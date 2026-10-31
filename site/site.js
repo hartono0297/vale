@@ -265,13 +265,29 @@
       if (notchCat) notchCat.render(look);
     }
 
-    $$('input[name="coat"], input[name="accessory"]').forEach(function (input) {
+    var pickers = $$('input[name="coat"], input[name="accessory"]');
+    pickers.forEach(function (input) {
       input.addEventListener('change', function () {
         if (!input.checked) return;
         look[input.name] = input.value;
         restyle();
       });
     });
+
+    /* Browsers restore checked radios on back/forward (Firefox also on reload)
+       without a change event, so the look is read from the pickers, not assumed. */
+    function syncLook() {
+      var changed = false;
+      pickers.forEach(function (input) {
+        if (input.checked && look[input.name] !== input.value) {
+          look[input.name] = input.value;
+          changed = true;
+        }
+      });
+      if (changed) restyle();
+    }
+    syncLook();
+    window.addEventListener('pageshow', syncLook);
 
     if (bigSvg && 'IntersectionObserver' in window) {
       new IntersectionObserver(function (entries) {
