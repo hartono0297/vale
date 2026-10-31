@@ -14,7 +14,7 @@
 use std::time::{Duration, Instant};
 
 use super::geometry::Rect;
-use super::motion::ease_out_cubic;
+use super::motion::{ease_in_out_cubic, ease_out_cubic};
 use crate::shelf::ShelfCard;
 
 /// A card coming in: opacity, size and rise.
@@ -77,16 +77,6 @@ pub fn progress(start: Instant, now: Instant, ms: u64) -> f32 {
 /// Whether an animation of `ms` that began at `start` is still going.
 fn active(start: Instant, now: Instant, ms: u64) -> bool {
     now < start + Duration::from_millis(ms)
-}
-
-/// Cubic ease-in-out (a card leaving).
-pub fn ease_in_out_cubic(t: f32) -> f32 {
-    let t = t.clamp(0.0, 1.0);
-    if t < 0.5 {
-        4.0 * t * t * t
-    } else {
-        1.0 - (-2.0 * t + 2.0).powi(3) / 2.0
-    }
 }
 
 fn lerp(a: f32, b: f32, t: f32) -> f32 {

@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use chrono::NaiveDate;
 
-use super::geometry::ease_out_back;
+use super::geometry::{ANIM_MS, LYRIC_RESIZE_MS, ease_out_back};
 use crate::clean::CleanMode;
 use crate::model::{CalView, Page};
 use crate::state::MolePhase;
@@ -43,13 +43,60 @@ pub fn ease_out_cubic(t: f32) -> f32 {
     1.0 - u * u * u
 }
 
-/// How the shape morph eases: with a slight overshoot, or plain ease-out
-/// when Windows' client-area animations are off.
-pub fn morph_ease(reduced: bool, t: f32) -> f32 {
-    if reduced {
-        ease_out_cubic(t)
+/// Cubic ease-in-out: slow start, slow landing, no overshoot (a card
+/// leaving, the notch shrinking to the eyes and coming back).
+pub fn ease_in_out_cubic(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    if t < 0.5 {
+        4.0 * t * t * t
     } else {
-        ease_out_back(t)
+        1.0 - (-2.0 * t + 2.0).powi(3) / 2.0
+    }
+}
+
+/// How long the notch takes to shrink to the cat's eyes or come back. Longer
+/// than `ANIM_MS` and eased in and out: with the eyes it is a small, calm
+/// change next to the pointer, not a view change.
+pub const EYES_MS: u64 = 320;
+
+/// The easing of one shape morph.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MorphCurve {
+    /// Ease-out with a slight overshoot (a view change).
+    Spring,
+    /// Plain ease-out, no overshoot: Windows' client-area animations are off.
+    Plain,
+    /// Ease-in-out, no overshoot: the shrink to the eyes and back.
+    EyesInOut,
+}
+
+impl MorphCurve {
+    /// The eased progress for linear progress `t` (0..1).
+    pub fn ease(self, t: f32) -> f32 {
+        match self {
+            MorphCurve::Spring => ease_out_back(t),
+            MorphCurve::Plain => ease_out_cubic(t),
+            MorphCurve::EyesInOut => ease_in_out_cubic(t),
+        }
+    }
+}
+
+/// How long a morph takes and how it eases: the eyes alone (`eyes_only`: the
+/// peek, with the view unchanged) take `EYES_MS` in and out; the lyric
+/// notch's width alone `LYRIC_RESIZE_MS`; any other `ANIM_MS`. `plain`: no
+/// overshoot for the last two.
+pub fn morph_timing(eyes_only: bool, lyric_resize: bool, plain: bool) -> (u64, MorphCurve) {
+    let curve = if plain {
+        MorphCurve::Plain
+    } else {
+        MorphCurve::Spring
+    };
+    if eyes_only {
+        (EYES_MS, MorphCurve::EyesInOut)
+    } else if lyric_resize {
+        (LYRIC_RESIZE_MS, curve)
+    } else {
+        (ANIM_MS, curve)
     }
 }
 
@@ -822,13 +869,59 @@ mod tests {
         // Plain: never past the target.
         for i in 0..=100 {
             let t = i as f32 / 100.0;
-            assert!(morph_ease(true, t) <= 1.0 + 1e-6, "t {t}");
+            assert!(MorphCurve::Plain.ease(t) <= 1.0 + 1e-6, "t {t}");
         }
-        assert_eq!(morph_ease(true, 0.0), 0.0);
-        assert_eq!(morph_ease(true, 1.0), 1.0);
+        assert_eq!(MorphCurve::Plain.ease(0.0), 0.0);
+        assert_eq!(MorphCurve::Plain.ease(1.0), 1.0);
         // The normal one overshoots, as it always did.
-        assert!(morph_ease(false, 0.8) > 1.0);
-        assert_eq!(morph_ease(false, 0.5), ease_out_back(0.5));
+        assert!(MorphCurve::Spring.ease(0.8) > 1.0);
+        assert_eq!(MorphCurve::Spring.ease(0.5), ease_out_back(0.5));
+    }
+
+    #[test]
+    fn the_morph_picker_gives_the_eyes_their_own_timing() {
+        assert_eq!(EYES_MS, 320);
+        assert_eq!(
+            morph_timing(true, false, false),
+            (320, MorphCurve::EyesInOut)
+        );
+        // Windows' animations off does not change the eyes' curve (it never
+        // overshoots anyway).
+        assert_eq!(morph_timing(true, false, true), (320, MorphCurve::EyesInOut));
+        assert_eq!(
+            morph_timing(false, false, false),
+            (ANIM_MS, MorphCurve::Spring)
+        );
+        assert_eq!(
+            morph_timing(false, true, false),
+            (LYRIC_RESIZE_MS, MorphCurve::Spring)
+        );
+        assert_eq!(morph_timing(false, false, true), (ANIM_MS, MorphCurve::Plain));
+        assert_eq!(
+            morph_timing(false, true, true),
+            (LYRIC_RESIZE_MS, MorphCurve::Plain)
+        );
+    }
+
+    #[test]
+    fn the_eyes_curve_stays_in_range_and_never_goes_back() {
+        let mut last = 0.0;
+        for i in 0..=1000 {
+            let t = i as f32 / 1000.0;
+            let e = MorphCurve::EyesInOut.ease(t);
+            assert!((0.0..=1.0).contains(&e), "t {t}: {e}");
+            assert!(e >= last, "t {t}: {e} < {last}");
+            last = e;
+        }
+        assert_eq!(MorphCurve::EyesInOut.ease(0.0), 0.0);
+        assert_eq!(MorphCurve::EyesInOut.ease(1.0), 1.0);
+        assert!((MorphCurve::EyesInOut.ease(0.5) - 0.5).abs() < 1e-6);
+        assert_eq!(MorphCurve::Spring.ease(0.5), ease_out_back(0.5));
+    }
+
+    #[test]
+    fn ease_in_out_is_slow_at_both_ends() {
+        assert!(ease_in_out_cubic(0.25) < 0.25 && ease_in_out_cubic(0.75) > 0.75);
     }
 
     #[test]
