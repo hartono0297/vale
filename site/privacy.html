@@ -91,12 +91,12 @@
 <caption>Every file Vale writes, what it holds and when it exists</caption>
 <thead><tr><th scope="col">File</th><th scope="col">What it holds</th><th scope="col">Encrypted</th><th scope="col">When it exists</th></tr></thead>
 <tbody>
-<tr><th scope="row"><code>config.json</code></th><td>Your settings, plus your own Google client ID and secret if you entered them.</td><td>No, plain text</td><td>Always</td></tr>
+<tr><th scope="row"><code>config.json</code></th><td>Your settings, plus your own Google client ID and secret if you entered them. If <code>config.json</code> cannot be read, Vale keeps the damaged copy next to it as <code>config.json.bak</code> (or <code>.bak2</code>, <code>.bak3</code> and so on, so no earlier copy is overwritten). That copy is plain text too and can hold the same client ID and secret.</td><td>No, plain text</td><td>Always</td></tr>
 <tr><th scope="row"><code>google-token.bin</code></th><td>The Google sign-in token.</td><td>Yes, Windows DPAPI, your Windows account</td><td>After Google sign-in. Disconnect deletes it.</td></tr>
 <tr><th scope="row"><code>calendar-cache.json</code></th><td>Event titles, times, descriptions and calendar colours.</td><td>No, plain text</td><td>After sign-in. Kept after you disconnect.</td></tr>
 <tr><th scope="row"><code>clipboard-history.bin</code></th><td>Copied text (up to 64 KB per item), links, colours, file paths and image thumbnails. 50 items by default, 10 to 200 in Settings. Full-size images stay in memory only. Copies from password managers are skipped.</td><td>Yes, Windows DPAPI</td><td>On and saved by default. Turning saving off deletes the file.</td></tr>
 <tr><th scope="row"><code>notification-history.bin</code></th><td>For each Windows notification Vale saw: app name, time, title, body (up to 1024 characters) and the app logo. 50 entries by default, 10 to 200 in Settings.</td><td>Yes, Windows DPAPI</td><td>On and saved by default. Turning saving off deletes the file.</td></tr>
-<tr><th scope="row"><code>notes.json</code>, <code>reminders.json</code></th><td>Your notes and reminders. If Vale cannot read one of them, it keeps a <code>.bak</code> copy.</td><td>No, plain text</td><td>When you use Notes or Reminders</td></tr>
+<tr><th scope="row"><code>notes.json</code>, <code>reminders.json</code></th><td>Your notes and reminders. If Vale cannot read one of them, it keeps the damaged copy as <code>notes.json.bak</code> or <code>reminders.json.bak</code> (or <code>.bak2</code>, <code>.bak3</code> and so on, so no earlier copy is overwritten).</td><td>No, plain text</td><td>When you use Notes or Reminders</td></tr>
 <tr><th scope="row"><code>cli-history.txt</code></th><td>The last 100 commands you typed in Vale's CLI.</td><td>No, plain text</td><td>When you use the CLI</td></tr>
 <tr><th scope="row"><code>cli-cwd.txt</code></th><td>The CLI's working folder.</td><td>No, plain text</td><td>When you use the CLI</td></tr>
 <tr><th scope="row"><code>cli-favorites.txt</code></th><td>Your favourite folders (up to 20).</td><td>No, plain text</td><td>When you use the CLI</td></tr>
@@ -120,7 +120,7 @@
 <li>The clipboard, for the clipboard history and the copy preview.</li>
 <li>Audio loopback of your default output, for the equalizer bars. Vale keeps five levels in memory and no audio. This is on by default.</li>
 <li>Per-app volume, for the Mixer.</li>
-<li>A low-level keyboard hook that reacts only to the bare PrtSc key, to open Vale's screenshot capture. This is on by default. Other keys pass through unread.</li>
+<li>A low-level keyboard hook that reacts only to the bare PrtSc key, to open Vale's screenshot capture. This is on by default. Vale checks each key only to see whether it is PrtSc; it does not record or keep any other key.</li>
 <li>Hotkeys Vale registers with Windows. Search on Ctrl+Alt+Space is on by default.</li>
 <li>Removable devices, for the Devices page and safe eject.</li>
 <li>UI Automation element boxes, so a screenshot can snap to windows and controls.</li>
