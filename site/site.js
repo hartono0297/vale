@@ -407,6 +407,18 @@
     }
 
     /* ----- copy notice ----- */
+    /* The full notice is 340 x 56 and would cover the nav and the Menu button,
+       so while any of the header is on screen the notch carries .is-compact and
+       the notice keeps the idle footprint (style.css). Without an observer it
+       stays compact everywhere. */
+    var header = $('.site-header');
+    if (header && 'IntersectionObserver' in window) {
+      new IntersectionObserver(function (entries) {
+        notch.classList.toggle('is-compact', entries[entries.length - 1].isIntersecting);
+      }).observe(header);
+    } else {
+      notch.classList.add('is-compact');
+    }
     notchApi = {
       showCopy: function (text) {
         if (open) return;

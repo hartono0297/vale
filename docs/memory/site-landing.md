@@ -18,11 +18,11 @@ A fixed container with a `button.notch-face` (closed states, `aria-expanded`, `a
 | idle | hero and every section without its own state | the terracotta cat left, the visitor's 24 h clock right (DM Mono, one `setTimeout` aimed at the next minute, only while idle and the tab is visible) |
 | music | `.f-music` | a plain square cover, a demo lyric line, 5 EQ bars. Demo track "Demo track" by "Vale demo"; five original lyric lines; the line follows the section's scroll progress (passive scroll listener only while the section intersects, work in rAF). EQ is CSS keyframes, paused when the tab is hidden |
 | panel | `.f-panel` | a "peek" (title, one demo line, the dock row), 400 x 128 |
-| clipboard | `.f-clip`, and 3 s after any Copy button | "Copied" with a preview of the copied text |
+| clipboard | `.f-clip`, and 3 s after any Copy button | "Copied" with a preview of the copied text; while any of the header is on screen (`.is-compact`, an IntersectionObserver on `.site-header`) only the cat and "Copied", at the idle size |
 | pomodoro | `.f-pomodoro` | a ring at a fixed progress with a static 18:42, no countdown |
 | cat | `#cat` | the cat, following the pointer, in the chosen coat and accessory |
 
-Sizes: idle 190 x 34 (120 x 45 below 32.5em, so the face is a 44 px tap target), music 300 x 36 (300 x 45 there), clipboard 340 x 56, pomodoro 200 x 34, open 460 x 300 (viewport minus 32 px on phones). Width, height and radius ease in about 350 ms, content crossfades.
+Sizes: idle and cat 190 x 34 (120 x 45 below 32.5em, so the face is a 44 px tap target; 96 x 45 below 23.5em), music 300 x 36 (300 x 45 there), clipboard 340 x 56 (the idle size while the header is visible), pomodoro 200 x 34 (same as idle below 32.5em), open 460 x 300 (viewport minus 32 px on phones). Width, height and radius ease in about 350 ms, content crossfades.
 
 **Interaction.** Mouse hover opens the full panel and leaving closes it (160 ms grace) unless it was pinned; a click pins, a second click closes. Touch: pointerenter is ignored, a tap toggles. Keyboard: the face is focusable, Enter or Space opens and moves focus to the selected tab, Escape closes and returns focus to the face, ArrowLeft/Right/Home/End move between the 13 icons (roving tabindex), Enter, Space or click selects. A click outside closes a pinned panel; Tab out of the panel closes it. The open panel's header strip is the face button itself, so clicking the title still toggles.
 
@@ -39,7 +39,7 @@ Every `<head>`, in order: charset, viewport, title, description, `link rel=icon 
 ## Decisions that differ from the first idea
 
 - **The header is not sticky.** The brief said sticky; but the notch is the one fixed element and its peek state is 400 px wide, which would sit on a sticky bar's links. A scrolling header never collides with a wider notch. Anchors use `scroll-margin-top: 3.5rem` so headings clear the notch.
-- **The menu button takes over below 76em (1216 px).** At 1216 px the links end 15 px from the idle notch; at 1280 px they start 48 px away; at 1024 px and below the menu button is shown. On a 375 px phone the idle notch is 120 px wide so the brand, the notch, the Menu button and the theme button fit one row with a 16 px gutter (notch 127.5 to 247.5, menu from 254).
+- **The menu button takes over below 76em (1216 px).** At 1216 px the links end 15 px from the idle notch; at 1280 px they start 48 px away; at 1024 px and below the menu button is shown. From 376 to 520 px the idle notch is 120 px wide and the text Menu button (57 px) clears it (at 376: notch ends 248, menu from 254.9). Below 23.5em (376 px) that no longer fits (21 px of overlap at 320), so the idle, cat, pomodoro and compact clipboard notch shrink to 96 px (9 px side padding: cat 26 + gap 10 + clock 39 fill the 94 px inside the edges) and the Menu button becomes a 44 px three-line button drawn with borders (forced colours keep it), its text kept at `font-size: 0` as the accessible name. Measured: 320 px notch 112 to 208, menu from 212; 360 px notch 132 to 228, menu from 252. The `.nf-idle` side padding needs `.notch .nf-idle` to beat the later `.nf { padding: 0 20px }`.
 - **The peek loses its dock row on phones (below 32.5em)** and is 64 px tall, so it does not cover the section text scrolling beneath it.
 - **The shrink-to-eyes pill is not built.** The brief allowed skipping it; it would have fought the hover-to-open flow.
 - Sections that do not change the notch say `data-notch="idle"` explicitly, so every section has a state.
@@ -65,11 +65,11 @@ Primary button: #E2683C fill, #17120F text, 5.56 (hover #EC7C55, 6.71). Notch, s
 
 ## Screenshots used, and why the others were not
 
-Copied from `assets/screenshots` into `site/img`: music, notch (the Calendar week page with the dot row, used for "Panel pages"), clipboard, clipboard-copied, system, cleaner, screenshot, shelf, cli, search-files, calendar, editor (the Google Calendar event editor, not a screenshot editor), pomodoro, reminders, notes, robot, greeting. All are 1x and shown at or below their natural width with `width`/`height`, `loading="lazy"` and specific alt text.
+Copied from `assets/screenshots` into `site/img`: music, notch (the Calendar week page, used for "Thirteen pages in one panel"), clipboard, clipboard-copied, system, cleaner, screenshot, shelf, cli, search-files, calendar, editor (the Google Calendar event editor, not a screenshot editor), pomodoro, reminders, notes, robot, greeting. All are 1x and shown at or below their natural width with `width`/`height`, `loading="lazy"` and specific alt text.
 
 Not used: `music-lyrics.png` (shows the old lyric offset control, -0.3 s with -/+ buttons, gone since 3.9, see [[lyrics-sync]]), `tour.png` (1.3 MB), `notices.png` (203 KB APNG; `greeting.png` says the same in 3 KB), `search.png` (search-files covers more), the settings, cleaner-mole and other detail shots. There is no Devices or Notifications screenshot, so those two sections have none (nothing is faked).
 
-Caveat: the screenshots were last regenerated on 2026-10-29, before the Devices and Notifications pages existed, so their page-dot row shows 11 dots, not 13. The pages themselves are unchanged. Re-run `scripts/capture-screenshots.ps1` ([[screenshot-capture-script]]) and copy the files again when convenient.
+The screenshots were last regenerated on 2026-10-29, before the Devices and Notifications pages existed, so their page-dot row showed 11 dots, not 13. In the `site/img` copies of the ten panel shots with that row (calendar, cli, clipboard, music, notch, notes, pomodoro, reminders, shelf, system) the dot row is painted over with the panel colour #17120F (a box around the dots only, so the rounded corners stay); `assets/screenshots` still has the originals, so those ten files differ from `assets/`. When `scripts/capture-screenshots.ps1` ([[screenshot-capture-script]]) is re-run for 3.9, copy the new files over and drop this note.
 
 ## Reduced motion
 

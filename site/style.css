@@ -158,14 +158,36 @@ html:not(.js) .site-nav ul { flex-wrap: wrap; }
 .notch[data-state="music"] { --nw: min(300px, calc(100vw - 32px)); --nh: 36px; --nr: 18px; }
 .notch[data-state="panel"] { --nw: min(400px, calc(100vw - 32px)); --nh: 128px; --nr: 24px; }
 .notch[data-state="clipboard"] { --nw: min(340px, calc(100vw - 32px)); --nh: 56px; --nr: 24px; }
+/* While the header is on screen (site.js sets .is-compact), the copy notice
+   keeps the idle footprint so it never lies over the nav, the Menu button or the brand. */
+.notch[data-state="clipboard"].is-compact { --nw: min(190px, calc(100vw - 32px)); --nh: 34px; --nr: 17px; }
+.notch.is-compact .nf-clip { justify-content: center; gap: 10px; }
+.notch.is-compact .nc-lg { width: 26px; height: 26px; }
+.notch.is-compact .clip-preview { display: none; }
 .notch[data-state="pomodoro"] { --nw: min(200px, calc(100vw - 32px)); }
 .notch[data-state].is-open { --nw: min(460px, calc(100vw - 32px)); --nh: 300px; --nr: 26px; }
 @media (max-width: 32.5em) {
-  .notch[data-state="idle"], .notch[data-state="cat"] { --nw: 120px; --nh: 45px; --nr: 22px; }
-  .nf-idle { padding: 0 14px; }
+  .notch[data-state="idle"], .notch[data-state="cat"], .notch[data-state="pomodoro"],
+  .notch[data-state="clipboard"].is-compact { --nw: 120px; --nh: 45px; --nr: 22px; }
+  .notch .nf-idle { padding: 0 14px; }
   .menu-btn { padding: 0 8px; }
-  .notch[data-state="pomodoro"] { --nw: 150px; --nh: 45px; --nr: 22px; }
   .notch[data-state="music"] { --nh: 45px; --nr: 22px; }
+}
+/* Below 23.5em (376 px) a 120 px notch and the 57 px text Menu button no
+   longer fit between the brand and the theme button (21 px of overlap at
+   320 px). The states the header can share the screen with shrink to 96 px
+   and the menu button becomes a 44 px three-line button; its text stays in
+   the DOM as the accessible name. At 320 px the notch then ends at 208 and
+   the menu button starts at 212. */
+@media (max-width: 23.49em) {
+  .notch[data-state="idle"], .notch[data-state="cat"], .notch[data-state="pomodoro"],
+  .notch[data-state="clipboard"].is-compact { --nw: 96px; }
+  /* 94 px inside the 1 px edges: cat 26 + gap 10 + clock 39 + 2 x 9. */
+  .notch .nf-idle, .notch .nf-pomo, .notch.is-compact .nf-clip { padding: 0 9px; }
+  .notch.is-compact .nf-clip { gap: 8px; }
+  .js .menu-btn { position: relative; justify-content: center; width: 44px; padding: 0; font-size: 0; }
+  .js .menu-btn::before { content: ""; display: block; box-sizing: border-box; width: 18px; height: 14px; border-top: 2px solid currentColor; border-bottom: 2px solid currentColor; }
+  .js .menu-btn::after { content: ""; position: absolute; left: 50%; top: 50%; width: 18px; margin: -1px 0 0 -9px; border-top: 2px solid currentColor; }
 }
 .notch-face { position: absolute; top: 0; left: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .notch.is-open .notch-face { height: 44px; }
