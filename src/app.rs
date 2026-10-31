@@ -103,7 +103,7 @@ use crate::ui::geometry::{
     AA_MARGIN, ANIM_MS, LYRIC_HOLD_MS, LYRIC_MAX_W, LYRIC_MIN_W, LYRIC_RESIZE_MS, NOTCH_H_DEFAULT,
     NOTCH_W_DEFAULT, NotchSize, ShapeKind, ShapeRect, Under, WINDOW_W, island_contains, lerp_shape,
     lyric_box_w, lyric_max_w, lyric_scroll_end_ms, lyric_scroll_offset, lyric_shape_sized,
-    lyric_target_w, lyric_width_min, panel_kind, shape_for, shape_sized, shape_with_robot_sized,
+    lyric_cap, lyric_target_w, lyric_width_min, panel_kind, shape_for, shape_sized, shape_with_robot_sized,
 };
 use crate::ui::motion::{
     FadeStart, PAGE_FADE_MS, Reveal, SlideStrip, Snap, SubView, Transit, Transition,
@@ -5556,8 +5556,9 @@ impl LyricFit {
         let current = self
             .width
             .filter(|_| self.robot == robot && self.max_w == max_w);
-        // The cap never sits under the notch width the user set.
-        let cap = max_w.max(self.min_w);
+        // The cap never sits under the notch width the user set, and it
+        // makes room for the robot's extra lead like `lyric_width_min`.
+        let cap = lyric_cap(robot, self.min_w, max_w);
         self.width = Some(lyric_target_w(current, wanted).min(cap));
         self.since = Some(now);
         self.text_w = text_w;
@@ -7462,13 +7463,42 @@ mod tests {
         assert_eq!(fit.width(), lyric_width(Some(300.0), true, LYRIC_MAX_W));
         // A smaller screen caps the same line lower.
         fit.line(Some(900.0), t0, true, LYRIC_MAX_W);
-        assert_eq!(fit.width(), LYRIC_MAX_W);
+        assert_eq!(fit.width(), LYRIC_MAX_W + crate::ui::geometry::LYRIC_ROBOT_EXTRA);
         fit.refit(true, 450.0);
         assert_eq!(fit.width(), 450.0 + crate::ui::geometry::LYRIC_ROBOT_EXTRA);
         // Nothing to refit before the first line.
         let mut empty = LyricFit::default();
         empty.refit(true, 450.0);
         assert_eq!(empty, LyricFit::default());
+    }
+
+    #[test]
+    fn lyric_fit_box_with_the_robot_is_todays_at_the_clamps() {
+        let t0 = Instant::now();
+        // Before `COMPACT_INSET` the robot's line box was the notch, clamped
+        // to [floor, cap], less 40 + 20.
+        for (min_w, max_w, text_w, today) in [
+            (0.0, LYRIC_MAX_W, Some(900.0), LYRIC_MAX_W - 60.0),
+            (0.0, LYRIC_MAX_W, Some(10.0), LYRIC_MIN_W - 60.0),
+            (0.0, LYRIC_MAX_W, None, LYRIC_MIN_W - 60.0),
+            (300.0, 250.0, Some(400.0), 300.0 - 60.0),
+            (300.0, 250.0, Some(10.0), 300.0 - 60.0),
+            (0.0, 450.0, Some(900.0), 450.0 - 60.0),
+        ] {
+            let mut fit = LyricFit::default();
+            fit.set_min(min_w);
+            fit.line(text_w, t0, true, max_w);
+            assert_eq!(fit.box_w(), today, "line {text_w:?} min {min_w} max {max_w}");
+            // A refit of the same line (the robot off and on) lands on the
+            // same width as the line itself.
+            let width = fit.width();
+            fit.refit(false, max_w);
+            fit.refit(true, max_w);
+            assert_eq!(fit.width(), width, "refit {text_w:?} min {min_w} max {max_w}");
+            fit.set_min(min_w + 1.0);
+            fit.set_min(min_w);
+            assert_eq!(fit.width(), width, "set_min {text_w:?} min {min_w} max {max_w}");
+        }
     }
 
     #[test]

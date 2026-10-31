@@ -44,11 +44,12 @@ a test in `settings_layout.rs` guards it.
 
 `lyric_width_min` clamps the width the line wanted with the *old* lead (40) to
 `[min_w, max_w]` exactly as before and adds the extra 10 *outside* the clamp,
-so the box is never narrower at the minimum or maximum. A consequence:
-with the robot the notch can reach `max_w + 10`, and `LyricFit::line` in
-`app.rs` still caps at `max_w.max(min_w)`, so for a line that already hits the
-maximum the box there is 10 narrower than before (it scrolls anyway), while
-`refit` / `set_min` give `max_w + 10`. A one-line fix in `LyricFit::line`
-(cap + `LYRIC_ROBOT_EXTRA` with the robot) would make them agree.
+so the box is never narrower at the minimum or maximum. With the robot the
+notch can therefore reach `max_w + 10`. Any cap applied after it must allow
+that: `LyricFit::line` in `app.rs` caps with `lyric_cap(robot, min_w, max_w)`
+(`max_w.max(min_w)` + 10 with the robot), never plain `max_w.max(min_w)`,
+or the box at the maximum shrinks by 10 and `line` disagrees with `refit` /
+`set_min` and the `--demo` scenes. Tests: `lyric_cap_is_the_widest_lyric_width`
+(geometry) and `lyric_fit_box_with_the_robot_is_todays_at_the_clamps` (app).
 
 Related: [[notch-size-and-fill]], [[lyric-notch-width]]. Listed in [[index]].

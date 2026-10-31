@@ -619,6 +619,13 @@ pub fn lyric_width_min(text_w: Option<f32>, robot: bool, min_w: f32, max_w: f32)
     base + extra
 }
 
+/// The widest `lyric_width_min` gives for this floor and cap: the cap (never
+/// under the floor), plus the robot's extra lead with the robot.
+pub fn lyric_cap(robot: bool, min_w: f32, max_w: f32) -> f32 {
+    let extra = if robot { LYRIC_ROBOT_EXTRA } else { 0.0 };
+    max_w.max(min_w.max(LYRIC_MIN_W)) + extra
+}
+
 /// The line's box width in a lyric notch `w` wide.
 pub fn lyric_box_w(w: f32, robot: bool) -> f32 {
     (w - lyric_lead(robot) - LYRIC_PAD).max(0.0)
@@ -2410,6 +2417,22 @@ mod tests {
                             "{size:?} {robot} {line:?}"
                         );
                     }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn lyric_cap_is_the_widest_lyric_width() {
+        for robot in [false, true] {
+            for min_w in [0.0, 220.0, 300.0] {
+                for max_w in [220.0, 250.0, 400.0, 560.0] {
+                    let cap = lyric_cap(robot, min_w, max_w);
+                    for step in 0..=90 {
+                        let w = lyric_width_min(Some(step as f32 * 10.0), robot, min_w, max_w);
+                        assert!(w <= cap, "robot {robot} min {min_w} max {max_w}: {w} > {cap}");
+                    }
+                    assert_eq!(lyric_width_min(Some(2000.0), robot, min_w, max_w), cap);
                 }
             }
         }
