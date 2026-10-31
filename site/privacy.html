@@ -104,10 +104,10 @@
 <tr><th scope="row"><code>lyrics-cache\</code></th><td>Synced lyrics (<code>.lrc</code> files) and markers for tracks where none were found.</td><td>No, plain text</td><td>Only with Lyrics on</td></tr>
 <tr><th scope="row"><code>shell-icon.txt</code></th><td>A version stamp for the app icon.</td><td>No, plain text</td><td>Once Vale has run</td></tr>
 <tr><th scope="row"><code>media.log</code></th><td>Media commands and states, never track titles.</td><td>No, plain text</td><td>Off. Only when Vale is started with <code>--media-log</code>.</td></tr>
-<tr><th scope="row"><code>Pictures\Screenshots</code></th><td>Screenshots you save. Vale never overwrites a file. Deleting a screenshot from the preview moves it to the Recycle Bin.</td><td>No, image files</td><td>When you save a screenshot</td></tr>
+<tr><th scope="row"><code>Pictures\Screenshots</code></th><td>Screenshots you save. Vale never overwrites a file. Deleting a screenshot from the preview moves it to the Recycle Bin. With <em>If ignored</em> set to <em>Delete</em> in Settings (off by default), a screenshot you leave alone goes to the Recycle Bin when its preview closes, even a file Snipping Tool saved.</td><td>No, image files</td><td>When you save a screenshot</td></tr>
 <tr><th scope="row"><code>HKCU\Software\Microsoft\Windows\CurrentVersion\Run</code></th><td>A value named <code>Vale</code> that starts Vale with Windows.</td><td>No</td><td>On by default. Turn it off in Settings.</td></tr>
 <tr><th scope="row"><code>%USERPROFILE%\.claude\settings.json</code> and <code>settings.json.bak-vale</code></th><td>Claude Code hook entries, with a backup of your settings file made first.</td><td>No, plain text</td><td>Only when you install the Claude Code hooks</td></tr>
-<tr><th scope="row"><code>%USERPROFILE%\.config\mole\whitelist.txt</code></th><td>Vale appends folders for Mole to leave alone (the Cargo caches and Autodesk).</td><td>No, plain text</td><td>Only in Mole mode</td></tr>
+<tr><th scope="row"><code>%USERPROFILE%\.config\mole\whitelist.txt</code></th><td>Vale appends folders for Mole to leave alone (the Cargo caches and Autodesk).</td><td>No, plain text</td><td>Once, before Mole mode's first preview, unless you turn off that protection in Settings</td></tr>
 </tbody></table></div>
 </section>
 
