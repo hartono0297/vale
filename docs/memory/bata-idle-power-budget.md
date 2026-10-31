@@ -1,6 +1,6 @@
 ---
 tags: [decision, robot, power, timers]
-date: 2026-10-29
+date: 2026-10-31
 ---
 
 # The notch assistant's idle power budget
@@ -143,8 +143,13 @@ the tick adds at most one `WindowFromPoint` a second and starts no frames
 moves the look target by 0.02 or more starts the clock (`ensure_clock`),
 `animating_at` counts `look.moving()`, and the clock stops once the ease has
 arrived. A small pointer movement costs no frame. The shrink to the eyes is a
-normal morph on the same clock (or settles at once with Motion not Full); while
-the notch is shrunk the blink timer and the equalizer timer are off.
+morph on the same clock (`EYES_MS`, 320 ms, ease-in-out; or it settles at once
+with Motion not Full); while the notch is shrunk the blink timer and the
+equalizer timer are off. The fast-entry fix (2026-10-31) adds no timer and no
+poll pace: the island's first `WM_MOUSEMOVE` while hover needs arming steps the
+peek once (one `GetCursorPos`, at most one `UnderCache`-limited window read, so
+at most once per approach, never at idle), and an over-the-notch reading reads
+the windows only when the pointer just arrived from outside the zone.
 
 **v3.8: the two toggles, and nothing else.** Settings → Kucing → Gerak has
 "Ikuti kursor" (`cat_follow_pointer`) and "Mengecil jadi mata" (`notch_peek`),

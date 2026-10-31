@@ -100,14 +100,15 @@ use crate::ui::cli_input::{self, CliInput, Key as InputKey, WM_APP_CLI_REDRAW};
 use crate::ui::editor::{self, EditorKind, EditorResult, WM_APP_EDITOR_RESULT};
 use crate::ui::frame_clock::{FrameClock, WM_APP_FRAME};
 use crate::ui::geometry::{
-    AA_MARGIN, ANIM_MS, LYRIC_HOLD_MS, LYRIC_MAX_W, LYRIC_MIN_W, LYRIC_RESIZE_MS, NOTCH_H_DEFAULT,
+    AA_MARGIN, ANIM_MS, LYRIC_HOLD_MS, LYRIC_MAX_W, LYRIC_MIN_W, NOTCH_H_DEFAULT,
     NOTCH_W_DEFAULT, NotchSize, ShapeKind, ShapeRect, Under, WINDOW_W, island_contains, lerp_shape,
     lyric_box_w, lyric_max_w, lyric_scroll_end_ms, lyric_scroll_offset, lyric_shape_sized,
     lyric_target_w, lyric_width_min, panel_kind, shape_for, shape_sized, shape_with_robot_sized,
 };
 use crate::ui::motion::{
     FadeStart, PAGE_FADE_MS, Reveal, SlideStrip, Snap, SubView, Transit, Transition,
-    content_alpha_from, fade_floor, mole_code, morph_ease, page_fade_frame, panel_fade, transition,
+    MorphCurve, content_alpha_from, ease_in_out_cubic, fade_floor, mole_code, morph_timing,
+    page_fade_frame, panel_fade, transition,
 };
 use crate::ui::notch_fill;
 use crate::ui::panel_layout::{CliHead, cli_layout};
@@ -406,6 +407,7 @@ pub fn run(media_log_flag: bool) {
             halo_ms: 0,
             peek: Peek::default(),
             under_cache: UnderCache::default(),
+            peek_last_pt: None,
             cover_cache: UnderCache::default(),
             eyes: false,
             eyes_morph: false,
@@ -674,6 +676,9 @@ struct App {
     /// eyes (set by `refresh`, so it changes together with the target shape).
     peek: Peek,
     under_cache: UnderCache,
+    /// Where the pointer was at the previous peek reading, so a reading can
+    /// say whether it moved (`PeekInputs::moved`). Cleared with the peek.
+    peek_last_pt: Option<(i32, i32)>,
     /// Whether a window lay over the island when the cat's look last asked,
     /// while stay-behind had it lowered (`look_hidden_behind`).
     cover_cache: UnderCache,
@@ -3006,15 +3011,19 @@ impl App {
             self.fill = (fill_from, fill_to);
             // Hidden keeps the shape where it is and only fades it out.
             let (to, to_opacity) = target.map_or((shape, 0.0), |s| (s, 1.0));
+            // The eyes alone (the view unchanged) morph slower and in and out;
+            // a view change at the same time keeps the view's own rules.
+            let eyes_only = eyes_swap && view_same && !hiding;
+            let (ms, curve) = morph_timing(eyes_only, resize, !self.animations);
             self.anim = Anim {
                 from: shape,
                 from_opacity: opacity,
                 to,
                 to_opacity,
                 start: now,
-                ms: if resize { LYRIC_RESIZE_MS } else { ANIM_MS },
+                ms,
                 running: true,
-                plain: !self.animations,
+                curve,
                 fade_from,
             };
             (self.leaving, self.closed_panel) = leaving_on_morph(
@@ -3226,7 +3235,7 @@ impl App {
         if !self.anim.running {
             return self.fill.1;
         }
-        let t = morph_ease(self.anim.plain, self.anim.progress(now));
+        let t = self.anim.curve.ease(self.anim.progress(now));
         notch_fill::morph_fill(self.fill.0, self.fill.1, t)
     }
 
@@ -3754,6 +3763,7 @@ impl App {
             return false;
         }
         self.under_cache.clear();
+        self.peek_last_pt = None;
         self.peek.reset()
     }
 
@@ -3839,6 +3849,7 @@ impl App {
         let ms = pointer_watch::poll_ms(follow, peek, self.pointer_near);
         if ms == 0 {
             self.under_cache.clear();
+            self.peek_last_pt = None;
             self.cover_cache.clear();
             // The next start reads at the quick pace first.
             self.pointer_near = true;
@@ -3900,12 +3911,16 @@ impl App {
         let over_normal = island_contains(style, normal, x, y, AA_MARGIN);
         let over_pill = island_contains(style, pill, x, y, AA_MARGIN);
         let before = self.peek.state();
+        let moved = self.peek_last_pt.is_some_and(|last| last != (pt.x, pt.y));
         if !in_zone {
             self.under_cache.clear();
         }
         // The walk over the windows only when a shrink is possible, once on
         // the approach and at most once a second while the pointer stays.
-        let candidate = before == PeekState::Normal && in_zone && !over_normal;
+        // A pointer over the notch is read too when it just arrived from
+        // outside (a fast move lands on it between two polls).
+        let candidate =
+            before == PeekState::Normal && in_zone && (!over_normal || self.peek.arriving());
         let window_under = candidate
             && self
                 .under_cache
@@ -3917,7 +3932,9 @@ impl App {
             over_pill,
             window_under,
             dragging: in_zone && left_button_down(),
+            moved,
         };
+        self.peek_last_pt = Some((pt.x, pt.y));
         let after = self.peek.step(inputs, now);
         if std::mem::discriminant(&before) != std::mem::discriminant(&after) {
             self.on_peek_changed(before, after, now);
@@ -4290,6 +4307,29 @@ impl App {
         // resting on them). Nothing hovers, no panel dwell starts.
         if self.peek.is_shrunk() {
             return;
+        }
+        // A fast move onto the notch can reach the island before the poll has
+        // read the pointer outside it: step the peek now, so a window under
+        // the notch still shrinks it before the hover starts. Once per
+        // approach (hover then no longer needs arming), no timer.
+        if self.peek_eligible()
+            && self.peek.state() == PeekState::Normal
+            && self.hover.needs_arming()
+        {
+            let mut pt = POINT::default();
+            if unsafe { GetCursorPos(&mut pt) }.is_ok() {
+                // This reading is the poll's too: a shrink re-paces the poll
+                // (`sync_pointer_watch`), which must see the pointer near the
+                // top now, not where the last, possibly slow, poll read it.
+                if let Some(win) = self.win.as_ref() {
+                    self.pointer_near =
+                        pointer_watch::near_top(pt.y - win.screen_origin().1, win.scale());
+                }
+                self.peek_tick(pt, Instant::now());
+                if self.peek.is_shrunk() {
+                    return;
+                }
+            }
         }
         // The faint margin round a small island takes a drag (the shelf),
         // not the pointer: nothing hovers there.
@@ -5018,9 +5058,9 @@ impl App {
                 .page_fade
                 .and_then(|f| page_fade_frame(f.progress(now))),
             content_alpha: if morphing {
-                self.anim.fade_from.map_or(1.0, |from| {
-                    content_alpha_from(from, self.anim.progress(now))
-                })
+                self.anim
+                    .fade_from
+                    .map_or(1.0, |from| content_alpha_from(from, self.anim.fade_t(now)))
             } else {
                 1.0
             },
@@ -5465,8 +5505,9 @@ struct Anim {
     start: Instant,
     ms: u64,
     running: bool,
-    /// Windows' animations are off: a plain ease-out, no overshoot.
-    plain: bool,
+    /// How the shape eases: the spring, a plain ease-out (Windows' animations
+    /// off) or in and out for the eyes (`motion::morph_timing`).
+    curve: MorphCurve,
     /// The content of the compact view or notice this morph leads to fades
     /// in with it, from this alpha (`motion::content_alpha_from`); `None`:
     /// no fade.
@@ -5483,16 +5524,28 @@ impl Anim {
             start: Instant::now(),
             ms: ANIM_MS,
             running: false,
-            plain: false,
+            curve: MorphCurve::Spring,
             fade_from: None,
+        }
+    }
+
+    /// The progress the content fade follows: the eyes' eased progress, so
+    /// the content moves with the shape; the linear one for the other morphs.
+    fn fade_t(&self, now: Instant) -> f32 {
+        let t = self.progress(now);
+        if self.curve == MorphCurve::EyesInOut {
+            ease_in_out_cubic(t)
+        } else {
+            t
         }
     }
 
     /// The content's alpha while its fade-in is still running, else `None`.
     fn fading(&self, now: Instant) -> Option<f32> {
-        let t = self.progress(now);
-        let from = self.fade_from.filter(|_| self.running && t < 1.0)?;
-        Some(content_alpha_from(from, t))
+        let from = self
+            .fade_from
+            .filter(|_| self.running && self.progress(now) < 1.0)?;
+        Some(content_alpha_from(from, self.fade_t(now)))
     }
 
     fn progress(&self, now: Instant) -> f32 {
@@ -5508,7 +5561,7 @@ impl Anim {
         if t >= 1.0 {
             return (self.to, self.to_opacity);
         }
-        let shape = lerp_shape(self.from, self.to, morph_ease(self.plain, t));
+        let shape = lerp_shape(self.from, self.to, self.curve.ease(t));
         let opacity = self.from_opacity + (self.to_opacity - self.from_opacity) * t;
         (shape, opacity)
     }
@@ -6955,7 +7008,7 @@ unsafe extern "system" fn wnd_proc(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::geometry::{lyric_shape, lyric_width};
+    use crate::ui::geometry::{LYRIC_RESIZE_MS, lyric_shape, lyric_width};
 
     #[test]
     fn greeting_waits_for_someone_at_an_unlocked_screen() {
@@ -7141,9 +7194,44 @@ mod tests {
             start,
             ms: ANIM_MS,
             running: true,
-            plain: false,
+            curve: MorphCurve::Spring,
             fade_from: None,
         }
+    }
+
+    #[test]
+    fn an_eyes_morph_takes_320_ms_and_never_overshoots() {
+        let t0 = Instant::now();
+        let (ms, curve) = morph_timing(true, false, false);
+        let eyes = Anim {
+            ms,
+            curve,
+            fade_from: Some(0.0),
+            ..morph(t0)
+        };
+        let target = eyes.to;
+        let at = |n: u64| t0 + Duration::from_millis(n);
+        assert_ne!(
+            eyes.frame(at(ANIM_MS)).0,
+            target,
+            "not there yet at the view morph's 240 ms"
+        );
+        assert!(eyes.fading(at(ANIM_MS)).is_some());
+        assert_eq!(eyes.frame(at(320)).0, target);
+        assert_eq!(eyes.fading(at(320)), None);
+        for n in (0..=320).step_by(8) {
+            let (shape, _) = eyes.frame(at(n));
+            assert!(
+                shape.w <= target.w + 1e-3 && shape.h <= target.h + 1e-3,
+                "{n} ms"
+            );
+        }
+        // The content fade follows the eased progress, not the linear one.
+        let linear = Anim {
+            curve: MorphCurve::Spring,
+            ..eyes
+        };
+        assert!(eyes.fading(at(150)).unwrap() < linear.fading(at(150)).unwrap());
     }
 
     #[test]
@@ -8189,7 +8277,7 @@ mod tests {
     fn a_morph_without_windows_animations_never_overshoots() {
         let t0 = Instant::now();
         let plain = Anim {
-            plain: true,
+            curve: MorphCurve::Plain,
             ..morph(t0)
         };
         let target = plain.to;

@@ -1,6 +1,6 @@
 ---
 tags: [decision, notch, pointer, power, motion]
-date: 2026-10-30
+date: 2026-10-31
 ---
 
 # The notch shrinks to the cat's eyes
@@ -36,14 +36,32 @@ seen). Anything else ends the peek at once (`peek_guard`, run at the top of
 `Peek { Normal | Shrunk { over_since } | Restored }`, `step(PeekInputs, now)`:
 
 - Normal, in the zone, a window under, not over the normal notch -> Shrunk.
-- Normal and the pointer already over the normal notch when first seen in the
-  zone -> Restored. A notch the pointer has reached is never pulled away.
+- Normal and the pointer over the normal notch -> Restored when it was resting
+  there: a notch the pointer sits on is never pulled away. **Fast entry** (v3.9
+  fix): a pointer that *arrives* shrinks it even when it lands straight on the
+  notch between two polls. `Peek` keeps a private `outside` flag (the previous
+  eligible reading saw the pointer outside the zone; `reset()` and any reading
+  that is not eligible clear it, so "unknown" counts as resting), and
+  `PeekInputs::moved` says the screen position differs from the previous peek
+  reading. `arrived = outside && moved`; in Normal + in zone + over the notch,
+  `arrived && window_under && !dragging` -> Shrunk, else Restored. No window
+  under, a held button, a stationary cursor (a synthesized `WM_MOUSEMOVE`) or no
+  earlier outside reading all keep today's Restored. `arriving()` (Normal and
+  `outside`) tells `App::peek_tick` to read the window under the notch for an
+  over-the-notch reading (`candidate`).
 - Shrunk and the pointer leaves the zone -> Normal.
 - Shrunk and over the drawn eyes continuously for `PEEK_DWELL` (500 ms) ->
   Restored. `over_since` resets whenever the pointer is off the eyes.
 - Restored and the pointer leaves the zone -> Normal (it can shrink again on
   the next approach). A Restored notch does not shrink again while the pointer
   stays in the zone.
+- **The `WM_MOUSEMOVE` trigger.** The island's first `WM_MOUSEMOVE` used to
+  call `begin_hover` before the poll had stepped the peek. `App::on_mouse_move`
+  now, right after the shrunk early return and before the `on_island` check,
+  steps the peek once (`GetCursorPos`, `peek_tick`) when `peek_eligible()`, the
+  state is Normal and `hover.needs_arming()`; if that shrank the notch it
+  returns without starting the hover. `peek_last_pt` (an App field, cleared with
+  the peek in `peek_guard` and where the poll stops) feeds `moved`.
 - A click on the eyes restores at once (assumption: the request only names the
   dwell). That click is swallowed: it never opens the panel.
 
@@ -73,7 +91,14 @@ there to drop on. A notch already shrunk stays so.
 - `refresh` targets the Eyes shape while the peek is Shrunk (`App::eyes`).
   Shrinking and coming back count as a compact swap: the content fades in with
   the morph (the cat too while the eyes morph runs, `Frame::robot_fades`).
-  Motion Full: the normal `ANIM_MS` morph. Motion Saver / Off or Energy Saver:
+  Motion Full: the eyes' own morph, `motion::EYES_MS` (320 ms, slower than
+  `ANIM_MS`) on `MorphCurve::EyesInOut` (ease-in-out cubic, no overshoot;
+  `morph_timing(eyes_only, lyric_resize, plain)` picks it when the swap is the
+  eyes alone, `eyes_swap && view_same && !hiding`; a view change at the same
+  time keeps the view's spring). The content fade (`Transit.content_alpha`,
+  `Anim::fading`) and the fill (`fill_at`) follow the same curve (the eased
+  progress for the eyes, the linear one for other morphs), so the eyes and the
+  shape move together; a restore by click goes through the same refresh. Motion Saver / Off or Energy Saver:
   `Anim::settled`, the new shape at once (a view change at the same time still
   morphs).
 - `Frame::eyes`: the renderer draws the fill in the pill and **only**

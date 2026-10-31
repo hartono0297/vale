@@ -124,17 +124,25 @@ pub struct PeekInputs {
     /// A mouse button is down (a drag may be on its way to the island): a
     /// notch that is not shrunk yet stays as it is.
     pub dragging: bool,
+    /// The pointer's screen position differs from the previous peek reading.
+    /// A synthesized `WM_MOUSEMOVE` or a reading with a resting cursor is not
+    /// an arrival.
+    pub moved: bool,
 }
 
 #[derive(Debug)]
 pub struct Peek {
     state: PeekState,
+    /// The previous eligible reading saw the pointer outside the zone, so an
+    /// in-zone reading that follows is an arrival, not a pointer at rest.
+    outside: bool,
 }
 
 impl Default for Peek {
     fn default() -> Self {
         Peek {
             state: PeekState::Normal,
+            outside: false,
         }
     }
 }
@@ -148,8 +156,17 @@ impl Peek {
         matches!(self.state, PeekState::Shrunk { .. })
     }
 
-    /// Back to `Normal` at once. True when it was something else.
+    /// The next in-zone reading would be an arrival: `Normal`, and the last
+    /// eligible reading saw the pointer outside the zone. The app reads the
+    /// window under the notch for an over-the-notch reading only then.
+    pub fn arriving(&self) -> bool {
+        self.state == PeekState::Normal && self.outside
+    }
+
+    /// Back to `Normal` at once. True when it was something else. Not eligible
+    /// means unknown, so a later first reading counts as a pointer at rest.
     pub fn reset(&mut self) -> bool {
+        self.outside = false;
         std::mem::replace(&mut self.state, PeekState::Normal) != PeekState::Normal
     }
 
@@ -165,15 +182,21 @@ impl Peek {
 
     /// The state after one reading.
     pub fn step(&mut self, i: PeekInputs, now: Instant) -> PeekState {
+        let arrived = self.outside && i.moved;
         self.state = match self.state {
             _ if !i.eligible => PeekState::Normal,
             PeekState::Normal => {
                 if !i.in_zone {
                     PeekState::Normal
                 } else if i.over_normal {
-                    // A notch the pointer has already reached is never pulled
-                    // away from under it.
-                    PeekState::Restored
+                    // A pointer that came in from outside shrinks the notch
+                    // even when it lands on it between two readings. One that
+                    // was resting there never has it pulled away.
+                    if arrived && i.window_under && !i.dragging {
+                        PeekState::Shrunk { over_since: None }
+                    } else {
+                        PeekState::Restored
+                    }
                 } else if i.window_under && !i.dragging {
                     PeekState::Shrunk { over_since: None }
                 } else {
@@ -204,6 +227,7 @@ impl Peek {
                 }
             }
         };
+        self.outside = i.eligible && !i.in_zone;
         self.state
     }
 }
@@ -443,12 +467,16 @@ mod tests {
             },
             PeekState::Restored,
         ] {
-            let mut peek = Peek { state: from };
+            let mut peek = Peek {
+                state: from,
+                outside: true,
+            };
             assert_eq!(peek.step(off, now), PeekState::Normal, "{from:?}");
         }
         assert!(
             Peek {
-                state: PeekState::Restored
+                state: PeekState::Restored,
+                outside: true,
             }
             .reset()
         );
@@ -504,6 +532,107 @@ mod tests {
             peek.step(near(), now + ms(10)),
             PeekState::Shrunk { .. }
         ));
+    }
+
+    fn outside() -> PeekInputs {
+        PeekInputs {
+            in_zone: false,
+            ..near()
+        }
+    }
+
+    /// A pointer that lands straight on the notch between two readings.
+    fn lands_on_it() -> PeekInputs {
+        PeekInputs {
+            over_normal: true,
+            moved: true,
+            ..near()
+        }
+    }
+
+    #[test]
+    fn a_fast_entry_onto_the_notch_shrinks_it() {
+        let (mut peek, now) = (Peek::default(), Instant::now());
+        peek.step(outside(), now);
+        assert!(peek.arriving());
+        assert_eq!(
+            peek.step(lands_on_it(), now + ms(80)),
+            PeekState::Shrunk { over_since: None }
+        );
+        assert!(!peek.arriving());
+    }
+
+    #[test]
+    fn a_pointer_resting_on_the_notch_does_not_shrink_it() {
+        // First reading in the zone, nothing seen outside before.
+        let (mut peek, now) = (Peek::default(), Instant::now());
+        assert!(!peek.arriving());
+        assert_eq!(peek.step(lands_on_it(), now), PeekState::Restored);
+        // After a reset the arrival is forgotten too.
+        let mut peek = Peek::default();
+        peek.step(outside(), now);
+        peek.reset();
+        assert_eq!(peek.step(lands_on_it(), now), PeekState::Restored);
+    }
+
+    #[test]
+    fn an_arrival_without_a_move_is_not_an_arrival() {
+        let (mut peek, now) = (Peek::default(), Instant::now());
+        peek.step(outside(), now);
+        let still = PeekInputs {
+            moved: false,
+            ..lands_on_it()
+        };
+        assert_eq!(peek.step(still, now + ms(10)), PeekState::Restored);
+    }
+
+    #[test]
+    fn a_fast_entry_with_a_button_held_or_no_window_does_not_shrink() {
+        let now = Instant::now();
+        for blocked in [
+            PeekInputs {
+                dragging: true,
+                ..lands_on_it()
+            },
+            PeekInputs {
+                window_under: false,
+                ..lands_on_it()
+            },
+        ] {
+            let mut peek = Peek::default();
+            peek.step(outside(), now);
+            assert_eq!(peek.step(blocked, now + ms(10)), PeekState::Restored);
+        }
+    }
+
+    #[test]
+    fn after_a_restore_only_leaving_and_returning_fast_shrinks_again() {
+        let (mut peek, now) = (Peek::default(), Instant::now());
+        peek.step(outside(), now);
+        peek.step(lands_on_it(), now + ms(10));
+        assert!(peek.restore());
+        // Staying in the zone, even moving over the notch: never again.
+        assert_eq!(peek.step(lands_on_it(), now + ms(20)), PeekState::Restored);
+        assert_eq!(peek.step(lands_on_it(), now + ms(30)), PeekState::Restored);
+        // Out, then straight back on it.
+        assert_eq!(peek.step(outside(), now + ms(40)), PeekState::Normal);
+        assert_eq!(
+            peek.step(lands_on_it(), now + ms(50)),
+            PeekState::Shrunk { over_since: None }
+        );
+    }
+
+    #[test]
+    fn a_reading_that_is_not_eligible_clears_the_arrival() {
+        let (mut peek, now) = (Peek::default(), Instant::now());
+        peek.step(outside(), now);
+        let off = PeekInputs {
+            eligible: false,
+            ..outside()
+        };
+        peek.step(off, now + ms(10));
+        assert!(!peek.arriving());
+        assert_eq!(peek.step(lands_on_it(), now + ms(20)), PeekState::Restored);
     }
 
     fn shrunk() -> (Peek, Instant) {
