@@ -406,6 +406,7 @@ pub fn run(media_log_flag: bool) {
             halo_ms: 0,
             peek: Peek::default(),
             under_cache: UnderCache::default(),
+            peek_last_pt: None,
             cover_cache: UnderCache::default(),
             eyes: false,
             eyes_morph: false,
@@ -674,6 +675,9 @@ struct App {
     /// eyes (set by `refresh`, so it changes together with the target shape).
     peek: Peek,
     under_cache: UnderCache,
+    /// Where the pointer was at the previous peek reading, so a reading can
+    /// say whether it moved (`PeekInputs::moved`). Cleared with the peek.
+    peek_last_pt: Option<(i32, i32)>,
     /// Whether a window lay over the island when the cat's look last asked,
     /// while stay-behind had it lowered (`look_hidden_behind`).
     cover_cache: UnderCache,
@@ -3754,6 +3758,7 @@ impl App {
             return false;
         }
         self.under_cache.clear();
+        self.peek_last_pt = None;
         self.peek.reset()
     }
 
@@ -3839,6 +3844,7 @@ impl App {
         let ms = pointer_watch::poll_ms(follow, peek, self.pointer_near);
         if ms == 0 {
             self.under_cache.clear();
+            self.peek_last_pt = None;
             self.cover_cache.clear();
             // The next start reads at the quick pace first.
             self.pointer_near = true;
@@ -3900,12 +3906,16 @@ impl App {
         let over_normal = island_contains(style, normal, x, y, AA_MARGIN);
         let over_pill = island_contains(style, pill, x, y, AA_MARGIN);
         let before = self.peek.state();
+        let moved = self.peek_last_pt.is_some_and(|last| last != (pt.x, pt.y));
         if !in_zone {
             self.under_cache.clear();
         }
         // The walk over the windows only when a shrink is possible, once on
         // the approach and at most once a second while the pointer stays.
-        let candidate = before == PeekState::Normal && in_zone && !over_normal;
+        // A pointer over the notch is read too when it just arrived from
+        // outside (a fast move lands on it between two polls).
+        let candidate =
+            before == PeekState::Normal && in_zone && (!over_normal || self.peek.arriving());
         let window_under = candidate
             && self
                 .under_cache
@@ -3917,7 +3927,9 @@ impl App {
             over_pill,
             window_under,
             dragging: in_zone && left_button_down(),
+            moved,
         };
+        self.peek_last_pt = Some((pt.x, pt.y));
         let after = self.peek.step(inputs, now);
         if std::mem::discriminant(&before) != std::mem::discriminant(&after) {
             self.on_peek_changed(before, after, now);
@@ -4290,6 +4302,22 @@ impl App {
         // resting on them). Nothing hovers, no panel dwell starts.
         if self.peek.is_shrunk() {
             return;
+        }
+        // A fast move onto the notch can reach the island before the poll has
+        // read the pointer outside it: step the peek now, so a window under
+        // the notch still shrinks it before the hover starts. Once per
+        // approach (hover then no longer needs arming), no timer.
+        if self.peek_eligible()
+            && self.peek.state() == PeekState::Normal
+            && self.hover.needs_arming()
+        {
+            let mut pt = POINT::default();
+            if unsafe { GetCursorPos(&mut pt) }.is_ok() {
+                self.peek_tick(pt, Instant::now());
+                if self.peek.is_shrunk() {
+                    return;
+                }
+            }
         }
         // The faint margin round a small island takes a drag (the shelf),
         // not the pointer: nothing hovers there.
