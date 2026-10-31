@@ -31,7 +31,8 @@ in `merge_owned`), geometry in `src/ui/geometry.rs`, alpha math in
   `shape_sized`, `shape_with_robot_sized`, `lyric_shape_sized`,
   `lyric_width_min`. `shape_for`, `shape_with_robot`, `lyric_shape`,
   `lyric_width` are the default-size forms (the last three are test-only now).
-- Follow the size: Idle, MediaCompact (w x h), PomodoroCompact (w + 20), and
+- Follow the size: Idle (w x h), MediaCompact (w + 12), PomodoroCompact (w + 22; see
+  [[compact-padding]]), and
   MediaLyric (height; its minimum width is `max(LYRIC_MIN_W, w)`, and
   `App::lyric_max_w` never goes below it, `LyricFit::set_min`). Notice,
   NoticeShot and every panel kind do not. See [[lyric-notch-width]].

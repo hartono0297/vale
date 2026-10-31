@@ -10,8 +10,9 @@ the line on screen instead of a fixed 300 × 34. Math in `src/ui/geometry.rs`
 (`lyric_*`), state in `App::lyric_fit` (`LyricFit` in `src/app.rs`).
 
 - **Width** = `ceil(text_w) + 1 + lead + 20`, clamped to
-  `[220, lyric_max_w]`. Lead is 20 without the robot, 6 + 26 + 8 = 40 with
-  it, so `shape_with_robot` adds nothing for MediaLyric (`robot_extra` 0).
+  `[220, lyric_max_w]`. Lead is 20 without the robot, 16 + 26 + 8 = 50 with
+  it (since the 16 dip inset, [[compact-padding]]; with the robot the width is
+  today's clamped width + 10, so the box is unchanged), so `shape_with_robot` adds nothing for MediaLyric (`robot_extra` 0).
   `lyric_max_w(screen_w) = min(560, 0.45 × screen_w)`, never below 220;
   `IslandWindow::screen_w()` is the primary monitor's logical width,
   refreshed on `WM_DPICHANGED` / `WM_DISPLAYCHANGE`. The "♪" rest and

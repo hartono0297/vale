@@ -64,6 +64,19 @@ pub fn panel_kind(page: crate::model::Page, cli_tall: bool, cleaner: bool) -> Sh
 const PILL_TOP: f32 = 8.0;
 /// Bottom corners of the Notch's compact shapes.
 const NOTCH_COMPACT_RADIUS: f32 = 16.0;
+/// The inset of the compact views' content (the media art or the robot, the
+/// equalizer bars, the pomodoro ring, the robot beside a lyric) from the
+/// shape's left and right edges. Equal to the Notch's compact corner radius,
+/// and the same in the Pill style, so content never sits closer to an end
+/// than the curve reaches. Idle, notices, panels and the eyes do not use it.
+pub const COMPACT_INSET: f32 = NOTCH_COMPACT_RADIUS;
+/// How much wider MediaCompact is than the user's width: the art's and the
+/// bars' insets grew from 6 and 14 to `COMPACT_INSET` (+10 and +2), and the
+/// shape grows by their sum so the title keeps exactly the room it had.
+pub const MEDIA_COMPACT_EXTRA: f32 = 12.0;
+/// The same for PomodoroCompact: the ring's inset grew from 14 to 16 (the
+/// ring's left edge, +2) on top of the 20 it was already wider.
+pub const POMODORO_COMPACT_EXTRA: f32 = 22.0;
 
 /// The closed island's width range (Settings -> Tampilan -> Notch), logical
 /// px. 160 keeps the idle robot and clock, and the compact media title, inside
@@ -82,7 +95,9 @@ pub const NOTCH_H_DEFAULT: u32 = 34;
 pub const NOTCH_OPACITY_DEFAULT: u8 = 30;
 
 /// The closed island's size as the user set it: what Idle, MediaCompact,
-/// PomodoroCompact (20 wider) and MediaLyric (its minimum width) are built on.
+/// PomodoroCompact (`POMODORO_COMPACT_EXTRA` wider), MediaCompact
+/// (`MEDIA_COMPACT_EXTRA` wider) and MediaLyric (its minimum width) are built
+/// on.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NotchSize {
     pub w: f32,
@@ -117,8 +132,9 @@ pub fn shape_for(style: Style, kind: ShapeKind) -> ShapeRect {
 /// notices do not follow it.
 pub fn shape_sized(style: Style, size: NotchSize, kind: ShapeKind) -> ShapeRect {
     let (w, h) = match kind {
-        ShapeKind::Idle | ShapeKind::MediaCompact => (size.w, size.h),
-        ShapeKind::PomodoroCompact => (size.w + 20.0, size.h),
+        ShapeKind::Idle => (size.w, size.h),
+        ShapeKind::MediaCompact => (size.w + MEDIA_COMPACT_EXTRA, size.h),
+        ShapeKind::PomodoroCompact => (size.w + POMODORO_COMPACT_EXTRA, size.h),
         ShapeKind::Eyes => (EYES_W, EYES_H),
         // Sized by its line (`lyric_shape_sized`); without one, the narrowest.
         ShapeKind::MediaLyric => (LYRIC_MIN_W.max(size.w), size.h),
@@ -160,7 +176,6 @@ pub const EYES_H: f32 = 14.0;
 /// this far from what follows. On a notice it takes the badge's 40 px place.
 pub const ROBOT_COMPACT: f32 = 26.0;
 pub const ROBOT_NOTICE: f32 = 40.0;
-const ROBOT_INSET: f32 = 6.0;
 const ROBOT_GAP: f32 = 8.0;
 /// The idle clock's box beside the robot: "00:00" in DM Sans 600 16,
 /// tracked (40.3 px), fits.
@@ -171,11 +186,11 @@ pub const CLOCK_W: f32 = 44.0;
 /// clock as it is; a notice's robot takes the badge's place.
 pub fn robot_extra(kind: ShapeKind) -> f32 {
     match kind {
-        // The art (22 px, text from +38) becomes the robot (26 px, text from +40).
+        // The art (22 px, text from +48) becomes the robot (26 px, text from +50).
         ShapeKind::MediaCompact => 2.0,
-        // `lyric_width` already counts the robot in its lead.
-        // The ring started 14 px in; now after the robot, 40 px in.
-        ShapeKind::PomodoroCompact => 26.0,
+        // `lyric_width_min` already counts the robot in its lead.
+        // The ring's centre was 24 px in; now after the robot, 58 px in.
+        ShapeKind::PomodoroCompact => 34.0,
         _ => 0.0,
     }
 }
@@ -208,7 +223,7 @@ pub fn shape_with_robot_sized(
 /// The robot's square at the left of a compact shape, vertically centred.
 pub fn robot_slot(s: ShapeRect) -> Rect {
     square(
-        s.x + ROBOT_INSET,
+        s.x + COMPACT_INSET,
         s.y + (s.h - ROBOT_COMPACT) / 2.0,
         ROBOT_COMPACT,
     )
@@ -514,8 +529,8 @@ fn square(x: f32, y: f32, size: f32) -> Rect {
 
 pub fn compact_layout(s: ShapeRect) -> CompactLayout {
     const ART: f32 = 22.0;
-    const PAD_L: f32 = 6.0;
-    const PAD_R: f32 = 14.0;
+    const PAD_L: f32 = COMPACT_INSET;
+    const PAD_R: f32 = COMPACT_INSET;
     const GAP: f32 = 10.0;
     let art = square(s.x + PAD_L, s.y + (s.h - ART) / 2.0, ART);
     let bars_w = BAR_COUNT as f32 * BAR_W + (BAR_COUNT - 1) as f32 * BAR_GAP;
@@ -557,11 +572,16 @@ const LYRIC_PAD: f32 = 20.0;
 /// Room for the measure's rounding, so a measured line never trims.
 const LYRIC_SLACK: f32 = 1.0;
 
+/// How much farther right the line's box starts with the robot since the
+/// robot's inset became `COMPACT_INSET` (it was 6): 10. `lyric_width_min` adds
+/// it to the width, so the box keeps the room it had.
+pub const LYRIC_ROBOT_EXTRA: f32 = COMPACT_INSET - 6.0;
+
 /// Where the line's box starts, from the shape's left edge: after the side
 /// padding, or after the robot (`lyric_layout_robot`).
 fn lyric_lead(robot: bool) -> f32 {
     if robot {
-        ROBOT_INSET + ROBOT_COMPACT + ROBOT_GAP
+        COMPACT_INSET + ROBOT_COMPACT + ROBOT_GAP
     } else {
         LYRIC_PAD
     }
@@ -584,12 +604,26 @@ pub fn lyric_width(text_w: Option<f32>, robot: bool, max_w: f32) -> f32 {
 pub fn lyric_width_min(text_w: Option<f32>, robot: bool, min_w: f32, max_w: f32) -> f32 {
     let min_w = min_w.max(LYRIC_MIN_W);
     let max_w = max_w.max(min_w);
-    match text_w {
-        Some(w) if w > 0.0 => {
-            (w.ceil() + LYRIC_SLACK + lyric_lead(robot) + LYRIC_PAD).clamp(min_w, max_w)
-        }
+    // The width the line wanted before the robot's inset grew, clamped as
+    // always; the robot's extra lead goes on top, outside the clamp, so the
+    // box is never narrower than it was (even at the minimum or maximum).
+    let (lead, extra) = if robot {
+        (lyric_lead(true) - LYRIC_ROBOT_EXTRA, LYRIC_ROBOT_EXTRA)
+    } else {
+        (lyric_lead(false), 0.0)
+    };
+    let base = match text_w {
+        Some(w) if w > 0.0 => (w.ceil() + LYRIC_SLACK + lead + LYRIC_PAD).clamp(min_w, max_w),
         _ => min_w,
-    }
+    };
+    base + extra
+}
+
+/// The widest `lyric_width_min` gives for this floor and cap: the cap (never
+/// under the floor), plus the robot's extra lead with the robot.
+pub fn lyric_cap(robot: bool, min_w: f32, max_w: f32) -> f32 {
+    let extra = if robot { LYRIC_ROBOT_EXTRA } else { 0.0 };
+    max_w.max(min_w.max(LYRIC_MIN_W)) + extra
 }
 
 /// The line's box width in a lyric notch `w` wide.
@@ -1055,7 +1089,11 @@ mod tests {
     fn idle_matches_v1_compact_size() {
         for style in [Style::Pill, Style::Notch] {
             let idle = shape_for(style, ShapeKind::Idle);
-            assert_eq!(idle, shape_for(style, ShapeKind::MediaCompact));
+            // MediaCompact is `MEDIA_COMPACT_EXTRA` wider (equal insets);
+            // everything else about it is the island's.
+            let media = shape_for(style, ShapeKind::MediaCompact);
+            assert_eq!((media.w, media.h), (idle.w + MEDIA_COMPACT_EXTRA, idle.h));
+            assert_eq!((media.y, media.radius), (idle.y, idle.radius));
             assert_eq!((idle.w, idle.h), (190.0, 34.0));
         }
         assert_eq!(shape_for(Style::Pill, ShapeKind::Idle).radius, 17.0);
@@ -1568,10 +1606,10 @@ mod tests {
             }
             let w = |kind| shape_with_robot(style, kind, true).w;
             assert_eq!(w(ShapeKind::Idle), 190.0);
-            assert_eq!(w(ShapeKind::MediaCompact), 192.0);
+            assert_eq!(w(ShapeKind::MediaCompact), 204.0);
             // Sized by its line, robot included (`lyric_width`).
             assert_eq!(w(ShapeKind::MediaLyric), LYRIC_MIN_W);
-            assert_eq!(w(ShapeKind::PomodoroCompact), 236.0);
+            assert_eq!(w(ShapeKind::PomodoroCompact), 246.0);
             assert_eq!(w(ShapeKind::Notice), 360.0);
             assert_eq!(w(ShapeKind::Panel), 560.0, "never in the panel");
         }
@@ -1807,9 +1845,9 @@ mod tests {
         assert_eq!(
             shape_for(Style::Pill, ShapeKind::MediaCompact),
             ShapeRect {
-                x: 215.0,
+                x: 209.0,
                 y: 8.0,
-                w: 190.0,
+                w: 202.0,
                 h: 34.0,
                 radius: 17.0
             }
@@ -1830,8 +1868,8 @@ mod tests {
                 (s.w, s.h)
             };
             assert_eq!(size(ShapeKind::Idle), (190.0, 34.0));
-            assert_eq!(size(ShapeKind::MediaCompact), (190.0, 34.0));
-            assert_eq!(size(ShapeKind::PomodoroCompact), (210.0, 34.0));
+            assert_eq!(size(ShapeKind::MediaCompact), (202.0, 34.0));
+            assert_eq!(size(ShapeKind::PomodoroCompact), (212.0, 34.0));
             assert_eq!(size(ShapeKind::MediaLyric), (220.0, 34.0));
             assert_eq!(size(ShapeKind::Notice), (360.0, 76.0));
             assert_eq!(size(ShapeKind::Panel), (560.0, 290.0));
@@ -1953,22 +1991,28 @@ mod tests {
     #[test]
     fn lyric_width_stays_between_min_and_max() {
         for robot in [false, true] {
+            // With the robot the width is the clamped one plus its extra lead.
+            let x = if robot { LYRIC_ROBOT_EXTRA } else { 0.0 };
             // Instrumental "♪", nothing, or a failed measure: the minimum.
-            assert_eq!(lyric_width(None, robot, LYRIC_MAX_W), LYRIC_MIN_W);
-            assert_eq!(lyric_width(Some(0.0), robot, LYRIC_MAX_W), LYRIC_MIN_W);
+            assert_eq!(lyric_width(None, robot, LYRIC_MAX_W), LYRIC_MIN_W + x);
+            assert_eq!(lyric_width(Some(0.0), robot, LYRIC_MAX_W), LYRIC_MIN_W + x);
             // A short line keeps the minimum; a huge one caps at the maximum.
-            assert_eq!(lyric_width(Some(40.0), robot, LYRIC_MAX_W), LYRIC_MIN_W);
-            assert_eq!(lyric_width(Some(2000.0), robot, LYRIC_MAX_W), LYRIC_MAX_W);
-            assert_eq!(lyric_width(Some(2000.0), robot, 450.0), 450.0);
-            // In between, the notch hugs its line: text, 1 px slack, lead, padding.
+            assert_eq!(lyric_width(Some(40.0), robot, LYRIC_MAX_W), LYRIC_MIN_W + x);
+            assert_eq!(
+                lyric_width(Some(2000.0), robot, LYRIC_MAX_W),
+                LYRIC_MAX_W + x
+            );
+            assert_eq!(lyric_width(Some(2000.0), robot, 450.0), 450.0 + x);
+            // In between, the notch hugs its line: text, 1 px slack, lead
+            // (the robot's, before its inset grew: 40), padding.
             let lead = if robot { 40.0 } else { 20.0 };
             assert_eq!(
                 lyric_width(Some(300.4), robot, LYRIC_MAX_W),
-                301.0 + 1.0 + lead + 20.0
+                301.0 + 1.0 + lead + 20.0 + x
             );
             for i in 0..200 {
                 let w = lyric_width(Some(i as f32 * 4.0), robot, LYRIC_MAX_W);
-                assert!((LYRIC_MIN_W..=LYRIC_MAX_W).contains(&w), "{w}");
+                assert!((LYRIC_MIN_W + x..=LYRIC_MAX_W + x).contains(&w), "{w}");
             }
         }
         // A maximum below the minimum (a tiny screen) never undercuts it.
@@ -2032,7 +2076,8 @@ mod tests {
     fn a_line_that_fits_the_widest_box_is_never_trimmed() {
         for style in [Style::Pill, Style::Notch] {
             for robot in [false, true] {
-                let room = lyric_box_w(LYRIC_MAX_W, robot) - 1.0;
+                let x = if robot { LYRIC_ROBOT_EXTRA } else { 0.0 };
+                let room = lyric_box_w(LYRIC_MAX_W + x, robot) - 1.0;
                 for i in 0..=100 {
                     let text_w = room * i as f32 / 100.0 + 0.37;
                     let s = lyric_shape(style, lyric_width(Some(text_w), robot, LYRIC_MAX_W));
@@ -2127,7 +2172,8 @@ mod tests {
         // Today's numbers, spelled out.
         let idle = shape_for(Style::Pill, ShapeKind::Idle);
         assert_eq!((idle.w, idle.h), (190.0, 34.0));
-        assert_eq!(shape_for(Style::Pill, ShapeKind::PomodoroCompact).w, 210.0);
+        assert_eq!(shape_for(Style::Pill, ShapeKind::PomodoroCompact).w, 212.0);
+        assert_eq!(shape_for(Style::Pill, ShapeKind::MediaCompact).w, 202.0);
         assert_eq!(shape_for(Style::Pill, ShapeKind::MediaLyric).w, LYRIC_MIN_W);
     }
 
@@ -2139,11 +2185,14 @@ mod tests {
                     let s = shape_sized(style, size, kind);
                     let base = shape_for(style, kind);
                     match kind {
-                        ShapeKind::Idle | ShapeKind::MediaCompact => {
+                        ShapeKind::Idle => {
                             assert_eq!((s.w, s.h), (size.w, size.h));
                         }
+                        ShapeKind::MediaCompact => {
+                            assert_eq!((s.w, s.h), (size.w + 12.0, size.h));
+                        }
                         ShapeKind::PomodoroCompact => {
-                            assert_eq!((s.w, s.h), (size.w + 20.0, size.h));
+                            assert_eq!((s.w, s.h), (size.w + 22.0, size.h));
                         }
                         ShapeKind::MediaLyric => {
                             assert_eq!((s.w, s.h), (LYRIC_MIN_W.max(size.w), size.h));
@@ -2177,7 +2226,8 @@ mod tests {
     fn the_lyric_minimum_follows_the_width() {
         assert_eq!(lyric_width_min(None, false, 160.0, 560.0), LYRIC_MIN_W);
         assert_eq!(lyric_width_min(None, false, 300.0, 560.0), 300.0);
-        assert_eq!(lyric_width_min(Some(10.0), true, 300.0, 560.0), 300.0);
+        // With the robot: the same plus the robot's extra lead (10).
+        assert_eq!(lyric_width_min(Some(10.0), true, 300.0, 560.0), 310.0);
         // A long line still grows past it; the cap never sits below it.
         assert_eq!(lyric_width_min(Some(400.0), false, 300.0, 560.0), 441.0);
         assert_eq!(lyric_width_min(Some(400.0), false, 300.0, 250.0), 300.0);
@@ -2263,6 +2313,172 @@ mod tests {
                 let s = shape_with_robot_sized(style, size, ShapeKind::PomodoroCompact, false);
                 let (_, _, text) = super::super::panel_layout::pomodoro_compact_layout(s);
                 assert!(inside(s, text));
+            }
+        }
+    }
+
+    /// Sizes spanning the slider ranges, corners included.
+    fn spread() -> Vec<NotchSize> {
+        [(160, 28), (190, 34), (300, 44), (160, 44), (300, 28)]
+            .into_iter()
+            .map(|(w, h)| NotchSize::from_px(w, h))
+            .collect()
+    }
+
+    fn close(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-3
+    }
+
+    fn bars_width() -> f32 {
+        BAR_COUNT as f32 * BAR_W + (BAR_COUNT - 1) as f32 * BAR_GAP
+    }
+
+    #[test]
+    fn compact_inset_is_the_notch_corner_radius() {
+        assert_eq!(COMPACT_INSET, 16.0);
+        assert_eq!(COMPACT_INSET, NOTCH_COMPACT_RADIUS);
+        assert_eq!(robot_extra(ShapeKind::MediaCompact), 2.0);
+        assert_eq!(robot_extra(ShapeKind::PomodoroCompact), 34.0);
+    }
+
+    #[test]
+    fn media_compact_sits_the_inset_from_both_ends() {
+        for style in [Style::Pill, Style::Notch] {
+            for size in spread() {
+                for robot in [false, true] {
+                    let s = shape_with_robot_sized(style, size, ShapeKind::MediaCompact, robot);
+                    let l = if robot {
+                        compact_layout_robot(s)
+                    } else {
+                        compact_layout(s)
+                    };
+                    let tag = format!("{style:?} {size:?} robot {robot}");
+                    assert!(close(l.art.x, s.x + COMPACT_INSET), "{tag} {l:?}");
+                    assert!(close(l.bars.right(), s.x + s.w - COMPACT_INSET), "{tag}");
+                    assert!(l.art.x >= s.x + 16.0 && l.bars.right() <= s.x + s.w - 16.0);
+                    assert!(l.text.x >= l.art.right() && l.text.right() <= l.bars.x);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn media_compact_keeps_the_title_room_it_had() {
+        // Today's layout from the old constants: art 22 at 6, bars 14 from
+        // the right, 10 between; the robot 26 at 6, then 8; the shape the
+        // user's width (+2 with the robot).
+        for style in [Style::Pill, Style::Notch] {
+            for size in spread() {
+                let old_plain = size.w - 6.0 - 22.0 - 10.0 - 10.0 - bars_width() - 14.0;
+                let old_robot = (size.w + 2.0) - 6.0 - 26.0 - 8.0 - 10.0 - bars_width() - 14.0;
+                let plain = shape_with_robot_sized(style, size, ShapeKind::MediaCompact, false);
+                let robot = shape_with_robot_sized(style, size, ShapeKind::MediaCompact, true);
+                assert!(close(compact_layout(plain).text.w, old_plain), "{size:?}");
+                assert!(
+                    close(compact_layout_robot(robot).text.w, old_robot),
+                    "{size:?}"
+                );
+                assert!(close(plain.w, size.w + MEDIA_COMPACT_EXTRA));
+                assert!(close(robot.w, size.w + MEDIA_COMPACT_EXTRA + 2.0));
+            }
+        }
+    }
+
+    #[test]
+    fn idle_keeps_the_users_width() {
+        for style in [Style::Pill, Style::Notch] {
+            for size in spread() {
+                assert_eq!(shape_sized(style, size, ShapeKind::Idle).w, size.w);
+                // Robot or not, Idle holds its group inside the same width.
+                assert_eq!(
+                    shape_with_robot_sized(style, size, ShapeKind::Idle, true).w,
+                    size.w
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn lyric_robot_sits_the_inset_from_the_left() {
+        for style in [Style::Pill, Style::Notch] {
+            for size in spread() {
+                for robot in [false, true] {
+                    for text_w in [None, Some(60.0), Some(300.0), Some(900.0)] {
+                        let w = lyric_width_min(text_w, robot, size.w, LYRIC_MAX_W);
+                        let s = lyric_shape_sized(style, size, w);
+                        let line = if robot {
+                            let (r, t) = lyric_layout_robot(s);
+                            assert!(close(r.x, s.x + COMPACT_INSET), "{style:?} {size:?}");
+                            assert!(r.x >= s.x + 16.0);
+                            t
+                        } else {
+                            lyric_layout(s)
+                        };
+                        assert!(line.x >= s.x + 16.0);
+                        assert!(
+                            line.right() <= s.x + s.w - 16.0,
+                            "{size:?} {robot} {line:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn lyric_cap_is_the_widest_lyric_width() {
+        for robot in [false, true] {
+            for min_w in [0.0, 220.0, 300.0] {
+                for max_w in [220.0, 250.0, 400.0, 560.0] {
+                    let cap = lyric_cap(robot, min_w, max_w);
+                    for step in 0..=90 {
+                        let w = lyric_width_min(Some(step as f32 * 10.0), robot, min_w, max_w);
+                        assert!(
+                            w <= cap,
+                            "robot {robot} min {min_w} max {max_w}: {w} > {cap}"
+                        );
+                    }
+                    assert_eq!(lyric_width_min(Some(2000.0), robot, min_w, max_w), cap);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn lyric_box_is_todays_in_every_case() {
+        // Today's formula, from the old constants: the lead was 20, or
+        // 6 + 26 + 8 = 40 with the robot; right padding 20.
+        let old_width = |text_w: f32, robot: bool, min_w: f32, max_w: f32| {
+            let lead = if robot { 40.0 } else { 20.0 };
+            let min_w = min_w.max(LYRIC_MIN_W);
+            let max_w = max_w.max(min_w);
+            if text_w > 0.0 {
+                (text_w.ceil() + 1.0 + lead + 20.0).clamp(min_w, max_w)
+            } else {
+                min_w
+            }
+        };
+        for robot in [false, true] {
+            let lead = if robot { 40.0 } else { 20.0 };
+            for min_w in [220.0, 300.0] {
+                for max_w in [220.0, 400.0, 560.0] {
+                    for step in 0..=70 {
+                        let whole = step as f32 * 10.0;
+                        for text_w in [whole, whole + 0.4] {
+                            let t = Some(text_w);
+                            let now = lyric_box_w(lyric_width_min(t, robot, min_w, max_w), robot);
+                            let old =
+                                (old_width(text_w, robot, min_w, max_w) - lead - 20.0).max(0.0);
+                            assert!(
+                                close(now, old),
+                                "{t:?} robot {robot} min {min_w} max {max_w}: {now} vs {old}"
+                            );
+                        }
+                    }
+                    let now = lyric_box_w(lyric_width_min(None, robot, min_w, max_w), robot);
+                    let old = old_width(0.0, robot, min_w, max_w) - lead - 20.0;
+                    assert!(close(now, old));
+                }
             }
         }
     }
