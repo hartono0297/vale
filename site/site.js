@@ -143,8 +143,9 @@
   var EAR_R = 'M55 37L52 10L37 26Z';
   var HEAD = 'M7 50V41Q7 24 32 24Q57 24 57 41V50Q57 54 53 54H11Q7 54 7 50Z';
 
-  function accessory(name, black) {
-    var frame = black ? '#F4EDE4' : '#17120F';
+  /* Glasses sit with the eyes (they follow the eye slide), so catMarkup draws them;
+     these are the accessories drawn after the eyes. */
+  function accessory(name) {
     switch (name) {
       case 'bow':
         return '<g fill="#D23F6A" stroke="#D23F6A" stroke-width="1.6" stroke-linejoin="round"><path d="M45 23L37 18.5V27.5Z"/><path d="M45 23L53 18.5V27.5Z"/></g><circle cx="45" cy="23" r="2.4" fill="#F07A9A"/>';
@@ -170,6 +171,7 @@
   function catMarkup(look, uid) {
     var coat = COATS[look.coat] || COATS.terracotta;
     var black = look.coat === 'black';
+    var frame = black ? '#F4EDE4' : '#17120F';
     var s = '<defs><mask id="' + uid + '-m" maskUnits="userSpaceOnUse" x="-30" y="-20" width="130" height="110">' +
       '<g fill="#fff" stroke="#fff" stroke-width="5" stroke-linejoin="round"><path d="' + EAR_L + '"/><path d="' + EAR_R + '"/></g>' +
       '<path d="' + HEAD + '" fill="#fff"/></mask></defs>';
@@ -187,7 +189,7 @@
       s += '<g fill="none" stroke="' + frame + '" stroke-width="1.9" stroke-linecap="round"><circle cx="24" cy="40" r="6.6"/><circle cx="40" cy="40" r="6.6"/><path d="M30.6 40H33.4"/></g>';
     }
     s += '</g>';
-    if (look.accessory !== 'glasses') s += accessory(look.accessory, black);
+    if (look.accessory !== 'glasses') s += accessory(look.accessory);
     return s + '</g>';
   }
 
@@ -325,6 +327,8 @@
     var pinned = false;
     var closeTimer = 0;
     var hideTimer = 0;
+    var openTimer = 0;
+    var dockTimer = 0;
     var lastPointerType = 'mouse';
 
     /* ----- clock: one timeout aimed at the next minute, only while idle and visible ----- */
@@ -520,12 +524,45 @@
     }, { passive: true });
     dock.addEventListener('pointerleave', dockReset, { passive: true });
 
+    /* Runs fn once the notch's width transition has ended (or at once when there
+       is none, as with reduced motion). transitioncancel is not a signal: opening
+       right after a close interrupts the closing width transition, and its
+       cancel event would arrive while the notch is still narrow. The timer is
+       the fallback for an opening transition that never reports its end. */
+    var widthWait = null;
+    function stopWidthWait() {
+      clearTimeout(dockTimer);
+      if (!widthWait) return;
+      notch.removeEventListener('transitionend', widthWait);
+      widthWait = null;
+    }
+    function afterWidthSettles(fn) {
+      stopWidthWait();
+      if (parseFloat(getComputedStyle(notch).transitionDuration) === 0) { fn(); return; }
+      function done() {
+        stopWidthWait();
+        fn();
+      }
+      widthWait = function (e) { if (e.target === notch && e.propertyName === 'width') done(); };
+      notch.addEventListener('transitionend', widthWait);
+      dockTimer = setTimeout(done, 1000);
+    }
+
+    /* Scroll the dock (only the dock, never the page) so the tab is inside it. */
+    function revealTab(t) {
+      var d = dock.getBoundingClientRect();
+      var r = t.getBoundingClientRect();
+      if (r.left < d.left) dock.scrollLeft += r.left - d.left;
+      else if (r.right > d.right) dock.scrollLeft += r.right - d.right;
+    }
+
     /* ----- open and close ----- */
     function setFaceLabel() {
       face.setAttribute('aria-expanded', open ? 'true' : 'false');
       face.setAttribute('aria-label', open ? 'Vale island demo. Close the panel' : 'Vale island demo. Open the panel');
     }
     function openPanel(pin) {
+      cancelHoverOpen();
       clearTimeout(closeTimer);
       clearTimeout(hideTimer);
       if (!open) {
@@ -539,7 +576,9 @@
       if (pin) pinned = true;
     }
     function closePanel(returnFocus) {
+      cancelHoverOpen();
       clearTimeout(closeTimer);
+      stopWidthWait();
       if (!open) return;
       open = false;
       pinned = false;
@@ -552,12 +591,41 @@
       if (returnFocus) face.focus();
     }
 
+    /* Hover intent: the idle notch (y 0..34) overlaps the nav row (y 6..50),
+       so a pointer sweeping along the header crosses it. The panel opens only
+       once the pointer has rested on the notch for HOVER_OPEN_MS (the app's
+       shelf waits OPEN_DELAY_MS = 120); any movement restarts the wait, and
+       leaving cancels it. */
+    var HOVER_OPEN_MS = 120;
+    var HOVER_STILL_PX = 4;
+    var hoverX = 0;
+    var hoverY = 0;
+    function cancelHoverOpen() {
+      clearTimeout(openTimer);
+      openTimer = 0;
+    }
+    function armHoverOpen(e) {
+      cancelHoverOpen();
+      hoverX = e.clientX;
+      hoverY = e.clientY;
+      openTimer = setTimeout(function () {
+        openTimer = 0;
+        openPanel(false);
+      }, HOVER_OPEN_MS);
+    }
     notch.addEventListener('pointerenter', function (e) {
       if (e.pointerType === 'touch') return;
-      openPanel(false);
+      clearTimeout(closeTimer);
+      if (!open) armHoverOpen(e);
     });
+    notch.addEventListener('pointermove', function (e) {
+      if (e.pointerType === 'touch' || open || !openTimer) return;
+      if (Math.abs(e.clientX - hoverX) > HOVER_STILL_PX || Math.abs(e.clientY - hoverY) > HOVER_STILL_PX) armHoverOpen(e);
+    }, { passive: true });
     notch.addEventListener('pointerleave', function (e) {
-      if (e.pointerType === 'touch' || pinned) return;
+      if (e.pointerType === 'touch') return;
+      cancelHoverOpen();
+      if (pinned) return;
       clearTimeout(closeTimer);
       closeTimer = setTimeout(function () { closePanel(false); }, 160);
     });
@@ -568,7 +636,16 @@
       if (open && !pinned && lastPointerType !== 'touch' && !byKeyboard) { pinned = true; return; }
       if (open && !pinned) { closePanel(byKeyboard); return; }
       openPanel(true);
-      if (byKeyboard) tabs[active].focus();
+      if (byKeyboard) {
+        /* The notch is still growing to its open width here; a scrolling focus
+           would scroll the (scrollable, still narrow) dock and leave the first
+           icons off to the left at full width. Focus without scrolling, then
+           bring the focused tab into view once the width has settled. */
+        tabs[active].focus({ preventScroll: true });
+        afterWidthSettles(function () {
+          revealTab(tabs.indexOf(doc.activeElement) >= 0 ? doc.activeElement : tabs[active]);
+        });
+      }
     });
     face.addEventListener('keydown', function () { lastPointerType = 'key'; });
     doc.addEventListener('keydown', function (e) {
