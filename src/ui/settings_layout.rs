@@ -6649,4 +6649,21 @@ mod tests {
         assert_eq!(text(Lang::En, Key::NotchFillTransparent), "See-through");
         assert_eq!(text(Lang::Id, Key::NotchOpacity), "Opasitas");
     }
+
+    #[test]
+    fn the_widest_island_fits_the_preview_screen() {
+        use crate::config::Style;
+        use crate::ui::geometry::{NotchSize, ShapeKind, shape_with_robot_sized};
+        // The preview's "screen" is the card less 12 px each side
+        // (`preview` in settings_controls.rs); a see-through island adds a
+        // checker strip 24 px wider than it on each side.
+        let screen_w = CONTENT_W - 24.0;
+        for style in [Style::Pill, Style::Notch] {
+            for kind in [ShapeKind::MediaCompact, ShapeKind::Idle] {
+                let widest = NotchSize::from_px(300, 44);
+                let w = shape_with_robot_sized(style, widest, kind, true).w;
+                assert!(w + 48.0 <= screen_w, "{style:?} {kind:?} {w} in {screen_w}");
+            }
+        }
+    }
 }
