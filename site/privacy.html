@@ -3,68 +3,159 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Privacy Policy · Vale</title>
+<title>Privacy policy | Vale</title>
+<meta name="description" content="What Vale reads, stores and sends. Vale runs on your PC, has no server and no account, and connects to the internet only for the optional features listed here.">
 <link rel="icon" href="img/logo.svg" type="image/svg+xml">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,600;9..40,700&family=DM+Mono&display=swap" rel="stylesheet">
+<script>document.documentElement.classList.add('js');try{var t=localStorage.getItem('vale-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t)}catch(e){}</script>
 <link rel="stylesheet" href="style.css">
+<script src="site.js" defer></script>
 </head>
 <body>
-<div class="wrap"><div class="nav">
-  <a class="brand" href="index.html"><img src="img/logo.svg" alt="" width="30" height="30">Vale</a>
-  <nav><a href="index.html">Home</a><a href="privacy.html">Privacy</a><a href="terms.html">Terms</a></nav>
-</div></div>
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-header"><div class="nav-inner"><a class="brand" href="index.html"><img src="img/logo.svg" alt="" width="28" height="28"><span>Vale</span></a><button class="menu-btn" type="button" aria-expanded="false" aria-controls="site-nav">Menu</button><nav id="site-nav" class="site-nav" aria-label="Main"><ul><li><a href="index.html#features">Features</a></li><li><a href="index.html#cat">Try the cat</a></li><li><a href="index.html#install">Install</a></li><li><a href="privacy.html" aria-current="page">Privacy</a></li><li><a href="terms.html">Terms</a></li><li><a href="https://github.com/hartono0297/dynamic-island">GitHub</a></li></ul></nav><button class="theme-btn" type="button" hidden></button></div></header>
+<main id="main" class="legal"><article class="legal-doc">
+<h1>Privacy policy</h1>
+<p class="legal-updated">Last updated: 31 October 2026</p>
 
-<main class="doc">
-  <h1>Privacy Policy</h1>
-  <p class="meta">Last updated: <span class="todo">[date of publishing]</span></p>
+<div class="legal-summary" id="summary">
+<h2>In short</h2>
+<ul>
+<li>Vale runs on your PC. There is no Vale server and no account.</li>
+<li>Vale has no telemetry, no analytics, no crash reports and no update checker.</li>
+<li>Your data stays on your PC. The only exceptions are the opt-in connections listed in the <a href="#network">network section</a>: Google Calendar, lyrics from LRCLIB, and the web search page that opens in your browser.</li>
+<li>Google Calendar is off until you sign in. What Vale gets from Google goes only between your PC and Google.</li>
+</ul>
+</div>
 
-  <p>Vale is a desktop app for Windows 11. This policy explains what data the app accesses, how it is used and stored, and how you can delete it. In short: <b>the app has no server, collects no analytics, and keeps your data on your own PC.</b></p>
+<nav class="legal-toc" aria-label="On this page"><ol>
+<li><a href="#summary">In short</a></li>
+<li><a href="#google-user-data">Google user data</a></li>
+<li><a href="#network">Network connections</a></li>
+<li><a href="#files">Files Vale writes</a></li>
+<li><a href="#read-locally">What Vale reads from Windows</a></li>
+<li><a href="#deleting-data">Deleting your data</a></li>
+<li><a href="#children">Children</a></li>
+<li><a href="#changes">Changes to this policy</a></li>
+<li><a href="#contact">Contact</a></li>
+</ol></nav>
 
-  <h2>Google user data</h2>
-  <p>If you connect Google Calendar, the app asks Google for these permissions:</p>
-  <table>
-    <tr><th>Permission</th><th>What the app does with it</th></tr>
-    <tr><td><code>calendar.calendarlist.readonly</code></td><td>Reads the list of your calendars, so their events and colours can be shown.</td></tr>
-    <tr><td><code>calendar.events</code></td><td>Reads your events to show them on the Calendar page; creates or updates an event only when you press Save in the event editor. The app never deletes events.</td></tr>
-  </table>
-  <ul>
-    <li><b>Storage.</b> Your sign-in token is stored on your PC, encrypted with Windows DPAPI so only your Windows account can read it. The most recent calendar data is cached on your PC so the calendar works offline.</li>
-    <li><b>Sharing.</b> Google user data is sent only between your PC and Google. It is not sent to the developer, to any server of ours, or to any third party, and it is not sold.</li>
-    <li><b>Use.</b> Google user data is used only to show and edit your calendar inside the app. It is not used for advertising, profiling or training AI models.</li>
-  </ul>
-  <div class="callout">Vale's use and transfer of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including the Limited Use requirements.</div>
+<section id="google-user-data">
+<h2>Google user data</h2>
+<p>Google Calendar is optional. Vale does not contact Google until you choose to sign in.</p>
 
-  <h2>Other data on your PC</h2>
-  <p>Everything else the app keeps lives in <code>%APPDATA%\Vale\</code> on your PC: settings, notes, reminders, CLI history and cached lyrics. None of it is uploaded.</p>
-  <ul>
-    <li><b>Notifications and media.</b> The app reads Windows notifications and the currently playing track to show them in the island. This stays on your PC.</li>
-    <li><b>Lyrics (off by default).</b> If you turn on lyrics, the artist, title and length of the playing track are sent to <a href="https://lrclib.net">lrclib.net</a> to fetch synced lyrics.</li>
-  </ul>
+<h3>How sign-in works</h3>
+<p>Vale opens the Google sign-in page (<code>accounts.google.com</code>) in your default browser and uses PKCE. After you approve, Vale exchanges the sign-in code for a token with <code>oauth2.googleapis.com</code>. While you sign in, Vale listens on the loopback address <code>127.0.0.1</code> so the browser can hand the code back. That listener exists only during sign-in and cannot be reached from other computers.</p>
+<p>Release builds use Vale's own OAuth client. If you enter a Client ID in <strong>Settings → Integrations</strong>, Vale uses yours instead.</p>
 
-  <h2>Deleting your data</h2>
-  <ul>
-    <li>Disconnect Google Calendar in <b>Settings → Integrations</b>. This deletes the stored token.</li>
-    <li>Remove the app's access to your Google account at <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a>.</li>
-    <li>Delete the folder <code>%APPDATA%\Vale\</code> to remove all local data, or uninstall with the uninstall script and <code>DI_PURGE=1</code>.</li>
-  </ul>
+<h3>What Vale asks Google for</h3>
+<p>Vale requests two permissions (scopes):</p>
+<ul>
+<li><code>https://www.googleapis.com/auth/calendar.calendarlist.readonly</code>: Vale reads the list of your calendars and their colours, so events can be shown per calendar.</li>
+<li><code>https://www.googleapis.com/auth/calendar.events</code>: Vale reads your events to show them, creates new events in your primary calendar, and edits an existing event when you change it in Vale.</li>
+</ul>
+<p>Vale never deletes events. Read-only events, recurring events and multi-day events cannot be edited in Vale. While you are connected, Vale asks Google for your calendars and events again every 10 minutes.</p>
 
-  <h2>Children</h2>
-  <p>The app is not directed at children under 13 and does not knowingly collect their data.</p>
+<h3>Where it is stored</h3>
+<ul>
+<li>The sign-in token is in <code>%APPDATA%\Vale\google-token.bin</code>, encrypted with Windows DPAPI for your Windows account.</li>
+<li>The calendar cache is <code>%APPDATA%\Vale\calendar-cache.json</code>. It is plain JSON with event titles, times, descriptions and calendar colours. Vale keeps it after you disconnect, until you delete it (see <a href="#deleting-data">Deleting your data</a>).</li>
+</ul>
 
-  <h2>Changes</h2>
-  <p>If this policy changes, the new version is published on this page with a new date. Material changes are also noted in the release notes on GitHub.</p>
+<h3>Who sees it</h3>
+<p>Google user data moves only between your PC and Google. Vale never sends it to the developer or to anyone else. It is not sold. It is not used for advertising or profiling, and not used to train artificial intelligence or machine-learning models. No person reads it, because there is no server for it to arrive on.</p>
 
-  <h2>Contact</h2>
-  <p>Questions about privacy: <span class="todo">[support email]</span> or <a href="https://github.com/hartono0297/dynamic-island/issues">GitHub issues</a>.</p>
-</main>
+<h3>Limited Use</h3>
+<blockquote class="legal-quote"><p>Vale's use and transfer of information received from Google APIs to any other app will adhere to the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including the Limited Use requirements.</p></blockquote>
+</section>
 
-<footer>
-  <div class="wrap inner">
-    <div><a href="privacy.html">Privacy policy</a><a href="terms.html">Terms of service</a><a href="https://github.com/hartono0297/dynamic-island/issues">Contact</a></div>
-    <div>Vale is not affiliated with Google or Apple.</div>
-  </div>
-</footer>
+<section id="network">
+<h2>Network connections</h2>
+<p>This table lists every connection Vale makes or starts. Inside Vale, every request goes through the Windows (WinRT) <code>HttpClient</code>. Vale has no update checker, no telemetry, no analytics and no crash reporting. It does not download cover art: album covers come from the Windows media session.</p>
+<div class="table-wrap" role="region" aria-label="Network connections" tabindex="0"><table>
+<caption>Every connection Vale makes, what it sends and when</caption>
+<thead><tr><th scope="col">Destination</th><th scope="col">What is sent</th><th scope="col">When</th></tr></thead>
+<tbody>
+<tr><th scope="row">LRCLIB: <code>https://lrclib.net/api/get</code> and <code>/api/search</code></th><td>Track title, artist and duration. Never the album.</td><td>Only when Lyrics is on. It is off by default. You turn it on in <strong>Settings → Features → Music</strong> or with the Lyrics button on the Music page. Results are cached in <code>lyrics-cache</code>.</td></tr>
+<tr><th scope="row">Google sign-in: <code>accounts.google.com</code> and <code>oauth2.googleapis.com</code></th><td>The standard OAuth sign-in exchange. Your Google password goes only to Google's page in your browser.</td><td>Only when you sign in, and when Vale renews the token while you are connected.</td></tr>
+<tr><th scope="row">Google Calendar API: <code>www.googleapis.com/calendar/v3</code></th><td>Requests to list your calendars, list events, create an event in your primary calendar, and patch an existing event. Event details you type or change are included.</td><td>Only while connected.</td></tr>
+<tr><th scope="row">Web search: <code>google.com/search</code></th><td>Vale sends nothing. It opens the page in your default browser, so your browser sends the search text.</td><td>Only when you pick the web search result in Vale's search.</td></tr>
+<tr><th scope="row">Links you click</th><td>Vale sends nothing. The link opens in your default browser: the repository, Releases, or the Mole README.</td><td>Only when you click.</td></tr>
+<tr><th scope="row">Installer: <code>api.github.com</code>, <code>github.com</code> and <code>raw.githubusercontent.com</code></th><td>The installer script (not the app) asks the GitHub API for <code>releases/latest</code>, downloads <code>vale.exe</code> and <code>vale.exe.sha256</code> from GitHub, checks the SHA-256, and fetches <code>uninstall.ps1</code> from <code>raw.githubusercontent.com</code>.</td><td>Only when you run the install command. Installing from the release zip downloads nothing.</td></tr>
+</tbody></table></div>
+</section>
+
+<section id="files">
+<h2>Files Vale writes</h2>
+<p>Names without a folder are in <code>%APPDATA%\Vale</code>. Nothing in this table is uploaded. The file shelf and the file-search index live in memory only and are never written to disk.</p>
+<div class="table-wrap" role="region" aria-label="Files Vale writes" tabindex="0"><table>
+<caption>Every file Vale writes, what it holds and when it exists</caption>
+<thead><tr><th scope="col">File</th><th scope="col">What it holds</th><th scope="col">Encrypted</th><th scope="col">When it exists</th></tr></thead>
+<tbody>
+<tr><th scope="row"><code>config.json</code></th><td>Your settings, plus your own Google client ID and secret if you entered them.</td><td>No, plain text</td><td>Always</td></tr>
+<tr><th scope="row"><code>google-token.bin</code></th><td>The Google sign-in token.</td><td>Yes, Windows DPAPI, your Windows account</td><td>After Google sign-in. Disconnect deletes it.</td></tr>
+<tr><th scope="row"><code>calendar-cache.json</code></th><td>Event titles, times, descriptions and calendar colours.</td><td>No, plain text</td><td>After sign-in. Kept after you disconnect.</td></tr>
+<tr><th scope="row"><code>clipboard-history.bin</code></th><td>Copied text (up to 64 KB per item), links, colours, file paths and image thumbnails. 50 items by default, 10 to 200 in Settings. Full-size images stay in memory only. Copies from password managers are skipped.</td><td>Yes, Windows DPAPI</td><td>On and saved by default. Turning saving off deletes the file.</td></tr>
+<tr><th scope="row"><code>notification-history.bin</code></th><td>For each Windows notification Vale saw: app name, time, title, body (up to 1024 characters) and the app logo. 50 entries by default, 10 to 200 in Settings.</td><td>Yes, Windows DPAPI</td><td>On and saved by default. Turning saving off deletes the file.</td></tr>
+<tr><th scope="row"><code>notes.json</code>, <code>reminders.json</code></th><td>Your notes and reminders. If Vale cannot read one of them, it keeps a <code>.bak</code> copy.</td><td>No, plain text</td><td>When you use Notes or Reminders</td></tr>
+<tr><th scope="row"><code>cli-history.txt</code></th><td>The last 100 commands you typed in Vale's CLI.</td><td>No, plain text</td><td>When you use the CLI</td></tr>
+<tr><th scope="row"><code>cli-cwd.txt</code></th><td>The CLI's working folder.</td><td>No, plain text</td><td>When you use the CLI</td></tr>
+<tr><th scope="row"><code>cli-favorites.txt</code></th><td>Your favourite folders (up to 20).</td><td>No, plain text</td><td>When you use the CLI</td></tr>
+<tr><th scope="row"><code>cli-recent.txt</code></th><td>Recently used folders (up to 25).</td><td>No, plain text</td><td>When you use the CLI</td></tr>
+<tr><th scope="row"><code>lyrics-cache\</code></th><td>Synced lyrics (<code>.lrc</code> files) and markers for tracks where none were found.</td><td>No, plain text</td><td>Only with Lyrics on</td></tr>
+<tr><th scope="row"><code>shell-icon.txt</code></th><td>A version stamp for the app icon.</td><td>No, plain text</td><td>Once Vale has run</td></tr>
+<tr><th scope="row"><code>media.log</code></th><td>Media commands and states, never track titles.</td><td>No, plain text</td><td>Off. Only when Vale is started with <code>--media-log</code>.</td></tr>
+<tr><th scope="row"><code>Pictures\Screenshots</code></th><td>Screenshots you save. Vale never overwrites a file. Deleting a screenshot from the preview moves it to the Recycle Bin.</td><td>No, image files</td><td>When you save a screenshot</td></tr>
+<tr><th scope="row"><code>HKCU\Software\Microsoft\Windows\CurrentVersion\Run</code></th><td>A value named <code>Vale</code> that starts Vale with Windows.</td><td>No</td><td>On by default. Turn it off in Settings.</td></tr>
+<tr><th scope="row"><code>%USERPROFILE%\.claude\settings.json</code> and <code>settings.json.bak-vale</code></th><td>Claude Code hook entries, with a backup of your settings file made first.</td><td>No, plain text</td><td>Only when you install the Claude Code hooks</td></tr>
+<tr><th scope="row"><code>%USERPROFILE%\.config\mole\whitelist.txt</code></th><td>Vale appends folders for Mole to leave alone (the Cargo caches and Autodesk).</td><td>No, plain text</td><td>Only in Mole mode</td></tr>
+</tbody></table></div>
+</section>
+
+<section id="read-locally">
+<h2>What Vale reads from Windows</h2>
+<p>Vale reads the following from Windows on your PC. None of it is sent anywhere.</p>
+<ul>
+<li>Windows notifications, to show them in the notch and keep a history. Vale never removes them from the Action Center.</li>
+<li>The track that is playing, from the Windows media session.</li>
+<li>The clipboard, for the clipboard history and the copy preview.</li>
+<li>Audio loopback of your default output, for the equalizer bars. Vale keeps five levels in memory and no audio. This is on by default.</li>
+<li>Per-app volume, for the Mixer.</li>
+<li>A low-level keyboard hook that reacts only to the bare PrtSc key, to open Vale's screenshot capture. This is on by default. Other keys pass through unread.</li>
+<li>Hotkeys Vale registers with Windows. Search on Ctrl+Alt+Space is on by default.</li>
+<li>Removable devices, for the Devices page and safe eject.</li>
+<li>UI Automation element boxes, so a screenshot can snap to windows and controls.</li>
+<li>Explorer folders and Start Menu shortcuts, and the names of files in Desktop, Documents, Downloads, Pictures, Videos and Music, for search.</li>
+<li>Battery, CPU, memory, disks and running processes, for the System page.</li>
+<li>The pointer position, so the cat can look at it and the notch can react to it.</li>
+</ul>
+</section>
+
+<section id="deleting-data">
+<h2>Deleting your data</h2>
+<ul>
+<li><strong>Disconnect Google.</strong> <strong>Settings → Integrations → Disconnect</strong> deletes the token file only. It does not revoke Vale's access at Google, and the cached events stay on your PC. To revoke access, open <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a> and remove Vale. To remove the cache, delete <code>%APPDATA%\Vale\calendar-cache.json</code>.</li>
+<li><strong>Clipboard and notification history.</strong> Turning off saving for either one deletes its file.</li>
+<li><strong>Uninstall.</strong> Run <code>irm https://raw.githubusercontent.com/hartono0297/dynamic-island/main/uninstall.ps1 | iex</code>. This keeps your data in <code>%APPDATA%\Vale</code>. To delete it too, run <code>$env:DI_PURGE = '1'</code> first, in the same PowerShell window, then the command above.</li>
+<li><strong>Delete the folder yourself.</strong> Removing <code>%APPDATA%\Vale</code> deletes everything Vale keeps there.</li>
+</ul>
+<p>The uninstall script removes Vale's autostart value and the Claude Code hooks Vale added. It never removes the screenshots you saved, the entries Vale added to Mole's whitelist, the <code>settings.json.bak-vale</code> backup, or the access you granted at Google.</p>
+</section>
+
+<section id="children">
+<h2>Children</h2>
+<p>Vale is not directed at children under 13. Vale collects nothing from anyone, because there is no Vale server to collect it.</p>
+</section>
+
+<section id="changes">
+<h2>Changes to this policy</h2>
+<p>When this policy changes, the new version goes on this page with a new date. The history of every change is in the <a href="https://github.com/hartono0297/dynamic-island">GitHub repository</a>.</p>
+</section>
+
+<section id="contact">
+<h2>Contact</h2>
+<p>Questions about privacy go to <a href="https://github.com/hartono0297/dynamic-island/issues">GitHub Issues</a>. There is no email address for Vale.</p>
+</section>
+</article></main>
+<footer class="site-footer"><div class="footer-inner"><p class="footer-brand"><img src="img/logo.svg" alt="" width="20" height="20"> Vale. © 2026 hartono0297, <a href="https://github.com/hartono0297/dynamic-island/blob/main/LICENSE">MIT licence</a>.</p><ul class="footer-links"><li><a href="privacy.html">Privacy</a></li><li><a href="terms.html">Terms</a></li><li><a href="https://github.com/hartono0297/dynamic-island">GitHub</a></li><li><a href="https://github.com/hartono0297/dynamic-island/issues">Issues</a></li></ul><p class="footer-note">Vale is not affiliated with Google or Apple.</p></div></footer>
 </body>
 </html>
