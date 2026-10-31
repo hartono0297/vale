@@ -3138,10 +3138,14 @@ pub fn tile_parts(tile: Rect) -> (Rect, Rect) {
     (glyph, label)
 }
 
-/// Small ring on the left (center, radius 8), then the time and label.
+/// Small ring on the left (center, radius 8, its left edge `COMPACT_INSET`
+/// in), then the time and label.
 pub fn pomodoro_compact_layout(s: ShapeRect) -> ((f32, f32), f32, Rect) {
     const RADIUS: f32 = 8.0;
-    let center = (s.x + 22.0, s.y + s.h / 2.0);
+    let center = (
+        s.x + crate::ui::geometry::COMPACT_INSET + RADIUS,
+        s.y + s.h / 2.0,
+    );
     let text_x = center.0 + RADIUS + 10.0;
     let text = rect(text_x, s.y, s.x + s.w - 18.0 - text_x, s.h);
     (center, RADIUS, text)
@@ -5942,6 +5946,60 @@ mod tests {
             assert!(text.x >= cx + r);
             assert!(text.right() <= s.x + s.w);
             assert!(rect_inside(style, s, text), "{style:?} {text:?}");
+        }
+    }
+
+    /// Sizes spanning the slider ranges, corners included.
+    fn spread() -> Vec<crate::ui::geometry::NotchSize> {
+        [(160, 28), (190, 34), (300, 44), (160, 44), (300, 28)]
+            .into_iter()
+            .map(|(w, h)| crate::ui::geometry::NotchSize::from_px(w, h))
+            .collect()
+    }
+
+    #[test]
+    fn pomodoro_compact_sits_the_inset_from_both_ends() {
+        use crate::ui::geometry::{COMPACT_INSET, shape_with_robot_sized};
+        for style in [Style::Pill, Style::Notch] {
+            for size in spread() {
+                let tag = format!("{style:?} {size:?}");
+                let s = shape_with_robot_sized(style, size, ShapeKind::PomodoroCompact, false);
+                let ((cx, _), r, text) = pomodoro_compact_layout(s);
+                assert!((cx - r - (s.x + COMPACT_INSET)).abs() < 1e-3, "{tag}");
+                assert!((cx - (s.x + 24.0)).abs() < 1e-3, "{tag}");
+                assert!(cx - r >= s.x + 16.0 && text.right() <= s.x + s.w - 16.0);
+
+                let s = shape_with_robot_sized(style, size, ShapeKind::PomodoroCompact, true);
+                let (robot, (cx, _), r, text) = pomodoro_compact_layout_robot(s);
+                assert!((robot.x - (s.x + COMPACT_INSET)).abs() < 1e-3, "{tag}");
+                assert!((cx - (s.x + 58.0)).abs() < 1e-3, "{tag}");
+                assert!(robot.right() + 8.0 <= cx - r + 1e-3);
+                assert!(robot.x >= s.x + 16.0 && text.right() <= s.x + s.w - 16.0);
+            }
+        }
+    }
+
+    #[test]
+    fn pomodoro_compact_keeps_the_text_room_it_had() {
+        use crate::ui::geometry::shape_with_robot_sized;
+        // Today's layout from the old numbers: the shape w + 20, the ring's
+        // centre 22 in, text 18 from the right; with the robot (6 + 26, then
+        // 8 + 8 to the centre) the shape w + 46.
+        for style in [Style::Pill, Style::Notch] {
+            for size in spread() {
+                let old_plain = (size.w + 20.0) - (22.0 + 8.0 + 10.0) - 18.0;
+                let old_robot = (size.w + 46.0) - (6.0 + 26.0 + 8.0 + 8.0 + 8.0 + 10.0) - 18.0;
+                let s = shape_with_robot_sized(style, size, ShapeKind::PomodoroCompact, false);
+                assert!((s.w - (size.w + 22.0)).abs() < 1e-3);
+                let (_, _, text) = pomodoro_compact_layout(s);
+                assert!((text.w - old_plain).abs() < 1e-3, "{size:?}");
+                assert!((text.w - (size.w - 38.0)).abs() < 1e-3);
+                let s = shape_with_robot_sized(style, size, ShapeKind::PomodoroCompact, true);
+                assert!((s.w - (size.w + 56.0)).abs() < 1e-3);
+                let (_, _, _, text) = pomodoro_compact_layout_robot(s);
+                assert!((text.w - old_robot).abs() < 1e-3, "{size:?}");
+                assert!((text.w - (size.w - 38.0)).abs() < 1e-3);
+            }
         }
     }
 }

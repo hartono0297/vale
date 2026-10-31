@@ -7433,17 +7433,19 @@ mod tests {
         fit.line(None, t0, false, 300.0_f32.max(LYRIC_MAX_W));
         assert_eq!(fit.width(), 300.0);
         // A short line stays at the floor; a long one grows past it.
+        // With the robot the notch is the floor plus the robot's extra lead,
+        // so the line's box keeps the room it had.
         fit.line(Some(100.0), t0, true, LYRIC_MAX_W);
-        assert_eq!(fit.width(), 300.0);
+        assert_eq!(fit.width(), 300.0 + crate::ui::geometry::LYRIC_ROBOT_EXTRA);
         fit.line(Some(450.0), t0, true, LYRIC_MAX_W);
         assert!(fit.width() > 450.0 && fit.width() <= LYRIC_MAX_W);
         // Changing the width refits the same line; a narrower setting goes
         // back to the lyric minimum.
         fit.line(Some(100.0), t0, true, LYRIC_MAX_W);
         fit.set_min(160.0);
-        assert_eq!(fit.width(), LYRIC_MIN_W);
+        assert_eq!(fit.width(), LYRIC_MIN_W + crate::ui::geometry::LYRIC_ROBOT_EXTRA);
         fit.set_min(260.0);
-        assert_eq!(fit.width(), 260.0);
+        assert_eq!(fit.width(), 260.0 + crate::ui::geometry::LYRIC_ROBOT_EXTRA);
         // The cap never sits under the floor.
         let mut tight = LyricFit::default();
         tight.set_min(300.0);
@@ -7462,7 +7464,7 @@ mod tests {
         fit.line(Some(900.0), t0, true, LYRIC_MAX_W);
         assert_eq!(fit.width(), LYRIC_MAX_W);
         fit.refit(true, 450.0);
-        assert_eq!(fit.width(), 450.0);
+        assert_eq!(fit.width(), 450.0 + crate::ui::geometry::LYRIC_ROBOT_EXTRA);
         // Nothing to refit before the first line.
         let mut empty = LyricFit::default();
         empty.refit(true, 450.0);
