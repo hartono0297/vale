@@ -4318,6 +4318,13 @@ impl App {
         {
             let mut pt = POINT::default();
             if unsafe { GetCursorPos(&mut pt) }.is_ok() {
+                // This reading is the poll's too: a shrink re-paces the poll
+                // (`sync_pointer_watch`), which must see the pointer near the
+                // top now, not where the last, possibly slow, poll read it.
+                if let Some(win) = self.win.as_ref() {
+                    self.pointer_near =
+                        pointer_watch::near_top(pt.y - win.screen_origin().1, win.scale());
+                }
                 self.peek_tick(pt, Instant::now());
                 if self.peek.is_shrunk() {
                     return;
