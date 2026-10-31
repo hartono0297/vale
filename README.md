@@ -73,7 +73,7 @@ powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\Vale\uninst
 
 ## What it does
 
-Hover the notch to open it, scroll to change pages. Hover the page dots under the panel and they turn into a row of icons that grow toward the pointer, like a dock; click one to jump to that page. With the cat on, it also turns its head and eyes toward the pointer (full animation only, off in Energy Saver; the *Follow the pointer* switch on the Cat page turns it off). While the pointer nears the notch over another window, the notch shrinks to the cat's two eyes so the window under it (a browser's tabs, say) can be clicked; rest on the eyes for half a second to bring the notch back (the *Shrink to eyes* switch turns this off). The panel stays open for a few seconds after you click in it or close an editor, and every page and sub-view change glides (or is instant when Windows' animation effects are off).
+Hover the notch to open it, scroll to change pages. Hover the page dots under the panel and they turn into a row of icons that grow toward the pointer, like a dock; click one to jump to that page. With the cat on, it also turns its head and eyes toward the pointer (full animation only, off in Energy Saver; the *Follow the pointer* switch on the Cat page turns it off). While the pointer nears the notch over another window, however fast it moves, the notch glides down to the cat's two eyes so the window under it (a browser's tabs, say) can be clicked; rest on the eyes for half a second to bring the notch back (the *Shrink to eyes* switch turns this off). The panel stays open for a few seconds after you click in it or close an editor, and every page and sub-view change glides (or is instant when Windows' animation effects are off).
 
 | | |
 |---|---|
