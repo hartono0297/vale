@@ -70,8 +70,7 @@
 :root[data-theme="light"] { color-scheme: light; }
 
 *, *::before, *::after { box-sizing: border-box; }
-html { -webkit-text-size-adjust: 100%; scroll-padding-top: 1rem; }
-@media (min-width: 48em) { html { scroll-padding-top: 4.5rem; } }
+html { -webkit-text-size-adjust: 100%; scroll-padding-top: 3.5rem; }
 @media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
 body {
   margin: 0;
@@ -84,8 +83,7 @@ body {
 }
 img, svg { max-width: 100%; }
 img { height: auto; display: block; }
-[id] { scroll-margin-top: 1rem; }
-@media (min-width: 48em) { [id] { scroll-margin-top: 4.5rem; } }
+[id] { scroll-margin-top: 3.5rem; }
 h1, h2, h3 { margin: 0; font-weight: 600; line-height: 1.1; letter-spacing: -.02em; text-wrap: balance; }
 p { margin: 0 0 1em; }
 a { color: var(--ink); text-underline-offset: .18em; text-decoration-thickness: 1px; }
@@ -100,9 +98,10 @@ code, kbd { font-family: var(--mono); font-size: .9em; }
 .skip { position: absolute; left: 8px; top: -100px; z-index: 300; padding: .6rem 1rem; background: var(--bg); color: var(--text); border: 2px solid var(--focus); border-radius: 8px; text-decoration: none; font-weight: 600; }
 .skip:focus { top: 8px; }
 
-/* ---------- header ---------- */
+/* ---------- header ----------
+   Not sticky on purpose: the notch is the one fixed element, and its wider
+   states (the panel peek is 400 px wide) would sit over a sticky bar's links. */
 .site-header { background: var(--bg); border-bottom: 1px solid var(--line); position: relative; z-index: 50; }
-@media (min-width: 48em) { .site-header { position: sticky; top: 0; } }
 .nav-inner { display: flex; align-items: center; gap: 4px; width: min(100% - 2 * var(--gutter), 78rem); margin-inline: auto; min-height: 56px; }
 .brand { display: inline-flex; align-items: center; gap: 8px; margin-right: auto; min-height: 44px; font-size: 1.125rem; font-weight: 600; letter-spacing: -.01em; color: var(--text); text-decoration: none; }
 .brand img { width: 28px; height: 28px; }
@@ -122,8 +121,8 @@ html:not(.js) .nav-inner { flex-wrap: wrap; padding-block: 4px; }
 html:not(.js) .site-nav { flex-basis: 100%; }
 html:not(.js) .site-nav ul { flex-wrap: wrap; }
 
-/* The links stay clear of the notch's idle footprint above 74em; below it the menu button takes over. */
-@media (max-width: 73.99em) {
+/* The links stay clear of the notch's idle footprint above 76em; below it the menu button takes over. */
+@media (max-width: 75.99em) {
   .js .menu-btn { display: inline-flex; align-items: center; }
   .js .site-nav { display: none; position: absolute; left: 0; right: 0; top: 100%; background: var(--bg); border-bottom: 1px solid var(--line); padding: 8px var(--gutter) 12px; }
   .js .site-nav.is-open { display: block; }
@@ -160,10 +159,13 @@ html:not(.js) .site-nav ul { flex-wrap: wrap; }
 .notch[data-state="panel"] { --nw: min(400px, calc(100vw - 32px)); --nh: 128px; --nr: 24px; }
 .notch[data-state="clipboard"] { --nw: min(340px, calc(100vw - 32px)); --nh: 56px; --nr: 24px; }
 .notch[data-state="pomodoro"] { --nw: min(200px, calc(100vw - 32px)); }
-.notch.is-open { --nw: min(460px, calc(100vw - 32px)); --nh: 300px; --nr: 26px; }
+.notch[data-state].is-open { --nw: min(460px, calc(100vw - 32px)); --nh: 300px; --nr: 26px; }
 @media (max-width: 32.5em) {
-  .notch[data-state="idle"], .notch[data-state="cat"] { --nw: 128px; --nh: 32px; --nr: 16px; }
-  .notch[data-state="pomodoro"] { --nw: 150px; --nh: 32px; --nr: 16px; }
+  .notch[data-state="idle"], .notch[data-state="cat"] { --nw: 120px; --nh: 45px; --nr: 22px; }
+  .nf-idle { padding: 0 14px; }
+  .menu-btn { padding: 0 8px; }
+  .notch[data-state="pomodoro"] { --nw: 150px; --nh: 45px; --nr: 22px; }
+  .notch[data-state="music"] { --nh: 45px; --nr: 22px; }
 }
 .notch-face { position: absolute; top: 0; left: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .notch.is-open .notch-face { height: 44px; }
@@ -241,7 +243,7 @@ html:not(.js) .notch-face { pointer-events: none; }
 .pg-sub { margin: 0 0 6px; color: var(--notch-2); font-size: 13px; }
 .pg-big { margin: 0; font-size: 22px; font-weight: 600; line-height: 1.2; }
 .pg-list, .pg-meters, .pg-tiles { margin: 0; padding: 0; list-style: none; }
-.pg-list li { display: flex; gap: 12px; align-items: baseline; padding: 9px 0; border-bottom: 1px solid var(--notch-line); font-size: 14px; }
+.pg-list li { overflow-wrap: anywhere; display: flex; gap: 12px; align-items: baseline; padding: 9px 0; border-bottom: 1px solid var(--notch-line); font-size: 14px; }
 .pg-list li:last-child { border-bottom: 0; }
 .pg-list .t { flex: none; min-width: 4.5rem; color: var(--notch-2); font-family: var(--mono); font-size: 12px; }
 .pg-list code { font-size: 13px; }
@@ -254,8 +256,6 @@ html:not(.js) .notch-face { pointer-events: none; }
 .pg-tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding-top: 6px; }
 .pg-tiles li { display: flex; flex-direction: column; gap: 4px; padding: 12px; border-radius: 12px; background: #221B17; font-size: 13px; color: var(--notch-2); }
 .pg-tiles b { color: var(--notch-text); font-weight: 600; font-size: 14px; }
-.pg-tiles-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-@media (max-width: 32.5em) { .pg-tiles-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .pg-code { margin: 6px 0 0; padding: 12px 14px; border: 1px solid var(--notch-line); border-radius: 10px; font-family: var(--mono); font-size: 13px; line-height: 1.7; }
 .pg-code .pr { color: var(--notch-accent); }
 .caret { display: inline-block; width: 7px; height: 14px; vertical-align: -2px; background: var(--notch-accent); }
@@ -346,7 +346,9 @@ h3 { font-size: clamp(1.4rem, 1.1rem + 1.2vw, 1.9rem); letter-spacing: -.015em; 
 .cat-stage { display: grid; gap: clamp(2rem, 5vw, 4rem); margin-top: clamp(2rem, 5vw, 3rem); align-items: center; }
 @media (min-width: 52em) { .cat-stage { grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); } }
 .cat-view { min-width: 0; }
-.cat-bubble { display: inline-block; margin: 0 0 1rem; padding: .5rem 1rem; background: var(--bg); border: 1px solid var(--control); border-radius: 12px 12px 12px 3px; font-weight: 500; }
+.cat-bubble { position: relative; display: inline-block; margin: 0 0 1.25rem; padding: .5rem 1rem; background: var(--bg); border-radius: 12px; font-weight: 500; }
+.cat-bubble::after { content: ""; position: absolute; left: 1.5rem; bottom: -5px; width: 12px; height: 12px; background: var(--bg); border-radius: 0 0 3px 0; transform: rotate(45deg); }
+.js .cat-bubble { display: inline-block; }
 .big-cat { display: block; width: 100%; max-width: 30rem; height: auto; overflow: visible; touch-action: manipulation; }
 .cat-pickers { display: grid; gap: 1.75rem; min-width: 0; }
 .picker { margin: 0; padding: 0; border: 0; min-width: 0; }
@@ -418,7 +420,7 @@ h3 { font-size: clamp(1.4rem, 1.1rem + 1.2vw, 1.9rem); letter-spacing: -.015em; 
 .legal-toc { margin: 0 0 2.5rem; padding-bottom: 1.5rem; border-bottom: 1px solid var(--line); }
 .legal-toc ol { margin: 0; padding-left: 1.5rem; columns: 2 16rem; column-gap: 2rem; }
 .legal-toc li { margin-bottom: .25rem; break-inside: avoid; }
-.legal-toc a { display: inline-block; padding: .25rem 0; }
+.legal-toc a { display: inline-block; padding: .7rem 0; }
 .legal-doc section { margin-top: 2.5rem; }
 .legal-doc h2 { margin: 0 0 .75rem; font-size: clamp(1.5rem, 1.2rem + 1.2vw, 2rem); }
 .legal-doc h3 { margin: 1.75rem 0 .5rem; font-size: 1.25rem; }
@@ -436,3 +438,15 @@ h3 { font-size: clamp(1.4rem, 1.1rem + 1.2vw, 1.9rem); letter-spacing: -.015em; 
 @media print {
   .notch, .skip, .menu-btn, .theme-btn { display: none !important; }
 }
+
+/* Reduced motion: states still change, but at once. */
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .notch, .nf, .notch-panel { transition: none; }
+  .lyric.swap { animation: none; }
+  .eq i { animation: none; }
+}
+
+/* Links inside running text get a taller hit area (padding on an inline box does not move the lines). */
+main p a, main dd a, main li a, .footer-brand a { padding-block: .75em; }
+main .btn { padding-block: 0; }

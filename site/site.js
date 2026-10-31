@@ -69,7 +69,7 @@
     doc.addEventListener('pointerdown', function (e) {
       if (isOpen() && !nav.contains(e.target) && !btn.contains(e.target)) setOpen(false, false);
     }, { passive: true });
-    var wide = window.matchMedia('(min-width: 74em)');
+    var wide = window.matchMedia('(min-width: 76em)');
     if (wide.addEventListener) wide.addEventListener('change', function () { setOpen(false, false); });
   }
 
