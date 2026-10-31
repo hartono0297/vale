@@ -1998,7 +1998,10 @@ mod tests {
             assert_eq!(lyric_width(Some(0.0), robot, LYRIC_MAX_W), LYRIC_MIN_W + x);
             // A short line keeps the minimum; a huge one caps at the maximum.
             assert_eq!(lyric_width(Some(40.0), robot, LYRIC_MAX_W), LYRIC_MIN_W + x);
-            assert_eq!(lyric_width(Some(2000.0), robot, LYRIC_MAX_W), LYRIC_MAX_W + x);
+            assert_eq!(
+                lyric_width(Some(2000.0), robot, LYRIC_MAX_W),
+                LYRIC_MAX_W + x
+            );
             assert_eq!(lyric_width(Some(2000.0), robot, 450.0), 450.0 + x);
             // In between, the notch hugs its line: text, 1 px slack, lead
             // (the robot's, before its inset grew: 40), padding.
@@ -2430,7 +2433,10 @@ mod tests {
                     let cap = lyric_cap(robot, min_w, max_w);
                     for step in 0..=90 {
                         let w = lyric_width_min(Some(step as f32 * 10.0), robot, min_w, max_w);
-                        assert!(w <= cap, "robot {robot} min {min_w} max {max_w}: {w} > {cap}");
+                        assert!(
+                            w <= cap,
+                            "robot {robot} min {min_w} max {max_w}: {w} > {cap}"
+                        );
                     }
                     assert_eq!(lyric_width_min(Some(2000.0), robot, min_w, max_w), cap);
                 }

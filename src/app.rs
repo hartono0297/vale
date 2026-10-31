@@ -102,8 +102,9 @@ use crate::ui::frame_clock::{FrameClock, WM_APP_FRAME};
 use crate::ui::geometry::{
     AA_MARGIN, ANIM_MS, LYRIC_HOLD_MS, LYRIC_MAX_W, LYRIC_MIN_W, LYRIC_RESIZE_MS, NOTCH_H_DEFAULT,
     NOTCH_W_DEFAULT, NotchSize, ShapeKind, ShapeRect, Under, WINDOW_W, island_contains, lerp_shape,
-    lyric_box_w, lyric_max_w, lyric_scroll_end_ms, lyric_scroll_offset, lyric_shape_sized,
-    lyric_cap, lyric_target_w, lyric_width_min, panel_kind, shape_for, shape_sized, shape_with_robot_sized,
+    lyric_box_w, lyric_cap, lyric_max_w, lyric_scroll_end_ms, lyric_scroll_offset,
+    lyric_shape_sized, lyric_target_w, lyric_width_min, panel_kind, shape_for, shape_sized,
+    shape_with_robot_sized,
 };
 use crate::ui::motion::{
     FadeStart, PAGE_FADE_MS, Reveal, SlideStrip, Snap, SubView, Transit, Transition,
@@ -7444,7 +7445,10 @@ mod tests {
         // back to the lyric minimum.
         fit.line(Some(100.0), t0, true, LYRIC_MAX_W);
         fit.set_min(160.0);
-        assert_eq!(fit.width(), LYRIC_MIN_W + crate::ui::geometry::LYRIC_ROBOT_EXTRA);
+        assert_eq!(
+            fit.width(),
+            LYRIC_MIN_W + crate::ui::geometry::LYRIC_ROBOT_EXTRA
+        );
         fit.set_min(260.0);
         assert_eq!(fit.width(), 260.0 + crate::ui::geometry::LYRIC_ROBOT_EXTRA);
         // The cap never sits under the floor.
@@ -7463,7 +7467,10 @@ mod tests {
         assert_eq!(fit.width(), lyric_width(Some(300.0), true, LYRIC_MAX_W));
         // A smaller screen caps the same line lower.
         fit.line(Some(900.0), t0, true, LYRIC_MAX_W);
-        assert_eq!(fit.width(), LYRIC_MAX_W + crate::ui::geometry::LYRIC_ROBOT_EXTRA);
+        assert_eq!(
+            fit.width(),
+            LYRIC_MAX_W + crate::ui::geometry::LYRIC_ROBOT_EXTRA
+        );
         fit.refit(true, 450.0);
         assert_eq!(fit.width(), 450.0 + crate::ui::geometry::LYRIC_ROBOT_EXTRA);
         // Nothing to refit before the first line.
@@ -7488,16 +7495,28 @@ mod tests {
             let mut fit = LyricFit::default();
             fit.set_min(min_w);
             fit.line(text_w, t0, true, max_w);
-            assert_eq!(fit.box_w(), today, "line {text_w:?} min {min_w} max {max_w}");
+            assert_eq!(
+                fit.box_w(),
+                today,
+                "line {text_w:?} min {min_w} max {max_w}"
+            );
             // A refit of the same line (the robot off and on) lands on the
             // same width as the line itself.
             let width = fit.width();
             fit.refit(false, max_w);
             fit.refit(true, max_w);
-            assert_eq!(fit.width(), width, "refit {text_w:?} min {min_w} max {max_w}");
+            assert_eq!(
+                fit.width(),
+                width,
+                "refit {text_w:?} min {min_w} max {max_w}"
+            );
             fit.set_min(min_w + 1.0);
             fit.set_min(min_w);
-            assert_eq!(fit.width(), width, "set_min {text_w:?} min {min_w} max {max_w}");
+            assert_eq!(
+                fit.width(),
+                width,
+                "set_min {text_w:?} min {min_w} max {max_w}"
+            );
         }
     }
 
