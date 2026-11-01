@@ -425,9 +425,11 @@ fn first_logo<T>(
     fallback().map(|logo| (logo, LogoSource::StartEntry))
 }
 
-/// The shell parsing name of an app's Start entry.
-fn start_entry_name(aumid: &str) -> String {
-    format!("shell:AppsFolder\\{aumid}")
+/// The shell parsing name of an app's Start entry; `None` for an empty or
+/// blank AUMID (no AUMID), since `shell:AppsFolder\` alone parses as the
+/// Applications folder and would hand back its generic icon.
+fn start_entry_name(aumid: &str) -> Option<String> {
+    (!aumid.trim().is_empty()).then(|| format!("shell:AppsFolder\\{aumid}"))
 }
 
 /// True when some pixel is not fully transparent. Some icons come out of the
@@ -440,7 +442,7 @@ fn has_visible_pixel(bgra: &[u8]) -> bool {
 /// thread (shell items want an STA) and waited for at most `START_ICON_WAIT`.
 /// A helper that overruns finishes on its own and its answer is dropped.
 fn start_entry_icon(aumid: &str) -> Option<Thumb> {
-    let name = start_entry_name(aumid);
+    let name = start_entry_name(aumid)?;
     let (tx, rx) = mpsc::channel();
     std::thread::Builder::new()
         .name("vale-start-icon".into())
@@ -851,14 +853,23 @@ mod tests {
     #[test]
     fn start_entry_name_is_the_apps_folder_path() {
         assert_eq!(
-            start_entry_name("Chrome"),
-            "shell:AppsFolder\\Chrome",
+            start_entry_name("Chrome").as_deref(),
+            Some("shell:AppsFolder\\Chrome"),
             "single backslash"
         );
         assert_eq!(
-            start_entry_name("com.squirrel.Discord.Discord"),
-            r"shell:AppsFolder\com.squirrel.Discord.Discord"
+            start_entry_name("com.squirrel.Discord.Discord").as_deref(),
+            Some(r"shell:AppsFolder\com.squirrel.Discord.Discord")
         );
+    }
+
+    #[test]
+    fn a_blank_aumid_has_no_start_entry() {
+        // "shell:AppsFolder\" parses as the Applications folder itself, whose
+        // generic icon must not become the app's logo.
+        assert_eq!(start_entry_name(""), None);
+        assert_eq!(start_entry_name("   "), None);
+        assert_eq!(start_entry_name("\t\n"), None);
     }
 
     #[test]
