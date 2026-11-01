@@ -397,6 +397,101 @@ pub fn reveal_frame(dir: RevealDir, from_alpha: f32, progress: f32) -> RevealFra
     }
 }
 
+/// A busy toast's strip arriving at or leaving the top of the open panel
+/// (`REVEAL_MS`, ease-out cubic, no timer: the frame clock runs while it
+/// does). The panel stays open and settled throughout; opening or closing it
+/// with a strip fades with the panel as ever, and a toast and a sticky strip
+/// swapping places is instant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StripDir {
+    /// The toast's strip arrives: the content slides down to make room.
+    In,
+    /// It leaves: the content slides up into its place.
+    Out,
+}
+
+/// What the panel showed around one applied event, as far as the strip goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StripSnap {
+    /// The view was the panel.
+    pub panel: bool,
+    pub page: Page,
+    /// `Some(is_toast)` while the strip shows something.
+    pub strip: Option<bool>,
+}
+
+/// Which way the strip moves for `before` becoming `after`, if it does: the
+/// panel showed before and after (same page, settled, animations on) and a
+/// toast's strip appeared or disappeared with nothing in its place.
+pub fn strip_dir(
+    before: StripSnap,
+    after: StripSnap,
+    settled: bool,
+    animations: bool,
+) -> Option<StripDir> {
+    if !animations || !settled || !before.panel || !after.panel || before.page != after.page {
+        return None;
+    }
+    match (before.strip, after.strip) {
+        (None, Some(true)) => Some(StripDir::In),
+        (Some(true), None) => Some(StripDir::Out),
+        _ => None,
+    }
+}
+
+/// What the strip's motion draws at one moment: the strip's opacity and the
+/// page content's vertical offset from its place under the strip.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StripFrame {
+    pub alpha: f32,
+    pub dy: f32,
+}
+
+/// The strip's motion at `progress` (0..1), `strip_h` tall. The content is
+/// laid out under the strip throughout: `In` starts it `strip_h` higher (where
+/// it was without the strip) and eases down while the strip fades in; `Out`
+/// eases it up by `strip_h` while the strip fades out.
+pub fn strip_frame(dir: StripDir, progress: f32, strip_h: f32) -> StripFrame {
+    let e = ease_out_cubic(progress);
+    match dir {
+        StripDir::In => StripFrame {
+            alpha: e,
+            dy: -strip_h * (1.0 - e),
+        },
+        StripDir::Out => StripFrame {
+            alpha: 1.0 - e,
+            dy: -strip_h * e,
+        },
+    }
+}
+
+/// A strip's motion that began at `start`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StripMotion {
+    pub start: Instant,
+    pub dir: StripDir,
+}
+
+impl StripMotion {
+    /// 0 at the start, 1 once `REVEAL_MS` has passed.
+    pub fn progress(&self, now: Instant) -> f32 {
+        let ms = now.saturating_duration_since(self.start).as_secs_f32() * 1000.0;
+        (ms / REVEAL_MS as f32).clamp(0.0, 1.0)
+    }
+
+    pub fn done(&self, now: Instant) -> bool {
+        self.progress(now) >= 1.0
+    }
+
+    /// The frame the renderer gets: `None` once it has reached its end, so
+    /// the last frame is drawn settled and registers the page's click regions
+    /// (as `page_fade_frame` does).
+    pub fn frame(&self, now: Instant, strip_h: f32) -> Option<StripFrame> {
+        let t = self.progress(now);
+        (t < 1.0).then(|| strip_frame(self.dir, t, strip_h))
+    }
+}
+
 /// What the renderer needs besides the page itself to draw a transition.
 /// All at rest by default.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1154,6 +1249,76 @@ mod tests {
             assert!(a >= last);
             last = a;
         }
+    }
+
+    fn strip_snap(panel: bool, page: Page, strip: Option<bool>) -> StripSnap {
+        StripSnap { panel, page, strip }
+    }
+
+    #[test]
+    fn a_toast_strip_moves_only_when_it_comes_or_goes_in_a_settled_open_panel() {
+        let p = Page::Calendar;
+        let none = strip_snap(true, p, None);
+        let toast = strip_snap(true, p, Some(true));
+        let sticky = strip_snap(true, p, Some(false));
+        assert_eq!(strip_dir(none, toast, true, true), Some(StripDir::In));
+        assert_eq!(strip_dir(toast, none, true, true), Some(StripDir::Out));
+        // A swap in the same slot is instant, either way; so is the sticky
+        // strip on its own, as before.
+        assert_eq!(strip_dir(sticky, toast, true, true), None);
+        assert_eq!(strip_dir(toast, sticky, true, true), None);
+        assert_eq!(strip_dir(none, sticky, true, true), None);
+        assert_eq!(strip_dir(sticky, none, true, true), None);
+        assert_eq!(strip_dir(toast, toast, true, true), None);
+        // Reduced motion, a panel still morphing, a panel opening or closing
+        // and another page at the same time: instant.
+        assert_eq!(strip_dir(none, toast, true, false), None);
+        assert_eq!(strip_dir(none, toast, false, true), None);
+        let shut = strip_snap(false, p, None);
+        assert_eq!(strip_dir(shut, toast, true, true), None);
+        assert_eq!(strip_dir(toast, shut, true, true), None);
+        let other = strip_snap(true, Page::Media, Some(true));
+        assert_eq!(strip_dir(none, other, true, true), None);
+    }
+
+    #[test]
+    fn the_strip_eases_its_content_and_opacity_over_the_reveal_time() {
+        let h = 24.0;
+        let at = |dir, t| strip_frame(dir, t, h);
+        assert_eq!(at(StripDir::In, 0.0), StripFrame { alpha: 0.0, dy: -h });
+        assert_eq!(at(StripDir::In, 1.0), StripFrame { alpha: 1.0, dy: 0.0 });
+        assert_eq!(at(StripDir::Out, 0.0), StripFrame { alpha: 1.0, dy: 0.0 });
+        assert_eq!(at(StripDir::Out, 1.0), StripFrame { alpha: 0.0, dy: -h });
+        // Monotonic, ease-out (past half way at half the time).
+        for dir in [StripDir::In, StripDir::Out] {
+            let mut last = at(dir, 0.0);
+            for i in 1..=20 {
+                let f = at(dir, i as f32 / 20.0);
+                match dir {
+                    StripDir::In => assert!(f.alpha >= last.alpha && f.dy >= last.dy),
+                    StripDir::Out => assert!(f.alpha <= last.alpha && f.dy <= last.dy),
+                }
+                last = f;
+            }
+        }
+        assert!(at(StripDir::In, 0.5).alpha > 0.5);
+        // The two directions end where the other starts: no jump when the
+        // layout changes at the end of an `Out`.
+        assert_eq!(at(StripDir::In, 1.0).dy, at(StripDir::Out, 0.0).dy);
+    }
+
+    #[test]
+    fn a_strip_motion_runs_reveal_ms_and_its_last_frame_is_settled() {
+        let t0 = Instant::now();
+        let m = StripMotion {
+            start: t0,
+            dir: StripDir::In,
+        };
+        assert_eq!(m.progress(t0), 0.0);
+        assert!(!m.done(t0 + Duration::from_millis(REVEAL_MS - 1)));
+        assert!(m.done(t0 + Duration::from_millis(REVEAL_MS)));
+        assert!(m.frame(t0 + Duration::from_millis(80), 24.0).is_some());
+        assert_eq!(m.frame(t0 + Duration::from_millis(REVEAL_MS), 24.0), None);
     }
 
     #[test]

@@ -15,7 +15,7 @@ use crate::cli_folders::CliStart;
 use crate::clipboard::store::{ITEMS_STEP, MAX_ITEMS, MIN_ITEMS};
 use crate::config::{
     ClipboardSettings, DISK_WARN_RANGE, NotchFill, NotifSettings, OpenMode, RAM_WARN_RANGE,
-    SHOT_SECS_RANGE, ScreenshotSettings, ShotIgnore, ShotTool, Style,
+    SHOT_SECS_RANGE, ScreenshotSettings, ShotIgnore, ShotTool, Style, ToastStyle,
 };
 use crate::hotkey::{Hotkey, HotkeyId, Hotkeys};
 use crate::i18n::{
@@ -459,6 +459,8 @@ pub enum Hit {
     ShotSecs(i32),
     /// "Alat screenshot" (Vale / Snipping Tool).
     ShotTool(ShotTool),
+    /// "Notifikasi saat notch dipakai" (Ringkas / Penuh).
+    NotifToastStyle(ToastStyle),
     Battery(i32),
     /// "Peringatan disk" / "Peringatan RAM", one step down (−1) or up.
     DiskWarn(i32),
@@ -608,6 +610,7 @@ pub enum Group {
     /// The own-shortcut form's Jenis.
     TileKind,
     ShotTool,
+    NotifToastStyle,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -3295,10 +3298,29 @@ fn notifications_card(b: &mut Builder, s: &State) {
     b.eyebrow(Key::SecNotifications, b.g.content_w - 4.0);
     let c = s.notif;
     let shown = s.muted.len().max(1);
-    let card = b.card((6 + shown) as f32 * ROW_H);
-    let row = |i: usize| card.y + i as f32 * ROW_H;
+    let card = b.card((7 + shown) as f32 * ROW_H);
+    // Row 0 is "Notifikasi saat notch dipakai"; the numbers below count
+    // from the history rows that follow it.
+    let style_y = card.y;
+    let row = |i: usize| card.y + (i + 1) as f32 * ROW_H;
     let cy = |y: f32| y + ROW_H / 2.0;
     let on = c.record;
+
+    let items = vec![
+        (
+            Hit::NotifToastStyle(ToastStyle::Compact),
+            b.t(Key::NotifToastCompact),
+        ),
+        (
+            Hit::NotifToastStyle(ToastStyle::Full),
+            b.t(Key::NotifToastFull),
+        ),
+    ];
+    let selected = index_of(ToastStyle::ALL, &c.toast_style);
+    let x = b.segmented(Group::NotifToastStyle, b.g.right, cy(style_y), items, selected);
+    let desc = Some((b.t(Key::NotifToastStyleDesc), Tone::Secondary));
+    b.row_text(card, style_y, b.t(Key::NotifToastStyle), desc, false, x);
+    b.divider(card, row(0));
 
     let x = b.toggle(Hit::NotifRecord, b.g.right, cy(row(0)), on);
     let desc = Some((b.t(Key::NotifRecordDesc), Tone::Secondary));
@@ -4507,6 +4529,11 @@ mod tests {
                             max_items: if locked { NOTIF_MAX } else { NOTIF_MIN },
                             persist: locked,
                             paused: false,
+                            toast_style: if locked {
+                                ToastStyle::Full
+                            } else {
+                                ToastStyle::Compact
+                            },
                         },
                         muted: if locked {
                             vec![
@@ -8097,6 +8124,51 @@ mod tests {
             crate::i18n::greeting_periods_line(Lang::En),
             "Morning 04-10 Good morning · Noon 11-14 Good afternoon · Afternoon 15-17 Good afternoon · Evening 18-23 Good evening · Late night 00-03 Up late?"
         );
+    }
+
+    #[test]
+    fn the_notification_card_starts_with_the_toast_style_and_everything_moves_one_row_down() {
+        for lang in [Lang::Id, Lang::En] {
+            for style in ToastStyle::ALL {
+                let mut s = State {
+                    lang,
+                    ..states()[0].clone()
+                };
+                s.notif.toast_style = *style;
+                let l = layout(Section::Features, &s, &Estimate);
+                let (track, items, selected) = l
+                    .segmented(Group::NotifToastStyle)
+                    .expect("Notifikasi saat notch dipakai");
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[0].hit, Hit::NotifToastStyle(ToastStyle::Compact));
+                assert_eq!(items[1].hit, Hit::NotifToastStyle(ToastStyle::Full));
+                assert_eq!(items[selected].hit, Hit::NotifToastStyle(*style));
+                // Its label and note are the card's first texts.
+                let label = text(lang, Key::NotifToastStyle);
+                let row = l
+                    .texts
+                    .iter()
+                    .find(|t| t.text == label)
+                    .expect("the row's label");
+                let record = l
+                    .texts
+                    .iter()
+                    .find(|t| t.text == text(lang, Key::NotifRecord))
+                    .expect("Simpan notifikasi");
+                assert!(row.rect.y < record.rect.y, "the new row is first");
+                assert!((record.rect.y - row.rect.y - ROW_H).abs() < 0.5, "one row down");
+                assert!(track.y > row.rect.y - ROW_H && track.bottom() < record.rect.y + ROW_H);
+                // The toggle that was first is still there, one row lower.
+                assert!(l.controls.iter().any(|c| matches!(
+                    c,
+                    Control::Toggle { hit: Hit::NotifRecord, on, .. } if *on == s.notif.record
+                )));
+                // A divider sits between the new row and the old first.
+                assert!(l.dividers.iter().any(|d| {
+                    d.y > row.rect.y && d.y < record.rect.y && d.w > 100.0
+                }));
+            }
+        }
     }
 
     #[test]

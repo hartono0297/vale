@@ -91,7 +91,7 @@ use crate::sources::battery::{
 };
 use crate::sources::fullscreen::is_fullscreen;
 use crate::sources::{explorer, media, notifications};
-use crate::state::{IslandState, ShownPanel, is_media_hit};
+use crate::state::{IslandState, ShownPanel, ToastForm, is_media_hit, is_real_toast};
 use crate::system::{
     CpuHistory, SampleKind, Sampler, SysEase, SystemSample, WarnMonitor, alert_notice,
 };
@@ -104,18 +104,19 @@ use crate::ui::editor::{self, EditorKind, EditorResult, WM_APP_EDITOR_RESULT};
 use crate::ui::frame_clock::{FrameClock, WM_APP_FRAME};
 use crate::ui::geometry::{
     AA_MARGIN, ANIM_MS, LYRIC_HOLD_MS, LYRIC_MAX_W, LYRIC_MIN_W, NOTCH_H_DEFAULT, NOTCH_W_DEFAULT,
-    NotchSize, ShapeKind, ShapeRect, Under, WINDOW_W, idle_shape_typing, island_contains,
-    lerp_shape, lyric_box_w, lyric_cap, lyric_max_w, lyric_scroll_end_ms, lyric_scroll_offset,
-    lyric_shape_sized, lyric_target_w, lyric_width_min, panel_kind, shape_for, shape_sized,
-    shape_with_robot_sized, typing_lead,
+    NotchSize, ShapeKind, ShapeRect, TOAST_SLOT_EXTRA, Under, WINDOW_W, idle_shape_typing,
+    island_contains, lerp_shape, lyric_box_w, lyric_cap, lyric_max_w, lyric_scroll_end_ms,
+    lyric_scroll_offset, lyric_shape_sized, lyric_slot_width, lyric_target_w, lyric_width_min,
+    panel_kind, shape_for, shape_sized, shape_with_robot_sized, toast_peek_reaches, typing_lead,
+    with_toast_slot,
 };
 use crate::ui::motion::{
-    FadeStart, MorphCurve, PAGE_FADE_MS, Reveal, SlideStrip, Snap, SubView, Transit, Transition,
-    content_alpha_from, ease_in_out_cubic, fade_floor, mole_code, morph_timing, page_fade_frame,
-    panel_fade, transition,
+    FadeStart, MorphCurve, PAGE_FADE_MS, Reveal, SlideStrip, Snap, StripDir, StripMotion,
+    StripSnap, SubView, Transit, Transition, content_alpha_from, ease_in_out_cubic, fade_floor,
+    mole_code, morph_timing, page_fade_frame, panel_fade, strip_dir, transition,
 };
 use crate::ui::notch_fill;
-use crate::ui::panel_layout::{CliHead, cli_layout};
+use crate::ui::panel_layout::{CliHead, STRIP_H, cli_layout};
 use crate::ui::render::{
     CleanerView, CliView, DevicesView, FolderMenuView, Frame, MoleView, Progress, Renderer,
     RobotFrame, SearchView, SystemView,
@@ -419,6 +420,10 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
             slide: None,
             page_fade: None,
             reveal: None,
+            strip_motion: None,
+            toast_over: false,
+            slot_keep: None,
+            slot_share: SlotShare::default(),
             leaving: None,
             closed_panel: None,
             fade_floor_h: notch.h,
@@ -545,6 +550,8 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
         app.apply(Event::CleanModeSetting(clean_mode), now);
         let open_mode = app.config.open_mode;
         app.apply(Event::OpenMode(open_mode), now);
+        let toast_style = app.config.notifications.toast_style;
+        app.apply(Event::ToastStyle(toast_style), now);
         let pages = PanelPages::from_saved(&app.config.panel_pages);
         app.apply(Event::PanelPages(pages), now);
         let tiles = ShortcutTiles::from_saved(&app.config.shortcut_tiles);
@@ -699,6 +706,16 @@ struct App {
     /// A sub-view switch fading in (`ui::motion`): the calendar's range, the
     /// cleaner opening, Mole's stages, the CLI's folder menu.
     reveal: Option<Reveal>,
+    /// A busy toast's strip arriving at or leaving the open panel.
+    strip_motion: Option<StripAnim>,
+    /// The pointer is on the busy toast's own spot, as the reducer last
+    /// heard (`Event::ToastPointer`); synced from the state at each refresh.
+    toast_over: bool,
+    /// The toast whose logo the slot shows, kept while the island shrinks
+    /// back so the logo fades out instead of vanishing.
+    slot_keep: Option<Notice>,
+    /// The slot's share of the compact notch's width over the running morph.
+    slot_share: SlotShare,
     /// The panel that is closing, as it showed, while its content fades
     /// with the shrinking shape; set at the morph's start, gone at its end.
     leaving: Option<ShownPanel>,
@@ -1272,6 +1289,12 @@ impl App {
             };
             let page = self.state.page();
             let before = self.panel_snap();
+            let strip_before = self.strip_snap();
+            let strip_notice = self
+                .state
+                .waiting_strip()
+                .filter(|n| is_real_toast(n))
+                .cloned();
             let shown_before = self.state.shown_panel();
             let cli_was = (
                 self.state.view() == View::Panel(Page::Cli),
@@ -1302,6 +1325,7 @@ impl App {
                 media_log::log_command(&click, media_log::Outcome::Ignored(why), &self.media_app());
             }
             self.follow_transition(before, now);
+            self.follow_strip(strip_before, strip_notice, now);
             self.follow_closed_panel(shown_before);
             self.follow_cli_page(cli_was);
             self.follow_clip_page(cli_was.2);
@@ -2121,6 +2145,45 @@ impl App {
                     .map_or(0.0, |r| r.frame(now).alpha);
                 self.reveal = Some(Reveal::new(now, dir, from_alpha));
                 self.ensure_clock();
+            }
+        }
+    }
+
+    /// What the panel's strip holds, for `follow_strip`.
+    fn strip_snap(&self) -> StripSnap {
+        StripSnap {
+            panel: matches!(self.state.view(), View::Panel(_)),
+            page: self.state.page(),
+            strip: self.state.waiting_strip().map(is_real_toast),
+        }
+    }
+
+    /// After any applied event: a busy toast's strip that came to the open
+    /// panel or left it moves (`ui::motion::strip_dir`: the content eases
+    /// down or up and the strip fades, `REVEAL_MS`); a toast and a sticky
+    /// strip swapping is instant. `leaving` is the toast's notice, for the
+    /// strip that fades out. Rides the frame clock like the reveal.
+    fn follow_strip(&mut self, before: StripSnap, leaving: Option<Notice>, now: Instant) {
+        let after = self.strip_snap();
+        match strip_dir(before, after, !self.anim.running, self.animations) {
+            Some(dir) => {
+                self.strip_motion = Some(StripAnim {
+                    motion: StripMotion { start: now, dir },
+                    leaving: leaving.filter(|_| dir == StripDir::Out),
+                });
+                self.ensure_clock();
+            }
+            None => {
+                // One that no longer fits what shows (the panel closed or
+                // turned a page; a strip came back while one left) ends.
+                let stale = match self.strip_motion.as_ref().map(|m| m.motion.dir) {
+                    Some(StripDir::In) => after.strip.is_none(),
+                    Some(StripDir::Out) => after.strip.is_some(),
+                    None => false,
+                };
+                if !after.panel || before.page != after.page || stale {
+                    self.strip_motion = None;
+                }
             }
         }
     }
@@ -3215,6 +3278,21 @@ impl App {
     /// Retargets the animation at the state's view and re-arms the notice deadline.
     fn refresh(&mut self, now: Instant) {
         self.sync_lyrics(now);
+        // A busy toast's logo beside the lyric line: the width, the box and
+        // the scroll plan are worked out with it. After `sync_lyrics`, whose
+        // `LyricsReady` may change the view the slot is read from; before
+        // `sync_lyric_line`, which fits the line and re-plans the scroll
+        // (`TIMER_LYRIC_SCROLL`, the frame clock) with the flag as it is now.
+        let lyric_slot =
+            self.state.toast_slot().is_some() && self.state.view() == View::MediaLyric;
+        self.lyric_fit.set_slot(lyric_slot);
+        // The reducer is the authority on where the pointer is for the toast
+        // (it lets go when a toast ends or the pointer leaves); the next
+        // mouse move compares against that.
+        self.toast_over = self.state.toast_pointer();
+        if let Some(n) = self.state.toast_slot() {
+            self.slot_keep = Some(n.clone());
+        }
         // The notch peek only lives on a quiet compact view; anything else
         // (a notice, the panel, fullscreen, stay-behind) ends it at once.
         self.peek_guard();
@@ -3268,10 +3346,28 @@ impl App {
             ShapeKind::MediaLyric => lyric_shape_sized(style, notch, self.lyric_fit.width()),
             // The idle island grows to the left for the typing cat's laptop.
             ShapeKind::Idle => self.idle_shape(now),
+            // The compact views widen to hold the busy toast's logo.
+            ShapeKind::MediaCompact | ShapeKind::PomodoroCompact
+                if self.state.toast_slot().is_some() =>
+            {
+                with_toast_slot(shape_with_robot_sized(style, notch, kind, robot))
+            }
             _ => shape_with_robot_sized(style, notch, kind, robot),
         });
+        // The logo's room in the target: a lyric line at its cap keeps the
+        // notch's width and gives the room up from its box, so the slot
+        // toggling there is a morph of its own.
+        let slot_to = if target.is_some() && !self.eyes && self.state.toast_slot().is_some() {
+            TOAST_SLOT_EXTRA
+        } else {
+            0.0
+        };
         let retarget = match target {
-            Some(shape) => self.anim.to != shape || self.anim.to_opacity != 1.0,
+            Some(shape) => {
+                self.anim.to != shape
+                    || self.anim.to_opacity != 1.0
+                    || self.slot_share.to != slot_to
+            }
             None => self.anim.to_opacity != 0.0,
         };
         // Hidden, something else on screen, or the notch swapped with the
@@ -3308,10 +3404,18 @@ impl App {
             fading
         };
         let hiding = view == View::Hidden;
+        // What of the slot shows now, on the view drawn before this refresh.
+        let slot_now = self.slot_drawn(now);
         if !hiding {
             self.drawn = view;
         }
         if retarget {
+            // The slot's share goes from what shows to the target's; hiding
+            // fades the island out as it is.
+            self.slot_share = SlotShare {
+                from: slot_now,
+                to: if hiding { slot_now } else { slot_to },
+            };
             let (shape, opacity) = self.anim.frame(now);
             // Drawn on screen before this morph (not hidden, not heading
             // for it): only then does a closing panel have content to fade.
@@ -3407,6 +3511,10 @@ impl App {
             // Same shape, but the content (track, notice text) may have changed.
             self.draw(now);
         }
+        // The slot's logo has nowhere to fade once the island is back.
+        if self.state.toast_slot().is_none() && !self.anim.running {
+            self.slot_keep = None;
+        }
         self.arm_deadline(now);
         self.sync_timers(now);
         self.sync_settings();
@@ -3431,6 +3539,7 @@ impl App {
             || self.system_easing(now)
             || self.slide.is_some()
             || self.reveal.is_some()
+            || self.strip_motion.is_some()
             || self.page_fade.is_some()
             || self.lyric_fading
             || self.lyric_scrolling
@@ -4126,6 +4235,8 @@ impl App {
             && !self.screen_away()
             && self.win.is_some()
             && pointer_watch::peek_view(&self.state.view())
+            // The logo of a busy toast has to stay on screen.
+            && self.state.toast_slot().is_none()
     }
 
     /// Ends a peek that may not go on (the notch is whole again at once).
@@ -4770,6 +4881,7 @@ impl App {
         let shape_done = self.anim.progress(now) >= 1.0;
         let slide_done = self.slide.is_none_or(|s| s.progress(now) >= 1.0);
         let reveal_done = self.reveal.is_none_or(|r| r.done(now));
+        let strip_done = self.strip_motion.as_ref().is_none_or(|m| m.motion.done(now));
         let fade_done = self.page_fade.is_none_or(|f| f.progress(now) >= 1.0);
         // The resting t = 1 frame is always drawn before the clock stops, so a
         // fade-out never leaves faint pixels that still catch clicks, and the
@@ -4781,6 +4893,9 @@ impl App {
             self.eyes_morph = false;
             // The panel that was closing is gone with its morph.
             self.leaving = None;
+            if self.state.toast_slot().is_none() {
+                self.slot_keep = None;
+            }
             self.frame_log.finish();
             // Back from the enlarged panel: the canvas shrinks again.
             if self.sync_window_height(now) {
@@ -4805,6 +4920,9 @@ impl App {
         }
         if reveal_done {
             self.reveal = None;
+        }
+        if strip_done {
+            self.strip_motion = None;
         }
         if fade_done {
             self.page_fade = None;
@@ -4886,6 +5004,10 @@ impl App {
         if self.peek.is_shrunk() {
             return;
         }
+        // A busy toast's own spot (its strip, its logo, the full toast it
+        // peeks as) holds it and shows it whole; only a change is sent.
+        let over = self.toast_pointer_at(lparam);
+        self.set_toast_pointer(over);
         // A fast move onto the notch can reach the island before the poll has
         // read the pointer outside it: step the peek now, so a window under
         // the notch still shrinks it before the hover starts. Once per
@@ -4976,6 +5098,9 @@ impl App {
         if self.mixer_drag.is_some() {
             return;
         }
+        // The pointer left the busy toast's spot with the island, whether or
+        // not the hover dwell had passed.
+        self.set_toast_pointer(false);
         self.click.clear();
         self.dock_leave();
         self.arrange_hover(None);
@@ -4988,6 +5113,36 @@ impl App {
             // visit a drop was made in.
             None if self.state.shelf_drop_here() => self.apply_now(Event::ShelfDropLeft),
             None => self.refresh(Instant::now()),
+        }
+    }
+
+    /// The pointer at `lparam` is on the busy toast's own spot: its strip in
+    /// the open panel, its small logo (where the full toast would still lie
+    /// under the pointer, else there is no peek to give), or, while it peeks,
+    /// anywhere on the island.
+    fn toast_pointer_at(&self, lparam: LPARAM) -> bool {
+        match self.hit_at(lparam) {
+            Some(Hit::Strip) => self.state.toast_form() == Some(ToastForm::Strip),
+            Some(Hit::ToastSlot) => self.toast_slot_peekable(lparam),
+            Some(_) => self.state.toast_is_peeking(),
+            None => false,
+        }
+    }
+
+    /// The full toast would lie under the pointer at `lparam`: a compact or
+    /// lyric notch wider than the toast has a band at its right end where a
+    /// peek would leave the pointer off it, and the notch would flap.
+    fn toast_slot_peekable(&self, lparam: LPARAM) -> bool {
+        let (x, y) = client_xy(lparam);
+        let (x, y) = self.renderer.to_dip(x as f32, y as f32);
+        toast_peek_reaches(self.config.style, self.notch_size(), x, y)
+    }
+
+    /// Tells the reducer the pointer reached or left the busy toast's spot.
+    fn set_toast_pointer(&mut self, over: bool) {
+        if self.toast_over != over {
+            self.toast_over = over;
+            self.apply_now(Event::ToastPointer(over));
         }
     }
 
@@ -5297,8 +5452,14 @@ impl App {
     fn adopt_config(&mut self, cfg: Config) {
         let google = |c: &Config| (c.google_client_id.clone(), c.google_client_secret.clone());
         let changed = google(&cfg) != google(&self.config);
+        let toast_style_was = self.config.notifications.toast_style;
         self.config = cfg;
         i18n::set_lang(self.config.language);
+        // A hand edit of "Notifikasi saat notch dipakai" applies live.
+        let toast_style = self.config.notifications.toast_style;
+        if toast_style != toast_style_was {
+            self.apply_now(Event::ToastStyle(toast_style));
+        }
         // New limits (the settings window or a hand edit) apply at once.
         self.system
             .monitor
@@ -5535,6 +5696,11 @@ impl App {
                 self.save_config();
                 self.apply_now(Event::OpenMode(mode));
             }
+            SettingsAction::NotifToastStyle(v) => {
+                self.config.notifications.toast_style = v;
+                self.save_config();
+                self.apply_now(Event::ToastStyle(v));
+            }
             SettingsAction::CliStart(start) => {
                 // Read the next time the CLI page opens.
                 self.config.cli_start = start;
@@ -5659,6 +5825,17 @@ impl App {
         self.save_config();
     }
 
+    /// The slot's share of the drawn compact view's width at `now` (0 with
+    /// no slot, or on any other view).
+    fn slot_drawn(&self, now: Instant) -> f32 {
+        match (&self.drawn, self.slot_keep.is_some()) {
+            (View::MediaCompact | View::MediaLyric | View::PomodoroCompact, true) => {
+                self.slot_share.at(&self.anim, now)
+            }
+            _ => 0.0,
+        }
+    }
+
     fn draw(&mut self, now: Instant) {
         self.dock_sync();
         // Clicks on the Devices page mean the cards of the frame drawn here.
@@ -5754,6 +5931,18 @@ impl App {
         );
         let notif =
             notif_page::notif_view(&self.notif, self.config.notifications, state.notif_armed());
+        // A busy toast's logo beside a compact view: the slot's share of the
+        // animated shape's width.
+        let toast_slot_w = self.slot_drawn(now);
+        let logos = &self.notif.logos;
+        // The strip: a toast's while its form is the strip, else the sticky
+        // one, and the toast that is fading out of it for the motion's time.
+        let strip = match leaving {
+            Some(shown) => shown.strip.as_ref(),
+            None => state
+                .waiting_strip()
+                .or_else(|| self.strip_motion.as_ref().and_then(|m| m.leaving.as_ref())),
+        };
         let frame = Frame {
             view: &self.drawn,
             media: state.media(),
@@ -5761,10 +5950,7 @@ impl App {
             now,
             today: state.today(),
             page: leaving.map_or(state.page(), |shown| shown.page),
-            strip: match leaving {
-                Some(shown) => shown.strip.as_ref(),
-                None => state.waiting_strip(),
-            },
+            strip,
             cal_view: state.cal_view(),
             cal_anchor: state.cal_anchor(),
             cal_selected: state.cal_selected(),
@@ -5865,6 +6051,19 @@ impl App {
             shot: shot::shot_view(&self.shots, &self.drawn),
             clip_notice: clip::clip_notice_view(&self.clip.history, &self.drawn),
             toast_logo: notif_page::toast_logo_view(&self.notif.logos, &self.drawn),
+            toast_slot_w,
+            toast_slot: self
+                .slot_keep
+                .as_ref()
+                .map(|n| notif_page::toast_badge_of(logos, n)),
+            toast_dot: state.toast_dot_shown() && !self.eyes,
+            strip_badge: strip
+                .filter(|n| is_real_toast(n))
+                .map(|n| notif_page::toast_badge_of(logos, n)),
+            strip_motion: self
+                .strip_motion
+                .as_ref()
+                .and_then(|m| m.motion.frame(now, STRIP_H)),
             transit,
         };
         if let Err(error) = self
@@ -6215,6 +6414,29 @@ impl Anim {
     }
 }
 
+/// A busy toast's slot share of a compact notch's width (0 to
+/// `TOAST_SLOT_EXTRA`) over a morph: what showed when it began and what the
+/// target has. Kept apart from the shape's width, which also changes with a
+/// longer lyric line or another view: a slot present at both ends stays
+/// whole the whole morph, and only a slot that comes or goes eases with it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct SlotShare {
+    from: f32,
+    to: f32,
+}
+
+impl SlotShare {
+    /// The share at `now`, following the shape's eased progress (an
+    /// overshoot is clamped).
+    fn at(&self, anim: &Anim, now: Instant) -> f32 {
+        let t = anim.progress(now);
+        if t >= 1.0 {
+            return self.to;
+        }
+        (self.from + (self.to - self.from) * anim.curve.ease(t)).clamp(0.0, TOAST_SLOT_EXTRA)
+    }
+}
+
 /// The lyric notch's width, worked out per line, and the line's scroll.
 /// Reset when the lyric view closes, so the next one starts at its first
 /// line's width.
@@ -6234,6 +6456,9 @@ struct LyricFit {
     /// The user's notch width, the notch's floor (`lyric_width_min`); 0 until
     /// set, which `lyric_width_min` reads as `LYRIC_MIN_W`.
     min_w: f32,
+    /// A busy toast's logo sits at the notch's right (`TOAST_SLOT_EXTRA`):
+    /// the width, the line's box and its scroll are worked out with it.
+    slot: bool,
 }
 
 impl LyricFit {
@@ -6277,12 +6502,38 @@ impl LyricFit {
         }
     }
 
+    /// The notch's width, the logo's room included while the slot shows.
     fn width(&self) -> f32 {
+        let w = self.line_side_w();
+        if self.slot {
+            lyric_slot_width(w, self.robot, self.min_w, self.max_w)
+        } else {
+            w
+        }
+    }
+
+    /// The width without the slot: what the line wanted.
+    fn line_side_w(&self) -> f32 {
         self.width.unwrap_or(LYRIC_MIN_W.max(self.min_w))
     }
 
+    /// The width the line's side keeps with the slot settled: the notch's
+    /// width less the logo's room.
+    fn content_w(&self) -> f32 {
+        if self.slot {
+            self.width() - TOAST_SLOT_EXTRA
+        } else {
+            self.width()
+        }
+    }
+
+    /// The slot appeared or went: the width, the box and the scroll follow.
+    fn set_slot(&mut self, on: bool) {
+        self.slot = on;
+    }
+
     fn box_w(&self) -> f32 {
-        lyric_box_w(self.width(), self.robot)
+        lyric_box_w(self.content_w(), self.robot)
     }
 
     /// The line's scroll at `now` (0 while it holds or when it fits).
@@ -6306,6 +6557,14 @@ impl LyricFit {
             since + Duration::from_millis(end),
         ))
     }
+}
+
+/// A busy toast's strip moving in or out of the open panel: when it began
+/// and which way, and (leaving) the notice it still draws while it fades.
+#[derive(Clone, Debug, PartialEq)]
+struct StripAnim {
+    motion: StripMotion,
+    leaving: Option<Notice>,
 }
 
 /// A panel page switch: `page_slide` eases from `strip.from` to 0 over
@@ -8019,6 +8278,70 @@ mod tests {
     }
 
     #[test]
+    fn the_slot_keeps_its_share_while_a_longer_lyric_line_grows_the_notch() {
+        // The slot shows before and after; the line side grows by 40 dip
+        // (a new, longer line within the toast's 5 s). The logo must stay
+        // whole the whole morph, overshoot included, not blink out and fade
+        // back as it would if the share were read off the target width.
+        let t0 = Instant::now();
+        let base = lyric_shape(Style::Pill, 300.0);
+        let wide = lyric_shape(Style::Pill, 340.0);
+        let (ms, curve) = morph_timing(false, true, false);
+        let anim = Anim {
+            from: base,
+            from_opacity: 1.0,
+            to: wide,
+            to_opacity: 1.0,
+            start: t0,
+            ms,
+            running: true,
+            curve,
+            fade_from: None,
+        };
+        let both = SlotShare {
+            from: TOAST_SLOT_EXTRA,
+            to: TOAST_SLOT_EXTRA,
+        };
+        let none = SlotShare::default();
+        for n in (0..=ms).step_by(4) {
+            let at = t0 + Duration::from_millis(n);
+            assert_eq!(both.at(&anim, at), TOAST_SLOT_EXTRA, "{n} ms");
+            assert_eq!(none.at(&anim, at), 0.0, "{n} ms");
+        }
+        // A slot that comes or goes eases with the shape, clamped to its
+        // room, and lands exactly on the target's share.
+        let comes = SlotShare {
+            from: 0.0,
+            to: TOAST_SLOT_EXTRA,
+        };
+        let goes = SlotShare {
+            from: TOAST_SLOT_EXTRA,
+            to: 0.0,
+        };
+        let mut last = 0.0;
+        for n in (0..=ms).step_by(4) {
+            let at = t0 + Duration::from_millis(n);
+            let e = comes.at(&anim, at);
+            assert!((0.0..=TOAST_SLOT_EXTRA).contains(&e), "{n} ms: {e}");
+            assert!(
+                e >= last || e == TOAST_SLOT_EXTRA,
+                "{n} ms: {e} after {last}"
+            );
+            last = e;
+            assert!((0.0..=TOAST_SLOT_EXTRA).contains(&goes.at(&anim, at)));
+        }
+        assert_eq!(comes.at(&anim, t0), 0.0);
+        assert_eq!(goes.at(&anim, t0), TOAST_SLOT_EXTRA);
+        let done = t0 + Duration::from_millis(ms);
+        assert_eq!(comes.at(&anim, done), TOAST_SLOT_EXTRA);
+        assert_eq!(goes.at(&anim, done), 0.0);
+        // Settled (no morph): the target's share.
+        let settled = Anim::settled(wide, 1.0);
+        assert_eq!(comes.at(&settled, t0), TOAST_SLOT_EXTRA);
+        assert_eq!(goes.at(&settled, t0), 0.0);
+    }
+
+    #[test]
     fn a_fade_cut_short_reports_where_it_is() {
         let t0 = Instant::now();
         let mut anim = morph(t0);
@@ -8353,6 +8676,41 @@ mod tests {
         let mut empty = LyricFit::default();
         empty.refit(true, 450.0);
         assert_eq!(empty, LyricFit::default());
+    }
+
+    #[test]
+    fn lyric_fit_with_a_toast_slot_keeps_the_line_box_and_never_passes_the_cap() {
+        let t0 = Instant::now();
+        for robot in [false, true] {
+            // A short line: the slot only adds its room to the notch.
+            let mut fit = LyricFit::default();
+            fit.set_min(190.0);
+            fit.line(Some(60.0), t0, robot, LYRIC_MAX_W);
+            let (plain_w, plain_box) = (fit.width(), fit.box_w());
+            fit.set_slot(true);
+            assert_eq!(fit.width(), plain_w + TOAST_SLOT_EXTRA, "robot {robot}");
+            assert_eq!(fit.box_w(), plain_box, "the line keeps its box");
+            assert_eq!(fit.content_w(), plain_w);
+            fit.set_slot(false);
+            assert_eq!(fit.width(), plain_w);
+
+            // A line at the cap: the total stays at the cap and the box gives
+            // the logo's room up (the line then scrolls and fades as ever).
+            let mut fit = LyricFit::default();
+            fit.set_min(190.0);
+            fit.line(Some(900.0), t0, robot, LYRIC_MAX_W);
+            let cap = lyric_cap(robot, 190.0, LYRIC_MAX_W);
+            assert_eq!(fit.width(), cap);
+            let (plain_box, plain_span) = (fit.box_w(), fit.scroll_span());
+            fit.set_slot(true);
+            assert_eq!(fit.width(), cap, "never above the cap");
+            assert_eq!(fit.box_w(), plain_box - TOAST_SLOT_EXTRA);
+            // The scroll plan follows the smaller box: it runs longer.
+            let span = fit.scroll_span().expect("a long line scrolls");
+            assert!(span.1 > plain_span.expect("scrolls without the slot").1);
+            fit.set_slot(false);
+            assert_eq!(fit.scroll_span(), plain_span);
+        }
     }
 
     #[test]
