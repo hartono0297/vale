@@ -25,6 +25,7 @@ pub mod robot;
 pub mod settings;
 pub mod settings_controls;
 pub mod settings_layout;
+pub mod settings_window;
 pub mod shelf_motion;
 pub mod tray;
 pub mod window;

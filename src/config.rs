@@ -195,16 +195,19 @@ const WINDOW_COORD_MAX: i32 = 100_000;
 /// place (a width or height of 0 or less, a coordinate beyond +-100000) is
 /// None and never fails the rest of the file.
 fn window_place<'de, D: Deserializer<'de>>(d: D) -> Result<Option<WindowPlace>, D::Error> {
-    let v = serde_json::Value::deserialize(d)?;
-    let Ok(p) = serde_json::from_value::<WindowPlace>(v) else {
-        return Ok(None);
-    };
+    Ok(place_from_json(serde_json::Value::deserialize(d)?))
+}
+
+/// A `WindowPlace` from a JSON value, or None when it is not well formed
+/// (see `window_place`).
+pub fn place_from_json(v: serde_json::Value) -> Option<WindowPlace> {
+    let p = serde_json::from_value::<WindowPlace>(v).ok()?;
     let sane = [p.left, p.top, p.right, p.bottom]
         .iter()
         .all(|c| (-WINDOW_COORD_MAX..=WINDOW_COORD_MAX).contains(c))
         && p.right > p.left
         && p.bottom > p.top;
-    Ok(sane.then_some(p))
+    sane.then_some(p)
 }
 
 /// The apps muted until the owner says otherwise.
@@ -1640,7 +1643,8 @@ mod tests {
             assert_eq!(c.settings_window, None, "{bad}");
             assert_eq!(c.style, Style::Notch, "{bad}");
         }
-        let edge = r#"{"left":-100000,"top":-100000,"right":100000,"bottom":100000,"maximized":false}"#;
+        let edge =
+            r#"{"left":-100000,"top":-100000,"right":100000,"bottom":100000,"maximized":false}"#;
         assert!(win(edge).settings_window.is_some());
     }
 

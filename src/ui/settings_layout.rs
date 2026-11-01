@@ -1923,7 +1923,6 @@ impl Builder<'_> {
     }
 }
 
-
 /// The whole window for `section` at the minimum client size.
 pub fn layout(section: Section, s: &State, m: &dyn Measure) -> Layout {
     layout_in(section, s, m, (CLIENT_W, CLIENT_H))
@@ -2127,7 +2126,12 @@ fn appearance(b: &mut Builder, s: &State) {
     b.row_text(card, rows[3], b.t(Key::IdleClock), desc, false, x);
     b.divider(card, rows[3]);
 
-    let x = b.toggle(Hit::EqFollowAudio, b.g.right, cy(rows[4]), s.eq_follow_audio);
+    let x = b.toggle(
+        Hit::EqFollowAudio,
+        b.g.right,
+        cy(rows[4]),
+        s.eq_follow_audio,
+    );
     let desc = Some((b.t(Key::EqFollowAudioDesc), Tone::Secondary));
     b.row_text(card, rows[4], b.t(Key::EqFollowAudio), desc, false, x);
     b.divider(card, rows[4]);
@@ -2352,7 +2356,13 @@ fn pages_card(b: &mut Builder, s: &State) {
             },
         });
         b.grip(card, cy, Hit::PageGrip(page));
-        let x = b.icon_button(b.g.right, cy, Hit::PageMove(page, 1), Icon::ChevD, item + 1 < n);
+        let x = b.icon_button(
+            b.g.right,
+            cy,
+            Hit::PageMove(page, 1),
+            Icon::ChevD,
+            item + 1 < n,
+        );
         let x = b.icon_button(x - 4.0, cy, Hit::PageMove(page, -1), Icon::ChevU, item > 0);
         let locked = n == 1;
         let w = b.button_w(&[&hide], ButtonKind::Secondary);
@@ -2471,7 +2481,13 @@ fn tiles_card(b: &mut Builder, s: &State) {
             },
         });
         b.grip(card, cy, Hit::TileGrip(i));
-        let x = b.icon_button(b.g.right, cy, Hit::TileMove(i, 1), Icon::ChevD, item + 1 < n);
+        let x = b.icon_button(
+            b.g.right,
+            cy,
+            Hit::TileMove(i, 1),
+            Icon::ChevD,
+            item + 1 < n,
+        );
         let x = b.icon_button(x - 4.0, cy, Hit::TileMove(i, -1), Icon::ChevU, item > 0);
         let locked = n == 1;
         let w = b.button_w(&[&hide], ButtonKind::Secondary);
@@ -2952,7 +2968,13 @@ fn cat_motion_card(b: &mut Builder, s: &State) {
     b.divider(card, rows[2]);
 
     // The eyes need stay-behind off, not the cat.
-    let x = b.toggle_if(Hit::NotchPeek, b.g.right, cy(3), s.notch_peek, !s.stay_behind);
+    let x = b.toggle_if(
+        Hit::NotchPeek,
+        b.g.right,
+        cy(3),
+        s.notch_peek,
+        !s.stay_behind,
+    );
     let desc = if s.stay_behind {
         b.t(Key::CatPeekBehind)
     } else {
@@ -3563,7 +3585,14 @@ fn arrange_card(b: &mut Builder, s: &State) {
     // Saved arrangements: the title row, then a row each.
     let head = row(3 + a.templates.len().max(1));
     b.divider(card, head);
-    b.row_text(card, head, b.t(Key::ArrangeSavedList), None, false, b.g.right);
+    b.row_text(
+        card,
+        head,
+        b.t(Key::ArrangeSavedList),
+        None,
+        false,
+        b.g.right,
+    );
     let rename = b.t(Key::ArrangeRename);
     let rename_w = b.compact_w(&rename);
     if a.saved.is_empty() {
@@ -3736,7 +3765,13 @@ fn devices_card(b: &mut Builder, s: &State) {
         ),
     ];
     let selected = index_of(DevicesHotkey::ALL, &s.devices_hotkey);
-    let x = b.segmented(Group::DevicesHotkey, b.g.right, cy(rows[1]), items, selected);
+    let x = b.segmented(
+        Group::DevicesHotkey,
+        b.g.right,
+        cy(rows[1]),
+        items,
+        selected,
+    );
     let desc = if s.devices_hotkey_failed && s.devices_hotkey != DevicesHotkey::Off {
         (b.t(Key::ClipHotkeyTaken), Tone::Bad)
     } else {
@@ -3929,7 +3964,14 @@ fn screenshot_card(b: &mut Builder, s: &State) {
         (Hit::ShotIgnore(ShotIgnore::Delete), b.t(Key::ShotDelete)),
     ];
     let selected = index_of(ShotIgnore::ALL, &c.on_ignore);
-    let x = b.segmented_if(Group::ShotIgnore, b.g.right, cy(rows[3]), items, selected, on);
+    let x = b.segmented_if(
+        Group::ShotIgnore,
+        b.g.right,
+        cy(rows[3]),
+        items,
+        selected,
+        on,
+    );
     let desc = Some((b.t(Key::ShotIgnoreDesc), Tone::Secondary));
     b.row_text(card, rows[3], b.t(Key::ShotIgnoreSetting), desc, false, x);
     b.divider(card, rows[3]);
@@ -6138,7 +6180,10 @@ mod tests {
         let (top, bottom) = (60.0, 520.0);
         assert_eq!(drag_scroll_speed(290.0, top, bottom), 0.0);
         assert_eq!(drag_scroll_speed(top + DRAG_SCROLL_ZONE, top, bottom), 0.0);
-        assert_eq!(drag_scroll_speed(bottom - DRAG_SCROLL_ZONE, top, bottom), 0.0);
+        assert_eq!(
+            drag_scroll_speed(bottom - DRAG_SCROLL_ZONE, top, bottom),
+            0.0
+        );
         // The slowest speed, just inside the zone: about 2 rows a second.
         let slow = drag_scroll_speed(top + DRAG_SCROLL_ZONE - 0.01, top, bottom);
         assert!((slow / ROW_H + 2.0).abs() < 0.01, "{slow}");

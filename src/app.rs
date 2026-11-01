@@ -5048,6 +5048,9 @@ impl App {
                 self.save_config();
                 self.apply_now(Event::ShortcutTiles(tiles));
             }
+            SettingsAction::WindowPlace(p) => {
+                self.save_config_with(|c| c.settings_window = Some(p))
+            }
             SettingsAction::Pomo(field, dir) => {
                 // Through the reducer like a click: state, then config.
                 self.apply_now(Event::Click(Hit::PomoAdjust(field, dir)));
