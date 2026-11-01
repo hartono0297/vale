@@ -58,14 +58,13 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SIZE_RESTORED, SM_CXICON, SM_CXSMICON, SW_HIDE, SW_RESTORE, SW_SHOW, SW_SHOWMAXIMIZED,
     SW_SHOWMINIMIZED, SW_SHOWNA, SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOZORDER, SendMessageW,
     SetCursor, SetForegroundWindow, SetTimer, SetWindowPos, SetWindowTextW, ShowWindow,
-    WINDOW_EX_STYLE, WINDOW_STYLE, WINDOWPLACEMENT, WM_ACTIVATE, WM_APP, WM_CAPTURECHANGED, WM_CHAR,
-    WM_CLOSE,
-    WM_COMMAND, WM_CTLCOLOREDIT, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_EXITSIZEMOVE,
-    WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-    WM_NCDESTROY, WM_PAINT, WM_SETCURSOR, WM_SETFONT, WM_SETICON, WM_SIZE, WM_SYSKEYDOWN, WM_TIMER,
-    WNDCLASSEXW,
-    WPF_RESTORETOMAXIMIZED, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_MAXIMIZEBOX, WS_MINIMIZEBOX,
-    WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP, WS_THICKFRAME,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WINDOWPLACEMENT, WM_ACTIVATE, WM_APP, WM_CAPTURECHANGED,
+    WM_CHAR, WM_CLOSE, WM_COMMAND, WM_CTLCOLOREDIT, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND,
+    WM_EXITSIZEMOVE, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+    WM_MOUSEWHEEL, WM_NCDESTROY, WM_PAINT, WM_SETCURSOR, WM_SETFONT, WM_SETICON, WM_SIZE,
+    WM_SYSKEYDOWN, WM_TIMER, WNDCLASSEXW, WPF_RESTORETOMAXIMIZED, WS_CAPTION, WS_CHILD,
+    WS_CLIPCHILDREN, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP,
+    WS_THICKFRAME,
 };
 use windows::core::{Error, HSTRING, PCWSTR, Result, w};
 
@@ -91,9 +90,7 @@ use crate::config::{
     ShotTool, Style, WindowPlace,
 };
 use crate::google::client;
-use crate::hotkey::{
-    Hotkey, HotkeyId, Hotkeys, Mods, Reject, Step, check, record_step, used_by,
-};
+use crate::hotkey::{Hotkey, HotkeyId, Hotkeys, Mods, Reject, Step, check, record_step, used_by};
 use crate::i18n::{Key, Lang, text};
 use crate::model::PomoField;
 use crate::pages::PanelPages;
@@ -2659,29 +2656,13 @@ impl Settings {
         } else {
             record_step(vk, mods)
         };
-        let value = match step {
-            Step::Ignore => return,
-            Step::Cancel => None,
-            Step::Clear => Some(None),
-            Step::Combo(hk) => match check(hk) {
-                Err(Reject::Reserved) => {
-                    self.hotkey_error = Some((id, RejectMsg::Reserved));
-                    None
-                }
-                Err(Reject::NeedsModifier) => {
-                    self.hotkey_error = Some((id, RejectMsg::NeedsModifier));
-                    None
-                }
-                Ok(()) => match used_by(&self.model.hotkeys, id, hk) {
-                    Some(other) => {
-                        self.hotkey_error = Some((id, RejectMsg::UsedBy(other)));
-                        None
-                    }
-                    None => Some(Some(hk)),
-                },
-            },
+        let RecOutcome::End { post, error } = rec_outcome(&self.model.hotkeys, id, step) else {
+            return;
         };
-        if let Some(value) = value {
+        if let Some(msg) = error {
+            self.hotkey_error = Some((id, msg));
+        }
+        if let Some(value) = post {
             post_action(self.owner, Action::Hotkey(id, value));
         }
         self.recording = None;
@@ -2699,6 +2680,53 @@ impl Settings {
             win: key_down(VK_LWIN.0) || key_down(VK_RWIN.0),
         };
         self.on_rec_key(vk, mods);
+    }
+}
+
+/// What a recorder step does to the recording of row `id`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RecOutcome {
+    /// A modifier alone: keep listening.
+    Listen,
+    /// The recording ends. `post`: the `Hotkey` action to send first (a new
+    /// combo, or `None` to turn the row off); `error`: why a combo was
+    /// refused (shown under the row).
+    End {
+        post: Option<Option<Hotkey>>,
+        error: Option<RejectMsg>,
+    },
+}
+
+/// The recorder's decision for `step` on row `id`, with the rows as the
+/// window has them: Esc ends with nothing, Backspace and Delete clear the
+/// row, a combo is checked (reserved, needs a modifier) and compared with the
+/// other rows, and only a good one is posted.
+fn rec_outcome(keys: &Hotkeys, id: HotkeyId, step: Step) -> RecOutcome {
+    let refused = |msg| RecOutcome::End {
+        post: None,
+        error: Some(msg),
+    };
+    match step {
+        Step::Ignore => RecOutcome::Listen,
+        Step::Cancel => RecOutcome::End {
+            post: None,
+            error: None,
+        },
+        Step::Clear => RecOutcome::End {
+            post: Some(None),
+            error: None,
+        },
+        Step::Combo(hk) => match check(hk) {
+            Err(Reject::Reserved) => refused(RejectMsg::Reserved),
+            Err(Reject::NeedsModifier) => refused(RejectMsg::NeedsModifier),
+            Ok(()) => match used_by(keys, id, hk) {
+                Some(other) => refused(RejectMsg::UsedBy(other)),
+                None => RecOutcome::End {
+                    post: Some(Some(hk)),
+                    error: None,
+                },
+            },
+        },
     }
 }
 
@@ -3650,7 +3678,9 @@ pub fn run_demo(args: &[String]) {
 
     /// The failed flags for `keys`: every set row when `on`.
     fn demo_failed(keys: &Hotkeys, on: bool) -> [bool; 5] {
-        std::array::from_fn(|i| on && HotkeyId::from_index(i).is_some_and(|id| keys.get(id).is_some()))
+        std::array::from_fn(|i| {
+            on && HotkeyId::from_index(i).is_some_and(|id| keys.get(id).is_some())
+        })
     }
 
     fn place_file() -> std::path::PathBuf {
@@ -4003,6 +4033,89 @@ pub fn run_demo(args: &[String]) {
 mod tests {
     use super::*;
     use crate::model::Page;
+
+    fn hk(text: &str) -> Hotkey {
+        crate::hotkey::parse(text).unwrap().unwrap()
+    }
+
+    #[test]
+    fn the_recorders_message_id_is_unique_among_the_windows_messages() {
+        assert_eq!(WM_APP_HOTKEY_REC, WM_APP + 13);
+        let ids = [
+            ("settings action", WM_APP_SETTINGS_ACTION),
+            ("submit", WM_APP_SUBMIT),
+            ("place", WM_APP_PLACE),
+            ("form", WM_APP_FORM),
+            ("frame clock", WM_APP_FRAME),
+            ("recorder", WM_APP_HOTKEY_REC),
+        ];
+        for (i, (name, id)) in ids.iter().enumerate() {
+            for (other, other_id) in &ids[i + 1..] {
+                assert_ne!(id, other_id, "{name} and {other}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_recorded_step_ends_the_recording_with_the_action_and_the_message_it_should() {
+        let rows = Hotkeys::default();
+        let id = HotkeyId::Clipboard;
+        let end = |post, error| RecOutcome::End { post, error };
+        // Modifiers alone: keep listening.
+        assert_eq!(rec_outcome(&rows, id, Step::Ignore), RecOutcome::Listen);
+        // Esc: nothing posted, nothing said. Delete or Backspace: off.
+        assert_eq!(rec_outcome(&rows, id, Step::Cancel), end(None, None));
+        assert_eq!(rec_outcome(&rows, id, Step::Clear), end(Some(None), None));
+        // A good combo is posted.
+        let good = hk("Ctrl+Alt+V");
+        assert_eq!(
+            rec_outcome(&rows, id, Step::Combo(good)),
+            end(Some(Some(good)), None)
+        );
+        // F13 bare is fine too.
+        assert_eq!(
+            rec_outcome(&rows, id, Step::Combo(hk("F13"))),
+            end(Some(Some(hk("F13"))), None)
+        );
+        // Windows' combos, a bare letter and a Shift-only one are refused.
+        assert_eq!(
+            rec_outcome(&rows, id, Step::Combo(hk("Alt+Tab"))),
+            end(None, Some(RejectMsg::Reserved))
+        );
+        assert_eq!(
+            rec_outcome(&rows, id, Step::Combo(hk("Ctrl+Shift+V"))),
+            end(None, Some(RejectMsg::Reserved))
+        );
+        for text in ["K", "Shift+K"] {
+            assert_eq!(
+                rec_outcome(&rows, id, Step::Combo(hk(text))),
+                end(None, Some(RejectMsg::NeedsModifier)),
+                "{text}"
+            );
+        }
+        // A combo another row has names that row; the row's own is fine.
+        assert_eq!(
+            rec_outcome(&rows, id, Step::Combo(hk("Ctrl+Alt+Space"))),
+            end(None, Some(RejectMsg::UsedBy(HotkeyId::Search)))
+        );
+        assert_eq!(
+            rec_outcome(&rows, HotkeyId::Search, Step::Combo(hk("Ctrl+Alt+Space"))),
+            end(Some(Some(hk("Ctrl+Alt+Space"))), None)
+        );
+        assert_eq!(
+            rec_outcome(&rows, HotkeyId::Devices, Step::Combo(hk("PrtSc"))),
+            end(None, Some(RejectMsg::UsedBy(HotkeyId::Screenshot)))
+        );
+        // Esc, Backspace and Delete with a modifier are combos like the rest.
+        assert_eq!(
+            rec_outcome(&rows, id, Step::Combo(hk("Ctrl+Delete"))),
+            end(Some(Some(hk("Ctrl+Delete"))), None)
+        );
+        assert_eq!(
+            rec_outcome(&rows, id, Step::Combo(hk("Ctrl+Esc"))),
+            end(None, Some(RejectMsg::Reserved))
+        );
+    }
 
     #[test]
     fn the_name_field_takes_an_app_name_in_fitur_and_a_label_elsewhere() {

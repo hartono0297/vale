@@ -39,7 +39,7 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[notification-history]]: the Notifikasi page (13th, after Clipboard): a capped, optionally encrypted history of the toasts, exclusion rule, TIMER_NOTIF_SAVE (34), keyboard only by click, logo path, notch toast logo + app eyebrow, browser site (file v2) (v3.9)
 - [[clipboard-notice]]: a 3 s preview in the notch on every external copy (text lines, thumbnail, files), skip rules, supersedes "Disalin untuk semua salinan", no timer
 - [[screenshot-preview]]: preview matching of the Windows file; Simpan never writes a duplicate (v3.6)
-- [[screenshot-snap]]: own region capture that snaps to windows and boxes, the editor after it, UIA budget, own-copy skip, PrtSc key opens Vale's capture (low-level keyboard hook on its own thread, Settings row, nothing in the registry)
+- [[screenshot-snap]]: own region capture that snaps to windows and boxes, the editor after it, UIA budget, own-copy skip, PrtSc key opens Vale's capture (low-level keyboard hook on its own thread, now a hotkey row, nothing in the registry)
 - [[panel-pages]]
 - [[vale-rename]]: the Vale rename, what keeps the old name, and the 2026-11-01 repo rename to hartono0297/vale
 - [[google-built-in-client]]
@@ -70,8 +70,9 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[eq-follow-audio]]: the compact view's equalizer bars follow the real music (WASAPI loopback, five bands, per-band auto-gain, `eq-capture` thread only while `TIMER_EQ` runs and "Equalizer ikut irama" is on, sine fallback)
 - [[cat-dances-to-music]]: the music and lyric cats nod to the bass (600 ms fallback beat) with a floating note, "Joget ikut musik", `dance_on` gate, note clamp under short notches, TIMER_EQ now also in the lyric view while dancing (v3.10)
 - [[arrange]]: Susun (v3.10), the window layouts: tree model with built-ins, gap maths, pick step with a click-through-gotcha overlay, mover on a worker with frame compensation and undo, saved arrangements, hotkey id 4, Page::ALL 14 / Shortcut::ALL 22, own pick overlay looks fullscreen to Windows (check skipped while it is up)
+- [[hotkeys]]: the five global hotkeys as recordable combos (`config.hotkeys`, text form "Ctrl+Alt+V", lenient read, one-time migration from the old presets), ids 1-5, `app_hotkeys.rs` and the generalised PrtSc hook table, the recorder hook (swallow, self-tracked modifiers, drain, safety timers), pausing while recording, the Tombol pintas section
 - [[settings-window-size]]: Settings resizes and maximizes (min 720x520, column capped at 760 and centred, `layout_in`), the place is remembered (`settings_window`, screen coordinates), drag auto-scroll
-- [[settings-structure]]: Settings in eight sections (Umum, Tampilan, Kucing, Panel, Clipboard, Fitur, Integrasi, Tentang), titled cards, renamed labels, which sections scroll (v3.8)
+- [[settings-structure]]: Settings in nine sections (Umum, Tampilan, Kucing, Panel, Clipboard, Tombol pintas, Fitur, Integrasi, Tentang), titled cards, renamed labels, which sections scroll (v3.8; Umum no longer wraps)
 - [[self-update]]: Check for updates (tray, Tentang), release JSON, SHA-256, swap the running exe (rename to .old), `--updated` restart with the mutex-handle wait, rollback, offer once, 24 h wall-clock timer (35), never in debug or demos (v3.11)
 - [[lyrics-lookup]]: LRCLIB 503 + Retry-After retry (30 s budget), step order (field search, get, free-text search), None vs transient, the Artist - Title split, tight-window consensus pick of the best-synced version, intro shift for a longer video, `.lrc2` / `.none4`
 

@@ -243,7 +243,6 @@ impl Hotkey {
         out.push(key_name(self.vk));
         out
     }
-
 }
 
 /// The `RegisterHotKey` modifiers of a combo with `MOD_NOREPEAT`.
@@ -272,10 +271,7 @@ pub struct ParseError;
 /// modifier ("Ctrl", "Win") or a text with two keys is an error.
 pub fn parse(text: &str) -> Result<Option<Hotkey>, ParseError> {
     let text = text.trim();
-    if text.is_empty()
-        || text.eq_ignore_ascii_case("none")
-        || text.eq_ignore_ascii_case("off")
-    {
+    if text.is_empty() || text.eq_ignore_ascii_case("none") || text.eq_ignore_ascii_case("off") {
         return Ok(None);
     }
     let mut mods = Mods::default();
@@ -562,7 +558,8 @@ pub fn record_step(vk: u16, mods: Mods) -> Step {
 /// match in any case; a typo reads as off.
 pub fn from_legacy(root: &serde_json::Value) -> Hotkeys {
     let text = |v: Option<&serde_json::Value>| -> Option<String> {
-        v.and_then(serde_json::Value::as_str).map(str::to_ascii_lowercase)
+        v.and_then(serde_json::Value::as_str)
+            .map(str::to_ascii_lowercase)
     };
     let ctrl_alt = Mods {
         ctrl: true,
@@ -574,10 +571,12 @@ pub fn from_legacy(root: &serde_json::Value) -> Hotkeys {
         alt: true,
         ..Mods::default()
     };
-    let combo = |mods, key: u8| Some(Hotkey {
-        mods,
-        vk: u16::from(key),
-    });
+    let combo = |mods, key: u8| {
+        Some(Hotkey {
+            mods,
+            vk: u16::from(key),
+        })
+    };
 
     let clipboard = match text(root.pointer("/clipboard/hotkey")).as_deref() {
         Some("ctrlaltv") => combo(ctrl_alt, b'V'),
@@ -710,8 +709,8 @@ mod tests {
         }
         assert_eq!(format_opt(None), "None");
         for text in [
-            "Ctrl", "Win", "Ctrl+", "+V", "Ctrl+V+B", "Nope", "F25", "F0", "F013", "Num10", "Ctrl+Alt",
-            "VK_1", "VK_ZZ", "Ctrl++V",
+            "Ctrl", "Win", "Ctrl+", "+V", "Ctrl+V+B", "Nope", "F25", "F0", "F013", "Num10",
+            "Ctrl+Alt", "VK_1", "VK_ZZ", "Ctrl++V",
         ] {
             assert!(parse(text).is_err(), "{text:?}");
         }
@@ -730,7 +729,9 @@ mod tests {
 
     #[test]
     fn modifier_vks_are_modifiers_left_and_right() {
-        for vk in [0x10, 0x11, 0x12, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C] {
+        for vk in [
+            0x10, 0x11, 0x12, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C,
+        ] {
             assert!(is_modifier_vk(vk), "{vk:#x}");
         }
         for vk in [0x41, 0x1B, 0x20, 0x2C, 0x70] {
@@ -799,7 +800,17 @@ mod tests {
 
     #[test]
     fn check_wants_ctrl_alt_or_win() {
-        for text in ["Shift+K", "K", "F1", "F12", "Space", "Shift+F5", "Esc", "Delete", "Shift+PrtSc"] {
+        for text in [
+            "Shift+K",
+            "K",
+            "F1",
+            "F12",
+            "Space",
+            "Shift+F5",
+            "Esc",
+            "Delete",
+            "Shift+PrtSc",
+        ] {
             let expect = if text == "Shift+PrtSc" {
                 Ok(())
             } else {
@@ -822,19 +833,29 @@ mod tests {
         let v = hk("Ctrl+Alt+V");
         assert_eq!(used_by(&keys, HotkeyId::Clipboard, v), None);
         keys.set(HotkeyId::Clipboard, Some(v));
-        assert_eq!(used_by(&keys, HotkeyId::Devices, v), Some(HotkeyId::Clipboard));
+        assert_eq!(
+            used_by(&keys, HotkeyId::Devices, v),
+            Some(HotkeyId::Clipboard)
+        );
         // The row itself is not a conflict.
         assert_eq!(used_by(&keys, HotkeyId::Clipboard, v), None);
         let space = hk("Ctrl+Alt+Space");
-        assert_eq!(used_by(&keys, HotkeyId::Arrange, space), Some(HotkeyId::Search));
-        assert_eq!(used_by(&keys, HotkeyId::Arrange, hk("PrtSc")), Some(HotkeyId::Screenshot));
+        assert_eq!(
+            used_by(&keys, HotkeyId::Arrange, space),
+            Some(HotkeyId::Search)
+        );
+        assert_eq!(
+            used_by(&keys, HotkeyId::Arrange, hk("PrtSc")),
+            Some(HotkeyId::Screenshot)
+        );
     }
 
     #[test]
     fn the_defaults_and_the_row_order() {
-        assert_eq!(HotkeyId::ALL.map(HotkeyId::config_key), [
-            "search", "clipboard", "devices", "arrange", "screenshot"
-        ]);
+        assert_eq!(
+            HotkeyId::ALL.map(HotkeyId::config_key),
+            ["search", "clipboard", "devices", "arrange", "screenshot"]
+        );
         for (i, id) in HotkeyId::ALL.iter().enumerate() {
             assert_eq!(id.index(), i);
             assert_eq!(HotkeyId::from_index(i), Some(*id));
@@ -842,7 +863,13 @@ mod tests {
         assert_eq!(HotkeyId::from_index(5), None);
         let d = Hotkeys::default();
         assert_eq!(d.search, Some(hk("Ctrl+Alt+Space")));
-        assert_eq!(d.screenshot, Some(Hotkey { mods: Mods::default(), vk: 0x2C }));
+        assert_eq!(
+            d.screenshot,
+            Some(Hotkey {
+                mods: Mods::default(),
+                vk: 0x2C
+            })
+        );
         assert_eq!((d.clipboard, d.devices, d.arrange), (None, None, None));
         assert!(d.all_default());
     }
@@ -922,7 +949,13 @@ mod tests {
 
     #[test]
     fn anything_that_is_not_an_object_gives_every_default() {
-        for v in [json!(null), json!(5), json!("Ctrl+Alt+V"), json!([1, 2]), json!(true)] {
+        for v in [
+            json!(null),
+            json!(5),
+            json!("Ctrl+Alt+V"),
+            json!([1, 2]),
+            json!(true),
+        ] {
             assert_eq!(Hotkeys::from_json(&v), Hotkeys::default(), "{v}");
             let h: Hotkeys = serde_json::from_value(v).unwrap();
             assert_eq!(h, Hotkeys::default());
@@ -942,15 +975,21 @@ mod tests {
         assert_eq!(record_step(VK_DELETE, none), Step::Clear);
         // With a modifier they are ordinary combos and `check` judges them.
         for vk in [VK_ESCAPE, VK_BACK, VK_DELETE] {
-            assert_eq!(record_step(vk, ctrl), Step::Combo(Hotkey { mods: ctrl, vk }));
+            assert_eq!(
+                record_step(vk, ctrl),
+                Step::Combo(Hotkey { mods: ctrl, vk })
+            );
         }
-        assert_eq!(
-            record_step(0x41, ctrl),
-            Step::Combo(hk("Ctrl+A"))
-        );
+        assert_eq!(record_step(0x41, ctrl), Step::Combo(hk("Ctrl+A")));
         assert_eq!(record_step(0x2C, none), Step::Combo(hk("PrtSc")));
         let shift = mods(false, false, true, false);
-        assert_eq!(record_step(VK_ESCAPE, shift), Step::Combo(Hotkey { mods: shift, vk: VK_ESCAPE }));
+        assert_eq!(
+            record_step(VK_ESCAPE, shift),
+            Step::Combo(Hotkey {
+                mods: shift,
+                vk: VK_ESCAPE
+            })
+        );
     }
 
     #[test]
@@ -987,9 +1026,18 @@ mod tests {
     #[test]
     fn legacy_clipboard_presets() {
         let of = |v: serde_json::Value| from_legacy(&v).clipboard;
-        assert_eq!(of(json!({"clipboard":{"hotkey":"CtrlAltV"}})), Some(hk("Ctrl+Alt+V")));
-        assert_eq!(of(json!({"clipboard":{"hotkey":"WinAltV"}})), Some(hk("Win+Alt+V")));
-        assert_eq!(of(json!({"clipboard":{"hotkey":"ctrlaltv"}})), Some(hk("Ctrl+Alt+V")));
+        assert_eq!(
+            of(json!({"clipboard":{"hotkey":"CtrlAltV"}})),
+            Some(hk("Ctrl+Alt+V"))
+        );
+        assert_eq!(
+            of(json!({"clipboard":{"hotkey":"WinAltV"}})),
+            Some(hk("Win+Alt+V"))
+        );
+        assert_eq!(
+            of(json!({"clipboard":{"hotkey":"ctrlaltv"}})),
+            Some(hk("Ctrl+Alt+V"))
+        );
         assert_eq!(of(json!({"clipboard":{"hotkey":"Off"}})), None);
         assert_eq!(of(json!({"clipboard":{"hotkey":"CtrlShiftV"}})), None);
         assert_eq!(of(json!({"clipboard":{"hotkey":5}})), None);
@@ -1004,16 +1052,25 @@ mod tests {
         assert_eq!(of(json!({})), space);
         assert_eq!(of(json!({"quick_search_hotkey":"CtrlAltSpace"})), space);
         assert_eq!(of(json!({"quick_search_hotkey":"ctrlaltspace"})), space);
-        assert_eq!(of(json!({"quick_search_hotkey":"WinAltS"})), Some(hk("Win+Alt+S")));
+        assert_eq!(
+            of(json!({"quick_search_hotkey":"WinAltS"})),
+            Some(hk("Win+Alt+S"))
+        );
         assert_eq!(of(json!({"quick_search_hotkey":"Off"})), None);
         assert_eq!(of(json!({"quick_search_hotkey":"AltSpace"})), None);
         assert_eq!(of(json!({"quick_search_hotkey":"Nope"})), None);
         assert_eq!(of(json!({"quick_search_hotkey":5})), None);
         // The new key wins over the 3.2.0 one.
-        assert_eq!(of(json!({"search_hotkey":"WinAltS","quick_search_hotkey":"Off"})), None);
+        assert_eq!(
+            of(json!({"search_hotkey":"WinAltS","quick_search_hotkey":"Off"})),
+            None
+        );
         // Only the 3.2.0 key: "Off" was never a choice there; anything else is.
         assert_eq!(of(json!({"search_hotkey":"Off"})), space);
-        assert_eq!(of(json!({"search_hotkey":"WinAltS"})), Some(hk("Win+Alt+S")));
+        assert_eq!(
+            of(json!({"search_hotkey":"WinAltS"})),
+            Some(hk("Win+Alt+S"))
+        );
         assert_eq!(of(json!({"search_hotkey":"CtrlAltSpace"})), space);
         assert_eq!(of(json!({"search_hotkey":"Typo"})), None);
         assert_eq!(of(json!({"search_hotkey":"off"})), None);
@@ -1023,23 +1080,44 @@ mod tests {
     #[test]
     fn legacy_devices_arrange_and_print_screen() {
         let k = |v: serde_json::Value| from_legacy(&v);
-        assert_eq!(k(json!({"devices_hotkey":"CtrlAltD"})).devices, Some(hk("Ctrl+Alt+D")));
-        assert_eq!(k(json!({"devices_hotkey":"ctrlaltd"})).devices, Some(hk("Ctrl+Alt+D")));
+        assert_eq!(
+            k(json!({"devices_hotkey":"CtrlAltD"})).devices,
+            Some(hk("Ctrl+Alt+D"))
+        );
+        assert_eq!(
+            k(json!({"devices_hotkey":"ctrlaltd"})).devices,
+            Some(hk("Ctrl+Alt+D"))
+        );
         assert_eq!(k(json!({"devices_hotkey":"Off"})).devices, None);
         assert_eq!(k(json!({"devices_hotkey":"WinAltD"})).devices, None);
         assert_eq!(k(json!({})).devices, None);
-        assert_eq!(k(json!({"arrange":{"hotkey":"CtrlAltS"}})).arrange, Some(hk("Ctrl+Alt+S")));
-        assert_eq!(k(json!({"arrange":{"hotkey":"CTRLALTS"}})).arrange, Some(hk("Ctrl+Alt+S")));
+        assert_eq!(
+            k(json!({"arrange":{"hotkey":"CtrlAltS"}})).arrange,
+            Some(hk("Ctrl+Alt+S"))
+        );
+        assert_eq!(
+            k(json!({"arrange":{"hotkey":"CTRLALTS"}})).arrange,
+            Some(hk("Ctrl+Alt+S"))
+        );
         assert_eq!(k(json!({"arrange":{"hotkey":"Off"}})).arrange, None);
         assert_eq!(k(json!({"arrange":{"hotkey":"x"}})).arrange, None);
         assert_eq!(k(json!({"arrange":{}})).arrange, None);
         let snap = Some(hk("PrtSc"));
-        assert_eq!(k(json!({"screenshot":{"print_screen":false}})).screenshot, None);
-        assert_eq!(k(json!({"screenshot":{"print_screen":true}})).screenshot, snap);
+        assert_eq!(
+            k(json!({"screenshot":{"print_screen":false}})).screenshot,
+            None
+        );
+        assert_eq!(
+            k(json!({"screenshot":{"print_screen":true}})).screenshot,
+            snap
+        );
         assert_eq!(k(json!({"screenshot":{}})).screenshot, snap);
         assert_eq!(k(json!({})).screenshot, snap);
         for odd in [json!("no"), json!(0), json!(null), json!([false])] {
-            assert_eq!(k(json!({"screenshot":{"print_screen":odd}})).screenshot, snap);
+            assert_eq!(
+                k(json!({"screenshot":{"print_screen":odd}})).screenshot,
+                snap
+            );
         }
         assert_eq!(from_legacy(&json!({})), Hotkeys::default());
         assert_eq!(from_legacy(&json!(5)), Hotkeys::default());

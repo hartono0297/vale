@@ -3000,7 +3000,6 @@ fn cat_motion_card(b: &mut Builder, s: &State) {
     b.divider(card, rows[4]);
 }
 
-
 /// Umum: "Dasar" (language, autostart) and "Peringatan" (battery, disk and
 /// RAM, and how to turn off Windows' pop-ups). The search hotkey lives in
 /// the Tombol pintas section.
@@ -3837,9 +3836,7 @@ pub fn reject_text(lang: Lang, msg: RejectMsg) -> String {
     match msg {
         RejectMsg::Reserved => text(lang, Key::HotkeyReserved).to_owned(),
         RejectMsg::NeedsModifier => text(lang, Key::HotkeyNeedsModifier).to_owned(),
-        RejectMsg::UsedBy(id) => {
-            crate::i18n::hotkey_used_by(lang, text(lang, hotkey_row_key(id)))
-        }
+        RejectMsg::UsedBy(id) => crate::i18n::hotkey_used_by(lang, text(lang, hotkey_row_key(id))),
     }
 }
 
@@ -3853,8 +3850,20 @@ pub fn hotkey_caps_w(m: &dyn Measure, caps: &[String]) -> f32 {
     2.0 * HOTKEY_FIELD_PAD + caps_w + caps.len().saturating_sub(1) as f32 * HOTKEY_PLUS_W
 }
 
+/// How much of a row the name and the description keep at least: the longest
+/// description measures about this with the generous estimate.
+const HOTKEY_TEXT_ROOM: f32 = 210.0;
+
+/// The widest a field may be in a card `card_w` wide: `HOTKEY_FIELD_MAX_W`,
+/// less when that would leave the row's text less than `HOTKEY_TEXT_ROOM`
+/// (at the minimum window), never below `HOTKEY_FIELD_MIN_W`.
+pub fn hotkey_max_w(card_w: f32) -> f32 {
+    let fixed = 2.0 * INSET + STEP_BUTTON + 3.0 * GAP;
+    (card_w - fixed - HOTKEY_TEXT_ROOM).clamp(HOTKEY_FIELD_MIN_W, HOTKEY_FIELD_MAX_W)
+}
+
 /// A hotkey field's width: from what it shows (the caps, "Tidak ada" or the
-/// recording prompt), kept between `HOTKEY_FIELD_MIN_W` and `HOTKEY_FIELD_MAX_W`.
+/// recording prompt), kept between `HOTKEY_FIELD_MIN_W` and `hotkey_max_w`.
 fn hotkey_field_w(b: &Builder, caps: &[String], recording: bool) -> f32 {
     let content = if recording {
         b.w(&b.t(Key::HotkeyRecording), Font::Control) + 2.0 * HOTKEY_TEXT_PAD
@@ -3863,7 +3872,7 @@ fn hotkey_field_w(b: &Builder, caps: &[String], recording: bool) -> f32 {
     } else {
         hotkey_caps_w(b.m, caps)
     };
-    content.clamp(HOTKEY_FIELD_MIN_W, HOTKEY_FIELD_MAX_W)
+    content.clamp(HOTKEY_FIELD_MIN_W, hotkey_max_w(b.g.content_w))
 }
 
 /// Tombol pintas: one card, a header (the hint and "Kembalikan semua") and a
@@ -4417,8 +4426,10 @@ mod tests {
                         },
                         hotkey_failed: [locked; 5],
                         hotkey_recording: locked.then_some(HotkeyId::Devices),
-                        hotkey_error: locked
-                            .then_some((HotkeyId::Clipboard, RejectMsg::UsedBy(HotkeyId::Screenshot))),
+                        hotkey_error: locked.then_some((
+                            HotkeyId::Clipboard,
+                            RejectMsg::UsedBy(HotkeyId::Screenshot),
+                        )),
                         arrange: ArrangeSettings::default(),
                         arrange_edit: None,
                         autostart: true,
@@ -4841,7 +4852,7 @@ mod tests {
 
     /// Every section fits the window's height. `SCROLLING` ones scroll by
     /// exactly what they lack and then the last card meets the bottom margin;
-    /// the rest (Umum in both languages, Integrasi, Tentang) never scroll.
+    /// the rest (Umum, Tombol pintas, Integrasi, Tentang) never scroll.
     #[test]
     fn everything_fits_in_the_window_height() {
         for (section, lang, l) in all_layouts() {
@@ -4884,9 +4895,15 @@ mod tests {
                 .filter(|s| layout(*s, &state, &Estimate).viewport.is_some())
                 .collect();
             assert_eq!(scrolling, SCROLLING, "{lang:?}");
-            // Integrasi and Tentang never scroll, whatever Google says.
+            // Umum, Tombol pintas, Integrasi and Tentang never scroll, whatever
+            // the state (Google, a recording, a refused combo, taken hotkeys).
             for s in states() {
-                for section in [Section::Integrations, Section::About] {
+                for section in [
+                    Section::General,
+                    Section::Hotkeys,
+                    Section::Integrations,
+                    Section::About,
+                ] {
                     let l = layout(section, &s, &Estimate);
                     assert!(l.viewport.is_none(), "{section:?}");
                 }
@@ -5344,7 +5361,9 @@ mod tests {
             ] {
                 let want = text(lang, key);
                 let shown = l.texts.iter().any(|t| t.text == want)
-                    || l.controls.iter().any(|c| matches!(c, Control::Button(b) if b.label == want));
+                    || l.controls
+                        .iter()
+                        .any(|c| matches!(c, Control::Button(b) if b.label == want));
                 assert!(shown, "{lang:?} {key:?}");
             }
         }
@@ -5489,7 +5508,7 @@ mod tests {
                 .iter()
                 .filter_map(|c| match c {
                     Control::Toggle { hit, .. } => Some(*hit),
-                    Control::Stepper { minus, .. } => minus.1,
+                    Control::Stepper { minus, plus, .. } => minus.1.or(plus.1),
                     Control::Button(b) => Some(b.hit),
                     Control::Segmented { items, .. } => items.first().map(|i| i.hit),
                     _ => None,
@@ -5500,7 +5519,7 @@ mod tests {
                 order,
                 [
                     Hit::ClipEnabled,
-                    Hit::ClipItems(-1),
+                    Hit::ClipItems(1),
                     Hit::ClipPersist,
                     Hit::ClipClearOnLock,
                     Hit::ClipNotice,
@@ -5509,7 +5528,7 @@ mod tests {
                     Hit::ShotTool(ShotTool::Vale),
                     Hit::ShotPreview,
                     Hit::ShotIgnore(ShotIgnore::Keep),
-                    Hit::ShotSecs(-1),
+                    Hit::ShotSecs(1),
                 ],
                 "{lang:?}"
             );
@@ -5615,7 +5634,10 @@ mod tests {
                 assert!(!recording);
                 assert!((HOTKEY_FIELD_MIN_W..=HOTKEY_FIELD_MAX_W).contains(&rect.w));
                 let id = HotkeyId::ALL[i];
-                assert_eq!(*caps, s.hotkeys.get(id).map(|h| h.caps()).unwrap_or_default());
+                assert_eq!(
+                    *caps,
+                    s.hotkeys.get(id).map(|h| h.caps()).unwrap_or_default()
+                );
                 // Its reset button sits to the right of the field, off at the default.
                 let reset = l
                     .controls
@@ -5660,7 +5682,10 @@ mod tests {
     fn a_hotkey_field_shows_its_caps_none_or_the_prompt_and_its_row_follows_the_state() {
         for lang in [Lang::Id, Lang::En] {
             let mut s = hotkey_base(lang);
-            s.hotkeys.set(HotkeyId::Clipboard, crate::hotkey::parse("Win+Alt+V").unwrap());
+            s.hotkeys.set(
+                HotkeyId::Clipboard,
+                crate::hotkey::parse("Win+Alt+V").unwrap(),
+            );
             let l = layout(Section::Hotkeys, &s, &Estimate);
             let f = hotkey_fields(&l);
             assert_eq!(f[0].2, ["Ctrl", "Alt", "Space"]);
@@ -5668,11 +5693,8 @@ mod tests {
             assert!(f[2].2.is_empty() && f[3].2.is_empty(), "off: no caps");
             assert_eq!(f[4].2, ["PrtSc"]);
             // A changed row can be reset; the others cannot.
-            let enabled = |l: &Layout, id: HotkeyId| {
-                l.hits()
-                    .iter()
-                    .any(|(h, _)| *h == Hit::HotkeyReset(id))
-            };
+            let enabled =
+                |l: &Layout, id: HotkeyId| l.hits().iter().any(|(h, _)| *h == Hit::HotkeyReset(id));
             assert!(enabled(&l, HotkeyId::Clipboard));
             assert!(!enabled(&l, HotkeyId::Search));
             assert!(l.hits().iter().any(|(h, _)| *h == Hit::HotkeysResetAll));
@@ -5692,9 +5714,8 @@ mod tests {
             );
             // The description: red for a refusal on that row, red for a taken
             // one that is set, otherwise secondary.
-            let tone_of = |l: &Layout, want: &str| {
-                l.texts.iter().find(|t| t.text == want).map(|t| t.tone)
-            };
+            let tone_of =
+                |l: &Layout, want: &str| l.texts.iter().find(|t| t.text == want).map(|t| t.tone);
             let desc = |id| text(lang, hotkey_row_desc_key(id));
             assert_eq!(tone_of(&l, desc(HotkeyId::Arrange)), Some(Tone::Secondary));
             let err = State {
@@ -5743,7 +5764,7 @@ mod tests {
                     let l = layout(Section::Hotkeys, &s, &Estimate);
                     let f = &hotkey_fields(&l)[0];
                     assert!(
-                        (HOTKEY_FIELD_MIN_W..=HOTKEY_FIELD_MAX_W).contains(&f.1.w),
+                        (HOTKEY_FIELD_MIN_W..=hotkey_max_w(l.cards[0].w)).contains(&f.1.w),
                         "{lang:?} {value:?}: {}",
                         f.1.w
                     );
@@ -5751,20 +5772,32 @@ mod tests {
                     // The label column keeps room: the description fits.
                     for t in &l.texts {
                         let w = Estimate.width(&t.text, t.font);
-                        assert!(w <= t.rect.w + 0.01, "{lang:?} {:?} {w} > {}", t.text, t.rect.w);
+                        assert!(
+                            w <= t.rect.w + 0.01,
+                            "{lang:?} {:?} {w} > {}",
+                            t.text,
+                            t.rect.w
+                        );
                     }
                 }
             }
         }
         // Content decides the width between the limits: a short combo gets the
-        // minimum, the longest the maximum (its caps do not all fit then).
-        let w_of = |v| {
+        // minimum, the longest the maximum (its caps do not all fit then). A
+        // wide window allows 260; the minimum window less, so the row's text
+        // keeps its room.
+        let w_of = |v, client| {
             let mut s = hotkey_base(Lang::En);
             s.hotkeys.set(HotkeyId::Search, v);
-            hotkey_fields(&layout(Section::Hotkeys, &s, &Estimate))[0].1.w
+            hotkey_fields(&layout_in(Section::Hotkeys, &s, &Estimate, client))[0]
+                .1
+                .w
         };
-        assert_eq!(w_of(shortest), HOTKEY_FIELD_MIN_W);
-        assert_eq!(w_of(longest), HOTKEY_FIELD_MAX_W);
+        assert_eq!(w_of(shortest, (CLIENT_W, CLIENT_H)), HOTKEY_FIELD_MIN_W);
+        assert_eq!(w_of(longest, (1400.0, 900.0)), HOTKEY_FIELD_MAX_W);
+        let at_minimum = w_of(longest, (CLIENT_W, CLIENT_H));
+        assert!(at_minimum < HOTKEY_FIELD_MAX_W && at_minimum > HOTKEY_FIELD_MIN_W);
+        assert_eq!(at_minimum, hotkey_max_w(CONTENT_W));
         let caps = longest.unwrap().caps();
         assert!(hotkey_caps_w(&Estimate, &caps) > HOTKEY_FIELD_MAX_W);
         let small = crate::hotkey::parse("Ctrl+Alt+V").unwrap().unwrap().caps();
@@ -5793,8 +5826,14 @@ mod tests {
             reject_text(Lang::En, RejectMsg::UsedBy(HotkeyId::Devices)),
             "Already used by Open Devices"
         );
-        assert_eq!(reject_text(Lang::Id, RejectMsg::Reserved), "Dipakai Windows");
-        assert_eq!(reject_text(Lang::En, RejectMsg::Reserved), "Reserved by Windows");
+        assert_eq!(
+            reject_text(Lang::Id, RejectMsg::Reserved),
+            "Dipakai Windows"
+        );
+        assert_eq!(
+            reject_text(Lang::En, RejectMsg::Reserved),
+            "Reserved by Windows"
+        );
         assert_eq!(
             reject_text(Lang::Id, RejectMsg::NeedsModifier),
             "Tambahkan Ctrl, Alt, atau Win"
@@ -6103,7 +6142,7 @@ mod tests {
             Some(Hit::Style(Style::Pill))
         );
         // Nav rows switch sections.
-        let nav = &l.nav[6];
+        let nav = &l.nav[7];
         assert_eq!(
             l.hit(nav.pill.x + 4.0, nav.pill.y + 4.0),
             Some(Hit::Nav(Section::Integrations))
@@ -7100,12 +7139,10 @@ mod tests {
                     Some(Hit::DeviceNotices)
                 );
                 // No hotkey control and no divider inside the card.
-                assert!(
-                    !l.hits()
-                        .iter()
-                        .any(|(h, r)| matches!(h, Hit::HotkeyField(_) | Hit::HotkeyReset(_))
-                            && inside(*r, card))
-                );
+                assert!(!l.hits().iter().any(|(h, r)| matches!(
+                    h,
+                    Hit::HotkeyField(_) | Hit::HotkeyReset(_)
+                ) && inside(*r, card)));
                 let dividers = l
                     .dividers
                     .iter()
@@ -7188,16 +7225,17 @@ mod tests {
                         _ => None,
                     })
                     .expect("the gap slider");
-                assert!(gap.y >= card.y && gap.bottom() <= card.y + ROW_H, "{lang:?}");
+                assert!(
+                    gap.y >= card.y && gap.bottom() <= card.y + ROW_H,
+                    "{lang:?}"
+                );
                 assert!(
                     l.hits()
                         .iter()
                         .all(|(h, _)| !matches!(h, Hit::HotkeyField(_) | Hit::HotkeyReset(_)))
                 );
                 assert!(
-                    l.dividers
-                        .iter()
-                        .all(|d| (d.y + 0.5 - card.y).abs() > 0.01),
+                    l.dividers.iter().all(|d| (d.y + 0.5 - card.y).abs() > 0.01),
                     "no divider on the card's top edge"
                 );
                 // The first divider in the card is above the templates' title.

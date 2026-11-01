@@ -47,9 +47,9 @@ use super::robot::{Expr, Pose, RobotPainter};
 use super::settings_layout::{
     Align, Button, ButtonKind, CARD_RADIUS, CAT_TILE, CONTROL_RADIUS, CatFace, Chip, Control,
     EXTERNAL_GLYPH, FULL_RADIUS, Field, Font, Group, HOTKEY_CAP_H, HOTKEY_CAP_PAD,
-    HOTKEY_PLUS_W, Hit, LINK_GLYPH_W, Layout, Measure, Rect, SEGMENT_RADIUS, SLIDER_THUMB,
-    SWATCH_RING_GAP, SWATCH_RING_W, Section, Segment, Text, Tone, accent_key, hotkey_caps_w,
-    slider_x,
+    HOTKEY_FIELD_PAD, HOTKEY_PLUS_W, Hit, LINK_GLYPH_W, Layout, Measure, Rect, SEGMENT_RADIUS,
+    SLIDER_THUMB, SWATCH_RING_GAP, SWATCH_RING_W, Section, Segment, Text, Tone, accent_key,
+    hotkey_caps_w, slider_x,
 };
 use crate::config::Style;
 use crate::i18n::{Key, Lang, text};
@@ -848,7 +848,7 @@ impl Painter<'_> {
             let none = text(s.lang, Key::HotkeyNone);
             self.draw_str(none, style, r, self.p.secondary, 1.0);
         } else if hotkey_caps_w(self.gfx, caps) <= r.w {
-            let total = hotkey_caps_w(self.gfx, caps) - 2.0 * super::settings_layout::HOTKEY_FIELD_PAD;
+            let total = hotkey_caps_w(self.gfx, caps) - 2.0 * HOTKEY_FIELD_PAD;
             let mut x = r.x + (r.w - total) / 2.0;
             for (i, cap) in caps.iter().enumerate() {
                 let w = self.gfx.width(cap, Font::Control) + 2.0 * HOTKEY_CAP_PAD;
@@ -874,7 +874,15 @@ impl Painter<'_> {
                 }
             }
         } else {
-            self.draw_str(&caps.join("+"), style, r, self.p.text, 1.0);
+            // Plain text; a smaller face when even that is wider than the field.
+            let plain = caps.join("+");
+            let small = self.gfx.width(&plain, Font::Control) > r.w - 2.0 * HOTKEY_FIELD_PAD;
+            let style = if small {
+                self.style(Font::Desc, Align::Center)
+            } else {
+                style
+            };
+            self.draw_str(&plain, style, r, self.p.text, 1.0);
         }
     }
 

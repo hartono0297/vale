@@ -1506,7 +1506,15 @@ mod tests {
     fn an_old_hotkey_key_inside_arrange_is_ignored_and_the_rest_kept() {
         let tpl_json = tpl("a", "Dua", &BuiltIn::Cols2.node());
         let saved = saved_json("Kerja", r#"{"builtin":"cols2"}"#, "[null,null]");
-        for hotkey in ["null", "5", "true", "[]", "{}", r#""Nope""#, r#""CtrlAltS""#] {
+        for hotkey in [
+            "null",
+            "5",
+            "true",
+            "[]",
+            "{}",
+            r#""Nope""#,
+            r#""CtrlAltS""#,
+        ] {
             let json = format!(
                 r#"{{"hotkey":{hotkey},"gap":12,"templates":[{tpl_json}],"saved":[{saved}]}}"#
             );

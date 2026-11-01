@@ -33,7 +33,6 @@ use crate::ui::render::{
     ArrangeCardView, ArrangeNameView, ArrangeSavedView, ArrangeView, ArrangeWindowView,
 };
 
-
 /// What a "Simpan…" will store: the layout, the monitor and one entry per
 /// tile, captured when the windows were picked.
 #[derive(Clone, Debug)]

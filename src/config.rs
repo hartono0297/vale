@@ -1162,7 +1162,10 @@ mod tests {
             assert!(c.update_check, "{junk}");
             assert_eq!(c.style, Style::Notch);
         }
-        assert_eq!(parse(r#"{"update_offered":"3.11.0"}"#).update_offered, "3.11.0");
+        assert_eq!(
+            parse(r#"{"update_offered":"3.11.0"}"#).update_offered,
+            "3.11.0"
+        );
         assert!(!parse(r#"{"update_check":false}"#).update_check);
         // The island's copy wins over the file's, both ways.
         let mem = Config {
@@ -1714,7 +1717,10 @@ mod tests {
         assert!(!c.clipboard.enabled);
         assert_eq!((c.arrange.gap, c.screenshot.show_secs), (4, 10));
         // The search follows the new key, then the 3.2.0 one ("Off" was never a choice).
-        assert_eq!(parse(r#"{"quick_search_hotkey":"Off"}"#).hotkeys.search, None);
+        assert_eq!(
+            parse(r#"{"quick_search_hotkey":"Off"}"#).hotkeys.search,
+            None
+        );
         assert_eq!(
             parse(r#"{"search_hotkey":"Off"}"#).hotkeys.search,
             HotkeyId::Search.default()
@@ -1724,7 +1730,9 @@ mod tests {
             combo("Win+Alt+S")
         );
         assert_eq!(
-            parse(r#"{"search_hotkey":"WinAltS","quick_search_hotkey":"Off"}"#).hotkeys.search,
+            parse(r#"{"search_hotkey":"WinAltS","quick_search_hotkey":"Off"}"#)
+                .hotkeys
+                .search,
             None
         );
         let odd = parse(r#"{"quick_search_hotkey":"Nope","style":"Notch"}"#);
@@ -1743,7 +1751,13 @@ mod tests {
         assert_eq!(c.hotkeys.devices, None);
         assert_eq!(c.hotkeys.screenshot, HotkeyId::Screenshot.default());
         // A bad shape anywhere never loses the rest of the file.
-        for bad in ["null", "5", r#""x""#, "[]", r#"{"search":7,"clipboard":"Banana"}"#] {
+        for bad in [
+            "null",
+            "5",
+            r#""x""#,
+            "[]",
+            r#"{"search":7,"clipboard":"Banana"}"#,
+        ] {
             let c = parse(&format!(r#"{{"style":"Notch","hotkeys":{bad}}}"#));
             assert_eq!(c.style, Style::Notch, "{bad}");
             assert_eq!(c.hotkeys, Hotkeys::default(), "{bad}");

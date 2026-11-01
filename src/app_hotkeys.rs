@@ -88,7 +88,10 @@ pub(super) struct HotkeyState {
 impl HotkeyState {
     /// Whether any row's combo in effect needs the PrtSc hook.
     fn needs_hook(&self) -> bool {
-        self.applied.iter().flatten().any(|hk| hotkey::uses_hook(*hk))
+        self.applied
+            .iter()
+            .flatten()
+            .any(|hk| hotkey::uses_hook(*hk))
     }
 
     /// The rows in effect that are failed, by row index.
@@ -113,7 +116,11 @@ impl App {
         let want = self.config.hotkeys;
         for id in HotkeyId::ALL {
             let i = id.index();
-            let plan = plan_row(want.get(id), self.hotkeys.applied[i], self.hotkeys.failed[i]);
+            let plan = plan_row(
+                want.get(id),
+                self.hotkeys.applied[i],
+                self.hotkeys.failed[i],
+            );
             if plan == RowPlan::Keep {
                 continue;
             }
@@ -221,7 +228,8 @@ impl App {
     /// refused if it is reserved, lacks a modifier or another row has it.
     pub(super) fn set_hotkey(&mut self, id: HotkeyId, value: Option<Hotkey>) {
         if let Some(hk) = value
-            && (hotkey::check(hk).is_err() || hotkey::used_by(&self.config.hotkeys, id, hk).is_some())
+            && (hotkey::check(hk).is_err()
+                || hotkey::used_by(&self.config.hotkeys, id, hk).is_some())
         {
             self.sync_settings();
             return;
@@ -271,7 +279,6 @@ impl App {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -309,7 +316,10 @@ mod tests {
         assert_eq!(plan_row(Some(snap), Some(snap), false), RowPlan::Keep);
         // A new value: registered, or hooked for PrtSc.
         assert_eq!(plan_row(Some(v), None, false), RowPlan::Register(v));
-        assert_eq!(plan_row(Some(v), Some(hk("Win+Alt+V")), false), RowPlan::Register(v));
+        assert_eq!(
+            plan_row(Some(v), Some(hk("Win+Alt+V")), false),
+            RowPlan::Register(v)
+        );
         assert_eq!(plan_row(Some(snap), None, false), RowPlan::Hook(snap));
         assert_eq!(
             plan_row(Some(hk("Ctrl+PrtSc")), Some(snap), false),
