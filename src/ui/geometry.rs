@@ -626,6 +626,82 @@ pub fn lyric_cap(robot: bool, min_w: f32, max_w: f32) -> f32 {
     max_w.max(min_w.max(LYRIC_MIN_W)) + extra
 }
 
+/// The side of the small logo that stands for a busy toast beside a compact
+/// view (`docs/memory/toast-while-busy.md`).
+pub const TOAST_SLOT: f32 = 20.0;
+/// The gap between a compact view's last element and the slot's logo.
+pub const TOAST_SLOT_GAP: f32 = 8.0;
+/// How much wider a compact shape is while the slot shows: the logo and its
+/// gap.
+pub const TOAST_SLOT_EXTRA: f32 = TOAST_SLOT + TOAST_SLOT_GAP;
+/// The unread dot's diameter.
+pub const TOAST_DOT: f32 = 6.0;
+
+/// `s` widened by `TOAST_SLOT_EXTRA`, still centred: the compact shape with
+/// room for the logo at its right.
+pub fn with_toast_slot(s: ShapeRect) -> ShapeRect {
+    ShapeRect {
+        x: s.x - TOAST_SLOT_EXTRA / 2.0,
+        w: s.w + TOAST_SLOT_EXTRA,
+        ..s
+    }
+}
+
+/// What a lyric notch `w` wide (as `lyric_width_min` gave it) becomes with
+/// the slot: the line's side shrinks only when `w` would not leave the
+/// logo's room under `lyric_cap`, so the total never passes the cap.
+pub fn lyric_slot_width(w: f32, robot: bool, min_w: f32, max_w: f32) -> f32 {
+    let cap = lyric_cap(robot, min_w, max_w);
+    w.min(cap - TOAST_SLOT_EXTRA).max(0.0) + TOAST_SLOT_EXTRA
+}
+
+/// The parts of a compact `shape` that shows (or is morphing to or from) the
+/// toast slot: the rect the compact content is laid out on, the logo's
+/// square, and the logo's alpha. `base_w` is the width of the content with
+/// the slot settled (the shape's width without the slot; for a lyric line
+/// that hit its cap, `lyric_slot_width` less `TOAST_SLOT_EXTRA`). The slot's share `e` of the width is what `shape` has over
+/// `base_w` (0 to `TOAST_SLOT_EXTRA`, so an overshooting morph is clamped);
+/// the content gives up exactly that much of its right side, so nothing under
+/// the logo moves at any frame. The logo appears only once it clears the
+/// content (`e >= TOAST_SLOT`), fully at `TOAST_SLOT_EXTRA`.
+pub fn toast_slot_parts(shape: ShapeRect, base_w: f32) -> (ShapeRect, Rect, f32) {
+    let e = (shape.w - base_w).clamp(0.0, TOAST_SLOT_EXTRA);
+    let content = ShapeRect {
+        w: shape.w - e,
+        ..shape
+    };
+    let logo = square(
+        shape.x + shape.w - COMPACT_INSET - TOAST_SLOT,
+        shape.y + (shape.h - TOAST_SLOT) / 2.0,
+        TOAST_SLOT,
+    );
+    let alpha = ((e - TOAST_SLOT) / TOAST_SLOT_GAP).clamp(0.0, 1.0);
+    (content, logo, alpha)
+}
+
+/// The unread dot's centre and radius: 8 dip in from the right end, at the
+/// shape's vertical centre.
+pub fn toast_dot(shape: ShapeRect) -> ((f32, f32), f32) {
+    (
+        (shape.x + shape.w - 8.0, shape.y + shape.h / 2.0),
+        TOAST_DOT / 2.0,
+    )
+}
+
+/// A toast's strip in the open panel: its 16 dip logo and the text box
+/// (`strip` is `panel_layout::waiting_strip`).
+pub fn toast_strip_parts(strip: Rect) -> (Rect, Rect) {
+    const LOGO: f32 = 16.0;
+    let logo = square(strip.x + 6.0, strip.y + (strip.h - LOGO) / 2.0, LOGO);
+    let text = Rect {
+        x: strip.x + 28.0,
+        y: strip.y,
+        w: (strip.w - 28.0 - 10.0).max(0.0),
+        h: strip.h,
+    };
+    (logo, text)
+}
+
 /// The line's box width in a lyric notch `w` wide.
 pub fn lyric_box_w(w: f32, robot: bool) -> f32 {
     (w - lyric_lead(robot) - LYRIC_PAD).max(0.0)
@@ -2882,6 +2958,224 @@ mod tests {
                     assert!(close(now, old));
                 }
             }
+        }
+    }
+
+    // ---- the toast slot ----
+
+    /// Every combination the slot can meet: both styles, the smallest,
+    /// default and widest notch, the cat on and off.
+    fn slot_cases() -> Vec<(Style, NotchSize, bool)> {
+        let mut out = Vec::new();
+        for style in [Style::Pill, Style::Notch] {
+            for w in [NOTCH_W_MIN, NOTCH_W_DEFAULT, NOTCH_W_MAX] {
+                for h in [NOTCH_H_MIN, NOTCH_H_DEFAULT, NOTCH_H_MAX] {
+                    for robot in [false, true] {
+                        out.push((style, NotchSize::from_px(w, h), robot));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The right edge of the last thing a compact view draws on `content`.
+    fn last_element(kind: ShapeKind, content: ShapeRect, robot: bool) -> f32 {
+        use super::super::panel_layout::{pomodoro_compact_layout, pomodoro_compact_layout_robot};
+        match (kind, robot) {
+            (ShapeKind::MediaCompact, false) => compact_layout(content).bars.right(),
+            (ShapeKind::MediaCompact, true) => compact_layout_robot(content).bars.right(),
+            (ShapeKind::PomodoroCompact, false) => pomodoro_compact_layout(content).2.right(),
+            (ShapeKind::PomodoroCompact, true) => pomodoro_compact_layout_robot(content).3.right(),
+            (ShapeKind::MediaLyric, false) => lyric_layout(content).right(),
+            (ShapeKind::MediaLyric, true) => lyric_layout_robot(content).1.right(),
+            _ => unreachable!(),
+        }
+    }
+
+    /// The compact shape of `kind` and its twin with the slot, and the width
+    /// the content has with the slot settled (`toast_slot_parts`'s `base_w`).
+    fn slot_pair(
+        style: Style,
+        size: NotchSize,
+        kind: ShapeKind,
+        robot: bool,
+        lyric_text: f32,
+    ) -> (ShapeRect, ShapeRect, f32) {
+        if kind == ShapeKind::MediaLyric {
+            let max_w = lyric_max_w(1920.0);
+            let min_w = size.w;
+            let w = lyric_width_min(Some(lyric_text), robot, min_w, max_w);
+            let slot_w = lyric_slot_width(w, robot, min_w, max_w);
+            return (
+                lyric_shape_sized(style, size, w),
+                lyric_shape_sized(style, size, slot_w),
+                slot_w - TOAST_SLOT_EXTRA,
+            );
+        }
+        let base = shape_with_robot_sized(style, size, kind, robot);
+        (base, with_toast_slot(base), base.w)
+    }
+
+    #[test]
+    fn the_slot_widens_a_compact_shape_and_keeps_it_centred() {
+        for (style, size, robot) in slot_cases() {
+            for kind in [ShapeKind::MediaCompact, ShapeKind::PomodoroCompact] {
+                let base = shape_with_robot_sized(style, size, kind, robot);
+                let wide = with_toast_slot(base);
+                assert_eq!(wide.w, base.w + TOAST_SLOT_EXTRA);
+                assert!(((wide.x + wide.w / 2.0) - (base.x + base.w / 2.0)).abs() < 0.001);
+                assert_eq!((wide.y, wide.h, wide.radius), (base.y, base.h, base.radius));
+            }
+        }
+        assert_eq!(TOAST_SLOT_EXTRA, 28.0);
+    }
+
+    #[test]
+    fn with_the_slot_the_content_ends_8_dip_left_of_the_logo_inside_the_shape() {
+        for (style, size, robot) in slot_cases() {
+            for kind in [
+                ShapeKind::MediaCompact,
+                ShapeKind::PomodoroCompact,
+                ShapeKind::MediaLyric,
+            ] {
+                for text in [1.0, 150.0, 5000.0] {
+                    let (_, shape, base_w) = slot_pair(style, size, kind, robot, text);
+                    let (content, logo, alpha) = toast_slot_parts(shape, base_w);
+                    let tag = format!("{style:?} {size:?} {kind:?} robot {robot} text {text}");
+                    assert_eq!(alpha, 1.0, "{tag}");
+                    assert!((content.w - base_w).abs() < 0.001, "{tag}");
+                    assert_eq!(content.x, shape.x, "{tag}");
+                    let last = last_element(kind, content, robot);
+                    assert!(
+                        logo.x - last >= TOAST_SLOT_GAP - 0.001,
+                        "{tag}: content ends {last}, logo starts {}",
+                        logo.x
+                    );
+                    assert_eq!((logo.w, logo.h), (TOAST_SLOT, TOAST_SLOT), "{tag}");
+                    assert!(inside(shape, logo), "{tag}: the logo is inside the shape");
+                    // It ends COMPACT_INSET from the right and is centred.
+                    assert!((shape.x + shape.w - logo.right() - COMPACT_INSET).abs() < 0.001);
+                    assert!(((logo.y + logo.h / 2.0) - (shape.y + shape.h / 2.0)).abs() < 0.001);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn through_the_morph_the_content_never_overlaps_a_visible_logo() {
+        for (style, size, robot) in slot_cases() {
+            for kind in [
+                ShapeKind::MediaCompact,
+                ShapeKind::PomodoroCompact,
+                ShapeKind::MediaLyric,
+            ] {
+                let (base, shape, base_w) = slot_pair(style, size, kind, robot, 150.0);
+                // Both ways: the slot coming in and going out.
+                for (from, to) in [(base, shape), (shape, base)] {
+                    for step in 0..=100 {
+                        let t = step as f32 / 100.0;
+                        let now = lerp_shape(from, to, ease_out_back(t));
+                        let (content, logo, alpha) = toast_slot_parts(now, base_w);
+                        assert!(content.w >= 0.0 && (0.0..=1.0).contains(&alpha));
+                        if alpha > 0.0 {
+                            let last = last_element(kind, content, robot);
+                            assert!(
+                                last <= logo.x + 0.001,
+                                "{style:?} {kind:?} robot {robot} t {t}: {last} past {}",
+                                logo.x
+                            );
+                        }
+                    }
+                }
+                // Without the slot nothing is taken from the content.
+                let (content, _, alpha) = toast_slot_parts(base, base_w);
+                assert_eq!((content, alpha), (base, 0.0));
+            }
+        }
+    }
+
+    #[test]
+    fn the_logo_fades_in_only_once_it_clears_the_content() {
+        let base = shape_sized(Style::Notch, NotchSize::DEFAULT, ShapeKind::MediaCompact);
+        let at = |e: f32| {
+            let s = ShapeRect {
+                w: base.w + e,
+                ..base
+            };
+            toast_slot_parts(s, base.w).2
+        };
+        assert_eq!(at(0.0), 0.0);
+        assert_eq!(at(TOAST_SLOT), 0.0);
+        assert!(at(24.0) > 0.0 && at(24.0) < 1.0);
+        assert_eq!(at(TOAST_SLOT_EXTRA), 1.0);
+        assert_eq!(at(TOAST_SLOT_EXTRA + 5.0), 1.0, "an overshoot is clamped");
+        assert_eq!(at(-9.0), 0.0);
+    }
+
+    #[test]
+    fn the_lyric_total_with_the_slot_stays_under_the_cap_and_keeps_a_box() {
+        for robot in [false, true] {
+            for min_w in [0.0, 190.0, 220.0, 300.0] {
+                for max_w in [220.0, 300.0, 504.0, 560.0] {
+                    let cap = lyric_cap(robot, min_w, max_w);
+                    for step in 0..=90 {
+                        let text = (step * 10) as f32;
+                        let w = lyric_width_min(Some(text), robot, min_w, max_w);
+                        let total = lyric_slot_width(w, robot, min_w, max_w);
+                        let tag = format!("robot {robot} min {min_w} max {max_w} text {text}");
+                        assert!(total <= cap, "{tag}: {total} > {cap}");
+                        assert!(total >= w.min(cap - TOAST_SLOT_EXTRA) + TOAST_SLOT_EXTRA);
+                        // The line keeps a box (under the content's width).
+                        let content_w = total - TOAST_SLOT_EXTRA;
+                        assert!(lyric_box_w(content_w, robot) > 0.0, "{tag}");
+                        // A line that fits keeps today's box exactly.
+                        if w <= cap - TOAST_SLOT_EXTRA {
+                            assert_eq!(content_w, w, "{tag}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_unread_dot_sits_8_dip_in_from_the_right_end() {
+        for (style, size, robot) in slot_cases() {
+            for kind in [
+                ShapeKind::Idle,
+                ShapeKind::MediaCompact,
+                ShapeKind::PomodoroCompact,
+            ] {
+                let s = shape_with_robot_sized(style, size, kind, robot);
+                let ((cx, cy), r) = toast_dot(s);
+                assert_eq!(r * 2.0, TOAST_DOT);
+                assert_eq!(cx, s.x + s.w - 8.0);
+                assert_eq!(cy, s.y + s.h / 2.0);
+                assert!(cx + r <= s.x + s.w && cy - r >= s.y && cy + r <= s.y + s.h);
+            }
+        }
+    }
+
+    #[test]
+    fn the_toast_strip_parts_lie_inside_the_waiting_strip() {
+        for style in [Style::Pill, Style::Notch] {
+            let panel = shape_sized(style, NotchSize::DEFAULT, ShapeKind::Panel);
+            let strip = super::super::panel_layout::waiting_strip(panel);
+            let (logo, text) = toast_strip_parts(strip);
+            let within = |r: Rect| {
+                r.x >= strip.x
+                    && r.right() <= strip.right() + 0.001
+                    && r.y >= strip.y
+                    && r.bottom() <= strip.bottom() + 0.001
+            };
+            assert!(within(logo) && within(text));
+            assert_eq!((logo.w, logo.h), (16.0, 16.0));
+            assert_eq!(logo.x, strip.x + 6.0);
+            assert!(((logo.y + 8.0) - (strip.y + strip.h / 2.0)).abs() < 0.001);
+            assert_eq!(text.x, strip.x + 28.0);
+            assert!((strip.right() - text.right() - 10.0).abs() < 0.001);
+            assert!(text.x >= logo.right(), "the text clears the logo");
         }
     }
 }
