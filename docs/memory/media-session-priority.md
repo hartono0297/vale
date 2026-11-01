@@ -23,16 +23,33 @@ takes the first in list order. Consequences:
   session shown before stays, whatever the list order, so the island does not
   flip between two equal tabs.
 
+"Playing" for ranking is wider than what the island displays (`rank_playing`,
+`ranked_live`): a session reporting `Changing` (a skip) ranks as playing, and
+the shown session keeps ranking as playing for `HOLD` (2 s) after it goes from
+playing to paused, opened or unreadable. Without this, a skip or the short
+pause between two tracks handed the island to another playing session (say a
+muted video) for a moment and back, resetting lyrics and the cat. The hold ends
+early when it plays again, closes or stops, or another session is chosen; when
+it runs out, `next_refresh` times out and asks for a re-rank, so a really
+paused player gives way without waiting for another event. The play/pause
+button still shows the real status at once.
+
 ## What counts as music (`is_music`)
 
 A known player's AUMID (`KNOWN_PLAYERS`, case-insensitive substring: Spotify,
 Apple Music, iTunes, Tidal, Deezer, Amazon Music, YouTube Music desktop,
 SoundCloud, Pandora, foobar2000, MusicBee, AIMP, Winamp, Groove/Media Player,
-Dopamine, Plexamp), or `PlaybackType` Music, or both artist and album filled
-in. An artist alone is not enough: a video tab often has its channel as artist.
-Browsers are not in the list. All tabs of one browser share one AUMID, so the
-metadata (artist + album, declared type) is the only signal that tells a music
-tab from a video tab.
+Dopamine, Plexamp), or both artist and album filled in. An artist alone is not
+enough: a video tab often has its channel as artist. Browsers are not in the
+list. All tabs of one browser share one AUMID, so artist + album is the only
+signal that tells a music tab from a video tab.
+
+Gotcha: the declared `PlaybackType` is useless and not read. Browsers always
+report Music: Chromium and Firefox hard-code it for every media session, and
+so does every Electron or WebView2 host. A live YouTube tab in Chrome showed
+`PlaybackType Music`, an artist and no album. Filtering browsers by AUMID does
+not work either: Firefox's AUMID is an install-path hash (e.g.
+`308046B0AF4A39CB`), not "firefox".
 
 ## Subscriptions and reads
 

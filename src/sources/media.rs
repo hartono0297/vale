@@ -1,5 +1,5 @@
 use std::sync::Mutex;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use windows::Foundation::TypedEventHandler;
@@ -8,7 +8,6 @@ use windows::Media::Control::{
     GlobalSystemMediaTransportControlsSessionManager as Manager,
     GlobalSystemMediaTransportControlsSessionPlaybackStatus as PlaybackStatus,
 };
-use windows::Media::MediaPlaybackType;
 use windows::Storage::Streams::{DataReader, IRandomAccessStreamReference};
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
 use windows::core::{IUnknown, Interface, Result};
@@ -45,13 +44,18 @@ const KNOWN_PLAYERS: &[&str] = &[
     "plexamp",
 ];
 
+/// How long the shown session still ranks as playing after it stops (a short
+/// pause or an open between two tracks), so another playing session does not
+/// take the island for a moment and hand it back.
+const HOLD: Duration = Duration::from_secs(2);
+
 /// A tracked session, as far as ranking cares.
 #[derive(Clone, Debug, PartialEq)]
 struct Candidate {
     key: u64,
     app: String,
-    /// `shown_playing` of its status: `None` for closed or stopped, else
-    /// whether it plays.
+    /// `None` for closed or stopped, else whether it ranks as playing
+    /// (`rank_playing`, or held by `HOLD`).
     live: Option<bool>,
     music: bool,
 }
@@ -62,13 +66,13 @@ fn known_player(app: &str) -> bool {
     KNOWN_PLAYERS.iter().any(|known| app.contains(known))
 }
 
-/// Music rather than a video or a social tab: a known player, a session that
-/// declares music, or both artist and album filled in. An artist alone is
-/// not enough (a video tab often has a channel name).
-fn is_music(app: &str, playback_type_music: bool, artist: &str, album: &str) -> bool {
-    known_player(app)
-        || playback_type_music
-        || (!artist.trim().is_empty() && !album.trim().is_empty())
+/// Music rather than a video or a social tab: a known player, or both artist
+/// and album filled in. An artist alone is not enough (a video tab often has
+/// a channel name). The session's declared `PlaybackType` is not used:
+/// Chromium, Firefox and every Electron or WebView2 host report Music for
+/// every tab, a video included.
+fn is_music(app: &str, artist: &str, album: &str) -> bool {
+    known_player(app) || (!artist.trim().is_empty() && !album.trim().is_empty())
 }
 
 /// The candidate to show, by index. Closed and stopped sessions are never
@@ -179,8 +183,6 @@ struct Meta {
     title: String,
     artist: String,
     album: String,
-    /// The session says its media is music (`PlaybackType`).
-    playback_type_music: bool,
 }
 
 /// One session the watcher follows, with the handlers registered on it
@@ -193,8 +195,10 @@ struct Tracked {
     session: Session,
     /// The session's AppUserModelId, read once.
     app: String,
-    /// `shown_playing` of the last status read.
+    /// `shown_playing` of the last status read: what the island displays.
     live: Option<bool>,
+    /// `rank_playing` of the last status read: what ranking uses.
+    rank_live: Option<bool>,
     status: &'static str,
     meta: Meta,
     /// The metadata was read (or tried) once.
@@ -230,6 +234,7 @@ impl Tracked {
             session,
             app,
             live: None,
+            rank_live: None,
             status: "Unreadable",
             meta: Meta::default(),
             meta_tried: false,
@@ -260,19 +265,14 @@ impl Tracked {
         }
     }
 
-    /// Re-reads the playback status (and the declared media type).
+    /// Re-reads the playback status.
     fn read_status(&mut self) {
-        let info = self.session.GetPlaybackInfo();
-        if let Ok(kind) = info
-            .as_ref()
-            .map_err(Clone::clone)
-            .and_then(|i| i.PlaybackType())
-            .and_then(|r| r.Value())
-        {
-            self.meta.playback_type_music = kind == MediaPlaybackType::Music;
-        }
-        let status = info.and_then(|i| i.PlaybackStatus());
+        let status = self
+            .session
+            .GetPlaybackInfo()
+            .and_then(|i| i.PlaybackStatus());
         self.status = status_name(&status);
+        self.rank_live = rank_playing(&status);
         self.live = shown_playing(status);
     }
 
@@ -291,17 +291,13 @@ impl Tracked {
         }
     }
 
-    fn candidate(&self) -> Candidate {
+    /// `held`: the session is the shown one and inside its hold.
+    fn candidate(&self, held: bool) -> Candidate {
         Candidate {
             key: self.key,
             app: self.app.clone(),
-            live: self.live,
-            music: is_music(
-                &self.app,
-                self.meta.playback_type_music,
-                &self.meta.artist,
-                &self.meta.album,
-            ),
+            live: ranked_live(self.rank_live, held),
+            music: is_music(&self.app, &self.meta.artist, &self.meta.album),
         }
     }
 }
@@ -353,6 +349,9 @@ struct Watcher {
     next_key: u64,
     /// The key of the session on show.
     shown: Option<u64>,
+    /// The shown session stopped playing a moment ago and still ranks as
+    /// playing until then (`next_hold`): its key and the deadline.
+    hold: Option<(u64, Instant)>,
     /// The thumbnail of the shown session, and whose it is.
     art: Option<Vec<u8>>,
     art_for: Option<u64>,
@@ -384,6 +383,7 @@ impl Watcher {
             tracked: Vec::new(),
             next_key: 1,
             shown: None,
+            hold: None,
             art: None,
             art_for: None,
             status_seen: StatusSeen::default(),
@@ -468,12 +468,29 @@ impl Watcher {
             }
         }
         if refresh.rank {
+            let shown_rank = |tracked: &[Tracked], shown: Option<u64>| {
+                shown
+                    .and_then(|k| tracked.iter().find(|t| t.key == k))
+                    .and_then(|t| t.rank_live)
+            };
+            let was = shown_rank(&self.tracked, self.shown);
             for t in &mut self.tracked {
                 t.read_status();
             }
-            let cands: Vec<Candidate> = self.tracked.iter().map(Tracked::candidate).collect();
+            let now = Instant::now();
+            let now_live = shown_rank(&self.tracked, self.shown);
+            self.hold = next_hold(self.hold, self.shown, was, now_live, now);
+            let hold = self.hold;
+            let cands: Vec<Candidate> = self
+                .tracked
+                .iter()
+                .map(|t| t.candidate(hold.is_some_and(|(k, until)| k == t.key && now < until)))
+                .collect();
             let current = self.current_key();
             let chosen = choose(&cands, current, self.shown).map(|i| cands[i].key);
+            if chosen != self.shown {
+                self.hold = None;
+            }
             if chosen != before {
                 let live = cands.iter().filter(|c| c.live.is_some()).count();
                 let app = chosen
@@ -544,6 +561,12 @@ impl Watcher {
         })
     }
 
+    /// When the hold of the shown session runs out and the sessions must be
+    /// ranked again.
+    fn hold_deadline(&self) -> Option<Instant> {
+        self.hold.map(|(_, until)| until)
+    }
+
     /// The shown session's timeline; `None` without one or when it reports
     /// none.
     fn timeline(&self) -> Option<Timeline> {
@@ -574,6 +597,49 @@ fn shown_playing(status: Result<PlaybackStatus>) -> Option<bool> {
         Ok(status) => Some(status == PlaybackStatus::Playing),
         Err(_) => Some(false),
     }
+}
+
+/// Whether a session with this status ranks as playing; `None` like
+/// `shown_playing`. A session changing tracks (`Changing`) ranks as playing,
+/// though the island displays it as paused, so a skip does not hand the
+/// island to another playing session for a moment.
+fn rank_playing(status: &Result<PlaybackStatus>) -> Option<bool> {
+    match status {
+        Ok(PlaybackStatus::Changing) => Some(true),
+        Ok(PlaybackStatus::Closed | PlaybackStatus::Stopped) => None,
+        Ok(status) => Some(*status == PlaybackStatus::Playing),
+        Err(_) => Some(false),
+    }
+}
+
+/// `rank_live` as ranking sees it: a held session that stopped playing still
+/// ranks as playing. A closed or stopped one is never held.
+fn ranked_live(rank_live: Option<bool>, held: bool) -> Option<bool> {
+    match rank_live {
+        Some(false) if held => Some(true),
+        other => other,
+    }
+}
+
+/// The hold of the shown session after a status read: `(key, until)`.
+/// It starts when the shown session goes from playing to not playing (paused,
+/// opened, unreadable), lasts `HOLD`, and ends early when it plays again,
+/// closes or stops, or another session is shown.
+fn next_hold(
+    hold: Option<(u64, Instant)>,
+    shown: Option<u64>,
+    was: Option<bool>,
+    now_live: Option<bool>,
+    now: Instant,
+) -> Option<(u64, Instant)> {
+    let key = shown?;
+    if now_live != Some(false) {
+        return None;
+    }
+    if was == Some(true) {
+        return Some((key, now + HOLD));
+    }
+    hold.filter(|&(k, until)| k == key && now < until)
 }
 
 /// The status's name for the diagnosis log.
@@ -640,20 +706,35 @@ pub fn spawn_watcher(tx: Sender<Event>, wake: impl Fn() + Send + Sync + 'static)
             if sent {
                 wake();
             }
-            refresh = next_refresh(&signal_rx, |signal| watcher.accepts(signal));
+            let deadline = watcher.hold_deadline();
+            refresh = next_refresh(&signal_rx, deadline, |signal| watcher.accepts(signal));
         }
     });
 }
 
 /// Blocks for the next signal `accept` lets through, then folds in any
-/// already queued behind it.
-fn next_refresh(signals: &Receiver<Signal>, accept: impl Fn(Signal) -> bool) -> Refresh {
+/// already queued behind it. At `deadline` (a hold running out) it stops
+/// waiting and asks for a re-rank.
+fn next_refresh(
+    signals: &Receiver<Signal>,
+    deadline: Option<Instant>,
+    accept: impl Fn(Signal) -> bool,
+) -> Refresh {
     let mut refresh = Refresh::default();
     // The watcher holds a sender, so `recv` only returns once a signal arrives.
     // A burst of dropped signals (a closed session's) waits for the next one.
     while refresh == Refresh::default() {
-        let Ok(signal) = signals.recv() else {
-            break;
+        let received = match deadline {
+            None => signals.recv().map_err(|_| RecvTimeoutError::Disconnected),
+            Some(at) => signals.recv_timeout(at.saturating_duration_since(Instant::now())),
+        };
+        let signal = match received {
+            Ok(signal) => signal,
+            Err(RecvTimeoutError::Timeout) => {
+                refresh.rank = true;
+                break;
+            }
+            Err(RecvTimeoutError::Disconnected) => break,
         };
         if accept(signal) {
             refresh.add(signal);
@@ -742,7 +823,10 @@ fn read_properties(session: &Session, with_art: bool) -> Result<Properties> {
     Ok(Properties {
         title: props.Title()?.to_string(),
         artist: props.Artist()?.to_string(),
-        album: props.AlbumTitle().map(|a| a.to_string()).unwrap_or_default(),
+        album: props
+            .AlbumTitle()
+            .map(|a| a.to_string())
+            .unwrap_or_default(),
         art,
     })
 }
@@ -833,7 +917,11 @@ pub fn probe() {
                 m.title,
                 m.artist,
                 m.playing,
-                if m.source_app.is_empty() { "-" } else { &m.source_app },
+                if m.source_app.is_empty() {
+                    "-"
+                } else {
+                    &m.source_app
+                },
                 m.session_key,
                 m.art.as_ref().map_or(0, Vec::len)
             ),
@@ -890,55 +978,86 @@ mod tests {
 
     #[test]
     fn playing_music_beats_a_paused_social_tab() {
-        let music = is_music("Spotify.exe", false, "Queen", "A Night at the Opera");
-        let insta = is_music("Chrome", false, "", "");
-        let cands = [cand(1, "Chrome", false, insta), cand(2, "Spotify.exe", true, music)];
-        assert_eq!(picked(&cands, Some(1), Some(1)), Some(2));
-    }
-
-    #[test]
-    fn playing_music_beats_a_playing_video() {
-        let music = is_music("Chrome", false, "Queen", "Greatest Hits");
-        // A video: the channel as artist, no album.
-        let video = is_music("Chrome", false, "Some Channel", "");
-        assert!(music && !video);
-        let cands = [cand(1, "Chrome", true, video), cand(2, "Chrome", true, music)];
-        assert_eq!(picked(&cands, Some(1), Some(1)), Some(2));
-    }
-
-    #[test]
-    fn a_paused_player_gives_way_to_a_playing_video_and_takes_over_again() {
-        let paused = [cand(1, "Spotify.exe", false, true), cand(2, "Chrome", true, false)];
-        assert_eq!(picked(&paused, Some(1), Some(1)), Some(2));
-        // The music plays again: back to it, though the video stays shown
-        // and playing.
-        let playing = [cand(1, "Spotify.exe", true, true), cand(2, "Chrome", true, false)];
-        assert_eq!(picked(&playing, Some(2), Some(2)), Some(1));
-    }
-
-    #[test]
-    fn a_known_player_without_an_album_is_music() {
-        assert!(is_music("Spotify.exe", false, "Artist", ""));
-        assert!(is_music("Spotify.exe", false, "", ""));
+        let music = is_music("Spotify.exe", "Queen", "A Night at the Opera");
+        let insta = is_music("Chrome", "", "");
         let cands = [
-            cand(1, "Chrome", true, is_music("Chrome", false, "Channel", "")),
-            cand(2, "Spotify.exe", true, is_music("Spotify.exe", false, "", "")),
+            cand(1, "Chrome", false, insta),
+            cand(2, "Spotify.exe", true, music),
         ];
         assert_eq!(picked(&cands, Some(1), Some(1)), Some(2));
     }
 
     #[test]
-    fn the_declared_music_type_counts_without_artist_or_album() {
-        assert!(is_music("Chrome", true, "", ""));
-        assert!(!is_music("Chrome", false, "", ""));
+    fn playing_music_beats_a_playing_video() {
+        let music = is_music("Chrome", "Queen", "Greatest Hits");
+        // A video: the channel as artist, no album.
+        let video = is_music("Chrome", "Some Channel", "");
+        assert!(music && !video);
+        let cands = [
+            cand(1, "Chrome", true, video),
+            cand(2, "Chrome", true, music),
+        ];
+        assert_eq!(picked(&cands, Some(1), Some(1)), Some(2));
+    }
+
+    #[test]
+    fn a_paused_player_gives_way_to_a_playing_video_and_takes_over_again() {
+        let paused = [
+            cand(1, "Spotify.exe", false, true),
+            cand(2, "Chrome", true, false),
+        ];
+        assert_eq!(picked(&paused, Some(1), Some(1)), Some(2));
+        // The music plays again: back to it, though the video stays shown
+        // and playing.
+        let playing = [
+            cand(1, "Spotify.exe", true, true),
+            cand(2, "Chrome", true, false),
+        ];
+        assert_eq!(picked(&playing, Some(2), Some(2)), Some(1));
+    }
+
+    #[test]
+    fn a_known_player_without_an_album_is_music() {
+        assert!(is_music("Spotify.exe", "Artist", ""));
+        assert!(is_music("Spotify.exe", "", ""));
+        let cands = [
+            cand(1, "Chrome", true, is_music("Chrome", "Channel", "")),
+            cand(2, "Spotify.exe", true, is_music("Spotify.exe", "", "")),
+        ];
+        assert_eq!(picked(&cands, Some(1), Some(1)), Some(2));
+    }
+
+    #[test]
+    fn a_browser_video_tab_is_not_music() {
+        // What a live Chrome tab reports for a video: PlaybackType Music
+        // (Chromium declares it for every tab), the channel as artist and no
+        // album. Only artist and album count, so it is not music.
+        for app in ["Chrome", "MSEdge", "308046B0AF4A39CB", "Brave", "Opera"] {
+            assert!(!is_music(app, "Some Channel", ""), "{app}");
+            assert!(!is_music(app, "", ""), "{app}");
+            assert!(is_music(app, "Queen", "Greatest Hits"), "{app}");
+        }
+        // A player that is not a browser and fills in both is music.
+        assert!(is_music("VideoLAN.VLC", "Queen", "Greatest Hits"));
+    }
+
+    #[test]
+    fn spotify_beats_a_playing_youtube_video_whichever_windows_calls_current() {
+        let video = is_music("Chrome", "Some Channel", "");
+        let music = is_music("Spotify.exe", "Queen", "");
+        let cands = [
+            cand(1, "Chrome", true, video),
+            cand(2, "Spotify.exe", true, music),
+        ];
+        assert_eq!(picked(&cands, Some(1), Some(1)), Some(2));
     }
 
     #[test]
     fn an_artist_alone_or_an_album_alone_is_not_music() {
-        assert!(!is_music("Chrome", false, "Artist", ""));
-        assert!(!is_music("Chrome", false, "Artist", "   "));
-        assert!(!is_music("Chrome", false, "", "Album"));
-        assert!(is_music("Chrome", false, "Artist", "Album"));
+        assert!(!is_music("Chrome", "Artist", ""));
+        assert!(!is_music("Chrome", "Artist", "   "));
+        assert!(!is_music("Chrome", "", "Album"));
+        assert!(is_music("Chrome", "Artist", "Album"));
     }
 
     #[test]
@@ -954,14 +1073,20 @@ mod tests {
 
     #[test]
     fn a_tie_goes_to_the_current_session() {
-        let cands = [cand(1, "Chrome", true, false), cand(2, "Chrome", true, false)];
+        let cands = [
+            cand(1, "Chrome", true, false),
+            cand(2, "Chrome", true, false),
+        ];
         assert_eq!(picked(&cands, Some(2), Some(1)), Some(2));
         assert_eq!(picked(&cands, Some(1), Some(2)), Some(1));
     }
 
     #[test]
     fn a_tie_without_a_current_session_keeps_the_one_shown() {
-        let cands = [cand(1, "Chrome", true, false), cand(2, "Chrome", true, false)];
+        let cands = [
+            cand(1, "Chrome", true, false),
+            cand(2, "Chrome", true, false),
+        ];
         assert_eq!(picked(&cands, None, Some(2)), Some(2));
         assert_eq!(picked(&cands, None, Some(1)), Some(1));
         // The current one is a third session, not in the list.
@@ -1007,7 +1132,14 @@ mod tests {
         ] {
             assert!(known_player(app), "{app}");
         }
-        for app in ["Chrome", "MSEdge", "firefox.exe", "chrome.exe", "", "YouTube"] {
+        for app in [
+            "Chrome",
+            "MSEdge",
+            "firefox.exe",
+            "chrome.exe",
+            "",
+            "YouTube",
+        ] {
             assert!(!known_player(app), "{app:?}");
         }
     }
@@ -1153,7 +1285,7 @@ mod tests {
         tx.send(Signal::Properties(2)).unwrap();
         tx.send(Signal::Playback(2)).unwrap();
         tx.send(Signal::Timeline(1)).unwrap();
-        let r = next_refresh(&rx, |_| true);
+        let r = next_refresh(&rx, None, |_| true);
         assert_eq!(
             r,
             Refresh {
@@ -1176,7 +1308,7 @@ mod tests {
         tx.send(Signal::Timeline(9)).unwrap();
         tx.send(Signal::Timeline(2)).unwrap();
         tx.send(Signal::Playback(9)).unwrap();
-        let r = next_refresh(&rx, |s| matches!(s, Signal::Timeline(2)));
+        let r = next_refresh(&rx, None, |s| matches!(s, Signal::Timeline(2)));
         assert_eq!(
             r,
             Refresh {
@@ -1185,6 +1317,130 @@ mod tests {
             }
         );
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn changing_tracks_ranks_as_playing_but_displays_paused() {
+        let changing = Ok(PlaybackStatus::Changing);
+        assert_eq!(rank_playing(&changing), Some(true));
+        assert_eq!(shown_playing(changing), Some(false));
+        assert_eq!(rank_playing(&Ok(PlaybackStatus::Playing)), Some(true));
+        for status in [PlaybackStatus::Paused, PlaybackStatus::Opened] {
+            assert_eq!(rank_playing(&Ok(status)), Some(false), "{status:?}");
+        }
+        assert_eq!(rank_playing(&Ok(PlaybackStatus::Closed)), None);
+        assert_eq!(rank_playing(&Ok(PlaybackStatus::Stopped)), None);
+        assert_eq!(
+            rank_playing(&Err(windows::core::Error::empty())),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn a_skip_on_the_shown_player_keeps_it_over_a_playing_video() {
+        // Spotify (shown) reports Changing while a muted video plays.
+        let spotify = ranked_live(rank_playing(&Ok(PlaybackStatus::Changing)), false);
+        let cands = [
+            Candidate {
+                live: spotify,
+                ..cand(1, "Spotify.exe", true, true)
+            },
+            cand(2, "Chrome", true, false),
+        ];
+        assert_eq!(picked(&cands, Some(2), Some(1)), Some(1));
+    }
+
+    #[test]
+    fn a_held_session_ranks_as_playing_a_closed_one_never() {
+        assert_eq!(ranked_live(Some(false), true), Some(true));
+        assert_eq!(ranked_live(Some(false), false), Some(false));
+        assert_eq!(ranked_live(Some(true), false), Some(true));
+        assert_eq!(ranked_live(None, true), None);
+    }
+
+    #[test]
+    fn the_hold_starts_when_the_shown_session_stops_playing() {
+        let now = Instant::now();
+        let hold = next_hold(None, Some(1), Some(true), Some(false), now);
+        assert_eq!(hold, Some((1, now + HOLD)));
+        // A later read inside the hold keeps it; it does not start again.
+        let later = now + Duration::from_millis(500);
+        assert_eq!(
+            next_hold(hold, Some(1), Some(false), Some(false), later),
+            hold
+        );
+        // It runs out.
+        assert_eq!(
+            next_hold(hold, Some(1), Some(false), Some(false), now + HOLD),
+            None
+        );
+    }
+
+    #[test]
+    fn the_hold_ends_early() {
+        let now = Instant::now();
+        let hold = Some((1, now + HOLD));
+        // Playing again, closed or stopped.
+        assert_eq!(next_hold(hold, Some(1), Some(false), Some(true), now), None);
+        assert_eq!(next_hold(hold, Some(1), Some(false), None, now), None);
+        // Another session is shown, or none.
+        assert_eq!(
+            next_hold(hold, Some(2), Some(false), Some(false), now),
+            None
+        );
+        assert_eq!(next_hold(hold, None, Some(true), Some(false), now), None);
+        // A paused session that was not playing before gets no hold.
+        assert_eq!(
+            next_hold(None, Some(1), Some(false), Some(false), now),
+            None
+        );
+        assert_eq!(next_hold(None, Some(1), None, Some(false), now), None);
+    }
+
+    #[test]
+    fn a_short_pause_between_tracks_keeps_the_shown_player() {
+        let now = Instant::now();
+        let hold = next_hold(None, Some(1), Some(true), Some(false), now);
+        let held = |at: Instant| hold.is_some_and(|(k, until)| k == 1 && at < until);
+        let cands = |at: Instant| {
+            [
+                Candidate {
+                    live: ranked_live(Some(false), held(at)),
+                    ..cand(1, "Spotify.exe", false, true)
+                },
+                cand(2, "Chrome", true, false),
+            ]
+        };
+        assert_eq!(picked(&cands(now), Some(2), Some(1)), Some(1));
+        // Still paused after the hold: the playing video takes over.
+        assert_eq!(picked(&cands(now + HOLD), Some(2), Some(1)), Some(2));
+    }
+
+    #[test]
+    fn the_hold_running_out_asks_for_a_rerank() {
+        let (_tx, rx) = mpsc::channel::<Signal>();
+        let r = next_refresh(&rx, Some(Instant::now()), |_| true);
+        assert_eq!(
+            r,
+            Refresh {
+                rank: true,
+                ..Refresh::default()
+            }
+        );
+    }
+
+    #[test]
+    fn a_signal_before_the_deadline_is_taken_as_usual() {
+        let (tx, rx) = mpsc::channel();
+        tx.send(Signal::Timeline(1)).unwrap();
+        let r = next_refresh(&rx, Some(Instant::now() + HOLD), |_| true);
+        assert_eq!(
+            r,
+            Refresh {
+                timeline: true,
+                ..Refresh::default()
+            }
+        );
     }
 
     #[test]
