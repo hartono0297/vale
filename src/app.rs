@@ -4961,6 +4961,31 @@ impl App {
                 self.save_config();
                 self.sync_devices_hotkey();
             }
+            SettingsAction::ArrangeHotkey(h) => {
+                self.config.arrange.hotkey = h;
+                self.save_config();
+                self.sync_arrange_hotkey();
+                self.sync_settings();
+            }
+            // The thumb moves live; only the release is saved.
+            SettingsAction::ArrangeGap { gap, commit } => {
+                self.config.arrange.gap = gap;
+                if commit {
+                    self.save_config();
+                }
+            }
+            SettingsAction::ArrangeTemplates(list) => {
+                self.config.arrange.templates = list;
+                self.save_config();
+                self.sync_settings();
+                self.arrange_config_changed();
+            }
+            SettingsAction::ArrangeSaved(list) => {
+                self.config.arrange.saved = list;
+                self.save_config();
+                self.sync_settings();
+                self.arrange_config_changed();
+            }
             SettingsAction::OpenMode(mode) => {
                 self.config.open_mode = mode;
                 self.save_config();

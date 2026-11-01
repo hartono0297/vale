@@ -805,6 +805,14 @@ impl App {
         self.arrange.scroll = self.arrange.scroll.min(self.arrange_max_scroll());
     }
 
+    /// Settings changed the templates or the saved list: the page follows.
+    pub(super) fn arrange_config_changed(&mut self) {
+        self.arrange.scroll = self.arrange.scroll.min(self.arrange_max_scroll());
+        if self.arrange_page_shown() && !self.animating() {
+            self.draw(Instant::now());
+        }
+    }
+
     // --------------------------------------------------------------- hotkey
 
     /// Registers the chosen hotkey (none by default). A failure (another app

@@ -732,6 +732,12 @@ impl Painter<'_> {
                         .slider(*track, (*value, *min, *max), hovered, held);
                 }
                 Control::Button(b) => self.button(b, s),
+                Control::Mini {
+                    rect,
+                    rects,
+                    selected,
+                    canvas,
+                } => self.mini(*rect, rects, *selected, *canvas),
                 Control::IconButton {
                     hit,
                     rect,
@@ -840,6 +846,42 @@ impl Painter<'_> {
     /// and a smaller knob, both in the secondary text colour. Cross-faded by `v`.
     fn toggle(&self, r: Rect, v: f32, hover: bool) {
         draw_toggle(self.rt, self.brush, &self.p, r, v, hover, self.alpha);
+    }
+
+    /// Susun's miniature: the tiles of a layout in `r`; the editor's canvas
+    /// (`canvas`) has a field background and lights the selected tile.
+    fn mini(
+        &self,
+        r: Rect,
+        rects: &[crate::arrange::NRect],
+        selected: Option<usize>,
+        canvas: bool,
+    ) {
+        if canvas {
+            self.fill_round(r, 8.0, self.p.field, 1.0);
+            self.stroke_round(r, 8.0, self.p.border);
+        }
+        let gap = if canvas { 2.0 } else { 1.0 };
+        let radius = if canvas { 6.0 } else { 3.0 };
+        for (i, n) in rects.iter().enumerate() {
+            let tile = Rect {
+                x: r.x + n.x * r.w + gap,
+                y: r.y + n.y * r.h + gap,
+                w: (n.w * r.w - 2.0 * gap).max(1.0),
+                h: (n.h * r.h - 2.0 * gap).max(1.0),
+            };
+            let lit = selected == Some(i);
+            let (ink, alpha) = if lit {
+                (self.p.accent, 0.35)
+            } else {
+                (self.p.secondary, 0.28)
+            };
+            self.fill_round(tile, radius, ink, alpha);
+            if lit {
+                self.set(self.p.accent, 1.0);
+                self.outline(tile, radius, 2.0);
+            }
+        }
     }
 
     /// A slider: a rail with the part up to the thumb in the accent, and a

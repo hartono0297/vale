@@ -127,3 +127,9 @@ the pointer and the frame step in `src/app_dock.rs`, drawing in
   includes `dock.moving()`; a pointer resting on an icon stops the clock.
 
 Related: [[panel-linger-and-motion]], [[gestures]]
+
+**v3.10:** `Page::Arrange` ("Susun", [[arrange]]) is the 14th page, between Cli and
+Shortcuts (`Page::ALL: [Page; 14]`, name `"Arrange"` in `config.json`). A saved list
+without it (an older config) gets it right after Cli wherever the owner moved Cli to
+(`from_saved`, tested), shown. Icon: `Icon::Layout`, a screen frame cut into a 2x2
+layout, not Pintasan's `Grid`.

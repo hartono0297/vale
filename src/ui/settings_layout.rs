@@ -7,15 +7,16 @@
 //! labels and pushed to the right edge of their card; row labels take the
 //! space left over, so the tests check that the labels fit with the estimate.
 
+use crate::arrange::{ArrangeSettings, Dir, MAX_TEMPLATES, Node};
 use crate::calendar::CalStatus;
 use crate::claude::install::HookState;
 use crate::cli::Shell;
 use crate::cli_folders::CliStart;
 use crate::clipboard::store::{ITEMS_STEP, MAX_ITEMS, MIN_ITEMS};
 use crate::config::{
-    ClipHotkey, ClipboardSettings, DISK_WARN_RANGE, DevicesHotkey, NotchFill, NotifSettings,
-    OpenMode, RAM_WARN_RANGE, SHOT_SECS_RANGE, ScreenshotSettings, SearchHotkey, ShotIgnore,
-    ShotTool, Style,
+    ArrangeHotkey, ClipHotkey, ClipboardSettings, DISK_WARN_RANGE, DevicesHotkey, NotchFill,
+    NotifSettings, OpenMode, RAM_WARN_RANGE, SHOT_SECS_RANGE, ScreenshotSettings, SearchHotkey,
+    ShotIgnore, ShotTool, Style,
 };
 use crate::i18n::{Key, Lang, text, version_label};
 use crate::model::{Page, PomoField};
@@ -384,6 +385,20 @@ pub enum Hit {
     DeviceNotices,
     /// "Tombol pintas" of the Devices page.
     DevicesHotkey(DevicesHotkey),
+    /// Settings -> Fitur -> Susun: the hotkey, "+ Template baru", a
+    /// template's "Ubah" and "Hapus", a saved arrangement's "Ganti nama"
+    /// and "Hapus" (by place in their lists), and the editor's "Belah"
+    /// buttons, "Gabung", "Simpan" and "Batal".
+    ArrangeHotkey(ArrangeHotkey),
+    ArrangeTemplateNew,
+    ArrangeTemplateEdit(usize),
+    ArrangeTemplateDelete(usize),
+    ArrangeSavedRename(usize),
+    ArrangeSavedDelete(usize),
+    ArrangeSplit(Dir),
+    ArrangeMerge,
+    ArrangeEditorSave,
+    ArrangeEditorCancel,
     /// "Folder awal CLI": Ikuti Explorer or Folder terakhir.
     CliStart(CliStart),
     Shell(Shell),
@@ -475,6 +490,8 @@ pub enum SliderId {
     NotchWidth,
     NotchHeight,
     NotchOpacity,
+    /// "Jarak antar ubin", 0 to 24 px.
+    ArrangeGap,
 }
 
 impl SliderId {
@@ -484,6 +501,7 @@ impl SliderId {
             SliderId::NotchWidth => (NOTCH_W_MIN as i32, NOTCH_W_MAX as i32),
             SliderId::NotchHeight => (NOTCH_H_MIN as i32, NOTCH_H_MAX as i32),
             SliderId::NotchOpacity => (0, 100),
+            SliderId::ArrangeGap => (0, crate::arrange::GAP_MAX as i32),
         }
     }
 }
@@ -548,6 +566,7 @@ pub enum Group {
     OpenMode,
     SearchHotkey,
     DevicesHotkey,
+    ArrangeHotkey,
     CliStart,
     Shell,
     Motion,
@@ -678,6 +697,15 @@ pub enum Control {
         enabled: bool,
         bare: bool,
     },
+    /// Susun's layouts as a miniature: the tiles of `rects` in `rect`. With
+    /// `canvas` it is the editor's big one (the selected tile lit, the
+    /// dividers draggable by the window's pointer handling, not as hits).
+    Mini {
+        rect: Rect,
+        rects: Vec<crate::arrange::NRect>,
+        selected: Option<usize>,
+        canvas: bool,
+    },
 }
 
 impl Control {
@@ -728,6 +756,7 @@ impl Control {
                 ..
             } => vec![(*hit, *rect)],
             Control::IconButton { .. } => Vec::new(),
+            Control::Mini { .. } => Vec::new(),
         }
     }
 
@@ -772,6 +801,7 @@ impl Control {
             Control::Slider { track, .. } => down(track),
             Control::Button(b) => down(&mut b.rect),
             Control::IconButton { rect, .. } => down(rect),
+            Control::Mini { rect, .. } => down(rect),
         }
     }
 
@@ -805,6 +835,7 @@ impl Control {
             Control::Slider { track, .. } => *track,
             Control::Button(b) => b.rect,
             Control::IconButton { rect, .. } => *rect,
+            Control::Mini { rect, .. } => *rect,
         }
     }
 }
@@ -850,6 +881,8 @@ pub struct Layout {
     pub note_glyph: Option<Rect>,
     /// Rounded field backgrounds; the native edit sits inside.
     pub fields: Vec<(Field, Rect)>,
+    /// Susun's template editor canvas, while the editor is open.
+    pub canvas: Option<Rect>,
     /// The accent row's description, which names the swatch under the pointer.
     pub accent_desc: Option<usize>,
     /// A section taller than the window: the area its content scrolls in
@@ -1039,6 +1072,9 @@ pub struct State<'a> {
     pub devices_hotkey_failed: bool,
     /// The Susun hotkey could not be registered.
     pub arrange_hotkey_failed: bool,
+    /// Susun's settings, and the template editor while it is open.
+    pub arrange: ArrangeSettings,
+    pub arrange_edit: Option<EditView>,
     /// What the PrtSc row says when the key is wanted but its hook failed.
     pub prtsc: PrtscRow,
     pub autostart: bool,
@@ -3038,6 +3074,11 @@ fn panel_page(b: &mut Builder, s: &State) {
 /// "Notifikasi",
 /// "CLI", "Perangkat" and "Pembersih".
 fn features_page(b: &mut Builder, s: &State) {
+    // The template editor takes the whole page while it is open.
+    if let Some(e) = &s.arrange_edit {
+        arrange_editor(b, e);
+        return;
+    }
     titled(b, Key::GroupPomodoro);
     let card = b.card(4.0 * ROW_H);
     let fields = [
@@ -3092,6 +3133,7 @@ fn features_page(b: &mut Builder, s: &State) {
     let desc = Some((b.t(Key::LyricsInNotchDesc), Tone::Secondary));
     b.row_text(card, card.y, b.t(Key::LyricsInNotch), desc, false, x);
 
+    arrange_card(b, s);
     notifications_card(b, s);
 
     titled(b, Key::GroupCli);
@@ -3246,6 +3288,352 @@ fn notifications_card(b: &mut Builder, s: &State) {
     let x = b.buttons(RIGHT, cy(clear_y), vec![item]);
     let desc = Some((b.t(Key::NotifClearHistoryDesc), Tone::Secondary));
     b.row_text(card, clear_y, b.t(Key::NotifClearHistory), desc, false, x);
+}
+
+/// What the Susun card shows of the template editor while it is open (the
+/// window keeps the tree and the selection; the layout only draws them).
+#[derive(Clone, Debug, PartialEq)]
+pub struct EditView {
+    /// Renaming a saved arrangement: only the name field.
+    pub rename: bool,
+    pub root: Node,
+    pub selected: usize,
+    /// The Nama field holds a name of 1 to 24 characters.
+    pub name_ok: bool,
+}
+
+impl EditView {
+    /// Whether "Belah" in `dir` is allowed for the selected tile.
+    pub fn can_split(&self, dir: Dir) -> bool {
+        let mut probe = self.root.clone();
+        probe.split(self.selected, dir)
+    }
+
+    /// "Gabung" needs more than one tile.
+    pub fn can_merge(&self) -> bool {
+        self.root.leaves() > 1
+    }
+}
+
+/// How close (px) a press must be to a divider to take it.
+const DIVIDER_SLOP: f32 = 6.0;
+
+/// What a press on the editor's canvas takes.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CanvasPress {
+    /// A divider, by its path from the root.
+    Divider(Vec<bool>),
+    /// A tile, by its number.
+    Tile(usize),
+}
+
+/// The tile or divider at `(x, y)` on `canvas` showing `root`: a divider
+/// within `DIVIDER_SLOP` wins over the tile under it.
+pub fn canvas_press(root: &Node, canvas: Rect, x: f32, y: f32) -> Option<CanvasPress> {
+    if !canvas.contains(x, y) {
+        return None;
+    }
+    let (fx, fy) = ((x - canvas.x) / canvas.w, (y - canvas.y) / canvas.h);
+    let near = root
+        .dividers()
+        .into_iter()
+        .filter_map(|d| {
+            // Along the divider's own extent, and across it within the slop.
+            let (across, along, size_across, lo, hi) = match d.dir {
+                Dir::Cols => (fx, fy, canvas.w, d.region.y, d.region.bottom()),
+                Dir::Rows => (fy, fx, canvas.h, d.region.x, d.region.right()),
+            };
+            let dist = (across - d.pos).abs() * size_across;
+            (dist <= DIVIDER_SLOP && along >= lo && along <= hi).then_some((dist, d.path))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0));
+    if let Some((_, path)) = near {
+        return Some(CanvasPress::Divider(path));
+    }
+    root.to_rects()
+        .iter()
+        .position(|r| fx >= r.x && fx < r.right() && fy >= r.y && fy < r.bottom())
+        .map(CanvasPress::Tile)
+}
+
+/// Drags the divider at `path` to the pointer at `(x, y)` on `canvas`: the
+/// ratio inside its region, snapped and clamped by `Node::set_ratio`.
+pub fn canvas_drag(root: &mut Node, canvas: Rect, path: &[bool], x: f32, y: f32) -> bool {
+    let Some(d) = root.dividers().into_iter().find(|d| d.path == path) else {
+        return false;
+    };
+    let (pos, start, size) = match d.dir {
+        Dir::Cols => ((x - canvas.x) / canvas.w, d.region.x, d.region.w),
+        Dir::Rows => ((y - canvas.y) / canvas.h, d.region.y, d.region.h),
+    };
+    size > 0.0 && root.set_ratio(path, (pos - start) / size)
+}
+
+const MINI_W: f32 = 48.0;
+const MINI_H: f32 = 27.0;
+
+/// A mini preview control for `node` at `(x, cy)`'s left edge.
+fn mini(b: &mut Builder, x: f32, cy: f32, node: &Node) {
+    let rect = Rect {
+        x,
+        y: cy - MINI_H / 2.0,
+        w: MINI_W,
+        h: MINI_H,
+    };
+    b.l.controls.push(Control::Mini {
+        rect,
+        rects: node.to_rects(),
+        selected: None,
+        canvas: false,
+    });
+}
+
+/// Fitur -> Susun: the hotkey, the gap, the user's templates and the saved
+/// arrangements.
+fn arrange_card(b: &mut Builder, s: &State) {
+    b.eyebrow(Key::PageArrange, CONTENT_W - 4.0);
+    let a = &s.arrange;
+    let rows = 2 + 1 + a.templates.len().max(1) + 1 + a.saved.len().max(1);
+    let card = b.card(rows as f32 * ROW_H);
+    let row = |i: usize| card.y + i as f32 * ROW_H;
+    let cy = |y: f32| y + ROW_H / 2.0;
+
+    let items = vec![
+        (
+            Hit::ArrangeHotkey(ArrangeHotkey::Off),
+            b.t(Key::ClipHotkeyNone),
+        ),
+        (
+            Hit::ArrangeHotkey(ArrangeHotkey::CtrlAltS),
+            "Ctrl+Alt+S".to_owned(),
+        ),
+    ];
+    let selected = index_of(ArrangeHotkey::ALL, &a.hotkey);
+    let x = b.segmented(Group::ArrangeHotkey, RIGHT, cy(row(0)), items, selected);
+    let desc = if s.arrange_hotkey_failed && a.hotkey != ArrangeHotkey::Off {
+        (b.t(Key::ClipHotkeyTaken), Tone::Bad)
+    } else {
+        (b.t(Key::ArrangeHotkeyDesc), Tone::Secondary)
+    };
+    b.row_text(card, row(0), b.t(Key::DevicesHotkey), Some(desc), false, x);
+
+    let x = b.slider(
+        RIGHT,
+        cy(row(1)),
+        SliderId::ArrangeGap,
+        a.gap as i32,
+        format!("{} px", a.gap),
+        true,
+    );
+    let desc = Some((b.t(Key::ArrangeGapDesc), Tone::Secondary));
+    b.row_text(card, row(1), b.t(Key::ArrangeGap), desc, false, x);
+    b.divider(card, row(1));
+
+    // My templates: the title row with "+ Template baru", then a row each.
+    let full = a.templates.len() >= MAX_TEMPLATES;
+    let add = b.t(Key::ArrangeNewTemplate);
+    let w = b.button_w(&[&add], ButtonKind::Secondary);
+    let item = (
+        Hit::ArrangeTemplateNew,
+        add,
+        ButtonKind::Secondary,
+        !full,
+        w,
+    );
+    let x = b.buttons(RIGHT, cy(row(2)), vec![item]);
+    let desc = full.then(|| (b.t(Key::ArrangeTemplatesFull), Tone::Secondary));
+    b.row_text(card, row(2), b.t(Key::ArrangeMyTemplates), desc, false, x);
+    b.divider(card, row(2));
+    let (edit, delete) = (b.t(Key::ArrangeEdit), b.t(Key::ArrangeDelete));
+    let (edit_w, delete_w) = (b.compact_w(&edit), b.compact_w(&delete));
+    if a.templates.is_empty() {
+        let rect = Rect {
+            x: card.x + INSET,
+            y: row(3) + 16.0,
+            w: RIGHT - card.x - INSET,
+            h: 20.0,
+        };
+        b.text(
+            rect,
+            b.t(Key::ArrangeNoTemplates),
+            Font::Desc,
+            Tone::Secondary,
+            Align::Left,
+        );
+    }
+    for (i, t) in a.templates.iter().enumerate() {
+        let y = row(3 + i);
+        let items = vec![
+            (
+                Hit::ArrangeTemplateEdit(i),
+                edit.clone(),
+                ButtonKind::Secondary,
+                true,
+                edit_w,
+            ),
+            (
+                Hit::ArrangeTemplateDelete(i),
+                delete.clone(),
+                ButtonKind::Secondary,
+                true,
+                delete_w,
+            ),
+        ];
+        let x = b.buttons(RIGHT, cy(y), items);
+        mini(b, x - GAP - MINI_W, cy(y), &t.root);
+        b.row_text(card, y, t.name.clone(), None, false, x - GAP - MINI_W);
+    }
+
+    // Saved arrangements: the title row, then a row each.
+    let head = row(3 + a.templates.len().max(1));
+    b.divider(card, head);
+    b.row_text(card, head, b.t(Key::ArrangeSavedList), None, false, RIGHT);
+    let rename = b.t(Key::ArrangeRename);
+    let rename_w = b.compact_w(&rename);
+    if a.saved.is_empty() {
+        let rect = Rect {
+            x: card.x + INSET,
+            y: head + ROW_H + 16.0,
+            w: RIGHT - card.x - INSET,
+            h: 20.0,
+        };
+        b.text(
+            rect,
+            b.t(Key::ArrangeNoSaved),
+            Font::Desc,
+            Tone::Secondary,
+            Align::Left,
+        );
+    }
+    for (i, saved) in a.saved.iter().enumerate() {
+        let y = head + (i + 1) as f32 * ROW_H;
+        let items = vec![
+            (
+                Hit::ArrangeSavedRename(i),
+                rename.clone(),
+                ButtonKind::Secondary,
+                true,
+                rename_w,
+            ),
+            (
+                Hit::ArrangeSavedDelete(i),
+                delete.clone(),
+                ButtonKind::Secondary,
+                true,
+                delete_w,
+            ),
+        ];
+        let x = b.buttons(RIGHT, cy(y), items);
+        mini(b, x - GAP - MINI_W, cy(y), &saved.layout.node());
+        b.row_text(card, y, saved.name.clone(), None, false, x - GAP - MINI_W);
+    }
+}
+
+/// The template editor (or the rename field) in place of the Fitur page:
+/// a 16:9 canvas with the tiles, the split and merge buttons, the Nama
+/// field, Simpan and Batal.
+fn arrange_editor(b: &mut Builder, e: &EditView) {
+    b.eyebrow(Key::PageArrange, CONTENT_W - 4.0);
+    let canvas_w = (CONTENT_W - 2.0 * INSET).min(400.0);
+    let canvas_h = (canvas_w * 9.0 / 16.0).round();
+    let top_h = if e.rename { 0.0 } else { canvas_h + 2.0 * 12.0 };
+    let tool_h = if e.rename { 0.0 } else { ROW_H };
+    let card = b.card(top_h + tool_h + 2.0 * ROW_H);
+    let cy = |y: f32| y + ROW_H / 2.0;
+    let mut y = card.y;
+    if !e.rename {
+        let canvas = Rect {
+            x: card.x + (card.w - canvas_w) / 2.0,
+            y: card.y + 12.0,
+            w: canvas_w,
+            h: canvas_h,
+        };
+        b.l.canvas = Some(canvas);
+        b.l.controls.push(Control::Mini {
+            rect: canvas,
+            rects: e.root.to_rects(),
+            selected: Some(e.selected),
+            canvas: true,
+        });
+        y = card.y + top_h;
+        b.divider(card, y);
+        let (cols, rows, merge) = (
+            b.t(Key::ArrangeSplitCols),
+            b.t(Key::ArrangeSplitRows),
+            b.t(Key::ArrangeMerge),
+        );
+        let w = b.button_w(&[&cols, &rows, &merge], ButtonKind::Secondary);
+        let items = vec![
+            (
+                Hit::ArrangeSplit(Dir::Cols),
+                cols,
+                ButtonKind::Secondary,
+                e.can_split(Dir::Cols),
+                w,
+            ),
+            (
+                Hit::ArrangeSplit(Dir::Rows),
+                rows,
+                ButtonKind::Secondary,
+                e.can_split(Dir::Rows),
+                w,
+            ),
+            (
+                Hit::ArrangeMerge,
+                merge,
+                ButtonKind::Secondary,
+                e.can_merge(),
+                w,
+            ),
+        ];
+        b.buttons(RIGHT, cy(y), items);
+        y += ROW_H;
+        b.divider(card, y);
+    }
+    // Nama: the field takes the row.
+    let label = b.t(Key::ArrangeFieldName);
+    let label_w = b.w(&label, Font::Control) + 12.0;
+    let label_rect = Rect {
+        x: card.x + INSET,
+        y: cy(y) - 10.0,
+        w: label_w,
+        h: 20.0,
+    };
+    b.text(label_rect, label, Font::Control, Tone::Primary, Align::Left);
+    let field_x = label_rect.right() + 4.0;
+    b.l.fields.push((
+        Field::TileName,
+        Rect {
+            x: field_x,
+            y: cy(y) - FIELD_H / 2.0,
+            w: RIGHT - field_x,
+            h: FIELD_H,
+        },
+    ));
+    y += ROW_H;
+    b.divider(card, y);
+    let (save, cancel) = (b.t(Key::ArrangeSaveButton), b.t(Key::ArrangeCancel));
+    let (save_w, cancel_w) = (
+        b.button_w(&[&save], ButtonKind::Primary),
+        b.button_w(&[&cancel], ButtonKind::Secondary),
+    );
+    let items = vec![
+        (
+            Hit::ArrangeEditorSave,
+            save,
+            ButtonKind::Primary,
+            e.name_ok,
+            save_w,
+        ),
+        (
+            Hit::ArrangeEditorCancel,
+            cancel,
+            ButtonKind::Secondary,
+            true,
+            cancel_w,
+        ),
+    ];
+    b.buttons(RIGHT, cy(y), items);
 }
 
 /// "Perangkat" (the Devices page): the plug-in and safe-to-remove notices,
@@ -3857,6 +4245,8 @@ mod tests {
                         },
                         devices_hotkey_failed: locked,
                         arrange_hotkey_failed: locked,
+                        arrange: ArrangeSettings::default(),
+                        arrange_edit: None,
                         prtsc: if locked {
                             PrtscRow::Failed
                         } else {
@@ -5974,6 +6364,338 @@ mod tests {
             .collect();
         assert_eq!(inside_card.len(), 1);
         assert!((inside_card[0].y + 0.5 - (card.y + ROW_H)).abs() < 0.01);
+    }
+
+    fn susun_state(templates: usize, saved: usize) -> State<'static> {
+        let node = crate::arrange::BuiltIn::Main2.node();
+        let mut arrange = ArrangeSettings::default();
+        for i in 0..templates {
+            arrange.templates.push(
+                crate::arrange::CustomTemplate::new(
+                    &format!("t{i}"),
+                    &format!("T{i}"),
+                    node.clone(),
+                )
+                .unwrap(),
+            );
+        }
+        for i in 0..saved {
+            arrange.saved.push(
+                crate::arrange::SavedArrangement::new(
+                    &format!("S{i}"),
+                    crate::arrange::LayoutRef::BuiltIn(crate::arrange::BuiltIn::Cols2),
+                    crate::arrange::SavedMonitor {
+                        device: "D".into(),
+                        rect: crate::arrange::Rect::new(0, 0, 10, 10),
+                    },
+                    vec![None, None],
+                )
+                .unwrap(),
+            );
+        }
+        State {
+            arrange,
+            scroll: 0.0,
+            ..states()[0].clone()
+        }
+    }
+
+    #[test]
+    fn fitur_has_a_titled_susun_card_with_the_hotkey_and_the_gap() {
+        for lang in [Lang::Id, Lang::En] {
+            for (hotkey, failed) in [
+                (ArrangeHotkey::Off, false),
+                (ArrangeHotkey::CtrlAltS, true),
+                (ArrangeHotkey::CtrlAltS, false),
+            ] {
+                let mut s = susun_state(0, 0);
+                s.lang = lang;
+                s.arrange.hotkey = hotkey;
+                s.arrange_hotkey_failed = failed;
+                s.scroll = 1e6;
+                let l = layout(Section::Features, &s, &Estimate);
+                assert!(
+                    l.texts
+                        .iter()
+                        .any(|t| t.text == text(lang, Key::PageArrange).to_uppercase()),
+                    "the eyebrow"
+                );
+                let (_, items, selected) = l.segmented(Group::ArrangeHotkey).expect("hotkey");
+                let hits: Vec<Hit> = items.iter().map(|i| i.hit).collect();
+                assert_eq!(
+                    hits,
+                    [
+                        Hit::ArrangeHotkey(ArrangeHotkey::Off),
+                        Hit::ArrangeHotkey(ArrangeHotkey::CtrlAltS)
+                    ]
+                );
+                assert_eq!(items[selected].hit, Hit::ArrangeHotkey(hotkey));
+                let taken = l
+                    .texts
+                    .iter()
+                    .any(|t| t.text == text(lang, Key::ClipHotkeyTaken));
+                assert_eq!(taken, failed && hotkey != ArrangeHotkey::Off);
+                assert!(l.controls.iter().any(|c| matches!(
+                    c,
+                    Control::Slider {
+                        id: SliderId::ArrangeGap,
+                        ..
+                    }
+                )));
+            }
+        }
+        assert_eq!(SliderId::ArrangeGap.range(), (0, 24));
+    }
+
+    #[test]
+    fn the_gap_slider_shows_pixels_and_follows_the_setting() {
+        let mut s = susun_state(0, 0);
+        s.arrange.gap = 16;
+        s.scroll = 1e6;
+        let l = layout(Section::Features, &s, &Estimate);
+        assert!(l.texts.iter().any(|t| t.text == "16 px"));
+        let value = l.controls.iter().find_map(|c| match c {
+            Control::Slider {
+                id: SliderId::ArrangeGap,
+                value,
+                ..
+            } => Some(*value),
+            _ => None,
+        });
+        assert_eq!(value, Some(16));
+    }
+
+    #[test]
+    fn susun_lists_each_template_and_saved_arrangement_with_its_buttons() {
+        let mut s = susun_state(2, 3);
+        s.scroll = 1e6;
+        let l = layout(Section::Features, &s, &Estimate);
+        let all = buttons_of(&l);
+        for i in 0..2 {
+            assert!(button(&all, Hit::ArrangeTemplateEdit(i)).2);
+            assert!(button(&all, Hit::ArrangeTemplateDelete(i)).2);
+        }
+        for i in 0..3 {
+            assert!(button(&all, Hit::ArrangeSavedRename(i)).2);
+            assert!(button(&all, Hit::ArrangeSavedDelete(i)).2);
+        }
+        assert!(all.iter().all(|b| b.0 != Hit::ArrangeTemplateEdit(2)));
+        // One miniature per row.
+        let minis = l
+            .controls
+            .iter()
+            .filter(|c| matches!(c, Control::Mini { canvas: false, .. }))
+            .count();
+        assert_eq!(minis, 5);
+        assert!(button(&all, Hit::ArrangeTemplateNew).2, "room for more");
+    }
+
+    #[test]
+    fn the_new_template_button_is_off_at_twelve_and_says_so() {
+        for lang in [Lang::Id, Lang::En] {
+            let mut s = susun_state(12, 0);
+            s.lang = lang;
+            s.scroll = 1e6;
+            let l = layout(Section::Features, &s, &Estimate);
+            let all = buttons_of(&l);
+            assert!(!button(&all, Hit::ArrangeTemplateNew).2);
+            assert!(
+                l.texts
+                    .iter()
+                    .any(|t| t.text == text(lang, Key::ArrangeTemplatesFull))
+            );
+        }
+    }
+
+    #[test]
+    fn fitur_with_the_susun_card_still_scrolls_to_its_end_and_fits() {
+        for (templates, saved) in [(0, 0), (12, 12)] {
+            let mut s = susun_state(templates, saved);
+            s.scroll = f32::MAX;
+            let l = layout(Section::Features, &s, &Estimate);
+            let view = l.viewport.expect("Fitur scrolls");
+            assert!(l.scroll_max > 0.0 && l.scroll <= l.scroll_max);
+            let last = l.cards.last().expect("a card");
+            assert!(last.bottom() <= view.bottom() + 0.5, "the end is reachable");
+            for c in &l.controls {
+                let b = c.bounds();
+                assert!(b.x >= CONTENT_X - 1.0 && b.right() <= CONTENT_X + CONTENT_W + 1.0);
+            }
+        }
+    }
+
+    fn editor_state(
+        root: crate::arrange::Node,
+        selected: usize,
+        name: bool,
+        rename: bool,
+    ) -> State<'static> {
+        State {
+            arrange_edit: Some(EditView {
+                rename,
+                root,
+                selected,
+                name_ok: name,
+            }),
+            ..susun_state(1, 1)
+        }
+    }
+
+    #[test]
+    fn the_editor_has_a_sixteen_nine_canvas_and_its_buttons() {
+        let one = crate::arrange::Node::Leaf;
+        let l = layout(
+            Section::Features,
+            &editor_state(one, 0, false, false),
+            &Estimate,
+        );
+        let canvas = l.canvas.expect("a canvas");
+        assert!((canvas.w / canvas.h - 16.0 / 9.0).abs() < 0.02);
+        assert!(l.fields.iter().any(|(f, _)| *f == Field::TileName), "Nama");
+        let all = buttons_of(&l);
+        // One tile: both splits are fine, merge is not; no name: no Simpan.
+        assert!(button(&all, Hit::ArrangeSplit(Dir::Cols)).2);
+        assert!(button(&all, Hit::ArrangeSplit(Dir::Rows)).2);
+        assert!(!button(&all, Hit::ArrangeMerge).2, "disabled with one tile");
+        assert!(!button(&all, Hit::ArrangeEditorSave).2, "no valid name");
+        assert!(button(&all, Hit::ArrangeEditorCancel).2);
+        // The rest of Fitur is not there while it is open.
+        assert!(l.segmented(Group::Shell).is_none());
+        assert!(l.segmented(Group::ArrangeHotkey).is_none());
+        // With a name: Simpan is on.
+        let l = layout(
+            Section::Features,
+            &editor_state(crate::arrange::Node::Leaf, 0, true, false),
+            &Estimate,
+        );
+        assert!(button(&buttons_of(&l), Hit::ArrangeEditorSave).2);
+    }
+
+    #[test]
+    fn the_editor_disables_a_split_the_model_refuses_and_merge_needs_two_tiles() {
+        // Six tiles: no split at all.
+        let mut full = crate::arrange::Node::Leaf;
+        for _ in 0..5 {
+            let at = (0..full.leaves())
+                .find(|i| full.clone().split(*i, Dir::Rows) || full.clone().split(*i, Dir::Cols));
+            let at = at.expect("room for another");
+            let dir = if full.clone().split(at, Dir::Rows) {
+                Dir::Rows
+            } else {
+                Dir::Cols
+            };
+            full.split(at, dir);
+        }
+        assert_eq!(full.leaves(), 6);
+        let l = layout(
+            Section::Features,
+            &editor_state(full, 0, true, false),
+            &Estimate,
+        );
+        let all = buttons_of(&l);
+        assert!(!button(&all, Hit::ArrangeSplit(Dir::Cols)).2);
+        assert!(!button(&all, Hit::ArrangeSplit(Dir::Rows)).2);
+        assert!(button(&all, Hit::ArrangeMerge).2);
+        // A tile 0.25 wide cannot be split side by side, only top to bottom.
+        let mut narrow = crate::arrange::Node::Leaf;
+        narrow.split(0, Dir::Cols);
+        narrow.split(0, Dir::Cols);
+        let l = layout(
+            Section::Features,
+            &editor_state(narrow, 0, true, false),
+            &Estimate,
+        );
+        let all = buttons_of(&l);
+        assert!(!button(&all, Hit::ArrangeSplit(Dir::Cols)).2);
+        assert!(button(&all, Hit::ArrangeSplit(Dir::Rows)).2);
+    }
+
+    #[test]
+    fn renaming_shows_only_the_name_field() {
+        let l = layout(
+            Section::Features,
+            &editor_state(crate::arrange::Node::Leaf, 0, true, true),
+            &Estimate,
+        );
+        assert!(l.canvas.is_none());
+        assert!(l.fields.iter().any(|(f, _)| *f == Field::TileName));
+        let all = buttons_of(&l);
+        assert!(
+            all.iter()
+                .all(|b| !matches!(b.0, Hit::ArrangeSplit(_) | Hit::ArrangeMerge))
+        );
+        assert!(button(&all, Hit::ArrangeEditorSave).2);
+    }
+
+    #[test]
+    fn a_press_on_the_canvas_takes_a_divider_near_it_else_the_tile() {
+        let canvas = Rect {
+            x: 100.0,
+            y: 50.0,
+            w: 320.0,
+            h: 180.0,
+        };
+        let mut root = crate::arrange::Node::Leaf;
+        root.split(0, Dir::Cols);
+        // The divider is at the middle: x = 100 + 160.
+        assert_eq!(
+            canvas_press(&root, canvas, 262.0, 100.0),
+            Some(CanvasPress::Divider(vec![]))
+        );
+        assert_eq!(
+            canvas_press(&root, canvas, 150.0, 100.0),
+            Some(CanvasPress::Tile(0))
+        );
+        assert_eq!(
+            canvas_press(&root, canvas, 400.0, 200.0),
+            Some(CanvasPress::Tile(1))
+        );
+        assert_eq!(canvas_press(&root, canvas, 50.0, 100.0), None, "outside");
+        // A divider inside the right half only spans that half.
+        root.split(1, Dir::Rows);
+        let mid = 50.0 + 90.0;
+        assert_eq!(
+            canvas_press(&root, canvas, 350.0, mid + 2.0),
+            Some(CanvasPress::Divider(vec![true]))
+        );
+        assert_eq!(
+            canvas_press(&root, canvas, 150.0, mid),
+            Some(CanvasPress::Tile(0)),
+            "the left half has no such divider"
+        );
+    }
+
+    #[test]
+    fn dragging_a_divider_snaps_and_keeps_every_tile_at_fifteen_percent() {
+        let canvas = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 320.0,
+            h: 180.0,
+        };
+        let mut root = crate::arrange::Node::Leaf;
+        root.split(0, Dir::Cols);
+        // To 30 % of the width: 96 px.
+        assert!(canvas_drag(&mut root, canvas, &[], 96.0, 10.0));
+        assert!((root.to_rects()[0].w - 0.3).abs() < 1e-3);
+        // To 31 %: snapped to 30 %.
+        assert!(canvas_drag(&mut root, canvas, &[], 99.0, 10.0));
+        assert!((root.to_rects()[0].w - 0.3).abs() < 1e-3);
+        // Past the left edge: stops at 15 %; past the right: at 85 %.
+        assert!(canvas_drag(&mut root, canvas, &[], -50.0, 10.0));
+        assert!((root.to_rects()[0].w - 0.15).abs() < 1e-3);
+        assert!(canvas_drag(&mut root, canvas, &[], 900.0, 10.0));
+        assert!((root.to_rects()[1].w - 0.15).abs() < 1e-3);
+        assert!(root.is_valid());
+        assert!(
+            !canvas_drag(&mut root, canvas, &[true], 10.0, 10.0),
+            "no such divider"
+        );
+        // A rows divider follows the pointer's y.
+        let mut rows = crate::arrange::Node::Leaf;
+        rows.split(0, Dir::Rows);
+        assert!(canvas_drag(&mut rows, canvas, &[], 10.0, 45.0));
+        assert!((rows.to_rects()[0].h - 0.25).abs() < 1e-3);
     }
 
     #[test]

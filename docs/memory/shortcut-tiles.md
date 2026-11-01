@@ -112,3 +112,9 @@ switched off (the twelve-tile limit above).
   the `--settings` demo).
 
 Related: [[panel-pages]], [[studio-icons]].
+
+**v3.10:** `Shortcut::Go(Page::Arrange)` (name `"GoArrange"`) sits after `Go(Cli)` in
+`Shortcut::ALL` (22 built-ins) and is **off by default** (`default_on` stays false for
+it): an old config joins it off, right after Cli, and the default tile count is
+unchanged ([[arrange]]). "Tiles" in code and UI still means these Pintasan tiles; Susun
+calls its slots leaves and its overlay `arrange`.
