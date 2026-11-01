@@ -1,4 +1,5 @@
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Mutex;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use windows::Foundation::TypedEventHandler;
@@ -18,28 +19,156 @@ use crate::model::{Event, MediaCommand, MediaInfo, Timeline};
 /// Thumbnails larger than this are dropped rather than held in memory.
 const MAX_ART_BYTES: u64 = 2 * 1024 * 1024;
 
+/// AppUserModelIds (matched as a case-insensitive substring) of players that
+/// only play music. Browsers are not here: one browser id covers every tab,
+/// a video tab included.
+const KNOWN_PLAYERS: &[&str] = &[
+    "spotify",
+    "applemusic",
+    "itunes",
+    "tidal",
+    "deezer",
+    "amazon music",
+    "amazonmusic",
+    "youtube-music",
+    "youtubemusic",
+    "th-ch",
+    "soundcloud",
+    "pandora",
+    "foobar2000",
+    "musicbee",
+    "aimp",
+    "winamp",
+    "zunemusic",
+    "dopamine",
+    "plexamp",
+];
+
+/// How long the shown session still ranks as playing after it stops (a short
+/// pause or an open between two tracks), so another playing session does not
+/// take the island for a moment and hand it back.
+const HOLD: Duration = Duration::from_secs(2);
+
+/// A tracked session, as far as ranking cares.
+#[derive(Clone, Debug, PartialEq)]
+struct Candidate {
+    key: u64,
+    app: String,
+    /// `None` for closed or stopped, else whether it ranks as playing
+    /// (`rank_playing`, or held by `HOLD`).
+    live: Option<bool>,
+    music: bool,
+}
+
+/// Whether a known music player owns this AppUserModelId.
+fn known_player(app: &str) -> bool {
+    let app = app.to_lowercase();
+    KNOWN_PLAYERS.iter().any(|known| app.contains(known))
+}
+
+/// Music rather than a video or a social tab: a known player, or both artist
+/// and album filled in. An artist alone is not enough (a video tab often has
+/// a channel name). The session's declared `PlaybackType` is not used:
+/// Chromium, Firefox and every Electron or WebView2 host report Music for
+/// every tab, a video included.
+fn is_music(app: &str, artist: &str, album: &str) -> bool {
+    known_player(app) || (!artist.trim().is_empty() && !album.trim().is_empty())
+}
+
+/// The candidate to show, by index. Closed and stopped sessions are never
+/// chosen. Of the rest the best by (playing, music, Windows' current session,
+/// the one shown before); a full tie takes the first in list order.
+fn choose(cands: &[Candidate], current: Option<u64>, shown: Option<u64>) -> Option<usize> {
+    let mut best: Option<(usize, (bool, bool, bool, bool))> = None;
+    for (i, c) in cands.iter().enumerate() {
+        let Some(playing) = c.live else {
+            continue;
+        };
+        let score = (
+            playing,
+            c.music,
+            Some(c.key) == current,
+            Some(c.key) == shown,
+        );
+        if best.is_none_or(|(_, b)| score > b) {
+            best = Some((i, score));
+        }
+    }
+    best.map(|(i, _)| i)
+}
+
+/// A tracked session as `match_current` compares it.
+struct Facts<'a> {
+    app: &'a str,
+    status: &'static str,
+    title: &'a str,
+    artist: &'a str,
+}
+
+/// Windows' current session as `match_current` compares it, read only when
+/// several tracked sessions share its AUMID.
+struct Probe {
+    status: &'static str,
+    title: String,
+    artist: String,
+}
+
+/// Which tracked session (by index) is Windows' current one, whose COM
+/// identity matched none (see `Watcher::current_key`). The only session with
+/// its AUMID; when several share it (browser tabs), the only one of those
+/// whose status, title and artist equal the current session's (`probe`).
+/// No match, an empty AUMID, a failed probe or several equal tabs give
+/// `None`: better no tiebreak than the wrong one.
+fn match_current(
+    tracked: &[Facts],
+    app: &str,
+    probe: impl FnOnce() -> Option<Probe>,
+) -> Option<usize> {
+    if app.is_empty() {
+        return None;
+    }
+    let same_app: Vec<usize> = (0..tracked.len())
+        .filter(|&i| tracked[i].app == app)
+        .collect();
+    match same_app.as_slice() {
+        [] => return None,
+        [only] => return Some(*only),
+        _ => {}
+    }
+    let probe = probe()?;
+    let mut hits = same_app.into_iter().filter(|&i| {
+        let f = &tracked[i];
+        f.status == probe.status && f.title == probe.title && f.artist == probe.artist
+    });
+    let first = hits.next()?;
+    hits.next().is_none().then_some(first)
+}
+
 /// What a WinRT event handler reports to the watcher thread. Handlers run on
-/// WinRT threads, so they only send one of these and return.
+/// WinRT threads, so they only send one of these and return. The key names
+/// the tracked session the event came from.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Signal {
     /// The manager's current session, or its set of sessions, changed.
     Session,
-    /// The current session's title, artist or thumbnail changed.
-    Properties,
-    /// The current session's play/pause state changed.
-    Playback,
-    /// The current session's position, length or seek state changed.
-    Timeline,
+    /// A session's title, artist or thumbnail changed.
+    Properties(u64),
+    /// A session's play/pause state changed.
+    Playback(u64),
+    /// The shown session's position, length or seek state changed.
+    Timeline(u64),
 }
 
 /// The work implied by a burst of signals, coalesced so that a flurry of
 /// events costs one rebuild.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 struct Refresh {
-    /// Re-subscribe to whichever session is now current.
+    /// List the manager's sessions again.
     session: bool,
-    /// Re-read title, artist and thumbnail.
-    properties: bool,
+    /// Sessions whose title, artist or album must be re-read.
+    properties: Vec<u64>,
+    /// Re-read the statuses and choose the session to show again.
+    rank: bool,
     /// Re-read the timeline (cheap: no art).
     timeline: bool,
 }
@@ -49,16 +178,24 @@ impl Refresh {
         match signal {
             Signal::Session => {
                 self.session = true;
-                self.properties = true;
+                self.rank = true;
                 self.timeline = true;
             }
             // A new track starts a new timeline, whichever event comes first.
-            Signal::Properties => {
-                self.properties = true;
+            Signal::Properties(key) => {
+                if !self.properties.contains(&key) {
+                    self.properties.push(key);
+                }
+                self.rank = true;
                 self.timeline = true;
             }
-            // Play/pause may come with or without a timeline update.
-            Signal::Playback | Signal::Timeline => self.timeline = true,
+            // Any session's play/pause can change which one is shown; it may
+            // come with or without a timeline update.
+            Signal::Playback(_) => {
+                self.rank = true;
+                self.timeline = true;
+            }
+            Signal::Timeline(_) => self.timeline = true,
         }
     }
 }
@@ -79,26 +216,47 @@ impl LastSent {
     }
 }
 
-/// Title, artist and thumbnail of the current session; re-read only when the
-/// session reports new media properties, not on every playback change.
+/// Title, artist and album of a session, and its thumbnail when asked for.
 struct Properties {
     title: String,
     artist: String,
+    album: String,
     art: Option<Vec<u8>>,
 }
 
-/// Handlers registered on one session; removed when dropped.
-struct SessionSubscription {
+/// What the watcher remembers of one session between reads.
+#[derive(Default)]
+struct Meta {
+    title: String,
+    artist: String,
+    album: String,
+}
+
+/// One session the watcher follows, with the handlers registered on it
+/// (removed when dropped).
+struct Tracked {
+    /// Never reused while the watcher runs.
+    key: u64,
+    /// The session's COM identity, to recognise it in a new list.
+    identity: IUnknown,
     session: Session,
     /// The session's AppUserModelId, read once.
     app: String,
+    /// `shown_playing` of the last status read: what the island displays.
+    live: Option<bool>,
+    /// `rank_playing` of the last status read: what ranking uses.
+    rank_live: Option<bool>,
+    status: &'static str,
+    meta: Meta,
+    /// The metadata was read (or tried) once.
+    meta_tried: bool,
     properties_token: Option<i64>,
     playback_token: Option<i64>,
     timeline_token: Option<i64>,
 }
 
-impl SessionSubscription {
-    fn new(session: Session, signals: &Sender<Signal>) -> Self {
+impl Tracked {
+    fn new(key: u64, identity: IUnknown, session: Session, signals: &Sender<Signal>) -> Self {
         let app = session
             .SourceAppUserModelId()
             .map(|id| id.to_string())
@@ -106,35 +264,89 @@ impl SessionSubscription {
         let s = signals.clone();
         let properties_token = session
             .MediaPropertiesChanged(&TypedEventHandler::new(move |_, _| {
-                let _ = s.send(Signal::Properties);
+                let _ = s.send(Signal::Properties(key));
                 Ok(())
             }))
             .ok();
         let s = signals.clone();
         let playback_token = session
             .PlaybackInfoChanged(&TypedEventHandler::new(move |_, _| {
-                let _ = s.send(Signal::Playback);
-                Ok(())
-            }))
-            .ok();
-        let s = signals.clone();
-        let timeline_token = session
-            .TimelinePropertiesChanged(&TypedEventHandler::new(move |_, _| {
-                let _ = s.send(Signal::Timeline);
+                let _ = s.send(Signal::Playback(key));
                 Ok(())
             }))
             .ok();
         Self {
+            key,
+            identity,
             session,
             app,
+            live: None,
+            rank_live: None,
+            status: "Unreadable",
+            meta: Meta::default(),
+            meta_tried: false,
             properties_token,
             playback_token,
-            timeline_token,
+            timeline_token: None,
+        }
+    }
+
+    /// Starts reporting timeline changes (the shown session only).
+    fn subscribe_timeline(&mut self, signals: &Sender<Signal>) {
+        if self.timeline_token.is_some() {
+            return;
+        }
+        let (s, key) = (signals.clone(), self.key);
+        self.timeline_token = self
+            .session
+            .TimelinePropertiesChanged(&TypedEventHandler::new(move |_, _| {
+                let _ = s.send(Signal::Timeline(key));
+                Ok(())
+            }))
+            .ok();
+    }
+
+    fn unsubscribe_timeline(&mut self) {
+        if let Some(token) = self.timeline_token.take() {
+            let _ = self.session.RemoveTimelinePropertiesChanged(token);
+        }
+    }
+
+    /// Re-reads the playback status.
+    fn read_status(&mut self) {
+        let status = self
+            .session
+            .GetPlaybackInfo()
+            .and_then(|i| i.PlaybackStatus());
+        self.status = status_name(&status);
+        self.rank_live = rank_playing(&status);
+        self.live = shown_playing(status);
+    }
+
+    /// Re-reads title, artist and album, and returns the thumbnail when
+    /// `with_art`: `Some(None)` when the session has none, `None` when the
+    /// read failed. A failed read keeps the previous values.
+    fn read_meta(&mut self, with_art: bool) -> Option<Option<Vec<u8>>> {
+        self.meta_tried = true;
+        let p = read_properties(&self.session, with_art).ok()?;
+        self.meta.title = p.title;
+        self.meta.artist = p.artist;
+        self.meta.album = p.album;
+        Some(p.art)
+    }
+
+    /// `held`: the session is the shown one and inside its hold.
+    fn candidate(&self, held: bool) -> Candidate {
+        Candidate {
+            key: self.key,
+            app: self.app.clone(),
+            live: ranked_live(self.rank_live, held),
+            music: is_music(&self.app, &self.meta.artist, &self.meta.album),
         }
     }
 }
 
-impl Drop for SessionSubscription {
+impl Drop for Tracked {
     fn drop(&mut self) {
         if let Some(token) = self.properties_token {
             let _ = self.session.RemoveMediaPropertiesChanged(token);
@@ -142,10 +354,55 @@ impl Drop for SessionSubscription {
         if let Some(token) = self.playback_token {
             let _ = self.session.RemovePlaybackInfoChanged(token);
         }
-        if let Some(token) = self.timeline_token {
-            let _ = self.session.RemoveTimelinePropertiesChanged(token);
-        }
+        self.unsubscribe_timeline();
     }
+}
+
+/// Stores the thumbnail `read` from session `key` (`Tracked::read_meta`).
+/// A failed read (`None`) leaves the cache as it was, so the shown session
+/// keeps its cover; a read with no thumbnail clears it.
+fn store_art(
+    art: &mut Option<Vec<u8>>,
+    art_for: &mut Option<u64>,
+    key: u64,
+    read: Option<Option<Vec<u8>>>,
+) {
+    if let Some(read) = read {
+        *art = read;
+        *art_for = Some(key);
+    }
+}
+
+/// Called when session `key` has its metadata re-read. A session that is not
+/// shown reads no thumbnail, so if it owns the cached cover that cover may now
+/// belong to an old track: forget the owner, so the next `set_shown` for it
+/// reads the cover again instead of pairing the new title with the old cover.
+fn forget_stale_art(art_for: &mut Option<u64>, key: u64, is_shown: bool) {
+    if !is_shown && *art_for == Some(key) {
+        *art_for = None;
+    }
+}
+
+/// The sessions the watcher follows, for `send_command`: key, AppUserModelId
+/// and the session. Updated before an `Event::Media` carrying a new key goes
+/// out. Never held across a WinRT call that waits.
+static SESSIONS: Mutex<Vec<(u64, String, Session)>> = Mutex::new(Vec::new());
+
+fn publish_sessions(tracked: &[Tracked]) {
+    let list = tracked
+        .iter()
+        .map(|t| (t.key, t.app.clone(), t.session.clone()))
+        .collect();
+    *SESSIONS.lock().unwrap_or_else(|e| e.into_inner()) = list;
+}
+
+/// What a refresh found.
+struct Update {
+    /// What the island should now show.
+    info: Option<MediaInfo>,
+    /// The shown session changed, or its properties were re-read: a new
+    /// track may have started.
+    new_track: bool,
 }
 
 /// State owned by the watcher thread.
@@ -156,8 +413,17 @@ struct Watcher {
     /// current one without `CurrentSessionChanged` firing.
     sessions_token: Option<i64>,
     signals: Sender<Signal>,
-    subscription: Option<SessionSubscription>,
-    properties: Option<Properties>,
+    tracked: Vec<Tracked>,
+    /// The key the next session gets; starts at 1 (0 means unknown).
+    next_key: u64,
+    /// The key of the session on show.
+    shown: Option<u64>,
+    /// The shown session stopped playing a moment ago and still ranks as
+    /// playing until then (`next_hold`): its key and the deadline.
+    hold: Option<(u64, Instant)>,
+    /// The thumbnail of the shown session, and whose it is.
+    art: Option<Vec<u8>>,
+    art_for: Option<u64>,
     /// The last (session, status) pair, for the diagnosis log.
     status_seen: StatusSeen,
 }
@@ -183,60 +449,227 @@ impl Watcher {
             manager_token,
             sessions_token,
             signals,
-            subscription: None,
-            properties: None,
+            tracked: Vec::new(),
+            next_key: 1,
+            shown: None,
+            hold: None,
+            art: None,
+            art_for: None,
             status_seen: StatusSeen::default(),
         }
     }
 
-    /// Applies `refresh` and returns what the island should now show.
-    fn refresh(&mut self, refresh: Refresh) -> Option<MediaInfo> {
-        if refresh.session {
-            // Drop the old handlers before subscribing to the new session.
-            self.subscription = None;
-            self.properties = None;
-            self.subscription = self
-                .manager
-                .GetCurrentSession()
-                .ok()
-                .map(|session| SessionSubscription::new(session, &self.signals));
+    /// Whether a signal still means something: its session is tracked (the
+    /// timeline: shown). Late events of a session that is gone are dropped.
+    fn accepts(&self, signal: Signal) -> bool {
+        match signal {
+            Signal::Session => true,
+            Signal::Properties(key) | Signal::Playback(key) => {
+                self.tracked.iter().any(|t| t.key == key)
+            }
+            Signal::Timeline(key) => self.shown == Some(key),
         }
-        let Some(subscription) = self.subscription.as_ref() else {
+    }
+
+    /// Follows the manager's sessions again: known ones keep their key,
+    /// new ones are subscribed, gone ones are dropped.
+    fn relist(&mut self) {
+        let Ok(sessions) = self.manager.GetSessions() else {
+            return;
+        };
+        let Ok(size) = sessions.Size() else {
+            return;
+        };
+        let mut old = std::mem::take(&mut self.tracked);
+        let mut next = Vec::new();
+        for i in 0..size {
+            let Ok(session) = sessions.GetAt(i) else {
+                continue;
+            };
+            let Ok(identity) = session.cast::<IUnknown>() else {
+                continue;
+            };
+            if let Some(pos) = old.iter().position(|t| t.identity == identity) {
+                next.push(old.remove(pos));
+            } else {
+                let key = self.next_key;
+                self.next_key += 1;
+                next.push(Tracked::new(key, identity, session, &self.signals));
+            }
+        }
+        self.tracked = next;
+        publish_sessions(&self.tracked);
+    }
+
+    /// The key of the session Windows calls current. GSMTC hands back a
+    /// different COM object from `GetCurrentSession` than from `GetSessions`
+    /// for the same session, so identity alone almost never matches; then
+    /// `match_current` goes by AUMID and, for tabs sharing one, by status,
+    /// title and artist. Call after the statuses were read.
+    fn current_key(&self) -> Option<u64> {
+        let current = self.manager.GetCurrentSession().ok()?;
+        let identity = current.cast::<IUnknown>().ok()?;
+        if let Some(t) = self.tracked.iter().find(|t| t.identity == identity) {
+            return Some(t.key);
+        }
+        let app = current
+            .SourceAppUserModelId()
+            .map(|id| id.to_string())
+            .unwrap_or_default();
+        let facts: Vec<Facts> = self
+            .tracked
+            .iter()
+            .map(|t| Facts {
+                app: &t.app,
+                status: t.status,
+                title: &t.meta.title,
+                artist: &t.meta.artist,
+            })
+            .collect();
+        let probe = || {
+            let status = current.GetPlaybackInfo().and_then(|i| i.PlaybackStatus());
+            let p = read_properties(&current, false).ok()?;
+            Some(Probe {
+                status: status_name(&status),
+                title: p.title,
+                artist: p.artist,
+            })
+        };
+        match_current(&facts, &app, probe).map(|i| self.tracked[i].key)
+    }
+
+    /// Applies `refresh` and returns what the island should now show.
+    fn refresh(&mut self, refresh: &Refresh) -> Update {
+        if refresh.session {
+            self.relist();
+        }
+        let before = self.shown;
+        if before.is_some_and(|k| !self.tracked.iter().any(|t| t.key == k)) {
+            self.shown = None;
+        }
+        // Metadata: new sessions and those whose own properties changed. The
+        // thumbnail only for the shown one.
+        let mut shown_reread = false;
+        for t in &mut self.tracked {
+            let asked = refresh.properties.contains(&t.key);
+            if !asked && t.meta_tried {
+                continue;
+            }
+            let is_shown = self.shown == Some(t.key);
+            let art = t.read_meta(is_shown);
+            if is_shown {
+                store_art(&mut self.art, &mut self.art_for, t.key, art);
+                shown_reread = true;
+            } else {
+                forget_stale_art(&mut self.art_for, t.key, false);
+            }
+        }
+        if refresh.rank {
+            let shown_rank = |tracked: &[Tracked], shown: Option<u64>| {
+                shown
+                    .and_then(|k| tracked.iter().find(|t| t.key == k))
+                    .and_then(|t| t.rank_live)
+            };
+            let was = shown_rank(&self.tracked, self.shown);
+            for t in &mut self.tracked {
+                t.read_status();
+            }
+            let now = Instant::now();
+            let now_live = shown_rank(&self.tracked, self.shown);
+            self.hold = next_hold(self.hold, self.shown, was, now_live, now);
+            let hold = self.hold;
+            let cands: Vec<Candidate> = self
+                .tracked
+                .iter()
+                .map(|t| t.candidate(hold.is_some_and(|(k, until)| k == t.key && now < until)))
+                .collect();
+            let current = self.current_key();
+            let chosen = choose(&cands, current, self.shown).map(|i| cands[i].key);
+            if chosen != self.shown {
+                self.hold = None;
+            }
+            if chosen != before {
+                let live = cands.iter().filter(|c| c.live.is_some()).count();
+                let app = chosen
+                    .and_then(|k| cands.iter().find(|c| c.key == k))
+                    .map_or("", |c| c.app.as_str());
+                media_log::log_choice(app, live);
+            }
+            self.set_shown(chosen);
+        }
+        let shown_changed = self.shown != before;
+        Update {
+            info: self.info(),
+            new_track: shown_changed || shown_reread,
+        }
+    }
+
+    /// Makes `key` the shown session: the timeline handler moves to it and
+    /// its thumbnail is read.
+    fn set_shown(&mut self, key: Option<u64>) {
+        if self.shown != key {
+            if let Some(old) = self.shown
+                && let Some(t) = self.tracked.iter_mut().find(|t| t.key == old)
+            {
+                t.unsubscribe_timeline();
+            }
+            self.shown = key;
+        }
+        let signals = self.signals.clone();
+        let Some(t) = key.and_then(|k| self.tracked.iter_mut().find(|t| t.key == k)) else {
+            self.art = None;
+            self.art_for = None;
+            return;
+        };
+        t.subscribe_timeline(&signals);
+        if self.art_for != Some(t.key) {
+            let art = t.read_meta(true);
+            store_art(&mut self.art, &mut self.art_for, t.key, art);
+        }
+    }
+
+    /// The shown session as the island displays it; logs its status when
+    /// that changed.
+    fn info(&mut self) -> Option<MediaInfo> {
+        let shown = self
+            .shown
+            .and_then(|k| self.tracked.iter().find(|t| t.key == k));
+        let Some(t) = shown else {
             if self.status_seen.changed("", "None") {
                 media_log::log_status("", "None");
             }
             return None;
         };
-        let session = &subscription.session;
-        if refresh.properties || self.properties.is_none() {
-            // On a failed read keep the previous values for this session.
-            if let Ok(properties) = read_properties(session) {
-                self.properties = Some(properties);
-            }
+        if self.status_seen.changed(&t.app, t.status) {
+            media_log::log_status(&t.app, t.status);
         }
-        let status = session
-            .GetPlaybackInfo()
-            .and_then(|info| info.PlaybackStatus());
-        let name = status_name(&status);
-        if self.status_seen.changed(&subscription.app, name) {
-            media_log::log_status(&subscription.app, name);
-        }
-        let playing = shown_playing(status)?;
-        let properties = self.properties.as_ref()?;
+        let playing = t.live?;
         Some(MediaInfo {
-            title: properties.title.clone(),
-            artist: properties.artist.clone(),
+            title: t.meta.title.clone(),
+            artist: t.meta.artist.clone(),
             playing,
-            art: properties.art.clone(),
-            source_app: subscription.app.clone(),
+            art: if self.art_for == Some(t.key) {
+                self.art.clone()
+            } else {
+                None
+            },
+            source_app: t.app.clone(),
+            session_key: t.key,
         })
     }
 
-    /// The current session's timeline; `None` without a session or when it
-    /// reports none.
+    /// When the hold of the shown session runs out and the sessions must be
+    /// ranked again.
+    fn hold_deadline(&self) -> Option<Instant> {
+        self.hold.map(|(_, until)| until)
+    }
+
+    /// The shown session's timeline; `None` without one or when it reports
+    /// none.
     fn timeline(&self) -> Option<Timeline> {
-        let session = &self.subscription.as_ref()?.session;
-        read_timeline(session).ok().flatten()
+        let key = self.shown?;
+        let t = self.tracked.iter().find(|t| t.key == key)?;
+        read_timeline(&t.session).ok().flatten()
     }
 }
 
@@ -248,6 +681,7 @@ impl Drop for Watcher {
         if let Some(token) = self.sessions_token {
             let _ = self.manager.RemoveSessionsChanged(token);
         }
+        SESSIONS.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 }
 
@@ -260,6 +694,49 @@ fn shown_playing(status: Result<PlaybackStatus>) -> Option<bool> {
         Ok(status) => Some(status == PlaybackStatus::Playing),
         Err(_) => Some(false),
     }
+}
+
+/// Whether a session with this status ranks as playing; `None` like
+/// `shown_playing`. A session changing tracks (`Changing`) ranks as playing,
+/// though the island displays it as paused, so a skip does not hand the
+/// island to another playing session for a moment.
+fn rank_playing(status: &Result<PlaybackStatus>) -> Option<bool> {
+    match status {
+        Ok(PlaybackStatus::Changing) => Some(true),
+        Ok(PlaybackStatus::Closed | PlaybackStatus::Stopped) => None,
+        Ok(status) => Some(*status == PlaybackStatus::Playing),
+        Err(_) => Some(false),
+    }
+}
+
+/// `rank_live` as ranking sees it: a held session that stopped playing still
+/// ranks as playing. A closed or stopped one is never held.
+fn ranked_live(rank_live: Option<bool>, held: bool) -> Option<bool> {
+    match rank_live {
+        Some(false) if held => Some(true),
+        other => other,
+    }
+}
+
+/// The hold of the shown session after a status read: `(key, until)`.
+/// It starts when the shown session goes from playing to not playing (paused,
+/// opened, unreadable), lasts `HOLD`, and ends early when it plays again,
+/// closes or stops, or another session is shown.
+fn next_hold(
+    hold: Option<(u64, Instant)>,
+    shown: Option<u64>,
+    was: Option<bool>,
+    now_live: Option<bool>,
+    now: Instant,
+) -> Option<(u64, Instant)> {
+    let key = shown?;
+    if now_live != Some(false) {
+        return None;
+    }
+    if was == Some(true) {
+        return Some((key, now + HOLD));
+    }
+    hold.filter(|&(k, until)| k == key && now < until)
 }
 
 /// The status's name for the diagnosis log.
@@ -276,12 +753,13 @@ fn status_name(status: &Result<PlaybackStatus>) -> &'static str {
     }
 }
 
-/// Watches the system media session on a background thread and sends
-/// `Event::Media` whenever what is playing changes: once at start, then on
-/// session, track and play/pause changes. A changed timeline (a seek, a new
-/// track, play/pause) follows as `Event::MediaTimeline`, without re-reading
-/// the art; steady playback reported again is not sent (`timeline_moved`).
-/// The thread blocks between events.
+/// Watches the system media sessions on a background thread and sends
+/// `Event::Media` whenever what the island shows changes: once at start, then
+/// on session, track and play/pause changes. Every session is ranked and the
+/// best one is shown (`choose`). A changed timeline (a seek, a new track,
+/// play/pause) follows as `Event::MediaTimeline`, without re-reading the art;
+/// steady playback reported again is not sent (`timeline_moved`). The thread
+/// blocks between events.
 pub fn spawn_watcher(tx: Sender<Event>, wake: impl Fn() + Send + Sync + 'static) {
     std::thread::spawn(move || {
         unsafe {
@@ -297,7 +775,8 @@ pub fn spawn_watcher(tx: Sender<Event>, wake: impl Fn() + Send + Sync + 'static)
         let mut refresh = Refresh::default();
         refresh.add(Signal::Session);
         loop {
-            let info = watcher.refresh(refresh);
+            let update = watcher.refresh(&refresh);
+            let info = update.info;
             let (present, playing) = (info.is_some(), info.as_ref().is_some_and(|m| m.playing));
             let mut sent = false;
             if last.changed(&info) {
@@ -306,13 +785,14 @@ pub fn spawn_watcher(tx: Sender<Event>, wake: impl Fn() + Send + Sync + 'static)
                 }
                 sent = true;
             }
-            if refresh.timeline || sent {
+            if refresh.timeline || sent || update.new_track {
                 let timeline = if present { watcher.timeline() } else { None };
                 let now = Instant::now();
-                // After new properties (a new track) it goes out even if
-                // unchanged, so the island pairs the new title with it.
+                // After a new session or new properties (a new track) it goes
+                // out even if unchanged, so the island pairs the new title
+                // with it.
                 let moved = timeline_moved(last_timeline.as_ref(), timeline.as_ref(), playing, now);
-                if refresh.properties || moved {
+                if update.new_track || moved {
                     if tx.send(Event::MediaTimeline(timeline)).is_err() {
                         return;
                     }
@@ -323,30 +803,63 @@ pub fn spawn_watcher(tx: Sender<Event>, wake: impl Fn() + Send + Sync + 'static)
             if sent {
                 wake();
             }
-            refresh = next_refresh(&signal_rx);
+            let deadline = watcher.hold_deadline();
+            refresh = next_refresh(&signal_rx, deadline, |signal| watcher.accepts(signal));
         }
     });
 }
 
-/// Blocks for the next signal, then folds in any already queued behind it.
-fn next_refresh(signals: &Receiver<Signal>) -> Refresh {
+/// Blocks for the next signal `accept` lets through, then folds in any
+/// already queued behind it. At `deadline` (a hold running out) it stops
+/// waiting and asks for a re-rank.
+fn next_refresh(
+    signals: &Receiver<Signal>,
+    deadline: Option<Instant>,
+    accept: impl Fn(Signal) -> bool,
+) -> Refresh {
     let mut refresh = Refresh::default();
     // The watcher holds a sender, so `recv` only returns once a signal arrives.
-    if let Ok(signal) = signals.recv() {
-        refresh.add(signal);
+    // A burst of dropped signals (a closed session's) waits for the next one.
+    while refresh == Refresh::default() {
+        let received = match deadline {
+            None => signals.recv().map_err(|_| RecvTimeoutError::Disconnected),
+            Some(at) => signals.recv_timeout(at.saturating_duration_since(Instant::now())),
+        };
+        let signal = match received {
+            Ok(signal) => signal,
+            Err(RecvTimeoutError::Timeout) => {
+                refresh.rank = true;
+                break;
+            }
+            Err(RecvTimeoutError::Disconnected) => break,
+        };
+        if accept(signal) {
+            refresh.add(signal);
+        }
     }
     for signal in signals.try_iter() {
-        refresh.add(signal);
+        if accept(signal) {
+            refresh.add(signal);
+        }
     }
     refresh
 }
 
-/// Sends a transport command to the session whose AppUserModelId is
-/// `target` (the one the island shows) on a short-lived thread, so the caller
-/// never waits on WinRT. Without such a session nothing is sent. `click`,
-/// when the command came from one, goes to the diagnosis log. Errors are
-/// ignored.
-pub fn send_command(cmd: MediaCommand, target: String, click: Option<Click>) {
+/// The session a transport command is meant for: the one the island shows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Target {
+    /// The watcher's key of the shown session (`MediaInfo::session_key`); 0
+    /// when nothing is shown.
+    pub key: u64,
+    /// Its AppUserModelId, for the log only.
+    pub app: String,
+}
+
+/// Sends a transport command to the session with `target.key` (the one the
+/// island shows) on a short-lived thread, so the caller never waits on WinRT.
+/// Without such a session nothing is sent. `click`, when the command came
+/// from one, goes to the diagnosis log. Errors are ignored.
+pub fn send_command(cmd: MediaCommand, target: Target, click: Option<Click>) {
     std::thread::spawn(move || {
         unsafe {
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
@@ -355,16 +868,16 @@ pub fn send_command(cmd: MediaCommand, target: String, click: Option<Click>) {
     });
 }
 
-fn try_send_command(cmd: &MediaCommand, target: &str, click: Option<&Click>) -> Result<bool> {
-    let session = find_session(target);
+fn try_send_command(cmd: &MediaCommand, target: &Target, click: Option<&Click>) -> Result<bool> {
+    let session = find_session(target.key);
     if let Some(click) = click {
         let outcome = Outcome::Sent {
             cmd,
-            session_found: matches!(session, Ok(Some(_))),
+            session_found: session.is_some(),
         };
-        media_log::log_command(click, outcome, target);
+        media_log::log_command(click, outcome, &target.app);
     }
-    let Some(session) = session? else {
+    let Some(session) = session else {
         return Ok(false);
     };
     let op = match cmd {
@@ -376,58 +889,41 @@ fn try_send_command(cmd: &MediaCommand, target: &str, click: Option<&Click>) -> 
     op.join()
 }
 
-/// The session with AppUserModelId `target`; `None` when there is none.
-fn find_session(target: &str) -> Result<Option<Session>> {
-    let manager = Manager::RequestAsync()?.join()?;
-    let sessions = manager.GetSessions()?;
-    let list: Vec<Session> = (0..sessions.Size()?)
-        .filter_map(|i| sessions.GetAt(i).ok())
-        .collect();
-    let ids: Vec<String> = list
-        .iter()
-        .map(|s| {
-            s.SourceAppUserModelId()
-                .map(|id| id.to_string())
-                .unwrap_or_default()
-        })
-        .collect();
-    // COM identity: the same session always gives the same IUnknown.
-    let current = manager
-        .GetCurrentSession()
-        .ok()
-        .and_then(|c| c.cast::<IUnknown>().ok())
-        .and_then(|c| {
-            list.iter()
-                .position(|s| s.cast::<IUnknown>().ok().as_ref() == Some(&c))
-        });
-    Ok(pick_session(&ids, current, target).map(|i| list[i].clone()))
+/// The tracked session with `key`, cloned out of the registry so the lock is
+/// not held while the command runs.
+fn find_session(key: u64) -> Option<Session> {
+    let sessions = SESSIONS.lock().unwrap_or_else(|e| e.into_inner());
+    let keys: Vec<u64> = sessions.iter().map(|(k, _, _)| *k).collect();
+    pick_session(&keys, key).map(|i| sessions[i].2.clone())
 }
 
-/// Which of the sessions (by AppUserModelId) gets a command meant for
-/// `target`. Browser tabs share one id, so the current session wins when it
-/// matches, else the first match. An empty target (a player without an id)
-/// is the current session when it has none either. No match: none.
-fn pick_session(ids: &[String], current: Option<usize>, target: &str) -> Option<usize> {
-    if target.is_empty() {
-        return current.filter(|&i| ids.get(i).is_some_and(String::is_empty));
+/// Which of the tracked sessions (by key) gets a command meant for
+/// `target_key`. Key 0 (unknown) and keys not tracked get none.
+fn pick_session(keys: &[u64], target_key: u64) -> Option<usize> {
+    if target_key == 0 {
+        return None;
     }
-    if let Some(i) = current
-        && ids.get(i).is_some_and(|id| id == target)
-    {
-        return Some(i);
-    }
-    ids.iter().position(|id| id == target)
+    keys.iter().position(|&k| k == target_key)
 }
 
-fn read_properties(session: &Session) -> Result<Properties> {
+/// Reads title, artist and album, and the thumbnail when `with_art`.
+fn read_properties(session: &Session, with_art: bool) -> Result<Properties> {
     let props = session.TryGetMediaPropertiesAsync()?.join()?;
-    let art = props
-        .Thumbnail()
-        .ok()
-        .and_then(|thumbnail| read_thumbnail(&thumbnail).ok().flatten());
+    let art = if with_art {
+        props
+            .Thumbnail()
+            .ok()
+            .and_then(|thumbnail| read_thumbnail(&thumbnail).ok().flatten())
+    } else {
+        None
+    };
     Ok(Properties {
         title: props.Title()?.to_string(),
         artist: props.Artist()?.to_string(),
+        album: props
+            .AlbumTitle()
+            .map(|a| a.to_string())
+            .unwrap_or_default(),
         art,
     })
 }
@@ -514,10 +1010,16 @@ pub fn probe() {
         match event {
             Event::Media(None) => println!("None"),
             Event::Media(Some(m)) => println!(
-                "{} | {} | playing={} | art={} bytes",
+                "{} | {} | playing={} | app={} | key={} | art={} bytes",
                 m.title,
                 m.artist,
                 m.playing,
+                if m.source_app.is_empty() {
+                    "-"
+                } else {
+                    &m.source_app
+                },
+                m.session_key,
                 m.art.as_ref().map_or(0, Vec::len)
             ),
             Event::MediaTimeline(Some(t)) => println!(
@@ -543,47 +1045,379 @@ mod tests {
             playing,
             art,
             source_app: "Chrome".to_string(),
+            session_key: 1,
         })
     }
 
-    fn ids(list: &[&str]) -> Vec<String> {
-        list.iter().map(|s| s.to_string()).collect()
+    /// A live candidate; `playing` is its status.
+    fn cand(key: u64, app: &str, playing: bool, music: bool) -> Candidate {
+        Candidate {
+            key,
+            app: app.to_string(),
+            live: Some(playing),
+            music,
+        }
+    }
+
+    fn closed(key: u64, app: &str) -> Candidate {
+        Candidate {
+            key,
+            app: app.to_string(),
+            live: None,
+            music: true,
+        }
     }
 
     #[test]
-    fn a_command_goes_to_the_session_with_the_shown_id() {
-        let sessions = ids(&["Spotify.exe", "Chrome", "MSEdge"]);
-        assert_eq!(pick_session(&sessions, None, "Chrome"), Some(1));
-        assert_eq!(pick_session(&sessions, Some(0), "MSEdge"), Some(2));
+    fn a_failed_metadata_read_keeps_the_shown_cover() {
+        let (mut art, mut art_for) = (Some(vec![1, 2, 3]), Some(7));
+        store_art(&mut art, &mut art_for, 7, None);
+        assert_eq!(art, Some(vec![1, 2, 3]));
+        assert_eq!(art_for, Some(7));
     }
 
     #[test]
-    fn the_current_session_wins_among_tabs_sharing_an_id() {
-        let sessions = ids(&["Chrome", "Spotify.exe", "Chrome", "Chrome"]);
-        assert_eq!(pick_session(&sessions, Some(2), "Chrome"), Some(2));
-        // The current one is another app: the first match.
-        assert_eq!(pick_session(&sessions, Some(1), "Chrome"), Some(0));
-        assert_eq!(pick_session(&sessions, None, "Chrome"), Some(0));
-        // A stale index past the end is ignored.
-        assert_eq!(pick_session(&sessions, Some(9), "Chrome"), Some(0));
+    fn a_failed_read_on_a_new_session_leaves_it_unread() {
+        // `art_for` stays on the old session, so the next `set_shown` reads
+        // the new one again and `info` does not show the old cover on it.
+        let (mut art, mut art_for) = (Some(vec![1]), Some(7));
+        store_art(&mut art, &mut art_for, 8, None);
+        assert_eq!(art_for, Some(7));
+        assert_eq!(art, Some(vec![1]));
     }
 
     #[test]
-    fn no_matching_session_or_no_target_sends_nothing() {
-        let sessions = ids(&["Spotify.exe", "Chrome"]);
-        assert_eq!(pick_session(&sessions, Some(0), "MSEdge"), None);
-        assert_eq!(pick_session(&sessions, Some(0), ""), None);
-        assert_eq!(pick_session(&[], None, "Chrome"), None);
+    fn a_read_without_a_thumbnail_clears_the_cover() {
+        let (mut art, mut art_for) = (Some(vec![1, 2, 3]), Some(7));
+        store_art(&mut art, &mut art_for, 7, Some(None));
+        assert_eq!(art, None);
+        assert_eq!(art_for, Some(7));
     }
 
     #[test]
-    fn a_player_without_an_id_is_still_controlled() {
-        // The watcher shows the current session; when it has no
-        // AppUserModelId, that session is the one the buttons mean.
-        assert_eq!(pick_session(&ids(&["", "Chrome"]), Some(0), ""), Some(0));
-        // Not when the current session is another app, or there is none.
-        assert_eq!(pick_session(&ids(&["Chrome", ""]), Some(0), ""), None);
-        assert_eq!(pick_session(&ids(&["", "Chrome"]), None, ""), None);
+    fn a_read_with_a_thumbnail_replaces_the_cover() {
+        let (mut art, mut art_for) = (Some(vec![1]), Some(7));
+        store_art(&mut art, &mut art_for, 8, Some(Some(vec![9])));
+        assert_eq!(art, Some(vec![9]));
+        assert_eq!(art_for, Some(8));
+    }
+
+    #[test]
+    fn a_non_shown_reread_of_the_art_owner_clears_art_for() {
+        let mut art_for = Some(7);
+        forget_stale_art(&mut art_for, 7, false);
+        assert_eq!(art_for, None);
+    }
+
+    #[test]
+    fn a_non_shown_reread_of_another_key_leaves_art_for() {
+        let mut art_for = Some(7);
+        forget_stale_art(&mut art_for, 8, false);
+        assert_eq!(art_for, Some(7));
+        let mut none = None;
+        forget_stale_art(&mut none, 8, false);
+        assert_eq!(none, None);
+    }
+
+    #[test]
+    fn a_shown_reread_leaves_art_for_to_store_art() {
+        let mut art_for = Some(7);
+        forget_stale_art(&mut art_for, 7, true);
+        assert_eq!(art_for, Some(7));
+    }
+
+    #[test]
+    fn a_stale_cover_is_read_again_when_its_session_is_shown_next() {
+        // A shown with a cover, B shown next (thumbnail read fails, cache
+        // stays on A), then A's track changes while B is shown.
+        let (mut art, mut art_for) = (None, None);
+        store_art(&mut art, &mut art_for, 1, Some(Some(vec![1])));
+        assert_eq!(art_for, Some(1));
+        store_art(&mut art, &mut art_for, 2, None);
+        assert_eq!(art_for, Some(1));
+        forget_stale_art(&mut art_for, 1, false);
+        assert_eq!(art_for, None);
+    }
+
+    /// The key `choose` picks.
+    fn picked(cands: &[Candidate], current: Option<u64>, shown: Option<u64>) -> Option<u64> {
+        choose(cands, current, shown).map(|i| cands[i].key)
+    }
+
+    fn facts<'a>(app: &'a str, status: &'static str, title: &'a str, artist: &'a str) -> Facts<'a> {
+        Facts {
+            app,
+            status,
+            title,
+            artist,
+        }
+    }
+
+    fn probe(status: &'static str, title: &str, artist: &str) -> Option<Probe> {
+        Some(Probe {
+            status,
+            title: title.into(),
+            artist: artist.into(),
+        })
+    }
+
+    fn no_probe() -> Option<Probe> {
+        panic!("probed although the AUMID decides")
+    }
+
+    #[test]
+    fn the_current_session_is_found_by_its_aumid() {
+        let tracked = [
+            facts("Spotify.exe", "Paused", "Song", "Band"),
+            facts("Chrome", "Paused", "Video", "Channel"),
+        ];
+        assert_eq!(match_current(&tracked, "Chrome", no_probe), Some(1));
+        assert_eq!(match_current(&tracked, "vlc", no_probe), None);
+    }
+
+    #[test]
+    fn an_empty_aumid_matches_nothing() {
+        let tracked = [facts("", "Paused", "", "")];
+        assert_eq!(match_current(&tracked, "", no_probe), None);
+    }
+
+    #[test]
+    fn tabs_sharing_an_aumid_are_told_apart_by_status_title_and_artist() {
+        let tracked = [
+            facts("Chrome", "Playing", "Video A", "Channel"),
+            facts("Chrome", "Playing", "Video B", "Channel"),
+            facts("Chrome", "Paused", "Video B", "Channel"),
+        ];
+        let current = || probe("Playing", "Video B", "Channel");
+        assert_eq!(match_current(&tracked, "Chrome", current), Some(1));
+        let current = || probe("Paused", "Video B", "Channel");
+        assert_eq!(match_current(&tracked, "Chrome", current), Some(2));
+    }
+
+    #[test]
+    fn equal_tabs_or_a_failed_probe_give_no_current_session() {
+        let tracked = [
+            facts("Chrome", "Paused", "Video", "Channel"),
+            facts("Chrome", "Paused", "Video", "Channel"),
+        ];
+        let current = || probe("Paused", "Video", "Channel");
+        assert_eq!(match_current(&tracked, "Chrome", current), None);
+        assert_eq!(match_current(&tracked, "Chrome", || None), None);
+        let current = || probe("Playing", "Other", "Channel");
+        assert_eq!(match_current(&tracked, "Chrome", current), None);
+    }
+
+    #[test]
+    fn the_tab_windows_makes_current_takes_over_from_the_shown_one() {
+        // Tab A plays and is shown; the user starts tab B, which Windows
+        // makes current. Both are playing videos.
+        let tracked = [
+            facts("Chrome", "Playing", "Video A", "Channel A"),
+            facts("Chrome", "Playing", "Video B", "Channel B"),
+        ];
+        let current = match_current(&tracked, "Chrome", || {
+            probe("Playing", "Video B", "Channel B")
+        })
+        .map(|i| [1, 2][i]);
+        let cands = [
+            cand(1, "Chrome", true, false),
+            cand(2, "Chrome", true, false),
+        ];
+        assert_eq!(picked(&cands, current, Some(1)), Some(2));
+    }
+
+    #[test]
+    fn playing_music_beats_a_paused_social_tab() {
+        let music = is_music("Spotify.exe", "Queen", "A Night at the Opera");
+        let insta = is_music("Chrome", "", "");
+        let cands = [
+            cand(1, "Chrome", false, insta),
+            cand(2, "Spotify.exe", true, music),
+        ];
+        assert_eq!(picked(&cands, Some(1), Some(1)), Some(2));
+    }
+
+    #[test]
+    fn playing_music_beats_a_playing_video() {
+        let music = is_music("Chrome", "Queen", "Greatest Hits");
+        // A video: the channel as artist, no album.
+        let video = is_music("Chrome", "Some Channel", "");
+        assert!(music && !video);
+        let cands = [
+            cand(1, "Chrome", true, video),
+            cand(2, "Chrome", true, music),
+        ];
+        assert_eq!(picked(&cands, Some(1), Some(1)), Some(2));
+    }
+
+    #[test]
+    fn a_paused_player_gives_way_to_a_playing_video_and_takes_over_again() {
+        let paused = [
+            cand(1, "Spotify.exe", false, true),
+            cand(2, "Chrome", true, false),
+        ];
+        assert_eq!(picked(&paused, Some(1), Some(1)), Some(2));
+        // The music plays again: back to it, though the video stays shown
+        // and playing.
+        let playing = [
+            cand(1, "Spotify.exe", true, true),
+            cand(2, "Chrome", true, false),
+        ];
+        assert_eq!(picked(&playing, Some(2), Some(2)), Some(1));
+    }
+
+    #[test]
+    fn a_known_player_without_an_album_is_music() {
+        assert!(is_music("Spotify.exe", "Artist", ""));
+        assert!(is_music("Spotify.exe", "", ""));
+        let cands = [
+            cand(1, "Chrome", true, is_music("Chrome", "Channel", "")),
+            cand(2, "Spotify.exe", true, is_music("Spotify.exe", "", "")),
+        ];
+        assert_eq!(picked(&cands, Some(1), Some(1)), Some(2));
+    }
+
+    #[test]
+    fn a_browser_video_tab_is_not_music() {
+        // What a live Chrome tab reports for a video: PlaybackType Music
+        // (Chromium declares it for every tab), the channel as artist and no
+        // album. Only artist and album count, so it is not music.
+        for app in ["Chrome", "MSEdge", "308046B0AF4A39CB", "Brave", "Opera"] {
+            assert!(!is_music(app, "Some Channel", ""), "{app}");
+            assert!(!is_music(app, "", ""), "{app}");
+            assert!(is_music(app, "Queen", "Greatest Hits"), "{app}");
+        }
+        // A player that is not a browser and fills in both is music.
+        assert!(is_music("VideoLAN.VLC", "Queen", "Greatest Hits"));
+    }
+
+    #[test]
+    fn spotify_beats_a_playing_youtube_video_whichever_windows_calls_current() {
+        let video = is_music("Chrome", "Some Channel", "");
+        let music = is_music("Spotify.exe", "Queen", "");
+        let cands = [
+            cand(1, "Chrome", true, video),
+            cand(2, "Spotify.exe", true, music),
+        ];
+        assert_eq!(picked(&cands, Some(1), Some(1)), Some(2));
+    }
+
+    #[test]
+    fn an_artist_alone_or_an_album_alone_is_not_music() {
+        assert!(!is_music("Chrome", "Artist", ""));
+        assert!(!is_music("Chrome", "Artist", "   "));
+        assert!(!is_music("Chrome", "", "Album"));
+        assert!(is_music("Chrome", "Artist", "Album"));
+    }
+
+    #[test]
+    fn closed_and_stopped_sessions_are_never_chosen() {
+        // Not even when it is the only one, or the current one.
+        assert_eq!(picked(&[closed(1, "Spotify.exe")], Some(1), Some(1)), None);
+        let cands = [closed(1, "Spotify.exe"), closed(2, "Chrome")];
+        assert_eq!(picked(&cands, Some(2), Some(1)), None);
+        // A live one wins over a current one that is closed.
+        let cands = [closed(1, "Spotify.exe"), cand(2, "Chrome", false, false)];
+        assert_eq!(picked(&cands, Some(1), Some(1)), Some(2));
+    }
+
+    #[test]
+    fn a_tie_goes_to_the_current_session() {
+        let cands = [
+            cand(1, "Chrome", true, false),
+            cand(2, "Chrome", true, false),
+        ];
+        assert_eq!(picked(&cands, Some(2), Some(1)), Some(2));
+        assert_eq!(picked(&cands, Some(1), Some(2)), Some(1));
+    }
+
+    #[test]
+    fn a_tie_without_a_current_session_keeps_the_one_shown() {
+        let cands = [
+            cand(1, "Chrome", true, false),
+            cand(2, "Chrome", true, false),
+        ];
+        assert_eq!(picked(&cands, None, Some(2)), Some(2));
+        assert_eq!(picked(&cands, None, Some(1)), Some(1));
+        // The current one is a third session, not in the list.
+        assert_eq!(picked(&cands, Some(3), Some(2)), Some(2));
+        let reversed = [cands[1].clone(), cands[0].clone()];
+        assert_eq!(picked(&reversed, None, Some(1)), Some(1));
+    }
+
+    #[test]
+    fn a_full_tie_takes_the_first_in_the_list() {
+        let cands = [cand(5, "A", false, false), cand(3, "B", false, false)];
+        assert_eq!(choose(&cands, None, None), Some(0));
+    }
+
+    #[test]
+    fn nothing_to_choose_from() {
+        assert_eq!(choose(&[], None, None), None);
+        assert_eq!(choose(&[], Some(1), Some(1)), None);
+    }
+
+    #[test]
+    fn a_single_live_session_is_chosen() {
+        let cands = [closed(1, "Spotify.exe"), cand(2, "Chrome", false, false)];
+        assert_eq!(choose(&cands, None, None), Some(1));
+    }
+
+    #[test]
+    fn known_players_match_any_case_and_browsers_do_not() {
+        for app in [
+            "Spotify.exe",
+            "SPOTIFY",
+            "AppleInc.AppleMusicWin_nzyj5cx40ttqa!App",
+            "AppleInc.iTunes",
+            "TIDAL",
+            "Deezer.exe",
+            "AmazonMusic.exe",
+            "th-ch.YouTube-Music",
+            "SoundCloud",
+            "foobar2000.exe",
+            "MusicBee.exe",
+            "Microsoft.ZuneMusic_8wekyb3d8bbwe!Microsoft.ZuneMusic",
+            "Plexamp.exe",
+        ] {
+            assert!(known_player(app), "{app}");
+        }
+        for app in [
+            "Chrome",
+            "MSEdge",
+            "firefox.exe",
+            "chrome.exe",
+            "",
+            "YouTube",
+        ] {
+            assert!(!known_player(app), "{app:?}");
+        }
+    }
+
+    #[test]
+    fn a_command_goes_to_the_session_with_the_shown_key() {
+        // Two browser tabs share the id "Chrome"; Windows' current one is
+        // key 9, but the island shows key 7.
+        let tabs = [7, 9];
+        assert_eq!(pick_session(&tabs, 7), Some(0));
+        assert_eq!(pick_session(&tabs, 9), Some(1));
+        assert_eq!(pick_session(&[3, 7, 9], 9), Some(2));
+    }
+
+    #[test]
+    fn an_unknown_key_or_no_key_sends_nothing() {
+        assert_eq!(pick_session(&[7, 9], 8), None);
+        assert_eq!(pick_session(&[7, 9], 0), None);
+        assert_eq!(pick_session(&[0, 7], 0), None);
+        assert_eq!(pick_session(&[], 7), None);
+    }
+
+    #[test]
+    fn a_session_without_an_id_is_still_targeted_by_key() {
+        // The key identifies it, whatever its AppUserModelId (empty here).
+        let sessions = [(4u64, ""), (5, "Chrome")];
+        let keys: Vec<u64> = sessions.iter().map(|s| s.0).collect();
+        assert_eq!(pick_session(&keys, 4), Some(0));
     }
 
     #[test]
@@ -622,26 +1456,49 @@ mod tests {
     }
 
     #[test]
-    fn playback_and_timeline_signals_reread_only_the_timeline() {
-        for signal in [Signal::Playback, Signal::Timeline] {
-            let mut r = Refresh::default();
-            r.add(signal);
-            assert_eq!(
-                r,
-                Refresh {
-                    timeline: true,
-                    ..Refresh::default()
-                },
-                "{signal:?}"
-            );
-        }
+    fn another_session_with_the_same_text_counts_as_a_change() {
+        let mut last = LastSent::default();
+        let mut a = info("A", true, None);
+        assert!(last.changed(&a));
+        a.as_mut().unwrap().session_key = 2;
+        assert!(last.changed(&a));
     }
 
     #[test]
-    fn new_properties_reread_the_timeline_too() {
+    fn a_timeline_signal_rereads_only_the_timeline() {
         let mut r = Refresh::default();
-        r.add(Signal::Properties);
-        assert!(r.properties && r.timeline && !r.session);
+        r.add(Signal::Timeline(1));
+        assert_eq!(
+            r,
+            Refresh {
+                timeline: true,
+                ..Refresh::default()
+            }
+        );
+    }
+
+    #[test]
+    fn a_playback_signal_reranks_and_rereads_the_timeline() {
+        let mut r = Refresh::default();
+        r.add(Signal::Playback(3));
+        assert_eq!(
+            r,
+            Refresh {
+                rank: true,
+                timeline: true,
+                ..Refresh::default()
+            }
+        );
+    }
+
+    #[test]
+    fn new_properties_reread_that_session_and_rerank() {
+        let mut r = Refresh::default();
+        r.add(Signal::Properties(2));
+        r.add(Signal::Properties(2));
+        r.add(Signal::Properties(5));
+        assert_eq!(r.properties, vec![2, 5]);
+        assert!(r.rank && r.timeline && !r.session);
     }
 
     #[test]
@@ -656,15 +1513,16 @@ mod tests {
     }
 
     #[test]
-    fn session_change_implies_property_reread() {
+    fn a_session_change_relists_reranks_and_rereads_the_timeline() {
         let mut r = Refresh::default();
-        r.add(Signal::Playback);
+        r.add(Signal::Playback(1));
         r.add(Signal::Session);
         assert_eq!(
             r,
             Refresh {
                 session: true,
-                properties: true,
+                properties: vec![],
+                rank: true,
                 timeline: true
             }
         );
@@ -673,19 +1531,166 @@ mod tests {
     #[test]
     fn coalesces_queued_signals() {
         let (tx, rx) = mpsc::channel();
-        tx.send(Signal::Playback).unwrap();
-        tx.send(Signal::Properties).unwrap();
-        tx.send(Signal::Playback).unwrap();
-        let r = next_refresh(&rx);
+        tx.send(Signal::Playback(1)).unwrap();
+        tx.send(Signal::Properties(2)).unwrap();
+        tx.send(Signal::Playback(2)).unwrap();
+        tx.send(Signal::Timeline(1)).unwrap();
+        let r = next_refresh(&rx, None, |_| true);
         assert_eq!(
             r,
             Refresh {
                 session: false,
-                properties: true,
+                properties: vec![2],
+                rank: true,
                 timeline: true
             }
         );
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn signals_of_unknown_sessions_are_dropped() {
+        let (tx, rx) = mpsc::channel();
+        // Key 9 is gone: its events do not wake the watcher, the next
+        // accepted one does.
+        tx.send(Signal::Playback(9)).unwrap();
+        tx.send(Signal::Properties(9)).unwrap();
+        tx.send(Signal::Timeline(9)).unwrap();
+        tx.send(Signal::Timeline(2)).unwrap();
+        tx.send(Signal::Playback(9)).unwrap();
+        let r = next_refresh(&rx, None, |s| matches!(s, Signal::Timeline(2)));
+        assert_eq!(
+            r,
+            Refresh {
+                timeline: true,
+                ..Refresh::default()
+            }
+        );
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn changing_tracks_ranks_as_playing_but_displays_paused() {
+        let changing = Ok(PlaybackStatus::Changing);
+        assert_eq!(rank_playing(&changing), Some(true));
+        assert_eq!(shown_playing(changing), Some(false));
+        assert_eq!(rank_playing(&Ok(PlaybackStatus::Playing)), Some(true));
+        for status in [PlaybackStatus::Paused, PlaybackStatus::Opened] {
+            assert_eq!(rank_playing(&Ok(status)), Some(false), "{status:?}");
+        }
+        assert_eq!(rank_playing(&Ok(PlaybackStatus::Closed)), None);
+        assert_eq!(rank_playing(&Ok(PlaybackStatus::Stopped)), None);
+        assert_eq!(
+            rank_playing(&Err(windows::core::Error::empty())),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn a_skip_on_the_shown_player_keeps_it_over_a_playing_video() {
+        // Spotify (shown) reports Changing while a muted video plays.
+        let spotify = ranked_live(rank_playing(&Ok(PlaybackStatus::Changing)), false);
+        let cands = [
+            Candidate {
+                live: spotify,
+                ..cand(1, "Spotify.exe", true, true)
+            },
+            cand(2, "Chrome", true, false),
+        ];
+        assert_eq!(picked(&cands, Some(2), Some(1)), Some(1));
+    }
+
+    #[test]
+    fn a_held_session_ranks_as_playing_a_closed_one_never() {
+        assert_eq!(ranked_live(Some(false), true), Some(true));
+        assert_eq!(ranked_live(Some(false), false), Some(false));
+        assert_eq!(ranked_live(Some(true), false), Some(true));
+        assert_eq!(ranked_live(None, true), None);
+    }
+
+    #[test]
+    fn the_hold_starts_when_the_shown_session_stops_playing() {
+        let now = Instant::now();
+        let hold = next_hold(None, Some(1), Some(true), Some(false), now);
+        assert_eq!(hold, Some((1, now + HOLD)));
+        // A later read inside the hold keeps it; it does not start again.
+        let later = now + Duration::from_millis(500);
+        assert_eq!(
+            next_hold(hold, Some(1), Some(false), Some(false), later),
+            hold
+        );
+        // It runs out.
+        assert_eq!(
+            next_hold(hold, Some(1), Some(false), Some(false), now + HOLD),
+            None
+        );
+    }
+
+    #[test]
+    fn the_hold_ends_early() {
+        let now = Instant::now();
+        let hold = Some((1, now + HOLD));
+        // Playing again, closed or stopped.
+        assert_eq!(next_hold(hold, Some(1), Some(false), Some(true), now), None);
+        assert_eq!(next_hold(hold, Some(1), Some(false), None, now), None);
+        // Another session is shown, or none.
+        assert_eq!(
+            next_hold(hold, Some(2), Some(false), Some(false), now),
+            None
+        );
+        assert_eq!(next_hold(hold, None, Some(true), Some(false), now), None);
+        // A paused session that was not playing before gets no hold.
+        assert_eq!(
+            next_hold(None, Some(1), Some(false), Some(false), now),
+            None
+        );
+        assert_eq!(next_hold(None, Some(1), None, Some(false), now), None);
+    }
+
+    #[test]
+    fn a_short_pause_between_tracks_keeps_the_shown_player() {
+        let now = Instant::now();
+        let hold = next_hold(None, Some(1), Some(true), Some(false), now);
+        let held = |at: Instant| hold.is_some_and(|(k, until)| k == 1 && at < until);
+        let cands = |at: Instant| {
+            [
+                Candidate {
+                    live: ranked_live(Some(false), held(at)),
+                    ..cand(1, "Spotify.exe", false, true)
+                },
+                cand(2, "Chrome", true, false),
+            ]
+        };
+        assert_eq!(picked(&cands(now), Some(2), Some(1)), Some(1));
+        // Still paused after the hold: the playing video takes over.
+        assert_eq!(picked(&cands(now + HOLD), Some(2), Some(1)), Some(2));
+    }
+
+    #[test]
+    fn the_hold_running_out_asks_for_a_rerank() {
+        let (_tx, rx) = mpsc::channel::<Signal>();
+        let r = next_refresh(&rx, Some(Instant::now()), |_| true);
+        assert_eq!(
+            r,
+            Refresh {
+                rank: true,
+                ..Refresh::default()
+            }
+        );
+    }
+
+    #[test]
+    fn a_signal_before_the_deadline_is_taken_as_usual() {
+        let (tx, rx) = mpsc::channel();
+        tx.send(Signal::Timeline(1)).unwrap();
+        let r = next_refresh(&rx, Some(Instant::now() + HOLD), |_| true);
+        assert_eq!(
+            r,
+            Refresh {
+                timeline: true,
+                ..Refresh::default()
+            }
+        );
     }
 
     #[test]
@@ -709,13 +1714,6 @@ mod tests {
             shown_playing(Err(windows::core::Error::empty())),
             Some(false)
         );
-    }
-
-    #[test]
-    fn sessions_changed_resubscribes() {
-        let mut r = Refresh::default();
-        r.add(Signal::Session);
-        assert!(r.session && r.properties);
     }
 
     #[test]

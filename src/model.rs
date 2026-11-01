@@ -176,9 +176,12 @@ pub struct MediaInfo {
     pub artist: String,
     pub playing: bool,
     pub art: Option<Vec<u8>>,
-    /// The session's AppUserModelId: transport commands go to the session
-    /// with this id, not to whichever one Windows calls current.
+    /// The shown session's AppUserModelId. Browser tabs share one, so it is
+    /// a label for the log, not a way to find the session.
     pub source_app: String,
+    /// An id the watcher gives the shown session, 0 when unknown (demo,
+    /// tests). Transport commands go to the session with this key.
+    pub session_key: u64,
 }
 
 /// Where the current track's playback was at a known moment, from the media

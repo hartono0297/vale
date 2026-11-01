@@ -1755,9 +1755,19 @@ impl App {
     fn perform(&mut self, effect: Effect, now: Instant) -> Option<Event> {
         match effect {
             Effect::OpenApp(app_id) => notifications::open_app(&app_id),
-            // To the session the island shows, not whichever is current.
+            // To the session the island shows (by key), not whichever is current.
             Effect::Media(cmd) => {
-                media::send_command(cmd, self.media_app(), self.media_click.take())
+                let target = self.state.media().map_or_else(
+                    || media::Target {
+                        key: 0,
+                        app: String::new(),
+                    },
+                    |m| media::Target {
+                        key: m.session_key,
+                        app: m.source_app.clone(),
+                    },
+                );
+                media::send_command(cmd, target, self.media_click.take())
             }
             Effect::PlaySound => play_phase_sound(),
             Effect::SavePomodoro(settings) => {
