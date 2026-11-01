@@ -93,6 +93,14 @@ centred and the poll may stop ([[bata-idle-power-budget]]). The clamp test
 also takes every accessory's box now ([[cat-accessories]]); `LOOK_HEAD_DIP`
 stayed 7. Accessories follow the same slide and tilt (the glasses the eyes').
 
+The same toggle also drives the **shrunk notch's eyes** (v3.11, see
+[[notch-peek-eyes]]): while the notch is shrunk and "Ikuti kursor" is on, the
+eyes slide up to 4 dip across and 1.5 dip down toward the pointer. They do not
+need the cat (`config.robot`) and are gated by `pointer_watch::eyes_motion`
+(eased on the frame clock with Motion Full and Windows animations, otherwise
+they jump); the cat's own look stays off while shrunk. The row's description
+reads "Kepala dan mata menoleh ke kursor".
+
 Demo scenes: `bata-look-left`, `bata-look-right` (the idle cat at -1 / +1).
 
 Not verified live: the feel of the ease with a real pointer, and how the tilt
