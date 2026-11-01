@@ -1,8 +1,10 @@
 name: pages
 
-# Publishes the static site/ folder (index, privacy, terms, style, img) to
-# GitHub Pages. Pages can only serve the repo root or docs/ directly, so the
-# site goes out through the GitHub Actions source instead.
+# Publishes the static site/ folder (index, 404, privacy, terms, style,
+# site.js, fonts, img) to GitHub Pages. Pages can only serve the repo
+# root or docs/ directly, so the site goes out through the GitHub Actions
+# source instead.
+# Before pushing site changes, run: python -I scripts/check-site.py (links, ids, em dashes).
 # One-time owner step: Settings -> Pages -> Source: GitHub Actions.
 on:
   push:
