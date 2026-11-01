@@ -674,7 +674,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 135] = [
+const SCENES: [Scene; 139] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
