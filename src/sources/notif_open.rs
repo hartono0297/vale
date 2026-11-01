@@ -336,7 +336,7 @@ enum Plan {
         element: IUIAutomationElement,
     },
     /// A browser window, tab unchanged.
-    Front { win: Win, why: &'static str },
+    Front { win: Win, why: String },
     /// The browser is not running: start it on the site.
     LaunchBrowser { exe: String, url: String },
     /// A desktop app's visible or minimized main window.
@@ -417,13 +417,13 @@ fn search_browser(target: &OpenTarget, wins: &[Win], cancel: &dyn Fn() -> bool) 
     let uia = unsafe {
         CoCreateInstance::<_, IUIAutomation2>(&CUIAutomation8, None, CLSCTX_INPROC_SERVER)
     };
+    let mut strips: Vec<WindowTabs> = Vec::new();
     if let Ok(uia) = uia {
         let clock = Clock {
             uia: &uia,
             started: Instant::now(),
             cancel,
         };
-        let mut strips: Vec<WindowTabs> = Vec::new();
         let mut elements: Vec<Vec<IUIAutomationElement>> = Vec::new();
         for w in &mine {
             let Some((tabs, els)) = (unsafe { read_tabs(&clock, w.handle()) }) else {
@@ -441,9 +441,10 @@ fn search_browser(target: &OpenTarget, wins: &[Win], cancel: &dyn Fn() -> bool) 
             };
         }
     }
+    let tabs: usize = strips.iter().map(|s| s.tabs.len()).sum();
     Plan::Front {
         win: (*first).clone(),
-        why: "no tab matched",
+        why: format!("no tab matched among {tabs} tabs read in {} windows", strips.len()),
     }
 }
 
@@ -780,6 +781,19 @@ mod tests {
             "Google Chrome",
             Some("Chrome"),
             Some("web.telegram.org"),
+            "Ibu",
+        );
+        println!("{}", plan(&t));
+    }
+
+    /// Same for WhatsApp Web, with the title a chat's sender would give.
+    #[test]
+    #[ignore = "reads the real desktop; run with --ignored --nocapture"]
+    fn plan_for_a_whatsapp_web_toast_in_chrome() {
+        let t = target(
+            "Google Chrome",
+            Some("Chrome"),
+            Some("web.whatsapp.com"),
             "Ibu",
         );
         println!("{}", plan(&t));
