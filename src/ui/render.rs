@@ -51,7 +51,7 @@ use super::fonts::{self, Face, Role};
 use super::geometry::{
     BAR_COUNT, BAR_GAP, BAR_W, HitRegions, LYRIC_FADE_W, NoticeLayout, Rect, SHOT_BUTTON_PAD,
     SHOT_THUMB_RADIUS, ShapeRect, Under, badge_letter, badge_style, compact_layout,
-    compact_layout_robot, corner_radius, equalizer_heights, idle_layout, lyric_layout,
+    compact_layout_robot, corner_radius, equalizer_heights, idle_layout_lead, lyric_layout,
     lyric_layout_robot, lyric_overflow, notice_action, notice_action_w, notice_layout, shot_fit,
     shot_layout, shot_regions, shoulder_depth, toast_eyebrow, toast_notice_layout,
 };
@@ -168,6 +168,9 @@ pub struct Frame<'a> {
     pub legibility: f32,
     /// "HH:MM" drawn while the view is `Idle`; `None` when the clock is off.
     pub clock: Option<String>,
+    /// How far the idle shape has grown on its left (`geometry::typing_lead`,
+    /// 0 to `TYPING_LEAD`): the robot and clock are centred in the rest.
+    pub idle_lead: f32,
     /// The line drawn while the view is `MediaLyric`.
     pub lyric: Option<ShownLine<'a>>,
     /// How far a line too long for its box is scrolled left
@@ -1201,9 +1204,11 @@ impl Renderer {
         let name = i18n::text(lang, i18n::Key::SourceVale);
         self.text(name, &self.fonts.heading, title, 1.0);
         let pose = Pose::default();
-        let col = (card.w - 40.0) / 5.0;
+        // Six to a row: the eleven faces fit the two rows the sizes row
+        // leaves room for (the typing cat's laptop needs the wider cells).
+        let col = (card.w - 40.0) / 6.0;
         for (i, expr) in Expr::ALL.into_iter().enumerate() {
-            let (row, c) = (i / 5, i % 5);
+            let (row, c) = (i / 6, i % 6);
             let x = card.x + 20.0 + c as f32 * col;
             let y = card.y + 56.0 + row as f32 * 118.0;
             let cell = Rect {
@@ -1215,8 +1220,16 @@ impl Renderer {
             self.set_color(self.palette.raised, 1.0);
             self.fill_round(cell, radius::NOTICE / 1.5);
             let size = 56.0;
+            // The typing cat sits at the cell's right: its laptop reaches
+            // about 24 px left of the cat's square, so it needs that room
+            // and must not touch the neighbour.
+            let x = if expr == Expr::Typing {
+                cell.x + cell.w - size - 1.0
+            } else {
+                cell.x + (cell.w - size) / 2.0
+            };
             let area = Rect {
-                x: cell.x + (cell.w - size) / 2.0,
+                x,
                 y: cell.y + 14.0,
                 w: size,
                 h: size,
@@ -1591,7 +1604,12 @@ impl Renderer {
             },
             View::Idle => {
                 // Without the clock or the robot, idle is the empty shape.
-                let l = idle_layout(shape, robot.is_some(), frame.clock.is_some());
+                let l = idle_layout_lead(
+                    shape,
+                    robot.is_some(),
+                    frame.clock.is_some(),
+                    frame.idle_lead,
+                );
                 if let (Some(area), Some(r)) = (l.robot, robot) {
                     self.paint_robot(area, r);
                 }
@@ -1701,6 +1719,13 @@ impl Renderer {
                 y: area.y + robot.pose.nod_dip,
                 ..area
             });
+            // The typing cat's laptop gets the same halo.
+            let laptop = (robot.expr == Expr::Typing).then(|| {
+                (
+                    super::robot::laptop_rect(area),
+                    1.5 * area.w / super::robot::GRID,
+                )
+            });
             for (grow, weight) in [(3.0, 0.10), (1.5, 0.18)] {
                 self.set_color(0x000000, weight * strength);
                 self.fill_round(
@@ -1712,6 +1737,17 @@ impl Renderer {
                     },
                     radius + grow,
                 );
+                if let Some((laptop, corner)) = laptop {
+                    self.fill_round(
+                        Rect {
+                            x: laptop.x - grow,
+                            y: laptop.y - grow,
+                            w: laptop.w + 2.0 * grow,
+                            h: laptop.h + 2.0 * grow,
+                        },
+                        corner + grow,
+                    );
+                }
             }
         }
         self.robot.paint(

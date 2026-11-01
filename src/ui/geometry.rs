@@ -238,7 +238,43 @@ pub struct IdleLayout {
     pub clock: Option<Rect>,
 }
 
+/// How far the idle island grows to the left while the cat types on its
+/// laptop (dip): the laptop reaches about 11 dip left of the 26 dip robot
+/// square (`robot::laptop_rect`). The right edge stays, so the robot and the
+/// clock stay exactly where they are on screen (`idle_layout_lead`).
+pub const TYPING_LEAD: f32 = 12.0;
+
+/// The idle shape grown on the LEFT only by `TYPING_LEAD`: x reduced and w
+/// increased by it, the right edge and everything else unchanged.
+pub fn idle_shape_typing(style: Style, size: NotchSize, robot: bool) -> ShapeRect {
+    let s = shape_with_robot_sized(style, size, ShapeKind::Idle, robot);
+    ShapeRect {
+        x: s.x - TYPING_LEAD,
+        w: s.w + TYPING_LEAD,
+        ..s
+    }
+}
+
+/// How much of `shape_w` is the typing lead: its excess over the plain idle
+/// width `notch_w`, 0 to `TYPING_LEAD` (NaN is 0). It follows the shape
+/// through the grow and shrink morph, so the group stays still.
+pub fn typing_lead(shape_w: f32, notch_w: f32) -> f32 {
+    let lead = shape_w - notch_w;
+    if lead.is_nan() {
+        0.0
+    } else {
+        lead.clamp(0.0, TYPING_LEAD)
+    }
+}
+
 pub fn idle_layout(s: ShapeRect, robot: bool, clock: bool) -> IdleLayout {
+    idle_layout_lead(s, robot, clock, 0.0)
+}
+
+/// `idle_layout` for a shape grown on the left by `lead` (`typing_lead`): the
+/// group (the robot alone, or robot, gap and clock) is centred in the shape
+/// minus that lead. A clock alone still fills the whole shape.
+pub fn idle_layout_lead(s: ShapeRect, robot: bool, clock: bool, lead: f32) -> IdleLayout {
     let full = Rect {
         x: s.x,
         y: s.y,
@@ -252,12 +288,16 @@ pub fn idle_layout(s: ShapeRect, robot: bool, clock: bool) -> IdleLayout {
             clock: clock.then_some(full),
         },
         (true, false) => IdleLayout {
-            robot: Some(square(s.x + (s.w - ROBOT_COMPACT) / 2.0, y, ROBOT_COMPACT)),
+            robot: Some(square(
+                s.x + lead + (s.w - lead - ROBOT_COMPACT) / 2.0,
+                y,
+                ROBOT_COMPACT,
+            )),
             clock: None,
         },
         (true, true) => {
             let group = ROBOT_COMPACT + ROBOT_GAP + CLOCK_W;
-            let x = s.x + (s.w - group) / 2.0;
+            let x = s.x + lead + (s.w - lead - group) / 2.0;
             IdleLayout {
                 robot: Some(square(x, y, ROBOT_COMPACT)),
                 clock: Some(Rect {

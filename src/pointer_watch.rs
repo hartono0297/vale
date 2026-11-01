@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 use crate::behind;
 use crate::model::View;
 use crate::ui::geometry::{AA_MARGIN, Rect, ShapeRect};
+use crate::ui::robot::Expr;
 
 /// How far past the normal notch (left, right and below) the pointer counts as
 /// near it, in logical pixels.
@@ -291,6 +292,90 @@ pub fn look_target(pointer_x: f32, centre_x: f32, monitor_left: f32, monitor_rig
     (offset / span).clamp(-1.0, 1.0)
 }
 
+/// The rules for the idle cat to follow the pointer, all but the screen's
+/// state asked once: "Ikuti kursor" and the cat on (`allowed`), motion Full
+/// (`moves`), the idle view, the notch not shrunk, nothing fullscreen, the
+/// screen on, and a face that follows (`Expr::follows`: it turns its head, or
+/// the typing cat glances with its eyes). `expr` is the face drawn, if any.
+pub fn look_on(
+    allowed: bool,
+    moves: bool,
+    idle_view: bool,
+    shrunk: bool,
+    fullscreen: bool,
+    screen_away: bool,
+    expr: Option<Expr>,
+) -> bool {
+    allowed
+        && moves
+        && idle_view
+        && !shrunk
+        && !fullscreen
+        && !screen_away
+        && expr.is_some_and(Expr::follows)
+}
+
+/// How far below or above the eyes the pointer reaches the typing cat's
+/// largest glance down or up, in dip (the caller scales it with the pointer).
+pub const GLANCE_SPAN_Y_DIP: f32 = 300.0;
+/// The typing cat stops following a pointer that has been still this long:
+/// its eyes go back to the screen.
+pub const GLANCE_REST: Duration = Duration::from_millis(1_200);
+
+/// Where the pointer is for the typing cat's eyes: `(vx, vy)`, each -1 to 1.
+/// `vx` is `look_target`; `vy` is the pointer's offset from `eyes_y` over
+/// `GLANCE_SPAN_Y_DIP` (so the caller gives `pointer_y` and `eyes_y` in dip),
+/// clamped. NaN is 0.
+pub fn glance_target(
+    pointer_x: f32,
+    pointer_y: f32,
+    centre_x: f32,
+    monitor_left: f32,
+    monitor_right: f32,
+    eyes_y: f32,
+) -> (f32, f32) {
+    let vx = look_target(pointer_x, centre_x, monitor_left, monitor_right);
+    let vy = ((pointer_y - eyes_y) / GLANCE_SPAN_Y_DIP).clamp(-1.0, 1.0);
+    (
+        if vx.is_nan() { 0.0 } else { vx },
+        if vy.is_nan() { 0.0 } else { vy },
+    )
+}
+
+/// Whether the typing cat's eyes follow the pointer, from the poll's
+/// readings alone (no timer of its own): they follow while it moves, and go
+/// back to the screen once it has been still for `GLANCE_REST`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GlanceRest {
+    last: Option<(i32, i32)>,
+    moved_at: Option<Instant>,
+}
+
+impl GlanceRest {
+    /// One reading `pt` at `now`: true to follow the pointer. The first
+    /// reading only records (false); a changed position is a move (true); a
+    /// still pointer counts as followed for `GLANCE_REST` after its last move.
+    pub fn reading(&mut self, pt: (i32, i32), now: Instant) -> bool {
+        let first = self.last.is_none();
+        let moved = self.last.is_some_and(|last| last != pt);
+        self.last = Some(pt);
+        if first {
+            return false;
+        }
+        if moved {
+            self.moved_at = Some(now);
+            return true;
+        }
+        self.moved_at
+            .is_some_and(|at| now.saturating_duration_since(at) < GLANCE_REST)
+    }
+
+    /// Forgets the readings: the next one only records.
+    pub fn reset(&mut self) {
+        *self = GlanceRest::default();
+    }
+}
+
 /// The cat would follow the pointer but nobody can see it: "Di belakang
 /// jendela" has lowered the island (`lowered`) and a window lies over it
 /// (`covered`, read only for a lowered island). Its look then stays where it
@@ -373,6 +458,12 @@ pub struct EyesLook {
 }
 
 impl EyesLook {
+    /// The look now, `(x, y)`, each -1 to 1 (the typing cat's glance reuses
+    /// this pair of eases).
+    pub fn value(&self) -> (f32, f32) {
+        (self.x.value(), self.y.value())
+    }
+
     /// The slide now, in dip.
     pub fn offset_dip(&self) -> (f32, f32) {
         eyes_offset_dip(self.x.value(), self.y.value())

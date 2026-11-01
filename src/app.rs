@@ -80,7 +80,7 @@ use crate::mole::{self, Confirmed, MoleEvent, MoleOpts, MoleWorker};
 use crate::notes::NotesStore;
 use crate::pages::PanelPages;
 use crate::pointer_watch::{
-    self, EyesLook, EyesMotion, LookEase, Peek, PeekInputs, PeekState, UnderCache,
+    self, EyesLook, EyesMotion, GlanceRest, LookEase, Peek, PeekInputs, PeekState, UnderCache,
 };
 use crate::pomodoro::PomoStatus;
 use crate::reminders::{self, Reminder, RemindersStore, due_now, next_due};
@@ -104,9 +104,10 @@ use crate::ui::editor::{self, EditorKind, EditorResult, WM_APP_EDITOR_RESULT};
 use crate::ui::frame_clock::{FrameClock, WM_APP_FRAME};
 use crate::ui::geometry::{
     AA_MARGIN, ANIM_MS, LYRIC_HOLD_MS, LYRIC_MAX_W, LYRIC_MIN_W, NOTCH_H_DEFAULT, NOTCH_W_DEFAULT,
-    NotchSize, ShapeKind, ShapeRect, Under, WINDOW_W, island_contains, lerp_shape, lyric_box_w,
-    lyric_cap, lyric_max_w, lyric_scroll_end_ms, lyric_scroll_offset, lyric_shape_sized,
-    lyric_target_w, lyric_width_min, panel_kind, shape_for, shape_sized, shape_with_robot_sized,
+    NotchSize, ShapeKind, ShapeRect, Under, WINDOW_W, idle_shape_typing, island_contains,
+    lerp_shape, lyric_box_w, lyric_cap, lyric_max_w, lyric_scroll_end_ms, lyric_scroll_offset,
+    lyric_shape_sized, lyric_target_w, lyric_width_min, panel_kind, shape_for, shape_sized,
+    shape_with_robot_sized, typing_lead,
 };
 use crate::ui::motion::{
     FadeStart, MorphCurve, PAGE_FADE_MS, Reveal, SlideStrip, Snap, SubView, Transit, Transition,
@@ -120,8 +121,8 @@ use crate::ui::render::{
     RobotFrame, SearchView, SystemView,
 };
 use crate::ui::robot::{
-    self, Brain, EyesBlink, EyesPose, GreetSettings, Motion, Rng, Spot, choose_expr, plan_timers,
-    should_greet,
+    self, Brain, Expr, EyesBlink, EyesPose, GreetSettings, Motion, Rng, Spot, TypingPaws,
+    choose_expr, plan_timers, should_greet,
 };
 use crate::ui::settings::{self, Action as SettingsAction, WM_APP_SETTINGS_ACTION};
 use crate::ui::tray::{self, MenuCmd, WM_APP_TRAY};
@@ -256,6 +257,13 @@ const TIMER_HALO: usize = 30;
 /// when neither feature is eligible, in fullscreen, locked or with the display
 /// off; the cat's ease runs on the frame clock, never on this timer.
 const TIMER_POINTER: usize = 33;
+/// One-shot, re-armed at each step: the typing cat's paws (`TypingPaws::next`
+/// gives the wait, 110 to 900 ms) while `typing_anim_on`; one draw per step.
+/// Its own id on purpose: `TIMER_BLINK` and `TIMER_ROBOT` already carry the
+/// cat's blink, the shrunk eyes' blink and `Brain::next_change`, and sharing
+/// one would make each stop or re-arm the others. 40 was the next free id
+/// after 35 (`TIMER_UPDATE`) that the other features' notes leave alone.
+const TIMER_TYPING: usize = 40;
 /// Repeating, 1 s: the Mixer page asks the audio thread for the volumes while
 /// it shows (`sync_mixer`). Nothing runs with the page shut.
 const TIMER_MIXER: usize = 26;
@@ -444,6 +452,9 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
             look_at: None,
             eyes_look: EyesLook::default(),
             eyes_look_at: None,
+            glance: EyesLook::default(),
+            glance_at: None,
+            glance_rest: GlanceRest::default(),
             eyes_blink: EyesBlink::default(),
             eyes_blink_timer: false,
             pointer_ms: 0,
@@ -773,6 +784,12 @@ struct App {
     /// and when they were last eased.
     eyes_look: EyesLook,
     eyes_look_at: Option<Instant>,
+    /// The typing cat's eyes glance at the pointer (the same pair of eases),
+    /// when they were last eased, and the poll readings that tell whether the
+    /// pointer still moves (`GlanceRest`).
+    glance: EyesLook,
+    glance_at: Option<Instant>,
+    glance_rest: GlanceRest,
     /// The shrunk notch's blink, and whether `TIMER_BLINK` runs its schedule
     /// (the cat's own blink is `bata.blink_timer`; never both).
     eyes_blink: EyesBlink,
@@ -1061,6 +1078,9 @@ struct Bata {
     change_timer: bool,
     /// Windows' Energy Saver is on: Full motion runs as Saver.
     energy_saver: bool,
+    /// The typing cat's paws, and whether `TIMER_TYPING` is armed for them.
+    paws: TypingPaws,
+    typing_timer: bool,
 }
 
 impl Bata {
@@ -1075,6 +1095,8 @@ impl Bata {
             blink_timer: false,
             change_timer: false,
             energy_saver: false,
+            paws: TypingPaws::default(),
+            typing_timer: false,
         }
     }
 }
@@ -1550,6 +1572,16 @@ impl App {
         if spot == Spot::Idle && self.look.value() != 0.0 {
             pose = pose.looking_as(expr, self.look.value());
         }
+        // The typing cat only glances (eyes, never the head) and its paws
+        // take turns on `TIMER_TYPING`. With motion not Full `Brain::pose`
+        // is still: paws down, eyes on the screen.
+        if spot == Spot::Idle && expr.glances() && motion.moves() {
+            let (vx, vy) = self.glance.value();
+            pose = pose.glancing(vx, vy);
+            if self.bata.typing_timer {
+                pose.paw_lift = self.bata.paws.lift();
+            }
+        }
         // The music cat nods to the bass (or a fixed beat when capture is not
         // live) and its note floats up and fades, on the `TIMER_EQ` ticks.
         let playing = self.state.media().is_some_and(|m| m.playing);
@@ -1623,6 +1655,7 @@ impl App {
             }
         }
         self.bata.change_timer = next.is_some();
+        self.sync_typing_timer(now);
     }
 
     /// `TIMER_BLINK`: shut the eyes for `BLINK_MS`, then open them and wait
@@ -1687,6 +1720,77 @@ impl App {
             } else if !self.bata.blink_timer {
                 let _ = KillTimer(Some(self.hwnd), TIMER_BLINK);
             }
+        }
+    }
+
+    /// The typing cat's paws should move now (`robot::typing_anim_on`) at
+    /// `now`: the face is Typing and motion, Windows' animations, fullscreen,
+    /// the lock or display state and the shrunk notch allow it.
+    fn typing_anim_wanted(&self, now: Instant) -> bool {
+        let face = self.robot_frame(&self.state.view(), now).map(|r| r.expr);
+        robot::typing_anim_on(
+            face,
+            self.motion(),
+            self.animations,
+            self.fullscreen,
+            self.screen_away(),
+            self.eyes,
+        )
+    }
+
+    /// Arms or kills `TIMER_TYPING`: a one-shot, re-armed with each step's
+    /// wait (`TypingPaws::next`) while the paws should move, killed
+    /// otherwise with both paws down (drawn once if one was up and the typing
+    /// cat is still on screen). No frame clock, no repeating timer.
+    fn sync_typing_timer(&mut self, now: Instant) {
+        let wanted = self.typing_anim_wanted(now);
+        if wanted == self.bata.typing_timer {
+            return;
+        }
+        self.bata.typing_timer = wanted;
+        if wanted {
+            let wait = self.bata.paws.next(&mut self.bata.rng);
+            unsafe {
+                SetTimer(Some(self.hwnd), TIMER_TYPING, wait, None);
+            }
+            return;
+        }
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), TIMER_TYPING);
+        }
+        let was_up = self.bata.paws.up().is_some();
+        self.bata.paws.reset();
+        let typing_shows = self
+            .robot_frame(&self.state.view(), now)
+            .is_some_and(|r| r.expr == Expr::Typing);
+        if was_up && typing_shows && !self.animating_at(now) {
+            self.draw(now);
+        }
+    }
+
+    /// `TIMER_TYPING`: one step of the paws, the next one armed, one draw
+    /// (unless the frame clock draws anyway). A tick that is no longer wanted
+    /// ends the timer instead.
+    fn on_typing_timer(&mut self) {
+        let now = Instant::now();
+        if !self.bata.typing_timer {
+            // A tick posted just before the timer was killed.
+            unsafe {
+                let _ = KillTimer(Some(self.hwnd), TIMER_TYPING);
+            }
+            return;
+        }
+        if !self.typing_anim_wanted(now) {
+            // Kills the timer and puts the paws down.
+            self.sync_typing_timer(now);
+            return;
+        }
+        let wait = self.bata.paws.next(&mut self.bata.rng);
+        unsafe {
+            SetTimer(Some(self.hwnd), TIMER_TYPING, wait, None);
+        }
+        if !self.animating_at(now) {
+            self.draw(now);
         }
     }
 
@@ -3154,6 +3258,8 @@ impl App {
             // Shrunk to the eyes (only ever on a compact view).
             _ if self.eyes => shape_sized(style, notch, ShapeKind::Eyes),
             ShapeKind::MediaLyric => lyric_shape_sized(style, notch, self.lyric_fit.width()),
+            // The idle island grows to the left for the typing cat's laptop.
+            ShapeKind::Idle => self.idle_shape(now),
             _ => shape_with_robot_sized(style, notch, kind, robot),
         });
         let retarget = match target {
@@ -3322,6 +3428,7 @@ impl App {
             || self.lyric_scrolling
             || self.robot_moving(now)
             || self.look.moving()
+            || self.glance.moving()
             || self.eyes_look.moving()
             || self.shelf.motion.running(now)
             || self.dock.moving()
@@ -3756,6 +3863,8 @@ impl App {
         self.sync_behind(Instant::now());
         self.sync_halo_timer();
         self.sync_eq();
+        // A lock or a display change stops the paws and starts them again.
+        self.sync_typing_timer(Instant::now());
         self.follow_pointer_settings(Instant::now());
     }
 
@@ -3768,13 +3877,25 @@ impl App {
             // The notch comes back; `refresh` also syncs the look and the poll.
             self.refresh(now);
         } else {
-            let looked = (self.look.value(), self.eyes_look.offset_dip());
+            let looked = (
+                self.look.value(),
+                self.eyes_look.offset_dip(),
+                self.glance.value(),
+            );
             self.sync_look(now);
             self.sync_eyes_look();
-            if (self.look.value(), self.eyes_look.offset_dip()) != looked && !self.animating() {
+            if (
+                self.look.value(),
+                self.eyes_look.offset_dip(),
+                self.glance.value(),
+            ) != looked
+                && !self.animating()
+            {
                 // The cat was snapped back to the centre: draw it there.
                 self.draw(now);
             }
+            // The paws follow the same settings (the cat, its motion).
+            self.sync_typing_timer(now);
             self.sync_pointer_watch(now);
         }
     }
@@ -4016,15 +4137,31 @@ impl App {
     /// music, lyric and timer views its slot is tight, so it stays still there.
     fn look_eligible(&self, now: Instant) -> bool {
         let view = self.state.view();
-        pointer_watch::look_allowed(self.config.robot, self.config.cat_follow_pointer)
-            && self.motion().moves()
-            && view == View::Idle
-            && !self.peek.is_shrunk()
-            && !self.fullscreen
-            && !self.screen_away()
-            && self
-                .robot_frame(&view, now)
-                .is_some_and(|frame| frame.expr.looks())
+        pointer_watch::look_on(
+            pointer_watch::look_allowed(self.config.robot, self.config.cat_follow_pointer),
+            self.motion().moves(),
+            view == View::Idle,
+            self.peek.is_shrunk(),
+            self.fullscreen,
+            self.screen_away(),
+            self.robot_frame(&view, now).map(|frame| frame.expr),
+        )
+    }
+
+    /// The idle shape at the user's size: grown on the left for the typing
+    /// cat's laptop while the cat is on and `typing_wanted` (the hover's Happy
+    /// face does not count), else the plain one.
+    fn idle_shape(&self, now: Instant) -> ShapeRect {
+        let (style, robot, notch) = (self.config.style, self.config.robot, self.notch_size());
+        let inputs = self
+            .bata
+            .brain
+            .inputs(Spot::Idle, now, self.sleep_after(), self.motion());
+        if robot && robot::typing_wanted(&inputs) {
+            idle_shape_typing(style, notch, robot)
+        } else {
+            shape_with_robot_sized(style, notch, ShapeKind::Idle, robot)
+        }
     }
 
     /// The closed view's notch as it is without the peek, in logical px;
@@ -4032,7 +4169,8 @@ impl App {
     fn normal_shape(&self, view: &View) -> Option<ShapeRect> {
         let (style, robot, notch) = (self.config.style, self.config.robot, self.notch_size());
         let kind = match view {
-            View::Idle => ShapeKind::Idle,
+            // The typing cat's island is wider on the left.
+            View::Idle => return Some(self.idle_shape(Instant::now())),
             View::MediaCompact => ShapeKind::MediaCompact,
             View::MediaLyric => {
                 return Some(lyric_shape_sized(style, notch, self.lyric_fit.width()));
@@ -4151,6 +4289,22 @@ impl App {
         if !self.look_eligible(now) {
             self.look.snap_to_centre();
             self.look_at = None;
+            self.glance.snap_to_centre();
+            self.glance_at = None;
+            self.glance_rest.reset();
+            return;
+        }
+        // The typing cat never turns its head, and the others never glance.
+        let typing = self
+            .robot_frame(&self.state.view(), now)
+            .is_some_and(|frame| frame.expr.glances());
+        if typing {
+            self.look.snap_to_centre();
+            self.look_at = None;
+        } else {
+            self.glance.snap_to_centre();
+            self.glance_at = None;
+            self.glance_rest.reset();
         }
     }
 
@@ -4165,6 +4319,26 @@ impl App {
             pointer_watch::look_hidden(lowered, || cache.get(now, || self.island_covered()));
         self.cover_cache = cache;
         hidden
+    }
+
+    /// Where the typing cat's eyes are, vertically, in window dip: the middle
+    /// of the idle island they sit in (the glance's vertical reference).
+    fn glance_eyes_y(&self) -> f32 {
+        let s = self.anim.to;
+        s.y + s.h / 2.0
+    }
+
+    /// One frame-clock tick of the typing cat's glance: eased to `now`.
+    fn advance_glance(&mut self, now: Instant) {
+        if !self.glance.moving() {
+            self.glance_at = None;
+            return;
+        }
+        let dt = self
+            .glance_at
+            .map_or(Duration::ZERO, |at| now.saturating_duration_since(at));
+        self.glance.advance(dt);
+        self.glance_at = self.glance.moving().then_some(now);
     }
 
     /// One frame-clock tick of the cat's look: eased to `now`; once it has
@@ -4227,9 +4401,36 @@ impl App {
             // The island is centred on the monitor: so is the notch.
             let centre = origin.0 as f32 + WINDOW_W * scale / 2.0;
             let half = screen_w * scale / 2.0;
-            let v = pointer_watch::look_target(pt.x as f32, centre, centre - half, centre + half);
-            if self.look.set_target(v) {
-                self.ensure_clock();
+            let typing = self
+                .robot_frame(&self.state.view(), now)
+                .is_some_and(|frame| frame.expr.glances());
+            if typing {
+                // The typing cat glances with its eyes only, while the
+                // pointer moves; once it has rested they go back to the
+                // screen. The stillness rides these readings: no timer.
+                let target = if self.glance_rest.reading((pt.x, pt.y), now) {
+                    // The eyes' line, in dip like the pointer's y.
+                    let eyes_y = self.glance_eyes_y();
+                    pointer_watch::glance_target(
+                        pt.x as f32,
+                        (pt.y - origin.1) as f32 / scale,
+                        centre,
+                        centre - half,
+                        centre + half,
+                        eyes_y,
+                    )
+                } else {
+                    (0.0, 0.0)
+                };
+                if self.glance.set_target(target.0, target.1) {
+                    self.ensure_clock();
+                }
+            } else {
+                let v =
+                    pointer_watch::look_target(pt.x as f32, centre, centre - half, centre + half);
+                if self.look.set_target(v) {
+                    self.ensure_clock();
+                }
             }
         }
         // Eligibility may have changed with the peek; so may the pace.
@@ -4523,6 +4724,7 @@ impl App {
             TIMER_OUTSIDE => self.on_outside_poll(),
             TIMER_BEHIND => self.on_behind_timer(),
             TIMER_POINTER => self.on_pointer_timer(),
+            TIMER_TYPING => self.on_typing_timer(),
             TIMER_HALO => self.on_halo_poll(),
             TIMER_BLINK => self.on_blink(),
             TIMER_ROBOT => {
@@ -4548,6 +4750,7 @@ impl App {
         // The cat's look eases to this frame before it is drawn, so the frame
         // that reaches the target is the last one the clock draws for it.
         self.advance_look(now);
+        self.advance_glance(now);
         self.advance_eyes_look(now);
         self.dock_step(now);
         let shape_done = self.anim.progress(now) >= 1.0;
@@ -5598,6 +5801,13 @@ impl App {
             legibility: notch_fill::legibility(fill_alpha),
             clock: (self.config.idle_clock && self.drawn == View::Idle)
                 .then(|| Local::now().format("%H:%M").to_string()),
+            // The idle island's growth on the left (the typing cat's
+            // laptop), so the robot and the clock stay still as it morphs.
+            idle_lead: if self.drawn == View::Idle && self.config.robot {
+                typing_lead(shape.w, self.notch_size().w)
+            } else {
+                0.0
+            },
             lyric: self.lyrics.shown(now),
             lyric_scroll: if self.drawn == View::MediaLyric {
                 self.lyric_fit.scroll(now)
