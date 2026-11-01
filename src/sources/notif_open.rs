@@ -53,7 +53,7 @@ use crate::model::OpenTarget;
 use crate::notif::open::{
     self as rules, DesktopAction, MainCand, OpenKind, WinState, WindowTabs, browser_exe_names,
     browser_launch_path, decide, desktop_action, exe_stem, exe_stems_for, fallback_window,
-    pick_tab, start_target_exe,
+    is_helper_window, is_web_app, pick_tab, start_target_exe,
 };
 
 /// Time for the search (window list and tab strips); no call starts after it.
@@ -182,6 +182,8 @@ impl Win {
             owned: self.owned,
             tool_window: self.tool,
             has_title: !self.title.trim().is_empty(),
+            iconic: self.minimized,
+            helper: is_helper_window(&self.class, &self.title),
             w: self.w,
             h: self.h,
         }
@@ -665,7 +667,11 @@ unsafe fn read_tabs(
 fn search_desktop(target: &OpenTarget, wins: &[Win]) -> Plan {
     let aumid = target.app_id.as_deref().filter(|id| !id.is_empty());
     let stems = exe_stems_for(aumid, &target.source);
-    let start_exe = aumid.and_then(start_entry_exe);
+    // A web app's Start entry points at the browser (or its proxy stub): every
+    // browser window would pass for the app's. Its window AUMID finds it.
+    let start_exe = aumid
+        .filter(|id| !is_web_app(Some(id)))
+        .and_then(start_entry_exe);
     let mut found: Vec<&Win> = Vec::new();
     for w in wins {
         let by_process = !w.exe.is_empty()

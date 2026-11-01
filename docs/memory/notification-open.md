@@ -23,11 +23,23 @@ string for Chrome and Discord windows. It only helps packaged apps (including
 their `ApplicationFrameHost` windows). So the desktop search is: window AUMID,
 else the process image name against the Start entry's target
 (`PKEY_Link_TargetParsingPath`, ignored when it is an updater or launcher such
-as `Update.exe`), else the image stem against `exe_stems_for` (display name,
+as `Update.exe`, or a host of many apps such as explorer.exe, cmd.exe,
+rundll32.exe, javaw.exe, python.exe, node.exe, powershell.exe: `HOST_STEMS`;
+Explorer's own toasts still find explorer.exe by the stems of its AUMID), else the image stem against `exe_stems_for` (display name,
 every dotted piece of the AUMID; generic stems like update, app, desktop,
 electron are dropped so `Update.exe` never stands for Discord).
 
-## Browser rule (`decide` = Browser by `is_browser`)
+## Installed web apps (PWAs)
+
+An AUMID containing `_crx_` (`Chrome._crx_<id>`, `MSEdge._crx_<id>`) is an
+installed web app (`is_web_app`): `decide` sends it to the **desktop** rule even
+though `is_browser` sees the word chrome in it. Its window has no tab strip and
+the browser rule would bring a normal browser window forward instead. Its
+AUMID gives no exe stems and its Start entry target is not used (both name the
+browser, whose every window would match); its window declares the AUMID, so
+the window-AUMID match finds it, and with no window it launches by AUMID.
+
+## Browser rule (`decide` = Browser by `is_browser`, not a web app)
 
 1. The browser's windows by image name (`browser_exe_names`, all profiles), in
    Z order, `Chrome_WidgetWin_1` / `MozillaWindowClass`, visible, titled.
@@ -39,8 +51,12 @@ electron are dropped so `Update.exe` never stands for Discord).
    "- Memory usage - 120 MB", "- Audio playing", "- Google Chrome", ...);
    `score_tab` ranks the site's registrable label (`site_label`: web.telegram.org
    -> telegram) in the tab name above the whole notification title above its
-   words of 4+ letters. The body is not used. Matches come in tiers (site,
-   title, words only): the strongest tier anywhere decides, so a site match in
+   words of 4+ letters. The body is not used. Inside the site tier, a tab that
+   also holds the site's first meaningful subdomain (`site_sub_label`:
+   calendar.google.com -> calendar; www, web, app, m are skipped) ranks above
+   one with the bare label, so a Calendar reminder picks the Calendar tab over
+   the first or the active "Google Docs" tab (every Google site's label is
+   google). Matches come in tiers (site+subdomain, site, title, words only): the strongest tier anywhere decides, so a site match in
    an older window beats a words-only match in the newest. The most recent
    window with a match of that tier wins; inside it the active tab if its
    match is of that tier too, else the first best. A weak words-only hit on
@@ -65,7 +81,13 @@ electron are dropped so `Update.exe` never stands for Discord).
 ## Desktop rule
 
 `pick_main_window`: unowned, titled, not a tool window, not empty when visible;
-visible beats minimized beats hidden. Visible or minimized: restore, bring
+visible beats minimized beats hidden. A **hidden** candidate must also not be a
+helper (`is_helper_window`: GDI+ hook windows, `*MessageWindow*` and
+`*TrayIcon*` classes or titles, WPF's "Hidden Window", ATL's "AXWIN Frame
+Window", a title equal to its class) and, unless iconic, at least 64x64 (message
+windows sit at 136x39, GDI+ ones at 1x1). Most apps own several such hidden,
+titled, unowned windows; showing one pops up a blank frame. No WS_CAPTION check:
+a frameless main window may lack it. Visible or minimized: restore, bring
 forward. Only a hidden main window (tray) with an AUMID: launch by AUMID (a
 single-instance app shows itself), poll up to 2 s (every 100 ms) for a visible
 window of that app, else `SW_SHOW` the hidden one. No window: launch by AUMID.

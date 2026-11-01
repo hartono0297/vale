@@ -71,12 +71,20 @@ const SECOND_LEVEL: [&str; 14] = [
 /// "telegram", "dashboard.sedulurstore.co.id" -> "sedulurstore", an IPv4 or a
 /// label shorter than 3 characters -> None.
 pub fn site_label(site: &str) -> Option<String> {
+    let (labels, at) = host_labels(site)?;
+    let label = squash(&labels[at]);
+    (label.chars().count() >= 3).then_some(label)
+}
+
+/// The host's labels, lowercase, and the index of the registrable one. None
+/// for an IPv4 or a malformed host.
+fn host_labels(site: &str) -> Option<(Vec<String>, usize)> {
     let text = site.trim().to_ascii_lowercase();
     let text = text.split_once("://").map_or(text.as_str(), |(_, rest)| rest);
     let host = text.split(['/', '?', '#']).next()?;
     let host = host.rsplit_once('@').map_or(host, |(_, h)| h);
     let host = host.split(':').next()?.trim_matches('.');
-    let labels: Vec<&str> = host.split('.').collect();
+    let labels: Vec<String> = host.split('.').map(String::from).collect();
     if labels.iter().any(|l| l.is_empty()) {
         return None;
     }
@@ -85,18 +93,40 @@ pub fn site_label(site: &str) -> Option<String> {
     }
     let at = match labels.as_slice() {
         [_] => 0,
-        [.., second, last] if labels.len() >= 3 && last.len() == 2 && SECOND_LEVEL.contains(second) => {
+        [.., second, last]
+            if labels.len() >= 3 && last.len() == 2 && SECOND_LEVEL.contains(&second.as_str()) =>
+        {
             labels.len() - 3
         }
         _ => labels.len() - 2,
     };
-    let label = squash(labels[at]);
-    (label.chars().count() >= 3).then_some(label)
+    Some((labels, at))
+}
+
+/// Subdomain labels that say nothing about which page of a site it is.
+const GENERIC_SUBDOMAINS: [&str; 8] = [
+    "www", "web", "app", "apps", "mobile", "beta", "home", "portal",
+];
+
+/// The first meaningful subdomain label, squashed: "calendar.google.com" ->
+/// "calendar", "mail.google.com" -> "mail"; "web.telegram.org" (generic) and
+/// "google.com" (none) -> None. It tells apart the pages of one site that all
+/// share the registrable label (Calendar, Docs, Gmail are all "google").
+pub fn site_sub_label(site: &str) -> Option<String> {
+    let (labels, at) = host_labels(site)?;
+    labels[..at]
+        .iter()
+        .map(|l| squash(l))
+        .find(|l| l.chars().count() >= 3 && !GENERIC_SUBDOMAINS.contains(&l.as_str()))
 }
 
 // ---------------------------------------------------------------- scoring
 
 const SCORE_SITE: u32 = 1000;
+/// The site's subdomain ("calendar") in a tab that already matched the site:
+/// the most specific match, ranked above a bare site match. Never counted
+/// without the site, so it only refines the site tier.
+const SCORE_SUB: u32 = 2000;
 const SCORE_TITLE: u32 = 500;
 const SCORE_WORDS_HALF: u32 = 100;
 const SCORE_WORDS_FEW: u32 = 10;
@@ -104,19 +134,25 @@ const SCORE_WORDS_FEW: u32 = 10;
 const MIN_TITLE: usize = 3;
 
 /// How well a tab's name fits the toast: 0 = not at all. The site's label in
-/// the tab name counts most, then the whole notification title, then the
-/// title's words of 4+ letters (at least one; half or more counts more). The
-/// body is not used: it is too long and too often generic.
+/// the tab name counts most (more still with the site's subdomain label in it
+/// too: "Google Calendar" for calendar.google.com), then the whole
+/// notification title, then the title's words of 4+ letters (at least one;
+/// half or more counts more). The body is not used: it is too long and too
+/// often generic.
 pub fn score_tab(tab_title: &str, target: &OpenTarget) -> u32 {
     let tab = squash(&strip_tab_suffix(tab_title));
     if tab.is_empty() {
         return 0;
     }
     let mut score = 0;
-    if let Some(label) = target.site.as_deref().and_then(site_label)
+    if let Some(site) = target.site.as_deref()
+        && let Some(label) = site_label(site)
         && tab.contains(&label)
     {
         score += SCORE_SITE;
+        if site_sub_label(site).is_some_and(|sub| tab.contains(&sub)) {
+            score += SCORE_SUB;
+        }
     }
     let title = squash(&target.title);
     if title.chars().count() >= MIN_TITLE && tab.contains(&title) {
@@ -150,12 +186,13 @@ pub struct WindowTabs {
     pub active: Option<usize>,
 }
 
-/// The kind of evidence a score stands for: 3 the site, 2 the whole title, 1
-/// words of the title only, 0 none. Scores inside one tier are close calls;
-/// a higher tier always wins.
+/// The kind of evidence a score stands for: 4 the site and its subdomain, 3
+/// the site, 2 the whole title, 1 words of the title only, 0 none. Scores
+/// inside one tier are close calls; a higher tier always wins.
 fn tier(score: u32) -> u8 {
     match score {
         0 => 0,
+        s if s >= SCORE_SITE + SCORE_SUB => 4,
         s if s >= SCORE_SITE => 3,
         s if s >= SCORE_TITLE => 2,
         _ => 1,
@@ -206,9 +243,19 @@ pub enum OpenKind {
     Desktop,
 }
 
-/// A browser toast goes to a tab; anything else to the app's own window.
+/// An installed web app (PWA): Chromium gives each one its own AUMID,
+/// "Chrome._crx_<id>" / "MSEdge._crx_<id>", and its own window without a tab
+/// strip, which declares that AUMID. It is opened like a desktop app.
+pub fn is_web_app(app_id: Option<&str>) -> bool {
+    app_id.is_some_and(|id| id.to_ascii_lowercase().contains("_crx_"))
+}
+
+/// A browser toast goes to a tab; anything else, an installed web app
+/// included, to the app's own window.
 pub fn decide(target: &OpenTarget) -> OpenKind {
-    if is_browser(target.app_id.as_deref(), &target.source) {
+    if !is_web_app(target.app_id.as_deref())
+        && is_browser(target.app_id.as_deref(), &target.source)
+    {
         OpenKind::Browser
     } else {
         OpenKind::Desktop
@@ -273,7 +320,9 @@ fn usable_stem(stem: &str) -> bool {
 /// Process-name candidates (squashed, no ".exe") for a desktop app: its
 /// display name, then every meaningful dotted piece of its AUMID, last first
 /// ("com.squirrel.Discord.Discord" -> discord; "Telegram.TelegramDesktop" ->
-/// telegramdesktop, telegram). Generic stems are left out.
+/// telegramdesktop, telegram). Generic stems are left out, and so is every
+/// piece of a web app's AUMID: "Chrome._crx_<id>" names the browser, whose
+/// every window would then pass for the app's.
 pub fn exe_stems_for(app_id: Option<&str>, source: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut add = |s: String| {
@@ -282,7 +331,7 @@ pub fn exe_stems_for(app_id: Option<&str>, source: &str) -> Vec<String> {
         }
     };
     add(squash(source));
-    if let Some(id) = app_id {
+    if let Some(id) = app_id.filter(|id| !is_web_app(Some(id))) {
         let base = id.split('!').next().unwrap_or(id);
         for piece in base.rsplit('.') {
             add(squash(piece.split('_').next().unwrap_or(piece)));
@@ -302,12 +351,24 @@ pub fn exe_stem(path: &str) -> String {
     squash(stem)
 }
 
+/// Programs that run many apps' windows: a Start entry pointing at one of
+/// them ("explorer.exe shell:...", "javaw.exe -jar ...") says nothing about
+/// which of its windows is the app's. Explorer's own toasts still find
+/// explorer.exe through the stems of its AUMID ("Microsoft.Windows.Explorer").
+const HOST_STEMS: [&str; 16] = [
+    "explorer", "cmd", "conhost", "rundll32", "dllhost", "wscript", "cscript", "mshta", "java",
+    "javaw", "python", "pythonw", "pyw", "node", "powershell", "pwsh",
+];
+
 /// The exe file name (lowercase) of a Start entry's target, unless it is an
-/// updater or launcher stub: "...\\Discord\\Update.exe" says nothing about
-/// which process holds the window.
+/// updater or launcher stub ("...\\Discord\\Update.exe") or a host of many
+/// apps (`HOST_STEMS`): those say nothing about which process holds the
+/// window.
 pub fn start_target_exe(path: &str) -> Option<String> {
     let name = path.rsplit(['\\', '/']).next()?.to_lowercase();
-    (name.ends_with(".exe") && usable_stem(&exe_stem(&name))).then_some(name)
+    let stem = exe_stem(&name);
+    (name.ends_with(".exe") && usable_stem(&stem) && !HOST_STEMS.contains(&stem.as_str()))
+        .then_some(name)
 }
 
 // ----------------------------------------------------------- main window
@@ -326,13 +387,52 @@ pub struct MainCand {
     pub owned: bool,
     pub tool_window: bool,
     pub has_title: bool,
+    /// Minimized (`IsIconic`), whether shown or hidden: its rect is then the
+    /// small icon-sized one, so size says nothing.
+    pub iconic: bool,
+    /// Class or title of a known never-shown helper (`is_helper_window`).
+    pub helper: bool,
     pub w: i32,
     pub h: i32,
 }
 
+/// Below this width or height a hidden window is a helper, not a main
+/// window: message windows sit at 136x39, GDI+ hook windows at 1x1.
+const MIN_HIDDEN_SIDE: i32 = 64;
+
+/// Titles of hidden helper windows that are big enough and titled, so only
+/// their name gives them away (lowercase): WPF's `HwndWrapper` "Hidden
+/// Window", ATL's "AXWIN Frame Window", taskhostw's "Task Host Window".
+const HELPER_TITLES: [&str; 4] = [
+    "hidden window",
+    "axwin frame window",
+    "task host window",
+    "dwm notification window",
+];
+
+/// A window an app creates for itself and never shows: GDI+ hook windows,
+/// Qt's tray message window, message-only windows named after their purpose
+/// (`*MessageWindow*`, `*TrayIcon*`), the known helper titles, and windows
+/// titled exactly like their class, "Class" suffix aside
+/// ("MS_WebcheckMonitor", "CrossDeviceResumeWindow"). Showing one pops up a
+/// blank frame.
+pub fn is_helper_window(class: &str, title: &str) -> bool {
+    let class = class.trim().to_lowercase();
+    let title = title.trim().to_lowercase();
+    class == "gdi+ hook window class"
+        || title.starts_with("gdi+ window")
+        || [&class, &title]
+            .iter()
+            .any(|t| t.contains("messagewindow") || t.contains("trayicon"))
+        || HELPER_TITLES.contains(&title.as_str())
+        || (!title.is_empty()
+            && (class == title || class.strip_suffix("class") == Some(title.as_str())))
+}
+
 /// The app's main window: unowned, titled, not a tool window, and not empty
-/// when shown. Visible beats minimized beats hidden; the earlier (frontmost)
-/// wins a tie.
+/// when shown. A hidden one must also not be a helper (`is_helper_window`)
+/// and, unless minimized, at least `MIN_HIDDEN_SIDE` on both sides. Visible
+/// beats minimized beats hidden; the earlier (frontmost) wins a tie.
 pub fn pick_main_window(cands: &[MainCand]) -> Option<usize> {
     cands
         .iter()
@@ -341,7 +441,14 @@ pub fn pick_main_window(cands: &[MainCand]) -> Option<usize> {
             !c.owned
                 && c.has_title
                 && !c.tool_window
-                && (c.state != WinState::Visible || (c.w > 0 && c.h > 0))
+                && match c.state {
+                    WinState::Visible => c.w > 0 && c.h > 0,
+                    WinState::Minimized => true,
+                    WinState::Hidden => {
+                        !c.helper
+                            && (c.iconic || (c.w >= MIN_HIDDEN_SIDE && c.h >= MIN_HIDDEN_SIDE))
+                    }
+                }
         })
         .min_by_key(|(i, c)| (c.state, *i))
         .map(|(i, _)| i)
@@ -458,6 +565,44 @@ mod tests {
         assert_eq!(site_label("192.168.1.10:8080"), None);
         assert_eq!(site_label("x.com"), None);
         assert_eq!(site_label(""), None);
+    }
+
+    #[test]
+    fn site_sub_label_takes_the_first_meaningful_subdomain() {
+        assert_eq!(site_sub_label("calendar.google.com").as_deref(), Some("calendar"));
+        assert_eq!(site_sub_label("mail.google.com").as_deref(), Some("mail"));
+        assert_eq!(site_sub_label("docs.google.com").as_deref(), Some("docs"));
+        assert_eq!(site_sub_label("www.docs.google.com").as_deref(), Some("docs"));
+        assert_eq!(site_sub_label("web.telegram.org"), None);
+        assert_eq!(site_sub_label("google.com"), None);
+        assert_eq!(site_sub_label("m.facebook.com"), None);
+        assert_eq!(site_sub_label("app.toko.co.id"), None);
+        assert_eq!(site_sub_label("192.168.1.10"), None);
+    }
+
+    #[test]
+    fn the_subdomain_tells_apart_pages_of_one_site() {
+        let cal = target("Google Chrome", Some("Chrome"), Some("calendar.google.com"), "Rapat");
+        let docs = "Untitled document - Google Docs - Google Chrome";
+        let search = "kucing - Google Search - Google Chrome";
+        let calendar = "Google Calendar - Week of 1 November 2026 - Google Chrome";
+        assert!(score_tab(calendar, &cal) > score_tab(docs, &cal));
+        // Not the first Google tab: the Calendar one.
+        let w = [win(&[docs, search, calendar], None)];
+        assert_eq!(pick_tab(&w, &cal), Some((0, 2)));
+        // Not the active Docs tab either.
+        let w = [win(&[docs, search, calendar], Some(0))];
+        assert_eq!(pick_tab(&w, &cal), Some((0, 2)));
+        // In an older window too.
+        let w = [win(&[docs], Some(0)), win(&[calendar], Some(0))];
+        assert_eq!(pick_tab(&w, &cal), Some((1, 0)));
+        // With no Calendar tab open, any Google tab is still a site match.
+        let w = [win(&["Berita", search], Some(0))];
+        assert_eq!(pick_tab(&w, &cal), Some((0, 1)));
+        // "mail" is found inside "Gmail" once the tab also says Google.
+        let gmail = target("Google Chrome", Some("Chrome"), Some("mail.google.com"), "x");
+        let w = [win(&[search, "Inbox (3) - Gmail - Google"], Some(0))];
+        assert_eq!(pick_tab(&w, &gmail), Some((0, 1)));
     }
 
     #[test]
@@ -614,6 +759,33 @@ mod tests {
     }
 
     #[test]
+    fn installed_web_apps_open_their_own_window_not_a_tab() {
+        assert_eq!(
+            decide(&target("Chrome Remote Desktop", Some("Chrome._crx_abc"), None, "x")),
+            OpenKind::Desktop
+        );
+        // Even when the toast names the browser as its source.
+        assert_eq!(
+            decide(&target("Google Chrome", Some("Chrome._crx_abc"), Some("x.com"), "x")),
+            OpenKind::Desktop
+        );
+        assert_eq!(
+            decide(&target("Outlook", Some("MSEdge._crx_xyz"), None, "x")),
+            OpenKind::Desktop
+        );
+        assert!(is_web_app(Some("Chrome._crx_cmkncekebbplodngbpllndjkfo")));
+        assert!(!is_web_app(Some("Chrome")));
+        assert!(!is_web_app(None));
+        // Its AUMID names the browser: no stem from it, or every Chrome window
+        // would pass for the app's.
+        assert_eq!(
+            exe_stems_for(Some("Chrome._crx_abc"), "Chrome Remote Desktop"),
+            ["chromeremotedesktop"]
+        );
+        assert!(!exe_stems_for(Some("MSEdge._crx_xyz"), "Outlook").contains(&"msedge".to_string()));
+    }
+
+    #[test]
     fn browser_exe_names_follow_the_browser() {
         assert_eq!(browser_exe_names(Some("Chrome"), "Google Chrome"), ["chrome.exe"]);
         assert_eq!(browser_exe_names(Some("MSEdge"), "Microsoft Edge"), ["msedge.exe"]);
@@ -662,14 +834,85 @@ mod tests {
         assert_eq!(exe_stem("C:\\x\\Telegram.exe"), "telegram");
     }
 
+    #[test]
+    fn a_host_of_many_apps_is_not_a_process_to_match() {
+        for host in [
+            "C:\\Windows\\explorer.exe",
+            "C:\\Windows\\System32\\cmd.exe",
+            "C:\\Windows\\System32\\rundll32.exe",
+            "C:\\Windows\\System32\\wscript.exe",
+            "C:\\Program Files\\Java\\bin\\javaw.exe",
+            "C:\\Python312\\python.exe",
+            "C:\\Program Files\\nodejs\\node.exe",
+            "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        ] {
+            assert_eq!(start_target_exe(host), None, "{host}");
+        }
+        // Explorer's own toasts still find explorer.exe by their AUMID.
+        let stems = exe_stems_for(Some("Microsoft.Windows.Explorer"), "File Explorer");
+        assert!(stems.contains(&exe_stem("C:\\Windows\\explorer.exe")), "{stems:?}");
+    }
+
     fn cand(state: WinState) -> MainCand {
         MainCand {
             state,
             owned: false,
             tool_window: false,
             has_title: true,
+            iconic: state == WinState::Minimized,
+            helper: false,
             w: 800,
             h: 600,
+        }
+    }
+
+    #[test]
+    fn hidden_helper_windows_are_never_the_main_window() {
+        let hidden = cand(WinState::Hidden);
+        // GDI+ hook window (1x1) and a message window (136x39): too small.
+        let gdi = MainCand { w: 1, h: 1, ..hidden };
+        let message = MainCand { w: 136, h: 39, ..hidden };
+        // WPF's "Hidden Window", full screen sized: a helper by name.
+        let wpf = MainCand { w: 1920, h: 1023, helper: true, ..hidden };
+        assert_eq!(pick_main_window(&[gdi, message, wpf]), None);
+        assert_eq!(desktop_action(&[gdi, message, wpf], false), DesktopAction::Nothing);
+        assert_eq!(desktop_action(&[gdi, message, wpf], true), DesktopAction::Launch);
+        // Discord's tray-hidden main window (1296x728) behind them is found.
+        let discord = MainCand { w: 1296, h: 728, ..hidden };
+        assert_eq!(pick_main_window(&[gdi, message, wpf, discord]), Some(3));
+        // Hidden after being minimized: an icon-sized rect, still the main one.
+        let iconic = MainCand { w: 160, h: 28, iconic: true, ..hidden };
+        assert_eq!(pick_main_window(&[gdi, iconic]), Some(1));
+        // Size and name only matter for hidden windows.
+        let small = MainCand { w: 40, h: 40, ..cand(WinState::Visible) };
+        assert_eq!(pick_main_window(&[small]), Some(0));
+    }
+
+    #[test]
+    fn helper_windows_are_known_by_class_and_title() {
+        let helpers = [
+            ("GDI+ Hook Window Class", "GDI+ Window (Discord.exe)"),
+            ("HwndWrapper[Cloudflare WARP;;719393e6]", "Hidden Window"),
+            ("Qt690TrayIconMessageWindowClass", "QTrayIconMessageWindow"),
+            ("ATL:6DB2A9E0", "AXWIN Frame Window"),
+            ("AMDInstallManagerMessageWindow", "AMD Install Manager"),
+            ("BackgroundModeTrayIconClass", "BackgroundModeTrayIconClass"),
+            ("MS_WebcheckMonitor", "MS_WebcheckMonitor"),
+            ("CrossDeviceResumeWindowClass", "CrossDeviceResumeWindow"),
+            ("COMTASKSWINDOWCLASS", "Task Host Window"),
+        ];
+        for (class, title) in helpers {
+            assert!(is_helper_window(class, title), "{class} / {title}");
+        }
+        let mains = [
+            ("Chrome_WidgetWin_1", "Friends - Discord"),
+            ("Qt690QWindowIcon", "AMD Install Manager"),
+            ("Qt51517QWindowIcon", "Telegram"),
+            ("SDL_app", "Steam"),
+            ("CreativeCloudDesktopWindowClass", "Creative Cloud Desktop"),
+        ];
+        for (class, title) in mains {
+            assert!(!is_helper_window(class, title), "{class} / {title}");
         }
     }
 
