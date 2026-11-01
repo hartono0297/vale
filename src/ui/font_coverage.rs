@@ -46,8 +46,11 @@ const SYSTEM_FALLBACK: &[char] = &[
 
 /// Non-ASCII code points in the sources that are never drawn: BOM and
 /// replacement-character checks, zero-width joiner, ESC/CSI controls, and the
-/// end of the PowerShell quote range `ps_quote` escapes (mole.rs).
-const NOT_DRAWN: &[char] = &['\u{FEFF}', '\u{FFFD}', '\u{200D}', '\u{9B}', '\u{201B}'];
+/// end of the PowerShell quote range `ps_quote` escapes (mole.rs), and the
+/// zero-width space Edge writes inside a tab's name (`notif::open`).
+const NOT_DRAWN: &[char] = &[
+    '\u{FEFF}', '\u{FFFD}', '\u{200D}', '\u{200B}', '\u{9B}', '\u{201B}',
+];
 
 /// Mirrors `UNICODES` in `scripts/make-fonts.ps1`.
 const SUBSET_RANGES: &[(u32, u32)] = &[
