@@ -46,6 +46,15 @@ pub struct Toast {
     pub logo: Option<(String, Thumb)>,
 }
 
+/// What a notice made from a real Windows toast carries
+/// (`sources::notifications::to_notice` only).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ToastOrigin {
+    /// The web site of a browser notification, when Windows gave it
+    /// ("web.telegram.org").
+    pub site: Option<String>,
+}
+
 /// `Notice::key` of a copy preview of an image: its badge spot is the
 /// thumbnail, never Bata.
 pub const CLIP_IMAGE_KEY: &str = "clip-preview-image";
@@ -56,6 +65,10 @@ pub const CLIP_PREVIEW_KEY: &str = "clip-preview";
 pub enum NoticeKind {
     App {
         app_id: Option<String>,
+        /// Set only by `sources::notifications::to_notice`: this notice comes
+        /// from a real Windows toast, so the notch shows the app's logo and
+        /// name. Island-owned App notices carry `None`.
+        toast: Option<ToastOrigin>,
     },
     ClaudeDone {
         session_id: String,

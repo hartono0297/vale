@@ -16,7 +16,10 @@ use crate::clipboard::image::Thumb;
 use crate::dpapi;
 
 const MAGIC: &[u8; 4] = b"DINH";
-const VERSION: u16 = 1;
+/// Written by `encode`: v2 adds the browser site after each entry's body.
+const VERSION: u16 = 2;
+/// Still read: no site field.
+const VERSION_V1: u16 = 1;
 /// Refuse absurd counts and lengths in a damaged file before allocating.
 const MAX_COUNT: u32 = 10_000;
 const MAX_FIELD: u32 = 4 * 1024 * 1024;
@@ -79,6 +82,13 @@ pub fn encode(saved: &Saved) -> Vec<u8> {
         }
         put_str(&mut out, &e.title);
         put_str(&mut out, &e.body);
+        match &e.site {
+            Some(site) => {
+                out.push(1);
+                put_str(&mut out, site);
+            }
+            None => out.push(0),
+        }
     }
     let used: HashSet<String> = saved.items.iter().map(NotifEntry::logo_key).collect();
     let mut keys: Vec<&String> = saved.logos.keys().filter(|k| used.contains(*k)).collect();
@@ -131,7 +141,11 @@ impl Reader<'_> {
 /// The contents of `plain`, or `None` when it is not a history this reads.
 pub fn decode(plain: &[u8]) -> Option<Saved> {
     let mut r = Reader { b: plain, i: 0 };
-    if r.take(4)? != MAGIC || r.u16()? != VERSION {
+    if r.take(4)? != MAGIC {
+        return None;
+    }
+    let version = r.u16()?;
+    if version != VERSION && version != VERSION_V1 {
         return None;
     }
     let next_id = r.u64()?;
@@ -152,6 +166,15 @@ pub fn decode(plain: &[u8]) -> Option<Saved> {
         };
         let title = r.string()?;
         let body = r.string()?;
+        let site = if version == VERSION_V1 {
+            None
+        } else {
+            match r.u8()? {
+                0 => None,
+                1 => Some(r.string()?),
+                _ => return None,
+            }
+        };
         items.push(NotifEntry {
             id,
             at,
@@ -160,6 +183,7 @@ pub fn decode(plain: &[u8]) -> Option<Saved> {
             app_id,
             title,
             body,
+            site,
         });
     }
     let logo_count = r.u32()?;
@@ -299,6 +323,7 @@ mod tests {
 
     fn entry(id: u64, source: &str, app_id: Option<&str>) -> NotifEntry {
         NotifEntry {
+            site: (id == 7).then(|| "web.telegram.org".to_owned()),
             id,
             at: 1_700_000_000 + id as i64,
             read: id % 2 == 0,
@@ -393,7 +418,7 @@ mod tests {
         assert_eq!(load_from(&path), Saved::default(), "foreign magic");
 
         let mut wrong = encode(&sample());
-        wrong[4..6].copy_from_slice(&2u16.to_le_bytes());
+        wrong[4..6].copy_from_slice(&3u16.to_le_bytes());
         std::fs::write(&path, seal(&wrong)).unwrap();
         assert_eq!(load_from(&path), Saved::default(), "wrong version");
 
@@ -414,6 +439,94 @@ mod tests {
         std::fs::write(&path, seal(&whole)).unwrap();
         assert_eq!(load_from(&path), sample(), "and the intact one loads");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The version 1 layout, as the first release wrote it: no site field.
+    fn encode_v1(saved: &Saved) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend(MAGIC);
+        out.extend(1u16.to_le_bytes());
+        out.extend(saved.next_id.to_le_bytes());
+        out.extend((saved.items.len() as u32).to_le_bytes());
+        for e in &saved.items {
+            out.extend(e.id.to_le_bytes());
+            out.extend(e.at.to_le_bytes());
+            out.push(u8::from(e.read));
+            put_str(&mut out, &e.source);
+            match &e.app_id {
+                Some(id) => {
+                    out.push(1);
+                    put_str(&mut out, id);
+                }
+                None => out.push(0),
+            }
+            put_str(&mut out, &e.title);
+            put_str(&mut out, &e.body);
+        }
+        let used: HashSet<String> = saved.items.iter().map(NotifEntry::logo_key).collect();
+        let mut keys: Vec<&String> = saved.logos.keys().filter(|k| used.contains(*k)).collect();
+        keys.sort();
+        out.extend((keys.len() as u32).to_le_bytes());
+        for key in keys {
+            let logo = &saved.logos[key];
+            put_str(&mut out, key);
+            out.extend((logo.w as u16).to_le_bytes());
+            out.extend((logo.h as u16).to_le_bytes());
+            out.extend((logo.bgra.len() as u32).to_le_bytes());
+            out.extend(&logo.bgra);
+        }
+        out
+    }
+
+    #[test]
+    fn a_v1_file_still_loads_with_no_site() {
+        let s = sample();
+        assert!(
+            s.items.iter().any(|e| e.site.is_some()),
+            "the sample has a site"
+        );
+        let back = decode(&encode_v1(&s)).unwrap();
+        assert_eq!(back.items.len(), 3);
+        assert!(back.items.iter().all(|e| e.site.is_none()));
+        assert_eq!(back.next_id, s.next_id);
+        assert_eq!(back.logos, s.logos);
+        let others: Vec<_> = back
+            .items
+            .iter()
+            .map(|e| (e.id, &e.title, &e.body))
+            .collect();
+        let expect: Vec<_> = s.items.iter().map(|e| (e.id, &e.title, &e.body)).collect();
+        assert_eq!(others, expect);
+        // A trailing byte after a v1 file is still refused.
+        let mut extra = encode_v1(&s);
+        extra.push(0);
+        assert_eq!(decode(&extra), None);
+    }
+
+    #[test]
+    fn v2_round_trips_an_entry_with_a_site_and_one_without() {
+        let s = sample();
+        assert_eq!(s.items[0].site.as_deref(), Some("web.telegram.org"));
+        assert_eq!(s.items[1].site, None);
+        let plain = encode(&s);
+        assert_eq!(&plain[4..6], &2u16.to_le_bytes(), "always written as v2");
+        let back = decode(&plain).unwrap();
+        assert_eq!(back, s);
+        assert_eq!(back.items[0].site.as_deref(), Some("web.telegram.org"));
+        assert_eq!(back.items[1].site, None);
+    }
+
+    #[test]
+    fn a_bad_site_flag_is_refused() {
+        let s = Saved::of(2, &[entry(1, "Chrome", None)], &HashMap::new());
+        let mut plain = encode(&s);
+        // Entry 1 has no site: its flag is the last byte before the logo count (4 bytes).
+        let flag = plain.len() - 4 - 1;
+        assert_eq!(plain[flag], 0);
+        plain[flag] = 2;
+        assert_eq!(decode(&plain), None);
+        plain[flag] = 1;
+        assert_eq!(decode(&plain), None, "a flag of 1 with no string behind it");
     }
 
     #[test]

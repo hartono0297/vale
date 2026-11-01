@@ -35,7 +35,7 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[cleaner]]
 - [[mole-mode]]
 - [[clipboard-history]]
-- [[notification-history]]: the Notifikasi page (13th, after Clipboard): a capped, optionally encrypted history of the toasts, exclusion rule, TIMER_NOTIF_SAVE (34), keyboard only by click, logo path (v3.9)
+- [[notification-history]]: the Notifikasi page (13th, after Clipboard): a capped, optionally encrypted history of the toasts, exclusion rule, TIMER_NOTIF_SAVE (34), keyboard only by click, logo path, notch toast logo + app eyebrow, browser site (file v2) (v3.9)
 - [[clipboard-notice]]: a 3 s preview in the notch on every external copy (text lines, thumbnail, files), skip rules, supersedes "Disalin untuk semua salinan", no timer
 - [[screenshot-preview]]: preview matching of the Windows file; Simpan never writes a duplicate (v3.6)
 - [[screenshot-snap]]: own region capture that snaps to windows and boxes, the editor after it, UIA budget, own-copy skip, PrtSc key opens Vale's capture (low-level keyboard hook on its own thread, Settings row, nothing in the registry)

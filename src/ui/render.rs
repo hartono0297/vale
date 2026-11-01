@@ -49,11 +49,11 @@ use super::cat_style::CatLook;
 use super::dock::{DockFrame, DockZone};
 use super::fonts::{self, Face, Role};
 use super::geometry::{
-    BAR_COUNT, BAR_GAP, BAR_W, HitRegions, LYRIC_FADE_W, Rect, SHOT_BUTTON_PAD,
+    BAR_COUNT, BAR_GAP, BAR_W, HitRegions, LYRIC_FADE_W, NoticeLayout, Rect, SHOT_BUTTON_PAD,
     SHOT_THUMB_RADIUS, ShapeRect, Under, badge_letter, badge_style, compact_layout,
     compact_layout_robot, corner_radius, equalizer_heights, idle_layout, lyric_layout,
     lyric_layout_robot, lyric_overflow, notice_action, notice_action_w, notice_layout, shot_fit,
-    shot_layout, shot_regions, shoulder_depth,
+    shot_layout, shot_regions, shoulder_depth, toast_eyebrow, toast_notice_layout,
 };
 use super::icons::{Icon, IconSet};
 use super::motion::Transit;
@@ -218,6 +218,9 @@ pub struct Frame<'a> {
     /// The copied image's thumbnail for a `ClipPreview` notice; `None` for
     /// text and files, or when the entry is gone (then the Clipboard badge).
     pub clip_notice: Option<ClipNoticeView<'a>>,
+    /// The app's logo for a notice made from a real Windows toast; `None` for
+    /// every other notice, or when no logo is known (then the letter badge).
+    pub toast_logo: Option<ToastLogoView<'a>>,
     /// What transitions add to this frame (`ui::motion`); all at rest by
     /// default.
     pub transit: Transit,
@@ -229,6 +232,15 @@ pub struct Frame<'a> {
 pub struct ClipNoticeView<'a> {
     /// The history entry's id (the notice's `id`, and the bitmap cache's key).
     pub id: u64,
+    pub thumb: &'a Thumb,
+}
+
+/// What a toast notice draws in its badge (`NoticeKind::App` with `toast`):
+/// the app's logo, contained, over the badge plate.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ToastLogoView<'a> {
+    /// The logo key (`notif::logo_key`), also the bitmap cache's key.
+    pub key: &'a str,
     pub thumb: &'a Thumb,
 }
 
@@ -1568,7 +1580,14 @@ impl Renderer {
                 (NoticeKind::Arranged { save }, _) => {
                     self.paint_arranged(shape, notice, *save, &frame.arrange, robot)
                 }
-                _ => self.paint_notice(shape, notice, frame.pomodoro, robot, frame.clip_notice),
+                _ => self.paint_notice(
+                    shape,
+                    notice,
+                    frame.pomodoro,
+                    robot,
+                    frame.clip_notice,
+                    frame.toast_logo,
+                ),
             },
             View::Idle => {
                 // Without the clock or the robot, idle is the empty shape.
@@ -1911,6 +1930,7 @@ impl Renderer {
         pomo: &Pomodoro,
         robot: Option<RobotFrame>,
         clip: Option<ClipNoticeView>,
+        toast_logo: Option<ToastLogoView>,
     ) -> Result<()> {
         let p = self.palette;
         let next = pomo.phase();
@@ -1921,7 +1941,30 @@ impl Renderer {
             };
             (key, fill, p.on_accent)
         });
-        let layout = notice_layout(shape, action.map(|_| notice_action_w(&notice.kind)));
+        let action_w = action.map(|_| notice_action_w(&notice.kind));
+        // A notice made from a real toast adds the app's name above the title.
+        let toast = match &notice.kind {
+            NoticeKind::App {
+                toast: Some(origin),
+                ..
+            } => Some(origin),
+            _ => None,
+        };
+        let (layout, eyebrow) = match toast {
+            Some(_) => {
+                let l = toast_notice_layout(shape, action_w);
+                (
+                    NoticeLayout {
+                        badge: l.badge,
+                        title: l.title,
+                        body: l.body,
+                        action: l.action,
+                    },
+                    Some(l.eyebrow),
+                )
+            }
+            None => (notice_layout(shape, action_w), None),
+        };
         let badge = badge_style(notice, &p, next);
         // A copied image: its thumbnail takes the badge spot, never Bata.
         let thumb = match (&notice.kind, clip) {
@@ -1939,8 +1982,13 @@ impl Renderer {
             None => {
                 self.set_color(badge.fill, badge.alpha);
                 self.fill_round(layout.badge, radius::BADGE);
+                let logo_drawn = match toast_logo {
+                    Some(view) if toast.is_some() => self.paint_toast_logo(layout.badge, view)?,
+                    _ => false,
+                };
                 // The badge has its own fill: no shadow on what it holds.
                 self.solid_ink(|| match badge.icon {
+                    _ if logo_drawn => {}
                     // Line only: the duotone would vanish on a tint of its own colour.
                     Some(icon) => self.icon_colored(icon, layout.badge, 20.0, badge.ink, 1.0, None),
                     None => {
@@ -1949,6 +1997,10 @@ impl Renderer {
                     }
                 });
             }
+        }
+        if let (Some(origin), Some(area)) = (toast, eyebrow) {
+            let line = toast_eyebrow(&notice.source, origin.site.as_deref());
+            self.text_colored(&line, &self.fonts.micro, area, p.secondary, 1.0);
         }
         self.text(&notice.title, &self.fonts.title, layout.title, 1.0);
         self.text_colored(
@@ -1967,6 +2019,52 @@ impl Renderer {
             });
         }
         Ok(())
+    }
+
+    /// A toast's app logo inside the badge: contained (the whole picture,
+    /// centred) with rounded corners, over the plate the caller filled. Its
+    /// bitmap is the Notifikasi page's cache entry (`notif_logos`), capped so
+    /// many apps between page paints cannot grow it. False when the pixels
+    /// are unreadable: the caller draws the letter.
+    fn paint_toast_logo(&self, area: Rect, view: ToastLogoView) -> Result<bool> {
+        /// Bitmaps the cache keeps once the notch added one.
+        const KEEP: usize = 16;
+        let Some(bitmap) = self.notif_logo(view.key, view.thumb)? else {
+            return Ok(false);
+        };
+        {
+            let mut cache = self.notif_logos.borrow_mut();
+            while cache.len() > KEEP {
+                cache.remove(0);
+            }
+        }
+        let target = self.target.as_ref().expect("target ensured by paint");
+        unsafe {
+            let D2D_SIZE_F { width, height } = bitmap.GetSize();
+            let placed = shot_fit(area, width, height);
+            let k = placed.w / width.max(1.0);
+            let transform = Matrix3x2 {
+                M11: k,
+                M12: 0.0,
+                M21: 0.0,
+                M22: k,
+                M31: placed.x,
+                M32: placed.y,
+            };
+            let brush = target.rt.CreateBitmapBrush(&bitmap, None, None)?;
+            brush.SetTransform(&transform);
+            let brush: ID2D1Brush = brush.cast()?;
+            let r = radius::BADGE.min(placed.w / 2.0).min(placed.h / 2.0);
+            target.rt.FillRoundedRectangle(
+                &D2D1_ROUNDED_RECT {
+                    rect: d2d_rect(placed),
+                    radiusX: r,
+                    radiusY: r,
+                },
+                &brush,
+            );
+        }
+        Ok(true)
     }
 
     /// A copied image's thumbnail in the notice's badge spot: cover-cropped

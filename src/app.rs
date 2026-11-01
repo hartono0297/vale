@@ -5570,6 +5570,7 @@ impl App {
             cleaner: cleaner.as_ref(),
             shot: shot::shot_view(&self.shots, &self.drawn),
             clip_notice: clip::clip_notice_view(&self.clip.history, &self.drawn),
+            toast_logo: notif_page::toast_logo_view(&self.notif.logos, &self.drawn),
             transit,
         };
         if let Err(error) = self
@@ -6532,7 +6533,10 @@ fn island_notice(key: &str, title: &str, body: &str) -> Notice {
         source: "Vale".into(),
         title: title.into(),
         body: body.into(),
-        kind: NoticeKind::App { app_id: None },
+        kind: NoticeKind::App {
+            app_id: None,
+            toast: None,
+        },
     }
 }
 
@@ -6678,7 +6682,10 @@ fn client_id_notice() -> Notice {
         source: tr(Key::SourceCalendar).into(),
         title: tr(Key::ClientIdMissing).into(),
         body: tr(Key::ClientIdMissingBody).into(),
-        kind: NoticeKind::App { app_id: None },
+        kind: NoticeKind::App {
+            app_id: None,
+            toast: None,
+        },
     }
 }
 
@@ -7772,7 +7779,13 @@ mod tests {
     fn island_notices_are_temporary_and_open_nothing() {
         for notice in [dnd_notice(), invalid_config_notice(None)] {
             assert_eq!(notice.source, "Vale");
-            assert_eq!(notice.kind, NoticeKind::App { app_id: None });
+            assert_eq!(
+                notice.kind,
+                NoticeKind::App {
+                    app_id: None,
+                    toast: None
+                }
+            );
         }
     }
 
@@ -9116,7 +9129,13 @@ mod tests {
         assert_eq!(blocked.body, "Tidak bisa disalin — cek lagi isinya");
         let connect = invalid_config_notice(None);
         assert_eq!(connect.title, "config.json tidak valid");
-        assert_eq!(connect.kind, NoticeKind::App { app_id: None });
+        assert_eq!(
+            connect.kind,
+            NoticeKind::App {
+                app_id: None,
+                toast: None
+            }
+        );
     }
 
     #[test]
@@ -9140,7 +9159,13 @@ mod tests {
         assert_eq!(n.source, "Kalender");
         assert_eq!(n.title, "Isi Google client ID dulu");
         assert_eq!(n.body, "Pengaturan → Integrasi, panduan ada di README");
-        assert_eq!(n.kind, NoticeKind::App { app_id: None });
+        assert_eq!(
+            n.kind,
+            NoticeKind::App {
+                app_id: None,
+                toast: None
+            }
+        );
     }
 
     #[test]
