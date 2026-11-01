@@ -2445,6 +2445,7 @@ mod tests {
             playing,
             art: None,
             source_app: "Chrome".into(),
+            session_key: 0,
         }
     }
 

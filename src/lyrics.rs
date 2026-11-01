@@ -1701,6 +1701,7 @@ mod tests {
             playing: true,
             art: None,
             source_app: String::new(),
+            session_key: 0,
         }
     }
 

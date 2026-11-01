@@ -136,6 +136,19 @@ pub fn format_status(at: NaiveDateTime, app: &str, status: &str) -> String {
     format!("{} status app={app} status={status}", stamp(at))
 }
 
+/// One choice line: which session the watcher now shows (`-` for none) and
+/// how many were live to pick from. The id only: no title, artist or album.
+pub fn format_choice(at: NaiveDateTime, app: &str, live: usize) -> String {
+    let app = if app.is_empty() { "-" } else { app };
+    format!("{} choose app={app} of={live}", stamp(at))
+}
+
+pub fn log_choice(app: &str, live: usize) {
+    if enabled() {
+        write(&format_choice(Local::now().naive_local(), app, live));
+    }
+}
+
 pub fn log_command(click: &Click, outcome: Outcome, app: &str) {
     if enabled() {
         write(&format_command(
@@ -196,6 +209,7 @@ mod tests {
             playing: true,
             art: None,
             source_app: "Chrome".into(),
+            session_key: 0,
         };
         let click = Click {
             hit: Hit::PlayPause,
@@ -233,6 +247,18 @@ mod tests {
         assert_eq!(
             lines[2],
             "2026-10-27 14:03:12.045 status app=Chrome status=Playing"
+        );
+    }
+
+    #[test]
+    fn a_choice_line_holds_the_id_and_the_count_only() {
+        assert_eq!(
+            format_choice(at(), "Spotify.exe", 2),
+            "2026-10-27 14:03:12.045 choose app=Spotify.exe of=2"
+        );
+        assert_eq!(
+            format_choice(at(), "", 0),
+            "2026-10-27 14:03:12.045 choose app=- of=0"
         );
     }
 

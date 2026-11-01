@@ -1536,6 +1536,7 @@ fn run_scenes(scenes: &[Scene]) {
         playing: true,
         art: Some(test_art()),
         source_app: "Spotify.exe".into(),
+        session_key: 0,
     };
     let long_media = MediaInfo {
         title: "Sampai Jadi Debu (Live at Synchronize Festival 2024, Extended Version)".into(),
