@@ -97,6 +97,53 @@ fn choose(cands: &[Candidate], current: Option<u64>, shown: Option<u64>) -> Opti
     best.map(|(i, _)| i)
 }
 
+/// A tracked session as `match_current` compares it.
+struct Facts<'a> {
+    app: &'a str,
+    status: &'static str,
+    title: &'a str,
+    artist: &'a str,
+}
+
+/// Windows' current session as `match_current` compares it, read only when
+/// several tracked sessions share its AUMID.
+struct Probe {
+    status: &'static str,
+    title: String,
+    artist: String,
+}
+
+/// Which tracked session (by index) is Windows' current one, whose COM
+/// identity matched none (see `Watcher::current_key`). The only session with
+/// its AUMID; when several share it (browser tabs), the only one of those
+/// whose status, title and artist equal the current session's (`probe`).
+/// No match, an empty AUMID, a failed probe or several equal tabs give
+/// `None`: better no tiebreak than the wrong one.
+fn match_current(
+    tracked: &[Facts],
+    app: &str,
+    probe: impl FnOnce() -> Option<Probe>,
+) -> Option<usize> {
+    if app.is_empty() {
+        return None;
+    }
+    let same_app: Vec<usize> = (0..tracked.len())
+        .filter(|&i| tracked[i].app == app)
+        .collect();
+    match same_app.as_slice() {
+        [] => return None,
+        [only] => return Some(*only),
+        _ => {}
+    }
+    let probe = probe()?;
+    let mut hits = same_app.into_iter().filter(|&i| {
+        let f = &tracked[i];
+        f.status == probe.status && f.title == probe.title && f.artist == probe.artist
+    });
+    let first = hits.next()?;
+    hits.next().is_none().then_some(first)
+}
+
 /// What a WinRT event handler reports to the watcher thread. Handlers run on
 /// WinRT threads, so they only send one of these and return. The key names
 /// the tracked session the event came from.
@@ -444,14 +491,41 @@ impl Watcher {
         publish_sessions(&self.tracked);
     }
 
-    /// The key of the session Windows calls current.
+    /// The key of the session Windows calls current. GSMTC hands back a
+    /// different COM object from `GetCurrentSession` than from `GetSessions`
+    /// for the same session, so identity alone almost never matches; then
+    /// `match_current` goes by AUMID and, for tabs sharing one, by status,
+    /// title and artist. Call after the statuses were read.
     fn current_key(&self) -> Option<u64> {
         let current = self.manager.GetCurrentSession().ok()?;
         let identity = current.cast::<IUnknown>().ok()?;
-        self.tracked
+        if let Some(t) = self.tracked.iter().find(|t| t.identity == identity) {
+            return Some(t.key);
+        }
+        let app = current
+            .SourceAppUserModelId()
+            .map(|id| id.to_string())
+            .unwrap_or_default();
+        let facts: Vec<Facts> = self
+            .tracked
             .iter()
-            .find(|t| t.identity == identity)
-            .map(|t| t.key)
+            .map(|t| Facts {
+                app: &t.app,
+                status: t.status,
+                title: &t.meta.title,
+                artist: &t.meta.artist,
+            })
+            .collect();
+        let probe = || {
+            let status = current.GetPlaybackInfo().and_then(|i| i.PlaybackStatus());
+            let p = read_properties(&current, false).ok()?;
+            Some(Probe {
+                status: status_name(&status),
+                title: p.title,
+                artist: p.artist,
+            })
+        };
+        match_current(&facts, &app, probe).map(|i| self.tracked[i].key)
     }
 
     /// Applies `refresh` and returns what the island should now show.
@@ -1019,6 +1093,88 @@ mod tests {
     /// The key `choose` picks.
     fn picked(cands: &[Candidate], current: Option<u64>, shown: Option<u64>) -> Option<u64> {
         choose(cands, current, shown).map(|i| cands[i].key)
+    }
+
+    fn facts<'a>(app: &'a str, status: &'static str, title: &'a str, artist: &'a str) -> Facts<'a> {
+        Facts {
+            app,
+            status,
+            title,
+            artist,
+        }
+    }
+
+    fn probe(status: &'static str, title: &str, artist: &str) -> Option<Probe> {
+        Some(Probe {
+            status,
+            title: title.into(),
+            artist: artist.into(),
+        })
+    }
+
+    fn no_probe() -> Option<Probe> {
+        panic!("probed although the AUMID decides")
+    }
+
+    #[test]
+    fn the_current_session_is_found_by_its_aumid() {
+        let tracked = [
+            facts("Spotify.exe", "Paused", "Song", "Band"),
+            facts("Chrome", "Paused", "Video", "Channel"),
+        ];
+        assert_eq!(match_current(&tracked, "Chrome", no_probe), Some(1));
+        assert_eq!(match_current(&tracked, "vlc", no_probe), None);
+    }
+
+    #[test]
+    fn an_empty_aumid_matches_nothing() {
+        let tracked = [facts("", "Paused", "", "")];
+        assert_eq!(match_current(&tracked, "", no_probe), None);
+    }
+
+    #[test]
+    fn tabs_sharing_an_aumid_are_told_apart_by_status_title_and_artist() {
+        let tracked = [
+            facts("Chrome", "Playing", "Video A", "Channel"),
+            facts("Chrome", "Playing", "Video B", "Channel"),
+            facts("Chrome", "Paused", "Video B", "Channel"),
+        ];
+        let current = || probe("Playing", "Video B", "Channel");
+        assert_eq!(match_current(&tracked, "Chrome", current), Some(1));
+        let current = || probe("Paused", "Video B", "Channel");
+        assert_eq!(match_current(&tracked, "Chrome", current), Some(2));
+    }
+
+    #[test]
+    fn equal_tabs_or_a_failed_probe_give_no_current_session() {
+        let tracked = [
+            facts("Chrome", "Paused", "Video", "Channel"),
+            facts("Chrome", "Paused", "Video", "Channel"),
+        ];
+        let current = || probe("Paused", "Video", "Channel");
+        assert_eq!(match_current(&tracked, "Chrome", current), None);
+        assert_eq!(match_current(&tracked, "Chrome", || None), None);
+        let current = || probe("Playing", "Other", "Channel");
+        assert_eq!(match_current(&tracked, "Chrome", current), None);
+    }
+
+    #[test]
+    fn the_tab_windows_makes_current_takes_over_from_the_shown_one() {
+        // Tab A plays and is shown; the user starts tab B, which Windows
+        // makes current. Both are playing videos.
+        let tracked = [
+            facts("Chrome", "Playing", "Video A", "Channel A"),
+            facts("Chrome", "Playing", "Video B", "Channel B"),
+        ];
+        let current = match_current(&tracked, "Chrome", || {
+            probe("Playing", "Video B", "Channel B")
+        })
+        .map(|i| [1, 2][i]);
+        let cands = [
+            cand(1, "Chrome", true, false),
+            cand(2, "Chrome", true, false),
+        ];
+        assert_eq!(picked(&cands, current, Some(1)), Some(2));
     }
 
     #[test]

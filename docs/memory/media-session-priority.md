@@ -66,6 +66,21 @@ not work either: Firefox's AUMID is an install-path hash (e.g.
   old values (a new session with none counts as non-music, empty text).
 - Keys come from a counter starting at 1 and are never reused; a session is
   recognised across re-lists by its COM identity. 0 means unknown.
+  `GetSessions()` returns the same object for a session on every call, so
+  this is stable.
+
+## Gotcha: the current session is a different COM object
+
+`GetCurrentSession()` hands back a different COM object than the
+`GetSessions()` entry for the same session (checked live: one Chrome session,
+two different `IUnknown` pointers, each stable on repeated calls). Matching it
+by identity alone found nothing, so the "Windows' current session" tiebreak
+never applied. `Watcher::current_key` still tries identity first, then
+`match_current`: the only tracked session with the current one's AUMID; when
+several share it (browser tabs), the only one of those whose status, title
+and artist equal the current session's (read only in that case). An empty
+AUMID, a failed read or several equal tabs give no current session, and the
+tie falls to the session shown before.
 - "New track" for the timeline (force an `Event::MediaTimeline`) is: the shown
   session changed, or its properties were re-read.
 
@@ -86,8 +101,10 @@ When the chosen key changes (also to or from none) one line is written:
 `<stamp> choose app=<AUMID or -> of=<live sessions>`. The AUMID only, never a
 title, artist or album. See [[media-diagnosis-log]].
 
-Not covered by tests: the WinRT side (relist, subscriptions, registry); the
-ranking, music rule, signal coalescing and key lookup are unit tests.
+Not covered by tests: the WinRT side (relist, subscriptions, registry, the
+identity match of the current session); the
+ranking, music rule, current-session fallback, signal coalescing and key
+lookup are unit tests.
 `--probe-media` (debug builds) prints source app and key per update.
 
 Listed in [[index]].
