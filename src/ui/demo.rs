@@ -2016,8 +2016,9 @@ fn run_scenes(scenes: &[Scene]) {
                     },
                 ),
                 toast_logo,
-                // The slot grows with the morph, as `App::draw` works it out
-                // (the animated width over the one without the slot).
+                // The slot grows with the morph: the animated width over the
+                // one without the slot (a scene's slot and line are fixed, so
+                // this matches `App`'s `SlotShare` here).
                 toast_slot_w: if scene.slot {
                     (shape.w - (to.w - TOAST_SLOT_EXTRA)).clamp(0.0, TOAST_SLOT_EXTRA)
                 } else {

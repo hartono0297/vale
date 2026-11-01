@@ -834,7 +834,6 @@ impl IslandState {
         }
         // A new notice or a dismissal may have left the slot free for the next queued one.
         self.advance(now, &mut effects);
-        self.settle_toast();
         // The pointer over the preview: its expiry is no longer "ignored".
         if self.hover && self.shown_shot().is_some() {
             self.shot_touched = true;
@@ -968,6 +967,9 @@ impl IslandState {
             let (from, to) = self.cal_range();
             effects.push(Effect::RefreshCalendar { from, to });
         }
+        // Last, once the linger, the latch and the inputs have settled what
+        // shows: the toast is judged on the view this `apply` leaves.
+        self.settle_toast();
         effects
     }
 
@@ -2388,8 +2390,8 @@ impl IslandState {
         self.toast_seen = false;
     }
 
-    /// The end of every `apply`: what the current toast was shown as, and
-    /// what that does to the dot.
+    /// The very end of every `apply` (after the linger and the latch): what
+    /// the current toast was shown as, and what that does to the dot.
     fn settle_toast(&mut self) {
         let real = self
             .current
@@ -7855,6 +7857,25 @@ mod tests {
         s.apply(Event::Media(None), t0 + secs(1));
         assert_eq!(s.toast_form(), Some(ToastForm::Full));
         assert_eq!(s.next_deadline(), Some(t0 + NOTICE_DURATION));
+    }
+
+    #[test]
+    fn a_strip_over_a_panel_that_lingers_after_its_editor_stays_a_strip() {
+        // The editor held the panel open with the pointer away; it closes and
+        // the panel lingers. The toast is judged on the panel that stays, not
+        // on the Idle it passes through inside the same `apply`.
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Hover(true), t0);
+        s.apply(Event::EditorOpen(true), t0);
+        s.apply(Event::Hover(false), t0);
+        assert_eq!(s.view(), View::Panel(Page::Calendar));
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0);
+        assert_eq!(s.toast_form(), Some(ToastForm::Strip));
+        s.apply(Event::EditorOpen(false), t0 + secs(1));
+        assert_eq!(s.view(), View::Panel(Page::Calendar), "it lingers");
+        assert_eq!(s.toast_form(), Some(ToastForm::Strip));
+        assert_eq!(s.waiting_strip().map(|n| n.title.as_str()), Some("Ibu"));
     }
 
     #[test]

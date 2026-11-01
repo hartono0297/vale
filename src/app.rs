@@ -411,6 +411,7 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
             strip_motion: None,
             toast_over: false,
             slot_keep: None,
+            slot_share: SlotShare::default(),
             leaving: None,
             closed_panel: None,
             fade_floor_h: notch.h,
@@ -700,6 +701,8 @@ struct App {
     /// The toast whose logo the slot shows, kept while the island shrinks
     /// back so the logo fades out instead of vanishing.
     slot_keep: Option<Notice>,
+    /// The slot's share of the compact notch's width over the running morph.
+    slot_share: SlotShare,
     /// The panel that is closing, as it showed, while its content fades
     /// with the shrinking shape; set at the morph's start, gone at its end.
     leaving: Option<ShownPanel>,
@@ -3164,7 +3167,10 @@ impl App {
     fn refresh(&mut self, now: Instant) {
         self.sync_lyrics(now);
         // A busy toast's logo beside the lyric line: the width, the box and
-        // the scroll plan are worked out with it (before the line is fitted).
+        // the scroll plan are worked out with it. After `sync_lyrics`, whose
+        // `LyricsReady` may change the view the slot is read from; before
+        // `sync_lyric_line`, which fits the line and re-plans the scroll
+        // (`TIMER_LYRIC_SCROLL`, the frame clock) with the flag as it is now.
         let lyric_slot =
             self.state.toast_slot().is_some() && self.state.view() == View::MediaLyric;
         self.lyric_fit.set_slot(lyric_slot);
@@ -3234,8 +3240,20 @@ impl App {
             }
             _ => shape_with_robot_sized(style, notch, kind, robot),
         });
+        // The logo's room in the target: a lyric line at its cap keeps the
+        // notch's width and gives the room up from its box, so the slot
+        // toggling there is a morph of its own.
+        let slot_to = if target.is_some() && !self.eyes && self.state.toast_slot().is_some() {
+            TOAST_SLOT_EXTRA
+        } else {
+            0.0
+        };
         let retarget = match target {
-            Some(shape) => self.anim.to != shape || self.anim.to_opacity != 1.0,
+            Some(shape) => {
+                self.anim.to != shape
+                    || self.anim.to_opacity != 1.0
+                    || self.slot_share.to != slot_to
+            }
             None => self.anim.to_opacity != 0.0,
         };
         // Hidden, something else on screen, or the notch swapped with the
@@ -3272,10 +3290,18 @@ impl App {
             fading
         };
         let hiding = view == View::Hidden;
+        // What of the slot shows now, on the view drawn before this refresh.
+        let slot_now = self.slot_drawn(now);
         if !hiding {
             self.drawn = view;
         }
         if retarget {
+            // The slot's share goes from what shows to the target's; hiding
+            // fades the island out as it is.
+            self.slot_share = SlotShare {
+                from: slot_now,
+                to: if hiding { slot_now } else { slot_to },
+            };
             let (shape, opacity) = self.anim.frame(now);
             // Drawn on screen before this morph (not hidden, not heading
             // for it): only then does a closing panel have content to fade.
@@ -5598,6 +5624,17 @@ impl App {
         self.save_config();
     }
 
+    /// The slot's share of the drawn compact view's width at `now` (0 with
+    /// no slot, or on any other view).
+    fn slot_drawn(&self, now: Instant) -> f32 {
+        match (&self.drawn, self.slot_keep.is_some()) {
+            (View::MediaCompact | View::MediaLyric | View::PomodoroCompact, true) => {
+                self.slot_share.at(&self.anim, now)
+            }
+            _ => 0.0,
+        }
+    }
+
     fn draw(&mut self, now: Instant) {
         self.dock_sync();
         // Clicks on the Devices page mean the cards of the frame drawn here.
@@ -5693,19 +5730,9 @@ impl App {
         );
         let notif =
             notif_page::notif_view(&self.notif, self.config.notifications, state.notif_armed());
-        // A busy toast's logo beside a compact view: how much of the slot the
-        // animated shape has grown by (its width over the one without it).
-        let toast_slot_w = match (&self.drawn, self.slot_keep.is_some()) {
-            (View::MediaCompact | View::MediaLyric | View::PomodoroCompact, true) => {
-                let slot_on = if state.toast_slot().is_some() {
-                    TOAST_SLOT_EXTRA
-                } else {
-                    0.0
-                };
-                (shape.w - (self.anim.to.w - slot_on)).clamp(0.0, TOAST_SLOT_EXTRA)
-            }
-            _ => 0.0,
-        };
+        // A busy toast's logo beside a compact view: the slot's share of the
+        // animated shape's width.
+        let toast_slot_w = self.slot_drawn(now);
         let logos = &self.notif.logos;
         // The strip: a toast's while its form is the strip, else the sticky
         // one, and the toast that is fading out of it for the motion's time.
@@ -6167,6 +6194,29 @@ impl Anim {
         let shape = lerp_shape(self.from, self.to, self.curve.ease(t));
         let opacity = self.from_opacity + (self.to_opacity - self.from_opacity) * t;
         (shape, opacity)
+    }
+}
+
+/// A busy toast's slot share of a compact notch's width (0 to
+/// `TOAST_SLOT_EXTRA`) over a morph: what showed when it began and what the
+/// target has. Kept apart from the shape's width, which also changes with a
+/// longer lyric line or another view: a slot present at both ends stays
+/// whole the whole morph, and only a slot that comes or goes eases with it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct SlotShare {
+    from: f32,
+    to: f32,
+}
+
+impl SlotShare {
+    /// The share at `now`, following the shape's eased progress (an
+    /// overshoot is clamped).
+    fn at(&self, anim: &Anim, now: Instant) -> f32 {
+        let t = anim.progress(now);
+        if t >= 1.0 {
+            return self.to;
+        }
+        (self.from + (self.to - self.from) * anim.curve.ease(t)).clamp(0.0, TOAST_SLOT_EXTRA)
     }
 }
 
@@ -8013,6 +8063,70 @@ mod tests {
             ..eyes
         };
         assert!(eyes.fading(at(150)).unwrap() < linear.fading(at(150)).unwrap());
+    }
+
+    #[test]
+    fn the_slot_keeps_its_share_while_a_longer_lyric_line_grows_the_notch() {
+        // The slot shows before and after; the line side grows by 40 dip
+        // (a new, longer line within the toast's 5 s). The logo must stay
+        // whole the whole morph, overshoot included, not blink out and fade
+        // back as it would if the share were read off the target width.
+        let t0 = Instant::now();
+        let base = lyric_shape(Style::Pill, 300.0);
+        let wide = lyric_shape(Style::Pill, 340.0);
+        let (ms, curve) = morph_timing(false, true, false);
+        let anim = Anim {
+            from: base,
+            from_opacity: 1.0,
+            to: wide,
+            to_opacity: 1.0,
+            start: t0,
+            ms,
+            running: true,
+            curve,
+            fade_from: None,
+        };
+        let both = SlotShare {
+            from: TOAST_SLOT_EXTRA,
+            to: TOAST_SLOT_EXTRA,
+        };
+        let none = SlotShare::default();
+        for n in (0..=ms).step_by(4) {
+            let at = t0 + Duration::from_millis(n);
+            assert_eq!(both.at(&anim, at), TOAST_SLOT_EXTRA, "{n} ms");
+            assert_eq!(none.at(&anim, at), 0.0, "{n} ms");
+        }
+        // A slot that comes or goes eases with the shape, clamped to its
+        // room, and lands exactly on the target's share.
+        let comes = SlotShare {
+            from: 0.0,
+            to: TOAST_SLOT_EXTRA,
+        };
+        let goes = SlotShare {
+            from: TOAST_SLOT_EXTRA,
+            to: 0.0,
+        };
+        let mut last = 0.0;
+        for n in (0..=ms).step_by(4) {
+            let at = t0 + Duration::from_millis(n);
+            let e = comes.at(&anim, at);
+            assert!((0.0..=TOAST_SLOT_EXTRA).contains(&e), "{n} ms: {e}");
+            assert!(
+                e >= last || e == TOAST_SLOT_EXTRA,
+                "{n} ms: {e} after {last}"
+            );
+            last = e;
+            assert!((0.0..=TOAST_SLOT_EXTRA).contains(&goes.at(&anim, at)));
+        }
+        assert_eq!(comes.at(&anim, t0), 0.0);
+        assert_eq!(goes.at(&anim, t0), TOAST_SLOT_EXTRA);
+        let done = t0 + Duration::from_millis(ms);
+        assert_eq!(comes.at(&anim, done), TOAST_SLOT_EXTRA);
+        assert_eq!(goes.at(&anim, done), 0.0);
+        // Settled (no morph): the target's share.
+        let settled = Anim::settled(wide, 1.0);
+        assert_eq!(comes.at(&settled, t0), TOAST_SLOT_EXTRA);
+        assert_eq!(goes.at(&settled, t0), 0.0);
     }
 
     #[test]

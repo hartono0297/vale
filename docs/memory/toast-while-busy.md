@@ -37,8 +37,11 @@ the Hover `visit_on_notice`, the Wheel / PageFlick / page-dock sticky peeks,
 the Click-mode `Hit::Body` arm, `notice_blocks_hover`): with a tucked toast and
 no peek the reducer behaves as if there were no `current`.
 
-- **Full latch.** `settle_toast` (end of every `apply`, after the final
-  `advance`) sets `toast_full` when the toast is presented Full by context. Once
+- **Full latch.** `settle_toast` (the very end of every `apply`, after the
+  final `advance` *and* the hover latch, the linger arming and `end_linger`:
+  an editor closing with the pointer away passes through Idle before the
+  linger reopens the panel, and judging there latched a strip Full) sets
+  `toast_full` when the toast is presented Full by context. Once
   full it stays full until it ends, whatever comes under it (a panel that
   closes mid-toast shows the toast whole with its remaining time; music that
   ends under a slot does too). Context changes never restart the 5 s.
@@ -94,11 +97,21 @@ Lyric ([[lyric-notch-width]]): `lyric_slot_width(w, robot, min, max) =
 min(w, lyric_cap - 28) + 28`, never above `lyric_cap`. `LyricFit` has a `slot`
 flag: `width()` is the total, `content_w()` the line side, `box_w()` and the
 scroll plan follow the content, and the one-shot `TIMER_LYRIC_SCROLL` is
-re-planned on the toggle exactly as on a width change. A line that hit the cap
+re-planned on the toggle exactly as on a width change (`refresh` sets the flag
+after `sync_lyrics`, whose `LyricsReady` may change the view, and before
+`sync_lyric_line`, which ends in `sync_lyric_scroll`). A line that hit the cap
 gives the logo's 28 dip of its box up (it then scrolls and fades as ever).
-`Frame::toast_slot_w` = animated shape width less the target width without the
-slot; `App` keeps the slot's notice (`slot_keep`) until the island is back so
-the logo fades out with the shrink. The morph uses the existing rules (the same
+`Frame::toast_slot_w` is `App::slot_share` (`SlotShare { from, to }`), set at
+each retarget from the share drawn then and the target's (28 with the slot, 0
+without; hiding keeps it as it is), eased with the shape's curve. It is **not**
+read off the shape's width: that also changes with a longer lyric line or
+MediaCompact to MediaLyric, and the logo blinked out and `Hit::ToastSlot`
+dropped for the morph. A slot at both ends stays whole; only one that comes or
+goes eases. A lyric line at its cap keeps the notch's width when the slot
+toggles, so `slot_share.to` changing is a retarget of its own (a resize morph).
+After a peek the logo eases back in with the shrink (the Notice drew none).
+`App` keeps the slot's notice (`slot_keep`) until the island is back so the
+logo fades out with the shrink. The morph uses the existing rules (the same
 view gives no content fade; the lyric uses the resize timing). The dot sits
 8 dip in from the right at the vertical centre (`toast_dot`). The slot
 registers `Hit::ToastSlot` (the logo and the island's right end) only once the
