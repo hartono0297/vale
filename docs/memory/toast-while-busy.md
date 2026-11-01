@@ -58,12 +58,17 @@ no peek the reducer behaves as if there were no `current`.
   leaves, the form is Slot again (or follows the context). A peek blocks hover
   (`notice_blocks_hover`), so hover never opens the panel under the full toast.
 - **Hold.** `notice_held` also holds for `toast_pointer` while the form is Strip
-  or peeking. `settle_toast(spot_was)` drops `toast_pointer` when the toast's
-  spot (`toast_spot()`: Strip, or Slot with a peek counted as Slot) changed in
-  that `apply`: a panel shut by a key with the pointer on the strip otherwise
-  turned straight into a peek with no pointer on the slot. On `ToastPointer(false)` (or `Hover(false)`, which clears
-  `toast_pointer` too) after holding, expiry = max(expiry, now +
-  `SHOT_LEAVE_GRACE`), like a notice with an action.
+  or peeking. `toast_hold_moved` ends the hold when the spot the pointer held
+  it on (`toast_held_spot()`: Strip, or Slot while peeking) changed: it drops
+  `toast_pointer` (a panel shut by a key with the pointer on the strip
+  otherwise turned straight into a peek with no pointer on the slot) and sets
+  expiry = max(expiry, now + `SHOT_LEAVE_GRACE`). `apply` runs it after the
+  linger update, after the event (both **before** an `advance`: the second
+  `advance` judged a strip closed by a key as unheld Full and dropped a toast
+  whose 5 s had run out at once, unseen, setting the dot) and in
+  `settle_toast` (the latch / linger end). On `ToastPointer(false)` (or
+  `Hover(false)`, which clears `toast_pointer` too) after holding, the same
+  grace, like a notice with an action.
 - **Clicks.** `Hit::Strip` while the form is Strip calls
   `dismiss_visible_notice` (the panel stays open; with a sticky strip it still
   dismisses the sticky one). `Hit::ToastSlot` while a slot or peek shows

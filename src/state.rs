@@ -433,7 +433,7 @@ impl IslandState {
         let cleaner_was = self.cleaner.map(|c| c.mode);
         let hover_on = matches!(event, Event::Hover(true));
         let page_was = self.page;
-        let toast_spot_was = self.toast_spot();
+        let toast_held_was = self.toast_held_spot();
         // The linger runs out here, after the "was" values above saw the
         // panel as the user last did (the close below still cleans up after
         // it). From here on `panel_open_now` is the panel the event meets.
@@ -445,6 +445,9 @@ impl IslandState {
         let panel_view_now = matches!(self.view(), View::Panel(_));
         let linger_trigger = self.linger_trigger(&event, now);
         let mut effects = Vec::new();
+        // A linger that ran out may have moved the held toast: its grace
+        // first, before `advance` judges it unheld.
+        self.toast_hold_moved(toast_held_was, now);
         // Finish a phase whose end has passed before handling the input, so a
         // click that beats the deadline's Tick never pauses the timer at 0:00.
         if let Some(done) = self.pomodoro.tick(now) {
@@ -452,6 +455,7 @@ impl IslandState {
         }
         self.advance(now, &mut effects);
         self.expire_confirm(now);
+        let toast_held = self.toast_held_spot();
         match event {
             Event::Media(media) => self.set_media(media, now),
             Event::MediaTimeline(timeline) => self.timeline = timeline,
@@ -838,8 +842,13 @@ impl IslandState {
                 }
             }
         }
+        // A key that closed or opened the panel under the pointer moved the
+        // toast it held: the hold ends with the grace, before `advance` sees
+        // the new form unheld (an Idle close would drop it unseen).
+        self.toast_hold_moved(toast_held, now);
         // A new notice or a dismissal may have left the slot free for the next queued one.
         self.advance(now, &mut effects);
+        let toast_held = self.toast_held_spot();
         // The pointer over the preview: its expiry is no longer "ignored".
         if self.hover && self.shown_shot().is_some() {
             self.shot_touched = true;
@@ -975,7 +984,7 @@ impl IslandState {
         }
         // Last, once the linger, the latch and the inputs have settled what
         // shows: the toast is judged on the view this `apply` leaves.
-        self.settle_toast(toast_spot_was);
+        self.settle_toast(toast_held, now);
         effects
     }
 
@@ -2406,18 +2415,38 @@ impl IslandState {
         self.toast_form()
     }
 
+    /// The spot where the pointer holds the current toast: its strip, or
+    /// its slot while peeking (`toast_spot()` with `toast_pointer`).
+    fn toast_held_spot(&self) -> Option<ToastForm> {
+        if !self.toast_pointer {
+            return None;
+        }
+        self.toast_spot()
+            .filter(|spot| matches!(spot, ToastForm::Strip | ToastForm::Slot))
+    }
+
+    /// The pointer held the toast on `held` and the toast has moved since
+    /// (the panel closed or opened by a key, a linger ran out): the pointer
+    /// is on the old spot, not the new one, so the hold ends as a leave
+    /// does, with at least the grace more. `App`'s next move tells again.
+    fn toast_hold_moved(&mut self, held: Option<ToastForm>, now: Instant) {
+        if held.is_none() || self.toast_spot() == held {
+            return;
+        }
+        self.toast_pointer = false;
+        if let Some((n, expires)) = &mut self.current
+            && is_real_toast(n)
+        {
+            *expires = (*expires).max(now + SHOT_LEAVE_GRACE);
+        }
+    }
+
     /// The very end of every `apply` (after the linger and the latch): what
     /// the current toast was shown as, and what that does to the dot.
-    /// `spot_was` is `toast_spot()` as the previous `apply` left it.
-    fn settle_toast(&mut self, spot_was: Option<ToastForm>) {
-        // The toast moved from the strip to the slot or back (the panel
-        // closed or opened by a key, say): the pointer said it was on the
-        // old spot, not the new one. `App`'s next move tells again.
-        if matches!(spot_was, Some(ToastForm::Strip | ToastForm::Slot))
-            && self.toast_spot() != spot_was
-        {
-            self.toast_pointer = false;
-        }
+    /// `held` is `toast_held_spot()` after the last `advance`.
+    fn settle_toast(&mut self, held: Option<ToastForm>, now: Instant) {
+        // The latch or the linger's end moved the held toast.
+        self.toast_hold_moved(held, now);
         let real = self
             .current
             .as_ref()
@@ -7920,6 +7949,39 @@ mod tests {
         assert!(matches!(s.view(), View::Panel(_)));
         assert_eq!(s.toast_form(), Some(ToastForm::Strip));
         assert!(!s.toast_pointer());
+    }
+
+    #[test]
+    fn a_held_strip_closed_by_a_key_after_its_time_gets_the_leave_grace() {
+        // Idle under the panel: the toast shows full for the grace, seen.
+        let t0 = Instant::now();
+        let mut s = busy("panel", t0);
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0);
+        s.apply(Event::ToastPointer(true), t0 + secs(1));
+        s.apply(Event::Tick, t0 + secs(20));
+        assert_eq!(s.toast_form(), Some(ToastForm::Strip), "held");
+        let closed = t0 + secs(21);
+        s.apply(Event::PrintScreen, closed);
+        assert_eq!(s.toast_form(), Some(ToastForm::Full));
+        assert_eq!(s.view(), View::Notice(toast_notice("t1", "Ibu")));
+        assert_eq!(s.next_deadline(), Some(closed + SHOT_LEAVE_GRACE));
+        s.apply(Event::Tick, closed + SHOT_LEAVE_GRACE - Duration::from_millis(1));
+        assert_eq!(s.toast_form(), Some(ToastForm::Full));
+        s.apply(Event::Tick, closed + SHOT_LEAVE_GRACE);
+        assert_eq!(s.toast_form(), None);
+        assert!(!s.toast_dot_shown(), "it showed full: seen");
+        // Media under the panel: the slot, with the grace to run.
+        let mut s = busy("media", t0);
+        s.apply(Event::Hover(true), t0);
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0);
+        s.apply(Event::ToastPointer(true), t0 + secs(1));
+        s.apply(Event::Tick, t0 + secs(20));
+        assert_eq!(s.toast_form(), Some(ToastForm::Strip), "held");
+        s.apply(Event::PrintScreen, closed);
+        assert_eq!(s.toast_form(), Some(ToastForm::Slot));
+        assert_eq!(s.next_deadline(), Some(closed + SHOT_LEAVE_GRACE));
+        s.apply(Event::Tick, closed + secs(1));
+        assert_eq!(s.toast_form(), Some(ToastForm::Slot));
     }
 
     #[test]
