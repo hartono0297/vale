@@ -1254,13 +1254,35 @@ impl Renderer {
             drawn.push(entry.logo_key());
             self.paint_notif_logo(row.logo, entry, view)?;
             let name_ink = if entry.read { p.secondary } else { p.text };
-            self.text_colored(
-                &entry.source,
-                &self.fonts.body_medium,
-                row.name,
-                name_ink,
-                1.0,
-            );
+            match entry.site.as_deref() {
+                // A browser's site follows the app, quieter, in what is left.
+                Some(site) => {
+                    let used = (self.text_width(&entry.source, &self.fonts.body_medium).ceil()
+                        + 1.0)
+                        .min(row.name.w);
+                    let app = Rect {
+                        w: used,
+                        ..row.name
+                    };
+                    self.text_colored(&entry.source, &self.fonts.body_medium, app, name_ink, 1.0);
+                    let rest = Rect {
+                        x: row.name.x + used,
+                        w: row.name.w - used,
+                        ..row.name
+                    };
+                    if rest.w > 0.0 {
+                        let tail = format!(" \u{b7} {site}");
+                        self.text_colored(&tail, &self.fonts.body_medium, rest, p.secondary, 1.0);
+                    }
+                }
+                None => self.text_colored(
+                    &entry.source,
+                    &self.fonts.body_medium,
+                    row.name,
+                    name_ink,
+                    1.0,
+                ),
+            }
             let when = relative_time(entry.at, view.now, lang);
             self.text_colored(&when, &self.fonts.small_right, row.time, p.secondary, 1.0);
             if !entry.read {
@@ -2959,7 +2981,7 @@ impl Renderer {
 
     /// The logo `thumb` of logo key `key` as a bitmap of this target, made
     /// once.
-    fn notif_logo(&self, key: &str, thumb: &Thumb) -> Result<Option<ID2D1Bitmap>> {
+    pub(super) fn notif_logo(&self, key: &str, thumb: &Thumb) -> Result<Option<ID2D1Bitmap>> {
         if let Some((_, b)) = self.notif_logos.borrow().iter().find(|(k, _)| k == key) {
             return Ok(Some(b.clone()));
         }

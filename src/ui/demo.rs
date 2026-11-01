@@ -121,6 +121,7 @@ use super::notch_fill::{self, fill_alpha};
 use super::render::{
     CleanerView, CliView, ClipNoticeView, ClipView, DevicesView, FolderMenuView, Frame, MoleView,
     NotifView, Progress, Renderer, RobotFrame, SearchView, SheetKind, ShotView, SystemView,
+    ToastLogoView,
 };
 use super::robot::{Expr, Pose};
 use super::shelf_motion::{SHELF_ENTER_MS, SHELF_MOVE_MS, SHELF_STAGGER_MS, ShelfMotion};
@@ -137,10 +138,10 @@ use crate::config::{NotchFill, Style};
 use crate::devices::{self, Bus, Device, DeviceKind, Partition, Veto, VetoKind};
 use crate::i18n::{Key, tr};
 use crate::lyrics::{self, FADE, LyricsFound, LyricsState, Query};
-use crate::model::{CalView, MediaInfo, Notice, NoticeKind, Page, View};
+use crate::model::{CalView, MediaInfo, Notice, NoticeKind, Page, ToastOrigin, View};
 use crate::mole::{CleanRun, GroupSize, MoleOpts, MoleReport, PreviewSummary};
 use crate::notes::Note;
-use crate::notif::NotifEntry;
+use crate::notif::{NotifEntry, logo_key};
 use crate::pomodoro::{PomoSettings, Pomodoro};
 use crate::reminders::{Reminder, Repeat};
 use crate::state::MolePhase;
@@ -341,6 +342,13 @@ enum DemoNotice {
     Battery,
     /// An app's notification: the letter badge.
     App,
+    /// A real Windows toast whose app has a logo: the logo and the app's name.
+    AppLogo,
+    /// A browser toast with the site Windows gave.
+    AppSite,
+    /// A real Windows toast whose logo is unknown: the letter badge and the
+    /// app's name.
+    AppNoLogo,
     /// The morning greeting.
     Greeting,
     /// Claude at work (the design's "Claude Code" state).
@@ -659,7 +667,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 131] = [
+const SCENES: [Scene; 134] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -760,6 +768,9 @@ const SCENES: [Scene; 131] = [
     notice("notice-battery", DemoNotice::Battery),
     notice("notice-system", DemoNotice::System),
     notice("notice-app", DemoNotice::App),
+    notice("notice-app-logo", DemoNotice::AppLogo),
+    notice("notice-app-site", DemoNotice::AppSite),
+    notice("notice-app-no-logo", DemoNotice::AppNoLogo),
     panel("notes-4", Page::Notes),
     Scene {
         notes: 6,
@@ -1702,8 +1713,26 @@ fn run_scenes(scenes: &[Scene]) {
                 std::collections::HashMap::new()
             };
             let notif_items = demo_notif_items(scene.notif);
-            let notif_logos: std::collections::HashMap<String, Thumb> =
-                [(DEMO_LOGO_KEY.to_owned(), demo_logo())].into();
+            let notif_logos: std::collections::HashMap<String, Thumb> = [
+                (DEMO_LOGO_KEY.to_owned(), demo_logo([0x25, 0xA2, 0x5A])),
+                (DEMO_CHROME_KEY.to_owned(), demo_logo([0x3B, 0x76, 0xE8])),
+            ]
+            .into();
+            // The same lookup the island makes for a toast notice.
+            let toast_logo = match &view {
+                View::Notice(Notice {
+                    kind:
+                        NoticeKind::App {
+                            app_id,
+                            toast: Some(_),
+                        },
+                    source,
+                    ..
+                }) => notif_logos
+                    .get_key_value(&logo_key(app_id.as_deref(), source))
+                    .map(|(key, thumb)| ToastLogoView { key, thumb }),
+                _ => None,
+            };
             let frame = Frame {
                 view: &view,
                 media: Some(if scene.long_media {
@@ -1821,6 +1850,7 @@ fn run_scenes(scenes: &[Scene]) {
                         thumb: &clip_thumb,
                     },
                 ),
+                toast_logo,
                 transit: {
                     let reveal_at =
                         frozen_reveal.unwrap_or((into as f32 / REVEAL_MS as f32).min(1.0));
@@ -1939,9 +1969,13 @@ fn demo_notif_now() -> chrono::DateTime<Local> {
 /// The logo key of the one demo app that has a logo.
 const DEMO_LOGO_KEY: &str = "5319.WhatsApp!App";
 
-/// A made-up 48 x 48 logo: a green rounded square with a pale ring, drawn
-/// here, premultiplied (it is opaque inside, clear at the corners).
-fn demo_logo() -> Thumb {
+/// The logo key of the demo browser.
+const DEMO_CHROME_KEY: &str = "Chrome";
+
+/// A made-up 48 x 48 logo: a rounded square of colour `body` with a pale
+/// ring, drawn here, premultiplied (it is opaque inside, clear at the
+/// corners).
+fn demo_logo(body: [u8; 3]) -> Thumb {
     let side = 48u32;
     let mut bgra = Vec::with_capacity((side * side * 4) as usize);
     let (r, k) = (11.0f32, side as f32);
@@ -1957,7 +1991,7 @@ fn demo_logo() -> Thumb {
             let rgb: [f32; 3] = if ring {
                 [0xF2 as f32, 0xF7 as f32, 0xF3 as f32]
             } else {
-                [0x25 as f32, 0xA2 as f32, 0x5A as f32]
+                body.map(f32::from)
             };
             bgra.extend([
                 (rgb[2] * alpha) as u8,
@@ -1974,14 +2008,26 @@ fn demo_logo() -> Thumb {
     }
 }
 
+/// One made-up toast: source, AUMID, title, body, site, seconds ago, read.
+type DemoNotif = (
+    &'static str,
+    Option<&'static str>,
+    &'static str,
+    &'static str,
+    Option<&'static str>,
+    i64,
+    bool,
+);
+
 /// The made-up toasts of the Notifikasi scenes, newest first: `(source,
-/// AUMID, title, body, seconds ago, read)`.
-const DEMO_NOTIFS: [(&str, Option<&str>, &str, &str, i64, bool); 8] = [
+/// AUMID, title, body, site, seconds ago, read)`.
+const DEMO_NOTIFS: [DemoNotif; 8] = [
     (
         "WhatsApp",
         Some(DEMO_LOGO_KEY),
         "Ibu",
         "Jangan lupa makan siang ya",
+        None,
         20,
         false,
     ),
@@ -1990,14 +2036,16 @@ const DEMO_NOTIFS: [(&str, Option<&str>, &str, &str, i64, bool); 8] = [
         None,
         "Rapat desain 15.00",
         "Dimulai 30 menit lagi, ruang Kemang",
+        None,
         5 * 60,
         false,
     ),
     (
-        "Chrome",
-        None,
-        "Unduhan selesai",
-        "denah-lantai-2-rev3.pdf",
+        "Google Chrome",
+        Some(DEMO_CHROME_KEY),
+        "Rani",
+        "Foto denah sudah saya kirim",
+        Some("web.telegram.org"),
         42 * 60,
         true,
     ),
@@ -2006,6 +2054,7 @@ const DEMO_NOTIFS: [(&str, Option<&str>, &str, &str, i64, bool); 8] = [
         None,
         "Pak Hendra",
         "Revisi RAB sudah saya kirim, mohon dicek bagian pondasi dan tangga",
+        None,
         3 * 3600,
         false,
     ),
@@ -2014,6 +2063,7 @@ const DEMO_NOTIFS: [(&str, Option<&str>, &str, &str, i64, bool); 8] = [
         Some(DEMO_LOGO_KEY),
         "Tim Studio",
         "",
+        None,
         6 * 3600,
         true,
     ),
@@ -2022,6 +2072,7 @@ const DEMO_NOTIFS: [(&str, Option<&str>, &str, &str, i64, bool); 8] = [
         None,
         "Dina mengirim berkas",
         "gambar-kerja-struktur.dwg",
+        None,
         26 * 3600,
         true,
     ),
@@ -2030,6 +2081,7 @@ const DEMO_NOTIFS: [(&str, Option<&str>, &str, &str, i64, bool); 8] = [
         None,
         "Pembaruan tersedia",
         "Mulai ulang Chrome untuk menyelesaikan pembaruan",
+        None,
         3 * 86_400,
         true,
     ),
@@ -2038,6 +2090,7 @@ const DEMO_NOTIFS: [(&str, Option<&str>, &str, &str, i64, bool); 8] = [
         None,
         "Undangan: Tinjauan proyek",
         "Jumat, 14.00 · Ruang rapat besar",
+        None,
         40 * 86_400,
         true,
     ),
@@ -2055,7 +2108,8 @@ fn demo_notif_items(which: NotifDemo) -> Vec<NotifEntry> {
     };
     (0..count)
         .map(|i| {
-            let (source, app_id, title, body, ago, read) = DEMO_NOTIFS[i % DEMO_NOTIFS.len()];
+            let (source, app_id, title, body, site, ago, read) =
+                DEMO_NOTIFS[i % DEMO_NOTIFS.len()];
             // The long list spreads its times out, newest first.
             let ago = if count > DEMO_NOTIFS.len() {
                 ago + (i / DEMO_NOTIFS.len()) as i64 * 90_000
@@ -2070,6 +2124,7 @@ fn demo_notif_items(which: NotifDemo) -> Vec<NotifEntry> {
                 app_id: app_id.map(str::to_owned),
                 title: title.into(),
                 body: body.into(),
+                site: site.map(str::to_owned),
             }
         })
         .collect()
@@ -2230,6 +2285,35 @@ fn demo_notice(which: DemoNotice, renderer: &Renderer) -> Notice {
             "Rani · Mail",
             "Denah lantai 2 sudah saya kirim, cek ya".into(),
             NoticeKind::App { app_id: None, toast: None },
+        ),
+        DemoNotice::AppLogo => notice(
+            "Telegram",
+            "Rani",
+            "Denah lantai 2 sudah saya kirim, cek ya".into(),
+            NoticeKind::App {
+                app_id: Some(DEMO_LOGO_KEY.into()),
+                toast: Some(ToastOrigin::default()),
+            },
+        ),
+        DemoNotice::AppSite => notice(
+            "Google Chrome",
+            "Rani",
+            "Foto denah sudah saya kirim".into(),
+            NoticeKind::App {
+                app_id: Some(DEMO_CHROME_KEY.into()),
+                toast: Some(ToastOrigin {
+                    site: Some("web.telegram.org".into()),
+                }),
+            },
+        ),
+        DemoNotice::AppNoLogo => notice(
+            "Slack",
+            "Rani",
+            "Denah lantai 2 sudah saya kirim, cek ya".into(),
+            NoticeKind::App {
+                app_id: Some("com.squirrel.slack.slack".into()),
+                toast: Some(ToastOrigin::default()),
+            },
         ),
         DemoNotice::Greeting => {
             // DI_GREET_PERIOD: morning (default), midday, afternoon, evening, night.
