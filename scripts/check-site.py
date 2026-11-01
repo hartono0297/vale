@@ -4,7 +4,8 @@ Standard library only. Exit code 1 when any problem is found. For every
 site/*.html it checks:
   - the file parses and its tags nest correctly;
   - every id is unique;
-  - every internal href, src and CSS url() points at a file that exists, and
+  - every internal href, src and CSS url() points at a file that exists inside
+    site/ with the exact same case (GitHub Pages is case-sensitive), and
     every #fragment exists in the file it points at (index.html#features, the
     legal table-of-contents anchors, the SVG sprite ids used by <use>);
   - the shared contract in docs/memory/site-landing.md: the same inline head
@@ -15,6 +16,8 @@ site/*.html it checks:
     fetched).
 It also checks that no text file under site/ contains an em dash (U+2014).
 """
+import os
+import posixpath
 import re
 import sys
 from html.parser import HTMLParser
@@ -118,6 +121,41 @@ def is_other_scheme(value):
     return value.strip().lower().startswith(("mailto:", "tel:", "data:", "javascript:"))
 
 
+def site_file(rel):
+    """Resolves a reference made from a top-level file in site/ the way GitHub
+    Pages serves it. Returns (path relative to site/ in posix form, None), or
+    (None, reason). Pages only deploys site/ and its paths are case-sensitive,
+    so the target must stay inside site/ and every segment must match the real
+    directory listing exactly (Windows and macOS file systems ignore case)."""
+    outside = None, "points outside site/ (not deployed to GitHub Pages)"
+    # URL paths resolve lexically, so normalise the string itself. Path.resolve()
+    # would also rewrite each segment to its on-disk case on Windows, which
+    # hides exactly the mismatch checked below.
+    norm = posixpath.normpath(rel)
+    if rel.endswith("/"):
+        norm = posixpath.join(norm, "index.html")
+    if norm.startswith("/") or norm == ".." or norm.startswith("../"):
+        return outside
+    root = SITE.resolve()
+    if not (SITE / norm).resolve().is_relative_to(root):  # e.g. a symlink out of site/
+        return outside
+    parts = [p for p in norm.split("/") if p not in ("", ".")]
+    parent = root
+    for part in parts:
+        try:
+            entries = os.listdir(parent)
+        except OSError:
+            return None, "does not exist under site/"
+        if part not in entries:
+            if any(e.lower() == part.lower() for e in entries):
+                return None, "differs in case from the file under site/ (GitHub Pages paths are case-sensitive)"
+            return None, "does not exist under site/"
+        parent = parent / part
+    if not parent.is_file():
+        return None, "does not exist under site/"
+    return "/".join(parts), None
+
+
 def region(text, start_marker, end_marker):
     i = text.find(start_marker)
     if i < 0:
@@ -171,11 +209,13 @@ def main():
         if parts.scheme or parts.netloc:
             problem(name, f"{where}: unsupported reference {value!r}")
             return
-        target_name = name if rel == "" else rel
+        target_name = name
+        if rel:
+            target_name, why = site_file(rel)
+            if target_name is None:
+                problem(name, f"{where}: {value!r} {why}")
+                return
         target = SITE / target_name
-        if rel and not (target.is_file() or (rel.endswith("/") and (target / "index.html").is_file())):
-            problem(name, f"{where}: {value!r} does not exist under site/")
-            return
         if frag:
             if target_name in pages:
                 if frag not in pages[target_name].ids:
