@@ -21,11 +21,10 @@
   function initTheme() {
     var btn = $('.theme-btn');
     if (!btn) return;
-    var dark = window.matchMedia('(prefers-color-scheme: dark)');
+    /* Dark is the default whatever the system scheme says; only a stored or
+       clicked choice of light changes it. */
     function current() {
-      var t = root.getAttribute('data-theme');
-      if (t === 'light' || t === 'dark') return t;
-      return dark.matches ? 'dark' : 'light';
+      return root.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
     }
     function paint() {
       var isDark = current() === 'dark';
@@ -38,7 +37,6 @@
       store('vale-theme', next);
       paint();
     });
-    if (dark.addEventListener) dark.addEventListener('change', paint);
     paint();
     btn.hidden = false;
   }
@@ -319,6 +317,54 @@
     };
   }
 
+  /* ---------- one scroll loop for every scroll-linked effect ----------
+     One passive scroll listener (plus resize and load) asks for at most one
+     animation frame. In that frame every effect that is switched on reads
+     first (rects, sizes) and then all of them write (classes, transform,
+     opacity), so reads and writes never interleave. An effect is on while
+     fx.on() says so, usually while an IntersectionObserver says its section
+     is near the viewport (fx.near); fx.flush runs it once more after it
+     switches off, so it can settle. No wheel or touch handling, no snapping. */
+  function makeLoop() {
+    var list = [];
+    var pending = false;
+    function frame() {
+      pending = false;
+      var run = [];
+      var i;
+      for (i = 0; i < list.length; i++) {
+        if (list[i].on() || list[i].flush) { list[i].flush = false; run.push(list[i]); }
+      }
+      for (i = 0; i < run.length; i++) run[i].read();
+      for (i = 0; i < run.length; i++) run[i].write();
+    }
+    function schedule() {
+      if (pending) return;
+      pending = true;
+      requestAnimationFrame(frame);
+    }
+    window.addEventListener('scroll', schedule, { passive: true });
+    window.addEventListener('resize', schedule);
+    window.addEventListener('load', schedule);
+    if (reduce.addEventListener) reduce.addEventListener('change', function () { list.forEach(function (fx) { fx.flush = true; }); schedule(); });
+    return {
+      add: function (fx) { fx.flush = true; list.push(fx); schedule(); return fx; },
+      kick: function (fx) { if (fx) fx.flush = true; schedule(); },
+      /* fx.near follows el, with margin around the viewport. Without an
+         observer the effect simply stays on. */
+      gate: function (el, fx, margin) {
+        if (!('IntersectionObserver' in window)) { fx.near = true; return; }
+        fx.near = false;
+        new IntersectionObserver(function (entries) {
+          fx.near = entries[entries.length - 1].isIntersecting;
+          fx.flush = true;
+          schedule();
+        }, { rootMargin: margin || '200px 0px' }).observe(el);
+      }
+    };
+  }
+  var loop = null;
+
   /* ---------- the notch ---------- */
   var LYRICS = [
     'Lights low over the harbour',
@@ -382,14 +428,16 @@
        copy notice after a Copy button is a 3 s toast and is exempt. Checked on
        scroll frames and resize only, and only while one of the two states is the
        section's; shrinking is immediate, growing waits FIT_GROW_MS of free band. */
-    var TEXT_SEL = 'h1, h2, h3, p, li, figcaption, code, pre, label, legend, td, th, blockquote';
+    var TEXT_SEL = 'h1, h2, h3, p, li, dt, dd, figcaption, code, pre, label, legend, td, th, blockquote';
     var FIT_MARGIN_Y = 16;
     var FIT_MARGIN_X = 8;
     var FIT_GROW_MS = 150;
     var textEls = null;
     var fits = true;
     var growTimer = 0;
-    var fitFrame = false;
+    /* Susun: the tile step (0 to 3) while its stage is pinned, -1 otherwise. */
+    var arrangeStep = -1;
+    var arrangeN = $('#notch-ar-n');
 
     /* Mirror style.css from the same source it uses: 100vw and the 32.5em media
        query both count the scrollbar, root.clientWidth does not. */
@@ -413,8 +461,14 @@
       return false;
     }
     function peekState(name) { return name === 'panel' || name === 'clipboard'; }
+    /* The state the notch shows: the 3 s copy toast first, then Susun while its
+       stage is pinned, then the section's own state. The Susun section asks
+       for "arrange", which is the idle notch whenever the stage is not pinned. */
     function refresh() {
-      var want = copyTimer ? 'clipboard' : (sectionState === 'panel' && !fits ? 'idle' : sectionState);
+      var want = copyTimer ? 'clipboard'
+        : arrangeStep >= 0 ? 'arrange'
+        : (sectionState === 'arrange' || (sectionState === 'panel' && !fits)) ? 'idle'
+        : sectionState;
       setState(want);
       notch.classList.toggle('is-tight', !copyTimer && sectionState === 'clipboard' && !fits);
     }
@@ -425,29 +479,28 @@
       fits = !(peekState(name) && !open && !copyTimer && bandBlocked(name));
       refresh();
     }
-    function fitCheck() {
-      fitFrame = false;
-      if (open || copyTimer || !peekState(sectionState)) return;
-      if (bandBlocked(sectionState)) {
-        clearTimeout(growTimer);
-        growTimer = 0;
-        if (fits) { fits = false; refresh(); }
-      } else if (!fits && !growTimer) {
-        growTimer = setTimeout(function () {
+    /* fitCheck runs in the shared scroll loop, only while the section's state
+       is panel or clipboard and nothing else (open panel, copy toast) rules. */
+    var blocked = false;
+    var fitFx = {
+      on: function () { return !open && !copyTimer && peekState(sectionState); },
+      read: function () { blocked = fitFx.on() && bandBlocked(sectionState); },
+      write: function () {
+        if (!fitFx.on()) return;
+        if (blocked) {
+          clearTimeout(growTimer);
           growTimer = 0;
-          if (open || copyTimer || !peekState(sectionState)) return;
-          if (!bandBlocked(sectionState)) { fits = true; refresh(); }
-        }, FIT_GROW_MS);
+          if (fits) { fits = false; refresh(); }
+        } else if (!fits && !growTimer) {
+          growTimer = setTimeout(function () {
+            growTimer = 0;
+            if (!fitFx.on()) return;
+            if (!bandBlocked(sectionState)) { fits = true; refresh(); }
+          }, FIT_GROW_MS);
+        }
       }
-    }
-    function fitSoon() {
-      if (fitFrame || !peekState(sectionState)) return;
-      fitFrame = true;
-      requestAnimationFrame(fitCheck);
-    }
-    window.addEventListener('scroll', fitSoon, { passive: true });
-    window.addEventListener('resize', fitSoon);
-    window.addEventListener('load', fitSoon);
+    };
+    if (loop) loop.add(fitFx);
 
     /* ----- which state the section in view asks for ----- */
     var sections = $$('[data-notch]');
@@ -471,37 +524,31 @@
     var lyricEl = $('#notch-lyric');
     var musicSection = $('.f-music');
     var lyricIndex = 0;
-    var lyricTick = false;
+    var lyricNext = 0;
+    var lyricFlip = false;
+    /* Swapping between two identical animations restarts it without a reflow. */
     function setLyric(i) {
       if (!lyricEl || i === lyricIndex) return;
       lyricIndex = i;
       lyricEl.textContent = LYRICS[i];
+      lyricEl.classList.remove('swap-a', 'swap-b');
       if (!reduce.matches) {
-        lyricEl.classList.remove('swap');
-        void lyricEl.offsetWidth;
-        lyricEl.classList.add('swap');
+        lyricFlip = !lyricFlip;
+        lyricEl.classList.add(lyricFlip ? 'swap-a' : 'swap-b');
       }
     }
-    function lyricUpdate() {
-      lyricTick = false;
-      var r = musicSection.getBoundingClientRect();
-      var p = clamp((window.innerHeight * 0.5 - r.top) / Math.max(r.height, 1), 0, 0.999);
-      setLyric(Math.floor(p * LYRICS.length));
-    }
-    function lyricScroll() {
-      if (lyricTick) return;
-      lyricTick = true;
-      requestAnimationFrame(lyricUpdate);
-    }
-    if (lyricEl && musicSection && 'IntersectionObserver' in window) {
-      new IntersectionObserver(function (entries) {
-        if (entries[entries.length - 1].isIntersecting) {
-          window.addEventListener('scroll', lyricScroll, { passive: true });
-          lyricScroll();
-        } else {
-          window.removeEventListener('scroll', lyricScroll);
-        }
-      }).observe(musicSection);
+    if (lyricEl && musicSection && loop) {
+      var lyricFx = {
+        on: function () { return lyricFx.near; },
+        read: function () {
+          var r = musicSection.getBoundingClientRect();
+          var p = clamp((window.innerHeight * 0.5 - r.top) / Math.max(r.height, 1), 0, 0.999);
+          lyricNext = Math.floor(p * LYRICS.length);
+        },
+        write: function () { setLyric(lyricNext); }
+      };
+      loop.gate(musicSection, lyricFx, '0px');
+      loop.add(lyricFx);
     }
 
     /* ----- copy notice ----- */
@@ -528,6 +575,16 @@
           copyTimer = 0;
           enterSection(sectionState);
         }, 3000);
+        refresh();
+      },
+      /* Susun's scrub: the tile step while its stage is pinned, -1 when not. */
+      arrange: function (step) {
+        if (step === arrangeStep) return;
+        arrangeStep = step;
+        if (step >= 0) {
+          notch.setAttribute('data-ar', step >= 3 ? 'done' : 'pick');
+          if (arrangeN && step < 3) arrangeN.textContent = String(step + 1);
+        }
         refresh();
       }
     };
@@ -757,6 +814,119 @@
     tickClock();
   }
 
+  /* ---------- hero: the headline steps back as the hero scrolls away ----------
+     q = how far the hero has left the viewport (0 at the top, 1 when its
+     bottom passes the top edge). The headline scales 1 -> 0.92 and fades
+     1 -> 0.2 with q, both ways. Transform and opacity only; will-change only
+     while the hero is near the viewport. Reduced motion: nothing moves. */
+  function initHero() {
+    var hero = $('.hero');
+    var title = $('.hero-title');
+    if (!hero || !title || !loop) return;
+    var q = 0;
+    var shown = 0;
+    var hinted = false;
+    var fx = {
+      on: function () { return fx.near; },
+      read: function () {
+        var r = hero.getBoundingClientRect();
+        q = clamp(-r.top / Math.max(r.height, 1), 0, 1);
+      },
+      write: function () {
+        var v = reduce.matches ? 0 : Math.round(q * 1000) / 1000;
+        var hint = fx.near && !reduce.matches;
+        if (hint !== hinted) { hinted = hint; title.style.willChange = hint ? 'transform, opacity' : ''; }
+        if (v === shown) return;
+        shown = v;
+        if (v === 0) {
+          title.style.transform = '';
+          title.style.opacity = '';
+        } else {
+          title.style.transform = 'scale(' + (1 - 0.08 * v).toFixed(4) + ')';
+          title.style.opacity = (1 - 0.8 * v).toFixed(3);
+        }
+      }
+    };
+    loop.gate(hero, fx, '100px 0px');
+    loop.add(fx);
+  }
+
+  /* ---------- Susun: the sticky scrub ----------
+     The wrapper (.ar-scrub) is 130vh taller than the viewport (70vh on
+     phones) while .is-scrub is set, and the stage inside it sticks to the
+     top. p = clamp(-top / (height - innerHeight), 0, 1) of the wrapper;
+     below 0.25 tile 1 is current, then each quarter fills one more tile, and
+     from 0.75 all three are filled and the notice shows. Scrolling back runs
+     it backwards. .is-scrub is set only with motion welcome and a stage that
+     fits the viewport; otherwise the drawing keeps its default, the final
+     arranged state. While the stage is pinned (top <= 0 and bottom >= the
+     viewport) the notch shows the step; otherwise it follows the sections. */
+  function initSusun() {
+    var sec = $('.susun');
+    var outer = sec && $('.ar-scrub', sec);
+    var stage = sec && $('.ar-stage', sec);
+    var inner = sec && $('.ar-grid', sec);
+    var demo = $('#ar-demo');
+    var nEl = $('#ar-n');
+    if (!sec || !outer || !stage || !inner || !demo || !loop) return;
+    var vw = -1;
+    var vh = -1;
+    var fitsView = false;
+    var enabled = false;
+    var step = -1;
+    var top = 0;
+    var bottom = 0;
+    var height = 0;
+    function notchStep(s) { if (notchApi && notchApi.arrange) notchApi.arrange(s); }
+    var fx = {
+      on: function () { return fx.near; },
+      read: function () {
+        if (window.innerWidth !== vw || window.innerHeight !== vh) {
+          vw = window.innerWidth;
+          vh = window.innerHeight;
+          var cs = getComputedStyle(stage);
+          fitsView = inner.offsetHeight + parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom) <= vh;
+        }
+        var r = outer.getBoundingClientRect();
+        top = r.top;
+        bottom = r.bottom;
+        height = r.height;
+      },
+      write: function () {
+        var want = fitsView && !reduce.matches;
+        if (want !== enabled) {
+          enabled = want;
+          sec.classList.toggle('is-scrub', want);
+          /* The wrapper's height just changed. When it lies above the view (a
+             load at #cat or #install, a restored scroll position), keep the
+             view where it was: one measurement, only on this switch. */
+          if (bottom <= 0) {
+            var grown = outer.getBoundingClientRect().height - height;
+            if (grown) window.scrollBy({ top: grown, left: 0, behavior: 'instant' });
+          }
+          loop.kick(fx);
+          return;
+        }
+        if (!enabled) {
+          if (step !== -1) { step = -1; demo.removeAttribute('data-step'); }
+          notchStep(-1);
+          return;
+        }
+        var p = clamp(-top / Math.max(height - vh, 1), 0, 1);
+        var s = p < 0.25 ? 0 : p < 0.5 ? 1 : p < 0.75 ? 2 : 3;
+        if (s !== step) {
+          step = s;
+          demo.setAttribute('data-step', String(s));
+          if (nEl && s < 3) nEl.textContent = String(s + 1);
+        }
+        var pinned = fx.near && top <= 0.5 && bottom >= vh - 0.5;
+        notchStep(pinned ? s : -1);
+      }
+    };
+    loop.gate(outer, fx, '100px 0px');
+    loop.add(fx);
+  }
+
   /* ---------- reveal: once, for every browser ----------
      .reveal is hidden by CSS only under html.js. An element already on screen
      or scrolled past at start is shown at once; the others get .is-in the first
@@ -801,7 +971,10 @@
   safe(initMenu);
   safe(initCopy);
   var catApi = safe(initCats);
+  loop = safe(makeLoop);
   safe(function () { initNotch(catApi); });
+  safe(initHero);
+  safe(initSusun);
   safe(initReveal);
   /* The head script removes .js at DOMContentLoaded unless this is set (script blocked or broken). */
   root.classList.add('ready');
