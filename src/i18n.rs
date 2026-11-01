@@ -666,7 +666,6 @@ keys! {
     SourceCode => "Kode sumber", "Source code";
     OpenGithub => "Buka GitHub", "Open GitHub";
     Updates => "Pembaruan", "Updates";
-    UpdatesDesc => "Cek rilis terbaru di GitHub", "Check for the latest release";
     SeeReleases => "Lihat rilis", "See releases";
     DataFolder => "Folder data", "Data folder";
     OpenDataFolder => "Buka folder data", "Open data folder";
@@ -3211,6 +3210,13 @@ mod tests {
         let path = r"D:\proj\a.json";
         for lang in [Lang::Id, Lang::En] {
             let mut all = vec![
+                update_available(lang, "3.11.0"),
+                update_menu_install(lang, "3.11.0"),
+                update_downloading(lang, 42),
+                update_failed(lang, text(lang, Key::UpdateErrChecksum)),
+                update_up_to_date(lang, "3.10.0"),
+                update_done(lang, "3.11.0"),
+                update_installed(lang, "3.10.0"),
                 focus_done_body(lang, 5),
                 break_done_body(lang, 2, 4),
                 session_of(lang, 1, 4),

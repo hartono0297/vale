@@ -1850,6 +1850,44 @@ mod tests {
     }
 
     #[test]
+    fn the_update_notices_have_chips_and_badges() {
+        use crate::theme::{Accent, Surface, island};
+        let p = island(Accent::Plum, Surface::Espresso);
+        let available = NoticeKind::UpdateAvailable {
+            version: "3.11.0".into(),
+        };
+        assert_eq!(
+            notice_action(&available, PomoStatus::Idle),
+            Some(Key::UpdateButton)
+        );
+        assert_eq!(
+            notice_action(&NoticeKind::UpdateFailed, PomoStatus::Idle),
+            Some(Key::SeeReleases)
+        );
+        for kind in [NoticeKind::UpdateProgress { pct: 5 }, NoticeKind::UpdateInfo] {
+            assert_eq!(notice_action(&kind, PomoStatus::Idle), None);
+        }
+        assert_eq!(notice_action_w(&available), ACTION_W);
+        assert_eq!(
+            notice_action_w(&NoticeKind::UpdateFailed),
+            RELEASES_ACTION_W
+        );
+        let icon = |kind: NoticeKind| badge_style(&notice("Vale", kind), &p, Phase::Focus).icon;
+        assert_eq!(icon(available), Some(Icon::Download));
+        assert_eq!(
+            icon(NoticeKind::UpdateProgress { pct: 5 }),
+            Some(Icon::Download)
+        );
+        assert_eq!(icon(NoticeKind::UpdateFailed), Some(Icon::Download));
+        assert_eq!(icon(NoticeKind::UpdateInfo), Some(Icon::Check));
+        // Ochre for the failure, the accent for the offer.
+        let fill = |kind: NoticeKind| badge_style(&notice("Vale", kind), &p, Phase::Focus).fill;
+        assert_eq!(fill(NoticeKind::UpdateFailed), p.ochre);
+        assert_eq!(fill(NoticeKind::UpdateProgress { pct: 5 }), p.accent);
+        assert_eq!(fill(NoticeKind::UpdateInfo), p.sage);
+    }
+
+    #[test]
     fn badge_letter_is_first_char_uppercased() {
         assert_eq!(badge_letter("whatsApp"), "W");
         assert_eq!(badge_letter("ärzte"), "Ä");

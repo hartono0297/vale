@@ -6141,6 +6141,84 @@ mod tests {
     }
 
     #[test]
+    fn tentang_has_four_rows_the_update_row_and_the_auto_toggle_and_never_scrolls() {
+        for lang in [Lang::Id, Lang::En] {
+            let base = State {
+                lang,
+                ..states()[0].clone()
+            };
+            let l = layout(Section::About, &base, &Estimate);
+            assert_eq!(l.scroll, 0.0);
+            let all = buttons_of(&l);
+            for hit in [Hit::Repo, Hit::UpdateCheck, Hit::DataFolder] {
+                assert!(all.iter().any(|b| b.0 == hit), "{hit:?}");
+            }
+            assert!(
+                !all.iter().any(|b| b.0 == Hit::UpdateAuto),
+                "the auto row is a toggle, not a button"
+            );
+            // Four rows: Kode sumber, Pembaruan, the toggle, Folder data.
+            let card = l.cards.last().expect("the Tautan card");
+            assert_eq!(card.h, 4.0 * ROW_H);
+            let toggle = l.controls.iter().find_map(|c| match c {
+                Control::Toggle { hit, rect, on, .. } if *hit == Hit::UpdateAuto => {
+                    Some((*rect, *on))
+                }
+                _ => None,
+            });
+            let (rect, on) = toggle.expect("the auto-update toggle");
+            assert_eq!(on, base.update_auto);
+            assert!(rect.y > card.y + 2.0 * ROW_H && rect.y < card.y + 3.0 * ROW_H);
+            let (cx, cy) = (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
+            assert_eq!(l.hit(cx, cy), Some(Hit::UpdateAuto));
+            // The window is tall enough for the whole section.
+            assert!(card.bottom() + CARD_GAP <= CLIENT_H);
+        }
+    }
+
+    #[test]
+    fn the_update_row_says_what_is_known_and_offers_the_next_step() {
+        let desc_and_button = |lang, row: UpdateRow| {
+            let s = State {
+                lang,
+                update_row: row,
+                ..states()[0].clone()
+            };
+            let l = layout(Section::About, &s, &Estimate);
+            let (_, label, enabled) = button(&buttons_of(&l), Hit::UpdateCheck).clone();
+            // A disabled button takes no click: its hit is not listed.
+            let clickable = l.hits().iter().any(|(h, _)| *h == Hit::UpdateCheck);
+            assert_eq!(clickable, enabled);
+            let texts: Vec<String> = l.texts.iter().map(|t| t.text.clone()).collect();
+            (texts, label, enabled)
+        };
+        let has = |texts: &[String], what: &str| texts.iter().any(|t| t == what);
+        let (t, label, on) = desc_and_button(Lang::Id, UpdateRow::Idle);
+        assert!(has(&t, &format!("Versi terpasang {}", "2.1.0")));
+        assert_eq!((label.as_str(), on), ("Cek sekarang", true));
+        let (t, label, on) = desc_and_button(Lang::En, UpdateRow::Idle);
+        assert!(has(&t, "Installed version 2.1.0"));
+        assert_eq!((label.as_str(), on), ("Check now", true));
+        let (t, label, on) = desc_and_button(Lang::Id, UpdateRow::Checking);
+        assert!(has(&t, "Memeriksa\u{2026}"));
+        assert_eq!((label.as_str(), on), ("Cek sekarang", false));
+        let (t, _, on) = desc_and_button(Lang::En, UpdateRow::Checking);
+        assert!(has(&t, "Checking\u{2026}"));
+        assert!(!on);
+        let (t, label, on) = desc_and_button(Lang::Id, UpdateRow::Available("9.9.9".into()));
+        assert!(has(&t, "Vale 9.9.9 tersedia"));
+        assert_eq!((label.as_str(), on), ("Update", true));
+        let (t, _, _) = desc_and_button(Lang::En, UpdateRow::Available("9.9.9".into()));
+        assert!(has(&t, "Vale 9.9.9 is available"));
+        let (t, label, on) = desc_and_button(Lang::Id, UpdateRow::Downloading(42));
+        assert!(has(&t, "Mengunduh pembaruan\u{2026} 42%"));
+        assert_eq!((label.as_str(), on), ("Update", false));
+        let (t, _, on) = desc_and_button(Lang::En, UpdateRow::Downloading(7));
+        assert!(has(&t, "Downloading update\u{2026} 7%"));
+        assert!(!on);
+    }
+
+    #[test]
     fn idle_clock_toggle_shows_the_setting() {
         for on in [true, false] {
             let s = State {

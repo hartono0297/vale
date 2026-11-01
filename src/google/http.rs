@@ -83,7 +83,6 @@ impl Http {
     /// a body that must stay under `max_bytes`: it is read in pieces and the
     /// call fails (`Err`) as soon as it grows past that, so a hostile server
     /// cannot make it hold more. The body is read as UTF-8.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn get_with_headers_capped(
         &self,
         url: &str,
@@ -349,6 +348,52 @@ mod timeout_tests {
             "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi",
         );
         assert_eq!(http.get_json(&url, None).unwrap(), (200, "hi".to_owned()));
+    }
+
+    fn temp_file(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("vale-http-test-{name}-{}", std::process::id()))
+    }
+
+    #[test]
+    fn a_download_streams_into_the_file_and_reports_its_progress() {
+        let http = Http::new().unwrap().with_timeout(Duration::from_secs(10));
+        let path = temp_file("ok");
+        let url = serve_once(
+            Duration::ZERO,
+            "HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\nhello world",
+        );
+        let mut seen = Vec::new();
+        let status = http
+            .download_to(&url, &[], &path, 1024, |done, total| seen.push((done, total)))
+            .unwrap();
+        assert_eq!(status, 200);
+        assert_eq!(std::fs::read(&path).unwrap(), b"hello world");
+        let (done, total) = *seen.last().expect("progress was reported");
+        assert_eq!((done, total), (11, Some(11)));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_download_past_the_cap_fails_and_an_error_status_writes_nothing() {
+        let http = Http::new().unwrap().with_timeout(Duration::from_secs(10));
+        let path = temp_file("cap");
+        let _ = std::fs::remove_file(&path);
+        let url = serve_once(
+            Duration::ZERO,
+            "HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\nhello world",
+        );
+        assert!(http.download_to(&url, &[], &path, 5, |_, _| {}).is_err());
+        let _ = std::fs::remove_file(&path);
+
+        let url = serve_once(
+            Duration::ZERO,
+            "HTTP/1.1 404 Not Found\r\nContent-Length: 2\r\nConnection: close\r\n\r\nno",
+        );
+        let status = http
+            .download_to(&url, &[], &path, 1024, |_, _| {})
+            .unwrap();
+        assert_eq!(status, 404);
+        assert!(!path.exists(), "an error answer must not create the file");
     }
 
     #[test]

@@ -375,6 +375,11 @@ enum DemoNotice {
     DeviceSafe,
     /// A finished arrangement: 3 windows, with Batalkan and Simpan.
     Arranged,
+    /// The self-update's four notices, with made-up versions (no network).
+    UpdateAvailable,
+    UpdateProgress,
+    UpdateFailed,
+    UpdateDone,
 }
 
 /// The history entry the demo's copy previews name (`DemoNotice::Clip*`).
@@ -659,7 +664,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 131] = [
+const SCENES: [Scene; 135] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -836,6 +841,11 @@ const SCENES: [Scene; 131] = [
     arrange_page("arrange-hover", ArrangeDemo::Hover),
     arrange_page("arrange-pick", ArrangeDemo::Pick),
     notice("arrange-done", DemoNotice::Arranged),
+    // Self-update notices with a made-up 9.9.9; nothing touches the network.
+    notice("update-available", DemoNotice::UpdateAvailable),
+    notice("update-progress", DemoNotice::UpdateProgress),
+    notice("update-failed", DemoNotice::UpdateFailed),
+    notice("update-done", DemoNotice::UpdateDone),
     // The page dots hovered: icons, magnified around the pointer.
     Scene {
         dock: Some(3),
@@ -2333,6 +2343,38 @@ fn demo_notice(which: DemoNotice, renderer: &Renderer) -> Notice {
             NoticeKind::Arranged {
                 save: crate::model::ArrangeSave::Offer,
             },
+        ),
+        DemoNotice::UpdateAvailable => notice(
+            "Vale",
+            &crate::i18n::update_available(crate::i18n::lang(), "9.9.9"),
+            crate::i18n::update_installed(crate::i18n::lang(), env!("CARGO_PKG_VERSION")),
+            NoticeKind::UpdateAvailable {
+                version: "9.9.9".into(),
+            },
+        ),
+        DemoNotice::UpdateProgress => notice(
+            "Vale",
+            &crate::i18n::update_downloading(crate::i18n::lang(), 42),
+            "Vale 9.9.9".into(),
+            NoticeKind::UpdateProgress { pct: 42 },
+        ),
+        DemoNotice::UpdateFailed => {
+            let lang = crate::i18n::lang();
+            notice(
+                "Vale",
+                &crate::i18n::update_failed(
+                    lang,
+                    crate::update::UpdateError::ChecksumMismatch.reason(lang),
+                ),
+                "Vale 9.9.9".into(),
+                NoticeKind::UpdateFailed,
+            )
+        }
+        DemoNotice::UpdateDone => notice(
+            "Vale",
+            &crate::i18n::update_done(crate::i18n::lang(), "9.9.9"),
+            "9.9.8 \u{2192} 9.9.9".into(),
+            NoticeKind::UpdateInfo,
         ),
         DemoNotice::DeviceSafe => {
             devices::safe_notice(crate::i18n::lang(), &["SanDisk Ultra".to_owned()])

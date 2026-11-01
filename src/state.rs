@@ -4816,6 +4816,145 @@ mod tests {
         assert!(!effects.iter().any(|e| matches!(e, Effect::OpenDrive(_))));
     }
 
+    fn update_notice(kind: NoticeKind, title: &str) -> Notice {
+        Notice {
+            key: "update".into(),
+            source: "Vale".into(),
+            title: title.into(),
+            body: String::new(),
+            kind,
+        }
+    }
+
+    fn available() -> Notice {
+        update_notice(
+            NoticeKind::UpdateAvailable {
+                version: "3.11.0".into(),
+            },
+            "Vale 3.11.0 tersedia",
+        )
+    }
+
+    fn progress(pct: u8) -> Notice {
+        update_notice(
+            NoticeKind::UpdateProgress { pct },
+            &format!("Mengunduh pembaruan\u{2026} {pct}%"),
+        )
+    }
+
+    fn update_failed() -> Notice {
+        update_notice(NoticeKind::UpdateFailed, "Update gagal: tidak ada koneksi")
+    }
+
+    #[test]
+    fn the_update_offer_has_a_button_hover_leaves_alone_and_the_click_installs() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Notice(available()), t0);
+        assert_eq!(s.view(), View::Notice(available()));
+        assert_eq!(s.next_deadline(), Some(t0 + UPDATE_NOTICE_DURATION));
+        assert!(notice_has_action(&available()));
+        // Hover does not open the panel over the button.
+        s.apply(Event::Hover(true), t0);
+        assert_eq!(s.view(), View::Notice(available()));
+        let effects = s.apply(Event::Click(Hit::Body), t0);
+        assert_eq!(effects, vec![Effect::InstallUpdate]);
+        assert_eq!(s.view(), View::Idle);
+    }
+
+    #[test]
+    fn the_failed_update_notice_opens_the_releases_page() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Notice(update_failed()), t0);
+        assert!(notice_has_action(&update_failed()));
+        s.apply(Event::Hover(true), t0);
+        assert_eq!(s.view(), View::Notice(update_failed()));
+        assert_eq!(
+            s.apply(Event::Click(Hit::Body), t0),
+            vec![Effect::OpenReleases]
+        );
+    }
+
+    #[test]
+    fn the_info_notice_and_the_progress_only_dismiss() {
+        let t0 = Instant::now();
+        for notice in [
+            update_notice(NoticeKind::UpdateInfo, "Vale sudah versi terbaru (3.10.0)"),
+            progress(10),
+        ] {
+            let mut s = st();
+            s.apply(Event::Notice(notice.clone()), t0);
+            assert!(!notice_has_action(&notice));
+            assert_eq!(s.apply(Event::Click(Hit::Body), t0), vec![]);
+            assert_eq!(s.view(), View::Idle);
+        }
+    }
+
+    #[test]
+    fn the_progress_is_replaced_where_it_stands_and_timed_from_its_last_update() {
+        let t0 = Instant::now();
+        let secs = Duration::from_secs;
+        let mut s = st();
+        s.apply(Event::Notice(progress(0)), t0);
+        assert_eq!(s.view(), View::Notice(progress(0)));
+        assert_eq!(s.next_deadline(), Some(t0 + UPDATE_PROGRESS_DURATION));
+        assert_eq!(UPDATE_PROGRESS_DURATION, secs(15));
+        // A newer percent replaces the current one: still one notice, and the
+        // 15 s start over from this update.
+        s.apply(Event::Notice(progress(40)), t0 + secs(10));
+        assert_eq!(s.view(), View::Notice(progress(40)));
+        assert_eq!(s.next_deadline(), Some(t0 + secs(10) + UPDATE_PROGRESS_DURATION));
+        s.apply(Event::Tick, t0 + secs(20));
+        assert_eq!(s.view(), View::Notice(progress(40)), "past the first 15 s");
+        // Stalled for 15 s: it fades.
+        s.apply(Event::Tick, t0 + secs(25));
+        assert_eq!(s.view(), View::Idle);
+    }
+
+    #[test]
+    fn a_queued_progress_is_replaced_in_the_queue_not_added() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Notice(plugged('E')), t0);
+        s.apply(Event::Notice(progress(5)), t0);
+        s.apply(Event::Notice(progress(6)), t0);
+        s.apply(Event::Notice(progress(7)), t0);
+        assert_eq!(s.view(), View::Notice(plugged('E')));
+        s.apply(Event::Click(Hit::Body), t0);
+        // The one queued progress, with the newest percent.
+        assert_eq!(s.view(), View::Notice(progress(7)));
+        s.apply(Event::Click(Hit::Body), t0);
+        assert_eq!(s.view(), View::Idle);
+    }
+
+    #[test]
+    fn a_failure_takes_the_progress_away_shown_or_waiting() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Notice(progress(30)), t0);
+        s.apply(Event::Notice(update_failed()), t0);
+        assert_eq!(s.view(), View::Notice(update_failed()));
+        s.apply(Event::Click(Hit::Body), t0);
+        assert_eq!(s.view(), View::Idle, "no progress left behind");
+        // Waiting behind another notice.
+        let mut s = st();
+        s.apply(Event::Notice(plugged('E')), t0);
+        s.apply(Event::Notice(progress(30)), t0);
+        s.apply(Event::Notice(update_failed()), t0);
+        s.apply(Event::Click(Hit::Body), t0);
+        assert_eq!(s.view(), View::Notice(update_failed()));
+    }
+
+    #[test]
+    fn the_update_events_are_ignored_by_the_reducer() {
+        use crate::update::UpdateEvent;
+        let t0 = Instant::now();
+        let mut s = st();
+        assert_eq!(s.apply(Event::Update(UpdateEvent::Progress(5)), t0), vec![]);
+        assert_eq!(s.view(), View::Idle);
+    }
+
     #[test]
     fn the_safe_notice_is_temporary_and_a_click_only_dismisses_it() {
         let t0 = Instant::now();

@@ -20,7 +20,7 @@ integrations / integrasi, about / tentang. The window opens on Umum.
 | Panel | **Perilaku**: Mode buka, Di belakang jendela. **Halaman panel**, **Pintasan**, **Tersedia** (the lists and the own-tile form, [[panel-pages]], [[shortcut-tiles]]) |
 | Clipboard | **Riwayat**; **Screenshot** ([[screenshot-preview]]) |
 | Fitur | **Pomodoro** (4 steppers and the running note), **Musik** (Lirik di notch), **Notifikasi** (Simpan notifikasi, Jumlah maksimal, Simpan setelah restart, Aplikasi dikecualikan with a remove button each and a field with *Tambah*, Hapus riwayat notifikasi with two clicks; [[notification-history]]), **CLI** (Folder awal, Shell), **Perangkat** (Notifikasi perangkat, Tombol pintas), **Pembersih** (Lindungi cache Cargo & Autodesk di Mole) |
-| Integrasi, Tentang | the same content, each card under a title (Tentang's is "Tautan") |
+| Integrasi, Tentang | the same content, each card under a title (Tentang's is "Tautan": 4 rows since [[self-update]], Kode sumber, Pembaruan with "Cek sekarang" / "Update", the toggle "Cek pembaruan otomatis", Folder data) |
 
 Every card has an eyebrow (`titled` / `Builder::eyebrow`) except the two
 previews, which are pictures; `every_card_of_every_section_has_a_title_but_the_previews`

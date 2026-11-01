@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use chrono::{Datelike, Local, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 use windows::Win32::Foundation::{
-    ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, POINT, WPARAM,
+    CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, POINT, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::ScreenToClient;
 use windows::Win32::Media::Audio::{PlaySoundW, SND_ALIAS, SND_ASYNC, SND_NODEFAULT};
@@ -144,6 +144,10 @@ use dock_page::DockState;
 mod notif_page;
 use notif_page::{NotifSetting, NotifState, TIMER_NOTIF_SAVE};
 
+#[path = "app_update.rs"]
+mod update_page;
+use update_page::{TIMER_UPDATE, UpdateState};
+
 #[path = "app_prtsc.rs"]
 mod prtsc;
 use prtsc::{PrtscState, WM_APP_PRTSC};
@@ -260,6 +264,8 @@ const MIXER_MS: u32 = 1_000;
 /// the volume read for it is forgotten (the next wheel reads it again).
 const TIMER_VOLUME: usize = 28;
 const VOLUME_HUD_MS: u32 = 1_200;
+/// How long a start after an update waits for the old island's mutex.
+const UPDATE_CLAIM_WAIT: Duration = Duration::from_secs(10);
 const SYSTEM_PAGE_MS: u32 = crate::system::LIVE_MS;
 const SYSTEM_WARN_MS: u32 = 300_000;
 const CLI_MS: u32 = 1000;
@@ -292,6 +298,10 @@ thread_local! {
     /// the handler returns (creating a window while the app is borrowed would
     /// find the app gone).
     static DEFERRED_OPEN_SETTINGS: Cell<bool> = const { Cell::new(false) };
+    /// An update was swapped in and started: the island closes once the
+    /// handler returns (`shutdown` destroys the window, which needs the app
+    /// unborrowed to run its cleanup).
+    static DEFERRED_SHUTDOWN: Cell<bool> = const { Cell::new(false) };
     static DEFERRED_FRAME: Cell<bool> = const { Cell::new(false) };
     static DEFERRED_RESULTS: RefCell<Vec<EditorResult>> = const { RefCell::new(Vec::new()) };
     static DEFERRED_SETTINGS: RefCell<Vec<SettingsAction>> = const { RefCell::new(Vec::new()) };
@@ -305,9 +315,16 @@ thread_local! {
     static MENU_OPEN: Cell<bool> = const { Cell::new(false) };
 }
 
-/// `media_log_flag`: started with `--media-log`.
-pub fn run(media_log_flag: bool) {
-    if !claim_single_instance() {
+/// `media_log_flag`: started with `--media-log`. `updated_from`: started by
+/// the updater (`--updated <old version>`).
+pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
+    // After an update the old island may still be closing: wait for its mutex.
+    let wait = if updated_from.is_some() {
+        UPDATE_CLAIM_WAIT
+    } else {
+        Duration::ZERO
+    };
+    if !claim_single_instance(wait) {
         return;
     }
     // Before anything reads the data folder: DynamicIsland becomes Vale once.
@@ -494,6 +511,7 @@ pub fn run(media_log_flag: bool) {
             greet_pending: true,
             greet_ready: false,
             session_locked: false,
+            update: UpdateState::default(),
         });
     });
     with_app(|app| {
@@ -528,6 +546,8 @@ pub fn run(media_log_flag: bool) {
         }
         // Reminders that came due while the island was off ring now.
         app.fire_reminders(true);
+        // The updated notice, the update timer and the leftover cleanup.
+        app.update_start(updated_from);
         unsafe {
             SetTimer(Some(hwnd), TIMER_SYSTEM, SYSTEM_MS, None);
             SetTimer(Some(hwnd), TIMER_BATTERY, BATTERY_MS, None);
@@ -577,15 +597,54 @@ fn poster(hwnd: HWND, msg: u32) -> impl Fn() + Send + Copy + 'static {
 /// one from before the rename (whose data folder must not be moved under
 /// it). The mutex handles are never closed, so they are held for the life of
 /// the process, which also keeps an old Dynamic Island from starting beside it.
-fn claim_single_instance() -> bool {
-    let claim = |name| unsafe {
-        match CreateMutexW(None, false, name) {
-            Ok(_) => GetLastError() != ERROR_ALREADY_EXISTS,
-            // Cannot tell; better to run than to show nothing.
-            Err(_) => true,
+///
+/// `wait`: how long a taken name is retried (every 200 ms) before giving up;
+/// zero is a normal start (quit at once), about 10 s is a start after an
+/// update, while the old island is still closing.
+fn claim_single_instance(wait: Duration) -> bool {
+    claim_names(&[w!("Local\\Vale"), w!("Local\\DynamicIsland")], wait)
+}
+
+/// `claim_single_instance` for any mutex names.
+fn claim_names(names: &[PCWSTR], wait: Duration) -> bool {
+    let deadline = Instant::now() + wait;
+    loop {
+        if try_claim(names) {
+            return true;
         }
-    };
-    claim(w!("Local\\Vale")) & claim(w!("Local\\DynamicIsland"))
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// One try at every name. `CreateMutexW` returns a handle even when the mutex
+/// already exists (`ERROR_ALREADY_EXISTS`), and that handle keeps it alive:
+/// after a failed try every handle is closed, or the mutex would outlive its
+/// owner and a waiting start would never get it. A successful try keeps its
+/// handles for the life of the process.
+fn try_claim(names: &[PCWSTR]) -> bool {
+    let mut handles = Vec::new();
+    let mut free = true;
+    for &name in names {
+        // SAFETY: the names are NUL-terminated wide strings.
+        match unsafe { CreateMutexW(None, false, name) } {
+            Ok(handle) => {
+                // Read at once: any other call may change it.
+                free &= unsafe { GetLastError() } != ERROR_ALREADY_EXISTS;
+                handles.push(handle);
+            }
+            // Cannot tell; better to run than to show nothing.
+            Err(_) => {}
+        }
+    }
+    if !free {
+        for handle in handles {
+            let _ = unsafe { CloseHandle(handle) };
+        }
+    }
+    free
 }
 
 struct App {
@@ -854,6 +913,8 @@ struct App {
     /// The last lock or unlock `WM_WTSSESSION_CHANGE` said locked; used when
     /// asking Windows for the session's state fails.
     session_locked: bool,
+    /// The self-update: the known release, a check or a download running.
+    update: UpdateState,
 }
 
 /// The File Explorer reader (`sources::explorer`): at most one read runs.
@@ -1017,6 +1078,7 @@ impl App {
                     | Event::Devices(_)
                     | Event::Arrange(_)
                     | Event::Toast(_)
+                    | Event::Update(_)
             ));
             self.apply(event, now);
         }
@@ -1104,6 +1166,11 @@ impl App {
                 // The notch notice and the history entry are decided here.
                 Event::Toast(toast) => {
                     self.on_toast(toast, now);
+                    continue;
+                }
+                // The self-update's workers: `App` decides what shows.
+                Event::Update(event) => {
+                    self.on_update_event(event);
                     continue;
                 }
                 Event::SearchIndex(apps) => {
@@ -1685,6 +1752,8 @@ impl App {
                 self.arm_reminders();
             }
             Effect::OpenSettings => DEFERRED_OPEN_SETTINGS.set(true),
+            Effect::InstallUpdate => self.update_install(),
+            Effect::OpenReleases => self.update_open_releases(),
         }
         None
     }
@@ -2980,7 +3049,7 @@ impl App {
         // Hidden, something else on screen, or the notch swapped with the
         // eyes: a press made before must not pair with a release on what
         // shows now.
-        if press_ends(&view, &self.drawn, eyes_swap) {
+        if press_ends(&view, &self.drawn, eyes_swap) && !progress_in_place(&view, &self.drawn) {
             self.click.clear();
         }
         // Only the width changes while the lyric view stays: a quicker morph.
@@ -2988,7 +3057,7 @@ impl App {
             && self.drawn == View::MediaLyric
             && self.anim.to_opacity == 1.0
             && !eyes_swap;
-        let view_same = view == self.drawn;
+        let view_same = view == self.drawn || progress_in_place(&view, &self.drawn);
         // A compact view or notice replacing another fades in with its
         // morph, and a panel closing into one fades out as the shape shrinks.
         let was_panel = match &self.drawn {
@@ -2998,7 +3067,7 @@ impl App {
         let is_panel = matches!(view, View::Panel(_));
         // Shrinking to the eyes or coming back swaps the content like a view
         // change does: what shows fades in with the morph.
-        let compact_swap = (view != self.drawn && !is_panel && view != View::Hidden && !resize)
+        let compact_swap = (!view_same && !is_panel && view != View::Hidden && !resize)
             || (eyes_swap && !is_panel && view != View::Hidden);
         // A fade cut short goes on from the alpha it reached: new content
         // starts from it, and the same content keeps fading in.
@@ -4197,6 +4266,7 @@ impl App {
                 self.sync_system_page();
             }
             TIMER_SYSTEM_WARN => self.on_system_warn_timer(),
+            TIMER_UPDATE => self.on_update_timer(),
             TIMER_MIXER => {
                 if self.state.view() == View::Panel(Page::Mixer) {
                     self.mixer_scan();
@@ -4838,6 +4908,7 @@ impl App {
             devices_hotkey_failed: self.devices.hotkey_failed,
             arrange_hotkey_failed: self.arrange.hotkey_failed,
             prtsc: self.prtsc_model(),
+            update_row: self.update.row(),
             ..settings::Model::from_config(&self.config)
         }
     }
@@ -5093,6 +5164,12 @@ impl App {
             SettingsAction::ShotOnIgnore(v) => self.on_shot_setting(ShotSetting::OnIgnore(v)),
             SettingsAction::ShotSecs(n) => self.on_shot_setting(ShotSetting::Secs(n)),
             SettingsAction::ShotPrintScreen(on) => self.set_print_screen(on),
+            SettingsAction::CheckUpdates => self.update_manual_check(),
+            SettingsAction::InstallUpdate => self.update_install(),
+            SettingsAction::UpdateAuto(on) => {
+                self.config.update_check = on;
+                self.save_config();
+            }
             // Handled outside the app borrow (`deliver_settings_action`).
             SettingsAction::DndHelp | SettingsAction::Closed => {}
         }
@@ -5484,6 +5561,17 @@ impl ClickPair {
     fn clear(&mut self) {
         self.pressed = None;
     }
+}
+
+/// The update download's percent changing on screen: the same notice with a
+/// new number, not another view (no entrance fade, no cleared press).
+fn progress_in_place(view: &View, drawn: &View) -> bool {
+    matches!(
+        (view, drawn),
+        (View::Notice(a), View::Notice(b))
+            if matches!(a.kind, NoticeKind::UpdateProgress { .. })
+                && matches!(b.kind, NoticeKind::UpdateProgress { .. })
+    )
 }
 
 /// A pending press ends when the island hides, another view shows, or the
@@ -6467,10 +6555,10 @@ fn open_menu(hwnd: HWND) {
     if MENU_OPEN.get() {
         return;
     }
-    let Some(config) = with_app(|app| {
+    let Some((config, update)) = with_app(|app| {
         // A hotkey another app held may be free by now.
         app.retry_hotkeys();
-        app.config.clone()
+        (app.config.clone(), app.update.known_version())
     }) else {
         return;
     };
@@ -6478,9 +6566,15 @@ fn open_menu(hwnd: HWND) {
     // The menu takes the foreground: the window that had the keyboard is
     // what "Cari" hands it back to on Esc.
     let before = unsafe { GetForegroundWindow() };
-    let cmd = tray::show_menu(hwnd, &config);
+    let cmd = tray::show_menu(hwnd, &config, update.as_deref());
     MENU_OPEN.set(false);
     match cmd {
+        Some(MenuCmd::CheckUpdate) => {
+            with_app(|app| app.update_manual_check());
+        }
+        Some(MenuCmd::InstallUpdate) => {
+            with_app(|app| app.update_install());
+        }
         Some(MenuCmd::Settings) => open_settings(hwnd),
         // Whatever the hotkey is (off, taken): the menu always opens it
         // (and never closes it).
@@ -6660,6 +6754,11 @@ fn run_deferred() {
         && let Some(hwnd) = with_app(|app| app.hwnd)
     {
         open_settings(hwnd);
+    }
+    if DEFERRED_SHUTDOWN.take()
+        && let Some(hwnd) = with_app(|app| app.hwnd)
+    {
+        shutdown(hwnd);
     }
 }
 
@@ -7121,6 +7220,79 @@ unsafe extern "system" fn wnd_proc(
 mod tests {
     use super::*;
     use crate::ui::geometry::{LYRIC_RESIZE_MS, lyric_shape, lyric_width};
+
+    fn progress_view(pct: u8) -> View {
+        View::Notice(Notice {
+            key: "update-progress".into(),
+            source: "Vale".into(),
+            title: format!("{pct}%"),
+            body: String::new(),
+            kind: NoticeKind::UpdateProgress { pct },
+        })
+    }
+
+    #[test]
+    fn a_new_percent_is_the_same_view_but_any_other_change_is_not() {
+        assert!(progress_in_place(&progress_view(1), &progress_view(2)));
+        assert!(progress_in_place(&progress_view(1), &progress_view(1)));
+        assert!(!progress_in_place(&progress_view(1), &View::Idle));
+        assert!(!progress_in_place(&View::Idle, &progress_view(1)));
+        assert!(!progress_in_place(&View::Hidden, &View::Hidden));
+    }
+
+    /// A mutex name of this test's own, so no real island is involved.
+    fn mutex_name(tag: &str) -> windows::core::HSTRING {
+        windows::core::HSTRING::from(format!("Local\\ValeTest-{tag}-{}", std::process::id()))
+    }
+
+    #[test]
+    fn a_taken_mutex_quits_at_once_and_a_waiting_start_gets_it_when_the_owner_ends() {
+        let name = mutex_name("claim");
+        let names = [PCWSTR(name.as_ptr())];
+        // The "old island": holds the mutex through one handle.
+        let owner = unsafe { CreateMutexW(None, false, names[0]) }.expect("owner mutex");
+        // A normal start quits at once.
+        let start = Instant::now();
+        assert!(!claim_names(&names, Duration::ZERO));
+        assert!(start.elapsed() < Duration::from_millis(150));
+        // The owner is still alive, so a short wait ends without it.
+        assert!(!claim_names(&names, Duration::from_millis(450)));
+        // The owner ends (its handle closes) while a start waits: the wait
+        // gets the mutex. It would not if the failed tries had kept their own
+        // handles, which keep the mutex alive after the owner is gone.
+        let raw = owner.0 as isize;
+        let closer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(400));
+            unsafe {
+                let _ = CloseHandle(windows::Win32::Foundation::HANDLE(raw as *mut c_void));
+            }
+        });
+        let start = Instant::now();
+        assert!(claim_names(&names, Duration::from_secs(5)));
+        assert!(start.elapsed() < Duration::from_secs(4), "{:?}", start.elapsed());
+        closer.join().unwrap();
+    }
+
+    #[test]
+    fn the_failed_tries_leave_nothing_behind() {
+        // Two names, one of them held by someone else: a failed try must also
+        // release the name that was free, or the next try finds its own mutex.
+        let held = mutex_name("held");
+        let free = mutex_name("free");
+        let (held_p, free_p) = (PCWSTR(held.as_ptr()), PCWSTR(free.as_ptr()));
+        // Held by "someone else": a handle this test owns and closes later.
+        let owner = unsafe { CreateMutexW(None, false, held_p) }.expect("owner mutex");
+        for _ in 0..3 {
+            assert!(!try_claim(&[free_p, held_p]), "held name taken");
+        }
+        // The owner ends: both names are free at once.
+        unsafe {
+            let _ = CloseHandle(owner);
+        }
+        assert!(try_claim(&[free_p, held_p]));
+        // Held for the rest of the process by design; claimed again it is taken.
+        assert!(!try_claim(&[free_p]));
+    }
 
     #[test]
     fn the_own_pick_overlay_is_never_taken_for_a_fullscreen_app() {
