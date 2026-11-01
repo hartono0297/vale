@@ -4289,9 +4289,23 @@ impl App {
         }
     }
 
+    /// Asks Windows whether a fullscreen app is in front and tells the state
+    /// when that changed. While the Susun pick overlay is up the question is
+    /// not asked: the overlay is Vale's own topmost window over the whole
+    /// virtual screen and `SHQueryUserNotificationState` reports it as a
+    /// fullscreen app, which would hide the island and cancel the pick a
+    /// second after it began. The last known state stays, in `self.fullscreen`
+    /// and in the state alike (they never disagree). A real fullscreen app
+    /// takes the foreground from the overlay, which cancels the pick; the
+    /// next check then sees it.
     fn check_fullscreen(&mut self) {
-        let fullscreen = is_fullscreen();
-        if fullscreen != self.fullscreen {
+        let own_overlay_up = arrange_overlay::active();
+        let reported = if own_overlay_up {
+            self.fullscreen
+        } else {
+            is_fullscreen()
+        };
+        if let Some(fullscreen) = fullscreen_event(reported, own_overlay_up, self.fullscreen) {
             self.fullscreen = fullscreen;
             self.apply_now(Event::Fullscreen(fullscreen));
         }
@@ -5806,6 +5820,18 @@ fn ms_to_next_second(remaining: Duration) -> u32 {
 
 /// Where the current track is now; `None` without media, a timeline or a
 /// known length.
+/// The fullscreen change to apply, if any. `reported` is what Windows says,
+/// `own_overlay_up` that Vale's own pick overlay is on screen (it counts as a
+/// fullscreen app to Windows, so nothing is learned while it is up) and
+/// `last` the state already applied.
+fn fullscreen_event(reported: bool, own_overlay_up: bool, last: bool) -> Option<bool> {
+    if own_overlay_up || reported == last {
+        None
+    } else {
+        Some(reported)
+    }
+}
+
 fn track_progress(state: &IslandState, now: Instant) -> Option<Progress> {
     let playing = state.media()?.playing;
     Progress::at(state.timeline(), playing, now)
@@ -7091,6 +7117,20 @@ unsafe extern "system" fn wnd_proc(
 mod tests {
     use super::*;
     use crate::ui::geometry::{LYRIC_RESIZE_MS, lyric_shape, lyric_width};
+
+    #[test]
+    fn the_own_pick_overlay_is_never_taken_for_a_fullscreen_app() {
+        // Overlay up: nothing is learned, either way.
+        assert_eq!(fullscreen_event(true, true, false), None);
+        assert_eq!(fullscreen_event(false, true, true), None);
+        assert_eq!(fullscreen_event(true, true, true), None);
+        assert_eq!(fullscreen_event(false, true, false), None);
+        // Overlay down: a change is reported, the same value is not.
+        assert_eq!(fullscreen_event(true, false, false), Some(true));
+        assert_eq!(fullscreen_event(false, false, true), Some(false));
+        assert_eq!(fullscreen_event(true, false, true), None);
+        assert_eq!(fullscreen_event(false, false, false), None);
+    }
 
     #[test]
     fn greeting_waits_for_someone_at_an_unlocked_screen() {

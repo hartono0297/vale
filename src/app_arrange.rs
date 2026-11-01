@@ -161,6 +161,24 @@ fn available<'a>(p: &'a Picking) -> Vec<&'a OpenWindow> {
     p.flow.available(&p.windows)
 }
 
+/// Whether the Susun page counts as shown. A fullscreen app hides it, except
+/// during a pick: the pick overlay itself can look like one to Windows, and a
+/// real one ends the pick through the overlay losing the foreground.
+fn page_shown(page_is_arrange: bool, panel_open: bool, fullscreen: bool, picking: bool) -> bool {
+    page_is_arrange && panel_open && (picking || !fullscreen)
+}
+
+/// Where the hover outline goes: the monitor's work area. On a monitor whose
+/// work area is the whole monitor (an auto-hiding taskbar, or none) it is one
+/// pixel shorter, so the window never covers the full monitor rect.
+fn outline_area(monitor: &Monitor) -> Rect {
+    let mut area = monitor.work;
+    if area == monitor.rect && area.h > 1 {
+        area.h -= 1;
+    }
+    area
+}
+
 impl App {
     /// At startup: the hotkey.
     pub(super) fn arrange_start(&mut self) {
@@ -170,7 +188,12 @@ impl App {
     /// The Susun page is what the open panel shows (a notice over it does
     /// not count).
     fn arrange_page_shown(&self) -> bool {
-        self.state.page() == Page::Arrange && self.state.panel_is_open() && !self.state.fullscreen()
+        page_shown(
+            self.state.page() == Page::Arrange,
+            self.state.panel_is_open(),
+            self.state.fullscreen(),
+            self.arrange.picking.is_some(),
+        )
     }
 
     /// The page opened: the monitors are read again, the chip is the
@@ -360,7 +383,18 @@ impl App {
         }
     }
 
+    /// The outline is a click-through, never-activated window over the
+    /// target monitor's work area. Windows may take a topmost window that
+    /// covers a whole monitor for a fullscreen app (the pick overlay does,
+    /// see `arrange_overlay`), so the fullscreen check is NOT skipped while
+    /// the outline is up (it stays up while the pointer rests on a card, and
+    /// a game launched meanwhile must still hide the island). Instead the
+    /// outline never covers a whole monitor (`outline_area`) and is never
+    /// shown while a fullscreen app is in front.
     fn arrange_show_outline(&self, card: usize) {
+        if self.state.fullscreen() {
+            return;
+        }
         let Some(monitor) = self.arrange_monitor() else {
             return;
         };
@@ -370,7 +404,7 @@ impl App {
         let rects = self.arrange_rects(&layout.node(), monitor);
         arrange_overlay::outline_show(
             self.hwnd,
-            monitor.work,
+            outline_area(monitor),
             &rects,
             theme::current().accent.rgb(),
         );
@@ -497,7 +531,13 @@ impl App {
                 }
                 self.after_step();
             }
-            MSG_CANCEL => self.cancel_pick(),
+            MSG_CANCEL => {
+                self.cancel_pick();
+                // A fullscreen app that took the foreground ended the pick:
+                // the island hides now, not up to a second later. The
+                // overlay is closed, so the check is real again.
+                self.check_fullscreen();
+            }
             _ => {}
         }
     }
@@ -927,6 +967,66 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::View;
+    use crate::pomodoro::PomoSettings;
+    use crate::state::IslandState;
+    use chrono::NaiveDate;
+
+    #[test]
+    fn a_pick_keeps_the_page_shown_even_with_a_fullscreen_flag() {
+        assert!(page_shown(true, true, false, false));
+        assert!(page_shown(true, true, true, true), "picking");
+        assert!(!page_shown(true, true, true, false), "fullscreen, no pick");
+        assert!(!page_shown(false, true, false, true), "another page");
+        assert!(!page_shown(true, false, false, true), "panel closed");
+    }
+
+    #[test]
+    fn the_pick_survives_the_own_overlay_and_a_real_fullscreen_app_still_hides_the_island() {
+        use super::super::fullscreen_event;
+        let t0 = Instant::now();
+        let mut s = IslandState::new(
+            NaiveDate::from_ymd_opt(2026, 10, 25).unwrap(),
+            PomoSettings::default(),
+        );
+        s.apply(Event::ArrangeHotkey, t0);
+        s.apply(Event::ArrangePick(true), t0);
+        // A tick with the overlay up: Windows says "fullscreen" (it is the
+        // overlay), and nothing is applied.
+        let mut last = s.fullscreen();
+        if let Some(on) = fullscreen_event(true, true, last) {
+            s.apply(Event::Fullscreen(on), t0);
+            last = on;
+        }
+        assert!(!last);
+        assert_eq!(s.view(), View::Panel(Page::Arrange));
+        assert!(page_shown(
+            s.page() == Page::Arrange,
+            s.panel_is_open(),
+            s.fullscreen(),
+            true
+        ));
+        // The pick over (overlay closed): the next tick sees the real thing.
+        s.apply(Event::ArrangePick(false), t0);
+        if let Some(on) = fullscreen_event(true, false, last) {
+            s.apply(Event::Fullscreen(on), t0);
+        }
+        assert_eq!(s.view(), View::Hidden);
+    }
+
+    #[test]
+    fn the_outline_never_covers_a_whole_monitor() {
+        let rect = Rect::new(0, 0, 1920, 1080);
+        let mut m = Monitor {
+            device: "D".into(),
+            rect,
+            work: Rect::new(0, 0, 1920, 1040),
+            dpi: 96,
+        };
+        assert_eq!(outline_area(&m), m.work, "taskbar: the work area as is");
+        m.work = rect;
+        assert_eq!(outline_area(&m), Rect::new(0, 0, 1920, 1079));
+    }
 
     #[test]
     fn simpan_is_offered_only_when_a_tile_got_a_window() {
