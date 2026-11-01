@@ -391,9 +391,12 @@
     var growTimer = 0;
     var fitFrame = false;
 
+    /* Mirror style.css from the same source it uses: 100vw and the 32.5em media
+       query both count the scrollbar, root.clientWidth does not. */
+    var phonePeek = window.matchMedia('(max-width: 32.5em)');
     function peekSize(name) {
-      var vw = root.clientWidth;
-      if (name === 'panel') return { w: Math.min(400, vw - 32), h: vw <= 520 ? 64 : 128 };
+      var vw = window.innerWidth;
+      if (name === 'panel') return { w: Math.min(400, vw - 32), h: phonePeek.matches ? 64 : 128 };
       return { w: Math.min(340, vw - 32), h: 56 };
     }
     function bandBlocked(name) {
