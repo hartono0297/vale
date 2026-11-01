@@ -1696,7 +1696,11 @@ impl Renderer {
         // face reads on a light wallpaper.
         let strength = self.legible.get();
         if strength > 0.0 {
-            let (head, radius) = super::robot::head_rect(area);
+            // The halo follows the dance's nod.
+            let (head, radius) = super::robot::head_rect(Rect {
+                y: area.y + robot.pose.nod_dip,
+                ..area
+            });
             for (grow, weight) in [(3.0, 0.10), (1.5, 0.18)] {
                 self.set_color(0x000000, weight * strength);
                 self.fill_round(
@@ -1747,7 +1751,7 @@ impl Renderer {
         }
         // The robot takes the album art's place, as in the design.
         match robot {
-            Some(r) => self.paint_robot(layout.art, r),
+            Some(r) => self.paint_robot(layout.art, note_placed(r, layout.art, shape)),
             None => self.paint_art(layout.art, radius::ART, media.art.as_deref())?,
         }
         // The song, as in the design; the artist when the player gives no title.
@@ -1798,7 +1802,7 @@ impl Renderer {
         let area = match robot {
             Some(r) => {
                 let (slot, area) = lyric_layout_robot(shape);
-                self.paint_robot(slot, r);
+                self.paint_robot(slot, note_placed(r, slot, shape));
                 area
             }
             None => lyric_layout(shape),
@@ -2810,6 +2814,16 @@ fn shape_rect(s: ShapeRect) -> Rect {
         y: s.y,
         w: s.w,
         h: s.h,
+    }
+}
+
+/// `r` with a dancing note kept inside `shape` (the compact content is
+/// clipped to it): the room above the note decides how far it may rise
+/// (`robot::with_note_lift`). Any other pose comes back as it is.
+fn note_placed(r: RobotFrame, area: Rect, shape: ShapeRect) -> RobotFrame {
+    RobotFrame {
+        pose: super::robot::with_note_lift(r.pose, r.expr, area, shape.y),
+        ..r
     }
 }
 

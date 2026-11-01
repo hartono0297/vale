@@ -155,6 +155,10 @@ pub struct Config {
     /// "Ikuti kursor": the idle cat looks toward the pointer (default on).
     #[serde(deserialize_with = "default_on")]
     pub cat_follow_pointer: bool,
+    /// "Joget ikut musik": the cat nods to the beat while music plays
+    /// (default on).
+    #[serde(deserialize_with = "default_on")]
+    pub cat_dance: bool,
     /// "Mengecil jadi mata": the notch shrinks to the cat's eyes near the
     /// pointer over a window (default on).
     #[serde(deserialize_with = "default_on")]
@@ -602,6 +606,7 @@ impl Default for Config {
             cat_color: CatColor::Terracotta,
             cat_accessory: CatAccessory::None,
             cat_follow_pointer: true,
+            cat_dance: true,
             notch_peek: true,
             eq_follow_audio: true,
             notifications: NotifSettings::default(),
@@ -741,6 +746,7 @@ pub fn merge_owned(disk: Config, mem: &Config) -> Config {
         cat_color: mem.cat_color,
         cat_accessory: mem.cat_accessory,
         cat_follow_pointer: mem.cat_follow_pointer,
+        cat_dance: mem.cat_dance,
         notch_peek: mem.notch_peek,
         eq_follow_audio: mem.eq_follow_audio,
         notifications: mem.notifications,
@@ -1118,6 +1124,7 @@ mod tests {
             cat_color: CatColor::Calico,
             cat_accessory: CatAccessory::Bow,
             cat_follow_pointer: false,
+            cat_dance: false,
             notch_peek: false,
             eq_follow_audio: false,
             notifications: NotifSettings {
@@ -2288,6 +2295,30 @@ mod tests {
             cat(&merged),
             (CatColor::Black, CatAccessory::Scarf, false, false)
         );
+    }
+
+    #[test]
+    fn cat_dance_defaults_on_reads_leniently_and_round_trips() {
+        assert!(Config::default().cat_dance);
+        // A file from before the setting has no key.
+        assert!(parse(r#"{"style":"Notch","robot":false}"#).cat_dance);
+        // Junk reads as on and does not drop the rest of the file.
+        for junk in [r#""yes""#, "null", "7", r#""false""#, "[]"] {
+            let c = parse(&format!(r#"{{"style":"Notch","cat_dance":{junk}}}"#));
+            assert!(c.cat_dance, "{junk}");
+            assert_eq!(c.style, Style::Notch);
+        }
+        // Only a real false is off.
+        assert!(!parse(r#"{"cat_dance":false}"#).cat_dance);
+        assert!(parse(r#"{"cat_dance":true}"#).cat_dance);
+        let mem = Config {
+            cat_dance: false,
+            ..Config::default()
+        };
+        assert_eq!(parse(&serde_json::to_string_pretty(&mem).unwrap()), mem);
+        // The island keeps its own copy over the file's.
+        assert!(!merge_owned(Config::default(), &mem).cat_dance);
+        assert!(merge_owned(mem.clone(), &Config::default()).cat_dance);
     }
 
     #[test]

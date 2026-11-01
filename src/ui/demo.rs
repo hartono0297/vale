@@ -90,7 +90,12 @@
 //! fixed ("14:32", "23:48"), so nothing depends on the time of day. The
 //! scenes `bata-look-left` and `bata-look-right` draw the idle cat looking at
 //! a pointer at the far left and right of the screen (the largest turn: head
-//! 7 dip, tilt 6 degrees, eyes 4 dip further).
+//! 7 dip, tilt 6 degrees, eyes 4 dip further). The scenes `bata-musik-joget`
+//! (compact media, `Expr::Music`) and `bata-lirik-joget` (lyric view,
+//! `Expr::Sing`) draw the cat dancing to the music, frozen at the deepest nod
+//! (amount 1: the whole cat 1.5 dip down, 4 % wider, 6 % lower) with the note
+//! half way up its rise and 30 % faded. Fixed values: the demos never capture
+//! audio, and a real island nods with the bass or a 600 ms beat.
 //!
 //! The notch peek's scenes `peek-eyes` (robot on) and `peek-eyes-plain`
 //! (robot off) draw the notch shrunk to the cat's two eyes: a 34 x 14 pill,
@@ -243,6 +248,9 @@ struct Scene {
     eyes_look: (f32, f32),
     /// The shrunk notch's eyes are shut.
     eyes_blink: bool,
+    /// The music cat at the deepest nod (amount 1) with its note half way up
+    /// and a little faded: a fixed pose, nothing is captured.
+    dance: bool,
 }
 
 /// The cleaner's states (deepclean-opsi-d.html p10 and d1).
@@ -479,6 +487,7 @@ const BASE: Scene = Scene {
     look: 0.0,
     eyes_look: (0.0, 0.0),
     eyes_blink: false,
+    dance: false,
 };
 
 const fn clipboard(name: &'static str, which: ClipDemo) -> Scene {
@@ -682,7 +691,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 142] = [
+const SCENES: [Scene; 144] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -1036,6 +1045,28 @@ const SCENES: [Scene; 142] = [
         lyrics_on: true,
         ..bata(
             "bata-lirik-long",
+            ShapeKind::MediaLyric,
+            View0::MediaLyric,
+            Expr::Sing,
+        )
+    },
+    // The cat dancing to the music: the deepest nod, the note half way up
+    // and a little faded (fixed values, no audio capture).
+    Scene {
+        dance: true,
+        ..bata(
+            "bata-musik-joget",
+            ShapeKind::MediaCompact,
+            View0::MediaCompact,
+            Expr::Music,
+        )
+    },
+    Scene {
+        dance: true,
+        lyric_at: 6_000,
+        lyrics_on: true,
+        ..bata(
+            "bata-lirik-joget",
             ShapeKind::MediaLyric,
             View0::MediaLyric,
             Expr::Sing,
@@ -1864,7 +1895,14 @@ fn run_scenes(scenes: &[Scene]) {
                 progress: Some(DEMO_PROGRESS),
                 robot: scene.robot.map(|expr| RobotFrame {
                     expr,
-                    pose: Pose::default().looking(scene.look),
+                    pose: {
+                        let pose = Pose::default().looking(scene.look);
+                        if scene.dance {
+                            pose.dance(1.0, 0.5, 0.3)
+                        } else {
+                            pose
+                        }
+                    },
                 }),
                 eyes: scene.kind == ShapeKind::Eyes,
                 eyes_pose: {

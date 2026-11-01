@@ -863,6 +863,38 @@ mod tests {
                 }
             }
         }
+        // The dancing note floats up to `NOTE_RISE_DIP`: every accessory also
+        // stays clear of the whole way it rises (a compact cat is
+        // `ROBOT_COMPACT` px, so a dip is `1 / k` grid units). Sing's notes,
+        // shifted down under a 28 to 30 dip notch, do not rise, and the bow's
+        // box only grazes that shift (0.3 grid units at the very worst: the
+        // 28 dip notch with no bass), so only the rise is swept.
+        let k = crate::ui::geometry::ROBOT_COMPACT / crate::ui::robot::GRID;
+        let up = crate::ui::robot::NOTE_RISE_DIP / k;
+        for expr in [Expr::Music, Expr::Sing] {
+            let f = face(expr, false);
+            let notes = f.parts.iter().filter(|part| match part {
+                Part::Dot { ink, .. } => *ink == Ink::Cream,
+                Part::Stroke(line) => line.ink() == Ink::Cream,
+                _ => false,
+            });
+            for part in notes {
+                let m = mark_bounds(part);
+                let swept = (m.0, m.1 - up, m.2, m.3);
+                for accessory in CatAccessory::ALL {
+                    for corners in accessory_piece_corners(*accessory, f.ears) {
+                        let piece = corners.iter().fold(
+                            (f32::MAX, f32::MAX, f32::MIN, f32::MIN),
+                            |b, &((x, y), _)| (b.0.min(x), b.1.min(y), b.2.max(x), b.3.max(y)),
+                        );
+                        assert!(
+                            !overlap(piece, swept),
+                            "{accessory:?} piece {piece:?} is in the way of {expr:?}'s risen {part:?} ({swept:?})"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

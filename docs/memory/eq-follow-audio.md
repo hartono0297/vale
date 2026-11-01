@@ -79,12 +79,16 @@ demos and the Settings preview.
 
 ## When it runs (`app.rs`)
 
-- `eq_timer_wanted(view_compact, playing, eyes, fullscreen, screen_away)`:
-  `TIMER_EQ` now also stops while fullscreen and while the session is locked
-  or the display is off (`screen_away`). `eq_capture_wanted(timer_on,
-  setting_on)`: the capture runs exactly while the timer does and
-  "Equalizer ikut irama" (`eq_follow_audio`, Settings -> Tampilan -> Island,
-  default on) is on. Both are tables in tests.
+- `eq_timer_wanted(view_compact, view_lyric, dance_wanted, playing, eyes,
+  fullscreen, screen_away)`: `TIMER_EQ` stops while fullscreen and while the
+  session is locked or the display is off (`screen_away`). **It also runs in
+  the lyric view while the cat dances there** (`dance_wanted` = robot &&
+  "Joget ikut musik" && full motion && Windows animations,
+  [[cat-dances-to-music]]), so loopback capture can now run in the lyric view
+  too; the dancing cat reads band 0 (`App::eq_bass`) from the same shared
+  levels. `eq_capture_wanted(timer_on, setting_on)`: the capture runs exactly
+  while the timer does and "Equalizer ikut irama" (`eq_follow_audio`,
+  Settings -> Tampilan -> Island, default on) is on. Both are tables in tests.
 - `sync_eq` is called from `sync_timers` (every `refresh`) and from
   `sync_pointer_polls` (lock, unlock, display on/off), and sends
   `set_running` only when the wanted state changes.
