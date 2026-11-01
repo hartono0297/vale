@@ -73,8 +73,9 @@ no peek the reducer behaves as if there were no `current`.
   `dismiss_visible_notice` (the panel stays open; with a sticky strip it still
   dismisses the sticky one). `Hit::ToastSlot` while a slot or peek shows
   does the same; the peeked full toast is `Hit::Body` as always. A click counts
-  as seen. What a click on a toast *does* (open the app) is the other session's
-  area (`vale-notif-open`) and was not touched.
+  as seen. What a click on a toast *does* is [[notification-open]]: since the two
+  landed together, `dismiss_visible_notice` emits `Effect::OpenTarget` for
+  every toast (strip, slot and peek clicks too, also one without an app id).
 - **Strip vs sticky.** `waiting_strip()` and `shown_panel().strip` give the
   toast while the form is Strip, else `sticky.last()`: a sticky strip yields the
   slot for the toast's 5 s and comes back after.

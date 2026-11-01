@@ -171,3 +171,5 @@ web.whatsapp.com toast), Discord hidden in the tray planned as "relaunch".
   (only the plans were run, nothing was clicked); a minimized Chrome window's
   tab strip may read empty (then the window just comes forward).
 - Firefox's and Opera's tab strips; Edge vertical tabs.
+
+Related: [[toast-while-busy]] (its strip, slot and peek clicks go through the same OpenTarget effect).
