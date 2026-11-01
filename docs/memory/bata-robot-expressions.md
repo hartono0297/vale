@@ -35,8 +35,12 @@ first:
 4. Pomodoro → Focus, media → Music (the robot replaces the album art),
    lyric line → Sing.
 5. Idle only: CLI just done/failed (4 s) → Happy/Sad; Claude working, a
-   CLI command or a Mole clean running → Think; battery at or below the threshold and
-   discharging → Sad; asleep → Sleep; else Idle.
+   CLI command or a Mole clean running → **Typing** (since 2026-11-01, the
+   cat types on a laptop, see [[cat-types-while-working]]; it was Think, which
+   never looked at the pointer); battery at or below the threshold and
+   discharging → Sad; asleep → Sleep; else Idle. **Think** stays in `Expr` for
+   the demo face sheet and the `bata-claude` notice scene, but `choose_expr`
+   never returns it.
 
 "Claude working" = a session with `ClaudeActivity` in the last 2 minutes
 that has not sent Done or Waiting since (`CLAUDE_WORKING_FOR`).
@@ -46,7 +50,7 @@ pomodoro +26; idle holds robot + clock centred as a group). Notices are
 unchanged: the 40 px robot sits exactly in the badge's square. With the
 robot off every width is as before (`shape_with_robot(.., false)`).
 
-Blink only shows on open eyes (Idle, Focus, Alert, Think, Sad); the
+Blink only shows on open eyes (Idle, Focus, Alert, Think, Sad, Typing); the
 design's `blink` eyes (two level lines) replace the open eyes. The ears
 carry the mood (`Face::ears`): up 4 for Alert, turned outward 12 degrees
 asleep and 24 degrees when low. The ear tips stay
@@ -63,6 +67,7 @@ above are unchanged; the logo, tray and the notch-peek eyes stay terracotta.
 The label "Asisten di notch" is now "Kucing di notch".
 
 Related: [[bata-idle-power-budget]], [[bata-morning-greeting]],
-[[studio-bata-logo-sources]], [[cat-accessories]], [[cat-colours-and-surfaces]]
+[[studio-bata-logo-sources]], [[cat-accessories]], [[cat-colours-and-surfaces]],
+[[cat-types-while-working]]
 
 Part of [[v3-studio-overview]]. Listed in [[index]].

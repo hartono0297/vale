@@ -10,6 +10,11 @@
 //!   `LookEase`).
 //! - **The shrunk notch's eyes look at the pointer** too: sideways and down,
 //!   a few dip (`eyes_target`, `EyesLook`), gated by `eyes_motion`.
+//! - **The typing cat's eyes glance at the pointer** (`look_on` lets it
+//!   through like the looking cat, `glance_target`, the same `EyesLook` pair):
+//!   its eyes only, while the pointer moves; `GlanceRest` sends them back to
+//!   the screen once it has been still for `GLANCE_REST`, from the poll's own
+//!   readings.
 //!
 //! Nothing here touches Win32; `App` reads the pointer and applies the result.
 
@@ -18,6 +23,7 @@ use std::time::{Duration, Instant};
 use crate::behind;
 use crate::model::View;
 use crate::ui::geometry::{AA_MARGIN, Rect, ShapeRect};
+use crate::ui::robot::Expr;
 
 /// How far past the normal notch (left, right and below) the pointer counts as
 /// near it, in logical pixels.
@@ -291,6 +297,90 @@ pub fn look_target(pointer_x: f32, centre_x: f32, monitor_left: f32, monitor_rig
     (offset / span).clamp(-1.0, 1.0)
 }
 
+/// The rules for the idle cat to follow the pointer, all but the screen's
+/// state asked once: "Ikuti kursor" and the cat on (`allowed`), motion Full
+/// (`moves`), the idle view, the notch not shrunk, nothing fullscreen, the
+/// screen on, and a face that follows (`Expr::follows`: it turns its head, or
+/// the typing cat glances with its eyes). `expr` is the face drawn, if any.
+pub fn look_on(
+    allowed: bool,
+    moves: bool,
+    idle_view: bool,
+    shrunk: bool,
+    fullscreen: bool,
+    screen_away: bool,
+    expr: Option<Expr>,
+) -> bool {
+    allowed
+        && moves
+        && idle_view
+        && !shrunk
+        && !fullscreen
+        && !screen_away
+        && expr.is_some_and(Expr::follows)
+}
+
+/// How far below or above the eyes the pointer reaches the typing cat's
+/// largest glance down or up, in dip (the caller scales it with the pointer).
+pub const GLANCE_SPAN_Y_DIP: f32 = 300.0;
+/// The typing cat stops following a pointer that has been still this long:
+/// its eyes go back to the screen.
+pub const GLANCE_REST: Duration = Duration::from_millis(1_200);
+
+/// Where the pointer is for the typing cat's eyes: `(vx, vy)`, each -1 to 1.
+/// `vx` is `look_target`; `vy` is the pointer's offset from `eyes_y` over
+/// `GLANCE_SPAN_Y_DIP` (so the caller gives `pointer_y` and `eyes_y` in dip),
+/// clamped. NaN is 0.
+pub fn glance_target(
+    pointer_x: f32,
+    pointer_y: f32,
+    centre_x: f32,
+    monitor_left: f32,
+    monitor_right: f32,
+    eyes_y: f32,
+) -> (f32, f32) {
+    let vx = look_target(pointer_x, centre_x, monitor_left, monitor_right);
+    let vy = ((pointer_y - eyes_y) / GLANCE_SPAN_Y_DIP).clamp(-1.0, 1.0);
+    (
+        if vx.is_nan() { 0.0 } else { vx },
+        if vy.is_nan() { 0.0 } else { vy },
+    )
+}
+
+/// Whether the typing cat's eyes follow the pointer, from the poll's
+/// readings alone (no timer of its own): they follow while it moves, and go
+/// back to the screen once it has been still for `GLANCE_REST`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GlanceRest {
+    last: Option<(i32, i32)>,
+    moved_at: Option<Instant>,
+}
+
+impl GlanceRest {
+    /// One reading `pt` at `now`: true to follow the pointer. The first
+    /// reading only records (false); a changed position is a move (true); a
+    /// still pointer counts as followed for `GLANCE_REST` after its last move.
+    pub fn reading(&mut self, pt: (i32, i32), now: Instant) -> bool {
+        let first = self.last.is_none();
+        let moved = self.last.is_some_and(|last| last != pt);
+        self.last = Some(pt);
+        if first {
+            return false;
+        }
+        if moved {
+            self.moved_at = Some(now);
+            return true;
+        }
+        self.moved_at
+            .is_some_and(|at| now.saturating_duration_since(at) < GLANCE_REST)
+    }
+
+    /// Forgets the readings: the next one only records.
+    pub fn reset(&mut self) {
+        *self = GlanceRest::default();
+    }
+}
+
 /// The cat would follow the pointer but nobody can see it: "Di belakang
 /// jendela" has lowered the island (`lowered`) and a window lies over it
 /// (`covered`, read only for a lowered island). Its look then stays where it
@@ -373,6 +463,12 @@ pub struct EyesLook {
 }
 
 impl EyesLook {
+    /// The look now, `(x, y)`, each -1 to 1 (the typing cat's glance reuses
+    /// this pair of eases).
+    pub fn value(&self) -> (f32, f32) {
+        (self.x.value(), self.y.value())
+    }
+
     /// The slide now, in dip.
     pub fn offset_dip(&self) -> (f32, f32) {
         eyes_offset_dip(self.x.value(), self.y.value())
@@ -1155,5 +1251,125 @@ mod tests {
         assert_eq!(eyes.offset_dip(), (0.0, 0.0));
         assert!(!eyes.moving());
         assert!(!eyes.snap_to_centre());
+    }
+
+    #[test]
+    fn the_typing_cat_is_eligible_under_the_same_rules_as_the_looking_one() {
+        let all = |allowed, moves, idle, shrunk, full, away, expr| {
+            look_on(allowed, moves, idle, shrunk, full, away, expr)
+        };
+        for expr in [Expr::Idle, Expr::Happy, Expr::Sad, Expr::Typing] {
+            assert!(
+                all(true, true, true, false, false, false, Some(expr)),
+                "{expr:?}"
+            );
+            // Every rule flipped in turn.
+            assert!(!all(false, true, true, false, false, false, Some(expr)));
+            assert!(!all(true, false, true, false, false, false, Some(expr)));
+            assert!(!all(true, true, false, false, false, false, Some(expr)));
+            assert!(!all(true, true, true, true, false, false, Some(expr)));
+            assert!(!all(true, true, true, false, true, false, Some(expr)));
+            assert!(!all(true, true, true, false, false, true, Some(expr)));
+        }
+        // No cat drawn, or a face that neither turns nor glances.
+        assert!(!all(true, true, true, false, false, false, None));
+        for expr in [
+            Expr::Think,
+            Expr::Sleep,
+            Expr::Music,
+            Expr::Sing,
+            Expr::Wave,
+        ] {
+            assert!(
+                !all(true, true, true, false, false, false, Some(expr)),
+                "{expr:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_glance_target_maps_the_pointer_to_the_eyes() {
+        // A 1920 wide monitor, the notch at its centre, its eyes 17 dip down.
+        let t = |x, y| glance_target(x, y, 960.0, 0.0, 1920.0, 17.0);
+        assert_eq!(t(960.0, 17.0), (0.0, 0.0));
+        // Both monitor edges, level with the eyes.
+        assert_eq!(t(0.0, 17.0), (-1.0, 0.0));
+        assert_eq!(t(1920.0, 17.0), (1.0, 0.0));
+        // Half way across.
+        assert_eq!(t(1440.0, 17.0), (0.5, 0.0));
+        // Other monitors clamp.
+        assert_eq!(t(-3000.0, 17.0), (-1.0, 0.0));
+        assert_eq!(t(5000.0, 17.0), (1.0, 0.0));
+        // Below and above: 300 dip is the full look, either way.
+        assert_eq!(t(960.0, 17.0 + 150.0), (0.0, 0.5));
+        assert_eq!(t(960.0, 17.0 + GLANCE_SPAN_Y_DIP), (0.0, 1.0));
+        assert_eq!(t(960.0, 2000.0), (0.0, 1.0));
+        assert_eq!(t(960.0, 17.0 - 150.0), (0.0, -0.5));
+        assert_eq!(t(960.0, -2000.0), (0.0, -1.0));
+        assert_eq!(GLANCE_SPAN_Y_DIP, 300.0);
+        // NaN is the centre; a monitor with no room on a side is 0 across.
+        assert_eq!(t(f32::NAN, f32::NAN), (0.0, 0.0));
+        assert_eq!(t(f32::NAN, 17.0 + 150.0), (0.0, 0.5));
+        assert_eq!(
+            glance_target(10.0, 17.0, 960.0, 960.0, 960.0, 17.0),
+            (0.0, 0.0)
+        );
+        let (vx, vy) = glance_target(1.0, 1.0, 960.0, 0.0, 1920.0, f32::NAN);
+        assert!(vx < -0.99 && vy == 0.0, "({vx}, {vy})");
+    }
+
+    #[test]
+    fn the_glance_follows_a_moving_pointer_and_rests_after_1_2_s() {
+        let t0 = Instant::now();
+        let mut rest = GlanceRest::default();
+        // The first reading only records.
+        assert!(!rest.reading((10, 10), t0));
+        // Still, never moved: not followed.
+        assert!(!rest.reading((10, 10), t0 + ms(50)));
+        // A move is followed, wherever it is.
+        assert!(rest.reading((11, 10), t0 + ms(100)));
+        // Still for under 1.2 s: still followed.
+        assert!(rest.reading((11, 10), t0 + ms(100 + 1_199)));
+        // Still for 1.2 s or more: back to the screen.
+        assert!(!rest.reading((11, 10), t0 + ms(100 + 1_200)));
+        assert!(!rest.reading((11, 10), t0 + ms(100 + 5_000)));
+        // Moving again is followed at once, and the rest starts over.
+        assert!(rest.reading((40, 90), t0 + ms(7_000)));
+        assert!(rest.reading((40, 90), t0 + ms(7_000 + 1_000)));
+        assert!(!rest.reading((40, 90), t0 + ms(7_000 + 1_200)));
+        assert_eq!(GLANCE_REST, ms(1_200));
+        // reset forgets: the next reading only records.
+        rest.reset();
+        assert!(!rest.reading((41, 90), t0 + ms(9_000)));
+        assert!(!rest.reading((41, 90), t0 + ms(9_010)));
+        assert_eq!(rest, {
+            let mut r = GlanceRest::default();
+            r.reading((41, 90), t0 + ms(9_000));
+            r.reading((41, 90), t0 + ms(9_010));
+            r
+        });
+    }
+
+    #[test]
+    fn the_glance_eases_on_the_same_pair_as_the_eyes() {
+        let mut g = EyesLook::default();
+        assert_eq!(g.value(), (0.0, 0.0));
+        assert!(!g.moving());
+        assert!(g.set_target(1.0, -0.5));
+        assert!(g.moving());
+        g.advance(ms(120));
+        let (x, y) = g.value();
+        // One time constant covers 1 - 1/e of the way.
+        assert!(
+            (x - 0.632).abs() < 0.01 && (y + 0.316).abs() < 0.01,
+            "({x}, {y})"
+        );
+        // A change under LOOK_EPS is ignored.
+        assert!(!g.set_target(1.0, -0.51));
+        g.advance(ms(5_000));
+        assert_eq!(g.value(), (1.0, -0.5));
+        assert!(!g.moving());
+        assert!(g.snap_to_centre());
+        assert_eq!(g.value(), (0.0, 0.0));
     }
 }

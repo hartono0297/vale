@@ -97,6 +97,16 @@
 //! half way up its rise and 30 % faded. Fixed values: the demos never capture
 //! audio, and a real island nods with the bass or a 600 ms beat.
 //!
+//! The typing cat (work running: a Claude session, a CLI command, a Mole
+//! clean) is `bata-cli-running`; `bata-ketik` (paws down, the eyes on the
+//! screen), `bata-ketik-paw` (the left paw up), `bata-ketik-lirik-kiri` and
+//! `bata-ketik-lirik-kanan` (the eyes glancing at a pointer far left and far
+//! right, a little below) are fixed poses of it. All are the idle island
+//! grown 12 dip on the left for the laptop (`idle_shape_typing`), the robot
+//! and clock where the plain idle island has them; none reads the pointer or
+//! runs the paw timer. The face sheet (`bata-sheet`) shows the typing cat
+//! last, at the right of its cell so its laptop has room.
+//!
 //! The notch peek's scenes `peek-eyes` (robot on) and `peek-eyes-plain`
 //! (robot off) draw the notch shrunk to the cat's two eyes: a 34 x 14 pill,
 //! terracotta eyes, nothing else. Hold one with `DI_DEMO_STEP=peek-eyes` in
@@ -119,9 +129,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use super::cat_style::CatLook;
 use super::dock::{self, DockFrame};
 use super::geometry::{
-    ANIM_MS, NOTCH_OPACITY_DEFAULT, NotchSize, ShapeKind, ShapeRect, ease_out_back, lerp_shape,
-    lyric_box_w, lyric_max_w, lyric_scroll_offset, lyric_shape_sized, lyric_width_min,
-    shape_with_robot_sized,
+    ANIM_MS, NOTCH_OPACITY_DEFAULT, NotchSize, ShapeKind, ShapeRect, ease_out_back,
+    idle_shape_typing, lerp_shape, lyric_box_w, lyric_max_w, lyric_scroll_offset,
+    lyric_shape_sized, lyric_width_min, shape_with_robot_sized, typing_lead,
 };
 use super::motion::{
     PAGE_FADE_MS, REVEAL_MS, RevealDir, Transit, content_alpha, page_fade_frame, reveal_frame,
@@ -132,7 +142,7 @@ use super::render::{
     NotifView, Progress, Renderer, RobotFrame, SearchView, SheetKind, ShotView, SystemView,
     ToastLogoView,
 };
-use super::robot::{Expr, EyesPose, Pose};
+use super::robot::{Expr, EyesPose, PAW_LIFT, Pose};
 use super::shelf_motion::{SHELF_ENTER_MS, SHELF_MOVE_MS, SHELF_STAGGER_MS, ShelfMotion};
 use super::window::IslandWindow;
 use crate::calendar::{CalEvent, CalStatus, CalendarSnapshot, EventTime};
@@ -251,6 +261,10 @@ struct Scene {
     /// The music cat at the deepest nod (amount 1) with its note half way up
     /// and a little faded: a fixed pose, nothing is captured.
     dance: bool,
+    /// Where the typing cat's eyes glance: across (-1 to 1) and down (-1 to 1).
+    glance: (f32, f32),
+    /// How high the typing cat's left and right paw are raised, in grid units.
+    paws: [f32; 2],
 }
 
 /// The cleaner's states (deepclean-opsi-d.html p10 and d1).
@@ -488,6 +502,8 @@ const BASE: Scene = Scene {
     eyes_look: (0.0, 0.0),
     eyes_blink: false,
     dance: false,
+    glance: (0.0, 0.0),
+    paws: [0.0, 0.0],
 };
 
 const fn clipboard(name: &'static str, which: ClipDemo) -> Scene {
@@ -691,7 +707,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 144] = [
+const SCENES: [Scene; 148] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -1107,8 +1123,34 @@ const SCENES: [Scene; 144] = [
         "bata-cli-running",
         ShapeKind::Idle,
         View0::Idle,
-        Expr::Think,
+        Expr::Typing,
     ),
+    // The typing cat: paws down and the eyes on the screen, the left paw up,
+    // and the eyes glancing at a pointer far left / right (a little below).
+    // The island is grown on the left for the laptop.
+    bata("bata-ketik", ShapeKind::Idle, View0::Idle, Expr::Typing),
+    Scene {
+        paws: [PAW_LIFT, 0.0],
+        ..bata("bata-ketik-paw", ShapeKind::Idle, View0::Idle, Expr::Typing)
+    },
+    Scene {
+        glance: (-1.0, 0.3),
+        ..bata(
+            "bata-ketik-lirik-kiri",
+            ShapeKind::Idle,
+            View0::Idle,
+            Expr::Typing,
+        )
+    },
+    Scene {
+        glance: (1.0, 0.3),
+        ..bata(
+            "bata-ketik-lirik-kanan",
+            ShapeKind::Idle,
+            View0::Idle,
+            Expr::Typing,
+        )
+    },
     bata("bata-cli-done", ShapeKind::Idle, View0::Idle, Expr::Happy),
     bata("bata-cli-failed", ShapeKind::Idle, View0::Idle, Expr::Sad),
     bata(
@@ -1875,6 +1917,13 @@ fn run_scenes(scenes: &[Scene]) {
                     Some(fixed) => Some(fixed.to_owned()),
                     None => clock_on.then(|| Local::now().format("%H:%M").to_string()),
                 },
+                idle_lead: if scene.view == View0::Idle && scene.robot.is_some() {
+                    // Against the plain idle shape, as in the app.
+                    let plain = shape_with_robot_sized(style, notch, ShapeKind::Idle, true);
+                    typing_lead(shape, plain)
+                } else {
+                    0.0
+                },
                 lyric: lyric_state.shown(now),
                 lyric_scroll: scroll,
                 lyric_prev_scroll: 0.0,
@@ -1897,7 +1946,11 @@ fn run_scenes(scenes: &[Scene]) {
                 robot: scene.robot.map(|expr| RobotFrame {
                     expr,
                     pose: {
-                        let pose = Pose::default().looking(scene.look);
+                        let pose = Pose {
+                            paw_lift: scene.paws,
+                            ..Pose::default().looking(scene.look)
+                        }
+                        .glancing(scene.glance.0, scene.glance.1);
                         if scene.dance {
                             pose.dance(1.0, 0.5, 0.3)
                         } else {
@@ -2814,6 +2867,10 @@ fn scene_shape(
     lyric_at: u64,
 ) -> ShapeRect {
     let robot = scene.robot.is_some();
+    // The typing cat's idle island is wider on the left, as in the app.
+    if scene.kind == ShapeKind::Idle && scene.robot == Some(Expr::Typing) {
+        return idle_shape_typing(style, notch, robot);
+    }
     if scene.kind != ShapeKind::MediaLyric {
         return shape_with_robot_sized(style, notch, scene.kind, robot);
     }

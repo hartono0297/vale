@@ -17,7 +17,8 @@ Energy Saver), the view is **Idle**, the cat is drawn there (`robot_frame` is
 Some), the peek is not shrunk, not fullscreen, not `screen_away`. Idle only
 (assumption): in the compact music, lyric and timer views the cat's slot is
 tight, so it stays still there. Only a face that looks follows
-(`Expr::looks`): of the idle faces Idle, Happy and Sad. Think and Sleep stay
+(`Expr::looks`): of the idle faces Idle, Happy and Sad (the typing face only
+glances with its eyes, see the last section). Think and Sleep stay
 centred, since their thought dots and z's float beside the right ear and
 would slide 4 to 7 dip into the clock; a sleeping cat also stops the look's
 ease and frames. `robot_frame` draws them with `Pose::looking_as`, which keeps
@@ -101,7 +102,39 @@ need the cat (`config.robot`) and are gated by `pointer_watch::eyes_motion`
 they jump); the cat's own look stays off while shrunk. The row's description
 reads "Kepala dan mata menoleh ke kursor".
 
-Demo scenes: `bata-look-left`, `bata-look-right` (the idle cat at -1 / +1).
+## The typing cat glances (2026-11-01)
+
+Since work running gives `Expr::Typing` instead of Think ([[cat-types-while-working]]),
+the cat that "did not follow the cursor after the music ended" (it was Think,
+which never looks) does follow, but only with its **eyes**. The head, ears,
+body and laptop never move (`Expr::looks()` stays false for Typing).
+
+- **Eligibility** is the same pure rule as for the looking cat:
+  `pointer_watch::look_on(allowed, moves, idle_view, shrunk, fullscreen,
+  screen_away, expr)`, with `expr.follows()` = `looks() || glances()`.
+  `App::look_eligible` calls it: "Ikuti kursor" and the cat on, Motion Full,
+  the idle view, not shrunk, not fullscreen, not `screen_away`.
+- **Target**: `glance_target(pointer_x, pointer_y, centre_x, monitor_left,
+  monitor_right, eyes_y) -> (vx, vy)`: `vx` is `look_target`, `vy` the pointer's
+  offset from the eyes' line over `GLANCE_SPAN_Y_DIP` (300 dip), both clamped
+  to -1..1, NaN 0. The caller gives `y` in window dip. The pair is eased by a
+  second `EyesLook` (`App::glance`, tau 120 ms, `value()`), on the frame clock
+  only while it moves (`animating_at`, `advance_glance`).
+- **Rest**: `GlanceRest` (from the same `TIMER_POINTER` readings, no timer):
+  the first reading only records; a changed position follows the pointer; a
+  pointer still for `GLANCE_REST` (1.2 s) is no longer followed, so the target
+  goes back to (0, 0) and the eyes return to the screen.
+- **Pose**: `Pose::glancing(vx, vy)` sets `glance_x`, `glance_y` in grid units
+  from `glance_offset`: `GLANCE_X` 4.0 across, `GLANCE_Y` 1.5 down or up. They
+  are added to the face marks' translation only (the glasses ride it too).
+  At every extreme, open and blinking, both eyes stay at least 0.5 grid unit
+  inside the head outline (`the_glancing_eyes_stay_inside_the_head_at_every_extreme`).
+- `sync_look`: not eligible snaps look and glance to the centre and resets
+  `GlanceRest`; a Typing face snaps the head look to the centre, any other face
+  snaps the glance.
+
+Demo scenes: `bata-look-left`, `bata-look-right` (the idle cat at -1 / +1),
+`bata-ketik-lirik-kiri` / `-kanan` (the typing cat glancing, fixed pose).
 
 Not verified live: the feel of the ease with a real pointer, and how the tilt
 reads on a see-through notch.

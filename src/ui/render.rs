@@ -5,7 +5,7 @@ use windows::Win32::Graphics::Direct2D::Common::{
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_ARC_SEGMENT, D2D1_ARC_SIZE_SMALL, D2D1_CAP_STYLE_ROUND,
-    D2D1_DASH_STYLE_DASH, D2D1_DASH_STYLE_SOLID, D2D1_DRAW_TEXT_OPTIONS,
+    D2D1_COMBINE_MODE_UNION, D2D1_DASH_STYLE_DASH, D2D1_DASH_STYLE_SOLID, D2D1_DRAW_TEXT_OPTIONS,
     D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_EXTEND_MODE_CLAMP,
     D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_GAMMA_2_2, D2D1_LAYER_OPTIONS_NONE,
     D2D1_LAYER_PARAMETERS, D2D1_LINE_JOIN_ROUND, D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES,
@@ -51,7 +51,7 @@ use super::fonts::{self, Face, Role};
 use super::geometry::{
     BAR_COUNT, BAR_GAP, BAR_W, HitRegions, LYRIC_FADE_W, NoticeLayout, Rect, SHOT_BUTTON_PAD,
     SHOT_THUMB_RADIUS, ShapeRect, Under, badge_letter, badge_style, compact_layout,
-    compact_layout_robot, corner_radius, equalizer_heights, idle_layout, lyric_layout,
+    compact_layout_robot, corner_radius, equalizer_heights, idle_layout_lead, lyric_layout,
     lyric_layout_robot, lyric_overflow, notice_action, notice_action_w, notice_layout, shot_fit,
     shot_layout, shot_regions, shoulder_depth, toast_eyebrow, toast_notice_layout,
 };
@@ -168,6 +168,9 @@ pub struct Frame<'a> {
     pub legibility: f32,
     /// "HH:MM" drawn while the view is `Idle`; `None` when the clock is off.
     pub clock: Option<String>,
+    /// How far the idle shape has grown on its left (`geometry::typing_lead`,
+    /// 0 to `TYPING_LEAD`): the robot and clock are centred in the rest.
+    pub idle_lead: f32,
     /// The line drawn while the view is `MediaLyric`.
     pub lyric: Option<ShownLine<'a>>,
     /// How far a line too long for its box is scrolled left
@@ -1201,9 +1204,11 @@ impl Renderer {
         let name = i18n::text(lang, i18n::Key::SourceVale);
         self.text(name, &self.fonts.heading, title, 1.0);
         let pose = Pose::default();
-        let col = (card.w - 40.0) / 5.0;
+        // Six to a row: the eleven faces fit the two rows the sizes row
+        // leaves room for (the typing cat's laptop needs the wider cells).
+        let col = (card.w - 40.0) / 6.0;
         for (i, expr) in Expr::ALL.into_iter().enumerate() {
-            let (row, c) = (i / 5, i % 5);
+            let (row, c) = (i / 6, i % 6);
             let x = card.x + 20.0 + c as f32 * col;
             let y = card.y + 56.0 + row as f32 * 118.0;
             let cell = Rect {
@@ -1215,8 +1220,16 @@ impl Renderer {
             self.set_color(self.palette.raised, 1.0);
             self.fill_round(cell, radius::NOTICE / 1.5);
             let size = 56.0;
+            // The typing cat sits at the cell's right: its laptop reaches
+            // about 24 px left of the cat's square, so it needs that room
+            // and must not touch the neighbour.
+            let x = if expr == Expr::Typing {
+                cell.x + cell.w - size - 1.0
+            } else {
+                cell.x + (cell.w - size) / 2.0
+            };
             let area = Rect {
-                x: cell.x + (cell.w - size) / 2.0,
+                x,
                 y: cell.y + 14.0,
                 w: size,
                 h: size,
@@ -1591,7 +1604,12 @@ impl Renderer {
             },
             View::Idle => {
                 // Without the clock or the robot, idle is the empty shape.
-                let l = idle_layout(shape, robot.is_some(), frame.clock.is_some());
+                let l = idle_layout_lead(
+                    shape,
+                    robot.is_some(),
+                    frame.clock.is_some(),
+                    frame.idle_lead,
+                );
                 if let (Some(area), Some(r)) = (l.robot, robot) {
                     self.paint_robot(area, r);
                 }
@@ -1701,17 +1719,33 @@ impl Renderer {
                 y: area.y + robot.pose.nod_dip,
                 ..area
             });
+            // The typing cat's laptop gets the same halo.
+            let laptop = (robot.expr == Expr::Typing).then(|| {
+                (
+                    super::robot::laptop_rect(area),
+                    1.5 * area.w / super::robot::GRID,
+                )
+            });
+            let grown = |r: Rect, grow: f32| Rect {
+                x: r.x - grow,
+                y: r.y - grow,
+                w: r.w + 2.0 * grow,
+                h: r.h + 2.0 * grow,
+            };
             for (grow, weight) in [(3.0, 0.10), (1.5, 0.18)] {
                 self.set_color(0x000000, weight * strength);
-                self.fill_round(
-                    Rect {
-                        x: head.x - grow,
-                        y: head.y - grow,
-                        w: head.w + 2.0 * grow,
-                        h: head.h + 2.0 * grow,
-                    },
-                    radius + grow,
-                );
+                let head = (grown(head, grow), radius + grow);
+                match laptop {
+                    // One fill of the union, so where the two meet is not
+                    // darkened twice.
+                    Some((laptop, corner)) => {
+                        let laptop = (grown(laptop, grow), corner + grow);
+                        if self.fill_round_union(head, laptop).is_err() {
+                            self.fill_round(head.0, head.1);
+                        }
+                    }
+                    None => self.fill_round(head.0, head.1),
+                }
             }
         }
         self.robot.paint(
@@ -2405,6 +2439,29 @@ impl Renderer {
             },
             Style::Notch => self.notch_path(s, radius)?.cast(),
         }
+    }
+
+    /// Fills the union of two rounded rects (rect, radius) once with the
+    /// shared brush's current color, so a translucent fill is not doubled
+    /// where they overlap.
+    fn fill_round_union(&self, a: (Rect, f32), b: (Rect, f32)) -> Result<()> {
+        let target = self.target.as_ref().expect("target ensured by paint");
+        let round = |(r, radius): (Rect, f32)| D2D1_ROUNDED_RECT {
+            rect: d2d_rect(r),
+            radiusX: radius,
+            radiusY: radius,
+        };
+        unsafe {
+            let a = self.d2d.CreateRoundedRectangleGeometry(&round(a))?;
+            let b = self.d2d.CreateRoundedRectangleGeometry(&round(b))?;
+            let path = self.d2d.CreatePathGeometry()?;
+            let sink = path.Open()?;
+            // Finer than the default 0.25: the halo's corners are a few dip.
+            a.CombineWithGeometry(&b, D2D1_COMBINE_MODE_UNION, None, 0.05, &sink)?;
+            sink.Close()?;
+            target.rt.FillGeometry(&path, &target.brush, None);
+        }
+        Ok(())
     }
 
     /// Fills a rounded rect with the shared brush's current color.
