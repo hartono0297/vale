@@ -100,16 +100,15 @@ use crate::ui::cli_input::{self, CliInput, Key as InputKey, WM_APP_CLI_REDRAW};
 use crate::ui::editor::{self, EditorKind, EditorResult, WM_APP_EDITOR_RESULT};
 use crate::ui::frame_clock::{FrameClock, WM_APP_FRAME};
 use crate::ui::geometry::{
-    AA_MARGIN, ANIM_MS, LYRIC_HOLD_MS, LYRIC_MAX_W, LYRIC_MIN_W, NOTCH_H_DEFAULT,
-    NOTCH_W_DEFAULT, NotchSize, ShapeKind, ShapeRect, Under, WINDOW_W, island_contains, lerp_shape,
-    lyric_box_w, lyric_cap, lyric_max_w, lyric_scroll_end_ms, lyric_scroll_offset,
-    lyric_shape_sized, lyric_target_w, lyric_width_min, panel_kind, shape_for, shape_sized,
-    shape_with_robot_sized,
+    AA_MARGIN, ANIM_MS, LYRIC_HOLD_MS, LYRIC_MAX_W, LYRIC_MIN_W, NOTCH_H_DEFAULT, NOTCH_W_DEFAULT,
+    NotchSize, ShapeKind, ShapeRect, Under, WINDOW_W, island_contains, lerp_shape, lyric_box_w,
+    lyric_cap, lyric_max_w, lyric_scroll_end_ms, lyric_scroll_offset, lyric_shape_sized,
+    lyric_target_w, lyric_width_min, panel_kind, shape_for, shape_sized, shape_with_robot_sized,
 };
 use crate::ui::motion::{
-    FadeStart, PAGE_FADE_MS, Reveal, SlideStrip, Snap, SubView, Transit, Transition,
-    MorphCurve, content_alpha_from, ease_in_out_cubic, fade_floor, mole_code, morph_timing,
-    page_fade_frame, panel_fade, transition,
+    FadeStart, MorphCurve, PAGE_FADE_MS, Reveal, SlideStrip, Snap, SubView, Transit, Transition,
+    content_alpha_from, ease_in_out_cubic, fade_floor, mole_code, morph_timing, page_fade_frame,
+    panel_fade, transition,
 };
 use crate::ui::notch_fill;
 use crate::ui::panel_layout::{CliHead, cli_layout};
