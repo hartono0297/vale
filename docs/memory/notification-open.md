@@ -54,12 +54,18 @@ the window-AUMID match finds it, and with no window it launches by AUMID.
    words of 4+ letters. The title and its words match only whole words of
    the tab name (`WordRuns`): a short sender name like "Ibu" must not hit
    "Distribution", nor "pesan" hit "Pesanan Saya", or a toast with no site and
-   no chat tab open would switch to an unrelated tab. The body is not used. Inside the site tier, a tab that
-   also holds the site's first meaningful subdomain (`site_sub_label`:
-   calendar.google.com -> calendar; www, web, app, m are skipped) ranks above
-   one with the bare label, so a Calendar reminder picks the Calendar tab over
-   the first or the active "Google Docs" tab (every Google site's label is
-   google). Matches come in tiers (site+subdomain, site, title, words only): the strongest tier anywhere decides, so a site match in
+   no chat tab open would switch to an unrelated tab. The body is not used.
+   A meaningful subdomain label (`site_sub_label`:
+   calendar.google.com -> calendar, mail.google.com -> mail; www, web, app, m
+   and other generic or short labels are skipped) counts as a site match on
+   its own, as a substring of the squashed tab name ("mail" in "Gmail",
+   "calendar" in "Google Calendar"). With a meaningful subdomain, a tab
+   holding only the registrable label ("google") is not a site match, so a
+   Gmail or Calendar toast never switches to an unrelated Google tab (Search,
+   Docs) and, with no better match, the window comes forward on its current
+   tab. A site with no meaningful subdomain (web.telegram.org, google.com)
+   matches on the registrable label alone. Matches come in tiers (subdomain, site label, title, words only):
+   the strongest tier anywhere decides, so a site match in
    an older window beats a words-only match in the newest. The most recent
    window with a match of that tier wins; inside it the active tab if its
    match is of that tier too, else the first best. A weak words-only hit on
