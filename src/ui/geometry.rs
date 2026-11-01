@@ -1307,8 +1307,9 @@ mod tests {
 
     /// A grid point of the cat as `RobotPainter::paint` draws it in `area`
     /// for `face` and `pose`, in px: a face mark (`mark`) first slides by the
-    /// eye offset; then the face's and the look's tilt about (32, 40), the
-    /// face's bob, the scale, and the head's slide.
+    /// eye offset; then the dance's squash round the head's base, the face's
+    /// and the look's tilt about (32, 40), the face's bob, the scale, the
+    /// head's slide and the nod.
     fn drawn(
         area: Rect,
         face: &crate::ui::robot::Face,
@@ -1316,15 +1317,175 @@ mod tests {
         (gx, gy): (f32, f32),
         mark: bool,
     ) -> (f32, f32) {
+        use crate::ui::robot::{SQUASH_H, SQUASH_ORIGIN, SQUASH_W};
         let k = area.w / crate::ui::robot::GRID;
         let gx = if mark { gx + pose.eye_dx_dip / k } else { gx };
+        let (ox, oy) = SQUASH_ORIGIN;
+        let gx = ox + (gx - ox) * (1.0 + SQUASH_W * pose.squash);
+        let gy = oy + (gy - oy) * (1.0 - SQUASH_H * pose.squash);
         let a = (face.tilt + pose.tilt_deg).to_radians();
         let (dx, dy) = (gx - 32.0, gy - 40.0);
         let (x, y) = (
             32.0 + dx * a.cos() - dy * a.sin(),
             40.0 + dx * a.sin() + dy * a.cos() + face.bob,
         );
-        (area.x + x * k + pose.head_dx_dip, area.y + y * k)
+        (
+            area.x + x * k + pose.head_dx_dip,
+            area.y + y * k + pose.nod_dip,
+        )
+    }
+
+    /// `drawn` for a point of the music note's marks, which also move by the
+    /// pose's `note_dy_dip` (in dip, after the scale).
+    fn drawn_note(
+        area: Rect,
+        face: &crate::ui::robot::Face,
+        pose: crate::ui::robot::Pose,
+        p: (f32, f32),
+    ) -> (f32, f32) {
+        let (x, y) = drawn(area, face, pose, p, true);
+        (x, y + pose.note_dy_dip)
+    }
+
+    #[test]
+    fn the_dancing_cat_stays_in_every_compact_shape() {
+        use crate::theme::CatAccessory;
+        use crate::ui::cat_style::{RIM_WIDTH, accessory_corners};
+        use crate::ui::robot::{
+            EAR_STROKE, Expr, HEAD, NOTE_MARGIN_DIP, Part, Pose, Side, ear_drawn, face,
+            mark_bounds, with_note_lift,
+        };
+        let steps = |min: u32, max: u32, step: usize, default: u32| {
+            let mut v: Vec<u32> = (min..=max).step_by(step).chain([default, max]).collect();
+            v.sort_unstable();
+            v.dedup();
+            v
+        };
+        let widths = steps(NOTCH_W_MIN, NOTCH_W_MAX, 10, NOTCH_W_DEFAULT);
+        let heights = steps(NOTCH_H_MIN, NOTCH_H_MAX, 2, NOTCH_H_DEFAULT);
+        assert_eq!((widths.len(), heights.len()), (15, 9));
+        // The head's outline in grid units, grown by `grow` (the Black coat's
+        // rim), and the ears' round strokes (their stroke plus `grow`) round
+        // their turned corners.
+        let outline = |f: &crate::ui::robot::Face, grow: f32| {
+            let (x, y, w, h, r) = HEAD;
+            let mut cat = Vec::new();
+            for (cx, cy, a0) in [
+                (x + r, y + r, 180.0f32),
+                (x + w - r, y + r, 270.0),
+                (x + w - r, y + h - r, 0.0),
+                (x + r, y + h - r, 90.0),
+            ] {
+                for i in 0..=8 {
+                    let a = (a0 + i as f32 * 90.0 / 8.0).to_radians();
+                    cat.push((cx + (r + grow) * a.cos(), cy + (r + grow) * a.sin()));
+                }
+            }
+            for side in [Side::Left, Side::Right] {
+                for (x, y) in ear_drawn(side, f.ears) {
+                    cat.extend((0..16).map(|i| {
+                        let a = (i as f32 * 22.5).to_radians();
+                        let r = EAR_STROKE / 2.0 + grow;
+                        (x + r * a.cos(), y + r * a.sin())
+                    }));
+                }
+            }
+            cat
+        };
+        let is_note = |part: &&Part| match part {
+            Part::Dot { ink, .. } => *ink == crate::ui::robot::Ink::Cream,
+            Part::Stroke(line) => line.ink() == crate::ui::robot::Ink::Cream,
+            _ => false,
+        };
+        let mut checked = 0;
+        for style in [Style::Pill, Style::Notch] {
+            for &w in &widths {
+                for &h in &heights {
+                    let size = NotchSize::from_px(w, h);
+                    // The compact media view, and the lyric view at several widths.
+                    let mut cases = vec![(
+                        Expr::Music,
+                        shape_with_robot_sized(style, size, ShapeKind::MediaCompact, true),
+                        None,
+                    )];
+                    for lw in [LYRIC_MIN_W, 260.0, 340.0, LYRIC_MAX_W] {
+                        cases.push((Expr::Sing, lyric_shape_sized(style, size, lw), Some(lw)));
+                    }
+                    for (expr, s, lyric_w) in cases {
+                        let area = match lyric_w {
+                            None => compact_layout_robot(s).art,
+                            Some(_) => lyric_layout_robot(s).0,
+                        };
+                        let f = face(expr, false);
+                        let notes: Vec<(f32, f32)> = f
+                            .parts
+                            .iter()
+                            .filter(is_note)
+                            .flat_map(|part| {
+                                let (l, t, r, b) = mark_bounds(part);
+                                [(l, t), (r, t), (r, b), (l, b)]
+                            })
+                            .collect();
+                        for amount in [0.0, 1.0] {
+                            for rise in [0.0, 0.5, 1.0] {
+                                let pose = with_note_lift(
+                                    Pose::default().dance(amount, rise, 0.0),
+                                    expr,
+                                    area,
+                                    s.y,
+                                );
+                                let what = format!(
+                                    "{style:?} {size:?} {expr:?} {lyric_w:?} amount {amount} rise {rise}"
+                                );
+                                // The head and ears, bare and with the Black rim.
+                                for grow in [0.0, RIM_WIDTH] {
+                                    for p in outline(&f, grow) {
+                                        let (x, y) = drawn(area, &f, pose, p, false);
+                                        assert!(
+                                            shape_contains(style, s, x, y),
+                                            "{what} rim {grow}: ({x}, {y}) leaves the shape"
+                                        );
+                                    }
+                                }
+                                // Every note mark's box is inside the shape.
+                                for &p in &notes {
+                                    let (x, y) = drawn_note(area, &f, pose, p);
+                                    assert!(
+                                        y >= s.y + NOTE_MARGIN_DIP - 1e-3
+                                            && y <= s.y + s.h
+                                            && x >= s.x
+                                            && x <= s.x + s.w,
+                                        "{what}: note corner ({x}, {y}) leaves {s:?}"
+                                    );
+                                }
+                                // Every accessory's boxes.
+                                for acc in CatAccessory::ALL {
+                                    for &(p, eyes) in &accessory_corners(*acc, f.ears) {
+                                        let (x, y) = drawn(area, &f, pose, p, eyes);
+                                        assert!(
+                                            shape_contains(style, s, x, y),
+                                            "{what} {acc:?}: ({x}, {y}) leaves the shape"
+                                        );
+                                    }
+                                }
+                                checked += 1;
+                            }
+                        }
+                        // The rise only ever lifts the note: higher at 1 than at 0,
+                        // and a note under a tall enough notch really rises.
+                        let at = |rise| {
+                            with_note_lift(Pose::default().dance(0.0, rise, 0.0), expr, area, s.y)
+                                .note_dy_dip
+                        };
+                        assert!(at(1.0) <= at(0.0), "{style:?} {size:?} {expr:?}");
+                        if expr == Expr::Music {
+                            assert!(at(1.0) < 0.0, "{style:?} {size:?}: the note rises");
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(checked, 2 * 15 * 9 * 5 * 6);
     }
 
     #[test]
