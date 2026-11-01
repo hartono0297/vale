@@ -64,37 +64,42 @@ the window-AUMID match finds it, and with no window it launches by AUMID.
    substring or a middle word, so "ChatGPT" (chat), "Meeting notes - Notion"
    (meet), "Academic calendar 2026 - UI" (calendar), "How to use Gmail -
    YouTube" and "Sending email with Python - Stack Overflow" (mail) are not
-   matches (the owner's rule: never switch to an unrelated tab); ending the tab's **last word**, where pages name their
-   site ("Inbox - user@gmail.com - Gmail", "Mail - Budi - Outlook" for
-   outlook.live.com), so for a Gmail toast "Mail - Budi - Outlook" or
-   "Mailchimp - Campaigns" never beats the Gmail tab even when active; and
-   the label right in front of the subdomain ("googlechat", "googlecalendar",
-   "googledocs"), the strongest. A tab
-   whose **last whole-word** label is followed by another word and by no
-   subdomain names another page of the site and is no site match at all:
-   "gmail - Google Search", "Email newsletter - Google Docs" and "Gmail:
-   Private and Secure Email | Google Workspace" score 0 for a Gmail toast,
-   while "Security alert for your Google Account - user@gmail.com - Gmail"
-   and "user@google.com - Gmail" still match (the subdomain comes after the
-   label). The label must be a whole word: "live" inside "Oliver",
-   "delivery" or "olive" blocks nothing (a raw substring test did, and lost
-   the Outlook tab). Known gaps: "Hotmail" also ends in "mail" and ties with
-   Gmail; with no Gmail tab open, "Mail - Budi - Outlook" still matches a
-   Gmail toast on the bare subdomain as its first word (the Meet call tab
-   needs that rule). Owner awareness (no code change): a toast whose
+   matches (the owner's rule: never switch to an unrelated tab); ending the
+   tab's **last word**, where pages name their site ("Inbox -
+   user@gmail.com - Gmail", "Mail - Budi - Outlook" for outlook.live.com),
+   so for a Gmail toast "Mail - Budi - Outlook" or "Mailchimp - Campaigns"
+   never beats the Gmail tab even when active; and the label right in front
+   of the subdomain ("googlechat", "googlecalendar", "googledocs"), the
+   strongest. A tab whose **last whole-word** label is followed by another
+   word and by no subdomain names another page of the site and is no site
+   match at all: "gmail - Google Search", "Email newsletter - Google Docs"
+   and "Gmail: Private and Secure Email | Google Workspace" score 0 for a
+   Gmail toast, while "Security alert for your Google Account -
+   user@gmail.com - Gmail" and "user@google.com - Gmail" still match (the
+   subdomain comes after the label). The label must be a whole word: "live"
+   inside "Oliver", "delivery" or "olive" blocks nothing (a raw substring
+   test did, and lost the Outlook tab). Known gaps: "Hotmail" also ends in
+   "mail" and ties with Gmail; with no Gmail tab open, "Mail - Budi -
+   Outlook" still matches a Gmail toast on the bare subdomain as its first
+   word (the Meet call tab needs that rule). The first-word half also
+   matches unrelated tabs that open with the subdomain, picked when no
+   stronger tab exists: "Mail merge in Word - Microsoft Support"
+   (mail.google.com), "Chat with PDF - X" (chat), "Meet the team - Acme"
+   (meet), "Calendar of events - City" (calendar). And a leading unread
+   badge hides it: "(2) Chat - Budi" no longer matches the lone subdomain,
+   its first word being "2". Owner awareness (no code change): a toast whose
    **title** is "Google" (for example a Google security alert) can still
    match a label-only Google tab (for example "cats - Google Search")
-   through the title tier.
-   With no match the window comes forward on its current tab. A site with
-   no meaningful subdomain (web.telegram.org, google.com) matches on the
-   registrable label alone. Matches come in tiers (label and subdomain;
-   subdomain ending the last word; subdomain as first or last whole word, or
-   site label; title;
-   words only): the strongest tier anywhere decides, so a site match in
-   an older window beats a words-only match in the newest. The most recent
-   window with a match of that tier wins; inside it the active tab if its
-   match is of that tier too, else the first best. A weak words-only hit on
-   the active tab never beats a site match on another tab.
+   through the title tier. With no match the window comes forward on its
+   current tab. A site with no meaningful subdomain (web.telegram.org,
+   google.com) matches on the registrable label alone. Matches come in tiers
+   (label and subdomain; subdomain ending the last word; subdomain as first
+   or last whole word, or site label; title; words only): the strongest tier
+   anywhere decides, so a site match in an older window beats a words-only
+   match in the newest. The most recent window with a match of that tier
+   wins; inside it the active tab if its match is of that tier too, else the
+   first best. A weak words-only hit on the active tab never beats a site
+   match on another tab.
 4. Match: restore if minimized, `SelectionItemPattern.Select()` on that tab,
    bring the window forward. The select runs through the same UIA client with
    its timeouts reset to 1 s first: the budget checks leave it with whatever

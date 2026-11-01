@@ -314,7 +314,8 @@ pub struct WindowTabs {
 /// The kind of evidence a score stands for: 5 the site's label right before
 /// its subdomain ("Google Chat"), 4 the subdomain ending the tab's last word
 /// ("... - Gmail"), 3 the subdomain as the first or last whole word, or the
-/// site's label (a site with no subdomain), 2 the whole title, 1 words of the title only, 0 none.
+/// site's label (a site with no subdomain), 2 the whole title, 1 words of the
+/// title only, 0 none.
 /// Scores inside one tier are close calls; a higher tier always wins.
 fn tier(score: u32) -> u8 {
     match score {
@@ -870,7 +871,8 @@ mod tests {
         assert!(score_tab(call, &meet) >= SCORE_SITE);
         let w = [win(&["Berita", call], Some(0))];
         assert_eq!(pick_tab(&w, &meet), Some((0, 1)));
-        // The subdomain as the last word of the tab name.
+        // The subdomain as the first word of the tab name; it still loses to
+        // "Google Calendar".
         let cal = target("Google Chrome", Some("Chrome"), Some("calendar.google.com"), "Rapat");
         assert!(score_tab("Calendar - Outlook", &cal) >= SCORE_SITE);
         let week = "Google Calendar - Week of 1 November 2026";
