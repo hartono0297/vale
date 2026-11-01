@@ -31,7 +31,7 @@ Music with synced lyrics, calendar, clipboard history, volume mixer, file shelf,
 - **Yours to shape.** Open it on hover, hover-and-stay or click; reorder or hide pages; pick the accent colour, the size of the closed notch (width and height), a solid or see-through fill and the island's background (it follows the cat, or one of five colours), your own shortcut tiles and hotkeys. Indonesian and English.
 - **Private.** Notes, reminders, clipboard, notification history and files stay on your PC. No account, no telemetry.
 - **The equalizer follows the music.** The five bars beside the song title move with what is actually playing (bass to treble), not a made-up wave. It listens only while the compact music view is on screen, and one switch in Settings turns it off.
-- **A small cat lives in the notch.** Its face and ears tell you what is going on: listening to music, focused on a pomodoro, thinking while Claude Code works, asleep when you are away. It greets you by the time of day (morning, midday, afternoon, evening, late night), once per period. Pick its coat (Terracotta, Calico, White or Black) and an accessory (glasses, bow, nightcap, scarf, flower or crown).
+- **A small cat lives in the notch.** Its face and ears tell you what is going on: listening to music, focused on a pomodoro, thinking while Claude Code works, asleep when you are away. It greets you by the time of day (morning, midday, afternoon, evening, late night), once per period. While a song plays it nods to the beat with a little note floating up. Pick its coat (Terracotta, Calico, White or Black) and an accessory (glasses, bow, nightcap, scarf, flower or crown).
 
 ## Install
 
@@ -73,7 +73,7 @@ powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\Vale\uninst
 
 ## What it does
 
-Hover the notch to open it, scroll to change pages. Hover the page dots under the panel and they turn into a row of icons that grow toward the pointer, like a dock; click one to jump to that page. With the cat on, it also turns its head and eyes toward the pointer (full animation only, off in Energy Saver; the *Follow the pointer* switch on the Cat page turns it off). While the pointer nears the notch over another window, however fast it moves, the notch glides down to the cat's two eyes so the window under it (a browser's tabs, say) can be clicked; rest on the eyes for half a second to bring the notch back (the *Shrink to eyes* switch turns this off). The panel stays open for a few seconds after you click in it or close an editor, and every page and sub-view change glides (or is instant when Windows' animation effects are off).
+Hover the notch to open it, scroll to change pages. Hover the page dots under the panel and they turn into a row of icons that grow toward the pointer, like a dock; click one to jump to that page. With the cat on, it also turns its head and eyes toward the pointer (full animation only, off in Energy Saver; the *Follow the pointer* switch on the Cat page turns it off). While the pointer nears the notch over another window, however fast it moves, the notch glides down to the cat's two eyes so the window under it (a browser's tabs, say) can be clicked; the eyes blink now and then and glance toward the pointer; rest on the eyes for half a second to bring the notch back (the *Shrink to eyes* switch turns this off). The panel stays open for a few seconds after you click in it or close an editor, and every page and sub-view change glides (or is instant when Windows' animation effects are off).
 
 | | |
 |---|---|
@@ -85,7 +85,7 @@ Hover the notch to open it, scroll to change pages. Hover the page dots under th
 | **Search** | `Ctrl+Alt+Space`: apps, files and folders, calculator, Windows settings, web. |
 | **Calendar** | Google Calendar with day, week and month views; add and edit events. |
 | **Reminders, Notes, Pomodoro** | Quick ones, right in the panel. |
-| **Notifications** | Windows toasts and [Claude Code](https://claude.com/claude-code) prompts in the notch. The Notifications page keeps a short history of the toasts Vale caught while it ran (app logo, time, title and body), with pause, per-app exclusion and an optional encrypted copy that survives a restart. It never clears the Windows Action Center. |
+| **Notifications** | Windows toasts and [Claude Code](https://claude.com/claude-code) prompts in the notch; a toast shows which app sent it (its logo and name, plus the site for a browser's web notification when Windows passes it on). The Notifications page keeps a short history of the toasts Vale caught while it ran (app logo, time, title and body), with pause, per-app exclusion and an optional encrypted copy that survives a restart. It never clears the Windows Action Center. |
 | **System** | CPU, memory, disks, the busiest apps and a cleaner that asks before it deletes. |
 | **Devices** | Flash drives, external disks and memory cards, with Eject, Open, Detail and Eject all, the reason when Windows won't let go, and a notice when one is plugged in. |
 | **Susun** | Arrange your open windows into a layout: pick one (two or three columns, a grid, a main window with a side column, or your own), then click the windows tile by tile, with skip and back. Undo with one click, save an arrangement and re-apply it later. `Ctrl+Alt+S` opens it (off by default, in Settings). |
@@ -113,7 +113,7 @@ Hover the notch to open it, scroll to change pages. Hover the page dots under th
 
 <p align="center"><img src="assets/screenshots/notices.png" width="460" alt="Animated notices in the notch: a greeting, a copied item, a screenshot preview, a disk warning and a long lyric line"></p>
 
-Everything is set in **Settings**, from the tray icon, in eight sections: General, Appearance, Cat, Panel, Clipboard, Features, Integrations and About. Appearance holds the island style, accent colour, island background (*Match cat*, Espresso, Graphite, Sea, Night or Plum), notch size and fill; Cat holds the coat, accessory, animation, sleep, the follow-pointer and shrink-to-eyes switches and the greeting. Open mode, page order, shortcuts, hotkeys, lyrics and language are there too. It can also stay behind your windows (experimental). Every option is described in the [guide](docs/guide.md#settings).
+Everything is set in **Settings**, from the tray icon, in eight sections: General, Appearance, Cat, Panel, Clipboard, Features, Integrations and About. Appearance holds the island style, accent colour, island background (*Match cat*, Espresso, Graphite, Sea, Night or Plum), notch size and fill; Cat holds the coat, accessory, animation, sleep, the follow-pointer, dance-to-music and shrink-to-eyes switches and the greeting. Open mode, page order, shortcuts, hotkeys, lyrics and language are there too. It can also stay behind your windows (experimental). The Settings window can be resized or maximised and opens where you left it. Every option is described in the [guide](docs/guide.md#settings).
 
 ## Privacy
 

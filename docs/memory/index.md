@@ -63,7 +63,7 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[search-files]]: files and folders by name in six user folders, own walker with caps, icons/sizes/counts from a background worker
 - [[mixer]]: Mixer page, per-app volume through a Core Audio worker thread
 - [[devices]]: Devices page (Perangkat), safe eject of flash drives, external disks and cards through a worker thread, no polling
-- [[notch-peek-eyes]]: with stay-behind off, the notch shrinks to the cat's two eyes while the pointer is near it over a window, comes back on a 500 ms rest or a click; a fast entry (also caught on the island's WM_MOUSEMOVE) shrinks too; 320 ms ease-in-out eyes morph; shares TIMER_POINTER (33)
+- [[notch-peek-eyes]]: with stay-behind off, the notch shrinks to the cat's two eyes while the pointer is near it over a window, comes back on a 500 ms rest or a click; a fast entry (also caught on the island's WM_MOUSEMOVE) shrinks too; 320 ms ease-in-out eyes morph; shares TIMER_POINTER (33); since v3.11 the eyes look toward the pointer ("Ikuti kursor") and blink every 3-6 s on TIMER_BLINK
 - [[cat-looks-at-pointer]]: the idle cat turns head, ears and eyes toward the pointer sideways, eased on the frame clock, clamp checked by a test; "Ikuti kursor" turns it off (v3.8)
 - [[cat-colours-and-surfaces]]: four coats (Terracotta, Calico, White, Black), five island surfaces plus "follow the cat", contrast numbers, lenient config (v3.8)
 - [[cat-accessories]]: seven accessories, the one-silhouette paint order (rim, ears and head, calico patches cut to the whole silhouette, marks, accessories), the rejected mockups, the clamp test (v3.8)
