@@ -107,6 +107,20 @@ switched off (the twelve-tile limit above).
   a raised plate, the others shift (`display_order`), release commits through
   the pure `drop_index(y, row_tops)`, Esc or a lost capture cancels. The
   Settings model is updated at once (optimistic) and the owner confirms.
+- **Edge auto-scroll (since 2026-11):** while a row (Halaman panel or
+  Pintasan) is held, the content scrolls when the pointer is within 48 px of
+  the viewport's top or bottom edge or beyond it. `drag_scroll_speed(y, top,
+  bottom)` gives px/s: 0 outside the zone, 2 rows/s (ROW_H 52) at the zone's
+  inner boundary, growing linearly to 12 rows/s at the edge and beyond; in a
+  viewport shorter than two zones the nearer edge wins. `TIMER_DRAG_SCROLL`
+  (id 5, 16 ms) runs only while it scrolls: `Drag::last_tick` is `Some` while
+  it is set (it is not set again on every pointer move, which would restart
+  its interval), the tick uses dt clamped to 50 ms, and it stops when the
+  speed is 0 or scroll hits 0 / `scroll_max`. `end_drag` (release, Esc,
+  `WM_CAPTURECHANGED`) always kills it. The row place comes from the pure
+  `drag_place(tops, grab, y, scroll)`, re-run after each scroll change, so the
+  held row stays under the pointer. The mouse wheel now scrolls during a drag
+  too (it used to be ignored). The held row is still clamped to its own list.
 - Not verified by hand: typing into the form's fields and the file dialog
   (the logic around them is tested; the layout and the drag were checked in
   the `--settings` demo).

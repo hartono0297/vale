@@ -27,9 +27,10 @@ use windows::Win32::Graphics::Dwm::{
 };
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateFontW, CreateSolidBrush,
-    DEFAULT_CHARSET, DeleteObject, EndPaint, FW_NORMAL, GetDC, GetMonitorInfoW, GetTextMetricsW,
-    HBRUSH, HDC, HFONT, HGDIOBJ, InvalidateRect, MONITOR_DEFAULTTOPRIMARY, MONITORINFO,
-    MonitorFromPoint, OUT_DEFAULT_PRECIS, PAINTSTRUCT, ReleaseDC, SelectObject, SetBkColor,
+    DEFAULT_CHARSET, DeleteObject, EndPaint, EnumDisplayMonitors, FW_NORMAL, GetDC,
+    GetMonitorInfoW, GetTextMetricsW, HBRUSH, HDC, HFONT, HGDIOBJ, HMONITOR, InvalidateRect,
+    MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint,
+    MonitorFromRect, OUT_DEFAULT_PRECIS, PAINTSTRUCT, ReleaseDC, SelectObject, SetBkColor,
     SetTextColor, TEXTMETRICW,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -49,17 +50,19 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyWindow, EN_CHANGE, EN_KILLFOCUS,
-    EN_SETFOCUS, ES_AUTOHSCROLL, ES_PASSWORD, GetClientRect, GetDlgCtrlID, GetWindowTextLengthW,
-    GetWindowTextW, HICON, HMENU, HTCLIENT, ICON_BIG, ICON_SMALL, IDC_ARROW, IDC_HAND, IDC_SIZEALL,
-    IMAGE_ICON, IsIconic, IsWindow, KillTimer, LR_DEFAULTCOLOR, LoadCursorW, LoadImageW,
-    MoveWindow, PostMessageW, RegisterClassExW, SM_CXICON, SM_CXSMICON, SW_HIDE, SW_RESTORE,
-    SW_SHOW, SW_SHOWNA, SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOZORDER, SendMessageW, SetCursor,
-    SetForegroundWindow, SetTimer, SetWindowPos, SetWindowTextW, ShowWindow, WINDOW_EX_STYLE,
-    WINDOW_STYLE, WM_APP, WM_CAPTURECHANGED, WM_CHAR, WM_CLOSE, WM_COMMAND, WM_CTLCOLOREDIT,
-    WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP,
-    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCDESTROY, WM_PAINT, WM_SETCURSOR, WM_SETFONT, WM_SETICON,
-    WM_SIZE, WM_TIMER, WNDCLASSEXW, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_MINIMIZEBOX,
-    WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP,
+    EN_SETFOCUS, ES_AUTOHSCROLL, ES_PASSWORD, GetClientRect, GetDlgCtrlID, GetWindowPlacement,
+    GetWindowTextLengthW, GetWindowTextW, HICON, HMENU, HTCLIENT, ICON_BIG, ICON_SMALL, IDC_ARROW,
+    IDC_HAND, IDC_SIZEALL, IMAGE_ICON, IsIconic, IsWindow, KillTimer, LR_DEFAULTCOLOR, LoadCursorW,
+    LoadImageW, MINMAXINFO, MoveWindow, PostMessageW, RegisterClassExW, SIZE_MAXIMIZED,
+    SIZE_RESTORED, SM_CXICON, SM_CXSMICON, SW_HIDE, SW_RESTORE, SW_SHOW, SW_SHOWMAXIMIZED,
+    SW_SHOWMINIMIZED, SW_SHOWNA, SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOZORDER, SendMessageW,
+    SetCursor, SetForegroundWindow, SetTimer, SetWindowPos, SetWindowTextW, ShowWindow,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WINDOWPLACEMENT, WM_APP, WM_CAPTURECHANGED, WM_CHAR, WM_CLOSE,
+    WM_COMMAND, WM_CTLCOLOREDIT, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_EXITSIZEMOVE,
+    WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
+    WM_NCDESTROY, WM_PAINT, WM_SETCURSOR, WM_SETFONT, WM_SETICON, WM_SIZE, WM_TIMER, WNDCLASSEXW,
+    WPF_RESTORETOMAXIMIZED, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_MAXIMIZEBOX, WS_MINIMIZEBOX,
+    WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP, WS_THICKFRAME,
 };
 use windows::core::{Error, HSTRING, PCWSTR, Result, w};
 
@@ -68,11 +71,12 @@ use super::robot::{Motion, sleep_step};
 use super::settings_controls::{Gfx, Scene, ease};
 use super::settings_layout::{
     CLIENT_H, CLIENT_W, CanvasPress, CatFace, Control, DragView, EditView, Field, GUIDE_URL,
-    GoogleState, Group, Hit, Layout, List, PrtscRow, REPO_URL, ROW_H, ReorderRow,
-    Section, SliderId, State, TileForm, Tone, battery_step, canvas_drag, canvas_press,
-    clip_items_step, disk_warn_step, drop_index, layout, notif_items_step, ram_warn_step,
-    scroll_by, shot_secs_step, slider_value, UpdateRow,
+    GoogleState, Group, Hit, Layout, List, PrtscRow, REPO_URL, ROW_H, ReorderRow, Section,
+    SliderId, State, TileForm, Tone, UpdateRow, battery_step, canvas_drag, canvas_press,
+    clip_items_step, disk_warn_step, drag_scroll_speed, drop_index, layout_in, notif_items_step,
+    ram_warn_step, scroll_by, shot_secs_step, slider_value,
 };
+use super::settings_window::{Rc, clamp_min, mostly_visible, workspace_to_screen};
 use crate::arrange::{self, ArrangeSettings, CustomTemplate, Node, SavedArrangement};
 use crate::calendar::CalStatus;
 use crate::claude::install::{self, InstallOutcome, UninstallOutcome};
@@ -80,7 +84,7 @@ use crate::cli::Shell;
 use crate::cli_folders::CliStart;
 use crate::config::{
     ArrangeHotkey, ClipHotkey, ClipboardSettings, Config, DevicesHotkey, NotchFill, NotifSettings,
-    OpenMode, ScreenshotSettings, SearchHotkey, ShotIgnore, ShotTool, Style,
+    OpenMode, ScreenshotSettings, SearchHotkey, ShotIgnore, ShotTool, Style, WindowPlace,
 };
 use crate::google::client;
 use crate::i18n::{Key, Lang, text};
@@ -104,6 +108,9 @@ const WM_APP_FORM: u32 = WM_APP + 12;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
+    /// The window's normal rectangle (screen coordinates) and whether it is
+    /// maximized, after a move, a resize or on closing.
+    WindowPlace(WindowPlace),
     Style(Style),
     Accent(Accent),
     Surface(Surface),
@@ -362,6 +369,9 @@ pub struct Model {
     pub pages: PanelPages,
     /// "Pintasan".
     pub tiles: ShortcutTiles,
+    /// Where the window was last. Only `open` reads it, for a new window;
+    /// `update` ignores it.
+    pub window_place: Option<WindowPlace>,
     /// "Cek pembaruan otomatis", and the Pembaruan row's state (the island's:
     /// a check running, an update known, a download).
     pub update_auto: bool,
@@ -421,6 +431,7 @@ impl Model {
             shot: cfg.screenshot,
             pages: PanelPages::from_saved(&cfg.panel_pages),
             tiles: ShortcutTiles::from_saved(&cfg.shortcut_tiles),
+            window_place: cfg.settings_window,
             update_auto: cfg.update_check,
             update_row: UpdateRow::Idle,
         }
@@ -432,6 +443,12 @@ const TIMER_CONFIRM: usize = 1;
 const TIMER_GOOGLE_NOTE: usize = 2;
 const TIMER_HOOK_NOTE: usize = 3;
 const TIMER_TILE_NOTE: usize = 4;
+/// Scrolls the content while a row is dragged near the top or bottom edge;
+/// runs only while it scrolls.
+const TIMER_DRAG_SCROLL: usize = 5;
+const DRAG_SCROLL_MS: u32 = 16;
+/// A tick after a stall scrolls for at most this long.
+const DRAG_SCROLL_MAX_DT: Duration = Duration::from_millis(50);
 const CONFIRM_MS: u32 = 4000;
 const NOTE_MS: u32 = 5000;
 const ERROR_NOTE_MS: u32 = 10_000;
@@ -585,6 +602,22 @@ struct Drag {
     tops: Vec<f32>,
     /// The row's top now, in the same pixels.
     top: f32,
+    /// The pointer's last client y, in logical px.
+    pointer_y: f32,
+    /// Set while `TIMER_DRAG_SCROLL` runs: when the last tick (or the start)
+    /// was.
+    last_tick: Option<Instant>,
+}
+
+/// The held row's top and the slot it would drop at, for a pointer at client
+/// `y` with the content scrolled by `scroll`: the row follows the pointer
+/// (`grab` under its top) but stays between the first and last rows.
+fn drag_place(tops: &[f32], grab: f32, y: f32, scroll: f32) -> (f32, usize) {
+    let (Some(first), Some(last)) = (tops.first(), tops.last()) else {
+        return (0.0, 0);
+    };
+    let top = (y + scroll - grab).clamp(*first, last.max(*first));
+    (top, drop_index(top + ROW_H / 2.0, tops))
 }
 
 /// What the template editor is for.
@@ -612,6 +645,13 @@ struct Settings {
     section: Section,
     /// How far the section (when it is taller than the window) is scrolled.
     scroll: f32,
+    /// The client area in logical px (never below the minimum, and kept
+    /// from the last non-minimized size).
+    client: (f32, f32),
+    /// The place last posted to the owner (or the one the window opened at).
+    last_place: Option<WindowPlace>,
+    /// The window is maximized (as far as WM_SIZE told).
+    maximized: bool,
     layout: Layout,
     gfx: Gfx,
     hover: Option<Hit>,
@@ -829,10 +869,132 @@ fn primary_monitor() -> (u32, RECT) {
 }
 
 const STYLE: WINDOW_STYLE = WINDOW_STYLE(
-    WS_OVERLAPPED.0 | WS_CAPTION.0 | WS_SYSMENU.0 | WS_MINIMIZEBOX.0 | WS_CLIPCHILDREN.0,
+    WS_OVERLAPPED.0
+        | WS_CAPTION.0
+        | WS_SYSMENU.0
+        | WS_MINIMIZEBOX.0
+        | WS_MAXIMIZEBOX.0
+        | WS_THICKFRAME.0
+        | WS_CLIPCHILDREN.0,
 );
 
-/// Outer size for the logical client size at `dpi`.
+/// The primary monitor's full rectangle and work area.
+fn primary_rects() -> (Rc, Rc) {
+    unsafe {
+        let monitor = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
+        let mut info = MONITORINFO {
+            cbSize: size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        let _ = GetMonitorInfoW(monitor, &mut info);
+        (rc_of(info.rcMonitor), rc_of(info.rcWork))
+    }
+}
+
+fn rc_of(r: RECT) -> Rc {
+    Rc {
+        left: r.left,
+        top: r.top,
+        right: r.right,
+        bottom: r.bottom,
+    }
+}
+
+/// Every monitor's full rectangle.
+fn monitor_rects() -> Vec<Rc> {
+    unsafe extern "system" fn each(
+        _: HMONITOR,
+        _: HDC,
+        rect: *mut RECT,
+        data: LPARAM,
+    ) -> windows::core::BOOL {
+        let list = unsafe { &mut *(data.0 as *mut Vec<Rc>) };
+        if let Some(r) = unsafe { rect.as_ref() } {
+            list.push(rc_of(*r));
+        }
+        true.into()
+    }
+    let mut list: Vec<Rc> = Vec::new();
+    unsafe {
+        let _ = EnumDisplayMonitors(None, None, Some(each), LPARAM((&raw mut list) as isize));
+    }
+    list
+}
+
+/// The window's normal rectangle (screen coordinates) and whether it is
+/// maximized, as `GetWindowPlacement` has it.
+fn window_place_of(hwnd: HWND) -> Option<WindowPlace> {
+    let mut wp = WINDOWPLACEMENT {
+        length: size_of::<WINDOWPLACEMENT>() as u32,
+        ..Default::default()
+    };
+    unsafe { GetWindowPlacement(hwnd, &mut wp) }.ok()?;
+    let maximized = wp.showCmd == SW_SHOWMAXIMIZED.0 as u32
+        || (wp.showCmd == SW_SHOWMINIMIZED.0 as u32 && wp.flags.0 & WPF_RESTORETOMAXIMIZED.0 != 0);
+    let (monitor, work) = primary_rects();
+    let r = workspace_to_screen(rc_of(wp.rcNormalPosition), monitor, work);
+    Some(WindowPlace {
+        left: r.left,
+        top: r.top,
+        right: r.right,
+        bottom: r.bottom,
+        maximized,
+    })
+}
+
+/// The saved place to open at: its screen rectangle (grown to the minimum
+/// outer size at the DPI of the monitor it is on) and whether to maximize,
+/// or `None` when most of it is off every screen (a monitor was unplugged).
+fn restored_place(place: Option<WindowPlace>) -> Option<(Rc, bool)> {
+    let p = place?;
+    let r = Rc {
+        left: p.left,
+        top: p.top,
+        right: p.right,
+        bottom: p.bottom,
+    };
+    if !mostly_visible(r, &monitor_rects()) {
+        return None;
+    }
+    let rect = RECT {
+        left: r.left,
+        top: r.top,
+        right: r.right,
+        bottom: r.bottom,
+    };
+    let dpi = unsafe {
+        let monitor = MonitorFromRect(&rect, MONITOR_DEFAULTTONEAREST);
+        let (mut dx, mut dy) = (96, 96);
+        if GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dx, &mut dy).is_err() {
+            dx = 96;
+        }
+        dx.max(96)
+    };
+    let (w, h) = outer_size(dpi);
+    Some((clamp_min(r, w, h), p.maximized))
+}
+
+/// The client area of `hwnd` in logical px; the minimum size when it has
+/// none (minimized).
+fn client_logical(hwnd: HWND, dpi: u32) -> (f32, f32) {
+    let mut rc = RECT::default();
+    unsafe {
+        let _ = GetClientRect(hwnd, &mut rc);
+    }
+    let s = dpi.max(96) as f32 / 96.0;
+    let (w, h) = (
+        (rc.right - rc.left) as f32 / s,
+        (rc.bottom - rc.top) as f32 / s,
+    );
+    if w > 0.0 && h > 0.0 {
+        (w, h)
+    } else {
+        (CLIENT_W, CLIENT_H)
+    }
+}
+
+/// Outer size for the logical client size at `dpi`: the smallest the window
+/// can be (`WM_GETMINMAXINFO`) and what it opens at by default.
 fn outer_size(dpi: u32) -> (i32, i32) {
     let s = dpi as f32 / 96.0;
     let mut rc = RECT {
@@ -878,10 +1040,21 @@ pub fn open(owner: HWND, model: Model, section: Option<Section>) -> Result<HWND>
 
     let instance: HINSTANCE = unsafe { GetModuleHandleW(None)? }.into();
     register_class(instance)?;
-    let (dpi, work) = primary_monitor();
-    let (w, h) = outer_size(dpi);
-    let x = work.left + ((work.right - work.left) - w).max(0) / 2;
-    let y = work.top + ((work.bottom - work.top) - h).max(0) / 2;
+    // A saved place that is still on a screen: the window is created
+    // right there (so on the right monitor at the right DPI, with no
+    // WM_DPICHANGED to rescale it) and shown maximized afterwards if it was.
+    // The creation rectangle is the restore rectangle. Otherwise the default:
+    // the minimum client size, centred on the primary work area.
+    let (x, y, w, h, maximize) = match restored_place(model.window_place) {
+        Some((r, maximized)) => (r.left, r.top, r.width(), r.height(), maximized),
+        None => {
+            let (dpi, work) = primary_monitor();
+            let (w, h) = outer_size(dpi);
+            let x = work.left + ((work.right - work.left) - w).max(0) / 2;
+            let y = work.top + ((work.bottom - work.top) - h).max(0) / 2;
+            (x, y, w, h, false)
+        }
+    };
     let title = text(model.lang, Key::SettingsTitle);
     let hwnd = unsafe {
         CreateWindowExW(
@@ -901,6 +1074,11 @@ pub fn open(owner: HWND, model: Model, section: Option<Section>) -> Result<HWND>
     };
     // The window may have landed on a monitor with another DPI.
     let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
+    let client = client_logical(hwnd, dpi);
+    let opened_at = window_place_of(hwnd).map(|p| WindowPlace {
+        maximized: maximize,
+        ..p
+    });
     let gfx = match Gfx::new() {
         Ok(gfx) => gfx,
         Err(error) => {
@@ -926,6 +1104,9 @@ pub fn open(owner: HWND, model: Model, section: Option<Section>) -> Result<HWND>
         model,
         section: section.unwrap_or(Section::General),
         scroll: 0.0,
+        client,
+        last_place: opened_at,
+        maximized: maximize,
         layout: Layout::default(),
         gfx,
         hover: None,
@@ -972,7 +1153,7 @@ pub fn open(owner: HWND, model: Model, section: Option<Section>) -> Result<HWND>
     relayout_and_place();
     set_name_cue();
     unsafe {
-        let _ = ShowWindow(hwnd, SW_SHOW);
+        let _ = ShowWindow(hwnd, if maximize { SW_SHOWMAXIMIZED } else { SW_SHOW });
         let _ = SetForegroundWindow(hwnd);
     }
     Ok(hwnd)
@@ -1058,6 +1239,8 @@ fn cue_for(kind: CustomKind) -> PCWSTR {
 pub fn update(model: Model) {
     let changed = with(|st| {
         let mut model = model;
+        // Only `open` uses the saved place.
+        model.window_place = st.model.window_place;
         // The thumb in hand is where the pointer put it; an echo of an
         // earlier step must not pull it back.
         if st.slider.is_some() {
@@ -1312,7 +1495,7 @@ impl Settings {
     }
 
     fn relayout(&mut self) {
-        let l = layout(self.section, &self.state(), &self.gfx);
+        let l = layout_in(self.section, &self.state(), &self.gfx, self.client);
         // The layout keeps the scroll in range (a language change can move it).
         self.scroll = l.scroll;
         self.layout = l;
@@ -1321,16 +1504,33 @@ impl Settings {
 
     /// The wheel over a section taller than the window scrolls it.
     fn on_wheel(&mut self, delta: i32) {
-        // A row in the pointer's hand: the list stays where it is.
-        if self.drag.is_some() {
-            return;
-        }
         let scroll = scroll_by(self.scroll, delta, self.layout.scroll_max);
         if scroll != self.scroll {
             self.scroll = scroll;
             // What was under the pointer moved away.
             self.hover = None;
+            // A row in hand stays under the pointer: it takes the place the
+            // pointer now is over.
+            self.drag_follow();
             self.relayout();
+            self.sync_drag_timer();
+        }
+    }
+
+    /// The window's size in logical px, read again (after a DPI change the
+    /// pixel size may be the same while the logical one is not).
+    fn read_client(&mut self) {
+        self.client = client_logical(self.hwnd, self.dpi);
+    }
+
+    /// Posts the window's place to the owner when it changed.
+    fn post_place(&mut self) {
+        let Some(p) = window_place_of(self.hwnd) else {
+            return;
+        };
+        if self.last_place != Some(p) {
+            self.last_place = Some(p);
+            post_action(self.owner, Action::WindowPlace(p));
         }
     }
 
@@ -1738,6 +1938,8 @@ impl Settings {
             grab,
             top: tops[from],
             tops,
+            pointer_y: y,
+            last_tick: None,
         });
         self.hover = None;
     }
@@ -1745,20 +1947,103 @@ impl Settings {
     /// The pointer moved to `y` with a row in hand: it follows, and the
     /// others make room.
     fn drag_to(&mut self, y: f32) {
-        let scroll = self.scroll;
         let Some(d) = &mut self.drag else {
             return;
         };
-        let (first, last) = (d.tops[0], d.tops[d.tops.len() - 1]);
-        d.top = (y + scroll - d.grab).clamp(first, last);
-        d.to = drop_index(d.top + ROW_H / 2.0, &d.tops);
+        d.pointer_y = y;
+        self.drag_follow();
         self.relayout();
+        self.sync_drag_timer();
+    }
+
+    /// The row in hand takes its place for the pointer's last y and the
+    /// scroll now.
+    fn drag_follow(&mut self) {
+        let scroll = self.scroll;
+        if let Some(d) = &mut self.drag {
+            (d.top, d.to) = drag_place(&d.tops, d.grab, d.pointer_y, scroll);
+        }
+    }
+
+    /// How fast the content should scroll for the row in hand, px a second
+    /// (negative up): zero unless the pointer is near the viewport's edge,
+    /// the content can scroll that way and the section scrolls at all.
+    fn drag_scroll_now(&self) -> f32 {
+        let (Some(d), Some(v)) = (&self.drag, self.layout.viewport) else {
+            return 0.0;
+        };
+        let speed = drag_scroll_speed(d.pointer_y, v.y, v.bottom());
+        let room = if speed < 0.0 {
+            self.scroll > 0.0
+        } else {
+            self.scroll < self.layout.scroll_max
+        };
+        if room { speed } else { 0.0 }
+    }
+
+    /// `TIMER_DRAG_SCROLL` runs exactly while the row in hand scrolls the
+    /// content: it starts when the pointer is in a scroll zone with room to
+    /// scroll, and stops when it leaves the zone or the content reaches its
+    /// end. It is set once per run (setting it again would restart its
+    /// interval on every pointer move).
+    fn sync_drag_timer(&mut self) {
+        let wanted = self.drag_scroll_now() != 0.0;
+        let hwnd = self.hwnd;
+        let Some(d) = &mut self.drag else {
+            return;
+        };
+        match (wanted, d.last_tick.is_some()) {
+            (true, false) => {
+                d.last_tick = Some(Instant::now());
+                unsafe {
+                    SetTimer(Some(hwnd), TIMER_DRAG_SCROLL, DRAG_SCROLL_MS, None);
+                }
+            }
+            (false, true) => {
+                d.last_tick = None;
+                unsafe {
+                    let _ = KillTimer(Some(hwnd), TIMER_DRAG_SCROLL);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// One tick of the drag auto-scroll: scrolls by the speed over the time
+    /// since the last tick, moves the row to the place under the pointer and
+    /// stops the timer when there is nothing left to scroll. The caller
+    /// relayouts (and places the native fields).
+    fn drag_tick(&mut self) {
+        let speed = self.drag_scroll_now();
+        let now = Instant::now();
+        let Some(d) = &mut self.drag else {
+            unsafe {
+                let _ = KillTimer(Some(self.hwnd), TIMER_DRAG_SCROLL);
+            }
+            return;
+        };
+        let dt = d
+            .last_tick
+            .map_or(Duration::ZERO, |t| now.saturating_duration_since(t))
+            .min(DRAG_SCROLL_MAX_DT);
+        d.last_tick = Some(now);
+        let max = self.layout.scroll_max.max(0.0);
+        let scroll = (self.scroll + speed * dt.as_secs_f32()).clamp(0.0, max);
+        if scroll != self.scroll {
+            self.scroll = scroll;
+            self.hover = None;
+            self.drag_follow();
+        }
+        self.sync_drag_timer();
     }
 
     /// The row in hand is let go: put at its place (`commit`) or back where
     /// it was (Esc, the capture lost). The list shows the new order at once;
     /// the owner confirms it.
     fn end_drag(&mut self, commit: bool) -> Vec<After> {
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), TIMER_DRAG_SCROLL);
+        }
         let Some(d) = self.drag.take() else {
             return Vec::new();
         };
@@ -2846,10 +3131,19 @@ fn on_dpi_changed(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
             );
         }
     }
+    // The same pixel size at another DPI is another logical size.
+    with(|st| st.read_client());
     relayout_and_place();
 }
 
 fn on_timer(id: usize) {
+    if id == TIMER_DRAG_SCROLL {
+        // Not killed here: the timer runs until `sync_drag_timer` stops it.
+        with(|st| st.drag_tick());
+        // The form's native fields follow the content.
+        relayout_and_place();
+        return;
+    }
     with(|st| {
         unsafe {
             let _ = KillTimer(Some(st.hwnd), id);
@@ -2898,12 +3192,55 @@ unsafe extern "system" fn wnd_proc(
         }
         // Direct2D paints every pixel.
         WM_ERASEBKGND => LRESULT(1),
+        // The smallest the window can be: the minimum client size. It comes
+        // before the state exists, so nothing here uses `with`. Maximizing
+        // uses the default (the monitor's work area).
+        WM_GETMINMAXINFO => {
+            let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
+            let (w, h) = outer_size(dpi);
+            if let Some(info) = unsafe { (lparam.0 as *mut MINMAXINFO).as_mut() } {
+                info.ptMinTrackSize = POINT { x: w, y: h };
+            }
+            LRESULT(0)
+        }
         WM_SIZE => {
             let (w, h) = (
                 (lparam.0 & 0xFFFF) as u32,
                 ((lparam.0 >> 16) & 0xFFFF) as u32,
             );
-            with(|st| st.gfx.resize(w, h));
+            let kind = wparam.0 as u32;
+            let sized = with(|st| {
+                st.gfx.resize(w, h);
+                // Minimized has no client area: keep the last size.
+                if w > 0 && h > 0 {
+                    let s = st.scale();
+                    st.client = (w as f32 / s, h as f32 / s);
+                    true
+                } else {
+                    false
+                }
+            });
+            if sized == Some(true) {
+                relayout_and_place();
+            }
+            // Maximized or restored from it: the place is worth saving now
+            // (a plain resize is saved when it ends).
+            with(|st| {
+                let now = match kind {
+                    SIZE_MAXIMIZED => true,
+                    SIZE_RESTORED => false,
+                    _ => st.maximized,
+                };
+                if now != st.maximized {
+                    st.maximized = now;
+                    st.post_place();
+                }
+            });
+            LRESULT(0)
+        }
+        // A move or a resize with the mouse ended.
+        WM_EXITSIZEMOVE => {
+            with(|st| st.post_place());
             LRESULT(0)
         }
         WM_APP_FRAME => {
@@ -3059,6 +3396,7 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
         WM_CLOSE => {
+            with(|st| st.post_place());
             unsafe {
                 let _ = DestroyWindow(hwnd);
             }
@@ -3166,6 +3504,13 @@ unsafe extern "system" fn edit_proc(
 /// the PrtSc keyboard hook could not be installed) and `DI_UPDATE`
 /// (`available`, `checking`, `downloading`: Tentang's Pembaruan row, with a
 /// made-up 9.9.9) set the start.
+///
+/// The window's place is kept in `vale-settings-demo-window.json` in the temp
+/// folder (the real config is never touched): read at the start (a missing
+/// or bad file means the default place), written when the window is moved,
+/// resized, maximized or closed. Close and reopen the demo to see the place
+/// come back, or write an off-screen rectangle into the file to see the
+/// fallback to the centre.
 #[cfg(debug_assertions)]
 pub fn run_demo(args: &[String]) {
     use crate::i18n;
@@ -3178,8 +3523,23 @@ pub fn run_demo(args: &[String]) {
         static DEMO: RefCell<Option<Model>> = const { RefCell::new(None) };
     }
 
+    fn place_file() -> std::path::PathBuf {
+        std::env::temp_dir().join("vale-settings-demo-window.json")
+    }
+
+    fn read_place() -> Option<WindowPlace> {
+        let text = std::fs::read_to_string(place_file()).ok()?;
+        crate::config::place_from_json(serde_json::from_str(&text).ok()?)
+    }
+
     fn apply(m: &mut Model, action: Action) {
         match action {
+            Action::WindowPlace(p) => {
+                m.window_place = Some(p);
+                if let Ok(json) = serde_json::to_string(&p) {
+                    let _ = std::fs::write(place_file(), json);
+                }
+            }
             Action::Style(v) => m.style = v,
             Action::Accent(v) => m.accent = v,
             Action::Surface(v) => m.surface = v,
@@ -3400,6 +3760,7 @@ pub fn run_demo(args: &[String]) {
             _ => PrtscRow::Plain,
         },
         calendar,
+        window_place: read_place(),
         // The Pembaruan row's state, with a made-up version; nothing touches
         // the network.
         update_row: match env("DI_UPDATE").to_ascii_lowercase().as_str() {
@@ -3703,6 +4064,27 @@ mod tests {
     }
 
     #[test]
+    fn the_held_row_follows_the_pointer_within_the_list() {
+        let tops = [100.0, 152.0, 204.0, 256.0];
+        // The pointer took the row 10 px under its top (second row).
+        let grab = 10.0;
+        // Unscrolled: the row's top is the pointer minus the grab.
+        assert_eq!(drag_place(&tops, grab, 172.0, 0.0), (162.0, 1));
+        // Its middle (top + 26) is what picks the slot.
+        assert_eq!(drag_place(&tops, grab, 200.0, 0.0), (190.0, 2));
+        // Scrolling moves the content under a still pointer: the row goes
+        // down the list with it.
+        assert_eq!(drag_place(&tops, grab, 172.0, 52.0), (214.0, 2));
+        assert_eq!(drag_place(&tops, grab, 172.0, 104.0), (256.0, 3));
+        // Kept between the first and the last row.
+        assert_eq!(drag_place(&tops, grab, -500.0, 0.0), (100.0, 0));
+        assert_eq!(drag_place(&tops, grab, 9000.0, 0.0), (256.0, 3));
+        // One row: it stays.
+        assert_eq!(drag_place(&[100.0], grab, 500.0, 0.0), (100.0, 0));
+        assert_eq!(drag_place(&[], grab, 500.0, 0.0), (0.0, 0));
+    }
+
+    #[test]
     fn tweens_ease_toward_the_target_and_retarget_smoothly() {
         let t0 = Instant::now();
         let t = Tween::toward(None, 0.0, 2.0, t0);
@@ -3739,6 +4121,19 @@ mod tests {
             ),
             (Style::Notch, Accent::Clay, 35, "id", false, true)
         );
+        assert_eq!(m.window_place, None);
+        let place = WindowPlace {
+            left: 1,
+            top: 2,
+            right: 900,
+            bottom: 700,
+            maximized: true,
+        };
+        let cfg = Config {
+            settings_window: Some(place),
+            ..Config::default()
+        };
+        assert_eq!(Model::from_config(&cfg).window_place, Some(place));
     }
 
     #[test]

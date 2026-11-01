@@ -63,6 +63,12 @@ The Island card has five rows since "Equalizer ikut irama" was added
 Notch slider peeks in (the scroll test now asserts the new toggle is visible
 and nothing of the Notch card is).
 
+**Resizable window:** `scroll_max` is the content's bottom minus
+`client_h - PAD` and the viewport is `client_h - VIEW_TOP` high, both from the
+real client size (`layout_in`, [[settings-window-size]]); a section that fits
+gets no viewport. The scroll is re-clamped on every resize. The wheel also
+scrolls while a list row is dragged ([[shortcut-tiles]]).
+
 Related: [[bata-robot-expressions]], [[bata-idle-power-budget]],
 [[notch-size-and-fill]], [[settings-structure]]
 

@@ -61,6 +61,11 @@ checks it. Every row keeps its exact behaviour: the same `Hit`, `Action` and
 
 ## Scrolling ([[settings-appearance-scroll]])
 
+The window is no longer fixed at 520 px high ([[settings-window-size]]): the
+statements below hold at the 720x520 minimum client size, which is what the
+layout tests use. A bigger window needs less scrolling and a tall enough one
+needs no viewport at all (`scroll_max` is 0 and the scrollbar goes).
+
 Only a section that overflows gets a viewport. Tampilan, Kucing, Panel,
 Clipboard and Fitur always do; Integrasi and Tentang never. Umum fits the
 520 px window to the pixel (2 eyebrows + 3 + 4 rows), so it scrolls only by
