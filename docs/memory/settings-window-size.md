@@ -49,7 +49,7 @@ date: 2026-11-01
 - **Demo:** `--settings` is `#[cfg(debug_assertions)]`: run it with
   `cargo run -- --settings panel`; in release the flag is ignored and the real
   island starts. The demo keeps the place in
-  `%TEMP%ale-settings-demo-window.json` (never the real config): read at
+  `std::env::temp_dir()/vale-settings-demo-window.json` (never the real config): read at
   start, written on `Action::WindowPlace`. Close and reopen it, or write an
   off-screen rect into the file, to check restore and fallback.
 - Checked in the debug demo through Win32 messages: 720x520 look unchanged,
