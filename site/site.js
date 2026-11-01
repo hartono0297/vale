@@ -880,7 +880,10 @@
     probe.style.height = '100svh';
     doc.body.appendChild(probe);
     /* Until the reader scrolls or presses something, a fragment target below
-       the wrapper is kept in view when the wrapper's height changes. */
+       the wrapper is kept in view when the wrapper's height changes. These
+       listeners only start when this script runs, so the target must also
+       still sit where the fragment scroll put it: a reader who scrolled away
+       before a slow site.js arrived is not pulled back. */
     var touched = false;
     function touch() { touched = true; }
     ['wheel', 'touchstart', 'keydown', 'pointerdown'].forEach(function (t) {
@@ -892,6 +895,15 @@
       try { id = decodeURIComponent(id); } catch (e) { return null; }
       var el = doc.getElementById(id);
       return el && (outer.compareDocumentPosition(el) & 4) && !outer.contains(el) ? el : null;
+    }
+    /* Not scrolled yet (the browser has still to go to the fragment), or the
+       block start at scroll-margin-top, or lower when the page ends first. */
+    function atFragment(el) {
+      if (window.scrollY === 0) return true;
+      var t = el.getBoundingClientRect().top;
+      var m = parseFloat(getComputedStyle(el).scrollMarginTop) || 0;
+      var end = doc.documentElement.scrollHeight - window.innerHeight;
+      return Math.abs(t - m) < 2 || (t > m && window.scrollY >= end - 1);
     }
     var vw = -1;
     var vh = -1;
@@ -916,20 +928,44 @@
       bottom = r.bottom;
       height = r.height;
     }
-    /* Switches .is-scrub; the wrapper's height changes by 130vh (70vh). */
+    function stepAt(t, h) {
+      var p = clamp(-t / Math.max(h - sv, 1), 0, 1);
+      return p < 0.25 ? 0 : p < 0.5 ? 1 : p < 0.75 ? 2 : 3;
+    }
+    function setStep(s) {
+      if (s === step) return;
+      step = s;
+      if (s < 0) { demo.removeAttribute('data-step'); return; }
+      demo.setAttribute('data-step', String(s));
+      if (nEl && s < 3) nEl.textContent = String(s + 1);
+    }
+    /* Switches .is-scrub; the wrapper's height changes by 130vh (70vh).
+       With the wrapper above the view, the view must not move. Scroll
+       anchoring (overflow-anchor) may already have kept it in place, so the
+       first element after the wrapper is measured before and after, and only
+       what is left of its shift is scrolled away. data-step is set in the
+       same task, so no frame shows .is-scrub without a step. */
     function apply(want) {
       enabled = want;
-      sec.classList.toggle('is-scrub', want);
       var target = touched ? null : fragmentBelow();
+      if (target && !atFragment(target)) target = null;
+      var ref = !target && outer.getBoundingClientRect().bottom <= 0
+        ? (outer.nextElementSibling || sec.nextElementSibling) : null;
+      var before = ref ? ref.getBoundingClientRect().top : 0;
+      sec.classList.toggle('is-scrub', want);
       if (target) {
         /* A load or a link at #cat: aim at where the target is now. This also
            replaces a smooth fragment scroll that set off for the old spot. */
         target.scrollIntoView({ block: 'start', behavior: 'instant' });
-      } else if (bottom <= 0) {
-        /* The wrapper lies above the view (a restored scroll position, a
-           resize down the page): keep the view where it was. */
-        var grown = outer.getBoundingClientRect().height - height;
-        if (grown) window.scrollBy({ top: grown, left: 0, behavior: 'instant' });
+      } else if (ref) {
+        var moved = ref.getBoundingClientRect().top - before;
+        if (Math.abs(moved) >= 1) window.scrollBy({ top: moved, left: 0, behavior: 'instant' });
+      }
+      if (want) {
+        var r = outer.getBoundingClientRect();
+        setStep(stepAt(r.top, r.height));
+      } else {
+        setStep(-1);
       }
     }
     var fx = {
@@ -943,23 +979,20 @@
           return;
         }
         if (!enabled) {
-          if (step !== -1) { step = -1; demo.removeAttribute('data-step'); }
+          setStep(-1);
           notchStep(-1);
           return;
         }
-        var p = clamp(-top / Math.max(height - sv, 1), 0, 1);
-        var s = p < 0.25 ? 0 : p < 0.5 ? 1 : p < 0.75 ? 2 : 3;
-        if (s !== step) {
-          step = s;
-          demo.setAttribute('data-step', String(s));
-          if (nEl && s < 3) nEl.textContent = String(s + 1);
-        }
+        setStep(stepAt(top, height));
         var pinned = fx.near && top <= 0.5 && bottom >= sv - 0.5;
-        notchStep(pinned ? s : -1);
+        notchStep(pinned ? step : -1);
       }
     };
     measure();
     if (fitsView && !reduce.matches) apply(true);
+    /* A resize may flip the choice: make it now, away from the section, not
+       later when a (smooth) scroll arrives there and would overrun the fix. */
+    window.addEventListener('resize', function () { fx.flush = true; });
     loop.gate(outer, fx, '100px 0px');
     loop.add(fx);
   }
