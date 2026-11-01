@@ -2229,7 +2229,7 @@ fn demo_notice(which: DemoNotice, renderer: &Renderer) -> Notice {
             "Mail",
             "Rani · Mail",
             "Denah lantai 2 sudah saya kirim, cek ya".into(),
-            NoticeKind::App { app_id: None },
+            NoticeKind::App { app_id: None, toast: None },
         ),
         DemoNotice::Greeting => {
             // DI_GREET_PERIOD: morning (default), midday, afternoon, evening, night.

@@ -82,7 +82,7 @@ fn notice_has_action(notice: &Notice) -> bool {
             | NoticeKind::DevicePlugged { .. }
             | NoticeKind::ClipPreview { .. }
             | NoticeKind::Arranged { .. }
-            | NoticeKind::App { app_id: Some(_) }
+            | NoticeKind::App { app_id: Some(_), .. }
     )
 }
 
@@ -2095,7 +2095,7 @@ impl IslandState {
             return self.dismiss_newest_sticky();
         };
         match notice.kind {
-            NoticeKind::App { app_id: Some(id) } => Some(Effect::OpenApp(id)),
+            NoticeKind::App { app_id: Some(id), .. } => Some(Effect::OpenApp(id)),
             NoticeKind::ClaudeWaiting { .. }
             | NoticeKind::Reminder { .. }
             | NoticeKind::MoleFailed => self.dismiss_sticky(&notice),
@@ -2380,6 +2380,7 @@ mod tests {
             body: "udah makan belum?".into(),
             kind: NoticeKind::App {
                 app_id: Some("WhatsApp.Desktop!App".into()),
+                toast: None,
             },
         }
     }

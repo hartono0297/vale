@@ -29,6 +29,8 @@ pub struct NotifEntry {
     pub app_id: Option<String>,
     pub title: String,
     pub body: String,
+    /// The web site of a browser notification, when Windows gave it.
+    pub site: Option<String>,
 }
 
 impl NotifEntry {
@@ -118,12 +120,13 @@ impl NotifHistory {
     }
 
     /// A new unread entry at the front; the oldest go when the cap is over.
-    /// Title and body are cut to `MAX_TEXT` characters. Returns its id.
+    /// Title, body and site are cut to `MAX_TEXT` characters. Returns its id.
     pub fn push(
         &mut self,
         at: i64,
         source: &str,
         app_id: Option<&str>,
+        site: Option<&str>,
         title: &str,
         body: &str,
     ) -> u64 {
@@ -139,6 +142,7 @@ impl NotifHistory {
                 app_id: app_id.filter(|a| !a.is_empty()).map(str::to_owned),
                 title: cut(title),
                 body: cut(body),
+                site: site.filter(|s| !s.is_empty()).map(cut),
             },
         );
         self.enforce();
@@ -203,6 +207,7 @@ mod tests {
             n,
             "WhatsApp",
             Some("5319.WhatsApp!App"),
+            None,
             &format!("t{n}"),
             "b",
         )
@@ -288,7 +293,7 @@ mod tests {
     fn remove_muted_is_the_case_insensitive_substring_rule() {
         let mut h = NotifHistory::new(50);
         for source in ["Claude", "orca agent", "WhatsApp", "My CLAUDE app"] {
-            h.push(1, source, None, "t", "b");
+            h.push(1, source, None, None, "t", "b");
         }
         let muted = vec!["Claude".to_owned(), "Orca".to_owned()];
         assert_eq!(h.remove_muted(&muted), 3);
@@ -302,23 +307,37 @@ mod tests {
     fn text_is_cut_to_1024_characters_on_a_character_boundary() {
         let mut h = NotifHistory::new(50);
         let long = "é".repeat(2000);
-        h.push(1, "App", None, &long, &long);
+        h.push(1, "App", None, None, &long, &long);
         let e = &h.items()[0];
         assert_eq!(e.title.chars().count(), 1024);
         assert_eq!(e.body.chars().count(), 1024);
-        h.push(2, "App", None, "short", "");
+        h.push(2, "App", None, None, "short", "");
         assert_eq!(h.items()[0].title, "short");
     }
 
     #[test]
     fn an_empty_app_id_is_none_and_the_logo_key_falls_back_to_the_source() {
         let mut h = NotifHistory::new(50);
-        h.push(1, "Chrome", Some(""), "t", "b");
-        h.push(2, "Teams", Some("MSTeams!App"), "t", "b");
+        h.push(1, "Chrome", Some(""), None, "t", "b");
+        h.push(2, "Teams", Some("MSTeams!App"), None, "t", "b");
         assert_eq!(h.items()[1].app_id, None);
         assert_eq!(h.items()[1].logo_key(), "Chrome");
         assert_eq!(h.items()[0].logo_key(), "MSTeams!App");
         assert_eq!(logo_key(None, "X"), "X");
+    }
+
+    #[test]
+    fn site_is_kept_cut_and_empty_means_none() {
+        let mut h = NotifHistory::new(50);
+        h.push(1, "Chrome", Some("Chrome"), Some("web.telegram.org"), "t", "b");
+        assert_eq!(h.items()[0].site.as_deref(), Some("web.telegram.org"));
+        h.push(2, "Chrome", Some("Chrome"), Some(""), "t", "b");
+        assert_eq!(h.items()[0].site, None);
+        h.push(3, "Chrome", Some("Chrome"), None, "t", "b");
+        assert_eq!(h.items()[0].site, None);
+        let long = "a".repeat(2000);
+        h.push(4, "Chrome", None, Some(&long), "t", "b");
+        assert_eq!(h.items()[0].site.as_ref().unwrap().chars().count(), 1024);
     }
 
     #[test]
@@ -333,6 +352,7 @@ mod tests {
                 app_id: None,
                 title: "t".into(),
                 body: String::new(),
+                site: None,
             })
             .collect();
         let h = NotifHistory::from_parts(10, 3, items);

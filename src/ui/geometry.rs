@@ -727,6 +727,41 @@ pub fn notice_layout(s: ShapeRect, action: Option<f32>) -> NoticeLayout {
     }
 }
 
+/// A notice made from a real Windows toast: the app's name in a small line
+/// above the title, so three lines sit beside the badge.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ToastNoticeLayout {
+    pub badge: Rect,
+    pub eyebrow: Rect,
+    pub title: Rect,
+    pub body: Rect,
+    pub action: Option<Rect>,
+}
+
+/// `notice_layout`'s badge, chip and text edges with the text split in three
+/// lines (eyebrow, title, body) around the shape's middle.
+pub fn toast_notice_layout(s: ShapeRect, action: Option<f32>) -> ToastNoticeLayout {
+    let base = notice_layout(s, action);
+    let mid = s.y + s.h / 2.0;
+    let (left, right) = (base.title.x, base.title.right());
+    ToastNoticeLayout {
+        badge: base.badge,
+        eyebrow: text_box(left, right, mid - 25.0, 13.0),
+        title: text_box(left, right, mid - 12.0, 18.0),
+        body: text_box(left, right, mid + 7.0, 16.0),
+        action: base.action,
+    }
+}
+
+/// The line above a toast notice's title: the app, and the web site after it
+/// when a browser gave one.
+pub fn toast_eyebrow(source: &str, site: Option<&str>) -> String {
+    match site {
+        Some(site) if !site.is_empty() => format!("{source} \u{b7} {site}"),
+        _ => source.to_owned(),
+    }
+}
+
 /// The screenshot preview's size (`.nt.big` around `.shot.lg` in
 /// keputusan-v3.1.html p6).
 pub const SHOT_W: f32 = 440.0;
@@ -1178,6 +1213,51 @@ mod tests {
             assert_eq!(notice_action_w(&NoticeKind::CleanDone), ACTION_W);
             assert_eq!(notice_action_w(&NoticeKind::SystemLow), ACTION_W);
         }
+    }
+
+    #[test]
+    fn toast_notice_layout_keeps_three_lines_inside_every_notice_shape() {
+        for style in [Style::Pill, Style::Notch] {
+            let mut all = sizes().to_vec();
+            all.push(NotchSize::DEFAULT);
+            for size in all {
+                for robot in [false, true] {
+                    let s = if robot {
+                        shape_with_robot_sized(style, size, ShapeKind::Notice, true)
+                    } else {
+                        shape_sized(style, size, ShapeKind::Notice)
+                    };
+                    for action in [None, Some(ACTION_W), Some(LOG_ACTION_W)] {
+                        let l = toast_notice_layout(s, action);
+                        let base = notice_layout(s, action);
+                        let tag = format!("{style:?} {size:?} robot {robot} action {action:?}");
+                        for r in [l.badge, l.eyebrow, l.title, l.body] {
+                            assert!(inside(s, r), "{tag}: {r:?}");
+                        }
+                        if let Some(chip) = l.action {
+                            assert!(inside(s, chip), "{tag}: chip");
+                        }
+                        assert!(l.eyebrow.bottom() <= l.title.y, "{tag}");
+                        assert!(l.title.bottom() <= l.body.y, "{tag}");
+                        assert!(l.eyebrow.h >= 13.0, "{tag}");
+                        assert!(l.title.h >= 18.0, "{tag}");
+                        assert!(l.body.h >= 16.0, "{tag}");
+                        assert_eq!(l.badge, base.badge, "{tag}");
+                        assert_eq!(l.action, base.action, "{tag}");
+                        for r in [l.eyebrow, l.title, l.body] {
+                            assert_eq!((r.x, r.right()), (base.title.x, base.title.right()), "{tag}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_toast_eyebrow_adds_the_site_only_when_there_is_one() {
+        assert_eq!(toast_eyebrow("Google Chrome", Some("web.telegram.org")), "Google Chrome \u{b7} web.telegram.org");
+        assert_eq!(toast_eyebrow("Slack", None), "Slack");
+        assert_eq!(toast_eyebrow("Slack", Some("")), "Slack");
     }
 
     /// Points along the cat head's rounded outline and its ear tips, drawn in
@@ -1714,7 +1794,7 @@ mod tests {
             let b = style(n);
             (b.fill, b.ink, b.icon)
         };
-        let app = |s: &str| notice(s, NoticeKind::App { app_id: None });
+        let app = |s: &str| notice(s, NoticeKind::App { app_id: None, toast: None });
         assert_eq!(fill(&app("WhatsApp")), (WHATSAPP, WHATSAPP, None));
         assert_eq!(fill(&app("whatsapp beta")), (WHATSAPP, WHATSAPP, None));
         assert_eq!(fill(&app("Discord")), (p.raised_hi, p.text, None));

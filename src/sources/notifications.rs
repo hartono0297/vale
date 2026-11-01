@@ -23,7 +23,7 @@ use windows::core::{Interface, Result};
 
 use crate::clipboard::image::Thumb;
 use crate::i18n::{Key, tr};
-use crate::model::{Event, Notice, NoticeKind, Toast};
+use crate::model::{Event, Notice, NoticeKind, Toast, ToastOrigin};
 use crate::notif::logo_key;
 
 /// A logo is read at this size and kept at most this many pixels on a side.
@@ -214,7 +214,7 @@ pub fn spawn_poller(tx: Sender<Event>, wake: impl Fn() + Send + 'static) {
                         continue;
                     };
                     let app_id = match &notice.kind {
-                        NoticeKind::App { app_id } => app_id.as_deref(),
+                        NoticeKind::App { app_id, .. } => app_id.as_deref(),
                         _ => None,
                     };
                     let key = logo_key(app_id, &notice.source);
@@ -293,14 +293,40 @@ pub fn probe() {
     for _ in 0..PROBE_SECONDS {
         match new_notifications(&listener, &mut tracker) {
             Ok(fresh) => {
-                for notice in fresh.iter().filter_map(to_notice) {
-                    println!("{} | {} | {}", notice.source, notice.title, notice.body);
+                for toast in &fresh {
+                    print_probe(toast);
                 }
             }
             Err(e) => eprintln!("vale: reading notifications failed: {e}"),
         }
         std::thread::sleep(POLL_INTERVAL);
     }
+}
+
+/// One fresh toast for `--probe-notifications`: the notice line the island
+/// would build, then the raw facts it was built from (display name, AUMID,
+/// every raw text element) and the site `split_site` picks, so the owner can
+/// see whether a browser's attribution line arrives.
+fn print_probe(toast: &UserNotification) {
+    if let Some(notice) = to_notice(toast) {
+        println!("{} | {} | {}", notice.source, notice.title, notice.body);
+    }
+    let name = app_name(toast).ok();
+    let app_id = app_id_of(toast);
+    println!("  app: {}", name.as_deref().unwrap_or("-"));
+    println!("  aumid: {}", app_id.as_deref().unwrap_or("-"));
+    let raw = text_elements(toast);
+    match &raw {
+        Ok(items) => {
+            for (i, text) in items.iter().enumerate() {
+                println!("  [{i}] {text:?}");
+            }
+        }
+        Err(e) => println!("  text elements unreadable: {e}"),
+    }
+    let source = source_name(name, app_id.clone());
+    let (_, site) = split_site(app_id.as_deref(), &source, raw.unwrap_or_default());
+    println!("  site: {}", site.as_deref().unwrap_or("-"));
 }
 
 fn request_access() -> Result<Option<UserNotificationListener>> {
@@ -415,20 +441,95 @@ fn decode_logo(bytes: &[u8]) -> Option<Thumb> {
 /// Maps a toast to a notice; `None` when it has no readable id.
 fn to_notice(notification: &UserNotification) -> Option<Notice> {
     let key = notification.Id().ok()?.to_string();
-    let app_id = notification
-        .AppInfo()
-        .and_then(|info| info.AppUserModelId())
-        .ok()
-        .map(|id| id.to_string());
+    let app_id = app_id_of(notification);
     let source = source_name(app_name(notification).ok(), app_id.clone());
-    let (title, body) = notice_text(&source, text_elements(notification).unwrap_or_default());
+    let (texts, site) = split_site(
+        app_id.as_deref(),
+        &source,
+        text_elements(notification).unwrap_or_default(),
+    );
+    let (title, body) = notice_text(&source, texts);
     Some(Notice {
         key,
         source,
         title,
         body,
-        kind: NoticeKind::App { app_id },
+        kind: NoticeKind::App {
+            app_id,
+            toast: Some(ToastOrigin { site }),
+        },
     })
+}
+
+fn app_id_of(notification: &UserNotification) -> Option<String> {
+    notification
+        .AppInfo()
+        .and_then(|info| info.AppUserModelId())
+        .ok()
+        .map(|id| id.to_string())
+}
+
+/// Browsers whose toasts may carry the web site as their last text line.
+const BROWSER_WORDS: [&str; 7] = [
+    "chrome", "msedge", "edge", "firefox", "brave", "opera", "vivaldi",
+];
+
+/// True when the AUMID or the display name has a browser's name as a whole
+/// word ("Knowledge" is not Edge).
+fn is_browser(app_id: Option<&str>, source: &str) -> bool {
+    let has_browser_word = |text: &str| {
+        text.to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .any(|word| BROWSER_WORDS.contains(&word))
+    };
+    app_id.is_some_and(has_browser_word) || has_browser_word(source)
+}
+
+/// `text` as a bare host ("web.telegram.org", "localhost.test:8080"),
+/// optionally behind "via ": no spaces, at least one dot, letters, digits,
+/// '.' and '-' only, no empty label, no leading or trailing '.' or '-', an
+/// optional ":port" of 1-5 digits. Returned as given, without "via ".
+fn bare_host(text: &str) -> Option<String> {
+    let text = text.trim();
+    let rest = match text.get(..4) {
+        Some(head) if head.eq_ignore_ascii_case("via ") => text[4..].trim_start(),
+        _ => text,
+    };
+    let (host, port) = match rest.split_once(':') {
+        Some((host, port)) => (host, Some(port)),
+        None => (rest, None),
+    };
+    if let Some(port) = port
+        && !((1..=5).contains(&port.len()) && port.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return None;
+    }
+    let ok_char = |c: char| c.is_ascii_alphanumeric() || c == '.' || c == '-';
+    let edge = |c: char| c == '.' || c == '-';
+    let valid = host.contains('.')
+        && host.chars().all(ok_char)
+        && !host.starts_with(edge)
+        && !host.ends_with(edge)
+        && host.split('.').all(|label| !label.is_empty());
+    valid.then(|| rest.to_string())
+}
+
+/// A browser toast's last line is the site when it is a bare host: it moves
+/// out of the texts. The title (index 0) is never taken. Anything else comes
+/// back unchanged with no site.
+fn split_site(
+    app_id: Option<&str>,
+    source: &str,
+    mut texts: Vec<String>,
+) -> (Vec<String>, Option<String>) {
+    if texts.len() >= 2
+        && is_browser(app_id, source)
+        && let Some(site) = texts.last().and_then(|last| bare_host(last))
+    {
+        texts.pop();
+        return (texts, Some(site));
+    }
+    (texts, None)
 }
 
 /// The app's display name, else its AppUserModelID, else a generic label, so
@@ -623,6 +724,118 @@ mod tests {
         }
         assert_eq!(decode_logo(&[]), None);
         assert_eq!(decode_logo(b"definitely not an image"), None);
+    }
+
+    fn split(app_id: Option<&str>, source: &str, items: &[&str]) -> (Vec<String>, Option<String>) {
+        split_site(app_id, source, texts(items))
+    }
+
+    #[test]
+    fn chrome_toast_gives_its_site() {
+        let (rest, site) = split(
+            Some("Chrome"),
+            "Chrome",
+            &["Rani", "Halo", "web.telegram.org"],
+        );
+        assert_eq!(site.as_deref(), Some("web.telegram.org"));
+        let (title, body) = notice_text("Chrome", rest);
+        assert_eq!((title.as_str(), body.as_str()), ("Rani", "Halo"));
+    }
+
+    #[test]
+    fn edge_via_prefix_is_dropped_from_the_site() {
+        let (rest, site) = split(
+            Some("MSEdge"),
+            "Microsoft Edge",
+            &["Judul", "isi", "via www.example.com"],
+        );
+        assert_eq!(site.as_deref(), Some("www.example.com"));
+        assert_eq!(rest, texts(&["Judul", "isi"]));
+        let (_, site) = split(Some("MSEdge"), "x", &["T", "b", "VIA www.example.com"]);
+        assert_eq!(site.as_deref(), Some("www.example.com"));
+    }
+
+    #[test]
+    fn browser_is_found_by_display_name_alone() {
+        let (rest, site) = split(None, "Google Chrome", &["Rani", "Halo", "web.telegram.org"]);
+        assert_eq!(site.as_deref(), Some("web.telegram.org"));
+        assert_eq!(rest.len(), 2);
+    }
+
+    #[test]
+    fn firefox_matches_by_display_name() {
+        let (_, site) = split(
+            Some("308046B0AF4A39CB"),
+            "Firefox",
+            &["T", "b", "mail.example.org"],
+        );
+        assert_eq!(site.as_deref(), Some("mail.example.org"));
+    }
+
+    #[test]
+    fn host_with_a_port_is_a_site() {
+        for host in ["localhost.test:8080", "192.168.1.10:3000"] {
+            let (_, site) = split(Some("Chrome"), "Chrome", &["T", "b", host]);
+            assert_eq!(site.as_deref(), Some(host));
+        }
+        let (_, site) = split(Some("Chrome"), "Chrome", &["T", "b", "via a.test:80"]);
+        assert_eq!(site.as_deref(), Some("a.test:80"));
+    }
+
+    #[test]
+    fn non_browser_keeps_its_host_line_in_the_body() {
+        let (rest, site) = split(
+            Some("TelegramMessengerLLP.TelegramDesktop"),
+            "Telegram",
+            &["Rani", "Halo", "web.telegram.org"],
+        );
+        assert_eq!(site, None);
+        assert_eq!(rest, texts(&["Rani", "Halo", "web.telegram.org"]));
+        let (_, body) = notice_text("Telegram", rest);
+        assert_eq!(body, "Halo · web.telegram.org");
+    }
+
+    #[test]
+    fn text_with_spaces_is_no_host() {
+        let (rest, site) = split(Some("Chrome"), "Chrome", &["T", "see example.com now"]);
+        assert_eq!(site, None);
+        assert_eq!(rest.len(), 2);
+    }
+
+    #[test]
+    fn single_element_browser_toast_has_no_site() {
+        let (rest, site) = split(Some("Chrome"), "Chrome", &["web.telegram.org"]);
+        assert_eq!(site, None);
+        assert_eq!(rest, texts(&["web.telegram.org"]));
+    }
+
+    #[test]
+    fn via_chrome_without_a_dot_is_no_host() {
+        let (_, site) = split(Some("Chrome"), "Chrome", &["Ibu", "halo", "via Chrome"]);
+        assert_eq!(site, None);
+    }
+
+    #[test]
+    fn bare_host_rules() {
+        assert_eq!(bare_host(" a.b "), Some("a.b".to_string()));
+        for bad in [
+            "", "via", "via ", "localhost", ".a.b", "a.b.", "-a.b", "a.b-", "a..b", "a.b:",
+            "a.b:123456", "a.b:80x", "a.b:8:9", "a_b.c", "\u00e9.com", "a b.c",
+        ] {
+            assert_eq!(bare_host(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn browser_names_are_whole_words() {
+        assert!(is_browser(Some("MSEdge"), "x"));
+        assert!(is_browser(Some("Brave.Browser"), "x"));
+        assert!(is_browser(None, "Microsoft Edge"));
+        assert!(is_browser(None, "Opera GX"));
+        assert!(is_browser(None, "Vivaldi"));
+        assert!(!is_browser(None, "Knowledge Base"));
+        assert!(!is_browser(Some("com.squirrel.slack.slack"), "Slack"));
+        assert!(!is_browser(None, "Operator"));
     }
 
     #[test]

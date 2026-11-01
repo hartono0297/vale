@@ -1844,7 +1844,7 @@ mod tests {
             kind,
         };
         assert_eq!(
-            Spot::of(&View::Notice(n(NoticeKind::App { app_id: None }))),
+            Spot::of(&View::Notice(n(NoticeKind::App { app_id: None, toast: None }))),
             Spot::Notice(NoticeSort::App)
         );
         assert_eq!(

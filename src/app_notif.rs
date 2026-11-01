@@ -22,12 +22,13 @@ use super::App;
 use super::clip::pointer_moved;
 use crate::clipboard::image::Thumb;
 use crate::config::{self, NotifSettings};
-use crate::model::{Event, Hit, NoticeKind, NotifAction, Page, Toast, View};
+use crate::model::{Event, Hit, Notice, NoticeKind, NotifAction, Page, Toast, View};
 use crate::notif::persist::{self, Saved, Write};
 use crate::notif::store::clamp_cap;
-use crate::notif::{NotifHistory, route_toast};
+use crate::notif::{NotifHistory, logo_key, route_toast};
 use crate::sources::notifications::{self, is_muted};
 use crate::ui::cli_input::{CliInput, Key as InputKey};
+use crate::ui::render::ToastLogoView;
 use crate::ui::editor;
 use crate::ui::geometry::{ShapeKind, shape_for};
 use crate::ui::panel_layout::{
@@ -185,6 +186,10 @@ impl App {
     /// the history gets an entry while recording and not paused.
     pub(super) fn on_toast(&mut self, toast: Toast, now: Instant) {
         let Toast { notice, at, logo } = toast;
+        // `notif.logos` is never pruned during a run (clear, remove and mute
+        // leave it alone): the notch notice of a later toast, one with
+        // "Simpan notifikasi" off, paused or unrecorded, still finds its
+        // logo here (`toast_logo_view`). Only the saved file drops unused ones.
         if let Some((key, thumb)) = logo {
             self.notif.logos.insert(key, thumb);
         }
@@ -196,14 +201,18 @@ impl App {
             cfg.paused,
         );
         if history {
-            let app_id = match &notice.kind {
-                NoticeKind::App { app_id } => app_id.clone(),
-                _ => None,
+            let (app_id, site) = match &notice.kind {
+                NoticeKind::App { app_id, toast } => (
+                    app_id.clone(),
+                    toast.as_ref().and_then(|origin| origin.site.clone()),
+                ),
+                _ => (None, None),
             };
             self.notif.history.push(
                 at,
                 &notice.source,
                 app_id.as_deref(),
+                site.as_deref(),
                 &notice.title,
                 &notice.body,
             );
@@ -635,9 +644,33 @@ pub enum NotifSetting {
     Clear,
 }
 
+/// The logo the notch draws in a toast notice's badge: only for a notice made
+/// from a real Windows toast (`toast: Some`) whose logo key is known. An
+/// island-owned App notice, or a toast whose logo failed, gets `None` (the
+/// letter badge).
+pub(super) fn toast_logo_view<'a>(
+    logos: &'a HashMap<String, Thumb>,
+    view: &View,
+) -> Option<ToastLogoView<'a>> {
+    let View::Notice(Notice {
+        kind: NoticeKind::App {
+            app_id,
+            toast: Some(_),
+        },
+        source,
+        ..
+    }) = view
+    else {
+        return None;
+    };
+    let (key, thumb) = logos.get_key_value(&logo_key(app_id.as_deref(), source))?;
+    Some(ToastLogoView { key, thumb })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::ToastOrigin;
 
     #[test]
     fn the_pointer_selects_the_row_it_is_over_or_a_button_of_it() {
@@ -721,10 +754,67 @@ mod tests {
         assert_eq!(selection_after_remove(&ids, 9), None);
     }
 
+    fn toast_notice(app_id: Option<&str>, source: &str, toast: Option<ToastOrigin>) -> View {
+        View::Notice(Notice {
+            key: "k".into(),
+            source: source.into(),
+            title: "t".into(),
+            body: "b".into(),
+            kind: NoticeKind::App {
+                app_id: app_id.map(str::to_owned),
+                toast,
+            },
+        })
+    }
+
+    fn logo_map() -> HashMap<String, Thumb> {
+        let thumb = Thumb {
+            w: 1,
+            h: 1,
+            bgra: vec![1, 2, 3, 255],
+        };
+        HashMap::from([
+            ("5319.WhatsApp!App".to_owned(), thumb.clone()),
+            ("Chrome".to_owned(), thumb),
+        ])
+    }
+
+    #[test]
+    fn a_toast_notice_finds_its_logo_by_the_logo_key() {
+        let logos = logo_map();
+        let origin = Some(ToastOrigin::default());
+        let view = toast_notice(Some("5319.WhatsApp!App"), "WhatsApp", origin.clone());
+        let found = toast_logo_view(&logos, &view).expect("logo");
+        assert_eq!(found.key, "5319.WhatsApp!App");
+        assert_eq!(found.thumb, &logos["5319.WhatsApp!App"]);
+        // No AUMID: the display name keys it.
+        let by_name = toast_notice(None, "Chrome", origin);
+        assert_eq!(toast_logo_view(&logos, &by_name).expect("logo").key, "Chrome");
+    }
+
+    #[test]
+    fn an_island_owned_app_notice_has_no_toast_logo() {
+        let logos = logo_map();
+        let own = toast_notice(Some("5319.WhatsApp!App"), "WhatsApp", None);
+        assert_eq!(toast_logo_view(&logos, &own), None);
+    }
+
+    #[test]
+    fn a_toast_whose_key_is_not_in_the_map_has_no_logo() {
+        let logos = logo_map();
+        let view = toast_notice(Some("Slack!App"), "Slack", Some(ToastOrigin::default()));
+        assert_eq!(toast_logo_view(&logos, &view), None);
+        assert_eq!(
+            toast_logo_view(&HashMap::new(), &toast_notice(None, "Chrome", Some(ToastOrigin::default()))),
+            None
+        );
+        assert_eq!(toast_logo_view(&logos, &View::Idle), None);
+    }
+
     #[test]
     fn the_view_lights_only_a_listed_row_and_has_no_rows_without_access_to_scroll() {
         let mut notif = NotifState::default();
-        let a = notif.history.push(100, "WhatsApp", None, "Hi", "yo");
+        let a = notif.history.push(100, "WhatsApp", None, None, "Hi", "yo");
         notif.access = true;
         notif.selected = Some(a);
         let view = notif_view(&notif, NotifSettings::default(), false);
