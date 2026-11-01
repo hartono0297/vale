@@ -800,6 +800,6 @@
   var catApi = safe(initCats);
   safe(function () { initNotch(catApi); });
   safe(initReveal);
-  /* The head script removes .js after 4 s unless this is set (script blocked or broken). */
+  /* The head script removes .js at DOMContentLoaded unless this is set (script blocked or broken). */
   root.classList.add('ready');
 })();

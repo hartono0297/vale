@@ -6,7 +6,7 @@
 <title>Privacy policy | Vale</title>
 <meta name="description" content="What Vale reads, stores and sends. Vale runs on your PC, has no server and no account, and connects to the internet only for the optional features listed here.">
 <link rel="icon" href="img/logo.svg" type="image/svg+xml">
-<script>var d=document.documentElement;d.classList.add('js');setTimeout(function(){if(!d.classList.contains('ready'))d.classList.remove('js')},4000);try{var t=localStorage.getItem('vale-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t)}catch(e){}</script>
+<script>var d=document.documentElement;d.classList.add('js');function f(){if(!d.classList.contains('ready'))d.classList.remove('js')}document.addEventListener('DOMContentLoaded',f);setTimeout(function(){if(!d.classList.contains('ready'))d.classList.add('reveal-off')},4000);setTimeout(f,20000);try{var t=localStorage.getItem('vale-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t)}catch(e){}</script>
 <link rel="stylesheet" href="style.css">
 <script src="site.js" defer></script>
 </head>
@@ -107,7 +107,7 @@
 </tbody></table></div>
 
 <h3 id="files-outside">Outside %APPDATA%\Vale</h3>
-<p>These are not in Vale's data folder. Removing <code>%APPDATA%\Vale</code> or uninstalling Vale does not remove them.</p>
+<p>These are not in Vale's data folder, so removing <code>%APPDATA%\Vale</code> leaves them in place. The uninstall script removes the autostart value and the Claude Code hook entries. It keeps your screenshots, the <code>settings.json.bak-vale</code> backup and the Mole whitelist entries (see <a href="#deleting-data">Deleting your data</a>).</p>
 <div class="table-wrap" role="region" aria-label="Files and settings outside the Vale folder" tabindex="0"><table>
 <caption>What Vale writes outside %APPDATA%\Vale</caption>
 <thead><tr><th scope="col">Where</th><th scope="col">What it holds</th><th scope="col">Encrypted</th><th scope="col">When it exists</th></tr></thead>

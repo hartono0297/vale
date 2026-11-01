@@ -420,9 +420,12 @@ html:not(.js) .cat-stage { grid-template-columns: minmax(0, 1fr); }
    Once only, in every browser: site.js adds .is-in the first time the element
    is on screen and stops watching it, so it never replays on scroll back. The
    hiding rule exists only under .js; site.js adds .is-in to everything already
-   in view at start, and the head script drops .js again if site.js never runs. */
+   in view at start. The head script drops .js at DOMContentLoaded if site.js
+   failed (deferred scripts run before it), and adds .reveal-off after 4 s if
+   site.js is merely slow, so the text shows without the layout switching. */
 .js .reveal:not(.is-in) { opacity: 0; transform: translateY(16px); }
 .js .reveal { transition: opacity .5s ease-out, transform .5s ease-out; }
+.js.reveal-off .reveal, .js.reveal-off .reveal:not(.is-in) { opacity: 1; transform: none; }
 @media (prefers-reduced-motion: reduce) {
   .js .reveal, .js .reveal:not(.is-in) { opacity: 1; transform: none; transition: none; }
 }

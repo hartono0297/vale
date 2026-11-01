@@ -6,7 +6,7 @@
 <title>Vale, a notch for Windows 11</title>
 <meta name="description" content="Vale is a free, open-source notch for the top of the Windows 11 screen: the clock and a cat when idle, a panel of pages when you hover over it.">
 <link rel="icon" href="img/logo.svg" type="image/svg+xml">
-<script>var d=document.documentElement;d.classList.add('js');setTimeout(function(){if(!d.classList.contains('ready'))d.classList.remove('js')},4000);try{var t=localStorage.getItem('vale-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t)}catch(e){}</script>
+<script>var d=document.documentElement;d.classList.add('js');function f(){if(!d.classList.contains('ready'))d.classList.remove('js')}document.addEventListener('DOMContentLoaded',f);setTimeout(function(){if(!d.classList.contains('ready'))d.classList.add('reveal-off')},4000);setTimeout(f,20000);try{var t=localStorage.getItem('vale-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t)}catch(e){}</script>
 <link rel="preload" href="fonts/DMSans-400.ttf" as="font" type="font/ttf" crossorigin>
 <link rel="preload" href="fonts/DMSans-600.ttf" as="font" type="font/ttf" crossorigin>
 <link rel="stylesheet" href="style.css">

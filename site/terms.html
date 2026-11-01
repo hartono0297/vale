@@ -6,7 +6,7 @@
 <title>Terms of use | Vale</title>
 <meta name="description" content="The terms for using Vale, a free and open-source notch for Windows 11: the MIT licence, the features that change files or settings, and the limits of what the developer promises.">
 <link rel="icon" href="img/logo.svg" type="image/svg+xml">
-<script>var d=document.documentElement;d.classList.add('js');setTimeout(function(){if(!d.classList.contains('ready'))d.classList.remove('js')},4000);try{var t=localStorage.getItem('vale-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t)}catch(e){}</script>
+<script>var d=document.documentElement;d.classList.add('js');function f(){if(!d.classList.contains('ready'))d.classList.remove('js')}document.addEventListener('DOMContentLoaded',f);setTimeout(function(){if(!d.classList.contains('ready'))d.classList.add('reveal-off')},4000);setTimeout(f,20000);try{var t=localStorage.getItem('vale-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t)}catch(e){}</script>
 <link rel="stylesheet" href="style.css">
 <script src="site.js" defer></script>
 </head>
@@ -67,7 +67,7 @@
 <h2>At your own risk</h2>
 <p>These features change files, settings or the system. You use them at your own risk, so keep backups of anything you cannot replace.</p>
 <ul>
-<li><strong>The cleaner.</strong> It has 7 categories. It deletes caches, temporary files and logs permanently. It moves old installers to the Recycle Bin. It removes Windows Update leftovers through a helper that asks for administrator rights, and you approve that in the UAC prompt. Nothing is deleted until you click the confirm button.</li>
+<li><strong>The cleaner.</strong> It has 7 categories. It deletes caches and temporary files permanently. It moves old installers, and log files in your user folder and Roaming folder, to the Recycle Bin. It removes Windows Update leftovers through a helper that asks for administrator rights, and you approve that in the UAC prompt. Nothing is deleted until you click the confirm button.</li>
 <li><strong>Mole mode.</strong> This runs your own copy of Mole, which Vale never installs. Vale does a dry run first. If you add the system part, it runs with administrator rights, and you approve that in the UAC prompt.</li>
 <li><strong>The CLI.</strong> It runs any command you type, in PowerShell or cmd. Vale does not check what the command does.</li>
 <li><strong>Eject.</strong> It sends a safe-removal request to Windows. Windows can refuse it.</li>
