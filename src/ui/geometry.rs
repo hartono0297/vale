@@ -1793,7 +1793,10 @@ mod tests {
                 assert_eq!(typing.x + typing.w, idle.x + idle.w, "{style:?} {size:?}");
                 assert_eq!(typing.x, idle.x - TYPING_LEAD);
                 assert_eq!(typing.w, idle.w + TYPING_LEAD);
-                assert_eq!((typing.y, typing.h, typing.radius), (idle.y, idle.h, idle.radius));
+                assert_eq!(
+                    (typing.y, typing.h, typing.radius),
+                    (idle.y, idle.h, idle.radius)
+                );
             }
         }
     }

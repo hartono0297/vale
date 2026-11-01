@@ -84,6 +84,15 @@ no single thing to cut.
 the analyzer, the WASAPI client and the Settings row. No new crate and no new
 `windows` feature.
 
+## The typing cat (2026-11-01)
+
+[[cat-types-while-working]] (the laptop, paws, glance, typing shape and
+`TIMER_TYPING`) took the release exe from 2,816,000 to 2,821,120 bytes
+(+5,120, +0.18 %). Both were built with `cargo build --release --locked` in
+two folders of the same name length (`main` from `git archive`, and the
+branch), each with its own `CARGO_TARGET_DIR`, so the running island's exe was
+never touched. No new crate and no new `windows` feature.
+
 ## Idle RAM and CPU
 
 Not measured. The release exe is single-instance and reads real user data, and

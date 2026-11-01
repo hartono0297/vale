@@ -39,6 +39,22 @@ Bata adds only one-shots (`app.rs`, planned by `robot::plan_timers`):
   (`TIMER_OUTSIDE`, below) watches so a click outside ends it. Windows'
   animation setting is read at start and on `WM_SETTINGCHANGE`, never polled.
 
+- `TIMER_TYPING` (40, 2026-11-01): the typing cat's paws
+  ([[cat-types-while-working]]). A one-shot re-armed with each step's wait
+  (`TypingPaws::next`: 110 to 200 ms, 420 ms for about one step in eight, a
+  900 ms pause about every 8 s); each tick draws once (unless the frame clock
+  runs anyway). That is about 5 to 9 redraws a second, only while the face is
+  Typing **and** Motion is Full (Energy Saver folded in), Windows' animations
+  are on, nothing is fullscreen, the session is not locked, the display is on
+  and the notch is not shrunk (`robot::typing_anim_on`). Otherwise the timer is
+  killed, the paws go down (one draw if one was up) and nothing runs. No frame
+  clock and no repeating timer for it: `sync_typing_timer` is called from
+  `sync_robot_timers` (every `refresh`, and the end of a frame-clock run),
+  `sync_pointer_polls` (lock, display) and `follow_pointer_settings`.
+  The glance rides `TIMER_POINTER` (below) and the frame clock only while its
+  ease moves. `TIMER_BLINK` and `TIMER_ROBOT` already carry the cat's blink
+  and `next_change`, which is why the paws have their own id.
+
 Motion policy (`Motion`, config `robot_animation`):
 
 - **Penuh (Full)**: blink, lift, bounce.
@@ -154,6 +170,12 @@ only while they move (`eyes_look.moving()` in `animating_at`); with Saver,
 Off, Energy Saver or Windows animations off they jump with one draw and no
 clock. Nothing changes while the notch is not shrunk: an idle island costs
 what it did.
+
+**The typing cat's glance (2026-11-01)** adds nothing to the poll: it is
+`look_eligible` through `pointer_watch::look_on` (`Expr::follows`), so the poll
+runs at the follow pace exactly when the looking cat's would; the stillness
+check (`GlanceRest`, 1.2 s) rides the same readings. A pointer at rest sets the
+target back to (0, 0) once and then costs the poll's `GetCursorPos` only.
 
 **The look's ease runs on the `FrameClock`**, not on this timer: a poll that
 moves the look target by 0.02 or more starts the clock (`ensure_clock`),

@@ -10,6 +10,11 @@
 //!   `LookEase`).
 //! - **The shrunk notch's eyes look at the pointer** too: sideways and down,
 //!   a few dip (`eyes_target`, `EyesLook`), gated by `eyes_motion`.
+//! - **The typing cat's eyes glance at the pointer** (`look_on` lets it
+//!   through like the looking cat, `glance_target`, the same `EyesLook` pair):
+//!   its eyes only, while the pointer moves; `GlanceRest` sends them back to
+//!   the screen once it has been still for `GLANCE_REST`, from the poll's own
+//!   readings.
 //!
 //! Nothing here touches Win32; `App` reads the pointer and applies the result.
 
@@ -1254,7 +1259,10 @@ mod tests {
             look_on(allowed, moves, idle, shrunk, full, away, expr)
         };
         for expr in [Expr::Idle, Expr::Happy, Expr::Sad, Expr::Typing] {
-            assert!(all(true, true, true, false, false, false, Some(expr)), "{expr:?}");
+            assert!(
+                all(true, true, true, false, false, false, Some(expr)),
+                "{expr:?}"
+            );
             // Every rule flipped in turn.
             assert!(!all(false, true, true, false, false, false, Some(expr)));
             assert!(!all(true, false, true, false, false, false, Some(expr)));
@@ -1265,8 +1273,17 @@ mod tests {
         }
         // No cat drawn, or a face that neither turns nor glances.
         assert!(!all(true, true, true, false, false, false, None));
-        for expr in [Expr::Think, Expr::Sleep, Expr::Music, Expr::Sing, Expr::Wave] {
-            assert!(!all(true, true, true, false, false, false, Some(expr)), "{expr:?}");
+        for expr in [
+            Expr::Think,
+            Expr::Sleep,
+            Expr::Music,
+            Expr::Sing,
+            Expr::Wave,
+        ] {
+            assert!(
+                !all(true, true, true, false, false, false, Some(expr)),
+                "{expr:?}"
+            );
         }
     }
 
@@ -1343,7 +1360,10 @@ mod tests {
         g.advance(ms(120));
         let (x, y) = g.value();
         // One time constant covers 1 - 1/e of the way.
-        assert!((x - 0.632).abs() < 0.01 && (y + 0.316).abs() < 0.01, "({x}, {y})");
+        assert!(
+            (x - 0.632).abs() < 0.01 && (y + 0.316).abs() < 0.01,
+            "({x}, {y})"
+        );
         // A change under LOOK_EPS is ignored.
         assert!(!g.set_target(1.0, -0.51));
         g.advance(ms(5_000));

@@ -212,7 +212,11 @@ impl Pose {
     /// The dancing pose: nod and squash by `amount` (0 to 1), the note
     /// `note_rise` of the way up (0 to 1) and faded by `note_fade`.
     pub fn dance(self, amount: f32, note_rise: f32, note_fade: f32) -> Pose {
-        let amount = if amount.is_nan() { 0.0 } else { amount.clamp(0.0, 1.0) };
+        let amount = if amount.is_nan() {
+            0.0
+        } else {
+            amount.clamp(0.0, 1.0)
+        };
         Pose {
             nod_dip: NOD_MAX_DIP * amount,
             squash: amount,
@@ -511,7 +515,13 @@ pub fn face(expr: Expr, blink: bool) -> Face {
             -7.0,
         ),
         // The idle pills, shifted (below) toward the laptop on the left.
-        Expr::Typing => (open(10.0, 5.6, 0.0).to_vec(), vec![], still, 0.0, TYPING_TILT),
+        Expr::Typing => (
+            open(10.0, 5.6, 0.0).to_vec(),
+            vec![],
+            still,
+            0.0,
+            TYPING_TILT,
+        ),
     };
     let eyes = if blink && expr.blinks() {
         vec![Part::Stroke(Line::Blink)]
@@ -630,7 +640,12 @@ fn eyes_grid_boxes(blink: bool) -> Vec<(f32, f32, f32, f32)> {
             Seg::Move(x, y) => boxes.push((x - pad, y - pad, x + pad, y + pad)),
             Seg::Line(x, y) => {
                 if let Some(b) = boxes.last_mut() {
-                    *b = (b.0.min(x - pad), b.1.min(y - pad), b.2.max(x + pad), b.3.max(y + pad));
+                    *b = (
+                        b.0.min(x - pad),
+                        b.1.min(y - pad),
+                        b.2.max(x + pad),
+                        b.3.max(y + pad),
+                    );
                 }
             }
             _ => {}
@@ -1098,13 +1113,12 @@ impl RobotPainter {
                 face.eye_shift.1 + pose.glance_y,
             ) * world;
             // The dancing note's marks move on their own, in dip, and fade.
-            let notes = Matrix3x2::translation(
-                pose.eye_dx_dip / k + face.eye_shift.0,
-                face.eye_shift.1,
-            ) * shape
-                * Matrix3x2::translation(0.0, pose.note_dy_dip)
-                * place
-                * previous;
+            let notes =
+                Matrix3x2::translation(pose.eye_dx_dip / k + face.eye_shift.0, face.eye_shift.1)
+                    * shape
+                    * Matrix3x2::translation(0.0, pose.note_dy_dip)
+                    * place
+                    * previous;
             let note_alpha = 1.0 - pose.note_fade.clamp(0.0, 1.0);
             for part in &face.parts {
                 let note = is_note(part);
@@ -1763,7 +1777,11 @@ pub fn note_lift_dip(rest_top_room_dip: f32, rise: f32) -> f32 {
 fn is_note(part: &Part) -> bool {
     matches!(
         part,
-        Part::Stroke(Line::Note { .. }) | Part::Dot { ink: Ink::Cream, .. }
+        Part::Stroke(Line::Note { .. })
+            | Part::Dot {
+                ink: Ink::Cream,
+                ..
+            }
     )
 }
 
@@ -1924,8 +1942,16 @@ impl TypingPaws {
     /// How high each paw (left, right) is raised now, in grid units.
     pub fn lift(&self) -> [f32; 2] {
         [
-            if self.up == Some(Side::Left) { PAW_LIFT } else { 0.0 },
-            if self.up == Some(Side::Right) { PAW_LIFT } else { 0.0 },
+            if self.up == Some(Side::Left) {
+                PAW_LIFT
+            } else {
+                0.0
+            },
+            if self.up == Some(Side::Right) {
+                PAW_LIFT
+            } else {
+                0.0
+            },
         ]
     }
 }
@@ -2743,8 +2769,7 @@ mod tests {
             for w in log.windows(3) {
                 let (first, gap, second) = (w[0], w[1], w[2]);
                 // The gap's wait is what is left of the 260 ms: a double.
-                if first.1 && !gap.1 && first.2 == BLINK_MS && gap.2 == EYES_DOUBLE_MS - BLINK_MS
-                {
+                if first.1 && !gap.1 && first.2 == BLINK_MS && gap.2 == EYES_DOUBLE_MS - BLINK_MS {
                     assert!(second.1, "the second shut follows the gap");
                     assert_eq!(gap.0 - first.0, u64::from(BLINK_MS));
                     assert_eq!(second.0 - first.0, 260, "seed {seed}");
@@ -3218,16 +3243,43 @@ mod tests {
             }
         }
         let all = |robot, dance, anim, playing, timer| {
-            dance_on(robot, dance, Motion::Full, anim, playing, timer, Expr::Music)
+            dance_on(
+                robot,
+                dance,
+                Motion::Full,
+                anim,
+                playing,
+                timer,
+                Expr::Music,
+            )
         };
         assert!(all(true, true, true, true, true));
         assert!(!all(false, true, true, true, true), "cat off");
         assert!(!all(true, false, true, true, true), "setting off");
-        assert!(!all(true, true, false, true, true), "Windows animations off");
+        assert!(
+            !all(true, true, false, true, true),
+            "Windows animations off"
+        );
         assert!(!all(true, true, true, false, true), "paused");
         assert!(!all(true, true, true, true, false), "timer off");
-        assert!(dance_on(true, true, Motion::Full, true, true, true, Expr::Sing));
-        assert!(!dance_on(true, true, Motion::Full, true, true, true, Expr::Happy));
+        assert!(dance_on(
+            true,
+            true,
+            Motion::Full,
+            true,
+            true,
+            true,
+            Expr::Sing
+        ));
+        assert!(!dance_on(
+            true,
+            true,
+            Motion::Full,
+            true,
+            true,
+            true,
+            Expr::Happy
+        ));
     }
 
     #[test]
@@ -3272,12 +3324,8 @@ mod tests {
             let top = notes_top(expr).unwrap();
             for amount in [0.0, 1.0] {
                 for rise in [0.0, 0.5, 1.0] {
-                    let p = with_note_lift(
-                        Pose::default().dance(amount, rise, 0.0),
-                        expr,
-                        area,
-                        0.0,
-                    );
+                    let p =
+                        with_note_lift(Pose::default().dance(amount, rise, 0.0), expr, area, 0.0);
                     let k = area.w / GRID;
                     let squashed = 54.0 + (top - 54.0) * (1.0 - SQUASH_H * p.squash);
                     let y = area.y + p.nod_dip + squashed * k + p.note_dy_dip;
@@ -3316,15 +3364,39 @@ mod tests {
             assert_eq!(e(hover), Some(Expr::Happy), "{what} hover");
             assert!(typing_wanted(&hover), "{what} hover");
             // A command that just ended still wins.
-            let done = RobotInputs { cli: Cli::Done, ..i };
-            let failed = RobotInputs { cli: Cli::Failed, ..i };
+            let done = RobotInputs {
+                cli: Cli::Done,
+                ..i
+            };
+            let failed = RobotInputs {
+                cli: Cli::Failed,
+                ..i
+            };
             assert_eq!(e(done), Some(Expr::Happy), "{what}");
             assert_eq!(e(failed), Some(Expr::Sad), "{what}");
             assert!(!typing_wanted(&done) && !typing_wanted(&failed), "{what}");
             // Media, lyric, pomodoro and notices are as they were.
-            assert_eq!(e(RobotInputs { spot: Spot::Media, ..i }), Some(Expr::Music));
-            assert_eq!(e(RobotInputs { spot: Spot::Lyric, ..i }), Some(Expr::Sing));
-            assert_eq!(e(RobotInputs { spot: Spot::Pomodoro, ..i }), Some(Expr::Focus));
+            assert_eq!(
+                e(RobotInputs {
+                    spot: Spot::Media,
+                    ..i
+                }),
+                Some(Expr::Music)
+            );
+            assert_eq!(
+                e(RobotInputs {
+                    spot: Spot::Lyric,
+                    ..i
+                }),
+                Some(Expr::Sing)
+            );
+            assert_eq!(
+                e(RobotInputs {
+                    spot: Spot::Pomodoro,
+                    ..i
+                }),
+                Some(Expr::Focus)
+            );
             assert_eq!(
                 e(RobotInputs {
                     spot: Spot::Notice(NoticeSort::ClaudeWaiting),
@@ -3332,7 +3404,13 @@ mod tests {
                 }),
                 Some(Expr::Alert)
             );
-            assert!(!typing_wanted(&RobotInputs { spot: Spot::Media, ..i }), "{what}");
+            assert!(
+                !typing_wanted(&RobotInputs {
+                    spot: Spot::Media,
+                    ..i
+                }),
+                "{what}"
+            );
         }
         assert_eq!(e(base), Some(Expr::Idle));
         assert!(!typing_wanted(&base));
@@ -3391,7 +3469,10 @@ mod tests {
         let open = face(Expr::Typing, false);
         assert_eq!(open.parts, face(Expr::Idle, false).parts);
         assert_eq!(open.eye_shift, (-3.5, 1.0));
-        assert_eq!((open.ears, open.bob, open.tilt), (Ears::default(), 0.0, -4.0));
+        assert_eq!(
+            (open.ears, open.bob, open.tilt),
+            (Ears::default(), 0.0, -4.0)
+        );
         let centre = |part: &Part, shift: (f32, f32)| match *part {
             Part::Pill { x, y, w, h, .. } => (x + w / 2.0 + shift.0, y + h / 2.0 + shift.1),
             _ => panic!("an eye is a pill"),
@@ -3573,16 +3654,62 @@ mod tests {
         let on = |expr, motion, anim, full, away, shrunk| {
             typing_anim_on(expr, motion, anim, full, away, shrunk)
         };
-        assert!(on(Some(Expr::Typing), Motion::Full, true, false, false, false));
+        assert!(on(
+            Some(Expr::Typing),
+            Motion::Full,
+            true,
+            false,
+            false,
+            false
+        ));
         // Every argument flipped in turn.
-        assert!(!on(Some(Expr::Idle), Motion::Full, true, false, false, false));
+        assert!(!on(
+            Some(Expr::Idle),
+            Motion::Full,
+            true,
+            false,
+            false,
+            false
+        ));
         assert!(!on(None, Motion::Full, true, false, false, false));
-        assert!(!on(Some(Expr::Typing), Motion::Full, false, false, false, false));
-        assert!(!on(Some(Expr::Typing), Motion::Full, true, true, false, false));
-        assert!(!on(Some(Expr::Typing), Motion::Full, true, false, true, false));
-        assert!(!on(Some(Expr::Typing), Motion::Full, true, false, false, true));
+        assert!(!on(
+            Some(Expr::Typing),
+            Motion::Full,
+            false,
+            false,
+            false,
+            false
+        ));
+        assert!(!on(
+            Some(Expr::Typing),
+            Motion::Full,
+            true,
+            true,
+            false,
+            false
+        ));
+        assert!(!on(
+            Some(Expr::Typing),
+            Motion::Full,
+            true,
+            false,
+            true,
+            false
+        ));
+        assert!(!on(
+            Some(Expr::Typing),
+            Motion::Full,
+            true,
+            false,
+            false,
+            true
+        ));
         // Only full motion (Energy Saver already folded in) moves them.
-        for (motion, want) in [(Motion::Full, true), (Motion::Saver, false), (Motion::Off, false)] {
+        for (motion, want) in [
+            (Motion::Full, true),
+            (Motion::Saver, false),
+            (Motion::Off, false),
+        ] {
             assert_eq!(
                 on(Some(Expr::Typing), motion, true, false, false, false),
                 want,
@@ -3616,7 +3743,10 @@ mod tests {
         };
         let r = laptop_rect(area);
         assert_eq!((r.x, r.w), (73.0, 36.0));
-        assert!((r.y - 30.3).abs() < 1e-4 && (r.h - 29.1).abs() < 1e-4, "{r:?}");
+        assert!(
+            (r.y - 30.3).abs() < 1e-4 && (r.h - 29.1).abs() < 1e-4,
+            "{r:?}"
+        );
         // Every laptop and paw point lies inside the box, the paws' lift and
         // outline aside (a paw raised past the lid's top is still low).
         for (x, y) in typing_points([0.0, 0.0]) {
@@ -3656,10 +3786,42 @@ mod tests {
         assert!(look_on(allowed, true, true, false, false, false, expr));
         // "Ikuti kursor" off, Motion Saver (or Energy Saver), another view,
         // shrunk, fullscreen, locked: no.
-        assert!(!look_on(look_allowed(true, false), true, true, false, false, false, expr));
-        assert!(!look_on(look_allowed(false, true), true, true, false, false, false, expr));
-        assert!(!look_on(allowed, Motion::Saver.moves(), true, false, false, false, expr));
-        assert!(!look_on(allowed, Motion::Off.moves(), true, false, false, false, expr));
+        assert!(!look_on(
+            look_allowed(true, false),
+            true,
+            true,
+            false,
+            false,
+            false,
+            expr
+        ));
+        assert!(!look_on(
+            look_allowed(false, true),
+            true,
+            true,
+            false,
+            false,
+            false,
+            expr
+        ));
+        assert!(!look_on(
+            allowed,
+            Motion::Saver.moves(),
+            true,
+            false,
+            false,
+            false,
+            expr
+        ));
+        assert!(!look_on(
+            allowed,
+            Motion::Off.moves(),
+            true,
+            false,
+            false,
+            false,
+            expr
+        ));
         assert!(!look_on(allowed, true, false, false, false, false, expr));
         assert!(!look_on(allowed, true, true, true, false, false, expr));
         assert!(!look_on(allowed, true, true, false, true, false, expr));

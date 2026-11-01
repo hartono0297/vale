@@ -8705,9 +8705,11 @@ mod tests {
             TIMER_LYRIC_RETRY,
             TIMER_DEVICES,
             TIMER_POINTER,
+            TIMER_TYPING,
         ];
         assert_eq!(TIMER_POINTER, 33);
         assert_eq!(TIMER_NOTIF_SAVE, 34);
+        assert_eq!(TIMER_TYPING, 40);
         for (i, a) in ids.iter().enumerate() {
             assert!(!ids[i + 1..].contains(a), "timer id {a} used twice");
         }

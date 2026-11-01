@@ -97,6 +97,16 @@
 //! half way up its rise and 30 % faded. Fixed values: the demos never capture
 //! audio, and a real island nods with the bass or a 600 ms beat.
 //!
+//! The typing cat (work running: a Claude session, a CLI command, a Mole
+//! clean) is `bata-cli-running`; `bata-ketik` (paws down, the eyes on the
+//! screen), `bata-ketik-paw` (the left paw up), `bata-ketik-lirik-kiri` and
+//! `bata-ketik-lirik-kanan` (the eyes glancing at a pointer far left and far
+//! right, a little below) are fixed poses of it. All are the idle island
+//! grown 12 dip on the left for the laptop (`idle_shape_typing`), the robot
+//! and clock where the plain idle island has them; none reads the pointer or
+//! runs the paw timer. The face sheet (`bata-sheet`) shows the typing cat
+//! last, at the right of its cell so its laptop has room.
+//!
 //! The notch peek's scenes `peek-eyes` (robot on) and `peek-eyes-plain`
 //! (robot off) draw the notch shrunk to the cat's two eyes: a 34 x 14 pill,
 //! terracotta eyes, nothing else. Hold one with `DI_DEMO_STEP=peek-eyes` in
@@ -119,9 +129,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use super::cat_style::CatLook;
 use super::dock::{self, DockFrame};
 use super::geometry::{
-    ANIM_MS, NOTCH_OPACITY_DEFAULT, NotchSize, ShapeKind, ShapeRect, ease_out_back, lerp_shape,
-    idle_shape_typing, lyric_box_w, lyric_max_w, lyric_scroll_offset, lyric_shape_sized,
-    lyric_width_min, shape_with_robot_sized, typing_lead,
+    ANIM_MS, NOTCH_OPACITY_DEFAULT, NotchSize, ShapeKind, ShapeRect, ease_out_back,
+    idle_shape_typing, lerp_shape, lyric_box_w, lyric_max_w, lyric_scroll_offset,
+    lyric_shape_sized, lyric_width_min, shape_with_robot_sized, typing_lead,
 };
 use super::motion::{
     PAGE_FADE_MS, REVEAL_MS, RevealDir, Transit, content_alpha, page_fade_frame, reveal_frame,
