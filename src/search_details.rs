@@ -355,7 +355,7 @@ fn look(item: &Item, uninstall: &mut Option<Vec<UninstallEntry>>) -> Detail {
 
 /// The shell's icon for `path` at `ICON_PX`, never a content thumbnail (so a
 /// cloud file is not downloaded to draw it).
-fn shell_icon(path: &Path) -> Option<Thumb> {
+pub(crate) fn shell_icon(path: &Path) -> Option<Thumb> {
     unsafe {
         let wide = HSTRING::from(path.as_os_str());
         let factory: IShellItemImageFactory =

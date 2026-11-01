@@ -624,6 +624,7 @@ impl IslandState {
             | Event::SystemSample(_)
             | Event::Audio(..)
             | Event::Devices(_)
+            | Event::Arrange(_)
             | Event::SearchIndex(_)
             | Event::SearchFiles(_)
             | Event::SearchDetail { .. }

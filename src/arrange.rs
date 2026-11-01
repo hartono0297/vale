@@ -1917,3 +1917,37 @@ mod tests {
         assert_eq!(c.skipped, 0, "never negative");
     }
 }
+
+// ------------------------------------------------------------------- events
+
+/// A window's place before Vale moved it, kept for "Batalkan" (a plain copy
+/// of `WINDOWPLACEMENT`, so the event stays comparable).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Placement {
+    pub hwnd: isize,
+    pub flags: u32,
+    pub show: u32,
+    pub min: (i32, i32),
+    pub max: (i32, i32),
+    /// The restored rectangle: left, top, right, bottom.
+    pub normal: (i32, i32, i32, i32),
+}
+
+/// What the workers of `arrange_win` report to the island.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ArrangeEvent {
+    /// A move finished: `run` is the number `App` gave it, `moved` windows
+    /// are in place, `skipped` were not moved (gone, hung, elevated, refused
+    /// the move), `undo` the places they had before.
+    Done {
+        run: u64,
+        moved: usize,
+        skipped: usize,
+        undo: Vec<Placement>,
+    },
+    /// An app's icon, read off the UI thread (`None`: it has none).
+    Icon {
+        key: String,
+        thumb: Option<crate::clipboard::image::Thumb>,
+    },
+}

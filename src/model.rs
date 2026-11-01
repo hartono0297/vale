@@ -3,6 +3,7 @@ use std::time::Instant;
 
 use chrono::NaiveDate;
 
+use crate::arrange::ArrangeEvent;
 use crate::audio::MixerRow;
 use crate::calendar::CalendarSnapshot;
 use crate::clean::{CleanCat, CleanEvent, CleanMode};
@@ -291,6 +292,9 @@ pub enum Event {
     /// The drive scanner's answer (`devices_win::Devices`); `App` keeps it,
     /// the reducer ignores it.
     Devices(DevicesEvent),
+    /// A mover or icon worker of Susun (`arrange_win`); `App` keeps it, the
+    /// reducer ignores it.
+    Arrange(ArrangeEvent),
     /// The optional Devices hotkey: opens the panel on the Devices page
     /// (without taking the foreground), or closes it when it shows that.
     DevicesHotkey,
