@@ -43,7 +43,7 @@ const LENGTH_JUMP_MS: u64 = 2_000;
 const USER_AGENT: &str = concat!(
     "Vale/",
     env!("CARGO_PKG_VERSION"),
-    " (https://github.com/hartono0297/dynamic-island)"
+    " (https://github.com/hartono0297/vale)"
 );
 const API: &str = "https://lrclib.net/api/get";
 const SEARCH_API: &str = "https://lrclib.net/api/search";

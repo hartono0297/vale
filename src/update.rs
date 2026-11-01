@@ -24,10 +24,10 @@ use crate::model::Event;
 /// The running version.
 pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
 /// The stable (not draft, not pre-release) latest release of the repository.
-const LATEST_API: &str = "https://api.github.com/repos/hartono0297/dynamic-island/releases/latest";
+const LATEST_API: &str = "https://api.github.com/repos/hartono0297/vale/releases/latest";
 /// What the failure notice's chip opens: the release page, as a last resort.
 pub const RELEASES_LATEST_URL: &str =
-    "https://github.com/hartono0297/dynamic-island/releases/latest";
+    "https://github.com/hartono0297/vale/releases/latest";
 /// Asset names the release workflow publishes.
 const EXE_ASSET: &str = "vale.exe";
 const SHA_ASSET: &str = "vale.exe.sha256";

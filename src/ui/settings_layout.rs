@@ -134,8 +134,8 @@ const GRIP_W: f32 = 28.0;
 /// Padding above the own-shortcut form's first row.
 const FORM_PAD: f32 = 6.0;
 
-pub const REPO_URL: &str = "https://github.com/hartono0297/dynamic-island";
-pub const GUIDE_URL: &str = "https://github.com/hartono0297/dynamic-island#setup-google-calendar";
+pub const REPO_URL: &str = "https://github.com/hartono0297/vale";
+pub const GUIDE_URL: &str = "https://github.com/hartono0297/vale#setup-google-calendar";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Section {
@@ -4261,7 +4261,7 @@ fn about(b: &mut Builder, s: &State) {
     let repo = (
         Hit::Repo,
         Key::SourceCode,
-        "github.com/hartono0297/dynamic-island".to_owned(),
+        "github.com/hartono0297/vale".to_owned(),
         Key::OpenGithub,
         ButtonKind::External,
     );

@@ -1,6 +1,6 @@
 ---
 tags: [decision, rename, install]
-date: 2026-10-28
+date: 2026-11-01
 ---
 
 # The app is Vale now; what still says Dynamic Island, and why
@@ -26,8 +26,7 @@ say Vale.
   publisher stays `CN=DynamicIslandDev`, because it must match the dev
   certificate the owner already trusts (re-trusting needs admin).
   `package.ps1` removes an old `DynamicIsland` registration.
-- **Repo URLs** (`hartono0297/dynamic-island`) stay until the owner renames
-  the GitHub repo; GitHub redirects the old URLs after a rename.
+- **Repo renamed.** The GitHub repo was renamed to `hartono0297/vale` on 2026-11-01, and every repo URL in code, scripts, docs and site/ now uses it. Pages moved to https://hartono0297.github.io/vale/. GitHub redirects the old git, web, API, release and raw URLs, but not Pages. The old name `hartono0297/dynamic-island` must never be reused for a new repo, or those redirects break (old installs' self-updater and old one-liners rely on them).
 - `scripts/make-fonts.ps1` keeps the `dynamic-island-subset` tag in the font
   names, since changing it changes the font files for no visible gain.
 

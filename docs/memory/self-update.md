@@ -15,7 +15,7 @@ notices, state), `google::http::Http::download_to` (streaming download),
 ## Flow
 
 1. **Check** (worker thread): GET
-   `https://api.github.com/repos/hartono0297/dynamic-island/releases/latest`
+   `https://api.github.com/repos/hartono0297/vale/releases/latest`
    with `User-Agent: Vale/<version>` and `Accept: application/vnd.github+json`,
    20 s timeout, body capped at 1 MB. `releases/latest` skips drafts and
    pre-releases. A non-2xx answer (403 rate limit, 404) is `BadRelease`; a
