@@ -113,7 +113,7 @@ Hover the notch to open it, scroll to change pages. Hover the page dots under th
 
 <p align="center"><img src="assets/screenshots/notices.png" width="460" alt="Animated notices in the notch: a greeting, a copied item, a screenshot preview, a disk warning and a long lyric line"></p>
 
-Everything is set in **Settings**, from the tray icon, in eight sections: General, Appearance, Cat, Panel, Clipboard, Features, Integrations and About. Appearance holds the island style, accent colour, island background (*Match cat*, Espresso, Graphite, Sea, Night or Plum), notch size and fill; Cat holds the coat, accessory, animation, sleep, the follow-pointer, dance-to-music and shrink-to-eyes switches and the greeting. Open mode, page order, shortcuts, hotkeys, lyrics and language are there too. It can also stay behind your windows (experimental). Every option is described in the [guide](docs/guide.md#settings).
+Everything is set in **Settings**, from the tray icon, in eight sections: General, Appearance, Cat, Panel, Clipboard, Features, Integrations and About. Appearance holds the island style, accent colour, island background (*Match cat*, Espresso, Graphite, Sea, Night or Plum), notch size and fill; Cat holds the coat, accessory, animation, sleep, the follow-pointer, dance-to-music and shrink-to-eyes switches and the greeting. Open mode, page order, shortcuts, hotkeys, lyrics and language are there too. It can also stay behind your windows (experimental). The Settings window can be resized or maximised and opens where you left it. Every option is described in the [guide](docs/guide.md#settings).
 
 ## Privacy
 

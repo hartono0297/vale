@@ -133,6 +133,8 @@ Open **Settings…** from the tray icon.
 
 Eight sections, in this order; the window opens on General. Every card has a small title.
 
+The window can be resized (down to 720 × 520) and maximised; the content stays in a centred column and the window opens where and as large as you left it (on screen again if its monitor is gone). While you drag a handle in a list, holding it near the top or bottom edge scrolls the page.
+
 | Section | What's in it |
 |---|---|
 | General | *Basics*: language (Indonesia / English), start with Windows, the quick-search hotkey. *Alerts*: battery threshold (off on a PC without a battery), disk and RAM warnings, and how to turn off Windows pop-ups |
