@@ -43,7 +43,8 @@ use windows::Win32::UI::HiDpi::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, ReleaseCapture, SetCapture, SetFocus, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
-    VK_A, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_RETURN, VK_TAB, VK_UP,
+    VK_A, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_LWIN, VK_MENU, VK_RETURN, VK_RWIN, VK_SHIFT, VK_TAB,
+    VK_UP,
 };
 use windows::Win32::UI::Shell::{
     DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass, ShellExecuteW,
@@ -57,21 +58,24 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SIZE_RESTORED, SM_CXICON, SM_CXSMICON, SW_HIDE, SW_RESTORE, SW_SHOW, SW_SHOWMAXIMIZED,
     SW_SHOWMINIMIZED, SW_SHOWNA, SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOZORDER, SendMessageW,
     SetCursor, SetForegroundWindow, SetTimer, SetWindowPos, SetWindowTextW, ShowWindow,
-    WINDOW_EX_STYLE, WINDOW_STYLE, WINDOWPLACEMENT, WM_APP, WM_CAPTURECHANGED, WM_CHAR, WM_CLOSE,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WINDOWPLACEMENT, WM_ACTIVATE, WM_APP, WM_CAPTURECHANGED, WM_CHAR,
+    WM_CLOSE,
     WM_COMMAND, WM_CTLCOLOREDIT, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_EXITSIZEMOVE,
     WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-    WM_NCDESTROY, WM_PAINT, WM_SETCURSOR, WM_SETFONT, WM_SETICON, WM_SIZE, WM_TIMER, WNDCLASSEXW,
+    WM_NCDESTROY, WM_PAINT, WM_SETCURSOR, WM_SETFONT, WM_SETICON, WM_SIZE, WM_SYSKEYDOWN, WM_TIMER,
+    WNDCLASSEXW,
     WPF_RESTORETOMAXIMIZED, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_MAXIMIZEBOX, WS_MINIMIZEBOX,
     WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP, WS_THICKFRAME,
 };
 use windows::core::{Error, HSTRING, PCWSTR, Result, w};
 
 use super::frame_clock::{FrameClock, WM_APP_FRAME};
+use super::hotkey_rec::{RecHook, WM_APP_HOTKEY_REC};
 use super::robot::{Motion, sleep_step};
 use super::settings_controls::{Gfx, Scene, ease};
 use super::settings_layout::{
     CLIENT_H, CLIENT_W, CanvasPress, CatFace, Control, DragView, EditView, Field, GUIDE_URL,
-    GoogleState, Group, Hit, Layout, List, PrtscRow, REPO_URL, ROW_H, ReorderRow, Section,
+    GoogleState, Group, Hit, Layout, List, REPO_URL, ROW_H, RejectMsg, ReorderRow, Section,
     SliderId, State, TileForm, Tone, UpdateRow, battery_step, canvas_drag, canvas_press,
     clip_items_step, disk_warn_step, drag_scroll_speed, drop_index, layout_in, notif_items_step,
     ram_warn_step, scroll_by, shot_secs_step, slider_value,
@@ -83,10 +87,13 @@ use crate::claude::install::{self, InstallOutcome, UninstallOutcome};
 use crate::cli::Shell;
 use crate::cli_folders::CliStart;
 use crate::config::{
-    ArrangeHotkey, ClipHotkey, ClipboardSettings, Config, DevicesHotkey, NotchFill, NotifSettings,
-    OpenMode, ScreenshotSettings, SearchHotkey, ShotIgnore, ShotTool, Style, WindowPlace,
+    ClipboardSettings, Config, NotchFill, NotifSettings, OpenMode, ScreenshotSettings, ShotIgnore,
+    ShotTool, Style, WindowPlace,
 };
 use crate::google::client;
+use crate::hotkey::{
+    Hotkey, HotkeyId, Hotkeys, Mods, Reject, Step, check, record_step, used_by,
+};
 use crate::i18n::{Key, Lang, text};
 use crate::model::PomoField;
 use crate::pages::PanelPages;
@@ -156,16 +163,18 @@ pub enum Action {
     ClipItems(u32),
     ClipPersist(bool),
     ClipClearOnLock(bool),
-    ClipHotkey(ClipHotkey),
-    /// Settings → Umum → Dasar → Tombol pintas pencarian.
-    SearchHotkey(SearchHotkey),
-    /// Settings → Fitur → Perangkat: the plug-in and safe-to-remove notices,
-    /// and the Devices page's hotkey.
+    /// Settings → Fitur → Perangkat: the plug-in and safe-to-remove notices.
     DeviceNotices(bool),
-    DevicesHotkey(DevicesHotkey),
-    /// Settings -> Fitur -> Susun: the hotkey, the gap (`commit` false while
+    /// Settings → Tombol pintas: a row's new combo (`None`: off), every row
+    /// back to its default, and the recorder starting (`true`: the island
+    /// lets go of its hotkeys) or ending (`false`: it takes them again). A
+    /// `Hotkey` is always posted before the `HotkeyRecording(false)` that
+    /// ends the recording.
+    Hotkey(HotkeyId, Option<Hotkey>),
+    HotkeysResetAll,
+    HotkeyRecording(bool),
+    /// Settings -> Fitur -> Susun: the gap (`commit` false while
     /// the thumb moves), and the whole lists after an edit.
-    ArrangeHotkey(ArrangeHotkey),
     ArrangeGap {
         gap: u32,
         commit: bool,
@@ -191,8 +200,6 @@ pub enum Action {
     ShotPreview(bool),
     ShotOnIgnore(ShotIgnore),
     ShotSecs(u32),
-    /// "Tombol PrtSc membuka screenshot Vale".
-    ShotPrintScreen(bool),
     BatteryThreshold(u8),
     /// "Peringatan disk": GB free.
     DiskWarn(u32),
@@ -326,19 +333,13 @@ pub struct Model {
     pub shell: Shell,
     pub cli_start: CliStart,
     pub open_mode: OpenMode,
-    pub search_hotkey: SearchHotkey,
-    /// The chosen search hotkey could not be registered.
-    pub search_hotkey_failed: bool,
     pub device_notices: bool,
-    pub devices_hotkey: DevicesHotkey,
-    /// The chosen Devices hotkey could not be registered.
-    pub devices_hotkey_failed: bool,
-    /// Registering the Susun hotkey failed (another app has it).
-    pub arrange_hotkey_failed: bool,
-    /// Susun's hotkey, gap, templates and saved arrangements.
+    /// The five hotkeys, and by `HotkeyId::index` whether the one set could
+    /// not be registered (another app has it, or the PrtSc hook failed).
+    pub hotkeys: Hotkeys,
+    pub hotkey_failed: [bool; 5],
+    /// Susun's gap, templates and saved arrangements.
     pub arrange: ArrangeSettings,
-    /// What the PrtSc row says when the key is wanted but its hook failed.
-    pub prtsc: PrtscRow,
     pub robot: bool,
     pub robot_motion: Motion,
     pub robot_sleep: u32,
@@ -362,8 +363,6 @@ pub struct Model {
     /// Settings → Fitur → Notifikasi and the excluded apps.
     pub notif: NotifSettings,
     pub muted: Vec<String>,
-    /// The chosen Clipboard hotkey could not be registered.
-    pub clip_hotkey_failed: bool,
     pub shot: ScreenshotSettings,
     /// "Halaman panel".
     pub pages: PanelPages,
@@ -398,14 +397,10 @@ impl Model {
             shell: cfg.cli_shell,
             cli_start: cfg.cli_start,
             open_mode: cfg.open_mode,
-            search_hotkey: cfg.search_hotkey,
-            search_hotkey_failed: false,
             device_notices: cfg.device_notices,
-            devices_hotkey: cfg.devices_hotkey,
-            devices_hotkey_failed: false,
-            arrange_hotkey_failed: false,
+            hotkeys: cfg.hotkeys,
+            hotkey_failed: [false; 5],
             arrange: cfg.arrange.clone(),
-            prtsc: PrtscRow::Plain,
             robot: cfg.robot,
             robot_motion: cfg.robot_animation,
             robot_sleep: cfg.robot_sleep_minutes,
@@ -427,7 +422,6 @@ impl Model {
             clip: cfg.clipboard,
             notif: cfg.notifications,
             muted: cfg.muted_apps.clone(),
-            clip_hotkey_failed: false,
             shot: cfg.screenshot,
             pages: PanelPages::from_saved(&cfg.panel_pages),
             tiles: ShortcutTiles::from_saved(&cfg.shortcut_tiles),
@@ -689,6 +683,13 @@ struct Settings {
     drag: Option<Drag>,
     /// The template editor (or the rename field) while it is open.
     arrange_edit: Option<ArrangeEdit>,
+    /// The hotkey row being recorded, and why the last combo was refused
+    /// (shown under that row until the next recording or a section change).
+    recording: Option<HotkeyId>,
+    hotkey_error: Option<(HotkeyId, RejectMsg)>,
+    /// The recorder's keyboard hook. Kept after a combo until it has let go
+    /// of the keys (it ends by itself), so `WM_DESTROY` can still stop it.
+    rec_hook: Option<RecHook>,
     /// `%APPDATA%\Vale`, or the old folder while a failed migration keeps it.
     data_label: String,
     /// Small and large window icons, owned (not shared) and destroyed with the window.
@@ -743,6 +744,9 @@ fn post_action(owner: HWND, action: Action) {
         drop(unsafe { Box::from_raw(ptr) });
     }
 }
+
+/// `WM_ACTIVATE`'s `wparam` low word when the window loses the foreground.
+const WA_INACTIVE: u32 = 0;
 
 const CLASS_NAME: PCWSTR = w!("ValeSettings");
 
@@ -1131,6 +1135,9 @@ pub fn open(owner: HWND, model: Model, section: Option<Section>) -> Result<HWND>
         tile_note: None,
         drag: None,
         arrange_edit: None,
+        recording: None,
+        hotkey_error: None,
+        rec_hook: None,
         data_label: crate::data_dir::label(&crate::data_dir::dir()),
         icons: [HICON::default(); 2],
         styled_light: None,
@@ -1438,12 +1445,11 @@ impl Settings {
             shell: m.shell,
             cli_start: m.cli_start,
             open_mode: m.open_mode,
-            search_hotkey: m.search_hotkey,
-            search_hotkey_failed: m.search_hotkey_failed,
             device_notices: m.device_notices,
-            devices_hotkey: m.devices_hotkey,
-            devices_hotkey_failed: m.devices_hotkey_failed,
-            arrange_hotkey_failed: m.arrange_hotkey_failed,
+            hotkeys: m.hotkeys,
+            hotkey_failed: m.hotkey_failed,
+            hotkey_recording: self.recording,
+            hotkey_error: self.hotkey_error,
             arrange: m.arrange.clone(),
             arrange_edit: self.arrange_edit.as_ref().map(|e| EditView {
                 rename: matches!(e.target, EditTarget::Rename(_)),
@@ -1451,7 +1457,6 @@ impl Settings {
                 selected: e.selected,
                 name_ok: arrange::clean_name(&self.field_text[2]).is_some(),
             }),
-            prtsc: m.prtsc,
             battery_threshold: m.battery_threshold,
             has_battery: self.has_battery,
             disk_warn_gb: m.disk_warn_gb,
@@ -1475,7 +1480,6 @@ impl Settings {
             hooks: self.hooks,
             hook_note: self.hook_note.as_ref().map(|(s, t)| (s.as_str(), *t)),
             clip: m.clip,
-            clip_hotkey_failed: m.clip_hotkey_failed,
             shot: m.shot,
             pages: m.pages.clone(),
             tiles: m.tiles.clone(),
@@ -1609,22 +1613,6 @@ impl Settings {
                     .iter()
                     .position(|v| *v == m.robot_motion)
                     .unwrap_or(0) as f32,
-                Group::ClipHotkey => ClipHotkey::ALL
-                    .iter()
-                    .position(|v| *v == m.clip.hotkey)
-                    .unwrap_or(0) as f32,
-                Group::SearchHotkey => SearchHotkey::ALL
-                    .iter()
-                    .position(|v| *v == m.search_hotkey)
-                    .unwrap_or(0) as f32,
-                Group::DevicesHotkey => DevicesHotkey::ALL
-                    .iter()
-                    .position(|v| *v == m.devices_hotkey)
-                    .unwrap_or(0) as f32,
-                Group::ArrangeHotkey => ArrangeHotkey::ALL
-                    .iter()
-                    .position(|v| *v == m.arrange.hotkey)
-                    .unwrap_or(0) as f32,
                 Group::ShotIgnore => usize::from(m.shot.on_ignore == ShotIgnore::Delete) as f32,
                 // The form's own choice, not the model's.
                 Group::TileKind => 0.0,
@@ -1641,10 +1629,6 @@ impl Settings {
             Group::CliStart,
             Group::Shell,
             Group::Motion,
-            Group::ClipHotkey,
-            Group::SearchHotkey,
-            Group::DevicesHotkey,
-            Group::ArrangeHotkey,
             Group::ShotIgnore,
             Group::ShotTool,
         ] {
@@ -1720,11 +1704,6 @@ impl Settings {
             (Hit::NotifRecord, old.notif.record, new.notif.record),
             (Hit::NotifPersist, old.notif.persist, new.notif.persist),
             (Hit::ShotPreview, old.shot.preview, new.shot.preview),
-            (
-                Hit::ShotPrintScreen,
-                old.shot.print_screen,
-                new.shot.print_screen,
-            ),
         ] {
             if from != to {
                 self.anims.slide_toggle(hit, from, to, now);
@@ -2183,10 +2162,34 @@ impl Settings {
             }
             Hit::ClipPersist => post(Action::ClipPersist(!m.clip.persist)),
             Hit::ClipClearOnLock => post(Action::ClipClearOnLock(!m.clip.clear_on_lock)),
-            Hit::ClipHotkey(h) if h != m.clip.hotkey => post(Action::ClipHotkey(h)),
-            Hit::SearchHotkey(h) if h != m.search_hotkey => post(Action::SearchHotkey(h)),
             Hit::DeviceNotices => post(Action::DeviceNotices(!m.device_notices)),
-            Hit::DevicesHotkey(h) if h != m.devices_hotkey => post(Action::DevicesHotkey(h)),
+            // A field: the first click records, the next on the same field
+            // cancels.
+            Hit::HotkeyField(id) => {
+                if self.recording == Some(id) {
+                    self.cancel_recording();
+                } else {
+                    self.start_recording(id);
+                }
+                Vec::new()
+            }
+            // The row's default; refused here (red text) when another row
+            // has that combo, as the island would refuse it.
+            Hit::HotkeyReset(id) => match id.default() {
+                Some(hk) if used_by(&m.hotkeys, id, hk).is_some() => {
+                    let other = used_by(&m.hotkeys, id, hk);
+                    self.hotkey_error = other.map(|o| (id, RejectMsg::UsedBy(o)));
+                    Vec::new()
+                }
+                value => {
+                    self.hotkey_error = None;
+                    post(Action::Hotkey(id, value))
+                }
+            },
+            Hit::HotkeysResetAll => {
+                self.hotkey_error = None;
+                post(Action::HotkeysResetAll)
+            }
             Hit::ClipNotice => post(Action::ClipNotice(!m.clip.copy_notice)),
             Hit::ClipFeedbackAll => post(Action::ClipFeedbackAll(!m.clip.copied_feedback_all)),
             Hit::ClipClear if self.clip_confirm => {
@@ -2236,7 +2239,6 @@ impl Settings {
                 Vec::new()
             }
             Hit::ShotPreview => post(Action::ShotPreview(!m.shot.preview)),
-            Hit::ShotPrintScreen => post(Action::ShotPrintScreen(!m.shot.print_screen)),
             Hit::ShotTool(v) if v != m.shot.tool => post(Action::ShotTool(v)),
             Hit::ShotIgnore(v) if v != m.shot.on_ignore => post(Action::ShotOnIgnore(v)),
             Hit::ShotSecs(dir) => {
@@ -2289,7 +2291,6 @@ impl Settings {
             Hit::PageGrip(_) | Hit::TileGrip(_) | Hit::Slider(_) => Vec::new(),
             Hit::NotchReset => post(Action::NotchReset),
             Hit::NotchFill(v) if v != m.notch_fill => post(Action::NotchFill(v)),
-            Hit::ArrangeHotkey(v) if v != m.arrange.hotkey => post(Action::ArrangeHotkey(v)),
             Hit::ArrangeTemplateNew => {
                 if m.arrange.templates.len() >= arrange::MAX_TEMPLATES {
                     Vec::new()
@@ -2470,10 +2471,6 @@ impl Settings {
             | Hit::CliStart(_)
             | Hit::OpenMode(_)
             | Hit::Motion(_)
-            | Hit::ClipHotkey(_)
-            | Hit::SearchHotkey(_)
-            | Hit::DevicesHotkey(_)
-            | Hit::ArrangeHotkey(_)
             | Hit::ShotIgnore(_)
             | Hit::ShotTool(_) => Vec::new(),
         };
@@ -2606,12 +2603,102 @@ impl Settings {
         if self.section == Section::Features {
             self.arrange_edit = None;
         }
+        // A recording stops, and a refusal's red text goes, with the section.
+        self.cancel_recording();
+        self.hotkey_error = None;
         self.section = section;
         self.scroll = 0.0;
         self.focused = None;
         self.hover = None;
         self.start_clock();
         true
+    }
+
+    // ---- Recording a hotkey ----
+
+    /// A click on a row's field: the island lets go of its hotkeys, the
+    /// recorder's keyboard hook goes in (or, if it cannot, the window's own
+    /// key messages record), and the field asks for keys.
+    fn start_recording(&mut self, id: HotkeyId) {
+        self.stop_rec_hook();
+        self.hotkey_error = None;
+        self.recording = Some(id);
+        post_action(self.owner, Action::HotkeyRecording(true));
+        self.rec_hook = RecHook::start(self.hwnd);
+    }
+
+    /// Stops the recorder's hook now (a finished one is only joined).
+    fn stop_rec_hook(&mut self) {
+        if let Some(hook) = self.rec_hook.take() {
+            hook.stop();
+        }
+    }
+
+    /// The recording ends with nothing changed, by the user's click, a
+    /// section change or the window losing the foreground: the hook goes at
+    /// once and the island takes its hotkeys back. Nothing when none runs.
+    fn cancel_recording(&mut self) {
+        self.stop_rec_hook();
+        if self.recording.take().is_some() {
+            post_action(self.owner, Action::HotkeyRecording(false));
+            self.invalidate();
+        }
+    }
+
+    /// A key pressed while recording, from the hook (`WM_APP_HOTKEY_REC`) or
+    /// the window's own key messages (the fallback): the `Hotkey` it makes, if
+    /// any, goes to the owner before `HotkeyRecording(false)`. The hook is left
+    /// to let go of the held keys by itself.
+    fn on_rec_key(&mut self, vk: u16, mods: Mods) {
+        let Some(id) = self.recording else {
+            return;
+        };
+        // vk 0: the hook gave up waiting.
+        let step = if vk == 0 {
+            Step::Cancel
+        } else {
+            record_step(vk, mods)
+        };
+        let value = match step {
+            Step::Ignore => return,
+            Step::Cancel => None,
+            Step::Clear => Some(None),
+            Step::Combo(hk) => match check(hk) {
+                Err(Reject::Reserved) => {
+                    self.hotkey_error = Some((id, RejectMsg::Reserved));
+                    None
+                }
+                Err(Reject::NeedsModifier) => {
+                    self.hotkey_error = Some((id, RejectMsg::NeedsModifier));
+                    None
+                }
+                Ok(()) => match used_by(&self.model.hotkeys, id, hk) {
+                    Some(other) => {
+                        self.hotkey_error = Some((id, RejectMsg::UsedBy(other)));
+                        None
+                    }
+                    None => Some(Some(hk)),
+                },
+            },
+        };
+        if let Some(value) = value {
+            post_action(self.owner, Action::Hotkey(id, value));
+        }
+        self.recording = None;
+        post_action(self.owner, Action::HotkeyRecording(false));
+        self.relayout();
+    }
+
+    /// The fallback while the recorder's hook could not go in: a key message
+    /// of the window, with the modifiers read from the keyboard state.
+    fn on_fallback_key(&mut self, vk: u16) {
+        let mods = Mods {
+            ctrl: key_down(VK_CONTROL.0),
+            alt: key_down(VK_MENU.0),
+            shift: key_down(VK_SHIFT.0),
+            win: key_down(VK_LWIN.0) || key_down(VK_RWIN.0),
+        };
+        self.on_rec_key(vk, mods);
     }
 }
 
@@ -2898,6 +2985,13 @@ fn on_button_down(hwnd: HWND, lparam: LPARAM) {
     }
     let hit = with(|st| {
         st.pressed = st.hit_at(lparam);
+        // A press anywhere but on the field being recorded ends the
+        // recording; the click itself still does what it would.
+        if let Some(id) = st.recording
+            && st.pressed != Some(Hit::HotkeyField(id))
+        {
+            st.cancel_recording();
+        }
         // A handle takes the row in hand at once.
         if let Some(h @ (Hit::PageGrip(_) | Hit::TileGrip(_))) = st.pressed {
             let (_, y) = st.point(lparam);
@@ -2984,6 +3078,12 @@ fn on_button_up(hwnd: HWND, lparam: LPARAM) {
     let after = with(|st| st.on_click(hit)).unwrap_or_default();
     run_after(hwnd, owner, after);
     relayout_and_place();
+}
+
+/// A recording is on and the recorder's hook is not running (it could not be
+/// installed): the window's own key messages record.
+fn recording_without_hook() -> bool {
+    with(|st| st.recording.is_some() && st.rec_hook.is_none()).unwrap_or(false)
 }
 
 fn on_key(hwnd: HWND, key: u16) -> bool {
@@ -3381,6 +3481,26 @@ unsafe extern "system" fn wnd_proc(
             }
             LRESULT(1)
         }
+        // A combo the recorder's hook saw (or gave up waiting for).
+        WM_APP_HOTKEY_REC => {
+            let (vk, mods) = (wparam.0 as u16, Mods::from_bits(lparam.0 as u8));
+            with(|st| st.on_rec_key(vk, mods));
+            LRESULT(0)
+        }
+        // The fallback while the hook could not go in: the window's own key
+        // messages record (Esc cancels instead of closing the window).
+        WM_KEYDOWN | WM_SYSKEYDOWN if recording_without_hook() => {
+            let vk = (wparam.0 & 0xFFFF) as u16;
+            with(|st| st.on_fallback_key(vk));
+            LRESULT(0)
+        }
+        // Another window came up (or Win+L): a recording in progress ends.
+        WM_ACTIVATE => {
+            if (wparam.0 & 0xFFFF) as u32 == WA_INACTIVE {
+                with(|st| st.cancel_recording());
+            }
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+        }
         WM_KEYDOWN if on_key(hwnd, (wparam.0 & 0xFFFF) as u16) => LRESULT(0),
         WM_COMMAND => {
             on_command(wparam, lparam);
@@ -3405,6 +3525,9 @@ unsafe extern "system" fn wnd_proc(
         WM_DESTROY => {
             if let Some(owner) = with(|st| {
                 st.clock = None;
+                // The recorder's hook never outlives the window; a recording
+                // in progress ends (the island takes its hotkeys back).
+                st.cancel_recording();
                 st.owner
             }) {
                 post_action(owner, Action::Closed);
@@ -3500,8 +3623,8 @@ unsafe extern "system" fn edit_proc(
 /// demo model and pushes it back, so every control works. Nothing is saved
 /// and the island is not involved; the hook buttons and links are real, so
 /// leave them alone. `DI_ACCENT`, `DI_GOOGLE` (`ok`, `needslogin`,
-/// `reconnect`, `offline`, `none`), `DI_POMO_LOCKED=1`, `DI_PRTSC` (`failed`:
-/// the PrtSc keyboard hook could not be installed) and `DI_UPDATE`
+/// `reconnect`, `offline`, `none`), `DI_POMO_LOCKED=1`, `DI_HOTKEYS` (`failed`:
+/// every hotkey that is set shows as taken by another app) and `DI_UPDATE`
 /// (`available`, `checking`, `downloading`: Tentang's Pembaruan row, with a
 /// made-up 9.9.9) set the start.
 ///
@@ -3521,6 +3644,13 @@ pub fn run_demo(args: &[String]) {
 
     thread_local! {
         static DEMO: RefCell<Option<Model>> = const { RefCell::new(None) };
+        /// `DI_HOTKEYS=failed`: every hotkey that is set shows as taken.
+        static HOTKEYS_FAILED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// The failed flags for `keys`: every set row when `on`.
+    fn demo_failed(keys: &Hotkeys, on: bool) -> [bool; 5] {
+        std::array::from_fn(|i| on && HotkeyId::from_index(i).is_some_and(|id| keys.get(id).is_some()))
     }
 
     fn place_file() -> std::path::PathBuf {
@@ -3576,11 +3706,23 @@ pub fn run_demo(args: &[String]) {
             Action::ClipItems(v) => m.clip.max_items = v,
             Action::ClipPersist(v) => m.clip.persist = v,
             Action::ClipClearOnLock(v) => m.clip.clear_on_lock = v,
-            Action::ClipHotkey(v) => m.clip.hotkey = v,
-            Action::SearchHotkey(v) => m.search_hotkey = v,
             Action::DeviceNotices(v) => m.device_notices = v,
-            Action::DevicesHotkey(v) => m.devices_hotkey = v,
-            Action::ArrangeHotkey(v) => m.arrange.hotkey = v,
+            Action::Hotkey(id, value) => {
+                // What the island does: checked again, then set.
+                let fine = value.is_none_or(|hk| {
+                    crate::hotkey::check(hk).is_ok()
+                        && crate::hotkey::used_by(&m.hotkeys, id, hk).is_none()
+                });
+                if fine {
+                    m.hotkeys.set(id, value);
+                }
+                m.hotkey_failed = demo_failed(&m.hotkeys, HOTKEYS_FAILED.get());
+            }
+            Action::HotkeysResetAll => {
+                m.hotkeys.reset_all();
+                m.hotkey_failed = demo_failed(&m.hotkeys, HOTKEYS_FAILED.get());
+            }
+            Action::HotkeyRecording(_) => {}
             Action::ArrangeGap { gap, .. } => m.arrange.gap = gap,
             Action::ArrangeTemplates(list) => m.arrange.templates = list,
             Action::ArrangeSaved(list) => m.arrange.saved = list,
@@ -3603,7 +3745,6 @@ pub fn run_demo(args: &[String]) {
             Action::NotifClear => {}
             Action::ShotTool(v) => m.shot.tool = v,
             Action::ShotPreview(v) => m.shot.preview = v,
-            Action::ShotPrintScreen(v) => m.shot.print_screen = v,
             Action::ShotOnIgnore(v) => m.shot.on_ignore = v,
             Action::ShotSecs(v) => m.shot.show_secs = v,
             Action::BatteryThreshold(v) => m.battery_threshold = v,
@@ -3704,6 +3845,7 @@ pub fn run_demo(args: &[String]) {
         _ => CalStatus::Ok,
     };
     let configured = calendar != CalStatus::NotConfigured;
+    HOTKEYS_FAILED.set(env("DI_HOTKEYS") == "failed");
     let mut cfg = Config::default();
     if env("DI_TILES") == "1" {
         // Two own tiles among the built-in ones, as the Pintasan card shows.
@@ -3754,11 +3896,8 @@ pub fn run_demo(args: &[String]) {
         lang,
         pomodoro_locked: env("DI_POMO_LOCKED") == "1",
         lyrics: env("DI_LYRICS") == "1",
-        // The PrtSc row with its hook failed (the red note).
-        prtsc: match env("DI_PRTSC").as_str() {
-            "failed" => PrtscRow::Failed,
-            _ => PrtscRow::Plain,
-        },
+        // Every hotkey that is set, taken by another app (the red note).
+        hotkey_failed: demo_failed(&Hotkeys::default(), HOTKEYS_FAILED.get()),
         calendar,
         window_place: read_place(),
         // The Pembaruan row's state, with a made-up version; nothing touches

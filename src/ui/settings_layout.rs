@@ -14,10 +14,10 @@ use crate::cli::Shell;
 use crate::cli_folders::CliStart;
 use crate::clipboard::store::{ITEMS_STEP, MAX_ITEMS, MIN_ITEMS};
 use crate::config::{
-    ArrangeHotkey, ClipHotkey, ClipboardSettings, DISK_WARN_RANGE, DevicesHotkey, NotchFill,
-    NotifSettings, OpenMode, RAM_WARN_RANGE, SHOT_SECS_RANGE, ScreenshotSettings, SearchHotkey,
-    ShotIgnore, ShotTool, Style,
+    ClipboardSettings, DISK_WARN_RANGE, NotchFill, NotifSettings, OpenMode, RAM_WARN_RANGE,
+    SHOT_SECS_RANGE, ScreenshotSettings, ShotIgnore, ShotTool, Style,
 };
+use crate::hotkey::{Hotkey, HotkeyId, Hotkeys};
 use crate::i18n::{
     Key, Lang, text, update_available, update_downloading, update_installed, version_label,
 };
@@ -104,8 +104,6 @@ pub const LINK_GLYPH_W: f32 = 18.0;
 const GAP: f32 = 8.0;
 /// A description that wraps: each further line adds this to its row.
 const DESC_LINE_H: f32 = 14.0;
-/// A second line of a row's label (`Builder::row_text_label_lines`).
-const LABEL_LINE_H: f32 = 18.0;
 const LOGO: f32 = 28.0;
 const NAV_X: f32 = 10.0;
 const NAV_W: f32 = SIDEBAR_W - 2.0 * NAV_X;
@@ -139,7 +137,7 @@ pub const GUIDE_URL: &str = "https://github.com/hartono0297/vale#setup-google-ca
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Section {
-    /// Umum: language, autostart, the search hotkey, the warnings.
+    /// Umum: language, autostart, the warnings.
     General,
     /// Tampilan: the island's look (style, colours, the notch, the window).
     Appearance,
@@ -148,6 +146,8 @@ pub enum Section {
     /// Panel: how it opens, its pages, its shortcut tiles.
     Panel,
     Clipboard,
+    /// Tombol pintas: the five global hotkeys, each recorded by pressing it.
+    Hotkeys,
     /// Fitur: the pomodoro, music, the CLI, devices, the cleaner.
     Features,
     Integrations,
@@ -155,12 +155,13 @@ pub enum Section {
 }
 
 impl Section {
-    pub const ALL: [Section; 8] = [
+    pub const ALL: [Section; 9] = [
         Section::General,
         Section::Appearance,
         Section::Cat,
         Section::Panel,
         Section::Clipboard,
+        Section::Hotkeys,
         Section::Features,
         Section::Integrations,
         Section::About,
@@ -173,6 +174,7 @@ impl Section {
             Section::Cat => Key::SecCat,
             Section::Panel => Key::SecPanel,
             Section::Clipboard => Key::SecClipboard,
+            Section::Hotkeys => Key::SecHotkeys,
             Section::Features => Key::SecFeatures,
             Section::Integrations => Key::SecIntegrations,
             Section::About => Key::SecAbout,
@@ -187,6 +189,7 @@ impl Section {
             Section::Cat => Icon::Cat,
             Section::Panel => Icon::Grid,
             Section::Clipboard => Icon::Clipboard,
+            Section::Hotkeys => Icon::Keyboard,
             Section::Features => Icon::Sparkle,
             Section::Integrations => Icon::Link,
             Section::About => Icon::Info,
@@ -208,6 +211,10 @@ impl Section {
             "cat" | "kucing" => Some(Section::Cat),
             "panel" => Some(Section::Panel),
             "clipboard" => Some(Section::Clipboard),
+            // "shortcuts" is not here: the tiles are "Pintasan".
+            "hotkeys" | "tombol-pintas" | "tombolpintas" | "shortcut-keys" => {
+                Some(Section::Hotkeys)
+            }
             "features" | "fitur" | "pomodoro" => Some(Section::Features),
             "integrations" | "integrasi" => Some(Section::Integrations),
             "about" | "tentang" => Some(Section::About),
@@ -390,16 +397,17 @@ pub enum Hit {
     Lyrics,
     /// "Mode buka": Hover, Hover & tetap or Klik.
     OpenMode(OpenMode),
-    SearchHotkey(SearchHotkey),
+    /// Settings -> Tombol pintas: a row's field (click to record, again to
+    /// cancel), its reset button, and "Kembalikan semua".
+    HotkeyField(HotkeyId),
+    HotkeyReset(HotkeyId),
+    HotkeysResetAll,
     /// "Notifikasi perangkat": the plug-in and safe-to-remove notices.
     DeviceNotices,
-    /// "Tombol pintas" of the Devices page.
-    DevicesHotkey(DevicesHotkey),
-    /// Settings -> Fitur -> Susun: the hotkey, "+ Template baru", a
+    /// Settings -> Fitur -> Susun: "+ Template baru", a
     /// template's "Ubah" and "Hapus", a saved arrangement's "Ganti nama"
     /// and "Hapus" (by place in their lists), and the editor's "Belah"
     /// buttons, "Gabung", "Simpan" and "Batal".
-    ArrangeHotkey(ArrangeHotkey),
     ArrangeTemplateNew,
     ArrangeTemplateEdit(usize),
     ArrangeTemplateDelete(usize),
@@ -421,13 +429,12 @@ pub enum Hit {
     /// "Sapaan".
     Greeting,
     /// Settings → Clipboard: "Riwayat clipboard", "Jumlah item" (−1 / +1),
-    /// "Simpan setelah restart", "Hapus saat layar dikunci", "Pintasan",
+    /// "Simpan setelah restart", "Hapus saat layar dikunci",
     /// "Notifikasi salinan", "Disalin" for every copy, and "Hapus riwayat".
     ClipEnabled,
     ClipItems(i32),
     ClipPersist,
     ClipClearOnLock,
-    ClipHotkey(ClipHotkey),
     ClipNotice,
     ClipFeedbackAll,
     ClipClear,
@@ -447,8 +454,6 @@ pub enum Hit {
     ShotSecs(i32),
     /// "Alat screenshot" (Vale / Snipping Tool).
     ShotTool(ShotTool),
-    /// "Tombol PrtSc membuka screenshot Vale".
-    ShotPrintScreen,
     Battery(i32),
     /// "Peringatan disk" / "Peringatan RAM", one step down (−1) or up.
     DiskWarn(i32),
@@ -591,13 +596,9 @@ pub enum Group {
     Window,
     Lang,
     OpenMode,
-    SearchHotkey,
-    DevicesHotkey,
-    ArrangeHotkey,
     CliStart,
     Shell,
     Motion,
-    ClipHotkey,
     ShotIgnore,
     /// The own-shortcut form's Jenis.
     TileKind,
@@ -724,6 +725,15 @@ pub enum Control {
         enabled: bool,
         bare: bool,
     },
+    /// A hotkey row's field: the combo as key caps (empty: "Tidak ada"), or
+    /// the recording prompt while `recording`. A click starts or cancels the
+    /// recording.
+    HotkeyField {
+        hit: Hit,
+        rect: Rect,
+        caps: Vec<String>,
+        recording: bool,
+    },
     /// Susun's layouts as a miniature: the tiles of `rects` in `rect`. With
     /// `canvas` it is the editor's big one (the selected tile lit, the
     /// dividers draggable by the window's pointer handling, not as hits).
@@ -783,6 +793,7 @@ impl Control {
                 ..
             } => vec![(*hit, *rect)],
             Control::IconButton { .. } => Vec::new(),
+            Control::HotkeyField { hit, rect, .. } => vec![(*hit, *rect)],
             Control::Mini { .. } => Vec::new(),
         }
     }
@@ -828,6 +839,7 @@ impl Control {
             Control::Slider { track, .. } => down(track),
             Control::Button(b) => down(&mut b.rect),
             Control::IconButton { rect, .. } => down(rect),
+            Control::HotkeyField { rect, .. } => down(rect),
             Control::Mini { rect, .. } => down(rect),
         }
     }
@@ -862,6 +874,7 @@ impl Control {
             Control::Slider { track, .. } => *track,
             Control::Button(b) => b.rect,
             Control::IconButton { rect, .. } => *rect,
+            Control::HotkeyField { rect, .. } => *rect,
             Control::Mini { rect, .. } => *rect,
         }
     }
@@ -1120,21 +1133,19 @@ pub struct State<'a> {
     pub cli_start: CliStart,
     /// How the pointer opens the panel.
     pub open_mode: OpenMode,
-    pub search_hotkey: SearchHotkey,
-    /// The chosen search hotkey could not be registered.
-    pub search_hotkey_failed: bool,
     /// The plug-in and safe-to-remove notices.
     pub device_notices: bool,
-    pub devices_hotkey: DevicesHotkey,
-    /// The chosen Devices hotkey could not be registered.
-    pub devices_hotkey_failed: bool,
-    /// The Susun hotkey could not be registered.
-    pub arrange_hotkey_failed: bool,
+    /// The five hotkeys, and by `HotkeyId::index` whether a set one could not
+    /// be registered (taken by another app, or the PrtSc hook failed).
+    pub hotkeys: Hotkeys,
+    pub hotkey_failed: [bool; 5],
+    /// The row being recorded, and why the last combo typed was refused
+    /// (window state, not saved).
+    pub hotkey_recording: Option<HotkeyId>,
+    pub hotkey_error: Option<(HotkeyId, RejectMsg)>,
     /// Susun's settings, and the template editor while it is open.
     pub arrange: ArrangeSettings,
     pub arrange_edit: Option<EditView>,
-    /// What the PrtSc row says when the key is wanted but its hook failed.
-    pub prtsc: PrtscRow,
     pub autostart: bool,
     pub battery_threshold: u8,
     pub has_battery: bool,
@@ -1161,10 +1172,8 @@ pub struct State<'a> {
     pub hooks: Option<HookState>,
     /// The outcome of the last hook button, shown instead of the status.
     pub hook_note: Option<(&'a str, Tone)>,
-    /// Settings → Clipboard, and whether the chosen hotkey could not be
-    /// registered.
+    /// Settings → Clipboard.
     pub clip: ClipboardSettings,
-    pub clip_hotkey_failed: bool,
     /// Settings → Clipboard → Screenshot.
     pub shot: ScreenshotSettings,
     /// "Halaman panel": the pages' order and which the wheel shows.
@@ -1525,37 +1534,6 @@ impl Builder<'_> {
             };
             self.text(rect, line, Font::Desc, tone, Align::Left);
         }
-    }
-
-    /// A row whose label took `label` lines (`wrap`), then its description
-    /// one line under the last; the same top as `row_text`'s for one line.
-    fn row_text_label_lines(
-        &mut self,
-        card: Rect,
-        y: f32,
-        label: Vec<String>,
-        desc: (String, Tone),
-        control_x: f32,
-    ) {
-        let x = card.x + INSET;
-        let w = row_text_w(card, control_x);
-        let n = label.len();
-        for (i, line) in label.into_iter().enumerate() {
-            let rect = Rect {
-                x,
-                y: y + 7.0 + i as f32 * LABEL_LINE_H,
-                w,
-                h: 20.0,
-            };
-            self.text(rect, line, Font::Label, Tone::Primary, Align::Left);
-        }
-        let rect = Rect {
-            x,
-            y: y + 28.0 + (n - 1) as f32 * LABEL_LINE_H,
-            w,
-            h: 16.0,
-        };
-        self.text(rect, desc.0, Font::Desc, desc.1, Align::Left);
     }
 
     /// `s` broken at spaces into lines no wider than `w` in `font`; a word
@@ -1983,6 +1961,7 @@ pub fn layout_in(section: Section, s: &State, m: &dyn Measure, client: (f32, f32
         Section::Cat => cat_page(&mut b, s),
         Section::Panel => panel_page(&mut b, s),
         Section::Clipboard => clipboard_page(&mut b, s),
+        Section::Hotkeys => hotkeys_page(&mut b, s),
         Section::Features => features_page(&mut b, s),
         Section::Integrations => integrations(&mut b, s),
         Section::About => about(&mut b, s),
@@ -3021,58 +3000,14 @@ fn cat_motion_card(b: &mut Builder, s: &State) {
     b.divider(card, rows[4]);
 }
 
-/// What Umum takes back from its gaps when its search-hotkey label wraps,
-/// so the page still fits the window: under the page title (16 to 8),
-/// under each group title (8 to 6) and between the groups (12 to 6).
-const UMUM_TRIM_TITLE: f32 = 8.0;
-const UMUM_TRIM_EYEBROW: f32 = 2.0;
-const UMUM_TRIM_GROUPS: f32 = 6.0;
-const _: () = assert!(UMUM_TRIM_TITLE + 2.0 * UMUM_TRIM_EYEBROW + UMUM_TRIM_GROUPS == LABEL_LINE_H);
 
-/// Umum: "Dasar" (language, autostart, the search hotkey) and "Peringatan"
-/// (battery, disk and RAM, and how to turn off Windows' pop-ups).
+/// Umum: "Dasar" (language, autostart) and "Peringatan" (battery, disk and
+/// RAM, and how to turn off Windows' pop-ups). The search hotkey lives in
+/// the Tombol pintas section.
 fn general(b: &mut Builder, s: &State) {
-    // "Tombol pintas pencarian" is long beside its three choices: when it
-    // does not fit on one line it wraps, and its row grows by a line. Umum
-    // fits the window with nothing to spare, so it then takes that line back
-    // from its gaps (`UMUM_TRIM_*`) and never scrolls.
-    let hotkeys = vec![
-        (
-            Hit::SearchHotkey(SearchHotkey::Off),
-            b.t(Key::ClipHotkeyNone),
-        ),
-        (
-            Hit::SearchHotkey(SearchHotkey::CtrlAltSpace),
-            "Ctrl+Alt+Space".to_owned(),
-        ),
-        (
-            Hit::SearchHotkey(SearchHotkey::WinAltS),
-            "Win+Alt+S".to_owned(),
-        ),
-    ];
-    let probe = Rect {
-        x: b.g.content_x,
-        y: 0.0,
-        w: b.g.content_w,
-        h: 0.0,
-    };
-    let hotkey_label = b.wrap(
-        &b.t(Key::SearchHotkeySetting),
-        Font::Label,
-        row_text_w(probe, b.g.right - b.segmented_w(&hotkeys)),
-    );
-    let hotkey_h = ROW_H + (hotkey_label.len() - 1) as f32 * LABEL_LINE_H;
-    let tight = hotkey_label.len() > 1;
-    let trim = |b: &mut Builder, by: f32| {
-        if tight {
-            b.y -= by;
-        }
-    };
-    trim(b, UMUM_TRIM_TITLE);
     titled(b, Key::GroupBasics);
-    trim(b, UMUM_TRIM_EYEBROW);
-    let card = b.card(2.0 * ROW_H + hotkey_h);
-    let rows = [card.y, card.y + ROW_H, card.y + 2.0 * ROW_H];
+    let card = b.card(2.0 * ROW_H);
+    let rows = [card.y, card.y + ROW_H];
     let cy = |y: f32| y + ROW_H / 2.0;
 
     let items = vec![
@@ -3089,20 +3024,7 @@ fn general(b: &mut Builder, s: &State) {
     b.row_text(card, rows[1], b.t(Key::Autostart), desc, false, x);
     b.divider(card, rows[1]);
 
-    let selected = index_of(SearchHotkey::ALL, &s.search_hotkey);
-    let cy_hotkey = rows[2] + hotkey_h / 2.0;
-    let x = b.segmented(Group::SearchHotkey, b.g.right, cy_hotkey, hotkeys, selected);
-    let desc = if s.search_hotkey_failed && s.search_hotkey != SearchHotkey::Off {
-        (b.t(Key::SearchHotkeyTaken), Tone::Bad)
-    } else {
-        (b.t(Key::SearchHotkeyDesc), Tone::Secondary)
-    };
-    b.row_text_label_lines(card, rows[2], hotkey_label, desc, x);
-    b.divider(card, rows[2]);
-
-    trim(b, UMUM_TRIM_GROUPS);
     titled(b, Key::GroupAlerts);
-    trim(b, UMUM_TRIM_EYEBROW);
     warnings_card(b, s);
 }
 
@@ -3516,46 +3438,26 @@ fn mini(b: &mut Builder, x: f32, cy: f32, node: &Node) {
     });
 }
 
-/// Fitur -> Susun: the hotkey, the gap, the user's templates and the saved
-/// arrangements.
+/// Fitur -> Susun: the gap, the user's templates and the saved
+/// arrangements. (The hotkey is in the Tombol pintas section.)
 fn arrange_card(b: &mut Builder, s: &State) {
     b.eyebrow(Key::PageArrange, b.g.content_w - 4.0);
     let a = &s.arrange;
-    let rows = 2 + 1 + a.templates.len().max(1) + 1 + a.saved.len().max(1);
+    let rows = 1 + 1 + a.templates.len().max(1) + 1 + a.saved.len().max(1);
     let card = b.card(rows as f32 * ROW_H);
     let row = |i: usize| card.y + i as f32 * ROW_H;
     let cy = |y: f32| y + ROW_H / 2.0;
 
-    let items = vec![
-        (
-            Hit::ArrangeHotkey(ArrangeHotkey::Off),
-            b.t(Key::ClipHotkeyNone),
-        ),
-        (
-            Hit::ArrangeHotkey(ArrangeHotkey::CtrlAltS),
-            "Ctrl+Alt+S".to_owned(),
-        ),
-    ];
-    let selected = index_of(ArrangeHotkey::ALL, &a.hotkey);
-    let x = b.segmented(Group::ArrangeHotkey, b.g.right, cy(row(0)), items, selected);
-    let desc = if s.arrange_hotkey_failed && a.hotkey != ArrangeHotkey::Off {
-        (b.t(Key::ClipHotkeyTaken), Tone::Bad)
-    } else {
-        (b.t(Key::ArrangeHotkeyDesc), Tone::Secondary)
-    };
-    b.row_text(card, row(0), b.t(Key::DevicesHotkey), Some(desc), false, x);
-
     let x = b.slider(
         b.g.right,
-        cy(row(1)),
+        cy(row(0)),
         SliderId::ArrangeGap,
         a.gap as i32,
         format!("{} px", a.gap),
         true,
     );
     let desc = Some((b.t(Key::ArrangeGapDesc), Tone::Secondary));
-    b.row_text(card, row(1), b.t(Key::ArrangeGap), desc, false, x);
-    b.divider(card, row(1));
+    b.row_text(card, row(0), b.t(Key::ArrangeGap), desc, false, x);
 
     // My templates: the title row with "+ Template baru", then a row each.
     let full = a.templates.len() >= MAX_TEMPLATES;
@@ -3568,16 +3470,16 @@ fn arrange_card(b: &mut Builder, s: &State) {
         !full,
         w,
     );
-    let x = b.buttons(b.g.right, cy(row(2)), vec![item]);
+    let x = b.buttons(b.g.right, cy(row(1)), vec![item]);
     let desc = full.then(|| (b.t(Key::ArrangeTemplatesFull), Tone::Secondary));
-    b.row_text(card, row(2), b.t(Key::ArrangeMyTemplates), desc, false, x);
-    b.divider(card, row(2));
+    b.row_text(card, row(1), b.t(Key::ArrangeMyTemplates), desc, false, x);
+    b.divider(card, row(1));
     let (edit, delete) = (b.t(Key::ArrangeEdit), b.t(Key::ArrangeDelete));
     let (edit_w, delete_w) = (b.compact_w(&edit), b.compact_w(&delete));
     if a.templates.is_empty() {
         let rect = Rect {
             x: card.x + INSET,
-            y: row(3) + 16.0,
+            y: row(2) + 16.0,
             w: b.g.right - card.x - INSET,
             h: 20.0,
         };
@@ -3590,7 +3492,7 @@ fn arrange_card(b: &mut Builder, s: &State) {
         );
     }
     for (i, t) in a.templates.iter().enumerate() {
-        let y = row(3 + i);
+        let y = row(2 + i);
         let items = vec![
             (
                 Hit::ArrangeTemplateEdit(i),
@@ -3613,7 +3515,7 @@ fn arrange_card(b: &mut Builder, s: &State) {
     }
 
     // Saved arrangements: the title row, then a row each.
-    let head = row(3 + a.templates.len().max(1));
+    let head = row(2 + a.templates.len().max(1));
     b.divider(card, head);
     b.row_text(
         card,
@@ -3771,44 +3673,16 @@ fn arrange_editor(b: &mut Builder, e: &EditView) {
     b.buttons(b.g.right, cy(y), items);
 }
 
-/// "Perangkat" (the Devices page): the plug-in and safe-to-remove notices,
-/// and the page's own hotkey (none by default; "taken" in red when another
-/// app has the one chosen), in a third card under the warnings.
+/// "Perangkat" (the Devices page): the plug-in and safe-to-remove notices.
+/// (The page's hotkey is in the Tombol pintas section.)
 fn devices_card(b: &mut Builder, s: &State) {
     b.eyebrow(Key::PageDevices, b.g.content_w - 4.0);
-    let card = b.card(2.0 * ROW_H);
-    let rows = [card.y, card.y + ROW_H];
-    let cy = |y: f32| y + ROW_H / 2.0;
+    let card = b.card(ROW_H);
+    let cy = card.y + ROW_H / 2.0;
 
-    let x = b.toggle(Hit::DeviceNotices, b.g.right, cy(rows[0]), s.device_notices);
+    let x = b.toggle(Hit::DeviceNotices, b.g.right, cy, s.device_notices);
     let desc = Some((b.t(Key::DeviceNoticesDesc), Tone::Secondary));
-    b.row_text(card, rows[0], b.t(Key::DeviceNotices), desc, false, x);
-
-    let items = vec![
-        (
-            Hit::DevicesHotkey(DevicesHotkey::Off),
-            b.t(Key::ClipHotkeyNone),
-        ),
-        (
-            Hit::DevicesHotkey(DevicesHotkey::CtrlAltD),
-            "Ctrl+Alt+D".to_owned(),
-        ),
-    ];
-    let selected = index_of(DevicesHotkey::ALL, &s.devices_hotkey);
-    let x = b.segmented(
-        Group::DevicesHotkey,
-        b.g.right,
-        cy(rows[1]),
-        items,
-        selected,
-    );
-    let desc = if s.devices_hotkey_failed && s.devices_hotkey != DevicesHotkey::Off {
-        (b.t(Key::ClipHotkeyTaken), Tone::Bad)
-    } else {
-        (b.t(Key::DevicesHotkeyDesc), Tone::Secondary)
-    };
-    b.row_text(card, rows[1], b.t(Key::DevicesHotkey), Some(desc), false, x);
-    b.divider(card, rows[1]);
+    b.row_text(card, card.y, b.t(Key::DeviceNotices), desc, false, x);
 }
 
 /// "Jumlah item" one step (10) up or down, kept in 10–200; a hand-edited
@@ -3829,8 +3703,8 @@ pub fn clip_items_step(n: u32, dir: i32) -> u32 {
 fn clipboard_page(b: &mut Builder, s: &State) {
     let c = s.clip;
     titled(b, Key::GroupHistory);
-    let card = b.card(8.0 * ROW_H);
-    let rows: [f32; 8] = std::array::from_fn(|i| card.y + i as f32 * ROW_H);
+    let card = b.card(7.0 * ROW_H);
+    let rows: [f32; 7] = std::array::from_fn(|i| card.y + i as f32 * ROW_H);
     let cy = |y: f32| y + ROW_H / 2.0;
     let on = c.enabled;
 
@@ -3868,36 +3742,18 @@ fn clipboard_page(b: &mut Builder, s: &State) {
     b.row_text(card, rows[3], b.t(Key::ClipClearOnLock), desc, false, x);
     b.divider(card, rows[3]);
 
-    let items = vec![
-        (Hit::ClipHotkey(ClipHotkey::Off), b.t(Key::ClipHotkeyNone)),
-        (
-            Hit::ClipHotkey(ClipHotkey::CtrlAltV),
-            "Ctrl+Alt+V".to_owned(),
-        ),
-        (Hit::ClipHotkey(ClipHotkey::WinAltV), "Win+Alt+V".to_owned()),
-    ];
-    let selected = index_of(ClipHotkey::ALL, &c.hotkey);
-    let x = b.segmented(Group::ClipHotkey, b.g.right, cy(rows[4]), items, selected);
-    let desc = if s.clip_hotkey_failed && c.hotkey != ClipHotkey::Off {
-        (b.t(Key::ClipHotkeyTaken), Tone::Bad)
-    } else {
-        (b.t(Key::ClipHotkeyDesc), Tone::Secondary)
-    };
-    b.row_text(card, rows[4], b.t(Key::ClipHotkey), Some(desc), false, x);
-    b.divider(card, rows[4]);
-
     // The copy preview needs a history entry to show: faded with it off.
-    let x = b.toggle_if(Hit::ClipNotice, b.g.right, cy(rows[5]), c.copy_notice, on);
+    let x = b.toggle_if(Hit::ClipNotice, b.g.right, cy(rows[4]), c.copy_notice, on);
     let desc = Some((b.t(Key::ClipCopyNoticeDesc), Tone::Secondary));
-    b.row_text(card, rows[5], b.t(Key::ClipCopyNotice), desc, false, x);
-    b.divider(card, rows[5]);
+    b.row_text(card, rows[4], b.t(Key::ClipCopyNotice), desc, false, x);
+    b.divider(card, rows[4]);
 
     // While the preview is on it says what "Disalin" would, for the same
     // copies: this row fades and tells so.
     let x = b.toggle_if(
         Hit::ClipFeedbackAll,
         b.g.right,
-        cy(rows[6]),
+        cy(rows[5]),
         c.copied_feedback_all,
         on && !c.copy_notice,
     );
@@ -3908,13 +3764,13 @@ fn clipboard_page(b: &mut Builder, s: &State) {
     };
     b.row_text(
         card,
-        rows[6],
+        rows[5],
         b.t(Key::ClipFeedbackAll),
         Some((desc, Tone::Secondary)),
         false,
         x,
     );
-    b.divider(card, rows[6]);
+    b.divider(card, rows[5]);
 
     // Two clicks, as "Putuskan": the first arms it for a few seconds.
     let (label, sure) = (b.t(Key::ClipClearButton), b.t(Key::ConfirmShort));
@@ -3924,12 +3780,158 @@ fn clipboard_page(b: &mut Builder, s: &State) {
     } else {
         (Hit::ClipClear, label, ButtonKind::Secondary, true, w)
     };
-    let x = b.buttons(b.g.right, cy(rows[7]), vec![item]);
+    let x = b.buttons(b.g.right, cy(rows[6]), vec![item]);
     let desc = Some((b.t(Key::ClipClearDesc), Tone::Secondary));
-    b.row_text(card, rows[7], b.t(Key::ClipClear), desc, false, x);
-    b.divider(card, rows[7]);
+    b.row_text(card, rows[6], b.t(Key::ClipClear), desc, false, x);
+    b.divider(card, rows[6]);
 
     screenshot_card(b, s);
+}
+
+/// The narrowest and widest a hotkey field gets (it is measured from what it
+/// shows in between).
+pub const HOTKEY_FIELD_MIN_W: f32 = 150.0;
+pub const HOTKEY_FIELD_MAX_W: f32 = 260.0;
+/// The key caps inside a field: their height, the padding inside one, the
+/// gap that holds the "+" between two, and the field's own side padding.
+pub const HOTKEY_CAP_H: f32 = 20.0;
+pub const HOTKEY_CAP_PAD: f32 = 7.0;
+pub const HOTKEY_PLUS_W: f32 = 14.0;
+pub const HOTKEY_FIELD_PAD: f32 = 6.0;
+/// The room round plain text in a field ("Tidak ada", the recording prompt).
+const HOTKEY_TEXT_PAD: f32 = 14.0;
+
+/// Why the combo just typed was refused (window state, shown in red under the
+/// row's name).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RejectMsg {
+    Reserved,
+    NeedsModifier,
+    /// Another row already has it.
+    UsedBy(HotkeyId),
+}
+
+/// The name of a hotkey row.
+pub fn hotkey_row_key(id: HotkeyId) -> Key {
+    match id {
+        HotkeyId::Search => Key::HotkeyRowSearch,
+        HotkeyId::Clipboard => Key::HotkeyRowClipboard,
+        HotkeyId::Devices => Key::HotkeyRowDevices,
+        HotkeyId::Arrange => Key::HotkeyRowArrange,
+        HotkeyId::Screenshot => Key::HotkeyRowScreenshot,
+    }
+}
+
+fn hotkey_row_desc_key(id: HotkeyId) -> Key {
+    match id {
+        HotkeyId::Search => Key::HotkeyRowSearchDesc,
+        HotkeyId::Clipboard => Key::HotkeyRowClipboardDesc,
+        HotkeyId::Devices => Key::HotkeyRowDevicesDesc,
+        HotkeyId::Arrange => Key::HotkeyRowArrangeDesc,
+        HotkeyId::Screenshot => Key::HotkeyRowScreenshotDesc,
+    }
+}
+
+/// The text of a refused combo in `lang`.
+pub fn reject_text(lang: Lang, msg: RejectMsg) -> String {
+    match msg {
+        RejectMsg::Reserved => text(lang, Key::HotkeyReserved).to_owned(),
+        RejectMsg::NeedsModifier => text(lang, Key::HotkeyNeedsModifier).to_owned(),
+        RejectMsg::UsedBy(id) => {
+            crate::i18n::hotkey_used_by(lang, text(lang, hotkey_row_key(id)))
+        }
+    }
+}
+
+/// How wide the key caps of a combo draw: a cap each (its text and padding),
+/// a gap for the "+" between, and the field's side padding.
+pub fn hotkey_caps_w(m: &dyn Measure, caps: &[String]) -> f32 {
+    let caps_w: f32 = caps
+        .iter()
+        .map(|c| m.width(c, Font::Control) + 2.0 * HOTKEY_CAP_PAD)
+        .sum();
+    2.0 * HOTKEY_FIELD_PAD + caps_w + caps.len().saturating_sub(1) as f32 * HOTKEY_PLUS_W
+}
+
+/// A hotkey field's width: from what it shows (the caps, "Tidak ada" or the
+/// recording prompt), kept between `HOTKEY_FIELD_MIN_W` and `HOTKEY_FIELD_MAX_W`.
+fn hotkey_field_w(b: &Builder, caps: &[String], recording: bool) -> f32 {
+    let content = if recording {
+        b.w(&b.t(Key::HotkeyRecording), Font::Control) + 2.0 * HOTKEY_TEXT_PAD
+    } else if caps.is_empty() {
+        b.w(&b.t(Key::HotkeyNone), Font::Control) + 2.0 * HOTKEY_TEXT_PAD
+    } else {
+        hotkey_caps_w(b.m, caps)
+    };
+    content.clamp(HOTKEY_FIELD_MIN_W, HOTKEY_FIELD_MAX_W)
+}
+
+/// Tombol pintas: one card, a header (the hint and "Kembalikan semua") and a
+/// row for each hotkey: its name and description (red when the last combo was
+/// refused, or the one set is taken), the field that records it and its own
+/// reset button.
+fn hotkeys_page(b: &mut Builder, s: &State) {
+    titled(b, Key::GroupHotkeys);
+    let card = b.card(HEADER_H + HotkeyId::ALL.len() as f32 * ROW_H);
+
+    // The header, laid out like a list's.
+    let cy = card.y + HEADER_H / 2.0;
+    let label = b.t(Key::HotkeysResetAll);
+    let w = b.button_w(&[&label], ButtonKind::Secondary);
+    let item = (
+        Hit::HotkeysResetAll,
+        label,
+        ButtonKind::Secondary,
+        !s.hotkeys.all_default(),
+        w,
+    );
+    let x = b.buttons(b.g.right, cy, vec![item]);
+    let rect = Rect {
+        x: card.x + INSET,
+        y: cy - 8.0,
+        w: row_text_w(card, x),
+        h: 16.0,
+    };
+    let hint = b.t(Key::HotkeysHint);
+    b.text(rect, hint, Font::Desc, Tone::Secondary, Align::Left);
+
+    for (i, id) in HotkeyId::ALL.into_iter().enumerate() {
+        let y = card.y + HEADER_H + i as f32 * ROW_H;
+        b.divider(card, y);
+        let cy = y + ROW_H / 2.0;
+        let value = s.hotkeys.get(id);
+        let at_default = s.hotkeys.is_default(id);
+        let left = b.icon_button(
+            b.g.right,
+            cy,
+            Hit::HotkeyReset(id),
+            Icon::Reset,
+            !at_default,
+        );
+        let caps = value.map(|h: Hotkey| h.caps()).unwrap_or_default();
+        let recording = s.hotkey_recording == Some(id);
+        let w = hotkey_field_w(b, &caps, recording);
+        let field = Rect {
+            x: left - GAP - w,
+            y: cy - CONTROL_H / 2.0,
+            w,
+            h: CONTROL_H,
+        };
+        b.l.controls.push(Control::HotkeyField {
+            hit: Hit::HotkeyField(id),
+            rect: field,
+            caps,
+            recording,
+        });
+        let desc = match s.hotkey_error {
+            Some((who, msg)) if who == id => (reject_text(b.lang, msg), Tone::Bad),
+            _ if value.is_some() && s.hotkey_failed[id.index()] => {
+                (b.t(Key::HotkeyTaken), Tone::Bad)
+            }
+            _ => (b.t(hotkey_row_desc_key(id)), Tone::Secondary),
+        };
+        b.row_text(card, y, b.t(hotkey_row_key(id)), Some(desc), false, field.x);
+    }
 }
 
 /// "Lama tampil" one step (2 s) up or down, kept in `SHOT_SECS_RANGE`; a
@@ -3951,14 +3953,8 @@ pub fn shot_secs_step(n: u32, dir: i32) -> u32 {
 fn screenshot_card(b: &mut Builder, s: &State) {
     let c = s.shot;
     b.eyebrow(Key::SecScreenshot, b.g.content_w - 4.0);
-    // The toggle just switched off is plain at once, before `App` catches up.
-    let prtsc = if c.print_screen {
-        s.prtsc
-    } else {
-        PrtscRow::Plain
-    };
-    let card = b.card(5.0 * ROW_H);
-    let rows: [f32; 5] = std::array::from_fn(|i| card.y + i as f32 * ROW_H);
+    let card = b.card(4.0 * ROW_H);
+    let rows: [f32; 4] = std::array::from_fn(|i| card.y + i as f32 * ROW_H);
     let cy = |y: f32| y + ROW_H / 2.0;
     let on = c.preview;
 
@@ -3973,21 +3969,10 @@ fn screenshot_card(b: &mut Builder, s: &State) {
     let desc = Some((b.t(Key::ShotToolDesc), Tone::Secondary));
     b.row_text(card, rows[0], b.t(Key::ShotToolSetting), desc, false, x);
 
-    // The PrtSc key, right after the tool and never faded by the preview:
-    // it starts Vale's capture whatever the tool is. When the keyboard hook
-    // could not be installed: a red note in place of its description, nothing
-    // to click.
-    let x = b.toggle(Hit::ShotPrintScreen, b.g.right, cy(rows[1]), c.print_screen);
-    let desc = match prtsc {
-        PrtscRow::Failed => Some((b.t(Key::PrtscHookFailed), Tone::Bad)),
-        PrtscRow::Plain => Some((b.t(Key::ShotPrintScreenDesc), Tone::Secondary)),
-    };
-    b.row_text(card, rows[1], b.t(Key::ShotPrintScreen), desc, false, x);
+    // (The key that starts Vale's capture is in the Tombol pintas section.)
+    let x = b.toggle(Hit::ShotPreview, b.g.right, cy(rows[1]), on);
+    b.row_text(card, rows[1], b.t(Key::ShotPreviewSetting), None, false, x);
     b.divider(card, rows[1]);
-
-    let x = b.toggle(Hit::ShotPreview, b.g.right, cy(rows[2]), on);
-    b.row_text(card, rows[2], b.t(Key::ShotPreviewSetting), None, false, x);
-    b.divider(card, rows[2]);
 
     let items = vec![
         (Hit::ShotIgnore(ShotIgnore::Keep), b.t(Key::ShotKeep)),
@@ -3997,38 +3982,28 @@ fn screenshot_card(b: &mut Builder, s: &State) {
     let x = b.segmented_if(
         Group::ShotIgnore,
         b.g.right,
-        cy(rows[3]),
+        cy(rows[2]),
         items,
         selected,
         on,
     );
     let desc = Some((b.t(Key::ShotIgnoreDesc), Tone::Secondary));
-    b.row_text(card, rows[3], b.t(Key::ShotIgnoreSetting), desc, false, x);
-    b.divider(card, rows[3]);
+    b.row_text(card, rows[2], b.t(Key::ShotIgnoreSetting), desc, false, x);
+    b.divider(card, rows[2]);
 
     let (min, max, _) = SHOT_SECS_RANGE;
     let n = c.show_secs;
     let x = b.stepper(
         b.g.right,
-        cy(rows[4]),
+        cy(rows[3]),
         crate::i18n::seconds_short(b.lang, n),
         Hit::ShotSecs(-1),
         Hit::ShotSecs(1),
         (n > min, n < max),
         on,
     );
-    b.row_text(card, rows[4], b.t(Key::ShotShowFor), None, false, x);
-    b.divider(card, rows[4]);
-}
-
-/// What the PrtSc row shows (`App` fills it from `app_prtsc::RowState`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum PrtscRow {
-    /// Off, or on and the keyboard hook is installed.
-    #[default]
-    Plain,
-    /// On, but `SetWindowsHookExW` failed: a red note.
-    Failed,
+    b.row_text(card, rows[3], b.t(Key::ShotShowFor), None, false, x);
+    b.divider(card, rows[3]);
 }
 
 fn integrations(b: &mut Builder, s: &State) {
@@ -4340,6 +4315,18 @@ fn update_row_texts(b: &Builder, s: &State) -> (String, String, bool) {
 mod tests {
     use super::*;
 
+    /// Every row set, with the longest combos the field has to hold.
+    fn long_hotkeys() -> Hotkeys {
+        let hk = |t: &str| crate::hotkey::parse(t).unwrap();
+        Hotkeys {
+            search: hk("Win+Ctrl+Alt+Shift+PageDown"),
+            clipboard: hk("Win+Ctrl+Alt+Shift+NumMultiply"),
+            devices: hk("Ctrl+Alt+F13"),
+            arrange: hk("Win+Alt+S"),
+            screenshot: hk("Ctrl+PrtSc"),
+        }
+    }
+
     fn states() -> Vec<State<'static>> {
         let mut out = Vec::new();
         for lang in [Lang::Id, Lang::En] {
@@ -4419,27 +4406,21 @@ mod tests {
                         } else {
                             OpenMode::Hover
                         },
-                        search_hotkey: if locked {
-                            SearchHotkey::WinAltS
-                        } else {
-                            SearchHotkey::Off
-                        },
-                        search_hotkey_failed: locked,
                         device_notices: !locked,
-                        devices_hotkey: if locked {
-                            DevicesHotkey::CtrlAltD
+                        // Locked: every row set, the longest combos, taken,
+                        // one being recorded and one refused. Otherwise the
+                        // defaults.
+                        hotkeys: if locked {
+                            long_hotkeys()
                         } else {
-                            DevicesHotkey::Off
+                            Hotkeys::default()
                         },
-                        devices_hotkey_failed: locked,
-                        arrange_hotkey_failed: locked,
+                        hotkey_failed: [locked; 5],
+                        hotkey_recording: locked.then_some(HotkeyId::Devices),
+                        hotkey_error: locked
+                            .then_some((HotkeyId::Clipboard, RejectMsg::UsedBy(HotkeyId::Screenshot))),
                         arrange: ArrangeSettings::default(),
                         arrange_edit: None,
-                        prtsc: if locked {
-                            PrtscRow::Failed
-                        } else {
-                            PrtscRow::Plain
-                        },
                         autostart: true,
                         battery_threshold: 50,
                         has_battery: battery,
@@ -4484,14 +4465,8 @@ mod tests {
                         clip: ClipboardSettings {
                             enabled: !locked,
                             max_items: if locked { MAX_ITEMS } else { MIN_ITEMS },
-                            hotkey: if locked {
-                                ClipHotkey::WinAltV
-                            } else {
-                                ClipHotkey::CtrlAltV
-                            },
                             ..ClipboardSettings::default()
                         },
-                        clip_hotkey_failed: !battery,
                         shot: ScreenshotSettings {
                             preview: !locked,
                             on_ignore: if locked {
@@ -4505,10 +4480,6 @@ mod tests {
                             } else {
                                 ShotTool::Vale
                             },
-                            // On wherever `prtsc` failed (the card draws a
-                            // failed row only while on), on and plain in one
-                            // unlocked state, off in the other.
-                            print_screen: locked || hooks.is_some_and(|h| !h.complete),
                         },
                         pages: if locked {
                             let mut p = PanelPages::default();
@@ -4613,6 +4584,33 @@ mod tests {
                             1,
                             3,
                         )),
+                        ..base.clone()
+                    });
+                }
+            }
+        }
+        // The Tombol pintas rows: each refusal under each row, and each row
+        // being recorded.
+        for base in [out[0].clone(), out[2].clone()] {
+            for lang in [Lang::Id, Lang::En] {
+                for id in HotkeyId::ALL {
+                    for msg in [
+                        RejectMsg::Reserved,
+                        RejectMsg::NeedsModifier,
+                        RejectMsg::UsedBy(HotkeyId::Clipboard),
+                        RejectMsg::UsedBy(HotkeyId::Screenshot),
+                    ] {
+                        out.push(State {
+                            lang,
+                            hotkey_recording: None,
+                            hotkey_error: Some((id, msg)),
+                            ..base.clone()
+                        });
+                    }
+                    out.push(State {
+                        lang,
+                        hotkey_recording: Some(id),
+                        hotkey_error: None,
                         ..base.clone()
                     });
                 }
@@ -5280,9 +5278,9 @@ mod tests {
             let l = layout(Section::General, &base, &Estimate);
             // "Dasar" and "Peringatan", each under its title.
             assert_eq!(l.cards.len(), 2);
-            // Three rows, the last a line taller when its label wraps.
-            let extra = l.cards[0].h - 3.0 * ROW_H;
-            assert!(extra == 0.0 || extra == LABEL_LINE_H, "{extra}");
+            // Two rows, language and autostart: the search hotkey moved to
+            // Tombol pintas, so the card never grows.
+            assert_eq!(l.cards[0].h, 2.0 * ROW_H);
             assert_eq!(l.cards[1].h, 4.0 * ROW_H);
             for key in [Key::GroupBasics, Key::GroupAlerts] {
                 assert!(
@@ -5305,7 +5303,7 @@ mod tests {
                     | Hit::DeviceNotices
                     | Hit::MoleProtect
             )));
-            // Dasar: language, autostart, the search hotkey, in that order.
+            // Dasar: language and autostart, in that order, and no hotkey.
             let order: Vec<Hit> = l
                 .controls
                 .iter()
@@ -5315,13 +5313,11 @@ mod tests {
                     _ => None,
                 })
                 .collect();
-            assert_eq!(
-                order,
-                [
-                    Hit::Lang(Lang::Id),
-                    Hit::Autostart,
-                    Hit::SearchHotkey(SearchHotkey::Off)
-                ]
+            assert_eq!(order, [Hit::Lang(Lang::Id), Hit::Autostart]);
+            assert!(
+                !hits
+                    .iter()
+                    .any(|h| matches!(h, Hit::HotkeyField(_) | Hit::HotkeyReset(_)))
             );
             // Peringatan: the three steppers (battery, disk, RAM) and the help button.
             let steppers: Vec<Hit> = l
@@ -5340,7 +5336,6 @@ mod tests {
             for key in [
                 Key::Language,
                 Key::Autostart,
-                Key::SearchHotkeySetting,
                 Key::BatteryAlert,
                 Key::DiskAlert,
                 Key::RamAlert,
@@ -5349,14 +5344,7 @@ mod tests {
             ] {
                 let want = text(lang, key);
                 let shown = l.texts.iter().any(|t| t.text == want)
-                    || l.controls.iter().any(|c| matches!(c, Control::Button(b) if b.label == want))
-                    // The long search-hotkey label may wrap into lines.
-                    || l.texts
-                        .iter()
-                        .map(|t| t.text.as_str())
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                        .contains(want);
+                    || l.controls.iter().any(|c| matches!(c, Control::Button(b) if b.label == want));
                 assert!(shown, "{lang:?} {key:?}");
             }
         }
@@ -5477,99 +5465,344 @@ mod tests {
     }
 
     #[test]
-    fn the_layout_sweeps_draw_every_prtsc_row_with_its_toggle_on() {
-        // `screenshot_card` draws the failed note only while the toggle is on,
-        // so the general sweeps (`all_layouts`) reach it only if some state
-        // has both. One on and plain too.
-        let shown: Vec<PrtscRow> = states()
-            .iter()
-            .filter(|s| s.shot.print_screen)
-            .map(|s| s.prtsc)
-            .collect();
-        for row in [PrtscRow::Plain, PrtscRow::Failed] {
+    fn the_clipboard_cards_lost_their_hotkey_and_prtsc_rows() {
+        for lang in [Lang::Id, Lang::En] {
+            let s = State {
+                lang,
+                scroll: 1e6,
+                ..states()[0].clone()
+            };
+            let l = layout(Section::Clipboard, &s, &Estimate);
+            // Riwayat: seven rows (the hotkey row is gone); Screenshot: tool,
+            // preview, on-ignore, seconds (the PrtSc row is gone).
+            assert_eq!(l.cards.len(), 2);
+            assert_eq!(l.cards[0].h, 7.0 * ROW_H);
+            assert_eq!(l.cards[1].h, 4.0 * ROW_H);
+            let hits: Vec<Hit> = l.hits().into_iter().map(|(h, _)| h).collect();
             assert!(
-                shown.contains(&row),
-                "no state draws {row:?} with the toggle on"
+                !hits
+                    .iter()
+                    .any(|h| matches!(h, Hit::HotkeyField(_) | Hit::HotkeyReset(_)))
             );
+            let order: Vec<Hit> = l
+                .controls
+                .iter()
+                .filter_map(|c| match c {
+                    Control::Toggle { hit, .. } => Some(*hit),
+                    Control::Stepper { minus, .. } => minus.1,
+                    Control::Button(b) => Some(b.hit),
+                    Control::Segmented { items, .. } => items.first().map(|i| i.hit),
+                    _ => None,
+                })
+                .collect();
+            // The rest keep their order: history rows, then the screenshot's.
+            assert_eq!(
+                order,
+                [
+                    Hit::ClipEnabled,
+                    Hit::ClipItems(-1),
+                    Hit::ClipPersist,
+                    Hit::ClipClearOnLock,
+                    Hit::ClipNotice,
+                    Hit::ClipFeedbackAll,
+                    Hit::ClipClear,
+                    Hit::ShotTool(ShotTool::Vale),
+                    Hit::ShotPreview,
+                    Hit::ShotIgnore(ShotIgnore::Keep),
+                    Hit::ShotSecs(-1),
+                ],
+                "{lang:?}"
+            );
+            // Every row of both cards is one ROW_H apart (no row grew).
+            assert!((l.cards[1].bottom() - (CLIENT_H - PAD)).abs() < 0.01);
         }
-        assert!(states().iter().any(|s| !s.shot.print_screen));
+    }
+
+    /// The Tombol pintas fields of a layout, in the order they are drawn.
+    fn hotkey_fields(l: &Layout) -> Vec<(Hit, Rect, Vec<String>, bool)> {
+        l.controls
+            .iter()
+            .filter_map(|c| match c {
+                Control::HotkeyField {
+                    hit,
+                    rect,
+                    caps,
+                    recording,
+                } => Some((*hit, *rect, caps.clone(), *recording)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn hotkey_base(lang: Lang) -> State<'static> {
+        State {
+            lang,
+            hotkeys: Hotkeys::default(),
+            hotkey_failed: [false; 5],
+            hotkey_recording: None,
+            hotkey_error: None,
+            scroll: 0.0,
+            ..states()[0].clone()
+        }
     }
 
     #[test]
-    fn the_prtsc_row_sits_after_the_tool_is_always_one_row_and_notes_only_a_failed_hook() {
-        let hits_of =
-            |l: &Layout, want: Hit| l.hits().into_iter().filter(|(h, _)| *h == want).count();
-        let shown = |l: &Layout, text_: &str| l.texts.iter().any(|t| t.text == text_);
+    fn tombol_pintas_sits_after_clipboard_with_a_header_and_five_rows() {
+        assert_eq!(
+            Section::ALL,
+            [
+                Section::General,
+                Section::Appearance,
+                Section::Cat,
+                Section::Panel,
+                Section::Clipboard,
+                Section::Hotkeys,
+                Section::Features,
+                Section::Integrations,
+                Section::About,
+            ]
+        );
+        assert_eq!(Section::Hotkeys.icon(), Icon::Keyboard);
         for lang in [Lang::Id, Lang::En] {
-            // (toggle on, what `App` says about the key)
-            for (on, row) in [
-                (true, PrtscRow::Plain),
-                (false, PrtscRow::Plain),
-                // A stale failure with the toggle just switched off.
-                (false, PrtscRow::Failed),
-                (true, PrtscRow::Failed),
-            ] {
-                let s = State {
-                    lang,
-                    shot: ScreenshotSettings {
-                        print_screen: on,
-                        ..ScreenshotSettings::default()
-                    },
-                    prtsc: row,
-                    scroll: 1e6,
-                    ..states()[0].clone()
-                };
-                let l = layout(Section::Clipboard, &s, &Estimate);
-                let ctx = format!("{lang:?} on={on} row={row:?}");
-                let failed = on && row == PrtscRow::Failed;
-                // Five rows of ROW_H whatever the row says, ending at the
-                // bottom edge.
-                let card = l.cards[1];
-                assert_eq!(card.h, 5.0 * ROW_H, "{ctx}");
-                assert!((card.bottom() - (CLIENT_H - PAD)).abs() < 0.01, "{ctx}");
-                let (row_top, row_bottom) = (card.y + ROW_H, card.y + 2.0 * ROW_H);
-                // The row has the brief's full label and a toggle that follows
-                // the setting, placed right after the tool row (the second row).
-                let label_text = text(lang, Key::ShotPrintScreen);
-                let (brief, plain_desc) = match lang {
-                    Lang::Id => ("Tombol PrtSc", "Buka screenshot Vale"),
-                    Lang::En => ("PrtSc key", "Opens Vale's screenshot"),
-                };
-                assert_eq!(label_text, brief);
-                assert!(shown(&l, label_text), "{ctx}");
-                // What it does is the row's description; a failed hook's red
-                // note replaces it.
-                assert_eq!(text(lang, Key::ShotPrintScreenDesc), plain_desc);
-                assert_eq!(shown(&l, plain_desc), !failed, "{ctx}");
-                let (is_on, enabled, y) = clip_toggle(&l, Hit::ShotPrintScreen).expect(&ctx);
-                assert_eq!((is_on, enabled), (on, true), "{ctx}");
-                assert!(y >= row_top && y < row_bottom, "{ctx}");
-                let (_, _, preview_y) = clip_toggle(&l, Hit::ShotPreview).expect(&ctx);
-                assert!(preview_y >= row_bottom, "{ctx}");
-                assert_eq!(hits_of(&l, Hit::ShotPrintScreen), 1, "{ctx}");
-                // The label and the note fit their room in every state.
-                let in_row = |t: &&Text| t.rect.y >= row_top && t.rect.bottom() <= row_bottom;
-                assert!(l.texts.iter().filter(in_row).count() >= 1, "{ctx}");
-                for t in l.texts.iter().filter(in_row) {
-                    let w = Estimate.width(&t.text, t.font);
-                    assert!(w <= t.rect.w, "{ctx}: {:?} is {w} in {}", t.text, t.rect.w);
+            let s = hotkey_base(lang);
+            let l = layout(Section::Hotkeys, &s, &Estimate);
+            // The section needs no viewport at the minimum size.
+            assert!(l.viewport.is_none() && l.scroll_max == 0.0, "{lang:?}");
+            // One card of the header and five rows, under its eyebrow.
+            assert_eq!(l.cards.len(), 1);
+            let card = l.cards[0];
+            assert_eq!(card.h, HEADER_H + 5.0 * ROW_H);
+            assert!(
+                l.texts
+                    .iter()
+                    .any(|t| t.text == text(lang, Key::GroupHotkeys).to_uppercase()),
+                "{lang:?}"
+            );
+            assert_eq!(l.title.as_ref().unwrap().text, text(lang, Key::SecHotkeys));
+            // The hint on the left, "Kembalikan semua" on the right, in the
+            // header.
+            let header_bottom = card.y + HEADER_H;
+            let hint = l
+                .texts
+                .iter()
+                .find(|t| t.text == text(lang, Key::HotkeysHint))
+                .expect("the hint");
+            assert!(hint.rect.bottom() <= header_bottom && hint.rect.x < card.x + 40.0);
+            let reset_all = l
+                .controls
+                .iter()
+                .find_map(|c| match c {
+                    Control::Button(b) if b.hit == Hit::HotkeysResetAll => Some(b),
+                    _ => None,
+                })
+                .expect("Kembalikan semua");
+            assert_eq!(reset_all.label, text(lang, Key::HotkeysResetAll));
+            assert_eq!(reset_all.kind, ButtonKind::Secondary);
+            assert!(reset_all.rect.bottom() <= header_bottom);
+            assert!(reset_all.rect.x > hint.rect.x, "on the right");
+            // All at their defaults: nothing to reset.
+            assert!(!reset_all.enabled);
+            let fields = hotkey_fields(&l);
+            let ids: Vec<Hit> = fields.iter().map(|f| f.0).collect();
+            assert_eq!(
+                ids,
+                HotkeyId::ALL.map(Hit::HotkeyField).to_vec(),
+                "the rows are in ALL order"
+            );
+            for (i, (_, rect, caps, recording)) in fields.iter().enumerate() {
+                let row_top = header_bottom + i as f32 * ROW_H;
+                assert!(rect.y >= row_top && rect.bottom() <= row_top + ROW_H);
+                assert!(!recording);
+                assert!((HOTKEY_FIELD_MIN_W..=HOTKEY_FIELD_MAX_W).contains(&rect.w));
+                let id = HotkeyId::ALL[i];
+                assert_eq!(*caps, s.hotkeys.get(id).map(|h| h.caps()).unwrap_or_default());
+                // Its reset button sits to the right of the field, off at the default.
+                let reset = l
+                    .controls
+                    .iter()
+                    .find_map(|c| match c {
+                        Control::IconButton {
+                            hit,
+                            rect: r,
+                            icon,
+                            enabled,
+                            ..
+                        } if *hit == Hit::HotkeyReset(id) => Some((*r, *icon, *enabled)),
+                        _ => None,
+                    })
+                    .expect("a reset button");
+                assert!(reset.0.x >= rect.right() && reset.1 == Icon::Reset);
+                assert!(!reset.2);
+                // The name and the description.
+                let name = text(lang, hotkey_row_key(id));
+                let desc = text(lang, hotkey_row_desc_key(id));
+                for want in [name, desc] {
+                    assert!(
+                        l.texts.iter().any(|t| t.text == want
+                            && t.rect.y >= row_top
+                            && t.rect.bottom() <= row_top + ROW_H),
+                        "{lang:?} {want}"
+                    );
                 }
-                // The red note only when the hook failed.
-                assert_eq!(shown(&l, text(lang, Key::PrtscHookFailed)), failed, "{ctx}");
-                let note = match lang {
-                    Lang::Id => "Tombol PrtSc tidak bisa dipasang",
-                    Lang::En => "Could not hook the PrtSc key",
-                };
-                assert_eq!(text(lang, Key::PrtscHookFailed), note);
-                // Nothing to click in the row but the toggle.
-                let clickable_in_row: Vec<_> = l
-                    .hits()
-                    .into_iter()
-                    .filter(|(_, r)| r.x >= CONTENT_X && r.y >= row_top && r.bottom() <= row_bottom)
-                    .collect();
-                assert_eq!(clickable_in_row.len(), 1, "{ctx}: {clickable_in_row:?}");
+            }
+            // One divider on the top edge of every row, the first under the header.
+            for i in 0..5 {
+                let y = header_bottom + i as f32 * ROW_H;
+                assert!(
+                    l.dividers.iter().any(|d| (d.y + 0.5 - y).abs() < 0.01),
+                    "{lang:?} row {i}"
+                );
             }
         }
+    }
+
+    #[test]
+    fn a_hotkey_field_shows_its_caps_none_or_the_prompt_and_its_row_follows_the_state() {
+        for lang in [Lang::Id, Lang::En] {
+            let mut s = hotkey_base(lang);
+            s.hotkeys.set(HotkeyId::Clipboard, crate::hotkey::parse("Win+Alt+V").unwrap());
+            let l = layout(Section::Hotkeys, &s, &Estimate);
+            let f = hotkey_fields(&l);
+            assert_eq!(f[0].2, ["Ctrl", "Alt", "Space"]);
+            assert_eq!(f[1].2, ["Win", "Alt", "V"]);
+            assert!(f[2].2.is_empty() && f[3].2.is_empty(), "off: no caps");
+            assert_eq!(f[4].2, ["PrtSc"]);
+            // A changed row can be reset; the others cannot.
+            let enabled = |l: &Layout, id: HotkeyId| {
+                l.hits()
+                    .iter()
+                    .any(|(h, _)| *h == Hit::HotkeyReset(id))
+            };
+            assert!(enabled(&l, HotkeyId::Clipboard));
+            assert!(!enabled(&l, HotkeyId::Search));
+            assert!(l.hits().iter().any(|(h, _)| *h == Hit::HotkeysResetAll));
+            // Every field takes a click.
+            for id in HotkeyId::ALL {
+                assert!(l.hits().iter().any(|(h, _)| *h == Hit::HotkeyField(id)));
+            }
+            // Recording: the flag on that field only.
+            let rec = State {
+                hotkey_recording: Some(HotkeyId::Devices),
+                ..s.clone()
+            };
+            let f = hotkey_fields(&layout(Section::Hotkeys, &rec, &Estimate));
+            assert_eq!(
+                f.iter().map(|x| x.3).collect::<Vec<_>>(),
+                [false, false, true, false, false]
+            );
+            // The description: red for a refusal on that row, red for a taken
+            // one that is set, otherwise secondary.
+            let tone_of = |l: &Layout, want: &str| {
+                l.texts.iter().find(|t| t.text == want).map(|t| t.tone)
+            };
+            let desc = |id| text(lang, hotkey_row_desc_key(id));
+            assert_eq!(tone_of(&l, desc(HotkeyId::Arrange)), Some(Tone::Secondary));
+            let err = State {
+                hotkey_error: Some((HotkeyId::Arrange, RejectMsg::UsedBy(HotkeyId::Clipboard))),
+                ..s.clone()
+            };
+            let l = layout(Section::Hotkeys, &err, &Estimate);
+            let msg = reject_text(lang, RejectMsg::UsedBy(HotkeyId::Clipboard));
+            assert_eq!(tone_of(&l, &msg), Some(Tone::Bad));
+            assert!(msg.contains(text(lang, Key::HotkeyRowClipboard)), "{msg}");
+            assert_eq!(tone_of(&l, desc(HotkeyId::Arrange)), None, "replaced");
+            assert_eq!(tone_of(&l, desc(HotkeyId::Devices)), Some(Tone::Secondary));
+            for (msg, key) in [
+                (RejectMsg::Reserved, Key::HotkeyReserved),
+                (RejectMsg::NeedsModifier, Key::HotkeyNeedsModifier),
+            ] {
+                let s = State {
+                    hotkey_error: Some((HotkeyId::Search, msg)),
+                    ..s.clone()
+                };
+                let l = layout(Section::Hotkeys, &s, &Estimate);
+                assert_eq!(tone_of(&l, text(lang, key)), Some(Tone::Bad));
+            }
+            // A set row taken by another app is red; an off one never is.
+            let taken = State {
+                hotkey_failed: [true; 5],
+                ..s.clone()
+            };
+            let l = layout(Section::Hotkeys, &taken, &Estimate);
+            let reds: Vec<&Text> = l.texts.iter().filter(|t| t.tone == Tone::Bad).collect();
+            assert_eq!(reds.len(), 3, "search, clipboard and screenshot are set");
+            assert!(reds.iter().all(|t| t.text == text(lang, Key::HotkeyTaken)));
+        }
+    }
+
+    #[test]
+    fn the_hotkey_fields_stay_between_the_widths_and_inside_the_card_for_every_combo() {
+        let longest = crate::hotkey::parse("Win+Ctrl+Alt+Shift+NumMultiply").unwrap();
+        let shortest = crate::hotkey::parse("F13").unwrap();
+        for lang in [Lang::Id, Lang::En] {
+            for value in [longest, shortest, None] {
+                for recording in [None, Some(HotkeyId::Search)] {
+                    let mut s = hotkey_base(lang);
+                    s.hotkeys.set(HotkeyId::Search, value);
+                    s.hotkey_recording = recording;
+                    let l = layout(Section::Hotkeys, &s, &Estimate);
+                    let f = &hotkey_fields(&l)[0];
+                    assert!(
+                        (HOTKEY_FIELD_MIN_W..=HOTKEY_FIELD_MAX_W).contains(&f.1.w),
+                        "{lang:?} {value:?}: {}",
+                        f.1.w
+                    );
+                    assert!(inside(f.1, l.cards[0]));
+                    // The label column keeps room: the description fits.
+                    for t in &l.texts {
+                        let w = Estimate.width(&t.text, t.font);
+                        assert!(w <= t.rect.w + 0.01, "{lang:?} {:?} {w} > {}", t.text, t.rect.w);
+                    }
+                }
+            }
+        }
+        // Content decides the width between the limits: a short combo gets the
+        // minimum, the longest the maximum (its caps do not all fit then).
+        let w_of = |v| {
+            let mut s = hotkey_base(Lang::En);
+            s.hotkeys.set(HotkeyId::Search, v);
+            hotkey_fields(&layout(Section::Hotkeys, &s, &Estimate))[0].1.w
+        };
+        assert_eq!(w_of(shortest), HOTKEY_FIELD_MIN_W);
+        assert_eq!(w_of(longest), HOTKEY_FIELD_MAX_W);
+        let caps = longest.unwrap().caps();
+        assert!(hotkey_caps_w(&Estimate, &caps) > HOTKEY_FIELD_MAX_W);
+        let small = crate::hotkey::parse("Ctrl+Alt+V").unwrap().unwrap().caps();
+        assert!(hotkey_caps_w(&Estimate, &small) <= HOTKEY_FIELD_MAX_W);
+    }
+
+    #[test]
+    fn hotkey_hits_and_names() {
+        assert_eq!(Section::from_name("hotkeys"), Some(Section::Hotkeys));
+        assert_eq!(Section::from_name("Tombol-Pintas"), Some(Section::Hotkeys));
+        assert_eq!(Section::from_name("tombolpintas"), Some(Section::Hotkeys));
+        assert_eq!(Section::from_name("shortcut-keys"), Some(Section::Hotkeys));
+        // "shortcuts" is not taken: the tiles are Pintasan.
+        assert_eq!(Section::from_name("shortcuts"), None);
+        for lang in [Lang::Id, Lang::En] {
+            assert_eq!(
+                reject_text(lang, RejectMsg::UsedBy(HotkeyId::Arrange)),
+                crate::i18n::hotkey_used_by(lang, text(lang, Key::HotkeyRowArrange))
+            );
+        }
+        assert_eq!(
+            reject_text(Lang::Id, RejectMsg::UsedBy(HotkeyId::Devices)),
+            "Sudah dipakai Buka Perangkat"
+        );
+        assert_eq!(
+            reject_text(Lang::En, RejectMsg::UsedBy(HotkeyId::Devices)),
+            "Already used by Open Devices"
+        );
+        assert_eq!(reject_text(Lang::Id, RejectMsg::Reserved), "Dipakai Windows");
+        assert_eq!(reject_text(Lang::En, RejectMsg::Reserved), "Reserved by Windows");
+        assert_eq!(
+            reject_text(Lang::Id, RejectMsg::NeedsModifier),
+            "Tambahkan Ctrl, Alt, atau Win"
+        );
+        assert_eq!(
+            reject_text(Lang::En, RejectMsg::NeedsModifier),
+            "Add Ctrl, Alt or Win"
+        );
     }
 
     /// The Clipboard section's toggle for `hit`: (on, enabled), and its row's
@@ -6807,86 +7040,6 @@ mod tests {
     }
 
     #[test]
-    fn general_has_a_devices_card_with_the_notice_toggle_and_the_hotkey() {
-        for lang in [Lang::Id, Lang::En] {
-            for (on, hotkey, failed) in [
-                (true, DevicesHotkey::Off, false),
-                (false, DevicesHotkey::CtrlAltD, true),
-                (true, DevicesHotkey::CtrlAltD, false),
-            ] {
-                let s = State {
-                    lang,
-                    device_notices: on,
-                    devices_hotkey: hotkey,
-                    devices_hotkey_failed: failed,
-                    scroll: 1e6,
-                    ..states()[0].clone()
-                };
-                let l = layout(Section::Features, &s, &Estimate);
-                // Its own card, two rows under its label, before "Pembersih".
-                let card = l.cards[l.cards.len() - 2];
-                assert_eq!(card.h, 2.0 * ROW_H);
-                assert!(
-                    l.texts
-                        .iter()
-                        .any(|t| t.text == text(lang, Key::PageDevices).to_uppercase())
-                );
-                for key in [
-                    Key::DeviceNotices,
-                    Key::DeviceNoticesDesc,
-                    Key::DevicesHotkey,
-                ] {
-                    assert!(l.texts.iter().any(|t| t.text == text(lang, key)), "{key:?}");
-                }
-                let toggle = l.controls.iter().find_map(|c| match c {
-                    Control::Toggle {
-                        hit: Hit::DeviceNotices,
-                        on,
-                        rect,
-                        ..
-                    } => Some((*on, *rect)),
-                    _ => None,
-                });
-                let (shown_on, rect) = toggle.expect("the notices toggle");
-                assert_eq!(shown_on, on);
-                assert!(rect.y >= card.y && rect.bottom() <= card.y + ROW_H);
-                assert_eq!(
-                    l.hit(rect.x + rect.w / 2.0, rect.y + rect.h / 2.0),
-                    Some(Hit::DeviceNotices)
-                );
-                let (track, items, selected) =
-                    l.segmented(Group::DevicesHotkey).expect("the hotkey");
-                let hits: Vec<Hit> = items.iter().map(|i| i.hit).collect();
-                assert_eq!(
-                    hits,
-                    [
-                        Hit::DevicesHotkey(DevicesHotkey::Off),
-                        Hit::DevicesHotkey(DevicesHotkey::CtrlAltD)
-                    ]
-                );
-                assert_eq!(items[selected].hit, Hit::DevicesHotkey(hotkey));
-                assert!(track.y >= card.y + ROW_H && track.bottom() <= card.bottom());
-                // "Taken by another app" replaces the description, in red.
-                let taken = l
-                    .texts
-                    .iter()
-                    .any(|t| t.text == text(lang, Key::ClipHotkeyTaken));
-                let plain = l
-                    .texts
-                    .iter()
-                    .any(|t| t.text == text(lang, Key::DevicesHotkeyDesc));
-                assert_eq!(taken, failed && hotkey != DevicesHotkey::Off);
-                assert_eq!(plain, !taken);
-            }
-        }
-        // Not on the other tabs.
-        for section in [Section::Appearance, Section::General, Section::Panel] {
-            let l = layout(section, &states()[0], &Estimate);
-            assert!(l.segmented(Group::DevicesHotkey).is_none());
-        }
-    }
-
-    #[test]
     fn no_divider_sits_on_a_cards_top_edge() {
         for lang in [Lang::Id, Lang::En] {
             for section in Section::ALL {
@@ -6909,20 +7062,58 @@ mod tests {
     }
 
     #[test]
-    fn the_devices_card_has_one_divider_between_its_two_rows() {
-        let s = State {
-            scroll: 1e6,
-            ..states()[0].clone()
-        };
-        let l = layout(Section::Features, &s, &Estimate);
-        let card = l.cards[l.cards.len() - 2];
-        let inside_card: Vec<&Rect> = l
-            .dividers
-            .iter()
-            .filter(|d| d.y >= card.y - 1.0 && d.y <= card.bottom() + 1.0)
-            .collect();
-        assert_eq!(inside_card.len(), 1);
-        assert!((inside_card[0].y + 0.5 - (card.y + ROW_H)).abs() < 0.01);
+    fn the_devices_card_is_one_row_with_the_notice_toggle_and_no_divider() {
+        for lang in [Lang::Id, Lang::En] {
+            for on in [true, false] {
+                let s = State {
+                    lang,
+                    device_notices: on,
+                    scroll: 1e6,
+                    ..states()[0].clone()
+                };
+                let l = layout(Section::Features, &s, &Estimate);
+                // Its own card under its label, before "Pembersih": one row.
+                let card = l.cards[l.cards.len() - 2];
+                assert_eq!(card.h, ROW_H);
+                assert!(
+                    l.texts
+                        .iter()
+                        .any(|t| t.text == text(lang, Key::PageDevices).to_uppercase())
+                );
+                for key in [Key::DeviceNotices, Key::DeviceNoticesDesc] {
+                    assert!(l.texts.iter().any(|t| t.text == text(lang, key)), "{key:?}");
+                }
+                let toggle = l.controls.iter().find_map(|c| match c {
+                    Control::Toggle {
+                        hit: Hit::DeviceNotices,
+                        on,
+                        rect,
+                        ..
+                    } => Some((*on, *rect)),
+                    _ => None,
+                });
+                let (shown_on, rect) = toggle.expect("the notices toggle");
+                assert_eq!(shown_on, on);
+                assert!(rect.y >= card.y && rect.bottom() <= card.bottom());
+                assert_eq!(
+                    l.hit(rect.x + rect.w / 2.0, rect.y + rect.h / 2.0),
+                    Some(Hit::DeviceNotices)
+                );
+                // No hotkey control and no divider inside the card.
+                assert!(
+                    !l.hits()
+                        .iter()
+                        .any(|(h, r)| matches!(h, Hit::HotkeyField(_) | Hit::HotkeyReset(_))
+                            && inside(*r, card))
+                );
+                let dividers = l
+                    .dividers
+                    .iter()
+                    .filter(|d| d.y >= card.y - 1.0 && d.y <= card.bottom() + 1.0)
+                    .count();
+                assert_eq!(dividers, 0, "{lang:?}");
+            }
+        }
     }
 
     fn susun_state(templates: usize, saved: usize) -> State<'static> {
@@ -6960,17 +7151,11 @@ mod tests {
     }
 
     #[test]
-    fn fitur_has_a_titled_susun_card_with_the_hotkey_and_the_gap() {
+    fn fitur_has_a_titled_susun_card_that_opens_with_the_gap() {
         for lang in [Lang::Id, Lang::En] {
-            for (hotkey, failed) in [
-                (ArrangeHotkey::Off, false),
-                (ArrangeHotkey::CtrlAltS, true),
-                (ArrangeHotkey::CtrlAltS, false),
-            ] {
-                let mut s = susun_state(0, 0);
+            for (templates, saved) in [(0, 0), (2, 3)] {
+                let mut s = susun_state(templates, saved);
                 s.lang = lang;
-                s.arrange.hotkey = hotkey;
-                s.arrange_hotkey_failed = failed;
                 s.scroll = 1e6;
                 let l = layout(Section::Features, &s, &Estimate);
                 assert!(
@@ -6979,28 +7164,50 @@ mod tests {
                         .any(|t| t.text == text(lang, Key::PageArrange).to_uppercase()),
                     "the eyebrow"
                 );
-                let (_, items, selected) = l.segmented(Group::ArrangeHotkey).expect("hotkey");
-                let hits: Vec<Hit> = items.iter().map(|i| i.hit).collect();
-                assert_eq!(
-                    hits,
-                    [
-                        Hit::ArrangeHotkey(ArrangeHotkey::Off),
-                        Hit::ArrangeHotkey(ArrangeHotkey::CtrlAltS)
-                    ]
-                );
-                assert_eq!(items[selected].hit, Hit::ArrangeHotkey(hotkey));
-                let taken = l
-                    .texts
+                // The card: the gap, the templates' title row, the templates,
+                // the saved title row and the saved (an empty list keeps one
+                // row for its note).
+                let rows = 1 + 1 + templates.max(1) + 1 + saved.max(1);
+                let card = l
+                    .cards
                     .iter()
-                    .any(|t| t.text == text(lang, Key::ClipHotkeyTaken));
-                assert_eq!(taken, failed && hotkey != ArrangeHotkey::Off);
-                assert!(l.controls.iter().any(|c| matches!(
-                    c,
-                    Control::Slider {
-                        id: SliderId::ArrangeGap,
-                        ..
-                    }
-                )));
+                    .copied()
+                    .find(|c| (c.h - rows as f32 * ROW_H).abs() < 0.01)
+                    .expect("the Susun card");
+                // The gap row is the first row, with nothing above it: no
+                // hotkey control, no divider on its top edge.
+                let gap = l
+                    .controls
+                    .iter()
+                    .find_map(|c| match c {
+                        Control::Slider {
+                            id: SliderId::ArrangeGap,
+                            track,
+                            ..
+                        } => Some(*track),
+                        _ => None,
+                    })
+                    .expect("the gap slider");
+                assert!(gap.y >= card.y && gap.bottom() <= card.y + ROW_H, "{lang:?}");
+                assert!(
+                    l.hits()
+                        .iter()
+                        .all(|(h, _)| !matches!(h, Hit::HotkeyField(_) | Hit::HotkeyReset(_)))
+                );
+                assert!(
+                    l.dividers
+                        .iter()
+                        .all(|d| (d.y + 0.5 - card.y).abs() > 0.01),
+                    "no divider on the card's top edge"
+                );
+                // The first divider in the card is above the templates' title.
+                let first = l
+                    .dividers
+                    .iter()
+                    .filter(|d| d.y > card.y && d.y < card.bottom())
+                    .map(|d| d.y + 0.5)
+                    .fold(f32::MAX, f32::min);
+                assert!((first - (card.y + ROW_H)).abs() < 0.01, "{lang:?}");
             }
         }
         assert_eq!(SliderId::ArrangeGap.range(), (0, 24));
@@ -7120,7 +7327,6 @@ mod tests {
         assert!(button(&all, Hit::ArrangeEditorCancel).2);
         // The rest of Fitur is not there while it is open.
         assert!(l.segmented(Group::Shell).is_none());
-        assert!(l.segmented(Group::ArrangeHotkey).is_none());
         // With a name: Simpan is on.
         let l = layout(
             Section::Features,
@@ -7361,7 +7567,7 @@ mod tests {
         for s in Section::ALL {
             assert_eq!(Section::ALL[s.index()], s);
         }
-        // The eight sections, in the sidebar's order.
+        // The nine sections, in the sidebar's order.
         assert_eq!(
             Section::ALL,
             [
@@ -7370,6 +7576,7 @@ mod tests {
                 Section::Cat,
                 Section::Panel,
                 Section::Clipboard,
+                Section::Hotkeys,
                 Section::Features,
                 Section::Integrations,
                 Section::About,
@@ -7384,6 +7591,8 @@ mod tests {
             ("cat", Section::Cat),
             ("panel", Section::Panel),
             ("clipboard", Section::Clipboard),
+            ("hotkeys", Section::Hotkeys),
+            ("tombol-pintas", Section::Hotkeys),
             ("fitur", Section::Features),
             ("features", Section::Features),
             // A section before v3.8: Pomodoro lives in Fitur now.
@@ -7403,6 +7612,7 @@ mod tests {
                     "Kucing",
                     "Panel",
                     "Clipboard",
+                    "Tombol pintas",
                     "Fitur",
                     "Integrasi",
                     "Tentang",
@@ -7416,6 +7626,7 @@ mod tests {
                     "Cat",
                     "Panel",
                     "Clipboard",
+                    "Hotkeys",
                     "Features",
                     "Integrations",
                     "About",
@@ -7429,7 +7640,7 @@ mod tests {
         assert_eq!(Section::Cat.icon(), Icon::Cat);
         let mut icons: Vec<Icon> = Section::ALL.iter().map(|s| s.icon()).collect();
         icons.dedup();
-        assert_eq!(icons.len(), 8);
+        assert_eq!(icons.len(), 9);
     }
 
     #[test]

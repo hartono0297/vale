@@ -133,11 +133,14 @@ pub enum Icon {
     /// The Susun page: a rounded screen frame split by a vertical and a
     /// horizontal line into a 2x2 layout (Pintasan's `Grid` is four tiles).
     Layout,
+    /// The Tombol pintas section: a keyboard, a rounded body with a row of
+    /// key dots and a space bar.
+    Keyboard,
 }
 
 impl Icon {
     /// Every icon, in declaration order (`ALL[i] as usize == i`).
-    pub const ALL: [Icon; 70] = [
+    pub const ALL: [Icon; 71] = [
         Icon::Camera,
         Icon::Clipboard,
         Icon::Emoji,
@@ -208,6 +211,7 @@ impl Icon {
         Icon::Cat,
         Icon::Inbox,
         Icon::Layout,
+        Icon::Keyboard,
     ];
 
     /// The icon's primitives on the 24-unit grid, in drawing order.
@@ -485,6 +489,15 @@ impl Icon {
                 Part::FillRect(3.0, 4.5, 18.0, 15.0, 3.0),
                 Part::Rect(3.0, 4.5, 18.0, 15.0, 3.0),
                 Part::Path("M12 4.5v15M3 12h18"),
+            ],
+            Icon::Keyboard => &[
+                Part::FillRect(3.0, 6.0, 18.0, 12.0, 3.0),
+                Part::Rect(3.0, 6.0, 18.0, 12.0, 3.0),
+                Part::Dot(7.0, 10.0),
+                Part::Dot(10.3, 10.0),
+                Part::Dot(13.7, 10.0),
+                Part::Dot(17.0, 10.0),
+                Part::Path("M8 14.2h8"),
             ],
         }
     }

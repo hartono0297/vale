@@ -1,6 +1,6 @@
 //! The island's side of the clipboard history: the listener, reading a
 //! change into the history, copying an entry back, the encrypted file, the
-//! hotkey and the Clipboard page's search field and selection. A child of
+//! Clipboard page's search field and selection. A child of
 //! `app`, so it works on `App` directly.
 //!
 //! Power: no repeating timer. A clipboard change while the page is hidden
@@ -10,9 +10,6 @@
 use std::time::Instant;
 
 use chrono::Local;
-use windows::Win32::UI::Input::KeyboardAndMouse::{
-    MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_WIN, RegisterHotKey, UnregisterHotKey,
-};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, KillTimer, SetForegroundWindow, SetTimer,
 };
@@ -26,7 +23,6 @@ use crate::clipboard::persist::{self, Write};
 use crate::clipboard::store::{self, ClipSnapshot, Ingested, ingest};
 use crate::clipboard::win::{self, Read};
 use crate::clipboard::{Clip, ClipData, History};
-use crate::config::ClipHotkey;
 use crate::i18n::{self, Key, tr};
 use crate::model::{
     CLIP_IMAGE_KEY, CLIP_PREVIEW_KEY, ClipAction, Event, Hit, Notice, NoticeKind, Page, View,
@@ -49,8 +45,6 @@ const RETRY_MS: u32 = 60;
 const RETRIES: u8 = 4;
 const SAVE_MS: u32 = 1500;
 const HOLD_MS: u32 = 8000;
-/// `RegisterHotKey` id of the Clipboard page's hotkey.
-pub(super) const HOTKEY_CLIP: i32 = 1;
 /// Characters the search field takes.
 pub(super) const SEARCH_LIMIT: usize = 256;
 
@@ -72,9 +66,8 @@ pub(super) struct ClipState {
     pub scroll: usize,
     /// The search text as last seen.
     pub query: String,
-    /// The hotkey in effect, and whether registering the chosen one failed.
-    pub hotkey: Option<ClipHotkey>,
-    pub hotkey_failed: bool,
+    /// `clip_start` ran (before it a config read leaves the history alone).
+    pub started: bool,
     /// Where the last mouse move over the page was (client pixels).
     pub pointer: Option<(i32, i32)>,
     /// The keyboard moved the selection: the pointer selects nothing until it
@@ -261,24 +254,23 @@ pub(super) fn clip_notice_view<'a>(
 }
 
 impl App {
-    /// At startup: the saved history (when kept), the listener and the hotkey.
+    /// At startup: the saved history (when kept) and the listener.
     pub(super) fn clip_start(&mut self) {
         let cfg = self.config.clipboard;
         let items = persist::start_items(&persist::path(), cfg.persist);
         self.clip.history = History::from_items(cfg.max_items, items);
         self.sync_clip_listener();
-        self.sync_clip_hotkey();
+        self.clip.started = true;
     }
 
-    /// config.json changed (a save, or a hand edit picked up): the cap, the
-    /// listener and the hotkey follow. Nothing before `clip_start`.
+    /// config.json changed (a save, or a hand edit picked up): the cap and the
+    /// listener follow. Nothing before `clip_start`.
     pub(super) fn clip_follow_config(&mut self) {
-        if self.clip.hotkey.is_none() {
+        if !self.clip.started {
             return;
         }
         self.clip.history.set_cap(self.config.clipboard.max_items);
         self.sync_clip_listener();
-        self.sync_clip_hotkey();
     }
 
     /// The listener runs while "Riwayat clipboard" or the screenshot
@@ -293,44 +285,11 @@ impl App {
         }
     }
 
-    /// Registers the chosen hotkey (none by default). A failure (another app
-    /// has it) shows in Settings and is tried again on the next sync.
-    pub(super) fn sync_clip_hotkey(&mut self) {
-        let want = self.config.clipboard.hotkey;
-        if self.clip.hotkey == Some(want) && !self.clip.hotkey_failed {
-            return;
-        }
-        unsafe {
-            let _ = UnregisterHotKey(Some(self.hwnd), HOTKEY_CLIP);
-        }
-        let mods = match want {
-            ClipHotkey::Off => None,
-            ClipHotkey::CtrlAltV => Some(MOD_CONTROL | MOD_ALT),
-            ClipHotkey::WinAltV => Some(MOD_WIN | MOD_ALT),
-        };
-        self.clip.hotkey_failed = match mods {
-            Some(m) => unsafe {
-                RegisterHotKey(
-                    Some(self.hwnd),
-                    HOTKEY_CLIP,
-                    m | MOD_NOREPEAT,
-                    u32::from(b'V'),
-                )
-            }
-            .is_err(),
-            None => false,
-        };
-        self.clip.hotkey = Some(want);
-    }
-
-    /// `WM_DESTROY`: the listener and hotkey go; a pending save is written now.
+    /// `WM_DESTROY`: the listener goes; a pending save is written now.
     pub(super) fn clip_shutdown(&mut self) {
         if self.clip.listening {
             win::remove_listener(self.hwnd);
             self.clip.listening = false;
-        }
-        unsafe {
-            let _ = UnregisterHotKey(Some(self.hwnd), HOTKEY_CLIP);
         }
         if std::mem::take(&mut self.clip.save_due) && self.config.clipboard.persist {
             persist::write_now(
@@ -798,7 +757,6 @@ impl App {
             ClipSetting::Items(n) => cfg.max_items = store::clamp_items(n),
             ClipSetting::Persist(on) => cfg.persist = on,
             ClipSetting::ClearOnLock(on) => cfg.clear_on_lock = on,
-            ClipSetting::Hotkey(h) => cfg.hotkey = h,
             ClipSetting::FeedbackAll(on) => cfg.copied_feedback_all = on,
             ClipSetting::CopyNotice(on) => cfg.copy_notice = on,
             ClipSetting::Clear => {
@@ -832,14 +790,8 @@ impl App {
                 persist::write_in_background(persist::path(), Write::Remove);
             }
             ClipSetting::Persist(true) => self.write_clip_file_now(),
-            ClipSetting::Hotkey(_) => self.sync_clip_hotkey(),
             _ => {}
         }
-    }
-
-    /// For Settings: the hotkey chosen could not be registered.
-    pub(super) fn clip_hotkey_failed(&self) -> bool {
-        self.clip.hotkey_failed
     }
 }
 
@@ -850,7 +802,6 @@ pub enum ClipSetting {
     Items(u32),
     Persist(bool),
     ClearOnLock(bool),
-    Hotkey(ClipHotkey),
     FeedbackAll(bool),
     /// "Notifikasi salinan".
     CopyNotice(bool),

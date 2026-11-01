@@ -1,7 +1,7 @@
 //! The island's side of the Susun (Arrange) page: the template step (monitor
 //! chips, template cards, saved arrangements), the pick step with its
 //! overlay, the mover, the notice after it, the name field of "Simpan…" and
-//! the optional hotkey. A child of `app`, so it works on `App` directly. The
+//! its hotkey press. A child of `app`, so it works on `App` directly. The
 //! rules and arithmetic are `arrange.rs`, the Win32 is `arrange_win.rs` and
 //! `arrange_overlay.rs`, the layout is `panel_layout::arrange_layout`.
 //!
@@ -12,9 +12,6 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use windows::Win32::UI::Input::KeyboardAndMouse::{
-    MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, RegisterHotKey, UnregisterHotKey,
-};
 use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, SetForegroundWindow};
 
 use super::{App, poster};
@@ -25,7 +22,7 @@ use crate::arrange::{
 use crate::arrange_overlay::{self, MSG_BACK, MSG_CANCEL, MSG_PICK, PickSpec, TileState};
 use crate::arrange_win;
 use crate::clipboard::image::Thumb;
-use crate::config::{ArrangeHotkey, Config};
+use crate::config::Config;
 use crate::i18n::{self, Key, Lang};
 use crate::model::{ArrangeSave, Event, Notice, NoticeKind, Page};
 use crate::theme;
@@ -36,9 +33,6 @@ use crate::ui::render::{
     ArrangeCardView, ArrangeNameView, ArrangeSavedView, ArrangeView, ArrangeWindowView,
 };
 
-/// `RegisterHotKey` id of the Susun hotkey (the Clipboard's is 1, the quick
-/// search's 2, Devices' 3).
-pub(super) const HOTKEY_ARRANGE: i32 = 4;
 
 /// What a "Simpan…" will store: the layout, the monitor and one entry per
 /// tile, captured when the windows were picked.
@@ -112,9 +106,6 @@ fn move_in_flight(since: Option<Instant>, now: Instant) -> bool {
 /// What the Susun page keeps.
 #[derive(Default)]
 pub(super) struct ArrangeState {
-    /// The hotkey in effect, and whether registering the chosen one failed.
-    hotkey: Option<ArrangeHotkey>,
-    pub hotkey_failed: bool,
     monitors: Vec<Monitor>,
     /// The chip chosen (an index into `monitors`).
     monitor: usize,
@@ -180,11 +171,6 @@ fn outline_area(monitor: &Monitor) -> Rect {
 }
 
 impl App {
-    /// At startup: the hotkey.
-    pub(super) fn arrange_start(&mut self) {
-        self.sync_arrange_hotkey();
-    }
-
     /// The Susun page is what the open panel shows (a notice over it does
     /// not count).
     fn arrange_page_shown(&self) -> bool {
@@ -914,31 +900,6 @@ impl App {
 
     // --------------------------------------------------------------- hotkey
 
-    /// Registers the chosen hotkey (none by default). A failure (another app
-    /// has it) shows in Settings and is tried again on the next sync.
-    pub(super) fn sync_arrange_hotkey(&mut self) {
-        let want = self.config.arrange.hotkey;
-        if self.arrange.hotkey == Some(want) && !self.arrange.hotkey_failed {
-            return;
-        }
-        unsafe {
-            let _ = UnregisterHotKey(Some(self.hwnd), HOTKEY_ARRANGE);
-        }
-        self.arrange.hotkey_failed = match want {
-            ArrangeHotkey::Off => false,
-            ArrangeHotkey::CtrlAltS => unsafe {
-                RegisterHotKey(
-                    Some(self.hwnd),
-                    HOTKEY_ARRANGE,
-                    MOD_CONTROL | MOD_ALT | MOD_NOREPEAT,
-                    u32::from(b'S'),
-                )
-            }
-            .is_err(),
-        };
-        self.arrange.hotkey = Some(want);
-    }
-
     /// `WM_HOTKEY`: the page opens (or closes) at the template step without
     /// taking the foreground, held open like the Devices page.
     pub(super) fn on_arrange_hotkey(&mut self) {
@@ -946,20 +907,10 @@ impl App {
         self.arm_hotkey_hold();
     }
 
-    /// The hotkey may have been changed by a hand edit of the file.
-    pub(super) fn arrange_follow_config(&mut self) {
-        if self.arrange.hotkey.is_some() {
-            self.sync_arrange_hotkey();
-        }
-    }
-
-    /// `WM_DESTROY`: the overlays and the hotkey go.
+    /// `WM_DESTROY`: the overlays go.
     pub(super) fn arrange_shutdown(&mut self) {
         arrange_overlay::close();
         arrange_overlay::outline_hide();
-        unsafe {
-            let _ = UnregisterHotKey(Some(self.hwnd), HOTKEY_ARRANGE);
-        }
     }
 }
 

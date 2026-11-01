@@ -15,9 +15,6 @@ use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
 use windows::Win32::System::Threading::{
     GetCurrentThread, SetThreadPriority, THREAD_MODE_BACKGROUND_BEGIN,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::{
-    MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_WIN, RegisterHotKey, UnregisterHotKey, VK_SPACE,
-};
 use windows::Win32::UI::WindowsAndMessaging::{
     ASFW_ANY, AllowSetForegroundWindow, GW_HWNDNEXT, GWL_EXSTYLE, GetClassNameW,
     GetForegroundWindow, GetTopWindow, GetWindow, GetWindowLongW, IsIconic, IsWindowVisible,
@@ -26,7 +23,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use super::{App, WM_APP_EVENT, poster};
 use crate::clipboard::win;
-use crate::config::SearchHotkey;
 use crate::i18n::{self, Key, tr};
 use crate::model::{Event, Hit, Notice, NoticeKind, Page, View};
 use crate::search::{self, Action, AppEntry, Labels, SearchResult};
@@ -37,8 +33,6 @@ use crate::shortcuts;
 use crate::ui::cli_input::{CliInput, Key as InputKey};
 use crate::ui::editor;
 
-/// `RegisterHotKey` id of the quick search (the Clipboard's is 1).
-pub(super) const HOTKEY_SEARCH: i32 = 2;
 /// Characters the field takes.
 pub(super) const QUERY_LIMIT: usize = search::QUERY_MAX;
 
@@ -66,9 +60,6 @@ pub(super) struct SearchState {
     pub results: Vec<SearchResult>,
     /// The highlighted row.
     pub selected: usize,
-    /// The hotkey in effect, and whether registering the chosen one failed.
-    pub hotkey: Option<SearchHotkey>,
-    pub hotkey_failed: bool,
 }
 
 /// `CF_UNICODETEXT`'s bytes for `text`.
@@ -120,54 +111,6 @@ pub(super) fn move_selection(at: usize, n: usize, up: bool) -> usize {
 }
 
 impl App {
-    /// Registers the chosen hotkey (none by default). A failure (another app
-    /// has it) shows in Settings and is tried again on the next sync (a
-    /// config read, the tray menu or Settings opening), since the app that
-    /// held it may have let go.
-    pub(super) fn sync_search_hotkey(&mut self) {
-        let want = self.config.search_hotkey;
-        if self.search.hotkey == Some(want) && !self.search.hotkey_failed {
-            return;
-        }
-        unsafe {
-            let _ = UnregisterHotKey(Some(self.hwnd), HOTKEY_SEARCH);
-        }
-        let reg = match want {
-            SearchHotkey::Off => None,
-            SearchHotkey::CtrlAltSpace => Some((MOD_CONTROL | MOD_ALT, u32::from(VK_SPACE.0))),
-            SearchHotkey::WinAltS => Some((MOD_WIN | MOD_ALT, u32::from(b'S'))),
-        };
-        self.search.hotkey_failed = match reg {
-            Some((mods, key)) => {
-                unsafe { RegisterHotKey(Some(self.hwnd), HOTKEY_SEARCH, mods | MOD_NOREPEAT, key) }
-                    .is_err()
-            }
-            None => false,
-        };
-        self.search.hotkey = Some(want);
-    }
-
-    /// Tries a hotkey whose registration failed again (the tray menu or
-    /// Settings opening); one that works is left alone.
-    pub(super) fn retry_hotkeys(&mut self) {
-        if self.search.hotkey_failed {
-            self.sync_search_hotkey();
-        }
-        if self.clip.hotkey_failed {
-            self.sync_clip_hotkey();
-        }
-        if self.prtsc.failed {
-            self.sync_prtsc_hook();
-        }
-    }
-
-    /// `WM_DESTROY`: the hotkey goes.
-    pub(super) fn search_shutdown(&mut self) {
-        unsafe {
-            let _ = UnregisterHotKey(Some(self.hwnd), HOTKEY_SEARCH);
-        }
-    }
-
     /// `WM_HOTKEY`: the search opens (or closes). The Start Menu is read the
     /// first time.
     pub(super) fn on_search_hotkey(&mut self) {

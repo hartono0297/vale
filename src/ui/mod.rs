@@ -13,6 +13,7 @@ mod font_coverage;
 pub mod fonts;
 pub mod frame_clock;
 pub mod geometry;
+pub mod hotkey_rec;
 #[cfg(test)]
 mod icon_frames;
 pub mod icons;

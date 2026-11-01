@@ -547,7 +547,6 @@ keys! {
     ArrangeGrid4 => "Grid 2\u{d7}2", "2\u{d7}2 grid";
     ArrangeTwoThirds => "2/3 + 1/3", "2/3 + 1/3";
     ArrangeMain3 => "Utama + 3", "Main + 3";
-    ArrangeHotkeyDesc => "Buka halaman Susun", "Open the Arrange page";
     ArrangeGap => "Jarak antar ubin", "Gap between tiles";
     ArrangeGapDesc => "Dalam piksel, dihitung per monitor", "In pixels, scaled per monitor";
     ArrangeMyTemplates => "Template saya", "My templates";
@@ -594,8 +593,6 @@ keys! {
     DeviceNotices => "Notifikasi perangkat", "Device notifications";
     DeviceNoticesDesc => "Saat flashdisk dicolok dan saat aman dicabut",
         "When a drive is plugged in and when it is safe to remove";
-    DevicesHotkey => "Tombol pintas", "Hotkey";
-    DevicesHotkeyDesc => "Buka halaman Perangkat", "Open the Devices page";
     PageCli => "CLI", "CLI";
     PageShortcuts => "Pintasan", "Shortcuts";
     Language => "Bahasa", "Language";
@@ -729,10 +726,6 @@ keys! {
     ClipPersistDesc => "Terenkripsi DPAPI, hanya akun ini", "Encrypted with DPAPI, this account only";
     ClipClearOnLock => "Hapus saat layar dikunci", "Clear when the screen locks";
     ClipClearOnLockDesc => "Item tersemat tetap", "Pinned items stay";
-    ClipHotkey => "Tombol pintas", "Hotkey";
-    ClipHotkeyDesc => "Buka halaman Clipboard", "Open the Clipboard page";
-    ClipHotkeyTaken => "Dipakai aplikasi lain", "Taken by another app";
-    ClipHotkeyNone => "Tidak ada", "None";
 
     // Quick search.
     SearchTitle => "Pencarian", "Search";
@@ -757,10 +750,6 @@ keys! {
     SearchKindSetting => "Pengaturan Windows", "Windows Settings";
     SearchCopy => "Enter untuk menyalin", "Enter to copy";
     SearchKindWeb => "Cari di web", "Search the web";
-    // Settings → Umum → Dasar → Tombol pintas pencarian.
-    SearchHotkeySetting => "Tombol pintas pencarian", "Search hotkey";
-    SearchHotkeyDesc => "Cari dan hitung", "Find and calculate";
-    SearchHotkeyTaken => "Sudah dipakai", "In use";
     ClipFeedbackAll => "\u{201C}Disalin\u{201D} untuk semua salinan", "\u{201C}Copied\u{201D} for every copy";
     ClipFeedbackAllDesc => "Hanya saat pratinjau mati", "Only while the preview is off";
     ClipCopyNotice => "Pratinjau salinan", "Copy preview";
@@ -835,11 +824,7 @@ keys! {
     ShotToolSetting => "Alat screenshot", "Screenshot tool";
     ShotToolVale => "Vale", "Vale";
     ShotToolWindows => "Snipping Tool", "Snipping Tool";
-    // The bare PrtSc key opens Vale's own capture (Settings → Clipboard).
-    ShotPrintScreen => "Tombol PrtSc", "PrtSc key";
-    ShotPrintScreenDesc => "Buka screenshot Vale", "Opens Vale's screenshot";
     ShotToolDesc => "Dipakai tile Screenshot", "Used by the Screenshot tile";
-    PrtscHookFailed => "Tombol PrtSc tidak bisa dipasang", "Could not hook the PrtSc key";
     SnapHint => "Klik atau seret · Enter ambil · Esc batal",
         "Click or drag · Enter to capture · Esc to cancel";
     EditTitle => "Vale · Screenshot", "Vale · Screenshot";
@@ -879,6 +864,26 @@ keys! {
     SecCat => "Kucing", "Cat";
     SecPanel => "Panel", "Panel";
     SecFeatures => "Fitur", "Features";
+    // Settings → Tombol pintas: five hotkeys recorded by pressing them.
+    SecHotkeys => "Tombol pintas", "Hotkeys";
+    GroupHotkeys => "Di semua aplikasi", "In every app";
+    HotkeysHint => "Klik kolom, lalu tekan tombolnya", "Click a field, then press the keys";
+    HotkeysResetAll => "Kembalikan semua", "Reset all";
+    HotkeyRowSearch => "Pencarian cepat", "Quick search";
+    HotkeyRowSearchDesc => "Cari aplikasi, file, dan hitung", "Find apps and files, calculate";
+    HotkeyRowClipboard => "Buka Clipboard", "Open Clipboard";
+    HotkeyRowClipboardDesc => "Riwayat salinan di panel", "Your copy history in the panel";
+    HotkeyRowDevices => "Buka Perangkat", "Open Devices";
+    HotkeyRowDevicesDesc => "Flashdisk dan disk eksternal", "Flash drives and external disks";
+    HotkeyRowArrange => "Buka Susun", "Open Arrange";
+    HotkeyRowArrangeDesc => "Atur jendela jadi tata letak", "Arrange windows into a layout";
+    HotkeyRowScreenshot => "Screenshot Vale", "Vale screenshot";
+    HotkeyRowScreenshotDesc => "Ambil area layar, lalu edit", "Capture an area, then edit";
+    HotkeyNone => "Tidak ada", "None";
+    HotkeyRecording => "Tekan tombol… (Esc batal)", "Press keys… (Esc cancels)";
+    HotkeyTaken => "Sudah dipakai aplikasi lain", "Taken by another app";
+    HotkeyReserved => "Dipakai Windows", "Reserved by Windows";
+    HotkeyNeedsModifier => "Tambahkan Ctrl, Alt, atau Win", "Add Ctrl, Alt or Win";
     GroupBasics => "Dasar", "Basics";
     GroupAlerts => "Peringatan", "Alerts";
     GroupIsland => "Island", "Island";
@@ -1938,6 +1943,15 @@ pub fn shot_deleted(
 /// "8 dtk", "8 s": the "Lama tampil" stepper's value.
 pub fn seconds_short(lang: Lang, secs: u32) -> String {
     format!("{secs} {}", text(lang, Key::SecondsShort))
+}
+
+/// "Sudah dipakai Buka Clipboard": the message under a hotkey row whose new
+/// combo another row already has; `label` is that row's name.
+pub fn hotkey_used_by(lang: Lang, label: &str) -> String {
+    match lang {
+        Lang::Id => format!("Sudah dipakai {label}"),
+        Lang::En => format!("Already used by {label}"),
+    }
 }
 
 /// A running command's time on the clock: "0:42", "12:05", "1:02:03".
