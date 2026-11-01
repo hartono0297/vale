@@ -690,11 +690,14 @@ pub const ACTION_W: f32 = 66.0;
 /// The Mole notices' "Log" chip: narrower, so their longer titles keep
 /// the room ("Mole selesai · 12,4 GB dibebaskan").
 pub const LOG_ACTION_W: f32 = 46.0;
+/// The failed update's "Lihat rilis" / "See releases" chip: a longer word.
+pub const RELEASES_ACTION_W: f32 = 88.0;
 
 /// How wide `kind`'s chip is (`notice_action` says whether it has one).
 pub fn notice_action_w(kind: &NoticeKind) -> f32 {
     match kind {
         NoticeKind::MoleDone | NoticeKind::MoleFailed => LOG_ACTION_W,
+        NoticeKind::UpdateFailed => RELEASES_ACTION_W,
         _ => ACTION_W,
     }
 }
@@ -933,6 +936,14 @@ pub fn badge_style(notice: &Notice, p: &Palette, pomo_next: Phase) -> BadgeStyle
         NoticeKind::DeviceSafe => tint(p.sage, Icon::Check),
         // With the robot off: the Susun layout icon, in the accent.
         NoticeKind::Arranged { .. } => tint(p.accent, Icon::Layout),
+        // With the robot off: the download arrow, in the accent, for the
+        // offer and the progress; ochre for a failure, a sage check when
+        // there is only news (up to date, updated).
+        NoticeKind::UpdateAvailable { .. } | NoticeKind::UpdateProgress { .. } => {
+            tint(p.accent, Icon::Download)
+        }
+        NoticeKind::UpdateFailed => tint(p.ochre, Icon::Download),
+        NoticeKind::UpdateInfo => tint(p.sage, Icon::Check),
         // Drawn by the robot; this badge only shows if it is turned off meanwhile.
         NoticeKind::Greeting { .. } => tint(p.accent, Icon::Sparkle),
         // With the robot off: the Clipboard icon, as on the Pintasan tile.
@@ -979,6 +990,9 @@ pub fn notice_action(kind: &NoticeKind, pomo: PomoStatus) -> Option<Key> {
         NoticeKind::ClipPreview { .. } => Some(Key::ClipPreviewChip),
         // The click opens the cleaner on Mole's log.
         NoticeKind::MoleDone | NoticeKind::MoleFailed => Some(Key::MoleLog),
+        // The click installs the update, or opens the releases page.
+        NoticeKind::UpdateAvailable { .. } => Some(Key::UpdateButton),
+        NoticeKind::UpdateFailed => Some(Key::SeeReleases),
         _ => None,
     }
 }
@@ -1511,6 +1525,98 @@ mod tests {
     }
 
     #[test]
+    fn the_shrunk_eyes_stay_inside_the_pill() {
+        use crate::pointer_watch::{EYES_LOOK_DOWN_DIP, EYES_LOOK_X_DIP};
+        use crate::ui::robot::{eyes_boxes_at, eyes_centre, eyes_offset_in};
+        let steps = |min: u32, max: u32, step: usize, default: u32| {
+            let mut v: Vec<u32> = (min..=max).step_by(step).chain([default, max]).collect();
+            v.sort_unstable();
+            v.dedup();
+            v
+        };
+        let widths = steps(NOTCH_W_MIN, NOTCH_W_MAX, 10, NOTCH_W_DEFAULT);
+        let heights = steps(NOTCH_H_MIN, NOTCH_H_MAX, 2, NOTCH_H_DEFAULT);
+        assert_eq!((widths.len(), heights.len()), (15, 9));
+        // The look's own extremes, then ones far past them: the clamp's job.
+        let (lx, ly) = (EYES_LOOK_X_DIP, EYES_LOOK_DOWN_DIP);
+        let offsets = [
+            (0.0, 0.0),
+            (lx, 0.0),
+            (-lx, 0.0),
+            (0.0, ly),
+            (lx, ly),
+            (-lx, ly),
+            (20.0, 0.0),
+            (-20.0, 0.0),
+            (20.0, 10.0),
+            (-20.0, 10.0),
+            (0.0, 10.0),
+        ];
+        let inside = |style, s: ShapeRect, boxes: &[(f32, f32, f32, f32)]| {
+            boxes.iter().all(|&(l, t, r, b)| {
+                [(l, t), (r, t), (r, b), (l, b)]
+                    .into_iter()
+                    .all(|(x, y)| island_contains(style, s, x, y, 0.0))
+            })
+        };
+        for style in [Style::Pill, Style::Notch] {
+            let pill = shape_sized(style, NotchSize::DEFAULT, ShapeKind::Eyes);
+            // The final pill takes the look's extremes as they are: the clamp
+            // is a guard, not a visible limit.
+            for &(dx, dy) in &offsets[..6] {
+                assert_eq!(eyes_offset_in(style, pill, dx, dy), (dx, dy), "{style:?}");
+                for blink in [false, true] {
+                    let boxes = eyes_boxes_at(eyes_centre(pill), dx, dy, blink);
+                    assert!(inside(style, pill, &boxes), "{style:?} ({dx}, {dy}) {blink}");
+                }
+            }
+            // Past the extremes the pill does cut the slide back (down
+            // first, then across what is left of the room).
+            let (cx, cy) = eyes_offset_in(style, pill, 20.0, 10.0);
+            assert!(cx > 0.0 && cx < 20.0 && cy > ly && cy < 10.0, "{style:?} {cx} {cy}");
+            assert!(eyes_offset_in(style, pill, 20.0, 0.0).0 > lx);
+            for &w in &widths {
+                for &h in &heights {
+                    let size = NotchSize::from_px(w, h);
+                    let eyes = shape_sized(style, size, ShapeKind::Eyes);
+                    assert_eq!(eyes, pill, "the pill does not follow the notch size");
+                    let mut normals = Vec::new();
+                    for robot in [true, false] {
+                        for kind in [
+                            ShapeKind::Idle,
+                            ShapeKind::MediaCompact,
+                            ShapeKind::PomodoroCompact,
+                        ] {
+                            normals.push(shape_with_robot_sized(style, size, kind, robot));
+                        }
+                        for lyric_w in [LYRIC_MIN_W.max(size.w), 380.0, LYRIC_MAX_W] {
+                            normals.push(lyric_shape_sized(style, size, lyric_w));
+                        }
+                    }
+                    for normal in normals {
+                        for step in 0..=10 {
+                            let s = lerp_shape(normal, eyes, step as f32 / 10.0);
+                            for &(dx, dy) in &offsets {
+                                let (ox, oy) = eyes_offset_in(style, s, dx, dy);
+                                // Never past what was asked, never the other way.
+                                assert!(ox.abs() <= dx.abs() && ox * dx >= 0.0, "{ox} {dx}");
+                                assert!(oy.abs() <= dy.abs() && oy * dy >= 0.0, "{oy} {dy}");
+                                for blink in [false, true] {
+                                    let boxes = eyes_boxes_at(eyes_centre(s), ox, oy, blink);
+                                    assert!(
+                                        inside(style, s, &boxes),
+                                        "{style:?} {size:?} t {step}/10 ({dx}, {dy}) -> ({ox}, {oy}) blink {blink} in {s:?}"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn the_screenshot_preview_follows_the_design() {
         for style in [Style::Pill, Style::Notch] {
             let s = shape_with_robot(style, ShapeKind::NoticeShot, true);
@@ -1833,6 +1939,44 @@ mod tests {
             notice_action_w(&NoticeKind::ClipPreview { id: 1 }),
             ACTION_W
         );
+    }
+
+    #[test]
+    fn the_update_notices_have_chips_and_badges() {
+        use crate::theme::{Accent, Surface, island};
+        let p = island(Accent::Plum, Surface::Espresso);
+        let available = NoticeKind::UpdateAvailable {
+            version: "3.11.0".into(),
+        };
+        assert_eq!(
+            notice_action(&available, PomoStatus::Idle),
+            Some(Key::UpdateButton)
+        );
+        assert_eq!(
+            notice_action(&NoticeKind::UpdateFailed, PomoStatus::Idle),
+            Some(Key::SeeReleases)
+        );
+        for kind in [NoticeKind::UpdateProgress { pct: 5 }, NoticeKind::UpdateInfo] {
+            assert_eq!(notice_action(&kind, PomoStatus::Idle), None);
+        }
+        assert_eq!(notice_action_w(&available), ACTION_W);
+        assert_eq!(
+            notice_action_w(&NoticeKind::UpdateFailed),
+            RELEASES_ACTION_W
+        );
+        let icon = |kind: NoticeKind| badge_style(&notice("Vale", kind), &p, Phase::Focus).icon;
+        assert_eq!(icon(available), Some(Icon::Download));
+        assert_eq!(
+            icon(NoticeKind::UpdateProgress { pct: 5 }),
+            Some(Icon::Download)
+        );
+        assert_eq!(icon(NoticeKind::UpdateFailed), Some(Icon::Download));
+        assert_eq!(icon(NoticeKind::UpdateInfo), Some(Icon::Check));
+        // Ochre for the failure, the accent for the offer.
+        let fill = |kind: NoticeKind| badge_style(&notice("Vale", kind), &p, Phase::Focus).fill;
+        assert_eq!(fill(NoticeKind::UpdateFailed), p.ochre);
+        assert_eq!(fill(NoticeKind::UpdateProgress { pct: 5 }), p.accent);
+        assert_eq!(fill(NoticeKind::UpdateInfo), p.sage);
     }
 
     #[test]

@@ -30,7 +30,8 @@ use windows::core::Result as WinResult;
 use windows_numerics::{Matrix3x2, Vector2};
 
 use super::cat_style::{CatLook, Placed, RIM_WIDTH};
-use super::geometry::Rect;
+use super::geometry::{EYES_H, Rect, ShapeRect, shape_contains};
+use crate::config::Style;
 use crate::greeting::{self, DayPeriod, GreetMark};
 use crate::i18n::Key;
 use crate::model::{NoticeKind, View};
@@ -494,6 +495,184 @@ pub fn eyes_area(centre: (f32, f32)) -> Rect {
     }
 }
 
+// ---- The shrunk notch's eyes: where they look and when they blink ----
+
+/// What the shrunk notch's eyes do this frame: slid `dx_dip` across and
+/// `dy_dip` down from the centre (the look), or shut (a blink). The default
+/// is centred and open.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct EyesPose {
+    pub dx_dip: f32,
+    pub dy_dip: f32,
+    pub blink: bool,
+}
+
+/// The grid boxes `(left, top, right, bottom)` of the eyes' marks: the two
+/// open pills, or the two blink lines with their round caps (stroke width
+/// included).
+fn eyes_grid_boxes(blink: bool) -> Vec<(f32, f32, f32, f32)> {
+    if !blink {
+        return eye_pills()
+            .into_iter()
+            .filter_map(|part| match part {
+                Part::Pill { x, y, w, h, .. } => Some((x, y, x + w, y + h)),
+                _ => None,
+            })
+            .collect();
+    }
+    let line = Line::Blink;
+    let pad = line.width() / 2.0;
+    let mut boxes: Vec<(f32, f32, f32, f32)> = Vec::new();
+    for seg in line.segments() {
+        match seg {
+            Seg::Move(x, y) => boxes.push((x - pad, y - pad, x + pad, y + pad)),
+            Seg::Line(x, y) => {
+                if let Some(b) = boxes.last_mut() {
+                    *b = (b.0.min(x - pad), b.1.min(y - pad), b.2.max(x + pad), b.3.max(y + pad));
+                }
+            }
+            _ => {}
+        }
+    }
+    boxes
+}
+
+/// The boxes of both eyes in dip, as `paint_eyes` draws them when centred on
+/// `centre` and slid by `(dx, dy)`.
+pub fn eyes_boxes_at(
+    centre: (f32, f32),
+    dx: f32,
+    dy: f32,
+    blink: bool,
+) -> Vec<(f32, f32, f32, f32)> {
+    let at = |x: f32, y: f32| {
+        (
+            centre.0 + (x - 32.0) * EYES_SCALE + dx,
+            centre.1 + (y - Y) * EYES_SCALE + dy,
+        )
+    };
+    eyes_grid_boxes(blink)
+        .into_iter()
+        .map(|(l, t, r, b)| {
+            let (left, top) = at(l, t);
+            let (right, bottom) = at(r, b);
+            (left, top, right, bottom)
+        })
+        .collect()
+}
+
+/// Where the shrunk notch's eyes sit in `shape` (a pill, or the morph toward
+/// it): the middle of the line between them, as `paint_eyes_pill` anchors it.
+pub fn eyes_centre(shape: ShapeRect) -> (f32, f32) {
+    (shape.x + shape.w / 2.0, shape.y + EYES_H / 2.0)
+}
+
+/// The slide `(dx, dy)` of the eyes in dip, cut back so both eyes stay inside
+/// `shape` (the pill, or any shape of the morph to it): open or shut, so a
+/// blink never moves them. The shapes' corners are tested on the main outline
+/// (the Notch's shoulders are outside it, so this is the stricter side). At the
+/// final pill the look's own extremes fit, so this is a guard that the morph
+/// and odd sizes never trip over, not a visible limit.
+pub fn eyes_offset_in(style: Style, shape: ShapeRect, dx: f32, dy: f32) -> (f32, f32) {
+    let centre = eyes_centre(shape);
+    let fits = |ox: f32, oy: f32| {
+        [false, true].into_iter().all(|blink| {
+            eyes_boxes_at(centre, ox, oy, blink)
+                .into_iter()
+                .all(|(l, t, r, b)| {
+                    [(l, t), (r, t), (l, b), (r, b)]
+                        .into_iter()
+                        .all(|(x, y)| shape_contains(style, shape, x, y))
+                })
+        })
+    };
+    // The set of slides that fit is convex, so along a line from the middle
+    // it is an interval: bisect for its end.
+    let reach = |want: f32, fits: &dyn Fn(f32) -> bool| {
+        if want.is_nan() || want == 0.0 || !fits(0.0) {
+            return 0.0;
+        }
+        if fits(want) {
+            return want;
+        }
+        let (mut ok, mut bad) = (0.0f32, want);
+        for _ in 0..24 {
+            let mid = (ok + bad) / 2.0;
+            if fits(mid) {
+                ok = mid;
+            } else {
+                bad = mid;
+            }
+        }
+        ok
+    };
+    let y = reach(dy, &|v| fits(0.0, v));
+    let x = reach(dx, &|v| fits(v, y));
+    (x, y)
+}
+
+pub const EYES_BLINK_MIN_MS: u32 = 3_000;
+pub const EYES_BLINK_MAX_MS: u32 = 6_000;
+/// A double blink: its second shut starts this long after the first one starts.
+pub const EYES_DOUBLE_MS: u32 = 260;
+
+/// The shrunk notch's blink schedule: eyes open for 3 to 6 s, shut for
+/// `BLINK_MS`, and one blink in four is a double (shut, open 140 ms, shut
+/// again). `next` is called each time `TIMER_BLINK` fires.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EyesBlink {
+    /// Open, waiting for the next blink.
+    #[default]
+    Open,
+    /// Shut; a second shut follows when `second_follows`.
+    Shut { second_follows: bool },
+    /// Open between the two shuts of a double blink.
+    Gap,
+}
+
+impl EyesBlink {
+    /// The wait while open: 3 to 6 s. The first one is what arms the timer.
+    pub fn open_wait(rng: &mut Rng) -> u32 {
+        EYES_BLINK_MIN_MS + rng.next_u32() % (EYES_BLINK_MAX_MS - EYES_BLINK_MIN_MS + 1)
+    }
+
+    /// The eyes are shut now.
+    pub fn shut(&self) -> bool {
+        matches!(self, EyesBlink::Shut { .. })
+    }
+
+    /// The timer fired: the next step, and the milliseconds until the one
+    /// after it.
+    pub fn next(&mut self, rng: &mut Rng) -> u32 {
+        match *self {
+            EyesBlink::Open => {
+                *self = EyesBlink::Shut {
+                    second_follows: rng.next_u32() % 4 == 0,
+                };
+                BLINK_MS
+            }
+            EyesBlink::Shut {
+                second_follows: true,
+            } => {
+                *self = EyesBlink::Gap;
+                EYES_DOUBLE_MS - BLINK_MS
+            }
+            EyesBlink::Gap => {
+                *self = EyesBlink::Shut {
+                    second_follows: false,
+                };
+                BLINK_MS
+            }
+            EyesBlink::Shut {
+                second_follows: false,
+            } => {
+                *self = EyesBlink::Open;
+                Self::open_wait(rng)
+            }
+        }
+    }
+}
+
 /// Head: x 7 y 24, 50 × 30, a dome on top (radius 17) and a flat base.
 pub const HEAD: (f32, f32, f32, f32, f32) = (7.0, 24.0, 50.0, 30.0, 17.0);
 /// How far an ear's stroke (width 5, round joins) reaches past its triangle.
@@ -812,14 +991,16 @@ impl RobotPainter {
 impl RobotPainter {
     /// Only the two open eyes of the idle face, in the brand terracotta (the
     /// espresso of the cat's own eyes would vanish on the dark notch), over a
-    /// square `area` as `eyes_area` gives. The render target's transform is
-    /// restored; the brush colour is not.
+    /// square `area` as `eyes_area` gives; with `blink`, the cat's two short
+    /// level lines instead, in the same colour. The render target's transform
+    /// is restored; the brush colour is not.
     pub fn paint_eyes(
         &self,
         rt: &ID2D1RenderTarget,
         brush: &ID2D1SolidColorBrush,
         area: Rect,
         alpha: f32,
+        blink: bool,
     ) {
         if area.w <= 0.0 {
             return;
@@ -837,7 +1018,13 @@ impl RobotPainter {
                 b: ch(0),
                 a: alpha,
             });
-            for part in eye_pills() {
+            if blink {
+                let line = Line::Blink;
+                if let Some(g) = self.path(Shape::Line(line)) {
+                    rt.DrawGeometry(&g, brush, line.width(), &self.round);
+                }
+            }
+            for part in eye_pills().into_iter().filter(|_| !blink) {
                 if let Part::Pill { x, y, w, h, rx, ry } = part {
                     rt.FillRoundedRectangle(
                         &D2D1_ROUNDED_RECT {
@@ -943,6 +1130,14 @@ pub enum NoticeSort {
     DeviceSafe,
     /// Susun arranged the windows.
     Arranged,
+    /// "Vale X.Y.Z tersedia".
+    UpdateAvailable,
+    /// The download's percent.
+    UpdateProgress,
+    /// "Update gagal".
+    UpdateFailed,
+    /// Up to date, updated, off in debug builds.
+    UpdateInfo,
 }
 
 impl NoticeSort {
@@ -967,6 +1162,10 @@ impl NoticeSort {
             NoticeKind::DevicePlugged { .. } => NoticeSort::DevicePlugged,
             NoticeKind::DeviceSafe => NoticeSort::DeviceSafe,
             NoticeKind::Arranged { .. } => NoticeSort::Arranged,
+            NoticeKind::UpdateAvailable { .. } => NoticeSort::UpdateAvailable,
+            NoticeKind::UpdateProgress { .. } => NoticeSort::UpdateProgress,
+            NoticeKind::UpdateFailed => NoticeSort::UpdateFailed,
+            NoticeKind::UpdateInfo => NoticeSort::UpdateInfo,
         }
     }
 }
@@ -1073,13 +1272,19 @@ pub fn choose_expr(i: &RobotInputs) -> Option<Expr> {
                 | NoticeSort::Screenshot
                 | NoticeSort::DeviceSafe
                 | NoticeSort::Arranged
+                | NoticeSort::UpdateInfo
                 | NoticeSort::ShotSaved => Some(Expr::Happy),
                 // keputusan-v3.1 p6: "Dihapus" with Bata at rest; a drive
                 // plugged in is news, not an event: Bata at rest as well.
-                NoticeSort::ShotDeleted | NoticeSort::DevicePlugged => Some(Expr::Idle),
-                NoticeSort::BatteryLow | NoticeSort::SystemLow | NoticeSort::MoleFailed => {
-                    Some(Expr::Sad)
-                }
+                // An update on offer or on its way is the same kind of news.
+                NoticeSort::ShotDeleted
+                | NoticeSort::DevicePlugged
+                | NoticeSort::UpdateAvailable
+                | NoticeSort::UpdateProgress => Some(Expr::Idle),
+                NoticeSort::BatteryLow
+                | NoticeSort::SystemLow
+                | NoticeSort::MoleFailed
+                | NoticeSort::UpdateFailed => Some(Expr::Sad),
                 NoticeSort::Greeting(period) => Some(greeting::face(period)),
             };
         }
@@ -1751,6 +1956,10 @@ mod tests {
             (NoticeSort::ShotDeleted, Expr::Idle),
             (NoticeSort::DevicePlugged, Expr::Idle),
             (NoticeSort::DeviceSafe, Expr::Happy),
+            (NoticeSort::UpdateAvailable, Expr::Idle),
+            (NoticeSort::UpdateProgress, Expr::Idle),
+            (NoticeSort::UpdateFailed, Expr::Sad),
+            (NoticeSort::UpdateInfo, Expr::Happy),
         ] {
             let spot = Spot::Notice(sort);
             assert_eq!(e(RobotInputs { spot, ..busy }), Some(expr), "{sort:?}");
@@ -1900,6 +2109,173 @@ mod tests {
         let mut again = Rng::new(42);
         assert_eq!(blink_delay_ms(&mut again), delays[0]);
         assert_eq!(BLINK_MS, 120);
+    }
+
+    /// The eyes' blink run until `blinks` shuts have happened: `(time the
+    /// timer fired, shut after that, wait until the next firing)`, from an
+    /// open start at time 0 (the first firing comes after the open wait).
+    fn eyes_blink_run(seed: u64, blinks: usize) -> Vec<(u64, bool, u32)> {
+        let mut rng = Rng::new(seed);
+        let mut state = EyesBlink::default();
+        let mut t = u64::from(EyesBlink::open_wait(&mut rng));
+        let mut log = Vec::new();
+        let mut shuts = 0;
+        while shuts < blinks {
+            let wait = state.next(&mut rng);
+            log.push((t, state.shut(), wait));
+            if state.shut() {
+                shuts += 1;
+            }
+            t += u64::from(wait);
+        }
+        log
+    }
+
+    #[test]
+    fn the_eyes_open_wait_is_three_to_six_seconds() {
+        assert_eq!((EYES_BLINK_MIN_MS, EYES_BLINK_MAX_MS), (3_000, 6_000));
+        for seed in 0..200u64 {
+            let mut rng = Rng::new(seed);
+            for _ in 0..20 {
+                let w = EyesBlink::open_wait(&mut rng);
+                assert!((3_000..=6_000).contains(&w), "{w}");
+            }
+            // And the wait after the last shut of a blink (next from Shut).
+            let mut state = EyesBlink::Shut {
+                second_follows: false,
+            };
+            let w = state.next(&mut rng);
+            assert!((3_000..=6_000).contains(&w), "{w}");
+            assert_eq!(state, EyesBlink::Open);
+            assert!(!state.shut());
+        }
+        // Spread over the range, not stuck.
+        let mut rng = Rng::new(7);
+        let waits: Vec<u32> = (0..500).map(|_| EyesBlink::open_wait(&mut rng)).collect();
+        assert!(waits.iter().any(|w| *w < 3_500) && waits.iter().any(|w| *w > 5_500));
+    }
+
+    #[test]
+    fn a_blink_shuts_the_eyes_for_the_blink_time() {
+        // Open -> Shut: the shut lasts BLINK_MS (120 ms) before the next step.
+        for seed in 0..100u64 {
+            let mut rng = Rng::new(seed);
+            let mut state = EyesBlink::default();
+            assert!(!state.shut());
+            assert_eq!(state.next(&mut rng), BLINK_MS);
+            assert!(state.shut());
+        }
+    }
+
+    #[test]
+    fn about_a_quarter_of_the_eyes_blinks_are_doubles() {
+        let mut rng = Rng::new(12345);
+        let mut state = EyesBlink::default();
+        let (mut blinks, mut doubles) = (0u32, 0u32);
+        for _ in 0..20_000 {
+            let was_open = state == EyesBlink::Open;
+            state.next(&mut rng);
+            if was_open {
+                blinks += 1;
+                if let EyesBlink::Shut { second_follows } = state {
+                    doubles += u32::from(second_follows);
+                }
+            }
+            if blinks == 1000 {
+                break;
+            }
+        }
+        assert_eq!(blinks, 1000);
+        let share = doubles as f32 / blinks as f32;
+        assert!((0.15..=0.35).contains(&share), "{doubles} of {blinks}");
+        // Over many seeds too, not one lucky stream.
+        let total: u32 = (0..100u64)
+            .map(|seed| {
+                let mut rng = Rng::new(seed * 7919 + 3);
+                (0..40)
+                    .filter(|_| {
+                        let mut s = EyesBlink::Open;
+                        s.next(&mut rng);
+                        s == EyesBlink::Shut {
+                            second_follows: true,
+                        }
+                    })
+                    .count() as u32
+            })
+            .sum();
+        let share = total as f32 / 4000.0;
+        assert!((0.15..=0.35).contains(&share), "{total} of 4000");
+    }
+
+    #[test]
+    fn a_double_blinks_second_shut_starts_260_ms_after_the_first() {
+        let mut found = 0;
+        for seed in 0..40u64 {
+            let log = eyes_blink_run(seed, 60);
+            for w in log.windows(3) {
+                let (first, gap, second) = (w[0], w[1], w[2]);
+                // The gap's wait is what is left of the 260 ms: a double.
+                if first.1 && !gap.1 && first.2 == BLINK_MS && gap.2 == EYES_DOUBLE_MS - BLINK_MS
+                {
+                    assert!(second.1, "the second shut follows the gap");
+                    assert_eq!(gap.0 - first.0, u64::from(BLINK_MS));
+                    assert_eq!(second.0 - first.0, 260, "seed {seed}");
+                    assert_eq!(second.2, BLINK_MS);
+                    found += 1;
+                }
+            }
+        }
+        assert_eq!(EYES_DOUBLE_MS, 260);
+        assert!(found > 20, "{found} doubles seen");
+    }
+
+    #[test]
+    fn a_single_blink_goes_straight_back_to_open() {
+        let mut found = 0;
+        for seed in 0..40u64 {
+            let log = eyes_blink_run(seed, 60);
+            for pair in log.windows(2) {
+                // Shut, then open with the 3 to 6 s wait ahead: no gap.
+                if pair[0].1 && !pair[1].1 && pair[1].2 >= EYES_BLINK_MIN_MS {
+                    assert_eq!(pair[1].0 - pair[0].0, u64::from(BLINK_MS));
+                    found += 1;
+                }
+            }
+        }
+        assert!(found > 100, "{found}");
+    }
+
+    #[test]
+    fn the_eyes_boxes_follow_the_offset_and_stay_in_the_pill() {
+        use super::super::geometry::{EYES_W, ShapeKind, shape_for};
+        for style in [Style::Pill, Style::Notch] {
+            let pill = shape_for(style, ShapeKind::Eyes);
+            let centre = eyes_centre(pill);
+            assert_eq!(centre, (pill.x + EYES_W / 2.0, pill.y + EYES_H / 2.0));
+            for blink in [false, true] {
+                let still = eyes_boxes_at(centre, 0.0, 0.0, blink);
+                let slid = eyes_boxes_at(centre, 3.0, 1.0, blink);
+                assert_eq!(still.len(), 2, "two eyes");
+                for (a, b) in still.iter().zip(&slid) {
+                    assert!((b.0 - a.0 - 3.0).abs() < 1e-4 && (b.1 - a.1 - 1.0).abs() < 1e-4);
+                    assert!((b.2 - a.2 - 3.0).abs() < 1e-4 && (b.3 - a.3 - 1.0).abs() < 1e-4);
+                }
+                // Centred, the eyes are symmetric about the pill's middle.
+                let (left, right) = (still[0], still[1]);
+                assert!(((centre.0 - left.0) - (right.2 - centre.0)).abs() < 1e-4);
+            }
+            // An open eye is 8 dip tall; the blink's lines are far flatter.
+            let open = eyes_boxes_at(centre, 0.0, 0.0, false);
+            assert!((open[0].3 - open[0].1 - 8.0).abs() < 1e-4);
+            let shut = eyes_boxes_at(centre, 0.0, 0.0, true);
+            assert!(shut[0].3 - shut[0].1 < 2.0);
+            // A request in range passes untouched, one past it is cut back
+            // (and NaN is no slide).
+            assert_eq!(eyes_offset_in(style, pill, 4.0, 1.5), (4.0, 1.5));
+            let (x, y) = eyes_offset_in(style, pill, 40.0, -40.0);
+            assert!(x > 0.0 && x < 40.0 && y < 0.0 && y > -40.0, "{x} {y}");
+            assert_eq!(eyes_offset_in(style, pill, f32::NAN, f32::NAN), (0.0, 0.0));
+        }
     }
 
     #[test]

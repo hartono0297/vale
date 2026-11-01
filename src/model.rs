@@ -22,6 +22,7 @@ use crate::search_details::Detail;
 use crate::search_files::FileEntry;
 use crate::system::SystemSample;
 use crate::tiles::{CustomTile, ShortcutTiles};
+use crate::update::UpdateEvent;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Notice {
@@ -127,6 +128,22 @@ pub enum NoticeKind {
     Arranged {
         save: ArrangeSave,
     },
+    /// "Vale 3.11.0 tersedia" with the chip "Update" (`version` is X.Y.Z).
+    /// A click installs it.
+    UpdateAvailable {
+        version: String,
+    },
+    /// "Mengunduh pembaruan… 42%": one at a time, replaced in place as the
+    /// percent moves, gone 15 s after the last one.
+    UpdateProgress {
+        pct: u8,
+    },
+    /// "Update gagal: <alasan>" with the chip "Lihat rilis" (the releases
+    /// page). A click opens it.
+    UpdateFailed,
+    /// "Vale sudah versi terbaru", "Diperbarui ke X.Y.Z", the debug-build
+    /// note: temporary, a click dismisses.
+    UpdateInfo,
 }
 
 /// What the Arranged notice offers beside "Batalkan".
@@ -186,6 +203,9 @@ pub enum Event {
     /// there). `App` routes it: the notch (`Notice`) and the Notifikasi
     /// history; the reducer ignores it.
     Toast(Toast),
+    /// A worker of the self-update (`update.rs`): a check, the download's
+    /// progress or its end. `App` handles it; the reducer ignores it.
+    Update(UpdateEvent),
     ClaudeActivity {
         session_id: String,
     },
@@ -651,6 +671,11 @@ pub enum Effect {
     Shot(ShotAction),
     /// Open Vale's own Settings window (the "Setelan Vale" tile).
     OpenSettings,
+    /// The "Update" chip of the update notice: download, verify and swap in
+    /// the release `App` knows.
+    InstallUpdate,
+    /// The failed update's chip: the releases page in the browser.
+    OpenReleases,
 }
 
 /// What the screenshot preview asks for (screenshot id).

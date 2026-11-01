@@ -8,6 +8,8 @@
 //!   comes back once the pointer rests on the eyes (`Peek`).
 //! - **The cat looks at the pointer**: sideways, eased (`look_target`,
 //!   `LookEase`).
+//! - **The shrunk notch's eyes look at the pointer** too: sideways and down,
+//!   a few dip (`eyes_target`, `EyesLook`), gated by `eyes_motion`.
 //!
 //! Nothing here touches Win32; `App` reads the pointer and applies the result.
 
@@ -297,6 +299,130 @@ pub fn look_hidden(lowered: bool, covered: impl FnOnce() -> bool) -> bool {
     lowered && covered()
 }
 
+/// How far the shrunk notch's eyes slide toward a pointer at the edge of
+/// their zone (a look of 1), in dip: sideways, and down (never up).
+pub const EYES_LOOK_X_DIP: f32 = 4.0;
+pub const EYES_LOOK_DOWN_DIP: f32 = 1.5;
+
+/// Where the pointer is for the shrunk notch's eyes, in island dip:
+/// `(vx, vy)`. `vx` is -1 to 1, the pointer's offset from the pill's centre
+/// over `half_span` (the normal notch's half width plus `PEEK_ZONE_DIP`, so
+/// the look reaches its extreme at the edge of the peek zone, never at the
+/// monitor's edges). `vy` is 0 to 1: how far below the pill's centre, over
+/// `PEEK_ZONE_DIP`; a pointer above it does not make the eyes look up.
+/// NaN or a `half_span` of 0 or less give 0.
+pub fn eyes_target(
+    pointer_x: f32,
+    pointer_y: f32,
+    pill_cx: f32,
+    pill_cy: f32,
+    half_span: f32,
+) -> (f32, f32) {
+    let vx = if half_span > 0.0 {
+        ((pointer_x - pill_cx) / half_span).clamp(-1.0, 1.0)
+    } else {
+        0.0
+    };
+    let vy = ((pointer_y - pill_cy) / PEEK_ZONE_DIP).clamp(0.0, 1.0);
+    (
+        if vx.is_nan() { 0.0 } else { vx },
+        if vy.is_nan() { 0.0 } else { vy },
+    )
+}
+
+/// The eyes' slide in dip for a look `(vx, vy)`.
+pub fn eyes_offset_dip(vx: f32, vy: f32) -> (f32, f32) {
+    (EYES_LOOK_X_DIP * vx, EYES_LOOK_DOWN_DIP * vy)
+}
+
+/// How the shrunk notch's eyes follow the pointer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EyesMotion {
+    /// "Ikuti kursor" is off: the eyes stay centred.
+    Still,
+    /// They go to the pointer's place at once, with one draw and no frame
+    /// clock (Motion Saver or Off, Energy Saver, Windows animations off).
+    Jump,
+    /// They ease there on the frame clock.
+    Ease,
+}
+
+/// How the eyes follow: not at all without "Ikuti kursor" (`follow`), eased
+/// with Motion Full and Windows animations on, otherwise in one jump.
+pub fn eyes_motion(follow: bool, motion_moves: bool, windows_animations: bool) -> EyesMotion {
+    if !follow {
+        EyesMotion::Still
+    } else if motion_moves && windows_animations {
+        EyesMotion::Ease
+    } else {
+        EyesMotion::Jump
+    }
+}
+
+/// The shared poll runs at the follow pace when the cat's look or the eyes'
+/// look wants the pointer.
+pub fn follow_on(cat_look: bool, eyes_look: bool) -> bool {
+    cat_look || eyes_look
+}
+
+/// The shrunk notch's eyes look: a sideways and a downward ease.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct EyesLook {
+    x: LookEase,
+    y: LookEase,
+}
+
+impl EyesLook {
+    /// The slide now, in dip.
+    pub fn offset_dip(&self) -> (f32, f32) {
+        eyes_offset_dip(self.x.value(), self.y.value())
+    }
+
+    pub fn moving(&self) -> bool {
+        self.x.moving() || self.y.moving()
+    }
+
+    /// Heads for `(vx, vy)`. False when neither axis changed by `LOOK_EPS`.
+    pub fn set_target(&mut self, vx: f32, vy: f32) -> bool {
+        let (a, b) = (self.x.set_target(vx), self.y.set_target(vy));
+        a || b
+    }
+
+    /// There at once, nothing to ease. False when neither axis moved by
+    /// `LOOK_EPS` (a pixel of jitter is no redraw).
+    pub fn jump_to(&mut self, vx: f32, vy: f32) -> bool {
+        let far = |e: &LookEase, v: f32| (v.clamp(-1.0, 1.0) - e.value()).abs() >= LOOK_EPS;
+        if !(far(&self.x, vx) || far(&self.y, vy)) {
+            return false;
+        }
+        self.x.jump_to(vx);
+        self.y.jump_to(vy);
+        true
+    }
+
+    /// Wherever it was heading, there at once (a motion setting changed
+    /// under an ease). True when that moved the eyes.
+    pub fn finish(&mut self) -> bool {
+        let moved = self.moving();
+        self.x.finish();
+        self.y.finish();
+        moved
+    }
+
+    /// Centred now, nothing left to ease. True when that moved the eyes.
+    pub fn snap_to_centre(&mut self) -> bool {
+        let moved = self.x.snap_to_centre() | self.y.snap_to_centre();
+        self.x = LookEase::default();
+        self.y = LookEase::default();
+        moved
+    }
+
+    pub fn advance(&mut self, dt: Duration) {
+        self.x.advance(dt);
+        self.y.advance(dt);
+    }
+}
+
 /// The cat's look, -1 to 1, eased toward its target.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct LookEase {
@@ -322,6 +448,18 @@ impl LookEase {
         }
         self.target = v;
         true
+    }
+
+    /// At `v` (clamped to -1..=1) now: current and target both, no ease.
+    pub fn jump_to(&mut self, v: f32) {
+        let v = v.clamp(-1.0, 1.0);
+        self.current = v;
+        self.target = v;
+    }
+
+    /// At the target now.
+    fn finish(&mut self) {
+        self.current = self.target;
     }
 
     /// At the centre now, nothing left to ease. True when that moved the cat.
@@ -882,5 +1020,140 @@ mod tests {
         // Lowered: hidden only with a window over it.
         assert!(look_hidden(true, || true));
         assert!(!look_hidden(true, || false));
+    }
+
+    #[test]
+    fn the_eyes_target_maps_the_pointer_over_the_pill_and_the_zone() {
+        // A normal notch 190 wide: half_span = 95 + 50 = 145.
+        let half = 95.0 + PEEK_ZONE_DIP;
+        let t = |x: f32, y: f32| eyes_target(x, y, 310.0, 7.0, half);
+        // Over the centre: 0 across, 0 down.
+        assert_eq!(t(310.0, 7.0), (0.0, 0.0));
+        // Far left and far right clamp to -1 / 1 (the monitor is much wider).
+        assert_eq!(t(-4000.0, 7.0).0, -1.0);
+        assert_eq!(t(9000.0, 7.0).0, 1.0);
+        // The zone's edge is the extreme, not the monitor's: half a span is 0.5.
+        assert!((t(310.0 + half / 2.0, 7.0).0 - 0.5).abs() < 1e-6);
+        assert_eq!(t(310.0 + half, 7.0).0, 1.0);
+        // Above the pill: never up. Below: grows, clamps to 1 at the zone's end.
+        assert_eq!(t(310.0, -300.0).1, 0.0);
+        assert_eq!(t(310.0, 7.0 + PEEK_ZONE_DIP / 2.0).1, 0.5);
+        assert_eq!(t(310.0, 7.0 + PEEK_ZONE_DIP).1, 1.0);
+        assert_eq!(t(310.0, 5000.0).1, 1.0);
+        // NaN and an empty span give 0.
+        assert_eq!(t(f32::NAN, f32::NAN), (0.0, 0.0));
+        let (vx, vy) = eyes_target(400.0, 40.0, 310.0, 7.0, 0.0);
+        assert_eq!(vx, 0.0);
+        assert!((vy - 0.66).abs() < 1e-6, "{vy}");
+        assert_eq!(eyes_target(400.0, 40.0, 310.0, 7.0, -3.0).0, 0.0);
+        assert_eq!(eyes_target(f32::NAN, 40.0, 310.0, 7.0, half).0, 0.0);
+        // The offsets in dip.
+        assert_eq!(eyes_offset_dip(-1.0, 0.0), (-4.0, 0.0));
+        assert_eq!(eyes_offset_dip(1.0, 1.0), (4.0, 1.5));
+        assert_eq!(eyes_offset_dip(0.5, 0.5), (2.0, 0.75));
+    }
+
+    #[test]
+    fn the_eyes_motion_table() {
+        use EyesMotion::{Ease, Jump, Still};
+        // (follow, motion moves, windows animations) -> motion
+        let table = [
+            (false, false, false, Still),
+            (false, false, true, Still),
+            (false, true, false, Still),
+            (false, true, true, Still),
+            (true, false, false, Jump),
+            (true, false, true, Jump),
+            (true, true, false, Jump),
+            (true, true, true, Ease),
+        ];
+        for (follow, moves, anim, want) in table {
+            assert_eq!(
+                eyes_motion(follow, moves, anim),
+                want,
+                "{follow} {moves} {anim}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_eyes_look_wants_the_follow_pace_with_or_without_the_cat() {
+        // The cat's look off, the eyes' on: the follow pace, not the peek's.
+        for near in [false, true] {
+            assert_eq!(
+                poll_ms(follow_on(false, true), true, near),
+                poll_ms(true, true, near)
+            );
+            // Neither look: the peek's own pace.
+            assert_eq!(
+                poll_ms(follow_on(false, false), true, near),
+                poll_ms(false, true, near)
+            );
+            assert_eq!(
+                poll_ms(follow_on(true, false), true, near),
+                poll_ms(true, true, near)
+            );
+        }
+        assert_eq!(poll_ms(follow_on(false, true), true, true), FOLLOW_NEAR_MS);
+        assert_eq!(poll_ms(follow_on(false, true), true, false), FOLLOW_FAR_MS);
+        assert_eq!(
+            poll_ms(follow_on(false, false), true, true),
+            behind::POLL_MS
+        );
+        assert_eq!(
+            poll_ms(follow_on(false, false), true, false),
+            behind::SLOW_MS
+        );
+    }
+
+    #[test]
+    fn jump_to_sets_current_and_target_with_no_ease() {
+        let mut look = LookEase::default();
+        look.jump_to(0.6);
+        assert_eq!(look.value(), 0.6);
+        assert!(!look.moving());
+        look.jump_to(-7.0);
+        assert_eq!(look.value(), -1.0);
+        assert!(!look.moving());
+        // Mid-ease it replaces the target too.
+        look.set_target(1.0);
+        look.advance(ms(16));
+        assert!(look.moving());
+        look.jump_to(0.25);
+        assert!(!look.moving());
+        assert_eq!(look.value(), 0.25);
+    }
+
+    #[test]
+    fn the_eyes_look_eases_per_axis_jumps_and_snaps() {
+        let mut eyes = EyesLook::default();
+        assert_eq!(eyes.offset_dip(), (0.0, 0.0));
+        assert!(!eyes.set_target(0.0, 0.0));
+        assert!(eyes.set_target(1.0, 1.0));
+        assert!(eyes.moving());
+        eyes.advance(ms(120));
+        let (dx, dy) = eyes.offset_dip();
+        assert!(dx > 0.0 && dx < EYES_LOOK_X_DIP, "{dx}");
+        assert!(dy > 0.0 && dy < EYES_LOOK_DOWN_DIP, "{dy}");
+        // A change of one axis alone only moves that axis.
+        assert!(eyes.set_target(1.0, 0.0));
+        eyes.advance(ms(5000));
+        assert_eq!(eyes.offset_dip(), (EYES_LOOK_X_DIP, 0.0));
+        assert!(!eyes.moving());
+        // `finish` goes where it was heading.
+        assert!(eyes.set_target(-1.0, 1.0));
+        assert!(eyes.finish());
+        assert_eq!(eyes.offset_dip(), (-EYES_LOOK_X_DIP, EYES_LOOK_DOWN_DIP));
+        assert!(!eyes.finish());
+        // A jump under `LOOK_EPS` is no change; a real one is, with no ease.
+        assert!(!eyes.jump_to(-1.0 + LOOK_EPS / 2.0, 1.0));
+        assert!(eyes.jump_to(0.5, 0.5));
+        assert!(!eyes.moving());
+        assert_eq!(eyes.offset_dip(), (2.0, 0.75));
+        // A snap centres both axes.
+        assert!(eyes.snap_to_centre());
+        assert_eq!(eyes.offset_dip(), (0.0, 0.0));
+        assert!(!eyes.moving());
+        assert!(!eyes.snap_to_centre());
     }
 }

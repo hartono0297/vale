@@ -49,6 +49,7 @@ mod system;
 mod theme;
 mod tiles;
 mod ui;
+mod update;
 
 use windows::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
 
@@ -74,6 +75,8 @@ fn opens_windows(arg: Option<&str>) -> bool {
     match arg {
         None => true,
         Some(media_log::FLAG) => true,
+        // The updater starts the new exe with it: the island as usual.
+        Some("--updated") => true,
         #[cfg(debug_assertions)]
         Some(
             "--demo" | "--demo-editor" | "--demo-cli" | "--demo-robot" | "--demo-devices"
@@ -89,10 +92,17 @@ fn main() {
         ui::fonts::register_gdi();
     }
     match arg.as_deref() {
-        None => app::run(false),
+        None => app::run(false, None),
         // The island as usual, with the media diagnosis log on. No console:
         // it runs like a normal start, single instance included.
-        Some(media_log::FLAG) => app::run(true),
+        Some(media_log::FLAG) => app::run(true, None),
+        // Started by the updater (`update::launch_updated`) as `--updated
+        // <old version>`: the island as usual, but it waits for the old
+        // one's mutex instead of quitting, and says it was updated.
+        Some("--updated") => {
+            let old = std::env::args().nth(2).unwrap_or_default();
+            app::run(false, Some(&old));
+        }
         // No console attach: the hook prints nothing, and attaching can swap an
         // unset stdin for the console's, leaving the hook blocked on keyboard input.
         Some("--hook") => claude::hook::run_hook(),

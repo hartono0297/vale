@@ -70,6 +70,7 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[arrange]]: Susun (v3.10), the window layouts: tree model with built-ins, gap maths, pick step with a click-through-gotcha overlay, mover on a worker with frame compensation and undo, saved arrangements, hotkey id 4, Page::ALL 14 / Shortcut::ALL 22, own pick overlay looks fullscreen to Windows (check skipped while it is up)
 - [[settings-window-size]]: Settings resizes and maximizes (min 720x520, column capped at 760 and centred, `layout_in`), the place is remembered (`settings_window`, screen coordinates), drag auto-scroll
 - [[settings-structure]]: Settings in eight sections (Umum, Tampilan, Kucing, Panel, Clipboard, Fitur, Integrasi, Tentang), titled cards, renamed labels, which sections scroll (v3.8)
+- [[self-update]]: Check for updates (tray, Tentang), release JSON, SHA-256, swap the running exe (rename to .old), `--updated` restart with the mutex-handle wait, rollback, offer once, 24 h wall-clock timer (35), never in debug or demos (v3.11)
 - [[lyrics-lookup]]: LRCLIB 503 + Retry-After retry (30 s budget), step order (field search, get, free-text search), None vs transient, the Artist - Title split, consensus pick of the best-synced version, `.none3`
 
 ## Gotchas
@@ -85,6 +86,7 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[install-script-follows-latest-release]]
 - [[shot-editor-paint-order]]: Direct2D paints in call order; the editor's footer background must come before the buttons in it (the Discard bar)
 - [[taskbar-icon-from-exe]]: the Win11 taskbar shows the exe's cached icon, not WM_SETICON; the installer and the app tell the shell
+- [[tray-dark-menu]]: the tray menu follows the Windows app mode via uxtheme ordinals 135/136/104 (AllowDark), not Vale's window theme
 
 ## Conventions
 

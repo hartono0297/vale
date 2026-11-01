@@ -5,6 +5,9 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
 use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, HWND, LPARAM, POINT, WPARAM};
+use windows::Win32::System::LibraryLoader::{
+    GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
+};
 use windows::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SZ,
     RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegQueryValueExW, RegSetValueExW,
@@ -19,10 +22,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SetForegroundWindow, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, WM_APP,
     WM_NULL,
 };
-use windows::core::{Error, HSTRING, Result, w};
+use windows::core::{Error, HSTRING, PCSTR, Result, w};
 
 use crate::config::{Config, Style};
-use crate::i18n::{Key, text};
+use crate::i18n::{Key, text, update_menu_install};
 use crate::ui::app_icon;
 
 /// Sent by the shell for mouse activity on the tray icon; `lparam` holds the
@@ -45,14 +48,21 @@ pub enum MenuCmd {
     Search,
     StylePill,
     StyleNotch,
+    /// "Cek pembaruan…": asks GitHub now.
+    CheckUpdate,
+    /// "Update ke X.Y.Z": in the menu in place of `CheckUpdate` while an
+    /// update is known; installs it.
+    InstallUpdate,
     Exit,
 }
 
-const COMMANDS: [MenuCmd; 5] = [
+const COMMANDS: [MenuCmd; 7] = [
     MenuCmd::Settings,
     MenuCmd::Search,
     MenuCmd::StylePill,
     MenuCmd::StyleNotch,
+    MenuCmd::CheckUpdate,
+    MenuCmd::InstallUpdate,
     MenuCmd::Exit,
 ];
 
@@ -71,7 +81,7 @@ impl MenuCmd {
 enum MenuItem {
     Entry {
         cmd: MenuCmd,
-        label: &'static str,
+        label: String,
         checked: bool,
     },
     Separator,
@@ -79,11 +89,21 @@ enum MenuItem {
 
 /// The menu in `cfg.language`, built each time it opens, so it always
 /// shows the current language. Everything else lives in the settings window.
-fn menu_items(cfg: &Config) -> Vec<MenuItem> {
+/// `update`: the version (X.Y.Z) of a known, not yet installed update; its
+/// item then installs it instead of checking again.
+fn menu_items(cfg: &Config, update: Option<&str>) -> Vec<MenuItem> {
     let entry = |cmd, key, checked| MenuItem::Entry {
         cmd,
-        label: text(cfg.language, key),
+        label: text(cfg.language, key).to_owned(),
         checked,
+    };
+    let update_entry = match update {
+        Some(version) => MenuItem::Entry {
+            cmd: MenuCmd::InstallUpdate,
+            label: update_menu_install(cfg.language, version),
+            checked: false,
+        },
+        None => entry(MenuCmd::CheckUpdate, Key::MenuCheckUpdate, false),
     };
     vec![
         entry(MenuCmd::Settings, Key::MenuSettings, false),
@@ -100,6 +120,7 @@ fn menu_items(cfg: &Config) -> Vec<MenuItem> {
             cfg.style == Style::Notch,
         ),
         MenuItem::Separator,
+        update_entry,
         entry(MenuCmd::Exit, Key::MenuExit, false),
     ]
 }
@@ -164,12 +185,88 @@ pub fn is_menu_click(lparam: LPARAM) -> bool {
     matches!(lparam.0 as u32, WM_LBUTTONUP | WM_RBUTTONUP)
 }
 
+/// `uxtheme.dll` ordinal of `SetPreferredAppMode(i32) -> i32` (1903+). On 1809
+/// the same ordinal is `AllowDarkModeForApp(BOOL)`. Undocumented export, so it
+/// is resolved by ordinal: it has no public name.
+const ORD_SET_PREFERRED_APP_MODE: u16 = 135;
+/// `uxtheme.dll` ordinal of `FlushMenuThemes()`. Undocumented, by ordinal.
+const ORD_FLUSH_MENU_THEMES: u16 = 136;
+/// `uxtheme.dll` ordinal of `RefreshImmersiveColorPolicyState()`. Undocumented,
+/// by ordinal.
+const ORD_REFRESH_COLOR_POLICY: u16 = 104;
+/// `PreferredAppMode::AllowDark`: menus follow the Windows app mode (2 would
+/// be ForceDark). Also reads as TRUE for `AllowDarkModeForApp` on 1809.
+const APP_MODE_ALLOW_DARK: i32 = 1;
+
+/// The undocumented uxtheme functions; each is `None` when the export is
+/// missing, and then that step is silently skipped.
+struct UxTheme {
+    set_preferred_app_mode: Option<unsafe extern "system" fn(i32) -> i32>,
+    flush_menu_themes: Option<unsafe extern "system" fn()>,
+    refresh_color_policy: Option<unsafe extern "system" fn()>,
+}
+
+/// An export name that is an ordinal (MAKEINTRESOURCEA).
+fn ordinal_name(ordinal: u16) -> PCSTR {
+    PCSTR(ordinal as usize as *const u8)
+}
+
+/// Loads uxtheme.dll once and resolves the ordinals; `None` when it will not load.
+fn ux_theme() -> Option<&'static UxTheme> {
+    static UX: OnceLock<Option<UxTheme>> = OnceLock::new();
+    UX.get_or_init(|| unsafe {
+        let module = LoadLibraryExW(w!("uxtheme.dll"), None, LOAD_LIBRARY_SEARCH_SYSTEM32).ok()?;
+        // SAFETY: the signatures are the ones these exports have on Windows 10/11.
+        Some(UxTheme {
+            set_preferred_app_mode: GetProcAddress(
+                module,
+                ordinal_name(ORD_SET_PREFERRED_APP_MODE),
+            )
+            .map(|f| std::mem::transmute::<_, unsafe extern "system" fn(i32) -> i32>(f)),
+            flush_menu_themes: GetProcAddress(module, ordinal_name(ORD_FLUSH_MENU_THEMES))
+                .map(|f| std::mem::transmute::<_, unsafe extern "system" fn()>(f)),
+            refresh_color_policy: GetProcAddress(module, ordinal_name(ORD_REFRESH_COLOR_POLICY))
+                .map(|f| std::mem::transmute::<_, unsafe extern "system" fn()>(f)),
+        })
+    })
+    .as_ref()
+}
+
+/// Makes this process's native menus follow the Windows app mode (light or
+/// dark), whatever Vale's own window theme is. Call once before any menu
+/// opens. Does nothing when the uxtheme exports are missing: the menu stays light.
+pub fn follow_system_menu_theme() {
+    let Some(ux) = ux_theme() else { return };
+    unsafe {
+        if let Some(set_mode) = ux.set_preferred_app_mode {
+            set_mode(APP_MODE_ALLOW_DARK);
+        }
+        if let Some(flush) = ux.flush_menu_themes {
+            flush();
+        }
+    }
+}
+
+/// Re-reads the Windows app mode for the next menu; call when Windows
+/// switches between light and dark. Silent when the exports are missing.
+pub fn refresh_menu_theme() {
+    let Some(ux) = ux_theme() else { return };
+    unsafe {
+        if let Some(refresh) = ux.refresh_color_policy {
+            refresh();
+        }
+        if let Some(flush) = ux.flush_menu_themes {
+            flush();
+        }
+    }
+}
+
 /// Shows the menu at the cursor and waits for a choice. Runs a modal message
 /// loop, so the caller must not hold any state borrow across it.
-pub fn show_menu(hwnd: HWND, cfg: &Config) -> Option<MenuCmd> {
+pub fn show_menu(hwnd: HWND, cfg: &Config, update: Option<&str>) -> Option<MenuCmd> {
     unsafe {
         let menu = CreatePopupMenu().ok()?;
-        for item in menu_items(cfg) {
+        for item in menu_items(cfg, update) {
             let _ = match item {
                 MenuItem::Entry {
                     cmd,
@@ -300,12 +397,22 @@ mod tests {
     use super::*;
     use crate::i18n::Lang;
 
-    fn labels(items: &[MenuItem]) -> Vec<&'static str> {
+    fn labels(items: &[MenuItem]) -> Vec<&str> {
         items
             .iter()
             .map(|item| match item {
-                MenuItem::Entry { label, .. } => *label,
+                MenuItem::Entry { label, .. } => label.as_str(),
                 MenuItem::Separator => "-",
+            })
+            .collect()
+    }
+
+    fn commands(items: &[MenuItem]) -> Vec<MenuCmd> {
+        items
+            .iter()
+            .filter_map(|item| match item {
+                MenuItem::Entry { cmd, .. } => Some(*cmd),
+                MenuItem::Separator => None,
             })
             .collect()
     }
@@ -323,9 +430,23 @@ mod tests {
     }
 
     #[test]
+    fn ordinal_name_is_the_ordinal_as_a_pointer() {
+        assert_eq!(ordinal_name(135).0 as usize, 135);
+        assert_eq!(ordinal_name(136).0 as usize, 136);
+    }
+
+    #[test]
+    fn menu_theme_calls_do_not_panic() {
+        follow_system_menu_theme();
+        follow_system_menu_theme();
+        refresh_menu_theme();
+        refresh_menu_theme();
+    }
+
+    #[test]
     fn menu_labels_in_order() {
         assert_eq!(
-            labels(&menu_items(&Config::default())),
+            labels(&menu_items(&Config::default(), None)),
             vec![
                 "Pengaturan…",
                 "Cari…",
@@ -333,9 +454,34 @@ mod tests {
                 "Gaya: Pill",
                 "Gaya: Notch",
                 "-",
+                "Cek pembaruan…",
                 "Keluar"
             ]
         );
+    }
+
+    #[test]
+    fn a_known_update_takes_the_place_of_the_check_item() {
+        let id = labels(&menu_items(&Config::default(), Some("3.11.0"))).join("|");
+        assert_eq!(
+            id,
+            "Pengaturan…|Cari…|-|Gaya: Pill|Gaya: Notch|-|Update ke 3.11.0|Keluar"
+        );
+        let en = Config {
+            language: Lang::En,
+            ..Config::default()
+        };
+        let en = labels(&menu_items(&en, Some("3.11.0"))).join("|");
+        assert_eq!(
+            en,
+            "Settings…|Search…|-|Style: Pill|Style: Notch|-|Update to 3.11.0|Quit"
+        );
+        let with = commands(&menu_items(&Config::default(), Some("3.11.0")));
+        assert!(with.contains(&MenuCmd::InstallUpdate));
+        assert!(!with.contains(&MenuCmd::CheckUpdate));
+        let without = commands(&menu_items(&Config::default(), None));
+        assert!(without.contains(&MenuCmd::CheckUpdate));
+        assert!(!without.contains(&MenuCmd::InstallUpdate));
     }
 
     #[test]
@@ -345,7 +491,7 @@ mod tests {
             ..Config::default()
         };
         assert_eq!(
-            labels(&menu_items(&en)),
+            labels(&menu_items(&en, None)),
             vec![
                 "Settings…",
                 "Search…",
@@ -353,6 +499,7 @@ mod tests {
                 "Style: Pill",
                 "Style: Notch",
                 "-",
+                "Check for updates…",
                 "Quit"
             ]
         );
@@ -360,7 +507,7 @@ mod tests {
 
     #[test]
     fn settings_comes_first() {
-        let items = menu_items(&Config::default());
+        let items = menu_items(&Config::default(), None);
         assert!(matches!(
             items.first(),
             Some(MenuItem::Entry {
@@ -374,13 +521,13 @@ mod tests {
     #[test]
     fn checks_follow_config() {
         let pill = Config::default();
-        assert_eq!(checked(&menu_items(&pill)), vec![MenuCmd::StylePill]);
+        assert_eq!(checked(&menu_items(&pill, None)), vec![MenuCmd::StylePill]);
         let notch = Config {
             style: Style::Notch,
             start_with_windows: false,
             ..Config::default()
         };
-        assert_eq!(checked(&menu_items(&notch)), vec![MenuCmd::StyleNotch]);
+        assert_eq!(checked(&menu_items(&notch, None)), vec![MenuCmd::StyleNotch]);
     }
 
     #[test]
@@ -395,14 +542,16 @@ mod tests {
 
     #[test]
     fn every_command_is_in_the_menu() {
-        let items = menu_items(&Config::default());
+        // The install item only shows once an update is known.
+        let mut reachable = commands(&menu_items(&Config::default(), None));
+        reachable.extend(commands(&menu_items(&Config::default(), Some("3.11.0"))));
         for cmd in COMMANDS {
-            assert!(
-                items
-                    .iter()
-                    .any(|item| matches!(item, MenuItem::Entry { cmd: c, .. } if *c == cmd)),
-                "{cmd:?}"
-            );
+            assert!(reachable.contains(&cmd), "{cmd:?}");
+        }
+        // And Quit stays last, update known or not.
+        for update in [None, Some("3.11.0")] {
+            let items = commands(&menu_items(&Config::default(), update));
+            assert_eq!(items.last(), Some(&MenuCmd::Exit));
         }
     }
 

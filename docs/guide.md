@@ -16,7 +16,7 @@ irm https://raw.githubusercontent.com/hartono0297/dynamic-island/main/install.ps
 
 The script downloads the latest [release](https://github.com/hartono0297/dynamic-island/releases), checks its SHA-256, installs `vale.exe` (one file, about 2 MB, no runtime needed) to `%LOCALAPPDATA%\Programs\Vale`, adds a Start Menu shortcut and starts the island.
 
-- **Update:** run the same line again. Your settings, notes and Google login are kept.
+- **Update:** Vale checks GitHub for a newer release once a day (Settings → About → *Check for updates automatically*, on by default) and offers it in the notch with an *Update* button. The tray menu (*Check for updates…*, then *Update to X.Y.Z*) and Settings → About → *Check now* do the same on demand. Installing downloads `vale.exe` and its `.sha256` from the release, checks the hash, swaps the exe in place and restarts Vale; if anything fails the old exe stays and the notice links to the release page. Debug builds never check. Running the install line again also updates. Your settings, notes and Google login are kept.
 - **Without the script:** download `vale-v<version>.zip` from Releases, extract it, right-click `install.ps1` → *Run with PowerShell*. The exe also runs from any folder.
 - **Uninstall:**
   ```powershell
@@ -141,7 +141,7 @@ Eight sections, in this order; the window opens on General. Every card has a sma
 | Clipboard | *History*: on or off, how many items, keep after restart, clear when the screen locks, the optional hotkey, the copy preview (a preview in the notch on every copy; replaces *"Copied" for every copy*, which works only while the preview is off), clear history (asks once more). *Screenshot*: the screenshot tool for the Screenshot tile (Vale or Snipping Tool), the *PrtSc key* (opens Vale's screenshot; a red line says so if Windows refuses the hook), the preview in the notch, what an ignored preview does and how long it shows |
 | Features | *Pomodoro*: focus, break and long break length; sessions before a long break (locked while a pomodoro runs). *Music*: lyrics in notch. *Notifications*: save notifications, the most kept, keep after restart, the excluded apps (a list with a field to add) and clearing the history (asks once more). *CLI*: start folder (Explorer / last folder) and shell (PowerShell / cmd). *Devices*: the plug-in and safe-to-remove notifications (on by default) and the Devices page's hotkey. *Cleaner*: protect Cargo & Autodesk caches in Mole |
 | Integrations | Google Calendar: status, *Sign in with Google* (or your own client ID / secret under *Advanced*), Disconnect, setup guide. Claude Code: install or remove hooks |
-| About | Version, source code, releases, data folder |
+| About | Version, source code, *Updates* (the installed version, *Check now*, or *Update* when a newer one is known), *Check for updates automatically* (once a day from GitHub, on by default), data folder |
 
 **Animation:** *Full* blinks, lifts the cat when you point at it and bounces on alerts. *Saver* drops the blinking and motion but keeps the faces; Full also behaves like Saver while Windows Energy Saver is on. *Off* runs no assistant timers at all: the faces still follow what happens, but the cat does not fall asleep. With the cat off, the island looks and works as without it.
 

@@ -170,6 +170,15 @@ pub struct Config {
     /// saved arrangements ([`crate::arrange`]).
     #[serde(deserialize_with = "crate::arrange::lenient_settings")]
     pub arrange: ArrangeSettings,
+    /// "Cek pembaruan otomatis" (Settings → Tentang): ask GitHub for a newer
+    /// release about once a day (default on). A manual check ignores it.
+    #[serde(deserialize_with = "default_on")]
+    pub update_check: bool,
+    /// The last version an automatic check offered ("3.11.0"), so the same
+    /// one is not offered again; empty when none. Not a setting: the island
+    /// writes it.
+    #[serde(deserialize_with = "lenient_string")]
+    pub update_offered: String,
     /// Where the Settings window was last (screen coordinates), so it opens
     /// there again. Not part of `merge_owned`: it comes from the file on every
     /// save and only `save_config_with` writes it, so a hand edit survives.
@@ -337,6 +346,12 @@ fn notif_settings<'de, D: Deserializer<'de>>(d: D) -> Result<NotifSettings, D::E
 fn default_on<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
     let v = serde_json::Value::deserialize(d)?;
     Ok(v.as_bool().unwrap_or(true))
+}
+
+/// A string; anything else (a number, null) is empty.
+fn lenient_string<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(v.as_str().unwrap_or_default().to_owned())
 }
 
 /// A cat colour name; anything else (a typo, a number) is Terracotta.
@@ -630,6 +645,8 @@ impl Default for Config {
             eq_follow_audio: true,
             notifications: NotifSettings::default(),
             arrange: ArrangeSettings::default(),
+            update_check: true,
+            update_offered: String::new(),
         }
     }
 }
@@ -767,6 +784,8 @@ pub fn merge_owned(disk: Config, mem: &Config) -> Config {
         eq_follow_audio: mem.eq_follow_audio,
         notifications: mem.notifications,
         arrange: mem.arrange.clone(),
+        update_check: mem.update_check,
+        update_offered: mem.update_offered.clone(),
         ..disk
     }
 }
@@ -1151,6 +1170,8 @@ mod tests {
                 gap: 16,
                 ..ArrangeSettings::default()
             },
+            update_check: false,
+            update_offered: "3.11.0".into(),
             settings_window: Some(WindowPlace {
                 left: 20,
                 top: 30,
@@ -1160,6 +1181,39 @@ mod tests {
             }),
         };
         assert_eq!(parse(&serde_json::to_string(&c).unwrap()), c);
+    }
+
+    #[test]
+    fn update_settings_default_on_read_leniently_and_belong_to_the_island() {
+        let d = Config::default();
+        assert!(d.update_check);
+        assert_eq!(d.update_offered, "");
+        // A file from before the setting has neither key.
+        let old = parse(r#"{"style":"Notch"}"#);
+        assert!(old.update_check);
+        assert_eq!(old.update_offered, "");
+        // Junk keeps the defaults and does not drop the rest of the file.
+        for junk in [r#""yes""#, "null", "7", r#""false""#, "[]"] {
+            let c = parse(&format!(
+                r#"{{"style":"Notch","update_check":{junk},"update_offered":{junk}}}"#
+            ));
+            assert!(c.update_check, "{junk}");
+            assert_eq!(c.style, Style::Notch);
+        }
+        assert_eq!(parse(r#"{"update_offered":"3.11.0"}"#).update_offered, "3.11.0");
+        assert!(!parse(r#"{"update_check":false}"#).update_check);
+        // The island's copy wins over the file's, both ways.
+        let mem = Config {
+            update_check: false,
+            update_offered: "3.11.0".into(),
+            ..Config::default()
+        };
+        let merged = merge_owned(Config::default(), &mem);
+        assert!(!merged.update_check);
+        assert_eq!(merged.update_offered, "3.11.0");
+        let merged = merge_owned(mem, &Config::default());
+        assert!(merged.update_check);
+        assert_eq!(merged.update_offered, "");
     }
 
     #[test]

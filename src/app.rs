@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use chrono::{Datelike, Local, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 use windows::Win32::Foundation::{
-    ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, POINT, WPARAM,
+    CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, POINT, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::ScreenToClient;
 use windows::Win32::Media::Audio::{PlaySoundW, SND_ALIAS, SND_ASYNC, SND_NODEFAULT};
@@ -79,7 +79,9 @@ use crate::model::{Effect, Event, Hit, Notice, NoticeKind, Page, View};
 use crate::mole::{self, Confirmed, MoleEvent, MoleOpts, MoleWorker};
 use crate::notes::NotesStore;
 use crate::pages::PanelPages;
-use crate::pointer_watch::{self, LookEase, Peek, PeekInputs, PeekState, UnderCache};
+use crate::pointer_watch::{
+    self, EyesLook, EyesMotion, LookEase, Peek, PeekInputs, PeekState, UnderCache,
+};
 use crate::pomodoro::PomoStatus;
 use crate::reminders::{self, Reminder, RemindersStore, due_now, next_due};
 use crate::shelf_ole;
@@ -118,7 +120,8 @@ use crate::ui::render::{
     RobotFrame, SearchView, SystemView,
 };
 use crate::ui::robot::{
-    self, Brain, GreetSettings, Motion, Rng, Spot, choose_expr, plan_timers, should_greet,
+    self, Brain, EyesBlink, EyesPose, GreetSettings, Motion, Rng, Spot, choose_expr, plan_timers,
+    should_greet,
 };
 use crate::ui::settings::{self, Action as SettingsAction, WM_APP_SETTINGS_ACTION};
 use crate::ui::tray::{self, MenuCmd, WM_APP_TRAY};
@@ -143,6 +146,10 @@ use dock_page::DockState;
 #[path = "app_notif.rs"]
 mod notif_page;
 use notif_page::{NotifSetting, NotifState, TIMER_NOTIF_SAVE};
+
+#[path = "app_update.rs"]
+mod update_page;
+use update_page::{TIMER_UPDATE, UpdateState};
 
 #[path = "app_prtsc.rs"]
 mod prtsc;
@@ -260,6 +267,8 @@ const MIXER_MS: u32 = 1_000;
 /// the volume read for it is forgotten (the next wheel reads it again).
 const TIMER_VOLUME: usize = 28;
 const VOLUME_HUD_MS: u32 = 1_200;
+/// How long a start after an update waits for the old island's mutex.
+const UPDATE_CLAIM_WAIT: Duration = Duration::from_secs(10);
 const SYSTEM_PAGE_MS: u32 = crate::system::LIVE_MS;
 const SYSTEM_WARN_MS: u32 = 300_000;
 const CLI_MS: u32 = 1000;
@@ -292,6 +301,10 @@ thread_local! {
     /// the handler returns (creating a window while the app is borrowed would
     /// find the app gone).
     static DEFERRED_OPEN_SETTINGS: Cell<bool> = const { Cell::new(false) };
+    /// An update was swapped in and started: the island closes once the
+    /// handler returns (`shutdown` destroys the window, which needs the app
+    /// unborrowed to run its cleanup).
+    static DEFERRED_SHUTDOWN: Cell<bool> = const { Cell::new(false) };
     static DEFERRED_FRAME: Cell<bool> = const { Cell::new(false) };
     static DEFERRED_RESULTS: RefCell<Vec<EditorResult>> = const { RefCell::new(Vec::new()) };
     static DEFERRED_SETTINGS: RefCell<Vec<SettingsAction>> = const { RefCell::new(Vec::new()) };
@@ -305,9 +318,16 @@ thread_local! {
     static MENU_OPEN: Cell<bool> = const { Cell::new(false) };
 }
 
-/// `media_log_flag`: started with `--media-log`.
-pub fn run(media_log_flag: bool) {
-    if !claim_single_instance() {
+/// `media_log_flag`: started with `--media-log`. `updated_from`: started by
+/// the updater (`--updated <old version>`).
+pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
+    // After an update the old island may still be closing: wait for its mutex.
+    let wait = if updated_from.is_some() {
+        UPDATE_CLAIM_WAIT
+    } else {
+        Duration::ZERO
+    };
+    if !claim_single_instance(wait) {
         return;
     }
     // Before anything reads the data folder: DynamicIsland becomes Vale once.
@@ -322,6 +342,8 @@ pub fn run(media_log_flag: bool) {
     media_log::set_enabled(media_log::requested(media_log_flag, config.media_log));
     i18n::set_lang(config.language);
     theme::set_system_light(theme::read_system_light());
+    // Before any menu can open: the tray menu follows the Windows app mode.
+    tray::follow_system_menu_theme();
     theme::set_current(Theme::of(&config));
     let win = IslandWindow::create(Some(wnd_proc)).expect("create island window");
     let renderer = Renderer::new().expect("create renderer");
@@ -419,6 +441,10 @@ pub fn run(media_log_flag: bool) {
             eyes_morph: false,
             look: LookEase::default(),
             look_at: None,
+            eyes_look: EyesLook::default(),
+            eyes_look_at: None,
+            eyes_blink: EyesBlink::default(),
+            eyes_blink_timer: false,
             pointer_ms: 0,
             pointer_near: true,
             display_off: false,
@@ -492,6 +518,7 @@ pub fn run(media_log_flag: bool) {
             greet_pending: true,
             greet_ready: false,
             session_locked: false,
+            update: UpdateState::default(),
         });
     });
     with_app(|app| {
@@ -526,6 +553,8 @@ pub fn run(media_log_flag: bool) {
         }
         // Reminders that came due while the island was off ring now.
         app.fire_reminders(true);
+        // The updated notice, the update timer and the leftover cleanup.
+        app.update_start(updated_from);
         unsafe {
             SetTimer(Some(hwnd), TIMER_SYSTEM, SYSTEM_MS, None);
             SetTimer(Some(hwnd), TIMER_BATTERY, BATTERY_MS, None);
@@ -575,15 +604,54 @@ fn poster(hwnd: HWND, msg: u32) -> impl Fn() + Send + Copy + 'static {
 /// one from before the rename (whose data folder must not be moved under
 /// it). The mutex handles are never closed, so they are held for the life of
 /// the process, which also keeps an old Dynamic Island from starting beside it.
-fn claim_single_instance() -> bool {
-    let claim = |name| unsafe {
-        match CreateMutexW(None, false, name) {
-            Ok(_) => GetLastError() != ERROR_ALREADY_EXISTS,
-            // Cannot tell; better to run than to show nothing.
-            Err(_) => true,
+///
+/// `wait`: how long a taken name is retried (every 200 ms) before giving up;
+/// zero is a normal start (quit at once), about 10 s is a start after an
+/// update, while the old island is still closing.
+fn claim_single_instance(wait: Duration) -> bool {
+    claim_names(&[w!("Local\\Vale"), w!("Local\\DynamicIsland")], wait)
+}
+
+/// `claim_single_instance` for any mutex names.
+fn claim_names(names: &[PCWSTR], wait: Duration) -> bool {
+    let deadline = Instant::now() + wait;
+    loop {
+        if try_claim(names) {
+            return true;
         }
-    };
-    claim(w!("Local\\Vale")) & claim(w!("Local\\DynamicIsland"))
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// One try at every name. `CreateMutexW` returns a handle even when the mutex
+/// already exists (`ERROR_ALREADY_EXISTS`), and that handle keeps it alive:
+/// after a failed try every handle is closed, or the mutex would outlive its
+/// owner and a waiting start would never get it. A successful try keeps its
+/// handles for the life of the process.
+fn try_claim(names: &[PCWSTR]) -> bool {
+    let mut handles = Vec::new();
+    let mut free = true;
+    for &name in names {
+        // SAFETY: the names are NUL-terminated wide strings.
+        match unsafe { CreateMutexW(None, false, name) } {
+            Ok(handle) => {
+                // Read at once: any other call may change it.
+                free &= unsafe { GetLastError() } != ERROR_ALREADY_EXISTS;
+                handles.push(handle);
+            }
+            // Cannot tell; better to run than to show nothing.
+            Err(_) => {}
+        }
+    }
+    if !free {
+        for handle in handles {
+            let _ = unsafe { CloseHandle(handle) };
+        }
+    }
+    free
 }
 
 struct App {
@@ -697,6 +765,14 @@ struct App {
     /// The cat's look at the pointer, and when it was last eased.
     look: LookEase,
     look_at: Option<Instant>,
+    /// The shrunk notch's eyes look at the pointer (`pointer_watch::EyesLook`),
+    /// and when they were last eased.
+    eyes_look: EyesLook,
+    eyes_look_at: Option<Instant>,
+    /// The shrunk notch's blink, and whether `TIMER_BLINK` runs its schedule
+    /// (the cat's own blink is `bata.blink_timer`; never both).
+    eyes_blink: EyesBlink,
+    eyes_blink_timer: bool,
     /// `TIMER_POINTER`'s interval now (0: not running), and whether the
     /// pointer was near the top edge at the last read.
     pointer_ms: u32,
@@ -852,6 +928,8 @@ struct App {
     /// The last lock or unlock `WM_WTSSESSION_CHANGE` said locked; used when
     /// asking Windows for the session's state fails.
     session_locked: bool,
+    /// The self-update: the known release, a check or a download running.
+    update: UpdateState,
 }
 
 /// The File Explorer reader (`sources::explorer`): at most one read runs.
@@ -1015,6 +1093,7 @@ impl App {
                     | Event::Devices(_)
                     | Event::Arrange(_)
                     | Event::Toast(_)
+                    | Event::Update(_)
             ));
             self.apply(event, now);
         }
@@ -1102,6 +1181,11 @@ impl App {
                 // The notch notice and the history entry are decided here.
                 Event::Toast(toast) => {
                     self.on_toast(toast, now);
+                    continue;
+                }
+                // The self-update's workers: `App` decides what shows.
+                Event::Update(event) => {
+                    self.on_update_event(event);
                     continue;
                 }
                 Event::SearchIndex(apps) => {
@@ -1480,7 +1564,8 @@ impl App {
     fn sync_robot_timers(&mut self, now: Instant) {
         let face = self.robot_frame(&self.state.view(), now).map(|r| r.expr);
         let mut plan = plan_timers(face, self.motion(), self.animating_at(now));
-        // The eyes alone are static: no blink while the notch is shrunk.
+        // The shrunk notch has no cat to blink: its eyes run their own
+        // schedule below, on the same timer.
         plan.blink &= !self.eyes;
         if plan.blink != self.bata.blink_timer {
             self.bata.blink_timer = plan.blink;
@@ -1494,6 +1579,7 @@ impl App {
                 }
             }
         }
+        self.sync_eyes_blink();
         let next = plan
             .change
             .then(|| self.bata.brain.next_change(now, self.sleep_after()))
@@ -1518,6 +1604,19 @@ impl App {
     /// `TIMER_BLINK`: shut the eyes for `BLINK_MS`, then open them and wait
     /// 4–7 s for the next blink.
     fn on_blink(&mut self) {
+        if self.eyes_blink_timer {
+            // The shrunk notch's eyes: one step of their schedule. A running
+            // ease does not postpone it: the clock draws the shut state, and
+            // otherwise this draws it.
+            let wait = self.eyes_blink.next(&mut self.bata.rng);
+            unsafe {
+                SetTimer(Some(self.hwnd), TIMER_BLINK, wait, None);
+            }
+            if !self.animating() {
+                self.draw(Instant::now());
+            }
+            return;
+        }
         if !self.bata.blink_timer {
             unsafe {
                 let _ = KillTimer(Some(self.hwnd), TIMER_BLINK);
@@ -1535,6 +1634,49 @@ impl App {
         }
         if !self.animating() {
             self.draw(Instant::now());
+        }
+    }
+
+    /// The shrunk notch's eyes may blink: it is shrunk (with or without the
+    /// cat), Motion is Full (not Energy Saver) and Windows animations are on.
+    /// Not held back by the frame clock: the eyes' ease would postpone every
+    /// blink.
+    fn eyes_blink_wanted(&self) -> bool {
+        self.eyes && self.motion().moves() && self.animations
+    }
+
+    /// Arms or kills `TIMER_BLINK` for the eyes' blink schedule, and starts
+    /// the schedule open. Whichever of the cat's and the eyes' schedule
+    /// stops leaves the shared timer to the other: the cat's block of
+    /// `sync_robot_timers` has already armed or killed it by its own plan.
+    fn sync_eyes_blink(&mut self) {
+        let wanted = self.eyes_blink_wanted();
+        if wanted == self.eyes_blink_timer {
+            return;
+        }
+        self.eyes_blink_timer = wanted;
+        self.eyes_blink = EyesBlink::default();
+        unsafe {
+            if wanted {
+                let wait = EyesBlink::open_wait(&mut self.bata.rng);
+                SetTimer(Some(self.hwnd), TIMER_BLINK, wait, None);
+            } else if !self.bata.blink_timer {
+                let _ = KillTimer(Some(self.hwnd), TIMER_BLINK);
+            }
+        }
+    }
+
+    /// The shrunk notch's eyes this frame: where they look, and shut for a
+    /// blink. Centred and open anywhere else.
+    fn eyes_pose(&self) -> EyesPose {
+        if !self.eyes {
+            return EyesPose::default();
+        }
+        let (dx_dip, dy_dip) = self.eyes_look.offset_dip();
+        EyesPose {
+            dx_dip,
+            dy_dip,
+            blink: self.eyes_blink.shut(),
         }
     }
 
@@ -1683,6 +1825,8 @@ impl App {
                 self.arm_reminders();
             }
             Effect::OpenSettings => DEFERRED_OPEN_SETTINGS.set(true),
+            Effect::InstallUpdate => self.update_install(),
+            Effect::OpenReleases => self.update_open_releases(),
         }
         None
     }
@@ -2937,6 +3081,13 @@ impl App {
         let view = self.state.view();
         // The cat's look goes back to the centre when it cannot follow.
         self.sync_look(now);
+        // The eyes start centred at every shrink and every restore, and look
+        // only while the shrunk notch may follow the pointer.
+        if eyes_swap {
+            self.eyes_look.snap_to_centre();
+            self.eyes_look_at = None;
+        }
+        self.sync_eyes_look();
         // Bata: an alert that just appeared bounces; a lift or bounce needs frames.
         let face = self.robot_frame(&view, now).map(|r| r.expr);
         let moves = self.motion().moves();
@@ -2978,7 +3129,7 @@ impl App {
         // Hidden, something else on screen, or the notch swapped with the
         // eyes: a press made before must not pair with a release on what
         // shows now.
-        if press_ends(&view, &self.drawn, eyes_swap) {
+        if press_ends(&view, &self.drawn, eyes_swap) && !progress_in_place(&view, &self.drawn) {
             self.click.clear();
         }
         // Only the width changes while the lyric view stays: a quicker morph.
@@ -2986,7 +3137,7 @@ impl App {
             && self.drawn == View::MediaLyric
             && self.anim.to_opacity == 1.0
             && !eyes_swap;
-        let view_same = view == self.drawn;
+        let view_same = view == self.drawn || progress_in_place(&view, &self.drawn);
         // A compact view or notice replacing another fades in with its
         // morph, and a panel closing into one fades out as the shape shrinks.
         let was_panel = match &self.drawn {
@@ -2996,7 +3147,7 @@ impl App {
         let is_panel = matches!(view, View::Panel(_));
         // Shrinking to the eyes or coming back swaps the content like a view
         // change does: what shows fades in with the morph.
-        let compact_swap = (view != self.drawn && !is_panel && view != View::Hidden && !resize)
+        let compact_swap = (!view_same && !is_panel && view != View::Hidden && !resize)
             || (eyes_swap && !is_panel && view != View::Hidden);
         // A fade cut short goes on from the alpha it reached: new content
         // starts from it, and the same content keeps fading in.
@@ -3137,6 +3288,7 @@ impl App {
             || self.lyric_scrolling
             || self.robot_moving(now)
             || self.look.moving()
+            || self.eyes_look.moving()
             || self.shelf.motion.running(now)
             || self.dock.moving()
     }
@@ -3555,9 +3707,10 @@ impl App {
             // The notch comes back; `refresh` also syncs the look and the poll.
             self.refresh(now);
         } else {
-            let looked = self.look.value();
+            let looked = (self.look.value(), self.eyes_look.offset_dip());
             self.sync_look(now);
-            if self.look.value() != looked && !self.animating() {
+            self.sync_eyes_look();
+            if (self.look.value(), self.eyes_look.offset_dip()) != looked && !self.animating() {
                 // The cat was snapped back to the centre: draw it there.
                 self.draw(now);
             }
@@ -3829,6 +3982,99 @@ impl App {
         Some(shape_with_robot_sized(style, notch, kind, robot))
     }
 
+    /// The shrunk notch's eyes follow the pointer: it is shrunk, "Ikuti
+    /// kursor" is on, and the peek may go on (not fullscreen, not locked).
+    /// The cat is not asked: the eyes show with it off.
+    fn eyes_look_eligible(&self) -> bool {
+        self.peek.is_shrunk() && self.config.cat_follow_pointer && self.peek_eligible()
+    }
+
+    /// How the eyes follow now (`pointer_watch::eyes_motion`).
+    fn eyes_motion(&self) -> EyesMotion {
+        pointer_watch::eyes_motion(
+            self.config.cat_follow_pointer,
+            self.motion().moves(),
+            self.animations,
+        )
+    }
+
+    /// The eyes cannot look any more (not shrunk, "Ikuti kursor" off,
+    /// fullscreen, locked): they are centred at once, with no ease. And a
+    /// motion setting that stopped easing finishes a running ease where it
+    /// was heading.
+    fn sync_eyes_look(&mut self) {
+        if !self.eyes_look_eligible() {
+            self.eyes_look.snap_to_centre();
+            self.eyes_look_at = None;
+        } else if self.eyes_motion() != EyesMotion::Ease && self.eyes_look.finish() {
+            self.eyes_look_at = None;
+        }
+    }
+
+    /// One poll reading for the eyes: the pointer, in island dip, sets the
+    /// look's target. Eased on the frame clock with Motion Full and Windows
+    /// animations on; otherwise the eyes jump there and are drawn once.
+    fn eyes_look_tick(&mut self, pt: POINT, now: Instant) {
+        let view = self.state.view();
+        let Some(normal) = self.normal_shape(&view) else {
+            return;
+        };
+        let Some((origin, k)) = self
+            .win
+            .as_ref()
+            .map(|win| (win.screen_origin(), win.scale()))
+        else {
+            return;
+        };
+        let (x, y) = ((pt.x - origin.0) as f32 / k, (pt.y - origin.1) as f32 / k);
+        let pill = shape_sized(self.config.style, self.notch_size(), ShapeKind::Eyes);
+        let half_span = normal.w / 2.0 + pointer_watch::PEEK_ZONE_DIP;
+        let (vx, vy) = pointer_watch::eyes_target(
+            x,
+            y,
+            pill.x + pill.w / 2.0,
+            pill.y + pill.h / 2.0,
+            half_span,
+        );
+        match self.eyes_motion() {
+            EyesMotion::Still => {}
+            EyesMotion::Jump => {
+                if self.eyes_look.jump_to(vx, vy) && !self.animating() {
+                    self.draw(now);
+                }
+            }
+            EyesMotion::Ease => {
+                if self.eyes_look.set_target(vx, vy) {
+                    self.ensure_clock();
+                }
+            }
+        }
+    }
+
+    /// One frame-clock tick of the eyes' look: eased to `now`.
+    fn advance_eyes_look(&mut self, now: Instant) {
+        if !self.eyes_look.moving() {
+            self.eyes_look_at = None;
+            return;
+        }
+        let dt = self
+            .eyes_look_at
+            .map_or(Duration::ZERO, |at| now.saturating_duration_since(at));
+        self.eyes_look.advance(dt);
+        self.eyes_look_at = self.eyes_look.moving().then_some(now);
+    }
+
+    /// Windows' animation setting was read again: the eyes' ease and blink
+    /// follow it at once (nothing runs unless the notch is shrunk).
+    fn animations_changed(&mut self) {
+        self.animations = client_animations_on();
+        if self.eyes {
+            let now = Instant::now();
+            self.sync_eyes_look();
+            self.sync_robot_timers(now);
+        }
+    }
+
     /// The cat cannot follow the pointer any more (`look_eligible` is false):
     /// its look is back at the centre at once, with no ease. Every way out
     /// leaves nothing to ease on screen: the cat is gone (off, another view,
@@ -3874,7 +4120,8 @@ impl App {
     /// a locked session and a display that is off), and its pace follows
     /// `pointer_watch::poll_ms`.
     fn sync_pointer_watch(&mut self, now: Instant) {
-        let (follow, peek) = (self.look_eligible(now), self.peek_eligible());
+        let follow = pointer_watch::follow_on(self.look_eligible(now), self.eyes_look_eligible());
+        let peek = self.peek_eligible();
         let ms = pointer_watch::poll_ms(follow, peek, self.pointer_near);
         if ms == 0 {
             self.under_cache.clear();
@@ -3906,6 +4153,9 @@ impl App {
         self.pointer_near = pointer_watch::near_top(pt.y - origin.1, scale);
         if self.peek_eligible() {
             self.peek_tick(pt, now);
+        }
+        if self.eyes_look_eligible() {
+            self.eyes_look_tick(pt, now);
         }
         if self.look_eligible(now) && !self.look_hidden_behind(now) {
             // The island is centred on the monitor: so is the notch.
@@ -4195,6 +4445,7 @@ impl App {
                 self.sync_system_page();
             }
             TIMER_SYSTEM_WARN => self.on_system_warn_timer(),
+            TIMER_UPDATE => self.on_update_timer(),
             TIMER_MIXER => {
                 if self.state.view() == View::Panel(Page::Mixer) {
                     self.mixer_scan();
@@ -4231,6 +4482,7 @@ impl App {
         // The cat's look eases to this frame before it is drawn, so the frame
         // that reaches the target is the last one the clock draws for it.
         self.advance_look(now);
+        self.advance_eyes_look(now);
         self.dock_step(now);
         let shape_done = self.anim.progress(now) >= 1.0;
         let slide_done = self.slide.is_none_or(|s| s.progress(now) >= 1.0);
@@ -4836,6 +5088,7 @@ impl App {
             devices_hotkey_failed: self.devices.hotkey_failed,
             arrange_hotkey_failed: self.arrange.hotkey_failed,
             prtsc: self.prtsc_model(),
+            update_row: self.update.row(),
             ..settings::Model::from_config(&self.config)
         }
     }
@@ -5094,6 +5347,12 @@ impl App {
             SettingsAction::ShotOnIgnore(v) => self.on_shot_setting(ShotSetting::OnIgnore(v)),
             SettingsAction::ShotSecs(n) => self.on_shot_setting(ShotSetting::Secs(n)),
             SettingsAction::ShotPrintScreen(on) => self.set_print_screen(on),
+            SettingsAction::CheckUpdates => self.update_manual_check(),
+            SettingsAction::InstallUpdate => self.update_install(),
+            SettingsAction::UpdateAuto(on) => {
+                self.config.update_check = on;
+                self.save_config();
+            }
             // Handled outside the app borrow (`deliver_settings_action`).
             SettingsAction::DndHelp | SettingsAction::Closed => {}
         }
@@ -5307,6 +5566,7 @@ impl App {
             progress: track_progress(state, now),
             robot,
             eyes: self.eyes,
+            eyes_pose: self.eyes_pose(),
             eq_heights: self.eq_heights(),
             robot_fades: self.eyes_morph,
             system: Some(&system),
@@ -5485,6 +5745,17 @@ impl ClickPair {
     fn clear(&mut self) {
         self.pressed = None;
     }
+}
+
+/// The update download's percent changing on screen: the same notice with a
+/// new number, not another view (no entrance fade, no cleared press).
+fn progress_in_place(view: &View, drawn: &View) -> bool {
+    matches!(
+        (view, drawn),
+        (View::Notice(a), View::Notice(b))
+            if matches!(a.kind, NoticeKind::UpdateProgress { .. })
+                && matches!(b.kind, NoticeKind::UpdateProgress { .. })
+    )
 }
 
 /// A pending press ends when the island hides, another view shows, or the
@@ -6468,10 +6739,10 @@ fn open_menu(hwnd: HWND) {
     if MENU_OPEN.get() {
         return;
     }
-    let Some(config) = with_app(|app| {
+    let Some((config, update)) = with_app(|app| {
         // A hotkey another app held may be free by now.
         app.retry_hotkeys();
-        app.config.clone()
+        (app.config.clone(), app.update.known_version())
     }) else {
         return;
     };
@@ -6479,9 +6750,15 @@ fn open_menu(hwnd: HWND) {
     // The menu takes the foreground: the window that had the keyboard is
     // what "Cari" hands it back to on Esc.
     let before = unsafe { GetForegroundWindow() };
-    let cmd = tray::show_menu(hwnd, &config);
+    let cmd = tray::show_menu(hwnd, &config, update.as_deref());
     MENU_OPEN.set(false);
     match cmd {
+        Some(MenuCmd::CheckUpdate) => {
+            with_app(|app| app.update_manual_check());
+        }
+        Some(MenuCmd::InstallUpdate) => {
+            with_app(|app| app.update_install());
+        }
         Some(MenuCmd::Settings) => open_settings(hwnd),
         // Whatever the hotkey is (off, taken): the menu always opens it
         // (and never closes it).
@@ -6662,6 +6939,11 @@ fn run_deferred() {
     {
         open_settings(hwnd);
     }
+    if DEFERRED_SHUTDOWN.take()
+        && let Some(hwnd) = with_app(|app| app.hwnd)
+    {
+        shutdown(hwnd);
+    }
 }
 
 /// `deliver_cli_key` for the quick search's field.
@@ -6826,6 +7108,8 @@ fn client_animations_on() -> bool {
 /// Windows switched between light and dark apps: windows following it restyle.
 /// The island itself is dark either way.
 fn on_system_theme_changed() {
+    // The tray menu follows Windows whatever Vale's window theme is.
+    tray::refresh_menu_theme();
     let changed = theme::set_system_light(theme::read_system_light());
     if changed && theme::current().window == theme::WindowTheme::System {
         editor::restyle_open_editor();
@@ -7083,7 +7367,7 @@ unsafe extern "system" fn wnd_proc(
             }
             // The animation switch is read again (no timer, no poll); it
             // only matters to the next transition.
-            with_app(|app| app.animations = client_animations_on());
+            with_app(|app| app.animations_changed());
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
         WM_DESTROY => {
@@ -7120,6 +7404,79 @@ unsafe extern "system" fn wnd_proc(
 mod tests {
     use super::*;
     use crate::ui::geometry::{LYRIC_RESIZE_MS, lyric_shape, lyric_width};
+
+    fn progress_view(pct: u8) -> View {
+        View::Notice(Notice {
+            key: "update-progress".into(),
+            source: "Vale".into(),
+            title: format!("{pct}%"),
+            body: String::new(),
+            kind: NoticeKind::UpdateProgress { pct },
+        })
+    }
+
+    #[test]
+    fn a_new_percent_is_the_same_view_but_any_other_change_is_not() {
+        assert!(progress_in_place(&progress_view(1), &progress_view(2)));
+        assert!(progress_in_place(&progress_view(1), &progress_view(1)));
+        assert!(!progress_in_place(&progress_view(1), &View::Idle));
+        assert!(!progress_in_place(&View::Idle, &progress_view(1)));
+        assert!(!progress_in_place(&View::Hidden, &View::Hidden));
+    }
+
+    /// A mutex name of this test's own, so no real island is involved.
+    fn mutex_name(tag: &str) -> windows::core::HSTRING {
+        windows::core::HSTRING::from(format!("Local\\ValeTest-{tag}-{}", std::process::id()))
+    }
+
+    #[test]
+    fn a_taken_mutex_quits_at_once_and_a_waiting_start_gets_it_when_the_owner_ends() {
+        let name = mutex_name("claim");
+        let names = [PCWSTR(name.as_ptr())];
+        // The "old island": holds the mutex through one handle.
+        let owner = unsafe { CreateMutexW(None, false, names[0]) }.expect("owner mutex");
+        // A normal start quits at once.
+        let start = Instant::now();
+        assert!(!claim_names(&names, Duration::ZERO));
+        assert!(start.elapsed() < Duration::from_millis(150));
+        // The owner is still alive, so a short wait ends without it.
+        assert!(!claim_names(&names, Duration::from_millis(450)));
+        // The owner ends (its handle closes) while a start waits: the wait
+        // gets the mutex. It would not if the failed tries had kept their own
+        // handles, which keep the mutex alive after the owner is gone.
+        let raw = owner.0 as isize;
+        let closer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(400));
+            unsafe {
+                let _ = CloseHandle(windows::Win32::Foundation::HANDLE(raw as *mut c_void));
+            }
+        });
+        let start = Instant::now();
+        assert!(claim_names(&names, Duration::from_secs(5)));
+        assert!(start.elapsed() < Duration::from_secs(4), "{:?}", start.elapsed());
+        closer.join().unwrap();
+    }
+
+    #[test]
+    fn the_failed_tries_leave_nothing_behind() {
+        // Two names, one of them held by someone else: a failed try must also
+        // release the name that was free, or the next try finds its own mutex.
+        let held = mutex_name("held");
+        let free = mutex_name("free");
+        let (held_p, free_p) = (PCWSTR(held.as_ptr()), PCWSTR(free.as_ptr()));
+        // Held by "someone else": a handle this test owns and closes later.
+        let owner = unsafe { CreateMutexW(None, false, held_p) }.expect("owner mutex");
+        for _ in 0..3 {
+            assert!(!try_claim(&[free_p, held_p]), "held name taken");
+        }
+        // The owner ends: both names are free at once.
+        unsafe {
+            let _ = CloseHandle(owner);
+        }
+        assert!(try_claim(&[free_p, held_p]));
+        // Held for the rest of the process by design; claimed again it is taken.
+        assert!(!try_claim(&[free_p]));
+    }
 
     #[test]
     fn the_own_pick_overlay_is_never_taken_for_a_fullscreen_app() {
