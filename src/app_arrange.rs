@@ -10,7 +10,7 @@
 //! starts, the mover and the icon reader are short-lived threads.
 
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, RegisterHotKey, UnregisterHotKey,
@@ -75,6 +75,17 @@ struct Picking {
     windows: Vec<OpenWindow>,
 }
 
+/// How long a move in flight holds off the next one. A run that starts
+/// while another is moving would replace it in `pending`, and the first
+/// run's undo and notice would be lost; a worker stuck on a window that hung
+/// mid-move must not lock Susun for good, though.
+const MOVE_WAIT: Duration = Duration::from_secs(10);
+
+/// A move started at `since` is still running and blocks a new one.
+fn move_in_flight(since: Option<Instant>, now: Instant) -> bool {
+    since.is_some_and(|at| now.saturating_duration_since(at) < MOVE_WAIT)
+}
+
 /// What the Susun page keeps.
 #[derive(Default)]
 pub(super) struct ArrangeState {
@@ -92,6 +103,8 @@ pub(super) struct ArrangeState {
     icons: HashMap<String, Thumb>,
     run: u64,
     pending: Option<(u64, Run)>,
+    /// When the move in `pending` started; see `move_in_flight`.
+    pending_since: Option<Instant>,
     /// Where the windows were before the last arrangement, for "Batalkan".
     undo: Vec<Placement>,
     /// What "Simpan…" would store, from the last pick.
@@ -332,7 +345,12 @@ impl App {
             return;
         };
         let rects = self.arrange_rects(&layout.node(), monitor);
-        arrange_overlay::outline_show(monitor.work, &rects, theme::current().accent.rgb());
+        arrange_overlay::outline_show(
+            self.hwnd,
+            monitor.work,
+            &rects,
+            theme::current().accent.rgb(),
+        );
     }
 
     fn arrange_hide_outline(&self) {
@@ -357,7 +375,10 @@ impl App {
     pub(super) fn arrange_card(&mut self, i: usize) {
         self.arrange_hide_outline();
         self.arrange.hover_card = None;
-        if self.arrange.picking.is_some() || arrange_overlay::active() {
+        if self.arrange.picking.is_some()
+            || arrange_overlay::active()
+            || move_in_flight(self.arrange.pending_since, Instant::now())
+        {
             return;
         }
         let Some((name, layout)) = self.arrange_cards().into_iter().nth(i) else {
@@ -568,6 +589,7 @@ impl App {
         self.arrange.run += 1;
         let id = self.arrange.run;
         self.arrange.pending = Some((id, run));
+        self.arrange.pending_since = Some(Instant::now());
         arrange_win::spawn_move(
             id,
             jobs,
@@ -579,7 +601,9 @@ impl App {
     /// A saved arrangement's play button: the monitor is resolved, the
     /// windows matched against what is open, nothing is ever launched.
     pub(super) fn arrange_play(&mut self, i: usize) {
-        if self.arrange.picking.is_some() {
+        if self.arrange.picking.is_some()
+            || move_in_flight(self.arrange.pending_since, Instant::now())
+        {
             return;
         }
         let Some(saved) = self.config.arrange.saved.get(i).cloned() else {
@@ -629,6 +653,7 @@ impl App {
                     self.arrange.pending = Some((id, what));
                     return;
                 }
+                self.arrange.pending_since = None;
                 self.arrange.undo = undo;
                 self.arrange.last_save = None;
                 let lang = i18n::lang();
@@ -861,5 +886,22 @@ impl App {
         unsafe {
             let _ = UnregisterHotKey(Some(self.hwnd), HOTKEY_ARRANGE);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_move_in_flight_holds_off_a_new_one_for_a_while() {
+        let t = Instant::now();
+        assert!(!move_in_flight(None, t), "nothing pending");
+        assert!(move_in_flight(Some(t), t));
+        assert!(move_in_flight(Some(t), t + Duration::from_secs(9)));
+        assert!(
+            !move_in_flight(Some(t), t + MOVE_WAIT),
+            "a stuck worker stops blocking"
+        );
     }
 }

@@ -610,6 +610,7 @@ pub fn clean_gap(v: &Value) -> u32 {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct ArrangeSettings {
+    #[serde(deserialize_with = "lenient_hotkey")]
     pub hotkey: crate::config::ArrangeHotkey,
     #[serde(deserialize_with = "lenient_gap")]
     pub gap: u32,
@@ -628,6 +629,16 @@ impl Default for ArrangeSettings {
             saved: Vec::new(),
         }
     }
+}
+
+/// Any name the hotkey does not know, or a non-string, reads as `Off`.
+fn lenient_hotkey<'de, D: Deserializer<'de>>(
+    d: D,
+) -> Result<crate::config::ArrangeHotkey, D::Error> {
+    Ok(Value::deserialize(d)?
+        .as_str()
+        .and_then(crate::config::ArrangeHotkey::from_name)
+        .unwrap_or_default())
 }
 
 fn lenient_gap<'de, D: Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
@@ -1503,6 +1514,28 @@ mod tests {
         assert_eq!(first.monitor.rect, Rect::new(0, 0, 2560, 1440));
         assert_eq!(first.tiles[0].as_ref().unwrap().title, "main.rs");
         assert!(first.tiles[1].is_none());
+    }
+
+    #[test]
+    fn a_bad_hotkey_resets_only_the_hotkey() {
+        let tpl_json = tpl("a", "Dua", &BuiltIn::Cols2.node());
+        let saved = saved_json("Kerja", r#"{"builtin":"cols2"}"#, "[null,null]");
+        for hotkey in ["null", "5", "true", "[]", "{}", r#""Nope""#] {
+            let json = format!(
+                r#"{{"hotkey":{hotkey},"gap":12,"templates":[{tpl_json}],"saved":[{saved}]}}"#
+            );
+            let v: Value = serde_json::from_str(&json).unwrap();
+            let s = lenient_settings(v).expect("lenient");
+            assert_eq!(s.hotkey, crate::config::ArrangeHotkey::Off, "{hotkey}");
+            assert_eq!(s.gap, 12, "{hotkey}");
+            assert_eq!(s.templates.len(), 1, "{hotkey}: templates kept");
+            assert_eq!(s.saved.len(), 1, "{hotkey}: saved kept");
+        }
+        let v: Value = serde_json::from_str(r#"{"hotkey":"ctrlalts"}"#).unwrap();
+        assert_eq!(
+            lenient_settings(v).unwrap().hotkey,
+            crate::config::ArrangeHotkey::CtrlAltS
+        );
     }
 
     #[test]

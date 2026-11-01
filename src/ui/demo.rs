@@ -1413,7 +1413,7 @@ fn demo_arrange_overlays(
         }
         ArrangeDemo::Hover => {
             arrange_overlay::close();
-            arrange_overlay::outline_show(work, &tiles, accent);
+            arrange_overlay::outline_show(island, work, &tiles, accent);
         }
         _ => {
             arrange_overlay::close();

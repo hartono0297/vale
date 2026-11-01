@@ -363,6 +363,25 @@ pub fn frame_close(frame: Rect, target: Rect) -> bool {
         && (frame.bottom() - target.bottom()).abs() <= 1
 }
 
+/// Brings a minimized or maximized window back to its normal state, so its
+/// frame and borders are the plain ones before it is placed. A minimized
+/// window that was maximized before (`WPF_RESTORETOMAXIMIZED`) comes back
+/// maximized from the first `SW_RESTORE`, so a second one takes it to normal.
+/// False when the window is gone.
+unsafe fn restore_to_normal(hwnd: HWND) -> bool {
+    unsafe {
+        for _ in 0..2 {
+            if !(IsIconic(hwnd).as_bool() || IsZoomed(hwnd).as_bool()) {
+                break;
+            }
+            if !ShowWindow(hwnd, SW_RESTORE).as_bool() && !IsWindow(Some(hwnd)).as_bool() {
+                return false;
+            }
+        }
+        true
+    }
+}
+
 /// Moves every `(hwnd, rect)`; the synchronous core of `spawn_move`. A window
 /// that is gone, hung, or elevated while Vale is not is skipped, as is one
 /// that refuses the move. A minimized or maximized window is restored first.
@@ -383,10 +402,7 @@ pub fn move_all(jobs: &[(isize, Rect)]) -> (usize, usize, Vec<Placement>) {
                 continue;
             }
             let saved = placement_of(hwnd);
-            if (IsIconic(hwnd).as_bool() || IsZoomed(hwnd).as_bool())
-                && !ShowWindow(hwnd, SW_RESTORE).as_bool()
-                && !IsWindow(Some(hwnd)).as_bool()
-            {
+            if !restore_to_normal(hwnd) {
                 skipped += 1;
                 continue;
             }
@@ -592,6 +608,25 @@ mod tests {
             }
             let after = placement_of(hwnd).expect("placement");
             assert_eq!(after.normal, before.normal);
+
+            // Minimized from maximized: the first SW_RESTORE would bring it
+            // back maximized; it must end up normal at the target.
+            let _ = ShowWindow(hwnd, windows::Win32::UI::WindowsAndMessaging::SW_MAXIMIZE);
+            let _ = ShowWindow(hwnd, windows::Win32::UI::WindowsAndMessaging::SW_MINIMIZE);
+            assert!(IsIconic(hwnd).as_bool());
+            let target3 = Rect::new(160, 180, 600, 420);
+            let (moved, skipped, undo3) = move_all(&[(raw, target3)]);
+            assert_eq!((moved, skipped), (1, 0));
+            assert!(
+                !IsIconic(hwnd).as_bool() && !IsZoomed(hwnd).as_bool(),
+                "normal"
+            );
+            let frame = visible_frame(hwnd).expect("frame");
+            assert!(frame_close(frame, target3), "{frame:?} vs {target3:?}");
+            for p in undo3 {
+                assert!(restore(p));
+            }
+            assert!(IsIconic(hwnd).as_bool(), "minimized again");
 
             let _ = DestroyWindow(hwnd);
         }

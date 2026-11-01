@@ -397,8 +397,10 @@ unsafe extern "system" fn outline_proc(
 }
 
 /// Shows `tiles` (virtual-screen px) dashed on `area` (the target monitor's
-/// work area), click-through. Replaces what an earlier call showed.
-pub fn outline_show(area: Rect, tiles: &[Rect], accent: u32) {
+/// work area), click-through. Replaces what an earlier call showed. The
+/// outline is topmost and covers the top of the work area, so `island` goes
+/// back above it: the open panel is never drawn over.
+pub fn outline_show(island: HWND, area: Rect, tiles: &[Rect], accent: u32) {
     outline_hide();
     if area.is_empty() {
         return;
@@ -428,6 +430,7 @@ pub fn outline_show(area: Rect, tiles: &[Rect], accent: u32) {
     unsafe {
         let _ = ShowWindow(hwnd, SW_SHOWNA);
     }
+    raise(island);
     OUTLINE.with(|o| {
         if let Ok(mut slot) = o.try_borrow_mut() {
             *slot = Some((hwnd, canvas));
@@ -572,9 +575,14 @@ pub fn close() {
 /// The island goes back above the overlay (the overlay is topmost too, and
 /// a click on it raises it).
 fn raise_island() {
-    if let Some(island) = with(|p| p.island)
-        && !island.is_invalid()
-    {
+    if let Some(island) = with(|p| p.island) {
+        raise(island);
+    }
+}
+
+/// `island` to the top of the topmost band, without taking the focus.
+fn raise(island: HWND) {
+    if !island.is_invalid() {
         unsafe {
             let _ = SetWindowPos(
                 island,
