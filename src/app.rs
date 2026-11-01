@@ -530,6 +530,8 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
         app.apply(Event::CleanModeSetting(clean_mode), now);
         let open_mode = app.config.open_mode;
         app.apply(Event::OpenMode(open_mode), now);
+        let toast_style = app.config.notifications.toast_style;
+        app.apply(Event::ToastStyle(toast_style), now);
         let pages = PanelPages::from_saved(&app.config.panel_pages);
         app.apply(Event::PanelPages(pages), now);
         let tiles = ShortcutTiles::from_saved(&app.config.shortcut_tiles);
@@ -5080,8 +5082,14 @@ impl App {
     fn adopt_config(&mut self, cfg: Config) {
         let google = |c: &Config| (c.google_client_id.clone(), c.google_client_secret.clone());
         let changed = google(&cfg) != google(&self.config);
+        let toast_style_was = self.config.notifications.toast_style;
         self.config = cfg;
         i18n::set_lang(self.config.language);
+        // A hand edit of "Notifikasi saat notch dipakai" applies live.
+        let toast_style = self.config.notifications.toast_style;
+        if toast_style != toast_style_was {
+            self.apply_now(Event::ToastStyle(toast_style));
+        }
         // New limits (the settings window or a hand edit) apply at once.
         self.system
             .monitor
@@ -5332,6 +5340,11 @@ impl App {
                 self.config.open_mode = mode;
                 self.save_config();
                 self.apply_now(Event::OpenMode(mode));
+            }
+            SettingsAction::NotifToastStyle(v) => {
+                self.config.notifications.toast_style = v;
+                self.save_config();
+                self.apply_now(Event::ToastStyle(v));
             }
             SettingsAction::CliStart(start) => {
                 // Read the next time the CLI page opens.

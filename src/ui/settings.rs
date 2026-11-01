@@ -84,7 +84,7 @@ use crate::cli::Shell;
 use crate::cli_folders::CliStart;
 use crate::config::{
     ArrangeHotkey, ClipHotkey, ClipboardSettings, Config, DevicesHotkey, NotchFill, NotifSettings,
-    OpenMode, ScreenshotSettings, SearchHotkey, ShotIgnore, ShotTool, Style, WindowPlace,
+    OpenMode, ScreenshotSettings, SearchHotkey, ShotIgnore, ShotTool, Style, ToastStyle, WindowPlace,
 };
 use crate::google::client;
 use crate::i18n::{Key, Lang, text};
@@ -180,6 +180,8 @@ pub enum Action {
     NotifRecord(bool),
     NotifItems(u32),
     NotifPersist(bool),
+    /// "Notifikasi saat notch dipakai".
+    NotifToastStyle(ToastStyle),
     /// A name for the excluded apps, and one taken out of them (by name: the
     /// island's list may have changed by hand since the window drew it).
     NotifMutedAdd(String),
@@ -1629,6 +1631,9 @@ impl Settings {
                 // The form's own choice, not the model's.
                 Group::TileKind => 0.0,
                 Group::ShotTool => usize::from(m.shot.tool == ShotTool::Windows) as f32,
+                Group::NotifToastStyle => {
+                    usize::from(m.notif.toast_style == ToastStyle::Full) as f32
+                }
                 Group::NotchFill => usize::from(m.notch_fill == NotchFill::Transparent) as f32,
             }
         };
@@ -1647,6 +1652,7 @@ impl Settings {
             Group::ArrangeHotkey,
             Group::ShotIgnore,
             Group::ShotTool,
+            Group::NotifToastStyle,
         ] {
             let (from, to) = (index(group, &old), index(group, new));
             if from != to {
@@ -2238,6 +2244,9 @@ impl Settings {
             Hit::ShotPreview => post(Action::ShotPreview(!m.shot.preview)),
             Hit::ShotPrintScreen => post(Action::ShotPrintScreen(!m.shot.print_screen)),
             Hit::ShotTool(v) if v != m.shot.tool => post(Action::ShotTool(v)),
+            Hit::NotifToastStyle(v) if v != m.notif.toast_style => {
+                post(Action::NotifToastStyle(v))
+            }
             Hit::ShotIgnore(v) if v != m.shot.on_ignore => post(Action::ShotOnIgnore(v)),
             Hit::ShotSecs(dir) => {
                 let n = shot_secs_step(m.shot.show_secs, dir);
@@ -2475,7 +2484,8 @@ impl Settings {
             | Hit::DevicesHotkey(_)
             | Hit::ArrangeHotkey(_)
             | Hit::ShotIgnore(_)
-            | Hit::ShotTool(_) => Vec::new(),
+            | Hit::ShotTool(_)
+            | Hit::NotifToastStyle(_) => Vec::new(),
         };
         self.relayout();
         after
@@ -3602,6 +3612,7 @@ pub fn run_demo(args: &[String]) {
             }
             Action::NotifClear => {}
             Action::ShotTool(v) => m.shot.tool = v,
+            Action::NotifToastStyle(v) => m.notif.toast_style = v,
             Action::ShotPreview(v) => m.shot.preview = v,
             Action::ShotPrintScreen(v) => m.shot.print_screen = v,
             Action::ShotOnIgnore(v) => m.shot.on_ignore = v,

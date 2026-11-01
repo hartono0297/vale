@@ -788,6 +788,11 @@ keys! {
     NotifNoAccess => "Izin notifikasi belum diberikan", "Notification access not granted";
     NotifOpenSettings => "Buka pengaturan", "Open settings";
     SecNotifications => "Notifikasi", "Notifications";
+    NotifToastStyle => "Notifikasi saat notch dipakai", "Notifications while the notch is in use";
+    NotifToastStyleDesc => "Ringkas: strip atau logo kecil saat notch dipakai",
+        "Compact: a strip or a small logo while the notch is busy";
+    NotifToastCompact => "Ringkas", "Compact";
+    NotifToastFull => "Penuh", "Full";
     NotifRecord => "Simpan notifikasi", "Save notifications";
     NotifRecordDesc => "Riwayat notifikasi Windows di halaman Notifikasi",
         "Windows notifications, kept on the Notifications page";

@@ -9,7 +9,7 @@ use crate::calendar::CalendarSnapshot;
 use crate::clean::{CleanCat, CleanEvent, CleanMode};
 use crate::cli::CliEvent;
 use crate::clipboard::image::Thumb;
-use crate::config::OpenMode;
+use crate::config::{OpenMode, ToastStyle};
 use crate::devices::DevicesEvent;
 use crate::greeting::DayPeriod;
 use crate::lyrics::LyricsFound;
@@ -331,6 +331,13 @@ pub enum Event {
     CleanModeSetting(CleanMode),
     /// "Mode buka" (startup and the settings window).
     OpenMode(OpenMode),
+    /// "Notifikasi saat notch dipakai" (startup, the settings window and a
+    /// hand edit): Full turns a tucked toast into the full notice at once.
+    ToastStyle(ToastStyle),
+    /// The pointer is on the busy toast's own spot (its strip, its logo slot,
+    /// or the peeked full toast), or left it. Drives the peek and the strip's
+    /// hold.
+    ToastPointer(bool),
     /// A mouse button went down outside the island while the panel was kept
     /// open: it closes.
     Dismiss,
@@ -446,6 +453,8 @@ pub enum Hit {
     /// The strip at the top of the open panel: the newest Claude waiting or
     /// due reminder notice.
     Strip,
+    /// The small logo beside a compact view that stands for a busy toast.
+    ToastSlot,
     /// A result row of the quick search (its place in the list).
     SearchResult(usize),
     /// The back button left of the quick search's field: closes it, as Esc.

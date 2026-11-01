@@ -16,7 +16,7 @@ use crate::clipboard::store::{ITEMS_STEP, MAX_ITEMS, MIN_ITEMS};
 use crate::config::{
     ArrangeHotkey, ClipHotkey, ClipboardSettings, DISK_WARN_RANGE, DevicesHotkey, NotchFill,
     NotifSettings, OpenMode, RAM_WARN_RANGE, SHOT_SECS_RANGE, ScreenshotSettings, SearchHotkey,
-    ShotIgnore, ShotTool, Style,
+    ShotIgnore, ShotTool, Style, ToastStyle,
 };
 use crate::i18n::{
     Key, Lang, text, update_available, update_downloading, update_installed, version_label,
@@ -452,6 +452,8 @@ pub enum Hit {
     ShotSecs(i32),
     /// "Alat screenshot" (Vale / Snipping Tool).
     ShotTool(ShotTool),
+    /// "Notifikasi saat notch dipakai" (Ringkas / Penuh).
+    NotifToastStyle(ToastStyle),
     /// "Tombol PrtSc membuka screenshot Vale".
     ShotPrintScreen,
     Battery(i32),
@@ -607,6 +609,7 @@ pub enum Group {
     /// The own-shortcut form's Jenis.
     TileKind,
     ShotTool,
+    NotifToastStyle,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -3374,10 +3377,29 @@ fn notifications_card(b: &mut Builder, s: &State) {
     b.eyebrow(Key::SecNotifications, b.g.content_w - 4.0);
     let c = s.notif;
     let shown = s.muted.len().max(1);
-    let card = b.card((6 + shown) as f32 * ROW_H);
-    let row = |i: usize| card.y + i as f32 * ROW_H;
+    let card = b.card((7 + shown) as f32 * ROW_H);
+    // Row 0 is "Notifikasi saat notch dipakai"; the numbers below count
+    // from the history rows that follow it.
+    let style_y = card.y;
+    let row = |i: usize| card.y + (i + 1) as f32 * ROW_H;
     let cy = |y: f32| y + ROW_H / 2.0;
     let on = c.record;
+
+    let items = vec![
+        (
+            Hit::NotifToastStyle(ToastStyle::Compact),
+            b.t(Key::NotifToastCompact),
+        ),
+        (
+            Hit::NotifToastStyle(ToastStyle::Full),
+            b.t(Key::NotifToastFull),
+        ),
+    ];
+    let selected = index_of(ToastStyle::ALL, &c.toast_style);
+    let x = b.segmented(Group::NotifToastStyle, b.g.right, cy(style_y), items, selected);
+    let desc = Some((b.t(Key::NotifToastStyleDesc), Tone::Secondary));
+    b.row_text(card, style_y, b.t(Key::NotifToastStyle), desc, false, x);
+    b.divider(card, row(0));
 
     let x = b.toggle(Hit::NotifRecord, b.g.right, cy(row(0)), on);
     let desc = Some((b.t(Key::NotifRecordDesc), Tone::Secondary));
