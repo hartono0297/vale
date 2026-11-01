@@ -144,9 +144,39 @@ pub struct Pose {
     pub tilt_deg: f32,
     /// The face's marks slide further across the head, in dip.
     pub eye_dx_dip: f32,
+    /// The dance's nod: the whole cat moves down, in dip (0 is at rest).
+    pub nod_dip: f32,
+    /// The nod's squash, 0 to 1: width grows by `SQUASH_W` of it, height
+    /// shrinks by `SQUASH_H`, around the head's base centre.
+    pub squash: f32,
+    /// The music note's marks move further, in dip (negative is up). Set by
+    /// the renderer from `note_rise` once it knows how much room the shape
+    /// leaves above the note (`note_lift_dip`); never by `dance`.
+    pub note_dy_dip: f32,
+    /// 0 is a fully visible note, 1 is gone: the marks' alpha is `1 - note_fade`.
+    pub note_fade: f32,
+    /// The dance is on (`dance` sets it): the renderer then clamps the note
+    /// inside the shape. Off, every field above stays as it was.
+    pub dancing: bool,
+    /// How far through its rise the note is, 0 to 1 (`note_phase`).
+    pub note_rise: f32,
 }
 
 impl Pose {
+    /// The dancing pose: nod and squash by `amount` (0 to 1), the note
+    /// `note_rise` of the way up (0 to 1) and faded by `note_fade`.
+    pub fn dance(self, amount: f32, note_rise: f32, note_fade: f32) -> Pose {
+        let amount = if amount.is_nan() { 0.0 } else { amount.clamp(0.0, 1.0) };
+        Pose {
+            nod_dip: NOD_MAX_DIP * amount,
+            squash: amount,
+            note_fade: note_fade.clamp(0.0, 1.0),
+            dancing: true,
+            note_rise: note_rise.clamp(0.0, 1.0),
+            ..self
+        }
+    }
+
     /// The cat looking `v` of the way to the right edge (-1 to 1; negative
     /// to the left): 0 is the pose as it has always been.
     pub fn looking(self, v: f32) -> Pose {
@@ -695,14 +725,28 @@ impl RobotPainter {
         }
         let face = face(expr, pose.blink);
         let k = area.w / GRID;
-        // The look turns and slides the whole cat; its marks slide a little further.
-        let local = Matrix3x2::rotation_around(face.tilt + pose.tilt_deg, Vector2::new(32.0, 40.0))
+        // The look turns and slides the whole cat; its marks slide a little
+        // further. The dance's squash comes first (in the grid, round the
+        // head's base), its nod goes with the placement (in dip).
+        let (ox, oy) = SQUASH_ORIGIN;
+        let (sx, sy) = (1.0 + SQUASH_W * pose.squash, 1.0 - SQUASH_H * pose.squash);
+        let squash = Matrix3x2 {
+            M11: sx,
+            M12: 0.0,
+            M21: 0.0,
+            M22: sy,
+            M31: ox * (1.0 - sx),
+            M32: oy * (1.0 - sy),
+        };
+        let shape = squash
+            * Matrix3x2::rotation_around(face.tilt + pose.tilt_deg, Vector2::new(32.0, 40.0))
             * Matrix3x2::translation(0.0, face.bob)
-            * Matrix3x2::scale(k, k)
-            * Matrix3x2::translation(
-                area.x + pose.head_dx_dip,
-                area.y - pose.lift_px - pose.bounce_px,
-            );
+            * Matrix3x2::scale(k, k);
+        let place = Matrix3x2::translation(
+            area.x + pose.head_dx_dip,
+            area.y - pose.lift_px - pose.bounce_px + pose.nod_dip,
+        );
+        let local = shape * place;
         let color = |rgb: u32, a: f32| {
             let ch = |s: u32| ((rgb >> s) & 0xFF) as f32 / 255.0;
             D2D1_COLOR_F {
@@ -770,8 +814,17 @@ impl RobotPainter {
             }
             // 4. The face marks.
             let eyes = Matrix3x2::translation(pose.eye_dx_dip / k, 0.0) * world;
-            rt.SetTransform(&eyes);
+            // The dancing note's marks move on their own, in dip, and fade.
+            let notes = Matrix3x2::translation(pose.eye_dx_dip / k, 0.0)
+                * shape
+                * Matrix3x2::translation(0.0, pose.note_dy_dip)
+                * place
+                * previous;
+            let note_alpha = 1.0 - pose.note_fade.clamp(0.0, 1.0);
             for part in &face.parts {
+                let note = is_note(part);
+                rt.SetTransform(if note { &notes } else { &eyes });
+                let fade = if note { note_alpha } else { 1.0 };
                 match *part {
                     Part::Pill { x, y, w, h, rx, ry } => {
                         brush.SetColor(&color(look.eye_rgb(), 1.0));
@@ -785,12 +838,12 @@ impl RobotPainter {
                         );
                     }
                     Part::Dot { cx, cy, r, ink } => {
-                        brush.SetColor(&color(look.ink_rgb(ink), 1.0));
+                        brush.SetColor(&color(look.ink_rgb(ink), fade));
                         rt.FillEllipse(&circle(cx, cy, r), brush);
                     }
                     Part::Stroke(line) => {
                         if let Some(g) = self.path(Shape::Line(line)) {
-                            brush.SetColor(&color(look.ink_rgb(line.ink()), line.alpha()));
+                            brush.SetColor(&color(look.ink_rgb(line.ink()), line.alpha() * fade));
                             rt.DrawGeometry(&g, brush, line.width(), &self.round);
                         }
                     }
@@ -1225,6 +1278,145 @@ pub fn bounce_offset(elapsed: Duration) -> f32 {
 pub fn lift_offset(elapsed: Duration) -> f32 {
     let t = (elapsed.as_millis() as f32 / LIFT_MS as f32).clamp(0.0, 1.0);
     LIFT_PX * (1.0 - (1.0 - t).powi(3))
+}
+
+// ---- Dance ----
+
+/// How far the whole cat dips at the deepest nod (a level of 1), in dip.
+pub const NOD_MAX_DIP: f32 = 1.5;
+/// The nod's squash at its deepest: the width grows and the height shrinks
+/// by these fractions, around the head's base centre.
+pub const SQUASH_W: f32 = 0.04;
+pub const SQUASH_H: f32 = 0.06;
+/// The fallback beat when capture is not live: 600 ms, 100 BPM.
+pub const BEAT_MS: u64 = 600;
+/// The floating note rises and fades over this long, then starts again.
+pub const NOTE_LOOP_MS: u64 = 1_200;
+/// How far the note rises over a loop, at most, in dip.
+pub const NOTE_RISE_DIP: f32 = 3.0;
+/// The room kept between the note and the top of the shape, in dip.
+pub const NOTE_MARGIN_DIP: f32 = 0.5;
+
+/// The grid point the squash is made around: the head's base centre.
+pub const SQUASH_ORIGIN: (f32, f32) = (32.0, 54.0);
+
+/// The cat nods to the music: only the faces with the note (`Music` in the
+/// compact media view, `Sing` in the lyric view), only with the cat on, the
+/// setting on, full motion (`motion` already folds in Energy Saver), Windows'
+/// animations on, the music playing and `TIMER_EQ` running (it is the only
+/// tick that redraws). Everything else is drawn at rest.
+pub fn dance_on(
+    robot: bool,
+    cat_dance: bool,
+    motion: Motion,
+    windows_animations: bool,
+    playing: bool,
+    eq_timer_on: bool,
+    expr: Expr,
+) -> bool {
+    robot
+        && cat_dance
+        && motion.moves()
+        && windows_animations
+        && playing
+        && eq_timer_on
+        && matches!(expr, Expr::Music | Expr::Sing)
+}
+
+/// The nod for a bass `level`, 0 (rest) to 1; a level that is not a number,
+/// or is negative, is rest.
+pub fn nod_amount(level: f32) -> f32 {
+    if level.is_nan() || level <= 0.0 {
+        0.0
+    } else {
+        level.min(1.0)
+    }
+}
+
+/// The nod when capture is not live: `sin(pi * t / BEAT_MS)^2`, 0 on each
+/// beat boundary and 1 in the middle of the beat.
+pub fn fallback_beat(elapsed: Duration) -> f32 {
+    let beat = u128::from(BEAT_MS) * 1_000;
+    let t = (elapsed.as_micros() % beat) as f32 / beat as f32;
+    (std::f32::consts::PI * t).sin().powi(2)
+}
+
+/// The note `elapsed` into its loop: how far up it is (0 to 1, easing out)
+/// and how faded (0 for the first half, then linearly to 1). At the start of
+/// a loop the note is back at its rest place, fully visible.
+pub fn note_phase(elapsed: Duration) -> (f32, f32) {
+    let loop_us = u128::from(NOTE_LOOP_MS) * 1_000;
+    let p = (elapsed.as_micros() % loop_us) as f32 / loop_us as f32;
+    let rise = 1.0 - (1.0 - p).powi(3);
+    let fade = if p < 0.5 { 0.0 } else { (p - 0.5) * 2.0 };
+    (rise, fade)
+}
+
+/// The grid top of the note marks of `expr` (the top of the highest note's
+/// beam, stroke included), or `None` for a face without notes.
+pub fn notes_top(expr: Expr) -> Option<f32> {
+    // `note(x, y)`: the beam's corner is at y - 9.5, the stroke is round.
+    let top = |y: f32| y - 9.5 - Line::Note { x: 0.0, y: 0.0 }.width() / 2.0;
+    match expr {
+        Expr::Music => Some(top(13.0)),
+        Expr::Sing => Some(top(3.0).min(top(13.0))),
+        _ => None,
+    }
+}
+
+/// How far the dancing note is lifted (dip, up is positive) when the shape
+/// leaves `rest_top_room_dip` between the top of the note at rest and the top
+/// of the shape: it rises `rise` of the way up to `NOTE_RISE_DIP`, but never
+/// past `NOTE_MARGIN_DIP` from the top. With less room than the margin (the
+/// upper note of the singing cat sits above the top of a 28 to 30 dip notch
+/// at rest) it is shifted down by the shortfall instead and does not rise, so
+/// the note is never clipped. Only the dancing note is moved.
+pub fn note_lift_dip(rest_top_room_dip: f32, rise: f32) -> f32 {
+    let room = rest_top_room_dip - NOTE_MARGIN_DIP;
+    if room >= 0.0 {
+        rise.clamp(0.0, 1.0) * NOTE_RISE_DIP.min(room)
+    } else {
+        room
+    }
+}
+
+/// A mark of the floating music note: its stem and beam and its cream heads.
+/// (Only the faces with a note ever dance, so the dance fields of a `Pose`
+/// reach no other cream mark.)
+fn is_note(part: &Part) -> bool {
+    matches!(
+        part,
+        Part::Stroke(Line::Note { .. }) | Part::Dot { ink: Ink::Cream, .. }
+    )
+}
+
+/// How much room (dip) lies between the top of `expr`'s note marks and
+/// `shape_top`, for the cat drawn in `area` with the nod and squash of
+/// `pose`: the note's grid top squashed round the head's base, scaled, and
+/// moved down by the nod. Negative when the note is above the shape. `None`
+/// for a face without notes.
+pub fn note_top_room(expr: Expr, pose: Pose, area: Rect, shape_top: f32) -> Option<f32> {
+    let top = notes_top(expr)?;
+    let k = area.w / GRID;
+    let squashed = SQUASH_ORIGIN.1 + (top - SQUASH_ORIGIN.1) * (1.0 - SQUASH_H * pose.squash);
+    let y = area.y - pose.lift_px - pose.bounce_px + pose.nod_dip + squashed * k;
+    Some(y - shape_top)
+}
+
+/// `pose` with the dancing note placed for a shape whose top is `shape_top`
+/// (`note_lift_dip` for the room the cat has above its note). A pose that is
+/// not dancing, or a face without notes, comes back as it is.
+pub fn with_note_lift(pose: Pose, expr: Expr, area: Rect, shape_top: f32) -> Pose {
+    if !pose.dancing {
+        return pose;
+    }
+    match note_top_room(expr, pose, area, shape_top) {
+        Some(room) => Pose {
+            note_dy_dip: -note_lift_dip(room, pose.note_rise),
+            ..pose
+        },
+        None => pose,
+    }
 }
 
 // ---- The robot's state ----
@@ -2187,5 +2379,202 @@ mod tests {
             should_greet(None, now(27, 8, 0), GreetSettings { robot: false, ..on }),
             None
         );
+    }
+
+    #[test]
+    fn nod_amount_clamps_and_rests_on_junk() {
+        assert_eq!(nod_amount(0.0), 0.0);
+        assert_eq!(nod_amount(1.0), 1.0);
+        assert_eq!(nod_amount(0.4), 0.4);
+        assert_eq!(nod_amount(2.0), 1.0);
+        assert_eq!(nod_amount(f32::NAN), 0.0);
+        assert_eq!(nod_amount(-1.0), 0.0);
+        assert_eq!(nod_amount(f32::INFINITY), 1.0);
+        assert_eq!(nod_amount(f32::NEG_INFINITY), 0.0);
+    }
+
+    #[test]
+    fn the_fallback_beat_is_a_600_ms_swell() {
+        let at = |ms: u64| fallback_beat(Duration::from_millis(ms));
+        assert_eq!(at(0), 0.0);
+        assert!(at(600) < 1e-6, "{}", at(600));
+        assert!(at(1_200) < 1e-6);
+        assert!((at(300) - 1.0).abs() < 1e-6);
+        assert!((at(900) - 1.0).abs() < 1e-6);
+        // Rises to mid-beat, falls after it, and repeats.
+        assert!(at(100) < at(200) && at(200) < at(300));
+        assert!(at(400) > at(500));
+        assert!((at(150) - at(750)).abs() < 1e-5);
+        for ms in (0..5_000).step_by(7) {
+            let v = at(ms);
+            assert!((0.0..=1.0).contains(&v), "{ms} ms: {v}");
+        }
+    }
+
+    #[test]
+    fn the_note_loops_every_1200_ms_rising_then_fading() {
+        let at = |ms: u64| note_phase(Duration::from_millis(ms));
+        assert_eq!(at(0), (0.0, 0.0), "back at its rest place, fully visible");
+        let (rise, fade) = at(1_199);
+        assert!(rise > 0.999 && fade > 0.99, "{rise} {fade}");
+        // Periodic: the loop starts again.
+        assert_eq!(at(1_200), (0.0, 0.0));
+        assert_eq!(at(2_400 + 300), at(300));
+        // Rises all the way (easing out), faded only in the second half.
+        let mut last = 0.0;
+        for ms in (0..1_200).step_by(10) {
+            let (rise, fade) = at(ms);
+            assert!(rise >= last, "{ms} ms");
+            last = rise;
+            assert!((0.0..=1.0).contains(&rise) && (0.0..=1.0).contains(&fade));
+            assert_eq!(fade == 0.0, ms <= 600, "{ms} ms: {fade}");
+        }
+        // Ease out: more than half way up by the half loop.
+        assert!(at(600).0 > 0.5);
+        assert!((at(900).1 - 0.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn the_note_rises_only_as_far_as_the_room_allows() {
+        // Plenty of room: rises the full way, in proportion to `rise`.
+        assert_eq!(note_lift_dip(10.0, 0.0), 0.0);
+        assert_eq!(note_lift_dip(10.0, 1.0), NOTE_RISE_DIP);
+        assert_eq!(note_lift_dip(10.0, 0.5), NOTE_RISE_DIP / 2.0);
+        // Exactly the rise plus the margin.
+        assert_eq!(note_lift_dip(NOTE_RISE_DIP + NOTE_MARGIN_DIP, 1.0), 3.0);
+        // A small room caps it, leaving the margin.
+        let lift = note_lift_dip(2.1, 1.0);
+        assert!((lift - 1.6).abs() < 1e-6, "{lift}");
+        assert!((note_lift_dip(2.1, 0.5) - 0.8).abs() < 1e-6);
+        // Exactly the margin: no room to rise.
+        assert_eq!(note_lift_dip(NOTE_MARGIN_DIP, 1.0), 0.0);
+        // Less than the margin (or above the shape): shifted down by the
+        // shortfall, and it does not rise whatever `rise` is.
+        for rise in [0.0, 0.5, 1.0] {
+            assert_eq!(note_lift_dip(0.0, rise), -NOTE_MARGIN_DIP);
+            assert!((note_lift_dip(-2.0, rise) + 2.5).abs() < 1e-6);
+        }
+        // A rise outside 0..=1 is clamped.
+        assert_eq!(note_lift_dip(10.0, 2.0), NOTE_RISE_DIP);
+        assert_eq!(note_lift_dip(10.0, -1.0), 0.0);
+    }
+
+    #[test]
+    fn the_notes_top_is_the_top_of_the_note_marks() {
+        use super::mark_bounds;
+        for expr in Expr::ALL {
+            let top = notes_top(expr);
+            let notes: Vec<f32> = face(expr, false)
+                .parts
+                .iter()
+                .filter(|p| is_note(p))
+                .map(|p| mark_bounds(p).1)
+                .collect();
+            match top {
+                Some(t) => {
+                    assert!(matches!(expr, Expr::Music | Expr::Sing), "{expr:?}");
+                    let lowest = notes.iter().cloned().fold(f32::MAX, f32::min);
+                    assert!((t - lowest).abs() < 1e-5, "{expr:?}: {t} vs {lowest}");
+                }
+                None => {
+                    // No note marks, except Think's cream dots (not a note).
+                    assert!(
+                        notes.is_empty() || expr == Expr::Think,
+                        "{expr:?} has notes"
+                    );
+                }
+            }
+        }
+        // The singing cat's upper note sits above the top of the grid.
+        assert!(notes_top(Expr::Sing).unwrap() < 0.0);
+        assert!(notes_top(Expr::Music).unwrap() > 0.0);
+    }
+
+    #[test]
+    fn the_cat_dances_only_where_every_condition_holds() {
+        // Every Motion, saver, animations off, paused, timer off, every Expr.
+        for motion in [Motion::Full, Motion::Saver, Motion::Off] {
+            for saver in [false, true] {
+                let effective = motion.effective(saver);
+                for expr in Expr::ALL {
+                    let on = dance_on(true, true, effective, true, true, true, expr);
+                    let want = motion == Motion::Full
+                        && !saver
+                        && matches!(expr, Expr::Music | Expr::Sing);
+                    assert_eq!(on, want, "{motion:?} saver {saver} {expr:?}");
+                }
+            }
+        }
+        let all = |robot, dance, anim, playing, timer| {
+            dance_on(robot, dance, Motion::Full, anim, playing, timer, Expr::Music)
+        };
+        assert!(all(true, true, true, true, true));
+        assert!(!all(false, true, true, true, true), "cat off");
+        assert!(!all(true, false, true, true, true), "setting off");
+        assert!(!all(true, true, false, true, true), "Windows animations off");
+        assert!(!all(true, true, true, false, true), "paused");
+        assert!(!all(true, true, true, true, false), "timer off");
+        assert!(dance_on(true, true, Motion::Full, true, true, true, Expr::Sing));
+        assert!(!dance_on(true, true, Motion::Full, true, true, true, Expr::Happy));
+    }
+
+    #[test]
+    fn a_pose_without_the_dance_is_the_pose_as_it_was() {
+        let rest = Pose::default();
+        assert_eq!(
+            (rest.nod_dip, rest.squash, rest.note_dy_dip, rest.note_fade),
+            (0.0, 0.0, 0.0, 0.0)
+        );
+        assert!(!rest.dancing);
+        let area = Rect {
+            x: 10.0,
+            y: 1.0,
+            w: 26.0,
+            h: 26.0,
+        };
+        // Not dancing: the renderer's note placement leaves it alone.
+        assert_eq!(with_note_lift(rest, Expr::Sing, area, 0.0), rest);
+        // The dance sets the nod, the squash and the note, and nothing else.
+        let p = Pose::default().dance(1.0, 0.5, 0.3);
+        assert_eq!((p.nod_dip, p.squash), (NOD_MAX_DIP, 1.0));
+        assert_eq!((p.note_rise, p.note_fade, p.dancing), (0.5, 0.3, true));
+        assert_eq!((p.lift_px, p.head_dx_dip, p.blink), (0.0, 0.0, false));
+        let half = Pose::default().dance(0.5, 0.0, 0.0);
+        assert_eq!((half.nod_dip, half.squash), (NOD_MAX_DIP / 2.0, 0.5));
+        let junk = Pose::default().dance(f32::NAN, 0.0, 0.0);
+        assert_eq!((junk.nod_dip, junk.squash), (0.0, 0.0));
+        // A face without a note gets no note offset.
+        assert_eq!(with_note_lift(p, Expr::Happy, area, 0.0), p);
+    }
+
+    #[test]
+    fn a_dancing_note_is_placed_inside_the_shape() {
+        // A 28 dip tall notch: the cat's 26 px slot is 1 px from the top.
+        let area = Rect {
+            x: 10.0,
+            y: 1.0,
+            w: 26.0,
+            h: 26.0,
+        };
+        for expr in [Expr::Music, Expr::Sing] {
+            let top = notes_top(expr).unwrap();
+            for amount in [0.0, 1.0] {
+                for rise in [0.0, 0.5, 1.0] {
+                    let p = with_note_lift(
+                        Pose::default().dance(amount, rise, 0.0),
+                        expr,
+                        area,
+                        0.0,
+                    );
+                    let k = area.w / GRID;
+                    let squashed = 54.0 + (top - 54.0) * (1.0 - SQUASH_H * p.squash);
+                    let y = area.y + p.nod_dip + squashed * k + p.note_dy_dip;
+                    assert!(
+                        y >= NOTE_MARGIN_DIP - 1e-4,
+                        "{expr:?} amount {amount} rise {rise}: top at {y}"
+                    );
+                }
+            }
+        }
     }
 }

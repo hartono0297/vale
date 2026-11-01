@@ -907,6 +907,8 @@ keys! {
         "Two eyes when the pointer nears it over a window";
     CatPeekBehind => "Mati selama \u{201C}Di belakang jendela\u{201D} menyala",
         "Off while \u{201C}Stay behind windows\u{201D} is on";
+    CatDance => "Joget ikut musik", "Dance to music";
+    CatDanceDesc => "Mengangguk ikut irama saat musik diputar", "Nods to the beat while music plays";
     CatGreeting => "Sapaan", "Greeting";
 }
 

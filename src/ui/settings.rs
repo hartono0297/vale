@@ -142,6 +142,8 @@ pub enum Action {
     CatAccessory(CatAccessory),
     CatFollow(bool),
     NotchPeek(bool),
+    /// "Joget ikut musik".
+    CatDance(bool),
     /// Settings → Clipboard.
     ClipEnabled(bool),
     ClipItems(u32),
@@ -332,6 +334,7 @@ pub struct Model {
     pub cat_accessory: CatAccessory,
     pub cat_follow: bool,
     pub notch_peek: bool,
+    pub cat_dance: bool,
     pub battery_threshold: u8,
     pub disk_warn_gb: u32,
     pub ram_warn_percent: u8,
@@ -391,6 +394,7 @@ impl Model {
             cat_accessory: cfg.cat_accessory,
             cat_follow: cfg.cat_follow_pointer,
             notch_peek: cfg.notch_peek,
+            cat_dance: cfg.cat_dance,
             battery_threshold: cfg.battery_threshold,
             disk_warn_gb: cfg.disk_warn_gb,
             ram_warn_percent: cfg.ram_warn_percent,
@@ -1232,6 +1236,7 @@ impl Settings {
             cat_accessory: m.cat_accessory,
             cat_follow: m.cat_follow,
             notch_peek: m.notch_peek,
+            cat_dance: m.cat_dance,
             cat_face: self.cat_face,
             scroll: self.scroll,
             lyrics: m.lyrics,
@@ -1470,6 +1475,10 @@ impl Settings {
         if old.notch_peek != new.notch_peek {
             self.anims
                 .slide_toggle(Hit::NotchPeek, old.notch_peek, new.notch_peek, now);
+        }
+        if old.cat_dance != new.cat_dance {
+            self.anims
+                .slide_toggle(Hit::CatDance, old.cat_dance, new.cat_dance, now);
         }
         if old.greeting != new.greeting {
             self.anims
@@ -1852,6 +1861,7 @@ impl Settings {
             Hit::CatAccessory(v) if v != m.cat_accessory => post(Action::CatAccessory(v)),
             Hit::CatFollow => post(Action::CatFollow(!m.cat_follow)),
             Hit::NotchPeek => post(Action::NotchPeek(!m.notch_peek)),
+            Hit::CatDance => post(Action::CatDance(!m.cat_dance)),
             // The base color is picked in Tampilan; no second picker here.
             Hit::CatBackdrop => vec![After::Section(Section::Appearance)],
             // The preview's face: window state only, nothing is saved.
@@ -3175,6 +3185,7 @@ pub fn run_demo(args: &[String]) {
             Action::CatAccessory(v) => m.cat_accessory = v,
             Action::CatFollow(v) => m.cat_follow = v,
             Action::NotchPeek(v) => m.notch_peek = v,
+            Action::CatDance(v) => m.cat_dance = v,
             Action::ClipEnabled(v) => m.clip.enabled = v,
             Action::ClipItems(v) => m.clip.max_items = v,
             Action::ClipPersist(v) => m.clip.persist = v,

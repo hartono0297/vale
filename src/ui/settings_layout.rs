@@ -357,6 +357,7 @@ pub enum Hit {
     CatAccessory(CatAccessory),
     /// "Ikuti kursor" and "Mengecil jadi mata".
     CatFollow,
+    CatDance,
     NotchPeek,
     /// "Ubah" beside "Latar: ...": goes to Tampilan.
     CatBackdrop,
@@ -1050,6 +1051,7 @@ pub struct State<'a> {
     pub cat_accessory: CatAccessory,
     pub cat_follow: bool,
     pub notch_peek: bool,
+    pub cat_dance: bool,
     /// The face the Kucing preview shows (window state, not saved).
     pub cat_face: CatFace,
     /// How far a section taller than the window is scrolled (clamped).
@@ -2842,10 +2844,10 @@ fn cat_motion_card(b: &mut Builder, s: &State) {
     let motion_h = wrapped_row_h(motion_desc.len());
 
     titled(b, Key::GroupMotion);
-    let card = b.card(3.0 * ROW_H + motion_h);
-    let heights = [motion_h, ROW_H, ROW_H, ROW_H];
-    let mut rows = [card.y; 4];
-    for i in 1..4 {
+    let card = b.card(4.0 * ROW_H + motion_h);
+    let heights = [motion_h, ROW_H, ROW_H, ROW_H, ROW_H];
+    let mut rows = [card.y; 5];
+    for i in 1..5 {
         rows[i] = rows[i - 1] + heights[i - 1];
     }
     let cy = |i: usize| rows[i] + heights[i] / 2.0;
@@ -2875,8 +2877,13 @@ fn cat_motion_card(b: &mut Builder, s: &State) {
     b.row_text(card, rows[2], b.t(Key::CatFollow), desc, false, x);
     b.divider(card, rows[2]);
 
+    let x = b.toggle_if(Hit::CatDance, RIGHT, cy(3), s.cat_dance, on);
+    let desc = Some((b.t(Key::CatDanceDesc), Tone::Secondary));
+    b.row_text(card, rows[3], b.t(Key::CatDance), desc, false, x);
+    b.divider(card, rows[3]);
+
     // The eyes need stay-behind off, not the cat.
-    let x = b.toggle_if(Hit::NotchPeek, RIGHT, cy(3), s.notch_peek, !s.stay_behind);
+    let x = b.toggle_if(Hit::NotchPeek, RIGHT, cy(4), s.notch_peek, !s.stay_behind);
     let desc = if s.stay_behind {
         b.t(Key::CatPeekBehind)
     } else {
@@ -2884,13 +2891,13 @@ fn cat_motion_card(b: &mut Builder, s: &State) {
     };
     b.row_text(
         card,
-        rows[3],
+        rows[4],
         b.t(Key::CatPeek),
         Some((desc, Tone::Secondary)),
         false,
         x,
     );
-    b.divider(card, rows[3]);
+    b.divider(card, rows[4]);
 }
 
 /// What Umum takes back from its gaps when its search-hotkey label wraps,
@@ -4209,6 +4216,7 @@ mod tests {
                         },
                         cat_follow: !locked,
                         notch_peek: locked,
+                        cat_dance: !locked,
                         cat_face: if locked {
                             CatFace::Sleep
                         } else {
@@ -5334,7 +5342,11 @@ mod tests {
             let hits = hit_list(&l);
             assert!(!hits.iter().any(|h| matches!(
                 h,
-                Hit::Motion(_) | Hit::RobotSleep(_) | Hit::Greeting | Hit::CatFollow
+                Hit::Motion(_)
+                    | Hit::RobotSleep(_)
+                    | Hit::Greeting
+                    | Hit::CatFollow
+                    | Hit::CatDance
             )));
             assert!(hits.contains(&Hit::NotchPeek));
             // With it on they all take clicks.
@@ -5347,7 +5359,12 @@ mod tests {
                 &Estimate,
             );
             let hits = hit_list(&l);
-            for hit in [Hit::Motion(Motion::Full), Hit::Greeting, Hit::CatFollow] {
+            for hit in [
+                Hit::Motion(Motion::Full),
+                Hit::Greeting,
+                Hit::CatFollow,
+                Hit::CatDance,
+            ] {
                 assert!(hits.contains(&hit), "{hit:?}");
             }
             // Mati: no sleep timer, so no sleep setting.

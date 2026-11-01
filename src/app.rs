@@ -408,6 +408,7 @@ pub fn run(media_log_flag: bool) {
             eq_timer: false,
             eq_capture: None,
             eq_capture_on: false,
+            dance_anchor: Instant::now(),
             outside_ms: 0,
             behind: behind::Behind::default(),
             behind_ms: 0,
@@ -669,6 +670,9 @@ struct App {
     /// `set_running` sent to it.
     eq_capture: Option<EqCapture>,
     eq_capture_on: bool,
+    /// When `TIMER_EQ` last started: the dancing cat's fallback beat and its
+    /// note loop count from here, so a dance always starts at rest.
+    dance_anchor: Instant,
     /// `TIMER_OUTSIDE`'s interval now; 0 while it does not run.
     outside_ms: u32,
     /// "Di belakang jendela": the island's place in the window order, and
@@ -1463,6 +1467,26 @@ impl App {
         // a face that looks (nothing floating beside its head).
         if spot == Spot::Idle && self.look.value() != 0.0 {
             pose = pose.looking_as(expr, self.look.value());
+        }
+        // The music cat nods to the bass (or a fixed beat when capture is not
+        // live) and its note floats up and fades, on the `TIMER_EQ` ticks.
+        let playing = self.state.media().is_some_and(|m| m.playing);
+        if robot::dance_on(
+            self.config.robot,
+            self.config.cat_dance,
+            motion,
+            self.animations,
+            playing,
+            self.eq_timer,
+            expr,
+        ) {
+            let since = now.saturating_duration_since(self.dance_anchor);
+            let amount = robot::nod_amount(
+                self.eq_bass()
+                    .unwrap_or_else(|| robot::fallback_beat(since)),
+            );
+            let (rise, fade) = robot::note_phase(since);
+            pose = pose.dance(amount, rise, fade);
         }
         Some(RobotFrame { expr, pose })
     }
@@ -3456,12 +3480,20 @@ impl App {
 
     /// `TIMER_EQ` runs only while the compact view shows playing media at a
     /// screen somebody can see: not shrunk to the eyes, not fullscreen, not
-    /// locked or with the display off. The capture thread behind the bars
-    /// runs exactly while that timer does and the setting is on.
+    /// locked or with the display off. The lyric view joins it while the cat
+    /// dances there. The capture thread behind the bars runs exactly while
+    /// that timer does and the setting is on.
     fn sync_eq(&mut self) {
         let playing = self.state.media().is_some_and(|m| m.playing);
+        let view = self.state.view();
+        let dance_wanted = self.config.robot
+            && self.config.cat_dance
+            && self.motion().moves()
+            && self.animations;
         let eq = eq_timer_wanted(
-            self.state.view() == View::MediaCompact,
+            view == View::MediaCompact,
+            view == View::MediaLyric,
+            dance_wanted,
             playing,
             self.eyes,
             self.fullscreen,
@@ -3471,6 +3503,8 @@ impl App {
             self.eq_timer = eq;
             unsafe {
                 if eq {
+                    // A dance starts at rest, the note at its place.
+                    self.dance_anchor = Instant::now();
                     SetTimer(Some(self.hwnd), TIMER_EQ, EQ_MS, None);
                 } else {
                     let _ = KillTimer(Some(self.hwnd), TIMER_EQ);
@@ -3502,6 +3536,23 @@ impl App {
                 shared.levels(),
                 shared.muted.load(Ordering::Relaxed),
             )
+        })
+    }
+
+    /// The bass band (the lowest of the five) from the real sound, for the
+    /// dancing cat: 0 while the output is muted, `None` where the bars use
+    /// the sine, that is whenever `eq_heights` would.
+    fn eq_bass(&self) -> Option<f32> {
+        if !eq_capture_wanted(self.eq_timer, self.config.eq_follow_audio) {
+            return None;
+        }
+        let shared = self.eq_capture.as_ref()?.shared();
+        shared.live.load(Ordering::Relaxed).then(|| {
+            if shared.muted.load(Ordering::Relaxed) {
+                0.0
+            } else {
+                shared.levels()[0]
+            }
         })
     }
 
@@ -4949,6 +5000,13 @@ impl App {
                 // the pointer poll and puts the look back at the centre.
                 self.refresh(now);
             }
+            SettingsAction::CatDance(on) => {
+                self.config.cat_dance = on;
+                self.save_config();
+                // `sync_eq` (from `refresh`) starts or stops `TIMER_EQ` now,
+                // and the cat is drawn at rest or dancing.
+                self.refresh(now);
+            }
             SettingsAction::NotchPeek(on) => {
                 self.config.notch_peek = on;
                 self.save_config();
@@ -6121,14 +6179,22 @@ fn rise_frame(
 
 /// `TIMER_EQ` (33 ms) runs only while the compact view shows playing media
 /// with the full notch, on a screen that is not fullscreen, locked or off.
+/// The lyric view runs it too, but only while the cat dances there
+/// (`dance_wanted`): it is the tick that redraws the nod.
 fn eq_timer_wanted(
     view_compact: bool,
+    view_lyric: bool,
+    dance_wanted: bool,
     playing: bool,
     eyes: bool,
     fullscreen: bool,
     screen_away: bool,
 ) -> bool {
-    view_compact && playing && !eyes && !fullscreen && !screen_away
+    (view_compact || (view_lyric && dance_wanted))
+        && playing
+        && !eyes
+        && !fullscreen
+        && !screen_away
 }
 
 /// The capture thread runs exactly while `TIMER_EQ` does and "Equalizer ikut
@@ -7082,9 +7148,16 @@ unsafe extern "system" fn wnd_proc(
             if is_color_set_change(lparam) {
                 on_system_theme_changed();
             }
-            // The animation switch is read again (no timer, no poll); it
-            // only matters to the next transition.
-            with_app(|app| app.animations = client_animations_on());
+            // The animation switch is read again (no timer, no poll). It
+            // matters to the next transition and to the dancing cat, so a
+            // change re-syncs the timers (`TIMER_EQ`) and redraws at once.
+            with_app(|app| {
+                let on = client_animations_on();
+                if on != app.animations {
+                    app.animations = on;
+                    app.refresh(Instant::now());
+                }
+            });
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
         WM_DESTROY => {
@@ -8117,31 +8190,53 @@ mod tests {
 
     #[test]
     fn eq_timer_runs_only_for_playing_compact_media_on_a_visible_screen() {
-        for bits in 0..32u32 {
+        // (compact, lyric, dance, playing, eyes, fullscreen, away)
+        for bits in 0..128u32 {
             let b = |n: u32| bits & (1 << n) != 0;
-            let (compact, playing, eyes, fullscreen, away) = (b(0), b(1), b(2), b(3), b(4));
-            let expect = compact && playing && !eyes && !fullscreen && !away;
+            let (compact, lyric, dance) = (b(0), b(1), b(2));
+            let (playing, eyes, fullscreen, away) = (b(3), b(4), b(5), b(6));
+            let expect = (compact || (lyric && dance)) && playing && !eyes && !fullscreen && !away;
             assert_eq!(
-                eq_timer_wanted(compact, playing, eyes, fullscreen, away),
+                eq_timer_wanted(compact, lyric, dance, playing, eyes, fullscreen, away),
                 expect,
-                "compact {compact} playing {playing} eyes {eyes} fullscreen {fullscreen} away {away}"
+                "compact {compact} lyric {lyric} dance {dance} playing {playing} eyes {eyes} fullscreen {fullscreen} away {away}"
             );
         }
-        assert!(eq_timer_wanted(true, true, false, false, false));
+        assert!(eq_timer_wanted(true, false, false, true, false, false, false));
         // Each condition alone stops it.
         assert!(
-            !eq_timer_wanted(false, true, false, false, false),
+            !eq_timer_wanted(false, false, true, true, false, false, false),
             "another view"
         );
-        assert!(!eq_timer_wanted(true, false, false, false, false), "paused");
-        assert!(!eq_timer_wanted(true, true, true, false, false), "eyes");
         assert!(
-            !eq_timer_wanted(true, true, false, true, false),
+            !eq_timer_wanted(true, false, false, false, false, false, false),
+            "paused"
+        );
+        assert!(
+            !eq_timer_wanted(true, false, false, true, true, false, false),
+            "eyes"
+        );
+        assert!(
+            !eq_timer_wanted(true, false, false, true, false, true, false),
             "fullscreen"
         );
         assert!(
-            !eq_timer_wanted(true, true, false, false, true),
+            !eq_timer_wanted(true, false, false, true, false, false, true),
             "locked or display off"
+        );
+        // The lyric view only while the cat dances there.
+        assert!(eq_timer_wanted(false, true, true, true, false, false, false));
+        assert!(
+            !eq_timer_wanted(false, true, false, true, false, false, false),
+            "lyric view without the dance"
+        );
+        assert!(
+            !eq_timer_wanted(false, true, true, false, false, false, false),
+            "lyric view, paused"
+        );
+        assert!(
+            !eq_timer_wanted(false, true, true, true, true, false, false),
+            "lyric view, shrunk to the eyes"
         );
     }
 
@@ -8152,12 +8247,12 @@ mod tests {
         assert!(!eq_capture_wanted(false, true), "no timer, no capture");
         assert!(!eq_capture_wanted(false, false));
         // End to end over every state: capture only with a running timer.
-        for bits in 0..64u32 {
+        for bits in 0..256u32 {
             let b = |n: u32| bits & (1 << n) != 0;
-            let timer = eq_timer_wanted(b(0), b(1), b(2), b(3), b(4));
-            let capture = eq_capture_wanted(timer, b(5));
-            assert_eq!(capture, timer && b(5), "{bits:06b}");
-            if !b(5) {
+            let timer = eq_timer_wanted(b(0), b(1), b(2), b(3), b(4), b(5), b(6));
+            let capture = eq_capture_wanted(timer, b(7));
+            assert_eq!(capture, timer && b(7), "{bits:08b}");
+            if !b(7) {
                 assert!(!capture, "setting off never captures");
             }
         }
