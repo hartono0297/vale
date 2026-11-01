@@ -59,22 +59,26 @@ use crate::ui::icons::Icon;
 use crate::ui::month_grid::{CellCanvas, CellLook, DayState, Filled, day_geometry, paint_day};
 use crate::ui::motion::{ease_out_cubic, page_fade_frame, panel_fade, panel_regions_wanted};
 use crate::ui::panel_layout::{
-    CLEAN_CHECK, CLEANER_READY, CLI_LINE_H, CLI_TERM_RADIUS, CLIP_RADIUS, CLIP_SCROLLBAR_W,
-    CLIP_THUMB_W, CalendarLayout, CleanFoot, CleanHead, CleanerLayout, CliHead, CliLayout,
-    ClipButton, ClipLayout, DEV_BAR_H, DevicesHead, DevicesLayout, HOUR_GUTTER, ListLayout,
-    MENU_RADIUS, MENU_ROW_RADIUS, MIXER_TRACK_H, MOLE_LOG_LINE_H, MOLE_LOG_PAD, MenuLayout,
-    MeterLayout, MixerLayout, MoleFoot, MoleLayout, NOTIF_DOT, NOTIF_RADIUS, NotifHead,
-    NotifLayout, PageLayout, PomodoroLayout, RING_STROKE, SEG_PAD, SYS_RING_STROKE, SearchLayout,
-    ShelfLayout, ShortcutsLayout, SystemHead, SystemLayout, VOLUME_HUD_H, WEEK_HEAD_H,
-    calendar_layout, cleaner_layout, cli_folder_menu, cli_layout, cli_suggestions,
-    clipboard_layout, device_shapes, devices_layout, media_panel_layout, media_progress_layout,
-    mixer_layout, mole_layout, notes_layout, notif_layout, page_dots, pomodoro_compact_layout,
-    pomodoro_compact_layout_robot, pomodoro_layout, regions, reminders_layout, search_layout,
-    shelf_card_layout, shelf_layout, shortcuts_layout, system_layout, tile_parts,
-    volume_hud_layout, waiting_strip,
+    ArrangeLayout, ArrangeShape, CLEAN_CHECK, CLEANER_READY, CLI_LINE_H, CLI_TERM_RADIUS,
+    CLIP_RADIUS, CLIP_SCROLLBAR_W, CLIP_THUMB_W, CalendarLayout, CleanFoot, CleanHead,
+    CleanerLayout, CliHead, CliLayout, ClipButton, ClipLayout, DEV_BAR_H, DevicesHead,
+    DevicesLayout, HOUR_GUTTER, ListLayout, MENU_RADIUS, MENU_ROW_RADIUS, MIXER_TRACK_H,
+    MOLE_LOG_LINE_H, MOLE_LOG_PAD, MenuLayout, MeterLayout, MixerLayout, MoleFoot, MoleLayout,
+    NOTIF_DOT, NOTIF_RADIUS, NotifHead, NotifLayout, PageLayout, PomodoroLayout, RING_STROKE,
+    SEG_PAD, SYS_RING_STROKE, SearchLayout, ShelfLayout, ShortcutsLayout, SystemHead, SystemLayout,
+    VOLUME_HUD_H, WEEK_HEAD_H, arrange_layout, calendar_layout, cleaner_layout, cli_folder_menu,
+    cli_layout, cli_suggestions, clipboard_layout, device_shapes, devices_layout,
+    media_panel_layout, media_progress_layout, mixer_layout, mole_layout, notes_layout,
+    notif_layout, page_dots, pomodoro_compact_layout, pomodoro_compact_layout_robot,
+    pomodoro_layout, regions, reminders_layout, search_layout, shelf_card_layout, shelf_layout,
+    shortcuts_layout, system_layout, tile_parts, volume_hud_layout, waiting_strip,
 };
 use crate::ui::robot::{Expr, Pose};
 use crate::ui::shelf_motion::Drawn;
+
+// Susun's page and notice are drawn in a child file.
+#[path = "render_arrange.rs"]
+pub(super) mod arrange_paint;
 
 /// A heading's line (DM Sans 600 20, 26 px) is taller than the 22 px header
 /// row: its box grows by this much above and below so the line, descenders
@@ -562,6 +566,7 @@ impl Renderer {
             };
             self.regions.devices_list = match &layout {
                 PageLayout::Devices(l) => Some(l.list),
+                PageLayout::Arrange(l) => Some(l.list),
                 _ => None,
             };
         }
@@ -737,6 +742,17 @@ impl Renderer {
                 let shapes = device_shapes(d.list, d.vetoes, d.expanded);
                 PageLayout::Devices(devices_layout(s, strip, &head, &shapes, d.scroll))
             }
+            Page::Arrange => {
+                let a = &frame.arrange;
+                let head = self.arrange_head(a);
+                let shape = ArrangeShape {
+                    picking: a.picking.is_some(),
+                    cards: a.cards.len(),
+                    saved: a.saved.len(),
+                    windows: a.windows.len(),
+                };
+                PageLayout::Arrange(arrange_layout(s, strip, &head, shape, a.scroll))
+            }
             Page::Mixer => PageLayout::Mixer(mixer_layout(
                 s,
                 strip,
@@ -801,6 +817,10 @@ impl Renderer {
             }
             PageLayout::Devices(l) => {
                 self.paint_devices(l, &frame.devices);
+                Ok(())
+            }
+            PageLayout::Arrange(l) => {
+                self.paint_arrange(l, &frame.arrange);
                 Ok(())
             }
         }

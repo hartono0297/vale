@@ -1600,6 +1600,7 @@ fn run_scenes(scenes: &[Scene]) {
                 cli: cli.view(),
                 clip: clip_view(&clips, scene.clip),
                 notif: notif_view(&notif_items, &notif_logos, scene.notif),
+                arrange: crate::ui::render::ArrangeView::default(),
                 search: SearchView {
                     query: search_query,
                     selection: (search_query.len(), search_query.len()),

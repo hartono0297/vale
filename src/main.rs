@@ -2,6 +2,7 @@
 
 mod app;
 mod arrange;
+mod arrange_overlay;
 mod arrange_win;
 mod audio;
 mod behind;

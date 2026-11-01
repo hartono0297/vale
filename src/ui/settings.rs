@@ -307,6 +307,8 @@ pub struct Model {
     pub devices_hotkey: DevicesHotkey,
     /// The chosen Devices hotkey could not be registered.
     pub devices_hotkey_failed: bool,
+    /// Registering the Susun hotkey failed (another app has it).
+    pub arrange_hotkey_failed: bool,
     /// What the PrtSc row says when the key is wanted but its hook failed.
     pub prtsc: PrtscRow,
     pub robot: bool,
@@ -365,6 +367,7 @@ impl Model {
             device_notices: cfg.device_notices,
             devices_hotkey: cfg.devices_hotkey,
             devices_hotkey_failed: false,
+            arrange_hotkey_failed: false,
             prtsc: PrtscRow::Plain,
             robot: cfg.robot,
             robot_motion: cfg.robot_animation,
@@ -1206,6 +1209,7 @@ impl Settings {
             device_notices: m.device_notices,
             devices_hotkey: m.devices_hotkey,
             devices_hotkey_failed: m.devices_hotkey_failed,
+            arrange_hotkey_failed: m.arrange_hotkey_failed,
             prtsc: m.prtsc,
             battery_threshold: m.battery_threshold,
             has_battery: self.has_battery,

@@ -579,6 +579,7 @@ mod tests {
         assert_eq!(shortcut_name(Shortcut::Go(Page::Shelf)), "GoShelf");
         assert_eq!(shortcut_name(Shortcut::Go(Page::Devices)), "GoDevices");
         assert_eq!(shortcut_name(Shortcut::Go(Page::Cli)), "GoCli");
+        assert_eq!(shortcut_name(Shortcut::Go(Page::Arrange)), "GoArrange");
         assert_eq!(
             shortcut_from_name(" goshelf "),
             Some(Shortcut::Go(Page::Shelf))
@@ -719,6 +720,7 @@ mod tests {
                 "(GoSystem)",
                 "GoDevices",
                 "(GoCli)",
+                "(GoArrange)",
                 "(Emoji)",
                 "Explorer",
                 "Calculator",
@@ -961,6 +963,36 @@ mod tests {
     }
 
     /// The default tiles (12 on) plus `own` custom tiles, all on.
+    #[test]
+    fn the_susun_jump_tile_is_off_by_default_and_an_old_config_joins_it_off() {
+        assert_eq!(Shortcut::ALL.len(), 22);
+        assert!(!Shortcut::Go(Page::Arrange).default_on());
+        // A fresh install: the tile exists but is off; the page keeps its twelve.
+        let t = ShortcutTiles::default();
+        assert!(
+            t.entries()
+                .iter()
+                .any(|(s, on)| *s == Tile::Builtin(Shortcut::Go(Page::Arrange)) && !on)
+        );
+        assert_eq!(t.shown(), 12);
+        // An old config that never heard of it (the 21 built-ins as saved,
+        // 12 of them on) gets it back off, right after Cli, and still shows 12.
+        let old: Vec<TileEntry> = ShortcutTiles::default()
+            .to_saved()
+            .into_iter()
+            .filter(|e| e.tile != "GoArrange")
+            .collect();
+        assert_eq!(old.len(), 21);
+        let t = ShortcutTiles::from_saved(&old);
+        assert_eq!(t.shown(), 12);
+        let names = names(&t);
+        let at = names
+            .iter()
+            .position(|n| n == "(GoArrange)")
+            .expect("joined off");
+        assert_eq!(names[at - 1], "(GoCli)");
+    }
+
     fn with_own(own: usize) -> ShortcutTiles {
         let mut t = ShortcutTiles::default();
         for i in 0..own {
@@ -993,19 +1025,19 @@ mod tests {
     #[test]
     fn tiles_on_past_the_twelfth_are_marked() {
         // Hand-added: 12 + 3 on, all three past the limit (the own tiles sit
-        // after the 21 built-ins, at 21, 22 and 23).
+        // after the 22 built-ins, at 22, 23 and 24).
         let t = with_own(3);
         assert_eq!(t.shown(), 15);
         let beyond: Vec<usize> = (0..t.entries().len())
             .filter(|i| t.beyond_limit(*i))
             .collect();
-        assert_eq!(beyond, [21, 22, 23]);
+        assert_eq!(beyond, [22, 23, 24]);
         assert_eq!(t.visible().len(), MAX_SHOWN);
         // An entry that is off is never "beyond"; neither is one that shows.
         let mut t = with_own(3);
-        assert!(t.toggle(21));
-        assert!(!t.beyond_limit(21));
-        assert!(t.beyond_limit(22));
+        assert!(t.toggle(22));
+        assert!(!t.beyond_limit(22));
+        assert!(t.beyond_limit(23));
         assert!(!t.beyond_limit(0));
         assert!(!t.beyond_limit(99));
     }

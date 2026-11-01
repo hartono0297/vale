@@ -1037,6 +1037,8 @@ pub struct State<'a> {
     pub devices_hotkey: DevicesHotkey,
     /// The chosen Devices hotkey could not be registered.
     pub devices_hotkey_failed: bool,
+    /// The Susun hotkey could not be registered.
+    pub arrange_hotkey_failed: bool,
     /// What the PrtSc row says when the key is wanted but its hook failed.
     pub prtsc: PrtscRow,
     pub autostart: bool,
@@ -2181,6 +2183,7 @@ fn page_key(p: Page) -> Key {
         Page::Cli => Key::PageCli,
         Page::Shortcuts => Key::PageShortcuts,
         Page::Devices => Key::PageDevices,
+        Page::Arrange => Key::PageArrange,
     }
 }
 
@@ -3853,6 +3856,7 @@ mod tests {
                             DevicesHotkey::Off
                         },
                         devices_hotkey_failed: locked,
+                        arrange_hotkey_failed: locked,
                         prtsc: if locked {
                             PrtscRow::Failed
                         } else {

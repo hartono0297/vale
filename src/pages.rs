@@ -171,6 +171,7 @@ pub fn page_name(page: Page) -> &'static str {
         Page::System => "System",
         Page::Devices => "Devices",
         Page::Cli => "Cli",
+        Page::Arrange => "Arrange",
         Page::Shortcuts => "Shortcuts",
         // Not in the order; never saved.
         Page::Search => "Search",
@@ -197,7 +198,7 @@ mod tests {
     }
 
     #[test]
-    fn default_shows_all_thirteen_pages_in_the_design_order() {
+    fn default_shows_all_fourteen_pages_in_the_design_order() {
         let p = PanelPages::default();
         assert_eq!(p.visible(), Page::ALL.to_vec());
         assert_eq!(
@@ -215,10 +216,14 @@ mod tests {
                 Page::System,
                 Page::Devices,
                 Page::Cli,
+                Page::Arrange,
                 Page::Shortcuts,
             ]
         );
-        assert_eq!(Page::ALL.len(), 13);
+        assert_eq!(Page::ALL.len(), 14);
+        assert_eq!(p.visible().len(), 14, "every page shows by default");
+        assert_eq!(page_name(Page::Arrange), "Arrange");
+        assert_eq!(page_from_name(" arrange "), Some(Page::Arrange));
         assert_eq!(page_name(Page::Devices), "Devices");
         assert_eq!(page_from_name(" devices "), Some(Page::Devices));
         assert_eq!(page_name(Page::Notifications), "Notifications");
@@ -295,6 +300,40 @@ mod tests {
     }
 
     #[test]
+    fn a_saved_order_without_arrange_gets_it_back_after_cli() {
+        // A config written before Susun: the thirteen pages, the owner's
+        // order (Cli moved to the front, Shortcuts last) and one off.
+        let mut saved: Vec<PageEntry> = Page::ALL
+            .iter()
+            .filter(|p| **p != Page::Arrange)
+            .map(|p| entry(page_name(*p), true))
+            .collect();
+        assert_eq!(saved.len(), 13);
+        let cli = saved.iter().position(|e| e.page == "Cli").unwrap();
+        let moved = saved.remove(cli);
+        saved.insert(0, moved);
+        saved[1].on = false; // Calendar off
+        let p = PanelPages::from_saved(&saved);
+        assert_eq!(p.entries().len(), 14);
+        assert_eq!(
+            p.position(Page::Arrange),
+            p.position(Page::Cli) + 1,
+            "right after Cli wherever it went"
+        );
+        assert_eq!(p.entries()[0].0, Page::Cli);
+        assert_eq!(p.entries().last().unwrap().0, Page::Shortcuts);
+        assert!(p.is_on(Page::Arrange), "and shown");
+        assert!(!p.is_on(Page::Calendar), "the rest is untouched");
+        // The default order puts it between Cli and Pintasan.
+        let plain: Vec<PageEntry> = Page::ALL
+            .iter()
+            .filter(|p| **p != Page::Arrange)
+            .map(|p| entry(page_name(*p), true))
+            .collect();
+        assert_eq!(PanelPages::from_saved(&plain).visible(), Page::ALL.to_vec());
+    }
+
+    #[test]
     fn names_round_trip_and_unknown_names_are_none() {
         for page in Page::ALL {
             assert_eq!(page_from_name(page_name(page)), Some(page));
@@ -317,7 +356,7 @@ mod tests {
         reversed.reverse();
         assert_eq!(order, reversed);
         assert!(!p.is_on(Page::Shortcuts));
-        assert_eq!(p.visible().first(), Some(&Page::Cli));
+        assert_eq!(p.visible().first(), Some(&Page::Arrange));
         assert_eq!(PanelPages::from_saved(&p.to_saved()), p);
     }
 

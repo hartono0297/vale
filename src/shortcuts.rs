@@ -102,6 +102,7 @@ pub fn label(s: Shortcut) -> Key {
             Page::System => Key::PageSystem,
             Page::Devices => Key::PageDevices,
             Page::Cli => Key::PageCli,
+            Page::Arrange => Key::PageArrange,
             Page::Clipboard => Key::PageClipboard,
             Page::Notifications => Key::PageNotifications,
             Page::Shortcuts => Key::PageShortcuts,
@@ -125,6 +126,7 @@ pub(crate) fn page_icon(page: Page) -> Icon {
         Page::System => Icon::Chip,
         Page::Devices => Icon::Usb,
         Page::Cli => Icon::Terminal,
+        Page::Arrange => Icon::Layout,
         Page::Shortcuts => Icon::Grid,
         Page::Search => Icon::Search,
     }
@@ -319,6 +321,7 @@ mod tests {
                 (Shortcut::Go(Page::System), None),
                 (Shortcut::Go(Page::Devices), None),
                 (Shortcut::Go(Page::Cli), None),
+                (Shortcut::Go(Page::Arrange), None),
             ]
         );
     }
@@ -347,6 +350,15 @@ mod tests {
             icon(Shortcut::Go(Page::Notifications)),
             icon(Shortcut::Go(Page::Reminders))
         );
+    }
+
+    #[test]
+    fn the_susun_tile_has_its_own_layout_icon_and_label() {
+        assert_eq!(page_icon(Page::Arrange), Icon::Layout);
+        assert_ne!(Icon::Layout, Icon::Grid, "not Pintasan's icon");
+        assert_eq!(label(Shortcut::Go(Page::Arrange)), Key::PageArrange);
+        assert_eq!(icon(Shortcut::Go(Page::Arrange)), Icon::Layout);
+        assert_eq!(shortcut_action(Shortcut::Go(Page::Arrange)), None);
     }
 
     #[test]
