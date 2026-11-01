@@ -1247,4 +1247,109 @@ mod tests {
         assert!(!eyes.moving());
         assert!(!eyes.snap_to_centre());
     }
+
+    #[test]
+    fn the_typing_cat_is_eligible_under_the_same_rules_as_the_looking_one() {
+        let all = |allowed, moves, idle, shrunk, full, away, expr| {
+            look_on(allowed, moves, idle, shrunk, full, away, expr)
+        };
+        for expr in [Expr::Idle, Expr::Happy, Expr::Sad, Expr::Typing] {
+            assert!(all(true, true, true, false, false, false, Some(expr)), "{expr:?}");
+            // Every rule flipped in turn.
+            assert!(!all(false, true, true, false, false, false, Some(expr)));
+            assert!(!all(true, false, true, false, false, false, Some(expr)));
+            assert!(!all(true, true, false, false, false, false, Some(expr)));
+            assert!(!all(true, true, true, true, false, false, Some(expr)));
+            assert!(!all(true, true, true, false, true, false, Some(expr)));
+            assert!(!all(true, true, true, false, false, true, Some(expr)));
+        }
+        // No cat drawn, or a face that neither turns nor glances.
+        assert!(!all(true, true, true, false, false, false, None));
+        for expr in [Expr::Think, Expr::Sleep, Expr::Music, Expr::Sing, Expr::Wave] {
+            assert!(!all(true, true, true, false, false, false, Some(expr)), "{expr:?}");
+        }
+    }
+
+    #[test]
+    fn the_glance_target_maps_the_pointer_to_the_eyes() {
+        // A 1920 wide monitor, the notch at its centre, its eyes 17 dip down.
+        let t = |x, y| glance_target(x, y, 960.0, 0.0, 1920.0, 17.0);
+        assert_eq!(t(960.0, 17.0), (0.0, 0.0));
+        // Both monitor edges, level with the eyes.
+        assert_eq!(t(0.0, 17.0), (-1.0, 0.0));
+        assert_eq!(t(1920.0, 17.0), (1.0, 0.0));
+        // Half way across.
+        assert_eq!(t(1440.0, 17.0), (0.5, 0.0));
+        // Other monitors clamp.
+        assert_eq!(t(-3000.0, 17.0), (-1.0, 0.0));
+        assert_eq!(t(5000.0, 17.0), (1.0, 0.0));
+        // Below and above: 300 dip is the full look, either way.
+        assert_eq!(t(960.0, 17.0 + 150.0), (0.0, 0.5));
+        assert_eq!(t(960.0, 17.0 + GLANCE_SPAN_Y_DIP), (0.0, 1.0));
+        assert_eq!(t(960.0, 2000.0), (0.0, 1.0));
+        assert_eq!(t(960.0, 17.0 - 150.0), (0.0, -0.5));
+        assert_eq!(t(960.0, -2000.0), (0.0, -1.0));
+        assert_eq!(GLANCE_SPAN_Y_DIP, 300.0);
+        // NaN is the centre; a monitor with no room on a side is 0 across.
+        assert_eq!(t(f32::NAN, f32::NAN), (0.0, 0.0));
+        assert_eq!(t(f32::NAN, 17.0 + 150.0), (0.0, 0.5));
+        assert_eq!(
+            glance_target(10.0, 17.0, 960.0, 960.0, 960.0, 17.0),
+            (0.0, 0.0)
+        );
+        let (vx, vy) = glance_target(1.0, 1.0, 960.0, 0.0, 1920.0, f32::NAN);
+        assert!(vx < -0.99 && vy == 0.0, "({vx}, {vy})");
+    }
+
+    #[test]
+    fn the_glance_follows_a_moving_pointer_and_rests_after_1_2_s() {
+        let t0 = Instant::now();
+        let mut rest = GlanceRest::default();
+        // The first reading only records.
+        assert!(!rest.reading((10, 10), t0));
+        // Still, never moved: not followed.
+        assert!(!rest.reading((10, 10), t0 + ms(50)));
+        // A move is followed, wherever it is.
+        assert!(rest.reading((11, 10), t0 + ms(100)));
+        // Still for under 1.2 s: still followed.
+        assert!(rest.reading((11, 10), t0 + ms(100 + 1_199)));
+        // Still for 1.2 s or more: back to the screen.
+        assert!(!rest.reading((11, 10), t0 + ms(100 + 1_200)));
+        assert!(!rest.reading((11, 10), t0 + ms(100 + 5_000)));
+        // Moving again is followed at once, and the rest starts over.
+        assert!(rest.reading((40, 90), t0 + ms(7_000)));
+        assert!(rest.reading((40, 90), t0 + ms(7_000 + 1_000)));
+        assert!(!rest.reading((40, 90), t0 + ms(7_000 + 1_200)));
+        assert_eq!(GLANCE_REST, ms(1_200));
+        // reset forgets: the next reading only records.
+        rest.reset();
+        assert!(!rest.reading((41, 90), t0 + ms(9_000)));
+        assert!(!rest.reading((41, 90), t0 + ms(9_010)));
+        assert_eq!(rest, {
+            let mut r = GlanceRest::default();
+            r.reading((41, 90), t0 + ms(9_000));
+            r.reading((41, 90), t0 + ms(9_010));
+            r
+        });
+    }
+
+    #[test]
+    fn the_glance_eases_on_the_same_pair_as_the_eyes() {
+        let mut g = EyesLook::default();
+        assert_eq!(g.value(), (0.0, 0.0));
+        assert!(!g.moving());
+        assert!(g.set_target(1.0, -0.5));
+        assert!(g.moving());
+        g.advance(ms(120));
+        let (x, y) = g.value();
+        // One time constant covers 1 - 1/e of the way.
+        assert!((x - 0.632).abs() < 0.01 && (y + 0.316).abs() < 0.01, "({x}, {y})");
+        // A change under LOOK_EPS is ignored.
+        assert!(!g.set_target(1.0, -0.51));
+        g.advance(ms(5_000));
+        assert_eq!(g.value(), (1.0, -0.5));
+        assert!(!g.moving());
+        assert!(g.snap_to_centre());
+        assert_eq!(g.value(), (0.0, 0.0));
+    }
 }

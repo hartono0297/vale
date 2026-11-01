@@ -1460,7 +1460,16 @@ mod tests {
     ) -> (f32, f32) {
         use crate::ui::robot::{SQUASH_H, SQUASH_ORIGIN, SQUASH_W};
         let k = area.w / crate::ui::robot::GRID;
-        let gx = if mark { gx + pose.eye_dx_dip / k } else { gx };
+        // The face's own shift (the typing cat) and the glance slide the
+        // marks in the grid too, before the squash and the tilt.
+        let (gx, gy) = if mark {
+            (
+                gx + pose.eye_dx_dip / k + face.eye_shift.0 + pose.glance_x,
+                gy + face.eye_shift.1 + pose.glance_y,
+            )
+        } else {
+            (gx, gy)
+        };
         let (ox, oy) = SQUASH_ORIGIN;
         let gx = ox + (gx - ox) * (1.0 + SQUASH_W * pose.squash);
         let gy = oy + (gy - oy) * (1.0 - SQUASH_H * pose.squash);
@@ -1473,6 +1482,16 @@ mod tests {
         (
             area.x + x * k + pose.head_dx_dip,
             area.y + y * k + pose.nod_dip,
+        )
+    }
+
+    /// A grid point drawn in `area` but not turned by the face's tilt (the
+    /// typing cat's laptop and paws): scaled, then placed like the cat.
+    fn drawn_flat(area: Rect, pose: crate::ui::robot::Pose, (gx, gy): (f32, f32)) -> (f32, f32) {
+        let k = area.w / crate::ui::robot::GRID;
+        (
+            area.x + gx * k + pose.head_dx_dip,
+            area.y + gy * k + pose.nod_dip,
         )
     }
 
@@ -1634,8 +1653,10 @@ mod tests {
         use crate::theme::CatAccessory;
         use crate::ui::cat_style::accessory_corners;
         use crate::ui::robot::{EAR_STROKE, Expr, GRID, Pose, Side, ear_drawn, face, mark_bounds};
-        // Every face the idle view shows (`choose_expr`), open-eyed and blinking.
-        let faces = [Expr::Idle, Expr::Happy, Expr::Think, Expr::Sad, Expr::Sleep];
+        // Every face the idle view shows (`choose_expr`), open-eyed and
+        // blinking. Think is not one of them any more (work running gives
+        // Typing, checked by `the_typing_cat_stays_in_the_idle_island`).
+        let faces = [Expr::Idle, Expr::Happy, Expr::Sad, Expr::Sleep];
         // Every notch size the sliders give, stepped: each 10 px across and
         // 2 px down, the defaults and both ends included.
         let steps = |min: u32, max: u32, step: usize, default: u32| {
@@ -1741,6 +1762,201 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Every notch size the sliders give, stepped: each 10 px across and 2 px
+    /// down, the defaults and both ends included.
+    fn notch_sizes() -> Vec<NotchSize> {
+        let steps = |min: u32, max: u32, step: usize, default: u32| {
+            let mut v: Vec<u32> = (min..=max).step_by(step).chain([default, max]).collect();
+            v.sort_unstable();
+            v.dedup();
+            v
+        };
+        let widths = steps(NOTCH_W_MIN, NOTCH_W_MAX, 10, NOTCH_W_DEFAULT);
+        let heights = steps(NOTCH_H_MIN, NOTCH_H_MAX, 2, NOTCH_H_DEFAULT);
+        assert_eq!((widths.len(), heights.len()), (15, 9));
+        widths
+            .iter()
+            .flat_map(|&w| heights.iter().map(move |&h| NotchSize::from_px(w, h)))
+            .collect()
+    }
+
+    #[test]
+    fn the_typing_shape_grows_to_the_left_only() {
+        assert_eq!(TYPING_LEAD, 12.0);
+        for style in [Style::Pill, Style::Notch] {
+            for size in notch_sizes() {
+                let idle = shape_with_robot_sized(style, size, ShapeKind::Idle, true);
+                let typing = idle_shape_typing(style, size, true);
+                // The right edge stays; the left edge moves out by 12.
+                assert_eq!(typing.x + typing.w, idle.x + idle.w, "{style:?} {size:?}");
+                assert_eq!(typing.x, idle.x - TYPING_LEAD);
+                assert_eq!(typing.w, idle.w + TYPING_LEAD);
+                assert_eq!((typing.y, typing.h, typing.radius), (idle.y, idle.h, idle.radius));
+            }
+        }
+    }
+
+    #[test]
+    fn the_typing_lead_follows_the_shape_and_is_clamped() {
+        assert_eq!(typing_lead(190.0, 190.0), 0.0);
+        assert_eq!(typing_lead(202.0, 190.0), 12.0);
+        assert_eq!(typing_lead(196.0, 190.0), 6.0);
+        // Narrower than the notch (the eyes) and past the end (an overshoot).
+        assert_eq!(typing_lead(34.0, 190.0), 0.0);
+        assert_eq!(typing_lead(215.0, 190.0), 12.0);
+        assert_eq!(typing_lead(f32::NAN, 190.0), 0.0);
+        assert_eq!(typing_lead(190.0, f32::NAN), 0.0);
+    }
+
+    #[test]
+    fn the_robot_and_the_clock_stay_still_while_the_island_grows_left() {
+        for style in [Style::Pill, Style::Notch] {
+            for size in notch_sizes() {
+                let idle = shape_with_robot_sized(style, size, ShapeKind::Idle, true);
+                let typing = idle_shape_typing(style, size, true);
+                for clock in [true, false] {
+                    let plain = idle_layout(idle, true, clock);
+                    // The two ends and the morph points between (the eased
+                    // overshoot only moves the shape past them).
+                    for t in [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0] {
+                        let shape = lerp_shape(idle, typing, t);
+                        let lead = typing_lead(shape.w, size.w);
+                        let l = idle_layout_lead(shape, true, clock, lead);
+                        let (a, b) = (l.robot.unwrap(), plain.robot.unwrap());
+                        assert!(
+                            (a.x - b.x).abs() < 1e-3 && (a.y - b.y).abs() < 1e-3,
+                            "{style:?} {size:?} clock {clock} t {t}: robot {a:?} vs {b:?}"
+                        );
+                        if let (Some(c), Some(d)) = (l.clock, plain.clock) {
+                            assert!(
+                                (c.x - d.x).abs() < 1e-3 && (c.y - d.y).abs() < 1e-3,
+                                "{style:?} {size:?} t {t}: clock {c:?} vs {d:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        // No lead is the plain layout, so the Settings preview is unchanged.
+        let s = shape_for(Style::Notch, ShapeKind::Idle);
+        for (robot, clock) in [(true, true), (true, false), (false, true), (false, false)] {
+            assert_eq!(
+                idle_layout_lead(s, robot, clock, 0.0),
+                idle_layout(s, robot, clock)
+            );
+        }
+    }
+
+    #[test]
+    fn the_typing_cat_stays_in_the_idle_island() {
+        use crate::theme::CatAccessory;
+        use crate::ui::cat_style::{RIM_WIDTH, accessory_corners};
+        use crate::ui::robot::{
+            EAR_STROKE, Expr, HEAD, PAW_LIFT, Pose, Side, ear_drawn, face, mark_bounds,
+            typing_points,
+        };
+        // The head's outline in grid units, grown by `grow` (the Black coat's
+        // rim), and the ears' round strokes (their stroke plus `grow`) round
+        // their turned corners.
+        let outline = |f: &crate::ui::robot::Face, grow: f32| {
+            let (x, y, w, h, r) = HEAD;
+            let mut cat = Vec::new();
+            for (cx, cy, a0) in [
+                (x + r, y + r, 180.0f32),
+                (x + w - r, y + r, 270.0),
+                (x + w - r, y + h - r, 0.0),
+                (x + r, y + h - r, 90.0),
+            ] {
+                for i in 0..=8 {
+                    let a = (a0 + i as f32 * 90.0 / 8.0).to_radians();
+                    cat.push((cx + (r + grow) * a.cos(), cy + (r + grow) * a.sin()));
+                }
+            }
+            for side in [Side::Left, Side::Right] {
+                for (x, y) in ear_drawn(side, f.ears) {
+                    cat.extend((0..16).map(|i| {
+                        let a = (i as f32 * 22.5).to_radians();
+                        let r = EAR_STROKE / 2.0 + grow;
+                        (x + r * a.cos(), y + r * a.sin())
+                    }));
+                }
+            }
+            cat
+        };
+        let glances = [
+            (-1.0, -1.0),
+            (-1.0, 1.0),
+            (1.0, -1.0),
+            (1.0, 1.0),
+            (0.0, 0.0),
+        ];
+        let paws = [[0.0, 0.0], [PAW_LIFT, 0.0], [0.0, PAW_LIFT]];
+        let mut checked = 0u32;
+        for style in [Style::Pill, Style::Notch] {
+            for size in notch_sizes() {
+                let s = idle_shape_typing(style, size, true);
+                let lead = typing_lead(s.w, size.w);
+                assert_eq!(lead, TYPING_LEAD);
+                for clock in [true, false] {
+                    let l = idle_layout_lead(s, true, clock, lead);
+                    let area = l.robot.expect("the cat is drawn");
+                    for blink in [false, true] {
+                        let f = face(Expr::Typing, blink);
+                        // Everything must be inside the island and left of the
+                        // clock box.
+                        let check = |what: &str, (x, y): (f32, f32)| {
+                            assert!(
+                                shape_contains(style, s, x, y),
+                                "{style:?} {size:?} clock {clock} blink {blink} {what}: ({x}, {y}) leaves the island {s:?}"
+                            );
+                            if let Some(c) = l.clock {
+                                assert!(
+                                    x < c.x,
+                                    "{style:?} {size:?} blink {blink} {what}: ({x}, {y}) reaches the clock at {}",
+                                    c.x
+                                );
+                            }
+                        };
+                        for (vx, vy) in glances {
+                            let pose = Pose::default().glancing(vx, vy);
+                            // The head and ears, bare and with the Black rim.
+                            for grow in [0.0, RIM_WIDTH] {
+                                for p in outline(&f, grow) {
+                                    check("cat", drawn(area, &f, pose, p, false));
+                                    checked += 1;
+                                }
+                            }
+                            // Every eye's box: the pills, or the blink lines.
+                            for part in &f.parts {
+                                let (l, t, r, b) = mark_bounds(part);
+                                for p in [(l, t), (r, t), (r, b), (l, b)] {
+                                    check("eye", drawn(area, &f, pose, p, true));
+                                    checked += 1;
+                                }
+                            }
+                            // Every accessory, the glasses on the shifted and
+                            // glancing eyes.
+                            for acc in CatAccessory::ALL {
+                                for &(p, eyes) in &accessory_corners(*acc, f.ears) {
+                                    check("accessory", drawn(area, &f, pose, p, eyes));
+                                    checked += 1;
+                                }
+                            }
+                            // The laptop and the paws are not turned by the tilt.
+                            for lift in paws {
+                                for p in typing_points(lift) {
+                                    check("laptop", drawn_flat(area, pose, p));
+                                    checked += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 1_000_000, "{checked} points checked");
     }
 
     #[test]

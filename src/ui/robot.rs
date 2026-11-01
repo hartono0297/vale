@@ -2532,27 +2532,27 @@ mod tests {
             cli: Cli::None,
             ..busy
         };
-        assert_eq!(e(working), Some(Expr::Think));
+        assert_eq!(e(working), Some(Expr::Typing));
         let running = RobotInputs {
             cli: Cli::Running,
             claude_working: false,
             ..busy
         };
-        assert_eq!(e(running), Some(Expr::Think));
-        // A Mole clean thinks like a CLI command.
+        assert_eq!(e(running), Some(Expr::Typing));
+        // A Mole clean types like a CLI command.
         let mole = RobotInputs {
             cli: Cli::None,
             claude_working: false,
             mole_running: true,
             ..busy
         };
-        assert_eq!(e(mole), Some(Expr::Think));
+        assert_eq!(e(mole), Some(Expr::Typing));
         assert_eq!(
             e(RobotInputs {
                 mole_running: true,
                 ..base
             }),
-            Some(Expr::Think)
+            Some(Expr::Typing)
         );
         let low = RobotInputs {
             cli: Cli::None,
@@ -3288,5 +3288,414 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ---- The typing cat ----
+
+    #[test]
+    fn work_running_makes_the_idle_cat_type_never_think() {
+        let base = inputs(Spot::Idle);
+        let e = |i: RobotInputs| choose_expr(&i);
+        let claude = RobotInputs {
+            claude_working: true,
+            ..base
+        };
+        let cli = RobotInputs {
+            cli: Cli::Running,
+            ..base
+        };
+        let mole = RobotInputs {
+            mole_running: true,
+            ..base
+        };
+        for (what, i) in [("claude", claude), ("cli", cli), ("mole", mole)] {
+            assert_eq!(e(i), Some(Expr::Typing), "{what}");
+            // The shape wants the laptop, hovering or not (hover shows Happy).
+            assert!(typing_wanted(&i), "{what}");
+            let hover = RobotInputs { hover: true, ..i };
+            assert_eq!(e(hover), Some(Expr::Happy), "{what} hover");
+            assert!(typing_wanted(&hover), "{what} hover");
+            // A command that just ended still wins.
+            let done = RobotInputs { cli: Cli::Done, ..i };
+            let failed = RobotInputs { cli: Cli::Failed, ..i };
+            assert_eq!(e(done), Some(Expr::Happy), "{what}");
+            assert_eq!(e(failed), Some(Expr::Sad), "{what}");
+            assert!(!typing_wanted(&done) && !typing_wanted(&failed), "{what}");
+            // Media, lyric, pomodoro and notices are as they were.
+            assert_eq!(e(RobotInputs { spot: Spot::Media, ..i }), Some(Expr::Music));
+            assert_eq!(e(RobotInputs { spot: Spot::Lyric, ..i }), Some(Expr::Sing));
+            assert_eq!(e(RobotInputs { spot: Spot::Pomodoro, ..i }), Some(Expr::Focus));
+            assert_eq!(
+                e(RobotInputs {
+                    spot: Spot::Notice(NoticeSort::ClaudeWaiting),
+                    ..i
+                }),
+                Some(Expr::Alert)
+            );
+            assert!(!typing_wanted(&RobotInputs { spot: Spot::Media, ..i }), "{what}");
+        }
+        assert_eq!(e(base), Some(Expr::Idle));
+        assert!(!typing_wanted(&base));
+        // Think stays a face (the demo sheet, the Claude notice scene) but no
+        // input ever chooses it.
+        let spots = [
+            Spot::Hidden,
+            Spot::Panel,
+            Spot::Idle,
+            Spot::Pomodoro,
+            Spot::Media,
+            Spot::Lyric,
+            Spot::Notice(NoticeSort::App),
+            Spot::Notice(NoticeSort::Reminder),
+            Spot::Notice(NoticeSort::ClaudeWaiting),
+            Spot::Notice(NoticeSort::ClaudeDone),
+            Spot::Notice(NoticeSort::BatteryLow),
+            Spot::Notice(NoticeSort::MoleDone),
+        ];
+        for spot in spots {
+            for bits in 0..32u32 {
+                for cli in [Cli::None, Cli::Running, Cli::Done, Cli::Failed] {
+                    let i = RobotInputs {
+                        spot,
+                        hover: bits & 1 != 0,
+                        asleep: bits & 2 != 0,
+                        claude_working: bits & 4 != 0,
+                        cli,
+                        mole_running: bits & 8 != 0,
+                        battery_low: bits & 16 != 0,
+                    };
+                    assert_ne!(e(i), Some(Expr::Think), "{i:?}");
+                }
+            }
+        }
+        assert!(Expr::ALL.contains(&Expr::Think));
+        assert_eq!(Expr::ALL.len(), 11);
+        assert_eq!(Expr::ALL[10], Expr::Typing);
+    }
+
+    #[test]
+    fn the_typing_face_blinks_glances_and_never_turns_its_head() {
+        assert!(Expr::Typing.blinks());
+        assert!(!Expr::Typing.looks());
+        assert!(Expr::Typing.glances());
+        assert!(Expr::Typing.follows());
+        for expr in Expr::ALL {
+            assert_eq!(expr.glances(), expr == Expr::Typing, "{expr:?}");
+            assert_eq!(expr.follows(), expr.looks() || expr.glances(), "{expr:?}");
+            if expr != Expr::Typing {
+                assert_eq!(face(expr, false).eye_shift, (0.0, 0.0), "{expr:?}");
+            }
+        }
+        // The idle pills, shifted toward the laptop: centres (20.5, 41) and
+        // (36.5, 41); the cat leans 4 degrees; no extras, the ears at rest.
+        let open = face(Expr::Typing, false);
+        assert_eq!(open.parts, face(Expr::Idle, false).parts);
+        assert_eq!(open.eye_shift, (-3.5, 1.0));
+        assert_eq!((open.ears, open.bob, open.tilt), (Ears::default(), 0.0, -4.0));
+        let centre = |part: &Part, shift: (f32, f32)| match *part {
+            Part::Pill { x, y, w, h, .. } => (x + w / 2.0 + shift.0, y + h / 2.0 + shift.1),
+            _ => panic!("an eye is a pill"),
+        };
+        assert_eq!(centre(&open.parts[0], open.eye_shift), (20.5, 41.0));
+        assert_eq!(centre(&open.parts[1], open.eye_shift), (36.5, 41.0));
+        // A blink gives the Blink lines, shifted the same way.
+        let shut = face(Expr::Typing, true);
+        assert_eq!(shut.parts, vec![Part::Stroke(Line::Blink)]);
+        assert_eq!(shut.eye_shift, (-3.5, 1.0));
+        assert_eq!(shut.ears, Ears::default());
+        // The pose carries the glance for the eyes only.
+        let p = Pose::default().glancing(1.0, -1.0);
+        assert_eq!((p.glance_x, p.glance_y), (GLANCE_X, -GLANCE_Y));
+        assert_eq!((p.head_dx_dip, p.tilt_deg, p.eye_dx_dip), (0.0, 0.0, 0.0));
+        assert_eq!(Pose::default().glancing(0.0, 0.0), Pose::default());
+        assert_eq!(Pose::default().paw_lift, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn the_glance_maps_and_clamps() {
+        assert_eq!((GLANCE_X, GLANCE_Y, PAW_LIFT), (4.0, 1.5, 1.6));
+        assert_eq!(glance_offset(0.0, 0.0), (0.0, 0.0));
+        assert_eq!(glance_offset(1.0, 1.0), (4.0, 1.5));
+        assert_eq!(glance_offset(-1.0, -1.0), (-4.0, -1.5));
+        assert_eq!(glance_offset(0.5, -0.5), (2.0, -0.75));
+        assert_eq!(glance_offset(9.0, -9.0), (4.0, -1.5));
+        assert_eq!(glance_offset(f32::NAN, 1.0), (0.0, 1.5));
+        assert_eq!(glance_offset(1.0, f32::NAN), (4.0, 0.0));
+        assert_eq!(glance_offset(f32::INFINITY, f32::NEG_INFINITY), (4.0, -1.5));
+    }
+
+    /// The head's outline as a closed polygon in grid units (the real path's
+    /// curves sampled).
+    fn head_polygon() -> Vec<(f32, f32)> {
+        let mut points = Vec::new();
+        let mut at = (0.0f32, 0.0f32);
+        for seg in head_path() {
+            match seg {
+                Seg::Move(x, y) | Seg::Line(x, y) => {
+                    points.push((x, y));
+                    at = (x, y);
+                }
+                Seg::Quad(cx, cy, x, y) => {
+                    for i in 1..=16 {
+                        let t = i as f32 / 16.0;
+                        let u = 1.0 - t;
+                        points.push((
+                            u * u * at.0 + 2.0 * u * t * cx + t * t * x,
+                            u * u * at.1 + 2.0 * u * t * cy + t * t * y,
+                        ));
+                    }
+                    at = (x, y);
+                }
+                Seg::Cubic(..) | Seg::Close => {}
+            }
+        }
+        points
+    }
+
+    /// How far inside the polygon `p` is: negative when outside.
+    fn depth_in(poly: &[(f32, f32)], p: (f32, f32)) -> f32 {
+        let mut inside = false;
+        let mut nearest = f32::MAX;
+        for i in 0..poly.len() {
+            let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
+            if (a.1 > p.1) != (b.1 > p.1) && p.0 < (b.0 - a.0) * (p.1 - a.1) / (b.1 - a.1) + a.0 {
+                inside = !inside;
+            }
+            let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+            let len2 = dx * dx + dy * dy;
+            let t = if len2 == 0.0 {
+                0.0
+            } else {
+                (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / len2).clamp(0.0, 1.0)
+            };
+            nearest = nearest.min((p.0 - a.0 - t * dx).hypot(p.1 - a.1 - t * dy));
+        }
+        if inside { nearest } else { -nearest }
+    }
+
+    #[test]
+    fn the_glancing_eyes_stay_inside_the_head_at_every_extreme() {
+        let head = head_polygon();
+        for blink in [false, true] {
+            let f = face(Expr::Typing, blink);
+            for (vx, vy) in [
+                (-1.0, -1.0),
+                (-1.0, 1.0),
+                (1.0, -1.0),
+                (1.0, 1.0),
+                (0.0, 0.0),
+                (-1.0, 0.0),
+                (1.0, 0.0),
+                (0.0, 1.0),
+                (0.0, -1.0),
+            ] {
+                let p = Pose::default().glancing(vx, vy);
+                for part in &f.parts {
+                    let (l, t, r, b) = mark_bounds(part);
+                    let (dx, dy) = (f.eye_shift.0 + p.glance_x, f.eye_shift.1 + p.glance_y);
+                    for corner in [(l, t), (r, t), (r, b), (l, b)] {
+                        let at = (corner.0 + dx, corner.1 + dy);
+                        let depth = depth_in(&head, at);
+                        assert!(
+                            depth >= 0.5,
+                            "blink {blink} glance ({vx}, {vy}): {at:?} is only {depth} inside the head"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_paws_take_turns_with_beats_and_pauses() {
+        let mut rng = Rng::new(0x5EED_CAFE);
+        let mut paws = TypingPaws::default();
+        assert_eq!((paws.up(), paws.lift()), (None, [0.0, 0.0]));
+        let steps = 20_000u32;
+        let (mut gaps, mut moving, mut pauses) = (0u32, 0u32, 0u32);
+        let (mut clock, mut first_pause, mut last_pause) = (0u64, None, 0u64);
+        let mut last_paw = None;
+        let mut in_pause = false;
+        for _ in 0..steps {
+            let wait = paws.next(&mut rng);
+            assert!(
+                (TYPE_STEP_MIN_MS..=TYPE_STEP_MAX_MS).contains(&wait)
+                    || wait == TYPE_GAP_MS
+                    || wait == TYPE_PAUSE_MS,
+                "wait {wait}"
+            );
+            match paws.up() {
+                None => {
+                    // A pause: both paws down for 900 ms.
+                    assert_eq!(wait, TYPE_PAUSE_MS);
+                    assert_eq!(paws.lift(), [0.0, 0.0]);
+                    pauses += 1;
+                    in_pause = true;
+                    first_pause.get_or_insert(clock);
+                    last_pause = clock;
+                }
+                Some(paw) => {
+                    assert_ne!(wait, TYPE_PAUSE_MS);
+                    moving += 1;
+                    gaps += u32::from(wait == TYPE_GAP_MS);
+                    // The paw that is up alternates, across pauses too.
+                    if let Some(last) = last_paw {
+                        assert_ne!(paw, last, "the same paw twice");
+                    }
+                    last_paw = Some(paw);
+                    in_pause = false;
+                    let lift = paws.lift();
+                    match paw {
+                        Side::Left => assert_eq!(lift, [PAW_LIFT, 0.0]),
+                        Side::Right => assert_eq!(lift, [0.0, PAW_LIFT]),
+                    }
+                }
+            }
+            clock += u64::from(wait);
+        }
+        let _ = in_pause;
+        let share = f64::from(gaps) / f64::from(moving);
+        assert!((0.09..=0.15).contains(&share), "420 ms share {share}");
+        assert!(pauses > 100, "{pauses} pauses");
+        let mean = (last_pause - first_pause.unwrap()) as f64 / f64::from(pauses - 1) / 1000.0;
+        assert!((6.0..=10.0).contains(&mean), "a pause every {mean} s");
+        // The very first step lifts the left paw; reset puts both down.
+        let mut fresh = TypingPaws::default();
+        fresh.next(&mut Rng::new(7));
+        assert_eq!(fresh.up(), Some(Side::Left));
+        fresh.reset();
+        assert_eq!((fresh.up(), fresh.lift()), (None, [0.0, 0.0]));
+        assert_eq!(fresh, TypingPaws::default());
+    }
+
+    #[test]
+    fn the_paws_move_only_where_the_gate_allows() {
+        let on = |expr, motion, anim, full, away, shrunk| {
+            typing_anim_on(expr, motion, anim, full, away, shrunk)
+        };
+        assert!(on(Some(Expr::Typing), Motion::Full, true, false, false, false));
+        // Every argument flipped in turn.
+        assert!(!on(Some(Expr::Idle), Motion::Full, true, false, false, false));
+        assert!(!on(None, Motion::Full, true, false, false, false));
+        assert!(!on(Some(Expr::Typing), Motion::Full, false, false, false, false));
+        assert!(!on(Some(Expr::Typing), Motion::Full, true, true, false, false));
+        assert!(!on(Some(Expr::Typing), Motion::Full, true, false, true, false));
+        assert!(!on(Some(Expr::Typing), Motion::Full, true, false, false, true));
+        // Only full motion (Energy Saver already folded in) moves them.
+        for (motion, want) in [(Motion::Full, true), (Motion::Saver, false), (Motion::Off, false)] {
+            assert_eq!(
+                on(Some(Expr::Typing), motion, true, false, false, false),
+                want,
+                "{motion:?}"
+            );
+        }
+        assert!(!on(
+            Some(Expr::Typing),
+            Motion::Full.effective(true),
+            true,
+            false,
+            false,
+            false
+        ));
+        for expr in Expr::ALL {
+            assert_eq!(
+                on(Some(expr), Motion::Full, true, false, false, false),
+                expr == Expr::Typing,
+                "{expr:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_laptop_box_reaches_left_of_the_cat() {
+        let area = Rect {
+            x: 100.0,
+            y: 3.0,
+            w: 64.0,
+            h: 64.0,
+        };
+        let r = laptop_rect(area);
+        assert_eq!((r.x, r.w), (73.0, 36.0));
+        assert!((r.y - 30.3).abs() < 1e-4 && (r.h - 29.1).abs() < 1e-4, "{r:?}");
+        // Every laptop and paw point lies inside the box, the paws' lift and
+        // outline aside (a paw raised past the lid's top is still low).
+        for (x, y) in typing_points([0.0, 0.0]) {
+            assert!(x >= -27.0 - 1e-4 && x <= 13.8 + 1e-4, "{x}");
+            assert!(y >= 27.3 - 0.21 && y <= 56.4 + 1e-4, "{y}");
+        }
+        // The paws' lift moves their boxes up by exactly that much.
+        let rest = typing_points([0.0, 0.0]);
+        let lifted = typing_points([PAW_LIFT, 0.0]);
+        assert_eq!(rest.len(), lifted.len());
+        let moved: Vec<_> = rest
+            .iter()
+            .zip(&lifted)
+            .filter(|(a, b)| a != b)
+            .map(|(a, b)| a.1 - b.1)
+            .collect();
+        assert_eq!(moved.len(), 4);
+        assert!(moved.iter().all(|d| (d - PAW_LIFT).abs() < 1e-5));
+    }
+
+    #[test]
+    fn a_working_session_after_music_gives_a_typing_cat_that_glances() {
+        use crate::pointer_watch::{GlanceRest, LookEase, glance_target, look_allowed, look_on};
+        let t0 = Instant::now();
+        let after = Duration::from_secs(600);
+        let mut brain = Brain::new(t0);
+        brain.claude_activity("session", t0);
+        let face_at = |brain: &Brain, spot| {
+            choose_expr(&brain.inputs(spot, t0 + Duration::from_secs(5), after, Motion::Full))
+        };
+        // The reported case: the music ends, the island is idle again, and a
+        // Claude session was active: Typing, not Think (which never looked).
+        assert_eq!(face_at(&brain, Spot::Media), Some(Expr::Music));
+        let expr = face_at(&brain, Spot::Idle);
+        assert_eq!(expr, Some(Expr::Typing));
+        let allowed = look_allowed(true, true);
+        assert!(look_on(allowed, true, true, false, false, false, expr));
+        // "Ikuti kursor" off, Motion Saver (or Energy Saver), another view,
+        // shrunk, fullscreen, locked: no.
+        assert!(!look_on(look_allowed(true, false), true, true, false, false, false, expr));
+        assert!(!look_on(look_allowed(false, true), true, true, false, false, false, expr));
+        assert!(!look_on(allowed, Motion::Saver.moves(), true, false, false, false, expr));
+        assert!(!look_on(allowed, Motion::Off.moves(), true, false, false, false, expr));
+        assert!(!look_on(allowed, true, false, false, false, false, expr));
+        assert!(!look_on(allowed, true, true, true, false, false, expr));
+        assert!(!look_on(allowed, true, true, false, true, false, expr));
+        assert!(!look_on(allowed, true, true, false, false, true, expr));
+        assert!(!look_on(allowed, true, true, false, false, false, None));
+        assert!(!look_on(
+            allowed,
+            true,
+            true,
+            false,
+            false,
+            false,
+            Some(Expr::Sleep)
+        ));
+        // A moved pointer: the glance follows it and eases off zero.
+        let mut rest = GlanceRest::default();
+        assert!(!rest.reading((100, 100), t0));
+        let moved = t0 + Duration::from_millis(33);
+        assert!(rest.reading((900, 40), moved));
+        let (vx, vy) = glance_target(1500.0, 200.0, 960.0, 0.0, 1920.0, 17.0);
+        let mut glance = crate::pointer_watch::EyesLook::default();
+        assert!(glance.set_target(vx, vy));
+        glance.advance(Duration::from_millis(60));
+        let (gx, gy) = glance.value();
+        assert!(gx != 0.0 && gy != 0.0, "({gx}, {gy})");
+        let p = Pose::default().glancing(gx, gy);
+        assert!(p.glance_x > 0.0 && p.glance_y > 0.0);
+        // Without Claude, a CLI command or Mole the face is Idle: it looks
+        // (the head) exactly as before.
+        brain.claude_ended("session");
+        let idle = face_at(&brain, Spot::Idle);
+        assert_eq!(idle, Some(Expr::Idle));
+        assert!(look_on(allowed, true, true, false, false, false, idle));
+        let mut look = LookEase::default();
+        assert!(look.set_target(0.5));
+        look.advance(Duration::from_millis(60));
+        assert!(look.value() > 0.0);
     }
 }
