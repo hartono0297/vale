@@ -5818,8 +5818,6 @@ fn ms_to_next_second(remaining: Duration) -> u32 {
     }
 }
 
-/// Where the current track is now; `None` without media, a timeline or a
-/// known length.
 /// The fullscreen change to apply, if any. `reported` is what Windows says,
 /// `own_overlay_up` that Vale's own pick overlay is on screen (it counts as a
 /// fullscreen app to Windows, so nothing is learned while it is up) and
@@ -5832,6 +5830,8 @@ fn fullscreen_event(reported: bool, own_overlay_up: bool, last: bool) -> Option<
     }
 }
 
+/// Where the current track is now; `None` without media, a timeline or a
+/// known length.
 fn track_progress(state: &IslandState, now: Instant) -> Option<Progress> {
     let playing = state.media()?.playing;
     Progress::at(state.timeline(), playing, now)

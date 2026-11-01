@@ -531,13 +531,12 @@ impl App {
                 }
                 self.after_step();
             }
-            MSG_CANCEL => {
-                self.cancel_pick();
-                // A fullscreen app that took the foreground ended the pick:
-                // the island hides now, not up to a second later. The
-                // overlay is closed, so the check is real again.
-                self.check_fullscreen();
-            }
+            // No fullscreen check here: the overlay was destroyed a moment
+            // ago and Windows may still report it as a fullscreen app (as
+            // with the capture overlay), which would hide the island on a
+            // plain Esc. The next system tick reads the settled state, and a
+            // real fullscreen app that ended the pick hides the island then.
+            MSG_CANCEL => self.cancel_pick(),
             _ => {}
         }
     }

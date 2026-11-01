@@ -113,8 +113,11 @@ in `settings_layout.rs`, `--demo-arrange` in `ui/demo.rs`.
   disagree, which is why the reducer is not guarded), and `page_shown` ignores
   fullscreen while picking. A real fullscreen app mid-pick takes the
   foreground from the overlay: that posts MSG_CANCEL (armed), `cancel_pick`
-  closes the overlay and `on_arrange_msg` checks fullscreen at once, so the
-  island hides without waiting for the tick. The hover outline is not
+  closes the overlay and the next `TIMER_SYSTEM` tick hides the island.
+  `on_arrange_msg` does NOT check fullscreen right after the cancel: the
+  overlay was destroyed a moment earlier and QUNS can still say BUSY for it,
+  which would hide the island on a plain Esc (every cancel goes the same
+  way). Up to a second late for a real game is fine. The hover outline is not
   skipped: it never activates and is click-through, and covers only the work
   area; where the work area equals the monitor (auto-hiding taskbar) it is
   made 1 px shorter (`outline_area`) and it is never shown while
