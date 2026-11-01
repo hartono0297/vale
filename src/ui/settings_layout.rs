@@ -131,6 +131,11 @@ const HEADER_H: f32 = 48.0;
 const SUBHEAD_H: f32 = 32.0;
 /// The drag handle's column: a row's label starts after it.
 const GRIP_W: f32 = 28.0;
+/// A page's Dock icon in the pages card, and where it and the name start
+/// (from the card's left edge): icon, 10 dip gap, name.
+const PAGE_ICON: f32 = 18.0;
+const PAGE_ICON_X: f32 = GRIP_W + 6.0;
+const PAGE_NAME_X: f32 = PAGE_ICON_X + PAGE_ICON + 10.0;
 /// Padding above the own-shortcut form's first row.
 const FORM_PAD: f32 = 6.0;
 
@@ -876,6 +881,16 @@ pub struct Chip {
     pub label: Text,
 }
 
+/// A decorative icon in a row: never a hit target and not in the focus
+/// order. `quiet` draws it dimmed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Glyph {
+    pub rect: Rect,
+    pub icon: Icon,
+    pub tone: Tone,
+    pub quiet: bool,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Nav {
     pub section: Section,
@@ -897,6 +912,8 @@ pub struct Layout {
     pub controls: Vec<Control>,
     /// Status chips (Integrations).
     pub chips: Vec<Chip>,
+    /// Decorative icons (the pages card), drawn under the texts.
+    pub glyphs: Vec<Glyph>,
     /// The live island preview (Appearance).
     pub preview: Option<Rect>,
     /// The cat's preview card (Kucing): the cat on its surface and the idle
@@ -1778,6 +1795,16 @@ impl Builder<'_> {
         rect.x
     }
 
+    /// A decorative icon: no control, so no hit region and no focus stop.
+    fn glyph(&mut self, rect: Rect, icon: Icon, tone: Tone, quiet: bool) {
+        self.l.glyphs.push(Glyph {
+            rect,
+            icon,
+            tone,
+            quiet,
+        });
+    }
+
     /// A row's drag handle, in the column at the left of `card`.
     fn grip(&mut self, card: Rect, cy: f32, hit: Hit) {
         let rect = Rect {
@@ -2032,6 +2059,9 @@ fn scroll(l: &mut Layout, scroll: f32, g: Geom) {
     }
     for (_, r) in &mut l.fields {
         down(r);
+    }
+    for g in &mut l.glyphs {
+        down(&mut g.rect);
     }
     for r in &mut l.rows {
         down(&mut r.rect);
@@ -2356,10 +2386,17 @@ fn pages_card(b: &mut Builder, s: &State) {
     let top = card.y + HEADER_H;
     let drag = s.drag.filter(|d| d.list == List::Pages);
     let hide = b.t(Key::ListHide);
+    // `row_text` starts a name INSET right of its card's edge.
     let text_card = Rect {
-        x: card.x + GRIP_W,
-        w: card.w - GRIP_W,
+        x: card.x + PAGE_NAME_X - INSET,
+        w: card.w - (PAGE_NAME_X - INSET),
         ..card
+    };
+    let glyph_at = |cy: f32| Rect {
+        x: card.x + PAGE_ICON_X,
+        y: cy - PAGE_ICON / 2.0,
+        w: PAGE_ICON,
+        h: PAGE_ICON,
     };
     for (slot, item) in display_order(n, drag.as_ref()).into_iter().enumerate() {
         let page = shown[item];
@@ -2381,6 +2418,12 @@ fn pages_card(b: &mut Builder, s: &State) {
             },
         });
         b.grip(card, cy, Hit::PageGrip(page));
+        b.glyph(
+            glyph_at(cy),
+            crate::shortcuts::page_icon(page),
+            Tone::Secondary,
+            false,
+        );
         let x = b.icon_button(
             b.g.right,
             cy,
@@ -2421,7 +2464,13 @@ fn pages_card(b: &mut Builder, s: &State) {
                 w,
             );
             let x = b.buttons(b.g.right, y + ROW_H / 2.0, vec![button]);
-            b.row_text(card, y, b.t(page_key(*page)), None, false, x);
+            b.glyph(
+                glyph_at(y + ROW_H / 2.0),
+                crate::shortcuts::page_icon(*page),
+                Tone::Secondary,
+                true,
+            );
+            b.row_text(text_card, y, b.t(page_key(*page)), None, false, x);
         }
     }
 }
@@ -4738,6 +4787,12 @@ mod tests {
                     "{section:?} {lang:?}: {f:?}"
                 );
             }
+            for g in &l.glyphs {
+                assert!(
+                    l.cards.iter().any(|card| inside(g.rect, *card)),
+                    "{section:?} {lang:?}: {g:?} outside every card"
+                );
+            }
             for card in &l.cards {
                 assert!(inside(*card, canvas(&l)), "{section:?}: card {card:?}");
                 assert!(card.x >= SIDEBAR_W + PAD - 0.01);
@@ -4758,6 +4813,7 @@ mod tests {
                 .collect();
             boxes.extend(l.fields.iter().map(|(f, r)| (format!("{f:?}"), *r)));
             boxes.extend(l.chips.iter().map(|c| (format!("{c:?}"), c.rect)));
+            boxes.extend(l.glyphs.iter().map(|g| (format!("{g:?}"), g.rect)));
             for (i, (na, a)) in boxes.iter().enumerate() {
                 for (nb, b) in &boxes[i + 1..] {
                     assert!(!overlaps(*a, *b), "{section:?} {lang:?}: {na} / {nb}");
@@ -4992,6 +5048,9 @@ mod tests {
             }
             for chip in &l.chips {
                 within(chip.rect, "chip");
+            }
+            for g in &l.glyphs {
+                within(g.rect, &format!("{g:?}"));
             }
             for r in l.preview.iter().chain(&l.cat_preview).chain(&l.about_logo) {
                 within(*r, "picture");
@@ -6208,6 +6267,133 @@ mod tests {
             let title = text(s.lang, Key::PagesHidden).to_uppercase();
             assert_eq!(l.texts.iter().any(|t| t.text == title), !hidden.is_empty());
         }
+    }
+
+    #[test]
+    fn panel_pages_card_draws_each_pages_dock_icon_in_its_row() {
+        let mut moved = PanelPages::default();
+        moved.toggle(Page::Clipboard);
+        moved.toggle(Page::Devices);
+        moved.toggle(Page::Cli);
+        moved.move_to(Page::Shortcuts, 0);
+        let mut cases: Vec<State> = states().into_iter().take(8).collect();
+        for lang in [Lang::Id, Lang::En] {
+            cases.push(State {
+                pages: moved.clone(),
+                lang,
+                ..states()[0].clone()
+            });
+        }
+        let mut saw_hidden = false;
+        for s in &cases {
+            let l = layout(Section::Panel, s, &Estimate);
+            let shown = s.pages.visible();
+            let hidden: Vec<Page> = s
+                .pages
+                .entries()
+                .iter()
+                .filter(|(_, on)| !on)
+                .map(|(p, _)| *p)
+                .collect();
+            saw_hidden |= !hidden.is_empty();
+            let order: Vec<Page> = shown.iter().chain(hidden.iter()).copied().collect();
+            assert_eq!(l.glyphs.len(), s.pages.entries().len());
+            let icons: Vec<Icon> = l.glyphs.iter().map(|g| g.icon).collect();
+            let want: Vec<Icon> = order
+                .iter()
+                .map(|p| crate::shortcuts::page_icon(*p))
+                .collect();
+            assert_eq!(icons, want);
+            let x0 = l.glyphs[0].rect.x;
+            let mut name_x = None;
+            for (i, (g, page)) in l.glyphs.iter().zip(&order).enumerate() {
+                let is_shown = i < shown.len();
+                assert_eq!(g.quiet, !is_shown, "{page:?}");
+                assert_eq!(g.tone, Tone::Secondary);
+                assert_eq!(g.rect.x, x0, "one icon column");
+                assert_eq!((g.rect.w, g.rect.h), (PAGE_ICON, PAGE_ICON));
+                let cy = g.rect.y + g.rect.h / 2.0;
+                let name = text(s.lang, page_key(*page));
+                let t = l
+                    .texts
+                    .iter()
+                    .find(|t| {
+                        t.text == name && (t.rect.y + t.rect.h / 2.0 - cy).abs() < ROW_H / 2.0
+                    })
+                    .unwrap_or_else(|| panic!("no name for {page:?}"));
+                assert!(g.rect.x + g.rect.w <= t.rect.x, "{page:?} icon before name");
+                assert_eq!(*name_x.get_or_insert(t.rect.x), t.rect.x, "names line up");
+                let card = l
+                    .cards
+                    .iter()
+                    .find(|c| {
+                        g.rect.x >= c.x
+                            && g.rect.right() <= c.right()
+                            && g.rect.y >= c.y
+                            && g.rect.bottom() <= c.bottom()
+                    })
+                    .expect("inside a card");
+                assert_eq!(t.rect.x, card.x + PAGE_NAME_X);
+                if is_shown {
+                    let row = l
+                        .rows
+                        .iter()
+                        .find(|r| r.grip == Hit::PageGrip(*page))
+                        .expect("a row per shown page");
+                    assert!(g.rect.y >= row.rect.y && g.rect.bottom() <= row.rect.bottom());
+                    let grip = l
+                        .controls
+                        .iter()
+                        .find_map(|c| match c {
+                            Control::IconButton { hit, rect, .. }
+                                if *hit == Hit::PageGrip(*page) =>
+                            {
+                                Some(*rect)
+                            }
+                            _ => None,
+                        })
+                        .expect("a grip");
+                    assert!(g.rect.x >= grip.x + grip.w, "right of the handle");
+                } else {
+                    assert!(g.rect.y >= card.y && g.rect.bottom() <= card.bottom());
+                    assert!((cy - (t.rect.y + t.rect.h / 2.0)).abs() <= ROW_H / 2.0);
+                }
+            }
+            // Decoration only: no control carries a glyph's rect or icon.
+            for c in &l.controls {
+                if let Control::IconButton { icon, rect, .. } = c {
+                    assert!(!icons.contains(icon), "{icon:?}");
+                    assert!(l.glyphs.iter().all(|g| g.rect != *rect));
+                }
+            }
+        }
+        assert!(saw_hidden, "a case with hidden pages");
+    }
+
+    #[test]
+    fn the_icon_of_a_held_page_rides_the_lifted_row() {
+        let base = states()[0].clone();
+        let shown = base.pages.visible();
+        let icons: Vec<Icon> = shown
+            .iter()
+            .map(|p| crate::shortcuts::page_icon(*p))
+            .collect();
+        for (i, a) in icons.iter().enumerate() {
+            assert!(!icons[i + 1..].contains(a), "one icon per page");
+        }
+        let drag = held_row(&base, List::Pages, 1, 3);
+        let l = layout(
+            Section::Panel,
+            &State {
+                drag: Some(drag),
+                ..base.clone()
+            },
+            &Estimate,
+        );
+        let lifted = l.lifted.expect("the held row is raised");
+        let held = icons[1];
+        let g = l.glyphs.iter().find(|g| g.icon == held).expect("its icon");
+        assert!(g.rect.y >= lifted.y && g.rect.bottom() <= lifted.bottom());
     }
 
     #[test]
