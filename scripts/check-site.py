@@ -10,9 +10,16 @@ site/*.html it checks:
     legal table-of-contents anchors, the SVG sprite ids used by <use>);
   - the shared contract in docs/memory/site-landing.md: the same inline head
     script, style.css and site.js, and the same header and footer on every page
-    (apart from the index.html# prefix and aria-current);
+    (apart from the index.html# prefix and aria-current); the header links
+    Features and Install to (index.html)#features and #install, GitHub and the
+    Download (releases/latest/download/vale.exe); the footer links privacy.html
+    and terms.html;
+  - every page has the go-to-top target id "top" and an a.to-top[href="#top"]
+    with an aria-label, the same markup on every page;
+  - every <link rel=preload as=font> points at a .woff2 that an @font-face
+    in style.css uses;
   - every table sits in div.table-wrap[role=region][tabindex=0] with a name;
-  - .reveal sits only on h2, h3 and figure;
+  - .reveal sits only on h2, h3, figure and li.tile;
   - the notch dock on index.html has the 14 tabs of Page::ALL, in order, each
     controlling an existing panel;
   - no third-party resource is loaded (external http(s) links are listed, not
@@ -53,6 +60,8 @@ class Page(HTMLParser):
         self.in_script = False
         self.reveal = []
         self.tabs = []  # (id, aria-controls) of role=tab buttons, in order
+        self.to_top = []  # attrs of every a.to-top
+        self.preloads = []  # (href, line) of every <link rel=preload as=font>
 
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
@@ -64,8 +73,13 @@ class Page(HTMLParser):
                 self.refs.append((tag, attr, a[attr], line))
         if tag == "img" and "alt" not in a:
             problem(self.name, f"line {line}: img without alt")
-        if "reveal" in (a.get("class") or "").split() and tag not in ("h2", "h3", "figure"):
-            problem(self.name, f"line {line}: .reveal on <{tag}> (only headings and screenshots)")
+        classes = (a.get("class") or "").split()
+        if "reveal" in classes and not (tag in ("h2", "h3", "figure") or (tag == "li" and "tile" in classes)):
+            problem(self.name, f"line {line}: .reveal on <{tag}> (only headings, screenshots and li.tile)")
+        if tag == "a" and "to-top" in classes:
+            self.to_top.append(a)
+        if tag == "link" and "preload" in (a.get("rel") or "").lower().split() and (a.get("as") or "").lower() == "font":
+            self.preloads.append((a.get("href") or "", line))
         if a.get("role") == "tab":
             self.tabs.append((a.get("id"), a.get("aria-controls")))
         if tag == "table":
@@ -271,9 +285,17 @@ def main():
             problem(name, "no footer.site-footer")
         shells[name] = (normalise_shell(header or ""), normalise_shell(footer or ""))
         if header:
-            for label, frag in (("Features", "index.html#features"), ("Try the cat", "index.html#cat"), ("Install", "index.html#install")):
+            for label, frag in (("Features", "index.html#features"), ("Install", "index.html#install")):
                 if f'href="{frag}">{label}<' not in header and f'href="#{frag.split("#")[1]}">{label}<' not in header:
                     problem(name, f"header link {label!r} is not {frag}")
+            if 'href="https://github.com/hartono0297/vale">GitHub<' not in header:
+                problem(name, "header has no GitHub link to https://github.com/hartono0297/vale")
+            if not re.search(r'href="https://github\.com/hartono0297/vale/releases/latest/download/vale\.exe"[^>]*>Download<', header):
+                problem(name, "header has no Download link to releases/latest/download/vale.exe")
+        if footer:
+            for target in ("privacy.html", "terms.html"):
+                if f'href="{target}"' not in footer:
+                    problem(name, f"footer does not link {target}")
     if shells:
         ref_name = "index.html" if "index.html" in shells else next(iter(shells))
         for name, (h, f) in shells.items():
@@ -281,6 +303,32 @@ def main():
                 problem(name, f"header differs from {ref_name}")
             if f != shells[ref_name][1]:
                 problem(name, f"footer differs from {ref_name}")
+
+    # Go to top: the #top target and an a.to-top[href="#top"] with a name, the same markup everywhere.
+    top_links = {}
+    for name, page in pages.items():
+        if "top" not in page.ids:
+            problem(name, "no element with id 'top' (the go-to-top target)")
+        links = [a for a in page.to_top if a.get("href") == "#top" and (a.get("aria-label") or "").strip()]
+        if not links:
+            problem(name, 'no a.to-top[href="#top"] with an aria-label')
+        top_links[name] = region(texts[name], '<a class="to-top"', "</a>") or ""
+    if len(set(top_links.values())) > 1:
+        problem("site", "the a.to-top markup differs between pages: " + ", ".join(sorted(top_links)))
+
+    # Font preloads must point at a .woff2 that style.css actually uses in an @font-face.
+    css_text = (SITE / "style.css").read_text(encoding="utf-8") if (SITE / "style.css").is_file() else ""
+    face_urls = set()
+    for block in re.findall(r"@font-face\s*\{[^}]*\}", css_text):
+        for m in re.finditer(r"url\(\s*(['\"]?)([^)'\"]+)\1\s*\)", block):
+            face_urls.add(posixpath.normpath(m.group(2)))
+    for name, page in pages.items():
+        for href, line in page.preloads:
+            norm = posixpath.normpath(split_ref(href)[1]) if href else ""
+            if not norm.lower().endswith(".woff2"):
+                problem(name, f"line {line}: font preload {href!r} is not a .woff2")
+            elif norm not in face_urls:
+                problem(name, f"line {line}: font preload {href!r} is not used by an @font-face in style.css")
 
     # The notch dock on index.html: the 14 pages of Page::ALL (src/model.rs), in order.
     if "index.html" in pages:

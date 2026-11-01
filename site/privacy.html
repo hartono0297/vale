@@ -7,12 +7,14 @@
 <meta name="description" content="What Vale reads, stores and sends. Vale runs on your PC, has no server and no account, and connects to the internet only for the optional features listed here.">
 <link rel="icon" href="img/logo.svg" type="image/svg+xml">
 <script>(function(){var d=document.documentElement;d.classList.add('js');function f(){if(!d.classList.contains('ready'))d.classList.remove('js')}document.addEventListener('DOMContentLoaded',f);setTimeout(function(){if(!d.classList.contains('ready'))d.classList.add('reveal-off')},4000);setTimeout(f,20000);try{var t=localStorage.getItem('vale-theme');if(t==='light'||t==='dark')d.setAttribute('data-theme',t)}catch(e){}})()</script>
+<link rel="preload" href="fonts/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="style.css">
 <script src="site.js" defer></script>
 </head>
 <body>
+<span id="top" tabindex="-1"></span>
 <a class="skip" href="#main">Skip to content</a>
-<header class="site-header"><div class="nav-inner"><a class="brand" href="index.html"><img src="img/logo.svg" alt="" width="28" height="28"><span>Vale</span></a><button class="menu-btn" type="button" aria-expanded="false" aria-controls="site-nav">Menu</button><nav id="site-nav" class="site-nav" aria-label="Main"><ul><li><a href="index.html#features">Features</a></li><li><a href="index.html#cat">Try the cat</a></li><li><a href="index.html#install">Install</a></li><li><a href="privacy.html" aria-current="page">Privacy</a></li><li><a href="terms.html">Terms</a></li><li><a href="https://github.com/hartono0297/vale">GitHub</a></li></ul></nav><button class="theme-btn" type="button" hidden></button></div></header>
+<header class="site-header"><div class="nav-inner"><div class="pill pill-l"><a class="brand" href="index.html"><img src="img/logo.svg" alt="" width="28" height="28"><span class="brand-name">Vale</span></a><button class="menu-btn" type="button" aria-expanded="false" aria-controls="site-nav"><span class="menu-ico" aria-hidden="true"></span><span class="menu-label">Menu</span></button><nav id="site-nav" class="site-nav" aria-label="Main"><ul><li class="nav-more"><a href="index.html"><img src="img/logo.svg" alt="" width="24" height="24">Home</a></li><li><a href="index.html#features">Features</a></li><li><a href="index.html#install">Install</a></li><li class="nav-more"><a href="https://github.com/hartono0297/vale">GitHub</a></li><li class="nav-more nav-theme"><button class="theme-btn" type="button" hidden></button></li></ul></nav></div><div class="pill pill-r"><a class="nav-gh" href="https://github.com/hartono0297/vale">GitHub</a><button class="theme-btn" type="button" hidden></button><a class="btn-dl" href="https://github.com/hartono0297/vale/releases/latest/download/vale.exe">Download</a></div></div></header>
 <main id="main" class="legal"><article class="legal-doc">
 <h1>Privacy policy</h1>
 <p class="legal-updated">Last updated: 1 November 2026</p>
@@ -21,8 +23,8 @@
 <h2>In short</h2>
 <ul>
 <li>Vale runs on your PC. There is no Vale server and no account.</li>
-<li>Vale has no telemetry, no analytics, no crash reports and no update checker.</li>
-<li>Your data stays on your PC. The only exceptions are the opt-in connections listed in the <a href="#network">network section</a>: Google Calendar, lyrics from LRCLIB, and the web search page that opens in your browser.</li>
+<li>Vale has no telemetry, no analytics and no crash reports. Release builds check GitHub for a new version about once a day; you can turn that off.</li>
+<li>Your data stays on your PC. The only exceptions are the connections listed in the <a href="#network">network section</a>: the update check, which is on by default, and the opt-in ones: Google Calendar, lyrics from LRCLIB, and the web search page that opens in your browser.</li>
 <li>Google Calendar is off until you sign in. What Vale gets from Google goes only between your PC and Google.</li>
 </ul>
 </div>
@@ -70,7 +72,7 @@
 
 <section id="network">
 <h2>Network connections</h2>
-<p>This table lists every connection Vale makes or starts. Inside Vale, every request goes through the Windows (WinRT) <code>HttpClient</code>. Vale has no update checker, no telemetry, no analytics and no crash reporting. It does not download cover art: album covers come from the Windows media session.</p>
+<p>This table lists every connection Vale makes or starts. Inside Vale, every request goes through the Windows (WinRT) <code>HttpClient</code>. Vale has no telemetry, no analytics and no crash reporting. The only connection it makes on its own is the update check in the table, which you can turn off. It does not download cover art: album covers come from the Windows media session.</p>
 <div class="table-wrap" role="region" aria-label="Network connections" tabindex="0"><table>
 <caption>Every connection Vale makes, what it sends and when</caption>
 <thead><tr><th scope="col">Destination</th><th scope="col">What is sent</th><th scope="col">When</th></tr></thead>
@@ -80,6 +82,7 @@
 <tr><th scope="row">Google Calendar API: <code>www.googleapis.com/calendar/v3</code></th><td>Requests to list your calendars, list events, create an event in your primary calendar, and patch an existing event. Event details you type or change are included.</td><td>Only while connected.</td></tr>
 <tr><th scope="row">Web search: <code>google.com/search</code></th><td>Vale sends nothing. It opens the page in your default browser, so your browser sends the search text.</td><td>Only when you pick the web search result in Vale's search.</td></tr>
 <tr><th scope="row">Links you click</th><td>Vale sends nothing. The link opens in your default browser: the repository, Releases, or the Mole README.</td><td>Only when you click.</td></tr>
+<tr><th scope="row">Update check: <code>https://api.github.com/repos/hartono0297/vale/releases/latest</code>, and for an update <code>github.com</code> (redirected to <code>objects.githubusercontent.com</code>)</th><td>A request for the latest release, with a <code>User-Agent: Vale/&lt;version&gt;</code> header. No account or personal data is sent. When you click Update, Vale downloads <code>vale.exe</code> and <code>vale.exe.sha256</code> from the GitHub release and checks the SHA-256 before it replaces the app.</td><td>Release builds only, about once a day while <strong>Check for updates automatically</strong> (<strong>Settings &gt; About</strong>) is on. It is on by default; turn it off there. Check for updates in the tray menu or in Settings &gt; About checks once, when you choose it. The download happens only when you click Update. Debug builds never check.</td></tr>
 <tr><th scope="row">Installer: <code>api.github.com</code>, <code>github.com</code> and <code>raw.githubusercontent.com</code></th><td>The installer script (not the app) asks the GitHub API for <code>releases/latest</code>, downloads <code>vale.exe</code> and <code>vale.exe.sha256</code> from GitHub, checks the SHA-256, and fetches <code>uninstall.ps1</code> from <code>raw.githubusercontent.com</code>.</td><td>Only when you run the install command. Installing from the release zip downloads nothing.</td></tr>
 </tbody></table></div>
 </section>
@@ -165,5 +168,6 @@
 </section>
 </article></main>
 <footer class="site-footer"><div class="footer-inner"><p class="footer-brand"><img src="img/logo.svg" alt="" width="20" height="20"> Vale. © 2026 hartono0297, <a href="https://github.com/hartono0297/vale/blob/main/LICENSE">MIT licence</a>.</p><ul class="footer-links"><li><a href="privacy.html">Privacy</a></li><li><a href="terms.html">Terms</a></li><li><a href="https://github.com/hartono0297/vale">GitHub</a></li><li><a href="https://github.com/hartono0297/vale/issues">Issues</a></li></ul><p class="footer-note">Vale is not affiliated with Google or Apple.</p></div></footer>
+<a class="to-top" href="#top" aria-label="Back to top"><svg viewBox="0 0 64 64" width="30" height="30" aria-hidden="true" focusable="false"><g fill="#E2683C" stroke="#E2683C" stroke-width="5" stroke-linejoin="round"><path d="M9 37L12 10L27 26Z"/><path d="M55 37L52 10L37 26Z"/></g><path d="M7 50V41Q7 24 32 24Q57 24 57 41V50Q57 54 53 54H11Q7 54 7 50Z" fill="#E2683C"/><g fill="#17120F"><rect x="21.2" y="35" width="5.6" height="10" rx="2.8"/><rect x="37.2" y="35" width="5.6" height="10" rx="2.8"/></g></svg></a>
 </body>
 </html>

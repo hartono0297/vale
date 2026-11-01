@@ -32,6 +32,12 @@ Latin subsets embedded in `vale.exe`, both under the **SIL Open Font Licence
 
 `scripts/make-fonts.ps1` rebuilds the subsets from the pinned upstream files.
 
+**Website fonts.** The site in `site/` (not the app) uses **Geist** and
+**Geist Mono**, © The Geist Project Authors
+([github.com/vercel/geist-font](https://github.com/vercel/geist-font)), under
+the **SIL Open Font Licence 1.1**; the text is in
+[`site/fonts/OFL.txt`](site/fonts/OFL.txt).
+
 ### Rust crates
 
 Every crate Vale is built from, from `Cargo.lock` (regenerate with

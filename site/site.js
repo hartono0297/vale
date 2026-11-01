@@ -18,9 +18,11 @@
   var ICON_SUN = '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.3 5.3l1.6 1.6M17.1 17.1l1.6 1.6M5.3 18.7l1.6-1.6M17.1 6.9l1.6-1.6"/></svg>';
   var ICON_MOON = '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"/></svg>';
 
+  /* Two theme buttons: one in the right pill, one in the dropdown under the
+     Menu button (only one of them is displayed at a time). */
   function initTheme() {
-    var btn = $('.theme-btn');
-    if (!btn) return;
+    var btns = $$('.theme-btn');
+    if (!btns.length) return;
     /* Dark is the default whatever the system scheme says; only a stored or
        clicked choice of light changes it. */
     function current() {
@@ -28,20 +30,26 @@
     }
     function paint() {
       var isDark = current() === 'dark';
-      btn.setAttribute('aria-label', isDark ? 'Switch to light theme' : 'Switch to dark theme');
-      btn.innerHTML = isDark ? ICON_SUN : ICON_MOON;
+      btns.forEach(function (btn) {
+        btn.setAttribute('aria-label', isDark ? 'Switch to light theme' : 'Switch to dark theme');
+        btn.innerHTML = isDark ? ICON_SUN : ICON_MOON;
+      });
     }
-    btn.addEventListener('click', function () {
-      var next = current() === 'dark' ? 'light' : 'dark';
-      root.setAttribute('data-theme', next);
-      store('vale-theme', next);
-      paint();
+    btns.forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var next = current() === 'dark' ? 'light' : 'dark';
+        root.setAttribute('data-theme', next);
+        store('vale-theme', next);
+        paint();
+      });
+      btn.hidden = false;
     });
     paint();
-    btn.hidden = false;
   }
 
-  /* ---------- menu button (below the nav breakpoint) ---------- */
+  /* ---------- menu button (below the pill breakpoint, 48em) ----------
+     The left pill becomes a Menu button; the nav list opens under it as a
+     dropdown with Home, Features, Install, GitHub and the theme button. */
   function initMenu() {
     var btn = $('.menu-btn');
     var nav = $('#site-nav');
@@ -67,7 +75,11 @@
     doc.addEventListener('pointerdown', function (e) {
       if (isOpen() && !nav.contains(e.target) && !btn.contains(e.target)) setOpen(false, false);
     }, { passive: true });
-    var wide = window.matchMedia('(min-width: 76em)');
+    /* Tab out of the open dropdown closes it. */
+    nav.addEventListener('focusout', function (e) {
+      if (isOpen() && e.relatedTarget && !nav.contains(e.relatedTarget) && e.relatedTarget !== btn) setOpen(false, false);
+    });
+    var wide = window.matchMedia('(min-width: 48em)');
     if (wide.addEventListener) wide.addEventListener('change', function () { setOpen(false, false); });
   }
 
@@ -445,10 +457,55 @@
     function peekSize(name) {
       var vw = window.innerWidth;
       if (name === 'panel') return { w: Math.min(400, vw - 32), h: phonePeek.matches ? 64 : 128 };
+      if (name === 'music') return { w: Math.min(300, vw - 32), h: phonePeek.matches ? 45 : 36 };
       return { w: Math.min(340, vw - 32), h: 56 };
     }
+
+    /* ----- room beside the header pills -----
+       The header is fixed and always on screen, with a pill on each side of
+       the notch. A closed state wider than idle (music, panel, clipboard)
+       shows at full size only while its box, plus PILL_MARGIN on every side,
+       clears both pills. Otherwise music and clipboard keep the idle
+       footprint (.is-tight) and the panel peek shows the idle notch. The
+       pills are measured in the loop's read phase (pillFx): on start, on
+       resize, when fonts arrive, and on every frame while one of these
+       states is wanted; the decisions use the last measured boxes. */
+    var PILL_MARGIN = 8;
+    var pillEls = $$('.site-header .pill');
+    var pillBoxes = null;
+    var room = { music: false, panel: false, clipboard: false };
+    function roomFor(name) {
+      if (!pillBoxes) return false;
+      var size = peekSize(name);
+      var mid = root.clientWidth / 2;
+      var left = mid - size.w / 2 - PILL_MARGIN;
+      var right = mid + size.w / 2 + PILL_MARGIN;
+      var bottom = size.h + PILL_MARGIN;
+      for (var i = 0; i < pillBoxes.length; i++) {
+        var r = pillBoxes[i];
+        if (r.width && r.height && r.right > left && r.left < right && r.top < bottom && r.bottom > -PILL_MARGIN) return false;
+      }
+      return true;
+    }
+    var pillFx = {
+      on: function () { return copyTimer || sectionState === 'music' || sectionState === 'panel' || sectionState === 'clipboard'; },
+      read: function () {
+        pillBoxes = pillEls.map(function (el) { return el.getBoundingClientRect(); });
+        pillFx.next = { music: roomFor('music'), panel: roomFor('panel'), clipboard: roomFor('clipboard') };
+      },
+      write: function () {
+        var n = pillFx.next;
+        if (n.music === room.music && n.panel === room.panel && n.clipboard === room.clipboard) return;
+        room = n;
+        refresh();
+      }
+    };
+
     function bandBlocked(name) {
-      if (!textEls) textEls = $$(TEXT_SEL).filter(function (el) { return !notch.contains(el); });
+      if (!textEls) {
+        var header = $('.site-header');
+        textEls = $$(TEXT_SEL).filter(function (el) { return !notch.contains(el) && !(header && header.contains(el)); });
+      }
       var size = peekSize(name);
       var mid = root.clientWidth / 2;
       var left = mid - size.w / 2 - FIT_MARGIN_X;
@@ -463,14 +520,20 @@
     function peekState(name) { return name === 'panel' || name === 'clipboard'; }
     /* The state the notch shows: the 3 s copy toast first, then Susun while its
        stage is pinned, then the section's own state. The Susun section asks
-       for "arrange", which is the idle notch whenever the stage is not pinned. */
+       for "arrange", which is the idle notch whenever the stage is not pinned.
+       The panel peek needs room beside the pills and a free text band; music
+       and clipboard shrink to the idle footprint (.is-tight) without room, and
+       the clipboard section state also over text (the toast ignores text). */
     function refresh() {
       var want = copyTimer ? 'clipboard'
         : arrangeStep >= 0 ? 'arrange'
-        : (sectionState === 'arrange' || (sectionState === 'panel' && !fits)) ? 'idle'
+        : (sectionState === 'arrange' || (sectionState === 'panel' && (!fits || !room.panel))) ? 'idle'
         : sectionState;
       setState(want);
-      notch.classList.toggle('is-tight', !copyTimer && sectionState === 'clipboard' && !fits);
+      var tight = want === 'music' ? !room.music
+        : want === 'clipboard' ? (!room.clipboard || (!copyTimer && !fits))
+        : false;
+      notch.classList.toggle('is-tight', tight);
     }
     function enterSection(name) {
       sectionState = name;
@@ -500,7 +563,17 @@
         }
       }
     };
-    if (loop) loop.add(fitFx);
+    if (loop) {
+      loop.add(fitFx);
+      loop.add(pillFx);
+      /* The pills only change size with the viewport and the web font. */
+      window.addEventListener('resize', function () { pillFx.flush = true; });
+      if (doc.fonts) {
+        var repill = function () { loop.kick(pillFx); };
+        if (doc.fonts.ready) doc.fonts.ready.then(repill, function () {});
+        if (doc.fonts.addEventListener) doc.fonts.addEventListener('loadingdone', repill);
+      }
+    }
 
     /* ----- which state the section in view asks for ----- */
     var sections = $$('[data-notch]');
@@ -551,19 +624,9 @@
       loop.add(lyricFx);
     }
 
-    /* ----- copy notice ----- */
-    /* The full notice is 340 x 56 and would cover the nav and the Menu button,
-       so while any of the header is on screen the notch carries .is-compact and
-       the notice keeps the idle footprint (style.css). Without an observer it
-       stays compact everywhere. */
-    var header = $('.site-header');
-    if (header && 'IntersectionObserver' in window) {
-      new IntersectionObserver(function (entries) {
-        notch.classList.toggle('is-compact', entries[entries.length - 1].isIntersecting);
-      }).observe(header);
-    } else {
-      notch.classList.add('is-compact');
-    }
+    /* ----- copy notice -----
+       The full notice is 340 x 56; refresh() keeps it at the idle footprint
+       when it would touch a header pill (room.clipboard). */
     notchApi = {
       showCopy: function (text) {
         if (open) return;
@@ -743,8 +806,8 @@
       enterSection(sectionState);
     }
 
-    /* Hover intent: the idle notch (y 0..34) overlaps the nav row (y 6..50),
-       so a pointer sweeping along the header crosses it. The panel opens only
+    /* Hover intent: the idle notch sits between the two header pills, so a
+       pointer moving along the header from one pill to the other crosses it. The panel opens only
        once the pointer has rested on the notch for HOVER_OPEN_MS (the app's
        shelf waits OPEN_DELAY_MS = 120); any movement restarts the wait, and
        leaving cancels it. */
@@ -849,6 +912,73 @@
     };
     loop.gate(hero, fx, '100px 0px');
     loop.add(fx);
+  }
+
+  /* ---------- the header pills: transparent at the top, tinted once scrolled ----------
+     Set once at start (a reload mid-page restores the scroll position before
+     or soon after this runs) and then by the scroll loop. */
+  var SCROLLED_AT = 12;
+  function initHeader() {
+    var header = $('.site-header');
+    if (!header) return;
+    var scrolled = window.scrollY > SCROLLED_AT;
+    header.classList.toggle('is-scrolled', scrolled);
+    if (!loop) return;
+    var next = scrolled;
+    loop.add({
+      on: function () { return true; },
+      read: function () { next = window.scrollY > SCROLLED_AT; },
+      write: function () {
+        if (next === scrolled) return;
+        scrolled = next;
+        header.classList.toggle('is-scrolled', scrolled);
+      }
+    });
+  }
+
+  /* ---------- go to top ----------
+     Without script the link is always shown and is a plain #top link. With
+     script it shows (.is-shown) once the hero's bottom has left the top of
+     the viewport, or after one viewport height on pages without a hero, and
+     hides again near the top. It also hides while its box lies over a button
+     (Download, Copy), a coat or accessory choice or a footer link, so it never
+     blocks one. The list is built once. A click or Enter scrolls
+     to the top (smooth only when motion is welcome), then focuses #top
+     without scrolling, so the next Tab is the skip link; the URL keeps no #top. */
+  function initToTop() {
+    var btn = $('.to-top');
+    var target = $('#top');
+    if (!btn || !target) return;
+    btn.addEventListener('click', function (e) {
+      e.preventDefault();
+      window.scrollTo({ top: 0, left: 0, behavior: reduce.matches ? 'instant' : 'smooth' });
+      target.focus({ preventScroll: true });
+    });
+    if (!loop) { btn.classList.add('is-shown'); return; }
+    var hero = $('.hero');
+    var avoid = $$('.btn, .picker label, .site-footer a');
+    var shown = false;
+    var next = false;
+    loop.add({
+      on: function () { return true; },
+      read: function () {
+        var past = hero ? hero.getBoundingClientRect().bottom < 0 : window.scrollY > window.innerHeight;
+        var covers = false;
+        if (past) {
+          var b = btn.getBoundingClientRect();
+          for (var i = 0; i < avoid.length && !covers; i++) {
+            var r = avoid[i].getBoundingClientRect();
+            covers = r.width > 0 && r.height > 0 && r.right > b.left && r.left < b.right && r.bottom > b.top && r.top < b.bottom;
+          }
+        }
+        next = past && !covers;
+      },
+      write: function () {
+        if (next === shown) return;
+        shown = next;
+        btn.classList.toggle('is-shown', shown);
+      }
+    });
   }
 
   /* ---------- Susun: the sticky scrub ----------
@@ -993,9 +1123,9 @@
     /* A resize may flip the choice: make it now, away from the section, not
        later when a (smooth) scroll arrives there and would overrun the fix. */
     window.addEventListener('resize', function () { fx.flush = true; });
-    /* DM Sans often lands after this first measure, and its metrics can make
-       the stage taller than the fallback font did (600 x 750: +39 px). Measure
-       again once fonts are in; apply() keeps the view if the choice flips. */
+    /* Geist often lands after this first measure, and its metrics can make
+       the stage taller or shorter than the fallback font did. Measure again
+       once fonts are in; apply() keeps the view if the choice flips. */
     function refit() { vw = -1; loop.kick(fx); }
     if (doc.fonts) {
       if (doc.fonts.ready) doc.fonts.ready.then(refit, function () {});
@@ -1052,6 +1182,8 @@
   loop = safe(makeLoop);
   safe(function () { initNotch(catApi); });
   safe(initHero);
+  safe(initHeader);
+  safe(initToTop);
   safe(initSusun);
   safe(initReveal);
   /* The head script removes .js at DOMContentLoaded unless this is set (script blocked or broken). */
