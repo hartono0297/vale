@@ -572,9 +572,24 @@ pub enum MediaCommand {
     Next,
 }
 
+/// What the island knows about a caught toast when the user opens it: enough
+/// to go to where it came from (`sources::notif_open`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct OpenTarget {
+    /// The app's AppUserModelID, when Windows told it.
+    pub app_id: Option<String>,
+    /// The app's display name.
+    pub source: String,
+    /// The web site of a browser notification, when Windows gave it.
+    pub site: Option<String>,
+    pub title: String,
+    pub body: String,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Effect {
-    OpenApp(String),
+    /// Bring forward where a caught toast came from.
+    OpenTarget(OpenTarget),
     Media(MediaCommand),
     PlaySound,
     SavePomodoro(PomoSettings),

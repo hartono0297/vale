@@ -22,11 +22,12 @@ use super::App;
 use super::clip::pointer_moved;
 use crate::clipboard::image::Thumb;
 use crate::config::{self, NotifSettings};
-use crate::model::{Event, Hit, Notice, NoticeKind, NotifAction, Page, Toast, View};
+use crate::model::{Event, Hit, Notice, NoticeKind, NotifAction, OpenTarget, Page, Toast, View};
 use crate::notif::persist::{self, Saved, Write};
 use crate::notif::store::clamp_cap;
 use crate::notif::{NotifHistory, logo_key, route_toast};
 use crate::sources::notifications::{self, is_muted};
+use crate::sources::notif_open;
 use crate::ui::cli_input::{CliInput, Key as InputKey};
 use crate::ui::editor;
 use crate::ui::geometry::{ShapeKind, shape_for};
@@ -436,14 +437,21 @@ impl App {
     pub(super) fn perform_notif(&mut self, action: NotifAction) {
         match action {
             NotifAction::Open(id) => {
-                // Read, and its app comes forward when the toast knew it.
-                let app = self.notif.history.get(id).and_then(|e| e.app_id.clone());
+                // Read, and where it came from comes forward: the same routine
+                // as a click on the notch toast, AUMID or not.
+                let target = self.notif.history.get(id).map(|e| OpenTarget {
+                    app_id: e.app_id.clone(),
+                    source: e.source.clone(),
+                    site: e.site.clone(),
+                    title: e.title.clone(),
+                    body: e.body.clone(),
+                });
                 self.notif.selected = Some(id);
                 if self.notif.history.mark_read(id) {
                     self.schedule_notif_save();
                 }
-                if let Some(app) = app {
-                    notifications::open_app(&app);
+                if let Some(target) = target {
+                    notif_open::open(target);
                 }
             }
             NotifAction::Remove(id) => {

@@ -257,13 +257,6 @@ pub fn ask_access(done: impl FnOnce() + Send + 'static) -> Result<()> {
         .when(move |_| done())
 }
 
-/// Brings the app with this AppUserModelID to the front, launching it if needed.
-pub fn open_app(app_id: &str) {
-    let _ = Command::new("explorer.exe")
-        .arg(format!("shell:AppsFolder\\{app_id}"))
-        .spawn();
-}
-
 /// Where the user grants (or takes back) notification access.
 pub const PRIVACY_PAGE: &str = "ms-settings:privacy-notifications";
 
@@ -615,7 +608,7 @@ const BROWSER_WORDS: [&str; 7] = [
 
 /// True when the AUMID or the display name has a browser's name as a whole
 /// word ("Knowledge" is not Edge).
-fn is_browser(app_id: Option<&str>, source: &str) -> bool {
+pub(crate) fn is_browser(app_id: Option<&str>, source: &str) -> bool {
     let has_browser_word = |text: &str| {
         text.to_lowercase()
             .split(|c: char| !c.is_alphanumeric())
