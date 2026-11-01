@@ -947,6 +947,36 @@ pub fn drop_index(y: f32, row_tops: &[f32]) -> usize {
     row_tops.iter().rposition(|top| *top <= y).unwrap_or(0)
 }
 
+/// How near the viewport's top or bottom edge a dragged row's pointer starts
+/// to scroll the content.
+pub const DRAG_SCROLL_ZONE: f32 = 48.0;
+/// The slowest auto-scroll (at the zone's inner boundary), in rows a second.
+const DRAG_SCROLL_MIN_ROWS: f32 = 2.0;
+/// The fastest (at the edge and beyond it), in rows a second.
+const DRAG_SCROLL_MAX_ROWS: f32 = 12.0;
+
+/// The speed, in px a second, at which the content scrolls while a row is
+/// dragged with the pointer at client `y` over the viewport `view_top` to
+/// `view_bottom`: negative scrolls up. Zero in the middle; inside the zone at
+/// either edge it grows from 2 rows a second to 12 at the edge, and past the
+/// edge it stays at 12. In a viewport shorter than two zones the nearer edge
+/// decides.
+pub fn drag_scroll_speed(y: f32, view_top: f32, view_bottom: f32) -> f32 {
+    let from_top = y - view_top;
+    let from_bottom = view_bottom - y;
+    let (d, sign) = if from_top <= from_bottom {
+        (from_top, -1.0)
+    } else {
+        (from_bottom, 1.0)
+    };
+    if d >= DRAG_SCROLL_ZONE {
+        return 0.0;
+    }
+    let depth = (1.0 - d.max(0.0) / DRAG_SCROLL_ZONE).clamp(0.0, 1.0);
+    let rows = DRAG_SCROLL_MIN_ROWS + (DRAG_SCROLL_MAX_ROWS - DRAG_SCROLL_MIN_ROWS) * depth;
+    sign * ROW_H * rows
+}
+
 /// The rows' places as they are drawn during a drag: the row held leaves
 /// its place and takes the one it would drop at.
 fn display_order(n: usize, drag: Option<&DragView>) -> Vec<usize> {
@@ -6101,6 +6131,55 @@ mod tests {
         assert_eq!(drop_index(256.0, &tops), 3);
         assert_eq!(drop_index(900.0, &tops), 3, "below the list");
         assert_eq!(drop_index(10.0, &[]), 0);
+    }
+
+    #[test]
+    fn drag_scroll_speed_is_zero_in_the_middle_and_grows_toward_the_edges() {
+        let (top, bottom) = (60.0, 520.0);
+        assert_eq!(drag_scroll_speed(290.0, top, bottom), 0.0);
+        assert_eq!(drag_scroll_speed(top + DRAG_SCROLL_ZONE, top, bottom), 0.0);
+        assert_eq!(drag_scroll_speed(bottom - DRAG_SCROLL_ZONE, top, bottom), 0.0);
+        // The slowest speed, just inside the zone: about 2 rows a second.
+        let slow = drag_scroll_speed(top + DRAG_SCROLL_ZONE - 0.01, top, bottom);
+        assert!((slow / ROW_H + 2.0).abs() < 0.01, "{slow}");
+        let slow = drag_scroll_speed(bottom - DRAG_SCROLL_ZONE + 0.01, top, bottom);
+        assert!((slow / ROW_H - 2.0).abs() < 0.01, "{slow}");
+        // The fastest at the edge and beyond: 12 rows a second.
+        for y in [top, top - 1.0, top - 500.0] {
+            assert_eq!(drag_scroll_speed(y, top, bottom), -12.0 * ROW_H, "{y}");
+        }
+        for y in [bottom, bottom + 1.0, bottom + 500.0] {
+            assert_eq!(drag_scroll_speed(y, top, bottom), 12.0 * ROW_H, "{y}");
+        }
+        // The sign: up near the top, down near the bottom.
+        assert!(drag_scroll_speed(top + 10.0, top, bottom) < 0.0);
+        assert!(drag_scroll_speed(bottom - 10.0, top, bottom) > 0.0);
+    }
+
+    #[test]
+    fn drag_scroll_speed_is_monotonic_and_symmetric() {
+        let (top, bottom) = (60.0, 520.0);
+        let mut last = 0.0_f32;
+        for i in 0..=480 {
+            let d = DRAG_SCROLL_ZONE - 0.01 - i as f32 * 0.1;
+            let up = -drag_scroll_speed(top + d, top, bottom);
+            let down = drag_scroll_speed(bottom - d, top, bottom);
+            assert!((up - down).abs() < 0.001, "symmetric at {d}");
+            assert!(up >= last - 0.001, "monotonic at {d}: {up} < {last}");
+            last = up;
+        }
+    }
+
+    #[test]
+    fn drag_scroll_speed_in_a_short_viewport_follows_the_nearer_edge() {
+        // 60 px tall: every point is inside both zones.
+        let (top, bottom) = (100.0, 160.0);
+        assert!(drag_scroll_speed(120.0, top, bottom) < 0.0);
+        assert!(drag_scroll_speed(140.0, top, bottom) > 0.0);
+        assert_eq!(
+            drag_scroll_speed(120.0, top, bottom),
+            -drag_scroll_speed(140.0, top, bottom)
+        );
     }
 
     #[test]

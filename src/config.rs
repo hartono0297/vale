@@ -170,6 +170,41 @@ pub struct Config {
     /// saved arrangements ([`crate::arrange`]).
     #[serde(deserialize_with = "crate::arrange::lenient_settings")]
     pub arrange: ArrangeSettings,
+    /// Where the Settings window was last (screen coordinates), so it opens
+    /// there again. Not part of `merge_owned`: it comes from the file on every
+    /// save and only `save_config_with` writes it, so a hand edit survives.
+    #[serde(deserialize_with = "window_place")]
+    pub settings_window: Option<WindowPlace>,
+}
+
+/// The Settings window's normal (restore) rectangle in screen coordinates,
+/// physical pixels, and whether it was maximized.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WindowPlace {
+    pub left: i32,
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
+    pub maximized: bool,
+}
+
+/// No coordinate of a saved window is believable beyond this.
+const WINDOW_COORD_MAX: i32 = 100_000;
+
+/// `settings_window` read leniently: anything that is not a well-formed
+/// place (a width or height of 0 or less, a coordinate beyond +-100000) is
+/// None and never fails the rest of the file.
+fn window_place<'de, D: Deserializer<'de>>(d: D) -> Result<Option<WindowPlace>, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    let Ok(p) = serde_json::from_value::<WindowPlace>(v) else {
+        return Ok(None);
+    };
+    let sane = [p.left, p.top, p.right, p.bottom]
+        .iter()
+        .all(|c| (-WINDOW_COORD_MAX..=WINDOW_COORD_MAX).contains(c))
+        && p.right > p.left
+        && p.bottom > p.top;
+    Ok(sane.then_some(p))
 }
 
 /// The apps muted until the owner says otherwise.
@@ -546,6 +581,7 @@ impl Default for Config {
             battery_threshold: 20,
             start_with_windows: true,
             muted_apps: default_muted_apps(),
+            settings_window: None,
             onboarding_done: false,
             pomodoro: PomoSettings::default(),
             google_client_id: String::new(),
@@ -1112,6 +1148,13 @@ mod tests {
                 gap: 16,
                 ..ArrangeSettings::default()
             },
+            settings_window: Some(WindowPlace {
+                left: 20,
+                top: 30,
+                right: 1000,
+                bottom: 800,
+                maximized: false,
+            }),
         };
         assert_eq!(parse(&serde_json::to_string(&c).unwrap()), c);
     }
@@ -1558,6 +1601,64 @@ mod tests {
         let merged = merge_owned(Config::default(), &mem);
         assert!(merged.notifications.paused);
         assert_eq!(merged.notifications.max_items, 100);
+    }
+
+    #[test]
+    fn settings_window_round_trips_and_reads_leniently() {
+        let place = WindowPlace {
+            left: -1500,
+            top: 40,
+            right: -300,
+            bottom: 700,
+            maximized: true,
+        };
+        let c = Config {
+            settings_window: Some(place),
+            ..Config::default()
+        };
+        let back = parse(&serde_json::to_string(&c).unwrap());
+        assert_eq!(back.settings_window, Some(place));
+        // An absent key is None.
+        assert_eq!(parse(r#"{"style":"Notch"}"#).settings_window, None);
+        let win = |json: &str| parse(&format!(r#"{{"style":"Notch","settings_window":{json}}}"#));
+        for bad in [
+            "\"x\"",
+            "7",
+            "null",
+            "[]",
+            "{}",
+            r#"{"left":0,"top":0,"right":-10,"bottom":10,"maximized":false}"#,
+            r#"{"left":0,"top":0,"right":0,"bottom":10,"maximized":false}"#,
+            r#"{"left":0,"top":0,"right":10,"bottom":0,"maximized":false}"#,
+            r#"{"left":0,"top":0,"right":100001,"bottom":10,"maximized":false}"#,
+            r#"{"left":-100001,"top":0,"right":10,"bottom":10,"maximized":false}"#,
+            r#"{"left":0,"top":0,"right":10,"bottom":10}"#,
+            r#"{"left":"a","top":0,"right":10,"bottom":10,"maximized":false}"#,
+            r#"{"left":-2147483648,"top":0,"right":2147483647,"bottom":10,"maximized":false}"#,
+        ] {
+            let c = win(bad);
+            assert_eq!(c.settings_window, None, "{bad}");
+            assert_eq!(c.style, Style::Notch, "{bad}");
+        }
+        let edge = r#"{"left":-100000,"top":-100000,"right":100000,"bottom":100000,"maximized":false}"#;
+        assert!(win(edge).settings_window.is_some());
+    }
+
+    #[test]
+    fn settings_window_is_not_owned_by_the_island() {
+        let place = WindowPlace {
+            left: 10,
+            top: 10,
+            right: 900,
+            bottom: 700,
+            maximized: false,
+        };
+        let disk = Config {
+            settings_window: Some(place),
+            ..Config::default()
+        };
+        let merged = merge_owned(disk, &Config::default());
+        assert_eq!(merged.settings_window, Some(place));
     }
 
     #[test]
