@@ -7879,6 +7879,51 @@ mod tests {
     }
 
     #[test]
+    fn the_notification_card_starts_with_the_toast_style_and_everything_moves_one_row_down() {
+        for lang in [Lang::Id, Lang::En] {
+            for style in ToastStyle::ALL {
+                let mut s = State {
+                    lang,
+                    ..states()[0].clone()
+                };
+                s.notif.toast_style = *style;
+                let l = layout(Section::Features, &s, &Estimate);
+                let (track, items, selected) = l
+                    .segmented(Group::NotifToastStyle)
+                    .expect("Notifikasi saat notch dipakai");
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[0].hit, Hit::NotifToastStyle(ToastStyle::Compact));
+                assert_eq!(items[1].hit, Hit::NotifToastStyle(ToastStyle::Full));
+                assert_eq!(items[selected].hit, Hit::NotifToastStyle(*style));
+                // Its label and note are the card's first texts.
+                let label = text(lang, Key::NotifToastStyle);
+                let row = l
+                    .texts
+                    .iter()
+                    .find(|t| t.text == label)
+                    .expect("the row's label");
+                let record = l
+                    .texts
+                    .iter()
+                    .find(|t| t.text == text(lang, Key::NotifRecord))
+                    .expect("Simpan notifikasi");
+                assert!(row.rect.y < record.rect.y, "the new row is first");
+                assert!((record.rect.y - row.rect.y - ROW_H).abs() < 0.5, "one row down");
+                assert!(track.y > row.rect.y - ROW_H && track.bottom() < record.rect.y + ROW_H);
+                // The toggle that was first is still there, one row lower.
+                assert!(l.controls.iter().any(|c| matches!(
+                    c,
+                    Control::Toggle { hit: Hit::NotifRecord, on, .. } if *on == s.notif.record
+                )));
+                // A divider sits between the new row and the old first.
+                assert!(l.dividers.iter().any(|d| {
+                    d.y > row.rect.y && d.y < record.rect.y && d.w > 100.0
+                }));
+            }
+        }
+    }
+
+    #[test]
     fn panel_holds_the_open_mode_stay_behind_and_the_lists() {
         for lang in [Lang::Id, Lang::En] {
             let s = State {

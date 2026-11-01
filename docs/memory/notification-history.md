@@ -173,4 +173,6 @@ the year when it differs). Demo scenes: `notifications`, `-selected`, `-long`,
 `-empty`, `-no-access`, `-paused`, `-armed` (fixed fake data and a fixed
 "now").
 
+After v3.11 a real toast over a busy notch no longer covers it by default (a strip or a small logo, an unread dot): see [[toast-while-busy]].
+
 Related: [[clipboard-privacy]], [[settings-structure]], [[devices]]

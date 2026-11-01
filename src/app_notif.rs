@@ -867,3 +867,66 @@ pub(super) fn toast_badge_of<'a>(
         logo: toast_logo_of(logos, notice),
     }
 }
+
+#[cfg(test)]
+mod toast_logo_of_tests {
+    use super::*;
+    use crate::model::ToastOrigin;
+
+    fn notice(app_id: Option<&str>, source: &str, toast: Option<ToastOrigin>) -> Notice {
+        Notice {
+            key: "k".into(),
+            source: source.into(),
+            title: "t".into(),
+            body: "b".into(),
+            kind: NoticeKind::App {
+                app_id: app_id.map(str::to_owned),
+                toast,
+            },
+        }
+    }
+
+    fn logos() -> HashMap<String, Thumb> {
+        let key = logo_key(Some("5319.WhatsApp!App"), "WhatsApp");
+        let thumb = Thumb {
+            w: 1,
+            h: 1,
+            bgra: vec![0, 0, 0, 255],
+        };
+        HashMap::from([(key, thumb)])
+    }
+
+    #[test]
+    fn a_busy_toast_finds_its_logo_like_the_full_notice_does() {
+        let logos = logos();
+        let toast = notice(
+            Some("5319.WhatsApp!App"),
+            "WhatsApp",
+            Some(ToastOrigin::default()),
+        );
+        let found = toast_logo_of(&logos, &toast).expect("logo");
+        assert_eq!(
+            Some(found),
+            toast_logo_view(&logos, &View::Notice(toast.clone()))
+        );
+        let badge = toast_badge_of(&logos, &toast);
+        assert_eq!(badge.source, "WhatsApp");
+        assert_eq!(badge.logo, Some(found));
+    }
+
+    #[test]
+    fn no_logo_for_an_island_notice_or_an_unknown_app_gives_the_letter_tile() {
+        let logos = logos();
+        let own = notice(Some("5319.WhatsApp!App"), "WhatsApp", None);
+        assert_eq!(toast_logo_of(&logos, &own), None);
+        let other = notice(Some("x.Slack"), "Slack", Some(ToastOrigin::default()));
+        assert_eq!(toast_logo_of(&logos, &other), None);
+        let badge = toast_badge_of(&logos, &other);
+        assert_eq!((badge.source, badge.logo), ("Slack", None));
+        let not_app = Notice {
+            kind: NoticeKind::BatteryLow,
+            ..own
+        };
+        assert_eq!(toast_logo_of(&logos, &not_app), None);
+    }
+}

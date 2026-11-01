@@ -8353,6 +8353,41 @@ mod tests {
     }
 
     #[test]
+    fn lyric_fit_with_a_toast_slot_keeps_the_line_box_and_never_passes_the_cap() {
+        let t0 = Instant::now();
+        for robot in [false, true] {
+            // A short line: the slot only adds its room to the notch.
+            let mut fit = LyricFit::default();
+            fit.set_min(190.0);
+            fit.line(Some(60.0), t0, robot, LYRIC_MAX_W);
+            let (plain_w, plain_box) = (fit.width(), fit.box_w());
+            fit.set_slot(true);
+            assert_eq!(fit.width(), plain_w + TOAST_SLOT_EXTRA, "robot {robot}");
+            assert_eq!(fit.box_w(), plain_box, "the line keeps its box");
+            assert_eq!(fit.content_w(), plain_w);
+            fit.set_slot(false);
+            assert_eq!(fit.width(), plain_w);
+
+            // A line at the cap: the total stays at the cap and the box gives
+            // the logo's room up (the line then scrolls and fades as ever).
+            let mut fit = LyricFit::default();
+            fit.set_min(190.0);
+            fit.line(Some(900.0), t0, robot, LYRIC_MAX_W);
+            let cap = lyric_cap(robot, 190.0, LYRIC_MAX_W);
+            assert_eq!(fit.width(), cap);
+            let (plain_box, plain_span) = (fit.box_w(), fit.scroll_span());
+            fit.set_slot(true);
+            assert_eq!(fit.width(), cap, "never above the cap");
+            assert_eq!(fit.box_w(), plain_box - TOAST_SLOT_EXTRA);
+            // The scroll plan follows the smaller box: it runs longer.
+            let span = fit.scroll_span().expect("a long line scrolls");
+            assert!(span.1 > plain_span.expect("scrolls without the slot").1);
+            fit.set_slot(false);
+            assert_eq!(fit.scroll_span(), plain_span);
+        }
+    }
+
+    #[test]
     fn lyric_fit_box_with_the_robot_is_todays_at_the_clamps() {
         let t0 = Instant::now();
         // Before `COMPACT_INSET` the robot's line box was the notch, clamped
