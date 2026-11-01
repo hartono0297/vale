@@ -43,7 +43,7 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[vale-rename]]
 - [[google-built-in-client]]
 - [[github-pages]]: site/ goes to GitHub Pages through the Actions source (Pages cannot serve site/ directly)
-- [[site-landing]]: the landing page rebuilt around a working notch at the top edge: notch states per section, the shared header/footer/legal markup contract, tokens and contrast, which screenshots were used, reduced motion
+- [[site-landing]]: the landing page rebuilt around a working notch at the top edge: notch states per section, the shared header/footer/legal markup contract, tokens and contrast, which screenshots were used, reveal once, the no-script page, the peek-must-not-cover-text rule, `scripts/check-site.py`, reduced motion
 - [[v3-1-handoff]]: where v3.1 stands, how to continue on another PC
 - [[open-mode]]: Mode buka (Hover, Hover & tetap, Klik) and notices with a button
 - [[panel-linger-and-motion]]: the panel stays open 4 s after an action; every page and sub-view change moves (slide, fade, reveal), reduced motion, budget
