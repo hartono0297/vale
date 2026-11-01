@@ -5,6 +5,9 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
 use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, HWND, LPARAM, POINT, WPARAM};
+use windows::Win32::System::LibraryLoader::{
+    GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
+};
 use windows::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SZ,
     RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegQueryValueExW, RegSetValueExW,
@@ -19,7 +22,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SetForegroundWindow, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, WM_APP,
     WM_NULL,
 };
-use windows::core::{Error, HSTRING, Result, w};
+use windows::core::{Error, HSTRING, PCSTR, Result, w};
 
 use crate::config::{Config, Style};
 use crate::i18n::{Key, text};
@@ -162,6 +165,82 @@ pub fn is_taskbar_created(msg: u32) -> bool {
 pub fn is_menu_click(lparam: LPARAM) -> bool {
     use windows::Win32::UI::WindowsAndMessaging::{WM_LBUTTONUP, WM_RBUTTONUP};
     matches!(lparam.0 as u32, WM_LBUTTONUP | WM_RBUTTONUP)
+}
+
+/// `uxtheme.dll` ordinal of `SetPreferredAppMode(i32) -> i32` (1903+). On 1809
+/// the same ordinal is `AllowDarkModeForApp(BOOL)`. Undocumented export, so it
+/// is resolved by ordinal: it has no public name.
+const ORD_SET_PREFERRED_APP_MODE: u16 = 135;
+/// `uxtheme.dll` ordinal of `FlushMenuThemes()`. Undocumented, by ordinal.
+const ORD_FLUSH_MENU_THEMES: u16 = 136;
+/// `uxtheme.dll` ordinal of `RefreshImmersiveColorPolicyState()`. Undocumented,
+/// by ordinal.
+const ORD_REFRESH_COLOR_POLICY: u16 = 104;
+/// `PreferredAppMode::AllowDark`: menus follow the Windows app mode (2 would
+/// be ForceDark). Also reads as TRUE for `AllowDarkModeForApp` on 1809.
+const APP_MODE_ALLOW_DARK: i32 = 1;
+
+/// The undocumented uxtheme functions; each is `None` when the export is
+/// missing, and then that step is silently skipped.
+struct UxTheme {
+    set_preferred_app_mode: Option<unsafe extern "system" fn(i32) -> i32>,
+    flush_menu_themes: Option<unsafe extern "system" fn()>,
+    refresh_color_policy: Option<unsafe extern "system" fn()>,
+}
+
+/// An export name that is an ordinal (MAKEINTRESOURCEA).
+fn ordinal_name(ordinal: u16) -> PCSTR {
+    PCSTR(ordinal as usize as *const u8)
+}
+
+/// Loads uxtheme.dll once and resolves the ordinals; `None` when it will not load.
+fn ux_theme() -> Option<&'static UxTheme> {
+    static UX: OnceLock<Option<UxTheme>> = OnceLock::new();
+    UX.get_or_init(|| unsafe {
+        let module = LoadLibraryExW(w!("uxtheme.dll"), None, LOAD_LIBRARY_SEARCH_SYSTEM32).ok()?;
+        // SAFETY: the signatures are the ones these exports have on Windows 10/11.
+        Some(UxTheme {
+            set_preferred_app_mode: GetProcAddress(
+                module,
+                ordinal_name(ORD_SET_PREFERRED_APP_MODE),
+            )
+            .map(|f| std::mem::transmute::<_, unsafe extern "system" fn(i32) -> i32>(f)),
+            flush_menu_themes: GetProcAddress(module, ordinal_name(ORD_FLUSH_MENU_THEMES))
+                .map(|f| std::mem::transmute::<_, unsafe extern "system" fn()>(f)),
+            refresh_color_policy: GetProcAddress(module, ordinal_name(ORD_REFRESH_COLOR_POLICY))
+                .map(|f| std::mem::transmute::<_, unsafe extern "system" fn()>(f)),
+        })
+    })
+    .as_ref()
+}
+
+/// Makes this process's native menus follow the Windows app mode (light or
+/// dark), whatever Vale's own window theme is. Call once before any menu
+/// opens. Does nothing when the uxtheme exports are missing: the menu stays light.
+pub fn follow_system_menu_theme() {
+    let Some(ux) = ux_theme() else { return };
+    unsafe {
+        if let Some(set_mode) = ux.set_preferred_app_mode {
+            set_mode(APP_MODE_ALLOW_DARK);
+        }
+        if let Some(flush) = ux.flush_menu_themes {
+            flush();
+        }
+    }
+}
+
+/// Re-reads the Windows app mode for the next menu; call when Windows
+/// switches between light and dark. Silent when the exports are missing.
+pub fn refresh_menu_theme() {
+    let Some(ux) = ux_theme() else { return };
+    unsafe {
+        if let Some(refresh) = ux.refresh_color_policy {
+            refresh();
+        }
+        if let Some(flush) = ux.flush_menu_themes {
+            flush();
+        }
+    }
 }
 
 /// Shows the menu at the cursor and waits for a choice. Runs a modal message
@@ -320,6 +399,20 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn ordinal_name_is_the_ordinal_as_a_pointer() {
+        assert_eq!(ordinal_name(135).0 as usize, 135);
+        assert_eq!(ordinal_name(136).0 as usize, 136);
+    }
+
+    #[test]
+    fn menu_theme_calls_do_not_panic() {
+        follow_system_menu_theme();
+        follow_system_menu_theme();
+        refresh_menu_theme();
+        refresh_menu_theme();
     }
 
     #[test]

@@ -322,6 +322,8 @@ pub fn run(media_log_flag: bool) {
     media_log::set_enabled(media_log::requested(media_log_flag, config.media_log));
     i18n::set_lang(config.language);
     theme::set_system_light(theme::read_system_light());
+    // Before any menu can open: the tray menu follows the Windows app mode.
+    tray::follow_system_menu_theme();
     theme::set_current(Theme::of(&config));
     let win = IslandWindow::create(Some(wnd_proc)).expect("create island window");
     let renderer = Renderer::new().expect("create renderer");
@@ -6823,6 +6825,8 @@ fn client_animations_on() -> bool {
 /// Windows switched between light and dark apps: windows following it restyle.
 /// The island itself is dark either way.
 fn on_system_theme_changed() {
+    // The tray menu follows Windows whatever Vale's window theme is.
+    tray::refresh_menu_theme();
     let changed = theme::set_system_light(theme::read_system_light());
     if changed && theme::current().window == theme::WindowTheme::System {
         editor::restyle_open_editor();
