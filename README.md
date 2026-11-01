@@ -77,7 +77,7 @@ Hover the notch to open it, scroll to change pages. Hover the page dots under th
 
 | | |
 |---|---|
-| **Music** | Cover, controls, progress and synced lyrics in the notch. Scroll over the notch for volume, swipe or middle-click to skip. With the panel open, a sideways two-finger swipe on a touchpad turns the page. |
+| **Music** | Cover, controls, progress and synced lyrics in the notch. Scroll over the notch for volume, swipe or middle-click to skip. With the panel open, a sideways two-finger swipe on a touchpad turns the page. When several apps or browser tabs play, the notch prefers the music one over a video or a feed, and Pause and Skip go to the session it shows. |
 | **Mixer** | Master and per-app volume sliders. |
 | **Clipboard** | Searchable history of text, links, colours, files and images, with pins, and a short preview in the notch whenever you copy something. Password managers' copies are never kept or shown. |
 | **Screenshot** | Its own capture: the Screenshot tile freezes the screen and snaps to the window, panel or box under the pointer (or drag your own rectangle), then opens an editor with text, arrows, boxes, pen, marker and pixelate. PrtSc opens this capture too, even where Windows owns the key (Settings → Clipboard → Screenshot turns it off; Alt+PrtSc and Win+PrtSc stay with Windows). The notch also previews Win+Shift+S and Snipping Tool shots, with Copy again, Keep or Delete; Keep never saves a second copy of a file Windows already wrote. |
