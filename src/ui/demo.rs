@@ -1918,7 +1918,9 @@ fn run_scenes(scenes: &[Scene]) {
                     None => clock_on.then(|| Local::now().format("%H:%M").to_string()),
                 },
                 idle_lead: if scene.view == View0::Idle && scene.robot.is_some() {
-                    typing_lead(shape.w, notch.w)
+                    // Against the plain idle shape, as in the app.
+                    let plain = shape_with_robot_sized(style, notch, ShapeKind::Idle, true);
+                    typing_lead(shape, plain)
                 } else {
                     0.0
                 },

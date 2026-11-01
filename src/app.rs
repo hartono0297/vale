@@ -1636,10 +1636,16 @@ impl App {
             }
         }
         self.sync_eyes_blink();
-        let next = plan
-            .change
-            .then(|| self.bata.brain.next_change(now, self.sleep_after()))
-            .flatten();
+        // With Motion Off, the typing cat's wider island still shrinks back
+        // when a Claude session goes quiet (`robot::change_at`).
+        let typing_shape = matches!(self.state.view(), View::Idle) && self.typing_shape(now);
+        let next = robot::change_at(
+            &self.bata.brain,
+            plan,
+            typing_shape,
+            now,
+            self.sleep_after(),
+        );
         unsafe {
             match next {
                 // `SetTimer` on the same id replaces the pending one.
@@ -4153,15 +4159,21 @@ impl App {
     /// face does not count), else the plain one.
     fn idle_shape(&self, now: Instant) -> ShapeRect {
         let (style, robot, notch) = (self.config.style, self.config.robot, self.notch_size());
-        let inputs = self
-            .bata
-            .brain
-            .inputs(Spot::Idle, now, self.sleep_after(), self.motion());
-        if robot && robot::typing_wanted(&inputs) {
+        if self.typing_shape(now) {
             idle_shape_typing(style, notch, robot)
         } else {
             shape_with_robot_sized(style, notch, ShapeKind::Idle, robot)
         }
+    }
+
+    /// The idle island is (or would be) grown for the typing cat's laptop:
+    /// the cat is on and `typing_wanted`.
+    fn typing_shape(&self, now: Instant) -> bool {
+        let inputs = self
+            .bata
+            .brain
+            .inputs(Spot::Idle, now, self.sleep_after(), self.motion());
+        self.config.robot && robot::typing_wanted(&inputs)
     }
 
     /// The closed view's notch as it is without the peek, in logical px;
@@ -5803,8 +5815,17 @@ impl App {
                 .then(|| Local::now().format("%H:%M").to_string()),
             // The idle island's growth on the left (the typing cat's
             // laptop), so the robot and the clock stay still as it morphs.
+            // Measured against the plain idle shape, so a symmetric morph
+            // back to idle (media, a notice or the panel ending) keeps the
+            // group centred.
             idle_lead: if self.drawn == View::Idle && self.config.robot {
-                typing_lead(shape.w, self.notch_size().w)
+                let plain = shape_with_robot_sized(
+                    self.config.style,
+                    self.notch_size(),
+                    ShapeKind::Idle,
+                    true,
+                );
+                typing_lead(shape, plain)
             } else {
                 0.0
             },

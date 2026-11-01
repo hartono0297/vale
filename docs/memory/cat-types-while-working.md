@@ -51,7 +51,10 @@ before (rim, silhouette, calico patches, marks, accessories), then the paws.
 The two polygons are paths built once (`Shape::Lid`, `Shape::LidEdge`).
 `laptop_rect(area)` is the laptop's dip box (grid x -27..9, y 27.3..56.4); the
 see-through legibility halo in `render.rs::paint_robot` draws the same two
-steps round it (radius 1.5 k + grow).
+steps round it (radius 1.5 k + grow). Each step fills the union of the head's
+and the laptop's rounded rects once (`fill_round_union`, a D2D
+`CombineWithGeometry` union): two separate translucent fills darkened their
+overlap (grid x 0..9, y about 27..56) twice, a visible seam.
 
 ## Pose
 
@@ -105,8 +108,15 @@ and the clock stay exactly where they are on screen.
 - `TYPING_LEAD` = 12 dip (the laptop reaches about 11 dip left of the 26 dip
   robot square). `idle_shape_typing(style, size, robot)` is the idle shape with
   x reduced and w increased by it (the right edge stays).
-- `typing_lead(shape_w, notch_w)` = `(shape_w - notch_w).clamp(0, 12)` (NaN 0),
-  so it follows the morph. `idle_layout_lead(s, robot, clock, lead)` centres
+- `typing_lead(shape, plain)`, `plain` the plain idle shape: (growth on the
+  left) - (growth on the right) against `plain`, clamped 0..12 (NaN 0). For
+  the idle <-> typing morph that is exactly `shape.w - notch.w`, so it follows
+  the morph; for a symmetric morph back to the plain idle island (media,
+  pomodoro, a lyric, a notice or the panel ending) it is 0, so the group stays
+  centred as before. **Gotcha:** the first version used `shape.w - notch.w`,
+  which is positive for every wider shape morphing back to idle: the cat and
+  clock faded in up to 6 dip right of their place and slid left
+  (`the_robot_and_the_clock_stay_centred_back_to_the_plain_idle_island`). `idle_layout_lead(s, robot, clock, lead)` centres
   the group in the shape minus `lead` on its left: `x = s.x + lead + (s.w -
   lead - group) / 2`. `idle_layout` is lead 0 (the Settings preview is
   unchanged). With the lead from the shape, the robot and the clock keep the
@@ -114,7 +124,15 @@ and the clock stay exactly where they are on screen.
 - `App::idle_shape` (one helper) is used for the idle target in `refresh` and
   for `normal_shape` (the peek). It grows and shrinks with the usual compact
   morph (`view_same`, no fade). `Frame::idle_lead` carries the lead to the
-  renderer (`typing_lead(shape.w, notch.w)` for View::Idle with the cat on).
+  renderer (`typing_lead(shape, plain)` for View::Idle with the cat on; the
+  demo does the same).
+- Motion Off arms no robot one-shot (`plan_timers(..).change` is false), but
+  the wider island must still shrink when Claude goes quiet:
+  `robot::change_at` arms `TIMER_ROBOT` at `Brain::next_quiet` (the next
+  session's `CLAUDE_WORKING_FOR` expiry) while the view is Idle and
+  `App::typing_shape` holds. Full and Saver keep `Brain::next_change`. A CLI
+  or Mole end refreshes by itself. The face under Off otherwise stays as it
+  was (no sleep, no transient faces).
 
 ## Gotchas
 

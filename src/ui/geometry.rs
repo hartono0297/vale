@@ -255,11 +255,16 @@ pub fn idle_shape_typing(style: Style, size: NotchSize, robot: bool) -> ShapeRec
     }
 }
 
-/// How much of `shape_w` is the typing lead: its excess over the plain idle
-/// width `notch_w`, 0 to `TYPING_LEAD` (NaN is 0). It follows the shape
-/// through the grow and shrink morph, so the group stays still.
-pub fn typing_lead(shape_w: f32, notch_w: f32) -> f32 {
-    let lead = shape_w - notch_w;
+/// How much of `shape` is the typing lead: how much more it has grown on the
+/// left than on the right of `plain` (the plain idle shape), 0 to
+/// `TYPING_LEAD` (NaN is 0). It follows the shape through the idle <-> typing
+/// morph, so the group stays still, and is 0 through a symmetric morph (from
+/// or to the compact views, a notice or the panel), so the group stays
+/// centred there as before.
+pub fn typing_lead(shape: ShapeRect, plain: ShapeRect) -> f32 {
+    let left = plain.x - shape.x;
+    let right = (shape.x + shape.w) - (plain.x + plain.w);
+    let lead = left - right;
     if lead.is_nan() {
         0.0
     } else {
@@ -1803,14 +1808,81 @@ mod tests {
 
     #[test]
     fn the_typing_lead_follows_the_shape_and_is_clamped() {
-        assert_eq!(typing_lead(190.0, 190.0), 0.0);
-        assert_eq!(typing_lead(202.0, 190.0), 12.0);
-        assert_eq!(typing_lead(196.0, 190.0), 6.0);
-        // Narrower than the notch (the eyes) and past the end (an overshoot).
-        assert_eq!(typing_lead(34.0, 190.0), 0.0);
-        assert_eq!(typing_lead(215.0, 190.0), 12.0);
-        assert_eq!(typing_lead(f32::NAN, 190.0), 0.0);
-        assert_eq!(typing_lead(190.0, f32::NAN), 0.0);
+        let plain = ShapeRect {
+            x: 100.0,
+            y: 0.0,
+            w: 190.0,
+            h: 32.0,
+            radius: 12.0,
+        };
+        // Grown on the left only by `w`, and moved by `dx` on both sides.
+        let left = |w: f32| ShapeRect {
+            x: plain.x - w,
+            w: plain.w + w,
+            ..plain
+        };
+        let both = |dx: f32| ShapeRect {
+            x: plain.x - dx,
+            w: plain.w + 2.0 * dx,
+            ..plain
+        };
+        assert_eq!(typing_lead(plain, plain), 0.0);
+        assert_eq!(typing_lead(left(12.0), plain), 12.0);
+        assert_eq!(typing_lead(left(6.0), plain), 6.0);
+        // Past the end (an overshoot), and a symmetric shape wider or
+        // narrower than the plain one (a compact view, the eyes).
+        assert_eq!(typing_lead(left(25.0), plain), 12.0);
+        assert_eq!(typing_lead(both(7.0), plain), 0.0);
+        assert_eq!(typing_lead(both(185.0), plain), 0.0);
+        assert_eq!(typing_lead(both(-78.0), plain), 0.0);
+        // Grown more on the right than on the left.
+        assert_eq!(typing_lead(left(-6.0), plain), 0.0);
+        let nan = ShapeRect {
+            x: f32::NAN,
+            ..plain
+        };
+        assert_eq!(typing_lead(nan, plain), 0.0);
+        assert_eq!(typing_lead(plain, nan), 0.0);
+    }
+
+    #[test]
+    fn the_robot_and_the_clock_stay_centred_back_to_the_plain_idle_island() {
+        // A symmetric morph back to the plain idle island (media ends, a
+        // notice ends, the panel closes) keeps the group at the plain idle x,
+        // as before the typing lead.
+        for style in [Style::Pill, Style::Notch] {
+            for size in notch_sizes() {
+                let idle = shape_with_robot_sized(style, size, ShapeKind::Idle, true);
+                let froms = [
+                    shape_with_robot_sized(style, size, ShapeKind::MediaCompact, true),
+                    shape_with_robot_sized(style, size, ShapeKind::PomodoroCompact, true),
+                    lyric_shape_sized(style, size, size.w.max(220.0) + 40.0),
+                    shape_with_robot_sized(style, size, ShapeKind::Notice, true),
+                    shape_with_robot_sized(style, size, ShapeKind::Panel, true),
+                ];
+                for from in froms {
+                    for clock in [true, false] {
+                        let plain = idle_layout(idle, true, clock);
+                        for t in [0.0, 0.1, 0.3, 0.5, 0.75, 0.9, 1.0, 1.1] {
+                            let shape = lerp_shape(from, idle, t);
+                            let lead = typing_lead(shape, idle);
+                            let l = idle_layout_lead(shape, true, clock, lead);
+                            let (a, b) = (l.robot.unwrap(), plain.robot.unwrap());
+                            assert!(
+                                (a.x - b.x).abs() < 1e-3,
+                                "{style:?} {size:?} from {from:?} clock {clock} t {t}: robot {a:?} vs {b:?}"
+                            );
+                            if let (Some(c), Some(d)) = (l.clock, plain.clock) {
+                                assert!(
+                                    (c.x - d.x).abs() < 1e-3,
+                                    "{style:?} {size:?} from {from:?} t {t}: clock {c:?} vs {d:?}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -1825,7 +1897,7 @@ mod tests {
                     // overshoot only moves the shape past them).
                     for t in [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0] {
                         let shape = lerp_shape(idle, typing, t);
-                        let lead = typing_lead(shape.w, size.w);
+                        let lead = typing_lead(shape, idle);
                         let l = idle_layout_lead(shape, true, clock, lead);
                         let (a, b) = (l.robot.unwrap(), plain.robot.unwrap());
                         assert!(
@@ -1900,7 +1972,8 @@ mod tests {
         for style in [Style::Pill, Style::Notch] {
             for size in notch_sizes() {
                 let s = idle_shape_typing(style, size, true);
-                let lead = typing_lead(s.w, size.w);
+                let plain = shape_with_robot_sized(style, size, ShapeKind::Idle, true);
+                let lead = typing_lead(s, plain);
                 assert_eq!(lead, TYPING_LEAD);
                 for clock in [true, false] {
                     let l = idle_layout_lead(s, true, clock, lead);

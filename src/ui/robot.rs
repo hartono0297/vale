@@ -2156,13 +2156,43 @@ impl Brain {
     /// Claude session going quiet, a CLI face ending), for a one-shot timer.
     pub fn next_change(&self, now: Instant, sleep_after: Duration) -> Option<Instant> {
         let sleep = time_to_sleep(self.last_activity, now, sleep_after).map(|d| now + d);
-        let claude = self
-            .claude
+        let cli = self.cli_mood.map(|(_, until)| until).filter(|t| *t > now);
+        sleep
+            .into_iter()
+            .chain(self.next_quiet(now))
+            .chain(cli)
+            .min()
+    }
+
+    /// The next moment a busy Claude session goes quiet
+    /// (`CLAUDE_WORKING_FOR` after it was last heard from).
+    pub fn next_quiet(&self, now: Instant) -> Option<Instant> {
+        self.claude
             .iter()
             .map(|(_, at)| *at + CLAUDE_WORKING_FOR)
-            .filter(|t| *t > now);
-        let cli = self.cli_mood.map(|(_, until)| until).filter(|t| *t > now);
-        sleep.into_iter().chain(claude).chain(cli).min()
+            .filter(|t| *t > now)
+            .min()
+    }
+}
+
+/// When `TIMER_ROBOT` fires: `Brain::next_change` when the plan has the
+/// one-shot. Motion Off has none (the face stays as it is), but while the idle
+/// island holds the typing cat's wider shape (`typing_shape`) it still fires
+/// when a Claude session goes quiet, so the island shrinks back then and not
+/// at some later unrelated refresh. A CLI or Mole end refreshes by itself.
+pub fn change_at(
+    brain: &Brain,
+    plan: TimerPlan,
+    typing_shape: bool,
+    now: Instant,
+    sleep_after: Duration,
+) -> Option<Instant> {
+    if plan.change {
+        brain.next_change(now, sleep_after)
+    } else if typing_shape {
+        brain.next_quiet(now)
+    } else {
+        None
     }
 }
 
@@ -2891,6 +2921,40 @@ mod tests {
         b.claude_ended("a");
         assert!(!b.claude_working(t0));
         assert_eq!(b.next_change(t0, far), Some(t0 + far));
+    }
+
+    #[test]
+    fn motion_off_still_shrinks_the_typing_island_when_claude_goes_quiet() {
+        let t0 = Instant::now();
+        let far = Duration::from_secs(3600);
+        let mut b = Brain::new(t0);
+        b.claude_activity("a", t0);
+        b.claude_activity("b", t0 + Duration::from_secs(30));
+        let quiet = t0 + CLAUDE_WORKING_FOR;
+        assert_eq!(b.next_quiet(t0), Some(quiet));
+        assert_eq!(
+            b.next_quiet(quiet),
+            Some(quiet + Duration::from_secs(30)),
+            "the next session"
+        );
+        let face = Some(Expr::Typing);
+        // Full and Saver: the usual one-shot.
+        for motion in [Motion::Full, Motion::Saver] {
+            let plan = plan_timers(face, motion, false);
+            assert_eq!(change_at(&b, plan, true, t0, far), b.next_change(t0, far));
+        }
+        // Off: only for the typing shape, only when a session goes quiet.
+        let off = plan_timers(face, Motion::Off, false);
+        assert!(!off.change);
+        assert_eq!(change_at(&b, off, true, t0, far), Some(quiet));
+        assert_eq!(change_at(&b, off, false, t0, far), None);
+        b.claude_ended("a");
+        b.claude_ended("b");
+        assert_eq!(
+            change_at(&b, off, true, t0, far),
+            None,
+            "nothing to wait for"
+        );
     }
 
     #[test]

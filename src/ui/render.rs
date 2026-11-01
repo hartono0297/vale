@@ -5,7 +5,7 @@ use windows::Win32::Graphics::Direct2D::Common::{
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_ARC_SEGMENT, D2D1_ARC_SIZE_SMALL, D2D1_CAP_STYLE_ROUND,
-    D2D1_DASH_STYLE_DASH, D2D1_DASH_STYLE_SOLID, D2D1_DRAW_TEXT_OPTIONS,
+    D2D1_COMBINE_MODE_UNION, D2D1_DASH_STYLE_DASH, D2D1_DASH_STYLE_SOLID, D2D1_DRAW_TEXT_OPTIONS,
     D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_EXTEND_MODE_CLAMP,
     D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_GAMMA_2_2, D2D1_LAYER_OPTIONS_NONE,
     D2D1_LAYER_PARAMETERS, D2D1_LINE_JOIN_ROUND, D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES,
@@ -1726,27 +1726,25 @@ impl Renderer {
                     1.5 * area.w / super::robot::GRID,
                 )
             });
+            let grown = |r: Rect, grow: f32| Rect {
+                x: r.x - grow,
+                y: r.y - grow,
+                w: r.w + 2.0 * grow,
+                h: r.h + 2.0 * grow,
+            };
             for (grow, weight) in [(3.0, 0.10), (1.5, 0.18)] {
                 self.set_color(0x000000, weight * strength);
-                self.fill_round(
-                    Rect {
-                        x: head.x - grow,
-                        y: head.y - grow,
-                        w: head.w + 2.0 * grow,
-                        h: head.h + 2.0 * grow,
-                    },
-                    radius + grow,
-                );
-                if let Some((laptop, corner)) = laptop {
-                    self.fill_round(
-                        Rect {
-                            x: laptop.x - grow,
-                            y: laptop.y - grow,
-                            w: laptop.w + 2.0 * grow,
-                            h: laptop.h + 2.0 * grow,
-                        },
-                        corner + grow,
-                    );
+                let head = (grown(head, grow), radius + grow);
+                match laptop {
+                    // One fill of the union, so where the two meet is not
+                    // darkened twice.
+                    Some((laptop, corner)) => {
+                        let laptop = (grown(laptop, grow), corner + grow);
+                        if self.fill_round_union(head, laptop).is_err() {
+                            self.fill_round(head.0, head.1);
+                        }
+                    }
+                    None => self.fill_round(head.0, head.1),
                 }
             }
         }
@@ -2441,6 +2439,29 @@ impl Renderer {
             },
             Style::Notch => self.notch_path(s, radius)?.cast(),
         }
+    }
+
+    /// Fills the union of two rounded rects (rect, radius) once with the
+    /// shared brush's current color, so a translucent fill is not doubled
+    /// where they overlap.
+    fn fill_round_union(&self, a: (Rect, f32), b: (Rect, f32)) -> Result<()> {
+        let target = self.target.as_ref().expect("target ensured by paint");
+        let round = |(r, radius): (Rect, f32)| D2D1_ROUNDED_RECT {
+            rect: d2d_rect(r),
+            radiusX: radius,
+            radiusY: radius,
+        };
+        unsafe {
+            let a = self.d2d.CreateRoundedRectangleGeometry(&round(a))?;
+            let b = self.d2d.CreateRoundedRectangleGeometry(&round(b))?;
+            let path = self.d2d.CreatePathGeometry()?;
+            let sink = path.Open()?;
+            // Finer than the default 0.25: the halo's corners are a few dip.
+            a.CombineWithGeometry(&b, D2D1_COMBINE_MODE_UNION, None, 0.05, &sink)?;
+            sink.Close()?;
+            target.rt.FillGeometry(&path, &target.brush, None);
+        }
+        Ok(())
     }
 
     /// Fills a rounded rect with the shared brush's current color.
