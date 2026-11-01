@@ -12,6 +12,9 @@ site/*.html it checks:
     script, style.css and site.js, and the same header and footer on every page
     (apart from the index.html# prefix and aria-current);
   - every table sits in div.table-wrap[role=region][tabindex=0] with a name;
+  - .reveal sits only on h2, h3 and figure;
+  - the notch dock on index.html has the 14 tabs of Page::ALL, in order, each
+    controlling an existing panel;
   - no third-party resource is loaded (external http(s) links are listed, not
     fetched).
 It also checks that no text file under site/ contains an em dash (U+2014).
@@ -28,6 +31,8 @@ SITE = Path(__file__).resolve().parent.parent / "site"
 VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
 TEXT_SUFFIXES = {".html", ".css", ".js", ".md", ".svg", ".json", ".xml", ".webmanifest"}
 EM_DASH = "—"
+DOCK_TABS = ["tab-" + n for n in ("calendar", "pomodoro", "reminders", "notes", "music", "mixer", "clipboard",
+                                  "notifications", "shelf", "system", "devices", "cli", "arrange", "shortcuts")]
 problems = []
 externals = []
 
@@ -47,6 +52,7 @@ class Page(HTMLParser):
         self.scripts = []
         self.in_script = False
         self.reveal = []
+        self.tabs = []  # (id, aria-controls) of role=tab buttons, in order
 
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
@@ -58,8 +64,10 @@ class Page(HTMLParser):
                 self.refs.append((tag, attr, a[attr], line))
         if tag == "img" and "alt" not in a:
             problem(self.name, f"line {line}: img without alt")
-        if "reveal" in (a.get("class") or "").split() and tag not in ("h3", "figure"):
+        if "reveal" in (a.get("class") or "").split() and tag not in ("h2", "h3", "figure"):
             problem(self.name, f"line {line}: .reveal on <{tag}> (only headings and screenshots)")
+        if a.get("role") == "tab":
+            self.tabs.append((a.get("id"), a.get("aria-controls")))
         if tag == "table":
             wrap = next((e for e in reversed(self.stack) if e[0] == "div"), None)
             ok = bool(wrap) and "table-wrap" in (wrap[1].get("class") or "").split() \
@@ -273,6 +281,16 @@ def main():
                 problem(name, f"header differs from {ref_name}")
             if f != shells[ref_name][1]:
                 problem(name, f"footer differs from {ref_name}")
+
+    # The notch dock on index.html: the 14 pages of Page::ALL (src/model.rs), in order.
+    if "index.html" in pages:
+        page = pages["index.html"]
+        got = [t for t, _ in page.tabs]
+        if got != DOCK_TABS:
+            problem("index.html", f"dock tabs are {got}, expected {DOCK_TABS} (Page::ALL order)")
+        for tab, panel in page.tabs:
+            if not panel or panel not in page.ids:
+                problem("index.html", f"tab {tab!r} controls {panel!r}, which is not an id")
 
     # No em dash in any text file under site/.
     for path in sorted(SITE.rglob("*")):
