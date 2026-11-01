@@ -58,24 +58,30 @@ the window-AUMID match finds it, and with no window it launches by AUMID.
    A meaningful subdomain label (`site_sub_label`:
    calendar.google.com -> calendar, mail.google.com -> mail; www, web, app, m
    and other generic or short labels are skipped) counts as a site match on
-   its own, as a substring of the squashed tab name ("mail" in "Gmail",
-   "calendar" in "Google Calendar") when the tab does not hold the
-   registrable label. A tab holding the label right in front of the
-   subdomain in the squashed name ("googlechat", "googlecalendar",
-   "googledocs") ranks a tier above that ("ChatGPT" also contains "chat"), so
-   the substring rule never sends a chat.google.com toast to ChatGPT. A tab
-   holding the label anywhere else names another page of the site and is no
-   site match at all, even when it also holds the subdomain: "gmail - Google
-   Search" and "Email newsletter - Google Docs" hold "mail" and "google", yet
-   a Gmail toast never picks them, while the real Gmail tab ("Inbox (3) -
-   user@gmail.com - Gmail") never says "google". Only label-then-subdomain
-   counts: "gmailgooglesearch" holds "mailgoogle". With no better match the
-   window comes forward on its current tab. Known gap: a Gmail tab whose
-   address is on google.com ("user@google.com - Gmail") holds the label
-   elsewhere and only scores on the title. A site with no meaningful subdomain (web.telegram.org,
-   google.com) matches on the registrable label alone. Matches come in tiers
-   (subdomain and label; subdomain alone or site label; title; words only):
-   the strongest tier anywhere decides, so a site match in
+   its own, as a substring of the squashed tab name, in three strengths:
+   anywhere ("chat" in "ChatGPT", "meet" in a call tab "Meet -
+   abc-defg-hij"); ending the tab's **last word**, where pages name their
+   site ("Inbox - user@gmail.com - Gmail", "Mail - Budi - Outlook" for
+   outlook.live.com), so for a Gmail toast "Mail - Budi - Outlook" or
+   "Mailchimp - Campaigns" never beats the Gmail tab even when active; and
+   the label right in front of the subdomain ("googlechat", "googlecalendar",
+   "googledocs"), so a chat.google.com toast never goes to ChatGPT. A tab
+   whose **last whole-word** label is followed by another word and by no
+   subdomain names another page of the site and is no site match at all:
+   "gmail - Google Search", "Email newsletter - Google Docs" and "Gmail:
+   Private and Secure Email | Google Workspace" score 0 for a Gmail toast,
+   while "Security alert for your Google Account - user@gmail.com - Gmail"
+   and "user@google.com - Gmail" still match (the subdomain comes after the
+   label). The label must be a whole word: "live" inside "Oliver",
+   "delivery" or "olive" blocks nothing (a raw substring test did, and lost
+   the Outlook tab). Known gaps: "Hotmail" also ends in "mail" and ties with
+   Gmail; with no Gmail tab open, "Mail - Budi - Outlook" still matches a
+   Gmail toast on the bare subdomain (the Meet call tab needs that rule).
+   With no match the window comes forward on its current tab. A site with
+   no meaningful subdomain (web.telegram.org, google.com) matches on the
+   registrable label alone. Matches come in tiers (label and subdomain;
+   subdomain ending the last word; subdomain elsewhere or site label; title;
+   words only): the strongest tier anywhere decides, so a site match in
    an older window beats a words-only match in the newest. The most recent
    window with a match of that tier wins; inside it the active tab if its
    match is of that tier too, else the first best. A weak words-only hit on

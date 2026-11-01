@@ -123,11 +123,17 @@ pub fn site_sub_label(site: &str) -> Option<String> {
 // ---------------------------------------------------------------- scoring
 
 const SCORE_SITE: u32 = 1000;
+/// The site's meaningful subdomain ending the tab's last word, where a page
+/// names its site ("Inbox - user@gmail.com - Gmail", "Mail - Budi - Outlook"
+/// for outlook.live.com): it ranks above the subdomain elsewhere in the tab
+/// (SCORE_SITE alone), so for a Gmail toast "Mail - Budi - Outlook" or
+/// "Mailchimp - Campaigns" never beats the Gmail tab.
+const SCORE_NAMED: u32 = 1000;
 /// The site's registrable label right in front of its meaningful subdomain in
 /// the squashed tab name ("googlecalendar", "googlechat", "googledocs"): the
-/// page names itself, so it ranks above the subdomain alone (SCORE_SITE),
-/// which a substring can also find in an unrelated tab ("chat" in
-/// "ChatGPT"). Only that order counts: "gmail - Google Search" squashes to
+/// page names itself, so it ranks above the subdomain alone, which a
+/// substring can also find in an unrelated tab ("chat" in "ChatGPT"). Only
+/// that order counts: "gmail - Google Search" squashes to
 /// "gmailgooglesearch", which holds "mailgoogle".
 const SCORE_SUB: u32 = 2000;
 const SCORE_TITLE: u32 = 500;
@@ -168,57 +174,99 @@ impl WordRuns {
     /// "sedulurstore" is in "Sedulur Store" but "ibu" is not in
     /// "Distribution".
     fn contains(&self, needle: &str) -> bool {
-        !needle.is_empty()
-            && self.starts.iter().any(|&at| {
-                self.text[at..].starts_with(needle)
-                    && self.ends.binary_search(&(at + needle.len())).is_ok()
-            })
+        self.last_end(needle).is_some()
+    }
+
+    /// Where the last whole-word run of `needle` (squashed) ends in `text`.
+    fn last_end(&self, needle: &str) -> Option<usize> {
+        if needle.is_empty() {
+            return None;
+        }
+        self.starts.iter().rev().find_map(|&at| {
+            let end = at + needle.len();
+            (self.text[at..].starts_with(needle) && self.ends.binary_search(&end).is_ok())
+                .then_some(end)
+        })
+    }
+
+    /// The last word, squashed.
+    fn last_word(&self) -> Option<&str> {
+        Some(&self.text[*self.starts.last()?..])
+    }
+}
+
+/// How well a tab's name (as words) fits the toast's site, 0 = not at all.
+/// See `score_tab`.
+fn site_score(tab: &WordRuns, site: &str) -> u32 {
+    let label = site_label(site);
+    let Some(sub) = site_sub_label(site) else {
+        return match label {
+            Some(label) if tab.text.contains(&label) => SCORE_SITE,
+            _ => 0,
+        };
+    };
+    if let Some(label) = &label {
+        // The label as a whole word followed by another word names that page
+        // ("cats - Google Search", "Email newsletter - Google Docs"), unless
+        // the subdomain comes after it ("Google Calendar - Week of ...",
+        // "Security alert for your Google Account - user@gmail.com - Gmail").
+        // Only a whole word: "live" inside "Oliver" says nothing.
+        if let Some(end) = tab.last_end(label)
+            && end < tab.text.len()
+            && !tab.text[end..].contains(sub.as_str())
+        {
+            return 0;
+        }
+        if tab.text.contains(&format!("{label}{sub}")) {
+            return SCORE_SITE + SCORE_SUB;
+        }
+    }
+    if tab.last_word().is_some_and(|w| w.ends_with(sub.as_str())) {
+        SCORE_SITE + SCORE_NAMED
+    } else if tab.text.contains(&sub) {
+        SCORE_SITE
+    } else {
+        0
     }
 }
 
 /// How well a tab's name fits the toast: 0 = not at all. The site counts
 /// most. A site with a meaningful subdomain (`site_sub_label`: mail.google.com
-/// -> "mail"): SCORE_SITE + SCORE_SUB for a tab holding label and subdomain
-/// side by side ("googlechat" in "Google Chat"), SCORE_SITE for a tab holding
-/// the subdomain as a substring and no label ("mail" in "Inbox - Gmail",
-/// "chat" in "ChatGPT"). A tab holding the label anywhere else names another
-/// page of that site and is NOT a site match, whatever else it says: a Gmail
+/// -> "mail"), in the squashed tab name:
+/// - label and subdomain side by side ("googlechat" in "Google Chat"):
+///   SCORE_SITE + SCORE_SUB;
+/// - the subdomain ending the last word ("Inbox - user@gmail.com - Gmail"):
+///   SCORE_SITE + SCORE_NAMED;
+/// - the subdomain anywhere else ("chat" in "ChatGPT", "mail" in the Outlook
+///   tab "Mail - Budi - Outlook"): SCORE_SITE.
+///
+/// A tab whose last whole-word label is followed by another word and by no
+/// subdomain names another page of that site and is NOT a site match: a Gmail
 /// toast never picks "cats - Google Search", "gmail - Google Search" or
-/// "Email newsletter - Google Docs". A site with no meaningful
-/// subdomain (google.com, web.telegram.org) matches on the label alone:
-/// SCORE_SITE. Then the whole notification title, then the title's words of
-/// 4+ letters (at least one;
-/// half or more counts more). The title and its words count only as whole
-/// words of the tab name. The body is not used: it is too long and too often
-/// generic.
+/// "Email newsletter - Google Docs", yet "Security alert for your Google
+/// Account - user@gmail.com - Gmail" is the Gmail tab. Only a whole word
+/// counts: "live" (outlook.live.com) inside "Oliver" blocks nothing. A site
+/// with no meaningful subdomain (google.com, web.telegram.org) matches on the
+/// label alone: SCORE_SITE. Then the whole notification title, then the
+/// title's words of 4+ letters (at least one; half or more counts more). The
+/// title and its words count only as whole words of the tab name. The body is
+/// not used: it is too long and too often generic.
+///
+/// Known gap: a mail tab that also ends in "mail" ("Hotmail") ties with the
+/// Gmail tab, and with no Gmail tab open "Mail - Budi - Outlook" still
+/// matches a Gmail toast on the subdomain alone (a Meet call's tab, "Meet -
+/// abc-defg-hij", needs that rule).
 pub fn score_tab(tab_title: &str, target: &OpenTarget) -> u32 {
-    let tab = squash(&strip_tab_suffix(tab_title));
-    if tab.is_empty() {
+    // The title and its words only count as whole words of the tab: "Ibu"
+    // inside "Distribution" or "pesan" inside "pesanan" is not a match.
+    let tab_words = WordRuns::new(&strip_tab_suffix(tab_title));
+    if tab_words.text.is_empty() {
         return 0;
     }
     let mut score = 0;
     if let Some(site) = target.site.as_deref() {
-        match site_sub_label(site) {
-            Some(sub) => match site_label(site) {
-                Some(label) if tab.contains(&format!("{label}{sub}")) => {
-                    score += SCORE_SITE + SCORE_SUB;
-                }
-                // The label elsewhere names another page of the site
-                // ("Email newsletter - Google Docs" for mail.google.com).
-                Some(label) if tab.contains(&label) => {}
-                _ if tab.contains(&sub) => score += SCORE_SITE,
-                _ => {}
-            },
-            None => {
-                if site_label(site).is_some_and(|label| tab.contains(&label)) {
-                    score += SCORE_SITE;
-                }
-            }
-        }
+        score += site_score(&tab_words, site);
     }
-    // The title and its words only count as whole words of the tab: "Ibu"
-    // inside "Distribution" or "pesan" inside "pesanan" is not a match.
-    let tab_words = WordRuns::new(&strip_tab_suffix(tab_title));
     let title = squash(&target.title);
     if title.chars().count() >= MIN_TITLE && tab_words.contains(&title) {
         score += SCORE_TITLE;
@@ -251,15 +299,16 @@ pub struct WindowTabs {
     pub active: Option<usize>,
 }
 
-/// The kind of evidence a score stands for: 4 the site's label right before
-/// its subdomain ("Google Chat"), 3 the subdomain alone or the site's
-/// label (a site with none), 2 the whole title, 1 words of the title only,
-/// 0 none. Scores
-/// inside one tier are close calls; a higher tier always wins.
+/// The kind of evidence a score stands for: 5 the site's label right before
+/// its subdomain ("Google Chat"), 4 the subdomain ending the tab's last word
+/// ("... - Gmail"), 3 the subdomain elsewhere or the site's label (a site
+/// with no subdomain), 2 the whole title, 1 words of the title only, 0 none.
+/// Scores inside one tier are close calls; a higher tier always wins.
 fn tier(score: u32) -> u8 {
     match score {
         0 => 0,
-        s if s >= SCORE_SITE + SCORE_SUB => 4,
+        s if s >= SCORE_SITE + SCORE_SUB => 5,
+        s if s >= SCORE_SITE + SCORE_NAMED => 4,
         s if s >= SCORE_SITE => 3,
         s if s >= SCORE_TITLE => 2,
         _ => 1,
@@ -712,6 +761,53 @@ mod tests {
         // The same Docs tab is the right one for a docs.google.com toast.
         let docs = target("Google Chrome", Some("Chrome"), Some("docs.google.com"), "x");
         assert_eq!(score_tab(newsletter, &docs), SCORE_SITE + SCORE_SUB);
+    }
+
+    #[test]
+    fn the_label_inside_a_word_of_the_page_never_hides_a_real_match() {
+        // outlook.live.com: "live" sits inside "Oliver", "delivery", "olive".
+        let ol = target("Google Chrome", Some("Chrome"), Some("outlook.live.com"), "Budi");
+        for tab in [
+            "Mail - Oliver Smith - Outlook - Google Chrome",
+            "Your delivery is on its way - Outlook",
+            "Mail - Olive - Outlook",
+        ] {
+            assert!(score_tab(tab, &ol) >= SCORE_SITE, "{tab}");
+        }
+        let w = [win(&["Berita", "Mail - Oliver Smith - Outlook"], Some(0))];
+        assert_eq!(pick_tab(&w, &ol), Some((0, 1)));
+    }
+
+    #[test]
+    fn a_gmail_tab_that_mentions_google_still_matches() {
+        let t = gmail("Budi");
+        // The subject says "Google"; the page still names itself Gmail last.
+        let alert = "Security alert for your Google Account - user@gmail.com - Gmail - Google Chrome";
+        let docs_mail = "Re: Google Docs access - user@gmail.com - Gmail";
+        let workspace = "Inbox (2) - user@google.com - Gmail";
+        for tab in [alert, docs_mail, workspace] {
+            assert!(score_tab(tab, &t) >= SCORE_SITE, "{tab}");
+        }
+        assert_eq!(pick_tab(&[win(&[SEARCH, alert], Some(0))], &t), Some((0, 1)));
+        assert_eq!(pick_tab(&[win(&[DOCS, workspace], Some(0))], &t), Some((0, 1)));
+        // Gmail's marketing page is another Google page, not the inbox.
+        let ad = "Gmail: Private and Secure Email | Google Workspace";
+        assert_eq!(score_tab(ad, &t), 0);
+    }
+
+    #[test]
+    fn another_mail_tab_never_beats_the_gmail_tab() {
+        let t = gmail("Budi");
+        let outlook = "Mail - Budi - Outlook - Google Chrome";
+        let chimp = "Mailchimp - Campaigns";
+        assert!(score_tab(INBOX, &t) > score_tab(outlook, &t));
+        assert!(tier(score_tab(INBOX, &t)) > tier(score_tab(outlook, &t)));
+        // The Outlook tab active, first, or in the newest window: still Gmail.
+        assert_eq!(pick_tab(&[win(&[outlook, INBOX], Some(0))], &t), Some((0, 1)));
+        assert_eq!(pick_tab(&[win(&[outlook, INBOX], None)], &t), Some((0, 1)));
+        assert_eq!(pick_tab(&[win(&[chimp, INBOX], Some(0))], &t), Some((0, 1)));
+        let w = [win(&[outlook], Some(0)), win(&["Berita", INBOX], Some(0))];
+        assert_eq!(pick_tab(&w, &t), Some((1, 1)));
     }
 
     #[test]
