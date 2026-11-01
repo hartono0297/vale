@@ -179,6 +179,17 @@ The slot's morph, the logo fade and the strip's motion are in `animating_at`
   languages ("Notifikasi saat notch dipakai" / "Notifications on a busy notch",
   note "Ringkas: strip atau logo kecil" / "Compact: a strip or a small logo").
 
+## Merge with main (2026-11-02)
+
+Merged after the hotkeys section and the typing cat landed on main
+([[hotkeys]], [[cat-types-while-working]]). Both sides were kept; the one
+thing dropped is the branch's PrtSc toggle in Settings (`ShotPrintScreen`
+Hit), because main turned PrtSc into a hotkey row. The Notifikasi card keeps
+the Ringkas/Penuh row first and the history rows one row lower. The slot never
+applies to `ShapeKind::Idle`, so the typing cat's `idle_shape_typing` and the
+slot arm do not meet; the demo `SCENES` list holds both sides' scenes (155).
+`app_notif.rs` (main's start-logo fallback) is untouched.
+
 ## Not verified live
 
 Only the pure rules (reducer, geometry, motion) have tests, plus a `--demo`
@@ -190,6 +201,6 @@ Settings switched to Penuh and back; the strip's motion and the slot's morph by
 eye; the hover over a slot on a real island (the window is a layered one, so a
 pointer off the drawn pixels sends no moves).
 
-Related: [[open-mode]], [[notification-history]], [[lyric-notch-width]],
+Related: [[hotkeys]], [[cat-types-while-working]], [[open-mode]], [[notification-history]], [[lyric-notch-width]],
 [[compact-padding]], [[notch-peek-eyes]], [[panel-linger-and-motion]],
 [[bata-idle-power-budget]]. Listed in [[index]].
