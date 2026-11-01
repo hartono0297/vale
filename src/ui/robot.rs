@@ -9,6 +9,13 @@
 //! (`choose_expr`), when it blinks, sleeps, bounces or lifts, and which
 //! one-shot timers that needs (`plan_timers`). `app.rs` only feeds it events
 //! and arms the timers it asks for.
+//!
+//! While work runs (a Claude Code session, a CLI command, a Mole clean) the
+//! idle cat types on a small laptop (`Expr::Typing`, the "Typing" section):
+//! its paws take turns on a one-shot timer, its eyes (only its eyes) glance
+//! at the pointer, and the island grows `TYPING_LEAD` to the left to hold the
+//! laptop. `Expr::Think` stays for the demo sheet and the notice scenes, but
+//! `choose_expr` never picks it.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -49,7 +56,7 @@ const L: f32 = 24.0;
 const R: f32 = 40.0;
 const Y: f32 = 40.0;
 
-/// The ten faces. Blinking is not one of them: it is a `Pose` input.
+/// The eleven faces. Blinking is not one of them: it is a `Pose` input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Expr {
     Idle,
@@ -65,12 +72,14 @@ pub enum Expr {
     Sad,
     /// "Menyapa".
     Wave,
+    /// "Mengetik": work runs; the cat types on a laptop beside it.
+    Typing,
 }
 
 impl Expr {
     // The demo sheet (debug builds) and tests list and name every face.
     #[cfg_attr(not(debug_assertions), allow(dead_code))]
-    pub const ALL: [Expr; 10] = [
+    pub const ALL: [Expr; 11] = [
         Expr::Idle,
         Expr::Happy,
         Expr::Focus,
@@ -81,13 +90,14 @@ impl Expr {
         Expr::Sleep,
         Expr::Sad,
         Expr::Wave,
+        Expr::Typing,
     ];
 
     /// Its eyes are open (pills or round): a blink shows. Arcs do not blink.
     pub fn blinks(self) -> bool {
         matches!(
             self,
-            Expr::Idle | Expr::Focus | Expr::Alert | Expr::Think | Expr::Sad
+            Expr::Idle | Expr::Focus | Expr::Alert | Expr::Think | Expr::Sad | Expr::Typing
         )
     }
 
@@ -98,8 +108,19 @@ impl Expr {
     pub fn looks(self) -> bool {
         !matches!(
             self,
-            Expr::Think | Expr::Sleep | Expr::Music | Expr::Sing | Expr::Wave
+            Expr::Think | Expr::Sleep | Expr::Music | Expr::Sing | Expr::Wave | Expr::Typing
         )
+    }
+
+    /// Only its eyes glance at the pointer (`Pose::glancing`): the typing
+    /// cat. Its head, ears, body and laptop never move.
+    pub fn glances(self) -> bool {
+        self == Expr::Typing
+    }
+
+    /// The pointer poll matters to this face: it looks or glances.
+    pub fn follows(self) -> bool {
+        self.looks() || self.glances()
     }
 
     /// The name the demo sheet labels it with.
@@ -116,6 +137,7 @@ impl Expr {
             Expr::Sleep => Key::ExprSleep,
             Expr::Sad => Key::ExprSad,
             Expr::Wave => Key::ExprWave,
+            Expr::Typing => Key::ExprTyping,
         }
     }
 }
@@ -130,6 +152,22 @@ impl Expr {
 pub const LOOK_HEAD_DIP: f32 = 7.0;
 pub const LOOK_TILT_DEG: f32 = 6.0;
 pub const LOOK_EYE_DIP: f32 = 4.0;
+
+/// How far the typing cat's eyes (and only its eyes) slide toward a pointer
+/// at the edge of the glance's reach, in grid units: sideways and down or up.
+/// Small enough that the pills stay inside the head with room to spare
+/// (`the_typing_cat_stays_in_the_idle_island`).
+pub const GLANCE_X: f32 = 4.0;
+pub const GLANCE_Y: f32 = 1.5;
+/// How high a typing paw lifts, in grid units.
+pub const PAW_LIFT: f32 = 1.6;
+
+/// The glance in grid units for a pointer at `(vx, vy)` (each -1 to 1,
+/// clamped; NaN is 0).
+pub fn glance_offset(vx: f32, vy: f32) -> (f32, f32) {
+    let unit = |v: f32| if v.is_nan() { 0.0 } else { v.clamp(-1.0, 1.0) };
+    (GLANCE_X * unit(vx), GLANCE_Y * unit(vy))
+}
 
 /// Moment-to-moment state on top of the face: eyes shut for a blink, how far
 /// the whole cat is raised (hover lift, alert bounce), in px, and where it
@@ -161,6 +199,13 @@ pub struct Pose {
     pub dancing: bool,
     /// How far through its rise the note is, 0 to 1 (`note_phase`).
     pub note_rise: f32,
+    /// The typing cat's glance: its face marks slide further by this much,
+    /// in grid units (`glance_offset`). The head and body stay.
+    pub glance_x: f32,
+    pub glance_y: f32,
+    /// How high the typing cat's left (0) and right (1) paw are raised, in
+    /// grid units.
+    pub paw_lift: [f32; 2],
 }
 
 impl Pose {
@@ -186,6 +231,17 @@ impl Pose {
             head_dx_dip: LOOK_HEAD_DIP * v,
             tilt_deg: LOOK_TILT_DEG * v,
             eye_dx_dip: LOOK_EYE_DIP * v,
+            ..self
+        }
+    }
+
+    /// The typing cat glancing at a pointer `(vx, vy)` (each -1 to 1): the
+    /// eyes only, no head slide or tilt.
+    pub fn glancing(self, vx: f32, vy: f32) -> Pose {
+        let (glance_x, glance_y) = glance_offset(vx, vy);
+        Pose {
+            glance_x,
+            glance_y,
             ..self
         }
     }
@@ -338,13 +394,16 @@ pub struct Ears {
 }
 
 /// A face: its marks, the ears, the vertical bob and the tilt (degrees,
-/// clockwise).
+/// clockwise). `eye_shift` moves every mark across the head, in grid units,
+/// before the tilt (the typing cat looks down and to the laptop); it is
+/// `(0, 0)` for every other face.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Face {
     pub parts: Vec<Part>,
     pub ears: Ears,
     pub bob: f32,
     pub tilt: f32,
+    pub eye_shift: (f32, f32),
 }
 
 /// An espresso pill centred on (x, y), with SVG's corner rule: `rx` is
@@ -378,6 +437,12 @@ fn note(x: f32, y: f32) -> [Part; 3] {
         dot(x + 3.4, y - 1.5, 1.9, Ink::Cream),
     ]
 }
+
+/// The typing cat's whole body tilts this many degrees (clockwise), toward
+/// the laptop on its left; and its eyes sit this far across and down the head
+/// (grid units), so the idle pills' centres land at (20.5, 41) and (36.5, 41).
+const TYPING_TILT: f32 = -4.0;
+const TYPING_EYE_SHIFT: (f32, f32) = (-3.5, 1.0);
 
 /// The marks of `expr`: its eyes first, then what floats beside the head.
 /// With `blink`, open eyes (pills and round ones) become the design's
@@ -445,6 +510,8 @@ pub fn face(expr: Expr, blink: bool) -> Face {
             0.0,
             -7.0,
         ),
+        // The idle pills, shifted (below) toward the laptop on the left.
+        Expr::Typing => (open(10.0, 5.6, 0.0).to_vec(), vec![], still, 0.0, TYPING_TILT),
     };
     let eyes = if blink && expr.blinks() {
         vec![Part::Stroke(Line::Blink)]
@@ -458,6 +525,11 @@ pub fn face(expr: Expr, blink: bool) -> Face {
         ears,
         bob,
         tilt,
+        eye_shift: if expr == Expr::Typing {
+            TYPING_EYE_SHIFT
+        } else {
+            (0.0, 0.0)
+        },
     }
 }
 
@@ -812,6 +884,9 @@ pub(super) enum Shape {
     Ear(Side, f32),
     Head,
     Heart(f32, f32),
+    /// The typing cat's laptop lid and the light along its edge.
+    Lid,
+    LidEdge,
 }
 
 impl Shape {
@@ -829,8 +904,24 @@ impl Shape {
             }
             Shape::Head => head_path(),
             Shape::Heart(x, y) => heart(x, y),
+            Shape::Lid => polygon(&LID),
+            Shape::LidEdge => polygon(&LID_EDGE),
         }
     }
+}
+
+/// A closed polygon through `points`.
+fn polygon(points: &[(f32, f32)]) -> Vec<Seg> {
+    let mut segs = Vec::with_capacity(points.len() + 1);
+    for (i, &(x, y)) in points.iter().enumerate() {
+        segs.push(if i == 0 {
+            Seg::Move(x, y)
+        } else {
+            Seg::Line(x, y)
+        });
+    }
+    segs.push(Seg::Close);
+    segs
 }
 
 /// The cat's paths in grid units, built on first use and kept. The render
@@ -954,6 +1045,14 @@ impl RobotPainter {
             let mut previous = Matrix3x2::default();
             rt.GetTransform(&mut previous);
             let world = local * previous;
+            // The typing cat's laptop and paws sit in the cat's grid and are
+            // placed like it, but the face's tilt does not turn them.
+            let typing = expr == Expr::Typing;
+            let fixed = Matrix3x2::scale(k, k) * place * previous;
+            // 0. The laptop, under the cat.
+            if typing {
+                self.paint_laptop(rt, brush, &fixed, &color);
+            }
             // 1. The Black cat's rim, under everything: the ears stroked
             // wider than their own stroke and the head stroked wider than
             // its outline, so it reaches `RIM_WIDTH` past the silhouette.
@@ -992,10 +1091,17 @@ impl RobotPainter {
                 self.paint_patches(rt, brush, &world, face.ears, alpha);
             }
             // 4. The face marks.
-            let eyes = Matrix3x2::translation(pose.eye_dx_dip / k, 0.0) * world;
+            // The face's own shift (the typing cat looks down at its laptop)
+            // and the glance move the eyes in the grid, before the tilt.
+            let eyes = Matrix3x2::translation(
+                pose.eye_dx_dip / k + face.eye_shift.0 + pose.glance_x,
+                face.eye_shift.1 + pose.glance_y,
+            ) * world;
             // The dancing note's marks move on their own, in dip, and fade.
-            let notes = Matrix3x2::translation(pose.eye_dx_dip / k, 0.0)
-                * shape
+            let notes = Matrix3x2::translation(
+                pose.eye_dx_dip / k + face.eye_shift.0,
+                face.eye_shift.1,
+            ) * shape
                 * Matrix3x2::translation(0.0, pose.note_dy_dip)
                 * place
                 * previous;
@@ -1036,7 +1142,72 @@ impl RobotPainter {
             }
             // 5. The accessory, on top of everything.
             self.paint_accessory(rt, brush, look, face.ears, (&world, &eyes), alpha);
+            // 6. The typing cat's paws, over the laptop and the head.
+            if typing {
+                rt.SetTransform(&fixed);
+                for (i, &(cx, cy)) in PAWS.iter().enumerate() {
+                    let ellipse = D2D1_ELLIPSE {
+                        point: Vector2::new(cx, cy - pose.paw_lift[i]),
+                        radiusX: PAW_RX,
+                        radiusY: PAW_RY,
+                    };
+                    brush.SetColor(&color(look.head_rgb(), 1.0));
+                    rt.FillEllipse(&ellipse, brush);
+                    // Only the Black coat is outlined, in its rim colour.
+                    if let Some(rim) = look.rim() {
+                        brush.SetColor(&color(rim, 1.0));
+                        rt.DrawEllipse(&ellipse, brush, PAW_OUTLINE, None);
+                    }
+                }
+            }
             rt.SetTransform(&previous);
+        }
+    }
+
+    /// The laptop, in the cat's grid: base, lid, the screen's lit edge and
+    /// the logo dot, in fixed colours (not the coat's). `fixed` is the grid's
+    /// transform (scaled, placed, not tilted).
+    fn paint_laptop(
+        &self,
+        rt: &ID2D1RenderTarget,
+        brush: &ID2D1SolidColorBrush,
+        fixed: &Matrix3x2,
+        color: &dyn Fn(u32, f32) -> D2D1_COLOR_F,
+    ) {
+        unsafe {
+            rt.SetTransform(fixed);
+            let (x, y, w, h, r) = LAPTOP_BASE;
+            brush.SetColor(&color(LAPTOP_BASE_RGB, 1.0));
+            rt.FillRoundedRectangle(
+                &D2D1_ROUNDED_RECT {
+                    rect: D2D_RECT_F {
+                        left: x,
+                        top: y,
+                        right: x + w,
+                        bottom: y + h,
+                    },
+                    radiusX: r,
+                    radiusY: r,
+                },
+                brush,
+            );
+            if let Some(g) = self.path(Shape::Lid) {
+                brush.SetColor(&color(LAPTOP_LID_RGB, 1.0));
+                rt.FillGeometry(&g, brush, None);
+            }
+            if let Some(g) = self.path(Shape::LidEdge) {
+                brush.SetColor(&color(LAPTOP_EDGE_RGB, LAPTOP_EDGE_ALPHA));
+                rt.FillGeometry(&g, brush, None);
+            }
+            brush.SetColor(&color(CREAM, LAPTOP_LOGO_ALPHA));
+            rt.FillEllipse(
+                &D2D1_ELLIPSE {
+                    point: Vector2::new(LAPTOP_LOGO.0, LAPTOP_LOGO.1),
+                    radiusX: LAPTOP_LOGO.2,
+                    radiusY: LAPTOP_LOGO.2,
+                },
+                brush,
+            );
         }
     }
 }
@@ -1307,8 +1478,9 @@ pub struct RobotInputs {
 /// 3. The pointer over a compact island → Happy (it also wakes it).
 /// 4. Pomodoro → Focus, media → Music, lyric line → Sing.
 /// 5. Idle: CLI just done → Happy, just failed → Sad; Claude working, a
-///    CLI command or a Mole clean running → Think; low battery → Sad;
-///    asleep → Sleep; otherwise Idle.
+///    CLI command or a Mole clean running → Typing (never Think, which only
+///    the demo sheet and the Claude notice scene still draw); low battery →
+///    Sad; asleep → Sleep; otherwise Idle.
 pub fn choose_expr(i: &RobotInputs) -> Option<Expr> {
     let compact = match i.spot {
         Spot::Hidden | Spot::Panel => return None,
@@ -1353,7 +1525,7 @@ pub fn choose_expr(i: &RobotInputs) -> Option<Expr> {
         _ => match i.cli {
             Cli::Done => Expr::Happy,
             Cli::Failed => Expr::Sad,
-            _ if i.claude_working || i.cli == Cli::Running || i.mole_running => Expr::Think,
+            _ if i.claude_working || i.cli == Cli::Running || i.mole_running => Expr::Typing,
             _ if i.battery_low => Expr::Sad,
             _ if i.asleep => Expr::Sleep,
             _ => Expr::Idle,
@@ -1622,6 +1794,167 @@ pub fn with_note_lift(pose: Pose, expr: Expr, area: Rect, shape_top: f32) -> Pos
         },
         None => pose,
     }
+}
+
+// ---- Typing ----
+
+// The laptop and the paws, in the cat's 64-unit grid. They are drawn only for
+// `Expr::Typing`, in fixed colours, and are not turned by the face's tilt.
+
+/// The laptop's base: x, y, w, h, corner radius (x -27 to 9, y 53 to 56.4).
+const LAPTOP_BASE: (f32, f32, f32, f32, f32) = (-27.0, 53.0, 36.0, 3.4, 1.5);
+const LAPTOP_BASE_RGB: u32 = 0x8F857C;
+/// The lid, leaning back to the left of the cat.
+const LID: [(f32, f32); 4] = [(-23.0, 54.0), (-17.5, 54.0), (-20.5, 27.5), (-25.6, 28.2)];
+const LAPTOP_LID_RGB: u32 = 0x4A423C;
+/// The screen's light along the lid's right edge.
+const LID_EDGE: [(f32, f32); 4] = [(-20.5, 27.5), (-18.4, 27.3), (-15.3, 53.6), (-17.5, 54.0)];
+const LAPTOP_EDGE_RGB: u32 = 0x9CC8E8;
+const LAPTOP_EDGE_ALPHA: f32 = 0.55;
+/// The logo dot on the lid: cx, cy, r.
+const LAPTOP_LOGO: (f32, f32, f32) = (-21.6, 40.5, 1.5);
+const LAPTOP_LOGO_ALPHA: f32 = 0.85;
+/// The two paws (left, right) at rest, and their size. The Black coat's paws
+/// get a thin outline in its rim colour.
+const PAWS: [(f32, f32); 2] = [(1.0, 52.6), (9.5, 52.6)];
+const PAW_RX: f32 = 3.8;
+const PAW_RY: f32 = 2.4;
+const PAW_OUTLINE: f32 = 1.0;
+
+/// The laptop's box in dip for a cat drawn in `area`: grid x -27 to 9, y
+/// 27.3 (the lid's top edge, its round stroke excluded) to 56.4. It sticks out
+/// to the left of the cat's own square, which is why the island grows to the
+/// left (`geometry::TYPING_LEAD`) and why the see-through halo covers it.
+pub fn laptop_rect(area: Rect) -> Rect {
+    let k = area.w / GRID;
+    Rect {
+        x: area.x - 27.0 * k,
+        y: area.y + 27.3 * k,
+        w: 36.0 * k,
+        h: (56.4 - 27.3) * k,
+    }
+}
+
+/// Every grid point the laptop and the paws reach, for the clamp test: the
+/// lid and its lit edge, the base's corners, the logo's box, and each paw's
+/// box with its lift and the Black coat's outline included. `paw_lift` is
+/// per paw, in grid units.
+#[cfg(test)]
+pub fn typing_points(paw_lift: [f32; 2]) -> Vec<(f32, f32)> {
+    let mut points: Vec<(f32, f32)> = LID.iter().chain(LID_EDGE.iter()).copied().collect();
+    let (x, y, w, h, _) = LAPTOP_BASE;
+    points.extend([(x, y), (x + w, y), (x + w, y + h), (x, y + h)]);
+    let (cx, cy, r) = LAPTOP_LOGO;
+    points.extend([
+        (cx - r, cy - r),
+        (cx + r, cy - r),
+        (cx + r, cy + r),
+        (cx - r, cy + r),
+    ]);
+    for (i, &(px, py)) in PAWS.iter().enumerate() {
+        let py = py - paw_lift[i];
+        let (rx, ry) = (PAW_RX + PAW_OUTLINE / 2.0, PAW_RY + PAW_OUTLINE / 2.0);
+        points.extend([
+            (px - rx, py - ry),
+            (px + rx, py - ry),
+            (px + rx, py + ry),
+            (px - rx, py + ry),
+        ]);
+    }
+    points
+}
+
+/// The shortest and longest wait between two paw steps, in milliseconds.
+pub const TYPE_STEP_MIN_MS: u32 = 110;
+pub const TYPE_STEP_MAX_MS: u32 = 200;
+/// About `TYPE_GAP_PCT` percent of the steps wait this long instead (a
+/// thinking beat).
+pub const TYPE_GAP_MS: u32 = 420;
+pub const TYPE_GAP_PCT: u32 = 12;
+/// About one step in `TYPE_PAUSE_ONE_IN` starts a pause: both paws down this
+/// long (a pause about every 8 s on average).
+pub const TYPE_PAUSE_MS: u32 = 900;
+pub const TYPE_PAUSE_ONE_IN: u32 = 43;
+
+/// The typing paws' rhythm: they take turns (left up, then right up), with
+/// now and then a longer beat and a pause with both down. Pure; `App` fires
+/// `next` on a one-shot timer and draws once per step.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TypingPaws {
+    /// The paw that is up now; `None` is a pause or the start (both down).
+    up: Option<Side>,
+    /// The paw that was up last, so the next one is the other.
+    last: Option<Side>,
+}
+
+impl TypingPaws {
+    /// The paw that is up now.
+    pub fn up(&self) -> Option<Side> {
+        self.up
+    }
+
+    /// Both paws down, as at the start.
+    pub fn reset(&mut self) {
+        *self = TypingPaws::default();
+    }
+
+    /// The timer fired: a step now, and the milliseconds until the next one.
+    /// From a paw up, about one step in `TYPE_PAUSE_ONE_IN` puts both down
+    /// for `TYPE_PAUSE_MS`; otherwise (and out of a pause) the other paw
+    /// goes up, after 110 to 200 ms, or `TYPE_GAP_MS` in `TYPE_GAP_PCT`
+    /// percent of the steps.
+    pub fn next(&mut self, rng: &mut Rng) -> u32 {
+        if self.up.is_some() && rng.next_u32() % TYPE_PAUSE_ONE_IN == 0 {
+            self.up = None;
+            return TYPE_PAUSE_MS;
+        }
+        let paw = match self.last {
+            Some(Side::Left) => Side::Right,
+            _ => Side::Left,
+        };
+        self.up = Some(paw);
+        self.last = Some(paw);
+        if rng.next_u32() % 100 < TYPE_GAP_PCT {
+            TYPE_GAP_MS
+        } else {
+            TYPE_STEP_MIN_MS + rng.next_u32() % (TYPE_STEP_MAX_MS - TYPE_STEP_MIN_MS + 1)
+        }
+    }
+
+    /// How high each paw (left, right) is raised now, in grid units.
+    pub fn lift(&self) -> [f32; 2] {
+        [
+            if self.up == Some(Side::Left) { PAW_LIFT } else { 0.0 },
+            if self.up == Some(Side::Right) { PAW_LIFT } else { 0.0 },
+        ]
+    }
+}
+
+/// The paws move: the face is Typing, motion is Full (`motion` already folds
+/// in Energy Saver), Windows' animations are on, nothing is fullscreen, the
+/// screen is not locked or off, and the notch is not shrunk to the eyes.
+/// Otherwise the paws stay down and nothing is timed.
+pub fn typing_anim_on(
+    expr: Option<Expr>,
+    motion: Motion,
+    windows_animations: bool,
+    fullscreen: bool,
+    screen_away: bool,
+    shrunk: bool,
+) -> bool {
+    expr == Some(Expr::Typing)
+        && motion.moves()
+        && windows_animations
+        && !fullscreen
+        && !screen_away
+        && !shrunk
+}
+
+/// The idle island has grown to hold the laptop: the face would be Typing
+/// without the hover (which shows Happy). The shape follows this, not the
+/// face, so the island does not shrink under the pointer.
+pub fn typing_wanted(i: &RobotInputs) -> bool {
+    choose_expr(&RobotInputs { hover: false, ..*i }) == Some(Expr::Typing)
 }
 
 // ---- The robot's state ----
