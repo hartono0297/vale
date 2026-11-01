@@ -94,6 +94,16 @@ fn save_offer(tiles: &[Option<SavedWindow>], full: bool) -> ArrangeSave {
     }
 }
 
+/// What the shared EDIT takes while it is Susun's name field: a name's
+/// length (in UTF-16 units, so never more characters than a name may have).
+const NAME_FIELD_LIMIT: usize = arrange::NAME_MAX;
+
+/// What the shared EDIT holds once the name field is gone: the quick
+/// search's query when the search is open under the notice, else nothing.
+fn field_after_naming(search_open: bool, query: &str) -> &str {
+    if search_open { query } else { "" }
+}
+
 /// A move started at `since` is still running and blocks a new one.
 fn move_in_flight(since: Option<Instant>, now: Instant) -> bool {
     since.is_some_and(|at| now.saturating_duration_since(at) < MOVE_WAIT)
@@ -746,6 +756,8 @@ impl App {
         };
         let prefix = i18n::text(i18n::lang(), Key::ArrangeDefaultName);
         let name = arrange::default_save_name(prefix, &self.config.arrange.saved);
+        // No longer than a name can be: what fits the field saves.
+        input.set_limit(NAME_FIELD_LIMIT);
         input.set_text(&name);
         self.arrange.name_text = name;
         unsafe {
@@ -759,6 +771,7 @@ impl App {
         let has = input.focus() && unsafe { GetForegroundWindow() } == self.hwnd;
         if !has {
             self.return_keyboard();
+            self.give_field_back();
             return;
         }
         self.arrange.naming = Some(info);
@@ -775,11 +788,21 @@ impl App {
             return;
         }
         self.return_keyboard();
-        if let Some(input) = &self.search_input {
-            input.set_text("");
-        }
+        self.give_field_back();
         self.arrange.name_text.clear();
         self.apply_now(Event::ArrangeNaming(false));
+    }
+
+    /// The shared EDIT is the quick search's again: its length, and the
+    /// query it held if the search is open under the notice.
+    fn give_field_back(&self) {
+        if let Some(input) = &self.search_input {
+            input.set_limit(super::QUERY_LIMIT);
+            input.set_text(field_after_naming(
+                self.state.search_open(),
+                &self.search.query,
+            ));
+        }
     }
 
     /// Whether the name field has the keys: it shares the quick search's
@@ -923,6 +946,34 @@ mod tests {
         assert_eq!(save_offer(&[], false), ArrangeSave::None);
         assert_eq!(save_offer(&[None, win()], false), ArrangeSave::Offer);
         assert_eq!(save_offer(&[win(), None], true), ArrangeSave::Full);
+    }
+
+    #[test]
+    fn whatever_fits_the_name_field_is_short_enough_to_save() {
+        let layout = LayoutRef::BuiltIn(BuiltIn::Cols2);
+        let monitor = SavedMonitor {
+            device: "D".into(),
+            rect: Rect::new(0, 0, 10, 10),
+        };
+        // The longest names the field takes, in UTF-16 units: plain and
+        // accented letters, and emoji (two units each).
+        let names = [
+            "x".repeat(NAME_FIELD_LIMIT),
+            "\u{e9}".repeat(NAME_FIELD_LIMIT),
+            "\u{1f600}".repeat(NAME_FIELD_LIMIT / 2),
+        ];
+        for name in names {
+            assert_eq!(name.encode_utf16().count(), NAME_FIELD_LIMIT);
+            let saved =
+                SavedArrangement::new(&name, layout.clone(), monitor.clone(), vec![None, None]);
+            assert!(saved.is_some(), "{name}");
+        }
+    }
+
+    #[test]
+    fn the_search_gets_its_query_back_after_the_name_field() {
+        assert_eq!(field_after_naming(true, "notepad"), "notepad");
+        assert_eq!(field_after_naming(false, "notepad"), "");
     }
 
     #[test]

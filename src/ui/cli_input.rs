@@ -116,6 +116,19 @@ impl CliInput {
         Ok(Self { hwnd })
     }
 
+    /// How many UTF-16 units the field takes from now on (what it holds
+    /// already stays).
+    pub fn set_limit(&self, limit: usize) {
+        unsafe {
+            SendMessageW(
+                self.hwnd,
+                EM_LIMITTEXT,
+                Some(WPARAM(limit)),
+                Some(LPARAM(0)),
+            );
+        }
+    }
+
     pub fn text(&self) -> String {
         let len = unsafe { GetWindowTextLengthW(self.hwnd) }.max(0) as usize;
         let mut buf = vec![0u16; len + 1];

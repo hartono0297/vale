@@ -2282,6 +2282,11 @@ impl Settings {
             to: 1.0,
             start: now,
         });
+        // Susun's template editor lives on Fitur and borrows the shortcut
+        // form's Nama field: leaving Fitur closes it, as Batal would.
+        if self.section == Section::Features {
+            self.arrange_edit = None;
+        }
         self.section = section;
         self.scroll = 0.0;
         self.focused = None;
@@ -2363,6 +2368,24 @@ fn set_name_text(text: &str) {
     set_name_cue();
 }
 
+/// What the shared Nama field holds: Susun's template name (only while the
+/// editor is open on Fitur), an excluded app's name (Fitur otherwise), or an
+/// own tile's label (the shortcut form on Panel).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum NameRole {
+    Template,
+    MutedApp,
+    TileLabel,
+}
+
+fn name_role(section: Section, editing: bool) -> NameRole {
+    match (section, editing) {
+        (Section::Features, true) => NameRole::Template,
+        (Section::Features, false) => NameRole::MutedApp,
+        _ => NameRole::TileLabel,
+    }
+}
+
 /// How many characters the Nama field takes: an excluded app's name while
 /// Fitur uses it (`MUTED_NAME_MAX`), a tile label otherwise (`LABEL_MAX`).
 fn name_limit(section: Section) -> usize {
@@ -2385,7 +2408,7 @@ fn set_name_cue() {
     else {
         return;
     };
-    if editing {
+    if name_role(section, editing) == NameRole::Template {
         // Susun's template editor: a name of up to 24 characters.
         send(name, EM_SETLIMITTEXT, arrange::NAME_MAX, 0);
         let cue = HSTRING::from(text(lang, Key::ArrangeFieldName));
@@ -2900,7 +2923,8 @@ unsafe extern "system" fn wnd_proc(
                     // On Fitur the field is the excluded apps': Enter adds
                     // the name, Esc empties the field.
                     // Susun's editor: Enter saves, Esc cancels.
-                    if with(|st| st.arrange_edit.is_some()).unwrap_or(false) {
+                    let role = with(|st| name_role(st.section, st.arrange_edit.is_some()));
+                    if role == Some(NameRole::Template) {
                         let hit = if wparam.0 == 0 {
                             Hit::ArrangeEditorSave
                         } else {
@@ -2912,7 +2936,7 @@ unsafe extern "system" fn wnd_proc(
                         relayout_and_place();
                         return LRESULT(0);
                     }
-                    let features = with(|st| st.section == Section::Features).unwrap_or(false);
+                    let features = role == Some(NameRole::MutedApp);
                     if features && wparam.0 == 1 {
                         reset_form();
                     } else {
@@ -3442,6 +3466,24 @@ mod tests {
             assert_eq!(name_limit(section), want, "{section:?}");
         }
         assert!(name_limit(Section::Features) >= "Microsoft Teams (work or school)".len());
+    }
+
+    #[test]
+    fn the_name_field_is_the_template_name_only_while_the_editor_is_open_on_fitur() {
+        assert_eq!(name_role(Section::Features, true), NameRole::Template);
+        assert_eq!(name_role(Section::Features, false), NameRole::MutedApp);
+        // An editor state carried to another section never takes over the
+        // shortcut form's Enter, Esc, hint or length.
+        for section in Section::ALL {
+            if section != Section::Features {
+                assert_eq!(name_role(section, true), NameRole::TileLabel, "{section:?}");
+                assert_eq!(
+                    name_role(section, false),
+                    NameRole::TileLabel,
+                    "{section:?}"
+                );
+            }
+        }
     }
 
     #[test]

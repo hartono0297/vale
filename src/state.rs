@@ -4616,6 +4616,22 @@ mod tests {
     }
 
     #[test]
+    fn batalkan_still_undoes_while_the_name_field_is_up_past_the_three_seconds() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Notice(arranged(ArrangeSave::Offer)), t0);
+        s.apply(Event::Click(Hit::ArrangeSave), t0);
+        s.apply(Event::ArrangeNaming(true), t0);
+        let later = t0 + Duration::from_secs(10);
+        s.apply(Event::Tick, later);
+        assert_eq!(
+            s.apply(Event::Click(Hit::ArrangeUndo), later),
+            vec![Effect::ArrangeUndo]
+        );
+        assert_eq!(s.view(), View::Idle);
+    }
+
+    #[test]
     fn the_arranged_buttons_undo_and_save_only_from_the_notice() {
         let t0 = Instant::now();
         let mut s = st();

@@ -962,7 +962,6 @@ mod tests {
         assert_eq!(t.entries().len(), Shortcut::ALL.len());
     }
 
-    /// The default tiles (12 on) plus `own` custom tiles, all on.
     #[test]
     fn the_susun_jump_tile_is_off_by_default_and_an_old_config_joins_it_off() {
         assert_eq!(Shortcut::ALL.len(), 22);
@@ -993,6 +992,7 @@ mod tests {
         assert_eq!(names[at - 1], "(GoCli)");
     }
 
+    /// The default tiles (12 on) plus `own` custom tiles, all on.
     fn with_own(own: usize) -> ShortcutTiles {
         let mut t = ShortcutTiles::default();
         for i in 0..own {

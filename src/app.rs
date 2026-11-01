@@ -2288,7 +2288,9 @@ impl App {
         self.on_cli_changed();
         self.on_clip_changed();
         self.on_notif_changed();
-        if self.state.search_open() {
+        // The search's field is also Susun's name field, which is up with
+        // the search closed.
+        if self.state.search_open() || self.arrange_naming() {
             self.on_search_changed();
         }
     }

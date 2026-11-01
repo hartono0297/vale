@@ -262,8 +262,8 @@ impl Renderer {
 
     /// The notice after an arrangement: the badge (or Bata), the title over
     /// the body, and "Batalkan" and "Simpan…" at the right; while the name
-    /// field is up, a hint over the field instead. The buttons are hit
-    /// regions.
+    /// field is up, a hint over the field and "Batalkan" alone. The buttons
+    /// are hit regions.
     pub(in crate::ui::render) fn paint_arranged(
         &mut self,
         shape: ShapeRect,
@@ -287,13 +287,30 @@ impl Renderer {
         }
         let edge = shape.x + shape.w - 20.0;
         let mid = shape.y + shape.h / 2.0;
+        let chip = |w: f32, right: f32| Rect {
+            x: right - w,
+            y: mid - CHIP_H / 2.0,
+            w,
+            h: CHIP_H,
+        };
         if let Some(name) = view.name {
-            // The hint small above the field, the field the rest of the row.
+            // "Batalkan" stays at the right (the undo works while the field
+            // is up); the hint small above the field, the field the rest of
+            // the row.
+            let label = text(lang, Key::ArrangeUndo);
+            let w = self.text_width(label, &self.fonts.button).ceil() + 2.0 * CHIP_PAD;
+            let undo = chip(w, edge);
+            self.set_color(p.accent, 1.0);
+            self.fill_round(undo, undo.h / 2.0);
+            self.solid_ink(|| {
+                self.text_colored(label, &self.fonts.button_center, undo, p.on_accent, 1.0);
+            });
             let left = layout.title.x;
+            let right = undo.x - 10.0;
             let hint = Rect {
                 y: mid - 26.0,
                 h: 14.0,
-                w: edge - left,
+                w: (right - left).max(0.0),
                 ..layout.title
             };
             self.text_colored(
@@ -306,20 +323,17 @@ impl Renderer {
             let field = Rect {
                 x: left,
                 y: mid - 8.0,
-                w: edge - left,
+                w: (right - left).max(0.0),
                 h: NAME_H,
             };
             self.paint_name_field(field, name);
-            self.regions.regions = Vec::new();
+            self.regions.regions = vec![Region {
+                rect: undo,
+                hit: Hit::ArrangeUndo,
+            }];
             return Ok(());
         }
         // The chips, right to left.
-        let chip = |w: f32, right: f32| Rect {
-            x: right - w,
-            y: mid - CHIP_H / 2.0,
-            w,
-            h: CHIP_H,
-        };
         let mut right = edge;
         let mut regions = Vec::new();
         let mut first_left = edge;
