@@ -901,7 +901,7 @@ keys! {
     AccFlower => "Bunga", "Flower";
     AccCrown => "Mahkota", "Crown";
     CatFollow => "Ikuti kursor", "Follow the pointer";
-    CatFollowDesc => "Kepala menoleh ke arah kursor", "The head turns toward the pointer";
+    CatFollowDesc => "Kepala dan mata menoleh ke kursor", "Head and eyes turn toward the pointer";
     CatPeek => "Mengecil jadi mata", "Shrink to eyes";
     CatPeekDesc => "Jadi dua mata saat kursor mendekat di atas jendela",
         "Two eyes when the pointer nears it over a window";

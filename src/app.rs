@@ -79,7 +79,9 @@ use crate::model::{Effect, Event, Hit, Notice, NoticeKind, Page, View};
 use crate::mole::{self, Confirmed, MoleEvent, MoleOpts, MoleWorker};
 use crate::notes::NotesStore;
 use crate::pages::PanelPages;
-use crate::pointer_watch::{self, LookEase, Peek, PeekInputs, PeekState, UnderCache};
+use crate::pointer_watch::{
+    self, EyesLook, EyesMotion, LookEase, Peek, PeekInputs, PeekState, UnderCache,
+};
 use crate::pomodoro::PomoStatus;
 use crate::reminders::{self, Reminder, RemindersStore, due_now, next_due};
 use crate::shelf_ole;
@@ -118,7 +120,8 @@ use crate::ui::render::{
     RobotFrame, SearchView, SystemView,
 };
 use crate::ui::robot::{
-    self, Brain, GreetSettings, Motion, Rng, Spot, choose_expr, plan_timers, should_greet,
+    self, Brain, EyesBlink, EyesPose, GreetSettings, Motion, Rng, Spot, choose_expr, plan_timers,
+    should_greet,
 };
 use crate::ui::settings::{self, Action as SettingsAction, WM_APP_SETTINGS_ACTION};
 use crate::ui::tray::{self, MenuCmd, WM_APP_TRAY};
@@ -421,6 +424,10 @@ pub fn run(media_log_flag: bool) {
             eyes_morph: false,
             look: LookEase::default(),
             look_at: None,
+            eyes_look: EyesLook::default(),
+            eyes_look_at: None,
+            eyes_blink: EyesBlink::default(),
+            eyes_blink_timer: false,
             pointer_ms: 0,
             pointer_near: true,
             display_off: false,
@@ -699,6 +706,14 @@ struct App {
     /// The cat's look at the pointer, and when it was last eased.
     look: LookEase,
     look_at: Option<Instant>,
+    /// The shrunk notch's eyes look at the pointer (`pointer_watch::EyesLook`),
+    /// and when they were last eased.
+    eyes_look: EyesLook,
+    eyes_look_at: Option<Instant>,
+    /// The shrunk notch's blink, and whether `TIMER_BLINK` runs its schedule
+    /// (the cat's own blink is `bata.blink_timer`; never both).
+    eyes_blink: EyesBlink,
+    eyes_blink_timer: bool,
     /// `TIMER_POINTER`'s interval now (0: not running), and whether the
     /// pointer was near the top edge at the last read.
     pointer_ms: u32,
@@ -1482,7 +1497,8 @@ impl App {
     fn sync_robot_timers(&mut self, now: Instant) {
         let face = self.robot_frame(&self.state.view(), now).map(|r| r.expr);
         let mut plan = plan_timers(face, self.motion(), self.animating_at(now));
-        // The eyes alone are static: no blink while the notch is shrunk.
+        // The shrunk notch has no cat to blink: its eyes run their own
+        // schedule below, on the same timer.
         plan.blink &= !self.eyes;
         if plan.blink != self.bata.blink_timer {
             self.bata.blink_timer = plan.blink;
@@ -1496,6 +1512,7 @@ impl App {
                 }
             }
         }
+        self.sync_eyes_blink();
         let next = plan
             .change
             .then(|| self.bata.brain.next_change(now, self.sleep_after()))
@@ -1520,6 +1537,19 @@ impl App {
     /// `TIMER_BLINK`: shut the eyes for `BLINK_MS`, then open them and wait
     /// 4–7 s for the next blink.
     fn on_blink(&mut self) {
+        if self.eyes_blink_timer {
+            // The shrunk notch's eyes: one step of their schedule. A running
+            // ease does not postpone it: the clock draws the shut state, and
+            // otherwise this draws it.
+            let wait = self.eyes_blink.next(&mut self.bata.rng);
+            unsafe {
+                SetTimer(Some(self.hwnd), TIMER_BLINK, wait, None);
+            }
+            if !self.animating() {
+                self.draw(Instant::now());
+            }
+            return;
+        }
         if !self.bata.blink_timer {
             unsafe {
                 let _ = KillTimer(Some(self.hwnd), TIMER_BLINK);
@@ -1537,6 +1567,49 @@ impl App {
         }
         if !self.animating() {
             self.draw(Instant::now());
+        }
+    }
+
+    /// The shrunk notch's eyes may blink: it is shrunk (with or without the
+    /// cat), Motion is Full (not Energy Saver) and Windows animations are on.
+    /// Not held back by the frame clock: the eyes' ease would postpone every
+    /// blink.
+    fn eyes_blink_wanted(&self) -> bool {
+        self.eyes && self.motion().moves() && self.animations
+    }
+
+    /// Arms or kills `TIMER_BLINK` for the eyes' blink schedule, and starts
+    /// the schedule open. Whichever of the cat's and the eyes' schedule
+    /// stops leaves the shared timer to the other: the cat's block of
+    /// `sync_robot_timers` has already armed or killed it by its own plan.
+    fn sync_eyes_blink(&mut self) {
+        let wanted = self.eyes_blink_wanted();
+        if wanted == self.eyes_blink_timer {
+            return;
+        }
+        self.eyes_blink_timer = wanted;
+        self.eyes_blink = EyesBlink::default();
+        unsafe {
+            if wanted {
+                let wait = EyesBlink::open_wait(&mut self.bata.rng);
+                SetTimer(Some(self.hwnd), TIMER_BLINK, wait, None);
+            } else if !self.bata.blink_timer {
+                let _ = KillTimer(Some(self.hwnd), TIMER_BLINK);
+            }
+        }
+    }
+
+    /// The shrunk notch's eyes this frame: where they look, and shut for a
+    /// blink. Centred and open anywhere else.
+    fn eyes_pose(&self) -> EyesPose {
+        if !self.eyes {
+            return EyesPose::default();
+        }
+        let (dx_dip, dy_dip) = self.eyes_look.offset_dip();
+        EyesPose {
+            dx_dip,
+            dy_dip,
+            blink: self.eyes_blink.shut(),
         }
     }
 
@@ -2939,6 +3012,13 @@ impl App {
         let view = self.state.view();
         // The cat's look goes back to the centre when it cannot follow.
         self.sync_look(now);
+        // The eyes start centred at every shrink and every restore, and look
+        // only while the shrunk notch may follow the pointer.
+        if eyes_swap {
+            self.eyes_look.snap_to_centre();
+            self.eyes_look_at = None;
+        }
+        self.sync_eyes_look();
         // Bata: an alert that just appeared bounces; a lift or bounce needs frames.
         let face = self.robot_frame(&view, now).map(|r| r.expr);
         let moves = self.motion().moves();
@@ -3139,6 +3219,7 @@ impl App {
             || self.lyric_scrolling
             || self.robot_moving(now)
             || self.look.moving()
+            || self.eyes_look.moving()
             || self.shelf.motion.running(now)
             || self.dock.moving()
     }
@@ -3557,9 +3638,10 @@ impl App {
             // The notch comes back; `refresh` also syncs the look and the poll.
             self.refresh(now);
         } else {
-            let looked = self.look.value();
+            let looked = (self.look.value(), self.eyes_look.offset_dip());
             self.sync_look(now);
-            if self.look.value() != looked && !self.animating() {
+            self.sync_eyes_look();
+            if (self.look.value(), self.eyes_look.offset_dip()) != looked && !self.animating() {
                 // The cat was snapped back to the centre: draw it there.
                 self.draw(now);
             }
@@ -3831,6 +3913,99 @@ impl App {
         Some(shape_with_robot_sized(style, notch, kind, robot))
     }
 
+    /// The shrunk notch's eyes follow the pointer: it is shrunk, "Ikuti
+    /// kursor" is on, and the peek may go on (not fullscreen, not locked).
+    /// The cat is not asked: the eyes show with it off.
+    fn eyes_look_eligible(&self) -> bool {
+        self.peek.is_shrunk() && self.config.cat_follow_pointer && self.peek_eligible()
+    }
+
+    /// How the eyes follow now (`pointer_watch::eyes_motion`).
+    fn eyes_motion(&self) -> EyesMotion {
+        pointer_watch::eyes_motion(
+            self.config.cat_follow_pointer,
+            self.motion().moves(),
+            self.animations,
+        )
+    }
+
+    /// The eyes cannot look any more (not shrunk, "Ikuti kursor" off,
+    /// fullscreen, locked): they are centred at once, with no ease. And a
+    /// motion setting that stopped easing finishes a running ease where it
+    /// was heading.
+    fn sync_eyes_look(&mut self) {
+        if !self.eyes_look_eligible() {
+            self.eyes_look.snap_to_centre();
+            self.eyes_look_at = None;
+        } else if self.eyes_motion() != EyesMotion::Ease && self.eyes_look.finish() {
+            self.eyes_look_at = None;
+        }
+    }
+
+    /// One poll reading for the eyes: the pointer, in island dip, sets the
+    /// look's target. Eased on the frame clock with Motion Full and Windows
+    /// animations on; otherwise the eyes jump there and are drawn once.
+    fn eyes_look_tick(&mut self, pt: POINT, now: Instant) {
+        let view = self.state.view();
+        let Some(normal) = self.normal_shape(&view) else {
+            return;
+        };
+        let Some((origin, k)) = self
+            .win
+            .as_ref()
+            .map(|win| (win.screen_origin(), win.scale()))
+        else {
+            return;
+        };
+        let (x, y) = ((pt.x - origin.0) as f32 / k, (pt.y - origin.1) as f32 / k);
+        let pill = shape_sized(self.config.style, self.notch_size(), ShapeKind::Eyes);
+        let half_span = normal.w / 2.0 + pointer_watch::PEEK_ZONE_DIP;
+        let (vx, vy) = pointer_watch::eyes_target(
+            x,
+            y,
+            pill.x + pill.w / 2.0,
+            pill.y + pill.h / 2.0,
+            half_span,
+        );
+        match self.eyes_motion() {
+            EyesMotion::Still => {}
+            EyesMotion::Jump => {
+                if self.eyes_look.jump_to(vx, vy) && !self.animating() {
+                    self.draw(now);
+                }
+            }
+            EyesMotion::Ease => {
+                if self.eyes_look.set_target(vx, vy) {
+                    self.ensure_clock();
+                }
+            }
+        }
+    }
+
+    /// One frame-clock tick of the eyes' look: eased to `now`.
+    fn advance_eyes_look(&mut self, now: Instant) {
+        if !self.eyes_look.moving() {
+            self.eyes_look_at = None;
+            return;
+        }
+        let dt = self
+            .eyes_look_at
+            .map_or(Duration::ZERO, |at| now.saturating_duration_since(at));
+        self.eyes_look.advance(dt);
+        self.eyes_look_at = self.eyes_look.moving().then_some(now);
+    }
+
+    /// Windows' animation setting was read again: the eyes' ease and blink
+    /// follow it at once (nothing runs unless the notch is shrunk).
+    fn animations_changed(&mut self) {
+        self.animations = client_animations_on();
+        if self.eyes {
+            let now = Instant::now();
+            self.sync_eyes_look();
+            self.sync_robot_timers(now);
+        }
+    }
+
     /// The cat cannot follow the pointer any more (`look_eligible` is false):
     /// its look is back at the centre at once, with no ease. Every way out
     /// leaves nothing to ease on screen: the cat is gone (off, another view,
@@ -3876,7 +4051,8 @@ impl App {
     /// a locked session and a display that is off), and its pace follows
     /// `pointer_watch::poll_ms`.
     fn sync_pointer_watch(&mut self, now: Instant) {
-        let (follow, peek) = (self.look_eligible(now), self.peek_eligible());
+        let follow = pointer_watch::follow_on(self.look_eligible(now), self.eyes_look_eligible());
+        let peek = self.peek_eligible();
         let ms = pointer_watch::poll_ms(follow, peek, self.pointer_near);
         if ms == 0 {
             self.under_cache.clear();
@@ -3908,6 +4084,9 @@ impl App {
         self.pointer_near = pointer_watch::near_top(pt.y - origin.1, scale);
         if self.peek_eligible() {
             self.peek_tick(pt, now);
+        }
+        if self.eyes_look_eligible() {
+            self.eyes_look_tick(pt, now);
         }
         if self.look_eligible(now) && !self.look_hidden_behind(now) {
             // The island is centred on the monitor: so is the notch.
@@ -4233,6 +4412,7 @@ impl App {
         // The cat's look eases to this frame before it is drawn, so the frame
         // that reaches the target is the last one the clock draws for it.
         self.advance_look(now);
+        self.advance_eyes_look(now);
         self.dock_step(now);
         let shape_done = self.anim.progress(now) >= 1.0;
         let slide_done = self.slide.is_none_or(|s| s.progress(now) >= 1.0);
@@ -5306,6 +5486,7 @@ impl App {
             progress: track_progress(state, now),
             robot,
             eyes: self.eyes,
+            eyes_pose: self.eyes_pose(),
             eq_heights: self.eq_heights(),
             robot_fades: self.eyes_morph,
             system: Some(&system),
@@ -7084,7 +7265,7 @@ unsafe extern "system" fn wnd_proc(
             }
             // The animation switch is read again (no timer, no poll); it
             // only matters to the next transition.
-            with_app(|app| app.animations = client_animations_on());
+            with_app(|app| app.animations_changed());
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
         WM_DESTROY => {

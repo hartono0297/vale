@@ -30,7 +30,8 @@ use windows::core::Result as WinResult;
 use windows_numerics::{Matrix3x2, Vector2};
 
 use super::cat_style::{CatLook, Placed, RIM_WIDTH};
-use super::geometry::Rect;
+use super::geometry::{EYES_H, Rect, ShapeRect, shape_contains};
+use crate::config::Style;
 use crate::greeting::{self, DayPeriod, GreetMark};
 use crate::i18n::Key;
 use crate::model::{NoticeKind, View};
@@ -494,6 +495,184 @@ pub fn eyes_area(centre: (f32, f32)) -> Rect {
     }
 }
 
+// ---- The shrunk notch's eyes: where they look and when they blink ----
+
+/// What the shrunk notch's eyes do this frame: slid `dx_dip` across and
+/// `dy_dip` down from the centre (the look), or shut (a blink). The default
+/// is centred and open.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct EyesPose {
+    pub dx_dip: f32,
+    pub dy_dip: f32,
+    pub blink: bool,
+}
+
+/// The grid boxes `(left, top, right, bottom)` of the eyes' marks: the two
+/// open pills, or the two blink lines with their round caps (stroke width
+/// included).
+fn eyes_grid_boxes(blink: bool) -> Vec<(f32, f32, f32, f32)> {
+    if !blink {
+        return eye_pills()
+            .into_iter()
+            .filter_map(|part| match part {
+                Part::Pill { x, y, w, h, .. } => Some((x, y, x + w, y + h)),
+                _ => None,
+            })
+            .collect();
+    }
+    let line = Line::Blink;
+    let pad = line.width() / 2.0;
+    let mut boxes: Vec<(f32, f32, f32, f32)> = Vec::new();
+    for seg in line.segments() {
+        match seg {
+            Seg::Move(x, y) => boxes.push((x - pad, y - pad, x + pad, y + pad)),
+            Seg::Line(x, y) => {
+                if let Some(b) = boxes.last_mut() {
+                    *b = (b.0.min(x - pad), b.1.min(y - pad), b.2.max(x + pad), b.3.max(y + pad));
+                }
+            }
+            _ => {}
+        }
+    }
+    boxes
+}
+
+/// The boxes of both eyes in dip, as `paint_eyes` draws them when centred on
+/// `centre` and slid by `(dx, dy)`.
+pub fn eyes_boxes_at(
+    centre: (f32, f32),
+    dx: f32,
+    dy: f32,
+    blink: bool,
+) -> Vec<(f32, f32, f32, f32)> {
+    let at = |x: f32, y: f32| {
+        (
+            centre.0 + (x - 32.0) * EYES_SCALE + dx,
+            centre.1 + (y - Y) * EYES_SCALE + dy,
+        )
+    };
+    eyes_grid_boxes(blink)
+        .into_iter()
+        .map(|(l, t, r, b)| {
+            let (left, top) = at(l, t);
+            let (right, bottom) = at(r, b);
+            (left, top, right, bottom)
+        })
+        .collect()
+}
+
+/// Where the shrunk notch's eyes sit in `shape` (a pill, or the morph toward
+/// it): the middle of the line between them, as `paint_eyes_pill` anchors it.
+pub fn eyes_centre(shape: ShapeRect) -> (f32, f32) {
+    (shape.x + shape.w / 2.0, shape.y + EYES_H / 2.0)
+}
+
+/// The slide `(dx, dy)` of the eyes in dip, cut back so both eyes stay inside
+/// `shape` (the pill, or any shape of the morph to it): open or shut, so a
+/// blink never moves them. The shapes' corners are tested on the main outline
+/// (the Notch's shoulders are outside it, so this is the stricter side). At the
+/// final pill the look's own extremes fit, so this is a guard that the morph
+/// and odd sizes never trip over, not a visible limit.
+pub fn eyes_offset_in(style: Style, shape: ShapeRect, dx: f32, dy: f32) -> (f32, f32) {
+    let centre = eyes_centre(shape);
+    let fits = |ox: f32, oy: f32| {
+        [false, true].into_iter().all(|blink| {
+            eyes_boxes_at(centre, ox, oy, blink)
+                .into_iter()
+                .all(|(l, t, r, b)| {
+                    [(l, t), (r, t), (l, b), (r, b)]
+                        .into_iter()
+                        .all(|(x, y)| shape_contains(style, shape, x, y))
+                })
+        })
+    };
+    // The set of slides that fit is convex, so along a line from the middle
+    // it is an interval: bisect for its end.
+    let reach = |want: f32, fits: &dyn Fn(f32) -> bool| {
+        if want.is_nan() || want == 0.0 || !fits(0.0) {
+            return 0.0;
+        }
+        if fits(want) {
+            return want;
+        }
+        let (mut ok, mut bad) = (0.0f32, want);
+        for _ in 0..24 {
+            let mid = (ok + bad) / 2.0;
+            if fits(mid) {
+                ok = mid;
+            } else {
+                bad = mid;
+            }
+        }
+        ok
+    };
+    let y = reach(dy, &|v| fits(0.0, v));
+    let x = reach(dx, &|v| fits(v, y));
+    (x, y)
+}
+
+pub const EYES_BLINK_MIN_MS: u32 = 3_000;
+pub const EYES_BLINK_MAX_MS: u32 = 6_000;
+/// A double blink: its second shut starts this long after the first one starts.
+pub const EYES_DOUBLE_MS: u32 = 260;
+
+/// The shrunk notch's blink schedule: eyes open for 3 to 6 s, shut for
+/// `BLINK_MS`, and one blink in four is a double (shut, open 140 ms, shut
+/// again). `next` is called each time `TIMER_BLINK` fires.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EyesBlink {
+    /// Open, waiting for the next blink.
+    #[default]
+    Open,
+    /// Shut; a second shut follows when `second_follows`.
+    Shut { second_follows: bool },
+    /// Open between the two shuts of a double blink.
+    Gap,
+}
+
+impl EyesBlink {
+    /// The wait while open: 3 to 6 s. The first one is what arms the timer.
+    pub fn open_wait(rng: &mut Rng) -> u32 {
+        EYES_BLINK_MIN_MS + rng.next_u32() % (EYES_BLINK_MAX_MS - EYES_BLINK_MIN_MS + 1)
+    }
+
+    /// The eyes are shut now.
+    pub fn shut(&self) -> bool {
+        matches!(self, EyesBlink::Shut { .. })
+    }
+
+    /// The timer fired: the next step, and the milliseconds until the one
+    /// after it.
+    pub fn next(&mut self, rng: &mut Rng) -> u32 {
+        match *self {
+            EyesBlink::Open => {
+                *self = EyesBlink::Shut {
+                    second_follows: rng.next_u32() % 4 == 0,
+                };
+                BLINK_MS
+            }
+            EyesBlink::Shut {
+                second_follows: true,
+            } => {
+                *self = EyesBlink::Gap;
+                EYES_DOUBLE_MS - BLINK_MS
+            }
+            EyesBlink::Gap => {
+                *self = EyesBlink::Shut {
+                    second_follows: false,
+                };
+                BLINK_MS
+            }
+            EyesBlink::Shut {
+                second_follows: false,
+            } => {
+                *self = EyesBlink::Open;
+                Self::open_wait(rng)
+            }
+        }
+    }
+}
+
 /// Head: x 7 y 24, 50 × 30, a dome on top (radius 17) and a flat base.
 pub const HEAD: (f32, f32, f32, f32, f32) = (7.0, 24.0, 50.0, 30.0, 17.0);
 /// How far an ear's stroke (width 5, round joins) reaches past its triangle.
@@ -812,14 +991,16 @@ impl RobotPainter {
 impl RobotPainter {
     /// Only the two open eyes of the idle face, in the brand terracotta (the
     /// espresso of the cat's own eyes would vanish on the dark notch), over a
-    /// square `area` as `eyes_area` gives. The render target's transform is
-    /// restored; the brush colour is not.
+    /// square `area` as `eyes_area` gives; with `blink`, the cat's two short
+    /// level lines instead, in the same colour. The render target's transform
+    /// is restored; the brush colour is not.
     pub fn paint_eyes(
         &self,
         rt: &ID2D1RenderTarget,
         brush: &ID2D1SolidColorBrush,
         area: Rect,
         alpha: f32,
+        blink: bool,
     ) {
         if area.w <= 0.0 {
             return;
@@ -837,7 +1018,13 @@ impl RobotPainter {
                 b: ch(0),
                 a: alpha,
             });
-            for part in eye_pills() {
+            if blink {
+                let line = Line::Blink;
+                if let Some(g) = self.path(Shape::Line(line)) {
+                    rt.DrawGeometry(&g, brush, line.width(), &self.round);
+                }
+            }
+            for part in eye_pills().into_iter().filter(|_| !blink) {
                 if let Part::Pill { x, y, w, h, rx, ry } = part {
                     rt.FillRoundedRectangle(
                         &D2D1_ROUNDED_RECT {

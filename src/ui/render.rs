@@ -49,7 +49,7 @@ use super::cat_style::CatLook;
 use super::dock::{DockFrame, DockZone};
 use super::fonts::{self, Face, Role};
 use super::geometry::{
-    BAR_COUNT, BAR_GAP, BAR_W, EYES_H, HitRegions, LYRIC_FADE_W, Rect, SHOT_BUTTON_PAD,
+    BAR_COUNT, BAR_GAP, BAR_W, HitRegions, LYRIC_FADE_W, Rect, SHOT_BUTTON_PAD,
     SHOT_THUMB_RADIUS, ShapeRect, Under, badge_letter, badge_style, compact_layout,
     compact_layout_robot, corner_radius, equalizer_heights, idle_layout, lyric_layout,
     lyric_layout_robot, lyric_overflow, notice_action, notice_action_w, notice_layout, shot_fit,
@@ -57,7 +57,7 @@ use super::geometry::{
 };
 use super::icons::{Icon, IconSet};
 use super::motion::Transit;
-use super::robot::{Expr, Pose, RobotPainter, eyes_area};
+use super::robot::{Expr, EyesPose, Pose, RobotPainter, eyes_area, eyes_centre, eyes_offset_in};
 use super::shelf_motion::ShelfMotion;
 use super::window::IslandWindow;
 use crate::audio::MixerRow;
@@ -198,6 +198,9 @@ pub struct Frame<'a> {
     /// The closed island is shrunk to the eyes (`ShapeKind::Eyes`): the pill
     /// holds only the cat's two open eyes, whatever the view or `robot`.
     pub eyes: bool,
+    /// Where the shrunk notch's eyes look and whether they are shut; only
+    /// read with `eyes`. The default is centred and open.
+    pub eyes_pose: EyesPose,
     /// The compact view's equalizer bar heights from the real sound
     /// (`geometry::audio_bar_heights`); `None` draws the sine of
     /// `equalizer_heights`, as paused media and the demos do.
@@ -1517,7 +1520,7 @@ impl Renderer {
         // pixels are all the island draws, so a click anywhere else reaches
         // the window below.
         if frame.eyes {
-            self.paint_eyes_pill(shape, frame.transit.content_alpha);
+            self.paint_eyes_pill(style, shape, frame.transit.content_alpha, frame.eyes_pose);
             return Ok(());
         }
         unsafe {
@@ -1621,9 +1624,11 @@ impl Renderer {
     }
 
     /// The cat's two open eyes alone, in the brand terracotta, centred on the
-    /// shrunk notch's place (its top, `EYES_H` tall, however far the morph has
-    /// come), fading in with `content_alpha`. Static: no blink.
-    fn paint_eyes_pill(&self, shape: ShapeRect, content_alpha: f32) {
+    /// shrunk notch's place (its top, `geometry::EYES_H` tall, however far the morph has
+    /// come), fading in with `content_alpha`. They slide by `pose`'s look
+    /// (cut back so both stay inside `shape`, whatever stage of the morph it
+    /// is) and shut for its blink, as the cat's blink lines.
+    fn paint_eyes_pill(&self, style: Style, shape: ShapeRect, content_alpha: f32, pose: EyesPose) {
         let target = self.target.as_ref().expect("target ensured by paint");
         let alpha = content_alpha.clamp(0.0, 1.0);
         unsafe {
@@ -1632,9 +1637,11 @@ impl Renderer {
                 D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
             );
         }
-        let area = eyes_area((shape.x + shape.w / 2.0, shape.y + EYES_H / 2.0));
+        let (dx, dy) = eyes_offset_in(style, shape, pose.dx_dip, pose.dy_dip);
+        let (cx, cy) = eyes_centre(shape);
+        let area = eyes_area((cx + dx, cy + dy));
         self.robot
-            .paint_eyes(&target.rt, &target.brush, area, alpha);
+            .paint_eyes(&target.rt, &target.brush, area, alpha, pose.blink);
         unsafe { target.rt.PopAxisAlignedClip() };
     }
 
