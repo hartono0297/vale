@@ -104,9 +104,10 @@ use crate::ui::editor::{self, EditorKind, EditorResult, WM_APP_EDITOR_RESULT};
 use crate::ui::frame_clock::{FrameClock, WM_APP_FRAME};
 use crate::ui::geometry::{
     AA_MARGIN, ANIM_MS, LYRIC_HOLD_MS, LYRIC_MAX_W, LYRIC_MIN_W, NOTCH_H_DEFAULT, NOTCH_W_DEFAULT,
-    NotchSize, ShapeKind, ShapeRect, Under, WINDOW_W, island_contains, lerp_shape, lyric_box_w,
-    lyric_cap, lyric_max_w, lyric_scroll_end_ms, lyric_scroll_offset, lyric_shape_sized,
-    lyric_target_w, lyric_width_min, panel_kind, shape_for, shape_sized, shape_with_robot_sized,
+    NotchSize, ShapeKind, ShapeRect, TOAST_SLOT_EXTRA, Under, WINDOW_W, island_contains,
+    lerp_shape, lyric_box_w, lyric_cap, lyric_max_w, lyric_scroll_end_ms, lyric_scroll_offset,
+    lyric_shape_sized, lyric_slot_width, lyric_target_w, lyric_width_min, panel_kind, shape_for,
+    shape_sized, shape_with_robot_sized, with_toast_slot,
 };
 use crate::ui::motion::{
     FadeStart, MorphCurve, PAGE_FADE_MS, Reveal, SlideStrip, Snap, SubView, Transit, Transition,
@@ -3105,6 +3106,11 @@ impl App {
     /// Retargets the animation at the state's view and re-arms the notice deadline.
     fn refresh(&mut self, now: Instant) {
         self.sync_lyrics(now);
+        // A busy toast's logo beside the lyric line: the width, the box and
+        // the scroll plan are worked out with it (before the line is fitted).
+        let lyric_slot =
+            self.state.toast_slot().is_some() && self.state.view() == View::MediaLyric;
+        self.lyric_fit.set_slot(lyric_slot);
         // The notch peek only lives on a quiet compact view; anything else
         // (a notice, the panel, fullscreen, stay-behind) ends it at once.
         self.peek_guard();
@@ -3156,6 +3162,12 @@ impl App {
             // Shrunk to the eyes (only ever on a compact view).
             _ if self.eyes => shape_sized(style, notch, ShapeKind::Eyes),
             ShapeKind::MediaLyric => lyric_shape_sized(style, notch, self.lyric_fit.width()),
+            // The compact views widen to hold the busy toast's logo.
+            ShapeKind::MediaCompact | ShapeKind::PomodoroCompact
+                if self.state.toast_slot().is_some() =>
+            {
+                with_toast_slot(shape_with_robot_sized(style, notch, kind, robot))
+            }
             _ => shape_with_robot_sized(style, notch, kind, robot),
         });
         let retarget = match target {
@@ -3999,6 +4011,8 @@ impl App {
             && !self.screen_away()
             && self.win.is_some()
             && pointer_watch::peek_view(&self.state.view())
+            // The logo of a busy toast has to stay on screen.
+            && self.state.toast_slot().is_none()
     }
 
     /// Ends a peek that may not go on (the notch is whole again at once).
@@ -6029,6 +6043,9 @@ struct LyricFit {
     /// The user's notch width, the notch's floor (`lyric_width_min`); 0 until
     /// set, which `lyric_width_min` reads as `LYRIC_MIN_W`.
     min_w: f32,
+    /// A busy toast's logo sits at the notch's right (`TOAST_SLOT_EXTRA`):
+    /// the width, the line's box and its scroll are worked out with it.
+    slot: bool,
 }
 
 impl LyricFit {
@@ -6072,12 +6089,38 @@ impl LyricFit {
         }
     }
 
+    /// The notch's width, the logo's room included while the slot shows.
     fn width(&self) -> f32 {
+        let w = self.line_side_w();
+        if self.slot {
+            lyric_slot_width(w, self.robot, self.min_w, self.max_w)
+        } else {
+            w
+        }
+    }
+
+    /// The width without the slot: what the line wanted.
+    fn line_side_w(&self) -> f32 {
         self.width.unwrap_or(LYRIC_MIN_W.max(self.min_w))
     }
 
+    /// The width the line's side keeps with the slot settled: the notch's
+    /// width less the logo's room.
+    fn content_w(&self) -> f32 {
+        if self.slot {
+            self.width() - TOAST_SLOT_EXTRA
+        } else {
+            self.width()
+        }
+    }
+
+    /// The slot appeared or went: the width, the box and the scroll follow.
+    fn set_slot(&mut self, on: bool) {
+        self.slot = on;
+    }
+
     fn box_w(&self) -> f32 {
-        lyric_box_w(self.width(), self.robot)
+        lyric_box_w(self.content_w(), self.robot)
     }
 
     /// The line's scroll at `now` (0 while it holds or when it fits).
