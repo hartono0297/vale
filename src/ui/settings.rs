@@ -2634,11 +2634,13 @@ impl Settings {
     /// The recording ends with nothing changed, by the user's click, a
     /// section change or the window losing the foreground: the hook goes at
     /// once and the island takes its hotkeys back. Nothing when none runs.
+    /// The field's recording look is part of the layout, so the layout is
+    /// built again: the island's answer does not do it (its model is the same).
     fn cancel_recording(&mut self) {
         self.stop_rec_hook();
         if self.recording.take().is_some() {
             post_action(self.owner, Action::HotkeyRecording(false));
-            self.invalidate();
+            self.relayout();
         }
     }
 

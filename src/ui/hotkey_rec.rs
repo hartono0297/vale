@@ -5,9 +5,14 @@
 //! Alt+Tab and the like reach neither Windows nor another app. It tracks the
 //! modifiers itself from the events it sees (`GetAsyncKeyState` does not know
 //! about swallowed keys): a set of 256 keys whose key-down it swallowed
-//! (`KeySet`). On the first key that is not a bare modifier it posts the vk
-//! and the modifiers once (`WM_APP_HOTKEY_REC` to the Settings window; the
-//! decision is `hotkey::record_step`, shared with the window's fallback), then
+//! (`KeySet`). A key that was already down when the hook went in (held while
+//! the user clicked the field) still sends auto-repeat key-downs; Windows saw
+//! that key go down, so the recorder passes its repeats and its key-up and
+//! only counts it as a modifier (it tells such a key by `GetAsyncKeyState`,
+//! which swallowed keys never change). On the first key that is not a bare
+//! modifier it posts the vk and the modifiers once (`WM_APP_HOTKEY_REC` to
+//! the Settings window; the decision is `hotkey::record_step`, shared with
+//! the window's fallback), then
 //! it drains: only the key-ups of keys in the set (and the auto-repeat of
 //! those keys) are still swallowed, everything else passes. With the set
 //! empty it unhooks and the thread ends, so the hook is never left installed.
@@ -28,6 +33,7 @@ use std::thread::JoinHandle;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
+use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GetMessageW, KBDLLHOOKSTRUCT, KillTimer, MSG, PM_NOREMOVE, PeekMessageW,
     PostMessageW, PostQuitMessage, PostThreadMessageW, SetTimer, SetWindowsHookExW,
@@ -130,31 +136,42 @@ const PASS: RecEvent = RecEvent {
 /// (and so only drains now). Pure; the proc keeps it in atomics.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RecState {
+    /// The keys whose key-down it swallowed.
     pub keys: KeySet,
+    /// The keys Windows already had down when the recorder first saw them:
+    /// passed, never swallowed, but their modifiers count.
+    pub before: KeySet,
     pub draining: bool,
 }
 
 impl RecState {
-    /// One key event, as the hook saw it. Listening: every key-down is
-    /// swallowed and enters the set (auto-repeat of a key in the set does
-    /// nothing more); the first one `record_step` does not ignore is posted
-    /// and starts the drain. A key-up is swallowed when its key is in the
-    /// set, otherwise it passes (Windows never saw that key go down here, or
-    /// did before the recording: swallowing it would leave it held). Draining:
-    /// only the key-ups of keys in the set, and their auto-repeat, are
-    /// swallowed; the last one out says `done`.
-    pub fn event(&mut self, vk: u16, down: bool) -> RecEvent {
+    /// One key event, as the hook saw it; `os_down`: Windows has the key
+    /// down already (read before this event counts, so only a key it saw go
+    /// down earlier, held from before the recording). Listening: such a key's
+    /// repeats pass and it goes in `before`, where its modifier counts and
+    /// nothing else happens. Every other key-down is swallowed and enters the
+    /// set (auto-repeat of a key in the set does nothing more); the first one
+    /// `record_step` does not ignore is posted and starts the drain. A key-up
+    /// is swallowed only when its key is in the set, otherwise it passes
+    /// (Windows saw that key go down: swallowing it would leave it held).
+    /// Draining: only the key-ups of keys in the set, and their auto-repeat,
+    /// are swallowed; the last one out says `done`.
+    pub fn event(&mut self, vk: u16, down: bool, os_down: bool) -> RecEvent {
         let vk = vk & 0xFF;
         if down {
             let held = self.keys.contains(vk);
             if self.draining {
                 return if held { SWALLOW } else { PASS };
             }
+            if !held && os_down {
+                self.before.insert(vk);
+                return PASS;
+            }
             self.keys.insert(vk);
             if held {
                 return SWALLOW;
             }
-            let mods = self.keys.mods();
+            let mods = Mods::from_bits(self.keys.mods().bits() | self.before.mods().bits());
             match record_step(vk, mods) {
                 Step::Ignore => SWALLOW,
                 _ => {
@@ -173,6 +190,7 @@ impl RecState {
                 done: self.draining && self.keys.is_empty(),
             }
         } else {
+            self.before.remove(vk);
             PASS
         }
     }
@@ -203,6 +221,12 @@ static KEYS: [AtomicU64; 4] = [
     AtomicU64::new(0),
     AtomicU64::new(0),
 ];
+static BEFORE: [AtomicU64; 4] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+];
 static DRAINING: AtomicBool = AtomicBool::new(false);
 /// The Settings window the proc posts to (0: none).
 static TARGET: AtomicIsize = AtomicIsize::new(0);
@@ -213,12 +237,16 @@ static DRAIN_TIMER: AtomicUsize = AtomicUsize::new(0);
 fn load() -> RecState {
     RecState {
         keys: KeySet(std::array::from_fn(|i| KEYS[i].load(Ordering::Relaxed))),
+        before: KeySet(std::array::from_fn(|i| BEFORE[i].load(Ordering::Relaxed))),
         draining: DRAINING.load(Ordering::Relaxed),
     }
 }
 
 fn store(s: &RecState) {
     for (slot, bits) in KEYS.iter().zip(s.keys.0) {
+        slot.store(bits, Ordering::Relaxed);
+    }
+    for (slot, bits) in BEFORE.iter().zip(s.before.0) {
         slot.store(bits, Ordering::Relaxed);
     }
     DRAINING.store(s.draining, Ordering::Relaxed);
@@ -261,8 +289,13 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         let down = matches!(msg, WM_KEYDOWN | WM_SYSKEYDOWN);
         let up = matches!(msg, WM_KEYUP | WM_SYSKEYUP);
         if down || up {
+            let vk = kb.vkCode as u16;
+            // A low-level hook runs before the key's async state is updated,
+            // and a swallowed key never updates it: down here means Windows
+            // saw this key go down before the recording.
+            let os_down = down && unsafe { GetAsyncKeyState(i32::from(vk & 0xFF)) } < 0;
             let mut state = load();
-            let ev = state.event(kb.vkCode as u16, down);
+            let ev = state.event(vk, down, os_down);
             store(&state);
             if let Some(p) = ev.post {
                 post(p);
@@ -451,11 +484,11 @@ mod tests {
         let mut r = RecState::default();
         // Modifiers go down: swallowed, nothing posted yet.
         for vk in [CTRL, LALT] {
-            assert_eq!(r.event(vk, true), SWALLOW, "{vk:#x}");
+            assert_eq!(r.event(vk, true, false), SWALLOW, "{vk:#x}");
         }
         assert!(!r.draining);
         // The key: posted with Ctrl+Alt, and the drain starts.
-        let ev = r.event(V, true);
+        let ev = r.event(V, true, false);
         assert!(!ev.pass && !ev.done);
         let (vk, mods) = ev.post.expect("posted");
         assert_eq!(vk, V);
@@ -463,65 +496,101 @@ mod tests {
         assert!(r.draining);
         // Auto-repeat of the key (and of a held modifier): swallowed, no second post.
         for vk in [V, V, CTRL] {
-            assert_eq!(r.event(vk, true), SWALLOW);
+            assert_eq!(r.event(vk, true, false), SWALLOW);
         }
     }
 
     #[test]
     fn draining_swallows_only_the_key_ups_of_what_was_held_and_ends_when_none_is() {
         let mut r = RecState::default();
-        r.event(LWIN, true);
-        r.event(V, true);
+        r.event(LWIN, true, false);
+        r.event(V, true, false);
         assert!(r.draining);
         // Other keys pass while draining, down and up.
-        assert_eq!(r.event(0x41, true), PASS);
-        assert_eq!(r.event(0x41, false), PASS);
+        assert_eq!(r.event(0x41, true, false), PASS);
+        assert_eq!(r.event(0x41, false, false), PASS);
         // The key-ups of the held ones are swallowed; the last says done.
-        let first = r.event(V, false);
+        let first = r.event(V, false, false);
         assert!(!first.pass && !first.done);
-        let last = r.event(LWIN, false);
+        let last = r.event(LWIN, false, false);
         assert!(!last.pass && last.done);
         // After that everything passes.
-        assert_eq!(r.event(LWIN, false), PASS);
-        assert_eq!(r.event(V, true), PASS);
+        assert_eq!(r.event(LWIN, false, false), PASS);
+        assert_eq!(r.event(V, true, false), PASS);
     }
 
     #[test]
     fn a_key_up_of_a_key_never_seen_down_passes() {
         let mut r = RecState::default();
         // Held before the recording began: Windows saw its key-down.
-        assert_eq!(r.event(CTRL, false), PASS);
-        assert_eq!(r.event(V, false), PASS);
+        assert_eq!(r.event(CTRL, false, false), PASS);
+        assert_eq!(r.event(V, false, false), PASS);
         assert!(!r.draining);
+    }
+
+    #[test]
+    fn a_key_held_before_the_recording_is_passed_but_its_modifier_counts() {
+        // Ctrl held while the field was clicked: Windows saw it go down, and
+        // its auto-repeat reaches the hook. The repeats and the key-up pass
+        // (swallowing the key-up would leave Ctrl held for every app).
+        let mut r = RecState::default();
+        assert_eq!(r.event(CTRL, true, true), PASS);
+        assert_eq!(r.event(CTRL, true, true), PASS);
+        assert!(r.keys.is_empty() && !r.draining);
+        // A key pressed now is posted with Ctrl, and only it is drained.
+        let ev = r.event(V, true, false);
+        assert_eq!(ev.post.map(|(v, m)| (v, m.bits())), Some((V, 2)));
+        assert!(!ev.pass && r.draining);
+        assert_eq!(r.event(CTRL, true, true), PASS);
+        let up = r.event(V, false, false);
+        assert!(!up.pass && up.done);
+        assert_eq!(r.event(CTRL, false, false), PASS);
+
+        // Let go of before a key: it no longer counts, the next press of it
+        // is the recorder's.
+        let mut r = RecState::default();
+        assert_eq!(r.event(LALT, true, true), PASS);
+        assert_eq!(r.event(LALT, false, false), PASS);
+        assert!(r.before.is_empty());
+        assert_eq!(r.event(LALT, true, false), SWALLOW);
+        assert!(r.keys.contains(LALT));
+        let ev = r.event(V, true, false);
+        assert_eq!(ev.post.map(|(v, m)| (v, m.bits())), Some((V, 1)));
+
+        // A plain key held from before: passed, never posted.
+        let mut r = RecState::default();
+        assert_eq!(r.event(V, true, true), PASS);
+        assert!(!r.draining);
+        assert_eq!(r.event(V, false, false), PASS);
     }
 
     #[test]
     fn a_modifier_pressed_and_released_alone_keeps_listening() {
         let mut r = RecState::default();
-        assert_eq!(r.event(SHIFT, true), SWALLOW);
-        let up = r.event(SHIFT, false);
+        assert_eq!(r.event(SHIFT, true, false), SWALLOW);
+        let up = r.event(SHIFT, false, false);
         assert!(!up.pass && !up.done && up.post.is_none());
         assert!(!r.draining && r.keys.is_empty());
         // Then a combo still works.
-        r.event(CTRL, true);
-        assert!(r.event(V, true).post.is_some());
+        r.event(CTRL, true, false);
+        assert!(r.event(V, true, false).post.is_some());
     }
 
     #[test]
     fn esc_and_backspace_and_delete_are_posted_like_any_key() {
         for vk in [ESC, 0x08, 0x2E] {
             let mut r = RecState::default();
-            let ev = r.event(vk, true);
+            let ev = r.event(vk, true, false);
             assert_eq!(ev.post, Some((vk, Mods::default())), "{vk:#x}");
             assert!(r.draining);
             // The key-up ends it.
-            let up = r.event(vk, false);
+            let up = r.event(vk, false, false);
             assert!(!up.pass && up.done);
         }
         // With a modifier they are combos: posted with it.
         let mut r = RecState::default();
-        r.event(CTRL, true);
-        let ev = r.event(ESC, true);
+        r.event(CTRL, true, false);
+        let ev = r.event(ESC, true, false);
         assert_eq!(ev.post.map(|(v, m)| (v, m.bits())), Some((ESC, 2)));
     }
 
@@ -535,13 +604,13 @@ mod tests {
         assert!(r.draining);
         // Keys held (a modifier): the drain waits for their key-ups.
         let mut r = RecState::default();
-        r.event(CTRL, true);
+        r.event(CTRL, true, false);
         let ev = r.give_up();
         assert!(ev.post.is_some() && !ev.done);
-        assert!(r.event(CTRL, false).done);
+        assert!(r.event(CTRL, false, false).done);
         // After a combo was posted it does nothing.
         let mut r = RecState::default();
-        r.event(V, true);
+        r.event(V, true, false);
         let ev = r.give_up();
         assert_eq!(ev.post, None);
         assert!(!ev.done);
@@ -558,6 +627,7 @@ mod tests {
         let mut s = RecState::default();
         s.keys.insert(CTRL);
         s.keys.insert(0xFE);
+        s.before.insert(0xA3);
         s.draining = true;
         store(&s);
         assert_eq!(load(), s);

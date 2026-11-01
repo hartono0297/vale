@@ -250,6 +250,17 @@ pub fn register_mods(hk: Hotkey) -> u32 {
     u32::from(hk.mods.bits()) | MOD_NOREPEAT
 }
 
+/// The `RegisterHotKey` key of a combo. With Ctrl held the Pause key sends
+/// `VK_CANCEL` (Ctrl+Break), not `VK_PAUSE`, so Ctrl+Pause is registered on
+/// that code; the combo is still stored and shown as Pause.
+pub fn register_vk(hk: Hotkey) -> u16 {
+    if hk.mods.ctrl && hk.vk == VK_PAUSE {
+        VK_CANCEL
+    } else {
+        hk.vk
+    }
+}
+
 /// Whether the low-level hook (not `RegisterHotKey`) has to carry it:
 /// Windows owns the PrtSc key.
 pub fn uses_hook(hk: Hotkey) -> bool {
@@ -998,6 +1009,13 @@ mod tests {
         assert_eq!(register_mods(hk("Win+Shift+F13")), 8 | 4 | 0x4000);
         assert_eq!(register_mods(hk("PrtSc")), 0x4000);
         assert_eq!(register_mods(hk("Alt+F1")), 1 | 0x4000);
+        // Ctrl turns the Pause key into VK_CANCEL: that is the code to register.
+        assert_eq!(register_vk(hk("Ctrl+Pause")), VK_CANCEL);
+        assert_eq!(register_vk(hk("Ctrl+Alt+Pause")), VK_CANCEL);
+        assert_eq!(register_vk(hk("Pause")), VK_PAUSE);
+        assert_eq!(register_vk(hk("Alt+Pause")), VK_PAUSE);
+        assert_eq!(register_vk(hk("Ctrl+V")), 0x56);
+        assert_eq!(hk("Ctrl+Pause").to_string(), "Ctrl+Pause");
         use windows::Win32::UI::Input::KeyboardAndMouse as k;
         assert_eq!(MOD_ALT, k::MOD_ALT.0);
         assert_eq!(MOD_CONTROL, k::MOD_CONTROL.0);

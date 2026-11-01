@@ -3744,10 +3744,9 @@ pub fn clip_items_step(n: u32, dir: i32) -> u32 {
     (stepped / ITEMS_STEP * ITEMS_STEP).clamp(MIN_ITEMS, MAX_ITEMS)
 }
 
-/// Settings → Clipboard after keputusan-v3.1.html §5 (`settingsWin`), with
-/// the plan's hotkey choice (none, Ctrl+Alt+V, Win+Alt+V; never
-/// Ctrl+Shift+V) and a clear button. With the history off the other rows
-/// fade and take no clicks.
+/// Settings → Clipboard after keputusan-v3.1.html §5 (`settingsWin`), with a
+/// clear button; its hotkey lives in the Tombol pintas section. With the
+/// history off the other rows fade and take no clicks.
 fn clipboard_page(b: &mut Builder, s: &State) {
     let c = s.clip;
     titled(b, Key::GroupHistory);
@@ -4005,7 +4004,7 @@ pub fn shot_secs_step(n: u32, dir: i32) -> u32 {
 }
 
 /// The screenshot preview (keputusan-v3.1.html p6, its `settingsWin`
-/// "Screenshot") in a second card under the history's eight rows, named by
+/// "Screenshot") in a second card under the history's seven rows, named by
 /// an eyebrow; the section scrolls to reach it. With the preview off the
 /// other two rows fade and take no clicks. Simpan is the default.
 fn screenshot_card(b: &mut Builder, s: &State) {

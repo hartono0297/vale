@@ -20,6 +20,12 @@
 //! A PrtSc press is taken only when the modifiers held are exactly a row's:
 //! with the default row (bare PrtSc), Alt+PrtSc, Win+PrtSc, Ctrl+PrtSc and
 //! Shift+PrtSc stay Windows'. Vale writes nothing to the registry.
+//!
+//! A combo taken with Win or Alt held would leave Windows a bare Win or Alt
+//! tap (the PrtSc in between never reached it), which opens Start or the
+//! active window's menu bar on release. The proc then sends a mask key (an
+//! unassigned vk, down and up) while the modifier is still down, as
+//! AutoHotkey's `A_MenuMaskKey` does.
 
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU8, Ordering};
 use std::sync::mpsc;
@@ -29,7 +35,9 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT, VK_SNAPSHOT,
+    GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT,
+    KEYEVENTF_KEYUP, SendInput, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
+    VK_SNAPSHOT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GetMessageW, KBDLLHOOKSTRUCT, LLKHF_ALTDOWN, MSG, PM_NOREMOVE, PeekMessageW,
@@ -125,6 +133,40 @@ pub(super) fn prtsc_hook_action(
     }
 }
 
+/// The key sent to mask a Win or Alt release: unassigned (Microsoft's list),
+/// so it does nothing itself.
+const MASK_VK: u16 = 0xE8;
+
+/// Whether a swallowed combo with these modifiers needs the mask key: Win or
+/// Alt released with no key Windows saw in between opens a menu.
+pub(super) fn needs_mask(mods: Mods) -> bool {
+    mods.win || mods.alt
+}
+
+/// Sends the mask key down and up (no allocation: two inputs on the stack).
+fn send_mask() {
+    let input = |up: bool| INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: VIRTUAL_KEY(MASK_VK),
+                wScan: 0,
+                dwFlags: if up {
+                    KEYEVENTF_KEYUP
+                } else {
+                    KEYBD_EVENT_FLAGS(0)
+                },
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    let inputs = [input(false), input(true)];
+    unsafe {
+        SendInput(&inputs, size_of::<INPUT>() as i32);
+    }
+}
+
 /// Whether a modifier key is down right now.
 fn held(vk: u16) -> bool {
     let state = unsafe { GetAsyncKeyState(i32::from(vk)) };
@@ -156,6 +198,9 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                     HookAction::Pass => {}
                     HookAction::Swallow => return LRESULT(1),
                     HookAction::SwallowAndFire => {
+                        if needs_mask(mods) {
+                            send_mask();
+                        }
                         let hwnd = ISLAND.load(Ordering::Relaxed);
                         if hwnd != 0 {
                             unsafe {
@@ -348,6 +393,40 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn only_win_or_alt_combos_need_the_mask_key() {
+        let win = Mods { win: true, ..NONE };
+        let alt = Mods { alt: true, ..NONE };
+        let shift = Mods {
+            shift: true,
+            ..NONE
+        };
+        for mods in [
+            win,
+            alt,
+            Mods { ctrl: true, ..win },
+            Mods { shift: true, ..alt },
+        ] {
+            assert!(needs_mask(mods), "{mods:?}");
+        }
+        for mods in [
+            NONE,
+            ctrl(),
+            shift,
+            Mods {
+                shift: true,
+                ..ctrl()
+            },
+        ] {
+            assert!(!needs_mask(mods), "{mods:?}");
+        }
+        // The mask key is one Windows leaves unassigned, and no key a hotkey
+        // can use.
+        assert_eq!(MASK_VK, 0xE8);
+        assert!(!crate::hotkey::is_modifier_vk(MASK_VK));
+        assert_ne!(MASK_VK, VK_SNAPSHOT.0);
     }
 
     #[test]

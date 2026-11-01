@@ -139,7 +139,7 @@ impl App {
                             Some(self.hwnd),
                             wm_id(id),
                             HOT_KEY_MODIFIERS(hotkey::register_mods(hk)),
-                            u32::from(hk.vk),
+                            u32::from(hotkey::register_vk(hk)),
                         )
                     }
                     .is_ok();
