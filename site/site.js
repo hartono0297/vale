@@ -852,15 +852,19 @@
   }
 
   /* ---------- Susun: the sticky scrub ----------
-     The wrapper (.ar-scrub) is 130vh taller than the viewport (70vh on
-     phones) while .is-scrub is set, and the stage inside it sticks to the
-     top. p = clamp(-top / (height - innerHeight), 0, 1) of the wrapper;
-     below 0.25 tile 1 is current, then each quarter fills one more tile, and
-     from 0.75 all three are filled and the notice shows. Scrolling back runs
-     it backwards. .is-scrub is set only with motion welcome and a stage that
-     fits the viewport; otherwise the drawing keeps its default, the final
-     arranged state. While the stage is pinned (top <= 0 and bottom >= the
-     viewport) the notch shows the step; otherwise it follows the sections. */
+     The wrapper (.ar-scrub) is 130vh taller than the stage (70vh on phones)
+     while .is-scrub is set, and the stage inside it, 100svh tall, sticks to
+     the top. p = clamp(-top / (height - svh), 0, 1) of the wrapper; below
+     0.25 tile 1 is current, then each quarter fills one more tile, and from
+     0.75 all three are filled and the notice shows. Scrolling back runs it
+     backwards. .is-scrub is set only with motion welcome and a stage that
+     fits 100svh; otherwise the drawing keeps its default, the final arranged
+     state. svh, not innerHeight: on phones innerHeight moves with the
+     toolbar, svh does not, so the choice cannot flip mid-scroll. While the
+     stage is pinned (top <= 0 and bottom >= svh) the notch shows the step;
+     otherwise it follows the sections.
+     The first choice is made here, synchronously, so the page has its final
+     height before the browser scrolls to a fragment (index.html#cat). */
   function initSusun() {
     var sec = $('.susun');
     var outer = sec && $('.ar-scrub', sec);
@@ -869,8 +873,29 @@
     var demo = $('#ar-demo');
     var nEl = $('#ar-n');
     if (!sec || !outer || !stage || !inner || !demo || !loop) return;
+    /* Measures 100svh (100vh where svh is unknown), the sticky stage's height. */
+    var probe = doc.createElement('div');
+    probe.setAttribute('aria-hidden', 'true');
+    probe.style.cssText = 'position:fixed;top:0;left:0;width:0;height:100vh;visibility:hidden;pointer-events:none';
+    probe.style.height = '100svh';
+    doc.body.appendChild(probe);
+    /* Until the reader scrolls or presses something, a fragment target below
+       the wrapper is kept in view when the wrapper's height changes. */
+    var touched = false;
+    function touch() { touched = true; }
+    ['wheel', 'touchstart', 'keydown', 'pointerdown'].forEach(function (t) {
+      window.addEventListener(t, touch, { passive: true, once: true });
+    });
+    function fragmentBelow() {
+      var id = location.hash.slice(1);
+      if (!id) return null;
+      try { id = decodeURIComponent(id); } catch (e) { return null; }
+      var el = doc.getElementById(id);
+      return el && (outer.compareDocumentPosition(el) & 4) && !outer.contains(el) ? el : null;
+    }
     var vw = -1;
     var vh = -1;
+    var sv = 1;
     var fitsView = false;
     var enabled = false;
     var step = -1;
@@ -878,32 +903,42 @@
     var bottom = 0;
     var height = 0;
     function notchStep(s) { if (notchApi && notchApi.arrange) notchApi.arrange(s); }
+    function measure() {
+      if (window.innerWidth !== vw || window.innerHeight !== vh) {
+        vw = window.innerWidth;
+        vh = window.innerHeight;
+        sv = probe.offsetHeight || vh;
+        var cs = getComputedStyle(stage);
+        fitsView = inner.offsetHeight + parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom) <= sv;
+      }
+      var r = outer.getBoundingClientRect();
+      top = r.top;
+      bottom = r.bottom;
+      height = r.height;
+    }
+    /* Switches .is-scrub; the wrapper's height changes by 130vh (70vh). */
+    function apply(want) {
+      enabled = want;
+      sec.classList.toggle('is-scrub', want);
+      var target = touched ? null : fragmentBelow();
+      if (target) {
+        /* A load or a link at #cat: aim at where the target is now. This also
+           replaces a smooth fragment scroll that set off for the old spot. */
+        target.scrollIntoView({ block: 'start', behavior: 'instant' });
+      } else if (bottom <= 0) {
+        /* The wrapper lies above the view (a restored scroll position, a
+           resize down the page): keep the view where it was. */
+        var grown = outer.getBoundingClientRect().height - height;
+        if (grown) window.scrollBy({ top: grown, left: 0, behavior: 'instant' });
+      }
+    }
     var fx = {
       on: function () { return fx.near; },
-      read: function () {
-        if (window.innerWidth !== vw || window.innerHeight !== vh) {
-          vw = window.innerWidth;
-          vh = window.innerHeight;
-          var cs = getComputedStyle(stage);
-          fitsView = inner.offsetHeight + parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom) <= vh;
-        }
-        var r = outer.getBoundingClientRect();
-        top = r.top;
-        bottom = r.bottom;
-        height = r.height;
-      },
+      read: measure,
       write: function () {
         var want = fitsView && !reduce.matches;
         if (want !== enabled) {
-          enabled = want;
-          sec.classList.toggle('is-scrub', want);
-          /* The wrapper's height just changed. When it lies above the view (a
-             load at #cat or #install, a restored scroll position), keep the
-             view where it was: one measurement, only on this switch. */
-          if (bottom <= 0) {
-            var grown = outer.getBoundingClientRect().height - height;
-            if (grown) window.scrollBy({ top: grown, left: 0, behavior: 'instant' });
-          }
+          apply(want);
           loop.kick(fx);
           return;
         }
@@ -912,17 +947,19 @@
           notchStep(-1);
           return;
         }
-        var p = clamp(-top / Math.max(height - vh, 1), 0, 1);
+        var p = clamp(-top / Math.max(height - sv, 1), 0, 1);
         var s = p < 0.25 ? 0 : p < 0.5 ? 1 : p < 0.75 ? 2 : 3;
         if (s !== step) {
           step = s;
           demo.setAttribute('data-step', String(s));
           if (nEl && s < 3) nEl.textContent = String(s + 1);
         }
-        var pinned = fx.near && top <= 0.5 && bottom >= vh - 0.5;
+        var pinned = fx.near && top <= 0.5 && bottom >= sv - 0.5;
         notchStep(pinned ? s : -1);
       }
     };
+    measure();
+    if (fitsView && !reduce.matches) apply(true);
     loop.gate(outer, fx, '100px 0px');
     loop.add(fx);
   }
