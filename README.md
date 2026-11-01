@@ -117,7 +117,7 @@ Everything is set in **Settings**, from the tray icon, in nine sections: General
 
 ## Privacy
 
-Notes, reminders, clipboard history, notification history and the shelf stay on your PC; the clipboard and notification history files are encrypted with Windows DPAPI. Nothing is sent anywhere except to Google Calendar (when you connect it) and, with lyrics on, the artist, title and length of the playing track to [LRCLIB](https://lrclib.net). There is no telemetry. Details in the [guide](docs/guide.md#data-and-privacy).
+Notes, reminders, clipboard history, notification history and the shelf stay on your PC; the clipboard and notification history files are encrypted with Windows DPAPI. Nothing is sent anywhere except the daily update check to GitHub (on by default, off in Settings → About), Google Calendar (when you connect it) and, with lyrics on, the artist, title and length of the playing track to [LRCLIB](https://lrclib.net). There is no telemetry. Details in the [guide](docs/guide.md#data-and-privacy).
 
 ## Build from source
 

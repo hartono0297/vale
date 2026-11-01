@@ -200,7 +200,7 @@ Everything lives in `%APPDATA%\Vale\`:
 | `media.log` | Only with `--media-log`: when the island sent a media command and when playback changed (app id and state, never titles), up to 1 MB |
 | `lyrics-cache\` | Lyrics already fetched |
 
-- Nothing is sent anywhere except Google Calendar (when connected) and lrclib.net (when lyrics are on: the artist, title and length of the playing track).
+- Nothing is sent anywhere except the update check (about once a day, release builds ask GitHub for the latest release; on by default, turn off *Check for updates automatically* in Settings → About), Google Calendar (when connected) and lrclib.net (when lyrics are on: the artist, title and length of the playing track).
 - A copy that a password manager marks as private never enters the clipboard history.
 - Notes and reminders are local only; there is no sync and no telemetry.
 
