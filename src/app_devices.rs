@@ -1,7 +1,7 @@
 //! The island's side of the Devices page: the drives as last listed, which
 //! are being ejected, the refusals, the card expanded and the scroll; the
 //! worker that scans and ejects (`devices_win`); the change notifications
-//! that start a scan; the notices; the optional hotkey. A child of `app`, so
+//! that start a scan; the notices; its hotkey press. A child of `app`, so
 //! it works on `App` directly. The wording and the arithmetic are
 //! `devices.rs`, the layout is `panel_layout::devices_layout`.
 //!
@@ -18,9 +18,6 @@ use std::time::Instant;
 
 use windows::Win32::Foundation::{HANDLE, HWND};
 use windows::Win32::System::Ioctl::GUID_DEVINTERFACE_DISK;
-use windows::Win32::UI::Input::KeyboardAndMouse::{
-    MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, RegisterHotKey, UnregisterHotKey,
-};
 use windows::Win32::UI::WindowsAndMessaging::{
     DBT_DEVICEARRIVAL, DBT_DEVICEREMOVECOMPLETE, DBT_DEVTYP_DEVICEINTERFACE, DBT_DEVTYP_VOLUME,
     DEV_BROADCAST_DEVICEINTERFACE_W, DEV_BROADCAST_HDR, DEVICE_NOTIFY_WINDOW_HANDLE, HDEVNOTIFY,
@@ -28,7 +25,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use super::{App, poster};
-use crate::config::DevicesHotkey;
 use crate::devices::{self, Change, Device, DevicesEvent, Ejected, Veto};
 use crate::devices_win::{Capacity, Devices, Req};
 use crate::i18n::{self, Lang};
@@ -41,9 +37,6 @@ use crate::ui::panel_layout::{DEV_WHEEL_PX, device_shapes, devices_max_scroll, d
 /// (`Capacity::NewOnly`). Every relevant message starts it again.
 pub(super) const TIMER_DEVICES: usize = 32;
 const DEBOUNCE_MS: u32 = 400;
-/// `RegisterHotKey` id of the Devices page's hotkey (the Clipboard's is 1,
-/// the quick search's 2).
-pub(super) const HOTKEY_DEVICES: i32 = 3;
 /// What `WM_DEVICECHANGE` reports in `wparam`.
 const ARRIVAL: usize = DBT_DEVICEARRIVAL as usize;
 const REMOVED: usize = DBT_DEVICEREMOVECOMPLETE as usize;
@@ -76,9 +69,6 @@ pub(super) struct DevicesState {
     drawn: Vec<String>,
     /// The disk-interface notification (`HDEVNOTIFY`), 0 without one.
     notify: isize,
-    /// The hotkey in effect, and whether registering the chosen one failed.
-    hotkey: Option<DevicesHotkey>,
-    pub hotkey_failed: bool,
 }
 
 /// A `WM_DEVICECHANGE` that may mean a drive came or went: an arrival or a
@@ -194,11 +184,10 @@ impl DevicesState {
 }
 
 impl App {
-    /// At startup: the change notification, the hotkey and the seed scan (no
+    /// At startup: the change notification and the seed scan (no
     /// sizes read, no notices).
     pub(super) fn devices_start(&mut self) {
         self.register_device_notify();
-        self.sync_devices_hotkey();
         self.devices_scan(Capacity::Keep);
     }
 
@@ -445,31 +434,6 @@ impl App {
         true
     }
 
-    /// Registers the chosen hotkey (none by default). A failure (another app
-    /// has it) shows in Settings and is tried again on the next sync.
-    pub(super) fn sync_devices_hotkey(&mut self) {
-        let want = self.config.devices_hotkey;
-        if self.devices.hotkey == Some(want) && !self.devices.hotkey_failed {
-            return;
-        }
-        unsafe {
-            let _ = UnregisterHotKey(Some(self.hwnd), HOTKEY_DEVICES);
-        }
-        self.devices.hotkey_failed = match want {
-            DevicesHotkey::Off => false,
-            DevicesHotkey::CtrlAltD => unsafe {
-                RegisterHotKey(
-                    Some(self.hwnd),
-                    HOTKEY_DEVICES,
-                    MOD_CONTROL | MOD_ALT | MOD_NOREPEAT,
-                    u32::from(b'D'),
-                )
-            }
-            .is_err(),
-        };
-        self.devices.hotkey = Some(want);
-    }
-
     /// `WM_HOTKEY`: the page opens (or closes) without taking the
     /// foreground, held open like the Clipboard's.
     pub(super) fn on_devices_hotkey(&mut self) {
@@ -477,14 +441,7 @@ impl App {
         self.arm_hotkey_hold();
     }
 
-    /// The Devices hotkey may have been changed by a hand edit of the file.
-    pub(super) fn devices_follow_config(&mut self) {
-        if self.devices.hotkey.is_some() {
-            self.sync_devices_hotkey();
-        }
-    }
-
-    /// `WM_DESTROY`: the notification and the hotkey go.
+    /// `WM_DESTROY`: the notification goes.
     pub(super) fn devices_shutdown(&mut self) {
         let note = std::mem::take(&mut self.devices.notify);
         if note != 0 {
@@ -493,7 +450,6 @@ impl App {
             }
         }
         unsafe {
-            let _ = UnregisterHotKey(Some(self.hwnd), HOTKEY_DEVICES);
             let _ = KillTimer(Some(self.hwnd), TIMER_DEVICES);
         }
     }

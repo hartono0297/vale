@@ -37,7 +37,8 @@ in `settings_layout.rs`, `--demo-arrange` in `ui/demo.rs`.
   an inner edge by half (left/top rounds down, right/bottom up: neighbours are
   exactly `gap` apart, no pixel lost). Gap 0..=24 logical px, default 8, scaled
   by the target monitor's DPI/96 (`scaled_gap`).
-- Config `config.arrange` (`ArrangeSettings`: hotkey, gap, templates, saved)
+- Config `config.arrange` (`ArrangeSettings`: gap, templates, saved; an old
+  `hotkey` key inside it is ignored and drops out on the next save)
   reads leniently, like `panel_pages`: a broken template or saved entry (bad
   tree, unknown built-in id, bad name, tile count not matching the layout) drops
   only itself, a non-array is an empty list, gap clamps, past 12 are dropped.
@@ -147,7 +148,8 @@ in `settings_layout.rs`, `--demo-arrange` in `ui/demo.rs`.
 ## Settings and entry points
 
 - Fitur has a "Susun" card (after Musik, so the tests anchored to the end of
-  Fitur still see their rows): hotkey (Off / Ctrl+Alt+S), gap slider 0-24 px,
+  Fitur still see their rows): gap slider 0-24 px (the first row; the hotkey
+  row moved to Tombol pintas, [[hotkeys]]),
   "Template saya" and "Susunan tersimpan". The template editor (16:9 canvas,
   click a tile, "Belah kiri-kanan" / "Belah atas-bawah", "Gabung", drag dividers,
   Nama field, Simpan, Batal) takes the whole Fitur page while it is open: it uses
@@ -158,9 +160,11 @@ in `settings_layout.rs`, `--demo-arrange` in `ui/demo.rs`.
   old saved list gets it right after Cli, shown (`PanelPages::from_saved`).
   `Shortcut::ALL` has 22 with `Go(Arrange)` after `Go(Cli)`, off by default. New
   `Icon::Layout`, label "Susun" / "Arrange".
-- Hotkey Ctrl+Alt+S (`ArrangeHotkey`, off by default), `RegisterHotKey` id 4
-  (Clipboard 1, Search 2, Devices 3); it opens the page at the template step via
-  the shared `hotkey_held` hold, like Devices.
+- Hotkey: the `arrange` row of `config.hotkeys` ([[hotkeys]]), off by default
+  (it was Ctrl+Alt+S, the old `arrange.hotkey`, migrated once),
+  `RegisterHotKey` id 4 (Clipboard 1, Search 2, Devices 3, Screenshot 5); it
+  opens the page at the template step via the shared `hotkey_held` hold, like
+  Devices.
 
 Related: [[panel-pages]], [[devices]], [[screenshot-snap]], [[open-mode]],
 [[settings-structure]], [[shortcut-tiles]]

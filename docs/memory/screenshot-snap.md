@@ -123,8 +123,10 @@ Vale.
 
 ## PrtSc key opens Vale's capture
 
-Code: `src/app_prtsc.rs` (a child of `app`), `Event::PrintScreen` /
-`Effect::RunCapture` in the reducer, the row in `settings_layout::screenshot_card`.
+Code: `src/app_prtsc.rs` (a child of `app`, the hook only), `src/app_hotkeys.rs`
+(which rows use it), `Event::PrintScreen` / `Effect::RunCapture` in the
+reducer, the row in `settings_layout::hotkeys_page`. Generalised in
+[[hotkeys]].
 
 - **Why a hotkey failed.** Windows 11 owns the bare PrtSc key (Snipping Tool)
   while `HKCU\Control Panel\Keyboard\PrintScreenKeyForSnippingEnabled` is
@@ -141,49 +143,54 @@ Code: `src/app_prtsc.rs` (a child of `app`), `Event::PrintScreen` /
   reports success or failure once over a channel (the UI waits for that one
   answer), then blocks in a plain `GetMessageW` loop. Stop =
   `PostThreadMessageW(WM_QUIT)`, the thread unhooks and ends, the UI joins it.
-  It exists only while `screenshot.print_screen` is on: started at startup
-  and when the setting toggles on, stopped when it toggles off and in
-  `WM_DESTROY` (`prtsc_shutdown`). No timer.
+  Since the recordable hotkeys ([[hotkeys]]) it exists only while some row of
+  `config.hotkeys` has a PrtSc combo (the screenshot row by default) and the
+  hotkeys are not paused: started and stopped by `app_hotkeys::sync_hotkeys`
+  and in `WM_DESTROY` (`hotkeys_shutdown`). No timer.
 - **Fast-proc rules.** `hook_proc` allocates nothing, takes no lock, logs
-  nothing. It reads the island HWND (`ISLAND`, `AtomicIsize`) and `SWALLOWING`
-  (`AtomicBool`), calls the pure `prtsc_hook_action(vk, key_down, Mods,
-  swallowing)`, and on `SwallowAndFire` does `PostMessageW(island,
-  WM_APP_PRTSC)` (`WM_APP + 60`, a free id) and returns 1; else
-  `CallNextHookEx`. Bare key-down: swallow and fire once; auto-repeat while
-  swallowing: swallow, no second fire; key-up after a swallow: swallow and
-  clear; key-up not swallowed and other keys: pass.
-- **Modifier pass-through.** Alt (`LLKHF_ALTDOWN` or `GetAsyncKeyState`
-  VK_MENU), Win, Ctrl or Shift held: the press passes, so Alt+PrtSc,
-  Win+PrtSc, Ctrl+PrtSc and Shift+PrtSc stay Windows'. Default on.
-- **Config.** `screenshot.print_screen` (bool). Lenient like `shot_tool`:
-  missing, or any non-bool (string, number, null, array), reads as on, never
-  an invalid config. Off = hook stopped, `failed` cleared.
-- **What a press does.** `WM_APP_PRTSC` -> `on_prtsc_hotkey`: always Vale's
+  nothing. It reads the island HWND (`ISLAND`, `AtomicIsize`), `SWALLOWING`
+  (`AtomicBool`) and a static table of five `AtomicU8` (one per `HotkeyId`:
+  0xFF unassigned, else the modifier bits of that row's PrtSc combo), calls the
+  pure `prtsc_hook_action(vk, key_down, mods, swallowing, table)`, and on
+  `SwallowAndFire(row)` does `PostMessageW(island, WM_APP_PRTSC, row)`
+  (`WM_APP + 60`, a free id; `wparam` is the `HotkeyId` index) and returns 1;
+  else `CallNextHookEx`. A key-down whose modifiers equal an assigned row's:
+  swallow and fire once; auto-repeat while swallowing: swallow, no second fire;
+  key-up after a swallow: swallow and clear; an unassigned combo, its key-up
+  and other keys: pass. Changing a row while the hook runs is an atomic store.
+- **Modifier match.** Alt (`LLKHF_ALTDOWN` or `GetAsyncKeyState` VK_MENU),
+  Win, Ctrl and Shift are read as before and must equal the row's modifiers
+  exactly: with the default bare row, Alt+PrtSc, Win+PrtSc, Ctrl+PrtSc and
+  Shift+PrtSc stay Windows'. Default row: bare PrtSc.
+- **Config.** `hotkeys.screenshot` ("PrtSc", or "None" for off). The old
+  `screenshot.print_screen` bool is migrated once (false: None; true, absent
+  or a non-bool: PrtSc) and drops out on the next save.
+- **What a press does.** `WM_APP_PRTSC` -> `on_hook_row` ->
+  `on_screenshot_hotkey` (any row may carry a PrtSc combo; the screenshot row
+  does this): always Vale's
   own capture, whatever "Alat screenshot" says (that choice is only for the
-  tile). Returns early when the setting is off or `capture::overlay::active()`
+  tile). Returns early when the row is off or `capture::overlay::active()`
   (an overlay is up or starting); else `Event::PrintScreen`: the reducer
   collapses an open panel or the search (checked with `panel_open()`, not
   `view()`: a transient notice on top hides a panel still held under it) and
   asks `Effect::RunCapture`, which `App` queues as `Action::Capture` on
   `TIMER_SHORTCUT` (delay `ANIM_MS + 60`), so the panel is not in the picture.
   It is not mapped through the `ms-screenclip:` branch of `queue_shortcut`.
-- **Settings row.** `PrtscRow` is `Plain` (off, or on and the hook is
-  installed) or `Failed` (on, `SetWindowsHookExW` failed): a red note
-  `PrtscHookFailed` ("Tombol PrtSc tidak bisa dipasang" / "Could not hook the
-  PrtSc key"). The row is always `ROW_H` tall, no button; the layout test
-  measures every text in it with `Estimate`. The old keys
-  `PrtscTurnOffInWindows` and `PrtscUsedByWindows` are gone.
-- **Retry.** A failed install is tried again only when the tray menu opens and
-  when Settings opens (`retry_hotkeys`). A config save or read
-  (`adopt_config` -> `prtsc_follow_config`) touches the hook only when the
-  setting moved (`follows_config`: want != installed || failed), so a toggle
-  click is one try and an unrelated save none; `set_print_screen` only saves.
+- **Settings row.** The old "Tombol PrtSc" toggle (and `PrtscRow`,
+  `PrtscHookFailed`) are gone: the key is the last row of Settings → Tombol
+  pintas ("Screenshot Vale"), a recordable field like the others. When the
+  hook cannot be installed every PrtSc row is `failed` and its description
+  turns red ("Sudah dipakai aplikasi lain"). The Screenshot card in Clipboard
+  is now four rows: tool, preview, on-ignore, seconds.
+- **Retry.** A failed install is tried again when the tray menu opens and
+  when Settings opens (`retry_hotkeys`), and by any sync of a failed row.
 - **Untouched:** `app_shot.rs` (the clipboard preview of a PrtSc image),
   `src/screenshot/`, the tile's tool choice, gestures, the search layout.
-- **Demo:** `DI_PRTSC=failed` with `--settings clipboard` shows the red note.
-- **Tests:** the pure decision, plan / follows_config, the row mapping, the
-  `WM_APP + 60` id against every other `WM_APP + n`, the layout (always
-  `ROW_H`, note only when Failed), and a start/stop of the thread with no
+- **Demo:** `DI_HOTKEYS=failed` with `--settings hotkeys` marks every set row
+  as taken (it replaced `DI_PRTSC=failed`).
+- **Tests:** the pure decision over the table (exact modifiers, the row that
+  fires, repeat, key-up), the table's atomic stores, the `WM_APP + 60` id
+  against every other `WM_APP + n`, and a start/stop of the thread with no
   island window. The proc itself is not driven by synthetic keys.
 - **Not verified live:** real hardware against Snipping Tool (that the swallow
   keeps it from opening), and that a low-level hook does not see keys while

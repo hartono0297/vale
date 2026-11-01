@@ -119,8 +119,10 @@ state in `src/app_devices.rs` (a child of `app`, like the shelf), layout in
 - The tile `Go(Devices)` is **default-on** (decision): a fresh install shows
   twelve tiles; an old config with 11 shown gets it, one with 12 does not
   ([[shortcut-tiles]]).
-- Optional hotkey `devices_hotkey` (Ctrl+Alt+D, off by default,
-  `RegisterHotKey` id 3). The reducer's hold is generalised
+- Optional hotkey: the `devices` row of `config.hotkeys` ([[hotkeys]], off by
+  default; it was `devices_hotkey` Ctrl+Alt+D, migrated once),
+  `RegisterHotKey` id 3. The Fitur "Perangkat" card is now one row (the
+  notice toggle). The reducer's hold is generalised
   (`hotkey_held: Option<Page>`): the Clipboard and Devices hotkeys share one
   hold, one timer (`TIMER_CLIP_HOLD`) and every place that cleared the old
   `clip_held` clears it. The Clipboard hotkey behaves as before.

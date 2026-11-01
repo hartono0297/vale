@@ -46,9 +46,10 @@ use super::notch_fill::legibility;
 use super::robot::{Expr, Pose, RobotPainter};
 use super::settings_layout::{
     Align, Button, ButtonKind, CARD_RADIUS, CAT_TILE, CONTROL_RADIUS, CatFace, Chip, Control,
-    EXTERNAL_GLYPH, FULL_RADIUS, Field, Font, Group, Hit, LINK_GLYPH_W, Layout, Measure, Rect,
-    SEGMENT_RADIUS, SLIDER_THUMB, SWATCH_RING_GAP, SWATCH_RING_W, Section, Segment, Text, Tone,
-    accent_key, slider_x,
+    EXTERNAL_GLYPH, FULL_RADIUS, Field, Font, Group, HOTKEY_CAP_H, HOTKEY_CAP_PAD,
+    HOTKEY_FIELD_PAD, HOTKEY_PLUS_W, Hit, LINK_GLYPH_W, Layout, Measure, Rect, SEGMENT_RADIUS,
+    SLIDER_THUMB, SWATCH_RING_GAP, SWATCH_RING_W, Section, Segment, Text, Tone, accent_key,
+    hotkey_caps_w, slider_x,
 };
 use crate::config::Style;
 use crate::i18n::{Key, Lang, text};
@@ -736,6 +737,12 @@ impl Painter<'_> {
                         .slider(*track, (*value, *min, *max), hovered, held);
                 }
                 Control::Button(b) => self.button(b, s),
+                Control::HotkeyField {
+                    hit,
+                    rect,
+                    caps,
+                    recording,
+                } => self.hotkey_field(*rect, caps, *recording, *hit, s),
                 Control::Mini {
                     rect,
                     rects,
@@ -821,6 +828,66 @@ impl Painter<'_> {
         let d = chip.dot;
         self.circle(d.x + d.w / 2.0, d.y + d.h / 2.0, d.w / 2.0, rgb, 1.0);
         self.text(&chip.label);
+    }
+
+    /// A hotkey row's field: the segmented control's track, the combo as
+    /// small rounded key caps with a "+" between (plain text when the caps do
+    /// not fit), "Tidak ada" when the row is off, and while recording the
+    /// prompt under an accent border. A hover state tints the track.
+    fn hotkey_field(&self, r: Rect, caps: &[String], recording: bool, hit: Hit, s: &Scene) {
+        draw_segment_track(self.rt, self.brush, &self.p, r, self.alpha);
+        if !recording && s.hover == Some(hit) {
+            let a = if s.pressed == s.hover { 0.10 } else { 0.06 };
+            self.fill_round(r, CONTROL_RADIUS, self.p.text, a);
+        }
+        if recording {
+            self.set(self.p.accent, 1.0);
+            self.outline(r, CONTROL_RADIUS, 1.5);
+        }
+        let style = self.style(Font::Control, Align::Center);
+        if recording {
+            let prompt = text(s.lang, Key::HotkeyRecording);
+            self.draw_str(prompt, style, r, self.p.text, 1.0);
+        } else if caps.is_empty() {
+            let none = text(s.lang, Key::HotkeyNone);
+            self.draw_str(none, style, r, self.p.secondary, 1.0);
+        } else if hotkey_caps_w(self.gfx, caps) <= r.w {
+            let total = hotkey_caps_w(self.gfx, caps) - 2.0 * HOTKEY_FIELD_PAD;
+            let mut x = r.x + (r.w - total) / 2.0;
+            for (i, cap) in caps.iter().enumerate() {
+                let w = self.gfx.width(cap, Font::Control) + 2.0 * HOTKEY_CAP_PAD;
+                let cap_r = Rect {
+                    x,
+                    y: r.y + (r.h - HOTKEY_CAP_H) / 2.0,
+                    w,
+                    h: HOTKEY_CAP_H,
+                };
+                self.fill_round(cap_r, 6.0, self.p.button, 1.0);
+                self.stroke_round(cap_r, 6.0, self.p.border);
+                self.draw_str(cap, style, cap_r, self.p.text, 1.0);
+                x += w;
+                if i + 1 < caps.len() {
+                    let plus = Rect {
+                        x,
+                        y: r.y,
+                        w: HOTKEY_PLUS_W,
+                        h: r.h,
+                    };
+                    self.draw_str("+", style, plus, self.p.secondary, 1.0);
+                    x += HOTKEY_PLUS_W;
+                }
+            }
+        } else {
+            // Plain text; a smaller face when even that is wider than the field.
+            let plain = caps.join("+");
+            let small = self.gfx.width(&plain, Font::Control) > r.w - 2.0 * HOTKEY_FIELD_PAD;
+            let style = if small {
+                self.style(Font::Desc, Align::Center)
+            } else {
+                style
+            };
+            self.draw_str(&plain, style, r, self.p.text, 1.0);
+        }
     }
 
     /// The track (window background, hairline, radius 10) with the selected

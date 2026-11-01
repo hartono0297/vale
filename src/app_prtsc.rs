@@ -1,29 +1,33 @@
-//! The PrtSc key opens Vale's own screenshot (`capture` and the editor after
-//! it): the keyboard hook that sees the key, what Settings shows when the
-//! hook could not be installed. A child of `app`, so it works on `App`
-//! directly.
+//! The keyboard hook that carries the PrtSc combos: a child of `app`, used by
+//! `app_hotkeys`.
 //!
-//! Windows 11 owns the bare key (Snipping Tool, while
-//! `PrintScreenKeyForSnippingEnabled` is absent), so `RegisterHotKey` fails.
-//! A low-level keyboard hook (`WH_KEYBOARD_LL`) sees the key first and
-//! swallows it. The hook lives on its own thread: Windows waits for a
-//! low-level hook on every keystroke system-wide and silently removes a slow
-//! one, so the busy UI thread must not be the one that answers. The thread
-//! is started only while the setting is on and blocks in `GetMessageW`
-//! between keystrokes: no timer, nothing runs while nobody types. The proc
-//! does no work: it reads two statics, asks `prtsc_hook_action`, and posts
-//! `WM_APP_PRTSC` to the island.
+//! Windows 11 owns the bare PrtSc key (Snipping Tool, while
+//! `PrintScreenKeyForSnippingEnabled` is absent), so `RegisterHotKey` fails on
+//! it. A low-level keyboard hook (`WH_KEYBOARD_LL`) sees the key first and can
+//! swallow it. Any hotkey row whose combo is PrtSc (bare, or with modifiers)
+//! goes through the hook instead of `RegisterHotKey`.
 //!
-//! The key is taken bare: Alt+PrtSc, Win+PrtSc, Ctrl+PrtSc and Shift+PrtSc go
-//! to Windows untouched. Vale writes nothing to the registry.
+//! The hook lives on its own thread: Windows waits for a low-level hook on
+//! every keystroke system-wide and silently removes a slow one, so the busy UI
+//! thread must not be the one that answers. The thread exists only while at
+//! least one row uses PrtSc (and the hotkeys are not paused) and blocks in
+//! `GetMessageW` between keystrokes: no timer, nothing runs while nobody
+//! types. The proc does no work: it reads a static table (one `AtomicU8` per
+//! row: unassigned, or the modifier bits of that row's PrtSc combo), asks
+//! `prtsc_hook_action`, and posts `WM_APP_PRTSC` with the row to the island.
+//! Changing a row while the hook runs is just an atomic store.
 //!
-//! A failed install (Settings shows a red note) is tried again only when the
-//! tray menu opens or Settings opens (`retry_hotkeys`). A config save or read
-//! starts or stops the hook only when the setting itself moved
-//! (`follows_config`), so a toggle click is one try and an unrelated save
-//! none.
+//! A PrtSc press is taken only when the modifiers held are exactly a row's:
+//! with the default row (bare PrtSc), Alt+PrtSc, Win+PrtSc, Ctrl+PrtSc and
+//! Shift+PrtSc stay Windows'. Vale writes nothing to the registry.
+//!
+//! A combo taken with Win or Alt held would leave Windows a bare Win or Alt
+//! tap (the PrtSc in between never reached it), which opens Start or the
+//! active window's menu bar on release. The proc then sends a mask key (an
+//! unassigned vk, down and up) while the modifier is still down, as
+//! AutoHotkey's `A_MenuMaskKey` does.
 
-use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU8, Ordering};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 
@@ -31,7 +35,9 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT, VK_SNAPSHOT,
+    GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT,
+    KEYEVENTF_KEYUP, SendInput, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
+    VK_SNAPSHOT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GetMessageW, KBDLLHOOKSTRUCT, LLKHF_ALTDOWN, MSG, PM_NOREMOVE, PeekMessageW,
@@ -39,12 +45,25 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_APP, WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
 
-use super::App;
-use crate::model::Event;
-use crate::ui::settings_layout::PrtscRow;
+use crate::hotkey::{HotkeyId, Mods};
 
-/// Posted to the island by the hook proc when a bare PrtSc goes down.
+/// Posted to the island by the hook proc when a PrtSc combo of a row goes
+/// down; `wparam` is the row's `HotkeyId::index`.
 pub(super) const WM_APP_PRTSC: u32 = WM_APP + 60;
+
+/// The table entry of a row that has no PrtSc combo.
+const UNASSIGNED: u8 = 0xFF;
+
+/// One entry per `HotkeyId`: `UNASSIGNED`, or the modifier bits (`Mods::bits`)
+/// of that row's PrtSc combo. Written by the island's thread, read by the
+/// proc.
+static TABLE: [AtomicU8; 5] = [
+    AtomicU8::new(UNASSIGNED),
+    AtomicU8::new(UNASSIGNED),
+    AtomicU8::new(UNASSIGNED),
+    AtomicU8::new(UNASSIGNED),
+    AtomicU8::new(UNASSIGNED),
+];
 
 /// The island window the proc posts to (0: none). Set before the thread
 /// starts, cleared at shutdown.
@@ -52,6 +71,24 @@ static ISLAND: AtomicIsize = AtomicIsize::new(0);
 /// A PrtSc key-down was swallowed and its key-up has not come yet. Only the
 /// hook thread touches it while the hook runs.
 static SWALLOWING: AtomicBool = AtomicBool::new(false);
+
+/// The row's PrtSc combo has these modifiers.
+pub(super) fn table_set(id: HotkeyId, mods: Mods) {
+    TABLE[id.index()].store(mods.bits(), Ordering::Relaxed);
+}
+
+/// The row has no PrtSc combo.
+pub(super) fn table_clear(id: HotkeyId) {
+    TABLE[id.index()].store(UNASSIGNED, Ordering::Relaxed);
+}
+
+/// What the table holds now, as the pure decision wants it.
+fn table_snapshot() -> [Option<Mods>; 5] {
+    std::array::from_fn(|i| {
+        let bits = TABLE[i].load(Ordering::Relaxed);
+        (bits != UNASSIGNED).then(|| Mods::from_bits(bits))
+    })
+}
 
 /// What the proc does with one key event.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,48 +101,69 @@ pub(super) enum HookAction {
     SwallowAndFire,
 }
 
-/// The modifiers held when the key went down.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) struct Mods {
-    pub alt: bool,
-    pub win: bool,
-    pub ctrl: bool,
-    pub shift: bool,
-}
-
-impl Mods {
-    fn any(self) -> bool {
-        self.alt || self.win || self.ctrl || self.shift
-    }
-}
-
 /// The decision for one key event, from the virtual key, whether it is a
-/// key-down, the modifiers and whether the last press was swallowed. Returns
-/// the action and the new "swallowing". Pure: the proc only reads state and
-/// calls this.
+/// key-down, the modifiers held, whether the last press was swallowed and the
+/// table of rows. Returns the action, the row to fire and the new
+/// "swallowing". Pure: the proc only reads state and calls this.
 pub(super) fn prtsc_hook_action(
     vk: u32,
     key_down: bool,
     mods: Mods,
     swallowing: bool,
-) -> (HookAction, bool) {
+    table: &[Option<Mods>; 5],
+) -> (HookAction, Option<usize>, bool) {
     if vk != u32::from(VK_SNAPSHOT.0) {
-        return (HookAction::Pass, swallowing);
+        return (HookAction::Pass, None, swallowing);
     }
     if key_down {
         if swallowing {
             // Auto-repeat of a press already taken: no second capture.
-            (HookAction::Swallow, true)
-        } else if mods.any() {
-            (HookAction::Pass, false)
+            (HookAction::Swallow, None, true)
+        } else if let Some(row) = table.iter().position(|m| *m == Some(mods)) {
+            (HookAction::SwallowAndFire, Some(row), true)
         } else {
-            (HookAction::SwallowAndFire, true)
+            // A combo nobody asked for stays Windows'.
+            (HookAction::Pass, None, false)
         }
     } else if swallowing {
-        (HookAction::Swallow, false)
+        (HookAction::Swallow, None, false)
     } else {
         // A key-up of a press that went to Windows.
-        (HookAction::Pass, false)
+        (HookAction::Pass, None, false)
+    }
+}
+
+/// The key sent to mask a Win or Alt release: unassigned (Microsoft's list),
+/// so it does nothing itself.
+const MASK_VK: u16 = 0xE8;
+
+/// Whether a swallowed combo with these modifiers needs the mask key: Win or
+/// Alt released with no key Windows saw in between opens a menu.
+pub(super) fn needs_mask(mods: Mods) -> bool {
+    mods.win || mods.alt
+}
+
+/// Sends the mask key down and up (no allocation: two inputs on the stack).
+fn send_mask() {
+    let input = |up: bool| INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: VIRTUAL_KEY(MASK_VK),
+                wScan: 0,
+                dwFlags: if up {
+                    KEYEVENTF_KEYUP
+                } else {
+                    KEYBD_EVENT_FLAGS(0)
+                },
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    let inputs = [input(false), input(true)];
+    unsafe {
+        SendInput(&inputs, size_of::<INPUT>() as i32);
     }
 }
 
@@ -133,19 +191,23 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                     shift: held(VK_SHIFT.0),
                 };
                 let was = SWALLOWING.load(Ordering::Relaxed);
-                let (action, now) = prtsc_hook_action(kb.vkCode, down, mods, was);
+                let (action, row, now) =
+                    prtsc_hook_action(kb.vkCode, down, mods, was, &table_snapshot());
                 SWALLOWING.store(now, Ordering::Relaxed);
                 match action {
                     HookAction::Pass => {}
                     HookAction::Swallow => return LRESULT(1),
                     HookAction::SwallowAndFire => {
+                        if needs_mask(mods) {
+                            send_mask();
+                        }
                         let hwnd = ISLAND.load(Ordering::Relaxed);
                         if hwnd != 0 {
                             unsafe {
                                 let _ = PostMessageW(
                                     Some(HWND(hwnd as *mut _)),
                                     WM_APP_PRTSC,
-                                    WPARAM(0),
+                                    WPARAM(row.unwrap_or(0)),
                                     LPARAM(0),
                                 );
                             }
@@ -160,7 +222,7 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
 }
 
 /// The running hook thread.
-struct HookThread {
+pub(super) struct HookThread {
     thread_id: u32,
     handle: JoinHandle<()>,
 }
@@ -168,7 +230,7 @@ struct HookThread {
 impl HookThread {
     /// Starts the thread and waits once for it to say whether the hook went
     /// in. `None`: `SetWindowsHookExW` failed (or the thread did not start).
-    fn start(hwnd: HWND) -> Option<HookThread> {
+    pub(super) fn start(hwnd: HWND) -> Option<HookThread> {
         ISLAND.store(hwnd.0 as isize, Ordering::Relaxed);
         SWALLOWING.store(false, Ordering::Relaxed);
         let (tx, rx) = mpsc::channel::<Option<u32>>();
@@ -190,7 +252,7 @@ impl HookThread {
     }
 
     /// `WM_QUIT` to the thread, which unhooks and ends; waits for it.
-    fn stop(self) {
+    pub(super) fn stop(self) {
         unsafe {
             let _ = PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0));
         }
@@ -224,166 +286,26 @@ fn hook_thread_main(tx: mpsc::Sender<Option<u32>>) {
     }
 }
 
-/// What the PrtSc hook holds: the running thread and whether the last
-/// install failed.
-#[derive(Default)]
-pub(super) struct PrtscState {
-    hook: Option<HookThread>,
-    pub failed: bool,
-}
-
-impl PrtscState {
-    /// Whether the hook is installed.
-    pub fn installed(&self) -> bool {
-        self.hook.is_some()
-    }
-
-    /// The Settings row, from what is kept.
-    fn row(&self, on: bool) -> RowState {
-        prtsc_row(on, self.failed)
-    }
-}
-
-/// What the Settings row shows.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum RowState {
-    /// The toggle is off: no hook, nothing to say.
-    Off,
-    /// On and the hook is installed.
-    Active,
-    /// On, but `SetWindowsHookExW` failed.
-    Failed,
-}
-
-/// The row's state from the toggle and whether the last install failed.
-pub(super) fn prtsc_row(on: bool, failed: bool) -> RowState {
-    if !on {
-        RowState::Off
-    } else if failed {
-        RowState::Failed
-    } else {
-        RowState::Active
-    }
-}
-
-/// What Settings draws for a row state.
-pub(super) fn ui_row(row: RowState) -> PrtscRow {
-    match row {
-        RowState::Off | RowState::Active => PrtscRow::Plain,
-        RowState::Failed => PrtscRow::Failed,
-    }
-}
-
-/// Whether a config save or read has to touch the hook: only when the
-/// setting no longer matches what is installed or was last tried (turned on
-/// and never tried, turned off while installed or failed). A failed hook that
-/// is still wanted waits for `retry_hotkeys`.
-pub(super) fn follows_config(want: bool, installed: bool, failed: bool) -> bool {
-    want != (installed || failed)
-}
-
-/// What a sync has to do to the hook.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Plan {
-    Nothing,
-    Install,
-    Uninstall,
-}
-
-/// The step from the setting and whether the hook is installed. A failed
-/// hook is tried again (`Install`) only while it is wanted; one that is
-/// installed is left alone.
-pub(super) fn plan(want: bool, installed: bool) -> Plan {
-    match (want, installed) {
-        (true, false) => Plan::Install,
-        (false, true) => Plan::Uninstall,
-        _ => Plan::Nothing,
-    }
-}
-
-impl App {
-    /// Installs or removes the PrtSc hook as the setting says. A failure
-    /// shows in Settings and is tried again on the next sync, tray menu or
-    /// Settings opening.
-    pub(super) fn sync_prtsc_hook(&mut self) {
-        let want = self.config.screenshot.print_screen;
-        match plan(want, self.prtsc.installed()) {
-            Plan::Nothing => {}
-            Plan::Uninstall => {
-                if let Some(hook) = self.prtsc.hook.take() {
-                    hook.stop();
-                }
-            }
-            Plan::Install => {
-                self.prtsc.hook = HookThread::start(self.hwnd);
-                self.prtsc.failed = !self.prtsc.installed();
-            }
-        }
-        if !want {
-            self.prtsc.failed = false;
-        }
-    }
-
-    /// `WM_APP_PRTSC`: Vale's own capture, whatever "Alat screenshot" says
-    /// (that choice is for the tile). Starts through the shortcut timer like
-    /// the tile, after an open panel or the search has collapsed, so it is
-    /// not in the picture. One overlay at a time: a press while it is up (or
-    /// while it is starting) does nothing.
-    pub(super) fn on_prtsc_hotkey(&mut self) {
-        if !self.config.screenshot.print_screen || crate::capture::overlay::active() {
-            return;
-        }
-        self.apply_now(Event::PrintScreen);
-    }
-
-    /// The Settings toggle: kept and saved; the hook follows from
-    /// `adopt_config` (`prtsc_follow_config`), one try per click.
-    pub(super) fn set_print_screen(&mut self, on: bool) {
-        self.config.screenshot.print_screen = on;
-        self.save_config();
-    }
-
-    /// A config save or read (the toggle, a hand edit): the hook follows a
-    /// changed setting. Not a retry of a failed hook (`retry_hotkeys` is).
-    pub(super) fn prtsc_follow_config(&mut self) {
-        let want = self.config.screenshot.print_screen;
-        if follows_config(want, self.prtsc.installed(), self.prtsc.failed) {
-            self.sync_prtsc_hook();
-        }
-    }
-
-    /// The row's state for Settings.
-    pub(super) fn prtsc_model(&self) -> PrtscRow {
-        ui_row(self.prtsc.row(self.config.screenshot.print_screen))
-    }
-
-    /// `WM_DESTROY`: the hook goes.
-    pub(super) fn prtsc_shutdown(&mut self) {
-        ISLAND.store(0, Ordering::Relaxed);
-        if let Some(hook) = self.prtsc.hook.take() {
-            hook.stop();
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const SNAP: u32 = 0x2C;
     const NONE: Mods = Mods {
-        alt: false,
-        win: false,
         ctrl: false,
+        alt: false,
         shift: false,
+        win: false,
     };
 
-    #[test]
-    fn the_hotkey_ids_of_the_other_keys_stay_distinct() {
-        assert_eq!(super::super::clip::HOTKEY_CLIP, 1);
-        assert_eq!(super::super::HOTKEY_SEARCH, 2);
-        assert_eq!(super::super::HOTKEY_DEVICES, 3);
-        assert_eq!(super::super::HOTKEY_ARRANGE, 4);
+    fn only(row: usize, mods: Mods) -> [Option<Mods>; 5] {
+        let mut t = [None; 5];
+        t[row] = Some(mods);
+        t
+    }
+
+    fn ctrl() -> Mods {
+        Mods { ctrl: true, ..NONE }
     }
 
     #[test]
@@ -399,91 +321,174 @@ mod tests {
     }
 
     #[test]
-    fn a_bare_press_fires_once_and_is_swallowed() {
+    fn an_assigned_combo_fires_its_row_once_and_is_swallowed() {
+        let bare = only(4, NONE);
         assert_eq!(
-            prtsc_hook_action(SNAP, true, NONE, false),
-            (HookAction::SwallowAndFire, true)
+            prtsc_hook_action(SNAP, true, NONE, false, &bare),
+            (HookAction::SwallowAndFire, Some(4), true)
+        );
+        // A modified combo on another row: the right row fires.
+        let mut table = only(1, ctrl());
+        table[4] = Some(NONE);
+        assert_eq!(
+            prtsc_hook_action(SNAP, true, ctrl(), false, &table),
+            (HookAction::SwallowAndFire, Some(1), true)
+        );
+        assert_eq!(
+            prtsc_hook_action(SNAP, true, NONE, false, &table),
+            (HookAction::SwallowAndFire, Some(4), true)
         );
     }
 
     #[test]
-    fn auto_repeat_is_swallowed_without_a_second_fire() {
-        assert_eq!(
-            prtsc_hook_action(SNAP, true, NONE, true),
-            (HookAction::Swallow, true)
-        );
-        // Even if a modifier went down meanwhile: the press is still ours.
-        let shift = Mods {
-            shift: true,
-            ..NONE
-        };
-        assert_eq!(
-            prtsc_hook_action(SNAP, true, shift, true),
-            (HookAction::Swallow, true)
-        );
-    }
-
-    #[test]
-    fn the_key_up_after_a_swallowed_press_is_swallowed_and_clears() {
-        assert_eq!(
-            prtsc_hook_action(SNAP, false, NONE, true),
-            (HookAction::Swallow, false)
-        );
-        // The whole press: down, repeat, repeat, up, then a new press fires.
-        let mut sw = false;
-        let mut fired = 0;
-        for (down, expect_swallow) in [(true, true), (true, true), (true, true), (false, true)] {
-            let (action, now) = prtsc_hook_action(SNAP, down, NONE, sw);
-            fired += usize::from(action == HookAction::SwallowAndFire);
-            assert_eq!(action != HookAction::Pass, expect_swallow);
-            sw = now;
-        }
-        assert_eq!(fired, 1);
-        assert!(!sw);
-        assert_eq!(
-            prtsc_hook_action(SNAP, true, NONE, sw),
-            (HookAction::SwallowAndFire, true)
-        );
-    }
-
-    #[test]
-    fn each_modifier_sends_the_key_to_windows() {
+    fn the_modifiers_must_match_exactly() {
+        let table = only(4, NONE);
         let cases = [
             Mods { alt: true, ..NONE },
             Mods { win: true, ..NONE },
-            Mods { ctrl: true, ..NONE },
+            ctrl(),
             Mods {
                 shift: true,
+                ..NONE
+            },
+            Mods {
+                ctrl: true,
+                alt: true,
                 ..NONE
             },
         ];
         for mods in cases {
             assert_eq!(
-                prtsc_hook_action(SNAP, true, mods, false),
-                (HookAction::Pass, false),
+                prtsc_hook_action(SNAP, true, mods, false, &table),
+                (HookAction::Pass, None, false),
                 "{mods:?}"
             );
+        }
+        // And a row with Ctrl+Shift does not take a bare press or Ctrl alone.
+        let both = Mods {
+            ctrl: true,
+            shift: true,
+            ..NONE
+        };
+        let table = only(2, both);
+        for mods in [NONE, ctrl()] {
+            assert_eq!(
+                prtsc_hook_action(SNAP, true, mods, false, &table).0,
+                HookAction::Pass
+            );
+        }
+        assert_eq!(
+            prtsc_hook_action(SNAP, true, both, false, &table).1,
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn an_empty_table_takes_nothing() {
+        for mods in [NONE, ctrl()] {
+            for down in [true, false] {
+                assert_eq!(
+                    prtsc_hook_action(SNAP, down, mods, false, &[None; 5]),
+                    (HookAction::Pass, None, false)
+                );
+            }
         }
     }
 
     #[test]
+    fn only_win_or_alt_combos_need_the_mask_key() {
+        let win = Mods { win: true, ..NONE };
+        let alt = Mods { alt: true, ..NONE };
+        let shift = Mods {
+            shift: true,
+            ..NONE
+        };
+        for mods in [
+            win,
+            alt,
+            Mods { ctrl: true, ..win },
+            Mods { shift: true, ..alt },
+        ] {
+            assert!(needs_mask(mods), "{mods:?}");
+        }
+        for mods in [
+            NONE,
+            ctrl(),
+            shift,
+            Mods {
+                shift: true,
+                ..ctrl()
+            },
+        ] {
+            assert!(!needs_mask(mods), "{mods:?}");
+        }
+        // The mask key is one Windows leaves unassigned, and no key a hotkey
+        // can use.
+        assert_eq!(MASK_VK, 0xE8);
+        assert!(!crate::hotkey::is_modifier_vk(MASK_VK));
+        assert_ne!(MASK_VK, VK_SNAPSHOT.0);
+    }
+
+    #[test]
+    fn auto_repeat_is_swallowed_without_a_second_fire() {
+        let table = only(4, NONE);
+        assert_eq!(
+            prtsc_hook_action(SNAP, true, NONE, true, &table),
+            (HookAction::Swallow, None, true)
+        );
+        // Even if a modifier went down meanwhile: the press is still ours.
+        assert_eq!(
+            prtsc_hook_action(SNAP, true, ctrl(), true, &table),
+            (HookAction::Swallow, None, true)
+        );
+    }
+
+    #[test]
+    fn the_key_up_after_a_swallowed_press_is_swallowed_and_clears() {
+        let table = only(4, NONE);
+        assert_eq!(
+            prtsc_hook_action(SNAP, false, NONE, true, &table),
+            (HookAction::Swallow, None, false)
+        );
+        // The whole press: down, repeat, repeat, up, then a new press fires.
+        let mut sw = false;
+        let mut fired = Vec::new();
+        for (down, expect_swallow) in [(true, true), (true, true), (true, true), (false, true)] {
+            let (action, row, now) = prtsc_hook_action(SNAP, down, NONE, sw, &table);
+            if action == HookAction::SwallowAndFire {
+                fired.push(row);
+            }
+            assert_eq!(action != HookAction::Pass, expect_swallow);
+            sw = now;
+        }
+        assert_eq!(fired, vec![Some(4)]);
+        assert!(!sw);
+        assert_eq!(
+            prtsc_hook_action(SNAP, true, NONE, sw, &table),
+            (HookAction::SwallowAndFire, Some(4), true)
+        );
+    }
+
+    #[test]
     fn a_key_up_that_was_not_swallowed_passes() {
+        let table = only(4, NONE);
         for mods in [NONE, Mods { alt: true, ..NONE }] {
             assert_eq!(
-                prtsc_hook_action(SNAP, false, mods, false),
-                (HookAction::Pass, false)
+                prtsc_hook_action(SNAP, false, mods, false, &table),
+                (HookAction::Pass, None, false)
             );
         }
     }
 
     #[test]
     fn other_keys_pass_and_leave_the_swallowing_alone() {
+        let table = only(4, NONE);
         for vk in [0x41, 0x1B, 0x2D, 0x5B, 0x70] {
             for down in [true, false] {
                 for sw in [false, true] {
                     assert_eq!(
-                        prtsc_hook_action(vk, down, NONE, sw),
-                        (HookAction::Pass, sw),
+                        prtsc_hook_action(vk, down, NONE, sw, &table),
+                        (HookAction::Pass, None, sw),
                         "vk={vk:#x} down={down} sw={sw}"
                     );
                 }
@@ -492,37 +497,15 @@ mod tests {
     }
 
     #[test]
-    fn the_row_follows_the_toggle_and_the_install() {
-        for failed in [false, true] {
-            assert_eq!(prtsc_row(false, failed), RowState::Off);
-        }
-        assert_eq!(prtsc_row(true, false), RowState::Active);
-        assert_eq!(prtsc_row(true, true), RowState::Failed);
-        assert_eq!(ui_row(RowState::Off), PrtscRow::Plain);
-        assert_eq!(ui_row(RowState::Active), PrtscRow::Plain);
-        assert_eq!(ui_row(RowState::Failed), PrtscRow::Failed);
-        let mut s = PrtscState::default();
-        assert_eq!(s.row(true), RowState::Active);
-        s.failed = true;
-        assert_eq!(s.row(true), RowState::Failed);
-        assert_eq!(s.row(false), RowState::Off);
-        assert!(!s.installed());
-    }
-
-    #[test]
-    fn a_config_save_touches_the_hook_only_when_the_setting_moved() {
-        // Wanted and installed, or wanted and failed: an unrelated save (or
-        // the toggle's own save, already followed) neither installs again nor
-        // stops anything. A failed hook waits for `retry_hotkeys`.
-        assert!(!follows_config(true, true, false));
-        assert!(!follows_config(true, false, true));
-        // Turned on (never tried, or removed): one try.
-        assert!(follows_config(true, false, false));
-        // Turned off while installed: removed; while failed: the failure clears.
-        assert!(follows_config(false, true, false));
-        assert!(follows_config(false, false, true));
-        // Off and nothing installed: nothing.
-        assert!(!follows_config(false, false, false));
+    fn the_table_is_atomic_stores_and_reads_back() {
+        // Only the Devices row is used here, and it is cleared at the end.
+        table_set(HotkeyId::Devices, ctrl());
+        assert_eq!(table_snapshot()[HotkeyId::Devices.index()], Some(ctrl()));
+        table_clear(HotkeyId::Devices);
+        assert_eq!(table_snapshot()[HotkeyId::Devices.index()], None);
+        table_set(HotkeyId::Devices, NONE);
+        assert_eq!(table_snapshot()[HotkeyId::Devices.index()], Some(NONE));
+        table_clear(HotkeyId::Devices);
     }
 
     #[test]
@@ -534,27 +517,5 @@ mod tests {
         }
         assert_eq!(ISLAND.load(Ordering::Relaxed), 0);
         assert!(!SWALLOWING.load(Ordering::Relaxed));
-    }
-
-    #[test]
-    fn the_hook_is_planned_from_the_setting_and_what_is_installed() {
-        // Off: nothing installed, nothing to do; installed: remove.
-        assert_eq!(plan(false, false), Plan::Nothing);
-        assert_eq!(plan(false, true), Plan::Uninstall);
-        // On: not installed (never tried, failed, or removed): install, which
-        // is also the retry of a failed one; installed: leave.
-        assert_eq!(plan(true, false), Plan::Install);
-        assert_eq!(plan(true, true), Plan::Nothing);
-    }
-
-    #[test]
-    fn a_retry_happens_only_for_a_failed_hook_that_is_still_wanted() {
-        // `retry_hotkeys` calls the sync only while `failed`; the plan then
-        // installs only while wanted, and `follows_config` stays quiet.
-        let (want, installed, failed) = (true, false, true);
-        assert!(!follows_config(want, installed, failed));
-        assert_eq!(plan(want, installed), Plan::Install);
-        // Wanted off meanwhile: no retry install.
-        assert_eq!(plan(false, installed), Plan::Nothing);
     }
 }

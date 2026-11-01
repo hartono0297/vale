@@ -5,16 +5,16 @@ date: 2026-10-30
 
 # Quick search (v3.2 Run 10, "Pencarian-lite")
 
-A Spotlight-like search that opens on a hotkey. **Settings → Umum →
-Pencarian** (`config.search_hotkey`, `SearchHotkey`: `CtrlAltSpace` is the
-default since 3.2.1 (it was `Off` in 3.2.0, so nobody found it), `WinAltS`,
-`Off`; a file that never names it gets the default, "Off" stays off, a typo
-reads as `Off`, Alt+Space is never offered). The key is saved as
-`quick_search_hotkey`: 3.2.0 wrote `search_hotkey: "Off"` into every config, so
-that old key is ignored when it says "Off" (never chosen) and honoured for
-any other value; the Settings control is island-owned (`merge_owned`), so a
-choice, Off included, sticks across saves (3.2.1 review fix). Registered as `RegisterHotKey` id 2 (the Clipboard's is 1) in
-`app_search.rs`; a failed registration shows "Sudah dipakai" in Settings.
+A Spotlight-like search that opens on a hotkey. Since the recordable hotkeys
+the key is the `search` row of `config.hotkeys` ([[hotkeys]]), chosen in
+**Settings → Tombol pintas → Pencarian cepat**: Ctrl+Alt+Space by default
+(since 3.2.1; it was `Off` in 3.2.0, so nobody found it), any other combo
+that passes `hotkey::check`, or None. Alt+Space stays refused (the window
+menu). The old `quick_search_hotkey` and 3.2.0's `search_hotkey: "Off"` rules
+live on only as the one-time migration (`hotkey::from_legacy`). The row is
+island-owned (`merge_owned`), so a choice, None included, sticks across saves.
+Registered as `RegisterHotKey` id 2 by `app_hotkeys.rs`; a failed registration
+shows "Sudah dipakai aplikasi lain" in red under the row.
 
 - **Where it lives:** `Page::Search` is a page of the panel but not one of
   `Page::ALL`: no wheel, no dots, no slide, never saved, and
@@ -97,9 +97,9 @@ Related: [[shortcut-tiles]], [[gestures]].
   search (never closes it). The window it returns to is the one in front
   when the menu opened, unless that is the taskbar / tray overflow (by
   class) or the island; then the topmost ordinary window in the z-order.
-- **Hotkey retry:** a failed `RegisterHotKey` (search and Clipboard) is
-  tried again on every sync (config read) and when the tray menu or
-  Settings opens (`retry_hotkeys`).
+- **Hotkey retry:** a failed row (any of the five) is tried again on every
+  sync (config read) and when the tray menu or Settings opens
+  (`retry_hotkeys`, `app_hotkeys.rs`).
 - No search EDIT (creation failed at start): `FocusSearch` closes it again.
 
 

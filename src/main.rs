@@ -24,6 +24,7 @@ mod gestures;
 mod google;
 mod greeting;
 mod halo;
+mod hotkey;
 mod i18n;
 mod lyrics;
 mod media_log;

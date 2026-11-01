@@ -49,10 +49,13 @@ Run 7 of the v3.1 plan (Keputusan #5). Code in `src/clipboard/` (pure:
   entries stay until cleared. The listener stops only when the screenshot
   preview is off too; with the preview on it still looks at new images
   (by the same skip rules) and keeps nothing.
-- **Hotkey.** None by default. Settings offers Ctrl+Alt+V and Win+Alt+V,
-  **never Ctrl+Shift+V** (paste as plain text in browsers, VS Code and
-  Office). An unknown name in config.json reads as none. `RegisterHotKey`
-  only when set; a failure shows in the row ("Dipakai aplikasi lain"). The
+- **Hotkey.** None by default: the `clipboard` row of `config.hotkeys`
+  ([[hotkeys]]), recorded in Settings → Tombol pintas → Buka Clipboard (the
+  old `clipboard.hotkey` Ctrl+Alt+V / Win+Alt+V presets are migrated once).
+  **Ctrl+Shift+V is reserved** (paste as plain text in browsers, VS Code and
+  Office) and `check` refuses it. A bad value reads as the default (none).
+  `RegisterHotKey` only when set; a failure shows in the row ("Sudah dipakai
+  aplikasi lain"). The
   hotkey opens the panel on the Clipboard page *without* the foreground
   (`clip_held`); it closes on a second press, when the pointer visits and
   leaves, or after an 8 s one-shot if it never came.

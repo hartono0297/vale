@@ -134,11 +134,11 @@ use clip::{ClipSetting, ClipState, SEARCH_LIMIT};
 
 #[path = "app_devices.rs"]
 mod devices_page;
-use devices_page::{DevicesState, HOTKEY_DEVICES, TIMER_DEVICES};
+use devices_page::{DevicesState, TIMER_DEVICES};
 
 #[path = "app_arrange.rs"]
 mod arrange_page;
-use arrange_page::{ArrangeState, HOTKEY_ARRANGE};
+use arrange_page::ArrangeState;
 
 #[path = "app_dock.rs"]
 mod dock_page;
@@ -154,11 +154,15 @@ use update_page::{TIMER_UPDATE, UpdateState};
 
 #[path = "app_prtsc.rs"]
 mod prtsc;
-use prtsc::{PrtscState, WM_APP_PRTSC};
+use prtsc::WM_APP_PRTSC;
+
+#[path = "app_hotkeys.rs"]
+mod hotkeys;
+use hotkeys::{HotkeyState, row_of_wm_id};
 
 #[path = "app_search.rs"]
 mod quick;
-use quick::{HOTKEY_SEARCH, QUERY_LIMIT, SearchState};
+use quick::{QUERY_LIMIT, SearchState};
 
 #[path = "app_shelf.rs"]
 mod shelf_page;
@@ -482,7 +486,7 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
             dock: DockState::default(),
             devices: DevicesState::default(),
             arrange: ArrangeState::default(),
-            prtsc: PrtscState::default(),
+            hotkeys: HotkeyState::default(),
             pomo_timer: false,
             clock_timer: false,
             progress_timer: false,
@@ -550,10 +554,8 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
         app.clip_start();
         // The saved history, and the poller when the listener may run.
         app.notif_start();
-        app.sync_search_hotkey();
         app.devices_start();
-        app.arrange_start();
-        app.sync_prtsc_hook();
+        app.sync_hotkeys();
         app.draw(now);
         app.request_calendar(app.state.cal_range(), now);
         // An empty notes list would otherwise look like the notes were deleted.
@@ -849,8 +851,8 @@ struct App {
     /// The Susun page: monitors, the pick step, the mover's results, the
     /// name field and the hotkey (`app_arrange`).
     arrange: ArrangeState,
-    /// The PrtSc key and whether Vale holds it (`app_prtsc`).
-    prtsc: PrtscState,
+    /// The five hotkeys in effect, the PrtSc hook and the recording pause (`app_hotkeys`).
+    hotkeys: HotkeyState,
     pomo_timer: bool,
     /// `TIMER_CLOCK` is set.
     clock_timer: bool,
@@ -5304,14 +5306,9 @@ impl App {
         self.clip_follow_config();
         // The cap, the file and the muted apps of the Notifikasi history.
         self.notif_follow_config();
-        // A hand edit of the hotkey is picked up too (once started).
-        if self.search.hotkey.is_some() {
-            self.sync_search_hotkey();
-        }
-        self.devices_follow_config();
-        self.arrange_follow_config();
-        // The PrtSc setting may have been edited by hand too (or toggled).
-        self.prtsc_follow_config();
+        // The hotkeys follow a changed value (once started; not while
+        // Settings records).
+        self.hotkeys_follow_config();
         if changed && let Some(sync) = &self.sync {
             sync.send(SyncRequest::Config(self.config.clone()));
             // The next calendar view asks again, now with the new client.
@@ -5364,11 +5361,7 @@ impl App {
             pomodoro: self.state.pomodoro().settings(),
             pomodoro_locked: !matches!(status, PomoStatus::Idle | PomoStatus::Ready),
             calendar: self.calendar.status,
-            clip_hotkey_failed: self.clip_hotkey_failed(),
-            search_hotkey_failed: self.search.hotkey_failed,
-            devices_hotkey_failed: self.devices.hotkey_failed,
-            arrange_hotkey_failed: self.arrange.hotkey_failed,
-            prtsc: self.prtsc_model(),
+            hotkey_failed: self.hotkeys.failed_flags(),
             update_row: self.update.row(),
             ..settings::Model::from_config(&self.config)
         }
@@ -5504,25 +5497,19 @@ impl App {
                 self.config.morning_greeting = on;
                 self.save_config();
             }
-            SettingsAction::SearchHotkey(h) => {
-                self.config.search_hotkey = h;
-                self.save_config();
-                self.sync_search_hotkey();
+            SettingsAction::Hotkey(id, hk) => self.set_hotkey(id, hk),
+            SettingsAction::HotkeysResetAll => self.reset_all_hotkeys(),
+            SettingsAction::HotkeyRecording(on) => {
+                if on {
+                    self.pause_hotkeys();
+                } else {
+                    self.resume_hotkeys();
+                    self.sync_settings();
+                }
             }
             SettingsAction::DeviceNotices(on) => {
                 self.config.device_notices = on;
                 self.save_config();
-            }
-            SettingsAction::DevicesHotkey(h) => {
-                self.config.devices_hotkey = h;
-                self.save_config();
-                self.sync_devices_hotkey();
-            }
-            SettingsAction::ArrangeHotkey(h) => {
-                self.config.arrange.hotkey = h;
-                self.save_config();
-                self.sync_arrange_hotkey();
-                self.sync_settings();
             }
             // The thumb moves live; only the release is saved.
             SettingsAction::ArrangeGap { gap, commit } => {
@@ -5614,7 +5601,6 @@ impl App {
             SettingsAction::ClipClearOnLock(on) => {
                 self.on_clip_setting(ClipSetting::ClearOnLock(on))
             }
-            SettingsAction::ClipHotkey(h) => self.on_clip_setting(ClipSetting::Hotkey(h)),
             SettingsAction::ClipFeedbackAll(on) => {
                 self.on_clip_setting(ClipSetting::FeedbackAll(on))
             }
@@ -5634,7 +5620,6 @@ impl App {
             SettingsAction::ShotPreview(on) => self.on_shot_setting(ShotSetting::Preview(on)),
             SettingsAction::ShotOnIgnore(v) => self.on_shot_setting(ShotSetting::OnIgnore(v)),
             SettingsAction::ShotSecs(n) => self.on_shot_setting(ShotSetting::Secs(n)),
-            SettingsAction::ShotPrintScreen(on) => self.set_print_screen(on),
             SettingsAction::CheckUpdates => self.update_manual_check(),
             SettingsAction::InstallUpdate => self.update_install(),
             SettingsAction::UpdateAuto(on) => {
@@ -5642,7 +5627,9 @@ impl App {
                 self.save_config();
             }
             // Handled outside the app borrow (`deliver_settings_action`).
-            SettingsAction::DndHelp | SettingsAction::Closed => {}
+            SettingsAction::DndHelp => {}
+            // A window closed in the middle of a recording: the hotkeys come back.
+            SettingsAction::Closed => self.resume_hotkeys(),
         }
         self.sync_settings();
     }
@@ -7581,20 +7568,16 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
         WM_HOTKEY => {
-            if wparam.0 as i32 == clip::HOTKEY_CLIP {
-                with_app(App::on_clip_hotkey);
-            } else if wparam.0 as i32 == HOTKEY_SEARCH {
-                with_app(App::on_search_hotkey);
-            } else if wparam.0 as i32 == HOTKEY_DEVICES {
-                with_app(App::on_devices_hotkey);
-            } else if wparam.0 as i32 == HOTKEY_ARRANGE {
-                with_app(App::on_arrange_hotkey);
+            if let Some(id) = row_of_wm_id(wparam.0 as i32) {
+                with_app(|app| app.on_hotkey(id));
             }
             LRESULT(0)
         }
-        // The PrtSc key, seen by the keyboard hook thread (`app_prtsc`).
+        // A PrtSc combo, seen by the keyboard hook thread (`app_prtsc`): the
+        // row is in `wparam`.
         WM_APP_PRTSC => {
-            with_app(App::on_prtsc_hotkey);
+            let row = wparam.0;
+            with_app(|app| app.on_hook_row(row));
             LRESULT(0)
         }
         // A drive came or went: only an arrival or a removal of a volume or
@@ -7671,7 +7654,7 @@ unsafe extern "system" fn wnd_proc(
                 // A history change still waiting for its save is written now.
                 with_app(App::clip_shutdown);
                 with_app(App::notif_shutdown);
-                with_app(App::search_shutdown);
+                with_app(App::hotkeys_shutdown);
             }
             LRESULT(0)
         }
@@ -7695,10 +7678,9 @@ unsafe extern "system" fn wnd_proc(
             with_app(App::stop_sync);
             with_app(App::clip_shutdown);
             with_app(App::notif_shutdown);
-            with_app(App::search_shutdown);
             with_app(App::devices_shutdown);
             with_app(App::arrange_shutdown);
-            with_app(App::prtsc_shutdown);
+            with_app(App::hotkeys_shutdown);
             unsafe {
                 let _ = WTSUnRegisterSessionNotification(hwnd);
                 let note = DISPLAY_NOTIFY.replace(0);

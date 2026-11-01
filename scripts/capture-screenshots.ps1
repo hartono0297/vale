@@ -230,8 +230,10 @@ $shots = @(
     @{ name = 'settings'; args = "--settings appearance $Window en"; env = @{}; wheel = 6 }
     # Appearance scrolled to its end with two own tiles in the Pintasan card.
     @{ name = 'settings-tiles'; args = "--settings appearance $Window en"; env = @{ DI_TILES = '1' }; wheel = 40 }
-    # General scrolled to its end: the search hotkey and stay-behind rows.
+    # General scrolled to its end: the alerts' rows.
     @{ name = 'settings-general'; args = "--settings general $Window en"; env = @{}; wheel = 10 }
+    # Tombol pintas: the five hotkeys with their fields.
+    @{ name = 'settings-hotkeys'; args = "--settings hotkeys $Window en"; env = @{} }
     @{ name = 'settings-clipboard'; args = "--settings clipboard $Window en"; env = @{} }
     # Clipboard scrolled to its end: the screenshot preview's card.
     @{ name = 'settings-screenshot'; args = "--settings clipboard $Window en"; env = @{}; wheel = 6 }

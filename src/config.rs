@@ -76,12 +76,6 @@ pub struct Config {
     /// "Mode buka": how the pointer opens the panel (by name; a typo is
     /// Hover).
     pub open_mode: OpenMode,
-    /// "Pencarian cepat": the hotkey that opens the quick search. Saved as
-    /// `quick_search_hotkey`: 3.2.0 wrote `search_hotkey: "Off"` into every
-    /// config, and reading that key again would keep the search off for
-    /// everyone who never chose it.
-    #[serde(rename = "quick_search_hotkey")]
-    pub search_hotkey: SearchHotkey,
     /// Swipe, sideways wheel and middle button on the island while music
     /// plays (`gestures`): on unless switched off here.
     pub gestures: bool,
@@ -142,9 +136,6 @@ pub struct Config {
     /// Eject says it is safe to remove (Settings → Fitur → Perangkat). On
     /// unless switched off here.
     pub device_notices: bool,
-    /// "Tombol pintas" (Perangkat): the hotkey that opens the Devices page. None by
-    /// default.
-    pub devices_hotkey: DevicesHotkey,
     /// "Warna" (Settings -> Kucing): the notch cat's coat. A bad value reads
     /// as Terracotta.
     #[serde(deserialize_with = "cat_color")]
@@ -178,6 +169,11 @@ pub struct Config {
     /// release about once a day (default on). A manual check ignores it.
     #[serde(deserialize_with = "default_on")]
     pub update_check: bool,
+    /// "Tombol pintas": the five global hotkeys (Settings -> Tombol pintas).
+    /// Read leniently (`Hotkeys`'s deserializer never fails); an old file
+    /// without the key gets the old presets as combos (`migrate_hotkeys`).
+    /// Owned by the island, so a Settings choice sticks across saves.
+    pub hotkeys: crate::hotkey::Hotkeys,
     /// The last version an automatic check offered ("3.11.0"), so the same
     /// one is not offered again; empty when none. Not a setting: the island
     /// writes it.
@@ -420,10 +416,6 @@ pub struct ScreenshotSettings {
     /// "Alat screenshot".
     #[serde(deserialize_with = "shot_tool")]
     pub tool: ShotTool,
-    /// "Tombol PrtSc membuka screenshot Vale": the bare PrtSc key starts
-    /// Vale's own capture (default on). Missing or any non-bool reads as on.
-    #[serde(deserialize_with = "print_screen")]
-    pub print_screen: bool,
 }
 
 impl Default for ScreenshotSettings {
@@ -433,16 +425,8 @@ impl Default for ScreenshotSettings {
             on_ignore: ShotIgnore::Keep,
             show_secs: 8,
             tool: ShotTool::Vale,
-            print_screen: true,
         }
     }
-}
-
-/// A bool; anything else (a string, a number, null) is on, so a bad value
-/// never makes the whole config invalid.
-fn print_screen<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
-    let v = serde_json::Value::deserialize(d)?;
-    Ok(v.as_bool().unwrap_or(true))
 }
 
 /// A name or anything else (a number, null): any name that is not a tool
@@ -462,33 +446,6 @@ fn shot_secs<'de, D: Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
         }))
 }
 
-crate::theme::named_enum! {
-    /// "Pintasan" of the Clipboard page: none by default. Ctrl+Shift+V is
-    /// never offered (it is "paste as plain text" in browsers, VS Code and
-    /// Office); any other name, that one included, reads as `Off`.
-    ClipHotkey { Off, CtrlAltV, WinAltV }
-}
-
-crate::theme::named_enum! {
-    /// "Pencarian cepat": the hotkey that opens the quick search. A config
-    /// that never named one gets Ctrl+Alt+Space (`Config::default`); "Off" is a
-    /// choice. Alt+Space is never offered (it is the window menu); any other
-    /// name, that one included, reads as `Off`.
-    SearchHotkey { Off, CtrlAltSpace, WinAltS }
-}
-
-crate::theme::named_enum! {
-    /// "Tombol pintas" (Susun): the hotkey that opens the Susun page at the
-    /// template step. None by default; any other name reads as `Off`.
-    ArrangeHotkey { Off, CtrlAltS }
-}
-
-crate::theme::named_enum! {
-    /// "Tombol pintas" (Perangkat): the hotkey that opens the Devices page, like the
-    /// Clipboard's. None by default; any other name reads as `Off`.
-    DevicesHotkey { Off, CtrlAltD }
-}
-
 /// Settings → Clipboard.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(default)]
@@ -503,7 +460,6 @@ pub struct ClipboardSettings {
     pub persist: bool,
     /// "Hapus saat layar dikunci": unpinned entries go when the screen locks.
     pub clear_on_lock: bool,
-    pub hotkey: ClipHotkey,
     /// "Disalin" also for copies made in other apps.
     pub copied_feedback_all: bool,
     /// "Notifikasi salinan": a preview in the notch on every copy made in
@@ -519,7 +475,6 @@ impl Default for ClipboardSettings {
             max_items: crate::clipboard::store::DEFAULT_ITEMS,
             persist: true,
             clear_on_lock: false,
-            hotkey: ClipHotkey::Off,
             copied_feedback_all: false,
             copy_notice: true,
         }
@@ -621,7 +576,6 @@ impl Default for Config {
             lyrics: false,
             gestures: true,
             scroll_volume: true,
-            search_hotkey: SearchHotkey::CtrlAltSpace,
             cli_shell: Shell::PowerShell,
             cli_start: CliStart::Explorer,
             open_mode: OpenMode::Hover,
@@ -641,7 +595,6 @@ impl Default for Config {
             panel_pages: Vec::new(),
             shortcut_tiles: Vec::new(),
             device_notices: true,
-            devices_hotkey: DevicesHotkey::Off,
             cat_color: CatColor::Terracotta,
             cat_accessory: CatAccessory::None,
             cat_follow_pointer: true,
@@ -651,6 +604,7 @@ impl Default for Config {
             notifications: NotifSettings::default(),
             arrange: ArrangeSettings::default(),
             update_check: true,
+            hotkeys: crate::hotkey::Hotkeys::default(),
             update_offered: String::new(),
         }
     }
@@ -690,24 +644,24 @@ pub fn parse(text: &str) -> Config {
 pub fn try_parse(text: &str) -> Option<Config> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut value: serde_json::Value = serde_json::from_str(text).ok()?;
-    migrate_search_hotkey(&mut value);
+    migrate_hotkeys(&mut value);
     serde_json::from_value(value).ok()
 }
 
-/// 3.2.0 saved the hotkey as `search_hotkey` (Off unless chosen). The key is
-/// now `quick_search_hotkey`; a file without it keeps an old *chosen* value
-/// (anything but "Off") and otherwise gets the default.
-fn migrate_search_hotkey(value: &mut serde_json::Value) {
-    let Some(map) = value.as_object_mut() else {
-        return;
-    };
-    if map.contains_key("quick_search_hotkey") {
+/// A file without a `hotkeys` key is from before the recordable hotkeys: the
+/// old presets (`quick_search_hotkey`, 3.2.0's `search_hotkey`,
+/// `devices_hotkey`, `clipboard.hotkey`, `arrange.hotkey`,
+/// `screenshot.print_screen`) become the new rows. The old keys are not read
+/// again and drop out on the next save.
+fn migrate_hotkeys(value: &mut serde_json::Value) {
+    if value.get("hotkeys").is_some() {
         return;
     }
-    if let Some(old) = map.get("search_hotkey").cloned()
-        && old.as_str().is_some_and(|s| s != "Off")
+    let migrated = crate::hotkey::from_legacy(value);
+    if let Some(map) = value.as_object_mut()
+        && let Ok(json) = serde_json::to_value(migrated)
     {
-        map.insert("quick_search_hotkey".into(), old);
+        map.insert("hotkeys".into(), json);
     }
 }
 
@@ -764,7 +718,6 @@ pub fn merge_owned(disk: Config, mem: &Config) -> Config {
         idle_clock: mem.idle_clock,
         stay_behind: mem.stay_behind,
         lyrics: mem.lyrics,
-        search_hotkey: mem.search_hotkey,
         cli_shell: mem.cli_shell,
         cli_start: mem.cli_start,
         open_mode: mem.open_mode,
@@ -781,7 +734,6 @@ pub fn merge_owned(disk: Config, mem: &Config) -> Config {
         panel_pages: mem.panel_pages.clone(),
         shortcut_tiles: mem.shortcut_tiles.clone(),
         device_notices: mem.device_notices,
-        devices_hotkey: mem.devices_hotkey,
         cat_color: mem.cat_color,
         cat_accessory: mem.cat_accessory,
         cat_follow_pointer: mem.cat_follow_pointer,
@@ -791,6 +743,7 @@ pub fn merge_owned(disk: Config, mem: &Config) -> Config {
         notifications: mem.notifications,
         arrange: mem.arrange.clone(),
         update_check: mem.update_check,
+        hotkeys: mem.hotkeys,
         update_offered: mem.update_offered.clone(),
         ..disk
     }
@@ -1094,7 +1047,6 @@ mod tests {
         let c = Config {
             gestures: false,
             scroll_volume: false,
-            search_hotkey: SearchHotkey::WinAltS,
             shortcut_tiles: vec![TileEntry {
                 tile: "Lock".into(),
                 on: false,
@@ -1143,7 +1095,6 @@ mod tests {
                 max_items: 120,
                 persist: false,
                 clear_on_lock: true,
-                hotkey: ClipHotkey::WinAltV,
                 copied_feedback_all: true,
                 copy_notice: false,
             },
@@ -1152,14 +1103,12 @@ mod tests {
                 on_ignore: ShotIgnore::Delete,
                 show_secs: 12,
                 tool: ShotTool::Windows,
-                print_screen: false,
             },
             panel_pages: vec![PageEntry {
                 page: "Media".into(),
                 on: false,
             }],
             device_notices: false,
-            devices_hotkey: DevicesHotkey::CtrlAltD,
             cat_color: CatColor::Calico,
             cat_accessory: CatAccessory::Bow,
             cat_follow_pointer: false,
@@ -1173,12 +1122,18 @@ mod tests {
                 paused: true,
             },
             arrange: ArrangeSettings {
-                hotkey: ArrangeHotkey::CtrlAltS,
                 gap: 16,
                 ..ArrangeSettings::default()
             },
             update_check: false,
             update_offered: "3.11.0".into(),
+            hotkeys: crate::hotkey::Hotkeys {
+                search: None,
+                clipboard: crate::hotkey::parse("Win+Alt+V").unwrap(),
+                devices: crate::hotkey::parse("Ctrl+Alt+D").unwrap(),
+                arrange: crate::hotkey::parse("Win+Shift+F13").unwrap(),
+                screenshot: crate::hotkey::parse("Ctrl+PrtSc").unwrap(),
+            },
             settings_window: Some(WindowPlace {
                 left: 20,
                 top: 30,
@@ -1207,7 +1162,10 @@ mod tests {
             assert!(c.update_check, "{junk}");
             assert_eq!(c.style, Style::Notch);
         }
-        assert_eq!(parse(r#"{"update_offered":"3.11.0"}"#).update_offered, "3.11.0");
+        assert_eq!(
+            parse(r#"{"update_offered":"3.11.0"}"#).update_offered,
+            "3.11.0"
+        );
         assert!(!parse(r#"{"update_check":false}"#).update_check);
         // The island's copy wins over the file's, both ways.
         let mem = Config {
@@ -1275,33 +1233,6 @@ mod tests {
         assert_eq!(win.screenshot.tool, ShotTool::Windows);
         let back = parse(&serde_json::to_string(&win).unwrap());
         assert_eq!(back.screenshot.tool, ShotTool::Windows);
-    }
-
-    #[test]
-    fn the_print_screen_key_is_on_unless_the_file_says_false() {
-        assert!(ScreenshotSettings::default().print_screen);
-        // An old file without the key: on, and the rest of the file stays.
-        let old = parse(r#"{"style":"Notch","screenshot":{"preview":false}}"#);
-        assert!(old.screenshot.print_screen);
-        assert_eq!(old.style, Style::Notch);
-        // Garbage of any type is on too, never an invalid config.
-        for text in [
-            r#"{"style":"Notch","screenshot":{"print_screen":"no"}}"#,
-            r#"{"style":"Notch","screenshot":{"print_screen":0}}"#,
-            r#"{"style":"Notch","screenshot":{"print_screen":null}}"#,
-            r#"{"style":"Notch","screenshot":{"print_screen":[false]}}"#,
-        ] {
-            let c = parse(text);
-            assert_eq!(c.style, Style::Notch, "{text}");
-            assert!(c.screenshot.print_screen, "{text}");
-        }
-        // False is kept, and round-trips under screenshot.print_screen.
-        let off = parse(r#"{"screenshot":{"print_screen":false}}"#);
-        assert!(!off.screenshot.print_screen);
-        let text = serde_json::to_string(&off).unwrap();
-        let json: serde_json::Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(json["screenshot"]["print_screen"], serde_json::json!(false));
-        assert!(!parse(&text).screenshot.print_screen);
     }
 
     #[test]
@@ -1421,7 +1352,7 @@ mod tests {
                 .clipboard
                 .copy_notice
         );
-        assert_eq!((d.max_items, d.hotkey), (50, ClipHotkey::Off));
+        assert_eq!(d.max_items, 50);
         // An older config.json without the group loads the defaults.
         let old = parse(r#"{"style":"Notch","robot":false,"lyrics":true}"#);
         assert_eq!(old.clipboard, ClipboardSettings::default());
@@ -1436,17 +1367,6 @@ mod tests {
         assert_eq!(small.clipboard.max_items, 10);
         let word = parse(r#"{"clipboard":{"max_items":"banyak"}}"#);
         assert_eq!(word.clipboard.max_items, 50);
-        // Hotkeys by name; an unknown one, Ctrl+Shift+V too, is none.
-        let alt = parse(r#"{"clipboard":{"hotkey":"CtrlAltV"}}"#);
-        assert_eq!(alt.clipboard.hotkey, ClipHotkey::CtrlAltV);
-        for name in ["CtrlShiftV", "Ctrl+Shift+V", "F13", ""] {
-            let json = format!(r#"{{"style":"Notch","clipboard":{{"hotkey":"{name}"}}}}"#);
-            let c = parse(&json);
-            assert_eq!(
-                (c.style, c.clipboard.hotkey),
-                (Style::Notch, ClipHotkey::Off)
-            );
-        }
         // The island's own settings win over a stale copy on disk.
         let mem = Config {
             clipboard: ClipboardSettings {
@@ -1557,34 +1477,19 @@ mod tests {
     }
 
     #[test]
-    fn device_notices_default_on_and_the_hotkey_off_even_for_an_old_file() {
+    fn device_notices_default_on_and_belong_to_the_island() {
         let d = Config::default();
         assert!(d.device_notices);
-        assert_eq!(d.devices_hotkey, DevicesHotkey::Off);
-        // A file from before the Devices page names neither.
         let old = parse(r#"{"style":"Notch","disk_warn_gb":20}"#);
         assert!(old.device_notices);
-        assert_eq!(old.devices_hotkey, DevicesHotkey::Off);
-        // A bad name keeps the rest of the file and reads as Off.
-        let named = |name: &str| parse(&format!(r#"{{"devices_hotkey":"{name}"}}"#)).devices_hotkey;
-        assert_eq!(named("CtrlAltD"), DevicesHotkey::CtrlAltD);
-        assert_eq!(named("ctrlaltd"), DevicesHotkey::CtrlAltD);
-        assert_eq!(named("WinAltD"), DevicesHotkey::Off);
-        assert_eq!(named(""), DevicesHotkey::Off);
-        let odd = parse(r#"{"devices_hotkey":"Nope","device_notices":false,"style":"Notch"}"#);
-        assert_eq!(
-            (odd.devices_hotkey, odd.device_notices, odd.style),
-            (DevicesHotkey::Off, false, Style::Notch)
-        );
-        // Both belong to the island: a save keeps what it chose over the file.
+        let odd = parse(r#"{"device_notices":false,"style":"Notch"}"#);
+        assert_eq!((odd.device_notices, odd.style), (false, Style::Notch));
         let mem = Config {
             device_notices: false,
-            devices_hotkey: DevicesHotkey::CtrlAltD,
             ..Config::default()
         };
         let merged = merge_owned(Config::default(), &mem);
         assert!(!merged.device_notices);
-        assert_eq!(merged.devices_hotkey, DevicesHotkey::CtrlAltD);
         assert_eq!(parse(&serde_json::to_string_pretty(&mem).unwrap()), mem);
     }
 
@@ -1790,44 +1695,93 @@ mod tests {
     }
 
     #[test]
-    fn the_search_hotkey_defaults_to_ctrl_alt_space_and_a_typo_or_alt_space_reads_as_off() {
-        // Never named in the file: the default. Named "Off": off.
-        assert_eq!(Config::default().search_hotkey, SearchHotkey::CtrlAltSpace);
+    fn a_file_from_before_the_hotkeys_gets_the_old_presets_as_combos() {
+        use crate::hotkey::{HotkeyId, Hotkeys, parse as hk};
+        let combo = |t: &str| hk(t).unwrap();
+        // Nothing named: the defaults.
+        assert_eq!(parse(r#"{"style":"Notch"}"#).hotkeys, Hotkeys::default());
+        assert_eq!(Config::default().hotkeys, Hotkeys::default());
+        // Every old preset at once.
+        let c = parse(
+            r#"{"style":"Notch","quick_search_hotkey":"WinAltS","devices_hotkey":"CtrlAltD",
+                "clipboard":{"hotkey":"WinAltV","enabled":false},"arrange":{"hotkey":"CtrlAltS","gap":4},
+                "screenshot":{"print_screen":false,"show_secs":10}}"#,
+        );
+        assert_eq!(c.style, Style::Notch);
+        assert_eq!(c.hotkeys.search, combo("Win+Alt+S"));
+        assert_eq!(c.hotkeys.devices, combo("Ctrl+Alt+D"));
+        assert_eq!(c.hotkeys.clipboard, combo("Win+Alt+V"));
+        assert_eq!(c.hotkeys.arrange, combo("Ctrl+Alt+S"));
+        assert_eq!(c.hotkeys.screenshot, None);
+        // The rest of each group stays.
+        assert!(!c.clipboard.enabled);
+        assert_eq!((c.arrange.gap, c.screenshot.show_secs), (4, 10));
+        // The search follows the new key, then the 3.2.0 one ("Off" was never a choice).
         assert_eq!(
-            parse(r#"{"style":"Notch"}"#).search_hotkey,
-            SearchHotkey::CtrlAltSpace
+            parse(r#"{"quick_search_hotkey":"Off"}"#).hotkeys.search,
+            None
         );
         assert_eq!(
-            parse(r#"{"quick_search_hotkey":"Off"}"#).search_hotkey,
-            SearchHotkey::Off
-        );
-        let named =
-            |name: &str| parse(&format!(r#"{{"quick_search_hotkey":"{name}"}}"#)).search_hotkey;
-        assert_eq!(named("CtrlAltSpace"), SearchHotkey::CtrlAltSpace);
-        assert_eq!(named("WinAltS"), SearchHotkey::WinAltS);
-        // Alt+Space is the window menu: never a choice.
-        assert_eq!(named("AltSpace"), SearchHotkey::Off);
-        assert_eq!(named("ctrlaltspaces"), SearchHotkey::Off);
-        assert_eq!(named(""), SearchHotkey::Off);
-        // A 3.2.0 file wrote "Off" for everyone: that is the default now. A
-        // hotkey it names is a choice and stays; the new key wins over it.
-        assert_eq!(
-            parse(r#"{"search_hotkey":"Off"}"#).search_hotkey,
-            SearchHotkey::CtrlAltSpace
+            parse(r#"{"search_hotkey":"Off"}"#).hotkeys.search,
+            HotkeyId::Search.default()
         );
         assert_eq!(
-            parse(r#"{"search_hotkey":"WinAltS"}"#).search_hotkey,
-            SearchHotkey::WinAltS
+            parse(r#"{"search_hotkey":"WinAltS"}"#).hotkeys.search,
+            combo("Win+Alt+S")
         );
         assert_eq!(
-            parse(r#"{"search_hotkey":"WinAltS","quick_search_hotkey":"Off"}"#).search_hotkey,
-            SearchHotkey::Off
+            parse(r#"{"search_hotkey":"WinAltS","quick_search_hotkey":"Off"}"#)
+                .hotkeys
+                .search,
+            None
         );
         let odd = parse(r#"{"quick_search_hotkey":"Nope","style":"Notch"}"#);
-        assert_eq!(
-            (odd.search_hotkey, odd.style),
-            (SearchHotkey::Off, Style::Notch)
+        assert_eq!((odd.hotkeys.search, odd.style), (None, Style::Notch));
+    }
+
+    #[test]
+    fn a_hotkeys_key_wins_over_the_old_names_and_reads_leniently() {
+        use crate::hotkey::{HotkeyId, Hotkeys, parse as hk};
+        // Once the file has `hotkeys`, the old keys are not read again.
+        let c = parse(
+            r#"{"quick_search_hotkey":"WinAltS","devices_hotkey":"CtrlAltD",
+                "hotkeys":{"search":"Ctrl+Alt+K","devices":"None"}}"#,
         );
+        assert_eq!(c.hotkeys.search, hk("Ctrl+Alt+K").unwrap());
+        assert_eq!(c.hotkeys.devices, None);
+        assert_eq!(c.hotkeys.screenshot, HotkeyId::Screenshot.default());
+        // A bad shape anywhere never loses the rest of the file.
+        for bad in [
+            "null",
+            "5",
+            r#""x""#,
+            "[]",
+            r#"{"search":7,"clipboard":"Banana"}"#,
+        ] {
+            let c = parse(&format!(r#"{{"style":"Notch","hotkeys":{bad}}}"#));
+            assert_eq!(c.style, Style::Notch, "{bad}");
+            assert_eq!(c.hotkeys, Hotkeys::default(), "{bad}");
+        }
+        // A reserved row and a repeated row: the default or off, the rest kept.
+        let c = parse(
+            r#"{"style":"Notch","hotkeys":{"search":"Ctrl+Alt+K","clipboard":"Alt+Tab",
+                "devices":"Ctrl+Alt+K","arrange":"Win+Alt+S","screenshot":"F13"}}"#,
+        );
+        assert_eq!(c.style, Style::Notch);
+        assert_eq!(c.hotkeys.search, hk("Ctrl+Alt+K").unwrap());
+        assert_eq!(c.hotkeys.clipboard, None);
+        assert_eq!(c.hotkeys.devices, None);
+        assert_eq!(c.hotkeys.arrange, hk("Win+Alt+S").unwrap());
+        assert_eq!(c.hotkeys.screenshot, hk("F13").unwrap());
+        // It is written as five strings, and the old keys are gone.
+        let json = serde_json::to_value(&c).unwrap();
+        assert_eq!(json["hotkeys"]["devices"], serde_json::json!("None"));
+        assert!(json.get("quick_search_hotkey").is_none());
+        assert!(json.get("devices_hotkey").is_none());
+        assert!(json["clipboard"].get("hotkey").is_none());
+        assert!(json["screenshot"].get("print_screen").is_none());
+        assert!(json["arrange"].get("hotkey").is_none());
+        assert_eq!(parse(&json.to_string()), c);
     }
 
     #[test]
@@ -2097,20 +2051,33 @@ mod tests {
 
     #[test]
     fn a_hotkey_chosen_in_settings_survives_the_save() {
+        use crate::hotkey::{HotkeyId, Hotkeys, parse as hk};
         let tmp = TempDir::new("hotkey");
         let path = tmp.file("config.json");
-        // A file from 3.2.1: the default is on disk; the user picks Off, then
-        // Win+Alt+S, and each choice is what the file keeps.
+        // The defaults are on disk; the user turns the search off, then picks
+        // Win+Alt+S and a PrtSc combo: each choice is what the file keeps.
         Config::default().save_to(&path).unwrap();
-        for choice in [SearchHotkey::Off, SearchHotkey::WinAltS] {
+        let mut mine = Hotkeys::default();
+        mine.set(HotkeyId::Search, None);
+        let mut second = Hotkeys::default();
+        second.set(HotkeyId::Search, hk("Win+Alt+S").unwrap());
+        second.set(HotkeyId::Screenshot, hk("Ctrl+PrtSc").unwrap());
+        for choice in [mine, second] {
             let mem = Config {
-                search_hotkey: choice,
+                hotkeys: choice,
                 ..Config::default()
             };
             let out = save_merged_at(&path, &mem);
-            assert_eq!(out.config.search_hotkey, choice);
-            assert_eq!(on_disk(&path).search_hotkey, choice);
+            assert_eq!(out.config.hotkeys, choice);
+            assert_eq!(on_disk(&path).hotkeys, choice);
         }
+        // merge_owned keeps the island's choice over the file's.
+        let disk = Config::default();
+        let mem = Config {
+            hotkeys: second,
+            ..Config::default()
+        };
+        assert_eq!(merge_owned(disk, &mem).hotkeys, second);
     }
 
     #[test]
