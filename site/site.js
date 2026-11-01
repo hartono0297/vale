@@ -993,6 +993,14 @@
     /* A resize may flip the choice: make it now, away from the section, not
        later when a (smooth) scroll arrives there and would overrun the fix. */
     window.addEventListener('resize', function () { fx.flush = true; });
+    /* DM Sans often lands after this first measure, and its metrics can make
+       the stage taller than the fallback font did (600 x 750: +39 px). Measure
+       again once fonts are in; apply() keeps the view if the choice flips. */
+    function refit() { vw = -1; loop.kick(fx); }
+    if (doc.fonts) {
+      if (doc.fonts.ready) doc.fonts.ready.then(refit, function () {});
+      if (doc.fonts.addEventListener) doc.fonts.addEventListener('loadingdone', refit);
+    }
     loop.gate(outer, fx, '100px 0px');
     loop.add(fx);
   }
