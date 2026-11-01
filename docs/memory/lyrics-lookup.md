@@ -1,6 +1,6 @@
 ---
 tags: [decision, gotcha, lyrics, lrclib]
-date: 2026-10-31
+date: 2026-11-01
 ---
 
 # Lyrics lookup: retry, steps, consensus pick
@@ -62,20 +62,61 @@ or the raw artist ends with "VEVO" or " - Topic". The pair is then the
 "cleaned names" of steps 1, 2 (second get) and 3. Titles such as "Red (Taylor
 Swift)" and "Some Song - Live" are not split.
 
-## Best synced version: consensus
+## Best synced version: consensus and intro shift
 
 LRCLIB entries are user uploads and their timing varies; copies of one
-timing agree with each other. `pick_best` keeps the candidates within
-`SEARCH_DURATION_MS` (3 s) of the playing length (a missing length counts as
-0 off; at most 20), and with several it matches lines by normalised text (the
-k-th occurrence with the k-th, first 300 lines, at least 3 shared lines per
-pair), takes the median shift per pair, and scores each candidate by the
-median of its absolute shifts to the others. Lowest wins; ties go to the
-closest length, then the first. A shifted upload loses even when its length is
-the closest. One candidate is returned as is. Applied per step's candidate set.
+timing agree with each other. Two real cases (fixtures in `src/testdata/`,
+used by the tests in `lookup_tests`):
 
-## none3
+- **Ed Sheeran "Perfect"**, official video, 282 s. All 20 entries share the
+  album timing (first line at 2.98 s), lengths 201..280, lower median 263 s.
+  The old pick kept only the 280-s entry (within 3 s), so every line showed
+  ~19 s early: the video has a ~19 s longer intro than the album.
+- **Five for Fighting "Superman (It's Not Easy)"**, 219 s. Within 3 s there
+  are several timings for "I can't stand to fly": 18.41 (the three 219-s
+  entries), 20.10 .. 21.29. Weighing the whole 3 s window picked 21.29: ~2.9 s
+  late. The exact-length entries agree and are right.
 
-`NONE_EXT` is now `none3`: markers written by the older, weaker lookups
-(`.none`, `.none2`) are ignored, so those tracks are asked again once. `.lrc`
-files stay valid.
+`pick_best` (a search reply, `many`; the first 20 synced entries):
+
+1. **Tight window.** A candidate's gap is `|length - playing|` (a missing
+   length counts as 0 off). If any candidate has gap <= `TIGHT_DURATION_MS`
+   (1.5 s), only those are weighed; else those within `SEARCH_DURATION_MS`
+   (3 s); else the all-lengths fallback (step 4).
+2. **Consensus** among the weighed ones: lines are matched by normalised text
+   (the k-th occurrence with the k-th, first 300 lines, at least 3 shared
+   lines per pair); each candidate's score is the median of its absolute
+   shifts to the others. Lowest wins; ties go to the closest length, then
+   the first. A shifted upload loses even when its length is the closest.
+3. **Intro shift** of the winner C. Its family is every candidate of the
+   reply, any length, C included, whose timing is within `FAMILY_MS` (500 ms)
+   of C's (measured against C, not chained). The reference is the lower
+   median of the family's lengths (none known: no shift). When
+   `playing - reference` is over 3 s and at most `MAX_INTRO_MS` (60 s), every
+   line is shifted **later** by that difference; a shorter playing version is
+   never shifted. Perfect at 282 s: reference 263 s, +19 s. Superman at 219 s:
+   the family is the three 219-s entries, no shift. Superman at 222 s: no
+   shift (the 220-223 s entries agree within a second).
+4. **All-lengths fallback** (no candidate within 3 s): the consensus runs over
+   all candidates and the winner is returned **only** when step 3 shifts it;
+   otherwise `None` and the next step runs: a playing version that is shorter,
+   or longer by 3 s or less, or longer by over 60 s (Perfect at 345 s) gets
+   nothing from this reply.
+
+A `/api/get` reply (a single entry, no family) works as before
+(`pick_exact`): returned when its length is within 3 s of the playing one (a
+missing length counts), no tight window, never shifted.
+
+The returned `Answer::Synced` text is the shifted LRC (`format_lrc`: one
+`[mm:ss.xxx]text` per line, a gap is just its tag), so the disk cache, the
+memory cache and the display agree. An unshifted pick returns the upload's
+text unchanged. There is no user offset setting on purpose (removed in v3.9).
+
+## Cache version: `.lrc2`, `.none4`
+
+`LRC_EXT` is `lrc2` and `NONE_EXT` is `none4`. Old `<hash>.lrc` and
+`.none` .. `.none3` files are ignored (never read, not cleaned up), so every
+track is looked up once more with the new pick: lyrics cached by the old
+choice may be early or late, and a music video with a `.none3` marker may now
+get shifted lyrics. Markers keep their rules: 24 h TTL, removed when expired
+or future-dated, and `write_lrc` removes the marker.
