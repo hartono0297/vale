@@ -225,6 +225,8 @@ struct Scene {
     fade_from: Option<Page>,
     /// What the Devices page shows.
     devices: DevicesDemo,
+    /// What the Susun page shows (and which overlay is on the screen).
+    arrange: ArrangeDemo,
     /// The page dots as the dock, the pointer over this icon (0-based).
     dock: Option<usize>,
     /// The compact view or notice has the see-through background
@@ -371,6 +373,8 @@ enum DemoNotice {
     DevicePlugged,
     /// "Aman dicabut" after Eject: SanDisk Ultra.
     DeviceSafe,
+    /// A finished arrangement: 3 windows, with Batalkan and Simpan.
+    Arranged,
 }
 
 /// The history entry the demo's copy previews name (`DemoNotice::Clip*`).
@@ -448,6 +452,7 @@ const BASE: Scene = Scene {
     reveal: None,
     fade_from: None,
     devices: DevicesDemo::Design,
+    arrange: ArrangeDemo::No,
     dock: None,
     transparent: false,
     look: 0.0,
@@ -645,7 +650,16 @@ const fn devices_page(name: &'static str, which: DevicesDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 127] = [
+const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
+    Scene {
+        name,
+        view: View0::Panel(Page::Arrange),
+        arrange: which,
+        ..BASE
+    }
+}
+
+const SCENES: [Scene; 131] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -817,6 +831,11 @@ const SCENES: [Scene; 127] = [
     devices_page("devices-empty", DevicesDemo::Empty),
     notice("device-plugged", DemoNotice::DevicePlugged),
     notice("device-safe", DemoNotice::DeviceSafe),
+    // Susun: made-up windows and monitors; the overlays are click-through.
+    arrange_page("arrange-templates", ArrangeDemo::Templates),
+    arrange_page("arrange-hover", ArrangeDemo::Hover),
+    arrange_page("arrange-pick", ArrangeDemo::Pick),
+    notice("arrange-done", DemoNotice::Arranged),
     // The page dots hovered: icons, magnified around the pointer.
     Scene {
         dock: Some(3),
@@ -1252,6 +1271,169 @@ pub fn run_devices() {
     run_scenes(&scenes);
 }
 
+/// What the Susun page shows in a demo scene (`--demo-arrange`).
+#[derive(Clone, Copy, PartialEq)]
+enum ArrangeDemo {
+    /// Not a Susun scene.
+    No,
+    /// The template step: two fake monitors, the built-ins, a custom
+    /// template and two saved arrangements.
+    Templates,
+    /// The same with a card under the pointer: its outline is on the screen
+    /// through the click-through overlay.
+    Hover,
+    /// The pick step, tile 2 of 3 current and the first filled: the real
+    /// overlay (click-through in a demo) is on the screen.
+    Pick,
+}
+
+/// The made-up windows of the pick list: fixed titles, no real window.
+const DEMO_WINDOWS: [&str; 5] = [
+    "main.rs \u{2014} vale \u{2014} Visual Studio Code",
+    "Proposal Renovasi.docx \u{2014} Word",
+    "Inbox (3) \u{2014} Mail \u{2014} Chrome",
+    "Denah Lantai 2.dwg \u{2014} AutoCAD",
+    "Spotify",
+];
+
+fn demo_arrange_view(which: ArrangeDemo) -> super::render::ArrangeView<'static> {
+    use super::render::{ArrangeCardView, ArrangeSavedView, ArrangeView, ArrangeWindowView};
+    use crate::arrange::{BuiltIn, NRect};
+    let lang = crate::i18n::lang();
+    let mut cards: Vec<ArrangeCardView> = BuiltIn::ALL
+        .iter()
+        .map(|b| ArrangeCardView {
+            name: crate::i18n::arrange_builtin_name(lang, *b).to_owned(),
+            rects: b.node().to_rects(),
+        })
+        .collect();
+    let mut custom = crate::arrange::Node::Leaf;
+    custom.split(0, crate::arrange::Dir::Cols);
+    custom.split(1, crate::arrange::Dir::Rows);
+    cards.push(ArrangeCardView {
+        name: "Gambar + 2".to_owned(),
+        rects: custom.to_rects(),
+    });
+    let saved = |name: &str, node: &crate::arrange::Node, apps: &str| ArrangeSavedView {
+        name: name.to_owned(),
+        rects: node.to_rects(),
+        apps: apps.to_owned(),
+    };
+    let picking = which == ArrangeDemo::Pick;
+    // The first window is taken by tile 1: out of the list.
+    let windows = if picking {
+        DEMO_WINDOWS[1..]
+            .iter()
+            .map(|t| ArrangeWindowView {
+                title: (*t).to_owned(),
+                key: "",
+                icon: None,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let _ = NRect::FULL;
+    ArrangeView {
+        picking: picking.then_some((1, 3)),
+        monitors: vec![
+            crate::i18n::arrange_monitor_chip(1, 2560, 1440),
+            crate::i18n::arrange_monitor_chip(2, 1920, 1080),
+        ],
+        monitor: 0,
+        cards,
+        saved: if picking {
+            Vec::new()
+        } else {
+            vec![
+                saved(
+                    "Kerja",
+                    &BuiltIn::Main2.node(),
+                    "Code \u{b7} Chrome \u{b7} Terminal",
+                ),
+                saved("Rapat", &BuiltIn::Cols2.node(), "Teams \u{b7} OneNote"),
+            ]
+        },
+        windows,
+        scroll: 0.0,
+        hover_card: (which == ArrangeDemo::Hover).then_some(2),
+        name: None,
+    }
+}
+
+/// The overlays of an Arrange scene on the real screen, click-through, with
+/// made-up tiles: the pick overlay (tile 2 of 3 current, the first filled)
+/// or the hover outline. Never a real window list, never the mover.
+fn demo_arrange_overlays(
+    which: ArrangeDemo,
+    island: windows::Win32::Foundation::HWND,
+    at: (i32, i32),
+) {
+    use crate::arrange::{BuiltIn, Rect};
+    use crate::arrange_overlay::{self, PickSpec, TileState};
+    let area = crate::capture::win::virtual_screen();
+    // The monitor the island is on.
+    let (monitor, dpi) = crate::capture::win::monitor_at((at.0 + 8, at.1 + 8));
+    // The work area is close enough to the monitor for a demo.
+    let work = Rect::new(monitor.x, monitor.y, monitor.w, monitor.h - 48);
+    let tiles = crate::arrange::tile_rects(
+        &BuiltIn::Main2.node().to_rects(),
+        work,
+        crate::arrange::scaled_gap(8, dpi),
+    );
+    let accent = theme::current().accent.rgb();
+    match which {
+        ArrangeDemo::Pick => {
+            arrange_overlay::outline_hide();
+            if !arrange_overlay::active() {
+                let spec = PickSpec {
+                    island,
+                    tiles,
+                    accent,
+                    allowed: Vec::new(),
+                    windows: Vec::new(),
+                    area,
+                    demo: true,
+                };
+                if arrange_overlay::start(spec) {
+                    arrange_overlay::update(
+                        vec![
+                            TileState::Filled {
+                                name: "Code".to_owned(),
+                                key: String::new(),
+                                icon: None,
+                            },
+                            TileState::Current,
+                            TileState::Waiting,
+                        ],
+                        Vec::new(),
+                    );
+                }
+            }
+        }
+        ArrangeDemo::Hover => {
+            arrange_overlay::close();
+            arrange_overlay::outline_show(work, &tiles, accent);
+        }
+        _ => {
+            arrange_overlay::close();
+            arrange_overlay::outline_hide();
+        }
+    }
+}
+
+/// `--demo-arrange`: only the Susun page's scenes, Pill then Notch;
+/// `DI_DEMO_STEP` picks one by number or name as in `--demo`. The demo
+/// never calls the mover and never lists or moves a real window.
+pub fn run_arrange() {
+    let scenes: Vec<Scene> = SCENES
+        .iter()
+        .copied()
+        .filter(|s| s.name.starts_with("arrange"))
+        .collect();
+    run_scenes(&scenes);
+}
+
 pub fn run_cli() {
     let scenes: Vec<Scene> = SCENES
         .iter()
@@ -1396,6 +1578,9 @@ fn run_scenes(scenes: &[Scene]) {
             if t >= 1.0 {
                 if settled != step {
                     println!("demo: step {step} {:?} {}", style, scene.name);
+                    // Susun's overlays (click-through, made-up tiles) show
+                    // with the settled scene and go with it.
+                    demo_arrange_overlays(scene.arrange, win.hwnd(), win.screen_origin());
                 }
                 settled = step;
             }
@@ -1600,7 +1785,7 @@ fn run_scenes(scenes: &[Scene]) {
                 cli: cli.view(),
                 clip: clip_view(&clips, scene.clip),
                 notif: notif_view(&notif_items, &notif_logos, scene.notif),
-                arrange: crate::ui::render::ArrangeView::default(),
+                arrange: demo_arrange_view(scene.arrange),
                 search: SearchView {
                     query: search_query,
                     selection: (search_query.len(), search_query.len()),
@@ -2140,6 +2325,15 @@ fn demo_notice(which: DemoNotice, renderer: &Renderer) -> Notice {
         DemoNotice::DevicePlugged => {
             devices::plugged_notice(crate::i18n::lang(), &demo_devices_list()[0])
         }
+        DemoNotice::Arranged => notice(
+            tr(Key::PageArrange),
+            &crate::i18n::arrange_done(crate::i18n::lang(), 3, None),
+            crate::i18n::arrange_builtin_name(crate::i18n::lang(), crate::arrange::BuiltIn::Main2)
+                .to_owned(),
+            NoticeKind::Arranged {
+                save: crate::model::ArrangeSave::Offer,
+            },
+        ),
         DemoNotice::DeviceSafe => {
             devices::safe_notice(crate::i18n::lang(), &["SanDisk Ultra".to_owned()])
         }
