@@ -1,15 +1,15 @@
 /* Vale site. One stylesheet for index, 404, privacy and terms.
-   Tokens first, then base, header and footer, the notch, the landing page
-   sections (hero, Susun, features, cat, install, Google Calendar, privacy),
-   the legal pages. Dark is the default whatever the system scheme says;
-   html[data-theme="light"] (the theme button, stored as vale-theme) switches
-   to the light set. Contrast ratios are listed in docs/memory/site-landing.md. */
+   Tokens first, then base, the header pills, the footer and the go-to-top
+   link, the notch, the landing page sections (hero, tiles, screenshots,
+   Susun, cat, install, Google Calendar, privacy), the legal pages. Dark is the
+   default whatever the system scheme says; html[data-theme="light"] (the
+   theme button, stored as vale-theme) switches to the light set. Contrast
+   ratios are listed in docs/memory/site-landing.md. */
 
-@font-face { font-family: "DM Sans"; font-weight: 400; font-style: normal; font-display: swap; src: url("fonts/DMSans-400.ttf") format("truetype"); }
-@font-face { font-family: "DM Sans"; font-weight: 500; font-style: normal; font-display: swap; src: url("fonts/DMSans-500.ttf") format("truetype"); }
-@font-face { font-family: "DM Sans"; font-weight: 600; font-style: normal; font-display: swap; src: url("fonts/DMSans-600.ttf") format("truetype"); }
-@font-face { font-family: "DM Mono"; font-weight: 400; font-style: normal; font-display: swap; src: url("fonts/DMMono-400.ttf") format("truetype"); }
-@font-face { font-family: "DM Mono"; font-weight: 500; font-style: normal; font-display: swap; src: url("fonts/DMMono-500.ttf") format("truetype"); }
+/* Geist and Geist Mono (SIL OFL 1.1, fonts/OFL.txt). Geist is the variable
+   file (smaller than three statics); Geist Mono is only used at 400. */
+@font-face { font-family: "Geist"; font-weight: 100 900; font-style: normal; font-display: swap; src: url("fonts/Geist-Variable.woff2") format("woff2"); }
+@font-face { font-family: "Geist Mono"; font-weight: 400; font-style: normal; font-display: swap; src: url("fonts/GeistMono-Regular.woff2") format("woff2"); }
 
 /* Dark, the default. */
 :root {
@@ -47,8 +47,11 @@
   --scr-bar: #3A302A;
 
   --gutter: clamp(16px, 4vw, 40px);
-  --font: "DM Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
-  --mono: "DM Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  /* The header pills sit this far from the left and right edges. */
+  --edge: 16px;
+  --i-download: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 4v11M7 10.5l5 5 5-5M5 20h14'/%3E%3C/svg%3E");
+  --font: "Geist", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "Geist Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
   color-scheme: dark;
 }
 :root[data-theme="light"] {
@@ -65,6 +68,7 @@
   --notch-edge: #17120F;
   color-scheme: light;
 }
+@media (min-width: 40em) { :root { --edge: 24px; } }
 
 *, *::before, *::after { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
@@ -80,12 +84,15 @@ body {
 }
 img, svg { max-width: 100%; }
 img { height: auto; display: block; }
-[id] { scroll-margin-top: 3.5rem; }
+/* Anchored headings land below the fixed header (pills end at 60 px). */
+[id] { scroll-margin-top: 5rem; }
 h1, h2, h3 { margin: 0; font-weight: 600; line-height: 1.1; letter-spacing: -.02em; text-wrap: balance; }
 p { margin: 0 0 1em; }
+strong, b, th { font-weight: 600; }
 a { color: var(--ink); text-underline-offset: .18em; text-decoration-thickness: 1px; }
 a:hover { text-decoration-thickness: 2px; }
-code, kbd { font-family: var(--mono); font-size: .9em; }
+/* Geist Mono is loaded at 400 only, so mono text never asks for another weight. */
+code, kbd { font-family: var(--mono); font-size: .9em; font-weight: 400; }
 :focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
 .sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
 /* Helpers for what only makes sense with or without script (the inline head
@@ -93,46 +100,101 @@ code, kbd { font-family: var(--mono); font-size: .9em; }
 html:not(.js) .js-only { display: none !important; }
 .js .no-js-only { display: none !important; }
 .wrap { width: min(100% - 2 * var(--gutter), 72rem); margin-inline: auto; }
+.narrow { width: min(100% - 2 * var(--gutter), 49rem); }
 
+/* The go-to-top link scrolls here and focuses it, so the next Tab is the skip link. */
+#top { position: absolute; top: 0; left: 0; width: 1px; height: 1px; overflow: hidden; }
+#top:focus { outline: none; }
 .skip { position: absolute; left: 8px; top: -100px; z-index: 300; padding: .6rem 1rem; background: var(--bg); color: var(--text); border: 2px solid var(--focus); border-radius: 8px; text-decoration: none; font-weight: 600; }
 .skip:focus { top: 8px; }
 
-/* ---------- header ----------
-   Not sticky on purpose: the notch is the one fixed element, and its wider
-   states (the panel peek is 400 px wide) would sit over a sticky bar's links.
-   The metrics (56 px row, link padding, the 76em breakpoint) are measured
-   against the idle notch; see site-landing.md before changing them. */
-.site-header { background: var(--bg); border-bottom: 1px solid var(--line); position: relative; z-index: 50; }
-.nav-inner { display: flex; align-items: center; gap: 4px; width: min(100% - 2 * var(--gutter), 78rem); margin-inline: auto; min-height: 56px; }
-.brand { display: inline-flex; align-items: center; gap: 8px; margin-right: auto; min-height: 44px; font-size: 1.125rem; font-weight: 600; letter-spacing: -.01em; color: var(--text); text-decoration: none; }
+/* ---------- header: two pills that flank the notch ----------
+   With script the header is fixed and spans the width, but only the pills
+   take pointer events, so the notch between them stays reachable. The pills
+   are transparent at the top of the page; site.js adds .is-scrolled once the
+   page has moved, and they get the tint and a hairline. The border is always
+   there (transparent at first), so the pills never change size. Their widths
+   are measured against the idle notch (at least 12 px clear at every width),
+   and site.js measures them to decide whether a wider notch state fits. */
+.site-header { position: relative; z-index: 90; }
+.nav-inner { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 8px var(--edge); }
+.js .site-header { position: fixed; top: 0; left: 0; right: 0; pointer-events: none; }
+.js .nav-inner { flex-wrap: nowrap; }
+.js .pill { pointer-events: auto; }
+.pill { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 2px; padding: 3px; border: 1px solid transparent; border-radius: 999px; background: transparent; }
+.js .is-scrolled .pill { background: var(--bg-2); border-color: var(--line); }
+@media (prefers-reduced-motion: no-preference) {
+  .pill { transition: background-color .3s ease-out, border-color .3s ease-out; }
+}
+.brand { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 12px 0 8px; border-radius: 999px; font-size: 1.0625rem; font-weight: 600; letter-spacing: -.01em; color: var(--text); text-decoration: none; }
 .brand img { width: 28px; height: 28px; }
-.site-nav ul { display: flex; gap: 0; margin: 0; padding: 0; list-style: none; }
-.site-nav a { display: inline-flex; align-items: center; min-height: 44px; padding: 0 7px; font-size: .9375rem; color: var(--text-2); text-decoration: none; border-radius: 6px; white-space: nowrap; }
-.site-nav a:hover { color: var(--text); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: .3em; }
-.site-nav a[aria-current="page"] { color: var(--text); text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: .3em; }
-.menu-btn, .theme-btn { min-height: 44px; border: 1px solid var(--control); border-radius: 999px; background: transparent; color: var(--text); font: inherit; font-size: .9375rem; font-weight: 500; cursor: pointer; }
-.menu-btn { display: none; padding: 0 14px; }
+.site-nav ul { display: flex; flex-wrap: wrap; gap: 0; margin: 0; padding: 0; list-style: none; }
+.site-nav a, .nav-gh { display: inline-flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 12px; border-radius: 999px; font-size: .9375rem; color: var(--text-2); text-decoration: none; white-space: nowrap; }
+.site-nav a:hover, .nav-gh:hover { color: var(--text); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: .3em; }
+.site-nav a[aria-current="page"] { color: var(--text); }
+/* Only in the dropdown under the Menu button. */
+.nav-more { display: none; }
+.btn-dl { display: inline-flex; align-items: center; min-height: 44px; padding: 0 16px; border-radius: 999px; background: var(--btn-bg); color: var(--btn-text); font-size: .9375rem; font-weight: 600; text-decoration: none; white-space: nowrap; }
+.btn-dl:hover { background: var(--btn-bg-hover); }
+.btn-dl:focus-visible { outline-color: var(--text); }
+.menu-btn, .theme-btn { min-height: 44px; border: 0; border-radius: 999px; background: transparent; color: var(--text); font: inherit; font-size: .9375rem; font-weight: 500; cursor: pointer; }
+.menu-btn { display: none; align-items: center; gap: 6px; padding: 0 10px 0 8px; }
+.menu-ico { position: relative; display: block; box-sizing: border-box; width: 18px; height: 14px; border-top: 2px solid currentColor; border-bottom: 2px solid currentColor; }
+.menu-ico::after { content: ""; position: absolute; left: 0; right: 0; top: 4px; border-top: 2px solid currentColor; }
 .theme-btn { display: inline-flex; align-items: center; justify-content: center; width: 44px; padding: 0; }
 .theme-btn[hidden] { display: none; }
 .theme-btn svg { width: 20px; height: 20px; }
-.menu-btn:hover, .theme-btn:hover { background: var(--bg-2); }
+.menu-btn:hover, .theme-btn:hover { background: var(--line); }
 
-/* Without script: the links stay visible and wrap under the brand. */
-html:not(.js) .nav-inner { flex-wrap: wrap; padding-block: 4px; }
-html:not(.js) .site-nav { flex-basis: 100%; }
-html:not(.js) .site-nav ul { flex-wrap: wrap; }
-
-/* The links stay clear of the notch's idle footprint above 76em; below it the menu button takes over. */
-@media (max-width: 75.99em) {
-  .js .menu-btn { display: inline-flex; align-items: center; }
-  .js .site-nav { display: none; position: absolute; left: 0; right: 0; top: 100%; background: var(--bg); border-bottom: 1px solid var(--line); padding: 8px var(--gutter) 12px; }
+/* Wide enough for both full pills beside the idle notch (measured, see
+   site-landing.md); narrower, the left pill is a Menu button and the right
+   pill only Download. Without script nothing is folded away. Media queries
+   count a classic scrollbar (15 to 17 px on Windows) but the notch centres on
+   the width without it, so every fold below keeps 12 px with one: the full
+   pills need 49em, not 48em. */
+@media (max-width: 48.99em) {
+  .js .menu-btn { display: inline-flex; }
+  .js .pill-l .brand, .js .pill-r .nav-gh, .js .pill-r .theme-btn { display: none; }
+  .js .pill-r { padding: 0; border-color: transparent !important; background: transparent !important; }
+  .js .site-nav { display: none; position: absolute; left: -1px; top: calc(100% + 8px); width: min(17rem, calc(100vw - 2 * var(--edge))); padding: 8px; background: var(--bg-2); border: 1px solid var(--line); border-radius: 22px; }
   .js .site-nav.is-open { display: block; }
-  .js .site-nav ul { flex-direction: column; width: min(100%, 78rem); margin-inline: auto; }
-  .js .site-nav a { width: 100%; font-size: 1.0625rem; }
+  .js .site-nav ul { flex-direction: column; }
+  .js .site-nav li { display: block; }
+  .js .site-nav a { width: 100%; padding: 0 14px; font-size: 1.0625rem; color: var(--text); }
+  .js .site-nav a img { width: 24px; height: 24px; }
+  .js .nav-theme { padding: 4px 2px 0; }
+  .js .nav-theme .theme-btn { border: 1px solid var(--control); }
+}
+/* On phones the Menu pill must end 12 px before the 120 px notch (at 376 px
+   with a scrollbar it has 93 px); below 23.5em the header shares 320 px with
+   a 96 px notch: the Menu button keeps only its icon (the word stays as its
+   accessible name) and Download gets smaller again (76 px room at 320 with a
+   scrollbar). */
+@media (max-width: 32.5em) {
+  .btn-dl { padding: 0 10px; font-size: .875rem; }
+}
+@media (max-width: 23.49em) {
+  .js .menu-btn { width: 44px; justify-content: center; padding: 0; }
+  .menu-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .btn-dl { padding: 0 7px; font-size: .75rem; }
+}
+/* Below 20em (fold cover screens, about 280 px) the word no longer fits
+   beside the 96 px notch with 12 px clear (it needs 312 px with a
+   scrollbar), so Download becomes a 44 px download icon: clear from 263 px
+   up. The word stays in the link, moved out of view, as its accessible
+   name. Without script the header is static and keeps the word. */
+@media (max-width: 19.99em) {
+  .js .btn-dl { position: relative; width: 44px; padding: 0; overflow: hidden; white-space: nowrap; text-indent: 44px; }
+  .js .btn-dl::before {
+    content: ""; position: absolute; top: 50%; left: 50%; width: 20px; height: 20px; margin: -10px 0 0 -10px;
+    background: currentColor; forced-color-adjust: none;
+    -webkit-mask: var(--i-download) center / contain no-repeat; mask: var(--i-download) center / contain no-repeat;
+  }
 }
 
 /* ---------- footer ---------- */
-.site-footer { margin-top: clamp(4rem, 10vw, 8rem); border-top: 1px solid var(--line); padding-block: 2.5rem 3rem; }
+/* The bottom padding keeps the last links above the go-to-top button. */
+.site-footer { margin-top: clamp(4rem, 10vw, 8rem); border-top: 1px solid var(--line); padding-block: 2.5rem 6rem; }
 .footer-inner { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 2rem; width: min(100% - 2 * var(--gutter), 78rem); margin-inline: auto; }
 .footer-brand { margin: 0 auto 0 0; font-size: .9375rem; }
 .footer-brand img { display: inline-block; width: 20px; height: 20px; margin-right: 4px; vertical-align: -4px; }
@@ -140,6 +202,22 @@ html:not(.js) .site-nav ul { flex-wrap: wrap; }
 .footer-links a { display: inline-flex; align-items: center; min-height: 44px; padding: 0 .6rem; font-size: .9375rem; color: var(--text-2); }
 .footer-links a:hover { color: var(--text); }
 .footer-note { flex-basis: 100%; margin: 0; font-size: .875rem; color: var(--text-2); }
+
+/* ---------- go to top ----------
+   The cat head on a notch-coloured disc, so it reads on both themes (the
+   disc's edge is 3.41 on the dark page; on the light page the disc itself is
+   17.18). Without script it is always there, a plain #top link. With script
+   site.js shows it once the hero has scrolled away (.is-shown); hidden it is
+   not focusable (visibility). */
+.to-top { position: fixed; right: 16px; bottom: 16px; z-index: 80; display: flex; align-items: center; justify-content: center; width: 48px; height: 48px; border-radius: 50%; background: var(--notch-bg); border: 1px solid var(--notch-edge); }
+.to-top svg { width: 30px; height: 30px; }
+.to-top:focus-visible { outline: 3px solid var(--ink); outline-offset: 3px; }
+@media (min-width: 40em) { .to-top { right: 24px; bottom: 24px; } }
+.js .to-top:not(.is-shown) { opacity: 0; visibility: hidden; pointer-events: none; }
+.js.reveal-off .to-top { opacity: 1; visibility: visible; pointer-events: auto; }
+@media (prefers-reduced-motion: no-preference) {
+  .js .to-top { transition: opacity .2s ease-out, visibility .2s; }
+}
 
 /* ---------- the notch ---------- */
 .notch {
@@ -160,37 +238,33 @@ html:not(.js) .site-nav ul { flex-wrap: wrap; }
 .notch[data-state="music"] { --nw: min(300px, calc(100vw - 32px)); --nh: 36px; --nr: 18px; }
 .notch[data-state="panel"] { --nw: min(400px, calc(100vw - 32px)); --nh: 128px; --nr: 24px; }
 .notch[data-state="clipboard"] { --nw: min(340px, calc(100vw - 32px)); --nh: 56px; --nr: 24px; }
-/* While the header is on screen (site.js sets .is-compact), the copy notice
-   keeps the idle footprint so it never lies over the nav, the Menu button or the brand.
-   .is-tight does the same when the section state would cover text (site.js, fitCheck). */
-.notch[data-state="clipboard"]:is(.is-compact, .is-tight) { --nw: min(190px, calc(100vw - 32px)); --nh: 34px; --nr: 17px; }
-.notch:is(.is-compact, .is-tight) .nf-clip { justify-content: center; gap: 10px; }
-.notch:is(.is-compact, .is-tight) .nc-lg { width: 26px; height: 26px; }
-.notch:is(.is-compact, .is-tight) .clip-preview { display: none; }
-.notch[data-state="pomodoro"], .notch[data-state="arrange"] { --nw: min(200px, calc(100vw - 32px)); }
+/* .is-tight (site.js): the state keeps the idle footprint, because at full
+   size it would touch a header pill, or (the clipboard section state) cover
+   text. Music then shows the cover and the bars without the lyric line. */
+.notch:is([data-state="clipboard"], [data-state="music"]).is-tight { --nw: min(190px, calc(100vw - 32px)); --nh: 34px; --nr: 17px; }
+.notch.is-tight .nf-clip { justify-content: center; gap: 10px; }
+.notch.is-tight .nc-lg { width: 26px; height: 26px; }
+.notch.is-tight .clip-preview { display: none; }
+.notch.is-tight .lyric { display: none; }
+.notch.is-tight .nf-music { justify-content: space-between; }
 .notch[data-state].is-open { --nw: min(460px, calc(100vw - 32px)); --nh: 300px; --nr: 26px; }
 @media (max-width: 32.5em) {
-  .notch[data-state="idle"], .notch[data-state="cat"], .notch[data-state="pomodoro"], .notch[data-state="arrange"],
-  .notch[data-state="clipboard"]:is(.is-compact, .is-tight) { --nw: 120px; --nh: 45px; --nr: 22px; }
+  .notch[data-state="idle"], .notch[data-state="cat"], .notch[data-state="arrange"],
+  .notch:is([data-state="clipboard"], [data-state="music"]).is-tight { --nw: 120px; --nh: 45px; --nr: 22px; }
   .notch .nf-idle { padding: 0 14px; }
-  .menu-btn { padding: 0 8px; }
   .notch[data-state="music"] { --nh: 45px; --nr: 22px; }
 }
-/* Below 23.5em (376 px) a 120 px notch and the 57 px text Menu button no
-   longer fit between the brand and the theme button (21 px of overlap at
-   320 px). The states the header can share the screen with shrink to 96 px
-   and the menu button becomes a 44 px three-line button; its text stays in
-   the DOM as the accessible name. At 320 px the notch then ends at 208 and
-   the menu button starts at 212. */
+/* Below 23.5em (376 px) the idle footprint is 96 px, so the Menu and
+   Download pills keep 12 px from it at 320 px. */
 @media (max-width: 23.49em) {
-  .notch[data-state="idle"], .notch[data-state="cat"], .notch[data-state="pomodoro"], .notch[data-state="arrange"],
-  .notch[data-state="clipboard"]:is(.is-compact, .is-tight) { --nw: 96px; }
+  .notch[data-state="idle"], .notch[data-state="cat"], .notch[data-state="arrange"],
+  .notch:is([data-state="clipboard"], [data-state="music"]).is-tight { --nw: 96px; }
   /* 94 px inside the 1 px edges: cat 26 + gap 10 + clock 39 + 2 x 9. */
-  .notch .nf-idle, .notch .nf-pomo, .notch .nf-arrange, .notch:is(.is-compact, .is-tight) .nf-clip { padding: 0 9px; }
-  .notch:is(.is-compact, .is-tight) .nf-clip { gap: 8px; }
-  .js .menu-btn { position: relative; justify-content: center; width: 44px; padding: 0; font-size: 0; }
-  .js .menu-btn::before { content: ""; display: block; box-sizing: border-box; width: 18px; height: 14px; border-top: 2px solid currentColor; border-bottom: 2px solid currentColor; }
-  .js .menu-btn::after { content: ""; position: absolute; left: 50%; top: 50%; width: 18px; margin: -1px 0 0 -9px; border-top: 2px solid currentColor; }
+  .notch .nf-idle, .notch .nf-arrange, .notch.is-tight .nf-clip, .notch.is-tight .nf-music { padding: 0 9px; }
+  .notch.is-tight .nf-clip { gap: 8px; }
+  /* 42 px are left for the title (76 - cat 26 - gap 8); "Copied" is 47 px at
+     14 px and 41 px at 12 px. */
+  .notch.is-tight .clip-title { font-size: 12px; }
 }
 .notch-face { position: absolute; top: 0; left: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .notch.is-open .notch-face { height: 44px; }
@@ -204,14 +278,13 @@ html:not(.js) #notch { display: none; }
 .notch[data-state="music"] .nf-music,
 .notch[data-state="panel"] .nf-panel,
 .notch[data-state="clipboard"] .nf-clip,
-.notch[data-state="pomodoro"] .nf-pomo,
 .notch[data-state="arrange"] .nf-arrange,
 .notch[data-state="cat"] .nf-cat { opacity: 1; transition-delay: .12s; }
 .notch.is-open .nf { opacity: 0; transition-delay: 0s; }
 .notch.is-open .nf-open { opacity: 1; transition-delay: .1s; }
 
 .nf-idle { justify-content: space-between; }
-.nf-idle .clock, .pomo-time { font-family: var(--mono); font-weight: 500; font-size: 13px; font-variant-numeric: tabular-nums; }
+.nf-idle .clock { font-family: var(--mono); font-weight: 400; font-size: 13px; font-variant-numeric: tabular-nums; }
 .nc { flex: none; overflow: visible; }
 .nf-cat { justify-content: center; }
 .nf-music { padding: 0 14px; }
@@ -256,14 +329,11 @@ html:not(.js) #notch { display: none; }
 
 .nf-clip { padding: 0 16px; gap: 12px; }
 .clip-text { display: flex; flex-direction: column; min-width: 0; }
-.clip-title { font-weight: 600; font-size: 14px; }
+.clip-title { font-weight: 600; font-size: 14px; white-space: nowrap; }
 .clip-preview { color: var(--notch-2); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.nf-pomo { justify-content: center; gap: 8px; }
-.pomo-label { color: var(--notch-2); font-size: 12px; }
-@media (max-width: 32.5em) { .pomo-label { display: none; } }
-
-/* Susun while its stage is pinned: "Tile n of 3", then "Arranged". */
+/* Susun while its stage is pinned: "Tile n of 3", then "Arranged", at the
+   idle footprint, so it never needs room beside the pills. */
 .nf-arrange { justify-content: center; gap: 8px; }
 .ar-ico { flex: none; color: var(--notch-accent); }
 .ar-text { display: grid; font-size: 13px; font-weight: 500; white-space: nowrap; }
@@ -287,7 +357,7 @@ html:not(.js) #notch { display: none; }
 .pg-list, .pg-meters, .pg-tiles { margin: 0; padding: 0; list-style: none; }
 .pg-list li { overflow-wrap: anywhere; display: flex; gap: 12px; align-items: baseline; padding: 9px 0; border-bottom: 1px solid var(--notch-line); font-size: 14px; }
 .pg-list li:last-child { border-bottom: 0; }
-.pg-list .t { flex: none; min-width: 4.5rem; color: var(--notch-2); font-family: var(--mono); font-size: 12px; }
+.pg-list .t { flex: none; min-width: 4.5rem; color: var(--notch-2); font-family: var(--mono); font-weight: 400; font-size: 12px; }
 .pg-list code { font-size: 13px; }
 .pg-row { display: flex; align-items: center; gap: 18px; padding-top: 8px; }
 .pg-grow { flex: 1; min-width: 0; }
@@ -298,7 +368,7 @@ html:not(.js) #notch { display: none; }
 .pg-tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding-top: 6px; }
 .pg-tiles li { display: flex; flex-direction: column; gap: 4px; padding: 12px; border-radius: 12px; background: #221B17; font-size: 13px; color: var(--notch-2); }
 .pg-tiles b { color: var(--notch-text); font-weight: 600; font-size: 14px; }
-.pg-code { margin: 6px 0 0; padding: 12px 14px; border: 1px solid var(--notch-line); border-radius: 10px; font-family: var(--mono); font-size: 13px; line-height: 1.7; }
+.pg-code { margin: 6px 0 0; padding: 12px 14px; border: 1px solid var(--notch-line); border-radius: 10px; font-family: var(--mono); font-weight: 400; font-size: 13px; line-height: 1.7; }
 .pg-code .pr { color: var(--notch-accent); }
 .caret { display: inline-block; width: 7px; height: 14px; vertical-align: -2px; background: var(--notch-accent); }
 .pg-minis { display: grid; grid-template-columns: repeat(3, 48px); gap: 14px 22px; padding: 10px 0 14px; color: var(--notch-2); }
@@ -317,7 +387,7 @@ html:not(.js) #notch { display: none; }
 }
 
 /* ---------- landing page: type and buttons ---------- */
-h1 { font-size: clamp(2.75rem, 1.1rem + 6.2vw, 6rem); line-height: .98; letter-spacing: -.045em; }
+h1 { font-size: clamp(2.5rem, 1rem + 6.4vw, 6rem); line-height: .98; letter-spacing: -.045em; }
 h2 { font-size: clamp(2rem, 1.25rem + 3vw, 3.5rem); line-height: 1.02; letter-spacing: -.035em; }
 h3 { font-size: clamp(1.25rem, 1.1rem + .6vw, 1.5rem); letter-spacing: -.015em; }
 .lead { font-size: clamp(1.125rem, 1rem + .5vw, 1.3125rem); line-height: 1.5; max-width: 36rem; color: var(--text-2); }
@@ -325,25 +395,44 @@ h3 { font-size: clamp(1.25rem, 1.1rem + .6vw, 1.5rem); letter-spacing: -.015em; 
 .btn { display: inline-flex; align-items: center; justify-content: center; min-height: 48px; padding: 0 24px; border: 1px solid transparent; border-radius: 999px; font: inherit; font-weight: 600; text-decoration: none; cursor: pointer; }
 .btn-primary { background: var(--btn-bg); color: var(--btn-text); }
 .btn-primary:hover { background: var(--btn-bg-hover); text-decoration: none; }
-.btn-outline { border-color: var(--control); color: var(--text); background: transparent; font-weight: 500; }
-.btn-outline:hover { background: var(--bg-2); border-color: var(--text-2); }
 .btn-copy { min-height: 44px; padding: 0 18px; border-color: var(--control); background: var(--bg); color: var(--text); font-weight: 500; }
 .btn-copy:hover { background: var(--bg-2); }
 .btn-copy.is-copied { border-color: var(--ink); color: var(--ink); }
-.actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin: 2.5rem 0 0; }
-.hint { max-width: 30rem; margin: 2.5rem auto 0; font-size: .875rem; color: var(--text-2); }
-.note { font-size: .9375rem; color: var(--text-2); }
+.actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin: 2.25rem 0 0; }
+.hint { margin: 1.75rem auto 0; font-size: .875rem; color: var(--text-2); }
 
 /* ---------- hero ----------
-   Centred, one headline and one line. As the hero scrolls away, site.js
-   scales the headline to 0.92 and fades it to 0.2 (transform and opacity
-   only); reduced motion leaves it alone. The top padding keeps the idle
-   notch (34 px, 45 on phones) well clear of the headline. */
-.hero { display: flex; align-items: center; min-height: min(calc(100vh - 57px), 56rem); padding-block: clamp(6rem, 14vh, 10rem) clamp(5rem, 12vh, 8rem); text-align: center; }
+   Centred: the cat, a two-line headline, one line, Download and the install
+   line. As the hero scrolls away, site.js scales the headline to 0.92 and
+   fades it to 0.2 (transform and opacity only); reduced motion leaves it
+   alone. The top padding keeps the notch and the header pills clear. */
+.hero { display: flex; align-items: center; min-height: min(100vh, 56rem); min-height: min(100svh, 56rem); padding-block: clamp(6.5rem, 15vh, 9rem) clamp(4rem, 10vh, 7rem); text-align: center; }
+html:not(.js) .hero { min-height: 0; }
 .hero-inner { display: flex; flex-direction: column; align-items: center; }
-.hero-title { max-width: 15ch; transform-origin: 50% 40%; }
-.hero-line { max-width: 34rem; margin: 1.75rem 0 0; font-size: clamp(1.125rem, 1rem + .5vw, 1.3125rem); line-height: 1.5; color: var(--text-2); }
+.hero-logo { width: clamp(56px, 7vw, 80px); height: auto; margin-bottom: 2rem; }
+.hero-title { transform-origin: 50% 40%; }
+.hero-title .l { display: block; }
+.hero-line { max-width: 34rem; margin: 1.5rem 0 0; font-size: clamp(1.125rem, 1rem + .5vw, 1.3125rem); line-height: 1.5; color: var(--text-2); }
+.hero-cmd { width: min(100%, 49rem); margin-top: 1.25rem; text-align: left; }
 @media (prefers-reduced-motion: reduce) { .hero-title { transform: none !important; opacity: 1 !important; } }
+
+/* ---------- features: the tiles ---------- */
+.features { padding-top: clamp(3rem, 8vw, 6rem); }
+.features h2, .shot-sec h2 { text-align: center; margin-bottom: clamp(1.75rem, 4vw, 3rem); }
+.tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 0; padding: 0; list-style: none; }
+@media (min-width: 48em) { .tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; } }
+.tile { min-width: 0; padding: 16px; border-radius: 16px; background: var(--bg-2); }
+@media (min-width: 40em) { .tile { padding: 22px; } }
+.tile-ico { display: block; width: 28px; height: 28px; margin-bottom: 14px; color: var(--ink); }
+.tile h3 { margin-bottom: 4px; font-size: 1.0625rem; letter-spacing: -.01em; }
+.tile p { margin: 0; font-size: .9375rem; line-height: 1.45; color: var(--text-2); }
+.also { max-width: 40rem; margin: 1.75rem auto 0; text-align: center; font-size: .9375rem; color: var(--text-2); }
+
+/* ---------- the three screenshots ---------- */
+.shot-sec { padding-top: clamp(4.5rem, 11vw, 8.5rem); }
+.shot { display: grid; justify-items: center; margin: 0; min-width: 0; max-width: 100%; }
+.shot img { filter: var(--shot-shadow); }
+.shot figcaption { margin-top: .9rem; font-size: .875rem; color: var(--text-2); text-align: center; }
 
 /* ---------- Susun ----------
    The final, arranged state is the default (no script, reduced motion, a
@@ -351,7 +440,7 @@ h3 { font-size: clamp(1.25rem, 1.1rem + .6vw, 1.5rem); letter-spacing: -.015em; 
    fits the viewport and motion is welcome: the wrapper grows by 130vh (70vh
    on phones), the stage sticks to the top, and data-step on the drawing
    (0 to 3) says how many tiles are filled. Only opacity and transform move. */
-.susun { padding-top: clamp(2rem, 6vw, 4rem); }
+.susun { padding-top: clamp(2.5rem, 7vw, 5rem); }
 .ar-stage { display: flex; flex-direction: column; justify-content: center; padding-block: 5rem 2rem; }
 .js .susun.is-scrub .ar-scrub { height: 230vh; }
 .js .susun.is-scrub .ar-stage { position: sticky; top: 0; height: 100vh; height: 100svh; }
@@ -361,15 +450,14 @@ h3 { font-size: clamp(1.25rem, 1.1rem + .6vw, 1.5rem); letter-spacing: -.015em; 
   .susun .ar-stage { position: static !important; height: auto !important; }
 }
 /* The stage must fit the viewport to scrub (site.js measures it): stacked,
-   the drawing stays at most 32rem wide; on phones the top padding is the
-   45 px notch plus 16 px plus a little, and no more. */
+   the drawing stays at most 32rem wide; on phones the top padding clears the
+   pills (they end at 60 px) and the 45 px notch, and no more. */
 .ar-grid { display: grid; gap: 1.5rem; align-items: center; }
 @media (max-width: 51.99em) { .ar-fig .ar-demo { max-width: 32rem; } }
-@media (max-width: 32.5em) { .ar-stage { padding-block: 4.25rem 1rem; } }
+@media (max-width: 32.5em) { .ar-stage { padding-block: 4.5rem 1rem; } }
 @media (min-width: 52em) { .ar-grid { grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); gap: clamp(2.5rem, 5vw, 5rem); } }
 .ar-copy { min-width: 0; }
 .ar-copy .lead { margin: 1.25rem 0 0; }
-.ar-new { margin: 0 0 1rem; font-family: var(--mono); font-size: .875rem; color: var(--ink); }
 .ar-fig { margin: 0; min-width: 0; }
 .ar-fig figcaption { margin-top: .75rem; font-size: .875rem; color: var(--text-2); }
 .ar-demo { width: 100%; max-width: 40rem; }
@@ -380,7 +468,7 @@ h3 { font-size: clamp(1.25rem, 1.1rem + .6vw, 1.5rem); letter-spacing: -.015em; 
 .ar-tile { position: relative; min-width: 0; border: 1px solid var(--scr-line); border-radius: 6px; }
 .ar-tile[data-n="1"] { grid-row: 1 / span 2; }
 .ar-tile::after { content: ""; position: absolute; inset: -1px; border: 2px solid var(--scr-accent); border-radius: 6px; opacity: 0; pointer-events: none; }
-.ar-num { position: absolute; left: 10px; top: 8px; font-family: var(--mono); font-size: .8125rem; color: var(--scr-2); }
+.ar-num { position: absolute; left: 10px; top: 8px; font-family: var(--mono); font-weight: 400; font-size: .8125rem; color: var(--scr-2); }
 .ar-fill { position: absolute; inset: -1px; display: flex; flex-direction: column; gap: 7px; padding: 10px 12px; overflow: hidden; background: var(--scr-tile); border-radius: 6px; }
 .ar-fill b { font-size: .8125rem; font-weight: 600; color: var(--scr-text); }
 .ar-fill i { display: block; height: 5px; border-radius: 3px; background: var(--scr-bar); }
@@ -401,43 +489,10 @@ h3 { font-size: clamp(1.25rem, 1.1rem + .6vw, 1.5rem); letter-spacing: -.015em; 
 .js .is-scrub [data-step="0"] .ar-tile[data-n="1"]::after,
 .js .is-scrub [data-step="1"] .ar-tile[data-n="2"]::after,
 .js .is-scrub [data-step="2"] .ar-tile[data-n="3"]::after { opacity: 1; }
-.ar-facts { display: grid; gap: 1.5rem clamp(2rem, 4vw, 3rem); grid-template-columns: repeat(auto-fit, minmax(min(100%, 19rem), 1fr)); margin: clamp(2rem, 5vw, 4rem) 0 0; padding: 0; list-style: none; color: var(--text-2); }
-.ar-facts li { padding-top: 1rem; border-top: 1px solid var(--line); }
-.ar-facts strong { display: block; margin-bottom: .25rem; color: var(--text); font-weight: 600; }
-
-/* ---------- features ---------- */
-.feature { padding-block: clamp(4rem, 10vw, 8rem) 0; }
-.f-head { max-width: 40rem; margin-inline: auto; text-align: center; }
-.f-head h2 { margin-bottom: 1.25rem; }
-.f-head p, .pair-col p { color: var(--text-2); }
-.f-head .note { margin-top: 1.5rem; }
-.shots { display: grid; justify-items: center; gap: 2rem; margin-top: clamp(2rem, 5vw, 3.5rem); }
-.shots-two { grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); align-items: start; }
-.shot { margin: 0; min-width: 0; max-width: 100%; }
-.shot img { filter: var(--shot-shadow); }
-.shot figcaption { margin-top: .75rem; font-size: .875rem; color: var(--text-2); }
-.f-head + .shots .shot figcaption { text-align: center; }
-.pages-list { display: flex; flex-wrap: wrap; justify-content: center; gap: .5rem; margin: 1.75rem 0 0; padding: 0; list-style: none; font-size: .9375rem; color: var(--text); }
-.pages-list li { padding: .3rem .8rem; border: 1px solid var(--line); border-radius: 999px; }
-.pair { display: grid; gap: clamp(3rem, 6vw, 4rem) clamp(2rem, 5vw, 4rem); grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); align-items: start; }
-.pair-col { min-width: 0; }
-.pair-col h2 { margin-bottom: 1rem; font-size: clamp(1.75rem, 1.2rem + 2vw, 2.5rem); }
-.pair-col .shot { margin-top: 1.75rem; }
-.small-wrap { max-width: 48rem; }
-.h-small { font-size: clamp(1.5rem, 1.2rem + 1.2vw, 2rem); margin-bottom: 1.25rem; }
-.small-list { margin: 0; }
-.small-list > div { display: grid; gap: .25rem 2rem; padding: .9rem 0; border-top: 1px solid var(--line); }
-.small-list > div:last-child { border-bottom: 1px solid var(--line); }
-@media (min-width: 40em) { .small-list > div { grid-template-columns: 10rem minmax(0, 1fr); } }
-.small-list dt { font-weight: 600; }
-.small-list dd { margin: 0; color: var(--text-2); }
-.f-small .note { margin: 1rem 0 0; }
-.f-more { padding-top: clamp(2.5rem, 6vw, 4rem); }
 
 /* ---------- Try the cat ---------- */
-.cat-section { margin-top: clamp(4rem, 10vw, 8rem); padding-block: clamp(4rem, 9vw, 7rem); background: var(--bg-2); }
+.cat-section { margin-top: clamp(3rem, 8vw, 6rem); padding-block: clamp(4rem, 9vw, 7rem); background: var(--bg-2); }
 .cat-section .lead { margin: 1.25rem 0 0; }
-.cat-more { max-width: 36rem; margin: 1rem 0 0; color: var(--text-2); }
 .cat-stage { display: grid; gap: clamp(2rem, 5vw, 4rem); margin-top: clamp(2rem, 5vw, 3rem); align-items: center; }
 @media (min-width: 52em) { .cat-stage { grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); } }
 html:not(.js) .cat-stage { grid-template-columns: minmax(0, 1fr); }
@@ -460,34 +515,32 @@ html:not(.js) .cat-stage { grid-template-columns: minmax(0, 1fr); }
 .sw { display: inline-block; width: 14px; height: 14px; border-radius: 50%; background: var(--sw); border: 1px solid var(--control); }
 
 /* ---------- install, Google Calendar, privacy ---------- */
-.gcal, .privacy-short, .install { padding-block: clamp(4rem, 9vw, 7rem) 0; }
-.gcal-grid, .privacy-grid, .install-grid { display: grid; gap: clamp(2rem, 5vw, 4rem); }
-@media (min-width: 62em) {
-  .gcal-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-  .privacy-grid { grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); }
-  .install-grid { grid-template-columns: minmax(0, .9fr) minmax(0, 1.3fr); }
-}
+.gcal, .privacy-short, .install { padding-top: clamp(4rem, 9vw, 7rem); }
 .gcal h2, .privacy-short h2, .install h2 { margin-bottom: 1.25rem; }
-.gcal p, .privacy-short p, .install p { max-width: 36rem; }
 .gcal .lead, .privacy-short .lead, .install .lead { color: var(--text); }
-.gcal p:not(.lead), .install-intro p:not(.lead) { color: var(--text-2); }
-.gcal h3, .privacy-short h3 { margin-bottom: .75rem; font-size: 1.25rem; }
-.gcal-detail h3:not(:first-child) { margin-top: 2rem; }
-.facts { font-size: .9375rem; }
+.install-dl { margin: 1.75rem 0 1rem; }
+.gcal h3, .privacy-short h3, .install h3 { margin: 1.75rem 0 .6rem; font-size: 1.125rem; }
 .scopes { margin: 0; }
 .scopes dt { margin-top: 1rem; }
 .scopes dt code { display: inline-block; max-width: 100%; padding: .35rem .6rem; background: var(--code-bg); border: 1px solid var(--line); border-radius: 6px; font-size: .8125rem; overflow-wrap: anywhere; }
-.scopes dd { margin: .4rem 0 0; color: var(--text-2); max-width: 34rem; }
-.plain { margin: 0 0 1.25rem; padding: 0; list-style: none; max-width: 38rem; }
+.scopes dd { margin: .4rem 0 0; color: var(--text-2); }
+.plain { margin: 0 0 1.25rem; padding: 0; list-style: none; }
 .plain li { padding: .75rem 0; border-top: 1px solid var(--line); }
 .plain li:last-child { border-bottom: 1px solid var(--line); }
-.cmd-block { margin-bottom: 2rem; }
-.cmd-block h3 { margin-bottom: .6rem; font-size: 1.125rem; }
-.cmd-block p { margin: 0 0 .6rem; color: var(--text-2); font-size: .9375rem; }
+
+/* Native disclosure: opens without script, the marker stays. */
+.more { margin-top: 1.75rem; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.more summary { display: list-item; min-height: 44px; padding: .65rem 0; font-weight: 500; color: var(--text); cursor: pointer; }
+.more summary:hover { color: var(--ink); }
+.more summary::marker { color: var(--ink); }
+.more-body { padding: .25rem 0 1.25rem; color: var(--text-2); }
+.more-body p, .more-body dd { max-width: 40rem; }
+.more-body h3 { color: var(--text); }
+.more-body > :first-child { margin-top: 0; }
 
 .cmd { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: stretch; }
 .cmd-scroll { display: flex; align-items: center; min-width: 0; padding: 0 14px; min-height: 44px; overflow-x: auto; white-space: nowrap; background: var(--code-bg); border: 1px solid var(--line); border-radius: 10px; }
-.cmd-scroll code { font-size: .875rem; user-select: text; }
+.cmd-scroll code { font-size: .875rem; color: var(--text); user-select: text; }
 /* Without script the Copy buttons are hidden: the command takes the whole row. */
 html:not(.js) .cmd { grid-template-columns: minmax(0, 1fr); }
 .copy-msg { grid-column: 1 / -1; font-size: .875rem; }
@@ -495,7 +548,7 @@ html:not(.js) .cmd { grid-template-columns: minmax(0, 1fr); }
 .copy-msg.is-error { color: var(--ink); font-weight: 500; }
 @media (max-width: 32.5em) { .cmd { grid-template-columns: minmax(0, 1fr); } .btn-copy { justify-self: start; } }
 
-/* ---------- scroll reveal (headings and screenshots only) ----------
+/* ---------- scroll reveal (headings, tiles and screenshots only) ----------
    Once only, in every browser: site.js adds .is-in the first time the element
    is on screen and stops watching it, so it never replays on scroll back. The
    hiding rule exists only under .js; site.js adds .is-in to everything already
@@ -504,25 +557,33 @@ html:not(.js) .cmd { grid-template-columns: minmax(0, 1fr); }
    site.js is merely slow, so the text shows without the layout switching. */
 .js .reveal:not(.is-in) { opacity: 0; transform: translateY(16px); }
 .js .reveal { transition: opacity .5s ease-out, transform .5s ease-out; }
+.js .tile.reveal:nth-child(4n + 2) { transition-delay: 60ms; }
+.js .tile.reveal:nth-child(4n + 3) { transition-delay: 120ms; }
+.js .tile.reveal:nth-child(4n + 4) { transition-delay: 180ms; }
 .js.reveal-off .reveal, .js.reveal-off .reveal:not(.is-in) { opacity: 1; transform: none; }
 @media (prefers-reduced-motion: reduce) {
   .js .reveal, .js .reveal:not(.is-in) { opacity: 1; transform: none; transition: none; }
 }
 
 /* ---------- 404 ---------- */
-.lost { padding-block: clamp(6rem, 16vw, 11rem) 2rem; text-align: center; }
+.lost { padding-block: clamp(6.5rem, 16vw, 11rem) 2rem; text-align: center; }
 .lost h1 { max-width: 12ch; margin-inline: auto; }
 .lost p { max-width: 32rem; margin: 1.5rem auto 0; }
 .lost .btn { margin-top: 1rem; }
 .notch-static { pointer-events: none; }
+/* Without script the header is static and unfolded, so below the fold its
+   links would sit under the notch. */
+@media (max-width: 48.99em) { html:not(.js) .notch-static { display: none; } }
 .notch-static .nf { opacity: 1; justify-content: space-between; }
 .notch-static .clock { color: var(--notch-2); }
 
 /* ---------- legal pages ---------- */
 .legal { padding-block: clamp(3rem, 7vw, 5.5rem) 0; }
+/* With script the header is fixed over the page: start below its pills. */
+.js .legal { padding-top: calc(4.5rem + clamp(1rem, 4vw, 3rem)); }
 .legal-doc { width: min(100% - 2 * var(--gutter), 68ch); margin-inline: auto; }
 .legal-doc h1 { max-width: none; font-size: clamp(2.25rem, 1.4rem + 3.4vw, 3.75rem); line-height: 1; letter-spacing: -.04em; }
-.legal-updated { margin: 1rem 0 2.5rem; color: var(--text-2); font-family: var(--mono); font-size: .875rem; }
+.legal-updated { margin: 1rem 0 2.5rem; color: var(--text-2); font-family: var(--mono); font-weight: 400; font-size: .875rem; }
 .legal-summary { margin: 0 0 2.5rem; padding: 1.5rem 1.75rem; background: var(--bg-2); border: 1px solid var(--line); border-radius: 16px; }
 .legal-summary h2 { margin: 0 0 .75rem; font-size: 1.25rem; letter-spacing: -.02em; }
 .legal-summary > :last-child { margin-bottom: 0; }
@@ -547,7 +608,8 @@ html:not(.js) .cmd { grid-template-columns: minmax(0, 1fr); }
 .table-wrap thead th { background: var(--bg-2); font-weight: 600; }
 
 @media print {
-  .notch, .skip, .menu-btn, .theme-btn { display: none !important; }
+  .notch, .skip, .menu-btn, .theme-btn, .to-top { display: none !important; }
+  .js .site-header { position: static; }
   .susun .ar-scrub { height: auto !important; }
   .susun .ar-stage { position: static !important; height: auto !important; }
 }

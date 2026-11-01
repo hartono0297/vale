@@ -7,14 +7,14 @@
 <meta name="description" content="Vale is a free, open-source notch for the top of the Windows 11 screen: the clock and a cat when idle, a panel of pages when you hover over it.">
 <link rel="icon" href="img/logo.svg" type="image/svg+xml">
 <script>(function(){var d=document.documentElement;d.classList.add('js');function f(){if(!d.classList.contains('ready'))d.classList.remove('js')}document.addEventListener('DOMContentLoaded',f);setTimeout(function(){if(!d.classList.contains('ready'))d.classList.add('reveal-off')},4000);setTimeout(f,20000);try{var t=localStorage.getItem('vale-theme');if(t==='light'||t==='dark')d.setAttribute('data-theme',t)}catch(e){}})()</script>
-<link rel="preload" href="fonts/DMSans-400.ttf" as="font" type="font/ttf" crossorigin>
-<link rel="preload" href="fonts/DMSans-600.ttf" as="font" type="font/ttf" crossorigin>
+<link rel="preload" href="fonts/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="style.css">
 <script src="site.js" defer></script>
 </head>
 <body>
+<span id="top" tabindex="-1"></span>
 <a class="skip" href="#main">Skip to content</a>
-<header class="site-header"><div class="nav-inner"><a class="brand" href="index.html"><img src="img/logo.svg" alt="" width="28" height="28"><span>Vale</span></a><button class="menu-btn" type="button" aria-expanded="false" aria-controls="site-nav">Menu</button><nav id="site-nav" class="site-nav" aria-label="Main"><ul><li><a href="#features">Features</a></li><li><a href="#cat">Try the cat</a></li><li><a href="#install">Install</a></li><li><a href="privacy.html">Privacy</a></li><li><a href="terms.html">Terms</a></li><li><a href="https://github.com/hartono0297/vale">GitHub</a></li></ul></nav><button class="theme-btn" type="button" hidden></button></div></header>
+<header class="site-header"><div class="nav-inner"><div class="pill pill-l"><a class="brand" href="index.html"><img src="img/logo.svg" alt="" width="28" height="28"><span class="brand-name">Vale</span></a><button class="menu-btn" type="button" aria-expanded="false" aria-controls="site-nav"><span class="menu-ico" aria-hidden="true"></span><span class="menu-label">Menu</span></button><nav id="site-nav" class="site-nav" aria-label="Main"><ul><li class="nav-more"><a href="index.html"><img src="img/logo.svg" alt="" width="24" height="24">Home</a></li><li><a href="#features">Features</a></li><li><a href="#install">Install</a></li><li class="nav-more"><a href="https://github.com/hartono0297/vale">GitHub</a></li><li class="nav-more nav-theme"><button class="theme-btn" type="button" hidden></button></li></ul></nav></div><div class="pill pill-r"><a class="nav-gh" href="https://github.com/hartono0297/vale">GitHub</a><button class="theme-btn" type="button" hidden></button><a class="btn-dl" href="https://github.com/hartono0297/vale/releases/latest/download/vale.exe">Download</a></div></div></header>
 
 <svg class="sprite" width="0" height="0" aria-hidden="true" focusable="false">
   <symbol id="i-calendar" viewBox="0 0 24 24"><g fill="currentColor" fill-opacity=".38" stroke="none"><rect x="3" y="5" width="18" height="16" rx="3"/></g><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M3 10h18M8 3v4M16 3v4"/></g><g fill="currentColor"><circle cx="8" cy="14" r="1.1"/><circle cx="12" cy="14" r="1.1"/><circle cx="16" cy="14" r="1.1"/></g></symbol>
@@ -31,6 +31,8 @@
   <symbol id="i-terminal" viewBox="0 0 24 24"><g fill="currentColor" fill-opacity=".38" stroke="none"><rect x="3" y="5" width="18" height="14" rx="3"/></g><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M7 10l3 2.5L7 15M12.5 15H17"/></g></symbol>
   <symbol id="i-grid" viewBox="0 0 24 24"><g fill="currentColor" fill-opacity=".38" stroke="none"><rect x="4" y="4" width="7" height="7" rx="2"/></g><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="7" height="7" rx="2"/><rect x="13" y="4" width="7" height="7" rx="2"/><rect x="4" y="13" width="7" height="7" rx="2"/><rect x="13" y="13" width="7" height="7" rx="2"/></g></symbol>
   <symbol id="i-layout" viewBox="0 0 24 24"><g fill="currentColor" fill-opacity=".38" stroke="none"><rect x="3" y="4.5" width="18" height="15" rx="3"/></g><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="M12 4.5v15M3 12h18"/></g></symbol>
+  <symbol id="i-camera" viewBox="0 0 24 24"><g fill="currentColor" fill-opacity=".38" stroke="none"><path d="M3 9h4l1.6-2.5h6.8L17 9h4v10H3z"/></g><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8.5h3l1.5-2.2h7L17 8.5h3a1 1 0 0 1 1 1v8.5a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9.5a1 1 0 0 1 1-1z"/><circle cx="12" cy="13.5" r="3.3"/></g></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="6"/><path d="M16 16l4 4"/></g></symbol>
   <symbol id="l-cols2" viewBox="0 0 32 20"><g fill="currentColor" fill-opacity=".14" stroke="currentColor" stroke-width="1.2"><rect x="1" y="1" width="14.25" height="18" rx="1.5"/><rect x="16.75" y="1" width="14.25" height="18" rx="1.5"/></g></symbol>
   <symbol id="l-cols3" viewBox="0 0 32 20"><g fill="currentColor" fill-opacity=".14" stroke="currentColor" stroke-width="1.2"><rect x="1" y="1" width="9" height="18" rx="1.5"/><rect x="11.5" y="1" width="9" height="18" rx="1.5"/><rect x="22" y="1" width="9" height="18" rx="1.5"/></g></symbol>
   <symbol id="l-main2" viewBox="0 0 32 20"><g fill="currentColor" fill-opacity=".14" stroke="currentColor" stroke-width="1.2"><rect x="1" y="1" width="19" height="18" rx="1.5"/><rect x="21.5" y="1" width="9.5" height="8.25" rx="1.5"/><rect x="21.5" y="10.75" width="9.5" height="8.25" rx="1.5"/></g></symbol>
@@ -61,10 +63,6 @@
       <svg class="nc nc-lg" viewBox="0 0 64 64" width="34" height="34" focusable="false"><g fill="#E2683C" stroke="#E2683C" stroke-width="5" stroke-linejoin="round"><path d="M9 37L12 10L27 26Z"/><path d="M55 37L52 10L37 26Z"/></g><path d="M7 50V41Q7 24 32 24Q57 24 57 41V50Q57 54 53 54H11Q7 54 7 50Z" fill="#E2683C"/><g fill="none" stroke="#17120F" stroke-width="3" stroke-linecap="round"><path d="M18 40Q21 36 24 40M40 40Q43 36 46 40"/></g></svg>
       <span class="clip-text"><span class="clip-title">Copied</span><span class="clip-preview" id="notch-clip-preview">Meeting at 3 pm, room 2</span></span>
     </span>
-    <span class="nf nf-pomo" aria-hidden="true">
-      <svg class="ring" viewBox="0 0 24 24" width="22" height="22" focusable="false"><circle cx="12" cy="12" r="9" fill="none" stroke="#3A302A" stroke-width="3"/><circle cx="12" cy="12" r="9" fill="none" stroke="#E2683C" stroke-width="3" stroke-linecap="round" stroke-dasharray="56.55" stroke-dashoffset="14.1" transform="rotate(-90 12 12)"/></svg>
-      <span class="pomo-time">18:42</span><span class="pomo-label">Focus</span>
-    </span>
     <span class="nf nf-cat" aria-hidden="true">
       <svg class="nc nc-follow" id="notch-cat" viewBox="0 0 64 64" width="26" height="26" focusable="false"><g class="cat-move"><g fill="#E2683C" stroke="#E2683C" stroke-width="5" stroke-linejoin="round"><path d="M9 37L12 10L27 26Z"/><path d="M55 37L52 10L37 26Z"/></g><path d="M7 50V41Q7 24 32 24Q57 24 57 41V50Q57 54 53 54H11Q7 54 7 50Z" fill="#E2683C"/><g class="cat-eyes" fill="#17120F"><rect x="21.2" y="35" width="5.6" height="10" rx="2.8"/><rect x="37.2" y="35" width="5.6" height="10" rx="2.8"/></g></g></svg>
     </span>
@@ -81,7 +79,7 @@
         <ul class="pg-list"><li><span class="t">10:00</span>Review drawings</li><li><span class="t">13:00</span>Call with the contractor</li><li><span class="t">16:30</span>Print plans for the site visit</li></ul>
       </div>
       <div class="pg" role="tabpanel" id="pg-pomodoro" aria-labelledby="tab-pomodoro" hidden>
-        <div class="pg-row"><svg class="ring-lg" viewBox="0 0 24 24" width="96" height="96" focusable="false"><circle cx="12" cy="12" r="9" fill="none" stroke="#3A302A" stroke-width="1.6"/><circle cx="12" cy="12" r="9" fill="none" stroke="#E2683C" stroke-width="1.6" stroke-linecap="round" stroke-dasharray="56.55" stroke-dashoffset="14.1" transform="rotate(-90 12 12)"/><text x="12" y="13.4" text-anchor="middle" font-size="5" font-family="DM Sans, sans-serif" font-weight="600" fill="#F4EDE4">18:42</text></svg><div><p class="pg-big">Focus</p><p class="pg-sub">Session 2 of 4</p></div></div>
+        <div class="pg-row"><svg class="ring-lg" viewBox="0 0 24 24" width="96" height="96" focusable="false"><circle cx="12" cy="12" r="9" fill="none" stroke="#3A302A" stroke-width="1.6"/><circle cx="12" cy="12" r="9" fill="none" stroke="#E2683C" stroke-width="1.6" stroke-linecap="round" stroke-dasharray="56.55" stroke-dashoffset="14.1" transform="rotate(-90 12 12)"/><text x="12" y="13.4" text-anchor="middle" font-size="5" font-family="Geist, sans-serif" font-weight="600" fill="#F4EDE4">18:42</text></svg><div><p class="pg-big">Focus</p><p class="pg-sub">Session 2 of 4</p></div></div>
       </div>
       <div class="pg" role="tabpanel" id="pg-reminders" aria-labelledby="tab-reminders" hidden>
         <ul class="pg-list"><li><span class="t">11:30</span>Drink water</li><li><span class="t">15:00</span>Send the revised plan</li><li><span class="t">Tomorrow</span>Back up project files</li></ul>
@@ -144,24 +142,75 @@
 
 <section class="hero" data-notch="idle" aria-labelledby="h-hero">
   <div class="wrap hero-inner">
-    <h1 id="h-hero" class="hero-title">A notch for the top of your Windows screen.</h1>
-    <p class="hero-line">Vale is free and open source, for Windows 11. It shows the clock and a cat when idle, and opens a panel of pages when you hover over it.</p>
+    <img class="hero-logo" src="img/logo.svg" alt="" width="80" height="80">
+    <h1 id="h-hero" class="hero-title"><span class="l">Your Windows,</span> <span class="l">with a notch.</span></h1>
+    <p class="hero-line">Free and open source, for Windows 11.</p>
     <div class="actions">
       <a class="btn btn-primary" href="https://github.com/hartono0297/vale/releases/latest/download/vale.exe">Download for Windows</a>
-      <a class="btn btn-outline" href="https://github.com/hartono0297/vale">View on GitHub</a>
     </div>
-    <p class="hint js-only">The island at the top of this page is live. Hover or click it, tap it on a phone, or press Tab until the island is focused, then Enter.</p>
+    <div class="cmd hero-cmd">
+      <div class="cmd-scroll" tabindex="0" role="region" aria-label="Install command"><code id="cmd-hero">irm https://raw.githubusercontent.com/hartono0297/vale/main/install.ps1 | iex</code></div>
+      <button class="btn btn-copy js-only" type="button" data-copy="#cmd-hero">Copy</button>
+      <span class="copy-msg js-only" role="status" aria-live="polite"></span>
+    </div>
+    <p class="hint js-only">The notch at the top is live. Try it.</p>
   </div>
 </section>
 
-<section id="features" class="susun" data-notch="arrange" aria-labelledby="h-susun">
+<section id="features" class="features" data-notch="idle" aria-labelledby="h-features">
+  <div class="wrap">
+    <h2 id="h-features" class="reveal">Everything in one notch.</h2>
+    <ul class="tiles">
+      <li class="tile reveal"><svg class="tile-ico" viewBox="0 0 24 24" width="28" height="28" aria-hidden="true" focusable="false"><use href="#i-music"/></svg><h3>Music</h3><p>Cover, controls and synced lyrics.</p></li>
+      <li class="tile reveal"><svg class="tile-ico" viewBox="0 0 24 24" width="28" height="28" aria-hidden="true" focusable="false"><use href="#i-layout"/></svg><h3>Susun</h3><p>Arrange windows into a layout.</p></li>
+      <li class="tile reveal"><svg class="tile-ico" viewBox="0 0 24 24" width="28" height="28" aria-hidden="true" focusable="false"><use href="#i-clipboard"/></svg><h3>Clipboard</h3><p>Your last 50 copies, encrypted.</p></li>
+      <li class="tile reveal"><svg class="tile-ico" viewBox="0 0 24 24" width="28" height="28" aria-hidden="true" focusable="false"><use href="#i-camera"/></svg><h3>Screenshot</h3><p>PrtSc snaps to windows and boxes.</p></li>
+      <li class="tile reveal"><svg class="tile-ico" viewBox="0 0 24 24" width="28" height="28" aria-hidden="true" focusable="false"><use href="#i-chip"/></svg><h3>System</h3><p>CPU, memory, disks and a cleaner.</p></li>
+      <li class="tile reveal"><svg class="tile-ico" viewBox="0 0 24 24" width="28" height="28" aria-hidden="true" focusable="false"><use href="#i-search"/></svg><h3>Search</h3><p>Apps, files and sums on a hotkey.</p></li>
+      <li class="tile reveal"><svg class="tile-ico" viewBox="0 0 24 24" width="28" height="28" aria-hidden="true" focusable="false"><use href="#i-calendar"/></svg><h3>Calendar</h3><p>Google Calendar, if you want it.</p></li>
+      <li class="tile reveal"><svg class="tile-ico" viewBox="0 0 24 24" width="28" height="28" aria-hidden="true" focusable="false"><use href="#i-file"/></svg><h3>File shelf</h3><p>Drop files here, drag them out later.</p></li>
+    </ul>
+    <p class="also">Also in the panel: Pomodoro, Reminders, Notes, Notifications, Devices, Mixer, CLI and Shortcuts.</p>
+  </div>
+</section>
+
+<section class="shot-sec f-music" data-notch="music" aria-labelledby="h-music">
+  <div class="wrap">
+    <h2 id="h-music" class="reveal">Your music, up top.</h2>
+    <figure class="shot reveal">
+      <img src="img/music.png" width="560" height="290" loading="lazy" alt="The Music page: a cover, the track Senja di Kemang, a progress bar, playback controls and a Lyrics button.">
+      <figcaption>The Music page, with demo data. Lyrics are off until you turn them on.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section class="shot-sec f-panel" data-notch="panel" aria-labelledby="h-panel">
+  <div class="wrap">
+    <h2 id="h-panel" class="reveal">Fourteen pages, one hover.</h2>
+    <figure class="shot reveal">
+      <img src="img/notch.png" width="584" height="290" loading="lazy" alt="The Calendar page in week view, with demo events from Monday to Sunday and an Add event button.">
+      <figcaption>The Calendar page in week view, with demo events.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section class="shot-sec f-clip" data-notch="clipboard" aria-labelledby="h-clip">
+  <div class="wrap">
+    <h2 id="h-clip" class="reveal">Every copy, kept.</h2>
+    <figure class="shot reveal">
+      <img src="img/clipboard.png" width="560" height="290" loading="lazy" alt="The Clipboard page: a search box and a grid of copied text, a link, an image, a code line and a colour.">
+      <figcaption>The Clipboard page, with demo items. Saved on your PC with Windows DPAPI.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section id="susun" class="susun" data-notch="arrange" aria-labelledby="h-susun">
   <div class="ar-scrub">
     <div class="ar-stage">
       <div class="wrap ar-grid">
         <div class="ar-copy">
-          <p class="ar-new">New in 3.10</p>
           <h2 id="h-susun">Susun puts your windows in place.</h2>
-          <p class="lead">Pick a layout, click a window for each tile, and Vale moves and resizes them into the work area. In the English interface it is called Arrange.</p>
+          <p class="lead">Pick a layout, then click a window for each tile. In English it is called Arrange.</p>
         </div>
         <figure class="ar-fig">
           <div class="ar-demo" id="ar-demo" role="img" aria-label="An illustration of Susun: six layout thumbnails with Main + 2 chosen, and a screen where three windows go into the Main + 2 tiles one at a time, ending with the notice Arranged, 3 windows.">
@@ -188,182 +237,12 @@
       </div>
     </div>
   </div>
-  <div class="wrap">
-    <ul class="ar-facts">
-      <li><strong>Six layouts, or your own.</strong> 2 columns, 3 columns, Main + 2, Grid 2x2, 2/3 + 1/3 and Main + 3 are built in. Make your own in Settings.</li>
-      <li><strong>One tile at a time.</strong> Vale asks for each tile in turn, "Tile 1 of 3", and you click a window for it, in the list or on screen. Skip a tile, or go back one.</li>
-      <li><strong>Into the work area.</strong> Vale moves and resizes the windows with a gap between them, from 0 to 24 px (8 by default). Undo puts them back in one click.</li>
-      <li><strong>Save it for later.</strong> Save an arrangement and replay it later. Apps that are not open are skipped, never launched.</li>
-      <li><strong>A hotkey, if you want one.</strong> Ctrl+Alt+S opens Susun. It is off by default.</li>
-    </ul>
-  </div>
-</section>
-
-<section class="feature f-music" data-notch="music" aria-labelledby="h-music">
-  <div class="wrap">
-    <div class="f-head">
-      <h2 id="h-music" class="reveal">Music</h2>
-      <p>Vale shows the cover, the controls and the song that is playing. Turn on Lyrics and it fetches synced lines from LRCLIB and shows the current line in the island. Lyrics are off until you turn them on.</p>
-      <p>The equalizer bars beside the lyric follow the real audio. Roll the mouse wheel over the island to change the volume.</p>
-      <p class="js-only note">While you read this section, the island above is playing a demo track.</p>
-    </div>
-    <div class="shots">
-      <figure class="shot reveal">
-        <img src="img/music.png" width="560" height="290" loading="lazy" alt="The Music page: a cover, the track Senja di Kemang, a progress bar, playback controls and a Lyrics button.">
-        <figcaption>The Music page, with demo data.</figcaption>
-      </figure>
-    </div>
-  </div>
-</section>
-
-<section class="feature f-panel" data-notch="panel" aria-labelledby="h-panel">
-  <div class="wrap">
-    <div class="f-head">
-      <h2 id="h-panel" class="reveal">Fourteen pages in one panel</h2>
-      <p><span class="js-only">Hover the island and the panel opens.</span><span class="no-js-only">In Vale, the panel opens when you hover the island.</span> The island itself changes shape as you use it: lyrics while music plays, a notice when you copy something, a ring while a timer runs.</p>
-      <p>Under the panel, the page dots turn into Dock-style icons that grow as the pointer passes over them. Swipe or use the wheel to change page. Reorder the pages or hide the ones you do not use in Settings &gt; Panel.</p>
-      <ul class="pages-list">
-        <li>Calendar</li><li>Pomodoro</li><li>Reminders</li><li>Notes</li><li>Music</li><li>Mixer</li><li>Clipboard</li><li>Notifications</li><li>File shelf</li><li>System</li><li>Devices</li><li>CLI</li><li>Arrange</li><li>Shortcuts</li>
-      </ul>
-      <p class="js-only note">In this section the island above can show a small peek of the panel, when nothing is under it. Hover it to open the whole thing.</p>
-    </div>
-    <div class="shots">
-      <figure class="shot reveal">
-        <img src="img/notch.png" width="584" height="290" loading="lazy" alt="The Calendar page in week view, with demo events from Monday to Sunday and an Add event button.">
-        <figcaption>The Calendar page in week view, with demo events.</figcaption>
-      </figure>
-    </div>
-  </div>
-</section>
-
-<section class="feature f-clip" data-notch="clipboard" aria-labelledby="h-clip">
-  <div class="wrap">
-    <div class="f-head">
-      <h2 id="h-clip" class="reveal">Clipboard</h2>
-      <p>Vale keeps a history of what you copy: the last 50 items, saved on your PC with Windows DPAPI. History is on by default. Copies from password managers are skipped.</p>
-      <p>Each copy also shows a short preview in the island.</p>
-      <p class="js-only note">Press a Copy button on this page to see the preview in the island above.</p>
-    </div>
-    <div class="shots shots-stack">
-      <figure class="shot reveal">
-        <img src="img/clipboard.png" width="560" height="290" loading="lazy" alt="The Clipboard page: a search box and a grid of copied text, a link, an image, a code line and a colour.">
-        <figcaption>The Clipboard page, with demo items.</figcaption>
-      </figure>
-      <figure class="shot reveal">
-        <img src="img/clipboard-copied.png" width="384" height="76" loading="lazy" alt="The island showing a Copied notice with a preview of the copied text.">
-        <figcaption>The preview in the island.</figcaption>
-      </figure>
-    </div>
-  </div>
-</section>
-
-<section class="feature f-pair" data-notch="idle" aria-label="Screenshot and file shelf">
-  <div class="wrap pair">
-    <div class="pair-col">
-      <h2 class="reveal">Screenshot</h2>
-      <p>Press PrtSc and Vale opens its own capture, which snaps to windows and boxes. An editor follows. Screenshots are saved to Pictures\Screenshots. The PrtSc key is on by default.</p>
-      <figure class="shot reveal">
-        <img src="img/screenshot.png" width="464" height="156" loading="lazy" alt="A screenshot preview in the island with the buttons Copy again, Keep and Delete.">
-        <figcaption>The preview after a capture.</figcaption>
-      </figure>
-    </div>
-    <div class="pair-col">
-      <h2 class="reveal">File shelf</h2>
-      <p>Drop files on the island to hold them there. Drag them out again when you need them.</p>
-      <figure class="shot reveal">
-        <img src="img/shelf.png" width="560" height="290" loading="lazy" alt="The File shelf page with six files, one marked missing, and a Clear button.">
-        <figcaption>The File shelf page, with demo files.</figcaption>
-      </figure>
-    </div>
-  </div>
-</section>
-
-<section class="feature f-system" data-notch="idle" aria-labelledby="h-system">
-  <div class="wrap">
-    <div class="f-head">
-      <h2 id="h-system" class="reveal">System</h2>
-      <p>CPU, RAM, disks and battery on one page. A cleaner lists what it can remove and the size of each item before you confirm. An optional Mole mode is there if you use Mole.</p>
-    </div>
-    <div class="shots shots-two">
-      <figure class="shot reveal">
-        <img src="img/system.png" width="560" height="290" loading="lazy" alt="The System page: CPU load as a ring, RAM and two disks as bars, and the busiest apps.">
-        <figcaption>The System page, with demo readings.</figcaption>
-      </figure>
-      <figure class="shot reveal">
-        <img src="img/cleaner.png" width="560" height="352" loading="lazy" alt="The cleaner: a list of temporary files, browser cache and app cache with sizes, and a Clean button.">
-        <figcaption>The cleaner, before you confirm.</figcaption>
-      </figure>
-    </div>
-  </div>
-</section>
-
-<section class="feature f-search" data-notch="idle" aria-label="Search and CLI">
-  <div class="wrap pair">
-    <div class="pair-col">
-      <h2 id="h-search" class="reveal">Search</h2>
-      <p>Press Ctrl+Alt+Space for quick search: apps, a calculator, Windows settings, files and the web. Searching the web opens google.com in your browser only when you pick that result.</p>
-      <figure class="shot reveal">
-        <img src="img/search-files.png" width="560" height="290" loading="lazy" alt="Quick search for gam, listing an app, folders, a picture, a drawing file and a web search.">
-        <figcaption>Quick search, with demo files.</figcaption>
-      </figure>
-    </div>
-    <div class="pair-col">
-      <h2 id="h-cli" class="reveal">CLI</h2>
-      <p>Run PowerShell or cmd commands right in the panel.</p>
-      <figure class="shot reveal">
-        <img src="img/cli.png" width="560" height="290" loading="lazy" alt="The CLI page: a PowerShell prompt with git status, a file listing and git pull.">
-        <figcaption>The CLI page, with demo commands.</figcaption>
-      </figure>
-    </div>
-  </div>
-</section>
-
-<section class="feature f-calendar" data-notch="idle" aria-labelledby="h-calendar">
-  <div class="wrap">
-    <div class="f-head">
-      <h2 id="h-calendar" class="reveal">Calendar</h2>
-      <p>Connect Google Calendar to see your events by day, week or month, and to add or edit events from the panel. Connecting is optional. <a href="#google-calendar">The Google Calendar section below</a> says exactly what Vale asks for.</p>
-    </div>
-    <div class="shots shots-two">
-      <figure class="shot reveal">
-        <img src="img/calendar.png" width="560" height="290" loading="lazy" alt="The Calendar page in month view, with the events of Thursday 29 October listed beside it.">
-        <figcaption>The Calendar page in month view, with demo events.</figcaption>
-      </figure>
-      <figure class="shot reveal">
-        <img src="img/editor.png" width="400" height="361" loading="lazy" alt="The event editor: a title, date, start and end time, an all-day switch, notes, and Cancel and Save buttons.">
-        <figcaption>The event editor.</figcaption>
-      </figure>
-    </div>
-  </div>
-</section>
-
-<section class="feature f-small f-pomodoro" data-notch="pomodoro" aria-labelledby="h-pomodoro">
-  <div class="wrap small-wrap">
-    <h2 id="h-pomodoro" class="h-small reveal">Pomodoro, Reminders and Notes</h2>
-    <dl class="small-list">
-      <div><dt>Pomodoro</dt><dd>A focus timer. While it runs, the island shows a ring.</dd></div>
-      <div><dt>Reminders</dt><dd>Set reminders, and Vale shows a notice in the island when one is due.</dd></div>
-      <div><dt>Notes</dt><dd>Keep short notes in the panel.</dd></div>
-    </dl>
-    <p class="js-only note">While you read this section, the island above shows a timer ring.</p>
-  </div>
-</section>
-
-<section class="feature f-small f-more" data-notch="idle" aria-labelledby="h-more">
-  <div class="wrap small-wrap">
-    <h2 id="h-more" class="h-small reveal">Notifications and Devices</h2>
-    <dl class="small-list">
-      <div><dt>Notifications</dt><dd>Vale keeps a history of Windows toasts, so you can read what you missed. You can mute apps you do not want in it.</dd></div>
-      <div><dt>Devices</dt><dd>Eject flash drives, external disks and memory cards safely from the panel. The island tells you when a device is plugged in and when it is safe to remove.</dd></div>
-    </dl>
-  </div>
 </section>
 
 <section id="cat" class="cat-section" data-notch="cat" aria-labelledby="h-cat">
   <div class="wrap">
     <h2 id="h-cat"><span class="js-only">Try the cat</span><span class="no-js-only">The cat</span></h2>
-    <p class="lead"><span class="js-only">Move the pointer and the cat turns its head toward it, the way it does in the island. Pick a coat and an accessory. In Vale, the matching settings are Follow the pointer, Shrink to eyes and Greeting.</span><span class="no-js-only">In Vale the cat follows your pointer. It comes in four coats and six accessories, and it greets you by the time of day. The matching settings are Follow the pointer, Shrink to eyes and Greeting.</span></p>
-    <p class="cat-more">The cat sits in the island when it is idle. Its face and ears change for notices, such as Claude Code finishing or waiting for you, a low battery and a reminder that is due.</p>
+    <p class="lead"><span class="js-only">It follows your pointer. Pick a coat and an accessory.</span><span class="no-js-only">In Vale the cat follows your pointer, in four coats and six accessories.</span></p>
     <div class="cat-stage">
       <div class="cat-view">
         <p class="cat-bubble" id="cat-greeting" aria-live="off" hidden></p>
@@ -397,32 +276,25 @@
 </section>
 
 <section id="install" class="install" data-notch="idle" aria-labelledby="h-install">
-  <div class="wrap install-grid">
-    <div class="install-intro">
-      <h2 id="h-install">Install</h2>
-      <p class="lead">Paste this line in PowerShell. It needs no admin rights.</p>
-      <p>The installer finds the latest release through the GitHub API, downloads vale.exe and vale.exe.sha256, and checks the SHA-256. It installs to %LOCALAPPDATA%\Programs\Vale, adds a Start Menu shortcut, fetches uninstall.ps1 and starts Vale.</p>
-      <p>To update, run the same line again. Prefer a file? <a href="https://github.com/hartono0297/vale/releases/latest/download/vale.exe">Download vale.exe</a>.</p>
-      <p class="facts">For Windows 11 x64. Free, with an MIT licence. The interface is in English and Indonesian.</p>
+  <div class="wrap narrow">
+    <h2 id="h-install">Install</h2>
+    <p class="lead">Download the app, or paste the line below in PowerShell. No admin rights needed.</p>
+    <p class="install-dl"><a class="btn btn-primary" href="https://github.com/hartono0297/vale/releases/latest/download/vale.exe">Download vale.exe</a></p>
+    <div class="cmd">
+      <div class="cmd-scroll" tabindex="0" role="region" aria-label="Install or update command"><code id="cmd-install">irm https://raw.githubusercontent.com/hartono0297/vale/main/install.ps1 | iex</code></div>
+      <button class="btn btn-copy js-only" type="button" data-copy="#cmd-install">Copy</button>
+      <span class="copy-msg js-only" role="status" aria-live="polite"></span>
     </div>
-    <div class="install-cmds">
-      <div class="cmd-block">
-        <h3 id="lbl-install">Install or update</h3>
-        <div class="cmd">
-          <div class="cmd-scroll" tabindex="0" role="region" aria-labelledby="lbl-install"><code id="cmd-install">irm https://raw.githubusercontent.com/hartono0297/vale/main/install.ps1 | iex</code></div>
-          <button class="btn btn-copy js-only" type="button" data-copy="#cmd-install">Copy</button>
-          <span class="copy-msg js-only" role="status" aria-live="polite"></span>
-        </div>
-      </div>
-      <div class="cmd-block">
+    <details class="more">
+      <summary>Update, uninstall and details</summary>
+      <div class="more-body">
+        <p>Run the same line again to update. The installer checks the SHA-256, installs to %LOCALAPPDATA%\Programs\Vale and adds a Start Menu shortcut. For Windows 11 x64, with an MIT licence, in English and Indonesian.</p>
         <h3 id="lbl-uninstall">Uninstall</h3>
         <div class="cmd">
           <div class="cmd-scroll" tabindex="0" role="region" aria-labelledby="lbl-uninstall"><code id="cmd-uninstall">irm https://raw.githubusercontent.com/hartono0297/vale/main/uninstall.ps1 | iex</code></div>
           <button class="btn btn-copy js-only" type="button" data-copy="#cmd-uninstall">Copy</button>
           <span class="copy-msg js-only" role="status" aria-live="polite"></span>
         </div>
-      </div>
-      <div class="cmd-block">
         <h3 id="lbl-purge">Uninstall and delete Vale's data</h3>
         <p>This variant also deletes the data Vale keeps on your PC.</p>
         <div class="cmd">
@@ -431,57 +303,60 @@
           <span class="copy-msg js-only" role="status" aria-live="polite"></span>
         </div>
       </div>
-    </div>
+    </details>
   </div>
 </section>
 
 <section id="google-calendar" class="gcal" data-notch="idle" aria-labelledby="h-gcal">
-  <div class="wrap gcal-grid">
-    <div class="gcal-intro">
-      <h2 id="h-gcal">Google Calendar</h2>
-      <p class="lead">Connecting Google Calendar is optional. If you do, this is what happens.</p>
-      <p>You sign in in your browser, on Google's own page, using OAuth with PKCE. While you sign in, Vale listens on 127.0.0.1 on your PC for Google's reply, and only during the login. Release builds use Vale's own OAuth client. If you enter your own Client ID in Settings &gt; Integrations, yours is used instead.</p>
-      <p>Vale lists your calendars and events, creates new events in your primary calendar, and edits existing ones. It never deletes events. Read-only, recurring and multi-day events cannot be edited. While connected, it fetches your events again every 10 minutes.</p>
-      <p>Data goes only between your PC and Google. Vale has no server in between.</p>
-    </div>
-    <div class="gcal-detail">
-      <h3>The two scopes</h3>
-      <dl class="scopes">
-        <dt><code>https://www.googleapis.com/auth/calendar.calendarlist.readonly</code></dt>
-        <dd>Reads the list of your calendars, so Vale can show them and their colours.</dd>
-        <dt><code>https://www.googleapis.com/auth/calendar.events</code></dt>
-        <dd>Reads your events, creates events in your primary calendar and edits existing ones. It never deletes them.</dd>
-      </dl>
-      <h3>Disconnecting</h3>
-      <p>Disconnect in Settings &gt; Integrations. That deletes the saved token and nothing else, so events Vale already cached stay on your PC until you delete them. To revoke Vale's access on Google's side, go to <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a>.</p>
-      <p><a href="privacy.html">Read the privacy policy</a></p>
-    </div>
+  <div class="wrap narrow">
+    <h2 id="h-gcal">Google Calendar</h2>
+    <p class="lead">Connecting Google Calendar is optional. You sign in on Google's own page, and your data goes only between your PC and Google. Vale never deletes events.</p>
+    <details class="more">
+      <summary>How Vale uses Google Calendar</summary>
+      <div class="more-body">
+        <p>You sign in in your browser, on Google's own page, using OAuth with PKCE. While you sign in, Vale listens on 127.0.0.1 on your PC for Google's reply, and only during the login. Release builds use Vale's own OAuth client. If you enter your own Client ID in Settings &gt; Integrations, yours is used instead.</p>
+        <p>Vale lists your calendars and events, creates new events in your primary calendar, and edits existing ones. It never deletes events. Read-only, recurring and multi-day events cannot be edited. While connected, it fetches your events again every 10 minutes.</p>
+        <p>Data goes only between your PC and Google. Vale has no server in between.</p>
+        <h3>The two scopes</h3>
+        <dl class="scopes">
+          <dt><code>https://www.googleapis.com/auth/calendar.calendarlist.readonly</code></dt>
+          <dd>Reads the list of your calendars, so Vale can show them and their colours.</dd>
+          <dt><code>https://www.googleapis.com/auth/calendar.events</code></dt>
+          <dd>Reads your events, creates events in your primary calendar and edits existing ones. It never deletes them.</dd>
+        </dl>
+        <h3>Disconnecting</h3>
+        <p>Disconnect in Settings &gt; Integrations. That deletes the saved token and nothing else, so events Vale already cached stay on your PC until you delete them. To revoke Vale's access on Google's side, go to <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a>.</p>
+        <p><a href="privacy.html">Read the privacy policy</a></p>
+      </div>
+    </details>
   </div>
 </section>
 
 <section id="privacy" class="privacy-short" data-notch="idle" aria-labelledby="h-privacy">
-  <div class="wrap privacy-grid">
-    <div>
-      <h2 id="h-privacy">Privacy in short</h2>
-      <p class="lead">Vale has no server of its own, no account, no telemetry or analytics, and no update checker.</p>
-      <p><a href="privacy.html">Read the full privacy policy</a></p>
-    </div>
-    <div>
-      <h3>Everything that can leave your PC</h3>
-      <ul class="plain">
-        <li><strong>Lyrics from LRCLIB.</strong> Off by default. When you turn it on, Vale sends the song title, the artist and the duration, never the album.</li>
-        <li><strong>Google Calendar.</strong> Only after you connect it.</li>
-        <li><strong>Web search.</strong> Vale opens google.com/search in your default browser only when you pick that result.</li>
-        <li><strong>Links.</strong> They open in your browser when you click them.</li>
-        <li><strong>The installer.</strong> It downloads Vale from GitHub.</li>
-      </ul>
-      <p>Album covers are not downloaded. They come from Windows' media session.</p>
-    </div>
+  <div class="wrap narrow">
+    <h2 id="h-privacy">Privacy in short</h2>
+    <p class="lead">Vale has no server of its own, no account, and no telemetry or analytics. Release builds check GitHub for a new version about once a day, and you can turn that off.</p>
+    <p><a href="privacy.html">Read the full privacy policy</a></p>
+    <details class="more">
+      <summary>Everything that can leave your PC</summary>
+      <div class="more-body">
+        <ul class="plain">
+          <li><strong>The update check.</strong> On by default. About once a day, release builds ask the GitHub API for the latest release, with a <code>User-Agent: Vale/&lt;version&gt;</code> header. Turn it off with Check for updates automatically in Settings &gt; About. When you click Update, Vale downloads vale.exe and vale.exe.sha256 from the GitHub release and checks the SHA-256.</li>
+          <li><strong>Lyrics from LRCLIB.</strong> Off by default. When you turn it on, Vale sends the song title, the artist and the duration, never the album.</li>
+          <li><strong>Google Calendar.</strong> Only after you connect it.</li>
+          <li><strong>Web search.</strong> Vale opens google.com/search in your default browser only when you pick that result.</li>
+          <li><strong>Links.</strong> They open in your browser when you click them.</li>
+          <li><strong>The installer.</strong> It downloads Vale from GitHub.</li>
+        </ul>
+        <p>Album covers are not downloaded. They come from Windows' media session.</p>
+      </div>
+    </details>
   </div>
 </section>
 
 </main>
 
 <footer class="site-footer"><div class="footer-inner"><p class="footer-brand"><img src="img/logo.svg" alt="" width="20" height="20"> Vale. © 2026 hartono0297, <a href="https://github.com/hartono0297/vale/blob/main/LICENSE">MIT licence</a>.</p><ul class="footer-links"><li><a href="privacy.html">Privacy</a></li><li><a href="terms.html">Terms</a></li><li><a href="https://github.com/hartono0297/vale">GitHub</a></li><li><a href="https://github.com/hartono0297/vale/issues">Issues</a></li></ul><p class="footer-note">Vale is not affiliated with Google or Apple.</p></div></footer>
+<a class="to-top" href="#top" aria-label="Back to top"><svg viewBox="0 0 64 64" width="30" height="30" aria-hidden="true" focusable="false"><g fill="#E2683C" stroke="#E2683C" stroke-width="5" stroke-linejoin="round"><path d="M9 37L12 10L27 26Z"/><path d="M55 37L52 10L37 26Z"/></g><path d="M7 50V41Q7 24 32 24Q57 24 57 41V50Q57 54 53 54H11Q7 54 7 50Z" fill="#E2683C"/><g fill="#17120F"><rect x="21.2" y="35" width="5.6" height="10" rx="2.8"/><rect x="37.2" y="35" width="5.6" height="10" rx="2.8"/></g></svg></a>
 </body>
 </html>
