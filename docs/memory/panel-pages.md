@@ -1,6 +1,6 @@
 ---
 tags: [decision, panel, settings, v3.4]
-date: 2026-10-29
+date: 2026-11-01
 ---
 
 # Panel pages: order and which ones the wheel shows
@@ -133,3 +133,12 @@ Shortcuts (`Page::ALL: [Page; 14]`, name `"Arrange"` in `config.json`). A saved 
 without it (an older config) gets it right after Cli wherever the owner moved Cli to
 (`from_saved`, tested), shown. Icon: `Icon::Layout`, a screen frame cut into a 2x2
 layout, not Pintasan's `Grid`.
+
+**2026-11-01:** The pages card shows each page's Dock icon in its row
+(`shortcuts::page_icon`, the one page-to-icon mapping, also used by
+`paint_page_dots`): 18 dip, secondary ink, at `card.x + 34`; hidden rows
+("Tersembunyi") draw it dimmed (0.45 alpha). Names start at `card.x + 62` in
+both groups so they line up. The icon is a `Layout.glyphs` item (`Glyph`): a
+decorative rect with no hit region and no focus stop, shifted by the scroll,
+painted in `cards_and_controls` after the lifted plate (so the held row's icon
+rides the raised plate) and before the texts.
