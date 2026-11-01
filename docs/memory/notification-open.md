@@ -58,14 +58,18 @@ the window-AUMID match finds it, and with no window it launches by AUMID.
    A meaningful subdomain label (`site_sub_label`:
    calendar.google.com -> calendar, mail.google.com -> mail; www, web, app, m
    and other generic or short labels are skipped) counts as a site match on
-   its own, as a substring of the squashed tab name, in three strengths:
-   anywhere ("chat" in "ChatGPT", "meet" in a call tab "Meet -
-   abc-defg-hij"); ending the tab's **last word**, where pages name their
+   its own, in three strengths: the subdomain alone as the tab's **first or
+   last whole word** ("Meet - abc-defg-hij", "Mail - Budi - Outlook",
+   "Calendar - Outlook"; `WordRuns::is_first_or_last_word`), never as a raw
+   substring or a middle word, so "ChatGPT" (chat), "Meeting notes - Notion"
+   (meet), "Academic calendar 2026 - UI" (calendar), "How to use Gmail -
+   YouTube" and "Sending email with Python - Stack Overflow" (mail) are not
+   matches (the owner's rule: never switch to an unrelated tab); ending the tab's **last word**, where pages name their
    site ("Inbox - user@gmail.com - Gmail", "Mail - Budi - Outlook" for
    outlook.live.com), so for a Gmail toast "Mail - Budi - Outlook" or
    "Mailchimp - Campaigns" never beats the Gmail tab even when active; and
    the label right in front of the subdomain ("googlechat", "googlecalendar",
-   "googledocs"), so a chat.google.com toast never goes to ChatGPT. A tab
+   "googledocs"), the strongest. A tab
    whose **last whole-word** label is followed by another word and by no
    subdomain names another page of the site and is no site match at all:
    "gmail - Google Search", "Email newsletter - Google Docs" and "Gmail:
@@ -76,11 +80,16 @@ the window-AUMID match finds it, and with no window it launches by AUMID.
    "delivery" or "olive" blocks nothing (a raw substring test did, and lost
    the Outlook tab). Known gaps: "Hotmail" also ends in "mail" and ties with
    Gmail; with no Gmail tab open, "Mail - Budi - Outlook" still matches a
-   Gmail toast on the bare subdomain (the Meet call tab needs that rule).
+   Gmail toast on the bare subdomain as its first word (the Meet call tab
+   needs that rule). Owner awareness (no code change): a toast whose
+   **title** is "Google" (for example a Google security alert) can still
+   match a label-only Google tab (for example "cats - Google Search")
+   through the title tier.
    With no match the window comes forward on its current tab. A site with
    no meaningful subdomain (web.telegram.org, google.com) matches on the
    registrable label alone. Matches come in tiers (label and subdomain;
-   subdomain ending the last word; subdomain elsewhere or site label; title;
+   subdomain ending the last word; subdomain as first or last whole word, or
+   site label; title;
    words only): the strongest tier anywhere decides, so a site match in
    an older window beats a words-only match in the newest. The most recent
    window with a match of that tier wins; inside it the active tab if its
