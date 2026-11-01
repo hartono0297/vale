@@ -33,9 +33,14 @@ use crate::ui::robot::{Motion, SLEEP_MAX, SLEEP_MIN};
 
 pub use super::geometry::Rect;
 
-/// Client area.
+/// The smallest client area the window can have (the window's minimum
+/// track size); a bigger window lays out against its real client size
+/// (`layout_in`).
 pub const CLIENT_W: f32 = 720.0;
 pub const CLIENT_H: f32 = 520.0;
+/// The content column stops growing here and is centred in the space beside
+/// the sidebar.
+const MAX_CONTENT_W: f32 = 760.0;
 pub const SIDEBAR_W: f32 = 184.0;
 const PAD: f32 = 24.0;
 const CARD_GAP: f32 = 12.0;
@@ -52,7 +57,10 @@ pub const FULL_RADIUS: f32 = 999.0;
 
 /// Horizontal padding inside a card.
 const INSET: f32 = 16.0;
+/// The column at the minimum client size (what the tests measure against).
+#[cfg(test)]
 const CONTENT_X: f32 = SIDEBAR_W + PAD;
+#[cfg(test)]
 const CONTENT_W: f32 = CLIENT_W - CONTENT_X - PAD;
 const TITLE_Y: f32 = 20.0;
 const TITLE_H: f32 = 32.0;
@@ -976,7 +984,7 @@ impl Layout {
         let h = (v.h * v.h / content).max(24.0);
         let y = v.y + (v.h - h) * (self.scroll / self.scroll_max);
         Some(Rect {
-            x: CLIENT_W - SCROLLBAR_W - 5.0,
+            x: v.right() - SCROLLBAR_W - 5.0,
             y: y + 4.0,
             w: SCROLLBAR_W,
             h: h - 8.0,
@@ -1263,6 +1271,37 @@ struct Builder<'a> {
     l: Layout,
     /// Top of the next card.
     y: f32,
+    /// The column for this window size.
+    g: Geom,
+}
+
+/// Where the content column goes for one window size, worked out once per
+/// layout. At the minimum client size this is `CONTENT_X` and `CONTENT_W`.
+#[derive(Clone, Copy, Debug)]
+struct Geom {
+    client_w: f32,
+    client_h: f32,
+    content_x: f32,
+    content_w: f32,
+    /// Where controls end inside a card.
+    right: f32,
+}
+
+impl Geom {
+    fn new((w, h): (f32, f32)) -> Self {
+        let client_w = w.max(CLIENT_W);
+        let client_h = h.max(CLIENT_H);
+        let avail = client_w - SIDEBAR_W - 2.0 * PAD;
+        let content_w = avail.min(MAX_CONTENT_W);
+        let content_x = SIDEBAR_W + PAD + ((avail - content_w) / 2.0).round();
+        Geom {
+            client_w,
+            client_h,
+            content_x,
+            content_w,
+            right: content_x + content_w - INSET,
+        }
+    }
 }
 
 impl Builder<'_> {
@@ -1276,9 +1315,9 @@ impl Builder<'_> {
 
     fn card(&mut self, h: f32) -> Rect {
         let r = Rect {
-            x: CONTENT_X,
+            x: self.g.content_x,
             y: self.y,
-            w: CONTENT_W,
+            w: self.g.content_w,
             h,
         };
         self.l.cards.push(r);
@@ -1299,7 +1338,7 @@ impl Builder<'_> {
     /// An uppercase label above the next card, in the space it takes.
     fn eyebrow(&mut self, key: Key, w: f32) {
         let rect = Rect {
-            x: CONTENT_X + 2.0,
+            x: self.g.content_x + 2.0,
             y: self.y,
             w,
             h: EYEBROW_H,
@@ -1710,7 +1749,7 @@ impl Builder<'_> {
         let label = self.t(Key::ListRestore);
         let w = self.button_w(&[&label], ButtonKind::Secondary);
         let item = (reset, label, ButtonKind::Secondary, enabled, w);
-        let x = self.buttons(RIGHT, cy, vec![item]);
+        let x = self.buttons(self.g.right, cy, vec![item]);
         let rect = Rect {
             x: card.x + INSET,
             y: cy - 10.0,
@@ -1810,7 +1849,7 @@ impl Builder<'_> {
             rect: Rect {
                 x: brand_x,
                 y: 22.0,
-                w: CONTENT_X - GAP / 2.0 - brand_x,
+                w: SIDEBAR_W + PAD - GAP / 2.0 - brand_x,
                 h: LOGO,
             },
             text: "Vale".into(),
@@ -1854,22 +1893,29 @@ impl Builder<'_> {
     }
 }
 
-const RIGHT: f32 = CONTENT_X + CONTENT_W - INSET;
 
-/// The whole window for `section`.
+/// The whole window for `section` at the minimum client size.
 pub fn layout(section: Section, s: &State, m: &dyn Measure) -> Layout {
+    layout_in(section, s, m, (CLIENT_W, CLIENT_H))
+}
+
+/// The whole window for `section` in a client area of `client` logical
+/// pixels (never smaller than `CLIENT_W` x `CLIENT_H`).
+pub fn layout_in(section: Section, s: &State, m: &dyn Measure, client: (f32, f32)) -> Layout {
+    let g = Geom::new(client);
     let mut b = Builder {
         m,
         lang: s.lang,
         l: Layout::default(),
         y: FIRST_CARD_Y,
+        g,
     };
     b.sidebar();
     b.l.title = Some(Text {
         rect: Rect {
-            x: CONTENT_X,
+            x: b.g.content_x,
             y: TITLE_Y,
-            w: CONTENT_W,
+            w: b.g.content_w,
             h: TITLE_H,
         },
         text: b.t(section.key()),
@@ -1887,14 +1933,14 @@ pub fn layout(section: Section, s: &State, m: &dyn Measure) -> Layout {
         Section::Integrations => integrations(&mut b, s),
         Section::About => about(&mut b, s),
     }
-    scroll(&mut b.l, s.scroll);
+    scroll(&mut b.l, s.scroll, g);
     b.l
 }
 
 /// A section whose cards run past the window's bottom margin scrolls: its
 /// content (not the sidebar or title) moves up by `scroll`, kept in range,
 /// inside a viewport from `VIEW_TOP` to the window's bottom.
-fn scroll(l: &mut Layout, scroll: f32) {
+fn scroll(l: &mut Layout, scroll: f32, g: Geom) {
     // A note under the last card counts too.
     let bottom = l
         .cards
@@ -1902,7 +1948,7 @@ fn scroll(l: &mut Layout, scroll: f32) {
         .map(Rect::bottom)
         .chain(l.texts.iter().map(|t| t.rect.bottom()))
         .fold(0.0, f32::max);
-    let max = (bottom - (CLIENT_H - PAD)).max(0.0);
+    let max = (bottom - (g.client_h - PAD)).max(0.0);
     if max <= 0.0 {
         return;
     }
@@ -1910,8 +1956,8 @@ fn scroll(l: &mut Layout, scroll: f32) {
     l.viewport = Some(Rect {
         x: SIDEBAR_W,
         y: VIEW_TOP,
-        w: CLIENT_W - SIDEBAR_W,
-        h: CLIENT_H - VIEW_TOP,
+        w: g.client_w - SIDEBAR_W,
+        h: g.client_h - VIEW_TOP,
     });
     l.scroll_max = max;
     l.scroll = -dy;
@@ -1956,7 +2002,7 @@ fn index_of<T: PartialEq>(all: &[T], v: &T) -> usize {
 
 /// An uppercase title over the card that follows (the whole content width).
 fn titled(b: &mut Builder, key: Key) {
-    b.eyebrow(key, CONTENT_W - 4.0);
+    b.eyebrow(key, b.g.content_w - 4.0);
 }
 
 /// Tampilan: the preview, then the cards "Island", "Notch" and "Jendela".
@@ -1977,12 +2023,12 @@ fn appearance(b: &mut Builder, s: &State) {
         .map(|(v, k)| (Hit::Style(*v), b.t(*k)))
         .collect();
     let selected = index_of(&[Style::Pill, Style::Notch], &s.style);
-    let x = b.segmented(Group::Style, RIGHT, cy(rows[0]), items, selected);
+    let x = b.segmented(Group::Style, b.g.right, cy(rows[0]), items, selected);
     let desc = Some((b.t(Key::IslandStyleDesc), Tone::Secondary));
     b.row_text(card, rows[0], b.t(Key::IslandStyle), desc, false, x);
 
     let total = Accent::ALL.len() as f32 * SWATCH + (Accent::ALL.len() - 1) as f32 * SWATCH_GAP;
-    let x0 = RIGHT - total;
+    let x0 = b.g.right - total;
     let items = Accent::ALL
         .iter()
         .enumerate()
@@ -2015,7 +2061,7 @@ fn appearance(b: &mut Builder, s: &State) {
     // the row's description is the chosen name (and what Auto gives now).
     let n = Surface::ALL.len() as f32;
     let total = n * SWATCH + (n - 1.0) * SWATCH_GAP;
-    let x0 = RIGHT - total;
+    let x0 = b.g.right - total;
     let items = Surface::ALL
         .iter()
         .enumerate()
@@ -2046,12 +2092,12 @@ fn appearance(b: &mut Builder, s: &State) {
     );
     b.divider(card, rows[2]);
 
-    let x = b.toggle(Hit::IdleClock, RIGHT, cy(rows[3]), s.idle_clock);
+    let x = b.toggle(Hit::IdleClock, b.g.right, cy(rows[3]), s.idle_clock);
     let desc = Some((b.t(Key::IdleClockDesc), Tone::Secondary));
     b.row_text(card, rows[3], b.t(Key::IdleClock), desc, false, x);
     b.divider(card, rows[3]);
 
-    let x = b.toggle(Hit::EqFollowAudio, RIGHT, cy(rows[4]), s.eq_follow_audio);
+    let x = b.toggle(Hit::EqFollowAudio, b.g.right, cy(rows[4]), s.eq_follow_audio);
     let desc = Some((b.t(Key::EqFollowAudioDesc), Tone::Secondary));
     b.row_text(card, rows[4], b.t(Key::EqFollowAudio), desc, false, x);
     b.divider(card, rows[4]);
@@ -2071,7 +2117,7 @@ fn appearance(b: &mut Builder, s: &State) {
         .collect();
     let x = b.segmented(
         Group::Window,
-        RIGHT,
+        b.g.right,
         card.y + ROW_H / 2.0,
         items,
         index_of(WindowTheme::ALL, &s.window),
@@ -2142,7 +2188,7 @@ fn notch_card(b: &mut Builder, s: &State) {
     let cy = |y: f32| y + ROW_H / 2.0;
 
     let x = b.slider(
-        RIGHT,
+        b.g.right,
         cy(rows[0]),
         SliderId::NotchWidth,
         s.notch_width as i32,
@@ -2152,7 +2198,7 @@ fn notch_card(b: &mut Builder, s: &State) {
     b.row_text(card, rows[0], b.t(Key::NotchWidth), None, false, x);
 
     let x = b.slider(
-        RIGHT,
+        b.g.right,
         cy(rows[1]),
         SliderId::NotchHeight,
         s.notch_height as i32,
@@ -2166,7 +2212,7 @@ fn notch_card(b: &mut Builder, s: &State) {
     let reset = b.t(Key::NotchReset);
     let w = b.button_w(&[&reset], ButtonKind::Secondary);
     let x = b.buttons(
-        RIGHT,
+        b.g.right,
         cy(rows[2]),
         vec![(Hit::NotchReset, reset, ButtonKind::Secondary, changed, w)],
     );
@@ -2182,7 +2228,7 @@ fn notch_card(b: &mut Builder, s: &State) {
     .collect();
     let x = b.segmented(
         Group::NotchFill,
-        RIGHT,
+        b.g.right,
         cy(rows[3]),
         items,
         index_of(NotchFill::ALL, &s.notch_fill),
@@ -2192,7 +2238,7 @@ fn notch_card(b: &mut Builder, s: &State) {
     b.divider(card, rows[3]);
 
     let x = b.slider(
-        RIGHT,
+        b.g.right,
         cy(rows[4]),
         SliderId::NotchOpacity,
         i32::from(s.notch_opacity),
@@ -2228,7 +2274,7 @@ fn page_key(p: Page) -> Key {
 /// "Tersembunyi" come the others, each with "Tampilkan". The last page still
 /// shown cannot be hidden. The header counts them and restores the defaults.
 fn pages_card(b: &mut Builder, s: &State) {
-    b.eyebrow(Key::PanelPages, CONTENT_W - 4.0);
+    b.eyebrow(Key::PanelPages, b.g.content_w - 4.0);
     let shown = s.pages.visible();
     let hidden: Vec<Page> = s
         .pages
@@ -2276,7 +2322,7 @@ fn pages_card(b: &mut Builder, s: &State) {
             },
         });
         b.grip(card, cy, Hit::PageGrip(page));
-        let x = b.icon_button(RIGHT, cy, Hit::PageMove(page, 1), Icon::ChevD, item + 1 < n);
+        let x = b.icon_button(b.g.right, cy, Hit::PageMove(page, 1), Icon::ChevD, item + 1 < n);
         let x = b.icon_button(x - 4.0, cy, Hit::PageMove(page, -1), Icon::ChevU, item > 0);
         let locked = n == 1;
         let w = b.button_w(&[&hide], ButtonKind::Secondary);
@@ -2309,7 +2355,7 @@ fn pages_card(b: &mut Builder, s: &State) {
                 true,
                 w,
             );
-            let x = b.buttons(RIGHT, y + ROW_H / 2.0, vec![button]);
+            let x = b.buttons(b.g.right, y + ROW_H / 2.0, vec![button]);
             b.row_text(card, y, b.t(page_key(*page)), None, false, x);
         }
     }
@@ -2357,7 +2403,7 @@ fn tile_target(b: &Builder, lang: Lang, kind: CustomKind, target: &str, max_w: f
 /// hidden; a tile on past the twelfth (a list edited by hand) says it does
 /// not show.
 fn tiles_card(b: &mut Builder, s: &State) {
-    b.eyebrow(Key::Shortcuts, CONTENT_W - 4.0);
+    b.eyebrow(Key::Shortcuts, b.g.content_w - 4.0);
     let entries = s.tiles.entries();
     let on_idx: Vec<usize> = (0..entries.len()).filter(|i| entries[*i].1).collect();
     let n = on_idx.len();
@@ -2395,7 +2441,7 @@ fn tiles_card(b: &mut Builder, s: &State) {
             },
         });
         b.grip(card, cy, Hit::TileGrip(i));
-        let x = b.icon_button(RIGHT, cy, Hit::TileMove(i, 1), Icon::ChevD, item + 1 < n);
+        let x = b.icon_button(b.g.right, cy, Hit::TileMove(i, 1), Icon::ChevD, item + 1 < n);
         let x = b.icon_button(x - 4.0, cy, Hit::TileMove(i, -1), Icon::ChevU, item > 0);
         let locked = n == 1;
         let w = b.button_w(&[&hide], ButtonKind::Secondary);
@@ -2465,9 +2511,9 @@ fn available_card(b: &mut Builder, s: &State) {
 
     // The row that opens the form, or the form itself: heights first.
     let probe = Rect {
-        x: CONTENT_X,
+        x: b.g.content_x,
         y: 0.0,
-        w: CONTENT_W,
+        w: b.g.content_w,
         h: 0.0,
     };
     let can_open = s.tiles.customs() < MAX_CUSTOM;
@@ -2480,12 +2526,12 @@ fn available_card(b: &mut Builder, s: &State) {
     };
     let mut desc_lines = vec![b.t(desc_key)];
     if let Some(k) = s.tile_note.filter(|_| can_open) {
-        desc_lines.extend(b.wrap(&b.t(k), Font::Desc, row_text_w(probe, RIGHT - open_w)));
+        desc_lines.extend(b.wrap(&b.t(k), Font::Desc, row_text_w(probe, b.g.right - open_w)));
     }
     let error_lines = s
         .tile_form
         .and_then(|f| f.error)
-        .map(|k| b.wrap(&b.t(k), Font::Desc, RIGHT - CONTENT_X - INSET))
+        .map(|k| b.wrap(&b.t(k), Font::Desc, b.g.right - b.g.content_x - INSET))
         .unwrap_or_default();
     let error_h = if error_lines.is_empty() {
         0.0
@@ -2497,7 +2543,7 @@ fn available_card(b: &mut Builder, s: &State) {
         None => wrapped_row_h(desc_lines.len()),
     };
 
-    b.eyebrow(Key::TilesAvailable, CONTENT_W - 4.0);
+    b.eyebrow(Key::TilesAvailable, b.g.content_w - 4.0);
     let card = b.card(list_h + tail_h);
     let (add, delete) = (b.t(Key::TileAdd), b.t(Key::Delete));
     let add_w = b.button_w(&[&add], ButtonKind::Secondary);
@@ -2524,7 +2570,7 @@ fn available_card(b: &mut Builder, s: &State) {
                 !full,
                 add_w,
             );
-            let mut x = b.buttons(RIGHT, cy, vec![button]);
+            let mut x = b.buttons(b.g.right, cy, vec![button]);
             let note = full.then(|| (b.t(Key::TilePageFull), Tone::Secondary));
             let (label, desc) = match &entries[i].0 {
                 Tile::Builtin(sc) => (b.t(crate::shortcuts::label(*sc)), note),
@@ -2564,7 +2610,7 @@ fn available_card(b: &mut Builder, s: &State) {
                 open_w,
             );
             let cy = y + tail_h / 2.0;
-            let x = b.buttons(RIGHT, cy, vec![button]);
+            let x = b.buttons(b.g.right, cy, vec![button]);
             let label = b.t(Key::TileGroupOwn);
             b.row_text_lines(card, y, label, desc_lines, Tone::Secondary, x);
         }
@@ -2603,7 +2649,7 @@ fn tile_form(b: &mut Builder, card: Rect, y: f32, form: TileForm, error: &[Strin
         w: right - field_x,
         h: FIELD_H,
     };
-    b.l.fields.push((Field::TileName, field(0, RIGHT)));
+    b.l.fields.push((Field::TileName, field(0, b.g.right)));
 
     let kinds = [
         (CustomKind::App, Key::TileKindApp),
@@ -2616,14 +2662,14 @@ fn tile_form(b: &mut Builder, card: Rect, y: f32, form: TileForm, error: &[Strin
         .collect();
     let selected = index_of(&CustomKind::ALL, &form.kind);
     let kind_cy = row(1) + FIELD_ROW_H / 2.0;
-    b.segmented(Group::TileKind, RIGHT, kind_cy, items, selected);
+    b.segmented(Group::TileKind, b.g.right, kind_cy, items, selected);
 
-    let mut right = RIGHT;
+    let mut right = b.g.right;
     if form.kind != CustomKind::Url {
         let label = b.t(Key::TileBrowse);
         let w = b.button_w(&[&label], ButtonKind::Secondary);
         let button = (Hit::TileBrowse, label, ButtonKind::Secondary, true, w);
-        right = b.buttons(RIGHT, row(2) + FIELD_ROW_H / 2.0, vec![button]) - GAP;
+        right = b.buttons(b.g.right, row(2) + FIELD_ROW_H / 2.0, vec![button]) - GAP;
     }
     b.l.fields.push((Field::TileTarget, field(2, right)));
 
@@ -2633,7 +2679,7 @@ fn tile_form(b: &mut Builder, card: Rect, y: f32, form: TileForm, error: &[Strin
             let rect = Rect {
                 x: card.x + INSET,
                 y: y + 2.0 + i as f32 * DESC_LINE_H,
-                w: RIGHT - card.x - INSET,
+                w: b.g.right - card.x - INSET,
                 h: 16.0,
             };
             b.text(rect, line.clone(), Font::Desc, Tone::Bad, Align::Left);
@@ -2657,7 +2703,7 @@ fn tile_form(b: &mut Builder, card: Rect, y: f32, form: TileForm, error: &[Strin
             b.button_w(&[&add], ButtonKind::Primary),
         ),
     ];
-    b.buttons(RIGHT, y + ROW_H / 2.0, items);
+    b.buttons(b.g.right, y + ROW_H / 2.0, items);
 }
 
 /// The width left for a row's label and description, left of `control_x`.
@@ -2697,7 +2743,7 @@ fn cat_page(b: &mut Builder, s: &State) {
     let selected = index_of(&CatFace::ALL, &s.cat_face);
     b.segmented(
         Group::CatFace,
-        RIGHT,
+        b.g.right,
         preview.bottom() - 12.0 - CONTROL_H / 2.0,
         items,
         selected,
@@ -2714,13 +2760,13 @@ fn cat_page(b: &mut Builder, s: &State) {
     ];
     let cy = |y: f32| y + ROW_H / 2.0;
 
-    let x = b.toggle(Hit::Robot, RIGHT, cy(rows[0]), on);
+    let x = b.toggle(Hit::Robot, b.g.right, cy(rows[0]), on);
     let desc = Some((b.t(Key::RobotInNotchDesc), Tone::Secondary));
     b.row_text(card, rows[0], b.t(Key::RobotInNotch), desc, false, x);
 
     // "Warna": the four coats; the chosen one's name is the description.
     let n = CatColor::ALL.len() as f32;
-    let x0 = RIGHT - (n * SWATCH + (n - 1.0) * SWATCH_GAP);
+    let x0 = b.g.right - (n * SWATCH + (n - 1.0) * SWATCH_GAP);
     let items = CatColor::ALL
         .iter()
         .enumerate()
@@ -2754,7 +2800,7 @@ fn cat_page(b: &mut Builder, s: &State) {
     let change = b.t(Key::CatBackdropChange);
     let w = b.button_w(&[&change], ButtonKind::Secondary);
     let item = (Hit::CatBackdrop, change, ButtonKind::Secondary, on, w);
-    let x = b.buttons(RIGHT, cy(rows[2]), vec![item]);
+    let x = b.buttons(b.g.right, cy(rows[2]), vec![item]);
     let shown = s.surface.resolve(s.cat_color, s.robot);
     let label = format!(
         "{}: {}",
@@ -2773,10 +2819,10 @@ fn cat_page(b: &mut Builder, s: &State) {
         b.t(Key::CatAccessoryLabel),
         Some((name, Tone::Secondary)),
         false,
-        RIGHT,
+        b.g.right,
     );
     let n = CatAccessory::ALL.len() as f32;
-    let gap = (RIGHT - (card.x + INSET) - n * ACC_TILE) / (n - 1.0);
+    let gap = (b.g.right - (card.x + INSET) - n * ACC_TILE) / (n - 1.0);
     let items = CatAccessory::ALL
         .iter()
         .enumerate()
@@ -2801,9 +2847,9 @@ fn cat_page(b: &mut Builder, s: &State) {
 
     titled(b, Key::GroupGreeting);
     let line = crate::i18n::greeting_periods_line(b.lang);
-    let periods = b.wrap(&line, Font::Desc, CONTENT_W - 2.0 * INSET);
+    let periods = b.wrap(&line, Font::Desc, b.g.content_w - 2.0 * INSET);
     let card = b.card(ROW_H + periods.len() as f32 * DESC_LINE_H + 14.0);
-    let x = b.toggle_if(Hit::Greeting, RIGHT, cy(card.y), s.greeting, on);
+    let x = b.toggle_if(Hit::Greeting, b.g.right, cy(card.y), s.greeting, on);
     let desc = Some((b.t(Key::MorningGreetingDesc), Tone::Secondary));
     b.row_text(card, card.y, b.t(Key::CatGreeting), desc, false, x);
     b.divider(card, card.y + ROW_H);
@@ -2811,7 +2857,7 @@ fn cat_page(b: &mut Builder, s: &State) {
         let rect = Rect {
             x: card.x + INSET,
             y: card.y + ROW_H + 8.0 + i as f32 * DESC_LINE_H,
-            w: CONTENT_W - 2.0 * INSET,
+            w: b.g.content_w - 2.0 * INSET,
             h: 16.0,
         };
         b.text(rect, line, Font::Desc, Tone::Secondary, Align::Left);
@@ -2832,12 +2878,12 @@ fn cat_motion_card(b: &mut Builder, s: &State) {
         .map(|(v, k)| (Hit::Motion(*v), b.t(*k)))
         .collect();
     let probe = Rect {
-        x: CONTENT_X,
+        x: b.g.content_x,
         y: 0.0,
-        w: CONTENT_W,
+        w: b.g.content_w,
         h: 0.0,
     };
-    let desc_w = row_text_w(probe, RIGHT - b.segmented_w(&items));
+    let desc_w = row_text_w(probe, b.g.right - b.segmented_w(&items));
     let motion_desc = b.wrap(&b.t(Key::RobotMotionDesc), Font::Desc, desc_w);
     let motion_h = wrapped_row_h(motion_desc.len());
 
@@ -2852,13 +2898,13 @@ fn cat_motion_card(b: &mut Builder, s: &State) {
     let on = s.robot;
 
     let selected = index_of(Motion::ALL, &s.robot_motion);
-    let x = b.segmented_if(Group::Motion, RIGHT, cy(0), items, selected, on);
+    let x = b.segmented_if(Group::Motion, b.g.right, cy(0), items, selected, on);
     let label = b.t(Key::RobotMotion);
     b.row_text_lines(card, rows[0], label, motion_desc, Tone::Secondary, x);
 
     let m = s.robot_sleep;
     let x = b.stepper(
-        RIGHT,
+        b.g.right,
         cy(1),
         sleep_value(b.lang, m),
         Hit::RobotSleep(-1),
@@ -2870,13 +2916,13 @@ fn cat_motion_card(b: &mut Builder, s: &State) {
     b.row_text(card, rows[1], b.t(Key::RobotSleep), desc, false, x);
     b.divider(card, rows[1]);
 
-    let x = b.toggle_if(Hit::CatFollow, RIGHT, cy(2), s.cat_follow, on);
+    let x = b.toggle_if(Hit::CatFollow, b.g.right, cy(2), s.cat_follow, on);
     let desc = Some((b.t(Key::CatFollowDesc), Tone::Secondary));
     b.row_text(card, rows[2], b.t(Key::CatFollow), desc, false, x);
     b.divider(card, rows[2]);
 
     // The eyes need stay-behind off, not the cat.
-    let x = b.toggle_if(Hit::NotchPeek, RIGHT, cy(3), s.notch_peek, !s.stay_behind);
+    let x = b.toggle_if(Hit::NotchPeek, b.g.right, cy(3), s.notch_peek, !s.stay_behind);
     let desc = if s.stay_behind {
         b.t(Key::CatPeekBehind)
     } else {
@@ -2923,15 +2969,15 @@ fn general(b: &mut Builder, s: &State) {
         ),
     ];
     let probe = Rect {
-        x: CONTENT_X,
+        x: b.g.content_x,
         y: 0.0,
-        w: CONTENT_W,
+        w: b.g.content_w,
         h: 0.0,
     };
     let hotkey_label = b.wrap(
         &b.t(Key::SearchHotkeySetting),
         Font::Label,
-        row_text_w(probe, RIGHT - b.segmented_w(&hotkeys)),
+        row_text_w(probe, b.g.right - b.segmented_w(&hotkeys)),
     );
     let hotkey_h = ROW_H + (hotkey_label.len() - 1) as f32 * LABEL_LINE_H;
     let tight = hotkey_label.len() > 1;
@@ -2952,18 +2998,18 @@ fn general(b: &mut Builder, s: &State) {
         (Hit::Lang(Lang::En), b.t(Key::LangEnglish)),
     ];
     let selected = usize::from(s.lang == Lang::En);
-    let x = b.segmented(Group::Lang, RIGHT, cy(rows[0]), items, selected);
+    let x = b.segmented(Group::Lang, b.g.right, cy(rows[0]), items, selected);
     let desc = Some((b.t(Key::LanguageDesc), Tone::Secondary));
     b.row_text(card, rows[0], b.t(Key::Language), desc, false, x);
 
-    let x = b.toggle(Hit::Autostart, RIGHT, cy(rows[1]), s.autostart);
+    let x = b.toggle(Hit::Autostart, b.g.right, cy(rows[1]), s.autostart);
     let desc = Some((b.t(Key::AutostartDesc), Tone::Secondary));
     b.row_text(card, rows[1], b.t(Key::Autostart), desc, false, x);
     b.divider(card, rows[1]);
 
     let selected = index_of(SearchHotkey::ALL, &s.search_hotkey);
     let cy_hotkey = rows[2] + hotkey_h / 2.0;
-    let x = b.segmented(Group::SearchHotkey, RIGHT, cy_hotkey, hotkeys, selected);
+    let x = b.segmented(Group::SearchHotkey, b.g.right, cy_hotkey, hotkeys, selected);
     let desc = if s.search_hotkey_failed && s.search_hotkey != SearchHotkey::Off {
         (b.t(Key::SearchHotkeyTaken), Tone::Bad)
     } else {
@@ -2989,7 +3035,7 @@ fn warnings_card(b: &mut Builder, s: &State) {
     let (min, max, _) = BATTERY_RANGE;
     let t = s.battery_threshold;
     let x = b.stepper(
-        RIGHT,
+        b.g.right,
         cy(rows[0]),
         format!("{t}%"),
         Hit::Battery(-1),
@@ -3007,7 +3053,7 @@ fn warnings_card(b: &mut Builder, s: &State) {
     let (min, max, _) = DISK_WARN_RANGE;
     let gb = s.disk_warn_gb;
     let x = b.stepper(
-        RIGHT,
+        b.g.right,
         cy(rows[1]),
         disk_warn_value(gb),
         Hit::DiskWarn(-1),
@@ -3022,7 +3068,7 @@ fn warnings_card(b: &mut Builder, s: &State) {
     let (min, max, _) = RAM_WARN_RANGE;
     let pct = s.ram_warn_percent;
     let x = b.stepper(
-        RIGHT,
+        b.g.right,
         cy(rows[2]),
         format!("{pct}%"),
         Hit::RamWarn(-1),
@@ -3037,7 +3083,7 @@ fn warnings_card(b: &mut Builder, s: &State) {
     let label = b.t(Key::ShowHow);
     let w = b.button_w(&[&label], ButtonKind::Secondary);
     let item = (Hit::DndHelp, label, ButtonKind::Secondary, true, w);
-    let x = b.buttons(RIGHT, cy(rows[3]), vec![item]);
+    let x = b.buttons(b.g.right, cy(rows[3]), vec![item]);
     let desc = Some((b.t(Key::PopupsHelpDesc), Tone::Secondary));
     b.row_text(card, rows[3], b.t(Key::PopupsHelp), desc, false, x);
     b.divider(card, rows[3]);
@@ -3057,11 +3103,11 @@ fn panel_page(b: &mut Builder, s: &State) {
         (Hit::OpenMode(OpenMode::Click), b.t(Key::OpenModeClick)),
     ];
     let selected = index_of(OpenMode::ALL, &s.open_mode);
-    let x = b.segmented(Group::OpenMode, RIGHT, cy(rows[0]), items, selected);
+    let x = b.segmented(Group::OpenMode, b.g.right, cy(rows[0]), items, selected);
     let desc = Some((b.t(Key::OpenModeDesc), Tone::Secondary));
     b.row_text(card, rows[0], b.t(Key::OpenModeSetting), desc, false, x);
 
-    let x = b.toggle(Hit::StayBehind, RIGHT, cy(rows[1]), s.stay_behind);
+    let x = b.toggle(Hit::StayBehind, b.g.right, cy(rows[1]), s.stay_behind);
     let desc = Some((b.t(Key::StayBehindDesc), Tone::Secondary));
     b.row_text(card, rows[1], b.t(Key::StayBehind), desc, false, x);
     b.divider(card, rows[1]);
@@ -3092,7 +3138,7 @@ fn features_page(b: &mut Builder, s: &State) {
         let v = pomo_get(&s.pomodoro, field);
         let (min, max, _) = pomodoro::range(field);
         let x = b.stepper(
-            RIGHT,
+            b.g.right,
             y + ROW_H / 2.0,
             pomo_value(b.lang, field, v),
             Hit::Pomo(field, -1),
@@ -3109,15 +3155,15 @@ fn features_page(b: &mut Builder, s: &State) {
     if s.pomodoro_locked {
         let y = card.bottom() + 12.0;
         b.l.note_glyph = Some(Rect {
-            x: CONTENT_X + 4.0,
+            x: b.g.content_x + 4.0,
             y,
             w: 16.0,
             h: 18.0,
         });
         let rect = Rect {
-            x: CONTENT_X + 26.0,
+            x: b.g.content_x + 26.0,
             y,
-            w: CONTENT_W - 26.0,
+            w: b.g.content_w - 26.0,
             h: 18.0,
         };
         let note = b.t(Key::PomodoroLocked);
@@ -3129,7 +3175,7 @@ fn features_page(b: &mut Builder, s: &State) {
     titled(b, Key::GroupMusic);
     let card = b.card(ROW_H);
     // The description doubles as the privacy note.
-    let x = b.toggle(Hit::Lyrics, RIGHT, card.y + ROW_H / 2.0, s.lyrics);
+    let x = b.toggle(Hit::Lyrics, b.g.right, card.y + ROW_H / 2.0, s.lyrics);
     let desc = Some((b.t(Key::LyricsInNotchDesc), Tone::Secondary));
     b.row_text(card, card.y, b.t(Key::LyricsInNotch), desc, false, x);
 
@@ -3149,7 +3195,7 @@ fn features_page(b: &mut Builder, s: &State) {
         (Hit::CliStart(CliStart::Last), b.t(Key::CliStartLast)),
     ];
     let selected = index_of(&CliStart::ALL, &s.cli_start);
-    let x = b.segmented(Group::CliStart, RIGHT, cy(rows[0]), items, selected);
+    let x = b.segmented(Group::CliStart, b.g.right, cy(rows[0]), items, selected);
     let desc = Some((b.t(Key::CliStartFolderDesc), Tone::Secondary));
     b.row_text(card, rows[0], b.t(Key::CliStartFolder), desc, false, x);
 
@@ -3158,7 +3204,7 @@ fn features_page(b: &mut Builder, s: &State) {
         (Hit::Shell(Shell::Cmd), b.t(Key::ShellCmd)),
     ];
     let selected = index_of(&Shell::ALL, &s.shell);
-    let x = b.segmented(Group::Shell, RIGHT, cy(rows[1]), items, selected);
+    let x = b.segmented(Group::Shell, b.g.right, cy(rows[1]), items, selected);
     let desc = Some((b.t(Key::ShellCliDesc), Tone::Secondary));
     b.row_text(card, rows[1], b.t(Key::ShellCli), desc, false, x);
     b.divider(card, rows[1]);
@@ -3169,7 +3215,7 @@ fn features_page(b: &mut Builder, s: &State) {
     let card = b.card(ROW_H);
     let x = b.toggle(
         Hit::MoleProtect,
-        RIGHT,
+        b.g.right,
         card.y + ROW_H / 2.0,
         s.mole_protect,
     );
@@ -3194,7 +3240,7 @@ pub fn notif_items_step(n: u32, dir: i32) -> u32 {
 /// its remove button, then a field and "Tambah"), and "Hapus riwayat
 /// notifikasi" with two clicks.
 fn notifications_card(b: &mut Builder, s: &State) {
-    b.eyebrow(Key::SecNotifications, CONTENT_W - 4.0);
+    b.eyebrow(Key::SecNotifications, b.g.content_w - 4.0);
     let c = s.notif;
     let shown = s.muted.len().max(1);
     let card = b.card((6 + shown) as f32 * ROW_H);
@@ -3202,13 +3248,13 @@ fn notifications_card(b: &mut Builder, s: &State) {
     let cy = |y: f32| y + ROW_H / 2.0;
     let on = c.record;
 
-    let x = b.toggle(Hit::NotifRecord, RIGHT, cy(row(0)), on);
+    let x = b.toggle(Hit::NotifRecord, b.g.right, cy(row(0)), on);
     let desc = Some((b.t(Key::NotifRecordDesc), Tone::Secondary));
     b.row_text(card, row(0), b.t(Key::NotifRecord), desc, false, x);
 
     let n = c.max_items;
     let x = b.stepper(
-        RIGHT,
+        b.g.right,
         cy(row(1)),
         n.to_string(),
         Hit::NotifItems(-1),
@@ -3220,14 +3266,14 @@ fn notifications_card(b: &mut Builder, s: &State) {
     b.row_text(card, row(1), b.t(Key::NotifMax), desc, false, x);
     b.divider(card, row(1));
 
-    let x = b.toggle(Hit::NotifPersist, RIGHT, cy(row(2)), c.persist);
+    let x = b.toggle(Hit::NotifPersist, b.g.right, cy(row(2)), c.persist);
     let desc = Some((b.t(Key::NotifPersistDesc), Tone::Secondary));
     b.row_text(card, row(2), b.t(Key::NotifPersist), desc, false, x);
     b.divider(card, row(2));
 
     // The excluded apps: the title row, a row each, then the add row.
     let desc = Some((b.t(Key::NotifMutedDesc), Tone::Secondary));
-    b.row_text(card, row(3), b.t(Key::NotifMuted), desc, false, RIGHT);
+    b.row_text(card, row(3), b.t(Key::NotifMuted), desc, false, b.g.right);
     b.divider(card, row(3));
     let delete = b.t(Key::Delete);
     let delete_w = b.compact_w(&delete);
@@ -3235,7 +3281,7 @@ fn notifications_card(b: &mut Builder, s: &State) {
         let rect = Rect {
             x: card.x + INSET,
             y: row(4) + 16.0,
-            w: RIGHT - card.x - INSET,
+            w: b.g.right - card.x - INSET,
             h: 20.0,
         };
         b.text(
@@ -3255,7 +3301,7 @@ fn notifications_card(b: &mut Builder, s: &State) {
             true,
             delete_w,
         );
-        let x = b.buttons(RIGHT, cy(y), vec![item]);
+        let x = b.buttons(b.g.right, cy(y), vec![item]);
         b.row_text(card, y, name.clone(), None, false, x);
     }
     let add_y = row(4 + shown);
@@ -3263,7 +3309,7 @@ fn notifications_card(b: &mut Builder, s: &State) {
     let add = b.t(Key::NotifMutedAdd);
     let w = b.button_w(&[&add], ButtonKind::Secondary);
     let item = (Hit::NotifMutedAdd, add, ButtonKind::Secondary, true, w);
-    let x = b.buttons(RIGHT, cy(add_y), vec![item]);
+    let x = b.buttons(b.g.right, cy(add_y), vec![item]);
     let field_x = card.x + INSET;
     b.l.fields.push((
         Field::TileName,
@@ -3285,7 +3331,7 @@ fn notifications_card(b: &mut Builder, s: &State) {
     } else {
         (Hit::NotifClear, label, ButtonKind::Secondary, true, w)
     };
-    let x = b.buttons(RIGHT, cy(clear_y), vec![item]);
+    let x = b.buttons(b.g.right, cy(clear_y), vec![item]);
     let desc = Some((b.t(Key::NotifClearHistoryDesc), Tone::Secondary));
     b.row_text(card, clear_y, b.t(Key::NotifClearHistory), desc, false, x);
 }
@@ -3391,7 +3437,7 @@ fn mini(b: &mut Builder, x: f32, cy: f32, node: &Node) {
 /// Fitur -> Susun: the hotkey, the gap, the user's templates and the saved
 /// arrangements.
 fn arrange_card(b: &mut Builder, s: &State) {
-    b.eyebrow(Key::PageArrange, CONTENT_W - 4.0);
+    b.eyebrow(Key::PageArrange, b.g.content_w - 4.0);
     let a = &s.arrange;
     let rows = 2 + 1 + a.templates.len().max(1) + 1 + a.saved.len().max(1);
     let card = b.card(rows as f32 * ROW_H);
@@ -3409,7 +3455,7 @@ fn arrange_card(b: &mut Builder, s: &State) {
         ),
     ];
     let selected = index_of(ArrangeHotkey::ALL, &a.hotkey);
-    let x = b.segmented(Group::ArrangeHotkey, RIGHT, cy(row(0)), items, selected);
+    let x = b.segmented(Group::ArrangeHotkey, b.g.right, cy(row(0)), items, selected);
     let desc = if s.arrange_hotkey_failed && a.hotkey != ArrangeHotkey::Off {
         (b.t(Key::ClipHotkeyTaken), Tone::Bad)
     } else {
@@ -3418,7 +3464,7 @@ fn arrange_card(b: &mut Builder, s: &State) {
     b.row_text(card, row(0), b.t(Key::DevicesHotkey), Some(desc), false, x);
 
     let x = b.slider(
-        RIGHT,
+        b.g.right,
         cy(row(1)),
         SliderId::ArrangeGap,
         a.gap as i32,
@@ -3440,7 +3486,7 @@ fn arrange_card(b: &mut Builder, s: &State) {
         !full,
         w,
     );
-    let x = b.buttons(RIGHT, cy(row(2)), vec![item]);
+    let x = b.buttons(b.g.right, cy(row(2)), vec![item]);
     let desc = full.then(|| (b.t(Key::ArrangeTemplatesFull), Tone::Secondary));
     b.row_text(card, row(2), b.t(Key::ArrangeMyTemplates), desc, false, x);
     b.divider(card, row(2));
@@ -3450,7 +3496,7 @@ fn arrange_card(b: &mut Builder, s: &State) {
         let rect = Rect {
             x: card.x + INSET,
             y: row(3) + 16.0,
-            w: RIGHT - card.x - INSET,
+            w: b.g.right - card.x - INSET,
             h: 20.0,
         };
         b.text(
@@ -3479,7 +3525,7 @@ fn arrange_card(b: &mut Builder, s: &State) {
                 delete_w,
             ),
         ];
-        let x = b.buttons(RIGHT, cy(y), items);
+        let x = b.buttons(b.g.right, cy(y), items);
         mini(b, x - GAP - MINI_W, cy(y), &t.root);
         b.row_text(card, y, t.name.clone(), None, false, x - GAP - MINI_W);
     }
@@ -3487,14 +3533,14 @@ fn arrange_card(b: &mut Builder, s: &State) {
     // Saved arrangements: the title row, then a row each.
     let head = row(3 + a.templates.len().max(1));
     b.divider(card, head);
-    b.row_text(card, head, b.t(Key::ArrangeSavedList), None, false, RIGHT);
+    b.row_text(card, head, b.t(Key::ArrangeSavedList), None, false, b.g.right);
     let rename = b.t(Key::ArrangeRename);
     let rename_w = b.compact_w(&rename);
     if a.saved.is_empty() {
         let rect = Rect {
             x: card.x + INSET,
             y: head + ROW_H + 16.0,
-            w: RIGHT - card.x - INSET,
+            w: b.g.right - card.x - INSET,
             h: 20.0,
         };
         b.text(
@@ -3523,7 +3569,7 @@ fn arrange_card(b: &mut Builder, s: &State) {
                 delete_w,
             ),
         ];
-        let x = b.buttons(RIGHT, cy(y), items);
+        let x = b.buttons(b.g.right, cy(y), items);
         mini(b, x - GAP - MINI_W, cy(y), &saved.layout.node());
         b.row_text(card, y, saved.name.clone(), None, false, x - GAP - MINI_W);
     }
@@ -3533,8 +3579,8 @@ fn arrange_card(b: &mut Builder, s: &State) {
 /// a 16:9 canvas with the tiles, the split and merge buttons, the Nama
 /// field, Simpan and Batal.
 fn arrange_editor(b: &mut Builder, e: &EditView) {
-    b.eyebrow(Key::PageArrange, CONTENT_W - 4.0);
-    let canvas_w = (CONTENT_W - 2.0 * INSET).min(400.0);
+    b.eyebrow(Key::PageArrange, b.g.content_w - 4.0);
+    let canvas_w = (b.g.content_w - 2.0 * INSET).min(400.0);
     let canvas_h = (canvas_w * 9.0 / 16.0).round();
     let top_h = if e.rename { 0.0 } else { canvas_h + 2.0 * 12.0 };
     let tool_h = if e.rename { 0.0 } else { ROW_H };
@@ -3586,7 +3632,7 @@ fn arrange_editor(b: &mut Builder, e: &EditView) {
                 w,
             ),
         ];
-        b.buttons(RIGHT, cy(y), items);
+        b.buttons(b.g.right, cy(y), items);
         y += ROW_H;
         b.divider(card, y);
     }
@@ -3606,7 +3652,7 @@ fn arrange_editor(b: &mut Builder, e: &EditView) {
         Rect {
             x: field_x,
             y: cy(y) - FIELD_H / 2.0,
-            w: RIGHT - field_x,
+            w: b.g.right - field_x,
             h: FIELD_H,
         },
     ));
@@ -3633,19 +3679,19 @@ fn arrange_editor(b: &mut Builder, e: &EditView) {
             cancel_w,
         ),
     ];
-    b.buttons(RIGHT, cy(y), items);
+    b.buttons(b.g.right, cy(y), items);
 }
 
 /// "Perangkat" (the Devices page): the plug-in and safe-to-remove notices,
 /// and the page's own hotkey (none by default; "taken" in red when another
 /// app has the one chosen), in a third card under the warnings.
 fn devices_card(b: &mut Builder, s: &State) {
-    b.eyebrow(Key::PageDevices, CONTENT_W - 4.0);
+    b.eyebrow(Key::PageDevices, b.g.content_w - 4.0);
     let card = b.card(2.0 * ROW_H);
     let rows = [card.y, card.y + ROW_H];
     let cy = |y: f32| y + ROW_H / 2.0;
 
-    let x = b.toggle(Hit::DeviceNotices, RIGHT, cy(rows[0]), s.device_notices);
+    let x = b.toggle(Hit::DeviceNotices, b.g.right, cy(rows[0]), s.device_notices);
     let desc = Some((b.t(Key::DeviceNoticesDesc), Tone::Secondary));
     b.row_text(card, rows[0], b.t(Key::DeviceNotices), desc, false, x);
 
@@ -3660,7 +3706,7 @@ fn devices_card(b: &mut Builder, s: &State) {
         ),
     ];
     let selected = index_of(DevicesHotkey::ALL, &s.devices_hotkey);
-    let x = b.segmented(Group::DevicesHotkey, RIGHT, cy(rows[1]), items, selected);
+    let x = b.segmented(Group::DevicesHotkey, b.g.right, cy(rows[1]), items, selected);
     let desc = if s.devices_hotkey_failed && s.devices_hotkey != DevicesHotkey::Off {
         (b.t(Key::ClipHotkeyTaken), Tone::Bad)
     } else {
@@ -3693,13 +3739,13 @@ fn clipboard_page(b: &mut Builder, s: &State) {
     let cy = |y: f32| y + ROW_H / 2.0;
     let on = c.enabled;
 
-    let x = b.toggle(Hit::ClipEnabled, RIGHT, cy(rows[0]), on);
+    let x = b.toggle(Hit::ClipEnabled, b.g.right, cy(rows[0]), on);
     let desc = Some((b.t(Key::ClipHistoryDesc), Tone::Secondary));
     b.row_text(card, rows[0], b.t(Key::ClipHistory), desc, false, x);
 
     let n = c.max_items;
     let x = b.stepper(
-        RIGHT,
+        b.g.right,
         cy(rows[1]),
         n.to_string(),
         Hit::ClipItems(-1),
@@ -3711,14 +3757,14 @@ fn clipboard_page(b: &mut Builder, s: &State) {
     b.row_text(card, rows[1], b.t(Key::ClipItems), desc, false, x);
     b.divider(card, rows[1]);
 
-    let x = b.toggle_if(Hit::ClipPersist, RIGHT, cy(rows[2]), c.persist, on);
+    let x = b.toggle_if(Hit::ClipPersist, b.g.right, cy(rows[2]), c.persist, on);
     let desc = Some((b.t(Key::ClipPersistDesc), Tone::Secondary));
     b.row_text(card, rows[2], b.t(Key::ClipPersist), desc, false, x);
     b.divider(card, rows[2]);
 
     let x = b.toggle_if(
         Hit::ClipClearOnLock,
-        RIGHT,
+        b.g.right,
         cy(rows[3]),
         c.clear_on_lock,
         on,
@@ -3736,7 +3782,7 @@ fn clipboard_page(b: &mut Builder, s: &State) {
         (Hit::ClipHotkey(ClipHotkey::WinAltV), "Win+Alt+V".to_owned()),
     ];
     let selected = index_of(ClipHotkey::ALL, &c.hotkey);
-    let x = b.segmented(Group::ClipHotkey, RIGHT, cy(rows[4]), items, selected);
+    let x = b.segmented(Group::ClipHotkey, b.g.right, cy(rows[4]), items, selected);
     let desc = if s.clip_hotkey_failed && c.hotkey != ClipHotkey::Off {
         (b.t(Key::ClipHotkeyTaken), Tone::Bad)
     } else {
@@ -3746,7 +3792,7 @@ fn clipboard_page(b: &mut Builder, s: &State) {
     b.divider(card, rows[4]);
 
     // The copy preview needs a history entry to show: faded with it off.
-    let x = b.toggle_if(Hit::ClipNotice, RIGHT, cy(rows[5]), c.copy_notice, on);
+    let x = b.toggle_if(Hit::ClipNotice, b.g.right, cy(rows[5]), c.copy_notice, on);
     let desc = Some((b.t(Key::ClipCopyNoticeDesc), Tone::Secondary));
     b.row_text(card, rows[5], b.t(Key::ClipCopyNotice), desc, false, x);
     b.divider(card, rows[5]);
@@ -3755,7 +3801,7 @@ fn clipboard_page(b: &mut Builder, s: &State) {
     // copies: this row fades and tells so.
     let x = b.toggle_if(
         Hit::ClipFeedbackAll,
-        RIGHT,
+        b.g.right,
         cy(rows[6]),
         c.copied_feedback_all,
         on && !c.copy_notice,
@@ -3783,7 +3829,7 @@ fn clipboard_page(b: &mut Builder, s: &State) {
     } else {
         (Hit::ClipClear, label, ButtonKind::Secondary, true, w)
     };
-    let x = b.buttons(RIGHT, cy(rows[7]), vec![item]);
+    let x = b.buttons(b.g.right, cy(rows[7]), vec![item]);
     let desc = Some((b.t(Key::ClipClearDesc), Tone::Secondary));
     b.row_text(card, rows[7], b.t(Key::ClipClear), desc, false, x);
     b.divider(card, rows[7]);
@@ -3809,7 +3855,7 @@ pub fn shot_secs_step(n: u32, dir: i32) -> u32 {
 /// other two rows fade and take no clicks. Simpan is the default.
 fn screenshot_card(b: &mut Builder, s: &State) {
     let c = s.shot;
-    b.eyebrow(Key::SecScreenshot, CONTENT_W);
+    b.eyebrow(Key::SecScreenshot, b.g.content_w);
     // The toggle just switched off is plain at once, before `App` catches up.
     let prtsc = if c.print_screen {
         s.prtsc
@@ -3828,7 +3874,7 @@ fn screenshot_card(b: &mut Builder, s: &State) {
         (Hit::ShotTool(ShotTool::Windows), b.t(Key::ShotToolWindows)),
     ];
     let selected = index_of(ShotTool::ALL, &c.tool);
-    let x = b.segmented(Group::ShotTool, RIGHT, cy(rows[0]), items, selected);
+    let x = b.segmented(Group::ShotTool, b.g.right, cy(rows[0]), items, selected);
     let desc = Some((b.t(Key::ShotToolDesc), Tone::Secondary));
     b.row_text(card, rows[0], b.t(Key::ShotToolSetting), desc, false, x);
 
@@ -3836,7 +3882,7 @@ fn screenshot_card(b: &mut Builder, s: &State) {
     // it starts Vale's capture whatever the tool is. When the keyboard hook
     // could not be installed: a red note in place of its description, nothing
     // to click.
-    let x = b.toggle(Hit::ShotPrintScreen, RIGHT, cy(rows[1]), c.print_screen);
+    let x = b.toggle(Hit::ShotPrintScreen, b.g.right, cy(rows[1]), c.print_screen);
     let desc = match prtsc {
         PrtscRow::Failed => Some((b.t(Key::PrtscHookFailed), Tone::Bad)),
         PrtscRow::Plain => Some((b.t(Key::ShotPrintScreenDesc), Tone::Secondary)),
@@ -3844,7 +3890,7 @@ fn screenshot_card(b: &mut Builder, s: &State) {
     b.row_text(card, rows[1], b.t(Key::ShotPrintScreen), desc, false, x);
     b.divider(card, rows[1]);
 
-    let x = b.toggle(Hit::ShotPreview, RIGHT, cy(rows[2]), on);
+    let x = b.toggle(Hit::ShotPreview, b.g.right, cy(rows[2]), on);
     b.row_text(card, rows[2], b.t(Key::ShotPreviewSetting), None, false, x);
     b.divider(card, rows[2]);
 
@@ -3853,7 +3899,7 @@ fn screenshot_card(b: &mut Builder, s: &State) {
         (Hit::ShotIgnore(ShotIgnore::Delete), b.t(Key::ShotDelete)),
     ];
     let selected = index_of(ShotIgnore::ALL, &c.on_ignore);
-    let x = b.segmented_if(Group::ShotIgnore, RIGHT, cy(rows[3]), items, selected, on);
+    let x = b.segmented_if(Group::ShotIgnore, b.g.right, cy(rows[3]), items, selected, on);
     let desc = Some((b.t(Key::ShotIgnoreDesc), Tone::Secondary));
     b.row_text(card, rows[3], b.t(Key::ShotIgnoreSetting), desc, false, x);
     b.divider(card, rows[3]);
@@ -3861,7 +3907,7 @@ fn screenshot_card(b: &mut Builder, s: &State) {
     let (min, max, _) = SHOT_SECS_RANGE;
     let n = c.show_secs;
     let x = b.stepper(
-        RIGHT,
+        b.g.right,
         cy(rows[4]),
         crate::i18n::seconds_short(b.lang, n),
         Hit::ShotSecs(-1),
@@ -3890,11 +3936,11 @@ fn integrations(b: &mut Builder, s: &State) {
     let w = b.button_w(&[&guide], ButtonKind::Link);
     let item = (Hit::GoogleGuide, guide, ButtonKind::Link, true, w);
     let x = b.buttons(
-        CONTENT_X + CONTENT_W + LINK_PAD,
+        b.g.content_x + b.g.content_w + LINK_PAD,
         b.y + EYEBROW_H / 2.0,
         vec![item],
     );
-    b.eyebrow(Key::GoogleCalendar, x - GAP - CONTENT_X - 2.0);
+    b.eyebrow(Key::GoogleCalendar, x - GAP - b.g.content_x - 2.0);
     // With Vale's own client the card is one button; the user's own Client
     // ID and secret wait under "Lanjutan".
     // An own ID in the field keeps them open: it is the one a login uses.
@@ -3932,7 +3978,7 @@ fn integrations(b: &mut Builder, s: &State) {
                 Rect {
                     x: field_x,
                     y: y + (FIELD_ROW_H - FIELD_H) / 2.0,
-                    w: RIGHT - field_x,
+                    w: b.g.right - field_x,
                     h: FIELD_H,
                 },
             ));
@@ -3999,7 +4045,7 @@ fn integrations(b: &mut Builder, s: &State) {
         b.button_w(&[&disconnect, &sure], ButtonKind::Secondary),
     ));
     let row_cy = buttons_y + ROW_H / 2.0;
-    let x = b.buttons(RIGHT, row_cy, items);
+    let x = b.buttons(b.g.right, row_cy, items);
     let left_w = (x - 2.0 * GAP - card.x - INSET).max(0.0);
     match s.google_note {
         // A message after a click stands in for the status for a few seconds.
@@ -4024,12 +4070,12 @@ fn integrations(b: &mut Builder, s: &State) {
         let w = b.button_w(&[&advanced], kind);
         let top = card.y + card.h + 4.0;
         let item = (Hit::GoogleAdvanced, advanced, kind, true, w);
-        b.buttons(CONTENT_X + w, top + CONTROL_H / 2.0, vec![item]);
+        b.buttons(b.g.content_x + w, top + CONTROL_H / 2.0, vec![item]);
         b.y = top + CONTROL_H + 4.0;
     }
 
     // Claude Code hooks.
-    b.eyebrow(Key::ClaudeCode, CONTENT_W - 2.0);
+    b.eyebrow(Key::ClaudeCode, b.g.content_w - 2.0);
     let card = b.card(ROW_H);
     let (install, remove) = (b.t(Key::InstallHooks), b.t(Key::RemoveHooks));
     // Unreadable settings (`None`): both stay on, so a click reports why.
@@ -4051,7 +4097,7 @@ fn integrations(b: &mut Builder, s: &State) {
             b.button_w(&[&remove], ButtonKind::Secondary),
         ),
     ];
-    let x = b.buttons(RIGHT, card.y + ROW_H / 2.0, items);
+    let x = b.buttons(b.g.right, card.y + ROW_H / 2.0, items);
     let desc = match s.hook_note {
         Some((note, tone)) => (note.to_owned(), tone),
         None => match s.hooks {
@@ -4067,16 +4113,17 @@ fn about(b: &mut Builder, s: &State) {
     // The logo with the name, version and tagline beside it.
     let top = FIRST_CARD_Y + 2.0;
     b.l.about_logo = Some(Rect {
-        x: CONTENT_X + 2.0,
+        x: b.g.content_x + 2.0,
         y: top,
         w: ABOUT_LOGO,
         h: ABOUT_LOGO,
     });
-    let text_x = CONTENT_X + 2.0 + ABOUT_LOGO + 16.0;
+    let text_x = b.g.content_x + 2.0 + ABOUT_LOGO + 16.0;
+    let text_w = b.g.content_x + b.g.content_w - text_x;
     let line = |y, h| Rect {
         x: text_x,
         y,
-        w: CONTENT_X + CONTENT_W - text_x,
+        w: text_w,
         h,
     };
     b.text(
@@ -4137,9 +4184,9 @@ fn about(b: &mut Builder, s: &State) {
         let item = (hit, button, kind, true, w);
         // The glyph, not its larger click area, ends at the content edge.
         let right = if kind == ButtonKind::External {
-            RIGHT + (ICON_BUTTON - EXTERNAL_GLYPH) / 2.0
+            b.g.right + (ICON_BUTTON - EXTERNAL_GLYPH) / 2.0
         } else {
-            RIGHT
+            b.g.right
         };
         let x = b.buttons(right, y + ROW_H / 2.0, vec![item]);
         b.row_text(card, y, b.t(label), Some((desc, Tone::Secondary)), false, x);
@@ -5421,6 +5468,7 @@ mod tests {
             lang: Lang::Id,
             l: Layout::default(),
             y: 0.0,
+            g: Geom::new((CLIENT_W, CLIENT_H)),
         };
         assert_eq!(b.wrap("a b", Font::Desc, 1.0), ["a", "b"]);
         assert_eq!(b.wrap("a b", Font::Desc, 100.0), ["a b"]);
