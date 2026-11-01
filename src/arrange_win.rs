@@ -28,8 +28,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GW_OWNER, GWL_EXSTYLE, GetClassNameW, GetWindow, GetWindowLongW,
     GetWindowPlacement, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsHungAppWindow,
     IsIconic, IsWindow, IsWindowVisible, IsZoomed, SET_WINDOW_POS_FLAGS, SW_RESTORE,
-    SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOZORDER, SetWindowPlacement, SetWindowPos, ShowWindow,
-    WINDOWPLACEMENT, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+    SW_SHOWMINIMIZED, SW_SHOWMINNOACTIVE, SW_SHOWNOACTIVATE, SW_SHOWNORMAL, SWP_NOACTIVATE,
+    SWP_NOOWNERZORDER, SWP_NOZORDER, SetWindowPlacement, SetWindowPos, ShowWindow, WINDOWPLACEMENT,
+    WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
 };
 use windows::core::{BOOL, PWSTR};
 
@@ -302,6 +303,9 @@ pub fn visible_frame(hwnd: HWND) -> Option<Rect> {
     }
 }
 
+/// The window's place, for undo. A window in its normal state also keeps the
+/// rectangle it really has: when it is snapped (Aero Snap, Snap Layouts),
+/// `rcNormalPosition` is where it was before the snap, not where it is.
 fn placement_of(hwnd: HWND) -> Option<Placement> {
     unsafe {
         let mut p = WINDOWPLACEMENT {
@@ -309,7 +313,16 @@ fn placement_of(hwnd: HWND) -> Option<Placement> {
             ..Default::default()
         };
         GetWindowPlacement(hwnd, &mut p).ok()?;
+        let normal_state = !(IsIconic(hwnd).as_bool() || IsZoomed(hwnd).as_bool());
+        let mut outer = RECT::default();
+        let rect = (normal_state && GetWindowRect(hwnd, &mut outer).is_ok()).then_some((
+            outer.left,
+            outer.top,
+            outer.right,
+            outer.bottom,
+        ));
         Some(Placement {
+            rect,
             hwnd: hwnd.0 as isize,
             flags: p.flags.0,
             show: p.showCmd,
@@ -421,8 +434,34 @@ pub fn move_all(jobs: &[(isize, Rect)]) -> (usize, usize, Vec<Placement>) {
     (moved, skipped, undo)
 }
 
+/// The show command undo uses: the saved state without activating, so
+/// undoing several windows never raises them one after another (which would
+/// reverse their z-order and move the focus). Maximized has no quiet form.
+pub fn quiet_show(show: u32) -> u32 {
+    let cmd = show as i32;
+    if cmd == SW_SHOWNORMAL.0 {
+        SW_SHOWNOACTIVATE.0 as u32
+    } else if cmd == SW_SHOWMINIMIZED.0 {
+        SW_SHOWMINNOACTIVE.0 as u32
+    } else {
+        show
+    }
+}
+
+/// Whether two window rectangles (left, top, right, bottom) are within 1 px
+/// on every side.
+fn rect_close(a: (i32, i32, i32, i32), b: (i32, i32, i32, i32)) -> bool {
+    (a.0 - b.0).abs() <= 1
+        && (a.1 - b.1).abs() <= 1
+        && (a.2 - b.2).abs() <= 1
+        && (a.3 - b.3).abs() <= 1
+}
+
 /// `SetWindowPlacement` with a saved place: the rectangle and the
-/// maximized or minimized state come back. False when the window is gone.
+/// maximized or minimized state come back, without activating. A window that
+/// was in its normal state is then put at the rectangle it really had, when
+/// that is not where the placement left it (a snapped window). False when the
+/// window is gone.
 pub fn restore(p: Placement) -> bool {
     let hwnd = HWND(p.hwnd as *mut c_void);
     unsafe {
@@ -432,7 +471,7 @@ pub fn restore(p: Placement) -> bool {
         let placement = WINDOWPLACEMENT {
             length: size_of::<WINDOWPLACEMENT>() as u32,
             flags: windows::Win32::UI::WindowsAndMessaging::WINDOWPLACEMENT_FLAGS(p.flags),
-            showCmd: p.show,
+            showCmd: quiet_show(p.show),
             ptMinPosition: windows::Win32::Foundation::POINT {
                 x: p.min.0,
                 y: p.min.1,
@@ -448,7 +487,33 @@ pub fn restore(p: Placement) -> bool {
                 bottom: p.normal.3,
             },
         };
-        SetWindowPlacement(hwnd, &placement).is_ok()
+        if SetWindowPlacement(hwnd, &placement).is_err() {
+            return false;
+        }
+        if let Some(want) = p.rect
+            && !(IsIconic(hwnd).as_bool() || IsZoomed(hwnd).as_bool())
+        {
+            // A move across monitors of another DPI may make the app resize
+            // itself, so the rectangle is read again and corrected once.
+            for _ in 0..2 {
+                let mut now = RECT::default();
+                if GetWindowRect(hwnd, &mut now).is_err()
+                    || rect_close((now.left, now.top, now.right, now.bottom), want)
+                {
+                    break;
+                }
+                let _ = SetWindowPos(
+                    hwnd,
+                    None,
+                    want.0,
+                    want.1,
+                    want.2 - want.0,
+                    want.3 - want.1,
+                    SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+                );
+            }
+        }
+        true
     }
 }
 
@@ -545,13 +610,101 @@ mod tests {
         assert_eq!(monitor_index_at(&[], (0, 0)), 0);
     }
 
+    /// A hidden window of this test's own (never shown: no `WS_VISIBLE`, and
+    /// nothing below shows it), at `x, y, w, h`.
+    unsafe fn hidden_window(x: i32, y: i32, w: i32, h: i32) -> HWND {
+        unsafe {
+            let instance: HINSTANCE = GetModuleHandleW(None).expect("module").into();
+            CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                w!("STATIC"),
+                w!("Vale arrange hidden test window"),
+                WS_OVERLAPPEDWINDOW,
+                x,
+                y,
+                w,
+                h,
+                None,
+                None,
+                Some(instance),
+                None,
+            )
+            .expect("a window")
+        }
+    }
+
+    fn outer(hwnd: HWND) -> (i32, i32, i32, i32) {
+        let mut r = RECT::default();
+        unsafe { GetWindowRect(hwnd, &mut r) }.expect("rect");
+        (r.left, r.top, r.right, r.bottom)
+    }
+
     #[test]
     fn moving_nothing_moves_nothing() {
         let (moved, skipped, undo) = move_all(&[]);
         assert_eq!((moved, skipped, undo.len()), (0, 0, 0));
-        // A handle that is no window is skipped, never an error.
-        let (moved, skipped, _) = move_all(&[(0x7fff_fff0, Rect::new(0, 0, 10, 10))]);
-        assert_eq!((moved, skipped), (0, 1));
+        // A handle that is no window is skipped, never an error. The handle
+        // is one of this test's own windows, destroyed: certainly no live
+        // window of anyone else's.
+        let stale = unsafe {
+            let hwnd = hidden_window(0, 0, 100, 100);
+            DestroyWindow(hwnd).expect("destroyed");
+            hwnd
+        };
+        assert!(!unsafe { IsWindow(Some(stale)) }.as_bool());
+        let (moved, skipped, undo) = move_all(&[(stale.0 as isize, Rect::new(0, 0, 10, 10))]);
+        assert_eq!((moved, skipped, undo.len()), (0, 1, 0));
+    }
+
+    #[test]
+    fn undo_never_activates_a_window() {
+        let q = |c: windows::Win32::UI::WindowsAndMessaging::SHOW_WINDOW_CMD| {
+            quiet_show(c.0 as u32) as i32
+        };
+        assert_eq!(q(SW_SHOWNORMAL), SW_SHOWNOACTIVATE.0);
+        assert_eq!(q(SW_SHOWMINIMIZED), SW_SHOWMINNOACTIVE.0);
+        assert_eq!(q(SW_SHOWNOACTIVATE), SW_SHOWNOACTIVATE.0);
+        assert_eq!(
+            q(windows::Win32::UI::WindowsAndMessaging::SW_SHOWMAXIMIZED),
+            windows::Win32::UI::WindowsAndMessaging::SW_SHOWMAXIMIZED.0
+        );
+    }
+
+    /// A normal window keeps the rectangle it really has, and undo puts it
+    /// back there even when the placement's restore rectangle is elsewhere
+    /// (a snapped window: `rcNormalPosition` is its place before the snap).
+    /// Only a hidden window of this test's own is used.
+    #[test]
+    fn undo_puts_a_snapped_window_where_it_really_was() {
+        unsafe {
+            let hwnd = hidden_window(210, 230, 400, 300);
+            let mut saved = placement_of(hwnd).expect("placement");
+            assert_eq!(saved.rect, Some(outer(hwnd)), "the real rectangle is kept");
+            // Kept hidden through the undo: never a window on screen.
+            saved.show = windows::Win32::UI::WindowsAndMessaging::SW_HIDE.0 as u32;
+
+            // Snapped: the restore rectangle is not where the window is.
+            let mut snapped = saved;
+            snapped.normal = (20, 30, 520, 430);
+            snapped.rect = Some((250, 260, 750, 660));
+            assert!(restore(snapped));
+            assert!(
+                rect_close(outer(hwnd), (250, 260, 750, 660)),
+                "{:?}",
+                outer(hwnd)
+            );
+            assert!(!IsWindowVisible(hwnd).as_bool(), "still hidden");
+
+            // Not snapped: the plain placement already puts it in place.
+            assert!(restore(saved));
+            assert!(
+                rect_close(outer(hwnd), saved.rect.unwrap()),
+                "{:?}",
+                outer(hwnd)
+            );
+
+            let _ = DestroyWindow(hwnd);
+        }
     }
 
     /// Creates its own plain top-level window, so no other window is ever

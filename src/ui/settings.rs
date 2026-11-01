@@ -3304,7 +3304,7 @@ pub fn run_demo(args: &[String]) {
             .expect("a template"),
     ];
     let monitor = arrange::SavedMonitor {
-        device: r"\.\DISPLAY1".into(),
+        device: r"\\.\DISPLAY1".into(),
         rect: arrange::Rect::new(0, 0, 2560, 1440),
     };
     cfg.arrange.saved = vec![

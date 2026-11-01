@@ -1962,8 +1962,14 @@ pub struct Placement {
     pub show: u32,
     pub min: (i32, i32),
     pub max: (i32, i32),
-    /// The restored rectangle: left, top, right, bottom.
+    /// The restored rectangle: left, top, right, bottom (workspace
+    /// coordinates, as `WINDOWPLACEMENT` has them).
     pub normal: (i32, i32, i32, i32),
+    /// Where a window in its normal state really was (`GetWindowRect`, screen
+    /// coordinates): left, top, right, bottom. A snapped window's `normal` is
+    /// its place before the snap, not this. `None` when it was minimized or
+    /// maximized.
+    pub rect: Option<(i32, i32, i32, i32)>,
 }
 
 /// What the workers of `arrange_win` report to the island.

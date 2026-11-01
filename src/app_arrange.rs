@@ -81,6 +81,19 @@ struct Picking {
 /// mid-move must not lock Susun for good, though.
 const MOVE_WAIT: Duration = Duration::from_secs(10);
 
+/// What the notice after the pick step offers: "Simpan…" only when at least
+/// one tile got a window (an arrangement of empty tiles has nothing to play
+/// back), off when the list is full.
+fn save_offer(tiles: &[Option<SavedWindow>], full: bool) -> ArrangeSave {
+    if tiles.iter().all(Option::is_none) {
+        ArrangeSave::None
+    } else if full {
+        ArrangeSave::Full
+    } else {
+        ArrangeSave::Offer
+    }
+}
+
 /// A move started at `since` is still running and blocks a new one.
 fn move_in_flight(since: Option<Instant>, now: Instant) -> bool {
     since.is_some_and(|at| now.saturating_duration_since(at) < MOVE_WAIT)
@@ -665,15 +678,14 @@ impl App {
                         layout_name,
                     } => {
                         let counts = Counts::picked(tiles, moved);
-                        self.arrange.last_save = Some(info);
+                        let save = save_offer(&info.tiles, full);
+                        if save != ArrangeSave::None {
+                            self.arrange.last_save = Some(info);
+                        }
                         (
                             i18n::arrange_done(lang, counts.moved, counts.skipped_shown()),
                             layout_name,
-                            if full {
-                                ArrangeSave::Full
-                            } else {
-                                ArrangeSave::Offer
-                            },
+                            save,
                         )
                     }
                     Run::Saved { wanted, name } => {
@@ -892,6 +904,26 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn simpan_is_offered_only_when_a_tile_got_a_window() {
+        let win = || {
+            Some(SavedWindow {
+                exe: "C:/a.exe".into(),
+                class: "A".into(),
+                title: "A".into(),
+            })
+        };
+        assert_eq!(
+            save_offer(&[None, None], false),
+            ArrangeSave::None,
+            "all skipped"
+        );
+        assert_eq!(save_offer(&[None, None], true), ArrangeSave::None);
+        assert_eq!(save_offer(&[], false), ArrangeSave::None);
+        assert_eq!(save_offer(&[None, win()], false), ArrangeSave::Offer);
+        assert_eq!(save_offer(&[win(), None], true), ArrangeSave::Full);
+    }
 
     #[test]
     fn a_move_in_flight_holds_off_a_new_one_for_a_while() {

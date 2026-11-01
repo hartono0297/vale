@@ -75,7 +75,13 @@ in `settings_layout.rs`, `--demo-arrange` in `ui/demo.rs`.
   gone window, `IsHungAppWindow`, a target process that is elevated while Vale is
   not (token check; a token that cannot be opened is tried, a failed move counts
   as skipped). Minimized or maximized windows are restored first. Undo is
-  `SetWindowPlacement` of the saved placements (rect plus maximized/minimized).
+  `SetWindowPlacement` of the saved placements (rect plus maximized/minimized),
+  with the show command made quiet (`SW_SHOWNOACTIVATE` / `SW_SHOWMINNOACTIVE`,
+  else undo raises each window in turn and reverses the z-order). **Snap
+  gotcha:** a snapped window's `rcNormalPosition` is its place *before* the
+  snap, so a normal window also saves its `GetWindowRect` and undo
+  `SetWindowPos`es it back there when the placement left it elsewhere.
+  "Simpan…" is offered only when at least one tile got a window.
   No animation. Icons are read by `search_details::shell_icon` on a worker, a
   generic icon until ready.
 - Never touches Windows Snap Layouts or the registry, never launches anything.
