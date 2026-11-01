@@ -63,8 +63,12 @@ the window-AUMID match finds it, and with no window it launches by AUMID.
    holding only the registrable label ("google") is not a site match, so a
    Gmail or Calendar toast never switches to an unrelated Google tab (Search,
    Docs) and, with no better match, the window comes forward on its current
-   tab. A site with no meaningful subdomain (web.telegram.org, google.com)
-   matches on the registrable label alone. Matches come in tiers (subdomain, site label, title, words only):
+   tab. A tab holding the subdomain and the label ("Google Chat") ranks a
+   tier above one holding the subdomain alone ("ChatGPT" also contains
+   "chat"), so the substring rule never sends a chat.google.com toast to
+   ChatGPT. A site with no meaningful subdomain (web.telegram.org,
+   google.com) matches on the registrable label alone. Matches come in tiers
+   (subdomain and label; subdomain alone or site label; title; words only):
    the strongest tier anywhere decides, so a site match in
    an older window beats a words-only match in the newest. The most recent
    window with a match of that tier wins; inside it the active tab if its

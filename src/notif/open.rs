@@ -123,10 +123,11 @@ pub fn site_sub_label(site: &str) -> Option<String> {
 // ---------------------------------------------------------------- scoring
 
 const SCORE_SITE: u32 = 1000;
-/// The site's meaningful subdomain ("calendar", "mail") in the tab name: the
-/// most specific evidence of the page, so it counts as a site match on its
-/// own (together with SCORE_SITE) and ranks above a bare site match. With a
-/// meaningful subdomain the registrable label alone ("google") is not a match.
+/// The site's meaningful subdomain ("calendar", "mail") together with its
+/// registrable label ("google") in the tab name: the most specific evidence
+/// of the page, so it ranks above the subdomain alone (SCORE_SITE), which a
+/// substring can also find in an unrelated tab ("chat" in "ChatGPT"). With a
+/// meaningful subdomain the registrable label alone is not a match.
 const SCORE_SUB: u32 = 2000;
 const SCORE_TITLE: u32 = 500;
 const SCORE_WORDS_HALF: u32 = 100;
@@ -177,12 +178,14 @@ impl WordRuns {
 /// How well a tab's name fits the toast: 0 = not at all. The site counts
 /// most. A site with a meaningful subdomain (`site_sub_label`: mail.google.com
 /// -> "mail") matches a tab holding that subdomain as a substring of the
-/// squashed name ("mail" in "Gmail", "calendar" in "Google Calendar"), with or
-/// without the registrable label: SCORE_SITE + SCORE_SUB. A tab holding only
+/// squashed name ("mail" in "Gmail", "calendar" in "Google Calendar"):
+/// SCORE_SITE, plus SCORE_SUB when the tab also holds the registrable label
+/// ("Google Chat" beats "ChatGPT" for chat.google.com). A tab holding only
 /// the registrable label ("google") is NOT a site match then, so a Gmail
 /// toast never picks "cats - Google Search". A site with no meaningful
 /// subdomain (google.com, web.telegram.org) matches on the label alone:
-/// SCORE_SITE. Then the whole notification title, then the title's words of 4+ letters (at least one;
+/// SCORE_SITE. Then the whole notification title, then the title's words of
+/// 4+ letters (at least one;
 /// half or more counts more). The title and its words count only as whole
 /// words of the tab name. The body is not used: it is too long and too often
 /// generic.
@@ -196,7 +199,10 @@ pub fn score_tab(tab_title: &str, target: &OpenTarget) -> u32 {
         match site_sub_label(site) {
             Some(sub) => {
                 if tab.contains(&sub) {
-                    score += SCORE_SITE + SCORE_SUB;
+                    score += SCORE_SITE;
+                    if site_label(site).is_some_and(|label| tab.contains(&label)) {
+                        score += SCORE_SUB;
+                    }
                 }
             }
             None => {
@@ -241,8 +247,10 @@ pub struct WindowTabs {
     pub active: Option<usize>,
 }
 
-/// The kind of evidence a score stands for: 4 the site's subdomain (a site
-/// with a meaningful subdomain), 3 the site's label (a site with none), 2 the whole title, 1 words of the title only, 0 none. Scores
+/// The kind of evidence a score stands for: 4 the site's subdomain and label
+/// (a site with a meaningful subdomain), 3 the subdomain alone or the site's
+/// label (a site with none), 2 the whole title, 1 words of the title only,
+/// 0 none. Scores
 /// inside one tier are close calls; a higher tier always wins.
 fn tier(score: u32) -> u8 {
     match score {
@@ -670,7 +678,7 @@ mod tests {
     fn a_gmail_toast_picks_the_gmail_tab_never_a_search_tab() {
         let t = gmail("Budi");
         // "mail" is found inside "gmail" though the tab never says "google".
-        assert!(score_tab(INBOX, &t) >= SCORE_SITE + SCORE_SUB);
+        assert!(score_tab(INBOX, &t) >= SCORE_SITE);
         assert_eq!(score_tab(SEARCH, &t), 0);
         let w = [win(&[SEARCH, INBOX], Some(0))];
         assert_eq!(pick_tab(&w, &t), Some((0, 1)));
@@ -680,6 +688,24 @@ mod tests {
         // No Gmail tab: nothing is picked, the window just comes forward.
         assert_eq!(pick_tab(&[win(&[SEARCH], Some(0))], &t), None);
         assert_eq!(pick_tab(&[win(&[SEARCH, DOCS], Some(0))], &t), None);
+    }
+
+    #[test]
+    fn a_tab_with_the_subdomain_and_the_label_beats_one_with_the_subdomain_only() {
+        // "chat" is inside "chatgpt" too; only "Google Chat" also says "google".
+        let chat = target("Google Chrome", Some("Chrome"), Some("chat.google.com"), "Budi");
+        let w = [win(&["ChatGPT", "Google Chat"], Some(0))];
+        assert_eq!(pick_tab(&w, &chat), Some((0, 1)));
+        assert_eq!(score_tab("ChatGPT", &chat), SCORE_SITE);
+        assert_eq!(score_tab("Google Chat", &chat), SCORE_SITE + SCORE_SUB);
+        // The same for Calendar next to an Outlook calendar, and Meet next to
+        // a page that merely says "meeting".
+        let cal = target("Google Chrome", Some("Chrome"), Some("calendar.google.com"), "Rapat");
+        let w = [win(&["Calendar - Outlook", "Google Calendar"], Some(0))];
+        assert_eq!(pick_tab(&w, &cal), Some((0, 1)));
+        let meet = target("Google Chrome", Some("Chrome"), Some("meet.google.com"), "Rapat");
+        let w = [win(&["Meeting notes - Notion", "Google Meet"], Some(0))];
+        assert_eq!(pick_tab(&w, &meet), Some((0, 1)));
     }
 
     #[test]
