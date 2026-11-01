@@ -690,11 +690,14 @@ pub const ACTION_W: f32 = 66.0;
 /// The Mole notices' "Log" chip: narrower, so their longer titles keep
 /// the room ("Mole selesai · 12,4 GB dibebaskan").
 pub const LOG_ACTION_W: f32 = 46.0;
+/// The failed update's "Lihat rilis" / "See releases" chip: a longer word.
+pub const RELEASES_ACTION_W: f32 = 88.0;
 
 /// How wide `kind`'s chip is (`notice_action` says whether it has one).
 pub fn notice_action_w(kind: &NoticeKind) -> f32 {
     match kind {
         NoticeKind::MoleDone | NoticeKind::MoleFailed => LOG_ACTION_W,
+        NoticeKind::UpdateFailed => RELEASES_ACTION_W,
         _ => ACTION_W,
     }
 }
@@ -933,6 +936,14 @@ pub fn badge_style(notice: &Notice, p: &Palette, pomo_next: Phase) -> BadgeStyle
         NoticeKind::DeviceSafe => tint(p.sage, Icon::Check),
         // With the robot off: the Susun layout icon, in the accent.
         NoticeKind::Arranged { .. } => tint(p.accent, Icon::Layout),
+        // With the robot off: the download arrow, in the accent, for the
+        // offer and the progress; ochre for a failure, a sage check when
+        // there is only news (up to date, updated).
+        NoticeKind::UpdateAvailable { .. } | NoticeKind::UpdateProgress { .. } => {
+            tint(p.accent, Icon::Download)
+        }
+        NoticeKind::UpdateFailed => tint(p.ochre, Icon::Download),
+        NoticeKind::UpdateInfo => tint(p.sage, Icon::Check),
         // Drawn by the robot; this badge only shows if it is turned off meanwhile.
         NoticeKind::Greeting { .. } => tint(p.accent, Icon::Sparkle),
         // With the robot off: the Clipboard icon, as on the Pintasan tile.
@@ -979,6 +990,9 @@ pub fn notice_action(kind: &NoticeKind, pomo: PomoStatus) -> Option<Key> {
         NoticeKind::ClipPreview { .. } => Some(Key::ClipPreviewChip),
         // The click opens the cleaner on Mole's log.
         NoticeKind::MoleDone | NoticeKind::MoleFailed => Some(Key::MoleLog),
+        // The click installs the update, or opens the releases page.
+        NoticeKind::UpdateAvailable { .. } => Some(Key::UpdateButton),
+        NoticeKind::UpdateFailed => Some(Key::SeeReleases),
         _ => None,
     }
 }

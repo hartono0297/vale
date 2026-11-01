@@ -68,10 +68,10 @@ use super::robot::{Motion, sleep_step};
 use super::settings_controls::{Gfx, Scene, ease};
 use super::settings_layout::{
     CLIENT_H, CLIENT_W, CanvasPress, CatFace, Control, DragView, EditView, Field, GUIDE_URL,
-    GoogleState, Group, Hit, Layout, List, PrtscRow, RELEASES_URL, REPO_URL, ROW_H, ReorderRow,
+    GoogleState, Group, Hit, Layout, List, PrtscRow, REPO_URL, ROW_H, ReorderRow,
     Section, SliderId, State, TileForm, Tone, battery_step, canvas_drag, canvas_press,
     clip_items_step, disk_warn_step, drop_index, layout, notif_items_step, ram_warn_step,
-    scroll_by, shot_secs_step, slider_value,
+    scroll_by, shot_secs_step, slider_value, UpdateRow,
 };
 use crate::arrange::{self, ArrangeSettings, CustomTemplate, Node, SavedArrangement};
 use crate::calendar::CalStatus;
@@ -203,6 +203,12 @@ pub enum Action {
     },
     ConnectGoogle,
     DisconnectGoogle,
+    /// Tentang → Pembaruan: "Cek sekarang".
+    CheckUpdates,
+    /// Tentang → Pembaruan: "Update", on a known newer version.
+    InstallUpdate,
+    /// "Cek pembaruan otomatis".
+    UpdateAuto(bool),
     /// The window closed.
     Closed,
 }
@@ -353,6 +359,10 @@ pub struct Model {
     pub pages: PanelPages,
     /// "Pintasan".
     pub tiles: ShortcutTiles,
+    /// "Cek pembaruan otomatis", and the Pembaruan row's state (the island's:
+    /// a check running, an update known, a download).
+    pub update_auto: bool,
+    pub update_row: UpdateRow,
 }
 
 impl Model {
@@ -407,6 +417,8 @@ impl Model {
             shot: cfg.screenshot,
             pages: PanelPages::from_saved(&cfg.panel_pages),
             tiles: ShortcutTiles::from_saved(&cfg.shortcut_tiles),
+            update_auto: cfg.update_check,
+            update_row: UpdateRow::Idle,
         }
     }
 }
@@ -1288,6 +1300,8 @@ impl Settings {
             tile_form: self.tile_form,
             tile_note: self.tile_note,
             version: env!("CARGO_PKG_VERSION"),
+            update_auto: m.update_auto,
+            update_row: m.update_row.clone(),
             data_dir: &self.data_label,
         }
     }
@@ -1454,6 +1468,10 @@ impl Settings {
         if old.stay_behind != new.stay_behind {
             self.anims
                 .slide_toggle(Hit::StayBehind, old.stay_behind, new.stay_behind, now);
+        }
+        if old.update_auto != new.update_auto {
+            self.anims
+                .slide_toggle(Hit::UpdateAuto, old.update_auto, new.update_auto, now);
         }
         if old.lyrics != new.lyrics {
             self.anims
@@ -2106,7 +2124,13 @@ impl Settings {
             }
             Hit::GoogleGuide => vec![After::Open(GUIDE_URL.into())],
             Hit::Repo => vec![After::Open(REPO_URL.into())],
-            Hit::Releases => vec![After::Open(RELEASES_URL.into())],
+            // Check, or install what a check found; a running one waits.
+            Hit::UpdateCheck => match m.update_row {
+                UpdateRow::Idle => post(Action::CheckUpdates),
+                UpdateRow::Available(_) => post(Action::InstallUpdate),
+                UpdateRow::Checking | UpdateRow::Downloading(_) => Vec::new(),
+            },
+            Hit::UpdateAuto => post(Action::UpdateAuto(!m.update_auto)),
             Hit::DataFolder => vec![After::OpenDataFolder],
             Hit::HooksInstall => {
                 let note = match install::install_for_current_exe() {
@@ -3128,8 +3152,10 @@ unsafe extern "system" fn edit_proc(
 /// demo model and pushes it back, so every control works. Nothing is saved
 /// and the island is not involved; the hook buttons and links are real, so
 /// leave them alone. `DI_ACCENT`, `DI_GOOGLE` (`ok`, `needslogin`,
-/// `reconnect`, `offline`, `none`), `DI_POMO_LOCKED=1` and `DI_PRTSC` (`failed`:
-/// the PrtSc keyboard hook could not be installed) set the start.
+/// `reconnect`, `offline`, `none`), `DI_POMO_LOCKED=1`, `DI_PRTSC` (`failed`:
+/// the PrtSc keyboard hook could not be installed) and `DI_UPDATE`
+/// (`available`, `checking`, `downloading`: Tentang's Pembaruan row, with a
+/// made-up 9.9.9) set the start.
 #[cfg(debug_assertions)]
 pub fn run_demo(args: &[String]) {
     use crate::i18n;
@@ -3239,6 +3265,10 @@ pub fn run_demo(args: &[String]) {
             }
             Action::ConnectGoogle => m.calendar = CalStatus::Ok,
             Action::DisconnectGoogle => m.calendar = CalStatus::NeedsLogin,
+            Action::UpdateAuto(v) => m.update_auto = v,
+            // No network and no install in the demo; the row state is set by
+            // `DI_UPDATE`.
+            Action::CheckUpdates | Action::InstallUpdate => {}
             Action::DndHelp | Action::Closed => {}
         }
         theme::set_current(theme::Theme {
@@ -3359,6 +3389,14 @@ pub fn run_demo(args: &[String]) {
             _ => PrtscRow::Plain,
         },
         calendar,
+        // The Pembaruan row's state, with a made-up version; nothing touches
+        // the network.
+        update_row: match env("DI_UPDATE").to_ascii_lowercase().as_str() {
+            "available" => UpdateRow::Available("9.9.9".into()),
+            "checking" => UpdateRow::Checking,
+            "downloading" => UpdateRow::Downloading(42),
+            _ => UpdateRow::Idle,
+        },
         // A build with Vale's own client signs in without one.
         google_client_id: if configured && !client::has_built_in() {
             "123456789012-demo.apps.googleusercontent.com".into()

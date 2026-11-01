@@ -49,6 +49,7 @@ mod system;
 mod theme;
 mod tiles;
 mod ui;
+mod update;
 
 use windows::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
 

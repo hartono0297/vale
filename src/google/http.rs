@@ -144,6 +144,76 @@ impl Http {
         ))
     }
 
+    /// GET streamed into the file at `path` (created or truncated once the
+    /// answer is a 2xx; any other status leaves the disk alone and is returned
+    /// as is). The body is read in pieces: past `max_bytes` (counting the
+    /// announced length too) the call fails, and `progress(done, total)` runs
+    /// after each piece, `total` being the Content-Length when the server
+    /// sent one. `self.timeout` is a stall limit here: it restarts after every
+    /// piece, so a long download is fine while a frozen one fails. A failed
+    /// download leaves the partial file; the caller deletes it.
+    pub fn download_to(
+        &self,
+        url: &str,
+        extra: &[(&str, &str)],
+        path: &std::path::Path,
+        max_bytes: u64,
+        mut progress: impl FnMut(u64, Option<u64>),
+    ) -> Result<u16> {
+        use std::io::Write;
+        let request = self.request(&HttpMethod::Get()?, url, None)?;
+        let headers = request.Headers()?;
+        for (name, value) in extra {
+            headers.TryAppendWithoutValidation(&HSTRING::from(*name), &HSTRING::from(*value))?;
+        }
+        let stall = |timeout: Option<Duration>| timeout.map(|t| Instant::now() + t);
+        let deadline = stall(self.timeout);
+        let response = join_by!(
+            self.client
+                .SendRequestWithOptionAsync(&request, HttpCompletionOption::ResponseHeadersRead)?,
+            deadline
+        )?;
+        let status = response.StatusCode()?.0 as u16;
+        if !(200..300).contains(&status) {
+            return Ok(status);
+        }
+        let content = response.Content()?;
+        let total = content
+            .Headers()
+            .and_then(|h| h.ContentLength())
+            .and_then(|n| n.Value())
+            .ok();
+        if total.is_some_and(|n| n > max_bytes) {
+            return Err(Error::new(E_FAIL, "response too large"));
+        }
+        let stream = join_by!(content.ReadAsInputStreamAsync()?, deadline)?;
+        let mut file = std::fs::File::create(path)?;
+        const CHUNK: u32 = 64 * 1024;
+        let mut done: u64 = 0;
+        let mut piece = Vec::new();
+        loop {
+            let deadline = stall(self.timeout);
+            let buffer = join_by!(
+                stream.ReadAsync(&Buffer::Create(CHUNK)?, CHUNK, InputStreamOptions::Partial)?,
+                deadline
+            )?;
+            let len = buffer.Length()? as usize;
+            if len == 0 {
+                break;
+            }
+            if done + len as u64 > max_bytes {
+                return Err(Error::new(E_FAIL, "response too large"));
+            }
+            piece.resize(len, 0);
+            DataReader::FromBuffer(&buffer)?.ReadBytes(&mut piece)?;
+            file.write_all(&piece)?;
+            done += len as u64;
+            progress(done, total);
+        }
+        file.flush()?;
+        Ok(status)
+    }
+
     /// `method` is "POST" or "PATCH"; `body` is sent as UTF-8 JSON.
     pub fn send_json(
         &self,

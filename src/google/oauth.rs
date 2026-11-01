@@ -143,21 +143,20 @@ pub fn base64url(bytes: &[u8]) -> String {
     out
 }
 
-/// PKCE S256: `base64url(SHA-256(verifier))`.
-pub fn pkce_challenge(verifier: &str) -> String {
+/// SHA-256 of `bytes` (BCrypt).
+pub fn sha256(bytes: &[u8]) -> [u8; 32] {
     let mut digest = [0u8; 32];
     // The SHA-256 pseudo-handle needs no setup and does not fail on Windows 10+.
-    // If it ever did, Google would reject the code exchange, which surfaces as an error.
-    let status = unsafe {
-        BCryptHash(
-            BCRYPT_SHA256_ALG_HANDLE,
-            None,
-            verifier.as_bytes(),
-            &mut digest,
-        )
-    };
+    // If it ever did, Google would reject the code exchange (PKCE) and the
+    // updater would report a checksum mismatch: both surface as errors.
+    let status = unsafe { BCryptHash(BCRYPT_SHA256_ALG_HANDLE, None, bytes, &mut digest) };
     debug_assert!(status.is_ok(), "BCryptHash failed: {status:?}");
-    base64url(&digest)
+    digest
+}
+
+/// PKCE S256: `base64url(SHA-256(verifier))`.
+pub fn pkce_challenge(verifier: &str) -> String {
+    base64url(&sha256(verifier.as_bytes()))
 }
 
 pub fn auth_url(client_id: &str, redirect: &str, challenge: &str, state: &str) -> String {

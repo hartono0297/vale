@@ -34,6 +34,12 @@ pub const CLIP_NOTICE_DURATION: Duration = Duration::from_secs(3);
 /// The Arranged notice: long enough to reach "Batalkan".
 pub const ARRANGE_NOTICE_DURATION: Duration = Duration::from_secs(3);
 
+/// "Vale X.Y.Z tersedia": long enough to reach "Update".
+pub const UPDATE_NOTICE_DURATION: Duration = Duration::from_secs(8);
+/// The download's percent stays this long after its last update, so a
+/// stalled download fades instead of showing a frozen number.
+pub const UPDATE_PROGRESS_DURATION: Duration = Duration::from_secs(15);
+
 /// "Disimpan" and "Dihapus" after a screenshot's button.
 pub const SHOT_DONE_DURATION: Duration = Duration::from_millis(2500);
 /// The screenshot preview never expires under the pointer; once it leaves,
@@ -49,6 +55,8 @@ fn duration_of(notice: &Notice) -> Duration {
         NoticeKind::Screenshot { secs, .. } => Duration::from_secs(u64::from(secs)),
         NoticeKind::ShotSaved | NoticeKind::ShotDeleted => SHOT_DONE_DURATION,
         NoticeKind::Arranged { .. } => ARRANGE_NOTICE_DURATION,
+        NoticeKind::UpdateAvailable { .. } | NoticeKind::UpdateFailed => UPDATE_NOTICE_DURATION,
+        NoticeKind::UpdateProgress { .. } => UPDATE_PROGRESS_DURATION,
         _ => NOTICE_DURATION,
     }
 }
@@ -82,8 +90,15 @@ fn notice_has_action(notice: &Notice) -> bool {
             | NoticeKind::DevicePlugged { .. }
             | NoticeKind::ClipPreview { .. }
             | NoticeKind::Arranged { .. }
+            | NoticeKind::UpdateAvailable { .. }
+            | NoticeKind::UpdateFailed
             | NoticeKind::App { app_id: Some(_) }
     )
+}
+
+/// The download's percent notice.
+fn is_update_progress(notice: &Notice) -> bool {
+    matches!(notice.kind, NoticeKind::UpdateProgress { .. })
 }
 
 /// After hover opens the panel, its media buttons ignore clicks until the
@@ -429,7 +444,33 @@ impl IslandState {
                 | NoticeKind::DevicePlugged { .. }
                 | NoticeKind::DeviceSafe
                 | NoticeKind::Arranged { .. }
+                | NoticeKind::UpdateAvailable { .. }
+                | NoticeKind::UpdateInfo
                 | NoticeKind::Pomodoro => self.queue.push_back(notice),
+                // The download's percent: one notice, replaced where it
+                // stands (current or queued) so it never re-enters, and
+                // timed from this update, not from the first.
+                NoticeKind::UpdateProgress { .. } => {
+                    if let Some((current, expires)) = &mut self.current
+                        && is_update_progress(current)
+                    {
+                        *current = notice;
+                        *expires = now + UPDATE_PROGRESS_DURATION;
+                    } else if let Some(queued) = self.queue.iter_mut().find(|n| is_update_progress(n))
+                    {
+                        *queued = notice;
+                    } else {
+                        self.queue.push_back(notice);
+                    }
+                }
+                // A failure ends the download's percent, shown or waiting.
+                NoticeKind::UpdateFailed => {
+                    self.queue.retain(|n| !is_update_progress(n));
+                    if matches!(&self.current, Some((n, _)) if is_update_progress(n)) {
+                        self.current = None;
+                    }
+                    self.queue.push_back(notice);
+                }
                 // A newer screenshot replaces an older preview and a
                 // "Disalin" (both kept, nothing deleted); it never removes
                 // another kind of notice and never shows over a game.
@@ -634,6 +675,7 @@ impl IslandState {
             Event::Click(hit) => self.click(hit, now, &mut effects),
             Event::Calendar(_)
             | Event::Toast(_)
+            | Event::Update(_)
             | Event::Lyrics(_)
             | Event::Cli(_)
             | Event::ExplorerFolders { .. }
@@ -1433,6 +1475,12 @@ impl IslandState {
                     {
                         self.collapse();
                         effects.push(Effect::OpenDrive(letter));
+                    }
+                    // The update notice's chips: install, or the releases page.
+                    match &n.kind {
+                        NoticeKind::UpdateAvailable { .. } => effects.push(Effect::InstallUpdate),
+                        NoticeKind::UpdateFailed => effects.push(Effect::OpenReleases),
+                        _ => {}
                     }
                     if opens_panel {
                         self.hover_blocked = false;

@@ -449,6 +449,20 @@ keys! {
     MenuExit => "Keluar", "Quit";
     MenuSettings => "Pengaturan…", "Settings…";
     MenuSearch => "Cari…", "Search…";
+    MenuCheckUpdate => "Cek pembaruan…", "Check for updates…";
+
+    // Self-update (Settings → Tentang, notices, `update.rs`).
+    UpdateAuto => "Cek pembaruan otomatis", "Check for updates automatically";
+    UpdateAutoDesc => "Sekali sehari dari GitHub", "Once a day from GitHub";
+    UpdateCheckNow => "Cek sekarang", "Check now";
+    UpdateChecking => "Memeriksa…", "Checking…";
+    UpdateButton => "Update", "Update";
+    UpdateDebugOff => "Cek pembaruan mati di build debug", "Update check is off in debug builds";
+    UpdateErrNoNetwork => "tidak ada koneksi", "no connection";
+    UpdateErrNotWritable => "folder tidak bisa ditulis", "folder is not writable";
+    UpdateErrChecksum => "checksum tidak cocok", "checksum does not match";
+    UpdateErrAsset => "file rilis tidak ada", "release file is missing";
+    UpdateErrBadRelease => "rilis tidak terbaca", "release could not be read";
 
     // Settings window.
     SettingsTitle => "Pengaturan Vale", "Vale Settings";
@@ -1162,6 +1176,63 @@ pub fn device_count(lang: Lang, n: usize) -> String {
     match lang {
         Lang::Id => format!("{n} perangkat"),
         Lang::En => format!("{n} {}", if n == 1 { "device" } else { "devices" }),
+    }
+}
+
+/// "Vale 3.11.0 tersedia", "Vale 3.11.0 is available": the update notice's
+/// title and the Tentang row's description.
+pub fn update_available(lang: Lang, version: &str) -> String {
+    match lang {
+        Lang::Id => format!("Vale {version} tersedia"),
+        Lang::En => format!("Vale {version} is available"),
+    }
+}
+
+/// The tray item while an update is known: "Update ke 3.11.0", "Update to 3.11.0".
+pub fn update_menu_install(lang: Lang, version: &str) -> String {
+    match lang {
+        Lang::Id => format!("Update ke {version}"),
+        Lang::En => format!("Update to {version}"),
+    }
+}
+
+/// "Mengunduh pembaruan… 42%", "Downloading update… 42%".
+pub fn update_downloading(lang: Lang, pct: u8) -> String {
+    match lang {
+        Lang::Id => format!("Mengunduh pembaruan\u{2026} {pct}%"),
+        Lang::En => format!("Downloading update\u{2026} {pct}%"),
+    }
+}
+
+/// "Update gagal: tidak ada koneksi", "Update failed: no connection".
+pub fn update_failed(lang: Lang, reason: &str) -> String {
+    match lang {
+        Lang::Id => format!("Update gagal: {reason}"),
+        Lang::En => format!("Update failed: {reason}"),
+    }
+}
+
+/// A manual check with nothing newer: "Vale sudah versi terbaru (3.10.0)".
+pub fn update_up_to_date(lang: Lang, version: &str) -> String {
+    match lang {
+        Lang::Id => format!("Vale sudah versi terbaru ({version})"),
+        Lang::En => format!("Vale is up to date ({version})"),
+    }
+}
+
+/// After an update restarted Vale: "Diperbarui ke 3.11.0", "Updated to 3.11.0".
+pub fn update_done(lang: Lang, version: &str) -> String {
+    match lang {
+        Lang::Id => format!("Diperbarui ke {version}"),
+        Lang::En => format!("Updated to {version}"),
+    }
+}
+
+/// The Tentang row's description when idle: "Versi terpasang 3.10.0".
+pub fn update_installed(lang: Lang, version: &str) -> String {
+    match lang {
+        Lang::Id => format!("Versi terpasang {version}"),
+        Lang::En => format!("Installed version {version}"),
     }
 }
 
