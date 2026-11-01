@@ -64,6 +64,12 @@ not work either: Firefox's AUMID is an install-path hash (e.g.
   properties signal fired. The thumbnail is read only for the shown session,
   when it becomes shown or its own properties change. A failed read keeps the
   old values (a new session with none counts as non-music, empty text).
+- "New track" for the timeline (force an `Event::MediaTimeline`) is: the shown
+  session changed, or its properties were re-read.
+- Stale cover: when a session that is not shown has its metadata re-read and it
+  owns the cached cover, the cache is marked stale (`art_for` cleared,
+  `forget_stale_art`), so its cover is read again when it is next shown. The
+  shown session of the moment never shows it (`info` pairs art with `art_for`).
 - Keys come from a counter starting at 1 and are never reused; a session is
   recognised across re-lists by its COM identity. 0 means unknown.
   `GetSessions()` returns the same object for a session on every call, so
@@ -81,8 +87,6 @@ several share it (browser tabs), the only one of those whose status, title
 and artist equal the current session's (read only in that case). An empty
 AUMID, a failed read or several equal tabs give no current session, and the
 tie falls to the session shown before.
-- "New track" for the timeline (force an `Event::MediaTimeline`) is: the shown
-  session changed, or its properties were re-read.
 
 ## Commands go by key
 
@@ -103,8 +107,8 @@ title, artist or album. See [[media-diagnosis-log]].
 
 Not covered by tests: the WinRT side (relist, subscriptions, registry, the
 identity match of the current session); the
-ranking, music rule, current-session fallback, signal coalescing and key
-lookup are unit tests.
+ranking, music rule, current-session fallback, signal coalescing, key
+lookup and the stale-art rule are unit tests.
 `--probe-media` (debug builds) prints source app and key per update.
 
 Listed in [[index]].

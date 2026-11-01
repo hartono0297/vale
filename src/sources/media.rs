@@ -373,6 +373,16 @@ fn store_art(
     }
 }
 
+/// Called when session `key` has its metadata re-read. A session that is not
+/// shown reads no thumbnail, so if it owns the cached cover that cover may now
+/// belong to an old track: forget the owner, so the next `set_shown` for it
+/// reads the cover again instead of pairing the new title with the old cover.
+fn forget_stale_art(art_for: &mut Option<u64>, key: u64, is_shown: bool) {
+    if !is_shown && *art_for == Some(key) {
+        *art_for = None;
+    }
+}
+
 /// The sessions the watcher follows, for `send_command`: key, AppUserModelId
 /// and the session. Updated before an `Event::Media` carrying a new key goes
 /// out. Never held across a WinRT call that waits.
@@ -550,6 +560,8 @@ impl Watcher {
             if is_shown {
                 store_art(&mut self.art, &mut self.art_for, t.key, art);
                 shown_reread = true;
+            } else {
+                forget_stale_art(&mut self.art_for, t.key, false);
             }
         }
         if refresh.rank {
@@ -1088,6 +1100,43 @@ mod tests {
         store_art(&mut art, &mut art_for, 8, Some(Some(vec![9])));
         assert_eq!(art, Some(vec![9]));
         assert_eq!(art_for, Some(8));
+    }
+
+    #[test]
+    fn a_non_shown_reread_of_the_art_owner_clears_art_for() {
+        let mut art_for = Some(7);
+        forget_stale_art(&mut art_for, 7, false);
+        assert_eq!(art_for, None);
+    }
+
+    #[test]
+    fn a_non_shown_reread_of_another_key_leaves_art_for() {
+        let mut art_for = Some(7);
+        forget_stale_art(&mut art_for, 8, false);
+        assert_eq!(art_for, Some(7));
+        let mut none = None;
+        forget_stale_art(&mut none, 8, false);
+        assert_eq!(none, None);
+    }
+
+    #[test]
+    fn a_shown_reread_leaves_art_for_to_store_art() {
+        let mut art_for = Some(7);
+        forget_stale_art(&mut art_for, 7, true);
+        assert_eq!(art_for, Some(7));
+    }
+
+    #[test]
+    fn a_stale_cover_is_read_again_when_its_session_is_shown_next() {
+        // A shown with a cover, B shown next (thumbnail read fails, cache
+        // stays on A), then A's track changes while B is shown.
+        let (mut art, mut art_for) = (None, None);
+        store_art(&mut art, &mut art_for, 1, Some(Some(vec![1])));
+        assert_eq!(art_for, Some(1));
+        store_art(&mut art, &mut art_for, 2, None);
+        assert_eq!(art_for, Some(1));
+        forget_stale_art(&mut art_for, 1, false);
+        assert_eq!(art_for, None);
     }
 
     /// The key `choose` picks.
