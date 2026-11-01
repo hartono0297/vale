@@ -73,7 +73,12 @@ Related: [[search]], [[clipboard-history]], [[devices]], [[arrange]],
   `adopt_config`, after a Settings change) plans each row from want, in
   effect and failed (`plan_row`): `RegisterHotKey` for an ordinary combo, an
   entry in the PrtSc hook's table for a PrtSc combo, `UnregisterHotKey` for
-  off; then starts the hook thread if any row needs it, stops it when none
+  off. **Two passes** (`HotkeyState::apply` over the `HotkeyOps` trait, a fake
+  in tests): every changing row lets go first, then the new combos go in.
+  `RegisterHotKey` refuses a combo still held by ANY id, the window's own
+  other ids included, so one pass in `ALL` order failed when two rows swapped
+  combos (e.g. "Kembalikan semua" moving Ctrl+Alt+Space from Clipboard back to
+  Search). Then it starts the hook thread if any row needs it, stops it when none
   does. A hook install failure marks every PrtSc row failed.
 - `retry_hotkeys()` retries failed rows when the tray menu or Settings opens.
   `WM_DESTROY` (and `WM_ENDSESSION`) unregisters all five and stops the hook.
@@ -100,7 +105,14 @@ paused `sync_hotkeys` does nothing. `HotkeyRecording(false)` (and
 `Action::Closed`, as a safety) -> `resume_hotkeys()` clears `paused` and runs a
 full sync. `Action::Hotkey(id, value)` re-checks `check` and `used_by`
 defensively, sets, saves, syncs unless paused; `HotkeysResetAll` resets all.
-The window posts `Hotkey` (if any) BEFORE `HotkeyRecording(false)`.
+The window posts `Hotkey` (if any) BEFORE `HotkeyRecording(false)`, and
+`HotkeyRecording(false)` **waits for the recorder's hook thread to end**
+(`WM_APP_HOTKEY_REC_DONE`, WM_APP+14, posted after the unhook; the window's
+pure `Resume` decides). Resuming while the recorder still drains would put the
+PrtSc hook back in, newer and so first in the LL chain: a held PrtSc's
+auto-repeat (swallowed keys are up for Windows, so its modifiers read as none
+too) would fire a capture right after recording. Only a key held past the
+2 s drain limit can still do that.
 
 ## The recorder (`src/ui/hotkey_rec.rs`, `settings.rs`)
 

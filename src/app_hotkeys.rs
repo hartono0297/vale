@@ -4,21 +4,23 @@
 //! pause while Settings records a new combo, and what a press does. A child of
 //! `app`, so it works on `App` directly.
 //!
-//! One `sync_hotkeys` brings every row to the config's value: a row that
-//! differs from what is registered, or that failed, is unregistered and
-//! registered again (`RegisterHotKey`, or an entry in the hook's table for a
-//! PrtSc combo). The hook thread runs only while some row needs it.
+//! One `sync_hotkeys` brings every row to the config's value: every row that
+//! differs from what is registered, or that failed, is unregistered first,
+//! then each is registered again (`RegisterHotKey`, or an entry in the hook's
+//! table for a PrtSc combo), so two rows can swap combos. The hook thread
+//! runs only while some row needs it.
 //!
 //! A row Windows or another app holds shows red in Settings and is tried again
 //! when the tray menu opens or Settings opens (`retry_hotkeys`).
 
+use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     HOT_KEY_MODIFIERS, RegisterHotKey, UnregisterHotKey,
 };
 
 use super::App;
 use super::prtsc::{self, HookThread};
-use crate::hotkey::{self, Hotkey, HotkeyId};
+use crate::hotkey::{self, Hotkey, HotkeyId, Hotkeys};
 use crate::model::Event;
 
 /// `RegisterHotKey` ids, one per row.
@@ -105,6 +107,80 @@ impl HotkeyState {
     }
 }
 
+/// What a sync asks of Windows and the PrtSc hook's table; tests use a fake
+/// that refuses a combo another id holds, as `RegisterHotKey` does.
+pub(super) trait HotkeyOps {
+    /// Lets go of whatever the row had: its `RegisterHotKey` id and its entry
+    /// in the hook's table.
+    fn release(&mut self, id: HotkeyId);
+    /// Registers the combo under the row's id; false when it is taken.
+    fn register(&mut self, id: HotkeyId, hk: Hotkey) -> bool;
+    /// Puts the PrtSc combo in the hook's table.
+    fn hook(&mut self, id: HotkeyId, hk: Hotkey);
+}
+
+/// The real thing, on the island's window.
+struct WinOps(HWND);
+
+impl HotkeyOps for WinOps {
+    fn release(&mut self, id: HotkeyId) {
+        unsafe {
+            let _ = UnregisterHotKey(Some(self.0), wm_id(id));
+        }
+        prtsc::table_clear(id);
+    }
+
+    fn register(&mut self, id: HotkeyId, hk: Hotkey) -> bool {
+        unsafe {
+            RegisterHotKey(
+                Some(self.0),
+                wm_id(id),
+                HOT_KEY_MODIFIERS(hotkey::register_mods(hk)),
+                u32::from(hotkey::register_vk(hk)),
+            )
+        }
+        .is_ok()
+    }
+
+    fn hook(&mut self, id: HotkeyId, hk: Hotkey) {
+        prtsc::table_set(id, hk.mods);
+    }
+}
+
+impl HotkeyState {
+    /// Brings every row to `want`, in two passes: first every row that
+    /// changes lets go of what it had, then the new combos go in. One pass
+    /// would fail when rows swap combos: `RegisterHotKey` refuses a combo
+    /// that is still registered, even under another id of the same window,
+    /// and the row that holds it may come later.
+    fn apply(&mut self, want: &Hotkeys, ops: &mut impl HotkeyOps) {
+        let plans = HotkeyId::ALL.map(|id| {
+            let i = id.index();
+            (id, plan_row(want.get(id), self.applied[i], self.failed[i]))
+        });
+        for (id, plan) in plans {
+            if plan != RowPlan::Keep {
+                ops.release(id);
+            }
+        }
+        for (id, plan) in plans {
+            let i = id.index();
+            if plan == RowPlan::Keep {
+                continue;
+            }
+            self.applied[i] = want.get(id);
+            self.failed[i] = match plan {
+                RowPlan::Keep | RowPlan::Clear => false,
+                RowPlan::Hook(hk) => {
+                    ops.hook(id, hk);
+                    false
+                }
+                RowPlan::Register(hk) => !ops.register(id, hk),
+            };
+        }
+    }
+}
+
 impl App {
     /// Brings every row to the config's value; one that failed is tried
     /// again. Does nothing while Settings records.
@@ -114,39 +190,7 @@ impl App {
             return;
         }
         let want = self.config.hotkeys;
-        for id in HotkeyId::ALL {
-            let i = id.index();
-            let plan = plan_row(
-                want.get(id),
-                self.hotkeys.applied[i],
-                self.hotkeys.failed[i],
-            );
-            if plan == RowPlan::Keep {
-                continue;
-            }
-            unsafe {
-                let _ = UnregisterHotKey(Some(self.hwnd), wm_id(id));
-            }
-            prtsc::table_clear(id);
-            self.hotkeys.applied[i] = want.get(id);
-            self.hotkeys.failed[i] = false;
-            match plan {
-                RowPlan::Keep | RowPlan::Clear => {}
-                RowPlan::Hook(hk) => prtsc::table_set(id, hk.mods),
-                RowPlan::Register(hk) => {
-                    let ok = unsafe {
-                        RegisterHotKey(
-                            Some(self.hwnd),
-                            wm_id(id),
-                            HOT_KEY_MODIFIERS(hotkey::register_mods(hk)),
-                            u32::from(hotkey::register_vk(hk)),
-                        )
-                    }
-                    .is_ok();
-                    self.hotkeys.failed[i] = !ok;
-                }
-            }
-        }
+        self.hotkeys.apply(&want, &mut WinOps(self.hwnd));
         self.sync_hotkey_hook();
     }
 
@@ -347,6 +391,118 @@ mod tests {
         s.failed[2] = true;
         assert!(s.any_failed());
         assert_eq!(s.failed_flags(), [false, false, true, false, false]);
+    }
+
+    /// `RegisterHotKey` as Windows does it: a combo is refused while any id
+    /// holds it, the window's own other ids included.
+    #[derive(Default)]
+    struct FakeOps {
+        registered: std::collections::HashMap<HotkeyId, Hotkey>,
+        table: [Option<Hotkey>; 5],
+        taken_elsewhere: Vec<Hotkey>,
+    }
+
+    impl HotkeyOps for FakeOps {
+        fn release(&mut self, id: HotkeyId) {
+            self.registered.remove(&id);
+            self.table[id.index()] = None;
+        }
+
+        fn register(&mut self, id: HotkeyId, hk: Hotkey) -> bool {
+            if self.taken_elsewhere.contains(&hk)
+                || self.registered.contains_key(&id)
+                || self.registered.values().any(|held| *held == hk)
+            {
+                return false;
+            }
+            self.registered.insert(id, hk);
+            true
+        }
+
+        fn hook(&mut self, id: HotkeyId, hk: Hotkey) {
+            self.table[id.index()] = Some(hk);
+        }
+    }
+
+    fn rows(pairs: &[(HotkeyId, &str)]) -> Hotkeys {
+        let mut keys = Hotkeys::default();
+        for id in HotkeyId::ALL {
+            keys.set(id, None);
+        }
+        for (id, text) in pairs {
+            keys.set(*id, Some(hk(text)));
+        }
+        keys
+    }
+
+    #[test]
+    fn two_rows_can_swap_their_combos_in_one_sync() {
+        let space = hk("Ctrl+Alt+Space");
+        let v = hk("Ctrl+Alt+V");
+        let mut s = HotkeyState::default();
+        let mut ops = FakeOps::default();
+        // Search off, Clipboard on Ctrl+Alt+Space (the reviewer's repro
+        // before "Kembalikan semua").
+        s.apply(&rows(&[(HotkeyId::Clipboard, "Ctrl+Alt+Space")]), &mut ops);
+        assert_eq!(ops.registered.get(&HotkeyId::Clipboard), Some(&space));
+        // Back to the defaults: Search (earlier in `ALL`) takes the combo
+        // Clipboard still holds until Clipboard is let go of.
+        s.apply(&rows(&[(HotkeyId::Search, "Ctrl+Alt+Space")]), &mut ops);
+        assert!(!s.any_failed(), "{:?}", s.failed_flags());
+        assert_eq!(ops.registered.get(&HotkeyId::Search), Some(&space));
+        assert_eq!(ops.registered.get(&HotkeyId::Clipboard), None);
+        // A hand edit that swaps two set rows.
+        s.apply(
+            &rows(&[
+                (HotkeyId::Search, "Ctrl+Alt+V"),
+                (HotkeyId::Clipboard, "Ctrl+Alt+Space"),
+            ]),
+            &mut ops,
+        );
+        s.apply(
+            &rows(&[
+                (HotkeyId::Search, "Ctrl+Alt+Space"),
+                (HotkeyId::Clipboard, "Ctrl+Alt+V"),
+            ]),
+            &mut ops,
+        );
+        assert!(!s.any_failed(), "{:?}", s.failed_flags());
+        assert_eq!(ops.registered.get(&HotkeyId::Search), Some(&space));
+        assert_eq!(ops.registered.get(&HotkeyId::Clipboard), Some(&v));
+    }
+
+    #[test]
+    fn a_sync_hooks_prtsc_keeps_what_did_not_change_and_marks_what_is_taken() {
+        let mut s = HotkeyState::default();
+        let mut ops = FakeOps {
+            taken_elsewhere: vec![hk("Ctrl+Alt+D")],
+            ..FakeOps::default()
+        };
+        let want = rows(&[
+            (HotkeyId::Search, "Ctrl+Alt+Space"),
+            (HotkeyId::Devices, "Ctrl+Alt+D"),
+            (HotkeyId::Screenshot, "PrtSc"),
+        ]);
+        s.apply(&want, &mut ops);
+        assert!(s.failed_flags()[HotkeyId::Devices.index()]);
+        assert_eq!(s.failed.iter().filter(|f| **f).count(), 1);
+        assert_eq!(ops.table[HotkeyId::Screenshot.index()], Some(hk("PrtSc")));
+        assert!(s.needs_hook());
+        // The other app lets go: the retry registers Devices and leaves the
+        // rows that work alone.
+        ops.taken_elsewhere.clear();
+        s.apply(&want, &mut ops);
+        assert!(!s.any_failed());
+        assert_eq!(ops.registered.len(), 2);
+        // Screenshot off: out of the table, the hook no longer needed.
+        let off = rows(&[
+            (HotkeyId::Search, "Ctrl+Alt+Space"),
+            (HotkeyId::Devices, "Ctrl+Alt+D"),
+        ]);
+        s.apply(&off, &mut ops);
+        assert_eq!(ops.table, [None; 5]);
+        assert!(!s.needs_hook());
+        assert_eq!(ops.registered.len(), 2);
     }
 
     #[test]

@@ -16,6 +16,9 @@
 //! it drains: only the key-ups of keys in the set (and the auto-repeat of
 //! those keys) are still swallowed, everything else passes. With the set
 //! empty it unhooks and the thread ends, so the hook is never left installed.
+//! The thread's end is posted to the window (`WM_APP_HOTKEY_REC_DONE`): only
+//! then does the island get its hotkeys back, so a key still held from the
+//! recording (and its auto-repeat) never reaches the island's PrtSc hook.
 //!
 //! Two timers on the hook thread keep that true: draining ends after
 //! `DRAIN_MS` at most, and a recording that got no combo in `LISTEN_MS` posts
@@ -47,6 +50,11 @@ use crate::hotkey::{Mods, Step, record_step};
 /// that ended the listening (0: it gave up waiting), `lparam` the modifier
 /// bits (`Mods::bits`) held with it.
 pub const WM_APP_HOTKEY_REC: u32 = WM_APP + 13;
+
+/// Posted to the Settings window when the hook thread has ended (drained,
+/// timed out or stopped): the recorder holds no key any more, so the island
+/// can take its hotkeys back.
+pub const WM_APP_HOTKEY_REC_DONE: u32 = WM_APP + 14;
 
 /// A recording that gets no combo in this long is cancelled.
 const LISTEN_MS: u32 = 20_000;
@@ -347,6 +355,11 @@ impl RecHook {
         started
     }
 
+    /// Whether the hook thread still runs (listening or draining).
+    pub fn running(&self) -> bool {
+        self.thread_id.load(Ordering::Relaxed) != 0
+    }
+
     /// Ends the thread now (`WM_QUIT`; nothing if it already ended) and waits
     /// for it.
     pub fn stop(self) {
@@ -416,7 +429,21 @@ fn hook_thread_main(tx: mpsc::Sender<bool>, alive: Arc<AtomicU32>) {
     unsafe {
         let _ = UnhookWindowsHookEx(hook);
     }
+    // Not running from here on, then the window hears it: a window that
+    // checks `running` after this store needs no message, one that checked
+    // before gets it.
     alive.store(0, Ordering::Relaxed);
+    let hwnd = TARGET.load(Ordering::Relaxed);
+    if hwnd != 0 {
+        unsafe {
+            let _ = PostMessageW(
+                Some(HWND(hwnd as *mut _)),
+                WM_APP_HOTKEY_REC_DONE,
+                WPARAM(0),
+                LPARAM(0),
+            );
+        }
+    }
 }
 
 #[cfg(test)]

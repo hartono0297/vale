@@ -69,7 +69,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{Error, HSTRING, PCWSTR, Result, w};
 
 use super::frame_clock::{FrameClock, WM_APP_FRAME};
-use super::hotkey_rec::{RecHook, WM_APP_HOTKEY_REC};
+use super::hotkey_rec::{RecHook, WM_APP_HOTKEY_REC, WM_APP_HOTKEY_REC_DONE};
 use super::robot::{Motion, sleep_step};
 use super::settings_controls::{Gfx, Scene, ease};
 use super::settings_layout::{
@@ -166,7 +166,8 @@ pub enum Action {
     /// back to its default, and the recorder starting (`true`: the island
     /// lets go of its hotkeys) or ending (`false`: it takes them again). A
     /// `Hotkey` is always posted before the `HotkeyRecording(false)` that
-    /// ends the recording.
+    /// ends the recording, and that one waits until the recorder's hook has
+    /// let go of every key it swallowed (`Resume`).
     Hotkey(HotkeyId, Option<Hotkey>),
     HotkeysResetAll,
     HotkeyRecording(bool),
@@ -687,6 +688,8 @@ struct Settings {
     /// The recorder's keyboard hook. Kept after a combo until it has let go
     /// of the keys (it ends by itself), so `WM_DESTROY` can still stop it.
     rec_hook: Option<RecHook>,
+    /// Whether a `HotkeyRecording(false)` waits for that hook to end.
+    resume: Resume,
     /// `%APPDATA%\Vale`, or the old folder while a failed migration keeps it.
     data_label: String,
     /// Small and large window icons, owned (not shared) and destroyed with the window.
@@ -1135,6 +1138,7 @@ pub fn open(owner: HWND, model: Model, section: Option<Section>) -> Result<HWND>
         recording: None,
         hotkey_error: None,
         rec_hook: None,
+        resume: Resume::default(),
         data_label: crate::data_dir::label(&crate::data_dir::dir()),
         icons: [HICON::default(); 2],
         styled_light: None,
@@ -2618,6 +2622,7 @@ impl Settings {
     /// key messages record), and the field asks for keys.
     fn start_recording(&mut self, id: HotkeyId) {
         self.stop_rec_hook();
+        self.resume.start();
         self.hotkey_error = None;
         self.recording = Some(id);
         post_action(self.owner, Action::HotkeyRecording(true));
@@ -2639,15 +2644,36 @@ impl Settings {
     fn cancel_recording(&mut self) {
         self.stop_rec_hook();
         if self.recording.take().is_some() {
-            post_action(self.owner, Action::HotkeyRecording(false));
+            if self.resume.end(false) {
+                post_action(self.owner, Action::HotkeyRecording(false));
+            }
             self.relayout();
+        } else if self.resume.hook_done(false) {
+            // A finished recording whose hook was still draining.
+            post_action(self.owner, Action::HotkeyRecording(false));
+        }
+    }
+
+    /// Whether the recorder's hook thread still runs (listening or draining).
+    fn rec_hook_running(&self) -> bool {
+        self.rec_hook.as_ref().is_some_and(RecHook::running)
+    }
+
+    /// The recorder's hook thread ended (`WM_APP_HOTKEY_REC_DONE`): a
+    /// recording that ended while it drained gives the island its hotkeys
+    /// back now.
+    fn on_rec_hook_done(&mut self) {
+        if self.resume.hook_done(self.rec_hook_running()) {
+            post_action(self.owner, Action::HotkeyRecording(false));
         }
     }
 
     /// A key pressed while recording, from the hook (`WM_APP_HOTKEY_REC`) or
     /// the window's own key messages (the fallback): the `Hotkey` it makes, if
     /// any, goes to the owner before `HotkeyRecording(false)`. The hook is left
-    /// to let go of the held keys by itself.
+    /// to let go of the held keys by itself, and `HotkeyRecording(false)` waits
+    /// for that: while it drains, a held key's auto-repeat must not reach the
+    /// island's PrtSc hook, which would be newer and so see it first.
     fn on_rec_key(&mut self, vk: u16, mods: Mods) {
         let Some(id) = self.recording else {
             return;
@@ -2668,7 +2694,9 @@ impl Settings {
             post_action(self.owner, Action::Hotkey(id, value));
         }
         self.recording = None;
-        post_action(self.owner, Action::HotkeyRecording(false));
+        if self.resume.end(self.rec_hook_running()) {
+            post_action(self.owner, Action::HotkeyRecording(false));
+        }
         self.relayout();
     }
 
@@ -2682,6 +2710,41 @@ impl Settings {
             win: key_down(VK_LWIN.0) || key_down(VK_RWIN.0),
         };
         self.on_rec_key(vk, mods);
+    }
+}
+
+/// When the island gets its hotkeys back after a recording: once the
+/// recorder's hook thread has ended, never while it still drains. Its
+/// swallowed keys are down for the user but up for Windows, so the island's
+/// PrtSc hook (installed again on resume, and newer, so first in line) would
+/// take a held PrtSc's auto-repeat for a fresh press.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Resume {
+    /// The recording ended while the hook still ran.
+    pending: bool,
+}
+
+impl Resume {
+    /// A recording starts: one still waiting is dropped (the island stays
+    /// paused for the new one).
+    fn start(&mut self) {
+        self.pending = false;
+    }
+
+    /// The recording ended; true: post `HotkeyRecording(false)` now.
+    fn end(&mut self, hook_running: bool) -> bool {
+        self.pending = hook_running;
+        !hook_running
+    }
+
+    /// The hook thread ended, or was stopped; true: post it now. A stale
+    /// message while a newer hook runs, or with nothing waiting, does nothing.
+    fn hook_done(&mut self, hook_running: bool) -> bool {
+        if self.pending && !hook_running {
+            self.pending = false;
+            return true;
+        }
+        false
     }
 }
 
@@ -3517,6 +3580,11 @@ unsafe extern "system" fn wnd_proc(
             with(|st| st.on_rec_key(vk, mods));
             LRESULT(0)
         }
+        // The recorder's hook thread ended: it holds no key any more.
+        WM_APP_HOTKEY_REC_DONE => {
+            with(|st| st.on_rec_hook_done());
+            LRESULT(0)
+        }
         // The fallback while the hook could not go in: the window's own key
         // messages record (Esc cancels instead of closing the window).
         WM_KEYDOWN | WM_SYSKEYDOWN if recording_without_hook() => {
@@ -4043,6 +4111,7 @@ mod tests {
     #[test]
     fn the_recorders_message_id_is_unique_among_the_windows_messages() {
         assert_eq!(WM_APP_HOTKEY_REC, WM_APP + 13);
+        assert_eq!(WM_APP_HOTKEY_REC_DONE, WM_APP + 14);
         let ids = [
             ("settings action", WM_APP_SETTINGS_ACTION),
             ("submit", WM_APP_SUBMIT),
@@ -4050,12 +4119,35 @@ mod tests {
             ("form", WM_APP_FORM),
             ("frame clock", WM_APP_FRAME),
             ("recorder", WM_APP_HOTKEY_REC),
+            ("recorder done", WM_APP_HOTKEY_REC_DONE),
         ];
         for (i, (name, id)) in ids.iter().enumerate() {
             for (other, other_id) in &ids[i + 1..] {
                 assert_ne!(id, other_id, "{name} and {other}");
             }
         }
+    }
+
+    #[test]
+    fn the_island_gets_its_hotkeys_back_only_once_the_recorder_let_go() {
+        // A combo while the hook drains: nothing yet, then its end.
+        let mut r = Resume::default();
+        assert!(!r.end(true));
+        assert!(!r.hook_done(true), "still draining");
+        assert!(r.hook_done(false));
+        assert!(!r.hook_done(false), "only once");
+        // The hook already gone (it ended first, or the fallback): at once.
+        let mut r = Resume::default();
+        assert!(r.end(false));
+        assert!(!r.hook_done(false));
+        // A new recording while the old hook drained: the old one's end is
+        // stale, the new one's end decides.
+        let mut r = Resume::default();
+        assert!(!r.end(true));
+        r.start();
+        assert!(!r.hook_done(false));
+        assert!(!r.end(true));
+        assert!(r.hook_done(false));
     }
 
     #[test]
