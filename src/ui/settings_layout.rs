@@ -18,7 +18,9 @@ use crate::config::{
     NotifSettings, OpenMode, RAM_WARN_RANGE, SHOT_SECS_RANGE, ScreenshotSettings, SearchHotkey,
     ShotIgnore, ShotTool, Style,
 };
-use crate::i18n::{Key, Lang, text, version_label};
+use crate::i18n::{
+    Key, Lang, text, update_available, update_downloading, update_installed, version_label,
+};
 use crate::model::{Page, PomoField};
 use crate::notif::store::{CAP_STEP, MAX_CAP as NOTIF_MAX, MIN_CAP as NOTIF_MIN};
 use crate::pages::PanelPages;
@@ -125,7 +127,6 @@ const GRIP_W: f32 = 28.0;
 const FORM_PAD: f32 = 6.0;
 
 pub const REPO_URL: &str = "https://github.com/hartono0297/dynamic-island";
-pub const RELEASES_URL: &str = "https://github.com/hartono0297/dynamic-island/releases";
 pub const GUIDE_URL: &str = "https://github.com/hartono0297/dynamic-island#setup-google-calendar";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -479,8 +480,25 @@ pub enum Hit {
     HooksInstall,
     HooksRemove,
     Repo,
-    Releases,
+    /// The Pembaruan row's button: checks, or installs a known update.
+    UpdateCheck,
+    /// "Cek pembaruan otomatis".
+    UpdateAuto,
     DataFolder,
+}
+
+/// What the Tentang → Pembaruan row says and offers.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub enum UpdateRow {
+    /// Nothing known: the installed version, and "Cek sekarang".
+    #[default]
+    Idle,
+    /// A check is running.
+    Checking,
+    /// A newer version (X.Y.Z) is known: "Update".
+    Available(String),
+    /// The download is at this percent.
+    Downloading(u8),
 }
 
 /// Which slider (Tampilan -> Notch).
@@ -1119,6 +1137,9 @@ pub struct State<'a> {
     /// A message after the last tile added (it is off: the page is full).
     pub tile_note: Option<Key>,
     pub version: &'a str,
+    /// "Cek pembaruan otomatis", and the Pembaruan row's state.
+    pub update_auto: bool,
+    pub update_row: UpdateRow,
     /// The data folder in use, as `data_dir::label` names it.
     pub data_dir: &'a str,
 }
@@ -4105,33 +4126,26 @@ fn about(b: &mut Builder, s: &State) {
     b.y = top + ABOUT_LOGO + 18.0;
     titled(b, Key::GroupLinks);
 
-    let card = b.card(3.0 * ROW_H);
-    // Web pages open from a bare "open" glyph; the data folder has a button.
-    let rows = [
-        (
-            Hit::Repo,
-            Key::SourceCode,
-            "github.com/hartono0297/dynamic-island".to_owned(),
-            Key::OpenGithub,
-            ButtonKind::External,
-        ),
-        (
-            Hit::Releases,
-            Key::Updates,
-            b.t(Key::UpdatesDesc),
-            Key::SeeReleases,
-            ButtonKind::External,
-        ),
-        (
-            Hit::DataFolder,
-            Key::DataFolder,
-            s.data_dir.to_owned(),
-            Key::OpenDataFolder,
-            ButtonKind::Secondary,
-        ),
-    ];
-    for (i, (hit, label, desc, button, kind)) in rows.into_iter().enumerate() {
-        let y = card.y + i as f32 * ROW_H;
+    let card = b.card(4.0 * ROW_H);
+    let row_y = |i: usize| card.y + i as f32 * ROW_H;
+    // The source page opens from a bare "open" glyph; the update row and the
+    // data folder have a button.
+    let repo = (
+        Hit::Repo,
+        Key::SourceCode,
+        "github.com/hartono0297/dynamic-island".to_owned(),
+        Key::OpenGithub,
+        ButtonKind::External,
+    );
+    let data = (
+        Hit::DataFolder,
+        Key::DataFolder,
+        s.data_dir.to_owned(),
+        Key::OpenDataFolder,
+        ButtonKind::Secondary,
+    );
+    for (i, (hit, label, desc, button, kind)) in [(0, repo), (3, data)] {
+        let y = row_y(i);
         let button = b.t(button);
         let w = b.button_w(&[&button], kind);
         let item = (hit, button, kind, true, w);
@@ -4146,6 +4160,51 @@ fn about(b: &mut Builder, s: &State) {
         if i > 0 {
             b.divider(card, y);
         }
+    }
+
+    // Pembaruan: what is known about an update, and the button for the next
+    // step (check, install, or nothing while one runs).
+    let (desc, button, enabled) = update_row_texts(b, s);
+    let y = row_y(1);
+    let w = b.button_w(&[&button], ButtonKind::Secondary);
+    let item = (Hit::UpdateCheck, button, ButtonKind::Secondary, enabled, w);
+    let x = b.buttons(RIGHT, y + ROW_H / 2.0, vec![item]);
+    b.row_text(
+        card,
+        y,
+        b.t(Key::Updates),
+        Some((desc, Tone::Secondary)),
+        false,
+        x,
+    );
+    b.divider(card, y);
+
+    let y = row_y(2);
+    let x = b.toggle(Hit::UpdateAuto, RIGHT, y + ROW_H / 2.0, s.update_auto);
+    let desc = Some((b.t(Key::UpdateAutoDesc), Tone::Secondary));
+    b.row_text(card, y, b.t(Key::UpdateAuto), desc, false, x);
+    b.divider(card, y);
+}
+
+/// The Pembaruan row's description, button label and whether the button works.
+fn update_row_texts(b: &Builder, s: &State) -> (String, String, bool) {
+    match &s.update_row {
+        UpdateRow::Idle => (
+            update_installed(b.lang, s.version),
+            b.t(Key::UpdateCheckNow),
+            true,
+        ),
+        UpdateRow::Checking => (b.t(Key::UpdateChecking), b.t(Key::UpdateCheckNow), false),
+        UpdateRow::Available(version) => (
+            update_available(b.lang, version),
+            b.t(Key::UpdateButton),
+            true,
+        ),
+        UpdateRow::Downloading(pct) => (
+            update_downloading(b.lang, *pct),
+            b.t(Key::UpdateButton),
+            false,
+        ),
     }
 }
 
@@ -4360,6 +4419,8 @@ mod tests {
                         tile_form: None,
                         tile_note: None,
                         version: "2.1.0",
+                        update_auto: true,
+                        update_row: UpdateRow::Idle,
                         data_dir: r"%APPDATA%\Vale",
                     });
                 }
@@ -6077,6 +6138,84 @@ mod tests {
             [0, 1, 2],
             "no such row"
         );
+    }
+
+    #[test]
+    fn tentang_has_four_rows_the_update_row_and_the_auto_toggle_and_never_scrolls() {
+        for lang in [Lang::Id, Lang::En] {
+            let base = State {
+                lang,
+                ..states()[0].clone()
+            };
+            let l = layout(Section::About, &base, &Estimate);
+            assert_eq!(l.scroll, 0.0);
+            let all = buttons_of(&l);
+            for hit in [Hit::Repo, Hit::UpdateCheck, Hit::DataFolder] {
+                assert!(all.iter().any(|b| b.0 == hit), "{hit:?}");
+            }
+            assert!(
+                !all.iter().any(|b| b.0 == Hit::UpdateAuto),
+                "the auto row is a toggle, not a button"
+            );
+            // Four rows: Kode sumber, Pembaruan, the toggle, Folder data.
+            let card = l.cards.last().expect("the Tautan card");
+            assert_eq!(card.h, 4.0 * ROW_H);
+            let toggle = l.controls.iter().find_map(|c| match c {
+                Control::Toggle { hit, rect, on, .. } if *hit == Hit::UpdateAuto => {
+                    Some((*rect, *on))
+                }
+                _ => None,
+            });
+            let (rect, on) = toggle.expect("the auto-update toggle");
+            assert_eq!(on, base.update_auto);
+            assert!(rect.y > card.y + 2.0 * ROW_H && rect.y < card.y + 3.0 * ROW_H);
+            let (cx, cy) = (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
+            assert_eq!(l.hit(cx, cy), Some(Hit::UpdateAuto));
+            // The window is tall enough for the whole section.
+            assert!(card.bottom() + CARD_GAP <= CLIENT_H);
+        }
+    }
+
+    #[test]
+    fn the_update_row_says_what_is_known_and_offers_the_next_step() {
+        let desc_and_button = |lang, row: UpdateRow| {
+            let s = State {
+                lang,
+                update_row: row,
+                ..states()[0].clone()
+            };
+            let l = layout(Section::About, &s, &Estimate);
+            let (_, label, enabled) = button(&buttons_of(&l), Hit::UpdateCheck).clone();
+            // A disabled button takes no click: its hit is not listed.
+            let clickable = l.hits().iter().any(|(h, _)| *h == Hit::UpdateCheck);
+            assert_eq!(clickable, enabled);
+            let texts: Vec<String> = l.texts.iter().map(|t| t.text.clone()).collect();
+            (texts, label, enabled)
+        };
+        let has = |texts: &[String], what: &str| texts.iter().any(|t| t == what);
+        let (t, label, on) = desc_and_button(Lang::Id, UpdateRow::Idle);
+        assert!(has(&t, &format!("Versi terpasang {}", "2.1.0")));
+        assert_eq!((label.as_str(), on), ("Cek sekarang", true));
+        let (t, label, on) = desc_and_button(Lang::En, UpdateRow::Idle);
+        assert!(has(&t, "Installed version 2.1.0"));
+        assert_eq!((label.as_str(), on), ("Check now", true));
+        let (t, label, on) = desc_and_button(Lang::Id, UpdateRow::Checking);
+        assert!(has(&t, "Memeriksa\u{2026}"));
+        assert_eq!((label.as_str(), on), ("Cek sekarang", false));
+        let (t, _, on) = desc_and_button(Lang::En, UpdateRow::Checking);
+        assert!(has(&t, "Checking\u{2026}"));
+        assert!(!on);
+        let (t, label, on) = desc_and_button(Lang::Id, UpdateRow::Available("9.9.9".into()));
+        assert!(has(&t, "Vale 9.9.9 tersedia"));
+        assert_eq!((label.as_str(), on), ("Update", true));
+        let (t, _, _) = desc_and_button(Lang::En, UpdateRow::Available("9.9.9".into()));
+        assert!(has(&t, "Vale 9.9.9 is available"));
+        let (t, label, on) = desc_and_button(Lang::Id, UpdateRow::Downloading(42));
+        assert!(has(&t, "Mengunduh pembaruan\u{2026} 42%"));
+        assert_eq!((label.as_str(), on), ("Update", false));
+        let (t, _, on) = desc_and_button(Lang::En, UpdateRow::Downloading(7));
+        assert!(has(&t, "Downloading update\u{2026} 7%"));
+        assert!(!on);
     }
 
     #[test]

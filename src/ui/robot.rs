@@ -1130,6 +1130,14 @@ pub enum NoticeSort {
     DeviceSafe,
     /// Susun arranged the windows.
     Arranged,
+    /// "Vale X.Y.Z tersedia".
+    UpdateAvailable,
+    /// The download's percent.
+    UpdateProgress,
+    /// "Update gagal".
+    UpdateFailed,
+    /// Up to date, updated, off in debug builds.
+    UpdateInfo,
 }
 
 impl NoticeSort {
@@ -1154,6 +1162,10 @@ impl NoticeSort {
             NoticeKind::DevicePlugged { .. } => NoticeSort::DevicePlugged,
             NoticeKind::DeviceSafe => NoticeSort::DeviceSafe,
             NoticeKind::Arranged { .. } => NoticeSort::Arranged,
+            NoticeKind::UpdateAvailable { .. } => NoticeSort::UpdateAvailable,
+            NoticeKind::UpdateProgress { .. } => NoticeSort::UpdateProgress,
+            NoticeKind::UpdateFailed => NoticeSort::UpdateFailed,
+            NoticeKind::UpdateInfo => NoticeSort::UpdateInfo,
         }
     }
 }
@@ -1260,13 +1272,19 @@ pub fn choose_expr(i: &RobotInputs) -> Option<Expr> {
                 | NoticeSort::Screenshot
                 | NoticeSort::DeviceSafe
                 | NoticeSort::Arranged
+                | NoticeSort::UpdateInfo
                 | NoticeSort::ShotSaved => Some(Expr::Happy),
                 // keputusan-v3.1 p6: "Dihapus" with Bata at rest; a drive
                 // plugged in is news, not an event: Bata at rest as well.
-                NoticeSort::ShotDeleted | NoticeSort::DevicePlugged => Some(Expr::Idle),
-                NoticeSort::BatteryLow | NoticeSort::SystemLow | NoticeSort::MoleFailed => {
-                    Some(Expr::Sad)
-                }
+                // An update on offer or on its way is the same kind of news.
+                NoticeSort::ShotDeleted
+                | NoticeSort::DevicePlugged
+                | NoticeSort::UpdateAvailable
+                | NoticeSort::UpdateProgress => Some(Expr::Idle),
+                NoticeSort::BatteryLow
+                | NoticeSort::SystemLow
+                | NoticeSort::MoleFailed
+                | NoticeSort::UpdateFailed => Some(Expr::Sad),
                 NoticeSort::Greeting(period) => Some(greeting::face(period)),
             };
         }
@@ -1938,6 +1956,10 @@ mod tests {
             (NoticeSort::ShotDeleted, Expr::Idle),
             (NoticeSort::DevicePlugged, Expr::Idle),
             (NoticeSort::DeviceSafe, Expr::Happy),
+            (NoticeSort::UpdateAvailable, Expr::Idle),
+            (NoticeSort::UpdateProgress, Expr::Idle),
+            (NoticeSort::UpdateFailed, Expr::Sad),
+            (NoticeSort::UpdateInfo, Expr::Happy),
         ] {
             let spot = Spot::Notice(sort);
             assert_eq!(e(RobotInputs { spot, ..busy }), Some(expr), "{sort:?}");

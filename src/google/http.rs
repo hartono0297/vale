@@ -83,7 +83,6 @@ impl Http {
     /// a body that must stay under `max_bytes`: it is read in pieces and the
     /// call fails (`Err`) as soon as it grows past that, so a hostile server
     /// cannot make it hold more. The body is read as UTF-8.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn get_with_headers_capped(
         &self,
         url: &str,
@@ -142,6 +141,76 @@ impl Http {
             String::from_utf8_lossy(&body).into_owned(),
             retry_after,
         ))
+    }
+
+    /// GET streamed into the file at `path` (created or truncated once the
+    /// answer is a 2xx; any other status leaves the disk alone and is returned
+    /// as is). The body is read in pieces: past `max_bytes` (counting the
+    /// announced length too) the call fails, and `progress(done, total)` runs
+    /// after each piece, `total` being the Content-Length when the server
+    /// sent one. `self.timeout` is a stall limit here: it restarts after every
+    /// piece, so a long download is fine while a frozen one fails. A failed
+    /// download leaves the partial file; the caller deletes it.
+    pub fn download_to(
+        &self,
+        url: &str,
+        extra: &[(&str, &str)],
+        path: &std::path::Path,
+        max_bytes: u64,
+        mut progress: impl FnMut(u64, Option<u64>),
+    ) -> Result<u16> {
+        use std::io::Write;
+        let request = self.request(&HttpMethod::Get()?, url, None)?;
+        let headers = request.Headers()?;
+        for (name, value) in extra {
+            headers.TryAppendWithoutValidation(&HSTRING::from(*name), &HSTRING::from(*value))?;
+        }
+        let stall = |timeout: Option<Duration>| timeout.map(|t| Instant::now() + t);
+        let deadline = stall(self.timeout);
+        let response = join_by!(
+            self.client
+                .SendRequestWithOptionAsync(&request, HttpCompletionOption::ResponseHeadersRead)?,
+            deadline
+        )?;
+        let status = response.StatusCode()?.0 as u16;
+        if !(200..300).contains(&status) {
+            return Ok(status);
+        }
+        let content = response.Content()?;
+        let total = content
+            .Headers()
+            .and_then(|h| h.ContentLength())
+            .and_then(|n| n.Value())
+            .ok();
+        if total.is_some_and(|n| n > max_bytes) {
+            return Err(Error::new(E_FAIL, "response too large"));
+        }
+        let stream = join_by!(content.ReadAsInputStreamAsync()?, deadline)?;
+        let mut file = std::fs::File::create(path)?;
+        const CHUNK: u32 = 64 * 1024;
+        let mut done: u64 = 0;
+        let mut piece = Vec::new();
+        loop {
+            let deadline = stall(self.timeout);
+            let buffer = join_by!(
+                stream.ReadAsync(&Buffer::Create(CHUNK)?, CHUNK, InputStreamOptions::Partial)?,
+                deadline
+            )?;
+            let len = buffer.Length()? as usize;
+            if len == 0 {
+                break;
+            }
+            if done + len as u64 > max_bytes {
+                return Err(Error::new(E_FAIL, "response too large"));
+            }
+            piece.resize(len, 0);
+            DataReader::FromBuffer(&buffer)?.ReadBytes(&mut piece)?;
+            file.write_all(&piece)?;
+            done += len as u64;
+            progress(done, total);
+        }
+        file.flush()?;
+        Ok(status)
     }
 
     /// `method` is "POST" or "PATCH"; `body` is sent as UTF-8 JSON.
@@ -279,6 +348,52 @@ mod timeout_tests {
             "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi",
         );
         assert_eq!(http.get_json(&url, None).unwrap(), (200, "hi".to_owned()));
+    }
+
+    fn temp_file(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("vale-http-test-{name}-{}", std::process::id()))
+    }
+
+    #[test]
+    fn a_download_streams_into_the_file_and_reports_its_progress() {
+        let http = Http::new().unwrap().with_timeout(Duration::from_secs(10));
+        let path = temp_file("ok");
+        let url = serve_once(
+            Duration::ZERO,
+            "HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\nhello world",
+        );
+        let mut seen = Vec::new();
+        let status = http
+            .download_to(&url, &[], &path, 1024, |done, total| seen.push((done, total)))
+            .unwrap();
+        assert_eq!(status, 200);
+        assert_eq!(std::fs::read(&path).unwrap(), b"hello world");
+        let (done, total) = *seen.last().expect("progress was reported");
+        assert_eq!((done, total), (11, Some(11)));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_download_past_the_cap_fails_and_an_error_status_writes_nothing() {
+        let http = Http::new().unwrap().with_timeout(Duration::from_secs(10));
+        let path = temp_file("cap");
+        let _ = std::fs::remove_file(&path);
+        let url = serve_once(
+            Duration::ZERO,
+            "HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\nhello world",
+        );
+        assert!(http.download_to(&url, &[], &path, 5, |_, _| {}).is_err());
+        let _ = std::fs::remove_file(&path);
+
+        let url = serve_once(
+            Duration::ZERO,
+            "HTTP/1.1 404 Not Found\r\nContent-Length: 2\r\nConnection: close\r\n\r\nno",
+        );
+        let status = http
+            .download_to(&url, &[], &path, 1024, |_, _| {})
+            .unwrap();
+        assert_eq!(status, 404);
+        assert!(!path.exists(), "an error answer must not create the file");
     }
 
     #[test]

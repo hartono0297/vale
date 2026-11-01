@@ -25,7 +25,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{Error, HSTRING, PCSTR, Result, w};
 
 use crate::config::{Config, Style};
-use crate::i18n::{Key, text};
+use crate::i18n::{Key, text, update_menu_install};
 use crate::ui::app_icon;
 
 /// Sent by the shell for mouse activity on the tray icon; `lparam` holds the
@@ -48,14 +48,21 @@ pub enum MenuCmd {
     Search,
     StylePill,
     StyleNotch,
+    /// "Cek pembaruan…": asks GitHub now.
+    CheckUpdate,
+    /// "Update ke X.Y.Z": in the menu in place of `CheckUpdate` while an
+    /// update is known; installs it.
+    InstallUpdate,
     Exit,
 }
 
-const COMMANDS: [MenuCmd; 5] = [
+const COMMANDS: [MenuCmd; 7] = [
     MenuCmd::Settings,
     MenuCmd::Search,
     MenuCmd::StylePill,
     MenuCmd::StyleNotch,
+    MenuCmd::CheckUpdate,
+    MenuCmd::InstallUpdate,
     MenuCmd::Exit,
 ];
 
@@ -74,7 +81,7 @@ impl MenuCmd {
 enum MenuItem {
     Entry {
         cmd: MenuCmd,
-        label: &'static str,
+        label: String,
         checked: bool,
     },
     Separator,
@@ -82,11 +89,21 @@ enum MenuItem {
 
 /// The menu in `cfg.language`, built each time it opens, so it always
 /// shows the current language. Everything else lives in the settings window.
-fn menu_items(cfg: &Config) -> Vec<MenuItem> {
+/// `update`: the version (X.Y.Z) of a known, not yet installed update; its
+/// item then installs it instead of checking again.
+fn menu_items(cfg: &Config, update: Option<&str>) -> Vec<MenuItem> {
     let entry = |cmd, key, checked| MenuItem::Entry {
         cmd,
-        label: text(cfg.language, key),
+        label: text(cfg.language, key).to_owned(),
         checked,
+    };
+    let update_entry = match update {
+        Some(version) => MenuItem::Entry {
+            cmd: MenuCmd::InstallUpdate,
+            label: update_menu_install(cfg.language, version),
+            checked: false,
+        },
+        None => entry(MenuCmd::CheckUpdate, Key::MenuCheckUpdate, false),
     };
     vec![
         entry(MenuCmd::Settings, Key::MenuSettings, false),
@@ -103,6 +120,7 @@ fn menu_items(cfg: &Config) -> Vec<MenuItem> {
             cfg.style == Style::Notch,
         ),
         MenuItem::Separator,
+        update_entry,
         entry(MenuCmd::Exit, Key::MenuExit, false),
     ]
 }
@@ -245,10 +263,10 @@ pub fn refresh_menu_theme() {
 
 /// Shows the menu at the cursor and waits for a choice. Runs a modal message
 /// loop, so the caller must not hold any state borrow across it.
-pub fn show_menu(hwnd: HWND, cfg: &Config) -> Option<MenuCmd> {
+pub fn show_menu(hwnd: HWND, cfg: &Config, update: Option<&str>) -> Option<MenuCmd> {
     unsafe {
         let menu = CreatePopupMenu().ok()?;
-        for item in menu_items(cfg) {
+        for item in menu_items(cfg, update) {
             let _ = match item {
                 MenuItem::Entry {
                     cmd,
@@ -379,12 +397,22 @@ mod tests {
     use super::*;
     use crate::i18n::Lang;
 
-    fn labels(items: &[MenuItem]) -> Vec<&'static str> {
+    fn labels(items: &[MenuItem]) -> Vec<&str> {
         items
             .iter()
             .map(|item| match item {
-                MenuItem::Entry { label, .. } => *label,
+                MenuItem::Entry { label, .. } => label.as_str(),
                 MenuItem::Separator => "-",
+            })
+            .collect()
+    }
+
+    fn commands(items: &[MenuItem]) -> Vec<MenuCmd> {
+        items
+            .iter()
+            .filter_map(|item| match item {
+                MenuItem::Entry { cmd, .. } => Some(*cmd),
+                MenuItem::Separator => None,
             })
             .collect()
     }
@@ -418,7 +446,7 @@ mod tests {
     #[test]
     fn menu_labels_in_order() {
         assert_eq!(
-            labels(&menu_items(&Config::default())),
+            labels(&menu_items(&Config::default(), None)),
             vec![
                 "Pengaturan…",
                 "Cari…",
@@ -426,9 +454,34 @@ mod tests {
                 "Gaya: Pill",
                 "Gaya: Notch",
                 "-",
+                "Cek pembaruan…",
                 "Keluar"
             ]
         );
+    }
+
+    #[test]
+    fn a_known_update_takes_the_place_of_the_check_item() {
+        let id = labels(&menu_items(&Config::default(), Some("3.11.0"))).join("|");
+        assert_eq!(
+            id,
+            "Pengaturan…|Cari…|-|Gaya: Pill|Gaya: Notch|-|Update ke 3.11.0|Keluar"
+        );
+        let en = Config {
+            language: Lang::En,
+            ..Config::default()
+        };
+        let en = labels(&menu_items(&en, Some("3.11.0"))).join("|");
+        assert_eq!(
+            en,
+            "Settings…|Search…|-|Style: Pill|Style: Notch|-|Update to 3.11.0|Quit"
+        );
+        let with = commands(&menu_items(&Config::default(), Some("3.11.0")));
+        assert!(with.contains(&MenuCmd::InstallUpdate));
+        assert!(!with.contains(&MenuCmd::CheckUpdate));
+        let without = commands(&menu_items(&Config::default(), None));
+        assert!(without.contains(&MenuCmd::CheckUpdate));
+        assert!(!without.contains(&MenuCmd::InstallUpdate));
     }
 
     #[test]
@@ -438,7 +491,7 @@ mod tests {
             ..Config::default()
         };
         assert_eq!(
-            labels(&menu_items(&en)),
+            labels(&menu_items(&en, None)),
             vec![
                 "Settings…",
                 "Search…",
@@ -446,6 +499,7 @@ mod tests {
                 "Style: Pill",
                 "Style: Notch",
                 "-",
+                "Check for updates…",
                 "Quit"
             ]
         );
@@ -453,7 +507,7 @@ mod tests {
 
     #[test]
     fn settings_comes_first() {
-        let items = menu_items(&Config::default());
+        let items = menu_items(&Config::default(), None);
         assert!(matches!(
             items.first(),
             Some(MenuItem::Entry {
@@ -467,13 +521,13 @@ mod tests {
     #[test]
     fn checks_follow_config() {
         let pill = Config::default();
-        assert_eq!(checked(&menu_items(&pill)), vec![MenuCmd::StylePill]);
+        assert_eq!(checked(&menu_items(&pill, None)), vec![MenuCmd::StylePill]);
         let notch = Config {
             style: Style::Notch,
             start_with_windows: false,
             ..Config::default()
         };
-        assert_eq!(checked(&menu_items(&notch)), vec![MenuCmd::StyleNotch]);
+        assert_eq!(checked(&menu_items(&notch, None)), vec![MenuCmd::StyleNotch]);
     }
 
     #[test]
@@ -488,14 +542,16 @@ mod tests {
 
     #[test]
     fn every_command_is_in_the_menu() {
-        let items = menu_items(&Config::default());
+        // The install item only shows once an update is known.
+        let mut reachable = commands(&menu_items(&Config::default(), None));
+        reachable.extend(commands(&menu_items(&Config::default(), Some("3.11.0"))));
         for cmd in COMMANDS {
-            assert!(
-                items
-                    .iter()
-                    .any(|item| matches!(item, MenuItem::Entry { cmd: c, .. } if *c == cmd)),
-                "{cmd:?}"
-            );
+            assert!(reachable.contains(&cmd), "{cmd:?}");
+        }
+        // And Quit stays last, update known or not.
+        for update in [None, Some("3.11.0")] {
+            let items = commands(&menu_items(&Config::default(), update));
+            assert_eq!(items.last(), Some(&MenuCmd::Exit));
         }
     }
 
