@@ -1,7 +1,7 @@
 # Vale installer.
 #
 # Install or update (PowerShell, no admin needed):
-#   irm https://raw.githubusercontent.com/hartono0297/dynamic-island/main/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/hartono0297/vale/main/install.ps1 | iex
 #
 # Or run it from an extracted release zip: it then installs the exe next to it
 # instead of downloading.
@@ -14,7 +14,7 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
-$Repo = 'hartono0297/dynamic-island'
+$Repo = 'hartono0297/vale'
 $RawBase = "https://raw.githubusercontent.com/$Repo/main"
 $InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\Vale'
 $Exe = Join-Path $InstallDir 'vale.exe'

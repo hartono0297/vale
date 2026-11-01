@@ -41,7 +41,7 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[screenshot-preview]]: preview matching of the Windows file; Simpan never writes a duplicate (v3.6)
 - [[screenshot-snap]]: own region capture that snaps to windows and boxes, the editor after it, UIA budget, own-copy skip, PrtSc key opens Vale's capture (low-level keyboard hook on its own thread, Settings row, nothing in the registry)
 - [[panel-pages]]
-- [[vale-rename]]
+- [[vale-rename]]: the Vale rename, what keeps the old name, and the 2026-11-01 repo rename to hartono0297/vale
 - [[google-built-in-client]]
 - [[github-pages]]: site/ goes to GitHub Pages through the Actions source (Pages cannot serve site/ directly)
 - [[site-landing]]: the landing page, direction B "dark stage" (dark by default, light toggle) with a working notch: section order, Susun section with a sticky scroll scrub and the pinned-only arrange notch state, 14-tab dock, one scroll loop (hero, Susun, lyric, fitCheck), tokens and contrast in both themes, the shared header/footer/legal markup contract, no-script and reduced motion, `scripts/check-site.py`, what was verified

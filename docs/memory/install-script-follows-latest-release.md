@@ -5,7 +5,7 @@ date: 2026-10-28
 
 # install.ps1 is live at once, but installs the latest release
 
-`irm https://raw.githubusercontent.com/hartono0297/dynamic-island/main/install.ps1 | iex`
+`irm https://raw.githubusercontent.com/hartono0297/vale/main/install.ps1 | iex`
 runs the script from `main` (live a few minutes after a push; the raw URL
 is cached up to about 5 minutes) but downloads the exe from the latest GitHub
 *release*. The two can disagree.

@@ -1,10 +1,10 @@
 # Vale uninstaller.
 #
-#   irm https://raw.githubusercontent.com/hartono0297/dynamic-island/main/uninstall.ps1 | iex
+#   irm https://raw.githubusercontent.com/hartono0297/vale/main/uninstall.ps1 | iex
 #
 # Your data (%APPDATA%\Vale: settings, notes, Google login) is kept.
 # To delete it as well, set DI_PURGE=1 first:
-#   $env:DI_PURGE = '1'; irm https://raw.githubusercontent.com/hartono0297/dynamic-island/main/uninstall.ps1 | iex
+#   $env:DI_PURGE = '1'; irm https://raw.githubusercontent.com/hartono0297/vale/main/uninstall.ps1 | iex
 #
 # Leftovers of Dynamic Island (Vale's name before the rename) are removed too.
 

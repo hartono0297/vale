@@ -15,6 +15,8 @@ GitHub Pages can only serve the repo root or `docs/` from a branch, not a folder
 
 Before pushing a site change, run `python -I scripts/check-site.py` (links, ids, the shared header and footer, no em dash; the workflow does not run it). How the page is built, the notch, the shared markup contract and the colours are in [[site-landing]]. The logo file stays byte-identical to `assets/logo.svg` ([[logo]]).
 
-`404.html` uses relative asset paths like the other pages. On a project site (`user.github.io/dynamic-island/`) GitHub serves it for any missing URL, so on a nested missing path (`/dynamic-island/a/b`) the stylesheet and links resolve against that path and break: the page then shows as plain HTML with working-looking but wrong links. Accepted: a base-path guess in script would not run before the CSS loads, and the site has no nested pages, so only a mistyped deep URL shows it.
+`404.html` uses relative asset paths like the other pages. On a project site (`user.github.io/vale/`) GitHub serves it for any missing URL, so on a nested missing path (`/vale/a/b`) the stylesheet and links resolve against that path and break: the page then shows as plain HTML with working-looking but wrong links. Accepted: a base-path guess in script would not run before the CSS loads, and the site has no nested pages, so only a mistyped deep URL shows it.
+
+The live site is https://hartono0297.github.io/vale/ (moved from /dynamic-island/ with the repo rename on 2026-11-01; Pages URLs are not redirected).
 
 Related: [[install-script-follows-latest-release]]

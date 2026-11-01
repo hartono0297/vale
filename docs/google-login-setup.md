@@ -61,7 +61,7 @@ Vale meminta dua izin Calendar, keduanya termasuk *sensitive scope*:
 
 ## Tahap 2 · Masukkan ke rilis Vale (jalur B)
 
-1. Di GitHub: repo **hartono0297/dynamic-island** → **Settings** →
+1. Di GitHub: repo **hartono0297/vale** → **Settings** →
    **Secrets and variables** → **Actions** → **New repository secret**:
    - `VALE_GOOGLE_CLIENT_ID` = Client ID dari langkah 1.7
    - `VALE_GOOGLE_CLIENT_SECRET` = Client secret dari langkah 1.7

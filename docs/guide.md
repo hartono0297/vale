@@ -11,16 +11,16 @@ Design documents (in Indonesian) are in [`docs/design/`](design/).
 Windows 11, 64-bit. Open **PowerShell** (no admin needed) and run:
 
 ```powershell
-irm https://raw.githubusercontent.com/hartono0297/dynamic-island/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/hartono0297/vale/main/install.ps1 | iex
 ```
 
-The script downloads the latest [release](https://github.com/hartono0297/dynamic-island/releases), checks its SHA-256, installs `vale.exe` (one file, about 2 MB, no runtime needed) to `%LOCALAPPDATA%\Programs\Vale`, adds a Start Menu shortcut and starts the island.
+The script downloads the latest [release](https://github.com/hartono0297/vale/releases), checks its SHA-256, installs `vale.exe` (one file, about 2 MB, no runtime needed) to `%LOCALAPPDATA%\Programs\Vale`, adds a Start Menu shortcut and starts the island.
 
 - **Update:** Vale checks GitHub for a newer release once a day (Settings → About → *Check for updates automatically*, on by default) and offers it in the notch with an *Update* button. The tray menu (*Check for updates…*, then *Update to X.Y.Z*) and Settings → About → *Check now* do the same on demand. Installing downloads `vale.exe` and its `.sha256` from the release, checks the hash, swaps the exe in place and restarts Vale; if anything fails the old exe stays and the notice links to the release page. Debug builds never check. Running the install line again also updates. Your settings, notes and Google login are kept.
 - **Without the script:** download `vale-v<version>.zip` from Releases, extract it, right-click `install.ps1` → *Run with PowerShell*. The exe also runs from any folder.
 - **Uninstall:**
   ```powershell
-  irm https://raw.githubusercontent.com/hartono0297/dynamic-island/main/uninstall.ps1 | iex
+  irm https://raw.githubusercontent.com/hartono0297/vale/main/uninstall.ps1 | iex
   ```
   This removes the island's Claude Code hooks, autostart, shortcut and program folder. Your data stays; run `$env:DI_PURGE = '1'` first to delete it too.
 - **SmartScreen:** the exe is not code-signed. If Windows warns about a downloaded exe, choose *More info → Run anyway*.

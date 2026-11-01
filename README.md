@@ -6,10 +6,10 @@
 Music with synced lyrics, calendar, clipboard history, volume mixer, file shelf, quick search and more, one hover away.</p>
 
 <p align="center">
-  <a href="https://github.com/hartono0297/dynamic-island/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/hartono0297/dynamic-island?style=flat-square&color=c8644a"></a>
-  <a href="https://github.com/hartono0297/dynamic-island/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/hartono0297/dynamic-island/total?style=flat-square&color=c8644a"></a>
-  <a href="https://github.com/hartono0297/dynamic-island/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/hartono0297/dynamic-island?style=flat-square&color=c8644a"></a>
-  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/github/license/hartono0297/dynamic-island?style=flat-square&color=c8644a"></a>
+  <a href="https://github.com/hartono0297/vale/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/hartono0297/vale?style=flat-square&color=c8644a"></a>
+  <a href="https://github.com/hartono0297/vale/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/hartono0297/vale/total?style=flat-square&color=c8644a"></a>
+  <a href="https://github.com/hartono0297/vale/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/hartono0297/vale?style=flat-square&color=c8644a"></a>
+  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/github/license/hartono0297/vale?style=flat-square&color=c8644a"></a>
   <img alt="Windows 11" src="https://img.shields.io/badge/Windows-11-c8644a?style=flat-square">
   <img alt="Rust, about 2 MB, no runtime" src="https://img.shields.io/badge/Rust-2%20MB-c8644a?style=flat-square">
 </p>
@@ -38,14 +38,14 @@ Music with synced lyrics, calendar, clipboard history, volume mixer, file shelf,
 Windows 11, 64-bit. Open **PowerShell** (no admin needed) and run:
 
 ```powershell
-irm https://raw.githubusercontent.com/hartono0297/dynamic-island/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/hartono0297/vale/main/install.ps1 | iex
 ```
 
-The script downloads the latest [release](https://github.com/hartono0297/dynamic-island/releases/latest), checks its SHA-256, installs `vale.exe` to `%LOCALAPPDATA%\Programs\Vale`, adds a Start Menu shortcut and starts it. Vale then sits at the top centre of your screen, with an icon in the tray.
+The script downloads the latest [release](https://github.com/hartono0297/vale/releases/latest), checks its SHA-256, installs `vale.exe` to `%LOCALAPPDATA%\Programs\Vale`, adds a Start Menu shortcut and starts it. Vale then sits at the top centre of your screen, with an icon in the tray.
 
 - **First run:** Windows asks for access to your notifications; allow it so toasts show in the notch.
 - **Update:** Vale checks GitHub about once a day and offers a new version in the notch; the tray menu and Settings → About have *Check for updates*. *Update* downloads the release, checks its SHA-256, swaps the exe and restarts Vale (no GitHub page, no reinstall). Running the install line again also works. Settings, notes and your Google login are kept.
-- **Without the script:** download `vale-<version>.zip` from [Releases](https://github.com/hartono0297/dynamic-island/releases/latest), extract it, right-click `install.ps1` → *Run with PowerShell*. The exe also runs from any folder.
+- **Without the script:** download `vale-<version>.zip` from [Releases](https://github.com/hartono0297/vale/releases/latest), extract it, right-click `install.ps1` → *Run with PowerShell*. The exe also runs from any folder.
 - **SmartScreen:** the exe is not code-signed yet. If Windows warns about it, choose *More info → Run anyway*.
 - **Coming from Dynamic Island** (Vale's old name): installing Vale replaces it and moves your data to `%APPDATA%\Vale`.
 
@@ -54,7 +54,7 @@ The script downloads the latest [release](https://github.com/hartono0297/dynamic
 Open **PowerShell** and run:
 
 ```powershell
-irm https://raw.githubusercontent.com/hartono0297/dynamic-island/main/uninstall.ps1 | iex
+irm https://raw.githubusercontent.com/hartono0297/vale/main/uninstall.ps1 | iex
 ```
 
 This quits Vale and removes its program folder, Start Menu shortcut, autostart entry and its Claude Code hooks. **Your data is kept** in `%APPDATA%\Vale` (settings, notes, reminders, clipboard and notification history, Google login), so a later install picks up where you left off.
@@ -62,7 +62,7 @@ This quits Vale and removes its program folder, Start Menu shortcut, autostart e
 To remove your data as well:
 
 ```powershell
-$env:DI_PURGE = '1'; irm https://raw.githubusercontent.com/hartono0297/dynamic-island/main/uninstall.ps1 | iex
+$env:DI_PURGE = '1'; irm https://raw.githubusercontent.com/hartono0297/vale/main/uninstall.ps1 | iex
 ```
 
 Offline, the copy of the script installed next to Vale does the same:
