@@ -604,6 +604,10 @@ impl Painter<'_> {
             self.fill_round(r, CONTROL_RADIUS, self.p.field, 1.0);
             self.stroke_round(r, CONTROL_RADIUS, self.p.border);
         }
+        for g in &l.glyphs {
+            let a = if g.quiet { 0.45 } else { 1.0 };
+            self.icon(g.icon, g.rect, g.rect.w, self.tone(g.tone), a, false);
+        }
         if let Some(r) = l.cat_preview {
             self.cat_preview(r, s);
         }
