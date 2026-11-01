@@ -2089,6 +2089,173 @@ mod tests {
         assert_eq!(BLINK_MS, 120);
     }
 
+    /// The eyes' blink run until `blinks` shuts have happened: `(time the
+    /// timer fired, shut after that, wait until the next firing)`, from an
+    /// open start at time 0 (the first firing comes after the open wait).
+    fn eyes_blink_run(seed: u64, blinks: usize) -> Vec<(u64, bool, u32)> {
+        let mut rng = Rng::new(seed);
+        let mut state = EyesBlink::default();
+        let mut t = u64::from(EyesBlink::open_wait(&mut rng));
+        let mut log = Vec::new();
+        let mut shuts = 0;
+        while shuts < blinks {
+            let wait = state.next(&mut rng);
+            log.push((t, state.shut(), wait));
+            if state.shut() {
+                shuts += 1;
+            }
+            t += u64::from(wait);
+        }
+        log
+    }
+
+    #[test]
+    fn the_eyes_open_wait_is_three_to_six_seconds() {
+        assert_eq!((EYES_BLINK_MIN_MS, EYES_BLINK_MAX_MS), (3_000, 6_000));
+        for seed in 0..200u64 {
+            let mut rng = Rng::new(seed);
+            for _ in 0..20 {
+                let w = EyesBlink::open_wait(&mut rng);
+                assert!((3_000..=6_000).contains(&w), "{w}");
+            }
+            // And the wait after the last shut of a blink (next from Shut).
+            let mut state = EyesBlink::Shut {
+                second_follows: false,
+            };
+            let w = state.next(&mut rng);
+            assert!((3_000..=6_000).contains(&w), "{w}");
+            assert_eq!(state, EyesBlink::Open);
+            assert!(!state.shut());
+        }
+        // Spread over the range, not stuck.
+        let mut rng = Rng::new(7);
+        let waits: Vec<u32> = (0..500).map(|_| EyesBlink::open_wait(&mut rng)).collect();
+        assert!(waits.iter().any(|w| *w < 3_500) && waits.iter().any(|w| *w > 5_500));
+    }
+
+    #[test]
+    fn a_blink_shuts_the_eyes_for_the_blink_time() {
+        // Open -> Shut: the shut lasts BLINK_MS (120 ms) before the next step.
+        for seed in 0..100u64 {
+            let mut rng = Rng::new(seed);
+            let mut state = EyesBlink::default();
+            assert!(!state.shut());
+            assert_eq!(state.next(&mut rng), BLINK_MS);
+            assert!(state.shut());
+        }
+    }
+
+    #[test]
+    fn about_a_quarter_of_the_eyes_blinks_are_doubles() {
+        let mut rng = Rng::new(12345);
+        let mut state = EyesBlink::default();
+        let (mut blinks, mut doubles) = (0u32, 0u32);
+        for _ in 0..20_000 {
+            let was_open = state == EyesBlink::Open;
+            state.next(&mut rng);
+            if was_open {
+                blinks += 1;
+                if let EyesBlink::Shut { second_follows } = state {
+                    doubles += u32::from(second_follows);
+                }
+            }
+            if blinks == 1000 {
+                break;
+            }
+        }
+        assert_eq!(blinks, 1000);
+        let share = doubles as f32 / blinks as f32;
+        assert!((0.15..=0.35).contains(&share), "{doubles} of {blinks}");
+        // Over many seeds too, not one lucky stream.
+        let total: u32 = (0..100u64)
+            .map(|seed| {
+                let mut rng = Rng::new(seed * 7919 + 3);
+                (0..40)
+                    .filter(|_| {
+                        let mut s = EyesBlink::Open;
+                        s.next(&mut rng);
+                        s == EyesBlink::Shut {
+                            second_follows: true,
+                        }
+                    })
+                    .count() as u32
+            })
+            .sum();
+        let share = total as f32 / 4000.0;
+        assert!((0.15..=0.35).contains(&share), "{total} of 4000");
+    }
+
+    #[test]
+    fn a_double_blinks_second_shut_starts_260_ms_after_the_first() {
+        let mut found = 0;
+        for seed in 0..40u64 {
+            let log = eyes_blink_run(seed, 60);
+            for w in log.windows(3) {
+                let (first, gap, second) = (w[0], w[1], w[2]);
+                // The gap's wait is what is left of the 260 ms: a double.
+                if first.1 && !gap.1 && first.2 == BLINK_MS && gap.2 == EYES_DOUBLE_MS - BLINK_MS
+                {
+                    assert!(second.1, "the second shut follows the gap");
+                    assert_eq!(gap.0 - first.0, u64::from(BLINK_MS));
+                    assert_eq!(second.0 - first.0, 260, "seed {seed}");
+                    assert_eq!(second.2, BLINK_MS);
+                    found += 1;
+                }
+            }
+        }
+        assert_eq!(EYES_DOUBLE_MS, 260);
+        assert!(found > 20, "{found} doubles seen");
+    }
+
+    #[test]
+    fn a_single_blink_goes_straight_back_to_open() {
+        let mut found = 0;
+        for seed in 0..40u64 {
+            let log = eyes_blink_run(seed, 60);
+            for pair in log.windows(2) {
+                // Shut, then open with the 3 to 6 s wait ahead: no gap.
+                if pair[0].1 && !pair[1].1 && pair[1].2 >= EYES_BLINK_MIN_MS {
+                    assert_eq!(pair[1].0 - pair[0].0, u64::from(BLINK_MS));
+                    found += 1;
+                }
+            }
+        }
+        assert!(found > 100, "{found}");
+    }
+
+    #[test]
+    fn the_eyes_boxes_follow_the_offset_and_stay_in_the_pill() {
+        use super::super::geometry::{EYES_W, ShapeKind, shape_for};
+        for style in [Style::Pill, Style::Notch] {
+            let pill = shape_for(style, ShapeKind::Eyes);
+            let centre = eyes_centre(pill);
+            assert_eq!(centre, (pill.x + EYES_W / 2.0, pill.y + EYES_H / 2.0));
+            for blink in [false, true] {
+                let still = eyes_boxes_at(centre, 0.0, 0.0, blink);
+                let slid = eyes_boxes_at(centre, 3.0, 1.0, blink);
+                assert_eq!(still.len(), 2, "two eyes");
+                for (a, b) in still.iter().zip(&slid) {
+                    assert!((b.0 - a.0 - 3.0).abs() < 1e-4 && (b.1 - a.1 - 1.0).abs() < 1e-4);
+                    assert!((b.2 - a.2 - 3.0).abs() < 1e-4 && (b.3 - a.3 - 1.0).abs() < 1e-4);
+                }
+                // Centred, the eyes are symmetric about the pill's middle.
+                let (left, right) = (still[0], still[1]);
+                assert!(((centre.0 - left.0) - (right.2 - centre.0)).abs() < 1e-4);
+            }
+            // An open eye is 8 dip tall; the blink's lines are far flatter.
+            let open = eyes_boxes_at(centre, 0.0, 0.0, false);
+            assert!((open[0].3 - open[0].1 - 8.0).abs() < 1e-4);
+            let shut = eyes_boxes_at(centre, 0.0, 0.0, true);
+            assert!(shut[0].3 - shut[0].1 < 2.0);
+            // A request in range passes untouched, one past it is cut back
+            // (and NaN is no slide).
+            assert_eq!(eyes_offset_in(style, pill, 4.0, 1.5), (4.0, 1.5));
+            let (x, y) = eyes_offset_in(style, pill, 40.0, -40.0);
+            assert!(x > 0.0 && x < 40.0 && y < 0.0 && y > -40.0, "{x} {y}");
+            assert_eq!(eyes_offset_in(style, pill, f32::NAN, f32::NAN), (0.0, 0.0));
+        }
+    }
+
     #[test]
     fn sleep_schedule() {
         let t0 = Instant::now();
