@@ -16,7 +16,7 @@ pub mod win;
 
 /// A rectangle in physical pixels (virtual-screen coordinates for the
 /// frame and the candidates, image coordinates inside a crop).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Rect {
     pub x: i32,
     pub y: i32,

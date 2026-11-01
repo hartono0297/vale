@@ -931,6 +931,8 @@ pub fn badge_style(notice: &Notice, p: &Palette, pomo_next: Phase) -> BadgeStyle
         NoticeKind::DevicePlugged { .. } => tint(p.accent, Icon::Usb),
         // With the robot off: a check, in sage.
         NoticeKind::DeviceSafe => tint(p.sage, Icon::Check),
+        // With the robot off: the Susun layout icon, in the accent.
+        NoticeKind::Arranged { .. } => tint(p.accent, Icon::Layout),
         // Drawn by the robot; this badge only shows if it is turned off meanwhile.
         NoticeKind::Greeting { .. } => tint(p.accent, Icon::Sparkle),
         // With the robot off: the Clipboard icon, as on the Pintasan tile.

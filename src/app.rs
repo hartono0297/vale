@@ -55,6 +55,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{PCWSTR, PWSTR, w};
 
+use crate::arrange_overlay;
 use crate::audio;
 use crate::behind;
 use crate::calendar::sync::{SyncHandle, SyncRequest, post_status, save_failed_notice, spawn_sync};
@@ -100,16 +101,15 @@ use crate::ui::cli_input::{self, CliInput, Key as InputKey, WM_APP_CLI_REDRAW};
 use crate::ui::editor::{self, EditorKind, EditorResult, WM_APP_EDITOR_RESULT};
 use crate::ui::frame_clock::{FrameClock, WM_APP_FRAME};
 use crate::ui::geometry::{
-    AA_MARGIN, ANIM_MS, LYRIC_HOLD_MS, LYRIC_MAX_W, LYRIC_MIN_W, NOTCH_H_DEFAULT,
-    NOTCH_W_DEFAULT, NotchSize, ShapeKind, ShapeRect, Under, WINDOW_W, island_contains, lerp_shape,
-    lyric_box_w, lyric_cap, lyric_max_w, lyric_scroll_end_ms, lyric_scroll_offset,
-    lyric_shape_sized, lyric_target_w, lyric_width_min, panel_kind, shape_for, shape_sized,
-    shape_with_robot_sized,
+    AA_MARGIN, ANIM_MS, LYRIC_HOLD_MS, LYRIC_MAX_W, LYRIC_MIN_W, NOTCH_H_DEFAULT, NOTCH_W_DEFAULT,
+    NotchSize, ShapeKind, ShapeRect, Under, WINDOW_W, island_contains, lerp_shape, lyric_box_w,
+    lyric_cap, lyric_max_w, lyric_scroll_end_ms, lyric_scroll_offset, lyric_shape_sized,
+    lyric_target_w, lyric_width_min, panel_kind, shape_for, shape_sized, shape_with_robot_sized,
 };
 use crate::ui::motion::{
-    FadeStart, PAGE_FADE_MS, Reveal, SlideStrip, Snap, SubView, Transit, Transition,
-    MorphCurve, content_alpha_from, ease_in_out_cubic, fade_floor, mole_code, morph_timing,
-    page_fade_frame, panel_fade, transition,
+    FadeStart, MorphCurve, PAGE_FADE_MS, Reveal, SlideStrip, Snap, SubView, Transit, Transition,
+    content_alpha_from, ease_in_out_cubic, fade_floor, mole_code, morph_timing, page_fade_frame,
+    panel_fade, transition,
 };
 use crate::ui::notch_fill;
 use crate::ui::panel_layout::{CliHead, cli_layout};
@@ -131,6 +131,10 @@ use clip::{ClipSetting, ClipState, SEARCH_LIMIT};
 #[path = "app_devices.rs"]
 mod devices_page;
 use devices_page::{DevicesState, HOTKEY_DEVICES, TIMER_DEVICES};
+
+#[path = "app_arrange.rs"]
+mod arrange_page;
+use arrange_page::{ArrangeState, HOTKEY_ARRANGE};
 
 #[path = "app_dock.rs"]
 mod dock_page;
@@ -296,6 +300,7 @@ thread_local! {
     static DEFERRED_CLIP: RefCell<Vec<InputKey>> = const { RefCell::new(Vec::new()) };
     static DEFERRED_NOTIF: RefCell<Vec<InputKey>> = const { RefCell::new(Vec::new()) };
     static DEFERRED_SEARCH: RefCell<Vec<InputKey>> = const { RefCell::new(Vec::new()) };
+    static DEFERRED_ARRANGE: RefCell<Vec<(usize, isize)>> = const { RefCell::new(Vec::new()) };
     /// The tray menu's modal loop is running; a second click must not nest another.
     static MENU_OPEN: Cell<bool> = const { Cell::new(false) };
 }
@@ -438,6 +443,7 @@ pub fn run(media_log_flag: bool) {
             shelf: ShelfState::default(),
             dock: DockState::default(),
             devices: DevicesState::default(),
+            arrange: ArrangeState::default(),
             prtsc: PrtscState::default(),
             pomo_timer: false,
             clock_timer: false,
@@ -507,6 +513,7 @@ pub fn run(media_log_flag: bool) {
         app.notif_start();
         app.sync_search_hotkey();
         app.devices_start();
+        app.arrange_start();
         app.sync_prtsc_hook();
         app.draw(now);
         app.request_calendar(app.state.cal_range(), now);
@@ -742,6 +749,9 @@ struct App {
     /// The Devices page: the drives, their worker and the page's state
     /// (`app_devices`).
     devices: DevicesState,
+    /// The Susun page: monitors, the pick step, the mover's results, the
+    /// name field and the hotkey (`app_arrange`).
+    arrange: ArrangeState,
     /// The PrtSc key and whether Vale holds it (`app_prtsc`).
     prtsc: PrtscState,
     pomo_timer: bool,
@@ -1000,7 +1010,11 @@ impl App {
             // (`system.raised`) unless a muted app's.
             samples += usize::from(matches!(
                 event,
-                Event::SystemSample(_) | Event::Audio(..) | Event::Devices(_) | Event::Toast(_)
+                Event::SystemSample(_)
+                    | Event::Audio(..)
+                    | Event::Devices(_)
+                    | Event::Arrange(_)
+                    | Event::Toast(_)
             ));
             self.apply(event, now);
         }
@@ -1079,6 +1093,10 @@ impl App {
                 }
                 Event::Devices(event) => {
                     self.on_devices_event(event, now);
+                    continue;
+                }
+                Event::Arrange(event) => {
+                    self.on_arrange_event(event, now);
                     continue;
                 }
                 // The notch notice and the history entry are decided here.
@@ -1611,6 +1629,13 @@ impl App {
             Effect::DeviceOpen(i) => self.devices_open(i),
             Effect::DeviceDetail(i) => self.devices_toggle_detail(i),
             Effect::DevicesEjectAll => self.devices_eject_all(),
+            Effect::ArrangeMonitor(i) => self.arrange_pick_monitor(i),
+            Effect::ArrangeCard(i) => self.arrange_card(i),
+            Effect::ArrangePlay(i) => self.arrange_play(i),
+            Effect::ArrangeWindow(i) => self.arrange_window(i),
+            Effect::ArrangeSkip => self.arrange_skip(),
+            Effect::ArrangeUndo => self.arrange_undo(),
+            Effect::ArrangeSave => self.arrange_save(),
             Effect::OpenCleaner => self.scan_clean(),
             Effect::CleanDelete(cats) => return self.start_clean(cats),
             Effect::SaveCleanMode(mode) => {
@@ -2263,7 +2288,9 @@ impl App {
         self.on_cli_changed();
         self.on_clip_changed();
         self.on_notif_changed();
-        if self.state.search_open() {
+        // The search's field is also Susun's name field, which is up with
+        // the search closed.
+        if self.state.search_open() || self.arrange_naming() {
             self.on_search_changed();
         }
     }
@@ -3406,6 +3433,7 @@ impl App {
         self.sync_mixer();
         self.sync_shelf();
         self.sync_devices();
+        self.sync_arrange();
         self.sync_notif();
         self.sync_outside_timer();
         self.sync_behind(now);
@@ -4343,6 +4371,10 @@ impl App {
             return;
         }
         self.dock_follow(lparam);
+        if self.state.view() == View::Panel(Page::Arrange) {
+            let hit = self.hit_at(lparam);
+            self.arrange_hover(hit.as_ref());
+        }
         if self.state.view() == View::Panel(Page::Clipboard) {
             let hit = self.hit_at(lparam);
             self.clip_hover(client_xy(lparam), hit.as_ref());
@@ -4397,6 +4429,7 @@ impl App {
         }
         self.click.clear();
         self.dock_leave();
+        self.arrange_hover(None);
         self.shelf_release();
         self.middle_down = false;
         self.bata.brain.hover(false, Instant::now());
@@ -4622,6 +4655,12 @@ impl App {
         {
             // The cards scrolled (or an end spent the notch).
         } else if over_devices
+            && self.state.view() == View::Panel(Page::Arrange)
+            && self.arrange_wheel(delta)
+        {
+            // The Susun list scrolled; with everything fitting, the notch
+            // turns the page below.
+        } else if over_devices
             && self.state.view() == View::Panel(Page::Devices)
             && self.devices_wheel(delta)
         {
@@ -4723,6 +4762,7 @@ impl App {
             self.sync_search_hotkey();
         }
         self.devices_follow_config();
+        self.arrange_follow_config();
         // The PrtSc setting may have been edited by hand too (or toggled).
         self.prtsc_follow_config();
         if changed && let Some(sync) = &self.sync {
@@ -4780,6 +4820,7 @@ impl App {
             clip_hotkey_failed: self.clip_hotkey_failed(),
             search_hotkey_failed: self.search.hotkey_failed,
             devices_hotkey_failed: self.devices.hotkey_failed,
+            arrange_hotkey_failed: self.arrange.hotkey_failed,
             prtsc: self.prtsc_model(),
             ..settings::Model::from_config(&self.config)
         }
@@ -4921,6 +4962,31 @@ impl App {
                 self.config.devices_hotkey = h;
                 self.save_config();
                 self.sync_devices_hotkey();
+            }
+            SettingsAction::ArrangeHotkey(h) => {
+                self.config.arrange.hotkey = h;
+                self.save_config();
+                self.sync_arrange_hotkey();
+                self.sync_settings();
+            }
+            // The thumb moves live; only the release is saved.
+            SettingsAction::ArrangeGap { gap, commit } => {
+                self.config.arrange.gap = gap;
+                if commit {
+                    self.save_config();
+                }
+            }
+            SettingsAction::ArrangeTemplates(list) => {
+                self.config.arrange.templates = list;
+                self.save_config();
+                self.sync_settings();
+                self.arrange_config_changed();
+            }
+            SettingsAction::ArrangeSaved(list) => {
+                self.config.arrange.saved = list;
+                self.save_config();
+                self.sync_settings();
+                self.arrange_config_changed();
             }
             SettingsAction::OpenMode(mode) => {
                 self.config.open_mode = mode;
@@ -5156,6 +5222,7 @@ impl App {
             shelf: &self.shelf.cards,
             shelf_drag: self.shelf.dragging,
             shelf_motion: &self.shelf.motion,
+            arrange: App::arrange_view(&self.arrange, &self.config, self.search_input.as_ref()),
             devices: DevicesView {
                 list: &self.devices.list,
                 ejecting: &self.devices.ejecting,
@@ -6555,6 +6622,9 @@ fn run_deferred() {
     for key in DEFERRED_SEARCH.take() {
         deliver_search_key(key);
     }
+    for (code, data) in DEFERRED_ARRANGE.take() {
+        with_app(|app| app.on_arrange_msg(code, data));
+    }
     if DEFERRED_CLI_REDRAW.take() {
         with_app(App::on_input_changed);
     }
@@ -6861,6 +6931,13 @@ unsafe extern "system" fn wnd_proc(
             }
             LRESULT(0)
         }
+        arrange_overlay::WM_APP_ARRANGE => {
+            let (code, data) = (wparam.0, lparam.0);
+            if with_app(|app| app.on_arrange_msg(code, data)).is_none() {
+                DEFERRED_ARRANGE.with_borrow_mut(|queue| queue.push((code, data)));
+            }
+            LRESULT(0)
+        }
         WM_APP_CLI_REDRAW => {
             if with_app(App::on_input_changed).is_none() {
                 DEFERRED_CLI_REDRAW.set(true);
@@ -6878,6 +6955,8 @@ unsafe extern "system" fn wnd_proc(
                 with_app(App::on_search_hotkey);
             } else if wparam.0 as i32 == HOTKEY_DEVICES {
                 with_app(App::on_devices_hotkey);
+            } else if wparam.0 as i32 == HOTKEY_ARRANGE {
+                with_app(App::on_arrange_hotkey);
             }
             LRESULT(0)
         }
@@ -6985,6 +7064,7 @@ unsafe extern "system" fn wnd_proc(
             with_app(App::notif_shutdown);
             with_app(App::search_shutdown);
             with_app(App::devices_shutdown);
+            with_app(App::arrange_shutdown);
             with_app(App::prtsc_shutdown);
             unsafe {
                 let _ = WTSUnRegisterSessionNotification(hwnd);

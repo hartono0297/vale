@@ -67,6 +67,7 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[cat-colours-and-surfaces]]: four coats (Terracotta, Calico, White, Black), five island surfaces plus "follow the cat", contrast numbers, lenient config (v3.8)
 - [[cat-accessories]]: seven accessories, the one-silhouette paint order (rim, ears and head, calico patches cut to the whole silhouette, marks, accessories), the rejected mockups, the clamp test (v3.8)
 - [[eq-follow-audio]]: the compact view's equalizer bars follow the real music (WASAPI loopback, five bands, per-band auto-gain, `eq-capture` thread only while `TIMER_EQ` runs and "Equalizer ikut irama" is on, sine fallback)
+- [[arrange]]: Susun (v3.10), the window layouts: tree model with built-ins, gap maths, pick step with a click-through-gotcha overlay, mover on a worker with frame compensation and undo, saved arrangements, hotkey id 4, Page::ALL 14 / Shortcut::ALL 22
 - [[settings-structure]]: Settings in eight sections (Umum, Tampilan, Kucing, Panel, Clipboard, Fitur, Integrasi, Tentang), titled cards, renamed labels, which sections scroll (v3.8)
 - [[lyrics-lookup]]: LRCLIB 503 + Retry-After retry (30 s budget), step order (field search, get, free-text search), None vs transient, the Artist - Title split, consensus pick of the best-synced version, `.none3`
 

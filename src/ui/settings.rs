@@ -67,18 +67,20 @@ use super::frame_clock::{FrameClock, WM_APP_FRAME};
 use super::robot::{Motion, sleep_step};
 use super::settings_controls::{Gfx, Scene, ease};
 use super::settings_layout::{
-    CLIENT_H, CLIENT_W, CatFace, Control, DragView, Field, GUIDE_URL, GoogleState, Group, Hit,
-    Layout, List, PrtscRow, RELEASES_URL, REPO_URL, ROW_H, ReorderRow, Section, SliderId, State,
-    TileForm, Tone, battery_step, clip_items_step, disk_warn_step, drop_index, layout,
-    notif_items_step, ram_warn_step, scroll_by, shot_secs_step, slider_value,
+    CLIENT_H, CLIENT_W, CanvasPress, CatFace, Control, DragView, EditView, Field, GUIDE_URL,
+    GoogleState, Group, Hit, Layout, List, PrtscRow, RELEASES_URL, REPO_URL, ROW_H, ReorderRow,
+    Section, SliderId, State, TileForm, Tone, battery_step, canvas_drag, canvas_press,
+    clip_items_step, disk_warn_step, drop_index, layout, notif_items_step, ram_warn_step,
+    scroll_by, shot_secs_step, slider_value,
 };
+use crate::arrange::{self, ArrangeSettings, CustomTemplate, Node, SavedArrangement};
 use crate::calendar::CalStatus;
 use crate::claude::install::{self, InstallOutcome, UninstallOutcome};
 use crate::cli::Shell;
 use crate::cli_folders::CliStart;
 use crate::config::{
-    ClipHotkey, ClipboardSettings, Config, DevicesHotkey, NotchFill, NotifSettings, OpenMode,
-    ScreenshotSettings, SearchHotkey, ShotIgnore, ShotTool, Style,
+    ArrangeHotkey, ClipHotkey, ClipboardSettings, Config, DevicesHotkey, NotchFill, NotifSettings,
+    OpenMode, ScreenshotSettings, SearchHotkey, ShotIgnore, ShotTool, Style,
 };
 use crate::google::client;
 use crate::i18n::{Key, Lang, text};
@@ -152,6 +154,15 @@ pub enum Action {
     /// and the Devices page's hotkey.
     DeviceNotices(bool),
     DevicesHotkey(DevicesHotkey),
+    /// Settings -> Fitur -> Susun: the hotkey, the gap (`commit` false while
+    /// the thumb moves), and the whole lists after an edit.
+    ArrangeHotkey(ArrangeHotkey),
+    ArrangeGap {
+        gap: u32,
+        commit: bool,
+    },
+    ArrangeTemplates(Vec<CustomTemplate>),
+    ArrangeSaved(Vec<SavedArrangement>),
     ClipNotice(bool),
     ClipFeedbackAll(bool),
     /// "Hapus riwayat": every entry that is not pinned.
@@ -307,6 +318,10 @@ pub struct Model {
     pub devices_hotkey: DevicesHotkey,
     /// The chosen Devices hotkey could not be registered.
     pub devices_hotkey_failed: bool,
+    /// Registering the Susun hotkey failed (another app has it).
+    pub arrange_hotkey_failed: bool,
+    /// Susun's hotkey, gap, templates and saved arrangements.
+    pub arrange: ArrangeSettings,
     /// What the PrtSc row says when the key is wanted but its hook failed.
     pub prtsc: PrtscRow,
     pub robot: bool,
@@ -365,6 +380,8 @@ impl Model {
             device_notices: cfg.device_notices,
             devices_hotkey: cfg.devices_hotkey,
             devices_hotkey_failed: false,
+            arrange_hotkey_failed: false,
+            arrange: cfg.arrange.clone(),
             prtsc: PrtscRow::Plain,
             robot: cfg.robot,
             robot_motion: cfg.robot_animation,
@@ -554,6 +571,23 @@ struct Drag {
     top: f32,
 }
 
+/// What the template editor is for.
+enum EditTarget {
+    New,
+    Template(usize),
+    /// A saved arrangement's name (no canvas).
+    Rename(usize),
+}
+
+/// The template editor while it is open (Fitur -> Susun).
+struct ArrangeEdit {
+    target: EditTarget,
+    root: Node,
+    selected: usize,
+    /// A divider in hand, by its path.
+    drag: Option<Vec<bool>>,
+}
+
 struct Settings {
     hwnd: HWND,
     owner: HWND,
@@ -597,6 +631,8 @@ struct Settings {
     tile_note: Option<Key>,
     /// A row held by its drag handle.
     drag: Option<Drag>,
+    /// The template editor (or the rename field) while it is open.
+    arrange_edit: Option<ArrangeEdit>,
     /// `%APPDATA%\Vale`, or the old folder while a failed migration keeps it.
     data_label: String,
     /// Small and large window icons, owned (not shared) and destroyed with the window.
@@ -897,6 +933,7 @@ pub fn open(owner: HWND, model: Model, section: Option<Section>) -> Result<HWND>
         tile_form: None,
         tile_note: None,
         drag: None,
+        arrange_edit: None,
         data_label: crate::data_dir::label(&crate::data_dir::dir()),
         icons: [HICON::default(); 2],
         styled_light: None,
@@ -1206,6 +1243,14 @@ impl Settings {
             device_notices: m.device_notices,
             devices_hotkey: m.devices_hotkey,
             devices_hotkey_failed: m.devices_hotkey_failed,
+            arrange_hotkey_failed: m.arrange_hotkey_failed,
+            arrange: m.arrange.clone(),
+            arrange_edit: self.arrange_edit.as_ref().map(|e| EditView {
+                rename: matches!(e.target, EditTarget::Rename(_)),
+                root: e.root.clone(),
+                selected: e.selected,
+                name_ok: arrange::clean_name(&self.field_text[2]).is_some(),
+            }),
             prtsc: m.prtsc,
             battery_threshold: m.battery_threshold,
             has_battery: self.has_battery,
@@ -1357,6 +1402,10 @@ impl Settings {
                     .iter()
                     .position(|v| *v == m.devices_hotkey)
                     .unwrap_or(0) as f32,
+                Group::ArrangeHotkey => ArrangeHotkey::ALL
+                    .iter()
+                    .position(|v| *v == m.arrange.hotkey)
+                    .unwrap_or(0) as f32,
                 Group::ShotIgnore => usize::from(m.shot.on_ignore == ShotIgnore::Delete) as f32,
                 // The form's own choice, not the model's.
                 Group::TileKind => 0.0,
@@ -1376,6 +1425,7 @@ impl Settings {
             Group::ClipHotkey,
             Group::SearchHotkey,
             Group::DevicesHotkey,
+            Group::ArrangeHotkey,
             Group::ShotIgnore,
             Group::ShotTool,
         ] {
@@ -1596,6 +1646,7 @@ impl Settings {
             SliderId::NotchWidth => self.model.notch_width as i32,
             SliderId::NotchHeight => self.model.notch_height as i32,
             SliderId::NotchOpacity => i32::from(self.model.notch_opacity),
+            SliderId::ArrangeGap => self.model.arrange.gap as i32,
         }
     }
 
@@ -1609,6 +1660,10 @@ impl Settings {
             },
             SliderId::NotchOpacity => Action::NotchOpacity {
                 pct: self.model.notch_opacity,
+                commit,
+            },
+            SliderId::ArrangeGap => Action::ArrangeGap {
+                gap: self.model.arrange.gap,
                 commit,
             },
         }
@@ -1629,6 +1684,7 @@ impl Settings {
             SliderId::NotchWidth => self.model.notch_width = value as u32,
             SliderId::NotchHeight => self.model.notch_height = value as u32,
             SliderId::NotchOpacity => self.model.notch_opacity = value as u8,
+            SliderId::ArrangeGap => self.model.arrange.gap = value as u32,
         }
         self.relayout();
         Some(self.slider_action(id, false))
@@ -1920,6 +1976,81 @@ impl Settings {
             Hit::PageGrip(_) | Hit::TileGrip(_) | Hit::Slider(_) => Vec::new(),
             Hit::NotchReset => post(Action::NotchReset),
             Hit::NotchFill(v) if v != m.notch_fill => post(Action::NotchFill(v)),
+            Hit::ArrangeHotkey(v) if v != m.arrange.hotkey => post(Action::ArrangeHotkey(v)),
+            Hit::ArrangeTemplateNew => {
+                if m.arrange.templates.len() >= arrange::MAX_TEMPLATES {
+                    Vec::new()
+                } else {
+                    self.arrange_edit = Some(ArrangeEdit {
+                        target: EditTarget::New,
+                        root: Node::Leaf,
+                        selected: 0,
+                        drag: None,
+                    });
+                    vec![After::SetName(String::new()), After::FocusName]
+                }
+            }
+            Hit::ArrangeTemplateEdit(i) => match m.arrange.templates.get(i) {
+                Some(t) => {
+                    self.arrange_edit = Some(ArrangeEdit {
+                        target: EditTarget::Template(i),
+                        root: t.root.clone(),
+                        selected: 0,
+                        drag: None,
+                    });
+                    vec![After::SetName(t.name.clone()), After::FocusName]
+                }
+                None => Vec::new(),
+            },
+            Hit::ArrangeTemplateDelete(i) => {
+                let mut list = m.arrange.templates.clone();
+                if i < list.len() {
+                    list.remove(i);
+                    post(Action::ArrangeTemplates(list))
+                } else {
+                    Vec::new()
+                }
+            }
+            Hit::ArrangeSavedRename(i) => match m.arrange.saved.get(i) {
+                Some(s) => {
+                    self.arrange_edit = Some(ArrangeEdit {
+                        target: EditTarget::Rename(i),
+                        root: Node::Leaf,
+                        selected: 0,
+                        drag: None,
+                    });
+                    vec![After::SetName(s.name.clone()), After::FocusName]
+                }
+                None => Vec::new(),
+            },
+            Hit::ArrangeSavedDelete(i) => {
+                let mut list = m.arrange.saved.clone();
+                if i < list.len() {
+                    list.remove(i);
+                    post(Action::ArrangeSaved(list))
+                } else {
+                    Vec::new()
+                }
+            }
+            Hit::ArrangeSplit(dir) => {
+                if let Some(e) = &mut self.arrange_edit {
+                    e.root.split(e.selected, dir);
+                }
+                Vec::new()
+            }
+            Hit::ArrangeMerge => {
+                if let Some(e) = &mut self.arrange_edit
+                    && e.root.merge(e.selected)
+                {
+                    e.selected = e.selected.min(e.root.leaves() - 1);
+                }
+                Vec::new()
+            }
+            Hit::ArrangeEditorCancel => {
+                self.arrange_edit = None;
+                vec![After::ResetForm]
+            }
+            Hit::ArrangeEditorSave => self.arrange_editor_save(),
             Hit::TileFormOpen => {
                 self.tile_form = Some(TileForm {
                     kind: CustomKind::App,
@@ -2023,11 +2154,108 @@ impl Settings {
             | Hit::ClipHotkey(_)
             | Hit::SearchHotkey(_)
             | Hit::DevicesHotkey(_)
+            | Hit::ArrangeHotkey(_)
             | Hit::ShotIgnore(_)
             | Hit::ShotTool(_) => Vec::new(),
         };
         self.relayout();
         after
+    }
+
+    /// The press at `lparam` is on the template editor's canvas: a divider
+    /// is taken (the drag follows), a tile is selected. False elsewhere.
+    fn canvas_down(&mut self, lparam: LPARAM) -> bool {
+        let (x, y) = self.point(lparam);
+        let Some(canvas) = self.layout.canvas else {
+            return false;
+        };
+        let Some(e) = &mut self.arrange_edit else {
+            return false;
+        };
+        match canvas_press(&e.root, canvas, x, y) {
+            Some(CanvasPress::Divider(path)) => e.drag = Some(path),
+            Some(CanvasPress::Tile(i)) => e.selected = i,
+            None => return false,
+        }
+        self.relayout();
+        true
+    }
+
+    /// A divider in hand follows the pointer (snapped and clamped by the
+    /// model).
+    fn canvas_move(&mut self, lparam: LPARAM) {
+        let (x, y) = self.point(lparam);
+        let Some(canvas) = self.layout.canvas else {
+            return;
+        };
+        let Some(e) = &mut self.arrange_edit else {
+            return;
+        };
+        let Some(path) = e.drag.clone() else {
+            return;
+        };
+        if canvas_drag(&mut e.root, canvas, &path, x, y) {
+            self.relayout();
+        }
+    }
+
+    /// The button went up: a divider in hand is let go. True when it was.
+    fn canvas_up(&mut self) -> bool {
+        self.arrange_edit
+            .as_mut()
+            .is_some_and(|e| e.drag.take().is_some())
+    }
+
+    /// "Simpan" of the editor: the template (or the new name of a saved
+    /// arrangement) goes to the island and the editor closes. With no valid
+    /// name nothing happens.
+    fn arrange_editor_save(&mut self) -> Vec<After> {
+        let Some(e) = self.arrange_edit.take() else {
+            return Vec::new();
+        };
+        let Some(name) = arrange::clean_name(&self.field_text[2]) else {
+            self.arrange_edit = Some(e);
+            return Vec::new();
+        };
+        let a = &self.model.arrange;
+        let action = match &e.target {
+            EditTarget::New => {
+                let id = arrange::new_template_id(&a.templates);
+                match CustomTemplate::new(&id, &name, e.root.clone()) {
+                    Some(t) if a.templates.len() < arrange::MAX_TEMPLATES => {
+                        let mut list = a.templates.clone();
+                        list.push(t);
+                        Action::ArrangeTemplates(list)
+                    }
+                    _ => {
+                        self.arrange_edit = Some(e);
+                        return Vec::new();
+                    }
+                }
+            }
+            EditTarget::Template(i) => {
+                let mut list = a.templates.clone();
+                let Some(old) = list.get(*i) else {
+                    return vec![After::ResetForm];
+                };
+                match CustomTemplate::new(&old.id, &name, e.root.clone()) {
+                    Some(t) => list[*i] = t,
+                    None => {
+                        self.arrange_edit = Some(e);
+                        return Vec::new();
+                    }
+                }
+                Action::ArrangeTemplates(list)
+            }
+            EditTarget::Rename(i) => {
+                let mut list = a.saved.clone();
+                if let Some(s) = list.get_mut(*i) {
+                    s.name = name;
+                }
+                Action::ArrangeSaved(list)
+            }
+        };
+        vec![After::Post(action), After::ResetForm]
     }
 
     fn save_action(&self) -> Action {
@@ -2054,6 +2282,11 @@ impl Settings {
             to: 1.0,
             start: now,
         });
+        // Susun's template editor lives on Fitur and borrows the shortcut
+        // form's Nama field: leaving Fitur closes it, as Batal would.
+        if self.section == Section::Features {
+            self.arrange_edit = None;
+        }
         self.section = section;
         self.scroll = 0.0;
         self.focused = None;
@@ -2078,6 +2311,8 @@ enum After {
     FocusName,
     /// "Pilih…": the file or folder dialog fills the Target field.
     Browse,
+    /// The Nama field takes this text (the template editor opening).
+    SetName(String),
 }
 
 fn run_after(hwnd: HWND, owner: HWND, after: Vec<After>) {
@@ -2092,6 +2327,7 @@ fn run_after(hwnd: HWND, owner: HWND, after: Vec<After>) {
                 let _ = PostMessageW(Some(hwnd), WM_APP_FORM, WPARAM(2), LPARAM(0));
             },
             After::Browse => browse(hwnd),
+            After::SetName(text) => set_name_text(&text),
             After::OpenDataFolder => {
                 let dir = crate::config::path()
                     .parent()
@@ -2118,6 +2354,36 @@ fn reset_form() {
         }
     }
     set_cue(CustomKind::App);
+    set_name_cue();
+}
+
+/// The Nama field's text (the template editor opening), with the editor's
+/// hint and length.
+fn set_name_text(text: &str) {
+    if let Some((name, _)) = tile_edits() {
+        unsafe {
+            let _ = SetWindowTextW(name, &HSTRING::from(text));
+        }
+    }
+    set_name_cue();
+}
+
+/// What the shared Nama field holds: Susun's template name (only while the
+/// editor is open on Fitur), an excluded app's name (Fitur otherwise), or an
+/// own tile's label (the shortcut form on Panel).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum NameRole {
+    Template,
+    MutedApp,
+    TileLabel,
+}
+
+fn name_role(section: Section, editing: bool) -> NameRole {
+    match (section, editing) {
+        (Section::Features, true) => NameRole::Template,
+        (Section::Features, false) => NameRole::MutedApp,
+        _ => NameRole::TileLabel,
+    }
 }
 
 /// How many characters the Nama field takes: an excluded app's name while
@@ -2137,9 +2403,18 @@ fn set_name_cue() {
     let Some((name, _)) = tile_edits() else {
         return;
     };
-    let Some((lang, section)) = with(|st| (st.model.lang, st.section)) else {
+    let Some((lang, section, editing)) =
+        with(|st| (st.model.lang, st.section, st.arrange_edit.is_some()))
+    else {
         return;
     };
+    if name_role(section, editing) == NameRole::Template {
+        // Susun's template editor: a name of up to 24 characters.
+        send(name, EM_SETLIMITTEXT, arrange::NAME_MAX, 0);
+        let cue = HSTRING::from(text(lang, Key::ArrangeFieldName));
+        send(name, EM_SETCUEBANNER, 0, cue.as_ptr() as isize);
+        return;
+    }
     send(name, EM_SETLIMITTEXT, name_limit(section), 0);
     let cue = if section == Section::Features {
         HSTRING::from(text(lang, Key::NotifMutedHint))
@@ -2246,6 +2521,8 @@ fn set_section(hwnd: HWND, section: Section) {
 }
 
 fn on_mouse_move(hwnd: HWND, lparam: LPARAM) {
+    // A divider of the template editor follows the pointer.
+    with(|st| st.canvas_move(lparam));
     // A slider's thumb follows the pointer; the island follows live.
     let slid = with(|st| {
         let id = st.slider?;
@@ -2292,6 +2569,14 @@ fn on_mouse_leave() {
 }
 
 fn on_button_down(hwnd: HWND, lparam: LPARAM) {
+    // The template editor's canvas: a divider is taken or a tile selected.
+    if with(|st| st.canvas_down(lparam)).unwrap_or(false) {
+        unsafe {
+            let _ = SetFocus(Some(hwnd));
+            SetCapture(hwnd);
+        }
+        return;
+    }
     let hit = with(|st| {
         st.pressed = st.hit_at(lparam);
         // A handle takes the row in hand at once.
@@ -2325,6 +2610,12 @@ fn on_button_down(hwnd: HWND, lparam: LPARAM) {
 }
 
 fn on_button_up(hwnd: HWND, lparam: LPARAM) {
+    if with(|st| st.canvas_up()).unwrap_or(false) {
+        unsafe {
+            let _ = ReleaseCapture();
+        }
+        return;
+    }
     // A slider's thumb lets go here: the value is final, so it is saved.
     let released = with(|st| {
         let id = st.slider.take()?;
@@ -2631,7 +2922,21 @@ unsafe extern "system" fn wnd_proc(
                 0 | 1 => {
                     // On Fitur the field is the excluded apps': Enter adds
                     // the name, Esc empties the field.
-                    let features = with(|st| st.section == Section::Features).unwrap_or(false);
+                    // Susun's editor: Enter saves, Esc cancels.
+                    let role = with(|st| name_role(st.section, st.arrange_edit.is_some()));
+                    if role == Some(NameRole::Template) {
+                        let hit = if wparam.0 == 0 {
+                            Hit::ArrangeEditorSave
+                        } else {
+                            Hit::ArrangeEditorCancel
+                        };
+                        if let Some((owner, after)) = with(|st| (st.owner, st.on_click(hit))) {
+                            run_after(hwnd, owner, after);
+                        }
+                        relayout_and_place();
+                        return LRESULT(0);
+                    }
+                    let features = role == Some(NameRole::MutedApp);
                     if features && wparam.0 == 1 {
                         reset_form();
                     } else {
@@ -2878,6 +3183,10 @@ pub fn run_demo(args: &[String]) {
             Action::SearchHotkey(v) => m.search_hotkey = v,
             Action::DeviceNotices(v) => m.device_notices = v,
             Action::DevicesHotkey(v) => m.devices_hotkey = v,
+            Action::ArrangeHotkey(v) => m.arrange.hotkey = v,
+            Action::ArrangeGap { gap, .. } => m.arrange.gap = gap,
+            Action::ArrangeTemplates(list) => m.arrange.templates = list,
+            Action::ArrangeSaved(list) => m.arrange.saved = list,
             Action::ClipNotice(v) => m.clip.copy_notice = v,
             Action::ClipFeedbackAll(v) => m.clip.copied_feedback_all = v,
             Action::ClipClear => {}
@@ -3009,6 +3318,35 @@ pub fn run_demo(args: &[String]) {
             own("Proyek", "Folder", "D:/Proyek/rumah-kemang"),
         ];
     }
+    // Susun: two templates and two saved arrangements to look at.
+    let mut grid = Node::Leaf;
+    grid.split(0, arrange::Dir::Cols);
+    grid.split(1, arrange::Dir::Rows);
+    cfg.arrange.templates = vec![
+        CustomTemplate::new("t1", "Gambar + 2", grid).expect("a template"),
+        CustomTemplate::new("t2", "Tiga kolom", arrange::BuiltIn::Cols3.node())
+            .expect("a template"),
+    ];
+    let monitor = arrange::SavedMonitor {
+        device: r"\\.\DISPLAY1".into(),
+        rect: arrange::Rect::new(0, 0, 2560, 1440),
+    };
+    cfg.arrange.saved = vec![
+        SavedArrangement::new(
+            "Kerja",
+            arrange::LayoutRef::BuiltIn(arrange::BuiltIn::Main2),
+            monitor.clone(),
+            vec![None, None, None],
+        )
+        .expect("saved"),
+        SavedArrangement::new(
+            "Rapat",
+            arrange::LayoutRef::BuiltIn(arrange::BuiltIn::Cols2),
+            monitor,
+            vec![None, None],
+        )
+        .expect("saved"),
+    ];
     let model = Model {
         accent,
         window,
@@ -3072,7 +3410,32 @@ pub fn run_demo(args: &[String]) {
             return;
         };
         match open(owner, model, section) {
-            Ok(hwnd) => println!("settings-demo: hwnd {:#x}", hwnd.0 as usize),
+            Ok(hwnd) => {
+                println!("settings-demo: hwnd {:#x}", hwnd.0 as usize);
+                // `DI_ARRANGE_EDIT=new` opens Susun's template editor,
+                // `DI_SETTINGS_SCROLL=<px>` scrolls the section.
+                let editor = std::env::var("DI_ARRANGE_EDIT").unwrap_or_default();
+                let scroll: f32 = std::env::var("DI_SETTINGS_SCROLL")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0.0);
+                with(|st| {
+                    if editor == "new" {
+                        let mut root = Node::Leaf;
+                        root.split(0, arrange::Dir::Cols);
+                        root.split(1, arrange::Dir::Rows);
+                        st.arrange_edit = Some(ArrangeEdit {
+                            target: EditTarget::New,
+                            root,
+                            selected: 1,
+                            drag: None,
+                        });
+                    }
+                    st.scroll = scroll;
+                    st.relayout();
+                });
+                relayout_and_place();
+            }
             Err(error) => {
                 eprintln!("settings-demo: open failed: {error}");
                 return;
@@ -3103,6 +3466,24 @@ mod tests {
             assert_eq!(name_limit(section), want, "{section:?}");
         }
         assert!(name_limit(Section::Features) >= "Microsoft Teams (work or school)".len());
+    }
+
+    #[test]
+    fn the_name_field_is_the_template_name_only_while_the_editor_is_open_on_fitur() {
+        assert_eq!(name_role(Section::Features, true), NameRole::Template);
+        assert_eq!(name_role(Section::Features, false), NameRole::MutedApp);
+        // An editor state carried to another section never takes over the
+        // shortcut form's Enter, Esc, hint or length.
+        for section in Section::ALL {
+            if section != Section::Features {
+                assert_eq!(name_role(section, true), NameRole::TileLabel, "{section:?}");
+                assert_eq!(
+                    name_role(section, false),
+                    NameRole::TileLabel,
+                    "{section:?}"
+                );
+            }
+        }
     }
 
     #[test]

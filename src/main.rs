@@ -1,6 +1,9 @@
 #![windows_subsystem = "windows"]
 
 mod app;
+mod arrange;
+mod arrange_overlay;
+mod arrange_win;
 mod audio;
 mod behind;
 mod calendar;
@@ -74,7 +77,7 @@ fn opens_windows(arg: Option<&str>) -> bool {
         #[cfg(debug_assertions)]
         Some(
             "--demo" | "--demo-editor" | "--demo-cli" | "--demo-robot" | "--demo-devices"
-            | "--demo-snap" | "--demo-shot-editor" | "--settings",
+            | "--demo-arrange" | "--demo-snap" | "--demo-shot-editor" | "--settings",
         ) => true,
         Some(_) => false,
     }
@@ -144,6 +147,14 @@ fn main() {
             attach_parent_console();
             demo_lang_from_env();
             ui::demo::run_devices();
+        }
+        // Only the Susun page's scenes: made-up windows and monitors, click-through
+        // overlays; it never calls the mover and never lists a real window.
+        #[cfg(debug_assertions)]
+        Some("--demo-arrange") => {
+            attach_parent_console();
+            demo_lang_from_env();
+            ui::demo::run_arrange();
         }
         // The capture overlay on a desktop drawn in code: no screen grab, no
         // window list, no UI Automation.

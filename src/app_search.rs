@@ -298,6 +298,8 @@ impl App {
     /// The reducer opened the search: a clean field takes the keyboard (the
     /// island activates). When it cannot have it, the search closes again.
     pub(super) fn focus_search(&mut self) -> Option<Event> {
+        // The search takes the field from Susun's name.
+        self.end_naming();
         // Every way in (hotkey, tray, tile) reads the Start Menu once and
         // looks at the user's folders again when the last look is old.
         self.start_search_index();
@@ -351,6 +353,10 @@ impl App {
 
     /// A key the field hands over.
     pub(super) fn on_search_key(&mut self, key: InputKey) {
+        // The same hidden field takes Susun's name while that is up.
+        if self.arrange_naming() {
+            return self.on_arrange_name_key(key);
+        }
         match key {
             // Enter is a click on the highlighted row: the reducer closes the
             // search and asks for it to be run.
@@ -390,6 +396,9 @@ impl App {
 
     /// The field's text or selection changed.
     pub(super) fn on_search_changed(&mut self) {
+        if self.arrange_naming() {
+            return self.on_arrange_name_changed();
+        }
         let typed = self
             .search_input
             .as_ref()

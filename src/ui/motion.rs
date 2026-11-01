@@ -887,7 +887,10 @@ mod tests {
         );
         // Windows' animations off does not change the eyes' curve (it never
         // overshoots anyway).
-        assert_eq!(morph_timing(true, false, true), (320, MorphCurve::EyesInOut));
+        assert_eq!(
+            morph_timing(true, false, true),
+            (320, MorphCurve::EyesInOut)
+        );
         assert_eq!(
             morph_timing(false, false, false),
             (ANIM_MS, MorphCurve::Spring)
@@ -896,7 +899,10 @@ mod tests {
             morph_timing(false, true, false),
             (LYRIC_RESIZE_MS, MorphCurve::Spring)
         );
-        assert_eq!(morph_timing(false, false, true), (ANIM_MS, MorphCurve::Plain));
+        assert_eq!(
+            morph_timing(false, false, true),
+            (ANIM_MS, MorphCurve::Plain)
+        );
         assert_eq!(
             morph_timing(false, true, true),
             (LYRIC_RESIZE_MS, MorphCurve::Plain)

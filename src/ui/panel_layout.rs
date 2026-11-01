@@ -541,6 +541,241 @@ pub fn devices_layout(
     }
 }
 
+// ------------------------------------------------------------------ Susun
+
+/// The Susun page's header as measured: the title ("Susun", or "Ubin 2 dari
+/// 3" while picking), each monitor chip and "Lewati ubin".
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ArrangeHead {
+    pub title_w: f32,
+    pub chip_w: Vec<f32>,
+    pub skip_w: f32,
+}
+
+/// What the Susun page's content depends on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ArrangeShape {
+    /// The pick step (the window list) instead of the templates.
+    pub picking: bool,
+    /// Template cards: the built-ins and the user's.
+    pub cards: usize,
+    /// Saved arrangements.
+    pub saved: usize,
+    /// Windows in the pick list.
+    pub windows: usize,
+}
+
+pub const ARR_CARD_W: f32 = 80.0;
+pub const ARR_CARD_H: f32 = 64.0;
+const ARR_GAP: f32 = 8.0;
+const ARR_PER_ROW: usize = 6;
+const ARR_HEAD_H: f32 = 22.0;
+const ARR_HEAD_GAP: f32 = 8.0;
+const ARR_CHIP_H: f32 = 22.0;
+const ARR_SAVED_TITLE_H: f32 = 16.0;
+const ARR_SAVED_ROW_H: f32 = 38.0;
+const ARR_WIN_ROW_H: f32 = 30.0;
+const ARR_HINT_H: f32 = 14.0;
+const ARR_PLAY: f32 = 26.0;
+const ARR_SKIP_H: f32 = 24.0;
+/// The wheel's step over the Susun lists, per notch.
+pub const ARR_WHEEL_PX: f32 = 40.0;
+
+/// One template card: the card, its mini preview and its name.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ArrangeCardLayout {
+    pub card: Rect,
+    pub preview: Rect,
+    pub name: Rect,
+}
+
+/// One saved arrangement: a row with a mini preview, the name over the apps,
+/// and a play button.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ArrangeSavedLayout {
+    pub row: Rect,
+    pub preview: Rect,
+    pub name: Rect,
+    pub apps: Rect,
+    pub play: Rect,
+}
+
+/// One window of the pick list.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ArrangeWindowLayout {
+    pub row: Rect,
+    pub icon: Rect,
+    pub title: Rect,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ArrangeLayout {
+    pub header: Rect,
+    /// One per monitor, after the title (only with two or more monitors).
+    pub chips: Vec<Rect>,
+    /// "Lewati ubin" while picking.
+    pub skip: Option<Rect>,
+    /// Where the content shows and is clipped to; the wheel over it scrolls.
+    pub list: Rect,
+    pub cards: Vec<ArrangeCardLayout>,
+    pub saved_title: Option<Rect>,
+    pub saved: Vec<ArrangeSavedLayout>,
+    pub windows: Vec<ArrangeWindowLayout>,
+    /// "Backspace kembali · Esc batal", under the pick list.
+    pub hint: Option<Rect>,
+    /// Nothing to pick from: the message's area.
+    pub empty: Option<Rect>,
+    pub scroll: f32,
+    pub max_scroll: f32,
+    pub scrollbar: Option<Rect>,
+}
+
+fn arrange_rows(n: usize) -> usize {
+    n.div_ceil(ARR_PER_ROW)
+}
+
+/// The content's height in px (what scrolls).
+pub fn arrange_content_h(shape: ArrangeShape) -> f32 {
+    if shape.picking {
+        let n = shape.windows;
+        return if n == 0 {
+            0.0
+        } else {
+            n as f32 * (ARR_WIN_ROW_H + 4.0) - 4.0
+        };
+    }
+    let rows = arrange_rows(shape.cards);
+    let mut h = if rows == 0 {
+        0.0
+    } else {
+        rows as f32 * (ARR_CARD_H + ARR_GAP) - ARR_GAP
+    };
+    if shape.saved > 0 {
+        h += ARR_GAP + ARR_SAVED_TITLE_H + 4.0;
+        h += shape.saved as f32 * (ARR_SAVED_ROW_H + 4.0) - 4.0;
+    }
+    h
+}
+
+/// Where the content shows (under the header; over the hint while picking).
+pub fn arrange_list_rect(s: ShapeRect, strip: bool, picking: bool) -> Rect {
+    let top = content_top(s, strip) + ARR_HEAD_H + ARR_HEAD_GAP;
+    let (l, r) = (left(s), right(s));
+    let bottom = content_bottom(s) - if picking { ARR_HINT_H + 4.0 } else { 0.0 };
+    rect(l, top, r - l, bottom - top)
+}
+
+/// The furthest the content scrolls (px); 0 when it all fits.
+pub fn arrange_max_scroll(s: ShapeRect, strip: bool, shape: ArrangeShape) -> f32 {
+    (arrange_content_h(shape) - arrange_list_rect(s, strip, shape.picking).h).max(0.0)
+}
+
+/// The Susun page: a header (title, monitor chips or "Lewati ubin"), then
+/// either the template cards over the saved arrangements, or the window list
+/// with a hint under it; the content scrolls when it does not fit.
+pub fn arrange_layout(
+    s: ShapeRect,
+    strip: bool,
+    head: &ArrangeHead,
+    shape: ArrangeShape,
+    scroll: f32,
+) -> ArrangeLayout {
+    let top = content_top(s, strip);
+    let (l, r) = (left(s), right(s));
+    let header = rect(l, top, head.title_w, HEADER_H);
+    let mut chips = Vec::new();
+    let mut x = header.right() + 12.0;
+    for w in &head.chip_w {
+        chips.push(rect(x, top + (HEADER_H - ARR_CHIP_H) / 2.0, *w, ARR_CHIP_H));
+        x += w + 6.0;
+    }
+    let skip = shape
+        .picking
+        .then(|| rect(r - head.skip_w, top - 1.0, head.skip_w, ARR_SKIP_H));
+    let list = arrange_list_rect(s, strip, shape.picking);
+    let max_scroll = arrange_max_scroll(s, strip, shape);
+    let scroll = scroll.clamp(0.0, max_scroll);
+    let mut y = list.y - scroll;
+    let mut cards = Vec::new();
+    let mut saved_title = None;
+    let mut saved = Vec::new();
+    let mut windows = Vec::new();
+    if shape.picking {
+        for _ in 0..shape.windows {
+            let row = rect(l, y, r - l, ARR_WIN_ROW_H);
+            windows.push(ArrangeWindowLayout {
+                row,
+                icon: rect(row.x + 10.0, row.y + (row.h - 18.0) / 2.0, 18.0, 18.0),
+                title: rect(row.x + 36.0, row.y, row.w - 46.0, row.h),
+            });
+            y += ARR_WIN_ROW_H + 4.0;
+        }
+    } else {
+        for i in 0..shape.cards {
+            let (col, row) = (i % ARR_PER_ROW, i / ARR_PER_ROW);
+            let card = rect(
+                l + col as f32 * (ARR_CARD_W + ARR_GAP),
+                y + row as f32 * (ARR_CARD_H + ARR_GAP),
+                ARR_CARD_W,
+                ARR_CARD_H,
+            );
+            cards.push(ArrangeCardLayout {
+                card,
+                preview: rect(card.x + 8.0, card.y + 7.0, card.w - 16.0, 36.0),
+                name: rect(card.x + 4.0, card.y + 45.0, card.w - 8.0, 14.0),
+            });
+        }
+        y += arrange_rows(shape.cards) as f32 * (ARR_CARD_H + ARR_GAP);
+        if shape.saved > 0 {
+            saved_title = Some(rect(l, y, r - l, ARR_SAVED_TITLE_H));
+            y += ARR_SAVED_TITLE_H + 4.0;
+            for _ in 0..shape.saved {
+                let row = rect(l, y, r - l, ARR_SAVED_ROW_H);
+                let play = rect(
+                    row.right() - 8.0 - ARR_PLAY,
+                    row.y + (row.h - ARR_PLAY) / 2.0,
+                    ARR_PLAY,
+                    ARR_PLAY,
+                );
+                let preview = rect(row.x + 8.0, row.y + 6.0, 44.0, 26.0);
+                let text_x = preview.right() + 10.0;
+                let text_w = play.x - 8.0 - text_x;
+                saved.push(ArrangeSavedLayout {
+                    row,
+                    preview,
+                    name: rect(text_x, row.y + 4.0, text_w, 16.0),
+                    apps: rect(text_x, row.y + 20.0, text_w, 14.0),
+                    play,
+                });
+                y += ARR_SAVED_ROW_H + 4.0;
+            }
+        }
+    }
+    let scrollbar = (max_scroll > 0.0).then(|| {
+        let total = list.h + max_scroll;
+        let h = (list.h * list.h / total).clamp(24.0, list.h);
+        let y = list.y + (list.h - h) * scroll / max_scroll;
+        rect(list.right() + 6.0, y, CLIP_SCROLLBAR_W, h)
+    });
+    ArrangeLayout {
+        header,
+        chips,
+        skip,
+        list,
+        cards,
+        saved_title,
+        saved,
+        hint: shape
+            .picking
+            .then(|| rect(l, list.bottom() + 4.0, r - l, ARR_HINT_H)),
+        empty: (shape.picking && shape.windows == 0).then_some(list),
+        windows,
+        scroll,
+        max_scroll,
+        scrollbar,
+    }
+}
+
 /// `r` cut to `clip`; `None` when nothing of it is inside.
 fn clipped(r: Rect, clip: Rect) -> Option<Rect> {
     let (x, y) = (r.x.max(clip.x), r.y.max(clip.y));
@@ -641,6 +876,7 @@ pub enum PageLayout {
     Search(SearchLayout),
     Shelf(ShelfLayout),
     Devices(DevicesLayout),
+    Arrange(ArrangeLayout),
 }
 
 /// The cleaner behind "Bersihkan" exists (Run 5): the button is the accent
@@ -3326,6 +3562,31 @@ pub fn regions(s: ShapeRect, layout: &PageLayout, strip: bool) -> Vec<Region> {
                 add(c.card, Hit::ShelfCard(i));
             }
         }
+        PageLayout::Arrange(l) => {
+            for (i, r) in l.chips.iter().enumerate() {
+                add(*r, Hit::ArrangeMonitor(i));
+            }
+            if let Some(r) = l.skip {
+                add(r, Hit::ArrangeSkip);
+            }
+            // Content scrolled partly out of the list only takes clicks
+            // where the list shows it. A play button sits on its row.
+            for (i, c) in l.cards.iter().enumerate() {
+                if let Some(r) = clipped(c.card, l.list) {
+                    add(r, Hit::ArrangeCard(i));
+                }
+            }
+            for (i, c) in l.saved.iter().enumerate() {
+                if let Some(r) = clipped(c.play, l.list) {
+                    add(r, Hit::ArrangePlay(i));
+                }
+            }
+            for (i, c) in l.windows.iter().enumerate() {
+                if let Some(r) = clipped(c.row, l.list) {
+                    add(r, Hit::ArrangeWindow(i));
+                }
+            }
+        }
         PageLayout::Devices(l) => {
             if let Some(r) = l.eject_all {
                 add(r, Hit::DevicesEjectAll);
@@ -3504,6 +3765,40 @@ mod tests {
             .collect()
     }
 
+    const ARR_HEAD: ArrangeHead = ArrangeHead {
+        title_w: 64.0,
+        chip_w: Vec::new(),
+        skip_w: 96.0,
+    };
+
+    /// The Susun page's states: the template step with only the built-ins,
+    /// with customs and a long saved list (it scrolls), and the pick step
+    /// with few and many windows.
+    fn arrange_cases() -> Vec<(&'static str, ArrangeShape, f32)> {
+        let step = |cards, saved| ArrangeShape {
+            picking: false,
+            cards,
+            saved,
+            windows: 0,
+        };
+        let pick = |windows| ArrangeShape {
+            picking: true,
+            cards: 0,
+            saved: 0,
+            windows,
+        };
+        vec![
+            ("builtins", step(6, 0), 0.0),
+            ("with saved", step(6, 2), 0.0),
+            ("full", step(18, 12), 0.0),
+            ("full scrolled", step(18, 12), 9999.0),
+            ("pick none", pick(0), 0.0),
+            ("pick 3", pick(3), 0.0),
+            ("pick 20", pick(20), 0.0),
+            ("pick 20 scrolled", pick(20), 9999.0),
+        ]
+    }
+
     fn panel(style: Style) -> ShapeRect {
         shape_for(style, ShapeKind::Panel)
     }
@@ -3631,6 +3926,10 @@ mod tests {
         for (name, shapes, scroll) in devices_cases() {
             let l = devices_layout(s, strip, &DEV_HEAD, &shapes, scroll);
             out.push((format!("devices {name}"), PageLayout::Devices(l)));
+        }
+        for (name, shape, scroll) in arrange_cases() {
+            let l = arrange_layout(s, strip, &ARR_HEAD, shape, scroll);
+            out.push((format!("arrange {name}"), PageLayout::Arrange(l)));
         }
         let head = NotifHead {
             title_w: 96.0,
@@ -5846,6 +6145,14 @@ mod tests {
                             drawn.extend([l.header, l.list]);
                             drawn.extend(l.chip);
                             drawn.extend(l.eject_all);
+                        }
+                        // The same for Susun: the header and the chips are
+                        // fixed, the content is clipped to `list`.
+                        PageLayout::Arrange(l) => {
+                            drawn.extend([l.header, l.list]);
+                            drawn.extend(l.chips.iter().copied());
+                            drawn.extend(l.skip);
+                            drawn.extend(l.hint);
                         }
                         PageLayout::Notifications(l) => {
                             drawn.extend([l.header, l.list]);

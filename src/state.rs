@@ -9,8 +9,8 @@ use crate::config::OpenMode;
 use crate::i18n::{self, Key, text};
 use crate::lyrics;
 use crate::model::{
-    CalView, ClipAction, Effect, Event, Hit, MediaCommand, MediaInfo, Notice, NoticeKind,
-    NotifAction, Page, Shortcut, ShotAction, Timeline, View,
+    ArrangeSave, CalView, ClipAction, Effect, Event, Hit, MediaCommand, MediaInfo, Notice,
+    NoticeKind, NotifAction, Page, Shortcut, ShotAction, Timeline, View,
 };
 use crate::mole::MoleOpts;
 use crate::pages::PanelPages;
@@ -31,6 +31,9 @@ pub const COPIED_DURATION: Duration = Duration::from_millis(1500);
 /// The copy preview (text lines, a thumbnail) needs a little more to be read.
 pub const CLIP_NOTICE_DURATION: Duration = Duration::from_secs(3);
 
+/// The Arranged notice: long enough to reach "Batalkan".
+pub const ARRANGE_NOTICE_DURATION: Duration = Duration::from_secs(3);
+
 /// "Disimpan" and "Dihapus" after a screenshot's button.
 pub const SHOT_DONE_DURATION: Duration = Duration::from_millis(2500);
 /// The screenshot preview never expires under the pointer; once it leaves,
@@ -45,6 +48,7 @@ fn duration_of(notice: &Notice) -> Duration {
         NoticeKind::ClipPreview { .. } => CLIP_NOTICE_DURATION,
         NoticeKind::Screenshot { secs, .. } => Duration::from_secs(u64::from(secs)),
         NoticeKind::ShotSaved | NoticeKind::ShotDeleted => SHOT_DONE_DURATION,
+        NoticeKind::Arranged { .. } => ARRANGE_NOTICE_DURATION,
         _ => NOTICE_DURATION,
     }
 }
@@ -77,6 +81,7 @@ fn notice_has_action(notice: &Notice) -> bool {
             | NoticeKind::Screenshot { .. }
             | NoticeKind::DevicePlugged { .. }
             | NoticeKind::ClipPreview { .. }
+            | NoticeKind::Arranged { .. }
             | NoticeKind::App { app_id: Some(_) }
     )
 }
@@ -204,6 +209,10 @@ pub struct IslandState {
     /// expiry wait for the pointer. A notice that arrives under a pointer
     /// already there (over an open panel, say) runs its time as usual.
     visit_on_notice: bool,
+    /// Susun's pick step is running: it keeps the panel open.
+    arrange_pick: bool,
+    /// The Arranged notice's name field is up: the notice waits.
+    arrange_naming: bool,
     /// The sticky reminder that already kept one visit's hover off: the
     /// next visit opens the panel, with the reminder in its strip.
     reminder_seen: Option<Notice>,
@@ -317,6 +326,8 @@ impl IslandState {
             hover: false,
             hover_blocked: false,
             visit_on_notice: false,
+            arrange_pick: false,
+            arrange_naming: false,
             reminder_seen: None,
             open_mode: OpenMode::Hover,
             latched: false,
@@ -417,6 +428,7 @@ impl IslandState {
                 | NoticeKind::ShotDeleted
                 | NoticeKind::DevicePlugged { .. }
                 | NoticeKind::DeviceSafe
+                | NoticeKind::Arranged { .. }
                 | NoticeKind::Pomodoro => self.queue.push_back(notice),
                 // A newer screenshot replaces an older preview and a
                 // "Disalin" (both kept, nothing deleted); it never removes
@@ -542,6 +554,7 @@ impl IslandState {
             }
             // A click outside the island: a panel kept open closes. Under the
             // pointer (an odd case) it stays shut until the pointer comes back.
+            Event::Dismiss if self.arrange_pick => {}
             Event::Dismiss => {
                 self.end_linger();
                 if self.latched {
@@ -558,6 +571,9 @@ impl IslandState {
             Event::ClipHotkey => self.clip_hotkey(),
             Event::ClipHoldEnd => self.hotkey_held = None,
             Event::DevicesHotkey => self.devices_hotkey(),
+            Event::ArrangeHotkey => self.page_hotkey(Page::Arrange),
+            Event::ArrangePick(on) => self.arrange_pick = on,
+            Event::ArrangeNaming(on) => self.arrange_naming = on,
             Event::PrintScreen => self.print_screen(&mut effects),
             Event::SearchHotkey => self.search_hotkey(&mut effects),
             Event::SearchOpen => {
@@ -624,6 +640,7 @@ impl IslandState {
             | Event::SystemSample(_)
             | Event::Audio(..)
             | Event::Devices(_)
+            | Event::Arrange(_)
             | Event::SearchIndex(_)
             | Event::SearchFiles(_)
             | Event::SearchDetail { .. }
@@ -950,7 +967,8 @@ impl IslandState {
     /// pointer's visit began on it. One that arrived under the pointer (over
     /// an open panel) runs its time, so it never hides the panel for good.
     fn notice_held(&self, notice: &Notice) -> bool {
-        self.hover && self.visit_on_notice && notice_has_action(notice)
+        (self.hover && self.visit_on_notice && notice_has_action(notice))
+            || (self.arrange_naming && matches!(notice.kind, NoticeKind::Arranged { .. }))
     }
 
     /// Hover and stay latches the panel the pointer holds, once the panel is
@@ -1161,6 +1179,7 @@ impl IslandState {
                 || self.notif_focused
                 || self.hotkey_held.is_some()
                 || self.shelf_held
+                || self.arrange_pick
                 || self.search_open)
     }
 
@@ -1541,6 +1560,47 @@ impl IslandState {
             Hit::DeviceOpen(i) => {
                 if self.view() == View::Panel(Page::Devices) {
                     self.collapse_for(Effect::DeviceOpen(i), effects);
+                }
+            }
+            // Susun's controls count only while its page shows.
+            Hit::ArrangeMonitor(i) => {
+                if self.view() == View::Panel(Page::Arrange) {
+                    effects.push(Effect::ArrangeMonitor(i));
+                }
+            }
+            Hit::ArrangeCard(i) => {
+                if self.view() == View::Panel(Page::Arrange) {
+                    effects.push(Effect::ArrangeCard(i));
+                }
+            }
+            Hit::ArrangePlay(i) => {
+                if self.view() == View::Panel(Page::Arrange) {
+                    effects.push(Effect::ArrangePlay(i));
+                }
+            }
+            Hit::ArrangeWindow(i) => {
+                if self.view() == View::Panel(Page::Arrange) {
+                    effects.push(Effect::ArrangeWindow(i));
+                }
+            }
+            Hit::ArrangeSkip => {
+                if self.view() == View::Panel(Page::Arrange) {
+                    effects.push(Effect::ArrangeSkip);
+                }
+            }
+            // The Arranged notice's buttons: "Batalkan" closes the notice
+            // (App runs the undo); "Simpan…" keeps it for the name field.
+            Hit::ArrangeUndo => {
+                if matches!(self.view(), View::Notice(n) if matches!(n.kind, NoticeKind::Arranged { .. }))
+                {
+                    effects.push(Effect::ArrangeUndo);
+                    effects.extend(self.dismiss_visible_notice(now));
+                }
+            }
+            Hit::ArrangeSave => {
+                if matches!(self.view(), View::Notice(n) if matches!(n.kind, NoticeKind::Arranged { save: ArrangeSave::Offer }))
+                {
+                    effects.push(Effect::ArrangeSave);
                 }
             }
             // The strip shows the newest sticky notice; clicking it dismisses that one.
@@ -3278,7 +3338,7 @@ mod tests {
         assert_eq!(s.view(), View::Panel(Page::Shortcuts));
         // Scrolling past the end is not stored up: one notch back moves one page.
         s.apply(Event::Wheel(120), t0);
-        assert_eq!(s.view(), View::Panel(Page::Cli));
+        assert_eq!(s.view(), View::Panel(Page::Arrange));
     }
 
     #[test]
@@ -3330,7 +3390,7 @@ mod tests {
         s.apply(Event::PageFlick { next: true }, t0);
         assert_eq!(s.view(), View::Panel(Page::Shortcuts));
         s.apply(Event::PageFlick { next: false }, t0);
-        assert_eq!(s.view(), View::Panel(Page::Cli));
+        assert_eq!(s.view(), View::Panel(Page::Arrange));
     }
 
     #[test]
@@ -3504,6 +3564,7 @@ mod tests {
                 Page::System,
                 Page::Devices,
                 Page::Cli,
+                Page::Arrange,
                 Page::Shortcuts,
             ]
         );
@@ -4453,6 +4514,157 @@ mod tests {
     }
 
     #[test]
+    fn the_arrange_hotkey_opens_the_page_held_and_toggles_it() {
+        let t0 = Instant::now();
+        let mut s = st();
+        assert_eq!(s.apply(Event::ArrangeHotkey, t0), vec![]);
+        assert_eq!(s.view(), View::Panel(Page::Arrange));
+        assert!(s.hotkey_held());
+        // Pressed again while it shows: closed.
+        s.apply(Event::ArrangeHotkey, t0);
+        assert_eq!(s.view(), View::Idle);
+        assert!(!s.hotkey_held());
+        // Not visited in time: closed by the shared hold timer.
+        s.apply(Event::ArrangeHotkey, t0);
+        s.apply(Event::ClipHoldEnd, t0);
+        assert_eq!(s.view(), View::Idle);
+        // Another page's hotkey takes the panel over.
+        s.apply(Event::ArrangeHotkey, t0);
+        s.apply(Event::DevicesHotkey, t0);
+        assert_eq!(s.view(), View::Panel(Page::Devices));
+        // Never over a fullscreen app.
+        let mut s = st();
+        s.apply(Event::Fullscreen(true), t0);
+        s.apply(Event::ArrangeHotkey, t0);
+        assert!(!s.hotkey_held());
+    }
+
+    #[test]
+    fn the_susun_controls_count_only_while_the_page_shows() {
+        let t0 = Instant::now();
+        let mut s = st();
+        let hits = [
+            (Hit::ArrangeMonitor(1), Effect::ArrangeMonitor(1)),
+            (Hit::ArrangeCard(2), Effect::ArrangeCard(2)),
+            (Hit::ArrangePlay(0), Effect::ArrangePlay(0)),
+            (Hit::ArrangeWindow(3), Effect::ArrangeWindow(3)),
+            (Hit::ArrangeSkip, Effect::ArrangeSkip),
+        ];
+        for (hit, _) in &hits {
+            assert_eq!(s.apply(Event::Click(hit.clone()), t0), vec![], "{hit:?}");
+        }
+        open_on(&mut s, Page::Calendar, t0);
+        for (hit, _) in &hits {
+            assert_eq!(s.apply(Event::Click(hit.clone()), t0), vec![], "{hit:?}");
+        }
+        open_on(&mut s, Page::Arrange, t0);
+        for (hit, effect) in hits {
+            assert_eq!(s.apply(Event::Click(hit), t0), vec![effect]);
+        }
+        assert_eq!(s.view(), View::Panel(Page::Arrange), "the panel stays");
+    }
+
+    #[test]
+    fn the_pick_step_keeps_the_panel_open_in_every_mode_and_ignores_a_click_outside() {
+        let t0 = Instant::now();
+        for mode in [OpenMode::Hover, OpenMode::HoverStay, OpenMode::Click] {
+            let mut s = st();
+            s.apply(Event::OpenMode(mode), t0);
+            s.apply(Event::ArrangeHotkey, t0);
+            s.apply(Event::Hover(true), t0);
+            s.apply(Event::ArrangePick(true), t0);
+            // The pointer goes to the overlay, and a click lands there.
+            s.apply(Event::Hover(false), t0);
+            s.apply(Event::Dismiss, t0);
+            assert_eq!(s.view(), View::Panel(Page::Arrange), "{mode:?}");
+            // Over: the panel follows the usual rules again.
+            s.apply(Event::ArrangePick(false), t0);
+            leave(&mut s, t0);
+            assert_eq!(s.view(), View::Idle, "{mode:?}");
+        }
+    }
+
+    fn arranged(save: ArrangeSave) -> Notice {
+        Notice {
+            key: "arrange-done".into(),
+            source: "Susun".into(),
+            title: "Tersusun \u{b7} 3 jendela".into(),
+            body: "3 kolom".into(),
+            kind: NoticeKind::Arranged { save },
+        }
+    }
+
+    #[test]
+    fn the_arranged_notice_lasts_three_seconds_and_waits_for_the_name_field() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Notice(arranged(ArrangeSave::Offer)), t0);
+        assert!(
+            matches!(s.view(), View::Notice(n) if matches!(n.kind, NoticeKind::Arranged { .. }))
+        );
+        assert_eq!(s.next_deadline(), Some(t0 + ARRANGE_NOTICE_DURATION));
+        assert_eq!(ARRANGE_NOTICE_DURATION, Duration::from_secs(3));
+        // The name field up: it does not run out.
+        s.apply(Event::ArrangeNaming(true), t0);
+        assert_eq!(s.next_deadline(), None);
+        s.apply(Event::Tick, t0 + Duration::from_secs(30));
+        assert!(matches!(s.view(), View::Notice(_)), "still there");
+        // The field gone: it goes at the next tick.
+        s.apply(Event::ArrangeNaming(false), t0 + Duration::from_secs(30));
+        s.apply(Event::Tick, t0 + Duration::from_secs(31));
+        assert_eq!(s.view(), View::Idle);
+    }
+
+    #[test]
+    fn batalkan_still_undoes_while_the_name_field_is_up_past_the_three_seconds() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Notice(arranged(ArrangeSave::Offer)), t0);
+        s.apply(Event::Click(Hit::ArrangeSave), t0);
+        s.apply(Event::ArrangeNaming(true), t0);
+        let later = t0 + Duration::from_secs(10);
+        s.apply(Event::Tick, later);
+        assert_eq!(
+            s.apply(Event::Click(Hit::ArrangeUndo), later),
+            vec![Effect::ArrangeUndo]
+        );
+        assert_eq!(s.view(), View::Idle);
+    }
+
+    #[test]
+    fn the_arranged_buttons_undo_and_save_only_from_the_notice() {
+        let t0 = Instant::now();
+        let mut s = st();
+        // No notice: nothing.
+        assert_eq!(s.apply(Event::Click(Hit::ArrangeUndo), t0), vec![]);
+        assert_eq!(s.apply(Event::Click(Hit::ArrangeSave), t0), vec![]);
+        // Batalkan: the undo runs and the notice closes.
+        s.apply(Event::Notice(arranged(ArrangeSave::Offer)), t0);
+        assert_eq!(
+            s.apply(Event::Click(Hit::ArrangeUndo), t0),
+            vec![Effect::ArrangeUndo]
+        );
+        assert_eq!(s.view(), View::Idle);
+        // Simpan...: the notice stays for the name field.
+        s.apply(Event::Notice(arranged(ArrangeSave::Offer)), t0);
+        assert_eq!(
+            s.apply(Event::Click(Hit::ArrangeSave), t0),
+            vec![Effect::ArrangeSave]
+        );
+        assert!(matches!(s.view(), View::Notice(_)));
+        // A saved run has no Simpan; a full list disables it.
+        for save in [ArrangeSave::None, ArrangeSave::Full] {
+            let mut s = st();
+            s.apply(Event::Notice(arranged(save)), t0);
+            assert_eq!(
+                s.apply(Event::Click(Hit::ArrangeSave), t0),
+                vec![],
+                "{save:?}"
+            );
+        }
+    }
+
+    #[test]
     fn the_devices_buttons_count_only_while_the_page_shows() {
         let t0 = Instant::now();
         let mut s = st();
@@ -4938,7 +5150,7 @@ mod tests {
         let effects = s.apply(Event::Wheel(-120), t0);
         assert_eq!(effects, vec![Effect::ReleaseCliFocus]);
         assert!(!s.cli_focused());
-        assert_eq!(s.view(), View::Panel(Page::Shortcuts));
+        assert_eq!(s.view(), View::Panel(Page::Arrange));
     }
 
     #[test]

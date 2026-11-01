@@ -516,6 +516,43 @@ keys! {
         "Drag files to the notch, take them out later";
     PageSystem => "Sistem", "System";
     PageDevices => "Perangkat", "Devices";
+    PageArrange => "Susun", "Arrange";
+    ArrangeSkip => "Lewati ubin", "Skip tile";
+    ArrangeSaved => "Tersimpan", "Saved";
+    ArrangeHint => "Backspace kembali \u{b7} Esc batal", "Backspace back \u{b7} Esc cancel";
+    ArrangeNoWindows => "Tidak ada jendela yang bisa dipilih", "No windows to pick";
+    ArrangeNameHint => "Nama susunan \u{b7} Enter simpan \u{b7} Esc batal",
+        "Name \u{b7} Enter to save \u{b7} Esc to cancel";
+    ArrangeSaveAs => "Simpan\u{2026}", "Save\u{2026}";
+    ArrangeUndo => "Batalkan", "Undo";
+    ArrangeFull => "Daftar penuh (maks. 12)", "List is full (max 12)";
+    ArrangeDefaultName => "Susunan", "Arrangement";
+    ArrangeCols2 => "2 kolom", "2 columns";
+    ArrangeCols3 => "3 kolom", "3 columns";
+    ArrangeMain2 => "Utama + 2", "Main + 2";
+    ArrangeGrid4 => "Grid 2\u{d7}2", "2\u{d7}2 grid";
+    ArrangeTwoThirds => "2/3 + 1/3", "2/3 + 1/3";
+    ArrangeMain3 => "Utama + 3", "Main + 3";
+    ArrangeHotkeyDesc => "Buka halaman Susun", "Open the Arrange page";
+    ArrangeGap => "Jarak antar ubin", "Gap between tiles";
+    ArrangeGapDesc => "Dalam piksel, dihitung per monitor", "In pixels, scaled per monitor";
+    ArrangeMyTemplates => "Template saya", "My templates";
+    ArrangeNewTemplate => "+ Template baru", "+ New template";
+    ArrangeTemplatesFull => "Penuh (maks. 12)", "Full (max 12)";
+    ArrangeNoTemplates => "Belum ada template", "No templates yet";
+    ArrangeSavedList => "Susunan tersimpan", "Saved arrangements";
+    ArrangeNoSaved => "Belum ada susunan tersimpan", "No saved arrangements yet";
+    ArrangeEdit => "Ubah", "Edit";
+    ArrangeDelete => "Hapus", "Delete";
+    ArrangeRename => "Ganti nama", "Rename";
+    ArrangeSplitCols => "Belah kiri-kanan", "Split left-right";
+    ArrangeSplitRows => "Belah atas-bawah", "Split top-bottom";
+    ArrangeMerge => "Gabung", "Merge";
+    ArrangeFieldName => "Nama", "Name";
+    ArrangeSaveButton => "Simpan", "Save";
+    ArrangeCancel => "Batal", "Cancel";
+    ArrangeEditorHint => "Klik ubin, belah, atau seret pembagi",
+        "Click a tile, split it, or drag a divider";
     DevicesEject => "Eject", "Eject";
     DevicesEjecting => "Melepas…", "Ejecting…";
     DevicesEjectAll => "Eject semua", "Eject all";
@@ -1126,6 +1163,61 @@ pub fn device_count(lang: Lang, n: usize) -> String {
         Lang::Id => format!("{n} perangkat"),
         Lang::En => format!("{n} {}", if n == 1 { "device" } else { "devices" }),
     }
+}
+
+/// The Susun pick step's title: "Ubin 2 dari 3", "Tile 2 of 3".
+pub fn arrange_tile_of(lang: Lang, n: usize, total: usize) -> String {
+    match lang {
+        Lang::Id => format!("Ubin {n} dari {total}"),
+        Lang::En => format!("Tile {n} of {total}"),
+    }
+}
+
+/// The notice after an arrangement: "Tersusun \u{b7} 3 jendela", with
+/// " \u{b7} 1 dilewati" when some tiles got no window.
+pub fn arrange_done(lang: Lang, moved: usize, skipped: Option<usize>) -> String {
+    let mut out = match lang {
+        Lang::Id => format!("Tersusun \u{b7} {moved} jendela"),
+        Lang::En => format!(
+            "Arranged \u{b7} {moved} window{}",
+            if moved == 1 { "" } else { "s" }
+        ),
+    };
+    if let Some(k) = skipped {
+        out.push_str(&match lang {
+            Lang::Id => format!(" \u{b7} {k} dilewati"),
+            Lang::En => format!(" \u{b7} {k} skipped"),
+        });
+    }
+    out
+}
+
+/// The notice after a saved arrangement ran: "2 dari 3 jendela, 1 dilewati",
+/// "2 of 3 windows, 1 skipped".
+pub fn arrange_saved_run(lang: Lang, moved: usize, wanted: usize, skipped: usize) -> String {
+    match lang {
+        Lang::Id => format!("{moved} dari {wanted} jendela, {skipped} dilewati"),
+        Lang::En => format!("{moved} of {wanted} windows, {skipped} skipped"),
+    }
+}
+
+/// A monitor chip: "1 \u{b7} 2560\u{d7}1440".
+pub fn arrange_monitor_chip(n: usize, w: i32, h: i32) -> String {
+    format!("{n} \u{b7} {w}\u{d7}{h}")
+}
+
+/// A built-in layout's name.
+pub fn arrange_builtin_name(lang: Lang, b: crate::arrange::BuiltIn) -> &'static str {
+    use crate::arrange::BuiltIn;
+    let key = match b {
+        BuiltIn::Cols2 => Key::ArrangeCols2,
+        BuiltIn::Cols3 => Key::ArrangeCols3,
+        BuiltIn::Main2 => Key::ArrangeMain2,
+        BuiltIn::Grid4 => Key::ArrangeGrid4,
+        BuiltIn::TwoThirds => Key::ArrangeTwoThirds,
+        BuiltIn::Main3 => Key::ArrangeMain3,
+    };
+    text(lang, key)
 }
 
 /// The Devices page's chip: "3 tersambung", "3 connected".
