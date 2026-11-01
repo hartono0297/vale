@@ -99,7 +99,7 @@ code, kbd { font-family: var(--mono); font-size: .9em; font-weight: 400; }
 html:not(.js) .js-only { display: none !important; }
 .js .no-js-only { display: none !important; }
 .wrap { width: min(100% - 2 * var(--gutter), 72rem); margin-inline: auto; }
-.narrow { width: min(100% - 2 * var(--gutter), 48rem); }
+.narrow { width: min(100% - 2 * var(--gutter), 49rem); }
 
 /* The go-to-top link scrolls here and focuses it, so the next Tab is the skip link. */
 #top { position: absolute; top: 0; left: 0; width: 1px; height: 1px; overflow: hidden; }
@@ -137,7 +137,7 @@ html:not(.js) .js-only { display: none !important; }
 .btn-dl:hover { background: var(--btn-bg-hover); }
 .btn-dl:focus-visible { outline-color: var(--text); }
 .menu-btn, .theme-btn { min-height: 44px; border: 0; border-radius: 999px; background: transparent; color: var(--text); font: inherit; font-size: .9375rem; font-weight: 500; cursor: pointer; }
-.menu-btn { display: none; align-items: center; gap: 8px; padding: 0 14px 0 12px; }
+.menu-btn { display: none; align-items: center; gap: 6px; padding: 0 10px 0 8px; }
 .menu-ico { position: relative; display: block; box-sizing: border-box; width: 18px; height: 14px; border-top: 2px solid currentColor; border-bottom: 2px solid currentColor; }
 .menu-ico::after { content: ""; position: absolute; left: 0; right: 0; top: 4px; border-top: 2px solid currentColor; }
 .theme-btn { display: inline-flex; align-items: center; justify-content: center; width: 44px; padding: 0; }
@@ -147,8 +147,11 @@ html:not(.js) .js-only { display: none !important; }
 
 /* Wide enough for both full pills beside the idle notch (measured, see
    site-landing.md); narrower, the left pill is a Menu button and the right
-   pill only Download. Without script nothing is folded away. */
-@media (max-width: 47.99em) {
+   pill only Download. Without script nothing is folded away. Media queries
+   count a classic scrollbar (15 to 17 px on Windows) but the notch centres on
+   the width without it, so every fold below keeps 12 px with one: the full
+   pills need 49em, not 48em. */
+@media (max-width: 48.99em) {
   .js .menu-btn { display: inline-flex; }
   .js .pill-l .brand, .js .pill-r .nav-gh, .js .pill-r .theme-btn { display: none; }
   .js .pill-r { padding: 0; border-color: transparent !important; background: transparent !important; }
@@ -161,17 +164,18 @@ html:not(.js) .js-only { display: none !important; }
   .js .nav-theme { padding: 4px 2px 0; }
   .js .nav-theme .theme-btn { border: 1px solid var(--control); }
 }
-/* On phones Download must end 12 px before the 120 px notch (at 376 px it
-   has 100 px); below 23.5em the header shares 320 px with a 96 px notch: the
-   Menu button keeps only its icon (the word stays as its accessible name)
-   and Download gets smaller again (84 px room at 320). */
+/* On phones the Menu pill must end 12 px before the 120 px notch (at 376 px
+   with a scrollbar it has 93 px); below 23.5em the header shares 320 px with
+   a 96 px notch: the Menu button keeps only its icon (the word stays as its
+   accessible name) and Download gets smaller again (76 px room at 320 with a
+   scrollbar). */
 @media (max-width: 32.5em) {
-  .btn-dl { padding: 0 12px; font-size: .875rem; }
+  .btn-dl { padding: 0 10px; font-size: .875rem; }
 }
 @media (max-width: 23.49em) {
   .js .menu-btn { width: 44px; justify-content: center; padding: 0; }
   .menu-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-  .btn-dl { padding: 0 9px; font-size: .8125rem; }
+  .btn-dl { padding: 0 7px; font-size: .75rem; }
 }
 
 /* ---------- footer ---------- */
@@ -392,7 +396,7 @@ html:not(.js) .hero { min-height: 0; }
 .hero-title { transform-origin: 50% 40%; }
 .hero-title .l { display: block; }
 .hero-line { max-width: 34rem; margin: 1.5rem 0 0; font-size: clamp(1.125rem, 1rem + .5vw, 1.3125rem); line-height: 1.5; color: var(--text-2); }
-.hero-cmd { width: min(100%, 47rem); margin-top: 1.25rem; text-align: left; }
+.hero-cmd { width: min(100%, 49rem); margin-top: 1.25rem; text-align: left; }
 @media (prefers-reduced-motion: reduce) { .hero-title { transform: none !important; opacity: 1 !important; } }
 
 /* ---------- features: the tiles ---------- */
@@ -550,6 +554,9 @@ html:not(.js) .cmd { grid-template-columns: minmax(0, 1fr); }
 .lost p { max-width: 32rem; margin: 1.5rem auto 0; }
 .lost .btn { margin-top: 1rem; }
 .notch-static { pointer-events: none; }
+/* Without script the header is static and unfolded, so below the fold its
+   links would sit under the notch. */
+@media (max-width: 48.99em) { html:not(.js) .notch-static { display: none; } }
 .notch-static .nf { opacity: 1; justify-content: space-between; }
 .notch-static .clock { color: var(--notch-2); }
 

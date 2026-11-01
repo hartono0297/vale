@@ -47,7 +47,7 @@
     paint();
   }
 
-  /* ---------- menu button (below the pill breakpoint, 48em) ----------
+  /* ---------- menu button (below the pill breakpoint, 49em) ----------
      The left pill becomes a Menu button; the nav list opens under it as a
      dropdown with Home, Features, Install, GitHub and the theme button. */
   function initMenu() {
@@ -79,7 +79,7 @@
     nav.addEventListener('focusout', function (e) {
       if (isOpen() && e.relatedTarget && !nav.contains(e.relatedTarget) && e.relatedTarget !== btn) setOpen(false, false);
     });
-    var wide = window.matchMedia('(min-width: 48em)');
+    var wide = window.matchMedia('(min-width: 49em)');
     if (wide.addEventListener) wide.addEventListener('change', function () { setOpen(false, false); });
   }
 
