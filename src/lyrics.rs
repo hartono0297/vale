@@ -47,11 +47,16 @@ const USER_AGENT: &str = concat!(
 );
 const API: &str = "https://lrclib.net/api/get";
 const SEARCH_API: &str = "https://lrclib.net/api/search";
+/// LRC files use this extension. The older `.lrc` files (written by a pick
+/// that ignored how the playing version differs from the upload, and without
+/// the intro shift) are never read, so those tracks are looked up again once.
+const LRC_EXT: &str = "lrc2";
 /// Not-found markers use this extension: ones written by an older, weaker
-/// lookup (`.none`, `.none2`: no retry of a busy server, no free-text search,
-/// no "Artist - Title" split) are ignored, so a track they gave up on is
+/// lookup (`.none` .. `.none3`: no retry of a busy server, no free-text
+/// search, no "Artist - Title" split, no intro shift for a music video whose
+/// lyrics are only found that way) are ignored, so a track they gave up on is
 /// asked again.
-const NONE_EXT: &str = "none3";
+const NONE_EXT: &str = "none4";
 /// A search result is the track only when its length is this close.
 const SEARCH_DURATION_MS: u64 = 3_000;
 /// The whole lookup (every step, retries and waits included) stops sending
@@ -65,7 +70,18 @@ const HTTP_RETRIES: u32 = 2;
 const MAX_CANDIDATES: usize = 20;
 const MATCH_LINES: usize = 300;
 const MIN_MATCHED: usize = 3;
-/// LRCLIB answers and cached `.lrc` files larger than this are refused
+/// An upload this close to the playing length is the same recording: when
+/// any is, only those are weighed.
+const TIGHT_DURATION_MS: u64 = 1_500;
+/// Two uploads whose timings differ by at most this are one family (copies of
+/// one timing), whatever their lengths.
+const FAMILY_MS: u64 = 500;
+/// The playing version is longer than its family's reference by more than
+/// `MIN_INTRO_MS` and at most `MAX_INTRO_MS`: its extra intro is added to
+/// every line.
+const MIN_INTRO_MS: u64 = 3_000;
+const MAX_INTRO_MS: u64 = 60_000;
+/// LRCLIB answers and cached `.lrc2` files larger than this are refused
 /// unparsed: a song's synced lyrics are a few KB.
 pub const MAX_BODY_BYTES: usize = 512 * 1024;
 /// `parse_lrc` keeps at most this many time tags of one line (more are
@@ -559,26 +575,18 @@ fn shift_between(a: &Times, b: &Times) -> Option<i64> {
     (diffs.len() >= MIN_MATCHED).then(|| lower_median(&mut diffs))
 }
 
-/// The synced lyrics to show out of `cands`, for a track of `duration_ms`.
-/// LRCLIB entries are user uploads whose timing varies; copies of one
-/// timing agree, so among the entries within `SEARCH_DURATION_MS` of the
-/// length the one that is least shifted from the others wins (the median of
-/// its shifts to each of them), then the closest length, then the first.
-pub fn pick_best(cands: Vec<Candidate>, duration_ms: u64) -> Option<String> {
-    let gap = |c: &Candidate| c.duration_ms.map_or(0, |d| d.abs_diff(duration_ms));
-    let mut near: Vec<Candidate> = cands
-        .into_iter()
-        .filter(|c| gap(c) <= SEARCH_DURATION_MS)
-        .take(MAX_CANDIDATES)
-        .collect();
-    if near.len() <= 1 {
-        return near.pop().map(|c| c.lrc);
+/// The index (into `times`) of the candidate among `idx` that is least
+/// shifted from the others (the median of its shifts to each of them), then
+/// the closest length, then the first. `idx` is not empty.
+fn consensus(times: &[Times], idx: &[usize], gap: impl Fn(usize) -> u64) -> usize {
+    if let [only] = idx {
+        return *only;
     }
-    let times: Vec<Times> = near.iter().map(|c| times_by_text(&c.lines)).collect();
     let score = |i: usize| -> u64 {
-        let mut away: Vec<u64> = (0..near.len())
-            .filter(|&j| j != i)
-            .filter_map(|j| shift_between(&times[i], &times[j]))
+        let mut away: Vec<u64> = idx
+            .iter()
+            .filter(|&&j| j != i)
+            .filter_map(|&j| shift_between(&times[i], &times[j]))
             .map(i64::unsigned_abs)
             .collect();
         if away.is_empty() {
@@ -587,8 +595,117 @@ pub fn pick_best(cands: Vec<Candidate>, duration_ms: u64) -> Option<String> {
             lower_median(&mut away)
         }
     };
-    let best = (0..near.len()).min_by_key(|&i| (score(i), gap(&near[i]), i))?;
-    Some(near.swap_remove(best).lrc)
+    idx.iter()
+        .copied()
+        .min_by_key(|&i| (score(i), gap(i), i))
+        .unwrap_or(idx[0])
+}
+
+/// How much later than the upload `cands[chosen]` plays in the version of
+/// `duration_ms`: the playing length minus the reference length of the
+/// chosen timing's family, when that is over `MIN_INTRO_MS` and at most
+/// `MAX_INTRO_MS`. The family is every candidate (any length) whose timing is
+/// within `FAMILY_MS` of the chosen one (measured against it, not chained);
+/// its reference is the lower median of their lengths. A longer intro (a
+/// music video) lengthens the recording but not the song, so the sung lines
+/// come later; a shorter playing version is never shifted.
+fn intro_shift(
+    cands: &[Candidate],
+    times: &[Times],
+    chosen: usize,
+    duration_ms: u64,
+) -> Option<u64> {
+    let mut lengths: Vec<u64> = (0..cands.len())
+        .filter(|&x| {
+            x == chosen
+                || shift_between(&times[chosen], &times[x])
+                    .is_some_and(|s| s.unsigned_abs() <= FAMILY_MS)
+        })
+        .filter_map(|x| cands[x].duration_ms)
+        .collect();
+    if lengths.is_empty() {
+        return None;
+    }
+    let extra = duration_ms.checked_sub(lower_median(&mut lengths))?;
+    (MIN_INTRO_MS < extra && extra <= MAX_INTRO_MS).then_some(extra)
+}
+
+/// `lines` as LRC text, one `[mm:ss.xxx]text` line each (an empty text, a gap,
+/// is just the tag; minutes may pass 59). `parse_lrc` reads it back as it was.
+pub fn format_lrc(lines: &[LrcLine]) -> String {
+    let mut out = String::new();
+    for line in lines {
+        let at = line.at_ms;
+        out.push_str(&format!(
+            "[{:02}:{:02}.{:03}]{}\n",
+            at / 60_000,
+            at / 1000 % 60,
+            at % 1000,
+            line.text
+        ));
+    }
+    out
+}
+
+/// The synced lyrics to show out of the entries of a search reply, for a
+/// track of `duration_ms`. LRCLIB entries are user uploads whose timing
+/// varies; copies of one timing agree, so among the entries within
+/// `TIGHT_DURATION_MS` of the length (else within `SEARCH_DURATION_MS`) the
+/// one that is least shifted from the others wins (the median of its shifts to
+/// each of them), then the closest length, then the first.
+///
+/// The upload may be of a shorter version than the one playing (a music video
+/// with a long intro): the chosen timing is then shifted later by the extra
+/// length (see `intro_shift`) and the shifted LRC is returned. With nothing
+/// within `SEARCH_DURATION_MS` the choice is made among all of them and
+/// returned only when it needs that shift.
+pub fn pick_best(cands: Vec<Candidate>, duration_ms: u64) -> Option<String> {
+    let mut cands: Vec<Candidate> = cands.into_iter().take(MAX_CANDIDATES).collect();
+    let gap = |i: usize| cands[i].duration_ms.map_or(0, |d| d.abs_diff(duration_ms));
+    let within =
+        |limit: u64| -> Vec<usize> { (0..cands.len()).filter(|&i| gap(i) <= limit).collect() };
+    let mut pool = within(TIGHT_DURATION_MS);
+    if pool.is_empty() {
+        pool = within(SEARCH_DURATION_MS);
+    }
+    let fallback = pool.is_empty();
+    if fallback {
+        pool = (0..cands.len()).collect();
+    }
+    if pool.is_empty() {
+        return None;
+    }
+    let times: Vec<Times> = cands.iter().map(|c| times_by_text(&c.lines)).collect();
+    let chosen = consensus(&times, &pool, gap);
+    let shifted = intro_shift(&cands, &times, chosen, duration_ms).map(|extra| {
+        let lines: Vec<LrcLine> = cands[chosen]
+            .lines
+            .iter()
+            .map(|l| LrcLine {
+                at_ms: l.at_ms.saturating_add(extra),
+                text: l.text.clone(),
+            })
+            .collect();
+        format_lrc(&lines)
+    });
+    match shifted {
+        Some(lrc) => Some(lrc),
+        None if fallback => None,
+        None => Some(cands.swap_remove(chosen).lrc),
+    }
+}
+
+/// The lyrics of a `/api/get` reply (one entry that LRCLIB matched by the
+/// length): returned when its length is within `SEARCH_DURATION_MS` of
+/// `duration_ms` (a missing length counts as 0 off). Never shifted.
+fn pick_exact(cands: Vec<Candidate>, duration_ms: u64) -> Option<String> {
+    cands
+        .into_iter()
+        .find(|c| {
+            c.duration_ms
+                .is_none_or(|d| d.abs_diff(duration_ms) <= SEARCH_DURATION_MS)
+        })
+        .map(|c| c.lrc)
 }
 
 /// What the worker found out: the synced lyrics, nothing (every request was
@@ -734,14 +851,16 @@ impl<N: Net> Chain<'_, N> {
         }
     }
 
-    /// One step: the synced lyrics `pick_best` takes from the reply to `url`.
+    /// One step: the synced lyrics `pick_best` (a search) or `pick_exact` (a
+    /// `/api/get`) takes from the reply to `url`.
     fn step(&mut self, url: &str, many: bool) -> Option<String> {
         let reading = match self.fetch(url) {
             Fetched::Done(status, body) => read_reply(status, &body, many),
             Fetched::Transient => Reading::Transient,
         };
         match reading {
-            Reading::Found(cands) => pick_best(cands, self.duration_ms),
+            Reading::Found(cands) if many => pick_best(cands, self.duration_ms),
+            Reading::Found(cands) => pick_exact(cands, self.duration_ms),
             Reading::Empty => None,
             Reading::Transient => {
                 self.transient = true;
@@ -841,8 +960,10 @@ pub enum Cached {
     Miss,
 }
 
-/// `<dir>\<hash>.lrc` holds a track's LRC; `<hash>.none3` holds the Unix time
-/// a lookup found nothing, trusted for `NEGATIVE_TTL_SECS`.
+/// `<dir>\<hash>.lrc2` holds a track's LRC (the text shown: shifted when the
+/// playing version has a longer intro); `<hash>.none4` holds the Unix time a
+/// lookup found nothing, trusted for `NEGATIVE_TTL_SECS`. Files of the older
+/// lookups (`.lrc`, `.none` .. `.none3`) are never read.
 pub struct DiskCache {
     dir: PathBuf,
 }
@@ -861,10 +982,10 @@ impl DiskCache {
         self.dir.join(format!("{}.{ext}", key_hash(key)))
     }
 
-    /// An `.lrc` over `MAX_BODY_BYTES` (never written by `write_lrc`) is
+    /// An `.lrc2` over `MAX_BODY_BYTES` (never written by `write_lrc`) is
     /// left unread, as if it were not there.
     pub fn read(&self, key: &str, now_unix: i64) -> Cached {
-        let lrc = self.file(key, "lrc");
+        let lrc = self.file(key, LRC_EXT);
         let fits = std::fs::metadata(&lrc).is_ok_and(|m| m.len() <= MAX_BODY_BYTES as u64);
         if fits && let Ok(lrc) = std::fs::read_to_string(&lrc) {
             return Cached::Lrc(lrc);
@@ -888,7 +1009,7 @@ impl DiskCache {
         if !storable(lrc) {
             return;
         }
-        let _ = write_atomic(&self.file(key, "lrc"), lrc);
+        let _ = write_atomic(&self.file(key, LRC_EXT), lrc);
         let _ = std::fs::remove_file(self.file(key, NONE_EXT));
     }
 
@@ -1841,7 +1962,7 @@ mod tests {
         let file = tmp
             .0
             .join("lyrics-cache")
-            .join(format!("{}.lrc", key_hash("k")));
+            .join(format!("{}.{LRC_EXT}", key_hash("k")));
         assert!(file.exists());
 
         cache.write_nothing("gone", now);
@@ -1878,7 +1999,7 @@ mod tests {
         let now = 1_800_000_000;
         let huge = format!("[00:01.00] {}", "x".repeat(MAX_BODY_BYTES));
         let q = query("big");
-        let file = tmp.0.join(format!("{}.lrc", key_hash(&q.key)));
+        let file = tmp.0.join(format!("{}.{LRC_EXT}", key_hash(&q.key)));
         let mut memory = MemoryCache::new(5);
         let f = keep_answer(&q, Answer::Synced(huge.clone()), &cache, &mut memory, now);
         assert!(f.transient && f.lines.is_none());
@@ -2493,8 +2614,9 @@ mod lookup_tests {
         let mut net = Fake::new(ok("[]".into())).on(&lrclib_url(&q), vec![status(404, None)]);
         assert_eq!(lookup_chain(&q, &mut net), Answer::None);
 
-        // Entries more than 3 s off the length are not the track.
-        let far = list(&[entry("a", 0, 190.0), entry("b", 0, 210.0)]);
+        // Entries far off the length (more than a longest intro shift, 60 s)
+        // are not the track.
+        let far = list(&[entry("a", 0, 100.0), entry("b", 0, 110.0)]);
         let mut net = Fake::new(ok(far)).on(&lrclib_url(&q), vec![status(404, None)]);
         assert_eq!(lookup_chain(&q, &mut net), Answer::None);
 
@@ -2672,8 +2794,12 @@ mod lookup_tests {
             cand("ok", 0, Some(199_000)),
         ];
         assert_eq!(pick_best(cands, 197_000), Some(tagged("ok", 0)));
-        let far = vec![cand("off", 0, Some(190_000))];
+        // Far shorter than the playing length (97 s: over the longest intro
+        // shift) and far longer: none.
+        let far = vec![cand("off", 0, Some(100_000))];
         assert_eq!(pick_best(far, 197_000), None);
+        let long = vec![cand("off", 0, Some(300_000))];
+        assert_eq!(pick_best(long, 197_000), None);
         assert_eq!(pick_best(Vec::new(), 197_000), None);
     }
 
@@ -2734,17 +2860,254 @@ mod lookup_tests {
 
     #[test]
     fn markers_of_the_older_lookups_are_ignored() {
-        assert_eq!(NONE_EXT, "none3");
+        assert_eq!(NONE_EXT, "none4");
+        assert_eq!(LRC_EXT, "lrc2");
         let dir = std::env::temp_dir().join(format!("vale-lookup-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let cache = DiskCache::new(dir.clone());
         let now = 1_800_000_000;
-        let old = dir.join(format!("{}.none2", key_hash("old")));
-        std::fs::write(old, now.to_string()).unwrap();
-        assert_eq!(cache.read("old", now), Cached::Miss);
+        for (key, ext) in [("old", "none2"), ("old3", "none3")] {
+            let old = dir.join(format!("{}.{ext}", key_hash(key)));
+            std::fs::write(old, now.to_string()).unwrap();
+            assert_eq!(cache.read(key, now), Cached::Miss, ".{ext} is ignored");
+        }
+        // An LRC written by the older pick is not read either.
+        let old_lrc = dir.join(format!("{}.lrc", key_hash("oldlrc")));
+        std::fs::write(old_lrc, "[00:01.00] hi").unwrap();
+        assert_eq!(cache.read("oldlrc", now), Cached::Miss);
         cache.write_nothing("new", now);
         assert_eq!(cache.read("new", now), Cached::Nothing(now));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Real `/api/search` replies (trimmed to ten lines per entry).
+    const PERFECT: &str = include_str!("testdata/lrclib-perfect-ed-sheeran.json");
+    const SUPERMAN: &str = include_str!("testdata/lrclib-superman-five-for-fighting.json");
+
+    fn first_worded(lrc: &str) -> LrcLine {
+        parse_lrc(lrc)
+            .into_iter()
+            .find(|l| !alnum_key(&l.text).is_empty())
+            .expect("a worded line")
+    }
+
+    /// The `syncedLyrics` of every entry, as uploaded.
+    fn uploads(body: &str) -> Vec<(u64, String)> {
+        candidates(body)
+            .into_iter()
+            .map(|c| (c.duration_ms.unwrap_or(0), c.lrc))
+            .collect()
+    }
+
+    #[test]
+    fn the_fixtures_are_whole() {
+        assert_eq!(candidates(PERFECT).len(), 20);
+        assert_eq!(
+            candidates(SUPERMAN).len(),
+            19,
+            "one entry has no synced lyrics"
+        );
+        let lengths: Vec<u64> = uploads(SUPERMAN).iter().map(|u| u.0).collect();
+        assert!(lengths.contains(&222_198) && lengths.contains(&220_816));
+    }
+
+    #[test]
+    fn a_video_with_a_longer_intro_gets_the_lyrics_shifted_later() {
+        // Perfect: the official video is 282 s, the album timing's family has
+        // a lower median length of 263 s: every line comes 19 s later.
+        let got = pick_best(candidates(PERFECT), 282_000).expect("lyrics");
+        let first = first_worded(&got);
+        assert_eq!(first.text, "I found a love, for me");
+        assert_eq!(first.at_ms, 2_980 + 19_000);
+        let original = parse_lrc(&uploads(PERFECT)[0].1);
+        let shifted = parse_lrc(&got);
+        assert_eq!(shifted.len(), original.len());
+        for (s, o) in shifted.iter().zip(&original) {
+            assert_eq!(s.at_ms, o.at_ms + 19_000);
+            assert_eq!(s.text, o.text);
+        }
+    }
+
+    #[test]
+    fn the_album_length_is_not_shifted() {
+        let got = pick_best(candidates(PERFECT), 263_000).expect("lyrics");
+        assert_eq!(first_worded(&got).at_ms, 2_980);
+        assert!(
+            uploads(PERFECT).iter().any(|u| u.1 == got),
+            "an upload as it is"
+        );
+        // Exactly 3 s longer than the family's reference: not over it.
+        let edge = pick_best(candidates(PERFECT), 266_000).expect("lyrics");
+        assert_eq!(first_worded(&edge).at_ms, 2_980);
+        // A shorter playing version is never shifted.
+        let shorter = pick_best(candidates(PERFECT), 259_500).expect("lyrics");
+        assert_eq!(first_worded(&shorter).at_ms, 2_980);
+    }
+
+    #[test]
+    fn the_intro_shift_stops_at_sixty_seconds() {
+        // No entry within 3 s: the shift is the only way to an answer.
+        let at = |ms| pick_best(candidates(PERFECT), ms);
+        assert_eq!(first_worded(&at(323_000).unwrap()).at_ms, 2_980 + 60_000);
+        assert_eq!(at(323_001), None);
+        assert_eq!(at(345_000), None);
+        // Over 3 s and up to 60 s longer than every length: shifted.
+        assert_eq!(first_worded(&at(310_000).unwrap()).at_ms, 2_980 + 47_000);
+    }
+
+    #[test]
+    fn the_exact_length_entries_win_the_tight_window() {
+        // Superman at 219 s: only the three 219-s uploads are within 1.5 s;
+        // they time "I can't stand to fly" at 18.41 and are right as they are.
+        let got = pick_best(candidates(SUPERMAN), 219_000).expect("lyrics");
+        let first = first_worded(&got);
+        assert_eq!(first.text, "I can't stand to fly");
+        assert_eq!(first.at_ms, 18_410);
+        let exact: Vec<String> = uploads(SUPERMAN)
+            .into_iter()
+            .filter(|u| u.0 == 219_000)
+            .map(|u| u.1)
+            .collect();
+        assert!(exact.contains(&got), "an upload as it is, not shifted");
+    }
+
+    #[test]
+    fn a_longer_superman_is_not_shifted() {
+        // At 222 s the entries around it (221-223 s) agree within a second:
+        // no shift, and not the 18.41 timing of the 219-s ones.
+        let got = pick_best(candidates(SUPERMAN), 222_000).expect("lyrics");
+        // Copies of one timing share their text: one of them is 220.5-223.5 s.
+        let lengths: Vec<u64> = uploads(SUPERMAN)
+            .into_iter()
+            .filter(|u| u.1 == got)
+            .map(|u| u.0)
+            .collect();
+        assert!(!lengths.is_empty(), "returned exactly as an entry uploaded it");
+        assert!(
+            lengths.iter().any(|l| (220_500..=223_500).contains(l)),
+            "{lengths:?}"
+        );
+        assert_ne!(first_worded(&got).at_ms, 18_410);
+    }
+
+    #[test]
+    fn a_shorter_playing_version_keeps_a_close_upload_as_it_is() {
+        // Three long copies of one timing and one 188-s upload of nearly the
+        // same timing; playing 189 s: the family's reference is 200 s, which is
+        // longer, so nothing is shifted.
+        let cands = vec![
+            cand("long1", 0, Some(200_000)),
+            cand("long2", 0, Some(200_000)),
+            cand("long3", 0, Some(200_000)),
+            cand("short", 100, Some(188_000)),
+        ];
+        assert_eq!(pick_best(cands, 189_000), Some(tagged("short", 100)));
+    }
+
+    #[test]
+    fn nothing_within_three_seconds_and_a_shorter_playing_version_is_none() {
+        let cands = vec![
+            cand("a", 0, Some(200_000)),
+            cand("b", 0, Some(200_000)),
+            cand("c", 0, Some(201_000)),
+        ];
+        assert_eq!(pick_best(cands.clone(), 190_000), None);
+        // One within 3 s: it is returned, and 2.9 s over the reference is no
+        // shift.
+        assert_eq!(pick_best(cands.clone(), 202_900), Some(tagged("c", 0)));
+        // Longer by over 3 s: shifted by the extra length.
+        let got = pick_best(cands, 210_000).expect("shifted");
+        assert_eq!(first_worded(&got).at_ms, 1_000 + 10_000);
+    }
+
+    #[test]
+    fn a_single_get_reply_is_never_shifted() {
+        let one = |millis| vec![cand("g", 0, millis)];
+        assert_eq!(
+            pick_exact(one(Some(200_000)), 202_900),
+            Some(tagged("g", 0))
+        );
+        assert_eq!(pick_exact(one(Some(200_000)), 203_001), None);
+        assert_eq!(
+            pick_exact(one(Some(200_000)), 197_000),
+            Some(tagged("g", 0))
+        );
+        assert_eq!(pick_exact(one(Some(200_000)), 120_000), None);
+        assert_eq!(pick_exact(one(None), 120_000), Some(tagged("g", 0)));
+        assert_eq!(pick_exact(Vec::new(), 120_000), None);
+    }
+
+    #[test]
+    fn a_get_reply_for_a_shorter_version_is_not_shifted_in_the_chain() {
+        let q = query("Song", "Band", 282);
+        let get = serde_json::json!({"duration": 263.0, "syncedLyrics": tagged("g", 0)});
+        let mut net = Fake::new(status(404, None)).on(&lrclib_url(&q), vec![ok(get.to_string())]);
+        assert_eq!(lookup_chain(&q, &mut net), Answer::None);
+        let near = serde_json::json!({"duration": 281.0, "syncedLyrics": tagged("g", 0)});
+        let mut net = Fake::new(status(404, None)).on(&lrclib_url(&q), vec![ok(near.to_string())]);
+        assert_eq!(lookup_chain(&q, &mut net), Answer::Synced(tagged("g", 0)));
+    }
+
+    #[test]
+    fn format_lrc_reads_back_as_it_was() {
+        let lines = vec![
+            LrcLine {
+                at_ms: 0,
+                text: "start".into(),
+            },
+            LrcLine {
+                at_ms: 12_345,
+                text: "a line".into(),
+            },
+            LrcLine {
+                at_ms: 20_007,
+                text: String::new(),
+            },
+            LrcLine {
+                at_ms: 20_007,
+                text: "same time".into(),
+            },
+            LrcLine {
+                at_ms: 3_725_999,
+                text: "after an hour".into(),
+            },
+        ];
+        let text = format_lrc(&lines);
+        assert!(text.contains("[00:12.345]a line\n"), "{text}");
+        assert!(
+            text.contains("[00:20.007]\n"),
+            "a gap is only its tag: {text}"
+        );
+        assert!(text.contains("[62:05.999]after an hour"), "{text}");
+        assert_eq!(parse_lrc(&text), lines);
+        assert_eq!(format_lrc(&[]), "");
+    }
+
+    #[test]
+    fn a_longer_video_is_found_shifted_by_the_whole_lookup() {
+        let q = query("Perfect", "Ed Sheeran", 282);
+        let url = lrclib_search_url("Perfect", "Ed Sheeran");
+        let mut net = Fake::new(status(404, None)).on(&url, vec![ok(PERFECT.to_string())]);
+        let Answer::Synced(text) = lookup_chain(&q, &mut net) else {
+            panic!("no lyrics");
+        };
+        assert_eq!(first_worded(&text).at_ms, 21_980);
+        assert_eq!(net.asked, vec![url], "the first step was enough");
+        // What is cached and shown is that same text.
+        let dir = std::env::temp_dir().join(format!("vale-shifted-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let cache = DiskCache::new(dir.clone());
+        let mut memory = MemoryCache::new(5);
+        let f = keep_answer(
+            &q,
+            Answer::Synced(text.clone()),
+            &cache,
+            &mut memory,
+            1_800_000_000,
+        );
+        assert_eq!(f.lines.as_deref(), Some(&parse_lrc(&text)));
+        assert_eq!(cache.read(&q.key, 1_800_000_000), Cached::Lrc(text));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
