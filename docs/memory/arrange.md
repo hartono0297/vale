@@ -102,6 +102,24 @@ in `settings_layout.rs`, `--demo-arrange` in `ui/demo.rs`.
   after the overlay shows and after every activation or click (a click raises the
   overlay over it). While the panel is open the stay-behind setting already keeps
   the island on top.
+- **Self-fullscreen gotcha:** Vale's own topmost pick overlay (the whole
+  virtual screen) is reported as a fullscreen app by
+  `SHQueryUserNotificationState` (QUNS_BUSY), the same family as the capture
+  overlay in [[screenshot-snap]]. Unhandled, the next `TIMER_SYSTEM` tick
+  hides the island, `arrange_page_shown` turns false and `sync_arrange`
+  cancels the pick about a second after it began. So `check_fullscreen` does
+  not ask while `arrange_overlay::active()` (`fullscreen_event` returns None;
+  `App.fullscreen` and `State.fullscreen` stay as they were and never
+  disagree, which is why the reducer is not guarded), and `page_shown` ignores
+  fullscreen while picking. A real fullscreen app mid-pick takes the
+  foreground from the overlay: that posts MSG_CANCEL (armed), `cancel_pick`
+  closes the overlay and `on_arrange_msg` checks fullscreen at once, so the
+  island hides without waiting for the tick. The hover outline is not
+  skipped: it never activates and is click-through, and covers only the work
+  area; where the work area equals the monitor (auto-hiding taskbar) it is
+  made 1 px shorter (`outline_area`) and it is never shown while
+  `State.fullscreen()` is true, so a game launched while the pointer rests on
+  a card still hides the island.
 - The panel stays open through the pick step in every open mode
   (`Event::ArrangePick`, part of `panel_held`) and `Dismiss` is ignored, see
   [[open-mode]]. Leaving the Susun page cancels (`sync_arrange`). Nothing runs at
@@ -144,7 +162,8 @@ in `settings_layout.rs`, `--demo-arrange` in `ui/demo.rs`.
 Related: [[panel-pages]], [[devices]], [[screenshot-snap]], [[open-mode]],
 [[settings-structure]], [[shortcut-tiles]]
 
-**Not verified by hand:** a real arrangement of real windows (the live test only
+**Not verified by hand:** the pick step lasting more than a few seconds on
+one monitor, a real fullscreen app mid-pick, a real arrangement of real windows (the live test only
 moves its own window; the demo never calls the mover), elevated windows, a move
 across monitors of different DPI, the pick step with the keyboard, and typing in
 the name field. The logic around them is tested; the layout and the overlays
