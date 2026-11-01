@@ -1923,7 +1923,9 @@ impl Builder<'_> {
     }
 }
 
-/// The whole window for `section` at the minimum client size.
+/// The whole window for `section` at the minimum client size (what the
+/// tests lay out against; the window uses `layout_in`).
+#[cfg(test)]
 pub fn layout(section: Section, s: &State, m: &dyn Measure) -> Layout {
     layout_in(section, s, m, (CLIENT_W, CLIENT_H))
 }
