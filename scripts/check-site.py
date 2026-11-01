@@ -2,7 +2,8 @@
 
 Standard library only. Exit code 1 when any problem is found. For every
 site/*.html it checks:
-  - the file parses and its tags nest correctly;
+  - the file parses, its tags nest correctly, and attributes are separated by
+    whitespace (html.parser accepts id="a"viewBox="b"; the HTML spec does not);
   - every id is unique;
   - every internal href, src and CSS url() points at a file that exists inside
     site/ with the exact same case (GitHub Pages is case-sensitive), and
@@ -66,6 +67,9 @@ class Page(HTMLParser):
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
         line = self.getpos()[0]
+        raw = self.get_starttag_text()
+        if raw and not attrs_separated(raw):
+            problem(self.name, f"line {line}: <{tag}> has no whitespace between two attributes")
         if "id" in a:
             self.ids.append(a["id"])
         for attr in ("href", "src"):
@@ -127,6 +131,40 @@ class Page(HTMLParser):
     def finish(self):
         for tag, a, line in self.stack:
             problem(self.name, f"line {line}: <{tag}> is never closed")
+
+
+def attrs_separated(raw):
+    """False when two attributes in the raw start tag touch, like
+    id="a"viewBox="b". Browsers and html.parser both recover from that, but it
+    is a parse error (missing-whitespace-between-attributes)."""
+    i = 1
+    n = len(raw)
+    while i < n and not (raw[i].isspace() or raw[i] in "/>"):
+        i += 1  # the tag name
+    while True:
+        start = i
+        while i < n and (raw[i].isspace() or raw[i] == "/"):
+            i += 1
+        if i >= n or raw[i] == ">":
+            return True
+        if i == start:
+            return False
+        while i < n and not (raw[i].isspace() or raw[i] in "=/>"):
+            i += 1  # the attribute name
+        j = i
+        while j < n and raw[j].isspace():
+            j += 1
+        if j < n and raw[j] == "=":
+            j += 1
+            while j < n and raw[j].isspace():
+                j += 1
+            if j < n and raw[j] in "\"'":
+                close = raw.find(raw[j], j + 1)
+                i = n if close < 0 else close + 1
+            else:
+                while j < n and not (raw[j].isspace() or raw[j] == ">"):
+                    j += 1
+                i = j
 
 
 def split_ref(value):
