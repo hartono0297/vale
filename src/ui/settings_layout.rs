@@ -3920,7 +3920,7 @@ pub fn shot_secs_step(n: u32, dir: i32) -> u32 {
 /// other two rows fade and take no clicks. Simpan is the default.
 fn screenshot_card(b: &mut Builder, s: &State) {
     let c = s.shot;
-    b.eyebrow(Key::SecScreenshot, b.g.content_w);
+    b.eyebrow(Key::SecScreenshot, b.g.content_w - 4.0);
     // The toggle just switched off is plain at once, before `App` catches up.
     let prtsc = if c.print_screen {
         s.prtsc
@@ -4821,6 +4821,235 @@ mod tests {
                     let l = layout(section, &s, &Estimate);
                     assert!(l.viewport.is_none(), "{section:?}");
                 }
+            }
+        }
+    }
+
+    /// The layouts of every section and state at `client`, each scrolled to
+    /// the top and to the end.
+    fn layouts_in(client: (f32, f32)) -> Vec<(Section, Lang, Layout)> {
+        let mut out = Vec::new();
+        for s in states() {
+            for section in Section::ALL {
+                for scroll in [0.0, f32::MAX] {
+                    let s = State {
+                        scroll,
+                        ..s.clone()
+                    };
+                    out.push((section, s.lang, layout_in(section, &s, &Estimate, client)));
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn layout_in_at_the_minimum_size_is_the_layout() {
+        for s in states() {
+            for section in Section::ALL {
+                for scroll in [0.0, 100.0, f32::MAX] {
+                    let s = State {
+                        scroll,
+                        ..s.clone()
+                    };
+                    let want = layout(section, &s, &Estimate);
+                    assert_eq!(
+                        layout_in(section, &s, &Estimate, (CLIENT_W, CLIENT_H)),
+                        want,
+                        "{section:?}"
+                    );
+                    // Smaller than the minimum is the minimum.
+                    assert_eq!(layout_in(section, &s, &Estimate, (10.0, 10.0)), want);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_column_at_the_minimum_size_is_where_it_always_was() {
+        let g = Geom::new((CLIENT_W, CLIENT_H));
+        assert_eq!(
+            (g.content_x, g.content_w, g.right),
+            (208.0, 488.0, CONTENT_X + CONTENT_W - INSET)
+        );
+        assert_eq!((CONTENT_X, CONTENT_W), (208.0, 488.0));
+    }
+
+    #[test]
+    fn a_wide_window_centres_a_column_capped_at_760() {
+        let client = (1400.0, 900.0);
+        let g = Geom::new(client);
+        let want_x = SIDEBAR_W + PAD + ((1400.0 - SIDEBAR_W - 2.0 * PAD - 760.0) / 2.0).round();
+        assert_eq!((g.content_x, g.content_w), (want_x, 760.0));
+        // The sidebar depends on the language only.
+        let min_of = |lang: Lang| {
+            let s = states().into_iter().find(|s| s.lang == lang).unwrap();
+            layout(Section::General, &s, &Estimate)
+        };
+        let min = [min_of(Lang::Id), min_of(Lang::En)];
+        for (section, lang, l) in layouts_in(client) {
+            let min = &min[usize::from(lang == Lang::En)];
+            for card in &l.cards {
+                assert_eq!((card.x, card.w), (g.content_x, 760.0), "{section:?}");
+            }
+            let lo = g.content_x - 0.01;
+            let hi = g.content_x + 760.0 + 0.01;
+            let within = |r: Rect, what: &str| {
+                assert!(
+                    r.x >= lo && r.right() <= hi,
+                    "{section:?} {lang:?}: {what} {r:?} leaves the column"
+                );
+            };
+            for c in &l.controls {
+                let bounds = c.bounds();
+                // The setup guide link sits just past the column's edge.
+                let link = matches!(
+                    c,
+                    Control::Button(b) if matches!(b.kind, ButtonKind::Link | ButtonKind::Disclosure(_))
+                );
+                if link {
+                    assert!(bounds.x >= lo && bounds.right() <= hi + LINK_PAD, "{c:?}");
+                } else {
+                    within(bounds, &format!("{c:?}"));
+                }
+            }
+            for t in &l.texts {
+                within(t.rect, &t.text);
+            }
+            for (f, r) in &l.fields {
+                within(*r, &format!("{f:?}"));
+            }
+            for chip in &l.chips {
+                within(chip.rect, "chip");
+            }
+            for r in l.preview.iter().chain(&l.cat_preview).chain(&l.about_logo) {
+                within(*r, "picture");
+            }
+            // The sidebar does not move; the title follows the column.
+            assert_eq!(l.logo, min.logo);
+            assert_eq!(l.brand, min.brand);
+            assert_eq!(l.nav, min.nav);
+            let title = l.title.as_ref().expect("a title");
+            assert_eq!((title.rect.x, title.rect.w), (g.content_x, 760.0));
+        }
+    }
+
+    #[test]
+    fn a_window_a_little_wider_has_an_uncapped_column_from_the_same_start() {
+        let client = (900.0, 520.0);
+        for (section, _, l) in layouts_in(client) {
+            for card in &l.cards {
+                assert_eq!(
+                    (card.x, card.w),
+                    (208.0, 900.0 - 184.0 - 48.0),
+                    "{section:?}"
+                );
+            }
+            let title = l.title.as_ref().expect("a title");
+            assert_eq!((title.rect.x, title.rect.w), (208.0, 668.0));
+        }
+        // Controls end at the card's inner edge.
+        let g = Geom::new(client);
+        assert_eq!(g.right, 208.0 + 668.0 - INSET);
+    }
+
+    #[test]
+    fn a_tall_window_needs_no_viewport() {
+        for (section, lang, l) in layouts_in((720.0, 3000.0)) {
+            assert_eq!(
+                (l.scroll_max, l.scroll, l.viewport),
+                (0.0, 0.0, None),
+                "{section:?} {lang:?}"
+            );
+            assert_eq!(l.scrollbar(), None);
+        }
+    }
+
+    #[test]
+    fn a_window_between_scrolls_by_what_it_lacks() {
+        let client = (720.0, 700.0);
+        let mut scrolled = 0;
+        for (section, lang, l) in layouts_in(client) {
+            let bottom = l
+                .cards
+                .iter()
+                .map(Rect::bottom)
+                .chain(l.texts.iter().map(|t| t.rect.bottom()))
+                .fold(0.0, f32::max);
+            assert!(
+                bottom + l.scroll - l.scroll_max <= client.1 - PAD + 0.01,
+                "{section:?} {lang:?}"
+            );
+            let Some(v) = l.viewport else {
+                assert_eq!(l.scroll_max, 0.0, "{section:?}");
+                continue;
+            };
+            scrolled += 1;
+            assert_eq!(
+                (v.x, v.y, v.w, v.h),
+                (
+                    SIDEBAR_W,
+                    VIEW_TOP,
+                    client.0 - SIDEBAR_W,
+                    client.1 - VIEW_TOP
+                )
+            );
+            assert!(l.scroll_max > 0.0);
+            if l.scroll == l.scroll_max {
+                assert!(
+                    (bottom - (client.1 - PAD)).abs() < 0.01,
+                    "{section:?} {lang:?}: {bottom}"
+                );
+            }
+        }
+        assert!(scrolled > 0, "some section still scrolls at 700");
+    }
+
+    #[test]
+    fn a_taller_window_keeps_the_scroll_in_its_smaller_range() {
+        let state = |scroll| State {
+            scroll,
+            ..states()[0].clone()
+        };
+        let at = |client: (f32, f32), scroll| {
+            layout_in(Section::Features, &state(scroll), &Estimate, client)
+        };
+        let small = at((CLIENT_W, CLIENT_H), 100_000.0);
+        let taller = at((CLIENT_W, 800.0), 100_000.0);
+        assert!(small.scroll_max > taller.scroll_max && taller.scroll_max > 0.0);
+        assert_eq!(small.scroll, small.scroll_max);
+        assert_eq!(taller.scroll, taller.scroll_max);
+        // The same distance from the end: 280 px more window, 280 less scroll.
+        assert!((small.scroll_max - taller.scroll_max - 280.0).abs() < 0.01);
+        assert_eq!(at((CLIENT_W, 5000.0), 100_000.0).scroll, 0.0);
+    }
+
+    #[test]
+    fn the_scrollbar_sits_at_the_windows_right_edge() {
+        for client in [(CLIENT_W, CLIENT_H), (1400.0, 520.0), (1000.0, 600.0)] {
+            let s = State {
+                scroll: 100.0,
+                ..states()[0].clone()
+            };
+            let l = layout_in(Section::Appearance, &s, &Estimate, client);
+            let bar = l.scrollbar().expect("Tampilan scrolls");
+            assert_eq!(bar.right() + 5.0, client.0, "{client:?}");
+            let v = l.viewport.expect("a viewport");
+            assert!(bar.y >= v.y && bar.bottom() <= v.bottom());
+        }
+    }
+
+    #[test]
+    fn hits_stay_clipped_to_the_viewport_in_a_wide_window() {
+        for (section, _, l) in layouts_in((1400.0, 600.0)) {
+            let Some(v) = l.viewport else {
+                continue;
+            };
+            for (hit, r) in l.hits() {
+                if matches!(hit, Hit::Nav(_)) {
+                    continue;
+                }
+                assert!(inside(r, v), "{section:?}: {hit:?} {r:?} leaves {v:?}");
             }
         }
     }
