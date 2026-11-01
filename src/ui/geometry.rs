@@ -679,6 +679,26 @@ pub fn toast_slot_parts(shape: ShapeRect, base_w: f32) -> (ShapeRect, Rect, f32)
     (content, logo, alpha)
 }
 
+/// How far inside the full toast's sides a pointer must be for a peek: the
+/// morph to it may overshoot narrower than its settled width for a frame.
+pub const TOAST_PEEK_INSET: f32 = 8.0;
+
+/// A pointer at the logical point (x, y), on the slot, may peek: the full
+/// toast it would turn into (the Notice shape, less `TOAST_PEEK_INSET` on each
+/// side) still lies under it. Asked of the pointer itself, not of the logo:
+/// a compact or lyric shape wider than the toast has a band at its right end
+/// where the peek would leave the pointer outside the toast, and the notch
+/// would flap between the slot and the toast under a still pointer.
+pub fn toast_peek_reaches(style: Style, size: NotchSize, x: f32, y: f32) -> bool {
+    let n = shape_sized(style, size, ShapeKind::Notice);
+    let inner = ShapeRect {
+        x: n.x + TOAST_PEEK_INSET,
+        w: (n.w - 2.0 * TOAST_PEEK_INSET).max(0.0),
+        ..n
+    };
+    shape_contains(style, inner, x, y)
+}
+
 /// The unread dot's centre and radius: 8 dip in from the right end, at the
 /// shape's vertical centre.
 pub fn toast_dot(shape: ShapeRect) -> ((f32, f32), f32) {
@@ -3111,6 +3131,46 @@ mod tests {
         assert_eq!(at(TOAST_SLOT_EXTRA), 1.0);
         assert_eq!(at(TOAST_SLOT_EXTRA + 5.0), 1.0, "an overshoot is clamped");
         assert_eq!(at(-9.0), 0.0);
+    }
+
+    /// The slot's peek is asked of the pointer: wherever it starts, the full
+    /// toast lies under the pointer, so the notch cannot flap between the two
+    /// forms. A shape wider than the toast leaves a band at its right end with
+    /// no peek (its logo still takes a click).
+    #[test]
+    fn a_peek_only_starts_where_the_full_toast_covers_the_pointer() {
+        for style in [Style::Notch, Style::Pill] {
+            let size = NotchSize::DEFAULT;
+            let notice = shape_sized(style, size, ShapeKind::Notice);
+            // A lyric notch with the slot wider than the toast.
+            for w in [372.0, 390.0, 412.0] {
+                let shape = lyric_shape_sized(style, size, w);
+                let (_, logo, _) = toast_slot_parts(shape, w - TOAST_SLOT_EXTRA);
+                let y = logo.y + logo.h / 2.0;
+                // The band at the right end: outside the toast, no peek.
+                let band = shape.x + shape.w - 2.0;
+                assert!(band > notice.x + notice.w, "{style:?} {w}");
+                assert!(!toast_peek_reaches(style, size, band, y), "{style:?} {w}");
+                // Every point where a peek starts lies inside the drawn toast.
+                let mut x = logo.x - 4.0;
+                while x < shape.x + shape.w {
+                    if toast_peek_reaches(style, size, x, y) {
+                        assert!(shape_contains(style, notice, x, y), "{style:?} {w} x {x}");
+                    }
+                    x += 0.5;
+                }
+            }
+            // A narrow compact shape: the whole logo peeks.
+            let base = shape_sized(style, size, ShapeKind::MediaCompact);
+            let shape = with_toast_slot(base);
+            let (_, logo, _) = toast_slot_parts(shape, base.w);
+            let cy = logo.y + logo.h / 2.0;
+            for x in [logo.x, logo.x + logo.w / 2.0, logo.right()] {
+                assert!(toast_peek_reaches(style, size, x, cy), "{style:?} x {x}");
+            }
+            // Off the island entirely: never.
+            assert!(!toast_peek_reaches(style, size, notice.x - 1.0, cy));
+        }
     }
 
     #[test]

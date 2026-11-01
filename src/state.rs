@@ -433,6 +433,7 @@ impl IslandState {
         let cleaner_was = self.cleaner.map(|c| c.mode);
         let hover_on = matches!(event, Event::Hover(true));
         let page_was = self.page;
+        let toast_spot_was = self.toast_spot();
         // The linger runs out here, after the "was" values above saw the
         // panel as the user last did (the close below still cleans up after
         // it). From here on `panel_open_now` is the panel the event meets.
@@ -475,17 +476,22 @@ impl IslandState {
                     self.queue.push_back(notice);
                 }
                 // A real toast over a busy notch that already shows one (a
-                // strip or a slot): the newest replaces it where it stands
-                // and runs its own time. Behind a full toast or any other
-                // notice it queues, as every notice does.
+                // strip or a slot), with nothing waiting: the newest replaces
+                // it where it stands and runs its own time. Behind a full
+                // toast or any other notice, or with others queued (a run of
+                // toasts must not hold them back, nor jump ahead of older
+                // toasts), it queues, as every notice does.
                 NoticeKind::App { toast: Some(_), .. } => {
-                    if self.toast_tucked() {
+                    if self.toast_tucked() && self.queue.is_empty() {
                         if !self.toast_seen && self.toast_style == ToastStyle::Compact {
                             self.toast_dot = true;
                         }
                         self.current = Some((notice, now + NOTICE_DURATION));
                         self.toast_full = false;
                         self.toast_seen = false;
+                        // A new toast: the pointer's spot is told again by
+                        // `App`'s next move.
+                        self.toast_pointer = false;
                     } else {
                         self.queue.push_back(notice);
                     }
@@ -969,7 +975,7 @@ impl IslandState {
         }
         // Last, once the linger, the latch and the inputs have settled what
         // shows: the toast is judged on the view this `apply` leaves.
-        self.settle_toast();
+        self.settle_toast(toast_spot_was);
         effects
     }
 
@@ -2390,9 +2396,28 @@ impl IslandState {
         self.toast_seen = false;
     }
 
+    /// Where the pointer can rest on the current real toast: its strip, or
+    /// its slot (peeking at it counts as the slot); `Full` and `None` have no
+    /// such spot.
+    fn toast_spot(&self) -> Option<ToastForm> {
+        if self.toast_peeking() {
+            return Some(ToastForm::Slot);
+        }
+        self.toast_form()
+    }
+
     /// The very end of every `apply` (after the linger and the latch): what
     /// the current toast was shown as, and what that does to the dot.
-    fn settle_toast(&mut self) {
+    /// `spot_was` is `toast_spot()` as the previous `apply` left it.
+    fn settle_toast(&mut self, spot_was: Option<ToastForm>) {
+        // The toast moved from the strip to the slot or back (the panel
+        // closed or opened by a key, say): the pointer said it was on the
+        // old spot, not the new one. `App`'s next move tells again.
+        if matches!(spot_was, Some(ToastForm::Strip | ToastForm::Slot))
+            && self.toast_spot() != spot_was
+        {
+            self.toast_pointer = false;
+        }
         let real = self
             .current
             .as_ref()
@@ -7803,6 +7828,98 @@ mod tests {
         assert!(s.toast_slot().is_none());
         // The first was never seen full: the dot says so, once.
         assert!(s.toast_dot_shown());
+    }
+
+    #[test]
+    fn a_run_of_busy_toasts_never_holds_back_a_waiting_notice() {
+        let t0 = Instant::now();
+        for context in ["media", "panel", "lyric"] {
+            let mut s = busy(context, t0);
+            s.apply(Event::Notice(toast_notice("t1", "Satu")), t0);
+            assert!(s.toast_form() != Some(ToastForm::Full), "{context}");
+            s.apply(Event::Notice(copied("x")), t0 + secs(1));
+            // A burst of chat toasts, each under the 5 s of the one before.
+            for (i, at) in [2, 3, 4].into_iter().enumerate() {
+                let key = format!("b{i}");
+                s.apply(Event::Notice(toast_notice(&key, &key)), t0 + secs(at));
+            }
+            // The first toast's own time is untouched: "Disalin" is next.
+            assert_eq!(s.next_deadline(), Some(t0 + NOTICE_DURATION), "{context}");
+            s.apply(Event::Tick, t0 + NOTICE_DURATION);
+            assert_eq!(s.view(), View::Notice(copied("x")), "{context}");
+            // Then the burst, oldest first.
+            let mut at = t0 + NOTICE_DURATION + COPIED_DURATION;
+            for key in ["b0", "b1", "b2"] {
+                s.apply(Event::Tick, at);
+                let shown = s.current.as_ref().map(|(n, _)| n.key.clone());
+                assert_eq!(shown.as_deref(), Some(key), "{context}");
+                at += NOTICE_DURATION;
+            }
+        }
+    }
+
+    #[test]
+    fn a_new_toast_over_a_slot_never_jumps_ahead_of_an_older_queued_one() {
+        let t0 = Instant::now();
+        let mut s = busy("media", t0);
+        s.apply(Event::Notice(copied("x")), t0);
+        let ms = Duration::from_millis;
+        s.apply(Event::Notice(toast_notice("a", "A")), t0 + ms(200));
+        s.apply(Event::Notice(toast_notice("b", "B")), t0 + ms(400));
+        // "Disalin" ends: A is the slot, B still waits.
+        let a_at = t0 + COPIED_DURATION;
+        s.apply(Event::Tick, a_at);
+        assert_eq!(s.toast_slot().map(|n| n.key.as_str()), Some("a"));
+        s.apply(Event::Notice(toast_notice("c", "C")), a_at + secs(1));
+        assert_eq!(s.toast_slot().map(|n| n.key.as_str()), Some("a"));
+        s.apply(Event::Tick, a_at + NOTICE_DURATION);
+        assert_eq!(s.toast_slot().map(|n| n.key.as_str()), Some("b"));
+        s.apply(Event::Tick, a_at + NOTICE_DURATION + NOTICE_DURATION);
+        assert_eq!(s.toast_slot().map(|n| n.key.as_str()), Some("c"));
+    }
+
+    #[test]
+    fn a_replacing_toast_starts_without_the_pointer() {
+        let t0 = Instant::now();
+        let mut s = busy("panel", t0);
+        s.apply(Event::Notice(toast_notice("t1", "Satu")), t0);
+        s.apply(Event::ToastPointer(true), t0 + secs(1));
+        assert!(s.toast_pointer());
+        assert_eq!(s.next_deadline(), None, "held on the strip");
+        let later = t0 + secs(2);
+        s.apply(Event::Notice(toast_notice("t2", "Dua")), later);
+        assert_eq!(s.waiting_strip().map(|n| n.title.as_str()), Some("Dua"));
+        assert!(!s.toast_pointer(), "App tells again on its next move");
+        assert_eq!(s.next_deadline(), Some(later + NOTICE_DURATION));
+    }
+
+    #[test]
+    fn a_panel_closed_by_a_key_under_the_pointer_gives_the_slot_not_a_peek() {
+        let t0 = Instant::now();
+        let mut s = busy("media", t0);
+        s.apply(Event::Hover(true), t0);
+        assert!(matches!(s.view(), View::Panel(_)));
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0);
+        assert_eq!(s.toast_form(), Some(ToastForm::Strip));
+        // The pointer rests on the toast's strip; a key shuts the panel.
+        s.apply(Event::ToastPointer(true), t0 + secs(1));
+        s.apply(Event::PrintScreen, t0 + secs(2));
+        assert_eq!(s.view(), View::MediaCompact);
+        assert_eq!(s.toast_form(), Some(ToastForm::Slot));
+        assert!(!s.toast_pointer(), "the pointer is not on the slot");
+        assert!(!s.toast_is_peeking());
+        // Its time runs again, with the leave's grace at most.
+        assert!(s.next_deadline().is_some());
+        // The panel opening again by a key moves it back to the strip, and a
+        // pointer that peeked at the slot is not on the strip either.
+        let mut s = busy("media", t0);
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0);
+        s.apply(Event::ToastPointer(true), t0 + secs(1));
+        assert!(s.toast_is_peeking());
+        s.apply(Event::SearchHotkey, t0 + secs(2));
+        assert!(matches!(s.view(), View::Panel(_)));
+        assert_eq!(s.toast_form(), Some(ToastForm::Strip));
+        assert!(!s.toast_pointer());
     }
 
     #[test]

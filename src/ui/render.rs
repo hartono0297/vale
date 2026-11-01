@@ -1326,16 +1326,6 @@ impl Renderer {
         self.regions.hit(x / self.scale, y / self.scale)
     }
 
-    /// The x, in logical px, of the busy toast's logo the last frame drew and
-    /// registered (settled), `None` without one.
-    pub fn toast_slot_x(&self) -> Option<f32> {
-        self.regions
-            .regions
-            .iter()
-            .find(|r| r.hit == Hit::ToastSlot)
-            .map(|r| r.rect.x + 4.0 + crate::ui::geometry::TOAST_SLOT / 2.0)
-    }
-
     /// What a client point in physical pixels is over: a drawn island pixel
     /// (shoulders and anti-aliased edge included), only the drag margin, or
     /// nothing.

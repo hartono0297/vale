@@ -45,16 +45,23 @@ no peek the reducer behaves as if there were no `current`.
   full it stays full until it ends, whatever comes under it (a panel that
   closes mid-toast shows the toast whole with its remaining time; music that
   ends under a slot does too). Context changes never restart the 5 s.
-- **Replacement.** A new real toast over a tucked one (Strip or Slot) replaces
-  it in place with expiry `now + NOTICE_DURATION`; the replaced one, if unseen,
-  sets the dot. Behind a Full toast, a peeked one or any other notice it queues
-  as always.
+- **Replacement.** A new real toast over a tucked one (Strip or Slot) **with
+  an empty queue** replaces it in place with expiry `now + NOTICE_DURATION`
+  and `toast_pointer` cleared; the replaced one, if unseen, sets the dot.
+  Behind a Full toast, a peeked one, any other notice, or while anything waits
+  in the queue it queues as always. Without the empty-queue guard a run of
+  toasts under 5 s apart restarted the time again and again and held back a
+  queued screenshot, Disalin, Pomodoro or update notice for the whole run, and
+  a newer toast could show before an older queued one.
 - **Peek.** `Event::ToastPointer(true)` while the form would be Slot: the view
   is the full toast (`toast_peeking()`), **not latched**: when the pointer
   leaves, the form is Slot again (or follows the context). A peek blocks hover
   (`notice_blocks_hover`), so hover never opens the panel under the full toast.
 - **Hold.** `notice_held` also holds for `toast_pointer` while the form is Strip
-  or peeking. On `ToastPointer(false)` (or `Hover(false)`, which clears
+  or peeking. `settle_toast(spot_was)` drops `toast_pointer` when the toast's
+  spot (`toast_spot()`: Strip, or Slot with a peek counted as Slot) changed in
+  that `apply`: a panel shut by a key with the pointer on the strip otherwise
+  turned straight into a peek with no pointer on the slot. On `ToastPointer(false)` (or `Hover(false)`, which clears
   `toast_pointer` too) after holding, expiry = max(expiry, now +
   `SHOT_LEAVE_GRACE`), like a notice with an action.
 - **Clicks.** `Hit::Strip` while the form is Strip calls
@@ -150,14 +157,19 @@ The slot's morph, the logo fade and the strip's motion are in `animating_at`
 ## Assumptions
 
 - Other notices still queue **behind** a tucked toast: an urgent one waits up to
-  the toast's 5 s, the same timing as today.
+  the toast's 5 s (bounded: a toast never replaces one while the queue holds
+  anything), the same timing as before.
 - The peek's grace is `SHOT_LEAVE_GRACE` (2 s) after the pointer leaves.
 - A toast that arrives in fullscreen is Full by context and counts as seen
   (nothing is shown in a game; as before it simply passes).
-- A peek only starts when the full toast (360 wide) would cover the logo's
-  spot; a very wide lyric notch whose logo lies outside it gives no peek (a
-  click on the logo still works), or the notch would flap between the two forms
-  under a still pointer.
+- A peek only starts when the full toast (360 wide, less
+  `TOAST_PEEK_INSET` 8 dip a side) lies under the **pointer itself**
+  (`geometry::toast_peek_reaches`, from `App::toast_slot_peekable`). The
+  `Hit::ToastSlot` region runs from `logo.x - 4` to the shape's right end, so
+  a compact or lyric shape wider than the toast has a band there with no peek
+  (a click on it still works). Asking only whether the logo's centre lay in the
+  toast left that band peeking with the pointer off the toast, and the notch
+  flapped between the slot and the toast under a still pointer.
 - The Settings texts are shorter than first asked so they fit the row in both
   languages ("Notifikasi saat notch dipakai" / "Notifications on a busy notch",
   note "Ringkas: strip atau logo kecil" / "Compact: a strip or a small logo").

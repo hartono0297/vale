@@ -107,7 +107,7 @@ use crate::ui::geometry::{
     NotchSize, ShapeKind, ShapeRect, TOAST_SLOT_EXTRA, Under, WINDOW_W, island_contains,
     lerp_shape, lyric_box_w, lyric_cap, lyric_max_w, lyric_scroll_end_ms, lyric_scroll_offset,
     lyric_shape_sized, lyric_slot_width, lyric_target_w, lyric_width_min, panel_kind, shape_for,
-    shape_sized, shape_with_robot_sized, with_toast_slot,
+    shape_sized, shape_with_robot_sized, toast_peek_reaches, with_toast_slot,
 };
 use crate::ui::motion::{
     FadeStart, MorphCurve, PAGE_FADE_MS, Reveal, SlideStrip, Snap, StripDir, StripMotion,
@@ -4900,26 +4900,25 @@ impl App {
     }
 
     /// The pointer at `lparam` is on the busy toast's own spot: its strip in
-    /// the open panel, its small logo (when the full toast would cover it,
-    /// else there is no peek to give), or, while it peeks, anywhere on the
-    /// island.
+    /// the open panel, its small logo (where the full toast would still lie
+    /// under the pointer, else there is no peek to give), or, while it peeks,
+    /// anywhere on the island.
     fn toast_pointer_at(&self, lparam: LPARAM) -> bool {
         match self.hit_at(lparam) {
             Some(Hit::Strip) => self.state.toast_form() == Some(ToastForm::Strip),
-            Some(Hit::ToastSlot) => self.toast_slot_peekable(),
+            Some(Hit::ToastSlot) => self.toast_slot_peekable(lparam),
             Some(_) => self.state.toast_is_peeking(),
             None => false,
         }
     }
 
-    /// The full toast would cover the slot's spot: it is narrower than a long
-    /// lyric notch, and a peek whose full form leaves the pointer off the
-    /// island would flap.
-    fn toast_slot_peekable(&self) -> bool {
-        let notice = shape_sized(self.config.style, self.notch_size(), ShapeKind::Notice);
-        self.renderer
-            .toast_slot_x()
-            .is_some_and(|x| x >= notice.x && x <= notice.x + notice.w)
+    /// The full toast would lie under the pointer at `lparam`: a compact or
+    /// lyric notch wider than the toast has a band at its right end where a
+    /// peek would leave the pointer off it, and the notch would flap.
+    fn toast_slot_peekable(&self, lparam: LPARAM) -> bool {
+        let (x, y) = client_xy(lparam);
+        let (x, y) = self.renderer.to_dip(x as f32, y as f32);
+        toast_peek_reaches(self.config.style, self.notch_size(), x, y)
     }
 
     /// Tells the reducer the pointer reached or left the busy toast's spot.
