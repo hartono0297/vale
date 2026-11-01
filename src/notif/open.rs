@@ -150,28 +150,52 @@ pub struct WindowTabs {
     pub active: Option<usize>,
 }
 
-/// The tab to select: `(window index, tab index)`. `windows` is in Z order
-/// (most recently used first); the first window holding any match wins, and
-/// inside it the active tab if it matches, else the first tab with the best
-/// score.
-pub fn pick_tab(windows: &[WindowTabs], target: &OpenTarget) -> Option<(usize, usize)> {
-    for (w, window) in windows.iter().enumerate() {
-        let scores: Vec<u32> = window.tabs.iter().map(|t| score_tab(t, target)).collect();
-        let Some(&best) = scores.iter().max() else {
-            continue;
-        };
-        if best == 0 {
-            continue;
-        }
-        if let Some(active) = window.active
-            && scores.get(active).is_some_and(|s| *s > 0)
-        {
-            return Some((w, active));
-        }
-        let first_best = scores.iter().position(|s| *s == best)?;
-        return Some((w, first_best));
+/// The kind of evidence a score stands for: 3 the site, 2 the whole title, 1
+/// words of the title only, 0 none. Scores inside one tier are close calls;
+/// a higher tier always wins.
+fn tier(score: u32) -> u8 {
+    match score {
+        0 => 0,
+        s if s >= SCORE_SITE => 3,
+        s if s >= SCORE_TITLE => 2,
+        _ => 1,
     }
-    None
+}
+
+/// The tab to select: `(window index, tab index)`. `windows` is in Z order
+/// (most recently used first). The strongest kind of match anywhere decides
+/// (a site match in an older window beats a words-only match in a newer one);
+/// the most recent window holding a match of that kind wins, and inside it
+/// the active tab if its match is of that kind too, else the first tab with
+/// the best score.
+pub fn pick_tab(windows: &[WindowTabs], target: &OpenTarget) -> Option<(usize, usize)> {
+    let scores: Vec<Vec<u32>> = windows
+        .iter()
+        .map(|w| w.tabs.iter().map(|t| score_tab(t, target)).collect())
+        .collect();
+    let top = scores.iter().flatten().map(|s| tier(*s)).max().unwrap_or(0);
+    if top == 0 {
+        return None;
+    }
+    let w = scores
+        .iter()
+        .position(|s| s.iter().any(|s| tier(*s) == top))?;
+    let window = &scores[w];
+    if let Some(active) = windows[w].active
+        && window.get(active).is_some_and(|s| tier(*s) == top)
+    {
+        return Some((w, active));
+    }
+    let best = window.iter().max()?;
+    let first_best = window.iter().position(|s| s == best)?;
+    Some((w, first_best))
+}
+
+/// The window to bring forward when no tab matched: the most recent one whose
+/// tab strip was read with tabs in it (a PWA, DevTools or picture-in-picture
+/// window has none), else the most recent one.
+pub fn fallback_window(strips: &[WindowTabs]) -> usize {
+    strips.iter().position(|s| !s.tabs.is_empty()).unwrap_or(0)
 }
 
 // ------------------------------------------------------------ app kinds
@@ -202,7 +226,9 @@ pub fn browser_exe_names(app_id: Option<&str>, source: &str) -> Vec<&'static str
             "msedge" | "edge" => &["msedge.exe"],
             "brave" => &["brave.exe"],
             "vivaldi" => &["vivaldi.exe"],
-            "opera" => &["opera.exe", "launcher.exe"],
+            // Opera's own `launcher.exe` exits once opera.exe runs, and the
+            // name is too generic to stand for Opera in a process list.
+            "opera" => &["opera.exe"],
             "firefox" => &["firefox.exe"],
             _ => &[],
         };
@@ -213,6 +239,24 @@ pub fn browser_exe_names(app_id: Option<&str>, source: &str) -> Vec<&'static str
         }
     }
     out
+}
+
+/// The exe to start the browser with, from an `App Paths` value or a Start
+/// entry's target: the whole path (a bare file name is not on the search path
+/// `Command` uses, so it would never start), quotes trimmed, when its file
+/// name is one of the browser's `names`, or it is Opera's `launcher.exe` in
+/// an Opera folder ("...\\Programs\\Opera GX\\launcher.exe"). Whether the
+/// file exists is the caller's check.
+pub fn browser_launch_path(path: &str, names: &[&str]) -> Option<String> {
+    let path = path.trim().trim_matches('"');
+    let mut parts = path.rsplit(['\\', '/']);
+    let file = parts.next()?.to_lowercase();
+    let dir = parts.next().filter(|d| !d.is_empty())?;
+    let ok = names.contains(&file.as_str())
+        || (file == "launcher.exe"
+            && names.contains(&"opera.exe")
+            && squash(dir).starts_with("opera"));
+    ok.then(|| path.to_string())
 }
 
 /// Stems that name no app: an updater or a shell around many ("Update.exe"
@@ -482,6 +526,80 @@ mod tests {
     }
 
     #[test]
+    fn a_weak_active_tab_never_beats_a_site_match() {
+        // "Pagi" is one 4+ letter word of the title: a words-only match.
+        let t = tg("Rapat besok pagi");
+        let w = [win(&["Pagi ini - YouTube", "Telegram Web"], Some(0))];
+        assert_eq!(pick_tab(&w, &t), Some((0, 1)));
+        // A title match on the active tab does not beat a site match either.
+        let w = [win(&["Rapat besok pagi - Docs", "Telegram Web"], Some(0))];
+        assert_eq!(pick_tab(&w, &t), Some((0, 1)));
+        // Same tier: the active tab still wins.
+        let w = [win(&["Telegram Web", "Telegram Web (Rapat besok pagi)"], Some(0))];
+        assert_eq!(pick_tab(&w, &t), Some((0, 0)));
+        // A words-only active tab with nothing stronger anywhere stays chosen.
+        let w = [win(&["Rapat - Docs", "Lain"], Some(0))];
+        assert_eq!(pick_tab(&w, &t), Some((0, 0)));
+    }
+
+    #[test]
+    fn a_site_match_in_an_older_window_beats_words_in_a_newer_one() {
+        let t = tg("Rapat besok pagi");
+        let windows = [
+            win(&["Pagi ini - YouTube"], Some(0)),
+            win(&["Berita", "Telegram Web"], Some(0)),
+        ];
+        assert_eq!(pick_tab(&windows, &t), Some((1, 1)));
+        // A title match in an older window beats words in a newer one.
+        let t = target("Google Chrome", Some("Chrome"), None, "Rapat besok pagi");
+        let windows = [
+            win(&["Pagi ini - YouTube"], Some(0)),
+            win(&["Rapat besok pagi - Docs"], Some(0)),
+        ];
+        assert_eq!(pick_tab(&windows, &t), Some((1, 0)));
+    }
+
+    #[test]
+    fn with_no_match_the_window_with_a_tab_strip_comes_forward() {
+        // A PWA or DevTools window in front reads no tabs.
+        let strips = [win(&[], None), win(&["Berita", "Docs"], Some(0))];
+        assert_eq!(fallback_window(&strips), 1);
+        assert_eq!(fallback_window(&[win(&["Berita"], Some(0)), win(&[], None)]), 0);
+        // Nothing read (no UIA, budget spent): the most recent window.
+        assert_eq!(fallback_window(&[win(&[], None)]), 0);
+        assert_eq!(fallback_window(&[]), 0);
+    }
+
+    #[test]
+    fn the_browser_launches_by_its_whole_path() {
+        let chrome = ["chrome.exe"];
+        let full = "C:\\Users\\a\\AppData\\Local\\Google\\Chrome\\Application\\chrome.exe";
+        assert_eq!(browser_launch_path(full, &chrome).as_deref(), Some(full));
+        assert_eq!(
+            browser_launch_path(&format!("\"{full}\""), &chrome).as_deref(),
+            Some(full)
+        );
+        // A bare name would not start: Command does not read App Paths.
+        assert_eq!(browser_launch_path("chrome.exe", &chrome), None);
+        // Another program's exe is never the browser.
+        assert_eq!(browser_launch_path("C:\\x\\Update.exe", &chrome), None);
+    }
+
+    #[test]
+    fn opera_launcher_only_counts_inside_an_opera_folder() {
+        let opera = browser_exe_names(None, "Opera");
+        let gx = "C:\\Users\\a\\AppData\\Local\\Programs\\Opera GX\\launcher.exe";
+        assert_eq!(browser_launch_path(gx, &opera).as_deref(), Some(gx));
+        let plain = "C:\\Users\\a\\AppData\\Local\\Programs\\Opera\\launcher.exe";
+        assert!(browser_launch_path(plain, &opera).is_some());
+        assert_eq!(browser_launch_path("C:\\Games\\Foo\\launcher.exe", &opera), None);
+        // Not Opera: launcher.exe is never accepted.
+        assert_eq!(browser_launch_path(plain, &["chrome.exe"]), None);
+        // And no launcher.exe process is ever taken for Opera's window.
+        assert!(!opera.contains(&"launcher.exe"));
+    }
+
+    #[test]
     fn browsers_go_to_tabs_and_everything_else_to_windows() {
         assert_eq!(decide(&tg("x")), OpenKind::Browser);
         assert_eq!(
@@ -501,7 +619,7 @@ mod tests {
         assert_eq!(browser_exe_names(Some("MSEdge"), "Microsoft Edge"), ["msedge.exe"]);
         assert_eq!(browser_exe_names(None, "Brave"), ["brave.exe"]);
         assert_eq!(browser_exe_names(None, "Vivaldi"), ["vivaldi.exe"]);
-        assert_eq!(browser_exe_names(None, "Opera GX"), ["opera.exe", "launcher.exe"]);
+        assert_eq!(browser_exe_names(None, "Opera GX"), ["opera.exe"]);
         assert_eq!(browser_exe_names(Some("Firefox"), "Firefox"), ["firefox.exe"]);
         assert!(browser_exe_names(Some("Slack"), "Slack").is_empty());
     }

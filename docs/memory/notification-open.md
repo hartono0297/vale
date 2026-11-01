@@ -39,16 +39,28 @@ electron are dropped so `Update.exe` never stands for Discord).
    "- Memory usage - 120 MB", "- Audio playing", "- Google Chrome", ...);
    `score_tab` ranks the site's registrable label (`site_label`: web.telegram.org
    -> telegram) in the tab name above the whole notification title above its
-   words of 4+ letters. The body is not used. The most recently used window
-   with any match wins; inside it the active tab if it matches, else the first
-   best.
+   words of 4+ letters. The body is not used. Matches come in tiers (site,
+   title, words only): the strongest tier anywhere decides, so a site match in
+   an older window beats a words-only match in the newest. The most recent
+   window with a match of that tier wins; inside it the active tab if its
+   match is of that tier too, else the first best. A weak words-only hit on
+   the active tab never beats a site match on another tab.
 4. Match: restore if minimized, `SelectionItemPattern.Select()` on that tab,
-   bring the window forward. No match: the most recent window of that browser,
-   tab unchanged.
+   bring the window forward. The select runs through the same UIA client with
+   its timeouts reset to 1 s first: the budget checks leave it with whatever
+   was over (down to 1 ms), and a Select cut short by `UIA_E_TIMEOUT` would
+   bring the window forward on the wrong tab. No match: the most recent window
+   whose tab strip read any tabs (a PWA, DevTools or picture-in-picture window
+   has none), else the most recent window; tab unchanged.
 5. **Never a new window, never the profile picker** while a window exists. The
    browser not running: the site known and the exe resolved (`App Paths`, else
-   the Start entry) -> start it with `https://<site>` and no profile flag; else
-   launch by AUMID as before.
+   the Start entry's target) -> start it with `https://<site>` and no profile
+   flag; else launch by AUMID as before. The exe must be a **full path** that
+   exists (`browser_launch_path`): `Command` searches the exe dir, System32,
+   Windows and PATH but never `App Paths`, so a bare `vivaldi.exe` never
+   starts. If the spawn still fails, launch by AUMID. Opera is `opera.exe`
+   only; its `launcher.exe` (a generic name) is accepted as a launch path only
+   inside a folder named Opera..., never as a window's process.
 
 ## Desktop rule
 

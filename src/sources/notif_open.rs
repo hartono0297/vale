@@ -52,7 +52,8 @@ use windows::core::{BOOL, HSTRING, PCWSTR, PWSTR};
 use crate::model::OpenTarget;
 use crate::notif::open::{
     self as rules, DesktopAction, MainCand, OpenKind, WinState, WindowTabs, browser_exe_names,
-    decide, desktop_action, exe_stem, exe_stems_for, pick_tab, start_target_exe,
+    browser_launch_path, decide, desktop_action, exe_stem, exe_stems_for, fallback_window,
+    pick_tab, start_target_exe,
 };
 
 /// Time for the search (window list and tab strips); no call starts after it.
@@ -60,6 +61,10 @@ const SEARCH_BUDGET: Duration = Duration::from_millis(1000);
 /// How long a relaunched, tray-hidden app gets to show its own window.
 const WAKE_WAIT: Duration = Duration::from_millis(2000);
 const WAKE_POLL: Duration = Duration::from_millis(100);
+
+/// UI Automation timeouts for selecting the chosen tab, set afresh: the search
+/// may have left the client with a timeout of a few milliseconds.
+const SELECT_TIMEOUT_MS: u32 = 1000;
 
 /// How deep the tab strip is looked for in a browser window's UIA tree.
 const MAX_DEPTH: usize = 8;
@@ -308,9 +313,14 @@ fn window_aumid(hwnd: HWND) -> Option<String> {
     }
 }
 
-/// The exe a Start entry points at ("shell:AppsFolder\\<AUMID>"), when it
-/// names one; an updater or launcher stub is ignored (`start_target_exe`).
+/// The exe file name a Start entry points at, for matching processes; an
+/// updater or launcher stub is ignored (`start_target_exe`).
 fn start_entry_exe(aumid: &str) -> Option<String> {
+    start_target_exe(&start_entry_target(aumid)?)
+}
+
+/// The full path a Start entry ("shell:AppsFolder\\<AUMID>") points at.
+fn start_entry_target(aumid: &str) -> Option<String> {
     unsafe {
         let item: IShellItem2 = SHCreateItemFromParsingName(
             &HSTRING::from(format!("shell:AppsFolder\\{aumid}")),
@@ -320,7 +330,7 @@ fn start_entry_exe(aumid: &str) -> Option<String> {
         let path = item.GetString(&PKEY_Link_TargetParsingPath).ok()?;
         let text = path.to_string().ok();
         CoTaskMemFree(Some(path.0 as *const _));
-        start_target_exe(&text?)
+        text.filter(|t| !t.is_empty())
     }
 }
 
@@ -334,11 +344,18 @@ enum Plan {
         index: usize,
         name: String,
         element: IUIAutomationElement,
+        /// The client that read the strip; the select goes through it.
+        uia: IUIAutomation2,
     },
     /// A browser window, tab unchanged.
     Front { win: Win, why: String },
-    /// The browser is not running: start it on the site.
-    LaunchBrowser { exe: String, url: String },
+    /// The browser is not running: start its exe (full path) on the site;
+    /// by AUMID when the exe will not start.
+    LaunchBrowser {
+        exe: String,
+        url: String,
+        aumid: Option<String>,
+    },
     /// A desktop app's visible or minimized main window.
     Focus { win: Win },
     /// A tray-hidden main window: launch by AUMID, then show it if nothing
@@ -365,7 +382,9 @@ fn describe(plan: &Plan) -> String {
             "browser {}: window {:#x} forward, tab unchanged ({why})",
             win.exe, win.hwnd
         ),
-        Plan::LaunchBrowser { exe, url } => format!("browser not running: start {exe} {url}"),
+        Plan::LaunchBrowser { exe, url, .. } => {
+            format!("browser not running: start {exe} {url}")
+        }
         Plan::Focus { win } => format!(
             "desktop: {:?} main window of {} {:#x} -> focus",
             win.state(),
@@ -411,9 +430,9 @@ fn search_browser(target: &OpenTarget, wins: &[Win], cancel: &dyn Fn() -> bool) 
         .iter()
         .filter(|w| names.contains(&w.exe.as_str()) && is_browser_window(w))
         .collect();
-    let Some(first) = mine.first() else {
+    if mine.is_empty() {
         return launch_browser_plan(target, &names);
-    };
+    }
     let uia = unsafe {
         CoCreateInstance::<_, IUIAutomation2>(&CUIAutomation8, None, CLSCTX_INPROC_SERVER)
     };
@@ -438,12 +457,15 @@ fn search_browser(target: &OpenTarget, wins: &[Win], cancel: &dyn Fn() -> bool) 
                 index: ti,
                 name: strips[wi].tabs[ti].clone(),
                 element: elements[wi][ti].clone(),
+                uia,
             };
         }
     }
     let tabs: usize = strips.iter().map(|s| s.tabs.len()).sum();
+    // A PWA, DevTools or picture-in-picture window has no tab strip: the
+    // window to come forward is the most recent one that has one.
     Plan::Front {
-        win: (*first).clone(),
+        win: mine[fallback_window(&strips)].clone(),
         why: format!("no tab matched among {tabs} tabs read in {} windows", strips.len()),
     }
 }
@@ -451,15 +473,17 @@ fn search_browser(target: &OpenTarget, wins: &[Win], cancel: &dyn Fn() -> bool) 
 /// The browser has no window: its site opens in it when both are known, else
 /// it starts the way it always did.
 fn launch_browser_plan(target: &OpenTarget, names: &[&str]) -> Plan {
+    let aumid = target.app_id.as_deref().filter(|id| !id.is_empty());
     if let Some(site) = target.site.as_deref().filter(|s| !s.trim().is_empty())
-        && let Some(exe) = browser_exe_path(target.app_id.as_deref(), names)
+        && let Some(exe) = browser_exe_path(aumid, names)
     {
         return Plan::LaunchBrowser {
             exe,
             url: format!("https://{}", site.trim()),
+            aumid: aumid.map(String::from),
         };
     }
-    match target.app_id.as_deref().filter(|id| !id.is_empty()) {
+    match aumid {
         Some(aumid) => Plan::LaunchAumid {
             aumid: aumid.to_string(),
             why: "browser not running, site or exe unknown",
@@ -468,23 +492,23 @@ fn launch_browser_plan(target: &OpenTarget, names: &[&str]) -> Plan {
     }
 }
 
-/// The browser's exe: `App Paths`, else its Start entry.
+/// The browser's exe, as a full path that exists: `App Paths`, else its Start
+/// entry's target (a per-user install often has no `App Paths` key). Only a
+/// path `browser_launch_path` accepts: a bare name would not start, since
+/// `Command` never reads `App Paths`.
 fn browser_exe_path(app_id: Option<&str>, names: &[&str]) -> Option<String> {
     const APP_PATHS: &str = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\";
+    let existing = |path: &str| browser_launch_path(path, names).filter(|p| Path::new(p).is_file());
     for name in names {
         for root in [HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER] {
-            if let Some(path) = unsafe { reg_default(root, &format!("{APP_PATHS}{name}")) } {
-                let path = path.trim_matches('"').to_string();
-                if Path::new(&path).is_file() {
-                    return Some(path);
-                }
+            if let Some(path) = unsafe { reg_default(root, &format!("{APP_PATHS}{name}")) }
+                .and_then(|p| existing(&p))
+            {
+                return Some(path);
             }
         }
     }
-    // The Start entry names the exe by file name only when it is the browser.
-    let aumid = app_id?;
-    let file = start_entry_exe(aumid)?;
-    names.contains(&file.as_str()).then(|| file)
+    existing(&start_entry_target(app_id?)?)
 }
 
 /// A string value (the default one) of a registry key, environment variables
@@ -680,8 +704,14 @@ fn search_desktop(target: &OpenTarget, wins: &[Win]) -> Plan {
 
 fn execute(plan: Plan, target: &OpenTarget, cancel: &dyn Fn() -> bool) {
     match plan {
-        Plan::Tab { win, element, .. } => {
+        Plan::Tab {
+            win, element, uia, ..
+        } => {
             unsafe {
+                // The last budget check left whatever was over, maybe 1 ms:
+                // a fresh timeout so the select is not cut short.
+                let _ = uia.SetConnectionTimeout(SELECT_TIMEOUT_MS);
+                let _ = uia.SetTransactionTimeout(SELECT_TIMEOUT_MS);
                 if let Ok(item) = element
                     .GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(
                         UIA_SelectionItemPatternId,
@@ -693,9 +723,13 @@ fn execute(plan: Plan, target: &OpenTarget, cancel: &dyn Fn() -> bool) {
             bring_forward(win.handle());
         }
         Plan::Front { win, .. } | Plan::Focus { win } => bring_forward(win.handle()),
-        Plan::LaunchBrowser { exe, url } => {
+        Plan::LaunchBrowser { exe, url, aumid } => {
             allow_foreground();
-            let _ = Command::new(exe).arg(url).spawn();
+            if Command::new(exe).arg(url).spawn().is_err()
+                && let Some(aumid) = aumid
+            {
+                launch_aumid(&aumid);
+            }
         }
         Plan::Wake { win, aumid } => {
             launch_aumid(&aumid);
