@@ -134,8 +134,8 @@ html:not(.js) .site-nav ul { flex-wrap: wrap; }
 /* ---------- footer ---------- */
 .site-footer { margin-top: clamp(4rem, 10vw, 8rem); border-top: 1px solid var(--line); padding-block: 2.5rem 3rem; }
 .footer-inner { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 2rem; width: min(100% - 2 * var(--gutter), 78rem); margin-inline: auto; }
-.footer-brand { display: flex; align-items: center; gap: 8px; margin: 0 auto 0 0; font-size: .9375rem; }
-.footer-brand img { width: 20px; height: 20px; flex: none; }
+.footer-brand { margin: 0 auto 0 0; font-size: .9375rem; }
+.footer-brand img { display: inline-block; width: 20px; height: 20px; margin-right: 4px; vertical-align: -4px; }
 .footer-links { display: flex; flex-wrap: wrap; gap: 0 .25rem; margin: 0; padding: 0; list-style: none; }
 .footer-links a { display: inline-flex; align-items: center; min-height: 44px; padding: 0 .6rem; font-size: .9375rem; color: var(--text-2); }
 .footer-links a:hover { color: var(--text); }
