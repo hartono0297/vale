@@ -24,7 +24,8 @@ use windows_numerics::{Matrix3x2, Vector2};
 
 use super::{
     CleanerView, CliView, ClipView, DevicesView, FolderMenuView, Frame, GroupShown, NotifView,
-    Progress, Renderer, RobotFrame, RowSize, SearchView, SystemView, color, d2d_rect, mix,
+    Progress, Renderer, RobotFrame, RowSize, SearchView, SystemView, ToastBadgeView, color,
+    d2d_rect, mix,
 };
 use crate::audio::{self, MixerRow, Target};
 use crate::calendar::{CalEvent, CalStatus, EventTime, events_on, range_for};
@@ -54,7 +55,9 @@ use crate::system::{self, SystemSample};
 use crate::theme::{self, Palette, radius};
 use crate::tiles::Tile;
 use crate::ui::dock::{self, DOCK_ICON};
-use crate::ui::geometry::{CLAUDE, ExpandedLayout, Rect, ShapeRect, panel_kind, shape_for};
+use crate::ui::geometry::{
+    CLAUDE, ExpandedLayout, Rect, ShapeRect, panel_kind, shape_for, toast_strip_parts,
+};
 use crate::ui::icons::Icon;
 use crate::ui::month_grid::{CellCanvas, CellLook, DayState, Filled, day_geometry, paint_day};
 use crate::ui::motion::{ease_out_cubic, page_fade_frame, panel_fade, panel_regions_wanted};
@@ -479,6 +482,10 @@ impl Renderer {
                 frame.transit.reveal,
             )
         };
+        // A toast's strip arriving or leaving: the page content eases down
+        // or up with it (not on the panel closing).
+        let strip_motion = frame.strip_motion.filter(|_| !closing);
+        let strip_dy = strip_motion.map_or(0.0, |m| m.dy);
         let from = frame.page_from.filter(|p| *p != page);
         match (from, fade) {
             // Two pages cross-fade (the search comes and goes over a page).
@@ -504,13 +511,14 @@ impl Renderer {
                 let (alpha, dx, dy) = reveal.map_or((1.0, 0.0, 0.0), |r| (r.alpha, r.dx, r.dy));
                 // Off screen early in a long spin: only the pages going out show.
                 if slide.abs() < 1.0 {
-                    self.paint_page_at(frame, &layout, (slide * s.w + dx, dy), alpha)?;
+                    self.paint_page_at(frame, &layout, (slide * s.w + dx, dy + strip_dy), alpha)?;
                 }
             }
         }
 
         if let Some(notice) = frame.strip {
-            self.paint_strip(s, notice);
+            let alpha = strip_motion.map_or(1.0, |m| m.alpha);
+            self.paint_strip(s, notice, frame.strip_badge, alpha)?;
         }
         // The cleaner is not a page: its footer takes the dots' place. The
         // search is not one of the pages the dots count.
@@ -523,7 +531,8 @@ impl Renderer {
         }
         // No clicks on a page still sliding in: its controls are not where
         // the regions say yet, and the old page's are still under the pointer.
-        let clicks = panel_regions_wanted(settled, closing, slide, fade);
+        // (A strip still moving holds them too, as a slide does.)
+        let clicks = panel_regions_wanted(settled, closing, slide, fade) && strip_motion.is_none();
         // The dock's zone stands through a slide or cross-fade (else the row
         // under a still pointer collapses the moment its own click turns
         // the page); only its clicks wait with the page's.
@@ -3992,10 +4001,56 @@ impl Renderer {
 
     /// Orange dot and "Claude butuh respon · {project}", or an accent dot and
     /// "{reminder} · 09.30".
-    fn paint_strip(&self, s: ShapeRect, notice: &Notice) {
+    fn paint_strip(
+        &self,
+        s: ShapeRect,
+        notice: &Notice,
+        badge: Option<ToastBadgeView>,
+        alpha: f32,
+    ) -> Result<()> {
+        let faded = alpha < 1.0;
+        if faded {
+            self.push_opacity(alpha.clamp(0.0, 0.999));
+        }
+        let painted = self.paint_strip_inner(s, notice, badge);
+        if faded {
+            let target = self.target.as_ref().expect("target ensured by paint");
+            unsafe { target.rt.PopLayer() };
+        }
+        painted
+    }
+
+    fn paint_strip_inner(
+        &self,
+        s: ShapeRect,
+        notice: &Notice,
+        badge: Option<ToastBadgeView>,
+    ) -> Result<()> {
         let r = waiting_strip(s);
         self.set_color(self.palette.raised, 1.0);
         self.fill_round(r, radius::CONTROL);
+        // A busy toast: its 16 dip logo (or letter tile), then
+        // "Source · title" (the body when there is no title).
+        if crate::state::is_real_toast(notice) {
+            let (logo, area) = toast_strip_parts(r);
+            let badge = badge.unwrap_or(ToastBadgeView {
+                source: &notice.source,
+                logo: None,
+            });
+            self.paint_toast_badge(logo, badge)?;
+            let said = if notice.title.is_empty() {
+                &notice.body
+            } else {
+                &notice.title
+            };
+            let text = match (notice.source.is_empty(), said.is_empty()) {
+                (_, true) => notice.source.clone(),
+                (true, false) => said.clone(),
+                (false, false) => format!("{} · {said}", notice.source),
+            };
+            self.text(&text, &self.fonts.secondary, area, 1.0);
+            return Ok(());
+        }
         let dot = match notice.kind {
             NoticeKind::Reminder { .. } => self.palette.accent,
             _ => CLAUDE,
@@ -4021,6 +4076,7 @@ impl Renderer {
             ..r
         };
         self.text(&text, &self.fonts.secondary, area, 1.0);
+        Ok(())
     }
 
     /// Small ring, `mm:ss`, then "Fokus 2/4", "Istirahat" or "Siap · klik".

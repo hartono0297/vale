@@ -836,3 +836,34 @@ mod tests {
         assert!(notif_view(&notif, NotifSettings::default(), false).no_access);
     }
 }
+
+/// The logo of the toast behind `notice` (a busy toast's slot or strip),
+/// found by its logo key like `toast_logo_view` does for the full notice.
+/// `None` for a notice that is not a real toast, or whose logo is unknown
+/// (the badge then draws the letter tile).
+pub(super) fn toast_logo_of<'a>(
+    logos: &'a HashMap<String, Thumb>,
+    notice: &Notice,
+) -> Option<ToastLogoView<'a>> {
+    let NoticeKind::App {
+        app_id,
+        toast: Some(_),
+    } = &notice.kind
+    else {
+        return None;
+    };
+    let (key, thumb) = logos.get_key_value(&logo_key(app_id.as_deref(), &notice.source))?;
+    Some(ToastLogoView { key, thumb })
+}
+
+/// The small badge of a busy toast (`notice`): its source for the letter
+/// tile, and the logo when one is known.
+pub(super) fn toast_badge_of<'a>(
+    logos: &'a HashMap<String, Thumb>,
+    notice: &'a Notice,
+) -> crate::ui::render::ToastBadgeView<'a> {
+    crate::ui::render::ToastBadgeView {
+        source: notice.source.as_str(),
+        logo: toast_logo_of(logos, notice),
+    }
+}

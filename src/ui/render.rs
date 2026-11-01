@@ -53,10 +53,12 @@ use super::geometry::{
     SHOT_THUMB_RADIUS, ShapeRect, Under, badge_letter, badge_style, compact_layout,
     compact_layout_robot, corner_radius, equalizer_heights, idle_layout, lyric_layout,
     lyric_layout_robot, lyric_overflow, notice_action, notice_action_w, notice_layout, shot_fit,
-    shot_layout, shot_regions, shoulder_depth, toast_eyebrow, toast_notice_layout,
+    shot_layout, shot_regions, shoulder_depth, toast_dot, toast_eyebrow, toast_notice_layout,
+    toast_slot_parts,
 };
 use super::icons::{Icon, IconSet};
-use super::motion::Transit;
+use super::motion::{StripFrame, Transit};
+use super::panel_layout::Region;
 use super::robot::{Expr, EyesPose, Pose, RobotPainter, eyes_area, eyes_centre, eyes_offset_in};
 use super::shelf_motion::ShelfMotion;
 use super::window::IslandWindow;
@@ -221,6 +223,19 @@ pub struct Frame<'a> {
     /// The app's logo for a notice made from a real Windows toast; `None` for
     /// every other notice, or when no logo is known (then the letter badge).
     pub toast_logo: Option<ToastLogoView<'a>>,
+    /// How much of a busy toast's slot the closed island has grown by this
+    /// frame (0 to `geometry::TOAST_SLOT_EXTRA`, the animated shape's width
+    /// over the one without the slot); 0 draws the compact views as ever.
+    pub toast_slot_w: f32,
+    /// The busy toast whose small logo sits beside the compact view.
+    pub toast_slot: Option<ToastBadgeView<'a>>,
+    /// The unread dot on the closed island: a busy toast came and went unseen.
+    pub toast_dot: bool,
+    /// The logo (or letter tile) of the toast the panel's strip shows.
+    pub strip_badge: Option<ToastBadgeView<'a>>,
+    /// The strip arriving or leaving the open panel (`motion::StripMotion`);
+    /// `None` at rest.
+    pub strip_motion: Option<StripFrame>,
     /// What transitions add to this frame (`ui::motion`); all at rest by
     /// default.
     pub transit: Transit,
@@ -233,6 +248,14 @@ pub struct ClipNoticeView<'a> {
     /// The history entry's id (the notice's `id`, and the bitmap cache's key).
     pub id: u64,
     pub thumb: &'a Thumb,
+}
+
+/// A busy toast's small badge (the slot beside a compact view, the panel's
+/// strip): the app's logo when one is known, else a letter tile of `source`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ToastBadgeView<'a> {
+    pub source: &'a str,
+    pub logo: Option<ToastLogoView<'a>>,
 }
 
 /// What a toast notice draws in its badge (`NoticeKind::App` with `toast`):
@@ -1303,6 +1326,16 @@ impl Renderer {
         self.regions.hit(x / self.scale, y / self.scale)
     }
 
+    /// The x, in logical px, of the busy toast's logo the last frame drew and
+    /// registered (settled), `None` without one.
+    pub fn toast_slot_x(&self) -> Option<f32> {
+        self.regions
+            .regions
+            .iter()
+            .find(|r| r.hit == Hit::ToastSlot)
+            .map(|r| r.rect.x + 4.0 + crate::ui::geometry::TOAST_SLOT / 2.0)
+    }
+
     /// What a client point in physical pixels is over: a drawn island pixel
     /// (shoulders and anti-aliased edge included), only the drag margin, or
     /// nothing.
@@ -1561,17 +1594,28 @@ impl Renderer {
             }
         }
         let robot = frame.robot;
+        // A busy toast's logo beside a compact view: the view is laid out on
+        // what the slot leaves of the shape, so nothing under it moves.
+        let slot = match view {
+            View::MediaCompact | View::MediaLyric | View::PomodoroCompact
+                if frame.toast_slot_w > 0.0 =>
+            {
+                Some(toast_slot_parts(shape, shape.w - frame.toast_slot_w))
+            }
+            _ => None,
+        };
+        let body = slot.map_or(shape, |(content, _, _)| content);
         let content = match view {
             View::MediaCompact => frame.media.map_or(Ok(()), |m| {
                 let eq = frame.eq_heights.filter(|_| m.playing);
-                self.paint_compact(style, shape, m, frame.now, frame.progress, robot, eq)
+                self.paint_compact(style, body, m, frame.now, frame.progress, robot, eq)
             }),
             View::MediaLyric => {
                 let scroll = (frame.lyric_scroll, frame.lyric_prev_scroll);
-                self.paint_lyric(shape, frame.lyric.as_ref(), scroll, robot);
+                self.paint_lyric(body, frame.lyric.as_ref(), scroll, robot);
                 Ok(())
             }
-            View::PomodoroCompact => self.paint_pomodoro_compact(shape, frame),
+            View::PomodoroCompact => self.paint_pomodoro_compact(body, frame),
             // A pomodoro notice shows while the next phase waits (Ready).
             View::Notice(notice) => match (&notice.kind, frame.shot) {
                 (NoticeKind::Screenshot { shot, .. }, Some(view)) if view.id == *shot => {
@@ -1616,6 +1660,51 @@ impl Renderer {
             if let Some(Some((area, r))) = self.robot_later.take() {
                 self.paint_robot(area, r);
             }
+        }
+        // The busy toast's logo, at the slot's alpha, over the island's own
+        // fill: no shadow on it.
+        self.legible.set(0.0);
+        let slot_drawn = match (slot, frame.toast_slot) {
+            (Some((_, logo, alpha)), Some(badge)) if alpha > 0.0 => {
+                self.paint_slot_logo(logo, alpha * content_alpha, badge)?;
+                if alpha >= 1.0 {
+                    // The whole right end takes the click and the peek: the
+                    // logo is small. Only once it has settled.
+                    let r = shape_rect(shape);
+                    let x = logo.x - 4.0;
+                    self.regions.regions.push(Region {
+                        rect: Rect {
+                            x,
+                            y: r.y,
+                            w: r.right() - x,
+                            h: r.h,
+                        },
+                        hit: Hit::ToastSlot,
+                    });
+                }
+                true
+            }
+            _ => false,
+        };
+        // The unread dot, in the brand terracotta, on the closed views only.
+        if frame.toast_dot
+            && !slot_drawn
+            && matches!(
+                view,
+                View::Idle | View::MediaCompact | View::MediaLyric | View::PomodoroCompact
+            )
+        {
+            let ((cx, cy), r) = toast_dot(shape);
+            self.set_color(super::robot::TERRACOTTA, content_alpha);
+            self.fill_round(
+                Rect {
+                    x: cx - r,
+                    y: cy - r,
+                    w: r * 2.0,
+                    h: r * 2.0,
+                },
+                r,
+            );
         }
         // The volume plate is its own near-opaque surface.
         self.legible.set(0.0);
@@ -2022,6 +2111,74 @@ impl Renderer {
                 self.text_colored(label, &self.fonts.button_center, chip, ink, 1.0);
             });
         }
+        Ok(())
+    }
+
+    /// A busy toast's logo (or its letter tile) in the slot square `area`,
+    /// at `alpha`: the whole picture contained and rounded like the notice's
+    /// badge, scaled to the slot's size.
+    fn paint_slot_logo(&self, area: Rect, alpha: f32, badge: ToastBadgeView) -> Result<()> {
+        let faded = alpha < 1.0;
+        if faded {
+            self.push_opacity(alpha.clamp(0.0, 1.0));
+        }
+        let painted = self.paint_toast_badge(area, badge);
+        if faded {
+            let target = self.target.as_ref().expect("target ensured by paint");
+            unsafe { target.rt.PopLayer() };
+        }
+        painted
+    }
+
+    /// The badge in `area` (a 20 or 16 dip square): the logo contained with
+    /// the notice badge's corner scaled to `area`, or the letter tile
+    /// (`notif::tile`) when there is no logo or its pixels are unreadable.
+    pub(super) fn paint_toast_badge(&self, area: Rect, badge: ToastBadgeView) -> Result<()> {
+        // `radius::BADGE` is for the notice's 40 dip badge.
+        let corner = radius::BADGE * area.w / super::geometry::ROBOT_NOTICE;
+        if let Some(view) = badge.logo
+            && let Some(bitmap) = self.notif_logo(view.key, view.thumb)?
+        {
+            let target = self.target.as_ref().expect("target ensured by paint");
+            unsafe {
+                let D2D_SIZE_F { width, height } = bitmap.GetSize();
+                let placed = shot_fit(area, width, height);
+                let k = placed.w / width.max(1.0);
+                let transform = Matrix3x2 {
+                    M11: k,
+                    M12: 0.0,
+                    M21: 0.0,
+                    M22: k,
+                    M31: placed.x,
+                    M32: placed.y,
+                };
+                let brush = target.rt.CreateBitmapBrush(&bitmap, None, None)?;
+                brush.SetTransform(&transform);
+                let brush: ID2D1Brush = brush.cast()?;
+                let r = corner.min(placed.w / 2.0).min(placed.h / 2.0);
+                target.rt.FillRoundedRectangle(
+                    &D2D1_ROUNDED_RECT {
+                        rect: d2d_rect(placed),
+                        radiusX: r,
+                        radiusY: r,
+                    },
+                    &brush,
+                );
+            }
+            return Ok(());
+        }
+        self.set_color(crate::notif::tile::tile_color(badge.source), 1.0);
+        self.fill_round(area, corner);
+        let letter = crate::notif::tile::tile_letter(badge.source);
+        self.solid_ink(|| {
+            self.text_colored(
+                &letter,
+                &self.fonts.small_center_bold,
+                area,
+                self.palette.text,
+                1.0,
+            );
+        });
         Ok(())
     }
 

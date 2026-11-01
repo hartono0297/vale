@@ -105,6 +105,16 @@
 //! dip), `peek-eyes-down` at one low and to the right (1.5 dip down, 2 dip
 //! across), `peek-eyes-blink` shows them shut (the cat's two level lines).
 //! None of them reads the pointer.
+//!
+//! The busy-notch toast's scenes (`docs/memory/toast-while-busy.md`), made-up
+//! data and a made-up logo only: `notice-busy-panel` (the Calendar page with
+//! the toast's strip under its top edge), `notice-busy-lyric`,
+//! `notice-busy-media` and `notice-busy-pomodoro` (the compact view grown by
+//! the small logo's slot), `notice-busy-hover` (the full toast the pointer on
+//! the logo peeks as, over a lyric context), `notice-unread-dot` (the
+//! compact music view with the terracotta dot) and `notice-unread-dot-idle`
+//! (the idle notch with it). A scene's morph from the one before plays as
+//! in the island: the notch grows by the slot while the logo fades in.
 
 use std::time::{Duration, Instant};
 
@@ -120,8 +130,8 @@ use super::cat_style::CatLook;
 use super::dock::{self, DockFrame};
 use super::geometry::{
     ANIM_MS, NOTCH_OPACITY_DEFAULT, NotchSize, ShapeKind, ShapeRect, ease_out_back, lerp_shape,
-    lyric_box_w, lyric_max_w, lyric_scroll_offset, lyric_shape_sized, lyric_width_min,
-    shape_with_robot_sized,
+    TOAST_SLOT_EXTRA, lyric_box_w, lyric_max_w, lyric_scroll_offset, lyric_shape_sized,
+    lyric_slot_width, lyric_width_min, shape_with_robot_sized, with_toast_slot,
 };
 use super::motion::{
     PAGE_FADE_MS, REVEAL_MS, RevealDir, Transit, content_alpha, page_fade_frame, reveal_frame,
@@ -130,7 +140,7 @@ use super::notch_fill::{self, fill_alpha};
 use super::render::{
     CleanerView, CliView, ClipNoticeView, ClipView, DevicesView, FolderMenuView, Frame, MoleView,
     NotifView, Progress, Renderer, RobotFrame, SearchView, SheetKind, ShotView, SystemView,
-    ToastLogoView,
+    ToastBadgeView, ToastLogoView,
 };
 use super::robot::{Expr, EyesPose, Pose};
 use super::shelf_motion::{SHELF_ENTER_MS, SHELF_MOVE_MS, SHELF_STAGGER_MS, ShelfMotion};
@@ -251,6 +261,13 @@ struct Scene {
     /// The music cat at the deepest nod (amount 1) with its note half way up
     /// and a little faded: a fixed pose, nothing is captured.
     dance: bool,
+    /// A busy toast's small logo sits beside the compact view (the slot).
+    slot: bool,
+    /// The strip under the panel's top edge holds a busy toast, not the
+    /// sticky Claude notice (with `strip`).
+    toast_strip: bool,
+    /// The unread dot on the closed notch.
+    dot: bool,
 }
 
 /// The cleaner's states (deepclean-opsi-d.html p10 and d1).
@@ -488,6 +505,9 @@ const BASE: Scene = Scene {
     eyes_look: (0.0, 0.0),
     eyes_blink: false,
     dance: false,
+    slot: false,
+    toast_strip: false,
+    dot: false,
 };
 
 const fn clipboard(name: &'static str, which: ClipDemo) -> Scene {
@@ -691,7 +711,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 144] = [
+const SCENES: [Scene; 151] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -795,6 +815,52 @@ const SCENES: [Scene; 144] = [
     notice("notice-app-logo", DemoNotice::AppLogo),
     notice("notice-app-site", DemoNotice::AppSite),
     notice("notice-app-no-logo", DemoNotice::AppNoLogo),
+    // A real toast over a busy notch (`notification-history`'s toast, tucked).
+    Scene {
+        strip: true,
+        toast_strip: true,
+        ..panel("notice-busy-panel", Page::Calendar)
+    },
+    Scene {
+        slot: true,
+        ..lyric("notice-busy-lyric", 6_000)
+    },
+    Scene {
+        name: "notice-busy-media",
+        kind: ShapeKind::MediaCompact,
+        view: View0::MediaCompact,
+        slot: true,
+        ..BASE
+    },
+    Scene {
+        name: "notice-busy-pomodoro",
+        kind: ShapeKind::PomodoroCompact,
+        view: View0::PomodoroCompact,
+        pomo: Pomo::Running,
+        slot: true,
+        ..BASE
+    },
+    // The pointer on the logo: the full toast, over a lyric context.
+    Scene {
+        lyric_at: 6_000,
+        lyrics_on: true,
+        ..notice("notice-busy-hover", DemoNotice::AppLogo)
+    },
+    Scene {
+        name: "notice-unread-dot",
+        kind: ShapeKind::MediaCompact,
+        view: View0::MediaCompact,
+        dot: true,
+        ..BASE
+    },
+    Scene {
+        name: "notice-unread-dot-idle",
+        kind: ShapeKind::Idle,
+        dot: true,
+        robot: Some(Expr::Idle),
+        clock: Some("14:32"),
+        ..BASE
+    },
     panel("notes-4", Page::Notes),
     Scene {
         notes: 6,
@@ -1580,6 +1646,17 @@ fn run_scenes(scenes: &[Scene]) {
             session_id: "demo".into(),
         },
     };
+    // The busy toast of the strip and the slot: a made-up Telegram message.
+    let busy_toast = Notice {
+        key: "demo-busy-toast".into(),
+        source: "Telegram".into(),
+        title: "Rani".into(),
+        body: "Denah lantai 2 sudah saya kirim, cek ya".into(),
+        kind: NoticeKind::App {
+            app_id: Some(DEMO_LOGO_KEY.into()),
+            toast: Some(ToastOrigin::default()),
+        },
+    };
     let hold: Option<usize> = std::env::var("DI_DEMO_STEP")
         .ok()
         .and_then(|v| held_step(scenes, &v));
@@ -1635,7 +1712,8 @@ fn run_scenes(scenes: &[Scene]) {
         let scroll = match scene.view {
             View0::MediaLyric => {
                 let text = lyric_state.shown(now).map_or("", |l| l.text);
-                let box_w = lyric_box_w(to.w, scene.robot.is_some());
+                let slot_w = if scene.slot { TOAST_SLOT_EXTRA } else { 0.0 };
+                let box_w = lyric_box_w(to.w - slot_w, scene.robot.is_some());
                 renderer.lyric_text_width(text).map_or(0.0, |text_w| {
                     lyric_scroll_offset(text_w, box_w, lyric_scroll.unwrap_or(into as u64))
                 })
@@ -1813,7 +1891,9 @@ fn run_scenes(scenes: &[Scene]) {
                 now,
                 today,
                 page,
-                strip: scene.strip.then_some(&strip),
+                strip: scene
+                    .strip
+                    .then_some(if scene.toast_strip { &busy_toast } else { &strip }),
                 cal_view: scene.cal_view,
                 cal_anchor: today,
                 cal_selected: today,
@@ -1936,6 +2016,27 @@ fn run_scenes(scenes: &[Scene]) {
                     },
                 ),
                 toast_logo,
+                // The slot grows with the morph, as `App::draw` works it out
+                // (the animated width over the one without the slot).
+                toast_slot_w: if scene.slot {
+                    (shape.w - (to.w - TOAST_SLOT_EXTRA)).clamp(0.0, TOAST_SLOT_EXTRA)
+                } else {
+                    0.0
+                },
+                toast_slot: scene.slot.then(|| ToastBadgeView {
+                    source: &busy_toast.source,
+                    logo: notif_logos
+                        .get_key_value(&logo_key(Some(DEMO_LOGO_KEY), &busy_toast.source))
+                        .map(|(key, thumb)| ToastLogoView { key, thumb }),
+                }),
+                toast_dot: scene.dot,
+                strip_badge: (scene.strip && scene.toast_strip).then(|| ToastBadgeView {
+                    source: &busy_toast.source,
+                    logo: notif_logos
+                        .get_key_value(&logo_key(Some(DEMO_LOGO_KEY), &busy_toast.source))
+                        .map(|(key, thumb)| ToastLogoView { key, thumb }),
+                }),
+                strip_motion: None,
                 transit: {
                     let reveal_at =
                         frozen_reveal.unwrap_or((into as f32 / REVEAL_MS as f32).min(1.0));
@@ -2815,7 +2916,13 @@ fn scene_shape(
 ) -> ShapeRect {
     let robot = scene.robot.is_some();
     if scene.kind != ShapeKind::MediaLyric {
-        return shape_with_robot_sized(style, notch, scene.kind, robot);
+        let shape = shape_with_robot_sized(style, notch, scene.kind, robot);
+        // A busy toast's logo beside a compact view widens it.
+        return if scene.slot {
+            with_toast_slot(shape)
+        } else {
+            shape
+        };
     }
     let state = demo_lyrics(lyric_at, None, Instant::now());
     let text_w = state
@@ -2823,6 +2930,11 @@ fn scene_shape(
         .and_then(|l| renderer.lyric_text_width(l.text));
     let max_w = lyric_max_w(win.screen_w()).max(notch.w);
     let w = lyric_width_min(text_w, robot, notch.w, max_w);
+    let w = if scene.slot {
+        lyric_slot_width(w, robot, notch.w, max_w)
+    } else {
+        w
+    };
     lyric_shape_sized(style, notch, w)
 }
 
