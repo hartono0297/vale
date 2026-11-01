@@ -1092,7 +1092,7 @@ const PAD_X: f32 = 20.0;
 /// Content starts this far below the panel's top edge.
 const PAD_TOP: f32 = 14.0;
 const STRIP_TOP: f32 = 8.0;
-const STRIP_H: f32 = 24.0;
+pub const STRIP_H: f32 = 24.0;
 const DOT: f32 = 5.0;
 const DOT_GAP: f32 = 6.0;
 pub(super) const DOT_BOTTOM: f32 = 11.0;

@@ -5,7 +5,7 @@ use chrono::{Days, Months, NaiveDate};
 
 use crate::calendar::range_for;
 use crate::clean::{CleanCat, CleanMode};
-use crate::config::OpenMode;
+use crate::config::{OpenMode, ToastStyle};
 use crate::i18n::{self, Key, text};
 use crate::lyrics;
 use crate::model::{
@@ -328,6 +328,38 @@ pub struct IslandState {
     /// `linger_until` is still in the future, as of the last `apply`
     /// (`panel_open` has no clock of its own).
     lingering: bool,
+    /// "Notifikasi saat notch dipakai": a real toast over a busy notch is
+    /// tucked (Compact, the default) or covers it (Full).
+    toast_style: ToastStyle,
+    /// The current real toast has been shown full because of the context
+    /// (idle, a game, a sticky notice, the setting): once full it stays full
+    /// until it ends, as a toast always did.
+    toast_full: bool,
+    /// The pointer is on the busy toast's own spot (its strip, its slot, or
+    /// the peeked full toast).
+    toast_pointer: bool,
+    /// The current toast's full content was on screen (full, peeked or
+    /// clicked).
+    toast_seen: bool,
+    /// A busy toast came and went unseen: a small dot on the compact notch
+    /// says so until a peek or the Notifikasi page clears it. Not persisted.
+    toast_dot: bool,
+}
+
+/// How a real Windows toast shows now: the whole notice (`Full`), a strip
+/// under the open panel's top edge (`Strip`), or a small logo beside a
+/// compact view (`Slot`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToastForm {
+    Full,
+    Strip,
+    Slot,
+}
+
+/// A notice made from a real Windows toast (`to_notice` of the notification
+/// source): it carries the toast's origin.
+pub fn is_real_toast(notice: &Notice) -> bool {
+    matches!(notice.kind, NoticeKind::App { toast: Some(_), .. })
 }
 
 impl IslandState {
@@ -385,6 +417,11 @@ impl IslandState {
             shot_touched: false,
             linger_until: None,
             lingering: false,
+            toast_style: ToastStyle::Compact,
+            toast_full: false,
+            toast_pointer: false,
+            toast_seen: false,
+            toast_dot: false,
         }
     }
 
@@ -396,6 +433,7 @@ impl IslandState {
         let cleaner_was = self.cleaner.map(|c| c.mode);
         let hover_on = matches!(event, Event::Hover(true));
         let page_was = self.page;
+        let toast_held_was = self.toast_held_spot();
         // The linger runs out here, after the "was" values above saw the
         // panel as the user last did (the close below still cleans up after
         // it). From here on `panel_open_now` is the panel the event meets.
@@ -407,6 +445,9 @@ impl IslandState {
         let panel_view_now = matches!(self.view(), View::Panel(_));
         let linger_trigger = self.linger_trigger(&event, now);
         let mut effects = Vec::new();
+        // A linger that ran out may have moved the held toast: its grace
+        // first, before `advance` judges it unheld.
+        self.toast_hold_moved(toast_held_was, now);
         // Finish a phase whose end has passed before handling the input, so a
         // click that beats the deadline's Tick never pauses the timer at 0:00.
         if let Some(done) = self.pomodoro.tick(now) {
@@ -414,6 +455,7 @@ impl IslandState {
         }
         self.advance(now, &mut effects);
         self.expire_confirm(now);
+        let toast_held = self.toast_held_spot();
         match event {
             Event::Media(media) => self.set_media(media, now),
             Event::MediaTimeline(timeline) => self.timeline = timeline,
@@ -436,6 +478,27 @@ impl IslandState {
                 NoticeKind::ClaudeDone { session_id } => {
                     self.clear_sticky(Sticky::Session(session_id));
                     self.queue.push_back(notice);
+                }
+                // A real toast over a busy notch that already shows one (a
+                // strip or a slot), with nothing waiting: the newest replaces
+                // it where it stands and runs its own time. Behind a full
+                // toast or any other notice, or with others queued (a run of
+                // toasts must not hold them back, nor jump ahead of older
+                // toasts), it queues, as every notice does.
+                NoticeKind::App { toast: Some(_), .. } => {
+                    if self.toast_tucked() && self.queue.is_empty() {
+                        if !self.toast_seen && self.toast_style == ToastStyle::Compact {
+                            self.toast_dot = true;
+                        }
+                        self.current = Some((notice, now + NOTICE_DURATION));
+                        self.toast_full = false;
+                        self.toast_seen = false;
+                        // A new toast: the pointer's spot is told again by
+                        // `App`'s next move.
+                        self.toast_pointer = false;
+                    } else {
+                        self.queue.push_back(notice);
+                    }
                 }
                 NoticeKind::App { .. }
                 | NoticeKind::BatteryLow
@@ -557,15 +620,18 @@ impl IslandState {
                 }
                 if on && !self.hover {
                     self.hover_blocked = !panel_open_now && self.notice_blocks_hover();
-                    self.visit_on_notice = self.current.is_some();
+                    self.visit_on_notice = self.notice_covers();
                     // A sticky reminder keeps hover off for one visit only.
-                    if self.hover_blocked && self.current.is_none() {
+                    if self.hover_blocked && !self.notice_covers() {
                         self.reminder_seen = self.sticky.last().cloned();
                     }
                 }
                 if !on {
                     self.hover_blocked = false;
                     self.visit_on_notice = false;
+                    // The pointer left the island, and the busy toast's spot
+                    // with it.
+                    self.toast_pointer = false;
                 }
                 self.hover = on;
                 // The drop's own visit ends when the pointer leaves it; a
@@ -595,6 +661,29 @@ impl IslandState {
                 self.open_mode = mode;
                 self.latched = false;
                 self.end_linger();
+            }
+            Event::ToastStyle(style) => {
+                self.toast_style = style;
+                // Full never keeps a dot: the toasts cover the notch again.
+                if style == ToastStyle::Full {
+                    self.toast_dot = false;
+                }
+            }
+            Event::ToastPointer(on) => {
+                // The pointer left what held the toast: at least the grace
+                // more, so a click is never beaten by the timeout.
+                let held = self
+                    .current
+                    .as_ref()
+                    .is_some_and(|(n, _)| self.notice_held(n));
+                self.toast_pointer =
+                    on && self.current.as_ref().is_some_and(|(n, _)| is_real_toast(n));
+                if !on
+                    && held
+                    && let Some((_, expires)) = &mut self.current
+                {
+                    *expires = (*expires).max(now + SHOT_LEAVE_GRACE);
+                }
             }
             // A click outside the island: a panel kept open closes. Under the
             // pointer (an odd case) it stays shut until the pointer comes back.
@@ -652,7 +741,7 @@ impl IslandState {
                 // (its strip), and that notch is spent on opening it, not on
                 // turning the page. Over a temporary notice the wheel is the
                 // notice's: the panel stays behind it.
-                if self.hover_blocked && self.current.is_none() && self.open_mode != OpenMode::Click
+                if self.hover_blocked && !self.notice_covers() && self.open_mode != OpenMode::Click
                 {
                     self.hover_blocked = false;
                     self.wheel = 0;
@@ -663,7 +752,7 @@ impl IslandState {
             Event::PageFlick { next } => {
                 // The wheel's rules: the peek over the sticky reminder spends
                 // the flick on opening the panel.
-                if self.hover_blocked && self.current.is_none() && self.open_mode != OpenMode::Click
+                if self.hover_blocked && !self.notice_covers() && self.open_mode != OpenMode::Click
                 {
                     self.hover_blocked = false;
                     self.wheel = 0;
@@ -753,8 +842,13 @@ impl IslandState {
                 }
             }
         }
+        // A key that closed or opened the panel under the pointer moved the
+        // toast it held: the hold ends with the grace, before `advance` sees
+        // the new form unheld (an Idle close would drop it unseen).
+        self.toast_hold_moved(toast_held, now);
         // A new notice or a dismissal may have left the slot free for the next queued one.
         self.advance(now, &mut effects);
+        let toast_held = self.toast_held_spot();
         // The pointer over the preview: its expiry is no longer "ignored".
         if self.hover && self.shown_shot().is_some() {
             self.shot_touched = true;
@@ -888,13 +982,24 @@ impl IslandState {
             let (from, to) = self.cal_range();
             effects.push(Effect::RefreshCalendar { from, to });
         }
+        // Last, once the linger, the latch and the inputs have settled what
+        // shows: the toast is judged on the view this `apply` leaves.
+        self.settle_toast(toast_held, now);
         effects
     }
 
     pub fn view(&self) -> View {
-        if let Some((notice, _)) = &self.current {
+        if let Some((notice, _)) = &self.current
+            && !self.toast_tucked()
+        {
             return View::Notice(notice.clone());
         }
+        self.base_view()
+    }
+
+    /// What the island shows with the current notice left out: the view a
+    /// tucked toast sits on.
+    fn base_view(&self) -> View {
         if self.fullscreen {
             return View::Hidden;
         }
@@ -1014,6 +1119,10 @@ impl IslandState {
     fn notice_held(&self, notice: &Notice) -> bool {
         (self.hover && self.visit_on_notice && notice_has_action(notice))
             || (self.arrange_naming && matches!(notice.kind, NoticeKind::Arranged { .. }))
+            // The pointer on the toast's strip, or peeking at it: it waits.
+            || (self.toast_pointer
+                && is_real_toast(notice)
+                && (self.toast_form() == Some(ToastForm::Strip) || self.toast_peeking()))
     }
 
     /// Hover and stay latches the panel the pointer holds, once the panel is
@@ -1022,7 +1131,7 @@ impl IslandState {
         self.open_mode == OpenMode::HoverStay
             && self.hover
             && !self.hover_blocked
-            && self.current.is_none()
+            && !self.notice_covers()
             && self.collapsed == Collapse::No
             && !self.fullscreen
     }
@@ -1342,13 +1451,19 @@ impl IslandState {
         if self.fullscreen {
             return false;
         }
+        // Peeking at the full toast: hover never opens the panel under it.
+        if self.toast_peeking() {
+            return true;
+        }
         match &self.current {
-            Some((n, _)) => notice_has_action(n),
+            Some((n, _)) if self.notice_covers() => notice_has_action(n),
+            // A toast tucked in a strip or slot is not in the way, so the
+            // newest sticky one is what a hover would land on.
             // The newest sticky one is what shows: only a reminder has the
             // Selesai button, and it keeps hover off for the first visit
             // after it appeared; later visits open the panel with it in the
             // strip (as in v3.1).
-            None => self.sticky.last().is_some_and(|n| {
+            _ => self.sticky.last().is_some_and(|n| {
                 matches!(n.kind, NoticeKind::Reminder { .. })
                     && self.reminder_seen.as_ref() != Some(n)
             }),
@@ -1452,7 +1567,7 @@ impl IslandState {
                     && (matches!(
                         self.view(),
                         View::Idle | View::MediaCompact | View::MediaLyric | View::PomodoroCompact
-                    ) || (self.current.is_none()
+                    ) || (!self.notice_covers()
                         && matches!(self.view(), View::Notice(_)))) =>
             {
                 self.open_by_click(now)
@@ -1657,7 +1772,19 @@ impl IslandState {
             // The strip shows the newest sticky notice; clicking it dismisses that one.
             Hit::Strip => {
                 if matches!(self.view(), View::Panel(_)) {
-                    effects.extend(self.dismiss_newest_sticky());
+                    if self.toast_form() == Some(ToastForm::Strip) {
+                        // The toast's strip: the notice's own click, the
+                        // panel stays open.
+                        effects.extend(self.dismiss_visible_notice(now));
+                    } else {
+                        effects.extend(self.dismiss_newest_sticky());
+                    }
+                }
+            }
+            // The small logo of a busy toast, or the full toast it peeks as.
+            Hit::ToastSlot => {
+                if self.toast_slot().is_some() || self.toast_peeking() {
+                    effects.extend(self.dismiss_visible_notice(now));
                 }
             }
             // The island's own quick search, the way its hotkey opens it.
@@ -1939,7 +2066,7 @@ impl IslandState {
     /// page the panel shows already does nothing. The slide's direction is
     /// the pages' places in the owner's order (`App`).
     fn go_to_page(&mut self, target: Page) {
-        if self.hover_blocked && self.current.is_none() && self.open_mode != OpenMode::Click {
+        if self.hover_blocked && !self.notice_covers() && self.open_mode != OpenMode::Click {
             self.hover_blocked = false;
             self.wheel = 0;
         } else if self.can_turn_page() && target != self.page {
@@ -2064,6 +2191,7 @@ impl IslandState {
         if let Some((n, expires)) = &self.current {
             let held = self.notice_held(n);
             if !held && *expires <= now {
+                let real_toast = is_real_toast(n);
                 if let NoticeKind::Screenshot {
                     shot,
                     delete_if_ignored: true,
@@ -2072,6 +2200,9 @@ impl IslandState {
                     && !self.shot_touched
                 {
                     effects.push(Effect::Shot(ShotAction::DeleteIgnored(shot)));
+                }
+                if real_toast {
+                    self.toast_left();
                 }
                 self.current = None;
             }
@@ -2085,6 +2216,9 @@ impl IslandState {
             }
             // It arrives under the pointer, if any: the visit began elsewhere.
             self.visit_on_notice = false;
+            self.toast_full = false;
+            self.toast_seen = false;
+            self.toast_pointer = false;
             self.current = Some((next, expires));
         }
     }
@@ -2180,6 +2314,172 @@ impl IslandState {
     }
 }
 
+/// A real Windows toast over a busy notch (docs/memory/toast-while-busy.md).
+impl IslandState {
+    /// The current real toast could be tucked: Compact, not shown full
+    /// already, and the notch under it is busy (a panel or a compact view).
+    /// Idle, Hidden and a sticky notice give Full, as a toast always did.
+    fn toast_candidate(&self) -> bool {
+        self.toast_style == ToastStyle::Compact
+            && !self.toast_full
+            && self
+                .current
+                .as_ref()
+                .is_some_and(|(n, _)| is_real_toast(n))
+            && matches!(
+                self.base_view(),
+                View::Panel(_) | View::MediaLyric | View::MediaCompact | View::PomodoroCompact
+            )
+    }
+
+    /// The pointer is on the slot's logo (or still on the island since): the
+    /// full toast shows for as long as it stays. Not latched.
+    fn toast_peeking(&self) -> bool {
+        self.toast_pointer
+            && self.toast_candidate()
+            && !matches!(self.base_view(), View::Panel(_))
+    }
+
+    /// The current real toast is tucked (a strip or a slot), the view being
+    /// the one under it.
+    fn toast_tucked(&self) -> bool {
+        self.toast_candidate() && !self.toast_peeking()
+    }
+
+    /// A notice covers the view: a current notice that is not tucked.
+    fn notice_covers(&self) -> bool {
+        self.current.is_some() && !self.toast_tucked()
+    }
+
+    /// How the current real toast shows; `None` when there is none.
+    pub fn toast_form(&self) -> Option<ToastForm> {
+        let (n, _) = self.current.as_ref()?;
+        if !is_real_toast(n) {
+            return None;
+        }
+        if !self.toast_tucked() {
+            return Some(ToastForm::Full);
+        }
+        Some(match self.base_view() {
+            View::Panel(_) => ToastForm::Strip,
+            _ => ToastForm::Slot,
+        })
+    }
+
+    /// The toast whose logo sits beside the compact view.
+    pub fn toast_slot(&self) -> Option<&Notice> {
+        if self.toast_form() == Some(ToastForm::Slot) {
+            return self.current.as_ref().map(|(n, _)| n);
+        }
+        None
+    }
+
+    /// A busy toast came and went unseen and the compact notch still says so.
+    pub fn toast_dot_shown(&self) -> bool {
+        self.toast_dot
+            && !self.fullscreen
+            && self.toast_slot().is_none()
+            && matches!(
+                self.view(),
+                View::Idle | View::MediaCompact | View::MediaLyric | View::PomodoroCompact
+            )
+    }
+
+    /// The pointer is on the toast's spot, as the reducer last heard.
+    pub fn toast_pointer(&self) -> bool {
+        self.toast_pointer
+    }
+
+    /// The pointer peeks at the toast: its full form shows over the slot.
+    pub fn toast_is_peeking(&self) -> bool {
+        self.toast_peeking()
+    }
+
+    /// A real toast leaves `current` (expired, replaced): unseen, it leaves
+    /// the dot. A click counts as seen and takes another way out.
+    fn toast_left(&mut self) {
+        if !self.toast_seen && self.toast_style == ToastStyle::Compact {
+            self.toast_dot = true;
+        }
+        self.toast_full = false;
+        self.toast_seen = false;
+    }
+
+    /// Where the pointer can rest on the current real toast: its strip, or
+    /// its slot (peeking at it counts as the slot); `Full` and `None` have no
+    /// such spot.
+    fn toast_spot(&self) -> Option<ToastForm> {
+        if self.toast_peeking() {
+            return Some(ToastForm::Slot);
+        }
+        self.toast_form()
+    }
+
+    /// The spot where the pointer holds the current toast: its strip, or
+    /// its slot while peeking (`toast_spot()` with `toast_pointer`).
+    fn toast_held_spot(&self) -> Option<ToastForm> {
+        if !self.toast_pointer {
+            return None;
+        }
+        self.toast_spot()
+            .filter(|spot| matches!(spot, ToastForm::Strip | ToastForm::Slot))
+    }
+
+    /// The pointer held the toast on `held` and the toast has moved since
+    /// (the panel closed or opened by a key, a linger ran out): the pointer
+    /// is on the old spot, not the new one, so the hold ends as a leave
+    /// does, with at least the grace more. `App`'s next move tells again.
+    fn toast_hold_moved(&mut self, held: Option<ToastForm>, now: Instant) {
+        if held.is_none() || self.toast_spot() == held {
+            return;
+        }
+        self.toast_pointer = false;
+        if let Some((n, expires)) = &mut self.current
+            && is_real_toast(n)
+        {
+            *expires = (*expires).max(now + SHOT_LEAVE_GRACE);
+        }
+    }
+
+    /// The very end of every `apply` (after the linger and the latch): what
+    /// the current toast was shown as, and what that does to the dot.
+    /// `held` is `toast_held_spot()` after the last `advance`.
+    fn settle_toast(&mut self, held: Option<ToastForm>, now: Instant) {
+        // The latch or the linger's end moved the held toast.
+        self.toast_hold_moved(held, now);
+        let real = self
+            .current
+            .as_ref()
+            .is_some_and(|(n, _)| is_real_toast(n));
+        if real {
+            let peek = self.toast_peeking();
+            let tucked = self.toast_tucked();
+            // Full because of the context: it stays full until it ends.
+            if !tucked && !peek {
+                self.toast_full = true;
+            }
+            // Any full presentation, the peek too, is a look at it.
+            if !tucked {
+                self.toast_seen = true;
+            }
+            if peek {
+                self.toast_dot = false;
+            }
+        } else {
+            self.toast_full = false;
+            self.toast_seen = false;
+            self.toast_pointer = false;
+        }
+        // The Notifikasi page lists it: nothing left to tell.
+        if self.view() == View::Panel(Page::Notifications) {
+            self.toast_dot = false;
+            if real {
+                self.toast_seen = true;
+            }
+        }
+    }
+}
+
 /// What the panel draws.
 impl IslandState {
     pub fn page(&self) -> Page {
@@ -2210,7 +2510,7 @@ impl IslandState {
             notes_page: self.notes_page,
             reminders_page: self.reminders_page,
             day_page: self.day_page,
-            strip: self.sticky.last().cloned(),
+            strip: self.waiting_strip_any().cloned(),
         })
     }
 
@@ -2218,9 +2518,18 @@ impl IslandState {
     /// of the open panel.
     pub fn waiting_strip(&self) -> Option<&Notice> {
         match self.view() {
-            View::Panel(_) => self.sticky.last(),
+            View::Panel(_) => self.waiting_strip_any(),
             _ => None,
         }
+    }
+
+    /// What the strip would hold: the busy toast while its form is the strip
+    /// (the sticky notice yields for its time), else the newest sticky one.
+    fn waiting_strip_any(&self) -> Option<&Notice> {
+        if self.toast_form() == Some(ToastForm::Strip) {
+            return self.current.as_ref().map(|(n, _)| n);
+        }
+        self.sticky.last()
     }
 
     pub fn pomodoro(&self) -> &Pomodoro {
@@ -7427,5 +7736,605 @@ mod tests {
         s.apply(Event::Notice(saved.clone()), t0);
         assert_eq!(s.view(), View::Notice(saved));
         assert_eq!(s.next_deadline(), Some(t0 + SHOT_DONE_DURATION));
+    }
+
+    // ---- a real toast over a busy notch ----
+
+    fn toast_notice(key: &str, title: &str) -> Notice {
+        Notice {
+            key: key.into(),
+            source: "Chrome".into(),
+            title: title.into(),
+            body: "halo".into(),
+            kind: NoticeKind::App {
+                app_id: Some("Chrome".into()),
+                toast: Some(ToastOrigin::default()),
+            },
+        }
+    }
+
+    /// The contexts a toast can arrive over, as a state ready for it.
+    fn busy(context: &str, t0: Instant) -> IslandState {
+        let mut s = st();
+        match context {
+            "idle" => {}
+            "panel" => {
+                s.apply(Event::Hover(true), t0);
+            }
+            "lyric" => lyric_ready(&mut s, t0),
+            "media" => {
+                s.apply(Event::Media(Some(media(true))), t0);
+            }
+            "pomodoro" => {
+                s.apply(Event::Click(Hit::PomoStartPause), t0);
+            }
+            other => panic!("{other}"),
+        }
+        s
+    }
+
+    #[test]
+    fn a_busy_toast_takes_its_form_from_the_context() {
+        let t0 = Instant::now();
+        let toast = toast_notice("t1", "Ibu");
+        let cases = [
+            ("idle", ToastForm::Full, View::Notice(toast.clone())),
+            ("panel", ToastForm::Strip, View::Panel(Page::Calendar)),
+            ("lyric", ToastForm::Slot, View::MediaLyric),
+            ("media", ToastForm::Slot, View::MediaCompact),
+            ("pomodoro", ToastForm::Slot, View::PomodoroCompact),
+        ];
+        for (context, form, view) in cases {
+            let mut s = busy(context, t0);
+            s.apply(Event::Notice(toast.clone()), t0);
+            assert_eq!(s.toast_form(), Some(form), "{context}");
+            assert_eq!(s.view(), view, "{context}");
+            assert_eq!(
+                s.toast_slot().is_some(),
+                form == ToastForm::Slot,
+                "{context}"
+            );
+            assert_eq!(
+                s.waiting_strip().is_some(),
+                form == ToastForm::Strip,
+                "{context}"
+            );
+            // The time is the notice's own, whatever the form.
+            assert_eq!(s.next_deadline(), Some(t0 + NOTICE_DURATION), "{context}");
+        }
+    }
+
+    #[test]
+    fn the_full_style_keeps_the_toast_over_everything() {
+        let t0 = Instant::now();
+        let toast = toast_notice("t1", "Ibu");
+        for context in ["idle", "panel", "lyric", "media", "pomodoro"] {
+            let mut s = busy(context, t0);
+            s.apply(Event::ToastStyle(ToastStyle::Full), t0);
+            s.apply(Event::Notice(toast.clone()), t0);
+            assert_eq!(s.view(), View::Notice(toast.clone()), "{context}");
+            assert_eq!(s.toast_form(), Some(ToastForm::Full), "{context}");
+            assert!(s.toast_slot().is_none(), "{context}");
+            assert!(s.waiting_strip().is_none(), "{context}");
+        }
+    }
+
+    #[test]
+    fn island_notices_and_toasts_without_an_origin_still_cover_a_panel() {
+        let t0 = Instant::now();
+        for notice in [
+            app_notice("a"),
+            copied("c"),
+            done("s"),
+            Notice {
+                kind: NoticeKind::BatteryLow,
+                ..copied("b")
+            },
+        ] {
+            let mut s = busy("panel", t0);
+            s.apply(Event::Notice(notice.clone()), t0);
+            assert_eq!(s.view(), View::Notice(notice.clone()), "{notice:?}");
+            assert_eq!(s.toast_form(), None, "{notice:?}");
+            let mut s = busy("media", t0);
+            s.apply(Event::Notice(notice.clone()), t0);
+            assert_eq!(s.view(), View::Notice(notice.clone()), "{notice:?}");
+            assert!(s.toast_slot().is_none(), "{notice:?}");
+        }
+    }
+
+    #[test]
+    fn the_newest_busy_toast_replaces_the_one_shown_and_restarts_its_time() {
+        let t0 = Instant::now();
+        let mut s = busy("media", t0);
+        s.apply(Event::Notice(toast_notice("t1", "Satu")), t0);
+        let later = t0 + secs(3);
+        s.apply(Event::Notice(toast_notice("t2", "Dua")), later);
+        assert_eq!(s.toast_slot().map(|n| n.title.as_str()), Some("Dua"));
+        assert_eq!(s.next_deadline(), Some(later + NOTICE_DURATION));
+        // Nothing waits behind it.
+        s.apply(Event::Tick, later + NOTICE_DURATION);
+        assert_eq!(s.view(), View::MediaCompact);
+        assert!(s.toast_slot().is_none());
+        // The first was never seen full: the dot says so, once.
+        assert!(s.toast_dot_shown());
+    }
+
+    #[test]
+    fn a_run_of_busy_toasts_never_holds_back_a_waiting_notice() {
+        let t0 = Instant::now();
+        for context in ["media", "panel", "lyric"] {
+            let mut s = busy(context, t0);
+            s.apply(Event::Notice(toast_notice("t1", "Satu")), t0);
+            assert!(s.toast_form() != Some(ToastForm::Full), "{context}");
+            s.apply(Event::Notice(copied("x")), t0 + secs(1));
+            // A burst of chat toasts, each under the 5 s of the one before.
+            for (i, at) in [2, 3, 4].into_iter().enumerate() {
+                let key = format!("b{i}");
+                s.apply(Event::Notice(toast_notice(&key, &key)), t0 + secs(at));
+            }
+            // The first toast's own time is untouched: "Disalin" is next.
+            assert_eq!(s.next_deadline(), Some(t0 + NOTICE_DURATION), "{context}");
+            s.apply(Event::Tick, t0 + NOTICE_DURATION);
+            assert_eq!(s.view(), View::Notice(copied("x")), "{context}");
+            // Then the burst, oldest first.
+            let mut at = t0 + NOTICE_DURATION + COPIED_DURATION;
+            for key in ["b0", "b1", "b2"] {
+                s.apply(Event::Tick, at);
+                let shown = s.current.as_ref().map(|(n, _)| n.key.clone());
+                assert_eq!(shown.as_deref(), Some(key), "{context}");
+                at += NOTICE_DURATION;
+            }
+        }
+    }
+
+    #[test]
+    fn a_new_toast_over_a_slot_never_jumps_ahead_of_an_older_queued_one() {
+        let t0 = Instant::now();
+        let mut s = busy("media", t0);
+        s.apply(Event::Notice(copied("x")), t0);
+        let ms = Duration::from_millis;
+        s.apply(Event::Notice(toast_notice("a", "A")), t0 + ms(200));
+        s.apply(Event::Notice(toast_notice("b", "B")), t0 + ms(400));
+        // "Disalin" ends: A is the slot, B still waits.
+        let a_at = t0 + COPIED_DURATION;
+        s.apply(Event::Tick, a_at);
+        assert_eq!(s.toast_slot().map(|n| n.key.as_str()), Some("a"));
+        s.apply(Event::Notice(toast_notice("c", "C")), a_at + secs(1));
+        assert_eq!(s.toast_slot().map(|n| n.key.as_str()), Some("a"));
+        s.apply(Event::Tick, a_at + NOTICE_DURATION);
+        assert_eq!(s.toast_slot().map(|n| n.key.as_str()), Some("b"));
+        s.apply(Event::Tick, a_at + NOTICE_DURATION + NOTICE_DURATION);
+        assert_eq!(s.toast_slot().map(|n| n.key.as_str()), Some("c"));
+    }
+
+    #[test]
+    fn a_replacing_toast_starts_without_the_pointer() {
+        let t0 = Instant::now();
+        let mut s = busy("panel", t0);
+        s.apply(Event::Notice(toast_notice("t1", "Satu")), t0);
+        s.apply(Event::ToastPointer(true), t0 + secs(1));
+        assert!(s.toast_pointer());
+        assert_eq!(s.next_deadline(), None, "held on the strip");
+        let later = t0 + secs(2);
+        s.apply(Event::Notice(toast_notice("t2", "Dua")), later);
+        assert_eq!(s.waiting_strip().map(|n| n.title.as_str()), Some("Dua"));
+        assert!(!s.toast_pointer(), "App tells again on its next move");
+        assert_eq!(s.next_deadline(), Some(later + NOTICE_DURATION));
+    }
+
+    #[test]
+    fn a_panel_closed_by_a_key_under_the_pointer_gives_the_slot_not_a_peek() {
+        let t0 = Instant::now();
+        let mut s = busy("media", t0);
+        s.apply(Event::Hover(true), t0);
+        assert!(matches!(s.view(), View::Panel(_)));
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0);
+        assert_eq!(s.toast_form(), Some(ToastForm::Strip));
+        // The pointer rests on the toast's strip; a key shuts the panel.
+        s.apply(Event::ToastPointer(true), t0 + secs(1));
+        s.apply(Event::PrintScreen, t0 + secs(2));
+        assert_eq!(s.view(), View::MediaCompact);
+        assert_eq!(s.toast_form(), Some(ToastForm::Slot));
+        assert!(!s.toast_pointer(), "the pointer is not on the slot");
+        assert!(!s.toast_is_peeking());
+        // Its time runs again, with the leave's grace at most.
+        assert!(s.next_deadline().is_some());
+        // The panel opening again by a key moves it back to the strip, and a
+        // pointer that peeked at the slot is not on the strip either.
+        let mut s = busy("media", t0);
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0);
+        s.apply(Event::ToastPointer(true), t0 + secs(1));
+        assert!(s.toast_is_peeking());
+        s.apply(Event::SearchHotkey, t0 + secs(2));
+        assert!(matches!(s.view(), View::Panel(_)));
+        assert_eq!(s.toast_form(), Some(ToastForm::Strip));
+        assert!(!s.toast_pointer());
+    }
+
+    #[test]
+    fn a_held_strip_closed_by_a_key_after_its_time_gets_the_leave_grace() {
+        // Idle under the panel: the toast shows full for the grace, seen.
+        let t0 = Instant::now();
+        let mut s = busy("panel", t0);
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0);
+        s.apply(Event::ToastPointer(true), t0 + secs(1));
+        s.apply(Event::Tick, t0 + secs(20));
+        assert_eq!(s.toast_form(), Some(ToastForm::Strip), "held");
+        let closed = t0 + secs(21);
+        s.apply(Event::PrintScreen, closed);
+        assert_eq!(s.toast_form(), Some(ToastForm::Full));
+        assert_eq!(s.view(), View::Notice(toast_notice("t1", "Ibu")));
+        assert_eq!(s.next_deadline(), Some(closed + SHOT_LEAVE_GRACE));
+        s.apply(Event::Tick, closed + SHOT_LEAVE_GRACE - Duration::from_millis(1));
+        assert_eq!(s.toast_form(), Some(ToastForm::Full));
+        s.apply(Event::Tick, closed + SHOT_LEAVE_GRACE);
+        assert_eq!(s.toast_form(), None);
+        assert!(!s.toast_dot_shown(), "it showed full: seen");
+        // Media under the panel: the slot, with the grace to run.
+        let mut s = busy("media", t0);
+        s.apply(Event::Hover(true), t0);
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0);
+        s.apply(Event::ToastPointer(true), t0 + secs(1));
+        s.apply(Event::Tick, t0 + secs(20));
+        assert_eq!(s.toast_form(), Some(ToastForm::Strip), "held");
+        s.apply(Event::PrintScreen, closed);
+        assert_eq!(s.toast_form(), Some(ToastForm::Slot));
+        assert_eq!(s.next_deadline(), Some(closed + SHOT_LEAVE_GRACE));
+        s.apply(Event::Tick, closed + secs(1));
+        assert_eq!(s.toast_form(), Some(ToastForm::Slot));
+    }
+
+    #[test]
+    fn a_toast_behind_a_full_one_queues_as_before() {
+        let t0 = Instant::now();
+        let mut s = busy("idle", t0);
+        s.apply(Event::Notice(toast_notice("t1", "Satu")), t0);
+        s.apply(Event::Media(Some(media(true))), t0);
+        // Full once, full until it ends: the next one waits its turn.
+        assert_eq!(s.toast_form(), Some(ToastForm::Full));
+        s.apply(Event::Notice(toast_notice("t2", "Dua")), t0 + secs(1));
+        match s.view() {
+            View::Notice(n) => assert_eq!(n.title, "Satu"),
+            other => panic!("{other:?}"),
+        }
+        s.apply(Event::Tick, t0 + NOTICE_DURATION);
+        // The second one is a busy toast now (music under it): a slot.
+        assert_eq!(s.toast_slot().map(|n| n.title.as_str()), Some("Dua"));
+        assert_eq!(
+            s.next_deadline(),
+            Some(t0 + NOTICE_DURATION + NOTICE_DURATION)
+        );
+        // Nothing was missed: a toast seen full leaves no dot.
+        assert!(!s.toast_dot_shown());
+    }
+
+    #[test]
+    fn the_panel_closing_mid_toast_keeps_the_time_and_shows_it_full() {
+        let t0 = Instant::now();
+        let mut s = busy("panel", t0);
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0);
+        assert_eq!(s.toast_form(), Some(ToastForm::Strip));
+        s.apply(Event::Hover(false), t0 + secs(2));
+        s.apply(Event::Dismiss, t0 + secs(2));
+        // Nothing under it now: the toast is the whole island, with the time
+        // it had left.
+        assert_eq!(s.toast_form(), Some(ToastForm::Full));
+        assert_eq!(s.next_deadline(), Some(t0 + NOTICE_DURATION));
+        // Once full it stays full, whatever comes under it.
+        s.apply(Event::Media(Some(media(true))), t0 + secs(3));
+        assert_eq!(s.toast_form(), Some(ToastForm::Full));
+        s.apply(Event::Tick, t0 + NOTICE_DURATION);
+        assert_eq!(s.view(), View::MediaCompact);
+        assert!(!s.toast_dot_shown(), "it was seen");
+    }
+
+    #[test]
+    fn music_ending_under_a_slot_hands_the_toast_the_whole_island() {
+        let t0 = Instant::now();
+        let mut s = busy("media", t0);
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0);
+        s.apply(Event::Media(None), t0 + secs(1));
+        assert_eq!(s.toast_form(), Some(ToastForm::Full));
+        assert_eq!(s.next_deadline(), Some(t0 + NOTICE_DURATION));
+    }
+
+    #[test]
+    fn a_strip_over_a_panel_that_lingers_after_its_editor_stays_a_strip() {
+        // The editor held the panel open with the pointer away; it closes and
+        // the panel lingers. The toast is judged on the panel that stays, not
+        // on the Idle it passes through inside the same `apply`.
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Hover(true), t0);
+        s.apply(Event::EditorOpen(true), t0);
+        s.apply(Event::Hover(false), t0);
+        assert_eq!(s.view(), View::Panel(Page::Calendar));
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0);
+        assert_eq!(s.toast_form(), Some(ToastForm::Strip));
+        s.apply(Event::EditorOpen(false), t0 + secs(1));
+        assert_eq!(s.view(), View::Panel(Page::Calendar), "it lingers");
+        assert_eq!(s.toast_form(), Some(ToastForm::Strip));
+        assert_eq!(s.waiting_strip().map(|n| n.title.as_str()), Some("Ibu"));
+    }
+
+    #[test]
+    fn the_panel_opening_over_a_slot_moves_the_toast_to_the_strip() {
+        let t0 = Instant::now();
+        let mut s = busy("media", t0);
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0);
+        assert_eq!(s.toast_form(), Some(ToastForm::Slot));
+        s.apply(Event::Hover(true), t0 + secs(1));
+        assert_eq!(s.toast_form(), Some(ToastForm::Strip));
+        assert!(matches!(s.view(), View::Panel(_)));
+        assert_eq!(
+            s.waiting_strip().map(|n| n.title.as_str()),
+            Some("Ibu"),
+            "hover elsewhere on the compact notch still opens the panel"
+        );
+        assert_eq!(s.next_deadline(), Some(t0 + NOTICE_DURATION));
+    }
+
+    #[test]
+    fn the_dot_comes_only_from_an_unseen_busy_toast() {
+        let t0 = Instant::now();
+        // A toast that was full from the start leaves nothing.
+        let mut s = busy("idle", t0);
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0);
+        s.apply(Event::Tick, t0 + NOTICE_DURATION);
+        assert!(!s.toast_dot_shown());
+        // A busy one that ran out unseen does, on the compact views and Idle.
+        let mut s = busy("lyric", t0);
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0);
+        assert!(!s.toast_dot_shown(), "the slot is showing");
+        s.apply(Event::Tick, t0 + NOTICE_DURATION);
+        assert!(s.toast_dot_shown());
+        s.apply(Event::Media(None), t0 + secs(9));
+        assert_eq!(s.view(), View::Idle);
+        assert!(s.toast_dot_shown());
+        // Not while the panel or a fullscreen app has the island.
+        s.apply(Event::Hover(true), t0 + secs(10));
+        assert!(!s.toast_dot_shown());
+        s.apply(Event::Hover(false), t0 + secs(11));
+        s.apply(Event::Dismiss, t0 + secs(11));
+        assert!(s.toast_dot_shown());
+        s.apply(Event::Fullscreen(true), t0 + secs(12));
+        assert!(!s.toast_dot_shown());
+    }
+
+    #[test]
+    fn a_click_counts_as_seen_and_leaves_no_dot() {
+        let t0 = Instant::now();
+        let mut s = busy("media", t0);
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0);
+        let fx = s.apply(Event::Click(Hit::ToastSlot), t0 + secs(1));
+        assert_eq!(fx, vec![Effect::OpenApp("Chrome".into())]);
+        assert_eq!(s.view(), View::MediaCompact);
+        assert!(!s.toast_dot_shown());
+        // The same for the strip, and the panel stays open.
+        let mut s = busy("panel", t0);
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0);
+        let fx = s.apply(Event::Click(Hit::Strip), t0 + secs(1));
+        assert_eq!(fx, vec![Effect::OpenApp("Chrome".into())]);
+        assert_eq!(s.view(), View::Panel(Page::Calendar));
+        assert!(s.waiting_strip().is_none());
+        s.apply(Event::Hover(false), t0 + secs(2));
+        s.apply(Event::Dismiss, t0 + secs(2));
+        assert!(!s.toast_dot_shown());
+    }
+
+    #[test]
+    fn a_peek_shows_the_full_toast_clears_the_dot_and_gives_the_slot_back() {
+        let t0 = Instant::now();
+        let mut s = busy("media", t0);
+        s.apply(Event::Notice(toast_notice("t1", "Satu")), t0);
+        s.apply(Event::Notice(toast_notice("t2", "Dua")), t0 + secs(1));
+        // The first went unseen: a dot, behind the slot.
+        s.apply(Event::Tick, t0 + secs(1) + NOTICE_DURATION);
+        assert!(s.toast_dot_shown());
+        s.apply(Event::Notice(toast_notice("t3", "Tiga")), t0 + secs(20));
+        s.apply(Event::Notice(toast_notice("t4", "Empat")), t0 + secs(21));
+        // The pointer on the logo: the full toast, held while it stays.
+        s.apply(Event::ToastPointer(true), t0 + secs(22));
+        match s.view() {
+            View::Notice(n) => assert_eq!(n.title, "Empat"),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(s.toast_form(), Some(ToastForm::Full));
+        assert!(s.toast_slot().is_none());
+        assert!(!s.toast_dot_shown());
+        assert_eq!(s.next_deadline(), None, "held under the pointer");
+        // Leaving gives the slot back, with at least the grace left.
+        s.apply(Event::ToastPointer(false), t0 + secs(30));
+        assert_eq!(s.toast_form(), Some(ToastForm::Slot));
+        assert_eq!(s.next_deadline(), Some(t0 + secs(30) + SHOT_LEAVE_GRACE));
+        s.apply(Event::Tick, t0 + secs(30) + SHOT_LEAVE_GRACE);
+        assert_eq!(s.view(), View::MediaCompact);
+        // It was seen full by the peek: no dot, and the earlier one cleared.
+        assert!(!s.toast_dot_shown());
+    }
+
+    #[test]
+    fn a_peek_is_not_latched() {
+        let t0 = Instant::now();
+        let mut s = busy("media", t0);
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0);
+        s.apply(Event::ToastPointer(true), t0 + secs(1));
+        assert_eq!(s.toast_form(), Some(ToastForm::Full));
+        s.apply(Event::ToastPointer(false), t0 + secs(2));
+        assert_eq!(s.toast_form(), Some(ToastForm::Slot));
+        // A panel opening during it is the strip, not a latched full toast.
+        s.apply(Event::Hover(true), t0 + secs(3));
+        assert_eq!(s.toast_form(), Some(ToastForm::Strip));
+    }
+
+    #[test]
+    fn a_peek_blocks_hover_from_opening_the_panel_under_the_full_toast() {
+        let t0 = Instant::now();
+        let mut s = busy("media", t0);
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0);
+        s.apply(Event::ToastPointer(true), t0 + secs(1));
+        s.apply(Event::Hover(true), t0 + secs(1));
+        assert!(matches!(s.view(), View::Notice(_)));
+        assert!(!s.panel_is_open());
+        // Clicking the peeked full toast is the notice's own click.
+        let fx = s.apply(Event::Click(Hit::Body), t0 + secs(2));
+        assert_eq!(fx, vec![Effect::OpenApp("Chrome".into())]);
+        assert!(!s.toast_dot_shown());
+    }
+
+    #[test]
+    fn opening_the_notifikasi_page_clears_the_dot_and_marks_the_toast_seen() {
+        let t0 = Instant::now();
+        let mut s = busy("media", t0);
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0);
+        s.apply(Event::Tick, t0 + NOTICE_DURATION);
+        assert!(s.toast_dot_shown());
+        open_on(&mut s, Page::Notifications, t0 + secs(6));
+        s.apply(Event::Hover(false), t0 + secs(7));
+        s.apply(Event::Dismiss, t0 + secs(7));
+        assert!(!s.toast_dot_shown());
+        // A toast arriving over that page is the page's already.
+        let mut s = busy("panel", t0);
+        open_on(&mut s, Page::Notifications, t0);
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0 + secs(1));
+        assert_eq!(s.toast_form(), Some(ToastForm::Strip));
+        s.apply(Event::Tick, t0 + secs(1) + NOTICE_DURATION);
+        s.apply(Event::Hover(false), t0 + secs(8));
+        s.apply(Event::Dismiss, t0 + secs(8));
+        assert!(!s.toast_dot_shown());
+    }
+
+    #[test]
+    fn the_full_style_never_sets_the_dot_and_clears_it() {
+        let t0 = Instant::now();
+        let mut s = busy("media", t0);
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0);
+        s.apply(Event::Tick, t0 + NOTICE_DURATION);
+        assert!(s.toast_dot_shown());
+        s.apply(Event::ToastStyle(ToastStyle::Full), t0 + secs(6));
+        assert!(!s.toast_dot_shown());
+        s.apply(Event::Notice(toast_notice("t2", "Dua")), t0 + secs(7));
+        s.apply(Event::Tick, t0 + secs(7) + NOTICE_DURATION);
+        assert!(!s.toast_dot_shown());
+    }
+
+    #[test]
+    fn switching_to_the_full_style_turns_a_tucked_toast_full_at_once() {
+        let t0 = Instant::now();
+        let mut s = busy("panel", t0);
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0);
+        assert_eq!(s.toast_form(), Some(ToastForm::Strip));
+        s.apply(Event::ToastStyle(ToastStyle::Full), t0 + secs(2));
+        assert_eq!(s.toast_form(), Some(ToastForm::Full));
+        assert!(matches!(s.view(), View::Notice(_)));
+        assert_eq!(s.next_deadline(), Some(t0 + NOTICE_DURATION));
+    }
+
+    #[test]
+    fn the_sticky_strip_yields_to_the_toast_and_comes_back() {
+        let t0 = Instant::now();
+        let mut s = busy("panel", t0);
+        s.apply(Event::Notice(waiting("a")), t0);
+        assert_eq!(
+            s.waiting_strip().map(|n| n.source.as_str()),
+            Some("Claude Code")
+        );
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0 + secs(1));
+        assert_eq!(s.waiting_strip().map(|n| n.title.as_str()), Some("Ibu"));
+        assert_eq!(
+            s.shown_panel().and_then(|p| p.strip).map(|n| n.title),
+            Some("Ibu".to_string())
+        );
+        s.apply(Event::Tick, t0 + secs(1) + NOTICE_DURATION);
+        assert_eq!(
+            s.waiting_strip().map(|n| n.source.as_str()),
+            Some("Claude Code")
+        );
+        // A click on the sticky strip dismisses the sticky one, as before.
+        s.apply(Event::Click(Hit::Strip), t0 + secs(7));
+        assert!(s.waiting_strip().is_none());
+    }
+
+    #[test]
+    fn the_pointer_on_the_strip_holds_the_toast_and_leaving_gives_the_grace() {
+        let t0 = Instant::now();
+        let mut s = busy("panel", t0);
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0);
+        s.apply(Event::ToastPointer(true), t0 + secs(1));
+        assert_eq!(s.next_deadline(), None);
+        s.apply(Event::Tick, t0 + secs(60));
+        assert_eq!(s.toast_form(), Some(ToastForm::Strip), "held");
+        s.apply(Event::ToastPointer(false), t0 + secs(60));
+        assert_eq!(s.next_deadline(), Some(t0 + secs(60) + SHOT_LEAVE_GRACE));
+        s.apply(Event::Tick, t0 + secs(62));
+        assert!(s.toast_form().is_none());
+        // Leaving the island (Hover(false)) also lets go, with the grace.
+        let mut s = busy("panel", t0);
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0);
+        s.apply(Event::ToastPointer(true), t0 + secs(1));
+        s.apply(Event::Hover(false), t0 + secs(50));
+        assert!(!s.toast_pointer());
+        assert_eq!(s.next_deadline(), Some(t0 + secs(50) + SHOT_LEAVE_GRACE));
+    }
+
+    #[test]
+    fn hover_and_stay_latches_a_panel_that_shows_a_toast_strip() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::OpenMode(OpenMode::HoverStay), t0);
+        s.apply(Event::Media(Some(media(true))), t0);
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0);
+        assert_eq!(s.toast_form(), Some(ToastForm::Slot));
+        s.apply(Event::Hover(true), t0 + secs(1));
+        assert_eq!(s.toast_form(), Some(ToastForm::Strip));
+        s.apply(Event::Hover(false), t0 + secs(2));
+        assert!(
+            matches!(s.view(), View::Panel(_)),
+            "latched: it stays until a click outside"
+        );
+        // A panel opened with the toast already over it latches too.
+        let mut s = st();
+        s.apply(Event::OpenMode(OpenMode::HoverStay), t0);
+        s.apply(Event::Hover(true), t0);
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0 + secs(1));
+        s.apply(Event::Hover(false), t0 + secs(2));
+        assert!(matches!(s.view(), View::Panel(_)));
+    }
+
+    #[test]
+    fn click_mode_opens_the_panel_from_the_compact_notch_beside_a_slot() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::OpenMode(OpenMode::Click), t0);
+        s.apply(Event::Media(Some(media(true))), t0);
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0);
+        assert_eq!(s.toast_form(), Some(ToastForm::Slot));
+        s.apply(Event::Click(Hit::Body), t0 + secs(1));
+        assert_eq!(s.toast_form(), Some(ToastForm::Strip));
+        assert!(matches!(s.view(), View::Panel(_)));
+    }
+
+    #[test]
+    fn a_strip_toast_does_not_block_the_wheel_or_the_page_dots() {
+        let t0 = Instant::now();
+        let mut s = busy("panel", t0);
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0);
+        let page = s.page();
+        s.apply(Event::Wheel(-120), t0 + secs(1));
+        assert_ne!(s.page(), page, "the panel still turns its pages");
+        assert_eq!(s.toast_form(), Some(ToastForm::Strip));
+    }
+
+    #[test]
+    fn a_toast_the_queue_hands_over_starts_with_clean_flags() {
+        let t0 = Instant::now();
+        let mut s = busy("idle", t0);
+        s.apply(Event::Notice(toast_notice("t1", "Satu")), t0);
+        s.apply(Event::Notice(toast_notice("t2", "Dua")), t0);
+        s.apply(Event::Media(Some(media(true))), t0 + secs(1));
+        s.apply(Event::Tick, t0 + NOTICE_DURATION);
+        // The second one met a busy notch fresh: a slot, no latch from the
+        // first one's full time.
+        assert_eq!(s.toast_form(), Some(ToastForm::Slot));
     }
 }
