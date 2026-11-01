@@ -106,9 +106,21 @@ On the poller thread (MTA, never the UI thread), the first time a logo key
 (AUMID, else the app name) is seen this run:
 `AppInfo().DisplayInfo().GetLogo(48 x 48)` -> `OpenReadAsync` -> bytes (cap
 1 MB) -> WIC (`SHCreateMemStream`, `CreateDecoderFromStream`, a Fant scaler
-only when larger than 48, `32bppPBGRA`, `CopyPixels`) -> `Thumb`. Any failure
--> none and a letter tile (`notif::tile`: a hue from an FNV hash of the
+only when larger than 48, `32bppPBGRA`, `CopyPixels`) -> `Thumb`.
+**Unpackaged Win32 apps (Chrome, Discord) have no package logo**, so when
+`GetLogo` gives nothing and the toast has an AUMID, the fallback reads the
+Start entry's icon: `SHCreateItemFromParsingName("shell:AppsFolder\<AUMID>")`
+-> `IShellItemImageFactory::GetImage(48 x 48, SIIGBF_ICONONLY |
+SIIGBF_BIGGERSIZEOK)` -> `HBITMAP` -> WIC `CreateBitmapFromHBITMAP`
+(premultiplied alpha) -> the same `fit_logo` scaler and `32bppPBGRA` convert ->
+`Thumb`; the `HBITMAP` is always deleted. It runs on a short-lived **STA
+helper thread** (`CoInitializeEx(APARTMENTTHREADED)`, work, `CoUninitialize`)
+that the poller joins with a 2 s `recv_timeout` (on a timeout the helper
+finishes on its own, its answer dropped). An icon with every pixel at alpha 0
+is rejected (not an invisible logo). No AUMID -> no fallback. Only when both
+fail: none and a letter tile (`notif::tile`: a hue from an FNV hash of the
 lowercase name, the first letter); a key that failed is not retried this run.
+`--probe-notifications` prints `logo: app-info | start-entry | none` per toast.
 The renderer caches one `ID2D1Bitmap` per key (`notif_logos`), dropping keys
 no longer drawn each frame. The WIC decode of real logos is **not verified
 with a real toast** here (the demo draws a made-up logo); only the garbage

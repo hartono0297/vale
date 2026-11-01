@@ -9,17 +9,22 @@ use windows::UI::Notifications::Management::{
     UserNotificationListener, UserNotificationListenerAccessStatus,
 };
 use windows::UI::Notifications::{KnownNotificationBindings, NotificationKinds, UserNotification};
+use windows::Win32::Foundation::SIZE;
+use windows::Win32::Graphics::Gdi::{DeleteObject, HGDIOBJ, HPALETTE};
 use windows::Win32::Graphics::Imaging::{
     CLSID_WICImagingFactory, GUID_WICPixelFormat32bppPBGRA, IWICBitmapSource, IWICImagingFactory,
     WICBitmapDitherTypeNone, WICBitmapInterpolationModeFant, WICBitmapPaletteTypeMedianCut,
-    WICDecodeMetadataCacheOnDemand,
+    WICBitmapUsePremultipliedAlpha, WICDecodeMetadataCacheOnDemand,
 };
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, COINIT_MULTITHREADED, CoCreateInstance,
-    CoInitializeEx,
+    CoInitializeEx, CoUninitialize,
 };
-use windows::Win32::UI::Shell::SHCreateMemStream;
-use windows::core::{Interface, Result};
+use windows::Win32::UI::Shell::{
+    IShellItemImageFactory, SHCreateItemFromParsingName, SHCreateMemStream, SIIGBF_BIGGERSIZEOK,
+    SIIGBF_ICONONLY,
+};
+use windows::core::{HSTRING, Interface, Result};
 
 use crate::clipboard::image::Thumb;
 use crate::i18n::{Key, tr};
@@ -30,6 +35,8 @@ use crate::notif::logo_key;
 pub const LOGO_SIDE: u32 = 48;
 /// A logo stream bigger than this is not read.
 const LOGO_MAX_BYTES: u64 = 1024 * 1024;
+/// How long the poller waits for the Start-entry icon helper thread.
+const START_ICON_WAIT: Duration = Duration::from_secs(2);
 
 const PROBE_SECONDS: u32 = 60;
 /// Re-read interval when change events are unavailable.
@@ -327,6 +334,8 @@ fn print_probe(toast: &UserNotification) {
     let source = source_name(name, app_id.clone());
     let (_, site) = split_site(app_id.as_deref(), &source, raw.unwrap_or_default());
     println!("  site: {}", site.as_deref().unwrap_or("-"));
+    let logo = logo_with(toast).map(|(_, source)| source);
+    println!("  logo: {}", LogoSource::label(logo));
 }
 
 fn request_access() -> Result<Option<UserNotificationListener>> {
@@ -369,9 +378,122 @@ pub fn fit_logo(w: u32, h: u32) -> (u32, u32) {
 }
 
 /// The app's logo as a premultiplied BGRA picture of at most
-/// `LOGO_SIDE` square. Runs on the poller thread (never the UI thread);
-/// `None` on any failure (the page draws a letter tile instead).
+/// `LOGO_SIDE` square. Runs on the poller thread (never the UI thread):
+/// the package logo first, then the Start entry's icon for an unpackaged
+/// Win32 app that has an AUMID; `None` when both fail (the page draws a
+/// letter tile instead).
 fn read_logo(notification: &UserNotification) -> Option<Thumb> {
+    logo_with(notification).map(|(thumb, _)| thumb)
+}
+
+/// Which source produced a logo, for `--probe-notifications`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LogoSource {
+    AppInfo,
+    StartEntry,
+}
+
+impl LogoSource {
+    fn label(source: Option<Self>) -> &'static str {
+        match source {
+            Some(Self::AppInfo) => "app-info",
+            Some(Self::StartEntry) => "start-entry",
+            None => "none",
+        }
+    }
+}
+
+fn logo_with(notification: &UserNotification) -> Option<(Thumb, LogoSource)> {
+    first_logo(
+        || app_info_logo(notification),
+        || {
+            let app_id = app_id_of(notification)?;
+            start_entry_icon(&app_id)
+        },
+    )
+}
+
+/// The first logo that is there: `primary`, and only when it gives none,
+/// `fallback`.
+fn first_logo<T>(
+    primary: impl FnOnce() -> Option<T>,
+    fallback: impl FnOnce() -> Option<T>,
+) -> Option<(T, LogoSource)> {
+    if let Some(logo) = primary() {
+        return Some((logo, LogoSource::AppInfo));
+    }
+    fallback().map(|logo| (logo, LogoSource::StartEntry))
+}
+
+/// The shell parsing name of an app's Start entry; `None` for an empty or
+/// blank AUMID (no AUMID), since `shell:AppsFolder\` alone parses as the
+/// Applications folder and would hand back its generic icon.
+fn start_entry_name(aumid: &str) -> Option<String> {
+    (!aumid.trim().is_empty()).then(|| format!("shell:AppsFolder\\{aumid}"))
+}
+
+/// True when some pixel is not fully transparent. Some icons come out of the
+/// shell without alpha (all zero): they would draw as nothing.
+fn has_visible_pixel(bgra: &[u8]) -> bool {
+    bgra.chunks_exact(4).any(|px| px[3] != 0)
+}
+
+/// The Start entry's icon for `aumid`, read on a short-lived STA helper
+/// thread (shell items want an STA) and waited for at most `START_ICON_WAIT`.
+/// A helper that overruns finishes on its own and its answer is dropped.
+fn start_entry_icon(aumid: &str) -> Option<Thumb> {
+    let name = start_entry_name(aumid)?;
+    let (tx, rx) = mpsc::channel();
+    std::thread::Builder::new()
+        .name("vale-start-icon".into())
+        .spawn(move || {
+            let initialised = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok() };
+            let thumb = start_entry_thumb(&name);
+            if initialised {
+                unsafe { CoUninitialize() };
+            }
+            let _ = tx.send(thumb);
+        })
+        .ok()?;
+    rx.recv_timeout(START_ICON_WAIT).ok().flatten()
+}
+
+/// The icon of the shell item `parsing_name` as a `Thumb`. COM must already
+/// be initialised on this thread.
+fn start_entry_thumb(parsing_name: &str) -> Option<Thumb> {
+    unsafe {
+        let item: IShellItemImageFactory =
+            SHCreateItemFromParsingName(&HSTRING::from(parsing_name), None).ok()?;
+        let hbitmap = item
+            .GetImage(
+                SIZE {
+                    cx: LOGO_SIDE as i32,
+                    cy: LOGO_SIDE as i32,
+                },
+                SIIGBF_ICONONLY | SIIGBF_BIGGERSIZEOK,
+            )
+            .ok()?;
+        let thumb = (|| {
+            let wic: IWICImagingFactory =
+                CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).ok()?;
+            let bitmap = wic
+                .CreateBitmapFromHBITMAP(
+                    hbitmap,
+                    HPALETTE::default(),
+                    WICBitmapUsePremultipliedAlpha,
+                )
+                .ok()?;
+            let (mut w, mut h) = (0u32, 0u32);
+            bitmap.GetSize(&mut w, &mut h).ok()?;
+            let source: IWICBitmapSource = bitmap.cast().ok()?;
+            fit_to_thumb(&wic, &source, w, h)
+        })();
+        let _ = DeleteObject(HGDIOBJ(hbitmap.0));
+        thumb.filter(|t| has_visible_pixel(&t.bgra))
+    }
+}
+
+fn app_info_logo(notification: &UserNotification) -> Option<Thumb> {
     let reference = notification
         .AppInfo()
         .ok()?
@@ -409,15 +531,32 @@ fn decode_logo(bytes: &[u8]) -> Option<Thumb> {
         if w == 0 || h == 0 {
             return None;
         }
+        let source: IWICBitmapSource = frame.cast().ok()?;
+        fit_to_thumb(&wic, &source, w, h)
+    }
+}
+
+/// Scales `source` (`w` x `h`) to fit `LOGO_SIDE` when larger and converts it
+/// to premultiplied BGRA.
+unsafe fn fit_to_thumb(
+    wic: &IWICImagingFactory,
+    source: &IWICBitmapSource,
+    w: u32,
+    h: u32,
+) -> Option<Thumb> {
+    if w == 0 || h == 0 {
+        return None;
+    }
+    unsafe {
         let (tw, th) = fit_logo(w, h);
         let source: IWICBitmapSource = if (tw, th) != (w, h) {
             let scaler = wic.CreateBitmapScaler().ok()?;
             scaler
-                .Initialize(&frame, tw, th, WICBitmapInterpolationModeFant)
+                .Initialize(source, tw, th, WICBitmapInterpolationModeFant)
                 .ok()?;
             scaler.cast().ok()?
         } else {
-            frame.cast().ok()?
+            source.clone()
         };
         let converter = wic.CreateFormatConverter().ok()?;
         converter
@@ -709,6 +848,83 @@ mod tests {
         assert_eq!(source_name(Some(String::new()), Some("Id".into())), "Id");
         assert_eq!(source_name(None, None), "Notifikasi");
         assert_eq!(source_name(None, Some(String::new())), "Notifikasi");
+    }
+
+    #[test]
+    fn start_entry_name_is_the_apps_folder_path() {
+        assert_eq!(
+            start_entry_name("Chrome").as_deref(),
+            Some("shell:AppsFolder\\Chrome"),
+            "single backslash"
+        );
+        assert_eq!(
+            start_entry_name("com.squirrel.Discord.Discord").as_deref(),
+            Some(r"shell:AppsFolder\com.squirrel.Discord.Discord")
+        );
+    }
+
+    #[test]
+    fn a_blank_aumid_has_no_start_entry() {
+        // "shell:AppsFolder\" parses as the Applications folder itself, whose
+        // generic icon must not become the app's logo.
+        assert_eq!(start_entry_name(""), None);
+        assert_eq!(start_entry_name("   "), None);
+        assert_eq!(start_entry_name("\t\n"), None);
+    }
+
+    #[test]
+    fn an_icon_with_no_alpha_anywhere_is_rejected() {
+        assert!(!has_visible_pixel(&[]));
+        assert!(!has_visible_pixel(&[10, 20, 30, 0, 1, 2, 3, 0]));
+        assert!(has_visible_pixel(&[0, 0, 0, 0, 0, 0, 0, 1]));
+        assert!(has_visible_pixel(&[1, 2, 3, 255]));
+    }
+
+    #[test]
+    fn the_fallback_runs_only_when_the_first_source_gives_nothing() {
+        let mut fallback_ran = false;
+        let got = first_logo(
+            || Some(1),
+            || {
+                fallback_ran = true;
+                Some(2)
+            },
+        );
+        assert_eq!(got, Some((1, LogoSource::AppInfo)));
+        assert!(!fallback_ran, "fallback skipped when the first one works");
+
+        assert_eq!(
+            first_logo(|| None, || Some(2)),
+            Some((2, LogoSource::StartEntry))
+        );
+        assert_eq!(first_logo::<u8>(|| None, || None), None);
+    }
+
+    #[test]
+    fn probe_labels_name_the_logo_source() {
+        assert_eq!(LogoSource::label(Some(LogoSource::AppInfo)), "app-info");
+        assert_eq!(
+            LogoSource::label(Some(LogoSource::StartEntry)),
+            "start-entry"
+        );
+        assert_eq!(LogoSource::label(None), "none");
+    }
+
+    /// Reads the icon of a Start entry every Windows machine has.
+    #[test]
+    #[ignore = "reads a real Start entry icon; run with --ignored"]
+    fn start_entry_icon_reads_a_real_logo() {
+        let thumb = [
+            "Microsoft.Windows.Explorer",
+            "windows.immersivecontrolpanel_cw5n1h2txyewy!microsoft.windows.immersivecontrolpanel",
+        ]
+        .iter()
+        .find_map(|aumid| start_entry_icon(aumid))
+        .expect("a Start entry icon");
+        assert!(thumb.w >= 1 && thumb.w <= LOGO_SIDE);
+        assert!(thumb.h >= 1 && thumb.h <= LOGO_SIDE);
+        assert_eq!(thumb.bgra.len(), (thumb.w * thumb.h * 4) as usize);
+        assert!(has_visible_pixel(&thumb.bgra));
     }
 
     #[test]
