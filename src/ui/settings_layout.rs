@@ -4538,6 +4538,11 @@ mod tests {
                             max_items: if locked { NOTIF_MAX } else { NOTIF_MIN },
                             persist: locked,
                             paused: false,
+                            toast_style: if locked {
+                                ToastStyle::Full
+                            } else {
+                                ToastStyle::Compact
+                            },
                         },
                         muted: if locked {
                             vec![
