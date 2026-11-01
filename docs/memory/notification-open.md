@@ -59,14 +59,20 @@ the window-AUMID match finds it, and with no window it launches by AUMID.
    calendar.google.com -> calendar, mail.google.com -> mail; www, web, app, m
    and other generic or short labels are skipped) counts as a site match on
    its own, as a substring of the squashed tab name ("mail" in "Gmail",
-   "calendar" in "Google Calendar"). With a meaningful subdomain, a tab
-   holding only the registrable label ("google") is not a site match, so a
-   Gmail or Calendar toast never switches to an unrelated Google tab (Search,
-   Docs) and, with no better match, the window comes forward on its current
-   tab. A tab holding the subdomain and the label ("Google Chat") ranks a
-   tier above one holding the subdomain alone ("ChatGPT" also contains
-   "chat"), so the substring rule never sends a chat.google.com toast to
-   ChatGPT. A site with no meaningful subdomain (web.telegram.org,
+   "calendar" in "Google Calendar") when the tab does not hold the
+   registrable label. A tab holding the label right in front of the
+   subdomain in the squashed name ("googlechat", "googlecalendar",
+   "googledocs") ranks a tier above that ("ChatGPT" also contains "chat"), so
+   the substring rule never sends a chat.google.com toast to ChatGPT. A tab
+   holding the label anywhere else names another page of the site and is no
+   site match at all, even when it also holds the subdomain: "gmail - Google
+   Search" and "Email newsletter - Google Docs" hold "mail" and "google", yet
+   a Gmail toast never picks them, while the real Gmail tab ("Inbox (3) -
+   user@gmail.com - Gmail") never says "google". Only label-then-subdomain
+   counts: "gmailgooglesearch" holds "mailgoogle". With no better match the
+   window comes forward on its current tab. Known gap: a Gmail tab whose
+   address is on google.com ("user@google.com - Gmail") holds the label
+   elsewhere and only scores on the title. A site with no meaningful subdomain (web.telegram.org,
    google.com) matches on the registrable label alone. Matches come in tiers
    (subdomain and label; subdomain alone or site label; title; words only):
    the strongest tier anywhere decides, so a site match in

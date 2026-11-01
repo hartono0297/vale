@@ -123,11 +123,12 @@ pub fn site_sub_label(site: &str) -> Option<String> {
 // ---------------------------------------------------------------- scoring
 
 const SCORE_SITE: u32 = 1000;
-/// The site's meaningful subdomain ("calendar", "mail") together with its
-/// registrable label ("google") in the tab name: the most specific evidence
-/// of the page, so it ranks above the subdomain alone (SCORE_SITE), which a
-/// substring can also find in an unrelated tab ("chat" in "ChatGPT"). With a
-/// meaningful subdomain the registrable label alone is not a match.
+/// The site's registrable label right in front of its meaningful subdomain in
+/// the squashed tab name ("googlecalendar", "googlechat", "googledocs"): the
+/// page names itself, so it ranks above the subdomain alone (SCORE_SITE),
+/// which a substring can also find in an unrelated tab ("chat" in
+/// "ChatGPT"). Only that order counts: "gmail - Google Search" squashes to
+/// "gmailgooglesearch", which holds "mailgoogle".
 const SCORE_SUB: u32 = 2000;
 const SCORE_TITLE: u32 = 500;
 const SCORE_WORDS_HALF: u32 = 100;
@@ -177,12 +178,13 @@ impl WordRuns {
 
 /// How well a tab's name fits the toast: 0 = not at all. The site counts
 /// most. A site with a meaningful subdomain (`site_sub_label`: mail.google.com
-/// -> "mail") matches a tab holding that subdomain as a substring of the
-/// squashed name ("mail" in "Gmail", "calendar" in "Google Calendar"):
-/// SCORE_SITE, plus SCORE_SUB when the tab also holds the registrable label
-/// ("Google Chat" beats "ChatGPT" for chat.google.com). A tab holding only
-/// the registrable label ("google") is NOT a site match then, so a Gmail
-/// toast never picks "cats - Google Search". A site with no meaningful
+/// -> "mail"): SCORE_SITE + SCORE_SUB for a tab holding label and subdomain
+/// side by side ("googlechat" in "Google Chat"), SCORE_SITE for a tab holding
+/// the subdomain as a substring and no label ("mail" in "Inbox - Gmail",
+/// "chat" in "ChatGPT"). A tab holding the label anywhere else names another
+/// page of that site and is NOT a site match, whatever else it says: a Gmail
+/// toast never picks "cats - Google Search", "gmail - Google Search" or
+/// "Email newsletter - Google Docs". A site with no meaningful
 /// subdomain (google.com, web.telegram.org) matches on the label alone:
 /// SCORE_SITE. Then the whole notification title, then the title's words of
 /// 4+ letters (at least one;
@@ -197,14 +199,16 @@ pub fn score_tab(tab_title: &str, target: &OpenTarget) -> u32 {
     let mut score = 0;
     if let Some(site) = target.site.as_deref() {
         match site_sub_label(site) {
-            Some(sub) => {
-                if tab.contains(&sub) {
-                    score += SCORE_SITE;
-                    if site_label(site).is_some_and(|label| tab.contains(&label)) {
-                        score += SCORE_SUB;
-                    }
+            Some(sub) => match site_label(site) {
+                Some(label) if tab.contains(&format!("{label}{sub}")) => {
+                    score += SCORE_SITE + SCORE_SUB;
                 }
-            }
+                // The label elsewhere names another page of the site
+                // ("Email newsletter - Google Docs" for mail.google.com).
+                Some(label) if tab.contains(&label) => {}
+                _ if tab.contains(&sub) => score += SCORE_SITE,
+                _ => {}
+            },
             None => {
                 if site_label(site).is_some_and(|label| tab.contains(&label)) {
                     score += SCORE_SITE;
@@ -247,8 +251,8 @@ pub struct WindowTabs {
     pub active: Option<usize>,
 }
 
-/// The kind of evidence a score stands for: 4 the site's subdomain and label
-/// (a site with a meaningful subdomain), 3 the subdomain alone or the site's
+/// The kind of evidence a score stands for: 4 the site's label right before
+/// its subdomain ("Google Chat"), 3 the subdomain alone or the site's
 /// label (a site with none), 2 the whole title, 1 words of the title only,
 /// 0 none. Scores
 /// inside one tier are close calls; a higher tier always wins.
@@ -688,6 +692,26 @@ mod tests {
         // No Gmail tab: nothing is picked, the window just comes forward.
         assert_eq!(pick_tab(&[win(&[SEARCH], Some(0))], &t), None);
         assert_eq!(pick_tab(&[win(&[SEARCH, DOCS], Some(0))], &t), None);
+    }
+
+    #[test]
+    fn a_google_tab_that_merely_says_mail_never_beats_the_gmail_tab() {
+        // Both hold "mail" and "google", but as another Google page: the label
+        // is not right in front of the subdomain ("googledocs", "googlesearch").
+        let t = gmail("Budi");
+        let newsletter = "Email newsletter - Google Docs - Google Chrome";
+        let searched = "gmail - Google Search - Google Chrome";
+        assert_eq!(score_tab(newsletter, &t), 0);
+        assert_eq!(score_tab(searched, &t), 0);
+        assert_eq!(pick_tab(&[win(&[INBOX, newsletter], None)], &t), Some((0, 0)));
+        assert_eq!(pick_tab(&[win(&[searched, INBOX], None)], &t), Some((0, 1)));
+        assert_eq!(pick_tab(&[win(&[searched, INBOX], Some(0))], &t), Some((0, 1)));
+        assert_eq!(pick_tab(&[win(&[INBOX, newsletter], Some(1))], &t), Some((0, 0)));
+        // Without a Gmail tab neither is picked.
+        assert_eq!(pick_tab(&[win(&[searched, newsletter], Some(0))], &t), None);
+        // The same Docs tab is the right one for a docs.google.com toast.
+        let docs = target("Google Chrome", Some("Chrome"), Some("docs.google.com"), "x");
+        assert_eq!(score_tab(newsletter, &docs), SCORE_SITE + SCORE_SUB);
     }
 
     #[test]
