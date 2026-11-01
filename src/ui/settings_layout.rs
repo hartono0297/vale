@@ -1795,7 +1795,6 @@ impl Builder<'_> {
         rect.x
     }
 
-    /// A row's drag handle, in the column at the left of `card`.
     /// A decorative icon: no control, so no hit region and no focus stop.
     fn glyph(&mut self, rect: Rect, icon: Icon, tone: Tone, quiet: bool) {
         self.l.glyphs.push(Glyph {
@@ -1806,6 +1805,7 @@ impl Builder<'_> {
         });
     }
 
+    /// A row's drag handle, in the column at the left of `card`.
     fn grip(&mut self, card: Rect, cy: f32, hit: Hit) {
         let rect = Rect {
             x: card.x + 8.0,
@@ -4787,6 +4787,12 @@ mod tests {
                     "{section:?} {lang:?}: {f:?}"
                 );
             }
+            for g in &l.glyphs {
+                assert!(
+                    l.cards.iter().any(|card| inside(g.rect, *card)),
+                    "{section:?} {lang:?}: {g:?} outside every card"
+                );
+            }
             for card in &l.cards {
                 assert!(inside(*card, canvas(&l)), "{section:?}: card {card:?}");
                 assert!(card.x >= SIDEBAR_W + PAD - 0.01);
@@ -4807,6 +4813,7 @@ mod tests {
                 .collect();
             boxes.extend(l.fields.iter().map(|(f, r)| (format!("{f:?}"), *r)));
             boxes.extend(l.chips.iter().map(|c| (format!("{c:?}"), c.rect)));
+            boxes.extend(l.glyphs.iter().map(|g| (format!("{g:?}"), g.rect)));
             for (i, (na, a)) in boxes.iter().enumerate() {
                 for (nb, b) in &boxes[i + 1..] {
                     assert!(!overlaps(*a, *b), "{section:?} {lang:?}: {na} / {nb}");
@@ -5041,6 +5048,9 @@ mod tests {
             }
             for chip in &l.chips {
                 within(chip.rect, "chip");
+            }
+            for g in &l.glyphs {
+                within(g.rect, &format!("{g:?}"));
             }
             for r in l.preview.iter().chain(&l.cat_preview).chain(&l.about_logo) {
                 within(*r, "picture");
