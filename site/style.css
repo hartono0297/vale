@@ -360,7 +360,12 @@ h3 { font-size: clamp(1.25rem, 1.1rem + .6vw, 1.5rem); letter-spacing: -.015em; 
   .susun .ar-scrub { height: auto !important; }
   .susun .ar-stage { position: static !important; height: auto !important; }
 }
-.ar-grid { display: grid; gap: clamp(2rem, 4vw, 3rem); align-items: center; }
+/* The stage must fit the viewport to scrub (site.js measures it): stacked,
+   the drawing stays at most 32rem wide; on phones the top padding is the
+   45 px notch plus 16 px plus a little, and no more. */
+.ar-grid { display: grid; gap: 1.5rem; align-items: center; }
+@media (max-width: 51.99em) { .ar-fig .ar-demo { max-width: 32rem; } }
+@media (max-width: 32.5em) { .ar-stage { padding-block: 4.25rem 1rem; } }
 @media (min-width: 52em) { .ar-grid { grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); gap: clamp(2.5rem, 5vw, 5rem); } }
 .ar-copy { min-width: 0; }
 .ar-copy .lead { margin: 1.25rem 0 0; }
