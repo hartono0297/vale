@@ -307,6 +307,10 @@ pub struct NotifSettings {
     /// "Jeda": nothing new is kept while on (the notch still shows toasts).
     #[serde(deserialize_with = "default_off")]
     pub paused: bool,
+    /// "Notifikasi saat notch dipakai": how a Windows toast shows while the
+    /// notch is busy (a panel, lyrics, music, a pomodoro).
+    #[serde(deserialize_with = "toast_style")]
+    pub toast_style: ToastStyle,
 }
 
 impl Default for NotifSettings {
@@ -316,8 +320,24 @@ impl Default for NotifSettings {
             max_items: crate::notif::store::DEFAULT_CAP,
             persist: true,
             paused: false,
+            toast_style: ToastStyle::Compact,
         }
     }
+}
+
+crate::theme::named_enum! {
+    /// "Notifikasi saat notch dipakai": Compact (Ringkas, the default) keeps a
+    /// real Windows toast from covering a busy notch (a strip in the open
+    /// panel, a small logo beside a compact view); Full (Penuh) is the full
+    /// takeover as always. Any other name reads as `Compact`.
+    ToastStyle { Compact, Full }
+}
+
+/// A name or anything else (a number, null): any name that is not a style
+/// reads as Compact, so a bad value never makes the whole config invalid.
+fn toast_style<'de, D: Deserializer<'de>>(d: D) -> Result<ToastStyle, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(v.as_str().and_then(ToastStyle::from_name).unwrap_or_default())
 }
 
 /// A bool; anything else is off.
@@ -1171,6 +1191,7 @@ mod tests {
                 max_items: 120,
                 persist: false,
                 paused: true,
+                toast_style: ToastStyle::Full,
             },
             arrange: ArrangeSettings {
                 hotkey: ArrangeHotkey::CtrlAltS,
@@ -1600,6 +1621,7 @@ mod tests {
                 max_items: 50,
                 persist: true,
                 paused: false,
+                toast_style: ToastStyle::Compact,
             }
         );
         // A partial object keeps what it names.
@@ -1611,6 +1633,7 @@ mod tests {
                 max_items: 120,
                 persist: true,
                 paused: true,
+                toast_style: ToastStyle::Compact,
             }
         );
     }
@@ -1646,10 +1669,37 @@ mod tests {
                 max_items: 30,
                 persist: false,
                 paused: true,
+                toast_style: ToastStyle::Full,
             },
             ..Config::default()
         };
         assert_eq!(parse(&serde_json::to_string_pretty(&mem).unwrap()), mem);
+    }
+
+    #[test]
+    fn the_toast_style_reads_compact_unless_the_file_says_full() {
+        let style = |v: &str| {
+            parse(&format!(r#"{{"notifications":{{"toast_style":{v}}}}}"#))
+                .notifications
+                .toast_style
+        };
+        // A config without the field.
+        assert_eq!(
+            parse(r#"{"notifications":{"paused":true}}"#)
+                .notifications
+                .toast_style,
+            ToastStyle::Compact
+        );
+        assert_eq!(parse("{}").notifications.toast_style, ToastStyle::Compact);
+        assert_eq!(style("\"Full\""), ToastStyle::Full);
+        assert_eq!(style("\"Compact\""), ToastStyle::Compact);
+        for bad in ["5", "null", "\"x\"", "true", "[1]"] {
+            assert_eq!(style(bad), ToastStyle::Compact, "{bad}");
+        }
+        // A bad style keeps the other fields of the object.
+        let c = parse(r#"{"notifications":{"paused":true,"toast_style":9}}"#);
+        assert!(c.notifications.paused);
+        assert_eq!(NotifSettings::default().toast_style, ToastStyle::Compact);
     }
 
     #[test]
@@ -1665,6 +1715,17 @@ mod tests {
         let merged = merge_owned(Config::default(), &mem);
         assert!(merged.notifications.paused);
         assert_eq!(merged.notifications.max_items, 100);
+        let full = Config {
+            notifications: NotifSettings {
+                toast_style: ToastStyle::Full,
+                ..NotifSettings::default()
+            },
+            ..Config::default()
+        };
+        assert_eq!(
+            merge_owned(Config::default(), &full).notifications.toast_style,
+            ToastStyle::Full
+        );
     }
 
     #[test]
