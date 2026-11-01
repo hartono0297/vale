@@ -277,18 +277,15 @@ impl Tracked {
     }
 
     /// Re-reads title, artist and album, and returns the thumbnail when
-    /// `with_art`. A failed read keeps the previous values.
-    fn read_meta(&mut self, with_art: bool) -> Option<Vec<u8>> {
+    /// `with_art`: `Some(None)` when the session has none, `None` when the
+    /// read failed. A failed read keeps the previous values.
+    fn read_meta(&mut self, with_art: bool) -> Option<Option<Vec<u8>>> {
         self.meta_tried = true;
-        match read_properties(&self.session, with_art) {
-            Ok(p) => {
-                self.meta.title = p.title;
-                self.meta.artist = p.artist;
-                self.meta.album = p.album;
-                p.art
-            }
-            Err(_) => None,
-        }
+        let p = read_properties(&self.session, with_art).ok()?;
+        self.meta.title = p.title;
+        self.meta.artist = p.artist;
+        self.meta.album = p.album;
+        Some(p.art)
     }
 
     /// `held`: the session is the shown one and inside its hold.
@@ -311,6 +308,21 @@ impl Drop for Tracked {
             let _ = self.session.RemovePlaybackInfoChanged(token);
         }
         self.unsubscribe_timeline();
+    }
+}
+
+/// Stores the thumbnail `read` from session `key` (`Tracked::read_meta`).
+/// A failed read (`None`) leaves the cache as it was, so the shown session
+/// keeps its cover; a read with no thumbnail clears it.
+fn store_art(
+    art: &mut Option<Vec<u8>>,
+    art_for: &mut Option<u64>,
+    key: u64,
+    read: Option<Option<Vec<u8>>>,
+) {
+    if let Some(read) = read {
+        *art = read;
+        *art_for = Some(key);
     }
 }
 
@@ -462,8 +474,7 @@ impl Watcher {
             let is_shown = self.shown == Some(t.key);
             let art = t.read_meta(is_shown);
             if is_shown {
-                self.art = art;
-                self.art_for = Some(t.key);
+                store_art(&mut self.art, &mut self.art_for, t.key, art);
                 shown_reread = true;
             }
         }
@@ -526,8 +537,8 @@ impl Watcher {
         };
         t.subscribe_timeline(&signals);
         if self.art_for != Some(t.key) {
-            self.art = t.read_meta(true);
-            self.art_for = Some(t.key);
+            let art = t.read_meta(true);
+            store_art(&mut self.art, &mut self.art_for, t.key, art);
         }
     }
 
@@ -969,6 +980,40 @@ mod tests {
             live: None,
             music: true,
         }
+    }
+
+    #[test]
+    fn a_failed_metadata_read_keeps_the_shown_cover() {
+        let (mut art, mut art_for) = (Some(vec![1, 2, 3]), Some(7));
+        store_art(&mut art, &mut art_for, 7, None);
+        assert_eq!(art, Some(vec![1, 2, 3]));
+        assert_eq!(art_for, Some(7));
+    }
+
+    #[test]
+    fn a_failed_read_on_a_new_session_leaves_it_unread() {
+        // `art_for` stays on the old session, so the next `set_shown` reads
+        // the new one again and `info` does not show the old cover on it.
+        let (mut art, mut art_for) = (Some(vec![1]), Some(7));
+        store_art(&mut art, &mut art_for, 8, None);
+        assert_eq!(art_for, Some(7));
+        assert_eq!(art, Some(vec![1]));
+    }
+
+    #[test]
+    fn a_read_without_a_thumbnail_clears_the_cover() {
+        let (mut art, mut art_for) = (Some(vec![1, 2, 3]), Some(7));
+        store_art(&mut art, &mut art_for, 7, Some(None));
+        assert_eq!(art, None);
+        assert_eq!(art_for, Some(7));
+    }
+
+    #[test]
+    fn a_read_with_a_thumbnail_replaces_the_cover() {
+        let (mut art, mut art_for) = (Some(vec![1]), Some(7));
+        store_art(&mut art, &mut art_for, 8, Some(Some(vec![9])));
+        assert_eq!(art, Some(vec![9]));
+        assert_eq!(art_for, Some(8));
     }
 
     /// The key `choose` picks.

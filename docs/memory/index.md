@@ -30,7 +30,7 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[settings-appearance-scroll]]
 - [[media-click-guards]]
 - [[media-diagnosis-log]]
-- [[media-session-priority]]: every media session is ranked and the best is shown (playing, music, Windows' current, the one shown before); music = known player, `PlaybackType` Music or artist + album; per-session subscriptions, timeline and thumbnail only for the shown one; commands go to the shown session by key
+- [[media-session-priority]]: every media session is ranked and the best is shown (playing, music, Windows' current, the one shown before); music = known player or artist + album; per-session subscriptions, timeline and thumbnail only for the shown one; commands go to the shown session by key
 - [[cli-explorer-folder]]
 - [[system-page]]
 - [[cleaner]]
