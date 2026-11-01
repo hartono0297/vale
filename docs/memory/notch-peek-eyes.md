@@ -104,10 +104,82 @@ there to drop on. A notch already shrunk stays so.
 - `Frame::eyes`: the renderer draws the fill in the pill and **only**
   `RobotPainter::paint_eyes` (the Pill parts of `face(Expr::Idle)`,
   `eye_pills()`, scaled 0.8 so they are 8 dip tall, centred on the pill). No
-  clock, art, timer or head. Drawn even with the cat off. Static: no blink (the
-  blink timer is not armed while shrunk, nor the equalizer timer).
+  clock, art, timer or head. Drawn even with the cat off. The equalizer timer
+  is off while shrunk. The eyes look and blink since v3.11 (next section).
 - Colour: the brand terracotta #E2683C (assumption: the espresso #17120F of the
-  cat's own eyes would be invisible on the dark notch).
+  cat's own eyes would be invisible on the dark notch). The blink's two level
+  lines and the open pills are both terracotta, whatever the coat.
+
+## The eyes look and blink
+
+**Look** (`pointer_watch.rs`, pure, tested). `eyes_target(pointer_x, pointer_y,
+pill_cx, pill_cy, half_span)` in island dip: `vx = (x - cx) / half_span`
+clamped to -1..1; `vy = (y - cy) / PEEK_ZONE_DIP` clamped to 0..1 (down only,
+never up); NaN or `half_span <= 0` give 0. `half_span` is the *normal* notch's
+half width of the current view (`App::normal_shape`) plus `PEEK_ZONE_DIP`, so
+the extreme is reached at the edge of the peek zone, not at the monitor's
+edges (the cat's look uses the monitor). Offsets: `dx = EYES_LOOK_X_DIP (4) *
+vx`, `dy = EYES_LOOK_DOWN_DIP (1.5) * vy`. `EyesLook` is two `LookEase` (tau
+120 ms, `LOOK_EPS` ignored changes), `LookEase::jump_to(v)` is the no-ease
+case.
+
+**Gating.** Runs while shrunk (`App::eyes_look_eligible`: peek Shrunk,
+`cat_follow_pointer`, peek still eligible) and does *not* need the cat
+(`config.robot`) or depend on Motion beyond how it moves. `eyes_motion(follow,
+motion_moves, windows_animations)` gives `Still` (toggle off: centred), `Jump`
+(Saver, Off, Energy Saver or Windows animations off: `jump_to` the target and
+draw once, no frame clock) or `Ease` (Motion Full and `App::animations`: the
+frame clock, `ensure_clock` when `set_target` returns true, `animating_at`
+counts `eyes_look.moving()`, `animate` advances it before the draw like
+`advance_look`). Every shrink and every restore snaps the look to the centre
+(`refresh`, `eyes_swap`); `sync_eyes_look` centres it when it stops being
+eligible and finishes a running ease when the motion setting stops easing.
+`WM_SETTINGCHANGE` (Windows animations) re-syncs it and the blink at once
+while shrunk.
+
+**Poll.** Reuses `TIMER_POINTER`, no new timer. While shrunk with the eyes look
+allowed, `sync_pointer_watch` passes `follow_on(look_eligible,
+eyes_look_eligible)` to `poll_ms`: 33 ms near the top edge, 250 ms far, instead
+of the peek-only 80 / 350. `on_pointer_timer` feeds the pointer (island dip, as
+`peek_tick` converts it) to `eyes_look_tick` after the peek step. Nothing
+changes while the notch is not shrunk.
+
+**Blink** (`ui/robot.rs`, pure, tested). `EyesBlink { Open, Shut { second_follows
+}, Gap }`, `next(&mut Rng) -> ms until the next step`, `shut()`.
+`EYES_BLINK_MIN_MS` 3000 .. `EYES_BLINK_MAX_MS` 6000 open; `BLINK_MS` (120)
+shut; a double blink with probability 1/4 (`rng % 4 == 0`) whose second shut
+starts `EYES_DOUBLE_MS` (260) after the first starts (140 ms open between).
+Reuses the one-shot `TIMER_BLINK`, re-armed per step by `on_blink` when
+`eyes_blink_timer` is set (the cat's 4-7 s schedule otherwise). Armed only
+while shrunk, Motion Full (not Energy Saver) and Windows animations on, with or
+without the cat; the frame clock does not hold it back (the eyes' ease would
+postpone every blink): `on_blink` draws only when not animating, otherwise the
+clock draws the shut state. `sync_robot_timers` keeps the cat's `plan.blink &=
+!eyes` and `sync_eyes_blink` arms or kills the timer for the eyes (it kills
+only if the cat's timer is not armed, so a restore never kills the cat's);
+switching either way resets the state to open.
+
+**Drawing.** `Frame::eyes_pose: EyesPose { dx_dip, dy_dip, blink }`.
+`paint_eyes_pill(style, shape, alpha, pose)` slides the eyes by the offset
+after `robot::eyes_offset_in(style, shape, dx, dy)` clamps it; open = the two
+`eye_pills()`, blink = the cat's `Line::Blink` (two level lines, stroke 2.4
+grid, round caps) via `paint_eyes(.., blink)`.
+
+**The clamp.** `eyes_offset_in` bisects (down first, then across) for the
+largest slide that keeps every corner of both boxes (open pills and blink
+lines with their stroke, both tested whatever the current state so a blink
+never moves them) inside the current `shape_contains` outline (the main
+shape, shoulders excluded, the stricter side), for any shape of the 320 ms
+morph. At the final 34 x 14 pill the look's extremes (+-4, 1.5) already fit, so
+it is a guard and not a visible limit
+(`the_shrunk_eyes_stay_inside_the_pill`: both styles, every notch size, every
+compact view's shape morphing to the pill at t = 0..1, offsets up to +-20 / 10,
+open and shut).
+
+Demo scenes `peek-eyes-left`, `peek-eyes-right`, `peek-eyes-down` (vx 0.5, vy 1)
+and `peek-eyes-blink` (robot on, a fixed pose, no pointer read). The Settings
+row "Ikuti kursor" now reads "Kepala dan mata menoleh ke kursor"
+(`CatFollowDesc`).
 
 ## Clicks and hover
 
@@ -129,8 +201,10 @@ in the old notch but off the pill is `Under::Off`;
 
 ## Not verified live
 
-Only the pure state machine, the geometry and the `--demo` scenes
-(`peek-eyes`, `peek-eyes-plain`) were run; the real pointer approach, the
+Only the pure state machine, the geometry, the look / blink maths and the
+unit tests were run; the demo scenes were built but not looked at, and the
+feel of the eyes' look and blink with a real pointer, and the blink timer
+re-arm across a shrink / restore, were not tried by hand. The real pointer approach, the
 click-through onto a browser, and the walk over windows with overlays (a game
 bar or other always-on-top non-transparent windows count as "a window under")
 were not tried by hand. The Notch-style tab shape was not looked at on a clean

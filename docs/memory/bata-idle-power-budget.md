@@ -12,6 +12,13 @@ Bata adds only one-shots (`app.rs`, planned by `robot::plan_timers`):
   then re-armed. Only while a robot with open eyes shows (compact view or
   the island's own notice), motion is Full, and nothing animates. A
   sleeping, happy or music face runs no blink timer.
+- `TIMER_BLINK` also runs while the notch is shrunk to the eyes
+  ([[notch-peek-eyes]]), cat or not, on the eyes' own schedule (open 3-6 s,
+  shut 120 ms, one blink in four a double with the second shut 260 ms after
+  the first starts). Armed only with Motion Full (not Energy Saver) and
+  Windows animations on, and never held back by the frame clock (the eyes'
+  ease would postpone every blink). Switching between eyes and cat resets the
+  state and re-arms or kills the same timer; no new timer id.
 - `TIMER_ROBOT`: one-shot at `Brain::next_change`: falling asleep
   (last activity + N min), a Claude session going quiet, a CLI face
   ending. Once asleep with nothing pending, no robot timer runs at all.
@@ -139,13 +146,23 @@ island), but a window over the island stops the look from setting targets:
 the tick adds at most one `WindowFromPoint` a second and starts no frames
 ([[cat-looks-at-pointer]]).
 
+**The eyes' look (shrunk notch, v3.11).** While the notch is shrunk with
+"Ikuti kursor" on (cat or not), `follow_on(look_eligible, eyes_look_eligible)`
+is true, so the poll runs at the follow pace (33 ms near the top edge, 250 ms
+far) instead of the peek-only 80 / 350 ms. The eyes ease on the `FrameClock`
+only while they move (`eyes_look.moving()` in `animating_at`); with Saver,
+Off, Energy Saver or Windows animations off they jump with one draw and no
+clock. Nothing changes while the notch is not shrunk: an idle island costs
+what it did.
+
 **The look's ease runs on the `FrameClock`**, not on this timer: a poll that
 moves the look target by 0.02 or more starts the clock (`ensure_clock`),
 `animating_at` counts `look.moving()`, and the clock stops once the ease has
 arrived. A small pointer movement costs no frame. The shrink to the eyes is a
 morph on the same clock (`EYES_MS`, 320 ms, ease-in-out; or it settles at once
-with Motion not Full); while the notch is shrunk the blink timer and the
-equalizer timer are off. The fast-entry fix (2026-10-31) adds no timer and no
+with Motion not Full); while the notch is shrunk the equalizer timer is off
+and the blink timer runs the eyes' own schedule instead of the cat's (above).
+The fast-entry fix (2026-10-31) adds no timer and no
 poll pace: the island's first `WM_MOUSEMOVE` while hover needs arming steps the
 peek once (one `GetCursorPos`, at most one `UnderCache`-limited window read, so
 at most once per approach, never at idle), and an over-the-notch reading reads

@@ -95,7 +95,11 @@
 //! The notch peek's scenes `peek-eyes` (robot on) and `peek-eyes-plain`
 //! (robot off) draw the notch shrunk to the cat's two eyes: a 34 x 14 pill,
 //! terracotta eyes, nothing else. Hold one with `DI_DEMO_STEP=peek-eyes` in
-//! `--demo`.
+//! `--demo`. The eyes look and blink: `peek-eyes-left` and `peek-eyes-right`
+//! look at a pointer at the zone's far left and right (the largest slide, 4
+//! dip), `peek-eyes-down` at one low and to the right (1.5 dip down, 2 dip
+//! across), `peek-eyes-blink` shows them shut (the cat's two level lines).
+//! None of them reads the pointer.
 
 use std::time::{Duration, Instant};
 
@@ -122,7 +126,7 @@ use super::render::{
     CleanerView, CliView, ClipNoticeView, ClipView, DevicesView, FolderMenuView, Frame, MoleView,
     NotifView, Progress, Renderer, RobotFrame, SearchView, SheetKind, ShotView, SystemView,
 };
-use super::robot::{Expr, Pose};
+use super::robot::{Expr, EyesPose, Pose};
 use super::shelf_motion::{SHELF_ENTER_MS, SHELF_MOVE_MS, SHELF_STAGGER_MS, ShelfMotion};
 use super::window::IslandWindow;
 use crate::calendar::{CalEvent, CalStatus, CalendarSnapshot, EventTime};
@@ -234,6 +238,10 @@ struct Scene {
     transparent: bool,
     /// Where the idle cat looks, -1 (left edge of the screen) to 1 (right).
     look: f32,
+    /// Where the shrunk notch's eyes look: across (-1 to 1) and down (0 to 1).
+    eyes_look: (f32, f32),
+    /// The shrunk notch's eyes are shut.
+    eyes_blink: bool,
 }
 
 /// The cleaner's states (deepclean-opsi-d.html p10 and d1).
@@ -456,6 +464,8 @@ const BASE: Scene = Scene {
     dock: None,
     transparent: false,
     look: 0.0,
+    eyes_look: (0.0, 0.0),
+    eyes_blink: false,
 };
 
 const fn clipboard(name: &'static str, which: ClipDemo) -> Scene {
@@ -659,7 +669,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 131] = [
+const SCENES: [Scene; 135] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -1070,6 +1080,23 @@ const SCENES: [Scene; 131] = [
     Scene {
         robot: None,
         ..bata("peek-eyes-plain", ShapeKind::Eyes, View0::Idle, Expr::Idle)
+    },
+    // The eyes looking at a pointer, and shut (a fixed pose, no pointer read).
+    Scene {
+        eyes_look: (-1.0, 0.0),
+        ..bata("peek-eyes-left", ShapeKind::Eyes, View0::Idle, Expr::Idle)
+    },
+    Scene {
+        eyes_look: (1.0, 0.0),
+        ..bata("peek-eyes-right", ShapeKind::Eyes, View0::Idle, Expr::Idle)
+    },
+    Scene {
+        eyes_look: (0.5, 1.0),
+        ..bata("peek-eyes-down", ShapeKind::Eyes, View0::Idle, Expr::Idle)
+    },
+    Scene {
+        eyes_blink: true,
+        ..bata("peek-eyes-blink", ShapeKind::Eyes, View0::Idle, Expr::Idle)
     },
     // Sub-view reveals (`DI_DEMO_REVEAL`): the new content fades in from
     // 8 px away. The week became the day; the cleaner just opened. The
@@ -1801,6 +1828,15 @@ fn run_scenes(scenes: &[Scene]) {
                     pose: Pose::default().looking(scene.look),
                 }),
                 eyes: scene.kind == ShapeKind::Eyes,
+                eyes_pose: {
+                    let (dx_dip, dy_dip) =
+                        crate::pointer_watch::eyes_offset_dip(scene.eyes_look.0, scene.eyes_look.1);
+                    EyesPose {
+                        dx_dip,
+                        dy_dip,
+                        blink: scene.eyes_blink,
+                    }
+                },
                 eq_heights: None,
                 robot_fades: false,
                 system: Some(&system),
