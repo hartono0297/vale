@@ -28,7 +28,7 @@ Lyrics ran behind or ahead of the song for four reasons, each handled:
   The negative cache extension is now `.none2` so misses recorded by the old,
   weaker lookup are retried once. (Superseded 2026-10-31: `pick_search`, the
   single search fallback and `.none2` are replaced by the steps, retry and
-  consensus pick in [[lyrics-lookup]], marker `.none3`.)
+  consensus pick in [[lyrics-lookup]], cache `.lrc2`, marker `.none4`.)
 
 ## 3.2.1: still too fast
 
