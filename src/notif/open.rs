@@ -133,12 +133,53 @@ const SCORE_WORDS_FEW: u32 = 10;
 /// A notification title shorter than this is too common to prove a tab.
 const MIN_TITLE: usize = 3;
 
+/// A text's words, squashed and joined, with where each word starts and ends
+/// in the joined text: "Sedulur Store" -> "sedulurstore", starts [0, 7], ends
+/// [7, 12].
+struct WordRuns {
+    text: String,
+    starts: Vec<usize>,
+    ends: Vec<usize>,
+}
+
+impl WordRuns {
+    fn new(text: &str) -> Self {
+        let mut runs = WordRuns {
+            text: String::new(),
+            starts: Vec::new(),
+            ends: Vec::new(),
+        };
+        for word in text.split(|c: char| !c.is_alphanumeric()).map(squash) {
+            if word.is_empty() {
+                continue;
+            }
+            runs.starts.push(runs.text.len());
+            runs.text.push_str(&word);
+            runs.ends.push(runs.text.len());
+        }
+        runs
+    }
+
+    /// Whether `needle` (squashed) is one or more whole words in a row: it
+    /// starts where a word starts and ends where a word ends, so
+    /// "sedulurstore" is in "Sedulur Store" but "ibu" is not in
+    /// "Distribution".
+    fn contains(&self, needle: &str) -> bool {
+        !needle.is_empty()
+            && self.starts.iter().any(|&at| {
+                self.text[at..].starts_with(needle)
+                    && self.ends.binary_search(&(at + needle.len())).is_ok()
+            })
+    }
+}
+
 /// How well a tab's name fits the toast: 0 = not at all. The site's label in
 /// the tab name counts most (more still with the site's subdomain label in it
 /// too: "Google Calendar" for calendar.google.com), then the whole
 /// notification title, then the title's words of 4+ letters (at least one;
-/// half or more counts more). The body is not used: it is too long and too
-/// often generic.
+/// half or more counts more). The title and its words count only as whole
+/// words of the tab name. The body is not used: it is too long and too often
+/// generic.
 pub fn score_tab(tab_title: &str, target: &OpenTarget) -> u32 {
     let tab = squash(&strip_tab_suffix(tab_title));
     if tab.is_empty() {
@@ -154,8 +195,11 @@ pub fn score_tab(tab_title: &str, target: &OpenTarget) -> u32 {
             score += SCORE_SUB;
         }
     }
+    // The title and its words only count as whole words of the tab: "Ibu"
+    // inside "Distribution" or "pesan" inside "pesanan" is not a match.
+    let tab_words = WordRuns::new(&strip_tab_suffix(tab_title));
     let title = squash(&target.title);
-    if title.chars().count() >= MIN_TITLE && tab.contains(&title) {
+    if title.chars().count() >= MIN_TITLE && tab_words.contains(&title) {
         score += SCORE_TITLE;
     }
     if score == 0 {
@@ -167,7 +211,7 @@ pub fn score_tab(tab_title: &str, target: &OpenTarget) -> u32 {
             .collect();
         words.sort();
         words.dedup();
-        let found = words.iter().filter(|w| tab.contains(w.as_str())).count() as u32;
+        let found = words.iter().filter(|w| tab_words.contains(w)).count() as u32;
         if found > 0 {
             score += if found as usize * 2 >= words.len() {
                 SCORE_WORDS_HALF
@@ -632,6 +676,34 @@ mod tests {
         // Short words alone never match.
         let short = target("Google Chrome", Some("Chrome"), None, "Ada si ibu");
         assert_eq!(score_tab("Ada si itu", &short), 0);
+    }
+
+    #[test]
+    fn the_title_and_its_words_match_only_whole_words_of_the_tab() {
+        // A sender's name is not a match inside another word of a tab.
+        let ibu = target("Google Chrome", Some("Chrome"), None, "Ibu");
+        assert_eq!(score_tab("Distribution - Wikipedia - Google Chrome", &ibu), 0);
+        let ani = target("Google Chrome", Some("Chrome"), None, "Ani");
+        assert_eq!(score_tab("Organization chart - Google Chrome", &ani), 0);
+        // "pesan" is not the word "pesanan"; "budi" is nowhere.
+        let pesan = target("Google Chrome", Some("Chrome"), None, "Pesan dari Budi");
+        assert_eq!(score_tab("Pesanan Saya - Tokopedia - Google Chrome", &pesan), 0);
+        // So with no site and no chat tab open, no tab is picked.
+        let w = [win(&["Distribution - Wikipedia", "Berita"], Some(1))];
+        assert_eq!(pick_tab(&w, &ibu), None);
+        let w = [win(&["Pesanan Saya - Tokopedia"], Some(0))];
+        assert_eq!(pick_tab(&w, &pesan), None);
+        // Whole words still match, however the tab spaces or punctuates them.
+        assert!(score_tab("Chat dengan Ibu", &ibu) >= SCORE_TITLE);
+        assert!(score_tab("Telegram Web (Ibu)", &ibu) >= SCORE_TITLE);
+        assert!(score_tab("ibu-ku: Ibu", &ibu) >= SCORE_TITLE);
+        assert!(score_tab("Pesan dari Budi!", &pesan) >= SCORE_TITLE);
+        assert!(score_tab("Pesan baru", &pesan) > 0);
+        let store = target("Google Chrome", Some("Chrome"), None, "SedulurStore");
+        assert!(score_tab("Sedulur Store - Dashboard", &store) >= SCORE_TITLE);
+        // A run of words that starts or ends inside a word is not the title.
+        let t = target("Google Chrome", Some("Chrome"), None, "Store Dash");
+        assert!(score_tab("Sedulur Store Dashboard", &t) < SCORE_TITLE);
     }
 
     #[test]

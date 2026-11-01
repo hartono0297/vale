@@ -51,7 +51,10 @@ the window-AUMID match finds it, and with no window it launches by AUMID.
    "- Memory usage - 120 MB", "- Audio playing", "- Google Chrome", ...);
    `score_tab` ranks the site's registrable label (`site_label`: web.telegram.org
    -> telegram) in the tab name above the whole notification title above its
-   words of 4+ letters. The body is not used. Inside the site tier, a tab that
+   words of 4+ letters. The title and its words match only whole words of
+   the tab name (`WordRuns`): a short sender name like "Ibu" must not hit
+   "Distribution", nor "pesan" hit "Pesanan Saya", or a toast with no site and
+   no chat tab open would switch to an unrelated tab. The body is not used. Inside the site tier, a tab that
    also holds the site's first meaningful subdomain (`site_sub_label`:
    calendar.google.com -> calendar; www, web, app, m are skipped) ranks above
    one with the bare label, so a Calendar reminder picks the Calendar tab over
