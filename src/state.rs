@@ -10,7 +10,7 @@ use crate::i18n::{self, Key, text};
 use crate::lyrics;
 use crate::model::{
     ArrangeSave, CalView, ClipAction, Effect, Event, Hit, MediaCommand, MediaInfo, Notice,
-    NoticeKind, NotifAction, Page, Shortcut, ShotAction, Timeline, View,
+    NoticeKind, NotifAction, OpenTarget, Page, Shortcut, ShotAction, Timeline, View,
 };
 use crate::mole::MoleOpts;
 use crate::pages::PanelPages;
@@ -2146,9 +2146,15 @@ impl IslandState {
             return self.dismiss_newest_sticky();
         };
         match notice.kind {
-            NoticeKind::App {
-                app_id: Some(id), ..
-            } => Some(Effect::OpenApp(id)),
+            NoticeKind::App { app_id, toast } if toast.is_some() || app_id.is_some() => {
+                Some(Effect::OpenTarget(OpenTarget {
+                    app_id,
+                    source: notice.source,
+                    site: toast.and_then(|t| t.site),
+                    title: notice.title,
+                    body: notice.body,
+                }))
+            }
             NoticeKind::ClaudeWaiting { .. }
             | NoticeKind::Reminder { .. }
             | NoticeKind::MoleFailed => self.dismiss_sticky(&notice),
@@ -2438,6 +2444,16 @@ mod tests {
         }
     }
 
+    fn whatsapp_target() -> OpenTarget {
+        OpenTarget {
+            app_id: Some("WhatsApp.Desktop!App".into()),
+            source: "WhatsApp".into(),
+            site: None,
+            title: "Ibu".into(),
+            body: "udah makan belum?".into(),
+        }
+    }
+
     fn media(playing: bool) -> MediaInfo {
         MediaInfo {
             title: "Bohemian Rhapsody".into(),
@@ -2646,6 +2662,56 @@ mod tests {
     }
 
     #[test]
+    fn click_toast_notice_without_an_app_id_still_opens_its_target() {
+        use crate::model::ToastOrigin;
+        let t0 = Instant::now();
+        let mut s = st();
+        let notice = Notice {
+            key: "k9".into(),
+            source: "Google Chrome".into(),
+            title: "Ibu".into(),
+            body: "udah makan belum?".into(),
+            kind: NoticeKind::App {
+                app_id: None,
+                toast: Some(ToastOrigin {
+                    site: Some("web.telegram.org".into()),
+                }),
+            },
+        };
+        s.apply(Event::Notice(notice), t0);
+        let effects = s.apply(Event::Click(Hit::Body), t0 + secs(1));
+        assert_eq!(
+            effects,
+            vec![Effect::OpenTarget(OpenTarget {
+                app_id: None,
+                source: "Google Chrome".into(),
+                site: Some("web.telegram.org".into()),
+                title: "Ibu".into(),
+                body: "udah makan belum?".into(),
+            })]
+        );
+    }
+
+    #[test]
+    fn click_island_owned_app_notice_without_an_id_is_a_no_op() {
+        let t0 = Instant::now();
+        let mut s = st();
+        let notice = Notice {
+            key: "k8".into(),
+            source: "Vale".into(),
+            title: "Synced".into(),
+            body: String::new(),
+            kind: NoticeKind::App {
+                app_id: None,
+                toast: None,
+            },
+        };
+        s.apply(Event::Notice(notice), t0);
+        let effects = s.apply(Event::Click(Hit::Body), t0 + secs(1));
+        assert!(effects.is_empty());
+    }
+
+    #[test]
     fn click_app_notice_opens_app_and_dismisses() {
         let t0 = Instant::now();
         let mut s = st();
@@ -2653,7 +2719,7 @@ mod tests {
         let effects = s.apply(Event::Click(Hit::Body), t0 + secs(1));
         assert_eq!(
             effects,
-            vec![Effect::OpenApp("WhatsApp.Desktop!App".into())]
+            vec![Effect::OpenTarget(whatsapp_target())]
         );
         assert_eq!(s.view(), View::Idle);
         assert_eq!(s.next_deadline(), None);
@@ -2951,7 +3017,7 @@ mod tests {
         s.apply(Event::Hover(true), t0);
         assert_eq!(
             s.apply(Event::Click(Hit::Body), t0),
-            vec![Effect::OpenApp("WhatsApp.Desktop!App".into())]
+            vec![Effect::OpenTarget(whatsapp_target())]
         );
         assert_eq!(s.view(), View::Idle, "no panel under the pointer");
         // A new visit opens it as usual.
@@ -3272,7 +3338,7 @@ mod tests {
         s.apply(Event::Notice(app_notice("k1")), t0);
         assert_eq!(
             s.apply(Event::Click(Hit::Body), t0),
-            vec![Effect::OpenApp("WhatsApp.Desktop!App".into())]
+            vec![Effect::OpenTarget(whatsapp_target())]
         );
         assert_eq!(s.view(), View::Idle);
     }

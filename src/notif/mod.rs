@@ -4,6 +4,7 @@
 //! format) are tested without Windows; `app_notif` is the island's side. See
 //! docs/memory/notification-history.md.
 
+pub mod open;
 pub mod persist;
 pub mod store;
 pub mod tile;
