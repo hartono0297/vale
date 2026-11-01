@@ -118,6 +118,12 @@ fn main() {
             attach_parent_console();
             sources::notifications::probe();
         }
+        // `--probe-open <app name> [AUMID|-] [site|-] [title]`: what opening
+        // such a toast would do. Looks only; nothing is selected or started.
+        Some("--probe-open") => {
+            attach_parent_console();
+            sources::notif_open::probe(std::env::args().skip(2).collect());
+        }
         #[cfg(debug_assertions)]
         Some("--probe-media") => {
             attach_parent_console();

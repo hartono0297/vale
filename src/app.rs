@@ -90,7 +90,7 @@ use crate::sources::battery::{
     BatteryMonitor, battery_low_now, battery_notice, energy_saver_on, read_battery,
 };
 use crate::sources::fullscreen::is_fullscreen;
-use crate::sources::{explorer, media, notifications};
+use crate::sources::{explorer, media, notif_open, notifications};
 use crate::state::{IslandState, ShownPanel, ToastForm, is_media_hit, is_real_toast};
 use crate::system::{
     CpuHistory, SampleKind, Sampler, SysEase, SystemSample, WarnMonitor, alert_notice,
@@ -1890,7 +1890,7 @@ impl App {
 
     fn perform(&mut self, effect: Effect, now: Instant) -> Option<Event> {
         match effect {
-            Effect::OpenApp(app_id) => notifications::open_app(&app_id),
+            Effect::OpenTarget(target) => notif_open::open(target),
             // To the session the island shows (by key), not whichever is current.
             Effect::Media(cmd) => {
                 let target = self.state.media().map_or_else(
