@@ -1,6 +1,6 @@
 ---
-tags: [decision, notifications, panel, privacy, dpapi, timers, v3.9]
-date: 2026-10-31
+tags: [decision, notifications, panel, privacy, dpapi, timers, v3.9, toast, browser-site]
+date: 2026-11-01
 ---
 
 # Notifikasi: the history of the toasts Vale catches
@@ -22,7 +22,7 @@ Settings card in `settings_layout::notifications_card`.
   history while *Simpan notifikasi* is on and *Jeda* is off. `muted_apps` is
   therefore read live (it used to be copied into the poller thread at start).
 - Entry: id, unix seconds, read flag, app display name, AUMID (optional),
-  title and body cut to 1024 characters. Newest first, capped 10-200 by 10
+  title and body cut to 1024 characters, the browser site (optional, same cut). Newest first, capped 10-200 by 10
   (default 50); the oldest go first.
 - **Vale never touches the Windows Action Center**: no `RemoveNotification`
   anywhere. The X removes a row from Vale's list only.
@@ -48,13 +48,16 @@ case-insensitive repeats dropped.
 
 ## File: `notification-history.bin`
 
-Next to `config.json`, magic `DINH`, version u16 1, sealed with DPAPI
+Next to `config.json`, magic `DINH`, version u16 **2**, sealed with DPAPI
 (current user, `dpapi.rs`), plaintext wiped, written to `.bin.tmp` and renamed
 on a short-lived thread ordered by a generation counter (the shape of
 [[clipboard-history]]'s file). Body: next id, count, entries (id, at, read,
-source, app id flag and string, title, body), then the logo table (count; key,
+source, app id flag and string, title, body, **site flag (u8 0/1) and
+string**), then the logo table (count; key,
 w u16, h u16, len, BGRA premultiplied) holding **only logos some entry uses**.
-Guards: `MAX_COUNT` 10 000, `MAX_FIELD` 4 MB, a logo side at most 64 and its
+Version 1 files (no site field) are still read, every entry with `site`
+None; `encode` always writes v2. A site flag other than 0 or 1 rejects the
+file; any other version loads empty. Guards: `MAX_COUNT` 10 000, `MAX_FIELD` 4 MB, a logo side at most 64 and its
 length exactly w x h x 4. Missing, foreign, wrong version, truncated, trailing
 bytes or undecryptable -> an empty history, never a panic. *Simpan setelah
 restart* off: nothing is written, the file is deleted at startup and when the
@@ -110,6 +113,46 @@ The renderer caches one `ID2D1Bitmap` per key (`notif_logos`), dropping keys
 no longer drawn each frame. The WIC decode of real logos is **not verified
 with a real toast** here (the demo draws a made-up logo); only the garbage
 case and the size arithmetic are tested.
+
+## The notch notice of a real toast: logo, app name, site
+
+Only a notice made by `sources::notifications::to_notice` carries
+`NoticeKind::App { toast: Some(ToastOrigin { site }) }`; every island-owned
+App notice (`notice-app`, calendar sync, devices) has `toast: None` and
+renders exactly as before (`notice_layout`, `badge_style` untouched). With
+`toast: Some`:
+
+- `geometry::toast_notice_layout` (badge, chip and text edges equal
+  `notice_layout`'s) splits the text into an eyebrow (13 dip, DM Sans 9.5,
+  `p.secondary`: `toast_eyebrow(source, site)` = "App · site"), the title
+  and the body.
+- The badge plate is filled as today's App badge (`badge_style` fill, so a
+  WhatsApp green plate stays); the logo is contain-fitted over it with a
+  bitmap brush (rounded to `radius::BADGE`, clamped to half the placed side).
+  No logo or a failed bitmap: today's letter badge, plus the eyebrow.
+- The logo comes from `Frame::toast_logo` (`app_notif::toast_logo_view`, only
+  for `toast: Some`, by `logo_key`). **`notif.logos` is never pruned during a
+  run** (clear, remove and mute leave it alone), so the 2nd and later toasts,
+  and toasts with *Simpan notifikasi* off, paused or muted-history, still
+  find it. The bitmap rides the page's `notif_logos` cache; the notch caps it
+  at 16 so many apps between page paints cannot grow it.
+- The Notifikasi row draws the site after the app name (` · site`,
+  `p.secondary`, ellipsised in what is left of the name box).
+
+### Browser site rule (unverified against real toasts)
+
+`split_site` takes the **last** text element as the site only when the app is a
+browser (a whole word of the AUMID or display name in chrome, msedge, edge,
+firefox, brave, opera, vivaldi), there are at least two elements (the title is
+never taken) and it is a bare host (`bare_host`: optional "via ", no spaces, a
+dot, letters/digits/./- only, optional ":port"). It relies **only** on
+`GetTextElements`: whether Chrome's attribution line really arrives there is
+not verified. Run `vale.exe --probe-notifications` and raise a browser toast to
+see. The probe still prints `source | title | body`, then per toast the app
+name, the AUMID, every raw text element (`[i] "text"`) and `site:`.
+
+Demo scenes: `notice-app-logo`, `notice-app-site`, `notice-app-no-logo`
+(made-up logos); the `notifications` scenes' Chrome row carries a site.
 
 ## Page
 

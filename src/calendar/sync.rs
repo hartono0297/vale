@@ -95,7 +95,10 @@ pub fn save_failed_notice(message: String) -> Notice {
         source: tr(Key::SourceCalendar).into(),
         title: tr(Key::SaveEventFailed).into(),
         body: message,
-        kind: NoticeKind::App { app_id: None, toast: None },
+        kind: NoticeKind::App {
+            app_id: None,
+            toast: None,
+        },
     }
 }
 
@@ -191,7 +194,10 @@ fn google_notice(e: &AuthError) -> Option<Notice> {
         source: tr(Key::SourceCalendar).into(),
         title: title.into(),
         body,
-        kind: NoticeKind::App { app_id: None, toast: None },
+        kind: NoticeKind::App {
+            app_id: None,
+            toast: None,
+        },
     })
 }
 
@@ -1040,7 +1046,13 @@ mod tests {
         assert_eq!(post_status(gone, Ok(())), None);
         let n = save_failed_notice("Gagal simpan: tidak ada koneksi".into());
         assert_eq!(n.source, "Kalender");
-        assert_eq!(n.kind, NoticeKind::App { app_id: None, toast: None });
+        assert_eq!(
+            n.kind,
+            NoticeKind::App {
+                app_id: None,
+                toast: None
+            }
+        );
     }
 
     #[test]

@@ -28,13 +28,13 @@ use crate::notif::store::clamp_cap;
 use crate::notif::{NotifHistory, logo_key, route_toast};
 use crate::sources::notifications::{self, is_muted};
 use crate::ui::cli_input::{CliInput, Key as InputKey};
-use crate::ui::render::ToastLogoView;
 use crate::ui::editor;
 use crate::ui::geometry::{ShapeKind, shape_for};
 use crate::ui::panel_layout::{
     notif_max_scroll, notif_rows, notif_scroll_to, notif_visible_row, notif_wheel_step,
 };
 use crate::ui::render::NotifView;
+use crate::ui::render::ToastLogoView;
 
 /// One-shot: write the history file once changes settle.
 pub(super) const TIMER_NOTIF_SAVE: usize = 34;
@@ -789,7 +789,10 @@ mod tests {
         assert_eq!(found.thumb, &logos["5319.WhatsApp!App"]);
         // No AUMID: the display name keys it.
         let by_name = toast_notice(None, "Chrome", origin);
-        assert_eq!(toast_logo_view(&logos, &by_name).expect("logo").key, "Chrome");
+        assert_eq!(
+            toast_logo_view(&logos, &by_name).expect("logo").key,
+            "Chrome"
+        );
     }
 
     #[test]
@@ -805,7 +808,10 @@ mod tests {
         let view = toast_notice(Some("Slack!App"), "Slack", Some(ToastOrigin::default()));
         assert_eq!(toast_logo_view(&logos, &view), None);
         assert_eq!(
-            toast_logo_view(&HashMap::new(), &toast_notice(None, "Chrome", Some(ToastOrigin::default()))),
+            toast_logo_view(
+                &HashMap::new(),
+                &toast_notice(None, "Chrome", Some(ToastOrigin::default()))
+            ),
             None
         );
         assert_eq!(toast_logo_view(&logos, &View::Idle), None);

@@ -1257,7 +1257,9 @@ impl Renderer {
             match entry.site.as_deref() {
                 // A browser's site follows the app, quieter, in what is left.
                 Some(site) => {
-                    let used = (self.text_width(&entry.source, &self.fonts.body_medium).ceil()
+                    let used = (self
+                        .text_width(&entry.source, &self.fonts.body_medium)
+                        .ceil()
                         + 1.0)
                         .min(row.name.w);
                     let app = Rect {

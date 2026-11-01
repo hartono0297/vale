@@ -819,8 +819,22 @@ mod tests {
     fn bare_host_rules() {
         assert_eq!(bare_host(" a.b "), Some("a.b".to_string()));
         for bad in [
-            "", "via", "via ", "localhost", ".a.b", "a.b.", "-a.b", "a.b-", "a..b", "a.b:",
-            "a.b:123456", "a.b:80x", "a.b:8:9", "a_b.c", "\u{e9}.com", "a b.c",
+            "",
+            "via",
+            "via ",
+            "localhost",
+            ".a.b",
+            "a.b.",
+            "-a.b",
+            "a.b-",
+            "a..b",
+            "a.b:",
+            "a.b:123456",
+            "a.b:80x",
+            "a.b:8:9",
+            "a_b.c",
+            "\u{e9}.com",
+            "a b.c",
         ] {
             assert_eq!(bare_host(bad), None, "{bad:?}");
         }

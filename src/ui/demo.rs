@@ -2108,8 +2108,7 @@ fn demo_notif_items(which: NotifDemo) -> Vec<NotifEntry> {
     };
     (0..count)
         .map(|i| {
-            let (source, app_id, title, body, site, ago, read) =
-                DEMO_NOTIFS[i % DEMO_NOTIFS.len()];
+            let (source, app_id, title, body, site, ago, read) = DEMO_NOTIFS[i % DEMO_NOTIFS.len()];
             // The long list spreads its times out, newest first.
             let ago = if count > DEMO_NOTIFS.len() {
                 ago + (i / DEMO_NOTIFS.len()) as i64 * 90_000
@@ -2284,7 +2283,10 @@ fn demo_notice(which: DemoNotice, renderer: &Renderer) -> Notice {
             "Mail",
             "Rani · Mail",
             "Denah lantai 2 sudah saya kirim, cek ya".into(),
-            NoticeKind::App { app_id: None, toast: None },
+            NoticeKind::App {
+                app_id: None,
+                toast: None,
+            },
         ),
         DemoNotice::AppLogo => notice(
             "Telegram",

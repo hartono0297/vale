@@ -481,13 +481,20 @@ mod tests {
     #[test]
     fn a_v1_file_still_loads_with_no_site() {
         let s = sample();
-        assert!(s.items.iter().any(|e| e.site.is_some()), "the sample has a site");
+        assert!(
+            s.items.iter().any(|e| e.site.is_some()),
+            "the sample has a site"
+        );
         let back = decode(&encode_v1(&s)).unwrap();
         assert_eq!(back.items.len(), 3);
         assert!(back.items.iter().all(|e| e.site.is_none()));
         assert_eq!(back.next_id, s.next_id);
         assert_eq!(back.logos, s.logos);
-        let others: Vec<_> = back.items.iter().map(|e| (e.id, &e.title, &e.body)).collect();
+        let others: Vec<_> = back
+            .items
+            .iter()
+            .map(|e| (e.id, &e.title, &e.body))
+            .collect();
         let expect: Vec<_> = s.items.iter().map(|e| (e.id, &e.title, &e.body)).collect();
         assert_eq!(others, expect);
         // A trailing byte after a v1 file is still refused.

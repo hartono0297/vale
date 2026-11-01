@@ -1245,7 +1245,11 @@ mod tests {
                         assert_eq!(l.badge, base.badge, "{tag}");
                         assert_eq!(l.action, base.action, "{tag}");
                         for r in [l.eyebrow, l.title, l.body] {
-                            assert_eq!((r.x, r.right()), (base.title.x, base.title.right()), "{tag}");
+                            assert_eq!(
+                                (r.x, r.right()),
+                                (base.title.x, base.title.right()),
+                                "{tag}"
+                            );
                         }
                     }
                 }
@@ -1255,7 +1259,10 @@ mod tests {
 
     #[test]
     fn the_toast_eyebrow_adds_the_site_only_when_there_is_one() {
-        assert_eq!(toast_eyebrow("Google Chrome", Some("web.telegram.org")), "Google Chrome \u{b7} web.telegram.org");
+        assert_eq!(
+            toast_eyebrow("Google Chrome", Some("web.telegram.org")),
+            "Google Chrome \u{b7} web.telegram.org"
+        );
         assert_eq!(toast_eyebrow("Slack", None), "Slack");
         assert_eq!(toast_eyebrow("Slack", Some("")), "Slack");
     }
@@ -1794,7 +1801,15 @@ mod tests {
             let b = style(n);
             (b.fill, b.ink, b.icon)
         };
-        let app = |s: &str| notice(s, NoticeKind::App { app_id: None, toast: None });
+        let app = |s: &str| {
+            notice(
+                s,
+                NoticeKind::App {
+                    app_id: None,
+                    toast: None,
+                },
+            )
+        };
         assert_eq!(fill(&app("WhatsApp")), (WHATSAPP, WHATSAPP, None));
         assert_eq!(fill(&app("whatsapp beta")), (WHATSAPP, WHATSAPP, None));
         assert_eq!(fill(&app("Discord")), (p.raised_hi, p.text, None));

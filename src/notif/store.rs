@@ -329,7 +329,14 @@ mod tests {
     #[test]
     fn site_is_kept_cut_and_empty_means_none() {
         let mut h = NotifHistory::new(50);
-        h.push(1, "Chrome", Some("Chrome"), Some("web.telegram.org"), "t", "b");
+        h.push(
+            1,
+            "Chrome",
+            Some("Chrome"),
+            Some("web.telegram.org"),
+            "t",
+            "b",
+        );
         assert_eq!(h.items()[0].site.as_deref(), Some("web.telegram.org"));
         h.push(2, "Chrome", Some("Chrome"), Some(""), "t", "b");
         assert_eq!(h.items()[0].site, None);
