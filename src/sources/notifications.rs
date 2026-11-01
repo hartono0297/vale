@@ -487,8 +487,9 @@ fn is_browser(app_id: Option<&str>, source: &str) -> bool {
 
 /// `text` as a bare host ("web.telegram.org", "localhost.test:8080"),
 /// optionally behind "via ": no spaces, at least one dot, letters, digits,
-/// '.' and '-' only, no empty label, no leading or trailing '.' or '-', an
-/// optional ":port" of 1-5 digits. Returned as given, without "via ".
+/// '.' and '-' only, no empty label, no leading or trailing '.' or '-', a last
+/// label of 2+ letters (or four all-digit labels, an IPv4), an optional
+/// ":port" of 1-5 digits. Returned as given, without "via ".
 fn bare_host(text: &str) -> Option<String> {
     let text = text.trim();
     let rest = match text.get(..4) {
@@ -506,11 +507,20 @@ fn bare_host(text: &str) -> Option<String> {
     }
     let ok_char = |c: char| c.is_ascii_alphanumeric() || c == '.' || c == '-';
     let edge = |c: char| c == '.' || c == '-';
+    let labels: Vec<&str> = host.split('.').collect();
+    let digits = |label: &&str| label.bytes().all(|b| b.is_ascii_digit());
+    // A price ("Rp65.000"), version ("1.2.3") or decimal ("3.14") is no host:
+    // the top label must be 2+ letters, unless the host is a dotted-quad IPv4.
+    let tld = labels.last().is_some_and(|label| {
+        label.len() >= 2 && label.bytes().all(|b| b.is_ascii_alphabetic())
+    });
+    let ipv4 = labels.len() == 4 && labels.iter().all(digits);
     let valid = host.contains('.')
         && host.chars().all(ok_char)
         && !host.starts_with(edge)
         && !host.ends_with(edge)
-        && host.split('.').all(|label| !label.is_empty());
+        && labels.iter().all(|label| !label.is_empty())
+        && (tld || ipv4);
     valid.then(|| rest.to_string())
 }
 
@@ -817,7 +827,7 @@ mod tests {
 
     #[test]
     fn bare_host_rules() {
-        assert_eq!(bare_host(" a.b "), Some("a.b".to_string()));
+        assert_eq!(bare_host(" a.bc "), Some("a.bc".to_string()));
         for bad in [
             "",
             "via",
@@ -835,8 +845,30 @@ mod tests {
             "a_b.c",
             "\u{e9}.com",
             "a b.c",
+            // Numbers, prices, versions and decimals are no hosts: the last
+            // label must be letters (2+) unless the host is a dotted quad.
+            "Rp65.000",
+            "65.000",
+            "1.2.3",
+            "3.14",
+            "1.2.3.4.5",
+            "1.2.3:80",
+            "a.b",
+            "a.b2",
         ] {
             assert_eq!(bare_host(bad), None, "{bad:?}");
+        }
+        for good in ["a.bc", "192.168.1.10", "10.0.0.1:3000", "x-1.example.com"] {
+            assert_eq!(bare_host(good), Some(good.to_string()), "{good:?}");
+        }
+    }
+
+    #[test]
+    fn browser_toast_with_a_number_keeps_its_body() {
+        for body in ["Rp65.000", "65.000", "1.2.3", "3.14"] {
+            let (rest, site) = split(Some("Chrome"), "Google Chrome", &["Harga turun", body]);
+            assert_eq!(site, None, "{body:?}");
+            assert_eq!(rest, texts(&["Harga turun", body]));
         }
     }
 

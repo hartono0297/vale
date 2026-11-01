@@ -145,7 +145,12 @@ renders exactly as before (`notice_layout`, `badge_style` untouched). With
 browser (a whole word of the AUMID or display name in chrome, msedge, edge,
 firefox, brave, opera, vivaldi), there are at least two elements (the title is
 never taken) and it is a bare host (`bare_host`: optional "via ", no spaces, a
-dot, letters/digits/./- only, optional ":port"). It relies **only** on
+dot, letters/digits/./- only, a last label of 2+ letters unless the host is a
+dotted-quad IPv4, optional ":port"). The letters-only last label keeps prices
+("Rp65.000", "65.000"), versions ("1.2.3") and decimals ("3.14") in the body
+when Chrome's attribution line does not arrive. A file-name body
+("denah-lantai-2-rev3.pdf") still reads as a host: no syntactic rule can tell
+it apart from a site. It relies **only** on
 `GetTextElements`: whether Chrome's attribution line really arrives there is
 not verified. Run `vale.exe --probe-notifications` and raise a browser toast to
 see. The probe still prints `source | title | body`, then per toast the app
