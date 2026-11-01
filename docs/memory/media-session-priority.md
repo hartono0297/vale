@@ -1,0 +1,76 @@
+---
+tags: [decision, media]
+date: 2026-11-01
+---
+
+# The island shows the best media session, not Windows' current one
+
+Windows names one "current" session, which is often a browser tab playing a
+video or a social feed while a music player sits paused or even plays. The
+watcher (`src/sources/media.rs`) now follows every GSMTC session, ranks them,
+and shows the best.
+
+## Ranking (`choose`)
+
+Closed and stopped sessions are never chosen. Of the rest the best by the tuple
+(playing, music, Windows' current session, the one shown before). A full tie
+takes the first in list order. Consequences:
+
+- A playing session beats a paused one, so a paused player gives way to a
+  playing video, and takes the screen back the moment it plays again.
+- Among playing (or among paused) sessions, music beats video and social tabs.
+- Stickiness: on a tie Windows' current session wins; with no current one the
+  session shown before stays, whatever the list order, so the island does not
+  flip between two equal tabs.
+
+## What counts as music (`is_music`)
+
+A known player's AUMID (`KNOWN_PLAYERS`, case-insensitive substring: Spotify,
+Apple Music, iTunes, Tidal, Deezer, Amazon Music, YouTube Music desktop,
+SoundCloud, Pandora, foobar2000, MusicBee, AIMP, Winamp, Groove/Media Player,
+Dopamine, Plexamp), or `PlaybackType` Music, or both artist and album filled
+in. An artist alone is not enough: a video tab often has its channel as artist.
+Browsers are not in the list. All tabs of one browser share one AUMID, so the
+metadata (artist + album, declared type) is the only signal that tells a music
+tab from a video tab.
+
+## Subscriptions and reads
+
+- Every tracked session subscribes `MediaPropertiesChanged` and
+  `PlaybackInfoChanged` (signals carry the session's key); `TimelinePropertiesChanged`
+  only on the shown session, moved when the shown session changes.
+- Any playback or properties signal of any session re-ranks. A timeline signal
+  only re-reads the timeline. Signals of sessions no longer tracked are dropped
+  (`Watcher::accepts`). `next_refresh` still folds a burst into one `Refresh`.
+- Statuses are cheap and are re-read for all sessions on a re-rank. Metadata
+  (title, artist, album) is read for new sessions and for sessions whose own
+  properties signal fired. The thumbnail is read only for the shown session,
+  when it becomes shown or its own properties change. A failed read keeps the
+  old values (a new session with none counts as non-music, empty text).
+- Keys come from a counter starting at 1 and are never reused; a session is
+  recognised across re-lists by its COM identity. 0 means unknown.
+- "New track" for the timeline (force an `Event::MediaTimeline`) is: the shown
+  session changed, or its properties were re-read.
+
+## Commands go by key
+
+`MediaInfo::session_key` is the shown session's key. The watcher publishes its
+tracked sessions to a process-global registry (`SESSIONS`) before the
+`Event::Media` that can carry a new key goes out. `send_command(cmd, Target {
+key, app }, click)` clones the session for that key out of the registry (the
+lock is never held across a WinRT join) and sends the explicit TryPlay /
+TryPause / skip. Key 0 or an unknown key sends nothing. Because the key is
+exact, two tabs sharing an AUMID are told apart; the click guards in
+[[media-click-guards]] are unchanged.
+
+## Log
+
+When the chosen key changes (also to or from none) one line is written:
+`<stamp> choose app=<AUMID or -> of=<live sessions>`. The AUMID only, never a
+title, artist or album. See [[media-diagnosis-log]].
+
+Not covered by tests: the WinRT side (relist, subscriptions, registry); the
+ranking, music rule, signal coalescing and key lookup are unit tests.
+`--probe-media` (debug builds) prints source app and key per update.
+
+Listed in [[index]].

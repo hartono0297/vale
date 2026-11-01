@@ -17,8 +17,11 @@ ear sensors or call apps.
   At about 1 MB the file is renamed to `media.log.1`.
 - **Lines:** `command`: hit, command (or `ignored(guard)` / `ignored(no media)`),
   page, `hover_open` age, target AUMID, and whether a session was found.
-  `status`: AUMID and playback status, written only when that pair changes.
-  Titles and artists are never logged.
+  `status`: AUMID and playback status of the shown session, written only when
+  that pair changes. `choose`: the AUMID the watcher now shows (`-` for none)
+  and how many sessions were live (`of=`), written when the shown session
+  changes ([[media-session-priority]]). Titles, artists and albums are never
+  logged.
 - **Reading it:** a `status ... Paused` with no `command` just before it means
   something outside the island paused the music. A `command ... cmd=Pause`
   means a click on the island did.
@@ -31,8 +34,8 @@ Guards:
   (`MEDIA_HOVER_GUARD` in `state.rs`). A panel held open by an editor or the
   CLI input has no guard.
 - Play/pause sends an explicit `TryPlay`/`TryPause`, based on what the island
-  shows, to the session whose AUMID matches `MediaInfo::source_app`. Browser tabs
-  share one AUMID, so the current session wins when it matches. With no match,
-  nothing is sent.
+  shows, to the shown session itself, found by `MediaInfo::session_key`.
+  `source_app` (the AUMID) is only what the log prints. With no session for the
+  key, nothing is sent.
 
-Related: [[studio-media-progress-timer]]
+Related: [[studio-media-progress-timer]], [[media-click-guards]], [[media-session-priority]]
