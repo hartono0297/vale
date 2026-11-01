@@ -6,7 +6,7 @@
 <title>Vale, a notch for Windows 11</title>
 <meta name="description" content="Vale is a free, open-source notch for the top of the Windows 11 screen: the clock and a cat when idle, a panel of pages when you hover over it.">
 <link rel="icon" href="img/logo.svg" type="image/svg+xml">
-<script>document.documentElement.classList.add('js');try{var t=localStorage.getItem('vale-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t)}catch(e){}</script>
+<script>var d=document.documentElement;d.classList.add('js');setTimeout(function(){if(!d.classList.contains('ready'))d.classList.remove('js')},4000);try{var t=localStorage.getItem('vale-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t)}catch(e){}</script>
 <link rel="preload" href="fonts/DMSans-400.ttf" as="font" type="font/ttf" crossorigin>
 <link rel="preload" href="fonts/DMSans-600.ttf" as="font" type="font/ttf" crossorigin>
 <link rel="stylesheet" href="style.css">
@@ -141,8 +141,8 @@
       <p class="side-label" id="hero-install-label">Or install from PowerShell:</p>
       <div class="cmd">
         <div class="cmd-scroll" tabindex="0" role="region" aria-labelledby="hero-install-label"><code id="cmd-hero">irm https://raw.githubusercontent.com/hartono0297/dynamic-island/main/install.ps1 | iex</code></div>
-        <button class="btn btn-copy" type="button" data-copy="#cmd-hero">Copy</button>
-        <span class="copy-msg" role="status" aria-live="polite"></span>
+        <button class="btn btn-copy js-only" type="button" data-copy="#cmd-hero">Copy</button>
+        <span class="copy-msg js-only" role="status" aria-live="polite"></span>
       </div>
       <p class="facts">For Windows 11 x64. Free, with an MIT licence. The interface is in English and Indonesian.</p>
     </div>
@@ -152,7 +152,7 @@
 <section id="features" class="features-head" data-notch="idle" aria-labelledby="h-features">
   <div class="wrap">
     <h2 id="h-features">What is in the panel</h2>
-    <p class="lead">Hover the island and the panel opens. The island itself changes shape as you use it: lyrics while music plays, a notice when you copy something, a ring while a timer runs.</p>
+    <p class="lead"><span class="js-only">Hover the island and the panel opens.</span><span class="no-js-only">In Vale, the panel opens when you hover the island.</span> The island itself changes shape as you use it: lyrics while music plays, a notice when you copy something, a ring while a timer runs.</p>
   </div>
 </section>
 
@@ -180,7 +180,7 @@
       <ul class="pages-list">
         <li>Calendar</li><li>Pomodoro</li><li>Reminders</li><li>Notes</li><li>Music</li><li>Mixer</li><li>Clipboard</li><li>Notifications</li><li>File shelf</li><li>System</li><li>Devices</li><li>CLI</li><li>Shortcuts</li>
       </ul>
-      <p class="js-only note">While you read this section, the island above shows the panel in a small size. Hover it to open the whole thing.</p>
+      <p class="js-only note">In this section the island above can show a small peek of the panel, when nothing is under it. Hover it to open the whole thing.</p>
     </div>
     <figure class="shot reveal">
       <img src="img/notch.png" width="584" height="290" loading="lazy" alt="The Calendar page in week view, with demo events from Monday to Sunday and an Add event button.">
@@ -363,13 +363,13 @@
 <section id="cat" class="cat-section" data-notch="cat" aria-labelledby="h-cat">
   <div class="wrap">
     <h2 id="h-cat">Try the cat</h2>
-    <p class="lead">Move the pointer and the cat turns its head toward it, the way it does in the island. Pick a coat and an accessory. In Vale, the matching settings are Follow the pointer, Shrink to eyes and Greeting.</p>
+    <p class="lead"><span class="js-only">Move the pointer and the cat turns its head toward it, the way it does in the island. Pick a coat and an accessory. In Vale, the matching settings are Follow the pointer, Shrink to eyes and Greeting.</span><span class="no-js-only">In Vale the cat follows your pointer. It comes in four coats and six accessories, and it greets you by the time of day. The matching settings are Follow the pointer, Shrink to eyes and Greeting.</span></p>
     <div class="cat-stage">
       <div class="cat-view">
-        <p class="cat-bubble js-only" id="cat-greeting" aria-live="off"></p>
+        <p class="cat-bubble" id="cat-greeting" aria-live="off" hidden></p>
         <svg id="big-cat" class="big-cat" viewBox="-24 -6 112 72" role="img" aria-label="A cartoon cat head that follows the pointer" focusable="false"><g class="cat-move"><g fill="#E2683C" stroke="#E2683C" stroke-width="5" stroke-linejoin="round"><path d="M9 37L12 10L27 26Z"/><path d="M55 37L52 10L37 26Z"/></g><path d="M7 50V41Q7 24 32 24Q57 24 57 41V50Q57 54 53 54H11Q7 54 7 50Z" fill="#E2683C"/><g class="cat-eyes" fill="#17120F"><rect x="21.2" y="35" width="5.6" height="10" rx="2.8"/><rect x="37.2" y="35" width="5.6" height="10" rx="2.8"/></g></g></svg>
       </div>
-      <div class="cat-pickers">
+      <div class="cat-pickers js-only">
         <fieldset class="picker">
           <legend>Coat</legend>
           <div class="picker-row">
@@ -454,16 +454,16 @@
         <h3 id="lbl-install">Install or update</h3>
         <div class="cmd">
           <div class="cmd-scroll" tabindex="0" role="region" aria-labelledby="lbl-install"><code id="cmd-install">irm https://raw.githubusercontent.com/hartono0297/dynamic-island/main/install.ps1 | iex</code></div>
-          <button class="btn btn-copy" type="button" data-copy="#cmd-install">Copy</button>
-          <span class="copy-msg" role="status" aria-live="polite"></span>
+          <button class="btn btn-copy js-only" type="button" data-copy="#cmd-install">Copy</button>
+          <span class="copy-msg js-only" role="status" aria-live="polite"></span>
         </div>
       </div>
       <div class="cmd-block">
         <h3 id="lbl-uninstall">Uninstall</h3>
         <div class="cmd">
           <div class="cmd-scroll" tabindex="0" role="region" aria-labelledby="lbl-uninstall"><code id="cmd-uninstall">irm https://raw.githubusercontent.com/hartono0297/dynamic-island/main/uninstall.ps1 | iex</code></div>
-          <button class="btn btn-copy" type="button" data-copy="#cmd-uninstall">Copy</button>
-          <span class="copy-msg" role="status" aria-live="polite"></span>
+          <button class="btn btn-copy js-only" type="button" data-copy="#cmd-uninstall">Copy</button>
+          <span class="copy-msg js-only" role="status" aria-live="polite"></span>
         </div>
       </div>
       <div class="cmd-block">
@@ -471,8 +471,8 @@
         <p>This variant also deletes the data Vale keeps on your PC.</p>
         <div class="cmd">
           <div class="cmd-scroll" tabindex="0" role="region" aria-labelledby="lbl-purge"><code id="cmd-purge">$env:DI_PURGE = '1'; irm https://raw.githubusercontent.com/hartono0297/dynamic-island/main/uninstall.ps1 | iex</code></div>
-          <button class="btn btn-copy" type="button" data-copy="#cmd-purge">Copy</button>
-          <span class="copy-msg" role="status" aria-live="polite"></span>
+          <button class="btn btn-copy js-only" type="button" data-copy="#cmd-purge">Copy</button>
+          <span class="copy-msg js-only" role="status" aria-live="polite"></span>
         </div>
       </div>
     </div>

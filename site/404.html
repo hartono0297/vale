@@ -6,7 +6,7 @@
 <title>Page not found | Vale</title>
 <meta name="description" content="This page does not exist. Go back to the Vale home page.">
 <link rel="icon" href="img/logo.svg" type="image/svg+xml">
-<script>document.documentElement.classList.add('js');try{var t=localStorage.getItem('vale-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t)}catch(e){}</script>
+<script>var d=document.documentElement;d.classList.add('js');setTimeout(function(){if(!d.classList.contains('ready'))d.classList.remove('js')},4000);try{var t=localStorage.getItem('vale-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t)}catch(e){}</script>
 <link rel="stylesheet" href="style.css">
 <script src="site.js" defer></script>
 </head>

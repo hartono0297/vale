@@ -311,6 +311,7 @@
       var h = new Date().getHours();
       var text = h < 4 ? 'Up late?' : h < 11 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
       bubble.textContent = text;
+      bubble.hidden = false;
     }
 
     return {
@@ -370,6 +371,81 @@
       tickClock();
     });
 
+    /* ----- the peek and the copy notice must not cover text -----
+       The panel peek (400 x 128, 64 high on phones) and the section's clipboard
+       state (340 x 56) are wider than the idle notch and would lie over section
+       text, so they are shown only while the band under the notch holds no text
+       element (the tags below). When it does, the panel state shows the idle
+       notch instead and the clipboard state keeps its content at the idle
+       footprint (.is-tight). Sizes are mirrored from style.css. The small
+       states (at most 45 px high) may pass over text, like a real notch. The
+       copy notice after a Copy button is a 3 s toast and is exempt. Checked on
+       scroll frames and resize only, and only while one of the two states is the
+       section's; shrinking is immediate, growing waits FIT_GROW_MS of free band. */
+    var TEXT_SEL = 'h1, h2, h3, p, li, figcaption, code, pre, label, legend, td, th, blockquote';
+    var FIT_MARGIN_Y = 16;
+    var FIT_MARGIN_X = 8;
+    var FIT_GROW_MS = 150;
+    var textEls = null;
+    var fits = true;
+    var growTimer = 0;
+    var fitFrame = false;
+
+    function peekSize(name) {
+      var vw = root.clientWidth;
+      if (name === 'panel') return { w: Math.min(400, vw - 32), h: vw <= 520 ? 64 : 128 };
+      return { w: Math.min(340, vw - 32), h: 56 };
+    }
+    function bandBlocked(name) {
+      if (!textEls) textEls = $$(TEXT_SEL).filter(function (el) { return !notch.contains(el); });
+      var size = peekSize(name);
+      var mid = root.clientWidth / 2;
+      var left = mid - size.w / 2 - FIT_MARGIN_X;
+      var right = mid + size.w / 2 + FIT_MARGIN_X;
+      var bottom = size.h + FIT_MARGIN_Y;
+      for (var i = 0; i < textEls.length; i++) {
+        var r = textEls[i].getBoundingClientRect();
+        if (r.width && r.height && r.bottom > 0 && r.top < bottom && r.right > left && r.left < right) return true;
+      }
+      return false;
+    }
+    function peekState(name) { return name === 'panel' || name === 'clipboard'; }
+    function refresh() {
+      var want = copyTimer ? 'clipboard' : (sectionState === 'panel' && !fits ? 'idle' : sectionState);
+      setState(want);
+      notch.classList.toggle('is-tight', !copyTimer && sectionState === 'clipboard' && !fits);
+    }
+    function enterSection(name) {
+      sectionState = name;
+      clearTimeout(growTimer);
+      growTimer = 0;
+      fits = !(peekState(name) && !open && !copyTimer && bandBlocked(name));
+      refresh();
+    }
+    function fitCheck() {
+      fitFrame = false;
+      if (open || copyTimer || !peekState(sectionState)) return;
+      if (bandBlocked(sectionState)) {
+        clearTimeout(growTimer);
+        growTimer = 0;
+        if (fits) { fits = false; refresh(); }
+      } else if (!fits && !growTimer) {
+        growTimer = setTimeout(function () {
+          growTimer = 0;
+          if (open || copyTimer || !peekState(sectionState)) return;
+          if (!bandBlocked(sectionState)) { fits = true; refresh(); }
+        }, FIT_GROW_MS);
+      }
+    }
+    function fitSoon() {
+      if (fitFrame || !peekState(sectionState)) return;
+      fitFrame = true;
+      requestAnimationFrame(fitCheck);
+    }
+    window.addEventListener('scroll', fitSoon, { passive: true });
+    window.addEventListener('resize', fitSoon);
+    window.addEventListener('load', fitSoon);
+
     /* ----- which state the section in view asks for ----- */
     var sections = $$('[data-notch]');
     if (sections.length && 'IntersectionObserver' in window) {
@@ -383,8 +459,7 @@
         var chosen = null;
         sections.forEach(function (s) { if (inBand.indexOf(s) >= 0) chosen = s; });
         if (!chosen) return;
-        sectionState = chosen.getAttribute('data-notch') || 'idle';
-        if (!copyTimer) setState(sectionState);
+        enterSection(chosen.getAttribute('data-notch') || 'idle');
       }, { rootMargin: '-40% 0px -55% 0px' });
       sections.forEach(function (s) { io.observe(s); });
     }
@@ -446,11 +521,11 @@
         var preview = $('#notch-clip-preview');
         if (preview) preview.textContent = line;
         clearTimeout(copyTimer);
-        setState('clipboard');
         copyTimer = setTimeout(function () {
           copyTimer = 0;
-          setState(sectionState);
+          enterSection(sectionState);
         }, 3000);
+        refresh();
       }
     };
 
@@ -605,6 +680,7 @@
       clearTimeout(hideTimer);
       hideTimer = setTimeout(function () { panel.hidden = true; }, reduce.matches ? 0 : 380);
       if (returnFocus) face.focus();
+      enterSection(sectionState);
     }
 
     /* Hover intent: the idle notch (y 0..34) overlaps the nav row (y 6..50),
@@ -678,29 +754,52 @@
     tickClock();
   }
 
-  /* ---------- reveal fallback: add a class once, then stop watching ---------- */
+  /* ---------- reveal: once, for every browser ----------
+     .reveal is hidden by CSS only under html.js. An element already on screen
+     or scrolled past at start is shown at once; the others get .is-in the first
+     time they intersect and are then unobserved, so nothing replays on scroll
+     back. Reduced motion, or no IntersectionObserver: everything shows now. */
   function initReveal() {
     var items = $$('.reveal');
     if (!items.length) return;
-    var native = window.CSS && CSS.supports && CSS.supports('animation-timeline: view()');
-    if (native || reduce.matches || !('IntersectionObserver' in window)) {
-      items.forEach(function (el) { el.classList.add('is-in'); });
-      return;
-    }
+    function show(el) { el.classList.add('is-in'); }
+    function showAll() { items.forEach(show); }
+    if (reduce.matches || !('IntersectionObserver' in window)) { showAll(); return; }
+    var fold = window.innerHeight * 0.9;
+    var waiting = items.filter(function (el) {
+      if (el.getBoundingClientRect().top < fold) { show(el); return false; }
+      return true;
+    });
+    if (!waiting.length) return;
     var io = new IntersectionObserver(function (entries) {
       entries.forEach(function (e) {
         if (!e.isIntersecting) return;
-        e.target.classList.add('is-in');
+        show(e.target);
         io.unobserve(e.target);
       });
     }, { rootMargin: '0px 0px -10% 0px' });
-    items.forEach(function (el) { io.observe(el); });
+    waiting.forEach(function (el) { io.observe(el); });
+    if (reduce.addEventListener) {
+      reduce.addEventListener('change', function () {
+        if (!reduce.matches) return;
+        io.disconnect();
+        showAll();
+      });
+    }
   }
 
-  initTheme();
-  initMenu();
-  initCopy();
-  var catApi = initCats();
-  initNotch(catApi);
-  initReveal();
+  /* One part failing must not stop the others, and must not leave .reveal hidden. */
+  function safe(fn) {
+    try { return fn(); } catch (e) { return null; }
+  }
+
+  root.classList.add('js');
+  safe(initTheme);
+  safe(initMenu);
+  safe(initCopy);
+  var catApi = safe(initCats);
+  safe(function () { initNotch(catApi); });
+  safe(initReveal);
+  /* The head script removes .js after 4 s unless this is set (script blocked or broken). */
+  root.classList.add('ready');
 })();

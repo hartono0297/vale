@@ -6,7 +6,7 @@
 <title>Privacy policy | Vale</title>
 <meta name="description" content="What Vale reads, stores and sends. Vale runs on your PC, has no server and no account, and connects to the internet only for the optional features listed here.">
 <link rel="icon" href="img/logo.svg" type="image/svg+xml">
-<script>document.documentElement.classList.add('js');try{var t=localStorage.getItem('vale-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t)}catch(e){}</script>
+<script>var d=document.documentElement;d.classList.add('js');setTimeout(function(){if(!d.classList.contains('ready'))d.classList.remove('js')},4000);try{var t=localStorage.getItem('vale-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t)}catch(e){}</script>
 <link rel="stylesheet" href="style.css">
 <script src="site.js" defer></script>
 </head>
@@ -45,7 +45,7 @@
 
 <h3>How sign-in works</h3>
 <p>Vale opens the Google sign-in page (<code>accounts.google.com</code>) in your default browser and uses PKCE. After you approve, Vale exchanges the sign-in code for a token with <code>oauth2.googleapis.com</code>. While you sign in, Vale listens on the loopback address <code>127.0.0.1</code> so the browser can hand the code back. That listener exists only during sign-in and cannot be reached from other computers.</p>
-<p>Release builds use Vale's own OAuth client. If you enter a Client ID in <strong>Settings → Integrations</strong>, Vale uses yours instead.</p>
+<p>Release builds use Vale's own OAuth client. If you enter a Client ID in <strong>Settings &gt; Integrations</strong>, Vale uses yours instead.</p>
 
 <h3>What Vale asks Google for</h3>
 <p>Vale requests two permissions (scopes):</p>
@@ -75,7 +75,7 @@
 <caption>Every connection Vale makes, what it sends and when</caption>
 <thead><tr><th scope="col">Destination</th><th scope="col">What is sent</th><th scope="col">When</th></tr></thead>
 <tbody>
-<tr><th scope="row">LRCLIB: <code>https://lrclib.net/api/get</code> and <code>/api/search</code></th><td>Track title, artist and duration. Never the album.</td><td>Only when Lyrics is on. It is off by default. You turn it on in <strong>Settings → Features → Music</strong> or with the Lyrics button on the Music page. Results are cached in <code>lyrics-cache</code>.</td></tr>
+<tr><th scope="row">LRCLIB: <code>https://lrclib.net/api/get</code> and <code>/api/search</code></th><td>Track title, artist and duration. Never the album.</td><td>Only when Lyrics is on. It is off by default. You turn it on in <strong>Settings &gt; Features &gt; Music</strong> or with the Lyrics button on the Music page. Results are cached in <code>lyrics-cache</code>.</td></tr>
 <tr><th scope="row">Google sign-in: <code>accounts.google.com</code> and <code>oauth2.googleapis.com</code></th><td>The standard OAuth sign-in exchange. Your Google password goes only to Google's page in your browser.</td><td>Only when you sign in, and when Vale renews the token while you are connected.</td></tr>
 <tr><th scope="row">Google Calendar API: <code>www.googleapis.com/calendar/v3</code></th><td>Requests to list your calendars, list events, create an event in your primary calendar, and patch an existing event. Event details you type or change are included.</td><td>Only while connected.</td></tr>
 <tr><th scope="row">Web search: <code>google.com/search</code></th><td>Vale sends nothing. It opens the page in your default browser, so your browser sends the search text.</td><td>Only when you pick the web search result in Vale's search.</td></tr>
@@ -86,9 +86,9 @@
 
 <section id="files">
 <h2>Files Vale writes</h2>
-<p>Names without a folder are in <code>%APPDATA%\Vale</code>. Nothing in this table is uploaded. The file shelf and the file-search index live in memory only and are never written to disk.</p>
-<div class="table-wrap" role="region" aria-label="Files Vale writes" tabindex="0"><table>
-<caption>Every file Vale writes, what it holds and when it exists</caption>
+<p>Names without a folder are in <code>%APPDATA%\Vale</code>. Nothing in these tables is uploaded. The file shelf and the file-search index live in memory only and are never written to disk.</p>
+<div class="table-wrap" role="region" aria-label="Files in the Vale folder" tabindex="0"><table>
+<caption>Files in %APPDATA%\Vale, what they hold and when they exist</caption>
 <thead><tr><th scope="col">File</th><th scope="col">What it holds</th><th scope="col">Encrypted</th><th scope="col">When it exists</th></tr></thead>
 <tbody>
 <tr><th scope="row"><code>config.json</code></th><td>Your settings, plus your own Google client ID and secret if you entered them. If <code>config.json</code> cannot be read, Vale keeps the damaged copy next to it as <code>config.json.bak</code> (or <code>.bak2</code>, <code>.bak3</code> and so on, so no earlier copy is overwritten). That copy is plain text too and can hold the same client ID and secret.</td><td>No, plain text</td><td>Always</td></tr>
@@ -103,8 +103,16 @@
 <tr><th scope="row"><code>cli-recent.txt</code></th><td>Recently used folders (up to 25).</td><td>No, plain text</td><td>When you use the CLI</td></tr>
 <tr><th scope="row"><code>lyrics-cache\</code></th><td>Synced lyrics (<code>.lrc</code> files) and markers for tracks where none were found.</td><td>No, plain text</td><td>Only with Lyrics on</td></tr>
 <tr><th scope="row"><code>shell-icon.txt</code></th><td>A version stamp for the app icon.</td><td>No, plain text</td><td>Once Vale has run</td></tr>
-<tr><th scope="row"><code>media.log</code></th><td>Media commands and states, never track titles.</td><td>No, plain text</td><td>Off. Only when Vale is started with <code>--media-log</code>.</td></tr>
-<tr><th scope="row">Your Windows Screenshots folder (<code>%USERPROFILE%\Pictures\Screenshots</code> by default, or where OneDrive moved it)</th><td>Screenshots you save. Vale never overwrites a file. Deleting a screenshot from the preview moves it to the Recycle Bin. With <em>If ignored</em> set to <em>Delete</em> in Settings (off by default), a screenshot you leave alone goes to the Recycle Bin when its preview closes, even a file Snipping Tool saved.</td><td>No, image files</td><td>When you save a screenshot</td></tr>
+<tr><th scope="row"><code>media.log</code></th><td>Media commands and states, never track titles.</td><td>No, plain text</td><td>Off by default. Only when Vale is started with <code>--media-log</code>, or when you set <code>"media_log": true</code> by hand in <code>config.json</code>.</td></tr>
+</tbody></table></div>
+
+<h3 id="files-outside">Outside %APPDATA%\Vale</h3>
+<p>These are not in Vale's data folder. Removing <code>%APPDATA%\Vale</code> or uninstalling Vale does not remove them.</p>
+<div class="table-wrap" role="region" aria-label="Files and settings outside the Vale folder" tabindex="0"><table>
+<caption>What Vale writes outside %APPDATA%\Vale</caption>
+<thead><tr><th scope="col">Where</th><th scope="col">What it holds</th><th scope="col">Encrypted</th><th scope="col">When it exists</th></tr></thead>
+<tbody>
+<tr><th scope="row">Your Windows Screenshots folder: <code>%USERPROFILE%\Pictures\Screenshots</code> by default. If OneDrive backs up your Pictures folder, Windows moves it there.</th><td>Screenshots you save. Vale never overwrites a file. Deleting a screenshot from the preview moves it to the Recycle Bin and removes its clipboard history cards, except a card you pinned. With <em>If ignored</em> set to <em>Delete</em> in Settings, a screenshot you leave alone goes to the Recycle Bin when its preview closes, even a file Snipping Tool saved. <em>If ignored</em> is <em>Keep</em> by default, and Keep never deletes.</td><td>No, image files</td><td>When you save a screenshot</td></tr>
 <tr><th scope="row"><code>HKCU\Software\Microsoft\Windows\CurrentVersion\Run</code></th><td>A value named <code>Vale</code> that starts Vale with Windows.</td><td>No</td><td>On by default. Turn it off in Settings.</td></tr>
 <tr><th scope="row"><code>%USERPROFILE%\.claude\settings.json</code> and <code>settings.json.bak-vale</code></th><td>Claude Code hook entries, with a backup of your settings file made first.</td><td>No, plain text</td><td>Only when you install the Claude Code hooks</td></tr>
 <tr><th scope="row"><code>%USERPROFILE%\.config\mole\whitelist.txt</code></th><td>Vale appends folders for Mole to leave alone (the Cargo caches and Autodesk).</td><td>No, plain text</td><td>Once, before Mole mode's first preview, unless you turn off that protection in Settings</td></tr>
@@ -133,10 +141,10 @@
 <section id="deleting-data">
 <h2>Deleting your data</h2>
 <ul>
-<li><strong>Disconnect Google.</strong> <strong>Settings → Integrations → Disconnect</strong> deletes the token file only. It does not revoke Vale's access at Google, and the cached events stay on your PC. To revoke access, open <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a> and remove Vale. To remove the cache, delete <code>%APPDATA%\Vale\calendar-cache.json</code>.</li>
+<li><strong>Disconnect Google.</strong> <strong>Settings &gt; Integrations &gt; Disconnect</strong> deletes the token file only. It does not revoke Vale's access at Google, and the cached events stay on your PC. To revoke access, open <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a> and remove Vale. To remove the cache, delete <code>%APPDATA%\Vale\calendar-cache.json</code>.</li>
 <li><strong>Clipboard and notification history.</strong> Turning off saving for either one deletes its file.</li>
 <li><strong>Uninstall.</strong> Run <code>irm https://raw.githubusercontent.com/hartono0297/dynamic-island/main/uninstall.ps1 | iex</code>. This keeps your data in <code>%APPDATA%\Vale</code>. To delete it too, run <code>$env:DI_PURGE = '1'</code> first, in the same PowerShell window, then the command above.</li>
-<li><strong>Delete the folder yourself.</strong> Removing <code>%APPDATA%\Vale</code> deletes everything Vale keeps there.</li>
+<li><strong>Delete the folder yourself.</strong> Removing <code>%APPDATA%\Vale</code> deletes everything Vale keeps there. It does not remove the screenshots you saved, which are in your Windows Screenshots folder, outside that folder. Delete those in File Explorer.</li>
 </ul>
 <p>The uninstall script removes Vale's autostart value and the Claude Code hooks Vale added. It never removes the screenshots you saved, the entries Vale added to Mole's whitelist, the <code>settings.json.bak-vale</code> backup, or the access you granted at Google.</p>
 </section>

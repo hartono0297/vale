@@ -6,7 +6,7 @@
 <title>Terms of use | Vale</title>
 <meta name="description" content="The terms for using Vale, a free and open-source notch for Windows 11: the MIT licence, the features that change files or settings, and the limits of what the developer promises.">
 <link rel="icon" href="img/logo.svg" type="image/svg+xml">
-<script>document.documentElement.classList.add('js');try{var t=localStorage.getItem('vale-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t)}catch(e){}</script>
+<script>var d=document.documentElement;d.classList.add('js');setTimeout(function(){if(!d.classList.contains('ready'))d.classList.remove('js')},4000);try{var t=localStorage.getItem('vale-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t)}catch(e){}</script>
 <link rel="stylesheet" href="style.css">
 <script src="site.js" defer></script>
 </head>
@@ -67,11 +67,11 @@
 <h2>At your own risk</h2>
 <p>These features change files, settings or the system. You use them at your own risk, so keep backups of anything you cannot replace.</p>
 <ul>
-<li><strong>The cleaner.</strong> It has 7 categories. It deletes caches permanently. It moves old installers and logs to the Recycle Bin. It removes Windows Update leftovers through a helper that asks for administrator rights, and you approve that in the UAC prompt. Nothing is deleted until you click the confirm button.</li>
-<li><strong>Mole mode.</strong> This runs your own copy of Mole, which Vale never installs. Vale does a dry run first. The real clean runs with administrator rights.</li>
+<li><strong>The cleaner.</strong> It has 7 categories. It deletes caches, temporary files and logs permanently. It moves old installers to the Recycle Bin. It removes Windows Update leftovers through a helper that asks for administrator rights, and you approve that in the UAC prompt. Nothing is deleted until you click the confirm button.</li>
+<li><strong>Mole mode.</strong> This runs your own copy of Mole, which Vale never installs. Vale does a dry run first. If you add the system part, it runs with administrator rights, and you approve that in the UAC prompt.</li>
 <li><strong>The CLI.</strong> It runs any command you type, in PowerShell or cmd. Vale does not check what the command does.</li>
 <li><strong>Eject.</strong> It sends a safe-removal request to Windows. Windows can refuse it.</li>
-<li><strong>Screenshots.</strong> Saving writes image files to your Pictures folder. Deleting one from the preview moves the file to the Recycle Bin and also takes the picture off your clipboard, if it is still there, and out of the clipboard history unless you pinned it. Copying it again puts it back on the clipboard. If you set <em>If ignored</em> to <em>Delete</em> in Settings, a screenshot you leave alone is moved to the Recycle Bin when its preview closes, and taken off the clipboard the same way. That file can be one that Snipping Tool saved, not Vale. The default is <em>Keep</em>.</li>
+<li><strong>Screenshots.</strong> Saving writes image files to your Windows Screenshots folder, which is <code>%USERPROFILE%\Pictures\Screenshots</code> by default. Deleting one from the preview moves the file to the Recycle Bin and also takes the picture off your clipboard, if it is still there, and out of the clipboard history unless you pinned it. Copying it again puts it back on the clipboard. If you set <em>If ignored</em> to <em>Delete</em> in Settings, a screenshot you leave alone is moved to the Recycle Bin when its preview closes, and taken off the clipboard the same way. That file can be one that Snipping Tool saved, not Vale. The default is <em>Keep</em>.</li>
 <li><strong>Volume.</strong> The Mixer and the mouse wheel over the notch change your volume.</li>
 <li><strong>Autostart.</strong> Vale starts with Windows by default. You can turn this off in Settings.</li>
 <li><strong>Claude Code hooks.</strong> Installing them edits <code>%USERPROFILE%\.claude\settings.json</code>. Vale first saves a backup as <code>settings.json.bak-vale</code>.</li>
