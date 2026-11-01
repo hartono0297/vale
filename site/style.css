@@ -49,6 +49,7 @@
   --gutter: clamp(16px, 4vw, 40px);
   /* The header pills sit this far from the left and right edges. */
   --edge: 16px;
+  --i-download: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 4v11M7 10.5l5 5 5-5M5 20h14'/%3E%3C/svg%3E");
   --font: "Geist", system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono: "Geist Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
   color-scheme: dark;
@@ -177,6 +178,19 @@ html:not(.js) .js-only { display: none !important; }
   .menu-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .btn-dl { padding: 0 7px; font-size: .75rem; }
 }
+/* Below 20em (fold cover screens, about 280 px) the word no longer fits
+   beside the 96 px notch with 12 px clear (it needs 312 px with a
+   scrollbar), so Download becomes a 44 px download icon: clear from 263 px
+   up. The word stays in the link, moved out of view, as its accessible
+   name. Without script the header is static and keeps the word. */
+@media (max-width: 19.99em) {
+  .js .btn-dl { position: relative; width: 44px; padding: 0; overflow: hidden; white-space: nowrap; text-indent: 44px; }
+  .js .btn-dl::before {
+    content: ""; position: absolute; top: 50%; left: 50%; width: 20px; height: 20px; margin: -10px 0 0 -10px;
+    background: currentColor; forced-color-adjust: none;
+    -webkit-mask: var(--i-download) center / contain no-repeat; mask: var(--i-download) center / contain no-repeat;
+  }
+}
 
 /* ---------- footer ---------- */
 /* The bottom padding keeps the last links above the go-to-top button. */
@@ -248,6 +262,9 @@ html:not(.js) .js-only { display: none !important; }
   /* 94 px inside the 1 px edges: cat 26 + gap 10 + clock 39 + 2 x 9. */
   .notch .nf-idle, .notch .nf-arrange, .notch.is-tight .nf-clip, .notch.is-tight .nf-music { padding: 0 9px; }
   .notch.is-tight .nf-clip { gap: 8px; }
+  /* 42 px are left for the title (76 - cat 26 - gap 8); "Copied" is 47 px at
+     14 px and 41 px at 12 px. */
+  .notch.is-tight .clip-title { font-size: 12px; }
 }
 .notch-face { position: absolute; top: 0; left: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .notch.is-open .notch-face { height: 44px; }
@@ -312,7 +329,7 @@ html:not(.js) #notch { display: none; }
 
 .nf-clip { padding: 0 16px; gap: 12px; }
 .clip-text { display: flex; flex-direction: column; min-width: 0; }
-.clip-title { font-weight: 600; font-size: 14px; }
+.clip-title { font-weight: 600; font-size: 14px; white-space: nowrap; }
 .clip-preview { color: var(--notch-2); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Susun while its stage is pinned: "Tile n of 3", then "Arranged", at the
