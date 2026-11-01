@@ -2,6 +2,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::arrange::ArrangeSettings;
 use crate::clean::CleanMode;
 use crate::cli::Shell;
 use crate::cli_folders::CliStart;
@@ -165,6 +166,10 @@ pub struct Config {
     /// The Notifikasi page's history (Settings → Fitur → Notifikasi).
     #[serde(deserialize_with = "notif_settings")]
     pub notifications: NotifSettings,
+    /// Susun (Arrange): the hotkey, the gap, the user's templates and the
+    /// saved arrangements ([`crate::arrange`]).
+    #[serde(deserialize_with = "crate::arrange::lenient_settings")]
+    pub arrange: ArrangeSettings,
 }
 
 /// The apps muted until the owner says otherwise.
@@ -416,6 +421,12 @@ crate::theme::named_enum! {
 }
 
 crate::theme::named_enum! {
+    /// "Tombol pintas" (Susun): the hotkey that opens the Susun page at the
+    /// template step. None by default; any other name reads as `Off`.
+    ArrangeHotkey { Off, CtrlAltS }
+}
+
+crate::theme::named_enum! {
     /// "Tombol pintas" (Perangkat): the hotkey that opens the Devices page, like the
     /// Clipboard's. None by default; any other name reads as `Off`.
     DevicesHotkey { Off, CtrlAltD }
@@ -579,6 +590,7 @@ impl Default for Config {
             notch_peek: true,
             eq_follow_audio: true,
             notifications: NotifSettings::default(),
+            arrange: ArrangeSettings::default(),
         }
     }
 }
@@ -715,6 +727,7 @@ pub fn merge_owned(disk: Config, mem: &Config) -> Config {
         notch_peek: mem.notch_peek,
         eq_follow_audio: mem.eq_follow_audio,
         notifications: mem.notifications,
+        arrange: mem.arrange.clone(),
         ..disk
     }
 }
@@ -1093,6 +1106,11 @@ mod tests {
                 max_items: 120,
                 persist: false,
                 paused: true,
+            },
+            arrange: ArrangeSettings {
+                hotkey: ArrangeHotkey::CtrlAltS,
+                gap: 16,
+                ..ArrangeSettings::default()
             },
         };
         assert_eq!(parse(&serde_json::to_string(&c).unwrap()), c);

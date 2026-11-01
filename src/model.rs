@@ -3,6 +3,7 @@ use std::time::Instant;
 
 use chrono::NaiveDate;
 
+use crate::arrange::ArrangeEvent;
 use crate::audio::MixerRow;
 use crate::calendar::CalendarSnapshot;
 use crate::clean::{CleanCat, CleanEvent, CleanMode};
@@ -120,6 +121,23 @@ pub enum NoticeKind {
     },
     /// Vale's Eject finished: "Aman dicabut". Temporary; a click dismisses.
     DeviceSafe,
+    /// Susun arranged the windows: "Tersusun · n jendela", with "Batalkan"
+    /// and (after a pick, not a saved run) "Simpan…". Lasts about 3 s, held
+    /// under the pointer and while the name field is up.
+    Arranged {
+        save: ArrangeSave,
+    },
+}
+
+/// What the Arranged notice offers beside "Batalkan".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArrangeSave {
+    /// A saved arrangement ran: undo only.
+    None,
+    /// "Simpan…".
+    Offer,
+    /// Twelve are saved already: "Simpan…" is off and says the list is full.
+    Full,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -291,9 +309,22 @@ pub enum Event {
     /// The drive scanner's answer (`devices_win::Devices`); `App` keeps it,
     /// the reducer ignores it.
     Devices(DevicesEvent),
+    /// A mover or icon worker of Susun (`arrange_win`); `App` keeps it, the
+    /// reducer ignores it.
+    Arrange(ArrangeEvent),
     /// The optional Devices hotkey: opens the panel on the Devices page
     /// (without taking the foreground), or closes it when it shows that.
     DevicesHotkey,
+    /// The optional Susun hotkey: opens the panel on the Susun page at the
+    /// template step (without taking the foreground), or closes it when it
+    /// shows that.
+    ArrangeHotkey,
+    /// The pick step is running (true) or over (false): it keeps the panel
+    /// open whatever the open mode is and a click outside does not close it.
+    ArrangePick(bool),
+    /// The Arranged notice's name field is up (true) or gone: the notice
+    /// waits for it.
+    ArrangeNaming(bool),
     /// The PrtSc key (when Settings lets Vale have it): Vale's own capture
     /// starts once an open panel has collapsed. A press with an overlay up
     /// is dropped by `App`, which knows the overlay.
@@ -406,6 +437,17 @@ pub enum Hit {
     DeviceDetail(usize),
     DeviceRetry(usize),
     DevicesEjectAll,
+    /// Susun, template step: a monitor chip, a template card (built-ins
+    /// first, then the user's) and a saved arrangement's play button, by
+    /// place. Pick step: a window row by place in the list, and "Lewati
+    /// ubin". The Arranged notice's "Batalkan" and "Simpan…".
+    ArrangeMonitor(usize),
+    ArrangeCard(usize),
+    ArrangePlay(usize),
+    ArrangeWindow(usize),
+    ArrangeSkip,
+    ArrangeUndo,
+    ArrangeSave,
     /// The CLI page's terminal: the input takes the keyboard.
     CliInput,
     /// The CLI header's Stop button (the same as Ctrl+C).
@@ -541,6 +583,14 @@ pub enum Effect {
     DeviceOpen(usize),
     DeviceDetail(usize),
     DevicesEjectAll,
+    /// Susun, as the hits of the same names.
+    ArrangeMonitor(usize),
+    ArrangeCard(usize),
+    ArrangePlay(usize),
+    ArrangeWindow(usize),
+    ArrangeSkip,
+    ArrangeUndo,
+    ArrangeSave,
     /// Give the CLI input the keyboard (the island activates for it).
     FocusCliInput,
     /// The CLI input lets go of the keyboard; the window that had it
@@ -681,6 +731,8 @@ pub enum Page {
     /// Perangkat: flash drives and external disks, with Eject.
     Devices,
     Cli,
+    /// Susun: arranges the open windows into a tile layout.
+    Arrange,
     /// Pintasan, the right-most page.
     Shortcuts,
     /// The quick search. Not one of `ALL`: only its hotkey opens it, the
@@ -690,7 +742,7 @@ pub enum Page {
 }
 
 impl Page {
-    pub const ALL: [Page; 13] = [
+    pub const ALL: [Page; 14] = [
         Page::Calendar,
         Page::Pomodoro,
         Page::Reminders,
@@ -703,6 +755,7 @@ impl Page {
         Page::System,
         Page::Devices,
         Page::Cli,
+        Page::Arrange,
         Page::Shortcuts,
     ];
 }
@@ -726,7 +779,7 @@ pub enum Shortcut {
 }
 
 impl Shortcut {
-    pub const ALL: [Shortcut; 21] = [
+    pub const ALL: [Shortcut; 22] = [
         Shortcut::Screenshot,
         Shortcut::Clipboard,
         Shortcut::Search,
@@ -748,11 +801,12 @@ impl Shortcut {
         Shortcut::Go(Page::System),
         Shortcut::Go(Page::Devices),
         Shortcut::Go(Page::Cli),
+        Shortcut::Go(Page::Arrange),
     ];
 
     /// Whether a fresh install shows this tile: the original nine, Vale's
-    /// own Settings, the Shelf and Devices. The other page tiles are there to
-    /// add.
+    /// own Settings, the Shelf and Devices. The other page tiles (Susun
+    /// included) are there to add.
     pub fn default_on(self) -> bool {
         !matches!(self, Shortcut::Go(p) if !matches!(p, Page::Shelf | Page::Devices))
     }

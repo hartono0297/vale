@@ -88,6 +88,7 @@ Hover the notch to open it, scroll to change pages. Hover the page dots under th
 | **Notifications** | Windows toasts and [Claude Code](https://claude.com/claude-code) prompts in the notch. The Notifications page keeps a short history of the toasts Vale caught while it ran (app logo, time, title and body), with pause, per-app exclusion and an optional encrypted copy that survives a restart. It never clears the Windows Action Center. |
 | **System** | CPU, memory, disks, the busiest apps and a cleaner that asks before it deletes. |
 | **Devices** | Flash drives, external disks and memory cards, with Eject, Open, Detail and Eject all, the reason when Windows won't let go, and a notice when one is plugged in. |
+| **Susun** | Arrange your open windows into a layout: pick one (two or three columns, a grid, a main window with a side column, or your own), then click the windows tile by tile, with skip and back. Undo with one click, save an arrangement and re-apply it later. `Ctrl+Alt+S` opens it (off by default, in Settings). |
 | **CLI** | A small terminal that starts in your Explorer folder. |
 | **Shortcuts** | Tiles for Windows tools, a jump to any panel page, Vale's own Settings, and your own apps, folders and links (added in Settings). |
 

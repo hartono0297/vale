@@ -941,6 +941,8 @@ pub enum NoticeSort {
     DevicePlugged,
     /// A device is safe to remove.
     DeviceSafe,
+    /// Susun arranged the windows.
+    Arranged,
 }
 
 impl NoticeSort {
@@ -964,6 +966,7 @@ impl NoticeSort {
             NoticeKind::ShotDeleted => NoticeSort::ShotDeleted,
             NoticeKind::DevicePlugged { .. } => NoticeSort::DevicePlugged,
             NoticeKind::DeviceSafe => NoticeSort::DeviceSafe,
+            NoticeKind::Arranged { .. } => NoticeSort::Arranged,
         }
     }
 }
@@ -1069,6 +1072,7 @@ pub fn choose_expr(i: &RobotInputs) -> Option<Expr> {
                 | NoticeSort::ClipPreview
                 | NoticeSort::Screenshot
                 | NoticeSort::DeviceSafe
+                | NoticeSort::Arranged
                 | NoticeSort::ShotSaved => Some(Expr::Happy),
                 // keputusan-v3.1 p6: "Dihapus" with Bata at rest; a drive
                 // plugged in is news, not an event: Bata at rest as well.

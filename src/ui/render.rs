@@ -89,6 +89,9 @@ use crate::tiles::Tile;
 // renderer's private state and helpers.
 #[path = "render_panel.rs"]
 mod panel;
+pub use panel::arrange_paint::{
+    ArrangeCardView, ArrangeNameView, ArrangeSavedView, ArrangeView, ArrangeWindowView,
+};
 
 const SECONDARY_ALPHA: f32 = 0.7;
 /// Decoded album art kept at once: one per size drawn (compact and media page).
@@ -184,6 +187,8 @@ pub struct Frame<'a> {
     pub notif: NotifView<'a>,
     /// The quick search (only drawn on `Page::Search`).
     pub search: SearchView<'a>,
+    /// The Susun page and its notice.
+    pub arrange: ArrangeView<'a>,
     /// Where the playing track is: the notch's progress line and the Music
     /// page's bar. `None` without a timeline or a known length.
     pub progress: Option<Progress>,
@@ -649,6 +654,8 @@ pub struct Renderer {
     /// The quick search's shell icons as bitmaps of the current target, by
     /// path; paths no longer shown are dropped each frame.
     search_icons: std::cell::RefCell<Vec<(std::path::PathBuf, ID2D1Bitmap)>>,
+    /// Susun's pick list icons as bitmaps of the current target, by exe key.
+    arrange_icons: std::cell::RefCell<Vec<(String, ID2D1Bitmap)>>,
     /// The screenshot preview's thumbnail as a bitmap, by screenshot id.
     shot_thumb: std::cell::RefCell<Option<(u64, ID2D1Bitmap)>>,
     /// While a compact view's content fades in with its morph, Bata is not
@@ -888,6 +895,7 @@ impl Renderer {
                 clip_thumbs: std::cell::RefCell::new(Vec::new()),
                 notif_logos: std::cell::RefCell::new(Vec::new()),
                 search_icons: std::cell::RefCell::new(Vec::new()),
+                arrange_icons: std::cell::RefCell::new(Vec::new()),
                 shot_thumb: std::cell::RefCell::new(None),
                 robot_later: std::cell::Cell::new(None),
                 legible: std::cell::Cell::new(0.0),
@@ -925,6 +933,7 @@ impl Renderer {
             self.clip_thumbs.borrow_mut().clear();
             self.notif_logos.borrow_mut().clear();
             self.search_icons.borrow_mut().clear();
+            self.arrange_icons.borrow_mut().clear();
             self.shot_thumb.borrow_mut().take();
             self.regions = HitRegions::default();
             self.paint(style, shape, frame, opacity)?;
@@ -1552,6 +1561,9 @@ impl Renderer {
             View::Notice(notice) => match (&notice.kind, frame.shot) {
                 (NoticeKind::Screenshot { shot, .. }, Some(view)) if view.id == *shot => {
                     self.paint_shot(shape, notice, view, robot)
+                }
+                (NoticeKind::Arranged { save }, _) => {
+                    self.paint_arranged(shape, notice, *save, &frame.arrange, robot)
                 }
                 _ => self.paint_notice(shape, notice, frame.pomodoro, robot, frame.clip_notice),
             },

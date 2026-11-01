@@ -130,11 +130,14 @@ pub enum Icon {
     /// The Notifikasi page: an inbox tray, an open-top box whose front edge
     /// dips in the middle. Duotone like the Bell, which it must not be mistaken for.
     Inbox,
+    /// The Susun page: a rounded screen frame split by a vertical and a
+    /// horizontal line into a 2x2 layout (Pintasan's `Grid` is four tiles).
+    Layout,
 }
 
 impl Icon {
     /// Every icon, in declaration order (`ALL[i] as usize == i`).
-    pub const ALL: [Icon; 69] = [
+    pub const ALL: [Icon; 70] = [
         Icon::Camera,
         Icon::Clipboard,
         Icon::Emoji,
@@ -204,6 +207,7 @@ impl Icon {
         Icon::Back,
         Icon::Cat,
         Icon::Inbox,
+        Icon::Layout,
     ];
 
     /// The icon's primitives on the 24-unit grid, in drawing order.
@@ -476,6 +480,11 @@ impl Icon {
                     "M3 13l3.2-7.5h11.6L21 13v5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18z",
                 ),
                 Part::Path("M3 13h4.5l1.2 2.5h6.6l1.2-2.5H21"),
+            ],
+            Icon::Layout => &[
+                Part::FillRect(3.0, 4.5, 18.0, 15.0, 3.0),
+                Part::Rect(3.0, 4.5, 18.0, 15.0, 3.0),
+                Part::Path("M12 4.5v15M3 12h18"),
             ],
         }
     }
