@@ -59,32 +59,36 @@ const ROW_EXCLUDED_PREFIXES: [&str; 3] = [
     "New session in ",
 ];
 
-/// The sidebar button that is the session titled `title`: its name is the
-/// title, or the title and a space and the subtitle. Exactly one candidate
-/// decides; none or several (two sessions of one title) is None.
-pub fn match_sidebar_row(names: &[String], title: &str) -> Option<usize> {
+/// Every sidebar button that could be the session titled `title`: its name is
+/// the title, or the title and a space and the subtitle. The helper buttons of
+/// a row are never candidates, and a blank title has none.
+pub fn sidebar_row_candidates(names: &[String], title: &str) -> Vec<usize> {
     let title = title.trim();
     if title.is_empty() {
-        return None;
+        return Vec::new();
     }
-    let mut found = None;
-    for (i, name) in names.iter().enumerate() {
-        let name = name.trim();
-        if ROW_EXCLUDED_PREFIXES.iter().any(|p| name.starts_with(p)) {
-            continue;
-        }
-        let hit = name == title
-            || name
-                .strip_prefix(title)
-                .is_some_and(|rest| rest.starts_with(' '));
-        if hit {
-            if found.is_some() {
-                return None;
-            }
-            found = Some(i);
-        }
+    names
+        .iter()
+        .enumerate()
+        .filter(|(_, name)| {
+            let name = name.trim();
+            !ROW_EXCLUDED_PREFIXES.iter().any(|p| name.starts_with(p))
+                && (name == title
+                    || name
+                        .strip_prefix(title)
+                        .is_some_and(|rest| rest.starts_with(' ')))
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// The sidebar button that is the session titled `title`. Exactly one
+/// candidate decides; none or several (two sessions of one title) is None.
+pub fn match_sidebar_row(names: &[String], title: &str) -> Option<usize> {
+    match sidebar_row_candidates(names, title).as_slice() {
+        [i] => Some(*i),
+        _ => None,
     }
-    found
 }
 
 /// The `title` of a Claude Desktop session file; nothing else of it is read.
@@ -377,6 +381,20 @@ mod tests {
         assert_eq!(match_sidebar_row(&rows, "Fix login"), Some(3));
         let only_helpers = names(&["More options for Fix login", "New session in Fix login"]);
         assert_eq!(match_sidebar_row(&only_helpers, "Fix login"), None);
+    }
+
+    #[test]
+    fn sidebar_row_candidates_tell_none_from_a_tie() {
+        let rows = names(&[
+            "Other",
+            "Fix login 1d",
+            "More options for Fix login",
+            "Fix login 3d",
+        ]);
+        assert_eq!(sidebar_row_candidates(&rows, "Fix login"), vec![1, 3]);
+        assert_eq!(sidebar_row_candidates(&rows, "Other"), vec![0]);
+        assert!(sidebar_row_candidates(&rows, "Missing").is_empty());
+        assert!(sidebar_row_candidates(&rows, "  ").is_empty());
     }
 
     #[test]

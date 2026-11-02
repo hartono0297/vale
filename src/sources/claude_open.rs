@@ -42,8 +42,8 @@ use crate::claude::host;
 use crate::claude::origin::{self, ClaudeOrigin};
 use crate::notif::claude_open::{
     ClaudeRule, WinCand, choose_claude_target, desktop_session_file_ok, hidden_console,
-    match_sidebar_row, parse_session_title, pick_claude_tab, resolve_window, tab_fallback_project,
-    vscode_uri,
+    match_sidebar_row, parse_session_title, pick_claude_tab, resolve_window,
+    sidebar_row_candidates, tab_fallback_project, vscode_uri,
 };
 use crate::notif::open::WinState;
 
@@ -246,6 +246,8 @@ impl Step<'_> {
         };
         let names: Vec<String> = rows.iter().map(|(n, _)| n.clone()).collect();
         log.push(format!("{} buttons read", names.len()));
+        let candidates = sidebar_row_candidates(&names, &title);
+        log.push(format!("{} sidebar rows match the title", candidates.len()));
         let Some(i) = match_sidebar_row(&names, &title) else {
             log.push("no single sidebar row matches the title: window only".into());
             return;
@@ -311,6 +313,10 @@ impl Step<'_> {
             return;
         };
         log.push(format!("{} tabs read", tabs.tabs.len()));
+        if !self.act {
+            // Only the dry run names them: why no tab was picked shows here.
+            log.push(format!("tabs: {:?}", tabs.tabs));
+        }
         // An editor's tabs include its open files: there only the console
         // title may pick.
         let picked = pick_claude_tab(
