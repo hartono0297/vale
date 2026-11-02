@@ -121,7 +121,7 @@ pub fn clean_tab_title(s: &str) -> String {
 
 /// True when `needle` is in `hay` with no letter or digit on either side.
 /// Both are compared lowercase.
-fn contains_whole_word(hay: &str, needle: &str) -> bool {
+pub(crate) fn contains_whole_word(hay: &str, needle: &str) -> bool {
     let hay = hay.to_lowercase();
     let needle = needle.to_lowercase();
     if needle.trim().is_empty() {
@@ -167,6 +167,52 @@ pub fn pick_claude_tab(
     }
 }
 
+/// Editors (VS Code and its forks, JetBrains IDEs, Visual Studio, Sublime,
+/// Zed): their UIA tree also holds the open files' tabs (an editor tab
+/// "api.rs" names the project "api" as a whole word), so a tab is picked there
+/// only by the console title, never by the project word.
+fn is_editor_host(exe: &str) -> bool {
+    const EDITORS: [&str; 26] = [
+        "code.exe",
+        "code - insiders.exe",
+        "cursor.exe",
+        "windsurf.exe",
+        "codium.exe",
+        "vscodium.exe",
+        "trae.exe",
+        "kiro.exe",
+        "positron.exe",
+        "void.exe",
+        "zed.exe",
+        "devenv.exe",
+        "sublime_text.exe",
+        "notepad++.exe",
+        "idea64.exe",
+        "pycharm64.exe",
+        "webstorm64.exe",
+        "phpstorm64.exe",
+        "rider64.exe",
+        "goland64.exe",
+        "clion64.exe",
+        "rustrover64.exe",
+        "rubymine64.exe",
+        "datagrip64.exe",
+        "fleet.exe",
+        "studio64.exe",
+    ];
+    EDITORS.contains(&exe)
+}
+
+/// The project folder the tab rule may fall back to for this host: none for
+/// an editor (`is_editor_host`), so only a console-title match selects a tab.
+pub fn tab_fallback_project<'a>(host_exe: &str, project: &'a str) -> &'a str {
+    if is_editor_host(host_exe) {
+        ""
+    } else {
+        project
+    }
+}
+
 // ------------------------------------------------------------------- VS Code
 
 /// The Claude Code extension's link to a session: `scheme` is `vscode` or
@@ -194,6 +240,13 @@ pub struct WinCand {
     /// Lowercase image file name.
     pub exe: String,
     pub cand: MainCand,
+}
+
+/// A console window that is not shown (a classic console started hidden, a
+/// ConPTY stand-in): never the user's window, so a click never shows one.
+pub fn hidden_console(class: &str, state: super::open::WinState) -> bool {
+    matches!(class, "ConsoleWindowClass" | "PseudoConsoleWindow")
+        && state == super::open::WinState::Hidden
 }
 
 /// The window to bring forward, an index into `wins` (Z order, frontmost
@@ -409,6 +462,43 @@ mod tests {
         assert_eq!(pick_claude_tab(&tabs, None, "Dynamic Island"), Some(0));
         let tabs = names(&["~/dynamic-island (main)", "dynamic", "island"]);
         assert_eq!(pick_claude_tab(&tabs, None, "dynamic-island"), Some(0));
+    }
+
+    #[test]
+    fn an_editor_tab_is_never_picked_by_the_project_word() {
+        // VS Code's integrated terminal: the editor's file tabs are read too.
+        let tabs = names(&["api.rs", "README.md", "pwsh"]);
+        let project = tab_fallback_project("code.exe", "api");
+        assert_eq!(
+            pick_claude_tab(&tabs, Some("Something else"), project),
+            None
+        );
+        assert_eq!(pick_claude_tab(&tabs, None, project), None);
+        assert_eq!(
+            pick_claude_tab(&tabs, None, tab_fallback_project("cursor.exe", "api")),
+            None
+        );
+        // A console-title match still selects there.
+        let tabs = names(&["api.rs", "✳ Fix login"]);
+        assert_eq!(
+            pick_claude_tab(&tabs, Some("⠂ Fix login"), project),
+            Some(1)
+        );
+        // Terminals keep the fallback.
+        let tabs = names(&["PowerShell", "~/work/api (main)"]);
+        let project = tab_fallback_project("windowsterminal.exe", "api");
+        assert_eq!(pick_claude_tab(&tabs, None, project), Some(1));
+        assert_eq!(tab_fallback_project("orca.exe", "api"), "api");
+    }
+
+    #[test]
+    fn only_a_hidden_console_window_is_refused() {
+        assert!(hidden_console("ConsoleWindowClass", WinState::Hidden));
+        assert!(hidden_console("PseudoConsoleWindow", WinState::Hidden));
+        assert!(!hidden_console("ConsoleWindowClass", WinState::Visible));
+        assert!(!hidden_console("ConsoleWindowClass", WinState::Minimized));
+        // A hidden (tray) app window is still shown.
+        assert!(!hidden_console("Chrome_WidgetWin_1", WinState::Hidden));
     }
 
     #[test]

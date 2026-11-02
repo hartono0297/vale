@@ -30,9 +30,13 @@ a debug build, measured with the ignored `capture_on_this_machine` test.
 
 1. One Toolhelp snapshot; the ancestors of the hook (max 16, stops at a gap or
    a cycle; pid reuse is not detected).
-2. One `EnumWindows` pass for the chain's pids: first window (Z order) that is
+2. One `EnumWindows` pass for the chain's pids: every window (Z order) that is
    visible, unowned, not `WS_EX_TOOLWINDOW`, titled, not Progman, WorkerW or the
-   taskbar.
+   taskbar, with its title. The host's window is `pick_host_window` (pure,
+   tested): VS Code and Windows Terminal run every window from one process and
+   the frontmost is only where the user is now, so first a window with a
+   " - " part equal to the project folder ("file - folder - Visual Studio
+   Code"), then one naming it as a whole word, then the frontmost.
 3. `choose_host` (pure, tested): the CLI is the first `claude.exe`, `node.exe` or
    `bun.exe`; the host is the first entry after it with a window that is not in
    the skip list (node, bun, cmd, powershell, pwsh, bash, sh, zsh, fish, nu, wsl,
@@ -50,8 +54,12 @@ a debug build, measured with the ignored `capture_on_this_machine` test.
    console alone gave the wrong title and no window. A console the process
    already had (`--probe-claude-open` attaches to print) is freed first and
    attached again at the end.
-5. No host: the console window; a ConPTY `PseudoConsoleWindow` becomes its
-   `GA_ROOTOWNER` when that is a visible window. The title is cut to 512 chars.
+5. The console window (`console_target`, pure): a ConPTY `PseudoConsoleWindow`
+   becomes its `GA_ROOTOWNER` when that is a visible window; a classic console
+   counts only while visible (a hook shell or CLI started hidden is never the
+   user's). It becomes the host when there is none, and replaces the host's
+   window when it belongs to the host's pid (a WT tab's own window, not the
+   one the user is in). The title is cut to 512 chars.
    `CLAUDE_CODE_HOST_SESSION_ID` is kept only if it matches
    `^[A-Za-z0-9_-]{1,100}$`.
 
@@ -78,7 +86,8 @@ Activity leaves it. `to_event` is unchanged and pure.
 Window: the recorded hwnd while it still exists and belongs to the recorded pid,
 else `pick_main_window` over the windows of a process with the same exe name
 (for Desktop only Electron windows, so a console window of some `claude.exe` is
-never taken for it).
+never taken for it). A hidden console window (`hidden_console`) is never taken,
+so a click never shows a blank console an older hook recorded.
 
 ## Execution (`sources/claude_open.rs`, on the `notif-open` worker)
 
@@ -108,8 +117,10 @@ through the same `Clock`, cancel checked between steps, the usual foreground rul
   `pick_claude_tab`: cleaned console title equal (status glyphs and braille
   spinner stripped, case-insensitive); two equal titles is a tie and decides
   nothing; none equal -> exactly one tab with the project folder as a whole word
-  ("api" is not "rapid"). Then `SelectionItemPattern.Select()`. No pick: the
-  current tab stays.
+  ("api" is not "rapid"); not for an editor host (`tab_fallback_project`: VS Code
+  and forks, JetBrains, Visual Studio, Sublime, Zed), whose UIA tree also holds
+  the open files' tabs ("api.rs"), so there only the console title picks. Then
+  `SelectionItemPattern.Select()`. No pick: the current tab stays.
 - **WindowOnly**: window forward.
 
 ## Dry run

@@ -41,8 +41,9 @@ use crate::claude::hook::{HookKind, parse_hook_input};
 use crate::claude::host;
 use crate::claude::origin::{self, ClaudeOrigin};
 use crate::notif::claude_open::{
-    ClaudeRule, WinCand, choose_claude_target, desktop_session_file_ok, match_sidebar_row,
-    parse_session_title, pick_claude_tab, resolve_window, vscode_uri,
+    ClaudeRule, WinCand, choose_claude_target, desktop_session_file_ok, hidden_console,
+    match_sidebar_row, parse_session_title, pick_claude_tab, resolve_window, tab_fallback_project,
+    vscode_uri,
 };
 use crate::notif::open::WinState;
 
@@ -153,6 +154,8 @@ fn execute(job: &ClaudeJob, cancel: &dyn Fn() -> bool, act: bool) -> Vec<String>
 
 /// The recorded window while it is there, else the main window of the host's
 /// exe. For the Desktop rule the exe fallback only looks at Electron windows.
+/// A hidden console window is never taken (an older hook may have recorded
+/// one): showing it would open a blank window the user never had.
 fn find_window<'a>(o: &ClaudeOrigin, desktop: bool, all: &'a [Win]) -> Option<&'a Win> {
     let cand = |w: &Win| WinCand {
         hwnd: w.hwnd as i64,
@@ -160,9 +163,13 @@ fn find_window<'a>(o: &ClaudeOrigin, desktop: bool, all: &'a [Win]) -> Option<&'
         exe: w.exe.clone(),
         cand: w.cand(),
     };
-    let cands: Vec<WinCand> = all.iter().map(cand).collect();
+    let all: Vec<&Win> = all
+        .iter()
+        .filter(|w| !hidden_console(&w.class, w.state()))
+        .collect();
+    let cands: Vec<WinCand> = all.iter().map(|w| cand(w)).collect();
     if let Some(i) = resolve_window(o.host_hwnd, o.host_pid, "", &cands) {
-        return Some(&all[i]);
+        return Some(all[i]);
     }
     let exe = if desktop && o.host_exe.is_empty() {
         "claude.exe"
@@ -170,7 +177,7 @@ fn find_window<'a>(o: &ClaudeOrigin, desktop: bool, all: &'a [Win]) -> Option<&'
         o.host_exe.as_str()
     };
     let pool: Vec<&Win> = all
-        .iter()
+        .into_iter()
         .filter(|w| !desktop || w.class == ELECTRON_CLASS)
         .collect();
     let cands: Vec<WinCand> = pool.iter().map(|w| cand(w)).collect();
@@ -304,10 +311,12 @@ impl Step<'_> {
             return;
         };
         log.push(format!("{} tabs read", tabs.tabs.len()));
+        // An editor's tabs include its open files: there only the console
+        // title may pick.
         let picked = pick_claude_tab(
             &tabs.tabs,
             self.job.origin.console_title.as_deref(),
-            &self.job.project,
+            tab_fallback_project(&self.job.origin.host_exe, &self.job.project),
         );
         let Some(i) = picked else {
             log.push("no single tab matches: current tab left".into());
@@ -458,7 +467,7 @@ pub fn probe() {
         "event: {kind}, session {}, project \"{}\"",
         msg.session_id, msg.project
     );
-    let origin = host::capture();
+    let origin = host::capture(&msg.project);
     println!(
         "origin: host pid {}, exe \"{}\", hwnd {:#x}, cli_direct {}",
         origin.host_pid, origin.host_exe, origin.host_hwnd, origin.cli_direct

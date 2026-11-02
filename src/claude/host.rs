@@ -17,12 +17,13 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
 use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GA_ROOTOWNER, GW_OWNER, GWL_EXSTYLE, GetAncestor, GetClassNameW, GetWindow,
-    GetWindowLongW, GetWindowTextLengthW, GetWindowThreadProcessId, IsWindowVisible,
-    WS_EX_TOOLWINDOW,
+    GetWindowLongW, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
+    IsWindowVisible, WS_EX_TOOLWINDOW,
 };
 use windows::core::BOOL;
 
 use super::origin::{ClaudeOrigin, clamp_title, sanitize_host_session_id};
+use crate::notif::claude_open::contains_whole_word;
 
 /// How many ancestors are looked at.
 const MAX_DEPTH: usize = 16;
@@ -168,21 +169,26 @@ const SHELL_CLASSES: [&str; 4] = [
 
 struct Scan {
     pids: Vec<u32>,
-    found: HashMap<u32, i64>,
+    found: HashMap<u32, Vec<(i64, String)>>,
 }
 
-/// Per pid of `pids`, its first (most recent in Z order) top-level window that
-/// is visible, unowned, not a tool window and titled.
-fn windows_of(pids: &[u32]) -> HashMap<u32, i64> {
+/// Per pid of `pids`, its top-level windows that are visible, unowned, not a
+/// tool window and titled, most recent in Z order first, with their titles.
+/// (For another process's window `GetWindowTextW` reads the stored caption
+/// and sends no message, so a hung host cannot stall the hook.)
+fn windows_of(pids: &[u32]) -> HashMap<u32, Vec<(i64, String)>> {
     unsafe extern "system" fn each(hwnd: HWND, lparam: LPARAM) -> BOOL {
         let scan = unsafe { &mut *(lparam.0 as *mut Scan) };
         let mut pid = 0u32;
         unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
-        if scan.pids.contains(&pid)
-            && !scan.found.contains_key(&pid)
-            && unsafe { real_window(hwnd) }
-        {
-            scan.found.insert(pid, hwnd.0 as isize as i64);
+        if scan.pids.contains(&pid) && unsafe { real_window(hwnd) } {
+            let mut text = [0u16; 512];
+            let n = unsafe { GetWindowTextW(hwnd, &mut text) }.max(0) as usize;
+            let title = String::from_utf16_lossy(&text[..n.min(text.len())]);
+            scan.found
+                .entry(pid)
+                .or_default()
+                .push((hwnd.0 as isize as i64, title));
         }
         true.into()
     }
@@ -194,6 +200,35 @@ fn windows_of(pids: &[u32]) -> HashMap<u32, i64> {
         let _ = EnumWindows(Some(each), LPARAM((&raw mut scan) as isize));
     }
     scan.found
+}
+
+/// Which of the host's windows (Z order, frontmost first) holds the session
+/// when the console does not say: a host such as VS Code runs every window
+/// from one process, and its frontmost one is only where the user is now.
+/// VS Code titles read "file - folder - Visual Studio Code", so first a
+/// window with a " - " part equal to the project folder (a leading dirty dot
+/// ignored), then one naming it as a whole word, then the frontmost.
+/// Case-insensitive; None for no windows.
+pub fn pick_host_window<W: Copy>(wins: &[(W, String)], project: &str) -> Option<W> {
+    let project = project.trim().to_lowercase();
+    let rank = |title: &str| -> u8 {
+        if project.is_empty() {
+            return 0;
+        }
+        let lower = title.to_lowercase();
+        if lower
+            .split(" - ")
+            .any(|part| part.trim().trim_start_matches('\u{25cf}').trim() == project)
+        {
+            2
+        } else if contains_whole_word(&lower, &project) {
+            1
+        } else {
+            0
+        }
+    };
+    let best = wins.iter().map(|(_, t)| rank(t)).max()?;
+    wins.iter().find(|(_, t)| rank(t) == best).map(|(w, _)| *w)
 }
 
 unsafe fn real_window(hwnd: HWND) -> bool {
@@ -304,25 +339,46 @@ fn console_info(cli_pid: Option<u32>, parent_pid: Option<u32>) -> (Option<HWND>,
     }
 }
 
+/// Class of a ConPTY console's stand-in window: hidden, owned by the terminal.
+const PSEUDO_CONSOLE_CLASS: &str = "PseudoConsoleWindow";
+
 /// A console window as the window to bring forward: a ConPTY pseudo window is
 /// replaced by its root owner (the terminal), which must be a real visible
-/// window; a classic console window is itself.
+/// window; a classic console window is itself, only while it is visible (a
+/// console started hidden, such as a hook shell's, was never the user's).
 unsafe fn terminal_window(console: HWND) -> Option<HWND> {
     unsafe {
         let mut name = [0u16; 64];
         let n = GetClassNameW(console, &mut name).max(0) as usize;
         let class = String::from_utf16_lossy(&name[..n.min(name.len())]);
-        if class != "PseudoConsoleWindow" {
-            return Some(console);
-        }
-        let root = GetAncestor(console, GA_ROOTOWNER);
-        (!root.is_invalid() && root != console && IsWindowVisible(root).as_bool()).then_some(root)
+        let root = if class == PSEUDO_CONSOLE_CLASS {
+            let root = GetAncestor(console, GA_ROOTOWNER);
+            (!root.is_invalid()).then(|| (root, IsWindowVisible(root).as_bool()))
+        } else {
+            None
+        };
+        console_target(console, &class, IsWindowVisible(console).as_bool(), root)
     }
 }
 
-/// Facts about where this hook runs. Called only for a Done or Waiting event.
-/// No panics, nothing printed.
-pub fn capture() -> ClaudeOrigin {
+/// The pure part of `terminal_window`: `root` is the pseudo window's root
+/// owner and whether that is visible.
+fn console_target<W: Copy + PartialEq>(
+    console: W,
+    class: &str,
+    console_visible: bool,
+    root: Option<(W, bool)>,
+) -> Option<W> {
+    if class != PSEUDO_CONSOLE_CLASS {
+        return console_visible.then_some(console);
+    }
+    root.filter(|&(r, visible)| r != console && visible)
+        .map(|(r, _)| r)
+}
+
+/// Facts about where this hook runs, for the session in the `project`
+/// folder. Called only for a Done or Waiting event. No panics, nothing printed.
+pub fn capture(project: &str) -> ClaudeOrigin {
     let table = process_table();
     let ancestors = ancestor_chain(&table, unsafe { GetCurrentProcessId() });
     let pids: Vec<u32> = ancestors.iter().map(|r| r.pid).collect();
@@ -333,7 +389,8 @@ pub fn capture() -> ClaudeOrigin {
             pid: r.pid,
             exe: r.exe.clone(),
             // Explorer's windows are folders and the desktop, never a CLI's home.
-            has_window: windows.contains_key(&r.pid) && r.exe != "explorer.exe",
+            has_window: windows.get(&r.pid).is_some_and(|w| !w.is_empty())
+                && r.exe != "explorer.exe",
         })
         .collect();
     let mut origin = ClaudeOrigin {
@@ -346,21 +403,28 @@ pub fn capture() -> ClaudeOrigin {
         let host = &chain[pick.index];
         origin.host_pid = host.pid;
         origin.host_exe = host.exe.clone();
-        origin.host_hwnd = windows.get(&host.pid).copied().unwrap_or(0);
+        origin.host_hwnd = windows
+            .get(&host.pid)
+            .and_then(|w| pick_host_window(w, project))
+            .unwrap_or(0);
         origin.cli_direct = pick.cli_direct;
     }
     let cli_pid = chain.iter().find(|e| is_cli(&e.exe)).map(|e| e.pid);
     let parent_pid = chain.first().map(|e| e.pid);
     let (console_window, title) = console_info(cli_pid, parent_pid);
     origin.console_title = title;
-    if origin.host_pid == 0
-        && let Some(hwnd) = console_window
-    {
+    if let Some(hwnd) = console_window {
         let mut pid = 0u32;
         unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
-        origin.host_pid = pid;
-        origin.host_exe = crate::sources::notif_open::image_name(pid);
-        origin.host_hwnd = hwnd.0 as isize as i64;
+        if origin.host_pid == 0 {
+            origin.host_pid = pid;
+            origin.host_exe = crate::sources::notif_open::image_name(pid);
+            origin.host_hwnd = hwnd.0 as isize as i64;
+        } else if pid != 0 && pid == origin.host_pid {
+            // The console names the session's own window (a ConPTY tab's
+            // terminal window), not just the host's frontmost one.
+            origin.host_hwnd = hwnd.0 as isize as i64;
+        }
     }
     origin
 }
@@ -569,6 +633,78 @@ mod tests {
         assert_eq!(gather(None, None).0, (None, None));
     }
 
+    fn wins(titles: &[&str]) -> Vec<(i64, String)> {
+        titles
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (i as i64 + 1, t.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn the_host_window_of_the_project_beats_the_frontmost() {
+        // VS Code: the user works in window B (front), the session is in A.
+        let w = wins(&[
+            "main.rs - shop - Visual Studio Code",
+            "lib.rs - api - Visual Studio Code",
+        ]);
+        assert_eq!(pick_host_window(&w, "api"), Some(2));
+        assert_eq!(pick_host_window(&w, "API"), Some(2));
+        // A dirty marker and a multi-root workspace title.
+        let w = wins(&[
+            "main.rs - shop - Visual Studio Code",
+            "\u{25cf} lib.rs - api (Workspace) - Visual Studio Code",
+        ]);
+        assert_eq!(pick_host_window(&w, "api"), Some(2));
+    }
+
+    #[test]
+    fn the_folder_part_beats_a_file_named_like_the_project() {
+        // "api.rs" names "api" as a whole word, but the folder part decides.
+        let w = wins(&[
+            "api.rs - shop - Visual Studio Code",
+            "lib.rs - api - Visual Studio Code",
+        ]);
+        assert_eq!(pick_host_window(&w, "api"), Some(2));
+        // Of two windows of the folder, the frontmost.
+        let w = wins(&[
+            "x - other - Visual Studio Code",
+            "a.rs - api - Visual Studio Code",
+            "b.rs - api - Visual Studio Code",
+        ]);
+        assert_eq!(pick_host_window(&w, "api"), Some(2));
+    }
+
+    #[test]
+    fn without_a_project_match_the_frontmost_host_window_stays() {
+        let w = wins(&["one - rapid - Code", "two - apiary - Code"]);
+        assert_eq!(pick_host_window(&w, "api"), Some(1));
+        assert_eq!(pick_host_window(&w, ""), Some(1));
+        assert_eq!(pick_host_window(&wins(&[]), "api"), None);
+    }
+
+    #[test]
+    fn a_console_window_counts_only_when_shown() {
+        // ConPTY: the stand-in window's visible root owner (the terminal).
+        assert_eq!(
+            console_target(1, PSEUDO_CONSOLE_CLASS, false, Some((5, true))),
+            Some(5)
+        );
+        assert_eq!(
+            console_target(1, PSEUDO_CONSOLE_CLASS, false, Some((5, false))),
+            None
+        );
+        assert_eq!(
+            console_target(1, PSEUDO_CONSOLE_CLASS, false, Some((1, true))),
+            None
+        );
+        assert_eq!(console_target(1, PSEUDO_CONSOLE_CLASS, false, None), None);
+        // A classic console: itself, only while visible (a hook shell's or a
+        // CLI started hidden is never the user's window).
+        assert_eq!(console_target(1, "ConsoleWindowClass", true, None), Some(1));
+        assert_eq!(console_target(1, "ConsoleWindowClass", false, None), None);
+    }
+
     fn row(pid: u32, ppid: u32, exe: &str) -> ProcRow {
         ProcRow {
             pid,
@@ -617,7 +753,7 @@ mod tests {
     #[ignore = "reads the real desktop; run with --ignored --nocapture"]
     fn capture_on_this_machine() {
         let t = std::time::Instant::now();
-        let origin = capture();
+        let origin = capture("dynamic-island");
         println!("{origin:?} in {:?}", t.elapsed());
     }
 }

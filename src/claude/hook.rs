@@ -160,7 +160,7 @@ pub fn run_hook() {
     if let Some(mut msg) = parse_hook_input(&String::from_utf8_lossy(&input)) {
         // Only a notice can be clicked: activity events do no capture work.
         if msg.kind != HookKind::Activity {
-            msg.origin = Some(super::host::capture());
+            msg.origin = Some(super::host::capture(&msg.project));
         }
         send_to_pipe(&msg);
     }
