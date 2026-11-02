@@ -15,7 +15,7 @@ The island does not try to dismiss browser prompts. That is a deliberate choice.
 
 ## How to tell
 
-1. Run with `--media-log`, or set `"media_log": true` in `%APPDATA%\DynamicIsland\config.json`.
+1. Run with `--media-log`, or set `"media_log": true` in `%APPDATA%\Vale\config.json`.
 2. Read `media.log`. At about 1 MB it rotates to `media.log.1`. Track titles are never written to it.
 3. Find the playback change to Paused. If no island command line comes just before it, something outside the island paused the music.
 
