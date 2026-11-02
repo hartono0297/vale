@@ -83,6 +83,10 @@ Vale.
   retried, at most 3 in a row; anything else stops (overlay cancels; the
   editor shows the canvas without a picture too big for the device and says
   so in the footer) instead of repainting in a loop.
+- **Editor tools.** Eight, in this order: Select, Text, Rectangle, **Line**
+  (key L, an arrow without its head: `Annotation::Line`, hit within
+  `tol + width / 2`, two handles like the arrow's), Arrow, Pen, Marker,
+  Pixelate (`Tool::ALL`, the toolbar test checks the first eight items).
 - **Editor.** Annotations in image px (`shot_edit::Session`: whole-document
   snapshots for undo/redo, `dirty` = anything changed since the last save or
   copy). `paint::draw_annotations` is used by the canvas and the export alike
@@ -123,7 +127,150 @@ Vale.
   auto-copy is inert too (`enabled` false: no worker, no timer, no clipboard)
   and Save writes to `target/demo-shots/`; the process ends when the window
   closes. Screenshots of them: `PrintWindow` with flag 2 on the demo's main
-  window.
+  window. `--demo-snap inline` is the inline mode, see "Inline mode".
+
+## Inline mode (2026-11-02, "Setelah capture" = "Langsung di layar")
+
+The owner's ask: a Lightshot-style capture. After the pick the overlay does not
+open the editor: the frozen screen stays, the region is drawn on in place, then
+Copy, Save or Open in editor. Pure rules: `src/capture/inline.rs` (tested); the
+window glue: `capture/overlay.rs` (Pick phase, `finish`, `finish_inline`) and
+`capture/overlay/edit.rs` (the drawing phase). Editor mode is untouched.
+
+- **Setting.** Settings → Clipboard → Screenshot → *Setelah capture*
+  (`screenshot.after_capture`, `config::AfterCapture`: `Editor` default,
+  `Inline`; read case-insensitively, a missing value, an unknown name, a number
+  or null reads as Editor and the rest of the file stays). Row 2 of 6, a
+  segmented control, never faded ([[settings-structure]]). `App` stores it with
+  `capture::set_after_capture` in `clip_start` and `clip_follow_config`
+  (every Settings change goes `on_shot_setting` -> `save_config` ->
+  `adopt_config` -> `clip_follow_config`, like auto-copy). The overlay latches
+  it and "Salin otomatis" in `overlay::start` / `start_demo`, so a change
+  meanwhile applies to the next capture. Applies to the tile and to PrtSc
+  (both start `overlay::start`); the Snipping Tool path (`queue_shortcut`) is
+  unchanged.
+- **Phases.** `Phase::Pick` is today's behaviour (snap by click, drag a
+  rectangle, Enter takes the highlight, Esc and a right click cancel). In
+  inline mode a pick calls `edit::enter` instead of `finish(Some(r))`: the
+  overlay stays, the pick hint pill goes, the UIA answers that come later are
+  ignored (still taken, so their boxes are freed). `Phase::Edit` holds the
+  selection (virtual-screen px), a `Session` (undo, redo, tool, colour, stroke;
+  Select is the tool), the drag, the open text, hover and pressed button, the
+  confirm flag and the mosaic cache.
+- **Frame px.** `Frozen` is now an origin plus an `Arc<Shot>`: the same pixels
+  are the painter's `&Shot` (no 100+ MB copy) and the source of the crop.
+  Annotations are in frame px: (0, 0) is the frame's top-left, also the
+  overlay's client (0, 0); the view is `View { scale: 1, ox: 0, oy: 0 }`. The
+  pointer is virtual px (the frame's origin added); `Env::local` turns it into
+  a frame point. Because the annotations are in frame px, moving the selection
+  moves only the crop, never what is drawn on screen.
+- **Drawing.** The frame, dimmed outside the selection; the annotations inside
+  `PushAxisAlignedClip(selection)` with `draw_annotations_clipped(.., clip =
+  selection)`; the selected annotation's handles (`paint::draw_selection`);
+  the selection's border (a 1 px black line, a white dashed one on top,
+  `Gfx::dash`); a size label in a dark pill above the top-left (just inside
+  when there is no room above on the monitor); eight handle squares; the tool
+  strip and the action bar; a tooltip; the demo's notice. The order is
+  `inline::PAINT_ORDER` (tested): a panel's background before its buttons, the
+  same rule as [[shot-editor-paint-order]]. Redraws only when something
+  changed; no timer, no worker at idle. Strip: Select, Pen, Line, Arrow, Rect,
+  Marker, Text, Pixelate | six colours | three strokes | Undo, Redo (icons from
+  `shot_edit::icons`, the editor's own). Bar: Salin, Simpan, Buka di editor,
+  Tutup; the confirm bar ("Buang perubahan?", Buang, Batal) takes its place.
+  Sizes are dip times `ui`, `ui` = the DPI of the monitor holding the
+  selection's centre over 96 (`win::monitor_at`), measured again when the
+  selection moves to another monitor.
+- **Placement** (`inline`, pure, tested). `place_side(sel, size, monitor, side,
+  gap)`: the strip goes Right (from the selection's top, else Left, else
+  inside the right edge), the bar Below (right edge on the selection's, else
+  Above, else inside the bottom edge); always clamped fully onto the monitor
+  of the selection, so a selection on a second monitor with negative
+  coordinates keeps its panels there. `separate` moves the bar clear of the
+  strip when they would overlap (a narrow selection near the edge).
+  `strip_layout(ui, max_h)` makes two (three, ...) columns when one is taller
+  than the monitor allows. `label_rect`, `tooltip_rect` likewise.
+- **Selection maths** (pure). Eight `SelHandle`s (`handle_at`, corners win a
+  tie); `resize_sel(start, handle, to, bounds)` moves the grabbed edges of the
+  rectangle **as it was at the press**, flips over the opposite edge, is at
+  least 1 × 1 and stays in the frame; `move_sel` keeps the size.
+  `select_press` orders what a Select press grabs: the selected annotation's
+  handle, the topmost annotation under the pointer (only inside the selection,
+  `Session::hit` with 6 × `ui` px), a selection handle (7 × `ui`), inside:
+  move the selection, outside: a new selection while nothing is drawn (else
+  nothing).
+- **Mouse.** A press on a button is that button and acts on release over the
+  same one, like the editor; while the confirm bar is up only Buang and Batal
+  answer, and a press on a panel's background does nothing. Drawing tools
+  (Pen, Line, Arrow, Rect, Marker, Pixelate) start only on a press inside the
+  selection; the stroke may leave it and is clipped. Same `Session::begin` /
+  `end` and degenerate-drop rules as the editor's window. Text: the shared
+  EDIT (see below), placed inside the selection, a double click on a text with
+  Select edits it. Cursors: arrow over the panels, size cursors over handles,
+  move over the selection, an I beam for Text, a cross to draw.
+  `WM_CAPTURECHANGED` mid-drag ends the drag as a release. The overlay's class
+  has `CS_DBLCLKS` and `WS_CLIPCHILDREN`.
+- **Keys** (`inline_key`, pure). A text EDIT or a drag running takes every key.
+  The confirm bar: Enter = Discard (close, copy nothing), Esc = Keep, the rest
+  ignored. Otherwise Enter or Ctrl+C copy and close, Ctrl+S save and close,
+  Esc asks (the confirm bar) when something is drawn else cancels, Ctrl+Z,
+  Ctrl+Y / Ctrl+Shift+Z, Delete, and V T R L A P M B pick a tool. "Tutup" and a
+  right click act as Esc (first the text being typed, then the confirm bar's
+  Keep). Assumption: `WM_CLOSE` / Alt+F4 in the drawing phase is Esc too (the
+  bar when something is drawn); in the Pick phase it cancels as before. Losing
+  the foreground, `WM_DISPLAYCHANGE` and a failed draw cancel at once and copy
+  nothing.
+- **Finishing** (`finish_inline`, `inline::finish_copies`). Copy always copies,
+  Save only with "Salin otomatis" (latched), Cancel / Close / Discard /
+  OpenEditor never. "Salin otomatis" never copies at the pick or on a debounce
+  here. The open text is committed first, then the state leaves its slot
+  (idempotent like `finish`), the selection is cropped from the frame, a clone
+  of the document is moved by -(selection - frame origin) (`doc_in_crop`;
+  annotations partly outside stay as they are) and the frame is freed. Copy:
+  `export::copy(overlay, crop, doc, next_capture_id(), true)` on the UI thread
+  before `DestroyWindow`; it records the write as **managed**, so the island
+  shows no notch preview and no copy notice and keeps one history card per
+  capture ([[clipboard-notice]]). Save (after that copy when auto-copy is
+  latched): `export::save_detached(crop, doc, dir)` on its own worker (the
+  same render, `write_new` naming and Screenshots folder as the editor's
+  Simpan, never over a file). OpenEditor: `shot_edit::window::open_with(crop,
+  selection centre, demo, doc)`; the editor then follows its own rules,
+  auto-copy included.
+- **Mosaic = export.** `paint::pixel_region(r, w, h, clip)`: without a clip a
+  Pixelate is `r` cut to the picture with `pixel_block(w, h)` (editor and
+  export); with a clip (the selection) it is `r` cut to the clip, then to the
+  picture, with `pixel_block(clip.w, clip.h)`. The cells are aligned to the
+  region's corner, so what the overlay shows (frame base, clip = selection) is
+  pixel for pixel the export of the crop (crop base, no clip); a test compares
+  the two `pixelate()` outputs. The `Pix` cache key now includes the block.
+- **Shared pieces** (no behaviour change for the editor). `shot_edit/text.rs`:
+  `TextEdit`, `create` (EDIT, font, brush, margins, subclass, caret at the
+  end), `destroy` (unsubclass before `DestroyWindow`), `fit`, `contrast_back`,
+  `edit_proc` (posts `WM_APP_TEXT` = `WM_APP + 50` to its parent with the EDIT in
+  `lparam`: 1 commit, 2 cancel), `TextClick`, `text_click_action`,
+  `text_msg_is_current` (the stale-message rule above, in both windows).
+  `shot_edit/icons.rs`: `Glyph` and `glyph` (taking `ui::geometry::Rect`), so
+  the strip draws the editor's icons. `export::save_detached` shares the save
+  worker's body (`save_blocking`) with `spawn_save`.
+- **Lifetime.** One overlay at a time; armed / deactivation cancel; display
+  change cancels; the frame is freed on close; `WM_DESTROY` takes the state, and
+  `Edit`'s `Drop` destroys an open EDIT and frees its GDI objects; a lost D2D
+  target is retried up to 3 times (the mosaic cache cleared too); no timers.
+- **Demo.** `--demo-snap inline` (debug builds): the same made-up desktop, the
+  pick keeps the overlay. Copy / Enter touch no clipboard: the top pill says
+  `EditDemoNoClipboard` and the overlay stays. Save writes to
+  `target/demo-shots/` on a worker whose `JoinHandle` waits in a thread-local;
+  `run_snap` joins it after the message loop. Buka di editor opens the editor
+  demo. A plain `--demo-snap` is as before. Driven in this session by posting
+  window messages to the demo's window and reading it with `PrintWindow` (flag
+  2): pick, rectangle / arrow / pen / line / mosaic, the tooltip, the confirm
+  bar, resize and move of the selection, an open text EDIT, Copy's notice,
+  Save (the file matched the selection with the mosaic), Buka di editor.
+- **Limits and not verified.** A Save that fails after the overlay is gone is
+  only `eprintln!`-ed (no window is left to say it). Not verified live: the
+  real clipboard (managed own-copy, history card, no notch preview), a text
+  typed through an IME inside the overlay, several monitors with different DPI,
+  and whether an IME or a system popup deactivates the overlay (that would
+  cancel).
 
 ## Auto-copy (2026-11-02, "Salin otomatis")
 
@@ -270,7 +417,8 @@ reducer, the row in `settings_layout::hotkeys_page`. Generalised in
   pintas ("Screenshot Vale"), a recordable field like the others. When the
   hook cannot be installed every PrtSc row is `failed` and its description
   turns red ("Sudah dipakai aplikasi lain"). The Screenshot card in Clipboard
-  is five rows since auto-copy: tool, Salin otomatis, preview, on-ignore, seconds.
+  is six rows: tool, Setelah capture, Salin otomatis, preview, on-ignore,
+  seconds.
 - **Retry.** A failed install is tried again when the tray menu opens and
   when Settings opens (`retry_hotkeys`), and by any sync of a failed row.
 - **Untouched:** `app_shot.rs` (the clipboard preview of a PrtSc image),

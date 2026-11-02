@@ -876,17 +876,25 @@ pub(super) fn on_key(hwnd: HWND, vk: u16) {
         key_down(VK_MENU.0),
     );
     let ctx = ed(|e, _| {
-        e.notice = None;
-        KeyCtx {
-            editing_text: e.text.is_some(),
-            confirm: e.confirm,
-            has_annotations: !e.session.doc.is_empty(),
-            dragging: e.drag.is_some(),
-        }
+        let had_notice = e.notice.take().is_some();
+        (
+            KeyCtx {
+                editing_text: e.text.is_some(),
+                confirm: e.confirm,
+                has_annotations: !e.session.doc.is_empty(),
+                dragging: e.drag.is_some(),
+            },
+            had_notice,
+        )
     });
-    let Some(ctx) = ctx else { return };
+    let Some((ctx, had_notice)) = ctx else { return };
     match inline_key(vk, ctrl, shift, alt, ctx) {
-        InlineKey::Ignore => {}
+        InlineKey::Ignore => {
+            // The demo's line goes with the next key.
+            if had_notice {
+                invalidate(hwnd);
+            }
+        }
         InlineKey::Copy => do_btn(hwnd, Btn::Copy),
         InlineKey::Save => do_btn(hwnd, Btn::Save),
         InlineKey::AskDiscard => ask(hwnd),
