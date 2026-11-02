@@ -53,7 +53,11 @@ pub fn choose_claude_target(o: &ClaudeOrigin) -> ClaudeRule {
 // ------------------------------------------------------------ Desktop sidebar
 
 /// Rows of the sidebar that are buttons of a session row but not the row.
-const ROW_EXCLUDED_PREFIXES: [&str; 3] = ["More options for ", "Hide nested sessions ", "New session in "];
+const ROW_EXCLUDED_PREFIXES: [&str; 3] = [
+    "More options for ",
+    "Hide nested sessions ",
+    "New session in ",
+];
 
 /// The sidebar button that is the session titled `title`: its name is the
 /// title, or the title and a space and the subtitle. Exactly one candidate
@@ -108,7 +112,8 @@ pub fn desktop_session_file_ok(id: &str) -> bool {
 /// trimmed.
 pub fn clean_tab_title(s: &str) -> String {
     s.trim_start_matches(|c: char| {
-        c.is_whitespace() || !c.is_alphanumeric() || ('\u{2800}'..='\u{28ff}').contains(&c)
+        // Braille patterns (the spinner) are symbols already; named for the reader.
+        c.is_whitespace() || !c.is_alphanumeric() || (0x2800..=0x28ff).contains(&(c as u32))
     })
     .trim()
     .to_string()
@@ -132,7 +137,11 @@ fn contains_whole_word(hay: &str, needle: &str) -> bool {
 /// The tab of the session: the one whose cleaned title equals the console's
 /// (case-insensitive); two such tabs are a tie and decide nothing. With none,
 /// the one tab naming the project folder as a whole word; again exactly one.
-pub fn pick_claude_tab(tabs: &[String], console_title: Option<&str>, project: &str) -> Option<usize> {
+pub fn pick_claude_tab(
+    tabs: &[String],
+    console_title: Option<&str>,
+    project: &str,
+) -> Option<usize> {
     let wanted = console_title.map(clean_tab_title).filter(|t| !t.is_empty());
     if let Some(wanted) = wanted {
         let wanted = wanted.to_lowercase();
@@ -194,7 +203,9 @@ pub struct WinCand {
 /// hidden one (shown, never launched). None when neither exists.
 pub fn resolve_window(hwnd: i64, pid: u32, exe: &str, wins: &[WinCand]) -> Option<usize> {
     if hwnd != 0
-        && let Some(i) = wins.iter().position(|w| w.hwnd == hwnd && w.pid == pid && pid != 0)
+        && let Some(i) = wins
+            .iter()
+            .position(|w| w.hwnd == hwnd && w.pid == pid && pid != 0)
     {
         return Some(i);
     }
@@ -369,7 +380,10 @@ mod tests {
     #[test]
     fn no_title_match_falls_back_to_the_project_word() {
         let tabs = names(&["PowerShell", "~/work/api (main)", "notes"]);
-        assert_eq!(pick_claude_tab(&tabs, Some("Something else"), "api"), Some(1));
+        assert_eq!(
+            pick_claude_tab(&tabs, Some("Something else"), "api"),
+            Some(1)
+        );
         assert_eq!(pick_claude_tab(&tabs, None, "api"), Some(1));
         assert_eq!(pick_claude_tab(&tabs, Some("   "), "api"), Some(1));
     }

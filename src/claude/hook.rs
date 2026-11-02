@@ -389,7 +389,10 @@ mod tests {
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert_eq!(serde_json::from_str::<HookMessage>(&json).unwrap(), msg);
-        let bare = HookMessage { origin: None, ..msg };
+        let bare = HookMessage {
+            origin: None,
+            ..msg
+        };
         assert!(!serde_json::to_string(&bare).unwrap().contains("origin"));
     }
 

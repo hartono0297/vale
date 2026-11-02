@@ -78,7 +78,12 @@ fn is_skipped(exe: &str) -> bool {
     is_shell(exe)
         || matches!(
             exe,
-            "node.exe" | "bun.exe" | "wslhost.exe" | "conhost.exe" | "openconsole.exe" | "git-bash.exe"
+            "node.exe"
+                | "bun.exe"
+                | "wslhost.exe"
+                | "conhost.exe"
+                | "openconsole.exe"
+                | "git-bash.exe"
         )
 }
 
@@ -90,7 +95,8 @@ fn is_skipped(exe: &str) -> bool {
 pub fn choose_host(chain: &[ProcEntry]) -> Option<HostPick> {
     let cli = chain.iter().position(|e| is_cli(&e.exe));
     let start = cli.map_or(0, |c| c + 1);
-    let index = (start..chain.len()).find(|&i| chain[i].has_window && !is_skipped(&chain[i].exe))?;
+    let index =
+        (start..chain.len()).find(|&i| chain[i].has_window && !is_skipped(&chain[i].exe))?;
     let cli_direct = cli.is_some_and(|c| {
         chain[c + 1..index]
             .iter()
@@ -152,7 +158,12 @@ fn process_table() -> Vec<ProcRow> {
 }
 
 /// Classes of the desktop and taskbar: never an app's window.
-const SHELL_CLASSES: [&str; 4] = ["Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd"];
+const SHELL_CLASSES: [&str; 4] = [
+    "Progman",
+    "WorkerW",
+    "Shell_TrayWnd",
+    "Shell_SecondaryTrayWnd",
+];
 
 struct Scan {
     pids: Vec<u32>,
@@ -166,7 +177,9 @@ fn windows_of(pids: &[u32]) -> HashMap<u32, i64> {
         let scan = unsafe { &mut *(lparam.0 as *mut Scan) };
         let mut pid = 0u32;
         unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
-        if scan.pids.contains(&pid) && !scan.found.contains_key(&pid) && unsafe { real_window(hwnd) }
+        if scan.pids.contains(&pid)
+            && !scan.found.contains_key(&pid)
+            && unsafe { real_window(hwnd) }
         {
             scan.found.insert(pid, hwnd.0 as isize as i64);
         }
@@ -212,7 +225,9 @@ fn console_info(cli_pid: Option<u32>) -> (Option<HWND>, Option<String>) {
             attached = AttachConsole(pid).is_ok();
         }
         let console = GetConsoleWindow();
-        let window = (!console.is_invalid()).then(|| terminal_window(console)).flatten();
+        let window = (!console.is_invalid())
+            .then(|| terminal_window(console))
+            .flatten();
         let mut buf = [0u16; 1024];
         let n = GetConsoleTitleW(&mut buf) as usize;
         let title = clamp_title(&String::from_utf16_lossy(&buf[..n.min(buf.len())]));
@@ -311,7 +326,12 @@ mod tests {
     #[test]
     fn windows_terminal_goes_through_a_shell() {
         assert_eq!(
-            pick(&["claude.exe", "pwsh.exe", "openconsole.exe", "windowsterminal.exe*"]),
+            pick(&[
+                "claude.exe",
+                "pwsh.exe",
+                "openconsole.exe",
+                "windowsterminal.exe*"
+            ]),
             Some((3, false))
         );
     }
@@ -339,14 +359,23 @@ mod tests {
     #[test]
     fn console_helpers_are_skipped_even_with_a_window() {
         assert_eq!(
-            pick(&["claude.exe", "cmd.exe", "conhost.exe*", "openconsole.exe*", "explorer.exe*"]),
+            pick(&[
+                "claude.exe",
+                "cmd.exe",
+                "conhost.exe*",
+                "openconsole.exe*",
+                "explorer.exe*"
+            ]),
             Some((4, false))
         );
     }
 
     #[test]
     fn no_window_anywhere_is_none() {
-        assert_eq!(pick(&["claude.exe", "pwsh.exe", "windowsterminal.exe"]), None);
+        assert_eq!(
+            pick(&["claude.exe", "pwsh.exe", "windowsterminal.exe"]),
+            None
+        );
         assert_eq!(pick(&[]), None);
     }
 
@@ -354,7 +383,12 @@ mod tests {
     fn the_hooks_own_shell_before_the_cli_is_not_the_host() {
         // The hook command ran through bash / cmd before reaching claude.
         assert_eq!(
-            pick(&["bash.exe*", "claude.exe", "pwsh.exe", "windowsterminal.exe*"]),
+            pick(&[
+                "bash.exe*",
+                "claude.exe",
+                "pwsh.exe",
+                "windowsterminal.exe*"
+            ]),
             Some((3, false))
         );
         assert_eq!(
@@ -431,6 +465,8 @@ mod tests {
     #[test]
     #[ignore = "reads the real desktop; run with --ignored --nocapture"]
     fn capture_on_this_machine() {
-        println!("{:?}", capture());
+        let t = std::time::Instant::now();
+        let origin = capture();
+        println!("{origin:?} in {:?}", t.elapsed());
     }
 }

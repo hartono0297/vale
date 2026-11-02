@@ -3187,7 +3187,7 @@ mod tests {
         let mut s = st();
         s.apply(Event::Media(Some(media(true))), t0);
         s.apply(Event::Notice(waiting("s1")), t0);
-        assert_eq!(s.apply(Event::Click(Hit::Body), t0), vec![]);
+        assert_eq!(s.apply(Event::Click(Hit::Body), t0), open_session("s1"));
         assert_eq!(s.view(), View::MediaCompact);
     }
 
@@ -3230,7 +3230,7 @@ mod tests {
         let mut s = st();
         s.apply(Event::Notice(waiting("s1")), t0);
         s.apply(Event::Notice(waiting("s2")), t0);
-        assert_eq!(s.apply(Event::Click(Hit::Body), t0), vec![]);
+        assert_eq!(s.apply(Event::Click(Hit::Body), t0), open_session("s2"));
         assert_eq!(s.view(), View::Notice(waiting("s1")));
     }
 
@@ -5957,7 +5957,7 @@ mod tests {
         s.apply(Event::Notice(waiting("s2")), t0);
         s.apply(Event::Hover(true), t0);
         assert_eq!(s.waiting_strip(), Some(&waiting("s2")));
-        assert_eq!(s.apply(Event::Click(Hit::Strip), t0), vec![]);
+        assert_eq!(s.apply(Event::Click(Hit::Strip), t0), open_session("s2"));
         assert_eq!(s.view(), View::Panel(Page::Calendar), "panel stays open");
         assert_eq!(
             s.waiting_strip(),
@@ -5967,6 +5967,61 @@ mod tests {
         s.apply(Event::Click(Hit::Strip), t0);
         assert_eq!(s.waiting_strip(), None);
         leave(&mut s, t0);
+        assert_eq!(s.view(), View::Idle);
+    }
+
+    fn open_session(id: &str) -> Vec<Effect> {
+        vec![Effect::OpenClaudeSession {
+            session_id: id.into(),
+        }]
+    }
+
+    #[test]
+    fn clicking_a_done_notice_opens_its_session() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Notice(done("d1")), t0);
+        assert_eq!(s.view(), View::Notice(done("d1")));
+        assert_eq!(s.apply(Event::Click(Hit::Body), t0), open_session("d1"));
+        assert_eq!(s.view(), View::Idle, "dismissed as before");
+    }
+
+    #[test]
+    fn clicking_a_waiting_notice_opens_its_session_and_clears_the_sticky() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Notice(waiting("w1")), t0);
+        assert_eq!(s.apply(Event::Click(Hit::Body), t0), open_session("w1"));
+        assert_eq!(s.view(), View::Idle);
+        // The sticky notice is gone: the strip has nothing, a new click does nothing.
+        s.apply(Event::Hover(true), t0);
+        assert_eq!(s.waiting_strip(), None);
+        assert_eq!(s.apply(Event::Click(Hit::Strip), t0), vec![]);
+    }
+
+    #[test]
+    fn clicking_the_strip_of_a_waiting_notice_opens_its_session() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Notice(waiting("w1")), t0);
+        s.apply(Event::Hover(true), t0);
+        assert_eq!(s.waiting_strip(), Some(&waiting("w1")));
+        assert_eq!(s.apply(Event::Click(Hit::Strip), t0), open_session("w1"));
+        assert_eq!(s.waiting_strip(), None);
+    }
+
+    #[test]
+    fn claude_activity_clears_a_waiting_notice_without_an_effect() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Notice(waiting("w1")), t0);
+        let effects = s.apply(
+            Event::ClaudeActivity {
+                session_id: "w1".into(),
+            },
+            t0,
+        );
+        assert_eq!(effects, vec![]);
         assert_eq!(s.view(), View::Idle);
     }
 
@@ -6758,7 +6813,7 @@ mod tests {
         s.apply(Event::Notice(reminder("r3")), t0);
         s.apply(Event::Notice(waiting("s2")), t0);
         assert_eq!(s.view(), View::Notice(waiting("s2")));
-        assert_eq!(s.apply(Event::Click(Hit::Body), t0), vec![]);
+        assert_eq!(s.apply(Event::Click(Hit::Body), t0), open_session("s2"));
         assert_eq!(s.view(), View::Notice(reminder("r3")));
     }
 
@@ -6855,7 +6910,7 @@ mod tests {
             vec![Effect::ReminderDone("r1".into())]
         );
         assert_eq!(s.waiting_strip(), Some(&waiting("s1")));
-        assert_eq!(s.apply(Event::Click(Hit::Strip), t0), vec![]);
+        assert_eq!(s.apply(Event::Click(Hit::Strip), t0), open_session("s1"));
         assert_eq!(s.waiting_strip(), None);
     }
 

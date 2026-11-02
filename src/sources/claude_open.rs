@@ -20,10 +20,10 @@ use std::io::{self, IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
 };
-use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Variant::VARIANT;
 use windows::Win32::UI::Accessibility::{
     CUIAutomation8, IUIAutomation2, IUIAutomationElement, IUIAutomationInvokePattern,
@@ -36,9 +36,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{HSTRING, w};
 
-use super::notif_open::{
-    Clock, SELECT_TIMEOUT_MS, Win, bring_forward, read_tabs, windows,
-};
+use super::notif_open::{Clock, SELECT_TIMEOUT_MS, Win, bring_forward, read_tabs, windows};
 use crate::claude::hook::{HookKind, parse_hook_input};
 use crate::claude::host;
 use crate::claude::origin::{self, ClaudeOrigin};
@@ -203,8 +201,10 @@ impl Step<'_> {
     }
 
     fn uia(&self) -> Option<IUIAutomation2> {
-        unsafe { CoCreateInstance::<_, IUIAutomation2>(&CUIAutomation8, None, CLSCTX_INPROC_SERVER) }
-            .ok()
+        unsafe {
+            CoCreateInstance::<_, IUIAutomation2>(&CUIAutomation8, None, CLSCTX_INPROC_SERVER)
+        }
+        .ok()
     }
 
     /// Claude Desktop: the window, then the session's sidebar row.
@@ -249,8 +249,9 @@ impl Step<'_> {
         }
         unsafe {
             reset_timeouts(&uia);
-            if let Ok(pattern) =
-                rows[i].1.GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId)
+            if let Ok(pattern) = rows[i]
+                .1
+                .GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId)
             {
                 let _ = pattern.Invoke();
             }
@@ -318,9 +319,9 @@ impl Step<'_> {
         }
         unsafe {
             reset_timeouts(&uia);
-            if let Ok(item) = elements[i]
-                .GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(UIA_SelectionItemPatternId)
-            {
+            if let Ok(item) = elements[i].GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(
+                UIA_SelectionItemPatternId,
+            ) {
                 let _ = item.Select();
             }
         }
@@ -351,10 +352,7 @@ fn wait_foreground(hwnd: HWND, cancel: &dyn Fn() -> bool) -> bool {
 
 /// Every button under the window with its name, in one cached call under the
 /// clock. None when the clock ran out first.
-unsafe fn read_buttons(
-    clock: &Clock,
-    hwnd: HWND,
-) -> Option<Vec<(String, IUIAutomationElement)>> {
+unsafe fn read_buttons(clock: &Clock, hwnd: HWND) -> Option<Vec<(String, IUIAutomationElement)>> {
     let uia = clock.uia;
     unsafe {
         if !clock.go() {
@@ -456,7 +454,10 @@ pub fn probe() {
         HookKind::Waiting => "Waiting",
         HookKind::Activity => "Activity (the hook would capture nothing)",
     };
-    println!("event: {kind}, session {}, project \"{}\"", msg.session_id, msg.project);
+    println!(
+        "event: {kind}, session {}, project \"{}\"",
+        msg.session_id, msg.project
+    );
     let origin = host::capture();
     println!(
         "origin: host pid {}, exe \"{}\", hwnd {:#x}, cli_direct {}",
