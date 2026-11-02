@@ -1,6 +1,6 @@
 ---
 tags: [decision, robot, notch]
-date: 2026-10-28
+date: 2026-11-02
 ---
 
 # The notch assistant: which face, and where it shows
@@ -41,6 +41,13 @@ first:
    discharging → Sad; asleep → Sleep; else Idle. **Think** stays in `Expr` for
    the demo face sheet and the `bata-claude` notice scene, but `choose_expr`
    never returns it.
+
+Asleep (2026-11-02) = N minutes ("Tidur setelah", default 10) without mouse
+or keyboard input anywhere on the PC (`GetLastInputInfo`) and without island
+activity. A sleeping cat wakes within 2 s of any input; hovering the island
+still wakes it at once. Motion Off never sleeps. Vale's own synthetic input
+(media keys, volume wheel) counts as input too. How it is polled, and why
+nothing runs while awake: [[bata-idle-power-budget]].
 
 "Claude working" = a session with `ClaudeActivity` in the last 2 minutes
 that has not sent Done or Waiting since (`CLAUDE_WORKING_FOR`).
