@@ -29,23 +29,30 @@ notch-peek eyes pill ([[notch-peek-eyes]]). The see-through legibility halo
 
 ## Surfaces
 
-`Surface { Auto, Espresso, Graphite, Sea, Night, Plum }`, `Auto` the default.
+`Surface { Auto, Espresso, Graphite, Sea, Night, Plum, Terminal }`, `Auto` the default
+(Terminal was appended last, so the `pack` indices keep their meaning).
 A file without `surface`, or with an unknown name, reads as Auto; a stored
 "Espresso" or "Graphite" keeps its meaning, and the old "Black" still reads
 as Espresso. Fills: Espresso #17120F and Graphite #221B17 unchanged, Sea
-#132321, Night #151C2E, Plum #2A2140.
+#132321, Night #151C2E, Plum #2A2140, Terminal #1B1D1F (a flat neutral
+near-black with no warm tint; label "Terminal" in both languages).
 
 `Surface::resolve(cat, robot_on)`: Auto gives Terracotta -> Espresso,
 Calico -> Sea, White -> Night, Black -> Plum, and Espresso with the cat off;
 any other value is itself. **Auto never reaches `island()`**:
 `island_palette(cfg)` and `Theme::of` resolve first (`island` itself reads a
 stray Auto as Espresso), and the Settings preview resolves the same way.
-`theme::pack` / `unpack` carry the six surfaces (a test walks every
-combination).
+`theme::pack` / `unpack` carry the seven surfaces (a test walks every
+combination, and Terminal has its own round trip).
+
+Auto never resolves to Terminal (a test checks it for every cat, robot on or off).
 
 The coloured surfaces lift their own colour the way Graphite lifts Espresso:
 raised +12, raised_hi +34, track and placeholder +26, column +5, dot_off +50
-on every channel (Espresso and Graphite keep their pinned values). Text stays
+on every channel (Espresso and Graphite keep their pinned values). On
+Terminal that gives raised #27292B, raised_hi #3D3F41, track and placeholder
+#353739, column #202224, dot_off #4D4F51: each stays within a spread of 4
+between channels, like the #1B1D1F source, so the surface stays neutral. Text stays
 #F4EDE4; each surface has its own `secondary` caption colour, because
 #A89A8B drops to about 4.2:1 on the coloured fills.
 
@@ -58,11 +65,16 @@ on every channel (Espresso and Graphite keep their pinned values). Text stays
 | Sea #132321 | 14.02 / 12.03 | #A3B8B2 | 7.80 / 6.69 |
 | Night #151C2E | 14.61 / 12.65 | #A7B1C8 | 7.89 / 6.83 |
 | Plum #2A2140 | 13.01 / 11.05 | #B9ACD0 | 7.10 / 6.03 |
+| Terminal #1B1D1F | 14.56 / 12.57 | #A9ADB2 (neutral grey) | 7.49 / 6.47 |
 
 The ink on every accent stays at least 4.5:1. The status colours (sage,
 ochre, plum) hold 4.5:1 on every surface; the third event colour #B07A9A fell
 to 4.39:1 on the Plum surface, so the Plum surface uses #C893B4 (5.96:1 on
-the surface, 5.06:1 on raised) for it.
+the surface, 5.06:1 on raised) for it. Terminal does the same: #B07A9A is
+4.91:1 on its fill but 4.21:1 on raised (it is under 4.5:1 on the raised
+step of Graphite, Sea and Night too, which the test does not check for
+the default third colour), so Terminal uses #C893B4 (6.67:1 / 5.76:1).
+Sage and ochre hold at least 6.4:1 on Terminal's surface and raised.
 
 ## Config (lenient, island-owned)
 

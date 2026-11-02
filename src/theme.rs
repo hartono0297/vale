@@ -105,7 +105,7 @@ named_enum! {
 named_enum! {
     /// The island's fill. `Auto` follows the cat's colour
     /// (`Surface::resolve`) and never reaches the palette.
-    Surface { Auto, Espresso, Graphite, Sea, Night, Plum }
+    Surface { Auto, Espresso, Graphite, Sea, Night, Plum, Terminal }
     aliases { "Black" => Espresso }
 }
 
@@ -172,6 +172,7 @@ impl Surface {
             Surface::Sea => 0x132321,
             Surface::Night => 0x151C2E,
             Surface::Plum => 0x2A2140,
+            Surface::Terminal => 0x1B1D1F,
         }
     }
 
@@ -199,6 +200,7 @@ impl Surface {
             Surface::Sea => 0xA3B8B2,
             Surface::Night => 0xA7B1C8,
             Surface::Plum => 0xB9ACD0,
+            Surface::Terminal => 0xA9ADB2,
         }
     }
 }
@@ -333,7 +335,7 @@ pub fn island(accent: Accent, surface: Surface) -> Palette {
             (0x241D18, 0x3A2F27, 0x332A23, 0x1D1713, 0x332A23, 0x4A3E35)
         }
         Surface::Graphite => (0x2E2620, 0x463A31, 0x3D332B, 0x272019, 0x3D332B, 0x574A40),
-        Surface::Sea | Surface::Night | Surface::Plum => {
+        Surface::Sea | Surface::Night | Surface::Plum | Surface::Terminal => {
             let s = surface.rgb();
             (
                 lift(s, 12),
@@ -360,8 +362,9 @@ pub fn island(accent: Accent, surface: Surface) -> Palette {
         sage: Accent::Sage.rgb(),
         ochre: Accent::Ochre.rgb(),
         // The third event colour is lifted on the Plum surface, where #B07A9A
-        // falls to 4.4:1.
-        plum: if surface == Surface::Plum {
+        // falls to 4.4:1, and on Terminal, where it holds 4.9:1 on the fill
+        // but only 4.2:1 on the raised step.
+        plum: if matches!(surface, Surface::Plum | Surface::Terminal) {
             0xC893B4
         } else {
             Accent::Plum.rgb()
@@ -643,7 +646,8 @@ mod tests {
             .copied()
             .filter(|s| *s != Surface::Auto)
             .collect();
-        assert_eq!(concrete.len(), 5);
+        assert_eq!(concrete.len(), 6);
+        assert!(concrete.contains(&Surface::Terminal));
         for surface in concrete {
             let p = island(Accent::Terracotta, surface);
             let nums = [
@@ -666,6 +670,20 @@ mod tests {
                 // The island's accent is never the island's own fill.
                 assert_ne!(a.rgb(), p.surface);
             }
+            // The status and event colours (sage, ochre, plum) read on the
+            // surface and on its raised step.
+            // (#B07A9A, the default third colour, is only 4.0-4.3:1 on the
+            // raised step of Graphite, Sea and Night, so the raised step is
+            // checked for it where it is lifted: Plum and Terminal.)
+            let lifted = matches!(surface, Surface::Plum | Surface::Terminal);
+            for status in [p.sage, p.ochre, p.plum] {
+                let c = contrast(status, p.surface);
+                assert!(c >= 4.5, "{surface:?} {status:06X}: {c:.2}");
+                if status != p.plum || lifted {
+                    let c = contrast(status, p.raised);
+                    assert!(c >= 4.5, "{surface:?} {status:06X} raised: {c:.2}");
+                }
+            }
             // Raised steps stay a visible step above the surface.
             for step in [p.raised, p.raised_hi, p.track, p.dot_off] {
                 assert!(luminance(step) > luminance(p.surface), "{surface:?}");
@@ -682,6 +700,9 @@ mod tests {
             (CatColor::Black, Surface::Plum),
         ] {
             assert_eq!(Surface::Auto.resolve(cat, true), want);
+            // Auto never gives Terminal, whatever the cat or the robot.
+            assert_ne!(Surface::Auto.resolve(cat, true), Surface::Terminal);
+            assert_ne!(Surface::Auto.resolve(cat, false), Surface::Terminal);
             // The cat off: always Espresso.
             assert_eq!(Surface::Auto.resolve(cat, false), Surface::Espresso);
             // A chosen surface is itself, whatever the cat.
@@ -709,6 +730,8 @@ mod tests {
             [Surface::Sea, Surface::Night, Surface::Plum].map(|s| s.rgb()),
             [0x132321, 0x151C2E, 0x2A2140]
         );
+        assert_eq!(Surface::Terminal.rgb(), 0x1B1D1F);
+        assert_eq!(Surface::from_name("terminal"), Some(Surface::Terminal));
         assert_eq!(Surface::from_name("auto"), Some(Surface::Auto));
         assert_eq!(Surface::from_name("Black"), Some(Surface::Espresso));
         assert_eq!(CatColor::default(), CatColor::Terracotta);
@@ -881,6 +904,45 @@ mod tests {
             serde_json::from_str::<Surface>("\"Black\"").unwrap(),
             Surface::Espresso
         );
+    }
+
+    #[test]
+    fn terminal_surface_is_neutral_and_keeps_its_index_last() {
+        // Appended last: the older surfaces keep their packed indices.
+        assert_eq!(Surface::Terminal.index(), 6);
+        assert_eq!(Surface::Plum.index(), 5);
+        assert_eq!(Surface::ALL.last(), Some(&Surface::Terminal));
+        let t = Theme {
+            accent: Accent::Terracotta,
+            surface: Surface::Terminal,
+            window: WindowTheme::Dark,
+        };
+        assert_eq!(unpack(pack(t)), t);
+        assert_eq!(unpack(pack(t)).surface, Surface::Terminal);
+        // Neutral: every derived colour's channels stay within the source's
+        // own spread (0x1B1D1F: 4).
+        let spread = |c: u32| {
+            let ch = [(c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF];
+            ch.iter().max().unwrap() - ch.iter().min().unwrap()
+        };
+        let p = island(Accent::Terracotta, Surface::Terminal);
+        assert_eq!(spread(p.surface), 4);
+        for c in [
+            p.raised,
+            p.raised_hi,
+            p.track,
+            p.column,
+            p.placeholder,
+            p.dot_off,
+        ] {
+            assert!(spread(c) <= 4, "{c:06X}");
+        }
+        // The caption grey is a touch cooler (spread 9) but still reads grey.
+        assert!(spread(p.secondary) <= 9);
+        assert_eq!(p.raised, 0x27292B);
+        assert_eq!(p.plum, 0xC893B4);
+        assert!(contrast(p.secondary, p.surface) >= 4.5);
+        assert!(contrast(p.secondary, p.raised) >= 4.5);
     }
 
     #[test]
