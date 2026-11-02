@@ -29,9 +29,10 @@ use windows_numerics::Vector2;
 
 use super::{Phase, State, black, invalidate, with};
 use crate::capture::inline::{
-    BarLabels, Btn, Cursor, FinishKind, InlineKey, KeyCtx, Layer, PAINT_ORDER, PANEL_GAP, Panel,
-    SelHandle, SelectPress, Side, bar_layout, cursor_over, inline_key, label_rect, move_sel,
-    place_side, resize_sel, select_press, separate, strip_layout, tip, tooltip_rect, ui_for,
+    BarLabels, Btn, Cursor, EscStep, FinishKind, InlineKey, KeyCtx, Layer, PAINT_ORDER, PANEL_GAP,
+    Panel, SelHandle, SelectPress, Side, bar_layout, cursor_over, esc_step, inline_key, label_rect,
+    move_sel, place_side, resize_sel, select_press, separate, strip_layout, tip, tooltip_rect,
+    ui_for,
 };
 use crate::capture::{Rect, drag_rect, is_click, size_label, win};
 use crate::i18n::{Key, tr};
@@ -831,37 +832,36 @@ fn ask(hwnd: HWND) {
 
 /// The way out: Esc, a right click, "Tutup". First the text being typed,
 /// then the confirm bar (back to drawing), then the bar when something is
-/// drawn, else the overlay closes with nothing copied.
+/// drawn, else the overlay closes with nothing copied. Nothing while a drag
+/// runs, as the keys (see `esc_step`).
 pub(super) fn esc(hwnd: HWND, closing: FinishKind) {
-    enum Step {
-        CancelText,
-        Keep,
-        Ask,
-        Cancel,
+    match ed(|e, _| esc_step(key_ctx(e))) {
+        Some(EscStep::CancelText) => cancel_text(hwnd),
+        Some(EscStep::Keep) => keep(hwnd),
+        Some(EscStep::Ask) => ask(hwnd),
+        Some(EscStep::Cancel) => super::finish_inline(closing),
+        Some(EscStep::Ignore) | None => {}
     }
-    let step = ed(|e, _| {
-        if e.text.is_some() {
-            Step::CancelText
-        } else if e.confirm {
-            Step::Keep
-        } else if !e.session.doc.is_empty() {
-            Step::Ask
-        } else {
-            Step::Cancel
-        }
-    });
-    match step {
-        Some(Step::CancelText) => cancel_text(hwnd),
-        Some(Step::Keep) => keep(hwnd),
-        Some(Step::Ask) => ask(hwnd),
-        Some(Step::Cancel) => super::finish_inline(closing),
-        None => {}
+}
+
+/// What `esc_step` and `inline_key` read (no auto-repeat).
+fn key_ctx(e: &Edit) -> KeyCtx {
+    KeyCtx {
+        editing_text: e.text.is_some(),
+        confirm: e.confirm,
+        has_annotations: !e.session.doc.is_empty(),
+        dragging: e.drag.is_some(),
+        repeat: false,
     }
 }
 
 /// `WM_CLOSE` / Alt+F4 in the drawing phase: as Esc, after taking a text
 /// being typed into the picture (so the bar knows something is drawn).
+/// Nothing while a drag runs.
 pub(super) fn close(hwnd: HWND) {
+    if ed(|e, _| e.drag.is_some()).unwrap_or(false) {
+        return;
+    }
     commit_text(hwnd);
     esc(hwnd, FinishKind::Cancel);
 }
@@ -881,11 +881,8 @@ pub(super) fn on_key(hwnd: HWND, vk: u16, repeat: bool) {
         let had_notice = e.notice.take().is_some();
         (
             KeyCtx {
-                editing_text: e.text.is_some(),
-                confirm: e.confirm,
-                has_annotations: !e.session.doc.is_empty(),
-                dragging: e.drag.is_some(),
                 repeat,
+                ..key_ctx(e)
             },
             had_notice,
         )

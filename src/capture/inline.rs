@@ -687,6 +687,39 @@ fn key_action(vk: u16, ctrl: bool, shift: bool, alt: bool, ctx: KeyCtx) -> Inlin
     }
 }
 
+/// What the way out does (Esc's button twin: a right click, "Tutup",
+/// `WM_CLOSE`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EscStep {
+    /// A drag is running: nothing, as the Esc key while dragging.
+    Ignore,
+    /// Drop the text being typed.
+    CancelText,
+    /// The confirm bar is up: back to drawing.
+    Keep,
+    /// Something is drawn: the confirm bar.
+    Ask,
+    /// Close, copy nothing.
+    Cancel,
+}
+
+/// The way out in `ctx`. A running drag ignores it like every key, so a
+/// right click mid-stroke neither raises the bar under the stroke (whose
+/// next Enter would discard it) nor closes the overlay mid-drag.
+pub fn esc_step(ctx: KeyCtx) -> EscStep {
+    if ctx.dragging {
+        EscStep::Ignore
+    } else if ctx.editing_text {
+        EscStep::CancelText
+    } else if ctx.confirm {
+        EscStep::Keep
+    } else if ctx.has_annotations {
+        EscStep::Ask
+    } else {
+        EscStep::Cancel
+    }
+}
+
 // ---- finishing ----
 
 /// How the overlay ends.
@@ -1424,6 +1457,49 @@ mod tests {
             assert_eq!(key(vk, false, false, dragging), InlineKey::Ignore);
             assert_eq!(key(vk, true, false, dragging), InlineKey::Ignore);
         }
+    }
+
+    #[test]
+    fn the_way_out_waits_for_a_running_drag() {
+        let drawing = KeyCtx {
+            dragging: true,
+            has_annotations: true,
+            ..NONE
+        };
+        // A right click mid-stroke: no bar under the stroke.
+        assert_eq!(esc_step(drawing), EscStep::Ignore);
+        // Nothing drawn yet (a selection drag): the overlay stays.
+        let selecting = KeyCtx {
+            dragging: true,
+            ..NONE
+        };
+        assert_eq!(esc_step(selecting), EscStep::Ignore);
+        assert_eq!(
+            esc_step(KeyCtx {
+                confirm: true,
+                ..drawing
+            }),
+            EscStep::Ignore
+        );
+        // Without a drag, the usual order.
+        let text = KeyCtx {
+            editing_text: true,
+            has_annotations: true,
+            ..NONE
+        };
+        assert_eq!(esc_step(text), EscStep::CancelText);
+        let bar = KeyCtx {
+            confirm: true,
+            has_annotations: true,
+            ..NONE
+        };
+        assert_eq!(esc_step(bar), EscStep::Keep);
+        let drawn = KeyCtx {
+            has_annotations: true,
+            ..NONE
+        };
+        assert_eq!(esc_step(drawn), EscStep::Ask);
+        assert_eq!(esc_step(NONE), EscStep::Cancel);
     }
 
     #[test]
