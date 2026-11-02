@@ -507,7 +507,7 @@ keys! {
     IdleClock => "Jam saat kosong", "Clock when idle";
     IdleClockDesc => "Tampilkan jam saat island kosong", "Show the time when the island is idle";
     UiFont => "Font", "Font";
-    UiFontDesc => "Untuk island, panel, dan jendela ini", "For the island, panel and this window";
+    UiFontDesc => "Island, panel, pengaturan", "Island, panel, settings";
     UiFontSans => "DM Sans", "DM Sans";
     UiFontMono => "JetBrains Mono", "JetBrains Mono";
     EqFollowAudio => "Equalizer ikut irama", "Equalizer follows the music";

@@ -5274,7 +5274,7 @@ mod tests {
             .map(|(h, _)| h)
             .filter(|h| matches!(h, Hit::Slider(_) | Hit::NotchReset | Hit::NotchFill(_)))
             .collect();
-        // The Island card's fifth row (the equalizer toggle) now ends the
+        // The Island card's sixth row (the equalizer toggle) now ends the
         // visible part; the Notch card starts below the window.
         assert_eq!(peeking, []);
         assert!(top.hits().iter().any(|(h, _)| *h == Hit::EqFollowAudio));
@@ -7147,6 +7147,145 @@ mod tests {
         let (t, _, on) = desc_and_button(Lang::En, UpdateRow::Downloading(7));
         assert!(has(&t, "Downloading update\u{2026} 7%"));
         assert!(!on);
+    }
+
+    /// "Font" is the Island card's third row after the style and the accent:
+    /// right after "Warna dasar" and before "Jam saat kosong"; the card has
+    /// six rows now.
+    #[test]
+    fn the_island_card_has_a_font_row_after_the_base_color() {
+        for lang in [Lang::Id, Lang::En] {
+            for font in UiFont::ALL.iter().copied() {
+                let s = State {
+                    lang,
+                    font,
+                    ..states()[0].clone()
+                };
+                let l = layout(Section::Appearance, &s, &Estimate);
+                let card = l.cards[1];
+                assert_eq!(card.h, 6.0 * ROW_H);
+                let row_of = |y: f32| ((y - card.y) / ROW_H).floor() as usize;
+                let (track, segs, selected) = l.segmented(Group::Font).expect("the Font row");
+                assert_eq!(row_of(track.y + track.h / 2.0), 3);
+                assert_eq!(selected, usize::from(font == UiFont::Mono));
+                let hits: Vec<Hit> = segs.iter().map(|s| s.hit).collect();
+                assert_eq!(
+                    hits,
+                    [Hit::UiFont(UiFont::Sans), Hit::UiFont(UiFont::Mono)]
+                );
+                let labels: Vec<&str> = segs.iter().map(|s| s.label.as_str()).collect();
+                assert_eq!(labels, ["DM Sans", "JetBrains Mono"]);
+                // The label and its description sit in the same row.
+                let label = l
+                    .texts
+                    .iter()
+                    .find(|t| t.text == text(lang, Key::UiFont))
+                    .expect("the label");
+                assert_eq!(row_of(label.rect.y), 3);
+                assert!(l.texts.iter().any(|t| t.text == text(lang, Key::UiFontDesc)));
+                // The swatches are the row before it, the clock toggle and the
+                // equalizer toggle the two after.
+                let swatches = l.controls.iter().find_map(|c| match c {
+                    Control::SurfaceSwatches { items, .. } => Some(items[0].1),
+                    _ => None,
+                });
+                assert_eq!(row_of(swatches.expect("swatches").y), 2);
+                let toggle_row = |hit: Hit| {
+                    l.controls
+                        .iter()
+                        .find_map(|c| match c {
+                            Control::Toggle { hit: h, rect, .. } if *h == hit => {
+                                Some(row_of(rect.y))
+                            }
+                            _ => None,
+                        })
+                        .expect("toggle")
+                };
+                assert_eq!(toggle_row(Hit::IdleClock), 4);
+                assert_eq!(toggle_row(Hit::EqFollowAudio), 5);
+                // A click on each segment hits it.
+                for seg in segs {
+                    let (cx, cy) = (seg.rect.x + seg.rect.w / 2.0, seg.rect.y + seg.rect.h / 2.0);
+                    assert_eq!(l.hit(cx, cy), Some(seg.hit));
+                }
+            }
+        }
+    }
+
+    /// JetBrains Mono is 0.6 em per character, under the Estimate's 0.62 and
+    /// 0.66 factors, so the layout tests that fit with the Estimate hold for
+    /// Mono too: every label the sections show (ID and EN), measured in every
+    /// `Font` style with the real embedded JetBrains Mono through the
+    /// window's own measure, is at most the Estimate. (Texts of one or two
+    /// characters are left out: the window's measure rounds a width up to a
+    /// whole pixel, which is more than the Estimate's margin on so little.)
+    #[test]
+    fn real_jetbrains_mono_is_within_the_estimate() {
+        use crate::ui::fonts;
+        use crate::ui::settings_controls::Gfx;
+        use std::collections::HashSet;
+        use windows::Win32::Graphics::DirectWrite::{DWRITE_FACTORY_TYPE_SHARED, DWriteCreateFactory, IDWriteFactory};
+        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+
+        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let dwrite: IDWriteFactory =
+            unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED) }.expect("factory");
+        if !fonts::embedded(&dwrite).loaded.jetbrains_mono {
+            eprintln!("skipped: JetBrains Mono is not in this binary");
+            return;
+        }
+        let mut gfx = Gfx::new(UiFont::Sans).expect("gfx");
+        gfx.set_font(UiFont::Mono).expect("mono");
+        let mut seen: HashSet<(String, Font)> = HashSet::new();
+        let mut brand: Vec<Text> = Vec::new();
+        for (_, _, l) in all_layouts() {
+            let mut texts: Vec<&Text> = l.texts.iter().collect();
+            texts.extend(l.title.iter());
+            texts.extend(l.brand.iter());
+            texts.extend(l.nav.iter().map(|n| &n.label));
+            texts.extend(l.chips.iter().map(|c| &c.label));
+            for c in &l.controls {
+                match c {
+                    Control::Segmented { items, .. } => {
+                        for s in items {
+                            seen.insert((s.label.clone(), Font::Control));
+                        }
+                    }
+                    Control::Button(b) => {
+                        seen.insert((b.label.clone(), Font::Control));
+                    }
+                    _ => {}
+                }
+            }
+            for t in texts {
+                seen.insert((t.text.clone(), t.font));
+            }
+            brand.extend(l.brand.iter().cloned());
+        }
+        for font in Font::ALL {
+            assert!(
+                seen.iter().any(|(_, f)| *f == font),
+                "no label in {font:?} to measure"
+            );
+        }
+        for (s, font) in &seen {
+            if s.chars().count() < 3 {
+                continue;
+            }
+            let (real, est) = (gfx.width(s, *font), Estimate.width(s, *font));
+            assert!(real <= est, "{s:?} in {font:?}: {real} px, the Estimate {est}");
+        }
+        // The sidebar's brand rect holds "Vale" in Mono 16 px 600.
+        assert!(!brand.is_empty());
+        let vale = gfx.width("Vale", Font::Brand);
+        for b in &brand {
+            assert!(vale <= b.rect.w, "Vale is {vale} px in a {} px brand box", b.rect.w);
+        }
+        // The option's own labels fit the Font row's segments in both fonts.
+        for label in ["DM Sans", "JetBrains Mono"] {
+            let (real, est) = (gfx.width(label, Font::Control), Estimate.width(label, Font::Control));
+            assert!(real <= est, "{label:?}: {real} vs {est}");
+        }
     }
 
     #[test]
