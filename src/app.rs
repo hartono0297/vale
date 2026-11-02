@@ -1948,7 +1948,7 @@ impl App {
             Effect::ArrangeSkip => self.arrange_skip(),
             Effect::ArrangeUndo => self.arrange_undo(),
             Effect::ArrangeSave => self.arrange_save(),
-            Effect::OpenCleaner => self.scan_clean(),
+            Effect::OpenCleaner => return self.scan_clean(),
             Effect::CleanDelete(cats) => return self.start_clean(cats),
             Effect::SaveCleanMode(mode) => {
                 self.config.clean_mode = mode;
@@ -2276,16 +2276,19 @@ impl App {
     }
 
     /// The cleaner opened (or a clean ended while it shows): measure every
-    /// category. Not while a clean runs; its end scans again.
-    fn scan_clean(&mut self) {
+    /// category. Not while a clean runs; its end scans again. A scan the
+    /// thread cannot take tells the reducer, so the next showing asks again.
+    fn scan_clean(&mut self) -> Option<Event> {
         if self.state.clean_busy() || self.clean.scanning {
-            return;
+            return None;
         }
         let sent = self.cleaner().is_some_and(Cleaner::scan);
-        if !sent {
-            self.clean.worker = None;
-        }
         self.clean.scanning = sent;
+        if sent {
+            return None;
+        }
+        self.clean.worker = None;
+        Some(Event::CleanScanFailed)
     }
 
     /// The confirmed clean. If the thread cannot take it, the rows take
@@ -2414,9 +2417,10 @@ impl App {
                     while self.mole.log.len() > mole::LOG_CAP {
                         self.mole.log.pop_front();
                     }
-                    // A log scrolled up stays on what it shows; at the
-                    // newest (the usual case, and always while the panel is
-                    // shut) nothing is applied, so nothing redraws.
+                    // A log scrolled up stays on what it shows, panel open
+                    // or shut (the offset is kept for the return); at the
+                    // newest (the usual case) nothing is applied. The drain
+                    // refreshes after any Mole event either way.
                     if self.state.mole_log_scroll() > 0 {
                         self.apply(Event::MoleLogLines(added), now);
                     }

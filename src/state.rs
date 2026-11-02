@@ -829,6 +829,7 @@ impl IslandState {
             | Event::ShotRecycled { .. }
             | Event::Tick => {}
             Event::CleanFinished => self.clean_finished(now, &mut effects),
+            Event::CleanScanFailed => self.own_scan_at = None,
             Event::CleanModeSetting(mode) => self.clean_mode = mode,
             Event::PanelPages(pages) => self.set_pages(pages),
             Event::ShortcutTiles(tiles) => self.tiles = tiles,
@@ -1256,12 +1257,16 @@ impl IslandState {
 
     /// An own-mode clean ended (or could not start). The cleaner, if there
     /// is one, scans again on the worker even with the panel shut, and its
-    /// result waits to be shown before the cleaner ends.
+    /// result waits to be shown before the cleaner ends. Without one (Back
+    /// during the clean) `App` has dropped the old sizes, so the stamp goes
+    /// too and the next "Bersihkan" scans.
     fn clean_finished(&mut self, now: Instant, effects: &mut Vec<Effect>) {
         self.clean_busy = false;
         if self.cleaner.is_some() {
             self.clean_result = Some(false);
             self.ask_own_scan(now, effects);
+        } else {
+            self.own_scan_at = None;
         }
     }
 
@@ -4491,6 +4496,37 @@ mod tests {
             s.apply(Event::Click(Hit::CleanGo), ms(5200)),
             vec![Effect::CleanDelete(default_picks())]
         );
+    }
+
+    /// Back during a clean: the clean's end drops `App`'s sizes, so the
+    /// next "Bersihkan" scans again however soon it comes.
+    #[test]
+    fn a_clean_ended_without_a_cleaner_scans_again_on_the_next_open() {
+        let t0 = Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        let mut s = cleaner_open(t0);
+        s.apply(Event::Click(Hit::CleanGo), ms(10));
+        assert_eq!(
+            s.apply(Event::Click(Hit::CleanGo), ms(20)),
+            vec![Effect::CleanDelete(default_picks())]
+        );
+        s.apply(Event::Click(Hit::CleanBack), ms(30));
+        assert!(s.cleaner().is_none());
+        assert!(s.apply(Event::CleanFinished, ms(40)).is_empty());
+        assert_eq!(
+            s.apply(Event::Click(Hit::SystemClean), ms(50)),
+            vec![Effect::OpenCleaner]
+        );
+        // A scan that could not be asked for is asked for again too.
+        s.apply(Event::Click(Hit::CleanBack), ms(60));
+        s.apply(Event::CleanScanFailed, ms(70));
+        assert_eq!(
+            s.apply(Event::Click(Hit::SystemClean), ms(80)),
+            vec![Effect::OpenCleaner]
+        );
+        // One that was asked for is reused while fresh.
+        s.apply(Event::Click(Hit::CleanBack), ms(90));
+        assert!(s.apply(Event::Click(Hit::SystemClean), ms(100)).is_empty());
     }
 
     /// The cleaner switched to "Otomatis · Mole", Mole found: its dry-run

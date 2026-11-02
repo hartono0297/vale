@@ -54,8 +54,9 @@ used is `clean_mode` in config (serde default `Own`).
   lines), `max = len - rows`, only while the log shows (Running, Finished, or
   Previewed with the log asked for). `mole_log_scroll` is 0 (follow the tail)
   on a new preview, a new run, "Lihat log" and when the cleaner ends. New
-  lines apply `Event::MoleLogLines(n)` only while scrolled (so a shut panel
-  never redraws). The renderer gets it in `MoleView::scroll` and records the
+  lines apply `Event::MoleLogLines(n)` only while scrolled, panel open or
+  shut, so the kept offset still shows the same lines on return (the drain
+  refreshes after any Mole event anyway, so skipping it would save nothing). The renderer gets it in `MoleView::scroll` and records the
   log rect in `HitRegions::mole_log` (`Renderer::over_mole_log`).
 - **Parse rules:** each line is ANSI-stripped (CSI, OSC, 8-bit CSI, control
   chars, the last `\r` segment). A section starts at "▸ Name" (`?`/U+FFFD

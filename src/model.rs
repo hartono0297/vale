@@ -321,6 +321,9 @@ pub enum Event {
     Clean(CleanEvent),
     /// The clean the panel asked for is over: its rows take clicks again.
     CleanFinished,
+    /// The scan `Effect::OpenCleaner` asked for could not reach the cleaner
+    /// thread: nothing is measured, so the next showing asks again.
+    CleanScanFailed,
     /// From the Mole thread (`mole::MoleWorker`); `App` keeps it and tells
     /// the reducer what it needs below.
     Mole(MoleEvent),

@@ -66,15 +66,16 @@ use crate::ui::panel_layout::{
     CLIP_RADIUS, CLIP_SCROLLBAR_W, CLIP_THUMB_W, CalendarLayout, CleanFoot, CleanHead,
     CleanerLayout, CliHead, CliLayout, ClipButton, ClipLayout, DEV_BAR_H, DevicesHead,
     DevicesLayout, HOUR_GUTTER, ListLayout, MENU_RADIUS, MENU_ROW_RADIUS, MIXER_TRACK_H,
-    MOLE_LOG_LINE_H, MOLE_LOG_PAD, MenuLayout, mole_log_rows, mole_log_skip, MeterLayout, MixerLayout, MoleFoot, MoleLayout,
+    MOLE_LOG_LINE_H, MOLE_LOG_PAD, MenuLayout, MeterLayout, MixerLayout, MoleFoot, MoleLayout,
     NOTIF_DOT, NOTIF_RADIUS, NotifHead, NotifLayout, PageLayout, PomodoroLayout, RING_STROKE,
     SEG_PAD, SYS_RING_STROKE, SearchLayout, ShelfLayout, ShortcutsLayout, SystemHead, SystemLayout,
     VOLUME_HUD_H, WEEK_HEAD_H, arrange_layout, calendar_layout, cleaner_layout, cli_folder_menu,
     cli_layout, cli_suggestions, clipboard_layout, device_shapes, devices_layout,
-    media_panel_layout, media_progress_layout, mixer_layout, mole_layout, notes_layout,
-    notif_layout, page_dots, pomodoro_compact_layout, pomodoro_compact_layout_robot,
-    pomodoro_layout, regions, reminders_layout, search_layout, shelf_card_layout, shelf_layout,
-    shortcuts_layout, system_layout, tile_parts, volume_hud_layout, waiting_strip,
+    media_panel_layout, media_progress_layout, mixer_layout, mole_layout, mole_log_rows,
+    mole_log_skip, notes_layout, notif_layout, page_dots, pomodoro_compact_layout,
+    pomodoro_compact_layout_robot, pomodoro_layout, regions, reminders_layout, search_layout,
+    shelf_card_layout, shelf_layout, shortcuts_layout, system_layout, tile_parts,
+    volume_hud_layout, waiting_strip,
 };
 use crate::ui::robot::{Expr, Pose};
 use crate::ui::shelf_motion::Drawn;

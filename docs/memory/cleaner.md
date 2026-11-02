@@ -119,7 +119,10 @@ changes. Tests are reducer tests in `state.rs` (`cleaner_*`, `the_wheel_*`,
   the same rule.
 - **Rescan after a clean** comes from the reducer: `CleanFinished` with a
   cleaner emits `OpenCleaner` and stamps, even with the notch shut (the
-  worker, no timer). `App` no longer scans again itself.
+  worker, no timer). `App` no longer scans again itself. Without a cleaner
+  (Back during the clean) it clears `own_scan_at`, since `App` dropped the
+  sizes on `Done`: the next "Bersihkan" scans. A scan the thread cannot take
+  returns `Event::CleanScanFailed`, which clears the stamp too.
 - **Safety:** with the cleaner on anything but an open System panel the
   button is disarmed (`armed_until = None`); a single click still never
   deletes, and `next_deadline` still holds only `armed_until`.
