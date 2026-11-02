@@ -19,9 +19,12 @@ own option: not tied to the surface, no presets. Fonts and subsetting:
 - Lenient (`ui_font`): a missing key, a typo, a number, `null` or an object
   reads Sans and the rest of the file is kept. Names are case-insensitive and
   trimmed ("mono", " MONO ").
-- Island-owned in `merge_owned` (the island's copy wins on a save), like the
-  surface. A hand edit of the file still applies live: `reload_config` ->
-  `adopt_config`.
+- Island-owned in `merge_owned` (`font: mem.font`), like the surface and the
+  accent: the island's copy wins. A hand edit of `font` made while the island
+  runs does **not** apply live (the file is not watched, and `reload_config`,
+  whose only caller is `connect_google`, merges the island's font back in),
+  and the next `save_config` writes the island's font over it. Edit the file
+  with the island stopped; it is read at startup.
 
 ## Live switch path
 

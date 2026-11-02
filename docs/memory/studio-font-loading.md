@@ -15,6 +15,7 @@ The UI typeface is an option (DM Sans or JetBrains Mono): [[ui-font-option]].
 - The display role (titles, large clocks) is DM Sans 600 upright with letter-spacing -2.5%, applied by `fonts::apply_tracking` (`IDWriteTextLayout1::SetCharacterSpacing`, constant `fonts::DISPLAY_TRACKING_EM`). Apply it in both the draw and the measure path, or measured widths will not match what is drawn. Like `tnum` it needs a text layout: `DrawText` cannot carry it. DM Sans tops out at weight 600.
 - The layout functions are pure and have no fonts (the calendar title is the exception: the renderer measures it and passes the width in, see [[studio-calendar-day-view]]), so other boxes that hold display text are sized from widths measured once with the real fonts and kept as constants beside a test (the pomodoro ring fits "100:00" in DM Sans 600 at 48 px; the idle clock box fits "00:00" in DM Sans 600 at 16 px). Re-measure when a font file, size or tracking changes.
 - Digits: [[studio-tabular-figures-word-gaps]].
+- The lyric notch is sized from `Renderer::lyric_text_width`, the same layout the line is drawn with: [[lyric-notch-width]].
 
 ## Roles per UI font (`UiFont`, v3.13)
 
@@ -62,17 +63,26 @@ the ink inside, measured with the real embedded JetBrains Mono v2.304
 `display_text_fits_its_boxes` runs the clock, the countdown, the CLI title,
 the calendar titles and the System figure for both fonts. The notice chips
 (`ACTION_W` 66, `LOG_ACTION_W` 46, `RELEASES_ACTION_W` 88) hold their words in
-both languages and both fonts. Everything else measures its text live
-(chips, buttons, headers), so Mono only trims where a notch or box is
-genuinely too narrow (the compact notch's song title gets its "..." sooner).
-Re-measure the Mono sizes when the font file, a size or the box changes.
+both languages and both fonts. Headers, chips and most buttons measure their
+text live. Other fixed columns are constants sized for DM Sans and are only
+checked by arithmetic for Mono (`METER_NAME_W`, `PROC_*_W`, `CLEAN_SIZE_W`,
+`DEV_DETAIL_LABEL_W`, `VIEW_BUTTON_W`); check them with the real font when
+their text or size changes. The Notifikasi time column is the one that did
+not fit: "28 Okt 2025" (an entry from an earlier year) is 11 cells, 69.3 px
+in `small_right` (10.5 px), over `NOTIF_TIME_W` 64. It is now
+`NotifHead::time_w`, measured from `notif::time::longest_samples` (the
+longest line of each `relative_time` rule) and never under 64: DM Sans stays
+64 ("28 May 2025" is 63.8 px), Mono gets 70.
+`notif_time_column_holds_every_relative_time_in_both_fonts` checks it. Mono
+also trims where a notch is genuinely too narrow (the compact notch's song
+title gets its "..." sooner). Re-measure the Mono sizes when the font file, a
+size or the box changes.
 
 `Estimate` in `settings_layout.rs` keeps its factors (0.62, 0.66 for weight
 500 and up, 0.8 for the eyebrow): JetBrains Mono is 0.6 em, below them, and
 `real_jetbrains_mono_is_within_the_estimate` measures every label of every
 section with the real font. The sidebar brand rect holds "Vale" in Mono 16
 px 600 (38.4 px).
-- The lyric notch is sized from `Renderer::lyric_text_width`, the same layout the line is drawn with: [[lyric-notch-width]].
 
 Part of [[v3-studio-overview]].
 - Tracking adds its spacing after every character, so centered display text (clock, lyric, big time) sits about `size * 0.025 / 2` px off center (0.6 px at 48 px). Accepted, not corrected.

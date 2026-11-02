@@ -5485,7 +5485,7 @@ impl App {
         self.follow_pointer_settings(Instant::now());
     }
 
-    /// Puts a changed UI font (Settings or a hand edit) into effect now: the
+    /// Puts a changed UI font (from Settings) into effect now: the
     /// renderer rebuilds its formats, the lyric line on screen is measured
     /// again (the notch is as wide as its line, `lyric_text_width`) and
     /// everything redraws. Compared with the font in effect, so a caller may

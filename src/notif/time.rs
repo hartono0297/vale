@@ -1,7 +1,7 @@
 //! "baru saja", "5 mnt", "14.05", "Kemarin", "28 Okt": how old an entry is,
 //! worked out when it is drawn (nothing ticks).
 
-use chrono::{DateTime, Datelike, Local, TimeZone};
+use chrono::{DateTime, Datelike, Local, NaiveDate, TimeZone};
 
 use crate::i18n::{self, Key, Lang, text};
 
@@ -33,6 +33,29 @@ pub fn relative_time(at: i64, now: DateTime<Local>, lang: Lang) -> String {
     } else {
         format!("{date} {}", day.year())
     }
+}
+
+/// The longest line each of `relative_time`'s rules writes in `lang`, with
+/// `year` standing for a past year: "baru saja", "59 mnt", "23.59",
+/// "Kemarin", and the 28th of every month with the year ("28 Okt 2025"). The
+/// Notifikasi time column is as wide as the widest of these.
+pub fn longest_samples(lang: Lang, year: i32) -> Vec<String> {
+    let mut out = vec![
+        text(lang, Key::NotifJustNow).to_owned(),
+        i18n::duration_label(lang, 59),
+        i18n::time_hm(
+            lang,
+            NaiveDate::from_ymd_opt(2000, 1, 1)
+                .and_then(|d| d.and_hms_opt(23, 59, 0))
+                .expect("a valid time"),
+        ),
+        text(lang, Key::NotifYesterday).to_owned(),
+    ];
+    out.extend((1..=12).filter_map(|month| {
+        let day = NaiveDate::from_ymd_opt(year, month, 28)?;
+        Some(format!("{} {year}", i18n::short_date(lang, day)))
+    }));
+    out
 }
 
 #[cfg(test)]
@@ -117,5 +140,23 @@ mod tests {
         assert_eq!(relative_time(at(dec31), jan, Lang::En), "Yesterday");
         let dec30 = local(2026, 12, 30, 10, 0, 0);
         assert_eq!(relative_time(at(dec30), jan, Lang::En), "30 Dec 2026");
+    }
+
+    #[test]
+    fn longest_samples_cover_every_rule_and_the_dated_line_with_a_year() {
+        let now = local(2026, 10, 31, 14, 30, 0);
+        for lang in [Lang::Id, Lang::En] {
+            let samples = longest_samples(lang, 2025);
+            assert_eq!(samples.len(), 16);
+            let last_year = local(2025, 10, 28, 9, 0, 0);
+            assert!(samples.contains(&relative_time(at(last_year), now, lang)));
+            assert!(samples.contains(&relative_time(at(now) - 59 * 60, now, lang)));
+            assert!(samples.contains(&relative_time(at(now) - 10, now, lang)));
+            let evening = local(2026, 10, 30, 20, 0, 0);
+            assert!(samples.contains(&relative_time(at(evening), now, lang)));
+        }
+        assert!(longest_samples(Lang::Id, 2025).contains(&"28 Okt 2025".to_owned()));
+        assert!(longest_samples(Lang::En, 2025).contains(&"28 Oct 2025".to_owned()));
+        assert!(longest_samples(Lang::Id, 2025).contains(&"23.59".to_owned()));
     }
 }
