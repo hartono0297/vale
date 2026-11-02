@@ -1,6 +1,6 @@
 ---
-tags: [decision, shortcuts, settings, config, v3.2, v3.4]
-date: 2026-10-29
+tags: [decision, shortcuts, settings, config, v3.2, v3.4, v3.12]
+date: 2026-11-02
 ---
 
 # Shortcut tiles you choose (v3.2 Run 7)
@@ -9,7 +9,8 @@ date: 2026-10-29
 shows the tiles in `config.shortcut_tiles`, in that order, up to twelve (four
 per row, up to three rows, `panel_layout::shortcuts_layout` wraps). Empty =
 the default tiles (the nine built-ins, Search being the ninth since 3.2.1,
-plus Vale Settings and the Shelf since 3.4), so old configs read as before.
+plus Vale Settings and the Shelf since 3.4; historical, the Vale Settings tile
+is gone since v3.12, see the last section), so old configs read as before.
 Settings → Panel (v3.8; it was Tampilan) → **Pintasan** (laid out as in the 2026-10-29 section
 below): the last tile shown cannot be hidden, and none can be switched on
 while twelve show (`toggle` and `set_on` refuse; the off rows say "Halaman
@@ -50,6 +51,11 @@ off it (`from_saved`); it can be switched on in Settings once another tile is
 switched off (the twelve-tile limit above).
 
 ## Page tiles, Vale Settings and the new Settings card (2026-10-29)
+
+> Historical where it names `ValeSettings`, its tile, `Icon::Sliders` as the
+> tile's icon, `Effect::OpenSettings` from a tile click and the counts 20, 12
+> and "Vale (Settings and Search)": the tile was removed in v3.12, see the
+> last section.
 
 - **New built-ins** in `Shortcut::ALL` (20 since v3.5, in this order): the nine,
   `ValeSettings`, then `Go(Calendar|Pomodoro|Reminders|Notes|Media|Mixer|Shelf|
@@ -132,3 +138,31 @@ Related: [[panel-pages]], [[studio-icons]].
 it): an old config joins it off, right after Cli, and the default tile count is
 unchanged ([[arrange]]). "Tiles" in code and UI still means these Pintasan tiles; Susun
 calls its slots leaves and its overlay `arrange`.
+
+## v3.12+: the Vale Settings tile is gone (2026-11-02)
+
+- `Shortcut::ValeSettings` is removed. `Shortcut::ALL` is now **21**
+  built-ins, and `default_on` is the nine, the Shelf and Devices: **11 tiles**
+  on a fresh install (one slot free; a fresh install no longer fills the page).
+  The Vale group in Settings -> Pintasan -> Tersedia lists only Search
+  (`tiles::group`). The key `ShortcutValeSettings` and the reducer arm for
+  `Hit::Shortcut(ValeSettings)` are gone; `Effect::OpenSettings` and
+  `DEFERRED_OPEN_SETTINGS` stay, the header button uses them.
+- **Old configs:** `tiles::shortcut_from_name("ValeSettings")` (any case, trimmed)
+  is `None`, so `from_saved` drops the entry; the other tiles keep their order
+  and on/off. The lenient `config::shortcut_tiles` deserializer drops it too,
+  so a config that is read and saved again for any other setting never
+  writes it back, even if the owner never opens the Pintasan card.
+- **Join rule unchanged:** a built-in the file never names joins after its
+  predecessor, on only if `default_on` AND there is room. So an old file that
+  showed twelve with ValeSettings on shows 11 afterwards, and a default-on
+  built-in it never named (Devices, say) may take the freed slot. A file whose
+  only shown tile was ValeSettings is "all off" after the drop and is made
+  whole with the default-on built-ins (the all-off gotcha above still holds).
+- Tests that assumed a full default page (12) now build one with a helper
+  (`full_default`: the default plus the Calendar tile on).
+- The window class names `"ValeSettings"` and `"ValeSettingsDemoOwner"`
+  (`ui/settings.rs`) and `is_kept_out("ValeSettings")` (`capture/win.rs`) are
+  window classes, not the tile, and are unchanged.
+- The replacement is the sliders button in the panel header, see
+  [[panel-pages]] (added by the panel-settings-button task).
