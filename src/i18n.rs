@@ -679,7 +679,7 @@ keys! {
     MotionSaver => "Hemat", "Saver";
     MotionOff => "Mati", "Off";
     RobotSleep => "Tidur setelah", "Sleep after";
-    RobotSleepDesc => "Tanpa aktivitas", "Without activity";
+    RobotSleepDesc => "Tanpa input mouse atau keyboard di PC", "No mouse or keyboard input on the PC";
     MorningGreetingDesc => "Ringkasan acara dan pengingat hari ini",
         "Today's events and reminders";
     GoodMorning => "Selamat pagi", "Good morning";

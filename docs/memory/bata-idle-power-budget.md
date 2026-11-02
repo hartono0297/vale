@@ -1,6 +1,6 @@
 ---
 tags: [decision, robot, power, timers]
-date: 2026-10-31
+date: 2026-11-02
 ---
 
 # The notch assistant's idle power budget
@@ -21,7 +21,23 @@ Bata adds only one-shots (`app.rs`, planned by `robot::plan_timers`):
   state and re-arms or kills the same timer; no new timer id.
 - `TIMER_ROBOT`: one-shot at `Brain::next_change`: falling asleep
   (last activity + N min), a Claude session going quiet, a CLI face
-  ending. Once asleep with nothing pending, no robot timer runs at all.
+  ending. The sleep deadline's "last activity" is now max(island activity,
+  last PC input via `GetLastInputInfo`), folded in (`robot::fold_input`,
+  `App::fold_pc_input`) at the start of every `refresh` and on every
+  `TIMER_ROBOT` fire: one `GetLastInputInfo` per fire, no new timer, so
+  input while awake just pushes the deadline out and the timer re-arms there.
+  **Wake poll (2026-11-02):** `TIMER_ROBOT` is also a 1.8 s coalescable
+  one-shot (`SetCoalescableTimer`, 200 ms slack, so a wake lands within 2 s of
+  input) only while the Sleep face is on screen: robot on, Motion not Off, idle
+  view, not shrunk, not fullscreen, not locked, display on
+  (`robot::wake_poll_on`, `robot_timer_at`). A fire that finds the cat still
+  asleep re-arms without a draw (`wake_tick_quiet`); one that finds input
+  goes through `refresh`, the face returns to Idle and the pointer, blink and
+  typing timers re-plan as usual. Nothing polls while awake. Lock, display
+  off/on, fullscreen and unlock re-sync it (`sync_pointer_polls`, the
+  fullscreen refresh). The interval is 1.8 s, not 2 s, so interval + slack
+  honours "within 2 s". Vale's own synthetic input (media keys, volume wheel)
+  also counts as PC input. See [[bata-robot-expressions]].
 - Hover lift (140 ms) and the alert's two bounces (2 × 260 ms) run the
   existing `FrameClock` only while they last (`App::animating_at`), and
   the blink re-plans when the clock stops.

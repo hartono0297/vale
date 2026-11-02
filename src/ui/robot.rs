@@ -2061,6 +2061,18 @@ impl Brain {
         }
     }
 
+    /// Mouse or keyboard input somewhere on the PC, `input_idle` ago (from
+    /// `GetLastInputInfo`): the sleep clock restarts at that moment if it is
+    /// newer than the last activity.
+    pub fn input_seen(&mut self, now: Instant, input_idle: Duration) {
+        self.last_activity = fold_input(self.last_activity, now, input_idle);
+    }
+
+    /// The face last drawn (see `observe`).
+    pub fn shown(&self) -> Option<Expr> {
+        self.shown
+    }
+
     /// The pointer came over the island (`true`) or left.
     pub fn hover(&mut self, on: bool, now: Instant) {
         if on {
@@ -2213,6 +2225,68 @@ pub fn plan_timers(face: Option<Expr>, motion: Motion, animating: bool) -> Timer
         blink: face.is_some_and(Expr::blinks) && motion.blinks() && !animating,
         change: face.is_some() && motion.timed(),
     }
+}
+
+// ---- Sleep follows the PC's input ----
+
+/// How often a sleeping cat looks for new PC input. 1.8 s, not 2 s: the wake
+/// must land within 2 s of the input, and a coalescable timer may fire up to
+/// `WAKE_POLL_SLACK_MS` late, so interval + slack stays at or under 2 000 ms.
+pub const WAKE_POLL_MS: u32 = 1_800;
+/// The coalescing slack of that poll.
+pub const WAKE_POLL_SLACK_MS: u32 = 200;
+
+/// `last_activity` moved forward to the last PC input (`input_idle` before
+/// `now`), never backwards. The input moment is never after `now`. An idle
+/// time too long for `Instant` to hold leaves it as it is.
+pub fn fold_input(last_activity: Instant, now: Instant, input_idle: Duration) -> Instant {
+    match now.checked_sub(input_idle) {
+        Some(input_at) => last_activity.max(input_at),
+        None => last_activity,
+    }
+}
+
+/// Whether `TIMER_ROBOT` also polls for input: only while the Sleep face is on
+/// screen (`face` is `None` with the robot off, the panel open or the island
+/// hidden), the idle view shows, motion is timed, and nothing is shrunk,
+/// fullscreen, locked or dark.
+pub fn wake_poll_on(
+    face: Option<Expr>,
+    spot: Spot,
+    motion: Motion,
+    shrunk: bool,
+    fullscreen: bool,
+    screen_away: bool,
+) -> bool {
+    face == Some(Expr::Sleep)
+        && spot == Spot::Idle
+        && motion.timed()
+        && !shrunk
+        && !fullscreen
+        && !screen_away
+}
+
+/// When `TIMER_ROBOT` fires, and whether that is the wake poll. With the poll
+/// on, the earlier of `change` and `now + WAKE_POLL_MS`; without it, `change`.
+pub fn robot_timer_at(
+    change: Option<Instant>,
+    wake_poll: bool,
+    now: Instant,
+) -> Option<(Instant, bool)> {
+    if !wake_poll {
+        return change.map(|c| (c, false));
+    }
+    let poll = now + Duration::from_millis(u64::from(WAKE_POLL_MS));
+    match change {
+        Some(c) if c < poll => Some((c, false)),
+        _ => Some((poll, true)),
+    }
+}
+
+/// A wake-poll fire where the Sleep face is already drawn and still right
+/// needs no refresh and no draw, only a re-arm.
+pub fn wake_tick_quiet(shown: Option<Expr>, face_now: Option<Expr>) -> bool {
+    shown == Some(Expr::Sleep) && face_now == Some(Expr::Sleep)
 }
 
 // ---- Greeting ----
@@ -3923,5 +3997,139 @@ mod tests {
         assert!(look.set_target(0.5));
         look.advance(Duration::from_millis(60));
         assert!(look.value() > 0.0);
+    }
+
+    // ---- Sleep follows the PC's input ----
+
+    #[test]
+    fn fold_input_keeps_the_later_moment() {
+        let base = Instant::now();
+        let now = base + Duration::from_secs(1_000);
+        let old = base + Duration::from_secs(100);
+        // Input 30 s ago is newer than the old activity.
+        assert_eq!(
+            fold_input(old, now, Duration::from_secs(30)),
+            now - Duration::from_secs(30)
+        );
+        // Input older than the last activity changes nothing.
+        let recent = now - Duration::from_secs(5);
+        assert_eq!(fold_input(recent, now, Duration::from_secs(30)), recent);
+        // Zero idle is `now`, never later.
+        assert_eq!(fold_input(old, now, Duration::ZERO), now);
+        // An activity already ahead of `now` is not pulled back.
+        let ahead = now + Duration::from_secs(3);
+        assert_eq!(fold_input(ahead, now, Duration::ZERO), ahead);
+    }
+
+    #[test]
+    fn fold_input_survives_a_huge_idle() {
+        let now = Instant::now();
+        assert_eq!(fold_input(now, now, Duration::from_secs(u64::MAX / 4)), now);
+        assert_eq!(fold_input(now, now, Duration::MAX), now);
+    }
+
+    #[test]
+    fn recent_pc_input_postpones_the_sleep() {
+        let base = Instant::now();
+        let mut brain = Brain::new(base);
+        let now = base + Duration::from_secs(20 * 60);
+        let after = Duration::from_secs(10 * 60);
+        assert!(brain.inputs(Spot::Idle, now, after, Motion::Full).asleep);
+        // Input 30 s ago: awake, and the deadline is input + 10 min.
+        brain.input_seen(now, Duration::from_secs(30));
+        assert!(!brain.inputs(Spot::Idle, now, after, Motion::Full).asleep);
+        assert_eq!(
+            brain.next_change(now, after),
+            Some(now - Duration::from_secs(30) + after)
+        );
+    }
+
+    #[test]
+    fn old_pc_input_leaves_the_cat_asleep() {
+        let base = Instant::now();
+        let mut brain = Brain::new(base);
+        let now = base + Duration::from_secs(30 * 60);
+        let after = Duration::from_secs(10 * 60);
+        brain.input_seen(now, Duration::from_secs(11 * 60));
+        assert!(brain.inputs(Spot::Idle, now, after, Motion::Full).asleep);
+        assert_eq!(brain.next_change(now, after), None);
+    }
+
+    #[test]
+    fn a_sleeping_cat_wakes_on_newer_input() {
+        let base = Instant::now();
+        let mut brain = Brain::new(base);
+        let now = base + Duration::from_secs(30 * 60);
+        let after = Duration::from_secs(10 * 60);
+        assert!(brain.inputs(Spot::Idle, now, after, Motion::Full).asleep);
+        brain.input_seen(now, Duration::from_millis(500));
+        assert!(!brain.inputs(Spot::Idle, now, after, Motion::Full).asleep);
+        // Input older than the activity just recorded changes nothing.
+        let before = brain.next_change(now, after);
+        brain.input_seen(now, Duration::from_secs(60));
+        assert_eq!(brain.next_change(now, after), before);
+    }
+
+    #[test]
+    fn shown_is_the_face_last_observed() {
+        let now = Instant::now();
+        let mut brain = Brain::new(now);
+        assert_eq!(brain.shown(), None);
+        brain.observe(Some(Expr::Sleep), now, true);
+        assert_eq!(brain.shown(), Some(Expr::Sleep));
+        brain.observe(None, now, true);
+        assert_eq!(brain.shown(), None);
+    }
+
+    #[test]
+    fn the_wake_poll_runs_only_for_the_sleep_face_on_the_idle_view() {
+        let s = Some(Expr::Sleep);
+        let on = |face, spot, motion, shrunk, full, away| {
+            wake_poll_on(face, spot, motion, shrunk, full, away)
+        };
+        assert!(on(s, Spot::Idle, Motion::Full, false, false, false));
+        // Hemat keeps sleep, so it keeps the poll.
+        assert!(on(s, Spot::Idle, Motion::Saver, false, false, false));
+        assert!(!on(s, Spot::Idle, Motion::Off, false, false, false));
+        assert!(!on(None, Spot::Idle, Motion::Full, false, false, false));
+        for face in [Expr::Idle, Expr::Typing, Expr::Happy] {
+            assert!(!on(Some(face), Spot::Idle, Motion::Full, false, false, false));
+        }
+        for spot in [Spot::Media, Spot::Lyric, Spot::Pomodoro, Spot::Panel] {
+            assert!(!on(s, spot, Motion::Full, false, false, false));
+        }
+        assert!(!on(s, Spot::Idle, Motion::Full, true, false, false));
+        assert!(!on(s, Spot::Idle, Motion::Full, false, true, false));
+        assert!(!on(s, Spot::Idle, Motion::Full, false, false, true));
+    }
+
+    #[test]
+    fn the_robot_timer_picks_the_poll_or_the_change() {
+        let now = Instant::now();
+        let poll = now + Duration::from_millis(1_800);
+        let soon = now + Duration::from_millis(500);
+        let late = now + Duration::from_secs(60);
+        assert_eq!(robot_timer_at(None, true, now), Some((poll, true)));
+        assert_eq!(robot_timer_at(Some(late), true, now), Some((poll, true)));
+        assert_eq!(robot_timer_at(Some(soon), true, now), Some((soon, false)));
+        assert_eq!(robot_timer_at(Some(late), false, now), Some((late, false)));
+        assert_eq!(robot_timer_at(None, false, now), None);
+    }
+
+    #[test]
+    fn the_wake_poll_lands_within_two_seconds() {
+        assert!(WAKE_POLL_MS + WAKE_POLL_SLACK_MS <= 2_000);
+    }
+
+    #[test]
+    fn a_quiet_wake_tick_is_only_sleep_to_sleep() {
+        let s = Some(Expr::Sleep);
+        assert!(wake_tick_quiet(s, s));
+        // Falling asleep: the Sleep face still has to be drawn.
+        assert!(!wake_tick_quiet(Some(Expr::Idle), s));
+        assert!(!wake_tick_quiet(None, s));
+        // Waking.
+        assert!(!wake_tick_quiet(s, Some(Expr::Idle)));
+        assert!(!wake_tick_quiet(s, None));
     }
 }
