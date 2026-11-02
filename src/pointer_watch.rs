@@ -84,11 +84,26 @@ pub fn poll_ms(follow_on: bool, peek_on: bool, near_top: bool) -> u32 {
     }
 }
 
-/// The pointer is near the island's monitor's top edge: `dy_px` physical
-/// pixels below it (negative above it, on a monitor stacked on top) and less
-/// than `behind::NEAR_TOP_DIP` down at `scale`. Above the edge is not near.
-pub fn near_top(dy_px: i32, scale: f32) -> bool {
-    dy_px >= 0 && (dy_px as f32) < behind::NEAR_TOP_DIP * scale
+/// The pointer is near the top edge of the island's monitor: `pt_x` lies in
+/// `span` (the monitor's `[left, right)` in physical pixels, see
+/// `monitor_span`) and `dy_px` physical pixels below the edge is less than
+/// `behind::NEAR_TOP_DIP` at `scale`. Above the edge (a monitor stacked on
+/// top) or beside the monitor (one to the left or right) is not near.
+pub fn near_top(pt_x: i32, dy_px: i32, span: (i32, i32), scale: f32) -> bool {
+    span.0 <= pt_x && pt_x < span.1 && dy_px >= 0 && (dy_px as f32) < behind::NEAR_TOP_DIP * scale
+}
+
+/// The island's monitor as `[left, right)` in physical pixels, from the
+/// window's left edge (`origin_x`), its width in pixels and the monitor's
+/// width in dip. The island is centred on its monitor, so the span is that
+/// centre plus and minus half the monitor.
+pub fn monitor_span(origin_x: i32, window_w_px: f32, screen_w_dip: f32, scale: f32) -> (i32, i32) {
+    let centre = origin_x as f32 + window_w_px / 2.0;
+    let half = screen_w_dip * scale / 2.0;
+    (
+        (centre - half).round() as i32,
+        (centre + half).round() as i32,
+    )
 }
 
 /// The views whose closed island may shrink to the eyes: the quiet compact
@@ -967,14 +982,46 @@ mod tests {
         assert!(!z.contains(300.0, -2.0) && !z.contains(300.0, -30.0));
     }
 
+    const SPAN: (i32, i32) = (0, 1920);
+
     #[test]
     fn a_pointer_on_a_monitor_above_is_not_near_the_top() {
-        assert!(near_top(0, 1.0) && near_top(149, 1.0));
-        assert!(!near_top(150, 1.0));
+        assert!(near_top(960, 0, SPAN, 1.0) && near_top(960, 149, SPAN, 1.0));
+        assert!(!near_top(960, 150, SPAN, 1.0));
         // 150 dip at 150 % is 225 px.
-        assert!(near_top(224, 1.5) && !near_top(225, 1.5));
+        assert!(near_top(960, 224, SPAN, 1.5) && !near_top(960, 225, SPAN, 1.5));
         // Above the island's monitor (another screen stacked on top).
-        assert!(!near_top(-1, 1.0) && !near_top(-5_000, 1.5));
+        assert!(!near_top(960, -1, SPAN, 1.0) && !near_top(960, -5_000, SPAN, 1.5));
+    }
+
+    #[test]
+    fn near_the_top_needs_the_pointer_inside_the_monitors_span() {
+        // Inside the span, near the top: near.
+        assert!(near_top(1, 10, SPAN, 1.0) && near_top(1_000, 10, SPAN, 1.0));
+        // The top of a monitor to the left or to the right is not near.
+        assert!(!near_top(-500, 10, SPAN, 1.0));
+        assert!(!near_top(2_500, 10, SPAN, 1.0));
+        // The left edge counts, the right edge does not.
+        assert!(near_top(0, 10, SPAN, 1.0));
+        assert!(near_top(1_919, 10, SPAN, 1.0) && !near_top(1_920, 10, SPAN, 1.0));
+        assert!(!near_top(-1, 10, SPAN, 1.0));
+        // A monitor to the right: its own span.
+        assert!(near_top(2_000, 10, (1_920, 3_840), 1.0));
+        // The 225 px boundary at 150 % holds with the span too.
+        assert!(near_top(100, 224, (0, 2_560), 1.5) && !near_top(100, 225, (0, 2_560), 1.5));
+        assert!(!near_top(3_000, 224, (0, 2_560), 1.5));
+    }
+
+    #[test]
+    fn the_monitor_span_follows_the_centred_island() {
+        // 1920 wide at 100 %: a 620 px window centred at 960 starts at 650.
+        assert_eq!(monitor_span(650, 620.0, 1920.0, 1.0), (0, 1920));
+        // 2560 px at 150 % (1706.67 dip): the 930 px window starts at 815.
+        let w = 620.0 * 1.5;
+        let origin = ((2560.0 - w) / 2.0) as i32;
+        assert_eq!(monitor_span(origin, w, 2560.0 / 1.5, 1.5), (0, 2560));
+        // A second monitor to the right shifts the span with the window.
+        assert_eq!(monitor_span(1920 + 650, 620.0, 1920.0, 1.0), (1920, 3840));
     }
 
     #[test]

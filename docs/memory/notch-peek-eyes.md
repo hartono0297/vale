@@ -1,6 +1,6 @@
 ---
 tags: [decision, notch, pointer, power, motion]
-date: 2026-10-31
+date: 2026-11-02
 ---
 
 # The notch shrinks to the cat's eyes
@@ -18,6 +18,7 @@ not depend on the cat (the eyes show with the cat off) and is faded, with a
 note, while "Di belakang jendela" is on. The eyes pill stays terracotta
 whatever the cat's coat ([[cat-colours-and-surfaces]]). Related:
 [[stay-behind]] (the other way out of the way, which turns this off),
+[[notch-monitor]] (the notch's monitor, which the zone and the poll follow),
 [[bata-idle-power-budget]] (the shared poll), [[bata-robot-expressions]] (the
 eyes), [[open-mode]] (the hover that comes back after a restore),
 [[cat-looks-at-pointer]] (the other user of the same poll).
@@ -73,6 +74,14 @@ px)` (it skips the desktop, invisible, minimised, cloaked and click-through
 windows and Vale's own) **only** in the Normal -> candidate case, and again at
 most once a second while the pointer stays in the zone (`UnderCache`); never at
 idle.
+
+The poll's "near the top" (`pointer_watch::near_top(pt_x, dy_px, span,
+scale)`, which sets the quick or slow pace) also needs the pointer inside the
+notch monitor's X span (`monitor_span`: the island's centre plus and minus half
+the monitor, `[left, right)` in physical px, from `App::notch_span`). The top
+of a monitor beside the notch's is not near, so the poll stays slow there. One
+monitor: the span is the whole screen, nothing changes. The zone itself was
+already local to the notch.
 
 Extra input, an assumption: a **mouse button held** (a drag may be on its way
 to the island, the shelf drop) never *starts* a shrink, so the notch is still

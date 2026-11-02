@@ -1,6 +1,6 @@
 ---
 tags: [decision, window, experimental, v3.2.1, v3.3, animation]
-date: 2026-10-29
+date: 2026-11-02
 ---
 
 # Stay behind windows (v3.2.1)
@@ -26,8 +26,9 @@ Settings → Umum → **Di belakang jendela** (`config.stay_behind`, default
 - Cost: one `TIMER_BEHIND` (29) reading `GetCursorPos`, only while the
   setting is on, the screen is not fullscreen, the session not locked and the
   display not off (`App::sync_behind`). 80 ms (`POLL_MS`) with the pointer
-  within 150 dip of the top edge or while lowering is due; 350 ms (`SLOW_MS`)
-  otherwise (`behind::poll_ms`, coalescable). Fullscreen, a lock or turning it
+  within 150 dip of the top edge *and* inside the notch monitor's X span
+  (`pointer_watch::near_top`, [[notch-monitor]]) or while lowering is due;
+  350 ms (`SLOW_MS`) otherwise (`behind::poll_ms`, coalescable). Fullscreen, a lock or turning it
   off puts the island back on top and stops the poll. A view change raises it
   at once (`sync_timers`), not at the next poll.
 
@@ -71,7 +72,10 @@ pure and tested; `App::rise`, `rise_frame`):
 - A window covering the top-centre of the screen hides the island until the
   pointer touches the strip.
 - Games and fullscreen apps: the existing fullscreen detection hides the
-  island as before; the order is reset to top when fullscreen starts.
+  island as before; the order is reset to top when fullscreen starts. The
+  detection is per monitor: a fullscreen app only counts while the foreground
+  window is on the notch's monitor (`is_fullscreen(Some(island))`,
+  `hides_notch`), so a game on another monitor leaves the island alone.
 
 Related: [[open-mode]], [[v3-2-handoff]]. With this setting off, the notch can
 instead shrink to the cat's eyes over a window ([[notch-peek-eyes]]); with it

@@ -4228,10 +4228,15 @@ impl App {
         let mut pt = POINT::default();
         let have = unsafe { GetCursorPos(&mut pt).is_ok() };
         let near_top = !have
-            || self.win.as_ref().is_none_or(|win| {
-                let (_, oy) = win.screen_origin();
-                ((pt.y - oy) as f32) < behind::NEAR_TOP_DIP * win.scale()
-            });
+            || match (self.win.as_ref(), self.notch_span()) {
+                (Some(win), Some(span)) => crate::pointer_watch::near_top(
+                    pt.x,
+                    pt.y - win.screen_origin().1,
+                    span,
+                    win.scale(),
+                ),
+                _ => true,
+            };
         let on_strip = have && self.on_raise_strip(pt);
         let over_island = have && {
             let mut client = pt;
@@ -4606,7 +4611,12 @@ impl App {
         else {
             return;
         };
-        self.pointer_near = pointer_watch::near_top(pt.y - origin.1, scale);
+        self.pointer_near = pointer_watch::near_top(
+            pt.x,
+            pt.y - origin.1,
+            pointer_watch::monitor_span(origin.0, WINDOW_W * scale, screen_w, scale),
+            scale,
+        );
         if self.peek_eligible() {
             self.peek_tick(pt, now);
         }
@@ -5057,12 +5067,26 @@ impl App {
         let reported = if own_overlay_up {
             self.fullscreen
         } else {
-            is_fullscreen()
+            // Per monitor: only a fullscreen app on the notch's monitor counts.
+            is_fullscreen(Some(self.hwnd))
         };
         if let Some(fullscreen) = fullscreen_event(reported, own_overlay_up, self.fullscreen) {
             self.fullscreen = fullscreen;
             self.apply_now(Event::Fullscreen(fullscreen));
         }
+    }
+
+    /// The island's monitor as `[left, right)` in physical pixels, from the
+    /// window's current position; `None` before the window exists.
+    fn notch_span(&self) -> Option<(i32, i32)> {
+        self.win.as_ref().map(|win| {
+            crate::pointer_watch::monitor_span(
+                win.screen_origin().0,
+                WINDOW_W * win.scale(),
+                win.screen_w(),
+                win.scale(),
+            )
+        })
     }
 
     fn check_battery(&mut self) {
@@ -5122,9 +5146,13 @@ impl App {
                 // This reading is the poll's too: a shrink re-paces the poll
                 // (`sync_pointer_watch`), which must see the pointer near the
                 // top now, not where the last, possibly slow, poll read it.
-                if let Some(win) = self.win.as_ref() {
-                    self.pointer_near =
-                        pointer_watch::near_top(pt.y - win.screen_origin().1, win.scale());
+                if let (Some(win), Some(span)) = (self.win.as_ref(), self.notch_span()) {
+                    self.pointer_near = pointer_watch::near_top(
+                        pt.x,
+                        pt.y - win.screen_origin().1,
+                        span,
+                        win.scale(),
+                    );
                 }
                 self.peek_tick(pt, Instant::now());
                 if self.peek.is_shrunk() {

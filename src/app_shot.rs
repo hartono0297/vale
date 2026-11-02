@@ -636,7 +636,8 @@ impl App {
 
     /// A screen clip's overlay is a fullscreen window: Windows reports a
     /// fullscreen app until it closes, and the island's own poll is up to a
-    /// second behind. Asks again now before trusting the flag.
+    /// second behind. Asks again now before trusting the flag. The rule is
+    /// per monitor (`check_fullscreen`): only the notch's monitor counts.
     fn fullscreen_now(&mut self) -> bool {
         if self.state.fullscreen() {
             self.check_fullscreen();
