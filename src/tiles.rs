@@ -206,7 +206,7 @@ pub fn group(tile: &Tile) -> TileGroup {
     match tile {
         Tile::Custom(_) => TileGroup::Own,
         Tile::Builtin(Shortcut::Go(_) | Shortcut::Clipboard) => TileGroup::Pages,
-        Tile::Builtin(Shortcut::ValeSettings | Shortcut::Search) => TileGroup::Vale,
+        Tile::Builtin(Shortcut::Search) => TileGroup::Vale,
         Tile::Builtin(_) => TileGroup::Windows,
     }
 }
@@ -223,7 +223,6 @@ fn shortcut_name(s: Shortcut) -> String {
         Shortcut::TaskManager => "TaskManager".into(),
         Shortcut::WindowsSettings => "WindowsSettings".into(),
         Shortcut::Lock => "Lock".into(),
-        Shortcut::ValeSettings => "ValeSettings".into(),
         Shortcut::Go(page) => format!("Go{}", page_name(page)),
     }
 }
@@ -507,22 +506,22 @@ mod tests {
         let all: Vec<Tile> = Shortcut::ALL.iter().map(|s| Tile::Builtin(*s)).collect();
         let listed: Vec<Tile> = t.entries().iter().map(|(x, _)| x.clone()).collect();
         assert_eq!(listed, all);
-        // The original nine, Vale's Settings, the Shelf and Devices.
+        // The original nine, the Shelf and Devices.
         let mut on: Vec<Tile> = original_nine().iter().map(|s| Tile::Builtin(*s)).collect();
-        on.push(Tile::Builtin(Shortcut::ValeSettings));
         on.push(Tile::Builtin(Shortcut::Go(Page::Shelf)));
         on.push(Tile::Builtin(Shortcut::Go(Page::Devices)));
         assert_eq!(t.visible(), on);
-        assert_eq!(t.shown(), 12);
+        assert_eq!(t.shown(), 11);
+        assert_eq!(Shortcut::ALL.len(), 21);
+        assert_eq!(listed.len(), 21);
         assert_eq!(ShortcutTiles::from_saved(&[]), t);
     }
 
     #[test]
-    fn only_the_original_nine_vale_settings_the_shelf_and_devices_are_on_by_default() {
+    fn only_the_original_nine_the_shelf_and_devices_are_on_by_default() {
         for s in original_nine() {
             assert!(s.default_on(), "{s:?}");
         }
-        assert!(Shortcut::ValeSettings.default_on());
         assert!(Shortcut::Go(Page::Shelf).default_on());
         assert!(Shortcut::Go(Page::Devices).default_on());
         for page in Page::ALL {
@@ -531,7 +530,7 @@ mod tests {
                 assert!(!go.default_on(), "{page:?}");
             }
         }
-        assert_eq!(Shortcut::ALL.iter().filter(|s| s.default_on()).count(), 12);
+        assert_eq!(Shortcut::ALL.iter().filter(|s| s.default_on()).count(), 11);
     }
 
     #[test]
@@ -562,7 +561,7 @@ mod tests {
         let mixer = listed.iter().position(|x| x == "(GoMixer)");
         assert!(at.is_some(), "{listed:?}");
         assert_eq!(at, mixer.map(|m| m + 1));
-        assert_eq!(t.shown(), 12, "the page is as it was");
+        assert_eq!(t.shown(), 11, "the page is as it was");
     }
 
     #[test]
@@ -575,7 +574,6 @@ mod tests {
                 "{s:?}"
             );
         }
-        assert_eq!(shortcut_name(Shortcut::ValeSettings), "ValeSettings");
         assert_eq!(shortcut_name(Shortcut::Go(Page::Shelf)), "GoShelf");
         assert_eq!(shortcut_name(Shortcut::Go(Page::Devices)), "GoDevices");
         assert_eq!(shortcut_name(Shortcut::Go(Page::Cli)), "GoCli");
@@ -584,10 +582,10 @@ mod tests {
             shortcut_from_name(" goshelf "),
             Some(Shortcut::Go(Page::Shelf))
         );
-        assert_eq!(
-            shortcut_from_name("valesettings"),
-            Some(Shortcut::ValeSettings)
-        );
+        // The retired Vale Settings tile is no built-in any more.
+        for gone in ["ValeSettings", "valesettings", " VALESETTINGS "] {
+            assert_eq!(shortcut_from_name(gone), None, "{gone}");
+        }
         // No tile for Search, Shortcuts or Clipboard as a Go; nor a bare Go.
         for bad in ["GoSearch", "GoShortcuts", "GoClipboard", "Go", "GoWeather"] {
             assert_eq!(shortcut_from_name(bad), None, "{bad}");
@@ -598,57 +596,57 @@ mod tests {
     }
 
     #[test]
-    fn an_old_nine_tile_config_gets_vale_settings_the_shelf_and_devices_on() {
+    fn an_old_nine_tile_config_gets_the_shelf_and_devices_on() {
         let saved: Vec<TileEntry> = original_nine()
             .iter()
             .map(|s| entry(&shortcut_name(*s), true))
             .collect();
         let t = ShortcutTiles::from_saved(&saved);
-        assert_eq!(t.shown(), 12);
+        assert_eq!(t.shown(), 11);
         let on = |s: Shortcut| {
             t.entries()
                 .iter()
                 .any(|(x, on)| *x == Tile::Builtin(s) && *on)
         };
-        assert!(on(Shortcut::ValeSettings));
         assert!(on(Shortcut::Go(Page::Shelf)));
         assert!(on(Shortcut::Go(Page::Devices)));
         assert!(!on(Shortcut::Go(Page::Calendar)));
         // Each joins after its predecessor in ALL.
         assert_eq!(
             &names(&t)[8..12],
-            ["Lock", "ValeSettings", "(GoCalendar)", "(GoPomodoro)"]
+            ["Lock", "(GoCalendar)", "(GoPomodoro)", "(GoReminders)"]
         );
         // The same config with some off keeps those off.
         let mut saved = saved;
         saved[8].on = false;
         let t = ShortcutTiles::from_saved(&saved);
-        assert_eq!(t.shown(), 11);
+        assert_eq!(t.shown(), 10);
     }
 
     #[test]
-    fn an_old_config_with_eleven_shown_gets_devices_and_one_with_twelve_does_not() {
-        // The nine, Vale's Settings and the Shelf: eleven shown, as 3.4 left it.
+    fn an_old_config_with_ten_shown_gets_devices_and_one_with_twelve_does_not() {
+        // The nine and the Shelf: ten shown.
         let mut saved: Vec<TileEntry> = original_nine()
             .iter()
             .map(|s| entry(&shortcut_name(*s), true))
             .collect();
-        saved.push(entry("ValeSettings", true));
         saved.push(entry("GoShelf", true));
         let t = ShortcutTiles::from_saved(&saved);
-        assert_eq!(t.shown(), 12, "room for one more: Devices is on");
+        assert_eq!(t.shown(), 11, "room for one more: Devices is on");
         assert!(
             t.visible()
                 .contains(&Tile::Builtin(Shortcut::Go(Page::Devices)))
         );
-        // One more own tile: twelve shown, so Devices joins off.
-        saved.push(TileEntry {
-            tile: CUSTOM.into(),
-            on: true,
-            label: "Gmail".into(),
-            kind: "Url".into(),
-            target: "https://mail.google.com".into(),
-        });
+        // Two more own tiles: twelve shown, so Devices joins off.
+        for label in ["Gmail", "Drive"] {
+            saved.push(TileEntry {
+                tile: CUSTOM.into(),
+                on: true,
+                label: label.into(),
+                kind: "Url".into(),
+                target: "https://mail.google.com".into(),
+            });
+        }
         let t = ShortcutTiles::from_saved(&saved);
         assert_eq!(t.shown(), 12);
         assert!(
@@ -676,11 +674,7 @@ mod tests {
         let t = ShortcutTiles::from_saved(&saved);
         assert_eq!(t.shown(), MAX_SHOWN);
         assert_eq!(t.customs(), 3);
-        for s in [
-            Shortcut::ValeSettings,
-            Shortcut::Go(Page::Shelf),
-            Shortcut::Go(Page::Devices),
-        ] {
+        for s in [Shortcut::Go(Page::Shelf), Shortcut::Go(Page::Devices)] {
             assert!(
                 t.entries()
                     .iter()
@@ -689,6 +683,147 @@ mod tests {
             );
         }
         assert_eq!(t.visible().len(), MAX_SHOWN);
+    }
+
+    /// An old config, as 3.12 and earlier wrote it: every built-in named,
+    /// `ValeSettings` among them, in the old order.
+    fn old_names() -> Vec<&'static str> {
+        vec![
+            "Screenshot",
+            "Clipboard",
+            "Search",
+            "Emoji",
+            "Explorer",
+            "Calculator",
+            "TaskManager",
+            "WindowsSettings",
+            "Lock",
+            "ValeSettings",
+            "GoCalendar",
+            "GoPomodoro",
+            "GoReminders",
+            "GoNotes",
+            "GoMedia",
+            "GoMixer",
+            "GoNotifications",
+            "GoShelf",
+            "GoSystem",
+            "GoDevices",
+            "GoCli",
+            "GoArrange",
+        ]
+    }
+
+    #[test]
+    fn a_saved_vale_settings_entry_is_dropped_whatever_its_flag_or_case() {
+        for (name, on) in [
+            ("ValeSettings", true),
+            ("ValeSettings", false),
+            ("valesettings", true),
+            (" VALESETTINGS ", false),
+        ] {
+            let saved = [
+                entry("Lock", true),
+                entry(name, on),
+                entry("Emoji", false),
+                entry("GoShelf", true),
+            ];
+            let t = ShortcutTiles::from_saved(&saved);
+            let listed = names(&t);
+            assert!(
+                !listed.iter().any(|n| n.to_lowercase().contains("valesettings")),
+                "{name}: {listed:?}"
+            );
+            // The others keep their order and on/off (the missing ones join).
+            let at = |n: &str| listed.iter().position(|x| x == n).unwrap();
+            assert!(at("Lock") < at("(Emoji)") && at("(Emoji)") < at("GoShelf"), "{listed:?}");
+            assert!(
+                t.to_saved()
+                    .iter()
+                    .all(|e| !e.tile.to_lowercase().contains("valesettings"))
+            );
+            assert_eq!(t.entries().len(), Shortcut::ALL.len());
+        }
+    }
+
+    #[test]
+    fn the_default_tiles_show_eleven_of_twenty_one_built_ins() {
+        let t = ShortcutTiles::default();
+        assert_eq!(t.shown(), 11);
+        assert_eq!(t.entries().len(), 21);
+        assert_eq!(Shortcut::ALL.len(), 21);
+    }
+
+    #[test]
+    fn a_full_twelve_old_config_with_vale_settings_on_shows_eleven_after_the_drop() {
+        // Old default: the nine, ValeSettings, the Shelf and Devices on; every
+        // built-in is named, so nothing joins and nothing else is switched on.
+        let saved: Vec<TileEntry> = old_names()
+            .into_iter()
+            .map(|n| {
+                let on = n == "ValeSettings"
+                    || shortcut_from_name(n).is_some_and(|s| s.default_on());
+                entry(n, on)
+            })
+            .collect();
+        assert_eq!(saved.iter().filter(|e| e.on).count(), 12);
+        let t = ShortcutTiles::from_saved(&saved);
+        assert_eq!(t.shown(), 11);
+        let on: Vec<Tile> = t.visible();
+        let want: Vec<Tile> = Shortcut::ALL
+            .iter()
+            .filter(|s| s.default_on())
+            .map(|s| Tile::Builtin(*s))
+            .collect();
+        assert_eq!(on, want, "no other tile is switched on");
+    }
+
+    #[test]
+    fn a_default_on_built_in_the_old_file_never_named_may_take_the_freed_slot() {
+        // The rule (unchanged): a built-in the file never names joins right
+        // after its predecessor, shown only if it is on by default AND the
+        // page has room. Dropping ValeSettings frees a slot, so Devices, which
+        // this old file never named, may come in on.
+        let mut saved: Vec<TileEntry> = original_nine()
+            .iter()
+            .map(|s| entry(&shortcut_name(*s), true))
+            .collect();
+        saved.push(entry("ValeSettings", true));
+        saved.push(entry("GoShelf", true));
+        saved.push(TileEntry {
+            tile: CUSTOM.into(),
+            on: true,
+            label: "Gmail".into(),
+            kind: "Url".into(),
+            target: "https://mail.google.com".into(),
+        });
+        assert_eq!(saved.iter().filter(|e| e.on).count(), 12, "the page was full");
+        let t = ShortcutTiles::from_saved(&saved);
+        assert_eq!(t.shown(), 12);
+        assert!(
+            t.visible()
+                .contains(&Tile::Builtin(Shortcut::Go(Page::Devices)))
+        );
+    }
+
+    #[test]
+    fn a_list_whose_only_shown_tile_was_vale_settings_is_made_whole_after_the_drop() {
+        let saved = [entry("Lock", false), entry("ValeSettings", true)];
+        let t = ShortcutTiles::from_saved(&saved);
+        // All off after the drop: the default-on built-ins are switched on.
+        assert_eq!(t.shown(), 11);
+        let want: Vec<Tile> = Shortcut::ALL
+            .iter()
+            .filter(|s| s.default_on())
+            .map(|s| Tile::Builtin(*s))
+            .collect();
+        let mut got = t.visible();
+        got.sort_by_key(|x| match x {
+            Tile::Builtin(s) => Shortcut::ALL.iter().position(|a| a == s),
+            Tile::Custom(_) => None,
+        });
+        assert_eq!(got, want);
+        assert_eq!(names(&t)[0], "Lock", "the file's own order is kept");
     }
 
     #[test]
@@ -708,7 +843,6 @@ mod tests {
                 "Clipboard",
                 "Search",
                 "Lock",
-                "ValeSettings",
                 "(GoCalendar)",
                 "(GoPomodoro)",
                 "(GoReminders)",
@@ -1068,22 +1202,21 @@ mod tests {
     #[test]
     fn move_shown_steps_over_tiles_that_are_off() {
         let mut t = ShortcutTiles::default();
-        // Index 9 is ValeSettings (on), 10..17 are off Go tiles, 17 is GoShelf,
-        // 18 GoSystem (off), 19 GoDevices (on, the last shown).
+        // Index 8 is Lock (on), 9..16 are off Go tiles, 16 is GoShelf,
+        // 17 GoSystem (off), 18 GoDevices (on, the last shown).
         assert!(
-            t.move_shown(17, -1),
-            "past the off Go tiles, onto Vale's place"
+            t.move_shown(16, -1),
+            "past the off Go tiles, onto Lock's place"
         );
-        assert_eq!(names(&t)[9], "GoShelf");
-        assert_eq!(names(&t)[10], "ValeSettings");
+        assert_eq!(names(&t)[8], "GoShelf");
+        assert_eq!(names(&t)[9], "Lock");
         assert!(!t.move_shown(0, -1), "first");
-        assert!(!t.move_shown(10, 1) || names(&t)[10] != "ValeSettings");
         let mut t = ShortcutTiles::default();
         assert!(!t.move_shown(12, 1), "an off tile does not move");
-        let last_on = 19;
+        let last_on = 18;
         assert!(!t.move_shown(last_on, 1), "last shown");
         assert!(t.move_shown(0, 50), "clamped to the last shown tile");
-        assert_eq!(names(&t)[19], "Screenshot");
+        assert_eq!(names(&t)[18], "Screenshot");
     }
 
     #[test]
@@ -1212,7 +1345,6 @@ mod tests {
         assert_eq!(g(Shortcut::Go(Page::Mixer)), TileGroup::Pages);
         assert_eq!(g(Shortcut::Lock), TileGroup::Windows);
         assert_eq!(g(Shortcut::Screenshot), TileGroup::Windows);
-        assert_eq!(g(Shortcut::ValeSettings), TileGroup::Vale);
         assert_eq!(g(Shortcut::Search), TileGroup::Vale);
         let own = custom("Gmail", CustomKind::Url, "https://mail.google.com");
         assert_eq!(group(&Tile::Custom(own)), TileGroup::Own);

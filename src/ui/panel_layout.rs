@@ -5467,7 +5467,7 @@ mod tests {
     fn page_and_settings_tiles_go_through_the_built_in_path() {
         use crate::model::Page;
         let go = [
-            Shortcut::ValeSettings,
+            Shortcut::Lock,
             Shortcut::Go(Page::Shelf),
             Shortcut::Go(Page::Calendar),
             Shortcut::Go(Page::Cli),

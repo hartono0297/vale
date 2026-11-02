@@ -643,14 +643,17 @@ fn panel_pages<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<PageEntry>, D::Err
 }
 
 /// `shortcut_tiles` read entry by entry, like `panel_pages`: an entry that
-/// is not an object is dropped (the others stay).
+/// is not an object is dropped (the others stay). The retired "ValeSettings"
+/// tile (any case) is dropped too, so a config read and saved again for any
+/// other setting never writes it back.
 fn shortcut_tiles<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<TileEntry>, D::Error> {
     let value = serde_json::Value::deserialize(d)?;
     let list = value.as_array().map(Vec::as_slice).unwrap_or_default();
     Ok(list
         .iter()
         .filter(|v| v.is_object())
-        .filter_map(|v| serde_json::from_value(v.clone()).ok())
+        .filter_map(|v| serde_json::from_value::<TileEntry>(v.clone()).ok())
+        .filter(|e| !e.tile.trim().eq_ignore_ascii_case("ValeSettings"))
         .collect())
 }
 
@@ -1895,6 +1898,30 @@ mod tests {
             merge_owned(Config::default(), &mem).shortcut_tiles,
             mixed.shortcut_tiles
         );
+    }
+
+    #[test]
+    fn the_retired_vale_settings_tile_is_dropped_when_read_and_never_written_back() {
+        for on in [true, false] {
+            let text = format!(
+                r#"{{"shortcut_tiles":[{{"tile":"Lock","on":true}},{{"tile":"ValeSettings","on":{on}}},{{"tile":" valesettings ","on":{on}}},{{"tile":"Emoji","on":false}},{{"tile":"GoShelf","on":true}}]}}"#
+            );
+            let c = try_parse(&text).expect("no error");
+            let tiles: Vec<(&str, bool)> = c
+                .shortcut_tiles
+                .iter()
+                .map(|e| (e.tile.as_str(), e.on))
+                .collect();
+            assert_eq!(
+                tiles,
+                [("Lock", true), ("Emoji", false), ("GoShelf", true)],
+                "on={on}"
+            );
+            let json = serde_json::to_string(&c).unwrap();
+            assert!(!json.to_lowercase().contains("valesettings"), "{json}");
+        }
+        // No shortcut_tiles at all still reads as the defaults (empty).
+        assert!(try_parse(r#"{"style":"Notch"}"#).unwrap().shortcut_tiles.is_empty());
     }
 
     #[test]
