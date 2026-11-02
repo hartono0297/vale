@@ -1863,6 +1863,7 @@ fn run_scenes(scenes: &[Scene]) {
                         },
                         log: if with_log { &mole_log } else { &no_log },
                         report: (which == CleanDemo::MoleResult).then_some(&mole_report),
+                        scroll: 0,
                     },
                 }
             });

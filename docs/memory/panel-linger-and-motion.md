@@ -1,6 +1,6 @@
 ---
 tags: [decision, panel, animation, power, linger, v3.4]
-date: 2026-10-29
+date: 2026-11-02
 ---
 
 # Panel linger and panel motion
@@ -110,9 +110,10 @@ outside into `Dismiss`). It stops when the linger ends.
   strip jumps by the excess. The renderer gets at most two trail pages
   (`Frame::page_trail`, those with |x| < 1).
 - **Gotcha, the closing panel's content:** by the time `refresh` starts the
-  closing morph, `apply` has already reset what the panel showed (the
-  cleaner, `cli_tall`, `cli_menu`, the notes, reminders and day pages; the
-  strip is `None` once the view is not the panel). `App` takes
+  closing morph, `apply` has already reset what the panel showed
+  (`cli_tall`, `cli_menu`, the notes, reminders and day pages; the strip is
+  `None` once the view is not the panel; the cleaner is kept since
+  2026-11-02, but `cleaner()` and the snapshot only give it on System). `App` takes
   `IslandState::shown_panel()` before each event and keeps it
   (`closed_panel`) when the event takes the panel off screen; `refresh` hands
   it to `leaving`, and `draw` builds the leaving frame from it (page, strip,
@@ -186,3 +187,7 @@ no screenshot was compared by eye. The owner should look at: a calendar
 range switch, the cleaner opening, the search opening and closing, the panel
 closing from the Music page, a notice appearing from the panel, and the
 folder menu; and turn Windows' animation effects off once.
+
+**2026-11-02:** the cleaner is no longer reset by a close. `ShownPanel.cleaner`
+is still the closing panel's snapshot (the cleaner on System, `cleaner()`), so
+the fade keeps its size; see [[cleaner]].

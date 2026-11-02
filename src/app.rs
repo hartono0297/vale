@@ -1984,7 +1984,7 @@ impl App {
             Effect::ArrangeSkip => self.arrange_skip(),
             Effect::ArrangeUndo => self.arrange_undo(),
             Effect::ArrangeSave => self.arrange_save(),
-            Effect::OpenCleaner => self.scan_clean(),
+            Effect::OpenCleaner => return self.scan_clean(),
             Effect::CleanDelete(cats) => return self.start_clean(cats),
             Effect::SaveCleanMode(mode) => {
                 self.config.clean_mode = mode;
@@ -2312,16 +2312,19 @@ impl App {
     }
 
     /// The cleaner opened (or a clean ended while it shows): measure every
-    /// category. Not while a clean runs; its end scans again.
-    fn scan_clean(&mut self) {
+    /// category. Not while a clean runs; its end scans again. A scan the
+    /// thread cannot take tells the reducer, so the next showing asks again.
+    fn scan_clean(&mut self) -> Option<Event> {
         if self.state.clean_busy() || self.clean.scanning {
-            return;
+            return None;
         }
         let sent = self.cleaner().is_some_and(Cleaner::scan);
-        if !sent {
-            self.clean.worker = None;
-        }
         self.clean.scanning = sent;
+        if sent {
+            return None;
+        }
+        self.clean.worker = None;
+        Some(Event::CleanScanFailed)
     }
 
     /// The confirmed clean. If the thread cannot take it, the rows take
@@ -2335,7 +2338,8 @@ impl App {
     }
 
     /// A scan or a clean came back. A clean raises its notice (Bata happy),
-    /// frees the rows and, while the cleaner shows, scans again.
+    /// frees the rows and, for a cleaner that is kept (open or not), the
+    /// reducer asks for a new scan.
     fn on_clean_event(&mut self, event: CleanEvent, now: Instant) {
         match event {
             CleanEvent::Scanned(scan) => {
@@ -2345,17 +2349,17 @@ impl App {
             CleanEvent::Done(report) => {
                 // The old sizes are no longer true.
                 self.clean.scan = None;
-                self.apply(Event::CleanFinished, now);
                 let notice = {
                     let r = &self.renderer;
                     let kind = NoticeKind::CleanDone;
                     let fits = |s: &str| r.notice_text_fits(&kind, false, s);
                     clean::done_notice(i18n::lang(), &report, &fits)
                 };
+                // The notice first: a result the notice covers is not yet
+                // seen. The reducer then asks for the new scan itself
+                // (`Effect::OpenCleaner`), with the panel open or shut.
                 self.apply(Event::Notice(notice), now);
-                if self.state.cleaner().is_some() {
-                    self.scan_clean();
-                }
+                self.apply(Event::CleanFinished, now);
             }
         }
     }
@@ -2444,9 +2448,17 @@ impl App {
             }
             MoleEvent::Lines { run, lines } => {
                 if run == self.mole.run {
+                    let added = lines.len();
                     self.mole.log.extend(lines);
                     while self.mole.log.len() > mole::LOG_CAP {
                         self.mole.log.pop_front();
+                    }
+                    // A log scrolled up stays on what it shows, panel open
+                    // or shut (the offset is kept for the return); at the
+                    // newest (the usual case) nothing is applied. The drain
+                    // refreshes after any Mole event either way.
+                    if self.state.mole_log_scroll() > 0 {
+                        self.apply(Event::MoleLogLines(added), now);
                     }
                 }
             }
@@ -2474,8 +2486,10 @@ impl App {
                 if run == self.mole.run {
                     self.mole.report = Some(report);
                 }
-                self.apply(Event::MoleFinished { ok }, now);
+                // The notice first: a result the notice covers is not yet
+                // seen (the cleaner ends only after it was).
                 self.apply(Event::Notice(notice), now);
+                self.apply(Event::MoleFinished { ok }, now);
             }
         }
     }
@@ -5401,6 +5415,11 @@ impl App {
         let over_devices = client && self.renderer.over_devices_list(pt.x as f32, pt.y as f32);
         let over_notifs = client && self.renderer.over_notif_list(pt.x as f32, pt.y as f32);
         let over_art = client && self.renderer.over_media_art(pt.x as f32, pt.y as f32);
+        let mole_rows = if client {
+            self.renderer.over_mole_log(pt.x as f32, pt.y as f32)
+        } else {
+            None
+        };
         if self.state.cli_menu() && self.state.view() == View::Panel(Page::Cli) {
             // The open folder menu scrolls, a row per notch (more rows
             // than fit: favourites, recent).
@@ -5440,6 +5459,17 @@ impl App {
             let lines = (delta * WHEEL_LINES / 120).clamp(-60, 60);
             let lines = if lines == 0 { delta.signum() } else { lines };
             self.cli_scroll(lines);
+        } else if let Some(rows) = mole_rows
+            && self.state.view() == View::Panel(Page::System)
+            && self.state.cleaner().is_some()
+            && self.mole.log.len() > rows
+        {
+            // The cleaner keeps the wheel; over a log longer than its box
+            // the notch scrolls it (away from the user: older lines).
+            let lines = (delta * WHEEL_LINES / 120).clamp(-60, 60);
+            let lines = if lines == 0 { delta.signum() } else { lines };
+            let max = self.mole.log.len().saturating_sub(rows);
+            self.apply_now(Event::MoleLogScroll { lines, max });
         } else if volume_wheel_applies(
             self.config.scroll_volume,
             self.state.media().is_some_and(|m| m.playing),
@@ -5971,6 +6001,7 @@ impl App {
                 summary: self.mole.preview.as_ref().map(mole::Preview::summary),
                 log: &self.mole.log,
                 report: self.mole.report.as_ref(),
+                scroll: state.mole_log_scroll(),
             },
         });
         let search = self.clip_input.as_ref();
@@ -6882,6 +6913,7 @@ fn is_activity(event: &Event) -> bool {
             | Event::EditorOpen(_)
             | Event::CliFocus(_)
             | Event::CliScroll { .. }
+            | Event::MoleLogScroll { .. }
             | Event::Cli(_)
             | Event::LyricsSetting(_)
     )

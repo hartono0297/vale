@@ -1,6 +1,6 @@
 ---
 tags: [decision, panel, settings, v3.4]
-date: 2026-11-01
+date: 2026-11-02
 ---
 
 # Panel pages: order and which ones the wheel shows
@@ -142,3 +142,13 @@ Shortcuts (`Page::ALL: [Page; 14]`, name `"Arrange"` in `config.json`). A saved 
 without it (an older config) gets it right after Cli wherever the owner moved Cli to
 (`from_saved`, tested), shown. Icon: `Icon::Layout`, a screen frame cut into a 2x2
 layout, not Pintasan's `Grid`.
+
+## The cleaner locks the pages (2026-11-02)
+
+The wheel, the sideways flick and the dock icons do not move off the System
+page while the cleaner shows over it (`can_turn_page()`, see [[cleaner]] and
+[[gestures]]); Back, or a hotkey / tile / search that jumps elsewhere, are the
+ways out, and the cleaner is kept when they do. A page switched off in
+Halaman panel but opened by its tile for the visit does not hand over on
+close while the cleaner is kept on it (`leave_hidden_page` skipped; without a
+cleaner the rule is as before). `set_pages` is unchanged.

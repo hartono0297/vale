@@ -294,6 +294,15 @@ pub enum Event {
     /// This many new output lines arrived; a view scrolled up stays on the
     /// lines it shows.
     CliOutput(usize),
+    /// Scroll Mole's log `lines` up (negative: down), at most `max` lines
+    /// above the newest: the wheel over the log while the cleaner shows it.
+    MoleLogScroll {
+        lines: i32,
+        max: usize,
+    },
+    /// This many new Mole log lines arrived; a view scrolled up stays on the
+    /// lines it shows.
+    MoleLogLines(usize),
     /// A calendar sync result; `App` keeps it, the reducer ignores it.
     Calendar(CalendarSnapshot),
     /// Output or the end of a CLI command; `App` keeps it, the reducer ignores it.
@@ -312,6 +321,9 @@ pub enum Event {
     Clean(CleanEvent),
     /// The clean the panel asked for is over: its rows take clicks again.
     CleanFinished,
+    /// The scan `Effect::OpenCleaner` asked for could not reach the cleaner
+    /// thread: nothing is measured, so the next showing asks again.
+    CleanScanFailed,
     /// From the Mole thread (`mole::MoleWorker`); `App` keeps it and tells
     /// the reducer what it needs below.
     Mole(MoleEvent),

@@ -71,10 +71,11 @@ use crate::ui::panel_layout::{
     SEG_PAD, SYS_RING_STROKE, SearchLayout, ShelfLayout, ShortcutsLayout, SystemHead, SystemLayout,
     VOLUME_HUD_H, WEEK_HEAD_H, arrange_layout, calendar_layout, cleaner_layout, cli_folder_menu,
     cli_layout, cli_suggestions, clipboard_layout, device_shapes, devices_layout,
-    media_panel_layout, media_progress_layout, mixer_layout, mole_layout, notes_layout,
-    notif_layout, page_dots, pomodoro_compact_layout, pomodoro_compact_layout_robot,
-    pomodoro_layout, regions, reminders_layout, search_layout, shelf_card_layout, shelf_layout,
-    shortcuts_layout, system_layout, tile_parts, volume_hud_layout, waiting_strip,
+    media_panel_layout, media_progress_layout, mixer_layout, mole_layout, mole_log_rows,
+    mole_log_skip, notes_layout, notif_layout, page_dots, pomodoro_compact_layout,
+    pomodoro_compact_layout_robot, pomodoro_layout, regions, reminders_layout, search_layout,
+    shelf_card_layout, shelf_layout, shortcuts_layout, system_layout, tile_parts,
+    volume_hud_layout, waiting_strip,
 };
 use crate::ui::robot::{Expr, Pose};
 use crate::ui::shelf_motion::Drawn;
@@ -567,6 +568,10 @@ impl Renderer {
             };
             self.regions.media_art = match &layout {
                 PageLayout::Media(l) => Some(l.art),
+                _ => None,
+            };
+            self.regions.mole_log = match &layout {
+                PageLayout::Mole(l) => l.log,
                 _ => None,
             };
             self.regions.mixer_tracks = match &layout {
@@ -1771,7 +1776,7 @@ impl Renderer {
             self.text_colored(&line, &self.fonts.body_medium, r, ink, 1.0);
         }
         if let Some(log) = l.log {
-            self.paint_mole_log(log, m.log, m.phase == MolePhase::Running);
+            self.paint_mole_log(log, m.log, m.scroll, m.phase == MolePhase::Running);
         }
         if let Some(card) = &l.card {
             self.set_color(p.raised, 1.0);
@@ -1814,7 +1819,13 @@ impl Renderer {
     /// the top like the design's; once it is longer than the box, its last
     /// lines (the newest at the bottom). Section headers bright, the rest
     /// quiet.
-    fn paint_mole_log(&self, area: Rect, log: &std::collections::VecDeque<String>, running: bool) {
+    fn paint_mole_log(
+        &self,
+        area: Rect,
+        log: &std::collections::VecDeque<String>,
+        scroll: usize,
+        running: bool,
+    ) {
         let p = self.palette;
         self.set_color(theme::TERMINAL_BG, 1.0);
         self.fill_round(area, MOLE_LOG_RADIUS);
@@ -1824,7 +1835,7 @@ impl Renderer {
             w: area.w - 2.0 * MOLE_LOG_PAD,
             h: area.h - 2.0 * MOLE_LOG_PAD,
         };
-        let rows = (inner.h / MOLE_LOG_LINE_H).floor().max(0.0) as usize;
+        let rows = mole_log_rows(area);
         let row = |k: usize| Rect {
             y: inner.y + k as f32 * MOLE_LOG_LINE_H,
             h: MOLE_LOG_LINE_H,
@@ -1842,8 +1853,9 @@ impl Renderer {
             );
             return;
         }
-        let skip = log.len().saturating_sub(rows);
-        for (k, line) in log.iter().skip(skip).enumerate() {
+        // The newest lines, or the window scrolled up from them.
+        let skip = mole_log_skip(log.len(), rows, scroll);
+        for (k, line) in log.iter().skip(skip).take(rows).enumerate() {
             let ink = if crate::mole::is_section(line) {
                 theme::TERMINAL_TEXT
             } else {
@@ -4519,6 +4531,7 @@ mod tests {
             summary,
             log,
             report: None,
+            scroll: 0,
         }
     }
 

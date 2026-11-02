@@ -1,6 +1,6 @@
 ---
 tags: [decision, gestures, media, v3.2]
-date: 2026-10-29
+date: 2026-11-02
 ---
 
 # Gestures on the island (v3.2 Run 8)
@@ -66,3 +66,14 @@ cli_menu_open, gestures_media_ok, over_island)` (`App::on_hwheel`):
 - No element of the panel scrolls sideways (only hidden, owner-drawn EDITs
   have `ES_AUTOHSCROLL`), so nothing else claims the flick.
 - Left-button swipe, middle click and the vertical wheel are unchanged.
+
+## The cleaner holds the wheel (2026-11-02)
+
+While the cleaner shows over the System page (`cleaner_shown()`), the vertical
+wheel (`Event::Wheel`), the sideways flick (`Event::PageFlick`) and the dock
+(`Hit::PanelPage`, `go_to_page`) turn no page: `can_turn_page()` is false and
+a locked notch zeroes the saved-up residue. Back leaves it. The sticky
+reminder peek branch is unchanged, and the plain System page still turns
+pages. Over a Mole log longer than its box the wheel scrolls the log
+(`Event::MoleLogScroll`, the CLI output's `WHEEL_LINES` rule), see
+[[cleaner]] and [[mole-mode]].
