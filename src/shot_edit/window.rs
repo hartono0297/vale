@@ -16,28 +16,22 @@ use std::ffi::c_void;
 use std::sync::{Arc, Mutex};
 
 use windows::Win32::Foundation::{
-    COLORREF, D2DERR_RECREATE_TARGET, ERROR_CLASS_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, LRESULT,
-    POINT, RECT, WPARAM,
-};
-use windows::Win32::Graphics::Direct2D::Common::{
-    D2D1_FIGURE_BEGIN_FILLED, D2D1_FIGURE_END_CLOSED, D2D1_FIGURE_END_OPEN,
+    D2DERR_RECREATE_TARGET, ERROR_CLASS_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, LRESULT, POINT,
+    RECT, WPARAM,
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, ID2D1Bitmap,
-    ID2D1RenderTarget, ID2D1SolidColorBrush,
+    ID2D1RenderTarget,
 };
 use windows::Win32::Graphics::Dwm::{
     DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE,
     DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute,
 };
 use windows::Win32::Graphics::Gdi::{
-    ANTIALIASED_QUALITY, BeginPaint, CLIP_DEFAULT_PRECIS, CreateFontW, CreateSolidBrush,
-    DEFAULT_CHARSET, DeleteObject, EndPaint, FW_NORMAL, GetMonitorInfoW, HBRUSH, HFONT, HGDIOBJ,
-    InvalidateRect, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, OUT_DEFAULT_PRECIS,
-    PAINTSTRUCT, SetBkColor, SetTextColor,
+    BeginPaint, EndPaint, GetMonitorInfoW, InvalidateRect, MONITOR_DEFAULTTONEAREST, MONITORINFO,
+    MonitorFromPoint, PAINTSTRUCT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::Controls::EM_SETMARGINS;
 use windows::Win32::UI::HiDpi::{
     AdjustWindowRectExForDpi, GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI,
 };
@@ -45,17 +39,14 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, ReleaseCapture, SetCapture, SetFocus, VK_CONTROL, VK_DELETE, VK_ESCAPE, VK_RETURN,
     VK_SHIFT,
 };
-use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CS_DBLCLKS, CreateWindowExW, DefWindowProcW, DestroyWindow, EN_CHANGE, ES_AUTOVSCROLL,
-    ES_MULTILINE, GetClientRect, GetWindowTextLengthW, GetWindowTextW, HMENU, IDC_ARROW, IDC_CROSS,
-    IDC_IBEAM, IsWindow, LoadCursorW, MINMAXINFO, MoveWindow, PostMessageW, PostQuitMessage,
-    RegisterClassExW, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SendMessageW, SetCursor,
-    SetForegroundWindow, SetWindowPos, ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP,
-    WM_CAPTURECHANGED, WM_CHAR, WM_CLOSE, WM_COMMAND, WM_CTLCOLOREDIT, WM_DESTROY, WM_DPICHANGED,
-    WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCDESTROY, WM_PAINT, WM_SETCURSOR, WM_SETFONT, WM_SIZE,
-    WNDCLASSEXW, WS_CHILD, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+    CS_DBLCLKS, CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, IDC_ARROW,
+    IDC_CROSS, IDC_IBEAM, IsWindow, LoadCursorW, MINMAXINFO, PostQuitMessage, RegisterClassExW,
+    SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SetCursor, SetForegroundWindow, SetWindowPos,
+    ShowWindow, WINDOW_EX_STYLE, WM_APP, WM_CAPTURECHANGED, WM_CLOSE, WM_COMMAND, WM_CTLCOLOREDIT,
+    WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDBLCLK,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_SETCURSOR, WM_SIZE, WNDCLASSEXW,
+    WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer, WM_TIMER};
 use windows::core::{Error, HSTRING, w};
@@ -64,23 +55,22 @@ use windows_numerics::Vector2;
 use super::auto::{AutoCopy, DEBOUNCE_MS, ResultAction, Step, TimerAction, WriteGate};
 use super::export::{self, CopyInbox, CopyReady, Inbox, Prepared, Put, SaveResult};
 use super::gfx::{Align, Gfx, Target, bitmap, color, rect_f};
+use super::icons::{Glyph, fill, fill_round, glyph, line};
 use super::paint::{Pix, draw_annotations, draw_selection};
+use super::text::{
+    self, TextClick, TextEdit, WM_APP_TEXT, colorref, edit_text, text_click_action,
+    text_msg_is_current,
+};
 use super::{
     Annotation, COLORS, FRect, Handle, Pt, STROKES, Session, Tool, View, initial_scale, text_size,
 };
 use crate::capture::Shot;
 use crate::i18n::{Key, tr};
 use crate::theme::{self, WindowPalette};
-use crate::ui::fonts;
 use crate::ui::geometry::Rect;
 
 const CLASS: windows::core::PCWSTR = w!("ValeShotEditor");
 
-/// A native text editor finished: `wparam` 1 commits, 2 cancels, `lparam`
-/// is the EDIT that sent it (posted by the EDIT's subclass, so the EDIT is
-/// never destroyed inside its own proc). A message from an EDIT that is no
-/// longer the open one is ignored.
-const WM_APP_TEXT: u32 = WM_APP + 50;
 /// Lost render targets made again in a row before a paint gives up (until
 /// the next change asks for one).
 const RETRIES: u8 = 3;
@@ -88,7 +78,6 @@ const RETRIES: u8 = 3;
 const WM_APP_SAVED: u32 = WM_APP + 51;
 /// An auto-copy worker put its rendered picture in the copy inbox.
 const WM_APP_COPIED: u32 = WM_APP + 52;
-const EDIT_ID: isize = 7001;
 /// One-shot: a change settled (`DEBOUNCE_MS` after the last one); the
 /// picture is rendered for the clipboard.
 const ID_AUTO_DEBOUNCE: usize = 7101;
@@ -273,6 +262,7 @@ pub fn tip(hit: Hit) -> Option<String> {
                 Tool::Select => Key::EditSelect,
                 Tool::Text => Key::EditText,
                 Tool::Rect => Key::EditRect,
+                Tool::Line => Key::EditLine,
                 Tool::Arrow => Key::EditArrow,
                 Tool::Pen => Key::EditPen,
                 Tool::Marker => Key::EditMarker,
@@ -334,20 +324,6 @@ enum Drag {
     },
 }
 
-/// A native EDIT over the canvas.
-struct TextEdit {
-    edit: HWND,
-    font: HFONT,
-    brush: HBRUSH,
-    /// Replacing this annotation's text; `None` for a new text.
-    index: Option<usize>,
-    pos: Pt,
-    size: f32,
-    color: u32,
-    /// The EDIT's background (a contrast to the text colour).
-    back: u32,
-}
-
 struct Editor {
     hwnd: HWND,
     base: Arc<Shot>,
@@ -401,17 +377,6 @@ fn with<R>(hwnd: HWND, f: impl FnOnce(&mut Editor) -> R) -> Option<R> {
             .ok()
             .and_then(|mut m| m.get_mut(&(hwnd.0 as isize)).map(f))
     })
-}
-
-fn colorref(rgb: u32) -> COLORREF {
-    COLORREF(((rgb & 0xFF) << 16) | (rgb & 0xFF00) | (rgb >> 16))
-}
-
-/// White or near-black, whichever reads against `rgb` (the EDIT's back).
-fn contrast_back(rgb: u32) -> u32 {
-    let (r, g, b) = ((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
-    let luma = (299 * r + 587 * g + 114 * b) / 1000;
-    if luma > 150 { 0x202020 } else { 0xF7F7F7 }
 }
 
 fn key_down(vk: u16) -> bool {
@@ -1254,84 +1219,26 @@ fn begin_text(hwnd: HWND, pos: Pt, index: Option<usize>) {
     })
     .flatten();
     let Some(plan) = plan else { return };
-    let edit_pos = plan.pos;
     let px = (plan.size * plan.view_scale).round().max(8.0 * plan.ui);
-    let back = contrast_back(plan.color);
+    let Some(mut t) = text::create(hwnd, plan.client_pos, &plan.initial, px, plan.color, plan.ui)
+    else {
+        return;
+    };
+    t.index = index;
+    t.pos = plan.pos;
+    t.size = plan.size;
+    let edit = t.edit;
+    let mut slot = Some(t);
+    with(hwnd, |e| e.text = slot.take());
+    if let Some(t) = slot {
+        // The window's state is gone (a re-entrant borrow): take the EDIT
+        // back down.
+        text::destroy(t);
+        return;
+    }
+    fit_edit(hwnd);
     unsafe {
-        let Ok(instance) = GetModuleHandleW(None) else {
-            return;
-        };
-        let font = CreateFontW(
-            -(px as i32),
-            0,
-            0,
-            0,
-            FW_NORMAL.0 as i32,
-            0,
-            0,
-            0,
-            DEFAULT_CHARSET,
-            OUT_DEFAULT_PRECIS,
-            CLIP_DEFAULT_PRECIS,
-            ANTIALIASED_QUALITY,
-            0,
-            fonts::gdi_text_face(),
-        );
-        let style = WS_CHILD | WS_VISIBLE | WINDOW_STYLE((ES_MULTILINE | ES_AUTOVSCROLL) as u32);
-        let Ok(edit) = CreateWindowExW(
-            WINDOW_EX_STYLE(0),
-            w!("EDIT"),
-            &HSTRING::from(plan.initial.replace('\n', "\r\n")),
-            style,
-            plan.client_pos.0.round() as i32,
-            plan.client_pos.1.round() as i32,
-            (px * 8.0).max(140.0 * plan.ui) as i32,
-            (px * 1.4) as i32,
-            Some(hwnd),
-            Some(HMENU(EDIT_ID as *mut c_void)),
-            Some(instance.into()),
-            None,
-        ) else {
-            let _ = DeleteObject(HGDIOBJ(font.0));
-            return;
-        };
-        SendMessageW(
-            edit,
-            WM_SETFONT,
-            Some(WPARAM(font.0 as usize)),
-            Some(LPARAM(1)),
-        );
-        SendMessageW(edit, EM_SETMARGINS, Some(WPARAM(3)), Some(LPARAM(0)));
-        let _ = SetWindowSubclass(edit, Some(edit_proc), 1, 0);
-        let brush = CreateSolidBrush(colorref(back));
-        let kept = with(hwnd, |e| {
-            e.text = Some(TextEdit {
-                edit,
-                font,
-                brush,
-                index,
-                pos: edit_pos,
-                size: plan.size,
-                color: plan.color,
-                back,
-            });
-        });
-        if kept.is_none() {
-            let _ = DestroyWindow(edit);
-            let _ = DeleteObject(HGDIOBJ(font.0));
-            let _ = DeleteObject(HGDIOBJ(brush.0));
-            return;
-        }
-        fit_edit(hwnd);
         let _ = SetFocus(Some(edit));
-        // The caret at the end.
-        let len = GetWindowTextLengthW(edit);
-        SendMessageW(
-            edit,
-            windows::Win32::UI::Controls::EM_SETSEL,
-            Some(WPARAM(len as usize)),
-            Some(LPARAM(len as isize)),
-        );
     }
     invalidate(hwnd);
 }
@@ -1345,30 +1252,9 @@ fn fit_edit(hwnd: HWND) {
     })
     .flatten();
     let Some((edit, px, ui)) = plan else { return };
-    let text = edit_text(edit);
-    let (tw, th) =
-        with(hwnd, |e| e.gfx.measure(&format!("{text}M"), px, 400)).unwrap_or((0.0, 0.0));
-    let w = (tw + 12.0 * ui).max(140.0 * ui);
-    let h = (th + 6.0 * ui).max(px * 1.4);
-    unsafe {
-        let mut at = RECT::default();
-        let _ = windows::Win32::UI::WindowsAndMessaging::GetWindowRect(edit, &mut at);
-        let mut pt = POINT {
-            x: at.left,
-            y: at.top,
-        };
-        let _ = windows::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut pt);
-        let _ = MoveWindow(edit, pt.x, pt.y, w as i32, h as i32, true);
-    }
-}
-
-fn edit_text(edit: HWND) -> String {
-    unsafe {
-        let n = GetWindowTextLengthW(edit).max(0) as usize;
-        let mut buf = vec![0u16; n + 1];
-        let got = GetWindowTextW(edit, &mut buf).max(0) as usize;
-        String::from_utf16_lossy(&buf[..got]).replace("\r\n", "\n")
-    }
+    text::fit(hwnd, edit, px, ui, |s| {
+        with(hwnd, |e| e.gfx.measure(s, px, 400)).unwrap_or((0.0, 0.0))
+    });
 }
 
 /// Takes the typed text into the picture (an empty text is dropped) and
@@ -1381,56 +1267,22 @@ fn cancel_text(hwnd: HWND) {
     finish_text(hwnd, false);
 }
 
-/// What a canvas click does with the Text tool.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TextClick {
-    /// Not the Text tool: the click is for something else.
-    NotText,
-    /// An EDIT was open: the click only finishes it, so the focus goes back
-    /// to the editor and the keys (Ctrl+C, Ctrl+S, Delete, Esc, V/T/R) work.
-    CommitOnly,
-    /// No EDIT was open: the click places a new one.
-    Place,
-}
-
-/// `edit_was_open`: the press committed an open EDIT.
-fn text_click_action(edit_was_open: bool, tool: Tool) -> TextClick {
-    match (tool, edit_was_open) {
-        (Tool::Text, true) => TextClick::CommitOnly,
-        (Tool::Text, false) => TextClick::Place,
-        _ => TextClick::NotText,
-    }
-}
-
-/// Whether a `WM_APP_TEXT` belongs to the EDIT open now: the post carries the
-/// sender's HWND, and one from an EDIT already gone must never close a newer
-/// one.
-fn text_msg_is_current(open_edit: Option<isize>, sender: isize) -> bool {
-    open_edit == Some(sender)
-}
-
 fn finish_text(hwnd: HWND, keep: bool) -> bool {
     let Some(Some(t)) = with(hwnd, |e| e.text.take()) else {
         return false;
     };
     let typed = edit_text(t.edit);
-    unsafe {
-        // Unhooked first: the focus it loses on the way out must not post a
-        // commit that would land on the next EDIT.
-        let _ = RemoveWindowSubclass(t.edit, Some(edit_proc), 1);
-        let _ = DestroyWindow(t.edit);
-        let _ = DeleteObject(HGDIOBJ(t.font.0));
-        let _ = DeleteObject(HGDIOBJ(t.brush.0));
-    }
+    let (index, pos) = (t.index, t.pos);
+    text::destroy(t);
     with(hwnd, |e| {
         if keep {
-            match t.index {
+            match index {
                 Some(i) => {
                     e.session.set_text(i, &typed);
                 }
                 None => {
                     // In the colour and size it was typed in; blank is dropped.
-                    e.session.add_text(t.pos, &typed);
+                    e.session.add_text(pos, &typed);
                 }
             }
         }
@@ -1442,50 +1294,6 @@ fn finish_text(hwnd: HWND, keep: bool) -> bool {
     }
     invalidate(hwnd);
     true
-}
-
-/// Enter commits, Shift+Enter adds a line, Esc cancels, losing focus commits.
-unsafe extern "system" fn edit_proc(
-    hwnd: HWND,
-    msg: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-    _id: usize,
-    _data: usize,
-) -> LRESULT {
-    let parent = unsafe { windows::Win32::UI::WindowsAndMessaging::GetParent(hwnd) }.ok();
-    let post = |what: usize| {
-        if let Some(p) = parent {
-            unsafe {
-                let _ = PostMessageW(Some(p), WM_APP_TEXT, WPARAM(what), LPARAM(hwnd.0 as isize));
-            }
-        }
-    };
-    match msg {
-        WM_KEYDOWN => {
-            let key = (wparam.0 & 0xFFFF) as u16;
-            if key == VK_ESCAPE.0 {
-                post(2);
-                return LRESULT(0);
-            }
-            if key == VK_RETURN.0 && !key_down(VK_SHIFT.0) {
-                post(1);
-                return LRESULT(0);
-            }
-        }
-        WM_CHAR => {
-            // Enter and Esc: no new line, no beep.
-            if wparam.0 == 0x1B || (wparam.0 == 0x0D && !key_down(VK_SHIFT.0)) {
-                return LRESULT(0);
-            }
-        }
-        WM_KILLFOCUS => post(1),
-        WM_NCDESTROY => unsafe {
-            let _ = RemoveWindowSubclass(hwnd, Some(edit_proc), 1);
-        },
-        _ => {}
-    }
-    unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
 }
 
 // ---- mouse ----
@@ -1570,6 +1378,7 @@ fn on_down(hwnd: HWND, lparam: LPARAM, double: bool) {
                         r: FRect::new(p.x, p.y, 0.0, 0.0),
                         style,
                     },
+                    Tool::Line => Annotation::Line { a: p, b: p, style },
                     Tool::Arrow => Annotation::Arrow { a: p, b: p, style },
                     Tool::Pen => Annotation::Pen {
                         pts: vec![p],
@@ -1579,7 +1388,7 @@ fn on_down(hwnd: HWND, lparam: LPARAM, double: bool) {
                         pts: vec![p],
                         style,
                     },
-                    _ => Annotation::Pixelate {
+                    Tool::Pixelate | Tool::Select | Tool::Text => Annotation::Pixelate {
                         r: FRect::new(p.x, p.y, 0.0, 0.0),
                     },
                 };
@@ -1652,7 +1461,7 @@ fn on_move(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
                         Annotation::Rect { r, .. } | Annotation::Pixelate { r } => {
                             *r = FRect::between(from, p);
                         }
-                        Annotation::Arrow { b, .. } => *b = p,
+                        Annotation::Arrow { b, .. } | Annotation::Line { b, .. } => *b = p,
                         Annotation::Pen { pts, .. } | Annotation::Marker { pts, .. } => {
                             let far = pts.last().is_none_or(|l| {
                                 (l.x - p.x).hypot(l.y - p.y) >= 1.5 / e.view.scale.max(0.05)
@@ -1963,25 +1772,16 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         }
         WM_COMMAND => {
             // EN_CHANGE of the text EDIT: grow it with its text.
-            let notify = ((wparam.0 >> 16) & 0xFFFF) as u32;
-            if notify == EN_CHANGE {
+            if text::is_change(wparam) {
                 fit_edit(hwnd);
             }
             LRESULT(0)
         }
         WM_CTLCOLOREDIT => {
-            let brush = with(hwnd, |e| {
-                let t = e.text.as_ref()?;
-                let hdc = windows::Win32::Graphics::Gdi::HDC(wparam.0 as *mut c_void);
-                unsafe {
-                    SetTextColor(hdc, colorref(t.color));
-                    SetBkColor(hdc, colorref(t.back));
-                }
-                Some(t.brush)
-            })
-            .flatten();
+            let brush = with(hwnd, |e| e.text.as_ref().map(|t| text::ctl_color(t, wparam)))
+                .flatten();
             match brush {
-                Some(b) => LRESULT(b.0 as isize),
+                Some(b) => b,
                 None => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
             }
         }
@@ -2002,10 +1802,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             });
             if let Some(mut e) = removed {
                 if let Some(t) = e.text.take() {
-                    unsafe {
-                        let _ = DeleteObject(HGDIOBJ(t.font.0));
-                        let _ = DeleteObject(HGDIOBJ(t.brush.0));
-                    }
+                    text::free_gdi(&t);
                 }
                 let demo = e.demo;
                 drop(e);
@@ -2023,260 +1820,6 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
 
 fn rgba(packed: u32) -> (u32, f32) {
     (packed >> 8, (packed & 0xFF) as f32 / 255.0)
-}
-
-fn fill(rt: &ID2D1RenderTarget, brush: &ID2D1SolidColorBrush, r: Rect, rgb: u32, a: f32) {
-    unsafe {
-        brush.SetColor(&color(rgb, a));
-        rt.FillRectangle(&rect_f(r.x, r.y, r.w, r.h), brush);
-    }
-}
-
-fn fill_round(
-    rt: &ID2D1RenderTarget,
-    brush: &ID2D1SolidColorBrush,
-    r: Rect,
-    radius: f32,
-    rgb: u32,
-    a: f32,
-) {
-    use windows::Win32::Graphics::Direct2D::D2D1_ROUNDED_RECT;
-    unsafe {
-        brush.SetColor(&color(rgb, a));
-        rt.FillRoundedRectangle(
-            &D2D1_ROUNDED_RECT {
-                rect: rect_f(r.x, r.y, r.w, r.h),
-                radiusX: radius,
-                radiusY: radius,
-            },
-            brush,
-        );
-    }
-}
-
-fn line(
-    rt: &ID2D1RenderTarget,
-    brush: &ID2D1SolidColorBrush,
-    gfx: &Gfx,
-    a: (f32, f32),
-    b: (f32, f32),
-    w: f32,
-) {
-    unsafe {
-        rt.DrawLine(
-            Vector2::new(a.0, a.1),
-            Vector2::new(b.0, b.1),
-            brush,
-            w,
-            &gfx.round,
-        );
-    }
-}
-
-/// A path through `pts`, stroked (and closed/filled when asked).
-fn poly(
-    rt: &ID2D1RenderTarget,
-    brush: &ID2D1SolidColorBrush,
-    gfx: &Gfx,
-    pts: &[(f32, f32)],
-    width: f32,
-    closed_fill: bool,
-) {
-    let Some(first) = pts.first() else { return };
-    unsafe {
-        let Ok(g) = gfx.d2d.CreatePathGeometry() else {
-            return;
-        };
-        let Ok(sink) = g.Open() else { return };
-        sink.BeginFigure(Vector2::new(first.0, first.1), D2D1_FIGURE_BEGIN_FILLED);
-        for p in &pts[1..] {
-            sink.AddLine(Vector2::new(p.0, p.1));
-        }
-        sink.EndFigure(if closed_fill {
-            D2D1_FIGURE_END_CLOSED
-        } else {
-            D2D1_FIGURE_END_OPEN
-        });
-        if sink.Close().is_err() {
-            return;
-        }
-        if closed_fill {
-            rt.FillGeometry(&g, brush, None);
-        } else {
-            rt.DrawGeometry(&g, brush, width, &gfx.round);
-        }
-    }
-}
-
-enum Glyph {
-    Tool(Tool),
-    Undo,
-    Redo,
-}
-
-/// A toolbar icon drawn from a few lines, centred in `r`.
-#[allow(clippy::too_many_arguments)]
-fn glyph(
-    rt: &ID2D1RenderTarget,
-    brush: &ID2D1SolidColorBrush,
-    gfx: &Gfx,
-    g: Glyph,
-    r: Rect,
-    rgb: u32,
-    a: f32,
-    ui: f32,
-) {
-    let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
-    let u = 7.5 * ui;
-    let sw = 1.7 * ui;
-    unsafe {
-        brush.SetColor(&color(rgb, a));
-        match g {
-            Glyph::Tool(Tool::Select) => poly(
-                rt,
-                brush,
-                gfx,
-                &[
-                    (cx - u * 0.55, cy - u),
-                    (cx - u * 0.55, cy + u * 0.75),
-                    (cx - u * 0.1, cy + u * 0.3),
-                    (cx + u * 0.25, cy + u),
-                    (cx + u * 0.55, cy + u * 0.85),
-                    (cx + u * 0.2, cy + u * 0.2),
-                    (cx + u * 0.75, cy + u * 0.2),
-                ],
-                sw,
-                true,
-            ),
-            Glyph::Tool(Tool::Text) => {
-                gfx.text_in(
-                    rt,
-                    brush,
-                    "T",
-                    (r.x, r.y, r.w, r.h),
-                    18.0 * ui,
-                    700,
-                    rgb,
-                    a,
-                    Align::Center,
-                );
-            }
-            Glyph::Tool(Tool::Rect) => {
-                rt.DrawRectangle(
-                    &rect_f(cx - u, cy - u * 0.75, u * 2.0, u * 1.5),
-                    brush,
-                    sw,
-                    &gfx.round,
-                );
-            }
-            Glyph::Tool(Tool::Arrow) => {
-                line(
-                    rt,
-                    brush,
-                    gfx,
-                    (cx - u * 0.9, cy + u * 0.9),
-                    (cx + u * 0.9, cy - u * 0.9),
-                    sw,
-                );
-                poly(
-                    rt,
-                    brush,
-                    gfx,
-                    &[
-                        (cx + u * 0.0, cy - u * 0.9),
-                        (cx + u * 0.9, cy - u * 0.9),
-                        (cx + u * 0.9, cy + u * 0.0),
-                    ],
-                    sw,
-                    false,
-                );
-            }
-            Glyph::Tool(Tool::Pen) => poly(
-                rt,
-                brush,
-                gfx,
-                &[
-                    (cx - u, cy + u * 0.5),
-                    (cx - u * 0.5, cy - u * 0.6),
-                    (cx, cy + u * 0.4),
-                    (cx + u * 0.5, cy - u * 0.5),
-                    (cx + u, cy + u * 0.3),
-                ],
-                sw,
-                false,
-            ),
-            Glyph::Tool(Tool::Marker) => {
-                brush.SetColor(&color(rgb, a * 0.45));
-                line(
-                    rt,
-                    brush,
-                    gfx,
-                    (cx - u * 0.8, cy + u * 0.2),
-                    (cx + u * 0.8, cy - u * 0.5),
-                    6.0 * ui,
-                );
-                brush.SetColor(&color(rgb, a));
-                line(
-                    rt,
-                    brush,
-                    gfx,
-                    (cx - u * 0.9, cy + u * 0.95),
-                    (cx + u * 0.9, cy + u * 0.95),
-                    sw,
-                );
-            }
-            Glyph::Tool(Tool::Pixelate) => {
-                let cell = u * 0.66;
-                let (x0, y0) = (cx - cell * 1.5, cy - cell * 1.5);
-                for j in 0..3 {
-                    for i in 0..3 {
-                        let on = (i + j) % 2 == 0;
-                        brush.SetColor(&color(rgb, if on { a } else { a * 0.35 }));
-                        rt.FillRectangle(
-                            &rect_f(
-                                x0 + i as f32 * cell,
-                                y0 + j as f32 * cell,
-                                cell - 1.0 * ui,
-                                cell - 1.0 * ui,
-                            ),
-                            brush,
-                        );
-                    }
-                }
-            }
-            Glyph::Undo | Glyph::Redo => {
-                let m = if matches!(g, Glyph::Undo) { 1.0 } else { -1.0 };
-                let x = |dx: f32| cx - m * dx * u;
-                poly(
-                    rt,
-                    brush,
-                    gfx,
-                    &[
-                        (x(0.9), cy - u * 0.1),
-                        (x(-0.2), cy - u * 0.1),
-                        (x(-0.9), cy + u * 0.35),
-                        (x(-0.9), cy + u * 0.6),
-                        (x(-0.5), cy + u * 0.9),
-                        (x(0.1), cy + u * 0.9),
-                    ],
-                    sw,
-                    false,
-                );
-                poly(
-                    rt,
-                    brush,
-                    gfx,
-                    &[
-                        (x(0.9) + m * u * 0.6, cy - u * 0.75),
-                        (x(0.9), cy - u * 0.1),
-                        (x(0.9) + m * u * 0.6, cy + u * 0.55),
-                    ],
-                    sw,
-                    false,
-                );
-            }
-        }
-    }
 }
 
 /// The stages of one frame.
@@ -2794,9 +2337,9 @@ mod tests {
             let order: Vec<Hit> = l.items.iter().map(|(h, _)| *h).collect();
             let tools: Vec<Hit> = Tool::ALL.iter().map(|t| Hit::Tool(*t)).collect();
             assert_eq!(
-                &order[..7],
+                &order[..8],
                 tools.as_slice(),
-                "Select first, then T R A P M B"
+                "Select first, then T R L A P M B"
             );
             assert_eq!(l.seps.len(), 3);
             // The two groups apart at the least width.
@@ -2806,27 +2349,11 @@ mod tests {
     }
 
     #[test]
-    fn a_text_click_after_typing_only_commits() {
-        // An EDIT was open: the click finishes it and places nothing.
+    fn the_editor_places_text_by_the_shared_rules() {
+        // The rules and their tests moved to `text`; the editor uses them.
         assert_eq!(text_click_action(true, Tool::Text), TextClick::CommitOnly);
-        // No EDIT: a click places a new one.
         assert_eq!(text_click_action(false, Tool::Text), TextClick::Place);
-        // Other tools are not the text rule's business.
-        for tool in Tool::ALL {
-            if tool != Tool::Text {
-                assert_eq!(text_click_action(true, tool), TextClick::NotText);
-                assert_eq!(text_click_action(false, tool), TextClick::NotText);
-            }
-        }
-    }
-
-    #[test]
-    fn a_text_message_from_a_gone_edit_is_ignored() {
-        assert!(text_msg_is_current(Some(0x1234), 0x1234));
-        // A newer EDIT is open: the old one's post does not touch it.
-        assert!(!text_msg_is_current(Some(0x5678), 0x1234));
-        // Nothing open: nothing to close.
-        assert!(!text_msg_is_current(None, 0x1234));
+        assert!(text_msg_is_current(Some(7), 7) && !text_msg_is_current(Some(7), 8));
     }
 
     #[test]
@@ -2916,19 +2443,6 @@ mod tests {
             let s = tip(Hit::Tool(t)).expect("a tip");
             assert!(s.ends_with(&format!("({})", t.key())), "{s}");
         }
-    }
-
-    #[test]
-    fn the_text_background_contrasts_with_the_colour() {
-        assert_eq!(contrast_back(0xFFFFFF), 0x202020);
-        assert_eq!(contrast_back(0x1A1A1A), 0xF7F7F7);
-        assert_eq!(contrast_back(COLORS[0]), 0xF7F7F7);
-        assert_eq!(contrast_back(COLORS[1]), 0x202020);
-    }
-
-    #[test]
-    fn colorref_swaps_red_and_blue() {
-        assert_eq!(colorref(0x112233).0, 0x332211);
     }
 
     #[test]

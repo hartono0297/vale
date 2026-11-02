@@ -14,7 +14,9 @@
 pub mod auto;
 pub mod export;
 pub mod gfx;
+pub mod icons;
 pub mod paint;
+pub mod text;
 pub mod window;
 
 use std::collections::VecDeque;
@@ -109,6 +111,12 @@ pub enum Annotation {
         b: Pt,
         style: Style,
     },
+    /// A straight line: an arrow without its head.
+    Line {
+        a: Pt,
+        b: Pt,
+        style: Style,
+    },
     Pen {
         pts: Vec<Pt>,
         style: Style,
@@ -138,6 +146,7 @@ pub enum Tool {
     Select,
     Text,
     Rect,
+    Line,
     Arrow,
     Pen,
     Marker,
@@ -145,22 +154,24 @@ pub enum Tool {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 7] = [
+    pub const ALL: [Tool; 8] = [
         Tool::Select,
         Tool::Text,
         Tool::Rect,
+        Tool::Line,
         Tool::Arrow,
         Tool::Pen,
         Tool::Marker,
         Tool::Pixelate,
     ];
 
-    /// V, T, R, A, P, M, B (either case).
+    /// V, T, R, L, A, P, M, B (either case).
     pub fn from_key(c: char) -> Option<Tool> {
         Some(match c.to_ascii_uppercase() {
             'V' => Tool::Select,
             'T' => Tool::Text,
             'R' => Tool::Rect,
+            'L' => Tool::Line,
             'A' => Tool::Arrow,
             'P' => Tool::Pen,
             'M' => Tool::Marker,
@@ -174,6 +185,7 @@ impl Tool {
             Tool::Select => 'V',
             Tool::Text => 'T',
             Tool::Rect => 'R',
+            Tool::Line => 'L',
             Tool::Arrow => 'A',
             Tool::Pen => 'P',
             Tool::Marker => 'M',
@@ -234,6 +246,7 @@ impl Annotation {
             Annotation::Arrow { a, b, style } => {
                 FRect::between(*a, *b).grow(style.width * 1.5 + 4.0)
             }
+            Annotation::Line { a, b, style } => FRect::between(*a, *b).grow(style.width / 2.0 + 4.0),
             Annotation::Pen { pts, style } => points_bounds(pts, style.width / 2.0),
             Annotation::Marker { pts, style } => {
                 points_bounds(pts, style.width * MARKER_WIDTH_X / 2.0)
@@ -258,6 +271,9 @@ impl Annotation {
             }
             Annotation::Pixelate { r } => r.grow(tol).contains(p),
             Annotation::Arrow { a, b, style } => dist_to_segment(p, *a, *b) <= tol + style.width,
+            Annotation::Line { a, b, style } => {
+                dist_to_segment(p, *a, *b) <= tol + style.width / 2.0
+            }
             Annotation::Pen { pts, style } => near_polyline(pts, p, tol + style.width / 2.0),
             Annotation::Marker { pts, style } => {
                 near_polyline(pts, p, tol + style.width * MARKER_WIDTH_X / 2.0)
@@ -275,7 +291,7 @@ impl Annotation {
                     .into_iter()
                     .find(|h| near(r.corner(*h)))
             }
-            Annotation::Arrow { a, b, .. } => {
+            Annotation::Arrow { a, b, .. } | Annotation::Line { a, b, .. } => {
                 if near(*b) {
                     Some(Handle::End)
                 } else if near(*a) {
@@ -297,7 +313,9 @@ impl Annotation {
                     .map(|h| (h, r.corner(h)))
                     .collect()
             }
-            Annotation::Arrow { a, b, .. } => vec![(Handle::Start, *a), (Handle::End, *b)],
+            Annotation::Arrow { a, b, .. } | Annotation::Line { a, b, .. } => {
+                vec![(Handle::Start, *a), (Handle::End, *b)]
+            }
             _ => Vec::new(),
         }
     }
@@ -313,7 +331,7 @@ impl Annotation {
                 r.x += dx;
                 r.y += dy;
             }
-            Annotation::Arrow { a, b, .. } => {
+            Annotation::Arrow { a, b, .. } | Annotation::Line { a, b, .. } => {
                 shift(a);
                 shift(b);
             }
@@ -337,7 +355,7 @@ impl Annotation {
                 });
                 *r = FRect::between(anchor, to);
             }
-            Annotation::Arrow { a, b, .. } => match handle {
+            Annotation::Arrow { a, b, .. } | Annotation::Line { a, b, .. } => match handle {
                 Handle::Start => *a = to,
                 Handle::End => *b = to,
                 _ => {}
@@ -351,6 +369,7 @@ impl Annotation {
         match self {
             Annotation::Rect { style, .. }
             | Annotation::Arrow { style, .. }
+            | Annotation::Line { style, .. }
             | Annotation::Pen { style, .. }
             | Annotation::Marker { style, .. } => style.color = c,
             Annotation::Text { color, .. } => *color = c,
@@ -363,6 +382,7 @@ impl Annotation {
         match self {
             Annotation::Rect { style, .. }
             | Annotation::Arrow { style, .. }
+            | Annotation::Line { style, .. }
             | Annotation::Pen { style, .. }
             | Annotation::Marker { style, .. } => style.width = width,
             Annotation::Text { size, .. } => *size = text,
@@ -375,6 +395,7 @@ impl Annotation {
         match self {
             Annotation::Rect { style, .. }
             | Annotation::Arrow { style, .. }
+            | Annotation::Line { style, .. }
             | Annotation::Pen { style, .. }
             | Annotation::Marker { style, .. } => Some(style.color),
             Annotation::Text { color, .. } => Some(*color),
@@ -387,7 +408,9 @@ impl Annotation {
         const MIN: f32 = 3.0;
         match self {
             Annotation::Rect { r, .. } | Annotation::Pixelate { r } => r.w < MIN || r.h < MIN,
-            Annotation::Arrow { a, b, .. } => (a.x - b.x).abs() < MIN && (a.y - b.y).abs() < MIN,
+            Annotation::Arrow { a, b, .. } | Annotation::Line { a, b, .. } => {
+                (a.x - b.x).abs() < MIN && (a.y - b.y).abs() < MIN
+            }
             Annotation::Pen { pts, .. } | Annotation::Marker { pts, .. } => pts.len() < 2,
             Annotation::Text { text, .. } => text.trim().is_empty(),
         }
@@ -872,7 +895,73 @@ mod tests {
         assert_eq!(Tool::from_key('x'), None);
         assert_eq!(Tool::default(), Tool::Select);
         let letters: String = Tool::ALL.iter().map(|t| t.key()).collect();
-        assert_eq!(letters, "VTRAPMB");
+        assert_eq!(letters, "VTRLAPMB");
+        assert_eq!(Tool::ALL.len(), 8);
+        assert_eq!(Tool::from_key('l'), Some(Tool::Line));
+    }
+
+    fn line(a: (f32, f32), b: (f32, f32)) -> Annotation {
+        Annotation::Line {
+            a: Pt::new(a.0, a.1),
+            b: Pt::new(b.0, b.1),
+            style: RED,
+        }
+    }
+
+    #[test]
+    fn a_line_is_hit_on_the_segment_and_not_beside_it() {
+        // RED is 4 px wide: reach = tol + 2.
+        let l = line((0.0, 0.0), (100.0, 0.0));
+        assert!(l.hit(Pt::new(50.0, 0.0), 4.0), "on it");
+        assert!(l.hit(Pt::new(50.0, 5.0), 4.0), "within tol + width / 2");
+        assert!(!l.hit(Pt::new(50.0, 7.0), 4.0), "beside it");
+        assert!(l.hit(Pt::new(-3.0, 0.0), 4.0), "near the end");
+        assert!(!l.hit(Pt::new(-10.0, 0.0), 4.0), "past the end");
+        // An arrow of the same width reaches farther (its head needs room).
+        let a = arrow((0.0, 0.0), (100.0, 0.0));
+        assert!(a.hit(Pt::new(50.0, 7.0), 4.0));
+    }
+
+    #[test]
+    fn a_line_has_two_handles_and_resizes_by_its_ends() {
+        let mut l = line((10.0, 10.0), (100.0, 50.0));
+        assert_eq!(l.handle_at(Pt::new(99.0, 52.0), 5.0), Some(Handle::End));
+        assert_eq!(l.handle_at(Pt::new(12.0, 8.0), 5.0), Some(Handle::Start));
+        assert_eq!(l.handle_at(Pt::new(55.0, 30.0), 5.0), None);
+        assert_eq!(
+            l.handles(),
+            vec![
+                (Handle::Start, Pt::new(10.0, 10.0)),
+                (Handle::End, Pt::new(100.0, 50.0))
+            ]
+        );
+        l.resize(Handle::End, Pt::new(200.0, 200.0));
+        l.resize(Handle::Start, Pt::new(0.0, 0.0));
+        assert_eq!(l, line((0.0, 0.0), (200.0, 200.0)));
+        // A corner handle means nothing to a line.
+        l.resize(Handle::Nw, Pt::new(9.0, 9.0));
+        assert_eq!(l, line((0.0, 0.0), (200.0, 200.0)));
+    }
+
+    #[test]
+    fn a_line_moves_restyles_and_is_dropped_when_it_is_a_dot() {
+        let mut l = line((1.0, 2.0), (11.0, 12.0));
+        l.move_by(4.0, -2.0);
+        assert_eq!(l, line((5.0, 0.0), (15.0, 10.0)));
+        assert_eq!(l.color(), Some(RED.color));
+        l.set_color(COLORS[3]);
+        l.set_stroke(12.0, 48.0);
+        assert!(matches!(&l, Annotation::Line { style, .. }
+            if style.color == COLORS[3] && style.width == 12.0));
+        // The box holds the stroke: half the width and 4 px.
+        let b = l.bounds();
+        assert_eq!(b, FRect::new(-5.0, -10.0, 10.0 + 20.0, 10.0 + 20.0));
+        assert!(!l.is_degenerate());
+        assert!(line((5.0, 5.0), (6.0, 6.0)).is_degenerate());
+        assert!(line((5.0, 5.0), (5.0, 5.0)).is_degenerate());
+        let mut s = Session::default();
+        assert_eq!(s.add(line((5.0, 5.0), (6.0, 6.0))), None, "a click is no line");
+        assert_eq!(s.add(line((5.0, 5.0), (60.0, 6.0))), Some(0));
     }
 
     #[test]
