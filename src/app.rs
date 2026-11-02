@@ -5603,6 +5603,7 @@ impl App {
     fn apply_theme(&mut self) {
         if theme::set_current(Theme::of(&self.config)) {
             editor::restyle_open_editor();
+            crate::shot_edit::window::restyle_open();
             settings::restyle();
             self.draw(Instant::now());
         }
@@ -7819,6 +7820,7 @@ fn on_system_theme_changed() {
     let changed = theme::set_system_light(theme::read_system_light());
     if changed && theme::current().window == theme::WindowTheme::System {
         editor::restyle_open_editor();
+        crate::shot_edit::window::restyle_open();
         settings::restyle();
     }
 }

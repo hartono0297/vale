@@ -652,18 +652,40 @@ thread_local! {
     static PLACEHOLDERS: RefCell<Vec<(isize, Key)>> = const { RefCell::new(Vec::new()) };
     /// The EDITs on the window background (not on a field fill).
     static ON_BG: RefCell<Vec<isize>> = const { RefCell::new(Vec::new()) };
-    /// Per window mode (dark, light).
-    static BRUSHES: Cell<[Option<(HBRUSH, HBRUSH)>; 2]> = const { Cell::new([None; 2]) };
+    /// Per `(bg, field)` colour pair: the light palette, the warm dark one and
+    /// the neutral dark one (Terminal surface) are the only three there are.
+    static BRUSHES: Cell<[Option<BrushSlot>; BRUSH_SLOTS]> =
+        const { Cell::new([None; BRUSH_SLOTS]) };
 }
 
-/// `(window, field)` brushes of `p`'s mode, created once per mode and kept
-/// for the process lifetime (the background and field colours depend only on
-/// the mode).
+/// How many `(bg, field)` pairs `WindowPalette` can produce: light, warm dark
+/// and neutral dark.
+const BRUSH_SLOTS: usize = 3;
+
+/// `((bg, field), (window brush, field brush))`.
+type BrushSlot = ((u32, u32), (HBRUSH, HBRUSH));
+
+/// Where the brushes of `key` (a `(bg, field)` pair) live in `keys`: the slot
+/// that already holds it, else the first free one. `None` when all are taken
+/// by other pairs (cannot happen with the three palettes).
+fn brush_slot(keys: &[Option<(u32, u32)>], key: (u32, u32)) -> Option<usize> {
+    keys.iter()
+        .position(|k| *k == Some(key))
+        .or_else(|| keys.iter().position(Option::is_none))
+}
+
+/// `(window, field)` brushes of `p`, created once per `(bg, field)` pair (so
+/// once per palette, not per mode: Terminal's dark differs from the warm one)
+/// and kept for the process lifetime, at most `BRUSH_SLOTS` of them.
 pub(super) fn brushes(p: &WindowPalette) -> (HBRUSH, HBRUSH) {
     BRUSHES.with(|b| {
         let mut all = b.get();
-        let slot = &mut all[usize::from(p.light)];
-        if let Some(made) = *slot {
+        let key = (p.bg, p.field);
+        let keys: Vec<Option<(u32, u32)>> = all.iter().map(|s| s.map(|(k, _)| k)).collect();
+        let slot = brush_slot(&keys, key).unwrap_or(BRUSH_SLOTS - 1);
+        if let Some((k, made)) = all[slot]
+            && k == key
+        {
             return made;
         }
         let made = unsafe {
@@ -672,7 +694,7 @@ pub(super) fn brushes(p: &WindowPalette) -> (HBRUSH, HBRUSH) {
                 CreateSolidBrush(colorref(p.field)),
             )
         };
-        *slot = Some(made);
+        all[slot] = Some((key, made));
         b.set(all);
         made
     })
@@ -2739,6 +2761,8 @@ fn demo_popover(which: &str) {
 /// after 1.5 s, then success on the next try. Ends when the editor closes.
 ///
 /// `DI_WINDOW=system|dark|light` picks the window mode (default: system),
+/// `DI_SURFACE` (`terminal` gives the neutral dark window; unset or `auto` is
+/// the default Espresso) and `DI_ACCENT` pick the island theme,
 /// `DI_WINDOW_FLIP=ms` swaps dark and light after that long, to check the
 /// live restyle, and `DI_POPOVER=calendar|time|start` opens that popover
 /// half a second after the editor (for screenshots).
@@ -2833,13 +2857,9 @@ pub fn run_demo(which: Option<&str>) {
         }
     }
 
-    use crate::theme::{Theme, WindowTheme};
-    let mode = std::env::var("DI_WINDOW").unwrap_or_default();
+    use crate::theme::WindowTheme;
     theme::set_system_light(theme::read_system_light());
-    theme::set_current(Theme {
-        window: WindowTheme::from_name(&mode).unwrap_or_default(),
-        ..Theme::default()
-    });
+    theme::set_current(theme::theme_from_env());
 
     let date = chrono::Local::now().date_naive();
     let hm = |h, m| NaiveTime::from_hms_opt(h, m, 0).unwrap_or(NaiveTime::MIN);
@@ -3026,6 +3046,43 @@ pub fn run_demo(which: Option<&str>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn brush_slots_are_keyed_by_the_colour_pair_not_the_mode() {
+        let warm = theme::window(Accent::Terracotta, theme::WindowTheme::Dark, false);
+        let neutral = theme::window_for(
+            Accent::Terracotta,
+            theme::Surface::Terminal,
+            theme::WindowTheme::Dark,
+            false,
+        );
+        let light = theme::window(Accent::Terracotta, theme::WindowTheme::Light, false);
+        let key = |p: &WindowPalette| (p.bg, p.field);
+        // Same `light` flag, different colours: not the same slot.
+        assert!(!warm.light && !neutral.light);
+        assert_ne!(key(&warm), key(&neutral));
+        let mut keys: [Option<(u32, u32)>; BRUSH_SLOTS] = [None; BRUSH_SLOTS];
+        for (i, p) in [&warm, &neutral, &light].into_iter().enumerate() {
+            let slot = brush_slot(&keys, key(p)).expect("a free slot");
+            assert_eq!(slot, i);
+            keys[slot] = Some(key(p));
+        }
+        // Each palette finds its own slot again, and the table stays full.
+        for (i, p) in [&warm, &neutral, &light].into_iter().enumerate() {
+            assert_eq!(brush_slot(&keys, key(p)), Some(i));
+        }
+        assert_eq!(brush_slot(&keys, (1, 2)), None);
+        // Every accent shares the pair, so a palette never needs a fourth slot.
+        for a in Accent::ALL {
+            let n = theme::window_for(
+                *a,
+                theme::Surface::Terminal,
+                theme::WindowTheme::Dark,
+                false,
+            );
+            assert_eq!(key(&n), key(&neutral));
+        }
+    }
 
     fn rect(left: i32, top: i32, right: i32, bottom: i32) -> RECT {
         RECT {

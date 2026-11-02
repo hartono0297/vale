@@ -702,8 +702,9 @@ struct Settings {
     data_label: String,
     /// Small and large window icons, owned (not shared) and destroyed with the window.
     icons: [HICON; 2],
-    /// The mode the title bar and fields were last styled for.
-    styled_light: Option<bool>,
+    /// `(light, caption colour, caption text)` the title bar was last styled
+    /// for; the fields' theme follows `light` alone.
+    styled: Option<StyleKey>,
 }
 
 thread_local! {
@@ -1149,7 +1150,7 @@ pub fn open(owner: HWND, model: Model, section: Option<Section>) -> Result<HWND>
         resume: Resume::default(),
         data_label: crate::data_dir::label(&crate::data_dir::dir()),
         icons: [HICON::default(); 2],
-        styled_light: None,
+        styled: None,
     };
     let stored = SETTINGS.with(|cell| match cell.try_borrow_mut() {
         Ok(mut slot) => {
@@ -1296,13 +1297,28 @@ pub fn update(model: Model) {
     relayout_and_place();
 }
 
+/// What the title bar is styled from: `(light, caption colour, caption text)`.
+type StyleKey = (bool, u32, u32);
+
+/// `(title bar changed, light changed)` between the style last applied and
+/// the palette `p`. The title bar follows the palette's bg and text, so it
+/// also changes when the base colour moves between two dark palettes (warm to
+/// Terminal's neutral); the fields' theme only when light flips.
+fn style_changes(prev: Option<StyleKey>, p: &WindowPalette) -> (bool, bool) {
+    let now = (p.light, p.bg, p.text);
+    (
+        prev != Some(now),
+        prev.map(|(light, ..)| light) != Some(p.light),
+    )
+}
+
 /// Restyles for the window palette in effect (Windows switched between
-/// light and dark, or the window mode or accent changed).
+/// light and dark, or the window mode, accent or base colour changed).
 pub fn restyle() {
-    let Some((hwnd, edits, p, light_changed)) = with(|st| {
+    let Some((hwnd, edits, p, caption_changed, light_changed)) = with(|st| {
         let p = theme::current_window();
-        let changed = st.styled_light != Some(p.light);
-        st.styled_light = Some(p.light);
+        let (caption_changed, changed) = style_changes(st.styled, &p);
+        st.styled = Some((p.light, p.bg, p.text));
         if let Some(e) = &mut st.edits
             && e.brush_rgb != p.field
         {
@@ -1314,12 +1330,14 @@ pub fn restyle() {
             }
         }
         let edits = st.edits.as_ref().map(Edits::hwnds);
-        (st.hwnd, edits, p, changed)
+        (st.hwnd, edits, p, caption_changed, changed)
     }) else {
         return;
     };
-    if light_changed {
+    if caption_changed {
         apply_mode(hwnd, &p);
+    }
+    if light_changed {
         for edit in edits.into_iter().flatten() {
             let theme = if p.light {
                 w!("Explorer")
@@ -3771,7 +3789,8 @@ unsafe extern "system" fn edit_proc(
 /// demo model and pushes it back, so every control works. Nothing is saved
 /// and the island is not involved; the hook buttons and links are real, so
 /// leave them alone. `DI_ACCENT`, `DI_SURFACE` (a base colour name such as
-/// `terminal`; unset or unknown is Auto, which follows the cat), `DI_GOOGLE` (`ok`, `needslogin`,
+/// `terminal`; unset or unknown is Auto, which follows the cat; `terminal`
+/// also gives the neutral dark window), `DI_GOOGLE` (`ok`, `needslogin`,
 /// `reconnect`, `offline`, `none`), `DI_POMO_LOCKED=1`, `DI_HOTKEYS` (`failed`:
 /// every hotkey that is set shows as taken by another app) and `DI_UPDATE`
 /// (`available`, `checking`, `downloading`: Tentang's Pembaruan row, with a
@@ -4164,6 +4183,28 @@ mod tests {
 
     fn hk(text: &str) -> Hotkey {
         crate::hotkey::parse(text).unwrap().unwrap()
+    }
+
+    #[test]
+    fn the_title_bar_restyles_when_the_base_colour_moves_not_only_the_mode() {
+        use crate::theme::{Accent, Surface, WindowTheme, window_for};
+        let pal = |s, mode| window_for(Accent::Terracotta, s, mode, false);
+        let warm = pal(Surface::Espresso, WindowTheme::Dark);
+        let neutral = pal(Surface::Terminal, WindowTheme::Dark);
+        let light = pal(Surface::Terminal, WindowTheme::Light);
+        let key = |p: &WindowPalette| (p.light, p.bg, p.text);
+        // First styling: everything applies.
+        assert_eq!(style_changes(None, &warm), (true, true));
+        // Same palette: nothing.
+        assert_eq!(style_changes(Some(key(&warm)), &warm), (false, false));
+        // Warm dark to Terminal's dark: the caption moves, the fields' theme not.
+        assert_eq!(style_changes(Some(key(&warm)), &neutral), (true, false));
+        assert_eq!(style_changes(Some(key(&neutral)), &warm), (true, false));
+        // Dark to light: both.
+        assert_eq!(style_changes(Some(key(&neutral)), &light), (true, true));
+        // An accent change alone leaves the title bar alone.
+        let other = window_for(Accent::Sage, Surface::Terminal, WindowTheme::Dark, false);
+        assert_eq!(style_changes(Some(key(&neutral)), &other), (false, false));
     }
 
     #[test]
