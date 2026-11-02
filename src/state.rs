@@ -4278,7 +4278,11 @@ mod tests {
         );
         assert_eq!(s.view(), View::Panel(Page::System));
         assert!(s.cleaner().is_some());
-        // Off the page, or with the panel shut, nothing.
+        // The wheel never leaves the cleaner; Back does, and the page then
+        // turns again. Off the page, or with the panel shut, nothing.
+        s.apply(Event::Wheel(-120), t0);
+        assert_eq!(s.view(), View::Panel(Page::System));
+        s.apply(Event::Click(Hit::CleanBack), t0);
         s.apply(Event::Wheel(-120), t0);
         assert_eq!(s.view(), View::Panel(Page::Devices));
         assert!(s.apply(Event::Click(Hit::SystemClean), t0).is_empty());
@@ -4311,15 +4315,15 @@ mod tests {
     fn the_shown_panel_keeps_what_closing_it_resets() {
         use crate::ui::geometry::{ShapeKind, panel_kind};
         let t0 = Instant::now();
-        // The cleaner: gone from the state once the panel closes, still in
-        // what it showed, so the closing panel keeps the cleaner's size.
+        // The cleaner: kept in the state across the close, and in what the
+        // panel showed, so the closing panel keeps the cleaner's size.
         let mut s = cleaner_open(t0);
         let shown = s.shown_panel().expect("the panel shows");
         assert_eq!(shown.page, Page::System);
         assert!(shown.cleaner.is_some());
         leave(&mut s, t0);
         assert!(s.shown_panel().is_none());
-        assert!(s.cleaner().is_none());
+        assert!(s.cleaner().is_some());
         assert_eq!(
             panel_kind(shown.page, shown.cli_tall, shown.cleaner.is_some()),
             ShapeKind::PanelClean
@@ -4367,17 +4371,21 @@ mod tests {
         // Reopened, it starts from the default ticks.
         s.apply(Event::Click(Hit::SystemClean), t0);
         assert_eq!(s.cleaner().unwrap().picked(), default_picks());
-        // Closing the panel closes it, like another page.
+        // Closing the panel keeps it as it was left; so does the wheel, which
+        // it holds (only Back leaves).
+        s.apply(Event::Click(Hit::CleanToggle(CleanCat::DevCache)), t0);
+        let ticked = s.cleaner().unwrap().picked();
         leave(&mut s, t0);
-        assert!(s.cleaner().is_none());
-        s.apply(Event::Hover(true), t0);
+        assert_eq!(s.cleaner().unwrap().picked(), ticked);
+        assert!(s.apply(Event::Hover(true), t0).is_empty());
         assert_eq!(s.view(), View::Panel(Page::System));
+        assert_eq!(s.cleaner().unwrap().picked(), ticked);
+        s.apply(Event::Wheel(-120), t0);
+        assert_eq!(s.view(), View::Panel(Page::System));
+        s.apply(Event::Click(Hit::CleanBack), t0);
         assert!(s.cleaner().is_none());
-        // So does scrolling to another page.
-        s.apply(Event::Click(Hit::SystemClean), t0);
         s.apply(Event::Wheel(-120), t0);
         assert_eq!(s.view(), View::Panel(Page::Devices));
-        assert!(s.cleaner().is_none());
         // Cleaner clicks off the cleaner do nothing.
         for hit in [
             Hit::CleanGo,
@@ -4426,10 +4434,19 @@ mod tests {
         s.apply(Event::Click(Hit::CleanGo), ms(200));
         assert!(s.apply(Event::Click(Hit::CleanGo), late).is_empty());
         assert!(s.cleaner().unwrap().armed());
-        // Closing the panel disarms (and closes) it.
+        // Closing the panel disarms it (the cleaner is kept); so does
+        // another page, and the deadline goes with it.
         leave(&mut s, late);
-        assert!(s.cleaner().is_none());
+        assert!(s.cleaner().is_some() && !s.cleaner().unwrap().armed());
         assert_eq!(s.next_deadline(), None);
+        s.apply(Event::Hover(true), late);
+        s.apply(Event::Click(Hit::CleanGo), late);
+        assert!(s.cleaner().unwrap().armed());
+        // (Not a click: the hotkey moves the page under the armed button.)
+        s.apply(Event::ClipHotkey, late);
+        assert_eq!(s.view(), View::Panel(Page::Clipboard));
+        assert!(s.cleaner_kept());
+        assert!(!s.cleaner.unwrap().armed());
         // Nothing ticked: the button does nothing at all.
         let mut s = cleaner_open(t0);
         for cat in default_picks() {
@@ -4514,9 +4531,9 @@ mod tests {
         let effects = s.apply(Event::Click(Hit::CleanMode(CleanMode::Own)), t0);
         assert_eq!(
             effects,
+            // The own scan from when the cleaner opened is still good.
             vec![
                 Effect::SaveCleanMode(CleanMode::Own),
-                Effect::OpenCleaner,
                 Effect::MoleStopPreview
             ]
         );
@@ -4684,12 +4701,80 @@ mod tests {
         assert_eq!(cleans(&s.apply(Event::Click(Hit::MoleGo), ms(20_200))), 0);
     }
 
+    /// A dry-run that finished well, for the default options.
+    fn mole_previewed(now: Instant) -> IslandState {
+        let mut s = mole_scanning(now);
+        s.apply(
+            Event::MolePreviewed {
+                opts: MoleOpts::default(),
+                ok: true,
+            },
+            now,
+        );
+        assert_eq!(
+            s.mole_phase(),
+            MolePhase::Previewed {
+                opts: MoleOpts::default(),
+                ok: true
+            }
+        );
+        s
+    }
+
+    /// The confirmed Mole clean runs.
+    fn mole_running(now: Instant) -> IslandState {
+        let ms = |n: u64| now + Duration::from_millis(n);
+        let mut s = mole_previewed(now);
+        assert!(s.apply(Event::Click(Hit::MoleGo), ms(1)).is_empty());
+        assert_eq!(cleans(&s.apply(Event::Click(Hit::MoleGo), ms(2))), 1);
+        assert_eq!(s.mole_phase(), MolePhase::Running);
+        s
+    }
+
+    /// Effects that start, stop or ask for a scan, a detect or a preview.
+    fn scans(effects: &[Effect]) -> usize {
+        effects
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    Effect::OpenCleaner
+                        | Effect::MoleDetect
+                        | Effect::MolePreview(_)
+                        | Effect::MoleStopPreview
+                )
+            })
+            .count()
+    }
+
     #[test]
-    fn closing_the_cleaner_stops_a_mole_preview() {
+    fn a_mole_preview_goes_on_when_the_panel_closes_and_stops_with_back() {
         let t0 = Instant::now();
         let mut s = mole_scanning(t0);
-        assert_eq!(leave(&mut s, t0), vec![Effect::MoleStopPreview]);
+        // The panel closes: the dry-run is not stopped, the cleaner kept.
+        assert!(leave(&mut s, t0).is_empty());
+        assert_eq!(s.mole_phase(), MolePhase::Scanning(MoleOpts::default()));
+        assert!(s.cleaner_kept());
+        // Its answer arrives with the panel shut: a preview.
+        s.apply(
+            Event::MolePreviewed {
+                opts: MoleOpts::default(),
+                ok: true,
+            },
+            t0,
+        );
+        assert!(matches!(s.mole_phase(), MolePhase::Previewed { ok: true, .. }));
+        // The same cleaner is there on the next hover, nothing asked again.
+        assert!(s.apply(Event::Hover(true), t0).is_empty());
+        assert_eq!(s.cleaner().unwrap().mode, CleanMode::Mole);
+        // Back stops a preview that runs, as it always did.
+        let mut s = mole_scanning(t0);
+        assert_eq!(
+            s.apply(Event::Click(Hit::CleanBack), t0),
+            vec![Effect::MoleStopPreview]
+        );
         assert_eq!(s.mole_phase(), MolePhase::Unknown);
+        assert!(!s.cleaner_kept());
         // Its late answer is not a preview.
         s.apply(
             Event::MolePreviewed {
@@ -4699,27 +4784,444 @@ mod tests {
             t0,
         );
         assert_eq!(s.mole_phase(), MolePhase::Unknown);
-        // Another page does the same; a finished preview is forgotten.
-        let mut s = mole_scanning(t0);
-        s.apply(
-            Event::MolePreviewed {
-                opts: MoleOpts::default(),
-                ok: true,
-            },
-            t0,
-        );
+        // Back on a finished preview forgets it; the next cleaner looks anew
+        // (the old arming is gone).
+        let mut s = mole_previewed(t0);
         s.apply(Event::Click(Hit::MoleGo), t0);
-        s.apply(Event::Wheel(-120), t0);
+        assert!(s.apply(Event::Click(Hit::CleanBack), t0).is_empty());
         assert_eq!(s.mole_phase(), MolePhase::Unknown);
-        // Back on the cleaner, Mole is looked for and previewed anew: the
-        // old arming is gone.
-        s.apply(Event::Wheel(120), t0);
         assert_eq!(
             s.apply(Event::Click(Hit::SystemClean), t0),
             vec![Effect::MoleDetect]
         );
         assert!(!s.cleaner().unwrap().armed());
         assert_eq!(cleans(&s.apply(Event::Click(Hit::MoleGo), t0)), 0);
+    }
+
+    /// Every state the cleaner can show, each set up at `t0`.
+    fn cleaner_states(t0: Instant) -> Vec<(&'static str, IslandState)> {
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        let mut armed = cleaner_open(t0);
+        armed.apply(Event::Click(Hit::CleanGo), ms(10));
+        assert!(armed.cleaner().unwrap().armed());
+        let mut finished = mole_running(t0);
+        finished.apply(Event::MoleFinished { ok: true }, ms(100));
+        assert_eq!(finished.mole_phase(), MolePhase::Finished { ok: true });
+        vec![
+            ("own", cleaner_open(t0)),
+            ("own armed", armed),
+            ("mole scanning", mole_scanning(t0)),
+            ("mole previewed", mole_previewed(t0)),
+            ("mole running", mole_running(t0)),
+            ("mole finished", finished),
+        ]
+    }
+
+    #[test]
+    fn the_wheel_flick_and_dock_never_leave_the_cleaner() {
+        let t0 = Instant::now();
+        let at = t0 + Duration::from_millis(200);
+        for (name, mut s) in cleaner_states(t0) {
+            let armed = s.cleaner().unwrap().armed();
+            let mode = s.cleaner().unwrap().mode;
+            let events = [
+                Event::Wheel(-120),
+                Event::Wheel(120),
+                Event::Wheel(-360),
+                Event::Wheel(-60),
+                Event::Wheel(-60),
+                Event::PageFlick { next: true },
+                Event::PageFlick { next: false },
+                // A click disarms the button, like any click but its own.
+                Event::Click(Hit::PanelPage(Page::Devices)),
+                Event::Click(Hit::PanelPage(Page::Calendar)),
+            ];
+            for (i, event) in events.into_iter().enumerate() {
+                let effects = s.apply(event, at);
+                assert_eq!(s.view(), View::Panel(Page::System), "{name}");
+                assert!(s.cleaner().is_some(), "{name}");
+                assert_eq!(s.cleaner().unwrap().mode, mode, "{name}");
+                assert!(effects.is_empty(), "{name}: {effects:?}");
+                if i < 7 {
+                    assert_eq!(s.cleaner().unwrap().armed(), armed, "{name}");
+                }
+            }
+            // Nothing was saved up: two half notches after Back are no turn.
+            s.apply(Event::Click(Hit::CleanBack), at);
+            s.apply(Event::Wheel(-60), at);
+            assert_eq!(s.view(), View::Panel(Page::System), "{name}");
+        }
+        // The plain System page still turns pages, by the wheel, a flick
+        // and the dock.
+        let mut s = st();
+        open_on(&mut s, Page::System, t0);
+        s.apply(Event::Wheel(-120), t0);
+        assert_eq!(s.view(), View::Panel(Page::Devices));
+        s.apply(Event::PageFlick { next: false }, t0);
+        assert_eq!(s.view(), View::Panel(Page::System));
+        s.apply(Event::Click(Hit::PanelPage(Page::Cli)), t0);
+        assert_eq!(s.view(), View::Panel(Page::Cli));
+    }
+
+    #[test]
+    fn the_mole_log_scrolls_with_the_wheel_without_turning_the_page() {
+        let t0 = Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        let mut s = mole_running(t0);
+        assert_eq!(s.mole_log_scroll(), 0);
+        let scroll = |s: &mut IslandState, lines: i32, max: usize, at: u64| {
+            s.apply(Event::MoleLogScroll { lines, max }, ms(at));
+            s.mole_log_scroll()
+        };
+        // Up to older lines, clamped at both ends; the page never turns.
+        assert_eq!(scroll(&mut s, 3, 10, 10), 3);
+        assert_eq!(scroll(&mut s, 20, 10, 11), 10);
+        assert_eq!(scroll(&mut s, -4, 10, 12), 6);
+        assert_eq!(scroll(&mut s, -50, 10, 13), 0);
+        assert_eq!(s.view(), View::Panel(Page::System));
+        // A log that fits (max 0) does nothing.
+        assert_eq!(scroll(&mut s, 5, 0, 14), 0);
+        // New lines while scrolled keep the view; at the newest they follow.
+        s.apply(Event::MoleLogLines(4), ms(15));
+        assert_eq!(s.mole_log_scroll(), 0);
+        scroll(&mut s, 5, 10, 16);
+        s.apply(Event::MoleLogLines(4), ms(17));
+        assert_eq!(s.mole_log_scroll(), 9);
+        // Shut, the log is not scrolled; the offset stays for the return.
+        leave(&mut s, ms(18));
+        assert_eq!(scroll(&mut s, -3, 10, 19), 9);
+        s.apply(Event::Hover(true), ms(20));
+        assert_eq!(scroll(&mut s, -3, 10, 21), 6);
+        // Another page shows no log to scroll.
+        s.apply(Event::Click(Hit::Shortcut(Shortcut::Go(Page::Clipboard))), ms(22));
+        assert_eq!(scroll(&mut s, -3, 10, 23), 6);
+        s.apply(Event::Click(Hit::Shortcut(Shortcut::Go(Page::System))), ms(24));
+        // A new preview (after the run) starts at the newest again.
+        s.apply(Event::MoleFinished { ok: true }, ms(25));
+        assert_eq!(s.mole_log_scroll(), 6);
+        assert_eq!(
+            s.apply(Event::Click(Hit::MoleGo), ms(26)),
+            vec![Effect::MolePreview(MoleOpts::default())]
+        );
+        assert_eq!(s.mole_log_scroll(), 0);
+        // The preview's rows show no log: nothing to scroll until it is
+        // asked for, and hiding it again starts at the newest.
+        s.apply(
+            Event::MolePreviewed {
+                opts: MoleOpts::default(),
+                ok: true,
+            },
+            ms(27),
+        );
+        assert_eq!(scroll(&mut s, 3, 10, 28), 0);
+        s.apply(Event::Click(Hit::MoleShowLog), ms(29));
+        assert!(s.cleaner().unwrap().mole_log);
+        assert_eq!(scroll(&mut s, 3, 10, 30), 3);
+        s.apply(Event::Click(Hit::MoleShowLog), ms(31));
+        assert_eq!(s.mole_log_scroll(), 0);
+        // A new run starts at the newest.
+        s.apply(Event::Click(Hit::MoleShowLog), ms(32));
+        scroll(&mut s, 3, 10, 33);
+        s.apply(Event::Click(Hit::MoleGo), ms(34));
+        assert_eq!(s.mole_log_scroll(), 3, "the log was shown, the click armed");
+        s.apply(Event::Click(Hit::MoleGo), ms(35));
+        assert_eq!(s.mole_phase(), MolePhase::Running);
+        assert_eq!(s.mole_log_scroll(), 0);
+        // The own mode has no Mole log.
+        let mut own = cleaner_open(t0);
+        own.apply(
+            Event::MoleLogScroll { lines: 3, max: 10 },
+            t0,
+        );
+        assert_eq!(own.mole_log_scroll(), 0);
+        // The cleaner ending starts it at the newest.
+        scroll(&mut s, 3, 10, 36);
+        s.apply(Event::Click(Hit::CleanBack), ms(37));
+        assert_eq!(s.mole_log_scroll(), 0);
+    }
+
+    #[test]
+    fn a_closed_cleaner_is_kept_as_it_was_and_looks_again_only_when_stale() {
+        use crate::clean::CleanCat;
+        let t0 = Instant::now();
+        let fresh = t0 + CLEAN_SCAN_STALE - secs(1);
+        let stale = t0 + CLEAN_SCAN_STALE + secs(1);
+        // Own: the ticks stay, an armed button is disarmed, nothing asked.
+        {
+            let mut s = cleaner_open(t0);
+            s.apply(Event::Click(Hit::CleanToggle(CleanCat::DevCache)), t0);
+            let picked = s.cleaner().unwrap().picked();
+            s.apply(Event::Click(Hit::CleanGo), t0 + secs(1));
+            assert!(s.cleaner().unwrap().armed());
+            let effects = leave(&mut s, t0 + secs(2));
+            assert!(effects.is_empty(), "{effects:?}");
+            assert!(!s.panel_is_open());
+            let c = *s.cleaner().expect("kept");
+            assert_eq!((c.mode, c.picked(), c.armed()), (CleanMode::Own, picked, false));
+            assert_eq!(s.next_deadline(), None);
+            // The pointer comes back soon: the same cleaner, nothing asked.
+            assert!(s.apply(Event::Hover(true), fresh).is_empty());
+            assert_eq!(s.view(), View::Panel(Page::System));
+            assert_eq!(s.cleaner().unwrap().picked(), c.picked());
+            // A long time later: one scan, once.
+            leave(&mut s, fresh);
+            let effects = s.apply(Event::Hover(true), stale);
+            assert_eq!(effects, vec![Effect::OpenCleaner]);
+            leave(&mut s, stale);
+            assert!(s.apply(Event::Hover(true), stale + secs(1)).is_empty());
+        }
+        // A clean that runs is not scanned over, however old.
+        let mut s = cleaner_open(t0);
+        s.apply(Event::Click(Hit::CleanGo), t0 + secs(1));
+        s.apply(Event::Click(Hit::CleanGo), t0 + secs(2));
+        assert!(s.clean_busy());
+        leave(&mut s, t0 + secs(3));
+        assert!(s.apply(Event::Hover(true), stale).is_empty());
+        // Mole, previewed: the mode, the log and the options stay.
+        let mut s = mole_previewed(t0);
+        s.apply(Event::Click(Hit::MoleOpt(MoleOpt::GameMedia)), t0);
+        let opts = s.mole_opts();
+        s.apply(Event::MolePreviewed { opts, ok: true }, t0);
+        s.apply(Event::Click(Hit::MoleShowLog), t0);
+        s.apply(Event::Click(Hit::MoleGo), t0 + secs(1));
+        assert!(!leave(&mut s, t0 + secs(2)).contains(&Effect::MoleStopPreview));
+        let c = *s.cleaner().expect("kept");
+        assert!(c.mole_log && !c.armed());
+        assert_eq!(c.mode, CleanMode::Mole);
+        assert_eq!(s.mole_phase(), MolePhase::Previewed { opts, ok: true });
+        assert!(s.apply(Event::Hover(true), fresh).is_empty());
+        leave(&mut s, fresh);
+        // Stale: one new preview with the options ticked now.
+        let effects = s.apply(Event::Hover(true), stale);
+        assert_eq!(effects, vec![Effect::MolePreview(opts)]);
+        assert_eq!(s.mole_phase(), MolePhase::Scanning(opts));
+        // A preview or a clean that runs is left alone however old.
+        leave(&mut s, stale);
+        assert!(s.apply(Event::Hover(true), stale + mins(30)).is_empty());
+        let mut s = mole_running(t0);
+        leave(&mut s, t0 + secs(3));
+        assert!(s.apply(Event::Hover(true), stale + mins(30)).is_empty());
+        // Not installed: the card stays; looked for again only when stale.
+        let mut s = mole_scanning(t0);
+        s.apply(Event::Click(Hit::CleanBack), t0);
+        s.apply(Event::Click(Hit::SystemClean), t0);
+        s.apply(Event::MoleFound(false), t0);
+        assert_eq!(s.mole_phase(), MolePhase::Missing);
+        leave(&mut s, t0);
+        assert!(s.apply(Event::Hover(true), fresh).is_empty());
+        leave(&mut s, fresh);
+        assert_eq!(s.apply(Event::Hover(true), stale), vec![Effect::MoleDetect]);
+    }
+
+    #[test]
+    fn jumping_to_another_page_keeps_the_cleaner_and_comes_back_to_it() {
+        let t0 = Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        for (name, mut s) in cleaner_states(t0) {
+            // A finished clean's result was seen: leaving the System page
+            // ends it (below).
+            if name == "mole finished" {
+                s.apply(Event::ClipHotkey, ms(300));
+                assert_eq!(s.page(), Page::Clipboard);
+                assert!(!s.cleaner_kept());
+                continue;
+            }
+            let mode = s.cleaner().unwrap().mode;
+            let phase = s.mole_phase();
+            // The Clipboard hotkey.
+            let effects = s.apply(Event::ClipHotkey, ms(300));
+            assert_eq!(s.page(), Page::Clipboard, "{name}");
+            assert_eq!(scans(&effects), 0, "{name}: {effects:?}");
+            assert!(s.cleaner_kept() && s.cleaner().is_none(), "{name}");
+            assert_eq!(s.mole_phase(), phase, "{name}");
+            // Back on System: the same cleaner, nothing asked.
+            let effects = s.apply(Event::Click(Hit::Shortcut(Shortcut::Go(Page::System))), ms(400));
+            assert_eq!(scans(&effects), 0, "{name}: {effects:?}");
+            assert_eq!(s.cleaner().unwrap().mode, mode, "{name}");
+            assert_eq!(s.mole_phase(), phase, "{name}");
+            // The quick search over it, then its back button.
+            s.apply(Event::SearchHotkey, ms(500));
+            assert_eq!(s.view(), View::Panel(Page::Search), "{name}");
+            assert!(s.cleaner_kept() && s.cleaner().is_none(), "{name}");
+            let effects = s.apply(Event::Click(Hit::SearchBack), ms(600));
+            assert_eq!(scans(&effects), 0, "{name}: {effects:?}");
+            assert_eq!(s.view(), View::Panel(Page::System), "{name}");
+            assert_eq!(s.cleaner().unwrap().mode, mode, "{name}");
+            assert_eq!(s.mole_phase(), phase, "{name}");
+        }
+    }
+
+    #[test]
+    fn the_cleaner_is_on_the_panel_only_while_the_page_is_system() {
+        use crate::ui::geometry::{ShapeKind, panel_kind};
+        let t0 = Instant::now();
+        let mut s = cleaner_open(t0);
+        s.apply(Event::Click(Hit::Shortcut(Shortcut::Go(Page::Clipboard))), t0);
+        // Kept, but nothing of it shows: the panel is the page's own size.
+        assert!(s.cleaner_kept());
+        assert!(s.cleaner().is_none());
+        let shown = s.shown_panel().expect("the panel shows");
+        assert!(shown.cleaner.is_none());
+        assert_eq!(
+            panel_kind(s.page(), s.cli_tall(), s.cleaner().is_some()),
+            ShapeKind::Panel
+        );
+        s.apply(Event::Click(Hit::Shortcut(Shortcut::Go(Page::System))), t0);
+        assert_eq!(
+            panel_kind(s.page(), s.cli_tall(), s.cleaner().is_some()),
+            ShapeKind::PanelClean
+        );
+        // The panel shut on System: the cleaner is still the System page's.
+        leave(&mut s, t0);
+        assert!(s.cleaner().is_some());
+    }
+
+    #[test]
+    fn a_clean_that_ended_while_closed_keeps_the_cleaner_until_its_result_was_seen() {
+        let t0 = Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        // Own mode: the clean runs, the panel closes, the clean ends.
+        let mut s = cleaner_open(t0);
+        s.apply(Event::Click(Hit::CleanGo), ms(10));
+        s.apply(Event::Click(Hit::CleanGo), ms(20));
+        assert!(s.clean_busy());
+        leave(&mut s, ms(30));
+        // The rescan is asked for at once, panel shut or not.
+        assert_eq!(
+            s.apply(Event::CleanFinished, ms(5000)),
+            vec![Effect::OpenCleaner]
+        );
+        assert!(!s.clean_busy());
+        assert!(s.cleaner_kept());
+        s.apply(Event::Tick, ms(6000));
+        assert!(s.cleaner_kept());
+        // Opened, it shows the result (and the fresh scan is not repeated).
+        assert!(s.apply(Event::Hover(true), ms(7000)).is_empty());
+        assert!(s.cleaner().is_some());
+        // Seen once: closing it ends the cleaner.
+        leave(&mut s, ms(8000));
+        assert!(!s.cleaner_kept());
+        s.apply(Event::Hover(true), ms(9000));
+        assert_eq!(s.view(), View::Panel(Page::System));
+        assert!(s.cleaner().is_none(), "the plain System page");
+        // "Bersihkan" over the sizes the app still has asks for nothing.
+        assert!(s.apply(Event::Click(Hit::SystemClean), ms(9500)).is_empty());
+        assert!(s.cleaner().is_some());
+        // A clean that ends while the cleaner shows: seen at once.
+        s.apply(Event::Click(Hit::CleanGo), ms(10_000));
+        s.apply(Event::Click(Hit::CleanGo), ms(10_100));
+        assert_eq!(
+            s.apply(Event::CleanFinished, ms(11_000)),
+            vec![Effect::OpenCleaner]
+        );
+        assert!(s.cleaner().is_some());
+        leave(&mut s, ms(12_000));
+        assert!(!s.cleaner_kept());
+        // Another clean started again keeps the mark off until it ends.
+        s.apply(Event::Hover(true), ms(13_000));
+        s.apply(Event::Click(Hit::SystemClean), ms(13_100));
+        s.apply(Event::Click(Hit::CleanGo), ms(13_200));
+        s.apply(Event::Click(Hit::CleanGo), ms(13_300));
+        s.apply(Event::Click(Hit::CleanGo), ms(14_000));
+        leave(&mut s, ms(15_000));
+        assert!(s.cleaner_kept(), "a clean still runs");
+
+        // Mole: the clean ends with the panel shut.
+        let mut s = mole_running(t0);
+        leave(&mut s, ms(10));
+        assert!(s.apply(Event::MoleFinished { ok: true }, ms(20)).is_empty());
+        assert!(s.cleaner_kept());
+        assert!(s.apply(Event::Hover(true), ms(30)).is_empty());
+        assert_eq!(s.mole_phase(), MolePhase::Finished { ok: true });
+        assert_eq!(s.cleaner().unwrap().mode, CleanMode::Mole);
+        // Seen: it goes with the close, and a finished clean needs no stop.
+        let effects = leave(&mut s, ms(40));
+        assert!(effects.is_empty(), "{effects:?}");
+        assert!(!s.cleaner_kept());
+        assert_eq!(s.mole_phase(), MolePhase::Finished { ok: true });
+        s.apply(Event::Hover(true), ms(50));
+        assert!(s.cleaner().is_none(), "the plain System page");
+        // The next "Bersihkan" looks for Mole anew, not at the old result.
+        assert_eq!(
+            s.apply(Event::Click(Hit::SystemClean), ms(60)),
+            vec![Effect::MoleDetect]
+        );
+        assert_eq!(s.mole_phase(), MolePhase::Detecting);
+
+        // A result covered by its notice is not seen until it shows.
+        let mut s = mole_running(t0);
+        s.apply(Event::Notice(mole_notice(NoticeKind::MoleDone)), ms(10));
+        s.apply(Event::MoleFinished { ok: true }, ms(11));
+        assert!(matches!(s.view(), View::Notice(_)));
+        leave(&mut s, ms(12));
+        s.apply(Event::Tick, t0 + NOTICE_DURATION + secs(1));
+        assert!(s.cleaner_kept(), "never seen");
+        s.apply(Event::Hover(true), t0 + secs(20));
+        assert!(s.cleaner().is_some());
+        leave(&mut s, t0 + secs(21));
+        assert!(!s.cleaner_kept());
+
+        // A cleaner that only scanned or previewed survives any number of
+        // closes, until Back.
+        for mut s in [cleaner_open(t0), mole_previewed(t0)] {
+            for i in 1..=4u64 {
+                leave(&mut s, t0 + secs(i));
+                assert!(s.cleaner_kept());
+                s.apply(Event::Hover(true), t0 + secs(i) + Duration::from_millis(500));
+                assert!(s.cleaner().is_some());
+            }
+            s.apply(Event::Click(Hit::CleanBack), t0 + secs(10));
+            assert!(!s.cleaner_kept());
+        }
+    }
+
+    #[test]
+    fn a_mole_notice_over_a_kept_cleaner_asks_for_one_detect_at_most() {
+        let t0 = Instant::now();
+        // An own cleaner kept shut; Mole's sticky failure is clicked.
+        let mut s = cleaner_open(t0);
+        leave(&mut s, t0);
+        let failed = mole_notice(NoticeKind::MoleFailed);
+        s.apply(Event::Notice(failed.clone()), t0);
+        assert_eq!(s.view(), View::Notice(failed));
+        s.apply(Event::Click(Hit::Body), t0);
+        let effects = s.apply(Event::Hover(true), t0);
+        assert_eq!(effects, vec![Effect::MoleDetect]);
+        assert_eq!(s.view(), View::Panel(Page::System));
+        assert_eq!(s.cleaner().unwrap().mode, CleanMode::Mole);
+        assert_eq!(s.mole_phase(), MolePhase::Detecting);
+    }
+
+    #[test]
+    fn a_hidden_system_page_holds_while_the_cleaner_is_kept() {
+        let t0 = Instant::now();
+        let open_system = |t0: Instant| {
+            let mut s = st();
+            let mut pages = PanelPages::default();
+            pages.toggle(Page::System);
+            s.apply(Event::PanelPages(pages), t0);
+            s.apply(Event::Hover(true), t0);
+            // Its tile or button opens it for this visit.
+            s.apply(Event::Click(Hit::Shortcut(Shortcut::Go(Page::System))), t0);
+            assert_eq!(s.view(), View::Panel(Page::System));
+            s
+        };
+        // Without a cleaner it still moves off on close.
+        let mut s = open_system(t0);
+        leave(&mut s, t0);
+        assert_ne!(s.page(), Page::System);
+        // With one open it keeps its place.
+        let mut s = open_system(t0);
+        s.apply(Event::Click(Hit::SystemClean), t0);
+        leave(&mut s, t0);
+        assert_eq!(s.page(), Page::System);
+        s.apply(Event::Hover(true), t0);
+        assert_eq!(s.view(), View::Panel(Page::System));
+        assert!(s.cleaner().is_some());
+        // Back, and the next close moves off it.
+        s.apply(Event::Click(Hit::CleanBack), t0);
+        leave(&mut s, t0);
+        assert_ne!(s.page(), Page::System);
     }
 
     fn mole_notice(kind: NoticeKind) -> Notice {

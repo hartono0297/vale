@@ -1311,6 +1311,13 @@ pub fn mole_log_rows(area: Rect) -> usize {
         .max(0.0) as usize
 }
 
+/// The first log line drawn: the newest `rows` lines, or the window
+/// `scroll` lines up from them (never past the oldest line).
+pub fn mole_log_skip(len: usize, rows: usize, scroll: usize) -> usize {
+    let hidden = len.saturating_sub(rows);
+    hidden - scroll.min(hidden)
+}
+
 /// The System page, after keputusan-v3.1.html `.sys`, `.ringw`, `.spark`,
 /// `.meter`, `.bar`, `.procs` and `.cbtn`.
 const SYS_HEAD_H: f32 = 28.0;
@@ -3691,6 +3698,25 @@ mod tests {
 
     fn date(y: i32, m: u32, d: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    #[test]
+    fn the_mole_log_window_follows_the_newest_or_the_scroll() {
+        let area = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 300.0,
+            h: 2.0 * MOLE_LOG_PAD + 6.5 * MOLE_LOG_LINE_H,
+        };
+        assert_eq!(mole_log_rows(area), 6);
+        assert_eq!(mole_log_rows(Rect { h: 5.0, ..area }), 0);
+        // The newest rows by default, scrolled up a line at a time, never
+        // past the oldest line; a log that fits starts at the top.
+        assert_eq!(mole_log_skip(20, 6, 0), 14);
+        assert_eq!(mole_log_skip(20, 6, 3), 11);
+        assert_eq!(mole_log_skip(20, 6, 14), 0);
+        assert_eq!(mole_log_skip(20, 6, 99), 0);
+        assert_eq!(mole_log_skip(4, 6, 2), 0);
     }
 
     fn all_day(id: &str, d: NaiveDate) -> CalEvent {

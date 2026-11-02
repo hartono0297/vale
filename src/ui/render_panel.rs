@@ -66,7 +66,7 @@ use crate::ui::panel_layout::{
     CLIP_RADIUS, CLIP_SCROLLBAR_W, CLIP_THUMB_W, CalendarLayout, CleanFoot, CleanHead,
     CleanerLayout, CliHead, CliLayout, ClipButton, ClipLayout, DEV_BAR_H, DevicesHead,
     DevicesLayout, HOUR_GUTTER, ListLayout, MENU_RADIUS, MENU_ROW_RADIUS, MIXER_TRACK_H,
-    MOLE_LOG_LINE_H, MOLE_LOG_PAD, MenuLayout, mole_log_rows, MeterLayout, MixerLayout, MoleFoot, MoleLayout,
+    MOLE_LOG_LINE_H, MOLE_LOG_PAD, MenuLayout, mole_log_rows, mole_log_skip, MeterLayout, MixerLayout, MoleFoot, MoleLayout,
     NOTIF_DOT, NOTIF_RADIUS, NotifHead, NotifLayout, PageLayout, PomodoroLayout, RING_STROKE,
     SEG_PAD, SYS_RING_STROKE, SearchLayout, ShelfLayout, ShortcutsLayout, SystemHead, SystemLayout,
     VOLUME_HUD_H, WEEK_HEAD_H, arrange_layout, calendar_layout, cleaner_layout, cli_folder_menu,
@@ -1853,8 +1853,7 @@ impl Renderer {
             return;
         }
         // The newest lines, or the window scrolled up from them.
-        let hidden = log.len().saturating_sub(rows);
-        let skip = hidden - scroll.min(hidden);
+        let skip = mole_log_skip(log.len(), rows, scroll);
         for (k, line) in log.iter().skip(skip).take(rows).enumerate() {
             let ink = if crate::mole::is_section(line) {
                 theme::TERMINAL_TEXT

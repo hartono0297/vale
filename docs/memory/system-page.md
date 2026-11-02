@@ -1,6 +1,6 @@
 ---
 tags: [decision, system, timers, power]
-date: 2026-10-28
+date: 2026-11-02
 ---
 
 # System page (Sistem) and its disk / RAM warnings
@@ -66,7 +66,10 @@ the warning logic live in `src/system.rs`; the page in
 - **"Bersihkan"** is the accent button (`CLEANER_READY` is true since
   Run 5) and opens the cleaner over this page, see [[cleaner]]. The page
   itself deletes nothing, and it stops sampling while the cleaner covers it
-  (`system_sample_wanted(view, cleaner)`).
+  (`system_sample_wanted(view, cleaner)`). The cleaner now survives a close
+  and page changes, so `IslandState::cleaner()` is "cleaner on System" (None
+  on any other page): the page samples again as soon as another page shows,
+  and stops only while the cleaner is shown on System.
 - **Config.** `disk_warn_gb` (5–100 by 5, default 10) and
   `ram_warn_percent` (70–98, default 90). Both are serde defaults, so an
   older config still loads. Like the battery threshold, the file owns them

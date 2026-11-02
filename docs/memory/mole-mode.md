@@ -1,6 +1,6 @@
 ---
 tags: [decision, cleaner, mole, licence, notice]
-date: 2026-10-28
+date: 2026-11-02
 ---
 
 # The cleaner's "Otomatis · Mole" mode
@@ -25,15 +25,38 @@ used is `clean_mode` in config (serde default `Own`).
   "Jalankan Mole" only in `Previewed { opts: <ticked now>, ok: true }`; the
   second click within `CLEAN_CONFIRM` (shared with the own mode, so the same
   `next_deadline`) sends `MoleClean`. Any other click, an option tick (which
-  also starts a new preview), the timeout or the panel closing disarms it.
+  also starts a new preview), the timeout, the panel closing or another page
+  taking the panel disarms it.
   The app also drops a preview whose options differ. Tests: a fake
   `MoleRunner` records every argv; reducer tests count clean effects.
 - **Processes:** hidden `powershell -NoProfile -ExecutionPolicy Bypass -File
   mole.ps1 clean [--dry-run] [--game-media]` (`CREATE_NO_WINDOW`, stdin null,
-  stdout+stderr in one pipe, in a kill-on-close Job like the CLI). A preview
-  is killed when the cleaner closes or leaves Mole mode; a clean is never
-  killed and goes on with the panel closed, its notice still comes. A run
-  counter drops lines and results of a superseded run.
+  stdout+stderr in one pipe, in a kill-on-close Job like the CLI). Since
+  2026-11-02 a preview is **not** killed by the panel closing or a page
+  change (the cleaner keeps its place, see [[cleaner]]); only Back, a switch
+  to Own or the cleaner ending (a finished clean's result seen) stops it
+  (`leave_mole`). A clean is never killed and goes on with the panel closed,
+  its notice still comes. A run counter drops lines and results of a
+  superseded run.
+- **Detect / preview again only when stale.** The reducer stamps the time of
+  the request on `Effect::MoleDetect` / `MolePreview` (`mole_preview_at`).
+  When the cleaner shows again in Mole mode: Unknown detects; a Previewed or
+  Missing state older than `CLEAN_SCAN_STALE` (5 min) previews or detects
+  anew (one effect); fresh, Detecting, Scanning, Running and Finished do
+  nothing. `mole_found` still starts a preview while the panel is shut, and
+  the Mole notice's click path (`mole_pending`) keeps its own `enter_mole`,
+  never a second detect in the same `apply`. The stamp is the request's
+  time, not the run's end; `start_preview` clears the "result seen" mark.
+- **Log wheel scroll.** The cleaner holds the wheel (it never turns the
+  page). Over the Mole log box, when the log has more lines than fit
+  (`mole_log_rows`), a notch scrolls it: `Event::MoleLogScroll { lines, max }`
+  with the CLI's `WHEEL_LINES` scaling and sign (away from the user: older
+  lines), `max = len - rows`, only while the log shows (Running, Finished, or
+  Previewed with the log asked for). `mole_log_scroll` is 0 (follow the tail)
+  on a new preview, a new run, "Lihat log" and when the cleaner ends. New
+  lines apply `Event::MoleLogLines(n)` only while scrolled (so a shut panel
+  never redraws). The renderer gets it in `MoleView::scroll` and records the
+  log rect in `HitRegions::mole_log` (`Renderer::over_mole_log`).
 - **Parse rules:** each line is ANSI-stripped (CSI, OSC, 8-bit CSI, control
   chars, the last `\r` segment). A section starts at "▸ Name" (`?`/U+FFFD
   stand in for a lost ▸); its name maps to Browser / Apps / Dev / TempLogs by
