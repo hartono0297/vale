@@ -1,6 +1,6 @@
 export const meta = {
   name: 'build',
-  description: 'Plan (per-task light/heavy) -> build in worktrees -> heavy tasks: blind review/fix on a pinned commit, then check against a written checklist -> merge to main locally -> once everything is ready: update Obsidian memory + README, push',
+  description: 'Plan (per-task light/heavy) -> build in worktrees -> heavy tasks: blind review/fix on a pinned commit, then check against a written checklist -> merge to main locally -> once everything is ready: update Obsidian memory + README, push -> after the push: remove this run\'s merged worktrees and branches',
   whenToUse: 'Every code change. args: a request string, or {request, defer: true} to build now and verify heavy tasks later, or {verify: [...]} for the deferred review/check pass',
   phases: [
     { title: 'Plan', detail: 'split into tasks, mark each light or heavy, write a checklist for heavy ones', model: 'opus' },
@@ -9,6 +9,7 @@ export const meta = {
     { title: 'Check', detail: 'heavy only: tests + the written checklist', model: 'sonnet' },
     { title: 'Ship', detail: 'merge passing tasks into local main, test once; no push', model: 'sonnet' },
     { title: 'Finish', detail: 'only when everything is ready: update Obsidian memory + README, commit, push main', model: 'sonnet' },
+    { title: 'Clean', detail: 'only after Finish pushed: remove this run\'s merged worktrees and branches, never forced', model: 'sonnet' },
   ],
 }
 
@@ -90,6 +91,7 @@ const CHECK = {
       },
     },
     notes: { type: 'string' },
+    worktree: { type: 'string', description: 'absolute path of the worktree you checked in (git rev-parse --show-toplevel)' },
   },
   required: ['items', 'notes'],
 }
@@ -119,6 +121,32 @@ const FINISH = {
   required: ['memory_updated', 'readme_updated', 'docs_sha', 'pushed', 'head', 'notes'],
 }
 
+const CLEAN = {
+  type: 'object',
+  properties: {
+    removed: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: { worktree: { type: 'string' }, size: { type: 'string', description: 'folder size before removal, e.g. 2.3G' } },
+        required: ['worktree'],
+      },
+    },
+    deleted_branches: { type: 'array', items: { type: 'string' } },
+    skipped: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: { worktree: { type: 'string' }, branch: { type: 'string' }, reason: { type: 'string' } },
+        required: ['reason'],
+      },
+    },
+    freed: { type: 'string', description: 'rough total space freed, e.g. ~28 GB' },
+    notes: { type: 'string' },
+  },
+  required: ['removed', 'deleted_branches', 'skipped', 'freed', 'notes'],
+}
+
 // Rules every agent follows (see AGENTS.md)
 const TOOLS =
   `\n\nTool rules:\n` +
@@ -126,7 +154,7 @@ const TOOLS =
   `- For any library, framework, SDK, CLI or API: look up current docs with the Context7 MCP (resolve-library-id, then query-docs), matching the version the project uses. Do not rely on memory.\n` +
   `- Project memory is an Obsidian vault at docs/memory/ (start at docs/memory/index.md). Read the notes relevant to your work before starting.\n` +
   `- Never do anything that could interrupt the owner's other apps (media playback, calls, running builds). For visuals use the project's own demo or debug modes if it has any, never anything that touches real user data.\n` +
-  `- Never push to origin unless you are the Finish step, never force-push, and never force-delete branches or worktrees. The main session cleans those up.\n` +
+  `- Never push to origin unless you are the Finish step, never force-push, and never delete branches or worktrees unless you are the Clean step. Clean removes them once Finish has pushed main, and never forces it (no --force, no -D).\n` +
   `- Proof before claims: never report something as passing, fixed or working unless you ran the command in this session and saw its output.\n` +
   `- Nobody can answer questions during this workflow. Do not stop to ask; decide from the brief and report assumptions in your summary or notes.`
 
@@ -192,7 +220,7 @@ async function ship(label, ready, request) {
     `1. If the working tree on main has uncommitted changes (other than the untracked .claude/worktrees/ folder), STOP and report; do not stash or discard them.\n` +
     `2. Check out main. Note its sha as base. Merge each branch into main with --no-ff. If a merge conflict is not trivial, abort that merge, skip the branch, and report it. A conflict in docs/memory/index.md is trivial: keep both sides' lines.\n` +
     `3. Run the full test suite once on main (the project's test command, see 'Project commands' in AGENTS.md). If it fails, report the failures. Note main's sha as head.\n` +
-    `4. Do NOT update docs and do NOT push; the Finish step does both once everything is ready. Do not delete branches or worktrees.\n\n` +
+    `4. Do NOT update docs and do NOT push; the Finish step does both once everything is ready. Do not delete branches or worktrees; the Clean step does that after the push.\n\n` +
     `Request: ${request}\nTasks:\n${ready.map(r => `- ${r.id}: ${r.summary}`).join('\n')}` + TOOLS,
     { phase: 'Ship', model: SONNET, schema: SHIP }
   )
@@ -210,6 +238,22 @@ async function finish(label, request, head, lines) {
     `5. Push main to origin (git push origin main). Never force-push. If the push is rejected, do not pull, rebase or retry: report it with pushed=false.\n\n` +
     `Request: ${request}\nWhat was done:\n${lines.join('\n')}` + TOOLS,
     { phase: 'Finish', model: SONNET, schema: FINISH }
+  )
+}
+
+// Runs only after Finish pushed main. items: [{branch, worktree}] this run created; either may be null
+async function clean(label, items) {
+  const list = items.map(i => `- worktree: ${i.worktree || 'none'}; branch: ${i.branch || 'none'}`).join('\n')
+  return safe(
+    label,
+    `You are the Clean step. Finish has pushed main, so the work below is on origin. Remove what this run left behind, and nothing else.\n` +
+    `Work in the main repository on branch main, never inside one of the worktrees below. Touch only the worktrees and branches listed here (plus each worktree's own worktree-* branch, see 2), never other worktrees, branches or folders: other sessions may be using them.\n` +
+    `1. Worktree (if given): skip it, with the reason, if git worktree list does not show it, if git -C <path> status --porcelain shows changes, or if its HEAD is not in main (git merge-base --is-ancestor <its HEAD> main). Otherwise note the folder size (du -sh <path>), then git worktree remove <path>. Never use --force. If it refuses only because of untracked build output (target/, node_modules/, dist/ and the like), delete that folder and try once more. If a file is locked by a running process, skip it and say so.\n` +
+    `2. Branches: the branch listed, and the worktree tool's own branch for that worktree (worktree-<folder name>, if it exists). Delete each with git branch -d, never -D. If git says it is not fully merged, or it is still checked out somewhere, keep it and report why.\n` +
+    `3. Run git worktree prune.\n` +
+    `Report every removed worktree with its size, every deleted branch, everything skipped (worktree, branch, reason), and the rough total freed. Do not commit and do not push.\n\n` +
+    `Items:\n${list}` + TOOLS,
+    { phase: 'Clean', model: SONNET, schema: CLEAN }
   )
 }
 
@@ -255,9 +299,9 @@ if (input.verify) {
 
     async r => {
       if (r.state !== 'reviewed' || r.verdict !== 'SHIP') return { ...r, check: { passed: false, skipped: true, items: [], notes: 'not checked: review did not end in SHIP' } }
-      const where = r.worktree ? `Work in the worktree ${r.worktree} (cd there).` : `Check out ${r.sha} detached in your own worktree.`
+      const where = r.worktree ? `Work in the worktree ${r.worktree} (cd there).` : `Check out ${r.sha} detached in your own worktree, and report that worktree's absolute path as worktree.`
       const c = await safe(`check:${r.id}`, checkPrompt(where, r.sha, r.task), { phase: 'Check', isolation: r.worktree ? undefined : 'worktree', model: SONNET, schema: CHECK })
-      return { ...r, check: checkResult(c) }
+      return { ...r, check: checkResult(c), checkWorktree: (!r.worktree && c && c.worktree) || null }
     }
   )
 
@@ -282,9 +326,25 @@ if (input.verify) {
     log('Not finished: some items are not SHIP + checked, or main is not green; docs and push skipped')
   }
 
+  // Clean: the deferred builders' worktrees, fix worktrees and check worktrees, only once main is pushed
+  const ours = [
+    ...items.map(it => ({ branch: it.branch || null, worktree: it.worktree || null })),
+    ...rows.map(r => ({ branch: r.branch || null, worktree: r.worktree || null })),
+    ...rows.map(r => ({ branch: null, worktree: r.checkWorktree || null })),
+  ].filter(x => x.branch || x.worktree)
+  let cleaned = null
+  if (finished && finished.pushed && ours.length) {
+    phase('Clean')
+    cleaned = await clean('clean:verify', ours)
+  } else if (ours.length) {
+    log('Not cleaned: main was not pushed; worktrees and branches are kept (see leftovers)')
+  }
+
   return {
     pushed: !!(finished && finished.pushed),
     finish: finished,
+    cleanup: cleaned,
+    leftovers: cleaned ? [] : ours,
     shipNotes: shipped.notes,
     items: rows.map(r => ({ id: r.id, verdict: r.verdict, openFindings: r.openFindings, fixBranch: r.branch || null, checkPassed: r.check.passed, checkItems: r.check.items, checkNotes: r.check.notes })),
     manualChecks: manualChecks(rows),
@@ -385,10 +445,23 @@ if (allReady) {
   log(input.defer ? 'Deferred run: docs and push wait for the verify pass' : 'Not finished: some tasks are held, failed or main is not green; docs and push skipped')
 }
 
+// Clean: only after Finish pushed main. Held tasks keep their worktrees (see leftovers)
+let cleaned = null
+if (finished && finished.pushed) {
+  phase('Clean')
+  cleaned = await clean('clean:main', ready.map(r => ({ branch: r.branch, worktree: r.worktree })))
+}
+const leftovers = done
+  .filter(r => r.worktree && !(cleaned && ready.includes(r)))
+  .map(r => ({ task: r.id, branch: r.branch || null, worktree: r.worktree }))
+
 const byId = Object.fromEntries(tasks.map(t => [t.id, t]))
 return {
   pushed: !!(finished && finished.pushed),
   finish: finished,
+  cleanup: cleaned,
+  // worktrees this run did not hand to Clean; deferred ones are cleaned by the verify pass
+  leftovers,
   shipNotes: shipped.notes,
   testsPassedOnMain: shipped.tests_passed,
   base: shipped.base,
@@ -408,7 +481,7 @@ return {
   })),
   // heavy work built with defer: feed this to a later run as args.verify
   deferred: input.defer
-    ? done.filter(r => r.verdict === 'DEFERRED' && shipped.merged.includes(r.branch)).map(r => ({ id: r.id, brief: byId[r.id].brief, checklist: byId[r.id].checklist || [], base: shipped.base, head: shipped.head }))
+    ? done.filter(r => r.verdict === 'DEFERRED' && shipped.merged.includes(r.branch)).map(r => ({ id: r.id, brief: byId[r.id].brief, checklist: byId[r.id].checklist || [], base: shipped.base, head: shipped.head, branch: r.branch, worktree: r.worktree }))
     : [],
   manualChecks: manualChecks(done),
   incomplete,

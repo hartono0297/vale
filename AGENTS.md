@@ -10,6 +10,7 @@
 | Check | Sonnet 5.5 (`claude-sonnet-5-5`) |
 | Ship | Sonnet 5.5 (`claude-sonnet-5-5`) |
 | Finish (memory, README, push) | Sonnet 5.5 (`claude-sonnet-5-5`) |
+| Clean (worktrees, branches) | Sonnet 5.5 (`claude-sonnet-5-5`) |
 
 - Spawning subagents (Agent tool) is allowed whenever it helps: parallel
   reading, independent tasks, blind reviewers, fixers. Set each agent's model
@@ -40,6 +41,10 @@ yourself in the main session.
   Obsidian memory and `README.md`, commits those docs, and pushes `main`. This
   project uses a single branch (`main`), so that push is pre-approved. Deploy
   stays with me.
+- Once that push succeeded, its Clean step removes the worktrees and branches
+  the run left behind (never forced). Anything not merged into `main` or with
+  changes is kept and reported. If Finish did not run or the push failed,
+  nothing is removed and the result lists them in `leftovers`.
 - If anything is not ready, the workflow skips docs and push. Fix what it
   reports first; don't push half-finished work from the main session.
 - For a long batch of runs, pass `args: {request, defer: true}` to build now,
@@ -47,8 +52,24 @@ yourself in the main session.
   runs returned) at the end. Deferred runs never push; the verify pass does the
   Finish step.
 - When it finishes, report: which tasks were merged and their weight, what the
-  Finish step wrote to memory and README, whether `main` was pushed,
-  `manualChecks`, `incomplete`, and any open findings or failed checks.
+  Finish step wrote to memory and README, whether `main` was pushed, what Clean
+  removed (and the space freed) or kept, `manualChecks`, `incomplete`, and any
+  open findings or failed checks.
+
+## Clean up worktrees once they are pushed (main session)
+
+Clean only touches what its own run created. The main session cleans the rest
+the same way, once its branch is merged into `main` and `main` is pushed:
+worktrees you create yourself with the Agent tool's `isolation: "worktree"`, and
+a run's `leftovers` once what held them is fixed and pushed.
+
+- `git worktree remove <path>`, never `--force`. If only untracked build output
+  (such as `target/`) blocks it, delete that folder first.
+- `git branch -d` its branch and the tool's own `worktree-<folder>` branch,
+  never `-D`. Then `git worktree prune`.
+- Skip anything not merged into `main`, with changes, or still used by a running
+  session, and report it (path, branch, why). Report what was removed and
+  roughly how much space it freed.
 
 ## Every new task starts in a new session
 
