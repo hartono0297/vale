@@ -30,9 +30,9 @@ use windows_numerics::Vector2;
 use super::{Phase, State, black, invalidate, with};
 use crate::capture::inline::{
     BarLabels, Btn, CopyOutcome, Cursor, EscStep, FinishKind, InlineKey, KeyCtx, Layer,
-    PAINT_ORDER, PANEL_GAP, Panel, SelHandle, SelectPress, Side, after_copy, bar_layout, cursor_over, drag_handle, esc_step,
-    grab_offset, inline_key, label_rect, move_sel, place_side, select_press, separate,
-    strip_layout, tip, tooltip_rect, ui_for,
+    PAINT_ORDER, PANEL_GAP, Panel, SelHandle, SelectPress, Side, after_copy, bar_layout,
+    cursor_over, drag_handle, esc_step, grab_offset, inline_key, label_rect, move_sel, place_side,
+    select_press, separate, strip_layout, tip, tooltip_rect, ui_for,
 };
 use crate::capture::{Rect, drag_rect, is_click, size_label, win};
 use crate::i18n::{Key, tr};
@@ -782,7 +782,7 @@ fn do_btn(hwnd: HWND, btn: Btn) {
         Btn::Redo => {
             ed(|e, _| e.session.redo());
         }
-        Btn::Copy => copy(hwnd),
+        Btn::Copy => copy(),
         Btn::Save => super::finish_inline(FinishKind::Save),
         Btn::OpenEditor => super::finish_inline(FinishKind::OpenEditor),
         Btn::Close => esc(hwnd, FinishKind::Close),
@@ -800,8 +800,11 @@ fn do_btn(hwnd: HWND, btn: Btn) {
 /// Copy: renders the picture and puts it on the clipboard BEFORE the overlay
 /// state is touched. Copied: the overlay closes (without copying again).
 /// Not copied: the overlay stays with everything drawn and says so. A demo
-/// touches no clipboard: its line says so and the overlay stays.
-fn copy(hwnd: HWND) {
+/// touches no clipboard: its line says so and the overlay stays. The only way
+/// into a Copy (the bar's button and `finish_inline(Copy)`), so no path skips
+/// the demo check or closes the overlay after a failed copy.
+pub(super) fn copy() {
+    let Some(hwnd) = with(|s| s.hwnd) else { return };
     let demo = ed(|e, env| {
         if env.demo {
             e.notice = Some(Key::EditDemoNoClipboard);
@@ -812,16 +815,14 @@ fn copy(hwnd: HWND) {
     if demo {
         invalidate(hwnd);
     } else {
-        copy_current();
+        copy_real(hwnd);
     }
 }
 
-/// The real Copy (not the demo): see `copy`. Also what `finish_inline(Copy)`
-/// does, so no path closes the overlay after a failed copy.
-pub(super) fn copy_current() {
+/// The real Copy (not the demo): see `copy`.
+fn copy_real(hwnd: HWND) {
     // A text still being typed is part of the picture.
     commit_text_now();
-    let Some(hwnd) = with(|s| s.hwnd) else { return };
     // Owned values; the overlay's RefCell is released from here on:
     // `EmptyClipboard` may send WM_DESTROYCLIPBOARD to a window of this thread.
     let Some((_, shot, doc)) = super::inline_picture() else {

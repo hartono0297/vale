@@ -416,11 +416,12 @@ fn inline_picture() -> Option<(Rect, crate::capture::Shot, Vec<Annotation>)> {
 /// and then an auto-copying Save puts it on the clipboard (on this thread,
 /// before the window goes), Save also writes it on a worker, and OpenEditor
 /// opens the editor on it. Anything else closes with nothing copied. A Copy
-/// is never finished here: it goes through `edit::copy`, which keeps the
-/// overlay when the copy fails. Idempotent like `finish`.
+/// is never finished here: it goes through `edit::copy`, which touches no
+/// clipboard in the demo and keeps the overlay when the copy fails.
+/// Idempotent like `finish`.
 fn finish_inline(kind: FinishKind) {
     if kind == FinishKind::Copy {
-        edit::copy_current();
+        edit::copy();
         return;
     }
     // A text still being typed is part of the picture.
