@@ -2094,6 +2094,9 @@ impl IslandState {
             Hit::NotifRemove(id) => effects.push(Effect::Notif(NotifAction::Remove(id))),
             Hit::NotifPause => effects.push(Effect::Notif(NotifAction::TogglePause)),
             Hit::NotifSettings => effects.push(Effect::Notif(NotifAction::OpenSettings)),
+            // The panel header's Settings button (every page): the panel gets
+            // out of the way, which also ends the linger.
+            Hit::OpenSettings => self.collapse_for(Effect::OpenSettings, effects),
             // The first click arms; a second within `CLEAN_CONFIRM` clears.
             Hit::NotifClear => match self.notif_armed.take() {
                 Some(until) if now < until => {
@@ -5556,6 +5559,48 @@ mod tests {
         // activates for it when `App` says so (it sends `NotifFocus(true)`).
         assert_eq!(fx(Hit::NotifFocus, &mut s), vec![Effect::FocusNotifInput]);
         assert!(!s.notif_focused());
+    }
+
+    #[test]
+    fn the_header_settings_button_opens_settings_and_gets_the_panel_out_of_the_way() {
+        let t0 = Instant::now();
+        // Every page has the button; try a few, each on a fresh open panel.
+        for page in [Page::Calendar, Page::Media, Page::Notifications, Page::Cli] {
+            let mut s = st();
+            open_on(&mut s, page, t0);
+            // A click on the page first, so a linger is armed and must end.
+            s.apply(Event::Click(Hit::Body), t0);
+            let effects = s.apply(Event::Click(Hit::OpenSettings), t0);
+            assert_eq!(effects, vec![Effect::OpenSettings], "{page:?}");
+            assert!(!s.panel_open(), "{page:?}");
+            assert_eq!(s.view(), View::Idle, "{page:?}");
+            assert_eq!(s.next_deadline(), None, "no linger left on {page:?}");
+        }
+    }
+
+    #[test]
+    fn the_header_settings_button_does_nothing_outside_the_open_panel() {
+        let t0 = Instant::now();
+        let mut idle = st();
+        assert_eq!(idle.apply(Event::Click(Hit::OpenSettings), t0), vec![]);
+        assert_eq!(idle.view(), View::Idle);
+
+        let mut media_view = st();
+        media_view.apply(Event::Media(Some(media(true))), t0);
+        assert_eq!(media_view.view(), View::MediaCompact);
+        assert_eq!(
+            media_view.apply(Event::Click(Hit::OpenSettings), t0),
+            vec![]
+        );
+        assert_eq!(media_view.view(), View::MediaCompact);
+
+        let mut pomodoro = st();
+        pomodoro.apply(Event::Click(Hit::PomoStartPause), t0);
+        assert_eq!(pomodoro.view(), View::PomodoroCompact);
+        let before = pomodoro.next_deadline();
+        assert_eq!(pomodoro.apply(Event::Click(Hit::OpenSettings), t0), vec![]);
+        assert_eq!(pomodoro.view(), View::PomodoroCompact);
+        assert_eq!(pomodoro.next_deadline(), before);
     }
 
     #[test]
