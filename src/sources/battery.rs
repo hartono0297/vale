@@ -112,7 +112,7 @@ pub fn probe() {
         println!(
             "battery={:?} fullscreen={}",
             read_battery(),
-            super::fullscreen::is_fullscreen()
+            super::fullscreen::is_fullscreen(None)
         );
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
