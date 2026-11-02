@@ -1,6 +1,6 @@
 ---
 tags: [decision, build, size]
-date: 2026-10-30
+date: 2026-11-02
 ---
 
 # Exe size: what was measured, what was trimmed
@@ -92,6 +92,27 @@ the analyzer, the WASAPI client and the Settings row. No new crate and no new
 two folders of the same name length (`main` from `git archive`, and the
 branch), each with its own `CARGO_TARGET_DIR`, so the running island's exe was
 never touched. No new crate and no new `windows` feature.
+
+## JetBrains Mono for the UI font option (2026-11-02)
+
+[[ui-font-option]] embeds JetBrains Mono 400/500/600 (RCDATA 208-210). Built
+with `cargo build --release --locked` in two folders of the same name length
+(`main` from `git archive`, and the branch), each with its own
+`CARGO_TARGET_DIR`, so the running island's exe was never touched:
+
+| | Exe bytes |
+|---|---|
+| `main` (v3.12.0) | 2,913,792 |
+| branch | 3,040,768 (+126,976, +4.4 %) |
+
+Fonts total (`assets/fonts/*.ttf`): 321,880 bytes, 314.3 KB, up from 193,740
+(189 KB): DM Sans 3 x 39.3 KB, DM Mono 35.3 + 35.9 KB, JetBrains Mono 41.8 +
+41.5 + 41.9 KB. The budget is 370 KB (`LIMIT` in `VerifyPy`), so JetBrains
+Mono keeps its hinting; if a later font does not fit, drop hinting for that
+family only before touching the limit. The ligatures (`calt`, `liga`, `dlig`)
+are already dropped from the subset ([[studio-font-sources]]). No new crate
+and no new `windows` feature; the code added is the font selection, the
+Mono sizes and the Settings row.
 
 ## Idle RAM and CPU
 
