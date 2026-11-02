@@ -142,3 +142,37 @@ Shortcuts (`Page::ALL: [Page; 14]`, name `"Arrange"` in `config.json`). A saved 
 without it (an older config) gets it right after Cli wherever the owner moved Cli to
 (`from_saved`, tested), shown. Icon: `Icon::Layout`, a screen frame cut into a 2x2
 layout, not Pintasan's `Grid`.
+
+## The header Settings button (2026-11-02)
+
+Every open-panel page carries a fixed Settings button (`Icon::Sliders`) at the
+top right, in the header row. It opens Vale's Settings window.
+
+- **Helpers** (`panel_layout.rs`): `settings_button(s, strip)` is one 22 dip
+  square at `right(s) - 22`, `content_top(s, strip)`, the same rect on every
+  page so it never jumps between pages. `header_right(s)` (`right - 22 - 8`) is
+  the right edge of every header-row control; each layout's right-aligned
+  header part (calendar selector, Pomodoro durations, "+ Baru", CLI expand and
+  its chips, Clipboard search, Notifikasi clear and pause, Search field,
+  Shortcuts and Mixer header text, Shelf clear, System clean, cleaner and Mole
+  segment, Devices eject all, Susun skip and chips) ends there. Body content
+  below the header row keeps `right(s)`. The Media page has no header row: its
+  text column and "Lirik" give way only where they would reach the button (a
+  guard that does nothing at the default panel).
+- **Hit.** `Hit::OpenSettings` is the first region of `regions()` for every
+  page (right after `Hit::Strip`), so it wins over underlays such as
+  `NotifFocus` and `CliMenuDismiss`. The reducer answers with
+  `collapse_for(Effect::OpenSettings, ..)`: only on an open panel, it collapses
+  (which ends the linger) and `App` opens Settings after the handler returns
+  (`DEFERRED_OPEN_SETTINGS`, see [[shortcut-tiles]]).
+- **Drawing.** Fixed chrome like the page dots, painted in
+  `paint_panel_content` outside `paint_page_at` (no slide, cross-fade or reveal
+  offset), also while closing, and offset by `strip_dy` while a toast strip
+  moves. It fades with the panel through the existing masks.
+- **No hover plate, by design.** The panel tracks no pointer over header
+  buttons (the calendar's arrows draw the icon only), so the button does
+  likewise; no timer, tooltip, focus stop or hotkey was added, and nothing runs
+  at idle ([[bata-idle-power-budget]]).
+- **Tests.** `settings_button_is_clear_of_every_page` checks the rect against
+  every page's regions and drawn rects (`drawn_rects`, shared with
+  `drawn_rects_inside_panel`), strip on and off, both styles.

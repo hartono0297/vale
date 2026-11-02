@@ -6583,6 +6583,34 @@ mod tests {
         assert_eq!(m.title.right(), right(s));
         assert_eq!(m.lyrics.right(), right(s));
     }
+
+    #[test]
+    fn the_media_text_column_gives_way_to_the_settings_button_in_a_short_panel() {
+        // A panel short enough that the label rises to the button's rows:
+        // what would reach the button ends left of it.
+        let full = panel(Style::Pill);
+        let s = ShapeRect { h: 232.0, ..full };
+        let m = media_panel_layout(s, false);
+        let btn = settings_button(s, false);
+        let keep = Rect {
+            x: btn.x - SETTINGS_GAP,
+            y: btn.y - SETTINGS_GAP,
+            w: btn.w + 2.0 * SETTINGS_GAP,
+            h: btn.h + 2.0 * SETTINGS_GAP,
+        };
+        let rows_reached = [m.label, m.title, m.artist]
+            .into_iter()
+            .filter(|r| r.y < keep.bottom() && r.bottom() > keep.y)
+            .count();
+        assert!(rows_reached > 0, "the case must reach the button's rows");
+        for r in [m.label, m.title, m.artist] {
+            assert!(disjoint(r, keep), "{r:?} reaches {keep:?}");
+        }
+        // Nothing the page draws touches the button either.
+        for d in drawn_rects(&PageLayout::Media(m)) {
+            assert!(disjoint(btn, d), "{d:?}");
+        }
+    }
 }
 
 #[cfg(test)]
