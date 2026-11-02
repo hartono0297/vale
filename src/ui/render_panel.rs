@@ -73,8 +73,8 @@ use crate::ui::panel_layout::{
     cli_layout, cli_suggestions, clipboard_layout, device_shapes, devices_layout,
     media_panel_layout, media_progress_layout, mixer_layout, mole_layout, notes_layout,
     notif_layout, page_dots, pomodoro_compact_layout, pomodoro_compact_layout_robot,
-    pomodoro_layout, regions, reminders_layout, search_layout, shelf_card_layout, shelf_layout,
-    shortcuts_layout, system_layout, tile_parts, volume_hud_layout, waiting_strip,
+    pomodoro_layout, regions, reminders_layout, search_layout, settings_button, shelf_card_layout,
+    shelf_layout, shortcuts_layout, system_layout, tile_parts, volume_hud_layout, waiting_strip,
 };
 use crate::ui::robot::{Expr, Pose};
 use crate::ui::shelf_motion::Drawn;
@@ -529,6 +529,14 @@ impl Renderer {
         if has_dots {
             self.paint_page_dots(s, frame, page);
         }
+        // The header's Settings button: fixed chrome like the dots, outside
+        // `paint_page_at` (no slide, cross-fade or reveal offset). It rides a
+        // moving toast strip with the content and fades with the panel (the
+        // masks of `paint_panel` and `paint_leaving_panel`). No hover plate,
+        // as for the calendar's arrows: the panel tracks no hover over it.
+        let mut gear = settings_button(s, strip);
+        gear.y += strip_dy;
+        self.icon_colored(Icon::Sliders, gear, 18.0, self.palette.secondary, 1.0, None);
         // No clicks on a page still sliding in: its controls are not where
         // the regions say yet, and the old page's are still under the pointer.
         // (A strip still moving holds them too, as a slide does.)

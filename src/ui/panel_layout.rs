@@ -434,7 +434,14 @@ pub fn devices_layout(
     let top = content_top(s, strip);
     let (l, r) = (left(s), right(s));
     let n = shapes.len();
-    let eject_all = (n > 0).then(|| rect(r - head.eject_all_w, top, head.eject_all_w, DEV_HEAD_H));
+    let eject_all = (n > 0).then(|| {
+        rect(
+            header_right(s) - head.eject_all_w,
+            top,
+            head.eject_all_w,
+            DEV_HEAD_H,
+        )
+    });
     let header = rect(l, top, head.title_w, HEADER_H);
     let chip = (n > 0).then(|| {
         rect(
@@ -683,15 +690,23 @@ pub fn arrange_layout(
     let top = content_top(s, strip);
     let (l, r) = (left(s), right(s));
     let header = rect(l, top, head.title_w, HEADER_H);
+    let skip = shape.picking.then(|| {
+        rect(
+            header_right(s) - head.skip_w,
+            top - 1.0,
+            head.skip_w,
+            ARR_SKIP_H,
+        )
+    });
+    // The chips stay left of the Skip button (and so of the Settings button).
+    let chips_end = skip.map_or(header_right(s), |k| k.x - 8.0);
     let mut chips = Vec::new();
     let mut x = header.right() + 12.0;
     for w in &head.chip_w {
-        chips.push(rect(x, top + (HEADER_H - ARR_CHIP_H) / 2.0, *w, ARR_CHIP_H));
+        let w = w.min((chips_end - x).max(0.0));
+        chips.push(rect(x, top + (HEADER_H - ARR_CHIP_H) / 2.0, w, ARR_CHIP_H));
         x += w + 6.0;
     }
-    let skip = shape
-        .picking
-        .then(|| rect(r - head.skip_w, top - 1.0, head.skip_w, ARR_SKIP_H));
     let list = arrange_list_rect(s, strip, shape.picking);
     let max_scroll = arrange_max_scroll(s, strip, shape);
     let scroll = scroll.clamp(0.0, max_scroll);
@@ -1099,6 +1114,10 @@ pub(super) const DOT_BOTTOM: f32 = 11.0;
 /// Clear space between the content and the page dots.
 const ABOVE_DOTS: f32 = 6.0;
 const HEADER_H: f32 = 22.0;
+/// The panel header's Settings button: a square at the top right of every page.
+const SETTINGS_BTN: f32 = 22.0;
+/// Space between the Settings button and the header-row controls left of it.
+const SETTINGS_GAP: f32 = 8.0;
 const HEADER_GAP: f32 = 6.0;
 
 const NAV_W: f32 = 22.0;
@@ -1376,6 +1395,24 @@ fn right(s: ShapeRect) -> f32 {
     s.x + s.w - PAD_X
 }
 
+/// The right edge of every header-row control: left of the Settings button
+/// and its gap. Body content below the header row keeps `right`.
+fn header_right(s: ShapeRect) -> f32 {
+    right(s) - SETTINGS_BTN - SETTINGS_GAP
+}
+
+/// The panel header's Settings button. The same rect on every page (it never
+/// depends on the page, so it never jumps between pages), in the header row
+/// at the top right.
+pub fn settings_button(s: ShapeRect, strip: bool) -> Rect {
+    rect(
+        right(s) - SETTINGS_BTN,
+        content_top(s, strip),
+        SETTINGS_BTN,
+        SETTINGS_BTN,
+    )
+}
+
 /// Top of the page content: below the waiting strip when it is shown.
 fn content_top(s: ShapeRect, strip: bool) -> f32 {
     s.y + PAD_TOP + if strip { STRIP_H } else { 0.0 }
@@ -1530,7 +1567,7 @@ pub fn calendar_layout(
     // Header row: the title and its arrows on the left, the view selector
     // on the right.
     let seg_w = 3.0 * VIEW_BUTTON_W;
-    let seg_x = r - SEG_PAD - seg_w;
+    let seg_x = header_right(s) - SEG_PAD - seg_w;
     let views = [CalView::Day, CalView::Week, CalView::Month];
     let view_buttons = std::array::from_fn(|i| {
         let x = seg_x + i as f32 * VIEW_BUTTON_W;
@@ -1890,7 +1927,7 @@ pub fn pomodoro_layout(s: ShapeRect, strip: bool) -> PomodoroLayout {
     let top = content_top(s, strip);
     let bottom = content_bottom(s);
     let (l, r) = (left(s), right(s));
-    let durations = rect(r - DURATIONS_W, top, DURATIONS_W, HEADER_H);
+    let durations = rect(header_right(s) - DURATIONS_W, top, DURATIONS_W, HEADER_H);
     let header = rect(l, top, durations.x - 8.0 - l, HEADER_H);
     let body = header.bottom() + 8.0;
     let cy = body + (bottom - body) / 2.0;
@@ -1946,9 +1983,9 @@ pub fn pomodoro_layout(s: ShapeRect, strip: bool) -> PomodoroLayout {
 /// items start at.
 fn list_header(s: ShapeRect, strip: bool) -> (Rect, Rect, f32) {
     let top = content_top(s, strip);
-    let (l, r) = (left(s), right(s));
-    let header = rect(l, top, r - l - NEW_W - 8.0, HEADER_H);
-    let new_button = rect(r - NEW_W, top, NEW_W, HEADER_H);
+    let (l, hr) = (left(s), header_right(s));
+    let header = rect(l, top, hr - l - NEW_W - 8.0, HEADER_H);
+    let new_button = rect(hr - NEW_W, top, NEW_W, HEADER_H);
     (header, new_button, header.bottom() + LIST_TOP_GAP)
 }
 
@@ -2120,12 +2157,31 @@ pub fn media_panel_layout(s: ShapeRect, strip: bool) -> ExpandedLayout {
         MEDIA_SIDE_W,
         MEDIA_PLAY,
     );
-    let lyrics = rect(
+    let mut lyrics = rect(
         r - LYRICS_W,
         row_y + (MEDIA_PLAY - LYRICS_H) / 2.0,
         LYRICS_W,
         LYRICS_H,
     );
+    // The page has no header row, but the Settings button sits at its top
+    // right: whatever of the text column would reach it ends left of it.
+    let (mut label, mut title, mut artist) = (label, title, artist);
+    let btn = settings_button(s, strip);
+    let hr = header_right(s);
+    let reaches = |q: &Rect| {
+        q.x < btn.right() + SETTINGS_GAP
+            && q.right() > btn.x - SETTINGS_GAP
+            && q.y < btn.bottom() + SETTINGS_GAP
+            && q.bottom() > btn.y - SETTINGS_GAP
+    };
+    for q in [&mut label, &mut title, &mut artist] {
+        if reaches(q) {
+            q.w = (hr - q.x).max(0.0);
+        }
+    }
+    if reaches(&lyrics) {
+        lyrics.x = hr - lyrics.w;
+    }
     ExpandedLayout {
         art,
         label,
@@ -2164,7 +2220,7 @@ pub fn cli_layout(s: ShapeRect, strip: bool, head: &CliHead) -> CliLayout {
     let mid = top + CLI_HEAD_H / 2.0;
     let header = rect(l, top, CLI_TITLE_W, CLI_HEAD_H);
     let expand = rect(
-        r - CLI_EXPAND,
+        header_right(s) - CLI_EXPAND,
         mid - CLI_EXPAND / 2.0,
         CLI_EXPAND,
         CLI_EXPAND,
@@ -2395,9 +2451,10 @@ pub fn cli_suggestions(l: &CliLayout, n: usize) -> (Rect, Vec<Rect>) {
 fn clip_frame(s: ShapeRect, strip: bool) -> (Rect, Rect, Rect) {
     let top = content_top(s, strip);
     let (l, r) = (left(s), right(s));
-    let search_w = CLIP_SEARCH_MAX_W.min(r - l - 120.0);
+    let hr = header_right(s);
+    let search_w = CLIP_SEARCH_MAX_W.min(hr - l - 120.0);
     let search = rect(
-        r - search_w,
+        hr - search_w,
         top + (HEADER_H - CLIP_SEARCH_H) / 2.0,
         search_w,
         CLIP_SEARCH_H,
@@ -2694,10 +2751,11 @@ pub fn notif_layout(
     let scroll = scroll.min(notif_max_scroll(n, rows_fit));
 
     // Header controls: none without access; "Hapus semua" only with entries.
-    let clear = (n > 0).then(|| rect(r - head.clear_w, top, head.clear_w, DEV_HEAD_H));
+    let hr = header_right(s);
+    let clear = (n > 0).then(|| rect(hr - head.clear_w, top, head.clear_w, DEV_HEAD_H));
     let pause = (!no_access).then(|| {
         let w = head.pause_label_w + 6.0 + NOTIF_SWITCH_W;
-        let right_edge = clear.map_or(r, |c| c.x - NOTIF_CONTROL_GAP);
+        let right_edge = clear.map_or(hr, |c| c.x - NOTIF_CONTROL_GAP);
         rect(right_edge - w, top, w, DEV_HEAD_H)
     });
     let pause_label = pause.map(|p| rect(p.x, p.y, head.pause_label_w, p.h));
@@ -2833,7 +2891,7 @@ pub fn search_layout(s: ShapeRect, strip: bool, n: usize) -> SearchLayout {
     let (l, r) = (left(s), right(s));
     let back = rect(l, top, SEARCH_BACK_W, SEARCH_FIELD_H);
     let fx = back.right() + SEARCH_BACK_GAP;
-    let field = rect(fx, top, (r - fx).max(0.0), SEARCH_FIELD_H);
+    let field = rect(fx, top, (header_right(s) - fx).max(0.0), SEARCH_FIELD_H);
     let first = field.bottom() + SEARCH_FIELD_GAP;
     let rows = (0..n.min(crate::search::MAX_RESULTS))
         .map(|i| {
@@ -2858,7 +2916,7 @@ pub fn shortcuts_layout(s: ShapeRect, strip: bool, tiles: &[Tile]) -> ShortcutsL
     let top = content_top(s, strip);
     let bottom = content_bottom(s);
     let (l, r) = (left(s), right(s));
-    let header = rect(l, top, r - l, HEADER_H);
+    let header = rect(l, top, header_right(s) - l, HEADER_H);
     let body = header.bottom() + 8.0;
     let w = (r - l - 3.0 * TILE_GAP) / 4.0;
     let rows = tiles.len().div_ceil(4).max(1) as f32;
@@ -2911,8 +2969,9 @@ pub fn shelf_layout(s: ShapeRect, strip: bool, n: usize) -> ShelfLayout {
     let top = content_top(s, strip);
     let bottom = content_bottom(s);
     let (l, r) = (left(s), right(s));
-    let header = rect(l, top, r - l - SHELF_CLEAR_W - 8.0, HEADER_H);
-    let clear = (n > 0).then(|| rect(r - SHELF_CLEAR_W, top, SHELF_CLEAR_W, HEADER_H));
+    let hr = header_right(s);
+    let header = rect(l, top, hr - l - SHELF_CLEAR_W - 8.0, HEADER_H);
+    let clear = (n > 0).then(|| rect(hr - SHELF_CLEAR_W, top, SHELF_CLEAR_W, HEADER_H));
     let body = header.bottom() + 8.0;
     let w = (r - l - 3.0 * TILE_GAP) / 4.0;
     let rows = n.div_ceil(4).max(2) as f32;
@@ -2945,7 +3004,7 @@ pub fn mixer_layout(s: ShapeRect, strip: bool, n: usize) -> MixerLayout {
     let top = content_top(s, strip);
     let bottom = content_bottom(s);
     let (l, r) = (left(s), right(s));
-    let header = rect(l, top, r - l, HEADER_H);
+    let header = rect(l, top, header_right(s) - l, HEADER_H);
     let body = header.bottom() + 6.0;
     let n = n.max(1);
     let pitch = ((bottom - body) / n as f32).min(MIXER_ROW_MAX_H);
@@ -2991,7 +3050,7 @@ pub fn system_layout(
     let (l, r) = (left(s), right(s));
 
     let clean = rect(
-        r - head.clean_w,
+        header_right(s) - head.clean_w,
         top + (SYS_HEAD_H - SYS_CLEAN_H) / 2.0,
         head.clean_w,
         SYS_CLEAN_H,
@@ -3157,7 +3216,7 @@ pub fn cleaner_layout(
 /// title, the segment's track and its two items.
 fn clean_head(s: ShapeRect, strip: bool, head: &CleanHead) -> (f32, Rect, Rect, Rect, [Rect; 2]) {
     let top = s.y + CLEAN_TOP + if strip { STRIP_H } else { 0.0 };
-    let (l, r) = (left(s), right(s));
+    let l = left(s);
     let back = rect(
         l,
         top + (CLEAN_HEAD_H - CLEAN_BACK) / 2.0,
@@ -3166,7 +3225,7 @@ fn clean_head(s: ShapeRect, strip: bool, head: &CleanHead) -> (f32, Rect, Rect, 
     );
     let seg_w = head.seg[0] + head.seg[1] + 2.0 * CLEAN_SEG_PAD;
     let seg = rect(
-        r - seg_w,
+        header_right(s) - seg_w,
         top + (CLEAN_HEAD_H - CLEAN_SEG_H) / 2.0,
         seg_w,
         CLEAN_SEG_H,
@@ -3406,6 +3465,9 @@ pub fn regions(s: ShapeRect, layout: &PageLayout, strip: bool) -> Vec<Region> {
     if strip {
         add(waiting_strip(s), Hit::Strip);
     }
+    // Fixed chrome on every page: first among the page's regions (after the
+    // strip), so it wins over underlays such as `NotifFocus`.
+    add(settings_button(s, strip), Hit::OpenSettings);
     match layout {
         PageLayout::Calendar(l) => {
             for (view, r) in l.view_buttons {
