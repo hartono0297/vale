@@ -1642,6 +1642,20 @@ impl App {
                 .moving(Spot::of(&view), now, self.motion().moves())
     }
 
+    /// The cat's sleep clock takes the last mouse or keyboard input anywhere
+    /// on the PC (one `GetLastInputInfo`). A failed read changes nothing, so
+    /// it cannot keep the cat awake.
+    fn fold_pc_input(&mut self, now: Instant) {
+        if !self.config.robot {
+            return;
+        }
+        if let Some(ms) = input_idle() {
+            self.bata
+                .brain
+                .input_seen(now, Duration::from_millis(u64::from(ms)));
+        }
+    }
+
     /// Arms or stops Bata's one-shot timers for what shows now.
     fn sync_robot_timers(&mut self, now: Instant) {
         let face = self.robot_frame(&self.state.view(), now).map(|r| r.expr);
@@ -1672,10 +1686,32 @@ impl App {
             now,
             self.sleep_after(),
         );
+        // A sleeping cat on screen also looks for PC input every 1.8 s, as
+        // one-shots only; nothing polls while it is awake.
+        let wake = robot::wake_poll_on(
+            face,
+            Spot::of(&self.state.view()),
+            self.motion(),
+            self.eyes,
+            self.fullscreen,
+            self.screen_away(),
+        );
+        let next = robot::robot_timer_at(next, wake, now);
         unsafe {
             match next {
+                // The wake poll is coalescable; its slack keeps it within 2 s.
+                // `SetCoalescableTimer` on the same id replaces the pending one.
+                Some((_, true)) => {
+                    SetCoalescableTimer(
+                        Some(self.hwnd),
+                        TIMER_ROBOT,
+                        robot::WAKE_POLL_MS,
+                        None,
+                        robot::WAKE_POLL_SLACK_MS,
+                    );
+                }
                 // `SetTimer` on the same id replaces the pending one.
-                Some(at) => {
+                Some((at, false)) => {
                     let wait = at.saturating_duration_since(now) + Duration::from_millis(1);
                     let ms = wait.as_millis().min(u32::MAX as u128) as u32;
                     SetTimer(Some(self.hwnd), TIMER_ROBOT, ms, None);
@@ -3277,6 +3313,8 @@ impl App {
 
     /// Retargets the animation at the state's view and re-arms the notice deadline.
     fn refresh(&mut self, now: Instant) {
+        // The sleep clock follows mouse and keyboard input anywhere on the PC.
+        self.fold_pc_input(now);
         self.sync_lyrics(now);
         // A busy toast's logo beside the lyric line: the width, the box and
         // the scroll plan are worked out with it. After `sync_lyrics`, whose
@@ -3983,6 +4021,17 @@ impl App {
         // A lock or a display change stops the paws and starts them again.
         self.sync_typing_timer(Instant::now());
         self.follow_pointer_settings(Instant::now());
+        // The sleeping cat's wake poll stops while nobody is at the screen.
+        // Back again, input made meanwhile wakes the cat at once.
+        let now = Instant::now();
+        if !self.screen_away() {
+            self.fold_pc_input(now);
+            let face = self.robot_frame(&self.state.view(), now).map(|r| r.expr);
+            if face != self.bata.brain.shown() {
+                self.refresh(now);
+            }
+        }
+        self.sync_robot_timers(now);
     }
 
     /// Something the notch peek and the cat's look depend on changed (the
@@ -4857,8 +4906,18 @@ impl App {
                     let _ = KillTimer(Some(self.hwnd), TIMER_ROBOT);
                 }
                 self.bata.change_timer = false;
-                // The face may have changed (asleep, done thinking); re-arms.
-                self.refresh(Instant::now());
+                let now = Instant::now();
+                self.fold_pc_input(now);
+                let face = self.robot_frame(&self.state.view(), now).map(|r| r.expr);
+                if robot::wake_tick_quiet(self.bata.brain.shown(), face) {
+                    // A wake poll that finds the cat still asleep: re-arm
+                    // only, nothing to draw.
+                    self.sync_robot_timers(now);
+                } else {
+                    // The face may have changed (asleep, woken, done
+                    // thinking); re-arms.
+                    self.refresh(now);
+                }
             }
             _ => {}
         }
@@ -6182,17 +6241,24 @@ fn outside_poll_ms(input_idle_ms: u32) -> u32 {
     }
 }
 
-/// Milliseconds since the last keyboard or mouse input in this session.
-fn input_idle_ms() -> u32 {
+/// Milliseconds since the last keyboard or mouse input in this session;
+/// `None` when Windows cannot say.
+fn input_idle() -> Option<u32> {
     let mut info = LASTINPUTINFO {
         cbSize: size_of::<LASTINPUTINFO>() as u32,
         dwTime: 0,
     };
     if unsafe { GetLastInputInfo(&mut info) }.as_bool() {
-        unsafe { GetTickCount() }.wrapping_sub(info.dwTime)
+        Some(unsafe { GetTickCount() }.wrapping_sub(info.dwTime))
     } else {
-        0
+        None
     }
+}
+
+/// `input_idle`, with 0 (just now) when it cannot be read: the outside poll
+/// then stays quick.
+fn input_idle_ms() -> u32 {
+    input_idle().unwrap_or(0)
 }
 
 /// How late Windows may fire a polling timer to batch it with other
