@@ -3730,7 +3730,8 @@ unsafe extern "system" fn edit_proc(
 /// the window on its own, with a hidden owner that applies each action to a
 /// demo model and pushes it back, so every control works. Nothing is saved
 /// and the island is not involved; the hook buttons and links are real, so
-/// leave them alone. `DI_ACCENT`, `DI_GOOGLE` (`ok`, `needslogin`,
+/// leave them alone. `DI_ACCENT`, `DI_SURFACE` (a base colour name such as
+/// `terminal`; unset or unknown is Auto, which follows the cat), `DI_GOOGLE` (`ok`, `needslogin`,
 /// `reconnect`, `offline`, `none`), `DI_POMO_LOCKED=1`, `DI_HOTKEYS` (`failed`:
 /// every hotkey that is set shows as taken by another app) and `DI_UPDATE`
 /// (`available`, `checking`, `downloading`: Tentang's Pembaruan row, with a
@@ -3958,6 +3959,7 @@ pub fn run_demo(args: &[String]) {
     let configured = calendar != CalStatus::NotConfigured;
     HOTKEYS_FAILED.set(env("DI_HOTKEYS") == "failed");
     let mut cfg = Config::default();
+    cfg.surface = Surface::from_name(&env("DI_SURFACE")).unwrap_or_default();
     if env("DI_TILES") == "1" {
         // Two own tiles among the built-in ones, as the Pintasan card shows.
         let own = |label: &str, kind: &str, target: &str| crate::tiles::TileEntry {

@@ -909,6 +909,7 @@ keys! {
     SurfaceSea => "Laut", "Sea";
     SurfaceNight => "Malam", "Night";
     SurfacePlum => "Ungu", "Plum";
+    SurfaceTerminal => "Terminal", "Terminal";
     CatColorTerracotta => "Terakota", "Terracotta";
     CatColorCalico => "Calico", "Calico";
     CatColorWhite => "Putih", "White";

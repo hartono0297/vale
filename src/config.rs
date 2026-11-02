@@ -2488,6 +2488,23 @@ mod tests {
         assert_eq!(parse(r#"{"surface":"mauve"}"#).surface, Surface::Auto);
         assert_eq!(parse(r#"{"surface":"sea"}"#).surface, Surface::Sea);
         assert_eq!(parse(r#"{"surface":"Plum"}"#).surface, Surface::Plum);
+        assert_eq!(
+            parse(r#"{"surface":"Terminal"}"#).surface,
+            Surface::Terminal
+        );
+        assert_eq!(
+            parse(r#"{"surface":"terminal"}"#).surface,
+            Surface::Terminal
+        );
+        let saved = serde_json::to_string(&Config {
+            surface: Surface::Terminal,
+            ..Config::default()
+        })
+        .unwrap();
+        assert!(saved.contains(r#""surface":"Terminal""#), "{saved}");
+        assert_eq!(parse(&saved).surface, Surface::Terminal);
+        assert_eq!(parse(r#"{"surface":"Terminals"}"#).surface, Surface::Auto);
+        assert_eq!(parse(r#"{"surface":null}"#).surface, Surface::Auto);
         let json = serde_json::to_string(&Config::default()).unwrap();
         assert!(json.contains(r#""surface":"Auto""#), "{json}");
     }

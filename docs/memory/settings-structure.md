@@ -45,7 +45,8 @@ checks it. Every row keeps its exact behaviour: the same `Hit`, `Action` and
   moved into the Tombol pintas section, [[hotkeys]].)
   English labels match.
 - **Warna dasar** are swatches: Ikuti kucing (Auto, drawn as the colour it
-  gives now with a small cat outline), Espresso, Graphite, Laut, Malam, Ungu.
+  gives now with a small cat outline), Espresso, Graphite, Laut, Malam, Ungu, Terminal (flat neutral #1B1D1F, never
+  what Auto gives).
   The row's description is the chosen name; Auto adds what it gives
   ("Ikuti kucing · Laut"). Kucing has no second picker: "Ubah" jumps to
   Tampilan.

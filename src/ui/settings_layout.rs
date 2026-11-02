@@ -2215,6 +2215,7 @@ pub fn surface_key(v: Surface) -> Key {
         Surface::Sea => Key::SurfaceSea,
         Surface::Night => Key::SurfaceNight,
         Surface::Plum => Key::SurfacePlum,
+        Surface::Terminal => Key::SurfaceTerminal,
     }
 }
 
@@ -5303,7 +5304,7 @@ mod tests {
                         _ => None,
                     })
                     .expect("the base color swatches");
-                // Ikuti kucing first, then the five fills.
+                // Ikuti kucing first, then the six fills.
                 let order: Vec<Surface> = items.iter().map(|(v, _)| *v).collect();
                 assert_eq!(
                     order,
@@ -5313,7 +5314,8 @@ mod tests {
                         Surface::Graphite,
                         Surface::Sea,
                         Surface::Night,
-                        Surface::Plum
+                        Surface::Plum,
+                        Surface::Terminal
                     ]
                 );
                 assert_eq!(selected, surface);
