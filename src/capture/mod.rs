@@ -10,6 +10,7 @@
 
 #[cfg(debug_assertions)]
 pub mod demo;
+pub mod inline;
 pub mod overlay;
 pub mod uia;
 pub mod win;

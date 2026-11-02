@@ -6,6 +6,7 @@
 //! kept after the overlay closes.
 
 use std::ffi::c_void;
+use std::sync::Arc;
 
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
 use windows::Win32::Graphics::Dwm::{
@@ -28,25 +29,49 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::BOOL;
 
-use super::{Candidate, Rect};
+use super::{Candidate, Rect, Shot};
 
 /// The whole desktop at one moment, in memory only.
 pub struct Frozen {
-    pub w: u32,
-    pub h: u32,
     /// Where the frame's top-left pixel sits in the virtual screen.
     pub origin: (i32, i32),
-    /// `w * h * 4` bytes, top-down, alpha 255.
-    pub bgra: Vec<u8>,
+    /// The pixels: `w * h * 4` bytes, top-down, alpha 255. Behind an `Arc`
+    /// so the inline capture can hand the same frame to the annotation
+    /// painter (a `&Shot`) and to the export without copying 100+ MB.
+    pub shot: Arc<Shot>,
 }
 
 impl Frozen {
+    pub fn new(w: u32, h: u32, origin: (i32, i32), bgra: Vec<u8>) -> Frozen {
+        Frozen {
+            origin,
+            shot: Arc::new(Shot { w, h, bgra }),
+        }
+    }
+
+    pub fn w(&self) -> u32 {
+        self.shot.w
+    }
+
+    pub fn h(&self) -> u32 {
+        self.shot.h
+    }
+
+    pub fn bgra(&self) -> &[u8] {
+        &self.shot.bgra
+    }
+
     pub fn rect(&self) -> Rect {
-        Rect::new(self.origin.0, self.origin.1, self.w as i32, self.h as i32)
+        Rect::new(
+            self.origin.0,
+            self.origin.1,
+            self.shot.w as i32,
+            self.shot.h as i32,
+        )
     }
 
     pub fn stride(&self) -> usize {
-        self.w as usize * 4
+        self.shot.w as usize * 4
     }
 }
 
@@ -254,12 +279,12 @@ pub fn grab_virtual_screen() -> Option<Frozen> {
     for px in bgra.as_chunks_mut::<4>().0 {
         px[3] = 255;
     }
-    Some(Frozen {
-        w: area.w as u32,
-        h: area.h as u32,
-        origin: (area.x, area.y),
+    Some(Frozen::new(
+        area.w as u32,
+        area.h as u32,
+        (area.x, area.y),
         bgra,
-    })
+    ))
 }
 
 /// A top-level window worth snapping to.
@@ -395,13 +420,11 @@ mod tests {
 
     #[test]
     fn a_frozen_frame_knows_its_place() {
-        let f = Frozen {
-            w: 4,
-            h: 2,
-            origin: (-10, 5),
-            bgra: vec![0; 32],
-        };
+        let f = Frozen::new(4, 2, (-10, 5), vec![0; 32]);
         assert_eq!(f.rect(), Rect::new(-10, 5, 4, 2));
         assert_eq!(f.stride(), 16);
+        // The painter borrows the same pixels, no copy.
+        assert!(std::ptr::eq(f.shot.bgra.as_ptr(), f.shot.clone().bgra.as_ptr()));
+        assert_eq!((f.shot.w, f.shot.h), (4, 2));
     }
 }
