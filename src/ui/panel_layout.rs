@@ -434,7 +434,14 @@ pub fn devices_layout(
     let top = content_top(s, strip);
     let (l, r) = (left(s), right(s));
     let n = shapes.len();
-    let eject_all = (n > 0).then(|| rect(r - head.eject_all_w, top, head.eject_all_w, DEV_HEAD_H));
+    let eject_all = (n > 0).then(|| {
+        rect(
+            header_right(s) - head.eject_all_w,
+            top,
+            head.eject_all_w,
+            DEV_HEAD_H,
+        )
+    });
     let header = rect(l, top, head.title_w, HEADER_H);
     let chip = (n > 0).then(|| {
         rect(
@@ -683,15 +690,23 @@ pub fn arrange_layout(
     let top = content_top(s, strip);
     let (l, r) = (left(s), right(s));
     let header = rect(l, top, head.title_w, HEADER_H);
+    let skip = shape.picking.then(|| {
+        rect(
+            header_right(s) - head.skip_w,
+            top - 1.0,
+            head.skip_w,
+            ARR_SKIP_H,
+        )
+    });
+    // The chips stay left of the Skip button (and so of the Settings button).
+    let chips_end = skip.map_or(header_right(s), |k| k.x - 8.0);
     let mut chips = Vec::new();
     let mut x = header.right() + 12.0;
     for w in &head.chip_w {
-        chips.push(rect(x, top + (HEADER_H - ARR_CHIP_H) / 2.0, *w, ARR_CHIP_H));
+        let w = w.min((chips_end - x).max(0.0));
+        chips.push(rect(x, top + (HEADER_H - ARR_CHIP_H) / 2.0, w, ARR_CHIP_H));
         x += w + 6.0;
     }
-    let skip = shape
-        .picking
-        .then(|| rect(r - head.skip_w, top - 1.0, head.skip_w, ARR_SKIP_H));
     let list = arrange_list_rect(s, strip, shape.picking);
     let max_scroll = arrange_max_scroll(s, strip, shape);
     let scroll = scroll.clamp(0.0, max_scroll);
@@ -1099,6 +1114,10 @@ pub(super) const DOT_BOTTOM: f32 = 11.0;
 /// Clear space between the content and the page dots.
 const ABOVE_DOTS: f32 = 6.0;
 const HEADER_H: f32 = 22.0;
+/// The panel header's Settings button: a square at the top right of every page.
+const SETTINGS_BTN: f32 = 22.0;
+/// Space between the Settings button and the header-row controls left of it.
+const SETTINGS_GAP: f32 = 8.0;
 const HEADER_GAP: f32 = 6.0;
 
 const NAV_W: f32 = 22.0;
@@ -1391,6 +1410,24 @@ fn right(s: ShapeRect) -> f32 {
     s.x + s.w - PAD_X
 }
 
+/// The right edge of every header-row control: left of the Settings button
+/// and its gap. Body content below the header row keeps `right`.
+fn header_right(s: ShapeRect) -> f32 {
+    right(s) - SETTINGS_BTN - SETTINGS_GAP
+}
+
+/// The panel header's Settings button. The same rect on every page (it never
+/// depends on the page, so it never jumps between pages), in the header row
+/// at the top right.
+pub fn settings_button(s: ShapeRect, strip: bool) -> Rect {
+    rect(
+        right(s) - SETTINGS_BTN,
+        content_top(s, strip),
+        SETTINGS_BTN,
+        SETTINGS_BTN,
+    )
+}
+
 /// Top of the page content: below the waiting strip when it is shown.
 fn content_top(s: ShapeRect, strip: bool) -> f32 {
     s.y + PAD_TOP + if strip { STRIP_H } else { 0.0 }
@@ -1545,7 +1582,7 @@ pub fn calendar_layout(
     // Header row: the title and its arrows on the left, the view selector
     // on the right.
     let seg_w = 3.0 * VIEW_BUTTON_W;
-    let seg_x = r - SEG_PAD - seg_w;
+    let seg_x = header_right(s) - SEG_PAD - seg_w;
     let views = [CalView::Day, CalView::Week, CalView::Month];
     let view_buttons = std::array::from_fn(|i| {
         let x = seg_x + i as f32 * VIEW_BUTTON_W;
@@ -1905,7 +1942,7 @@ pub fn pomodoro_layout(s: ShapeRect, strip: bool) -> PomodoroLayout {
     let top = content_top(s, strip);
     let bottom = content_bottom(s);
     let (l, r) = (left(s), right(s));
-    let durations = rect(r - DURATIONS_W, top, DURATIONS_W, HEADER_H);
+    let durations = rect(header_right(s) - DURATIONS_W, top, DURATIONS_W, HEADER_H);
     let header = rect(l, top, durations.x - 8.0 - l, HEADER_H);
     let body = header.bottom() + 8.0;
     let cy = body + (bottom - body) / 2.0;
@@ -1961,9 +1998,9 @@ pub fn pomodoro_layout(s: ShapeRect, strip: bool) -> PomodoroLayout {
 /// items start at.
 fn list_header(s: ShapeRect, strip: bool) -> (Rect, Rect, f32) {
     let top = content_top(s, strip);
-    let (l, r) = (left(s), right(s));
-    let header = rect(l, top, r - l - NEW_W - 8.0, HEADER_H);
-    let new_button = rect(r - NEW_W, top, NEW_W, HEADER_H);
+    let (l, hr) = (left(s), header_right(s));
+    let header = rect(l, top, hr - l - NEW_W - 8.0, HEADER_H);
+    let new_button = rect(hr - NEW_W, top, NEW_W, HEADER_H);
     (header, new_button, header.bottom() + LIST_TOP_GAP)
 }
 
@@ -2135,12 +2172,31 @@ pub fn media_panel_layout(s: ShapeRect, strip: bool) -> ExpandedLayout {
         MEDIA_SIDE_W,
         MEDIA_PLAY,
     );
-    let lyrics = rect(
+    let mut lyrics = rect(
         r - LYRICS_W,
         row_y + (MEDIA_PLAY - LYRICS_H) / 2.0,
         LYRICS_W,
         LYRICS_H,
     );
+    // The page has no header row, but the Settings button sits at its top
+    // right: whatever of the text column would reach it ends left of it.
+    let (mut label, mut title, mut artist) = (label, title, artist);
+    let btn = settings_button(s, strip);
+    let hr = header_right(s);
+    let reaches = |q: &Rect| {
+        q.x < btn.right() + SETTINGS_GAP
+            && q.right() > btn.x - SETTINGS_GAP
+            && q.y < btn.bottom() + SETTINGS_GAP
+            && q.bottom() > btn.y - SETTINGS_GAP
+    };
+    for q in [&mut label, &mut title, &mut artist] {
+        if reaches(q) {
+            q.w = (hr - q.x).max(0.0);
+        }
+    }
+    if reaches(&lyrics) {
+        lyrics.x = hr - lyrics.w;
+    }
     ExpandedLayout {
         art,
         label,
@@ -2179,7 +2235,7 @@ pub fn cli_layout(s: ShapeRect, strip: bool, head: &CliHead) -> CliLayout {
     let mid = top + CLI_HEAD_H / 2.0;
     let header = rect(l, top, CLI_TITLE_W, CLI_HEAD_H);
     let expand = rect(
-        r - CLI_EXPAND,
+        header_right(s) - CLI_EXPAND,
         mid - CLI_EXPAND / 2.0,
         CLI_EXPAND,
         CLI_EXPAND,
@@ -2410,9 +2466,10 @@ pub fn cli_suggestions(l: &CliLayout, n: usize) -> (Rect, Vec<Rect>) {
 fn clip_frame(s: ShapeRect, strip: bool) -> (Rect, Rect, Rect) {
     let top = content_top(s, strip);
     let (l, r) = (left(s), right(s));
-    let search_w = CLIP_SEARCH_MAX_W.min(r - l - 120.0);
+    let hr = header_right(s);
+    let search_w = CLIP_SEARCH_MAX_W.min(hr - l - 120.0);
     let search = rect(
-        r - search_w,
+        hr - search_w,
         top + (HEADER_H - CLIP_SEARCH_H) / 2.0,
         search_w,
         CLIP_SEARCH_H,
@@ -2709,10 +2766,11 @@ pub fn notif_layout(
     let scroll = scroll.min(notif_max_scroll(n, rows_fit));
 
     // Header controls: none without access; "Hapus semua" only with entries.
-    let clear = (n > 0).then(|| rect(r - head.clear_w, top, head.clear_w, DEV_HEAD_H));
+    let hr = header_right(s);
+    let clear = (n > 0).then(|| rect(hr - head.clear_w, top, head.clear_w, DEV_HEAD_H));
     let pause = (!no_access).then(|| {
         let w = head.pause_label_w + 6.0 + NOTIF_SWITCH_W;
-        let right_edge = clear.map_or(r, |c| c.x - NOTIF_CONTROL_GAP);
+        let right_edge = clear.map_or(hr, |c| c.x - NOTIF_CONTROL_GAP);
         rect(right_edge - w, top, w, DEV_HEAD_H)
     });
     let pause_label = pause.map(|p| rect(p.x, p.y, head.pause_label_w, p.h));
@@ -2848,7 +2906,7 @@ pub fn search_layout(s: ShapeRect, strip: bool, n: usize) -> SearchLayout {
     let (l, r) = (left(s), right(s));
     let back = rect(l, top, SEARCH_BACK_W, SEARCH_FIELD_H);
     let fx = back.right() + SEARCH_BACK_GAP;
-    let field = rect(fx, top, (r - fx).max(0.0), SEARCH_FIELD_H);
+    let field = rect(fx, top, (header_right(s) - fx).max(0.0), SEARCH_FIELD_H);
     let first = field.bottom() + SEARCH_FIELD_GAP;
     let rows = (0..n.min(crate::search::MAX_RESULTS))
         .map(|i| {
@@ -2873,7 +2931,7 @@ pub fn shortcuts_layout(s: ShapeRect, strip: bool, tiles: &[Tile]) -> ShortcutsL
     let top = content_top(s, strip);
     let bottom = content_bottom(s);
     let (l, r) = (left(s), right(s));
-    let header = rect(l, top, r - l, HEADER_H);
+    let header = rect(l, top, header_right(s) - l, HEADER_H);
     let body = header.bottom() + 8.0;
     let w = (r - l - 3.0 * TILE_GAP) / 4.0;
     let rows = tiles.len().div_ceil(4).max(1) as f32;
@@ -2926,8 +2984,9 @@ pub fn shelf_layout(s: ShapeRect, strip: bool, n: usize) -> ShelfLayout {
     let top = content_top(s, strip);
     let bottom = content_bottom(s);
     let (l, r) = (left(s), right(s));
-    let header = rect(l, top, r - l - SHELF_CLEAR_W - 8.0, HEADER_H);
-    let clear = (n > 0).then(|| rect(r - SHELF_CLEAR_W, top, SHELF_CLEAR_W, HEADER_H));
+    let hr = header_right(s);
+    let header = rect(l, top, hr - l - SHELF_CLEAR_W - 8.0, HEADER_H);
+    let clear = (n > 0).then(|| rect(hr - SHELF_CLEAR_W, top, SHELF_CLEAR_W, HEADER_H));
     let body = header.bottom() + 8.0;
     let w = (r - l - 3.0 * TILE_GAP) / 4.0;
     let rows = n.div_ceil(4).max(2) as f32;
@@ -2960,7 +3019,7 @@ pub fn mixer_layout(s: ShapeRect, strip: bool, n: usize) -> MixerLayout {
     let top = content_top(s, strip);
     let bottom = content_bottom(s);
     let (l, r) = (left(s), right(s));
-    let header = rect(l, top, r - l, HEADER_H);
+    let header = rect(l, top, header_right(s) - l, HEADER_H);
     let body = header.bottom() + 6.0;
     let n = n.max(1);
     let pitch = ((bottom - body) / n as f32).min(MIXER_ROW_MAX_H);
@@ -3006,7 +3065,7 @@ pub fn system_layout(
     let (l, r) = (left(s), right(s));
 
     let clean = rect(
-        r - head.clean_w,
+        header_right(s) - head.clean_w,
         top + (SYS_HEAD_H - SYS_CLEAN_H) / 2.0,
         head.clean_w,
         SYS_CLEAN_H,
@@ -3172,7 +3231,7 @@ pub fn cleaner_layout(
 /// title, the segment's track and its two items.
 fn clean_head(s: ShapeRect, strip: bool, head: &CleanHead) -> (f32, Rect, Rect, Rect, [Rect; 2]) {
     let top = s.y + CLEAN_TOP + if strip { STRIP_H } else { 0.0 };
-    let (l, r) = (left(s), right(s));
+    let l = left(s);
     let back = rect(
         l,
         top + (CLEAN_HEAD_H - CLEAN_BACK) / 2.0,
@@ -3181,7 +3240,7 @@ fn clean_head(s: ShapeRect, strip: bool, head: &CleanHead) -> (f32, Rect, Rect, 
     );
     let seg_w = head.seg[0] + head.seg[1] + 2.0 * CLEAN_SEG_PAD;
     let seg = rect(
-        r - seg_w,
+        header_right(s) - seg_w,
         top + (CLEAN_HEAD_H - CLEAN_SEG_H) / 2.0,
         seg_w,
         CLEAN_SEG_H,
@@ -3421,6 +3480,9 @@ pub fn regions(s: ShapeRect, layout: &PageLayout, strip: bool) -> Vec<Region> {
     if strip {
         add(waiting_strip(s), Hit::Strip);
     }
+    // Fixed chrome on every page: first among the page's regions (after the
+    // strip), so it wins over underlays such as `NotifFocus`.
+    add(settings_button(s, strip), Hit::OpenSettings);
     match layout {
         PageLayout::Calendar(l) => {
             for (view, r) in l.view_buttons {
@@ -4067,7 +4129,7 @@ mod tests {
         let all = l.eject_all.expect("eject all");
         assert!(l.header.right() < chip.x && chip.right() < all.x);
         assert_eq!((chip.w, all.w, l.header.w), (84.0, 108.0, 96.0));
-        assert_eq!(all.right(), right(s));
+        assert_eq!(all.right(), header_right(s));
         // Nothing listed: no chip, no button, the message takes the list.
         let none = devices_layout(s, false, &DEV_HEAD, &[], 0.0);
         assert!(none.chip.is_none() && none.eject_all.is_none());
@@ -4077,7 +4139,7 @@ mod tests {
             .into_iter()
             .map(|r| r.hit)
             .collect();
-        assert!(hits.is_empty(), "nothing to click: {hits:?}");
+        assert_eq!(hits, [Hit::OpenSettings], "only the Settings button clicks");
     }
 
     #[test]
@@ -4130,7 +4192,10 @@ mod tests {
         for scroll in [0.0, 20.0, 45.0, 9999.0] {
             let l = devices_layout(s, false, &DEV_HEAD, &[plain; 6], scroll);
             let hits = regions(s, &PageLayout::Devices(l.clone()), false);
-            for r in hits.iter().filter(|r| r.hit != Hit::DevicesEjectAll) {
+            for r in hits
+                .iter()
+                .filter(|r| !matches!(r.hit, Hit::DevicesEjectAll | Hit::OpenSettings))
+            {
                 assert!(
                     r.rect.y >= l.list.y - 0.01 && r.rect.bottom() <= l.list.bottom() + 0.01,
                     "scroll {scroll}: {r:?} outside {:?}",
@@ -4275,7 +4340,7 @@ mod tests {
                 // Header: title, then the chip and the button, right-aligned.
                 assert!(l.header.right() < l.uptime.x);
                 assert!(l.uptime.right() < l.clean.x);
-                assert_eq!(l.clean.right(), right(s));
+                assert_eq!(l.clean.right(), header_right(s));
                 assert_eq!((l.uptime.w, l.clean.w), (96.0, 140.0));
                 // The 170 px column: the ring (150 px, less under the strip)
                 // over its 150 × 34 line; the meters 18 px to its right.
@@ -4323,7 +4388,7 @@ mod tests {
                 // Header: back, title, the segment at the right edge.
                 assert!(l.back.right() < l.header.x, "{tag}");
                 assert!(l.header.right() < l.seg.x, "{tag}");
-                assert_eq!(l.seg.right(), right(s));
+                assert_eq!(l.seg.right(), header_right(s));
                 assert_eq!(l.seg_items[0].right(), l.seg_items[1].x);
                 assert!(l.seg_items[1].right() <= l.seg.right() - 1.99);
                 if strip {
@@ -4374,6 +4439,7 @@ mod tests {
             regions(s, &PageLayout::Cleaner(l), false)
                 .into_iter()
                 .map(|r| r.hit)
+                .filter(|h| *h != Hit::OpenSettings)
                 .collect::<Vec<Hit>>()
         };
         let mut want = vec![
@@ -4390,6 +4456,7 @@ mod tests {
         assert!(!hits(true, false).contains(&Hit::CleanGo));
         let l = cleaner_layout(s, false, &CLEAN_HEAD, &CLEAN_FOOT, true, true);
         let r = regions(s, &PageLayout::Cleaner(l.clone()), false);
+        assert_eq!(r[0].hit, Hit::OpenSettings, "the Settings button first");
         for (i, a) in r.iter().enumerate() {
             for b in &r[i + 1..] {
                 assert!(disjoint(a.rect, b.rect), "{a:?} overlaps {b:?}");
@@ -4496,6 +4563,7 @@ mod tests {
             regions(s, &PageLayout::Mole(l), false)
                 .into_iter()
                 .map(|r| r.hit)
+                .filter(|h| *h != Hit::OpenSettings)
                 .collect::<Vec<Hit>>()
         };
         let seg = [
@@ -4602,13 +4670,15 @@ mod tests {
         // Before the first sample: no drives, no rows; only the button.
         let empty = system_layout(s, false, &SYS_HEAD, &[], 0);
         let hits = regions(s, &PageLayout::System(empty), false);
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].hit, Hit::SystemClean);
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].hit, Hit::OpenSettings);
+        assert_eq!(hits[1].hit, Hit::SystemClean);
         // With the strip: the strip, then the page's own regions.
         let l = system_layout(s, true, &SYS_HEAD, &['C', 'D', 'E'], 3);
         let hits = regions(s, &PageLayout::System(l), true);
         assert_eq!(hits[0].hit, Hit::Strip);
-        assert_eq!(hits.len(), 1 + 1 + 2 + 3);
+        assert_eq!(hits[1].hit, Hit::OpenSettings);
+        assert_eq!(hits.len(), 1 + 1 + 1 + 2 + 3);
     }
 
     /// Header chips of the CLI page: folder and shell, running with Stop,
@@ -4685,6 +4755,14 @@ mod tests {
 
     fn disjoint(a: Rect, b: Rect) -> bool {
         a.right() <= b.x || b.right() <= a.x || a.bottom() <= b.y || b.bottom() <= a.y
+    }
+
+    /// A page's own regions: `regions` without the Settings button every
+    /// page carries (`settings_button_is_clear_of_every_page` covers it).
+    fn page_regions(s: ShapeRect, layout: &PageLayout, strip: bool) -> Vec<Region> {
+        let mut r = regions(s, layout, strip);
+        r.retain(|x| x.hit != Hit::OpenSettings);
+        r
     }
 
     fn rect_inside(style: Style, s: ShapeRect, r: Rect) -> bool {
@@ -4777,7 +4855,7 @@ mod tests {
         assert_eq!(l.prev.x, l.header.right() + 8.0);
         assert!(l.next.x >= l.prev.right());
         assert!(l.next.right() + 12.0 <= l.view_buttons[0].1.x);
-        assert_eq!(l.view_buttons[2].1.right() + SEG_PAD, s.x + s.w - 20.0);
+        assert_eq!(l.view_buttons[2].1.right() + SEG_PAD, header_right(s));
         // A long title is cut short so nothing overlaps.
         let wide = super::calendar_layout(
             s,
@@ -5401,8 +5479,9 @@ mod tests {
         for hit in [Hit::Prev, Hit::PlayPause, Hit::Next, Hit::LyricsToggle] {
             assert!(has(&r, hit.clone()), "{hit:?}");
         }
-        // Only the four buttons: no lyric offset region is left.
-        assert_eq!(r.len(), 4);
+        // The Settings button and the four buttons: no lyric offset region
+        // is left.
+        assert_eq!(r.len(), 5);
         // "Lirik" ends at the text column's right edge, clear of the transport
         // buttons.
         assert_eq!(
@@ -5416,7 +5495,7 @@ mod tests {
         assert!(!r.iter().any(|r| r.rect.contains(mid.0, mid.1)));
 
         let idle = cli_layout(s, false, &cli_heads()[0]);
-        let r = regions(s, &PageLayout::Cli(idle.clone()), false);
+        let r = page_regions(s, &PageLayout::Cli(idle.clone()), false);
         let region = |rect, hit| Region { rect, hit };
         assert_eq!(
             r,
@@ -5428,18 +5507,18 @@ mod tests {
         );
         // While a command runs the run's chip opens nothing.
         let running = cli_layout(s, false, &cli_heads()[1]);
-        let r = regions(s, &PageLayout::Cli(running.clone()), false);
+        let r = page_regions(s, &PageLayout::Cli(running.clone()), false);
         assert_eq!(r[0], region(running.stop.unwrap(), Hit::CliStop));
         assert_eq!(r.len(), 3);
         // After an Explorer switch both chips open the menu.
         let explorer = cli_layout(s, false, &cli_heads()[4]);
-        let r = regions(s, &PageLayout::Cli(explorer.clone()), false);
+        let r = page_regions(s, &PageLayout::Cli(explorer.clone()), false);
         assert_eq!(r[0], region(explorer.chips[0], Hit::CliFolder));
         assert_eq!(r[1], region(explorer.chips[1], Hit::CliFolder));
         assert_eq!(r.len(), 4);
 
         let tiles = sample_tiles(ORIGINAL_NINE);
-        let r = regions(
+        let r = page_regions(
             s,
             &PageLayout::Shortcuts(shortcuts_layout(s, false, &tiles)),
             false,
@@ -5454,7 +5533,7 @@ mod tests {
         // A custom tile answers with its place among the tiles shown.
         let builtin = ORIGINAL_NINE;
         let mixed = sample_tiles(builtin + 2);
-        let r = regions(
+        let r = page_regions(
             s,
             &PageLayout::Shortcuts(shortcuts_layout(s, false, &mixed)),
             false,
@@ -5501,7 +5580,7 @@ mod tests {
     fn page_and_settings_tiles_go_through_the_built_in_path() {
         use crate::model::Page;
         let go = [
-            Shortcut::ValeSettings,
+            Shortcut::Lock,
             Shortcut::Go(Page::Shelf),
             Shortcut::Go(Page::Calendar),
             Shortcut::Go(Page::Cli),
@@ -5513,7 +5592,11 @@ mod tests {
             let order: Vec<Option<Shortcut>> = l.tiles.iter().map(|(t, _)| *t).collect();
             assert_eq!(order, go.map(Some));
             let r = regions(s, &PageLayout::Shortcuts(l), false);
-            let hits: Vec<Hit> = r.iter().map(|r| r.hit.clone()).collect();
+            let hits: Vec<Hit> = r
+                .iter()
+                .map(|r| r.hit.clone())
+                .filter(|h| *h != Hit::OpenSettings)
+                .collect();
             let want: Vec<Hit> = go.into_iter().map(Hit::Shortcut).collect();
             assert_eq!(hits, want);
         }
@@ -5598,6 +5681,7 @@ mod tests {
         assert_eq!(
             hits,
             [
+                Hit::OpenSettings,
                 Hit::ShelfClear,
                 Hit::ShelfRemove(0),
                 Hit::ShelfRemove(1),
@@ -5609,7 +5693,11 @@ mod tests {
         );
         // An empty shelf has no buttons.
         let empty = shelf_layout(s, false, 0);
-        assert!(regions(s, &PageLayout::Shelf(empty), false).is_empty());
+        let none: Vec<Hit> = regions(s, &PageLayout::Shelf(empty), false)
+            .into_iter()
+            .map(|r| r.hit)
+            .collect();
+        assert_eq!(none, [Hit::OpenSettings]);
     }
 
     #[test]
@@ -5641,6 +5729,7 @@ mod tests {
         assert_eq!(
             hits,
             [
+                Hit::OpenSettings,
                 Hit::MixerMute(0),
                 Hit::MixerSlider(0),
                 Hit::MixerMute(1),
@@ -5705,7 +5794,7 @@ mod tests {
                 assert!(l.prompt.right() <= l.field.x);
                 assert!(l.field.right() <= l.input.right() - 14.0);
                 // Chips and the button on the header row, right-aligned, in order.
-                assert_eq!(l.expand.right(), right(s));
+                assert_eq!(l.expand.right(), header_right(s));
                 assert_eq!(l.expand.w, 26.0);
                 let mut edge = l.header.right();
                 for c in &l.chips {
@@ -5877,7 +5966,9 @@ mod tests {
                 let mut l = cli_layout(s, false, &cli_heads()[4]);
                 let m = cli_folder_menu(&l, &menu_cases()[0]);
                 l.menu = Some(m.clone());
-                let r = regions(s, &PageLayout::Cli(l.clone()), false);
+                let mut r = regions(s, &PageLayout::Cli(l.clone()), false);
+                // The Settings button leads, over the menu and its backdrop.
+                assert_eq!(r.remove(0).hit, Hit::OpenSettings);
                 // Menu first, then the folder chips, then the backdrop.
                 assert_eq!(r[..m.hits.len()], m.hits[..]);
                 assert_eq!(r[m.hits.len()].hit, Hit::CliFolder);
@@ -5942,7 +6033,7 @@ mod tests {
                     let l = search_layout(s, strip, n);
                     assert!(l.back.right() < l.field.x, "a gap, no overlap");
                     assert_eq!(l.back.x, left(s));
-                    assert_eq!(l.field.right(), right(s));
+                    assert_eq!(l.field.right(), header_right(s));
                     assert!(l.back.w >= 32.0 && l.back.h >= SEARCH_FIELD_H);
                     assert_eq!((l.back.y, l.back.h), (l.field.y, l.field.h));
                     assert!(l.back.y >= content_top(s, strip));
@@ -6081,6 +6172,148 @@ mod tests {
         }
     }
 
+    /// Every rect a page draws as text or a control (not its click underlays),
+    /// the shared collection for the "inside the panel" and the "clear of the
+    /// Settings button" checks. Lists that scroll reach past the panel
+    /// (clipped to `list` when drawn): only their fixed parts.
+    fn drawn_rects(layout: &PageLayout) -> Vec<Rect> {
+        let mut drawn = Vec::new();
+        match layout {
+            PageLayout::Calendar(l) => {
+                drawn.extend([l.header, l.list, l.prev, l.next, l.add]);
+                drawn.extend(l.view_buttons.iter().map(|(_, r)| *r));
+                drawn.extend(l.offline);
+                drawn.extend(l.connect);
+                drawn.extend(l.weekday_labels.iter().copied());
+                drawn.extend(l.week_columns.iter().map(|(_, r)| *r));
+                drawn.extend(l.week_more.iter().map(|(_, _, r)| *r));
+                drawn.extend(l.caption);
+                drawn.extend(l.more.map(|(_, r)| r));
+            }
+            PageLayout::Pomodoro(l) => {
+                drawn.push(l.header);
+                let (cx, cy) = l.ring_center;
+                let r = l.ring_radius + RING_STROKE / 2.0;
+                drawn.push(Rect {
+                    x: cx - r,
+                    y: cy - r,
+                    w: 2.0 * r,
+                    h: 2.0 * r,
+                });
+                drawn.extend([l.time, l.phase, l.session, l.durations, l.next_up]);
+                drawn.extend([l.start_pause, l.reset, l.skip]);
+            }
+            PageLayout::System(l) => {
+                let (cx, cy) = l.ring_center;
+                let r = l.ring_radius + SYS_RING_STROKE / 2.0;
+                drawn.push(Rect {
+                    x: cx - r,
+                    y: cy - r,
+                    w: 2.0 * r,
+                    h: 2.0 * r,
+                });
+                drawn.extend([l.header, l.uptime, l.clean, l.spark, l.busiest]);
+                drawn.extend([l.percent, l.caption, l.ram.row]);
+                drawn.extend(l.drives.iter().map(|(_, m)| m.row));
+                drawn.extend(l.procs.iter().map(|p| p.row));
+            }
+            PageLayout::Notes(l) | PageLayout::Reminders(l) => {
+                drawn.extend([l.header, l.new_button]);
+                drawn.extend(l.groups.iter().map(|(_, r)| *r));
+            }
+            PageLayout::Media(l) => {
+                drawn.extend([l.art, l.label, l.title, l.artist, l.lyrics]);
+                drawn.extend(l.buttons);
+                let p = media_progress_layout(l);
+                drawn.extend([p.bar, p.elapsed, p.total]);
+            }
+            PageLayout::Cli(l) => {
+                drawn.extend([l.header, l.output, l.prompt, l.field, l.expand]);
+                drawn.extend(l.stop);
+                drawn.extend(l.chips.iter().filter(|c| c.w > 0.0));
+                if let Some(m) = &l.menu {
+                    drawn.push(m.boxed);
+                    drawn.extend(m.rows.iter().map(|(_, r)| *r));
+                }
+            }
+            PageLayout::Clipboard(l) => {
+                drawn.extend([l.header, l.search, l.list]);
+                drawn.extend(l.cards.iter().map(|c| c.2));
+                drawn.extend(l.buttons.iter().map(|b| b.2));
+            }
+            PageLayout::Search(l) => {
+                drawn.extend([l.back, l.field]);
+                drawn.extend(l.rows.iter().copied());
+                drawn.extend(l.empty);
+            }
+            PageLayout::Mixer(l) => {
+                drawn.push(l.header);
+                for row in &l.rows {
+                    drawn.extend([row.icon, row.name, row.track, row.value]);
+                }
+            }
+            PageLayout::Shelf(l) => {
+                drawn.push(l.header);
+                drawn.extend(l.clear);
+                drawn.extend(l.empty);
+                for c in &l.cards {
+                    let (glyph, label) = tile_parts(c.card);
+                    drawn.extend([c.card, c.remove, glyph, label]);
+                }
+            }
+            PageLayout::Shortcuts(l) => {
+                drawn.push(l.header);
+                for (_, tile) in &l.tiles {
+                    let (glyph, label) = tile_parts(*tile);
+                    drawn.extend([glyph, label]);
+                }
+            }
+            PageLayout::Devices(l) => {
+                drawn.extend([l.header, l.list]);
+                drawn.extend(l.chip);
+                drawn.extend(l.eject_all);
+            }
+            // The same for Susun: the header and the chips are fixed, the
+            // content is clipped to `list`.
+            PageLayout::Arrange(l) => {
+                drawn.extend([l.header, l.list]);
+                drawn.extend(l.chips.iter().copied());
+                drawn.extend(l.skip);
+                drawn.extend(l.hint);
+            }
+            PageLayout::Notifications(l) => {
+                drawn.extend([l.header, l.list]);
+                drawn.extend(l.count);
+                drawn.extend(l.pause);
+                drawn.extend(l.pause_label);
+                drawn.extend(l.pause_switch);
+                drawn.extend(l.clear);
+                drawn.extend(l.note);
+                drawn.extend(l.settings_button);
+                drawn.extend(l.scrollbar);
+                drawn.extend(l.rows.iter().map(|r| r.row));
+            }
+            // On their own, taller shape: `cleaner_fits_its_panel`; the
+            // header row's parts are the ones the Settings button must clear.
+            PageLayout::Cleaner(l) => {
+                drawn.extend([l.back, l.header, l.seg, l.credit, l.picked, l.go]);
+                drawn.extend(l.seg_items);
+                drawn.extend(l.rows.iter().map(|r| r.row));
+            }
+            PageLayout::Mole(l) => {
+                drawn.extend([l.back, l.header, l.seg, l.chip, l.intro, l.label]);
+                drawn.extend(l.seg_items);
+                drawn.extend(l.rows.iter().map(|r| r.row));
+                drawn.extend(l.opts.iter().map(|o| o.hit));
+                drawn.extend([l.log, l.result, l.protect, l.go].into_iter().flatten());
+                if let Some(c) = l.card {
+                    drawn.extend([c.boxed, c.robot, c.title, c.sub, c.button]);
+                }
+            }
+        }
+        drawn
+    }
+
     #[test]
     fn drawn_rects_inside_panel() {
         // Rects that are drawn but not clickable must stay inside too.
@@ -6089,117 +6322,9 @@ mod tests {
             for strip in [false, true] {
                 let mut drawn = Vec::new();
                 for (_, layout) in all_layouts(s, strip) {
-                    match layout {
-                        PageLayout::Mole(_) => {}
-                        PageLayout::Calendar(l) => {
-                            drawn.extend([l.header, l.list]);
-                            drawn.extend(l.weekday_labels.iter().copied());
-                            drawn.extend(l.week_columns.iter().map(|(_, r)| *r));
-                            drawn.extend(l.caption);
-                            drawn.extend(l.more.map(|(_, r)| r));
-                        }
-                        PageLayout::Pomodoro(l) => {
-                            drawn.push(l.header);
-                            let (cx, cy) = l.ring_center;
-                            let r = l.ring_radius + RING_STROKE / 2.0;
-                            drawn.push(Rect {
-                                x: cx - r,
-                                y: cy - r,
-                                w: 2.0 * r,
-                                h: 2.0 * r,
-                            });
-                            drawn.extend([l.time, l.phase, l.session, l.durations, l.next_up]);
-                        }
-                        PageLayout::System(l) => {
-                            let (cx, cy) = l.ring_center;
-                            let r = l.ring_radius + SYS_RING_STROKE / 2.0;
-                            drawn.push(Rect {
-                                x: cx - r,
-                                y: cy - r,
-                                w: 2.0 * r,
-                                h: 2.0 * r,
-                            });
-                            drawn.extend([l.header, l.uptime, l.clean, l.spark, l.busiest]);
-                            drawn.extend([l.percent, l.caption, l.ram.row]);
-                            drawn.extend(l.drives.iter().map(|(_, m)| m.row));
-                            drawn.extend(l.procs.iter().map(|p| p.row));
-                        }
-                        PageLayout::Notes(l) | PageLayout::Reminders(l) => {
-                            drawn.push(l.header);
-                            drawn.extend(l.groups.iter().map(|(_, r)| *r));
-                        }
-                        PageLayout::Media(l) => {
-                            drawn.extend([l.art, l.label, l.title, l.artist]);
-                            let p = media_progress_layout(&l);
-                            drawn.extend([p.bar, p.elapsed, p.total]);
-                        }
-                        PageLayout::Cli(l) => {
-                            drawn.extend([l.header, l.output, l.prompt, l.field]);
-                            drawn.extend(l.chips.iter().filter(|c| c.w > 0.0));
-                            if let Some(m) = &l.menu {
-                                drawn.push(m.boxed);
-                                drawn.extend(m.rows.iter().map(|(_, r)| *r));
-                            }
-                        }
-                        PageLayout::Clipboard(l) => {
-                            drawn.extend([l.header, l.search, l.list]);
-                            drawn.extend(l.cards.iter().map(|c| c.2));
-                            drawn.extend(l.buttons.iter().map(|b| b.2));
-                        }
-                        PageLayout::Search(l) => {
-                            drawn.extend([l.back, l.field]);
-                            drawn.extend(l.rows.iter().copied());
-                            drawn.extend(l.empty);
-                        }
-                        PageLayout::Mixer(l) => {
-                            drawn.push(l.header);
-                            for row in &l.rows {
-                                drawn.extend([row.icon, row.name, row.track, row.value]);
-                            }
-                        }
-                        PageLayout::Shelf(l) => {
-                            drawn.push(l.header);
-                            drawn.extend(l.clear);
-                            drawn.extend(l.empty);
-                            for c in &l.cards {
-                                let (glyph, label) = tile_parts(c.card);
-                                drawn.extend([c.card, c.remove, glyph, label]);
-                            }
-                        }
-                        PageLayout::Shortcuts(l) => {
-                            drawn.push(l.header);
-                            for (_, tile) in &l.tiles {
-                                let (glyph, label) = tile_parts(*tile);
-                                drawn.extend([glyph, label]);
-                            }
-                        }
-                        // The cards of a list that scrolls reach past the panel
-                        // (clipped to `list` when drawn): only the fixed parts.
-                        PageLayout::Devices(l) => {
-                            drawn.extend([l.header, l.list]);
-                            drawn.extend(l.chip);
-                            drawn.extend(l.eject_all);
-                        }
-                        // The same for Susun: the header and the chips are
-                        // fixed, the content is clipped to `list`.
-                        PageLayout::Arrange(l) => {
-                            drawn.extend([l.header, l.list]);
-                            drawn.extend(l.chips.iter().copied());
-                            drawn.extend(l.skip);
-                            drawn.extend(l.hint);
-                        }
-                        PageLayout::Notifications(l) => {
-                            drawn.extend([l.header, l.list]);
-                            drawn.extend(l.count);
-                            drawn.extend(l.pause);
-                            drawn.extend(l.clear);
-                            drawn.extend(l.note);
-                            drawn.extend(l.settings_button);
-                            drawn.extend(l.scrollbar);
-                            drawn.extend(l.rows.iter().map(|r| r.row));
-                        }
-                        // On its own, taller shape: `cleaner_fits_its_panel`.
-                        PageLayout::Cleaner(_) => {}
+                    // Cleaner and Mole: their own shape, below.
+                    if !matches!(layout, PageLayout::Mole(_) | PageLayout::Cleaner(_)) {
+                        drawn.extend(drawn_rects(&layout));
                     }
                 }
                 for r in drawn {
@@ -6271,7 +6396,7 @@ mod tests {
                 assert!((mid - cy).abs() < 0.01);
                 // Durations right of the title.
                 assert!(l.header.right() < l.durations.x);
-                assert_eq!(l.durations.right(), right(s));
+                assert_eq!(l.durations.right(), header_right(s));
             }
         }
     }
@@ -6341,6 +6466,183 @@ mod tests {
                 assert!((text.w - old_robot).abs() < 1e-3, "{size:?}");
                 assert!((text.w - (size.w - 38.0)).abs() < 1e-3);
             }
+        }
+    }
+
+    /// Every layout the Settings button must clear, each with the shape it
+    /// is drawn in: the pages at the default panel (`all_layouts`), a
+    /// calendar offline with a long title (the tag takes room), the CLI in the
+    /// tall panel, and the cleaner in both modes on its own shape.
+    fn settings_cases(style: Style, strip: bool) -> Vec<(ShapeRect, String, PageLayout)> {
+        let s = panel(style);
+        let mut out: Vec<(ShapeRect, String, PageLayout)> = all_layouts(s, strip)
+            .into_iter()
+            .map(|(name, layout)| (s, name, layout))
+            .collect();
+        let events = many_events(3, oct25());
+        for view in [CalView::Day, CalView::Week, CalView::Month] {
+            for title_w in [TITLE_W, 600.0] {
+                let l = super::calendar_layout(
+                    s,
+                    view,
+                    oct25(),
+                    oct25(),
+                    &events,
+                    &CalStatus::Offline,
+                    0,
+                    strip,
+                    title_w,
+                    None,
+                );
+                assert!(l.offline.is_some());
+                out.push((
+                    s,
+                    format!("calendar offline {view:?} title {title_w}"),
+                    PageLayout::Calendar(l),
+                ));
+            }
+        }
+        let tall = shape_for(style, ShapeKind::PanelTall);
+        for (n, head) in cli_heads().into_iter().enumerate() {
+            let mut l = cli_layout(tall, strip, &head);
+            out.push((tall, format!("cli tall {n}"), PageLayout::Cli(l.clone())));
+            l.menu = Some(cli_folder_menu(&l, &menu_cases()[0]));
+            out.push((tall, format!("cli tall menu {n}"), PageLayout::Cli(l)));
+        }
+        let clean = shape_for(style, ShapeKind::PanelClean);
+        let wide = CleanHead {
+            seg: [140.0, 170.0],
+        };
+        for (n, head) in [CLEAN_HEAD, wide].iter().enumerate() {
+            let l = cleaner_layout(clean, strip, head, &CLEAN_FOOT, true, true);
+            out.push((clean, format!("cleaner {n}"), PageLayout::Cleaner(l)));
+            for body in [
+                MoleBody::Rows,
+                MoleBody::Log { result: true },
+                MoleBody::Log { result: false },
+                MoleBody::Card,
+            ] {
+                let l = mole_layout(clean, strip, head, &MOLE_FOOT, look(body));
+                out.push((clean, format!("mole {n} {body:?}"), PageLayout::Mole(l)));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn settings_button_is_clear_of_every_page() {
+        for style in [Style::Pill, Style::Notch] {
+            for strip in [false, true] {
+                for (s, name, layout) in settings_cases(style, strip) {
+                    let tag = format!("{style:?} strip={strip} {name}");
+                    let btn = settings_button(s, strip);
+                    // In the header row, at the top right, inside the panel
+                    // and above the page dots.
+                    assert!(rect_inside(style, s, btn), "{tag}: {btn:?} outside");
+                    assert_eq!(btn.y, content_top(s, strip), "{tag}");
+                    assert_eq!(btn.h, 22.0, "{tag}");
+                    assert_eq!(btn.right(), right(s), "{tag}");
+                    let (dots, _) = page_dots(s, &Page::ALL, Page::Calendar);
+                    assert!(btn.bottom() <= dots[0].y, "{tag}: over the dots");
+
+                    // One region, right after the strip (first without it).
+                    let r = regions(s, &layout, strip);
+                    let at: Vec<usize> = (0..r.len())
+                        .filter(|&i| r[i].hit == Hit::OpenSettings)
+                        .collect();
+                    assert_eq!(at, [usize::from(strip)], "{tag}: one, in its place");
+                    if strip {
+                        assert_eq!(r[0].hit, Hit::Strip, "{tag}");
+                    }
+                    assert_eq!(r[at[0]].rect, btn, "{tag}");
+
+                    // Clear of every other region; the underlays that lie
+                    // beneath it come after it (hit-testing is first match).
+                    for (i, reg) in r.iter().enumerate() {
+                        if reg.hit == Hit::OpenSettings {
+                            continue;
+                        }
+                        if matches!(reg.hit, Hit::NotifFocus | Hit::CliMenuDismiss) {
+                            assert!(i > at[0], "{tag}: {:?} must come after", reg.hit);
+                            continue;
+                        }
+                        assert!(disjoint(btn, reg.rect), "{tag}: {btn:?} overlaps {reg:?}");
+                    }
+
+                    // And clear of everything the page draws.
+                    for d in drawn_rects(&layout) {
+                        assert!(disjoint(btn, d), "{tag}: {btn:?} overlaps drawn {d:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_settings_button_is_the_same_rect_on_every_page() {
+        for style in [Style::Pill, Style::Notch] {
+            for strip in [false, true] {
+                let s = panel(style);
+                let btn = settings_button(s, strip);
+                for (name, layout) in all_layouts(s, strip) {
+                    let r = regions(s, &layout, strip);
+                    let reg = r.iter().find(|x| x.hit == Hit::OpenSettings).unwrap();
+                    assert_eq!(reg.rect, btn, "{name}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn header_controls_end_left_of_the_settings_button() {
+        let s = panel(Style::Pill);
+        let hr = header_right(s);
+        assert_eq!(hr, settings_button(s, false).x - SETTINGS_GAP);
+        let c = calendar_layout(
+            s,
+            CalView::Month,
+            oct25(),
+            oct25(),
+            &[],
+            &CalStatus::Ok,
+            0,
+            false,
+        );
+        // The view selector ends at the header edge, the body keeps the
+        // full width.
+        assert_eq!(c.view_buttons[2].1.right() + SEG_PAD, hr);
+        assert_eq!(c.list.right(), right(s));
+        // The media text column keeps its full width at the default panel.
+        let m = media_panel_layout(s, false);
+        assert_eq!(m.title.right(), right(s));
+        assert_eq!(m.lyrics.right(), right(s));
+    }
+
+    #[test]
+    fn the_media_text_column_gives_way_to_the_settings_button_in_a_short_panel() {
+        // A panel short enough that the label rises to the button's rows:
+        // what would reach the button ends left of it.
+        let full = panel(Style::Pill);
+        let s = ShapeRect { h: 232.0, ..full };
+        let m = media_panel_layout(s, false);
+        let btn = settings_button(s, false);
+        let keep = Rect {
+            x: btn.x - SETTINGS_GAP,
+            y: btn.y - SETTINGS_GAP,
+            w: btn.w + 2.0 * SETTINGS_GAP,
+            h: btn.h + 2.0 * SETTINGS_GAP,
+        };
+        let rows_reached = [m.label, m.title, m.artist]
+            .into_iter()
+            .filter(|r| r.y < keep.bottom() && r.bottom() > keep.y)
+            .count();
+        assert!(rows_reached > 0, "the case must reach the button's rows");
+        for r in [m.label, m.title, m.artist] {
+            assert!(disjoint(r, keep), "{r:?} reaches {keep:?}");
+        }
+        // Nothing the page draws touches the button either.
+        for d in drawn_rects(&PageLayout::Media(m)) {
+            assert!(disjoint(btn, d), "{d:?}");
         }
     }
 }
@@ -6710,7 +7012,7 @@ mod media_tests {
         assert!(count.x >= l.header.right());
         assert!(count.right() <= pause.x, "count, then the switch");
         assert!(pause.right() <= clear.x, "then Hapus semua at the right");
-        assert_eq!(clear.right(), right(s));
+        assert_eq!(clear.right(), header_right(s));
         let (label, switch) = (l.pause_label.unwrap(), l.pause_switch.unwrap());
         assert!(label.right() <= switch.x);
         assert!(inside_rect(pause, label) && inside_rect(pause, switch));
@@ -6718,7 +7020,7 @@ mod media_tests {
         // No entries: nothing to clear, the switch moves to the edge.
         let none = notif(s, false, 0, None, 0);
         assert!(none.clear.is_none());
-        assert_eq!(none.pause.unwrap().right(), right(s));
+        assert_eq!(none.pause.unwrap().right(), header_right(s));
         assert!(none.empty.is_some() && none.rows.is_empty());
     }
 

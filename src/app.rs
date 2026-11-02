@@ -310,9 +310,9 @@ thread_local! {
     /// The display on/off notification's handle (`HPOWERNOTIFY`), 0 without one.
     static DISPLAY_NOTIFY: Cell<isize> = const { Cell::new(0) };
     static DEFERRED_REPOSITION: Cell<bool> = const { Cell::new(false) };
-    /// The "Setelan Vale" tile asked for the Settings window: it opens once
-    /// the handler returns (creating a window while the app is borrowed would
-    /// find the app gone).
+    /// The panel header's Settings button asked for the Settings window: it
+    /// opens once the handler returns (creating a window while the app is
+    /// borrowed would find the app gone).
     static DEFERRED_OPEN_SETTINGS: Cell<bool> = const { Cell::new(false) };
     /// An update was swapped in and started: the island closes once the
     /// handler returns (`shutdown` destroys the window, which needs the app
