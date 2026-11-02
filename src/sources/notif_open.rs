@@ -49,6 +49,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{BOOL, HSTRING, PCWSTR, PWSTR};
 
+use super::claude_open::{self, ClaudeJob};
 use crate::model::OpenTarget;
 use crate::notif::open::{
     self as rules, DesktopAction, MainCand, OpenKind, WinState, WindowTabs, browser_exe_names,
@@ -57,36 +58,57 @@ use crate::notif::open::{
 };
 
 /// Time for the search (window list and tab strips); no call starts after it.
-const SEARCH_BUDGET: Duration = Duration::from_millis(1000);
+pub(crate) const SEARCH_BUDGET: Duration = Duration::from_millis(1000);
 /// How long a relaunched, tray-hidden app gets to show its own window.
 const WAKE_WAIT: Duration = Duration::from_millis(2000);
 const WAKE_POLL: Duration = Duration::from_millis(100);
 
 /// UI Automation timeouts for selecting the chosen tab, set afresh: the search
 /// may have left the client with a timeout of a few milliseconds.
-const SELECT_TIMEOUT_MS: u32 = 1000;
+pub(crate) const SELECT_TIMEOUT_MS: u32 = 1000;
 
 /// How deep the tab strip is looked for in a browser window's UIA tree.
-const MAX_DEPTH: usize = 8;
+pub(crate) const MAX_DEPTH: usize = 8;
 /// Elements looked at in one browser window.
-const MAX_VISITED: usize = 800;
+pub(crate) const MAX_VISITED: usize = 800;
 
 /// Which click is the newest: an older job stops at its next step.
 static GENERATION: AtomicU64 = AtomicU64::new(0);
-static WORKER: Mutex<Option<Sender<(u64, OpenTarget)>>> = Mutex::new(None);
+static WORKER: Mutex<Option<Sender<(u64, Job)>>> = Mutex::new(None);
+
+/// What the worker can be asked: a caught toast's origin, or a Claude Code
+/// session (`claude_open`). One queue and one generation counter serve both,
+/// so the newest click of either kind wins.
+enum Job {
+    Toast(OpenTarget),
+    Claude(ClaudeJob),
+}
 
 /// Goes to where `target` came from. Returns at once (a send to the worker);
 /// call from any thread, the UI thread included.
 pub fn open(target: OpenTarget) {
+    submit(Job::Toast(target));
+}
+
+/// Goes to the Claude Code session of a clicked notice, by what its hook
+/// recorded. Nothing is sent when nothing was recorded (an older hook binary):
+/// the click then only dismisses. Never starts a program.
+pub fn open_claude(session_id: String) {
+    if let Some(job) = claude_open::job_for(session_id) {
+        submit(Job::Claude(job));
+    }
+}
+
+fn submit(job: Job) {
     let generation = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     let mut slot = WORKER.lock().unwrap_or_else(|p| p.into_inner());
     let target = match slot.as_ref() {
-        Some(tx) => match tx.send((generation, target)) {
+        Some(tx) => match tx.send((generation, job)) {
             Ok(()) => return,
             // The worker is gone: start another with the job.
-            Err(mpsc::SendError((_, target))) => target,
+            Err(mpsc::SendError((_, job))) => job,
         },
-        None => target,
+        None => job,
     };
     let (tx, rx) = mpsc::channel();
     let started = std::thread::Builder::new()
@@ -98,18 +120,23 @@ pub fn open(target: OpenTarget) {
     }
 }
 
-fn worker(jobs: Receiver<(u64, OpenTarget)>) {
+fn worker(jobs: Receiver<(u64, Job)>) {
     let inited = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
     while let Ok(mut job) = jobs.recv() {
         // Only the newest click matters.
         while let Ok(newer) = jobs.try_recv() {
             job = newer;
         }
-        let (generation, target) = job;
+        let (generation, job) = job;
         let cancel = move || GENERATION.load(Ordering::SeqCst) != generation;
-        let plan = search(&target, &cancel);
-        if !cancel() {
-            execute(plan, &target, &cancel);
+        match job {
+            Job::Toast(target) => {
+                let plan = search(&target, &cancel);
+                if !cancel() {
+                    execute(plan, &target, &cancel);
+                }
+            }
+            Job::Claude(job) => claude_open::run(&job, &cancel),
         }
     }
     if inited {
@@ -151,12 +178,13 @@ pub fn probe(args: Vec<String>) {
 
 /// A top-level window, as listed.
 #[derive(Clone, Debug)]
-struct Win {
-    hwnd: isize,
+pub(crate) struct Win {
+    pub(crate) hwnd: isize,
+    pub(crate) pid: u32,
     /// Image file name, lowercase ("chrome.exe"); empty when unreadable.
-    exe: String,
-    class: String,
-    title: String,
+    pub(crate) exe: String,
+    pub(crate) class: String,
+    pub(crate) title: String,
     visible: bool,
     minimized: bool,
     owned: bool,
@@ -166,7 +194,7 @@ struct Win {
 }
 
 impl Win {
-    fn state(&self) -> WinState {
+    pub(crate) fn state(&self) -> WinState {
         if !self.visible {
             WinState::Hidden
         } else if self.minimized {
@@ -176,7 +204,7 @@ impl Win {
         }
     }
 
-    fn cand(&self) -> MainCand {
+    pub(crate) fn cand(&self) -> MainCand {
         MainCand {
             state: self.state(),
             owned: self.owned,
@@ -189,7 +217,7 @@ impl Win {
         }
     }
 
-    fn handle(&self) -> HWND {
+    pub(crate) fn handle(&self) -> HWND {
         HWND(self.hwnd as *mut _)
     }
 }
@@ -213,7 +241,7 @@ struct Listing {
 
 /// Every top-level window in Z order (frontmost first), hidden and minimized
 /// ones too, without this process's own, IME and zero-size windows.
-fn windows() -> Vec<Win> {
+pub(crate) fn windows() -> Vec<Win> {
     unsafe extern "system" fn each(hwnd: HWND, lparam: LPARAM) -> BOOL {
         let listing = unsafe { &mut *(lparam.0 as *mut Listing) };
         if let Some(w) = unsafe { describe_window(hwnd, listing) } {
@@ -261,6 +289,7 @@ unsafe fn describe_window(hwnd: HWND, listing: &mut Listing) -> Option<Win> {
             .clone();
         Some(Win {
             hwnd: hwnd.0 as isize,
+            pid,
             exe,
             class,
             title: String::from_utf16_lossy(&text[..n.min(text.len())]),
@@ -275,7 +304,7 @@ unsafe fn describe_window(hwnd: HWND, listing: &mut Listing) -> Option<Win> {
 }
 
 /// The exe file name of process `pid`, lowercase; empty when unreadable.
-fn image_name(pid: u32) -> String {
+pub(crate) fn image_name(pid: u32) -> String {
     if pid == 0 {
         return String::new();
     }
@@ -447,7 +476,7 @@ fn search_browser(target: &OpenTarget, wins: &[Win], cancel: &dyn Fn() -> bool) 
         };
         let mut elements: Vec<Vec<IUIAutomationElement>> = Vec::new();
         for w in &mine {
-            let Some((tabs, els)) = (unsafe { read_tabs(&clock, w.handle()) }) else {
+            let Some((tabs, els)) = (unsafe { read_tabs(&clock, w.handle(), &CONTAINERS) }) else {
                 break;
             };
             strips.push(tabs);
@@ -548,14 +577,14 @@ unsafe fn reg_default(root: HKEY, subkey: &str) -> Option<String> {
 /// The budget the tab reads share: before every cross-process call, false
 /// when the budget is spent or the click is superseded, else the UI
 /// Automation timeouts are set to what is left.
-struct Clock<'a> {
-    uia: &'a IUIAutomation2,
-    started: Instant,
-    cancel: &'a dyn Fn() -> bool,
+pub(crate) struct Clock<'a> {
+    pub(crate) uia: &'a IUIAutomation2,
+    pub(crate) started: Instant,
+    pub(crate) cancel: &'a dyn Fn() -> bool,
 }
 
 impl Clock<'_> {
-    fn go(&self) -> bool {
+    pub(crate) fn go(&self) -> bool {
         let elapsed = self.started.elapsed();
         if elapsed >= SEARCH_BUDGET || (self.cancel)() {
             return false;
@@ -583,9 +612,11 @@ const CONTAINERS: [i32; 7] = [
 /// The tab strip of one browser window: breadth first, one level of one
 /// element per call, never the page. The first depth holding tab items ends
 /// the walk. None when the clock ran out before the window could be started.
-unsafe fn read_tabs(
+/// `containers` are the control types it descends into on the way.
+pub(crate) unsafe fn read_tabs(
     clock: &Clock,
     hwnd: HWND,
+    containers: &[i32],
 ) -> Option<(WindowTabs, Vec<IUIAutomationElement>)> {
     let uia = clock.uia;
     unsafe {
@@ -646,7 +677,7 @@ unsafe fn read_tabs(
                     elements.push(child);
                 } else if found_at.is_none()
                     && depth < MAX_DEPTH
-                    && CONTAINERS.contains(&kind.0)
+                    && containers.contains(&kind.0)
                 {
                     open.push_back((child, depth + 1));
                 }
@@ -765,7 +796,7 @@ fn execute(plan: Plan, target: &OpenTarget, cancel: &dyn Fn() -> bool) {
     }
 }
 
-fn allow_foreground() {
+pub(crate) fn allow_foreground() {
     unsafe {
         let _ = AllowSetForegroundWindow(ASFW_ANY);
     }
@@ -783,7 +814,7 @@ fn launch_aumid(aumid: &str) {
 /// Restores a minimized window and makes it the foreground one: no input
 /// queue attaching, no synthetic keys. The island's own window is
 /// `MA_NOACTIVATE`, so nothing takes it back.
-fn bring_forward(hwnd: HWND) {
+pub(crate) fn bring_forward(hwnd: HWND) {
     allow_foreground();
     unsafe {
         if !IsWindow(Some(hwnd)).as_bool() {

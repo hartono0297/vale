@@ -9,6 +9,7 @@ use windows::Win32::System::Pipes::WaitNamedPipeW;
 use windows::core::HSTRING;
 
 use super::PIPE_NAME;
+use super::origin::ClaudeOrigin;
 use crate::i18n::{Key, tr};
 use crate::model::{Event, Notice, NoticeKind};
 
@@ -29,6 +30,10 @@ pub struct HookMessage {
     pub session_id: String,
     pub project: String,
     pub message: Option<String>,
+    /// Where the hook ran (Done and Waiting only; `host::capture`). Absent in
+    /// lines from an older hook binary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<ClaudeOrigin>,
 }
 
 /// The fields of Claude Code's hook stdin payload that the island uses.
@@ -76,6 +81,7 @@ pub fn parse_hook_input(json: &str) -> Option<HookMessage> {
         session_id: input.session_id,
         project,
         message,
+        origin: None,
     })
 }
 
@@ -85,6 +91,7 @@ pub fn to_event(msg: HookMessage) -> Event {
         session_id,
         project,
         message,
+        origin: _,
     } = msg;
     match kind {
         HookKind::Done => Event::Notice(Notice {
@@ -150,7 +157,11 @@ pub fn run_hook() {
     if stdin.lock().read_to_end(&mut input).is_err() {
         return;
     }
-    if let Some(msg) = parse_hook_input(&String::from_utf8_lossy(&input)) {
+    if let Some(mut msg) = parse_hook_input(&String::from_utf8_lossy(&input)) {
+        // Only a notice can be clicked: activity events do no capture work.
+        if msg.kind != HookKind::Activity {
+            msg.origin = Some(super::host::capture(&msg.project));
+        }
         send_to_pipe(&msg);
     }
 }
@@ -185,7 +196,8 @@ mod tests {
                 kind: HookKind::Done,
                 session_id: "s1".into(),
                 project: "Dynamic Island".into(),
-                message: None
+                message: None,
+                origin: None
             }
         );
     }
@@ -202,7 +214,8 @@ mod tests {
                 kind: HookKind::Waiting,
                 session_id: "s2".into(),
                 project: "api".into(),
-                message: Some("Claude needs your permission to use Bash".into())
+                message: Some("Claude needs your permission to use Bash".into()),
+                origin: None
             }
         );
     }
@@ -278,6 +291,7 @@ mod tests {
             session_id: "s1".into(),
             project: "Dynamic Island".into(),
             message: None,
+            origin: None,
         });
         assert_eq!(
             event,
@@ -300,6 +314,7 @@ mod tests {
             session_id: "s2".into(),
             project: "api".into(),
             message: Some("Claude needs your permission to use Bash".into()),
+            origin: None,
         });
         assert_eq!(
             with_message,
@@ -318,6 +333,7 @@ mod tests {
             session_id: "s2".into(),
             project: "api".into(),
             message: None,
+            origin: None,
         }) else {
             panic!("expected a notice");
         };
@@ -331,6 +347,7 @@ mod tests {
             session_id: "s3".into(),
             project: "p".into(),
             message: None,
+            origin: None,
         });
         assert_eq!(
             event,
@@ -338,6 +355,72 @@ mod tests {
                 session_id: "s3".into()
             }
         );
+    }
+
+    fn sample_origin() -> ClaudeOrigin {
+        ClaudeOrigin {
+            host_pid: 4242,
+            host_exe: "windowsterminal.exe".into(),
+            host_hwnd: 0x1234,
+            cli_direct: false,
+            console_title: Some("✳ Fix the bug".into()),
+            host_session_id: Some("local_abc-1".into()),
+        }
+    }
+
+    #[test]
+    fn an_older_hook_line_without_origin_parses() {
+        let m: HookMessage = serde_json::from_str(
+            r#"{"kind":"Waiting","session_id":"s","project":"p","message":"m"}"#,
+        )
+        .unwrap();
+        assert_eq!(m.origin, None);
+        assert_eq!(m.kind, HookKind::Waiting);
+    }
+
+    #[test]
+    fn origin_round_trips_and_is_left_out_when_absent() {
+        let msg = HookMessage {
+            kind: HookKind::Done,
+            session_id: "s".into(),
+            project: "p".into(),
+            message: None,
+            origin: Some(sample_origin()),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert_eq!(serde_json::from_str::<HookMessage>(&json).unwrap(), msg);
+        let bare = HookMessage {
+            origin: None,
+            ..msg
+        };
+        assert!(!serde_json::to_string(&bare).unwrap().contains("origin"));
+    }
+
+    #[test]
+    fn parsing_the_hook_input_captures_nothing() {
+        let m = parse_hook_input(r#"{"hook_event_name":"Stop","session_id":"s","cwd":"C:\\p"}"#)
+            .unwrap();
+        assert_eq!(m.origin, None);
+    }
+
+    #[test]
+    fn a_message_with_max_length_fields_stays_under_the_pipe_limit() {
+        // The title is cut to 512 chars; the worst case JSON-escapes each as \u00XX.
+        let origin = ClaudeOrigin {
+            host_exe: "x".repeat(260),
+            console_title: Some("\u{1}".repeat(crate::claude::origin::MAX_TITLE_CHARS)),
+            host_session_id: Some("a".repeat(100)),
+            ..sample_origin()
+        };
+        let msg = HookMessage {
+            kind: HookKind::Waiting,
+            session_id: "s".repeat(200),
+            project: "p".repeat(255),
+            message: Some("m".repeat(4000)),
+            origin: Some(origin),
+        };
+        let line = serde_json::to_vec(&msg).unwrap();
+        assert!(line.len() < 64 * 1024, "{} bytes", line.len());
     }
 
     #[test]
@@ -349,6 +432,7 @@ mod tests {
             session_id: "s".into(),
             project: "p".into(),
             message: None,
+            origin: None,
         };
         let line = serde_json::to_vec(&msg).unwrap();
         let t = Instant::now();
