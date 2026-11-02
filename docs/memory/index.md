@@ -42,7 +42,7 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[claude-notice-open]]: clicking a "Claude selesai" / "Claude butuh respon" notice goes to its session: `--hook` captures the host window (process chain, skip list, `cli_direct`, console title), side registry, four rules (Desktop sidebar row, VS Code link, terminal tab, window only), never launches, `--probe-claude-open`
 - [[clipboard-notice]]: a 3 s preview in the notch on every external copy (text lines, thumbnail, files), skip rules, supersedes "Disalin untuk semua salinan", no timer
 - [[screenshot-preview]]: preview matching of the Windows file; Simpan never writes a duplicate (v3.6)
-- [[screenshot-snap]]: own region capture that snaps to windows and boxes, the editor after it, UIA budget, own-copy skip, PrtSc key opens Vale's capture (low-level keyboard hook on its own thread, now a hotkey row, nothing in the registry)
+- [[screenshot-snap]]: own region capture that snaps to windows and boxes, the editor after it, UIA budget, own-copy registry, auto-copy ("Salin otomatis": worker + debounce + guard + flush on close), PrtSc key opens Vale's capture (low-level keyboard hook on its own thread, now a hotkey row, nothing in the registry)
 - [[panel-pages]]
 - [[vale-rename]]: the Vale rename, what keeps the old name, and the 2026-11-01 repo rename to hartono0297/vale
 - [[google-built-in-client]]

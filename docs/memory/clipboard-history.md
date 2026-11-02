@@ -1,6 +1,6 @@
 ---
 tags: [decision, clipboard, privacy, dpapi, panel]
-date: 2026-10-28
+date: 2026-11-02
 ---
 
 # Clipboard history: what it keeps and how
@@ -132,3 +132,28 @@ focused search field (a hidden EDIT) took the wheel itself.
   top is where it is. Demo scene `clipboard-long` shows the thumb.
 
 See also [[clipboard-notice]]: the preview in the notch on every copy made in another app (v3.5).
+
+## One card per capture (auto-copy, 2026-11-02)
+
+Vale's screenshot editor copies its picture by itself and again after each
+finished edit ([[screenshot-snap]], "Auto-copy"). Writes from an editor whose
+auto-copy was on (`OwnCopy.managed`) do not take the normal `ingest` path:
+
+- `store::ingest_replacing(history, snap, at, card)` builds the entry by the
+  normal rules first (`should_skip`, the size caps, unchanged). Only when the
+  snapshot yields an entry does it remove the capture's previous card, if it
+  still exists and is **not pinned**, and push the new one. The new card gets a
+  new id (the thumbnail cache is keyed by id and never shows a stale picture)
+  and goes to the front; `push`'s dedupe against other cards still applies.
+- `CaptureCards::card(capture)` is `None` when another capture maps to the
+  same card (two pixel-identical captures: the dedupe answered `Bumped` with
+  the first one's card). Neither removes a shared card, so two captures keep
+  two cards; once one moves on, the other owns it alone again.
+- A **pinned** card is never changed or removed: the newer picture becomes a
+  new unpinned card. A snapshot that is not kept (over 64 MB, skipped) leaves
+  the old card as it is.
+- `ClipState.captures` (`store::CaptureCards`, newest 16 captures) maps a
+  capture number to its card. `App::keep_capture` updates it, calls
+  `schedule_clip_save` and `redraw_clip`. With the history off nothing is kept.
+- Not announced: see [[clipboard-notice]]. Windows' own Win+V history still
+  records every write; Vale cannot replace those.

@@ -2,7 +2,9 @@
 //! on a WIC bitmap), saving it as a PNG in the Screenshots folder, and
 //! copying it to the clipboard.
 //!
-//! Nothing here runs until Save or Copy is pressed. The PNG encoding and the
+//! Nothing here runs until Save or Copy is pressed, or (auto-copy) until the
+//! editor opens or a change settles: then one short-lived worker renders.
+//! The PNG encoding and the
 //! unique file naming are the screenshot preview's own (`screenshot::win`,
 //! `screenshot::save_name`), not copies of them.
 
@@ -164,11 +166,17 @@ pub fn spawn_save(
         .is_ok()
 }
 
-/// Puts the picture with its annotations on the clipboard as a PNG and a
-/// DIB, owned by `hwnd`, and records the sequence number it left so the
-/// notch's screenshot preview skips this one image. `None` when it could
-/// not be rendered or the clipboard stayed busy. Needs COM on this thread.
-pub fn copy(hwnd: HWND, base: &Shot, doc: &[Annotation]) -> Option<u32> {
+/// The picture with its annotations, rendered and encoded for the
+/// clipboard: a packed DIB and a PNG.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Prepared {
+    pub dib: Vec<u8>,
+    pub png: Vec<u8>,
+}
+
+/// Renders `doc` over `base` and encodes both clipboard formats. Needs COM
+/// on this thread (the auto-copy worker, or the UI thread for Copy).
+pub fn prepare(base: &Shot, doc: &[Annotation]) -> Option<Prepared> {
     let bgra = render_bgra(base, doc)?;
     let png = screenshot::win::encode_png(base.w, base.h, &bgra)?;
     let dib = crate::clipboard::image::dib_from_thumb(&Thumb {
@@ -176,13 +184,101 @@ pub fn copy(hwnd: HWND, base: &Shot, doc: &[Annotation]) -> Option<u32> {
         h: base.h,
         bgra,
     });
+    Some(Prepared { dib, png })
+}
+
+/// CF_DIB and the registered "PNG", the formats Copy writes, borrowed from
+/// `p` (a 4K DIB is about 33 MB; a copy of it would double the peak).
+fn formats(p: &Prepared) -> Vec<(u32, &[u8])> {
     let png_format = unsafe { RegisterClipboardFormatW(w!("PNG")) };
-    let mut formats = vec![(CF_DIB, dib)];
+    let mut formats = vec![(CF_DIB, p.dib.as_slice())];
     if png_format != 0 {
-        formats.push((png_format, png));
+        formats.push((png_format, p.png.as_slice()));
     }
-    let seq = crate::clipboard::win::write(hwnd, &formats)?;
-    super::record_own_copy(seq);
+    formats
+}
+
+/// How a guarded write ended (see `clipboard::win::write_when`).
+pub use crate::clipboard::win::Wrote as Put;
+
+/// Puts `prepared` on the clipboard, owned by `hwnd`, only while the
+/// clipboard's sequence is still `expected` (`None` for the first write of a
+/// capture). On success the sequence it left is recorded as the editor's own
+/// (`capture`, `managed`), so the screenshot preview skips it and the island
+/// treats it by the editor's rules. Runs on the editor's thread, never inside
+/// a borrow of the editor: `EmptyClipboard` may send WM_DESTROYCLIPBOARD to
+/// another editor's window on this thread.
+pub fn put(
+    hwnd: HWND,
+    prepared: &Prepared,
+    expected: Option<u32>,
+    capture: u64,
+    managed: bool,
+) -> Put {
+    let result = crate::clipboard::win::write_when(hwnd, &formats(prepared), expected);
+    if let Put::Written(seq) = result {
+        super::record_own_copy(seq, capture, managed);
+    }
+    result
+}
+
+/// What an auto-copy worker hands back: the picture of document revision
+/// `rev`, or `None` when it could not be rendered.
+#[derive(Debug)]
+pub struct CopyReady {
+    pub rev: u64,
+    pub prepared: Option<Prepared>,
+}
+
+/// Where finished renders wait for the window to pick them up.
+pub type CopyInbox = Arc<Mutex<Vec<CopyReady>>>;
+
+/// Renders the picture on a short-lived worker (`shot-edit-copy`) and puts
+/// the result in `inbox`, then rings `hwnd` with `msg`. Like `spawn_save`: if
+/// the window is gone by then, the Arc is all that is left. False when the
+/// thread could not start.
+pub fn spawn_auto_copy(
+    base: Arc<Shot>,
+    doc: Vec<Annotation>,
+    rev: u64,
+    inbox: CopyInbox,
+    hwnd: HWND,
+    msg: u32,
+) -> bool {
+    let target = hwnd.0 as isize;
+    std::thread::Builder::new()
+        .name("shot-edit-copy".into())
+        .spawn(move || {
+            let inited = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
+            let prepared = prepare(&base, &doc);
+            if inited {
+                unsafe { CoUninitialize() };
+            }
+            if let Ok(mut list) = inbox.lock() {
+                list.push(CopyReady { rev, prepared });
+            }
+            unsafe {
+                let _ = PostMessageW(Some(HWND(target as *mut _)), msg, WPARAM(0), LPARAM(0));
+            }
+        })
+        .is_ok()
+}
+
+/// Puts the picture with its annotations on the clipboard as a PNG and a
+/// DIB, owned by `hwnd`, and records the sequence number it left (for
+/// `capture`; `managed` is the editor's auto-copy flag) so the notch's
+/// screenshot preview skips this one image. `None` when it could not be
+/// rendered or the clipboard stayed busy. Needs COM on this thread.
+pub fn copy(
+    hwnd: HWND,
+    base: &Shot,
+    doc: &[Annotation],
+    capture: u64,
+    managed: bool,
+) -> Option<u32> {
+    let prepared = prepare(base, doc)?;
+    let seq = crate::clipboard::win::write(hwnd, &formats(&prepared))?;
+    super::record_own_copy(seq, capture, managed);
     Some(seq)
 }
 

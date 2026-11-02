@@ -75,6 +75,27 @@ pub(super) struct ClipState {
     pub keyboard_held: bool,
     /// The entry the copy preview announced last, and when (`NoticeGate`).
     pub gate: NoticeGate,
+    /// The card each screenshot editor's auto-copy made (one per capture).
+    pub captures: store::CaptureCards,
+}
+
+/// What the island does with a clipboard change that an editor of ours wrote
+/// (`shot_edit::own_copy`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum OwnRoute {
+    /// Not an editor write, or one from an editor with auto-copy off: the
+    /// normal path (history card, copy notice, screenshot preview rules).
+    Normal,
+    /// An auto-copying editor's write: one card per capture, and no notice,
+    /// no "Disalin" and no screenshot preview.
+    Managed { capture: u64 },
+}
+
+pub(super) fn own_route(own: Option<crate::shot_edit::OwnCopy>) -> OwnRoute {
+    match own {
+        Some(o) if o.managed => OwnRoute::Managed { capture: o.capture },
+        _ => OwnRoute::Normal,
+    }
 }
 
 /// Whether a mouse move at `at` is the pointer really moving, `last` the
@@ -259,13 +280,16 @@ impl App {
         let cfg = self.config.clipboard;
         let items = persist::start_items(&persist::path(), cfg.persist);
         self.clip.history = History::from_items(cfg.max_items, items);
+        crate::shot_edit::set_auto_copy(self.config.screenshot.auto_copy);
         self.sync_clip_listener();
         self.clip.started = true;
     }
 
     /// config.json changed (a save, or a hand edit picked up): the cap and the
-    /// listener follow. Nothing before `clip_start`.
+    /// listener follow, and the screenshot editor's "Salin otomatis" (latched
+    /// by each editor when it opens). Nothing else before `clip_start`.
     pub(super) fn clip_follow_config(&mut self) {
+        crate::shot_edit::set_auto_copy(self.config.screenshot.auto_copy);
         if !self.clip.started {
             return;
         }
@@ -326,6 +350,14 @@ impl App {
             Read::Snapshot(snap) => snap,
         };
         let sequence = snap.sequence;
+        // A write of a screenshot editor that auto-copies: one card per
+        // capture and nothing said (the owner did not copy anything).
+        if let OwnRoute::Managed { capture } = own_route(crate::shot_edit::own_copy(sequence)) {
+            if history {
+                self.keep_capture(snap, capture);
+            }
+            return;
+        }
         // The history off, the preview on: only an image is looked at, by
         // the history's rules, and nothing is kept.
         if !history {
@@ -376,6 +408,20 @@ impl App {
             Some(n) => self.apply_now(Event::Notice(n)),
             None => self.redraw_clip(),
         }
+    }
+
+    /// An auto-copy of capture `capture`: its card is replaced by the new
+    /// picture (`store::ingest_replacing`), quietly.
+    fn keep_capture(&mut self, snap: ClipSnapshot, capture: u64) {
+        let at = Local::now().timestamp();
+        let old = self.clip.captures.card(capture);
+        let outcome = store::ingest_replacing(&mut self.clip.history, snap, at, old);
+        let (Ingested::Added { id, .. } | Ingested::Bumped { id }) = outcome else {
+            return;
+        };
+        self.clip.captures.set(capture, id);
+        self.schedule_clip_save();
+        self.redraw_clip();
     }
 
     /// What an external copy that went into the history says: the preview
@@ -811,6 +857,24 @@ pub enum ClipSetting {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_managed_editor_copy_shows_nothing_and_any_other_is_as_before() {
+        use super::{OwnRoute, own_route};
+        use crate::shot_edit::OwnCopy;
+        let own = |managed| {
+            Some(OwnCopy {
+                seq: 5,
+                capture: 9,
+                managed,
+            })
+        };
+        assert_eq!(own_route(own(true)), OwnRoute::Managed { capture: 9 });
+        // An editor opened with auto-copy off: today's path.
+        assert_eq!(own_route(own(false)), OwnRoute::Normal);
+        // Not an editor write at all.
+        assert_eq!(own_route(None), OwnRoute::Normal);
+    }
+
     #[test]
     fn the_pointer_selects_the_card_it_is_over_or_a_button_of_it() {
         use super::{Hit, hover_target};

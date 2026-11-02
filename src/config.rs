@@ -454,6 +454,11 @@ pub struct ScreenshotSettings {
     /// "Alat screenshot".
     #[serde(deserialize_with = "shot_tool")]
     pub tool: ShotTool,
+    /// "Salin otomatis": Vale's own capture is copied to the clipboard when
+    /// the editor opens and again after each finished edit. A missing field,
+    /// a non-bool or null reads as on.
+    #[serde(deserialize_with = "default_on")]
+    pub auto_copy: bool,
 }
 
 impl Default for ScreenshotSettings {
@@ -463,6 +468,7 @@ impl Default for ScreenshotSettings {
             on_ignore: ShotIgnore::Keep,
             show_secs: 8,
             tool: ShotTool::Vale,
+            auto_copy: true,
         }
     }
 }
@@ -1146,6 +1152,7 @@ mod tests {
                 on_ignore: ShotIgnore::Delete,
                 show_secs: 12,
                 tool: ShotTool::Windows,
+                auto_copy: false,
             },
             panel_pages: vec![PageEntry {
                 page: "Media".into(),
@@ -1278,6 +1285,29 @@ mod tests {
         assert_eq!(win.screenshot.tool, ShotTool::Windows);
         let back = parse(&serde_json::to_string(&win).unwrap());
         assert_eq!(back.screenshot.tool, ShotTool::Windows);
+    }
+
+    #[test]
+    fn auto_copy_is_on_unless_the_file_says_false() {
+        assert!(ScreenshotSettings::default().auto_copy);
+        // An old file without the key, and bad values of any type: on, and
+        // the rest of the file stays valid.
+        for text in [
+            r#"{"style":"Notch","screenshot":{"preview":false}}"#,
+            r#"{"style":"Notch","screenshot":{"auto_copy":"x"}}"#,
+            r#"{"style":"Notch","screenshot":{"auto_copy":null}}"#,
+            r#"{"style":"Notch","screenshot":{"auto_copy":1}}"#,
+            r#"{"style":"Notch"}"#,
+        ] {
+            let c = parse(text);
+            assert_eq!(c.style, Style::Notch, "{text}");
+            assert!(c.screenshot.auto_copy, "{text}");
+        }
+        let off = parse(r#"{"style":"Notch","screenshot":{"auto_copy":false}}"#);
+        assert!(!off.screenshot.auto_copy);
+        assert_eq!(off.style, Style::Notch);
+        let back = parse(&serde_json::to_string(&off).unwrap());
+        assert!(!back.screenshot.auto_copy, "false round-trips");
     }
 
     #[test]

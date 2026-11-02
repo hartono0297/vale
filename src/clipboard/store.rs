@@ -328,22 +328,91 @@ impl History {
 /// The history's side of a clipboard change: password-manager content is
 /// skipped, then files, else text, else a bitmap becomes an entry.
 pub fn ingest(history: &mut History, snap: ClipSnapshot, at: i64) -> Ingested {
+    match entry_for(snap) {
+        Ok((kind, data)) => history.push(kind, data, at),
+        Err(not_kept) => not_kept,
+    }
+}
+
+/// The entry a snapshot becomes, or why it is not kept (`Skipped`:
+/// password-manager content; `Nothing`: an unknown format, too big, empty).
+fn entry_for(snap: ClipSnapshot) -> Result<(ClipKind, ClipData), Ingested> {
     if should_skip(&snap.formats) {
-        return Ingested::Skipped;
+        return Err(Ingested::Skipped);
     }
     if !snap.files.is_empty() {
-        return history.push(ClipKind::Files, ClipData::Files(snap.files), at);
+        return Ok((ClipKind::Files, ClipData::Files(snap.files)));
     }
     if let Some(text) = snap.text.filter(|t| !t.trim().is_empty()) {
         if text.len() > MAX_TEXT_BYTES {
-            return Ingested::Nothing;
+            return Err(Ingested::Nothing);
         }
         let kind = detect_kind(&text);
-        return history.push(kind, ClipData::Text(text), at);
+        return Ok((kind, ClipData::Text(text)));
     }
     match make_image(snap.dib, snap.only_bitmaps) {
-        Some(img) => history.push(ClipKind::Image, ClipData::Image(img), at),
-        None => Ingested::Nothing,
+        Some(img) => Ok((ClipKind::Image, ClipData::Image(img))),
+        None => Err(Ingested::Nothing),
+    }
+}
+
+/// `ingest` for an editor's auto-copy of one capture: when `card` (the card
+/// this capture made before) is still there and not pinned, it goes before
+/// the new picture is pushed, so a capture is one card, with a new id (the
+/// thumbnail cache is keyed by id and never shows the old picture) at the
+/// front. A pinned card is never changed or removed: the newer picture
+/// becomes its own unpinned card. A snapshot that is not kept (skipped, over
+/// the size cap) leaves the old card as it is.
+pub fn ingest_replacing(
+    history: &mut History,
+    snap: ClipSnapshot,
+    at: i64,
+    card: Option<u64>,
+) -> Ingested {
+    let (kind, data) = match entry_for(snap) {
+        Ok(entry) => entry,
+        Err(not_kept) => return not_kept,
+    };
+    if let Some(id) = card
+        && history.get(id).is_some_and(|c| !c.pinned)
+    {
+        history.delete(id);
+    }
+    history.push(kind, data, at)
+}
+
+/// How many captures keep a card they may replace.
+const CAPTURE_CARDS: usize = 16;
+
+/// Which card each capture's auto-copy made (the newest 16 captures).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CaptureCards {
+    /// Oldest first.
+    list: Vec<(u64, u64)>,
+}
+
+impl CaptureCards {
+    /// The card `capture` made last, which its next picture replaces. `None`
+    /// when another capture points at the same card too (two pixel-identical
+    /// captures: the dedupe bumped one card for both): neither may remove
+    /// it, so two captures keep two cards.
+    pub fn card(&self, capture: u64) -> Option<u64> {
+        let id = self
+            .list
+            .iter()
+            .find(|(c, _)| *c == capture)
+            .map(|(_, id)| *id)?;
+        let shared = self.list.iter().any(|(c, i)| *c != capture && *i == id);
+        (!shared).then_some(id)
+    }
+
+    /// `capture`'s card is now `card`; the oldest capture falls out past 16.
+    pub fn set(&mut self, capture: u64, card: u64) {
+        self.list.retain(|(c, _)| *c != capture);
+        self.list.push((capture, card));
+        if self.list.len() > CAPTURE_CARDS {
+            self.list.remove(0);
+        }
     }
 }
 
@@ -639,6 +708,141 @@ pub mod tests {
             items[1].image().unwrap().full.is_none(),
             "the older one gave way"
         );
+    }
+
+    fn id_of(i: Ingested) -> u64 {
+        match i {
+            Ingested::Added { id, .. } | Ingested::Bumped { id } => id,
+            other => panic!("expected a card, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_captures_first_copy_adds_a_card() {
+        let mut h = History::new(50);
+        let first = id_of(ingest_replacing(&mut h, image(64, 48), 1, None));
+        assert_eq!(h.len(), 1);
+        assert_eq!(h.items()[0].id, first);
+    }
+
+    #[test]
+    fn a_second_copy_of_the_same_capture_replaces_its_card() {
+        let mut h = History::new(50);
+        let first = id_of(ingest_replacing(&mut h, image(64, 48), 1, None));
+        ingest(&mut h, text("something else"), 2);
+        let second = id_of(ingest_replacing(&mut h, image(65, 48), 3, Some(first)));
+        assert_eq!(h.len(), 2, "one card per capture");
+        assert_ne!(second, first, "a new id, so no stale thumbnail");
+        assert!(h.get(first).is_none());
+        assert_eq!(h.items()[0].id, second, "at the front");
+        assert_eq!(h.items()[0].image().unwrap().width, 65);
+    }
+
+    #[test]
+    fn a_pinned_card_stays_and_the_newer_picture_is_a_new_unpinned_card() {
+        let mut h = History::new(50);
+        let first = id_of(ingest_replacing(&mut h, image(64, 48), 1, None));
+        h.set_pinned(first, true);
+        let second = id_of(ingest_replacing(&mut h, image(65, 48), 2, Some(first)));
+        assert_eq!(h.len(), 2);
+        assert!(h.get(first).is_some_and(|c| c.pinned));
+        assert_eq!(h.get(first).unwrap().image().unwrap().width, 64);
+        let newest = h.get(second).unwrap();
+        assert!(!newest.pinned);
+        assert_eq!(h.items()[0].id, second);
+    }
+
+    #[test]
+    fn a_snapshot_that_is_not_kept_leaves_the_old_card() {
+        let mut h = History::new(50);
+        let first = id_of(ingest_replacing(&mut h, image(64, 48), 1, None));
+        // Over the 64 MB cap.
+        let big = ClipSnapshot {
+            dib: Some(vec![0; MAX_IMAGE_BYTES + 1]),
+            only_bitmaps: true,
+            ..ClipSnapshot::default()
+        };
+        assert_eq!(
+            ingest_replacing(&mut h, big, 2, Some(first)),
+            Ingested::Nothing
+        );
+        // Password-manager content.
+        let secret = ClipSnapshot {
+            formats: vec![("Clipboard Viewer Ignore".into(), None)],
+            ..image(70, 40)
+        };
+        assert_eq!(
+            ingest_replacing(&mut h, secret, 3, Some(first)),
+            Ingested::Skipped
+        );
+        assert_eq!(h.len(), 1);
+        assert_eq!(h.items()[0].id, first);
+    }
+
+    #[test]
+    fn two_captures_give_two_cards() {
+        let mut h = History::new(50);
+        let a = id_of(ingest_replacing(&mut h, image(64, 48), 1, None));
+        let b = id_of(ingest_replacing(&mut h, image(80, 60), 2, None));
+        assert_eq!(h.len(), 2);
+        let a2 = id_of(ingest_replacing(&mut h, image(66, 48), 3, Some(a)));
+        assert_eq!(h.len(), 2, "the second capture's card is not touched");
+        assert!(h.get(b).is_some());
+        assert!(h.get(a).is_none());
+        assert_eq!(h.items()[0].id, a2);
+    }
+
+    #[test]
+    fn a_missing_old_card_just_adds() {
+        let mut h = History::new(50);
+        let gone = id_of(ingest_replacing(&mut h, image(64, 48), 1, None));
+        h.delete(gone);
+        id_of(ingest_replacing(&mut h, image(65, 48), 2, Some(gone)));
+        assert_eq!(h.len(), 1);
+    }
+
+    #[test]
+    fn the_capture_map_keeps_the_newest_sixteen() {
+        let mut m = CaptureCards::default();
+        assert_eq!(m.card(1), None);
+        for capture in 1..=18u64 {
+            m.set(capture, capture * 10);
+        }
+        assert_eq!(m.card(1), None);
+        assert_eq!(m.card(2), None);
+        assert_eq!(m.card(3), Some(30));
+        assert_eq!(m.card(18), Some(180));
+        // Setting a capture again replaces its card.
+        m.set(3, 99);
+        assert_eq!(m.card(3), Some(99));
+        m.set(19, 190);
+        assert_eq!(m.card(4), None);
+        assert_eq!(m.card(3), Some(99), "just refreshed, so not the oldest");
+    }
+
+    #[test]
+    fn a_card_two_captures_share_is_replaced_by_neither() {
+        // Two pixel-identical captures: the second copy bumped the first's
+        // card, so both point at it.
+        let mut h = History::new(50);
+        let mut m = CaptureCards::default();
+        let shared = id_of(ingest_replacing(&mut h, image(64, 48), 1, m.card(1)));
+        m.set(1, shared);
+        let bumped = id_of(ingest_replacing(&mut h, image(64, 48), 2, m.card(2)));
+        assert_eq!(bumped, shared, "the dedupe bumped the same card");
+        m.set(2, shared);
+        assert_eq!(
+            m.card(1),
+            None,
+            "shared: not the first capture's to replace"
+        );
+        // The first capture's edit is its own card; the shared one stays.
+        let a2 = id_of(ingest_replacing(&mut h, image(66, 48), 3, m.card(1)));
+        m.set(1, a2);
+        assert!(h.get(shared).is_some(), "the second capture's card stays");
+        assert_eq!(h.len(), 2);
+        // The second capture owns it alone now and may replace it.
+        assert_eq!(m.card(2), Some(shared));
     }
 
     #[test]

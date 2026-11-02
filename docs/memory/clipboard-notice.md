@@ -1,6 +1,6 @@
 ---
 tags: [decision, clipboard, notices, privacy, power, v3.5]
-date: 2026-10-30
+date: 2026-11-02
 ---
 
 # Copy notice: a preview in the notch on every copy (v3.5 request 3)
@@ -90,3 +90,15 @@ and pure functions. Demo scenes `clipboard-notice-text`, `-long`, `-image`,
   (the 4 s gate is the guard).
 - Whether copying from a password manager that sets none of the excluded
   formats shows a notice (it does: nothing can tell it apart).
+
+## Skip rule 8: managed editor copies (auto-copy, 2026-11-02)
+
+A clipboard write of Vale's screenshot editor that opened with "Salin
+otomatis" on (`shot_edit::own_copy(seq)` with `managed`) shows nothing: no
+ClipPreview, no "Disalin" (`copied_feedback_all` included), no screenshot
+preview. The owner did not copy anything; the card is just updated, one per
+capture ([[clipboard-history]], [[screenshot-snap]] "Auto-copy"). The route
+decision is the pure `app_clip::own_route` (managed -> `Managed`, anything
+else -> today's path). An editor that opened with auto-copy off is not
+managed: its Copy keeps today's behaviour (the card may still be added; the
+preview skips it through the same registry).
