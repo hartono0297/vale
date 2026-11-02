@@ -1303,6 +1303,14 @@ pub const MOLE_LOG_LINE_H: f32 = 14.5;
 /// The log's text inset inside its dark box.
 pub const MOLE_LOG_PAD: f32 = 10.0;
 
+/// How many log lines fit in the log box `area`: the painter's rows and the
+/// wheel's scroll range.
+pub fn mole_log_rows(area: Rect) -> usize {
+    ((area.h - 2.0 * MOLE_LOG_PAD) / MOLE_LOG_LINE_H)
+        .floor()
+        .max(0.0) as usize
+}
+
 /// The System page, after keputusan-v3.1.html `.sys`, `.ringw`, `.spark`,
 /// `.meter`, `.bar`, `.procs` and `.cbtn`.
 const SYS_HEAD_H: f32 = 28.0;

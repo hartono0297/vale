@@ -316,6 +316,8 @@ pub struct MoleView<'a> {
     pub log: &'a std::collections::VecDeque<String>,
     /// The last clean's measured result.
     pub report: Option<&'a MoleReport>,
+    /// How many lines the log is scrolled up from the newest; 0 follows.
+    pub scroll: usize,
 }
 
 /// A Mole group's size column.
@@ -1357,6 +1359,15 @@ impl Renderer {
     pub fn mixer_level_at(&self, row: usize, x: f32) -> Option<f32> {
         let track = self.regions.mixer_tracks.get(row)?;
         Some(crate::audio::slider_level(track.x, track.w, x / self.scale))
+    }
+
+    /// The lines that fit the cleaner's Mole log when this client point
+    /// (physical pixels) is over it, where the wheel scrolls it; `None`
+    /// elsewhere.
+    pub fn over_mole_log(&self, x: f32, y: f32) -> Option<usize> {
+        let area = self.regions.mole_log?;
+        area.contains(x / self.scale, y / self.scale)
+            .then(|| crate::ui::panel_layout::mole_log_rows(area))
     }
 
     /// Whether this client point (physical pixels) is on the Music page's

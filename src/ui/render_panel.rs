@@ -66,7 +66,7 @@ use crate::ui::panel_layout::{
     CLIP_RADIUS, CLIP_SCROLLBAR_W, CLIP_THUMB_W, CalendarLayout, CleanFoot, CleanHead,
     CleanerLayout, CliHead, CliLayout, ClipButton, ClipLayout, DEV_BAR_H, DevicesHead,
     DevicesLayout, HOUR_GUTTER, ListLayout, MENU_RADIUS, MENU_ROW_RADIUS, MIXER_TRACK_H,
-    MOLE_LOG_LINE_H, MOLE_LOG_PAD, MenuLayout, MeterLayout, MixerLayout, MoleFoot, MoleLayout,
+    MOLE_LOG_LINE_H, MOLE_LOG_PAD, MenuLayout, mole_log_rows, MeterLayout, MixerLayout, MoleFoot, MoleLayout,
     NOTIF_DOT, NOTIF_RADIUS, NotifHead, NotifLayout, PageLayout, PomodoroLayout, RING_STROKE,
     SEG_PAD, SYS_RING_STROKE, SearchLayout, ShelfLayout, ShortcutsLayout, SystemHead, SystemLayout,
     VOLUME_HUD_H, WEEK_HEAD_H, arrange_layout, calendar_layout, cleaner_layout, cli_folder_menu,
@@ -567,6 +567,10 @@ impl Renderer {
             };
             self.regions.media_art = match &layout {
                 PageLayout::Media(l) => Some(l.art),
+                _ => None,
+            };
+            self.regions.mole_log = match &layout {
+                PageLayout::Mole(l) => l.log,
                 _ => None,
             };
             self.regions.mixer_tracks = match &layout {
@@ -1771,7 +1775,7 @@ impl Renderer {
             self.text_colored(&line, &self.fonts.body_medium, r, ink, 1.0);
         }
         if let Some(log) = l.log {
-            self.paint_mole_log(log, m.log, m.phase == MolePhase::Running);
+            self.paint_mole_log(log, m.log, m.scroll, m.phase == MolePhase::Running);
         }
         if let Some(card) = &l.card {
             self.set_color(p.raised, 1.0);
@@ -1814,7 +1818,13 @@ impl Renderer {
     /// the top like the design's; once it is longer than the box, its last
     /// lines (the newest at the bottom). Section headers bright, the rest
     /// quiet.
-    fn paint_mole_log(&self, area: Rect, log: &std::collections::VecDeque<String>, running: bool) {
+    fn paint_mole_log(
+        &self,
+        area: Rect,
+        log: &std::collections::VecDeque<String>,
+        scroll: usize,
+        running: bool,
+    ) {
         let p = self.palette;
         self.set_color(theme::TERMINAL_BG, 1.0);
         self.fill_round(area, MOLE_LOG_RADIUS);
@@ -1824,7 +1834,7 @@ impl Renderer {
             w: area.w - 2.0 * MOLE_LOG_PAD,
             h: area.h - 2.0 * MOLE_LOG_PAD,
         };
-        let rows = (inner.h / MOLE_LOG_LINE_H).floor().max(0.0) as usize;
+        let rows = mole_log_rows(area);
         let row = |k: usize| Rect {
             y: inner.y + k as f32 * MOLE_LOG_LINE_H,
             h: MOLE_LOG_LINE_H,
@@ -1842,8 +1852,10 @@ impl Renderer {
             );
             return;
         }
-        let skip = log.len().saturating_sub(rows);
-        for (k, line) in log.iter().skip(skip).enumerate() {
+        // The newest lines, or the window scrolled up from them.
+        let hidden = log.len().saturating_sub(rows);
+        let skip = hidden - scroll.min(hidden);
+        for (k, line) in log.iter().skip(skip).take(rows).enumerate() {
             let ink = if crate::mole::is_section(line) {
                 theme::TERMINAL_TEXT
             } else {
@@ -4519,6 +4531,7 @@ mod tests {
             summary,
             log,
             report: None,
+            scroll: 0,
         }
     }
 

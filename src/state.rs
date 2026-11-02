@@ -114,8 +114,15 @@ pub const MEDIA_HOVER_GUARD: Duration = Duration::from_millis(ANIM_MS + 300);
 /// second click before it turns back.
 pub const CLEAN_CONFIRM: Duration = Duration::from_secs(4);
 
-/// What the open panel shows that closing it resets: the cleaner, the CLI's
-/// size and folder menu, the notes, reminders and day pages, the strip.
+/// How long a scan (own mode) or a Mole preview stays good while the cleaner
+/// is kept: once the cleaner shows again after this long (nothing running)
+/// it looks again. No timer: the age is only judged when it comes back.
+pub const CLEAN_SCAN_STALE: Duration = Duration::from_secs(300);
+
+/// What the open panel shows that closing it resets: the CLI's size and
+/// folder menu, the notes, reminders and day pages, the strip. The cleaner
+/// is here too, though the state keeps it past a close (it is only on the
+/// System page): this is what the panel drew, cleaner or not.
 /// `App` keeps it from before the event that closed the panel, so the
 /// closing panel fades out as it was, not as the reset left it
 /// (`docs/memory/panel-linger-and-motion.md`).
@@ -133,8 +140,9 @@ pub struct ShownPanel {
 }
 
 /// The cleaner over the System page: its mode, which rows are ticked and
-/// whether its button is armed. Opened by "Bersihkan"; gone when the panel
-/// closes, the page changes or its back button is clicked.
+/// whether its button is armed. Opened by "Bersihkan"; it keeps its place
+/// across a close of the panel and every page change, and goes only with
+/// its back button or once a finished clean's result has been seen.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CleanerUi {
     pub mode: CleanMode,
@@ -170,9 +178,10 @@ impl CleanerUi {
     }
 }
 
-/// Where the Mole mode stands (`crate::mole`). Kept while the cleaner is
-/// closed only for a clean (it goes on) and its end (the notice opens its
-/// log); a preview stops with the cleaner.
+/// Where the Mole mode stands (`crate::mole`). It stays across a close of
+/// the panel and page changes with the cleaner (a detect or a preview goes
+/// on meanwhile); a preview stops only when the cleaner ends or leaves Mole
+/// mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MolePhase {
     /// Not looked for since the cleaner last closed.
@@ -306,8 +315,22 @@ pub struct IslandState {
     cal_view: CalView,
     cal_anchor: NaiveDate,
     cal_selected: NaiveDate,
-    /// The cleaner, while it shows over the System page.
+    /// The cleaner, kept from "Bersihkan" until its back button or the end
+    /// rule (`clean_result`). It shows only while the page is System
+    /// (`cleaner()`); other pages, a closed panel and the search leave it be.
     cleaner: Option<CleanerUi>,
+    /// A clean ended while the cleaner existed: `Some(false)` its result has
+    /// not been shown yet, `Some(true)` it has (the cleaner goes once it is
+    /// no longer on an open System panel).
+    clean_result: Option<bool>,
+    /// When the reducer last asked for an own-mode scan, and for a Mole
+    /// detect or preview (the request's time, not the scan's end): the
+    /// cleaner looks again only after `CLEAN_SCAN_STALE`.
+    own_scan_at: Option<Instant>,
+    mole_preview_at: Option<Instant>,
+    /// How many Mole log lines the view is scrolled up from the newest; 0
+    /// follows new output.
+    mole_log_scroll: usize,
     /// A clean asked for has not finished: the cleaner's rows and button
     /// take no clicks meanwhile.
     clean_busy: bool,
@@ -409,6 +432,10 @@ impl IslandState {
             cal_anchor: today,
             cal_selected: today,
             cleaner: None,
+            clean_result: None,
+            own_scan_at: None,
+            mole_preview_at: None,
+            mole_log_scroll: 0,
             clean_busy: false,
             clean_mode: CleanMode::Own,
             mole: MolePhase::Unknown,
@@ -431,6 +458,7 @@ impl IslandState {
         let selected_was = self.cal_selected;
         let panel_was_open = self.panel_open();
         let cleaner_was = self.cleaner.map(|c| c.mode);
+        let shown_was = self.cleaner_shown();
         let hover_on = matches!(event, Event::Hover(true));
         let page_was = self.page;
         let toast_held_was = self.toast_held_spot();
@@ -736,6 +764,17 @@ impl IslandState {
                     self.cli_scroll = self.cli_scroll.saturating_add(n);
                 }
             }
+            Event::MoleLogScroll { lines, max } => {
+                if self.mole_log_visible() {
+                    let scrolled = self.mole_log_scroll as i64 + i64::from(lines);
+                    self.mole_log_scroll = scrolled.clamp(0, max as i64) as usize;
+                }
+            }
+            Event::MoleLogLines(n) => {
+                if self.mole_log_scroll > 0 {
+                    self.mole_log_scroll = self.mole_log_scroll.saturating_add(n);
+                }
+            }
             Event::Wheel(delta) => {
                 // A wheel notch over the sticky reminder peeks at the panel
                 // (its strip), and that notch is spent on opening it, not on
@@ -760,6 +799,9 @@ impl IslandState {
                     // A vertical residue must not add a second step.
                     self.wheel = 0;
                     self.turn_page(if next { 1 } else { -1 });
+                } else if self.cleaner_shown() {
+                    // The cleaner holds the wheel: nothing is saved up.
+                    self.wheel = 0;
                 }
             }
             Event::Today(date) => self.set_today(date),
@@ -786,7 +828,7 @@ impl IslandState {
             | Event::ShotSaveDone { .. }
             | Event::ShotRecycled { .. }
             | Event::Tick => {}
-            Event::CleanFinished => self.clean_busy = false,
+            Event::CleanFinished => self.clean_finished(now, &mut effects),
             Event::CleanModeSetting(mode) => self.clean_mode = mode,
             Event::PanelPages(pages) => self.set_pages(pages),
             Event::ShortcutTiles(tiles) => self.tiles = tiles,
@@ -830,7 +872,7 @@ impl IslandState {
                     effects.push(Effect::MixerLevel(i, level));
                 }
             }
-            Event::MoleFound(found) => self.mole_found(found, &mut effects),
+            Event::MoleFound(found) => self.mole_found(found, now, &mut effects),
             Event::MolePreviewed { opts, ok } => {
                 if self.mole == MolePhase::Scanning(opts) {
                     self.mole = MolePhase::Previewed { opts, ok };
@@ -839,6 +881,10 @@ impl IslandState {
             Event::MoleFinished { ok } => {
                 if self.mole == MolePhase::Running {
                     self.mole = MolePhase::Finished { ok };
+                    // Its result waits to be shown before the cleaner ends.
+                    if self.cleaner.is_some() {
+                        self.clean_result = Some(false);
+                    }
                 }
             }
         }
@@ -873,19 +919,41 @@ impl IslandState {
             self.cli_focused = false;
             effects.push(Effect::ReleaseCliFocus);
         }
-        // The cleaner belongs to the System page of an open panel.
-        if self.cleaner.is_some() && (self.page != Page::System || !self.panel_open()) {
+        // The cleaner keeps its place across a close and page changes. It
+        // ends with its back button, or once the result of a clean it
+        // showed has been seen and it is no longer on an open System panel.
+        if self.clean_result == Some(false) && self.cleaner_shown() {
+            self.clean_result = Some(true);
+        }
+        if self.clean_result == Some(true)
+            && self.cleaner.is_some()
+            && !(self.page == Page::System && self.panel_open())
+        {
             self.cleaner = None;
+        }
+        if self.cleaner.is_none() {
+            self.clean_result = None;
+            self.mole_log_scroll = 0;
         }
         // A Mole notice was clicked: the cleaner opens on its log.
         if self.mole_pending && self.page == Page::System && self.panel_open() {
             self.mole_pending = false;
-            self.open_mole_cleaner(&mut effects);
+            self.open_mole_cleaner(now, &mut effects);
         }
         // Mole mode left: a preview stops, its result is thrown away.
         let mole_now = self.cleaner.map(|c| c.mode);
         if cleaner_was == Some(CleanMode::Mole) && mole_now != Some(CleanMode::Mole) {
             self.leave_mole(&mut effects);
+        }
+        // An armed button never waits behind a closed panel or another page.
+        if self.cleaner.is_some() && !(self.page == Page::System && self.panel_open()) {
+            self.disarm_cleaner();
+        }
+        // The cleaner shows again (the panel reopened, the page came back,
+        // "Bersihkan" over a cached result): look again only if what it
+        // shows is old.
+        if !shown_was && self.cleaner_shown() {
+            self.refresh_if_stale(now, &mut effects);
         }
         if self.clip_focused && (self.page != Page::Clipboard || self.collapsed != Collapse::No) {
             self.clip_focused = false;
@@ -959,8 +1027,11 @@ impl IslandState {
         }
         if panel_was_open && !self.panel_open() {
             // A page that is off was opened by its button for that visit
-            // only; the next hover starts on a page that is on.
-            self.leave_hidden_page();
+            // only; the next hover starts on a page that is on. Not while
+            // the cleaner is kept on it: it keeps its place.
+            if !(self.cleaner.is_some() && self.page == Page::System) {
+                self.leave_hidden_page();
+            }
             self.wheel = 0;
             self.notes_page = 0;
             self.reminders_page = 0;
@@ -1149,7 +1220,8 @@ impl IslandState {
         }
     }
 
-    /// The cleaner is what the panel shows.
+    /// The cleaner is what the panel shows (the view is the System panel;
+    /// a notice over it, another page or a closed panel do not count).
     fn cleaner_shown(&self) -> bool {
         self.cleaner.is_some() && self.view() == View::Panel(Page::System)
     }
@@ -1162,6 +1234,76 @@ impl IslandState {
     /// The cleaner shows in Mole mode.
     fn mole_shown(&self) -> bool {
         self.cleaner_shown() && self.cleaner.is_some_and(|c| c.mode == CleanMode::Mole)
+    }
+
+    /// Mole's log is what shows: a clean that runs or ended, or a preview
+    /// whose log was asked for.
+    fn mole_log_visible(&self) -> bool {
+        self.mole_shown()
+            && match self.mole {
+                MolePhase::Running | MolePhase::Finished { .. } => true,
+                MolePhase::Previewed { .. } => self.cleaner.is_some_and(|c| c.mole_log),
+                _ => false,
+            }
+    }
+
+    /// The armed button turns back.
+    fn disarm_cleaner(&mut self) {
+        if let Some(c) = &mut self.cleaner {
+            c.armed_until = None;
+        }
+    }
+
+    /// An own-mode clean ended (or could not start). The cleaner, if there
+    /// is one, scans again on the worker even with the panel shut, and its
+    /// result waits to be shown before the cleaner ends.
+    fn clean_finished(&mut self, now: Instant, effects: &mut Vec<Effect>) {
+        self.clean_busy = false;
+        if self.cleaner.is_some() {
+            self.clean_result = Some(false);
+            self.ask_own_scan(now, effects);
+        }
+    }
+
+    /// Asks for a scan of the own mode's rows, stamped with the request's
+    /// time.
+    fn ask_own_scan(&mut self, now: Instant, effects: &mut Vec<Effect>) {
+        self.own_scan_at = Some(now);
+        effects.push(Effect::OpenCleaner);
+    }
+
+    fn scan_stale(at: Option<Instant>, now: Instant) -> bool {
+        at.is_none_or(|at| now.saturating_duration_since(at) > CLEAN_SCAN_STALE)
+    }
+
+    /// The own mode's rows are measured again when the last scan was asked
+    /// for long ago (or never) and no clean runs; otherwise the app reuses
+    /// the sizes it has.
+    fn refresh_own_if_stale(&mut self, now: Instant, effects: &mut Vec<Effect>) {
+        if !self.clean_busy && Self::scan_stale(self.own_scan_at, now) {
+            self.ask_own_scan(now, effects);
+        }
+    }
+
+    /// The cleaner shows again: a new one looks (own scan, Mole detect), a
+    /// kept one only when its sizes are older than `CLEAN_SCAN_STALE`. A
+    /// detect, a preview or a clean that runs is left alone.
+    fn refresh_if_stale(&mut self, now: Instant, effects: &mut Vec<Effect>) {
+        let Some(mode) = self.cleaner.map(|c| c.mode) else {
+            return;
+        };
+        match mode {
+            CleanMode::Own => self.refresh_own_if_stale(now, effects),
+            CleanMode::Mole => {
+                let stale = Self::scan_stale(self.mole_preview_at, now);
+                match self.mole {
+                    MolePhase::Unknown => self.enter_mole(false, now, effects),
+                    MolePhase::Previewed { .. } if stale => self.start_preview(now, effects),
+                    MolePhase::Missing if stale => self.enter_mole(false, now, effects),
+                    _ => {}
+                }
+            }
+        }
     }
 
     /// The cleaner's button: the first click arms it, a second one before
@@ -1182,6 +1324,7 @@ impl IslandState {
         match c.armed_until.take() {
             Some(until) if now < until => {
                 self.clean_busy = true;
+                self.clean_result = None;
                 effects.push(Effect::CleanDelete(picked));
             }
             _ => c.armed_until = Some(now + CLEAN_CONFIRM),
@@ -1197,7 +1340,7 @@ impl IslandState {
             return;
         }
         if matches!(self.mole, MolePhase::Finished { .. }) {
-            self.start_preview(effects);
+            self.start_preview(now, effects);
             return;
         }
         let ready = self.mole
@@ -1217,6 +1360,8 @@ impl IslandState {
             Some(until) if now < until => {
                 c.mole_log = false;
                 self.mole = MolePhase::Running;
+                self.mole_log_scroll = 0;
+                self.clean_result = None;
                 self.clear_sticky(Sticky::Mole);
                 effects.push(Effect::MoleClean(self.mole_opts));
             }
@@ -1225,8 +1370,11 @@ impl IslandState {
     }
 
     /// A new dry-run with the options ticked now; the old preview goes.
-    fn start_preview(&mut self, effects: &mut Vec<Effect>) {
+    fn start_preview(&mut self, now: Instant, effects: &mut Vec<Effect>) {
         self.mole = MolePhase::Scanning(self.mole_opts);
+        self.mole_preview_at = Some(now);
+        self.mole_log_scroll = 0;
+        self.clean_result = None;
         if let Some(c) = &mut self.cleaner {
             c.armed_until = None;
             c.mole_log = false;
@@ -1237,18 +1385,21 @@ impl IslandState {
     /// Mole mode came up: a clean that runs, or one that just ended when a
     /// notice asked for its log, shows as it is; otherwise Mole is looked
     /// for and, once found, previewed.
-    fn enter_mole(&mut self, for_log: bool, effects: &mut Vec<Effect>) {
+    fn enter_mole(&mut self, for_log: bool, now: Instant, effects: &mut Vec<Effect>) {
         match self.mole {
             MolePhase::Running => {}
             MolePhase::Finished { .. } if for_log => {}
             _ => {
                 self.mole = MolePhase::Detecting;
+                // A detect that finds nothing is not asked again before
+                // `CLEAN_SCAN_STALE`, like a preview.
+                self.mole_preview_at = Some(now);
                 effects.push(Effect::MoleDetect);
             }
         }
     }
 
-    /// Mole mode went (another mode, or the cleaner closed): a dry-run
+    /// Mole mode went (another mode, or the cleaner ended): a dry-run
     /// stops and every preview is forgotten. A clean goes on.
     fn leave_mole(&mut self, effects: &mut Vec<Effect>) {
         match self.mole {
@@ -1263,21 +1414,21 @@ impl IslandState {
         }
     }
 
-    fn mole_found(&mut self, found: bool, effects: &mut Vec<Effect>) {
+    fn mole_found(&mut self, found: bool, now: Instant, effects: &mut Vec<Effect>) {
         if self.mole != MolePhase::Detecting {
             return;
         }
         if !found {
             self.mole = MolePhase::Missing;
         } else if self.cleaner.is_some_and(|c| c.mode == CleanMode::Mole) {
-            self.start_preview(effects);
+            self.start_preview(now, effects);
         } else {
             self.mole = MolePhase::Unknown;
         }
     }
 
     /// The segment: the other mode, remembered. Not while a clean runs.
-    fn switch_mode(&mut self, mode: CleanMode, effects: &mut Vec<Effect>) {
+    fn switch_mode(&mut self, mode: CleanMode, now: Instant, effects: &mut Vec<Effect>) {
         if !self.cleaner_shown() || self.clean_busy || self.mole == MolePhase::Running {
             return;
         }
@@ -1293,8 +1444,8 @@ impl IslandState {
         self.clean_mode = mode;
         effects.push(Effect::SaveCleanMode(mode));
         match mode {
-            CleanMode::Mole => self.enter_mole(false, effects),
-            CleanMode::Own => effects.push(Effect::OpenCleaner),
+            CleanMode::Mole => self.enter_mole(false, now, effects),
+            CleanMode::Own => self.refresh_own_if_stale(now, effects),
         }
     }
 
@@ -1305,7 +1456,7 @@ impl IslandState {
         self.mole_pending = true;
     }
 
-    fn open_mole_cleaner(&mut self, effects: &mut Vec<Effect>) {
+    fn open_mole_cleaner(&mut self, now: Instant, effects: &mut Vec<Effect>) {
         match &mut self.cleaner {
             Some(c) if c.mode == CleanMode::Mole => return,
             Some(c) => {
@@ -1314,7 +1465,12 @@ impl IslandState {
             }
             None => self.cleaner = Some(CleanerUi::new(CleanMode::Mole)),
         }
-        self.enter_mole(true, effects);
+        self.enter_mole(true, now, effects);
+        // A finished clean's log opened by its notice is a result shown:
+        // the cleaner ends once it is seen, as after any clean.
+        if matches!(self.mole, MolePhase::Finished { .. }) && self.clean_result.is_none() {
+            self.clean_result = Some(false);
+        }
     }
 
     fn panel_open(&self) -> bool {
@@ -1846,14 +2002,17 @@ impl IslandState {
                     } else {
                         self.clean_mode
                     };
-                    self.cleaner = Some(CleanerUi::new(mode));
-                    match mode {
-                        CleanMode::Own => effects.push(Effect::OpenCleaner),
-                        CleanMode::Mole => self.enter_mole(false, effects),
+                    // An old result is not what a new cleaner shows.
+                    if mode == CleanMode::Mole && matches!(self.mole, MolePhase::Finished { .. })
+                    {
+                        self.mole = MolePhase::Unknown;
                     }
+                    // The scan or the detect is asked for by `apply`, where
+                    // the cleaner starts to show.
+                    self.cleaner = Some(CleanerUi::new(mode));
                 }
             }
-            Hit::CleanMode(mode) => self.switch_mode(mode, effects),
+            Hit::CleanMode(mode) => self.switch_mode(mode, now, effects),
             Hit::MoleOpt(opt) => {
                 // Not on the install card, not while a clean runs.
                 if self.mole_shown()
@@ -1866,7 +2025,7 @@ impl IslandState {
                             | MolePhase::Previewed { .. }
                             | MolePhase::Finished { .. }
                     ) {
-                        self.start_preview(effects);
+                        self.start_preview(now, effects);
                     }
                 }
             }
@@ -1895,6 +2054,7 @@ impl IslandState {
                     && let Some(c) = &mut self.cleaner
                 {
                     c.mole_log = !c.mole_log;
+                    self.mole_log_scroll = 0;
                 }
             }
             Hit::CleanBack => {
@@ -2020,6 +2180,10 @@ impl IslandState {
     /// past either end are spent, so one notch back always moves a page.
     fn wheel(&mut self, delta: i32) {
         if !self.can_turn_page() {
+            // The cleaner holds the wheel: nothing is saved up.
+            if self.cleaner_shown() {
+                self.wheel = 0;
+            }
             return;
         }
         self.wheel = self.wheel.saturating_add(delta);
@@ -2029,10 +2193,11 @@ impl IslandState {
         self.turn_page(-i64::from(steps));
     }
 
-    /// Whether the wheel or a flick may turn a page: the panel shows one,
-    /// and it is not the search (not in the order of pages).
+    /// Whether the wheel, a flick or a dock click may turn a page: the panel
+    /// shows one, it is not the search (not in the order of pages), and the
+    /// cleaner is not what shows (it keeps the wheel; Back leaves it).
     fn can_turn_page(&self) -> bool {
-        matches!(self.view(), View::Panel(_)) && self.page != Page::Search
+        matches!(self.view(), View::Panel(_)) && self.page != Page::Search && !self.cleaner_shown()
     }
 
     /// Closes the quick search (Esc): the panel collapses and the page it
@@ -2509,7 +2674,7 @@ impl IslandState {
         };
         Some(ShownPanel {
             page,
-            cleaner: self.cleaner,
+            cleaner: self.cleaner().copied(),
             mole: self.mole,
             cli_tall: self.cli_tall,
             cli_menu: self.cli_menu,
@@ -2582,9 +2747,23 @@ impl IslandState {
         self.reminders_page
     }
 
-    /// The cleaner over the System page, while it is open.
+    /// The cleaner over the System page: only while the page is System (the
+    /// panel may be shut; other pages show nothing of it), so the panel's
+    /// shape, its sampling and its frame follow "cleaner on System".
     pub fn cleaner(&self) -> Option<&CleanerUi> {
-        self.cleaner.as_ref()
+        self.cleaner.as_ref().filter(|_| self.page == Page::System)
+    }
+
+    /// The cleaner exists, on any page and with the panel shut. (Only the
+    /// tests ask; the app follows `cleaner()`.)
+    #[cfg(test)]
+    pub fn cleaner_kept(&self) -> bool {
+        self.cleaner.is_some()
+    }
+
+    /// Mole's log lines the view is scrolled up from the newest; 0 follows.
+    pub fn mole_log_scroll(&self) -> usize {
+        self.mole_log_scroll
     }
 
     /// A clean is running.

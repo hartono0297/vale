@@ -1023,6 +1023,8 @@ pub struct HitRegions {
     pub devices_list: Option<Rect>,
     /// The Music page's cover: where the wheel turns the volume.
     pub media_art: Option<Rect>,
+    /// The cleaner's Mole log, where the wheel scrolls it.
+    pub mole_log: Option<Rect>,
     /// The faint drag margin, while it is drawn.
     pub halo: Option<Rect>,
     /// The page dots' hover zone, on a page that shows the dots.
