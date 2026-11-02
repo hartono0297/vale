@@ -235,7 +235,7 @@ window glue: `capture/overlay.rs` (Pick phase, `finish`, `finish_inline`) and
   Simpan, never over a file). OpenEditor: `shot_edit::window::open_with(crop,
   selection centre, demo, doc)`; the editor then follows its own rules,
   auto-copy included.
-- **Copy failure rule** (`inline::after_copy`, `edit::copy_current`). Copy (the
+- **Copy failure rule** (`inline::after_copy`, `edit::copy` / `edit::copy_real`). Copy (the
   Salin button, Enter, Ctrl+C) renders and copies BEFORE the state is taken:
   `overlay::inline_picture()` reads the crop and the moved document as owned
   values inside `with(..)`, the RefCell is released, then `export::copy(..)`
