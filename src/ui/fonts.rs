@@ -601,6 +601,146 @@ mod tests {
     }
 
     #[test]
+    fn sans_is_exactly_the_old_choice_and_mono_prefers_jetbrains_mono() {
+        let all = Loaded {
+            dm_sans: true,
+            dm_mono: true,
+            jetbrains_mono: true,
+        };
+        let cases = [
+            all,
+            Loaded::default(),
+            Loaded {
+                jetbrains_mono: false,
+                ..all
+            },
+            Loaded {
+                dm_sans: false,
+                ..all
+            },
+            Loaded {
+                dm_mono: false,
+                ..all
+            },
+        ];
+        for loaded in cases {
+            for role in [Role::Text, Role::Display, Role::Mono] {
+                for installed in [true, false] {
+                    let installed = move |_: &str| installed;
+                    assert_eq!(
+                        choose_in(role, UiFont::Sans, loaded, installed),
+                        choose(role, loaded, installed),
+                        "{role:?} {loaded:?}"
+                    );
+                }
+            }
+        }
+        let jbm = Choice {
+            family: JETBRAINS_MONO,
+            embedded: true,
+        };
+        let mono = |role, loaded| choose_in(role, UiFont::Mono, loaded, |_| true);
+        assert_eq!(mono(Role::Text, all), jbm);
+        assert_eq!(mono(Role::Display, all), jbm);
+        // Code stays DM Mono in both.
+        assert_eq!(mono(Role::Mono, all).family, DM_MONO);
+        // JetBrains Mono missing: DM Sans when loaded, else the Segoe chain.
+        let no_jbm = Loaded {
+            jetbrains_mono: false,
+            ..all
+        };
+        assert_eq!(mono(Role::Text, no_jbm).family, DM_SANS);
+        assert_eq!(mono(Role::Display, no_jbm).family, DM_SANS);
+        let none = Loaded::default();
+        let text = choose_in(Role::Text, UiFont::Mono, none, |_| true);
+        assert_eq!(text.family, "Segoe UI Variable Text");
+        assert!(!text.embedded);
+        let display = choose_in(Role::Display, UiFont::Mono, none, |_| true);
+        assert_eq!(display.family, "Segoe UI Variable Display");
+        assert_eq!(
+            choose_in(Role::Display, UiFont::Mono, none, |f| f == "Segoe UI").family,
+            "Segoe UI"
+        );
+    }
+
+    #[test]
+    fn mono_has_no_display_tracking() {
+        assert_eq!(display_tracking_em(UiFont::Sans), DISPLAY_TRACKING_EM);
+        assert_eq!(display_tracking_em(UiFont::Mono), 0.0);
+        let dwrite = factory();
+        if !embedded(&dwrite).loaded.jetbrains_mono {
+            eprintln!("skipped: JetBrains Mono is not in this binary");
+            return;
+        }
+        let face = Face::for_role_in(&dwrite, Role::Display, UiFont::Mono);
+        assert_eq!(face.family.to_string(), JETBRAINS_MONO);
+        let size = 20.0;
+        let format = face
+            .format(&dwrite, DWRITE_FONT_WEIGHT_SEMI_BOLD, size)
+            .expect("format");
+        let typography = tabular_figures(&dwrite).expect("typography");
+        let text: Vec<u16> = "Oktober 2026".encode_utf16().collect();
+        let width = |ui: Option<UiFont>| unsafe {
+            let layout =
+                text_layout(&dwrite, &text, &format, 4096.0, 64.0, &typography).expect("layout");
+            if let Some(ui) = ui {
+                apply_tracking_in(&layout, text.len() as u32, size, ui).expect("tracking");
+            }
+            let mut m = Default::default();
+            layout.GetMetrics(&mut m).expect("metrics");
+            m.widthIncludingTrailingWhitespace
+        };
+        // Mono applies nothing; 12 cells of 0.6 em.
+        assert_eq!(width(None), width(Some(UiFont::Mono)));
+        assert!((width(None) - 12.0 * 0.6 * size).abs() < 0.1, "{}", width(None));
+        assert!(width(Some(UiFont::Sans)) < width(None));
+    }
+
+    #[test]
+    fn jetbrains_mono_keeps_spaces_and_draws_no_ligatures() {
+        let dwrite = factory();
+        if !embedded(&dwrite).loaded.jetbrains_mono {
+            eprintln!("skipped: JetBrains Mono is not in this binary");
+            return;
+        }
+        let face = Face::for_role_in(&dwrite, Role::Text, UiFont::Mono);
+        assert_eq!(face.family.to_string(), JETBRAINS_MONO);
+        let format = face
+            .format(&dwrite, DWRITE_FONT_WEIGHT_NORMAL, 13.0)
+            .expect("format");
+        let typography = tabular_figures(&dwrite).expect("typography");
+        let plain = unsafe { dwrite.CreateTypography() }.expect("plain");
+        let width = |s: &str, typography: &IDWriteTypography| unsafe {
+            let wide: Vec<u16> = s.encode_utf16().collect();
+            let layout =
+                text_layout(&dwrite, &wide, &format, 400.0, 20.0, typography).expect("layout");
+            let mut m = Default::default();
+            layout.GetMetrics(&mut m).expect("metrics");
+            m.widthIncludingTrailingWhitespace
+        };
+        // Text without digits measures as with no features at all, and a
+        // space is one cell like any other character.
+        for s in ["Minum vitamin", "a b  c", " "] {
+            assert_eq!(width(s, &typography), width(s, &plain), "{s:?}");
+        }
+        let cell = width("m", &typography);
+        assert!((width("a b", &typography) - 3.0 * cell).abs() < 0.01);
+        assert!((width(" ", &typography) - cell).abs() < 0.01);
+        // Digits are fixed width without the feature.
+        assert_eq!(width("1111", &plain), width("0000", &plain));
+        assert_eq!(width("12:34", &typography), width("00:00", &typography));
+        // No ligatures: "->" is "-" plus ">", "==" and "!=" likewise, and
+        // "www" is three cells.
+        for (pair, a, b) in [("->", "-", ">"), ("==", "=", "="), ("!=", "!", "="), ("<=", "<", "=")]
+        {
+            let joined = width(pair, &typography);
+            let apart = width(a, &typography) + width(b, &typography);
+            assert!((joined - apart).abs() < 0.01, "{pair:?}: {joined} vs {apart}");
+        }
+        assert!((width("www", &typography) - 3.0 * width("w", &typography)).abs() < 0.01);
+    }
+
+    #[test]
     fn tracking_narrows_display_text() {
         let dwrite = factory();
         let face = Face::for_role(&dwrite, Role::Display);
