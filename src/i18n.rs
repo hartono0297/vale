@@ -360,7 +360,6 @@ keys! {
     ShortcutTaskManager => "Pengelola Tugas", "Task Manager";
     ShortcutSettings => "Pengaturan Windows", "Windows Settings";
     ShortcutLock => "Kunci layar", "Lock screen";
-    ShortcutValeSettings => "Setelan Vale", "Vale Settings";
     ShortcutGoShelf => "Rak", "Shelf";
     // Settings → Panel → Halaman panel and Pintasan: the lists.
     PagesShown => "Tampil di panel", "Shown on the panel";

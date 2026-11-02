@@ -853,14 +853,12 @@ pub enum Shortcut {
     TaskManager,
     WindowsSettings,
     Lock,
-    /// Opens Vale's own Settings window.
-    ValeSettings,
     /// Jumps straight to a panel page (never Search or Shortcuts).
     Go(Page),
 }
 
 impl Shortcut {
-    pub const ALL: [Shortcut; 22] = [
+    pub const ALL: [Shortcut; 21] = [
         Shortcut::Screenshot,
         Shortcut::Clipboard,
         Shortcut::Search,
@@ -870,7 +868,6 @@ impl Shortcut {
         Shortcut::TaskManager,
         Shortcut::WindowsSettings,
         Shortcut::Lock,
-        Shortcut::ValeSettings,
         Shortcut::Go(Page::Calendar),
         Shortcut::Go(Page::Pomodoro),
         Shortcut::Go(Page::Reminders),
@@ -885,8 +882,8 @@ impl Shortcut {
         Shortcut::Go(Page::Arrange),
     ];
 
-    /// Whether a fresh install shows this tile: the original nine, Vale's
-    /// own Settings, the Shelf and Devices. The other page tiles (Susun
+    /// Whether a fresh install shows this tile: the original nine, the
+    /// Shelf and Devices (11 tiles). The other page tiles (Susun
     /// included) are there to add.
     pub fn default_on(self) -> bool {
         !matches!(self, Shortcut::Go(p) if !matches!(p, Page::Shelf | Page::Devices))

@@ -4314,7 +4314,10 @@ mod tests {
 
     #[test]
     fn tile_clicks_change_the_list_or_nothing() {
-        let tiles = ShortcutTiles::default();
+        let mut tiles = ShortcutTiles::default();
+        // The Calendar on too: twelve show, the page is full.
+        let calendar = 9;
+        assert!(tiles.toggle(calendar));
         // Screenshot hidden, then back.
         let off = tile_action(&tiles, Hit::TileOn(0)).expect("hidden");
         assert_eq!(off.shown(), tiles.shown() - 1);
@@ -4323,18 +4326,19 @@ mod tests {
         let moved = tile_action(&tiles, Hit::TileMove(0, 1)).expect("moved");
         assert_eq!(moved.visible()[1], tiles.visible()[0]);
         assert_eq!(tile_action(&tiles, Hit::TileMove(0, -1)), None);
-        // "+ Tambah" on a tile that is off, refused while twelve show (a
-        // fresh install shows twelve).
-        let calendar = 10;
-        assert_eq!(tile_action(&tiles, Hit::TileOn(calendar)), None);
+        // "+ Tambah" on a tile that is off, refused while twelve show.
+        assert_eq!(tile_action(&tiles, Hit::TileOn(10)), None);
         assert_eq!(tile_action(&tiles, Hit::TileOn(12)), None);
         let room = tile_action(&tiles, Hit::TileOn(0)).expect("hidden");
-        let added = tile_action(&room, Hit::TileOn(calendar)).expect("shown");
+        let added = tile_action(&room, Hit::TileOn(10)).expect("shown");
         assert_eq!(added.shown(), room.shown() + 1);
         // "Hapus" only on an own tile; "Kembalikan bawaan" on a changed list.
         assert_eq!(tile_action(&tiles, Hit::TileRemove(0)), None);
-        assert_eq!(tile_action(&tiles, Hit::TileReset), None);
-        assert_eq!(tile_action(&moved, Hit::TileReset), Some(tiles.clone()));
+        // Reset: nothing to do on the default, the default back from a change.
+        let defaults = ShortcutTiles::default();
+        assert_eq!(tile_action(&defaults, Hit::TileReset), None);
+        assert_eq!(tile_action(&tiles, Hit::TileReset), Some(defaults.clone()));
+        assert_eq!(tile_action(&moved, Hit::TileReset), Some(defaults));
         assert_eq!(tile_action(&tiles, Hit::TileGrip(0)), None);
         assert_eq!(tile_action(&tiles, Hit::Robot), None);
     }
@@ -4361,9 +4365,8 @@ mod tests {
 
     #[test]
     fn adding_an_own_tile_checks_what_was_typed() {
-        // One built-in hidden: the page has room for one own tile.
-        let mut tiles = ShortcutTiles::default();
-        tiles.toggle(0);
+        // Eleven show: the page has room for one own tile.
+        let tiles = ShortcutTiles::default();
         let add =
             |t: &ShortcutTiles, kind, name: &str, target: &str| add_tile_to(t, kind, name, target);
         let (next, on) = add(

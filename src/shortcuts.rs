@@ -51,14 +51,13 @@ pub fn drive_root(letter: char) -> String {
     format!("{letter}:\\")
 }
 
-/// `None` for the Clipboard, Cari, page and Vale Settings tiles: they open
-/// the island's own Clipboard page, quick search, a page and Settings (the
-/// reducer does that).
+/// `None` for the Clipboard, Cari and page tiles: they open the island's own
+/// Clipboard page, quick search and a page (the reducer does that).
 pub fn shortcut_action(s: Shortcut) -> Option<Action> {
     Some(match s {
         Shortcut::Screenshot => Action::Open("ms-screenclip:"),
         Shortcut::Clipboard | Shortcut::Search => return None,
-        Shortcut::ValeSettings | Shortcut::Go(_) => return None,
+        Shortcut::Go(_) => return None,
         Shortcut::Emoji => Action::WinKey(VK_OEM_PERIOD),
         Shortcut::Explorer => Action::System("explorer.exe"),
         Shortcut::Calculator => Action::System(r"System32\calc.exe"),
@@ -89,7 +88,6 @@ pub fn label(s: Shortcut) -> Key {
         Shortcut::TaskManager => Key::ShortcutTaskManager,
         Shortcut::WindowsSettings => Key::ShortcutSettings,
         Shortcut::Lock => Key::ShortcutLock,
-        Shortcut::ValeSettings => Key::ShortcutValeSettings,
         Shortcut::Go(page) => match page {
             Page::Calendar => Key::PageCalendar,
             Page::Pomodoro => Key::PagePomodoro,
@@ -144,7 +142,6 @@ pub fn icon(s: Shortcut) -> Icon {
         Shortcut::TaskManager => Icon::Activity,
         Shortcut::WindowsSettings => Icon::Gear,
         Shortcut::Lock => Icon::Lock,
-        Shortcut::ValeSettings => Icon::Sliders,
         Shortcut::Go(page) => page_icon(page),
     }
 }
@@ -308,8 +305,7 @@ mod tests {
                     Some(Action::Open("ms-settings:"))
                 ),
                 (Shortcut::Lock, Some(Action::Lock)),
-                // Vale's own Settings and the page tiles: the reducer's.
-                (Shortcut::ValeSettings, None),
+                // The page tiles: the reducer's.
                 (Shortcut::Go(Page::Calendar), None),
                 (Shortcut::Go(Page::Pomodoro), None),
                 (Shortcut::Go(Page::Reminders), None),
@@ -327,15 +323,7 @@ mod tests {
     }
 
     #[test]
-    fn vale_settings_does_not_look_like_the_windows_gear() {
-        assert_ne!(
-            icon(Shortcut::ValeSettings),
-            icon(Shortcut::WindowsSettings)
-        );
-        assert_ne!(
-            label(Shortcut::ValeSettings),
-            label(Shortcut::WindowsSettings)
-        );
+    fn page_tiles_have_their_own_icon_and_label() {
         assert_eq!(icon(Shortcut::Go(Page::Calendar)), Icon::Calendar);
         assert_eq!(label(Shortcut::Go(Page::Shelf)), Key::ShortcutGoShelf);
         assert_eq!(icon(Shortcut::Go(Page::Devices)), Icon::Usb);

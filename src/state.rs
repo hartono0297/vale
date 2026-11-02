@@ -1970,10 +1970,6 @@ impl IslandState {
                     self.page = page;
                 }
             }
-            // Vale's own Settings window; the panel gets out of the way.
-            Hit::Shortcut(Shortcut::ValeSettings) => {
-                self.collapse_for(Effect::OpenSettings, effects)
-            }
             // The panel gets out of the way first: the screenshot or picker
             // is for the window underneath. `App` waits for that.
             Hit::Shortcut(s) => self.collapse_for(Effect::RunShortcut(s), effects),
@@ -5354,16 +5350,6 @@ mod tests {
         s.apply(Event::Hover(false), later);
         s.apply(Event::Hover(true), later);
         assert_eq!(s.view(), View::Panel(Page::Media));
-    }
-
-    #[test]
-    fn the_vale_settings_tile_collapses_and_asks_to_open_the_settings() {
-        let t0 = Instant::now();
-        let mut s = st();
-        open_on(&mut s, Page::Shortcuts, t0);
-        let effects = s.apply(Event::Click(Hit::Shortcut(Shortcut::ValeSettings)), t0);
-        assert_eq!(effects, vec![Effect::OpenSettings]);
-        assert_eq!(s.view(), View::Idle);
     }
 
     #[test]
