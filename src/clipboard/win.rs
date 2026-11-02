@@ -283,8 +283,9 @@ pub fn drop_files(paths: &[PathBuf]) -> Vec<u8> {
 
 /// Puts `formats` on the clipboard as the island. Returns the sequence
 /// number after closing, which marks the `WM_CLIPBOARDUPDATE` this causes
-/// as the island's own; `None` if it could not.
-pub fn write(hwnd: HWND, formats: &[(u32, Vec<u8>)]) -> Option<u32> {
+/// as the island's own; `None` if it could not. The bytes are borrowed or
+/// owned (`B`), so a caller holding a large picture need not copy it.
+pub fn write<B: AsRef<[u8]>>(hwnd: HWND, formats: &[(u32, B)]) -> Option<u32> {
     if formats.is_empty() {
         return None;
     }
@@ -298,7 +299,7 @@ pub fn write(hwnd: HWND, formats: &[(u32, Vec<u8>)]) -> Option<u32> {
     unsafe { EmptyClipboard() }.ok()?;
     let mut any = false;
     for (f, bytes) in formats {
-        any |= set(*f, bytes);
+        any |= set(*f, bytes.as_ref());
     }
     drop(open);
     any.then(|| unsafe { GetClipboardSequenceNumber() })
@@ -312,9 +313,13 @@ pub enum Wrote {
     /// `expected` was given and the clipboard has changed since: nothing was
     /// touched.
     NotOurs,
-    /// The clipboard stayed held by another app, or a format could not be
-    /// set: try again shortly.
+    /// The clipboard stayed held by another app: nothing was touched, try
+    /// again shortly.
     Busy,
+    /// The clipboard was emptied but none of the formats could be set
+    /// (memory ran out): it is empty now, at this sequence number, which is
+    /// the writer's own change, not somebody else's copy.
+    Emptied(u32),
 }
 
 /// `write`, but only while the clipboard's sequence number is still
@@ -322,7 +327,11 @@ pub enum Wrote {
 /// clipboard open and before `EmptyClipboard`, as `empty_if_unchanged` does,
 /// so a copy made by someone else since is never replaced. Opens with the
 /// same 4 tries 8 ms apart.
-pub fn write_when(hwnd: HWND, formats: &[(u32, Vec<u8>)], expected: Option<u32>) -> Wrote {
+pub fn write_when<B: AsRef<[u8]>>(
+    hwnd: HWND,
+    formats: &[(u32, B)],
+    expected: Option<u32>,
+) -> Wrote {
     if formats.is_empty() {
         return Wrote::Busy;
     }
@@ -342,13 +351,13 @@ pub fn write_when(hwnd: HWND, formats: &[(u32, Vec<u8>)], expected: Option<u32>)
     }
     let mut any = false;
     for (f, bytes) in formats {
-        any |= set(*f, bytes);
+        any |= set(*f, bytes.as_ref());
     }
     drop(open);
     if any {
         Wrote::Written(sequence_now())
     } else {
-        Wrote::Busy
+        Wrote::Emptied(sequence_now())
     }
 }
 

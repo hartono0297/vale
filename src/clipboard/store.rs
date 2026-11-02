@@ -392,12 +392,18 @@ pub struct CaptureCards {
 }
 
 impl CaptureCards {
-    /// The card `capture` made last.
+    /// The card `capture` made last, which its next picture replaces. `None`
+    /// when another capture points at the same card too (two pixel-identical
+    /// captures: the dedupe bumped one card for both): neither may remove
+    /// it, so two captures keep two cards.
     pub fn card(&self, capture: u64) -> Option<u64> {
-        self.list
+        let id = self
+            .list
             .iter()
             .find(|(c, _)| *c == capture)
-            .map(|(_, id)| *id)
+            .map(|(_, id)| *id)?;
+        let shared = self.list.iter().any(|(c, i)| *c != capture && *i == id);
+        (!shared).then_some(id)
     }
 
     /// `capture`'s card is now `card`; the oldest capture falls out past 16.
@@ -812,6 +818,31 @@ pub mod tests {
         m.set(19, 190);
         assert_eq!(m.card(4), None);
         assert_eq!(m.card(3), Some(99), "just refreshed, so not the oldest");
+    }
+
+    #[test]
+    fn a_card_two_captures_share_is_replaced_by_neither() {
+        // Two pixel-identical captures: the second copy bumped the first's
+        // card, so both point at it.
+        let mut h = History::new(50);
+        let mut m = CaptureCards::default();
+        let shared = id_of(ingest_replacing(&mut h, image(64, 48), 1, m.card(1)));
+        m.set(1, shared);
+        let bumped = id_of(ingest_replacing(&mut h, image(64, 48), 2, m.card(2)));
+        assert_eq!(bumped, shared, "the dedupe bumped the same card");
+        m.set(2, shared);
+        assert_eq!(
+            m.card(1),
+            None,
+            "shared: not the first capture's to replace"
+        );
+        // The first capture's edit is its own card; the shared one stays.
+        let a2 = id_of(ingest_replacing(&mut h, image(66, 48), 3, m.card(1)));
+        m.set(1, a2);
+        assert!(h.get(shared).is_some(), "the second capture's card stays");
+        assert_eq!(h.len(), 2);
+        // The second capture owns it alone now and may replace it.
+        assert_eq!(m.card(2), Some(shared));
     }
 
     #[test]

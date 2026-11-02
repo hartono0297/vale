@@ -145,6 +145,10 @@ auto-copy was on (`OwnCopy.managed`) do not take the normal `ingest` path:
   still exists and is **not pinned**, and push the new one. The new card gets a
   new id (the thumbnail cache is keyed by id and never shows a stale picture)
   and goes to the front; `push`'s dedupe against other cards still applies.
+- `CaptureCards::card(capture)` is `None` when another capture maps to the
+  same card (two pixel-identical captures: the dedupe answered `Bumped` with
+  the first one's card). Neither removes a shared card, so two captures keep
+  two cards; once one moves on, the other owns it alone again.
 - A **pinned** card is never changed or removed: the newer picture becomes a
   new unpinned card. A snapshot that is not kept (over 64 MB, skipped) leaves
   the old card as it is.

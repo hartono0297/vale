@@ -160,7 +160,11 @@ window: `shot_edit/window.rs`; export: `shot_edit/export.rs`.
   editor's last write left): else somebody else copied since, auto-copy stops
   silently (`stopped`) and the session stays dirty. `clipboard::win::write_when`
   re-checks the sequence *with the clipboard open*, before `EmptyClipboard`
-  (like `empty_if_unchanged`), returning Written(seq) / NotOurs / Busy. A
+  (like `empty_if_unchanged`), returning Written(seq) / NotOurs / Busy /
+  Emptied(seq). Emptied: `EmptyClipboard` ran but no format could be set
+  (memory); the sequence moved by the editor's own hand, so `on_emptied`
+  records it as `last_seq` before the retry, else the retry would read it
+  as somebody else's copy and stop silently with the clipboard empty. A
   manual Copy (`on_manual_copy`) takes the clipboard back, clears `stopped`
   and drops any pending retry or debounce. Latest capture wins: a second
   editor's first write makes the first one stop.
@@ -180,6 +184,13 @@ window: `shot_edit/window.rs`; export: `shot_edit/export.rs`.
   bar therefore shows only when the picture is neither on the clipboard nor
   saved. `Hit::Discard` never flushes; a late worker result for a destroyed
   window is never read. A drag still running at close is ended as a release.
+- **Timers and the model move together.** `kill_auto_timers` also calls
+  `AutoCopy::timers_cancelled` (no debounce due, no retry waiting). Without
+  it a retry whose timer the close flush killed stayed in `waiting`, and the
+  next debounce for that revision did nothing (`on_timer`), so the revision
+  never reached the clipboard. A busy flush sets `due` again (`on_change`)
+  and arms the debounce. Format bytes are borrowed (`write`/`write_when` take
+  `&[(u32, B: AsRef<[u8]>)]`), never cloned out of `Prepared`.
 - **Registry and the island.** Each editor takes `next_capture_id()`. Its
   writes are recorded with `managed` = the latched flag. The island's
   `read_clipboard` looks `own_copy(seq)` up right after the snapshot: a

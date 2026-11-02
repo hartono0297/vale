@@ -158,6 +158,23 @@ impl<P> AutoCopy<P> {
         self.retry_tries = 0;
     }
 
+    /// The window killed the debounce and retry timers: nothing is due any
+    /// more and no write waits for a retry, so the next timer starts afresh
+    /// instead of waiting on a retry that will never fire.
+    pub fn timers_cancelled(&mut self) {
+        self.due = false;
+        self.waiting = None;
+        self.retry_tries = 0;
+    }
+
+    /// A write emptied the clipboard but could set none of its formats
+    /// (memory ran out): the empty clipboard, at sequence `seq`, is still
+    /// this editor's, so the retry is not mistaken for somebody else's copy.
+    /// The caller then treats the write as busy (`on_busy`).
+    pub fn on_emptied(&mut self, seq: u32) {
+        self.last_seq = Some(seq);
+    }
+
     /// The editor opened: the first worker starts at once.
     pub fn wants_first(&self) -> bool {
         self.active() && !self.attempted
@@ -463,6 +480,42 @@ mod tests {
         a.worker_failed(2);
         assert!(a.on_change());
         assert_eq!(a.on_timer(2, false), TimerAction::Start);
+    }
+
+    #[test]
+    fn a_retry_whose_timer_was_killed_does_not_block_the_next_render() {
+        // A busy write leaves a retry waiting; closing kills its timer, the
+        // flush is busy again and the debounce is armed instead.
+        let mut a = auto();
+        a.begin_worker(1);
+        assert_eq!(a.on_result(1, 1), ResultAction::Write);
+        assert_eq!(a.on_busy(1, "p"), Step::Again(RETRY_MS));
+        a.timers_cancelled();
+        assert!(a.on_change());
+        assert_eq!(
+            a.on_timer(1, false),
+            TimerAction::Start,
+            "no retry timer is left to write revision 1"
+        );
+    }
+
+    #[test]
+    fn a_write_that_only_emptied_the_clipboard_keeps_it_ours() {
+        let mut a = auto();
+        a.begin_worker(0);
+        a.on_written(10, 0);
+        // The next write emptied the clipboard (sequence 11) but set nothing.
+        a.on_emptied(11);
+        assert_eq!(a.on_busy(1, "p"), Step::Again(RETRY_MS));
+        assert_eq!(a.take_retry(1), Some((1, "p")));
+        assert_eq!(
+            a.may_write(11),
+            WriteGate::Write,
+            "the empty clipboard is ours"
+        );
+        assert!(!a.stopped());
+        // Somebody else copying after that still stops it.
+        assert_eq!(a.may_write(12), WriteGate::NotOurs);
     }
 
     #[test]

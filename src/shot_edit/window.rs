@@ -763,11 +763,14 @@ fn do_copy(hwnd: HWND) {
 
 // ---- auto-copy ----
 
+/// Kills both auto-copy timers and tells the model, so a retry waiting for
+/// a timer that is gone can never hold up the next render.
 fn kill_auto_timers(hwnd: HWND) {
     unsafe {
         let _ = KillTimer(Some(hwnd), ID_AUTO_DEBOUNCE);
         let _ = KillTimer(Some(hwnd), ID_AUTO_RETRY);
     }
+    with(hwnd, |e| e.auto.timers_cancelled());
 }
 
 fn arm_debounce(hwnd: HWND) {
@@ -931,13 +934,19 @@ fn put_prepared(hwnd: HWND, prepared: Prepared, rev: u64) {
             e.auto.stop();
             None
         }
-        Put::Busy => match e.auto.on_busy(rev, prepared) {
-            Step::Again(ms) => Some(ms),
-            Step::GiveUp => {
-                say(e, tr(Key::EditAutoCopyFailed), Tone::Error);
-                None
+        Put::Busy | Put::Emptied(_) => {
+            if let Put::Emptied(seq) = result {
+                // The empty clipboard is still this editor's.
+                e.auto.on_emptied(seq);
             }
-        },
+            match e.auto.on_busy(rev, prepared) {
+                Step::Again(ms) => Some(ms),
+                Step::GiveUp => {
+                    say(e, tr(Key::EditAutoCopyFailed), Tone::Error);
+                    None
+                }
+            }
+        }
     })
     .flatten();
     if let Some(ms) = retry {
@@ -1003,15 +1012,27 @@ fn flush_on_close(hwnd: HWND) {
         return;
     };
     let result = export::put(hwnd, &prepared, expected, capture, true);
-    with(hwnd, |e| match result {
+    let again = with(hwnd, |e| match result {
         Put::Written(seq) => {
             e.auto.on_written(seq, rev);
             e.session.mark_clean_at(rev);
+            false
         }
-        Put::NotOurs => e.auto.stop(),
-        Put::Busy => {}
-    });
-    if result == Put::Busy {
+        Put::NotOurs => {
+            e.auto.stop();
+            false
+        }
+        Put::Busy | Put::Emptied(_) => {
+            if let Put::Emptied(seq) = result {
+                // The empty clipboard is still this editor's.
+                e.auto.on_emptied(seq);
+            }
+            // The timers were killed above: the debounce is due again.
+            e.auto.on_change()
+        }
+    })
+    .unwrap_or(false);
+    if again {
         // The window stays (the bar asks): the debounce tries again.
         arm_debounce(hwnd);
     }

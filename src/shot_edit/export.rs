@@ -187,12 +187,13 @@ pub fn prepare(base: &Shot, doc: &[Annotation]) -> Option<Prepared> {
     Some(Prepared { dib, png })
 }
 
-/// CF_DIB and the registered "PNG", the formats Copy writes.
-fn formats(p: &Prepared) -> Vec<(u32, Vec<u8>)> {
+/// CF_DIB and the registered "PNG", the formats Copy writes, borrowed from
+/// `p` (a 4K DIB is about 33 MB; a copy of it would double the peak).
+fn formats(p: &Prepared) -> Vec<(u32, &[u8])> {
     let png_format = unsafe { RegisterClipboardFormatW(w!("PNG")) };
-    let mut formats = vec![(CF_DIB, p.dib.clone())];
+    let mut formats = vec![(CF_DIB, p.dib.as_slice())];
     if png_format != 0 {
-        formats.push((png_format, p.png.clone()));
+        formats.push((png_format, p.png.as_slice()));
     }
     formats
 }
