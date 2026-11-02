@@ -1,6 +1,6 @@
 ---
 tags: [decision, screenshot, capture, editor, uia, power, privacy]
-date: 2026-10-29
+date: 2026-11-02
 ---
 
 # Vale's own screenshot: snap capture and editor
@@ -16,7 +16,8 @@ Vale.
 - **Frozen frame.** `win::grab_virtual_screen` (GetDC + BitBlt
   `SRCCOPY|CAPTUREBLT` + GetDIBits, 32 bpp top-down) in physical px. It lives
   in memory only and is freed when the overlay closes; the crop is freed when
-  the editor closes. Nothing touches disk or clipboard without Save or Copy.
+  the editor closes. Nothing touches disk without Save; the clipboard gets the
+  picture on Copy and by itself ("Salin otomatis", see "Auto-copy" below).
 - **Display affinity.** Only the island is kept out of the frame: visible
   windows of our process whose class is in `win::KEPT_OUT` (`ValeWindow`; the
   halo margin and "Di belakang jendela" are the same window, not helpers of
@@ -110,16 +111,93 @@ Vale.
   (`screenshot::win::encode_png`, `write_at`; create-new, never overwrites). A
   blocked write says "mungkin diblokir Controlled folder access" (see the
   gotcha in [[screenshot-preview]]).
-- **Own-copy skip.** Copy writes PNG + CF_DIB through the clipboard module and
-  records the sequence number (`shot_edit::record_own_copy`);
-  `App::shot_from_image` returns early for that one image
-  (`is_own_copy(seq, own)`), so the notch does not preview Vale's own copy.
-  The clipboard history may still record it.
+- **Own-copy skip.** Every editor write (Copy, an auto-copy, the flush at
+  close) goes through the clipboard module and is recorded in a registry of
+  the last 32 writes (`shot_edit::record_own_copy(seq, capture, managed)`,
+  `own_copy(seq)`; 0 never matches). `App::shot_from_image` returns early for
+  any recorded sequence, so the notch never previews Vale's own copy. What the
+  island does with the write itself depends on `managed`: see Auto-copy.
 - **Demos** (debug builds, in `opens_windows`): `--demo-snap` (a desktop drawn
   in code, fixed candidates, no grab, no EnumWindows, no UIA) and
-  `--demo-shot-editor [empty]`. In demos Copy is inert (the footer says so) and
-  Save writes to `target/demo-shots/`; the process ends when the window closes.
-  Screenshots of them: `PrintWindow` with flag 2 on the demo's main window.
+  `--demo-shot-editor [empty]`. In demos Copy is inert (the footer says so),
+  auto-copy is inert too (`enabled` false: no worker, no timer, no clipboard)
+  and Save writes to `target/demo-shots/`; the process ends when the window
+  closes. Screenshots of them: `PrintWindow` with flag 2 on the demo's main
+  window.
+
+## Auto-copy (2026-11-02, "Salin otomatis")
+
+The owner's ask: a screenshot taken with Vale's capture is already on the
+clipboard, without pressing Copy in the editor. Settings → Clipboard →
+Screenshot → *Salin otomatis* (`screenshot.auto_copy`, default on, a missing
+or non-bool value reads as on). Vale's own capture only; Snipping Tool copies
+by itself. Pure rules: `src/shot_edit/auto.rs` (`AutoCopy<P>`, tested);
+window: `shot_edit/window.rs`; export: `shot_edit/export.rs`.
+
+- **Latched.** An editor reads the setting once when it opens
+  (`shot_edit::auto_copy_setting`, an `AtomicBool` that `App` sets in
+  `clip_start` and `clip_follow_config`); a demo is always off. Off: the
+  editor behaves as before (no worker, no timer, Copy as today).
+- **Copy at pick.** The window shows at once; a worker for revision 0 starts
+  right after. Worker = a named thread `shot-edit-copy` (COM MTA) that runs
+  `export::prepare` (render + PNG + DIB), pushes `CopyReady { rev, prepared }`
+  into an `Arc<Mutex<Vec<..>>>` inbox and rings `WM_APP_COPIED` (`WM_APP + 52`)
+  on the editor, like Save's inbox + doorbell (a closed window leaks nothing
+  beyond the Arc). The UI thread then writes with `export::put`, never inside
+  a `with(...)` borrow (`EmptyClipboard` can send WM_DESTROYCLIPBOARD to
+  another editor on this thread).
+- **Debounce.** After each finished change (add, move, resize, delete,
+  restyle, committed text, undo, redo) `note_change` sees a new
+  `Session::revision` and (re)arms one one-shot `ID_AUTO_DEBOUNCE` (300 ms);
+  it is killed when it fires, never repeating. Typing in an open EDIT does not
+  change the revision. When the timer fires: an EDIT open or a drag running
+  re-arms it (never copies mid-typing or mid-drag); a worker in flight sets
+  `again`; the revision already copied does nothing; else a worker starts. A
+  result for a revision that is no longer current is dropped and the current
+  one rendered (`on_result`: Write / Drop / Restart).
+- **Rule 3, the guard.** The first write of a capture is unconditional.
+  Later writes need `GetClipboardSequenceNumber() == last_seq` (what this
+  editor's last write left): else somebody else copied since, auto-copy stops
+  silently (`stopped`) and the session stays dirty. `clipboard::win::write_when`
+  re-checks the sequence *with the clipboard open*, before `EmptyClipboard`
+  (like `empty_if_unchanged`), returning Written(seq) / NotOurs / Busy. A
+  manual Copy (`on_manual_copy`) takes the clipboard back, clears `stopped`
+  and drops any pending retry or debounce. Latest capture wins: a second
+  editor's first write makes the first one stop.
+- **Busy clipboard.** `write_when` opens with 4 tries 8 ms apart; Busy keeps
+  the prepared formats and sets a one-shot `ID_AUTO_RETRY` (150 ms), 3
+  retries (`retry_step`), re-checking staleness and rule 3 each time. Then the
+  footer says `EditAutoCopyFailed` ("Gagal menyalin · tekan Salin" / "Couldn't
+  copy · press Copy"), Tone::Error. The next change tries again.
+- **Footer and dirty.** A landed write says "Disalin ke clipboard" and calls
+  `Session::mark_clean_at(rev)` (cleans only at the copied revision, never a
+  newer one). So the picture on the clipboard counts as kept.
+- **Flush on close.** `request_close` (Esc, the X, Alt+F4, WM_CLOSE) first
+  calls `flush_on_close`: when `needs_flush(rev)` (debounce due, a worker in
+  flight, a retry pending, or the current revision not yet copied) it kills
+  the timers, renders and writes the current revision synchronously on the UI
+  thread (like Copy), with the same guard, then `mark_clean_at`. The discard
+  bar therefore shows only when the picture is neither on the clipboard nor
+  saved. `Hit::Discard` never flushes; a late worker result for a destroyed
+  window is never read. A drag still running at close is ended as a release.
+- **Registry and the island.** Each editor takes `next_capture_id()`. Its
+  writes are recorded with `managed` = the latched flag. The island's
+  `read_clipboard` looks `own_copy(seq)` up right after the snapshot: a
+  `managed` write gives one card per capture (`store::ingest_replacing`, see
+  [[clipboard-history]]) and no ClipPreview notice, no "Disalin", no
+  screenshot preview ([[clipboard-notice]]); with the history off it does
+  nothing. An editor that opened with auto-copy off is `managed: false`: the
+  old path.
+- **Windows' own Win+V history is not ours.** It records every clipboard
+  write, so each auto re-copy (debounced, finished edits only) can add a
+  Win+V entry. Vale cannot replace Windows' entries; only Vale's Clipboard
+  page is one card per capture. A known limitation, decided with the owner.
+- **Privacy / tests.** No test and no demo reads, writes or empties the real
+  clipboard, registers a listener or grabs the screen ([[clipboard-privacy]]):
+  `write_when` / `put` are not unit-tested; the model, the registry, the
+  history helpers, the config and the Settings card are.
+- **Not verified live:** the real clipboard with several editors open, Win+V
+  entries, and a large 4K capture's first-copy delay.
 
 ## PrtSc key opens Vale's capture
 
@@ -181,7 +259,7 @@ reducer, the row in `settings_layout::hotkeys_page`. Generalised in
   pintas ("Screenshot Vale"), a recordable field like the others. When the
   hook cannot be installed every PrtSc row is `failed` and its description
   turns red ("Sudah dipakai aplikasi lain"). The Screenshot card in Clipboard
-  is now four rows: tool, preview, on-ignore, seconds.
+  is five rows since auto-copy: tool, Salin otomatis, preview, on-ignore, seconds.
 - **Retry.** A failed install is tried again when the tray menu opens and
   when Settings opens (`retry_hotkeys`), and by any sync of a failed row.
 - **Untouched:** `app_shot.rs` (the clipboard preview of a PrtSc image),
