@@ -5,7 +5,7 @@ export const meta = {
   phases: [
     { title: 'Plan', detail: 'split into tasks, mark each light or heavy, write a checklist for heavy ones', model: 'opus' },
     { title: 'Build', detail: 'one builder per task, in its own worktree', model: 'sonnet' },
-    { title: 'Review', detail: 'heavy only: blind review of a pinned commit, fixes land in the builder worktree', model: 'opus' },
+    { title: 'Review', detail: 'heavy only: blind review (Opus) of a pinned commit; fixes land in the builder worktree (Sonnet first, Opus from round 2)', model: 'opus' },
     { title: 'Check', detail: 'heavy only: tests + the written checklist', model: 'sonnet' },
     { title: 'Ship', detail: 'merge passing tasks into local main, test once; no push', model: 'sonnet' },
     { title: 'Finish', detail: 'only when everything is ready: update Obsidian memory + README, commit, push main', model: 'sonnet' },
@@ -17,6 +17,9 @@ const OPUS = 'opus'
 const SONNET = 'sonnet'
 const MAX_TASKS = 4
 const FIX_ROUNDS = 3
+
+// First fix round is Sonnet; if the reviewer still says FIX, later rounds escalate to Opus
+const fixModel = attempt => (attempt === 0 ? SONNET : OPUS)
 
 const PLAN = {
   type: 'object',
@@ -287,7 +290,7 @@ if (input.verify) {
           branch
             ? `Work ONLY in the worktree ${worktree} (cd there; use git -C ${worktree}). Fix these findings and commit on branch ${branch}:\n- ${review.findings.join('\n- ')}` + FIX_RULES + TOOLS
             : `Create a new branch "fix/${it.id}" from the current main (HEAD), fix these findings in the code that was added by ${it.base}..${it.head}, run the project's test command, commit, and report sha, branch and worktree path:\n- ${review.findings.join('\n- ')}` + FIX_RULES + TOOLS,
-          { phase: 'Review', isolation: branch ? undefined : 'worktree', model: OPUS, schema: FIX }
+          { phase: 'Review', isolation: branch ? undefined : 'worktree', model: fixModel(attempt), schema: FIX }
         )
         if (!fix || fix.sha === sha) { log(`${it.id}: the fix produced no new commit`); break }
         sha = fix.sha
@@ -398,7 +401,7 @@ const results = await pipeline(
       const fix = await safe(
         `fix:${task.id}#${attempt + 1}`,
         `Work ONLY in the builder's worktree ${r.worktree} (cd there; use git -C ${r.worktree}); it has branch "${r.branch}" checked out. Do not create another branch and do not check the branch out anywhere else. Fix these findings, run the project's test command, and commit on that branch. Return the new sha (git rev-parse HEAD).\n- ${review.findings.join('\n- ')}` + FIX_RULES + TOOLS,
-        { phase: 'Review', model: OPUS, schema: FIX }
+        { phase: 'Review', model: fixModel(attempt), schema: FIX }
       )
       if (!fix || fix.sha === sha) { log(`${task.id}: the fix produced no new commit`); break }
       sha = fix.sha

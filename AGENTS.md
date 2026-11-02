@@ -6,7 +6,8 @@
 |---|---|
 | Plan | Opus 5.5 (`claude-opus-5-5`) |
 | Build (write the code) | Sonnet 5.5 (`claude-sonnet-5-5`) |
-| Review and fix | Opus 5.5 (`claude-opus-5-5`) |
+| Review | Opus 5.5 (`claude-opus-5-5`) |
+| Fix | Sonnet 5.5 (`claude-sonnet-5-5`) in round 1, Opus 5.5 (`claude-opus-5-5`) from round 2 if the reviewer still says FIX |
 | Check | Sonnet 5.5 (`claude-sonnet-5-5`) |
 | Ship | Sonnet 5.5 (`claude-sonnet-5-5`) |
 | Finish (memory, README, push) | Sonnet 5.5 (`claude-sonnet-5-5`) |
