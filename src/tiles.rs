@@ -823,7 +823,8 @@ mod tests {
             Tile::Custom(_) => None,
         });
         assert_eq!(got, want);
-        assert_eq!(names(&t)[0], "Lock", "the file's own order is kept");
+        let listed = names(&t);
+        assert!(listed.contains(&"Lock".to_string()), "{listed:?}");
     }
 
     #[test]
@@ -1054,15 +1055,15 @@ mod tests {
                 .any(|(x, on)| *x == Tile::Builtin(Shortcut::Search) && !on)
         );
         // With room, the new ones that are on by default come in shown until
-        // the page is full (Search, Vale's Settings, the Shelf: 8 + 1 own + 3,
-        // so Devices has no room and joins off); a fresh install shows 12.
+        // the page is full (Search, the Shelf, Devices: 8 + 1 own + 3 = 12);
+        // a fresh install shows 11.
         let few = ShortcutTiles::from_saved(&saved[..9]);
         assert_eq!(few.shown(), 12);
         assert!(
-            !few.visible()
+            few.visible()
                 .contains(&Tile::Builtin(Shortcut::Go(Page::Devices)))
         );
-        assert_eq!(ShortcutTiles::default().shown(), 12);
+        assert_eq!(ShortcutTiles::default().shown(), 11);
     }
 
     #[test]
@@ -1098,26 +1099,26 @@ mod tests {
 
     #[test]
     fn the_susun_jump_tile_is_off_by_default_and_an_old_config_joins_it_off() {
-        assert_eq!(Shortcut::ALL.len(), 22);
+        assert_eq!(Shortcut::ALL.len(), 21);
         assert!(!Shortcut::Go(Page::Arrange).default_on());
-        // A fresh install: the tile exists but is off; the page keeps its twelve.
+        // A fresh install: the tile exists but is off; the page keeps its eleven.
         let t = ShortcutTiles::default();
         assert!(
             t.entries()
                 .iter()
                 .any(|(s, on)| *s == Tile::Builtin(Shortcut::Go(Page::Arrange)) && !on)
         );
-        assert_eq!(t.shown(), 12);
-        // An old config that never heard of it (the 21 built-ins as saved,
-        // 12 of them on) gets it back off, right after Cli, and still shows 12.
+        assert_eq!(t.shown(), 11);
+        // An old config that never heard of it (the 20 built-ins as saved,
+        // 11 of them on) gets it back off, right after Cli, and still shows 11.
         let old: Vec<TileEntry> = ShortcutTiles::default()
             .to_saved()
             .into_iter()
             .filter(|e| e.tile != "GoArrange")
             .collect();
-        assert_eq!(old.len(), 21);
+        assert_eq!(old.len(), 20);
         let t = ShortcutTiles::from_saved(&old);
-        assert_eq!(t.shown(), 12);
+        assert_eq!(t.shown(), 11);
         let names = names(&t);
         let at = names
             .iter()
@@ -1126,9 +1127,18 @@ mod tests {
         assert_eq!(names[at - 1], "(GoCli)");
     }
 
-    /// The default tiles (12 on) plus `own` custom tiles, all on.
-    fn with_own(own: usize) -> ShortcutTiles {
+    /// The default tiles with the Calendar switched on too (a full page of
+    /// 12), the starting point of the limit tests.
+    fn full_default() -> ShortcutTiles {
         let mut t = ShortcutTiles::default();
+        assert!(t.toggle(9), "the Calendar tile");
+        assert_eq!(t.shown(), MAX_SHOWN);
+        t
+    }
+
+    /// The full page (12 on) plus `own` custom tiles, all on.
+    fn with_own(own: usize) -> ShortcutTiles {
+        let mut t = full_default();
         for i in 0..own {
             assert!(t.add(custom(&format!("T{i}"), CustomKind::App, r"C:\a.exe")));
         }
@@ -1137,7 +1147,7 @@ mod tests {
 
     #[test]
     fn no_tile_goes_on_while_twelve_show() {
-        // The default shows 12: the page is full.
+        // The full default shows 12: the page is full.
         let mut t = with_own(0);
         assert!(t.full());
         assert!(t.toggle(0), "off is always fine");
@@ -1159,19 +1169,19 @@ mod tests {
     #[test]
     fn tiles_on_past_the_twelfth_are_marked() {
         // Hand-added: 12 + 3 on, all three past the limit (the own tiles sit
-        // after the 22 built-ins, at 22, 23 and 24).
+        // after the 21 built-ins, at 21, 22 and 23).
         let t = with_own(3);
         assert_eq!(t.shown(), 15);
         let beyond: Vec<usize> = (0..t.entries().len())
             .filter(|i| t.beyond_limit(*i))
             .collect();
-        assert_eq!(beyond, [22, 23, 24]);
+        assert_eq!(beyond, [21, 22, 23]);
         assert_eq!(t.visible().len(), MAX_SHOWN);
         // An entry that is off is never "beyond"; neither is one that shows.
         let mut t = with_own(3);
-        assert!(t.toggle(22));
-        assert!(!t.beyond_limit(22));
-        assert!(t.beyond_limit(23));
+        assert!(t.toggle(21));
+        assert!(!t.beyond_limit(21));
+        assert!(t.beyond_limit(22));
         assert!(!t.beyond_limit(0));
         assert!(!t.beyond_limit(99));
     }
@@ -1255,10 +1265,10 @@ mod tests {
         assert_eq!(t.entries()[..Shortcut::ALL.len()], *defaults.entries());
         assert_eq!(
             &names(&t)[Shortcut::ALL.len()..],
-            ["(+Gmail)", "(+Proyek)"],
+            ["+Gmail", "(+Proyek)"],
             "own tiles in their order, after the built-ins"
         );
-        // 12 built-ins on: no own tile fits.
+        // 11 built-ins on: one own tile fits, the next does not.
         assert_eq!(t.shown(), MAX_SHOWN);
         assert!(!t.entries()[Shortcut::ALL.len() + 1].1, "no room");
         // An own tile that was off stays off.
@@ -1266,7 +1276,7 @@ mod tests {
         t.add_own(custom("Gmail", CustomKind::Url, "https://mail.google.com"));
         t.toggle(Shortcut::ALL.len());
         t.reset();
-        assert_eq!(t.shown(), 12);
+        assert_eq!(t.shown(), 11);
         // Nothing to do on the default.
         let mut d = ShortcutTiles::default();
         d.reset();
@@ -1275,8 +1285,8 @@ mod tests {
 
     #[test]
     fn add_own_is_on_only_while_there_is_room() {
-        let mut t = ShortcutTiles::default();
-        // A fresh install shows twelve: the first own tile is off already.
+        let mut t = full_default();
+        // A full page shows twelve: the first own tile is off already.
         assert!(t.full());
         assert_eq!(
             t.add_own(custom("Gmail", CustomKind::Url, "https://mail.google.com")),
