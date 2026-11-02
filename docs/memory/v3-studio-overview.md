@@ -49,7 +49,7 @@ the note it links to.
 
 - **Faces** follow one priority list; panel open means no robot.
   [[bata-robot-expressions]]
-- **Power.** Only one-shot timers (a blink every 4–7 s while awake); asleep with nothing pending runs none.
+- **Power.** Only one-shot timers (a blink every 4–7 s while awake); asleep, only the 1.8 s `TIMER_ROBOT` wake poll (one-shot, re-armed) runs while the Sleep face is on screen.
   [[bata-idle-power-budget]]
 - **Greeting**, once per time-of-day period (five) per day since v3.8, never
   spent on a locked screen. [[greeting-periods]], [[bata-morning-greeting]]
