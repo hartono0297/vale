@@ -5910,6 +5910,9 @@ impl App {
             SettingsAction::ShotOnIgnore(v) => self.on_shot_setting(ShotSetting::OnIgnore(v)),
             SettingsAction::ShotSecs(n) => self.on_shot_setting(ShotSetting::Secs(n)),
             SettingsAction::ShotAutoCopy(on) => self.on_shot_setting(ShotSetting::AutoCopy(on)),
+            SettingsAction::ShotAfterCapture(v) => {
+                self.on_shot_setting(ShotSetting::AfterCapture(v));
+            }
             SettingsAction::CheckUpdates => self.update_manual_check(),
             SettingsAction::InstallUpdate => self.update_install(),
             SettingsAction::UpdateAuto(on) => {

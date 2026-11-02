@@ -131,6 +131,45 @@ pub fn write_new(dir: &Path, png: &[u8], now: chrono::NaiveDateTime) -> Option<P
     (0..5).find_map(|_| screenshot::win::write_at(&next_path(dir, now), png))
 }
 
+/// The save worker's body, on the calling thread: COM up, the picture
+/// rendered and encoded, written as a new file in `dir` (the Screenshots
+/// folder when `None`), COM down. The path of the file, or `None`.
+fn save_blocking(base: &Shot, doc: &[Annotation], dir: Option<PathBuf>) -> Option<PathBuf> {
+    let inited = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
+    let saved = (|| {
+        let dir = dir.or_else(screenshot::win::screenshots_dir)?;
+        let png = render_png(base, doc)?;
+        write_new(&dir, &png, chrono::Local::now().naive_local())
+    })();
+    if inited {
+        unsafe { CoUninitialize() };
+    }
+    saved
+}
+
+/// Save on a worker that has no window to ring back (the inline capture
+/// closes its overlay before the file is written): the same render, name
+/// and write as `spawn_save`, never over a file. The handle says whether a
+/// file was written; nobody has to join it (the demo does, so the file
+/// lands before the process ends). `None` when the thread could not start.
+pub fn save_detached(
+    base: Arc<Shot>,
+    doc: Vec<Annotation>,
+    dir: Option<PathBuf>,
+) -> Option<std::thread::JoinHandle<bool>> {
+    std::thread::Builder::new()
+        .name("shot-inline-save".into())
+        .spawn(move || {
+            let saved = save_blocking(&base, &doc, dir);
+            if saved.is_none() {
+                // No window is left to say it.
+                eprintln!("vale: the inline screenshot could not be saved");
+            }
+            saved.is_some()
+        })
+        .ok()
+}
+
 /// Save on a short-lived worker: render, encode, write, then put the result
 /// in `inbox` and ring `hwnd` with `msg`. `dir` is the Screenshots folder
 /// unless the demo gives its own. False when the thread could not start.
@@ -146,15 +185,7 @@ pub fn spawn_save(
     std::thread::Builder::new()
         .name("shot-edit-save".into())
         .spawn(move || {
-            let inited = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
-            let saved = (|| {
-                let dir = dir.or_else(screenshot::win::screenshots_dir)?;
-                let png = render_png(&base, &doc)?;
-                write_new(&dir, &png, chrono::Local::now().naive_local())
-            })();
-            if inited {
-                unsafe { CoUninitialize() };
-            }
+            let saved = save_blocking(&base, &doc, dir);
             let result = saved.map_or(SaveResult::Failed, SaveResult::Saved);
             if let Ok(mut list) = inbox.lock() {
                 list.push(result);
@@ -349,6 +380,73 @@ mod tests {
             bgra: vec![0; 10],
         };
         assert!(render_bgra(&short, &[]).is_none());
+    }
+
+    #[test]
+    fn a_detached_save_writes_a_new_file_and_never_overwrites() {
+        let dir = temp("detached");
+        let base = Arc::new(Shot {
+            w: 24,
+            h: 16,
+            bgra: [200u8, 100, 50, 255].repeat(24 * 16),
+        });
+        for _ in 0..2 {
+            let done = save_detached(base.clone(), Vec::new(), Some(dir.clone()))
+                .expect("a worker")
+                .join()
+                .expect("no panic");
+            assert!(done);
+        }
+        let mut names: Vec<String> = std::fs::read_dir(&dir)
+            .expect("the folder")
+            .filter_map(|e| e.ok()?.file_name().into_string().ok())
+            .collect();
+        names.sort();
+        assert_eq!(names.len(), 2, "{names:?}: two saves, two files");
+        assert!(
+            names
+                .iter()
+                .all(|n| n.starts_with("Screenshot ") && n.ends_with(".png"))
+        );
+        // A folder that cannot be made is a false, not a panic.
+        let file = dir.join(&names[0]);
+        let blocked = save_detached(base, Vec::new(), Some(file.join("sub")))
+            .expect("a worker")
+            .join()
+            .expect("no panic");
+        assert!(!blocked);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_export_draws_a_line_into_the_picture() {
+        let base = Shot {
+            w: 40,
+            h: 30,
+            bgra: [255u8, 255, 255, 255].repeat(40 * 30),
+        };
+        let doc = vec![Annotation::Line {
+            a: crate::shot_edit::Pt::new(4.0, 15.0),
+            b: crate::shot_edit::Pt::new(36.0, 15.0),
+            style: Style {
+                color: 0xE5484D,
+                width: 4.0,
+            },
+        }];
+        let inited = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
+        let marked = render_bgra(&base, &doc);
+        if inited {
+            unsafe { CoUninitialize() };
+        }
+        let marked = marked.expect("marked");
+        let at = |x: usize, y: usize| &marked[(y * 40 + x) * 4..(y * 40 + x) * 4 + 4];
+        // On the line (BGRA of 0xE5484D), and well off it.
+        assert_eq!(at(20, 15), [0x4D, 0x48, 0xE5, 255]);
+        assert_eq!(at(20, 5), [255, 255, 255, 255]);
+        assert_eq!(at(20, 25), [255, 255, 255, 255]);
+        // No head: the end is as thin as the shaft (an arrow would widen).
+        assert_eq!(at(30, 11), [255, 255, 255, 255]);
+        assert_eq!(at(30, 19), [255, 255, 255, 255]);
     }
 
     #[test]

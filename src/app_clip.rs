@@ -23,6 +23,7 @@ use crate::clipboard::persist::{self, Write};
 use crate::clipboard::store::{self, ClipSnapshot, Ingested, ingest};
 use crate::clipboard::win::{self, Read};
 use crate::clipboard::{Clip, ClipData, History};
+use crate::config::AfterCapture;
 use crate::i18n::{self, Key, tr};
 use crate::model::{
     CLIP_IMAGE_KEY, CLIP_PREVIEW_KEY, ClipAction, Event, Hit, Notice, NoticeKind, Page, View,
@@ -281,6 +282,9 @@ impl App {
         let items = persist::start_items(&persist::path(), cfg.persist);
         self.clip.history = History::from_items(cfg.max_items, items);
         crate::shot_edit::set_auto_copy(self.config.screenshot.auto_copy);
+        crate::capture::set_after_capture(
+            self.config.screenshot.after_capture == AfterCapture::Inline,
+        );
         self.sync_clip_listener();
         self.clip.started = true;
     }
@@ -290,6 +294,9 @@ impl App {
     /// by each editor when it opens). Nothing else before `clip_start`.
     pub(super) fn clip_follow_config(&mut self) {
         crate::shot_edit::set_auto_copy(self.config.screenshot.auto_copy);
+        crate::capture::set_after_capture(
+            self.config.screenshot.after_capture == AfterCapture::Inline,
+        );
         if !self.clip.started {
             return;
         }

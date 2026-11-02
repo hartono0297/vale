@@ -25,7 +25,34 @@ const TEXT_WEIGHT: i32 = 500;
 /// render target and one picture; dropped when either goes.
 #[derive(Default)]
 pub struct Pix {
-    map: HashMap<(u32, u32, u32, u32), ID2D1Bitmap>,
+    /// By region (x, y, w, h) and the mosaic's block size.
+    map: HashMap<(u32, u32, u32, u32, u32), ID2D1Bitmap>,
+}
+
+/// A part of the picture (x, y, w, h in whole pixels).
+pub type Region = (u32, u32, u32, u32);
+
+/// Where a `Pixelate` of `r` shows and how coarse its blocks are.
+///
+/// Without `clip` it is `r` cut to the picture (`w` × `h`) and a block that
+/// follows the picture's size, as in the editor and the export. With `clip`
+/// (the inline capture: the picture is the whole frozen screen, the part
+/// that will be kept is the selection) it is `r` cut to the clip and then to
+/// the picture, and the block follows the clip's size. Either way the mosaic
+/// of what is seen in the overlay is cell for cell the one the export of the
+/// cropped selection makes (the crop is the clip, and `r` moved by its
+/// corner): the cells are aligned to the region's corner, which is the same
+/// pixel in both.
+pub fn pixel_region(r: FRect, w: u32, h: u32, clip: Option<Region>) -> Option<(Region, u32)> {
+    let Some((cx, cy, cw, ch)) = clip else {
+        return Some((clip_to_image(r, w, h)?, pixel_block(w, h)));
+    };
+    let moved = FRect::new(r.x - cx as f32, r.y - cy as f32, r.w, r.h);
+    let (x, y, rw, rh) = clip_to_image(moved, cw, ch)?;
+    let (x, y) = (x + cx, y + cy);
+    // The clip itself may reach past the picture.
+    let (rw, rh) = (rw.min(w.saturating_sub(x)), rh.min(h.saturating_sub(y)));
+    (rw > 0 && rh > 0).then_some(((x, y, rw, rh), pixel_block(cw, ch)))
 }
 
 impl Pix {
@@ -40,18 +67,19 @@ impl Pix {
         &mut self,
         rt: &ID2D1RenderTarget,
         base: &Shot,
-        region: (u32, u32, u32, u32),
+        region: Region,
+        block: u32,
     ) -> Option<ID2D1Bitmap> {
-        if let Some(b) = self.map.get(&region) {
+        let key = (region.0, region.1, region.2, region.3, block);
+        if let Some(b) = self.map.get(&key) {
             return Some(b.clone());
         }
-        let block = pixel_block(base.w, base.h);
         let px = pixelate(&base.bgra, base.w, base.h, region, block)?;
         let bitmap = super::gfx::bitmap(rt, region.2, region.3, &px).ok()?;
         if self.map.len() >= Self::KEEP {
             self.map.clear();
         }
-        self.map.insert(region, bitmap.clone());
+        self.map.insert(key, bitmap.clone());
         Some(bitmap)
     }
 }
@@ -69,11 +97,29 @@ pub fn draw_annotations(
     skip: Option<usize>,
     pix: &mut Pix,
 ) {
+    draw_annotations_clipped(rt, brush, gfx, base, doc, view, skip, pix, None);
+}
+
+/// `draw_annotations` where only `clip` (x, y, w, h of `base`) will be kept:
+/// a mosaic is limited to it and sized by it (see `pixel_region`). The
+/// caller sets the render target's own clip for everything else.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_annotations_clipped(
+    rt: &ID2D1RenderTarget,
+    brush: &ID2D1SolidColorBrush,
+    gfx: &Gfx,
+    base: &Shot,
+    doc: &[Annotation],
+    view: &View,
+    skip: Option<usize>,
+    pix: &mut Pix,
+    clip: Option<Region>,
+) {
     for (i, ann) in doc.iter().enumerate() {
         if skip == Some(i) {
             continue;
         }
-        let _ = draw_one(rt, brush, gfx, base, ann, view, pix);
+        let _ = draw_one(rt, brush, gfx, base, ann, view, pix, clip);
     }
 }
 
@@ -82,6 +128,7 @@ fn v(view: &View, p: Pt) -> Vector2 {
     Vector2::new(x, y)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_one(
     rt: &ID2D1RenderTarget,
     brush: &ID2D1SolidColorBrush,
@@ -90,6 +137,7 @@ fn draw_one(
     ann: &Annotation,
     view: &View,
     pix: &mut Pix,
+    clip: Option<Region>,
 ) -> Result<()> {
     unsafe {
         match ann {
@@ -110,6 +158,16 @@ fn draw_one(
                 let [l, r] = arrow_head(*a, *b, style.width);
                 let head = [l, *b, r];
                 stroke_path(rt, brush, gfx, view, &head, w)?;
+            }
+            Annotation::Line { a, b, style } => {
+                brush.SetColor(&color(style.color, 1.0));
+                rt.DrawLine(
+                    v(view, *a),
+                    v(view, *b),
+                    brush,
+                    style.width * view.scale,
+                    &gfx.round,
+                );
             }
             Annotation::Pen { pts, style } => {
                 brush.SetColor(&color(style.color, 1.0));
@@ -139,10 +197,10 @@ fn draw_one(
                 );
             }
             Annotation::Pixelate { r } => {
-                let Some(region) = clip_to_image(*r, base.w, base.h) else {
+                let Some((region, block)) = pixel_region(*r, base.w, base.h, clip) else {
                     return Ok(());
                 };
-                let Some(bitmap) = pix.get(rt, base, region) else {
+                let Some(bitmap) = pix.get(rt, base, region, block) else {
                     return Ok(());
                 };
                 let (x, y) = view.to_view(Pt::new(region.0 as f32, region.1 as f32));
@@ -263,6 +321,80 @@ mod tests {
         let [l2, r2] = arrow_head(Pt::new(0.0, 0.0), Pt::new(0.0, 100.0), 4.0);
         assert!(l2.y < 100.0 && r2.y < 100.0);
         assert!((l2.y - r2.y).abs() < 1e-3);
+    }
+
+    /// A frame of `w` × `h` with a pattern that differs from pixel to pixel.
+    fn frame(w: u32, h: u32) -> Shot {
+        let mut bgra = Vec::with_capacity((w * h * 4) as usize);
+        for y in 0..h {
+            for x in 0..w {
+                let v = (x * 7 + y * 13 + (x * y) % 11) as u8;
+                bgra.extend([v, v.wrapping_mul(3), v.wrapping_add(x as u8), 255]);
+            }
+        }
+        Shot { w, h, bgra }
+    }
+
+    #[test]
+    fn without_a_clip_the_mosaic_is_the_editors_own() {
+        let r = FRect::new(-5.0, 2.5, 20.0, 10.2);
+        assert_eq!(
+            pixel_region(r, 100, 50, None),
+            Some(((0, 2, 15, 11), pixel_block(100, 50)))
+        );
+        assert_eq!(
+            pixel_region(FRect::new(200.0, 0.0, 5.0, 5.0), 100, 50, None),
+            None
+        );
+    }
+
+    #[test]
+    fn a_mosaic_seen_in_the_overlay_is_the_one_the_export_makes() {
+        // The frozen screen, and the selection the crop is cut from.
+        let screen = frame(2400, 1500);
+        let sel = (120u32, 80u32, 300u32, 200u32);
+        let crop = crate::capture::crop(
+            &screen.bgra,
+            screen.w as usize * 4,
+            crate::capture::Rect::new(0, 0, 2400, 1500),
+            crate::capture::Rect::new(sel.0 as i32, sel.1 as i32, sel.2 as i32, sel.3 as i32),
+        )
+        .expect("a crop");
+        // Pokes out of the selection on the left and the top, and ends
+        // inside: and one that pokes out on the right and the bottom.
+        for r in [
+            FRect::new(60.5, 40.25, 190.0, 150.0),
+            FRect::new(330.0, 220.75, 180.0, 160.0),
+            FRect::new(150.0, 100.0, 40.0, 40.0),
+        ] {
+            // The overlay: frame base, clip = selection.
+            let (region, block) = pixel_region(r, screen.w, screen.h, Some(sel)).expect("seen");
+            let seen = pixelate(&screen.bgra, screen.w, screen.h, region, block).expect("pixels");
+            // The export: crop base, no clip, the rectangle moved by the
+            // selection's corner (what `Annotation::move_by` does).
+            let moved = FRect::new(r.x - sel.0 as f32, r.y - sel.1 as f32, r.w, r.h);
+            let (region2, block2) = pixel_region(moved, crop.w, crop.h, None).expect("exported");
+            let made = pixelate(&crop.bgra, crop.w, crop.h, region2, block2).expect("pixels");
+            assert_eq!(block, block2, "{r:?}");
+            assert_eq!(block, pixel_block(sel.2, sel.3), "the clip's size decides");
+            assert_eq!(
+                (region.0 - sel.0, region.1 - sel.1, region.2, region.3),
+                region2,
+                "{r:?}"
+            );
+            assert_eq!(seen, made, "{r:?}");
+            // And it stays inside the selection.
+            assert!(region.0 >= sel.0 && region.0 + region.2 <= sel.0 + sel.2);
+            assert!(region.1 >= sel.1 && region.1 + region.3 <= sel.1 + sel.3);
+        }
+        // Outside the selection altogether: nothing to draw.
+        assert_eq!(
+            pixel_region(FRect::new(500.0, 400.0, 50.0, 50.0), 2400, 1500, Some(sel)),
+            None
+        );
+        // Without the clip the block would follow the whole frame and the
+        // mosaic would differ: the reason the overlay passes the clip.
+        assert_ne!(pixel_block(2400, 1500), pixel_block(sel.2, sel.3));
     }
 
     #[test]

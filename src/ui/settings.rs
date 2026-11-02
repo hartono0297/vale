@@ -86,8 +86,8 @@ use crate::claude::install::{self, InstallOutcome, UninstallOutcome};
 use crate::cli::Shell;
 use crate::cli_folders::CliStart;
 use crate::config::{
-    ClipboardSettings, Config, NotchFill, NotifSettings, OpenMode, ScreenshotSettings, ShotIgnore,
-    ShotTool, Style, ToastStyle, UiFont, WindowPlace,
+    AfterCapture, ClipboardSettings, Config, NotchFill, NotifSettings, OpenMode,
+    ScreenshotSettings, ShotIgnore, ShotTool, Style, ToastStyle, UiFont, WindowPlace,
 };
 use crate::google::client;
 use crate::hotkey::{Hotkey, HotkeyId, Hotkeys, Mods, Reject, Step, check, record_step, used_by};
@@ -199,6 +199,7 @@ pub enum Action {
     NotifClear,
     /// Settings → Clipboard → Screenshot.
     ShotTool(ShotTool),
+    ShotAfterCapture(AfterCapture),
     ShotPreview(bool),
     ShotAutoCopy(bool),
     ShotOnIgnore(ShotIgnore),
@@ -1656,6 +1657,9 @@ impl Settings {
                 // The form's own choice, not the model's.
                 Group::TileKind => 0.0,
                 Group::ShotTool => usize::from(m.shot.tool == ShotTool::Windows) as f32,
+                Group::ShotAfterCapture => {
+                    usize::from(m.shot.after_capture == AfterCapture::Inline) as f32
+                }
                 Group::NotifToastStyle => {
                     usize::from(m.notif.toast_style == ToastStyle::Full) as f32
                 }
@@ -1675,6 +1679,7 @@ impl Settings {
             Group::Motion,
             Group::ShotIgnore,
             Group::ShotTool,
+            Group::ShotAfterCapture,
             Group::NotifToastStyle,
         ] {
             let (from, to) = (index(group, &old), index(group, new));
@@ -2302,6 +2307,9 @@ impl Settings {
             Hit::ShotPreview => post(Action::ShotPreview(!m.shot.preview)),
             Hit::ShotAutoCopy => post(Action::ShotAutoCopy(!m.shot.auto_copy)),
             Hit::ShotTool(v) if v != m.shot.tool => post(Action::ShotTool(v)),
+            Hit::ShotAfterCapture(v) if v != m.shot.after_capture => {
+                post(Action::ShotAfterCapture(v))
+            }
             Hit::NotifToastStyle(v) if v != m.notif.toast_style => {
                 post(Action::NotifToastStyle(v))
             }
@@ -2540,6 +2548,7 @@ impl Settings {
             | Hit::Motion(_)
             | Hit::ShotIgnore(_)
             | Hit::ShotTool(_)
+            | Hit::ShotAfterCapture(_)
             | Hit::NotifToastStyle(_) => Vec::new(),
         };
         self.relayout();
@@ -3915,6 +3924,7 @@ pub fn run_demo(args: &[String]) {
             }
             Action::NotifClear => {}
             Action::ShotTool(v) => m.shot.tool = v,
+            Action::ShotAfterCapture(v) => m.shot.after_capture = v,
             Action::NotifToastStyle(v) => m.notif.toast_style = v,
             Action::ShotPreview(v) => m.shot.preview = v,
             Action::ShotAutoCopy(v) => m.shot.auto_copy = v,

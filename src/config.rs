@@ -337,7 +337,9 @@ crate::theme::named_enum! {
 /// reads as Compact, so a bad value never makes the whole config invalid.
 fn toast_style<'de, D: Deserializer<'de>>(d: D) -> Result<ToastStyle, D::Error> {
     let v = serde_json::Value::deserialize(d)?;
-    Ok(v.as_str().and_then(ToastStyle::from_name).unwrap_or_default())
+    Ok(v.as_str()
+        .and_then(ToastStyle::from_name)
+        .unwrap_or_default())
 }
 
 /// A bool; anything else is off.
@@ -424,6 +426,14 @@ crate::theme::named_enum! {
 }
 
 crate::theme::named_enum! {
+    /// "Setelah capture": what happens after Vale's own capture picks a
+    /// region. Editor opens the editor window (as always); Inline keeps the
+    /// frozen screen up and lets the person draw on it (Lightshot style).
+    /// A missing value or any other name reads as `Editor`.
+    AfterCapture { Editor, Inline }
+}
+
+crate::theme::named_enum! {
     /// The UI typeface of the notch, panel and Settings. Sans is DM Sans (the
     /// default, as always); Mono is JetBrains Mono. Code text stays DM Mono in
     /// both, and the reminder and screenshot editors stay DM Sans.
@@ -459,6 +469,9 @@ pub struct ScreenshotSettings {
     /// a non-bool or null reads as on.
     #[serde(deserialize_with = "default_on")]
     pub auto_copy: bool,
+    /// "Setelah capture": the editor window or drawing on the screen itself.
+    #[serde(deserialize_with = "after_capture")]
+    pub after_capture: AfterCapture,
 }
 
 impl Default for ScreenshotSettings {
@@ -469,8 +482,18 @@ impl Default for ScreenshotSettings {
             show_secs: 8,
             tool: ShotTool::Vale,
             auto_copy: true,
+            after_capture: AfterCapture::Editor,
         }
     }
+}
+
+/// A name (any case) or anything else (a number, null): a value that is not
+/// a mode reads as Editor, so a bad value never invalidates the file.
+fn after_capture<'de, D: Deserializer<'de>>(d: D) -> Result<AfterCapture, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(v.as_str()
+        .and_then(AfterCapture::from_name)
+        .unwrap_or_default())
 }
 
 /// A name or anything else (a number, null): any name that is not a tool
@@ -1153,6 +1176,7 @@ mod tests {
                 show_secs: 12,
                 tool: ShotTool::Windows,
                 auto_copy: false,
+                after_capture: AfterCapture::Inline,
             },
             panel_pages: vec![PageEntry {
                 page: "Media".into(),
@@ -1285,6 +1309,46 @@ mod tests {
         assert_eq!(win.screenshot.tool, ShotTool::Windows);
         let back = parse(&serde_json::to_string(&win).unwrap());
         assert_eq!(back.screenshot.tool, ShotTool::Windows);
+    }
+
+    #[test]
+    fn after_capture_is_the_editor_unless_the_file_says_inline() {
+        assert_eq!(
+            ScreenshotSettings::default().after_capture,
+            AfterCapture::Editor
+        );
+        // Missing, an unknown name, a number and null: the editor, and the
+        // rest of the file stays.
+        for text in [
+            r#"{"style":"Notch","screenshot":{"preview":false}}"#,
+            r#"{"style":"Notch","screenshot":{"after_capture":"Paint"}}"#,
+            r#"{"style":"Notch","screenshot":{"after_capture":7}}"#,
+            r#"{"style":"Notch","screenshot":{"after_capture":null}}"#,
+            r#"{"style":"Notch"}"#,
+        ] {
+            let c = parse(text);
+            assert_eq!(c.style, Style::Notch, "{text}");
+            assert_eq!(c.screenshot.after_capture, AfterCapture::Editor, "{text}");
+        }
+        for text in [
+            r#"{"screenshot":{"after_capture":"inline"}}"#,
+            r#"{"screenshot":{"after_capture":"Inline"}}"#,
+            r#"{"screenshot":{"after_capture":"INLINE"}}"#,
+        ] {
+            assert_eq!(
+                parse(text).screenshot.after_capture,
+                AfterCapture::Inline,
+                "{text}"
+            );
+        }
+        let inline = parse(r#"{"screenshot":{"after_capture":"inline"}}"#);
+        let json = serde_json::to_string(&inline).unwrap();
+        assert!(json.contains(r#""after_capture":"Inline""#), "{json}");
+        assert_eq!(
+            parse(&json).screenshot.after_capture,
+            AfterCapture::Inline,
+            "round trip"
+        );
     }
 
     #[test]
@@ -1682,7 +1746,9 @@ mod tests {
             ..Config::default()
         };
         assert_eq!(
-            merge_owned(Config::default(), &full).notifications.toast_style,
+            merge_owned(Config::default(), &full)
+                .notifications
+                .toast_style,
             ToastStyle::Full
         );
     }
@@ -1972,7 +2038,12 @@ mod tests {
             assert!(!json.to_lowercase().contains("valesettings"), "{json}");
         }
         // No shortcut_tiles at all still reads as the defaults (empty).
-        assert!(try_parse(r#"{"style":"Notch"}"#).unwrap().shortcut_tiles.is_empty());
+        assert!(
+            try_parse(r#"{"style":"Notch"}"#)
+                .unwrap()
+                .shortcut_tiles
+                .is_empty()
+        );
     }
 
     #[test]

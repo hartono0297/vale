@@ -834,6 +834,12 @@ keys! {
     ShotToolVale => "Vale", "Vale";
     ShotToolWindows => "Snipping Tool", "Snipping Tool";
     ShotToolDesc => "Dipakai tile Screenshot", "Used by the Screenshot tile";
+    ShotAfterCaptureSetting => "Setelah capture", "After capture";
+    ShotAfterEditor => "Jendela editor", "Editor window";
+    ShotAfterInline => "Langsung di layar", "On screen";
+    // The brief's "Screenshot Vale: tile dan PrtSc" needs 202 px; the row
+    // leaves 149 beside the two wide choices (`texts_fit_in_both_languages`).
+    ShotAfterCaptureDesc => "Untuk tile dan PrtSc", "For tile and PrtSc";
     ShotAutoCopySetting => "Salin otomatis", "Copy automatically";
     ShotAutoCopyDesc => "Hanya screenshot Vale; Snipping Tool menyalin sendiri",
         "Vale's own capture only; Snipping Tool copies by itself";
@@ -843,6 +849,8 @@ keys! {
     EditSelect => "Pilih", "Select";
     EditText => "Teks", "Text";
     EditRect => "Kotak", "Rectangle";
+    EditLine => "Garis", "Line";
+    InlineOpenEditor => "Buka di editor", "Open in editor";
     EditArrow => "Panah", "Arrow";
     EditPen => "Pena", "Pen";
     EditMarker => "Stabilo", "Marker";
