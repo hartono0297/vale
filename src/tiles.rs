@@ -1,6 +1,6 @@
 //! Which tiles the Pintasan page shows, in what order: the "Pintasan" setting.
-//! The built-in tiles (the original nine, Vale's own Settings and a jump to
-//! each panel page) are always listed once each (one that is off is hidden,
+//! The built-in tiles (the original nine and a jump to each panel page) are
+//! always listed once each (one that is off is hidden,
 //! not lost); custom tiles (an app, a folder, a web address) are the owner's
 //! own and can be removed. At most twelve show: a tile cannot be switched on
 //! while twelve already are, and a built-in a saved list does not name
@@ -186,7 +186,7 @@ pub enum TileGroup {
     Pages,
     /// The built-ins that run a Windows tool.
     Windows,
-    /// Vale's own: its Settings and its quick search.
+    /// Vale's own: its quick search.
     Vale,
     /// The owner's own tiles.
     Own,
