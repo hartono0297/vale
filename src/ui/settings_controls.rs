@@ -47,8 +47,8 @@ use super::robot::{Expr, Pose, RobotPainter};
 use super::settings_layout::{
     Align, Button, ButtonKind, CARD_RADIUS, CAT_TILE, CONTROL_RADIUS, CatFace, Chip, Control,
     EXTERNAL_GLYPH, FULL_RADIUS, Field, Font, Group, HOTKEY_CAP_H, HOTKEY_CAP_PAD,
-    HOTKEY_FIELD_PAD, HOTKEY_PLUS_W, Hit, LINK_GLYPH_W, Layout, Measure, Rect, SEGMENT_RADIUS,
-    SLIDER_THUMB, SWATCH_RING_GAP, SWATCH_RING_W, Section, Segment, Text, Tone, accent_key,
+    HOTKEY_FIELD_PAD, HOTKEY_PLUS_W, Hit, LINK_GLYPH_W, Layout, MapItem, Measure, MonitorPick,
+    Rect, SEGMENT_RADIUS, SLIDER_THUMB, SWATCH_RING_GAP, SWATCH_RING_W, Section, Segment, Text, Tone, accent_key,
     hotkey_caps_w, slider_x,
 };
 use crate::config::{Style, UiFont};
@@ -781,6 +781,12 @@ impl Painter<'_> {
                     selected,
                     canvas,
                 } => self.mini(*rect, rects, *selected, *canvas),
+                Control::MonitorMap { items, lit, .. } => self.monitor_map(items, *lit, s),
+                Control::Radio {
+                    hit,
+                    rect,
+                    selected,
+                } => self.radio(*rect, *hit, *selected, s),
                 Control::IconButton {
                     hit,
                     rect,
@@ -984,6 +990,58 @@ impl Painter<'_> {
                 self.set(self.p.accent, 1.0);
                 self.outline(tile, radius, 2.0);
             }
+        }
+    }
+
+    /// The Monitor map: each screen a rounded rectangle (its number is a
+    /// text of the layout). The one the notch is on is filled and outlined in
+    /// the accent; one that cannot be chosen is faint.
+    fn monitor_map(&self, items: &[MapItem], lit: Option<usize>, s: &Scene) {
+        const RADIUS: f32 = 4.0;
+        for item in items {
+            let is_lit = lit == Some(item.index);
+            let hit = Hit::NotchMonitor(MonitorPick::Entry(item.index as u8));
+            let (ink, alpha) = if is_lit {
+                (self.p.accent, 0.35)
+            } else if item.selectable {
+                (self.p.secondary, 0.28)
+            } else {
+                (self.p.secondary, 0.12)
+            };
+            self.fill_round(item.rect, RADIUS, ink, alpha);
+            if item.selectable && !is_lit && s.hover == Some(hit) {
+                let a = if s.pressed == s.hover { 0.12 } else { 0.07 };
+                self.fill_round(item.rect, RADIUS, self.p.text, a);
+            }
+            if is_lit {
+                self.set(self.p.accent, 1.0);
+                self.outline(item.rect, RADIUS, 2.0);
+            }
+            let ink = if item.selectable {
+                self.p.text
+            } else {
+                self.p.secondary
+            };
+            let style = self.style(Font::Value, Align::Center);
+            self.draw_str(&item.number.to_string(), style, item.rect, ink, 1.0);
+        }
+    }
+
+    /// One entry of the Monitor list: a radio dot (the chosen one filled in
+    /// the accent) and a soft wash under the pointer. The label and the muted
+    /// note are texts of the layout.
+    fn radio(&self, r: Rect, hit: Option<Hit>, selected: bool, s: &Scene) {
+        if hit.is_some() && s.hover == hit {
+            let a = if s.pressed == s.hover { 0.10 } else { 0.06 };
+            self.fill_round(r, CONTROL_RADIUS, self.p.text, a);
+        }
+        let (cx, cy) = (r.x + 16.0, r.y + r.h / 2.0);
+        if selected {
+            self.ring(cx, cy, 6.75, 1.5, self.p.accent, 1.0);
+            self.circle(cx, cy, 3.5, self.p.accent, 1.0);
+        } else {
+            let a = if hit.is_some() { 0.85 } else { 0.4 };
+            self.ring(cx, cy, 6.75, 1.5, self.p.secondary, a);
         }
     }
 

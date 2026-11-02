@@ -14,9 +14,11 @@ use windows::core::{Error, Result, w};
 
 use super::app_icon;
 use super::geometry::{TALL_WINDOW_H, WINDOW_H, WINDOW_W};
+use crate::arrange::Rect;
+use crate::notch_monitor::Display;
 
 /// The island's layered popup: a transparent canvas at the top-center of the
-/// primary monitor, `WINDOW_H` tall, or `TALL_WINDOW_H` while the enlarged
+/// chosen monitor (the primary by default), `WINDOW_H` tall, or `TALL_WINDOW_H` while the enlarged
 /// CLI panel needs it. Content and per-pixel alpha come from
 /// `Renderer::draw` via `UpdateLayeredWindow`, which also applies a new size.
 ///
@@ -31,12 +33,14 @@ pub struct IslandWindow {
     /// Above every window (the default); false while "Di belakang jendela"
     /// has put it at the bottom of the window order.
     front: bool,
-    /// The primary monitor's width in logical px (the lyric notch's cap).
+    /// The island's monitor's width in logical px (the lyric notch's cap).
     screen_w: f32,
 }
 
 impl IslandWindow {
-    pub fn create(wnd_proc: WNDPROC) -> Result<Self> {
+    /// Creates the island on `target` (the chosen monitor; the primary when
+    /// `None`).
+    pub fn create(wnd_proc: WNDPROC, target: Option<&Display>) -> Result<Self> {
         // Also named in `capture::win::KEPT_OUT` (kept out of screenshots).
         let class_name = w!("ValeWindow");
         unsafe {
@@ -65,7 +69,7 @@ impl IslandWindow {
                 size,
                 scale,
                 screen_w,
-            } = placement(false);
+            } = placement(target, false);
             let ex_style: WINDOW_EX_STYLE =
                 WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
             let hwnd = CreateWindowExW(
@@ -116,7 +120,7 @@ impl IslandWindow {
         self.scale
     }
 
-    /// The primary monitor's width in logical px, as of the last placement.
+    /// The island's monitor's width in logical px, as of the last placement.
     pub fn screen_w(&self) -> f32 {
         self.screen_w
     }
@@ -148,15 +152,16 @@ impl IslandWindow {
         (self.origin.x, self.origin.y)
     }
 
-    /// Re-centers on the primary monitor at its current DPI. Call on
-    /// `WM_DPICHANGED` and `WM_DISPLAYCHANGE`, then redraw.
-    pub fn reposition(&mut self) {
+    /// Re-centers on `target` (the chosen monitor; the primary when `None`) at
+    /// its current DPI. Call on `WM_DPICHANGED`, `WM_DISPLAYCHANGE`, a monitor
+    /// hot-plug and when the choice changes, then redraw.
+    pub fn reposition(&mut self, target: Option<&Display>) {
         let Placement {
             origin,
             size,
             scale,
             screen_w,
-        } = placement(self.tall);
+        } = placement(target, self.tall);
         self.origin = origin;
         self.size = size;
         self.scale = scale;
@@ -193,12 +198,6 @@ impl IslandWindow {
     }
 }
 
-/// Top-center of the primary monitor, sized for that monitor's DPI.
-///
-/// The DPI is read from the monitor rather than `GetDpiForWindow`: the island
-/// always lives on the primary monitor, where the two agree, and asking the
-/// monitor avoids moving the window first, which would send `WM_DPICHANGED`
-/// back into the caller's window procedure mid-call.
 /// Where `SetWindowPos` puts the island in the window order: topmost, or the
 /// bottom (which also takes away the topmost style).
 fn order(front: bool) -> HWND {
@@ -210,6 +209,7 @@ fn height(tall: bool) -> f32 {
 }
 
 /// Where the window goes and what it learned about the monitor.
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Placement {
     origin: POINT,
     size: SIZE,
@@ -218,7 +218,34 @@ struct Placement {
     screen_w: f32,
 }
 
-fn placement(tall: bool) -> Placement {
+/// Top-center of the monitor whose rectangle is `rect` (physical px), sized for
+/// its `dpi`.
+fn place_on(rect: Rect, dpi: u32, tall: bool) -> Placement {
+    let scale = dpi.max(96) as f32 / 96.0;
+    let size = SIZE {
+        cx: (WINDOW_W * scale).round() as i32,
+        cy: (height(tall) * scale).round() as i32,
+    };
+    let origin = POINT {
+        x: rect.x + (rect.w - size.cx) / 2,
+        y: rect.y,
+    };
+    Placement {
+        origin,
+        size,
+        scale,
+        screen_w: rect.w as f32 / scale,
+    }
+}
+
+/// The primary monitor's rectangle and DPI, straight from Windows: the target
+/// when the display list is empty or the caller has none (the demos, the
+/// first draw before any enumeration).
+///
+/// The DPI is read from the monitor rather than `GetDpiForWindow`: asking the
+/// monitor avoids moving the window first, which would send `WM_DPICHANGED`
+/// back into the caller's window procedure mid-call.
+fn primary_target() -> (Rect, u32) {
     unsafe {
         let monitor = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
         let mut info = MONITORINFO {
@@ -230,21 +257,67 @@ fn placement(tall: bool) -> Placement {
         if GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y).is_err() {
             dpi_x = 96;
         }
-        let scale = dpi_x as f32 / 96.0;
-        let size = SIZE {
-            cx: (WINDOW_W * scale).round() as i32,
-            cy: (height(tall) * scale).round() as i32,
-        };
         let rc = info.rcMonitor;
-        let origin = POINT {
-            x: rc.left + (rc.right - rc.left - size.cx) / 2,
-            y: rc.top,
-        };
-        Placement {
-            origin,
-            size,
-            scale,
-            screen_w: (rc.right - rc.left) as f32 / scale,
+        (
+            Rect::new(rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top),
+            dpi_x,
+        )
+    }
+}
+
+/// The placement on `target` (a chosen display), or on the primary monitor
+/// when there is none.
+fn placement(target: Option<&Display>, tall: bool) -> Placement {
+    match target {
+        Some(d) => place_on(d.monitor.rect, d.monitor.dpi, tall),
+        None => {
+            let (rect, dpi) = primary_target();
+            place_on(rect, dpi, tall)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_island_goes_top_centre_of_the_monitor() {
+        let p = place_on(Rect::new(0, 0, 1920, 1080), 96, false);
+        assert_eq!((p.size.cx, p.size.cy), (620, 330));
+        assert_eq!((p.origin.x, p.origin.y), ((1920 - 620) / 2, 0));
+        assert_eq!(p.scale, 1.0);
+        assert_eq!(p.screen_w, 1920.0);
+    }
+
+    #[test]
+    fn a_monitor_off_the_origin_is_centred_where_it_is() {
+        let p = place_on(Rect::new(-2560, -200, 2560, 1440), 96, false);
+        assert_eq!(p.origin.x, -2560 + (2560 - 620) / 2);
+        assert_eq!(p.origin.y, -200);
+        let right = place_on(Rect::new(1920, 0, 1920, 1080), 96, false);
+        assert_eq!(right.origin.x, 1920 + (1920 - 620) / 2);
+    }
+
+    #[test]
+    fn size_and_screen_width_follow_the_dpi() {
+        let p = place_on(Rect::new(0, 0, 3840, 2160), 192, false);
+        assert_eq!((p.size.cx, p.size.cy), (1240, 660));
+        assert_eq!(p.scale, 2.0);
+        assert_eq!(p.screen_w, 1920.0);
+        assert_eq!(p.origin.x, (3840 - 1240) / 2);
+        let odd = place_on(Rect::new(0, 0, 2400, 1350), 120, false);
+        assert_eq!(odd.scale, 1.25);
+        assert_eq!(odd.size.cx, (620.0f32 * 1.25).round() as i32);
+        assert_eq!(odd.screen_w, 2400.0 / 1.25);
+    }
+
+    #[test]
+    fn the_tall_canvas_only_changes_the_height() {
+        let a = place_on(Rect::new(0, 0, 1920, 1080), 96, false);
+        let b = place_on(Rect::new(0, 0, 1920, 1080), 96, true);
+        assert_eq!(b.size.cx, a.size.cx);
+        assert_eq!(b.size.cy, 460);
+        assert_eq!(b.origin, a.origin);
     }
 }

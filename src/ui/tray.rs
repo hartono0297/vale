@@ -17,15 +17,16 @@ use windows::Win32::UI::Shell::{
     NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, Shell_NotifyIconW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, DestroyIcon, DestroyMenu, GetCursorPos, HICON, IDI_APPLICATION,
-    LoadIconW, MF_CHECKED, MF_SEPARATOR, MF_STRING, PostMessageW, RegisterWindowMessageW,
-    SetForegroundWindow, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, WM_APP,
-    WM_NULL,
+    AppendMenuW, CheckMenuRadioItem, CreatePopupMenu, DestroyIcon, DestroyMenu, GetCursorPos,
+    HICON, HMENU, IDI_APPLICATION, LoadIconW, MF_BYCOMMAND, MF_CHECKED, MF_GRAYED, MF_POPUP,
+    MF_SEPARATOR, MF_STRING, PostMessageW, RegisterWindowMessageW, SetForegroundWindow,
+    TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, WM_APP, WM_NULL,
 };
 use windows::core::{Error, HSTRING, PCSTR, Result, w};
 
-use crate::config::{Config, Style};
-use crate::i18n::{Key, text, update_menu_install};
+use crate::config::{Config, NotchMonitor, Style};
+use crate::i18n::{Key, monitor_entry, text, update_menu_install};
+use crate::notch_monitor::{Display, choice_for, display_name, same_path, saved_missing};
 use crate::ui::app_icon;
 
 /// Sent by the shell for mouse activity on the tray icon; `lparam` holds the
@@ -80,6 +81,30 @@ impl MenuCmd {
     }
 }
 
+/// What a pick in the menu means: one of the plain commands, or the screen the
+/// notch should be on.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MenuChoice {
+    Cmd(MenuCmd),
+    Monitor(NotchMonitor),
+}
+
+/// The Monitor submenu's ids start here, clear of `MenuCmd::id` (1..=8):
+/// 100 is "Monitor utama", 101 + i the display at place i of the list the menu
+/// was built from.
+const MONITOR_ID_PRIMARY: usize = 100;
+
+/// One radio entry of the Monitor submenu.
+#[derive(Debug, PartialEq)]
+struct MonitorItem {
+    id: usize,
+    label: String,
+    checked: bool,
+    /// Greyed out: a display with no device path, or the saved one that is
+    /// not connected.
+    enabled: bool,
+}
+
 #[derive(Debug, PartialEq)]
 enum MenuItem {
     Entry {
@@ -88,13 +113,68 @@ enum MenuItem {
         checked: bool,
     },
     Separator,
+    /// A popup of radio entries.
+    Submenu {
+        label: String,
+        items: Vec<MonitorItem>,
+    },
+}
+
+/// The Monitor submenu from the saved choice and the displays now: "Monitor
+/// utama", each display as "N · name" (greyed when it cannot be chosen), and
+/// the saved one when it is not connected, greyed and checked.
+fn monitor_items(cfg: &Config, displays: &[Display]) -> Vec<MonitorItem> {
+    let lang = cfg.language;
+    let mut items = vec![MonitorItem {
+        id: MONITOR_ID_PRIMARY,
+        label: text(lang, Key::MonitorPrimary).to_owned(),
+        checked: cfg.notch_monitor == NotchMonitor::Primary,
+        enabled: true,
+    }];
+    for (i, d) in displays.iter().enumerate() {
+        let checked = matches!(&cfg.notch_monitor,
+            NotchMonitor::Chosen { path, .. } if same_path(&d.path, path));
+        items.push(MonitorItem {
+            id: MONITOR_ID_PRIMARY + 1 + i,
+            label: monitor_entry(d.number, &display_name(d)),
+            checked,
+            enabled: d.selectable(),
+        });
+    }
+    if let NotchMonitor::Chosen { name, .. } = &cfg.notch_monitor
+        && saved_missing(&cfg.notch_monitor, displays)
+    {
+        let name = if name.trim().is_empty() {
+            text(lang, Key::MonitorChoice)
+        } else {
+            name.as_str()
+        };
+        items.push(MonitorItem {
+            id: MONITOR_ID_PRIMARY + 1 + displays.len(),
+            label: format!("{name} ({})", text(lang, Key::MonitorNotConnected)),
+            checked: true,
+            enabled: false,
+        });
+    }
+    items
+}
+
+/// The choice a Monitor id of a menu built from `displays` makes; `None` for
+/// an id that is not one, or a display that cannot be chosen.
+fn monitor_choice(id: usize, displays: &[Display]) -> Option<NotchMonitor> {
+    if id == MONITOR_ID_PRIMARY {
+        return Some(NotchMonitor::Primary);
+    }
+    let i = id.checked_sub(MONITOR_ID_PRIMARY + 1)?;
+    choice_for(displays.get(i)?)
 }
 
 /// The menu in `cfg.language`, built each time it opens, so it always
 /// shows the current language. Everything else lives in the settings window.
 /// `update`: the version (X.Y.Z) of a known, not yet installed update; its
-/// item then installs it instead of checking again.
-fn menu_items(cfg: &Config, update: Option<&str>) -> Vec<MenuItem> {
+/// item then installs it instead of checking again. `displays`: the screens
+/// connected now (the Monitor submenu).
+fn menu_items(cfg: &Config, update: Option<&str>, displays: &[Display]) -> Vec<MenuItem> {
     let entry = |cmd, key, checked| MenuItem::Entry {
         cmd,
         label: text(cfg.language, key).to_owned(),
@@ -122,6 +202,10 @@ fn menu_items(cfg: &Config, update: Option<&str>) -> Vec<MenuItem> {
             Key::MenuStyleNotch,
             cfg.style == Style::Notch,
         ),
+        MenuItem::Submenu {
+            label: text(cfg.language, Key::MonitorChoice).to_owned(),
+            items: monitor_items(cfg, displays),
+        },
         MenuItem::Separator,
         // Built from the config each time the menu opens, so a change made in
         // Settings shows up here without any extra sync.
@@ -273,11 +357,18 @@ pub fn refresh_menu_theme() {
 }
 
 /// Shows the menu at the cursor and waits for a choice. Runs a modal message
-/// loop, so the caller must not hold any state borrow across it.
-pub fn show_menu(hwnd: HWND, cfg: &Config, update: Option<&str>) -> Option<MenuCmd> {
+/// loop, so the caller must not hold any state borrow across it. `displays`
+/// are the screens now, for the Monitor submenu; a pick there comes back as
+/// the choice it makes (resolved against this same list).
+pub fn show_menu(
+    hwnd: HWND,
+    cfg: &Config,
+    update: Option<&str>,
+    displays: &[Display],
+) -> Option<MenuChoice> {
     unsafe {
         let menu = CreatePopupMenu().ok()?;
-        for item in menu_items(cfg, update) {
+        for item in menu_items(cfg, update, displays) {
             let _ = match item {
                 MenuItem::Entry {
                     cmd,
@@ -292,6 +383,14 @@ pub fn show_menu(hwnd: HWND, cfg: &Config, update: Option<&str>) -> Option<MenuC
                     AppendMenuW(menu, flags, cmd.id(), &HSTRING::from(label))
                 }
                 MenuItem::Separator => AppendMenuW(menu, MF_SEPARATOR, 0, None),
+                MenuItem::Submenu { label, items } => match CreatePopupMenu() {
+                    Ok(sub) => {
+                        append_radio_items(sub, &items);
+                        // The popup's handle stands in for the item id.
+                        AppendMenuW(menu, MF_POPUP, sub.0 as usize, &HSTRING::from(label))
+                    }
+                    Err(e) => Err(e),
+                },
             };
         }
         let mut pt = POINT::default();
@@ -309,8 +408,42 @@ pub fn show_menu(hwnd: HWND, cfg: &Config, update: Option<&str>) -> Option<MenuC
         );
         // Lets the menu dismiss properly the next time it opens.
         let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
+        // Destroying the menu destroys its submenus.
         let _ = DestroyMenu(menu);
-        MenuCmd::from_id(chosen.0 as usize)
+        let id = chosen.0 as usize;
+        if id >= MONITOR_ID_PRIMARY {
+            return monitor_choice(id, displays).map(MenuChoice::Monitor);
+        }
+        MenuCmd::from_id(id).map(MenuChoice::Cmd)
+    }
+}
+
+/// Fills `menu` with the Monitor entries as a radio group: the checked one
+/// gets the radio bullet (`CheckMenuRadioItem` sets `MFT_RADIOCHECK` on it),
+/// the entries that cannot be chosen are greyed.
+unsafe fn append_radio_items(menu: HMENU, items: &[MonitorItem]) {
+    for item in items {
+        let flags = if item.enabled {
+            MF_STRING
+        } else {
+            MF_STRING | MF_GRAYED
+        };
+        unsafe {
+            let _ = AppendMenuW(menu, flags, item.id, &HSTRING::from(item.label.as_str()));
+        }
+    }
+    if let (Some(first), Some(last)) = (items.first(), items.last()) {
+        if let Some(on) = items.iter().find(|i| i.checked) {
+            unsafe {
+                let _ = CheckMenuRadioItem(
+                    menu,
+                    first.id as u32,
+                    last.id as u32,
+                    on.id as u32,
+                    MF_BYCOMMAND.0,
+                );
+            }
+        }
     }
 }
 
@@ -414,6 +547,7 @@ mod tests {
             .map(|item| match item {
                 MenuItem::Entry { label, .. } => label.as_str(),
                 MenuItem::Separator => "-",
+                MenuItem::Submenu { label, .. } => label.as_str(),
             })
             .collect()
     }
@@ -423,7 +557,7 @@ mod tests {
             .iter()
             .filter_map(|item| match item {
                 MenuItem::Entry { cmd, .. } => Some(*cmd),
-                MenuItem::Separator => None,
+                MenuItem::Separator | MenuItem::Submenu { .. } => None,
             })
             .collect()
     }
@@ -457,13 +591,14 @@ mod tests {
     #[test]
     fn menu_labels_in_order() {
         assert_eq!(
-            labels(&menu_items(&Config::default(), None)),
+            labels(&menu_items(&Config::default(), None, &[])),
             vec![
                 "Pengaturan…",
                 "Cari…",
                 "-",
                 "Gaya: Pill",
                 "Gaya: Notch",
+                "Monitor",
                 "-",
                 "Jalan saat Windows mulai",
                 "-",
@@ -475,24 +610,24 @@ mod tests {
 
     #[test]
     fn a_known_update_takes_the_place_of_the_check_item() {
-        let id = labels(&menu_items(&Config::default(), Some("3.11.0"))).join("|");
+        let id = labels(&menu_items(&Config::default(), Some("3.11.0"), &[])).join("|");
         assert_eq!(
             id,
-            "Pengaturan…|Cari…|-|Gaya: Pill|Gaya: Notch|-|Jalan saat Windows mulai|-|Update ke 3.11.0|Keluar"
+            "Pengaturan…|Cari…|-|Gaya: Pill|Gaya: Notch|Monitor|-|Jalan saat Windows mulai|-|Update ke 3.11.0|Keluar"
         );
         let en = Config {
             language: Lang::En,
             ..Config::default()
         };
-        let en = labels(&menu_items(&en, Some("3.11.0"))).join("|");
+        let en = labels(&menu_items(&en, Some("3.11.0"), &[])).join("|");
         assert_eq!(
             en,
-            "Settings…|Search…|-|Style: Pill|Style: Notch|-|Start with Windows|-|Update to 3.11.0|Quit"
+            "Settings…|Search…|-|Style: Pill|Style: Notch|Monitor|-|Start with Windows|-|Update to 3.11.0|Quit"
         );
-        let with = commands(&menu_items(&Config::default(), Some("3.11.0")));
+        let with = commands(&menu_items(&Config::default(), Some("3.11.0"), &[]));
         assert!(with.contains(&MenuCmd::InstallUpdate));
         assert!(!with.contains(&MenuCmd::CheckUpdate));
-        let without = commands(&menu_items(&Config::default(), None));
+        let without = commands(&menu_items(&Config::default(), None, &[]));
         assert!(without.contains(&MenuCmd::CheckUpdate));
         assert!(!without.contains(&MenuCmd::InstallUpdate));
     }
@@ -504,13 +639,14 @@ mod tests {
             ..Config::default()
         };
         assert_eq!(
-            labels(&menu_items(&en, None)),
+            labels(&menu_items(&en, None, &[])),
             vec![
                 "Settings…",
                 "Search…",
                 "-",
                 "Style: Pill",
                 "Style: Notch",
+                "Monitor",
                 "-",
                 "Start with Windows",
                 "-",
@@ -522,7 +658,7 @@ mod tests {
 
     #[test]
     fn settings_comes_first() {
-        let items = menu_items(&Config::default(), None);
+        let items = menu_items(&Config::default(), None, &[]);
         assert!(matches!(
             items.first(),
             Some(MenuItem::Entry {
@@ -537,7 +673,7 @@ mod tests {
     fn checks_follow_config() {
         let pill = Config::default();
         assert_eq!(
-            checked(&menu_items(&pill, None)),
+            checked(&menu_items(&pill, None, &[])),
             vec![MenuCmd::StylePill, MenuCmd::Autostart]
         );
         let notch = Config {
@@ -545,7 +681,7 @@ mod tests {
             start_with_windows: false,
             ..Config::default()
         };
-        assert_eq!(checked(&menu_items(&notch, None)), vec![MenuCmd::StyleNotch]);
+        assert_eq!(checked(&menu_items(&notch, None, &[])), vec![MenuCmd::StyleNotch]);
     }
 
     #[test]
@@ -567,7 +703,7 @@ mod tests {
                     start_with_windows: on,
                     ..Config::default()
                 };
-                let items = menu_items(&cfg, None);
+                let items = menu_items(&cfg, None, &[]);
                 let found = items.iter().any(|item| {
                     matches!(item, MenuItem::Entry { cmd: MenuCmd::Autostart, label: l, checked }
                         if l == label && *checked == on)
@@ -595,16 +731,195 @@ mod tests {
     #[test]
     fn every_command_is_in_the_menu() {
         // The install item only shows once an update is known.
-        let mut reachable = commands(&menu_items(&Config::default(), None));
-        reachable.extend(commands(&menu_items(&Config::default(), Some("3.11.0"))));
+        let mut reachable = commands(&menu_items(&Config::default(), None, &[]));
+        reachable.extend(commands(&menu_items(&Config::default(), Some("3.11.0"), &[])));
         for cmd in COMMANDS {
             assert!(reachable.contains(&cmd), "{cmd:?}");
         }
         // And Quit stays last, update known or not.
         for update in [None, Some("3.11.0")] {
-            let items = commands(&menu_items(&Config::default(), update));
+            let items = commands(&menu_items(&Config::default(), update, &[]));
             assert_eq!(items.last(), Some(&MenuCmd::Exit));
         }
+    }
+
+    fn display(n: usize, primary: bool, path: &str, name: &str) -> Display {
+        use crate::arrange::{Monitor, Rect};
+        Display {
+            monitor: Monitor {
+                device: format!(r"\\.\DISPLAY{n}"),
+                rect: Rect::new((n as i32 - 1) * 1920, 0, 1920, 1080),
+                work: Rect::new((n as i32 - 1) * 1920, 0, 1920, 1040),
+                dpi: 96,
+            },
+            hmonitor: n as isize,
+            primary,
+            path: path.into(),
+            name: name.into(),
+            number: n,
+        }
+    }
+
+    fn two() -> Vec<Display> {
+        vec![
+            display(1, true, r"\\?\DISPLAY#AAA#1", "DELL U2415"),
+            display(2, false, r"\\?\DISPLAY#BBB#2", "LG 27UL"),
+        ]
+    }
+
+    fn submenu(items: &[MenuItem]) -> (&str, &[MonitorItem]) {
+        items
+            .iter()
+            .find_map(|i| match i {
+                MenuItem::Submenu { label, items } => Some((label.as_str(), items.as_slice())),
+                _ => None,
+            })
+            .expect("the Monitor submenu")
+    }
+
+    fn chosen(path: &str, name: &str) -> NotchMonitor {
+        NotchMonitor::Chosen {
+            path: path.into(),
+            name: name.into(),
+        }
+    }
+
+    #[test]
+    fn the_monitor_submenu_follows_pill_and_notch() {
+        let items = menu_items(&Config::default(), None, &two());
+        let at = items
+            .iter()
+            .position(|i| matches!(i, MenuItem::Submenu { .. }))
+            .unwrap();
+        assert!(matches!(
+            &items[at - 1],
+            MenuItem::Entry {
+                cmd: MenuCmd::StyleNotch,
+                ..
+            }
+        ));
+        assert!(matches!(&items[at + 1], MenuItem::Separator));
+        let (label, subs) = submenu(&items);
+        assert_eq!(label, "Monitor");
+        let labels: Vec<&str> = subs.iter().map(|s| s.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            ["Monitor utama", "1 · DELL U2415", "2 · LG 27UL"]
+        );
+        let ids: Vec<usize> = subs.iter().map(|s| s.id).collect();
+        assert_eq!(ids, [100, 101, 102]);
+        // No id clashes with a plain command.
+        for s in subs {
+            assert!(MenuCmd::from_id(s.id).is_none());
+        }
+    }
+
+    #[test]
+    fn the_monitor_submenu_in_english() {
+        let en = Config {
+            language: Lang::En,
+            notch_monitor: chosen(r"\\?\DISPLAY#GONE#9", "Samsung"),
+            ..Config::default()
+        };
+        let items = menu_items(&en, None, &two());
+        let (label, subs) = submenu(&items);
+        assert_eq!(label, "Monitor");
+        let labels: Vec<&str> = subs.iter().map(|s| s.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            [
+                "Primary monitor",
+                "1 · DELL U2415",
+                "2 · LG 27UL",
+                "Samsung (not connected)"
+            ]
+        );
+    }
+
+    #[test]
+    fn primary_is_checked_by_default() {
+        let items = menu_items(&Config::default(), None, &two());
+        let (_, subs) = submenu(&items);
+        let on: Vec<usize> = subs.iter().filter(|s| s.checked).map(|s| s.id).collect();
+        assert_eq!(on, [100]);
+        assert!(subs.iter().all(|s| s.enabled));
+    }
+
+    #[test]
+    fn a_connected_choice_is_the_one_checked() {
+        let cfg = Config {
+            notch_monitor: chosen(r"\\?\display#bbb#2", "LG 27UL"),
+            ..Config::default()
+        };
+        let items = menu_items(&cfg, None, &two());
+        let (_, subs) = submenu(&items);
+        let on: Vec<usize> = subs.iter().filter(|s| s.checked).map(|s| s.id).collect();
+        assert_eq!(on, [102]);
+        assert_eq!(subs.len(), 3);
+    }
+
+    #[test]
+    fn a_missing_choice_shows_greyed_and_checked() {
+        let cfg = Config {
+            notch_monitor: chosen(r"\\?\DISPLAY#GONE#9", "Samsung Odyssey"),
+            ..Config::default()
+        };
+        let items = menu_items(&cfg, None, &two());
+        let (_, subs) = submenu(&items);
+        assert_eq!(subs.len(), 4);
+        let last = subs.last().unwrap();
+        assert!(last.checked && !last.enabled);
+        assert_eq!(last.label, "Samsung Odyssey (tidak terhubung)");
+        assert_eq!(subs.iter().filter(|s| s.checked).count(), 1);
+        // A saved choice with no name still reads.
+        let cfg = Config {
+            notch_monitor: chosen(r"\\?\DISPLAY#GONE#9", ""),
+            ..Config::default()
+        };
+        let items = menu_items(&cfg, None, &two());
+        assert_eq!(
+            submenu(&items).1.last().unwrap().label,
+            "Monitor (tidak terhubung)"
+        );
+    }
+
+    #[test]
+    fn a_display_without_a_path_is_greyed() {
+        let mut list = two();
+        list[1].path.clear();
+        let items = menu_items(&Config::default(), None, &list);
+        let (_, subs) = submenu(&items);
+        assert!(subs[0].enabled && subs[1].enabled && !subs[2].enabled);
+        // Choosing it does nothing; a display with a path gives its choice.
+        assert_eq!(monitor_choice(102, &list), None);
+        assert_eq!(
+            monitor_choice(101, &list),
+            Some(chosen(r"\\?\DISPLAY#AAA#1", "DELL U2415"))
+        );
+    }
+
+    #[test]
+    fn monitor_ids_map_back_to_choices() {
+        let list = two();
+        assert_eq!(monitor_choice(100, &list), Some(NotchMonitor::Primary));
+        assert_eq!(
+            monitor_choice(102, &list),
+            Some(chosen(r"\\?\DISPLAY#BBB#2", "LG 27UL"))
+        );
+        // Past the list (the greyed missing entry's id) and below the range.
+        assert_eq!(monitor_choice(103, &list), None);
+        assert_eq!(monitor_choice(99, &list), None);
+        assert_eq!(monitor_choice(0, &list), None);
+    }
+
+    #[test]
+    fn the_monitor_submenu_never_changes_the_plain_commands() {
+        let with = commands(&menu_items(&Config::default(), None, &two()));
+        let without = commands(&menu_items(&Config::default(), None, &[]));
+        assert_eq!(with, without);
+        // With no display listed there is still "Monitor utama".
+        let items = menu_items(&Config::default(), None, &[]);
+        assert_eq!(submenu(&items).1.len(), 1);
     }
 
     #[test]

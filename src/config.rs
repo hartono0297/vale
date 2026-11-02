@@ -188,6 +188,64 @@ pub struct Config {
     /// panel and Settings. Owned by the island. A bad value reads as Sans.
     #[serde(deserialize_with = "ui_font")]
     pub font: UiFont,
+    /// "Monitor" (Settings -> Tampilan -> Notch, tray): the screen the island
+    /// shows on. Owned by the island; a bad value reads as Primary.
+    pub notch_monitor: NotchMonitor,
+}
+
+/// Which screen the island shows on. `Primary` follows whichever monitor
+/// Windows calls primary; `Chosen` names one by its device path (stable across
+/// reboots and replugs, unlike the `\\.\DISPLAYn` name) with the friendly name
+/// kept only to show while it is unplugged.
+///
+/// On disk: the string "primary", or `{"path": "...", "name": "..."}`. Reading
+/// never fails: anything else is `Primary`, a missing or non-string `name` is "".
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum NotchMonitor {
+    #[default]
+    Primary,
+    Chosen { path: String, name: String },
+}
+
+impl Serialize for NotchMonitor {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        match self {
+            NotchMonitor::Primary => s.serialize_str("primary"),
+            NotchMonitor::Chosen { path, name } => {
+                let mut map = s.serialize_map(Some(2))?;
+                map.serialize_entry("path", path)?;
+                map.serialize_entry("name", name)?;
+                map.end()
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for NotchMonitor {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let v = serde_json::Value::deserialize(d)?;
+        Ok(NotchMonitor::from_value(&v))
+    }
+}
+
+impl NotchMonitor {
+    fn from_value(v: &serde_json::Value) -> NotchMonitor {
+        let Some(obj) = v.as_object() else {
+            return NotchMonitor::Primary;
+        };
+        match obj.get("path").and_then(|p| p.as_str()) {
+            Some(path) if !path.is_empty() => NotchMonitor::Chosen {
+                path: path.to_string(),
+                name: obj
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+            },
+            _ => NotchMonitor::Primary,
+        }
+    }
 }
 
 /// The Settings window's normal (restore) rectangle in screen coordinates,
@@ -674,6 +732,7 @@ impl Default for Config {
             hotkeys: crate::hotkey::Hotkeys::default(),
             update_offered: String::new(),
             font: UiFont::Sans,
+            notch_monitor: NotchMonitor::Primary,
         }
     }
 }
@@ -817,6 +876,7 @@ pub fn merge_owned(disk: Config, mem: &Config) -> Config {
         hotkeys: mem.hotkeys,
         update_offered: mem.update_offered.clone(),
         font: mem.font,
+        notch_monitor: mem.notch_monitor.clone(),
         ..disk
     }
 }
@@ -1217,6 +1277,10 @@ mod tests {
                 maximized: false,
             }),
             font: UiFont::Mono,
+            notch_monitor: NotchMonitor::Chosen {
+                path: r"\\?\DISPLAY#X#1".into(),
+                name: "Dell".into(),
+            },
         };
         assert_eq!(parse(&serde_json::to_string(&c).unwrap()), c);
     }
@@ -2501,6 +2565,77 @@ mod tests {
             parse(r#"{"notch_fill":"Glass"}"#).notch_fill,
             NotchFill::Solid
         );
+    }
+
+    #[test]
+    fn notch_monitor_defaults_to_primary_and_old_files_load() {
+        assert_eq!(Config::default().notch_monitor, NotchMonitor::Primary);
+        let old = parse(r#"{"style":"Notch","accent":"Plum"}"#);
+        assert_eq!(old.notch_monitor, NotchMonitor::Primary);
+        let json = serde_json::to_string(&Config::default()).unwrap();
+        assert!(json.contains(r#""notch_monitor":"primary""#), "{json}");
+    }
+
+    #[test]
+    fn notch_monitor_round_trips_both_variants() {
+        let chosen = NotchMonitor::Chosen {
+            path: r"\\?\DISPLAY#DEL4123#5&abc&0&UID4352#{guid}".into(),
+            name: "DELL U2723QE".into(),
+        };
+        for m in [NotchMonitor::Primary, chosen.clone()] {
+            let c = Config {
+                notch_monitor: m.clone(),
+                ..Config::default()
+            };
+            let back = parse(&serde_json::to_string_pretty(&c).unwrap());
+            assert_eq!(back.notch_monitor, m);
+        }
+        let json = serde_json::to_value(&chosen).unwrap();
+        assert_eq!(json["name"], "DELL U2723QE");
+        assert!(json["path"].as_str().unwrap().starts_with(r"\\?\DISPLAY"));
+    }
+
+    #[test]
+    fn notch_monitor_garbage_reads_as_primary_and_keeps_the_rest() {
+        for junk in [
+            "null",
+            "5",
+            "true",
+            "[]",
+            r#"["path"]"#,
+            r#""Primary2""#,
+            r#""chosen""#,
+            "{}",
+            r#"{"path":""}"#,
+            r#"{"path":5}"#,
+            r#"{"path":null,"name":"x"}"#,
+            r#"{"name":"only"}"#,
+        ] {
+            let c = parse(&format!(r#"{{"style":"Notch","notch_monitor":{junk}}}"#));
+            assert_eq!(c.notch_monitor, NotchMonitor::Primary, "{junk}");
+            assert_eq!(c.style, Style::Notch, "{junk}");
+        }
+        let chosen = |name: &str| NotchMonitor::Chosen {
+            path: "p".into(),
+            name: name.into(),
+        };
+        let c = parse(r#"{"notch_monitor":{"path":"p","name":7}}"#);
+        assert_eq!(c.notch_monitor, chosen(""));
+        let c = parse(r#"{"notch_monitor":{"path":"p"}}"#);
+        assert_eq!(c.notch_monitor, chosen(""));
+    }
+
+    #[test]
+    fn merge_owned_keeps_the_notch_monitor() {
+        let mem = Config {
+            notch_monitor: NotchMonitor::Chosen {
+                path: "p".into(),
+                name: "n".into(),
+            },
+            ..Config::default()
+        };
+        let merged = merge_owned(Config::default(), &mem);
+        assert_eq!(merged.notch_monitor, mem.notch_monitor);
     }
 
     #[test]

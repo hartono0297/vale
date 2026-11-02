@@ -41,7 +41,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    DEVICE_NOTIFY_WINDOW_HANDLE, DefWindowProcW, DestroyWindow, DispatchMessageW, EN_CHANGE,
+    DBT_DEVNODES_CHANGED, DEVICE_NOTIFY_WINDOW_HANDLE, DefWindowProcW, DestroyWindow, DispatchMessageW, EN_CHANGE,
     GA_ROOT, GetAncestor, GetCursorPos, GetForegroundWindow, GetMessageW, GetSystemMetrics,
     IsWindow, IsWindowVisible, KillTimer, MA_NOACTIVATE, MSG, PBT_POWERSETTINGCHANGE, PM_REMOVE,
     PeekMessageW, PostMessageW, PostQuitMessage, SM_SWAPBUTTON, SPI_GETCLIENTAREAANIMATION,
@@ -56,6 +56,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{PCWSTR, PWSTR, w};
 
 use crate::arrange_overlay;
+use crate::arrange_win;
 use crate::audio;
 use crate::behind;
 use crate::calendar::sync::{SyncHandle, SyncRequest, post_status, save_failed_notice, spawn_sync};
@@ -65,7 +66,7 @@ use crate::clean::{self, CleanCat, CleanEvent, Cleaner, ScanResult};
 use crate::cli::{self, Builtin, CliEvent, History, HistoryCursor, RunHandle, Session};
 use crate::cli_folders::{self, FolderList, ListKind};
 use crate::cli_panel::{self, Echoes, MAX_SUGGESTIONS, RunClock};
-use crate::config::{self, Config, OnDisk, Repair, Style};
+use crate::config::{self, Config, NotchMonitor, OnDisk, Repair, Style};
 use crate::data_dir;
 use crate::eq_audio::EqCapture;
 use crate::gestures;
@@ -73,10 +74,12 @@ use crate::google::client::{self, Client};
 use crate::greeting::{DayPeriod, GreetCounts, GreetMark};
 use crate::halo;
 use crate::i18n::{self, Key, tr};
+use crate::identify_overlay;
 use crate::lyrics::{self, DiskCache, LyricsState, LyricsWorker, Query};
 use crate::media_log;
 use crate::model::{Effect, Event, Hit, Notice, NoticeKind, Page, View};
 use crate::mole::{self, Confirmed, MoleEvent, MoleOpts, MoleWorker};
+use crate::notch_monitor::{self, Display};
 use crate::notes::NotesStore;
 use crate::pages::PanelPages;
 use crate::pointer_watch::{
@@ -121,12 +124,13 @@ use crate::ui::render::{
     CleanerView, CliView, DevicesView, FolderMenuView, Frame, MoleView, Progress, Renderer,
     RobotFrame, SearchView, SystemView,
 };
+use crate::ui::settings_layout::MonitorRow;
 use crate::ui::robot::{
     self, Brain, Expr, EyesBlink, EyesPose, GreetSettings, Motion, Rng, Spot, TypingPaws,
     choose_expr, plan_timers, should_greet,
 };
 use crate::ui::settings::{self, Action as SettingsAction, WM_APP_SETTINGS_ACTION};
-use crate::ui::tray::{self, MenuCmd, WM_APP_TRAY};
+use crate::ui::tray::{self, MenuChoice, MenuCmd, WM_APP_TRAY};
 use crate::ui::window::IslandWindow;
 
 #[path = "app_clip.rs"]
@@ -269,6 +273,12 @@ const TIMER_POINTER: usize = 33;
 /// one would make each stop or re-arm the others. 40 was the next free id
 /// after 35 (`TIMER_UPDATE`) that the other features' notes leave alone.
 const TIMER_TYPING: usize = 40;
+/// One-shot, `DISPLAYS_MS` after a device-node change (`DBT_DEVNODES_CHANGED`
+/// on `WM_DEVICECHANGE`): the monitors are listed again and the island moves
+/// only when its screen is not where it was. Re-armed by each change message;
+/// never polls. 41 is the next id the other features leave alone.
+const TIMER_DISPLAYS: usize = 41;
+const DISPLAYS_MS: u32 = 600;
 /// Repeating, 1 s: the Mixer page asks the audio thread for the volumes while
 /// it shows (`sync_mixer`). Nothing runs with the page shut.
 const TIMER_MIXER: usize = 26;
@@ -358,7 +368,12 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
     // Before any menu can open: the tray menu follows the Windows app mode.
     tray::follow_system_menu_theme();
     theme::set_current(Theme::of(&config));
-    let win = IslandWindow::create(Some(wnd_proc)).expect("create island window");
+    // The screen the notch is on: the saved choice among the displays now
+    // (the primary one when it is not connected or there is no choice).
+    let displays = arrange_win::displays();
+    let target = notch_monitor::resolve(&config.notch_monitor, &displays).map(|i| &displays[i]);
+    let placed = target.cloned();
+    let win = IslandWindow::create(Some(wnd_proc), target).expect("create island window");
     let mut renderer = Renderer::new().expect("create renderer");
     // Before the first draw: the typeface of the notch and the panel.
     if let Err(error) = renderer.set_ui_font(config.font) {
@@ -408,6 +423,8 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
         *cell.borrow_mut() = Some(App {
             hwnd,
             win: Some(win),
+            displays,
+            placed,
             renderer,
             config,
             state: IslandState::new(today, pomodoro),
@@ -683,6 +700,12 @@ struct App {
     hwnd: HWND,
     /// Taken out only while `reposition` runs, so no borrow is held across it.
     win: Option<IslandWindow>,
+    /// The screens as last listed (startup, a display or device change, the
+    /// island moving): Settings, Identify and the tray read it.
+    displays: Vec<Display>,
+    /// The display the window was last placed on (`None`: the primary monitor
+    /// by Windows' own answer, no list was available).
+    placed: Option<Display>,
     renderer: Renderer,
     config: Config,
     state: IslandState,
@@ -5642,8 +5665,33 @@ impl App {
             calendar: self.calendar.status,
             hotkey_failed: self.hotkeys.failed_flags(),
             update_row: self.update.row(),
+            monitors: self
+                .displays
+                .iter()
+                .map(MonitorRow::from_display)
+                .collect(),
             ..settings::Model::from_config(&self.config)
         }
+    }
+
+    /// The screen the notch shows on, from Settings or the tray. Saves the
+    /// choice and says whether it changed; the caller then moves the island
+    /// (`reposition`, or `DEFERRED_REPOSITION` while the app is borrowed).
+    fn set_notch_monitor(&mut self, choice: NotchMonitor) -> bool {
+        if self.config.notch_monitor == choice {
+            return false;
+        }
+        self.config.notch_monitor = choice;
+        self.save_config();
+        true
+    }
+
+    /// "Tandai": numbers every screen for two seconds. The list is read again
+    /// first, so a screen plugged in a moment ago has its plate.
+    fn identify_monitors(&mut self) {
+        self.displays = arrange_win::displays();
+        let fade = self.motion().moves() && self.animations;
+        identify_overlay::show(&self.displays, fade);
     }
 
     /// Brings an open settings window up to date; it redraws only on a change.
@@ -5694,6 +5742,15 @@ impl App {
                 self.set_notch_size(NOTCH_W_DEFAULT, NOTCH_H_DEFAULT, false);
                 self.save_config();
             }
+            // Runs inside `with_app`, so the island moves once the handler
+            // returns (`run_deferred`, at the end of the window procedure),
+            // never from here.
+            SettingsAction::NotchMonitor(choice) => {
+                if self.set_notch_monitor(choice) {
+                    DEFERRED_REPOSITION.set(true);
+                }
+            }
+            SettingsAction::NotchIdentify => self.identify_monitors(),
             SettingsAction::WindowMode(mode) => {
                 self.config.window_theme = mode;
                 self.save_config();
@@ -7451,8 +7508,25 @@ fn open_menu(hwnd: HWND) {
     // The menu takes the foreground: the window that had the keyboard is
     // what "Cari" hands it back to on Esc.
     let before = unsafe { GetForegroundWindow() };
-    let cmd = tray::show_menu(hwnd, &config, update.as_deref());
+    // Listed now, outside the app borrow, so the Monitor submenu shows the
+    // screens as they are.
+    let displays = arrange_win::displays();
+    let cmd = tray::show_menu(hwnd, &config, update.as_deref(), &displays);
     MENU_OPEN.set(false);
+    let cmd = match cmd {
+        Some(MenuChoice::Cmd(cmd)) => Some(cmd),
+        // The same path as Settings: save, then move the island (outside
+        // `with_app`), then bring an open Settings window up to date.
+        Some(MenuChoice::Monitor(choice)) => {
+            let changed = with_app(|app| app.set_notch_monitor(choice)).unwrap_or(false);
+            if changed {
+                reposition();
+            }
+            with_app(|app| app.sync_settings());
+            None
+        }
+        None => None,
+    };
     match cmd {
         Some(MenuCmd::CheckUpdate) => {
             with_app(|app| app.update_manual_check());
@@ -7584,12 +7658,17 @@ fn with_app<R>(f: impl FnOnce(&mut App) -> R) -> Option<R> {
     })
 }
 
-/// Re-centers and resizes for the primary monitor's current DPI, then redraws.
+/// Puts the island on the screen the saved choice resolves to (the primary one
+/// by default) at that screen's current DPI, then redraws, and brings an open
+/// Settings window up to date with the screens now. Called on a DPI or display
+/// change, a hot-plug (`TIMER_DISPLAYS`) and when the choice changes.
 /// `IslandWindow::reposition` calls `SetWindowPos`, which can send
 /// `WM_DPICHANGED` straight back here; the window is taken out of `App` for
 /// the call, so no borrow is held and the nested call finds it gone and returns.
+/// The monitors are listed here, outside any borrow.
 fn reposition() {
-    let Some(taken) = with_app(|app| app.win.take()) else {
+    let Some((taken, choice)) = with_app(|app| (app.win.take(), app.config.notch_monitor.clone()))
+    else {
         // Arrived mid-handler: redo once the handler returns.
         DEFERRED_REPOSITION.set(true);
         return;
@@ -7598,12 +7677,46 @@ fn reposition() {
         // Nested inside reposition itself, which already reads the new placement.
         return;
     };
-    win.reposition();
+    let displays = arrange_win::displays();
+    let target = notch_monitor::resolve(&choice, &displays).map(|i| displays[i].clone());
+    win.reposition(target.as_ref());
     with_app(move |app| {
         app.win = Some(win);
+        app.placed = target;
+        app.displays = displays;
         // The screen's width caps the lyric notch; refresh draws.
         app.refresh(Instant::now());
+        app.sync_settings();
     });
+}
+
+/// `TIMER_DISPLAYS`: a device-node change settled. The monitors are listed
+/// again and the island moves only when the screen it should be on is not
+/// where it is (a different rectangle, DPI or device path). Outside
+/// `with_app`: `reposition` needs the app unborrowed.
+fn on_displays_timer(hwnd: HWND) {
+    unsafe {
+        let _ = KillTimer(Some(hwnd), TIMER_DISPLAYS);
+    }
+    let displays = arrange_win::displays();
+    let Some((choice, placed)) =
+        with_app(|app| (app.config.notch_monitor.clone(), app.placed.clone()))
+    else {
+        // A handler holds the app: ask again shortly.
+        unsafe {
+            SetTimer(Some(hwnd), TIMER_DISPLAYS, DISPLAYS_MS, None);
+        }
+        return;
+    };
+    let wanted = notch_monitor::resolve(&choice, &displays).map(|i| &displays[i]);
+    if notch_monitor::moved(placed.as_ref(), wanted) {
+        reposition();
+    } else {
+        with_app(move |app| {
+            app.displays = displays;
+            app.sync_settings();
+        });
+    }
 }
 
 /// Runs work that `DEFERRED_*` postponed, once no handler holds the app.
@@ -7625,6 +7738,11 @@ fn run_deferred() {
     }
     for action in DEFERRED_SETTINGS.take() {
         deliver_settings_action(action);
+    }
+    // A setting just applied (the Monitor choice) asks for a move: do it now,
+    // not on the next message.
+    if DEFERRED_REPOSITION.take() {
+        reposition();
     }
     for key in DEFERRED_CLI.take() {
         deliver_cli_key(key);
@@ -7852,6 +7970,10 @@ unsafe extern "system" fn wnd_proc(
             run_shortcut();
             LRESULT(0)
         }
+        WM_TIMER if wparam.0 == TIMER_DISPLAYS => {
+            on_displays_timer(hwnd);
+            LRESULT(0)
+        }
         WM_TIMER => {
             with_app(|app| app.on_timer(wparam.0));
             LRESULT(0)
@@ -7991,6 +8113,13 @@ unsafe extern "system" fn wnd_proc(
             // Not through `with_app`: a broadcast sent while `App` is
             // borrowed would be dropped, and the drive would go unseen.
             devices_page::on_device_change(hwnd, wparam.0, lparam.0);
+            // A screen may have come or gone (Windows sends this in bursts):
+            // look again once it settles. Also without `with_app`.
+            if wparam.0 == DBT_DEVNODES_CHANGED as usize {
+                unsafe {
+                    SetTimer(Some(hwnd), TIMER_DISPLAYS, DISPLAYS_MS, None);
+                }
+            }
             LRESULT(1)
         }
         WM_ACTIVATE => {
@@ -9213,10 +9342,12 @@ mod tests {
             TIMER_DEVICES,
             TIMER_POINTER,
             TIMER_TYPING,
+            TIMER_DISPLAYS,
         ];
         assert_eq!(TIMER_POINTER, 33);
         assert_eq!(TIMER_NOTIF_SAVE, 34);
         assert_eq!(TIMER_TYPING, 40);
+        assert_eq!(TIMER_DISPLAYS, 41);
         for (i, a) in ids.iter().enumerate() {
             assert!(!ids[i + 1..].contains(a), "timer id {a} used twice");
         }

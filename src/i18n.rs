@@ -951,6 +951,16 @@ keys! {
     CatDance => "Joget ikut musik", "Dance to music";
     CatDanceDesc => "Mengangguk ikut irama saat musik diputar", "Nods to the beat while music plays";
     CatGreeting => "Sapaan", "Greeting";
+
+    // Monitor choice (Settings -> Tampilan -> Notch, the tray, the Identify plates).
+    MonitorChoice => "Monitor", "Monitor";
+    MonitorChoiceDesc => "Layar tempat notch muncul", "Screen the notch shows on";
+    MonitorIdentify => "Tandai", "Identify";
+    MonitorPrimary => "Monitor utama", "Primary monitor";
+    MonitorPrimaryTag => "utama", "primary";
+    MonitorNotConnected => "tidak terhubung", "not connected";
+    MonitorOnlyOne => "Cuma satu monitor terdeteksi", "Only one monitor detected";
+    MonitorNumbered => "Monitor", "Monitor";
 }
 
 /// `key` in `lang`.
@@ -1298,6 +1308,29 @@ pub fn arrange_saved_run(lang: Lang, moved: usize, wanted: usize, skipped: usize
     match lang {
         Lang::Id => format!("{moved} dari {wanted} jendela, {skipped} dilewati"),
         Lang::En => format!("{moved} of {wanted} windows, {skipped} skipped"),
+    }
+}
+
+/// The primary entry's muted note: "sekarang: 2", "now: 2".
+pub fn monitor_now(lang: Lang, n: usize) -> String {
+    match lang {
+        Lang::Id => format!("sekarang: {n}"),
+        Lang::En => format!("now: {n}"),
+    }
+}
+
+/// A monitor entry: "2 \u{b7} LG 27UL".
+pub fn monitor_entry(n: usize, name: &str) -> String {
+    format!("{n} \u{b7} {name}")
+}
+
+/// An entry's muted size note: "2560\u{d7}1440", with ", utama" / ", primary" on the primary.
+pub fn monitor_size(lang: Lang, w: i32, h: i32, primary: bool) -> String {
+    let tag = text(lang, Key::MonitorPrimaryTag);
+    if primary {
+        format!("{w}\u{d7}{h}, {tag}")
+    } else {
+        format!("{w}\u{d7}{h}")
     }
 }
 

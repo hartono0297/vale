@@ -74,10 +74,10 @@ use super::robot::{Motion, sleep_step};
 use super::settings_controls::{Gfx, Scene, ease};
 use super::settings_layout::{
     CLIENT_H, CLIENT_W, CanvasPress, CatFace, Control, DragView, EditView, Field, GUIDE_URL,
-    GoogleState, Group, Hit, Layout, List, REPO_URL, ROW_H, RejectMsg, ReorderRow, Section,
-    SliderId, State, TileForm, Tone, UpdateRow, battery_step, canvas_drag, canvas_press,
-    clip_items_step, disk_warn_step, drag_scroll_speed, drop_index, layout_in, notif_items_step,
-    ram_warn_step, scroll_by, shot_secs_step, slider_value,
+    GoogleState, Group, Hit, Layout, List, MonitorRow, REPO_URL, ROW_H, RejectMsg, ReorderRow,
+    Section, SliderId, State, TileForm, Tone, UpdateRow, battery_step, canvas_drag, canvas_press,
+    clip_items_step, disk_warn_step, drag_scroll_speed, drop_index, layout_in, monitor_choice,
+    notif_items_step, ram_warn_step, scroll_by, shot_secs_step, slider_value,
 };
 use super::settings_window::{Rc, clamp_min, mostly_visible, workspace_to_screen};
 use crate::arrange::{self, ArrangeSettings, CustomTemplate, Node, SavedArrangement};
@@ -86,7 +86,7 @@ use crate::claude::install::{self, InstallOutcome, UninstallOutcome};
 use crate::cli::Shell;
 use crate::cli_folders::CliStart;
 use crate::config::{
-    AfterCapture, ClipboardSettings, Config, NotchFill, NotifSettings, OpenMode,
+    AfterCapture, ClipboardSettings, Config, NotchFill, NotchMonitor, NotifSettings, OpenMode,
     ScreenshotSettings, ShotIgnore, ShotTool, Style, ToastStyle, UiFont, WindowPlace,
 };
 use crate::google::client;
@@ -133,6 +133,10 @@ pub enum Action {
         commit: bool,
     },
     NotchFill(NotchFill),
+    /// "Monitor": the screen the notch shows on (Tampilan → Notch).
+    NotchMonitor(NotchMonitor),
+    /// "Tandai": the island numbers every screen for two seconds.
+    NotchIdentify,
     /// "Ukuran bawaan": back to 190 × 34.
     NotchReset,
     WindowMode(WindowTheme),
@@ -329,6 +333,10 @@ pub struct Model {
     pub notch_height: u32,
     pub notch_fill: NotchFill,
     pub notch_opacity: u8,
+    /// The screen the notch shows on, and the screens connected now (the
+    /// island fills `monitors`; `from_config` leaves it empty).
+    pub notch_monitor: NotchMonitor,
+    pub monitors: Vec<MonitorRow>,
     pub window: WindowTheme,
     pub lang: Lang,
     pub autostart: bool,
@@ -394,6 +402,8 @@ impl Model {
             notch_height: cfg.notch_height,
             notch_fill: cfg.notch_fill,
             notch_opacity: cfg.notch_opacity,
+            notch_monitor: cfg.notch_monitor.clone(),
+            monitors: Vec::new(),
             window: cfg.window_theme,
             lang: cfg.language,
             autostart: cfg.start_with_windows,
@@ -1465,6 +1475,8 @@ impl Settings {
             notch_height: m.notch_height,
             notch_fill: m.notch_fill,
             notch_opacity: m.notch_opacity,
+            notch_monitor: m.notch_monitor.clone(),
+            monitors: &m.monitors,
             window: m.window,
             autostart: m.autostart,
             idle_clock: m.idle_clock,
@@ -2363,6 +2375,13 @@ impl Settings {
             // the sliders.
             Hit::PageGrip(_) | Hit::TileGrip(_) | Hit::Slider(_) => Vec::new(),
             Hit::NotchReset => post(Action::NotchReset),
+            Hit::NotchMonitor(pick) => {
+                match monitor_choice(pick, &m.monitors, &m.notch_monitor) {
+                    Some(choice) => post(Action::NotchMonitor(choice)),
+                    None => Vec::new(),
+                }
+            }
+            Hit::NotchIdentify => post(Action::NotchIdentify),
             Hit::NotchFill(v) if v != m.notch_fill => post(Action::NotchFill(v)),
             Hit::UiFont(v) if v != m.font => post(Action::Font(v)),
             Hit::ArrangeTemplateNew => {
@@ -3803,7 +3822,8 @@ unsafe extern "system" fn edit_proc(
 /// `reconnect`, `offline`, `none`), `DI_POMO_LOCKED=1`, `DI_HOTKEYS` (`failed`:
 /// every hotkey that is set shows as taken by another app) and `DI_UPDATE`
 /// (`available`, `checking`, `downloading`: Tentang's Pembaruan row, with a
-/// made-up 9.9.9) set the start.
+/// made-up 9.9.9) and `DI_MONITORS` (`1`, `3`, `3-missing`: made-up screens for the
+/// Notch card's Monitor row; unset lists the real ones) set the start.
 ///
 /// The window's place is kept in `vale-settings-demo-window.json` in the temp
 /// folder (the real config is never touched): read at the start (a missing
@@ -3841,8 +3861,59 @@ pub fn run_demo(args: &[String]) {
         crate::config::place_from_json(serde_json::from_str(&text).ok()?)
     }
 
+    /// The screens the demo shows. `DI_MONITORS`: `1` (one 1920x1080), `3`
+    /// (three side by side, the middle one primary, two with the same friendly
+    /// name), `3-missing` (the same, with a saved choice that is not
+    /// connected); anything else lists the real displays. The second value is
+    /// the saved choice (Primary except for `3-missing`).
+    fn demo_monitors(kind: &str) -> (Vec<MonitorRow>, NotchMonitor) {
+        let row = |number: usize, x: i32, primary: bool, name: &str, path: &str| MonitorRow {
+            number,
+            name: name.into(),
+            w: 1920,
+            h: 1080,
+            rect: arrange::Rect::new(x, 0, 1920, 1080),
+            primary,
+            path: path.into(),
+            selectable: !path.is_empty(),
+        };
+        let three = || {
+            vec![
+                row(1, -1920, false, "DELL U2415", r"\\?\DISPLAY#DEL4123#demo1#{e6f07b5f}"),
+                row(2, 0, true, "LG 27UL850", r"\\?\DISPLAY#GSM5B09#demo2#{e6f07b5f}"),
+                row(3, 1920, false, "DELL U2415", r"\\?\DISPLAY#DEL4123#demo3#{e6f07b5f}"),
+            ]
+        };
+        match kind.trim().to_ascii_lowercase().as_str() {
+            "1" => (
+                vec![row(1, 0, true, "Generic PnP Monitor", r"\\?\DISPLAY#DEMO#1#{e6f07b5f}")],
+                NotchMonitor::Primary,
+            ),
+            "3" => (three(), NotchMonitor::Primary),
+            "3-missing" => (
+                three(),
+                NotchMonitor::Chosen {
+                    path: r"\\?\DISPLAY#SAM0F9C#gone#{e6f07b5f}".into(),
+                    name: "Samsung Odyssey G7".into(),
+                },
+            ),
+            _ => (
+                crate::arrange_win::displays()
+                    .iter()
+                    .map(MonitorRow::from_display)
+                    .collect(),
+                NotchMonitor::Primary,
+            ),
+        }
+    }
+
     fn apply(m: &mut Model, action: Action) {
         match action {
+            Action::NotchMonitor(v) => m.notch_monitor = v,
+            // The real screens, whatever list the demo shows.
+            Action::NotchIdentify => {
+                crate::identify_overlay::show(&crate::arrange_win::displays(), true);
+            }
             Action::WindowPlace(p) => {
                 m.window_place = Some(p);
                 if let Ok(json) = serde_json::to_string(&p) {
@@ -4076,8 +4147,11 @@ pub fn run_demo(args: &[String]) {
     ];
     // `DI_FONT=mono`: the UI typeface (unset or unknown reads Sans).
     let font = UiFont::from_name(&env("DI_FONT")).unwrap_or_default();
+    let (monitors, notch_monitor) = demo_monitors(&env("DI_MONITORS"));
     let model = Model {
         font,
+        monitors,
+        notch_monitor,
         accent,
         window,
         lang,

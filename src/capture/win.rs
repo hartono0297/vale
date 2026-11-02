@@ -115,7 +115,7 @@ pub fn monitor_at(pt: (i32, i32)) -> (Rect, u32) {
 /// Vale's other windows (Settings, the calendar and notes editor, a
 /// screenshot editor) stay in the picture like any app's, so they can be
 /// captured; they are only left out as snap targets (`top_windows`).
-const KEPT_OUT: &[&str] = &["ValeWindow"];
+const KEPT_OUT: &[&str] = &["ValeWindow", crate::identify_overlay::CLASS_NAME];
 
 fn is_kept_out(class: &str) -> bool {
     KEPT_OUT.contains(&class)

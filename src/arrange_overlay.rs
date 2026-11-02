@@ -104,7 +104,7 @@ pub struct PickSpec {
 
 /// A DIB the size of a window, a software Direct2D target bound to it and
 /// the way to push it to a layered window.
-struct Canvas {
+pub(crate) struct Canvas {
     gfx: Gfx,
     rt: ID2D1DCRenderTarget,
     brush: ID2D1SolidColorBrush,
@@ -117,7 +117,7 @@ struct Canvas {
 }
 
 impl Canvas {
-    fn new(size: (i32, i32)) -> windows::core::Result<Canvas> {
+    pub(crate) fn new(size: (i32, i32)) -> windows::core::Result<Canvas> {
         let gfx = Gfx::new()?;
         let info = BITMAPINFO {
             bmiHeader: BITMAPINFOHEADER {
@@ -205,6 +205,18 @@ impl Canvas {
         base_alpha: f32,
         f: impl FnOnce(&Canvas),
     ) -> windows::core::Result<()> {
+        self.paint_with(hwnd, origin, base_alpha, 255, f)
+    }
+
+    /// `paint`, shown at `opacity` (0..=255) over the drawing's own alpha.
+    pub(crate) fn paint_with(
+        &self,
+        hwnd: HWND,
+        origin: (i32, i32),
+        base_alpha: f32,
+        opacity: u8,
+        f: impl FnOnce(&Canvas),
+    ) -> windows::core::Result<()> {
         let bounds = RECT {
             left: 0,
             top: 0,
@@ -218,10 +230,21 @@ impl Canvas {
         }
         f(self);
         unsafe { self.rt.EndDraw(None, None)? };
+        self.present(hwnd, origin, opacity)
+    }
+
+    /// Pushes what was drawn last to `hwnd` at `origin`, at `opacity`
+    /// (0..=255), without drawing again: a fade is just this with a new value.
+    pub(crate) fn present(
+        &self,
+        hwnd: HWND,
+        origin: (i32, i32),
+        opacity: u8,
+    ) -> windows::core::Result<()> {
         let blend = BLENDFUNCTION {
             BlendOp: AC_SRC_OVER as u8,
             BlendFlags: 0,
-            SourceConstantAlpha: 255,
+            SourceConstantAlpha: opacity,
             AlphaFormat: AC_SRC_ALPHA as u8,
         };
         unsafe {
@@ -245,7 +268,7 @@ impl Canvas {
         }
     }
 
-    fn fill(&self, r: Rect, radius: f32, rgb: u32, alpha: f32) {
+    pub(crate) fn fill(&self, r: Rect, radius: f32, rgb: u32, alpha: f32) {
         unsafe {
             self.brush.SetColor(&color(rgb, alpha));
             self.rt
@@ -265,7 +288,14 @@ impl Canvas {
         }
     }
 
-    fn text(&self, s: &str, area: (f32, f32, f32, f32), size: f32, rgb: u32, alpha: f32) {
+    pub(crate) fn text(
+        &self,
+        s: &str,
+        area: (f32, f32, f32, f32),
+        size: f32,
+        rgb: u32,
+        alpha: f32,
+    ) {
         self.gfx.text_in(
             &self.rt,
             &self.brush,

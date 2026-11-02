@@ -1639,7 +1639,14 @@ fn run_scenes(scenes: &[Scene]) {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
     }
-    let mut win = IslandWindow::create(Some(wnd_proc)).expect("create island window");
+    // `DI_NOTCH_MONITOR=N`: the display with this number (left to right, then
+    // top to bottom); unset or not a display: the primary monitor.
+    let displays = crate::arrange_win::displays();
+    let target = std::env::var("DI_NOTCH_MONITOR")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .and_then(|n| displays.iter().find(|d| d.number == n));
+    let mut win = IslandWindow::create(Some(wnd_proc), target).expect("create island window");
     // Room for the enlarged CLI panel in every scene.
     win.set_tall(true);
     let mut renderer = Renderer::new().expect("create renderer");
