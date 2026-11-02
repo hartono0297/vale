@@ -184,6 +184,10 @@ pub struct Config {
     /// save and only `save_config_with` writes it, so a hand edit survives.
     #[serde(deserialize_with = "window_place")]
     pub settings_window: Option<WindowPlace>,
+    /// "Font" (Settings -> Tampilan -> Island): the typeface of the notch, the
+    /// panel and Settings. Owned by the island. A bad value reads as Sans.
+    #[serde(deserialize_with = "ui_font")]
+    pub font: UiFont,
 }
 
 /// The Settings window's normal (restore) rectangle in screen coordinates,
@@ -419,6 +423,20 @@ crate::theme::named_enum! {
     ShotTool { Vale, Windows }
 }
 
+crate::theme::named_enum! {
+    /// The UI typeface of the notch, panel and Settings. Sans is DM Sans (the
+    /// default, as always); Mono is JetBrains Mono. Code text stays DM Mono in
+    /// both, and the reminder and screenshot editors stay DM Sans.
+    UiFont { Sans, Mono }
+}
+
+/// A font name; anything else (a typo, a number, null, an object) is Sans, and
+/// the rest of the file is kept.
+fn ui_font<'de, D: Deserializer<'de>>(d: D) -> Result<UiFont, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(v.as_str().and_then(UiFont::from_name).unwrap_or_default())
+}
+
 /// "Lama tampil" in seconds: (min, max, step).
 pub const SHOT_SECS_RANGE: (u32, u32, u32) = (4, 30, 2);
 
@@ -626,6 +644,7 @@ impl Default for Config {
             update_check: true,
             hotkeys: crate::hotkey::Hotkeys::default(),
             update_offered: String::new(),
+            font: UiFont::Sans,
         }
     }
 }
@@ -765,6 +784,7 @@ pub fn merge_owned(disk: Config, mem: &Config) -> Config {
         update_check: mem.update_check,
         hotkeys: mem.hotkeys,
         update_offered: mem.update_offered.clone(),
+        font: mem.font,
         ..disk
     }
 }
@@ -1162,6 +1182,7 @@ mod tests {
                 bottom: 800,
                 maximized: false,
             }),
+            font: UiFont::Mono,
         };
         assert_eq!(parse(&serde_json::to_string(&c).unwrap()), c);
     }
@@ -2475,6 +2496,52 @@ mod tests {
         // The island keeps its own copy over the file's.
         assert!(!merge_owned(Config::default(), &mem).eq_follow_audio);
         assert!(merge_owned(mem.clone(), &Config::default()).eq_follow_audio);
+    }
+
+    #[test]
+    fn ui_font_defaults_to_sans_reads_leniently_and_belongs_to_the_island() {
+        assert_eq!(Config::default().font, UiFont::Sans);
+        // An old file without the key loads unchanged.
+        let old = parse(r#"{"style":"Notch","accent":"Sage","robot":false}"#);
+        assert_eq!(old.font, UiFont::Sans);
+        assert_eq!(
+            old,
+            Config {
+                style: Style::Notch,
+                accent: Accent::Sage,
+                robot: false,
+                ..Config::default()
+            }
+        );
+        // Names are case-insensitive and trimmed.
+        for name in ["Mono", "mono", " MONO "] {
+            let c = parse(&format!(r#"{{"font":"{name}"}}"#));
+            assert_eq!(c.font, UiFont::Mono, "{name:?}");
+        }
+        assert_eq!(parse(r#"{"font":"sans"}"#).font, UiFont::Sans);
+        // A typo, a number, null or an object reads Sans and keeps the rest.
+        for junk in [r#""xyz""#, "3", "null", "{}", "[]", "true", r#""""#] {
+            let c = parse(&format!(
+                r#"{{"style":"Notch","accent":"Sage","font":{junk}}}"#
+            ));
+            assert_eq!(c.font, UiFont::Sans, "{junk}");
+            assert_eq!(c.style, Style::Notch, "{junk}");
+            assert_eq!(c.accent, Accent::Sage, "{junk}");
+        }
+        // Saving writes the canonical name, and it round trips.
+        let hand = parse(r#"{"font":" MONO "}"#);
+        let json = serde_json::to_string(&hand).unwrap();
+        assert!(json.contains(r#""font":"Mono""#), "{json}");
+        assert_eq!(parse(&json), hand);
+        let json = serde_json::to_string(&Config::default()).unwrap();
+        assert!(json.contains(r#""font":"Sans""#), "{json}");
+        // The island keeps its own copy over the file's.
+        let mono = Config {
+            font: UiFont::Mono,
+            ..Config::default()
+        };
+        assert_eq!(merge_owned(Config::default(), &mono).font, UiFont::Mono);
+        assert_eq!(merge_owned(mono, &Config::default()).font, UiFont::Sans);
     }
 
     #[test]
