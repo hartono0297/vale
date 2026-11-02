@@ -521,8 +521,8 @@ pub enum SelectPress {
 
 /// The decision of a Select press. `ann_handle` and `ann_hit` say whether the
 /// selected annotation has a handle under the pointer and whether any
-/// annotation does (the caller asks the session; only inside the selection
-/// is anything visible).
+/// annotation does. Only inside the selection is anything visible, so both
+/// count only for a press inside it.
 pub fn select_press(
     sel: Rect,
     pt: (i32, i32),
@@ -531,9 +531,12 @@ pub fn select_press(
     ann_hit: bool,
     has_annotations: bool,
 ) -> SelectPress {
-    if ann_handle {
+    // Outside the selection the picture is clipped away: an annotation's
+    // part there (a Line end past the edge, its handle) cannot be pressed.
+    let inside = sel.contains(pt);
+    if ann_handle && inside {
         SelectPress::AnnotationHandle
-    } else if ann_hit {
+    } else if ann_hit && inside {
         SelectPress::Annotation
     } else if let Some(h) = handle_at(sel, pt, tol) {
         SelectPress::SelHandle(h)
@@ -596,6 +599,9 @@ pub struct KeyCtx {
     pub has_annotations: bool,
     /// A drag is running.
     pub dragging: bool,
+    /// The key's auto-repeat (`WM_KEYDOWN` lparam bit 30: it was already
+    /// down), not a fresh press.
+    pub repeat: bool,
 }
 
 /// What a key asks for.
@@ -633,7 +639,19 @@ const VK_DELETE: u16 = 0x2E;
 /// Ctrl+S save, Esc asks (or cancels when nothing is drawn), Ctrl+Z undo,
 /// Ctrl+Y or Ctrl+Shift+Z redo, Delete, and V T R L A P M B (no Ctrl or
 /// Alt) pick a tool.
+///
+/// A held key acts once: its auto-repeat is ignored, so an Enter still down
+/// from the pick does not copy the bare region, and a held Enter or Esc does
+/// not answer the confirm bar. Only Undo and Redo repeat.
 pub fn inline_key(vk: u16, ctrl: bool, shift: bool, alt: bool, ctx: KeyCtx) -> InlineKey {
+    let k = key_action(vk, ctrl, shift, alt, ctx);
+    if ctx.repeat && !matches!(k, InlineKey::Undo | InlineKey::Redo) {
+        return InlineKey::Ignore;
+    }
+    k
+}
+
+fn key_action(vk: u16, ctrl: bool, shift: bool, alt: bool, ctx: KeyCtx) -> InlineKey {
     if ctx.editing_text || ctx.dragging {
         return InlineKey::Ignore;
     }
@@ -1210,6 +1228,33 @@ mod tests {
     }
 
     #[test]
+    fn an_annotation_outside_the_selection_is_not_grabbed() {
+        // A Line or Arrow end past the selection edge is clipped away, so
+        // its handle (or its body) there cannot be pressed: the press goes
+        // to the selection's own handle, or to nothing.
+        let sel = Rect::new(100, 100, 300, 200);
+        let just_outside_corner = (97, 97);
+        assert_eq!(
+            select_press(sel, just_outside_corner, 6, true, true, true),
+            SelectPress::SelHandle(SelHandle::Nw)
+        );
+        let far = (600, 600);
+        assert_eq!(
+            select_press(sel, far, 6, true, true, true),
+            SelectPress::Nothing
+        );
+        assert_eq!(
+            select_press(sel, far, 6, true, false, false),
+            SelectPress::NewSel
+        );
+        // Inside, the annotation's handle still wins.
+        assert_eq!(
+            select_press(sel, (250, 200), 6, true, true, true),
+            SelectPress::AnnotationHandle
+        );
+    }
+
+    #[test]
     fn the_pointer_shape_follows_what_a_press_would_do() {
         let sel = Rect::new(100, 100, 300, 200);
         assert_eq!(
@@ -1258,7 +1303,39 @@ mod tests {
         confirm: false,
         has_annotations: false,
         dragging: false,
+        repeat: false,
     };
+
+    #[test]
+    fn a_held_key_finishes_or_answers_only_once() {
+        let rep = KeyCtx {
+            repeat: true,
+            ..NONE
+        };
+        // Enter held from the pick: its auto-repeat must not copy.
+        assert_eq!(key(0x0D, false, false, rep), InlineKey::Ignore);
+        assert_eq!(key(0x1B, false, false, rep), InlineKey::Ignore);
+        let drawn = KeyCtx {
+            has_annotations: true,
+            ..rep
+        };
+        assert_eq!(key(0x1B, false, false, drawn), InlineKey::Ignore);
+        // Held on the confirm bar: neither Discard nor Keep.
+        let bar = KeyCtx {
+            confirm: true,
+            ..drawn
+        };
+        assert_eq!(key(0x0D, false, false, bar), InlineKey::Ignore);
+        assert_eq!(key(0x1B, false, false, bar), InlineKey::Ignore);
+        // Shortcuts that finish or toggle, and the tool letters, fire once.
+        for (vk, ctrl) in [(0x43, true), (0x53, true), (0x2E, false), (0x52, false)] {
+            assert_eq!(key(vk, ctrl, false, rep), InlineKey::Ignore, "{vk:#x}");
+        }
+        // Undo and redo keep repeating.
+        assert_eq!(key(0x5A, true, false, rep), InlineKey::Undo);
+        assert_eq!(key(0x59, true, false, rep), InlineKey::Redo);
+        assert_eq!(key(0x5A, true, true, rep), InlineKey::Redo);
+    }
 
     #[test]
     fn enter_and_ctrl_c_copy_and_ctrl_s_saves() {

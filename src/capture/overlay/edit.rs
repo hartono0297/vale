@@ -484,8 +484,9 @@ fn press(e: &mut Edit, env: &Env, p: (i32, i32), double: bool, edit_was_open: bo
                     .and_then(|a| a.handle_at(pl, tol))
                     .map(|h| (i, h))
             });
-            // Only inside the selection is anything seen, so hit.
-            let hit = if inside { e.session.hit(pl, tol) } else { None };
+            // `select_press` takes either only for a press inside the
+            // selection: outside it the picture is clipped away.
+            let hit = e.session.hit(pl, tol);
             let press = select_press(
                 e.sel,
                 p,
@@ -869,7 +870,8 @@ fn key_down(vk: u16) -> bool {
     unsafe { GetKeyState(i32::from(vk)) < 0 }
 }
 
-pub(super) fn on_key(hwnd: HWND, vk: u16) {
+/// `repeat`: the `WM_KEYDOWN` came from the key's auto-repeat.
+pub(super) fn on_key(hwnd: HWND, vk: u16, repeat: bool) {
     let (ctrl, shift, alt) = (
         key_down(VK_CONTROL.0),
         key_down(VK_SHIFT.0),
@@ -883,6 +885,7 @@ pub(super) fn on_key(hwnd: HWND, vk: u16) {
                 confirm: e.confirm,
                 has_annotations: !e.session.doc.is_empty(),
                 dragging: e.drag.is_some(),
+                repeat,
             },
             had_notice,
         )

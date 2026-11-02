@@ -671,7 +671,9 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         }
         WM_KEYDOWN => {
             if in_edit() {
-                edit::on_key(hwnd, (wparam.0 & 0xFFFF) as u16);
+                // lparam bit 30: the key was already down (auto-repeat).
+                let repeat = (lparam.0 >> 30) & 1 == 1;
+                edit::on_key(hwnd, (wparam.0 & 0xFFFF) as u16, repeat);
                 return LRESULT(0);
             }
             match wparam.0 as u16 {
