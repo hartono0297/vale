@@ -48,6 +48,8 @@ pub enum MenuCmd {
     Search,
     StylePill,
     StyleNotch,
+    /// "Jalan saat Windows mulai": a check item that flips `start_with_windows`.
+    Autostart,
     /// "Cek pembaruan…": asks GitHub now.
     CheckUpdate,
     /// "Update ke X.Y.Z": in the menu in place of `CheckUpdate` while an
@@ -56,11 +58,12 @@ pub enum MenuCmd {
     Exit,
 }
 
-const COMMANDS: [MenuCmd; 7] = [
+const COMMANDS: [MenuCmd; 8] = [
     MenuCmd::Settings,
     MenuCmd::Search,
     MenuCmd::StylePill,
     MenuCmd::StyleNotch,
+    MenuCmd::Autostart,
     MenuCmd::CheckUpdate,
     MenuCmd::InstallUpdate,
     MenuCmd::Exit,
@@ -118,6 +121,14 @@ fn menu_items(cfg: &Config, update: Option<&str>) -> Vec<MenuItem> {
             MenuCmd::StyleNotch,
             Key::MenuStyleNotch,
             cfg.style == Style::Notch,
+        ),
+        MenuItem::Separator,
+        // Built from the config each time the menu opens, so a change made in
+        // Settings shows up here without any extra sync.
+        entry(
+            MenuCmd::Autostart,
+            Key::Autostart,
+            cfg.start_with_windows,
         ),
         MenuItem::Separator,
         update_entry,
@@ -454,6 +465,8 @@ mod tests {
                 "Gaya: Pill",
                 "Gaya: Notch",
                 "-",
+                "Jalan saat Windows mulai",
+                "-",
                 "Cek pembaruan…",
                 "Keluar"
             ]
@@ -465,7 +478,7 @@ mod tests {
         let id = labels(&menu_items(&Config::default(), Some("3.11.0"))).join("|");
         assert_eq!(
             id,
-            "Pengaturan…|Cari…|-|Gaya: Pill|Gaya: Notch|-|Update ke 3.11.0|Keluar"
+            "Pengaturan…|Cari…|-|Gaya: Pill|Gaya: Notch|-|Jalan saat Windows mulai|-|Update ke 3.11.0|Keluar"
         );
         let en = Config {
             language: Lang::En,
@@ -474,7 +487,7 @@ mod tests {
         let en = labels(&menu_items(&en, Some("3.11.0"))).join("|");
         assert_eq!(
             en,
-            "Settings…|Search…|-|Style: Pill|Style: Notch|-|Update to 3.11.0|Quit"
+            "Settings…|Search…|-|Style: Pill|Style: Notch|-|Start with Windows|-|Update to 3.11.0|Quit"
         );
         let with = commands(&menu_items(&Config::default(), Some("3.11.0")));
         assert!(with.contains(&MenuCmd::InstallUpdate));
@@ -499,6 +512,8 @@ mod tests {
                 "Style: Pill",
                 "Style: Notch",
                 "-",
+                "Start with Windows",
+                "-",
                 "Check for updates…",
                 "Quit"
             ]
@@ -521,13 +536,50 @@ mod tests {
     #[test]
     fn checks_follow_config() {
         let pill = Config::default();
-        assert_eq!(checked(&menu_items(&pill, None)), vec![MenuCmd::StylePill]);
+        assert_eq!(
+            checked(&menu_items(&pill, None)),
+            vec![MenuCmd::StylePill, MenuCmd::Autostart]
+        );
         let notch = Config {
             style: Style::Notch,
             start_with_windows: false,
             ..Config::default()
         };
         assert_eq!(checked(&menu_items(&notch, None)), vec![MenuCmd::StyleNotch]);
+    }
+
+    #[test]
+    fn autostart_entry_follows_start_with_windows() {
+        for lang in [Lang::Id, Lang::En] {
+            let label = match lang {
+                Lang::Id => "Jalan saat Windows mulai",
+                Lang::En => "Start with Windows",
+            };
+            for (style, on) in [
+                (Style::Pill, true),
+                (Style::Pill, false),
+                (Style::Notch, true),
+                (Style::Notch, false),
+            ] {
+                let cfg = Config {
+                    language: lang,
+                    style,
+                    start_with_windows: on,
+                    ..Config::default()
+                };
+                let items = menu_items(&cfg, None);
+                let found = items.iter().any(|item| {
+                    matches!(item, MenuItem::Entry { cmd: MenuCmd::Autostart, label: l, checked }
+                        if l == label && *checked == on)
+                });
+                assert!(found, "{lang:?} {style:?} {on}");
+                // Independent of the style checks: exactly one style stays checked.
+                let marks = checked(&items);
+                assert_eq!(marks.contains(&MenuCmd::Autostart), on);
+                assert_eq!(marks.contains(&MenuCmd::StylePill), style == Style::Pill);
+                assert_eq!(marks.contains(&MenuCmd::StyleNotch), style == Style::Notch);
+            }
+        }
     }
 
     #[test]
