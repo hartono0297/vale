@@ -139,11 +139,7 @@ fn create_window(area: Rect) -> Option<HWND> {
     let module = unsafe { GetModuleHandleW(None) }.ok()?;
     unsafe {
         CreateWindowExW(
-            WS_EX_LAYERED
-                | WS_EX_TRANSPARENT
-                | WS_EX_NOACTIVATE
-                | WS_EX_TOPMOST
-                | WS_EX_TOOLWINDOW,
+            WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
             class(),
             w!("Vale identify"),
             WS_POPUP,
@@ -224,23 +220,24 @@ impl Overlay {
             let scale = area.w as f32 / PLATE_DIP;
             let side = area.w as f32;
             let number = d.number.to_string();
-            let drawn = plate
-                .canvas
-                .paint_with(plate.hwnd, plate.origin, 0.0, opacity(start), |c| {
-                    c.fill(
-                        Rect::new(0, 0, area.w, area.h),
-                        PLATE_RADIUS_DIP * scale,
-                        PLATE_RGB,
-                        PLATE_ALPHA,
-                    );
-                    c.text(
-                        &number,
-                        (0.0, 0.0, side, side),
-                        DIGIT_DIP * scale,
-                        DIGIT_RGB,
-                        1.0,
-                    );
-                });
+            let drawn =
+                plate
+                    .canvas
+                    .paint_with(plate.hwnd, plate.origin, 0.0, opacity(start), |c| {
+                        c.fill(
+                            Rect::new(0, 0, area.w, area.h),
+                            PLATE_RADIUS_DIP * scale,
+                            PLATE_RGB,
+                            PLATE_ALPHA,
+                        );
+                        c.text(
+                            &number,
+                            (0.0, 0.0, side, side),
+                            DIGIT_DIP * scale,
+                            DIGIT_RGB,
+                            1.0,
+                        );
+                    });
             if drawn.is_ok() {
                 unsafe {
                     let _ = ShowWindow(plate.hwnd, SW_SHOWNOACTIVATE);
@@ -383,7 +380,10 @@ mod tests {
         assert_eq!((r.x, r.y), ((1920 - 160) / 2, (1080 - 160) / 2));
         // A monitor to the left of the origin, and one below it.
         let r = plate_rect(Rect::new(-2560, 200, 2560, 1440), 96);
-        assert_eq!((r.x, r.y), (-2560 + (2560 - 160) / 2, 200 + (1440 - 160) / 2));
+        assert_eq!(
+            (r.x, r.y),
+            (-2560 + (2560 - 160) / 2, 200 + (1440 - 160) / 2)
+        );
     }
 
     #[test]

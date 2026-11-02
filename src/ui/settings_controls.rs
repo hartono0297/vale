@@ -1017,6 +1017,13 @@ impl Painter<'_> {
                 self.set(self.p.accent, 1.0);
                 self.outline(item.rect, RADIUS, 2.0);
             }
+            let ink = if item.selectable {
+                self.p.text
+            } else {
+                self.p.secondary
+            };
+            let style = self.style(Font::Value, Align::Center);
+            self.draw_str(&item.number.to_string(), style, item.rect, ink, 1.0);
         }
     }
 

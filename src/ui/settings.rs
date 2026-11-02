@@ -3822,7 +3822,8 @@ unsafe extern "system" fn edit_proc(
 /// `reconnect`, `offline`, `none`), `DI_POMO_LOCKED=1`, `DI_HOTKEYS` (`failed`:
 /// every hotkey that is set shows as taken by another app) and `DI_UPDATE`
 /// (`available`, `checking`, `downloading`: Tentang's Pembaruan row, with a
-/// made-up 9.9.9) set the start.
+/// made-up 9.9.9) and `DI_MONITORS` (`1`, `3`, `3-missing`: made-up screens for the
+/// Notch card's Monitor row; unset lists the real ones) set the start.
 ///
 /// The window's place is kept in `vale-settings-demo-window.json` in the temp
 /// folder (the real config is never touched): read at the start (a missing
