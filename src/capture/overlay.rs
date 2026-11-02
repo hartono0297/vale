@@ -47,6 +47,7 @@ use super::uia::{WM_APP_UIA, take_result};
 use super::win::{self, Frozen, TopWindow};
 use super::{Candidate, Rect, crop, drag_rect, is_click, pick, size_label};
 use crate::i18n::{Key, tr};
+use crate::shot_edit::Annotation;
 use crate::shot_edit::gfx::{Align, Gfx, Target, bitmap, color, rect_f};
 use crate::shot_edit::text::WM_APP_TEXT;
 use crate::theme;
@@ -394,48 +395,66 @@ fn finish(choice: Option<Rect>) {
     }
 }
 
+/// The picture the inline selection makes: the crop of the frame and the
+/// annotations moved onto it, as owned values. Reads the state without taking
+/// it, so a failed Copy leaves the overlay as it was. `None` outside the
+/// drawing phase or when the crop is empty.
+fn inline_picture() -> Option<(Rect, crate::capture::Shot, Vec<Annotation>)> {
+    with(|s| {
+        let Phase::Edit(e) = &s.phase else {
+            return None;
+        };
+        let sel = e.sel;
+        let doc = edit::doc_in_crop(&e.session.doc, sel, s.frame.origin);
+        crop(s.frame.bgra(), s.frame.stride(), s.frame.rect(), sel).map(|shot| (sel, shot, doc))
+    })
+    .flatten()
+}
+
 /// Ends the inline capture as `kind` says (see `inline::finish_copies`): the
 /// selection is cropped from the frame, the annotations moved onto the crop,
-/// and then Copy and an auto-copying Save put it on the clipboard (on this
-/// thread, before the window goes), Save also writes it on a worker, and
-/// OpenEditor opens the editor on it. Anything else closes with nothing
-/// copied. Idempotent like `finish`.
+/// and then an auto-copying Save puts it on the clipboard (on this thread,
+/// before the window goes), Save also writes it on a worker, and OpenEditor
+/// opens the editor on it. Anything else closes with nothing copied. A Copy
+/// is never finished here: it goes through `edit::copy`, which keeps the
+/// overlay when the copy fails. Idempotent like `finish`.
 fn finish_inline(kind: FinishKind) {
+    if kind == FinishKind::Copy {
+        edit::copy_current();
+        return;
+    }
     // A text still being typed is part of the picture.
     edit::commit_text_now();
-    let Some(mut state) = take_state(None) else {
+    // Only Save and OpenEditor keep the picture; the rest need no crop.
+    let kept = if matches!(kind, FinishKind::Save | FinishKind::OpenEditor) {
+        inline_picture()
+    } else {
+        None
+    };
+    let Some(state) = take_state(None) else {
         return;
     };
     state.stop.store(true, Ordering::Relaxed);
     let (hwnd, demo, auto_copy) = (state.hwnd, state.demo, state.auto_copy);
-    let kept = match std::mem::replace(&mut state.phase, Phase::Pick) {
-        Phase::Edit(e) => {
-            let sel = e.sel;
-            let doc = edit::doc_in_crop(&e.session.doc, sel, state.frame.origin);
-            crop(
-                state.frame.bgra(),
-                state.frame.stride(),
-                state.frame.rect(),
-                sel,
-            )
-            .map(|shot| (shot, sel, doc))
-        }
-        Phase::Pick => None,
-    };
     // The frame (100+ MB on a big desktop), the target, the picture and the
     // open EDIT go before anything is rendered.
     drop(state);
     let (kind, kept) = match kept {
         Some(k) => (kind, Some(k)),
         // Nothing to keep (an empty crop): the same as a cancel.
-        None => (FinishKind::Cancel, None),
+        None if matches!(kind, FinishKind::Save | FinishKind::OpenEditor) => {
+            (FinishKind::Cancel, None)
+        }
+        None => (kind, None),
     };
     let mut editor = None;
     let mut saved = None;
-    if let Some((shot, sel, doc)) = kept {
+    if let Some((sel, shot, doc)) = kept {
         if super::inline::finish_copies(kind, auto_copy) && !demo {
             let capture = crate::shot_edit::next_capture_id();
             // Managed: one history card, no notch preview, no copy notice.
+            // A failed copy is only logged: the Save still happens and it is
+            // never recorded as copied (`export::copy` records on success).
             if crate::shot_edit::export::copy(hwnd, &shot, &doc, capture, true).is_none() {
                 eprintln!("vale: the inline screenshot could not be copied");
             }

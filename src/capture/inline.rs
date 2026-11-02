@@ -772,6 +772,27 @@ pub fn finish_copies(kind: FinishKind, auto_copy: bool) -> bool {
     }
 }
 
+/// What the inline overlay does once Copy has tried to put the picture on
+/// the clipboard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CopyOutcome {
+    /// Copied: the overlay closes (without copying a second time).
+    Close,
+    /// Not copied (render failed or the clipboard stayed busy): the overlay
+    /// stays with everything drawn and says so.
+    StayWithNotice,
+}
+
+/// The decision after Copy: only a copy that happened closes the overlay, so
+/// a failed one never throws the drawing away.
+pub fn after_copy(copied: bool) -> CopyOutcome {
+    if copied {
+        CopyOutcome::Close
+    } else {
+        CopyOutcome::StayWithNotice
+    }
+}
+
 // ---- painting ----
 
 /// The stages of one frame. Direct2D paints in call order, so a panel's
@@ -1589,6 +1610,30 @@ mod tests {
                 FinishKind::OpenEditor,
             ] {
                 assert!(!finish_copies(kind, auto), "{kind:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_copy_that_happened_closes_the_overlay() {
+        assert_eq!(after_copy(true), CopyOutcome::Close);
+    }
+
+    #[test]
+    fn a_failed_copy_keeps_the_overlay_and_says_so() {
+        assert_eq!(after_copy(false), CopyOutcome::StayWithNotice);
+    }
+
+    #[test]
+    fn the_close_after_a_successful_copy_never_copies_again() {
+        for auto in [false, true] {
+            for kind in [
+                FinishKind::Close,
+                FinishKind::Cancel,
+                FinishKind::Discard,
+                FinishKind::OpenEditor,
+            ] {
+                assert!(!finish_copies(kind, auto), "{kind:?} auto={auto}");
             }
         }
     }

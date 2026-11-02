@@ -29,8 +29,8 @@ use windows_numerics::Vector2;
 
 use super::{Phase, State, black, invalidate, with};
 use crate::capture::inline::{
-    BarLabels, Btn, Cursor, EscStep, FinishKind, InlineKey, KeyCtx, Layer, PAINT_ORDER, PANEL_GAP,
-    Panel, SelHandle, SelectPress, Side, bar_layout, cursor_over, drag_handle, esc_step,
+    BarLabels, Btn, CopyOutcome, Cursor, EscStep, FinishKind, InlineKey, KeyCtx, Layer,
+    PAINT_ORDER, PANEL_GAP, Panel, SelHandle, SelectPress, Side, after_copy, bar_layout, cursor_over, drag_handle, esc_step,
     grab_offset, inline_key, label_rect, move_sel, place_side, select_press, separate,
     strip_layout, tip, tooltip_rect, ui_for,
 };
@@ -797,8 +797,10 @@ fn do_btn(hwnd: HWND, btn: Btn) {
     }
 }
 
-/// Copy and close. A demo touches no clipboard: its line says so and the
-/// overlay stays.
+/// Copy: renders the picture and puts it on the clipboard BEFORE the overlay
+/// state is touched. Copied: the overlay closes (without copying again).
+/// Not copied: the overlay stays with everything drawn and says so. A demo
+/// touches no clipboard: its line says so and the overlay stays.
 fn copy(hwnd: HWND) {
     let demo = ed(|e, env| {
         if env.demo {
@@ -810,7 +812,34 @@ fn copy(hwnd: HWND) {
     if demo {
         invalidate(hwnd);
     } else {
-        super::finish_inline(FinishKind::Copy);
+        copy_current();
+    }
+}
+
+/// The real Copy (not the demo): see `copy`. Also what `finish_inline(Copy)`
+/// does, so no path closes the overlay after a failed copy.
+pub(super) fn copy_current() {
+    // A text still being typed is part of the picture.
+    commit_text_now();
+    let Some(hwnd) = with(|s| s.hwnd) else { return };
+    // Owned values; the overlay's RefCell is released from here on:
+    // `EmptyClipboard` may send WM_DESTROYCLIPBOARD to a window of this thread.
+    let Some((_, shot, doc)) = super::inline_picture() else {
+        // Nothing to copy (an empty crop): the same as a cancel.
+        super::finish_inline(FinishKind::Cancel);
+        return;
+    };
+    let capture = crate::shot_edit::next_capture_id();
+    // Managed: one history card, no notch preview, no copy notice.
+    let copied = crate::shot_edit::export::copy(hwnd, &shot, &doc, capture, true).is_some();
+    drop((shot, doc));
+    match after_copy(copied) {
+        CopyOutcome::Close => super::finish_inline(FinishKind::Close),
+        CopyOutcome::StayWithNotice => {
+            eprintln!("vale: the inline screenshot could not be copied");
+            ed(|e, _| e.notice = Some(Key::InlineCopyFailed));
+            invalidate(hwnd);
+        }
     }
 }
 

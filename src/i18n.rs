@@ -871,6 +871,7 @@ keys! {
     EditSaving => "Menyimpan…", "Saving…";
     EditDemoNoClipboard => "Mode demo: clipboard tidak disentuh",
         "Demo mode: the clipboard is not touched";
+    InlineCopyFailed => "Gagal menyalin, coba lagi", "Couldn't copy, try again";
     EditHint => "Seret untuk menggambar · Del untuk hapus · Ctrl+Z urungkan",
         "Drag to draw · Delete removes · Ctrl+Z undoes";
     EditStroke => "Tebal garis", "Stroke width";

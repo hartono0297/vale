@@ -235,6 +235,22 @@ window glue: `capture/overlay.rs` (Pick phase, `finish`, `finish_inline`) and
   Simpan, never over a file). OpenEditor: `shot_edit::window::open_with(crop,
   selection centre, demo, doc)`; the editor then follows its own rules,
   auto-copy included.
+- **Copy failure rule** (`inline::after_copy`, `edit::copy_current`). Copy (the
+  Salin button, Enter, Ctrl+C) renders and copies BEFORE the state is taken:
+  `overlay::inline_picture()` reads the crop and the moved document as owned
+  values inside `with(..)`, the RefCell is released, then `export::copy(..)`
+  runs (`EmptyClipboard` may send WM_DESTROYCLIPBOARD to a window of this
+  thread). Copied: `FinishKind::Close` closes the overlay and does not copy
+  again (`finish_copies(Close)` is false). Not copied (render failed or the
+  clipboard stayed busy): the overlay stays with the selection, annotations,
+  undo / redo, tool, colour and stroke, and the top pill says "Gagal menyalin,
+  coba lagi" (`Key::InlineCopyFailed`; `EditCopyFailed` is the editor's own
+  footer text) until the next input. `finish_inline(Copy)` delegates to the
+  same code, so no path destroys the window after a failed Copy. An empty crop
+  is still a cancel. A Save with auto-copy still saves and closes when its copy
+  fails (logged only); `export::copy` records an own copy only after a
+  successful write, so a failed copy is never recorded. The demo never reaches
+  `export::copy`.
 - **Mosaic = export.** `paint::pixel_region(r, w, h, clip)`: without a clip a
   Pixelate is `r` cut to the picture with `pixel_block(w, h)` (editor and
   export); with a clip (the selection) it is `r` cut to the clip, then to the
