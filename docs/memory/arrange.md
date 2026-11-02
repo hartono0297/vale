@@ -1,6 +1,6 @@
 ---
 tags: [decision, gotcha, arrange, susun, windows, hotkey, config, v3.10]
-date: 2026-11-01
+date: 2026-11-02
 ---
 
 # Susun (Arrange): the window layouts (v3.10)
@@ -108,7 +108,11 @@ in `settings_layout.rs`, `--demo-arrange` in `ui/demo.rs`.
   `SHQueryUserNotificationState` (QUNS_BUSY), the same family as the capture
   overlay in [[screenshot-snap]]. Unhandled, the next `TIMER_SYSTEM` tick
   hides the island, `arrange_page_shown` turns false and `sync_arrange`
-  cancels the pick about a second after it began. So `check_fullscreen` does
+  cancels the pick about a second after it began. (Since 2026-11-02 the
+  report is per monitor: `is_fullscreen(Some(island))` only hides the notch
+  when the foreground window is on the notch's monitor, `hides_notch`; the
+  overlay covers every monitor, so the guard below is still needed.) So
+  `check_fullscreen` does
   not ask while `arrange_overlay::active()` (`fullscreen_event` returns None;
   `App.fullscreen` and `State.fullscreen` stay as they were and never
   disagree, which is why the reducer is not guarded), and `page_shown` ignores

@@ -1,6 +1,6 @@
 ---
 tags: [decision, robot, pointer, motion, power]
-date: 2026-10-31
+date: 2026-11-02
 ---
 
 # The idle cat looks toward the pointer
@@ -29,7 +29,9 @@ their pose centred even mid-ease.
 - `look_target(pointer_x, notch_centre_x, monitor_left, monitor_right)` in
   [-1, 1]: the horizontal offset over the distance from the notch centre to
   that side's monitor edge, clamped. Pointers on another monitor clamp to +-1.
-  The island sits at the primary monitor's centre.
+  The island sits at the notch's monitor's centre; the poll's quick pace
+  also needs the pointer inside that monitor's X span
+  (`pointer_watch::near_top`).
 - `LookEase { current, target }`: `set_target` ignores a change under
   `LOOK_EPS` (0.02) and returns false (no redraw, no clock); `advance(dt)` is an
   exponential ease with tau 120 ms (`1 - e^(-dt/tau)`, the same at any frame
