@@ -186,7 +186,9 @@ fn main() {
         Some("--demo-snap") => {
             attach_parent_console();
             demo_lang_from_env();
-            capture::demo::run_snap();
+            // "inline": the picked region stays on screen to draw on.
+            let inline = std::env::args().nth(2).as_deref() == Some("inline");
+            capture::demo::run_snap(inline);
         }
         // The screenshot editor on a made-up picture ("empty": no annotations).
         #[cfg(debug_assertions)]

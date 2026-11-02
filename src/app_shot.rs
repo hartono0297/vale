@@ -505,6 +505,8 @@ pub enum ShotSetting {
     Secs(u32),
     /// "Salin otomatis".
     AutoCopy(bool),
+    /// "Setelah capture".
+    AfterCapture(crate::config::AfterCapture),
 }
 
 impl App {
@@ -1065,6 +1067,7 @@ impl App {
                 cfg.show_secs = n.clamp(min, max);
             }
             ShotSetting::AutoCopy(on) => cfg.auto_copy = on,
+            ShotSetting::AfterCapture(v) => cfg.after_capture = v,
         }
         self.save_config();
         if matches!(change, ShotSetting::Preview(_)) {

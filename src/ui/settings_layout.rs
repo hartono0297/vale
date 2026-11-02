@@ -14,8 +14,9 @@ use crate::cli::Shell;
 use crate::cli_folders::CliStart;
 use crate::clipboard::store::{ITEMS_STEP, MAX_ITEMS, MIN_ITEMS};
 use crate::config::{
-    ClipboardSettings, DISK_WARN_RANGE, NotchFill, NotifSettings, OpenMode, RAM_WARN_RANGE,
-    SHOT_SECS_RANGE, ScreenshotSettings, ShotIgnore, ShotTool, Style, ToastStyle, UiFont,
+    AfterCapture, ClipboardSettings, DISK_WARN_RANGE, NotchFill, NotifSettings, OpenMode,
+    RAM_WARN_RANGE, SHOT_SECS_RANGE, ScreenshotSettings, ShotIgnore, ShotTool, Style, ToastStyle,
+    UiFont,
 };
 use crate::hotkey::{Hotkey, HotkeyId, Hotkeys};
 use crate::i18n::{
@@ -461,6 +462,8 @@ pub enum Hit {
     ShotSecs(i32),
     /// "Alat screenshot" (Vale / Snipping Tool).
     ShotTool(ShotTool),
+    /// "Setelah capture" (Jendela editor / Langsung di layar).
+    ShotAfterCapture(AfterCapture),
     /// "Salin otomatis": Vale's own capture is copied by itself.
     ShotAutoCopy,
     /// "Notifikasi saat notch dipakai" (Ringkas / Penuh).
@@ -616,6 +619,8 @@ pub enum Group {
     /// The own-shortcut form's Jenis.
     TileKind,
     ShotTool,
+    /// Clipboard -> Screenshot -> Setelah capture.
+    ShotAfterCapture,
     NotifToastStyle,
 }
 
@@ -4061,8 +4066,8 @@ pub fn shot_secs_step(n: u32, dir: i32) -> u32 {
 fn screenshot_card(b: &mut Builder, s: &State) {
     let c = s.shot;
     b.eyebrow(Key::SecScreenshot, b.g.content_w - 4.0);
-    let card = b.card(5.0 * ROW_H);
-    let rows: [f32; 5] = std::array::from_fn(|i| card.y + i as f32 * ROW_H);
+    let card = b.card(6.0 * ROW_H);
+    let rows: [f32; 6] = std::array::from_fn(|i| card.y + i as f32 * ROW_H);
     let cy = |y: f32| y + ROW_H / 2.0;
     let on = c.preview;
 
@@ -4077,17 +4082,49 @@ fn screenshot_card(b: &mut Builder, s: &State) {
     let desc = Some((b.t(Key::ShotToolDesc), Tone::Secondary));
     b.row_text(card, rows[0], b.t(Key::ShotToolSetting), desc, false, x);
 
-    // Auto-copy of Vale's own capture: next to the tool, never faded (it has
-    // nothing to do with the preview).
-    let x = b.toggle(Hit::ShotAutoCopy, b.g.right, cy(rows[1]), c.auto_copy);
-    let desc = Some((b.t(Key::ShotAutoCopyDesc), Tone::Secondary));
-    b.row_text(card, rows[1], b.t(Key::ShotAutoCopySetting), desc, false, x);
+    // What follows the pick of Vale's own capture: the editor window or
+    // drawing on the screen. Never faded: it has nothing to do with the
+    // preview.
+    let items = vec![
+        (
+            Hit::ShotAfterCapture(AfterCapture::Editor),
+            b.t(Key::ShotAfterEditor),
+        ),
+        (
+            Hit::ShotAfterCapture(AfterCapture::Inline),
+            b.t(Key::ShotAfterInline),
+        ),
+    ];
+    let selected = index_of(AfterCapture::ALL, &c.after_capture);
+    let x = b.segmented(
+        Group::ShotAfterCapture,
+        b.g.right,
+        cy(rows[1]),
+        items,
+        selected,
+    );
+    let desc = Some((b.t(Key::ShotAfterCaptureDesc), Tone::Secondary));
+    b.row_text(
+        card,
+        rows[1],
+        b.t(Key::ShotAfterCaptureSetting),
+        desc,
+        false,
+        x,
+    );
     b.divider(card, rows[1]);
 
-    // (The key that starts Vale's capture is in the Tombol pintas section.)
-    let x = b.toggle(Hit::ShotPreview, b.g.right, cy(rows[2]), on);
-    b.row_text(card, rows[2], b.t(Key::ShotPreviewSetting), None, false, x);
+    // Auto-copy of Vale's own capture: never faded (it has nothing to do
+    // with the preview).
+    let x = b.toggle(Hit::ShotAutoCopy, b.g.right, cy(rows[2]), c.auto_copy);
+    let desc = Some((b.t(Key::ShotAutoCopyDesc), Tone::Secondary));
+    b.row_text(card, rows[2], b.t(Key::ShotAutoCopySetting), desc, false, x);
     b.divider(card, rows[2]);
+
+    // (The key that starts Vale's capture is in the Tombol pintas section.)
+    let x = b.toggle(Hit::ShotPreview, b.g.right, cy(rows[3]), on);
+    b.row_text(card, rows[3], b.t(Key::ShotPreviewSetting), None, false, x);
+    b.divider(card, rows[3]);
 
     let items = vec![
         (Hit::ShotIgnore(ShotIgnore::Keep), b.t(Key::ShotKeep)),
@@ -4097,28 +4134,28 @@ fn screenshot_card(b: &mut Builder, s: &State) {
     let x = b.segmented_if(
         Group::ShotIgnore,
         b.g.right,
-        cy(rows[3]),
+        cy(rows[4]),
         items,
         selected,
         on,
     );
     let desc = Some((b.t(Key::ShotIgnoreDesc), Tone::Secondary));
-    b.row_text(card, rows[3], b.t(Key::ShotIgnoreSetting), desc, false, x);
-    b.divider(card, rows[3]);
+    b.row_text(card, rows[4], b.t(Key::ShotIgnoreSetting), desc, false, x);
+    b.divider(card, rows[4]);
 
     let (min, max, _) = SHOT_SECS_RANGE;
     let n = c.show_secs;
     let x = b.stepper(
         b.g.right,
-        cy(rows[4]),
+        cy(rows[5]),
         crate::i18n::seconds_short(b.lang, n),
         Hit::ShotSecs(-1),
         Hit::ShotSecs(1),
         (n > min, n < max),
         on,
     );
-    b.row_text(card, rows[4], b.t(Key::ShotShowFor), None, false, x);
-    b.divider(card, rows[4]);
+    b.row_text(card, rows[5], b.t(Key::ShotShowFor), None, false, x);
+    b.divider(card, rows[5]);
 }
 
 fn integrations(b: &mut Builder, s: &State) {
@@ -4604,6 +4641,11 @@ mod tests {
                                 ShotTool::Vale
                             },
                             auto_copy: !locked,
+                            after_capture: if locked {
+                                AfterCapture::Inline
+                            } else {
+                                AfterCapture::Editor
+                            },
                         },
                         pages: if locked {
                             let mut p = PanelPages::default();
@@ -5553,6 +5595,7 @@ mod tests {
                             | Hit::ShotIgnore(_)
                             | Hit::ShotSecs(_)
                             | Hit::ShotAutoCopy
+                            | Hit::ShotAfterCapture(_)
                     )
                 })
                 .collect()
@@ -5579,6 +5622,8 @@ mod tests {
             assert_eq!(
                 shot_hits(&l),
                 [
+                    Hit::ShotAfterCapture(AfterCapture::Editor),
+                    Hit::ShotAfterCapture(AfterCapture::Inline),
                     Hit::ShotAutoCopy,
                     Hit::ShotPreview,
                     Hit::ShotIgnore(ShotIgnore::Keep),
@@ -5605,6 +5650,8 @@ mod tests {
             });
             assert_eq!(secs, Some(crate::i18n::seconds_short(lang, 8)));
             for key in [
+                Key::ShotAfterCaptureSetting,
+                Key::ShotAfterCaptureDesc,
                 Key::ShotAutoCopySetting,
                 Key::ShotAutoCopyDesc,
                 Key::ShotPreviewSetting,
@@ -5632,7 +5679,15 @@ mod tests {
             };
             let l = layout(Section::Clipboard, &off, &Estimate);
             // Auto-copy is not the preview's: it keeps its click.
-            assert_eq!(shot_hits(&l), [Hit::ShotAutoCopy, Hit::ShotPreview]);
+            assert_eq!(
+                shot_hits(&l),
+                [
+                    Hit::ShotAfterCapture(AfterCapture::Editor),
+                    Hit::ShotAfterCapture(AfterCapture::Inline),
+                    Hit::ShotAutoCopy,
+                    Hit::ShotPreview
+                ]
+            );
             let auto = l.controls.iter().find_map(|c| match c {
                 Control::Toggle {
                     hit, on, enabled, ..
@@ -5640,6 +5695,65 @@ mod tests {
                 _ => None,
             });
             assert_eq!(auto, Some((true, true)), "on by default, never faded");
+        }
+    }
+
+    #[test]
+    fn the_after_capture_row_follows_the_tool_and_never_fades() {
+        for lang in [Lang::Id, Lang::En] {
+            for (value, selected) in [(AfterCapture::Editor, 0), (AfterCapture::Inline, 1)] {
+                // The preview off too: the row is not the preview's.
+                for preview in [true, false] {
+                    let s = State {
+                        lang,
+                        scroll: 1e6,
+                        shot: ScreenshotSettings {
+                            after_capture: value,
+                            preview,
+                            ..ScreenshotSettings::default()
+                        },
+                        ..states()[0].clone()
+                    };
+                    let l = layout(Section::Clipboard, &s, &Estimate);
+                    let row = l.controls.iter().find_map(|c| match c {
+                        Control::Segmented {
+                            group,
+                            selected,
+                            items,
+                            ..
+                        } if *group == Group::ShotAfterCapture => {
+                            Some((*selected, items.iter().map(|i| i.hit).collect::<Vec<_>>()))
+                        }
+                        _ => None,
+                    });
+                    let (got, hits) = row.expect("the After capture row");
+                    assert_eq!(got, selected, "{lang:?} {value:?}");
+                    assert_eq!(
+                        hits,
+                        [
+                            Hit::ShotAfterCapture(AfterCapture::Editor),
+                            Hit::ShotAfterCapture(AfterCapture::Inline)
+                        ]
+                    );
+                    // Its hits take clicks whatever the preview says.
+                    let live: Vec<Hit> = l.hits().into_iter().map(|(h, _)| h).collect();
+                    assert!(live.contains(&Hit::ShotAfterCapture(AfterCapture::Inline)));
+                    // The row sits right under the tool's (one row apart).
+                    let y_of = |group: Group| {
+                        l.controls.iter().find_map(|c| match c {
+                            Control::Segmented {
+                                group: g, items, ..
+                            } if *g == group => items.first().map(|i| i.rect.y),
+                            _ => None,
+                        })
+                    };
+                    if let (Some(tool), Some(after)) =
+                        (y_of(Group::ShotTool), y_of(Group::ShotAfterCapture))
+                    {
+                        assert!((after - tool - ROW_H).abs() < 0.01, "{tool} {after}");
+                    }
+                }
+            }
         }
     }
 
@@ -5653,10 +5767,11 @@ mod tests {
             };
             let l = layout(Section::Clipboard, &s, &Estimate);
             // Riwayat: seven rows (the hotkey row is gone); Screenshot: tool,
-            // auto-copy, preview, on-ignore, seconds (the PrtSc row is gone).
+            // after capture, auto-copy, preview, on-ignore, seconds (the
+            // PrtSc row is gone).
             assert_eq!(l.cards.len(), 2);
             assert_eq!(l.cards[0].h, 7.0 * ROW_H);
-            assert_eq!(l.cards[1].h, 5.0 * ROW_H);
+            assert_eq!(l.cards[1].h, 6.0 * ROW_H);
             let hits: Vec<Hit> = l.hits().into_iter().map(|(h, _)| h).collect();
             assert!(
                 !hits
@@ -5686,6 +5801,7 @@ mod tests {
                     Hit::ClipFeedbackAll,
                     Hit::ClipClear,
                     Hit::ShotTool(ShotTool::Vale),
+                    Hit::ShotAfterCapture(AfterCapture::Editor),
                     Hit::ShotAutoCopy,
                     Hit::ShotPreview,
                     Hit::ShotIgnore(ShotIgnore::Keep),

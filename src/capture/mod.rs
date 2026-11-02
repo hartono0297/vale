@@ -10,9 +10,25 @@
 
 #[cfg(debug_assertions)]
 pub mod demo;
+pub mod inline;
 pub mod overlay;
 pub mod uia;
 pub mod win;
+
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// "Setelah capture" = inline, as `App` last saw it in the config (the
+/// editor window by default). The overlay latches it when a capture starts.
+static AFTER_CAPTURE_INLINE: AtomicBool = AtomicBool::new(false);
+
+pub fn set_after_capture(inline: bool) {
+    AFTER_CAPTURE_INLINE.store(inline, Ordering::Relaxed);
+}
+
+/// True when a capture that starts now draws on the screen itself.
+pub fn inline_after_capture() -> bool {
+    AFTER_CAPTURE_INLINE.load(Ordering::Relaxed)
+}
 
 /// A rectangle in physical pixels (virtual-screen coordinates for the
 /// frame and the candidates, image coordinates inside a crop).

@@ -151,12 +151,7 @@ pub fn scene() -> (Frozen, Vec<Candidate>) {
         }
     }
     (
-        Frozen {
-            w: w as u32,
-            h: h as u32,
-            origin: (area.x, area.y),
-            bgra,
-        },
+        Frozen::new(w as u32, h as u32, (area.x, area.y), bgra),
         // The candidates were made in window-local numbers; the frame sits
         // at the virtual screen's origin.
         cands
@@ -172,7 +167,11 @@ pub fn scene() -> (Frozen, Vec<Candidate>) {
 
 /// `--demo-snap`: the overlay on `scene()`. A click opens the editor on the
 /// crop; the process ends when either closes.
-pub fn run_snap() {
+///
+/// `inline` is `--demo-snap inline`: the picked region stays up to draw on
+/// (Copy is inert, Save writes under `target/demo-shots/`, Buka di editor
+/// opens the editor demo).
+pub fn run_snap(inline: bool) {
     use windows::Win32::UI::WindowsAndMessaging::{
         DispatchMessageW, GetMessageW, MSG, TranslateMessage,
     };
@@ -181,7 +180,7 @@ pub fn run_snap() {
     // The editor it opens follows `DI_WINDOW`, `DI_SURFACE` and `DI_ACCENT`.
     crate::theme::set_current(crate::theme::theme_from_env());
     let (frame, cands) = scene();
-    if !super::overlay::start_demo(frame, cands) {
+    if !super::overlay::start_demo(frame, cands, inline) {
         eprintln!("vale: the demo overlay could not start");
         return;
     }
@@ -192,6 +191,9 @@ pub fn run_snap() {
             DispatchMessageW(&msg);
         }
     }
+    // A Save from the inline capture was written on a worker after the
+    // overlay closed: the file lands before the process ends.
+    super::overlay::join_demo_save();
 }
 
 #[cfg(test)]
@@ -209,7 +211,10 @@ mod tests {
     #[test]
     fn the_demo_scene_snaps_front_window_first_and_has_no_real_screen() {
         let (frame, cands) = scene();
-        assert_eq!(frame.bgra.len(), frame.w as usize * frame.h as usize * 4);
+        assert_eq!(
+            frame.bgra().len(),
+            frame.w() as usize * frame.h() as usize * 4
+        );
         let o = frame.origin;
         // The middle of the front window's first card is a card.
         let front = cands

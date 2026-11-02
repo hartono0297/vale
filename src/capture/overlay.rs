@@ -7,6 +7,13 @@
 //! right click or Esc cancels, and so does losing the foreground (Alt+Tab,
 //! the Win key, another app). One overlay at a time. It exists only while
 //! in use: no timer, nothing at idle, and the frame is freed when it closes.
+//!
+//! With "Setelah capture" set to "Langsung di layar" (`inline`), the pick
+//! does not open the editor: the overlay stays up in its second phase
+//! (`Phase::Edit`, in `edit`) and the region is drawn on in place. The pure
+//! rules of that phase are in `inline`.
+
+mod edit;
 
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
@@ -24,21 +31,25 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     ReleaseCapture, SetCapture, SetFocus, VK_ESCAPE, VK_RETURN,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, CreateWindowExW, DefWindowProcW, DestroyWindow, GetCursorPos,
+    BringWindowToTop, CS_DBLCLKS, CreateWindowExW, DefWindowProcW, DestroyWindow, GetCursorPos,
     GetForegroundWindow, GetWindowThreadProcessId, HWND_TOPMOST, IDC_CROSS, IsWindow, LoadCursorW,
     MSG, PM_REMOVE, PeekMessageW, PostQuitMessage, RegisterClassExW, SW_SHOWNA, SWP_SHOWWINDOW,
     SetCursor, SetForegroundWindow, SetWindowPos, ShowWindow, WM_ACTIVATE, WM_ACTIVATEAPP,
-    WM_CAPTURECHANGED, WM_CLOSE, WM_DESTROY, WM_DISPLAYCHANGE, WM_ERASEBKGND, WM_KEYDOWN,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR, WNDCLASSEXW,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    WM_CAPTURECHANGED, WM_CLOSE, WM_COMMAND, WM_CTLCOLOREDIT, WM_DESTROY, WM_DISPLAYCHANGE,
+    WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+    WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR, WNDCLASSEXW, WS_CLIPCHILDREN, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_POPUP,
 };
 use windows::core::{Error, w};
 
+use super::inline::FinishKind;
 use super::uia::{WM_APP_UIA, take_result};
 use super::win::{self, Frozen, TopWindow};
 use super::{Candidate, Rect, crop, drag_rect, is_click, pick, size_label};
 use crate::i18n::{Key, tr};
+use crate::shot_edit::Annotation;
 use crate::shot_edit::gfx::{Align, Gfx, Target, bitmap, color, rect_f};
+use crate::shot_edit::text::WM_APP_TEXT;
 use crate::theme;
 
 const CLASS: windows::core::PCWSTR = w!("ValeSnapOverlay");
@@ -48,6 +59,14 @@ const DIM: f32 = 0.55;
 
 /// Lost render targets made again in a row before the overlay gives up.
 const RETRIES: u8 = 3;
+
+/// Which part of the capture the overlay is in.
+enum Phase {
+    /// Choosing the region: snapping, click, drag.
+    Pick,
+    /// The region is chosen and stays on screen to draw on (inline mode).
+    Edit(Box<edit::Edit>),
+}
 
 struct State {
     hwnd: HWND,
@@ -73,6 +92,12 @@ struct State {
     /// cancels. Not before, so the brief input join in `take_foreground`
     /// (which can move the activation around) does not end it.
     armed: bool,
+    /// "Setelah capture" = inline, latched when this capture started.
+    inline: bool,
+    /// "Salin otomatis", latched likewise (never in a demo): a Save also
+    /// copies.
+    auto_copy: bool,
+    phase: Phase,
 }
 
 thread_local! {
@@ -80,6 +105,10 @@ thread_local! {
     /// True from the first trigger until the window is up (the grab takes a
     /// moment): a second trigger is ignored.
     static STARTING: Cell<bool> = const { Cell::new(false) };
+    /// The demo's Save runs on a worker after the overlay is gone;
+    /// `run_snap` joins it so the file lands before the process ends.
+    static DEMO_SAVE: RefCell<Option<std::thread::JoinHandle<bool>>> =
+        const { RefCell::new(None) };
 }
 
 static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
@@ -142,12 +171,15 @@ pub fn start() {
         return;
     }
     let starting = Starting::begin();
+    // Latched for this capture: a change in Settings meanwhile applies to
+    // the next one.
+    let inline = super::inline_after_capture();
     let up = (|| {
         let bounds = win::virtual_screen();
         let windows = win::top_windows(bounds);
         let frame = win::grab_virtual_screen()?;
         let cands: Vec<Candidate> = windows.iter().map(TopWindow::candidate).collect();
-        create(frame, cands, Some(windows), false)
+        create(frame, cands, Some(windows), false, inline)
     })();
     drop(starting);
     if up.is_none() {
@@ -156,19 +188,31 @@ pub fn start() {
 }
 
 /// The overlay over a made-up frame with fixed candidates: no screen grab,
-/// no window list, no UI Automation (the `--demo-snap` mode).
+/// no window list, no UI Automation (the `--demo-snap` mode). `inline` is
+/// `--demo-snap inline`.
 #[cfg(debug_assertions)]
-pub fn start_demo(frame: Frozen, cands: Vec<Candidate>) -> bool {
+pub fn start_demo(frame: Frozen, cands: Vec<Candidate>, inline: bool) -> bool {
     if active() {
         return false;
     }
-    create(frame, cands, None, true).is_some()
+    create(frame, cands, None, true, inline).is_some()
+}
+
+/// Waits for the demo's Save to land (`run_snap`, after the message loop).
+#[cfg(debug_assertions)]
+pub fn join_demo_save() {
+    if let Some(handle) = DEMO_SAVE.with(|s| s.borrow_mut().take()) {
+        let _ = handle.join();
+    }
 }
 
 fn register(instance: windows::Win32::Foundation::HINSTANCE) -> windows::core::Result<()> {
     unsafe {
         let class = WNDCLASSEXW {
             cbSize: size_of::<WNDCLASSEXW>() as u32,
+            // Double clicks (a text edited in place) arrive as their own
+            // message, handled like a press.
+            style: CS_DBLCLKS,
             lpfnWndProc: Some(proc),
             hInstance: instance,
             hCursor: LoadCursorW(None, IDC_CROSS)?,
@@ -190,6 +234,7 @@ fn create(
     cands: Vec<Candidate>,
     for_uia: Option<Vec<TopWindow>>,
     demo: bool,
+    inline: bool,
 ) -> Option<()> {
     let area = frame.rect();
     let gfx = Gfx::new().ok()?;
@@ -200,7 +245,8 @@ fn create(
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
             CLASS,
             w!("Vale capture"),
-            WS_POPUP,
+            // The EDIT of a text drawn inline is a child of this window.
+            WS_POPUP | WS_CLIPCHILDREN,
             area.x,
             area.y,
             area.w,
@@ -239,6 +285,10 @@ fn create(
         demo,
         lost: 0,
         armed: false,
+        inline,
+        // A demo never touches the clipboard.
+        auto_copy: crate::shot_edit::auto_copy_setting() && !demo,
+        phase: Phase::Pick,
     };
     let stored = OVERLAY.with(|c| match c.try_borrow_mut() {
         Ok(mut slot) if slot.is_none() => {
@@ -308,7 +358,8 @@ fn take_foreground(hwnd: HWND) -> bool {
 
 /// Closes the overlay. `choice` is the rectangle to keep (virtual-screen
 /// pixels); it is cropped from the frame, the frame is freed, the window
-/// closes and the editor opens at once.
+/// closes and the editor opens at once. `None` cancels: nothing is kept,
+/// copied or opened.
 ///
 /// Idempotent: the state leaves its slot first, so a second call (the
 /// `WM_ACTIVATE` that `DestroyWindow` itself sends, an Alt+F4 after a click)
@@ -320,7 +371,7 @@ fn finish(choice: Option<Rect>) {
     state.stop.store(true, Ordering::Relaxed);
     let shot = choice.and_then(|r| {
         crop(
-            &state.frame.bgra,
+            state.frame.bgra(),
             state.frame.stride(),
             state.frame.rect(),
             r,
@@ -328,7 +379,7 @@ fn finish(choice: Option<Rect>) {
         .map(|s| (s, r))
     });
     let (hwnd, demo) = (state.hwnd, state.demo);
-    // The picture, the target and the frame go now.
+    // The picture, the target and the frame go now (an open text with them).
     drop(state);
     unsafe {
         // Not while the window is already on its way out (closed by the
@@ -341,6 +392,109 @@ fn finish(choice: Option<Rect>) {
         Some((shot, r)) => crate::shot_edit::window::open(shot, r.center(), demo),
         None if demo => unsafe { PostQuitMessage(0) },
         None => {}
+    }
+}
+
+/// The picture the inline selection makes: the crop of the frame and the
+/// annotations moved onto it, as owned values. Reads the state without taking
+/// it, so a failed Copy leaves the overlay as it was. `None` outside the
+/// drawing phase or when the crop is empty.
+fn inline_picture() -> Option<(Rect, crate::capture::Shot, Vec<Annotation>)> {
+    with(|s| {
+        let Phase::Edit(e) = &s.phase else {
+            return None;
+        };
+        let sel = e.sel;
+        let doc = edit::doc_in_crop(&e.session.doc, sel, s.frame.origin);
+        crop(s.frame.bgra(), s.frame.stride(), s.frame.rect(), sel).map(|shot| (sel, shot, doc))
+    })
+    .flatten()
+}
+
+/// Ends the inline capture as `kind` says (see `inline::finish_copies`): the
+/// selection is cropped from the frame, the annotations moved onto the crop,
+/// and then an auto-copying Save puts it on the clipboard (on this thread,
+/// before the window goes), Save also writes it on a worker, and OpenEditor
+/// opens the editor on it. Anything else closes with nothing copied. A Copy
+/// is never finished here: it goes through `edit::copy`, which touches no
+/// clipboard in the demo and keeps the overlay when the copy fails.
+/// Idempotent like `finish`.
+fn finish_inline(kind: FinishKind) {
+    if kind == FinishKind::Copy {
+        edit::copy();
+        return;
+    }
+    // A text still being typed is part of the picture.
+    edit::commit_text_now();
+    // Only Save and OpenEditor keep the picture; the rest need no crop.
+    let kept = if matches!(kind, FinishKind::Save | FinishKind::OpenEditor) {
+        inline_picture()
+    } else {
+        None
+    };
+    let Some(state) = take_state(None) else {
+        return;
+    };
+    state.stop.store(true, Ordering::Relaxed);
+    let (hwnd, demo, auto_copy) = (state.hwnd, state.demo, state.auto_copy);
+    // The frame (100+ MB on a big desktop), the target, the picture and the
+    // open EDIT go before anything is rendered.
+    drop(state);
+    let (kind, kept) = match kept {
+        Some(k) => (kind, Some(k)),
+        // Nothing to keep (an empty crop): the same as a cancel.
+        None if matches!(kind, FinishKind::Save | FinishKind::OpenEditor) => {
+            (FinishKind::Cancel, None)
+        }
+        None => (kind, None),
+    };
+    let mut editor = None;
+    let mut saved = None;
+    if let Some((sel, shot, doc)) = kept {
+        if super::inline::finish_copies(kind, auto_copy) && !demo {
+            let capture = crate::shot_edit::next_capture_id();
+            // Managed: one history card, no notch preview, no copy notice.
+            // A failed copy is only logged: the Save still happens and it is
+            // never recorded as copied (`export::copy` records on success).
+            if crate::shot_edit::export::copy(hwnd, &shot, &doc, capture, true).is_none() {
+                eprintln!("vale: the inline screenshot could not be copied");
+            }
+        }
+        match kind {
+            FinishKind::Save => {
+                let dir = demo.then(|| {
+                    std::env::current_dir()
+                        .unwrap_or_default()
+                        .join("target")
+                        .join("demo-shots")
+                });
+                saved = crate::shot_edit::export::save_detached(Arc::new(shot), doc, dir);
+                if saved.is_none() {
+                    eprintln!("vale: the inline screenshot could not be saved");
+                }
+            }
+            // The overlay closes first below, then the editor opens on the
+            // crop (and follows its own rules, auto-copy included).
+            FinishKind::OpenEditor => editor = Some((shot, sel, doc)),
+            _ => {}
+        }
+    }
+    unsafe {
+        if IsWindow(Some(hwnd)).as_bool() {
+            let _ = DestroyWindow(hwnd);
+        }
+    }
+    if let Some(handle) = saved {
+        if demo {
+            DEMO_SAVE.with(|s| *s.borrow_mut() = Some(handle));
+        }
+        // Otherwise detached: nobody waits.
+    }
+    if let Some((shot, sel, doc)) = editor {
+        crate::shot_edit::window::open_with(shot, sel.center(), demo, doc);
+    } else if demo {
+        // Nothing else will end the demo's message loop.
+        unsafe { PostQuitMessage(0) };
     }
 }
 
@@ -371,7 +525,7 @@ fn moved(s: &mut State, cursor: (i32, i32)) -> bool {
 
 /// The overlay lost the foreground: keys now go to another window (Enter
 /// could send a message there) while the frozen screen still shows, so it
-/// cancels. Ignored until `create` has armed it.
+/// cancels, copying nothing. Ignored until `create` has armed it.
 fn deactivated() {
     if with(|s| s.armed) == Some(true) {
         finish(None);
@@ -390,6 +544,30 @@ fn invalidate(hwnd: HWND) {
     }
 }
 
+/// True while the overlay is in its drawing phase.
+fn in_edit() -> bool {
+    with(|s| matches!(s.phase, Phase::Edit(_))) == Some(true)
+}
+
+/// The pointer of a mouse message in virtual-screen pixels.
+fn pointer(s: &State, lparam: LPARAM) -> (i32, i32) {
+    let origin = s.frame.origin;
+    (
+        origin.0 + i32::from(lparam.0 as i16),
+        origin.1 + i32::from((lparam.0 >> 16) as i16),
+    )
+}
+
+/// The pick is made: inline mode keeps the overlay and goes on drawing on
+/// `r`; otherwise the editor opens on it.
+fn picked(hwnd: HWND, r: Rect) {
+    if with(|s| s.inline) == Some(true) {
+        edit::enter(hwnd, r);
+    } else {
+        finish(Some(r));
+    }
+}
+
 unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
         WM_ERASEBKGND => LRESULT(1),
@@ -398,14 +576,22 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             LRESULT(0)
         }
         WM_SETCURSOR => {
-            unsafe {
-                if let Ok(cross) = LoadCursorW(None, IDC_CROSS) {
-                    SetCursor(Some(cross));
+            if in_edit() {
+                edit::set_cursor();
+            } else {
+                unsafe {
+                    if let Ok(cross) = LoadCursorW(None, IDC_CROSS) {
+                        SetCursor(Some(cross));
+                    }
                 }
             }
             LRESULT(1)
         }
         WM_MOUSEMOVE => {
+            if in_edit() {
+                edit::on_move(hwnd, wparam, lparam);
+                return LRESULT(0);
+            }
             const MK_LBUTTON: usize = 0x0001;
             let held = wparam.0 & MK_LBUTTON != 0;
             let changed = with(|s| {
@@ -413,11 +599,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                     // The release went elsewhere (capture lost): no drag.
                     s.down = None;
                 }
-                let origin = s.frame.origin;
-                let p = (
-                    origin.0 + i32::from(lparam.0 as i16),
-                    origin.1 + i32::from((lparam.0 >> 16) as i16),
-                );
+                let p = pointer(s, lparam);
                 moved(s, p)
             });
             if changed == Some(true) {
@@ -425,13 +607,13 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             }
             LRESULT(0)
         }
-        WM_LBUTTONDOWN => {
+        WM_LBUTTONDOWN | WM_LBUTTONDBLCLK => {
+            if in_edit() {
+                edit::on_down(hwnd, lparam, msg == WM_LBUTTONDBLCLK);
+                return LRESULT(0);
+            }
             let set = with(|s| {
-                let origin = s.frame.origin;
-                let p = (
-                    origin.0 + i32::from(lparam.0 as i16),
-                    origin.1 + i32::from((lparam.0 >> 16) as i16),
-                );
+                let p = pointer(s, lparam);
                 s.cursor = p;
                 s.down = Some(p);
             });
@@ -443,12 +625,12 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             LRESULT(0)
         }
         WM_LBUTTONUP => {
+            if in_edit() {
+                edit::on_up(hwnd, lparam);
+                return LRESULT(0);
+            }
             let choice = with(|s| {
-                let origin = s.frame.origin;
-                let up = (
-                    origin.0 + i32::from(lparam.0 as i16),
-                    origin.1 + i32::from((lparam.0 >> 16) as i16),
-                );
+                let up = pointer(s, lparam);
                 let down = s.down.take()?;
                 s.cursor = up;
                 if is_click(down, up) {
@@ -473,7 +655,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 let _ = ReleaseCapture();
             }
             match choice {
-                Some(r) => finish(Some(r)),
+                Some(r) => picked(hwnd, r),
                 None => invalidate(hwnd),
             }
             LRESULT(0)
@@ -482,6 +664,10 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             // Capture lost mid-drag (Alt+Tab, Win, another window): the
             // release will not come here, so drop the press and its drag.
             if lparam.0 != hwnd.0 as isize {
+                if in_edit() {
+                    edit::on_capture_lost(hwnd);
+                    return LRESULT(0);
+                }
                 let changed = with(|s| {
                     let pressed = s.down.take().is_some() || s.drag.is_some();
                     s.drag = None;
@@ -495,27 +681,54 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             LRESULT(0)
         }
         WM_RBUTTONUP => {
-            finish(None);
+            if in_edit() {
+                // The same as Esc.
+                edit::esc(hwnd, FinishKind::Cancel);
+            } else {
+                finish(None);
+            }
             LRESULT(0)
         }
         WM_KEYDOWN => {
+            if in_edit() {
+                // lparam bit 30: the key was already down (auto-repeat).
+                let repeat = (lparam.0 >> 30) & 1 == 1;
+                edit::on_key(hwnd, (wparam.0 & 0xFFFF) as u16, repeat);
+                return LRESULT(0);
+            }
             match wparam.0 as u16 {
                 x if x == VK_ESCAPE.0 => finish(None),
                 x if x == VK_RETURN.0 => {
                     if let Some(Some(r)) = with(|s| s.hover) {
-                        finish(Some(r));
+                        picked(hwnd, r);
                     }
                 }
                 _ => {}
             }
             LRESULT(0)
         }
+        WM_APP_TEXT => {
+            edit::on_text_msg(hwnd, wparam, lparam);
+            LRESULT(0)
+        }
+        WM_COMMAND => {
+            // EN_CHANGE of the text EDIT: grow it with its text.
+            if crate::shot_edit::text::is_change(wparam) {
+                edit::fit_edit(hwnd);
+            }
+            LRESULT(0)
+        }
+        WM_CTLCOLOREDIT => match edit::ctl_color(wparam) {
+            Some(brush) => brush,
+            None => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+        },
         WM_APP_UIA => {
             // Always taken, so its box is freed even for an older capture.
             let found = take_result(lparam);
             let changed = with(|s| {
                 let Some(found) = found else { return false };
-                if wparam.0 != s.id {
+                // A late answer after the pick is of no use.
+                if wparam.0 != s.id || matches!(s.phase, Phase::Edit(_)) {
                     return false;
                 }
                 s.cands.extend(found);
@@ -545,9 +758,15 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             LRESULT(0)
         }
         WM_CLOSE => {
-            // Alt+F4 and the like: the same way out as Esc. No DefWindowProc,
-            // whose DestroyWindow would come on top of `finish`'s own.
-            finish(None);
+            // Alt+F4 and the like. In the drawing phase the same way out as
+            // Esc (the confirm bar when something is drawn); otherwise a
+            // cancel. No DefWindowProc, whose DestroyWindow would come on
+            // top of `finish`'s own.
+            if in_edit() {
+                edit::close(hwnd);
+            } else {
+                finish(None);
+            }
             LRESULT(0)
         }
         WM_DESTROY => {
@@ -586,16 +805,21 @@ fn paint(hwnd: HWND) {
             false
         }
         Err(err) if err.code() == D2DERR_RECREATE_TARGET && s.lost < RETRIES => {
-            // A lost target: made again on the next paint.
+            // A lost target: made again on the next paint (the mosaics,
+            // bitmaps of the old target, with it).
             s.lost += 1;
             s.target = None;
             s.picture = None;
+            if let Phase::Edit(e) = &mut s.phase {
+                e.pix.clear();
+            }
             invalidate(hwnd);
             false
         }
         Err(err) => {
             // Anything else (a frame too big for the device) would fail on
-            // every paint: give up rather than repaint in a loop.
+            // every paint: give up rather than repaint in a loop. Nothing
+            // is copied.
             eprintln!("vale: the capture overlay could not draw: {err}");
             true
         }
@@ -613,7 +837,10 @@ fn black(a: f32) -> D2D1_COLOR_F {
 }
 
 fn draw(s: &mut State) -> windows::core::Result<()> {
-    let (w, h) = (s.frame.w, s.frame.h);
+    if matches!(s.phase, Phase::Edit(_)) {
+        return edit::draw(s);
+    }
+    let (w, h) = (s.frame.w(), s.frame.h());
     if s.target.is_none() {
         s.target = Some(s.gfx.hwnd_target(s.hwnd, (w, h))?);
         s.picture = None;
@@ -621,7 +848,7 @@ fn draw(s: &mut State) -> windows::core::Result<()> {
     let target = s.target.as_ref().expect("made above");
     let rt: &windows::Win32::Graphics::Direct2D::ID2D1RenderTarget = &target.rt;
     if s.picture.is_none() {
-        s.picture = Some(bitmap(rt, w, h, &s.frame.bgra)?);
+        s.picture = Some(bitmap(rt, w, h, s.frame.bgra())?);
     }
     let picture = s.picture.as_ref().expect("made above");
     let brush = &target.brush;
@@ -814,5 +1041,13 @@ mod tests {
     #[test]
     fn the_dim_leaves_less_than_half_the_picture() {
         assert!((0.5..0.6).contains(&DIM));
+    }
+
+    #[test]
+    fn the_text_message_is_the_shared_one() {
+        assert_eq!(
+            WM_APP_TEXT,
+            windows::Win32::UI::WindowsAndMessaging::WM_APP + 50
+        );
     }
 }

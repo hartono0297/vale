@@ -1,6 +1,6 @@
 ---
 tags: [decision, settings, layout, v3.8]
-date: 2026-10-31
+date: 2026-11-02
 ---
 
 # Settings: nine sections, titled cards (v3.8, Tombol pintas added later)
@@ -21,7 +21,7 @@ integrasi, about / tentang. The window opens on Umum.
 | Tampilan | the preview; **Island**: Gaya island, Warna aksen, Warna dasar (swatches), Font (DM Sans or JetBrains Mono, [[ui-font-option]]), Jam saat kosong, Equalizer ikut irama ([[eq-follow-audio]]). **Notch**: Lebar, Tinggi, Ukuran bawaan, Isi notch (Solid / Tembus), Opasitas. **Jendela**: Mode jendela |
 | Kucing | the preview (cat about 64 px on the resolved surface, the idle notch at real size with the clock, chips Diam / Senang / Kedip / Tidur / Menyapa); **Kucing**: Kucing di notch, Warna, "Latar: <name>" with "Ubah", Aksesori tiles; **Gerak**: Animasi, Tidur setelah, Ikuti kursor, Joget ikut musik ([[cat-dances-to-music]]), Mengecil jadi mata; **Sapaan**: the toggle (one key, `CatGreeting`, with `MorningGreetingDesc` under it) and one read-only line of the five periods, built from `greeting.rs` (`DayPeriod::ALL`, `hours()`) and `i18n::greeting_title` by `i18n::greeting_periods_line`, so the hours cannot drift from `period_at` ([[greeting-periods]]) |
 | Panel | **Perilaku**: Mode buka, Di belakang jendela. **Halaman panel**, **Pintasan**, **Tersedia** (the lists and the own-tile form, [[panel-pages]], [[shortcut-tiles]]) |
-| Clipboard | **Riwayat** (7 rows: no hotkey row); **Screenshot** ([[screenshot-preview]]; 4 rows: tool, preview, on-ignore, seconds, no PrtSc row) |
+| Clipboard | **Riwayat** (7 rows: no hotkey row); **Screenshot** ([[screenshot-preview]]; 6 rows: Alat screenshot, Setelah capture, Salin otomatis, Pratinjau di notch, Jika diabaikan, Lama tampil; no PrtSc row). *Setelah capture* is a segmented control, "Jendela editor" / "Langsung di layar" (Editor window / On screen), `screenshot.after_capture`, right under the tool, never faded ([[screenshot-snap]], "Inline mode"); its description is "Untuk tile dan PrtSc" / "For tile and PrtSc" because the longer "Screenshot Vale: tile dan PrtSc" needs 202 px and the row leaves 149 beside the two wide choices |
 | Tombol pintas | **Di semua aplikasi**: one card, a header (hint and "Kembalikan semua") and five recordable rows ([[hotkeys]]) |
 | Fitur | **Pomodoro** (4 steppers and the running note), **Musik** (Lirik di notch), **Notifikasi** (Simpan notifikasi, Jumlah maksimal, Simpan setelah restart, Aplikasi dikecualikan with a remove button each and a field with *Tambah*, Hapus riwayat notifikasi with two clicks; [[notification-history]]), **CLI** (Folder awal, Shell), **Perangkat** (Notifikasi perangkat; one row), **Susun** (gap slider first, then the templates and saved lists), **Pembersih** (Lindungi cache Cargo & Autodesk di Mole) |
 | Integrasi, Tentang | the same content, each card under a title (Tentang's is "Tautan": 4 rows since [[self-update]], Kode sumber, Pembaruan with "Cek sekarang" / "Update", the toggle "Cek pembaruan otomatis", Folder data) |
