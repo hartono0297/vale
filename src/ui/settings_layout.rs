@@ -5330,6 +5330,23 @@ mod tests {
                 }
                 let name = surface_label(lang, surface, CatColor::Calico, true);
                 assert!(l.texts.iter().any(|t| t.text == name), "{name}");
+                // Seven swatches plus the hit slop leave "Warna dasar" and its
+                // description room to the left, at the 720x520 minimum.
+                assert_eq!(items.len(), 7);
+                let first = items.iter().map(|(_, r)| r.x).fold(f32::MAX, f32::min);
+                let last = items.iter().map(|(_, r)| r.right()).fold(0.0, f32::max);
+                let card = l.cards[1];
+                assert!(last + SWATCH_SLOP <= card.right(), "{lang:?} {surface:?}");
+                for want in [text(lang, Key::IslandSurface), name.as_str()] {
+                    let t = l.texts.iter().find(|t| t.text == want).expect("text");
+                    assert!(t.rect.w > 0.0, "{want}");
+                    assert!(
+                        t.rect.right() <= first - SWATCH_SLOP + 0.01,
+                        "{lang:?} {want}: {} vs {}",
+                        t.rect.right(),
+                        first - SWATCH_SLOP
+                    );
+                }
                 if surface == Surface::Auto {
                     assert_eq!(
                         name,
