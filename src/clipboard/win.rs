@@ -304,6 +304,54 @@ pub fn write(hwnd: HWND, formats: &[(u32, Vec<u8>)]) -> Option<u32> {
     any.then(|| unsafe { GetClipboardSequenceNumber() })
 }
 
+/// How `write_when` ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Wrote {
+    /// The formats are on the clipboard; the sequence number after closing.
+    Written(u32),
+    /// `expected` was given and the clipboard has changed since: nothing was
+    /// touched.
+    NotOurs,
+    /// The clipboard stayed held by another app, or a format could not be
+    /// set: try again shortly.
+    Busy,
+}
+
+/// `write`, but only while the clipboard's sequence number is still
+/// `expected` (`None`: no condition). The number is checked again with the
+/// clipboard open and before `EmptyClipboard`, as `empty_if_unchanged` does,
+/// so a copy made by someone else since is never replaced. Opens with the
+/// same 4 tries 8 ms apart.
+pub fn write_when(hwnd: HWND, formats: &[(u32, Vec<u8>)], expected: Option<u32>) -> Wrote {
+    if formats.is_empty() {
+        return Wrote::Busy;
+    }
+    let Some(open) = (0..4).find_map(|i| {
+        if i > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(8));
+        }
+        Open::new(hwnd)
+    }) else {
+        return Wrote::Busy;
+    };
+    if expected.is_some_and(|seq| sequence_now() != seq) {
+        return Wrote::NotOurs;
+    }
+    if unsafe { EmptyClipboard() }.is_err() {
+        return Wrote::Busy;
+    }
+    let mut any = false;
+    for (f, bytes) in formats {
+        any |= set(*f, bytes);
+    }
+    drop(open);
+    if any {
+        Wrote::Written(sequence_now())
+    } else {
+        Wrote::Busy
+    }
+}
+
 /// A packed DIB as the clipboard takes it (the screenshot's "Salin lagi").
 pub fn image_formats(dib: Vec<u8>) -> Vec<(u32, Vec<u8>)> {
     vec![(CF_DIB, dib)]

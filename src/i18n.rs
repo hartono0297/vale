@@ -830,6 +830,9 @@ keys! {
     ShotToolVale => "Vale", "Vale";
     ShotToolWindows => "Snipping Tool", "Snipping Tool";
     ShotToolDesc => "Dipakai tile Screenshot", "Used by the Screenshot tile";
+    ShotAutoCopySetting => "Salin otomatis", "Copy automatically";
+    ShotAutoCopyDesc => "Hanya screenshot Vale; Snipping Tool menyalin sendiri",
+        "Vale's own capture only; Snipping Tool copies by itself";
     SnapHint => "Klik atau seret · Enter ambil · Esc batal",
         "Click or drag · Enter to capture · Esc to cancel";
     EditTitle => "Vale · Screenshot", "Vale · Screenshot";
@@ -850,6 +853,7 @@ keys! {
     EditKeep => "Batal", "Cancel";
     EditCopied => "Disalin ke clipboard", "Copied to the clipboard";
     EditCopyFailed => "Gagal menyalin", "Couldn't copy";
+    EditAutoCopyFailed => "Gagal menyalin · tekan Salin", "Couldn't copy · press Copy";
     EditPreviewFailed => "Gambar terlalu besar untuk ditampilkan di sini",
         "The picture is too big to show here";
     EditSaving => "Menyimpan…", "Saving…";

@@ -2,18 +2,24 @@
 //! (annotations, hit testing, moving and resizing, undo and redo, the view
 //! mapping, pixelating). `window` is the window, `paint` draws the
 //! annotations (on screen and in the export alike), `export` renders at full
-//! resolution, saves and copies.
+//! resolution, saves and copies, `auto` decides when the picture is copied
+//! by itself.
 //!
 //! Everything lives in image pixels. The picture and its annotations exist
-//! only while the window is open; nothing reaches the disk or the clipboard
-//! without Save or Copy.
+//! only while the window is open. Nothing reaches the disk without Save. The
+//! clipboard gets the picture on Copy, and (with "Salin otomatis", on by
+//! default) by itself: when the editor opens and after each finished edit,
+//! only while the clipboard still holds what this editor wrote.
 
+pub mod auto;
 pub mod export;
 pub mod gfx;
 pub mod paint;
 pub mod window;
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::collections::VecDeque;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// A point in image pixels.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -753,24 +759,84 @@ pub fn pixelate(
     Some(out)
 }
 
-/// The clipboard sequence number of the editor's own last Copy, 0 for none.
-static OWN_COPY: AtomicU32 = AtomicU32::new(0);
-
-/// Remembers the sequence number the editor's Copy left on the clipboard.
-pub fn record_own_copy(seq: u32) {
-    OWN_COPY.store(seq, Ordering::Relaxed);
+/// One clipboard write an editor made (Copy, an auto-copy or the flush at
+/// close), remembered by the sequence number it left.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OwnCopy {
+    pub seq: u32,
+    /// The editor (capture) that wrote it: `next_capture_id`.
+    pub capture: u64,
+    /// That editor's auto-copy was on when it opened: the island keeps one
+    /// card per capture and shows nothing for these writes.
+    pub managed: bool,
 }
 
-/// The sequence number recorded by `record_own_copy` (0 for none).
-pub fn own_copy_seq() -> u32 {
-    OWN_COPY.load(Ordering::Relaxed)
+/// How many editor writes are remembered; older ones fall out.
+const OWN_COPIES: usize = 32;
+
+/// The last `OWN_COPIES` writes, oldest first.
+static OWN_COPY_LOG: Mutex<VecDeque<OwnCopy>> = Mutex::new(VecDeque::new());
+
+/// The next capture number: each editor takes one when it opens.
+pub fn next_capture_id() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
-/// The clipboard image with sequence number `seq` is the editor's own
-/// Copy (`own` the number it recorded; 0 means it never copied): the notch's
-/// screenshot preview skips it.
-pub fn is_own_copy(seq: u32, own: u32) -> bool {
-    own != 0 && seq == own
+/// `copy` joins `log`; the oldest falls out past `OWN_COPIES`. Sequence 0 is
+/// never kept, and a sequence already there is replaced, not doubled.
+fn remember(log: &mut VecDeque<OwnCopy>, copy: OwnCopy) {
+    if copy.seq == 0 {
+        return;
+    }
+    log.retain(|c| c.seq != copy.seq);
+    log.push_back(copy);
+    while log.len() > OWN_COPIES {
+        log.pop_front();
+    }
+}
+
+/// The write in `log` that left sequence `seq` (0 never matches).
+fn recognise(log: &VecDeque<OwnCopy>, seq: u32) -> Option<OwnCopy> {
+    if seq == 0 {
+        return None;
+    }
+    log.iter().find(|c| c.seq == seq).copied()
+}
+
+/// Remembers the sequence number an editor's write left on the clipboard.
+pub fn record_own_copy(seq: u32, capture: u64, managed: bool) {
+    if let Ok(mut log) = OWN_COPY_LOG.lock() {
+        remember(
+            &mut log,
+            OwnCopy {
+                seq,
+                capture,
+                managed,
+            },
+        );
+    }
+}
+
+/// The editor write that left sequence `seq`, if it was one: the notch's
+/// screenshot preview skips it, and the island treats a managed one apart.
+pub fn own_copy(seq: u32) -> Option<OwnCopy> {
+    OWN_COPY_LOG
+        .lock()
+        .ok()
+        .and_then(|log| recognise(&log, seq))
+}
+
+/// "Salin otomatis", as `App` last saw it in the config (on by default).
+static AUTO_COPY: AtomicBool = AtomicBool::new(true);
+
+pub fn set_auto_copy(on: bool) {
+    AUTO_COPY.store(on, Ordering::Relaxed);
+}
+
+/// What an editor latches when it opens.
+pub fn auto_copy_setting() -> bool {
+    AUTO_COPY.load(Ordering::Relaxed)
 }
 
 #[cfg(test)]
@@ -1151,12 +1217,70 @@ mod tests {
         assert_eq!(pixel_block(1920, 1080), 16);
     }
 
+    fn copy(seq: u32, capture: u64) -> OwnCopy {
+        OwnCopy {
+            seq,
+            capture,
+            managed: capture % 2 == 0,
+        }
+    }
+
     #[test]
-    fn only_the_recorded_sequence_is_the_editors_own_copy() {
-        assert!(is_own_copy(42, 42));
-        assert!(!is_own_copy(43, 42));
-        assert!(!is_own_copy(0, 0), "nothing recorded: nothing is own");
-        assert!(!is_own_copy(7, 0));
+    fn every_recorded_sequence_is_an_editors_own_copy() {
+        let mut log = VecDeque::new();
+        remember(&mut log, copy(42, 1));
+        remember(&mut log, copy(50, 2));
+        remember(&mut log, copy(60, 1));
+        assert_eq!(recognise(&log, 42), Some(copy(42, 1)));
+        assert_eq!(recognise(&log, 50), Some(copy(50, 2)));
+        assert_eq!(recognise(&log, 60).map(|c| c.capture), Some(1));
+        assert!(recognise(&log, 43).is_none());
+        assert!(recognise(&log, 50).is_some_and(|c| c.managed));
+        assert!(recognise(&log, 42).is_some_and(|c| !c.managed));
+    }
+
+    #[test]
+    fn sequence_zero_is_never_own() {
+        let mut log = VecDeque::new();
+        remember(&mut log, copy(0, 1));
+        assert!(log.is_empty(), "0 is not kept");
+        remember(&mut log, copy(7, 1));
+        assert!(recognise(&log, 0).is_none());
+    }
+
+    #[test]
+    fn the_oldest_write_falls_out_past_the_cap() {
+        let mut log = VecDeque::new();
+        for seq in 1..=(OWN_COPIES as u32 + 3) {
+            remember(&mut log, copy(seq, 1));
+        }
+        assert_eq!(log.len(), OWN_COPIES);
+        assert!(recognise(&log, 1).is_none());
+        assert!(recognise(&log, 3).is_none());
+        assert!(recognise(&log, 4).is_some());
+        assert!(recognise(&log, OWN_COPIES as u32 + 3).is_some());
+        // The same sequence recorded twice is one entry.
+        remember(&mut log, copy(10, 9));
+        assert_eq!(log.len(), OWN_COPIES);
+        assert_eq!(recognise(&log, 10).map(|c| c.capture), Some(9));
+    }
+
+    #[test]
+    fn capture_numbers_are_unique() {
+        let (a, b) = (next_capture_id(), next_capture_id());
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn a_copy_cleans_at_its_revision_and_never_a_newer_one() {
+        let mut s = Session::default();
+        s.add(rect(0.0, 0.0, 10.0, 10.0));
+        let copied = s.revision();
+        s.mark_clean_at(copied);
+        assert!(!s.dirty(), "cleaned at the copied revision");
+        s.add(rect(5.0, 5.0, 10.0, 10.0));
+        s.mark_clean_at(copied);
+        assert!(s.dirty(), "the newer revision stays dirty");
     }
 
     #[test]

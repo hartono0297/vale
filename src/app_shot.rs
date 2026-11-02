@@ -503,6 +503,8 @@ pub enum ShotSetting {
     Preview(bool),
     OnIgnore(ShotIgnore),
     Secs(u32),
+    /// "Salin otomatis".
+    AutoCopy(bool),
 }
 
 impl App {
@@ -523,7 +525,7 @@ impl App {
         }
         // The editor's own Copy (Vale's screenshot editor): that one image
         // is no new screenshot, whatever formats it carries.
-        if crate::shot_edit::is_own_copy(sequence, crate::shot_edit::own_copy_seq()) {
+        if crate::shot_edit::own_copy(sequence).is_some() {
             return ShotArrival::Nothing;
         }
         self.shots.next_id += 1;
@@ -1062,6 +1064,7 @@ impl App {
                 let (min, max, _) = crate::config::SHOT_SECS_RANGE;
                 cfg.show_secs = n.clamp(min, max);
             }
+            ShotSetting::AutoCopy(on) => cfg.auto_copy = on,
         }
         self.save_config();
         if matches!(change, ShotSetting::Preview(_)) {

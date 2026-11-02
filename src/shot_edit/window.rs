@@ -3,8 +3,12 @@
 //!
 //! Layout and hit testing are pure (and tested) at the top; the rest is
 //! Win32: Direct2D drawing, mouse and keyboard, a native EDIT control for
-//! text (IME and paste work), and the worker that saves. Nothing runs at
-//! idle: no timer, no thread, until Save is pressed.
+//! text (IME and paste work), and the workers that save and auto-copy.
+//! Nothing runs at idle: no repeating timer and no thread. A short-lived
+//! worker runs after Save, after the pick (the first auto-copy) and after a
+//! change has settled; only one-shot timers (the debounce, a clipboard
+//! retry) are ever set, each killed when it fires. The rules of auto-copy
+//! are pure and live in `auto`.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -53,10 +57,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCDESTROY, WM_PAINT, WM_SETCURSOR, WM_SETFONT, WM_SIZE,
     WNDCLASSEXW, WS_CHILD, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
 };
+use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer, WM_TIMER};
 use windows::core::{Error, HSTRING, w};
 use windows_numerics::Vector2;
 
-use super::export::{self, Inbox, SaveResult};
+use super::auto::{AutoCopy, DEBOUNCE_MS, ResultAction, Step, TimerAction, WriteGate};
+use super::export::{self, CopyInbox, CopyReady, Inbox, Prepared, Put, SaveResult};
 use super::gfx::{Align, Gfx, Target, bitmap, color, rect_f};
 use super::paint::{Pix, draw_annotations, draw_selection};
 use super::{
@@ -80,7 +86,14 @@ const WM_APP_TEXT: u32 = WM_APP + 50;
 const RETRIES: u8 = 3;
 /// A save worker put its result in the inbox.
 const WM_APP_SAVED: u32 = WM_APP + 51;
+/// An auto-copy worker put its rendered picture in the copy inbox.
+const WM_APP_COPIED: u32 = WM_APP + 52;
 const EDIT_ID: isize = 7001;
+/// One-shot: a change settled (`DEBOUNCE_MS` after the last one); the
+/// picture is rendered for the clipboard.
+const ID_AUTO_DEBOUNCE: usize = 7101;
+/// One-shot: the clipboard was busy; the rendered picture is written again.
+const ID_AUTO_RETRY: usize = 7102;
 
 // ---- layout (logical px, scaled by `ui`) ----
 
@@ -367,6 +380,15 @@ struct Editor {
     demo: bool,
     inbox: Inbox,
     p: WindowPalette,
+    /// This editor's capture number (`shot_edit::next_capture_id`): the
+    /// island keeps one card per capture.
+    capture: u64,
+    /// When the picture is copied by itself (`auto`).
+    auto: AutoCopy<Prepared>,
+    /// Where the auto-copy worker leaves its rendered picture.
+    copy_inbox: CopyInbox,
+    /// The document revision `note_change` saw last.
+    seen_rev: u64,
 }
 
 thread_local! {
@@ -548,6 +570,12 @@ fn try_open(
         demo,
         inbox: Arc::new(Mutex::new(Vec::new())),
         p,
+        capture: super::next_capture_id(),
+        // Latched now: a change in Settings meanwhile applies to the next
+        // editor. A demo never touches the clipboard.
+        auto: AutoCopy::new(super::auto_copy_setting() && !demo),
+        copy_inbox: Arc::new(Mutex::new(Vec::new())),
+        seen_rev: 0,
     };
     recompute_view(&mut e);
     let stored = EDITORS.with(|m| match m.try_borrow_mut() {
@@ -568,6 +596,11 @@ fn try_open(
         let _ = ShowWindow(hwnd, SW_SHOW);
         let _ = SetForegroundWindow(hwnd);
         let _ = SetFocus(Some(hwnd));
+    }
+    // The pick itself is copied: a worker renders it (the window never
+    // waits); the clipboard is written when it rings back.
+    if with(hwnd, |e| e.auto.wants_first()) == Some(true) {
+        start_worker(hwnd);
     }
     Ok(())
 }
@@ -697,21 +730,291 @@ fn do_copy(hwnd: HWND) {
             say(e, tr(Key::EditDemoNoClipboard), Tone::Hint);
             None
         } else {
-            Some((e.base.clone(), e.session.doc.clone()))
+            Some((
+                e.base.clone(),
+                e.session.doc.clone(),
+                e.session.revision(),
+                e.capture,
+                e.auto.enabled(),
+            ))
         }
     })
     .flatten();
-    let Some((base, doc)) = job else { return };
+    let Some((base, doc, rev, capture, managed)) = job else {
+        return;
+    };
     // The clipboard is held for a moment; rendering happens before.
-    let ok = export::copy(hwnd, &base, &doc).is_some();
+    let seq = export::copy(hwnd, &base, &doc, capture, managed);
     with(hwnd, |e| {
-        if ok {
+        if let Some(seq) = seq {
             e.session.mark_clean();
+            // The clipboard is this editor's again: auto-copy resumes (it
+            // may have stopped because somebody else copied).
+            e.auto.on_manual_copy(seq, rev);
             say(e, tr(Key::EditCopied), Tone::Ok);
         } else {
             say(e, tr(Key::EditCopyFailed), Tone::Error);
         }
     });
+    if seq.is_some() {
+        kill_auto_timers(hwnd);
+    }
+}
+
+// ---- auto-copy ----
+
+fn kill_auto_timers(hwnd: HWND) {
+    unsafe {
+        let _ = KillTimer(Some(hwnd), ID_AUTO_DEBOUNCE);
+        let _ = KillTimer(Some(hwnd), ID_AUTO_RETRY);
+    }
+}
+
+fn arm_debounce(hwnd: HWND) {
+    // The same id again restarts it: that is the debounce.
+    unsafe {
+        SetTimer(Some(hwnd), ID_AUTO_DEBOUNCE, DEBOUNCE_MS, None);
+    }
+}
+
+/// After anything that can end an action: when the document's revision moved
+/// since last time, the debounce starts over. Cheap (a number compared).
+fn note_change(hwnd: HWND) {
+    let arm = with(hwnd, |e| {
+        let rev = e.session.revision();
+        if rev == e.seen_rev {
+            return false;
+        }
+        e.seen_rev = rev;
+        e.auto.on_change()
+    })
+    .unwrap_or(false);
+    if arm {
+        arm_debounce(hwnd);
+    }
+}
+
+/// Starts a worker rendering the current document for the clipboard, unless
+/// rule 3 already says the clipboard is not ours any more. Never called with
+/// an EDIT open or a drag running (the document is not settled then); the
+/// callers check.
+fn start_worker(hwnd: HWND) {
+    let job = with(hwnd, |e| {
+        if e.auto.may_write(crate::clipboard::win::sequence_now()) == WriteGate::NotOurs {
+            return None;
+        }
+        let rev = e.session.revision();
+        e.auto.begin_worker(rev);
+        Some((
+            e.base.clone(),
+            e.session.doc.clone(),
+            rev,
+            e.copy_inbox.clone(),
+        ))
+    })
+    .flatten();
+    let Some((base, doc, rev, inbox)) = job else {
+        return;
+    };
+    if !export::spawn_auto_copy(base, doc, rev, inbox, hwnd, WM_APP_COPIED) {
+        with(hwnd, |e| {
+            e.auto.worker_failed(rev);
+            say(e, tr(Key::EditAutoCopyFailed), Tone::Error);
+        });
+        invalidate(hwnd);
+    }
+}
+
+/// An EDIT is open or a drag is running.
+fn editing(e: &Editor) -> bool {
+    e.text.is_some() || e.drag.is_some()
+}
+
+/// The debounce fired.
+fn on_debounce(hwnd: HWND) {
+    unsafe {
+        let _ = KillTimer(Some(hwnd), ID_AUTO_DEBOUNCE);
+    }
+    let action = with(hwnd, |e| {
+        let busy = editing(e);
+        e.auto.on_timer(e.session.revision(), busy)
+    });
+    match action {
+        Some(TimerAction::Rearm) => arm_debounce(hwnd),
+        Some(TimerAction::Start) => start_worker(hwnd),
+        _ => {}
+    }
+}
+
+/// The worker rang: the rendered pictures are written when still current.
+fn on_copied(hwnd: HWND) {
+    let ready: Vec<CopyReady> = with(hwnd, |e| {
+        e.copy_inbox
+            .lock()
+            .map(|mut l| std::mem::take(&mut *l))
+            .unwrap_or_default()
+    })
+    .unwrap_or_default();
+    for r in ready {
+        handle_ready(hwnd, r);
+    }
+}
+
+fn handle_ready(hwnd: HWND, ready: CopyReady) {
+    enum Next {
+        Nothing,
+        Restart,
+        Put(Prepared, u64),
+    }
+    let next = with(hwnd, |e| {
+        let current = e.session.revision();
+        match e.auto.on_result(ready.rev, current) {
+            ResultAction::Drop => Next::Nothing,
+            ResultAction::Restart => Next::Restart,
+            ResultAction::Write => match ready.prepared {
+                None => {
+                    say(e, tr(Key::EditAutoCopyFailed), Tone::Error);
+                    Next::Nothing
+                }
+                Some(p) => {
+                    match e.auto.may_write(crate::clipboard::win::sequence_now()) {
+                        WriteGate::Write => Next::Put(p, ready.rev),
+                        // Not ours: stopped, silently.
+                        WriteGate::NotOurs => Next::Nothing,
+                    }
+                }
+            },
+        }
+    });
+    match next {
+        Some(Next::Put(p, rev)) => put_prepared(hwnd, p, rev),
+        Some(Next::Restart) => {
+            // The document moved on while the worker ran: render the
+            // current one, once nothing is being typed or dragged.
+            let busy = with(hwnd, |e| {
+                let busy = editing(e);
+                if busy {
+                    e.auto.on_change();
+                }
+                busy
+            })
+            .unwrap_or(true);
+            if busy {
+                arm_debounce(hwnd);
+            } else {
+                start_worker(hwnd);
+            }
+        }
+        _ => {}
+    }
+    invalidate(hwnd);
+}
+
+/// Writes `prepared` (the document at `rev`) to the clipboard, only while it
+/// still holds this editor's last write. Never inside a borrow of the
+/// editor (`EmptyClipboard` may message another editor on this thread).
+fn put_prepared(hwnd: HWND, prepared: Prepared, rev: u64) {
+    let Some((expected, capture, managed)) =
+        with(hwnd, |e| (e.auto.expected(), e.capture, e.auto.enabled()))
+    else {
+        return;
+    };
+    let result = export::put(hwnd, &prepared, expected, capture, managed);
+    let retry = with(hwnd, |e| match result {
+        Put::Written(seq) => {
+            e.auto.on_written(seq, rev);
+            e.session.mark_clean_at(rev);
+            say(e, tr(Key::EditCopied), Tone::Ok);
+            None
+        }
+        Put::NotOurs => {
+            e.auto.stop();
+            None
+        }
+        Put::Busy => match e.auto.on_busy(rev, prepared) {
+            Step::Again(ms) => Some(ms),
+            Step::GiveUp => {
+                say(e, tr(Key::EditAutoCopyFailed), Tone::Error);
+                None
+            }
+        },
+    })
+    .flatten();
+    if let Some(ms) = retry {
+        unsafe {
+            SetTimer(Some(hwnd), ID_AUTO_RETRY, ms, None);
+        }
+    }
+    invalidate(hwnd);
+}
+
+/// The retry timer fired.
+fn on_retry(hwnd: HWND) {
+    unsafe {
+        let _ = KillTimer(Some(hwnd), ID_AUTO_RETRY);
+    }
+    let job = with(hwnd, |e| {
+        let (rev, p) = e.auto.take_retry(e.session.revision())?;
+        // Rule 3 again: the clipboard may have changed meanwhile.
+        match e.auto.may_write(crate::clipboard::win::sequence_now()) {
+            WriteGate::Write => Some((p, rev)),
+            WriteGate::NotOurs => None,
+        }
+    })
+    .flatten();
+    if let Some((p, rev)) = job {
+        put_prepared(hwnd, p, rev);
+    }
+}
+
+/// Closing: when the clipboard may lack the current picture (a change
+/// still waiting for its debounce, a render in flight, a retry pending), it
+/// is rendered and written now, on this thread, like Copy. A picture that is
+/// on the clipboard counts as saved, so the discard bar only shows when it
+/// is neither there nor in a file.
+fn flush_on_close(hwnd: HWND) {
+    let job = with(hwnd, |e| {
+        if !e.auto.enabled() {
+            return None;
+        }
+        // Closed mid-drag (Alt+F4, capture lost): the action ends as a
+        // release would, so the document and its revision agree.
+        if e.drag.is_some() {
+            finish_drag(e);
+        }
+        let rev = e.session.revision();
+        if !e.auto.needs_flush(rev) {
+            return None;
+        }
+        if e.auto.may_write(crate::clipboard::win::sequence_now()) == WriteGate::NotOurs {
+            return None;
+        }
+        Some((e.base.clone(), e.session.doc.clone(), rev))
+    })
+    .flatten();
+    kill_auto_timers(hwnd);
+    let Some((base, doc, rev)) = job else {
+        return;
+    };
+    let Some(prepared) = export::prepare(&base, &doc) else {
+        return;
+    };
+    let Some((expected, capture)) = with(hwnd, |e| (e.auto.expected(), e.capture)) else {
+        return;
+    };
+    let result = export::put(hwnd, &prepared, expected, capture, true);
+    with(hwnd, |e| match result {
+        Put::Written(seq) => {
+            e.auto.on_written(seq, rev);
+            e.session.mark_clean_at(rev);
+        }
+        Put::NotOurs => e.auto.stop(),
+        Put::Busy => {}
+    });
+    if result == Put::Busy {
+        // The window stays (the bar asks): the debounce tries again.
+        arm_debounce(hwnd);
+    }
 }
 
 fn do_save(hwnd: HWND) {
@@ -803,6 +1106,10 @@ fn confirm_key(vk: u16) -> Option<Hit> {
 /// The window's close: asks first when something changed. Also reached from
 /// WM_CLOSE (the X button, Alt+F4); with the bar already up it stays up.
 fn request_close(hwnd: HWND) {
+    // First the picture goes to the clipboard when auto-copy is behind: what
+    // is there counts as kept, so the bar below asks only about a picture
+    // that is neither copied nor saved.
+    flush_on_close(hwnd);
     let ask = with(hwnd, |e| {
         if close_action(e.session.dirty()) == CloseAction::Ask {
             e.confirm = true;
@@ -1501,14 +1808,18 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         }
         WM_LBUTTONDOWN => {
             on_down(hwnd, lparam, false);
+            note_change(hwnd);
             LRESULT(0)
         }
         WM_LBUTTONDBLCLK => {
             on_down(hwnd, lparam, true);
+            note_change(hwnd);
             LRESULT(0)
         }
         WM_MOUSEMOVE => {
             on_move(hwnd, wparam, lparam);
+            // A move without the button ends a drag whose release was lost.
+            note_change(hwnd);
             LRESULT(0)
         }
         WM_CAPTURECHANGED => {
@@ -1522,11 +1833,13 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 if changed == Some(true) {
                     invalidate(hwnd);
                 }
+                note_change(hwnd);
             }
             LRESULT(0)
         }
         WM_LBUTTONUP => {
             on_up(hwnd, lparam);
+            note_change(hwnd);
             LRESULT(0)
         }
         WM_SETCURSOR => {
@@ -1567,6 +1880,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         }
         WM_KEYDOWN => {
             on_key(hwnd, (wparam.0 & 0xFFFF) as u16);
+            note_change(hwnd);
             LRESULT(0)
         }
         WM_APP_TEXT => {
@@ -1580,10 +1894,23 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             } else {
                 cancel_text(hwnd);
             }
+            note_change(hwnd);
             LRESULT(0)
         }
         WM_APP_SAVED => {
             on_saved(hwnd);
+            LRESULT(0)
+        }
+        WM_APP_COPIED => {
+            on_copied(hwnd);
+            LRESULT(0)
+        }
+        WM_TIMER => {
+            match wparam.0 {
+                ID_AUTO_DEBOUNCE => on_debounce(hwnd),
+                ID_AUTO_RETRY => on_retry(hwnd),
+                _ => {}
+            }
             LRESULT(0)
         }
         WM_COMMAND => {
@@ -1612,6 +1939,9 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         }
         WM_CLOSE => {
             commit_text(hwnd);
+            // The committed text is a change; the flush in `request_close`
+            // writes it (and kills the debounce this arms).
+            note_change(hwnd);
             request_close(hwnd);
             LRESULT(0)
         }

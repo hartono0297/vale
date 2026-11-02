@@ -459,6 +459,8 @@ pub enum Hit {
     ShotSecs(i32),
     /// "Alat screenshot" (Vale / Snipping Tool).
     ShotTool(ShotTool),
+    /// "Salin otomatis": Vale's own capture is copied by itself.
+    ShotAutoCopy,
     /// "Notifikasi saat notch dipakai" (Ringkas / Penuh).
     NotifToastStyle(ToastStyle),
     Battery(i32),
@@ -4032,8 +4034,8 @@ pub fn shot_secs_step(n: u32, dir: i32) -> u32 {
 fn screenshot_card(b: &mut Builder, s: &State) {
     let c = s.shot;
     b.eyebrow(Key::SecScreenshot, b.g.content_w - 4.0);
-    let card = b.card(4.0 * ROW_H);
-    let rows: [f32; 4] = std::array::from_fn(|i| card.y + i as f32 * ROW_H);
+    let card = b.card(5.0 * ROW_H);
+    let rows: [f32; 5] = std::array::from_fn(|i| card.y + i as f32 * ROW_H);
     let cy = |y: f32| y + ROW_H / 2.0;
     let on = c.preview;
 
@@ -4048,10 +4050,17 @@ fn screenshot_card(b: &mut Builder, s: &State) {
     let desc = Some((b.t(Key::ShotToolDesc), Tone::Secondary));
     b.row_text(card, rows[0], b.t(Key::ShotToolSetting), desc, false, x);
 
-    // (The key that starts Vale's capture is in the Tombol pintas section.)
-    let x = b.toggle(Hit::ShotPreview, b.g.right, cy(rows[1]), on);
-    b.row_text(card, rows[1], b.t(Key::ShotPreviewSetting), None, false, x);
+    // Auto-copy of Vale's own capture: next to the tool, never faded (it has
+    // nothing to do with the preview).
+    let x = b.toggle(Hit::ShotAutoCopy, b.g.right, cy(rows[1]), c.auto_copy);
+    let desc = Some((b.t(Key::ShotAutoCopyDesc), Tone::Secondary));
+    b.row_text(card, rows[1], b.t(Key::ShotAutoCopySetting), desc, false, x);
     b.divider(card, rows[1]);
+
+    // (The key that starts Vale's capture is in the Tombol pintas section.)
+    let x = b.toggle(Hit::ShotPreview, b.g.right, cy(rows[2]), on);
+    b.row_text(card, rows[2], b.t(Key::ShotPreviewSetting), None, false, x);
+    b.divider(card, rows[2]);
 
     let items = vec![
         (Hit::ShotIgnore(ShotIgnore::Keep), b.t(Key::ShotKeep)),
@@ -4061,28 +4070,28 @@ fn screenshot_card(b: &mut Builder, s: &State) {
     let x = b.segmented_if(
         Group::ShotIgnore,
         b.g.right,
-        cy(rows[2]),
+        cy(rows[3]),
         items,
         selected,
         on,
     );
     let desc = Some((b.t(Key::ShotIgnoreDesc), Tone::Secondary));
-    b.row_text(card, rows[2], b.t(Key::ShotIgnoreSetting), desc, false, x);
-    b.divider(card, rows[2]);
+    b.row_text(card, rows[3], b.t(Key::ShotIgnoreSetting), desc, false, x);
+    b.divider(card, rows[3]);
 
     let (min, max, _) = SHOT_SECS_RANGE;
     let n = c.show_secs;
     let x = b.stepper(
         b.g.right,
-        cy(rows[3]),
+        cy(rows[4]),
         crate::i18n::seconds_short(b.lang, n),
         Hit::ShotSecs(-1),
         Hit::ShotSecs(1),
         (n > min, n < max),
         on,
     );
-    b.row_text(card, rows[3], b.t(Key::ShotShowFor), None, false, x);
-    b.divider(card, rows[3]);
+    b.row_text(card, rows[4], b.t(Key::ShotShowFor), None, false, x);
+    b.divider(card, rows[4]);
 }
 
 fn integrations(b: &mut Builder, s: &State) {
@@ -4566,6 +4575,7 @@ mod tests {
                             } else {
                                 ShotTool::Vale
                             },
+                            auto_copy: !locked,
                         },
                         pages: if locked {
                             let mut p = PanelPages::default();
@@ -5490,7 +5500,15 @@ mod tests {
             l.hits()
                 .into_iter()
                 .map(|(h, _)| h)
-                .filter(|h| matches!(h, Hit::ShotPreview | Hit::ShotIgnore(_) | Hit::ShotSecs(_)))
+                .filter(|h| {
+                    matches!(
+                        h,
+                        Hit::ShotPreview
+                            | Hit::ShotIgnore(_)
+                            | Hit::ShotSecs(_)
+                            | Hit::ShotAutoCopy
+                    )
+                })
                 .collect()
         };
         for lang in [Lang::Id, Lang::En] {
@@ -5515,6 +5533,7 @@ mod tests {
             assert_eq!(
                 shot_hits(&l),
                 [
+                    Hit::ShotAutoCopy,
                     Hit::ShotPreview,
                     Hit::ShotIgnore(ShotIgnore::Keep),
                     Hit::ShotIgnore(ShotIgnore::Delete),
@@ -5540,6 +5559,8 @@ mod tests {
             });
             assert_eq!(secs, Some(crate::i18n::seconds_short(lang, 8)));
             for key in [
+                Key::ShotAutoCopySetting,
+                Key::ShotAutoCopyDesc,
                 Key::ShotPreviewSetting,
                 Key::ShotIgnoreSetting,
                 Key::ShotIgnoreDesc,
@@ -5564,7 +5585,15 @@ mod tests {
                 ..end
             };
             let l = layout(Section::Clipboard, &off, &Estimate);
-            assert_eq!(shot_hits(&l), [Hit::ShotPreview]);
+            // Auto-copy is not the preview's: it keeps its click.
+            assert_eq!(shot_hits(&l), [Hit::ShotAutoCopy, Hit::ShotPreview]);
+            let auto = l.controls.iter().find_map(|c| match c {
+                Control::Toggle {
+                    hit, on, enabled, ..
+                } if *hit == Hit::ShotAutoCopy => Some((*on, *enabled)),
+                _ => None,
+            });
+            assert_eq!(auto, Some((true, true)), "on by default, never faded");
         }
     }
 
@@ -5578,10 +5607,10 @@ mod tests {
             };
             let l = layout(Section::Clipboard, &s, &Estimate);
             // Riwayat: seven rows (the hotkey row is gone); Screenshot: tool,
-            // preview, on-ignore, seconds (the PrtSc row is gone).
+            // auto-copy, preview, on-ignore, seconds (the PrtSc row is gone).
             assert_eq!(l.cards.len(), 2);
             assert_eq!(l.cards[0].h, 7.0 * ROW_H);
-            assert_eq!(l.cards[1].h, 4.0 * ROW_H);
+            assert_eq!(l.cards[1].h, 5.0 * ROW_H);
             let hits: Vec<Hit> = l.hits().into_iter().map(|(h, _)| h).collect();
             assert!(
                 !hits
@@ -5611,6 +5640,7 @@ mod tests {
                     Hit::ClipFeedbackAll,
                     Hit::ClipClear,
                     Hit::ShotTool(ShotTool::Vale),
+                    Hit::ShotAutoCopy,
                     Hit::ShotPreview,
                     Hit::ShotIgnore(ShotIgnore::Keep),
                     Hit::ShotSecs(1),

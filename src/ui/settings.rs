@@ -198,6 +198,7 @@ pub enum Action {
     /// Settings → Clipboard → Screenshot.
     ShotTool(ShotTool),
     ShotPreview(bool),
+    ShotAutoCopy(bool),
     ShotOnIgnore(ShotIgnore),
     ShotSecs(u32),
     BatteryThreshold(u8),
@@ -1711,6 +1712,7 @@ impl Settings {
             (Hit::NotifRecord, old.notif.record, new.notif.record),
             (Hit::NotifPersist, old.notif.persist, new.notif.persist),
             (Hit::ShotPreview, old.shot.preview, new.shot.preview),
+            (Hit::ShotAutoCopy, old.shot.auto_copy, new.shot.auto_copy),
         ] {
             if from != to {
                 self.anims.slide_toggle(hit, from, to, now);
@@ -2246,6 +2248,7 @@ impl Settings {
                 Vec::new()
             }
             Hit::ShotPreview => post(Action::ShotPreview(!m.shot.preview)),
+            Hit::ShotAutoCopy => post(Action::ShotAutoCopy(!m.shot.auto_copy)),
             Hit::ShotTool(v) if v != m.shot.tool => post(Action::ShotTool(v)),
             Hit::NotifToastStyle(v) if v != m.notif.toast_style => {
                 post(Action::NotifToastStyle(v))
@@ -3856,6 +3859,7 @@ pub fn run_demo(args: &[String]) {
             Action::ShotTool(v) => m.shot.tool = v,
             Action::NotifToastStyle(v) => m.notif.toast_style = v,
             Action::ShotPreview(v) => m.shot.preview = v,
+            Action::ShotAutoCopy(v) => m.shot.auto_copy = v,
             Action::ShotOnIgnore(v) => m.shot.on_ignore = v,
             Action::ShotSecs(v) => m.shot.show_secs = v,
             Action::BatteryThreshold(v) => m.battery_threshold = v,
