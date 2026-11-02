@@ -2597,6 +2597,9 @@ pub struct NotifHead {
     pub count_w: f32,
     pub pause_label_w: f32,
     pub clear_w: f32,
+    /// The time column of every row: `NOTIF_TIME_W` (DM Sans fits it), wider
+    /// when the font needs it ("28 Okt 2025" in JetBrains Mono).
+    pub time_w: f32,
 }
 
 /// The selected row's three buttons: "Buka", "Kecualikan app ini" and the X.
@@ -2668,7 +2671,9 @@ pub const NOTIF_SWITCH_H: f32 = 14.0;
 const NOTIF_HEAD_GAP: f32 = 6.0;
 const NOTIF_NOTE_H: f32 = 16.0;
 const NOTIF_PAD_X: f32 = 10.0;
-const NOTIF_TIME_W: f32 = 64.0;
+/// The time column's least width; `NotifHead::time_w` widens it to the
+/// longest `relative_time` line when that does not fit.
+pub const NOTIF_TIME_W: f32 = 64.0;
 const NOTIF_BTN_H: f32 = 20.0;
 const NOTIF_OPEN_W: f32 = 48.0;
 const NOTIF_MUTE_W: f32 = 124.0;
@@ -2800,6 +2805,7 @@ pub fn notif_layout(
     });
 
     let pitch = NOTIF_ROW_H + NOTIF_ROW_GAP;
+    let time_w = head.time_w.max(NOTIF_TIME_W);
     let rows: Vec<NotifRowLayout> = ids
         .iter()
         .enumerate()
@@ -2820,9 +2826,9 @@ pub fn notif_layout(
             );
             let text_x = logo.right() + 8.0;
             let time = rect(
-                row.right() - NOTIF_PAD_X - NOTIF_TIME_W,
+                row.right() - NOTIF_PAD_X - time_w,
                 row.y + 5.0,
-                NOTIF_TIME_W,
+                time_w,
                 16.0,
             );
             let dot = rect(
@@ -4032,6 +4038,7 @@ mod tests {
             count_w: 56.0,
             pause_label_w: 30.0,
             clear_w: 100.0,
+            time_w: NOTIF_TIME_W,
         };
         for (name, n, selected, scroll, note, no_access) in [
             ("none", 0u64, None, 0, false, false),
@@ -6868,6 +6875,7 @@ mod media_tests {
         count_w: 52.0,
         pause_label_w: 30.0,
         clear_w: 92.0,
+        time_w: NOTIF_TIME_W,
     };
 
     fn inside_rect(outer: Rect, r: Rect) -> bool {

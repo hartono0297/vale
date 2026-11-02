@@ -42,6 +42,10 @@
 //!   accessories, five faces and the notch's 26 px, in the chosen coat, on
 //!   the palette `DI_SURFACE` and `DI_ACCENT` pick) show them side by side
 //!   (`--demo-robot`, or `DI_DEMO_STEP=bata-colors` in `--demo`).
+//! - `DI_FONT=mono` sets the UI typeface to JetBrains Mono in every scene
+//!   that builds a renderer (`--demo`, `--demo-cli`, `--demo-robot`,
+//!   `--demo-devices`, `--demo-arrange`) and in `--settings`; unset or an
+//!   unknown name is DM Sans (`UiFont::from_name`).
 //! - `DI_CLOCK=0` draws the idle island without its clock.
 //! - `DI_LYRIC_AT=ms` puts the lyric scenes at that position in the fake
 //!   LRC (`DEMO_LRC`); `DI_DEMO_FADE=0.5` freezes the crossfade from the
@@ -164,7 +168,7 @@ use crate::cli_panel::{Echoes, RunState};
 use crate::clipboard::image::Thumb;
 use crate::clipboard::store::ClipImage;
 use crate::clipboard::{Clip, ClipData, ClipKind};
-use crate::config::{NotchFill, Style};
+use crate::config::{NotchFill, Style, UiFont};
 use crate::devices::{self, Bus, Device, DeviceKind, Partition, Veto, VetoKind};
 use crate::i18n::{Key, tr};
 use crate::lyrics::{self, FADE, LyricsFound, LyricsState, Query};
@@ -1639,6 +1643,10 @@ fn run_scenes(scenes: &[Scene]) {
     // Room for the enlarged CLI panel in every scene.
     win.set_tall(true);
     let mut renderer = Renderer::new().expect("create renderer");
+    // `DI_FONT=mono` (unset or unknown: Sans) applies to every scene.
+    let ui_font = UiFont::from_name(&std::env::var("DI_FONT").unwrap_or_default())
+        .unwrap_or_default();
+    renderer.set_ui_font(ui_font).expect("set the UI font");
     let media = MediaInfo {
         title: "Senja di Kemang".into(),
         artist: "Studio Ruang".into(),

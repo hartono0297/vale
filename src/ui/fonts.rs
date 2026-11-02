@@ -1,4 +1,4 @@
-//! The Studio typefaces (DM Sans, DM Mono), embedded in the exe as RCDATA
+//! The Studio typefaces (DM Sans, DM Mono, JetBrains Mono), embedded in the exe as RCDATA
 //! resources and loaded from memory: for DirectWrite as a custom font
 //! collection, for the remaining GDI windows as process-private fonts. When a
 //! face is missing (no resource, a load error), every caller falls back to the
@@ -6,6 +6,10 @@
 //!
 //! Display text (headings, the big clock, the song title) is DM Sans 600
 //! upright, tracked tighter by `DISPLAY_TRACKING_EM` (see `apply_tracking`).
+//!
+//! The UI typeface is an option (`UiFont`): Sans is the DM Sans above, Mono
+//! sets the text and display roles in JetBrains Mono, with no tracking (a
+//! monospace cell is designed spacing). Code stays DM Mono in both.
 
 use std::sync::OnceLock;
 
@@ -26,15 +30,29 @@ use windows::Win32::System::LibraryLoader::{
 };
 use windows::core::{BOOL, HSTRING, IUnknown, Interface, PCWSTR, Result, w};
 
+use crate::config::UiFont;
+
 pub const DM_SANS: &str = "DM Sans";
 pub const DM_MONO: &str = "DM Mono";
+pub const JETBRAINS_MONO: &str = "JetBrains Mono";
 
-/// RCDATA ids in `app.rc`: DM Sans 400/500/600, DM Mono 400/500.
-pub const FONT_RESOURCE_IDS: [u16; 5] = [203, 204, 205, 206, 207];
+/// RCDATA ids in `app.rc`: DM Sans 400/500/600 (203-205), DM Mono 400/500
+/// (206-207), JetBrains Mono 400/500/600 (208-210).
+pub const FONT_RESOURCE_IDS: [u16; 8] = [203, 204, 205, 206, 207, 208, 209, 210];
 
 /// Display text is tracked this much tighter, in em (the design's
 /// `letter-spacing: -.025em`).
 pub const DISPLAY_TRACKING_EM: f32 = -0.025;
+
+/// The display tracking for `ui`, in em: Sans is tighter by
+/// `DISPLAY_TRACKING_EM`; Mono has none, because negative tracking cramps
+/// monospace cells. Draw and measure both read it, and apply nothing at 0.
+pub fn display_tracking_em(ui: UiFont) -> f32 {
+    match ui {
+        UiFont::Sans => DISPLAY_TRACKING_EM,
+        UiFont::Mono => 0.0,
+    }
+}
 
 /// `RT_RCDATA` (`MAKEINTRESOURCE(10)`).
 const RT_RCDATA: PCWSTR = PCWSTR(10 as _);
@@ -60,6 +78,7 @@ pub enum Role {
 pub struct Loaded {
     pub dm_sans: bool,
     pub dm_mono: bool,
+    pub jetbrains_mono: bool,
 }
 
 /// The family a role is drawn in.
@@ -74,9 +93,32 @@ pub struct Choice {
 /// fallback chain that `installed` reports (the chain's last name when none
 /// is, leaving the rest to DirectWrite's own font fallback).
 pub fn choose(role: Role, loaded: Loaded, installed: impl Fn(&str) -> bool) -> Choice {
+    choose_in(role, UiFont::Sans, loaded, installed)
+}
+
+/// `choose` for the UI typeface `ui`. Sans is exactly `choose`. With Mono the
+/// text and display roles give JetBrains Mono when it loaded, else DM Sans
+/// when that loaded, else the Segoe chain; code (`Role::Mono`) is DM Mono in
+/// both.
+pub fn choose_in(
+    role: Role,
+    ui: UiFont,
+    loaded: Loaded,
+    installed: impl Fn(&str) -> bool,
+) -> Choice {
     let (family, ok, fallback) = match role {
-        Role::Text => (DM_SANS, loaded.dm_sans, TEXT_FALLBACK),
-        Role::Display => (DM_SANS, loaded.dm_sans, DISPLAY_FALLBACK),
+        Role::Text | Role::Display => {
+            let fallback = if role == Role::Text {
+                TEXT_FALLBACK
+            } else {
+                DISPLAY_FALLBACK
+            };
+            if ui == UiFont::Mono && loaded.jetbrains_mono {
+                (JETBRAINS_MONO, true, fallback)
+            } else {
+                (DM_SANS, loaded.dm_sans, fallback)
+            }
+        }
         Role::Mono => (DM_MONO, loaded.dm_mono, MONO_FALLBACK),
     };
     if ok {
@@ -203,6 +245,7 @@ impl Embedded {
         let loaded = Loaded {
             dm_sans: has(DM_SANS),
             dm_mono: has(DM_MONO),
+            jetbrains_mono: has(JETBRAINS_MONO),
         };
         Self { collection, loaded }
     }
@@ -248,6 +291,17 @@ impl Face {
     pub fn for_role(dwrite: &IDWriteFactory, role: Role) -> Face {
         let fonts = embedded(dwrite);
         let choice = choose(role, fonts.loaded, |name| system_has(dwrite, name));
+        Face::of(fonts, choice)
+    }
+
+    /// The face `role` is drawn in for the UI typeface `ui` (`choose_in`).
+    pub fn for_role_in(dwrite: &IDWriteFactory, role: Role, ui: UiFont) -> Face {
+        let fonts = embedded(dwrite);
+        let choice = choose_in(role, ui, fonts.loaded, |name| system_has(dwrite, name));
+        Face::of(fonts, choice)
+    }
+
+    fn of(fonts: &Embedded, choice: Choice) -> Face {
         Face {
             family: HSTRING::from(choice.family),
             collection: if choice.embedded {
@@ -326,17 +380,33 @@ pub fn text_layout(
 /// of the font `size` (trailing space after each character, so the line
 /// starts where it did). Display text only; both the draw and the measure
 /// of a line must call it, or measured widths stop matching what is drawn.
+/// The Sans tracking: the editors, which stay DM Sans, call this.
+pub fn apply_tracking(layout: &IDWriteTextLayout, len: u32, size: f32) -> Result<()> {
+    apply_tracking_in(layout, len, size, UiFont::Sans)
+}
+
+/// `apply_tracking` for the UI typeface `ui` (`display_tracking_em`): nothing
+/// is applied when it is 0 (Mono).
 ///
 /// Character spacing needs `IDWriteTextLayout1` (Windows 8 and up); where
 /// the cast fails the text stays untracked and this returns `Ok`.
-pub fn apply_tracking(layout: &IDWriteTextLayout, len: u32, size: f32) -> Result<()> {
+pub fn apply_tracking_in(
+    layout: &IDWriteTextLayout,
+    len: u32,
+    size: f32,
+    ui: UiFont,
+) -> Result<()> {
+    let em = display_tracking_em(ui);
+    if em == 0.0 {
+        return Ok(());
+    }
     let Ok(layout) = layout.cast::<IDWriteTextLayout1>() else {
         return Ok(());
     };
     unsafe {
         layout.SetCharacterSpacing(
             0.0,
-            size * DISPLAY_TRACKING_EM,
+            size * em,
             0.0,
             DWRITE_TEXT_RANGE {
                 startPosition: 0,
@@ -369,6 +439,7 @@ pub fn digit_runs(text: &[u16]) -> impl Iterator<Item = (u32, u32)> + '_ {
 pub struct GdiFonts {
     pub dm_sans: bool,
     pub dm_mono: bool,
+    pub jetbrains_mono: bool,
 }
 
 static GDI: OnceLock<GdiFonts> = OnceLock::new();
@@ -402,8 +473,9 @@ pub fn register_gdi() -> GdiFonts {
         let fonts = GdiFonts {
             dm_sans: gdi_has(DM_SANS),
             dm_mono: gdi_has(DM_MONO),
+            jetbrains_mono: gdi_has(JETBRAINS_MONO),
         };
-        if !fonts.dm_sans || !fonts.dm_mono {
+        if !fonts.dm_sans || !fonts.dm_mono || !fonts.jetbrains_mono {
             eprintln!("vale: embedded fonts incomplete for GDI: {fonts:?}");
         }
         fonts
@@ -421,6 +493,16 @@ pub fn gdi_text_face() -> PCWSTR {
         w!("DM Sans")
     } else {
         w!("Segoe UI")
+    }
+}
+
+/// The GDI face for UI text in the typeface `ui`: JetBrains Mono for Mono
+/// when registered, else what `gdi_text_face` gives (DM Sans, then Segoe UI).
+pub fn gdi_text_face_for(ui: UiFont) -> PCWSTR {
+    if ui == UiFont::Mono && gdi().jetbrains_mono {
+        w!("JetBrains Mono")
+    } else {
+        gdi_text_face()
     }
 }
 
@@ -500,6 +582,7 @@ mod tests {
         let loaded = Loaded {
             dm_sans: true,
             dm_mono: true,
+            jetbrains_mono: true,
         };
         let pick = |role| choose(role, loaded, |_| true);
         let dm_sans = Choice {
@@ -521,6 +604,146 @@ mod tests {
         assert_eq!(display.family, "Segoe UI Variable Display");
         assert!(!display.embedded);
         assert!(choose(Role::Mono, partial, |_| true).embedded);
+    }
+
+    #[test]
+    fn sans_is_exactly_the_old_choice_and_mono_prefers_jetbrains_mono() {
+        let all = Loaded {
+            dm_sans: true,
+            dm_mono: true,
+            jetbrains_mono: true,
+        };
+        let cases = [
+            all,
+            Loaded::default(),
+            Loaded {
+                jetbrains_mono: false,
+                ..all
+            },
+            Loaded {
+                dm_sans: false,
+                ..all
+            },
+            Loaded {
+                dm_mono: false,
+                ..all
+            },
+        ];
+        for loaded in cases {
+            for role in [Role::Text, Role::Display, Role::Mono] {
+                for installed in [true, false] {
+                    let installed = move |_: &str| installed;
+                    assert_eq!(
+                        choose_in(role, UiFont::Sans, loaded, installed),
+                        choose(role, loaded, installed),
+                        "{role:?} {loaded:?}"
+                    );
+                }
+            }
+        }
+        let jbm = Choice {
+            family: JETBRAINS_MONO,
+            embedded: true,
+        };
+        let mono = |role, loaded| choose_in(role, UiFont::Mono, loaded, |_| true);
+        assert_eq!(mono(Role::Text, all), jbm);
+        assert_eq!(mono(Role::Display, all), jbm);
+        // Code stays DM Mono in both.
+        assert_eq!(mono(Role::Mono, all).family, DM_MONO);
+        // JetBrains Mono missing: DM Sans when loaded, else the Segoe chain.
+        let no_jbm = Loaded {
+            jetbrains_mono: false,
+            ..all
+        };
+        assert_eq!(mono(Role::Text, no_jbm).family, DM_SANS);
+        assert_eq!(mono(Role::Display, no_jbm).family, DM_SANS);
+        let none = Loaded::default();
+        let text = choose_in(Role::Text, UiFont::Mono, none, |_| true);
+        assert_eq!(text.family, "Segoe UI Variable Text");
+        assert!(!text.embedded);
+        let display = choose_in(Role::Display, UiFont::Mono, none, |_| true);
+        assert_eq!(display.family, "Segoe UI Variable Display");
+        assert_eq!(
+            choose_in(Role::Display, UiFont::Mono, none, |f| f == "Segoe UI").family,
+            "Segoe UI"
+        );
+    }
+
+    #[test]
+    fn mono_has_no_display_tracking() {
+        assert_eq!(display_tracking_em(UiFont::Sans), DISPLAY_TRACKING_EM);
+        assert_eq!(display_tracking_em(UiFont::Mono), 0.0);
+        let dwrite = factory();
+        if !embedded(&dwrite).loaded.jetbrains_mono {
+            eprintln!("skipped: JetBrains Mono is not in this binary");
+            return;
+        }
+        let face = Face::for_role_in(&dwrite, Role::Display, UiFont::Mono);
+        assert_eq!(face.family.to_string(), JETBRAINS_MONO);
+        let size = 20.0;
+        let format = face
+            .format(&dwrite, DWRITE_FONT_WEIGHT_SEMI_BOLD, size)
+            .expect("format");
+        let typography = tabular_figures(&dwrite).expect("typography");
+        let text: Vec<u16> = "Oktober 2026".encode_utf16().collect();
+        let width = |ui: Option<UiFont>| unsafe {
+            let layout =
+                text_layout(&dwrite, &text, &format, 4096.0, 64.0, &typography).expect("layout");
+            if let Some(ui) = ui {
+                apply_tracking_in(&layout, text.len() as u32, size, ui).expect("tracking");
+            }
+            let mut m = Default::default();
+            layout.GetMetrics(&mut m).expect("metrics");
+            m.widthIncludingTrailingWhitespace
+        };
+        // Mono applies nothing; 12 cells of 0.6 em.
+        assert_eq!(width(None), width(Some(UiFont::Mono)));
+        assert!((width(None) - 12.0 * 0.6 * size).abs() < 0.1, "{}", width(None));
+        assert!(width(Some(UiFont::Sans)) < width(None));
+    }
+
+    #[test]
+    fn jetbrains_mono_keeps_spaces_and_draws_no_ligatures() {
+        let dwrite = factory();
+        if !embedded(&dwrite).loaded.jetbrains_mono {
+            eprintln!("skipped: JetBrains Mono is not in this binary");
+            return;
+        }
+        let face = Face::for_role_in(&dwrite, Role::Text, UiFont::Mono);
+        assert_eq!(face.family.to_string(), JETBRAINS_MONO);
+        let format = face
+            .format(&dwrite, DWRITE_FONT_WEIGHT_NORMAL, 13.0)
+            .expect("format");
+        let typography = tabular_figures(&dwrite).expect("typography");
+        let plain = unsafe { dwrite.CreateTypography() }.expect("plain");
+        let width = |s: &str, typography: &IDWriteTypography| unsafe {
+            let wide: Vec<u16> = s.encode_utf16().collect();
+            let layout =
+                text_layout(&dwrite, &wide, &format, 400.0, 20.0, typography).expect("layout");
+            let mut m = Default::default();
+            layout.GetMetrics(&mut m).expect("metrics");
+            m.widthIncludingTrailingWhitespace
+        };
+        // Text without digits measures as with no features at all, and a
+        // space is one cell like any other character.
+        for s in ["Minum vitamin", "a b  c", " "] {
+            assert_eq!(width(s, &typography), width(s, &plain), "{s:?}");
+        }
+        let cell = width("m", &typography);
+        assert!((width("a b", &typography) - 3.0 * cell).abs() < 0.01);
+        assert!((width(" ", &typography) - cell).abs() < 0.01);
+        // Digits are fixed width without the feature.
+        assert_eq!(width("1111", &plain), width("0000", &plain));
+        assert_eq!(width("12:34", &typography), width("00:00", &typography));
+        // No ligatures: "->" is "-" plus ">", "==" and "!=" likewise, and
+        // "www" is three cells.
+        for (pair, a, b) in [("->", "-", ">"), ("==", "=", "="), ("!=", "!", "="), ("<=", "<", "=")]
+        {
+            let joined = width(pair, &typography);
+            let apart = width(a, &typography) + width(b, &typography);
+            assert!((joined - apart).abs() < 0.01, "{pair:?}: {joined} vs {apart}");
+        }
+        assert!((width("www", &typography) - 3.0 * width("w", &typography)).abs() < 0.01);
     }
 
     #[test]

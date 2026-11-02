@@ -44,7 +44,7 @@ use crate::mole::{MoleGroup, MoleOpt};
 use crate::notes::Note;
 use crate::notif::NotifEntry;
 use crate::notif::tile::{tile_color, tile_letter};
-use crate::notif::time::relative_time;
+use crate::notif::time::{longest_samples, relative_time};
 use crate::pomodoro::{Phase, PomoStatus, Pomodoro};
 use crate::reminders::{Reminder, Repeat, local_time};
 use crate::search::Kind as SearchKind;
@@ -67,7 +67,7 @@ use crate::ui::panel_layout::{
     CleanerLayout, CliHead, CliLayout, ClipButton, ClipLayout, DEV_BAR_H, DevicesHead,
     DevicesLayout, HOUR_GUTTER, ListLayout, MENU_RADIUS, MENU_ROW_RADIUS, MIXER_TRACK_H,
     MOLE_LOG_LINE_H, MOLE_LOG_PAD, MenuLayout, MeterLayout, MixerLayout, MoleFoot, MoleLayout,
-    NOTIF_DOT, NOTIF_RADIUS, NotifHead, NotifLayout, PageLayout, PomodoroLayout, RING_STROKE,
+    NOTIF_DOT, NOTIF_RADIUS, NOTIF_TIME_W, NotifHead, NotifLayout, PageLayout, PomodoroLayout, RING_STROKE,
     SEG_PAD, SYS_RING_STROKE, SearchLayout, ShelfLayout, ShortcutsLayout, SystemHead, SystemLayout,
     VOLUME_HUD_H, WEEK_HEAD_H, arrange_layout, calendar_layout, cleaner_layout, cli_folder_menu,
     cli_layout, cli_suggestions, clipboard_layout, device_shapes, devices_layout,
@@ -1092,7 +1092,27 @@ impl Renderer {
             count_w,
             pause_label_w,
             clear_w,
+            time_w: self.notif_time_w(lang, view.now.year() - 1),
         }
+    }
+
+    /// The rows' time column: `NOTIF_TIME_W`, or the longest line
+    /// `relative_time` writes (`longest_samples`, `year` a past year) in
+    /// `small_right` when that is wider, so no date is cut in any font.
+    /// Measured once per font, language and year (`notif_time_cache`), not
+    /// on every frame of the page.
+    fn notif_time_w(&self, lang: Lang, year: i32) -> f32 {
+        if let Some((l, y, w)) = self.notif_time_cache.get()
+            && (l, y) == (lang, year)
+        {
+            return w;
+        }
+        let w = longest_samples(lang, year)
+            .iter()
+            .map(|s| self.text_width(s, &self.fonts.small_right).ceil())
+            .fold(NOTIF_TIME_W, f32::max);
+        self.notif_time_cache.set(Some((lang, year, w)));
+        w
     }
 
     /// An app's logo in `area` (24 px): the picture, contained and rounded,
@@ -4113,12 +4133,7 @@ impl Renderer {
         let tint = self.palette.phase(pomo.phase());
         self.ring(center, radius, 3.0, pomo.progress(frame.now), tint)?;
         let paused = matches!(pomo.status(), PomoStatus::Paused { .. });
-        let time = Rect { w: 42.0, ..text };
-        let label = Rect {
-            x: time.right() + 4.0,
-            w: (text.right() - time.right() - 4.0).max(0.0),
-            ..text
-        };
+        let (time, label) = pomodoro_compact_boxes(text, self.pomo_compact_time_w());
         self.text(
             &mmss(pomo.remaining(frame.now)),
             &self.fonts.title,
@@ -4128,6 +4143,22 @@ impl Renderer {
         let lang = i18n::lang();
         self.text2(&compact_label(lang, pomo), &self.fonts.eleven, label);
         Ok(())
+    }
+
+    /// The compact pomodoro's countdown box: `POMO_COMPACT_TIME_W`, or the
+    /// longest countdown it writes (`POMO_COMPACT_LONGEST`) in `title` when
+    /// that is wider (JetBrains Mono), so "120:00" is never cut. Measured
+    /// once per font (`pomo_time_cache`).
+    fn pomo_compact_time_w(&self) -> f32 {
+        if let Some(w) = self.pomo_time_cache.get() {
+            return w;
+        }
+        let w = POMO_COMPACT_LONGEST
+            .iter()
+            .map(|s| self.text_width(s, &self.fonts.title).ceil())
+            .fold(POMO_COMPACT_TIME_W, f32::max);
+        self.pomo_time_cache.set(Some(w));
+        w
     }
 
     /// Track plus a clockwise arc from 12 o'clock covering `progress`.
@@ -4461,6 +4492,25 @@ fn note_snippet(text: &str) -> String {
         .join(" ")
 }
 
+/// The compact pomodoro's countdown box in DM Sans (it holds "120:00").
+const POMO_COMPACT_TIME_W: f32 = 42.0;
+
+/// The longest countdowns `mmss` writes: focus runs up to 120 min
+/// (`pomodoro::range`), and with tabular figures every "1mm:ss" is as wide.
+const POMO_COMPACT_LONGEST: [&str; 2] = ["100:00", "120:00"];
+
+/// The compact pomodoro's text box split into the countdown (`time_w` wide)
+/// and, 4 px on, the label in the rest.
+fn pomodoro_compact_boxes(text: Rect, time_w: f32) -> (Rect, Rect) {
+    let time = Rect { w: time_w, ..text };
+    let label = Rect {
+        x: time.right() + 4.0,
+        w: (text.right() - time.right() - 4.0).max(0.0),
+        ..text
+    };
+    (time, label)
+}
+
 /// Whole seconds rounded up, so a fresh 25-minute phase shows "25:00".
 fn mmss(d: Duration) -> String {
     let secs = d.as_millis().div_ceil(1000);
@@ -4504,9 +4554,11 @@ fn primary_icon(status: PomoStatus) -> Icon {
 mod tests {
     use super::*;
     use crate::clean::{CatSize, ScanResult};
+    use crate::config::UiFont;
     use crate::pomodoro::PomoSettings;
     use crate::theme::{Accent, Surface, island};
     use crate::ui::geometry::ShapeKind;
+    use crate::ui::render::{MONO_BIG_TIME, MONO_CLOCK};
     use chrono::{NaiveTime, TimeZone};
     use std::time::Instant;
 
@@ -5241,48 +5293,443 @@ mod tests {
         assert_eq!(phase_label(l, &p), "Break ready");
     }
 
-    /// Display text measured with the real embedded DM Sans 600 and its
-    /// tracking, through the renderer's own layout path, fits the boxes the
-    /// layouts keep for it: no ellipsis, no ink clipped. When a font file,
-    /// size or the tracking changes and this fails, re-measure the constants
-    /// (`CLOCK_W`, the pomodoro ring's `TIME_*`, `CLI_TITLE_W`, the panel
-    /// layout tests' `TITLE_W`).
+    /// `s` drawn in `format` in `area` by `r` fits on one line and its ink
+    /// (left, top, right, bottom) stays inside `area`, so the clip cuts
+    /// nothing: the ink, else why not.
+    fn ink_check(
+        r: &Renderer,
+        s: &str,
+        format: &IDWriteTextFormat,
+        area: Rect,
+    ) -> std::result::Result<(f32, f32, f32, f32), String> {
+        let w = r.text_width(s, format);
+        if w > area.w {
+            return Err(format!("{s:?}: {w} px in a {} px box", area.w));
+        }
+        let wide: Vec<u16> = s.encode_utf16().collect();
+        let layout = r.layout(&wide, format, area.w, area.h).expect("layout");
+        let o = unsafe { layout.GetOverhangMetrics() }.expect("overhang");
+        let ink = (
+            area.x - o.left,
+            area.y - o.top,
+            area.right() + o.right,
+            area.bottom() + o.bottom,
+        );
+        if o.left <= 0.0 && o.top <= 0.0 && o.right <= 0.0 && o.bottom <= 0.0 {
+            Ok(ink)
+        } else {
+            Err(format!("{s:?} ink {ink:?} outside {area:?}"))
+        }
+    }
+
+    /// `ink_check`, failing the test when the text does not fit.
+    fn ink_fits(
+        r: &Renderer,
+        s: &str,
+        format: &IDWriteTextFormat,
+        area: Rect,
+    ) -> (f32, f32, f32, f32) {
+        ink_check(r, s, format, area).unwrap_or_else(|why| panic!("{why}"))
+    }
+
+    /// Display text measured with the real embedded DM Sans 600 (tracked) and
+    /// JetBrains Mono 600 (not tracked), through the renderer's own layout
+    /// path, fits the boxes the layouts keep for it: no ellipsis, no ink
+    /// clipped. When a font file, size or the tracking changes and this
+    /// fails, re-measure the constants (`CLOCK_W`, the pomodoro ring's
+    /// `TIME_*`, `CLI_TITLE_W`, the panel layout tests' `TITLE_W`, and for
+    /// Mono `MONO_CLOCK` and `MONO_BIG_TIME`). The compact countdown's box
+    /// (`POMO_COMPACT_TIME_W`) has its own test,
+    /// `pomodoro_compact_countdown_fits_its_box_in_both_fonts`.
     #[test]
     fn display_text_fits_its_boxes() {
         use crate::ui::fonts;
-        use crate::ui::geometry::{CLOCK_W, idle_layout, shape_with_robot};
         use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
 
         // WIC, made by the renderer, needs COM on this thread.
         let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
-        let r = Renderer::new().expect("renderer");
+        let mut r = Renderer::new().expect("renderer");
         if !fonts::embedded(&r.dwrite).loaded.dm_sans {
             eprintln!("skipped: the embedded fonts are not in this binary");
             return;
         }
-        let f = &r.fonts;
-        // `s` drawn in `format` in `area` fits on one line and its ink
-        // (left, top, right, bottom) stays inside `area`, so the clip cuts
-        // nothing.
-        let fits = |s: &str, format: &IDWriteTextFormat, area: Rect| {
-            let w = r.text_width(s, format);
-            assert!(w <= area.w, "{s:?}: {w} px in a {} px box", area.w);
-            let wide: Vec<u16> = s.encode_utf16().collect();
-            let layout = r.layout(&wide, format, area.w, area.h).expect("layout");
-            let o = unsafe { layout.GetOverhangMetrics() }.expect("overhang");
-            let ink = (
-                area.x - o.left,
-                area.y - o.top,
-                area.right() + o.right,
-                area.bottom() + o.bottom,
-            );
-            assert!(
-                o.left <= 0.0 && o.top <= 0.0 && o.right <= 0.0 && o.bottom <= 0.0,
-                "{s:?} ink {ink:?} outside {area:?}"
-            );
-            ink
-        };
+        display_fits(&r);
+        assert!(
+            fonts::embedded(&r.dwrite).loaded.jetbrains_mono,
+            "the test binary carries JetBrains Mono"
+        );
+        r.set_ui_font(UiFont::Mono).expect("mono formats");
+        display_fits(&r);
+    }
 
+    /// The notice chips (their widths are constants: `ACTION_W`,
+    /// `LOG_ACTION_W`, `RELEASES_ACTION_W`) hold their words in both
+    /// languages in DM Sans and in JetBrains Mono, text and ink inside.
+    #[test]
+    fn notice_action_chips_hold_their_words_in_both_fonts() {
+        use crate::ui::fonts;
+        use crate::ui::geometry::{notice_action, notice_action_w};
+        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+
+        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let mut r = Renderer::new().expect("renderer");
+        if !fonts::embedded(&r.dwrite).loaded.jetbrains_mono {
+            eprintln!("skipped: the embedded fonts are not in this binary");
+            return;
+        }
+        let kinds = [
+            (
+                NoticeKind::Reminder { id: "1".into() },
+                crate::pomodoro::PomoStatus::Idle,
+            ),
+            (NoticeKind::Pomodoro, crate::pomodoro::PomoStatus::Ready),
+            (NoticeKind::SystemLow, crate::pomodoro::PomoStatus::Idle),
+            (
+                NoticeKind::DevicePlugged { letter: 'E' },
+                crate::pomodoro::PomoStatus::Idle,
+            ),
+            (
+                NoticeKind::ClipPreview { id: 1 },
+                crate::pomodoro::PomoStatus::Idle,
+            ),
+            (NoticeKind::MoleDone, crate::pomodoro::PomoStatus::Idle),
+            (
+                NoticeKind::UpdateAvailable {
+                    version: "3.12.0".into(),
+                },
+                crate::pomodoro::PomoStatus::Idle,
+            ),
+            (NoticeKind::UpdateFailed, crate::pomodoro::PomoStatus::Idle),
+        ];
+        for ui in [UiFont::Sans, UiFont::Mono] {
+            r.set_ui_font(ui).expect("font");
+            for (kind, pomo) in &kinds {
+                let key = notice_action(kind, *pomo).expect("a chip");
+                let chip = Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: notice_action_w(kind),
+                    h: 24.0,
+                };
+                for lang in [Lang::Id, Lang::En] {
+                    let label = text(lang, key);
+                    ink_fits(&r, label, &r.fonts.button_center, chip);
+                }
+            }
+        }
+    }
+
+    /// The Notifikasi time column holds the longest line `relative_time`
+    /// writes ("28 Okt 2025", "28 Oct 2025": an entry from an earlier year)
+    /// in both languages, in DM Sans at `NOTIF_TIME_W` and in JetBrains Mono,
+    /// where that line is 11 cells of 0.6 x 10.5 px (69.3 px) and the column
+    /// widens to hold it. Text and ink inside, so nothing is trimmed with "…".
+    #[test]
+    fn notif_time_column_holds_every_relative_time_in_both_fonts() {
+        use crate::ui::fonts;
+        use crate::ui::panel_layout::notif_layout;
+        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+
+        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let mut r = Renderer::new().expect("renderer");
+        if !fonts::embedded(&r.dwrite).loaded.jetbrains_mono {
+            eprintln!("skipped: the embedded fonts are not in this binary");
+            return;
+        }
+        let s = shape_for(Style::Pill, ShapeKind::Panel);
+        for ui in [UiFont::Sans, UiFont::Mono] {
+            r.set_ui_font(ui).expect("font");
+            for lang in [Lang::Id, Lang::En] {
+                let time_w = r.notif_time_w(lang, 2025);
+                let head = NotifHead {
+                    title_w: 96.0,
+                    count_w: 56.0,
+                    pause_label_w: 30.0,
+                    clear_w: 100.0,
+                    time_w,
+                };
+                let l = notif_layout(s, false, &head, &[1], Some(1), 0, false, false);
+                let row = &l.rows[0];
+                assert_eq!(row.time.w, time_w);
+                assert!(row.name.w > 0.0 && row.dot.right() <= row.time.x);
+                for line in longest_samples(lang, 2025) {
+                    ink_fits(&r, &line, &r.fonts.small_right, row.time);
+                }
+                let dated = longest_samples(lang, 2025).pop().expect("a dated line");
+                let box64 = Rect {
+                    w: NOTIF_TIME_W,
+                    ..row.time
+                };
+                match ui {
+                    // DM Sans: the column stays the 64 px it was.
+                    UiFont::Sans => {
+                        assert_eq!(time_w, NOTIF_TIME_W, "{lang:?}");
+                        ink_fits(&r, &dated, &r.fonts.small_right, box64);
+                    }
+                    // JetBrains Mono: 64 px would cut "28 Des 2025".
+                    UiFont::Mono => {
+                        let w = r.text_width(&dated, &r.fonts.small_right);
+                        assert!((w - 11.0 * 0.6 * 10.5).abs() < 0.1, "{dated:?}: {w}");
+                        assert!(ink_check(&r, &dated, &r.fonts.small_right, box64).is_err());
+                        assert!(time_w > NOTIF_TIME_W, "{lang:?}: {time_w}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// The compact pomodoro's countdown box holds the longest countdowns it
+    /// writes ("100:00" up to "120:00": focus runs up to 120 min) in DM Sans
+    /// at the 42 px it always was, and in JetBrains Mono, where "120:00" is
+    /// 6 cells of 0.6 x 12.5 px (45 px) and the box widens to hold it, at the
+    /// narrowest island and beside Bata. Text and ink inside: no "…".
+    #[test]
+    fn pomodoro_compact_countdown_fits_its_box_in_both_fonts() {
+        use crate::model::PomoField;
+        use crate::pomodoro::range;
+        use crate::ui::fonts;
+        use crate::ui::geometry::{NOTCH_H_MIN, NOTCH_W_MIN, NotchSize, shape_with_robot_sized};
+        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+
+        // The longest focus the settings allow is what "120:00" stands for.
+        assert_eq!(range(PomoField::Focus).1, 120);
+        assert_eq!(mmss(Duration::from_secs(120 * 60)), "120:00");
+        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let mut r = Renderer::new().expect("renderer");
+        if !fonts::embedded(&r.dwrite).loaded.jetbrains_mono {
+            eprintln!("skipped: the embedded fonts are not in this binary");
+            return;
+        }
+        let size = NotchSize::from_px(NOTCH_W_MIN, NOTCH_H_MIN);
+        for ui in [UiFont::Sans, UiFont::Mono] {
+            r.set_ui_font(ui).expect("font");
+            let time_w = r.pomo_compact_time_w();
+            match ui {
+                UiFont::Sans => assert_eq!(time_w, POMO_COMPACT_TIME_W),
+                UiFont::Mono => {
+                    let w = r.text_width("120:00", &r.fonts.title);
+                    assert!((w - 6.0 * 0.6 * 12.5).abs() < 0.1, "{w}");
+                    assert!(time_w > POMO_COMPACT_TIME_W, "{time_w}");
+                }
+            }
+            for style in [Style::Pill, Style::Notch] {
+                for robot in [false, true] {
+                    let s = shape_with_robot_sized(style, size, ShapeKind::PomodoroCompact, robot);
+                    let text = if robot {
+                        pomodoro_compact_layout_robot(s).3
+                    } else {
+                        pomodoro_compact_layout(s).2
+                    };
+                    let (time, label) = pomodoro_compact_boxes(text, time_w);
+                    assert!(time.right() <= text.right() && label.x >= time.right());
+                    assert!(label.w > 0.0, "{ui:?} {style:?} robot {robot}: {label:?}");
+                    for t in ["120:00", "100:00", "119:59", "25:00", "0:00"] {
+                        ink_fits(&r, t, &r.fonts.title, time);
+                    }
+                    // JetBrains Mono: the Sans box would cut "100:00".
+                    if ui == UiFont::Mono {
+                        let box42 = Rect {
+                            w: POMO_COMPACT_TIME_W,
+                            ..time
+                        };
+                        assert!(ink_check(&r, "100:00", &r.fonts.title, box42).is_err());
+                    }
+                }
+            }
+        }
+    }
+
+    /// The width cache: the Notifikasi time column and the compact countdown
+    /// are measured once per font (and language and year), and a font switch
+    /// measures them again.
+    #[test]
+    fn measured_widths_are_cached_per_font() {
+        use crate::ui::fonts;
+        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+
+        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let mut r = Renderer::new().expect("renderer");
+        if !fonts::embedded(&r.dwrite).loaded.jetbrains_mono {
+            eprintln!("skipped: the embedded fonts are not in this binary");
+            return;
+        }
+        assert!(r.notif_time_cache.get().is_none() && r.pomo_time_cache.get().is_none());
+        let sans = (r.notif_time_w(Lang::Id, 2025), r.pomo_compact_time_w());
+        assert_eq!(r.notif_time_cache.get(), Some((Lang::Id, 2025, sans.0)));
+        assert_eq!(r.pomo_time_cache.get(), Some(sans.1));
+        // Another language or year is measured again.
+        let en = r.notif_time_w(Lang::En, 2024);
+        assert_eq!(r.notif_time_cache.get(), Some((Lang::En, 2024, en)));
+        // The same font again keeps the cache; another font clears it.
+        r.set_ui_font(UiFont::Sans).expect("same font");
+        assert!(r.pomo_time_cache.get().is_some());
+        r.set_ui_font(UiFont::Mono).expect("mono");
+        assert!(r.notif_time_cache.get().is_none() && r.pomo_time_cache.get().is_none());
+        let mono = (r.notif_time_w(Lang::Id, 2025), r.pomo_compact_time_w());
+        assert!(mono.0 > sans.0 && mono.1 > sans.1, "{mono:?} {sans:?}");
+        r.set_ui_font(UiFont::Sans).expect("sans");
+        assert_eq!(
+            (r.notif_time_w(Lang::Id, 2025), r.pomo_compact_time_w()),
+            sans
+        );
+    }
+
+    /// `set_ui_font` switches every format and the tracking at once, does
+    /// nothing when the font is the one in effect, and Sans comes back
+    /// exactly as it was (the lyric line is measured again with the new font,
+    /// which is what the notch's width follows).
+    #[test]
+    fn set_ui_font_switches_formats_and_tracking_and_back() {
+        use crate::ui::fonts;
+        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+
+        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let mut r = Renderer::new().expect("renderer");
+        if !fonts::embedded(&r.dwrite).loaded.jetbrains_mono {
+            eprintln!("skipped: the embedded fonts are not in this binary");
+            return;
+        }
+        assert_eq!(r.ui_font(), UiFont::Sans);
+        let line = "Senja di Kemang, sampai jadi debu";
+        let sans = (
+            r.text_width("Oktober 2026", &r.fonts.heading),
+            r.lyric_text_width(line).expect("lyric width"),
+            r.text_width("Minum vitamin", &r.fonts.secondary),
+        );
+        // Sans is unchanged: the tracked heading is the pinned 127 px.
+        assert!((sans.0 - 127.0).abs() < 1.0, "{}", sans.0);
+        r.set_ui_font(UiFont::Sans).expect("same font");
+        assert_eq!(r.text_width("Oktober 2026", &r.fonts.heading), sans.0);
+        r.set_ui_font(UiFont::Mono).expect("mono");
+        assert_eq!(r.ui_font(), UiFont::Mono);
+        // JetBrains Mono: 0.6 em a character and no tracking (12 cells of 12 px).
+        let heading = r.text_width("Oktober 2026", &r.fonts.heading);
+        assert!((heading - 144.0).abs() < 0.05, "{heading}");
+        let lyric = r.lyric_text_width(line).expect("lyric width");
+        let cells = line.chars().count() as f32;
+        assert!((lyric - cells * 0.6 * MONO_LYRIC).abs() < 0.1, "{lyric}");
+        assert!(lyric > sans.1);
+        let body = r.text_width("Minum vitamin", &r.fonts.secondary);
+        assert!((body - 13.0 * 0.6 * 12.0).abs() < 0.1, "{body}");
+        // And back: exactly the Sans measures of before.
+        r.set_ui_font(UiFont::Sans).expect("sans");
+        assert_eq!(r.ui_font(), UiFont::Sans);
+        assert_eq!(r.text_width("Oktober 2026", &r.fonts.heading), sans.0);
+        assert_eq!(r.lyric_text_width(line).expect("lyric width"), sans.1);
+        assert_eq!(r.text_width("Minum vitamin", &r.fonts.secondary), sans.2);
+    }
+
+    /// The lyric line's size in Mono (`DisplaySizes::MONO`).
+    const MONO_LYRIC: f32 = 16.0;
+
+    /// The Mono display sizes are pinned: `MONO_CLOCK` and `MONO_BIG_TIME` are
+    /// the largest 0.5 px steps (JetBrains Mono 600) whose widest text fits
+    /// its box with the ink inside, and the widths they measure are these.
+    /// Measured 2026-11-02 with JetBrains Mono v2.304: "00:00" at 14.5 px is
+    /// 43.5 px in `CLOCK_W` (44); "100:00" at 46.5 px is 167.4 px in the
+    /// ring's 167.5 px time box (15 px and 47 px do not fit).
+    #[test]
+    fn mono_display_sizes_are_the_largest_that_fit() {
+        use crate::ui::fonts;
+        use crate::ui::geometry::{CLOCK_W, idle_layout, shape_with_robot};
+        use windows::Win32::Graphics::DirectWrite::{
+            DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER,
+        };
+        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+
+        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let mut r = Renderer::new().expect("renderer");
+        if !fonts::embedded(&r.dwrite).loaded.jetbrains_mono {
+            eprintln!("skipped: the embedded fonts are not in this binary");
+            return;
+        }
+        r.set_ui_font(UiFont::Mono).expect("mono formats");
+        let face = fonts::Face::for_role_in(&r.dwrite, fonts::Role::Display, UiFont::Mono);
+        // Built as `Fonts::new` builds the centred display formats.
+        let at = |size: f32| {
+            let format = crate::ui::render::line_format(
+                &r.dwrite,
+                &face,
+                DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                size,
+            )
+            .expect("format");
+            unsafe { format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER) }.expect("align");
+            format
+        };
+        // Why the text does not fit, if it does not.
+        type Fit = std::result::Result<(), String>;
+        let holds = |size: f32, run: &dyn Fn(&Renderer, &IDWriteTextFormat) -> Fit| {
+            run(&r, &at(size)).is_ok()
+        };
+        let clock_box = idle_layout(
+            shape_with_robot(Style::Pill, ShapeKind::Idle, true),
+            true,
+            true,
+        )
+        .clock
+        .expect("clock box");
+        assert_eq!(clock_box.w, CLOCK_W);
+        let clock = |r: &Renderer, format: &IDWriteTextFormat| -> Fit {
+            for time in ["00:00", "23:59", "12:00"] {
+                ink_check(r, time, format, clock_box)?;
+            }
+            Ok(())
+        };
+        let s = shape_for(Style::Pill, ShapeKind::Panel);
+        let l = pomodoro_layout(s, false);
+        let (cx, cy) = l.ring_center;
+        let inner = l.ring_radius - RING_STROKE / 2.0;
+        let big = |r: &Renderer, format: &IDWriteTextFormat| -> Fit {
+            for time in ["100:00", "25:00", "60:00", "0:00"] {
+                let (left, top, right, bottom) = ink_check(r, time, format, l.time)?;
+                for (x, y) in [(left, top), (right, top), (left, bottom), (right, bottom)] {
+                    if (x - cx).hypot(y - cy) > inner {
+                        return Err(format!(
+                            "{time:?} past the ring: ({x},{y}) c ({cx},{cy}) inner {inner} box {:?}",
+                            l.time
+                        ));
+                    }
+                }
+                if bottom > l.phase.y {
+                    return Err(format!("{time:?} ink over the phase"));
+                }
+            }
+            Ok(())
+        };
+        let largest = |run: &dyn Fn(&Renderer, &IDWriteTextFormat) -> Fit| {
+            let mut size = 8.0;
+            while holds(size + 0.5, run) {
+                size += 0.5;
+            }
+            size
+        };
+        let (best_clock, best_big) = (largest(&clock), largest(&big));
+        assert_eq!(MONO_CLOCK, best_clock, "largest clock size that fits");
+        assert_eq!(MONO_BIG_TIME, best_big, "largest countdown size that fits");
+        for (text, size, want) in [
+            ("00:00", MONO_CLOCK, MONO_CLOCK_WIDTH),
+            ("100:00", MONO_BIG_TIME, MONO_BIG_TIME_WIDTH),
+        ] {
+            let got = r.text_width(text, &at(size));
+            assert!(
+                (got - want).abs() < 0.05,
+                "{text:?} at {size}: {got} px, pinned {want}"
+            );
+        }
+    }
+
+    /// "00:00" in JetBrains Mono 600 at `MONO_CLOCK`, and "100:00" at
+    /// `MONO_BIG_TIME`, as measured (5 and 6 cells of 0.6 em).
+    const MONO_CLOCK_WIDTH: f32 = 43.5;
+    const MONO_BIG_TIME_WIDTH: f32 = 167.4;
+
+    /// The checks of `display_text_fits_its_boxes` for the font `r` is set to.
+    fn display_fits(r: &Renderer) {
+        use crate::ui::geometry::{CLOCK_W, idle_layout, shape_with_robot};
+
+        let f = &r.fonts;
+        let fits = |s: &str, format: &IDWriteTextFormat, area: Rect| ink_fits(r, s, format, area);
         for style in [Style::Pill, Style::Notch] {
             // The idle clock, beside Bata (`CLOCK_W`) and alone.
             for robot in [false, true] {
@@ -5315,6 +5762,16 @@ mod tests {
                     assert!(bottom <= l.phase.y, "{time:?} ink over the phase");
                 }
 
+                // The System page's CPU figure: inside the ring's plate.
+                let head = SystemHead {
+                    uptime_w: 100.0,
+                    clean_w: 100.0,
+                };
+                let sys = system_layout(s, strip, &head, &['C'], 3);
+                for figure in ["100%", "8%", "42%", "—"] {
+                    fits(figure, &f.sys_big, sys.percent);
+                }
+
                 // Headings draw in the header row grown by `HEADING_BLEED`.
                 let bleed = |header: Rect| Rect {
                     y: header.y - HEADING_BLEED,
@@ -5338,7 +5795,12 @@ mod tests {
                 }
             }
         }
-        // The panel layout tests' `TITLE_W` is this title's width.
-        assert_eq!(r.calendar_title_w("Oktober 2026"), 128.0);
+        // The panel layout tests' `TITLE_W` is the Sans title's width; the
+        // Mono title is 12 cells of 12 px (plus the 1 px of slack).
+        let want = match r.ui_font {
+            UiFont::Sans => 128.0,
+            UiFont::Mono => 145.0,
+        };
+        assert_eq!(r.calendar_title_w("Oktober 2026"), want);
     }
 }

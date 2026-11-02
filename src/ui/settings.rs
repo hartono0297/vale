@@ -87,7 +87,7 @@ use crate::cli::Shell;
 use crate::cli_folders::CliStart;
 use crate::config::{
     ClipboardSettings, Config, NotchFill, NotifSettings, OpenMode, ScreenshotSettings, ShotIgnore,
-    ShotTool, Style, ToastStyle, WindowPlace,
+    ShotTool, Style, ToastStyle, UiFont, WindowPlace,
 };
 use crate::google::client;
 use crate::hotkey::{Hotkey, HotkeyId, Hotkeys, Mods, Reject, Step, check, record_step, used_by};
@@ -118,6 +118,8 @@ pub enum Action {
     Style(Style),
     Accent(Accent),
     Surface(Surface),
+    /// "Font" (Tampilan → Island): DM Sans or JetBrains Mono.
+    Font(UiFont),
     /// Settings → Tampilan → Notch. The sliders post `commit: false` while
     /// the thumb moves (the island follows live, nothing is saved) and
     /// `commit: true` once on release (saved).
@@ -318,6 +320,8 @@ pub struct Model {
     pub style: Style,
     pub accent: Accent,
     pub surface: Surface,
+    /// The UI typeface of the notch, the panel and this window.
+    pub font: UiFont,
     /// The closed island's size and background.
     pub notch_width: u32,
     pub notch_height: u32,
@@ -383,6 +387,7 @@ impl Model {
             style: cfg.style,
             accent: cfg.accent,
             surface: cfg.surface,
+            font: cfg.font,
             notch_width: cfg.notch_width,
             notch_height: cfg.notch_height,
             notch_fill: cfg.notch_fill,
@@ -823,7 +828,7 @@ fn destroy_icons(icons: [HICON; 2]) {
     }
 }
 
-fn create_font(dpi: u32) -> HFONT {
+fn create_font(dpi: u32, ui: UiFont) -> HFONT {
     let px = (13.0 * dpi as f32 / 96.0).round() as i32;
     unsafe {
         CreateFontW(
@@ -840,7 +845,7 @@ fn create_font(dpi: u32) -> HFONT {
             CLIP_DEFAULT_PRECIS,
             CLEARTYPE_QUALITY,
             0,
-            super::fonts::gdi_text_face(),
+            super::fonts::gdi_text_face_for(ui),
         )
     }
 }
@@ -1085,7 +1090,7 @@ pub fn open(owner: HWND, model: Model, section: Option<Section>) -> Result<HWND>
         maximized: maximize,
         ..p
     });
-    let gfx = match Gfx::new() {
+    let gfx = match Gfx::new(model.font) {
         Ok(gfx) => gfx,
         Err(error) => {
             unsafe {
@@ -1170,7 +1175,7 @@ pub fn open(owner: HWND, model: Model, section: Option<Section>) -> Result<HWND>
 }
 
 fn create_edits(parent: HWND, instance: HINSTANCE, dpi: u32, model: &Model) -> Option<Edits> {
-    let font = create_font(dpi);
+    let font = create_font(dpi, model.font);
     let make = |id: i32, text: &str, extra: i32, cue: PCWSTR, limit: usize| -> Option<HWND> {
         let style = WS_CHILD | WS_TABSTOP | WINDOW_STYLE((ES_AUTOHSCROLL | extra) as u32);
         let hwnd = unsafe {
@@ -1278,6 +1283,14 @@ pub fn update(model: Model) {
             let _ = SetWindowTextW(edit, &HSTRING::from(value.as_str()));
         }
     }
+    if let Some((hwnds, font, old)) = changes.edit_font {
+        for edit in hwnds {
+            send(edit, WM_SETFONT, font.0 as usize, 1);
+        }
+        unsafe {
+            let _ = DeleteObject(HGDIOBJ(old.0));
+        }
+    }
     restyle();
     relayout_and_place();
 }
@@ -1371,6 +1384,9 @@ pub fn close() {
 struct ModelChanges {
     title: Option<(HWND, Lang)>,
     fields: Vec<(HWND, String)>,
+    /// The typeface changed: the fields, their new GDI font and the old one
+    /// to delete once they use the new.
+    edit_font: Option<(Vec<HWND>, HFONT, HFONT)>,
 }
 
 /// Where each credential field goes: hidden, or at a client rect.
@@ -1424,6 +1440,7 @@ impl Settings {
             style: m.style,
             accent: m.accent,
             surface: m.surface,
+            font: m.font,
             notch_width: m.notch_width,
             notch_height: m.notch_height,
             notch_fill: m.notch_fill,
@@ -1624,11 +1641,13 @@ impl Settings {
                     usize::from(m.notif.toast_style == ToastStyle::Full) as f32
                 }
                 Group::NotchFill => usize::from(m.notch_fill == NotchFill::Transparent) as f32,
+                Group::Font => UiFont::ALL.iter().position(|v| *v == m.font).unwrap_or(0) as f32,
             }
         };
         for group in [
             Group::Style,
             Group::NotchFill,
+            Group::Font,
             Group::Window,
             Group::Lang,
             Group::OpenMode,
@@ -1719,7 +1738,22 @@ impl Settings {
         let mut changes = ModelChanges {
             title: None,
             fields: Vec::new(),
+            edit_font: None,
         };
+        if old.font != new.font {
+            // Measure and draw in the new typeface (the width cache is
+            // dropped with the formats), and give the native fields the new
+            // GDI face.
+            if let Err(error) = self.gfx.set_font(new.font) {
+                eprintln!("vale: settings font change failed: {error}");
+            }
+            if let Some(e) = &mut self.edits {
+                let font = create_font(self.dpi, new.font);
+                let old_font = std::mem::replace(&mut e.font, font);
+                e.line_h = line_height(self.hwnd, font);
+                changes.edit_font = Some((e.hwnds().to_vec(), font, old_font));
+            }
+        }
         if old.lang != new.lang {
             changes.title = Some((self.hwnd, new.lang));
             // Messages in the old language would linger; they are short-lived anyway.
@@ -2301,6 +2335,7 @@ impl Settings {
             Hit::PageGrip(_) | Hit::TileGrip(_) | Hit::Slider(_) => Vec::new(),
             Hit::NotchReset => post(Action::NotchReset),
             Hit::NotchFill(v) if v != m.notch_fill => post(Action::NotchFill(v)),
+            Hit::UiFont(v) if v != m.font => post(Action::Font(v)),
             Hit::ArrangeTemplateNew => {
                 if m.arrange.templates.len() >= arrange::MAX_TEMPLATES {
                     Vec::new()
@@ -2475,6 +2510,7 @@ impl Settings {
             | Hit::CatColor(_)
             | Hit::CatAccessory(_)
             | Hit::NotchFill(_)
+            | Hit::UiFont(_)
             | Hit::WindowMode(_)
             | Hit::Lang(_)
             | Hit::Shell(_)
@@ -3303,8 +3339,9 @@ fn on_dpi_changed(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
     let edits = with(|st| {
         st.dpi = dpi.max(96);
         st.gfx.reset_target();
+        let ui = st.model.font;
         st.edits.as_mut().map(|e| {
-            let font = create_font(st.dpi);
+            let font = create_font(st.dpi, ui);
             let old = std::mem::replace(&mut e.font, font);
             e.line_h = line_height(st.hwnd, font);
             (e.hwnds(), font, old)
@@ -3783,6 +3820,7 @@ pub fn run_demo(args: &[String]) {
             Action::Style(v) => m.style = v,
             Action::Accent(v) => m.accent = v,
             Action::Surface(v) => m.surface = v,
+            Action::Font(v) => m.font = v,
             Action::NotchSize { w, h, .. } => (m.notch_width, m.notch_height) = (w, h),
             Action::NotchOpacity { pct, .. } => m.notch_opacity = pct,
             Action::NotchFill(v) => m.notch_fill = v,
@@ -4001,7 +4039,10 @@ pub fn run_demo(args: &[String]) {
         )
         .expect("saved"),
     ];
+    // `DI_FONT=mono`: the UI typeface (unset or unknown reads Sans).
+    let font = UiFont::from_name(&env("DI_FONT")).unwrap_or_default();
     let model = Model {
+        font,
         accent,
         window,
         lang,

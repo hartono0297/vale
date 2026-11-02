@@ -2,11 +2,13 @@
 //! fonts must keep every glyph the UI draws from them. Pure test code; it reads
 //! the cmap of the TTF bytes and scans the sources for non-ASCII characters.
 //! See the note `docs/memory/exe-size.md` before trimming a font further.
+//! JetBrains Mono (the UI font option) is held to the same rules, plus: no
+//! ligature features left in its GSUB.
 
 use std::collections::BTreeSet;
 use std::path::Path;
 
-const FONTS: [(&str, &[u8]); 5] = [
+const FONTS: [(&str, &[u8]); 8] = [
     (
         "DMSans-400",
         include_bytes!("../../assets/fonts/DMSans-400.ttf"),
@@ -27,6 +29,18 @@ const FONTS: [(&str, &[u8]); 5] = [
         "DMMono-500",
         include_bytes!("../../assets/fonts/DMMono-500.ttf"),
     ),
+    (
+        "JetBrainsMono-400",
+        include_bytes!("../../assets/fonts/JetBrainsMono-400.ttf"),
+    ),
+    (
+        "JetBrainsMono-500",
+        include_bytes!("../../assets/fonts/JetBrainsMono-500.ttf"),
+    ),
+    (
+        "JetBrainsMono-600",
+        include_bytes!("../../assets/fonts/JetBrainsMono-600.ttf"),
+    ),
 ];
 
 /// Characters the UI draws that are NOT in the subset. They have always come
@@ -41,6 +55,22 @@ const SYSTEM_FALLBACK: &[char] = &[
     '\u{266A}', // ♪ geometry.rs
     '\u{25CF}', // ● demo only
     '\u{2713}', // ✓ demo only; DM Sans has no check mark
+    '\u{2500}', '\u{2502}', '\u{2503}', '\u{257F}', // box drawing, Mole log
+];
+
+/// What JetBrains Mono lacks of what the UI draws, which has always come from
+/// DirectWrite's system fallback (Segoe UI Symbol) when the font is chosen.
+/// It has the check mark that DM Sans lacks, and the same arrows, quotes and
+/// signs as DM Sans; the rest of `SYSTEM_FALLBACK` is missing here too. Do not
+/// add to it to silence a real gap: `jetbrains_mono_fallback_list_is_exactly_what_it_lacks`
+/// fails for a character that is in the font.
+const JBM_SYSTEM_FALLBACK: &[char] = &[
+    '\u{2197}', // ↗
+    '\u{21B3}', // ↳
+    '\u{2264}', // ≤
+    '\u{25B8}', // ▸
+    '\u{266A}', // ♪
+    '\u{25CF}', // ● demo only
     '\u{2500}', '\u{2502}', '\u{2503}', '\u{257F}', // box drawing, Mole log
 ];
 
@@ -295,12 +325,15 @@ fn test_module_files(file: &Path, source: &str) -> Vec<std::path::PathBuf> {
 /// have them today. The source families do not cover every code point of the
 /// ranges (DM Mono has no arrows, DM Sans no check mark), so this pins what the
 /// subset keeps: dropping a range or a glyph lowers the count and fails here.
-const SUBSET_COUNTS: [(&str, usize); 5] = [
+const SUBSET_COUNTS: [(&str, usize); 8] = [
     ("DMSans-400", 325),
     ("DMSans-500", 325),
     ("DMSans-600", 325),
     ("DMMono-400", 316),
     ("DMMono-500", 316),
+    ("JetBrainsMono-400", 348),
+    ("JetBrainsMono-500", 348),
+    ("JetBrainsMono-600", 348),
 ];
 
 fn in_subset(map: &BTreeSet<u32>) -> usize {
@@ -338,11 +371,8 @@ fn the_fonts_have_the_symbols_the_ui_draws() {
     let mono = "\u{B7}\u{D7}\u{2026}\u{203A}\u{2013}\u{2014}\u{2212}%";
     for (name, bytes) in FONTS {
         let map = cmap(bytes);
-        let want = if name.starts_with("DMSans") {
-            sans
-        } else {
-            mono
-        };
+        // JetBrains Mono sets the UI text in the Mono option: the sans list.
+        let want = if name.starts_with("DMMono") { mono } else { sans };
         for c in want.chars() {
             assert!(
                 map.contains(&(c as u32)),
@@ -367,6 +397,12 @@ fn every_character_the_sources_draw_is_covered() {
         .filter(|(n, _)| n.starts_with("DMSans"))
         .map(|(_, b)| cmap(b))
         .collect();
+    // JetBrains Mono sets the same UI text in the Mono option.
+    let jbm: Vec<BTreeSet<u32>> = FONTS
+        .iter()
+        .filter(|(n, _)| n.starts_with("JetBrainsMono"))
+        .map(|(_, b)| cmap(b))
+        .collect();
     let sources: Vec<(std::path::PathBuf, String)> = files
         .into_iter()
         .map(|f| {
@@ -388,11 +424,20 @@ fn every_character_the_sources_draw_is_covered() {
             continue;
         }
         for c in drawn_chars(text) {
-            if NOT_DRAWN.contains(&c) || SYSTEM_FALLBACK.contains(&c) {
+            if NOT_DRAWN.contains(&c) {
                 continue;
             }
-            if sans.iter().any(|map| !map.contains(&(c as u32))) {
+            if !SYSTEM_FALLBACK.contains(&c) && sans.iter().any(|map| !map.contains(&(c as u32)))
+            {
                 missing.push(format!("{c} U+{:04X} in {}", c as u32, file.display()));
+            }
+            if !JBM_SYSTEM_FALLBACK.contains(&c) && jbm.iter().any(|map| !map.contains(&(c as u32)))
+            {
+                missing.push(format!(
+                    "{c} U+{:04X} in {} (JetBrains Mono)",
+                    c as u32,
+                    file.display()
+                ));
             }
         }
     }
@@ -415,6 +460,76 @@ fn every_character_the_sources_draw_is_covered() {
         drawn_in("mole.rs").contains(&'\u{201B}'),
         "mole.rs not scanned past `argv`"
     );
+}
+
+/// The feature tags in a font's GSUB, from the raw bytes.
+fn gsub_features(font: &[u8]) -> Vec<[u8; 4]> {
+    let tables = be16(font, 4);
+    let Some(gsub) = (0..tables).find_map(|i| {
+        let rec = 12 + 16 * i;
+        (&font[rec..rec + 4] == b"GSUB").then(|| be32(font, rec + 8))
+    }) else {
+        return Vec::new();
+    };
+    // Header: version (4), script list, feature list, lookup list offsets.
+    let list = gsub + be16(font, gsub + 6);
+    (0..be16(font, list))
+        .map(|i| {
+            let at = list + 2 + 6 * i;
+            [font[at], font[at + 1], font[at + 2], font[at + 3]]
+        })
+        .collect()
+}
+
+/// The programming ligatures are dropped in the subset (`calt`, `liga` and
+/// `dlig` are not kept), so "->", "!=", "==" and "www" are drawn literally by
+/// DirectWrite and GDI alike. DM Sans keeps its `liga` and `calt`.
+#[test]
+fn jetbrains_mono_has_no_ligature_features() {
+    let dm_sans = gsub_features(FONTS[0].1);
+    assert!(
+        dm_sans.contains(b"liga") && dm_sans.contains(b"calt"),
+        "the GSUB reader finds DM Sans's features: {dm_sans:?}"
+    );
+    for (name, bytes) in FONTS.iter().filter(|(n, _)| n.starts_with("JetBrainsMono")) {
+        let tags = gsub_features(bytes);
+        assert!(tags.contains(b"ccmp"), "{name}: GSUB not read: {tags:?}");
+        for banned in [b"calt", b"liga", b"dlig"] {
+            assert!(
+                !tags.contains(banned),
+                "{name} still has {}",
+                String::from_utf8_lossy(banned)
+            );
+        }
+    }
+}
+
+#[test]
+fn jetbrains_mono_fallback_list_is_exactly_what_it_lacks() {
+    let maps: Vec<BTreeSet<u32>> = FONTS
+        .iter()
+        .filter(|(n, _)| n.starts_with("JetBrainsMono"))
+        .map(|(_, b)| cmap(b))
+        .collect();
+    assert_eq!(maps.len(), 3);
+    for c in JBM_SYSTEM_FALLBACK {
+        assert!(
+            maps.iter().all(|m| !m.contains(&(*c as u32))),
+            "JetBrains Mono has U+{:04X}: take it off the fallback list",
+            *c as u32
+        );
+    }
+    // What DM Sans lacks and the system supplies, JetBrains Mono has or is listed.
+    for c in SYSTEM_FALLBACK {
+        let has = maps.iter().all(|m| m.contains(&(*c as u32)));
+        assert!(
+            has || JBM_SYSTEM_FALLBACK.contains(c),
+            "U+{:04X} is in neither JetBrains Mono nor its fallback list",
+            *c as u32
+        );
+    }
+    // The check mark DM Sans lacks is in JetBrains Mono.
+    assert!(maps.iter().all(|m| m.contains(&0x2713)));
 }
 
 #[test]
