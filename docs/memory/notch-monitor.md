@@ -10,8 +10,8 @@ choice (Settings -> Tampilan -> Notch -> Monitor, or the tray's Monitor submenu)
 puts it on any connected screen. Related: [[notch-size-and-fill]] (the card it
 opens), [[settings-structure]] (the row list), [[arrange]] (`arrange_win`,
 `Monitor`, the overlay `Canvas`), [[notch-peek-eyes]] and [[stay-behind]] (the
-pointer and fullscreen logic that has to follow the window; another task owns
-those changes).
+pointer and fullscreen logic that follows the window, see "Follows the notch's
+monitor" below).
 
 ## Config
 
@@ -79,8 +79,24 @@ Already follows the window (verified by reading, not changed): the lyric cap
 (`win.screen_w()`), Susun's `monitor_index_at` at the notch centre,
 `win.to_screen` users (editors, popovers, the inline capture strip). Not
 touched: the Settings window's own placement (`primary_*` in settings.rs) and
-the `--demo-editor` anchor. The pointer code (eyes, `near_top`), fullscreen
-check and `follow_behind` belong to the parallel notch-monitor-follow task.
+the `--demo-editor` anchor.
+
+## Follows the notch's monitor
+
+- `pointer_watch::near_top(pt_x, dy_px, span, scale)`: the pointer counts as
+  near the top only inside the X span of the notch's monitor (`monitor_span`,
+  the same maths `on_pointer_timer` used), so the top edge of a neighbouring
+  monitor does nothing. Used by the peek, `on_mouse_move` and stay-behind's
+  `follow_behind` (through `App::notch_span`). Behaviour change: a pointer above
+  the monitor's top edge (a monitor stacked on top) is now not near in all three.
+- `sources::fullscreen::is_fullscreen(Option<HWND>)`: the shell's report
+  (fullscreen, busy, D3D, presentation) only hides the notch when the foreground
+  window is on the notch's monitor (`hides_notch`, pure and tested); an unreadable
+  foreground keeps the shell's answer; one monitor is as before. `check_fullscreen`
+  passes the island window; `--probe-system` prints the global answer
+  (`is_fullscreen(None)`); the screenshot code follows. The Susun overlay
+  exception is untouched. Only the pure rule is unit-tested, not the Win32
+  monitor lookups.
 
 ## Settings row
 
@@ -134,7 +150,7 @@ Verified: unit tests (config, resolve, place_on, layout, tray, fades), a
 looked at), and "Tandai" on this PC's two real screens (plates seen on both,
 gone after 2 s, no stray window left).
 
-Not verified live: a real hot-plug (unplugging or plugging a screen while Vale
+Not verified live (also: pointer and fullscreen on two real monitors): a real hot-plug (unplugging or plugging a screen while Vale
 runs), the island actually moving to a second screen of a different DPI from the
 tray or Settings, a path-less display, the fade look at 120 / 200 ms, and the
 tray submenu with a real mouse (only its item model is tested).
