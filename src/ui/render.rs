@@ -69,7 +69,7 @@ use crate::cli::{Output, Shell};
 use crate::cli_panel::{Echoes, RunState};
 use crate::clipboard::Clip;
 use crate::clipboard::image::Thumb;
-use crate::config::Style;
+use crate::config::{Style, UiFont};
 use crate::devices::{Device, Veto};
 use crate::i18n;
 use crate::lyrics::{self, ShownLine};
@@ -659,6 +659,8 @@ pub struct Renderer {
     /// Tabular figures, applied to every line of text.
     tabular: IDWriteTypography,
     fonts: Fonts,
+    /// The UI typeface `fonts` was built for; display tracking follows it.
+    ui_font: UiFont,
     /// Studio icon geometries, built on `d2d`.
     icons: IconSet,
     /// Bata's face strokes, built on `d2d`.
@@ -882,7 +884,7 @@ impl Renderer {
             let wic: IWICImagingFactory =
                 CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)?;
             let dwrite: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
-            let fonts = Fonts::new(&dwrite)?;
+            let fonts = Fonts::new(&dwrite, UiFont::Sans)?;
             let icons = IconSet::new(&d2d)?;
             let robot = RobotPainter::new(&d2d)?;
             let tabular = fonts::tabular_figures(&dwrite)?;
@@ -916,6 +918,7 @@ impl Renderer {
                 dwrite,
                 tabular,
                 fonts,
+                ui_font: UiFont::Sans,
                 icons,
                 robot,
                 surface: None,
@@ -943,6 +946,19 @@ impl Renderer {
                 cat: std::cell::Cell::new(CatLook::default()),
             })
         }
+    }
+
+    /// Switches the UI typeface (Settings -> Tampilan -> Island -> Font).
+    /// Rebuilds the text formats only when the font changed, and remembers it
+    /// for the display tracking. The caller redraws (and re-measures anything
+    /// it sized from a text width, such as the lyric notch).
+    pub fn set_ui_font(&mut self, ui: UiFont) -> Result<()> {
+        if ui == self.ui_font {
+            return Ok(());
+        }
+        self.fonts = Fonts::new(&self.dwrite, ui)?;
+        self.ui_font = ui;
+        Ok(())
     }
 
     /// Renders one frame. `shape` is in logical pixels; `opacity` 0 clears
@@ -2711,7 +2727,7 @@ impl Renderer {
         let layout = fonts::text_layout(&self.dwrite, text, format, w, h, &self.tabular)?;
         if self.fonts.is_display(format) {
             let size = unsafe { format.GetFontSize() };
-            fonts::apply_tracking(&layout, text.len() as u32, size)?;
+            fonts::apply_tracking_in(&layout, text.len() as u32, size, self.ui_font)?;
         }
         Ok(layout)
     }
@@ -2845,8 +2861,8 @@ const SHADOW_DROP: f32 = 0.55;
 const SHADOW_DIRS: [(f32, f32); 4] = [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)];
 
 impl Fonts {
-    /// `format` is one of the display formats (DM Sans 600), which are
-    /// tracked by `fonts::DISPLAY_TRACKING_EM`.
+    /// `format` is one of the display formats (DM Sans 600, or JetBrains Mono
+    /// 600), which are tracked by `fonts::display_tracking_em` (Sans only).
     fn is_display(&self, format: &IDWriteTextFormat) -> bool {
         [
             &self.clock,
@@ -2859,12 +2875,14 @@ impl Fonts {
         .contains(&format)
     }
 
-    fn new(dwrite: &IDWriteFactory) -> Result<Self> {
-        // DM Sans (display: 600, tracked) and DM Mono when embedded, else
-        // Segoe UI Variable and Cascadia Mono / Consolas.
-        let text = Face::for_role(dwrite, Role::Text);
-        let display = Face::for_role(dwrite, Role::Display);
+    fn new(dwrite: &IDWriteFactory, ui: UiFont) -> Result<Self> {
+        // DM Sans (display: 600, tracked) or JetBrains Mono (display: 600, not
+        // tracked) and DM Mono for code when embedded, else Segoe UI Variable
+        // and Cascadia Mono / Consolas.
+        let text = Face::for_role_in(dwrite, Role::Text, ui);
+        let display = Face::for_role_in(dwrite, Role::Display, ui);
         let mono = Face::for_role(dwrite, Role::Mono);
+        let sizes = DisplaySizes::of(ui);
         let line = |face: &Face, weight, size| line_format(dwrite, face, weight, size);
         let aligned = |face: &Face, weight, size, align: DWRITE_TEXT_ALIGNMENT| -> Result<_> {
             let format = line_format(dwrite, face, weight, size)?;
@@ -2936,10 +2954,10 @@ impl Fonts {
             secondary: line(&text, normal, body)?,
             body_medium: line(&text, medium, body)?,
             badge: centered(&text, semi, 16.0)?,
-            clock: centered(&display, semi, 16.0)?,
-            lyric: centered(&display, semi, 16.0)?,
+            clock: centered(&display, semi, sizes.clock)?,
+            lyric: centered(&display, semi, sizes.lyric)?,
             lyric_rest: centered(&text, normal, 19.0)?,
-            heading: line(&display, semi, 20.0)?,
+            heading: line(&display, semi, sizes.heading)?,
             small: line(&text, normal, caption)?,
             small_center: centered(&text, normal, caption)?,
             small_center_bold: centered(&text, semi, caption)?,
@@ -2960,15 +2978,15 @@ impl Fonts {
             snippet,
             body_center: centered(&text, normal, body)?,
             body_right: aligned(&text, normal, body, DWRITE_TEXT_ALIGNMENT_TRAILING)?,
-            big_time: centered(&display, semi, 48.0)?,
-            song: line(&display, semi, 28.0)?,
+            big_time: centered(&display, semi, sizes.big_time)?,
+            song: line(&display, semi, sizes.song)?,
             artist: line(&text, normal, 12.5)?,
             mono: line(&mono, normal, 11.0)?,
             mono_medium: line(&mono, medium, 11.0)?,
             chip_mono,
             mono_small: line(&mono, normal, caption)?,
             small_medium: line(&text, medium, caption)?,
-            sys_big: centered(&display, semi, 30.0)?,
+            sys_big: centered(&display, semi, sizes.sys_big)?,
             meter_name: line(&text, semi, 11.5)?,
             eleven_right: aligned(&text, normal, 11.0, DWRITE_TEXT_ALIGNMENT_TRAILING)?,
             small_right: aligned(&text, normal, caption, DWRITE_TEXT_ALIGNMENT_TRAILING)?,
@@ -2980,6 +2998,59 @@ impl Fonts {
             clip_kind: line(&text, medium, 9.0)?,
             clip_search: line(&text, normal, 11.5)?,
         })
+    }
+}
+
+/// JetBrains Mono 600 sizes (px) of the displays in boxes sized from DM Sans
+/// widths; measured with the real embedded font, see `DisplaySizes`.
+pub(super) const MONO_CLOCK: f32 = 14.5;
+pub(super) const MONO_BIG_TIME: f32 = 46.5;
+
+/// The display formats' font sizes for a UI typeface. The layout constants
+/// are font-agnostic and the Sans sizes are the design's; JetBrains Mono is
+/// wider (0.6 em a character), so the displays that sit in a box sized from
+/// DM Sans widths get a Mono size measured with the real embedded font: the
+/// largest 0.5 px step that fits with its ink inside (`CLOCK_W`, the
+/// pomodoro ring's time box). `display_text_fits_its_boxes` pins them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct DisplaySizes {
+    /// The idle clock "00:00" in `CLOCK_W`.
+    clock: f32,
+    /// The lyric line in the notch (sized live from its measured width).
+    lyric: f32,
+    /// Page titles (the boxes are measured live or wider than any title).
+    heading: f32,
+    /// The pomodoro countdown "100:00" in the ring.
+    big_time: f32,
+    /// The media page's title.
+    song: f32,
+    /// The System page's CPU figure in its ring.
+    sys_big: f32,
+}
+
+impl DisplaySizes {
+    const SANS: DisplaySizes = DisplaySizes {
+        clock: 16.0,
+        lyric: 16.0,
+        heading: 20.0,
+        big_time: 48.0,
+        song: 28.0,
+        sys_big: 30.0,
+    };
+    const MONO: DisplaySizes = DisplaySizes {
+        clock: MONO_CLOCK,
+        lyric: 16.0,
+        heading: 20.0,
+        big_time: MONO_BIG_TIME,
+        song: 28.0,
+        sys_big: 30.0,
+    };
+
+    fn of(ui: UiFont) -> Self {
+        match ui {
+            UiFont::Sans => Self::SANS,
+            UiFont::Mono => Self::MONO,
+        }
     }
 }
 

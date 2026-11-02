@@ -4484,7 +4484,9 @@ fn primary_icon(status: PomoStatus) -> Icon {
 mod tests {
     use super::*;
     use crate::clean::{CatSize, ScanResult};
+    use crate::config::UiFont;
     use crate::pomodoro::PomoSettings;
+    use crate::ui::render::{MONO_BIG_TIME, MONO_CLOCK};
     use crate::theme::{Accent, Surface, island};
     use crate::ui::geometry::ShapeKind;
     use chrono::{NaiveTime, TimeZone};
@@ -5220,48 +5222,160 @@ mod tests {
         assert_eq!(phase_label(l, &p), "Break ready");
     }
 
-    /// Display text measured with the real embedded DM Sans 600 and its
-    /// tracking, through the renderer's own layout path, fits the boxes the
-    /// layouts keep for it: no ellipsis, no ink clipped. When a font file,
-    /// size or the tracking changes and this fails, re-measure the constants
-    /// (`CLOCK_W`, the pomodoro ring's `TIME_*`, `CLI_TITLE_W`, the panel
-    /// layout tests' `TITLE_W`).
+    /// `s` drawn in `format` in `area` by `r` fits on one line and its ink
+    /// (left, top, right, bottom) stays inside `area`, so the clip cuts
+    /// nothing.
+    fn ink_fits(
+        r: &Renderer,
+        s: &str,
+        format: &IDWriteTextFormat,
+        area: Rect,
+    ) -> (f32, f32, f32, f32) {
+        let w = r.text_width(s, format);
+        assert!(w <= area.w, "{s:?}: {w} px in a {} px box", area.w);
+        let wide: Vec<u16> = s.encode_utf16().collect();
+        let layout = r.layout(&wide, format, area.w, area.h).expect("layout");
+        let o = unsafe { layout.GetOverhangMetrics() }.expect("overhang");
+        let ink = (
+            area.x - o.left,
+            area.y - o.top,
+            area.right() + o.right,
+            area.bottom() + o.bottom,
+        );
+        assert!(
+            o.left <= 0.0 && o.top <= 0.0 && o.right <= 0.0 && o.bottom <= 0.0,
+            "{s:?} ink {ink:?} outside {area:?}"
+        );
+        ink
+    }
+
+    /// Display text measured with the real embedded DM Sans 600 (tracked) and
+    /// JetBrains Mono 600 (not tracked), through the renderer's own layout
+    /// path, fits the boxes the layouts keep for it: no ellipsis, no ink
+    /// clipped. When a font file, size or the tracking changes and this
+    /// fails, re-measure the constants (`CLOCK_W`, the pomodoro ring's
+    /// `TIME_*`, `CLI_TITLE_W`, the panel layout tests' `TITLE_W`, and for
+    /// Mono `MONO_CLOCK` and `MONO_BIG_TIME`).
     #[test]
     fn display_text_fits_its_boxes() {
         use crate::ui::fonts;
-        use crate::ui::geometry::{CLOCK_W, idle_layout, shape_with_robot};
         use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
 
         // WIC, made by the renderer, needs COM on this thread.
         let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
-        let r = Renderer::new().expect("renderer");
+        let mut r = Renderer::new().expect("renderer");
         if !fonts::embedded(&r.dwrite).loaded.dm_sans {
             eprintln!("skipped: the embedded fonts are not in this binary");
             return;
         }
-        let f = &r.fonts;
-        // `s` drawn in `format` in `area` fits on one line and its ink
-        // (left, top, right, bottom) stays inside `area`, so the clip cuts
-        // nothing.
-        let fits = |s: &str, format: &IDWriteTextFormat, area: Rect| {
-            let w = r.text_width(s, format);
-            assert!(w <= area.w, "{s:?}: {w} px in a {} px box", area.w);
-            let wide: Vec<u16> = s.encode_utf16().collect();
-            let layout = r.layout(&wide, format, area.w, area.h).expect("layout");
-            let o = unsafe { layout.GetOverhangMetrics() }.expect("overhang");
-            let ink = (
-                area.x - o.left,
-                area.y - o.top,
-                area.right() + o.right,
-                area.bottom() + o.bottom,
-            );
-            assert!(
-                o.left <= 0.0 && o.top <= 0.0 && o.right <= 0.0 && o.bottom <= 0.0,
-                "{s:?} ink {ink:?} outside {area:?}"
-            );
-            ink
-        };
+        display_fits(&r);
+        assert!(
+            fonts::embedded(&r.dwrite).loaded.jetbrains_mono,
+            "the test binary carries JetBrains Mono"
+        );
+        r.set_ui_font(UiFont::Mono).expect("mono formats");
+        display_fits(&r);
+    }
 
+    /// The Mono display sizes are pinned: `MONO_CLOCK` and `MONO_BIG_TIME` are
+    /// the largest 0.5 px steps (JetBrains Mono 600) whose widest text fits
+    /// its box with the ink inside, and the widths they measure are these.
+    /// Measured 2026-11-02 with JetBrains Mono v2.304: "00:00" at 14.5 px is
+    /// 43.5 px in `CLOCK_W` (44); "100:00" at 46.5 px is 167.4 px in the
+    /// ring's 167.5 px time box (15 px and 47 px do not fit).
+    #[test]
+    fn mono_display_sizes_are_the_largest_that_fit() {
+        use crate::ui::fonts;
+        use crate::ui::geometry::{CLOCK_W, idle_layout, shape_with_robot};
+        use windows::Win32::Graphics::DirectWrite::{
+            DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER,
+        };
+        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+
+        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let mut r = Renderer::new().expect("renderer");
+        if !fonts::embedded(&r.dwrite).loaded.jetbrains_mono {
+            eprintln!("skipped: the embedded fonts are not in this binary");
+            return;
+        }
+        r.set_ui_font(UiFont::Mono).expect("mono formats");
+        let face = fonts::Face::for_role_in(&r.dwrite, fonts::Role::Display, UiFont::Mono);
+        // Built as `Fonts::new` builds the centred display formats.
+        let at = |size: f32| {
+            let format =
+                crate::ui::render::line_format(&r.dwrite, &face, DWRITE_FONT_WEIGHT_SEMI_BOLD, size)
+                    .expect("format");
+            unsafe { format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER) }.expect("align");
+            format
+        };
+        // Whether `fits` (it panics) holds, as a bool.
+        let holds = |size: f32, run: &dyn Fn(&Renderer, &IDWriteTextFormat)| {
+            let format = at(size);
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&r, &format))).is_ok()
+        };
+        let clock_box = idle_layout(
+            shape_with_robot(Style::Pill, ShapeKind::Idle, true),
+            true,
+            true,
+        )
+        .clock
+        .expect("clock box");
+        assert_eq!(clock_box.w, CLOCK_W);
+        let clock = |r: &Renderer, format: &IDWriteTextFormat| {
+            for time in ["00:00", "23:59", "12:00"] {
+                ink_fits(r, time, format, clock_box);
+            }
+        };
+        let s = shape_for(Style::Pill, ShapeKind::Panel);
+        let l = pomodoro_layout(s, false);
+        let (cx, cy) = l.ring_center;
+        let inner = l.ring_radius - RING_STROKE / 2.0;
+        let big = |r: &Renderer, format: &IDWriteTextFormat| {
+            for time in ["100:00", "25:00", "60:00", "0:00"] {
+                let (left, top, right, bottom) = ink_fits(r, time, format, l.time);
+                for (x, y) in [(left, top), (right, top), (left, bottom), (right, bottom)] {
+                    assert!((x - cx).hypot(y - cy) <= inner, "{time:?} past the ring: ({x},{y}) c ({cx},{cy}) inner {inner} box {:?}", l.time);
+                }
+                assert!(bottom <= l.phase.y, "{time:?} ink over the phase");
+            }
+        };
+        let largest = |run: &dyn Fn(&Renderer, &IDWriteTextFormat)| {
+            let mut size = 8.0;
+            while holds(size + 0.5, run) {
+                size += 0.5;
+            }
+            size
+        };
+        // Silence the expected panics of the probing.
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let (best_clock, best_big) = (largest(&clock), largest(&big));
+        std::panic::set_hook(hook);
+        assert_eq!(MONO_CLOCK, best_clock, "largest clock size that fits");
+        assert_eq!(MONO_BIG_TIME, best_big, "largest countdown size that fits");
+        for (text, size, want) in [
+            ("00:00", MONO_CLOCK, MONO_CLOCK_WIDTH),
+            ("100:00", MONO_BIG_TIME, MONO_BIG_TIME_WIDTH),
+        ] {
+            let got = r.text_width(text, &at(size));
+            assert!(
+                (got - want).abs() < 0.05,
+                "{text:?} at {size}: {got} px, pinned {want}"
+            );
+        }
+    }
+
+    /// "00:00" in JetBrains Mono 600 at `MONO_CLOCK`, and "100:00" at
+    /// `MONO_BIG_TIME`, as measured (5 and 6 cells of 0.6 em).
+    const MONO_CLOCK_WIDTH: f32 = 43.5;
+    const MONO_BIG_TIME_WIDTH: f32 = 167.4;
+
+    /// The checks of `display_text_fits_its_boxes` for the font `r` is set to.
+    fn display_fits(r: &Renderer) {
+        use crate::ui::geometry::{CLOCK_W, idle_layout, shape_with_robot};
+
+        let f = &r.fonts;
+        let fits = |s: &str, format: &IDWriteTextFormat, area: Rect| ink_fits(r, s, format, area);
         for style in [Style::Pill, Style::Notch] {
             // The idle clock, beside Bata (`CLOCK_W`) and alone.
             for robot in [false, true] {
@@ -5317,7 +5431,12 @@ mod tests {
                 }
             }
         }
-        // The panel layout tests' `TITLE_W` is this title's width.
-        assert_eq!(r.calendar_title_w("Oktober 2026"), 128.0);
+        // The panel layout tests' `TITLE_W` is the Sans title's width; the
+        // Mono title is 12 cells of 12 px (plus the 1 px of slack).
+        let want = match r.ui_font {
+            UiFont::Sans => 128.0,
+            UiFont::Mono => 145.0,
+        };
+        assert_eq!(r.calendar_title_w("Oktober 2026"), want);
     }
 }
