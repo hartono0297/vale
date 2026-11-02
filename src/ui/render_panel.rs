@@ -5277,6 +5277,113 @@ mod tests {
         display_fits(&r);
     }
 
+    /// The notice chips (their widths are constants: `ACTION_W`,
+    /// `LOG_ACTION_W`, `RELEASES_ACTION_W`) hold their words in both
+    /// languages in DM Sans and in JetBrains Mono, text and ink inside.
+    #[test]
+    fn notice_action_chips_hold_their_words_in_both_fonts() {
+        use crate::ui::fonts;
+        use crate::ui::geometry::{notice_action, notice_action_w};
+        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+
+        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let mut r = Renderer::new().expect("renderer");
+        if !fonts::embedded(&r.dwrite).loaded.jetbrains_mono {
+            eprintln!("skipped: the embedded fonts are not in this binary");
+            return;
+        }
+        let kinds = [
+            (
+                NoticeKind::Reminder {
+                    id: "1".into(),
+                },
+                crate::pomodoro::PomoStatus::Idle,
+            ),
+            (NoticeKind::Pomodoro, crate::pomodoro::PomoStatus::Ready),
+            (NoticeKind::SystemLow, crate::pomodoro::PomoStatus::Idle),
+            (
+                NoticeKind::DevicePlugged { letter: 'E' },
+                crate::pomodoro::PomoStatus::Idle,
+            ),
+            (
+                NoticeKind::ClipPreview { id: 1 },
+                crate::pomodoro::PomoStatus::Idle,
+            ),
+            (NoticeKind::MoleDone, crate::pomodoro::PomoStatus::Idle),
+            (
+                NoticeKind::UpdateAvailable {
+                    version: "3.12.0".into(),
+                },
+                crate::pomodoro::PomoStatus::Idle,
+            ),
+            (NoticeKind::UpdateFailed, crate::pomodoro::PomoStatus::Idle),
+        ];
+        for ui in [UiFont::Sans, UiFont::Mono] {
+            r.set_ui_font(ui).expect("font");
+            for (kind, pomo) in &kinds {
+                let key = notice_action(kind, *pomo).expect("a chip");
+                let chip = Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: notice_action_w(kind),
+                    h: 24.0,
+                };
+                for lang in [Lang::Id, Lang::En] {
+                    let label = text(lang, key);
+                    ink_fits(&r, label, &r.fonts.button_center, chip);
+                }
+            }
+        }
+    }
+
+    /// `set_ui_font` switches every format and the tracking at once, does
+    /// nothing when the font is the one in effect, and Sans comes back
+    /// exactly as it was (the lyric line is measured again with the new font,
+    /// which is what the notch's width follows).
+    #[test]
+    fn set_ui_font_switches_formats_and_tracking_and_back() {
+        use crate::ui::fonts;
+        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+
+        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let mut r = Renderer::new().expect("renderer");
+        if !fonts::embedded(&r.dwrite).loaded.jetbrains_mono {
+            eprintln!("skipped: the embedded fonts are not in this binary");
+            return;
+        }
+        assert_eq!(r.ui_font(), UiFont::Sans);
+        let line = "Senja di Kemang, sampai jadi debu";
+        let sans = (
+            r.text_width("Oktober 2026", &r.fonts.heading),
+            r.lyric_text_width(line).expect("lyric width"),
+            r.text_width("Minum vitamin", &r.fonts.secondary),
+        );
+        // Sans is unchanged: the tracked heading is the pinned 127 px.
+        assert!((sans.0 - 127.0).abs() < 1.0, "{}", sans.0);
+        r.set_ui_font(UiFont::Sans).expect("same font");
+        assert_eq!(r.text_width("Oktober 2026", &r.fonts.heading), sans.0);
+        r.set_ui_font(UiFont::Mono).expect("mono");
+        assert_eq!(r.ui_font(), UiFont::Mono);
+        // JetBrains Mono: 0.6 em a character and no tracking (12 cells of 12 px).
+        let heading = r.text_width("Oktober 2026", &r.fonts.heading);
+        assert!((heading - 144.0).abs() < 0.05, "{heading}");
+        let lyric = r.lyric_text_width(line).expect("lyric width");
+        let cells = line.chars().count() as f32;
+        assert!((lyric - cells * 0.6 * MONO_LYRIC).abs() < 0.1, "{lyric}");
+        assert!(lyric > sans.1);
+        let body = r.text_width("Minum vitamin", &r.fonts.secondary);
+        assert!((body - 13.0 * 0.6 * 12.0).abs() < 0.1, "{body}");
+        // And back: exactly the Sans measures of before.
+        r.set_ui_font(UiFont::Sans).expect("sans");
+        assert_eq!(r.ui_font(), UiFont::Sans);
+        assert_eq!(r.text_width("Oktober 2026", &r.fonts.heading), sans.0);
+        assert_eq!(r.lyric_text_width(line).expect("lyric width"), sans.1);
+        assert_eq!(r.text_width("Minum vitamin", &r.fonts.secondary), sans.2);
+    }
+
+    /// The lyric line's size in Mono (`DisplaySizes::MONO`).
+    const MONO_LYRIC: f32 = 16.0;
+
     /// The Mono display sizes are pinned: `MONO_CLOCK` and `MONO_BIG_TIME` are
     /// the largest 0.5 px steps (JetBrains Mono 600) whose widest text fits
     /// its box with the ink inside, and the widths they measure are these.
