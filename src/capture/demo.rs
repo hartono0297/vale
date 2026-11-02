@@ -178,6 +178,8 @@ pub fn run_snap() {
     };
 
     crate::theme::set_system_light(crate::theme::read_system_light());
+    // The editor it opens follows `DI_WINDOW`, `DI_SURFACE` and `DI_ACCENT`.
+    crate::theme::set_current(crate::theme::theme_from_env());
     let (frame, cands) = scene();
     if !super::overlay::start_demo(frame, cands) {
         eprintln!("vale: the demo overlay could not start");

@@ -390,7 +390,12 @@ pub const TERMINAL_HINT: u32 = 0x6E6155;
 /// Error lines and a failed command's chip on the island: soft red.
 pub const SOFT_RED: u32 = 0xFF8A73;
 
-/// Colours of ordinary windows (editors, settings).
+/// Colours of ordinary windows (editors, settings, the screenshot editor).
+///
+/// Light is one palette. Dark is warm brown, except when the island surface is
+/// `Surface::Terminal`: then `window_for` gives a neutral dark built on the
+/// island's #1B1D1F, so the windows match the island's flat near-black instead
+/// of sitting on a brown that the island no longer has.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WindowPalette {
     pub light: bool,
@@ -420,7 +425,25 @@ pub struct WindowPalette {
     pub tertiary: u32,
 }
 
+/// The warm window palette (what every surface but Terminal uses).
 pub fn window(accent: Accent, mode: WindowTheme, system_light: bool) -> WindowPalette {
+    window_for(accent, Surface::Espresso, mode, system_light)
+}
+
+/// The window palette for an island `surface`. Light (`Light`, or `System`
+/// with a light Windows) is the same whatever the surface. Dark is the warm
+/// brown, except on `Surface::Terminal`, where it is a neutral dark on
+/// #1B1D1F: the island's fill lifted by the same steps the warm palette takes
+/// above its own bg (card +8, popover +10, field +12, button +17, hover
+/// button +26), equal on every channel. The text stays #F4EDE4, the island's
+/// text on every surface, Terminal included; `secondary` is the island's
+/// Terminal grey. `Surface::Auto` (never in a `Theme`) reads as warm.
+pub fn window_for(
+    accent: Accent,
+    surface: Surface,
+    mode: WindowTheme,
+    system_light: bool,
+) -> WindowPalette {
     let light = match mode {
         WindowTheme::System => system_light,
         WindowTheme::Dark => false,
@@ -446,6 +469,26 @@ pub fn window(accent: Accent, mode: WindowTheme, system_light: bool) -> WindowPa
             // 12 % of the accent.
             selection: accent.light_rgb() << 8 | 0x1F,
             tertiary: 0xA89A8B,
+        }
+    } else if surface == Surface::Terminal {
+        WindowPalette {
+            light,
+            bg: 0x1B1D1F,
+            card: 0x232527,
+            border: 0xF4EDE414,
+            text: 0xF4EDE4,
+            secondary: 0xA9ADB2,
+            accent: accent.rgb(),
+            on_accent: accent.ink(),
+            field: 0x27292B,
+            button: 0x2C2E30,
+            button_hover: 0x353739,
+            error: 0xEF7A6E,
+            popover: 0x252729,
+            hover: 0x2C2E30,
+            // 16 % of the accent.
+            selection: accent.rgb() << 8 | 0x29,
+            tertiary: 0x646769,
         }
     } else {
         WindowPalette {
@@ -504,7 +547,27 @@ pub fn set_system_light(light: bool) -> bool {
 /// The window palette in effect.
 pub fn current_window() -> WindowPalette {
     let t = current();
-    window(t.accent, t.window, SYSTEM_LIGHT.load(Ordering::Relaxed))
+    window_for(
+        t.accent,
+        t.surface,
+        t.window,
+        SYSTEM_LIGHT.load(Ordering::Relaxed),
+    )
+}
+
+/// The theme a demo or debug mode runs with: `DI_WINDOW`, `DI_SURFACE` (unset
+/// or `auto` gives the default's Espresso) and `DI_ACCENT`; with none of them
+/// set it is `Theme::default()`.
+#[cfg(debug_assertions)]
+pub fn theme_from_env() -> Theme {
+    let var = |k: &str| std::env::var(k).unwrap_or_default();
+    Theme {
+        accent: Accent::from_name(&var("DI_ACCENT")).unwrap_or_default(),
+        surface: Surface::from_name(&var("DI_SURFACE"))
+            .unwrap_or_default()
+            .resolve(CatColor::default(), true),
+        window: WindowTheme::from_name(&var("DI_WINDOW")).unwrap_or_default(),
+    }
 }
 
 /// `AppsUseLightTheme` under HKCU Personalize; light when the value is
@@ -845,6 +908,127 @@ mod tests {
                 // Hover is a visible step off the popover.
                 assert_ne!(p.hover, p.popover);
             }
+        }
+    }
+
+    #[test]
+    fn neutral_window_palette_matches_the_pinned_hex_values() {
+        let p = window_for(
+            Accent::Terracotta,
+            Surface::Terminal,
+            WindowTheme::Dark,
+            false,
+        );
+        assert_eq!(
+            p,
+            WindowPalette {
+                light: false,
+                bg: 0x1B1D1F,
+                card: 0x232527,
+                border: 0xF4EDE414,
+                text: 0xF4EDE4,
+                secondary: 0xA9ADB2,
+                accent: 0xE2683C,
+                on_accent: 0x17120F,
+                field: 0x27292B,
+                button: 0x2C2E30,
+                button_hover: 0x353739,
+                error: 0xEF7A6E,
+                popover: 0x252729,
+                hover: 0x2C2E30,
+                selection: 0xE2683C29,
+                tertiary: 0x646769,
+            }
+        );
+        // The island's Terminal fill and raised step.
+        assert_eq!(p.bg, Surface::Terminal.rgb());
+        assert_eq!(p.field, island(Accent::Terracotta, Surface::Terminal).raised);
+        assert_eq!(p.secondary, Surface::Terminal.secondary());
+    }
+
+    #[test]
+    fn terminal_with_dark_or_system_dark_is_neutral_and_light_is_unchanged() {
+        for mode in [WindowTheme::Dark, WindowTheme::System] {
+            let p = window_for(Accent::Sage, Surface::Terminal, mode, false);
+            assert!(!p.light);
+            assert_eq!(p.bg, 0x1B1D1F, "{mode:?}");
+        }
+        let dark = window_for(Accent::Sage, Surface::Terminal, WindowTheme::Dark, true);
+        assert_eq!(dark.bg, 0x1B1D1F);
+        for (mode, sys) in [
+            (WindowTheme::Light, false),
+            (WindowTheme::Light, true),
+            (WindowTheme::System, true),
+        ] {
+            let p = window_for(Accent::Sage, Surface::Terminal, mode, sys);
+            assert!(p.light);
+            assert_eq!(p, window(Accent::Sage, mode, sys), "{mode:?} {sys}");
+        }
+    }
+
+    #[test]
+    fn every_surface_but_terminal_keeps_the_warm_window_palettes() {
+        for a in Accent::ALL {
+            for s in Surface::ALL.iter().filter(|s| **s != Surface::Terminal) {
+                for mode in [WindowTheme::Dark, WindowTheme::Light, WindowTheme::System] {
+                    for sys in [false, true] {
+                        assert_eq!(
+                            window_for(*a, *s, mode, sys),
+                            window(*a, mode, sys),
+                            "{a:?} {s:?} {mode:?} {sys}"
+                        );
+                    }
+                }
+            }
+        }
+        // The warm dark one stays what it was.
+        assert_eq!(
+            window_for(Accent::Terracotta, Surface::Plum, WindowTheme::Dark, false).bg,
+            0x1E1814
+        );
+    }
+
+    #[test]
+    fn neutral_window_palette_reads_for_every_accent() {
+        let warm = window(Accent::Terracotta, WindowTheme::Dark, false);
+        let warm_tertiary = contrast(warm.tertiary, warm.bg);
+        for a in Accent::ALL {
+            let p = window_for(*a, Surface::Terminal, WindowTheme::Dark, false);
+            for base in [p.bg, p.card, p.field, p.popover] {
+                assert!(contrast(p.text, base) >= 7.0, "{a:?} text on {base:06X}");
+                assert!(contrast(p.secondary, base) >= 4.5, "{a:?} {base:06X}");
+            }
+            assert!(contrast(p.error, p.bg) >= 4.5, "{a:?}");
+            assert!(contrast(p.on_accent, p.accent) >= 4.5, "{a:?}");
+            assert_eq!(p.selection >> 8, p.accent, "{a:?}");
+            // Placeholders: the same quiet class as the warm palette's.
+            let c = contrast(p.tertiary, p.bg);
+            assert!((c - warm_tertiary).abs() <= 0.15, "{c:.2} vs {warm_tertiary:.2}");
+            assert!(c < 4.5 && warm_tertiary < 4.5);
+            // The picked time reads in the accent on its tint.
+            assert!(contrast(p.accent, over(p.popover, p.selection)) >= 3.0, "{a:?}");
+            assert_ne!(p.hover, p.popover);
+        }
+    }
+
+    #[test]
+    fn neutral_window_palette_has_no_warm_tint() {
+        let p = window_for(Accent::Terracotta, Surface::Terminal, WindowTheme::Dark, false);
+        for (name, c) in [
+            ("bg", p.bg),
+            ("card", p.card),
+            ("field", p.field),
+            ("popover", p.popover),
+            ("button", p.button),
+            ("button_hover", p.button_hover),
+            ("hover", p.hover),
+            ("secondary", p.secondary),
+            ("tertiary", p.tertiary),
+        ] {
+            let (r, g, b) = ((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF);
+            let spread = r.max(g).max(b) - r.min(g).min(b);
+            assert!(spread <= 9, "{name} {c:06X}: spread {spread}");
+            assert!(r <= b, "{name} {c:06X} is warm-tinted");
         }
     }
 

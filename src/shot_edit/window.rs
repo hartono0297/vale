@@ -612,6 +612,33 @@ fn apply_frame(hwnd: HWND, p: &WindowPalette) {
     }
 }
 
+/// Restyles every open editor for the window palette in effect (Windows
+/// switched between light and dark, or the window mode, accent or base colour
+/// changed): the stored palette, the title bar and a repaint. The editors live
+/// on the UI thread (the capture overlay opens them there), so this runs on
+/// it. The DWM calls can re-enter `wnd_proc`, so they run after the map's
+/// borrow is released; a map that is busy (we are inside one of its handlers)
+/// is skipped, and its editor catches up on the next change.
+pub fn restyle_open() {
+    let p = theme::current_window();
+    let open: Vec<HWND> = EDITORS.with(|m| match m.try_borrow_mut() {
+        Ok(mut m) => m
+            .iter_mut()
+            .map(|(h, e)| {
+                e.p = p;
+                HWND(*h as *mut c_void)
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    });
+    for hwnd in open {
+        apply_frame(hwnd, &p);
+        unsafe {
+            let _ = InvalidateRect(Some(hwnd), None, false);
+        }
+    }
+}
+
 /// The picture centred in the canvas.
 fn recompute_view(e: &mut Editor) {
     let ui = e.dpi as f32 / 96.0;
@@ -2282,6 +2309,8 @@ fn draw(e: &mut Editor) -> windows::core::Result<()> {
 /// `--demo-shot-editor [empty]`: the editor on a made-up picture, with a few
 /// annotations (none with `empty`). Copy is inert, Save writes under
 /// `target/demo-shots/`; the process ends when the window closes.
+/// `DI_WINDOW=system|dark|light`, `DI_SURFACE` (`terminal` gives the neutral
+/// dark window) and `DI_ACCENT` pick the theme; unset is the default one.
 #[cfg(debug_assertions)]
 pub fn run_demo(empty: bool) {
     use windows::Win32::UI::WindowsAndMessaging::{
@@ -2289,6 +2318,7 @@ pub fn run_demo(empty: bool) {
     };
 
     theme::set_system_light(theme::read_system_light());
+    theme::set_current(theme::theme_from_env());
     let shot = crate::capture::demo::picture(960, 600);
     let doc = if empty { Vec::new() } else { demo_doc() };
     let anchor = {
