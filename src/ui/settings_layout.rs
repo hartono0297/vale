@@ -14,8 +14,9 @@ use crate::cli::Shell;
 use crate::cli_folders::CliStart;
 use crate::clipboard::store::{ITEMS_STEP, MAX_ITEMS, MIN_ITEMS};
 use crate::config::{
-    AfterCapture, ClipboardSettings, DISK_WARN_RANGE, NotchFill, NotifSettings, OpenMode, RAM_WARN_RANGE,
-    SHOT_SECS_RANGE, ScreenshotSettings, ShotIgnore, ShotTool, Style, ToastStyle, UiFont,
+    AfterCapture, ClipboardSettings, DISK_WARN_RANGE, NotchFill, NotifSettings, OpenMode,
+    RAM_WARN_RANGE, SHOT_SECS_RANGE, ScreenshotSettings, ShotIgnore, ShotTool, Style, ToastStyle,
+    UiFont,
 };
 use crate::hotkey::{Hotkey, HotkeyId, Hotkeys};
 use crate::i18n::{
@@ -4103,7 +4104,14 @@ fn screenshot_card(b: &mut Builder, s: &State) {
         selected,
     );
     let desc = Some((b.t(Key::ShotAfterCaptureDesc), Tone::Secondary));
-    b.row_text(card, rows[1], b.t(Key::ShotAfterCaptureSetting), desc, false, x);
+    b.row_text(
+        card,
+        rows[1],
+        b.t(Key::ShotAfterCaptureSetting),
+        desc,
+        false,
+        x,
+    );
     b.divider(card, rows[1]);
 
     // Auto-copy of Vale's own capture: never faded (it has nothing to do
@@ -5733,9 +5741,9 @@ mod tests {
                     // The row sits right under the tool's (one row apart).
                     let y_of = |group: Group| {
                         l.controls.iter().find_map(|c| match c {
-                            Control::Segmented { group: g, items, .. } if *g == group => {
-                                items.first().map(|i| i.rect.y)
-                            }
+                            Control::Segmented {
+                                group: g, items, ..
+                            } if *g == group => items.first().map(|i| i.rect.y),
                             _ => None,
                         })
                     };

@@ -403,7 +403,11 @@ mod tests {
             .collect();
         names.sort();
         assert_eq!(names.len(), 2, "{names:?}: two saves, two files");
-        assert!(names.iter().all(|n| n.starts_with("Screenshot ") && n.ends_with(".png")));
+        assert!(
+            names
+                .iter()
+                .all(|n| n.starts_with("Screenshot ") && n.ends_with(".png"))
+        );
         // A folder that cannot be made is a false, not a panic.
         let file = dir.join(&names[0]);
         let blocked = save_detached(base, Vec::new(), Some(file.join("sub")))

@@ -337,7 +337,9 @@ crate::theme::named_enum! {
 /// reads as Compact, so a bad value never makes the whole config invalid.
 fn toast_style<'de, D: Deserializer<'de>>(d: D) -> Result<ToastStyle, D::Error> {
     let v = serde_json::Value::deserialize(d)?;
-    Ok(v.as_str().and_then(ToastStyle::from_name).unwrap_or_default())
+    Ok(v.as_str()
+        .and_then(ToastStyle::from_name)
+        .unwrap_or_default())
 }
 
 /// A bool; anything else is off.
@@ -1744,7 +1746,9 @@ mod tests {
             ..Config::default()
         };
         assert_eq!(
-            merge_owned(Config::default(), &full).notifications.toast_style,
+            merge_owned(Config::default(), &full)
+                .notifications
+                .toast_style,
             ToastStyle::Full
         );
     }
@@ -2034,7 +2038,12 @@ mod tests {
             assert!(!json.to_lowercase().contains("valesettings"), "{json}");
         }
         // No shortcut_tiles at all still reads as the defaults (empty).
-        assert!(try_parse(r#"{"style":"Notch"}"#).unwrap().shortcut_tiles.is_empty());
+        assert!(
+            try_parse(r#"{"style":"Notch"}"#)
+                .unwrap()
+                .shortcut_tiles
+                .is_empty()
+        );
     }
 
     #[test]

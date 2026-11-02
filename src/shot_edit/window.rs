@@ -1220,8 +1220,14 @@ fn begin_text(hwnd: HWND, pos: Pt, index: Option<usize>) {
     .flatten();
     let Some(plan) = plan else { return };
     let px = (plan.size * plan.view_scale).round().max(8.0 * plan.ui);
-    let Some(mut t) = text::create(hwnd, plan.client_pos, &plan.initial, px, plan.color, plan.ui)
-    else {
+    let Some(mut t) = text::create(
+        hwnd,
+        plan.client_pos,
+        &plan.initial,
+        px,
+        plan.color,
+        plan.ui,
+    ) else {
         return;
     };
     t.index = index;
@@ -1778,8 +1784,10 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             LRESULT(0)
         }
         WM_CTLCOLOREDIT => {
-            let brush = with(hwnd, |e| e.text.as_ref().map(|t| text::ctl_color(t, wparam)))
-                .flatten();
+            let brush = with(hwnd, |e| {
+                e.text.as_ref().map(|t| text::ctl_color(t, wparam))
+            })
+            .flatten();
             match brush {
                 Some(b) => b,
                 None => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },

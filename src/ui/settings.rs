@@ -86,8 +86,8 @@ use crate::claude::install::{self, InstallOutcome, UninstallOutcome};
 use crate::cli::Shell;
 use crate::cli_folders::CliStart;
 use crate::config::{
-    AfterCapture, ClipboardSettings, Config, NotchFill, NotifSettings, OpenMode, ScreenshotSettings, ShotIgnore,
-    ShotTool, Style, ToastStyle, UiFont, WindowPlace,
+    AfterCapture, ClipboardSettings, Config, NotchFill, NotifSettings, OpenMode,
+    ScreenshotSettings, ShotIgnore, ShotTool, Style, ToastStyle, UiFont, WindowPlace,
 };
 use crate::google::client;
 use crate::hotkey::{Hotkey, HotkeyId, Hotkeys, Mods, Reject, Step, check, record_step, used_by};

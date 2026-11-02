@@ -424,7 +424,10 @@ mod tests {
         assert_eq!(f.rect(), Rect::new(-10, 5, 4, 2));
         assert_eq!(f.stride(), 16);
         // The painter borrows the same pixels, no copy.
-        assert!(std::ptr::eq(f.shot.bgra.as_ptr(), f.shot.clone().bgra.as_ptr()));
+        assert!(std::ptr::eq(
+            f.shot.bgra.as_ptr(),
+            f.shot.clone().bgra.as_ptr()
+        ));
         assert_eq!((f.shot.w, f.shot.h), (4, 2));
     }
 }

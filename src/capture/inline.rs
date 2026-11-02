@@ -143,8 +143,12 @@ impl Panel {
 fn strip_groups() -> Vec<Vec<Btn>> {
     vec![
         STRIP_TOOLS.iter().map(|t| Btn::Tool(*t)).collect(),
-        (0..crate::shot_edit::COLORS.len()).map(Btn::Color).collect(),
-        (0..crate::shot_edit::STROKES.len()).map(Btn::Stroke).collect(),
+        (0..crate::shot_edit::COLORS.len())
+            .map(Btn::Color)
+            .collect(),
+        (0..crate::shot_edit::STROKES.len())
+            .map(Btn::Stroke)
+            .collect(),
         vec![Btn::Undo, Btn::Redo],
     ]
 }
@@ -658,7 +662,9 @@ pub fn inline_key(vk: u16, ctrl: bool, shift: bool, alt: bool, ctx: KeyCtx) -> I
         VK_ESCAPE if ctx.has_annotations => InlineKey::AskDiscard,
         VK_ESCAPE => InlineKey::Cancel,
         VK_DELETE => InlineKey::Delete,
-        0x41..=0x5A => Tool::from_key(char::from(vk as u8)).map_or(InlineKey::Ignore, InlineKey::Tool),
+        0x41..=0x5A => {
+            Tool::from_key(char::from(vk as u8)).map_or(InlineKey::Ignore, InlineKey::Tool)
+        }
         _ => InlineKey::Ignore,
     }
 }
@@ -742,7 +748,10 @@ mod tests {
     }
 
     fn inside(r: Rect, bounds: Rect) -> bool {
-        r.x >= bounds.x && r.y >= bounds.y && r.right() <= bounds.right() && r.bottom() <= bounds.bottom()
+        r.x >= bounds.x
+            && r.y >= bounds.y
+            && r.right() <= bounds.right()
+            && r.bottom() <= bounds.bottom()
     }
 
     // ---- the strip and the bar ----
@@ -863,7 +872,17 @@ mod tests {
     }
 
     fn bar() -> (i32, i32) {
-        let p = bar_layout(1.0, &BarLabels { copy: 30.0, save: 40.0, editor: 90.0, close: 34.0, ..Default::default() }, false);
+        let p = bar_layout(
+            1.0,
+            &BarLabels {
+                copy: 30.0,
+                save: 40.0,
+                editor: 90.0,
+                close: 34.0,
+                ..Default::default()
+            },
+            false,
+        );
         (p.rect.w, p.rect.h)
     }
 
@@ -898,8 +917,14 @@ mod tests {
         assert_eq!((b.right(), b.y), (sel.right(), sel.y - 8 - bh));
         // Room on the preferred side: it stays there.
         let sel = Rect::new(100, 100, 400, 300);
-        assert_eq!(place_side(sel, (sw, sh), MON, Side::Right, 8).x, sel.right() + 8);
-        assert_eq!(place_side(sel, (bw, bh), MON, Side::Below, 8).y, sel.bottom() + 8);
+        assert_eq!(
+            place_side(sel, (sw, sh), MON, Side::Right, 8).x,
+            sel.right() + 8
+        );
+        assert_eq!(
+            place_side(sel, (bw, bh), MON, Side::Below, 8).y,
+            sel.bottom() + 8
+        );
     }
 
     #[test]
@@ -939,10 +964,16 @@ mod tests {
         }
         // Beside the right edge when it fits, like on the primary.
         let sel = Rect::new(-1500, 200, 600, 400);
-        assert_eq!(place_side(sel, (sw, sh), left, Side::Right, 8).x, sel.right() + 8);
+        assert_eq!(
+            place_side(sel, (sw, sh), left, Side::Right, 8).x,
+            sel.right() + 8
+        );
         // The right edge of this monitor is x = 0: no room right of this one.
         let sel = Rect::new(-700, 200, 690, 400);
-        assert_eq!(place_side(sel, (sw, sh), left, Side::Right, 8).x, sel.x - 8 - sw);
+        assert_eq!(
+            place_side(sel, (sw, sh), left, Side::Right, 8).x,
+            sel.x - 8 - sw
+        );
     }
 
     #[test]
@@ -970,7 +1001,10 @@ mod tests {
     fn the_size_label_sits_above_the_corner_or_just_inside() {
         let size = (90, 24);
         let sel = Rect::new(300, 200, 500, 300);
-        assert_eq!(label_rect(sel, size, MON, 6), Rect::new(300, 200 - 6 - 24, 90, 24));
+        assert_eq!(
+            label_rect(sel, size, MON, 6),
+            Rect::new(300, 200 - 6 - 24, 90, 24)
+        );
         // No room above: inside the corner.
         let top = Rect::new(300, 10, 500, 300);
         assert_eq!(label_rect(top, size, MON, 6), Rect::new(300, 16, 90, 24));
@@ -1001,7 +1035,10 @@ mod tests {
         assert_eq!(h.y, b.bottom() + 6);
         let low = Rect::new(800, 1040, 80, 30);
         assert_eq!(tooltip_rect(low, size, MON, false, 6).bottom(), low.y - 6);
-        assert!(inside(tooltip_rect(Rect::new(0, 0, 30, 30), size, MON, false, 6), MON));
+        assert!(inside(
+            tooltip_rect(Rect::new(0, 0, 30, 30), size, MON, false, 6),
+            MON
+        ));
     }
 
     // ---- the selection ----
@@ -1020,8 +1057,16 @@ mod tests {
         assert_eq!(handle_at(sel, (301, 150), 6), Some(SelHandle::E));
         assert_eq!(handle_at(sel, (200, 199), 6), Some(SelHandle::S));
         assert_eq!(handle_at(sel, (97, 150), 6), Some(SelHandle::W));
-        assert_eq!(handle_at(sel, (200, 150), 6), None, "the middle is the move area");
-        assert_eq!(handle_at(sel, (100, 130), 6), None, "an edge away from its handle");
+        assert_eq!(
+            handle_at(sel, (200, 150), 6),
+            None,
+            "the middle is the move area"
+        );
+        assert_eq!(
+            handle_at(sel, (100, 130), 6),
+            None,
+            "an edge away from its handle"
+        );
         // A tiny selection: the corner wins where handles meet.
         let tiny = Rect::new(100, 100, 6, 6);
         assert_eq!(handle_at(tiny, (100, 100), 6), Some(SelHandle::Nw));
@@ -1072,7 +1117,13 @@ mod tests {
         let r = resize_sel(sel, SelHandle::Nw, (600, 500), BOUNDS);
         assert_eq!(r, Rect::new(500, 400, 100, 100));
         for h in SelHandle::ALL {
-            for to in [(-500, -500), (5000, 5000), (350, 300), (200, 200), (500, 400)] {
+            for to in [
+                (-500, -500),
+                (5000, 5000),
+                (350, 300),
+                (200, 200),
+                (500, 400),
+            ] {
                 let r = resize_sel(sel, h, to, BOUNDS);
                 assert!(r.w >= 1 && r.h >= 1, "{h:?} {to:?}: {r:?}");
                 assert!(inside(r, BOUNDS), "{h:?} {to:?}: {r:?}");
@@ -1103,8 +1154,14 @@ mod tests {
     #[test]
     fn moving_the_selection_keeps_its_size_and_stays_in_the_bounds() {
         let sel = Rect::new(200, 200, 300, 200);
-        assert_eq!(move_sel(sel, 50, -20, BOUNDS), Rect::new(250, 180, 300, 200));
-        assert_eq!(move_sel(sel, -9999, -9999, BOUNDS), Rect::new(-100, 0, 300, 200));
+        assert_eq!(
+            move_sel(sel, 50, -20, BOUNDS),
+            Rect::new(250, 180, 300, 200)
+        );
+        assert_eq!(
+            move_sel(sel, -9999, -9999, BOUNDS),
+            Rect::new(-100, 0, 300, 200)
+        );
         assert_eq!(
             move_sel(sel, 9999, 9999, BOUNDS),
             Rect::new(BOUNDS.right() - 300, BOUNDS.bottom() - 200, 300, 200)
@@ -1155,14 +1212,36 @@ mod tests {
     #[test]
     fn the_pointer_shape_follows_what_a_press_would_do() {
         let sel = Rect::new(100, 100, 300, 200);
-        assert_eq!(cursor_over(sel, (100, 100), 6, Tool::Select), Cursor::SizeNwse);
-        assert_eq!(cursor_over(sel, (400, 100), 6, Tool::Select), Cursor::SizeNesw);
-        assert_eq!(cursor_over(sel, (250, 100), 6, Tool::Select), Cursor::SizeNs);
-        assert_eq!(cursor_over(sel, (400, 200), 6, Tool::Select), Cursor::SizeWe);
-        assert_eq!(cursor_over(sel, (250, 200), 6, Tool::Select), Cursor::SizeAll);
+        assert_eq!(
+            cursor_over(sel, (100, 100), 6, Tool::Select),
+            Cursor::SizeNwse
+        );
+        assert_eq!(
+            cursor_over(sel, (400, 100), 6, Tool::Select),
+            Cursor::SizeNesw
+        );
+        assert_eq!(
+            cursor_over(sel, (250, 100), 6, Tool::Select),
+            Cursor::SizeNs
+        );
+        assert_eq!(
+            cursor_over(sel, (400, 200), 6, Tool::Select),
+            Cursor::SizeWe
+        );
+        assert_eq!(
+            cursor_over(sel, (250, 200), 6, Tool::Select),
+            Cursor::SizeAll
+        );
         assert_eq!(cursor_over(sel, (900, 900), 6, Tool::Select), Cursor::Arrow);
         assert_eq!(cursor_over(sel, (250, 200), 6, Tool::Text), Cursor::IBeam);
-        for t in [Tool::Pen, Tool::Line, Tool::Arrow, Tool::Rect, Tool::Marker, Tool::Pixelate] {
+        for t in [
+            Tool::Pen,
+            Tool::Line,
+            Tool::Arrow,
+            Tool::Rect,
+            Tool::Marker,
+            Tool::Pixelate,
+        ] {
             assert_eq!(cursor_over(sel, (250, 200), 6, t), Cursor::Cross, "{t:?}");
             assert_eq!(cursor_over(sel, (900, 900), 6, t), Cursor::Arrow, "{t:?}");
         }
@@ -1190,8 +1269,14 @@ mod tests {
         assert_eq!(key(0x43, false, false, NONE), InlineKey::Ignore);
         assert_eq!(key(0x53, false, false, NONE), InlineKey::Ignore);
         // Alt+Enter and Alt+letters are the system's.
-        assert_eq!(inline_key(0x0D, false, false, true, NONE), InlineKey::Ignore);
-        assert_eq!(inline_key(0x50, false, false, true, NONE), InlineKey::Ignore);
+        assert_eq!(
+            inline_key(0x0D, false, false, true, NONE),
+            InlineKey::Ignore
+        );
+        assert_eq!(
+            inline_key(0x50, false, false, true, NONE),
+            InlineKey::Ignore
+        );
     }
 
     #[test]
@@ -1224,10 +1309,21 @@ mod tests {
             // Shift does not matter for a letter.
             assert_eq!(key(c as u16, false, true, NONE), InlineKey::Tool(t), "{c}");
             // With Ctrl it is a shortcut, never a tool.
-            assert!(!matches!(key(c as u16, true, false, NONE), InlineKey::Tool(_)), "{c}");
+            assert!(
+                !matches!(key(c as u16, true, false, NONE), InlineKey::Tool(_)),
+                "{c}"
+            );
         }
-        assert_eq!(key(0x58, false, false, NONE), InlineKey::Ignore, "X is nothing");
-        assert_eq!(key(0x70, false, false, NONE), InlineKey::Ignore, "F1 is nothing");
+        assert_eq!(
+            key(0x58, false, false, NONE),
+            InlineKey::Ignore,
+            "X is nothing"
+        );
+        assert_eq!(
+            key(0x70, false, false, NONE),
+            InlineKey::Ignore,
+            "F1 is nothing"
+        );
     }
 
     #[test]
@@ -1262,7 +1358,13 @@ mod tests {
         };
         assert_eq!(key(0x0D, false, false, bar), InlineKey::Discard);
         assert_eq!(key(0x1B, false, false, bar), InlineKey::Keep);
-        for (vk, ctrl) in [(0x43, true), (0x53, true), (0x5A, true), (0x2E, false), (0x50, false)] {
+        for (vk, ctrl) in [
+            (0x43, true),
+            (0x53, true),
+            (0x5A, true),
+            (0x2E, false),
+            (0x50, false),
+        ] {
             assert_eq!(key(vk, ctrl, false, bar), InlineKey::Ignore, "{vk:#x}");
         }
     }

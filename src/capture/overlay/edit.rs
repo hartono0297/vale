@@ -52,14 +52,31 @@ const UI_TEXT: f32 = 13.0;
 /// What a running drag moves.
 pub(super) enum Drag {
     /// A new annotation being drawn; `from` is where the press was (frame px).
-    Draw { idx: usize, from: Pt },
-    MoveAnn { idx: usize, last: Pt },
-    ResizeAnn { idx: usize, handle: Handle },
+    Draw {
+        idx: usize,
+        from: Pt,
+    },
+    MoveAnn {
+        idx: usize,
+        last: Pt,
+    },
+    ResizeAnn {
+        idx: usize,
+        handle: Handle,
+    },
     /// A new selection from `from` (virtual px), taken once it is a drag.
-    NewSel { from: (i32, i32) },
+    NewSel {
+        from: (i32, i32),
+    },
     /// The whole selection, as it was at the press.
-    MoveSel { start: Rect, from: (i32, i32) },
-    ResizeSel { start: Rect, handle: SelHandle },
+    MoveSel {
+        start: Rect,
+        from: (i32, i32),
+    },
+    ResizeSel {
+        start: Rect,
+        handle: SelHandle,
+    },
 }
 
 /// The drawing phase's state.
@@ -468,11 +485,7 @@ fn press(e: &mut Edit, env: &Env, p: (i32, i32), double: bool, edit_was_open: bo
                     .map(|h| (i, h))
             });
             // Only inside the selection is anything seen, so hit.
-            let hit = if inside {
-                e.session.hit(pl, tol)
-            } else {
-                None
-            };
+            let hit = if inside { e.session.hit(pl, tol) } else { None };
             let press = select_press(
                 e.sel,
                 p,
@@ -991,7 +1004,16 @@ impl Paint<'_> {
                 let on = e.session.tool == tool;
                 self.lit(r, on, hot);
                 let rgb = if on { on_fill } else { 0xF2F2F2 };
-                glyph(self.rt, self.brush, self.gfx, Glyph::Tool(tool), r, rgb, a, ui);
+                glyph(
+                    self.rt,
+                    self.brush,
+                    self.gfx,
+                    Glyph::Tool(tool),
+                    r,
+                    rgb,
+                    a,
+                    ui,
+                );
             }
             Btn::Color(i) => {
                 let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);

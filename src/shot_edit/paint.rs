@@ -342,7 +342,10 @@ mod tests {
             pixel_region(r, 100, 50, None),
             Some(((0, 2, 15, 11), pixel_block(100, 50)))
         );
-        assert_eq!(pixel_region(FRect::new(200.0, 0.0, 5.0, 5.0), 100, 50, None), None);
+        assert_eq!(
+            pixel_region(FRect::new(200.0, 0.0, 5.0, 5.0), 100, 50, None),
+            None
+        );
     }
 
     #[test]

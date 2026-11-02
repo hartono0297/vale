@@ -369,7 +369,13 @@ fn finish(choice: Option<Rect>) {
     };
     state.stop.store(true, Ordering::Relaxed);
     let shot = choice.and_then(|r| {
-        crop(state.frame.bgra(), state.frame.stride(), state.frame.rect(), r).map(|s| (s, r))
+        crop(
+            state.frame.bgra(),
+            state.frame.stride(),
+            state.frame.rect(),
+            r,
+        )
+        .map(|s| (s, r))
     });
     let (hwnd, demo) = (state.hwnd, state.demo);
     // The picture, the target and the frame go now (an open text with them).
@@ -1017,6 +1023,9 @@ mod tests {
 
     #[test]
     fn the_text_message_is_the_shared_one() {
-        assert_eq!(WM_APP_TEXT, windows::Win32::UI::WindowsAndMessaging::WM_APP + 50);
+        assert_eq!(
+            WM_APP_TEXT,
+            windows::Win32::UI::WindowsAndMessaging::WM_APP + 50
+        );
     }
 }

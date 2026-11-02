@@ -246,7 +246,9 @@ impl Annotation {
             Annotation::Arrow { a, b, style } => {
                 FRect::between(*a, *b).grow(style.width * 1.5 + 4.0)
             }
-            Annotation::Line { a, b, style } => FRect::between(*a, *b).grow(style.width / 2.0 + 4.0),
+            Annotation::Line { a, b, style } => {
+                FRect::between(*a, *b).grow(style.width / 2.0 + 4.0)
+            }
             Annotation::Pen { pts, style } => points_bounds(pts, style.width / 2.0),
             Annotation::Marker { pts, style } => {
                 points_bounds(pts, style.width * MARKER_WIDTH_X / 2.0)
@@ -960,7 +962,11 @@ mod tests {
         assert!(line((5.0, 5.0), (6.0, 6.0)).is_degenerate());
         assert!(line((5.0, 5.0), (5.0, 5.0)).is_degenerate());
         let mut s = Session::default();
-        assert_eq!(s.add(line((5.0, 5.0), (6.0, 6.0))), None, "a click is no line");
+        assert_eq!(
+            s.add(line((5.0, 5.0), (6.0, 6.0))),
+            None,
+            "a click is no line"
+        );
         assert_eq!(s.add(line((5.0, 5.0), (60.0, 6.0))), Some(0));
     }
 
