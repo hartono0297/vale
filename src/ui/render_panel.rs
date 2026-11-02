@@ -5515,6 +5515,16 @@ mod tests {
                     assert!(bottom <= l.phase.y, "{time:?} ink over the phase");
                 }
 
+                // The System page's CPU figure: inside the ring's plate.
+                let head = SystemHead {
+                    uptime_w: 100.0,
+                    clean_w: 100.0,
+                };
+                let sys = system_layout(s, strip, &head, &['C'], 3);
+                for figure in ["100%", "8%", "42%", "—"] {
+                    fits(figure, &f.sys_big, sys.percent);
+                }
+
                 // Headings draw in the header row grown by `HEADING_BLEED`.
                 let bleed = |header: Rect| Rect {
                     y: header.y - HEADING_BLEED,
