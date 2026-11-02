@@ -90,7 +90,7 @@ Hover the notch to open it, scroll to change pages. Hover the page dots under th
 | **Devices** | Flash drives, external disks and memory cards, with Eject, Open, Detail and Eject all, the reason when Windows won't let go, and a notice when one is plugged in. |
 | **Susun** | Arrange your open windows into a layout: pick one (two or three columns, a grid, a main window with a side column, or your own), then click the windows tile by tile, with skip and back. Undo with one click, save an arrangement and re-apply it later. Give it a hotkey in Settings → Hotkeys (none by default). |
 | **CLI** | A small terminal that starts in your Explorer folder. |
-| **Shortcuts** | Tiles for Windows tools, a jump to any panel page, Vale's own Settings, and your own apps, folders and links (added in Settings). |
+| **Shortcuts** | Tiles for Windows tools, a jump to any panel page, and your own apps, folders and links (added in Settings). |
 
 <table>
   <tr>
@@ -113,7 +113,7 @@ Hover the notch to open it, scroll to change pages. Hover the page dots under th
 
 <p align="center"><img src="assets/screenshots/notices.png" width="460" alt="Animated notices in the notch: a greeting, a copied item, a screenshot preview, a disk warning and a long lyric line"></p>
 
-Everything is set in **Settings**, from the tray icon, in nine sections: General, Appearance, Cat, Panel, Clipboard, Hotkeys, Features, Integrations and About. Appearance holds the island style, accent colour, island background (*Match cat*, Espresso, Graphite, Sea, Night or Plum), notch size and fill; Cat holds the coat, accessory, animation, sleep, the follow-pointer, dance-to-music and shrink-to-eyes switches and the greeting. Hotkeys holds all five global hotkeys (quick search, Clipboard, Devices, Susun and the Vale screenshot): click a field and press the keys you want, with a reset for each and for all. Open mode, page order, shortcuts, lyrics and language are there too. It can also stay behind your windows (experimental). The Settings window can be resized or maximised and opens where you left it. Every option is described in the [guide](docs/guide.md#settings).
+Everything is set in **Settings**, from the tray icon, in nine sections: General, Appearance, Cat, Panel, Clipboard, Hotkeys, Features, Integrations and About. Appearance holds the island style, accent colour, island background (*Match cat*, Espresso, Graphite, Sea, Night or Plum), notch size and fill; Cat holds the coat, accessory, animation, sleep, the follow-pointer, dance-to-music and shrink-to-eyes switches and the greeting. Hotkeys holds all five global hotkeys (quick search, Clipboard, Devices, Susun and the Vale screenshot): click a field and press the keys you want, with a reset for each and for all. Settings also opens from the sliders button at the top right of every panel page. Open mode, page order, shortcuts, lyrics and language are there too. It can also stay behind your windows (experimental). The Settings window can be resized or maximised and opens where you left it. Every option is described in the [guide](docs/guide.md#settings).
 
 ## Privacy
 
