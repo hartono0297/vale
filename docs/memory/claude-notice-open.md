@@ -41,11 +41,19 @@ a debug build, measured with the ignored `capture_on_this_machine` test.
    between the CLI and the host (VS Code extension host, Claude Desktop), no
    shell. `explorer.exe` never counts as having a window in `capture` (its windows
    are folders), so the console fallback applies.
-4. No host: `AttachConsole(ATTACH_PARENT_PROCESS)`, `GetConsoleWindow`; a ConPTY
-   `PseudoConsoleWindow` becomes its `GA_ROOTOWNER` when that is a visible window.
-5. Console title (attach to the parent, else the CLI's console; `FreeConsole`
-   again), cut to 512 chars. `CLAUDE_CODE_HOST_SESSION_ID` is kept only if it
-   matches `^[A-Za-z0-9_-]{1,100}$`.
+4. Console: `AttachConsole(<CLI pid>)` first, then `ATTACH_PARENT_PROCESS`
+   (just the parent when the parent is the CLI), `FreeConsole` after each; the
+   first window and the first title that is not an executable's path win
+   (`console_order`, `is_exe_path_title`, `gather_console`, pure and tested).
+   Claude Code runs hook commands through a shell (Git Bash) that can sit in its
+   own hidden, windowless console titled with the shell's path, so the parent's
+   console alone gave the wrong title and no window. A console the process
+   already had (`--probe-claude-open` attaches to print) is freed first and
+   attached again at the end.
+5. No host: the console window; a ConPTY `PseudoConsoleWindow` becomes its
+   `GA_ROOTOWNER` when that is a visible window. The title is cut to 512 chars.
+   `CLAUDE_CODE_HOST_SESSION_ID` is kept only if it matches
+   `^[A-Za-z0-9_-]{1,100}$`.
 
 The line stays far under the pipe's 64 KB `MAX_LINE` (tested with max fields).
 
@@ -129,7 +137,10 @@ title found in the session file, 132 buttons read, one sidebar row matched.
   plans, the pure rules and the Desktop dry run were exercised.
 - Pid reuse in the ancestor walk, and a window of the recorded exe found by name
   when the recorded one is gone (a wrong VS Code or terminal window is possible).
-- The console title read by `AttachConsole` can be the conhost's own title (the
-  Git Bash launcher path was seen); it only matters for the Tabs rule.
+- Default console titles that are just an exe path (the Git Bash path was seen
+  from the hook's shell) are dropped. A probe from a Claude Code shell now gives
+  `console title None` under Desktop. Sidebar rows of Desktop's Chat tab read
+  "Idle <title>"; if Code-tab rows carry such a prefix, `match_sidebar_row`
+  never matches (window only). Not confirmed with the Code tab visible.
 
 Related: [[notification-open]] (same worker, foreground rule and budget), [[toast-while-busy]].

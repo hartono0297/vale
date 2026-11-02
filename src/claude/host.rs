@@ -1,14 +1,15 @@
 //! `--hook` side of "click a Claude notice, go to its session": where does
 //! this hook run? Walks the process ancestors (one Toolhelp snapshot), finds
 //! the first one that owns a real top-level window and is not a shell or
-//! console helper, and falls back to the parent's console window. Prints
-//! nothing, never panics, launches nothing. See docs/memory/claude-notice-open.md.
+//! console helper, and falls back to the CLI's (else the parent's) console
+//! window. Prints nothing, never panics, launches nothing. See docs/memory/claude-notice-open.md.
 
 use std::collections::HashMap;
 
 use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM};
 use windows::Win32::System::Console::{
-    ATTACH_PARENT_PROCESS, AttachConsole, FreeConsole, GetConsoleTitleW, GetConsoleWindow,
+    ATTACH_PARENT_PROCESS, AttachConsole, FreeConsole, GetConsoleCP, GetConsoleTitleW,
+    GetConsoleWindow,
 };
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
@@ -211,30 +212,95 @@ unsafe fn real_window(hwnd: HWND) -> bool {
     }
 }
 
-/// What the console of the hook's parent (else of the CLI) says: its window
-/// (a ConPTY pseudo window resolved to the terminal window that owns it) and
-/// its title. Attaches to that console and lets go again. Stdin is already
-/// read and nothing is written.
-fn console_info(cli_pid: Option<u32>) -> (Option<HWND>, Option<String>) {
-    unsafe {
-        let mut attached = AttachConsole(ATTACH_PARENT_PROCESS).is_ok();
-        if !attached
-            && GetConsoleWindow().is_invalid()
-            && let Some(pid) = cli_pid
-        {
-            attached = AttachConsole(pid).is_ok();
+/// A console to read, in the order `console_info` tries them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ConsoleOf {
+    /// The CLI's own console: the one the session's terminal shows and titles.
+    Cli(u32),
+    /// The hook's parent's console (`ATTACH_PARENT_PROCESS`). Claude Code runs
+    /// hook commands through a shell that can sit in its own hidden,
+    /// windowless console titled with the shell's path, so it is only a
+    /// fallback.
+    Parent,
+}
+
+/// The CLI's console first, then the parent's; the parent alone when it is the
+/// CLI itself or no CLI was found.
+fn console_order(cli_pid: Option<u32>, parent_pid: Option<u32>) -> Vec<ConsoleOf> {
+    match cli_pid {
+        Some(cli) if parent_pid != Some(cli) => vec![ConsoleOf::Cli(cli), ConsoleOf::Parent],
+        _ => vec![ConsoleOf::Parent],
+    }
+}
+
+/// A console's default title: just an executable's path ("C:\Program
+/// Files\Git\usr\bin\bash.exe", "Administrator: C:\WINDOWS\system32\cmd.exe").
+/// Says nothing about the session and would only match a plain shell tab.
+fn is_exe_path_title(title: &str) -> bool {
+    let t = title.trim();
+    let t = t
+        .strip_prefix("Administrator:")
+        .unwrap_or(t)
+        .trim()
+        .trim_matches('"');
+    t.to_ascii_lowercase().ends_with(".exe")
+        && (t.contains(['\\', '/']) || !t.contains(char::is_whitespace))
+}
+
+/// Reads the consoles in `order` (`read` attaches to one and returns its
+/// window and title, `None` when it cannot attach) until both are known: the
+/// first window found, the first title that is not an executable's path.
+fn gather_console<W>(
+    order: &[ConsoleOf],
+    mut read: impl FnMut(ConsoleOf) -> Option<(Option<W>, Option<String>)>,
+) -> (Option<W>, Option<String>) {
+    let (mut window, mut title) = (None, None);
+    for &target in order {
+        if window.is_some() && title.is_some() {
+            break;
         }
-        let console = GetConsoleWindow();
-        let window = (!console.is_invalid())
-            .then(|| terminal_window(console))
-            .flatten();
-        let mut buf = [0u16; 1024];
-        let n = GetConsoleTitleW(&mut buf) as usize;
-        let title = clamp_title(&String::from_utf16_lossy(&buf[..n.min(buf.len())]));
-        if attached {
+        let Some((w, t)) = read(target) else {
+            continue;
+        };
+        window = window.or(w);
+        title = title.or(t.filter(|t| !is_exe_path_title(t)));
+    }
+    (window, title)
+}
+
+/// What the CLI's console (else the hook's parent's) says: its window (a
+/// ConPTY pseudo window resolved to the terminal window that owns it) and its
+/// title. Attaches to each console and lets go again; a console this process
+/// already had (`--probe-claude-open` attaches to its parent's to print) is
+/// left first and attached again at the end. Stdin is already read and
+/// nothing is written.
+fn console_info(cli_pid: Option<u32>, parent_pid: Option<u32>) -> (Option<HWND>, Option<String>) {
+    unsafe {
+        // GetConsoleCP fails (0) without a console.
+        let had_console = GetConsoleCP() != 0;
+        if had_console {
             let _ = FreeConsole();
         }
-        (window, title)
+        let found = gather_console(&console_order(cli_pid, parent_pid), |target| {
+            let attached = match target {
+                ConsoleOf::Cli(pid) => AttachConsole(pid),
+                ConsoleOf::Parent => AttachConsole(ATTACH_PARENT_PROCESS),
+            };
+            attached.ok()?;
+            let console = GetConsoleWindow();
+            let window = (!console.is_invalid())
+                .then(|| terminal_window(console))
+                .flatten();
+            let mut buf = [0u16; 1024];
+            let n = GetConsoleTitleW(&mut buf) as usize;
+            let title = clamp_title(&String::from_utf16_lossy(&buf[..n.min(buf.len())]));
+            let _ = FreeConsole();
+            Some((window, title))
+        });
+        if had_console {
+            let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+        }
+        found
     }
 }
 
@@ -284,7 +350,8 @@ pub fn capture() -> ClaudeOrigin {
         origin.cli_direct = pick.cli_direct;
     }
     let cli_pid = chain.iter().find(|e| is_cli(&e.exe)).map(|e| e.pid);
-    let (console_window, title) = console_info(cli_pid);
+    let parent_pid = chain.first().map(|e| e.pid);
+    let (console_window, title) = console_info(cli_pid, parent_pid);
     origin.console_title = title;
     if origin.host_pid == 0
         && let Some(hwnd) = console_window
@@ -416,6 +483,90 @@ mod tests {
             pick(&["claude.exe", "code.exe", "bash.exe", "code.exe*"]),
             Some((3, false))
         );
+    }
+
+    #[test]
+    fn the_clis_console_is_read_before_the_parents() {
+        use ConsoleOf::{Cli, Parent};
+        // Claude Code -> bash (the hook command) -> vale.
+        assert_eq!(console_order(Some(30), Some(40)), [Cli(30), Parent]);
+        // The CLI started the hook itself: its console is the parent's.
+        assert_eq!(console_order(Some(30), Some(30)), [Parent]);
+        assert_eq!(console_order(None, Some(40)), [Parent]);
+        assert_eq!(console_order(Some(30), None), [Cli(30), Parent]);
+    }
+
+    #[test]
+    fn executable_paths_are_not_session_titles() {
+        for t in [
+            r"C:\Program Files\Git\bin\..\usr\bin\bash.exe",
+            r"C:\WINDOWS\system32\cmd.exe",
+            r"Administrator: C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe",
+            r#""C:\Program Files\nodejs\node.exe""#,
+            "/usr/bin/bash.exe",
+            "pwsh.EXE",
+        ] {
+            assert!(is_exe_path_title(t), "{t}");
+        }
+        for t in [
+            "✳ Fix the bug",
+            "Claude Code",
+            "Fix vale.exe startup",
+            "api",
+        ] {
+            assert!(!is_exe_path_title(t), "{t}");
+        }
+    }
+
+    /// The fake reads: per console, `None` (cannot attach) or what it says.
+    fn gather(
+        cli: Option<(Option<i64>, Option<&str>)>,
+        parent: Option<(Option<i64>, Option<&str>)>,
+    ) -> ((Option<i64>, Option<String>), Vec<ConsoleOf>) {
+        let mut read = Vec::new();
+        let found = gather_console(&console_order(Some(30), Some(40)), |c| {
+            read.push(c);
+            let r = match c {
+                ConsoleOf::Cli(_) => cli,
+                ConsoleOf::Parent => parent,
+            };
+            r.map(|(w, t)| (w, t.map(String::from)))
+        });
+        (found, read)
+    }
+
+    const BASH: &str = r"C:\Program Files\Git\bin\..\usr\bin\bash.exe";
+
+    #[test]
+    fn a_hidden_shell_console_does_not_hide_the_session() {
+        // The reported case: the hook's bash has a hidden, windowless console
+        // titled with its path; the CLI's console is the terminal's tab.
+        let (found, read) = gather(
+            Some((Some(7), Some("✳ Fix the bug"))),
+            Some((None, Some(BASH))),
+        );
+        assert_eq!(found, (Some(7), Some("✳ Fix the bug".into())));
+        assert_eq!(read, [ConsoleOf::Cli(30)], "the parent is not needed");
+        // Plain console / default terminal: the CLI's conhost window is the
+        // only window anywhere, its title still the shell's.
+        let (found, _) = gather(
+            Some((Some(7), Some(r"C:\WINDOWS\system32\cmd.exe"))),
+            Some((None, Some(BASH))),
+        );
+        assert_eq!(found, (Some(7), None));
+    }
+
+    #[test]
+    fn the_parents_console_fills_what_the_clis_lacks() {
+        // No CLI console to attach to.
+        let (found, read) = gather(None, Some((Some(9), Some("tab"))));
+        assert_eq!(found, (Some(9), Some("tab".into())));
+        assert_eq!(read, [ConsoleOf::Cli(30), ConsoleOf::Parent]);
+        // A windowless CLI console (Claude Desktop) with a title.
+        let (found, _) = gather(Some((None, Some("✳ Task"))), Some((Some(9), Some(BASH))));
+        assert_eq!(found, (Some(9), Some("✳ Task".into())));
+        // Nothing anywhere.
+        assert_eq!(gather(None, None).0, (None, None));
     }
 
     fn row(pid: u32, ppid: u32, exe: &str) -> ProcRow {
