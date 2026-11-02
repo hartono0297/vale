@@ -711,6 +711,12 @@ pub struct Renderer {
     legible: std::cell::Cell<f32>,
     /// The cat's colour and accessory for this frame (`Frame::cat`).
     cat: std::cell::Cell<CatLook>,
+    /// The Notifikasi time column's width (`notif_time_w`) for the language
+    /// and year it was measured for; `set_ui_font` clears it.
+    notif_time_cache: std::cell::Cell<Option<(crate::i18n::Lang, i32, f32)>>,
+    /// The compact pomodoro's countdown box (`pomo_compact_time_w`);
+    /// `set_ui_font` clears it.
+    pomo_time_cache: std::cell::Cell<Option<f32>>,
 }
 
 struct Fonts {
@@ -944,6 +950,8 @@ impl Renderer {
                 robot_later: std::cell::Cell::new(None),
                 legible: std::cell::Cell::new(0.0),
                 cat: std::cell::Cell::new(CatLook::default()),
+                notif_time_cache: std::cell::Cell::new(None),
+                pomo_time_cache: std::cell::Cell::new(None),
             })
         }
     }
@@ -963,6 +971,9 @@ impl Renderer {
         }
         self.fonts = Fonts::new(&self.dwrite, ui)?;
         self.ui_font = ui;
+        // Widths measured in the old font.
+        self.notif_time_cache.set(None);
+        self.pomo_time_cache.set(None);
         Ok(())
     }
 
