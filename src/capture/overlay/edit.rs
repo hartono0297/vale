@@ -30,9 +30,9 @@ use windows_numerics::Vector2;
 use super::{Phase, State, black, invalidate, with};
 use crate::capture::inline::{
     BarLabels, Btn, Cursor, EscStep, FinishKind, InlineKey, KeyCtx, Layer, PAINT_ORDER, PANEL_GAP,
-    Panel, SelHandle, SelectPress, Side, bar_layout, cursor_over, esc_step, inline_key, label_rect,
-    move_sel, place_side, resize_sel, select_press, separate, strip_layout, tip, tooltip_rect,
-    ui_for,
+    Panel, SelHandle, SelectPress, Side, bar_layout, cursor_over, drag_handle, esc_step,
+    grab_offset, inline_key, label_rect, move_sel, place_side, select_press, separate,
+    strip_layout, tip, tooltip_rect, ui_for,
 };
 use crate::capture::{Rect, drag_rect, is_click, size_label, win};
 use crate::i18n::{Key, tr};
@@ -74,9 +74,12 @@ pub(super) enum Drag {
         start: Rect,
         from: (i32, i32),
     },
+    /// A handle of the selection, grabbed `grab` px off its point (it is
+    /// grabbed anywhere within the tolerance); the edge keeps that offset.
     ResizeSel {
         start: Rect,
         handle: SelHandle,
+        grab: (i32, i32),
     },
 }
 
@@ -521,6 +524,7 @@ fn press(e: &mut Edit, env: &Env, p: (i32, i32), double: bool, edit_was_open: bo
                     e.drag = Some(Drag::ResizeSel {
                         start: e.sel,
                         handle,
+                        grab: grab_offset(e.sel, handle, p),
                     });
                     Down::Dragging
                 }
@@ -701,8 +705,12 @@ pub(super) fn on_move(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
                 let r = move_sel(*start, p.0 - from.0, p.1 - from.1, bounds);
                 set_sel(e, env, r) || changed
             }
-            Drag::ResizeSel { start, handle } => {
-                let r = resize_sel(*start, *handle, p, bounds);
+            Drag::ResizeSel {
+                start,
+                handle,
+                grab,
+            } => {
+                let r = drag_handle(*start, *handle, *grab, p, bounds);
                 set_sel(e, env, r) || changed
             }
         }

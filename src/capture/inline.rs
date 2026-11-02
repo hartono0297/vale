@@ -495,6 +495,27 @@ pub fn resize_sel(sel: Rect, handle: SelHandle, to: (i32, i32), bounds: Rect) ->
     Rect::new(x0, y0, x1 - x0, y1 - y0)
 }
 
+/// How far `at` (the press) is from `handle`'s point on `sel`. A handle is
+/// grabbed anywhere within the tolerance, so the press is rarely on it.
+pub fn grab_offset(sel: Rect, handle: SelHandle, at: (i32, i32)) -> (i32, i32) {
+    let h = handle.point(sel);
+    (at.0 - h.0, at.1 - h.1)
+}
+
+/// `sel` (as it was when the drag began) with `handle`, grabbed `grab` px
+/// off its point, dragged until the pointer is at `p`: the edge keeps the
+/// press's offset, so it moves exactly as far as the pointer (a 1 px nudge
+/// is 1 px), never jumping onto the pointer.
+pub fn drag_handle(
+    sel: Rect,
+    handle: SelHandle,
+    grab: (i32, i32),
+    p: (i32, i32),
+    bounds: Rect,
+) -> Rect {
+    resize_sel(sel, handle, (p.0 - grab.0, p.1 - grab.1), bounds)
+}
+
 /// `sel` (as it was when the drag began) moved by `(dx, dy)`: the size
 /// stays, the place is kept inside `bounds`.
 pub fn move_sel(sel: Rect, dx: i32, dy: i32, bounds: Rect) -> Rect {
@@ -1153,6 +1174,38 @@ mod tests {
             resize_sel(sel, SelHandle::S, (0, 450), BOUNDS),
             Rect::new(200, 200, 300, 250)
         );
+    }
+
+    #[test]
+    fn a_handle_grabbed_off_its_point_moves_as_far_as_the_pointer() {
+        // Pressed 7 px right of E (inside the tolerance), then a 1 px move.
+        let sel = Rect::new(100, 100, 400, 300);
+        let press = (507, 250);
+        assert_eq!(handle_at(sel, press, 10), Some(SelHandle::E));
+        let grab = grab_offset(sel, SelHandle::E, press);
+        assert_eq!(grab, (7, 0));
+        // Resizing straight to the pointer jumps the edge from 500 to 508.
+        assert_eq!(
+            resize_sel(sel, SelHandle::E, (508, 250), BOUNDS).right(),
+            508
+        );
+        // Keeping the grab: the edge moves 1 px.
+        let r = drag_handle(sel, SelHandle::E, grab, (508, 250), BOUNDS);
+        assert_eq!(r, Rect::new(100, 100, 401, 300));
+        // Not moved at all: nothing changes.
+        assert_eq!(drag_handle(sel, SelHandle::E, grab, press, BOUNDS), sel);
+        // A corner grabbed up and to the left of its point, both axes.
+        let press = (95, 94);
+        let grab = grab_offset(sel, SelHandle::Nw, press);
+        assert_eq!(grab, (-5, -6));
+        assert_eq!(drag_handle(sel, SelHandle::Nw, grab, press, BOUNDS), sel);
+        let r = drag_handle(sel, SelHandle::Nw, grab, (96, 93), BOUNDS);
+        assert_eq!(r, Rect::new(101, 99, 399, 301));
+        // An edge handle off the middle along its edge: that axis is free.
+        let press = (300, 405);
+        let grab = grab_offset(sel, SelHandle::S, press);
+        let r = drag_handle(sel, SelHandle::S, grab, (290, 404), BOUNDS);
+        assert_eq!(r, Rect::new(100, 100, 400, 299));
     }
 
     #[test]
