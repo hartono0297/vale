@@ -47,6 +47,9 @@ combination, and Terminal has its own round trip).
 
 Auto never resolves to Terminal (a test checks it for every cat, robot on or off).
 
+Terminal also makes the dark windows (Settings, the editors, the screenshot
+editor) neutral instead of warm brown: [[terminal-windows]].
+
 The coloured surfaces lift their own colour the way Graphite lifts Espresso:
 raised +12, raised_hi +34, track and placeholder +26, column +5, dot_off +50
 on every channel (Espresso and Graphite keep their pinned values). On

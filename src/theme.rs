@@ -425,7 +425,9 @@ pub struct WindowPalette {
     pub tertiary: u32,
 }
 
-/// The warm window palette (what every surface but Terminal uses).
+/// The warm window palette (what every surface but Terminal uses). The app
+/// itself calls `window_for`; this is the reference the tests compare it with.
+#[cfg(test)]
 pub fn window(accent: Accent, mode: WindowTheme, system_light: bool) -> WindowPalette {
     window_for(accent, Surface::Espresso, mode, system_light)
 }
@@ -942,7 +944,10 @@ mod tests {
         );
         // The island's Terminal fill and raised step.
         assert_eq!(p.bg, Surface::Terminal.rgb());
-        assert_eq!(p.field, island(Accent::Terracotta, Surface::Terminal).raised);
+        assert_eq!(
+            p.field,
+            island(Accent::Terracotta, Surface::Terminal).raised
+        );
         assert_eq!(p.secondary, Surface::Terminal.secondary());
     }
 
@@ -1003,17 +1008,28 @@ mod tests {
             assert_eq!(p.selection >> 8, p.accent, "{a:?}");
             // Placeholders: the same quiet class as the warm palette's.
             let c = contrast(p.tertiary, p.bg);
-            assert!((c - warm_tertiary).abs() <= 0.15, "{c:.2} vs {warm_tertiary:.2}");
+            assert!(
+                (c - warm_tertiary).abs() <= 0.15,
+                "{c:.2} vs {warm_tertiary:.2}"
+            );
             assert!(c < 4.5 && warm_tertiary < 4.5);
             // The picked time reads in the accent on its tint.
-            assert!(contrast(p.accent, over(p.popover, p.selection)) >= 3.0, "{a:?}");
+            assert!(
+                contrast(p.accent, over(p.popover, p.selection)) >= 3.0,
+                "{a:?}"
+            );
             assert_ne!(p.hover, p.popover);
         }
     }
 
     #[test]
     fn neutral_window_palette_has_no_warm_tint() {
-        let p = window_for(Accent::Terracotta, Surface::Terminal, WindowTheme::Dark, false);
+        let p = window_for(
+            Accent::Terracotta,
+            Surface::Terminal,
+            WindowTheme::Dark,
+            false,
+        );
         for (name, c) in [
             ("bg", p.bg),
             ("card", p.card),

@@ -4199,12 +4199,7 @@ mod tests {
         // Dark to light: both.
         assert_eq!(style_changes(Some(key(&neutral)), &light), (true, true));
         // An accent change alone leaves the title bar alone.
-        let other = window_for(
-            Accent::Sage,
-            Surface::Terminal,
-            WindowTheme::Dark,
-            false,
-        );
+        let other = window_for(Accent::Sage, Surface::Terminal, WindowTheme::Dark, false);
         assert_eq!(style_changes(Some(key(&neutral)), &other), (false, false));
     }
 
