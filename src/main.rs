@@ -124,6 +124,13 @@ fn main() {
             attach_parent_console();
             sources::notif_open::probe(std::env::args().skip(2).collect());
         }
+        // `<hook payload> | vale --probe-claude-open`: the origin the hook
+        // would capture here and what a click on its notice would do. Looks
+        // only; nothing is focused, invoked, selected or opened.
+        Some("--probe-claude-open") => {
+            attach_parent_console();
+            sources::claude_open::probe();
+        }
         #[cfg(debug_assertions)]
         Some("--probe-media") => {
             attach_parent_console();

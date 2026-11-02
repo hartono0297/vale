@@ -2264,6 +2264,9 @@ impl IslandState {
     fn dismiss_sticky(&mut self, notice: &Notice) -> Option<Effect> {
         self.clear_sticky(sticky_key(notice)?);
         match &notice.kind {
+            NoticeKind::ClaudeWaiting { session_id } => Some(Effect::OpenClaudeSession {
+                session_id: session_id.clone(),
+            }),
             NoticeKind::Reminder { id } => Some(Effect::ReminderDone(id.clone())),
             NoticeKind::MoleFailed => {
                 self.open_mole_log();
@@ -2289,6 +2292,7 @@ impl IslandState {
                     body: notice.body,
                 }))
             }
+            NoticeKind::ClaudeDone { session_id } => Some(Effect::OpenClaudeSession { session_id }),
             NoticeKind::ClaudeWaiting { .. }
             | NoticeKind::Reminder { .. }
             | NoticeKind::MoleFailed => self.dismiss_sticky(&notice),

@@ -14,7 +14,8 @@ use windows::Win32::System::Pipes::{
 use windows::core::HSTRING;
 
 use super::PIPE_NAME;
-use super::hook::{HookMessage, to_event};
+use super::hook::{HookKind, HookMessage, to_event};
+use super::origin;
 use crate::model::Event;
 
 const BUFFER_SIZE: u32 = 4096;
@@ -100,7 +101,21 @@ fn read_event(client: File) -> Option<Event> {
         .read_until(b'\n', &mut line)
         .ok()?;
     let msg: HookMessage = serde_json::from_slice(&line).ok()?;
+    note_origin(&msg);
     Some(to_event(msg))
+}
+
+/// A notice's origin goes to the side registry (the click looks it up by
+/// session id); a notice from an older hook binary, with none, clears the
+/// session's entry so its click only dismisses, as before. Activity leaves it.
+fn note_origin(msg: &HookMessage) {
+    if msg.kind == HookKind::Activity {
+        return;
+    }
+    match &msg.origin {
+        Some(o) => origin::remember(&msg.session_id, o.clone(), &msg.project),
+        None => origin::forget(&msg.session_id),
+    }
 }
 
 #[cfg(test)]
@@ -110,6 +125,7 @@ mod tests {
 
     use super::*;
     use crate::claude::hook::{HookKind, HookMessage, send_line};
+    use crate::claude::origin::ClaudeOrigin;
 
     /// Sends `line`, retrying while the server thread is still creating its pipe.
     fn send_when_ready(name: &str, line: &[u8]) {
@@ -138,6 +154,7 @@ mod tests {
             session_id: "s9".into(),
             project: "p".into(),
             message: None,
+            origin: None,
         };
         let mut line = serde_json::to_vec(&msg).unwrap();
         line.push(b'\n');
@@ -155,5 +172,50 @@ mod tests {
             rx.try_recv().is_err(),
             "malformed line must not produce an event"
         );
+    }
+
+    #[test]
+    fn origin_goes_to_the_registry_and_an_older_line_forgets_it() {
+        let name = format!(r"\\.\pipe\vale-test-origin-{}", std::process::id());
+        let (tx, rx) = mpsc::channel();
+        let server_name = name.clone();
+        std::thread::spawn(move || serve(&server_name, tx, || {}));
+
+        let send = |line: String| {
+            let mut line = line.into_bytes();
+            line.push(b'\n');
+            send_when_ready(&name, &line);
+            rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        };
+        let with_origin = HookMessage {
+            kind: HookKind::Done,
+            session_id: "pipe-origin-1".into(),
+            project: "proj".into(),
+            message: None,
+            origin: Some(ClaudeOrigin {
+                host_pid: 42,
+                host_exe: "windowsterminal.exe".into(),
+                ..Default::default()
+            }),
+        };
+        send(serde_json::to_string(&with_origin).unwrap());
+        let got = origin::get("pipe-origin-1").unwrap();
+        assert_eq!(got.origin.host_pid, 42);
+        assert_eq!(got.project, "proj");
+
+        // Activity leaves the entry alone.
+        send(
+            r#"{"kind":"Activity","session_id":"pipe-origin-1","project":"proj","message":null}"#
+                .into(),
+        );
+        assert!(origin::get("pipe-origin-1").is_some());
+
+        // A line from an older hook binary has no `origin`: it parses, and
+        // the session's entry is gone.
+        send(
+            r#"{"kind":"Waiting","session_id":"pipe-origin-1","project":"proj","message":"m"}"#
+                .into(),
+        );
+        assert_eq!(origin::get("pipe-origin-1"), None);
     }
 }

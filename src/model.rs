@@ -599,6 +599,10 @@ pub struct OpenTarget {
 pub enum Effect {
     /// Bring forward where a caught toast came from.
     OpenTarget(OpenTarget),
+    /// A Claude notice was clicked: bring forward the Claude Code session it
+    /// came from (`sources::claude_open`). Nothing happens when the hook sent
+    /// no origin; it never starts anything.
+    OpenClaudeSession { session_id: String },
     Media(MediaCommand),
     PlaySound,
     SavePomodoro(PomoSettings),

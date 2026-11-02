@@ -1891,6 +1891,7 @@ impl App {
     fn perform(&mut self, effect: Effect, now: Instant) -> Option<Event> {
         match effect {
             Effect::OpenTarget(target) => notif_open::open(target),
+            Effect::OpenClaudeSession { session_id } => notif_open::open_claude(session_id),
             // To the session the island shows (by key), not whichever is current.
             Effect::Media(cmd) => {
                 let target = self.state.media().map_or_else(
