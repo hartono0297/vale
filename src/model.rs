@@ -724,8 +724,7 @@ pub enum Effect {
     Clip(ClipAction),
     /// Something to do with the screenshot on preview.
     Shot(ShotAction),
-    /// Open Vale's own Settings window (the "Setelan Vale" tile, and the
-    /// panel header's Settings button).
+    /// Open Vale's own Settings window (the panel header's Settings button).
     OpenSettings,
     /// The "Update" chip of the update notice: download, verify and swap in
     /// the release `App` knows.

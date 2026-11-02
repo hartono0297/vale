@@ -106,8 +106,8 @@ pub enum Icon {
     /// The Mixer rows' speaker, and its muted twin. Line only.
     Volume,
     VolumeMute,
-    /// Vale's own Settings tile (two sliders), so it is not the Windows
-    /// Settings gear. Line only.
+    /// The panel header's Settings button (two sliders), so it is not the
+    /// Windows Settings gear. Line only.
     Sliders,
     /// The System page's tile (a chip with pins). Line only.
     Chip,

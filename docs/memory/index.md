@@ -52,7 +52,7 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[panel-linger-and-motion]]: the panel stays open 4 s after an action; every page and sub-view change moves (slide, fade, reveal), reduced motion, budget
 - [[scroll-volume]]: the wheel over the music notch / cover turns the master volume 2 % a notch
 - [[lyrics-sync]]: position rate, resync tolerance, lookahead, no manual offset since 3.9, lrclib title clean + search fallback
-- [[shortcut-tiles]]: Pintasan tiles chosen in Settings (page jumps, Vale Settings, own tiles added in a form), drag to reorder
+- [[shortcut-tiles]]: Pintasan tiles chosen in Settings (page jumps, own tiles added in a form; the Vale Settings tile retired in v3.12), drag to reorder
 - [[gestures]]: middle click, swipe and sideways wheel on the music views; sideways swipe turns panel pages (v3.6)
 - [[v3-2-handoff]]: where v3.2 stands, what is unverified, owner steps
 - [[v3-3-handoff]]: v3.3 (icon refresh, stay-behind rise, shelf drop, file search), owner checks, minors left
