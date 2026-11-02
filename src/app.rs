@@ -359,7 +359,11 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
     tray::follow_system_menu_theme();
     theme::set_current(Theme::of(&config));
     let win = IslandWindow::create(Some(wnd_proc)).expect("create island window");
-    let renderer = Renderer::new().expect("create renderer");
+    let mut renderer = Renderer::new().expect("create renderer");
+    // Before the first draw: the typeface of the notch and the panel.
+    if let Err(error) = renderer.set_ui_font(config.font) {
+        eprintln!("vale: cannot set the UI font: {error}");
+    }
     let hwnd = win.hwnd();
     let cli_input = CliInput::create(hwnd, deliver_cli_key)
         .inspect_err(|e| eprintln!("vale: no CLI input: {e}"))
@@ -5476,8 +5480,31 @@ impl App {
             self.calendar_asked = None;
         }
         self.apply_theme();
+        self.apply_ui_font();
         // Stay-behind, the cat and its motion decide the pointer poll.
         self.follow_pointer_settings(Instant::now());
+    }
+
+    /// Puts a changed UI font (Settings or a hand edit) into effect now: the
+    /// renderer rebuilds its formats, the lyric line on screen is measured
+    /// again (the notch is as wide as its line, `lyric_text_width`) and
+    /// everything redraws. Compared with the font in effect, so a caller may
+    /// set the field first.
+    fn apply_ui_font(&mut self) {
+        let font = self.config.font;
+        if self.renderer.ui_font() == font {
+            return;
+        }
+        if let Err(error) = self.renderer.set_ui_font(font) {
+            eprintln!("vale: cannot set the UI font: {error}");
+            return;
+        }
+        let now = Instant::now();
+        if self.state.view() == View::MediaLyric {
+            self.fit_lyric_line(now);
+        }
+        self.refresh(now);
+        self.draw(now);
     }
 
     /// Puts a changed accent, surface or window mode into effect: the island
@@ -5546,6 +5573,11 @@ impl App {
             }
             SettingsAction::Surface(surface) => {
                 self.config.surface = surface;
+                self.save_config();
+            }
+            // `adopt_config` (from the save) switches the typeface live.
+            SettingsAction::Font(font) => {
+                self.config.font = font;
                 self.save_config();
             }
             // A live step follows the pointer and saves nothing; the release

@@ -51,7 +51,7 @@ use super::settings_layout::{
     SLIDER_THUMB, SWATCH_RING_GAP, SWATCH_RING_W, Section, Segment, Text, Tone, accent_key,
     hotkey_caps_w, slider_x,
 };
-use crate::config::Style;
+use crate::config::{Style, UiFont};
 use crate::i18n::{Key, Lang, text};
 use crate::theme;
 use crate::theme::{Accent, CatAccessory, CatColor, Palette, Surface, WindowPalette};
@@ -102,6 +102,8 @@ pub struct Scene<'a> {
 pub struct Gfx {
     d2d: ID2D1Factory,
     dwrite: IDWriteFactory,
+    /// The UI typeface the formats are made in.
+    ui: UiFont,
     formats: HashMap<(Font, Align), IDWriteTextFormat>,
     /// Tabular figures, set on the digits of the fonts that line numbers up
     /// (`Font::tabular`). Only on the digits: DM Sans's `tnum` also widens
@@ -133,37 +135,51 @@ struct Target {
 }
 
 impl Gfx {
-    pub fn new() -> Result<Self> {
+    /// The text formats of every `Font` style (and the preview island's
+    /// line) in the UI typeface `ui`: DM Sans (display: 600, tracked) or
+    /// JetBrains Mono (display: 600, not tracked) when embedded, else Segoe
+    /// UI Variable.
+    #[allow(clippy::type_complexity)]
+    fn text_formats(
+        dwrite: &IDWriteFactory,
+        ui: UiFont,
+    ) -> Result<(
+        HashMap<(Font, Align), IDWriteTextFormat>,
+        IDWriteTextFormat,
+    )> {
+        let text = Face::for_role_in(dwrite, Role::Text, ui);
+        let display = Face::for_role_in(dwrite, Role::Display, ui);
+        let mut formats = HashMap::new();
+        for font in Font::ALL {
+            let face = if font.display() { &display } else { &text };
+            let weight = DWRITE_FONT_WEIGHT(i32::from(font.weight()));
+            for (align, a) in [
+                (Align::Left, DWRITE_TEXT_ALIGNMENT_LEADING),
+                (Align::Center, DWRITE_TEXT_ALIGNMENT_CENTER),
+            ] {
+                let format = line_format(dwrite, face, weight, font.size(), a)?;
+                formats.insert((font, align), format);
+            }
+        }
+        let island_text = line_format(
+            dwrite,
+            &text,
+            DWRITE_FONT_WEIGHT_NORMAL,
+            12.0,
+            DWRITE_TEXT_ALIGNMENT_LEADING,
+        )?;
+        Ok((formats, island_text))
+    }
+
+    pub fn new(ui: UiFont) -> Result<Self> {
         unsafe {
             let d2d: ID2D1Factory = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
             let dwrite: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
-            // DM Sans (display: 600, tracked) when embedded, else Segoe UI
-            // Variable.
-            let text = Face::for_role(&dwrite, Role::Text);
-            let display = Face::for_role(&dwrite, Role::Display);
-            let mut formats = HashMap::new();
-            for font in Font::ALL {
-                let face = if font.display() { &display } else { &text };
-                let weight = DWRITE_FONT_WEIGHT(i32::from(font.weight()));
-                for (align, a) in [
-                    (Align::Left, DWRITE_TEXT_ALIGNMENT_LEADING),
-                    (Align::Center, DWRITE_TEXT_ALIGNMENT_CENTER),
-                ] {
-                    let format = line_format(&dwrite, face, weight, font.size(), a)?;
-                    formats.insert((font, align), format);
-                }
-            }
-            let normal = DWRITE_FONT_WEIGHT_NORMAL;
+            let (formats, island_text) = Gfx::text_formats(&dwrite, ui)?;
             Ok(Gfx {
                 icons: IconSet::new(&d2d)?,
                 robot: RobotPainter::new(&d2d)?,
-                island_text: line_format(
-                    &dwrite,
-                    &text,
-                    normal,
-                    12.0,
-                    DWRITE_TEXT_ALIGNMENT_LEADING,
-                )?,
+                island_text,
                 ears: ears_geometry(&d2d)?,
                 head: head_geometry(&d2d)?,
                 round: d2d.CreateStrokeStyle(
@@ -178,11 +194,27 @@ impl Gfx {
                 plain: dwrite.CreateTypography()?,
                 d2d,
                 dwrite,
+                ui,
                 formats,
                 widths: RefCell::new(HashMap::new()),
                 target: None,
             })
         }
+    }
+
+    /// Switches the UI typeface: the formats are rebuilt and the measured
+    /// widths forgotten (they belong to the old font), only when `ui`
+    /// differs. The caller lays out again.
+    pub fn set_font(&mut self, ui: UiFont) -> Result<()> {
+        if ui == self.ui {
+            return Ok(());
+        }
+        let (formats, island_text) = Gfx::text_formats(&self.dwrite, ui)?;
+        self.formats = formats;
+        self.island_text = island_text;
+        self.widths.borrow_mut().clear();
+        self.ui = ui;
+        Ok(())
     }
 
     /// One line of `text` in a `w` × `h` box in `style`: with `tabular`, its
@@ -192,7 +224,7 @@ impl Gfx {
     fn line(&self, text: &[u16], style: TextStyle, w: f32, h: f32) -> Result<IDWriteTextLayout> {
         let layout = fonts::text_layout(&self.dwrite, text, style.format, w, h, &self.plain)?;
         if let Some(size) = style.tracked {
-            fonts::apply_tracking(&layout, text.len() as u32, size)?;
+            fonts::apply_tracking_in(&layout, text.len() as u32, size, self.ui)?;
         }
         if style.tabular {
             for (start, len) in digit_runs(text) {
@@ -1812,7 +1844,7 @@ mod tests {
         const SIZE: u32 = 64;
         unsafe {
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-            let gfx = Gfx::new().expect("gfx");
+            let gfx = Gfx::new(UiFont::Sans).expect("gfx");
             let wic: IWICImagingFactory =
                 CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)
                     .expect("wic");

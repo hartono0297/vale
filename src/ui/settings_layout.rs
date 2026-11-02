@@ -15,7 +15,7 @@ use crate::cli_folders::CliStart;
 use crate::clipboard::store::{ITEMS_STEP, MAX_ITEMS, MIN_ITEMS};
 use crate::config::{
     ClipboardSettings, DISK_WARN_RANGE, NotchFill, NotifSettings, OpenMode, RAM_WARN_RANGE,
-    SHOT_SECS_RANGE, ScreenshotSettings, ShotIgnore, ShotTool, Style, ToastStyle,
+    SHOT_SECS_RANGE, ScreenshotSettings, ShotIgnore, ShotTool, Style, ToastStyle, UiFont,
 };
 use crate::hotkey::{Hotkey, HotkeyId, Hotkeys};
 use crate::i18n::{
@@ -391,6 +391,8 @@ pub enum Hit {
     NotchReset,
     /// "Isi notch": Solid or Tembus.
     NotchFill(NotchFill),
+    /// "Font": DM Sans or JetBrains Mono.
+    UiFont(UiFont),
     WindowMode(WindowTheme),
     Lang(Lang),
     Autostart,
@@ -600,6 +602,8 @@ pub enum Group {
     /// The Kucing preview's expression chips.
     CatFace,
     NotchFill,
+    /// Tampilan -> Island -> Font.
+    Font,
     Window,
     Lang,
     OpenMode,
@@ -1119,6 +1123,8 @@ pub struct State<'a> {
     pub style: Style,
     pub accent: Accent,
     pub surface: Surface,
+    /// The UI typeface (Tampilan -> Island -> Font).
+    pub font: UiFont,
     pub window: WindowTheme,
     /// The closed island's size and background (Tampilan -> Notch).
     pub notch_width: u32,
@@ -2076,8 +2082,8 @@ fn appearance(b: &mut Builder, s: &State) {
     let preview = b.card(PREVIEW_H);
     b.l.preview = Some(preview);
     titled(b, Key::GroupIsland);
-    let card = b.card(5.0 * ROW_H);
-    let rows: [f32; 5] = std::array::from_fn(|i| card.y + i as f32 * ROW_H);
+    let card = b.card(6.0 * ROW_H);
+    let rows: [f32; 6] = std::array::from_fn(|i| card.y + i as f32 * ROW_H);
     let cy = |y: f32| y + ROW_H / 2.0;
 
     let styles = [
@@ -2158,20 +2164,40 @@ fn appearance(b: &mut Builder, s: &State) {
     );
     b.divider(card, rows[2]);
 
-    let x = b.toggle(Hit::IdleClock, b.g.right, cy(rows[3]), s.idle_clock);
-    let desc = Some((b.t(Key::IdleClockDesc), Tone::Secondary));
-    b.row_text(card, rows[3], b.t(Key::IdleClock), desc, false, x);
+    // "Font": the typeface of the notch, the panel and this window. Separate
+    // from the surface; no presets.
+    let items = [
+        (UiFont::Sans, Key::UiFontSans),
+        (UiFont::Mono, Key::UiFontMono),
+    ]
+    .iter()
+    .map(|(v, k)| (Hit::UiFont(*v), b.t(*k)))
+    .collect();
+    let x = b.segmented(
+        Group::Font,
+        b.g.right,
+        cy(rows[3]),
+        items,
+        index_of(UiFont::ALL, &s.font),
+    );
+    let desc = Some((b.t(Key::UiFontDesc), Tone::Secondary));
+    b.row_text(card, rows[3], b.t(Key::UiFont), desc, false, x);
     b.divider(card, rows[3]);
+
+    let x = b.toggle(Hit::IdleClock, b.g.right, cy(rows[4]), s.idle_clock);
+    let desc = Some((b.t(Key::IdleClockDesc), Tone::Secondary));
+    b.row_text(card, rows[4], b.t(Key::IdleClock), desc, false, x);
+    b.divider(card, rows[4]);
 
     let x = b.toggle(
         Hit::EqFollowAudio,
         b.g.right,
-        cy(rows[4]),
+        cy(rows[5]),
         s.eq_follow_audio,
     );
     let desc = Some((b.t(Key::EqFollowAudioDesc), Tone::Secondary));
-    b.row_text(card, rows[4], b.t(Key::EqFollowAudio), desc, false, x);
-    b.divider(card, rows[4]);
+    b.row_text(card, rows[5], b.t(Key::EqFollowAudio), desc, false, x);
+    b.divider(card, rows[5]);
 
     notch_card(b, s);
 
@@ -4434,6 +4460,7 @@ mod tests {
                         style: Style::Notch,
                         accent: Accent::Ochre,
                         surface: Surface::Graphite,
+                        font: if locked { UiFont::Mono } else { UiFont::Sans },
                         window: WindowTheme::System,
                         notch_width: if locked { NOTCH_W_MAX } else { NOTCH_W_MIN },
                         notch_height: if locked { NOTCH_H_MAX } else { NOTCH_H_MIN },

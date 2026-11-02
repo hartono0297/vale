@@ -289,13 +289,19 @@ pub struct Face {
 impl Face {
     /// The face `role` is drawn in, embedded or fallback.
     pub fn for_role(dwrite: &IDWriteFactory, role: Role) -> Face {
-        Face::for_role_in(dwrite, role, UiFont::Sans)
+        let fonts = embedded(dwrite);
+        let choice = choose(role, fonts.loaded, |name| system_has(dwrite, name));
+        Face::of(fonts, choice)
     }
 
     /// The face `role` is drawn in for the UI typeface `ui` (`choose_in`).
     pub fn for_role_in(dwrite: &IDWriteFactory, role: Role, ui: UiFont) -> Face {
         let fonts = embedded(dwrite);
         let choice = choose_in(role, ui, fonts.loaded, |name| system_has(dwrite, name));
+        Face::of(fonts, choice)
+    }
+
+    fn of(fonts: &Embedded, choice: Choice) -> Face {
         Face {
             family: HSTRING::from(choice.family),
             collection: if choice.embedded {

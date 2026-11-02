@@ -948,6 +948,11 @@ impl Renderer {
         }
     }
 
+    /// The UI typeface the text formats are made in.
+    pub fn ui_font(&self) -> UiFont {
+        self.ui_font
+    }
+
     /// Switches the UI typeface (Settings -> Tampilan -> Island -> Font).
     /// Rebuilds the text formats only when the font changed, and remembers it
     /// for the display tracking. The caller redraws (and re-measures anything
