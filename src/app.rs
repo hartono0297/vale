@@ -7467,6 +7467,15 @@ fn open_menu(hwnd: HWND) {
         Some(MenuCmd::StyleNotch) => {
             with_app(|app| app.set_style(Style::Notch));
         }
+        // Same path as the Settings toggle. The menu is rebuilt from the config
+        // each time it opens, so a Settings change shows here without a sync.
+        Some(MenuCmd::Autostart) => {
+            with_app(|app| {
+                let on = !app.config.start_with_windows;
+                app.set_autostart(on);
+                app.sync_settings();
+            });
+        }
         Some(MenuCmd::Exit) => shutdown(hwnd),
         None => {}
     }

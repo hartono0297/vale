@@ -26,4 +26,16 @@ Windows (`AppsUseLightTheme`), not Vale's own "Tema jendela" setting.
 - Side effect: other native menus in the process (for example the right-click
   menu of the Settings edit controls) follow the Windows mode too.
 
+## Menu entries
+
+- Order: Settings, Search, -, Pill, Notch, -, Start with Windows, -, update
+  (check or install), Quit. Built by `menu_items` from the config each time the
+  menu opens, so the checkmarks always match the config.
+- "Start with Windows" is a check item (`MenuCmd::Autostart`, key
+  `Key::Autostart`, checked = `start_with_windows`). It flips the setting via
+  `App::set_autostart` (registry write, config saved only on success) and then
+  `sync_settings`, so an open Settings window follows. Same path as the
+  Settings -> Umum toggle; the other way round needs no code because the menu
+  is rebuilt on open.
+
 Related: [[logo]] (tray icon), [[settings-structure]] (window theme setting).
