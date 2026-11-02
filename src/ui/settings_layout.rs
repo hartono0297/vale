@@ -14,9 +14,9 @@ use crate::cli::Shell;
 use crate::cli_folders::CliStart;
 use crate::clipboard::store::{ITEMS_STEP, MAX_ITEMS, MIN_ITEMS};
 use crate::config::{
-    AfterCapture, ClipboardSettings, DISK_WARN_RANGE, NotchFill, NotifSettings, OpenMode,
-    RAM_WARN_RANGE, SHOT_SECS_RANGE, ScreenshotSettings, ShotIgnore, ShotTool, Style, ToastStyle,
-    UiFont,
+    AfterCapture, ClipboardSettings, DISK_WARN_RANGE, NotchFill, NotchMonitor, NotifSettings,
+    OpenMode, RAM_WARN_RANGE, SHOT_SECS_RANGE, ScreenshotSettings, ShotIgnore, ShotTool, Style,
+    ToastStyle, UiFont,
 };
 use crate::hotkey::{Hotkey, HotkeyId, Hotkeys};
 use crate::i18n::{
@@ -392,6 +392,10 @@ pub enum Hit {
     NotchReset,
     /// "Isi notch": Solid or Tembus.
     NotchFill(NotchFill),
+    /// "Monitor": a radio entry or a rectangle of the map.
+    NotchMonitor(MonitorPick),
+    /// "Tandai": numbers every screen for two seconds.
+    NotchIdentify,
     /// "Font": DM Sans or JetBrains Mono.
     UiFont(UiFont),
     WindowMode(WindowTheme),
@@ -513,6 +517,47 @@ pub enum Hit {
     /// "Cek pembaruan otomatis".
     UpdateAuto,
     DataFolder,
+}
+
+/// What a click in the Monitor list or map picks: Monitor utama, or the
+/// connected monitor at this place in `State::monitors`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MonitorPick {
+    Primary,
+    Entry(u8),
+}
+
+/// One connected monitor as the Settings window knows it (physical px).
+#[derive(Clone, Debug, PartialEq)]
+pub struct MonitorRow {
+    /// 1-based place, left to right then top to bottom.
+    pub number: usize,
+    /// The friendly name, or "Monitor N".
+    pub name: String,
+    pub w: i32,
+    pub h: i32,
+    /// Where it sits on the desktop (the map keeps the arrangement).
+    pub rect: crate::arrange::Rect,
+    pub primary: bool,
+    /// The device path the choice is saved by; empty when unknown.
+    pub path: String,
+    /// Has a path, so it can be chosen.
+    pub selectable: bool,
+}
+
+impl MonitorRow {
+    pub fn from_display(d: &crate::notch_monitor::Display) -> Self {
+        MonitorRow {
+            number: d.number,
+            name: crate::notch_monitor::display_name(d),
+            w: d.monitor.rect.w,
+            h: d.monitor.rect.h,
+            rect: d.monitor.rect,
+            primary: d.primary,
+            path: d.path.clone(),
+            selectable: d.selectable(),
+        }
+    }
 }
 
 /// What the Tentang → Pembaruan row says and offers.
@@ -762,6 +807,31 @@ pub enum Control {
         selected: Option<usize>,
         canvas: bool,
     },
+    /// "Monitor": every screen's rectangle scaled to fit `rect`, keeping the
+    /// arrangement. `lit` is the item the notch is on now. A rectangle takes a
+    /// click when its monitor can be chosen.
+    MonitorMap {
+        rect: Rect,
+        items: Vec<MapItem>,
+        lit: Option<usize>,
+    },
+    /// One radio entry of the Monitor list: `hit` is `None` for the entry of a
+    /// monitor that is not connected (it shows the choice, takes no click).
+    Radio {
+        hit: Option<Hit>,
+        rect: Rect,
+        selected: bool,
+    },
+}
+
+/// One screen in the map.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MapItem {
+    /// The place in `State::monitors`.
+    pub index: usize,
+    pub rect: Rect,
+    pub number: usize,
+    pub selectable: bool,
 }
 
 impl Control {
@@ -814,6 +884,17 @@ impl Control {
             Control::IconButton { .. } => Vec::new(),
             Control::HotkeyField { hit, rect, .. } => vec![(*hit, *rect)],
             Control::Mini { .. } => Vec::new(),
+            Control::MonitorMap { items, .. } => items
+                .iter()
+                .filter(|i| i.selectable)
+                .map(|i| (Hit::NotchMonitor(MonitorPick::Entry(i.index as u8)), i.rect))
+                .collect(),
+            Control::Radio {
+                hit: Some(hit),
+                rect,
+                ..
+            } => vec![(*hit, *rect)],
+            Control::Radio { hit: None, .. } => Vec::new(),
         }
     }
 
@@ -860,6 +941,13 @@ impl Control {
             Control::IconButton { rect, .. } => down(rect),
             Control::HotkeyField { rect, .. } => down(rect),
             Control::Mini { rect, .. } => down(rect),
+            Control::MonitorMap { rect, items, .. } => {
+                down(rect);
+                for i in items {
+                    down(&mut i.rect);
+                }
+            }
+            Control::Radio { rect, .. } => down(rect),
         }
     }
 
@@ -895,6 +983,8 @@ impl Control {
             Control::IconButton { rect, .. } => *rect,
             Control::HotkeyField { rect, .. } => *rect,
             Control::Mini { rect, .. } => *rect,
+            Control::MonitorMap { rect, .. } => *rect,
+            Control::Radio { rect, .. } => *rect,
         }
     }
 }
@@ -1138,6 +1228,9 @@ pub struct State<'a> {
     pub notch_height: u32,
     pub notch_fill: NotchFill,
     pub notch_opacity: u8,
+    /// "Monitor": the saved choice and the screens connected now.
+    pub notch_monitor: NotchMonitor,
+    pub monitors: &'a [MonitorRow],
     /// The idle island shows the clock.
     pub idle_clock: bool,
     pub eq_follow_audio: bool,
@@ -2283,14 +2376,301 @@ pub fn percent_value(pct: u8) -> String {
     format!("{pct} %")
 }
 
+/// The monitor map's height, and the gap under it.
+pub const MONITOR_MAP_H: f32 = 96.0;
+const MONITOR_MAP_GAP: f32 = 8.0;
+/// Space between two rectangles of the map.
+const MONITOR_MAP_SPACE: f32 = 4.0;
+/// One entry of the Monitor list, and the muted line for a single monitor.
+pub const RADIO_H: f32 = 32.0;
+const RADIO_NOTE_H: f32 = 24.0;
+/// The radio dot's column at the left of an entry, and the padding under the list.
+const RADIO_DOT_W: f32 = 30.0;
+const MONITOR_BLOCK_PAD: f32 = 8.0;
+
+/// The choice a click on `pick` makes, or `None` when it changes nothing: the
+/// monitor is not there, has no device path, or is the choice already.
+pub fn monitor_choice(
+    pick: MonitorPick,
+    monitors: &[MonitorRow],
+    current: &NotchMonitor,
+) -> Option<NotchMonitor> {
+    let want = match pick {
+        MonitorPick::Primary => NotchMonitor::Primary,
+        MonitorPick::Entry(i) => {
+            let m = monitors.get(usize::from(i)).filter(|m| m.selectable)?;
+            NotchMonitor::Chosen {
+                path: m.path.clone(),
+                name: m.name.clone(),
+            }
+        }
+    };
+    // Choosing the connected monitor the saved path already names is no change
+    // (the saved name may differ in case only).
+    let same = match (&want, current) {
+        (NotchMonitor::Chosen { path: a, .. }, NotchMonitor::Chosen { path: b, .. }) => {
+            crate::notch_monitor::same_path(a, b)
+        }
+        _ => want == *current,
+    };
+    (!same).then_some(want)
+}
+
+/// One line of the Monitor radio list.
+#[derive(Clone, Debug, PartialEq)]
+struct MonitorEntry {
+    label: String,
+    /// The muted text after the label.
+    note: String,
+    /// `None`: a saved monitor that is not connected, or one with no device
+    /// path (listed, not clickable).
+    pick: Option<MonitorPick>,
+    selected: bool,
+    /// Drawn in the secondary colour: it cannot be chosen.
+    muted: bool,
+    /// The note is a warning ("tidak terhubung").
+    warn: bool,
+}
+
+/// The place in `monitors` of the connected monitor the saved choice names.
+fn chosen_monitor(choice: &NotchMonitor, monitors: &[MonitorRow]) -> Option<usize> {
+    match choice {
+        NotchMonitor::Primary => None,
+        NotchMonitor::Chosen { path, .. } => monitors
+            .iter()
+            .position(|m| m.selectable && crate::notch_monitor::same_path(&m.path, path)),
+    }
+}
+
+/// The Monitor list: "Monitor utama", each connected monitor, and the saved
+/// one when it is not connected (selected, not clickable).
+fn monitor_entries(lang: Lang, s: &State) -> Vec<MonitorEntry> {
+    let primary_n = s
+        .monitors
+        .iter()
+        .find(|m| m.primary)
+        .or(s.monitors.first())
+        .map(|m| m.number);
+    let chosen = chosen_monitor(&s.notch_monitor, s.monitors);
+    let mut out = vec![MonitorEntry {
+        label: text(lang, Key::MonitorPrimary).to_owned(),
+        note: primary_n.map_or(String::new(), |n| crate::i18n::monitor_now(lang, n)),
+        pick: Some(MonitorPick::Primary),
+        selected: s.notch_monitor == NotchMonitor::Primary,
+        muted: false,
+        warn: false,
+    }];
+    for (i, m) in s.monitors.iter().enumerate() {
+        out.push(MonitorEntry {
+            label: crate::i18n::monitor_entry(m.number, &m.name),
+            note: crate::i18n::monitor_size(lang, m.w, m.h, m.primary),
+            pick: m.selectable.then_some(MonitorPick::Entry(i as u8)),
+            selected: chosen == Some(i),
+            muted: !m.selectable,
+            warn: false,
+        });
+    }
+    if let NotchMonitor::Chosen { name, .. } = &s.notch_monitor
+        && chosen.is_none()
+    {
+        out.push(MonitorEntry {
+            label: if name.trim().is_empty() {
+                text(lang, Key::MonitorChoice).to_owned()
+            } else {
+                name.clone()
+            },
+            note: text(lang, Key::MonitorNotConnected).to_owned(),
+            pick: None,
+            selected: true,
+            muted: true,
+            warn: true,
+        });
+    }
+    out
+}
+
+/// The height of the Monitor block at the top of the Notch card: the header
+/// row, the map (with monitors listed), the `entries` and the single-monitor note.
+fn monitor_block_h(s: &State, entries: usize) -> f32 {
+    let map = if s.monitors.is_empty() {
+        0.0
+    } else {
+        MONITOR_MAP_H + MONITOR_MAP_GAP
+    };
+    let note = if s.monitors.len() == 1 {
+        RADIO_NOTE_H
+    } else {
+        0.0
+    };
+    ROW_H + map + entries as f32 * RADIO_H + note + MONITOR_BLOCK_PAD
+}
+
+/// Each monitor's rectangle (physical px) scaled to fit `area` and centred in
+/// it, keeping the real arrangement, with `MONITOR_MAP_SPACE` between
+/// neighbours.
+pub fn map_rects(monitors: &[crate::arrange::Rect], area: Rect) -> Vec<Rect> {
+    let Some(first) = monitors.first() else {
+        return Vec::new();
+    };
+    let (mut left, mut top, mut right, mut bottom) =
+        (first.x, first.y, first.right(), first.bottom());
+    for m in monitors {
+        left = left.min(m.x);
+        top = top.min(m.y);
+        right = right.max(m.right());
+        bottom = bottom.max(m.bottom());
+    }
+    let (bw, bh) = (((right - left).max(1)) as f32, ((bottom - top).max(1)) as f32);
+    let scale = (area.w / bw).min(area.h / bh);
+    let (ox, oy) = (
+        area.x + (area.w - bw * scale) / 2.0,
+        area.y + (area.h - bh * scale) / 2.0,
+    );
+    let half = MONITOR_MAP_SPACE / 2.0;
+    monitors
+        .iter()
+        .map(|m| Rect {
+            x: ox + (m.x - left) as f32 * scale + half,
+            y: oy + (m.y - top) as f32 * scale + half,
+            w: (m.w as f32 * scale - MONITOR_MAP_SPACE).max(2.0),
+            h: (m.h as f32 * scale - MONITOR_MAP_SPACE).max(2.0),
+        })
+        .collect()
+}
+
+/// The top of the Notch card: "Monitor" with "Tandai", the map of the screens
+/// and the radio list.
+fn monitor_block(b: &mut Builder, card: Rect, s: &State, entries: &[MonitorEntry]) {
+    let identify = b.t(Key::MonitorIdentify);
+    let w = b.button_w(&[&identify], ButtonKind::Secondary);
+    let x = b.buttons(
+        b.g.right,
+        card.y + ROW_H / 2.0,
+        vec![(
+            Hit::NotchIdentify,
+            identify,
+            ButtonKind::Secondary,
+            true,
+            w,
+        )],
+    );
+    let desc = Some((b.t(Key::MonitorChoiceDesc), Tone::Secondary));
+    b.row_text(card, card.y, b.t(Key::MonitorChoice), desc, false, x);
+    let mut y = card.y + ROW_H;
+
+    if !s.monitors.is_empty() {
+        let area = Rect {
+            x: card.x + INSET,
+            y,
+            w: card.w - 2.0 * INSET,
+            h: MONITOR_MAP_H,
+        };
+        let rects: Vec<crate::arrange::Rect> = s.monitors.iter().map(|m| m.rect).collect();
+        let items: Vec<MapItem> = map_rects(&rects, area)
+            .into_iter()
+            .zip(s.monitors)
+            .enumerate()
+            .map(|(index, (rect, m))| MapItem {
+                index,
+                rect,
+                number: m.number,
+                selectable: m.selectable,
+            })
+            .collect();
+        let list: Vec<(&str, bool)> = s
+            .monitors
+            .iter()
+            .map(|m| (m.path.as_str(), m.primary))
+            .collect();
+        let lit = crate::notch_monitor::resolve_paths(&s.notch_monitor, &list);
+        for item in &items {
+            let tone = if item.selectable {
+                Tone::Primary
+            } else {
+                Tone::Secondary
+            };
+            b.text(
+                item.rect,
+                item.number.to_string(),
+                Font::Value,
+                tone,
+                Align::Center,
+            );
+        }
+        b.l.controls.push(Control::MonitorMap {
+            rect: area,
+            items,
+            lit,
+        });
+        y += MONITOR_MAP_H + MONITOR_MAP_GAP;
+    }
+
+    let row_x = card.x + 8.0;
+    let row_w = card.w - 16.0;
+    for e in entries {
+        let rect = Rect {
+            x: row_x,
+            y,
+            w: row_w,
+            h: RADIO_H,
+        };
+        b.l.controls.push(Control::Radio {
+            hit: e.pick.map(Hit::NotchMonitor),
+            rect,
+            selected: e.selected,
+        });
+        let label_x = rect.x + RADIO_DOT_W;
+        let room = rect.right() - 10.0 - label_x;
+        let label_w = (b.w(&e.label, Font::Control) + 2.0).min(room.max(0.0));
+        let tone = if e.muted {
+            Tone::Secondary
+        } else {
+            Tone::Primary
+        };
+        let label_rect = Rect {
+            x: label_x,
+            y,
+            w: label_w,
+            h: RADIO_H,
+        };
+        b.text(label_rect, e.label.clone(), Font::Control, tone, Align::Left);
+        if !e.note.is_empty() {
+            let note_x = label_x + label_w + 8.0;
+            let note_rect = Rect {
+                x: note_x,
+                y,
+                w: (rect.right() - 10.0 - note_x).max(0.0),
+                h: RADIO_H,
+            };
+            let note_tone = if e.warn { Tone::Warn } else { Tone::Secondary };
+            b.text(note_rect, e.note.clone(), Font::Desc, note_tone, Align::Left);
+        }
+        y += RADIO_H;
+    }
+    if s.monitors.len() == 1 {
+        let rect = Rect {
+            x: row_x + RADIO_DOT_W,
+            y,
+            w: (row_w - RADIO_DOT_W - 10.0).max(0.0),
+            h: RADIO_NOTE_H,
+        };
+        let note = b.t(Key::MonitorOnlyOne);
+        b.text(rect, note, Font::Desc, Tone::Secondary, Align::Left);
+    }
+}
+
 /// The closed island's size and background: width and height sliders, a
 /// reset to 190 x 34, "Solid" or "Tembus", and the opacity slider, which
 /// fades and takes no clicks unless it is Tembus.
 fn notch_card(b: &mut Builder, s: &State) {
     titled(b, Key::GroupNotch);
-    let card = b.card(5.0 * ROW_H);
-    let rows: [f32; 5] = std::array::from_fn(|i| card.y + i as f32 * ROW_H);
+    let entries = monitor_entries(b.lang, s);
+    let block = monitor_block_h(s, entries.len());
+    let card = b.card(block + 5.0 * ROW_H);
+    monitor_block(b, card, s, &entries);
+    let rows: [f32; 5] = std::array::from_fn(|i| card.y + block + i as f32 * ROW_H);
     let cy = |y: f32| y + ROW_H / 2.0;
+    b.divider(card, rows[0]);
 
     let x = b.slider(
         b.g.right,
@@ -4479,6 +4859,37 @@ mod tests {
         }
     }
 
+    fn row(number: usize, x: i32, primary: bool, name: &str, path: &str) -> MonitorRow {
+        MonitorRow {
+            number,
+            name: name.into(),
+            w: 1920,
+            h: 1080,
+            rect: crate::arrange::Rect::new(x, 0, 1920, 1080),
+            primary,
+            path: path.into(),
+            selectable: !path.is_empty(),
+        }
+    }
+
+    /// Three screens side by side, the middle one primary, two with the same
+    /// friendly name; and the one used to look at a single monitor.
+    fn three() -> &'static [MonitorRow] {
+        static LIST: std::sync::OnceLock<Vec<MonitorRow>> = std::sync::OnceLock::new();
+        LIST.get_or_init(|| {
+            vec![
+                row(1, -1920, false, "DELL U2415", r"\\?\DISPLAY#DEL#1"),
+                row(2, 0, true, "LG 27UL850", r"\\?\DISPLAY#GSM#2"),
+                row(3, 1920, false, "DELL U2415", r"\\?\DISPLAY#DEL#3"),
+            ]
+        })
+    }
+
+    fn one() -> &'static [MonitorRow] {
+        static LIST: std::sync::OnceLock<Vec<MonitorRow>> = std::sync::OnceLock::new();
+        LIST.get_or_init(|| vec![row(1, 0, true, "Generic PnP Monitor", r"\\?\DISPLAY#X#1")])
+    }
+
     fn states() -> Vec<State<'static>> {
         let mut out = Vec::new();
         for lang in [Lang::Id, Lang::En] {
@@ -4517,6 +4928,17 @@ mod tests {
                             NotchFill::Solid
                         },
                         notch_opacity: if locked { 0 } else { 100 },
+                        // Locked: three screens and a saved one that is gone;
+                        // otherwise the primary with no list.
+                        notch_monitor: if locked {
+                            NotchMonitor::Chosen {
+                                path: r"\\?\DISPLAY#GONE#9".into(),
+                                name: "Samsung Odyssey G7 (Wide)".into(),
+                            }
+                        } else {
+                            NotchMonitor::Primary
+                        },
+                        monitors: if locked { three() } else { &[] },
                         idle_clock: locked,
                         eq_follow_audio: !locked,
                         stay_behind: !locked,

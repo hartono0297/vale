@@ -19,6 +19,7 @@ version = "0.62"
 features = [
     "Win32_Foundation",
     "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_Devices_Display",
     "Win32_Devices_Usb",
     "Win32_System_Ioctl",
     "Win32_UI_WindowsAndMessaging",

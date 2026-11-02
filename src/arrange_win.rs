@@ -10,7 +10,15 @@
 use std::ffi::c_void;
 use std::sync::mpsc::Sender;
 
-use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, RECT};
+use windows::Win32::Devices::Display::{
+    DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME, DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME,
+    DISPLAYCONFIG_MODE_INFO, DISPLAYCONFIG_PATH_INFO, DISPLAYCONFIG_SOURCE_DEVICE_NAME,
+    DISPLAYCONFIG_TARGET_DEVICE_NAME, DisplayConfigGetDeviceInfo, GetDisplayConfigBufferSizes,
+    QDC_ONLY_ACTIVE_PATHS, QueryDisplayConfig,
+};
+use windows::Win32::Foundation::{
+    CloseHandle, ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS, HANDLE, HWND, LPARAM, RECT,
+};
 use windows::Win32::Graphics::Dwm::{
     DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute,
 };
@@ -27,7 +35,8 @@ use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GW_OWNER, GWL_EXSTYLE, GetClassNameW, GetWindow, GetWindowLongW,
     GetWindowPlacement, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsHungAppWindow,
-    IsIconic, IsWindow, IsWindowVisible, IsZoomed, SET_WINDOW_POS_FLAGS, SW_RESTORE,
+    IsIconic, IsWindow, IsWindowVisible, IsZoomed, MONITORINFOF_PRIMARY, SET_WINDOW_POS_FLAGS,
+    SW_RESTORE,
     SW_SHOWMINIMIZED, SW_SHOWMINNOACTIVE, SW_SHOWNOACTIVATE, SW_SHOWNORMAL, SWP_NOACTIVATE,
     SWP_NOOWNERZORDER, SWP_NOZORDER, SetWindowPlacement, SetWindowPos, ShowWindow, WINDOWPLACEMENT,
     WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
@@ -36,6 +45,7 @@ use windows::core::{BOOL, PWSTR};
 
 use crate::arrange::{ArrangeEvent, Monitor, OpenWindow, Placement, Rect};
 use crate::model::Event;
+use crate::notch_monitor::Display;
 
 /// Window classes that are never listed: the desktop and the taskbars.
 const SKIPPED_CLASSES: &[&str] = &[
@@ -50,36 +60,139 @@ const SKIPPED_CLASSES: &[&str] = &[
 /// The monitors, numbered in a stable order: left to right, then top to
 /// bottom. `work` excludes the taskbar.
 pub fn monitors() -> Vec<Monitor> {
+    displays().into_iter().map(|d| d.monitor).collect()
+}
+
+/// The device path and friendly name Windows gives one active display path.
+struct TargetNames {
+    /// The GDI name of the path's source (`\\.\DISPLAY1`).
+    gdi: String,
+    path: String,
+    name: String,
+}
+
+fn wide(units: &[u16]) -> String {
+    let n = units.iter().position(|c| *c == 0).unwrap_or(units.len());
+    String::from_utf16_lossy(&units[..n])
+}
+
+/// Every active display path with its source's GDI name and its target's
+/// device path and friendly name. Empty when Windows will not say; a failed
+/// target lookup leaves that entry's path and name empty. With cloned outputs
+/// the first target per source wins.
+fn target_names() -> Vec<TargetNames> {
+    unsafe {
+        let mut paths: Vec<DISPLAYCONFIG_PATH_INFO> = Vec::new();
+        let mut ok = false;
+        // The topology can change between the two calls: ask again.
+        for _ in 0..3 {
+            let (mut np, mut nm) = (0u32, 0u32);
+            if GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut np, &mut nm)
+                != ERROR_SUCCESS
+            {
+                return Vec::new();
+            }
+            paths = vec![DISPLAYCONFIG_PATH_INFO::default(); np as usize];
+            let mut modes = vec![DISPLAYCONFIG_MODE_INFO::default(); nm as usize];
+            let r = QueryDisplayConfig(
+                QDC_ONLY_ACTIVE_PATHS,
+                &mut np,
+                paths.as_mut_ptr(),
+                &mut nm,
+                modes.as_mut_ptr(),
+                None,
+            );
+            if r == ERROR_SUCCESS {
+                paths.truncate(np as usize);
+                ok = true;
+                break;
+            }
+            if r != ERROR_INSUFFICIENT_BUFFER {
+                return Vec::new();
+            }
+        }
+        if !ok {
+            return Vec::new();
+        }
+        let mut out: Vec<TargetNames> = Vec::new();
+        for p in &paths {
+            let mut src = DISPLAYCONFIG_SOURCE_DEVICE_NAME::default();
+            src.header.r#type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+            src.header.size = size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>() as u32;
+            src.header.adapterId = p.sourceInfo.adapterId;
+            src.header.id = p.sourceInfo.id;
+            if DisplayConfigGetDeviceInfo(&raw mut src.header) != 0 {
+                continue;
+            }
+            let gdi = wide(&src.viewGdiDeviceName);
+            if gdi.is_empty() || out.iter().any(|t| t.gdi.eq_ignore_ascii_case(&gdi)) {
+                continue;
+            }
+            let mut tgt = DISPLAYCONFIG_TARGET_DEVICE_NAME::default();
+            tgt.header.r#type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
+            tgt.header.size = size_of::<DISPLAYCONFIG_TARGET_DEVICE_NAME>() as u32;
+            tgt.header.adapterId = p.targetInfo.adapterId;
+            tgt.header.id = p.targetInfo.id;
+            let (path, name) = if DisplayConfigGetDeviceInfo(&raw mut tgt.header) == 0 {
+                (
+                    wide(&tgt.monitorDevicePath),
+                    wide(&tgt.monitorFriendlyDeviceName),
+                )
+            } else {
+                (String::new(), String::new())
+            };
+            out.push(TargetNames { gdi, path, name });
+        }
+        out
+    }
+}
+
+/// The connected displays in `monitors()` order, each with its stable device
+/// path and friendly name where Windows gives them.
+pub fn displays() -> Vec<Display> {
     unsafe extern "system" fn each(m: HMONITOR, _: HDC, _: *mut RECT, lparam: LPARAM) -> BOOL {
-        let list = unsafe { &mut *(lparam.0 as *mut Vec<Monitor>) };
+        let list = unsafe { &mut *(lparam.0 as *mut Vec<Display>) };
         let mut info = MONITORINFOEXW::default();
         info.monitorInfo.cbSize = size_of::<MONITORINFOEXW>() as u32;
         let ok = unsafe { GetMonitorInfoW(m, (&raw mut info).cast::<MONITORINFO>()) }.as_bool();
         if ok {
             let rect = |r: RECT| Rect::new(r.left, r.top, r.right - r.left, r.bottom - r.top);
-            let n = info
-                .szDevice
-                .iter()
-                .position(|c| *c == 0)
-                .unwrap_or(info.szDevice.len());
             let (mut dx, mut dy) = (96u32, 96u32);
             if unsafe { GetDpiForMonitor(m, MDT_EFFECTIVE_DPI, &mut dx, &mut dy) }.is_err() {
                 dx = 96;
             }
-            list.push(Monitor {
-                device: String::from_utf16_lossy(&info.szDevice[..n]),
-                rect: rect(info.monitorInfo.rcMonitor),
-                work: rect(info.monitorInfo.rcWork),
-                dpi: dx.max(96),
+            list.push(Display {
+                monitor: Monitor {
+                    device: wide(&info.szDevice),
+                    rect: rect(info.monitorInfo.rcMonitor),
+                    work: rect(info.monitorInfo.rcWork),
+                    dpi: dx.max(96),
+                },
+                hmonitor: m.0 as isize,
+                primary: info.monitorInfo.dwFlags & MONITORINFOF_PRIMARY != 0,
+                path: String::new(),
+                name: String::new(),
+                number: 0,
             });
         }
         true.into()
     }
-    let mut list: Vec<Monitor> = Vec::new();
+    let mut list: Vec<Display> = Vec::new();
     unsafe {
         let _ = EnumDisplayMonitors(None, None, Some(each), LPARAM((&raw mut list) as isize));
     }
-    list.sort_by_key(|m| (m.rect.x, m.rect.y));
+    list.sort_by_key(|d| (d.monitor.rect.x, d.monitor.rect.y));
+    let names = target_names();
+    for (i, d) in list.iter_mut().enumerate() {
+        d.number = i + 1;
+        if let Some(t) = names
+            .iter()
+            .find(|t| t.gdi.eq_ignore_ascii_case(&d.monitor.device))
+        {
+            d.path = t.path.clone();
+            d.name = t.name.clone();
+        }
+    }
     list
 }
 
