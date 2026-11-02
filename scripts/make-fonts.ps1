@@ -1,6 +1,6 @@
 # Builds the embedded fonts in assets\fonts: static, Latin-subset TTF files of
-# DM Sans and DM Mono, plus assets\fonts\OFL.txt.
-# app.rc embeds the TTFs as RCDATA 203-207; keep the file names in sync.
+# DM Sans, DM Mono and JetBrains Mono, plus assets\fonts\OFL.txt.
+# app.rc embeds the TTFs as RCDATA 203-210; keep the file names in sync.
 #
 # Sources are pinned by commit and SHA-256 below and downloaded into a fresh
 # scratch directory (-WorkDir, default a new folder under %TEMP%), never into
@@ -12,6 +12,11 @@
 # DM Sans comes from the upstream googlefonts/dm-fonts repo instead of
 # google/fonts: the google/fonts build predates the tabular-figures update and
 # has no tnum feature, which the clock and timers need.
+#
+# JetBrains Mono comes from the upstream JetBrains/JetBrainsMono repo (static
+# TTFs at the v2.304 tag commit). Its programming ligatures are dropped in the
+# subset (no calt, liga, dlig), so "->", "!=", "==" and "www" are drawn
+# literally by DirectWrite and GDI alike.
 #
 # Requires Windows PowerShell 5.1+ and Python 3.13 (the py launcher or python
 # on PATH). Re-run after changing a pin; commit the regenerated files.
@@ -29,6 +34,7 @@ $OutDir = Join-Path $Repo 'assets\fonts'
 
 $GoogleFonts = 'https://raw.githubusercontent.com/google/fonts'
 $DmFonts = 'https://raw.githubusercontent.com/googlefonts/dm-fonts'
+$JetBrainsMono = 'https://raw.githubusercontent.com/JetBrains/JetBrainsMono'
 $Sources = @(
     @{ Name = 'DMSans-VF.ttf'; Sha256 = 'A023F465D2F26D8F56C6E3CAC6AECE08B7A66EB75B4D75EEEF9DF838C53C81F6'
        Url = "$DmFonts/4412393b7d2de9fe7a92064c2dce9b5af5d7fd26/Sans/fonts/variable/DMSans%5Bopsz,wght%5D.ttf" }
@@ -40,6 +46,14 @@ $Sources = @(
        Url = "$GoogleFonts/bfb7c046dea572dca9fdd435481ba2f36b0a1ebc/ofl/dmmono/DMMono-Medium.ttf" }
     @{ Name = 'DMMono-OFL.txt'; Sha256 = '2BADA5EA45C3C63B7F1EA1F88CE9672C9E4F0C42B2C3B7378949084FE55A3066'
        Url = "$GoogleFonts/bfb7c046dea572dca9fdd435481ba2f36b0a1ebc/ofl/dmmono/OFL.txt" }
+    @{ Name = 'JetBrainsMono-Regular.ttf'; Sha256 = 'A0BF60EF0F83C5ED4D7A75D45838548B1F6873372DFAC88F71804491898D138F'
+       Url = "$JetBrainsMono/cd5227bd1f61dff3bbd6c814ceaf7ffd95e947d9/fonts/ttf/JetBrainsMono-Regular.ttf" }
+    @{ Name = 'JetBrainsMono-Medium.ttf'; Sha256 = '31C92D01A8A08528B718A43ADDF0AD3DF0AF2CA4B7B3290A452F70F358E14D3D'
+       Url = "$JetBrainsMono/cd5227bd1f61dff3bbd6c814ceaf7ffd95e947d9/fonts/ttf/JetBrainsMono-Medium.ttf" }
+    @{ Name = 'JetBrainsMono-SemiBold.ttf'; Sha256 = '1B3BFA1ED5665A4CE3F9FEB68D2D4E40E70BF8B4B7D9A3EDD418F321B4E166A0'
+       Url = "$JetBrainsMono/cd5227bd1f61dff3bbd6c814ceaf7ffd95e947d9/fonts/ttf/JetBrainsMono-SemiBold.ttf" }
+    @{ Name = 'JetBrainsMono-OFL.txt'; Sha256 = '30F0C136E3C88E422D0791ACD97238870F9054A9729BC34CF2FF0D4ED8CAC4AD'
+       Url = "$JetBrainsMono/cd5227bd1f61dff3bbd6c814ceaf7ffd95e947d9/OFL.txt" }
 )
 $PipPackages = @('fonttools==4.67.0', 'brotli==1.2.1')
 
@@ -59,16 +73,22 @@ src_dir, work_dir, out_dir, hinting = sys.argv[1], sys.argv[2], sys.argv[3], sys
 UNICODES = ("U+0020-007E,U+00A0-00FF,U+0100-017F,U+2010-2027,U+2030-203A,"
             "U+20AC,U+2122,U+2190-2193,U+2212,U+2713")
 FEATURES = "kern,liga,calt,ccmp,locl,mark,mkmk,tnum,pnum,lnum"
+# JetBrains Mono: the same list without calt, liga and dlig (ligatures dropped).
+FEATURES_NO_LIGA = "kern,ccmp,locl,mark,mkmk,tnum,pnum,lnum"
 NAME_IDS = "0,1,2,3,4,5,6,13,14,16,17"
 WEIGHT_NAMES = {400: "Regular", 500: "Medium", 600: "SemiBold"}
 
-# (source, axis location or None for a static source, output, family, weight)
+# (source, axis location or None for a static source, output, family, weight,
+# layout features)
 JOBS = [
-    ("DMSans-VF.ttf", {"wght": 400, "opsz": 12}, "DMSans-400.ttf", "DM Sans", 400),
-    ("DMSans-VF.ttf", {"wght": 500, "opsz": 12}, "DMSans-500.ttf", "DM Sans", 500),
-    ("DMSans-VF.ttf", {"wght": 600, "opsz": 12}, "DMSans-600.ttf", "DM Sans", 600),
-    ("DMMono-Regular.ttf", None, "DMMono-400.ttf", "DM Mono", 400),
-    ("DMMono-Medium.ttf", None, "DMMono-500.ttf", "DM Mono", 500),
+    ("DMSans-VF.ttf", {"wght": 400, "opsz": 12}, "DMSans-400.ttf", "DM Sans", 400, FEATURES),
+    ("DMSans-VF.ttf", {"wght": 500, "opsz": 12}, "DMSans-500.ttf", "DM Sans", 500, FEATURES),
+    ("DMSans-VF.ttf", {"wght": 600, "opsz": 12}, "DMSans-600.ttf", "DM Sans", 600, FEATURES),
+    ("DMMono-Regular.ttf", None, "DMMono-400.ttf", "DM Mono", 400, FEATURES),
+    ("DMMono-Medium.ttf", None, "DMMono-500.ttf", "DM Mono", 500, FEATURES),
+    ("JetBrainsMono-Regular.ttf", None, "JetBrainsMono-400.ttf", "JetBrains Mono", 400, FEATURES_NO_LIGA),
+    ("JetBrainsMono-Medium.ttf", None, "JetBrainsMono-500.ttf", "JetBrains Mono", 500, FEATURES_NO_LIGA),
+    ("JetBrainsMono-SemiBold.ttf", None, "JetBrainsMono-600.ttf", "JetBrains Mono", 600, FEATURES_NO_LIGA),
 ]
 
 
@@ -106,7 +126,7 @@ def set_names(font, family, weight):
 
 os.makedirs(work_dir, exist_ok=True)
 os.makedirs(out_dir, exist_ok=True)
-for src, location, out, family, weight in JOBS:
+for src, location, out, family, weight, features in JOBS:
     font = TTFont(os.path.join(src_dir, src))
     if location is not None:
         font = instancer.instantiateVariableFont(font, location, static=True)
@@ -117,7 +137,7 @@ for src, location, out, family, weight in JOBS:
         tmp,
         f"--output-file={os.path.join(out_dir, out)}",
         f"--unicodes={UNICODES}",
-        f"--layout-features={FEATURES}",
+        f"--layout-features={features}",
         f"--name-IDs={NAME_IDS}",
     ]
     if not hinting:
@@ -140,6 +160,9 @@ EXPECT = {
     "DMSans-600.ttf": ("DM Sans", "SemiBold", "Regular", 600),
     "DMMono-400.ttf": ("DM Mono", "Regular", "Regular", 400),
     "DMMono-500.ttf": ("DM Mono", "Medium", "Regular", 500),
+    "JetBrainsMono-400.ttf": ("JetBrains Mono", "Regular", "Regular", 400),
+    "JetBrainsMono-500.ttf": ("JetBrains Mono", "Medium", "Regular", 500),
+    "JetBrainsMono-600.ttf": ("JetBrains Mono", "SemiBold", "Regular", 600),
 }
 LIMIT = 370 * 1024
 
@@ -176,6 +199,14 @@ for file, (family, typo_sub, legacy_sub, weight) in EXPECT.items():
     for cp in (0x20, 0x7E, 0xE9, 0x2013, 0x2026, 0x20AC):
         if cp not in cmap:
             errors.append(f"{file}: U+{cp:04X} missing")
+    if file.startswith("JetBrainsMono"):
+        for tag in ("calt", "liga", "dlig"):
+            if tag in gsub:
+                errors.append(f"{file}: ligature feature {tag} still in GSUB")
+        hmtx = font["hmtx"]
+        widths = {cp: hmtx[cmap[cp]][0] for cp in range(0x30, 0x3A)}
+        if len(set(widths.values())) != 1:
+            errors.append(f"{file}: digit advances differ {widths}")
 print(f"total {total} bytes ({total / 1024:.1f} KB), limit {LIMIT // 1024} KB")
 if total > LIMIT:
     errors.append("total size over limit")
@@ -242,6 +273,7 @@ Invoke-Native $Py @('-I', $build, $SrcDir, $InstDir, $OutDir, $hint)
 $ofl = @(
     @{ File = 'DMSans-OFL.txt'; Title = 'DM Sans (Colophon Foundry, Google Fonts): DMSans-400.ttf, DMSans-500.ttf, DMSans-600.ttf' }
     @{ File = 'DMMono-OFL.txt'; Title = 'DM Mono (Colophon Foundry, Google Fonts): DMMono-400.ttf, DMMono-500.ttf' }
+    @{ File = 'JetBrainsMono-OFL.txt'; Title = 'JetBrains Mono (The JetBrains Mono Project Authors): JetBrainsMono-400.ttf, JetBrainsMono-500.ttf, JetBrainsMono-600.ttf' }
 )
 $text = "The fonts in this folder are subset static instances of the families below,`n" +
         "built by scripts/make-fonts.ps1. Each is licensed under the SIL Open Font`n" +

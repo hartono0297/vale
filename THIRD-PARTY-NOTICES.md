@@ -22,13 +22,16 @@ thank you to all of them.
 
 ### Fonts
 
-Latin subsets embedded in `vale.exe`, both under the **SIL Open Font Licence
+Latin subsets embedded in `vale.exe`, all under the **SIL Open Font Licence
 1.1** (text and copyright lines in [`assets/fonts/OFL.txt`](assets/fonts/OFL.txt)):
 
 - **DM Sans** by Colophon Foundry for Google Fonts, © 2014 The DM Sans
   Project Authors ([github.com/googlefonts/dm-fonts](https://github.com/googlefonts/dm-fonts)).
 - **DM Mono** by Colophon Foundry for Google Fonts, © 2020 The DM Mono
   Project Authors ([github.com/googlefonts/dm-fonts](https://github.com/googlefonts/dm-fonts)).
+- **JetBrains Mono** (UI font option), Copyright 2020 The JetBrains Mono Project
+  Authors ([github.com/JetBrains/JetBrainsMono](https://github.com/JetBrains/JetBrainsMono)),
+  SIL Open Font Licence 1.1; the programming ligatures are dropped in the subset.
 
 `scripts/make-fonts.ps1` rebuilds the subsets from the pinned upstream files.
 
