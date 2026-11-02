@@ -113,7 +113,7 @@ Hover the notch to open it, scroll to change pages. Hover the page dots under th
 
 <p align="center"><img src="assets/screenshots/notices.png" width="460" alt="Animated notices in the notch: a greeting, a copied item, a screenshot preview, a disk warning and a long lyric line"></p>
 
-Everything is set in **Settings**, from the tray icon, in nine sections: General, Appearance, Cat, Panel, Clipboard, Hotkeys, Features, Integrations and About. Appearance holds the island style, accent colour, island background (*Match cat*, Espresso, Graphite, Sea, Night or Plum), notch size and fill; Cat holds the coat, accessory, animation, sleep, the follow-pointer, dance-to-music and shrink-to-eyes switches and the greeting. Hotkeys holds all five global hotkeys (quick search, Clipboard, Devices, Susun and the Vale screenshot): click a field and press the keys you want, with a reset for each and for all. Settings also opens from the sliders button at the top right of every panel page. Open mode, page order, shortcuts, lyrics and language are there too. It can also stay behind your windows (experimental). The Settings window can be resized or maximised and opens where you left it. Every option is described in the [guide](docs/guide.md#settings).
+Everything is set in **Settings**, from the tray icon, in nine sections: General, Appearance, Cat, Panel, Clipboard, Hotkeys, Features, Integrations and About. Appearance holds the island style, accent colour, island background (*Match cat*, Espresso, Graphite, Sea, Night, Plum or Terminal), font (DM Sans or JetBrains Mono, switches live), notch size and fill; Cat holds the coat, accessory, animation, sleep, the follow-pointer, dance-to-music and shrink-to-eyes switches and the greeting. Hotkeys holds all five global hotkeys (quick search, Clipboard, Devices, Susun and the Vale screenshot): click a field and press the keys you want, with a reset for each and for all. Settings also opens from the sliders button at the top right of every panel page. Open mode, page order, shortcuts, lyrics and language are there too. It can also stay behind your windows (experimental). The Settings window can be resized or maximised and opens where you left it. Every option is described in the [guide](docs/guide.md#settings).
 
 ## Privacy
 
@@ -135,7 +135,7 @@ Tests: `cargo test --locked`. More in the [guide](docs/guide.md#build-from-sourc
 Vale is built on the work of others, with thanks:
 
 - **[Mole for Windows](https://github.com/tw93/Mole/tree/windows)** by tw93: the cleaner's list of safe-to-clean folders comes from Mole 1.30.0 (MIT), and the *Automatic · Mole* mode runs your own install of Mole.
-- **[DM Sans and DM Mono](https://github.com/googlefonts/dm-fonts)** by Colophon Foundry for Google Fonts (SIL Open Font License 1.1), embedded in the exe.
+- **[DM Sans and DM Mono](https://github.com/googlefonts/dm-fonts)** by Colophon Foundry for Google Fonts (SIL Open Font License 1.1), embedded in the exe, and **[JetBrains Mono](https://github.com/JetBrains/JetBrainsMono)** by JetBrains (SIL Open Font License 1.1), the optional UI font.
 - **[windows-rs](https://github.com/microsoft/windows-rs)** by Microsoft, with [serde](https://github.com/serde-rs/serde), [serde_json](https://github.com/serde-rs/json) and [chrono](https://github.com/chronotope/chrono) (MIT / Apache-2.0).
 - **[LRCLIB](https://lrclib.net)** for synced lyrics, and the **Google Calendar API** for your events.
 - **[Claude Code](https://claude.com/claude-code)** by Anthropic, through its hooks.
