@@ -1,6 +1,6 @@
 ---
 tags: [decision, settings, tray, windows, multi-monitor, config]
-date: 2026-11-02
+date: 2026-11-03
 ---
 
 # Notch monitor: which screen the island shows on
@@ -95,8 +95,63 @@ the `--demo-editor` anchor.
   foreground keeps the shell's answer; one monitor is as before. `check_fullscreen`
   passes the island window; `--probe-system` prints the global answer
   (`is_fullscreen(None)`); the screenshot code follows. The Susun overlay
-  exception is untouched. Only the pure rule is unit-tested, not the Win32
-  monitor lookups.
+  exception is untouched.
+- **Fullscreen video on the notch's own monitor while focus is elsewhere
+  (2026-11-03).** The shell only describes the foreground app, so with YouTube
+  fullscreen on the notch's monitor and a click on monitor 2 the notch used to
+  show over the video. `is_fullscreen(Some(island))` is now `decide(...)`: step 1
+  is the rule above; if it did not hide, and there are 2+ monitors
+  (`SM_CMONITORS`), both the foreground's and the notch's monitor are known and
+  they differ, it walks the top-level windows top to bottom
+  (`GetTopWindow` / `GW_HWNDNEXT`, at most 1024) and the first candidate that
+  intersects the notch monitor's `rcMonitor` (positive area; touching edges do
+  not count) decides: hidden if it covers the monitor, shown otherwise; none
+  gives shown. It runs whether or not the shell said fullscreen (a game on
+  monitor 2 makes the shell say yes), but only after step 1 did not hide.
+  `is_fullscreen(None)` is the shell's answer, unchanged.
+  - The desktop in front: when the foreground is the desktop itself (the
+    shell or desktop window handle, or class Progman / WorkerW; taskbars do not
+    count, each sits on its own monitor), its monitor says nothing, because the
+    desktop window spans the whole virtual screen and `MonitorFromWindow` puts
+    it on the primary monitor whichever screen was clicked. So with 2+ monitors
+    and a known notch monitor it walks even when the foreground's monitor equals
+    the notch's or is unknown. Without this, a click on the bare wallpaper of
+    monitor 2 with the notch on the primary showed the notch over a fullscreen
+    video there. Safe: a click cannot reach the desktop of a monitor a
+    fullscreen window covers, and when the click was on the notch's own monitor
+    the walk finds no covering window and shows the notch, as before. Step 1
+    still runs first, so a shell fullscreen report (a presentation, say) with
+    the desktop on the notch's monitor still hides without a walk.
+  - Accepted deviations: on 2026-11-03 the user accepted both this desktop
+    exception and a failed `SHQueryUserNotificationState` counting as not
+    fullscreen in `is_fullscreen(Some(island))` (the walk can still run;
+    `is_fullscreen(None)` is unchanged). His rule: "kalau notch dilayar mana,
+    misalnya layar 1, selama layar 1 itu full screen misalnya youtube, ya jangan
+    nongol dong kecuali ada notif".
+  - No walk otherwise: one monitor, an unknown notch monitor, or a foreground
+    that is not the desktop and sits on the notch's monitor or on an unknown
+    one keeps the shell's answer.
+  - Candidate: visible, not minimised, not cloaked (a failed
+    `DWMWA_CLOAKED` read counts as not cloaked). Not candidates, skipped
+    (they never hide and never stop the walk): classes Progman, WorkerW,
+    Shell_TrayWnd, Shell_SecondaryTrayWnd; the shell and desktop window handles;
+    any window of Vale's own process (island, Susun overlay, Identify plates);
+    WS_EX_TOOLWINDOW; WS_EX_TRANSPARENT.
+  - Covers: the rect contains `rcMonitor` (not the work area) and the window
+    is not maximised with a caption (so a maximised window with a caption never
+    counts, even with an auto-hide taskbar; a borderless window of the work area does not
+    contain the monitor). Browser video fullscreen, F11 and borderless or
+    exclusive games count, a paused one too.
+  - The window rect is `DWMWA_EXTENDED_FRAME_BOUNDS` (GetWindowRect only if the
+    read fails): a maximised window next door has invisible resize borders that
+    spill about 8 px into the notch's monitor in `GetWindowRect`, which would
+    make it the first candidate there and show the notch over the video.
+  - No new timer: the 1 s `TIMER_SYSTEM` tick drives it, so leaving fullscreen
+    shows the notch on the next tick. Cost: [[bata-idle-power-budget]].
+  - Tested: the pure rules (`Rect4`, `intersects`, `covers_monitor`,
+    `is_candidate`, `top_candidate_covers`, `decide`). The Win32 reads
+    (`facts_of`, `frame_of`, `monitor_rect`, the z-order iterator) and the
+    behaviour on two real monitors are not unit-tested or run live.
 
 ## Settings row
 
