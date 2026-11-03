@@ -48,7 +48,7 @@ use super::settings_layout::{
     Align, Button, ButtonKind, CARD_RADIUS, CAT_TILE, CONTROL_RADIUS, CatFace, Chip, Control,
     EXTERNAL_GLYPH, FULL_RADIUS, Field, Font, Group, HOTKEY_CAP_H, HOTKEY_CAP_PAD,
     HOTKEY_FIELD_PAD, HOTKEY_PLUS_W, Hit, LINK_GLYPH_W, Layout, MapItem, Measure, MonitorPick,
-    Rect, SEGMENT_RADIUS, SLIDER_THUMB, SWATCH_RING_GAP, SWATCH_RING_W, Section, Segment, Text, Tone, accent_key,
+    Rect, SEGMENT_RADIUS, SLIDER_THUMB, SWATCH_RING_GAP, SWATCH_RING_W, Section, Segment, Text, Tone, WidgetTile, accent_key,
     hotkey_caps_w, slider_x,
 };
 use crate::config::{Style, UiFont};
@@ -684,6 +684,9 @@ impl Painter<'_> {
         if let Some(r) = l.preview {
             self.preview(r, s);
         }
+        for t in &l.tiles {
+            self.widget_tile(t, s);
+        }
         if let Some(r) = l.about_logo {
             self.logo(r);
         }
@@ -825,6 +828,8 @@ impl Painter<'_> {
                     rect,
                     selected,
                 } => self.radio(*rect, *hit, *selected, s),
+                // Only a click area: its card is `Layout::tiles`.
+                Control::Area { .. } => {}
                 Control::IconButton {
                     hit,
                     rect,
@@ -1128,6 +1133,99 @@ impl Painter<'_> {
 
     /// An accent dot; the chosen one gets a text-coloured ring with a
     /// card-coloured gap, the one under the pointer a fainter ring.
+    /// A gallery card: its plate, and on it the still picture of a note (a
+    /// cream sticky note with a title and two checklist lines; never animated).
+    fn widget_tile(&self, t: &WidgetTile, s: &Scene) {
+        let hover = t.active && s.hover == Some(Hit::WidgetCard);
+        self.fill_round(t.rect, CONTROL_RADIUS + 2.0, self.p.bg, 1.0);
+        if hover {
+            self.set(self.p.accent, 1.0);
+            self.outline(t.rect, CONTROL_RADIUS + 2.0, 1.5);
+        } else {
+            self.stroke_round(t.rect, CONTROL_RADIUS + 2.0, self.p.border);
+        }
+        // The desk the note sits on.
+        self.fill_round(t.preview, CONTROL_RADIUS, self.p.button, 1.0);
+        let ink = 0x2B211A;
+        let (nw, nh) = (136.0f32.min(t.preview.w - 16.0), 84.0f32.min(t.preview.h - 12.0));
+        let note = Rect {
+            x: t.preview.x + (t.preview.w - nw) / 2.0,
+            y: t.preview.y + (t.preview.h - nh) / 2.0,
+            w: nw,
+            h: nh,
+        };
+        self.fill_round(Rect { y: note.y + 2.0, ..note }, 8.0, 0x000000, 0.12);
+        self.fill_round(note, 8.0, 0xF4E7C6, 1.0);
+        let title = Rect {
+            x: note.x + 10.0,
+            y: note.y + 6.0,
+            w: note.w - 20.0,
+            h: 18.0,
+        };
+        self.draw_str(
+            "Belanja",
+            self.style(Font::Label, Align::Left),
+            title,
+            ink,
+            1.0,
+        );
+        for (i, (label, done)) in [("Bata ekspos", true), ("Kaca low-e", false)].into_iter().enumerate() {
+            let y = note.y + 28.0 + i as f32 * 20.0;
+            let bx = Rect {
+                x: note.x + 10.0,
+                y: y + 3.0,
+                w: 11.0,
+                h: 11.0,
+            };
+            if done {
+                self.fill_round(bx, 3.0, Accent::Terracotta.light_rgb(), 1.0);
+                self.set(0xF4E7C6, 1.0);
+                unsafe {
+                    self.rt.DrawLine(
+                        Vector2::new(bx.x + 2.6, bx.y + 5.6),
+                        Vector2::new(bx.x + 4.6, bx.y + 7.6),
+                        self.brush,
+                        1.4,
+                        None,
+                    );
+                    self.rt.DrawLine(
+                        Vector2::new(bx.x + 4.6, bx.y + 7.6),
+                        Vector2::new(bx.x + 8.6, bx.y + 3.4),
+                        self.brush,
+                        1.4,
+                        None,
+                    );
+                }
+            } else {
+                self.set(0x6B5A4C, 1.0);
+                self.outline(bx, 3.0, 1.2);
+            }
+            let line = Rect {
+                x: bx.right() + 7.0,
+                y,
+                w: note.right() - bx.right() - 14.0,
+                h: 17.0,
+            };
+            let alpha = if done { 0.62 } else { 1.0 };
+            self.draw_str(label, self.style(Font::Desc, Align::Left), line, ink, alpha);
+            if done {
+                let w = self.gfx.width(label, Font::Desc).min(line.w);
+                self.set(ink, 0.62);
+                self.fill_round(
+                    Rect {
+                        x: line.x,
+                        y: y + 8.0,
+                        w,
+                        h: 1.0,
+                    },
+                    0.0,
+                    ink,
+                    0.62,
+                );
+            }
+        }
+    }
+
     fn swatch(&self, r: Rect, accent: Accent, selected: bool, hover: bool) {
         let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
         let ring = r.w / 2.0 + SWATCH_RING_GAP + SWATCH_RING_W / 2.0;

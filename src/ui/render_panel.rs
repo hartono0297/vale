@@ -41,7 +41,7 @@ use crate::devices::{self, DeviceKind};
 use crate::i18n::{self, Key, Lang, text};
 use crate::model::{CalView, Hit, MediaInfo, Notice, NoticeKind, Page};
 use crate::mole::{MoleGroup, MoleOpt};
-use crate::notes::Note;
+use crate::notes::{Note, note_time_label};
 use crate::notif::NotifEntry;
 use crate::notif::tile::{tile_color, tile_letter};
 use crate::notif::time::{longest_samples, relative_time};
@@ -67,7 +67,7 @@ use crate::ui::panel_layout::{
     CleanerLayout, CliHead, CliLayout, ClipButton, ClipLayout, DEV_BAR_H, DevicesHead,
     DevicesLayout, HOUR_GUTTER, ListLayout, MENU_RADIUS, MENU_ROW_RADIUS, MIXER_TRACK_H,
     MOLE_LOG_LINE_H, MOLE_LOG_PAD, MenuLayout, MeterLayout, MixerLayout, MoleFoot, MoleLayout,
-    NOTIF_DOT, NOTIF_RADIUS, NOTIF_TIME_W, NotifHead, NotifLayout, PageLayout, PomodoroLayout, RING_STROKE,
+    NOTE_PIN, NOTIF_DOT, NOTIF_RADIUS, NOTIF_TIME_W, note_pin_rect, NotifHead, NotifLayout, PageLayout, PomodoroLayout, RING_STROKE,
     SEG_PAD, SYS_RING_STROKE, SearchLayout, ShelfLayout, ShortcutsLayout, SystemHead, SystemLayout,
     VOLUME_HUD_H, WEEK_HEAD_H, arrange_layout, calendar_layout, cleaner_layout, cli_folder_menu,
     cli_layout, cli_suggestions, clipboard_layout, device_shapes, devices_layout,
@@ -3797,12 +3797,24 @@ impl Renderer {
             self.set_color(p.raised, 1.0);
             self.fill_round(*r, radius::CARD);
             let inner = inset(*r, 13.0, 0.0);
+            // Leaves the corner to the pin.
             let title = Rect {
                 y: r.y + 9.0,
                 h: 18.0,
+                w: (inner.w - NOTE_PIN - 4.0).max(0.0),
                 ..inner
             };
-            self.text(first_line(&note.text), &self.fonts.body_medium, title, 1.0);
+            if note.text.trim().is_empty() {
+                // A fresh desktop note has no text yet.
+                let empty = text(lang, Key::StickyEmpty);
+                self.text_colored(empty, &self.fonts.body_medium, title, p.secondary, 1.0);
+            } else {
+                self.text(first_line(&note.text), &self.fonts.body_medium, title, 1.0);
+            }
+            let pin = note_pin_rect(*r);
+            let on_desktop = note.sticky.is_some();
+            let ink = if on_desktop { p.accent } else { p.secondary };
+            self.icon_colored(Icon::Pin, pin, 14.0, ink, 1.0, None);
             let foot = Rect {
                 y: r.bottom() - 22.0,
                 h: 14.0,
@@ -4466,24 +4478,6 @@ fn event_time_label(lang: Lang, ev: &CalEvent) -> String {
             }
         }
         _ => String::new(),
-    }
-}
-
-/// "hari ini 09.12", "kemarin", "23 Okt", or "23 Okt 2025" in another year.
-fn note_time_label(lang: Lang, updated: NaiveDateTime, today: NaiveDate) -> String {
-    let d = updated.date();
-    if d == today {
-        format!(
-            "{} {}",
-            text(lang, Key::Today),
-            i18n::time_hm(lang, updated)
-        )
-    } else if Some(d) == today.pred_opt() {
-        text(lang, Key::Yesterday).into()
-    } else if d.year() == today.year() {
-        i18n::short_date(lang, d)
-    } else {
-        format!("{} {}", i18n::short_date(lang, d), d.year())
     }
 }
 

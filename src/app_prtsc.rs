@@ -57,13 +57,17 @@ const UNASSIGNED: u8 = 0xFF;
 /// One entry per `HotkeyId`: `UNASSIGNED`, or the modifier bits (`Mods::bits`)
 /// of that row's PrtSc combo. Written by the island's thread, read by the
 /// proc.
-static TABLE: [AtomicU8; 5] = [
+static TABLE: [AtomicU8; ROWS] = [
+    AtomicU8::new(UNASSIGNED),
     AtomicU8::new(UNASSIGNED),
     AtomicU8::new(UNASSIGNED),
     AtomicU8::new(UNASSIGNED),
     AtomicU8::new(UNASSIGNED),
     AtomicU8::new(UNASSIGNED),
 ];
+
+/// How many hotkey rows there are (`HotkeyId::ALL`).
+pub(super) const ROWS: usize = HotkeyId::ALL.len();
 
 /// The island window the proc posts to (0: none). Set before the thread
 /// starts, cleared at shutdown.
@@ -83,7 +87,7 @@ pub(super) fn table_clear(id: HotkeyId) {
 }
 
 /// What the table holds now, as the pure decision wants it.
-fn table_snapshot() -> [Option<Mods>; 5] {
+fn table_snapshot() -> [Option<Mods>; ROWS] {
     std::array::from_fn(|i| {
         let bits = TABLE[i].load(Ordering::Relaxed);
         (bits != UNASSIGNED).then(|| Mods::from_bits(bits))
@@ -110,7 +114,7 @@ pub(super) fn prtsc_hook_action(
     key_down: bool,
     mods: Mods,
     swallowing: bool,
-    table: &[Option<Mods>; 5],
+    table: &[Option<Mods>; ROWS],
 ) -> (HookAction, Option<usize>, bool) {
     if vk != u32::from(VK_SNAPSHOT.0) {
         return (HookAction::Pass, None, swallowing);
@@ -298,8 +302,8 @@ mod tests {
         win: false,
     };
 
-    fn only(row: usize, mods: Mods) -> [Option<Mods>; 5] {
-        let mut t = [None; 5];
+    fn only(row: usize, mods: Mods) -> [Option<Mods>; ROWS] {
+        let mut t = [None; ROWS];
         t[row] = Some(mods);
         t
     }
@@ -313,7 +317,7 @@ mod tests {
         assert_eq!(WM_APP_PRTSC, WM_APP + 60);
         // Every `WM_APP + n` the crate uses.
         let taken = [
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 20, 21, 22, 41, 50, 51, 61,
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 20, 21, 22, 41, 50, 51, 61, 71,
         ];
         for n in taken {
             assert_ne!(WM_APP_PRTSC, WM_APP + n);
@@ -388,7 +392,7 @@ mod tests {
         for mods in [NONE, ctrl()] {
             for down in [true, false] {
                 assert_eq!(
-                    prtsc_hook_action(SNAP, down, mods, false, &[None; 5]),
+                    prtsc_hook_action(SNAP, down, mods, false, &[None; ROWS]),
                     (HookAction::Pass, None, false)
                 );
             }

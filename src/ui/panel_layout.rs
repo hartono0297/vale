@@ -2080,6 +2080,13 @@ fn list_header(s: ShapeRect, strip: bool) -> (Rect, Rect, f32) {
 /// Cards in two columns, newest top left, two rows of them. When there are
 /// more, the page shows chunk `notes_page` (wrapping) and a "+N lagi" /
 /// "Kembali ke atas" line under the cards.
+/// A note card's pin button: 22 dip, at the card's top-right.
+pub const NOTE_PIN: f32 = 22.0;
+
+pub fn note_pin_rect(card: Rect) -> Rect {
+    rect(card.right() - NOTE_PIN - 5.0, card.y + 5.0, NOTE_PIN, NOTE_PIN)
+}
+
 pub fn notes_layout(s: ShapeRect, notes: &[Note], notes_page: usize, strip: bool) -> ListLayout {
     let (header, new_button, list_y) = list_header(s, strip);
     let (l, r) = (left(s), right(s));
@@ -3619,6 +3626,8 @@ pub fn regions(s: ShapeRect, layout: &PageLayout, strip: impl Into<StripKind>) -
         PageLayout::Notes(l) => {
             add(l.new_button, Hit::NoteNew);
             for (id, r) in &l.rows {
+                // The pin sits on the card, so it comes before it.
+                add(note_pin_rect(*r), Hit::NoteSticky(id.clone()));
                 add(*r, Hit::NoteOpen(id.clone()));
             }
             if let Some((_, r)) = l.more {
@@ -3931,6 +3940,7 @@ mod tests {
                 id: format!("n{i}"),
                 text: format!("note {i}"),
                 updated: 1000 - i as i64,
+                sticky: None,
             })
             .collect()
     }

@@ -33,6 +33,8 @@ use crate::ui::geometry::{
 };
 use crate::ui::icons::Icon;
 use crate::ui::robot::{Motion, SLEEP_MAX, SLEEP_MIN};
+use crate::widgets::prefs::{FullscreenRule, WidgetLayer, WidgetPrefs};
+use crate::widgets::sticky::can_add;
 
 pub use super::geometry::Rect;
 
@@ -151,6 +153,8 @@ pub enum Section {
     Cat,
     /// Panel: how it opens, its pages, its shortcut tiles.
     Panel,
+    /// Widget: how the desktop widgets behave, and the gallery to add them.
+    Widgets,
     Clipboard,
     /// Tombol pintas: the five global hotkeys, each recorded by pressing it.
     Hotkeys,
@@ -161,11 +165,12 @@ pub enum Section {
 }
 
 impl Section {
-    pub const ALL: [Section; 9] = [
+    pub const ALL: [Section; 10] = [
         Section::General,
         Section::Appearance,
         Section::Cat,
         Section::Panel,
+        Section::Widgets,
         Section::Clipboard,
         Section::Hotkeys,
         Section::Features,
@@ -179,6 +184,7 @@ impl Section {
             Section::Appearance => Key::SecAppearance,
             Section::Cat => Key::SecCat,
             Section::Panel => Key::SecPanel,
+            Section::Widgets => Key::SecWidgets,
             Section::Clipboard => Key::SecClipboard,
             Section::Hotkeys => Key::SecHotkeys,
             Section::Features => Key::SecFeatures,
@@ -194,6 +200,7 @@ impl Section {
             Section::Appearance => Icon::Palette,
             Section::Cat => Icon::Cat,
             Section::Panel => Icon::Grid,
+            Section::Widgets => Icon::Widgets,
             Section::Clipboard => Icon::Clipboard,
             Section::Hotkeys => Icon::Keyboard,
             Section::Features => Icon::Sparkle,
@@ -216,6 +223,7 @@ impl Section {
             "appearance" | "tampilan" => Some(Section::Appearance),
             "cat" | "kucing" => Some(Section::Cat),
             "panel" => Some(Section::Panel),
+            "widgets" | "widget" => Some(Section::Widgets),
             "clipboard" => Some(Section::Clipboard),
             // "shortcuts" is not here: the tiles are "Pintasan".
             "hotkeys" | "tombol-pintas" | "tombolpintas" | "shortcut-keys" => {
@@ -409,6 +417,17 @@ pub enum Hit {
     Lyrics,
     /// "Mode buka": Hover, Hover & tetap or Klik.
     OpenMode(OpenMode),
+    /// Settings -> Widget: "Tampilkan widget", "Lapisan", "Saat layar penuh",
+    /// "Kunci posisi" and "Kucing ngintip".
+    WidgetsShow,
+    WidgetsLayer(WidgetLayer),
+    WidgetsFullscreen(FullscreenRule),
+    WidgetsLock,
+    WidgetsPeek,
+    /// The (+) of a gallery card: one new empty sticky note.
+    WidgetAdd,
+    /// The gallery's active card: the notes flash on the desktop.
+    WidgetCard,
     /// Settings -> Tombol pintas: a row's field (click to record, again to
     /// cancel), its reset button, and "Kembalikan semua".
     HotkeyField(HotkeyId),
@@ -667,6 +686,9 @@ pub enum Group {
     /// Clipboard -> Screenshot -> Setelah capture.
     ShotAfterCapture,
     NotifToastStyle,
+    /// Widget -> Lapisan and Saat layar penuh.
+    WidgetLayer,
+    WidgetFullscreen,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -822,6 +844,9 @@ pub enum Control {
         rect: Rect,
         selected: bool,
     },
+    /// A rectangle that takes a click and draws nothing of its own (a
+    /// gallery card; its look is `Layout::tiles`).
+    Area { hit: Hit, rect: Rect },
 }
 
 /// One screen in the map.
@@ -895,6 +920,7 @@ impl Control {
                 ..
             } => vec![(*hit, *rect)],
             Control::Radio { hit: None, .. } => Vec::new(),
+            Control::Area { hit, rect } => vec![(*hit, *rect)],
         }
     }
 
@@ -948,6 +974,7 @@ impl Control {
                 }
             }
             Control::Radio { rect, .. } => down(rect),
+            Control::Area { rect, .. } => down(rect),
         }
     }
 
@@ -990,6 +1017,7 @@ impl Control {
                 w: RADIO_DOT_W.min(rect.w),
                 ..*rect
             },
+            Control::Area { rect, .. } => *rect,
         }
     }
 }
@@ -1062,6 +1090,17 @@ pub struct Layout {
     pub rows: Vec<ReorderRow>,
     /// The row held by a drag, drawn raised over the others.
     pub lifted: Option<Rect>,
+    /// The widget gallery's cards (Widget).
+    pub tiles: Vec<WidgetTile>,
+}
+
+/// One card of the widget gallery: its plate, the still picture in it, and
+/// whether one is on the desktop (a click then makes them flash).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WidgetTile {
+    pub rect: Rect,
+    pub preview: Rect,
+    pub active: bool,
 }
 
 /// A list the owner reorders: by dragging a handle or with the buttons.
@@ -1266,10 +1305,14 @@ pub struct State<'a> {
     pub open_mode: OpenMode,
     /// The plug-in and safe-to-remove notices.
     pub device_notices: bool,
-    /// The five hotkeys, and by `HotkeyId::index` whether a set one could not
+    /// The hotkeys, and by `HotkeyId::index` whether a set one could not
     /// be registered (taken by another app, or the PrtSc hook failed).
     pub hotkeys: Hotkeys,
-    pub hotkey_failed: [bool; 5],
+    pub hotkey_failed: [bool; HotkeyId::ALL.len()],
+    /// Settings -> Widget: the widgets' settings and how many sticky notes
+    /// are on the desktop.
+    pub widgets: WidgetPrefs,
+    pub sticky_count: usize,
     /// The row being recorded, and why the last combo typed was refused
     /// (window state, not saved).
     pub hotkey_recording: Option<HotkeyId>,
@@ -2101,6 +2144,7 @@ pub fn layout_in(section: Section, s: &State, m: &dyn Measure, client: (f32, f32
         Section::Appearance => appearance(&mut b, s),
         Section::Cat => cat_page(&mut b, s),
         Section::Panel => panel_page(&mut b, s),
+        Section::Widgets => widgets_page(&mut b, s),
         Section::Clipboard => clipboard_page(&mut b, s),
         Section::Hotkeys => hotkeys_page(&mut b, s),
         Section::Features => features_page(&mut b, s),
@@ -2158,6 +2202,10 @@ fn scroll(l: &mut Layout, scroll: f32, g: Geom) {
     }
     for r in &mut l.rows {
         down(&mut r.rect);
+    }
+    for t in &mut l.tiles {
+        down(&mut t.rect);
+        down(&mut t.preview);
     }
     for r in [
         &mut l.preview,
@@ -3576,6 +3624,131 @@ fn panel_page(b: &mut Builder, s: &State) {
     tiles_card(b, s);
 }
 
+/// The gallery's tile: its picture, and the room under it for the title and
+/// the description (two lines at most) beside the (+).
+const TILE_PREVIEW_H: f32 = 104.0;
+const TILE_H: f32 = 190.0;
+const TILE_PAD: f32 = 12.0;
+
+/// Widget: "Di desktop" (five settings), then "Galeri" with the card of the
+/// one widget there is, the sticky notes.
+fn widgets_page(b: &mut Builder, s: &State) {
+    titled(b, Key::GroupWidgetsDesktop);
+    let card = b.card(5.0 * ROW_H);
+    let rows: [f32; 5] = std::array::from_fn(|i| card.y + i as f32 * ROW_H);
+    let cy = |y: f32| y + ROW_H / 2.0;
+    let p = s.widgets;
+
+    let x = b.toggle(Hit::WidgetsShow, b.g.right, cy(rows[0]), p.show);
+    let desc = Some((b.t(Key::WidgetsShowDesc), Tone::Secondary));
+    b.row_text(card, rows[0], b.t(Key::WidgetsShow), desc, false, x);
+
+    let items = vec![
+        (Hit::WidgetsLayer(WidgetLayer::Desktop), b.t(Key::WidgetsLayerDesktop)),
+        (Hit::WidgetsLayer(WidgetLayer::Top), b.t(Key::WidgetsLayerTop)),
+    ];
+    let selected = index_of(&WidgetLayer::ALL, &p.layer);
+    let x = b.segmented(Group::WidgetLayer, b.g.right, cy(rows[1]), items, selected);
+    let desc = Some((b.t(Key::WidgetsLayerDesc), Tone::Secondary));
+    b.row_text(card, rows[1], b.t(Key::WidgetsLayer), desc, false, x);
+    b.divider(card, rows[1]);
+
+    let items = vec![
+        (Hit::WidgetsFullscreen(FullscreenRule::Hide), b.t(Key::WidgetsHide)),
+        (Hit::WidgetsFullscreen(FullscreenRule::Keep), b.t(Key::WidgetsKeep)),
+    ];
+    let selected = index_of(&FullscreenRule::ALL, &p.fullscreen);
+    let x = b.segmented(Group::WidgetFullscreen, b.g.right, cy(rows[2]), items, selected);
+    let desc = Some((b.t(Key::WidgetsFullscreenDesc), Tone::Secondary));
+    b.row_text(card, rows[2], b.t(Key::WidgetsFullscreen), desc, false, x);
+    b.divider(card, rows[2]);
+
+    let x = b.toggle(Hit::WidgetsLock, b.g.right, cy(rows[3]), p.lock);
+    let desc = Some((b.t(Key::WidgetsLockDesc), Tone::Secondary));
+    b.row_text(card, rows[3], b.t(Key::WidgetsLock), desc, false, x);
+    b.divider(card, rows[3]);
+
+    let x = b.toggle(Hit::WidgetsPeek, b.g.right, cy(rows[4]), p.cat_peek);
+    let desc = Some((b.t(Key::WidgetsPeekDesc), Tone::Secondary));
+    b.row_text(card, rows[4], b.t(Key::WidgetsPeek), desc, false, x);
+    b.divider(card, rows[4]);
+
+    // The gallery: its eyebrow with how many are on the desktop at the right.
+    let eyebrow_y = b.y;
+    titled(b, Key::GroupWidgetsGallery);
+    let count = crate::widgets::sticky::on_desktop_label(b.lang, s.sticky_count);
+    let count_w = b.w(&count, Font::Desc);
+    let count_rect = Rect {
+        x: b.g.content_x + b.g.content_w - 2.0 - count_w,
+        y: eyebrow_y,
+        w: count_w,
+        h: EYEBROW_H,
+    };
+    b.text(count_rect, count, Font::Desc, Tone::Secondary, Align::Left);
+    let grid = b.card(TILE_H + 2.0 * TILE_PAD);
+    widget_tile(b, grid, s);
+}
+
+/// The sticky notes' card: the first cell of the two-column grid.
+fn widget_tile(b: &mut Builder, grid: Rect, s: &State) {
+    let w = (grid.w - 3.0 * TILE_PAD) / 2.0;
+    let rect = Rect {
+        x: grid.x + TILE_PAD,
+        y: grid.y + TILE_PAD,
+        w,
+        h: TILE_H,
+    };
+    let preview = Rect {
+        x: rect.x + 8.0,
+        y: rect.y + 8.0,
+        w: rect.w - 16.0,
+        h: TILE_PREVIEW_H,
+    };
+    let active = s.sticky_count > 0;
+    b.l.tiles.push(WidgetTile { rect, preview, active });
+    let room_right = rect.right() - 12.0 - STEP_BUTTON - 8.0;
+    let title_y = preview.bottom() + 8.0;
+    let title = Rect {
+        x: rect.x + 12.0,
+        y: title_y,
+        w: (room_right - rect.x - 12.0).max(0.0),
+        h: 20.0,
+    };
+    b.text(title, b.t(Key::StickyName), Font::Label, Tone::Primary, Align::Left);
+    let can = can_add(s.sticky_count);
+    let desc = if can {
+        b.t(Key::StickyDesc)
+    } else {
+        b.t(Key::StickyMax)
+    };
+    let tone = if can { Tone::Secondary } else { Tone::Warn };
+    for (i, line) in b.wrap(&desc, Font::Desc, title.w).into_iter().take(2).enumerate() {
+        let r = Rect {
+            x: title.x,
+            y: title_y + 22.0 + i as f32 * DESC_LINE_H,
+            w: title.w,
+            h: 16.0,
+        };
+        b.text(r, line, Font::Desc, tone, Align::Left);
+    }
+    // The count on the picture, when there is one.
+    if active {
+        let label = s.sticky_count.to_string();
+        let cx = preview.right() - 8.0;
+        let chip_w = 2.0 * CHIP_PAD + DOT + DOT_GAP + b.w(&label, Font::Desc);
+        b.chip(cx - chip_w, preview.y + 14.0, label, Tone::Primary, chip_w);
+    }
+    // The (+), above the card's own click area so it wins.
+    let plus_cy = rect.bottom() - 12.0 - STEP_BUTTON / 2.0;
+    b.icon_button(rect.right() - 12.0, plus_cy, Hit::WidgetAdd, Icon::Plus, can);
+    if active {
+        b.l.controls.push(Control::Area {
+            hit: Hit::WidgetCard,
+            rect,
+        });
+    }
+}
+
 /// Fitur: "Pomodoro" (its four steppers and the running note), "Musik",
 /// "Notifikasi",
 /// "CLI", "Perangkat" and "Pembersih".
@@ -4293,6 +4466,7 @@ pub fn hotkey_row_key(id: HotkeyId) -> Key {
         HotkeyId::Devices => Key::HotkeyRowDevices,
         HotkeyId::Arrange => Key::HotkeyRowArrange,
         HotkeyId::Screenshot => Key::HotkeyRowScreenshot,
+        HotkeyId::StickyNote => Key::StickyNew,
     }
 }
 
@@ -4303,6 +4477,7 @@ fn hotkey_row_desc_key(id: HotkeyId) -> Key {
         HotkeyId::Devices => Key::HotkeyRowDevicesDesc,
         HotkeyId::Arrange => Key::HotkeyRowArrangeDesc,
         HotkeyId::Screenshot => Key::HotkeyRowScreenshotDesc,
+        HotkeyId::StickyNote => Key::StickyNewDesc,
     }
 }
 
@@ -4847,6 +5022,7 @@ mod tests {
             devices: hk("Ctrl+Alt+F13"),
             arrange: hk("Win+Alt+S"),
             screenshot: hk("Ctrl+PrtSc"),
+            sticky_note: hk("Win+Ctrl+Alt+Shift+NumMultiply"),
         }
     }
 
@@ -4981,7 +5157,19 @@ mod tests {
                         } else {
                             Hotkeys::default()
                         },
-                        hotkey_failed: [locked; 5],
+                        hotkey_failed: [locked; HotkeyId::ALL.len()],
+                        widgets: if locked {
+                            WidgetPrefs {
+                                show: false,
+                                layer: WidgetLayer::Top,
+                                fullscreen: FullscreenRule::Keep,
+                                lock: true,
+                                cat_peek: false,
+                            }
+                        } else {
+                            WidgetPrefs::default()
+                        },
+                        sticky_count: if locked { 20 } else { 0 },
                         hotkey_recording: locked.then_some(HotkeyId::Devices),
                         hotkey_error: locked.then_some((
                             HotkeyId::Clipboard,
@@ -6247,7 +6435,7 @@ mod tests {
         State {
             lang,
             hotkeys: Hotkeys::default(),
-            hotkey_failed: [false; 5],
+            hotkey_failed: [false; HotkeyId::ALL.len()],
             hotkey_recording: None,
             hotkey_error: None,
             scroll: 0.0,
@@ -6264,6 +6452,7 @@ mod tests {
                 Section::Appearance,
                 Section::Cat,
                 Section::Panel,
+                Section::Widgets,
                 Section::Clipboard,
                 Section::Hotkeys,
                 Section::Features,
@@ -6277,10 +6466,10 @@ mod tests {
             let l = layout(Section::Hotkeys, &s, &Estimate);
             // The section needs no viewport at the minimum size.
             assert!(l.viewport.is_none() && l.scroll_max == 0.0, "{lang:?}");
-            // One card of the header and five rows, under its eyebrow.
+            // One card of the header and six rows, under its eyebrow.
             assert_eq!(l.cards.len(), 1);
             let card = l.cards[0];
-            assert_eq!(card.h, HEADER_H + 5.0 * ROW_H);
+            assert_eq!(card.h, HEADER_H + 6.0 * ROW_H);
             assert!(
                 l.texts
                     .iter()
@@ -6431,7 +6620,7 @@ mod tests {
             }
             // A set row taken by another app is red; an off one never is.
             let taken = State {
-                hotkey_failed: [true; 5],
+                hotkey_failed: [true; HotkeyId::ALL.len()],
                 ..s.clone()
             };
             let l = layout(Section::Hotkeys, &taken, &Estimate);
@@ -8561,7 +8750,7 @@ mod tests {
         for s in Section::ALL {
             assert_eq!(Section::ALL[s.index()], s);
         }
-        // The nine sections, in the sidebar's order.
+        // The ten sections, in the sidebar's order.
         assert_eq!(
             Section::ALL,
             [
@@ -8569,6 +8758,7 @@ mod tests {
                 Section::Appearance,
                 Section::Cat,
                 Section::Panel,
+                Section::Widgets,
                 Section::Clipboard,
                 Section::Hotkeys,
                 Section::Features,

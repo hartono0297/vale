@@ -459,6 +459,8 @@ pub enum Hit {
     NoteNew,
     /// Note id.
     NoteOpen(String),
+    /// The pin on a note's card: put it on the desktop, or take it off.
+    NoteSticky(String),
     NotesMore,
     ReminderNew,
     /// Reminder id.
@@ -643,6 +645,8 @@ pub enum Effect {
     },
     /// `None` opens an empty editor for a new note.
     OpenNoteEditor(Option<String>),
+    /// Note id: stick it to the desktop, or unstick it (a desktop sticky note).
+    ToggleNoteSticky(String),
     /// `event_id: None` creates a new event on `date`.
     OpenEventEditor {
         event_id: Option<String>,

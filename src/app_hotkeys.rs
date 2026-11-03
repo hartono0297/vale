@@ -19,7 +19,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 
 use super::App;
-use super::prtsc::{self, HookThread};
+use super::prtsc::{self, HookThread, ROWS};
 use crate::hotkey::{self, Hotkey, HotkeyId, Hotkeys};
 use crate::model::Event;
 
@@ -29,6 +29,8 @@ pub(super) const HOTKEY_SEARCH: i32 = 2;
 pub(super) const HOTKEY_DEVICES: i32 = 3;
 pub(super) const HOTKEY_ARRANGE: i32 = 4;
 pub(super) const HOTKEY_SCREENSHOT: i32 = 5;
+/// Id 6 is the lyrics card's (another branch); the sticky note takes 7.
+pub(super) const HOTKEY_STICKY: i32 = 7;
 
 /// The `RegisterHotKey` id of a row.
 pub(super) fn wm_id(id: HotkeyId) -> i32 {
@@ -38,6 +40,7 @@ pub(super) fn wm_id(id: HotkeyId) -> i32 {
         HotkeyId::Devices => HOTKEY_DEVICES,
         HotkeyId::Arrange => HOTKEY_ARRANGE,
         HotkeyId::Screenshot => HOTKEY_SCREENSHOT,
+        HotkeyId::StickyNote => HOTKEY_STICKY,
     }
 }
 
@@ -76,9 +79,9 @@ pub(super) fn plan_row(want: Option<Hotkey>, applied: Option<Hotkey>, failed: bo
 #[derive(Default)]
 pub(super) struct HotkeyState {
     /// What each row has in effect (registered or in the hook's table).
-    applied: [Option<Hotkey>; 5],
+    applied: [Option<Hotkey>; ROWS],
     /// A row whose combo could not be registered or hooked.
-    failed: [bool; 5],
+    failed: [bool; ROWS],
     /// The PrtSc hook thread, while a row needs it.
     hook: Option<HookThread>,
     /// Settings is recording: nothing is registered and no sync does anything.
@@ -97,7 +100,7 @@ impl HotkeyState {
     }
 
     /// The rows in effect that are failed, by row index.
-    pub(super) fn failed_flags(&self) -> [bool; 5] {
+    pub(super) fn failed_flags(&self) -> [bool; ROWS] {
         self.failed
     }
 
@@ -249,7 +252,7 @@ impl App {
             }
             prtsc::table_clear(id);
         }
-        self.hotkeys.applied = [None; 5];
+        self.hotkeys.applied = [None; ROWS];
         if let Some(hook) = self.hotkeys.hook.take() {
             hook.stop();
         }
@@ -300,6 +303,7 @@ impl App {
             HotkeyId::Devices => self.on_devices_hotkey(),
             HotkeyId::Arrange => self.on_arrange_hotkey(),
             HotkeyId::Screenshot => self.on_screenshot_hotkey(),
+            HotkeyId::StickyNote => self.on_sticky_hotkey(),
         }
     }
 
@@ -338,16 +342,18 @@ mod tests {
         assert_eq!(HOTKEY_DEVICES, 3);
         assert_eq!(HOTKEY_ARRANGE, 4);
         assert_eq!(HOTKEY_SCREENSHOT, 5);
+        assert_eq!(HOTKEY_STICKY, 7, "6 is reserved for the lyrics card");
         for id in HotkeyId::ALL {
             assert_eq!(row_of_wm_id(wm_id(id)), Some(id));
         }
         assert_eq!(row_of_wm_id(0), None);
-        assert_eq!(row_of_wm_id(6), None);
-        // The hook's `wparam` is the row index, and the five ids are distinct.
+        assert_eq!(row_of_wm_id(6), None, "left unused for the lyrics card");
+        assert_eq!(row_of_wm_id(8), None);
+        // The hook's `wparam` is the row index, and the six ids are distinct.
         let mut ids: Vec<i32> = HotkeyId::ALL.iter().map(|i| wm_id(*i)).collect();
         ids.sort_unstable();
         ids.dedup();
-        assert_eq!(ids.len(), 5);
+        assert_eq!(ids.len(), 6);
     }
 
     #[test]
@@ -390,7 +396,7 @@ mod tests {
         assert!(!s.any_failed());
         s.failed[2] = true;
         assert!(s.any_failed());
-        assert_eq!(s.failed_flags(), [false, false, true, false, false]);
+        assert_eq!(s.failed_flags(), [false, false, true, false, false, false]);
     }
 
     /// `RegisterHotKey` as Windows does it: a combo is refused while any id
@@ -398,7 +404,7 @@ mod tests {
     #[derive(Default)]
     struct FakeOps {
         registered: std::collections::HashMap<HotkeyId, Hotkey>,
-        table: [Option<Hotkey>; 5],
+        table: [Option<Hotkey>; ROWS],
         taken_elsewhere: Vec<Hotkey>,
     }
 
@@ -500,7 +506,7 @@ mod tests {
             (HotkeyId::Devices, "Ctrl+Alt+D"),
         ]);
         s.apply(&off, &mut ops);
-        assert_eq!(ops.table, [None; 5]);
+        assert_eq!(ops.table, [None; ROWS]);
         assert!(!s.needs_hook());
         assert_eq!(ops.registered.len(), 2);
     }

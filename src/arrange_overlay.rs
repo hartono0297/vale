@@ -19,6 +19,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::c_void;
+use std::rc::Rc;
 
 use windows::Win32::Foundation::{
     COLORREF, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
@@ -105,7 +106,7 @@ pub struct PickSpec {
 /// A DIB the size of a window, a software Direct2D target bound to it and
 /// the way to push it to a layered window.
 pub(crate) struct Canvas {
-    gfx: Gfx,
+    gfx: Rc<Gfx>,
     rt: ID2D1DCRenderTarget,
     brush: ID2D1SolidColorBrush,
     dashed: ID2D1StrokeStyle,
@@ -118,7 +119,13 @@ pub(crate) struct Canvas {
 
 impl Canvas {
     pub(crate) fn new(size: (i32, i32)) -> windows::core::Result<Canvas> {
-        let gfx = Gfx::new()?;
+        Canvas::with_gfx(Rc::new(Gfx::new()?), size)
+    }
+
+    /// A canvas drawing with factories made elsewhere: the desktop widgets
+    /// share one `Gfx` between all their windows (and the geometries built on
+    /// its factory).
+    pub(crate) fn with_gfx(gfx: Rc<Gfx>, size: (i32, i32)) -> windows::core::Result<Canvas> {
         let info = BITMAPINFO {
             bmiHeader: BITMAPINFOHEADER {
                 biSize: size_of::<BITMAPINFOHEADER>() as u32,
@@ -266,6 +273,16 @@ impl Canvas {
                 ULW_ALPHA,
             )
         }
+    }
+
+    /// The Direct2D target, its one brush and the shared factories, for
+    /// callers that draw more than rounded rectangles and one line of text.
+    pub(crate) fn parts(&self) -> (&ID2D1DCRenderTarget, &ID2D1SolidColorBrush, &Rc<Gfx>) {
+        (&self.rt, &self.brush, &self.gfx)
+    }
+
+    pub(crate) fn size(&self) -> (i32, i32) {
+        self.size
     }
 
     pub(crate) fn fill(&self, r: Rect, radius: f32, rgb: u32, alpha: f32) {
@@ -639,7 +656,7 @@ fn raise(island: HWND) {
 /// refuse a plain `SetForegroundWindow` (the foreground lock, after other
 /// input); then this thread's input is joined to the foreground window's for
 /// a moment, which it allows. True when the overlay has it.
-fn take_foreground(hwnd: HWND) -> bool {
+pub(crate) fn take_foreground(hwnd: HWND) -> bool {
     unsafe {
         let _ = SetForegroundWindow(hwnd);
         if GetForegroundWindow() != hwnd {

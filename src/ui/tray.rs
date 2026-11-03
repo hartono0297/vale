@@ -47,6 +47,8 @@ static TRAY_ICON: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(std::ptr::null_m
 pub enum MenuCmd {
     Settings,
     Search,
+    /// "Catatan tempel baru": one empty sticky note on the desktop.
+    StickyNote,
     StylePill,
     StyleNotch,
     /// "Jalan saat Windows mulai": a check item that flips `start_with_windows`.
@@ -59,9 +61,10 @@ pub enum MenuCmd {
     Exit,
 }
 
-const COMMANDS: [MenuCmd; 8] = [
+const COMMANDS: [MenuCmd; 9] = [
     MenuCmd::Settings,
     MenuCmd::Search,
+    MenuCmd::StickyNote,
     MenuCmd::StylePill,
     MenuCmd::StyleNotch,
     MenuCmd::Autostart,
@@ -89,7 +92,7 @@ pub enum MenuChoice {
     Monitor(NotchMonitor),
 }
 
-/// The Monitor submenu's ids start here, clear of `MenuCmd::id` (1..=8):
+/// The Monitor submenu's ids start here, clear of `MenuCmd::id` (1..=9):
 /// 100 is "Monitor utama", 101 + i the display at place i of the list the menu
 /// was built from.
 const MONITOR_ID_PRIMARY: usize = 100;
@@ -111,6 +114,11 @@ enum MenuItem {
         cmd: MenuCmd,
         label: String,
         checked: bool,
+    },
+    /// An entry that cannot be chosen now; its label says why.
+    Disabled {
+        cmd: MenuCmd,
+        label: String,
     },
     Separator,
     /// A popup of radio entries.
@@ -175,6 +183,29 @@ fn monitor_choice(id: usize, displays: &[Display]) -> Option<NotchMonitor> {
 /// item then installs it instead of checking again. `displays`: the screens
 /// connected now (the Monitor submenu).
 fn menu_items(cfg: &Config, update: Option<&str>, displays: &[Display]) -> Vec<MenuItem> {
+    menu_items_with(cfg, update, displays, crate::widgets::sticky_count())
+}
+
+/// `menu_items` with the number of sticky notes on the desktop (the new-note
+/// entry is greyed, with the reason, at the cap).
+fn menu_items_with(
+    cfg: &Config,
+    update: Option<&str>,
+    displays: &[Display],
+    stickies: usize,
+) -> Vec<MenuItem> {
+    let sticky = if crate::widgets::sticky::can_add(stickies) {
+        MenuItem::Entry {
+            cmd: MenuCmd::StickyNote,
+            label: text(cfg.language, Key::StickyNew).to_owned(),
+            checked: false,
+        }
+    } else {
+        MenuItem::Disabled {
+            cmd: MenuCmd::StickyNote,
+            label: text(cfg.language, Key::StickyNewMax).to_owned(),
+        }
+    };
     let entry = |cmd, key, checked| MenuItem::Entry {
         cmd,
         label: text(cfg.language, key).to_owned(),
@@ -191,6 +222,7 @@ fn menu_items(cfg: &Config, update: Option<&str>, displays: &[Display]) -> Vec<M
     vec![
         entry(MenuCmd::Settings, Key::MenuSettings, false),
         entry(MenuCmd::Search, Key::MenuSearch, false),
+        sticky,
         MenuItem::Separator,
         entry(
             MenuCmd::StylePill,
@@ -382,6 +414,12 @@ pub fn show_menu(
                     };
                     AppendMenuW(menu, flags, cmd.id(), &HSTRING::from(label))
                 }
+                MenuItem::Disabled { cmd, label } => AppendMenuW(
+                    menu,
+                    MF_STRING | MF_GRAYED,
+                    cmd.id(),
+                    &HSTRING::from(label),
+                ),
                 MenuItem::Separator => AppendMenuW(menu, MF_SEPARATOR, 0, None),
                 MenuItem::Submenu { label, items } => match CreatePopupMenu() {
                     Ok(sub) => {
@@ -545,7 +583,7 @@ mod tests {
         items
             .iter()
             .map(|item| match item {
-                MenuItem::Entry { label, .. } => label.as_str(),
+                MenuItem::Entry { label, .. } | MenuItem::Disabled { label, .. } => label.as_str(),
                 MenuItem::Separator => "-",
                 MenuItem::Submenu { label, .. } => label.as_str(),
             })
@@ -556,7 +594,7 @@ mod tests {
         items
             .iter()
             .filter_map(|item| match item {
-                MenuItem::Entry { cmd, .. } => Some(*cmd),
+                MenuItem::Entry { cmd, .. } | MenuItem::Disabled { cmd, .. } => Some(*cmd),
                 MenuItem::Separator | MenuItem::Submenu { .. } => None,
             })
             .collect()
@@ -595,6 +633,7 @@ mod tests {
             vec![
                 "Pengaturan…",
                 "Cari…",
+                "Catatan tempel baru",
                 "-",
                 "Gaya: Pill",
                 "Gaya: Notch",
@@ -609,11 +648,35 @@ mod tests {
     }
 
     #[test]
+    fn the_new_note_entry_is_greyed_with_the_reason_at_the_cap() {
+        let cfg = Config::default();
+        let few = menu_items_with(&cfg, None, &[], 19);
+        assert!(matches!(
+            &few[2],
+            MenuItem::Entry { cmd: MenuCmd::StickyNote, label, .. } if label == "Catatan tempel baru"
+        ));
+        let full = menu_items_with(&cfg, None, &[], 20);
+        assert!(matches!(
+            &full[2],
+            MenuItem::Disabled { cmd: MenuCmd::StickyNote, label }
+                if label == "Catatan tempel baru (maksimal 20)"
+        ));
+        let en = Config {
+            language: Lang::En,
+            ..Config::default()
+        };
+        assert_eq!(
+            labels(&menu_items_with(&en, None, &[], 20))[2],
+            "New sticky note (at most 20)"
+        );
+    }
+
+    #[test]
     fn a_known_update_takes_the_place_of_the_check_item() {
         let id = labels(&menu_items(&Config::default(), Some("3.11.0"), &[])).join("|");
         assert_eq!(
             id,
-            "Pengaturan…|Cari…|-|Gaya: Pill|Gaya: Notch|Monitor|-|Jalan saat Windows mulai|-|Update ke 3.11.0|Keluar"
+            "Pengaturan…|Cari…|Catatan tempel baru|-|Gaya: Pill|Gaya: Notch|Monitor|-|Jalan saat Windows mulai|-|Update ke 3.11.0|Keluar"
         );
         let en = Config {
             language: Lang::En,
@@ -622,7 +685,7 @@ mod tests {
         let en = labels(&menu_items(&en, Some("3.11.0"), &[])).join("|");
         assert_eq!(
             en,
-            "Settings…|Search…|-|Style: Pill|Style: Notch|Monitor|-|Start with Windows|-|Update to 3.11.0|Quit"
+            "Settings…|Search…|New sticky note|-|Style: Pill|Style: Notch|Monitor|-|Start with Windows|-|Update to 3.11.0|Quit"
         );
         let with = commands(&menu_items(&Config::default(), Some("3.11.0"), &[]));
         assert!(with.contains(&MenuCmd::InstallUpdate));
@@ -643,6 +706,7 @@ mod tests {
             vec![
                 "Settings…",
                 "Search…",
+                "New sticky note",
                 "-",
                 "Style: Pill",
                 "Style: Notch",

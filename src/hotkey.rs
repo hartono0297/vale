@@ -354,16 +354,19 @@ pub enum HotkeyId {
     Devices,
     Arrange,
     Screenshot,
+    /// "Catatan tempel baru": a new sticky note on the desktop.
+    StickyNote,
 }
 
 impl HotkeyId {
     /// Every row, in Settings order.
-    pub const ALL: [HotkeyId; 5] = [
+    pub const ALL: [HotkeyId; 6] = [
         HotkeyId::Search,
         HotkeyId::Clipboard,
         HotkeyId::Devices,
         HotkeyId::Arrange,
         HotkeyId::Screenshot,
+        HotkeyId::StickyNote,
     ];
 
     /// The row's key in config.json.
@@ -374,6 +377,7 @@ impl HotkeyId {
             HotkeyId::Devices => "devices",
             HotkeyId::Arrange => "arrange",
             HotkeyId::Screenshot => "screenshot",
+            HotkeyId::StickyNote => "sticky_note",
         }
     }
 
@@ -394,7 +398,7 @@ impl HotkeyId {
         }
     }
 
-    /// The position in `ALL` (0..5).
+    /// The position in `ALL` (0..6).
     pub fn index(self) -> usize {
         self as usize
     }
@@ -405,7 +409,7 @@ impl HotkeyId {
     }
 }
 
-/// The five rows' values; `None` is off.
+/// The rows' values; `None` is off.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Hotkeys {
     pub search: Option<Hotkey>,
@@ -413,6 +417,7 @@ pub struct Hotkeys {
     pub devices: Option<Hotkey>,
     pub arrange: Option<Hotkey>,
     pub screenshot: Option<Hotkey>,
+    pub sticky_note: Option<Hotkey>,
 }
 
 impl Default for Hotkeys {
@@ -423,6 +428,7 @@ impl Default for Hotkeys {
             devices: HotkeyId::Devices.default(),
             arrange: HotkeyId::Arrange.default(),
             screenshot: HotkeyId::Screenshot.default(),
+            sticky_note: HotkeyId::StickyNote.default(),
         }
     }
 }
@@ -436,6 +442,7 @@ impl Hotkeys {
             devices: None,
             arrange: None,
             screenshot: None,
+            sticky_note: None,
         }
     }
 
@@ -446,6 +453,7 @@ impl Hotkeys {
             HotkeyId::Devices => self.devices,
             HotkeyId::Arrange => self.arrange,
             HotkeyId::Screenshot => self.screenshot,
+            HotkeyId::StickyNote => self.sticky_note,
         }
     }
 
@@ -456,6 +464,7 @@ impl Hotkeys {
             HotkeyId::Devices => self.devices = value,
             HotkeyId::Arrange => self.arrange = value,
             HotkeyId::Screenshot => self.screenshot = value,
+            HotkeyId::StickyNote => self.sticky_note = value,
         }
     }
 
@@ -631,6 +640,7 @@ pub fn from_legacy(root: &serde_json::Value) -> Hotkeys {
         devices,
         arrange,
         screenshot,
+        sticky_note: None,
     }
 }
 
@@ -865,14 +875,15 @@ mod tests {
     fn the_defaults_and_the_row_order() {
         assert_eq!(
             HotkeyId::ALL.map(HotkeyId::config_key),
-            ["search", "clipboard", "devices", "arrange", "screenshot"]
+            ["search", "clipboard", "devices", "arrange", "screenshot", "sticky_note"]
         );
         for (i, id) in HotkeyId::ALL.iter().enumerate() {
             assert_eq!(id.index(), i);
             assert_eq!(HotkeyId::from_index(i), Some(*id));
         }
-        assert_eq!(HotkeyId::from_index(5), None);
+        assert_eq!(HotkeyId::from_index(6), None);
         let d = Hotkeys::default();
+        assert_eq!(d.sticky_note, None, "the sixth row has no default combo");
         assert_eq!(d.search, Some(hk("Ctrl+Alt+Space")));
         assert_eq!(
             d.screenshot,
@@ -903,16 +914,22 @@ mod tests {
     }
 
     #[test]
-    fn the_config_form_is_five_strings_and_round_trips() {
+    fn the_config_form_is_six_strings_and_round_trips() {
         let mut keys = Hotkeys::default();
         keys.set(HotkeyId::Clipboard, Some(hk("Win+Alt+V")));
         keys.set(HotkeyId::Screenshot, None);
+        keys.set(HotkeyId::StickyNote, Some(hk("Ctrl+Alt+N")));
         let v = serde_json::to_value(keys).unwrap();
         assert_eq!(
             v,
             json!({"search":"Ctrl+Alt+Space","clipboard":"Win+Alt+V","devices":"None",
-                   "arrange":"None","screenshot":"None"})
+                   "arrange":"None","screenshot":"None","sticky_note":"Ctrl+Alt+N"})
         );
+        // A config from before the row has no key: off, the rest as written.
+        let old = Hotkeys::from_json(&json!({"search":"Ctrl+Alt+Space","clipboard":"Win+Alt+V",
+            "devices":"None","arrange":"None","screenshot":"None"}));
+        assert_eq!(old.sticky_note, None);
+        assert_eq!(old.clipboard, Some(hk("Win+Alt+V")));
         assert_eq!(Hotkeys::from_json(&v), keys);
         let back: Hotkeys = serde_json::from_value(v).unwrap();
         assert_eq!(back, keys);

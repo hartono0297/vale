@@ -962,6 +962,59 @@ keys! {
     MonitorNotConnected => "tidak terhubung", "not connected";
     MonitorOnlyOne => "Cuma satu monitor terdeteksi", "Only one monitor detected";
     MonitorNumbered => "Monitor", "Monitor";
+
+    // Widgets: Settings -> Widget, the sticky notes on the desktop, the tray
+    // entry, the hotkey row and the Notes page's pin.
+    SecWidgets => "Widget", "Widgets";
+    GroupWidgetsDesktop => "Di desktop", "On the desktop";
+    GroupWidgetsGallery => "Galeri", "Gallery";
+    WidgetsShow => "Tampilkan widget", "Show widgets";
+    WidgetsShowDesc => "Semua widget di desktop", "Every widget on the desktop";
+    WidgetsLayer => "Lapisan", "Layer";
+    WidgetsLayerDesc => "Catatan yang disematkan selalu di atas",
+        "Pinned notes always stay on top";
+    WidgetsLayerDesktop => "Di desktop", "On desktop";
+    WidgetsLayerTop => "Di atas jendela", "Above windows";
+    WidgetsFullscreen => "Saat layar penuh", "In fullscreen";
+    WidgetsFullscreenDesc => "Game, video, presentasi", "Games, video, presentations";
+    WidgetsHide => "Sembunyikan", "Hide";
+    WidgetsKeep => "Biarkan", "Keep";
+    WidgetsLock => "Kunci posisi", "Lock position";
+    WidgetsLockDesc => "Tidak bisa digeser atau diubah ukurannya", "Cannot be moved or resized";
+    WidgetsPeek => "Kucing ngintip", "Peeking cat";
+    WidgetsPeekDesc => "Kucing mengintip di catatan yang terakhir disentuh",
+        "The cat peeks over the note you touched last";
+    StickyName => "Catatan tempel", "Sticky notes";
+    StickyDesc => "Catatan berwarna yang nempel di desktop.",
+        "Colourful notes that stick to your desktop.";
+    StickyAdd => "Tambah catatan tempel", "Add a sticky note";
+    StickyMax => "Maksimal 20 catatan tempel", "At most 20 sticky notes";
+    StickyFull => "Catatan tempel penuh", "Sticky notes full";
+    StickyOnDesktop => "di desktop", "on desktop";
+    StickyOf => "dari", "of";
+    StickyEdited => "diubah", "edited";
+    StickyLineOne => "baris", "line";
+    StickyLineMany => "baris", "lines";
+    StickyEmpty => "Catatan kosong", "Empty note";
+    StickyOnDesktopTip => "Tempel ke desktop", "Stick to desktop";
+    StickyOffDesktopTip => "Lepas dari desktop", "Unstick from desktop";
+    StickyNew => "Catatan tempel baru", "New sticky note";
+    StickyNewMax => "Catatan tempel baru (maksimal 20)", "New sticky note (at most 20)";
+    StickyNewDesc => "Satu catatan kosong baru di desktop",
+        "One new empty note on the desktop";
+    StickyPinTop => "Sematkan di atas", "Pin on top";
+    StickyRoll => "Gulung", "Roll up";
+    StickyUnroll => "Buka gulungan", "Unroll";
+    StickyDelete => "Hapus catatan", "Delete note";
+    StickyDeleteAgain => "Klik lagi untuk hapus", "Click again to delete";
+    StickyTextSize => "Ukuran teks", "Text size";
+    StickyChecklist => "Daftar centang", "Checklist";
+    PaperKrem => "Krem", "Cream";
+    PaperTerakota => "Terakota", "Terracotta";
+    PaperSage => "Sage", "Sage";
+    PaperPlum => "Plum", "Plum";
+    PaperLaut => "Laut", "Sea";
+    PaperGelap => "Gelap", "Dark";
 }
 
 /// `key` in `lang`.
