@@ -107,9 +107,24 @@ the `--demo-editor` anchor.
   intersects the notch monitor's `rcMonitor` (positive area; touching edges do
   not count) decides: hidden if it covers the monitor, shown otherwise; none
   gives shown. It runs whether or not the shell said fullscreen (a game on
-  monitor 2 makes the shell say yes). Any other case (one monitor, foreground on
-  the notch's monitor, unknown monitors) has no walk and keeps the shell's
-  answer. `is_fullscreen(None)` is the shell's answer, unchanged.
+  monitor 2 makes the shell say yes), but only after step 1 did not hide.
+  `is_fullscreen(None)` is the shell's answer, unchanged.
+  - The desktop in front: when the foreground is the desktop itself (the
+    shell or desktop window handle, or class Progman / WorkerW; taskbars do not
+    count, each sits on its own monitor), its monitor says nothing, because the
+    desktop window spans the whole virtual screen and `MonitorFromWindow` puts
+    it on the primary monitor whichever screen was clicked. So with 2+ monitors
+    and a known notch monitor it walks even when the foreground's monitor equals
+    the notch's or is unknown. Without this, a click on the bare wallpaper of
+    monitor 2 with the notch on the primary showed the notch over a fullscreen
+    video there. Safe: a click cannot reach the desktop of a monitor a
+    fullscreen window covers, and when the click was on the notch's own monitor
+    the walk finds no covering window and shows the notch, as before. Step 1
+    still runs first, so a shell fullscreen report (a presentation, say) with
+    the desktop on the notch's monitor still hides without a walk.
+  - No walk otherwise: one monitor, an unknown notch monitor, or a foreground
+    that is not the desktop and sits on the notch's monitor or on an unknown
+    one keeps the shell's answer.
   - Candidate: visible, not minimised, not cloaked (a failed
     `DWMWA_CLOAKED` read counts as not cloaked). Not candidates, skipped
     (they never hide and never stop the walk): classes Progman, WorkerW,

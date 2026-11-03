@@ -1,6 +1,6 @@
 ---
 tags: [decision, gotcha, arrange, susun, windows, hotkey, config, v3.10]
-date: 2026-11-02
+date: 2026-11-03
 ---
 
 # Susun (Arrange): the window layouts (v3.10)
@@ -111,8 +111,8 @@ in `settings_layout.rs`, `--demo-arrange` in `ui/demo.rs`.
   cancels the pick about a second after it began. (Since 2026-11-02 the
   report is per monitor: `is_fullscreen(Some(island))` hides the notch when
   the foreground window is on the notch's monitor, `hides_notch`, or, with 2+
-  monitors and the foreground elsewhere, when the z-order walk finds a
-  covering window there, see [[notch-monitor]]. The walk skips the overlay
+  monitors and the foreground elsewhere (or the bare desktop in front), when
+  the z-order walk finds a covering window there, see [[notch-monitor]]. The walk skips the overlay
   (own process), but `SHQueryUserNotificationState` still reports it when it
   is in the foreground on the notch's monitor, so the guard below is still
   needed.) So

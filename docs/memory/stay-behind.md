@@ -76,9 +76,10 @@ pure and tested; `App::rise`, `rise_frame`):
   detection is per monitor: a fullscreen app only counts while the foreground
   window is on the notch's monitor (`is_fullscreen(Some(island))`,
   `hides_notch`), so a game on another monitor leaves the island alone. With 2+
-  monitors and the foreground on another one, a z-order walk finds a fullscreen
-  window that covers the notch's own monitor and hides the island too
-  (2026-11-03, [[notch-monitor]]).
+  monitors and the foreground on another one, or the bare desktop in front
+  (Windows places it on the primary monitor whichever screen was clicked), a
+  z-order walk finds a fullscreen window that covers the notch's own monitor
+  and hides the island too (2026-11-03, [[notch-monitor]]).
 
 Related: [[open-mode]], [[v3-2-handoff]]. With this setting off, the notch can
 instead shrink to the cat's eyes over a window ([[notch-peek-eyes]]); with it

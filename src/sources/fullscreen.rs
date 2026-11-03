@@ -76,19 +76,23 @@ pub fn is_fullscreen(island: Option<HWND>) -> bool {
 }
 
 /// The whole decision for `is_fullscreen(Some(island))`, without Win32.
-/// `walk` (the z-order scan of the notch's monitor) is called only when the
-/// shell's report did not already hide the notch, there are two or more
-/// monitors, both the foreground's and the notch's monitor are known and they
-/// differ. Every other case keeps the shell's answer (`hides_notch`) and never
-/// walks.
+/// Step 1 comes first and is never skipped: when the shell's report hides the
+/// notch (`hides_notch`) the answer is true and `walk` (the z-order scan of the
+/// notch's monitor) is not called. Otherwise `walk` decides only with two or
+/// more monitors and a known notch monitor, and then only when either
+/// - the foreground's monitor is known and differs from the notch's, or
+/// - `foreground_is_desktop`, whatever its monitor (equal to the notch's or
+///   unknown).
+///
+/// Every other case is false and never walks.
 ///
 /// `foreground_is_desktop`: the foreground is the desktop itself (the user
 /// clicked the bare wallpaper). That window spans the whole virtual screen,
 /// so Windows puts it on the primary monitor whichever screen was clicked, and
-/// its monitor says nothing. With two or more monitors and a known notch
-/// monitor it always walks instead. That is safe: a click cannot reach the
-/// desktop of a monitor a fullscreen window covers, and when the click was on
-/// the notch's own monitor the walk finds no covering window there.
+/// its monitor says nothing. That is why it walks even when its monitor is
+/// the notch's. It is safe: a click cannot reach the desktop of a monitor a
+/// fullscreen window covers, and when the click was on the notch's own monitor
+/// the walk finds no covering window there.
 pub fn decide(
     shell_fullscreen: bool,
     foreground_is_desktop: bool,
@@ -97,11 +101,11 @@ pub fn decide(
     monitor_count: u32,
     walk: impl FnOnce() -> bool,
 ) -> bool {
-    if foreground_is_desktop && monitor_count >= 2 && notch_monitor.is_some() {
-        return walk();
-    }
     if hides_notch(shell_fullscreen, foreground_monitor, notch_monitor) {
         return true;
+    }
+    if foreground_is_desktop && monitor_count >= 2 && notch_monitor.is_some() {
+        return walk();
     }
     match (foreground_monitor, notch_monitor) {
         (Some(fg), Some(notch)) if monitor_count >= 2 && fg != notch => walk(),
@@ -576,9 +580,18 @@ mod tests {
         // desktop on the primary monitor, which is the notch's (7).
         assert!(decide(false, true, Some(7), Some(7), 2, || true));
         assert!(!decide(false, true, Some(7), Some(7), 2, || false));
-        // The walk decides over the shell's answer, too.
-        assert!(!decide(true, true, Some(7), Some(7), 2, || false));
         assert!(decide(false, true, None, Some(7), 3, || true));
+    }
+
+    #[test]
+    fn the_desktop_in_front_keeps_step_one_when_the_shell_hides() {
+        // The shell reports fullscreen (a presentation, say) and the desktop sits
+        // on the notch's monitor: step 1 hides, as it did before the walk.
+        assert!(decide(true, true, Some(7), Some(7), 2, no_walk));
+        assert!(decide(true, true, None, Some(7), 2, no_walk));
+        // Off the notch's monitor step 1 does not hide, so the walk decides.
+        assert!(!decide(true, true, Some(8), Some(7), 2, || false));
+        assert!(decide(true, true, Some(8), Some(7), 2, || true));
     }
 
     #[test]
