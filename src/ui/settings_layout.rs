@@ -33,6 +33,8 @@ use crate::ui::geometry::{
 };
 use crate::ui::icons::Icon;
 use crate::ui::robot::{Motion, SLEEP_MAX, SLEEP_MIN};
+use crate::widgets::prefs::{FullscreenRule, WidgetLayer, WidgetPrefs};
+use crate::widgets::sticky::can_add;
 
 pub use super::geometry::Rect;
 
@@ -151,6 +153,8 @@ pub enum Section {
     Cat,
     /// Panel: how it opens, its pages, its shortcut tiles.
     Panel,
+    /// Widget: how the desktop widgets behave, and the gallery to add them.
+    Widgets,
     Clipboard,
     /// Tombol pintas: the six global hotkeys, each recorded by pressing it.
     Hotkeys,
@@ -161,11 +165,12 @@ pub enum Section {
 }
 
 impl Section {
-    pub const ALL: [Section; 9] = [
+    pub const ALL: [Section; 10] = [
         Section::General,
         Section::Appearance,
         Section::Cat,
         Section::Panel,
+        Section::Widgets,
         Section::Clipboard,
         Section::Hotkeys,
         Section::Features,
@@ -179,6 +184,7 @@ impl Section {
             Section::Appearance => Key::SecAppearance,
             Section::Cat => Key::SecCat,
             Section::Panel => Key::SecPanel,
+            Section::Widgets => Key::SecWidgets,
             Section::Clipboard => Key::SecClipboard,
             Section::Hotkeys => Key::SecHotkeys,
             Section::Features => Key::SecFeatures,
@@ -194,6 +200,7 @@ impl Section {
             Section::Appearance => Icon::Palette,
             Section::Cat => Icon::Cat,
             Section::Panel => Icon::Grid,
+            Section::Widgets => Icon::Widgets,
             Section::Clipboard => Icon::Clipboard,
             Section::Hotkeys => Icon::Keyboard,
             Section::Features => Icon::Sparkle,
@@ -216,6 +223,7 @@ impl Section {
             "appearance" | "tampilan" => Some(Section::Appearance),
             "cat" | "kucing" => Some(Section::Cat),
             "panel" => Some(Section::Panel),
+            "widgets" | "widget" => Some(Section::Widgets),
             "clipboard" => Some(Section::Clipboard),
             // "shortcuts" is not here: the tiles are "Pintasan".
             "hotkeys" | "tombol-pintas" | "tombolpintas" | "shortcut-keys" => {
@@ -409,6 +417,17 @@ pub enum Hit {
     Lyrics,
     /// "Mode buka": Hover, Hover & tetap or Klik.
     OpenMode(OpenMode),
+    /// Settings -> Widget: "Tampilkan widget", "Lapisan", "Saat layar penuh",
+    /// "Kunci posisi" and "Kucing ngintip".
+    WidgetsShow,
+    WidgetsLayer(WidgetLayer),
+    WidgetsFullscreen(FullscreenRule),
+    WidgetsLock,
+    WidgetsPeek,
+    /// The (+) of a gallery card: one new empty sticky note.
+    WidgetAdd,
+    /// The gallery's active card: the notes flash on the desktop.
+    WidgetCard,
     /// Settings -> Tombol pintas: a row's field (click to record, again to
     /// cancel), its reset button, and "Kembalikan semua".
     HotkeyField(HotkeyId),
@@ -667,6 +686,9 @@ pub enum Group {
     /// Clipboard -> Screenshot -> Setelah capture.
     ShotAfterCapture,
     NotifToastStyle,
+    /// Widget -> Lapisan and Saat layar penuh.
+    WidgetLayer,
+    WidgetFullscreen,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -822,6 +844,9 @@ pub enum Control {
         rect: Rect,
         selected: bool,
     },
+    /// A rectangle that takes a click and draws nothing of its own (a
+    /// gallery card; its look is `Layout::tiles`).
+    Area { hit: Hit, rect: Rect },
 }
 
 /// One screen in the map.
@@ -895,6 +920,7 @@ impl Control {
                 ..
             } => vec![(*hit, *rect)],
             Control::Radio { hit: None, .. } => Vec::new(),
+            Control::Area { hit, rect } => vec![(*hit, *rect)],
         }
     }
 
@@ -948,6 +974,7 @@ impl Control {
                 }
             }
             Control::Radio { rect, .. } => down(rect),
+            Control::Area { rect, .. } => down(rect),
         }
     }
 
@@ -990,6 +1017,7 @@ impl Control {
                 w: RADIO_DOT_W.min(rect.w),
                 ..*rect
             },
+            Control::Area { rect, .. } => *rect,
         }
     }
 }
@@ -1062,6 +1090,17 @@ pub struct Layout {
     pub rows: Vec<ReorderRow>,
     /// The row held by a drag, drawn raised over the others.
     pub lifted: Option<Rect>,
+    /// The widget gallery's cards (Widget).
+    pub tiles: Vec<WidgetTile>,
+}
+
+/// One card of the widget gallery: its plate, the still picture in it, and
+/// whether one is on the desktop (a click then makes them flash).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WidgetTile {
+    pub rect: Rect,
+    pub preview: Rect,
+    pub active: bool,
 }
 
 /// A list the owner reorders: by dragging a handle or with the buttons.
@@ -1266,10 +1305,14 @@ pub struct State<'a> {
     pub open_mode: OpenMode,
     /// The plug-in and safe-to-remove notices.
     pub device_notices: bool,
-    /// The six hotkeys, and by `HotkeyId::index` whether a set one could not
+    /// The hotkeys, and by `HotkeyId::index` whether a set one could not
     /// be registered (taken by another app, or the PrtSc hook failed).
     pub hotkeys: Hotkeys,
     pub hotkey_failed: [bool; HotkeyId::ALL.len()],
+    /// Settings -> Widget: the widgets' settings and how many sticky notes
+    /// are on the desktop.
+    pub widgets: WidgetPrefs,
+    pub sticky_count: usize,
     /// The row being recorded, and why the last combo typed was refused
     /// (window state, not saved).
     pub hotkey_recording: Option<HotkeyId>,
@@ -2101,6 +2144,7 @@ pub fn layout_in(section: Section, s: &State, m: &dyn Measure, client: (f32, f32
         Section::Appearance => appearance(&mut b, s),
         Section::Cat => cat_page(&mut b, s),
         Section::Panel => panel_page(&mut b, s),
+        Section::Widgets => widgets_page(&mut b, s),
         Section::Clipboard => clipboard_page(&mut b, s),
         Section::Hotkeys => hotkeys_page(&mut b, s),
         Section::Features => features_page(&mut b, s),
@@ -2158,6 +2202,10 @@ fn scroll(l: &mut Layout, scroll: f32, g: Geom) {
     }
     for r in &mut l.rows {
         down(&mut r.rect);
+    }
+    for t in &mut l.tiles {
+        down(&mut t.rect);
+        down(&mut t.preview);
     }
     for r in [
         &mut l.preview,
@@ -3576,6 +3624,153 @@ fn panel_page(b: &mut Builder, s: &State) {
     tiles_card(b, s);
 }
 
+/// The gallery's tile: its picture, and the room under it for the title and
+/// the description (two lines at most) beside the (+).
+const TILE_PREVIEW_H: f32 = 104.0;
+const TILE_H: f32 = 190.0;
+const TILE_PAD: f32 = 12.0;
+
+/// Widget: "Di desktop" (five settings), then "Galeri" with the card of the
+/// one widget there is, the sticky notes.
+fn widgets_page(b: &mut Builder, s: &State) {
+    let p = s.widgets;
+    let layer_items = vec![
+        (Hit::WidgetsLayer(WidgetLayer::Desktop), b.t(Key::WidgetsLayerDesktop)),
+        (Hit::WidgetsLayer(WidgetLayer::Top), b.t(Key::WidgetsLayerTop)),
+    ];
+    let full_items = vec![
+        (Hit::WidgetsFullscreen(FullscreenRule::Hide), b.t(Key::WidgetsHide)),
+        (Hit::WidgetsFullscreen(FullscreenRule::Keep), b.t(Key::WidgetsKeep)),
+    ];
+    // The two segmented rows may need a second line for their description.
+    let probe = Rect {
+        x: b.g.content_x,
+        y: 0.0,
+        w: b.g.content_w,
+        h: 0.0,
+    };
+    let wrapped = |b: &Builder, items: &[(Hit, String)], key: Key| {
+        let w = row_text_w(probe, b.g.right - b.segmented_w(items));
+        b.wrap(&b.t(key), Font::Desc, w)
+    };
+    let layer_desc = wrapped(b, &layer_items, Key::WidgetsLayerDesc);
+    let full_desc = wrapped(b, &full_items, Key::WidgetsFullscreenDesc);
+    let heights = [
+        ROW_H,
+        wrapped_row_h(layer_desc.len()),
+        wrapped_row_h(full_desc.len()),
+        ROW_H,
+        ROW_H,
+    ];
+
+    titled(b, Key::GroupWidgetsDesktop);
+    let card = b.card(heights.iter().sum());
+    let mut rows = [card.y; 5];
+    for i in 1..5 {
+        rows[i] = rows[i - 1] + heights[i - 1];
+    }
+    let cy = |i: usize| rows[i] + heights[i] / 2.0;
+
+    let x = b.toggle(Hit::WidgetsShow, b.g.right, cy(0), p.show);
+    let desc = Some((b.t(Key::WidgetsShowDesc), Tone::Secondary));
+    b.row_text(card, rows[0], b.t(Key::WidgetsShow), desc, false, x);
+
+    let selected = index_of(&WidgetLayer::ALL, &p.layer);
+    let x = b.segmented(Group::WidgetLayer, b.g.right, cy(1), layer_items, selected);
+    b.row_text_lines(card, rows[1], b.t(Key::WidgetsLayer), layer_desc, Tone::Secondary, x);
+    b.divider(card, rows[1]);
+
+    let selected = index_of(&FullscreenRule::ALL, &p.fullscreen);
+    let x = b.segmented(Group::WidgetFullscreen, b.g.right, cy(2), full_items, selected);
+    b.row_text_lines(card, rows[2], b.t(Key::WidgetsFullscreen), full_desc, Tone::Secondary, x);
+    b.divider(card, rows[2]);
+
+    let x = b.toggle(Hit::WidgetsLock, b.g.right, cy(3), p.lock);
+    let desc = Some((b.t(Key::WidgetsLockDesc), Tone::Secondary));
+    b.row_text(card, rows[3], b.t(Key::WidgetsLock), desc, false, x);
+    b.divider(card, rows[3]);
+
+    let x = b.toggle(Hit::WidgetsPeek, b.g.right, cy(4), p.cat_peek);
+    let desc = Some((b.t(Key::WidgetsPeekDesc), Tone::Secondary));
+    b.row_text(card, rows[4], b.t(Key::WidgetsPeek), desc, false, x);
+    b.divider(card, rows[4]);
+
+    // The gallery: its eyebrow with how many are on the desktop at the right.
+    let eyebrow_y = b.y;
+    titled(b, Key::GroupWidgetsGallery);
+    let count = crate::widgets::sticky::on_desktop_label(b.lang, s.sticky_count);
+    let count_w = b.w(&count, Font::Desc);
+    let count_rect = Rect {
+        x: b.g.content_x + b.g.content_w - 2.0 - count_w,
+        y: eyebrow_y,
+        w: count_w,
+        h: EYEBROW_H,
+    };
+    b.text(count_rect, count, Font::Desc, Tone::Secondary, Align::Left);
+    let grid = b.card(TILE_H + 2.0 * TILE_PAD);
+    widget_tile(b, grid, s);
+}
+
+/// The sticky notes' card: the first cell of the two-column grid.
+fn widget_tile(b: &mut Builder, grid: Rect, s: &State) {
+    let w = (grid.w - 3.0 * TILE_PAD) / 2.0;
+    let rect = Rect {
+        x: grid.x + TILE_PAD,
+        y: grid.y + TILE_PAD,
+        w,
+        h: TILE_H,
+    };
+    let preview = Rect {
+        x: rect.x + 8.0,
+        y: rect.y + 8.0,
+        w: rect.w - 16.0,
+        h: TILE_PREVIEW_H,
+    };
+    let active = s.sticky_count > 0;
+    b.l.tiles.push(WidgetTile { rect, preview, active });
+    let room_right = rect.right() - 12.0 - STEP_BUTTON - 8.0;
+    let title_y = preview.bottom() + 8.0;
+    let title = Rect {
+        x: rect.x + 12.0,
+        y: title_y,
+        w: (room_right - rect.x - 12.0).max(0.0),
+        h: 20.0,
+    };
+    b.text(title, b.t(Key::StickyName), Font::Label, Tone::Primary, Align::Left);
+    let can = can_add(s.sticky_count);
+    let desc = if can {
+        b.t(Key::StickyDesc)
+    } else {
+        b.t(Key::StickyMax)
+    };
+    let tone = if can { Tone::Secondary } else { Tone::Warn };
+    for (i, line) in b.wrap(&desc, Font::Desc, title.w).into_iter().take(2).enumerate() {
+        let r = Rect {
+            x: title.x,
+            y: title_y + 22.0 + i as f32 * DESC_LINE_H,
+            w: title.w,
+            h: 16.0,
+        };
+        b.text(r, line, Font::Desc, tone, Align::Left);
+    }
+    // The count on the picture, when there is one.
+    if active {
+        let label = s.sticky_count.to_string();
+        let cx = preview.right() - 8.0;
+        let chip_w = 2.0 * CHIP_PAD + DOT + DOT_GAP + b.w(&label, Font::Desc);
+        b.chip(cx - chip_w, preview.y + 14.0, label, Tone::Primary, chip_w);
+    }
+    // The (+), above the card's own click area so it wins.
+    let plus_cy = rect.bottom() - 12.0 - STEP_BUTTON / 2.0;
+    b.icon_button(rect.right() - 12.0, plus_cy, Hit::WidgetAdd, Icon::Plus, can);
+    if active {
+        b.l.controls.push(Control::Area {
+            hit: Hit::WidgetCard,
+            rect,
+        });
+    }
+}
+
 /// Fitur: "Pomodoro" (its four steppers and the running note), "Musik",
 /// "Notifikasi",
 /// "CLI", "Perangkat" and "Pembersih".
@@ -4294,6 +4489,7 @@ pub fn hotkey_row_key(id: HotkeyId) -> Key {
         HotkeyId::Arrange => Key::HotkeyRowArrange,
         HotkeyId::Screenshot => Key::HotkeyRowScreenshot,
         HotkeyId::LyricsCard => Key::HotkeyRowLyricsCard,
+        HotkeyId::StickyNote => Key::StickyNew,
     }
 }
 
@@ -4305,6 +4501,7 @@ fn hotkey_row_desc_key(id: HotkeyId) -> Key {
         HotkeyId::Arrange => Key::HotkeyRowArrangeDesc,
         HotkeyId::Screenshot => Key::HotkeyRowScreenshotDesc,
         HotkeyId::LyricsCard => Key::HotkeyRowLyricsCardDesc,
+        HotkeyId::StickyNote => Key::StickyNewDesc,
     }
 }
 
@@ -4850,6 +5047,7 @@ mod tests {
             arrange: hk("Win+Alt+S"),
             screenshot: hk("Ctrl+PrtSc"),
             lyrics_card: hk("Win+Ctrl+Alt+Shift+PageUp"),
+            sticky_note: hk("Win+Ctrl+Alt+Shift+End"),
         }
     }
 
@@ -4985,6 +5183,18 @@ mod tests {
                             Hotkeys::default()
                         },
                         hotkey_failed: [locked; HotkeyId::ALL.len()],
+                        widgets: if locked {
+                            WidgetPrefs {
+                                show: false,
+                                layer: WidgetLayer::Top,
+                                fullscreen: FullscreenRule::Keep,
+                                lock: true,
+                                cat_peek: false,
+                            }
+                        } else {
+                            WidgetPrefs::default()
+                        },
+                        sticky_count: if locked { 20 } else { 0 },
                         hotkey_recording: locked.then_some(HotkeyId::Devices),
                         hotkey_error: locked.then_some((
                             HotkeyId::Clipboard,
@@ -5340,6 +5550,8 @@ mod tests {
             let mut boxes: Vec<(String, Rect)> = l
                 .controls
                 .iter()
+                // A gallery card's click area lies under its own texts and (+).
+                .filter(|c| !matches!(c, Control::Area { .. }))
                 .map(|c| (format!("{c:?}"), c.bounds()))
                 .collect();
             boxes.extend(l.fields.iter().map(|(f, r)| (format!("{f:?}"), *r)));
@@ -5419,18 +5631,24 @@ mod tests {
 
     /// The sections that overflow the window and so scroll, whatever the
     /// state: Tampilan (three cards and the preview), Kucing, Panel (the two
-    /// lists), Clipboard (history and screenshot) and Fitur (five cards).
-    const SCROLLING: [Section; 5] = [
+    /// lists), Clipboard (history and screenshot), Tombol pintas (the header
+    /// and seven rows, 10 px past the margin at the minimum size) and Fitur
+    /// (five cards).
+    // Widget holds the five settings and the gallery's card: 460 px of
+    // content in a 400 px high viewport at the minimum size, so it scrolls.
+    const SCROLLING: [Section; 7] = [
         Section::Appearance,
         Section::Cat,
         Section::Panel,
+        Section::Widgets,
         Section::Clipboard,
+        Section::Hotkeys,
         Section::Features,
     ];
 
     /// Every section fits the window's height. `SCROLLING` ones scroll by
     /// exactly what they lack and then the last card meets the bottom margin;
-    /// the rest (Umum, Tombol pintas, Integrasi, Tentang) never scroll.
+    /// the rest (Umum, Integrasi, Tentang) never scroll.
     #[test]
     fn everything_fits_in_the_window_height() {
         for (section, lang, l) in all_layouts() {
@@ -5473,15 +5691,10 @@ mod tests {
                 .filter(|s| layout(*s, &state, &Estimate).viewport.is_some())
                 .collect();
             assert_eq!(scrolling, SCROLLING, "{lang:?}");
-            // Umum, Tombol pintas, Integrasi and Tentang never scroll, whatever
-            // the state (Google, a recording, a refused combo, taken hotkeys).
+            // Umum, Integrasi and Tentang never scroll, whatever the state
+            // (Google, a recording, a refused combo, taken hotkeys).
             for s in states() {
-                for section in [
-                    Section::General,
-                    Section::Hotkeys,
-                    Section::Integrations,
-                    Section::About,
-                ] {
+                for section in [Section::General, Section::Integrations, Section::About] {
                     let l = layout(section, &s, &Estimate);
                     assert!(l.viewport.is_none(), "{section:?}");
                 }
@@ -6259,7 +6472,7 @@ mod tests {
     }
 
     #[test]
-    fn tombol_pintas_sits_after_clipboard_with_a_header_and_six_rows() {
+    fn tombol_pintas_sits_after_clipboard_with_a_header_and_seven_rows() {
         assert_eq!(
             Section::ALL,
             [
@@ -6267,6 +6480,7 @@ mod tests {
                 Section::Appearance,
                 Section::Cat,
                 Section::Panel,
+                Section::Widgets,
                 Section::Clipboard,
                 Section::Hotkeys,
                 Section::Features,
@@ -6278,12 +6492,15 @@ mod tests {
         for lang in [Lang::Id, Lang::En] {
             let s = hotkey_base(lang);
             let l = layout(Section::Hotkeys, &s, &Estimate);
-            // The section needs no viewport at the minimum size.
-            assert!(l.viewport.is_none() && l.scroll_max == 0.0, "{lang:?}");
-            // One card of the header and six rows, under its eyebrow.
+            // Seven rows overflow the minimum size by a few px, so the section
+            // scrolls (and fits with room to spare in a taller window).
+            assert!(l.viewport.is_some() && l.scroll_max > 0.0, "{lang:?}");
+            let tall = layout_in(Section::Hotkeys, &s, &Estimate, (CLIENT_W, 700.0));
+            assert!(tall.viewport.is_none() && tall.scroll_max == 0.0, "{lang:?}");
+            // One card of the header and seven rows, under its eyebrow.
             assert_eq!(l.cards.len(), 1);
             let card = l.cards[0];
-            assert_eq!(card.h, HEADER_H + 6.0 * ROW_H);
+            assert_eq!(card.h, HEADER_H + 7.0 * ROW_H);
             assert!(
                 l.texts
                     .iter()
@@ -6385,6 +6602,8 @@ mod tests {
             assert_eq!(f[1].2, ["Win", "Alt", "V"]);
             assert!(f[2].2.is_empty() && f[3].2.is_empty(), "off: no caps");
             assert_eq!(f[4].2, ["PrtSc"]);
+            assert_eq!(f[5].2, ["Ctrl", "Alt", "L"], "the lyrics card");
+            assert!(f[6].2.is_empty(), "the sticky note row has no combo by default");
             // A changed row can be reset; the others cannot.
             let enabled =
                 |l: &Layout, id: HotkeyId| l.hits().iter().any(|(h, _)| *h == Hit::HotkeyReset(id));
@@ -6403,7 +6622,7 @@ mod tests {
             let f = hotkey_fields(&layout(Section::Hotkeys, &rec, &Estimate));
             assert_eq!(
                 f.iter().map(|x| x.3).collect::<Vec<_>>(),
-                [false, false, true, false, false, false]
+                [false, false, true, false, false, false, false]
             );
             // The description: red for a refusal on that row, red for a taken
             // one that is set, otherwise secondary.
@@ -6839,7 +7058,7 @@ mod tests {
             Some(Hit::Style(Style::Pill))
         );
         // Nav rows switch sections.
-        let nav = &l.nav[7];
+        let nav = &l.nav[Section::Integrations.index()];
         assert_eq!(
             l.hit(nav.pill.x + 4.0, nav.pill.y + 4.0),
             Some(Hit::Nav(Section::Integrations))
@@ -8568,7 +8787,7 @@ mod tests {
         for s in Section::ALL {
             assert_eq!(Section::ALL[s.index()], s);
         }
-        // The nine sections, in the sidebar's order.
+        // The ten sections, in the sidebar's order.
         assert_eq!(
             Section::ALL,
             [
@@ -8576,6 +8795,7 @@ mod tests {
                 Section::Appearance,
                 Section::Cat,
                 Section::Panel,
+                Section::Widgets,
                 Section::Clipboard,
                 Section::Hotkeys,
                 Section::Features,
@@ -8591,6 +8811,9 @@ mod tests {
             ("kucing", Section::Cat),
             ("cat", Section::Cat),
             ("panel", Section::Panel),
+            ("widgets", Section::Widgets),
+            ("widget", Section::Widgets),
+            (" Widget ", Section::Widgets),
             ("clipboard", Section::Clipboard),
             ("hotkeys", Section::Hotkeys),
             ("tombol-pintas", Section::Hotkeys),
@@ -8612,6 +8835,7 @@ mod tests {
                     "Tampilan",
                     "Kucing",
                     "Panel",
+                    "Widget",
                     "Clipboard",
                     "Tombol pintas",
                     "Fitur",
@@ -8626,6 +8850,7 @@ mod tests {
                     "Appearance",
                     "Cat",
                     "Panel",
+                    "Widgets",
                     "Clipboard",
                     "Hotkeys",
                     "Features",
@@ -8641,7 +8866,168 @@ mod tests {
         assert_eq!(Section::Cat.icon(), Icon::Cat);
         let mut icons: Vec<Icon> = Section::ALL.iter().map(|s| s.icon()).collect();
         icons.dedup();
-        assert_eq!(icons.len(), 9);
+        assert_eq!(icons.len(), 10);
+        assert_eq!(Section::Widgets.icon(), Icon::Widgets);
+    }
+
+    #[test]
+    fn the_sidebar_fits_ten_sections_at_the_minimum_height() {
+        let l = layout(Section::General, &states()[0], &Estimate);
+        assert_eq!(l.nav.len(), 10);
+        let last = l.nav.last().unwrap();
+        assert!(last.pill.bottom() <= CLIENT_H - 12.0, "{:?}", last.pill);
+        assert_eq!(l.nav[Section::Widgets.index()].section, Section::Widgets);
+        assert_eq!(Section::Widgets.index(), 4, "right after Panel");
+    }
+
+    /// A window tall enough to show the whole Widget section.
+    const TALL: (f32, f32) = (CLIENT_W, 900.0);
+
+    fn widgets_state(lang: Lang, count: usize) -> State<'static> {
+        State {
+            lang,
+            widgets: WidgetPrefs::default(),
+            sticky_count: count,
+            scroll: 0.0,
+            ..states()[0].clone()
+        }
+    }
+
+    #[test]
+    fn widget_has_its_settings_and_a_gallery_with_one_card() {
+        for lang in [Lang::Id, Lang::En] {
+            let l = layout_in(Section::Widgets, &widgets_state(lang, 0), &Estimate, TALL);
+            // The five settings, then the gallery's grid, each under its eyebrow.
+            assert_eq!(l.cards.len(), 2, "{lang:?}");
+            let has = |t: &str| l.texts.iter().any(|x| x.text == t);
+            assert!(has(&text(lang, Key::GroupWidgetsDesktop).to_uppercase()));
+            assert!(has(&text(lang, Key::GroupWidgetsGallery).to_uppercase()));
+            for key in [Key::WidgetsShow, Key::WidgetsLayer, Key::WidgetsFullscreen, Key::WidgetsLock, Key::WidgetsPeek, Key::StickyName] {
+                assert!(has(text(lang, key)), "{lang:?} {key:?}");
+            }
+            assert_eq!(l.title.as_ref().unwrap().text, text(lang, Key::SecWidgets));
+            // The two segmented controls and their choices.
+            let (_, layer, sel) = l.segmented(Group::WidgetLayer).expect("Lapisan");
+            assert_eq!(layer.len(), 2);
+            assert_eq!(layer[sel].hit, Hit::WidgetsLayer(WidgetLayer::Desktop));
+            assert_eq!(layer[1].hit, Hit::WidgetsLayer(WidgetLayer::Top));
+            let (_, full, sel) = l.segmented(Group::WidgetFullscreen).expect("Layar penuh");
+            assert_eq!(full[sel].hit, Hit::WidgetsFullscreen(FullscreenRule::Hide));
+            assert_eq!(full[1].hit, Hit::WidgetsFullscreen(FullscreenRule::Keep));
+            // The three toggles.
+            let hits: Vec<Hit> = l.hits().into_iter().map(|(h, _)| h).collect();
+            for h in [Hit::WidgetsShow, Hit::WidgetsLock, Hit::WidgetsPeek, Hit::WidgetAdd] {
+                assert!(hits.contains(&h), "{lang:?} {h:?}");
+            }
+            // The gallery has exactly one card, with its picture; none is on
+            // the desktop yet, so a click on it does nothing and there is no badge.
+            assert_eq!(l.tiles.len(), 1);
+            assert!(!l.tiles[0].active && !hits.contains(&Hit::WidgetCard));
+            assert!(l.chips.is_empty());
+            // "0 di desktop" at the gallery's right.
+            let count = crate::widgets::sticky::on_desktop_label(lang, 0);
+            let c = l.texts.iter().find(|x| x.text == count).expect("the count");
+            let eyebrow = l
+                .texts
+                .iter()
+                .find(|x| x.text == text(lang, Key::GroupWidgetsGallery).to_uppercase())
+                .unwrap();
+            assert!(c.rect.x > eyebrow.rect.x + 40.0 && (c.rect.y - eyebrow.rect.y).abs() < 0.5);
+        }
+    }
+
+    #[test]
+    fn the_gallery_card_is_clickable_once_a_note_is_on_the_desktop() {
+        for lang in [Lang::Id, Lang::En] {
+            let l = layout_in(Section::Widgets, &widgets_state(lang, 3), &Estimate, TALL);
+            assert!(l.tiles[0].active);
+            let tile = l.tiles[0].rect;
+            // A click on the card flashes the notes; one on its (+) adds a note.
+            assert_eq!(l.hit(tile.x + 20.0, tile.y + 20.0), Some(Hit::WidgetCard));
+            let plus = l
+                .controls
+                .iter()
+                .find_map(|c| match c {
+                    Control::IconButton { hit: Hit::WidgetAdd, rect, enabled, .. } => Some((*rect, *enabled)),
+                    _ => None,
+                })
+                .expect("the +");
+            assert!(plus.1, "enabled below the cap");
+            assert_eq!(l.hit(plus.0.x + 4.0, plus.0.y + 4.0), Some(Hit::WidgetAdd));
+            // The count badge shows "3".
+            assert!(l.chips.iter().any(|c| c.label.text == "3"), "{lang:?}");
+            let count = crate::widgets::sticky::on_desktop_label(lang, 3);
+            assert!(l.texts.iter().any(|t| t.text == count));
+        }
+    }
+
+    #[test]
+    fn the_plus_is_off_at_the_cap_and_the_description_says_why() {
+        for lang in [Lang::Id, Lang::En] {
+            let l = layout_in(Section::Widgets, &widgets_state(lang, 20), &Estimate, TALL);
+            let plus = l.controls.iter().find_map(|c| match c {
+                Control::IconButton { hit: Hit::WidgetAdd, rect, enabled, .. } => Some((*rect, *enabled)),
+                _ => None,
+            });
+            let (rect, enabled) = plus.expect("the + is still drawn");
+            assert!(!enabled);
+            assert_ne!(l.hit(rect.x + 4.0, rect.y + 4.0), Some(Hit::WidgetAdd), "no click");
+            let reason = text(lang, Key::StickyMax);
+            let words: Vec<&str> = reason.split(' ').collect();
+            // The reason may be wrapped: every word is there, in the warning tone.
+            let said: String = l
+                .texts
+                .iter()
+                .filter(|t| t.tone == Tone::Warn)
+                .map(|t| t.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            for w in words {
+                assert!(said.contains(w), "{lang:?}: {said:?} lacks {w:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_widget_controls_show_the_saved_choices() {
+        let prefs = WidgetPrefs {
+            show: false,
+            layer: WidgetLayer::Top,
+            fullscreen: FullscreenRule::Keep,
+            lock: true,
+            cat_peek: false,
+        };
+        let s = State {
+            widgets: prefs,
+            ..widgets_state(Lang::En, 1)
+        };
+        let l = layout_in(Section::Widgets, &s, &Estimate, TALL);
+        let (_, layer, sel) = l.segmented(Group::WidgetLayer).unwrap();
+        assert_eq!(layer[sel].hit, Hit::WidgetsLayer(WidgetLayer::Top));
+        let (_, full, sel) = l.segmented(Group::WidgetFullscreen).unwrap();
+        assert_eq!(full[sel].hit, Hit::WidgetsFullscreen(FullscreenRule::Keep));
+        let on = |hit: Hit| {
+            l.controls.iter().find_map(|c| match c {
+                Control::Toggle { hit: h, on, .. } if *h == hit => Some(*on),
+                _ => None,
+            })
+        };
+        assert_eq!(on(Hit::WidgetsShow), Some(false));
+        assert_eq!(on(Hit::WidgetsLock), Some(true));
+        assert_eq!(on(Hit::WidgetsPeek), Some(false));
+    }
+
+    #[test]
+    fn the_widget_section_scrolls_at_the_minimum_size_and_not_in_a_tall_window() {
+        // At 720 x 520 the five settings and the gallery are taller than the
+        // viewport (see SCROLLING); a tall window shows them whole.
+        let s = widgets_state(Lang::Id, 2);
+        let small = layout(Section::Widgets, &s, &Estimate);
+        assert!(small.viewport.is_some() && small.scroll_max > 0.0);
+        let tall = layout_in(Section::Widgets, &s, &Estimate, TALL);
+        assert!(tall.viewport.is_none() && tall.scroll_max == 0.0);
+        let last = tall.cards.last().unwrap();
+        assert!(last.bottom() <= 900.0 - PAD + 0.01, "{last:?}");
     }
 
     #[test]

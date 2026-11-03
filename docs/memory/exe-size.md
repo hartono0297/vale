@@ -131,3 +131,17 @@ about release. The changes here (a smaller icon resource) do not touch runtime
 code. Idle budget stays as in [[bata-idle-power-budget]].
 
 Listed in [[index]].
+
+## Desktop widgets, phase 1 (2026-11-04)
+
+`cargo build --release --locked`, same toolchain, before (main at 3.17.0) and
+after:
+
+| Build | Bytes |
+|---|---|
+| `main` (3.17.0) | 3,186,688 |
+| branch (widgets phase 1) | 3,294,720 (+108,032, +3.4 %) |
+
+No new crate and no new `windows` feature: the host, the drawing, the
+checklist, snap and placement maths, the colour popover, the Settings page and
+the extra strings. `--demo-widgets` is debug-only and not in the release exe.

@@ -3,7 +3,7 @@ tags: [decision, hotkeys, settings, config, windows]
 date: 2026-11-04
 ---
 
-# Hotkeys: six recordable combos in one Settings section
+# Hotkeys: seven recordable combos in one Settings section
 
 The five fixed presets (Clipboard Ctrl+Alt+V / Win+Alt+V, search
 Ctrl+Alt+Space / Win+Alt+S, Devices Ctrl+Alt+D, Arrange Ctrl+Alt+S, the PrtSc
@@ -58,7 +58,7 @@ that says "five" is five rows plus this one; the rest is unchanged.
 
 ## Config
 
-- `config.hotkeys` serializes as an object of six strings (five until 2026-11-04). It is read
+- `config.hotkeys` serializes as an object of seven strings (five until 2026-11-04). It is read
   **leniently and never fails**: a missing key, a value that does not parse or
   fails `check` gives that row's default; anything that is not an object gives
   every default; a row that repeats an earlier row (in `ALL` order) reads as
@@ -99,7 +99,7 @@ that says "five" is five rows plus this one; the rest is unchanged.
 - Per-module `hotkey` / `hotkey_failed` fields and `sync_*_hotkey` are gone;
   `ClipState` got a plain `started` flag where `clip.hotkey.is_none()` used to
   mean "not started".
-- **The PrtSc hook** (`app_prtsc.rs`) reads a static table of one `AtomicU8` per row (six)
+- **The PrtSc hook** (`app_prtsc.rs`) reads a static table of one `AtomicU8` per row (seven)
   (0xFF unassigned, else the row's modifier bits). `prtsc_hook_action(vk,
   key_down, mods, swallowing, table)` swallows and fires a press whose
   modifiers EXACTLY equal an assigned row's, swallows its auto-repeat and
@@ -197,3 +197,12 @@ window and cancels the recording), a hook under an elevated window (UIPI). The
 Settings page was only looked at in the debug demo (`--settings hotkeys`,
 `DI_HOTKEYS=failed` marks every set row as taken). Hand-edited combos that are
 reserved, lack a modifier or repeat another row are read leniently as above.
+
+## The seventh row: Catatan tempel baru (2026-11-04)
+
+`HotkeyId::StickyNote` is appended to `ALL` after the lyrics card (seven rows, index 6, config key
+`sticky_note`, default None, a config without the key reads None).
+`RegisterHotKey` id 7 (`HOTKEY_STICKY`); id 6 is the lyrics card's (both are on
+main now). The per-row arrays follow `HotkeyId::ALL.len()` / `prtsc::ROWS`.
+A press makes one empty sticky note with the keyboard, or at 20 notes shows a
+short island notice ([[widgets]]).

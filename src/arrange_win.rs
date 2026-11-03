@@ -690,6 +690,13 @@ mod tests {
         assert!(is_alt_tab_style("Notepad", none, false));
         assert!(!is_alt_tab_style("Notepad", WS_EX_TOOLWINDOW.0, false));
         assert!(!is_alt_tab_style("Notepad", none, true), "owned");
+        // A desktop sticky note: a tool window owned by the shell, in this
+        // process; Susun never lists, counts or moves it.
+        assert!(!is_alt_tab_style(
+            "ValeWidget",
+            WS_EX_TOOLWINDOW.0 | windows::Win32::UI::WindowsAndMessaging::WS_EX_LAYERED.0,
+            true
+        ));
         assert!(
             is_alt_tab_style("Notepad", WS_EX_APPWINDOW.0, true),
             "owned but an app window"

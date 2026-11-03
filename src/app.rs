@@ -133,6 +133,7 @@ use crate::ui::robot::{
 use crate::ui::settings::{self, Action as SettingsAction, WM_APP_SETTINGS_ACTION};
 use crate::ui::tray::{self, MenuChoice, MenuCmd, WM_APP_TRAY};
 use crate::ui::window::IslandWindow;
+use crate::widgets::host::WM_APP_WIDGET;
 
 #[path = "app_clip.rs"]
 mod clip;
@@ -177,6 +178,10 @@ use quick::{QUERY_LIMIT, SearchState};
 #[path = "app_shelf.rs"]
 mod shelf_page;
 use shelf_page::{ShelfState, TIMER_SHELF_HOLD};
+
+#[path = "app_widgets.rs"]
+mod widgets_page;
+use widgets_page::{TIMER_WIDGET_SAVE, WidgetsState};
 
 #[path = "app_shot.rs"]
 mod shot;
@@ -540,6 +545,7 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
             devices: DevicesState::default(),
             arrange: ArrangeState::default(),
             hotkeys: HotkeyState::default(),
+            widgets: WidgetsState::default(),
             pomo_timer: false,
             clock_timer: false,
             progress_timer: false,
@@ -611,6 +617,7 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
         app.notif_start();
         app.devices_start();
         app.sync_hotkeys();
+        app.widgets_start();
         app.draw(now);
         app.request_calendar(app.state.cal_range(), now);
         // An empty notes list would otherwise look like the notes were deleted.
@@ -1042,6 +1049,8 @@ struct App {
     arrange: ArrangeState,
     /// The five hotkeys in effect, the PrtSc hook and the recording pause (`app_hotkeys`).
     hotkeys: HotkeyState,
+    /// The desktop widgets (sticky notes): the host and the pending save.
+    widgets: WidgetsState,
     pomo_timer: bool,
     /// `TIMER_CLOCK` is set.
     clock_timer: bool,
@@ -2127,6 +2136,7 @@ impl App {
             Effect::OpenNoteEditor(id) => {
                 return self.open_editor(note_editor_kind(&self.notes, id.as_deref()));
             }
+            Effect::ToggleNoteSticky(id) => self.sticky_toggle(&id),
             Effect::OpenEventEditor { event_id, date } => {
                 let kind = event_editor_kind(&self.calendar.events, event_id.as_deref(), date)?;
                 return self.open_editor(kind);
@@ -3395,6 +3405,8 @@ impl App {
             EditorResult::NoteDeleted { id } => {
                 if self.notes.delete(&id) {
                     self.persist_notes(now);
+                    // A note on the desktop goes with it.
+                    self.widgets_sync();
                 }
             }
             EditorResult::EventSave {
@@ -3464,9 +3476,13 @@ impl App {
         // The editor is gone, so nothing else holds an id to update.
         let _id = self.notes.upsert(id, text, Local::now().timestamp());
         self.persist_notes(Instant::now());
+        // The same note on the desktop shows the new text (or goes, emptied).
+        self.widgets_sync();
     }
 
     fn persist_notes(&mut self, now: Instant) {
+        // Whatever the desktop notes had waiting goes out with this write.
+        self.widgets_saved();
         if let Err(error) = self.notes.save() {
             let notice = island_notice("notes", tr(Key::NotesSaveFailed), &error.to_string());
             self.apply(Event::Notice(notice), now);
@@ -3825,6 +3841,7 @@ impl App {
             || self.eyes_look.moving()
             || self.shelf.motion.running(now)
             || self.dock.moving()
+            || self.widgets_moving(now)
     }
 
     /// The window is `TALL_WINDOW_H` tall while the enlarged CLI panel shows
@@ -5036,6 +5053,8 @@ impl App {
             TIMER_SYSTEM => {
                 self.check_fullscreen();
                 self.check_lyrics_card_fullscreen();
+                // Pinned notes hide over a fullscreen app; free when none are.
+                self.widgets_fullscreen_tick();
                 self.check_editor();
                 // A focus lost without its message must not pin the panel.
                 if self.state.cli_focused() && !self.cli_has_keyboard() {
@@ -5052,6 +5071,7 @@ impl App {
                 }
             }
             TIMER_NOTIF_SAVE => self.on_notif_timer(),
+            TIMER_WIDGET_SAVE => self.on_widget_timer(),
             clip::TIMER_CLIP_RETRY | clip::TIMER_CLIP_SAVE | clip::TIMER_CLIP_HOLD => {
                 self.on_clip_timer(id)
             }
@@ -5186,6 +5206,7 @@ impl App {
         self.advance_glance(now);
         self.advance_eyes_look(now);
         self.dock_step(now);
+        self.widgets_step(now);
         let shape_done = self.anim.progress(now) >= 1.0;
         let slide_done = self.slide.is_none_or(|s| s.progress(now) >= 1.0);
         let reveal_done = self.reveal.is_none_or(|r| r.done(now));
@@ -5845,6 +5866,8 @@ impl App {
         }
         self.apply_theme();
         self.apply_ui_font();
+        // The desktop widgets: their settings, notes, colours and font.
+        self.widgets_follow_config();
         // Stay-behind, the cat and its motion decide the pointer poll.
         self.follow_pointer_settings(Instant::now());
         // A hand edit of the language (or the font) reaches an open lyrics
@@ -5914,6 +5937,7 @@ impl App {
     fn settings_model(&self) -> settings::Model {
         let status = self.state.pomodoro().status();
         settings::Model {
+            sticky_count: self.notes.sticky_count(),
             pomodoro: self.state.pomodoro().settings(),
             pomodoro_locked: !matches!(status, PomoStatus::Idle | PomoStatus::Ready),
             calendar: self.calendar.status,
@@ -6037,6 +6061,15 @@ impl App {
                 // The compact shapes widen or narrow; its timers start or stop.
                 self.refresh(now);
             }
+            SettingsAction::WidgetsShow(on) => self.widgets_show(on),
+            SettingsAction::WidgetsLayer(layer) => self.widgets_layer(layer),
+            SettingsAction::WidgetsFullscreen(rule) => self.widgets_fullscreen(rule),
+            SettingsAction::WidgetsLock(on) => self.widgets_lock(on),
+            SettingsAction::WidgetsPeek(on) => self.widgets_peek(on),
+            SettingsAction::WidgetAdd => {
+                self.new_sticky(None);
+            }
+            SettingsAction::WidgetHighlight => self.widgets_highlight(),
             SettingsAction::StayBehind(on) => {
                 self.config.stay_behind = on;
                 self.save_config();
@@ -7822,6 +7855,9 @@ fn open_menu(hwnd: HWND) {
         Some(MenuCmd::Search) => {
             with_app(|app| app.on_search_menu(before));
         }
+        Some(MenuCmd::StickyNote) => {
+            with_app(|app| app.on_sticky_menu());
+        }
         Some(MenuCmd::StylePill) => {
             with_app(|app| app.set_style(Style::Pill));
         }
@@ -7969,6 +8005,8 @@ fn reposition() {
         // The screen's width caps the lyric notch; refresh draws.
         app.refresh(Instant::now());
         app.sync_settings();
+        // The desktop notes follow their monitors.
+        app.widgets_displays();
     });
 }
 
@@ -7997,6 +8035,7 @@ fn on_displays_timer(hwnd: HWND) {
         with_app(move |app| {
             app.displays = displays;
             app.sync_settings();
+            app.widgets_displays();
         });
     }
 }
@@ -8256,6 +8295,16 @@ unsafe extern "system" fn wnd_proc(
             on_displays_timer(hwnd);
             LRESULT(0)
         }
+        // What the user did to a note on the desktop (`widgets::host`).
+        WM_APP_WIDGET => {
+            if with_app(App::widgets_events).is_none() {
+                // A handler holds the app: the events are still queued; ask again.
+                unsafe {
+                    let _ = PostMessageW(Some(hwnd), WM_APP_WIDGET, WPARAM(0), LPARAM(0));
+                }
+            }
+            LRESULT(0)
+        }
         WM_TIMER => {
             with_app(|app| app.on_timer(wparam.0));
             LRESULT(0)
@@ -8477,6 +8526,7 @@ unsafe extern "system" fn wnd_proc(
                 // A history change still waiting for its save is written now.
                 with_app(App::clip_shutdown);
                 with_app(App::notif_shutdown);
+                with_app(App::widgets_flush);
                 with_app(App::hotkeys_shutdown);
             }
             LRESULT(0)
@@ -8494,6 +8544,8 @@ unsafe extern "system" fn wnd_proc(
             // matters to the next transition, the shrunk eyes and the dancing
             // cat (`TIMER_EQ`), so a change re-syncs them and redraws.
             with_app(|app| app.animations_changed());
+            // The desktop notes draw once with Windows' colours as they are now.
+            with_app(App::widgets_restyle);
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
         WM_DESTROY => {
@@ -8501,6 +8553,7 @@ unsafe extern "system" fn wnd_proc(
             with_app(App::stop_sync);
             with_app(App::clip_shutdown);
             with_app(App::notif_shutdown);
+            with_app(App::widgets_shutdown);
             with_app(App::devices_shutdown);
             with_app(App::arrange_shutdown);
             with_app(App::hotkeys_shutdown);
@@ -8517,6 +8570,8 @@ unsafe extern "system" fn wnd_proc(
         }
         _ if tray::is_taskbar_created(msg) => {
             let _ = tray::add_tray(hwnd);
+            // The notes on the desktop layer are owned by the shell's window.
+            with_app(App::widgets_taskbar);
             LRESULT(0)
         }
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
@@ -9690,7 +9745,11 @@ mod tests {
             TIMER_POINTER,
             TIMER_TYPING,
             TIMER_DISPLAYS,
+            TIMER_WIDGET_SAVE,
+            crate::widgets::host::TIMER_WIDGET_CARET,
         ];
+        assert_eq!(TIMER_WIDGET_SAVE, 45);
+        assert_eq!(crate::widgets::host::TIMER_WIDGET_CARET, 46);
         assert_eq!(TIMER_POINTER, 33);
         assert_eq!(TIMER_NOTIF_SAVE, 34);
         assert_eq!(TIMER_TYPING, 40);

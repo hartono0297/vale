@@ -136,11 +136,13 @@ pub enum Icon {
     /// The Tombol pintas section: a keyboard, a rounded body with a row of
     /// key dots and a space bar.
     Keyboard,
+    /// The Widget section: four rounded cards of different sizes.
+    Widgets,
 }
 
 impl Icon {
     /// Every icon, in declaration order (`ALL[i] as usize == i`).
-    pub const ALL: [Icon; 71] = [
+    pub const ALL: [Icon; 72] = [
         Icon::Camera,
         Icon::Clipboard,
         Icon::Emoji,
@@ -212,6 +214,7 @@ impl Icon {
         Icon::Inbox,
         Icon::Layout,
         Icon::Keyboard,
+        Icon::Widgets,
     ];
 
     /// The icon's primitives on the 24-unit grid, in drawing order.
@@ -498,6 +501,16 @@ impl Icon {
                 Part::Dot(13.7, 10.0),
                 Part::Dot(17.0, 10.0),
                 Part::Path("M8 14.2h8"),
+            ],
+            // Four rounded cards of different sizes: a tall one and a small
+            // one on top, a short one and a tall one below.
+            Icon::Widgets => &[
+                Part::FillRect(3.0, 3.0, 8.0, 11.0, 2.0),
+                Part::Rect(3.0, 3.0, 8.0, 11.0, 2.0),
+                Part::Rect(14.0, 3.0, 7.0, 6.0, 2.0),
+                Part::Rect(3.0, 17.0, 8.0, 4.0, 1.6),
+                Part::FillRect(14.0, 12.0, 7.0, 9.0, 2.0),
+                Part::Rect(14.0, 12.0, 7.0, 9.0, 2.0),
             ],
         }
     }
