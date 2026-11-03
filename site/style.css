@@ -264,7 +264,7 @@ html:not(.js) .js-only { display: none !important; }
 
 /* ---------- footer ---------- */
 /* The footer text sits on the tint, never straight on the dawn glow. The
-   bottom padding keeps the last links above the go-to-top button. */
+   bottom padding keeps the last links above the go-to-top tail. */
 .site-footer { margin-top: clamp(4rem, 10vw, 8rem); border-top: 1px solid var(--line); padding-block: 2.5rem 6rem; background: var(--panel); }
 .footer-inner { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 2rem; width: min(100% - 2 * var(--gutter), 78rem); margin-inline: auto; }
 .footer-brand { margin: 0 auto 0 0; font-size: .9375rem; }
@@ -275,19 +275,48 @@ html:not(.js) .js-only { display: none !important; }
 .footer-note { flex-basis: 100%; margin: 0; font-size: .875rem; color: var(--text-2); }
 
 /* ---------- go to top ----------
-   The cat head on a notch-coloured disc, so it reads on both themes (the
-   disc's edge is 3.41 on the dark page; on the light page the disc itself is
-   17.18). Without script it is always there, a plain #top link. With script
-   site.js shows it once the hero has scrolled away (.is-shown); hidden it is
-   not focusable (visibility). */
-.to-top { position: fixed; right: 16px; bottom: 16px; z-index: 80; display: flex; align-items: center; justify-content: center; width: 48px; height: 48px; border-radius: 50%; background: var(--notch-bg); border: 1px solid var(--notch-edge); }
-.to-top svg { width: 30px; height: 30px; }
-.to-top:focus-visible { outline: 3px solid var(--ink); outline-offset: 3px; }
-@media (min-width: 40em) { .to-top { right: 24px; bottom: 24px; } }
-.js .to-top:not(.is-shown) { opacity: 0; visibility: hidden; pointer-events: none; }
-.js.reveal-off .to-top { opacity: 1; visibility: visible; pointer-events: auto; }
+   A cartoon cat tail, drawn in inline SVG, that starts flush at the right edge
+   of the window (as if the cat sat just off screen), curves up and left in an S
+   and ends in a curled tip. No disc: an outline underlay (--tail-edge) keeps it
+   at 3:1 or more against the page in both themes for every coat; the body is
+   --coat and the tip --tip, so a coat chip recolours it. The box is 56 x 100
+   (the viewBox pads 4 units on the left so the swish stays inside it). Without
+   script it is always there, a plain #top link, still. With script site.js shows
+   it once the hero has scrolled away (.is-shown): it slides in from the right
+   edge with a small overshoot; hidden it is off screen, not focusable and not a
+   hit target. Idle it swishes (a few degrees around its base), hover and focus
+   make it quicker, and a click yanks it up out of the view (.is-yank). All of
+   that is transform only and sits under no-preference motion. */
+.to-top { position: fixed; right: 0; bottom: 16px; z-index: 80; display: block; width: 56px; height: 100px; }
+.to-top svg { display: block; width: 56px; height: 100px; }
+.to-top .tail { transform-origin: 52px 92px; }
+.to-top path { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.tail-edge { stroke: var(--tail-edge); stroke-width: 12; }
+.tail-body { stroke: var(--coat); stroke-width: 9; }
+.tail-tip { stroke: var(--tip); stroke-width: 9; }
+.to-top:focus-visible { outline: 3px solid var(--focus); outline-offset: -3px; }
+@media (min-width: 40em) { .to-top { bottom: 24px; } }
+.js .to-top:not(.is-shown) { transform: translateX(100%); visibility: hidden; pointer-events: none; }
+.js.reveal-off .to-top { transform: none; visibility: visible; pointer-events: auto; }
 @media (prefers-reduced-motion: no-preference) {
-  .js .to-top { transition: opacity .2s ease-out, visibility .2s; }
+  .js .to-top { transition: transform .35s ease-in, visibility 0s linear .35s; }
+  .js .to-top.is-shown { transition: transform .35s cubic-bezier(.34, 1.56, .64, 1), visibility 0s linear 0s; }
+  .js .to-top.is-reset { transition: none !important; }
+  .js .to-top.is-shown .tail { animation: tail-swish 2.6s ease-in-out infinite alternate; }
+  .js .to-top:not(.is-shown) .tail { animation: none; }
+  .js .to-top.is-shown:focus-visible .tail { animation-duration: .6s; }
+  .js .to-top.is-yank { animation: tail-yank .7s linear forwards; pointer-events: none; }
+  .js .to-top.is-yank .tail { animation: none; }
+}
+@media (prefers-reduced-motion: no-preference) and (hover: hover) {
+  .js .to-top.is-shown:hover .tail { animation-duration: .6s; }
+}
+@keyframes tail-swish { from { transform: rotate(-2.5deg); } to { transform: rotate(2.5deg); } }
+@keyframes tail-yank {
+  0% { transform: translateY(0); opacity: 1; animation-timing-function: ease-out; }
+  18% { transform: translateY(8px); opacity: 1; animation-timing-function: cubic-bezier(.5, 0, .9, .45); }
+  85% { opacity: 1; }
+  100% { transform: translateY(-110vh); opacity: 0; }
 }
 
 /* ---------- the notch ---------- */
@@ -872,7 +901,7 @@ main .btn { padding-block: 0; }
    rhythm (h2 16 to the lead, the lead 28 to Download, Download 16 to the
    command box, the box 32 to the details, h3 32 above and 12 below), and 44 px
    targets for the coat chips, the draw tools and the footer licence link. From
-   40em up none of this applies. The go-to-top button keeps its own 16 px. */
+   40em up none of this applies. The go-to-top tail keeps its own 16 px bottom gap. */
 @media (max-width: 39.99em) {
   :root { --gutter: 20px; --edge: 20px; }
   .install h2, .gcal h2, .privacy-short h2 { margin-bottom: 16px; }
