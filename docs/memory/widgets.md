@@ -75,6 +75,41 @@ takes the whole marker, the caret never rests inside a marker (`snap_caret`),
 the header button adds or removes the marker on the caret's line. Edits go
 through `EM_REPLACESEL` with undo allowed.
 
+## Hits, carets and surrogate pairs (2026-11-04)
+
+Every index that leaves the layout is a UTF-16 unit index of the `\n` text, and
+a click, a drag-selection and Up/Down all get theirs from
+`BodyLayout::index_at` (`left_down`, `mouse_move`, `move_vertical`), which
+feeds `edit::set_selection` through `checklist::edit_index`.
+
+- **A trailing hit is after the whole cluster.** `HitTestPoint` answers with
+  `DWRITE_HIT_TEST_METRICS` for the hit cluster (`textPosition` its start,
+  `length` its length in UTF-16 units) plus `isTrailingHit` (windows crate
+  0.62.2; the Microsoft docs confirm the cluster semantics). The caret is
+  `textPosition + length` for a trailing hit, not `+ 1`: that put the caret
+  between the two halves of an emoji, and typing or deleting there split the
+  pair, `from_utf16_lossy` read the lone half back as U+FFFD, and it went into
+  `notes.json` and onto the Notes page. Pure helper `paint::hit_index`.
+- **A combining mark can be a cluster of its own.** With the shipped font
+  DirectWrite answers `textPosition 3, length 1` for the `e` of "cafe" plus
+  U+0301, so the trailing hit is 4, between the letter and the accent (found by
+  the real-layout test). `paint::settle_index` moves the index forward past
+  any surrogate half and any common combining mark, variation selector or
+  joiner (`is_extend`: U+0300-036F, 1AB0-1AFF, 1DC0-1DFF, 200D, 20D0-20FF,
+  FE00-FE0F, FE20-FE2F). Other marks stay legal indices: nothing is lost,
+  both sides are whole code points. `BodyLine` keeps its `content` units for
+  it.
+- **Last guard.** `edit::snap_to_boundary` (pure) moves an index that is
+  inside a surrogate pair back to before the pair. `set_selection` and `apply`
+  (every `EM_SETSEL` the note sends, apart from Ctrl+A's 0..-1) pass both ends
+  through it. `edit::selection` only reads what the EDIT holds and needs no
+  guard.
+- Tests: real DirectWrite layouts in `paint.rs` (an emoji line and a
+  combining-mark line; a sweep of x never giving an index inside a pair or
+  between letter and mark), the pure helpers (`hit_index`, `settle_index`,
+  `snap_to_boundary`), and an emoji round trip through `edit_index` /
+  `model_index` / `apply` in `edit.rs`.
+
 ## Snap, placement, monitors
 
 `snap.rs`: 8 dip grid, area edges, other notes (12 dip gap or edge alignment,
@@ -118,12 +153,12 @@ colour popover keeps the editing (the note gets the EDIT back when it closes).
 `TIMER_WIDGET_SAVE` 45 (one-shot, 1.5 s after the last widget change, flushed
 on `WM_DESTROY` / `WM_ENDSESSION`, cleared by any notes write) and 46. App
 message `WM_APP_WIDGET = WM_APP + 71` (the event drain). Hotkey id 7 (6 is
-reserved for the lyrics card). Idle cost: [[bata-idle-power-budget]].
+the lyrics card's, merged on main; `WM_APP + 70` is the card's, 71 is ours). Idle cost: [[bata-idle-power-budget]].
 
 ## Ways to make a note
 
 Settings -> Widget gallery (+), tray "Catatan tempel baru" (greyed at 20 with
-the reason in the label), the sixth hotkey row (no default; a short island
+the reason in the label), the seventh hotkey row (no default; a short island
 notice at 20), the pin on a Notes card (`Hit::NoteSticky`, 22 dip, top-right:
 accent when on the desktop), and the (+) in a note's header. Each makes an
 empty Krem note, gives it the keyboard (except the pin, the note has text) and
@@ -148,6 +183,17 @@ checklist, an all-done one, a rolled one, a pinned Gelap one), live
 everything; `DI_WIDGETS_LAYER=top`, `DI_WIDGETS_LOCK=1`, `DI_WIDGETS_PEEK=0`,
 `DI_LANG`, `DI_FONT`, theme variables. It ends when its last note is gone.
 
+Its message target (`ValeWidgetsDemoOwner`, only the event and timer target;
+the notes' owner is still the shell window) is a **hidden top-level tool
+window** (`WS_POPUP`, `WS_EX_TOOLWINDOW`, never shown: no taskbar button, no
+Alt+Tab entry), not a message-only one. A message-only window never gets
+broadcasts, so `WM_DISPLAYCHANGE` and `TaskbarCreated` now reach it and the
+demo follows a resolution change and an Explorer restart. Checked on this PC:
+`FindWindow` finds it from the top level (it does not find a message-only
+one), it is invisible with ex-style 0x80, and the six note windows come up
+beside it; `PostQuitMessage` when the last note is gone is unchanged. Not
+checked: an actual display change or Explorer restart against the demo.
+
 ## Verified and not verified
 
 Verified: unit tests (all the pure modules, store, settings layout, tray,
@@ -160,3 +206,9 @@ Not verified live: Win+D (above), dragging and resizing with a real mouse,
 a real IME, the colour popover and the native menu with a mouse, hot-plug and
 different DPI per monitor, fullscreen hiding over a real game, the Notes page's
 pin with a mouse.
+
+Run in the finish pass (2026-11-04, after merging main with the lyrics card):
+`cargo test --locked` and the debug demo launch (window classes listed; the
+demo owner is top-level and hidden). A click on an emoji or an accented letter
+is covered by real-layout tests, not by a mouse. Settings -> Tombol pintas has
+seven rows and scrolls at the minimum size (tested).

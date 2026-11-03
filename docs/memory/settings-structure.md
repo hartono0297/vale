@@ -72,12 +72,11 @@ layout tests use. A bigger window needs less scrolling and a tall enough one
 needs no viewport at all (`scroll_max` is 0 and the scrollbar goes).
 
 Only a section that overflows gets a viewport. Tampilan, Kucing, Panel,
-Clipboard and Fitur always do; Umum, Tombol pintas, Integrasi and Tentang
+Clipboard, Tombol pintas and Fitur always do; Umum, Integrasi and Tentang
 never. Umum used to fit the 520 px window to the pixel and trim its gaps when
 the search-hotkey label wrapped (`UMUM_TRIM_*`, `LABEL_LINE_H`); with that row
 gone to Tombol pintas it is 2 + 4 rows and never wraps, so all that logic was
-deleted. Tombol pintas is one card of a 48 px header and six rows (the lyrics card row added 2026-11-04; still no viewport at 720x520), well
-inside the window.
+deleted. Tombol pintas is one card of a 48 px header and seven rows (the lyrics card row and the sticky note row, 2026-11-04): 10 px past the margin at 720x520, so it scrolls there since the seventh row (and not in a taller window).
 `exactly_the_overflowing_sections_get_a_viewport` and
 `everything_fits_in_the_window_height` assert it, and that the last card meets
 the bottom margin when scrolled to the end.
@@ -115,5 +114,5 @@ title, a two-line description, a (+) that is off at 20 notes with the reason as
 its description, a count chip when n > 0; clicking an active card makes the
 notes flash an accent frame for about 600 ms on the frame clock). It scrolls at
 720x520 (about 460 px of content in a 400 px viewport) and not in a tall window
-(tested, `SCROLLING` has six sections). The Tombol pintas card has a sixth
+(tested, `SCROLLING` has seven sections since Tombol pintas joined). The Tombol pintas card has a seventh
 row. See [[widgets]].
