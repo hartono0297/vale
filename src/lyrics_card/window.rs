@@ -760,8 +760,11 @@ pub(super) fn open(args: OpenArgs, content: CardContent) -> bool {
     };
     let mut fx = Vec::new();
     card.apply(content, now, &mut fx);
-    // Jump to where things are: no ease from nothing on the first frame.
+    // Jump to where things are: no ease from nothing on the first frame, and
+    // no crossfade from the palette to the art (that is for a track change).
     card.scroll = Tween::at_rest(card.scroll_goal(now), now);
+    card.stops_from = card.stops;
+    card.fade = Tween::at_rest(1.0, now);
     card.hidden = args.hidden;
     card.render(now);
     let hidden = card.hidden;
@@ -1237,15 +1240,18 @@ impl Card {
         if hover <= 0.001 {
             return;
         }
-        // Prev, play/pause, next fade in above the bar.
-        let play = if self.c.playing { Icon::Pause } else { Icon::Play };
-        for (i, icon) in [Icon::Prev, play, Icon::Next].into_iter().enumerate() {
-            let c = r.controls[i];
-            let zone = [Zone::Prev, Zone::PlayPause, Zone::Next][i];
-            if self.hover_zone == zone {
-                self.surf.fill_round(c, c.w / 2.0, 0xFFFFFF, 0.14 * hover);
+        // Prev, play/pause, next fade in above the bar; with no session there
+        // is nothing to control, so they are not drawn (nor hit, `zone_at`).
+        if self.has_media() {
+            let play = if self.c.playing { Icon::Pause } else { Icon::Play };
+            for (i, icon) in [Icon::Prev, play, Icon::Next].into_iter().enumerate() {
+                let c = r.controls[i];
+                let zone = [Zone::Prev, Zone::PlayPause, Zone::Next][i];
+                if self.hover_zone == zone {
+                    self.surf.fill_round(c, c.w / 2.0, 0xFFFFFF, 0.14 * hover);
+                }
+                self.surf.icon(icon, c, 18.0, 0xFFFFFF, 0.92 * hover);
             }
-            self.surf.icon(icon, c, 18.0, 0xFFFFFF, 0.92 * hover);
         }
         // The grip: two short diagonal strokes in the corner.
         self.paint_grip(r.grip, 0.45 * hover);
@@ -1383,7 +1389,12 @@ impl Card {
 
     fn zone(&self, x: f32, y: f32) -> Zone {
         let (w, h) = self.size_dip;
-        layout::zone_at(&self.rects(), w, h, x, y, self.hovering)
+        layout::zone_at(&self.rects(), w, h, x, y, self.hovering, self.has_media())
+    }
+
+    /// A session to send prev, play/pause and next to.
+    fn has_media(&self) -> bool {
+        self.c.status != Status::NoMedia
     }
 
     fn line_at(&self, y: f32, now: Instant) -> Option<usize> {

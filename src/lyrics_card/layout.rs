@@ -331,9 +331,18 @@ pub enum Zone {
     Outside,
 }
 
-/// `hovering`: the pointer is in the card, so the transport controls and the
-/// grip are shown (and so can be hit).
-pub fn zone_at(r: &Rects, w: f32, h: f32, x: f32, y: f32, hovering: bool) -> Zone {
+/// `hovering`: the pointer is in the card, so the grip is shown (and so can
+/// be hit), and the transport controls too when `has_media` (a session to
+/// control; the Music panel drops them the same way).
+pub fn zone_at(
+    r: &Rects,
+    w: f32,
+    h: f32,
+    x: f32,
+    y: f32,
+    hovering: bool,
+    has_media: bool,
+) -> Zone {
     if x < 0.0 || y < 0.0 || x >= w || y >= h {
         return Zone::Outside;
     }
@@ -345,7 +354,7 @@ pub fn zone_at(r: &Rects, w: f32, h: f32, x: f32, y: f32, hovering: bool) -> Zon
             return Zone::Grip;
         }
         for (i, c) in r.controls.iter().enumerate() {
-            if c.contains(x, y) {
+            if has_media && c.contains(x, y) {
                 return [Zone::Prev, Zone::PlayPause, Zone::Next][i];
             }
         }
@@ -724,7 +733,7 @@ mod tests {
     fn zones_follow_what_is_shown() {
         let (w, h) = (300.0, 420.0);
         let r = card_rects(w, h);
-        let at = |c: RectF, hovering| zone_at(&r, w, h, c.x + 1.0, c.y + 1.0, hovering);
+        let at = |c: RectF, hovering| zone_at(&r, w, h, c.x + 1.0, c.y + 1.0, hovering, true);
         assert_eq!(at(r.close, false), Zone::Close);
         assert_eq!(at(r.close, true), Zone::Close);
         // The controls and the grip only exist while the pointer is in.
@@ -734,10 +743,24 @@ mod tests {
         assert_eq!(at(r.controls[1], false), Zone::Body);
         assert_eq!(at(r.grip, true), Zone::Grip);
         assert_eq!(at(r.grip, false), Zone::Body);
-        assert_eq!(zone_at(&r, w, h, 100.0, 5.0, true), Zone::Header);
-        assert_eq!(zone_at(&r, w, h, 100.0, 150.0, true), Zone::Body);
-        assert_eq!(zone_at(&r, w, h, -1.0, 150.0, true), Zone::Outside);
-        assert_eq!(zone_at(&r, w, h, 100.0, h, true), Zone::Outside);
+        assert_eq!(zone_at(&r, w, h, 100.0, 5.0, true, true), Zone::Header);
+        assert_eq!(zone_at(&r, w, h, 100.0, 150.0, true, true), Zone::Body);
+        assert_eq!(zone_at(&r, w, h, -1.0, 150.0, true, true), Zone::Outside);
+        assert_eq!(zone_at(&r, w, h, 100.0, h, true, true), Zone::Outside);
+    }
+
+    #[test]
+    fn no_media_has_no_transport_controls() {
+        let (w, h) = (300.0, 420.0);
+        let r = card_rects(w, h);
+        let at = |c: RectF| zone_at(&r, w, h, c.x + 1.0, c.y + 1.0, true, false);
+        // Nothing to control: prev, play/pause and next are not there.
+        for c in r.controls {
+            assert_eq!(at(c), Zone::Body);
+        }
+        // The grip and the close button still work.
+        assert_eq!(at(r.grip), Zone::Grip);
+        assert_eq!(at(r.close), Zone::Close);
     }
 
     // ---- toggling

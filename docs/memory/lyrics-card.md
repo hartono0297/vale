@@ -114,12 +114,15 @@ Related: [[lyrics-sync]], [[lyrics-lookup]], [[media-session-priority]],
   covers its neighbour. Footer: a 3 dip bar (track white 20 %, fill the accent).
   Hover: prev / play-pause / next fade in above the bar, the grip (16 dip,
   bottom right) shows, and with `can_seek` the line under the pointer gets a
-  white 8 % rounded highlight.
+  white 8 % rounded highlight. With no session (`Status::NoMedia`) the three
+  controls are neither drawn nor hit (`zone_at(.., has_media)`), like the Music
+  panel's `media_hits_for`; the grip and the X still work.
 - Non-Latin text goes through DirectWrite's font fallback like the notch lyric
   (checked in the demo: Cyrillic, CJK and Hangul show, no tofu). The demo's
   non-Latin text is written as `\u{..}` code points (`ui/font_coverage.rs` scans
   every non-test source character).
-- Track change: the gradient crossfades over 300 ms; each line change eases the
+- Track change: the gradient crossfades over 300 ms (not at open: `open()`
+  snaps the colours after the first `apply`, as it snaps the scroll); each line change eases the
   list 350 ms (ease-out cubic). Reduced motion (`client_animations_on()` false,
   passed as `CardContent::animations`): no ease, no crossfade, no hover fade;
   values jump.
