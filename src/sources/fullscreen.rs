@@ -31,7 +31,9 @@ const MAX_WALK: usize = 1024;
 /// 2. Otherwise, with two or more monitors, a known notch monitor and a
 ///    foreground window on another monitor, the shell cannot tell whether the
 ///    notch's own monitor shows a fullscreen video (the user clicked over to
-///    the other screen). Then the top-level windows are walked top to bottom
+///    the other screen). The bare desktop as the foreground counts as another
+///    monitor, since Windows places it on the primary one wherever it was
+///    clicked. Then the top-level windows are walked top to bottom
 ///    (`top_candidate_covers`): the first real window that overlaps the notch's
 ///    monitor decides, hidden only if it covers the whole monitor. This runs at
 ///    most once per `TIMER_SYSTEM` tick, only in that case, and reads only as
@@ -56,9 +58,11 @@ pub fn is_fullscreen(island: Option<HWND>) -> bool {
     } else {
         monitor_of(foreground)
     };
+    let foreground_is_desktop = !foreground.0.is_null() && unsafe { is_desktop_window(foreground) };
     let monitor_count = u32::try_from(unsafe { GetSystemMetrics(SM_CMONITORS) }).unwrap_or(0);
     decide(
         shell_fullscreen,
+        foreground_is_desktop,
         foreground_monitor,
         notch_monitor,
         monitor_count,
@@ -77,13 +81,25 @@ pub fn is_fullscreen(island: Option<HWND>) -> bool {
 /// monitors, both the foreground's and the notch's monitor are known and they
 /// differ. Every other case keeps the shell's answer (`hides_notch`) and never
 /// walks.
+///
+/// `foreground_is_desktop`: the foreground is the desktop itself (the user
+/// clicked the bare wallpaper). That window spans the whole virtual screen,
+/// so Windows puts it on the primary monitor whichever screen was clicked, and
+/// its monitor says nothing. With two or more monitors and a known notch
+/// monitor it always walks instead. That is safe: a click cannot reach the
+/// desktop of a monitor a fullscreen window covers, and when the click was on
+/// the notch's own monitor the walk finds no covering window there.
 pub fn decide(
     shell_fullscreen: bool,
+    foreground_is_desktop: bool,
     foreground_monitor: Option<isize>,
     notch_monitor: Option<isize>,
     monitor_count: u32,
     walk: impl FnOnce() -> bool,
 ) -> bool {
+    if foreground_is_desktop && monitor_count >= 2 && notch_monitor.is_some() {
+        return walk();
+    }
     if hides_notch(shell_fullscreen, foreground_monitor, notch_monitor) {
         return true;
     }
@@ -184,16 +200,33 @@ pub fn top_candidate_covers(
         .is_some_and(|w| covers_monitor(w.rect, monitor, w.maximised_with_caption))
 }
 
+/// Classes of the desktop (the wallpaper host), which spans every monitor.
+fn is_desktop_class_name(class: &str) -> bool {
+    ["Progman", "WorkerW"]
+        .iter()
+        .any(|c| c.eq_ignore_ascii_case(class))
+}
+
 /// Classes of the desktop and the taskbars.
 fn is_shell_class_name(class: &str) -> bool {
-    [
-        "Progman",
-        "WorkerW",
-        "Shell_TrayWnd",
-        "Shell_SecondaryTrayWnd",
-    ]
-    .iter()
-    .any(|c| c.eq_ignore_ascii_case(class))
+    is_desktop_class_name(class)
+        || ["Shell_TrayWnd", "Shell_SecondaryTrayWnd"]
+            .iter()
+            .any(|c| c.eq_ignore_ascii_case(class))
+}
+
+/// Whether `hwnd` is the desktop: the shell window, the desktop window or a
+/// wallpaper host (`Progman`, `WorkerW`). Taskbars are not: each one sits on
+/// its own monitor, so `MonitorFromWindow` places it correctly.
+unsafe fn is_desktop_window(hwnd: HWND) -> bool {
+    unsafe {
+        if hwnd == GetShellWindow() || hwnd == GetDesktopWindow() {
+            return true;
+        }
+        let mut class = [0u16; 64];
+        let n = GetClassNameW(hwnd, &mut class).max(0) as usize;
+        is_desktop_class_name(&String::from_utf16_lossy(&class[..n]))
+    }
 }
 
 /// The top-level windows, top of the z-order first, one `WindowFacts` each,
@@ -495,45 +528,75 @@ mod tests {
 
     #[test]
     fn one_monitor_never_walks() {
-        assert!(decide(true, Some(1), Some(1), 1, no_walk));
-        assert!(!decide(false, Some(1), Some(1), 1, no_walk));
-        assert!(!decide(false, Some(1), Some(2), 1, no_walk));
-        assert!(!decide(true, Some(1), Some(2), 1, no_walk));
+        assert!(decide(true, false, Some(1), Some(1), 1, no_walk));
+        assert!(!decide(false, false, Some(1), Some(1), 1, no_walk));
+        assert!(!decide(false, false, Some(1), Some(2), 1, no_walk));
+        assert!(!decide(true, false, Some(1), Some(2), 1, no_walk));
     }
 
     #[test]
     fn the_foreground_on_the_notch_monitor_never_walks() {
-        assert!(decide(true, Some(7), Some(7), 2, no_walk));
-        assert!(!decide(false, Some(7), Some(7), 2, no_walk));
+        assert!(decide(true, false, Some(7), Some(7), 2, no_walk));
+        assert!(!decide(false, false, Some(7), Some(7), 2, no_walk));
     }
 
     #[test]
     fn the_foreground_elsewhere_walks_and_returns_the_walks_answer() {
         let walked = Cell::new(false);
-        assert!(decide(false, Some(8), Some(7), 2, || {
+        assert!(decide(false, false, Some(8), Some(7), 2, || {
             walked.set(true);
             true
         }));
         assert!(walked.get());
-        assert!(!decide(false, Some(8), Some(7), 2, || false));
-        assert!(decide(false, Some(8), Some(7), 3, || true));
+        assert!(!decide(false, false, Some(8), Some(7), 2, || false));
+        assert!(decide(false, false, Some(8), Some(7), 3, || true));
     }
 
     #[test]
     fn an_unknown_foreground_or_notch_monitor_never_walks() {
-        assert!(decide(true, None, Some(7), 2, no_walk));
-        assert!(!decide(false, None, Some(7), 2, no_walk));
-        assert!(decide(true, Some(7), None, 2, no_walk));
-        assert!(!decide(false, Some(7), None, 2, no_walk));
-        assert!(decide(true, None, None, 2, no_walk));
-        assert!(!decide(false, None, None, 2, no_walk));
+        assert!(decide(true, false, None, Some(7), 2, no_walk));
+        assert!(!decide(false, false, None, Some(7), 2, no_walk));
+        assert!(decide(true, false, Some(7), None, 2, no_walk));
+        assert!(!decide(false, false, Some(7), None, 2, no_walk));
+        assert!(decide(true, false, None, None, 2, no_walk));
+        assert!(!decide(false, false, None, None, 2, no_walk));
     }
 
     #[test]
     fn shell_fullscreen_elsewhere_still_defers_to_the_walk() {
         // A game on monitor 2 while the notch's monitor shows nothing fullscreen.
-        assert!(!decide(true, Some(8), Some(7), 2, || false));
+        assert!(!decide(true, false, Some(8), Some(7), 2, || false));
         // A game on monitor 2 and a fullscreen video on the notch's monitor.
-        assert!(decide(true, Some(8), Some(7), 2, || true));
+        assert!(decide(true, false, Some(8), Some(7), 2, || true));
+    }
+
+    #[test]
+    fn the_desktop_in_front_walks_even_when_it_reports_the_notch_monitor() {
+        // The user clicked the bare desktop on monitor 2: Windows reports the
+        // desktop on the primary monitor, which is the notch's (7).
+        assert!(decide(false, true, Some(7), Some(7), 2, || true));
+        assert!(!decide(false, true, Some(7), Some(7), 2, || false));
+        // The walk decides over the shell's answer, too.
+        assert!(!decide(true, true, Some(7), Some(7), 2, || false));
+        assert!(decide(false, true, None, Some(7), 3, || true));
+    }
+
+    #[test]
+    fn the_desktop_in_front_keeps_the_shells_answer_without_a_walk() {
+        // One monitor: the desktop is on the notch's monitor.
+        assert!(!decide(false, true, Some(7), Some(7), 1, no_walk));
+        assert!(decide(true, true, Some(7), Some(7), 1, no_walk));
+        // An unknown notch monitor: there is nothing to walk.
+        assert!(!decide(false, true, Some(7), None, 2, no_walk));
+        assert!(decide(true, true, Some(7), None, 2, no_walk));
+    }
+
+    #[test]
+    fn only_the_wallpaper_hosts_are_desktop_classes() {
+        assert!(is_desktop_class_name("Progman"));
+        assert!(is_desktop_class_name("workerw"));
+        assert!(!is_desktop_class_name("Shell_TrayWnd"));
+        assert!(!is_desktop_class_name("Shell_SecondaryTrayWnd"));
+        assert!(!is_desktop_class_name("Chrome_WidgetWin_1"));
     }
 }
