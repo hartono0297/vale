@@ -343,8 +343,9 @@
       var light = isLight();
       var anim = !reduce.matches;
       var sy = S.sy;
-      var px = S.px;
-      var py = S.py;
+      /* Pointer parallax is motion: under reduced motion the stars ignore the pointer. */
+      var px = anim ? S.px : 0;
+      var py = anim ? S.py : 0;
       var span = H * 1.6;
       ctx.clearRect(0, 0, W, H);
       var step = light ? 3 : 1;
@@ -1833,6 +1834,12 @@
         btn.setAttribute('tabindex', '0');
         btn.setAttribute('aria-label', 'Wake the cat');
       } else {
+        /* Never hide the button while it holds focus: hand focus to the top of the page. */
+        if (doc.activeElement === btn) {
+          var top = $('#top');
+          if (top) top.focus({ preventScroll: true });
+          else btn.blur();
+        }
         btn.setAttribute('aria-hidden', 'true');
         btn.setAttribute('tabindex', '-1');
         btn.removeAttribute('aria-label');
