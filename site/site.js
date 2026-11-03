@@ -197,7 +197,11 @@
 
   function initCopy() {
     $$('[data-copy]').forEach(function (btn) {
-      var label = btn.textContent;
+      /* A command box's button keeps its icon: only the label span changes.
+         A button without one (the playground's) changes its own text. */
+      var span = btn.querySelector('.copy-label');
+      var label = (span || btn).textContent;
+      function setLabel(t) { (span || btn).textContent = t; }
       var timer = 0;
       btn.addEventListener('click', function () {
         var target = $(btn.getAttribute('data-copy'));
@@ -211,17 +215,38 @@
             msg.textContent = ok ? 'Copied to the clipboard.' : 'Copy failed. Select the text and press Ctrl+C.';
           }
           if (ok) {
-            btn.textContent = 'Copied';
+            setLabel('Copied');
             btn.classList.add('is-copied');
             if (notchApi) notchApi.showCopy(clipLine(text));
           }
           timer = setTimeout(function () {
-            btn.textContent = label;
+            setLabel(label);
             btn.classList.remove('is-copied');
             if (msg && ok) msg.textContent = '';
           }, ok ? 2000 : 6000);
         });
       });
+    });
+  }
+
+  /* The command boxes fade their right edge (.is-fade) while the command is
+     cut off and not scrolled to its end. Recomputed on resize of the box or
+     of the command, on scroll, and once the fonts are in; no frame callback. */
+  function initCmdFade() {
+    $$('.cmd-scroll').forEach(function (el) {
+      function update() {
+        var cut = el.scrollWidth > el.clientWidth + 1;
+        var atEnd = el.scrollLeft + el.clientWidth >= el.scrollWidth - 2;
+        el.classList.toggle('is-fade', cut && !atEnd);
+      }
+      el.addEventListener('scroll', update, { passive: true });
+      if (window.ResizeObserver) {
+        var ro = new ResizeObserver(update);
+        ro.observe(el);
+        if (el.firstElementChild) ro.observe(el.firstElementChild);
+      }
+      update();
+      if (doc.fonts && doc.fonts.ready) doc.fonts.ready.then(update, function () {});
     });
   }
 
@@ -1968,6 +1993,7 @@
   safe(initTheme);
   safe(initMenu);
   safe(initCopy);
+  safe(initCmdFade);
   safe(initCoats);
   safe(initMiniClocks);
   if (loop) {
