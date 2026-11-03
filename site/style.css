@@ -68,6 +68,8 @@
   /* The header pills sit this far from the left and right edges. */
   --edge: 16px;
   --i-download: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 4v11M7 10.5l5 5 5-5M5 20h14'/%3E%3C/svg%3E");
+  --i-copy: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='9' y='9' width='11' height='11' rx='2.5'/%3E%3Cpath d='M5 15V6.5A2.5 2.5 0 0 1 7.5 4H15'/%3E%3C/svg%3E");
+  --i-check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12.5l4.5 4.5L19 7.5'/%3E%3C/svg%3E");
   --font: "Geist", system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono: "Geist Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
   color-scheme: dark;
@@ -220,6 +222,12 @@ html:not(.js) .js-only { display: none !important; }
   .js .menu-btn { display: inline-flex; }
   .js .pill-l .brand, .js .pill-r .nav-gh, .js .pill-r .theme-btn { display: none; }
   .js .pill-r { padding: 0; border-color: transparent !important; background: transparent !important; }
+  /* Icon-only Menu at every width below 49em: the left pill is a 52 px circle
+     (44 + 2 x 3 padding + 2 x 1 border). The right pill is 52 tall too (its
+     Download link is 50 + 2 x 1 border), so both pills share top 8 and height. */
+  .js .menu-btn { width: 44px; justify-content: center; padding: 0; }
+  .js .menu-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .js .btn-dl { min-height: 50px; }
   .js .site-nav { display: none; position: absolute; left: -1px; top: calc(100% + 8px); width: min(17rem, calc(100vw - 2 * var(--edge))); padding: 8px; background: var(--bg-2); border: 1px solid var(--line); border-radius: 22px; }
   .js .site-nav.is-open { display: block; }
   .js .site-nav ul { flex-direction: column; }
@@ -235,12 +243,10 @@ html:not(.js) .js-only { display: none !important; }
    accessible name) and Download gets smaller again (76 px room at 320 with a
    scrollbar). */
 @media (max-width: 32.5em) {
-  .btn-dl { padding: 0 10px; font-size: .875rem; }
+  .btn-dl { padding: 0 9px; font-size: .875rem; }
 }
 @media (max-width: 23.49em) {
-  .js .menu-btn { width: 44px; justify-content: center; padding: 0; }
-  .menu-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-  .btn-dl { padding: 0 7px; font-size: .75rem; }
+  .btn-dl { padding: 0 6px; font-size: .75rem; }
 }
 /* Below 20em (fold cover screens, about 280 px) the word no longer fits
    beside the 96 px notch with 12 px clear (it needs 312 px with a
@@ -248,7 +254,7 @@ html:not(.js) .js-only { display: none !important; }
    up. The word stays in the link, moved out of view, as its accessible
    name. Without script the header is static and keeps the word. */
 @media (max-width: 19.99em) {
-  .js .btn-dl { position: relative; width: 44px; padding: 0; overflow: hidden; white-space: nowrap; text-indent: 44px; }
+  .js .btn-dl { position: relative; width: 50px; padding: 0; overflow: hidden; white-space: nowrap; text-indent: 50px; }
   .js .btn-dl::before {
     content: ""; position: absolute; top: 50%; left: 50%; width: 20px; height: 20px; margin: -10px 0 0 -10px;
     background: currentColor; forced-color-adjust: none;
@@ -413,9 +419,25 @@ h3 { font-size: clamp(1.25rem, 1.1rem + .6vw, 1.5rem); letter-spacing: -.015em; 
 .btn { display: inline-flex; align-items: center; justify-content: center; min-height: 48px; padding: 0 24px; border: 1px solid transparent; border-radius: 999px; font: inherit; font-weight: 600; text-decoration: none; cursor: pointer; }
 .btn-primary { background: var(--btn-bg); color: var(--btn-text); }
 .btn-primary:hover { background: var(--btn-bg-hover); text-decoration: none; }
-.btn-copy { min-height: 44px; padding: 0 18px; border-color: var(--control); background: var(--bg); color: var(--text); font-weight: 500; }
-.btn-copy:hover { background: var(--bg-2); }
-.btn-copy.is-copied { border-color: var(--ink); color: var(--ink); }
+/* The Copy control of a command box (see .cmd below): an icon and a label,
+   inside the box. Joined to the right edge on tablet and desktop, an
+   icon-only square on phones. The icon is a mask on currentColor. */
+.btn-copy { gap: 8px; min-height: 44px; font-size: .9375rem; font-weight: 500; color: var(--text); background: transparent; }
+.copy-ico { display: block; flex: none; width: 20px; height: 20px; background: currentColor; forced-color-adjust: none; -webkit-mask: var(--i-copy) center / contain no-repeat; mask: var(--i-copy) center / contain no-repeat; }
+.btn-copy.is-copied .copy-ico { -webkit-mask-image: var(--i-check); mask-image: var(--i-check); }
+.btn-copy.is-copied { color: var(--ink); }
+.btn-copy:hover { background: color-mix(in srgb, var(--code-bg), var(--text) 7%); }
+/* The terracotta check on the hover tint is 4.2 to 4.4, so a copied control takes no tint. */
+.btn-copy.is-copied:hover { background: transparent; }
+@media (min-width: 32.51em) {
+  .btn-copy { margin: 1px 1px 1px 0; padding: 0 18px; border: 0; border-left: 1px solid var(--line); border-radius: 0 11px 11px 0; }
+  .btn-copy:focus-visible { outline-offset: -3px; }
+}
+@media (max-width: 32.5em) {
+  .btn-copy { width: 44px; height: 44px; margin: 4px 4px 4px 0; padding: 0; border: 1px solid var(--control); border-radius: 8px; align-self: center; }
+  .btn-copy .copy-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .btn-copy.is-copied { border-color: var(--ink); }
+}
 .btn-s { min-height: 44px; padding: 0 18px; border-color: var(--control); background: transparent; color: var(--text); font-size: .9375rem; font-weight: 500; }
 .btn-s:hover:not(:disabled) { border-color: var(--ink); }
 .btn-s:disabled { opacity: .6; cursor: default; }
@@ -707,15 +729,28 @@ main > .tint-panel:last-child { margin-bottom: calc(-1 * clamp(4rem, 10vw, 8rem)
 .more-body h3 { color: var(--text); }
 .more-body > :first-child { margin-top: 0; }
 
-.cmd { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: stretch; }
-.cmd-scroll { display: flex; align-items: center; min-width: 0; padding: 0 14px; min-height: 44px; overflow-x: auto; white-space: nowrap; background: var(--code-bg); border: 1px solid var(--line); border-radius: 10px; }
+/* A command box: one 52 px box (the ::before, row 1 across both columns) with
+   the scrolling command in column 1 and the Copy control in column 2, both
+   drawn above it. Without script the Copy control is hidden and the command
+   spans the box. The scrollbar is hidden; a right-edge fade (.is-fade, set by
+   site.js only while the command is cut off and not scrolled to its end)
+   shows there is more. Without script there is no fade, because overflow
+   cannot be detected. The error message sits below the box (row 2). */
+.cmd { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0; }
+.cmd::before { content: ""; grid-area: 1 / 1 / 2 / -1; background: var(--code-bg); border: 1px solid var(--line); border-radius: 12px; }
+.cmd-scroll { grid-area: 1 / 1; position: relative; display: flex; align-items: center; min-width: 0; min-height: 52px; padding: 0 16px; overflow-x: auto; white-space: nowrap; scrollbar-width: none; }
+.cmd-scroll::-webkit-scrollbar { display: none; }
+.cmd-scroll.is-fade { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent); }
 .cmd-scroll code { font-size: .875rem; color: var(--text); user-select: text; }
-/* Without script the Copy buttons are hidden: the command takes the whole row. */
-html:not(.js) .cmd { grid-template-columns: minmax(0, 1fr); }
-.copy-msg { grid-column: 1 / -1; font-size: .875rem; }
+.cmd > .btn-copy { grid-area: 1 / 2; position: relative; }
+/* The mask would clip the scroll area's own focus ring, so the box wears it. */
+@supports selector(:has(a)) {
+  .cmd-scroll:focus-visible { outline: none; }
+  .cmd:has(> .cmd-scroll:focus-visible)::before { outline: 3px solid var(--focus); outline-offset: 2px; }
+}
+.copy-msg { grid-area: 2 / 1 / 3 / -1; font-size: .875rem; }
 .copy-msg:not(.is-error) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-.copy-msg.is-error { color: var(--ink); font-weight: 500; }
-@media (max-width: 32.5em) { .cmd { grid-template-columns: minmax(0, 1fr); } .btn-copy { justify-self: start; } }
+.copy-msg.is-error { margin-top: 8px; color: var(--ink); font-weight: 500; }
 
 /* ---------- scroll reveal (headings and the playground cards only) ----------
    Once only, in every browser: site.js adds .is-in the first time the element
@@ -831,3 +866,31 @@ html:not(.js) .cmd { grid-template-columns: minmax(0, 1fr); }
 /* Links inside running text get a taller hit area (padding on an inline box does not move the lines). */
 main p a, main dd a, main li a, .footer-brand a { padding-block: .75em; }
 main .btn { padding-block: 0; }
+
+/* ---------- phones (below 40em) ----------
+   A 20 px gutter and header edge, full-width Download buttons, the install
+   rhythm (h2 16 to the lead, the lead 28 to Download, Download 16 to the
+   command box, the box 32 to the details, h3 32 above and 12 below), and 44 px
+   targets for the coat chips, the draw tools and the footer licence link. From
+   40em up none of this applies. The go-to-top button keeps its own 16 px. */
+@media (max-width: 39.99em) {
+  :root { --gutter: 20px; --edge: 20px; }
+  .install h2, .gcal h2, .privacy-short h2 { margin-bottom: 16px; }
+  .hero .actions { align-self: stretch; }
+  .hero .actions .btn-primary, .install-dl .btn { width: 100%; }
+  .install-dl .btn { display: flex; }
+  .hero-cmd { margin-top: 16px; }
+  .more { margin-top: 32px; }
+  .gcal h3, .privacy-short h3, .install h3 { margin: 32px 0 12px; }
+  .scopes dt:first-child { margin-top: 0; }
+  .coats { gap: 0; }
+  .coat-chip { width: 44px; height: 44px; }
+  .coat-chip i { inset: 9px; }
+  .coat-chip[aria-pressed="true"]::after { inset: 4px; }
+  /* 44 px buttons in a bar with 2 px padding, 4 px up: the bar's top edge stays
+     where it was (136 px in the 190 px picture), so it covers no more of the
+     selection than before. */
+  .tools { bottom: 4px; padding: 2px; }
+  .tools button { height: 44px; }
+  .footer-brand a { display: inline-block; padding-block: 0; min-height: 44px; line-height: 44px; vertical-align: middle; }
+}
