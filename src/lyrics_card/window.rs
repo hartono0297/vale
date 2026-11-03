@@ -510,11 +510,12 @@ struct Content {
 
 /// The wrapped lines at the current width.
 struct LineLayouts {
-    /// The text of each line as drawn (an instrumental gap is the rest glyph).
-    texts: Vec<String>,
     items: Vec<IDWriteTextLayout>,
-    /// The same lines in the bold face, made when a line becomes current.
-    bold: HashMap<usize, IDWriteTextLayout>,
+    /// The same lines in the bold face, wrapped at the wrap width divided by
+    /// the current line's scale, so the scaled line wraps where the stacked
+    /// one does.
+    bold: Vec<IDWriteTextLayout>,
+    /// Each line's slot: the taller of its plain and its scaled bold form.
     heights: Vec<f32>,
     tops: Vec<f32>,
 }
@@ -622,11 +623,16 @@ fn px(dip: f32, dpi: u32) -> i32 {
     (dip * dpi.max(96) as f32 / 96.0).round() as i32
 }
 
+/// Tests make the window but never put it on screen (`test-spawns-no-window`).
+const ON_SCREEN: bool = !cfg!(test);
+
 fn run_fx(hwnd: HWND, fx: Vec<Fx>) {
     for f in fx {
         match f {
             Fx::Show(true) => unsafe {
-                let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+                if ON_SCREEN {
+                    let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+                }
             },
             Fx::Show(false) => unsafe {
                 let _ = ShowWindow(hwnd, SW_HIDE);
@@ -975,23 +981,28 @@ impl Card {
     fn build_layouts(&mut self) {
         let width = layout::line_width(self.size_dip.0);
         let mut items = Vec::new();
+        let mut bold = Vec::new();
         let mut heights = Vec::new();
-        let mut texts = Vec::new();
         for line in self.c.lines.iter() {
             let text = if line.text.is_empty() { NOTE } else { line.text.as_str() };
-            let Some(l) = self.surf.layout(text, layout::SIZE_OTHER, 400, width) else {
+            let plain = self.surf.layout(text, layout::SIZE_OTHER, 400, width);
+            let strong = self
+                .surf
+                .layout(text, layout::SIZE_OTHER, 600, width / layout::CURRENT_SCALE);
+            let (Some(plain), Some(strong)) = (plain, strong) else {
                 self.layouts = None;
                 return;
             };
-            heights.push(Surface::height_of(&l));
-            items.push(l);
-            texts.push(text.to_owned());
+            let slot =
+                Surface::height_of(&plain).max(Surface::height_of(&strong) * layout::CURRENT_SCALE);
+            heights.push(slot);
+            items.push(plain);
+            bold.push(strong);
         }
         let tops = layout::stack(&heights, layout::LINE_GAP);
         self.layouts = Some(LineLayouts {
-            texts,
             items,
-            bold: HashMap::new(),
+            bold,
             heights,
             tops,
         });
@@ -1289,24 +1300,9 @@ impl Card {
                 }
                 let alpha = 0.40 + 0.60 * e;
                 let (x, cy) = (layout::PAD, top + h / 2.0);
-                // Bold from halfway through the ease; the larger face wraps
-                // at width / scale so the scaled line wraps where the stacked
-                // one does.
-                let face = if e >= 0.5 {
-                    match l.bold.get(&i) {
-                        Some(b) => Some(b.clone()),
-                        None => {
-                            let made = self.surf.layout(&l.texts[i], layout::SIZE_OTHER, 600, width / big);
-                            if let Some(b) = &made {
-                                l.bold.insert(i, b.clone());
-                            }
-                            made
-                        }
-                    }
-                } else {
-                    None
-                };
-                let drawn = face.as_ref().unwrap_or(&l.items[i]);
+                // Bold from halfway through the ease; every line is centred
+                // in its slot.
+                let drawn = if e >= 0.5 { &l.bold[i] } else { &l.items[i] };
                 let dh = Surface::height_of(drawn);
                 unsafe {
                     self.surf.rt.SetTransform(&Matrix3x2 {
@@ -1733,4 +1729,138 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         _ => {}
     }
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lyrics_card::layout::Mon;
+    use crate::ui::settings_window::Rc;
+    use windows::Win32::UI::WindowsAndMessaging::IsWindowVisible;
+
+    fn content(status: Status, playing: bool) -> CardContent {
+        let lines = vec![
+            LrcLine {
+                at_ms: 1_000,
+                text: "one".into(),
+            },
+            LrcLine {
+                at_ms: 5_000,
+                text: String::new(),
+            },
+            LrcLine {
+                at_ms: 9_000,
+                text: "three".into(),
+            },
+        ];
+        CardContent {
+            status,
+            title: "Title".into(),
+            artist: "Artist".into(),
+            art: Change::Set(None),
+            lines: Change::Set(Arc::new(lines)),
+            timeline: Some(Timeline {
+                position_ms: 6_000,
+                end_ms: 30_000,
+                updated: Instant::now(),
+                rate: 1.0,
+            }),
+            playing,
+            can_seek: true,
+            session_key: 7,
+            palette: [0x232527, 0x1B1D1F, 0xD97757],
+            font: UiFont::Sans,
+            animations: true,
+        }
+    }
+
+    fn args() -> OpenArgs {
+        let rect = Rc {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        };
+        let mon = Mon {
+            rect,
+            work: Rc { bottom: 1040, ..rect },
+            dpi: 96,
+        };
+        OpenArgs {
+            island: HWND::default(),
+            saved: None,
+            monitors: vec![mon],
+            notch: Some(mon),
+            hidden: false,
+            demo: true,
+            frozen_ms: None,
+        }
+    }
+
+    #[test]
+    fn the_card_opens_updates_hides_and_closes_without_a_window_on_screen() {
+        assert!(open(args(), content(Status::Synced, true)));
+        // A second open does nothing: one card.
+        assert!(!open(args(), content(Status::Synced, true)));
+        let hwnd = hwnd().expect("the card exists");
+        assert!(!unsafe { IsWindowVisible(hwnd) }.as_bool(), "tests never show it");
+        assert_eq!(shown_key(), Some(7));
+        // Every status draws; the lines are dropped when they stop applying.
+        for status in [Status::Pending, Status::Missing, Status::NoMedia, Status::Synced] {
+            update(content(status, status == Status::Synced));
+        }
+        // Fullscreen hides it and brings it back; asking twice changes nothing.
+        assert!(set_hidden(true));
+        assert!(!set_hidden(true));
+        update(content(Status::Synced, true));
+        assert!(set_hidden(false));
+        assert!(!set_hidden(false));
+        // A drag's end saves the place once.
+        assert!(take_placed().is_none());
+        close();
+        assert!(super::hwnd().is_none());
+        assert!(!unsafe { windows::Win32::UI::WindowsAndMessaging::IsWindow(Some(hwnd)) }.as_bool());
+        // Closing again is harmless, and it can open again.
+        close();
+        assert!(open(args(), content(Status::Missing, false)));
+        close();
+    }
+
+    #[test]
+    fn the_timers_exist_only_while_playing_visible_with_synced_lyrics() {
+        use windows::Win32::UI::WindowsAndMessaging::KillTimer;
+        // A timer that exists can be killed (Ok); one that does not, cannot.
+        let timer_set = |h: HWND, id: usize| unsafe { KillTimer(Some(h), id) }.is_ok();
+        assert!(open(args(), content(Status::Synced, true)));
+        let h = hwnd().unwrap();
+        assert!(timer_set(h, TIMER_LINE), "playing with synced lyrics arms it");
+        update(content(Status::Synced, true));
+        assert!(timer_set(h, TIMER_LINE), "re-armed by the next snapshot");
+        update(content(Status::Synced, false));
+        assert!(!timer_set(h, TIMER_LINE), "paused: none");
+        update(content(Status::Missing, true));
+        assert!(!timer_set(h, TIMER_LINE), "no lyrics: none");
+        update(content(Status::Synced, true));
+        assert!(set_hidden(true));
+        assert!(!timer_set(h, TIMER_LINE), "hidden: none");
+        assert!(!timer_set(h, TIMER_MANUAL));
+        close();
+    }
+
+    #[test]
+    fn a_tween_eases_and_jumps_when_asked_to() {
+        let t0 = Instant::now();
+        let mut t = Tween::at_rest(10.0, t0);
+        assert!(!t.moving(t0));
+        t.go(110.0, 350, true, t0);
+        assert!(t.moving(t0));
+        assert_eq!(t.at(t0), 10.0);
+        assert!(t.at(t0 + std::time::Duration::from_millis(175)) > 60.0);
+        assert_eq!(t.at(t0 + std::time::Duration::from_millis(350)), 110.0);
+        assert!(!t.moving(t0 + std::time::Duration::from_millis(400)));
+        // Reduced motion: at once.
+        t.go(5.0, 350, false, t0);
+        assert_eq!(t.at(t0), 5.0);
+        assert!(!t.moving(t0));
+    }
 }
