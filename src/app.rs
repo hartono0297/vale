@@ -687,8 +687,12 @@ fn end_process() -> ! {
         std::thread::sleep(TEARDOWN_LIMIT);
         terminate_process();
     });
-    // A panic in a destructor must not skip the rest, nor unwind into the
-    // normal exit that crashes.
+    // Debug and test builds only: a panic in a destructor must not skip the
+    // rest, nor unwind into the normal exit that crashes. The release profile
+    // sets `panic = "abort"`, so there `catch_unwind` does nothing: a panicking
+    // drop aborts the process (WER may keep the mutexes for about 12 s, and
+    // `release_single_instance` and `terminate_process` are skipped). That case
+    // is covered by the new process waiting 60 s (`claim_wait`), not by this.
     let _ = std::panic::catch_unwind(|| {
         drop_app();
         release_graphics();

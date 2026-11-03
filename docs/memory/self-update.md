@@ -113,7 +113,10 @@ tray Quit, the update's `shutdown`, `WM_CLOSE`, ends in that loop):
 5. `TerminateProcess(GetCurrentProcess(), 0)` instead of returning. Belt and
    braces: the crash is inside D3D10Warp's own threadpool cleanup, so it can
    still happen on the DLL detach with none of our objects left; terminating
-   skips the detach, so an exit can never hang on WER. The OS closes the
+   skips the detach, so an exit can never hang on WER. Steps 1-4 run inside
+   `catch_unwind`, which only works in debug and test builds: the release profile has
+   `panic = "abort"`, so a panicking drop there aborts the process (WER, mutexes
+   held about 12 s, steps 4-5 skipped) and only the new process's 60 s wait covers it. The OS closes the
    handles of a terminated process at once; the CLI's job object still kills
    its children. A watchdog thread ends the process after 5 s if a drop blocks.
 
