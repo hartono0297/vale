@@ -27,7 +27,7 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[lyric-notch-width]]
 - [[compact-padding]]: one 16 dip inset (COMPACT_INSET) for the compact views; shapes grow (media +12, pomodoro +22, lyric +10 with the robot), text room unchanged
 - [[notch-size-and-fill]]: Tampilan -> Notch: width/height sliders (160-300 x 28-44), solid or see-through background, the panel stays solid
-- [[notch-monitor]]: which screen the notch shows on: `notch_monitor` (Primary or a device path), fallback to the primary and back, hot-plug on `DBT_DEVNODES_CHANGED` (TIMER_DISPLAYS 41), Settings map + radio list, tray submenu, the Identify plates, `DI_MONITORS` / `DI_NOTCH_MONITOR`
+- [[notch-monitor]]: which screen the notch shows on: `notch_monitor` (Primary or a device path), fallback to the primary and back, hot-plug on `DBT_DEVNODES_CHANGED` (TIMER_DISPLAYS 41), Settings map + radio list, tray submenu, the Identify plates, `DI_MONITORS` / `DI_NOTCH_MONITOR`, hidden over a fullscreen window on its own monitor even when focus is elsewhere (z-order walk, desktop exception)
 - [[settings-appearance-scroll]]
 - [[media-click-guards]]
 - [[media-diagnosis-log]]

@@ -122,6 +122,12 @@ the `--demo-editor` anchor.
     the walk finds no covering window and shows the notch, as before. Step 1
     still runs first, so a shell fullscreen report (a presentation, say) with
     the desktop on the notch's monitor still hides without a walk.
+  - Accepted deviations: on 2026-11-03 the user accepted both this desktop
+    exception and a failed `SHQueryUserNotificationState` counting as not
+    fullscreen in `is_fullscreen(Some(island))` (the walk can still run;
+    `is_fullscreen(None)` is unchanged). His rule: "kalau notch dilayar mana,
+    misalnya layar 1, selama layar 1 itu full screen misalnya youtube, ya jangan
+    nongol dong kecuali ada notif".
   - No walk otherwise: one monitor, an unknown notch monitor, or a foreground
     that is not the desktop and sits on the notch's monitor or on an unknown
     one keeps the shell's answer.
