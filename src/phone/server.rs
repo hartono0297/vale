@@ -57,6 +57,12 @@ pub(super) fn run(shared: &Arc<Shared>, mode: Mode) {
             }
         },
     };
+    // Back (or a sleep) may have come while the adapters were being read, which
+    // can take a while: nothing listens then, so no Firewall prompt either.
+    if shared.stop.load(Ordering::SeqCst) {
+        end(shared);
+        return;
+    }
     let listener = match bind(&cfg) {
         Ok(l) => l,
         Err(refusal) => {
@@ -129,7 +135,12 @@ pub(super) fn run(shared: &Arc<Shared>, mode: Mode) {
         }
     }
     drop(listener);
-    // The connection threads see the flag between chunks.
+    end(shared);
+}
+
+/// The normal end: the stop flag (the connection threads see it between
+/// chunks), then `ended`, then `SessionEnded` with the reason the stop recorded.
+fn end(shared: &Shared) {
     shared.stop.store(true, Ordering::SeqCst);
     let reason = shared
         .reason
@@ -761,5 +772,55 @@ mod tests {
             checked += 1;
         }
         assert!(checked > 20, "only {checked} calls found");
+    }
+
+    /// A stop asked before the thread got to `bind` (Back pressed while the
+    /// adapters were read) ends the session with nothing listening.
+    #[test]
+    fn a_stop_before_the_bind_listens_nowhere() {
+        use super::super::session::Session;
+        use super::super::{EndReason, Mode, PhoneEvent, ServerConfig, Shared};
+        use crate::i18n::Lang;
+        use std::net::{IpAddr, Ipv4Addr};
+        use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+        use std::sync::{Arc, Mutex, OnceLock};
+        use std::time::Instant;
+
+        let events = Arc::new(Mutex::new(Vec::<PhoneEvent>::new()));
+        let sink_events = Arc::clone(&events);
+        let session = Session::new(Instant::now(), |b| {
+            b.fill(7);
+            true
+        })
+        .expect("a session");
+        let shared = Arc::new(Shared {
+            session: Mutex::new(session),
+            stop: AtomicBool::new(false),
+            reason: Mutex::new(EndReason::Done),
+            ended: AtomicBool::new(false),
+            sink: Arc::new(move |e| sink_events.lock().expect("lock").push(e)),
+            runtime: OnceLock::new(),
+            conns: AtomicUsize::new(0),
+            next_upload: AtomicU64::new(1),
+        });
+        shared.request_stop(EndReason::Suspend);
+        let cfg = ServerConfig {
+            bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            ports: 0..=0,
+            dest_dir: std::env::temp_dir().join("vale-never-made"),
+            lang: Lang::En,
+            pc_name: "TEST-PC".into(),
+            network_name: "Test net".into(),
+            allow_loopback: true,
+        };
+        super::run(&shared, Mode::Fixed(cfg));
+        assert!(shared.runtime.get().is_none(), "a listener was made");
+        assert!(shared.ended.load(Ordering::SeqCst));
+        let seen = events.lock().expect("lock");
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        assert!(
+            matches!(seen[0], PhoneEvent::SessionEnded(EndReason::Suspend)),
+            "{seen:?}"
+        );
     }
 }
