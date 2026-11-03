@@ -43,8 +43,9 @@ silhouette, (3, 30) included (the orange circle is clipped to the head). The
 cache holds one entry per ear state. `the_calico_swatch_is_the_sites_conic_gradient`
 pins the swatch slices.
 
-Paths are built once: the head, ears and marks as before, the silhouette and
-patches per ear state (`RobotPainter::calico`, keyed by the ear's `up` and
+Paths are built once: the head, ears and marks as before, the calico
+patches per ear state, built from the ears and the head
+(`RobotPainter::calico`, keyed by the ear's `up` and
 `droop`), and each accessory's pieces (`extras`, behind an `Rc`). Nothing is
 rebuilt per frame, no timer is added ([[bata-idle-power-budget]]). A caller
 that fades the cat does it with a layer round `paint` (the renderer's
