@@ -32,7 +32,7 @@ const MAX_WALK: usize = 1024;
 ///    foreground window on another monitor, the shell cannot tell whether the
 ///    notch's own monitor shows a fullscreen video (the user clicked over to
 ///    the other screen). Then the top-level windows are walked top to bottom
-///    (`top_candidate_covers`): the first real window that touches the notch's
+///    (`top_candidate_covers`): the first real window that overlaps the notch's
 ///    monitor decides, hidden only if it covers the whole monitor. This runs at
 ///    most once per `TIMER_SYSTEM` tick, only in that case, and reads only as
 ///    many windows as it takes to reach the first one on that monitor.
@@ -171,7 +171,7 @@ pub fn is_candidate(w: &WindowFacts) -> bool {
 
 /// Walks `windows` (top of the z-order first) to the first candidate that
 /// shares an area with `monitor`, and says whether it covers the monitor.
-/// False when no candidate touches the monitor. Lazy: it stops reading at the
+/// False when no candidate overlaps the monitor. Lazy: it stops reading at the
 /// first deciding window.
 pub fn top_candidate_covers(
     windows: impl IntoIterator<Item = WindowFacts>,
@@ -262,7 +262,7 @@ unsafe fn facts_of(hwnd: HWND, own_pid: u32, shell: HWND, desktop: HWND) -> Wind
 /// visible frame (`DWMWA_EXTENDED_FRAME_BOUNDS`, as `arrange_win::visible_frame`)
 /// and not `GetWindowRect`: a maximised window on the neighbouring monitor has
 /// invisible resize borders that spill about 8 px into the notch's monitor in
-/// `GetWindowRect`, which would make it the first window that touches that
+/// `GetWindowRect`, which would make it the first window that overlaps that
 /// monitor and wrongly show the notch over the video. `GetWindowRect` is only
 /// the fallback when the DWM read fails.
 unsafe fn frame_of(hwnd: HWND) -> Rect4 {

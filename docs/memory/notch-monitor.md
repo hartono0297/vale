@@ -117,8 +117,8 @@ the `--demo-editor` anchor.
     any window of Vale's own process (island, Susun overlay, Identify plates);
     WS_EX_TOOLWINDOW; WS_EX_TRANSPARENT.
   - Covers: the rect contains `rcMonitor` (not the work area) and the window
-    is not maximised with a caption (so a maximised window never counts, even
-    with an auto-hide taskbar; a borderless window of the work area does not
+    is not maximised with a caption (so a maximised window with a caption never
+    counts, even with an auto-hide taskbar; a borderless window of the work area does not
     contain the monitor). Browser video fullscreen, F11 and borderless or
     exclusive games count, a paused one too.
   - The window rect is `DWMWA_EXTENDED_FRAME_BOUNDS` (GetWindowRect only if the

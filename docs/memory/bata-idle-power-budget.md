@@ -74,7 +74,7 @@ Bata adds only one-shots (`app.rs`, planned by `robot::plan_timers`):
 - The fullscreen check ([[notch-monitor]], "Follows the notch's monitor") rides
   the existing 1 s `TIMER_SYSTEM` tick and adds no timer. Its z-order walk runs
   only with 2+ monitors and the foreground window off the notch's monitor, at
-  most once per tick, stops at the first window that touches the notch's
+  most once per tick, stops at the first window that overlaps the notch's
   monitor and reads at most 1024 windows. With one monitor, or the foreground
   on the notch's monitor, it adds one `GetSystemMetrics` and two monitor lookups.
 
