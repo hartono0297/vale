@@ -60,6 +60,10 @@
   --eye: #17120F;
   --rim: transparent;
   --pa: 0;
+  /* The go-to-top tail: its tip colour (set with the coat) and its outline. */
+  --tip: #F4EDE4;
+  --tail-edge: #A89A8B;
+  --tail-halo: #17120F;
 
   /* Page progress 0 to 1, set by site.js: the sky mixes dusk, night and dawn. */
   --p: 0;
@@ -92,6 +96,8 @@
   --bubble-bg: #17120F;
   --bubble-text: #F4EDE4;
   --notch-edge: #17120F;
+  --tail-edge: #17120F;
+  --tail-halo: #F6F6F4;
   color-scheme: light;
 }
 @media (min-width: 40em) { :root { --edge: 24px; } }
@@ -291,6 +297,7 @@ html:not(.js) .js-only { display: none !important; }
 .to-top svg { display: block; width: 56px; height: 100px; }
 .to-top .tail { transform-origin: 52px 92px; }
 .to-top path { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.tail-halo { stroke: var(--tail-halo); stroke-width: 15; }
 .tail-edge { stroke: var(--tail-edge); stroke-width: 12; }
 .tail-body { stroke: var(--coat); stroke-width: 9; }
 .tail-tip { stroke: var(--tip); stroke-width: 9; }
@@ -801,8 +808,9 @@ main > .tint-panel:last-child { margin-bottom: calc(-1 * clamp(4rem, 10vw, 8rem)
 
 /* ---------- the walking cat ----------
    Index only, made by site.js: a 3 px trail at the very bottom and a 30 px cat
-   head that walks along it with page progress. Its track ends before the
-   go-to-top button. At the end of the page it curls up and sleeps; asleep
+   head that walks along it with page progress. Its track ends 12 px before the
+   go-to-top tail's box (the tail is flush at the right edge, so that is the
+   viewport width minus the box width, minus 12). At the end of the page it curls up and sleeps; asleep
    it is a real button that wakes it. */
 .walk { position: fixed; left: 0; right: 0; bottom: 0; z-index: 70; height: 3px; pointer-events: none; }
 .walk-trail { position: absolute; left: 0; bottom: 0; height: 3px; width: 0; background: linear-gradient(90deg, transparent, var(--ink)); }
