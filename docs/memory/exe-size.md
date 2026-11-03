@@ -143,6 +143,16 @@ dependency), four `windows` features (`Win32_NetworkManagement_IpHelper`,
 Indonesian and English strings and the layout and paint code. No HTTP crate
 and no thread pool.
 
+## The phone link, phase 2 (2026-11-04)
+
+[[shelf-phone]] phase 2 (shared set, Range, WIC thumbnails, the file routes, the page's
+second tab, the send view and its strings) took the release exe from 3,463,168 to
+3,505,664 bytes (+42,496, +1.23 %). Built with `cargo build --release --locked` from
+`git archive` of `main` (c1fa7a7) and of the branch head, in two folders of the same path
+length (`base` and `head`), each with its own `CARGO_TARGET_DIR`; no warning in either. No
+new crate and no new `windows` feature (WIC was already enabled); the page grew from
+14 KB to 24 KB of text.
+
 ## Idle RAM and CPU
 
 Not measured. The release exe is single-instance and reads real user data, and
