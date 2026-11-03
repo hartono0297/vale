@@ -5,20 +5,23 @@
 //! the routes in one `match` so a later phase only adds lines to it.
 
 use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::net::{Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
+use super::files::{self, OpenError};
 use super::http::{
-    HttpError, Method, Parsed, Request, Response, clear_cookie, parse_head, session_cookie,
+    self, FileHead, HttpError, Method, Parsed, Request, Response, clear_cookie, parse_head,
+    session_cookie,
 };
 use super::names::{clash_name, sanitize};
 use super::net::{self, BoundCheck, is_private};
 use super::session::{PairError, StateAnswer, Tick};
-use super::ua;
+use super::share::{RangeAns, Route, counts_as_taken};
+use super::{thumb, ua};
 use super::{EndReason, FailReason, Mode, PhoneEvent, Refusal, Runtime, ServerConfig, Shared};
 
 /// The accept loop's sleep between empty polls.
@@ -142,6 +145,10 @@ pub(super) fn run(shared: &Arc<Shared>, mode: Mode) {
 /// chunks), then `ended`, then `SessionEnded` with the reason the stop recorded.
 fn end(shared: &Shared) {
     shared.stop.store(true, Ordering::SeqCst);
+    // Every shared id goes with the session.
+    if let Ok(mut s) = shared.session.lock() {
+        s.shared_mut().unshare_all();
+    }
     let reason = shared
         .reason
         .lock()
@@ -281,13 +288,26 @@ fn read_head(
     }
 }
 
+/// What a route did: an ordinary answer for `serve` to write, or a streamed
+/// one the route wrote itself (a file, its head and its body).
+enum Routed {
+    Reply(Response),
+    Streamed,
+}
+
 fn serve(shared: &Shared, mut stream: TcpStream, peer: SocketAddr) {
-    let response = match read_head(shared, &mut stream) {
-        Ok((req, rest)) => route(shared, &mut stream, &req, rest, peer),
-        Err(Some(e)) => Response::for_error(e),
+    match read_head(shared, &mut stream) {
+        Ok((req, rest)) => match route(shared, &mut stream, &req, rest, peer) {
+            Routed::Reply(response) => {
+                let _ = response.write_to(&mut stream);
+            }
+            Routed::Streamed => {}
+        },
+        Err(Some(e)) => {
+            let _ = Response::for_error(e).write_to(&mut stream);
+        }
         Err(None) => return,
-    };
-    let _ = response.write_to(&mut stream);
+    }
     let _ = stream.shutdown(Shutdown::Write);
     drain(shared, &mut stream);
 }
@@ -321,14 +341,349 @@ fn route(
     req: &Request,
     rest: Vec<u8>,
     peer: SocketAddr,
-) -> Response {
+) -> Routed {
+    let reply = Routed::Reply;
     match (req.method, req.path.as_str()) {
-        (Method::Get, "/") => page(shared, req),
-        (Method::Get, "/api/state") => state(shared, req),
-        (Method::Post, "/api/upload") => upload(shared, stream, req, rest, peer),
-        (Method::Get, path) if path.starts_with("/s/") => scan(shared, req, &path[3..], peer),
-        _ => Response::not_found(),
+        (Method::Get, "/") => reply(page(shared, req)),
+        (Method::Get, "/api/state") => reply(state(shared, req)),
+        (Method::Get, "/api/files") => reply(file_list(shared, req)),
+        (Method::Post, "/api/upload") => reply(upload(shared, stream, req, rest, peer)),
+        (Method::Get | Method::Head, path) if path.starts_with("/api/file/") => {
+            download(shared, stream, req, &path["/api/file/".len()..], Route::File)
+        }
+        (Method::Get | Method::Head, path) if path.starts_with("/api/view/") => {
+            download(shared, stream, req, &path["/api/view/".len()..], Route::View)
+        }
+        (Method::Get, path) if path.starts_with("/api/thumb/") => {
+            reply(thumbnail(shared, req, &path["/api/thumb/".len()..]))
+        }
+        (Method::Get, path) if path.starts_with("/s/") => reply(scan(shared, req, &path[3..], peer)),
+        _ => reply(Response::not_found()),
     }
+}
+
+/// The approved phone behind a read-only API request, or `None` (a bare
+/// 404): anything but a session cookie, a pairing cookie included. Only
+/// `touch` makes it activity: a list or a thumbnail is not, so an open page
+/// cannot keep the server alive.
+fn api_device(shared: &Shared, req: &Request, touch: bool) -> Option<u64> {
+    let mut s = shared.session.lock().ok()?;
+    let device = s.device_for_view_api(req.cookie("vs"))?;
+    if touch {
+        s.touch(Instant::now());
+    }
+    Some(device)
+}
+
+/// A shared file is gone: its id is revoked and the app is told, once.
+fn revoke_gone(shared: &Shared, id: &str) {
+    let revoked = shared
+        .session
+        .lock()
+        .map(|mut s| s.shared_mut().unshare(id))
+        .unwrap_or(false);
+    if revoked {
+        shared.emit(PhoneEvent::SharedGone { id: id.to_owned() });
+    }
+}
+
+/// The page's word for a file's kind.
+fn kind_word(kind: crate::shelf::ShelfKind) -> &'static str {
+    use crate::shelf::ShelfKind;
+    match kind {
+        ShelfKind::Image => "image",
+        ShelfKind::Video => "video",
+        ShelfKind::Media => "audio",
+        ShelfKind::Archive => "archive",
+        ShelfKind::Code => "code",
+        ShelfKind::Folder | ShelfKind::Document => "doc",
+    }
+}
+
+/// `GET /api/files`: what this phone may take, in the order it was shared:
+/// id, name, size (read now), kind, whether the page may show it inline,
+/// whether this phone finished it and whether it is downloading it. No path
+/// ever appears. A file found gone is left out, revoked and reported.
+fn file_list(shared: &Shared, req: &Request) -> Response {
+    let Some(device) = api_device(shared, req, false) else {
+        return Response::not_found();
+    };
+    let snapshot: Vec<_> = match shared.session.lock() {
+        Ok(s) => s
+            .shared()
+            .entries()
+            .iter()
+            .map(|e| {
+                (
+                    e.id.clone(),
+                    e.path.clone(),
+                    e.name.clone(),
+                    e.kind,
+                    e.saved_by.contains(&device),
+                    e.busy.contains(&device),
+                )
+            })
+            .collect(),
+        Err(_) => return Response::not_found(),
+    };
+    // The sizes are read without the session's lock held.
+    let mut files = Vec::new();
+    let mut gone = Vec::new();
+    for (id, path, name, kind, saved, busy) in snapshot {
+        match files::regular_size(&path) {
+            Some(size) => files.push(serde_json::json!({
+                "id": id,
+                "name": name,
+                "size": size,
+                "kind": kind_word(kind),
+                "view": http::is_viewable(&name),
+                "saved": saved,
+                "busy": busy,
+            })),
+            None => gone.push(id),
+        }
+    }
+    let mut revoked = Vec::new();
+    let rev = match shared.session.lock() {
+        Ok(mut s) => {
+            for id in gone {
+                if s.shared_mut().unshare(&id) {
+                    revoked.push(id);
+                }
+            }
+            s.shared().rev()
+        }
+        Err(_) => return Response::not_found(),
+    };
+    for id in revoked {
+        shared.emit(PhoneEvent::SharedGone { id });
+    }
+    Response::json(
+        200,
+        serde_json::json!({ "rev": rev, "files": files }).to_string(),
+    )
+}
+
+/// Marks the phone busy with a file while it streams, and clears it at the
+/// end whatever way the stream ends.
+struct Busy<'a> {
+    shared: &'a Shared,
+    id: &'a str,
+    device: u64,
+}
+
+impl<'a> Busy<'a> {
+    fn new(shared: &'a Shared, id: &'a str, device: u64) -> Self {
+        if let Ok(mut s) = shared.session.lock() {
+            s.shared_mut().set_busy(id, device, true);
+        }
+        Busy { shared, id, device }
+    }
+}
+
+impl Drop for Busy<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut s) = self.shared.session.lock() {
+            s.shared_mut().set_busy(self.id, self.device, false);
+        }
+    }
+}
+
+/// The body of a file in 64 KB chunks from `start`, `len` bytes: it stops
+/// (and the connection is closed short) when the session ends or the id is
+/// no longer shared (unticked), or the phone stops reading. Every chunk
+/// counts as activity. `true` if every byte was written.
+fn stream_body(
+    shared: &Shared,
+    stream: &mut TcpStream,
+    file: &mut File,
+    start: u64,
+    len: u64,
+    id: &str,
+) -> bool {
+    if start > 0 && file.seek(SeekFrom::Start(start)).is_err() {
+        return false;
+    }
+    let mut buf = vec![0u8; CHUNK];
+    let mut left = len;
+    while left > 0 {
+        if shared.stop.load(Ordering::SeqCst) {
+            return false;
+        }
+        {
+            let Ok(mut s) = shared.session.lock() else {
+                return false;
+            };
+            if !s.shared().contains(id) {
+                return false;
+            }
+            s.touch(Instant::now());
+        }
+        let want = left.min(CHUNK as u64) as usize;
+        let n = match file.read(&mut buf[..want]) {
+            Ok(0) => return false,
+            Ok(n) => n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => return false,
+        };
+        if stream.write_all(&buf[..n]).is_err() {
+            return false;
+        }
+        left -= n as u64;
+    }
+    stream.flush().is_ok()
+}
+
+/// `GET` and `HEAD` of `/api/file/<id>` (an attachment) and `/api/view/<id>`
+/// (an image, inline): the file is looked at again every time, so a file
+/// deleted since it was ticked is 410 and its id is revoked. Range and
+/// If-Range are honoured (200, 206, 416). The start of the request and each
+/// chunk keep the session alive. After the last byte of a request that counts
+/// (`counts_as_taken`) the file is marked saved for this phone and, the first
+/// time, `FileTaken` is sent.
+fn download(
+    shared: &Shared,
+    stream: &mut TcpStream,
+    req: &Request,
+    id: &str,
+    route: Route,
+) -> Routed {
+    let bare = || Routed::Reply(Response::not_found());
+    let found = {
+        let Ok(mut s) = shared.session.lock() else {
+            return bare();
+        };
+        let Some(device) = s.device_for_view_api(req.cookie("vs")) else {
+            return bare();
+        };
+        s.touch(Instant::now());
+        s.shared()
+            .find(id)
+            .map(|e| (device, e.name.clone(), e.path.clone()))
+    };
+    let Some((device, name, path)) = found else {
+        return bare();
+    };
+    if route == Route::View && !http::is_viewable(&name) {
+        return bare();
+    }
+    let mut opened = match files::open_shared(&path) {
+        Ok(o) => o,
+        Err(OpenError::Gone) => {
+            revoke_gone(shared, id);
+            return Routed::Reply(Response::gone());
+        }
+        Err(OpenError::Busy) => return Routed::Reply(Response::error(500, "busy")),
+    };
+    let len = opened.len;
+    let tag = http::etag(len, opened.mtime);
+    let date = http::http_date(opened.mtime);
+    let answer = http::answer_range(
+        req.header("range"),
+        req.header("if-range"),
+        len,
+        &tag,
+        date.as_deref().unwrap_or(""),
+    );
+    let (status, start, body_len, content_range) = match answer {
+        RangeAns::Full => (200, 0, len, None),
+        RangeAns::Partial {
+            start, end_incl, ..
+        } => (
+            206,
+            start,
+            end_incl - start + 1,
+            Some(format!("bytes {start}-{end_incl}/{len}")),
+        ),
+        RangeAns::Unsatisfiable => (416, 0, 0, Some(format!("bytes */{len}"))),
+    };
+    let mut extra = vec![
+        ("Accept-Ranges", "bytes".to_owned()),
+        ("ETag", tag),
+        (
+            "Content-Disposition",
+            http::content_disposition(
+                if route == Route::File {
+                    "attachment"
+                } else {
+                    "inline"
+                },
+                &name,
+            ),
+        ),
+    ];
+    if let Some(date) = date {
+        extra.push(("Last-Modified", date));
+    }
+    if let Some(range) = content_range {
+        extra.push(("Content-Range", range));
+    }
+    let head = FileHead {
+        status,
+        content_type: http::mime_for(&name),
+        content_length: body_len,
+        cache_control: "no-store",
+        extra,
+    };
+    if http::write_file_head(stream, &head).is_err()
+        || req.method == Method::Head
+        || status == 416
+    {
+        return Routed::Streamed;
+    }
+    let busy = Busy::new(shared, id, device);
+    let all = stream_body(shared, stream, &mut opened.file, start, body_len, id);
+    if counts_as_taken(route, req.method, answer, len, all) {
+        let first = shared
+            .session
+            .lock()
+            .ok()
+            .and_then(|mut s| s.shared_mut().mark_saved(id, device));
+        if first == Some(true) {
+            shared.emit(PhoneEvent::FileTaken { id: id.to_owned() });
+        }
+    }
+    drop(busy);
+    Routed::Streamed
+}
+
+/// `GET /api/thumb/<id>`: a small JPEG of a shared image (never an SVG, never
+/// the full image in its place). Any failure is a bare 404 and the page draws
+/// the type icon. The thumbnail is kept in the set for the session.
+fn thumbnail(shared: &Shared, req: &Request, id: &str) -> Response {
+    if api_device(shared, req, false).is_none() {
+        return Response::not_found();
+    }
+    let found = shared
+        .session
+        .lock()
+        .ok()
+        .and_then(|s| s.shared().find(id).map(|e| (e.name.clone(), e.path.clone())));
+    let Some((name, path)) = found else {
+        return Response::not_found();
+    };
+    if !http::is_viewable(&name) {
+        return Response::not_found();
+    }
+    let opened = match files::open_shared(&path) {
+        Ok(o) => o,
+        Err(OpenError::Gone) => {
+            revoke_gone(shared, id);
+            return Response::gone();
+        }
+        Err(OpenError::Busy) => return Response::not_found(),
+    };
+    let cached = shared.session.lock().ok().and_then(|s| s.shared().thumb(id));
+    if let Some(bytes) = cached {
+        return Response::jpeg_thumb(bytes.as_ref().clone());
+    }
+    let Some(jpeg) = thumb::make(&opened.file) else {
+        return Response::not_found();
+    };
+    if let Ok(mut s) = shared.session.lock() {
+        s.shared_mut().set_thumb(id, jpeg.clone());
+    }
+    Response::jpeg_thumb(jpeg)
 }
 
 /// The page with its boot data (language, PC, network, how far the pairing
@@ -441,14 +796,15 @@ fn page(shared: &Shared, req: &Request) -> Response {
 /// `GET /api/state`: how far the pairing is.
 fn state(shared: &Shared, req: &Request) -> Response {
     let now = Instant::now();
-    let (answer, cancelled) = {
+    let (answer, cancelled, set) = {
         let Ok(mut s) = shared.session.lock() else {
             return Response::not_found();
         };
         let answer = s.answer_state(req.cookie("vp"), req.cookie("vs"), now);
-        let cancelled = matches!(answer, StateAnswer::Approved { .. })
-            .then(|| s.cancelled_batches());
-        (answer, cancelled)
+        let approved = matches!(answer, StateAnswer::Approved { .. });
+        let cancelled = approved.then(|| s.cancelled_batches());
+        let set = approved.then(|| (s.shared().rev(), s.shared().len()));
+        (answer, cancelled, set)
     };
     let Some(rt) = shared.runtime.get() else {
         return Response::not_found();
@@ -473,6 +829,12 @@ fn state(shared: &Shared, req: &Request) -> Response {
         if let Some(free) = free_bytes(&rt.dest_dir) {
             body["room"] = serde_json::json!(free.saturating_sub(MIN_FREE));
         }
+    }
+    // The files ticked for the phone: how many (the page's tab count) and the
+    // list's revision (when it differs from the page's, it fetches the list).
+    if let Some((rev, count)) = set {
+        body["rev"] = serde_json::json!(rev);
+        body["shared"] = serde_json::json!(count);
     }
     let body = body.to_string();
     state_cookies(Response::json(200, body), &answer)

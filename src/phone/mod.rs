@@ -13,17 +13,20 @@
 mod e2e;
 #[cfg(debug_assertions)]
 pub mod debug;
+pub mod files;
 pub mod http;
 pub mod names;
 pub mod net;
 pub mod qr;
 mod server;
 pub mod session;
+pub mod share;
+pub mod thumb;
 pub mod ua;
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::ops::RangeInclusive;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
@@ -154,7 +157,24 @@ pub enum PhoneEvent {
         upload_id: u64,
         reason: FailReason,
     },
+    /// A phone downloaded a shared file whole, the first time any phone did
+    /// (said once per id).
+    FileTaken {
+        id: String,
+    },
+    /// A shared file was found missing, or no longer a regular file, when a
+    /// phone asked for it or for the list: its id is revoked.
+    SharedGone {
+        id: String,
+    },
     SessionEnded(EndReason),
+}
+
+/// A file that was shared with the phones: its id and its size now.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShareInfo {
+    pub id: String,
+    pub size: u64,
 }
 
 /// A fresh link for the QR code.
@@ -348,6 +368,31 @@ impl Handle {
             if r.voided {
                 self.shared.emit(PhoneEvent::TokenVoid);
             }
+        }
+    }
+
+    /// Shares the file at `path` with the phones: it is looked at now (a
+    /// regular file, not a folder, a symlink or a junction), added to the
+    /// session's set and given a random id. `None` for anything else, a full
+    /// set or a system with no random bytes. Nothing is read or opened.
+    pub fn share(&self, path: &Path) -> Option<ShareInfo> {
+        let size = files::regular_size(path)?;
+        let id = self.shared.session.lock().ok()?.share(path)?;
+        Some(ShareInfo { id, size })
+    }
+
+    /// Stops sharing `id`: a download of it in flight is cut and later
+    /// requests for it are 404.
+    pub fn unshare(&self, id: &str) {
+        if let Ok(mut s) = self.shared.session.lock() {
+            s.shared_mut().unshare(id);
+        }
+    }
+
+    /// Stops sharing everything.
+    pub fn unshare_all(&self) {
+        if let Ok(mut s) = self.shared.session.lock() {
+            s.shared_mut().unshare_all();
         }
     }
 

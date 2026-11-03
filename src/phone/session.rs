@@ -10,6 +10,7 @@ use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use super::Outcome;
+use super::share::SharedSet;
 
 
 /// A token nobody has used is good for this long.
@@ -138,10 +139,12 @@ pub struct Session {
     last_activity: Instant,
     seen_batches: Vec<String>,
     cancelled: HashSet<String>,
+    /// The shelf files the owner ticked for the phone.
+    shared: SharedSet,
 }
 
 /// Equal without stopping at the first difference.
-fn same(a: &str, b: &str) -> bool {
+pub(super) fn same(a: &str, b: &str) -> bool {
     a.len() == b.len()
         && a.bytes()
             .zip(b.bytes())
@@ -188,6 +191,7 @@ impl Session {
             last_activity: now,
             seen_batches: Vec::new(),
             cancelled: HashSet::new(),
+            shared: SharedSet::new(),
         })
     }
 
@@ -365,6 +369,29 @@ impl Session {
         let i = vs.and_then(|c| self.by_session(c))?;
         self.last_activity = now;
         Some(self.devices[i].id)
+    }
+
+    /// The device a read-only API request (the file list, a download, a
+    /// thumbnail) belongs to: only an approved phone's session cookie opens
+    /// it. Unlike `device_for_api` this is not activity: whoever wants a
+    /// download to count calls `touch`.
+    pub fn device_for_view_api(&self, vs: Option<&str>) -> Option<u64> {
+        let i = vs.and_then(|c| self.by_session(c))?;
+        Some(self.devices[i].id)
+    }
+
+    /// The files ticked for the phone.
+    pub fn shared(&self) -> &SharedSet {
+        &self.shared
+    }
+
+    pub fn shared_mut(&mut self) -> &mut SharedSet {
+        &mut self.shared
+    }
+
+    /// Shares `path` (already seen to be a regular file): its id.
+    pub fn share(&mut self, path: &std::path::Path) -> Option<String> {
+        self.shared.share(self.fill, path)
     }
 
     /// Progress of an upload in flight keeps the session alive.

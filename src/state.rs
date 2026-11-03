@@ -332,6 +332,10 @@ pub struct IslandState {
     /// The phone link over the Shelf page (`phone_stage()`): `App` sets it
     /// with `PhoneStage`, a phone needing the owner with `PhoneAttention`.
     phone: Option<PhoneStage>,
+    /// The stage the send view was opened from (QR or Receiving): Back and
+    /// Selesai of the send view return to it. Only read while the stage is
+    /// `Send`.
+    phone_before_send: PhoneStage,
     /// The quick search is open (over `search_prev`'s page); it holds the
     /// panel open like the CLI input does.
     search_open: bool,
@@ -461,6 +465,7 @@ impl IslandState {
             shelf_held: false,
             shelf_drop: DropVisit::No,
             phone: None,
+            phone_before_send: PhoneStage::Qr,
             search_open: false,
             search_prev: Page::Calendar,
             collapsed: Collapse::No,
@@ -921,7 +926,13 @@ impl IslandState {
             // fullscreen, where the island is hidden.
             Event::PhoneAttention(stage) => {
                 if !self.fullscreen {
-                    self.phone = Some(stage);
+                    // Files arriving while the owner ticks files to send do
+                    // not pull the view away: Selesai goes back to them.
+                    if self.phone == Some(PhoneStage::Send) && stage == PhoneStage::Receiving {
+                        self.phone_before_send = PhoneStage::Receiving;
+                    } else {
+                        self.phone = Some(stage);
+                    }
                     self.latch_on_shelf();
                 }
             }
@@ -1980,10 +1991,30 @@ impl IslandState {
                     effects.push(Effect::PhoneStart);
                 }
             }
-            Hit::PhoneBack => {
-                if self.phone_shown().is_some() {
+            Hit::PhoneBack => match self.phone_shown() {
+                // The send view goes back to where it came from; the
+                // session is not ended.
+                Some(PhoneStage::Send) => self.phone = Some(self.phone_before_send),
+                Some(_) => {
                     self.phone = None;
                     effects.push(Effect::PhoneBack);
+                }
+                None => {}
+            },
+            Hit::PhoneSend => {
+                if let Some(from @ (PhoneStage::Qr | PhoneStage::Receiving)) = self.phone_shown() {
+                    self.phone_before_send = from;
+                    self.phone = Some(PhoneStage::Send);
+                }
+            }
+            Hit::PhoneShareToggle(i) => {
+                if self.phone_shown() == Some(PhoneStage::Send) {
+                    effects.push(Effect::PhoneShareToggle(i));
+                }
+            }
+            Hit::PhoneSendDone => {
+                if self.phone_shown() == Some(PhoneStage::Send) {
+                    self.phone = Some(self.phone_before_send);
                 }
             }
             Hit::PhoneNewQr => {
@@ -9043,6 +9074,9 @@ mod tests {
             Hit::PhoneReject(4),
             Hit::PhoneCancel,
             Hit::PhoneDone,
+            Hit::PhoneSend,
+            Hit::PhoneShareToggle(2),
+            Hit::PhoneSendDone,
         ];
         let effects = |s: &mut IslandState, stage: PhoneStage| {
             let mut out = Vec::new();
@@ -9071,6 +9105,103 @@ mod tests {
         s.apply(Event::PhoneAttention(PhoneStage::Receiving), t0);
         assert!(s.apply(Event::Click(Hit::PhoneShowQr), t0).is_empty());
         assert_eq!(s.phone_stage(), Some(PhoneStage::Qr));
+        // The send view's hits mean nothing at any of the other stages: only
+        // `PhoneSend` moves (at Qr and Receiving), the toggle and Selesai
+        // need the send view.
+        for stage in [PhoneStage::Qr, PhoneStage::Approval, PhoneStage::Receiving] {
+            for hit in [Hit::PhoneShareToggle(1), Hit::PhoneSendDone] {
+                s.apply(Event::PhoneAttention(stage), t0);
+                assert!(s.apply(Event::Click(hit), t0).is_empty());
+                assert_eq!(s.phone_stage(), Some(stage), "{stage:?} stays");
+            }
+        }
+        s.apply(Event::PhoneAttention(PhoneStage::Approval), t0);
+        assert!(s.apply(Event::Click(Hit::PhoneSend), t0).is_empty());
+        assert_eq!(s.phone_stage(), Some(PhoneStage::Approval), "no send over an approval");
+    }
+
+    #[test]
+    fn the_send_view_opens_from_the_code_and_from_receiving_and_goes_back_to_it() {
+        let t0 = Instant::now();
+        for from in [PhoneStage::Qr, PhoneStage::Receiving] {
+            // Selesai returns to the stage it came from, with no effect: the
+            // session goes on.
+            let mut s = st();
+            s.apply(Event::PhoneAttention(from), t0);
+            assert!(s.apply(Event::Click(Hit::PhoneSend), t0).is_empty());
+            assert_eq!(s.phone_stage(), Some(PhoneStage::Send));
+            assert_eq!(
+                s.apply(Event::Click(Hit::PhoneShareToggle(3)), t0),
+                vec![Effect::PhoneShareToggle(3)]
+            );
+            assert_eq!(s.phone_stage(), Some(PhoneStage::Send), "a tick stays on the view");
+            assert!(s.apply(Event::Click(Hit::PhoneSendDone), t0).is_empty());
+            assert_eq!(s.phone_stage(), Some(from));
+            // So does Back, and it does not end the session either.
+            s.apply(Event::Click(Hit::PhoneSend), t0);
+            assert!(s.apply(Event::Click(Hit::PhoneBack), t0).is_empty());
+            assert_eq!(s.phone_stage(), Some(from));
+            // Back from the stage itself still asks the app (as before).
+            assert_eq!(
+                s.apply(Event::Click(Hit::PhoneBack), t0),
+                vec![Effect::PhoneBack]
+            );
+            assert_eq!(s.phone_stage(), None);
+        }
+    }
+
+    #[test]
+    fn nothing_of_the_send_view_counts_while_the_page_is_not_showing() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::PhoneAttention(PhoneStage::Qr), t0);
+        s.apply(Event::Click(Hit::PhoneSend), t0);
+        open_on(&mut s, Page::Notes, t0);
+        for hit in [
+            Hit::PhoneShareToggle(0),
+            Hit::PhoneSendDone,
+            Hit::PhoneSend,
+            Hit::PhoneBack,
+        ] {
+            assert!(s.apply(Event::Click(hit), t0).is_empty());
+        }
+        assert_eq!(s.phone_stage_kept(), Some(PhoneStage::Send), "untouched");
+        // And with the panel shut.
+        let mut s = st();
+        s.apply(Event::PhoneAttention(PhoneStage::Qr), t0);
+        s.apply(Event::Dismiss, t0 + secs(1));
+        assert!(!s.panel_is_open());
+        assert!(s.apply(Event::Click(Hit::PhoneSend), t0 + secs(1)).is_empty());
+        assert_eq!(s.phone_stage(), Some(PhoneStage::Qr));
+    }
+
+    #[test]
+    fn a_phone_asking_over_the_send_view_shows_the_ask_and_files_arriving_do_not_move_it() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::PhoneAttention(PhoneStage::Qr), t0);
+        s.apply(Event::Click(Hit::PhoneSend), t0);
+        // A phone that wants in takes the view, as today.
+        s.apply(Event::PhoneAttention(PhoneStage::Approval), t0);
+        assert_eq!(s.phone_stage(), Some(PhoneStage::Approval));
+        // After the answer the app sets the stage it resumes to.
+        s.apply(Event::PhoneStage(Some(PhoneStage::Receiving)), t0);
+        assert_eq!(s.phone_stage(), Some(PhoneStage::Receiving));
+        // Files arriving while the owner ticks do not pull the view away;
+        // Selesai goes back to the receiving view.
+        s.apply(Event::Click(Hit::PhoneSend), t0);
+        s.apply(Event::PhoneAttention(PhoneStage::Receiving), t0);
+        assert_eq!(s.phone_stage(), Some(PhoneStage::Send));
+        s.apply(Event::Click(Hit::PhoneSendDone), t0);
+        assert_eq!(s.phone_stage(), Some(PhoneStage::Receiving));
+        // Over the send view that came from the code the arrival is
+        // remembered too.
+        let mut s = st();
+        s.apply(Event::PhoneAttention(PhoneStage::Qr), t0);
+        s.apply(Event::Click(Hit::PhoneSend), t0);
+        s.apply(Event::PhoneAttention(PhoneStage::Receiving), t0);
+        s.apply(Event::Click(Hit::PhoneBack), t0);
+        assert_eq!(s.phone_stage(), Some(PhoneStage::Receiving));
     }
 
     #[test]

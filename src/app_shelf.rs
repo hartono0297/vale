@@ -57,7 +57,7 @@ pub(super) struct ShelfState {
 
 impl App {
     /// Looks at the files again (the page opened, the list changed).
-    fn shelf_look(&mut self) {
+    pub(super) fn shelf_look(&mut self) {
         self.shelf.cards = self.shelf.shelf.cards(shelf::probe);
     }
 
@@ -136,6 +136,7 @@ impl App {
         let old = self.shelf.cards.clone();
         self.shelf.shelf.add(paths);
         self.shelf_look();
+        self.phone_prune_shared();
         // The cards on a page that is already showing come in at once; a
         // panel that is still opening gets them once it has grown a little.
         let delay = if self.shelf.shown {
@@ -162,6 +163,7 @@ impl App {
             return;
         }
         self.shelf_look();
+        self.phone_prune_shared();
         let delay = if self.shelf.shown {
             Duration::ZERO
         } else {
@@ -195,6 +197,8 @@ impl App {
         let old = self.shelf.cards.clone();
         if self.shelf.shelf.remove(i) {
             self.shelf_look();
+            // A card taken off stops being shared with the phone.
+            self.phone_prune_shared();
             let now = Instant::now();
             self.shelf_animate(&old, now, Duration::ZERO);
             self.refresh(now);
@@ -205,6 +209,7 @@ impl App {
         let old = self.shelf.cards.clone();
         if self.shelf.shelf.clear() {
             self.shelf_look();
+            self.phone_unshare_all();
             let now = Instant::now();
             self.shelf_animate(&old, now, Duration::ZERO);
             self.refresh(now);

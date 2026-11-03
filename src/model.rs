@@ -536,6 +536,12 @@ pub enum Hit {
     PhoneReject(u64),
     PhoneCancel,
     PhoneDone,
+    /// "Kirim ke HP" (opens the send view over the QR or the receiving
+    /// view), a shelf card ticked or unticked for the phone (its place on the
+    /// shelf) and "Selesai" of the send view (back to where it came from).
+    PhoneSend,
+    PhoneShareToggle(usize),
+    PhoneSendDone,
     /// The Devices page, by the card's place in the list as last drawn:
     /// "Eject" (and "Coba lagi", which asks the same again), the folder
     /// button, the info button, and "Eject semua".
@@ -720,6 +726,8 @@ pub enum Effect {
     PhoneCancel,
     PhoneStop,
     PhoneBack,
+    /// Card `i` of the shelf is ticked for the phone, or unticked.
+    PhoneShareToggle(usize),
     /// Devices page: eject card `i`'s device / open Explorer on its first
     /// drive (the panel has collapsed) / expand or fold its details / eject
     /// every listed device. `App` keeps the list.
@@ -866,6 +874,10 @@ pub enum PhoneStage {
     Qr,
     Approval,
     Receiving,
+    /// "Kirim ke HP": the shelf's cards with a tick box each, for the files
+    /// the phone may take. Reached from the QR or the receiving view and
+    /// left to the same one; never what the app asks for.
+    Send,
 }
 
 /// Panel pages, in scroll order: Kalender, Pomodoro, Pengingat, Catatan,

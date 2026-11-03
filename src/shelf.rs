@@ -92,6 +92,12 @@ fn drive_is_remote(letter: char) -> bool {
     unsafe { windows::Win32::Storage::FileSystem::GetDriveTypeW(&root) == DRIVE_REMOTE }
 }
 
+/// Whether `path` is on the network (see `on_network`), asked of the real
+/// drives.
+pub fn is_network(path: &Path) -> bool {
+    on_network(path, drive_is_remote)
+}
+
 /// What a network path is taken to be without looking: present, a folder
 /// when it has no extension, else a file.
 fn unprobed(path: &Path) -> Probe {
@@ -288,7 +294,7 @@ impl Shelf {
 }
 
 /// How two paths are compared: Windows ignores letter case.
-fn key_of(path: &Path) -> String {
+pub fn key_of(path: &Path) -> String {
     path.to_string_lossy()
         .trim_end_matches(['\\', '/'])
         .to_lowercase()

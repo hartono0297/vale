@@ -780,6 +780,20 @@ mod tests {
         );
         assert_eq!(shelf(Some(PhoneStage::Qr), Some(PhoneStage::Qr)), None);
         assert_eq!(shelf(None, None), None);
+        // The send view comes and goes with the same 160 ms reveal, from
+        // the code and from the receiving view, and back.
+        for from in [PhoneStage::Qr, PhoneStage::Receiving] {
+            assert_eq!(
+                shelf(Some(from), Some(PhoneStage::Send)),
+                Some(RevealDir::Open)
+            );
+            assert_eq!(
+                shelf(Some(PhoneStage::Send), Some(from)),
+                Some(RevealDir::Open)
+            );
+        }
+        assert_eq!(shelf(Some(PhoneStage::Send), None), Some(RevealDir::Close));
+        assert_eq!(shelf(Some(PhoneStage::Send), Some(PhoneStage::Send)), None);
         // Another page shows nothing of it.
         assert_eq!(
             reveal_dir(&with(None), &with(Some(PhoneStage::Qr)), Page::Notes),
