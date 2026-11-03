@@ -255,11 +255,21 @@ function check(f,cb){
 
 /* iPhone: a photo opens in a tab, where a long press offers Add to Photos
    (`all`: a run of Save all uses the file route for everything). Anything
-   else is a download link. */
-function trigger(f,all){
- var inline=IOS&&f.view&&!all,a=h("a",{href:(inline?"/api/view/":"/api/file/")+f.id});
+   else is a download link. Safari blocks a window opened from an async
+   callback, so Save opens the tab in the tap itself (`w`, blank) and this
+   points it at the photo; with no tab it falls back to a link. */
+function trigger(f,all,w){
+ var inline=IOS&&f.view&&!all;
+ if(inline&&w){try{w.location.href="/api/view/"+f.id;return}catch(e){}}
+ var a=h("a",{href:(inline?"/api/view/":"/api/file/")+f.id});
  if(inline){a.target="_blank";a.rel="noopener"}else a.setAttribute("download","");
  a.style.display="none";document.body.appendChild(a);a.click();document.body.removeChild(a)}
+
+/* The blank tab for a photo, opened inside the tap's own handler. */
+function openTab(f){
+ if(!(IOS&&f.view))return null;
+ try{var w=window.open("","_blank");if(w)w.opener=null;return w}catch(e){return null}}
+function closeTab(w){if(w){try{w.close()}catch(e){}}}
 
 /* Polls the list every 2 s until the file is saved; goes on when it is neither
    saved nor in flight for 3 polls in a row (a prompt was dismissed). */
@@ -276,10 +286,11 @@ function waitSaved(id,cb){
 function saveOne(id){
  var f=find(id);if(!f||f.wait||saveRun)return;
  f.wait=true;drawFiles();
+ var w=openTab(f);
  function done(){var g=find(id);if(g)g.wait=false;drawFiles()}
  check(f,function(ok){
-  if(!ok){done();return}
-  trigger(f,false);
+  if(!ok){closeTab(w);done();return}
+  trigger(f,false,w);
   if(f.saved){done();return}
   waitSaved(id,done)})}
 

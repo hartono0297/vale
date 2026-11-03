@@ -4084,6 +4084,7 @@ fn demo_shelf(filled: bool) -> Vec<crate::shelf::ShelfCard> {
             kind: crate::shelf::ShelfKind::Image,
             stale: false,
             from_phone: true,
+            network: false,
         });
     }
     cards
@@ -4219,6 +4220,7 @@ fn demo_shelf_files() -> Vec<crate::shelf::ShelfCard> {
         kind,
         stale,
         from_phone: false,
+        network: false,
     };
     vec![
         card(

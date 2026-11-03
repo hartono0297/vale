@@ -74,6 +74,7 @@ fn card_state(card: &ShelfCard, shared: &[Mirror]) -> CardState {
     } else {
         match shared.iter().find(|m| m.key == card.key) {
             Some(m) => CardState::Ticked { taken: m.taken },
+            None if card.network => CardState::Network,
             None => CardState::Unticked,
         }
     }
@@ -85,6 +86,17 @@ fn orphans(shared: &[Mirror], shelf_keys: &[String]) -> Vec<String> {
     shared
         .iter()
         .filter(|m| !shelf_keys.contains(&m.key))
+        .map(|m| m.id.clone())
+        .collect()
+}
+
+/// The ids to stop sharing because their card went stale (the file is
+/// gone): the footer must not count a file nobody can take, and a stale card
+/// cannot be unticked.
+fn stale_ids(shared: &[Mirror], cards: &[ShelfCard]) -> Vec<String> {
+    shared
+        .iter()
+        .filter(|m| cards.iter().any(|c| c.key == m.key && c.stale))
         .map(|m| m.id.clone())
         .collect()
 }
@@ -328,6 +340,21 @@ impl App {
             .map(shelf::key_of)
             .collect();
         let gone = orphans(&self.phone.shared, &keys);
+        if gone.is_empty() {
+            return;
+        }
+        if let Some(handle) = &self.phone.handle {
+            for id in &gone {
+                handle.unshare(id);
+            }
+        }
+        self.phone.shared.retain(|m| !gone.contains(&m.id));
+    }
+
+    /// The shelf was looked at: a ticked file whose card is now stale (it
+    /// went missing) stops being shared.
+    pub(super) fn phone_drop_stale(&mut self, cards: &[ShelfCard]) {
+        let gone = stale_ids(&self.phone.shared, cards);
         if gone.is_empty() {
             return;
         }
@@ -788,6 +815,7 @@ mod tests {
             kind,
             stale,
             from_phone: false,
+            network: false,
         }
     }
 
@@ -824,6 +852,33 @@ mod tests {
             "a file that went missing after it was ticked"
         );
         assert_eq!(state(&card("d", ShelfKind::Folder, true)), CardState::Folder);
+    }
+
+    #[test]
+    fn a_network_card_is_not_tickable_unless_it_is_already_ticked() {
+        let mut net = card("//srv/x/a.pdf", ShelfKind::Document, false);
+        net.network = true;
+        assert_eq!(card_state(&net, &[]), CardState::Network);
+        assert!(!card_state(&net, &[]).shareable());
+        let shared = [mirror("//srv/x/a.pdf", "id1", false)];
+        assert_eq!(card_state(&net, &shared), CardState::Ticked { taken: false });
+    }
+
+    #[test]
+    fn a_ticked_file_that_went_missing_is_unshared_with_its_card() {
+        let shared = [
+            mirror("a.pdf", "id1", false),
+            mirror("b.png", "id2", true),
+            mirror("c.txt", "id3", false),
+        ];
+        let cards = [
+            card("a.pdf", ShelfKind::Document, true),
+            card("b.png", ShelfKind::Image, false),
+            card("z.txt", ShelfKind::Document, true),
+        ];
+        assert_eq!(stale_ids(&shared, &cards), ["id1"]);
+        assert!(stale_ids(&shared, &[]).is_empty());
+        assert!(stale_ids(&[], &cards).is_empty());
     }
 
     #[test]

@@ -59,6 +59,9 @@ impl App {
     /// Looks at the files again (the page opened, the list changed).
     pub(super) fn shelf_look(&mut self) {
         self.shelf.cards = self.shelf.shelf.cards(shelf::probe);
+        let cards = std::mem::take(&mut self.shelf.cards);
+        self.phone_drop_stale(&cards);
+        self.shelf.cards = cards;
     }
 
     /// The OLE drop target saw files enter the island or leave it.

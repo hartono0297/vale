@@ -134,6 +134,9 @@ pub struct ShelfCard {
     pub stale: bool,
     /// The file came from a phone over the QR link (a small tag says so).
     pub from_phone: bool,
+    /// The path is on the network (`is_network`): it is never looked at, so
+    /// it counts as there, and it is never sent to a phone.
+    pub network: bool,
 }
 
 /// The name a card shows for `path`: its last part, or the whole path for
@@ -287,6 +290,7 @@ impl Shelf {
                     kind: kind_of(p, found == Probe::Folder),
                     stale: found == Probe::Missing,
                     from_phone: *origin == Origin::Phone,
+                    network: is_network(p),
                 }
             })
             .collect()

@@ -316,6 +316,7 @@ mod tests {
             kind: ShelfKind::Document,
             stale: false,
             from_phone: false,
+            network: false,
         }
     }
 

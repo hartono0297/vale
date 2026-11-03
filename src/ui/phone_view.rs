@@ -95,6 +95,9 @@ pub enum CardState {
     Folder,
     /// The file is gone: it cannot be sent.
     Stale,
+    /// The file is on the network: it is never looked at, so it cannot be
+    /// sent.
+    Network,
 }
 
 impl CardState {
@@ -219,5 +222,6 @@ mod tests {
         assert!(CardState::Unticked.shareable());
         assert!(!CardState::Folder.shareable());
         assert!(!CardState::Stale.shareable());
+        assert!(!CardState::Network.shareable());
     }
 }

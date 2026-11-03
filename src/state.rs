@@ -927,8 +927,13 @@ impl IslandState {
             Event::PhoneAttention(stage) => {
                 if !self.fullscreen {
                     // Files arriving while the owner ticks files to send do
-                    // not pull the view away: Selesai goes back to them.
-                    if self.phone == Some(PhoneStage::Send) && stage == PhoneStage::Receiving {
+                    // not pull the view away: Selesai goes back to them. Only
+                    // while the Send view is really on screen; a kept Send
+                    // stage behind a closed panel or another page gives way
+                    // to the receiving rows, as before.
+                    if self.phone_shown() == Some(PhoneStage::Send)
+                        && stage == PhoneStage::Receiving
+                    {
                         self.phone_before_send = PhoneStage::Receiving;
                     } else {
                         self.phone = Some(stage);
@@ -9201,6 +9206,27 @@ mod tests {
         s.apply(Event::Click(Hit::PhoneSend), t0);
         s.apply(Event::PhoneAttention(PhoneStage::Receiving), t0);
         s.apply(Event::Click(Hit::PhoneBack), t0);
+        assert_eq!(s.phone_stage(), Some(PhoneStage::Receiving));
+    }
+
+    #[test]
+    fn files_arriving_over_a_kept_send_stage_that_is_not_on_screen_show_the_receiving_rows() {
+        let t0 = Instant::now();
+        // Panel dismissed (hover mode closes it when the pointer leaves).
+        let mut s = st();
+        s.apply(Event::PhoneAttention(PhoneStage::Qr), t0);
+        s.apply(Event::Click(Hit::PhoneSend), t0);
+        s.apply(Event::Dismiss, t0 + secs(1));
+        assert!(!s.panel_is_open());
+        assert_eq!(s.phone_stage_kept(), Some(PhoneStage::Send));
+        s.apply(Event::PhoneAttention(PhoneStage::Receiving), t0 + secs(2));
+        assert_eq!(s.phone_stage(), Some(PhoneStage::Receiving));
+        // Another page is open over the kept Send stage.
+        let mut s = st();
+        s.apply(Event::PhoneAttention(PhoneStage::Qr), t0);
+        s.apply(Event::Click(Hit::PhoneSend), t0);
+        open_on(&mut s, Page::Notes, t0);
+        s.apply(Event::PhoneAttention(PhoneStage::Receiving), t0);
         assert_eq!(s.phone_stage(), Some(PhoneStage::Receiving));
     }
 
