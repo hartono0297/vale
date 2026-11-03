@@ -765,6 +765,36 @@ mod tests {
     }
 
     #[test]
+    fn the_phone_stage_reveals_over_the_shelf_and_nowhere_else() {
+        let with = |phone| SubView { phone, ..sub() };
+        let shelf = |a, b| reveal_dir(&with(a), &with(b), Page::Shelf);
+        assert_eq!(shelf(None, Some(PhoneStage::Qr)), Some(RevealDir::Open));
+        assert_eq!(shelf(Some(PhoneStage::Qr), None), Some(RevealDir::Close));
+        assert_eq!(
+            shelf(Some(PhoneStage::Qr), Some(PhoneStage::Approval)),
+            Some(RevealDir::Open)
+        );
+        assert_eq!(
+            shelf(Some(PhoneStage::Approval), Some(PhoneStage::Receiving)),
+            Some(RevealDir::Open)
+        );
+        assert_eq!(shelf(Some(PhoneStage::Qr), Some(PhoneStage::Qr)), None);
+        assert_eq!(shelf(None, None), None);
+        // Another page shows nothing of it.
+        assert_eq!(
+            reveal_dir(&with(None), &with(Some(PhoneStage::Qr)), Page::Notes),
+            None
+        );
+        // The existing Reveal carries it, and animations off skip it.
+        let (a, b) = (snap(true, Page::Shelf, with(None)), snap(true, Page::Shelf, with(Some(PhoneStage::Qr))));
+        assert_eq!(
+            transition(&a, &b, true),
+            Transition::Reveal(RevealDir::Open)
+        );
+        assert_eq!(transition(&a, &b, false), Transition::None);
+    }
+
+    #[test]
     fn the_close_fade_with_no_time_jumps_to_its_target() {
         let t0 = Instant::now();
         let mut f = CloseFade::settled(0.0, t0);

@@ -101,6 +101,10 @@ pub(super) fn run(shared: &Arc<Shared>, mode: Mode) {
         }
         match listener.accept() {
             Ok((stream, peer)) => {
+                // Stopped meanwhile: nobody new is served.
+                if shared.stop.load(Ordering::SeqCst) {
+                    break;
+                }
                 if let Some(ip) = watch
                     && !still_bound(&mut bound, ip)
                 {

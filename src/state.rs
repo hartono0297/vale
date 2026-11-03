@@ -8875,6 +8875,183 @@ mod tests {
         assert!(!s.panel_is_open());
     }
 
+    // ---- The phone link over the shelf ----
+
+    #[test]
+    fn a_phone_asking_opens_a_closed_panel_on_the_shelf_latched_at_the_approval() {
+        let t0 = Instant::now();
+        let mut s = st();
+        assert!(!s.panel_is_open());
+        assert!(s.apply(Event::PhoneAttention(PhoneStage::Approval), t0).is_empty());
+        assert_eq!(s.view(), View::Panel(Page::Shelf));
+        assert_eq!(s.phone_stage(), Some(PhoneStage::Approval));
+        // Latched like a drop: it stays when nobody hovers, until a click
+        // outside.
+        assert!(s.outside_click_wanted());
+        s.apply(Event::Dismiss, t0 + secs(1));
+        assert!(!s.panel_is_open());
+        // The stage is kept for the next visit.
+        assert_eq!(s.phone_stage(), Some(PhoneStage::Approval));
+    }
+
+    #[test]
+    fn a_phone_asking_over_another_page_goes_to_the_shelf() {
+        let t0 = Instant::now();
+        let mut s = st();
+        open_on(&mut s, Page::Notes, t0);
+        s.apply(Event::PhoneAttention(PhoneStage::Receiving), t0);
+        assert_eq!(s.view(), View::Panel(Page::Shelf));
+        assert_eq!(s.phone_stage(), Some(PhoneStage::Receiving));
+    }
+
+    #[test]
+    fn a_phone_asking_during_fullscreen_opens_nothing_and_sets_no_stage() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Fullscreen(true), t0);
+        s.apply(Event::PhoneAttention(PhoneStage::Approval), t0);
+        assert!(!matches!(s.view(), View::Panel(_)));
+        s.apply(Event::Fullscreen(false), t0 + secs(1));
+        assert!(!matches!(s.view(), View::Panel(_)));
+        assert_eq!(s.phone_stage(), None);
+        assert!(!s.outside_click_wanted());
+    }
+
+    #[test]
+    fn hover_mode_hands_a_phone_opened_panel_to_the_next_visit_like_a_drop() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::PhoneAttention(PhoneStage::Approval), t0);
+        assert!(s.shelf_drop_here(), "the visit it came in is the drop's own");
+        s.apply(Event::ShelfDropLeft, t0 + secs(1));
+        s.apply(Event::Hover(true), t0 + secs(2));
+        // The next visit hands the panel to hover: leaving closes it.
+        s.apply(Event::Hover(false), t0 + secs(3));
+        s.apply(Event::Dismiss, t0 + secs(3));
+        assert!(!s.panel_is_open());
+    }
+
+    #[test]
+    fn the_phone_stage_shows_only_over_the_shelf_page() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::PhoneAttention(PhoneStage::Qr), t0);
+        assert_eq!(s.phone_stage(), Some(PhoneStage::Qr));
+        open_on(&mut s, Page::Notes, t0);
+        assert_eq!(s.phone_stage(), None, "another page shows nothing of it");
+        open_on(&mut s, Page::Shelf, t0);
+        assert_eq!(s.phone_stage(), Some(PhoneStage::Qr), "and it is kept");
+    }
+
+    #[test]
+    fn the_stage_event_sets_and_clears_the_stage_without_opening_anything() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::PhoneStage(Some(PhoneStage::Receiving)), t0);
+        assert!(!s.panel_is_open(), "no panel was opened");
+        open_on(&mut s, Page::Shelf, t0);
+        assert_eq!(s.phone_stage(), Some(PhoneStage::Receiving));
+        s.apply(Event::PhoneStage(None), t0);
+        assert_eq!(s.phone_stage(), None);
+    }
+
+    #[test]
+    fn the_hp_pill_starts_the_link_only_on_the_open_shelf_without_a_stage() {
+        let t0 = Instant::now();
+        let mut s = st();
+        open_on(&mut s, Page::Notes, t0);
+        assert!(s.apply(Event::Click(Hit::ShelfPhone), t0).is_empty());
+        open_on(&mut s, Page::Shelf, t0);
+        assert_eq!(
+            s.apply(Event::Click(Hit::ShelfPhone), t0),
+            vec![Effect::PhoneStart]
+        );
+        // With a stage the shelf's own header is not what shows.
+        s.apply(Event::PhoneStage(Some(PhoneStage::Qr)), t0);
+        assert!(s.apply(Event::Click(Hit::ShelfPhone), t0).is_empty());
+    }
+
+    #[test]
+    fn back_and_done_end_the_stage_and_ask_the_app_what_to_do_with_the_session() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::PhoneAttention(PhoneStage::Qr), t0);
+        assert_eq!(
+            s.apply(Event::Click(Hit::PhoneBack), t0),
+            vec![Effect::PhoneBack]
+        );
+        assert_eq!(s.phone_stage(), None);
+        s.apply(Event::PhoneAttention(PhoneStage::Receiving), t0);
+        assert_eq!(
+            s.apply(Event::Click(Hit::PhoneDone), t0),
+            vec![Effect::PhoneStop]
+        );
+        assert_eq!(s.phone_stage(), None);
+        // The panel stays on the shelf, which shows as before.
+        assert_eq!(s.view(), View::Panel(Page::Shelf));
+    }
+
+    #[test]
+    fn each_phone_button_counts_only_at_its_own_stage() {
+        let t0 = Instant::now();
+        let mut s = st();
+        let hits = [
+            Hit::PhoneBack,
+            Hit::PhoneNewQr,
+            Hit::PhoneShowQr,
+            Hit::PhoneApprove(4),
+            Hit::PhoneReject(4),
+            Hit::PhoneCancel,
+            Hit::PhoneDone,
+        ];
+        let effects = |s: &mut IslandState, stage: PhoneStage| {
+            let mut out = Vec::new();
+            for hit in &hits {
+                // A fresh stage each time: Back and Done clear it.
+                s.apply(Event::PhoneAttention(stage), t0);
+                out.push(s.apply(Event::Click(hit.clone()), t0));
+            }
+            out
+        };
+        let qr = effects(&mut s, PhoneStage::Qr);
+        assert_eq!(qr[0], vec![Effect::PhoneBack]);
+        assert_eq!(qr[1], vec![Effect::PhoneNewQr]);
+        assert!(qr[2..].iter().all(Vec::is_empty));
+        let ask = effects(&mut s, PhoneStage::Approval);
+        assert_eq!(ask[0], vec![Effect::PhoneBack]);
+        assert_eq!(ask[3], vec![Effect::PhoneApprove(4)]);
+        assert_eq!(ask[4], vec![Effect::PhoneReject(4)]);
+        assert!(ask[1].is_empty() && ask[2].is_empty() && ask[5].is_empty() && ask[6].is_empty());
+        let recv = effects(&mut s, PhoneStage::Receiving);
+        assert_eq!(recv[0], vec![Effect::PhoneBack]);
+        assert_eq!(recv[5], vec![Effect::PhoneCancel]);
+        assert_eq!(recv[6], vec![Effect::PhoneStop]);
+        assert!(recv[1].is_empty() && recv[3].is_empty() && recv[4].is_empty());
+        // The small QR button flips the receiving view to the code.
+        s.apply(Event::PhoneAttention(PhoneStage::Receiving), t0);
+        assert!(s.apply(Event::Click(Hit::PhoneShowQr), t0).is_empty());
+        assert_eq!(s.phone_stage(), Some(PhoneStage::Qr));
+    }
+
+    #[test]
+    fn a_phone_hit_with_the_page_not_showing_does_nothing() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::PhoneAttention(PhoneStage::Approval), t0);
+        // Another page is open: the stage is kept but not on screen.
+        open_on(&mut s, Page::Notes, t0);
+        for hit in [Hit::PhoneApprove(1), Hit::PhoneBack, Hit::PhoneDone, Hit::ShelfPhone] {
+            assert!(s.apply(Event::Click(hit), t0).is_empty());
+        }
+        // And with the panel shut.
+        let mut s = st();
+        s.apply(Event::PhoneAttention(PhoneStage::Receiving), t0);
+        s.apply(Event::Dismiss, t0 + secs(1));
+        assert!(!s.panel_is_open());
+        assert!(s.apply(Event::Click(Hit::PhoneDone), t0 + secs(1)).is_empty());
+        assert_eq!(s.phone_stage(), Some(PhoneStage::Receiving), "untouched");
+    }
+
     #[test]
     fn timeline_is_kept_and_rebased_on_play_pause() {
         let t0 = Instant::now();

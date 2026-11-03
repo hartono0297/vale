@@ -373,29 +373,35 @@ impl Handle {
         self.shared.ended.load(Ordering::SeqCst)
     }
 
-    /// Ends the session now, saying why. The thread goes within a moment.
+    /// Ends the session now, saying why. The thread is woken and goes within
+    /// a moment; the caller (the island's UI thread) never waits for it, as
+    /// the network look it may still be in is not the UI's to wait on.
     pub fn stop_with(mut self, reason: EndReason) {
-        self.shut(reason);
+        self.shut(reason, false);
     }
 
-    /// Ends the session (`Done`).
+    /// Ends the session (`Done`) and waits for its thread: the listener is
+    /// gone when this returns. For the tests.
     #[cfg(test)]
-    pub fn stop(self) {
-        self.stop_with(EndReason::Done);
+    pub fn stop(mut self) {
+        self.shut(EndReason::Done, true);
     }
 
-    fn shut(&mut self, reason: EndReason) {
+    fn shut(&mut self, reason: EndReason, join: bool) {
         self.shared.request_stop(reason);
         if let Some(t) = self.thread.take() {
             t.thread().unpark();
-            let _ = t.join();
+            if join {
+                let _ = t.join();
+            }
         }
     }
 }
 
+/// Dropping the handle ends the session like `stop_with(Done)`.
 impl Drop for Handle {
     fn drop(&mut self) {
-        self.shut(EndReason::Done);
+        self.shut(EndReason::Done, false);
     }
 }
 

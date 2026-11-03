@@ -3995,4 +3995,56 @@ mod copy_preview_tests {
         assert_eq!(text(Lang::Id, Key::ClipCopyNotice), "Pratinjau salinan");
         assert_eq!(text(Lang::En, Key::ClipCopyNotice), "Copy preview");
     }
+
+    #[test]
+    fn the_phone_link_strings_read_in_both_languages() {
+        use crate::phone::DeviceKind;
+        assert_eq!(phone_valid_for(Lang::Id, 292), "berlaku 4:52");
+        assert_eq!(phone_valid_for(Lang::En, 7), "valid 0:07");
+        assert_eq!(phone_network(Lang::Id, "Rumah-5G"), "Rumah-5G · pribadi");
+        assert_eq!(phone_network(Lang::En, "Home"), "Home · private");
+        assert_eq!(
+            phone_ask_line(Lang::Id, DeviceKind::Android, Some("Chrome"), "192.168.18.57"),
+            "Android · Chrome · 192.168.18.57"
+        );
+        assert_eq!(
+            phone_ask_line(Lang::En, DeviceKind::Other, None, "10.0.0.4"),
+            "Phone · 10.0.0.4"
+        );
+        // One phone by its kind, several by their number.
+        assert_eq!(phone_devices_chip(Lang::Id, &[]), "");
+        assert_eq!(phone_devices_chip(Lang::Id, &[DeviceKind::IPhone]), "iPhone");
+        assert_eq!(
+            phone_devices_chip(Lang::Id, &[DeviceKind::IPhone, DeviceKind::Android]),
+            "2 HP"
+        );
+        assert_eq!(
+            phone_devices_chip(Lang::En, &[DeviceKind::IPhone, DeviceKind::Android]),
+            "2 phones"
+        );
+        // Sizes go through `format_size` from 1 MB.
+        assert_eq!(phone_size(Lang::Id, 812 * 1024), "812 KB");
+        assert_eq!(phone_size(Lang::Id, 5 * MIB), "5 MB");
+        assert_eq!(phone_size(Lang::Id, 1900 * MIB), format_size(Lang::Id, 1900 * MIB));
+        assert_eq!(
+            phone_received_summary(Lang::Id, 3, 55 * MIB),
+            r"3 berkas · 55 MB → Unduhan\Vale"
+        );
+        assert_eq!(
+            phone_received_summary(Lang::En, 1, 2 * MIB),
+            r"1 file · 2 MB → Downloads\Vale"
+        );
+        for key in [
+            Key::ShelfPhone,
+            Key::PhoneTitle,
+            Key::PhoneAllow,
+            Key::PhoneDeny,
+            Key::PhoneCancelAll,
+            Key::PhoneFinish,
+            Key::PhoneNewQr,
+            Key::PhoneWarnPublicBody,
+        ] {
+            assert_ne!(text(Lang::Id, key), text(Lang::En, key), "{key:?}");
+        }
+    }
 }
