@@ -62,6 +62,10 @@ struct BatchLanding {
 
 #[derive(Default)]
 pub(super) struct PhoneState {
+    /// The number of the current session: each start takes the next one and
+    /// its events carry it, so a late event of a session that was stopped
+    /// is not applied to the one that follows. Kept across sessions.
+    generation: u64,
     handle: Option<Handle>,
     /// A session was asked for and has said neither `Ready` nor `Refused`.
     starting: bool,
@@ -102,6 +106,7 @@ impl PhoneState {
     fn forget_session(&mut self) {
         *self = PhoneState {
             timer: self.timer,
+            generation: self.generation,
             ..PhoneState::default()
         };
     }
@@ -212,11 +217,13 @@ impl App {
     fn phone_begin(&mut self) {
         let tx = self.tx.clone();
         let wake = poster(self.hwnd, WM_APP_EVENT);
+        self.phone.forget_session();
+        self.phone.generation += 1;
+        let session = self.phone.generation;
         let sink: crate::phone::Sink = Arc::new(move |event| {
-            let _ = tx.send(Event::Phone(event));
+            let _ = tx.send(Event::Phone(session, event));
             wake();
         });
-        self.phone.forget_session();
         self.phone.starting = true;
         self.phone.timed = true;
         self.phone.handle = Some(crate::phone::start_lan(i18n::lang(), sink));
@@ -306,7 +313,10 @@ impl App {
     }
 
     /// One thing the phone link said.
-    pub(super) fn on_phone_event(&mut self, event: PhoneEvent, now: Instant) {
+    pub(super) fn on_phone_event(&mut self, session: u64, event: PhoneEvent, now: Instant) {
+        if session != self.phone.generation {
+            return;
+        }
         match event {
             PhoneEvent::Ready {
                 ip,
@@ -365,8 +375,11 @@ impl App {
                     self.phone.timed = false;
                     self.phone.chip = i18n::phone_devices_chip(i18n::lang(), &self.phone.devices);
                 }
-                // The view that was answering moves on to what is next.
-                if self.state.phone_stage() == Some(PhoneStage::Approval)
+                // The view that was answering moves on to what is next. The
+                // stage is read as the reducer keeps it: another page may
+                // be showing, and a stage left at Approval with nobody
+                // waiting would make the QR view's buttons do nothing.
+                if self.state.phone_stage_kept() == Some(PhoneStage::Approval)
                     && self.phone.pending.is_empty()
                 {
                     let next = self.phone.resume_stage();
@@ -450,13 +463,14 @@ impl App {
                 // handle left, and a stale event from an earlier session
                 // meets a handle that is still running.
                 if self.phone.handle.as_ref().is_some_and(Handle::has_ended) {
-                    let showing = self.state.phone_stage().is_some();
                     self.phone.handle = None;
                     self.phone.forget_session();
                     self.kill_phone_timer();
-                    if showing {
-                        self.apply(Event::PhoneStage(None), now);
-                    }
+                    // Whichever page shows: a stage kept with no session
+                    // behind it would show a dead view on the way back
+                    // and keep the "HP" pill from starting a new one.
+                    // It opens nothing.
+                    self.apply(Event::PhoneStage(None), now);
                 }
             }
         }
@@ -611,7 +625,9 @@ mod tests {
             void: true,
             ..PhoneState::default()
         };
+        s.generation = 7;
         s.forget_session();
         assert!(s.timer && s.files == 0 && !s.void);
+        assert_eq!(s.generation, 7, "the session number goes on counting");
     }
 }

@@ -340,27 +340,42 @@ fn state_cookies(mut r: Response, answer: &StateAnswer) -> Response {
     r
 }
 
+/// The page for what `answer_state` said (the pairing's progress).
+fn answer_page(shared: &Shared, answer: &StateAnswer) -> Response {
+    match answer {
+        StateAnswer::Unknown => Response::not_found(),
+        StateAnswer::Waiting { code } => page_with(shared, "waiting", Some(code)),
+        StateAnswer::Approved { .. } => state_cookies(page_with(shared, "approved", None), answer),
+        StateAnswer::Rejected => page_with(shared, "rejected", None),
+    }
+}
+
 /// `GET /s/<token>`: the QR's address. A valid token makes a pairing (the
 /// owner is told and the phone gets its pairing cookie); a phone that already
-/// has a cookie of this session just gets the page again.
+/// has a cookie of this session just gets the page again, except one whose
+/// pairing is over (turned down or timed out): the page tells it to scan
+/// again, so a valid token starts a new pairing for it. With a bad token it
+/// still gets the "rejected" page.
 fn scan(shared: &Shared, req: &Request, token: &str, peer: SocketAddr) -> Response {
     let now = Instant::now();
     let (vp, vs) = (req.cookie("vp"), req.cookie("vs"));
     let Ok(mut s) = shared.session.lock() else {
         return Response::not_found();
     };
-    if s.page_access(vp, vs, now) {
+    let retry = s.pairing_over(vp, vs);
+    if !retry && s.page_access(vp, vs, now) {
         let answer = s.answer_state(vp, vs, now);
         drop(s);
-        return match &answer {
-            StateAnswer::Unknown => Response::not_found(),
-            StateAnswer::Waiting { code } => page_with(shared, "waiting", Some(code)),
-            StateAnswer::Approved { .. } => state_cookies(page_with(shared, "approved", None), &answer),
-            StateAnswer::Rejected => page_with(shared, "rejected", None),
-        };
+        return answer_page(shared, &answer);
     }
     let pairing = match s.begin_pairing(token, now) {
         Ok(p) => p,
+        Err(_) if retry => {
+            s.page_access(vp, vs, now);
+            let answer = s.answer_state(vp, vs, now);
+            drop(s);
+            return answer_page(shared, &answer);
+        }
         Err(PairError::BadToken | PairError::Busy | PairError::NoRandom) => {
             return Response::not_found();
         }
@@ -389,12 +404,7 @@ fn page(shared: &Shared, req: &Request) -> Response {
     }
     let answer = s.answer_state(vp, vs, now);
     drop(s);
-    match &answer {
-        StateAnswer::Unknown => Response::not_found(),
-        StateAnswer::Waiting { code } => page_with(shared, "waiting", Some(code)),
-        StateAnswer::Approved { .. } => state_cookies(page_with(shared, "approved", None), &answer),
-        StateAnswer::Rejected => page_with(shared, "rejected", None),
-    }
+    answer_page(shared, &answer)
 }
 
 /// `GET /api/state`: how far the pairing is.

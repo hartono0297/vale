@@ -1314,7 +1314,7 @@ impl App {
                     | Event::Update(_)
                     // A progress tick draws the receiving view itself, at
                     // most six a second; nothing else changed.
-                    | Event::Phone(crate::phone::PhoneEvent::UploadProgress { .. })
+                    | Event::Phone(_, crate::phone::PhoneEvent::UploadProgress { .. })
             ));
             self.apply(event, now);
         }
@@ -1443,8 +1443,8 @@ impl App {
                 }
                 // The phone link's server: `App` keeps what it said and
                 // tells the reducer only the stage.
-                Event::Phone(event) => {
-                    self.on_phone_event(event, now);
+                Event::Phone(session, event) => {
+                    self.on_phone_event(session, event, now);
                     continue;
                 }
                 Event::Clean(event) => {

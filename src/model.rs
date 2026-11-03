@@ -410,7 +410,9 @@ pub enum Event {
     ShelfDropLeft,
     /// The phone link told something (`phone::PhoneEvent`). `App` keeps all of
     /// it; the reducer only hears `PhoneAttention` and `PhoneStage`.
-    Phone(crate::phone::PhoneEvent),
+    /// What the phone link said, with the number of the session that said it
+    /// (`App` ignores a session that is no longer the current one).
+    Phone(u64, crate::phone::PhoneEvent),
     /// The phone link needs the owner now (a phone asks to connect, files
     /// start to arrive): the panel opens on the shelf at that stage and
     /// stays, latched like a drop (`ShelfDropped`). Not in fullscreen.

@@ -267,6 +267,14 @@ impl Session {
             .or_else(|| vp.and_then(|c| self.by_pairing(c)))
     }
 
+    /// The phone's pairing is over without a yes (the owner turned it down,
+    /// or nobody answered in time) and it has no session cookie of an
+    /// approved phone: it may scan the QR again for a new pairing.
+    pub fn pairing_over(&self, vp: Option<&str>, vs: Option<&str>) -> bool {
+        self.device_for_view(vp, vs)
+            .is_some_and(|i| matches!(self.devices[i].status, Status::Rejected | Status::TimedOut))
+    }
+
     /// May this request see the page? A page load counts as activity.
     pub fn page_access(&mut self, vp: Option<&str>, vs: Option<&str>, now: Instant) -> bool {
         let ok = self.device_for_view(vp, vs).is_some();
@@ -475,6 +483,34 @@ mod tests {
     fn pair(s: &mut Session, now: Instant) -> NewPairing {
         let t = s.token().to_owned();
         s.begin_pairing(&t, now).expect("pairing")
+    }
+
+    #[test]
+    fn a_phone_whose_pairing_is_over_may_pair_again_but_not_an_approved_one() {
+        let (mut s, t0) = session();
+        let first = pair(&mut s, t0);
+        assert!(!s.pairing_over(Some(&first.cookie), None), "still waiting");
+        s.reject(first.device_id);
+        assert!(s.pairing_over(Some(&first.cookie), None));
+        // The old cookie still sees the "rejected" page, a new pairing
+        // is made with the valid token.
+        assert!(s.page_access(Some(&first.cookie), None, t0));
+        let second = pair(&mut s, t0);
+        assert_ne!(second.device_id, first.device_id);
+        assert!(!s.pairing_over(Some(&second.cookie), None));
+        assert!(s.approve(second.device_id));
+        let StateAnswer::Approved { session_cookie: Some(vs) } =
+            s.answer_state(Some(&second.cookie), None, t0)
+        else {
+            panic!("approved");
+        };
+        assert!(!s.pairing_over(Some(&second.cookie), Some(&vs)));
+        // Timed out counts the same.
+        let third = pair(&mut s, t0);
+        s.tick(t0 + APPROVE_TTL);
+        assert!(s.pairing_over(Some(&third.cookie), None));
+        // An unknown cookie is nobody.
+        assert!(!s.pairing_over(Some("nope"), None));
     }
 
     #[test]

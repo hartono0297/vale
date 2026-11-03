@@ -286,3 +286,73 @@ fn a_mid_upload_stop_removes_the_part_file() {
     assert!(left.is_empty(), "{left:?}");
     let _ = std::fs::remove_dir_all(&dest);
 }
+
+#[test]
+fn a_phone_that_was_turned_down_scans_again_and_gets_a_new_pairing() {
+    let dest = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("test-tmp")
+        .join(format!("phone-e2e-retry-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dest);
+    let cfg = ServerConfig {
+        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        ports: 0..=0,
+        dest_dir: dest.clone(),
+        lang: Lang::En,
+        pc_name: "TEST-PC".into(),
+        network_name: "Test net".into(),
+        allow_loopback: true,
+    };
+    let (tx, rx) = mpsc::channel();
+    let tx = Mutex::new(tx);
+    let handle = start(
+        cfg,
+        Arc::new(move |e| {
+            let _ = tx.lock().expect("lock").send(e);
+        }),
+    );
+    let PhoneEvent::Ready { port, url, .. } =
+        wait_for(&rx, |e| matches!(e, PhoneEvent::Ready { .. }))
+    else {
+        unreachable!()
+    };
+    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+    let token = url.rsplit('/').next().expect("token").to_owned();
+    let ua = "Mozilla/5.0 (Linux; Android 14; Pixel 8) Chrome/126.0.0.0 Mobile Safari/537.36";
+
+    let r = get(addr, &format!("/s/{token}"), None, ua);
+    let vp = cookie_of(&r, "vp");
+    let PhoneEvent::Pairing { device_id: first, .. } =
+        wait_for(&rx, |e| matches!(e, PhoneEvent::Pairing { .. }))
+    else {
+        unreachable!()
+    };
+    handle.reject(first);
+    wait_for(&rx, |e| matches!(e, PhoneEvent::PairingEnded { outcome: Outcome::Rejected, .. }));
+    let s = get(addr, "/api/state", Some(&vp), ua);
+    assert!(s.body.contains("\"state\":\"rejected\""));
+
+    // The same phone scans the QR again with its old cookie.
+    let again = get(addr, &format!("/s/{token}"), Some(&vp), ua);
+    assert_eq!(again.status, 200);
+    assert!(again.body.contains("\"state\":\"waiting\""), "a new pairing, not the old answer");
+    let vp2 = cookie_of(&again, "vp");
+    assert_ne!(vp2, vp);
+    let PhoneEvent::Pairing { device_id: second, .. } =
+        wait_for(&rx, |e| matches!(e, PhoneEvent::Pairing { .. }))
+    else {
+        unreachable!()
+    };
+    assert_ne!(second, first);
+    handle.approve(second);
+    wait_for(&rx, |e| matches!(e, PhoneEvent::PairingEnded { outcome: Outcome::Approved, .. }));
+    assert!(get(addr, "/api/state", Some(&vp2), ua).body.contains("\"state\":\"approved\""));
+
+    // With a bad token the old cookie still gets the "rejected" page.
+    let bad = get(addr, &format!("/s/{}", "A".repeat(22)), Some(&vp), ua);
+    assert_eq!(bad.status, 200);
+    assert!(bad.body.contains("\"state\":\"rejected\""));
+
+    handle.stop();
+    let _ = std::fs::remove_dir_all(&dest);
+}

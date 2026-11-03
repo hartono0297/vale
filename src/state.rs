@@ -884,7 +884,7 @@ impl IslandState {
             | Event::SearchDetail { .. }
             | Event::ShelfDrop(_)
             | Event::ShelfDragOver(_)
-            | Event::Phone(_)
+            | Event::Phone(..)
             | Event::Clean(_)
             | Event::Mole(_)
             | Event::ShotFolder { .. }
@@ -2970,6 +2970,12 @@ impl IslandState {
     /// shape, its sampling and its frame follow "cleaner on System".
     pub fn cleaner(&self) -> Option<&CleanerUi> {
         self.cleaner.as_ref().filter(|_| self.page == Page::System)
+    }
+
+    /// The stage the reducer keeps, whatever page shows. `App` reads it to
+    /// tell a view that is on screen from one that only waits.
+    pub fn phone_stage_kept(&self) -> Option<PhoneStage> {
+        self.phone
     }
 
     /// The phone link's stage over the Shelf page: only while the page is
@@ -8941,6 +8947,22 @@ mod tests {
         assert_eq!(s.phone_stage(), None, "another page shows nothing of it");
         open_on(&mut s, Page::Shelf, t0);
         assert_eq!(s.phone_stage(), Some(PhoneStage::Qr), "and it is kept");
+    }
+
+    #[test]
+    fn the_stage_event_reaches_a_stage_kept_while_another_page_shows() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::PhoneAttention(PhoneStage::Approval), t0);
+        open_on(&mut s, Page::Notes, t0);
+        assert_eq!(s.phone_stage(), None);
+        assert_eq!(s.phone_stage_kept(), Some(PhoneStage::Approval));
+        s.apply(Event::PhoneStage(Some(PhoneStage::Qr)), t0);
+        assert_eq!(s.phone_stage_kept(), Some(PhoneStage::Qr));
+        s.apply(Event::PhoneStage(None), t0);
+        assert_eq!(s.phone_stage_kept(), None);
+        open_on(&mut s, Page::Shelf, t0);
+        assert_eq!(s.phone_stage(), None, "no dead view on the way back");
     }
 
     #[test]
