@@ -34,7 +34,8 @@ pub const CLIP_NOTICE_DURATION: Duration = Duration::from_secs(3);
 /// The Arranged notice: long enough to reach "Batalkan".
 pub const ARRANGE_NOTICE_DURATION: Duration = Duration::from_secs(3);
 
-/// "Vale X.Y.Z tersedia": long enough to reach "Update".
+/// "Update gagal: ...": long enough to reach "Lihat rilis". (The offer
+/// "Vale X.Y.Z tersedia" is sticky and has no time.)
 pub const UPDATE_NOTICE_DURATION: Duration = Duration::from_secs(8);
 /// The download's percent stays this long after its last update, so a
 /// stalled download fades instead of showing a frozen number.
@@ -55,7 +56,7 @@ fn duration_of(notice: &Notice) -> Duration {
         NoticeKind::Screenshot { secs, .. } => Duration::from_secs(u64::from(secs)),
         NoticeKind::ShotSaved | NoticeKind::ShotDeleted => SHOT_DONE_DURATION,
         NoticeKind::Arranged { .. } => ARRANGE_NOTICE_DURATION,
-        NoticeKind::UpdateAvailable { .. } | NoticeKind::UpdateFailed => UPDATE_NOTICE_DURATION,
+        NoticeKind::UpdateFailed => UPDATE_NOTICE_DURATION,
         NoticeKind::UpdateProgress { .. } => UPDATE_PROGRESS_DURATION,
         _ => NOTICE_DURATION,
     }
@@ -90,13 +91,28 @@ fn notice_has_action(notice: &Notice) -> bool {
             | NoticeKind::DevicePlugged { .. }
             | NoticeKind::ClipPreview { .. }
             | NoticeKind::Arranged { .. }
-            | NoticeKind::UpdateAvailable { .. }
             | NoticeKind::UpdateFailed
             | NoticeKind::App {
                 app_id: Some(_),
                 ..
             }
     )
+}
+
+/// A sticky notice with buttons of its own (a reminder's Selesai, the update
+/// offer's Update and Nanti): hover is kept off for the first visit after it
+/// appeared (`reminder_seen`). Claude waiting and a failed Mole run only
+/// inform and never block.
+fn sticky_has_buttons(notice: &Notice) -> bool {
+    matches!(
+        notice.kind,
+        NoticeKind::Reminder { .. } | NoticeKind::UpdateAvailable { .. }
+    )
+}
+
+/// The update offer ("Vale X.Y.Z tersedia").
+fn is_update_offer(notice: &Notice) -> bool {
+    matches!(notice.kind, NoticeKind::UpdateAvailable { .. })
 }
 
 /// The download's percent notice.
@@ -225,7 +241,8 @@ pub struct IslandState {
     queue: VecDeque<Notice>,
     current: Option<(Notice, Instant)>,
     /// Sticky notices, oldest first; the newest is shown. At most one
-    /// `ClaudeWaiting` per session and one `Reminder` per reminder.
+    /// `ClaudeWaiting` per session, one `Reminder` per reminder and one
+    /// update offer.
     sticky: Vec<Notice>,
     fullscreen: bool,
     hover: bool,
@@ -240,8 +257,9 @@ pub struct IslandState {
     arrange_pick: bool,
     /// The Arranged notice's name field is up: the notice waits.
     arrange_naming: bool,
-    /// The sticky reminder that already kept one visit's hover off: the
-    /// next visit opens the panel, with the reminder in its strip.
+    /// The sticky notice with buttons (a reminder, the update offer) that
+    /// already kept one visit's hover off: the next visit opens the panel,
+    /// with the notice in its strip.
     reminder_seen: Option<Notice>,
     /// "Mode buka": how the pointer opens the panel.
     open_mode: OpenMode,
@@ -503,6 +521,19 @@ impl IslandState {
                     }
                     self.sticky.push(notice);
                 }
+                // The update offer: sticky like a reminder, one slot for any
+                // version (a newer or repeated offer replaces the old one).
+                // An offer is not urgent: no brief copy over a fullscreen app,
+                // it simply shows once the app is gone.
+                // The very same offer again (the daily check, a restart, a
+                // manual check) is not a new appearance: it stays where it
+                // stands and keeps its spent first visit.
+                NoticeKind::UpdateAvailable { .. } => {
+                    if !self.sticky.contains(&notice) {
+                        self.clear_sticky(Sticky::Update);
+                        self.sticky.push(notice);
+                    }
+                }
                 NoticeKind::ClaudeDone { session_id } => {
                     self.clear_sticky(Sticky::Session(session_id));
                     self.queue.push_back(notice);
@@ -538,13 +569,15 @@ impl IslandState {
                 | NoticeKind::DevicePlugged { .. }
                 | NoticeKind::DeviceSafe
                 | NoticeKind::Arranged { .. }
-                | NoticeKind::UpdateAvailable { .. }
                 | NoticeKind::UpdateInfo
                 | NoticeKind::Pomodoro => self.queue.push_back(notice),
                 // The download's percent: one notice, replaced where it
                 // stands (current or queued) so it never re-enters, and
                 // timed from this update, not from the first.
+                // The install started (from the offer or from the tray or
+                // Tentang): the offer has done its job.
                 NoticeKind::UpdateProgress { .. } => {
+                    self.clear_sticky(Sticky::Update);
                     if let Some((current, expires)) = &mut self.current
                         && is_update_progress(current)
                     {
@@ -649,7 +682,8 @@ impl IslandState {
                 if on && !self.hover {
                     self.hover_blocked = !panel_open_now && self.notice_blocks_hover();
                     self.visit_on_notice = self.notice_covers();
-                    // A sticky reminder keeps hover off for one visit only.
+                    // A sticky notice with buttons (a reminder, the update
+                    // offer) keeps hover off for one visit only.
                     if self.hover_blocked && !self.notice_covers() {
                         self.reminder_seen = self.sticky.last().cloned();
                     }
@@ -806,6 +840,7 @@ impl IslandState {
             }
             Event::Today(date) => self.set_today(date),
             Event::ReminderCleared(id) => self.clear_sticky(Sticky::Reminder(&id)),
+            Event::UpdateWithdrawn => self.clear_sticky(Sticky::Update),
             Event::Click(hit) => self.click(hit, now, &mut effects),
             Event::Calendar(_)
             | Event::Toast(_)
@@ -1620,14 +1655,14 @@ impl IslandState {
             Some((n, _)) if self.notice_covers() => notice_has_action(n),
             // A toast tucked in a strip or slot is not in the way, so the
             // newest sticky one is what a hover would land on.
-            // The newest sticky one is what shows: only a reminder has the
-            // Selesai button, and it keeps hover off for the first visit
-            // after it appeared; later visits open the panel with it in the
-            // strip (as in v3.1).
-            _ => self.sticky.last().is_some_and(|n| {
-                matches!(n.kind, NoticeKind::Reminder { .. })
-                    && self.reminder_seen.as_ref() != Some(n)
-            }),
+            // The newest sticky one is what shows: only a reminder (Selesai)
+            // and the update offer (Update, Nanti) have buttons, and they
+            // keep hover off for the first visit after they appeared; later
+            // visits open the panel with it in the strip (as in v3.1).
+            _ => self
+                .sticky
+                .last()
+                .is_some_and(|n| sticky_has_buttons(n) && self.reminder_seen.as_ref() != Some(n)),
         }
     }
 
@@ -1755,11 +1790,12 @@ impl IslandState {
                         self.collapse();
                         effects.push(Effect::OpenDrive(letter));
                     }
-                    // The update notice's chips: install, or the releases page.
-                    match &n.kind {
-                        NoticeKind::UpdateAvailable { .. } => effects.push(Effect::InstallUpdate),
-                        NoticeKind::UpdateFailed => effects.push(Effect::OpenReleases),
-                        _ => {}
+                    // A failed update's chip: the releases page. (The offer is
+                    // not here: a click on its body installs nothing and
+                    // dismisses nothing, its chips are `Hit::UpdateNow` and
+                    // `Hit::UpdateLater`.)
+                    if n.kind == NoticeKind::UpdateFailed {
+                        effects.push(Effect::OpenReleases);
                     }
                     if opens_panel {
                         self.hover_blocked = false;
@@ -1930,7 +1966,22 @@ impl IslandState {
                     effects.push(Effect::ArrangeSave);
                 }
             }
-            // The strip shows the newest sticky notice; clicking it dismisses that one.
+            // The update offer's chips, on the notice or in the strip: "Update"
+            // installs (the offer goes, `App` runs the install), "Nanti" only
+            // clears it.
+            Hit::UpdateNow => {
+                if self.update_offer_shown() {
+                    self.clear_sticky(Sticky::Update);
+                    effects.push(Effect::InstallUpdate);
+                }
+            }
+            Hit::UpdateLater => {
+                if self.update_offer_shown() {
+                    self.clear_sticky(Sticky::Update);
+                }
+            }
+            // The strip shows the newest sticky notice; clicking it dismisses
+            // that one (never the update offer: only its chips act).
             Hit::Strip => {
                 if matches!(self.view(), View::Panel(_)) {
                     if self.toast_form() == Some(ToastForm::Strip) {
@@ -2411,11 +2462,27 @@ impl IslandState {
         }
     }
 
+    /// The update offer is what the island shows: the notice, or the open
+    /// panel's strip. Its chips act only then.
+    fn update_offer_shown(&self) -> bool {
+        match self.view() {
+            View::Notice(n) => is_update_offer(&n),
+            View::Panel(_) => self.waiting_strip().is_some_and(is_update_offer),
+            _ => false,
+        }
+    }
+
     /// Removes the sticky notice for `key`, including a brief fullscreen copy
     /// that is queued or showing, so a resolved wait or a dismissed reminder is
     /// never displayed.
     fn clear_sticky(&mut self, key: Sticky) {
         let is_key = |n: &Notice| sticky_key(n) == Some(key);
+        // A new offer after this one is a fresh appearance: its first visit
+        // keeps hover off again, though its text is the same. Only an offer
+        // that was seen resets: a reminder's first visit stays spent.
+        if key == Sticky::Update && self.reminder_seen.as_ref().is_some_and(is_update_offer) {
+            self.reminder_seen = None;
+        }
         self.sticky.retain(|n| !is_key(n));
         self.queue.retain(|n| !is_key(n));
         if matches!(&self.current, Some((n, _)) if is_key(n)) {
@@ -2431,6 +2498,10 @@ impl IslandState {
 
     /// Removes a sticky notice (and its copies); a reminder is then done.
     fn dismiss_sticky(&mut self, notice: &Notice) -> Option<Effect> {
+        // A click that is not on the offer's chips leaves it where it is.
+        if is_update_offer(notice) {
+            return None;
+        }
         self.clear_sticky(sticky_key(notice)?);
         match &notice.kind {
             NoticeKind::ClaudeWaiting { session_id } => Some(Effect::OpenClaudeSession {
@@ -2858,6 +2929,8 @@ enum Sticky<'a> {
     Reminder(&'a str),
     /// The failed Mole clean (one at a time).
     Mole,
+    /// The update offer (one at a time, whatever the version).
+    Update,
 }
 
 /// The page the search's back button shows: the one it came over. The search
@@ -2881,6 +2954,7 @@ fn sticky_key(notice: &Notice) -> Option<Sticky<'_>> {
         NoticeKind::ClaudeWaiting { session_id } => Some(Sticky::Session(session_id)),
         NoticeKind::Reminder { id } => Some(Sticky::Reminder(id)),
         NoticeKind::MoleFailed => Some(Sticky::Mole),
+        NoticeKind::UpdateAvailable { .. } => Some(Sticky::Update),
         _ => None,
     }
 }
@@ -3598,6 +3672,27 @@ mod tests {
         s.apply(Event::Notice(reminder("r2")), t0);
         s.apply(Event::Hover(true), t0);
         assert_eq!(s.view(), View::Notice(reminder("r2")));
+    }
+
+    #[test]
+    fn a_download_percent_does_not_give_a_seen_reminder_a_second_first_visit() {
+        let t0 = Instant::now();
+        let secs = Duration::from_secs;
+        let mut s = st();
+        s.apply(Event::Notice(reminder("r1")), t0);
+        // The first visit is for its Selesai button.
+        s.apply(Event::Hover(true), t0);
+        assert_eq!(s.view(), View::Notice(reminder("r1")));
+        s.apply(Event::Hover(false), t0);
+        // An install starts (tray or Tentang): percents come, no offer exists.
+        for pct in [1, 2, 3] {
+            s.apply(Event::Notice(progress(pct)), t0);
+        }
+        s.apply(Event::Tick, t0 + UPDATE_PROGRESS_DURATION + secs(1));
+        // The reminder was already seen: the next visit opens the panel.
+        s.apply(Event::Hover(true), t0 + UPDATE_PROGRESS_DURATION + secs(1));
+        assert_eq!(s.view(), View::Panel(Page::Calendar));
+        assert_eq!(s.waiting_strip(), Some(&reminder("r1")));
     }
 
     #[test]
@@ -5980,20 +6075,290 @@ mod tests {
         update_notice(NoticeKind::UpdateFailed, "Update gagal: tidak ada koneksi")
     }
 
+    fn available_version(version: &str) -> Notice {
+        update_notice(
+            NoticeKind::UpdateAvailable {
+                version: version.into(),
+            },
+            &format!("Vale {version} tersedia"),
+        )
+    }
+
     #[test]
-    fn the_update_offer_has_a_button_hover_leaves_alone_and_the_click_installs() {
+    fn the_update_offer_is_sticky_with_no_deadline() {
+        let t0 = Instant::now();
+        let secs = Duration::from_secs;
+        let mut s = st();
+        s.apply(Event::Notice(available()), t0);
+        assert_eq!(s.view(), View::Notice(available()));
+        assert_eq!(s.next_deadline(), None, "an offer has no time");
+        // Minutes and hours later it is still there.
+        for later in [60, 600, 3 * 3600] {
+            s.apply(Event::Tick, t0 + secs(later));
+            assert_eq!(s.view(), View::Notice(available()), "{later} s");
+        }
+        // It is sticky, not queued: a click on its body installs nothing and
+        // dismisses nothing.
+        assert_eq!(s.sticky.len(), 1);
+        assert!(s.queue.is_empty() && s.current.is_none());
+        assert!(!notice_has_action(&available()), "not a current notice");
+    }
+
+    #[test]
+    fn update_now_installs_and_the_offer_is_gone() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Notice(available()), t0);
+        let effects = s.apply(Event::Click(Hit::UpdateNow), t0);
+        assert_eq!(effects, vec![Effect::InstallUpdate]);
+        assert_eq!(s.view(), View::Idle);
+        assert!(s.sticky.is_empty());
+        // Nothing to install once it is gone: a stray chip click does nothing.
+        assert_eq!(s.apply(Event::Click(Hit::UpdateNow), t0), vec![]);
+    }
+
+    #[test]
+    fn a_check_without_a_newer_release_withdraws_the_offer() {
+        // The newer release was pulled: `App` forgets it, so the offer goes
+        // too (its "Update" would have nothing to install).
         let t0 = Instant::now();
         let mut s = st();
         s.apply(Event::Notice(available()), t0);
         assert_eq!(s.view(), View::Notice(available()));
-        assert_eq!(s.next_deadline(), Some(t0 + UPDATE_NOTICE_DURATION));
-        assert!(notice_has_action(&available()));
-        // Hover does not open the panel over the button.
+        assert_eq!(s.apply(Event::UpdateWithdrawn, t0), vec![]);
+        assert_eq!(s.view(), View::Idle);
+        assert!(s.sticky.is_empty() && s.queue.is_empty() && s.current.is_none());
+        assert_eq!(s.apply(Event::Click(Hit::UpdateNow), t0), vec![]);
+        // Nothing else sticky is touched, and with no offer it is a no-op.
+        let mut s = st();
+        s.apply(Event::Notice(reminder("r1")), t0);
+        s.apply(Event::UpdateWithdrawn, t0);
+        assert_eq!(s.sticky.len(), 1);
+    }
+
+    #[test]
+    fn update_later_clears_the_offer_and_the_next_check_shows_it_again() {
+        let t0 = Instant::now();
+        let secs = Duration::from_secs;
+        let mut s = st();
+        s.apply(Event::Notice(available()), t0);
+        assert_eq!(s.apply(Event::Click(Hit::UpdateLater), t0), vec![]);
+        assert_eq!(s.view(), View::Idle);
+        assert!(s.sticky.is_empty());
+        assert_eq!(s.next_deadline(), None);
+        // The next automatic check offers the same version again.
+        let day = secs(24 * 3600);
+        s.apply(Event::Notice(available()), t0 + day);
+        assert_eq!(s.view(), View::Notice(available()));
+        assert_eq!(s.sticky.len(), 1);
+    }
+
+    #[test]
+    fn a_second_offer_replaces_the_first_so_there_is_only_one() {
+        let t0 = Instant::now();
+        let mut s = st();
+        // The same offer again (a manual check while it shows).
+        s.apply(Event::Notice(available()), t0);
+        s.apply(Event::Notice(available()), t0);
+        assert_eq!(s.sticky.len(), 1);
+        // A newer version replaces it in the same slot.
+        s.apply(Event::Notice(available_version("3.12.0")), t0);
+        assert_eq!(s.sticky.len(), 1);
+        assert_eq!(s.view(), View::Notice(available_version("3.12.0")));
+        // One "Nanti" clears all of it.
+        s.apply(Event::Click(Hit::UpdateLater), t0);
+        assert_eq!(s.view(), View::Idle);
+        assert!(s.sticky.is_empty());
+    }
+
+    #[test]
+    fn an_install_started_elsewhere_clears_the_offer() {
+        let t0 = Instant::now();
+        let secs = Duration::from_secs;
+        let mut s = st();
+        s.apply(Event::Notice(available()), t0);
+        // The tray's "Update ke X.Y.Z" or Tentang's "Update": the percent
+        // arrives and the offer goes.
+        s.apply(Event::Notice(progress(3)), t0);
+        assert_eq!(s.view(), View::Notice(progress(3)));
+        assert!(s.sticky.is_empty());
+        s.apply(Event::Tick, t0 + UPDATE_PROGRESS_DURATION + secs(1));
+        assert_eq!(s.view(), View::Idle, "the offer does not come back");
+        // A failure does not bring it back either; it is the 8 s notice.
+        s.apply(Event::Notice(update_failed()), t0 + secs(30));
+        assert_eq!(s.view(), View::Notice(update_failed()));
+        assert_eq!(s.next_deadline(), Some(t0 + secs(30) + UPDATE_NOTICE_DURATION));
+        s.apply(Event::Tick, t0 + secs(30) + UPDATE_NOTICE_DURATION);
+        assert_eq!(s.view(), View::Idle);
+    }
+
+    #[test]
+    fn the_update_offer_hides_in_fullscreen_and_is_back_after_with_no_brief_copy() {
+        let t0 = Instant::now();
+        let secs = Duration::from_secs;
+        let mut s = st();
+        s.apply(Event::Notice(available()), t0);
+        s.apply(Event::Fullscreen(true), t0 + secs(1));
+        assert_eq!(s.view(), View::Hidden);
+        // A new offer in a game is kept, not queued as a brief copy.
+        s.apply(Event::Notice(available_version("3.12.0")), t0 + secs(2));
+        assert_eq!(s.view(), View::Hidden);
+        assert!(s.queue.is_empty() && s.current.is_none(), "no copy over a game");
+        s.apply(Event::Tick, t0 + secs(10));
+        assert_eq!(s.view(), View::Hidden);
+        s.apply(Event::Fullscreen(false), t0 + secs(20));
+        assert_eq!(s.view(), View::Notice(available_version("3.12.0")));
+        // Reminders still do queue a brief copy (the rule is unchanged).
+        let mut s = st();
+        s.apply(Event::Fullscreen(true), t0);
+        s.apply(Event::Notice(reminder("r1")), t0);
+        assert!(!s.queue.is_empty() || s.current.is_some());
+    }
+
+    #[test]
+    fn the_first_hover_visit_is_for_the_buttons_a_later_one_opens_the_panel_with_the_strip() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Notice(available()), t0);
+        // The first visit is for Update and Nanti: the panel stays shut.
         s.apply(Event::Hover(true), t0);
         assert_eq!(s.view(), View::Notice(available()));
+        s.apply(Event::Hover(false), t0);
+        // Every later visit opens the panel, the offer in the strip.
+        for _ in 0..3 {
+            s.apply(Event::Hover(true), t0);
+            assert_eq!(s.view(), View::Panel(Page::Calendar));
+            assert_eq!(s.waiting_strip(), Some(&available()));
+            s.apply(Event::Hover(false), t0);
+        }
+        // A "Nanti" and a fresh offer is a new appearance: its own first visit.
+        s.apply(Event::Hover(true), t0);
+        s.apply(Event::Click(Hit::UpdateLater), t0);
+        leave(&mut s, t0);
+        s.apply(Event::Notice(available()), t0);
+        s.apply(Event::Hover(true), t0);
+        assert_eq!(s.view(), View::Notice(available()));
+    }
+
+    #[test]
+    fn the_same_offer_again_keeps_its_spent_first_visit() {
+        // The daily check (or a restart, or a manual check) repeats the offer
+        // that already shows: it is the same notice in the same slot, not a
+        // new appearance, so hover keeps opening the panel.
+        let t0 = Instant::now();
+        let day = Duration::from_secs(24 * 3600);
+        let mut s = st();
+        s.apply(Event::Notice(available()), t0);
+        s.apply(Event::Hover(true), t0);
+        assert_eq!(s.view(), View::Notice(available()), "the first visit");
+        s.apply(Event::Hover(false), t0);
+        s.apply(Event::Notice(available()), t0 + day);
+        assert_eq!(s.sticky.len(), 1);
+        s.apply(Event::Hover(true), t0 + day);
+        assert_eq!(s.view(), View::Panel(Page::Calendar));
+        assert_eq!(s.waiting_strip(), Some(&available()));
+        s.apply(Event::Hover(false), t0 + day);
+        // A newer version is a new appearance: its own first visit.
+        s.apply(Event::Notice(available_version("3.12.0")), t0 + day);
+        s.apply(Event::Hover(true), t0 + day);
+        assert_eq!(s.view(), View::Notice(available_version("3.12.0")));
+        s.apply(Event::Hover(false), t0 + day);
+        // The repeat stays where it stands: a newer reminder still shows on top.
+        let mut s = st();
+        s.apply(Event::Notice(available()), t0);
+        s.apply(Event::Notice(reminder("r1")), t0);
+        s.apply(Event::Notice(available()), t0 + day);
+        assert_eq!(s.sticky.len(), 2);
+        assert_eq!(s.sticky.last(), Some(&reminder("r1")));
+    }
+
+    #[test]
+    fn the_offer_arriving_over_an_open_panel_is_the_strip_and_its_chips_act_there() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Hover(true), t0);
+        assert_eq!(s.view(), View::Panel(Page::Calendar));
+        s.apply(Event::Notice(available()), t0);
+        assert_eq!(s.waiting_strip(), Some(&available()));
+        // The strip outside its chips does nothing: no install, no dismiss.
+        assert_eq!(s.apply(Event::Click(Hit::Strip), t0), vec![]);
+        assert_eq!(s.waiting_strip(), Some(&available()));
+        // "Nanti" in the strip clears it, the panel stays.
+        assert_eq!(s.apply(Event::Click(Hit::UpdateLater), t0), vec![]);
+        assert_eq!(s.waiting_strip(), None);
+        assert_eq!(s.view(), View::Panel(Page::Calendar));
+        // "Update" in the strip installs.
+        s.apply(Event::Notice(available()), t0);
+        assert_eq!(
+            s.apply(Event::Click(Hit::UpdateNow), t0),
+            vec![Effect::InstallUpdate]
+        );
+        assert_eq!(s.waiting_strip(), None);
+        assert_eq!(s.view(), View::Panel(Page::Calendar));
+    }
+
+    #[test]
+    fn a_click_on_the_offers_body_installs_nothing_and_dismisses_nothing() {
+        let t0 = Instant::now();
+        // Hover mode: nothing happens.
+        let mut s = st();
+        s.apply(Event::Notice(available()), t0);
+        assert_eq!(s.apply(Event::Click(Hit::Body), t0), vec![]);
+        assert_eq!(s.view(), View::Notice(available()));
+        s.apply(Event::Hover(true), t0);
+        assert_eq!(s.apply(Event::Click(Hit::Body), t0), vec![]);
+        assert_eq!(s.view(), View::Notice(available()));
+        // Click mode: it opens the panel like other sticky notices, the offer
+        // in the strip, still not installed.
+        let mut s = mode(OpenMode::Click, t0);
+        s.apply(Event::Notice(available()), t0);
         let effects = s.apply(Event::Click(Hit::Body), t0);
-        assert_eq!(effects, vec![Effect::InstallUpdate]);
-        assert_eq!(s.view(), View::Idle);
+        assert!(!effects.contains(&Effect::InstallUpdate), "{effects:?}");
+        assert_eq!(s.view(), View::Panel(Page::Calendar));
+        assert_eq!(s.waiting_strip(), Some(&available()));
+        assert_eq!(s.apply(Event::Click(Hit::Strip), t0), vec![]);
+        assert_eq!(s.waiting_strip(), Some(&available()));
+    }
+
+    #[test]
+    fn claude_waiting_shows_over_the_offer_and_the_offer_comes_back() {
+        let t0 = Instant::now();
+        let secs = Duration::from_secs;
+        let mut s = st();
+        s.apply(Event::Notice(available()), t0);
+        s.apply(Event::Notice(waiting("s1")), t0 + secs(5));
+        assert_eq!(s.view(), View::Notice(waiting("s1")));
+        // The offer's chips do nothing while it is not what shows.
+        assert_eq!(s.apply(Event::Click(Hit::UpdateNow), t0 + secs(6)), vec![]);
+        assert_eq!(s.sticky.len(), 2);
+        // Claude is answered: the offer is back.
+        s.apply(
+            Event::ClaudeActivity {
+                session_id: "s1".into(),
+            },
+            t0 + secs(10),
+        );
+        assert_eq!(s.view(), View::Notice(available()));
+        // And a reminder beside it: the newest shows, then the offer again.
+        s.apply(Event::Notice(reminder("r1")), t0 + secs(11));
+        assert_eq!(s.view(), View::Notice(reminder("r1")));
+        s.apply(Event::ReminderCleared("r1".into()), t0 + secs(12));
+        assert_eq!(s.view(), View::Notice(available()));
+    }
+
+    #[test]
+    fn a_tucked_toast_still_tucks_over_the_offer_strip_and_the_offer_comes_back() {
+        let t0 = Instant::now();
+        let mut s = busy("panel", t0);
+        s.apply(Event::Notice(available()), t0);
+        assert_eq!(s.waiting_strip(), Some(&available()));
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0 + Duration::from_secs(1));
+        assert_eq!(s.waiting_strip().map(|n| n.title.as_str()), Some("Ibu"));
+        // The chips belong to the offer: while the toast has the strip they
+        // do nothing.
+        assert_eq!(s.apply(Event::Click(Hit::UpdateNow), t0 + Duration::from_secs(2)), vec![]);
+        s.apply(Event::Tick, t0 + Duration::from_secs(1) + NOTICE_DURATION);
+        assert_eq!(s.waiting_strip(), Some(&available()));
     }
 
     #[test]

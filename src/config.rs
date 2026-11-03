@@ -174,9 +174,10 @@ pub struct Config {
     /// without the key gets the old presets as combos (`migrate_hotkeys`).
     /// Owned by the island, so a Settings choice sticks across saves.
     pub hotkeys: crate::hotkey::Hotkeys,
-    /// The last version an automatic check offered ("3.11.0"), so the same
-    /// one is not offered again; empty when none. Not a setting: the island
-    /// writes it.
+    /// No longer used: it once remembered the last version an automatic check
+    /// offered. Every check that finds a newer release offers it now ("Nanti"
+    /// only clears the notice). Kept so an old `config.json` with the key
+    /// still loads and `merge_owned` keeps working; nothing reads or writes it.
     #[serde(deserialize_with = "lenient_string")]
     pub update_offered: String,
     /// Where the Settings window was last (screen coordinates), so it opens

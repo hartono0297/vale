@@ -141,8 +141,9 @@ pub enum NoticeKind {
     Arranged {
         save: ArrangeSave,
     },
-    /// "Vale 3.11.0 tersedia" with the chip "Update" (`version` is X.Y.Z).
-    /// A click installs it.
+    /// "Vale 3.11.0 tersedia" with the chips "Update" and "Nanti" (`version`
+    /// is X.Y.Z). Sticky (one slot, any version): it stays until "Update"
+    /// installs it, "Nanti" sets it aside, or the install starts elsewhere.
     UpdateAvailable {
         version: String,
     },
@@ -245,6 +246,9 @@ pub enum Event {
     /// The reminder was edited, deleted or dismissed elsewhere: its sticky
     /// notice goes.
     ReminderCleared(String),
+    /// A check found no newer release (the one offered was pulled): `App`
+    /// forgot it, so the sticky update offer goes too.
+    UpdateWithdrawn,
     /// The CLI page's input has the keyboard (true) or lost it: like an open
     /// editor, it keeps the panel open meanwhile.
     CliFocus(bool),
@@ -465,6 +469,11 @@ pub enum Hit {
     /// The strip at the top of the open panel: the newest Claude waiting or
     /// due reminder notice.
     Strip,
+    /// The update offer's "Update" chip (notice or strip): install now.
+    UpdateNow,
+    /// The update offer's "Nanti" chip (notice or strip): clear the offer; the
+    /// next check offers again.
+    UpdateLater,
     /// The panel header's Settings button, at the top right of every page:
     /// opens Vale's Settings window.
     OpenSettings,

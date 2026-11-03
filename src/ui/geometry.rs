@@ -843,6 +843,64 @@ pub fn notice_action_w(kind: &NoticeKind) -> f32 {
     }
 }
 
+/// The update offer's "Update" chip (the primary one, at the right).
+pub const UPDATE_CHIP_W: f32 = 56.0;
+/// The update offer's "Nanti" / "Later" chip, left of "Update".
+pub const LATER_CHIP_W: f32 = 48.0;
+/// Space between a notice's chips.
+pub const NOTICE_CHIP_GAP: f32 = 6.0;
+
+/// The widths of `kind`'s chips, left to right (none for a notice a click
+/// only dismisses). The update offer has two: "Nanti" then "Update".
+pub fn notice_chip_widths(kind: &NoticeKind, pomo: PomoStatus) -> Vec<f32> {
+    match kind {
+        NoticeKind::UpdateAvailable { .. } => vec![LATER_CHIP_W, UPDATE_CHIP_W],
+        _ => notice_action(kind, pomo)
+            .map(|_| notice_action_w(kind))
+            .into_iter()
+            .collect(),
+    }
+}
+
+/// A notice with several chips in a row at the right (`widths`, left to
+/// right, `NOTICE_CHIP_GAP` apart), the text stopping short of the first.
+/// Returns the layout (its `action` is the whole block of chips) and each
+/// chip's rect, in the order of `widths`.
+pub fn notice_actions_layout(s: ShapeRect, widths: &[f32]) -> (NoticeLayout, Vec<Rect>) {
+    if widths.is_empty() {
+        return (notice_layout(s, None), Vec::new());
+    }
+    let gaps = NOTICE_CHIP_GAP * (widths.len() - 1) as f32;
+    let total = widths.iter().sum::<f32>() + gaps;
+    let layout = notice_layout(s, Some(total));
+    let block = layout.action.expect("room for the chips was asked for");
+    let mut x = block.x;
+    let chips = widths
+        .iter()
+        .map(|&w| {
+            let chip = Rect { x, w, ..block };
+            x += w + NOTICE_CHIP_GAP;
+            chip
+        })
+        .collect();
+    (layout, chips)
+}
+
+/// The update offer's click targets: "Nanti" and "Update". Anywhere else on
+/// the notice (or the strip) is the body (or the strip) and does nothing.
+pub fn update_offer_regions(later: Rect, update: Rect) -> Vec<Region> {
+    vec![
+        Region {
+            rect: later,
+            hit: Hit::UpdateLater,
+        },
+        Region {
+            rect: update,
+            hit: Hit::UpdateNow,
+        },
+    ]
+}
+
 /// `action`: room for a chip this wide naming what a click does at the
 /// right, the text stopping short of it.
 pub fn notice_layout(s: ShapeRect, action: Option<f32>) -> NoticeLayout {
@@ -1168,8 +1226,8 @@ pub fn notice_action(kind: &NoticeKind, pomo: PomoStatus) -> Option<Key> {
         NoticeKind::ClipPreview { .. } => Some(Key::ClipPreviewChip),
         // The click opens the cleaner on Mole's log.
         NoticeKind::MoleDone | NoticeKind::MoleFailed => Some(Key::MoleLog),
-        // The click installs the update, or opens the releases page.
-        NoticeKind::UpdateAvailable { .. } => Some(Key::UpdateButton),
+        // The click opens the releases page. (The update offer has two chips
+        // of its own, `notice_chip_widths`; its body does nothing.)
         NoticeKind::UpdateFailed => Some(Key::SeeReleases),
         _ => None,
     }
@@ -2634,10 +2692,17 @@ mod tests {
         let available = NoticeKind::UpdateAvailable {
             version: "3.11.0".into(),
         };
+        // The offer has two chips of its own, not one action.
+        assert_eq!(notice_action(&available, PomoStatus::Idle), None);
         assert_eq!(
-            notice_action(&available, PomoStatus::Idle),
-            Some(Key::UpdateButton)
+            notice_chip_widths(&available, PomoStatus::Idle),
+            vec![LATER_CHIP_W, UPDATE_CHIP_W]
         );
+        assert_eq!(
+            notice_chip_widths(&NoticeKind::UpdateFailed, PomoStatus::Idle),
+            vec![RELEASES_ACTION_W]
+        );
+        assert!(notice_chip_widths(&NoticeKind::UpdateInfo, PomoStatus::Idle).is_empty());
         assert_eq!(
             notice_action(&NoticeKind::UpdateFailed, PomoStatus::Idle),
             Some(Key::SeeReleases)
@@ -2645,7 +2710,6 @@ mod tests {
         for kind in [NoticeKind::UpdateProgress { pct: 5 }, NoticeKind::UpdateInfo] {
             assert_eq!(notice_action(&kind, PomoStatus::Idle), None);
         }
-        assert_eq!(notice_action_w(&available), ACTION_W);
         assert_eq!(
             notice_action_w(&NoticeKind::UpdateFailed),
             RELEASES_ACTION_W
@@ -3548,6 +3612,117 @@ mod tests {
                 assert_eq!(cy, s.y + s.h / 2.0);
                 assert!(cx + r <= s.x + s.w && cy - r >= s.y && cy + r <= s.y + s.h);
             }
+        }
+    }
+
+    #[test]
+    fn the_update_offers_chips_lie_inside_the_notice_clear_of_each_other_and_the_text() {
+        let widths = [LATER_CHIP_W, UPDATE_CHIP_W];
+        for style in [Style::Pill, Style::Notch] {
+            for size in [NotchSize::DEFAULT] {
+                for robot in [false, true] {
+                    let n = shape_with_robot_sized(style, size, ShapeKind::Notice, robot);
+                    let (l, chips) = notice_actions_layout(n, &widths);
+                    let [later, update] = chips[..] else {
+                        panic!("two chips");
+                    };
+                    let tag = format!("{style:?} {size:?} robot {robot}");
+                    for chip in [later, update] {
+                        assert!(inside(n, chip), "{tag} chip {chip:?}");
+                        // As clear of the rounded end as every other chip.
+                        assert!(
+                            chip.right() <= n.x + n.w - corner_radius(style, n) / 2.0,
+                            "{tag} chip {chip:?}"
+                        );
+                        for text in [l.title, l.body, l.badge] {
+                            assert!(!intersects(chip, text), "{tag} {chip:?} {text:?}");
+                        }
+                    }
+                    assert!(!intersects(later, update), "{tag}");
+                    // "Nanti" at the left, "Update" last at the right.
+                    assert!(later.right() + NOTICE_CHIP_GAP <= update.x + 0.001, "{tag}");
+                    assert_eq!((later.w, update.w), (LATER_CHIP_W, UPDATE_CHIP_W));
+                    assert_eq!(update.right(), l.action.expect("block").right());
+                    // The text stops short of both.
+                    assert!(l.title.right() < later.x && l.body.right() < later.x, "{tag}");
+                    assert!(l.title.w >= 140.0, "{tag} room for \"Vale 3.11.0 tersedia\"");
+                    // The same row as the old single chip: centred.
+                    assert_eq!(later.y, update.y);
+                    assert!((later.y + later.h / 2.0 - (n.y + n.h / 2.0)).abs() < 0.001);
+                }
+            }
+        }
+        // No chips: the layout of a notice without any.
+        let n = shape_for(Style::Pill, ShapeKind::Notice);
+        let (l, chips) = notice_actions_layout(n, &[]);
+        assert!(chips.is_empty());
+        assert_eq!(l, notice_layout(n, None));
+        // One chip: exactly `notice_layout`'s.
+        let (l, chips) = notice_actions_layout(n, &[ACTION_W]);
+        assert_eq!(l, notice_layout(n, Some(ACTION_W)));
+        assert_eq!(Some(chips[0]), l.action);
+    }
+
+    #[test]
+    fn the_update_offers_chip_regions_hit_test_in_the_notice() {
+        for style in [Style::Pill, Style::Notch] {
+            let n = shape_for(style, ShapeKind::Notice);
+            let (_, chips) = notice_actions_layout(n, &[LATER_CHIP_W, UPDATE_CHIP_W]);
+            let regions = HitRegions {
+                shape: Some((style, n)),
+                regions: update_offer_regions(chips[0], chips[1]),
+                ..HitRegions::default()
+            };
+            let mid = |r: Rect| (r.x + r.w / 2.0, r.y + r.h / 2.0);
+            let (x, y) = mid(chips[0]);
+            assert_eq!(regions.hit(x, y), Some(Hit::UpdateLater), "{style:?}");
+            let (x, y) = mid(chips[1]);
+            assert_eq!(regions.hit(x, y), Some(Hit::UpdateNow), "{style:?}");
+            // Each chip's own corner and the gap between them.
+            assert_eq!(
+                regions.hit(chips[0].x + 1.0, chips[0].y + 1.0),
+                Some(Hit::UpdateLater)
+            );
+            assert_eq!(
+                regions.hit(chips[1].right() - 1.0, chips[1].bottom() - 1.0),
+                Some(Hit::UpdateNow)
+            );
+            let gap_x = chips[0].right() + NOTICE_CHIP_GAP / 2.0;
+            assert_eq!(regions.hit(gap_x, chips[0].y + 2.0), Some(Hit::Body));
+            // The text side and the badge are the body.
+            assert_eq!(regions.hit(n.x + 30.0, n.y + n.h / 2.0), Some(Hit::Body));
+            assert_eq!(regions.hit(chips[0].x - 20.0, chips[0].y), Some(Hit::Body));
+        }
+    }
+
+    #[test]
+    fn the_update_strips_parts_lie_inside_the_waiting_strip() {
+        use super::super::panel_layout::{update_strip_parts, waiting_strip};
+        for style in [Style::Pill, Style::Notch] {
+            let panel = shape_sized(style, NotchSize::DEFAULT, ShapeKind::Panel);
+            let strip = waiting_strip(panel);
+            let parts = update_strip_parts(strip);
+            let within = |r: Rect| {
+                r.x >= strip.x
+                    && r.right() <= strip.right() + 0.001
+                    && r.y >= strip.y
+                    && r.bottom() <= strip.bottom() + 0.001
+            };
+            for r in [parts.dot, parts.text, parts.later, parts.update] {
+                assert!(within(r), "{style:?} {r:?}");
+            }
+            assert!(!intersects(parts.later, parts.update));
+            assert!(!intersects(parts.text, parts.later));
+            assert!(!intersects(parts.text, parts.update));
+            assert!(!intersects(parts.dot, parts.text));
+            assert!(parts.later.right() < parts.update.x, "Nanti then Update");
+            assert!(parts.update.right() <= strip.right() - 4.0 + 0.001);
+            // The chips are centred in the strip's height.
+            for chip in [parts.later, parts.update] {
+                assert!((chip.y + chip.h / 2.0 - (strip.y + strip.h / 2.0)).abs() < 0.001);
+            }
+            // Room for "Vale 3.11.0 is available" with its date of install.
+            assert!(parts.text.w >= 260.0, "{style:?} {:?}", parts.text);
         }
     }
 

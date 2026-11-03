@@ -456,6 +456,7 @@ keys! {
     UpdateCheckNow => "Cek sekarang", "Check now";
     UpdateChecking => "Memeriksa…", "Checking…";
     UpdateButton => "Update", "Update";
+    UpdateLater => "Nanti", "Later";
     UpdateDebugOff => "Cek pembaruan mati di build debug", "Update check is off in debug builds";
     UpdateErrNoNetwork => "tidak ada koneksi", "no connection";
     UpdateErrNotWritable => "folder tidak bisa ditulis", "folder is not writable";

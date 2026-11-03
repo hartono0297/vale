@@ -171,13 +171,6 @@ pub fn pick_release(json: &str) -> Result<Release, UpdateError> {
     })
 }
 
-/// Whether a known `latest` is shown as an offer: newer than `current`, and
-/// (unless the user asked) not the version an earlier automatic check offered.
-pub fn should_offer(latest: &str, current: &str, last_offered: &str, manual: bool) -> bool {
-    is_newer(latest, current)
-        && (manual || parse_version(latest).is_none_or(|l| Some(l) != parse_version(last_offered)))
-}
-
 /// What a worker tells the island (`Event::Update`); the reducer ignores it,
 /// `App` handles it.
 #[derive(Clone, Debug, PartialEq)]
@@ -584,21 +577,19 @@ mod tests {
     }
 
     #[test]
-    fn a_version_is_offered_once_by_the_automatic_check() {
-        // New, never offered.
-        assert!(should_offer("v3.11.0", "3.10.0", "", false));
-        // The same version again: not repeated.
-        assert!(!should_offer("v3.11.0", "3.10.0", "3.11.0", false));
-        // A newer one after that is offered.
-        assert!(should_offer("v3.12.0", "3.10.0", "3.11.0", false));
-        // A manual check always offers a newer version.
-        assert!(should_offer("v3.11.0", "3.10.0", "3.11.0", true));
-        // Never an older or an equal one, whoever asks.
-        for manual in [false, true] {
-            assert!(!should_offer("v3.10.0", "3.10.0", "", manual));
-            assert!(!should_offer("v3.9.0", "3.10.0", "", manual));
-            assert!(!should_offer("junk", "3.10.0", "", manual));
+    fn every_check_that_finds_a_newer_version_offers_it_again() {
+        // The offer is only "newer than the running version": nothing is
+        // remembered between checks, so a "Nanti" is followed by the same
+        // offer at the next automatic check (a day later, or the next start).
+        for _check in 0..3 {
+            assert!(is_newer("v3.11.0", "3.10.0"));
         }
+        // A newer one after that is offered too.
+        assert!(is_newer("v3.12.0", "3.10.0"));
+        // Never an older, an equal or an unreadable one.
+        assert!(!is_newer("v3.10.0", "3.10.0"));
+        assert!(!is_newer("v3.9.0", "3.10.0"));
+        assert!(!is_newer("junk", "3.10.0"));
     }
 
     #[test]

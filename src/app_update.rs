@@ -81,7 +81,9 @@ fn notice(key: &str, title: String, body: String, kind: NoticeKind) -> Notice {
     }
 }
 
-/// "Vale X.Y.Z tersedia" with the "Update" chip.
+/// "Vale X.Y.Z tersedia" with the "Nanti" and "Update" chips. Sticky: it stays
+/// until a chip is clicked, an install starts, a newer offer replaces it or a
+/// check finds no newer release.
 fn available_notice(lang: Lang, version: &str) -> Notice {
     notice(
         "update-available",
@@ -263,25 +265,23 @@ impl App {
         let lang = self.config.language;
         match result {
             Ok(release) if update::is_newer(&release.tag, update::CURRENT) => {
+                // Every check that finds a newer release offers it (the
+                // sticky notice keeps one slot, so a repeat replaces it).
+                // "Nanti" only clears the notice; the next check asks again.
                 let version = release.version();
-                let offer = update::should_offer(
-                    &release.tag,
-                    update::CURRENT,
-                    &self.config.update_offered,
-                    manual,
-                );
                 self.update.known = Some(release);
-                if offer {
-                    // An automatic offer is made once: remembered at once.
-                    if !manual {
-                        self.config.update_offered = version.clone();
-                        self.save_config();
-                    }
+                // A check that lands while an install runs (the daily one was
+                // in flight when the tray's item was clicked) offers nothing:
+                // "Update" on it would do nothing.
+                if self.update.downloading.is_none() {
                     self.apply_now(Event::Notice(available_notice(lang, &version)));
                 }
             }
             Ok(_) => {
+                // No newer release (the offered one was pulled): the offer
+                // goes with it, or its "Update" would have nothing to install.
                 self.update.known = None;
+                self.apply_now(Event::UpdateWithdrawn);
                 if manual {
                     self.apply_now(Event::Notice(up_to_date_notice(lang)));
                 }

@@ -62,7 +62,7 @@ use crate::ui::icons::Icon;
 use crate::ui::month_grid::{CellCanvas, CellLook, DayState, Filled, day_geometry, paint_day};
 use crate::ui::motion::{ease_out_cubic, page_fade_frame, panel_fade, panel_regions_wanted};
 use crate::ui::panel_layout::{
-    ArrangeLayout, ArrangeShape, CLEAN_CHECK, CLEANER_READY, CLI_LINE_H, CLI_TERM_RADIUS,
+    ArrangeLayout, ArrangeShape, CLEAN_CHECK, CLEANER_READY, StripKind, CLI_LINE_H, CLI_TERM_RADIUS,
     CLIP_RADIUS, CLIP_SCROLLBAR_W, CLIP_THUMB_W, CalendarLayout, CleanFoot, CleanHead,
     CleanerLayout, CliHead, CliLayout, ClipButton, ClipLayout, DEV_BAR_H, DevicesHead,
     DevicesLayout, HOUR_GUTTER, ListLayout, MENU_RADIUS, MENU_ROW_RADIUS, MIXER_TRACK_H,
@@ -75,7 +75,7 @@ use crate::ui::panel_layout::{
     mole_log_skip, notes_layout, notif_layout, page_dots, pomodoro_compact_layout,
     pomodoro_compact_layout_robot, pomodoro_layout, regions, reminders_layout, search_layout,
     settings_button, shelf_card_layout, shelf_layout, shortcuts_layout, system_layout,
-    tile_parts, volume_hud_layout, waiting_strip,
+    tile_parts, update_strip_parts, volume_hud_layout, waiting_strip,
 };
 use crate::ui::robot::{Expr, Pose};
 use crate::ui::shelf_motion::Drawn;
@@ -554,7 +554,14 @@ impl Renderer {
         if clicks {
             // The dock's icons sit over the page's bottom edge: they win.
             let mut hits = dock_hits;
-            hits.extend(regions(s, &layout, strip));
+            let strip_kind = match frame.strip {
+                Some(n) if matches!(n.kind, NoticeKind::UpdateAvailable { .. }) => {
+                    StripKind::UpdateOffer
+                }
+                Some(_) => StripKind::Plain,
+                None => StripKind::None,
+            };
+            hits.extend(regions(s, &layout, strip_kind));
             if matches!(layout, PageLayout::Media(_)) && frame.media.is_none() {
                 hits.retain(|r| !matches!(r.hit, Hit::Prev | Hit::PlayPause | Hit::Next));
             }
@@ -4039,8 +4046,10 @@ impl Renderer {
         self.text_colored(label, &self.fonts.button, area, ink, 1.0);
     }
 
-    /// Orange dot and "Claude butuh respon · {project}", or an accent dot and
-    /// "{reminder} · 09.30".
+    /// Orange dot and "Claude butuh respon · {project}", an accent dot and
+    /// "{reminder} · 09.30", or the update offer's accent dot, "Vale X.Y.Z
+    /// tersedia" and its "Nanti" and "Update" chips (a busy toast has its own
+    /// form, see `paint_strip_inner`).
     fn paint_strip(
         &self,
         s: ShapeRect,
@@ -4060,6 +4069,9 @@ impl Renderer {
         painted
     }
 
+    /// The strip's forms: a busy toast (logo and "Source · title"), the update
+    /// offer (dot, title, "Nanti" and "Update" chips), else the Claude or
+    /// reminder dot and text.
     fn paint_strip_inner(
         &self,
         s: ShapeRect,
@@ -4089,6 +4101,33 @@ impl Renderer {
                 (false, false) => format!("{} · {said}", notice.source),
             };
             self.text(&text, &self.fonts.secondary, area, 1.0);
+            return Ok(());
+        }
+        // The update offer: its dot, "Vale X.Y.Z tersedia" and two small
+        // chips at the right (hit regions, see `regions`).
+        if matches!(notice.kind, NoticeKind::UpdateAvailable { .. }) {
+            let p = self.palette;
+            let parts = update_strip_parts(r);
+            self.set_color(p.accent, 1.0);
+            self.fill_round(parts.dot, parts.dot.w / 2.0);
+            self.text(&notice.title, &self.fonts.secondary, parts.text, 1.0);
+            let lang = i18n::lang();
+            for (rect, key, fill, ink) in [
+                (parts.later, Key::UpdateLater, p.raised_hi, p.text),
+                (parts.update, Key::UpdateButton, p.accent, p.on_accent),
+            ] {
+                self.set_color(fill, 1.0);
+                self.fill_round(rect, rect.h / 2.0);
+                self.solid_ink(|| {
+                    self.text_colored(
+                        i18n::text(lang, key),
+                        &self.fonts.button_center,
+                        rect,
+                        ink,
+                        1.0,
+                    );
+                });
+            }
             return Ok(());
         }
         let dot = match notice.kind {
@@ -5393,12 +5432,6 @@ mod tests {
                 crate::pomodoro::PomoStatus::Idle,
             ),
             (NoticeKind::MoleDone, crate::pomodoro::PomoStatus::Idle),
-            (
-                NoticeKind::UpdateAvailable {
-                    version: "3.12.0".into(),
-                },
-                crate::pomodoro::PomoStatus::Idle,
-            ),
             (NoticeKind::UpdateFailed, crate::pomodoro::PomoStatus::Idle),
         ];
         for ui in [UiFont::Sans, UiFont::Mono] {
@@ -5416,6 +5449,63 @@ mod tests {
                     ink_fits(&r, label, &r.fonts.button_center, chip);
                 }
             }
+        }
+    }
+
+    /// The update offer's chips ("Nanti" / "Later", "Update"), on the notch
+    /// notice and in the strip, hold their words in both languages in DM Sans
+    /// and in JetBrains Mono, text and ink inside.
+    #[test]
+    fn update_offer_chips_hold_their_words_in_both_fonts() {
+        use crate::ui::fonts;
+        use crate::ui::geometry::{LATER_CHIP_W, UPDATE_CHIP_W};
+        use crate::ui::panel_layout::{STRIP_LATER_W, STRIP_UPDATE_W};
+        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+
+        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let mut r = Renderer::new().expect("renderer");
+        if !fonts::embedded(&r.dwrite).loaded.jetbrains_mono {
+            eprintln!("skipped: the embedded fonts are not in this binary");
+            return;
+        }
+        let chip = |w: f32, h: f32| Rect {
+            x: 0.0,
+            y: 0.0,
+            w,
+            h,
+        };
+        for ui in [UiFont::Sans, UiFont::Mono] {
+            r.set_ui_font(ui).expect("font");
+            for lang in [Lang::Id, Lang::En] {
+                for (key, notch_w, strip_w) in [
+                    (Key::UpdateLater, LATER_CHIP_W, STRIP_LATER_W),
+                    (Key::UpdateButton, UPDATE_CHIP_W, STRIP_UPDATE_W),
+                ] {
+                    let label = text(lang, key);
+                    ink_fits(&r, label, &r.fonts.button_center, chip(notch_w, 24.0));
+                    ink_fits(&r, label, &r.fonts.button_center, chip(strip_w, 18.0));
+                }
+            }
+        }
+    }
+
+    /// The offer's title and body stay on one line beside the two chips in
+    /// DM Sans, in both languages, even for a long version ("10.11.12").
+    /// (JetBrains Mono is wider and trims with "...", as every notice does.)
+    #[test]
+    fn update_offer_text_fits_beside_both_chips_in_dm_sans() {
+        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let mut r = Renderer::new().expect("renderer");
+        r.set_ui_font(UiFont::Sans).expect("font");
+        let kind = NoticeKind::UpdateAvailable {
+            version: "10.11.12".into(),
+        };
+        for lang in [Lang::Id, Lang::En] {
+            let title = crate::i18n::update_available(lang, "10.11.12");
+            let body = crate::i18n::update_installed(lang, "10.11.12");
+            assert!(r.notice_text_fits(&kind, true, &title), "{lang:?} {title}");
+            assert!(r.notice_text_fits(&kind, false, &body), "{lang:?} {body}");
         }
     }
 

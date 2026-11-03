@@ -1467,6 +1467,79 @@ pub fn waiting_strip(s: ShapeRect) -> Rect {
     rect(left(s), s.y + STRIP_TOP, s.w - 2.0 * PAD_X, STRIP_H)
 }
 
+/// What the strip at the top of the panel holds, for the click regions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StripKind {
+    /// No strip.
+    None,
+    /// A strip with nothing of its own to click beyond the strip itself
+    /// (Claude waiting, a reminder, a toast).
+    Plain,
+    /// The update offer: "Nanti" and "Update" chips at the right, ahead of
+    /// the strip's own region.
+    UpdateOffer,
+}
+
+impl StripKind {
+    /// A strip is drawn.
+    pub fn shown(self) -> bool {
+        self != StripKind::None
+    }
+}
+
+/// A bare flag reads as `None` or `Plain`, so callers without an offer pass
+/// `strip: bool` as before.
+impl From<bool> for StripKind {
+    fn from(shown: bool) -> Self {
+        if shown {
+            StripKind::Plain
+        } else {
+            StripKind::None
+        }
+    }
+}
+
+/// The update offer's "Update" chip in the strip.
+pub const STRIP_UPDATE_W: f32 = 52.0;
+/// The offer's "Nanti" / "Later" chip in the strip, left of "Update".
+pub const STRIP_LATER_W: f32 = 44.0;
+const STRIP_CHIP_H: f32 = 18.0;
+const STRIP_CHIP_GAP: f32 = 4.0;
+/// Space between the strip's right end and its last chip.
+const STRIP_CHIP_EDGE: f32 = 4.0;
+/// Space between the strip's text and its first chip.
+const STRIP_TEXT_GAP: f32 = 8.0;
+
+/// The update offer's strip: the dot, the text and the two chips.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UpdateStrip {
+    pub dot: Rect,
+    pub text: Rect,
+    pub later: Rect,
+    pub update: Rect,
+}
+
+/// Where the offer's parts lie inside `strip` (`waiting_strip`): the dot at
+/// the left, the chips at the right ("Update" last), the text between.
+pub fn update_strip_parts(strip: Rect) -> UpdateStrip {
+    let mid = strip.y + strip.h / 2.0;
+    let chip = |right: f32, w: f32| rect(right - w, mid - STRIP_CHIP_H / 2.0, w, STRIP_CHIP_H);
+    let update = chip(strip.right() - STRIP_CHIP_EDGE, STRIP_UPDATE_W);
+    let later = chip(update.x - STRIP_CHIP_GAP, STRIP_LATER_W);
+    let text_x = strip.x + 26.0;
+    UpdateStrip {
+        dot: rect(strip.x + 10.0, mid - 4.0, 8.0, 8.0),
+        text: rect(
+            text_x,
+            strip.y,
+            (later.x - STRIP_TEXT_GAP - text_x).max(0.0),
+            strip.h,
+        ),
+        later,
+        update,
+    }
+}
+
 /// Which `shown` items of `n` to list when `k` fit: chunk `page` (wrapping)
 /// once they do not all fit. Returns `(start, shown)`.
 fn chunk(n: usize, k: usize, page: usize) -> (usize, usize) {
@@ -3480,12 +3553,20 @@ pub fn pomodoro_compact_layout_robot(s: ShapeRect) -> (Rect, (f32, f32), f32, Re
 
 /// Clickable regions of a page, plus the waiting strip when it is shown.
 /// Clicks inside the panel that miss every region count as `Hit::Body`.
-pub fn regions(s: ShapeRect, layout: &PageLayout, strip: bool) -> Vec<Region> {
+/// The update offer's chips come first, so they win over the strip.
+pub fn regions(s: ShapeRect, layout: &PageLayout, strip: impl Into<StripKind>) -> Vec<Region> {
+    let strip: StripKind = strip.into();
     let mut out = Vec::new();
     let mut add = |rect: Rect, hit: Hit| out.push(Region { rect, hit });
-    if strip {
+    if strip == StripKind::UpdateOffer {
+        let parts = update_strip_parts(waiting_strip(s));
+        add(parts.later, Hit::UpdateLater);
+        add(parts.update, Hit::UpdateNow);
+    }
+    if strip.shown() {
         add(waiting_strip(s), Hit::Strip);
     }
+    let strip = strip.shown();
     // Fixed chrome on every page: first among the page's regions (after the
     // strip), so it wins over underlays such as `NotifFocus`.
     add(settings_button(s, strip), Hit::OpenSettings);
@@ -7103,4 +7184,56 @@ mod media_tests {
             "the title"
         );
     }
+
+    #[test]
+    fn the_update_offers_strip_chips_win_over_the_strip_and_belong_to_it_alone() {
+        for style in [Style::Pill, Style::Notch] {
+            let s = shape_for(style, ShapeKind::Panel);
+            let layout = PageLayout::Pomodoro(pomodoro_layout(s, true));
+            let strip = waiting_strip(s);
+            let parts = update_strip_parts(strip);
+            let with = regions(s, &layout, StripKind::UpdateOffer);
+            let hit_at = |regs: &[Region], x: f32, y: f32| {
+                regs.iter().find(|r| r.rect.contains(x, y)).map(|r| r.hit.clone())
+            };
+            let mid = |r: Rect| (r.x + r.w / 2.0, r.y + r.h / 2.0);
+            let (x, y) = mid(parts.later);
+            assert_eq!(hit_at(&with, x, y), Some(Hit::UpdateLater), "{style:?}");
+            let (x, y) = mid(parts.update);
+            assert_eq!(hit_at(&with, x, y), Some(Hit::UpdateNow), "{style:?}");
+            // The chips' regions come before the strip's: they win.
+            let pos = |hit: Hit| with.iter().position(|r| r.hit == hit).expect("region");
+            assert!(pos(Hit::UpdateLater) < pos(Hit::Strip));
+            assert!(pos(Hit::UpdateNow) < pos(Hit::Strip));
+            // The strip outside the chips, and left of them, is the strip.
+            assert_eq!(
+                hit_at(&with, parts.text.x + 4.0, strip.y + strip.h / 2.0),
+                Some(Hit::Strip)
+            );
+            assert_eq!(hit_at(&with, strip.x + 1.0, strip.y + 1.0), Some(Hit::Strip));
+            // A plain strip, or none, has no chip regions at all.
+            for plain in [StripKind::Plain, StripKind::None] {
+                let regs = regions(s, &layout, plain);
+                assert!(
+                    regs.iter()
+                        .all(|r| !matches!(r.hit, Hit::UpdateNow | Hit::UpdateLater)),
+                    "{plain:?}"
+                );
+                assert_eq!(
+                    regs.iter().any(|r| r.hit == Hit::Strip),
+                    plain == StripKind::Plain
+                );
+            }
+            // A bare flag still means a plain strip.
+            assert_eq!(
+                regions(s, &layout, true),
+                regions(s, &layout, StripKind::Plain)
+            );
+            assert_eq!(
+                regions(s, &layout, false),
+                regions(s, &layout, StripKind::None)
+            );
+        }
+    }
+
 }

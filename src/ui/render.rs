@@ -52,9 +52,9 @@ use super::geometry::{
     BAR_COUNT, BAR_GAP, BAR_W, HitRegions, LYRIC_FADE_W, NoticeLayout, Rect, SHOT_BUTTON_PAD,
     SHOT_THUMB_RADIUS, ShapeRect, Under, badge_letter, badge_style, compact_layout,
     compact_layout_robot, corner_radius, equalizer_heights, idle_layout_lead, lyric_layout,
-    lyric_layout_robot, lyric_overflow, notice_action, notice_action_w, notice_layout, shot_fit,
-    shot_layout, shot_regions, shoulder_depth, toast_dot, toast_eyebrow, toast_notice_layout,
-    toast_slot_parts,
+    lyric_layout_robot, lyric_overflow, notice_action, notice_action_w, notice_actions_layout,
+    notice_chip_widths, notice_layout, shot_fit, shot_layout, shot_regions, shoulder_depth,
+    toast_dot, toast_eyebrow, toast_notice_layout, toast_slot_parts, update_offer_regions,
 };
 use super::icons::{Icon, IconSet};
 use super::motion::{StripFrame, Transit};
@@ -71,13 +71,13 @@ use crate::clipboard::Clip;
 use crate::clipboard::image::Thumb;
 use crate::config::{Style, UiFont};
 use crate::devices::{Device, Veto};
-use crate::i18n;
+use crate::i18n::{self, Key};
 use crate::lyrics::{self, ShownLine};
 use crate::model::{CalView, Hit, MediaInfo, Notice, NoticeKind, Page, Timeline, View};
 use crate::mole::{GroupSize, MoleGroup, MoleOpts, MoleReport, PreviewSummary};
 use crate::notes::Note;
 use crate::notif::NotifEntry;
-use crate::pomodoro::{PomoStatus, Pomodoro};
+use crate::pomodoro::{Phase, PomoStatus, Pomodoro};
 use crate::reminders::Reminder;
 use crate::search::SearchResult;
 use crate::search_details::Detail;
@@ -1670,6 +1670,9 @@ impl Renderer {
                 (NoticeKind::Arranged { save }, _) => {
                     self.paint_arranged(shape, notice, *save, &frame.arrange, robot)
                 }
+                (NoticeKind::UpdateAvailable { .. }, _) => {
+                    self.paint_update_offer(shape, notice, robot)
+                }
                 _ => self.paint_notice(
                     shape,
                     notice,
@@ -2178,6 +2181,62 @@ impl Renderer {
                 self.text_colored(label, &self.fonts.button_center, chip, ink, 1.0);
             });
         }
+        Ok(())
+    }
+
+    /// The update offer: the badge (or Bata), the title over the body, and two
+    /// chips at the right, "Nanti" (quiet) then "Update" (accent). Both are
+    /// hit regions (`Hit::UpdateLater`, `Hit::UpdateNow`); the text stops
+    /// short of them.
+    fn paint_update_offer(
+        &mut self,
+        shape: ShapeRect,
+        notice: &Notice,
+        robot: Option<RobotFrame>,
+    ) -> Result<()> {
+        let p = self.palette;
+        let widths = notice_chip_widths(&notice.kind, PomoStatus::Idle);
+        let (layout, chips) = notice_actions_layout(shape, &widths);
+        let badge = badge_style(notice, &p, Phase::Focus);
+        match robot {
+            Some(r) => self.paint_robot(layout.badge, r),
+            None => {
+                self.set_color(badge.fill, badge.alpha);
+                self.fill_round(layout.badge, radius::BADGE);
+                self.solid_ink(|| {
+                    if let Some(icon) = badge.icon {
+                        self.icon_colored(icon, layout.badge, 20.0, badge.ink, 1.0, None);
+                    }
+                });
+            }
+        }
+        self.text(&notice.title, &self.fonts.title, layout.title, 1.0);
+        self.text_colored(
+            &notice.body,
+            &self.fonts.small,
+            layout.body,
+            p.secondary,
+            1.0,
+        );
+        let &[later, update] = chips.as_slice() else {
+            return Ok(());
+        };
+        let chip = |rect: Rect, key: Key, fill: u32, ink: u32| {
+            self.set_color(fill, 1.0);
+            self.fill_round(rect, rect.h / 2.0);
+            self.solid_ink(|| {
+                self.text_colored(
+                    i18n::text(i18n::lang(), key),
+                    &self.fonts.button_center,
+                    rect,
+                    ink,
+                    1.0,
+                );
+            });
+        };
+        chip(later, Key::UpdateLater, p.raised_hi, p.text);
+        chip(update, Key::UpdateButton, p.accent, p.on_accent);
+        self.regions.regions = update_offer_regions(later, update);
         Ok(())
     }
 
@@ -2763,8 +2822,7 @@ impl Renderer {
     /// any): its title (`title`) or its body, measured as it is drawn.
     pub fn notice_text_fits(&self, kind: &NoticeKind, title: bool, text: &str) -> bool {
         let s = super::geometry::shape_for(Style::Pill, super::geometry::ShapeKind::Notice);
-        let chip = notice_action(kind, PomoStatus::Idle).map(|_| notice_action_w(kind));
-        let l = notice_layout(s, chip);
+        let (l, _) = notice_actions_layout(s, &notice_chip_widths(kind, PomoStatus::Idle));
         let (format, area) = if title {
             (&self.fonts.title, l.title)
         } else {
