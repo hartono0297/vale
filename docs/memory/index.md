@@ -96,6 +96,7 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[install-script-follows-latest-release]]
 - [[shot-editor-paint-order]]: Direct2D paints in call order; the editor's footer background must come before the buttons in it (the Discard bar)
 - [[taskbar-icon-from-exe]]: the Win11 taskbar shows the exe's cached icon, not WM_SETICON; the installer and the app tell the shell
+- [[test-spawns-no-window]]: tests spawn console children with CREATE_NO_WINDOW and never show windows (editor `ON_SCREEN`), or Windows Terminal windows pop up
 - [[tray-dark-menu]]: the tray menu follows the Windows app mode via uxtheme ordinals 135/136/104 (AllowDark), not Vale's window theme
 
 ## Conventions
