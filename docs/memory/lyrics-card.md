@@ -35,7 +35,14 @@ Related: [[lyrics-sync]], [[lyrics-lookup]], [[media-session-priority]],
   an art fingerprint, hidden by fullscreen), `toggle_lyrics_card`,
   `close_lyrics_card`, `sync_lyrics_card(now)`, `on_lyrics_card_msg`,
   `check_lyrics_card_fullscreen`. `sync_lyrics_card` is called at the end of
-  `refresh` and right after a lyrics answer arrives.
+  `refresh`, right after a lyrics answer arrives, and at the end of
+  `adopt_config` (so a hand edit of `language` or `font` reaches the card) and
+  in the `SettingsAction::Lang` arm. `Sent` (what was last sent) also holds the
+  language in effect (`crate::i18n::lang()`), built by the pure `sent_of`: the
+  card draws its own messages (`LyricsCardSearching` / `None` / `NoMedia`) at
+  render time, so a language change makes the `Sent` differ and `card::update`
+  (apply + render, always) redraws them; the same content in the same language
+  gives an equal `Sent` and sends nothing.
 - The window procedure never calls `app::with_app`. It posts
   `PostMessageW(island, WM_APP_LYRICS_CARD, code, value)`; codes `Close` 1,
   `Seek` 2 (value = ms), `Prev` 3, `PlayPause` 4, `Next` 5, `Placed` 6 (the rect
@@ -187,7 +194,28 @@ title, artist or other user data); card commands are not click-logged
   timer, restarted by each notch) the list eases back to the song. The wheel is
   never forwarded: the card is a separate window, so the island's volume
   gesture never sees it.
-- Leaving: `TrackMouseEvent(TME_LEAVE)` and `WM_MOUSELEAVE`.
+- Leaving: `TrackMouseEvent(TME_LEAVE)` and `WM_MOUSELEAVE`. While a press is
+  held `pointer_leave` only clears `tracking` (it is one-shot), so when a press
+  ends (`button_up` and `capture_lost`) `after_press` reads `GetCursorPos` and
+  tests it against the card rect with `layout::point_in` (right and bottom
+  edges outside): outside calls `pointer_leave`, inside re-arms the tracking
+  (`arm_tracking`) and refreshes `last_pt`. Without this a resize released
+  outside the card left the controls and the grip shown.
+- Lost capture: `WM_CAPTURECHANGED` (Alt+Tab, the Win key, a UAC prompt during
+  a drag or resize) calls `Card::capture_lost`. It takes the `press`; a press
+  that was `dragging` goes through `finish_move`, so `Placed` is posted and the
+  rect is saved as a release would; a press that never moved posts nothing. The
+  messages are posted after the borrow, like in `WM_LBUTTONUP`. Our own
+  `ReleaseCapture` in `button_up` also sends `WM_CAPTURECHANGED`, but the press
+  is already gone then: one `Placed` only (tests cover both).
+- Hover state: `last_pt` is the last pointer position in dip, set in
+  `pointer_move`, cleared by `pointer_leave` and `destroyed`. `rehover(now)`
+  finds the zone and the line under it again (`hover_line` only for the body,
+  `None` when not hovering or without a point; a held press keeps what it had).
+  It runs from `follow` (a new line, and so the manual-hold return), `wheel` and
+  `frame` while the scroll moves, always before a render, so the highlight
+  follows the list under a resting pointer. No timer or poll was added. The
+  cursor shape (hand) still updates on the next mouse move or `WM_SETCURSOR`.
 
 ## Placement
 
@@ -257,7 +285,10 @@ timers without a window on screen: `ON_SCREEN = !cfg!(test)`, [[test-spawns-no-w
 changes), `config.rs` (the rect round trip, lenient read, an old config, the
 hotkey row's default, None, garbage, a duplicate of an earlier row, migration, an
 old file without the key), `hotkey.rs`, `app_hotkeys.rs` and `app_prtsc.rs` at
-six rows, `panel_layout.rs` (the button between `next` and "Lirik" at every
+six rows, `app_lyrics_card.rs` (`sent_of`: another language differs, the same
+language is equal), `window.rs` (`capture_lost` for a drag, a click and no
+press, `WM_CAPTURECHANGED` posting one `Placed`, `rehover` following the scroll),
+`layout.rs` (`point_in` edges), `panel_layout.rs` (the button between `next` and "Lirik" at every
 tested size, the region only with lyrics on), `settings_layout.rs` (six rows, no
 viewport), `state.rs`, `media_log.rs`.
 

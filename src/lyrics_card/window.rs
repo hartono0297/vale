@@ -2147,6 +2147,125 @@ mod tests {
         close();
     }
 
+    fn press(dragging: bool) -> Press {
+        Press {
+            zone: Zone::Header,
+            line: None,
+            start: (0, 0),
+            origin: (0, 0),
+            size_dip: (300.0, 420.0),
+            dragging,
+        }
+    }
+
+    #[test]
+    fn a_capture_lost_mid_drag_saves_the_place_once() {
+        assert!(open(args(), content(Status::Synced, true)));
+        // A header, body or grip drag that already moved the window: saved.
+        let mut post = Vec::new();
+        let state = with(|c, _| {
+            c.press = Some(press(true));
+            c.capture_lost(&mut post);
+            (c.press.is_none(), c.placed.is_some())
+        })
+        .unwrap();
+        assert_eq!(state, (true, true));
+        assert_eq!(post, vec![(Msg::Placed, 0)], "exactly one Placed");
+        assert!(take_placed().is_some());
+        // A press that never became a drag: nothing to save.
+        let mut post = Vec::new();
+        let state = with(|c, _| {
+            c.press = Some(press(false));
+            c.capture_lost(&mut post);
+            (c.press.is_none(), c.placed.is_some())
+        })
+        .unwrap();
+        assert_eq!(state, (true, false));
+        assert!(post.is_empty());
+        // No press at all (our own ReleaseCapture after a button release).
+        let mut post = Vec::new();
+        with(|c, _| c.capture_lost(&mut post)).unwrap();
+        assert!(post.is_empty());
+        assert!(take_placed().is_none());
+        close();
+    }
+
+    #[test]
+    fn wm_capturechanged_posts_placed_for_a_drag_and_never_twice() {
+        use windows::Win32::UI::WindowsAndMessaging::SendMessageW;
+        let island = fake_island();
+        let mut a = args();
+        a.island = island;
+        a.demo = false;
+        assert!(open(a, content(Status::Synced, true)));
+        let h = hwnd().unwrap();
+        let _ = with(|c, _| c.press = Some(press(true)));
+        // Alt+Tab, the Win key or a UAC prompt takes the capture.
+        unsafe { SendMessageW(h, WM_CAPTURECHANGED, None, None) };
+        assert_eq!(posted(island), vec![Msg::Placed.code()]);
+        assert!(take_placed().is_some());
+        // The WM_CAPTURECHANGED of our own ReleaseCapture after a release: the
+        // press is gone by then, so nothing more is posted.
+        unsafe { SendMessageW(h, WM_CAPTURECHANGED, None, None) };
+        assert!(posted(island).is_empty());
+        // A click that is not a drag posts nothing either.
+        let _ = with(|c, _| c.press = Some(press(false)));
+        unsafe { SendMessageW(h, WM_CAPTURECHANGED, None, None) };
+        assert!(posted(island).is_empty());
+        close();
+        unsafe {
+            let _ = DestroyWindow(island);
+        }
+    }
+
+    #[test]
+    fn the_highlight_follows_the_list_under_a_resting_pointer() {
+        assert!(open(args(), content(Status::Synced, true)));
+        let now = Instant::now();
+        let seen = with(|c, _| {
+            let body = c.rects().body;
+            let (tops, heights) = {
+                let l = c.layouts.as_ref().unwrap();
+                (l.tops.clone(), l.heights.clone())
+            };
+            let y = body.y + body.h / 2.0;
+            c.hovering = true;
+            c.last_pt = Some((50.0, y));
+            let at = |c: &mut Card, line: usize| {
+                // Scroll so that `line` sits under the pointer.
+                let s = tops[line] + heights[line] / 2.0 - (y - body.y);
+                c.scroll = Tween::at_rest(s, now);
+                c.rehover(now);
+                c.hover_line
+            };
+            let first = at(c, 0);
+            let last = at(c, 2);
+            let middle = at(c, 1);
+            // The pointer left: no highlight, whatever the list does.
+            c.hovering = false;
+            let off = at(c, 2);
+            // A held press keeps what it had.
+            c.hovering = true;
+            c.press = Some(press(false));
+            c.hover_line = Some(1);
+            let pressed = at(c, 2);
+            c.press = None;
+            // Without a position there is nothing to follow.
+            c.last_pt = None;
+            let none = at(c, 2);
+            (first, last, middle, off, pressed, none, c.hover_zone)
+        })
+        .unwrap();
+        assert_eq!(seen.0, Some(0));
+        assert_eq!(seen.1, Some(2));
+        assert_eq!(seen.2, Some(1));
+        assert_eq!(seen.3, None);
+        assert_eq!(seen.4, Some(1));
+        assert_eq!(seen.5, None);
+        assert_eq!(seen.6, Zone::Body);
+        close();
+    }
+
     #[test]
     fn a_tween_eases_and_jumps_when_asked_to() {
         let t0 = Instant::now();
