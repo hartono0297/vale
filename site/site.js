@@ -1288,7 +1288,8 @@
      Tab is the skip link; the URL keeps no #top. With motion the tail also
      plays a yank (.is-yank, about 700 ms: a dip, then up and out of the view)
      as if the cat climbed up; it ends in the hidden state with transitions
-     off for a moment (.is-reset, removed by a timer) so no slide-out replays,
+     off for a moment (.is-reset, removed by a timer; write holds back until
+     then, so a late show still slides in) so no slide-out replays,
      and stays hidden while that scroll is still running (climb). The yank has
      a timer fallback. Reduced motion: no yank, an instant scroll, no
      transition. */
@@ -1301,6 +1302,7 @@
     var shown = false;
     var next = false;
     var yanking = false;
+    var resetting = false;
     var climb = false;
     var yankTimer = 0;
     var climbTimer = 0;
@@ -1317,7 +1319,12 @@
       btn.classList.remove('is-yank', 'is-shown');
       shown = false;
       clearTimeout(resetTimer);
-      resetTimer = setTimeout(function () { btn.classList.remove('is-reset'); }, 100);
+      resetting = true;
+      resetTimer = setTimeout(function () {
+        resetting = false;
+        btn.classList.remove('is-reset');
+        loop.kick(fx);
+      }, 100);
       loop.kick(fx);
     }
     btn.addEventListener('animationend', function (e) {
@@ -1356,7 +1363,7 @@
         next = past && !covers && !climb;
       },
       write: function () {
-        if (yanking || next === shown) return;
+        if (yanking || resetting || next === shown) return;
         shown = next;
         btn.classList.toggle('is-shown', shown);
       }

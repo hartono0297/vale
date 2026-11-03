@@ -283,9 +283,9 @@ html:not(.js) .js-only { display: none !important; }
 /* ---------- go to top ----------
    A cartoon cat tail, drawn in inline SVG, that starts flush at the right edge
    of the window (as if the cat sat just off screen), curves up and left in an S
-   and ends in a curled tip. No disc: an outline underlay (--tail-edge) keeps it
-   at 3:1 or more against the page in both themes for every coat; the body is
-   --coat and the tip --tip, so a coat chip recolours it. The box is 56 x 100
+   and ends in a curled tip. No disc: two outline rings, --tail-halo under
+   --tail-edge, keep it at 3:1 or more against the page in both themes for every
+   coat; the body is --coat and the tip --tip, so a coat chip recolours it. The box is 56 x 100
    (the viewBox pads 4 units on the left so the swish stays inside it). Without
    script it is always there, a plain #top link, still. With script site.js shows
    it once the hero has scrolled away (.is-shown): it slides in from the right
