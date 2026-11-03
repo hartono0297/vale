@@ -127,6 +127,12 @@ pub enum PhoneEvent {
     },
     TokenExpired,
     TokenVoid,
+    /// A phone was approved with the token made at `token_made` while it
+    /// was good: it no longer runs out. An approval of a phone that paired
+    /// with an older token, or after the token expired, does not say this.
+    TokenKept {
+        token_made: Instant,
+    },
     UploadStarted {
         upload_id: u64,
         device_id: u64,
@@ -313,17 +319,19 @@ pub fn start_lan(lang: Lang, sink: Sink) -> Handle {
 impl Handle {
     /// The owner said yes to `device_id`.
     pub fn approve(&self, device_id: u64) {
-        let ok = self
-            .shared
-            .session
-            .lock()
-            .map(|mut s| s.approve(device_id))
-            .unwrap_or(false);
-        if ok {
-            self.shared.emit(PhoneEvent::PairingEnded {
-                device_id,
-                outcome: Outcome::Approved,
-            });
+        let answer = self.shared.session.lock().ok().and_then(|mut s| {
+            let approval = s.approve(device_id, Instant::now())?;
+            Some((approval, s.token_made()))
+        });
+        let Some((approval, token_made)) = answer else {
+            return;
+        };
+        self.shared.emit(PhoneEvent::PairingEnded {
+            device_id,
+            outcome: Outcome::Approved,
+        });
+        if approval.token_kept {
+            self.shared.emit(PhoneEvent::TokenKept { token_made });
         }
     }
 

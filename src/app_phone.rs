@@ -370,9 +370,9 @@ impl App {
                 };
                 let gone = self.phone.pending.remove(at);
                 if outcome == crate::phone::Outcome::Approved {
+                    // The token stops counting down only on `TokenKept`: a
+                    // phone of an older or expired token leaves it as it is.
                     self.phone.devices.push(gone.kind);
-                    // A phone is in: the token lives on with the session.
-                    self.phone.timed = false;
                     self.phone.chip = i18n::phone_devices_chip(i18n::lang(), &self.phone.devices);
                 }
                 // The view that was answering moves on to what is next. The
@@ -387,6 +387,13 @@ impl App {
                 }
             }
             PhoneEvent::TokenExpired => self.phone.expired = true,
+            PhoneEvent::TokenKept { token_made } => {
+                // Only for the token on screen: a late one of a token
+                // replaced since ("Buat QR baru") changes nothing.
+                if self.phone.ready.as_ref().is_some_and(|r| r.made == token_made) {
+                    self.phone.timed = false;
+                }
+            }
             PhoneEvent::TokenVoid => self.phone.void = true,
             PhoneEvent::UploadStarted {
                 upload_id,

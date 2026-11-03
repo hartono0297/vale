@@ -169,13 +169,22 @@ function pickFiles(list){
  for(i=0;i<n;i++)items.push({file:list[i],name:list[i].name||("file-"+i),size:list[i].size,batch:batch,index:i,count:n,s:"wait",pct:0,msg:""});
  drawList();if(!running)next()}
 
+/* The PC refuses more than this (413); such a file is not sent at all, so
+   the refusal cannot be lost to a connection reset mid-send. */
+var MAX=4*1024*1024*1024;
+
 function fail(it,status){
  it.s="err";
- it.msg=status===409?t("cancelled"):status===413?t("big"):status===507?t("full"):t("fail")}
+ it.msg=status===409?t("cancelled"):status===413?t("big"):status===507?t("full"):t("fail");
+ /* Cancelled on the PC: the rest of that pick would be refused too. */
+ if(status===409)items.forEach(function(o){if(o.s==="wait"&&o.batch===it.batch){o.s="err";o.msg=t("cancelled");o.file=null}})}
 
 function next(){
  var it=null,i;
- for(i=0;i<items.length;i++)if(items[i].s==="wait"){it=items[i];break}
+ for(i=0;i<items.length;i++){
+  if(items[i].s!=="wait")continue;
+  if(items[i].size>MAX){items[i].s="err";items[i].msg=t("big");items[i].file=null;continue}
+  it=items[i];break}
  if(!it){running=false;drawList();return}
  running=true;it.s="up";drawList();
  var x=new XMLHttpRequest();

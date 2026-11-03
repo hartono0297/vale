@@ -44,6 +44,8 @@ struct Device {
     pairing_cookie: String,
     session_cookie: Option<String>,
     status: Status,
+    /// The token this phone paired with (`Session::token_gen` then).
+    token_gen: u64,
 }
 
 /// What `begin_pairing` made.
@@ -78,9 +80,15 @@ pub enum StateAnswer {
     /// Nothing known about this cookie: a bare 404.
     Unknown,
     Waiting { code: String },
-    /// Approved. `session_cookie` is the new `vs` to set (and `vp` is then
-    /// cleared); it is `None` when the request already came with `vs`.
-    Approved { session_cookie: Option<String> },
+    /// Approved. `session_cookie` is the new `vs` to set; it is `None` when
+    /// the request already came with `vs`, or when this phone's `vs` was
+    /// made before (a second tab, a reload racing a poll): the pairing
+    /// cookie never makes another one. `clear_pairing`: the request came
+    /// with the pairing cookie, which is then cleared on the phone.
+    Approved {
+        session_cookie: Option<String>,
+        clear_pairing: bool,
+    },
     Rejected,
 }
 
@@ -91,6 +99,15 @@ pub enum Tick {
     TokenExpired,
     TokenVoid,
     Idle,
+}
+
+/// What `approve` did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Approval {
+    /// The phone paired with the current token while it was still good:
+    /// the token now lives as long as the session. Not for a phone that
+    /// paired with a token replaced since, nor once the token expired.
+    pub token_kept: bool,
 }
 
 /// What `reject` caused.
@@ -106,9 +123,13 @@ pub struct Session {
     fill: Fill,
     token: String,
     token_made: Instant,
-    /// A phone was approved with this token: it then lives until the session
-    /// ends (more phones may come), not just `TOKEN_TTL`.
+    /// A phone was approved with this token while it was good: it then
+    /// lives until the session ends (more phones may come), not just
+    /// `TOKEN_TTL`.
     approved_once: bool,
+    /// Which token is current: each new one takes the next number, so an
+    /// approval tells the token its phone paired with from a later one.
+    token_gen: u64,
     voided: bool,
     expiry_told: bool,
     rejections: u32,
@@ -158,6 +179,7 @@ impl Session {
             token,
             token_made: now,
             approved_once: false,
+            token_gen: 0,
             voided: false,
             expiry_told: false,
             rejections: 0,
@@ -186,6 +208,7 @@ impl Session {
         };
         self.token = token;
         self.token_made = now;
+        self.token_gen += 1;
         self.approved_once = false;
         self.voided = false;
         self.expiry_told = false;
@@ -236,6 +259,7 @@ impl Session {
             pairing_cookie: cookie.clone(),
             session_cookie: None,
             status: Status::Pending(now),
+            token_gen: self.token_gen,
         });
         self.last_activity = now;
         Ok(NewPairing {
@@ -306,7 +330,18 @@ impl Session {
             }
             Status::Approved if via_session => StateAnswer::Approved {
                 session_cookie: None,
+                clear_pairing: false,
             },
+            // The session cookie was made already: the pairing cookie only
+            // says "approved" and is cleared. A new cookie here would void
+            // the one the phone holds, and the pairing cookie would stay a
+            // way into the API.
+            Status::Approved if self.devices[i].session_cookie.is_some() => {
+                StateAnswer::Approved {
+                    session_cookie: None,
+                    clear_pairing: true,
+                }
+            }
             Status::Approved => {
                 // The first look after the owner's yes: the phone gets its
                 // own session cookie (and drops the pairing one).
@@ -317,6 +352,7 @@ impl Session {
                 self.last_activity = now;
                 StateAnswer::Approved {
                     session_cookie: Some(cookie),
+                    clear_pairing: true,
                 }
             }
             Status::Rejected | Status::TimedOut => StateAnswer::Rejected,
@@ -336,16 +372,21 @@ impl Session {
         self.last_activity = now;
     }
 
-    pub fn approve(&mut self, device_id: u64) -> bool {
-        let Some(d) = self.devices.iter_mut().find(|d| d.id == device_id) else {
-            return false;
-        };
+    /// The owner said yes. `None` if the device was not waiting.
+    pub fn approve(&mut self, device_id: u64, now: Instant) -> Option<Approval> {
+        let d = self.devices.iter_mut().find(|d| d.id == device_id)?;
         if !matches!(d.status, Status::Pending(_)) {
-            return false;
+            return None;
         }
         d.status = Status::Approved;
-        self.approved_once = true;
-        true
+        let current = d.token_gen == self.token_gen;
+        // An expired or replaced token is not brought back: the PC already
+        // shows it as gone.
+        let token_kept = current && self.token_state(now) == TokenState::Valid;
+        if token_kept {
+            self.approved_once = true;
+        }
+        Some(Approval { token_kept })
     }
 
     /// The owner said no. Three of these (and time outs) in one session void
@@ -498,8 +539,8 @@ mod tests {
         let second = pair(&mut s, t0);
         assert_ne!(second.device_id, first.device_id);
         assert!(!s.pairing_over(Some(&second.cookie), None));
-        assert!(s.approve(second.device_id));
-        let StateAnswer::Approved { session_cookie: Some(vs) } =
+        assert!(s.approve(second.device_id, t0).is_some());
+        let StateAnswer::Approved { session_cookie: Some(vs), .. } =
             s.answer_state(Some(&second.cookie), None, t0)
         else {
             panic!("approved");
@@ -543,7 +584,7 @@ mod tests {
     fn after_the_first_approval_the_token_lives_until_the_session_ends() {
         let (mut s, t0) = session();
         let p = pair(&mut s, t0);
-        assert!(s.approve(p.device_id));
+        assert!(s.approve(p.device_id, t0).is_some());
         assert_eq!(s.token_state(t0 + secs(3000)), TokenState::Valid);
         let t = s.token().to_owned();
         // A second phone can come much later (within the idle time).
@@ -619,7 +660,7 @@ mod tests {
             }]
         );
         assert_eq!(s.pending(), 0);
-        assert!(!s.approve(p.device_id), "too late");
+        assert!(s.approve(p.device_id, t0 + secs(60)).is_none(), "too late");
         assert_eq!(
             s.answer_state(Some(&p.cookie), None, t0 + secs(61)),
             StateAnswer::Rejected
@@ -683,7 +724,7 @@ mod tests {
         );
         // Not the API, even once approved.
         assert_eq!(s.device_for_api(Some(&p.cookie), t0), None);
-        assert!(s.approve(p.device_id));
+        assert!(s.approve(p.device_id, t0).is_some());
         assert_eq!(s.device_for_api(Some(&p.cookie), t0), None);
         // A made-up cookie opens nothing.
         assert!(!s.page_access(Some("zzz"), Some("yyy"), t0));
@@ -694,9 +735,10 @@ mod tests {
     fn approval_hands_over_a_new_session_cookie_once() {
         let (mut s, t0) = session();
         let p = pair(&mut s, t0);
-        assert!(s.approve(p.device_id));
+        assert!(s.approve(p.device_id, t0).is_some());
         let StateAnswer::Approved {
             session_cookie: Some(vs),
+            ..
         } = s.answer_state(Some(&p.cookie), None, t0)
         else {
             panic!("expected a session cookie");
@@ -707,22 +749,104 @@ mod tests {
         assert_eq!(
             s.answer_state(None, Some(&vs), t0),
             StateAnswer::Approved {
-                session_cookie: None
+                session_cookie: None,
+                clear_pairing: false,
             }
         );
         assert_eq!(s.device_for_api(Some(&vs), t0), Some(p.device_id));
         assert!(s.page_access(None, Some(&vs), t0));
         // Two phones get two different cookies.
         let q = pair(&mut s, t0);
-        s.approve(q.device_id);
+        s.approve(q.device_id, t0);
         let StateAnswer::Approved {
             session_cookie: Some(vs2),
+            ..
         } = s.answer_state(Some(&q.cookie), None, t0)
         else {
             panic!("second cookie");
         };
         assert_ne!(vs, vs2);
         assert_eq!(s.device_for_api(Some(&vs2), t0), Some(q.device_id));
+    }
+
+    #[test]
+    fn the_pairing_cookie_never_makes_a_second_session_cookie() {
+        let (mut s, t0) = session();
+        let p = pair(&mut s, t0);
+        assert!(s.approve(p.device_id, t0).is_some());
+        let StateAnswer::Approved {
+            session_cookie: Some(vs),
+            clear_pairing: true,
+        } = s.answer_state(Some(&p.cookie), None, t0)
+        else {
+            panic!("first cookie");
+        };
+        // A second tab, or a reload racing a poll, still sends only `vp`:
+        // it hears "approved", gets no cookie of its own, and `vp` goes.
+        assert_eq!(
+            s.answer_state(Some(&p.cookie), None, t0),
+            StateAnswer::Approved {
+                session_cookie: None,
+                clear_pairing: true,
+            }
+        );
+        // The cookie the phone holds still works.
+        assert_eq!(s.device_for_api(Some(&vs), t0), Some(p.device_id));
+        // Both cookies at once: the session one counts, nothing is made.
+        assert_eq!(
+            s.answer_state(Some(&p.cookie), Some(&vs), t0),
+            StateAnswer::Approved {
+                session_cookie: None,
+                clear_pairing: false,
+            }
+        );
+        assert_eq!(s.device_for_api(Some(&vs), t0), Some(p.device_id));
+    }
+
+    #[test]
+    fn only_a_phone_of_the_current_good_token_keeps_the_token() {
+        // Approved in time with the current token: kept.
+        let (mut s, t0) = session();
+        let p = pair(&mut s, t0);
+        assert_eq!(
+            s.approve(p.device_id, t0 + secs(10)),
+            Some(Approval { token_kept: true })
+        );
+        assert_eq!(s.token_state(t0 + secs(3000)), TokenState::Valid);
+
+        // Scanned at 4:50, approved at 5:10: the token stays expired.
+        let (mut s, t0) = session();
+        let p = pair(&mut s, t0 + secs(290));
+        assert!(s.tick(t0 + secs(300)).contains(&Tick::TokenExpired));
+        assert_eq!(
+            s.approve(p.device_id, t0 + secs(310)),
+            Some(Approval { token_kept: false })
+        );
+        assert_eq!(s.token_state(t0 + secs(310)), TokenState::Expired);
+        let t = s.token().to_owned();
+        assert_eq!(s.begin_pairing(&t, t0 + secs(311)), Err(PairError::BadToken));
+
+        // Paired with the old token, approved after "Buat QR baru": the
+        // phone is in, the new token still runs out.
+        let (mut s, t0) = session();
+        let p = pair(&mut s, t0);
+        assert!(s.new_token(t0 + secs(20)));
+        assert_eq!(
+            s.approve(p.device_id, t0 + secs(30)),
+            Some(Approval { token_kept: false })
+        );
+        assert_eq!(
+            s.token_state(t0 + secs(20) + TOKEN_TTL),
+            TokenState::Expired
+        );
+        let StateAnswer::Approved {
+            session_cookie: Some(vs),
+            ..
+        } = s.answer_state(Some(&p.cookie), None, t0 + secs(31))
+        else {
+            panic!("the phone is approved");
+        };
+        assert_eq!(s.device_for_api(Some(&vs), t0 + secs(31)), Some(p.device_id));
     }
 
     #[test]
@@ -764,10 +888,11 @@ mod tests {
             StateAnswer::Waiting { .. }
         ));
         assert!(!s.idle(t1 + secs(599)));
-        s.approve(p.device_id);
+        s.approve(p.device_id, t1);
         let t2 = t1 + secs(10);
         let StateAnswer::Approved {
             session_cookie: Some(vs),
+            ..
         } = s.answer_state(Some(&p.cookie), None, t2)
         else {
             panic!("cookie")
@@ -779,7 +904,8 @@ mod tests {
             assert_eq!(
                 s.answer_state(None, Some(&vs), now),
                 StateAnswer::Approved {
-                    session_cookie: None
+                    session_cookie: None,
+                    clear_pairing: false,
                 }
             );
         }

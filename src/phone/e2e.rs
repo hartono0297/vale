@@ -162,6 +162,12 @@ fn a_phone_pairs_uploads_is_cancelled_and_the_server_stops() {
     assert!(s.body.contains("\"state\":\"approved\""));
     let vs = cookie_of(&s, "vs");
     assert!(s.head.contains("Set-Cookie: vp=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"));
+    // A second tab (or a reload racing that poll) still sends `vp`: it is
+    // told "approved" and cleared, and no other `vs` replaces the first.
+    let again = get(addr, "/api/state", Some(&vp), ua);
+    assert!(again.body.contains("\"state\":\"approved\""));
+    assert!(!again.head.contains("Set-Cookie: vs="));
+    assert!(again.head.contains("Set-Cookie: vp=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"));
     let page = get(addr, "/", Some(&vs), ua);
     assert_eq!(page.status, 200);
 

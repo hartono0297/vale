@@ -330,12 +330,16 @@ fn page_with(shared: &Shared, state: &str, code: Option<&str>) -> Response {
 /// What a state answer sets on the phone.
 fn state_cookies(mut r: Response, answer: &StateAnswer) -> Response {
     if let StateAnswer::Approved {
-        session_cookie: Some(vs),
+        session_cookie: vs,
+        clear_pairing,
     } = answer
     {
-        r = r
-            .with_cookie(session_cookie("vs", vs))
-            .with_cookie(clear_cookie("vp"));
+        if let Some(vs) = vs {
+            r = r.with_cookie(session_cookie("vs", vs));
+        }
+        if *clear_pairing {
+            r = r.with_cookie(clear_cookie("vp"));
+        }
     }
     r
 }

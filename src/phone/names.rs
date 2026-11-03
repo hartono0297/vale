@@ -70,7 +70,8 @@ pub fn sanitize(raw: &str, lang: Lang) -> String {
     while name.contains("..") {
         name = name.replace("..", ".");
     }
-    let mut name = name.trim_matches([' ', '.']).to_owned();
+    // Windows drops trailing dots and spaces; a leading dot stays (".env").
+    let mut name = trim(&name).to_owned();
     // The extension, if any, is the part after the last dot.
     if is_reserved(name.split('.').next().unwrap_or("")) {
         let at = name.find('.').unwrap_or(name.len());
@@ -79,12 +80,17 @@ pub fn sanitize(raw: &str, lang: Lang) -> String {
     if name.chars().count() > MAX_CHARS {
         name = cap(&name);
     }
-    let name = name.trim_matches([' ', '.']).to_owned();
+    let name = trim(&name).to_owned();
     if name.is_empty() {
         fallback(lang).to_owned()
     } else {
         name
     }
+}
+
+/// `name` without leading spaces and without trailing dots and spaces.
+fn trim(name: &str) -> &str {
+    name.trim_start_matches(' ').trim_end_matches([' ', '.'])
 }
 
 /// `name` cut to `MAX_CHARS` characters, keeping a short extension.
@@ -150,6 +156,16 @@ mod tests {
         assert_eq!(s("tab\there\u{0}.txt"), "tabhere.txt");
         assert_eq!(s("a..b"), "a.b");
         assert!(!s("....").contains(".."));
+    }
+
+    #[test]
+    fn a_leading_dot_stays() {
+        assert_eq!(s(".env"), ".env");
+        assert_eq!(s("..env"), ".env");
+        assert_eq!(s(".nomedia"), ".nomedia");
+        assert_eq!(s(" .profile"), ".profile");
+        assert_eq!(s(".env. "), ".env");
+        assert_eq!(s("."), "file");
     }
 
     #[test]
