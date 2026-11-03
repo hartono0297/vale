@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use chrono::{Days, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 
 use super::geometry::{ExpandedLayout, Rect, ShapeRect};
+use super::phone_view::PhoneView;
 use crate::calendar::{CalEvent, CalStatus, EventTime, events_on, range_for};
 use crate::clean::{CleanCat, CleanMode};
 use crate::cli_folders::{MenuItem, Section};
@@ -193,6 +194,9 @@ pub struct ShortcutsLayout {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ShelfLayout {
     pub header: Rect,
+    /// The "HP" pill, left of "Kosongkan"'s place: always there, even on an
+    /// empty shelf (it opens the phone link).
+    pub phone: Rect,
     /// "Kosongkan"; only with something on the shelf.
     pub clear: Option<Rect>,
     /// Everything under the header: where files are dropped, outlined while
@@ -218,6 +222,7 @@ pub struct ShelfCardLayout {
 }
 
 const SHELF_CLEAR_W: f32 = 84.0;
+const SHELF_PHONE_W: f32 = 66.0;
 const SHELF_X: f32 = 18.0;
 const SHELF_GLYPH_H: f32 = 28.0;
 const SHELF_LINE_H: f32 = 13.5;
@@ -890,6 +895,12 @@ pub enum PageLayout {
     Mixer(MixerLayout),
     Search(SearchLayout),
     Shelf(ShelfLayout),
+    /// The phone link over the Shelf page: the QR view, the reason there is
+    /// none, the approval and the receiving view.
+    PhoneQr(PhoneQrLayout),
+    PhoneWarn(PhoneWarnLayout),
+    PhoneAsk(PhoneAskLayout),
+    PhoneRecv(PhoneRecvLayout),
     Devices(DevicesLayout),
     Arrange(ArrangeLayout),
 }
@@ -3064,7 +3075,13 @@ pub fn shelf_layout(s: ShapeRect, strip: bool, n: usize) -> ShelfLayout {
     let bottom = content_bottom(s);
     let (l, r) = (left(s), right(s));
     let hr = header_right(s);
-    let header = rect(l, top, hr - l - SHELF_CLEAR_W - 8.0, HEADER_H);
+    let phone = rect(
+        hr - SHELF_CLEAR_W - 8.0 - SHELF_PHONE_W,
+        top,
+        SHELF_PHONE_W,
+        HEADER_H,
+    );
+    let header = rect(l, top, phone.x - 8.0 - l, HEADER_H);
     let clear = (n > 0).then(|| rect(hr - SHELF_CLEAR_W, top, SHELF_CLEAR_W, HEADER_H));
     let body = header.bottom() + 8.0;
     let w = (r - l - 3.0 * TILE_GAP) / 4.0;
@@ -3084,11 +3101,341 @@ pub fn shelf_layout(s: ShapeRect, strip: bool, n: usize) -> ShelfLayout {
     let empty = (n == 0).then_some(zone);
     ShelfLayout {
         header,
+        phone,
         clear,
         zone,
         empty,
         lines,
         cards,
+    }
+}
+
+/// The round back button, the title and the row they sit in, shared by the
+/// phone link's four views: `(top, back, title)`.
+fn phone_head(s: ShapeRect, strip: bool) -> (f32, Rect, Rect) {
+    let top = content_top(s, strip);
+    let l = left(s);
+    let back = rect(l, top + (PHONE_HEAD_H - PHONE_BACK) / 2.0, PHONE_BACK, PHONE_BACK);
+    let title = rect(back.right() + 8.0, top, PHONE_TITLE_W, PHONE_HEAD_H);
+    (top, back, title)
+}
+
+/// The phone link's QR view (mockup page 1, view 2): the code on the left, the
+/// two steps, the network line and the firewall hint on the right, the
+/// "stays on the local network" line along the bottom. `expired`: the code is
+/// dimmed and "Buat QR baru" lies over it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PhoneQrLayout {
+    pub back: Rect,
+    pub title: Rect,
+    /// "berlaku 4:52", ending at the Settings button's gap.
+    pub chip: Rect,
+    /// The light square the code is drawn in (its padding included).
+    pub qr: Rect,
+    /// The "Buat QR baru" button over the dimmed code, when it is dead.
+    pub renew: Option<Rect>,
+    pub steps: [PhoneStep; 2],
+    /// The network line: its box (the icon and two text lines are laid out
+    /// inside by the painter from `net`).
+    pub net: Rect,
+    pub hint: Rect,
+    pub foot: Rect,
+}
+
+/// A numbered step: the disc, its title and its sub line.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PhoneStep {
+    pub num: Rect,
+    pub title: Rect,
+    pub sub: Rect,
+}
+
+const PHONE_BACK: f32 = 24.0;
+const PHONE_HEAD_H: f32 = 26.0;
+const PHONE_TITLE_W: f32 = 170.0;
+const PHONE_CHIP_W: f32 = 96.0;
+const PHONE_CHIP_H: f32 = 22.0;
+/// The QR square, padding included.
+pub const PHONE_QR: f32 = 150.0;
+/// The quiet border round the modules inside the square.
+pub const PHONE_QR_PAD: f32 = 8.0;
+const PHONE_BTN_H: f32 = 26.0;
+const PHONE_ROW_H: f32 = 40.0;
+const PHONE_ROW_GAP: f32 = 6.0;
+
+/// The QR view in `s`.
+pub fn phone_qr_layout(s: ShapeRect, strip: bool, expired: bool) -> PhoneQrLayout {
+    let (top, back, title) = phone_head(s, strip);
+    let (l, r) = (left(s), right(s));
+    let chip = rect(
+        header_right(s) - PHONE_CHIP_W,
+        top + (PHONE_HEAD_H - PHONE_CHIP_H) / 2.0,
+        PHONE_CHIP_W,
+        PHONE_CHIP_H,
+    );
+    let foot = rect(l, content_bottom(s) - 14.0, r - l, 14.0);
+    let body_top = top + PHONE_HEAD_H + 8.0;
+    let avail = foot.y - 6.0 - body_top;
+    let y = body_top + ((avail - PHONE_QR) / 2.0).max(0.0);
+    let qr = rect(l, y, PHONE_QR, PHONE_QR);
+    let x = qr.right() + 18.0;
+    let w = r - x;
+    let step = |i: f32| {
+        let sy = y + i * 42.0;
+        PhoneStep {
+            num: rect(x, sy + 1.0, 18.0, 18.0),
+            title: rect(x + 27.0, sy, w - 27.0, 16.0),
+            sub: rect(x + 27.0, sy + 16.0, w - 27.0, 14.0),
+        }
+    };
+    let net = rect(x, y + 84.0, w, 38.0);
+    let hint = rect(x, net.bottom() + 8.0, w, 20.0);
+    let renew = expired.then(|| {
+        rect(
+            qr.x + (qr.w - 112.0) / 2.0,
+            qr.y + (qr.h - PHONE_BTN_H) / 2.0,
+            112.0,
+            PHONE_BTN_H,
+        )
+    });
+    PhoneQrLayout {
+        back,
+        title,
+        chip,
+        qr,
+        renew,
+        steps: [step(0.0), step(1.0)],
+        net,
+        hint,
+        foot,
+    }
+}
+
+/// The view that says why there is no code (a Public network, no LAN, ports
+/// taken, a failed start): a card with the icon, a title, the explanation and
+/// "Coba lagi".
+#[derive(Clone, Debug, PartialEq)]
+pub struct PhoneWarnLayout {
+    pub back: Rect,
+    pub title: Rect,
+    pub card: Rect,
+    pub icon: Rect,
+    pub heading: Rect,
+    pub body: Rect,
+    pub retry: Rect,
+    pub foot: Rect,
+}
+
+pub fn phone_warn_layout(s: ShapeRect, strip: bool) -> PhoneWarnLayout {
+    let (top, back, title) = phone_head(s, strip);
+    let (l, r) = (left(s), right(s));
+    let foot = rect(l, content_bottom(s) - 14.0, r - l, 14.0);
+    let card = rect(l, top + PHONE_HEAD_H + 12.0, r - l, 124.0);
+    let icon = rect(card.x + 16.0, card.y + 16.0, 42.0, 42.0);
+    let text_x = icon.right() + 14.0;
+    let heading = rect(text_x, card.y + 14.0, card.right() - 16.0 - text_x, 20.0);
+    let body = rect(text_x, heading.bottom() + 4.0, heading.w, 48.0);
+    let retry = rect(
+        card.right() - 16.0 - 96.0,
+        card.bottom() - 12.0 - PHONE_BTN_H,
+        96.0,
+        PHONE_BTN_H,
+    );
+    PhoneWarnLayout {
+        back,
+        title,
+        card,
+        icon,
+        heading,
+        body,
+        retry,
+        foot,
+    }
+}
+
+/// The approval view: "HP minta tersambung", the phone's line and its code,
+/// Tolak and Izinkan. `id` is the phone the buttons answer (the oldest one
+/// waiting); `more` others wait behind it (a "+n" chip beside the title).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PhoneAskLayout {
+    pub id: u64,
+    pub back: Rect,
+    pub title: Rect,
+    pub more: Option<Rect>,
+    pub card: Rect,
+    pub icon: Rect,
+    pub heading: Rect,
+    pub device: Rect,
+    pub label: Rect,
+    pub code: Rect,
+    pub deny: Rect,
+    pub allow: Rect,
+    pub foot: Rect,
+}
+
+pub fn phone_ask_layout(s: ShapeRect, strip: bool, id: u64, more: usize) -> PhoneAskLayout {
+    let (top, back, title) = phone_head(s, strip);
+    let (l, r) = (left(s), right(s));
+    let more = (more > 0).then(|| {
+        rect(
+            title.right() + 4.0,
+            top + (PHONE_HEAD_H - PHONE_CHIP_H) / 2.0,
+            40.0,
+            PHONE_CHIP_H,
+        )
+    });
+    let card = rect(l, top + PHONE_HEAD_H + 14.0, r - l, 84.0);
+    let icon = rect(card.x + 16.0, card.y + (card.h - 42.0) / 2.0, 42.0, 42.0);
+    let code_w = 128.0;
+    let label = rect(card.right() - 16.0 - code_w, card.y + 14.0, code_w, 14.0);
+    let code = rect(label.x, label.bottom() + 2.0, code_w, 34.0);
+    let text_x = icon.right() + 14.0;
+    let text_w = label.x - 12.0 - text_x;
+    let heading = rect(text_x, card.y + card.h / 2.0 - 20.0, text_w, 20.0);
+    let device = rect(text_x, heading.bottom() + 2.0, text_w, 16.0);
+    let allow = rect(r - 92.0, card.bottom() + 12.0, 92.0, 30.0);
+    let deny = rect(allow.x - 8.0 - 80.0, allow.y, 80.0, 30.0);
+    let foot = rect(l, content_bottom(s) - 14.0, r - l, 14.0);
+    PhoneAskLayout {
+        id,
+        back,
+        title,
+        more,
+        card,
+        icon,
+        heading,
+        device,
+        label,
+        code,
+        deny,
+        allow,
+        foot,
+    }
+}
+
+/// The receiving view: a row of 40 dip per file (the newest that fit), a
+/// header chip and a small QR button for another phone, the summary and
+/// Batal / Selesai along the bottom.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PhoneRecvLayout {
+    pub back: Rect,
+    pub title: Rect,
+    pub chip: Rect,
+    /// The small QR button (another phone), at the Settings button's gap.
+    pub qr_button: Rect,
+    pub rows: Vec<PhoneRowLayout>,
+    /// Where the "Pilih berkas di HP" hint goes while no file came.
+    pub empty: Rect,
+    pub summary: Rect,
+    pub cancel: Rect,
+    pub done: Rect,
+}
+
+/// One file row: its type icon, the name over the size, the status at the
+/// right and (drawn by the painter along the row's bottom) the progress.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PhoneRowLayout {
+    pub row: Rect,
+    pub icon: Rect,
+    pub name: Rect,
+    pub size: Rect,
+    pub status: Rect,
+}
+
+/// Height of a row's progress bar.
+pub const PHONE_BAR_H: f32 = 2.0;
+const PHONE_STATUS_W: f32 = 84.0;
+
+/// How many file rows the receiving view can show.
+pub fn phone_rows_fit(s: ShapeRect, strip: bool) -> usize {
+    let top = content_top(s, strip) + PHONE_HEAD_H + 8.0;
+    let foot_y = content_bottom(s) - PHONE_BTN_H;
+    let avail = foot_y - 8.0 - top;
+    ((avail + PHONE_ROW_GAP) / (PHONE_ROW_H + PHONE_ROW_GAP))
+        .floor()
+        .max(0.0) as usize
+}
+
+/// The receiving view with room for `n` rows (at most what fits).
+pub fn phone_recv_layout(s: ShapeRect, strip: bool, n: usize) -> PhoneRecvLayout {
+    let (top, back, title) = phone_head(s, strip);
+    let (l, r) = (left(s), right(s));
+    let qr_button = rect(
+        header_right(s) - PHONE_BACK,
+        top + (PHONE_HEAD_H - PHONE_BACK) / 2.0,
+        PHONE_BACK,
+        PHONE_BACK,
+    );
+    let chip = rect(
+        qr_button.x - 8.0 - PHONE_CHIP_W,
+        top + (PHONE_HEAD_H - PHONE_CHIP_H) / 2.0,
+        PHONE_CHIP_W,
+        PHONE_CHIP_H,
+    );
+    let body = top + PHONE_HEAD_H + 8.0;
+    let foot_y = content_bottom(s) - PHONE_BTN_H;
+    let done = rect(r - 90.0, foot_y, 90.0, PHONE_BTN_H);
+    let cancel = rect(done.x - 8.0 - 76.0, foot_y, 76.0, PHONE_BTN_H);
+    let summary = rect(l, foot_y, cancel.x - 12.0 - l, PHONE_BTN_H);
+    let rows = (0..n.min(phone_rows_fit(s, strip)))
+        .map(|i| {
+            let row = rect(
+                l,
+                body + i as f32 * (PHONE_ROW_H + PHONE_ROW_GAP),
+                r - l,
+                PHONE_ROW_H,
+            );
+            let icon = rect(row.x + 6.0, row.y + 5.0, 30.0, 30.0);
+            let status = rect(
+                row.right() - 12.0 - PHONE_STATUS_W,
+                row.y,
+                PHONE_STATUS_W,
+                row.h - PHONE_BAR_H,
+            );
+            let text_x = icon.right() + 10.0;
+            let text_w = status.x - 8.0 - text_x;
+            PhoneRowLayout {
+                row,
+                icon,
+                name: rect(text_x, row.y + 5.0, text_w, 16.0),
+                size: rect(text_x, row.y + 21.0, text_w, 13.0),
+                status,
+            }
+        })
+        .collect();
+    let empty = rect(l, body, r - l, (foot_y - 8.0 - body).max(0.0));
+    PhoneRecvLayout {
+        back,
+        title,
+        chip,
+        qr_button,
+        rows,
+        empty,
+        summary,
+        cancel,
+        done,
+    }
+}
+
+/// The layout of the phone link's view `v`: its stage decides, a QR stage
+/// with a reason instead of a code takes the warning card, and an approval
+/// with nobody waiting falls back to the QR view.
+pub fn phone_page_layout(s: ShapeRect, strip: bool, v: &PhoneView) -> PageLayout {
+    use crate::model::PhoneStage;
+    use crate::ui::phone_view::QrView;
+    let qr = || match v.qr {
+        QrView::Warning(..) => PageLayout::PhoneWarn(phone_warn_layout(s, strip)),
+        _ => PageLayout::PhoneQr(phone_qr_layout(s, strip, v.code_dead())),
+    };
+    match v.stage {
+        PhoneStage::Qr => qr(),
+        PhoneStage::Approval => match v.ask {
+            Some(a) => PageLayout::PhoneAsk(phone_ask_layout(s, strip, a.id, a.more)),
+            None => qr(),
+        },
+        PhoneStage::Receiving => {
+            PageLayout::PhoneRecv(phone_recv_layout(s, strip, v.recv.rows.len()))
+        }
     }
 }
 
@@ -3718,6 +4065,7 @@ pub fn regions(s: ShapeRect, layout: &PageLayout, strip: impl Into<StripKind>) -
             if let Some(clear) = l.clear {
                 add(clear, Hit::ShelfClear);
             }
+            add(l.phone, Hit::ShelfPhone);
             // The X sits on its card: it comes first.
             for (i, c) in l.cards.iter().enumerate() {
                 add(c.remove, Hit::ShelfRemove(i));
@@ -3725,6 +4073,27 @@ pub fn regions(s: ShapeRect, layout: &PageLayout, strip: impl Into<StripKind>) -
             for (i, c) in l.cards.iter().enumerate() {
                 add(c.card, Hit::ShelfCard(i));
             }
+        }
+        PageLayout::PhoneQr(l) => {
+            add(l.back, Hit::PhoneBack);
+            if let Some(renew) = l.renew {
+                add(renew, Hit::PhoneNewQr);
+            }
+        }
+        PageLayout::PhoneWarn(l) => {
+            add(l.back, Hit::PhoneBack);
+            add(l.retry, Hit::PhoneNewQr);
+        }
+        PageLayout::PhoneAsk(l) => {
+            add(l.back, Hit::PhoneBack);
+            add(l.deny, Hit::PhoneReject(l.id));
+            add(l.allow, Hit::PhoneApprove(l.id));
+        }
+        PageLayout::PhoneRecv(l) => {
+            add(l.back, Hit::PhoneBack);
+            add(l.qr_button, Hit::PhoneShowQr);
+            add(l.cancel, Hit::PhoneCancel);
+            add(l.done, Hit::PhoneDone);
         }
         PageLayout::Arrange(l) => {
             for (i, r) in l.chips.iter().enumerate() {
@@ -4088,6 +4457,28 @@ mod tests {
             out.push((
                 format!("shelf {n}"),
                 PageLayout::Shelf(shelf_layout(s, strip, n)),
+            ));
+        }
+        for expired in [false, true] {
+            out.push((
+                format!("phone qr expired={expired}"),
+                PageLayout::PhoneQr(phone_qr_layout(s, strip, expired)),
+            ));
+        }
+        out.push((
+            "phone warning".into(),
+            PageLayout::PhoneWarn(phone_warn_layout(s, strip)),
+        ));
+        for more in [0, 2] {
+            out.push((
+                format!("phone ask +{more}"),
+                PageLayout::PhoneAsk(phone_ask_layout(s, strip, 7, more)),
+            ));
+        }
+        for n in [0, 1, 3, 4, 9] {
+            out.push((
+                format!("phone receiving {n}"),
+                PageLayout::PhoneRecv(phone_recv_layout(s, strip, n)),
             ));
         }
         for n in [0, 1, 3, crate::search::MAX_RESULTS] {
@@ -5771,6 +6162,7 @@ mod tests {
             [
                 Hit::OpenSettings,
                 Hit::ShelfClear,
+                Hit::ShelfPhone,
                 Hit::ShelfRemove(0),
                 Hit::ShelfRemove(1),
                 Hit::ShelfRemove(2),
@@ -5779,13 +6171,122 @@ mod tests {
                 Hit::ShelfCard(2),
             ]
         );
-        // An empty shelf has no buttons.
+        // An empty shelf has no card buttons, but the "HP" pill stays.
         let empty = shelf_layout(s, false, 0);
+        assert!(empty.clear.is_none());
         let none: Vec<Hit> = regions(s, &PageLayout::Shelf(empty), false)
             .into_iter()
             .map(|r| r.hit)
             .collect();
-        assert_eq!(none, [Hit::OpenSettings]);
+        assert_eq!(none, [Hit::OpenSettings, Hit::ShelfPhone]);
+    }
+
+    #[test]
+    fn the_phone_pill_sits_left_of_clear_on_every_shelf_and_ends_at_the_header_edge() {
+        for style in [Style::Pill, Style::Notch] {
+            let s = panel(style);
+            for strip in [false, true] {
+                for n in [0, 1, 6, 12] {
+                    let l = shelf_layout(s, strip, n);
+                    assert!(l.phone.w > 0.0 && l.phone.h == HEADER_H);
+                    assert!(l.header.right() <= l.phone.x, "the title clears the pill");
+                    if let Some(clear) = l.clear {
+                        assert!(l.phone.right() < clear.x, "left of Kosongkan");
+                        assert_eq!(clear.right(), header_right(s));
+                    }
+                    assert!(l.phone.right() <= header_right(s));
+                    assert!(disjoint(l.phone, settings_button(s, strip)));
+                    // The pill's place does not depend on the cards.
+                    assert_eq!(l.phone, shelf_layout(s, strip, 3).phone);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_phone_views_fit_the_panel_and_end_their_header_at_the_edge() {
+        for style in [Style::Pill, Style::Notch] {
+            let s = panel(style);
+            for strip in [false, true] {
+                let top = content_top(s, strip);
+                let q = phone_qr_layout(s, strip, false);
+                assert!(q.renew.is_none());
+                assert_eq!(q.chip.right(), header_right(s));
+                assert_eq!(q.qr.w, PHONE_QR);
+                assert!(q.qr.y >= top + PHONE_HEAD_H && q.qr.bottom() <= q.foot.y);
+                assert!(q.hint.bottom() <= q.foot.y, "the hint clears the footer");
+                assert!(q.net.bottom() <= q.hint.y && q.steps[1].sub.bottom() <= q.net.y);
+                assert!(q.title.right() < q.chip.x);
+                let dead = phone_qr_layout(s, strip, true);
+                let renew = dead.renew.expect("the button shows on a dead code");
+                assert!(renew.x >= dead.qr.x && renew.right() <= dead.qr.right());
+                assert!(renew.y >= dead.qr.y && renew.bottom() <= dead.qr.bottom());
+                let w = phone_warn_layout(s, strip);
+                assert!(w.body.bottom() < w.retry.y + 12.0 && w.retry.bottom() <= w.card.bottom());
+                assert!(w.card.bottom() <= w.foot.y);
+                for more in [0, 3] {
+                    let a = phone_ask_layout(s, strip, 5, more);
+                    assert_eq!(a.more.is_some(), more > 0);
+                    assert_eq!(a.allow.right(), right(s));
+                    assert!(a.deny.right() < a.allow.x);
+                    assert!(a.card.bottom() < a.deny.y && a.deny.bottom() <= a.foot.y);
+                    assert!(a.code.right() <= a.card.right() && a.code.bottom() <= a.card.bottom());
+                    assert!(a.device.right() < a.code.x, "the line clears the code");
+                    if let Some(m) = a.more {
+                        assert!(m.x >= a.title.right() && m.right() < header_right(s));
+                    }
+                }
+                let fit = phone_rows_fit(s, strip);
+                assert!(fit >= 3, "{style:?} strip={strip}: {fit}");
+                let r = phone_recv_layout(s, strip, 20);
+                assert_eq!(r.rows.len(), fit, "no more rows than fit");
+                assert_eq!(r.qr_button.right(), header_right(s));
+                assert!(r.chip.right() < r.qr_button.x && r.title.right() < r.chip.x);
+                let last = r.rows.last().expect("a row");
+                assert!(last.row.bottom() <= r.done.y, "the rows clear the buttons");
+                assert!(r.cancel.right() < r.done.x && r.summary.right() < r.cancel.x);
+                for row in &r.rows {
+                    assert_eq!(row.row.h, PHONE_ROW_H);
+                    assert!(row.status.x > row.name.right() && row.status.x > row.size.right());
+                    assert!(row.name.bottom() <= row.size.y);
+                }
+                assert!(phone_recv_layout(s, strip, 2).rows.len() == 2);
+                assert!(phone_recv_layout(s, strip, 0).rows.is_empty());
+                // Each view's hits, after the Settings button.
+                let hits = |l: PageLayout| -> Vec<Hit> {
+                    regions(s, &l, strip)
+                        .into_iter()
+                        .map(|r| r.hit)
+                        .filter(|h| !matches!(h, Hit::Strip | Hit::OpenSettings))
+                        .collect()
+                };
+                assert_eq!(
+                    hits(PageLayout::PhoneAsk(phone_ask_layout(s, strip, 5, 0))),
+                    [Hit::PhoneBack, Hit::PhoneReject(5), Hit::PhoneApprove(5)]
+                );
+                assert_eq!(
+                    hits(PageLayout::PhoneRecv(phone_recv_layout(s, strip, 2))),
+                    [
+                        Hit::PhoneBack,
+                        Hit::PhoneShowQr,
+                        Hit::PhoneCancel,
+                        Hit::PhoneDone
+                    ]
+                );
+                assert_eq!(
+                    hits(PageLayout::PhoneQr(phone_qr_layout(s, strip, false))),
+                    [Hit::PhoneBack]
+                );
+                assert_eq!(
+                    hits(PageLayout::PhoneQr(phone_qr_layout(s, strip, true))),
+                    [Hit::PhoneBack, Hit::PhoneNewQr]
+                );
+                assert_eq!(
+                    hits(PageLayout::PhoneWarn(phone_warn_layout(s, strip))),
+                    [Hit::PhoneBack, Hit::PhoneNewQr]
+                );
+            }
+        }
     }
 
     #[test]
@@ -6340,8 +6841,32 @@ mod tests {
                     drawn.extend([row.icon, row.name, row.track, row.value]);
                 }
             }
+            PageLayout::PhoneQr(l) => {
+                drawn.extend([l.back, l.title, l.chip, l.qr, l.net, l.hint, l.foot]);
+                drawn.extend(l.renew);
+                for st in l.steps {
+                    drawn.extend([st.num, st.title, st.sub]);
+                }
+            }
+            PageLayout::PhoneWarn(l) => {
+                drawn.extend([l.back, l.title, l.card, l.icon, l.heading, l.body, l.retry]);
+                drawn.push(l.foot);
+            }
+            PageLayout::PhoneAsk(l) => {
+                drawn.extend([l.back, l.title, l.card, l.icon, l.heading, l.device]);
+                drawn.extend([l.label, l.code, l.deny, l.allow, l.foot]);
+                drawn.extend(l.more);
+            }
+            PageLayout::PhoneRecv(l) => {
+                drawn.extend([l.back, l.title, l.chip, l.qr_button, l.empty]);
+                drawn.extend([l.summary, l.cancel, l.done]);
+                for r in &l.rows {
+                    drawn.extend([r.row, r.icon, r.name, r.size, r.status]);
+                }
+            }
             PageLayout::Shelf(l) => {
                 drawn.push(l.header);
+                drawn.push(l.phone);
                 drawn.extend(l.clear);
                 drawn.extend(l.empty);
                 for c in &l.cards {

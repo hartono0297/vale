@@ -6,11 +6,11 @@
 //! a network.
 
 use std::collections::HashSet;
-use std::net::IpAddr;
+
 use std::time::{Duration, Instant};
 
 use super::Outcome;
-use super::ua::{Browser, DeviceKind};
+
 
 /// A token nobody has used is good for this long.
 pub const TOKEN_TTL: Duration = Duration::from_secs(300);

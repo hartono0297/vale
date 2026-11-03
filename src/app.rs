@@ -174,6 +174,10 @@ use quick::{QUERY_LIMIT, SearchState};
 mod shelf_page;
 use shelf_page::{ShelfState, TIMER_SHELF_HOLD};
 
+#[path = "app_phone.rs"]
+mod phone_page;
+use phone_page::{PhoneState, TIMER_PHONE};
+
 #[path = "app_shot.rs"]
 mod shot;
 use shot::{ShotSetting, Shots};
@@ -190,6 +194,8 @@ const WM_TIMECHANGE: u32 = 0x001E;
 const WM_POWERBROADCAST: u32 = 0x0218;
 /// `WM_POWERBROADCAST` codes for waking from sleep (with or without a user).
 const PBT_APMRESUMESUSPEND: usize = 0x0007;
+/// The PC is about to sleep: the phone link ends.
+const PBT_APMSUSPEND: usize = 0x0004;
 const PBT_APMRESUMEAUTOMATIC: usize = 0x0012;
 /// The power source or battery state changed (Energy Saver too).
 const PBT_APMPOWERSTATUSCHANGE: usize = 0x000A;
@@ -531,6 +537,7 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
             mixer_wheel_sum: None,
             mixer_drag: None,
             shelf: ShelfState::default(),
+            phone: PhoneState::default(),
             dock: DockState::default(),
             devices: DevicesState::default(),
             arrange: ArrangeState::default(),
@@ -1024,6 +1031,8 @@ struct App {
     mixer_drag: Option<audio::Target>,
     /// The file shelf (`app_shelf`).
     shelf: ShelfState,
+    /// The phone link (`app_phone`).
+    phone: PhoneState,
     /// The page dots' dock: values, pointer, frame step.
     dock: DockState,
     /// The Devices page: the drives, their worker and the page's state
@@ -1303,6 +1312,9 @@ impl App {
                     | Event::Arrange(_)
                     | Event::Toast(_)
                     | Event::Update(_)
+                    // A progress tick draws the receiving view itself, at
+                    // most six a second; nothing else changed.
+                    | Event::Phone(crate::phone::PhoneEvent::UploadProgress { .. })
             ));
             self.apply(event, now);
         }
@@ -1427,6 +1439,12 @@ impl App {
                 }
                 Event::ShelfDrop(paths) => {
                     self.on_shelf_drop(paths, now);
+                    continue;
+                }
+                // The phone link's server: `App` keeps what it said and
+                // tells the reducer only the stage.
+                Event::Phone(event) => {
+                    self.on_phone_event(event, now);
                     continue;
                 }
                 Event::Clean(event) => {
@@ -2138,6 +2156,13 @@ impl App {
             Effect::ShelfOpen(i) => self.shelf_open(i),
             Effect::ShelfRemove(i) => self.shelf_remove(i),
             Effect::ShelfClear => self.shelf_clear(),
+            Effect::PhoneStart => return self.phone_pill(),
+            Effect::PhoneNewQr => self.phone_new_qr(),
+            Effect::PhoneApprove(id) => self.phone_answer(id, true),
+            Effect::PhoneReject(id) => self.phone_answer(id, false),
+            Effect::PhoneCancel => self.phone_cancel(),
+            Effect::PhoneStop => self.phone_stop(crate::phone::EndReason::Done),
+            Effect::PhoneBack => self.phone_back(),
             Effect::DeviceEject(i) => self.devices_eject(i),
             Effect::DeviceOpen(i) => self.devices_open(i),
             Effect::DeviceDetail(i) => self.devices_toggle_detail(i),
@@ -2292,6 +2317,7 @@ impl App {
                 mole: mole_code(s.mole_phase()),
                 mole_log: cleaner.is_some_and(|c| c.mole_log),
                 cli_menu: s.cli_menu(),
+                phone: s.phone_stage(),
             },
         }
     }
@@ -4102,6 +4128,7 @@ impl App {
         self.sync_system_page();
         self.sync_mixer();
         self.sync_shelf();
+        self.sync_phone_timer(now);
         self.sync_devices();
         self.sync_arrange();
         self.sync_notif();
@@ -5127,6 +5154,7 @@ impl App {
             TIMER_VOLUME => self.on_volume_timer(),
             TIMER_DEVICES => self.on_devices_timer(),
             TIMER_SHELF_HOLD => self.on_shelf_hold_timer(),
+            TIMER_PHONE => self.on_phone_timer(),
             TIMER_OUTSIDE => self.on_outside_poll(),
             TIMER_BEHIND => self.on_behind_timer(),
             TIMER_POINTER => self.on_pointer_timer(),
@@ -6362,6 +6390,7 @@ impl App {
                 .waiting_strip()
                 .or_else(|| self.strip_motion.as_ref().and_then(|m| m.leaving.as_ref())),
         };
+        let phone_view = App::phone_view(state, &self.phone, now);
         let frame = Frame {
             view: &self.drawn,
             media: state.media(),
@@ -6378,6 +6407,8 @@ impl App {
             shelf: &self.shelf.cards,
             shelf_drag: self.shelf.dragging,
             shelf_motion: &self.shelf.motion,
+            phone: phone_view.as_ref(),
+            phone_on: self.phone.running(),
             arrange: App::arrange_view(&self.arrange, &self.config, self.search_input.as_ref()),
             devices: DevicesView {
                 list: &self.devices.list,
@@ -8248,7 +8279,18 @@ unsafe extern "system" fn wnd_proc(
                         let trigger = GreetTrigger::Wake {
                             by_user: wparam.0 == PBT_APMRESUMESUSPEND,
                         };
-                        with_app(|app| app.maybe_greet(trigger));
+                        with_app(|app| {
+                            // A phone session left over from before the
+                            // sleep is ended: its connections are gone.
+                            app.phone_on_resume(Instant::now());
+                            app.maybe_greet(trigger)
+                        });
+                    }
+                    // Going to sleep: the phone link ends with it.
+                    PBT_APMSUSPEND => {
+                        with_app(|app| {
+                            app.phone_on_away(crate::phone::EndReason::Suspend, Instant::now())
+                        });
                     }
                     // Charger or Energy Saver changed: the robot follows now.
                     PBT_APMPOWERSTATUSCHANGE => {
@@ -8274,6 +8316,7 @@ unsafe extern "system" fn wnd_proc(
                     with_app(|app| {
                         app.session_locked = true;
                         app.clip_on_lock();
+                        app.phone_on_away(crate::phone::EndReason::Lock, Instant::now());
                         app.sync_pointer_polls();
                     });
                 }
@@ -9660,7 +9703,9 @@ mod tests {
             TIMER_POINTER,
             TIMER_TYPING,
             TIMER_DISPLAYS,
+            TIMER_PHONE,
         ];
+        assert_eq!(TIMER_PHONE, 42);
         assert_eq!(TIMER_POINTER, 33);
         assert_eq!(TIMER_NOTIF_SAVE, 34);
         assert_eq!(TIMER_TYPING, 40);

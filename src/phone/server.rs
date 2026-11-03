@@ -42,8 +42,9 @@ const BOOT_MARK: &str = "/*BOOT*/null";
 
 pub(super) fn run(shared: &Arc<Shared>, mode: Mode) {
     let (cfg, watch) = match mode {
+        #[cfg(any(test, debug_assertions))]
         Mode::Fixed(cfg) => (cfg, None),
-        Mode::Lan => match super::detect_lan(shared.lang, &shared.pc_name) {
+        Mode::Lan { lang, pc_name } => match super::detect_lan(lang, &pc_name) {
             Ok((cfg, ip)) => (cfg, Some(ip)),
             Err(refusal) => {
                 shared.emit(PhoneEvent::Refused(refusal));
@@ -65,6 +66,8 @@ pub(super) fn run(shared: &Arc<Shared>, mode: Mode) {
         ip: cfg.bind,
         port,
         dest_dir: cfg.dest_dir.clone(),
+        lang: cfg.lang,
+        pc_name: cfg.pc_name.clone(),
         network_name: cfg.network_name.clone(),
         allow_loopback: cfg.allow_loopback,
     });
@@ -300,15 +303,13 @@ fn route(
 /// The page with its boot data (language, PC, network, how far the pairing
 /// is), JSON-escaped so that nothing in it can close the script.
 fn page_with(shared: &Shared, state: &str, code: Option<&str>) -> Response {
-    let net = shared
-        .runtime
-        .get()
-        .map(|r| r.network_name.clone())
-        .unwrap_or_default();
+    let Some(rt) = shared.runtime.get() else {
+        return Response::not_found();
+    };
     let boot = serde_json::json!({
-        "lang": shared.lang.code(),
-        "pc": shared.pc_name,
-        "net": net,
+        "lang": rt.lang.code(),
+        "pc": rt.pc_name,
+        "net": rt.network_name,
         "state": state,
         "code": code,
     });
@@ -401,11 +402,9 @@ fn state(shared: &Shared, req: &Request) -> Response {
         };
         s.answer_state(req.cookie("vp"), req.cookie("vs"), now)
     };
-    let net = shared
-        .runtime
-        .get()
-        .map(|r| r.network_name.as_str())
-        .unwrap_or("");
+    let Some(rt) = shared.runtime.get() else {
+        return Response::not_found();
+    };
     let (name, code) = match &answer {
         StateAnswer::Unknown => return Response::not_found(),
         StateAnswer::Waiting { code } => ("waiting", Some(code.as_str())),
@@ -415,8 +414,8 @@ fn state(shared: &Shared, req: &Request) -> Response {
     let body = serde_json::json!({
         "state": name,
         "code": code,
-        "pc": shared.pc_name,
-        "net": net,
+        "pc": rt.pc_name,
+        "net": rt.network_name,
     })
     .to_string();
     state_cookies(Response::json(200, body), &answer)
@@ -547,7 +546,7 @@ fn upload(
     if !begun {
         return Response::error(409, "cancelled");
     }
-    let name = sanitize(req.header("x-vale-name").unwrap_or(""), shared.lang);
+    let name = sanitize(req.header("x-vale-name").unwrap_or(""), rt.lang);
     let Ok((part, mut file)) = create_part(&rt.dest_dir, &name) else {
         return Response::error(500, "disk");
     };

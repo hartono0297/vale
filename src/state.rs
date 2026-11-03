@@ -10,7 +10,7 @@ use crate::i18n::{self, Key, text};
 use crate::lyrics;
 use crate::model::{
     ArrangeSave, CalView, ClipAction, Effect, Event, Hit, MediaCommand, MediaInfo, Notice,
-    NoticeKind, NotifAction, OpenTarget, Page, Shortcut, ShotAction, Timeline, View,
+    NoticeKind, NotifAction, OpenTarget, Page, PhoneStage, Shortcut, ShotAction, Timeline, View,
 };
 use crate::mole::MoleOpts;
 use crate::pages::PanelPages;
@@ -329,6 +329,9 @@ pub struct IslandState {
     /// them (`ShelfDropped`). The visit they were dropped in does not end it;
     /// the next one hands the panel to hover. Always `No` unless `latched`.
     shelf_drop: DropVisit,
+    /// The phone link over the Shelf page (`phone_stage()`): `App` sets it
+    /// with `PhoneStage`, a phone needing the owner with `PhoneAttention`.
+    phone: Option<PhoneStage>,
     /// The quick search is open (over `search_prev`'s page); it holds the
     /// panel open like the CLI input does.
     search_open: bool,
@@ -457,6 +460,7 @@ impl IslandState {
             hotkey_held: None,
             shelf_held: false,
             shelf_drop: DropVisit::No,
+            phone: None,
             search_open: false,
             search_prev: Page::Calendar,
             collapsed: Collapse::No,
@@ -880,6 +884,7 @@ impl IslandState {
             | Event::SearchDetail { .. }
             | Event::ShelfDrop(_)
             | Event::ShelfDragOver(_)
+            | Event::Phone(_)
             | Event::Clean(_)
             | Event::Mole(_)
             | Event::ShotFolder { .. }
@@ -908,17 +913,19 @@ impl IslandState {
             // keep a latched panel until a click outside.
             Event::ShelfDropped => {
                 if !self.fullscreen {
-                    self.page = Page::Shelf;
-                    self.collapsed = Collapse::No;
-                    self.shelf_held = false;
-                    self.latched = true;
-                    self.shelf_drop = if self.open_mode == OpenMode::Hover {
-                        DropVisit::Here
-                    } else {
-                        DropVisit::No
-                    };
+                    self.latch_on_shelf();
                 }
             }
+            // The phone link needs the owner (a phone asks, files arrive):
+            // the same latch as a drop, with the phone's stage on it. Not in
+            // fullscreen, where the island is hidden.
+            Event::PhoneAttention(stage) => {
+                if !self.fullscreen {
+                    self.phone = Some(stage);
+                    self.latch_on_shelf();
+                }
+            }
+            Event::PhoneStage(stage) => self.phone = stage,
             // The pointer left before the dwell, so no `Hover(false)` comes.
             Event::ShelfDropLeft => {
                 if self.shelf_drop == DropVisit::Here {
@@ -1276,6 +1283,31 @@ impl IslandState {
             && c.armed_until.is_some_and(|until| until <= now)
         {
             c.armed_until = None;
+        }
+    }
+
+    /// The panel opens on the shelf and stays, latched like a click, for
+    /// something that arrived by itself (a drop, a phone). In Hover mode the
+    /// visit it arrived in does not end it (see `DropVisit`).
+    fn latch_on_shelf(&mut self) {
+        self.page = Page::Shelf;
+        self.collapsed = Collapse::No;
+        self.shelf_held = false;
+        self.latched = true;
+        self.shelf_drop = if self.open_mode == OpenMode::Hover {
+            DropVisit::Here
+        } else {
+            DropVisit::No
+        };
+    }
+
+    /// The phone link's view is what the panel shows: the shelf, with a
+    /// stage, on an open panel.
+    fn phone_shown(&self) -> Option<PhoneStage> {
+        if self.view() == View::Panel(Page::Shelf) {
+            self.phone
+        } else {
+            None
         }
     }
 
@@ -1937,6 +1969,50 @@ impl IslandState {
             Hit::ShelfClear => {
                 if self.view() == View::Panel(Page::Shelf) {
                     effects.push(Effect::ShelfClear);
+                }
+            }
+            // The phone link's controls count only while their view shows
+            // (the "HP" pill on the shelf itself, without a stage).
+            Hit::ShelfPhone => {
+                if self.view() == View::Panel(Page::Shelf) && self.phone.is_none() {
+                    effects.push(Effect::PhoneStart);
+                }
+            }
+            Hit::PhoneBack => {
+                if self.phone_shown().is_some() {
+                    self.phone = None;
+                    effects.push(Effect::PhoneBack);
+                }
+            }
+            Hit::PhoneNewQr => {
+                if self.phone_shown() == Some(PhoneStage::Qr) {
+                    effects.push(Effect::PhoneNewQr);
+                }
+            }
+            Hit::PhoneShowQr => {
+                if self.phone_shown() == Some(PhoneStage::Receiving) {
+                    self.phone = Some(PhoneStage::Qr);
+                }
+            }
+            Hit::PhoneApprove(id) => {
+                if self.phone_shown() == Some(PhoneStage::Approval) {
+                    effects.push(Effect::PhoneApprove(id));
+                }
+            }
+            Hit::PhoneReject(id) => {
+                if self.phone_shown() == Some(PhoneStage::Approval) {
+                    effects.push(Effect::PhoneReject(id));
+                }
+            }
+            Hit::PhoneCancel => {
+                if self.phone_shown() == Some(PhoneStage::Receiving) {
+                    effects.push(Effect::PhoneCancel);
+                }
+            }
+            Hit::PhoneDone => {
+                if self.phone_shown() == Some(PhoneStage::Receiving) {
+                    self.phone = None;
+                    effects.push(Effect::PhoneStop);
                 }
             }
             // The Devices page's buttons count only while it shows. A device
@@ -2894,6 +2970,12 @@ impl IslandState {
     /// shape, its sampling and its frame follow "cleaner on System".
     pub fn cleaner(&self) -> Option<&CleanerUi> {
         self.cleaner.as_ref().filter(|_| self.page == Page::System)
+    }
+
+    /// The phone link's stage over the Shelf page: only while the page is
+    /// Shelf (the panel may be shut; other pages show nothing of it).
+    pub fn phone_stage(&self) -> Option<PhoneStage> {
+        self.phone.filter(|_| self.page == Page::Shelf)
     }
 
     /// The cleaner exists, on any page and with the panel shut. (Only the

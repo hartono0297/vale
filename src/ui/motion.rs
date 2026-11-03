@@ -12,7 +12,7 @@ use chrono::NaiveDate;
 
 use super::geometry::{ANIM_MS, LYRIC_RESIZE_MS, ease_out_back};
 use crate::clean::CleanMode;
-use crate::model::{CalView, Page};
+use crate::model::{CalView, Page, PhoneStage};
 use crate::state::MolePhase;
 
 /// A sub-view `Reveal`: the new content fades in over this long.
@@ -606,6 +606,8 @@ pub struct SubView {
     pub mole: u8,
     pub mole_log: bool,
     pub cli_menu: bool,
+    /// The phone link over the Shelf page and its stage.
+    pub phone: Option<PhoneStage>,
 }
 
 /// Mole's stage without its payload: a new dry-run with other options
@@ -710,6 +712,14 @@ pub fn reveal_dir(before: &SubView, after: &SubView, page: Page) -> Option<Revea
             }
             _ => None,
         },
+        // The phone link comes and goes over the shelf like the cleaner over
+        // System, and each stage change inside it reveals the new view.
+        Page::Shelf => match (before.phone, after.phone) {
+            (None, Some(_)) => Some(RevealDir::Open),
+            (Some(_), None) => Some(RevealDir::Close),
+            (Some(a), Some(b)) if a != b => Some(RevealDir::Open),
+            _ => None,
+        },
         Page::Cli => match (before.cli_menu, after.cli_menu) {
             // Only the menu appearing reveals; it closes at once.
             (false, true) => Some(RevealDir::Open),
@@ -735,6 +745,7 @@ mod tests {
             mole: 0,
             mole_log: false,
             cli_menu: false,
+            phone: None,
         }
     }
 

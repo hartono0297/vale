@@ -11,6 +11,8 @@
 
 #[cfg(test)]
 mod e2e;
+#[cfg(debug_assertions)]
+pub mod debug;
 pub mod http;
 pub mod names;
 pub mod net;
@@ -162,6 +164,8 @@ pub(crate) struct Runtime {
     pub ip: IpAddr,
     pub port: u16,
     pub dest_dir: PathBuf,
+    pub lang: Lang,
+    pub pc_name: String,
     pub network_name: String,
     pub allow_loopback: bool,
 }
@@ -180,8 +184,6 @@ pub(crate) struct Shared {
     /// Set (before `SessionEnded` is sent) when the server thread is done.
     pub ended: AtomicBool,
     pub sink: Sink,
-    pub lang: Lang,
-    pub pc_name: String,
     pub runtime: OnceLock<Runtime>,
     pub conns: AtomicUsize,
     pub next_upload: AtomicU64,
@@ -206,9 +208,10 @@ impl Shared {
 /// What a server thread starts from.
 pub(crate) enum Mode {
     /// A fixed address (tests, the debug flag).
+    #[cfg(any(test, debug_assertions))]
     Fixed(ServerConfig),
     /// The PC's real local network, found on the thread.
-    Lan,
+    Lan { lang: Lang, pc_name: String },
 }
 
 /// The running link. Dropping it ends the session and its thread.
@@ -234,7 +237,7 @@ pub fn pc_name() -> String {
         .unwrap_or_else(|| "PC".to_owned())
 }
 
-fn launch(lang: Lang, pc_name: String, mode: Mode, sink: Sink) -> Handle {
+fn launch(mode: Mode, sink: Sink) -> Handle {
     let session = Session::new(Instant::now(), os_random);
     let shared = Arc::new(Shared {
         session: Mutex::new(session.unwrap_or_else(|| {
@@ -250,8 +253,6 @@ fn launch(lang: Lang, pc_name: String, mode: Mode, sink: Sink) -> Handle {
         reason: Mutex::new(EndReason::Done),
         ended: AtomicBool::new(false),
         sink,
-        lang,
-        pc_name,
         runtime: OnceLock::new(),
         conns: AtomicUsize::new(0),
         next_upload: AtomicU64::new(1),
@@ -289,10 +290,10 @@ fn session_failed(shared: &Shared) -> bool {
 }
 
 /// Starts a session on `cfg`'s address. Tells `sink` `Ready` or `Refused`.
+/// For the tests and the debug flag; the app uses `start_lan`.
+#[cfg(any(test, debug_assertions))]
 pub fn start(cfg: ServerConfig, sink: Sink) -> Handle {
-    let lang = cfg.lang;
-    let name = cfg.pc_name.clone();
-    launch(lang, name, Mode::Fixed(cfg), sink)
+    launch(Mode::Fixed(cfg), sink)
 }
 
 /// Starts a session on the PC's real local network: the adapter, its
@@ -300,7 +301,13 @@ pub fn start(cfg: ServerConfig, sink: Sink) -> Handle {
 /// (never the caller's), and the sink gets `Refused` (a Public network, no
 /// LAN) or `Ready`.
 pub fn start_lan(lang: Lang, sink: Sink) -> Handle {
-    launch(lang, pc_name(), Mode::Lan, sink)
+    launch(
+        Mode::Lan {
+            lang,
+            pc_name: pc_name(),
+        },
+        sink,
+    )
 }
 
 impl Handle {
@@ -372,6 +379,7 @@ impl Handle {
     }
 
     /// Ends the session (`Done`).
+    #[cfg(test)]
     pub fn stop(self) {
         self.stop_with(EndReason::Done);
     }

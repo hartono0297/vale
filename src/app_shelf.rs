@@ -152,6 +152,24 @@ impl App {
         self.refresh(now);
     }
 
+    /// Files (or the folder) that came from a phone: cards on the shelf that
+    /// say so. The panel is already open on the phone link, latched by
+    /// `PhoneAttention`, so nothing is applied to the reducer; the cards come
+    /// in through the shelf's own motion like dropped ones.
+    pub(super) fn shelf_add_phone(&mut self, paths: Vec<PathBuf>, now: Instant) {
+        let old = self.shelf.cards.clone();
+        if self.shelf.shelf.add_from(paths, shelf::Origin::Phone) == 0 {
+            return;
+        }
+        self.shelf_look();
+        let delay = if self.shelf.shown {
+            Duration::ZERO
+        } else {
+            Duration::from_millis(OPEN_DELAY_MS)
+        };
+        self.shelf_animate(&old, now, delay);
+    }
+
     /// `TIMER_SHELF_HOLD`: the drag stayed away; its hold on the panel ends.
     pub(super) fn on_shelf_hold_timer(&mut self) {
         unsafe {

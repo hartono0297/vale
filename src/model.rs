@@ -408,6 +408,16 @@ pub enum Event {
     /// dwell never fired (so no `Hover(false)` follows): the visit is over.
     /// `App` sends it when the reducer says `shelf_drop_here()`.
     ShelfDropLeft,
+    /// The phone link told something (`phone::PhoneEvent`). `App` keeps all of
+    /// it; the reducer only hears `PhoneAttention` and `PhoneStage`.
+    Phone(crate::phone::PhoneEvent),
+    /// The phone link needs the owner now (a phone asks to connect, files
+    /// start to arrive): the panel opens on the shelf at that stage and
+    /// stays, latched like a drop (`ShelfDropped`). Not in fullscreen.
+    PhoneAttention(PhoneStage),
+    /// `App` sets (or clears) the phone stage on the open shelf; it opens
+    /// nothing.
+    PhoneStage(Option<PhoneStage>),
     /// A folder check for screenshot `shot` ended: the Screenshots folder
     /// and the file that matched, if any. `App` keeps it, the reducer
     /// ignores it.
@@ -503,6 +513,18 @@ pub enum Hit {
     ShelfCard(usize),
     ShelfRemove(usize),
     ShelfClear,
+    /// The shelf's "HP" pill (opens the phone link), and the phone link's
+    /// own controls while its view shows: its back button, "Buat QR baru",
+    /// the small QR button of the receiving view, Izinkan / Tolak for the
+    /// phone `id` (the oldest one waiting), Batal and Selesai.
+    ShelfPhone,
+    PhoneBack,
+    PhoneNewQr,
+    PhoneShowQr,
+    PhoneApprove(u64),
+    PhoneReject(u64),
+    PhoneCancel,
+    PhoneDone,
     /// The Devices page, by the card's place in the list as last drawn:
     /// "Eject" (and "Coba lagi", which asks the same again), the folder
     /// button, the info button, and "Eject semua".
@@ -669,6 +691,16 @@ pub enum Effect {
     ShelfOpen(usize),
     ShelfRemove(usize),
     ShelfClear,
+    /// The phone link, as the hits of the same names; `App` keeps the server.
+    /// `PhoneStart` is the "HP" pill (a session starts if none runs and the
+    /// view shows), `PhoneBack` stops it only if no phone ever connected.
+    PhoneStart,
+    PhoneNewQr,
+    PhoneApprove(u64),
+    PhoneReject(u64),
+    PhoneCancel,
+    PhoneStop,
+    PhoneBack,
     /// Devices page: eject card `i`'s device / open Explorer on its first
     /// drive (the panel has collapsed) / expand or fold its details / eject
     /// every listed device. `App` keeps the list.
@@ -805,6 +837,16 @@ pub enum PomoField {
     ShortBreak,
     LongBreak,
     Sessions,
+}
+
+/// What the phone link shows over the Shelf page: the QR code (or why there
+/// is none), a phone asking to connect, the files arriving. Like the cleaner
+/// over System it is not a page: it comes with its own back button.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PhoneStage {
+    Qr,
+    Approval,
+    Receiving,
 }
 
 /// Panel pages, in scroll order: Kalender, Pomodoro, Pengingat, Catatan,

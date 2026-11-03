@@ -21,6 +21,7 @@ pub mod month_grid;
 pub mod motion;
 pub mod notch_fill;
 pub mod panel_layout;
+pub mod phone_view;
 pub mod render;
 pub mod robot;
 pub mod settings;
