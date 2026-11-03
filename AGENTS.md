@@ -35,7 +35,9 @@ yourself in the main session.
   request and marks each task `light` or `heavy`. Light tasks get build only
   (the builder and Ship run the tests). Heavy tasks get build, a blind review of
   a pinned commit (fixes land in the builder's worktree), and a check against a
-  written checklist. What the checker cannot test lands in `manualChecks` for me.
+  written checklist. A failed check item goes back to a fix (Opus), then one more
+  review; only a SHIP is checked again, and a task gets 2 checks at most. What
+  the checker cannot test lands in `manualChecks` for me.
 - The workflow merges passing tasks into `main` locally. Once everything is
   ready (every task merged, reviewed, fixed and checked where required, tests
   green on `main`, nothing `incomplete`), its Finish step **always** updates the
@@ -64,6 +66,10 @@ the same way, once its branch is merged into `main` and `main` is pushed:
 worktrees you create yourself with the Agent tool's `isolation: "worktree"`, and
 a run's `leftovers` once what held them is fixed and pushed.
 
+- If a folder in the worktree is a link to a folder outside it (a Windows
+  junction or a symlink, such as a shared `node_modules`), remove only the link
+  first (`cmd /c rmdir "<link>"` on Windows, `rm "<link>"` elsewhere), never
+  recursively: `git worktree remove` follows a junction and deletes its target.
 - `git worktree remove <path>`, never `--force`. If only untracked build output
   (such as `target/`) blocks it, delete that folder first.
 - `git branch -d` its branch and the tool's own `worktree-<folder>` branch,
@@ -79,10 +85,12 @@ a new task that would run `build` (new feature, bug fix, refactor), do not
 brainstorm or plan it here. Start a new session for it right away, without
 asking me first, and tell me in one line which session it is.
 
-- Start it with `start_session`, context `fresh`. The brief holds my request in
-  my own words plus whatever from this conversation it needs, and says: "You
-  were started by the main session to brainstorm and plan this task with the
-  user, then run `build`. Follow 'Always brainstorm before `build`' in
+- Start it with `start_session`, context `fresh`. If this session has no
+  `start_session` tool, use `spawn_task` instead (the Claude desktop app shows it
+  as a card; one click starts the session). The brief holds my request in my own
+  words plus whatever from this conversation it needs, stands on its own, and
+  says: "You were started by the main session to brainstorm and plan this task
+  with the user, then run `build`. Follow 'Always brainstorm before `build`' in
   AGENTS.md. Skip 'Session start'. Do not start another session."
 - A session started that way brainstorms and plans in itself and runs `build`
   itself. This rule does not apply inside it, so it never spawns another one:
@@ -92,8 +100,9 @@ asking me first, and tell me in one line which session it is.
   to that session (`SendMessage`), not to a new one.
 - What is not a new task stays here: questions, explanations, reading code, and
   anything under "When NOT to run it".
-- If this environment has no way to start a session, brainstorm in the current
-  session instead.
+- Do not brainstorm, read code for the task, or run `build` in the main
+  session while waiting for the new one. Only if neither `start_session` nor
+  `spawn_task` exists, say so and brainstorm in the current session.
 
 ## Always brainstorm before `build`
 

@@ -6,7 +6,7 @@ export const meta = {
     { title: 'Plan', detail: 'split into tasks, mark each light or heavy, write a checklist for heavy ones', model: 'opus' },
     { title: 'Build', detail: 'one builder per task, in its own worktree', model: 'sonnet' },
     { title: 'Review', detail: 'heavy only: blind review (Opus) of a pinned commit; fixes land in the builder worktree (Sonnet first, Opus from round 2)', model: 'opus' },
-    { title: 'Check', detail: 'heavy only: tests + the written checklist', model: 'sonnet' },
+    { title: 'Check', detail: 'heavy only: tests + the written checklist; a failed item goes back to a fix (Opus), one more review, then the check again (2 checks at most)', model: 'sonnet' },
     { title: 'Ship', detail: 'merge passing tasks into local main, test once; no push', model: 'sonnet' },
     { title: 'Finish', detail: 'only when everything is ready: update Obsidian memory + README, commit, push main', model: 'sonnet' },
     { title: 'Clean', detail: 'only after Finish pushed: remove this run\'s merged worktrees and branches, never forced', model: 'sonnet' },
@@ -17,6 +17,8 @@ const OPUS = 'opus'
 const SONNET = 'sonnet'
 const MAX_TASKS = 4
 const FIX_ROUNDS = 3
+// Checks per heavy task: a failed check gets one fix + review + check again
+const CHECK_ROUNDS = 2
 
 // First fix round is Sonnet; if the reviewer still says FIX, later rounds escalate to Opus
 const fixModel = attempt => (attempt === 0 ? SONNET : OPUS)
@@ -251,13 +253,57 @@ async function clean(label, items) {
     label,
     `You are the Clean step. Finish has pushed main, so the work below is on origin. Remove what this run left behind, and nothing else.\n` +
     `Work in the main repository on branch main, never inside one of the worktrees below. Touch only the worktrees and branches listed here (plus each worktree's own worktree-* branch, see 2), never other worktrees, branches or folders: other sessions may be using them.\n` +
-    `1. Worktree (if given): skip it, with the reason, if git worktree list does not show it, if git -C <path> status --porcelain shows changes, or if its HEAD is not in main (git merge-base --is-ancestor <its HEAD> main). Otherwise note the folder size (du -sh <path>), then git worktree remove <path>. Never use --force. If it refuses only because of untracked build output (target/, node_modules/, dist/ and the like), delete that folder and try once more. If a file is locked by a running process, skip it and say so.\n` +
+    `1. Worktree (if given): skip it, with the reason, if git worktree list does not show it, if git -C <path> status --porcelain shows changes, or if its HEAD is not in main (git merge-base --is-ancestor <its HEAD> main). Otherwise note the folder size (du -sh <path>). If a folder inside the worktree is a link to a folder outside it (a Windows junction or a symlink, e.g. a shared node_modules), remove only the link first (Windows: cmd /c rmdir "<link>", with MSYS_NO_PATHCONV=1 in Git Bash; elsewhere: rm "<link>" without -r) and never delete it recursively: git worktree remove follows a Windows junction and deletes the folder it points to. Then git worktree remove <path>. Never use --force. If it refuses only because of untracked build output (target/, node_modules/, dist/ and the like), delete that folder and try once more. If a file is locked by a running process, skip it and say so.\n` +
     `2. Branches: the branch listed, and the worktree tool's own branch for that worktree (worktree-<folder name>, if it exists). Delete each with git branch -d, never -D. If git says it is not fully merged, or it is still checked out somewhere, keep it and report why.\n` +
     `3. Run git worktree prune.\n` +
     `Report every removed worktree with its size, every deleted branch, everything skipped (worktree, branch, reason), and the rough total freed. Do not commit and do not push.\n\n` +
     `Items:\n${list}` + TOOLS,
     { phase: 'Clean', model: SONNET, schema: CLEAN }
   )
+}
+
+// Check against the written checklist. A failed item goes to a fixer (Opus: the bug got past a review), the fix
+// gets one more blind review, and only a SHIP is checked again. state: {sha, branch, worktree}; base is set in
+// the verify pass, where the work is a range on main and a fix needs its own fix/<id> branch.
+async function checkWithFixes(id, task, state, base) {
+  let { sha, branch, worktree } = state
+  let checkWorktree = null
+  let check = null
+  for (let round = 1; round <= CHECK_ROUNDS; round++) {
+    const where = worktree
+      ? `Work in the worktree ${worktree} (cd there); branch "${branch}".`
+      : `Check out ${sha} detached in your own worktree, and report that worktree's absolute path as worktree.`
+    const c = await safe(`check:${id}#${round}`, checkPrompt(where, sha, task), { phase: 'Check', isolation: worktree ? undefined : 'worktree', model: SONNET, schema: CHECK })
+    if (!worktree && c && c.worktree) checkWorktree = c.worktree
+    check = checkResult(c)
+    if (check.passed || !c || round === CHECK_ROUNDS) break
+
+    const failed = c.items.filter(i => i.status === 'fail').map(i => `${i.item}${i.note ? ' (checker: ' + i.note + ')' : ''}`)
+    const what = `The checker ran the app against the brief's checklist and these items FAILED:\n- ${failed.join('\n- ')}\nChecker notes: ${c.notes || 'none'}`
+    const fix = await safe(
+      `fix:${id}:check#${round}`,
+      worktree
+        ? `Work ONLY in the worktree ${worktree} (cd there; use git -C ${worktree}); it has branch "${branch}" checked out. Do not create another branch. ${what}\nFix them, run the project's test command (see 'Project commands' in AGENTS.md), and commit on that branch. Return the new sha (git rev-parse HEAD).` + FIX_RULES + TOOLS
+        : `Create a new branch "fix/${id}" from the current main (HEAD). ${what}\nFix them in the code that was added by ${base}..${state.sha}, run the project's test command, commit, and report sha, branch and worktree path.` + FIX_RULES + TOOLS,
+      { phase: 'Check', isolation: worktree ? undefined : 'worktree', model: OPUS, schema: FIX }
+    )
+    if (!fix || fix.sha === sha) { log(`${id}: the fix for the failed check produced no new commit`); break }
+    sha = fix.sha
+    branch = fix.branch || branch
+    worktree = fix.worktree || worktree
+
+    const review = await reviewAt(
+      `review:${id}:check#${round}`,
+      base ? `You get the brief and the diff git diff ${base}..${sha} (read it in the worktree ${worktree}, branch ${branch})` : `You get the brief and the diff of branch "${branch}" at commit ${sha} (git diff against its base)`,
+      task.brief,
+      sha
+    )
+    const held = notes => ({ sha, branch, worktree, checkWorktree, verdict: review ? review.verdict : 'UNKNOWN', openFindings: review ? review.findings : [], check: { passed: false, skipped: false, items: check.items, notes } })
+    if (!review) return held('the review of the fix for the failed check did not finish')
+    if (review.verdict !== 'SHIP') { log(`${id}: the fix for the failed check did not pass review`); return held('the fix for the failed check did not pass review') }
+  }
+  if (!check.passed) log(`${id}: check still failing after ${CHECK_ROUNDS} checks`)
+  return { sha, branch, worktree, checkWorktree, verdict: 'SHIP', openFindings: [], check }
 }
 
 function manualChecks(rows) {
@@ -288,7 +334,7 @@ if (input.verify) {
         const fix = await safe(
           `fix:${it.id}#${attempt + 1}`,
           branch
-            ? `Work ONLY in the worktree ${worktree} (cd there; use git -C ${worktree}). Fix these findings and commit on branch ${branch}:\n- ${review.findings.join('\n- ')}` + FIX_RULES + TOOLS
+            ? `Work ONLY in the worktree ${worktree} (cd there; use git -C ${worktree}). Fix these findings, run the project's test command (see 'Project commands' in AGENTS.md), and commit on branch ${branch}:\n- ${review.findings.join('\n- ')}` + FIX_RULES + TOOLS
             : `Create a new branch "fix/${it.id}" from the current main (HEAD), fix these findings in the code that was added by ${it.base}..${it.head}, run the project's test command, commit, and report sha, branch and worktree path:\n- ${review.findings.join('\n- ')}` + FIX_RULES + TOOLS,
           { phase: 'Review', isolation: branch ? undefined : 'worktree', model: fixModel(attempt), schema: FIX }
         )
@@ -302,9 +348,7 @@ if (input.verify) {
 
     async r => {
       if (r.state !== 'reviewed' || r.verdict !== 'SHIP') return { ...r, check: { passed: false, skipped: true, items: [], notes: 'not checked: review did not end in SHIP' } }
-      const where = r.worktree ? `Work in the worktree ${r.worktree} (cd there).` : `Check out ${r.sha} detached in your own worktree, and report that worktree's absolute path as worktree.`
-      const c = await safe(`check:${r.id}`, checkPrompt(where, r.sha, r.task), { phase: 'Check', isolation: r.worktree ? undefined : 'worktree', model: SONNET, schema: CHECK })
-      return { ...r, check: checkResult(c), checkWorktree: (!r.worktree && c && c.worktree) || null }
+      return { ...r, ...(await checkWithFixes(r.id, r.task, { sha: r.sha, branch: r.branch, worktree: r.worktree }, r.task.base)) }
     }
   )
 
@@ -410,13 +454,13 @@ const results = await pipeline(
     return { ...r, sha, verdict: review.verdict, openFindings: review.verdict === 'SHIP' ? [] : review.findings }
   },
 
-  // Check against the written checklist, heavy tasks only, in the builder's worktree
+  // Check against the written checklist, heavy tasks only, in the builder's worktree; failures loop back once
   async (r, task) => {
     if (r.state !== 'built') return r
     if (r.verdict === 'SKIPPED' || r.verdict === 'DEFERRED') return { ...r, check: { passed: true, skipped: true, items: [], notes: r.verdict === 'SKIPPED' ? 'light task: the builder ran the tests and Ship tests main' : 'deferred to the verify pass' } }
     if (r.verdict !== 'SHIP') return { ...r, check: { passed: false, skipped: true, items: [], notes: 'not checked: review did not end in SHIP' } }
-    const c = await safe(`check:${task.id}`, checkPrompt(`Work in the builder's worktree ${r.worktree} (cd there); branch "${r.branch}".`, r.sha, task), { phase: 'Check', model: SONNET, schema: CHECK })
-    return { ...r, check: checkResult(c) }
+    const out = await checkWithFixes(task.id, task, { sha: r.sha, branch: r.branch, worktree: r.worktree }, null)
+    return { ...r, sha: out.sha, verdict: out.verdict, openFindings: out.openFindings, check: out.check }
   }
 )
 
