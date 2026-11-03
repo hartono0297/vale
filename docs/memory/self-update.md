@@ -38,8 +38,9 @@ notices, state), `google::http::Http::download_to` (streaming download),
    download -> `vale.exe` (3 tries, 200 ms apart, antivirus may hold it), start
    `vale.exe --updated <old version>`, then the island closes through
    `shutdown` (tray icon removed by `WM_DESTROY`, config saved before).
-7. **New process**: waits for the single-instance mutex, shows "Diperbarui ke
-   X.Y.Z", deletes `vale.exe.old` (`cleanup_leftovers`, background thread,
+7. **New process**: waits (up to 60 s) for the single-instance mutex, which the
+   old island releases itself at the end of its exit (see "Exit crash and the
+   mutex hand-over"), shows "Diperbarui ke X.Y.Z", deletes `vale.exe.old` (`cleanup_leftovers`, background thread,
    retries for about 5 s). Every normal start of a release build runs the
    same cleanup.
 
@@ -51,11 +52,15 @@ Assets, exact names (from `.github/workflows/release.yml`, see
 
 - **The mutex handle outlives the old process.** `CreateMutexW` returns a
   handle even when the mutex exists (`ERROR_ALREADY_EXISTS`). A start that
-  waits (`--updated`, up to 10 s, polling every 200 ms) must `CloseHandle`
-  every handle of a failed try, for both names (`Local\Vale`,
-  `Local\DynamicIsland`), before retrying, including the handle of a name
-  that was free (else the retry sees its own mutex). A normal start still
-  quits at once. Test: `claim_names` in `app.rs`.
+  waits (`--updated`, up to 60 s (`UPDATE_CLAIM_WAIT`, `claim_wait`), polling
+  every 200 ms) must `CloseHandle` every handle of a failed try, for both names
+  (`Local\Vale`, `Local\DynamicIsland`), before retrying, including the handle
+  of a name that was free (else the retry sees its own mutex). A normal start
+  still quits at once. The old island closes its own handles at the end of its
+  teardown (`release_single_instance`, handles kept by `try_claim` in
+  `INSTANCE_MUTEXES`), so the wait normally ends within a second. Tests:
+  `claim_names` and `releasing_the_mutexes_lets_the_next_island_claim_them` in
+  `app.rs`.
 - **A running exe can be renamed, not overwritten or deleted** (NTFS). That is
   why the swap renames first, and why `.old` can only go once the old process
   is gone.
@@ -72,6 +77,58 @@ Assets, exact names (from `.github/workflows/release.yml`, see
 - **`classify`** maps a failed transfer's HRESULT: disk full / access denied /
   write fault -> `NotWritable`, `E_FAIL` (a body past the cap) -> `BadRelease`,
   the rest (WinHTTP 12xxx, `ERROR_TIMEOUT`) -> `NoNetwork`.
+
+## Exit crash and the mutex hand-over (v3.15.1)
+
+**Symptom**: in v3.15.0 Vale did not come back after "Update". The old exe was
+already swapped (`vale.exe.old` stayed behind), the new `--updated` process
+started, waited 10 s for the mutex and quit silently.
+
+**Root cause** (crash dumps in `%LOCALAPPDATA%\CrashDumps`): the OLD process
+crashed on every exit with 0xc000000d in ntdll, raised on a threadpool thread
+and called from `D3D10Warp.dll` during the DLL detach / FLS cleanup in
+`LdrShutdownProcess`. The render targets are
+`D2D1_RENDER_TARGET_TYPE_SOFTWARE` (WARP), and they were still alive: `App`
+(it owns `Renderer`) sits in the `APP` thread-local in `app.rs`, which only
+the TLS destructors dropped, inside `LdrShutdownProcess`. Windows Error
+Reporting then kept the dying process, and with it the `Local\Vale` and
+`Local\DynamicIsland` mutexes, for about 12 s. The new process waited 10 s
+(`UPDATE_CLAIM_WAIT`), found the mutex still taken and ended.
+
+**Fix** (`app::end_process`, after the `GetMessageW` loop; every exit path,
+tray Quit, the update's `shutdown`, `WM_CLOSE`, ends in that loop):
+1. `drop_app`: `App` leaves `APP` and is dropped explicitly (Renderer, CLI
+   inputs, window, stores). Config, notes and reminders are saved at each
+   change, the clipboard and notification history in `WM_DESTROY`, so nothing
+   is left to save at the end.
+2. `release_graphics`: `release()` in every module that keeps D2D/DWrite
+   objects in a thread-local: `settings`, `editor` (and its popover),
+   `arrange_overlay` (outline and pick), `capture::overlay`, `identify_overlay`,
+   `shot_edit::window`. Each destroys its window if open and empties its slot.
+   `fonts.rs`'s DirectWrite loader is not WARP and stays.
+3. `stop_pipe_server`: the Claude hook pipe thread stops (`PipeServer::stop`:
+   flag, a wake-up connection of its own, bounded join of about 1 s). A hook
+   line that arrived before the stop is still read.
+4. `release_single_instance`: the island closes its own mutex handles.
+5. `TerminateProcess(GetCurrentProcess(), 0)` instead of returning. Belt and
+   braces: the crash is inside D3D10Warp's own threadpool cleanup, so it can
+   still happen on the DLL detach with none of our objects left; terminating
+   skips the detach, so an exit can never hang on WER. Steps 1-4 run inside
+   `catch_unwind`, which only works in debug and test builds: the release profile has
+   `panic = "abort"`, so a panicking drop there aborts the process (WER, mutexes
+   held about 12 s, steps 4-5 skipped) and only the new process's 60 s wait covers it. The OS closes the
+   handles of a terminated process at once; the CLI's job object still kills
+   its children. A watchdog thread ends the process after 5 s if a drop blocks.
+
+**New process**: waits 60 s instead of 10 (`claim_wait`: `Some` -> 60 s,
+`None` -> 0). The Claude pipe's first instance
+(`FILE_FLAG_FIRST_PIPE_INSTANCE`) is retried for 60 s (`first_instance_retry`,
+250 ms steps) while the old process still holds `\\.\pipe\vale`.
+
+Not checked live in the build run (the owner's island was running): start the
+release exe, quit from the tray, and compare the Application Error events for
+`vale.exe` and the files in `%LOCALAPPDATA%\CrashDumps` before and after: none
+new.
 
 ## Never in debug builds, never in the demos
 

@@ -1979,6 +1979,17 @@ pub fn close_open_editor() -> Option<EditorResult> {
     close(hwnd, Editor::closing_result).map(|(_, result)| result)
 }
 
+/// The island is ending: the editor and its popover are closed (their last
+/// result is not posted: nobody reads it any more, `shutdown` flushed it) and
+/// what is left in the slots (the Direct2D objects) is dropped now, not in the
+/// thread-local destructors during process exit.
+pub fn release() {
+    drop(close_open_editor());
+    popover::release();
+    let left = EDITOR.with(|cell| cell.try_borrow_mut().ok().and_then(|mut s| s.take()));
+    drop(left);
+}
+
 /// `finish` without the post: the owner and final result (`None` if it was
 /// already sent), with the window destroyed.
 fn close(hwnd: HWND, result: impl FnOnce(&Editor) -> EditorResult) -> Option<(HWND, EditorResult)> {
