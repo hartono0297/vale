@@ -74,7 +74,6 @@ fn card_state(card: &ShelfCard, shared: &[Mirror]) -> CardState {
     } else {
         match shared.iter().find(|m| m.key == card.key) {
             Some(m) => CardState::Ticked { taken: m.taken },
-            None if card.network => CardState::Network,
             None => CardState::Unticked,
         }
     }
@@ -294,8 +293,10 @@ impl App {
 
     /// A card was clicked in the send view: ticked files are shared with the
     /// phones, ticked again they are not. A path that is gone turns the card
-    /// stale and shares nothing; a folder is never shared; neither is a file
-    /// on the network (looking at it could hold the UI thread).
+    /// stale and shares nothing; a folder is never shared. A file on the
+    /// network is not looked at here (that could hold the UI thread): it is
+    /// shared at once, its size follows (`SharedSized`), and if it is not
+    /// there it is unticked again (`SharedGone`).
     pub(super) fn phone_share_toggle(&mut self, i: usize, now: Instant) {
         let Some(path) = self.shelf.shelf.get(i).map(PathBuf::from) else {
             return;
@@ -306,9 +307,8 @@ impl App {
             if let Some(handle) = &self.phone.handle {
                 handle.unshare(&gone.id);
             }
-        } else if let Some(handle) = &self.phone.handle
-            && !shelf::is_network(&path)
-        {
+        } else if let Some(handle) = &self.phone.handle {
+            // `probe` does not look at a path on the network either.
             match shelf::probe(&path) {
                 Probe::Missing => self.shelf_look(),
                 Probe::Folder => {}
@@ -317,7 +317,8 @@ impl App {
                         self.phone.shared.push(Mirror {
                             key,
                             id: info.id,
-                            size: info.size,
+                            // A file on the network: `SharedSized` follows.
+                            size: info.size.unwrap_or(0),
                             taken: false,
                         });
                     }
@@ -513,6 +514,18 @@ impl App {
                     m.taken = true;
                 }
                 // Only the send view shows it: a redraw, never a refresh.
+                if self.state.phone_stage() == Some(PhoneStage::Send)
+                    && self.state.view() == View::Panel(Page::Shelf)
+                    && !self.animating()
+                {
+                    self.draw(now);
+                }
+            }
+            PhoneEvent::SharedSized { id, size } => {
+                if let Some(m) = self.phone.shared.iter_mut().find(|m| m.id == id) {
+                    m.size = size;
+                }
+                // Only the send view's footer shows it.
                 if self.state.phone_stage() == Some(PhoneStage::Send)
                     && self.state.view() == View::Panel(Page::Shelf)
                     && !self.animating()
@@ -815,7 +828,6 @@ mod tests {
             kind,
             stale,
             from_phone: false,
-            network: false,
         }
     }
 
@@ -855,12 +867,11 @@ mod tests {
     }
 
     #[test]
-    fn a_network_card_is_not_tickable_unless_it_is_already_ticked() {
-        let mut net = card("//srv/x/a.pdf", ShelfKind::Document, false);
-        net.network = true;
-        assert_eq!(card_state(&net, &[]), CardState::Network);
-        assert!(!card_state(&net, &[]).shareable());
-        let shared = [mirror("//srv/x/a.pdf", "id1", false)];
+    fn a_file_on_the_network_can_be_ticked_like_any_other() {
+        let net = card(r"\\srv\x\a.pdf", ShelfKind::Document, false);
+        assert_eq!(card_state(&net, &[]), CardState::Unticked);
+        assert!(card_state(&net, &[]).shareable());
+        let shared = [mirror(r"\\srv\x\a.pdf", "id1", false)];
         assert_eq!(card_state(&net, &shared), CardState::Ticked { taken: false });
     }
 

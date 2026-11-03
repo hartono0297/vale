@@ -1332,10 +1332,11 @@ impl App {
                     // A progress tick draws the receiving view itself, at
                     // most six a second; nothing else changed.
                     | Event::Phone(_, crate::phone::PhoneEvent::UploadProgress { .. })
-                    // A file taken or gone redraws the send view or the
-                    // shelf itself; the island has nothing new to show.
+                    // A file taken, gone or sized redraws the send view or
+                    // the shelf itself; the island has nothing new to show.
                     | Event::Phone(_, crate::phone::PhoneEvent::FileTaken { .. })
                     | Event::Phone(_, crate::phone::PhoneEvent::SharedGone { .. })
+                    | Event::Phone(_, crate::phone::PhoneEvent::SharedSized { .. })
             ));
             self.apply(event, now);
         }

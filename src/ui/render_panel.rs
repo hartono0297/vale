@@ -3632,9 +3632,7 @@ impl Renderer {
             let (a, ticked, taken) = match card.state {
                 CardState::Ticked { taken } => (1.0, true, taken),
                 CardState::Unticked => (1.0, false, false),
-                CardState::Folder | CardState::Stale | CardState::Network => {
-                    (0.45, false, false)
-                }
+                CardState::Folder | CardState::Stale => (0.45, false, false),
             };
             self.set_color(p.raised, a);
             self.fill_round(lay.card, radius::TILE);
@@ -3664,13 +3662,13 @@ impl Renderer {
                     let edge = inset(lay.boxed, 0.75, 0.75);
                     self.stroke_round_width(edge, 4.5, p.secondary, 1.5);
                 }
-                CardState::Folder | CardState::Stale | CardState::Network => {
+                CardState::Folder | CardState::Stale => {
                     let word = text(
                         lang,
-                        match card.state {
-                            CardState::Folder => Key::PhoneTagFolder,
-                            CardState::Network => Key::PhoneTagNetwork,
-                            _ => Key::ShelfMissing,
+                        if card.state == CardState::Folder {
+                            Key::PhoneTagFolder
+                        } else {
+                            Key::ShelfMissing
                         },
                     );
                     let tag = phone_send_tag(lay.card, self.text_width(word, &self.fonts.micro_center));
@@ -6186,7 +6184,7 @@ mod tests {
                         for send in [&send2, &send3] {
                             for card in &send.cards {
                                 let icon_left = card.glyph.x + (card.glyph.w - 24.0) / 2.0;
-                                for key in [Key::PhoneTagFolder, Key::PhoneTagNetwork, Key::ShelfMissing] {
+                                for key in [Key::PhoneTagFolder, Key::ShelfMissing] {
                                     let word = text(lang, key);
                                     let w = r.text_width(word, &f.micro_center);
                                     let tag = phone_send_tag(card.card, w);

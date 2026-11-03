@@ -57,8 +57,13 @@ fn gone_or_busy(e: &io::Error) -> OpenError {
 /// Whether `path` is a regular file right now (not a folder, not a symlink
 /// or junction), and its size.
 pub fn regular_size(path: &Path) -> Option<u64> {
+    regular_file(path).map(|(len, _)| len)
+}
+
+/// `regular_size` with the file's modified time.
+pub fn regular_file(path: &Path) -> Option<(u64, Option<std::time::SystemTime>)> {
     let m = fs::symlink_metadata(path).ok()?;
-    (m.is_file() && !m.file_type().is_symlink()).then(|| m.len())
+    (m.is_file() && !m.file_type().is_symlink()).then(|| (m.len(), m.modified().ok()))
 }
 
 /// Looks at `path` and opens it for reading with every share flag.

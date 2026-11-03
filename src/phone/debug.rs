@@ -86,7 +86,7 @@ fn share_made_up(handle: &Handle, dir: &Path) {
             Some(info) => println!(
                 "phone-debug: sharing {} ({} bytes), id {}",
                 path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default(),
-                info.size,
+                info.size.map_or_else(|| "?".to_owned(), |n| n.to_string()),
                 info.id
             ),
             None => println!("phone-debug: could not share {}", path.display()),

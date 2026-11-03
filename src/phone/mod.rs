@@ -163,9 +163,17 @@ pub enum PhoneEvent {
         id: String,
     },
     /// A shared file was found missing, or no longer a regular file, when a
-    /// phone asked for it or for the list: its id is revoked.
+    /// phone asked for it or for the list, or when a file on the network was
+    /// looked at after it was shared: its id is revoked.
     SharedGone {
         id: String,
+    },
+    /// A file on the network, shared without being looked at
+    /// (`ShareInfo::size` is `None`), was looked at on a thread of its own:
+    /// it is a regular file of `size` bytes.
+    SharedSized {
+        id: String,
+        size: u64,
     },
     SessionEnded(EndReason),
 }
@@ -174,7 +182,9 @@ pub enum PhoneEvent {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ShareInfo {
     pub id: String,
-    pub size: u64,
+    /// `None` for a file on the network: it is looked at on a thread of its
+    /// own, which says `SharedSized` or `SharedGone` for the id.
+    pub size: Option<u64>,
 }
 
 /// A fresh link for the QR code.
@@ -375,10 +385,40 @@ impl Handle {
     /// regular file, not a folder, a symlink or a junction), added to the
     /// session's set and given a random id. `None` for anything else, a full
     /// set or a system with no random bytes. Nothing is read or opened.
+    ///
+    /// A path on the network (`shelf::is_network`) is not looked at here:
+    /// the caller is the UI thread, and a share that is slow or gone can
+    /// hold it for seconds. It is added at once and looked at on a thread of
+    /// its own (`share_unseen`).
     pub fn share(&self, path: &Path) -> Option<ShareInfo> {
+        if crate::shelf::is_network(path) {
+            return self.share_unseen(path);
+        }
         let size = files::regular_size(path)?;
         let id = self.shared.session.lock().ok()?.share(path)?;
-        Some(ShareInfo { id, size })
+        Some(ShareInfo {
+            id,
+            size: Some(size),
+        })
+    }
+
+    /// Shares `path` without looking at it; a thread of its own then does
+    /// (`server::check_shared`) and says `SharedSized`, or revokes the id
+    /// and says `SharedGone`. The server looks at the file again at every
+    /// request anyway (the list, a download, a thumbnail), on its own
+    /// threads.
+    fn share_unseen(&self, path: &Path) -> Option<ShareInfo> {
+        let id = self.shared.session.lock().ok()?.share(path)?;
+        let shared = Arc::clone(&self.shared);
+        let (check_id, check_path) = (id.clone(), path.to_path_buf());
+        let spawned = std::thread::Builder::new()
+            .name("phone-share-check".into())
+            .spawn(move || server::check_shared(&shared, &check_id, &check_path));
+        if spawned.is_err() {
+            self.unshare(&id);
+            return None;
+        }
+        Some(ShareInfo { id, size: None })
     }
 
     /// Stops sharing `id`: a download of it in flight is cut and later

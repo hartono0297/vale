@@ -176,8 +176,9 @@ function showFrom(){
  app.appendChild(h("div",{class:"from",id:"from"}));
  drawFiles();fetchFiles()}
 
+function thKey(f){return f.id+"?v="+f.v}
 function paintTh(f,th){
- if(thState[f.id]===1)th.appendChild(h("img",{src:"/api/thumb/"+f.id,alt:""}));
+ if(thState[thKey(f)]===1)th.appendChild(h("img",{src:"/api/thumb/"+thKey(f),alt:""}));
  else th.appendChild(svg(KIND[f.kind]||KIND.doc,18,"#E8916D"))}
 
 function fileRow(f){
@@ -211,20 +212,21 @@ function drawFiles(){
   if(saveRun)b.disabled=true;
   b.onclick=saveAll;box.appendChild(b)}
  box.appendChild(h("div",{class:"fine"},t("only")));
- files.forEach(function(f){if(f.view&&thState[f.id]===undefined){thState[f.id]=0;thQ.push(f.id)}});
+ files.forEach(function(f){var k=thKey(f);if(f.view&&thState[k]===undefined){thState[k]=0;thQ.push(k)}});
  pumpThumbs()}
 
 /* One thumbnail at a time, so the PC's 8 connections are never all taken
-   by a list of previews; one that fails leaves the type icon. */
+   by a list of previews; one that fails leaves the type icon. It is asked
+   for by id and version: a file written over gets a new one. */
 function pumpThumbs(){
  if(thBusy||!thQ.length)return;
- var id=thQ.shift(),im=new Image();thBusy=true;
+ var k=thQ.shift(),id=k.split("?")[0],im=new Image();thBusy=true;
  im.onload=function(){
-  thState[id]=1;thBusy=false;
+  thState[k]=1;thBusy=false;
   var th=thEls[id],f=find(id);if(th&&f){th.textContent="";paintTh(f,th)}
   pumpThumbs()};
- im.onerror=function(){thState[id]=2;thBusy=false;pumpThumbs()};
- im.src="/api/thumb/"+id}
+ im.onerror=function(){thState[k]=2;thBusy=false;pumpThumbs()};
+ im.src="/api/thumb/"+k}
 
 function fetchFiles(cb){
  var x=new XMLHttpRequest();

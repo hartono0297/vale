@@ -1,7 +1,8 @@
 //! The files the owner ticked for the phone: a small set that lives and
 //! dies with the session (`Session` holds it). No sockets, no clock and no
 //! file system here: the caller checks that a path is a regular file before
-//! it asks to share it, so every rule is tested without a network.
+//! it asks to share it (for a file on the network, right after, off the UI
+//! thread), so every rule is tested without a network.
 //!
 //! Each shared file gets a random 128-bit id from the session's filler (the
 //! same one the token comes from). The phone only ever sees ids and names:
@@ -35,8 +36,10 @@ pub struct Entry {
     pub saved_by: Vec<u64>,
     /// Devices with a download of it in flight.
     pub busy: Vec<u64>,
-    /// The JPEG thumbnail once made (a few KB).
-    thumb: Option<Arc<Vec<u8>>>,
+    /// The JPEG thumbnail once made (a few KB), with the `ETag` of the file
+    /// it was made from: a file written over in place (same path, same id)
+    /// gets a new one.
+    thumb: Option<(String, Arc<Vec<u8>>)>,
 }
 
 /// The shared files in the order they were shared.
@@ -190,13 +193,17 @@ impl SharedSet {
         }
     }
 
-    pub fn thumb(&self, id: &str) -> Option<Arc<Vec<u8>>> {
-        self.find(id)?.thumb.clone()
+    /// The thumbnail of `id` made from the file as `tag` (`http::etag`)
+    /// says it is now: none when it was made from another version.
+    pub fn thumb(&self, id: &str, tag: &str) -> Option<Arc<Vec<u8>>> {
+        let (made_from, jpeg) = self.find(id)?.thumb.as_ref()?;
+        (made_from == tag).then(|| Arc::clone(jpeg))
     }
 
-    pub fn set_thumb(&mut self, id: &str, jpeg: Vec<u8>) {
+    /// Keeps `jpeg`, made from the file as `tag`, in place of any older one.
+    pub fn set_thumb(&mut self, id: &str, tag: &str, jpeg: Vec<u8>) {
         if let Some(i) = self.position(id) {
-            self.entries[i].thumb = Some(Arc::new(jpeg));
+            self.entries[i].thumb = Some((tag.to_owned(), Arc::new(jpeg)));
         }
     }
 }
@@ -404,11 +411,17 @@ mod tests {
         let mut set = SharedSet::new();
         let a = set.share(fake, &p(r"C:\x\a.png")).expect("id");
         set.share(fake, &p(r"C:\x\b.png")).expect("id");
-        assert!(set.thumb(&a).is_none());
-        set.set_thumb(&a, vec![0xFF, 0xD8, 1]);
-        assert_eq!(set.thumb(&a).expect("thumb").as_slice(), [0xFF, 0xD8, 1]);
+        assert!(set.thumb(&a, "1-1").is_none());
+        set.set_thumb(&a, "1-1", vec![0xFF, 0xD8, 1]);
+        assert_eq!(set.thumb(&a, "1-1").expect("thumb").as_slice(), [0xFF, 0xD8, 1]);
+        // The file was written over (another size or time): the old picture
+        // is not given for it, and the new one takes its place.
+        assert!(set.thumb(&a, "2-5").is_none(), "made from another version");
+        set.set_thumb(&a, "2-5", vec![0xFF, 0xD8, 2]);
+        assert_eq!(set.thumb(&a, "2-5").expect("thumb").as_slice(), [0xFF, 0xD8, 2]);
+        assert!(set.thumb(&a, "1-1").is_none());
         set.unshare(&a);
-        assert!(set.thumb(&a).is_none());
+        assert!(set.thumb(&a, "2-5").is_none());
         assert!(set.unshare_all());
         assert!(set.is_empty());
     }

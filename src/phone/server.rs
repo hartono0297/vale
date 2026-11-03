@@ -375,6 +375,29 @@ fn api_device(shared: &Shared, req: &Request, touch: bool) -> Option<u64> {
     Some(device)
 }
 
+/// Looks at a file that was shared without being looked at (one on the
+/// network), on the caller's thread, never the UI's: while it is still
+/// shared, a regular file's size is told (`SharedSized`); anything else has
+/// its id revoked (`SharedGone`).
+pub(crate) fn check_shared(shared: &Shared, id: &str, path: &Path) {
+    match files::regular_size(path) {
+        Some(size) => {
+            let still = shared
+                .session
+                .lock()
+                .map(|s| s.shared().contains(id))
+                .unwrap_or(false);
+            if still {
+                shared.emit(PhoneEvent::SharedSized {
+                    id: id.to_owned(),
+                    size,
+                });
+            }
+        }
+        None => revoke_gone(shared, id),
+    }
+}
+
 /// A shared file is gone: its id is revoked and the app is told, once.
 fn revoke_gone(shared: &Shared, id: &str) {
     let revoked = shared
@@ -401,7 +424,8 @@ fn kind_word(kind: crate::shelf::ShelfKind) -> &'static str {
 }
 
 /// `GET /api/files`: what this phone may take, in the order it was shared:
-/// id, name, size (read now), kind, whether the page may show it inline,
+/// id, name, size (read now), its version (the `ETag` without its quotes),
+/// kind, whether the page may show it inline,
 /// whether this phone finished it and whether it is downloading it. No path
 /// ever appears. A file found gone is left out, revoked and reported.
 fn file_list(shared: &Shared, req: &Request) -> Response {
@@ -430,11 +454,13 @@ fn file_list(shared: &Shared, req: &Request) -> Response {
     let mut files = Vec::new();
     let mut gone = Vec::new();
     for (id, path, name, kind, saved, busy) in snapshot {
-        match files::regular_size(&path) {
-            Some(size) => files.push(serde_json::json!({
+        match files::regular_file(&path) {
+            Some((size, mtime)) => files.push(serde_json::json!({
                 "id": id,
                 "name": name,
                 "size": size,
+                // The file's version: the thumbnail URL carries it.
+                "v": http::etag(size, mtime).trim_matches('"'),
                 "kind": kind_word(kind),
                 "view": http::is_viewable(&name),
                 "saved": saved,
@@ -537,10 +563,10 @@ fn stream_body(
 /// `GET` and `HEAD` of `/api/file/<id>` (an attachment) and `/api/view/<id>`
 /// (an image, inline): the file is looked at again every time, so a file
 /// deleted since it was ticked is 410 and its id is revoked. Range and
-/// If-Range are honoured (200, 206, 416). The start of the request and each
-/// chunk keep the session alive. After the last byte of a request that counts
-/// (`counts_as_taken`) the file is marked saved for this phone and, the first
-/// time, `FileTaken` is sent.
+/// If-Range are honoured (200, 206, 416). The start of a request for a shared
+/// id (by a route that fits it) and each chunk keep the session alive. After
+/// the last byte of a request that counts (`counts_as_taken`) the file is
+/// marked saved for this phone and, the first time, `FileTaken` is sent.
 fn download(
     shared: &Shared,
     stream: &mut TcpStream,
@@ -556,17 +582,19 @@ fn download(
         let Some(device) = s.device_for_view_api(req.cookie("vs")) else {
             return bare();
         };
+        let Some(e) = s.shared().find(id) else {
+            return bare();
+        };
+        if route == Route::View && !http::is_viewable(&e.name) {
+            return bare();
+        }
+        let found = (device, e.name.clone(), e.path.clone());
+        // Only a request for a file this phone may take, by a route that
+        // fits it, is activity: a made-up id keeps nothing alive.
         s.touch(Instant::now());
-        s.shared()
-            .find(id)
-            .map(|e| (device, e.name.clone(), e.path.clone()))
+        found
     };
-    let Some((device, name, path)) = found else {
-        return bare();
-    };
-    if route == Route::View && !http::is_viewable(&name) {
-        return bare();
-    }
+    let (device, name, path) = found;
     let mut opened = match files::open_shared(&path) {
         Ok(o) => o,
         Err(OpenError::Gone) => {
@@ -649,7 +677,9 @@ fn download(
 
 /// `GET /api/thumb/<id>`: a small JPEG of a shared image (never an SVG, never
 /// the full image in its place). Any failure is a bare 404 and the page draws
-/// the type icon. The thumbnail is kept in the set for the session.
+/// the type icon. The thumbnail is kept in the set for the file's version
+/// (its `ETag`); the page asks with `?v=` of that version, so the phone's
+/// cache never shows an old picture either.
 fn thumbnail(shared: &Shared, req: &Request, id: &str) -> Response {
     if api_device(shared, req, false).is_none() {
         return Response::not_found();
@@ -673,7 +703,9 @@ fn thumbnail(shared: &Shared, req: &Request, id: &str) -> Response {
         }
         Err(OpenError::Busy) => return Response::not_found(),
     };
-    let cached = shared.session.lock().ok().and_then(|s| s.shared().thumb(id));
+    // Kept by the file's version: one written over in place is made again.
+    let tag = http::etag(opened.len, opened.mtime);
+    let cached = shared.session.lock().ok().and_then(|s| s.shared().thumb(id, &tag));
     if let Some(bytes) = cached {
         return Response::jpeg_thumb(bytes.as_ref().clone());
     }
@@ -681,7 +713,7 @@ fn thumbnail(shared: &Shared, req: &Request, id: &str) -> Response {
         return Response::not_found();
     };
     if let Ok(mut s) = shared.session.lock() {
-        s.shared_mut().set_thumb(id, jpeg.clone());
+        s.shared_mut().set_thumb(id, &tag, jpeg.clone());
     }
     Response::jpeg_thumb(jpeg)
 }
@@ -1240,6 +1272,42 @@ mod tests {
         shared.session.lock().expect("lock").shared_mut().unshare(&id);
         assert!(!super::stream_body(&shared, &mut server_side, &mut file, 0, 100_000, &id));
         client.shutdown(std::net::Shutdown::Both).expect("shutdown");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A download request that is refused (an id that is not shared, a view
+    /// of a file that is not an image) is not activity: only a download that
+    /// starts keeps the server alive.
+    #[test]
+    fn a_refused_download_is_not_activity() {
+        use std::net::{TcpListener, TcpStream};
+        let ago = std::time::Duration::from_secs(700);
+        let Some((shared, cookie, _)) = quiet_server(ago) else {
+            eprintln!("skipped: the clock has not run {ago:?} yet");
+            return;
+        };
+        let idle = |s: &super::Shared| s.session.lock().expect("lock").idle(std::time::Instant::now());
+        let dir = crate::phone::files::tests::temp_dir("phone-idle-refused");
+        let txt = dir.join("a.txt");
+        std::fs::write(&txt, b"text").expect("write");
+        let id = shared.session.lock().expect("lock").share(&txt).expect("shared");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let _client = TcpStream::connect(listener.local_addr().expect("addr")).expect("connect");
+        let (mut server_side, _) = listener.accept().expect("accept");
+        let refused = |shared: &super::Shared, stream: &mut TcpStream, path: &str, id: &str, route| {
+            match super::download(shared, stream, &get_request(path, &cookie), id, route) {
+                super::Routed::Reply(r) => r.status,
+                super::Routed::Streamed => 200,
+            }
+        };
+        assert_eq!(refused(&shared, &mut server_side, "/api/file/bogus", "bogus", super::Route::File), 404);
+        assert!(idle(&shared), "an id that is not shared is not activity");
+        let view = format!("/api/view/{id}");
+        assert_eq!(refused(&shared, &mut server_side, &view, &id, super::Route::View), 404);
+        assert!(idle(&shared), "a view of a file that is not an image is not activity");
+        let file = format!("/api/file/{id}");
+        assert_eq!(refused(&shared, &mut server_side, &file, &id, super::Route::File), 200);
+        assert!(!idle(&shared), "a download that starts is");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

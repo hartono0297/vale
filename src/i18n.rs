@@ -578,7 +578,6 @@ keys! {
     PhoneSendNone => "Centang berkas untuk HP", "Tick files for the phone";
     PhoneSendEmpty => "Rak masih kosong", "The shelf is empty";
     PhoneTagFolder => "folder", "folder";
-    PhoneTagNetwork => "LAN", "LAN";
     PhoneTagTaken => "\u{2713} diambil", "\u{2713} taken";
     PhoneKindAndroid => "Android", "Android";
     PhoneKindIPhone => "iPhone", "iPhone";

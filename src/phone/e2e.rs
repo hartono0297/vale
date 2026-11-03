@@ -549,7 +549,10 @@ fn a_phone_lists_downloads_resumes_and_is_cut_off_by_the_shared_files() {
     assert!(r.handle.share(&share.join("nothing.pdf")).is_none(), "a missing path");
     let txt_info = r.handle.share(&txt).expect("share txt");
     let png_info = r.handle.share(&png).expect("share png");
-    assert_eq!((txt_info.size, png_info.size), (text.len() as u64, png_bytes.len() as u64));
+    assert_eq!(
+        (txt_info.size, png_info.size),
+        (Some(text.len() as u64), Some(png_bytes.len() as u64))
+    );
     assert_eq!(r.handle.share(&txt).expect("again").id, txt_info.id, "the same path, the same id");
     let (txt_id, png_id) = (txt_info.id, png_info.id);
 
@@ -578,7 +581,7 @@ fn a_phone_lists_downloads_resumes_and_is_cut_off_by_the_shared_files() {
     assert_eq!(files[1]["kind"], "image");
     assert_eq!(files[1]["view"], true);
     for f in &files {
-        assert_eq!(f.as_object().expect("object").len(), 7, "id name size kind view saved busy: {f}");
+        assert_eq!(f.as_object().expect("object").len(), 8, "id name size v kind view saved busy: {f}");
     }
 
     // A full GET: exactly the bytes, with the headers a download needs.
@@ -705,6 +708,23 @@ fn a_phone_lists_downloads_resumes_and_is_cut_off_by_the_shared_files() {
     assert!(thumb.body.len() < png_bytes.len(), "a thumbnail, not the image");
     let again = send(r.addr, "GET", &format!("/api/thumb/{png_id}"), Some(&vs), "");
     assert_eq!(again.body, thumb.body, "the second one comes from the set");
+    // The PNG is written over in place (same path, same id): the list's
+    // version moves, so the page asks for a new URL, and the thumbnail is
+    // made again rather than the old picture.
+    let v_before = entry_of(&files_of(&r, &vs), &png_id)["v"].as_str().expect("v").to_owned();
+    super::thumb::tests::write_gradient_png(&png, 480, 640);
+    let v_after = entry_of(&files_of(&r, &vs), &png_id)["v"].as_str().expect("v").to_owned();
+    assert_ne!(v_before, v_after, "the version follows the file");
+    let fresh = send(r.addr, "GET", &format!("/api/thumb/{png_id}?v={v_after}"), Some(&vs), "");
+    assert_eq!(fresh.status, 200);
+    assert_ne!(fresh.body, thumb.body, "a file written over gets a new thumbnail");
+    assert_eq!(
+        super::thumb::tests::jpeg_size(&fresh.body),
+        Some((144, 192)),
+        "the new picture's shape"
+    );
+    // Back to the first picture, so what follows reads the same bytes.
+    super::thumb::tests::write_gradient_png(&png, 640, 480);
     assert_eq!(send(r.addr, "GET", &format!("/api/thumb/{txt_id}"), Some(&vs), "").status, 404);
     // An SVG is never shown inline, never a thumbnail; only a download.
     let svg = r.dir.join("logo.svg");
@@ -781,6 +801,47 @@ fn a_phone_lists_downloads_resumes_and_is_cut_off_by_the_shared_files() {
     handle.stop();
     wait_for(&rx, |e| matches!(e, PhoneEvent::SessionEnded(EndReason::Done)));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A file on the network is shared like any other, but not looked at by the
+/// caller (the UI thread): its id comes at once with no size, and a thread
+/// of its own then says `SharedSized`, or revokes it with `SharedGone`. A
+/// `\\?\` path counts as the network (any `\\` form does), so the
+/// loopback test needs no real share.
+#[test]
+fn a_file_on_the_network_is_shared_without_being_looked_at_then_sized_or_revoked() {
+    let r = rig("phone-e2e-network");
+    let (_d, _vp, vs) = r.pair();
+    let local = r.dir.join("denah.pdf");
+    std::fs::write(&local, vec![1u8; 4321]).expect("write");
+    // `canonicalize` gives the `\\?\C:\…` form.
+    let net = std::fs::canonicalize(&local).expect("canonical");
+    assert!(crate::shelf::is_network(&net), "{}", net.display());
+    let info = r.handle.share(&net).expect("shared at once");
+    assert_eq!(info.size, None, "not looked at by the caller");
+    let sized = wait_for(&r.rx, |e| matches!(e, PhoneEvent::SharedSized { .. }));
+    assert_eq!(
+        sized,
+        PhoneEvent::SharedSized {
+            id: info.id.clone(),
+            size: 4321
+        }
+    );
+    // The phone gets it like any other file.
+    assert_eq!(entry_of(&files_of(&r, &vs), &info.id)["size"], 4321);
+    let got = send(r.addr, "GET", &format!("/api/file/{}", info.id), Some(&vs), "");
+    assert_eq!((got.status, got.body.len()), (200, 4321));
+
+    // One that is not there is revoked once it has been looked at.
+    let missing = net.with_file_name("hilang.pdf");
+    let gone = r.handle.share(&missing).expect("shared at once");
+    assert_eq!(gone.size, None);
+    let said = wait_for(&r.rx, |e| matches!(e, PhoneEvent::SharedGone { .. }));
+    assert_eq!(said, PhoneEvent::SharedGone { id: gone.id.clone() });
+    let ids: Vec<_> = files_of(&r, &vs).iter().map(|f| f["id"].clone()).collect();
+    assert_eq!(ids, [serde_json::Value::from(info.id.as_str())], "only the one that is there");
+    assert_eq!(send(r.addr, "GET", &format!("/api/file/{}", gone.id), Some(&vs), "").status, 404);
+    let _ = std::fs::remove_dir_all(&r.dir);
 }
 
 #[test]

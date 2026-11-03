@@ -172,7 +172,7 @@ pub(crate) mod tests {
     use crate::phone::files::tests::temp_dir;
 
     /// The width and height a JPEG's first SOF marker says.
-    fn jpeg_size(b: &[u8]) -> Option<(u32, u32)> {
+    pub(crate) fn jpeg_size(b: &[u8]) -> Option<(u32, u32)> {
         let mut i = 2;
         while i + 9 < b.len() {
             if b[i] != 0xFF {
