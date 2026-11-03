@@ -397,6 +397,74 @@ pub fn reveal_frame(dir: RevealDir, from_alpha: f32, progress: f32) -> RevealFra
     }
 }
 
+/// How long the ✕ of a timed notice takes to fade in or out.
+pub const CLOSE_FADE_MS: u64 = 120;
+
+/// The ✕'s fade length: 0 (instant) when Windows' animations are off, the
+/// robot's motion is Off or Energy Saver is on; `CLOSE_FADE_MS` otherwise.
+pub fn close_fade_ms(
+    windows_animations: bool,
+    motion: crate::ui::robot::Motion,
+    energy_saver: bool,
+) -> u64 {
+    if !windows_animations || motion == crate::ui::robot::Motion::Off || energy_saver {
+        0
+    } else {
+        CLOSE_FADE_MS
+    }
+}
+
+/// The ✕'s opacity easing from `from` to `to` over `ms` from `start`:
+/// opacity only, nothing moves. No timer: `App` keeps the frame clock running
+/// while `moving` holds (docs/memory/notice-close.md).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CloseFade {
+    pub from: f32,
+    pub to: f32,
+    pub start: Instant,
+    pub ms: u64,
+}
+
+impl CloseFade {
+    /// Settled at `alpha`.
+    pub fn settled(alpha: f32, now: Instant) -> Self {
+        Self {
+            from: alpha,
+            to: alpha,
+            start: now,
+            ms: 0,
+        }
+    }
+
+    /// The opacity at `now`: `to` at once when `ms` is 0 and from `to` on
+    /// once `ms` has passed; between, `from` toward `to` by ease-out cubic.
+    pub fn alpha(&self, now: Instant) -> f32 {
+        if self.ms == 0 {
+            return self.to;
+        }
+        let ms = now.saturating_duration_since(self.start).as_secs_f32() * 1000.0;
+        let t = (ms / self.ms as f32).clamp(0.0, 1.0);
+        self.from + (self.to - self.from) * ease_out_cubic(t)
+    }
+
+    /// Aims at `to` from the opacity shown at `now`, over `ms`.
+    pub fn retarget(&mut self, to: f32, now: Instant, ms: u64) {
+        *self = Self {
+            from: self.alpha(now),
+            to,
+            start: now,
+            ms,
+        };
+    }
+
+    /// The fade is still running at `now` (the frame clock must tick).
+    pub fn moving(&self, now: Instant) -> bool {
+        self.ms > 0
+            && self.from != self.to
+            && now.saturating_duration_since(self.start).as_millis() < u128::from(self.ms)
+    }
+}
+
 /// A busy toast's strip arriving at or leaving the top of the open panel
 /// (`REVEAL_MS`, ease-out cubic, no timer: the frame clock runs while it
 /// does). The panel stays open and settled throughout; opening or closing it
@@ -672,6 +740,68 @@ mod tests {
 
     fn snap(panel: bool, page: Page, sub: SubView) -> Snap {
         Snap { panel, page, sub }
+    }
+
+    #[test]
+    fn the_close_fade_is_instant_when_animations_are_off_or_saving_energy() {
+        use crate::ui::robot::Motion;
+        assert_eq!(close_fade_ms(true, Motion::Full, false), CLOSE_FADE_MS);
+        assert_eq!(close_fade_ms(true, Motion::Saver, false), CLOSE_FADE_MS);
+        assert_eq!(close_fade_ms(false, Motion::Full, false), 0);
+        assert_eq!(close_fade_ms(true, Motion::Off, false), 0);
+        assert_eq!(close_fade_ms(true, Motion::Full, true), 0);
+        assert_eq!(CLOSE_FADE_MS, 120);
+    }
+
+    #[test]
+    fn the_close_fade_with_no_time_jumps_to_its_target() {
+        let t0 = Instant::now();
+        let mut f = CloseFade::settled(0.0, t0);
+        f.retarget(1.0, t0, 0);
+        assert_eq!(f.alpha(t0), 1.0);
+        assert!(!f.moving(t0));
+        f.retarget(0.0, t0 + Duration::from_millis(5), 0);
+        assert_eq!(f.alpha(t0 + Duration::from_millis(5)), 0.0);
+        assert!(!f.moving(t0 + Duration::from_millis(5)));
+    }
+
+    #[test]
+    fn the_close_fade_eases_out_and_stops_moving_at_the_end() {
+        let t0 = Instant::now();
+        let mut f = CloseFade::settled(0.0, t0);
+        f.retarget(1.0, t0, CLOSE_FADE_MS);
+        assert_eq!(f.alpha(t0), 0.0);
+        assert!(f.moving(t0));
+        let mid = t0 + Duration::from_millis(CLOSE_FADE_MS / 2);
+        // Ease-out cubic at 0.5 is 0.875.
+        assert!((f.alpha(mid) - 0.875).abs() < 1e-3, "{}", f.alpha(mid));
+        assert!(f.moving(mid));
+        let end = t0 + Duration::from_millis(CLOSE_FADE_MS);
+        assert_eq!(f.alpha(end), 1.0);
+        assert!(!f.moving(end));
+        assert_eq!(f.alpha(end + Duration::from_secs(5)), 1.0);
+        assert!(!f.moving(end + Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn a_retarget_mid_close_fade_continues_from_the_alpha_shown() {
+        let t0 = Instant::now();
+        let mut f = CloseFade::settled(0.0, t0);
+        f.retarget(1.0, t0, CLOSE_FADE_MS);
+        let mid = t0 + Duration::from_millis(CLOSE_FADE_MS / 2);
+        let shown = f.alpha(mid);
+        f.retarget(0.0, mid, CLOSE_FADE_MS);
+        assert_eq!(f.from, shown);
+        assert_eq!(f.alpha(mid), shown);
+        let later = mid + Duration::from_millis(CLOSE_FADE_MS / 2);
+        assert!(f.alpha(later) < shown);
+        assert!(f.alpha(later) > 0.0);
+        assert!(f.moving(later));
+        assert_eq!(f.alpha(mid + Duration::from_millis(CLOSE_FADE_MS)), 0.0);
+        // The same target again from a settled fade is not motion.
+        let mut g = CloseFade::settled(1.0, t0);
+        g.retarget(1.0, t0, CLOSE_FADE_MS);
+        assert!(!g.moving(t0));
     }
 
     #[test]

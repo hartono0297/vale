@@ -237,4 +237,8 @@ Related: [[bata-robot-expressions]], [[studio-media-progress-timer]], [[system-p
 [[clipboard-history]],
 [[lyric-notch-width]] (a long lyric line's one-shot scroll timer follows the same rule)
 
+The notice ✕'s 120 ms fade ([[notice-close]]) rides the same `FrameClock`
+(`close_fade.moving(now)` in `animating_at`): no new timer, and it is instant
+under Energy Saver, Motion Off or Windows animations off.
+
 Part of [[v3-studio-overview]]. Listed in [[index]].

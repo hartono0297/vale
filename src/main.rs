@@ -82,8 +82,16 @@ fn opens_windows(arg: Option<&str>) -> bool {
         Some("--updated") => true,
         #[cfg(debug_assertions)]
         Some(
-            "--demo" | "--demo-editor" | "--demo-cli" | "--demo-robot" | "--demo-devices"
-            | "--demo-arrange" | "--demo-snap" | "--demo-shot-editor" | "--settings",
+            "--demo"
+            | "--demo-editor"
+            | "--demo-cli"
+            | "--demo-robot"
+            | "--demo-devices"
+            | "--demo-arrange"
+            | "--demo-notice-close"
+            | "--demo-snap"
+            | "--demo-shot-editor"
+            | "--settings",
         ) => true,
         Some(_) => false,
     }
@@ -181,6 +189,14 @@ fn main() {
             attach_parent_console();
             demo_lang_from_env();
             ui::demo::run_arrange();
+        }
+        // The notice ✕ on a real `IslandState` fed made-up notices: effects are
+        // printed, never run.
+        #[cfg(debug_assertions)]
+        Some("--demo-notice-close") => {
+            attach_parent_console();
+            demo_lang_from_env();
+            ui::demo::run_notice_close();
         }
         // The capture overlay on a desktop drawn in code: no screen grab, no
         // window list, no UI Automation.

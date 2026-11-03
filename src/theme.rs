@@ -756,6 +756,24 @@ mod tests {
         }
     }
 
+    /// The notice's ✕ is the text colour on the `raised` disc (`raised_hi`
+    /// while the pointer is on it): legible on every island surface, whatever
+    /// the see-through fill does behind it (docs/memory/notice-close.md).
+    #[test]
+    fn the_notice_close_glyph_reads_on_its_disc_on_every_surface() {
+        for &surface in Surface::ALL.iter().filter(|s| **s != Surface::Auto) {
+            let p = island(Accent::default(), surface);
+            let (rest, hot) = (contrast(p.text, p.raised), contrast(p.text, p.raised_hi));
+            println!("{surface:?}: text on raised {rest:.2}, on raised_hi {hot:.2}");
+            assert!(rest >= 4.5, "{surface:?} raised: {rest:.2}");
+            assert!(hot >= 4.5, "{surface:?} raised_hi: {hot:.2}");
+        }
+        // Auto resolves to one of those.
+        let auto = island(Accent::default(), Surface::Auto);
+        assert!(contrast(auto.text, auto.raised) >= 4.5);
+        assert!(contrast(auto.text, auto.raised_hi) >= 4.5);
+    }
+
     #[test]
     fn auto_follows_the_cat_and_never_reaches_the_palette() {
         for (cat, want) in [

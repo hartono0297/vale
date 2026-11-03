@@ -172,4 +172,7 @@ web.whatsapp.com toast), Discord hidden in the tray planned as "relaunch".
   tab strip may read empty (then the window just comes forward).
 - Firefox's and Opera's tab strips; Edge vertical tabs.
 
+The notice's ✕ ([[notice-close]]) never emits `OpenTarget`: it closes a notice
+without opening its app.
+
 Related: [[toast-while-busy]] (its strip, slot and peek clicks go through the same OpenTarget effect), [[claude-notice-open]] (a Claude notice click, same worker and foreground rule).

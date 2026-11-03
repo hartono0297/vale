@@ -867,12 +867,21 @@ pub fn notice_chip_widths(kind: &NoticeKind, pomo: PomoStatus) -> Vec<f32> {
 /// Returns the layout (its `action` is the whole block of chips) and each
 /// chip's rect, in the order of `widths`.
 pub fn notice_actions_layout(s: ShapeRect, widths: &[f32]) -> (NoticeLayout, Vec<Rect>) {
+    notice_actions_layout_with(s, widths, false)
+}
+
+/// `notice_actions_layout` with the room for the ✕ (`notice_layout_with`).
+pub fn notice_actions_layout_with(
+    s: ShapeRect,
+    widths: &[f32],
+    close: bool,
+) -> (NoticeLayout, Vec<Rect>) {
     if widths.is_empty() {
-        return (notice_layout(s, None), Vec::new());
+        return (notice_layout_with(s, None, close), Vec::new());
     }
     let gaps = NOTICE_CHIP_GAP * (widths.len() - 1) as f32;
     let total = widths.iter().sum::<f32>() + gaps;
-    let layout = notice_layout(s, Some(total));
+    let layout = notice_layout_with(s, Some(total), close);
     let block = layout.action.expect("room for the chips was asked for");
     let mut x = block.x;
     let chips = widths
@@ -923,9 +932,44 @@ pub fn reminder_done_regions(chip: Rect) -> Vec<Region> {
     }]
 }
 
+/// The ✕ of a timed full notice (docs/memory/notice-close.md): the hit square's
+/// side, its right edge's distance from the shape's right edge, the painted
+/// circle, the glyph, and the room between the text (or the chip) and the
+/// square.
+pub const NOTICE_CLOSE_HIT: f32 = 24.0;
+pub const NOTICE_CLOSE_INSET: f32 = 8.0;
+pub const NOTICE_CLOSE_DISC: f32 = 20.0;
+pub const NOTICE_CLOSE_GLYPH: f32 = 9.0;
+pub const NOTICE_CLOSE_GAP: f32 = 6.0;
+
+/// The ✕'s hit square: `NOTICE_CLOSE_HIT` wide, `NOTICE_CLOSE_INSET` from the
+/// shape's right edge, centred vertically.
+pub fn notice_close_rect(s: ShapeRect) -> Rect {
+    square(
+        s.x + s.w - NOTICE_CLOSE_INSET - NOTICE_CLOSE_HIT,
+        s.y + (s.h - NOTICE_CLOSE_HIT) / 2.0,
+        NOTICE_CLOSE_HIT,
+    )
+}
+
+/// The ✕'s click target: one region, `Hit::NoticeClose`.
+pub fn notice_close_regions(rect: Rect) -> Vec<Region> {
+    vec![Region {
+        rect,
+        hit: Hit::NoticeClose,
+    }]
+}
+
 /// `action`: room for a chip this wide naming what a click does at the
 /// right, the text stopping short of it.
 pub fn notice_layout(s: ShapeRect, action: Option<f32>) -> NoticeLayout {
+    notice_layout_with(s, action, false)
+}
+
+/// `notice_layout` with the room for the ✕ (`close`): the text and the chip
+/// end `NOTICE_CLOSE_GAP` before its square. Kept for a closable notice
+/// whether or not the ✕ shows, so nothing moves when the pointer arrives.
+pub fn notice_layout_with(s: ShapeRect, action: Option<f32>, close: bool) -> NoticeLayout {
     // The robot takes exactly the badge's place.
     const BADGE: f32 = ROBOT_NOTICE;
     const PAD_L: f32 = 18.0;
@@ -935,7 +979,11 @@ pub fn notice_layout(s: ShapeRect, action: Option<f32>) -> NoticeLayout {
     let badge = square(s.x + PAD_L, s.y + (s.h - BADGE) / 2.0, BADGE);
     let left = badge.right() + 12.0;
     let mid = s.y + s.h / 2.0;
-    let edge = s.x + s.w - PAD_R;
+    let edge = if close {
+        notice_close_rect(s).x - NOTICE_CLOSE_GAP
+    } else {
+        s.x + s.w - PAD_R
+    };
     let action = action.map(|w| Rect {
         x: edge - w,
         y: mid - ACTION_H / 2.0,
@@ -964,8 +1012,19 @@ pub struct ToastNoticeLayout {
 
 /// `notice_layout`'s badge, chip and text edges with the text split in three
 /// lines (eyebrow, title, body) around the shape's middle.
+// The renderer asks for the ✕'s room itself (`toast_notice_layout_with`).
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn toast_notice_layout(s: ShapeRect, action: Option<f32>) -> ToastNoticeLayout {
-    let base = notice_layout(s, action);
+    toast_notice_layout_with(s, action, false)
+}
+
+/// `toast_notice_layout` with the room for the ✕ (`notice_layout_with`).
+pub fn toast_notice_layout_with(
+    s: ShapeRect,
+    action: Option<f32>,
+    close: bool,
+) -> ToastNoticeLayout {
+    let base = notice_layout_with(s, action, close);
     let mid = s.y + s.h / 2.0;
     let (left, right) = (base.title.x, base.title.right());
     ToastNoticeLayout {
@@ -3714,6 +3773,96 @@ mod tests {
             // The text side and the badge are the body.
             assert_eq!(regions.hit(n.x + 30.0, n.y + n.h / 2.0), Some(Hit::Body));
             assert_eq!(regions.hit(chips[0].x - 20.0, chips[0].y), Some(Hit::Body));
+        }
+    }
+
+    #[test]
+    fn the_notice_close_rect_stays_inside_the_shape_for_every_style_robot_and_size() {
+        let sizes = [
+            NotchSize::DEFAULT,
+            NotchSize::from_px(NOTCH_W_MIN, NOTCH_H_MIN),
+            NotchSize::from_px(NOTCH_W_MAX, NOTCH_H_MAX),
+            NotchSize::from_px(NOTCH_W_MIN, NOTCH_H_MAX),
+        ];
+        for style in [Style::Pill, Style::Notch] {
+            for robot in [false, true] {
+                for size in sizes {
+                    let n = shape_with_robot_sized(style, size, ShapeKind::Notice, robot);
+                    let r = notice_close_rect(n);
+                    let tag = format!("{style:?} robot={robot} {size:?}");
+                    assert!(r.w >= 24.0 && r.h >= 24.0, "{tag}");
+                    assert_eq!(r.right(), n.x + n.w - NOTICE_CLOSE_INSET, "{tag}");
+                    assert_eq!(r.y + r.h / 2.0, n.y + n.h / 2.0, "{tag}");
+                    // Every corner (just inside it) is on the island.
+                    for (x, y) in [
+                        (r.x, r.y),
+                        (r.right() - 0.01, r.y),
+                        (r.x, r.bottom() - 0.01),
+                        (r.right() - 0.01, r.bottom() - 0.01),
+                    ] {
+                        assert!(shape_contains(style, n, x, y), "{tag} corner {x},{y}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_closable_notice_keeps_its_text_and_chip_clear_of_the_close_square() {
+        for style in [Style::Pill, Style::Notch] {
+            for robot in [false, true] {
+                let n = shape_with_robot_sized(style, NotchSize::DEFAULT, ShapeKind::Notice, robot);
+                let close = notice_close_rect(n);
+                let limit = close.x - NOTICE_CLOSE_GAP;
+                for action in [None, Some(ACTION_W), Some(LOG_ACTION_W)] {
+                    let tag = format!("{style:?} robot={robot} {action:?}");
+                    let l = notice_layout_with(n, action, true);
+                    assert!(l.title.right() <= limit, "{tag}");
+                    assert!(l.body.right() <= limit, "{tag}");
+                    if let Some(chip) = l.action {
+                        assert!(chip.right() <= limit, "{tag}");
+                        assert!(l.title.right() <= chip.x, "{tag}");
+                    }
+                    let t = toast_notice_layout_with(n, action, true);
+                    assert!(t.eyebrow.right() <= limit, "{tag}");
+                    assert!(t.title.right() <= limit, "{tag}");
+                    assert!(t.body.right() <= limit, "{tag}");
+                    if let Some(chip) = t.action {
+                        assert!(chip.right() <= limit, "{tag}");
+                    }
+                    // Without the ✕ the layouts are the old ones, 18 dip wider.
+                    let plain = notice_layout(n, action);
+                    assert_eq!(plain, notice_layout_with(n, action, false), "{tag}");
+                    assert_eq!(
+                        toast_notice_layout(n, action),
+                        toast_notice_layout_with(n, action, false)
+                    );
+                    assert_eq!(plain.title.right() - l.title.right(), 18.0, "{tag}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_notice_close_region_hit_tests_apart_from_the_body() {
+        for style in [Style::Pill, Style::Notch] {
+            for robot in [false, true] {
+                let n = shape_with_robot_sized(style, NotchSize::DEFAULT, ShapeKind::Notice, robot);
+                let close = notice_close_rect(n);
+                let regions = HitRegions {
+                    shape: Some((style, n)),
+                    regions: notice_close_regions(close),
+                    ..HitRegions::default()
+                };
+                let tag = format!("{style:?} robot={robot}");
+                let (cx, cy) = (close.x + close.w / 2.0, close.y + close.h / 2.0);
+                assert_eq!(regions.hit(cx, cy), Some(Hit::NoticeClose), "{tag}");
+                // The text side is the body, and so is the gap before the ✕.
+                let l = toast_notice_layout_with(n, None, true);
+                let (tx, ty) = (l.title.x + 10.0, l.title.y + l.title.h / 2.0);
+                assert_eq!(regions.hit(tx, ty), Some(Hit::Body), "{tag}");
+                assert_eq!(regions.hit(close.x - 3.0, cy), Some(Hit::Body), "{tag}");
+            }
         }
     }
 
