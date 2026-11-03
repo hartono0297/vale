@@ -63,12 +63,13 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent, VK_ESCAPE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GetCursorPos, GetSystemMetrics, HTCLIENT,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GetCursorPos, GetSystemMetrics, GetWindowRect,
+    HTCLIENT,
     IDC_ARROW, IDC_HAND, IDC_SIZENWSE, KillTimer, LoadCursorW, PostMessageW, RegisterClassExW,
     SM_CXDRAG, SM_CYDRAG, SW_HIDE, SW_SHOWNOACTIVATE, SetCursor, SetTimer, ShowWindow, ULW_ALPHA,
-    UpdateLayeredWindow, WM_CAPTURECHANGED, WM_DPICHANGED, WM_ERASEBKGND, WM_KEYDOWN,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_SETCURSOR,
-    WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    UpdateLayeredWindow, WM_CAPTURECHANGED, WM_CLOSE, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND,
+    WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_SETCURSOR,
+    WM_TIMER, WM_WINDOWPOSCHANGED, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 use windows::core::{Error, Interface, PCWSTR, Result, w};
 use windows_numerics::{Matrix3x2, Vector2};
@@ -566,6 +567,9 @@ pub(super) struct Card {
     tracking: bool,
     press: Option<Press>,
     hidden: bool,
+    /// The window was destroyed by someone other than `close` (App was asked
+    /// to close): nothing is drawn or timed on the dead hwnd any more.
+    gone: bool,
     clock: Option<FrameClock>,
     placed: Option<CardPlace>,
     demo: bool,
@@ -748,6 +752,7 @@ pub(super) fn open(args: OpenArgs, content: CardContent) -> bool {
         // Held back until the card is stored: a frame tick posted to a card
         // nobody can find yet would never be acknowledged.
         hidden: true,
+        gone: false,
         clock: None,
         placed: None,
         demo: args.demo,
@@ -851,7 +856,7 @@ impl Card {
     }
 
     fn visible(&self) -> bool {
-        !self.hidden
+        !self.hidden && !self.gone
     }
 
     /// The position the card shows at `now` (frozen in the demo).
@@ -1566,6 +1571,23 @@ impl Card {
         false
     }
 
+    /// Windows moved the window itself (a monitor unplugged or rearranged, a
+    /// display change): later renders keep it where it is now.
+    fn sync_origin(&mut self) {
+        let mut r = RECT::default();
+        if unsafe { GetWindowRect(self.hwnd, &mut r) }.is_ok() {
+            self.origin = (r.left, r.top);
+        }
+    }
+
+    /// The window is gone: stop the timers and the frame clock for good.
+    fn destroyed(&mut self) {
+        self.gone = true;
+        self.press = None;
+        self.kill_timers();
+        self.clock = None;
+    }
+
     /// The window moved to a monitor of another DPI: the same size in dip.
     fn set_dpi(&mut self, dpi: u32, origin: Option<(i32, i32)>) {
         self.dpi = dpi.max(96);
@@ -1744,6 +1766,40 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             with(|c, _| c.set_dpi(dpi, Some((rect.left, rect.top))));
             return LRESULT(0);
         }
+        // Every render passes the stored origin to `UpdateLayeredWindow`, so a
+        // move Windows made must be read back or the next render undoes it.
+        // A move the card made itself (inside `present`) arrives while the card
+        // is borrowed and is skipped: the origin already holds it.
+        WM_WINDOWPOSCHANGED => {
+            with(|c, _| {
+                if c.hwnd == hwnd {
+                    c.sync_origin();
+                }
+            });
+        }
+        // Alt+F4 on a focused card: App closes it, like Esc and the X.
+        // DefWindowProc would destroy the window behind App's back.
+        WM_CLOSE => {
+            if let Some((island, demo)) = with(|c, _| (c.island, c.demo)) {
+                emit(island, demo, Msg::Close, 0);
+            }
+            return LRESULT(0);
+        }
+        // `close` takes the card out before it destroys the window, so a card
+        // still stored here was destroyed by someone else: App drops it.
+        WM_DESTROY => {
+            let info = with(|c, _| {
+                (c.hwnd == hwnd && !c.gone).then(|| {
+                    c.destroyed();
+                    (c.island, c.demo)
+                })
+            })
+            .flatten();
+            if let Some((island, demo)) = info {
+                emit(island, demo, Msg::Close, 0);
+            }
+            return LRESULT(0);
+        }
         _ => {}
     }
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
@@ -1878,6 +1934,113 @@ mod tests {
         }
         update(at_end);
         assert!(!timer_set(h, TIMER_LINE), "at the end: nothing left to move");
+        close();
+    }
+
+    /// A message-only window standing in for the island (never on screen).
+    fn fake_island() -> HWND {
+        use windows::Win32::UI::WindowsAndMessaging::{HWND_MESSAGE, WINDOW_EX_STYLE, WINDOW_STYLE};
+        unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                w!("STATIC"),
+                None,
+                WINDOW_STYLE::default(),
+                0,
+                0,
+                0,
+                0,
+                Some(HWND_MESSAGE),
+                None,
+                None,
+                None,
+            )
+        }
+        .expect("a message-only window")
+    }
+
+    /// The card messages posted to `island`, oldest first (removed).
+    fn posted(island: HWND) -> Vec<usize> {
+        use windows::Win32::UI::WindowsAndMessaging::{MSG, PM_REMOVE, PeekMessageW};
+        let mut out = Vec::new();
+        let mut m = MSG::default();
+        while unsafe {
+            PeekMessageW(&mut m, Some(island), WM_APP_LYRICS_CARD, WM_APP_LYRICS_CARD, PM_REMOVE)
+        }
+        .as_bool()
+        {
+            out.push(m.wParam.0);
+        }
+        out
+    }
+
+    #[test]
+    fn wm_close_asks_the_island_to_close_instead_of_destroying_the_card() {
+        use windows::Win32::UI::WindowsAndMessaging::{IsWindow, SendMessageW};
+        let island = fake_island();
+        let mut a = args();
+        a.island = island;
+        a.demo = false;
+        assert!(open(a, content(Status::Synced, true)));
+        let h = hwnd().unwrap();
+        // Alt+F4 on a focused card ends in WM_CLOSE.
+        unsafe { SendMessageW(h, WM_CLOSE, None, None) };
+        assert!(unsafe { IsWindow(Some(h)) }.as_bool(), "the window lives until App closes it");
+        assert_eq!(hwnd(), Some(h));
+        assert_eq!(posted(island), vec![Msg::Close.code()], "the same path as Esc and the X");
+        // App's own close posts nothing back.
+        close();
+        assert!(posted(island).is_empty());
+        unsafe {
+            let _ = DestroyWindow(island);
+        }
+    }
+
+    #[test]
+    fn a_card_destroyed_behind_app_s_back_asks_the_island_to_close() {
+        let island = fake_island();
+        let mut a = args();
+        a.island = island;
+        a.demo = false;
+        assert!(open(a, content(Status::Synced, true)));
+        let h = hwnd().unwrap();
+        unsafe {
+            let _ = DestroyWindow(h);
+        }
+        assert_eq!(posted(island), vec![Msg::Close.code()]);
+        // App then drops the stale card; nothing else is posted.
+        close();
+        assert!(hwnd().is_none());
+        assert!(posted(island).is_empty());
+        unsafe {
+            let _ = DestroyWindow(island);
+        }
+    }
+
+    #[test]
+    fn a_move_windows_makes_is_kept_by_the_next_render() {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetWindowRect, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos,
+        };
+        let rect_of = |h: HWND| {
+            let mut r = RECT::default();
+            unsafe { GetWindowRect(h, &mut r) }.unwrap();
+            (r.left, r.top)
+        };
+        assert!(open(args(), content(Status::Synced, true)));
+        let h = hwnd().unwrap();
+        assert_ne!(rect_of(h), (100, 200));
+        // A monitor was unplugged or rearranged: Windows moves the window.
+        unsafe { SetWindowPos(h, None, 100, 200, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE) }
+            .unwrap();
+        // The next snapshot renders: the card stays where Windows put it.
+        update(content(Status::Synced, true));
+        assert_eq!(rect_of(h), (100, 200));
+        // A drag's end saves where it really is.
+        let mut post = Vec::new();
+        assert!(with(|c, _| c.finish_move(&mut post)).is_some());
+        let p = take_placed().unwrap();
+        assert_eq!((p.left, p.top), (100, 200));
         close();
     }
 

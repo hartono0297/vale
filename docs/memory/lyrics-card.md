@@ -61,8 +61,12 @@ Related: [[lyrics-sync]], [[lyrics-lookup]], [[media-session-priority]],
   close. Lyrics off by any path (the Musik toggle `SaveLyrics(false)`, the
   Settings switch, `adopt_config`) closes it: `perform` closes at once and
   `sync_lyrics_card` (end of every `refresh`) closes whatever got past.
-- Close: the X, Esc on `WM_KEYDOWN` while the card has focus, the hotkey or the
-  button again. A click outside does NOT close it. Open state is for this run
+- Close: the X, Esc on `WM_KEYDOWN` while the card has focus, Alt+F4
+  (`WM_CLOSE` is handled: it posts `Close` and returns 0, never
+  `DefWindowProc`, which would destroy the hwnd behind App's back and leave
+  `open` true with a dead window), the hotkey or the button again. A
+  `WM_DESTROY` of a card that is still stored (`close` takes it out first)
+  marks it `gone` (no render, timers or clock) and also posts `Close`. A click outside does NOT close it. Open state is for this run
   only, never reopened at startup. The notch click is untouched.
 - Window: class `ValeLyricsCard`, `WS_POPUP`, `WS_EX_LAYERED | WS_EX_TOOLWINDOW |
   WS_EX_TOPMOST` (no taskbar button), activatable (a click takes focus so Esc
@@ -193,7 +197,11 @@ that monitor's DPI, top left kept); otherwise (first open, monitor gone) the
 notch monitor's work area (`notch_monitor::resolve`): right edge 24 dip in from
 the right, top 72 dip below the work area's top, the default size, shrunk to
 fit a small work area. DPI: the monitor's at open, `WM_DPICHANGED` (suggested
-top left, the same size in dip) and a re-read after a drag.
+top left, the same size in dip) and a re-read after a drag. Every render passes the stored
+origin to `UpdateLayeredWindow`, so `WM_WINDOWPOSCHANGED` re-reads it with
+`GetWindowRect` when the card is not borrowed (a move Windows made: a monitor
+unplugged or rearranged at the same DPI, a display change); the card's own
+moves arrive inside `present` while borrowed and are skipped.
 
 ## Timers and power ([[bata-idle-power-budget]])
 
