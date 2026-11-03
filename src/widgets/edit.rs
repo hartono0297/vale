@@ -207,8 +207,26 @@ pub fn selection(edit: HWND, model_text: &str) -> (usize, usize) {
     )
 }
 
+/// `index` (UTF-16 units of `model_text`), moved back to the start of the
+/// surrogate pair it falls inside, if it does. Every index that reaches the
+/// EDIT goes through this, so a caret or a selection edge can never sit
+/// between a high and a low surrogate: typing or deleting there would split
+/// the pair, and `from_utf16_lossy` turns a lone half into U+FFFD.
+pub fn snap_to_boundary(model_text: &str, index: usize) -> usize {
+    let mut prev = 0u16;
+    for (i, unit) in model_text.encode_utf16().enumerate() {
+        if i == index {
+            let inside = (0xDC00..0xE000).contains(&unit) && (0xD800..0xDC00).contains(&prev);
+            return if inside { index - 1 } else { index };
+        }
+        prev = unit;
+    }
+    index
+}
+
 /// Selects model indices `a` to `b` (a caret when equal).
 pub fn set_selection(edit: HWND, model_text: &str, a: usize, b: usize) {
+    let (a, b) = (snap_to_boundary(model_text, a), snap_to_boundary(model_text, b));
     unsafe {
         SendMessageW(
             edit,
@@ -227,12 +245,16 @@ pub fn apply(edit: HWND, model_text: &str, e: &Edit) {
         .chain([0])
         .collect();
     let new_text = checklist::apply(model_text, e);
+    let (start, end) = (
+        snap_to_boundary(model_text, e.start),
+        snap_to_boundary(model_text, e.end),
+    );
     unsafe {
         SendMessageW(
             edit,
             EM_SETSEL,
-            Some(WPARAM(checklist::edit_index(model_text, e.start))),
-            Some(LPARAM(checklist::edit_index(model_text, e.end) as isize)),
+            Some(WPARAM(checklist::edit_index(model_text, start))),
+            Some(LPARAM(checklist::edit_index(model_text, end) as isize)),
         );
         SendMessageW(
             edit,
@@ -407,6 +429,71 @@ unsafe extern "system" fn edit_proc(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_index_inside_a_surrogate_pair_snaps_to_before_it() {
+        // "ab" + U+1F600 (units 2 and 3) + "cd"
+        let t = "ab\u{1F600}cd";
+        assert_eq!(t.encode_utf16().count(), 6);
+        assert_eq!(snap_to_boundary(t, 0), 0);
+        assert_eq!(snap_to_boundary(t, 2), 2, "before the pair");
+        assert_eq!(snap_to_boundary(t, 3), 2, "between the halves");
+        assert_eq!(snap_to_boundary(t, 4), 4, "after the pair");
+        assert_eq!(snap_to_boundary(t, 6), 6, "the end");
+        assert_eq!(snap_to_boundary(t, 99), 99, "out of range is left to the EDIT");
+        // Two pairs in a row, then a combining mark (one unit per code
+        // point: any boundary around it is a legal index).
+        let u = "\u{1F600}\u{1F601}e\u{0301}";
+        assert_eq!(
+            (1..=5).map(|i| snap_to_boundary(u, i)).collect::<Vec<_>>(),
+            [0, 2, 2, 4, 5]
+        );
+        assert_eq!(snap_to_boundary("", 0), 0);
+    }
+
+    #[test]
+    fn emoji_text_survives_the_edit_index_round_trip() {
+        let text = "a\u{1F600}\n- [ ] \u{1F601}b\n\u{1F600}";
+        let units = text.encode_utf16().count();
+        // Every model index maps to the EDIT and back unchanged, the breaks
+        // counting two there and one here.
+        for i in 0..=units {
+            let e = checklist::edit_index(text, i);
+            assert_eq!(checklist::model_index(text, e), i, "index {i}");
+        }
+        // The EDIT's own text reads back as the same text, emoji whole.
+        let in_edit = checklist::to_edit_text(text);
+        let back = String::from_utf16_lossy(&in_edit.encode_utf16().collect::<Vec<_>>());
+        assert_eq!(checklist::normalize(&back), text);
+        assert!(!back.contains('\u{FFFD}'));
+        // An edit placed right after an emoji (a caret that came from a click
+        // on its right half) keeps the emoji.
+        let after = 3; // a, then the pair at 1 and 2
+        assert_eq!(snap_to_boundary(text, after), after);
+        let e = Edit {
+            start: after,
+            end: after,
+            insert: "x".into(),
+            caret: after + 1,
+        };
+        assert_eq!(
+            checklist::apply(text, &e),
+            "a\u{1F600}x\n- [ ] \u{1F601}b\n\u{1F600}"
+        );
+        // Between the halves, the snap moves the edit before the pair, so a
+        // lone surrogate is never made.
+        let mid = snap_to_boundary(text, 2);
+        assert_eq!(mid, 1);
+        let e = Edit {
+            start: mid,
+            end: mid,
+            insert: "x".into(),
+            caret: mid + 1,
+        };
+        let applied = checklist::apply(text, &e);
+        assert_eq!(applied, "ax\u{1F600}\n- [ ] \u{1F601}b\n\u{1F600}");
+        assert!(!applied.contains('\u{FFFD}'));
+    }
 
     #[test]
     fn the_edit_does_not_wrap_on_its_own_metrics() {

@@ -293,6 +293,9 @@ pub struct BodyLine {
     pub x: f32,
     pub title: bool,
     pub layout: Option<IDWriteTextLayout>,
+    /// The line's text after its marker, as UTF-16 units (what `layout` was
+    /// made from): a hit is settled against it.
+    content: Vec<u16>,
 }
 
 pub struct BodyLayout {
@@ -354,12 +357,61 @@ pub fn build_body(res: &Res, text: &str, size: TextSize, width: f32) -> BodyLayo
             x,
             title,
             layout,
+            content: units[raw.content_start()..raw.end].to_vec(),
         });
         y += h + 1.0;
     }
     BodyLayout {
         lines,
         height: (y - 1.0).max(0.0),
+    }
+}
+
+/// The text position a `HitTestPoint` answer puts the caret at: the start of
+/// the hit cluster, or its end when the hit is on the trailing side. The end
+/// is `textPosition + length`: `length` is the cluster's length in UTF-16
+/// units, 2 for an emoji (a surrogate pair), 2 or more for a base letter with
+/// combining marks. Adding 1 puts the caret inside the cluster, and a typed
+/// character or a delete there splits the pair.
+fn hit_index(text_position: u32, length: u32, trailing: bool) -> usize {
+    text_position as usize + if trailing { length as usize } else { 0 }
+}
+
+/// A unit that attaches to the one before it: a combining mark, a variation
+/// selector or a zero width joiner. These are the common ranges, not the whole
+/// of Unicode; any other index stays a legal one (both sides are whole code
+/// points), the caret just may rest between a letter and a rarer mark.
+fn is_extend(unit: u16) -> bool {
+    matches!(
+        unit,
+        0x0300..=0x036F
+            | 0x1AB0..=0x1AFF
+            | 0x1DC0..=0x1DFF
+            | 0x200D
+            | 0x20D0..=0x20FF
+            | 0xFE00..=0xFE0F
+            | 0xFE20..=0xFE2F
+    )
+}
+
+/// `pos` (UTF-16 units into `content`) moved forward to the next place a caret
+/// may rest: never between the halves of a surrogate pair, never between a
+/// letter and the combining marks after it. DirectWrite's hit metrics can
+/// name a one-unit cluster for a letter whose mark is a unit of its own, so
+/// `hit_index` alone is not enough there.
+fn settle_index(content: &[u16], pos: usize) -> usize {
+    let mut pos = pos.min(content.len());
+    let low = |u: u16| (0xDC00..0xE000).contains(&u);
+    let high = |u: u16| (0xD800..0xDC00).contains(&u);
+    loop {
+        let inside = pos > 0 && pos < content.len();
+        let in_pair = inside && high(content[pos - 1]) && low(content[pos]);
+        let before_mark = inside && is_extend(content[pos]);
+        if in_pair || before_mark {
+            pos += 1;
+        } else {
+            return pos;
+        }
     }
 }
 
@@ -419,7 +471,8 @@ impl BodyLayout {
         if hit.is_err() {
             return end;
         }
-        let pos = m.textPosition as usize + usize::from(trailing.as_bool());
+        let pos = hit_index(m.textPosition, m.length, trailing.as_bool());
+        let pos = settle_index(&line.content, pos);
         (line.raw.content_start() + pos).min(end)
     }
 
@@ -1014,6 +1067,127 @@ mod tests {
             target(item.x + 80.0, item.y + 3.0, 240.0, 208.0, false, Some(&body), 0.0),
             Target::Body
         );
+    }
+
+    #[test]
+    fn a_hit_index_adds_the_cluster_length_when_trailing() {
+        // Leading: the cluster's start, whatever its length.
+        assert_eq!(hit_index(5, 1, false), 5);
+        assert_eq!(hit_index(5, 2, false), 5);
+        // Trailing: after the whole cluster. One unit for a plain letter, two
+        // for an emoji (surrogate pair) or a base letter with a combining mark.
+        assert_eq!(hit_index(5, 1, true), 6);
+        assert_eq!(hit_index(5, 2, true), 7);
+        assert_eq!(hit_index(0, 3, true), 3);
+        // A zero-length answer (the end of an empty line) stays put.
+        assert_eq!(hit_index(0, 0, true), 0);
+    }
+
+    /// Whether `index` of `text` (UTF-16 units) is between a high and a low
+    /// surrogate.
+    fn inside_a_pair(text: &str, index: usize) -> bool {
+        let u: Vec<u16> = text.encode_utf16().collect();
+        index > 0
+            && index < u.len()
+            && (0xD800..0xDC00).contains(&u[index - 1])
+            && (0xDC00..0xE000).contains(&u[index])
+    }
+
+    /// Every model index a click along the first line of `text` gives,
+    /// sweeping x over the line in 0.25 dip steps (and a little past both ends).
+    fn sweep_first_line(body: &BodyLayout) -> Vec<(f32, usize)> {
+        let (_, y, h) = body.caret(0).expect("caret");
+        let width = body.lines[0].layout.as_ref().map_or(200.0, |l| {
+            let mut m = DWRITE_TEXT_METRICS::default();
+            unsafe { l.GetMetrics(&mut m) }.ok();
+            m.widthIncludingTrailingWhitespace
+        });
+        let steps = ((width + 8.0) * 4.0) as usize;
+        (0..=steps)
+            .map(|i| {
+                let x = -2.0 + i as f32 * 0.25;
+                (x, body.index_at(x, y + h / 2.0))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_settled_index_skips_halves_of_a_pair_and_combining_marks() {
+        let u = |t: &str| t.encode_utf16().collect::<Vec<u16>>();
+        let t = u("ab\u{1F600}cd");
+        assert_eq!(
+            (0..=6).map(|i| settle_index(&t, i)).collect::<Vec<_>>(),
+            [0, 1, 2, 4, 4, 5, 6]
+        );
+        assert_eq!(settle_index(&t, 99), 6, "past the end is the end");
+        // e + acute + grave: no rest between the three.
+        let m = u("e\u{0301}\u{0300}x");
+        assert_eq!(
+            (0..=3).map(|i| settle_index(&m, i)).collect::<Vec<_>>(),
+            [0, 3, 3, 3]
+        );
+        // A letter followed by a variation selector, and a joiner.
+        let z = u("a\u{FE0F}b\u{200D}c");
+        assert_eq!(
+            (0..=5).map(|i| settle_index(&z, i)).collect::<Vec<_>>(),
+            [0, 2, 2, 4, 4, 5]
+        );
+        assert_eq!(settle_index(&[], 0), 0);
+    }
+
+    #[test]
+    fn a_click_on_an_emoji_never_lands_between_its_two_halves() {
+        let res = Res::new(UiFont::Sans).expect("DirectWrite works without a window");
+        let text = "ab\u{1F600}cd";
+        let body = build_body(&res, text, TextSize::M, 400.0);
+        let (x_before, y, h) = body.caret(2).expect("caret before the emoji");
+        let (x_after, _, _) = body.caret(4).expect("caret after the emoji");
+        assert!(x_after > x_before + 4.0, "the emoji has a width");
+        let mid = y + h / 2.0;
+        // The left half goes before the emoji, the right half after it.
+        assert_eq!(body.index_at(x_before + (x_after - x_before) * 0.25, mid), 2);
+        assert_eq!(body.index_at(x_before + (x_after - x_before) * 0.75, mid), 4);
+        // Whatever x, the index is never inside the pair.
+        let all = sweep_first_line(&body);
+        assert!(all.len() > 20);
+        for (x, index) in &all {
+            assert!(!inside_a_pair(text, *index), "x {x} gave {index}");
+        }
+        // Sweeping across the emoji does reach both sides of it.
+        assert!(all.iter().any(|(_, i)| *i == 2) && all.iter().any(|(_, i)| *i == 4));
+        // The drag-selection path (a later line too) goes through the same
+        // function: an emoji on the second line, the third being an item.
+        let text = "t\nxy\u{1F600}\n- [ ] \u{1F600}\u{1F601}z";
+        let body = build_body(&res, text, TextSize::M, 400.0);
+        for (li, line) in body.lines.iter().enumerate() {
+            let cs = line.raw.content_start();
+            let (_, y, h) = body.caret(cs).expect("caret");
+            for i in 0..=160 {
+                let index = body.index_at(line.x + i as f32 * 0.5, y + h / 2.0);
+                assert!(!inside_a_pair(text, index), "line {li}, step {i} gave {index}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_click_on_a_letter_with_a_combining_mark_never_splits_it() {
+        let res = Res::new(UiFont::Sans).expect("DirectWrite works without a window");
+        let text = "cafe\u{0301} x";
+        // c0 a1 f2 e3 (U+0301)4 space5 x6
+        let body = build_body(&res, text, TextSize::M, 400.0);
+        let (x_base, y, h) = body.caret(3).expect("caret before the e");
+        let (x_after, _, _) = body.caret(5).expect("caret after the mark");
+        assert!(x_after > x_base + 2.0);
+        let mid = y + h / 2.0;
+        // DirectWrite names a one-unit cluster for the e here (position 3,
+        // length 1), so its trailing hit alone would give 4: `settle_index`
+        // moves it past the mark.
+        // The trailing half of the cluster is after the mark, never between.
+        assert_eq!(body.index_at(x_base + (x_after - x_base) * 0.75, mid), 5);
+        assert_eq!(body.index_at(x_base + (x_after - x_base) * 0.25, mid), 3);
+        for (x, index) in sweep_first_line(&body) {
+            assert_ne!(index, 4, "x {x}: between the e and its accent");
+        }
     }
 
     #[test]
