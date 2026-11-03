@@ -315,6 +315,7 @@ mod tests {
             name: key.into(),
             kind: ShelfKind::Document,
             stale: false,
+            from_phone: false,
         }
     }
 

@@ -77,9 +77,10 @@ const JBM_SYSTEM_FALLBACK: &[char] = &[
 /// Non-ASCII code points in the sources that are never drawn: BOM and
 /// replacement-character checks, zero-width joiner, ESC/CSI controls, and the
 /// end of the PowerShell quote range `ps_quote` escapes (mole.rs), and the
-/// zero-width space Edge writes inside a tab's name (`notif::open`).
+/// zero-width space Edge writes inside a tab's name (`notif::open`), and the
+/// line and paragraph separators the phone page's boot JSON escapes.
 const NOT_DRAWN: &[char] = &[
-    '\u{FEFF}', '\u{FFFD}', '\u{200D}', '\u{200B}', '\u{9B}', '\u{201B}',
+    '\u{FEFF}', '\u{FFFD}', '\u{200D}', '\u{200B}', '\u{9B}', '\u{201B}', '\u{2028}', '\u{2029}',
 ];
 
 /// Mirrors `UNICODES` in `scripts/make-fonts.ps1`.

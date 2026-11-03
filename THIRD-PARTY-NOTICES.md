@@ -61,6 +61,7 @@ crate's repository and on crates.io.
 | memchr | 2.8.3 | Unlicense OR MIT | https://github.com/BurntSushi/memchr |
 | num-traits | 0.2.19 | MIT OR Apache-2.0 | https://github.com/rust-num/num-traits |
 | proc-macro2 | 1.0.107 | MIT OR Apache-2.0 | https://github.com/dtolnay/proc-macro2 |
+| qrcodegen | 1.8.0 | MIT | https://github.com/nayuki/QR-Code-generator |
 | quote | 1.0.47 | MIT OR Apache-2.0 | https://github.com/dtolnay/quote |
 | serde | 1.0.229 | MIT OR Apache-2.0 | https://github.com/serde-rs/serde |
 | serde_core | 1.0.229 | MIT OR Apache-2.0 | https://github.com/serde-rs/serde |

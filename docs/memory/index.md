@@ -63,6 +63,7 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[readme-structure]]: README with gallery, install and uninstall, credits in THIRD-PARTY-NOTICES.md; long guide in docs/guide.md; APNG tours
 - [[stay-behind]]: experimental setting, island below ordinary windows, rises at the top edge with a short fade and slide (v3.3)
 - [[shelf]]: file shelf page, OLE drop target, drag out (paths only, in memory); a drop latches the panel (v3.3)
+- [[shelf-phone]]: the HP pill, a QR link and a small local HTTP server to receive files from a phone (phase 1): token + approval code + cookies, private LAN only, `Downloads\Vale`, session ends, power, gotchas, what is not verified live (2026-11-04)
 - [[shelf-motion]]: shelf cards animate in (200 ms), out as ghosts (180 ms) and across (220 ms), no timer, per-draw alpha, reduced motion (v3.5)
 - [[search]]: quick search on a hotkey: apps, calculator, Windows settings, web; back button returns to the previous page
 - [[search-files]]: files and folders by name in six user folders, own walker with caps, icons/sizes/counts from a background worker

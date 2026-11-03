@@ -136,11 +136,13 @@ pub enum Icon {
     /// The Tombol pintas section: a keyboard, a rounded body with a row of
     /// key dots and a space bar.
     Keyboard,
+    /// The phone link: a phone, rounded body with its home bar. Duotone.
+    Phone,
 }
 
 impl Icon {
     /// Every icon, in declaration order (`ALL[i] as usize == i`).
-    pub const ALL: [Icon; 71] = [
+    pub const ALL: [Icon; 72] = [
         Icon::Camera,
         Icon::Clipboard,
         Icon::Emoji,
@@ -212,6 +214,7 @@ impl Icon {
         Icon::Inbox,
         Icon::Layout,
         Icon::Keyboard,
+        Icon::Phone,
     ];
 
     /// The icon's primitives on the 24-unit grid, in drawing order.
@@ -498,6 +501,11 @@ impl Icon {
                 Part::Dot(13.7, 10.0),
                 Part::Dot(17.0, 10.0),
                 Part::Path("M8 14.2h8"),
+            ],
+            Icon::Phone => &[
+                Part::FillRect(6.0, 2.0, 12.0, 20.0, 3.0),
+                Part::Rect(6.0, 2.0, 12.0, 20.0, 3.0),
+                Part::Path("M11 18h2"),
             ],
         }
     }

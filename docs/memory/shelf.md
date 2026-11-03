@@ -187,3 +187,7 @@ Related: [[mixer]], [[open-mode]].
 ## v3.5: motion
 
 Cards animate in, out and across: see [[shelf-motion]].
+
+## v3.18: from a phone
+
+The HP pill, a QR link and the cards tagged "dari HP": see [[shelf-phone]].
