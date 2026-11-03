@@ -263,22 +263,12 @@ impl App {
         let lang = self.config.language;
         match result {
             Ok(release) if update::is_newer(&release.tag, update::CURRENT) => {
+                // Every check that finds a newer release offers it (the
+                // sticky notice keeps one slot, so a repeat replaces it).
+                // "Nanti" only clears the notice; the next check asks again.
                 let version = release.version();
-                let offer = update::should_offer(
-                    &release.tag,
-                    update::CURRENT,
-                    &self.config.update_offered,
-                    manual,
-                );
                 self.update.known = Some(release);
-                if offer {
-                    // An automatic offer is made once: remembered at once.
-                    if !manual {
-                        self.config.update_offered = version.clone();
-                        self.save_config();
-                    }
-                    self.apply_now(Event::Notice(available_notice(lang, &version)));
-                }
+                self.apply_now(Event::Notice(available_notice(lang, &version)));
             }
             Ok(_) => {
                 self.update.known = None;

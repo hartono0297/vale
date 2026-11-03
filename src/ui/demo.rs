@@ -285,6 +285,9 @@ struct Scene {
     /// The strip under the panel's top edge holds a busy toast, not the
     /// sticky Claude notice (with `strip`).
     toast_strip: bool,
+    /// The strip holds the sticky update offer with its two chips (with
+    /// `strip`).
+    offer_strip: bool,
     /// The unread dot on the closed notch.
     dot: bool,
 }
@@ -528,6 +531,7 @@ const BASE: Scene = Scene {
     paws: [0.0, 0.0],
     slot: false,
     toast_strip: false,
+    offer_strip: false,
     dot: false,
 };
 
@@ -732,7 +736,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 155] = [
+const SCENES: [Scene; 156] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -959,7 +963,14 @@ const SCENES: [Scene; 155] = [
     arrange_page("arrange-pick", ArrangeDemo::Pick),
     notice("arrange-done", DemoNotice::Arranged),
     // Self-update notices with a made-up 9.9.9; nothing touches the network.
+    // The sticky offer: the notch with "Nanti" and "Update"; over an open
+    // panel the same offer is the strip, both chips drawn.
     notice("update-available", DemoNotice::UpdateAvailable),
+    Scene {
+        strip: true,
+        offer_strip: true,
+        ..panel("update-available-strip", Page::Calendar)
+    },
     notice("update-progress", DemoNotice::UpdateProgress),
     notice("update-failed", DemoNotice::UpdateFailed),
     notice("update-done", DemoNotice::UpdateDone),
@@ -1705,6 +1716,17 @@ fn run_scenes(scenes: &[Scene]) {
         },
     };
     // The busy toast of the strip and the slot: a made-up Telegram message.
+    // The sticky update offer of the `update-available-strip` scene (made-up
+    // 9.9.9, touches no network).
+    let offer = Notice {
+        key: "demo-update".into(),
+        source: "Vale".into(),
+        title: crate::i18n::update_available(crate::i18n::lang(), "9.9.9"),
+        body: crate::i18n::update_installed(crate::i18n::lang(), env!("CARGO_PKG_VERSION")),
+        kind: NoticeKind::UpdateAvailable {
+            version: "9.9.9".into(),
+        },
+    };
     let busy_toast = Notice {
         key: "demo-busy-toast".into(),
         source: "Telegram".into(),
@@ -1950,9 +1972,13 @@ fn run_scenes(scenes: &[Scene]) {
                 now,
                 today,
                 page,
-                strip: scene
-                    .strip
-                    .then_some(if scene.toast_strip { &busy_toast } else { &strip }),
+                strip: scene.strip.then_some(if scene.toast_strip {
+                    &busy_toast
+                } else if scene.offer_strip {
+                    &offer
+                } else {
+                    &strip
+                }),
                 cal_view: scene.cal_view,
                 cal_anchor: today,
                 cal_selected: today,

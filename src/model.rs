@@ -141,8 +141,9 @@ pub enum NoticeKind {
     Arranged {
         save: ArrangeSave,
     },
-    /// "Vale 3.11.0 tersedia" with the chip "Update" (`version` is X.Y.Z).
-    /// A click installs it.
+    /// "Vale 3.11.0 tersedia" with the chips "Update" and "Nanti" (`version`
+    /// is X.Y.Z). Sticky (one slot, any version): it stays until "Update"
+    /// installs it, "Nanti" sets it aside, or the install starts elsewhere.
     UpdateAvailable {
         version: String,
     },
@@ -465,6 +466,11 @@ pub enum Hit {
     /// The strip at the top of the open panel: the newest Claude waiting or
     /// due reminder notice.
     Strip,
+    /// The update offer's "Update" chip (notice or strip): install now.
+    UpdateNow,
+    /// The update offer's "Nanti" chip (notice or strip): clear the offer; the
+    /// next check offers again.
+    UpdateLater,
     /// The panel header's Settings button, at the top right of every page:
     /// opens Vale's Settings window.
     OpenSettings,
