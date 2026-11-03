@@ -464,6 +464,7 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
             toast_over: false,
             close_fade: CloseFade::settled(0.0, Instant::now()),
             close_hot: false,
+            close_ptr: None,
             slot_keep: None,
             slot_share: SlotShare::default(),
             leaving: None,
@@ -869,6 +870,11 @@ struct App {
     close_fade: CloseFade,
     /// The pointer is on the ✕ (the lit disc), as the last move saw it.
     close_hot: bool,
+    /// Where the pointer last was on the island (`WM_MOUSEMOVE`'s lparam),
+    /// `None` once it left: the ✕'s lit disc is re-read from it after a frame
+    /// registers the ✕, since a pointer resting where the ✕ fades in sends no
+    /// move of its own.
+    close_ptr: Option<LPARAM>,
     /// The toast whose logo the slot shows, kept while the island shrinks
     /// back so the logo fades out instead of vanishing.
     slot_keep: Option<Notice>,
@@ -5367,6 +5373,7 @@ impl App {
     /// The pointer is on the ✕ (or, with `None`, off the island): redraws only
     /// when that changed, so the lit disc follows the pointer with no timer.
     fn track_close_hot(&mut self, lparam: Option<LPARAM>) {
+        self.close_ptr = lparam;
         let hot = lparam.is_some_and(|l| self.hit_at(l) == Some(Hit::NoticeClose));
         if hot != self.close_hot {
             self.close_hot = hot;
@@ -6496,6 +6503,16 @@ impl App {
             && let (Some(input), Some(caret)) = (search_field, self.renderer.search_caret())
         {
             input.set_ime_caret(caret);
+        }
+        // The ✕ may have just been registered under a resting pointer: light
+        // its disc now instead of at the next move. Settles in one more frame
+        // (the two then agree), so it cannot loop.
+        if let Some(ptr) = self.close_ptr {
+            let hot = self.hit_at(ptr) == Some(Hit::NoticeClose);
+            if hot != self.close_hot && self.close_fade.alpha(now) > 0.0 {
+                self.close_hot = hot;
+                self.draw(now);
+            }
         }
     }
 }

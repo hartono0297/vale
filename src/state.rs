@@ -9574,23 +9574,27 @@ mod tests {
         let fx = s.apply(Event::Click(Hit::NoticeClose), t0 + secs(1));
         assert_eq!(fx, vec![]);
         assert_eq!(s.view(), View::Idle);
-        // A Pomodoro notice: closed, the pomodoro is not started by it.
-        let mut s = st();
-        s.apply(
-            Event::Notice(Notice {
-                key: "pomodoro".into(),
-                source: "Pomodoro".into(),
-                title: "Fokus selesai".into(),
-                body: String::new(),
-                kind: NoticeKind::Pomodoro,
-            }),
-            t0,
-        );
-        let before = s.pomodoro.status();
-        let fx = s.apply(Event::Click(Hit::NoticeClose), t0 + secs(1));
+        // A real READY Pomodoro notice: the close never starts the next phase.
+        let ready = || {
+            let mut s = st();
+            s.apply(Event::Click(Hit::PomoStartPause), t0);
+            s.apply(Event::Tick, t0 + mins(25));
+            let View::Notice(n) = s.view() else {
+                panic!("{:?}", s.view())
+            };
+            assert_eq!(n.kind, NoticeKind::Pomodoro);
+            assert_eq!(s.pomodoro().status(), PomoStatus::Ready);
+            s
+        };
+        let mut s = ready();
+        let fx = s.apply(Event::Click(Hit::NoticeClose), t0 + mins(25) + secs(1));
         assert_eq!(fx, vec![]);
-        assert_eq!(s.pomodoro.status(), before);
-        assert_eq!(s.view(), View::Idle);
+        assert_eq!(s.pomodoro().status(), PomoStatus::Ready);
+        assert_ne!(s.view(), View::Notice(done("s1")));
+        // Contrast: a body click on the same notice does start it.
+        let mut s = ready();
+        s.apply(Event::Click(Hit::Body), t0 + mins(25) + secs(1));
+        assert_ne!(s.pomodoro().status(), PomoStatus::Ready);
     }
 
     #[test]
@@ -9662,7 +9666,8 @@ mod tests {
             s.apply(Event::Notice(notice.clone()), t0);
             assert!(matches!(s.view(), View::Notice(_)), "{notice:?}");
             assert!(!s.notice_close_shown(), "{notice:?}");
-            s.apply(Event::Click(Hit::NoticeClose), t0 + secs(1));
+            let fx = s.apply(Event::Click(Hit::NoticeClose), t0 + secs(1));
+            assert_eq!(fx, vec![], "{notice:?}");
             assert!(matches!(s.view(), View::Notice(_)), "{notice:?}");
         }
         // Buttons of their own.
