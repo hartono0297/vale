@@ -1,6 +1,11 @@
 /* Vale site script. One plain deferred file, no framework, no library.
    Every part checks that its elements exist and does nothing otherwise, so
-   the same file serves index, 404, privacy and terms. */
+   the same file serves index, 404, privacy and terms, and every part runs in
+   safe(): one failing must not stop the others. There is exactly one
+   requestAnimationFrame loop (makeLoop): it reads first and then writes,
+   runs continuously only while the page is visible, motion is welcome and
+   something animates, and is otherwise asked for one frame at a time by
+   scroll, resize, load and input. */
 (function () {
   'use strict';
 
@@ -13,6 +18,80 @@
   function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, v)); }
   function pad(n) { return (n < 10 ? '0' : '') + n; }
   function store(key, val) { try { localStorage.setItem(key, val); } catch (e) { /* storage blocked: the choice lasts for this visit */ } }
+  function isLight() { return root.getAttribute('data-theme') === 'light'; }
+  function rnd(a, b) { return a + Math.random() * (b - a); }
+
+  /* Shared, written by the progress task at the start of every frame. */
+  var S = { dirty: true, sy: 0, max: 0, p: 0, vw: 0, vh: 0, px: 0.5, py: 0.5, mx: -1, my: -1, moving: false, scrollAt: 0 };
+  var loop = null;
+  var notchApi = null;
+  var coatApi = null;
+
+  /* ---------- the one animation loop ----------
+     Tasks have read(t, dt) and write(t, dt), and optionally on() and busy.
+     A task runs in a frame when it is flushed, busy (it set busy in its last
+     write: it still animates), or on() says so. All reads run before all
+     writes. The loop asks for the next frame by itself only while some task
+     is busy, the page is visible and motion is welcome; everything else
+     (scroll, resize, load, pointer, a timer) calls request(). fx.near follows
+     an element through an IntersectionObserver (gate). */
+  function makeLoop() {
+    var list = [];
+    var raf = 0;
+    var last = 0;
+    function frame(t) {
+      raf = 0;
+      var dt = last ? Math.min(0.1, (t - last) / 1000) : 1 / 60;
+      last = t;
+      var run = [];
+      var i;
+      for (i = 0; i < list.length; i++) {
+        var fx = list[i];
+        if (fx.flush || fx.busy || (fx.on && fx.on())) { fx.flush = false; run.push(fx); }
+      }
+      for (i = 0; i < run.length; i++) run[i].read(t, dt);
+      for (i = 0; i < run.length; i++) run[i].write(t, dt);
+      var more = false;
+      if (!doc.hidden && !reduce.matches) {
+        for (i = 0; i < run.length; i++) if (run[i].busy) { more = true; break; }
+      }
+      S.dirty = false;
+      if (more) request(); else last = 0;
+    }
+    function request() {
+      if (raf) return;
+      raf = requestAnimationFrame(frame);
+    }
+    /* Scroll-driven tasks run on a frame only when S.dirty says the page
+       scrolled, resized or loaded since the last one (animation frames skip
+       them); a task can still be flushed or busy. */
+    window.addEventListener('scroll', function () { S.dirty = true; request(); }, { passive: true });
+    window.addEventListener('resize', function () { S.dirty = true; list.forEach(function (fx) { if (fx.onResize) fx.flush = true; }); request(); });
+    window.addEventListener('load', function () { S.dirty = true; request(); });
+    window.addEventListener('pageshow', function () { S.dirty = true; request(); });
+    doc.addEventListener('visibilitychange', function () {
+      root.classList.toggle('is-hidden', doc.hidden);
+      if (!doc.hidden) request();
+    });
+    if (reduce.addEventListener) reduce.addEventListener('change', function () { S.dirty = true; list.forEach(function (fx) { fx.flush = true; }); request(); });
+    return {
+      add: function (fx) { fx.flush = true; list.push(fx); request(); return fx; },
+      kick: function (fx) { if (fx) fx.flush = true; request(); },
+      request: request,
+      /* fx.near follows el, with margin around the viewport. Without an
+         observer the effect simply stays on. */
+      gate: function (el, fx, margin) {
+        if (!('IntersectionObserver' in window)) { fx.near = true; return; }
+        fx.near = false;
+        new IntersectionObserver(function (entries) {
+          fx.near = entries[entries.length - 1].isIntersecting;
+          fx.flush = true;
+          S.dirty = true;
+          request();
+        }, { rootMargin: margin || '200px 0px' }).observe(el);
+      }
+    };
+  }
 
   /* ---------- theme button ---------- */
   var ICON_SUN = '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.3 5.3l1.6 1.6M17.1 17.1l1.6 1.6M5.3 18.7l1.6-1.6M17.1 6.9l1.6-1.6"/></svg>';
@@ -25,9 +104,7 @@
     if (!btns.length) return;
     /* Dark is the default whatever the system scheme says; only a stored or
        clicked choice of light changes it. */
-    function current() {
-      return root.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
-    }
+    function current() { return isLight() ? 'light' : 'dark'; }
     function paint() {
       var isDark = current() === 'dark';
       btns.forEach(function (btn) {
@@ -41,6 +118,7 @@
         root.setAttribute('data-theme', next);
         store('vale-theme', next);
         paint();
+        if (loop) loop.request();
       });
       btn.hidden = false;
     });
@@ -84,7 +162,9 @@
   }
 
   /* ---------- copy buttons ---------- */
-  var notchApi = null;
+  /* True while the execCommand fallback runs: it fires a copy event too, and
+     the page-wide copy toast must not show a second one. */
+  var fallbackCopying = false;
 
   function copyText(text) {
     function fallback() {
@@ -96,7 +176,9 @@
       area.style.cssText = 'position:fixed;top:0;left:-9999px;opacity:0';
       var keep = doc.activeElement;
       doc.body.appendChild(area);
+      fallbackCopying = true;
       try { area.select(); area.setSelectionRange(0, text.length); ok = doc.execCommand('copy'); } catch (e) { ok = false; }
+      fallbackCopying = false;
       doc.body.removeChild(area);
       if (keep && keep.focus) keep.focus();
       return ok;
@@ -105,6 +187,12 @@
       return navigator.clipboard.writeText(text).then(function () { return true; }, function () { return fallback(); });
     }
     return Promise.resolve(fallback());
+  }
+
+  /* The notch's copy preview: trimmed, whitespace collapsed, cut with an ellipsis. */
+  function clipLine(text) {
+    var t = String(text).replace(/\s+/g, ' ').trim();
+    return t.length > 80 ? t.slice(0, 79).replace(/\s+$/, '') + '…' : t;
   }
 
   function initCopy() {
@@ -125,7 +213,7 @@
           if (ok) {
             btn.textContent = 'Copied';
             btn.classList.add('is-copied');
-            if (notchApi) notchApi.showCopy(text);
+            if (notchApi) notchApi.showCopy(clipLine(text));
           }
           timer = setTimeout(function () {
             btn.textContent = label;
@@ -137,256 +225,259 @@
     });
   }
 
-  /* ---------- the cat, drawn from the app's geometry (src/ui/robot.rs, cat_style.rs) ---------- */
+  /* ---------- the cat's coat ----------
+     The coat lives in six custom properties on <html>; the hero cat, the
+     notch cats, the picture cats and the walking cat all read them. DECIDED
+     for the site: Black has the #75675B rim and amber eyes (the app's own rim
+     is #8E7CB8). The brand logo and the header brand stay terracotta. */
   var COATS = {
-    terracotta: { head: '#E2683C', eyes: '#17120F' },
-    calico: { head: '#F4EDE4', eyes: '#17120F' },
-    white: { head: '#F6F1EA', eyes: '#17120F' },
-    black: { head: '#1E1B22', eyes: '#F2B33D' }
+    terracotta: { coat: '#E2683C', l: '#E2683C', r: '#E2683C', eye: '#17120F', rim: 'transparent', pa: '0' },
+    calico: { coat: '#F4EDE4', l: '#E2683C', r: '#2B2420', eye: '#17120F', rim: 'transparent', pa: '1' },
+    white: { coat: '#F6F1EA', l: '#F6F1EA', r: '#F6F1EA', eye: '#17120F', rim: 'transparent', pa: '0' },
+    black: { coat: '#1E1B22', l: '#1E1B22', r: '#1E1B22', eye: '#F2B33D', rim: '#75675B', pa: '0' }
   };
-  /* The idle look in the app: head slide 7 dip, tilt 6 degrees, extra eye slide
-     4 dip, on a cat drawn 26 dip wide (64 grid units): 7 / (26 / 64) units. */
-  var LOOK_HEAD = 17.23;
-  var LOOK_TILT = 6;
-  var LOOK_EYES = 9.85;
-  var EAR_L = 'M9 37L12 10L27 26Z';
-  var EAR_R = 'M55 37L52 10L37 26Z';
-  var HEAD = 'M7 50V41Q7 24 32 24Q57 24 57 41V50Q57 54 53 54H11Q7 54 7 50Z';
 
-  /* Glasses sit with the eyes (they follow the eye slide), so catMarkup draws them;
-     these are the accessories drawn after the eyes. */
-  function accessory(name) {
-    switch (name) {
-      case 'bow':
-        return '<g fill="#D23F6A" stroke="#D23F6A" stroke-width="1.6" stroke-linejoin="round"><path d="M45 23L37 18.5V27.5Z"/><path d="M45 23L53 18.5V27.5Z"/></g><circle cx="45" cy="23" r="2.4" fill="#F07A9A"/>';
-      case 'nightcap':
-        return '<path d="M19 25.8Q32 21.5 45 25.8Q40 6 14.5 7Q10.5 17 19 25.8Z" fill="#2F4A7A" stroke="#2F4A7A" stroke-width="1.2" stroke-linejoin="round"/><path d="M19 25.8Q32 21.5 45 25.8" fill="none" stroke="#F4EDE4" stroke-width="4.4" stroke-linecap="round"/><circle cx="14.5" cy="7" r="3" fill="#F4EDE4"/>';
-      case 'scarf':
-        return '<path d="M13 52L22 52L23 60.5L15 61.5Z" fill="#C48A18" stroke="#C48A18" stroke-width="1.6" stroke-linejoin="round"/><path d="M9.5 47H54.5Q58 47 58 50.5V51Q58 55 54 55H10Q6 55 6 51V50.5Q6 47 9.5 47Z" fill="#E0A526"/>';
-      case 'flower':
-        var petals = '';
-        for (var i = 0; i < 5; i++) {
-          var a = (-90 + 72 * i) * Math.PI / 180;
-          petals += '<circle cx="' + (16 + 3.6 * Math.cos(a)).toFixed(2) + '" cy="' + (23 + 3.6 * Math.sin(a)).toFixed(2) + '" r="2.6" fill="#F29BB5"/>';
+  function initCoats() {
+    var chips = $$('.coat-chip');
+    if (!chips.length) return null;
+    function setCoat(name, pop) {
+      var k = COATS[name];
+      if (!k) return;
+      var st = root.style;
+      st.setProperty('--coat', k.coat);
+      st.setProperty('--earl', k.l);
+      st.setProperty('--earr', k.r);
+      st.setProperty('--eye', k.eye);
+      st.setProperty('--rim', k.rim);
+      st.setProperty('--pa', k.pa);
+      chips.forEach(function (c) { c.setAttribute('aria-pressed', c.getAttribute('data-coat') === name ? 'true' : 'false'); });
+      if (pop && coatApi && coatApi.pop) coatApi.pop();
+    }
+    chips.forEach(function (c) {
+      c.addEventListener('click', function () { setCoat(c.getAttribute('data-coat'), true); });
+    });
+    coatApi = { set: setCoat, pop: null };
+    return coatApi;
+  }
+
+  /* ---------- progress, the sky and the stars ----------
+     progress runs first every frame and fills S (scroll, page progress,
+     viewport); it writes --p on <html> (the sky mixes dusk, night and dawn
+     from it) only when it moved by .004. The star canvas exists on the home
+     page only. Stars: count by area, DPR capped at 2, depth parallax on
+     scroll, a small pointer parallax, an occasional shooting star, and the
+     wish (meteors, then stars flying into the cat's head constellation).
+     Dark: warm white stars. Light: faint warm specks, and meteors and the
+     constellation in the ink colour. Reduced motion: drawn once, again on
+     resize or scroll, and the wish shows only its bubble. */
+  var CON_PTS = [[22, 157], [36, 33], [105, 106], [128, 97], [151, 106], [220, 33], [234, 157], [243, 190], [230, 235], [26, 235], [13, 190], [91, 152], [91, 190], [165, 152], [165, 190]];
+  var CON_LINES = [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 6], [6, 7], [7, 8], [8, 9], [9, 10], [10, 0], [11, 12], [13, 14]];
+  var skyApi = null;
+
+  function initSky() {
+    var shown = -1;
+    loop.add({
+      on: function () { return S.dirty; },
+      read: function () {
+        S.sy = window.pageYOffset || 0;
+        S.vw = root.clientWidth;
+        S.vh = root.clientHeight;
+        S.max = Math.max(0, root.scrollHeight - S.vh);
+        S.p = S.max > 0 ? clamp(S.sy / S.max, 0, 1) : 0;
+      },
+      write: function () {
+        if (shown < 0 || Math.abs(S.p - shown) >= 0.004 || ((S.p === 0 || S.p === 1) && S.p !== shown)) {
+          shown = S.p;
+          root.style.setProperty('--p', S.p.toFixed(3));
         }
-        return petals + '<circle cx="16" cy="23" r="2" fill="#F2B33D"/>';
-      case 'crown':
-        return '<path d="M23.5 27.5V19L28 23.5L32 16L36 23.5L40.5 19V27.5Z" fill="#F2B33D" stroke="#F2B33D" stroke-width="1.4" stroke-linejoin="round"/><path d="M25 25.8H39" stroke="#C8861C" stroke-width="1.8" stroke-linecap="round"/>';
-      default:
-        return '';
-    }
-  }
-
-  /* Paint order from docs/memory/cat-accessories.md: rim, silhouette, patches, eyes, accessories. */
-  function catMarkup(look, uid) {
-    var coat = COATS[look.coat] || COATS.terracotta;
-    var black = look.coat === 'black';
-    var frame = black ? '#F4EDE4' : '#17120F';
-    var s = '<defs><mask id="' + uid + '-m" maskUnits="userSpaceOnUse" x="-30" y="-20" width="130" height="110">' +
-      '<g fill="#fff" stroke="#fff" stroke-width="5" stroke-linejoin="round"><path d="' + EAR_L + '"/><path d="' + EAR_R + '"/></g>' +
-      '<path d="' + HEAD + '" fill="#fff"/></mask></defs>';
-    s += '<g class="cat-move">';
-    if (black) {
-      s += '<g fill="#8E7CB8" stroke="#8E7CB8" stroke-linejoin="round"><path d="' + EAR_L + '" stroke-width="8.2"/><path d="' + EAR_R + '" stroke-width="8.2"/><path d="' + HEAD + '" stroke-width="3.2"/></g>';
-    }
-    s += '<g fill="' + coat.head + '" stroke="' + coat.head + '" stroke-width="5" stroke-linejoin="round"><path d="' + EAR_L + '"/><path d="' + EAR_R + '"/></g>';
-    s += '<path d="' + HEAD + '" fill="' + coat.head + '"/>';
-    if (look.coat === 'calico') {
-      s += '<g mask="url(#' + uid + '-m)"><path d="M-12 -12H30Q30 25 27 28Q19 34 4 40L-12 42Z" fill="#E2683C"/><path d="M76 -12H34Q34 25 37 27Q46 32 60 36L76 38Z" fill="#2B2420"/></g>';
-    }
-    s += '<g class="cat-eyes"><g fill="' + coat.eyes + '"><rect x="21.2" y="35" width="5.6" height="10" rx="2.8"/><rect x="37.2" y="35" width="5.6" height="10" rx="2.8"/></g>';
-    if (look.accessory === 'glasses') {
-      s += '<g fill="none" stroke="' + frame + '" stroke-width="1.9" stroke-linecap="round"><circle cx="24" cy="40" r="6.6"/><circle cx="40" cy="40" r="6.6"/><path d="M30.6 40H33.4"/></g>';
-    }
-    s += '</g>';
-    if (look.accessory !== 'glasses') s += accessory(look.accessory);
-    return s + '</g>';
-  }
-
-  var cats = [];
-  var look = { coat: 'terracotta', accessory: 'none' };
-  var bigVisible = false;
-  var lastX = null;
-  var catRaf = 0;
-  var catLast = 0;
-
-  function makeCat(svg, uid, isActive) {
-    var c = { svg: svg, uid: uid, v: 0, target: 0, active: isActive, move: null, eyes: null };
-    c.bind = function () { c.move = $('.cat-move', svg); c.eyes = $('.cat-eyes', svg); };
-    c.apply = function () {
-      if (!c.move) return;
-      c.move.setAttribute('transform', 'translate(' + (LOOK_HEAD * c.v).toFixed(3) + ' 0) rotate(' + (LOOK_TILT * c.v).toFixed(3) + ' 32 40)');
-      if (c.eyes) c.eyes.setAttribute('transform', 'translate(' + (LOOK_EYES * c.v).toFixed(3) + ' 0)');
-    };
-    c.render = function (l) {
-      svg.innerHTML = catMarkup(l, uid);
-      c.bind();
-      c.apply();
-    };
-    c.bind();
-    cats.push(c);
-    return c;
-  }
-
-  function catStep(t) {
-    var dt = Math.min(0.1, (t - catLast) / 1000);
-    catLast = t;
-    var k = 1 - Math.exp(-dt / 0.12);
-    var moving = false;
-    cats.forEach(function (c) {
-      if (c.v === c.target) return;
-      c.v += (c.target - c.v) * k;
-      if (Math.abs(c.target - c.v) < 0.002) c.v = c.target; else moving = true;
-      c.apply();
+      },
+      busy: false,
+      onResize: true
     });
-    catRaf = moving ? requestAnimationFrame(catStep) : 0;
-  }
-
-  /* v = clamp(offset / distance to that side's viewport edge, -1, 1), as in the app. */
-  function pointCats(x) {
-    var changed = false;
-    cats.forEach(function (c) {
-      if (!c.active()) return;
-      var r = c.svg.getBoundingClientRect();
-      var cx = r.left + r.width / 2;
-      var off = x - cx;
-      var dist = off >= 0 ? window.innerWidth - cx : cx;
-      var v = clamp(off / Math.max(dist, 1), -1, 1);
-      if (Math.abs(v - c.target) < 0.02) return;
-      c.target = v;
-      changed = true;
-      if (reduce.matches) { c.v = v; c.apply(); }
-    });
-    if (changed && !reduce.matches && !catRaf) {
-      catLast = performance.now();
-      catRaf = requestAnimationFrame(catStep);
-    }
-  }
-
-  function initCats() {
-    var bigSvg = $('#big-cat');
-    var bigCat = bigSvg ? makeCat(bigSvg, 'bigcat', function () { return bigVisible; }) : null;
-    var notchSvg = $('#notch-cat');
-    var notchCat = notchSvg ? makeCat(notchSvg, 'notchcat', function () { var n = $('#notch'); return !!n && n.getAttribute('data-state') === 'cat'; }) : null;
-    if (!bigCat && !notchCat) return null;
-
-    function restyle() {
-      if (bigCat) bigCat.render(look);
-      if (notchCat) notchCat.render(look);
-    }
-
-    var pickers = $$('input[name="coat"], input[name="accessory"]');
-    pickers.forEach(function (input) {
-      input.addEventListener('change', function () {
-        if (!input.checked) return;
-        look[input.name] = input.value;
-        restyle();
-      });
-    });
-
-    /* Browsers restore checked radios on back/forward (Firefox also on reload)
-       without a change event, so the look is read from the pickers, not assumed. */
-    function syncLook() {
-      var changed = false;
-      pickers.forEach(function (input) {
-        if (input.checked && look[input.name] !== input.value) {
-          look[input.name] = input.value;
-          changed = true;
-        }
-      });
-      if (changed) restyle();
-    }
-    syncLook();
-    window.addEventListener('pageshow', syncLook);
-
-    if (bigSvg && 'IntersectionObserver' in window) {
-      new IntersectionObserver(function (entries) {
-        bigVisible = entries[entries.length - 1].isIntersecting;
-      }, { rootMargin: '100px 0px' }).observe(bigSvg);
-    }
-
+    window.addEventListener('scroll', function () { S.scrollAt = performance.now(); }, { passive: true });
     doc.addEventListener('pointermove', function (e) {
-      lastX = e.clientX;
-      if (e.pointerType === 'touch' || reduce.matches) return;
-      pointCats(e.clientX);
-    }, { passive: true });
-    /* A tap turns the cat toward the tap; with reduced motion every press does, and nothing else moves it. */
-    doc.addEventListener('pointerdown', function (e) {
-      lastX = e.clientX;
-      if (e.pointerType === 'touch' || reduce.matches) pointCats(e.clientX);
+      S.mx = e.clientX;
+      S.my = e.clientY;
+      S.px = e.clientX / Math.max(1, root.clientWidth) - 0.5;
+      S.py = e.clientY / Math.max(1, root.clientHeight) - 0.5;
+      loop.request();
     }, { passive: true });
 
-    var bubble = $('#cat-greeting');
-    if (bubble) {
-      var h = new Date().getHours();
-      var text = h < 4 ? 'Up late?' : h < 11 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
-      bubble.textContent = text;
-      bubble.hidden = false;
+    if (!$('#h-hero')) return;
+    var cv = doc.createElement('canvas');
+    cv.id = 'sky';
+    cv.setAttribute('aria-hidden', 'true');
+    doc.body.appendChild(cv);
+    var ctx = cv.getContext('2d');
+    if (!ctx) return;
+    var W = 0;
+    var H = 0;
+    var dpr = 1;
+    var pool = [];
+    var count = 0;
+    var shoot = null;
+    var meteors = [];
+    var con = null;
+    var want = { w: 0, h: 0, r: 1 };
+    var animated = false;
+
+    function grow(n) {
+      while (pool.length < n) pool.push({ x: Math.random(), y: Math.random() * 1.6, z: Math.random() * 0.8 + 0.2, ph: Math.random() * 6.28, sp: 0.5 + Math.random() * 2 });
+    }
+    function measure() {
+      want.w = root.clientWidth;
+      want.h = root.clientHeight;
+      want.r = Math.min(2, window.devicePixelRatio || 1);
+    }
+    function size() {
+      if (want.w === W && want.h === H && want.r === dpr) return;
+      W = want.w; H = want.h; dpr = want.r;
+      cv.width = Math.max(1, Math.round(W * dpr));
+      cv.height = Math.max(1, Math.round(H * dpr));
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      count = Math.round(W * H / 4200);
+      grow(count);
     }
 
-    return {
-      entered: function () { if (lastX !== null) pointCats(lastX); }
-    };
-  }
-
-  /* ---------- one scroll loop for every scroll-linked effect ----------
-     One passive scroll listener (plus resize and load) asks for at most one
-     animation frame. In that frame every effect that is switched on reads
-     first (rects, sizes) and then all of them write (classes, transform,
-     opacity), so reads and writes never interleave. An effect is on while
-     fx.on() says so, usually while an IntersectionObserver says its section
-     is near the viewport (fx.near); fx.flush runs it once more after it
-     switches off, so it can settle. No wheel or touch handling, no snapping. */
-  function makeLoop() {
-    var list = [];
-    var pending = false;
-    function frame() {
-      pending = false;
-      var run = [];
+    function draw(t, dt) {
+      var light = isLight();
+      var anim = !reduce.matches;
+      var sy = S.sy;
+      /* Pointer parallax is motion: under reduced motion the stars ignore the pointer. */
+      var px = anim ? S.px : 0;
+      var py = anim ? S.py : 0;
+      var span = H * 1.6;
+      ctx.clearRect(0, 0, W, H);
+      var step = light ? 3 : 1;
       var i;
-      for (i = 0; i < list.length; i++) {
-        if (list[i].on() || list[i].flush) { list[i].flush = false; run.push(list[i]); }
+      for (i = 0; i < count; i += step) {
+        var s = pool[i];
+        var y = (((s.y * H - sy * s.z * 0.25 - py * 14 * s.z) % span) + span) % span - H * 0.3;
+        var x = s.x * W - px * 18 * s.z;
+        var a = anim && !light ? (0.35 + 0.65 * Math.abs(Math.sin(t / 1000 * s.sp + s.ph))) * s.z : 0.7 * s.z;
+        ctx.fillStyle = light ? 'rgba(168,67,28,' + (a * 0.3).toFixed(3) + ')' : 'rgba(244,237,228,' + a.toFixed(3) + ')';
+        ctx.fillRect(x, y, s.z * 1.8, s.z * 1.8);
       }
-      for (i = 0; i < run.length; i++) run[i].read();
-      for (i = 0; i < run.length; i++) run[i].write();
+      var inkMeteor = light ? '168,67,28' : '255,214,170';
+      /* An occasional shooting star (dark, motion welcome). */
+      if (anim && !light) {
+        if (!shoot && Math.random() < 0.25 * dt) shoot = { x: rnd(0.2, 0.9) * W, y: Math.random() * H * 0.3, age: 0 };
+        if (shoot) {
+          var g0 = ctx.createLinearGradient(shoot.x, shoot.y, shoot.x - 120, shoot.y + 60);
+          g0.addColorStop(0, 'rgba(244,237,228,.9)');
+          g0.addColorStop(1, 'rgba(244,237,228,0)');
+          ctx.strokeStyle = g0;
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.moveTo(shoot.x, shoot.y);
+          ctx.lineTo(shoot.x - 120, shoot.y + 60);
+          ctx.stroke();
+          shoot.x -= 720 * dt;
+          shoot.y += 360 * dt;
+          shoot.age += dt;
+          if (shoot.age > 0.6) shoot = null;
+        }
+      }
+      /* The wish: a meteor shower ... */
+      var alive = [];
+      meteors.forEach(function (m) {
+        if (t < m.t0) { alive.push(m); return; }
+        var k = (t - m.t0) / m.d;
+        if (k > 1) return;
+        alive.push(m);
+        var mx = m.x - k * m.len;
+        var my = m.y + k * m.len * 0.5;
+        var g = ctx.createLinearGradient(mx, my, mx + 140, my - 70);
+        g.addColorStop(0, 'rgba(' + inkMeteor + ',' + (1 - k).toFixed(3) + ')');
+        g.addColorStop(1, 'rgba(' + inkMeteor + ',0)');
+        ctx.strokeStyle = g;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(mx, my);
+        ctx.lineTo(mx + 140, my - 70);
+        ctx.stroke();
+      });
+      meteors = alive;
+      /* ... then the stars gather into the cat's head. */
+      if (con) {
+        var e = t - con.t0;
+        var fade = e > 6200 ? Math.max(0, 1 - (e - 6200) / 1200) : 1;
+        var oy = con.sy - sy;
+        if (fade <= 0) {
+          con = null;
+        } else {
+          var pts = con.pts.map(function (p, n) {
+            var k2 = clamp((e - 900 - n * 60) / 1300, 0, 1);
+            var q = 1 - Math.pow(1 - k2, 3);
+            return [p.sx + (p.x - p.sx) * q, p.sy + (p.y + oy - p.sy) * q, k2];
+          });
+          var lk = clamp((e - 2600) / 1400, 0, 1);
+          var ink = light ? '168,67,28' : '244,237,228';
+          ctx.strokeStyle = 'rgba(' + ink + ',' + (0.55 * fade).toFixed(3) + ')';
+          ctx.lineWidth = 1.2;
+          CON_LINES.forEach(function (ab, n) {
+            var part = clamp(lk * CON_LINES.length - n, 0, 1);
+            if (!part) return;
+            var A = pts[ab[0]];
+            var B = pts[ab[1]];
+            ctx.beginPath();
+            ctx.moveTo(A[0], A[1]);
+            ctx.lineTo(A[0] + (B[0] - A[0]) * part, A[1] + (B[1] - A[1]) * part);
+            ctx.stroke();
+          });
+          pts.forEach(function (pt, n) {
+            var tw = 0.7 + 0.3 * Math.sin(t / 200 + n);
+            ctx.fillStyle = light ? 'rgba(168,67,28,' + (fade * tw).toFixed(3) + ')' : 'rgba(255,226,190,' + (fade * tw).toFixed(3) + ')';
+            ctx.beginPath();
+            ctx.arc(pt[0], pt[1], 2.4 * (pt[2] > 0.99 ? 1.3 : 1), 0, 6.283);
+            ctx.fill();
+            if (pt[2] > 0.99) {
+              ctx.fillStyle = 'rgba(226,104,60,' + (0.25 * fade).toFixed(3) + ')';
+              ctx.beginPath();
+              ctx.arc(pt[0], pt[1], 8, 0, 6.283);
+              ctx.fill();
+            }
+          });
+        }
+      }
+      animated = anim && ((!light) || meteors.length > 0 || !!con);
     }
-    function schedule() {
-      if (pending) return;
-      pending = true;
-      requestAnimationFrame(frame);
-    }
-    window.addEventListener('scroll', schedule, { passive: true });
-    window.addEventListener('resize', schedule);
-    window.addEventListener('load', schedule);
-    if (reduce.addEventListener) reduce.addEventListener('change', function () { list.forEach(function (fx) { fx.flush = true; }); schedule(); });
-    return {
-      add: function (fx) { fx.flush = true; list.push(fx); schedule(); return fx; },
-      kick: function (fx) { if (fx) fx.flush = true; schedule(); },
-      /* fx.near follows el, with margin around the viewport. Without an
-         observer the effect simply stays on. */
-      gate: function (el, fx, margin) {
-        if (!('IntersectionObserver' in window)) { fx.near = true; return; }
-        fx.near = false;
-        new IntersectionObserver(function (entries) {
-          fx.near = entries[entries.length - 1].isIntersecting;
-          fx.flush = true;
-          schedule();
-        }, { rootMargin: margin || '200px 0px' }).observe(el);
+
+    var fx = {
+      on: function () { return true; },
+      read: measure,
+      write: function (t, dt) {
+        size();
+        draw(t, dt);
+        fx.busy = animated && !doc.hidden;
+      },
+      busy: false,
+      onResize: true
+    };
+    skyApi = {
+      fx: fx,
+      /* The wish: cx, cy and s place the constellation (viewport px, px per grid unit). */
+      wish: function (cx, cy, s) {
+        var t = performance.now();
+        if (reduce.matches) return false;
+        var i;
+        for (i = 0; i < 14; i++) meteors.push({ t0: t + i * 110 + Math.random() * 80, d: 700 + Math.random() * 300, x: W * (0.3 + Math.random() * 0.8), y: Math.random() * H * 0.4, len: 300 + Math.random() * 200 });
+        con = {
+          t0: t,
+          sy: S.sy,
+          pts: CON_PTS.map(function (xy) {
+            return { x: cx + (xy[0] - 128) * s, y: cy + (xy[1] - 134) * s, sx: Math.random() * W, sy: Math.random() * H * 0.6 };
+          })
+        };
+        loop.kick(fx);
+        return true;
       }
     };
+    loop.add(fx);
   }
-  var loop = null;
 
   /* ---------- the notch ---------- */
-  var LYRICS = [
-    'Lights low over the harbour',
-    'We count the hours by the bell',
-    'Nothing here is a real song',
-    'Hum along, it is only a demo',
-    'Home is a few streets away'
-  ];
-
-  function initNotch(catApi) {
+  function initNotch() {
     var notch = $('#notch');
     var face = notch && $('.notch-face', notch);
     var panel = notch && $('#notch-panel');
@@ -394,8 +485,8 @@
     face.removeAttribute('tabindex');
 
     var state = 'idle';
-    var sectionState = 'idle';
     var copyTimer = 0;
+    var greetTimer = 0;
     var clockTimer = 0;
     var clockEl = $('#notch-clock');
     var open = false;
@@ -404,6 +495,7 @@
     var hideTimer = 0;
     var openTimer = 0;
     var dockTimer = 0;
+    var holdTimer = 0;
     var lastPointerType = 'mouse';
 
     /* ----- clock: one timeout aimed at the next minute, only while idle and visible ----- */
@@ -421,59 +513,31 @@
       state = next;
       notch.setAttribute('data-state', next);
       tickClock();
-      if (next === 'cat' && catApi) catApi.entered();
     }
 
-    doc.addEventListener('visibilitychange', function () {
-      root.classList.toggle('is-hidden', doc.hidden);
-      tickClock();
-    });
-
-    /* ----- the peek and the copy notice must not cover text -----
-       The panel peek (400 x 128, 64 high on phones) and the section's clipboard
-       state (340 x 56) are wider than the idle notch and would lie over section
-       text, so they are shown only while the band under the notch holds no text
-       element (the tags below). When it does, the panel state shows the idle
-       notch instead and the clipboard state keeps its content at the idle
-       footprint (.is-tight). Sizes are mirrored from style.css. The small
-       states (at most 45 px high) may pass over text, like a real notch. The
-       copy notice after a Copy button is a 3 s toast and is exempt. Checked on
-       scroll frames and resize only, and only while one of the two states is the
-       section's; shrinking is immediate, growing waits FIT_GROW_MS of free band. */
-    var TEXT_SEL = 'h1, h2, h3, p, li, dt, dd, figcaption, code, pre, label, legend, td, th, blockquote';
-    var FIT_MARGIN_Y = 16;
-    var FIT_MARGIN_X = 8;
-    var FIT_GROW_MS = 150;
-    var textEls = null;
-    var fits = true;
-    var growTimer = 0;
-    /* Susun: the tile step (0 to 3) while its stage is pinned, -1 otherwise. */
-    var arrangeStep = -1;
-    var arrangeN = $('#notch-ar-n');
+    doc.addEventListener('visibilitychange', tickClock);
 
     /* Mirror style.css from the same source it uses: 100vw and the 32.5em media
        query both count the scrollbar, root.clientWidth does not. */
     var phonePeek = window.matchMedia('(max-width: 32.5em)');
     function peekSize(name) {
       var vw = window.innerWidth;
-      if (name === 'panel') return { w: Math.min(400, vw - 32), h: phonePeek.matches ? 64 : 128 };
-      if (name === 'music') return { w: Math.min(300, vw - 32), h: phonePeek.matches ? 45 : 36 };
+      if (name === 'greet') return { w: Math.min(230, vw - 32), h: phonePeek.matches ? 45 : 38 };
       return { w: Math.min(340, vw - 32), h: 56 };
     }
 
     /* ----- room beside the header pills -----
        The header is fixed and always on screen, with a pill on each side of
-       the notch. A closed state wider than idle (music, panel, clipboard)
-       shows at full size only while its box, plus PILL_MARGIN on every side,
-       clears both pills. Otherwise music and clipboard keep the idle
-       footprint (.is-tight) and the panel peek shows the idle notch. The
+       the notch. The copy toast (340 x 56) and the greeting (230 x 38) show at
+       full size only while their box, plus PILL_MARGIN on every side, clears
+       both pills; otherwise they keep the idle footprint (.is-tight). The
        pills are measured in the loop's read phase (pillFx): on start, on
-       resize, when fonts arrive, and on every frame while one of these
-       states is wanted; the decisions use the last measured boxes. */
+       resize, when fonts arrive, and on every frame while one of these states
+       is shown; the decisions use the last measured boxes. */
     var PILL_MARGIN = 8;
     var pillEls = $$('.site-header .pill');
     var pillBoxes = null;
-    var room = { music: false, panel: false, clipboard: false };
+    var room = { clipboard: false, greet: false };
     function roomFor(name) {
       if (!pillBoxes) return false;
       var size = peekSize(name);
@@ -488,169 +552,79 @@
       return true;
     }
     var pillFx = {
-      on: function () { return copyTimer || sectionState === 'music' || sectionState === 'panel' || sectionState === 'clipboard'; },
+      on: function () { return copyTimer || greetTimer; },
       read: function () {
         pillBoxes = pillEls.map(function (el) { return el.getBoundingClientRect(); });
-        pillFx.next = { music: roomFor('music'), panel: roomFor('panel'), clipboard: roomFor('clipboard') };
+        pillFx.next = { clipboard: roomFor('clipboard'), greet: roomFor('greet') };
       },
       write: function () {
         var n = pillFx.next;
-        if (n.music === room.music && n.panel === room.panel && n.clipboard === room.clipboard) return;
+        if (n.clipboard === room.clipboard && n.greet === room.greet) return;
         room = n;
         refresh();
-      }
+      },
+      onResize: true
     };
-
-    function bandBlocked(name) {
-      if (!textEls) {
-        var header = $('.site-header');
-        textEls = $$(TEXT_SEL).filter(function (el) { return !notch.contains(el) && !(header && header.contains(el)); });
-      }
-      var size = peekSize(name);
-      var mid = root.clientWidth / 2;
-      var left = mid - size.w / 2 - FIT_MARGIN_X;
-      var right = mid + size.w / 2 + FIT_MARGIN_X;
-      var bottom = size.h + FIT_MARGIN_Y;
-      for (var i = 0; i < textEls.length; i++) {
-        var r = textEls[i].getBoundingClientRect();
-        if (r.width && r.height && r.bottom > 0 && r.top < bottom && r.right > left && r.left < right) return true;
-      }
-      return false;
-    }
-    function peekState(name) { return name === 'panel' || name === 'clipboard'; }
-    /* The state the notch shows: the 3 s copy toast first, then Susun while its
-       stage is pinned, then the section's own state. The Susun section asks
-       for "arrange", which is the idle notch whenever the stage is not pinned.
-       The panel peek needs room beside the pills and a free text band; music
-       and clipboard shrink to the idle footprint (.is-tight) without room, and
-       the clipboard section state also over text (the toast ignores text). */
+    /* The state the notch shows: the 3 s copy toast first, then the greeting,
+       then idle. Both wider states need room beside the pills. */
     function refresh() {
-      var want = copyTimer ? 'clipboard'
-        : arrangeStep >= 0 ? 'arrange'
-        : (sectionState === 'arrange' || (sectionState === 'panel' && (!fits || !room.panel))) ? 'idle'
-        : sectionState;
+      var want = copyTimer ? 'clipboard' : greetTimer ? 'greet' : 'idle';
       setState(want);
-      var tight = want === 'music' ? !room.music
-        : want === 'clipboard' ? (!room.clipboard || (!copyTimer && !fits))
-        : false;
+      var tight = want === 'clipboard' ? !room.clipboard : want === 'greet' ? !room.greet : false;
       notch.classList.toggle('is-tight', tight);
     }
-    function enterSection(name) {
-      sectionState = name;
-      clearTimeout(growTimer);
-      growTimer = 0;
-      fits = !(peekState(name) && !open && !copyTimer && bandBlocked(name));
-      refresh();
-    }
-    /* fitCheck runs in the shared scroll loop, only while the section's state
-       is panel or clipboard and nothing else (open panel, copy toast) rules. */
-    var blocked = false;
-    var fitFx = {
-      on: function () { return !open && !copyTimer && peekState(sectionState); },
-      read: function () { blocked = fitFx.on() && bandBlocked(sectionState); },
-      write: function () {
-        if (!fitFx.on()) return;
-        if (blocked) {
-          clearTimeout(growTimer);
-          growTimer = 0;
-          if (fits) { fits = false; refresh(); }
-        } else if (!fits && !growTimer) {
-          growTimer = setTimeout(function () {
-            growTimer = 0;
-            if (!fitFx.on()) return;
-            if (!bandBlocked(sectionState)) { fits = true; refresh(); }
-          }, FIT_GROW_MS);
-        }
-      }
-    };
-    if (loop) {
-      loop.add(fitFx);
-      loop.add(pillFx);
-      /* The pills only change size with the viewport and the web font. */
-      window.addEventListener('resize', function () { pillFx.flush = true; });
-      if (doc.fonts) {
-        var repill = function () { loop.kick(pillFx); };
-        if (doc.fonts.ready) doc.fonts.ready.then(repill, function () {});
-        if (doc.fonts.addEventListener) doc.fonts.addEventListener('loadingdone', repill);
-      }
+    loop.add(pillFx);
+    if (doc.fonts) {
+      var repill = function () { loop.kick(pillFx); };
+      if (doc.fonts.ready) doc.fonts.ready.then(repill, function () {});
+      if (doc.fonts.addEventListener) doc.fonts.addEventListener('loadingdone', repill);
     }
 
-    /* ----- which state the section in view asks for ----- */
-    var sections = $$('[data-notch]');
-    if (sections.length && 'IntersectionObserver' in window) {
-      var inBand = [];
-      var io = new IntersectionObserver(function (entries) {
-        entries.forEach(function (e) {
-          var i = inBand.indexOf(e.target);
-          if (e.isIntersecting && i < 0) inBand.push(e.target);
-          if (!e.isIntersecting && i >= 0) inBand.splice(i, 1);
-        });
-        var chosen = null;
-        sections.forEach(function (s) { if (inBand.indexOf(s) >= 0) chosen = s; });
-        if (!chosen) return;
-        enterSection(chosen.getAttribute('data-notch') || 'idle');
-      }, { rootMargin: '-40% 0px -55% 0px' });
-      sections.forEach(function (s) { io.observe(s); });
-    }
-
-    /* ----- lyric line follows the Music section's scroll progress ----- */
-    var lyricEl = $('#notch-lyric');
-    var musicSection = $('.f-music');
-    var lyricIndex = 0;
-    var lyricNext = 0;
-    var lyricFlip = false;
-    /* Swapping between two identical animations restarts it without a reflow. */
-    function setLyric(i) {
-      if (!lyricEl || i === lyricIndex) return;
-      lyricIndex = i;
-      lyricEl.textContent = LYRICS[i];
-      lyricEl.classList.remove('swap-a', 'swap-b');
-      if (!reduce.matches) {
-        lyricFlip = !lyricFlip;
-        lyricEl.classList.add(lyricFlip ? 'swap-a' : 'swap-b');
-      }
-    }
-    if (lyricEl && musicSection && loop) {
-      var lyricFx = {
-        on: function () { return lyricFx.near; },
-        read: function () {
-          var r = musicSection.getBoundingClientRect();
-          var p = clamp((window.innerHeight * 0.5 - r.top) / Math.max(r.height, 1), 0, 0.999);
-          lyricNext = Math.floor(p * LYRICS.length);
-        },
-        write: function () { setLyric(lyricNext); }
-      };
-      loop.gate(musicSection, lyricFx, '0px');
-      loop.add(lyricFx);
-    }
-
-    /* ----- copy notice -----
-       The full notice is 340 x 56; refresh() keeps it at the idle footprint
-       when it would touch a header pill (room.clipboard). */
+    /* ----- copy notice and greeting -----
+       The copy notice is 340 x 56 and the greeting 230 x 38; refresh() keeps
+       either at the idle footprint when it would touch a header pill. */
     notchApi = {
       showCopy: function (text) {
         if (open) return;
-        var line = text.length > 90 ? text.slice(0, 90) : text;
         var preview = $('#notch-clip-preview');
-        if (preview) preview.textContent = line;
+        if (preview) preview.textContent = text;
         clearTimeout(copyTimer);
         copyTimer = setTimeout(function () {
           copyTimer = 0;
-          enterSection(sectionState);
+          refresh();
         }, 3000);
         refresh();
+        loop.kick(pillFx);
       },
-      /* Susun's scrub: the tile step while its stage is pinned, -1 when not. */
-      arrange: function (step) {
-        if (step === arrangeStep) return;
-        arrangeStep = step;
-        if (step >= 0) {
-          notch.setAttribute('data-ar', step >= 3 ? 'done' : 'pick');
-          if (arrangeN && step < 3) arrangeN.textContent = String(step + 1);
-        }
+      /* "Hi, I'm Vale!" with the happy cat for about 2 s (the dropped hero cat). */
+      greet: function () {
+        if (open) return;
+        clearTimeout(greetTimer);
+        greetTimer = setTimeout(function () {
+          greetTimer = 0;
+          refresh();
+        }, 2000);
         refresh();
+        loop.kick(pillFx);
+      },
+      /* The glow while the dragged hero cat is over the notch. */
+      glow: function (on) { notch.classList.toggle('is-glow', !!on); },
+      /* The pointer is still on the notch right after the cat is dropped
+         there: the panel must not hover-open over the greeting. */
+      hold: function (ms) {
+        cancelHoverOpen();
+        clearTimeout(holdTimer);
+        holdTimer = setTimeout(function () { holdTimer = 0; }, ms);
       }
     };
+
+    /* Any copy on the page with a non-empty selection shows the copy toast. */
+    doc.addEventListener('copy', function () {
+      if (fallbackCopying || !window.getSelection) return;
+      var text = String(window.getSelection());
+      if (!text.trim()) return;
+      notchApi.showCopy(clipLine(text));
+    });
 
     /* ----- pages ----- */
     var tabs = $$('[role="tab"]', panel);
@@ -685,42 +659,30 @@
       tabs[to].focus();
     });
 
-    /* ----- Dock magnification: scale = 1 + 0.9 * falloff(d), R = 2 x pitch, eased with tau 70 ms ----- */
+    /* ----- Dock magnification: scale = 1 + 0.9 * falloff(d), R = 2 x pitch, eased with tau 70 ms -----
+       The easing runs in the shared loop; the pointer only sets targets. */
     var dock = $('.dock', panel);
     var dockItems = tabs.map(function (t) { return { ico: $('.dock-ico', t), cur: 1, target: 1 }; });
     var fine = window.matchMedia('(pointer: fine)');
     var narrow = window.matchMedia('(max-width: 32.5em)');
-    var dockRaf = 0;
-    var dockLast = 0;
-    function dockApply() {
-      dockItems.forEach(function (it) { it.ico.style.transform = it.cur === 1 ? '' : 'scale(' + it.cur.toFixed(3) + ')'; });
-    }
-    function dockStep(t) {
-      var dt = Math.min(0.1, (t - dockLast) / 1000);
-      dockLast = t;
-      var k = 1 - Math.exp(-dt / 0.07);
-      var moving = false;
-      dockItems.forEach(function (it) {
-        it.cur += (it.target - it.cur) * k;
-        if (Math.abs(it.target - it.cur) < 0.002) it.cur = it.target; else moving = true;
-      });
-      dockApply();
-      dockRaf = moving ? requestAnimationFrame(dockStep) : 0;
-    }
-    function dockKick() {
-      if (reduce.matches) {
-        dockItems.forEach(function (it) { it.cur = it.target; });
-        dockApply();
-        return;
-      }
-      if (!dockRaf) {
-        dockLast = performance.now();
-        dockRaf = requestAnimationFrame(dockStep);
-      }
-    }
+    var dockFx = {
+      read: function () {},
+      write: function (t, dt) {
+        var k = reduce.matches ? 1 : 1 - Math.exp(-dt / 0.07);
+        var moving = false;
+        dockItems.forEach(function (it) {
+          it.cur += (it.target - it.cur) * k;
+          if (Math.abs(it.target - it.cur) < 0.002) it.cur = it.target; else moving = true;
+          it.ico.style.transform = it.cur === 1 ? '' : 'scale(' + it.cur.toFixed(3) + ')';
+        });
+        dockFx.busy = moving;
+      },
+      busy: false
+    };
+    loop.add(dockFx);
     function dockReset() {
       dockItems.forEach(function (it) { it.target = 1; });
-      dockKick();
+      loop.kick(dockFx);
     }
     dock.addEventListener('pointermove', function (e) {
       if (e.pointerType !== 'mouse' || !fine.matches || narrow.matches) return;
@@ -734,7 +696,7 @@
         var f = d < reach ? 0.5 * (1 + Math.cos(Math.PI * d / reach)) : 0;
         dockItems[n].target = 1 + 0.9 * f;
       });
-      dockKick();
+      loop.kick(dockFx);
     }, { passive: true });
     dock.addEventListener('pointerleave', dockReset, { passive: true });
 
@@ -803,7 +765,7 @@
       clearTimeout(hideTimer);
       hideTimer = setTimeout(function () { panel.hidden = true; }, reduce.matches ? 0 : 380);
       if (returnFocus) face.focus();
-      enterSection(sectionState);
+      refresh();
     }
 
     /* Hover intent: the idle notch sits between the two header pills, so a
@@ -831,7 +793,7 @@
     notch.addEventListener('pointerenter', function (e) {
       if (e.pointerType === 'touch') return;
       clearTimeout(closeTimer);
-      if (!open) armHoverOpen(e);
+      if (!open && !holdTimer) armHoverOpen(e);
     });
     notch.addEventListener('pointermove', function (e) {
       if (e.pointerType === 'touch' || open || !openTimer) return;
@@ -877,57 +839,403 @@
     tickClock();
   }
 
-  /* ---------- hero: the headline steps back as the hero scrolls away ----------
-     q = how far the hero has left the viewport (0 at the top, 1 when its
-     bottom passes the top edge). The headline scales 1 -> 0.92 and fades
-     1 -> 0.2 with q, both ways. Transform and opacity only; will-change only
-     while the hero is near the viewport. Reduced motion: nothing moves. */
-  function initHero() {
-    var hero = $('.hero');
-    var title = $('.hero-title');
-    if (!hero || !title || !loop) return;
-    var q = 0;
-    var shown = 0;
-    var hinted = false;
-    var fx = {
-      on: function () { return fx.near; },
-      read: function () {
-        var r = hero.getBoundingClientRect();
-        q = clamp(-r.top / Math.max(r.height, 1), 0, 1);
-      },
-      write: function () {
-        var v = reduce.matches ? 0 : Math.round(q * 1000) / 1000;
-        var hint = fx.near && !reduce.matches;
-        if (hint !== hinted) { hinted = hint; title.style.willChange = hint ? 'transform, opacity' : ''; }
-        if (v === shown) return;
-        shown = v;
-        if (v === 0) {
-          title.style.transform = '';
-          title.style.opacity = '';
-        } else {
-          title.style.transform = 'scale(' + (1 - 0.08 * v).toFixed(4) + ')';
-          title.style.opacity = (1 - 0.8 * v).toFixed(3);
+  /* ---------- the hero cat ----------
+     Inline SVG in the logo's 256 grid. Without script it is a still picture
+     (role=img); here its wrapper becomes a button ("Vale's cat. Press to poke
+     it"). Always: eyes follow the pointer (eased), the head tilts a little
+     toward it, it blinks every 2.5 to 6 s, the right ear twitches every 4 to 9
+     s, the ears perk on hover (CSS). Press, Enter or Space: a squash jump, a
+     bubble (mrrp!, meow, hi!, nya~) and sparks. Rubbing it with a mouse or pen
+     (no button down): it purrs (happy eyes, a fine vibration, hearts), never
+     on touch. Drag (mouse: more than 6 px; touch: a 350 ms long press, then
+     move): squint eyes, it follows the pointer and tilts with the velocity,
+     and springs home when released; dropped on the live notch (which glows
+     while the cat is over it) it shrinks in, the notch greets, and the cat
+     pops back saying "again?". Five presses within 2 s make a wish: the
+     bubbles "make a wish" and "granted", meteors, and a constellation of the
+     cat's head behind it. Reduced motion: no jump, sparks, vibration, meteors
+     or constellation; bubbles and eye changes still work. */
+  function initHeroCat() {
+    var wrap = $('#cat-wrap');
+    var stage = $('#hero-cat');
+    var cat = $('#cat');
+    var eyes = $('#cat-eyes');
+    var all = $('#cat-all');
+    var bubble = $('#cat-bubble');
+    if (!wrap || !stage || !cat || !eyes || !all || !bubble) return;
+    var notchEl = $('#notch');
+
+    stage.setAttribute('role', 'button');
+    stage.setAttribute('tabindex', '0');
+    stage.setAttribute('aria-label', 'Vale’s cat. Press to poke it');
+    /* Quick swipes still scroll; only an armed long press on touch drags. */
+    stage.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+
+    var h = new Date().getHours();
+    var greeting = h < 4 ? 'Up late?' : h < 11 ? 'Good morning!' : h < 18 ? 'Good afternoon!' : 'Good evening!';
+    var sayTimer = 0;
+    function say(text, ms) {
+      bubble.textContent = text;
+      bubble.classList.add('on');
+      clearTimeout(sayTimer);
+      sayTimer = setTimeout(function () { bubble.classList.remove('on'); }, ms || 1300);
+    }
+    setTimeout(function () { say(greeting, 2600); }, 700);
+
+    function animate(el, frames, opts) {
+      if (reduce.matches || !el.animate) return null;
+      return el.animate(frames, opts);
+    }
+    function burst(chars, n) {
+      if (reduce.matches || !wrap.animate) return;
+      for (var i = 0; i < n; i++) {
+        var s = doc.createElement('span');
+        s.className = 'fx';
+        s.setAttribute('aria-hidden', 'true');
+        s.textContent = chars[i % chars.length];
+        wrap.appendChild(s);
+        var a = Math.random() * 6.28;
+        var d = 80 + Math.random() * 90;
+        var an = s.animate([
+          { transform: 'translate(-50%,-50%) scale(.4)', opacity: 1 },
+          { transform: 'translate(' + (Math.cos(a) * d).toFixed(1) + 'px,' + (Math.sin(a) * d - 40).toFixed(1) + 'px) scale(1.1)', opacity: 0 }
+        ], { duration: 900 + Math.random() * 400, easing: 'cubic-bezier(.2,.8,.2,1)' });
+        an.onfinish = (function (el) { return function () { if (el.parentNode) el.parentNode.removeChild(el); }; })(s);
+      }
+    }
+    function pop() {
+      animate(cat, [{ transform: 'none' }, { transform: 'scale(.82,1.12)', offset: 0.3 }, { transform: 'none' }], { duration: 450, easing: 'cubic-bezier(.3,1.7,.5,1)' });
+    }
+    if (coatApi) coatApi.pop = pop;
+
+    /* ----- blink and ear twitch ----- */
+    var purring = false;
+    var held = false;
+    (function blink() {
+      setTimeout(function () {
+        if (!doc.hidden && !purring && !held) {
+          cat.classList.add('blink');
+          setTimeout(function () { cat.classList.remove('blink'); }, 130);
         }
+        blink();
+      }, rnd(2500, 6000));
+    })();
+    (function twitch() {
+      setTimeout(function () {
+        var ear = $('.er', cat);
+        if (!doc.hidden && ear && !reduce.matches) animate(ear, [{ transform: 'none' }, { transform: 'rotate(14deg)', offset: 0.4 }, { transform: 'none' }], { duration: 350 });
+        twitch();
+      }, rnd(4000, 9000));
+    })();
+
+    /* ----- poke, and the wish after five presses within 2 s ----- */
+    var SAYS = ['mrrp!', 'meow', 'hi!', 'nya~'];
+    var sayAt = 0;
+    var presses = [];
+    var looking = false;
+    var lookTimer = 0;
+    function wish() {
+      say('make a wish ✨', 3000);
+      if (reduce.matches || !skyApi) return;
+      var r = wrap.getBoundingClientRect();
+      var ok = skyApi.wish(r.left + r.width / 2, r.top + r.height / 2, 1.8 * r.width / 256);
+      if (!ok) return;
+      looking = true;
+      clearTimeout(lookTimer);
+      lookTimer = setTimeout(function () { looking = false; loop.kick(catFx); }, 6500);
+      setTimeout(function () { say('✨ granted', 1800); }, 5200);
+      loop.kick(catFx);
+    }
+    function poke() {
+      var now = Date.now();
+      presses = presses.filter(function (x) { return now - x < 2000; });
+      presses.push(now);
+      if (presses.length >= 5) { presses = []; wish(); return; }
+      say(SAYS[sayAt++ % SAYS.length]);
+      animate(cat, [
+        { transform: 'none' },
+        { transform: 'scale(1.12,.85)', offset: 0.18 },
+        { transform: 'translateY(-34px) scale(.92,1.1)', offset: 0.45 },
+        { transform: 'scale(1.05,.95)', offset: 0.75 },
+        { transform: 'none' }
+      ], { duration: 550, easing: 'cubic-bezier(.3,1.4,.5,1)' });
+      burst(['✦', '•', '•'], 9);
+    }
+    stage.addEventListener('keydown', function (e) {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();
+      if (e.repeat) return; /* a held key is one press, not a run toward the wish */
+      poke();
+    });
+
+    /* ----- the pointer: press = poke, drag = carry, rub = purr ----- */
+    var down = null;
+    var lpTimer = 0;
+    var absorbed = false;
+    var ox = 0;
+    var oy = 0;
+    var vx = 0;
+    var vy = 0;
+    var gx = 0;
+    var gy = 0;
+    var tx = 0;
+    var ty = 0;
+    var over = false;
+    var returning = false;
+    var pet = 0;
+    var petT = 0;
+    var petTimer = 0;
+    var lx = null;
+    var ly = null;
+    var lastHeart = 0;
+    var DRAG_PX = 6;
+    /* .hero-inner is its own stacking context, so the stage's z-index alone cannot lift the carried cat above the header. */
+    var heroInner = stage.closest ? stage.closest('.hero-inner') : null;
+    var LONG_PRESS_MS = 350;
+
+    function startHold() {
+      held = true;
+      returning = false;
+      cat.classList.add('is-held');
+      stage.classList.add('is-held');
+      if (heroInner) heroInner.classList.add('is-carrying');
+      stopPurr();
+      loop.kick(catFx);
+    }
+    stage.addEventListener('pointerdown', function (e) {
+      if (absorbed) return;
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      var touch = e.pointerType === 'touch';
+      down = { x: e.clientX, y: e.clientY, id: e.pointerId, touch: touch, armed: !touch };
+      gx = e.clientX - ox;
+      gy = e.clientY - oy;
+      tx = ox;
+      ty = oy;
+      try { stage.setPointerCapture(e.pointerId); } catch (err) { /* capture can fail for a pointer that already ended */ }
+      clearTimeout(lpTimer);
+      if (touch) lpTimer = setTimeout(function () { if (down && !held) down.armed = true; }, LONG_PRESS_MS);
+    });
+    /* A non-passive touchmove on the cat only, and only while a drag is
+       armed or running, so a quick swipe over the cat still scrolls. */
+    stage.addEventListener('touchmove', function (e) {
+      if ((down && down.armed && down.touch) || held) e.preventDefault();
+    }, { passive: false });
+
+    function stopPurr() {
+      if (!purring) return;
+      purring = false;
+      cat.classList.remove('purr');
+      clearTimeout(petTimer);
+      pet = 0;
+    }
+    function checkPurr() {
+      pet *= Math.exp(-(performance.now() - petT) / 545);
+      petT = performance.now();
+      if (pet < 120) stopPurr(); else petTimer = setTimeout(checkPurr, 250);
+    }
+    function rub(e) {
+      var now = performance.now();
+      if (lx !== null) pet = pet * Math.exp(-(now - petT) / 545) + Math.hypot(e.clientX - lx, e.clientY - ly);
+      petT = now;
+      lx = e.clientX;
+      ly = e.clientY;
+      if (pet > 260 && !purring && !held) {
+        purring = true;
+        cat.classList.add('purr');
+        clearTimeout(petTimer);
+        petTimer = setTimeout(checkPurr, 250);
+      }
+      if (purring && now - lastHeart > 260) { lastHeart = now; burst(['♥'], 1); }
+    }
+    window.addEventListener('pointermove', function (e) {
+      if (down && e.pointerId === down.id) {
+        var dist = Math.hypot(e.clientX - down.x, e.clientY - down.y);
+        if (!held) {
+          if (down.touch && !down.armed && dist > 10) { clearTimeout(lpTimer); down = null; return; }
+          if (down.armed && dist > DRAG_PX) startHold();
+        }
+        if (held) {
+          tx = e.clientX - gx;
+          ty = e.clientY - gy;
+          loop.kick(catFx);
+        }
+        return;
+      }
+      if (e.pointerType === 'touch' || e.buttons || held || !stage.contains(e.target)) { lx = null; return; }
+      rub(e);
+    }, { passive: true });
+    stage.addEventListener('pointerleave', function () { lx = null; });
+
+    function release(e) {
+      if (!down || (e && e.pointerId !== down.id)) return;
+      var wasHeld = held;
+      clearTimeout(lpTimer);
+      down = null;
+      held = false;
+      cat.classList.remove('is-held');
+      stage.classList.remove('is-held');
+      if (heroInner) heroInner.classList.remove('is-carrying');
+      if (e && e.type === 'pointercancel') { returning = true; loop.kick(catFx); return; }
+      if (!wasHeld) { poke(); return; }
+      if (over) absorb(); else { returning = true; loop.kick(catFx); }
+    }
+    window.addEventListener('pointerup', release);
+    window.addEventListener('pointercancel', release);
+
+    function absorb() {
+      over = false;
+      if (notchApi) notchApi.glow(false);
+      absorbed = true;
+      returning = false;
+      if (notchApi) notchApi.hold(2800);
+      var a = stage.getBoundingClientRect();
+      var b = notchEl ? notchEl.getBoundingClientRect() : a;
+      var dx = b.left + b.width / 2 - (a.left + a.width / 2);
+      var dy = b.top + b.height / 2 - (a.top + a.height / 2);
+      var anim = animate(stage, [
+        { transform: 'translate(' + ox + 'px,' + oy + 'px)', opacity: 1 },
+        { transform: 'translate(' + (ox + dx) + 'px,' + (oy + dy) + 'px) scale(.12)', opacity: 0 }
+      ], { duration: 320, easing: 'cubic-bezier(.5,0,.8,.4)', fill: 'forwards' });
+      if (!anim) stage.style.opacity = '0';
+      setTimeout(function () { if (notchApi) notchApi.greet(); }, 300);
+      setTimeout(function () {
+        if (anim) anim.cancel();
+        ox = oy = vx = vy = tx = ty = 0;
+        absorbed = false;
+        stage.style.transform = '';
+        stage.style.opacity = '';
+        animate(stage, [{ transform: 'scale(.3)', opacity: 0 }, { transform: 'scale(1)', opacity: 1 }], { duration: 480, easing: 'cubic-bezier(.3,1.6,.5,1)' });
+        say('again?');
+      }, 2600);
+    }
+
+    /* ----- the cat's frame: eyes, tilt, drag, the spring home -----
+       One task in the shared loop. Reads: the stage box (and the notch box
+       while dragged). Writes: the eye and tilt transforms, the stage
+       transform, the notch glow. */
+    var ex = 0;
+    var ey = 0;
+    var tl = 0;
+    var box = null;
+    var notchBox = null;
+    var shownEx = null;
+    var shownTl = null;
+    var shownStage = '';
+    var catFx = {
+      near: true,
+      on: function () { return catFx.near || held || returning; },
+      read: function () {
+        box = stage.getBoundingClientRect();
+        notchBox = held && notchEl ? notchEl.getBoundingClientRect() : null;
+      },
+      write: function (t, dt) {
+        var busy = false;
+        var snap = reduce.matches;
+        /* Drag, and the spring home (steps of one 60 Hz frame). */
+        if (held) {
+          var nx = tx;
+          var ny = ty;
+          vx += ((nx - ox) - vx) * 0.4;
+          vy += ((ny - oy) - vy) * 0.4;
+          ox = nx;
+          oy = ny;
+          if (notchBox) {
+            over = Math.abs(box.left + box.width / 2 - (notchBox.left + notchBox.width / 2)) < 110 && box.top + box.height / 2 < notchBox.bottom + 70;
+            if (notchApi) notchApi.glow(over);
+          }
+          busy = true;
+        } else if (returning && !absorbed) {
+          if (snap) {
+            ox = oy = vx = vy = 0;
+          } else {
+            var steps = clamp(Math.round(dt * 60), 1, 4);
+            for (var i = 0; i < steps; i++) {
+              vx += -ox * 0.08;
+              vy += -oy * 0.08;
+              vx *= 0.82;
+              vy *= 0.82;
+              ox += vx;
+              oy += vy;
+            }
+          }
+          if (Math.abs(ox) < 0.3 && Math.abs(oy) < 0.3 && Math.abs(vx) < 0.3 && Math.abs(vy) < 0.3) {
+            ox = oy = vx = vy = 0;
+            returning = false;
+          } else {
+            busy = true;
+          }
+          if (notchApi) notchApi.glow(false);
+        }
+        if (!absorbed) {
+          var st = (ox || oy || vx) ? 'translate(' + ox.toFixed(1) + 'px,' + oy.toFixed(1) + 'px) rotate(' + clamp(vx * 1.5, -25, 25).toFixed(1) + 'deg)' : '';
+          if (st !== shownStage) { shownStage = st; stage.style.transform = st; }
+        }
+        /* Eyes and tilt toward the pointer (up during the wish). */
+        var cx = box.left + box.width / 2;
+        var cy = box.top + box.height * 0.62;
+        var dx = looking ? 0 : (S.mx < 0 ? 0 : S.mx - cx);
+        var dy = looking ? -400 : (S.my < 0 ? 0 : S.my - cy);
+        var d = Math.hypot(dx, dy) || 1;
+        var k = Math.min(1, d / 360);
+        var wantX = (S.mx < 0 && !looking) ? 0 : dx / d * 16 * k;
+        var wantY = (S.my < 0 && !looking) ? 0 : dy / d * (looking ? 18 : 11) * k;
+        var wantT = (S.mx < 0 && !looking) ? 0 : dx / d * 6 * k;
+        if (snap) {
+          ex = wantX; ey = wantY; tl = wantT;
+        } else {
+          var f = 1 - Math.exp(-dt / 0.11);
+          var f2 = 1 - Math.exp(-dt / 0.15);
+          ex += (wantX - ex) * f;
+          ey += (wantY - ey) * f;
+          tl += (wantT - tl) * f2;
+          if (Math.abs(wantX - ex) > 0.03 || Math.abs(wantY - ey) > 0.03 || Math.abs(wantT - tl) > 0.03) busy = true;
+          else { ex = wantX; ey = wantY; tl = wantT; }
+        }
+        var es = 'translate(' + ex.toFixed(2) + ' ' + ey.toFixed(2) + ')';
+        if (es !== shownEx) { shownEx = es; eyes.setAttribute('transform', es); }
+        var ts = 'rotate(' + tl.toFixed(2) + ' 128 230)';
+        if (ts !== shownTl) { shownTl = ts; all.setAttribute('transform', ts); }
+        catFx.busy = busy;
+      },
+      busy: false
+    };
+    loop.gate(wrap, catFx, '100px 0px');
+    loop.add(catFx);
+  }
+
+  /* ---------- marquee: the 14 names move sideways with the scroll ---------- */
+  function initMarquee() {
+    var wrapEl = $('.marquee');
+    var row = $('#marquee');
+    if (!wrapEl || !row) return;
+    var shown = 0;
+    var fx = {
+      on: function () { return fx.near && S.dirty; },
+      read: function () {},
+      write: function () {
+        var x = reduce.matches ? 0 : Math.round(S.sy * 0.35);
+        if (x === shown) return;
+        shown = x;
+        row.style.transform = x ? 'translate3d(' + (-x) + 'px,0,0)' : '';
       }
     };
-    loop.gate(hero, fx, '100px 0px');
+    loop.gate(wrapEl, fx, '100px 0px');
     loop.add(fx);
   }
 
   /* ---------- the header pills: transparent at the top, tinted once scrolled ----------
      Set once at start (a reload mid-page restores the scroll position before
-     or soon after this runs) and then by the scroll loop. */
+     or soon after this runs) and then by the loop. */
   var SCROLLED_AT = 12;
   function initHeader() {
     var header = $('.site-header');
     if (!header) return;
-    var scrolled = window.scrollY > SCROLLED_AT;
+    var scrolled = window.pageYOffset > SCROLLED_AT;
     header.classList.toggle('is-scrolled', scrolled);
-    if (!loop) return;
     var next = scrolled;
     loop.add({
-      on: function () { return true; },
-      read: function () { next = window.scrollY > SCROLLED_AT; },
+      on: function () { return S.dirty; },
+      read: function () { next = S.sy > SCROLLED_AT; },
       write: function () {
         if (next === scrolled) return;
         scrolled = next;
@@ -941,10 +1249,11 @@
      script it shows (.is-shown) once the hero's bottom has left the top of
      the viewport, or after one viewport height on pages without a hero, and
      hides again near the top. It also hides while its box lies over a button
-     (Download, Copy), a coat or accessory choice or a footer link, so it never
-     blocks one. The list is built once. A click or Enter scrolls
-     to the top (smooth only when motion is welcome), then focuses #top
-     without scrolling, so the next Tab is the skip link; the URL keeps no #top. */
+     (Download, Copy, a coat chip, a playground control), a details summary,
+     the install line or a footer link, so it never blocks one. The list is
+     built once. A click or Enter scrolls to the top (smooth only when motion
+     is welcome), then focuses #top without scrolling, so the next Tab is the
+     skip link; the URL keeps no #top. */
   function initToTop() {
     var btn = $('.to-top');
     var target = $('#top');
@@ -954,15 +1263,14 @@
       window.scrollTo({ top: 0, left: 0, behavior: reduce.matches ? 'instant' : 'smooth' });
       target.focus({ preventScroll: true });
     });
-    if (!loop) { btn.classList.add('is-shown'); return; }
     var hero = $('.hero');
-    var avoid = $$('.btn, .picker label, .site-footer a');
+    var avoid = $$('.btn, .coat-chip, .play-card button, .more summary, .cmd-scroll, .site-footer a');
     var shown = false;
     var next = false;
     loop.add({
-      on: function () { return true; },
+      on: function () { return S.dirty; },
       read: function () {
-        var past = hero ? hero.getBoundingClientRect().bottom < 0 : window.scrollY > window.innerHeight;
+        var past = hero ? hero.getBoundingClientRect().bottom < 0 : S.sy > S.vh;
         var covers = false;
         if (past) {
           var b = btn.getBoundingClientRect();
@@ -981,28 +1289,47 @@
     });
   }
 
-  /* ---------- Susun: the sticky scrub ----------
-     The wrapper (.ar-scrub) is 130vh taller than the stage (70vh on phones)
-     while .is-scrub is set, and the stage inside it, 100svh tall, sticks to
-     the top. p = clamp(-top / (height - svh), 0, 1) of the wrapper; below
-     0.25 tile 1 is current, then each quarter fills one more tile, and from
-     0.75 all three are filled and the notice shows. Scrolling back runs it
-     backwards. .is-scrub is set only with motion welcome and a stage that
-     fits 100svh; otherwise the drawing keeps its default, the final arranged
-     state. svh, not innerHeight: on phones innerHeight moves with the
-     toolbar, svh does not, so the choice cannot flip mid-scroll. While the
-     stage is pinned (top <= 0 and bottom >= svh) the notch shows the step;
-     otherwise it follows the sections.
-     The first choice is made here, synchronously, so the page has its final
-     height before the browser scrolls to a fragment (index.html#cat). */
-  function initSusun() {
-    var sec = $('.susun');
-    var outer = sec && $('.ar-scrub', sec);
-    var stage = sec && $('.ar-stage', sec);
-    var inner = sec && $('.ar-grid', sec);
-    var demo = $('#ar-demo');
-    var nEl = $('#ar-n');
-    if (!sec || !outer || !stage || !inner || !demo || !loop) return;
+  /* ---------- the story: one hover, fourteen pages ----------
+     The wrapper (.story-pin) is about 560vh (420vh on phones) while .is-pin is
+     set, and the stage inside it, 100svh tall, sticks to the top. p =
+     clamp(-top / (height - svh), 0, 1) of the wrapper. z = clamp(p * 8, 0, 1)
+     grows the panel from notch size to full; q = clamp((p - .1) / .9, 0, 1)
+     picks the page, round(q * 13), while the page position fpos eases toward
+     q * 13 and the dock icons magnify as the live notch's dock does
+     (1 + 0.9 * falloff(d), falloff = .5 (1 + cos(pi d / 2)) within 2 icons).
+     .is-pin is set only with motion welcome and a stage that fits 100svh
+     (measured with a hidden probe, again once fonts are in and on viewport
+     changes, never on innerHeight); otherwise the story is static: the first
+     page on the screen and the 14 names as a readable list.
+     Scroll position (kept from the old Susun scrub): (1) the first choice is
+     made synchronously when this runs, before the browser handles a
+     fragment; (2) until the reader scrolls or presses something, and while
+     the target still sits where the fragment scroll put it, a #fragment
+     target after the wrapper is put back at its scroll margin; (3) otherwise,
+     with the wrapper above the view, the first element after it is measured
+     before and after the switch and only the remaining shift is scrolled;
+     (4) a resize flushes the effect, so the switch happens at the resize;
+     (5) the pages are set in the same task as the class. */
+  function initStory() {
+    var sec = $('#features.story');
+    var outer = sec && $('.story-pin', sec);
+    var stage = sec && $('.story-stage', sec);
+    var inner = sec && $('.story-grid', sec);
+    var screen = sec && $('.screen', sec);
+    var copy = sec && $('.story-copy', sec);
+    if (!sec || !outer || !stage || !inner || !screen || !copy) return;
+    var pagesEls = $$('.bp-pg', sec);
+    var dockEls = $$('.bp-dock svg', sec);
+    var listEls = $$('.story-list li', sec);
+    var nEl = $('.story-n', sec);
+    var nameEl = $('.st-name', sec);
+    var lineEl = $('.st-line', sec);
+    var titleEl = $('.bp-title', sec);
+    var names = listEls.map(function (li) { return li.querySelector('b').textContent; });
+    var lines = listEls.map(function (li) { return li.querySelector('span').textContent; });
+    var N = pagesEls.length;
+    if (!N || dockEls.length !== N || names.length !== N) return;
+
     /* Measures 100svh (100vh where svh is unknown), the sticky stage's height. */
     var probe = doc.createElement('div');
     probe.setAttribute('aria-hidden', 'true');
@@ -1040,41 +1367,81 @@
     var sv = 1;
     var fitsView = false;
     var enabled = false;
-    var step = -1;
     var top = 0;
     var bottom = 0;
     var height = 0;
-    function notchStep(s) { if (notchApi && notchApi.arrange) notchApi.arrange(s); }
+    var cur = -1;
+    var fpos = 0;
+    var swapTimer = 0;
+    var shownZ = -1;
+    var shownSp = -1;
+    var shownS = [];
+
+    /* Does the pinned layout fit 100svh? The pinned layout is tried on for the
+       measurement (a synchronous class switch, nothing is painted). */
+    function measureFit() {
+      var was = sec.classList.contains('is-pin');
+      if (!was) sec.classList.add('is-pin');
+      var cs = getComputedStyle(stage);
+      var fit = inner.offsetHeight + parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom) <= sv;
+      if (!was) sec.classList.remove('is-pin');
+      return fit;
+    }
     function measure() {
       if (window.innerWidth !== vw || window.innerHeight !== vh) {
         vw = window.innerWidth;
         vh = window.innerHeight;
         sv = probe.offsetHeight || vh;
-        var cs = getComputedStyle(stage);
-        fitsView = inner.offsetHeight + parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom) <= sv;
+        fitsView = measureFit();
       }
       var r = outer.getBoundingClientRect();
       top = r.top;
       bottom = r.bottom;
       height = r.height;
     }
-    function stepAt(t, h) {
-      var p = clamp(-t / Math.max(h - sv, 1), 0, 1);
-      return p < 0.25 ? 0 : p < 0.5 ? 1 : p < 0.75 ? 2 : 3;
+    function progress() { return clamp(-top / Math.max(height - sv, 1), 0, 1); }
+    function showPage(i) {
+      pagesEls.forEach(function (e, j) { e.classList.toggle('on', j === i); e.classList.toggle('prev', j < i); });
+      dockEls.forEach(function (d, j) { d.classList.toggle('on', j === i); });
+      if (titleEl) titleEl.textContent = names[i];
+      if (nEl) nEl.textContent = pad(i + 1);
+      var prev = cur;
+      cur = i;
+      clearTimeout(swapTimer);
+      if (prev < 0 || reduce.matches) {
+        nameEl.textContent = names[i];
+        lineEl.textContent = lines[i];
+        copy.classList.remove('swap');
+      } else {
+        copy.classList.add('swap');
+        swapTimer = setTimeout(function () {
+          nameEl.textContent = names[cur];
+          lineEl.textContent = lines[cur];
+          copy.classList.remove('swap');
+        }, 180);
+      }
     }
-    function setStep(s) {
-      if (s === step) return;
-      step = s;
-      if (s < 0) { demo.removeAttribute('data-step'); return; }
-      demo.setAttribute('data-step', String(s));
-      if (nEl && s < 3) nEl.textContent = String(s + 1);
+    function resetStatic() {
+      shownZ = -1;
+      shownSp = -1;
+      screen.style.removeProperty('--z');
+      copy.style.removeProperty('--sp');
+      dockEls.forEach(function (d) { d.style.removeProperty('--s'); });
+      shownS = [];
+      cur = -1;
+      fpos = 0;
+      clearTimeout(swapTimer);
+      copy.classList.remove('swap');
+      showPage(0);
+      nameEl.textContent = names[0];
+      lineEl.textContent = lines[0];
+      if (nEl) nEl.textContent = '01';
     }
-    /* Switches .is-scrub; the wrapper's height changes by 130vh (70vh).
-       With the wrapper above the view, the view must not move. Scroll
-       anchoring (overflow-anchor) may already have kept it in place, so the
-       first element after the wrapper is measured before and after, and only
-       what is left of its shift is scrolled away. data-step is set in the
-       same task, so no frame shows .is-scrub without a step. */
+    /* Switches .is-pin; the wrapper's height changes by about 460vh. With the
+       wrapper above the view, the view must not move. Scroll anchoring
+       (overflow-anchor) may already have kept it in place, so the first
+       element after the wrapper is measured before and after, and only what
+       is left of its shift is scrolled away. */
     function apply(want) {
       enabled = want;
       var target = touched ? null : fragmentBelow();
@@ -1082,10 +1449,10 @@
       var ref = !target && outer.getBoundingClientRect().bottom <= 0
         ? (outer.nextElementSibling || sec.nextElementSibling) : null;
       var before = ref ? ref.getBoundingClientRect().top : 0;
-      sec.classList.toggle('is-scrub', want);
+      sec.classList.toggle('is-pin', want);
       if (target) {
-        /* A load or a link at #cat: aim at where the target is now. This also
-           replaces a smooth fragment scroll that set off for the old spot. */
+        /* A load or a link at #install: aim at where the target is now. This
+           also replaces a smooth fragment scroll that set off for the old spot. */
         target.scrollIntoView({ block: 'start', behavior: 'instant' });
       } else if (ref) {
         var moved = ref.getBoundingClientRect().top - before;
@@ -1093,36 +1460,51 @@
       }
       if (want) {
         var r = outer.getBoundingClientRect();
-        setStep(stepAt(r.top, r.height));
+        top = r.top;
+        height = r.height;
+        var q0 = clamp((progress() - 0.1) / 0.9, 0, 1);
+        fpos = q0 * (N - 1);
+        cur = -1;
+        showPage(Math.round(fpos));
       } else {
-        setStep(-1);
+        resetStatic();
       }
     }
     var fx = {
-      on: function () { return fx.near; },
+      on: function () { return fx.near && S.dirty; },
       read: measure,
-      write: function () {
+      write: function (t, dt) {
         var want = fitsView && !reduce.matches;
         if (want !== enabled) {
           apply(want);
           loop.kick(fx);
           return;
         }
-        if (!enabled) {
-          setStep(-1);
-          notchStep(-1);
-          return;
+        if (!enabled) { fx.busy = false; return; }
+        var p = progress();
+        var z = Math.round(clamp(p * 8, 0, 1) * 1000) / 1000;
+        var q = clamp((p - 0.1) / 0.9, 0, 1);
+        var targetPos = q * (N - 1);
+        fpos += (targetPos - fpos) * (1 - Math.exp(-dt / 0.08));
+        var moving = Math.abs(targetPos - fpos) > 0.002;
+        if (!moving) fpos = targetPos;
+        if (z !== shownZ) { shownZ = z; screen.style.setProperty('--z', String(z)); }
+        var sp = Math.round(q * 1000) / 1000;
+        if (sp !== shownSp) { shownSp = sp; copy.style.setProperty('--sp', String(sp)); }
+        for (var j = 0; j < N; j++) {
+          var d = Math.abs(j - fpos);
+          var s = (1 + 0.9 * (d < 2 ? 0.5 * (1 + Math.cos(Math.PI * d / 2)) : 0)).toFixed(3);
+          if (shownS[j] !== s) { shownS[j] = s; dockEls[j].style.setProperty('--s', s); }
         }
-        setStep(stepAt(top, height));
-        var pinned = fx.near && top <= 0.5 && bottom >= sv - 0.5;
-        notchStep(pinned ? step : -1);
-      }
+        var i = clamp(Math.round(targetPos), 0, N - 1);
+        if (i !== cur) showPage(i);
+        fx.busy = moving;
+      },
+      busy: false,
+      onResize: true
     };
     measure();
     if (fitsView && !reduce.matches) apply(true);
-    /* A resize may flip the choice: make it now, away from the section, not
-       later when a (smooth) scroll arrives there and would overrun the fix. */
-    window.addEventListener('resize', function () { fx.flush = true; });
     /* Geist often lands after this first measure, and its metrics can make
        the stage taller or shorter than the fallback font did. Measure again
        once fonts are in; apply() keeps the view if the choice flips. */
@@ -1132,6 +1514,413 @@
       if (doc.fonts.addEventListener) doc.fonts.addEventListener('loadingdone', refit);
     }
     loop.gate(outer, fx, '100px 0px');
+    loop.add(fx);
+  }
+
+  /* ---------- the playground ----------
+     Six live cards. The controls are .js-only (the text and pictures show
+     without script). Reduced motion: the dance, the dots and the paws stand
+     still, the Susun windows jump at once. */
+  function playCard(name) { return $('.play-card[data-card="' + name + '"]'); }
+
+  function initDance() {
+    var card = playCard('dance');
+    var btn = card && $('[data-act="dance"]', card);
+    var pic = card && $('.play-pic', card);
+    if (!btn || !pic) return;
+    var timer = 0;
+    function note() {
+      if (doc.hidden || !pic.animate) return;
+      var n = doc.createElement('span');
+      n.className = 'note';
+      n.setAttribute('aria-hidden', 'true');
+      n.textContent = Math.random() < 0.5 ? '♪' : '♫';
+      pic.appendChild(n);
+      var an = n.animate([
+        { transform: 'translate(-50%,0)', opacity: 1 },
+        { transform: 'translate(' + ((Math.random() - 0.5) * 200).toFixed(0) + 'px,110px) rotate(' + ((Math.random() - 0.5) * 60).toFixed(0) + 'deg)', opacity: 0 }
+      ], { duration: 1600, easing: 'ease-out' });
+      an.onfinish = function () { if (n.parentNode) n.parentNode.removeChild(n); };
+    }
+    function sync() {
+      clearInterval(timer);
+      timer = 0;
+      if (card.classList.contains('is-on') && !reduce.matches) timer = setInterval(note, 500);
+    }
+    btn.addEventListener('click', function () {
+      var on = card.classList.toggle('is-on');
+      btn.textContent = on ? 'Pause' : 'Play a beat';
+      sync();
+    });
+    if (reduce.addEventListener) reduce.addEventListener('change', sync);
+  }
+
+  function initTyping() {
+    var card = playCard('typing');
+    var btn = card && $('[data-act="start"]', card);
+    var term = card && $('.term-lines', card);
+    var live = card && $('[data-live]', card);
+    if (!btn || !term) return;
+    var LINES = ['> claude "fix the flaky test"', 'Reading src/app.rs', 'Editing 2 files', 'Running cargo test', '1857 passed'];
+    function say(text) { if (live) live.textContent = text; }
+    btn.addEventListener('click', function () {
+      if (card.getAttribute('data-s') === 'work') return;
+      card.setAttribute('data-s', 'work');
+      btn.disabled = true;
+      term.textContent = '';
+      say('Claude is working');
+      LINES.forEach(function (l, i) {
+        setTimeout(function () {
+          var row = doc.createElement('div');
+          row.textContent = l;
+          term.appendChild(row);
+        }, 500 + i * 600);
+      });
+      setTimeout(function () { card.setAttribute('data-s', 'done'); say('Claude is done'); }, 3600);
+      setTimeout(function () {
+        card.setAttribute('data-s', 'idle');
+        btn.disabled = false;
+        term.textContent = '';
+      }, 7000);
+    });
+  }
+
+  function initPeek() {
+    var card = playCard('peek');
+    var pic = card && $('.play-pic', card);
+    var mn = card && $('.mn-peek', card);
+    var eyeEls = card ? $$('.pe i', card) : [];
+    if (!pic || !mn || eyeEls.length < 2) return;
+    var eyesOn = false;
+    var box = null;
+    var shown = '';
+    function set(on) {
+      eyesOn = on;
+      card.classList.toggle('is-eyes', on);
+      loop.kick(fx);
+    }
+    var fx = {
+      on: function () { return eyesOn; },
+      read: function () { box = mn.getBoundingClientRect(); },
+      write: function () {
+        if (!eyesOn) { if (shown) { shown = ''; eyeEls.forEach(function (e) { e.style.transform = ''; }); } return; }
+        var dx = S.mx < 0 ? 0 : clamp((S.mx - (box.left + box.width / 2)) / 40, -2.5, 2.5);
+        var dy = S.my < 0 ? 0 : clamp((S.my - box.bottom) / 60, 0, 2.5);
+        var v = 'translate(' + dx.toFixed(2) + 'px,' + dy.toFixed(2) + 'px)';
+        if (v === shown) return;
+        shown = v;
+        eyeEls.forEach(function (e) { e.style.transform = v; });
+      }
+    };
+    loop.add(fx);
+    /* Mouse and pen: while the pointer is inside the picture. Touch: a tap toggles. */
+    pic.addEventListener('pointerenter', function (e) { if (e.pointerType !== 'touch') set(true); });
+    pic.addEventListener('pointerleave', function (e) { if (e.pointerType !== 'touch') set(false); });
+    pic.addEventListener('pointerup', function (e) { if (e.pointerType === 'touch') set(!eyesOn); });
+    pic.addEventListener('pointermove', function () { if (eyesOn) loop.kick(fx); }, { passive: true });
+    (function blink() {
+      setTimeout(function () {
+        if (eyesOn && !doc.hidden) {
+          card.classList.add('is-blink');
+          setTimeout(function () { card.classList.remove('is-blink'); }, 130);
+        }
+        blink();
+      }, rnd(2200, 4700));
+    })();
+  }
+
+  function initSusunCard() {
+    var card = playCard('susun');
+    var wins = card ? $$('.play-pic .win', card) : [];
+    var label = card && $('.ar-t', card);
+    var live = card && $('[data-live]', card);
+    var btns = card ? $$('.lay button', card) : [];
+    if (wins.length !== 3 || !label || !btns.length) return;
+    var LAYOUTS = {
+      cols: [[3, 22, 30, 72], [35, 22, 30, 72], [67, 22, 30, 72]],
+      main: [[3, 22, 60, 72], [65, 22, 32, 35], [65, 59, 32, 35]],
+      top: [[3, 22, 94, 35], [3, 59, 46, 35], [51, 59, 46, 35]]
+    };
+    var timers = [];
+    function say(text) {
+      label.textContent = text;
+      if (live) live.textContent = text;
+    }
+    btns.forEach(function (b) {
+      b.addEventListener('click', function () {
+        timers.forEach(clearTimeout);
+        timers = [];
+        btns.forEach(function (x) { x.setAttribute('aria-pressed', x === b ? 'true' : 'false'); });
+        var l = LAYOUTS[b.getAttribute('data-l')];
+        function place(i) {
+          var w = wins[i].style;
+          w.left = l[i][0] + '%';
+          w.top = l[i][1] + '%';
+          w.width = l[i][2] + '%';
+          w.height = l[i][3] + '%';
+        }
+        if (reduce.matches) {
+          wins.forEach(function (w, i) { place(i); });
+          say('Arranged');
+          return;
+        }
+        wins.forEach(function (w, i) {
+          timers.push(setTimeout(function () {
+            say('Tile ' + (i + 1) + ' of 3');
+            place(i);
+          }, i * 260));
+        });
+        timers.push(setTimeout(function () { say('Arranged'); }, 900));
+      });
+    });
+  }
+
+  function initDraw() {
+    var card = playCard('draw');
+    var pic = card && $('.play-pic', card);
+    var cv = card && $('.draw-cv', card);
+    var sel = card && $('.sel', card);
+    var toolBtns = card ? $$('.tools button', card) : [];
+    if (!pic || !cv || !sel || !toolBtns.length) return;
+    var ctx = cv.getContext('2d');
+    if (!ctx) return;
+    /* The selection box inside the picture, as fractions (matches .sel in style.css). */
+    var X0 = 0.12;
+    var Y0 = 0.22;
+    var X1 = 0.88;
+    var Y1 = 0.76;
+    var tool = 'pen';
+    var strokes = [];
+    var current = null;
+    var W = 0;
+    var H = 0;
+    var picBox = null;
+    function redraw() {
+      ctx.clearRect(0, 0, W, H);
+      ctx.strokeStyle = '#E2683C';
+      ctx.fillStyle = '#E2683C';
+      ctx.lineWidth = 3;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      var list = current ? strokes.concat([current]) : strokes;
+      list.forEach(function (s) {
+        if (s.type === 'box') {
+          var a = s.pts[0];
+          var b = s.pts[s.pts.length - 1];
+          ctx.strokeRect(a[0] * W, a[1] * H, (b[0] - a[0]) * W, (b[1] - a[1]) * H);
+        } else if (s.pts.length === 1) {
+          ctx.beginPath();
+          ctx.arc(s.pts[0][0] * W, s.pts[0][1] * H, 1.8, 0, 6.283);
+          ctx.fill();
+        } else {
+          ctx.beginPath();
+          ctx.moveTo(s.pts[0][0] * W, s.pts[0][1] * H);
+          for (var i = 1; i < s.pts.length; i++) ctx.lineTo(s.pts[i][0] * W, s.pts[i][1] * H);
+          ctx.stroke();
+        }
+      });
+    }
+    /* Strokes are kept as fractions of the picture, so a resize redraws them in place. */
+    var fx = {
+      on: function () { return false; },
+      read: function () { picBox = pic.getBoundingClientRect(); },
+      write: function () {
+        var r = Math.min(2, window.devicePixelRatio || 1);
+        var w = Math.max(1, Math.round(picBox.width));
+        var h = Math.max(1, Math.round(picBox.height));
+        if (cv.width !== Math.round(w * r) || cv.height !== Math.round(h * r)) {
+          cv.width = Math.round(w * r);
+          cv.height = Math.round(h * r);
+        }
+        W = w;
+        H = h;
+        ctx.setTransform(r, 0, 0, r, 0, 0);
+        redraw();
+      },
+      onResize: true
+    };
+    loop.add(fx);
+    function point(e) {
+      var r = pic.getBoundingClientRect();
+      return [clamp((e.clientX - r.left) / Math.max(r.width, 1), X0, X1), clamp((e.clientY - r.top) / Math.max(r.height, 1), Y0, Y1)];
+    }
+    sel.addEventListener('pointerdown', function (e) {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      try { sel.setPointerCapture(e.pointerId); } catch (err) { /* the pointer may already be gone */ }
+      current = { type: tool, pts: [point(e)] };
+      redraw();
+    });
+    sel.addEventListener('pointermove', function (e) {
+      if (!current) return;
+      var p = point(e);
+      if (current.type === 'box') current.pts = [current.pts[0], p]; else current.pts.push(p);
+      redraw();
+    });
+    function end() {
+      if (!current) return;
+      strokes.push(current);
+      current = null;
+      redraw();
+    }
+    sel.addEventListener('pointerup', end);
+    sel.addEventListener('pointercancel', end);
+    toolBtns.forEach(function (b) {
+      b.addEventListener('click', function () {
+        var t = b.getAttribute('data-t');
+        if (t === 'clear') { strokes = []; current = null; redraw(); return; }
+        if (t === 'copy') { if (notchApi) notchApi.showCopy('Screenshot 640 x 360'); return; }
+        tool = t;
+        toolBtns.forEach(function (x) {
+          if (x.getAttribute('data-t') === 'pen' || x.getAttribute('data-t') === 'box') x.setAttribute('aria-pressed', x === b ? 'true' : 'false');
+          x.classList.toggle('on', x === b);
+        });
+      });
+    });
+  }
+
+  function initMiniClocks() {
+    var d = new Date();
+    var t = pad(d.getHours()) + ':' + pad(d.getMinutes());
+    $$('.clk').forEach(function (el) { el.textContent = t; });
+  }
+
+  /* ---------- the walking cat and the bottom easter egg ----------
+     A fixed 3 px trail at the very bottom and a 30 px cat head that walks
+     along it with page progress, bobbing only while the page scrolls. The
+     track ends 12 px before the go-to-top button (the right edge minus the
+     edge gutter, 48 px and 12 px), so it never lies over it or a footer link.
+     At the end of the page the cat curls up and sleeps (z's float up); only
+     then is it a real, focusable button, "Wake the cat". Waking it: a
+     stretch, "mrrow? back to the top?", and a dash left along the track while
+     the page scrolls to the top (smooth only when motion is welcome). While
+     it walks it is aria-hidden, tabindex -1 and not clickable. Reduced motion:
+     no float or dash; it still wakes and scrolls at once. */
+  function initWalk() {
+    if (!$('#h-hero') || !$('.to-top')) return;
+    var bar = doc.createElement('div');
+    bar.className = 'walk';
+    bar.innerHTML = '<span class="walk-trail" aria-hidden="true"></span>' +
+      '<div class="walk-pos"><button class="walk-cat" type="button" tabindex="-1" aria-hidden="true">' +
+      '<svg viewBox="0 0 256 256" focusable="false"><use href="#cat-idle"/></svg></button>' +
+      '<span class="zz" aria-hidden="true">z</span><span class="zz" aria-hidden="true">z</span><span class="zz" aria-hidden="true">z</span>' +
+      '<p class="walk-bubble" role="status" aria-live="polite"></p></div>';
+    doc.body.appendChild(bar);
+    var trail = $('.walk-trail', bar);
+    var pos = $('.walk-pos', bar);
+    var btn = $('.walk-cat', bar);
+    var use = $('use', bar);
+    var bubble = $('.walk-bubble', bar);
+    var wide = window.matchMedia('(min-width: 40em)');
+    var state = 'walk';
+    var slept = false;
+    var sleepTimer = 0;
+    var sayTimer = 0;
+    var x = 0;
+    var shownX = -1;
+    var track = 0;
+    var vw = 0;
+    function say(text, ms) {
+      bubble.textContent = text;
+      bubble.classList.add('on');
+      clearTimeout(sayTimer);
+      sayTimer = setTimeout(function () { bubble.classList.remove('on'); }, ms);
+    }
+    function asleep(on) {
+      pos.classList.toggle('is-asleep', on);
+      btn.classList.toggle('is-asleep', on);
+      use.setAttribute('href', on ? '#cat-sleep' : '#cat-idle');
+      if (on) {
+        btn.removeAttribute('aria-hidden');
+        btn.setAttribute('tabindex', '0');
+        btn.setAttribute('aria-label', 'Wake the cat');
+      } else {
+        /* Never hide the button while it holds focus: hand focus to the top of the page. */
+        if (doc.activeElement === btn) {
+          var top = $('#top');
+          if (top) top.focus({ preventScroll: true });
+          else btn.blur();
+        }
+        btn.setAttribute('aria-hidden', 'true');
+        btn.setAttribute('tabindex', '-1');
+        btn.removeAttribute('aria-label');
+      }
+    }
+    function wake() {
+      if (state !== 'asleep') return;
+      state = 'dash';
+      asleep(false);
+      say('mrrow? back to the top?', 2800);
+      var top = $('#top');
+      if (top) top.focus({ preventScroll: true });
+      if (reduce.matches) {
+        window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+        state = 'walk';
+        loop.kick(fx);
+        return;
+      }
+      btn.classList.add('is-stretch');
+      setTimeout(function () {
+        btn.classList.remove('is-stretch');
+        btn.classList.add('is-dash');
+        window.scrollTo({ top: 0, left: 0, behavior: reduce.matches ? 'instant' : 'smooth' });
+        loop.kick(fx);
+        /* Failsafe if the scroll never reaches the top. */
+        setTimeout(function () { if (state === 'dash') endDash(); }, 4000);
+      }, 450);
+    }
+    function endDash() {
+      state = 'walk';
+      btn.classList.remove('is-dash');
+      loop.kick(fx);
+    }
+    btn.addEventListener('click', wake);
+    var fx = {
+      on: function () { return S.dirty || state !== 'walk'; },
+      /* S.moving is worked out here, not in the progress task: that task runs only
+         on dirty frames, so a value kept there would stay true after the scroll stops
+         and keep the loop (and the bob) going. */
+      read: function () { vw = root.clientWidth; S.moving = performance.now() - S.scrollAt < 160; },
+      write: function () {
+        var edge = wide.matches ? 24 : 16;
+        track = Math.max(0, vw - edge - 48 - 12 - 30);
+        x = Math.round(S.p * track);
+        if (state === 'asleep') x = Math.round(track);
+        if (x !== shownX) {
+          shownX = x;
+          pos.style.transform = 'translate3d(' + x + 'px,0,0)';
+          trail.style.width = (x + 15) + 'px';
+          /* The bubble hangs to the left of the cat; near the left edge it hangs to the right. */
+          var flip = x < 200;
+          if (bubble.classList.contains('flip') !== flip) bubble.classList.toggle('flip', flip);
+        }
+        var walking = state === 'walk' && S.moving && !reduce.matches;
+        if (btn.classList.contains('is-walking') !== walking) btn.classList.toggle('is-walking', walking);
+        var atEnd = S.max > 0 && S.sy >= S.max - 2;
+        if (state === 'walk') {
+          if (atEnd && !slept && !sleepTimer) {
+            sleepTimer = setTimeout(function () {
+              sleepTimer = 0;
+              if (state !== 'walk' || S.sy < S.max - 2) return;
+              slept = true;
+              state = 'asleep';
+              asleep(true);
+              loop.kick(fx);
+            }, 500);
+          }
+          if (!atEnd && S.sy < S.max - 120) { slept = false; clearTimeout(sleepTimer); sleepTimer = 0; }
+        } else if (state === 'dash' && S.sy <= 2) {
+          endDash();
+        } else if (state === 'asleep' && S.sy < S.max - 120) {
+          /* The reader scrolled away on their own: it wakes quietly. */
+          state = 'walk';
+          slept = false;
+          asleep(false);
+        }
+        fx.busy = state === 'dash' || (state === 'walk' && S.moving);
+      },
+      busy: false,
+      onResize: true
+    };
     loop.add(fx);
   }
 
@@ -1175,16 +1964,27 @@
   }
 
   root.classList.add('js');
+  loop = safe(makeLoop);
   safe(initTheme);
   safe(initMenu);
   safe(initCopy);
-  var catApi = safe(initCats);
-  loop = safe(makeLoop);
-  safe(function () { initNotch(catApi); });
-  safe(initHero);
-  safe(initHeader);
-  safe(initToTop);
-  safe(initSusun);
+  safe(initCoats);
+  safe(initMiniClocks);
+  if (loop) {
+    safe(initSky);
+    safe(initNotch);
+    safe(initHeroCat);
+    safe(initMarquee);
+    safe(initHeader);
+    safe(initToTop);
+    safe(initStory);
+    safe(initDance);
+    safe(initTyping);
+    safe(initPeek);
+    safe(initSusunCard);
+    safe(initDraw);
+    safe(initWalk);
+  }
   safe(initReveal);
   /* The head script removes .js at DOMContentLoaded unless this is set (script blocked or broken). */
   root.classList.add('ready');

@@ -20,9 +20,12 @@ site/*.html it checks:
   - every <link rel=preload as=font> points at a .woff2 that an @font-face
     in style.css uses;
   - every table sits in div.table-wrap[role=region][tabindex=0] with a name;
-  - .reveal sits only on h2, h3, figure and li.tile;
+  - .reveal sits only on h2, h3, figure and article.play-card;
   - the notch dock on index.html has the 14 tabs of Page::ALL, in order, each
     controlling an existing panel;
+  - the story on index.html (ol.story-list) lists the same 14 pages in the
+    same order (li[data-page]), the playground has exactly six .play-card, and
+    the Google Calendar and privacy sections each hold a <details>;
   - no third-party resource is loaded (external http(s) links are listed, not
     fetched).
 It also checks that no text file under site/ contains an em dash (U+2014).
@@ -41,6 +44,8 @@ TEXT_SUFFIXES = {".html", ".css", ".js", ".md", ".svg", ".json", ".xml", ".webma
 EM_DASH = "—"
 DOCK_TABS = ["tab-" + n for n in ("calendar", "pomodoro", "reminders", "notes", "music", "mixer", "clipboard",
                                   "notifications", "shelf", "system", "devices", "cli", "arrange", "shortcuts")]
+STORY_PAGES = [t[len("tab-"):] for t in DOCK_TABS]  # the story's data-page ids are the dock's page ids
+PLAY_CARDS = 6
 problems = []
 externals = []
 
@@ -63,6 +68,9 @@ class Page(HTMLParser):
         self.tabs = []  # (id, aria-controls) of role=tab buttons, in order
         self.to_top = []  # attrs of every a.to-top
         self.preloads = []  # (href, line) of every <link rel=preload as=font>
+        self.story_pages = []  # data-page of every li inside ol.story-list, in order
+        self.play_cards = 0  # .play-card elements inside #playground
+        self.details = []  # id of the nearest section around every <details> (None when there is none)
 
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
@@ -78,8 +86,15 @@ class Page(HTMLParser):
         if tag == "img" and "alt" not in a:
             problem(self.name, f"line {line}: img without alt")
         classes = (a.get("class") or "").split()
-        if "reveal" in classes and not (tag in ("h2", "h3", "figure") or (tag == "li" and "tile" in classes)):
-            problem(self.name, f"line {line}: .reveal on <{tag}> (only headings, screenshots and li.tile)")
+        if "reveal" in classes and not (tag in ("h2", "h3", "figure") or (tag == "article" and "play-card" in classes)):
+            problem(self.name, f"line {line}: .reveal on <{tag}> (only headings, figures and article.play-card)")
+        if tag == "li" and "data-page" in a and any(
+                t == "ol" and "story-list" in (at.get("class") or "").split() for t, at, _ in self.stack):
+            self.story_pages.append(a["data-page"])
+        if "play-card" in classes and any(at.get("id") == "playground" for _, at, _ in self.stack):
+            self.play_cards += 1
+        if tag == "details":
+            self.details.append(next((at.get("id") for t, at, _ in reversed(self.stack) if t == "section" and at.get("id")), None))
         if tag == "a" and "to-top" in classes:
             self.to_top.append(a)
         if tag == "link" and "preload" in (a.get("rel") or "").lower().split() and (a.get("as") or "").lower() == "font":
@@ -377,6 +392,18 @@ def main():
         for tab, panel in page.tabs:
             if not panel or panel not in page.ids:
                 problem("index.html", f"tab {tab!r} controls {panel!r}, which is not an id")
+
+    # The story lists the 14 pages of Page::ALL in order, the playground has six cards,
+    # and the Calendar and privacy sections each hold a <details>.
+    if "index.html" in pages:
+        page = pages["index.html"]
+        if page.story_pages != STORY_PAGES:
+            problem("index.html", f"the story lists {page.story_pages}, expected {STORY_PAGES} (Page::ALL order, ol.story-list li[data-page])")
+        if page.play_cards != PLAY_CARDS:
+            problem("index.html", f"#playground has {page.play_cards} .play-card, expected {PLAY_CARDS}")
+        for section in ("google-calendar", "privacy"):
+            if section not in page.details:
+                problem("index.html", f"#{section} has no <details>")
 
     # No em dash in any text file under site/.
     for path in sorted(SITE.rglob("*")):

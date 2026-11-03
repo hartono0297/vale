@@ -47,8 +47,8 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[panel-pages]]
 - [[vale-rename]]: the Vale rename, what keeps the old name, and the 2026-11-01 repo rename to hartono0297/vale
 - [[google-built-in-client]]
-- [[github-pages]]: site/ goes to GitHub Pages through the Actions source (Pages cannot serve site/ directly); Geist woff2 fonts, one preload
-- [[site-landing]]: the landing page, direction A "minimal" on the dark stage (dark by default, light toggle) with a working notch: hero with the install line, 8 feature tiles, three screenshots, Susun scrub, fixed two-pill header around the notch with the measured pill clearance rule, cat-head go-to-top, Geist fonts, details for the long facts, the update-check fact, one scroll loop, tokens and contrast, the shared markup contract, no-script and reduced motion, `scripts/check-site.py`, what was verified
+- [[github-pages]]: site/ goes to GitHub Pages through the Actions source (Pages cannot serve site/ directly); Geist woff2 fonts, one preload; site/img holds only logo.svg
+- [[site-landing]]: the landing page, "Night mix" (2026-11-03): a sky that mixes dusk, night and dawn by page progress (CSS on all four pages, a star canvas on index), the interactive hero cat (coats, greeting, poke, purr, drag onto the notch, the wish constellation), a marquee, the pinned story that grows the panel and flips through the 14 pages, six live playground cards, the page-wide copy toast and the greet state in the live notch, the walking cat and the sleeping-cat easter egg, one animation loop, fixed two-pill header with the measured pill clearance rule, tokens and the screenshot-based contrast sweep, the shared markup contract, no-script and reduced motion, `scripts/check-site.py`, what was verified
 - [[v3-1-handoff]]: where v3.1 stands, how to continue on another PC
 - [[open-mode]]: Mode buka (Hover, Hover & tetap, Klik) and notices with a button
 - [[panel-linger-and-motion]]: the panel stays open 4 s after an action; every page and sub-view change moves (slide, fade, reveal), reduced motion, budget
