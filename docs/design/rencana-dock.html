@@ -1,0 +1,415 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rencana Dock</title>
+<style>
+  @font-face { font-family: 'DM Sans'; font-weight: 400; src: url('../../assets/fonts/DMSans-400.ttf'); }
+  @font-face { font-family: 'DM Sans'; font-weight: 500; src: url('../../assets/fonts/DMSans-500.ttf'); }
+  @font-face { font-family: 'DM Sans'; font-weight: 600; src: url('../../assets/fonts/DMSans-600.ttf'); }
+  @font-face { font-family: 'DM Mono'; font-weight: 400; src: url('../../assets/fonts/DMMono-400.ttf'); }
+  :root {
+    --paper: #F1ECE4; --ink: #221A14; --ink2: #7A6B5D; --rule: #DDD3C6; --card: #FBF7F1;
+    --s: #17120F; --r: #241D18; --t: #332A23; --tx: #F4EDE4; --tx2: #A89A8B;
+    --a: #E2683C; --sage: #9DB59A; --ochre: #D9A441; --plum: #B07A9A; --red: #D9604F;
+    --body: 'DM Sans', sans-serif; --mono: 'DM Mono', monospace;
+  }
+  @page { size: 297mm 210mm; margin: 0; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: #9a948c; }
+  body { font-family: var(--body); color: var(--ink); -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .page { width: 297mm; height: 210mm; overflow: hidden; position: relative; margin: 0 auto 16px; padding: 28px 38px; background: var(--paper); break-after: page; }
+  .page.dark { background: var(--s); color: var(--tx); }
+  @media print { html, body { background: none; } .page { margin: 0; } }
+  .folio { position: absolute; left: 38px; right: 38px; bottom: 14px; display: flex; justify-content: space-between; font-size: 9.5px; letter-spacing: .1em; text-transform: uppercase; opacity: .5; }
+  .eyebrow { font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase; font-weight: 600; color: var(--ink2); }
+  .dark .eyebrow { color: var(--tx2); }
+  h1 { font-weight: 600; font-size: 27px; letter-spacing: -.025em; margin: 2px 0 10px; }
+  h2 { font-weight: 600; font-size: 15.5px; letter-spacing: -.02em; margin-bottom: 4px; }
+  .lbl { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; font-weight: 600; color: var(--ink2); margin-bottom: 6px; }
+  .dark .lbl { color: var(--tx2); }
+  p, li { font-size: 11px; line-height: 1.5; color: #3E3229; }
+  .dark p, .dark li { color: var(--tx2); }
+  code, .mono { font-family: var(--mono); font-size: 9.8px; }
+  code { background: #E8E0D4; padding: 0 4px; border-radius: 4px; }
+  .dark code { background: var(--t); color: var(--tx); }
+  b { font-weight: 600; }
+  .grid { display: grid; gap: 14px; }
+  .g2 { grid-template-columns: 1fr 1fr; } .g3 { grid-template-columns: 1fr 1fr 1fr; }
+  .card { background: var(--card); border: 1px solid var(--rule); border-radius: 16px; padding: 12px 14px; }
+  .card.d { background: var(--r); border-color: var(--t); color: var(--tx); }
+  .card.d p, .card.d li { color: var(--tx2); }
+  .card ul, .bul { margin: 4px 0 0; }
+  .card li, .bul li { list-style: none; position: relative; padding-left: 13px; margin-bottom: 3px; }
+  .card li::before, .bul li::before { content: ""; position: absolute; left: 0; top: 7px; width: 5px; height: 5px; border-radius: 50%; background: var(--a); }
+  .tag { display: inline-block; font-size: 9.5px; letter-spacing: .08em; text-transform: uppercase; font-weight: 600; padding: 2px 8px; border-radius: 99px; background: #E6DCCF; color: #4A3D33; }
+  .tag.a { background: rgba(226,104,60,.18); color: #A8431F; } .tag.g { background: rgba(157,181,154,.3); color: #3F5A3C; } .tag.o { background: rgba(217,164,65,.25); color: #7A5A12; } .tag.r { background: rgba(217,96,79,.18); color: #9A3426; }
+  table { border-collapse: collapse; width: 100%; }
+  th { text-align: left; font-size: 9.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink2); font-weight: 600; padding: 5px 7px; border-bottom: 1.5px solid var(--rule); }
+  td { font-size: 10.4px; line-height: 1.38; padding: 5px 7px; border-bottom: 1px solid var(--rule); vertical-align: top; color: #3E3229; }
+  .note { font-size: 10.3px; background: rgba(157,181,154,.2); border-radius: 10px; padding: 7px 10px; color: #3F5A3C; line-height: 1.45; }
+  .warn { font-size: 10.3px; background: rgba(217,164,65,.2); border-radius: 10px; padding: 7px 10px; color: #6B4E10; line-height: 1.45; }
+  .bad { font-size: 10.3px; background: rgba(217,96,79,.14); border-radius: 10px; padding: 7px 10px; color: #8A2F22; line-height: 1.45; }
+
+  /* desktop mockups */
+  .desk { position: relative; border-radius: 14px; overflow: hidden; background: #3A2F27; height: 196px; }
+  .desk.light { background: #CFC3B4; }
+  .desk .notch { position: absolute; top: 0; left: 50%; transform: translateX(-50%); height: 22px; border-radius: 0 0 13px 13px; background: var(--s); color: var(--tx); font-size: 9.5px; display: flex; align-items: center; gap: 8px; padding: 0 12px; white-space: nowrap; }
+  .desk .win { position: absolute; left: 28px; top: 36px; width: 46%; height: 92px; border-radius: 8px; background: #272019; border: 1px solid #3A2F27; }
+  .desk.light .win { background: #FFFBF5; border-color: #DDD3C6; }
+  .desk .taskbar { position: absolute; left: 0; right: 0; bottom: 0; height: 20px; background: #1D1713; }
+  .dock { position: absolute; left: 50%; bottom: 7px; transform: translateX(-50%); display: flex; align-items: flex-end; gap: 5px; padding: 5px 8px 7px; border-radius: 15px; background: rgba(23,18,15,.88); border: 1px solid rgba(244,237,228,.12); }
+  .light .dock { background: rgba(255,251,245,.88); border-color: rgba(34,26,20,.12); }
+  .ti { position: relative; width: 24px; height: 24px; border-radius: 7px; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 600; color: #fff; flex: none; }
+  .ti.dot::after { content: ""; position: absolute; left: 50%; bottom: -5px; width: 3px; height: 3px; border-radius: 50%; background: var(--tx); transform: translateX(-50%); }
+  .light .ti.dot::after { background: var(--ink); }
+  .ti .bd { position: absolute; top: -4px; right: -5px; min-width: 12px; height: 12px; border-radius: 6px; background: var(--a); color: var(--s); font-size: 7.5px; display: flex; align-items: center; justify-content: center; padding: 0 3px; }
+  .sep { width: 1px; height: 20px; background: rgba(244,237,228,.22); margin: 0 3px; align-self: center; }
+  .light .sep { background: rgba(34,26,20,.2); }
+  .st { display: flex; align-items: center; gap: 6px; color: var(--tx); font-size: 8.5px; align-self: center; padding: 0 2px; line-height: 1.15; text-align: right; }
+  .light .st { color: var(--ink); }
+  .st i { font-style: normal; width: 8px; height: 8px; border-radius: 2px; background: currentColor; opacity: .75; display: inline-block; }
+  .tip { position: absolute; bottom: 52px; transform: translateX(-50%); font-size: 8.5px; padding: 2px 7px; border-radius: 5px; background: var(--s); color: var(--tx); white-space: nowrap; }
+  .edge { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: rgba(226,104,60,.8); }
+  .cap { font-size: 10px; color: var(--ink2); margin-top: 5px; line-height: 1.4; }
+  .dark .cap { color: var(--tx2); }
+  .c1 { background: #E2683C; } .c2 { background: #D9A441; } .c3 { background: #5B8DD6; } .c4 { background: #3C7FC4; } .c5 { background: #4A3E35; } .c6 { background: #4FA36B; } .c7 { background: #B07A9A; } .c8 { background: #6E72D6; } .c9 { background: #7A6B5D; } .c10 { background: #5F5E5A; }
+
+  .menu { position: absolute; width: 132px; border-radius: 9px; background: #272019; border: 1px solid #3A2F27; padding: 4px; font-size: 9px; color: var(--tx); }
+  .menu div { padding: 3px 7px; border-radius: 5px; }
+  .menu .h { background: #33291F; }
+  .menu hr { border: 0; border-top: 1px solid #3A2F27; margin: 3px 0; }
+  .pv { position: absolute; display: flex; gap: 7px; padding: 6px; border-radius: 10px; background: #272019; border: 1px solid #3A2F27; }
+  .pv .t { width: 92px; height: 56px; border-radius: 5px; background: #1E1814; border: 1px solid #3A2F27; }
+  .pv .n { font-size: 8px; color: var(--tx2); margin-top: 3px; }
+
+  .lp { border-radius: 14px; background: #241D18; height: 300px; position: relative; color: var(--tx); padding-top: 16px; }
+  .lp .sb { margin: 0 auto 10px; width: 200px; height: 22px; border-radius: 11px; background: #33291F; font-size: 9.5px; color: var(--tx2); display: flex; align-items: center; padding: 0 11px; }
+  .lp .gr { display: grid; grid-template-columns: repeat(7, 54px); gap: 12px 14px; justify-content: center; }
+  .lp .gi { display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 8.5px; }
+  .lp .gi .ti { width: 34px; height: 34px; border-radius: 9px; font-size: 12px; }
+  .lp .fold { width: 34px; height: 34px; border-radius: 9px; background: #33291F; display: grid; grid-template-columns: 1fr 1fr; gap: 3px; padding: 5px; }
+  .lp .fold span { border-radius: 3px; }
+  .lp .pg { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); display: flex; gap: 5px; }
+  .lp .pg span { width: 5px; height: 5px; border-radius: 50%; background: #4A3E35; } .lp .pg span.a { background: var(--tx); }
+
+  .set { border-radius: 14px; background: #1E1814; color: var(--tx); display: grid; grid-template-columns: 112px 1fr; height: 300px; overflow: hidden; }
+  .set .nav { background: var(--s); padding: 10px 6px; font-size: 9.5px; display: flex; flex-direction: column; gap: 1px; }
+  .set .nav div { padding: 4px 8px; border-radius: 6px; color: var(--tx2); }
+  .set .nav div.a { background: #33291F; color: var(--tx); }
+  .set .body { padding: 10px 12px; }
+  .set .c { background: #272019; border-radius: 9px; padding: 7px 10px; margin-bottom: 7px; }
+  .set .c h4 { font-size: 9px; font-weight: 500; color: var(--tx2); margin-bottom: 3px; letter-spacing: .04em; text-transform: uppercase; }
+  .set .row { display: flex; justify-content: space-between; align-items: center; font-size: 9.5px; padding: 2.5px 0; }
+  .tg { width: 22px; height: 12px; border-radius: 6px; background: var(--a); position: relative; }
+  .tg::after { content: ""; position: absolute; right: 2px; top: 2px; width: 8px; height: 8px; border-radius: 50%; background: var(--s); }
+  .tg.off { background: #4A3E35; } .tg.off::after { left: 2px; right: auto; background: var(--tx2); }
+  .seg { display: flex; background: #2C241D; border-radius: 6px; padding: 2px; font-size: 8.5px; }
+  .seg span { padding: 2px 6px; border-radius: 4px; color: var(--tx2); } .seg span.a { background: #33291F; color: var(--tx); }
+  .sl { width: 84px; height: 3px; border-radius: 2px; background: #4A3E35; position: relative; }
+  .sl b { position: absolute; left: 0; top: 0; height: 3px; border-radius: 2px; background: var(--a); }
+
+  table.tight td { padding: 3px 7px; font-size: 10px; }
+  .phase { display: grid; grid-template-columns: 52px 1fr; gap: 0 10px; }
+  .flow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 10px; }
+  .flow span { padding: 4px 9px; border-radius: 8px; background: var(--card); border: 1px solid var(--rule); }
+  .flow em { font-style: normal; color: var(--ink2); }
+</style>
+</head>
+<body>
+
+<!-- 1 -->
+<section class="page">
+  <div class="eyebrow">Vale · Rencana fitur · 2026-11-03</div>
+  <h1>Dock ala macOS yang menggantikan taskbar Windows</h1>
+  <p style="max-width:760px;margin-bottom:14px">Bar app di tepi bawah layar: app yang di-pin dan yang sedang jalan, ikon yang membesar saat di-hover, titik untuk app aktif, auto-hide, dan Launchpad dari tombol Start. Pada akhirnya taskbar Windows disembunyikan, lalu Vale menyediakan sendiri Start, status (jam, volume, wifi, baterai, notifikasi) dan akses ke tray. Dock ini berbeda dari "dock" titik halaman di panel notch (<code>src/ui/dock.rs</code>); rumus pembesarannya dipakai ulang.</p>
+  <div class="grid g2">
+    <div class="card">
+      <div class="lbl">Yang sudah diputuskan pemilik</div>
+      <table>
+        <tr><th style="width:120px">Hal</th><th>Keputusan</th></tr>
+        <tr><td>Hubungan ke taskbar</td><td><b>Ganti total (B).</b> Taskbar Windows disembunyikan di monitor Dock; Fase 1 berjalan dulu di samping taskbar, penggantian di Fase 2</td></tr>
+        <tr><td>Isi</td><td>Bisa diatur penuh: Start, app pin, app jalan, terakhir dibuka, Downloads, tempat sampah, status; masing-masing bisa dinyalakan/dimatikan</td></tr>
+        <tr><td>Tampil</td><td>Bisa dipilih, <b>default sembunyi otomatis</b>; muncul saat kursor menyentuh tepi bawah</td></tr>
+        <tr><td>Monitor</td><td>Default ikut monitor notch, bisa dipilih manual; taskbar Windows di monitor lain tetap ada. Dock di semua monitor = Fase 5</td></tr>
+        <tr><td>Status</td><td>Bisa dipilih: di ujung kanan Dock (default) atau di kiri-kanan notch</td></tr>
+        <tr><td>Tray</td><td>Tombol ^ membuka flyout tray asli Windows (perlu spike dulu)</td></tr>
+        <tr><td>Start</td><td><b>Launchpad Vale</b>; tombol Win default membuka Launchpad, bisa diubah ke Start Windows</td></tr>
+        <tr><td>Fullscreen</td><td>Dock hilang, tepi bawah tetap bisa memanggil, kecuali game D3D exclusive (tepi dimatikan; bisa diatur)</td></tr>
+        <tr><td>Preview</td><td>Thumbnail live jendela (DWM) saat hover</td></tr>
+        <tr><td>Efek</td><td>Loncat saat buka, badge angka, drag keluar untuk lepas (poof), taruh file ke ikon: semua nyala</td></tr>
+        <tr><td>Launchpad</td><td>Semua app otomatis (abjad) + folder buatan sendiri</td></tr>
+        <tr><td>Tema</td><td>Bisa dipilih: ikut tema Vale (default) atau warna sendiri</td></tr>
+        <tr><td>Gerak</td><td>"Smooth seperti Mac": spesifikasi di halaman 4, detail diserahkan ke rencana ini</td></tr>
+      </table>
+    </div>
+    <div>
+      <div class="desk" style="height:230px">
+        <div class="notch">♪ Night mix</div>
+        <div class="win"></div>
+        <div class="dock">
+          <div class="ti c1">S</div><div class="sep"></div>
+          <div class="ti c2 dot">Ex</div><div class="ti c3 dot">Ch</div><div class="ti c4 dot" style="width:40px;height:40px;font-size:12px">VS</div><div class="ti c5" style="width:31px;height:31px">Te</div><div class="ti c6 dot">Sp</div><div class="ti c8 dot">Di<span class="bd">12</span></div>
+          <div class="sep"></div><div class="ti c9">Dl</div><div class="ti c10">Tr</div>
+          <div class="sep"></div><div class="st">^ <i></i><i></i><i></i><span>12:40<br>Sel 3 Nov</span></div>
+        </div>
+        <div class="tip" style="left:50%;bottom:62px">VS Code · 2 jendela</div>
+      </div>
+      <p class="cap">Tujuan akhir: tanpa taskbar Windows. Kiri ke kanan: Start (Launchpad), app pin dan jalan, tumpukan Downloads dan tempat sampah, status dengan tombol tray ^.</p>
+      <div class="note" style="margin-top:10px">Mockup interaktif dibuat di session brainstorming (posisi A/B/C, hover, klik kanan, sembunyi, preview, badge, loncat, drag keluar, tumpukan, Launchpad, Settings). Halaman 2 sampai 4 merangkumnya sebagai gambar diam.</div>
+    </div>
+  </div>
+  <div class="folio"><span>Vale · Rencana Dock</span><span>1 / 7</span></div>
+</section>
+
+<!-- 2 -->
+<section class="page">
+  <div class="eyebrow">Tampilan</div>
+  <h1>Diam, hover, sembunyi, gelap dan terang</h1>
+  <div class="grid g3">
+    <div>
+      <div class="desk">
+        <div class="notch">♪ Night mix</div><div class="win"></div>
+        <div class="dock"><div class="ti c1">S</div><div class="sep"></div><div class="ti c2 dot">Ex</div><div class="ti c3 dot">Ch</div><div class="ti c4 dot">VS</div><div class="ti c5">Te</div><div class="ti c6 dot">Sp</div><div class="ti c7">Fi</div><div class="sep"></div><div class="ti c9">Dl</div><div class="ti c10">Tr</div></div>
+      </div>
+      <p class="cap"><b>Diam.</b> Ikon 48 dip (default), titik 4 dip di bawah app yang jalan, garis pemisah di antara bagian.</p>
+    </div>
+    <div>
+      <div class="desk">
+        <div class="notch">♪ Night mix</div><div class="win"></div>
+        <div class="dock"><div class="ti c1">S</div><div class="sep"></div><div class="ti c2 dot">Ex</div><div class="ti c3 dot" style="width:31px;height:31px;margin:0 2px">Ch</div><div class="ti c4 dot" style="width:42px;height:42px;margin:0 4px;font-size:12px">VS</div><div class="ti c5" style="width:31px;height:31px;margin:0 2px">Te</div><div class="ti c6 dot">Sp</div><div class="ti c7">Fi</div><div class="sep"></div><div class="ti c9">Dl</div><div class="ti c10">Tr</div></div>
+        <div class="tip" style="left:50%;bottom:60px">VS Code · 2 jendela</div>
+      </div>
+      <p class="cap"><b>Hover.</b> Pembesaran cosinus dengan puncak 1,8×. Tetangga ikut membesar dan Dock melebar ke dua sisi, persis Mac. Tooltip menampilkan nama dan jumlah jendela.</p>
+    </div>
+    <div>
+      <div class="desk">
+        <div class="notch">♪ Night mix</div><div class="win" style="height:140px;width:88%"></div>
+        <div class="edge"></div>
+      </div>
+      <p class="cap"><b>Sembunyi.</b> Dock turun keluar layar dan jendela memakai seluruh tinggi layar. Menyentuh tepi bawah (garis oranye) selama 150 ms memunculkannya kembali.</p>
+    </div>
+    <div>
+      <div class="desk light">
+        <div class="notch">♪ Night mix</div><div class="win"></div>
+        <div class="dock"><div class="ti c1">S</div><div class="sep"></div><div class="ti c2 dot">Ex</div><div class="ti c3 dot">Ch</div><div class="ti c4 dot">VS</div><div class="ti c6 dot">Sp</div><div class="ti c7">Fi</div><div class="sep"></div><div class="ti c9">Dl</div><div class="ti c10">Tr</div><div class="sep"></div><div class="st">^ <i></i><i></i><i></i><span>12:40<br>Sel 3 Nov</span></div></div>
+      </div>
+      <p class="cap"><b>Terang, status di Dock.</b> Permukaan dan aksen mengikuti tema Vale; dengan "warna sendiri", Dock punya permukaan, aksen, dan tingkat tembus pandang sendiri.</p>
+    </div>
+    <div>
+      <div class="desk">
+        <div class="notch" style="gap:9px"><span style="opacity:.7">wifi · vol · 82%</span><span style="opacity:.35">|</span>♪ Night mix<span style="opacity:.35">|</span><span>12:40 · Sel 3 Nov</span></div><div class="win"></div>
+        <div class="dock"><div class="ti c1">S</div><div class="sep"></div><div class="ti c2 dot">Ex</div><div class="ti c3 dot">Ch</div><div class="ti c4 dot">VS</div><div class="ti c6 dot">Sp</div><div class="ti c7">Fi</div><div class="sep"></div><div class="ti c9">Dl</div><div class="ti c10">Tr</div></div>
+      </div>
+      <p class="cap"><b>Status di notch.</b> Wifi, volume, dan baterai di kiri notch, jam di kanan, seperti menu bar Mac. Kalau notch sedang menampilkan sesuatu yang lebar, status mengecil menjadi ikon saja.</p>
+    </div>
+    <div>
+      <div class="desk">
+        <div class="notch">♪ Night mix</div><div class="win"></div>
+        <div class="dock"><div class="ti c1">S</div><div class="sep"></div><div class="ti c2 dot">Ex</div><div class="ti c3 dot">Ch</div><div class="ti c4 dot" style="width:38px;height:38px;margin:0 3px">VS</div><div class="ti c6 dot">Sp</div><div class="ti c7">Fi</div><div class="sep"></div><div class="ti c9">Dl</div><div class="ti c10">Tr</div></div>
+        <div class="menu" style="left:calc(50% - 66px);bottom:58px"><div style="color:var(--tx2)">Jendela</div><div class="h">vale — main.rs</div><div>site — index.html</div><hr><div>Jendela baru</div><div>Lepas dari Dock</div><div>Susun jendela…</div><hr><div>Tutup semua</div></div>
+      </div>
+      <p class="cap"><b>Klik kanan.</b> Daftar jendela, jendela baru, pin/lepas, sambungan ke Susun (<code>arrange</code>), tutup. Menunya memakai gaya popover Vale.</p>
+    </div>
+  </div>
+  <div class="folio"><span>Vale · Rencana Dock</span><span>2 / 7</span></div>
+</section>
+
+<!-- 3 -->
+<section class="page">
+  <div class="eyebrow">Start dan Settings</div>
+  <h1>Launchpad, dan section Settings "Dock"</h1>
+  <div class="grid g2">
+    <div>
+      <div class="lp">
+        <div class="sb">Cari app</div>
+        <div class="gr">
+          <div class="gi"><div class="ti c2">Ex</div>Explorer</div><div class="gi"><div class="ti c3">Ch</div>Chrome</div><div class="gi"><div class="ti c4">VS</div>VS Code</div><div class="gi"><div class="fold"><span class="c4"></span><span class="c6"></span><span class="c3"></span><span class="c10"></span></div>Office</div><div class="gi"><div class="ti c6">Sp</div>Spotify</div><div class="gi"><div class="ti c7">Fi</div>Figma</div><div class="gi"><div class="ti c8">Di</div>Discord</div>
+          <div class="gi"><div class="ti c5">Te</div>Terminal</div><div class="gi"><div class="ti c2">Ph</div>Photos</div><div class="gi"><div class="fold"><span class="c5"></span><span class="c8"></span><span class="c1"></span><span class="c9"></span></div>Game</div><div class="gi"><div class="ti c10">No</div>Notion</div><div class="gi"><div class="ti c5">OB</div>OBS</div><div class="gi"><div class="ti c9">Se</div>Settings</div><div class="gi"><div class="ti c10">Ca</div>Kalkulator</div>
+          <div class="gi"><div class="ti c1">Pa</div>Paint</div><div class="gi"><div class="ti c3">Ma</div>Mail</div><div class="gi"><div class="ti c1">Ka</div>Kalender</div><div class="gi"><div class="ti c5">Jm</div>Jam</div><div class="gi"><div class="ti c3">St</div>Store</div><div class="gi"><div class="ti c1">Va</div>Vale</div><div class="gi"><div class="ti c6">Ex</div>Excel</div>
+        </div>
+        <div class="pg"><span class="a"></span><span></span><span></span></div>
+      </div>
+      <p class="cap"><b>Launchpad.</b> Semua app dari <code>shell:AppsFolder</code> (Win32 dan Store), urut abjad. Tumpuk satu ikon di atas ikon lain untuk membuat folder. Halaman digeser dengan roda atau drag dan memantul di ujung. Ketik langsung untuk mencari; panah dan Enter untuk keyboard; Esc atau klik kosong untuk menutup. Dibuka dari tombol Start di Dock, tombol Win (default, bisa diubah), atau hotkey Vale.</p>
+    </div>
+    <div>
+      <div class="set">
+        <div class="nav"><div>Umum</div><div>Tampilan</div><div>Kucing</div><div>Panel</div><div class="a">Dock</div><div>Clipboard</div><div>Tombol pintas</div><div>Fitur</div><div>Integrasi</div><div>Tentang</div></div>
+        <div class="body">
+          <div class="c"><h4>Dock</h4>
+            <div class="row">Tampilkan Dock<span class="tg"></span></div>
+            <div class="row">Ganti taskbar Windows<span class="tg off"></span></div>
+            <div class="row">Sembunyi otomatis<span class="tg"></span></div>
+            <div class="row">Monitor<span class="seg"><span class="a">Ikut notch</span><span>Pilih…</span></span></div>
+            <div class="row">Tombol Win membuka<span class="seg"><span class="a">Launchpad</span><span>Start Windows</span></span></div>
+          </div>
+          <div class="c"><h4>Isi</h4>
+            <div class="row">Start · App pin · App jalan · Terakhir dibuka · Downloads · Tempat sampah · Status</div>
+            <div class="row">Status ditaruh di<span class="seg"><span class="a">Dock</span><span>Notch</span></span></div>
+          </div>
+          <div class="c"><h4>Tampilan dan gerak</h4>
+            <div class="row">Warna<span class="seg"><span class="a">Ikut tema Vale</span><span>Sendiri</span></span></div>
+            <div class="row">Ukuran ikon<span class="sl"><b style="width:45%"></b></span></div>
+            <div class="row">Pembesaran<span class="sl"><b style="width:60%"></b></span></div>
+            <div class="row">Loncat saat buka app<span class="tg"></span></div>
+            <div class="row">Preview jendela<span class="tg"></span></div>
+          </div>
+        </div>
+      </div>
+      <p class="cap"><b>Settings → Dock.</b> Section baru yang ke-10, di antara Panel dan Clipboard. Isinya berupa chip on/off dengan urutan bisa di-drag. Daftar app pin diatur langsung di Dock (drag), bukan di Settings. Section ini juga punya tombol "Kembalikan taskbar Windows" yang selalu ada (lihat Fase 2a).</p>
+    </div>
+  </div>
+  <div class="folio"><span>Vale · Rencana Dock</span><span>3 / 7</span></div>
+</section>
+
+<!-- 4 -->
+<section class="page">
+  <div class="eyebrow">Detail dan gerak</div>
+  <h1>"Smooth seperti Mac": spesifikasi gerak</h1>
+  <div class="grid g2">
+    <div>
+      <div class="desk" style="height:200px">
+        <div class="notch">♪ Night mix</div><div class="win"></div>
+        <div class="pv" style="left:calc(50% - 130px);bottom:64px"><div><div class="t"></div><div class="n">GitHub — vale</div></div><div><div class="t"></div><div class="n">YouTube Music</div></div></div>
+        <div class="dock"><div class="ti c1">S</div><div class="sep"></div><div class="ti c2 dot">Ex</div><div class="ti c3 dot" style="width:42px;height:42px;font-size:12px">Ch</div><div class="ti c4 dot">VS</div><div class="ti c6 dot">Sp</div><div class="ti c7" style="transform:translateY(-10px)">Fi</div><div class="ti c8 dot">Di<span class="bd">12</span></div><div class="sep"></div><div class="ti c9">Dl</div><div class="ti c10">Tr</div></div>
+      </div>
+      <p class="cap">Preview live di atas Chrome, Figma sedang loncat, Discord dengan badge 12.</p>
+      <div class="card" style="margin-top:10px">
+        <div class="lbl">Aturan umum</div>
+        <ul>
+          <li>Semua gerak berjalan di <code>FrameClock</code> yang sudah ada dan berhenti begitu diam. Tidak ada timer yang jalan terus (lihat <code>bata-idle-power-budget</code>).</li>
+          <li>Mouse hanya mengatur target. Nilai yang tampil mengejar target lewat <code>v += (t - v)(1 - e^(-dt/τ))</code>, tanpa overshoot dan tidak bergantung frame rate (sama dengan dock halaman).</li>
+          <li>Reduced motion, Energy Saver, atau animasi Windows mati: semuanya langsung lompat ke nilai akhir. Loncat dan poof diganti fade pendek.</li>
+          <li>Target 60 fps dengan refresh tinggi diikuti. Jendela Dock hanya selebar Dock saat membesar, tidak selebar layar, supaya biaya <code>UpdateLayeredWindow</code> per frame tetap kecil. Fase 1c mengukur ini; kalau masih berat, pakai DirectComposition.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="card">
+      <table>
+        <tr><th style="width:110px">Gerak</th><th>Spesifikasi</th></tr>
+        <tr><td>Pembesaran</td><td>Falloff cosinus dengan jangkauan 2,5 lebar ikon, puncak default 1,8× (slider 1,0–2,2), τ 70 ms. Ikon tumbuh dari tepi bawah. Lebar Dock = jumlah lebar ikon yang sudah dibesarkan, jadi tetangga bergeser mulus seperti Mac. Klik memakai layout diam sehingga target tidak goyang.</td></tr>
+        <tr><td>Muncul / sembunyi</td><td>Kursor diam di tepi bawah selama 150 ms → naik 240 ms ease-out cubic. Kursor keluar dari Dock → tunggu 500 ms, lalu turun 200 ms ease-in. Menu, preview, atau drag yang terbuka menahan Dock.</td></tr>
+        <tr><td>Loncat</td><td>Siklus 600 ms: naik 18 dip (ease-out), turun (ease-in), lalu satu pantulan kecil 7 dip. Berulang sampai jendela app muncul atau 5 detik lewat. App yang minta perhatian (flash) loncat 3×.</td></tr>
+        <tr><td>Titik</td><td>Fade-in 150 ms saat app jalan, fade-out 200 ms saat app keluar. App yang tidak di-pin menyusut keluar dalam 220 ms dan tetangganya bergeser rapat.</td></tr>
+        <tr><td>Urutan (drag)</td><td>Ghost ikon mengikuti kursor; tetangga membuka celah dalam 180 ms. Drag lebih dari 48 dip ke atas Dock memunculkan label "Lepas"; dilepas → animasi poof 250 ms (5 bingkai awan) dan tetangga merapat.</td></tr>
+        <tr><td>Preview</td><td>Hover diam 400 ms → kartu thumbnail fade + naik 6 dip dalam 150 ms. Pindah ke ikon lain saat preview terbuka berganti langsung tanpa jeda. Thumbnail memakai <code>DwmRegisterThumbnail</code>, jadi live dan tanpa salin piksel.</td></tr>
+        <tr><td>Tumpukan</td><td>Grid file terbaru tumbuh dari ikonnya: 200 ms scale 0,9→1 + fade. Klik file untuk membuka, atau drag keluar.</td></tr>
+        <tr><td>Badge</td><td>Muncul dengan scale 0,6→1 dalam 180 ms; angka berganti dengan crossfade.</td></tr>
+        <tr><td>Launchpad</td><td>Buka: zoom 1,06→1 + fade 220 ms di atas scrim permukaan 85%. Tutup: kebalikannya dalam 180 ms. Geser halaman memakai pegas τ 90 ms dengan rubber band di ujung. Folder terbuka melebar dari ikonnya dalam 200 ms.</td></tr>
+        <tr><td>Minimize</td><td>Efek genie Mac tidak bisa dibuat untuk jendela app lain. Windows tetap memakai animasi minimize miliknya; sisa ruang di sini sengaja dibiarkan.</td></tr>
+      </table>
+    </div>
+  </div>
+  <div class="folio"><span>Vale · Rencana Dock</span><span>4 / 7</span></div>
+</section>
+
+<!-- 5 -->
+<section class="page">
+  <div class="eyebrow">Arsitektur</div>
+  <h1>Modul, sumber data, dan apa yang dipakai ulang</h1>
+  <div class="grid g2">
+    <div class="card">
+      <div class="lbl">Modul baru (usulan)</div>
+      <table>
+        <tr><th style="width:150px">File</th><th>Isi</th></tr>
+        <tr><td><code>src/dock/model.rs</code></td><td>Murni dan dites: item (Start, pin, jalan, terakhir, tumpukan, status, pemisah), urutan, penggabungan pin dengan app jalan, layout diam, pembesaran (memakai rumus <code>ui/dock.rs</code> yang dibuat umum), posisi muncul/sembunyi</td></tr>
+        <tr><td><code>src/dock/apps.rs</code></td><td>Jendela yang jalan: filter alt-tab dari <code>arrange_win::is_alt_tab_style</code>, dikelompokkan per AppUserModelID (<code>SHGetPropertyStoreForWindow</code>, fallback ke path exe). Pin: .lnk / AUMID. Perubahan lewat <code>SetWinEventHook</code> (create, destroy, show, hide, foreground, name change, flash), tanpa polling</td></tr>
+        <tr><td><code>src/dock/icons.rs</code></td><td>Ikon 64–256 px lewat <code>IShellItemImageFactory</code> (seperti <code>search_details.rs</code>), dibuat di worker thread dan disimpan di cache per AUMID/exe</td></tr>
+        <tr><td><code>src/dock/window.rs</code></td><td>Jendela layered sendiri (topmost, <code>WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE</code>), render Direct2D bersama <code>ui/render.rs</code>, hit-test, tepi bawah</td></tr>
+        <tr><td><code>src/app_dock_bar.rs</code></td><td>Penghubung ke <code>App</code>: klik (buka / aktifkan / minimize kalau sudah di depan / putar antar jendela), menu, drag, fullscreen, monitor. Nama file dibedakan dari <code>app_dock.rs</code> (dock titik halaman)</td></tr>
+        <tr><td><code>src/taskbar.rs</code></td><td>Fase 2: sembunyikan/kembalikan <code>Shell_TrayWnd</code>, area kerja (AppBar <code>SHAppBarMessage</code> saat Dock selalu tampil), <code>TaskbarCreated</code>, pemulihan setelah crash</td></tr>
+        <tr><td><code>src/dock/status.rs</code></td><td>Fase 2: jam, volume (<code>audio.rs</code>), wifi (NLM), baterai (<code>GetSystemPowerStatus</code>), bel (Win+N), quick settings (Win+A)</td></tr>
+        <tr><td><code>src/launchpad/</code></td><td>Fase 3: daftar app, folder, jendela layar penuh, cari</td></tr>
+      </table>
+    </div>
+    <div>
+      <div class="card">
+        <div class="lbl">Yang dipakai ulang</div>
+        <ul>
+          <li><code>ui/dock.rs</code>: falloff, smoothing, dan hit-test yang tidak goyang</li>
+          <li><code>arrange_win.rs</code>: enumerasi jendela, pemindah jendela, Susun dari menu klik kanan</li>
+          <li><code>search_details.rs</code> / <code>search.rs</code>: ikon dan daftar app untuk Launchpad</li>
+          <li><code>notch_monitor.rs</code>: pilihan monitor dan hot-plug (<code>DBT_DEVNODES_CHANGED</code>)</li>
+          <li><code>sources/fullscreen.rs</code>: deteksi fullscreen per monitor; Dock menambah pembedaan D3D exclusive</li>
+          <li><code>app_hotkeys.rs</code> + hook PrtSc: tempat menangkap tombol Win</li>
+          <li>Riwayat notifikasi: angka badge per app</li>
+          <li><code>shelf</code>: drop target OLE untuk "taruh file ke ikon"</li>
+          <li>Tema, permukaan, tembus pandang, dan font dari Settings Tampilan</li>
+        </ul>
+      </div>
+      <div class="warn" style="margin-top:10px"><b>Tombol Win.</b> Win ditekan lalu dilepas tanpa tombol lain → Launchpad. Hook menelan Win dan menyuntik tombol dummy supaya Start Windows tidak ikut terbuka. Win+X, Win+E, dan kombinasi lain tetap lolos. Kalau hook mati, Win kembali membuka Start Windows. Ini masuk Spike.</div>
+      <div class="note" style="margin-top:10px"><b>Hemat daya.</b> Diam = nol timer dan nol frame. Event jendela memakai hook out-of-context. Ikon dibuat sekali lalu di-cache. Thumbnail DWM tidak menyalin piksel. Ukuran exe diukur setiap fase (catatan <code>exe-size</code>).</div>
+    </div>
+  </div>
+  <div class="folio"><span>Vale · Rencana Dock</span><span>5 / 7</span></div>
+</section>
+
+<!-- 6 -->
+<section class="page">
+  <div class="eyebrow">Fase dan session</div>
+  <h1>Pecahan kerja: satu baris = satu session / worktree</h1>
+  <table class="tight">
+    <tr><th style="width:62px">Fase</th><th style="width:190px">Isi</th><th>Selesai kalau</th><th style="width:150px">Urutan</th></tr>
+    <tr><td><span class="tag o">0 Spike</span></td><td>Probe buangan di luar <code>src/</code>: sembunyikan taskbar, tombol Win, flyout tray, tepi bawah saat fullscreen</td><td>Catatan jawaban untuk 5 pertanyaan di halaman 7, dengan cara kerja yang dipilih. Tidak ada kode yang masuk ke <code>main</code></td><td>Bareng 1a</td></tr>
+    <tr><td><span class="tag a">1a</span></td><td>Fondasi: <code>dock/model.rs</code>, <code>config.dock</code> (pembacaan lenient), section Settings "Dock" (Tampilkan, Sembunyi otomatis, Monitor, Isi, Ukuran, Pembesaran, Warna)</td><td>Model dites (layout, gabung pin + jalan, pembesaran, posisi sembunyi), config lama tetap terbaca, Settings menyimpan</td><td>Duluan</td></tr>
+    <tr><td><span class="tag a">1b</span></td><td>Sumber app: <code>dock/apps.rs</code>, <code>dock/icons.rs</code></td><td>Daftar app jalan per AUMID benar untuk Explorer, Chrome PWA, app Store, dan terminal; event tanpa polling; ikon tajam di 2×</td><td>Setelah 1a, bareng 1c</td></tr>
+    <tr><td><span class="tag a">1c</span></td><td>Jendela Dock: render, pembesaran, titik, tooltip, klik, sembunyi otomatis dan tepi, fullscreen, ikut monitor notch, demo <code>--demo-dock</code></td><td>Gerak sesuai halaman 4, nol timer saat diam, demo tanpa data asli</td><td>Setelah 1a, bareng 1b (data dummy dulu)</td></tr>
+    <tr><td><span class="tag a">1d</span></td><td>Interaksi: klik kanan, drag urutan, pin dari app jalan, drag keluar + poof</td><td>Urutan pin tersimpan, menu sesuai mockup, poof jalan</td><td>Setelah 1b + 1c</td></tr>
+    <tr><td><span class="tag r">2a</span></td><td>Ganti taskbar: <code>taskbar.rs</code>, area kerja, re-hide setelah <code>TaskbarCreated</code>, pemulihan crash, "Kembalikan taskbar" di Settings + menu tray</td><td>Keluar, crash, atau Explorer restart tidak pernah meninggalkan layar tanpa taskbar dan tanpa Dock</td><td>Setelah Spike + Fase 1</td></tr>
+    <tr><td><span class="tag r">2b</span></td><td>Status: jam (klik → kalender Vale), volume, wifi, baterai, notifikasi; posisi di Dock atau notch</td><td>Nilai benar, update lewat event, dua posisi jalan</td><td>Bareng 2a</td></tr>
+    <tr><td><span class="tag r">2c</span></td><td>Tombol tray ^ membuka flyout tray asli</td><td>Cara yang dipilih Spike jalan; kalau gagal, fallback menampilkan taskbar sebentar</td><td>Setelah 2a</td></tr>
+    <tr><td><span class="tag g">3</span></td><td>Launchpad + tombol Win (default Launchpad, bisa diubah) + hotkey</td><td>Semua app muncul, folder tersimpan, keyboard lengkap, gerak sesuai halaman 4</td><td>Bareng Fase 2</td></tr>
+    <tr><td><span class="tag g">4a</span></td><td>Preview live (DWM) + loncat</td><td>Preview per jendela, klik/tutup jalan, loncat berhenti saat jendela muncul</td><td>Setelah Fase 1</td></tr>
+    <tr><td><span class="tag g">4b</span></td><td>Badge + tumpukan Downloads / tempat sampah + taruh file ke ikon + app terakhir dibuka</td><td>Angka cocok dengan riwayat; tempat sampah bisa dikosongkan setelah konfirmasi</td><td>Setelah Fase 1, bareng 4a</td></tr>
+    <tr><td><span class="tag">5</span></td><td>Dock di semua monitor, posisi kiri/kanan</td><td>Satu Dock per monitor berisi app di monitor itu, hot-plug aman</td><td>Paling akhir</td></tr>
+  </table>
+  <div class="grid g2" style="margin-top:10px">
+    <div class="warn"><b>File rebutan.</b> Hampir semua fase menyentuh <code>config.rs</code>, <code>ui/settings_window.rs</code>, dan <code>i18n.rs</code>. Session yang ngubah tiga file ini jalan bergiliran: 1b dan 1c tidak menyentuhnya (pengaturan sudah disiapkan di 1a), dan baris Settings fase berikutnya ditambahkan satu per satu.</div>
+    <div class="note"><b>Setiap session:</b> brainstorming singkat dengan pemilik → <code>build</code> (Plan memecah light/heavy) → merge ke <code>main</code> → Finish (memory, README, push). Tidak ada rilis sampai pemilik minta. Jalankan 1b dan 1c di worktree masing-masing.</div>
+  </div>
+  <div class="folio"><span>Vale · Rencana Dock</span><span>6 / 7</span></div>
+</section>
+
+<!-- 7 -->
+<section class="page">
+  <div class="eyebrow">Risiko dan Spike</div>
+  <h1>Yang harus dibuktikan dulu, dan cek manual</h1>
+  <div class="grid g2">
+    <div>
+      <div class="card">
+        <div class="lbl">5 pertanyaan Spike (Fase 0)</div>
+        <ul>
+          <li><b>Sembunyikan taskbar di Windows 11 26200.</b> Apakah <code>ShowWindow(Shell_TrayWnd, SW_HIDE)</code> + auto-hide bertahan saat Win ditekan, saat Start atau Search terbuka, dan saat tablet mode? Apakah area kerja ikut terbebas?</li>
+          <li><b>Pulih.</b> Setelah Explorer restart (<code>TaskbarCreated</code>), sleep/resume, dan Vale dibunuh paksa, apa yang terjadi? Taskbar harus selalu bisa kembali, dan Vale butuh penanda "taskbar disembunyikan oleh Vale" untuk dipulihkan di start berikutnya.</li>
+          <li><b>Flyout tray.</b> Bisakah overflow tray asli dibuka saat taskbar tersembunyi (Win+B, <code>NotifyIconOverflowWindow</code>, atau munculkan taskbar 5 detik)? Bagaimana posisinya?</li>
+          <li><b>Tombol Win.</b> Tangkap Win yang ditekan sendirian tanpa Start ikut terbuka dan tanpa merusak Win+kombinasi, termasuk di layar kunci dan UAC.</li>
+          <li><b>Tepi saat fullscreen.</b> Di video borderless dan game D3D exclusive, apakah jendela topmost yang muncul membuat game minimize atau stutter?</li>
+        </ul>
+      </div>
+      <div class="bad" style="margin-top:10px"><b>Risiko terbesar:</b> layar tanpa taskbar dan tanpa Dock setelah crash. Aturannya keras: setiap jalur keluar mengembalikan taskbar; start berikutnya memeriksa penanda; menu tray dan Settings punya "Kembalikan taskbar Windows"; dan ada perintah <code>vale.exe --restore-taskbar</code>.</div>
+    </div>
+    <div>
+      <div class="card">
+        <div class="lbl">Cek manual awal (diperluas tiap fase)</div>
+        <ul>
+          <li>Hover sepanjang Dock: pembesaran mulus, tidak goyang, tetangga bergeser rapi; diam = CPU ~0 %</li>
+          <li>Buka dan tutup app: titik muncul dan hilang, app yang tidak di-pin masuk dan keluar dengan animasi</li>
+          <li>Klik app aktif → minimize; klik lagi → kembali; app dengan 2 jendela → berputar</li>
+          <li>Sembunyi otomatis: tepi bawah memunculkan, keluar menyembunyikan; menu dan preview menahan Dock</li>
+          <li>Fullscreen video vs game: perilaku sesuai keputusan</li>
+          <li>Ganti monitor notch / cabut monitor: Dock ikut pindah</li>
+          <li>Gelap/terang, warna sendiri, tembus pandang</li>
+          <li>Fase 2: bunuh Vale dari Task Manager → taskbar kembali (langsung, atau paling lambat di start berikutnya)</li>
+          <li>Fase 2: restart Explorer → taskbar tetap tersembunyi, Dock tetap ada</li>
+          <li>Fase 3: tombol Win membuka Launchpad; Win+E tetap membuka Explorer</li>
+        </ul>
+      </div>
+      <div class="note" style="margin-top:10px"><b>Di luar rencana (sengaja):</b> efek genie minimize, widget di Dock, Dock vertikal sebelum Fase 5, tray buatan Vale sendiri (terlalu rapuh).</div>
+    </div>
+  </div>
+  <div class="folio"><span>Vale · Rencana Dock</span><span>7 / 7</span></div>
+</section>
+
+</body>
+</html>
