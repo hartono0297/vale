@@ -10,6 +10,7 @@ use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use super::Outcome;
+use super::share::SharedSet;
 
 
 /// A token nobody has used is good for this long.
@@ -138,10 +139,12 @@ pub struct Session {
     last_activity: Instant,
     seen_batches: Vec<String>,
     cancelled: HashSet<String>,
+    /// The shelf files the owner ticked for the phone.
+    shared: SharedSet,
 }
 
 /// Equal without stopping at the first difference.
-fn same(a: &str, b: &str) -> bool {
+pub(super) fn same(a: &str, b: &str) -> bool {
     a.len() == b.len()
         && a.bytes()
             .zip(b.bytes())
@@ -188,6 +191,7 @@ impl Session {
             last_activity: now,
             seen_batches: Vec::new(),
             cancelled: HashSet::new(),
+            shared: SharedSet::new(),
         })
     }
 
@@ -365,6 +369,29 @@ impl Session {
         let i = vs.and_then(|c| self.by_session(c))?;
         self.last_activity = now;
         Some(self.devices[i].id)
+    }
+
+    /// The device a read-only API request (the file list, a download, a
+    /// thumbnail) belongs to: only an approved phone's session cookie opens
+    /// it. Unlike `device_for_api` this is not activity: whoever wants a
+    /// download to count calls `touch`.
+    pub fn device_for_view_api(&self, vs: Option<&str>) -> Option<u64> {
+        let i = vs.and_then(|c| self.by_session(c))?;
+        Some(self.devices[i].id)
+    }
+
+    /// The files ticked for the phone.
+    pub fn shared(&self) -> &SharedSet {
+        &self.shared
+    }
+
+    pub fn shared_mut(&mut self) -> &mut SharedSet {
+        &mut self.shared
+    }
+
+    /// Shares `path` (already seen to be a regular file): its id.
+    pub fn share(&mut self, path: &std::path::Path) -> Option<String> {
+        self.shared.share(self.fill, path)
     }
 
     /// Progress of an upload in flight keeps the session alive.
@@ -927,6 +954,56 @@ mod tests {
         assert!(!s.idle(later + secs(599)));
         s.touch(later + secs(500));
         assert!(!s.idle(later + secs(1000)));
+    }
+
+    #[test]
+    fn a_read_only_api_request_is_not_activity_and_only_an_approved_session_cookie_opens_it() {
+        let (mut s, t0) = session();
+        let p = pair(&mut s, t0);
+        // The pairing cookie opens none of the file routes.
+        assert_eq!(s.device_for_view_api(Some(&p.cookie)), None);
+        s.approve(p.device_id, t0);
+        assert_eq!(s.device_for_view_api(Some(&p.cookie)), None, "still only `vp`");
+        let StateAnswer::Approved {
+            session_cookie: Some(vs),
+            ..
+        } = s.answer_state(Some(&p.cookie), None, t0)
+        else {
+            panic!("cookie")
+        };
+        assert_eq!(s.device_for_view_api(Some(&vs)), Some(p.device_id));
+        assert_eq!(s.device_for_view_api(Some("nope")), None);
+        assert_eq!(s.device_for_view_api(None), None);
+        // Asking for the list or a thumbnail all day does not keep it alive.
+        for _ in 0..200 {
+            assert!(s.device_for_view_api(Some(&vs)).is_some());
+        }
+        assert!(s.idle(t0 + secs(600)), "reading the list is not activity");
+        // The start of a download and each chunk of it is.
+        s.touch(t0 + secs(590));
+        assert!(!s.idle(t0 + secs(1189)));
+        s.touch(t0 + secs(1180));
+        assert!(!s.idle(t0 + secs(1779)));
+        assert!(s.idle(t0 + secs(1780)));
+    }
+
+    #[test]
+    fn the_shared_files_live_in_the_session_and_go_with_it() {
+        let (mut s, _) = session();
+        let a = s.share(std::path::Path::new(r"C:\x\a.pdf")).expect("id");
+        assert_eq!(s.shared().len(), 1);
+        assert_eq!(s.shared().find(&a).expect("a").name, "a.pdf");
+        assert!(s.shared_mut().unshare(&a));
+        assert!(s.shared().is_empty());
+        // With no random bytes nothing is shared.
+        let mut dead = Session::new(Instant::now(), fake).expect("session");
+        dead.fill = none;
+        assert_eq!(dead.share(std::path::Path::new(r"C:\x\b.pdf")), None);
+        // Another session never knows an id of this one.
+        let (mut other, _) = session();
+        let b = other.share(std::path::Path::new(r"C:\x\a.pdf")).expect("id");
+        assert_ne!(a, b);
+        assert!(s.shared().find(&b).is_none());
     }
 
     #[test]

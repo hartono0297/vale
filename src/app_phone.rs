@@ -23,9 +23,10 @@ use crate::phone::session::TOKEN_TTL;
 use crate::phone::{
     Browser, DeviceKind, EndReason, FailReason, Handle, PhoneEvent, QrMatrix, Refusal,
 };
-use crate::shelf::{self, Landing};
+use crate::shelf::{self, Landing, Probe, ShelfCard, ShelfKind};
 use crate::ui::phone_view::{
-    AskView, CodeView, PhoneView, QrView, RecvView, RowStatus, RowView, Warn,
+    AskView, CardState, CodeView, PhoneView, QrView, RecvView, RowStatus, RowView, SendCard,
+    SendView, Warn,
 };
 
 /// One-shot: the QR view's countdown, once a second while it shows. 42-47
@@ -51,6 +52,52 @@ struct Pending {
     browser: Browser,
     ip: String,
     code: String,
+}
+
+/// A shelf card that is ticked for the phone, as the session's set has it:
+/// matched to the card by its key (`shelf::key_of` of the path).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Mirror {
+    key: String,
+    id: String,
+    size: u64,
+    /// A phone downloaded the whole file.
+    taken: bool,
+}
+
+/// How a shelf card stands in the send view.
+fn card_state(card: &ShelfCard, shared: &[Mirror]) -> CardState {
+    if card.kind == ShelfKind::Folder {
+        CardState::Folder
+    } else if card.stale {
+        CardState::Stale
+    } else {
+        match shared.iter().find(|m| m.key == card.key) {
+            Some(m) => CardState::Ticked { taken: m.taken },
+            None => CardState::Unticked,
+        }
+    }
+}
+
+/// The ids to stop sharing: those whose card is no longer on the shelf (its
+/// key is not among `shelf_keys`), in the mirror's order.
+fn orphans(shared: &[Mirror], shelf_keys: &[String]) -> Vec<String> {
+    shared
+        .iter()
+        .filter(|m| !shelf_keys.contains(&m.key))
+        .map(|m| m.id.clone())
+        .collect()
+}
+
+/// The ids to stop sharing because their card went stale (the file is
+/// gone): the footer must not count a file nobody can take, and a stale card
+/// cannot be unticked.
+fn stale_ids(shared: &[Mirror], cards: &[ShelfCard]) -> Vec<String> {
+    shared
+        .iter()
+        .filter(|m| cards.iter().any(|c| c.key == m.key && c.stale))
+        .map(|m| m.id.clone())
+        .collect()
 }
 
 /// How a batch of files is landing on the shelf.
@@ -96,6 +143,9 @@ pub(super) struct PhoneState {
     attended: Option<String>,
     /// `TIMER_PHONE` is armed.
     timer: bool,
+    /// The shelf cards ticked for the phone, in the order they were ticked;
+    /// gone with the session (it is rebuilt empty by `forget_session`).
+    shared: Vec<Mirror>,
 }
 
 impl PhoneState {
@@ -170,10 +220,32 @@ fn percent(received: u64, size: u64) -> u8 {
 }
 
 impl App {
-    /// What the phone views draw, while the shelf shows one.
+    /// The shelf's cards as the send view draws them (empty when no phone
+    /// view could show them: nothing is built then).
+    pub(super) fn phone_send_cards(
+        state: &crate::state::IslandState,
+        cards: &[ShelfCard],
+        st: &PhoneState,
+    ) -> Vec<SendCard> {
+        if state.phone_stage() != Some(PhoneStage::Send) {
+            return Vec::new();
+        }
+        cards
+            .iter()
+            .map(|c| SendCard {
+                name: c.name.clone(),
+                kind: c.kind,
+                state: card_state(c, &st.shared),
+            })
+            .collect()
+    }
+
+    /// What the phone views draw, while the shelf shows one. `send` is what
+    /// `phone_send_cards` made.
     pub(super) fn phone_view<'a>(
         state: &crate::state::IslandState,
         st: &'a PhoneState,
+        send: &'a [SendCard],
         now: Instant,
     ) -> Option<PhoneView<'a>> {
         let stage = state.phone_stage()?;
@@ -210,7 +282,97 @@ impl App {
                 files: st.files,
                 bytes: st.bytes,
             },
+            send: SendView {
+                cards: send,
+                count: st.shared.len(),
+                bytes: st.shared.iter().map(|m| m.size).sum(),
+                chip: &st.chip,
+            },
         })
+    }
+
+    /// A card was clicked in the send view: ticked files are shared with the
+    /// phones, ticked again they are not. A path that is gone turns the card
+    /// stale and shares nothing; a folder is never shared. A file on the
+    /// network is not looked at here (that could hold the UI thread): it is
+    /// shared at once, its size follows (`SharedSized`), and if it is not
+    /// there it is unticked again (`SharedGone`).
+    pub(super) fn phone_share_toggle(&mut self, i: usize, now: Instant) {
+        let Some(path) = self.shelf.shelf.get(i).map(PathBuf::from) else {
+            return;
+        };
+        let key = shelf::key_of(&path);
+        if let Some(at) = self.phone.shared.iter().position(|m| m.key == key) {
+            let gone = self.phone.shared.remove(at);
+            if let Some(handle) = &self.phone.handle {
+                handle.unshare(&gone.id);
+            }
+        } else if let Some(handle) = &self.phone.handle {
+            // `probe` does not look at a path on the network either.
+            match shelf::probe(&path) {
+                Probe::Missing => self.shelf_look(),
+                Probe::Folder => {}
+                Probe::File => {
+                    if let Some(info) = handle.share(&path) {
+                        self.phone.shared.push(Mirror {
+                            key,
+                            id: info.id,
+                            // A file on the network: `SharedSized` follows.
+                            size: info.size.unwrap_or(0),
+                            taken: false,
+                        });
+                    }
+                }
+            }
+        }
+        if !self.animating() {
+            self.draw(now);
+        }
+    }
+
+    /// The shelf changed: whatever was ticked and is no longer on it stops
+    /// being shared.
+    pub(super) fn phone_prune_shared(&mut self) {
+        if self.phone.shared.is_empty() {
+            return;
+        }
+        let keys: Vec<String> = (0..self.shelf.shelf.len())
+            .filter_map(|i| self.shelf.shelf.get(i))
+            .map(shelf::key_of)
+            .collect();
+        let gone = orphans(&self.phone.shared, &keys);
+        if gone.is_empty() {
+            return;
+        }
+        if let Some(handle) = &self.phone.handle {
+            for id in &gone {
+                handle.unshare(id);
+            }
+        }
+        self.phone.shared.retain(|m| !gone.contains(&m.id));
+    }
+
+    /// The shelf was looked at: a ticked file whose card is now stale (it
+    /// went missing) stops being shared.
+    pub(super) fn phone_drop_stale(&mut self, cards: &[ShelfCard]) {
+        let gone = stale_ids(&self.phone.shared, cards);
+        if gone.is_empty() {
+            return;
+        }
+        if let Some(handle) = &self.phone.handle {
+            for id in &gone {
+                handle.unshare(id);
+            }
+        }
+        self.phone.shared.retain(|m| !gone.contains(&m.id));
+    }
+
+    /// "Kosongkan": nothing stays shared.
+    pub(super) fn phone_unshare_all(&mut self) {
+        if let Some(handle) = &self.phone.handle {
+            handle.unshare_all();
+        }
+        self.phone.shared.clear();
     }
 
     /// Starts a session on the PC's local network. The network, the adapter
@@ -345,6 +507,39 @@ impl App {
                 self.phone.starting = false;
                 self.phone.ready = None;
                 self.phone.refusal = Some(refusal);
+                self.phone.shared.clear();
+            }
+            PhoneEvent::FileTaken { id } => {
+                if let Some(m) = self.phone.shared.iter_mut().find(|m| m.id == id) {
+                    m.taken = true;
+                }
+                // Only the send view shows it: a redraw, never a refresh.
+                if self.state.phone_stage() == Some(PhoneStage::Send)
+                    && self.state.view() == View::Panel(Page::Shelf)
+                    && !self.animating()
+                {
+                    self.draw(now);
+                }
+            }
+            PhoneEvent::SharedSized { id, size } => {
+                if let Some(m) = self.phone.shared.iter_mut().find(|m| m.id == id) {
+                    m.size = size;
+                }
+                // Only the send view's footer shows it.
+                if self.state.phone_stage() == Some(PhoneStage::Send)
+                    && self.state.view() == View::Panel(Page::Shelf)
+                    && !self.animating()
+                {
+                    self.draw(now);
+                }
+            }
+            PhoneEvent::SharedGone { id } => {
+                self.phone.shared.retain(|m| m.id != id);
+                // The file is missing: its card turns dim.
+                self.shelf_look();
+                if self.state.view() == View::Panel(Page::Shelf) && !self.animating() {
+                    self.draw(now);
+                }
             }
             PhoneEvent::Pairing {
                 device_id,
@@ -624,6 +819,104 @@ mod tests {
         s.timed = false;
         assert_eq!(s.remaining(t0 + Duration::from_secs(9000)), Some(0));
         assert!(!s.running());
+    }
+
+    fn card(key: &str, kind: ShelfKind, stale: bool) -> ShelfCard {
+        ShelfCard {
+            key: key.to_owned(),
+            name: key.to_owned(),
+            kind,
+            stale,
+            from_phone: false,
+        }
+    }
+
+    fn mirror(key: &str, id: &str, taken: bool) -> Mirror {
+        Mirror {
+            key: key.to_owned(),
+            id: id.to_owned(),
+            size: 10,
+            taken,
+        }
+    }
+
+    #[test]
+    fn a_card_is_ticked_taken_unticked_a_folder_or_stale() {
+        let shared = [mirror("a.pdf", "id1", false), mirror("b.png", "id2", true)];
+        let state = |c: &ShelfCard| card_state(c, &shared);
+        assert_eq!(
+            state(&card("a.pdf", ShelfKind::Document, false)),
+            CardState::Ticked { taken: false }
+        );
+        assert_eq!(
+            state(&card("b.png", ShelfKind::Image, false)),
+            CardState::Ticked { taken: true }
+        );
+        assert_eq!(
+            state(&card("c.xlsx", ShelfKind::Document, false)),
+            CardState::Unticked
+        );
+        // A folder and a missing file cannot be ticked, whatever the mirror says.
+        assert_eq!(state(&card("d", ShelfKind::Folder, false)), CardState::Folder);
+        assert_eq!(
+            state(&card("a.pdf", ShelfKind::Document, true)),
+            CardState::Stale,
+            "a file that went missing after it was ticked"
+        );
+        assert_eq!(state(&card("d", ShelfKind::Folder, true)), CardState::Folder);
+    }
+
+    #[test]
+    fn a_file_on_the_network_can_be_ticked_like_any_other() {
+        let net = card(r"\\srv\x\a.pdf", ShelfKind::Document, false);
+        assert_eq!(card_state(&net, &[]), CardState::Unticked);
+        assert!(card_state(&net, &[]).shareable());
+        let shared = [mirror(r"\\srv\x\a.pdf", "id1", false)];
+        assert_eq!(card_state(&net, &shared), CardState::Ticked { taken: false });
+    }
+
+    #[test]
+    fn a_ticked_file_that_went_missing_is_unshared_with_its_card() {
+        let shared = [
+            mirror("a.pdf", "id1", false),
+            mirror("b.png", "id2", true),
+            mirror("c.txt", "id3", false),
+        ];
+        let cards = [
+            card("a.pdf", ShelfKind::Document, true),
+            card("b.png", ShelfKind::Image, false),
+            card("z.txt", ShelfKind::Document, true),
+        ];
+        assert_eq!(stale_ids(&shared, &cards), ["id1"]);
+        assert!(stale_ids(&shared, &[]).is_empty());
+        assert!(stale_ids(&[], &cards).is_empty());
+    }
+
+    #[test]
+    fn what_left_the_shelf_is_unshared_and_nothing_else() {
+        let shared = [
+            mirror("a.pdf", "id1", false),
+            mirror("b.png", "id2", true),
+            mirror("c.txt", "id3", false),
+        ];
+        let keys = |k: &[&str]| k.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        // A card taken off.
+        assert_eq!(orphans(&shared, &keys(&["a.pdf", "c.txt"])), ["id2"]);
+        // Everything still there: nothing to revoke.
+        assert!(orphans(&shared, &keys(&["a.pdf", "b.png", "c.txt", "z"])).is_empty());
+        // Cleared: all of them, in order.
+        assert_eq!(orphans(&shared, &[]), ["id1", "id2", "id3"]);
+        assert!(orphans(&[], &keys(&["a.pdf"])).is_empty());
+    }
+
+    #[test]
+    fn a_session_that_goes_forgets_what_was_ticked_for_it() {
+        let mut s = PhoneState {
+            shared: vec![mirror("a.pdf", "id1", false)],
+            ..PhoneState::default()
+        };
+        s.forget_session();
+        assert!(s.shared.is_empty(), "the next session starts with nothing shared");
     }
 
     #[test]

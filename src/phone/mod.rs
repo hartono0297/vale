@@ -13,17 +13,20 @@
 mod e2e;
 #[cfg(debug_assertions)]
 pub mod debug;
+pub mod files;
 pub mod http;
 pub mod names;
 pub mod net;
 pub mod qr;
 mod server;
 pub mod session;
+pub mod share;
+pub mod thumb;
 pub mod ua;
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::ops::RangeInclusive;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
@@ -154,7 +157,34 @@ pub enum PhoneEvent {
         upload_id: u64,
         reason: FailReason,
     },
+    /// A phone downloaded a shared file whole, the first time any phone did
+    /// (said once per id).
+    FileTaken {
+        id: String,
+    },
+    /// A shared file was found missing, or no longer a regular file, when a
+    /// phone asked for it or for the list, or when a file on the network was
+    /// looked at after it was shared: its id is revoked.
+    SharedGone {
+        id: String,
+    },
+    /// A file on the network, shared without being looked at
+    /// (`ShareInfo::size` is `None`), was looked at on a thread of its own:
+    /// it is a regular file of `size` bytes.
+    SharedSized {
+        id: String,
+        size: u64,
+    },
     SessionEnded(EndReason),
+}
+
+/// A file that was shared with the phones: its id and its size now.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShareInfo {
+    pub id: String,
+    /// `None` for a file on the network: it is looked at on a thread of its
+    /// own, which says `SharedSized` or `SharedGone` for the id.
+    pub size: Option<u64>,
 }
 
 /// A fresh link for the QR code.
@@ -348,6 +378,61 @@ impl Handle {
             if r.voided {
                 self.shared.emit(PhoneEvent::TokenVoid);
             }
+        }
+    }
+
+    /// Shares the file at `path` with the phones: it is looked at now (a
+    /// regular file, not a folder, a symlink or a junction), added to the
+    /// session's set and given a random id. `None` for anything else, a full
+    /// set or a system with no random bytes. Nothing is read or opened.
+    ///
+    /// A path on the network (`shelf::is_network`) is not looked at here:
+    /// the caller is the UI thread, and a share that is slow or gone can
+    /// hold it for seconds. It is added at once and looked at on a thread of
+    /// its own (`share_unseen`).
+    pub fn share(&self, path: &Path) -> Option<ShareInfo> {
+        if crate::shelf::is_network(path) {
+            return self.share_unseen(path);
+        }
+        let size = files::regular_size(path)?;
+        let id = self.shared.session.lock().ok()?.share(path)?;
+        Some(ShareInfo {
+            id,
+            size: Some(size),
+        })
+    }
+
+    /// Shares `path` without looking at it; a thread of its own then does
+    /// (`server::check_shared`) and says `SharedSized`, or revokes the id
+    /// and says `SharedGone`. The server looks at the file again at every
+    /// request anyway (the list, a download, a thumbnail), on its own
+    /// threads.
+    fn share_unseen(&self, path: &Path) -> Option<ShareInfo> {
+        let id = self.shared.session.lock().ok()?.share(path)?;
+        let shared = Arc::clone(&self.shared);
+        let (check_id, check_path) = (id.clone(), path.to_path_buf());
+        let spawned = std::thread::Builder::new()
+            .name("phone-share-check".into())
+            .spawn(move || server::check_shared(&shared, &check_id, &check_path));
+        if spawned.is_err() {
+            self.unshare(&id);
+            return None;
+        }
+        Some(ShareInfo { id, size: None })
+    }
+
+    /// Stops sharing `id`: a download of it in flight is cut and later
+    /// requests for it are 404.
+    pub fn unshare(&self, id: &str) {
+        if let Ok(mut s) = self.shared.session.lock() {
+            s.shared_mut().unshare(id);
+        }
+    }
+
+    /// Stops sharing everything.
+    pub fn unshare_all(&self) {
+        if let Ok(mut s) = self.shared.session.lock() {
+            s.shared_mut().unshare_all();
         }
     }
 

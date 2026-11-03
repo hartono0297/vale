@@ -1332,6 +1332,11 @@ impl App {
                     // A progress tick draws the receiving view itself, at
                     // most six a second; nothing else changed.
                     | Event::Phone(_, crate::phone::PhoneEvent::UploadProgress { .. })
+                    // A file taken, gone or sized redraws the send view or
+                    // the shelf itself; the island has nothing new to show.
+                    | Event::Phone(_, crate::phone::PhoneEvent::FileTaken { .. })
+                    | Event::Phone(_, crate::phone::PhoneEvent::SharedGone { .. })
+                    | Event::Phone(_, crate::phone::PhoneEvent::SharedSized { .. })
             ));
             self.apply(event, now);
         }
@@ -2188,6 +2193,7 @@ impl App {
             Effect::PhoneCancel => self.phone_cancel(),
             Effect::PhoneStop => self.phone_stop(crate::phone::EndReason::Done),
             Effect::PhoneBack => self.phone_back(),
+            Effect::PhoneShareToggle(i) => self.phone_share_toggle(i, now),
             Effect::DeviceEject(i) => self.devices_eject(i),
             Effect::DeviceOpen(i) => self.devices_open(i),
             Effect::DeviceDetail(i) => self.devices_toggle_detail(i),
@@ -6445,7 +6451,8 @@ impl App {
                 .waiting_strip()
                 .or_else(|| self.strip_motion.as_ref().and_then(|m| m.leaving.as_ref())),
         };
-        let phone_view = App::phone_view(state, &self.phone, now);
+        let send_cards = App::phone_send_cards(state, &self.shelf.cards, &self.phone);
+        let phone_view = App::phone_view(state, &self.phone, &send_cards, now);
         let frame = Frame {
             view: &self.drawn,
             media: state.media(),

@@ -901,6 +901,7 @@ pub enum PageLayout {
     PhoneWarn(PhoneWarnLayout),
     PhoneAsk(PhoneAskLayout),
     PhoneRecv(PhoneRecvLayout),
+    PhoneSend(PhoneSendLayout),
     Devices(DevicesLayout),
     Arrange(ArrangeLayout),
 }
@@ -3178,6 +3179,9 @@ pub struct PhoneQrLayout {
     pub title: Rect,
     /// "berlaku 4:52", ending at the Settings button's gap.
     pub chip: Rect,
+    /// "Kirim ke HP", 8 px before the chip; only while a server listens (a
+    /// code is shown).
+    pub send: Option<Rect>,
     /// The light square the code is drawn in (its padding included).
     pub qr: Rect,
     /// The "Buat QR baru" button over the dimmed code, when it is dead.
@@ -3213,8 +3217,22 @@ const PHONE_BTN_H: f32 = 26.0;
 const PHONE_ROW_H: f32 = 40.0;
 const PHONE_ROW_GAP: f32 = 6.0;
 
-/// The QR view in `s`.
-pub fn phone_qr_layout(s: ShapeRect, strip: bool, expired: bool) -> PhoneQrLayout {
+/// The "Kirim ke HP" button of the header row, `gap` px before `chip`.
+pub const PHONE_SEND_W: f32 = 108.0;
+const PHONE_SEND_H: f32 = 24.0;
+
+fn phone_send_button(top: f32, chip: Rect) -> Rect {
+    rect(
+        chip.x - 8.0 - PHONE_SEND_W,
+        top + (PHONE_HEAD_H - PHONE_SEND_H) / 2.0,
+        PHONE_SEND_W,
+        PHONE_SEND_H,
+    )
+}
+
+/// The QR view in `s`. `send`: the "Kirim ke HP" button shows (a server
+/// listens, so a code is on screen).
+pub fn phone_qr_layout(s: ShapeRect, strip: bool, expired: bool, send: bool) -> PhoneQrLayout {
     let (top, back, title) = phone_head(s, strip);
     let (l, r) = (left(s), right(s));
     let chip = rect(
@@ -3223,7 +3241,8 @@ pub fn phone_qr_layout(s: ShapeRect, strip: bool, expired: bool) -> PhoneQrLayou
         PHONE_CHIP_W,
         PHONE_CHIP_H,
     );
-    let title = title_until(title, chip.x);
+    let send = send.then(|| phone_send_button(top, chip));
+    let title = title_until(title, send.map_or(chip.x, |b| b.x));
     let foot = rect(l, content_bottom(s) - 14.0, r - l, 14.0);
     let body_top = top + PHONE_HEAD_H + 8.0;
     let avail = foot.y - 6.0 - body_top;
@@ -3253,6 +3272,7 @@ pub fn phone_qr_layout(s: ShapeRect, strip: bool, expired: bool) -> PhoneQrLayou
         back,
         title,
         chip,
+        send,
         qr,
         renew,
         steps: [step(0.0), step(1.0)],
@@ -3373,6 +3393,8 @@ pub struct PhoneRecvLayout {
     pub back: Rect,
     pub title: Rect,
     pub chip: Rect,
+    /// "Kirim ke HP", 8 px before the chip (always shown here).
+    pub send: Option<Rect>,
     /// The small QR button (another phone), at the Settings button's gap.
     pub qr_button: Rect,
     pub rows: Vec<PhoneRowLayout>,
@@ -3436,7 +3458,9 @@ pub fn phone_recv_layout(s: ShapeRect, strip: bool, n: usize) -> PhoneRecvLayout
         PHONE_CHIP_W,
         PHONE_CHIP_H,
     );
-    let title = title_until(title, chip.x);
+    let send = phone_send_button(top, chip);
+    let title = title_until(title, send.x);
+    let send = Some(send);
     let body = top + PHONE_HEAD_H + 8.0;
     let foot_y = content_bottom(s) - PHONE_BTN_H;
     let done = rect(r - 90.0, foot_y, 90.0, PHONE_BTN_H);
@@ -3473,11 +3497,141 @@ pub fn phone_recv_layout(s: ShapeRect, strip: bool, n: usize) -> PhoneRecvLayout
         back,
         title,
         chip,
+        send,
         qr_button,
         rows,
         empty,
         summary,
         cancel,
+        done,
+    }
+}
+
+/// The send view, "Kirim ke HP": the shelf's cards in the shelf's grid (four
+/// to a row, up to three rows) each with a tick box, the device chip at the
+/// right of the header, and the summary with Selesai along the bottom.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PhoneSendLayout {
+    pub back: Rect,
+    pub title: Rect,
+    /// Who is connected; none while no phone has been approved.
+    pub chip: Option<Rect>,
+    /// Lines a card's name gets: two, or one with three rows of cards.
+    pub lines: usize,
+    pub cards: Vec<PhoneSendCard>,
+    /// The hint of an empty shelf (the whole body).
+    pub empty: Option<Rect>,
+    pub summary: Rect,
+    pub done: Rect,
+}
+
+/// One card of the send view: the tick box (the tag of a folder or a missing
+/// file takes its place), the icon and the name. `hit`: the card can be
+/// ticked, so the whole card is a click target.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PhoneSendCard {
+    pub card: Rect,
+    pub boxed: Rect,
+    pub glyph: Rect,
+    pub label: Rect,
+    pub hit: bool,
+}
+
+/// The tick box's side.
+pub const PHONE_TICK: f32 = 16.0;
+/// The icon on a send card.
+pub const PHONE_SEND_GLYPH: f32 = 24.0;
+/// The gap between rows of send cards (a footer row shares the panel).
+const PHONE_SEND_ROW_GAP: f32 = 6.0;
+
+/// The tag that takes the tick box's place on a folder or a missing file:
+/// `text_w` is its measured width.
+pub fn phone_send_tag(card: Rect, text_w: f32) -> Rect {
+    let w = (text_w.ceil() + 6.0).clamp(30.0, card.w - 12.0);
+    rect(card.x + 6.0, card.y + 6.0, w, 15.0)
+}
+
+/// The name's box on a taken send card, whose "✓ diambil" tag is `tag`
+/// (`shelf_phone_tag`). With three rows of cards and the strip a card is
+/// only 50 px high, so the tag at its bottom right reaches the one name
+/// line: the name then ends 4 px left of the tag (and is cut shorter to
+/// fit). A name the tag does not reach keeps its whole box.
+pub fn phone_send_name(label: Rect, tag: Rect) -> Rect {
+    let reaches = tag.y < label.bottom() && tag.bottom() > label.y && tag.x < label.right();
+    if !reaches {
+        return label;
+    }
+    Rect {
+        w: (tag.x - 4.0 - label.x).max(0.0),
+        ..label
+    }
+}
+
+/// The send view for the shelf's cards: `shareable[i]` says card `i` can be
+/// ticked (a file that is there). `chip`: a phone has been approved.
+pub fn phone_send_layout(
+    s: ShapeRect,
+    strip: bool,
+    shareable: &[bool],
+    chip: bool,
+) -> PhoneSendLayout {
+    let (top, back, title) = phone_head(s, strip);
+    let (l, r) = (left(s), right(s));
+    let chip = chip.then(|| {
+        rect(
+            header_right(s) - PHONE_CHIP_W,
+            top + (PHONE_HEAD_H - PHONE_CHIP_H) / 2.0,
+            PHONE_CHIP_W,
+            PHONE_CHIP_H,
+        )
+    });
+    let title = title_until(title, chip.map_or(header_right(s), |c| c.x));
+    let body = top + PHONE_HEAD_H + 8.0;
+    let foot_y = content_bottom(s) - PHONE_BTN_H;
+    let done = rect(r - 90.0, foot_y, 90.0, PHONE_BTN_H);
+    let summary = rect(l, foot_y, done.x - 12.0 - l, PHONE_BTN_H);
+    let bottom = foot_y - 8.0;
+    let n = shareable.len().min(crate::shelf::MAX_ITEMS);
+    let w = (r - l - 3.0 * TILE_GAP) / 4.0;
+    let rows = n.div_ceil(4).max(2) as f32;
+    let h = ((bottom - body - (rows - 1.0) * PHONE_SEND_ROW_GAP) / rows).min(TILE_MAX_H);
+    let lines = if rows > 2.0 { 1 } else { 2 };
+    let cards = shareable
+        .iter()
+        .take(n)
+        .enumerate()
+        .map(|(i, &hit)| {
+            let (row, col) = ((i / 4) as f32, (i % 4) as f32);
+            let card = rect(
+                l + col * (w + TILE_GAP),
+                body + row * (h + PHONE_SEND_ROW_GAP),
+                w,
+                h,
+            );
+            let glyph = rect(card.x, card.y + 5.0, card.w, PHONE_SEND_GLYPH);
+            PhoneSendCard {
+                card,
+                boxed: rect(card.x + 6.0, card.y + 6.0, PHONE_TICK, PHONE_TICK),
+                glyph,
+                label: rect(
+                    card.x + 6.0,
+                    glyph.bottom() + 1.0,
+                    card.w - 12.0,
+                    lines as f32 * SHELF_LINE_H,
+                ),
+                hit,
+            }
+        })
+        .collect();
+    let empty = (n == 0).then(|| rect(l, body, r - l, (bottom - body).max(0.0)));
+    PhoneSendLayout {
+        back,
+        title,
+        chip,
+        lines,
+        cards,
+        empty,
+        summary,
         done,
     }
 }
@@ -3490,7 +3644,9 @@ pub fn phone_page_layout(s: ShapeRect, strip: bool, v: &PhoneView) -> PageLayout
     use crate::ui::phone_view::QrView;
     let qr = || match v.qr {
         QrView::Warning(..) => PageLayout::PhoneWarn(phone_warn_layout(s, strip)),
-        _ => PageLayout::PhoneQr(phone_qr_layout(s, strip, v.code_dead())),
+        // The button shows while a code is on screen: a server listens.
+        QrView::Code(_) => PageLayout::PhoneQr(phone_qr_layout(s, strip, v.code_dead(), true)),
+        QrView::Starting => PageLayout::PhoneQr(phone_qr_layout(s, strip, v.code_dead(), false)),
     };
     match v.stage {
         PhoneStage::Qr => qr(),
@@ -3500,6 +3656,10 @@ pub fn phone_page_layout(s: ShapeRect, strip: bool, v: &PhoneView) -> PageLayout
         },
         PhoneStage::Receiving => {
             PageLayout::PhoneRecv(phone_recv_layout(s, strip, v.recv.rows.len()))
+        }
+        PhoneStage::Send => {
+            let shareable: Vec<bool> = v.send.cards.iter().map(|c| c.state.shareable()).collect();
+            PageLayout::PhoneSend(phone_send_layout(s, strip, &shareable, !v.send.chip.is_empty()))
         }
     }
 }
@@ -4144,6 +4304,9 @@ pub fn regions(s: ShapeRect, layout: &PageLayout, strip: impl Into<StripKind>) -
         }
         PageLayout::PhoneQr(l) => {
             add(l.back, Hit::PhoneBack);
+            if let Some(send) = l.send {
+                add(send, Hit::PhoneSend);
+            }
             if let Some(renew) = l.renew {
                 add(renew, Hit::PhoneNewQr);
             }
@@ -4159,9 +4322,22 @@ pub fn regions(s: ShapeRect, layout: &PageLayout, strip: impl Into<StripKind>) -
         }
         PageLayout::PhoneRecv(l) => {
             add(l.back, Hit::PhoneBack);
+            if let Some(send) = l.send {
+                add(send, Hit::PhoneSend);
+            }
             add(l.qr_button, Hit::PhoneShowQr);
             add(l.cancel, Hit::PhoneCancel);
             add(l.done, Hit::PhoneDone);
+        }
+        PageLayout::PhoneSend(l) => {
+            add(l.back, Hit::PhoneBack);
+            add(l.done, Hit::PhoneSendDone);
+            // A folder or a missing file has no region: it cannot be ticked.
+            for (i, c) in l.cards.iter().enumerate() {
+                if c.hit {
+                    add(c.card, Hit::PhoneShareToggle(i));
+                }
+            }
         }
         PageLayout::Arrange(l) => {
             for (i, r) in l.chips.iter().enumerate() {
@@ -4528,10 +4704,22 @@ mod tests {
                 PageLayout::Shelf(shelf_layout(s, strip, n)),
             ));
         }
-        for expired in [false, true] {
+        for (expired, send) in [(false, true), (true, true), (false, false)] {
             out.push((
-                format!("phone qr expired={expired}"),
-                PageLayout::PhoneQr(phone_qr_layout(s, strip, expired)),
+                format!("phone qr expired={expired} send={send}"),
+                PageLayout::PhoneQr(phone_qr_layout(s, strip, expired, send)),
+            ));
+        }
+        for (cards, chip) in [
+            (&[][..], false),
+            (&[true][..], true),
+            (&[true, true, false, true, false][..], true),
+            (&[true; 9][..], false),
+            (&[true; 12][..], true),
+        ] {
+            out.push((
+                format!("phone send {} chip={chip}", cards.len()),
+                PageLayout::PhoneSend(phone_send_layout(s, strip, cards, chip)),
             ));
         }
         out.push((
@@ -6301,15 +6489,26 @@ mod tests {
             let s = panel(style);
             for strip in [false, true] {
                 let top = content_top(s, strip);
-                let q = phone_qr_layout(s, strip, false);
+                let q = phone_qr_layout(s, strip, false, true);
                 assert!(q.renew.is_none());
                 assert_eq!(q.chip.right(), header_right(s));
+                // "Kirim ke HP" sits 8 px before the chip and the title ends
+                // 8 px before it; with no server there is no button and the
+                // title may run up to the chip.
+                let send = q.send.expect("the button shows while a code does");
+                assert_eq!(send.right() + 8.0, q.chip.x);
+                assert_eq!(send.w, PHONE_SEND_W);
+                assert!(q.title.right() <= send.x - 8.0 + 0.01);
+                assert!(send.y >= content_top(s, strip) && send.bottom() <= content_top(s, strip) + PHONE_HEAD_H);
+                let none = phone_qr_layout(s, strip, false, false);
+                assert!(none.send.is_none());
+                assert!(none.title.right() > q.title.right());
                 assert_eq!(q.qr.w, PHONE_QR);
                 assert!(q.qr.y >= top + PHONE_HEAD_H && q.qr.bottom() <= q.foot.y);
                 assert!(q.hint.bottom() <= q.foot.y, "the hint clears the footer");
                 assert!(q.net.bottom() <= q.hint.y && q.steps[1].sub.bottom() <= q.net.y);
                 assert!(q.title.right() < q.chip.x);
-                let dead = phone_qr_layout(s, strip, true);
+                let dead = phone_qr_layout(s, strip, true, true);
                 let renew = dead.renew.expect("the button shows on a dead code");
                 assert!(renew.x >= dead.qr.x && renew.right() <= dead.qr.right());
                 assert!(renew.y >= dead.qr.y && renew.bottom() <= dead.qr.bottom());
@@ -6334,6 +6533,10 @@ mod tests {
                 assert_eq!(r.rows.len(), fit, "no more rows than fit");
                 assert_eq!(r.qr_button.right(), header_right(s));
                 assert!(r.chip.right() < r.qr_button.x && r.title.right() < r.chip.x);
+                let rs = r.send.expect("the receiving view always has the button");
+                assert_eq!(rs.right() + 8.0, r.chip.x);
+                assert!(r.title.right() <= rs.x - 8.0 + 0.01);
+                assert_eq!((rs.w, rs.y), (PHONE_SEND_W, send.y));
                 let last = r.rows.last().expect("a row");
                 assert!(last.row.bottom() <= r.done.y, "the rows clear the buttons");
                 assert!(r.cancel.right() < r.done.x && r.summary.right() < r.cancel.x);
@@ -6360,18 +6563,23 @@ mod tests {
                     hits(PageLayout::PhoneRecv(phone_recv_layout(s, strip, 2))),
                     [
                         Hit::PhoneBack,
+                        Hit::PhoneSend,
                         Hit::PhoneShowQr,
                         Hit::PhoneCancel,
                         Hit::PhoneDone
                     ]
                 );
                 assert_eq!(
-                    hits(PageLayout::PhoneQr(phone_qr_layout(s, strip, false))),
+                    hits(PageLayout::PhoneQr(phone_qr_layout(s, strip, false, true))),
+                    [Hit::PhoneBack, Hit::PhoneSend]
+                );
+                assert_eq!(
+                    hits(PageLayout::PhoneQr(phone_qr_layout(s, strip, false, false))),
                     [Hit::PhoneBack]
                 );
                 assert_eq!(
-                    hits(PageLayout::PhoneQr(phone_qr_layout(s, strip, true))),
-                    [Hit::PhoneBack, Hit::PhoneNewQr]
+                    hits(PageLayout::PhoneQr(phone_qr_layout(s, strip, true, true))),
+                    [Hit::PhoneBack, Hit::PhoneSend, Hit::PhoneNewQr]
                 );
                 assert_eq!(
                     hits(PageLayout::PhoneWarn(phone_warn_layout(s, strip))),
@@ -6379,6 +6587,135 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_send_view_lays_the_shelf_out_between_its_header_and_footer() {
+        for style in [Style::Pill, Style::Notch] {
+            let s = panel(style);
+            for strip in [false, true] {
+                let top = content_top(s, strip);
+                for n in [0usize, 1, 4, 5, 8, 9, 12] {
+                    let ticks: Vec<bool> = (0..n).map(|i| i % 3 != 2).collect();
+                    for chip in [false, true] {
+                        let l = phone_send_layout(s, strip, &ticks, chip);
+                        assert_eq!(l.cards.len(), n);
+                        assert_eq!(l.chip.is_some(), chip);
+                        assert_eq!(l.empty.is_some(), n == 0);
+                        assert_eq!(l.lines, if n > 8 { 1 } else { 2 }, "one line with 3 rows");
+                        // The header ends at the edge; the title clears the chip.
+                        if let Some(c) = l.chip {
+                            assert_eq!(c.right(), header_right(s));
+                            assert!(l.title.right() <= c.x - 8.0 + 0.01);
+                        } else {
+                            assert!(l.title.right() <= header_right(s));
+                        }
+                        // Footer: the summary left, Selesai at the right edge.
+                        assert_eq!(l.done.right(), right(s));
+                        assert!(l.summary.right() < l.done.x);
+                        assert_eq!(l.done.bottom(), content_bottom(s));
+                        let body = top + PHONE_HEAD_H + 8.0;
+                        for (i, c) in l.cards.iter().enumerate() {
+                            // Four to a row, in the shelf's order.
+                            let (row, col) = (i / 4, i % 4);
+                            assert_eq!(c.card.x, l.cards[col].card.x, "card {i} in its column");
+                            assert_eq!(c.card.y, l.cards[row * 4].card.y, "card {i} in its row");
+                            assert!(c.card.y >= body - 0.01, "under the header");
+                            assert!(c.card.bottom() <= l.done.y - 8.0 + 0.01, "above the footer");
+                            assert!(c.card.right() <= right(s) + 0.01);
+                            // The tick box is inside the card's top left; the
+                            // icon and the name inside the card, the name
+                            // under the icon, the box clear of the icon.
+                            assert_eq!((c.boxed.w, c.boxed.h), (PHONE_TICK, PHONE_TICK));
+                            assert!(c.boxed.x >= c.card.x && c.boxed.y >= c.card.y);
+                            assert!(c.glyph.bottom() <= c.label.y);
+                            assert!(c.label.bottom() <= c.card.bottom() + 0.01, "{n} cards: {c:?}");
+                            assert!(c.label.x >= c.card.x && c.label.right() <= c.card.right());
+                            let icon_left = c.glyph.x + (c.glyph.w - PHONE_SEND_GLYPH) / 2.0;
+                            assert!(c.boxed.right() < icon_left, "the box clears the icon");
+                            assert_eq!(c.hit, ticks[i]);
+                        }
+                        if n >= 2 {
+                            assert!(l.cards[1].card.x > l.cards[0].card.right());
+                        }
+                        if let Some(e) = l.empty {
+                            assert!(e.y >= body - 0.01 && e.bottom() <= l.done.y);
+                        }
+                    }
+                }
+                // Hits: back, Selesai, then each card that can be ticked by
+                // its place on the shelf; a folder or a missing file has none.
+                let l = phone_send_layout(s, strip, &[true, false, true, true], true);
+                let got: Vec<Hit> = regions(s, &PageLayout::PhoneSend(l), strip)
+                    .into_iter()
+                    .map(|r| r.hit)
+                    .filter(|h| !matches!(h, Hit::Strip | Hit::OpenSettings))
+                    .collect();
+                assert_eq!(
+                    got,
+                    [
+                        Hit::PhoneBack,
+                        Hit::PhoneSendDone,
+                        Hit::PhoneShareToggle(0),
+                        Hit::PhoneShareToggle(2),
+                        Hit::PhoneShareToggle(3),
+                    ]
+                );
+                // The whole card is the click target.
+                let l = phone_send_layout(s, strip, &[true], false);
+                let r = regions(s, &PageLayout::PhoneSend(l.clone()), strip);
+                let hit = r.iter().find(|r| r.hit == Hit::PhoneShareToggle(0)).expect("card region");
+                assert_eq!(hit.rect, l.cards[0].card);
+            }
+        }
+    }
+
+    /// "✓ diambil" sits at a taken card's bottom right. With three rows and
+    /// the strip a card is 50 px high and its one name line reaches the
+    /// tag's height, so the name ends left of the tag there; everywhere else
+    /// the name keeps its whole box.
+    #[test]
+    fn the_taken_tag_never_sits_on_a_cards_name() {
+        let apart = |a: Rect, b: Rect| {
+            a.right() <= b.x || b.right() <= a.x || a.bottom() <= b.y || b.bottom() <= a.y
+        };
+        let mut narrowed = 0;
+        for style in [Style::Pill, Style::Notch] {
+            let s = panel(style);
+            for strip in [false, true] {
+                for n in [1usize, 4, 5, 8, 9, 12] {
+                    let l = phone_send_layout(s, strip, &vec![true; n], true);
+                    for c in &l.cards {
+                        // The narrowest tag (44 px) and a wide word's.
+                        for text_w in [0.0, 60.0] {
+                            let tag = shelf_phone_tag(c.card, text_w);
+                            let name = phone_send_name(c.label, tag);
+                            assert!(apart(name, tag), "{style:?} strip={strip} {n}: {name:?} under {tag:?}");
+                            if apart(c.label, tag) {
+                                assert_eq!(name, c.label, "a clear name keeps its box");
+                            } else {
+                                narrowed += 1;
+                                assert_eq!((name.x, name.y, name.h), (c.label.x, c.label.y, c.label.h));
+                                assert!(name.right() <= tag.x - 4.0 + 0.01);
+                                // Room for a short name still (6 characters).
+                                assert!(name.w >= 6.0 * 6.4, "{name:?}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(narrowed > 0, "the tight case (three rows with the strip) is covered");
+    }
+
+    #[test]
+    fn the_send_tag_takes_the_tick_boxs_place_and_never_leaves_the_card() {
+        let card = Rect { x: 100.0, y: 50.0, w: 122.0, h: 59.0 };
+        let t = phone_send_tag(card, 28.4);
+        assert_eq!((t.x, t.y), (card.x + 6.0, card.y + 6.0));
+        assert!(t.w >= 30.0 && t.right() < card.right());
+        let huge = phone_send_tag(card, 500.0);
+        assert!(huge.right() <= card.right() - 6.0 + 0.01);
     }
 
     #[test]
@@ -6948,9 +7285,18 @@ mod tests {
                     drawn.extend([row.icon, row.name, row.track, row.value]);
                 }
             }
+            PageLayout::PhoneSend(l) => {
+                drawn.extend([l.back, l.title, l.summary, l.done]);
+                drawn.extend(l.chip);
+                drawn.extend(l.empty);
+                for c in &l.cards {
+                    drawn.extend([c.card, c.boxed, c.glyph, c.label]);
+                }
+            }
             PageLayout::PhoneQr(l) => {
                 drawn.extend([l.back, l.title, l.chip, l.qr, l.net, l.hint, l.foot]);
                 drawn.extend(l.renew);
+                drawn.extend(l.send);
                 for st in l.steps {
                     drawn.extend([st.num, st.title, st.sub]);
                 }
@@ -6965,6 +7311,7 @@ mod tests {
                 drawn.extend(l.more);
             }
             PageLayout::PhoneRecv(l) => {
+                drawn.extend(l.send);
                 drawn.extend([l.back, l.title, l.chip, l.qr_button, l.empty]);
                 drawn.extend([l.summary, l.cancel, l.done]);
                 for r in &l.rows {

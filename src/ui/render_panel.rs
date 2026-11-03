@@ -875,6 +875,12 @@ impl Renderer {
                 }
                 Ok(())
             }
+            PageLayout::PhoneSend(l) => {
+                if let Some(view) = frame.phone {
+                    self.paint_phone_send(l, view);
+                }
+                Ok(())
+            }
             PageLayout::Devices(l) => {
                 self.paint_devices(l, &frame.devices);
                 Ok(())
@@ -3333,6 +3339,9 @@ impl Renderer {
         let lang = i18n::lang();
         let p = self.palette;
         self.paint_phone_head(l.back, l.title, text(lang, Key::PhoneTitle));
+        if let Some(send) = l.send {
+            self.paint_phone_button(send, text(lang, Key::PhoneSend), false);
+        }
         match v.qr {
             QrView::Code(c) => {
                 let (label, ink) = match (c.void, c.remaining) {
@@ -3501,19 +3510,10 @@ impl Renderer {
         let lang = i18n::lang();
         let p = self.palette;
         self.paint_phone_head(l.back, l.title, text(lang, Key::PhoneReceiving));
-        // The chip: a green dot and who is connected.
-        self.set_color(p.raised, 1.0);
-        self.fill_round(l.chip, l.chip.h / 2.0);
-        let dot = Rect {
-            x: l.chip.x + 10.0,
-            y: l.chip.y + (l.chip.h - 6.0) / 2.0,
-            w: 6.0,
-            h: 6.0,
-        };
-        self.set_color(p.sage, 1.0);
-        self.fill_round(dot, 3.0);
-        let chip_text = crate::ui::panel_layout::phone_chip_text(l.chip);
-        self.text_colored(v.recv.chip, &self.fonts.small, chip_text, p.text, 1.0);
+        if let Some(send) = l.send {
+            self.paint_phone_button(send, text(lang, Key::PhoneSend), false);
+        }
+        self.paint_phone_chip(l.chip, v.recv.chip);
         // Another phone: the small QR button.
         self.set_color(p.raised, 1.0);
         self.fill_round(l.qr_button, l.qr_button.w / 2.0);
@@ -3580,6 +3580,116 @@ impl Renderer {
         let summary = i18n::phone_received_summary(lang, v.recv.files, v.recv.bytes);
         self.text_colored(&summary, &self.fonts.small, l.summary, p.secondary, 1.0);
         self.paint_phone_button(l.cancel, text(lang, Key::PhoneCancelAll), false);
+        self.paint_phone_button(l.done, text(lang, Key::PhoneFinish), true);
+    }
+
+    /// The header chip of the receiving and send views: a green dot and who
+    /// is connected.
+    fn paint_phone_chip(&self, chip: Rect, label: &str) {
+        let p = self.palette;
+        self.set_color(p.raised, 1.0);
+        self.fill_round(chip, chip.h / 2.0);
+        let dot = Rect {
+            x: chip.x + 10.0,
+            y: chip.y + (chip.h - 6.0) / 2.0,
+            w: 6.0,
+            h: 6.0,
+        };
+        self.set_color(p.sage, 1.0);
+        self.fill_round(dot, 3.0);
+        let chip_text = crate::ui::panel_layout::phone_chip_text(chip);
+        self.text_colored(label, &self.fonts.small, chip_text, p.text, 1.0);
+    }
+
+    /// "Kirim ke HP": the shelf's cards, each with a tick box, at rest (the
+    /// shelf's motion and drop latch belong to the Shelf page alone). A
+    /// ticked card has the accent outline; a folder or a missing file is
+    /// dimmed with a tag where the box would be and cannot be ticked.
+    fn paint_phone_send(&self, l: &crate::ui::panel_layout::PhoneSendLayout, v: &PhoneView) {
+        use crate::ui::panel_layout::{PHONE_SEND_GLYPH, phone_send_name, phone_send_tag};
+        use crate::ui::phone_view::CardState;
+        let lang = i18n::lang();
+        let p = self.palette;
+        self.paint_phone_head(l.back, l.title, text(lang, Key::PhoneSend));
+        if let Some(chip) = l.chip {
+            self.paint_phone_chip(chip, v.send.chip);
+        }
+        if let Some(empty) = l.empty {
+            let line = Rect {
+                y: empty.y + empty.h / 2.0 - 10.0,
+                h: 20.0,
+                ..empty
+            };
+            self.text_colored(
+                text(lang, Key::PhoneSendEmpty),
+                &self.fonts.eleven_center,
+                line,
+                p.secondary,
+                1.0,
+            );
+        }
+        for (card, lay) in v.send.cards.iter().zip(&l.cards) {
+            let (a, ticked, taken) = match card.state {
+                CardState::Ticked { taken } => (1.0, true, taken),
+                CardState::Unticked => (1.0, false, false),
+                CardState::Folder | CardState::Stale => (0.45, false, false),
+            };
+            self.set_color(p.raised, a);
+            self.fill_round(lay.card, radius::TILE);
+            if ticked {
+                let edge = inset(lay.card, 0.75, 0.75);
+                self.stroke_round_width(edge, radius::TILE, p.accent, 1.5);
+            }
+            self.icon(crate::shelf::icon(card.kind), lay.glyph, PHONE_SEND_GLYPH, a, true);
+            // "✓ diambil" at the bottom right; the name ends left of it
+            // where the two would meet.
+            let taken_tag = taken.then(|| {
+                let word = text(lang, Key::PhoneTagTaken);
+                (word, shelf_phone_tag(lay.card, self.text_width(word, &self.fonts.micro_center)))
+            });
+            let label = taken_tag.map_or(lay.label, |(_, tag)| phone_send_name(lay.label, tag));
+            // As long as a name fits its box: about 6.4 px a character.
+            let per_line = (label.w / 6.4) as usize;
+            let names = crate::shelf::wrap_name(&card.name, per_line.max(6), l.lines);
+            for (i, line) in names.iter().enumerate() {
+                let row = Rect {
+                    y: label.y + i as f32 * (label.h / l.lines as f32),
+                    h: label.h / l.lines as f32,
+                    ..label
+                };
+                self.text(line, &self.fonts.eleven_center, row, a);
+            }
+            match card.state {
+                CardState::Ticked { .. } => {
+                    self.set_color(p.accent, 1.0);
+                    self.fill_round(lay.boxed, 5.0);
+                    self.icon_colored(Icon::Check, lay.boxed, 11.0, p.on_accent, 1.0, None);
+                }
+                CardState::Unticked => {
+                    let edge = inset(lay.boxed, 0.75, 0.75);
+                    self.stroke_round_width(edge, 4.5, p.secondary, 1.5);
+                }
+                CardState::Folder | CardState::Stale => {
+                    let word = text(
+                        lang,
+                        if card.state == CardState::Folder {
+                            Key::PhoneTagFolder
+                        } else {
+                            Key::ShelfMissing
+                        },
+                    );
+                    let tag = phone_send_tag(lay.card, self.text_width(word, &self.fonts.micro_center));
+                    self.set_color(p.track, a);
+                    self.fill_round(tag, tag.h / 2.0);
+                    self.text(word, &self.fonts.micro_center, tag, a);
+                }
+            }
+            if let Some((word, tag)) = taken_tag {
+                self.text_colored(word, &self.fonts.micro_center, tag, p.sage, 1.0);
+            }
+        }
+        let summary = i18n::phone_shared_summary(lang, v.send.count, v.send.bytes);
+        self.text_colored(&summary, &self.fonts.small, l.summary, p.secondary, 1.0);
         self.paint_phone_button(l.done, text(lang, Key::PhoneFinish), true);
     }
 
@@ -5813,7 +5923,8 @@ mod tests {
         use crate::config::Style;
         use crate::ui::fonts;
         use crate::ui::panel_layout::{
-            phone_ask_layout, phone_qr_layout, phone_recv_layout, phone_warn_layout,
+            phone_ask_layout, phone_qr_layout, phone_recv_layout, phone_send_layout,
+            phone_warn_layout,
         };
         use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
 
@@ -5835,10 +5946,14 @@ mod tests {
                 let s = shape_for(style, ShapeKind::Panel);
                 for strip in [false, true] {
                     let titles = [
-                        (Key::PhoneTitle, phone_qr_layout(s, strip, false).title),
+                        (Key::PhoneTitle, phone_qr_layout(s, strip, false, true).title),
                         (Key::PhoneTitle, phone_warn_layout(s, strip).title),
                         (Key::PhoneTitle, phone_ask_layout(s, strip, 1, 2).title),
                         (Key::PhoneReceiving, phone_recv_layout(s, strip, 3).title),
+                        (
+                            Key::PhoneSend,
+                            phone_send_layout(s, strip, &[true; 6], true).title,
+                        ),
                     ];
                     let shelf = shelf_layout(s, strip, 12);
                     for lang in [Lang::Id, Lang::En] {
@@ -5905,7 +6020,7 @@ mod tests {
         use crate::ui::fonts;
         use crate::ui::panel_layout::{
             phone_ask_layout, phone_chip_text, phone_qr_layout, phone_recv_layout,
-            phone_warn_layout,
+            phone_send_layout, phone_send_name, phone_send_tag, phone_warn_layout,
         };
         use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
 
@@ -5927,10 +6042,14 @@ mod tests {
             for style in [Style::Pill, Style::Notch] {
                 let s = shape_for(style, ShapeKind::Panel);
                 for strip in [false, true] {
-                    let qr = phone_qr_layout(s, strip, true);
+                    let qr = phone_qr_layout(s, strip, true, true);
                     let warn = phone_warn_layout(s, strip);
                     let ask = phone_ask_layout(s, strip, 1, 2);
                     let recv = phone_recv_layout(s, strip, 3);
+                    // The send view with three rows, so one line a name
+                    // (the tightest), and with two rows.
+                    let send3 = phone_send_layout(s, strip, &[true; 12], true);
+                    let send2 = phone_send_layout(s, strip, &[true; 6], true);
                     let row = recv.rows.first().expect("one row");
                     let chip_text = phone_chip_text(recv.chip);
                     let shelf = shelf_layout(s, strip, 3);
@@ -5947,6 +6066,7 @@ mod tests {
                                 "eleven" => &f.eleven,
                                 "secondary" => &f.secondary,
                                 "title" => &f.title,
+                                "micro_center" => &f.micro_center,
                                 _ => unreachable!("{fmt}"),
                             };
                             singles.push((s.to_owned(), format, area));
@@ -6042,6 +6162,72 @@ mod tests {
                             },
                         );
                         add(text(lang, Key::ShelfClear), "small_center", shelf.clear.expect("clear"));
+                        // The "Kirim ke HP" button, in the code view and in
+                        // the receiving view.
+                        add(text(lang, Key::PhoneSend), "button", qr.send.expect("send"));
+                        add(text(lang, Key::PhoneSend), "button", recv.send.expect("send"));
+                        // The send view: the chip, the footer, Selesai, the
+                        // hint of an empty shelf.
+                        let send_chip = phone_chip_text(send3.chip.expect("chip"));
+                        for k in kinds {
+                            add(&i18n::phone_devices_chip(lang, &[k]), "small", send_chip);
+                        }
+                        add(&i18n::phone_devices_chip(lang, &[DeviceKind::Other; 99]), "small", send_chip);
+                        for summary in [
+                            i18n::phone_shared_summary(lang, 12, (999.9 * 1_048_576.0) as u64),
+                            i18n::phone_shared_summary(lang, 12, 99 * 1024 * 1024 * 1024),
+                            i18n::phone_shared_summary(lang, 12, 1023 * 1024),
+                            text(lang, Key::PhoneSendNone).to_owned(),
+                        ] {
+                            add(&summary, "small", send3.summary);
+                        }
+                        add(text(lang, Key::PhoneFinish), "button", send3.done);
+                        let empty = phone_send_layout(s, strip, &[], false);
+                        add(text(lang, Key::PhoneSendEmpty), "eleven_center", empty.empty.expect("empty"));
+                        // The tags on a card: "folder" and "hilang" where
+                        // the box is, "diambil" at the bottom right.
+                        for send in [&send2, &send3] {
+                            for card in &send.cards {
+                                let icon_left = card.glyph.x + (card.glyph.w - 24.0) / 2.0;
+                                for key in [Key::PhoneTagFolder, Key::ShelfMissing] {
+                                    let word = text(lang, key);
+                                    let w = r.text_width(word, &f.micro_center);
+                                    let tag = phone_send_tag(card.card, w);
+                                    // The icon's 24 px box has about 3 px of empty margin all round,
+                                    // which the tag may enter, never the drawing.
+                                    assert!(
+                                        tag.right() <= icon_left + 4.0,
+                                        "{word:?}: the tag clears the icon ({} wide for text {w}, icon at {})",
+                                        tag.w,
+                                        icon_left - card.card.x
+                                    );
+                                    add(word, "micro_center", tag);
+                                }
+                                let word = text(lang, Key::PhoneTagTaken);
+                                let w = r.text_width(word, &f.micro_center);
+                                let tag = shelf_phone_tag(card.card, w);
+                                assert!(tag.right() < card.card.right() && tag.bottom() <= card.card.bottom());
+                                add(word, "micro_center", tag);
+                                // The name of a taken card stays clear of the
+                                // tag (three rows with the strip: it ends left
+                                // of it), cut by the renderer's own rule.
+                                let name = phone_send_name(card.label, tag);
+                                let row_h = name.h / send.lines as f32;
+                                let first = Rect { h: row_h, ..name };
+                                assert!(
+                                    first.right() <= tag.x || first.bottom() <= tag.y,
+                                    "{lang:?} {ui:?} strip={strip}: the name {first:?} under {tag:?}"
+                                );
+                                // A shortened name holds its narrower box.
+                                if name != card.label {
+                                    let per_line = ((name.w / 6.4) as usize).max(6);
+                                    for long in ["foto-lokasi-proyek-kemang.png", "Laporan_Mingguan_Final.docx"] {
+                                        let lines = crate::shelf::wrap_name(long, per_line, send.lines);
+                                        add(&lines[0], "eleven_center", first);
+                                    }
+                                }
+                            }
+                        }
                         for (label, format, area) in singles {
                             checked += 1;
                             if let Err(why) = ink_check(&r, &label, format, area) {

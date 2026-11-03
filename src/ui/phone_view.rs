@@ -85,6 +85,44 @@ pub struct RecvView<'a> {
     pub bytes: u64,
 }
 
+/// How a shelf card stands in the send view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CardState {
+    /// Ticked for the phone. `taken`: a phone has downloaded the whole file.
+    Ticked { taken: bool },
+    Unticked,
+    /// A folder: it cannot be sent.
+    Folder,
+    /// The file is gone: it cannot be sent.
+    Stale,
+}
+
+impl CardState {
+    /// The card can be ticked (a file that is there).
+    pub fn shareable(self) -> bool {
+        matches!(self, CardState::Ticked { .. } | CardState::Unticked)
+    }
+}
+
+/// A shelf card as the send view draws it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SendCard {
+    pub name: String,
+    pub kind: ShelfKind,
+    pub state: CardState,
+}
+
+/// The send view ("Kirim ke HP"): the shelf's cards in the shelf's order.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SendView<'a> {
+    pub cards: &'a [SendCard],
+    /// Files ticked, and their size, for the footer.
+    pub count: usize,
+    pub bytes: u64,
+    /// "Android", "2 HP"; empty while no phone has been approved.
+    pub chip: &'a str,
+}
+
 /// The phone link's view over the shelf.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PhoneView<'a> {
@@ -92,6 +130,7 @@ pub struct PhoneView<'a> {
     pub qr: QrView<'a>,
     pub ask: Option<AskView<'a>>,
     pub recv: RecvView<'a>,
+    pub send: SendView<'a>,
 }
 
 impl PhoneView<'_> {
@@ -162,8 +201,23 @@ mod tests {
                 files: 0,
                 bytes: 0,
             },
+            send: SendView {
+                cards: &[],
+                count: 0,
+                bytes: 0,
+                chip: "",
+            },
         };
         assert!(!view(Some(5)).code_dead());
         assert!(view(None).code_dead());
+    }
+
+    #[test]
+    fn only_a_ticked_or_unticked_card_can_be_ticked() {
+        assert!(CardState::Ticked { taken: false }.shareable());
+        assert!(CardState::Ticked { taken: true }.shareable());
+        assert!(CardState::Unticked.shareable());
+        assert!(!CardState::Folder.shareable());
+        assert!(!CardState::Stale.shareable());
     }
 }

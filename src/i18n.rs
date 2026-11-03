@@ -574,6 +574,11 @@ keys! {
     PhoneRowFailed => "gagal", "failed";
     PhoneCancelAll => "Batal", "Cancel";
     PhoneFinish => "Selesai", "Done";
+    PhoneSend => "Kirim ke HP", "Send to phone";
+    PhoneSendNone => "Centang berkas untuk HP", "Tick files for the phone";
+    PhoneSendEmpty => "Rak masih kosong", "The shelf is empty";
+    PhoneTagFolder => "folder", "folder";
+    PhoneTagTaken => "\u{2713} diambil", "\u{2713} taken";
     PhoneKindAndroid => "Android", "Android";
     PhoneKindIPhone => "iPhone", "iPhone";
     PhoneKindIPad => "iPad", "iPad";
@@ -1538,6 +1543,19 @@ pub fn phone_received_summary(lang: Lang, files: usize, bytes: u64) -> String {
             let noun = if files == 1 { "file" } else { "files" };
             format!("{files} {noun} \u{b7} {size} \u{2192} Downloads\\Vale")
         }
+    }
+}
+
+/// The send view's footer: "3 dibagikan · 55 MB", "3 shared · 55 MB"; with
+/// nothing ticked, "Centang berkas untuk HP".
+pub fn phone_shared_summary(lang: Lang, files: usize, bytes: u64) -> String {
+    if files == 0 {
+        return text(lang, Key::PhoneSendNone).to_owned();
+    }
+    let size = phone_size(lang, bytes);
+    match lang {
+        Lang::Id => format!("{files} dibagikan \u{b7} {size}"),
+        Lang::En => format!("{files} shared \u{b7} {size}"),
     }
 }
 
@@ -4091,6 +4109,30 @@ mod copy_preview_tests {
             phone_received_summary(Lang::En, 1, 2 * MIB),
             r"1 file · 2 MB → Downloads\Vale"
         );
+        // The send view's footer: how many are ticked and how big.
+        assert_eq!(
+            phone_shared_summary(Lang::Id, 3, 55 * MIB),
+            "3 dibagikan · 55 MB"
+        );
+        assert_eq!(
+            phone_shared_summary(Lang::En, 1, 812 * 1024),
+            "1 shared · 812 KB"
+        );
+        assert_eq!(
+            phone_shared_summary(Lang::Id, 0, 0),
+            "Centang berkas untuk HP"
+        );
+        assert_eq!(
+            phone_shared_summary(Lang::En, 0, 5),
+            "Tick files for the phone"
+        );
+        assert_eq!(text(Lang::Id, Key::PhoneSend), "Kirim ke HP");
+        assert_eq!(text(Lang::En, Key::PhoneSend), "Send to phone");
+        assert_eq!(text(Lang::Id, Key::PhoneSendEmpty), "Rak masih kosong");
+        assert_eq!(text(Lang::En, Key::PhoneSendEmpty), "The shelf is empty");
+        assert_eq!(text(Lang::Id, Key::PhoneTagTaken), "\u{2713} diambil");
+        assert_eq!(text(Lang::En, Key::PhoneTagTaken), "\u{2713} taken");
+        assert_eq!(text(Lang::Id, Key::ShelfMissing), "hilang");
         for key in [
             Key::ShelfPhone,
             Key::PhoneTitle,
@@ -4100,6 +4142,10 @@ mod copy_preview_tests {
             Key::PhoneFinish,
             Key::PhoneNewQr,
             Key::PhoneWarnPublicBody,
+            Key::PhoneSend,
+            Key::PhoneSendNone,
+            Key::PhoneSendEmpty,
+            Key::PhoneTagTaken,
         ] {
             assert_ne!(text(Lang::Id, key), text(Lang::En, key), "{key:?}");
         }
