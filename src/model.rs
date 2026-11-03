@@ -482,6 +482,8 @@ pub enum Hit {
     OpenSettings,
     /// The small logo beside a compact view that stands for a busy toast.
     ToastSlot,
+    /// The ✕ at the right end of a timed full notice: closes it, opens nothing.
+    NoticeClose,
     /// A result row of the quick search (its place in the list).
     SearchResult(usize),
     /// The back button left of the quick search's field: closes it, as Esc.

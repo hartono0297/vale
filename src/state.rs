@@ -75,6 +75,24 @@ fn is_clip_preview(notice: &Notice) -> bool {
     matches!(notice.kind, NoticeKind::ClipPreview { .. })
 }
 
+/// A timed notice that shows a ✕ in its full form: every kind except the ones
+/// with buttons of their own (the screenshot and copy previews, Arranged) and
+/// the sticky ones (a reminder, Claude waiting, a failed Mole run, the update
+/// offer), which stay until acted on even when one is shown briefly as the
+/// current notice in fullscreen (docs/memory/notice-close.md).
+pub fn notice_closable(n: &Notice) -> bool {
+    !matches!(
+        n.kind,
+        NoticeKind::Screenshot { .. }
+            | NoticeKind::ClipPreview { .. }
+            | NoticeKind::Arranged { .. }
+            | NoticeKind::Reminder { .. }
+            | NoticeKind::ClaudeWaiting { .. }
+            | NoticeKind::MoleFailed
+            | NoticeKind::UpdateAvailable { .. }
+    )
+}
+
 /// A notice the pointer can act on: a button or a click target. Hover must
 /// not open the panel over it (the notice would shrink into a strip under the
 /// pointer), and its expiry waits while the pointer is on it. Claude waiting
@@ -1544,6 +1562,8 @@ impl IslandState {
             Event::Click(Hit::PanelPage(_)) => LingerTrigger::PageTurn,
             // The reminder's Done chip is the closed notch's: no panel behind it.
             Event::Click(Hit::ReminderDone) => LingerTrigger::No,
+            // The ✕ closes a notice on the closed notch: no panel behind it.
+            Event::Click(Hit::NoticeClose) => LingerTrigger::No,
             Event::Click(hit) if !(is_media_hit(hit) && self.media_guarded(now)) => {
                 LingerTrigger::Panel
             }
@@ -2008,6 +2028,22 @@ impl IslandState {
             Hit::ToastSlot => {
                 if self.toast_slot().is_some() || self.toast_peeking() {
                     effects.extend(self.dismiss_visible_notice(now));
+                }
+            }
+            // The ✕ of a timed full notice: it goes, and nothing opens, starts
+            // or lights the unread dot (not `dismiss_visible_notice`, not
+            // `toast_left`). The queue's next notice shows at the end of
+            // `apply`. A visit that began on the notice must not turn into
+            // the panel under the pointer.
+            Hit::NoticeClose => {
+                if self.notice_close_shown() {
+                    self.current = None;
+                    self.toast_pointer = false;
+                    self.toast_full = false;
+                    self.toast_seen = false;
+                    if self.hover && self.visit_on_notice {
+                        self.hover_blocked = true;
+                    }
                 }
             }
             // The island's own quick search, the way its hotkey opens it.
@@ -2625,6 +2661,17 @@ impl IslandState {
             View::Panel(_) => ToastForm::Strip,
             _ => ToastForm::Slot,
         })
+    }
+
+    /// The current notice shows in its full form (or as the peek) and may be
+    /// closed with its ✕: false for a tucked toast (Strip, Slot), for a notice
+    /// that is not closable, and for a sticky notice shown from `base_view`
+    /// with no `current`.
+    pub fn notice_close_shown(&self) -> bool {
+        self.current
+            .as_ref()
+            .is_some_and(|(n, _)| notice_closable(n))
+            && !self.toast_tucked()
     }
 
     /// The toast whose logo sits beside the compact view.
@@ -9483,6 +9530,297 @@ mod tests {
         let fx = s.apply(Event::Click(Hit::Body), t0 + secs(2));
         assert_eq!(fx, vec![Effect::OpenTarget(chrome_target("Ibu"))]);
         assert!(!s.toast_dot_shown());
+    }
+
+    // ---- the ✕ of a timed full notice ----
+
+    fn mole_failed() -> Notice {
+        Notice {
+            key: "mole-failed".into(),
+            source: "Mole".into(),
+            title: "Mole gagal".into(),
+            body: String::new(),
+            kind: NoticeKind::MoleFailed,
+        }
+    }
+
+    #[test]
+    fn notice_close_on_a_real_toast_returns_no_effects_and_drops_it() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0);
+        assert!(s.notice_close_shown());
+        let fx = s.apply(Event::Click(Hit::NoticeClose), t0 + secs(1));
+        assert_eq!(fx, vec![]);
+        assert_eq!(s.view(), View::Idle);
+        assert!(!s.notice_close_shown());
+        // The body click on the same toast still opens its target.
+        let mut s = st();
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0);
+        let fx = s.apply(Event::Click(Hit::Body), t0 + secs(1));
+        assert_eq!(fx, vec![Effect::OpenTarget(chrome_target("Ibu"))]);
+    }
+
+    #[test]
+    fn notice_close_never_opens_claude_or_starts_the_pomodoro() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Notice(done("s1")), t0);
+        let fx = s.apply(Event::Click(Hit::NoticeClose), t0 + secs(1));
+        assert_eq!(fx, vec![]);
+        assert_eq!(s.view(), View::Idle);
+        // A Pomodoro notice: closed, the pomodoro is not started by it.
+        let mut s = st();
+        s.apply(
+            Event::Notice(Notice {
+                key: "pomodoro".into(),
+                source: "Pomodoro".into(),
+                title: "Fokus selesai".into(),
+                body: String::new(),
+                kind: NoticeKind::Pomodoro,
+            }),
+            t0,
+        );
+        let before = s.pomodoro.status();
+        let fx = s.apply(Event::Click(Hit::NoticeClose), t0 + secs(1));
+        assert_eq!(fx, vec![]);
+        assert_eq!(s.pomodoro.status(), before);
+        assert_eq!(s.view(), View::Idle);
+    }
+
+    #[test]
+    fn notice_close_shows_the_next_queued_notice_at_once() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Notice(toast_notice("t1", "Satu")), t0);
+        s.apply(Event::Notice(copied("x")), t0);
+        s.apply(Event::Notice(done("s1")), t0);
+        let fx = s.apply(Event::Click(Hit::NoticeClose), t0 + secs(1));
+        assert_eq!(fx, vec![]);
+        assert_eq!(s.view(), View::Notice(copied("x")));
+        let fx = s.apply(Event::Click(Hit::NoticeClose), t0 + secs(2));
+        assert_eq!(fx, vec![]);
+        assert_eq!(s.view(), View::Notice(done("s1")));
+        // The new notice has its whole time.
+        assert_eq!(s.next_deadline(), Some(t0 + secs(2) + NOTICE_DURATION));
+    }
+
+    #[test]
+    fn notice_close_in_fullscreen_with_an_empty_queue_hides_the_island() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Fullscreen(true), t0);
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0);
+        assert!(matches!(s.view(), View::Notice(_)));
+        assert!(s.notice_close_shown());
+        let fx = s.apply(Event::Click(Hit::NoticeClose), t0 + secs(1));
+        assert_eq!(fx, vec![]);
+        assert_eq!(s.view(), View::Hidden);
+    }
+
+    #[test]
+    fn notice_close_sets_no_unread_dot() {
+        let t0 = Instant::now();
+        // Compact style (the default), a toast shown full over an idle notch.
+        let mut s = st();
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0);
+        s.apply(Event::Click(Hit::NoticeClose), t0 + secs(1));
+        assert!(!s.toast_dot);
+        assert!(!s.toast_dot_shown());
+        // The peeked full toast over a slot: the same.
+        let mut s = busy("media", t0);
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0);
+        s.apply(Event::ToastPointer(true), t0 + secs(1));
+        s.apply(Event::Click(Hit::NoticeClose), t0 + secs(2));
+        assert!(!s.toast_dot);
+        assert!(!s.toast_dot_shown());
+    }
+
+    #[test]
+    fn notice_close_is_never_shown_for_the_notices_with_buttons_or_sticky() {
+        let t0 = Instant::now();
+        // Sticky kinds shown as `current` in fullscreen.
+        for notice in [reminder("r1"), waiting("w1"), mole_failed()] {
+            let mut s = st();
+            s.apply(Event::Fullscreen(true), t0);
+            s.apply(Event::Notice(notice.clone()), t0);
+            assert!(matches!(s.view(), View::Notice(_)), "{notice:?}");
+            assert!(!s.notice_close_shown(), "{notice:?}");
+            let fx = s.apply(Event::Click(Hit::NoticeClose), t0 + secs(1));
+            assert_eq!(fx, vec![], "{notice:?}");
+            assert!(matches!(s.view(), View::Notice(_)), "{notice:?}");
+        }
+        // The same sticky notices (and the offer) on the closed notch: the
+        // view comes from `base_view`, `current` is None.
+        for notice in [reminder("r1"), waiting("w1"), mole_failed(), available()] {
+            let mut s = st();
+            s.apply(Event::Notice(notice.clone()), t0);
+            assert!(matches!(s.view(), View::Notice(_)), "{notice:?}");
+            assert!(!s.notice_close_shown(), "{notice:?}");
+            s.apply(Event::Click(Hit::NoticeClose), t0 + secs(1));
+            assert!(matches!(s.view(), View::Notice(_)), "{notice:?}");
+        }
+        // Buttons of their own.
+        for notice in [
+            shot(1, false),
+            clip_preview(2),
+            arranged(ArrangeSave::Offer),
+        ] {
+            let mut s = st();
+            s.apply(Event::Notice(notice.clone()), t0);
+            assert!(matches!(s.view(), View::Notice(_)), "{notice:?}");
+            assert!(!s.notice_close_shown(), "{notice:?}");
+            let fx = s.apply(Event::Click(Hit::NoticeClose), t0 + secs(1));
+            assert_eq!(fx, vec![], "{notice:?}");
+            assert!(matches!(s.view(), View::Notice(_)), "{notice:?}");
+        }
+    }
+
+    #[test]
+    fn notice_closable_lists_exactly_the_timed_kinds() {
+        let mk = |kind: NoticeKind| Notice {
+            key: "k".into(),
+            source: String::new(),
+            title: String::new(),
+            body: String::new(),
+            kind,
+        };
+        let closable = [
+            NoticeKind::App {
+                app_id: None,
+                toast: None,
+            },
+            NoticeKind::ClaudeDone {
+                session_id: "s".into(),
+            },
+            NoticeKind::BatteryLow,
+            NoticeKind::Pomodoro,
+            NoticeKind::Greeting {
+                period: crate::greeting::DayPeriod::Morning,
+            },
+            NoticeKind::SystemLow,
+            NoticeKind::CleanDone,
+            NoticeKind::MoleDone,
+            NoticeKind::Copied,
+            NoticeKind::ShotSaved,
+            NoticeKind::ShotDeleted,
+            NoticeKind::DevicePlugged { letter: 'E' },
+            NoticeKind::DeviceSafe,
+            NoticeKind::UpdateProgress { pct: 5 },
+            NoticeKind::UpdateFailed,
+            NoticeKind::UpdateInfo,
+        ];
+        for kind in closable {
+            assert!(notice_closable(&mk(kind.clone())), "{kind:?}");
+        }
+        let not_closable = [
+            NoticeKind::Screenshot {
+                shot: 1,
+                secs: 8,
+                delete_if_ignored: false,
+            },
+            NoticeKind::ClipPreview { id: 1 },
+            NoticeKind::Arranged {
+                save: ArrangeSave::None,
+            },
+            NoticeKind::Reminder { id: "r".into() },
+            NoticeKind::ClaudeWaiting {
+                session_id: "s".into(),
+            },
+            NoticeKind::MoleFailed,
+            NoticeKind::UpdateAvailable {
+                version: "3.11.0".into(),
+            },
+        ];
+        for kind in not_closable {
+            assert!(!notice_closable(&mk(kind.clone())), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn notice_close_is_not_shown_on_a_strip_or_a_slot_but_is_on_the_peek() {
+        let t0 = Instant::now();
+        // Strip: the panel is open under the toast.
+        let mut s = busy("panel", t0);
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0);
+        assert_eq!(s.toast_form(), Some(ToastForm::Strip));
+        assert!(!s.notice_close_shown());
+        let fx = s.apply(Event::Click(Hit::NoticeClose), t0 + secs(1));
+        assert_eq!(fx, vec![]);
+        assert_eq!(s.toast_form(), Some(ToastForm::Strip));
+        // Slot: MediaCompact.
+        let mut s = busy("media", t0);
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0);
+        assert_eq!(s.toast_form(), Some(ToastForm::Slot));
+        assert!(!s.notice_close_shown());
+        let fx = s.apply(Event::Click(Hit::NoticeClose), t0 + secs(1));
+        assert_eq!(fx, vec![]);
+        assert_eq!(s.toast_form(), Some(ToastForm::Slot));
+        // Peek: the full toast over the slot, and the ✕ closes it.
+        s.apply(Event::ToastPointer(true), t0 + secs(2));
+        assert!(s.notice_close_shown());
+        let fx = s.apply(Event::Click(Hit::NoticeClose), t0 + secs(3));
+        assert_eq!(fx, vec![]);
+        assert_eq!(s.view(), View::MediaCompact);
+        assert!(s.toast_slot().is_none());
+    }
+
+    #[test]
+    fn notice_close_keeps_a_visit_that_began_on_the_notice_from_opening_the_panel() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::OpenMode(OpenMode::Hover), t0);
+        s.apply(Event::Notice(done("s1")), t0);
+        // The pointer arrives on the notice, which has no button of its own:
+        // hover alone would open the panel once it is gone.
+        s.apply(Event::Hover(true), t0 + secs(1));
+        assert!(matches!(s.view(), View::Notice(_)));
+        let fx = s.apply(Event::Click(Hit::NoticeClose), t0 + secs(2));
+        assert_eq!(fx, vec![]);
+        assert!(!matches!(s.view(), View::Panel(_)), "{:?}", s.view());
+        // A toast (with an app id) the same.
+        let mut s = st();
+        s.apply(Event::OpenMode(OpenMode::Hover), t0);
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0);
+        s.apply(Event::Hover(true), t0 + secs(1));
+        s.apply(Event::Click(Hit::NoticeClose), t0 + secs(2));
+        assert!(!matches!(s.view(), View::Panel(_)), "{:?}", s.view());
+        // The pointer leaving and coming back is a new visit: the panel opens.
+        s.apply(Event::Hover(false), t0 + secs(3));
+        s.apply(Event::Hover(true), t0 + secs(4));
+        assert!(matches!(s.view(), View::Panel(_)));
+    }
+
+    #[test]
+    fn notice_close_shows_the_panel_again_when_the_visit_began_on_it() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::OpenMode(OpenMode::Hover), t0);
+        s.apply(Event::Hover(true), t0);
+        assert!(matches!(s.view(), View::Panel(_)));
+        s.apply(Event::Notice(done("s1")), t0 + secs(1));
+        assert!(matches!(s.view(), View::Notice(_)));
+        // The panel is on screen again, so the calendar asks for its days:
+        // the only effect, and none comes from the ✕ itself.
+        let fx = s.apply(Event::Click(Hit::NoticeClose), t0 + secs(2));
+        assert!(
+            fx.iter()
+                .all(|e| matches!(e, Effect::RefreshCalendar { .. })),
+            "{fx:?}"
+        );
+        assert!(matches!(s.view(), View::Panel(_)), "{:?}", s.view());
+    }
+
+    #[test]
+    fn notice_close_click_arms_no_linger() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Notice(done("s1")), t0);
+        let trigger = s.linger_trigger(&Event::Click(Hit::NoticeClose), t0);
+        assert_eq!(trigger, LingerTrigger::No);
+        s.apply(Event::Click(Hit::NoticeClose), t0 + secs(1));
+        assert!(!s.lingering);
+        assert_eq!(s.linger_until, None);
     }
 
     #[test]
