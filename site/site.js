@@ -251,15 +251,16 @@
   }
 
   /* ---------- the cat's coat ----------
-     The coat lives in six custom properties on <html>; the hero cat, the
-     notch cats, the picture cats and the walking cat all read them. DECIDED
+     The coat lives in seven custom properties on <html> (--tip is the colour
+     of the go-to-top tail's tip); the hero cat, the notch cats, the picture
+     cats, the walking cat and the tail all read them. DECIDED
      for the site: Black has the #75675B rim and amber eyes (the app's own rim
      is #8E7CB8). The brand logo and the header brand stay terracotta. */
   var COATS = {
-    terracotta: { coat: '#E2683C', l: '#E2683C', r: '#E2683C', eye: '#17120F', rim: 'transparent', pa: '0' },
-    calico: { coat: '#F4EDE4', l: '#E2683C', r: '#2B2420', eye: '#17120F', rim: 'transparent', pa: '1' },
-    white: { coat: '#F6F1EA', l: '#F6F1EA', r: '#F6F1EA', eye: '#17120F', rim: 'transparent', pa: '0' },
-    black: { coat: '#1E1B22', l: '#1E1B22', r: '#1E1B22', eye: '#F2B33D', rim: '#75675B', pa: '0' }
+    terracotta: { coat: '#E2683C', l: '#E2683C', r: '#E2683C', eye: '#17120F', rim: 'transparent', pa: '0', tip: '#F4EDE4' },
+    calico: { coat: '#F4EDE4', l: '#E2683C', r: '#2B2420', eye: '#17120F', rim: 'transparent', pa: '1', tip: '#E2683C' },
+    white: { coat: '#F6F1EA', l: '#F6F1EA', r: '#F6F1EA', eye: '#17120F', rim: 'transparent', pa: '0', tip: '#E3D8CA' },
+    black: { coat: '#1E1B22', l: '#1E1B22', r: '#1E1B22', eye: '#F2B33D', rim: '#75675B', pa: '0', tip: '#4B4650' }
   };
 
   function initCoats() {
@@ -275,6 +276,7 @@
       st.setProperty('--eye', k.eye);
       st.setProperty('--rim', k.rim);
       st.setProperty('--pa', k.pa);
+      st.setProperty('--tip', k.tip);
       chips.forEach(function (c) { c.setAttribute('aria-pressed', c.getAttribute('data-coat') === name ? 'true' : 'false'); });
       if (pop && coatApi && coatApi.pop) coatApi.pop();
     }
@@ -1270,44 +1272,98 @@
   }
 
   /* ---------- go to top ----------
-     Without script the link is always shown and is a plain #top link. With
-     script it shows (.is-shown) once the hero's bottom has left the top of
+     The link is a cat tail flush at the right edge. Without script it is
+     always shown and is a plain #top link. With script it shows (.is-shown,
+     a slide in from the right edge) once the hero's bottom has left the top of
      the viewport, or after one viewport height on pages without a hero, and
-     hides again near the top. It also hides while its box lies over a button
-     (Download, Copy, a coat chip, a playground control), a details summary,
-     the install line or a footer link, so it never blocks one. The list is
-     built once. A click or Enter scrolls to the top (smooth only when motion
-     is welcome), then focuses #top without scrolling, so the next Tab is the
-     skip link; the URL keeps no #top. */
+     slides out again near the top. It also hides while its box lies over a
+     button (Download, Copy, a coat chip, a playground control), a details
+     summary, the install line or a footer link, so it never blocks one. The
+     list is built once. That test uses the SHOWN box, worked out from layout
+     values a transform cannot change (offsetLeft, offsetTop and the box size
+     of the fixed link): while it is hidden it sits translated off screen, and
+     its bounding rect would never overlap anything, so the tail would show,
+     cover, hide and flicker. A click or Enter scrolls to the top (smooth only
+     when motion is welcome), then focuses #top without scrolling, so the next
+     Tab is the skip link; the URL keeps no #top. With motion the tail also
+     plays a yank (.is-yank, about 700 ms: a dip, then up and out of the view)
+     as if the cat climbed up; it ends in the hidden state with transitions
+     off for a moment (.is-reset, removed by a timer; write holds back until
+     then, so a late show still slides in) so no slide-out replays,
+     and stays hidden while that scroll is still running (climb). The yank has
+     a timer fallback. Reduced motion: no yank, an instant scroll, no
+     transition. */
   function initToTop() {
     var btn = $('.to-top');
     var target = $('#top');
     if (!btn || !target) return;
-    btn.addEventListener('click', function (e) {
-      e.preventDefault();
-      window.scrollTo({ top: 0, left: 0, behavior: reduce.matches ? 'instant' : 'smooth' });
-      target.focus({ preventScroll: true });
-    });
     var hero = $('.hero');
     var avoid = $$('.btn, .coat-chip, .play-card button, .more summary, .cmd-scroll, .site-footer a');
     var shown = false;
     var next = false;
-    loop.add({
+    var yanking = false;
+    var resetting = false;
+    var climb = false;
+    var yankTimer = 0;
+    var climbTimer = 0;
+    var resetTimer = 0;
+    function armClimb(ms) {
+      clearTimeout(climbTimer);
+      climbTimer = setTimeout(function () { climb = false; loop.kick(fx); }, ms);
+    }
+    function endYank() {
+      if (!yanking) return;
+      yanking = false;
+      clearTimeout(yankTimer);
+      btn.classList.add('is-reset');
+      btn.classList.remove('is-yank', 'is-shown');
+      shown = false;
+      clearTimeout(resetTimer);
+      resetting = true;
+      resetTimer = setTimeout(function () {
+        resetting = false;
+        btn.classList.remove('is-reset');
+        loop.kick(fx);
+      }, 100);
+      loop.kick(fx);
+    }
+    btn.addEventListener('animationend', function (e) {
+      if (e.target === btn && e.animationName === 'tail-yank') endYank();
+    });
+    window.addEventListener('scroll', function () { if (climb) armClimb(350); }, { passive: true });
+    btn.addEventListener('click', function (e) {
+      e.preventDefault();
+      var motion = !reduce.matches;
+      window.scrollTo({ top: 0, left: 0, behavior: motion ? 'smooth' : 'instant' });
+      target.focus({ preventScroll: true });
+      if (motion && !yanking) {
+        yanking = true;
+        climb = true;
+        armClimb(700);
+        btn.classList.add('is-yank');
+        yankTimer = setTimeout(endYank, 800);
+      }
+    });
+    var fx = loop.add({
       on: function () { return S.dirty; },
       read: function () {
+        if (climb && S.sy <= 2) climb = false;
         var past = hero ? hero.getBoundingClientRect().bottom < 0 : S.sy > S.vh;
         var covers = false;
         if (past) {
-          var b = btn.getBoundingClientRect();
+          var l = btn.offsetLeft;
+          var t = btn.offsetTop;
+          var rr = l + btn.offsetWidth;
+          var bb = t + btn.offsetHeight;
           for (var i = 0; i < avoid.length && !covers; i++) {
             var r = avoid[i].getBoundingClientRect();
-            covers = r.width > 0 && r.height > 0 && r.right > b.left && r.left < b.right && r.bottom > b.top && r.top < b.bottom;
+            covers = r.width > 0 && r.height > 0 && r.right > l && r.left < rr && r.bottom > t && r.top < bb;
           }
         }
-        next = past && !covers;
+        next = past && !covers && !climb;
       },
       write: function () {
-        if (next === shown) return;
+        if (yanking || resetting || next === shown) return;
         shown = next;
         btn.classList.toggle('is-shown', shown);
       }
@@ -1812,8 +1868,10 @@
   /* ---------- the walking cat and the bottom easter egg ----------
      A fixed 3 px trail at the very bottom and a 30 px cat head that walks
      along it with page progress, bobbing only while the page scrolls. The
-     track ends 12 px before the go-to-top button (the right edge minus the
-     edge gutter, 48 px and 12 px), so it never lies over it or a footer link.
+     track ends 12 px before the go-to-top tail's box: the tail is flush at the
+     right edge, so the cat's right edge is the viewport width minus the box's
+     offsetWidth (read from layout, never from a transformed rect) minus 12,
+     and the sleeping cat never lies over the tail.
      At the end of the page the cat curls up and sleeps (z's float up); only
      then is it a real, focusable button, "Wake the cat". Waking it: a
      stretch, "mrrow? back to the top?", and a dash left along the track while
@@ -1821,7 +1879,8 @@
      it walks it is aria-hidden, tabindex -1 and not clickable. Reduced motion:
      no float or dash; it still wakes and scrolls at once. */
   function initWalk() {
-    if (!$('#h-hero') || !$('.to-top')) return;
+    var toTop = $('.to-top');
+    if (!$('#h-hero') || !toTop) return;
     var bar = doc.createElement('div');
     bar.className = 'walk';
     bar.innerHTML = '<span class="walk-trail" aria-hidden="true"></span>' +
@@ -1835,7 +1894,6 @@
     var btn = $('.walk-cat', bar);
     var use = $('use', bar);
     var bubble = $('.walk-bubble', bar);
-    var wide = window.matchMedia('(min-width: 40em)');
     var state = 'walk';
     var slept = false;
     var sleepTimer = 0;
@@ -1844,6 +1902,7 @@
     var shownX = -1;
     var track = 0;
     var vw = 0;
+    var tw = 0;
     function say(text, ms) {
       bubble.textContent = text;
       bubble.classList.add('on');
@@ -1904,10 +1963,9 @@
       /* S.moving is worked out here, not in the progress task: that task runs only
          on dirty frames, so a value kept there would stay true after the scroll stops
          and keep the loop (and the bob) going. */
-      read: function () { vw = root.clientWidth; S.moving = performance.now() - S.scrollAt < 160; },
+      read: function () { vw = root.clientWidth; tw = toTop.offsetWidth; S.moving = performance.now() - S.scrollAt < 160; },
       write: function () {
-        var edge = wide.matches ? 24 : 16;
-        track = Math.max(0, vw - edge - 48 - 12 - 30);
+        track = Math.max(0, vw - tw - 12 - 30);
         x = Math.round(S.p * track);
         if (state === 'asleep') x = Math.round(track);
         if (x !== shownX) {
