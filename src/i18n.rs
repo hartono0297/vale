@@ -996,7 +996,6 @@ keys! {
     StickyLineOne => "baris", "line";
     StickyLineMany => "baris", "lines";
     StickyEmpty => "Catatan kosong", "Empty note";
-    StickyOnDesktopTip => "Tempel ke desktop", "Stick to desktop";
     StickyOffDesktopTip => "Lepas dari desktop", "Unstick from desktop";
     StickyNew => "Catatan tempel baru", "New sticky note";
     StickyNewMax => "Catatan tempel baru (maksimal 20)", "New sticky note (at most 20)";

@@ -48,7 +48,11 @@ impl App {
     }
 
     /// Brings the windows to the notes and the settings, and the tray's count.
+    /// What the windows still have queued is applied to the notes first, or
+    /// the sync would put the store's older copy (a paper, a pin, a box) back
+    /// on the window.
     pub(super) fn widgets_sync(&mut self) {
+        self.widgets_apply_events(true);
         let animate = self.motion().moves() && self.animations;
         let App {
             notes,
@@ -153,8 +157,10 @@ impl App {
         }
     }
 
-    /// `WM_ENDSESSION`: a change still waiting for its save is written now.
+    /// `WM_ENDSESSION`: a change still waiting for its save is written now,
+    /// with what the windows still have queued.
     pub(super) fn widgets_flush(&mut self) {
+        self.widgets_apply_events(false);
         if self.widgets.save_due {
             self.persist_notes(Instant::now());
         }
@@ -173,12 +179,22 @@ impl App {
 
     /// `WM_APP_WIDGET`: what the user did on the desktop.
     pub(super) fn widgets_events(&mut self) {
+        if self.widgets_apply_events(true) {
+            self.widgets_sync();
+        }
+    }
+
+    /// Applies what the windows queued to the notes (the queue is emptied, so
+    /// a sync it leads to finds nothing more). True when a note came off the
+    /// desktop or went, and the windows need a sync. `live` false while the
+    /// island ends: the notes and the save only, no new note and no drawing.
+    fn widgets_apply_events(&mut self, live: bool) -> bool {
         let events = match self.widgets.host.as_mut() {
             Some(host) => host.drain(),
-            None => return,
+            None => return false,
         };
         if events.is_empty() {
-            return;
+            return false;
         }
         let out = apply(&mut self.notes, events, Local::now().timestamp());
         let (changed, structural, clock) = (out.changed, out.structural, out.clock);
@@ -186,11 +202,14 @@ impl App {
             self.config.widgets.cat_peek = on;
             self.save_config();
         }
+        if !live {
+            if changed {
+                self.widgets.save_due = true;
+            }
+            return structural;
+        }
         for id in out.beside {
             self.new_sticky(Some(&id));
-        }
-        if structural {
-            self.widgets_sync();
         }
         if changed {
             self.arm_widget_save();
@@ -203,6 +222,7 @@ impl App {
         if clock {
             self.ensure_clock();
         }
+        structural
     }
 
     // ------------------------------------------------------------ new notes

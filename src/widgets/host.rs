@@ -1251,6 +1251,18 @@ enum Down {
 
 fn left_down(hwnd: HWND, x: i32, y: i32) {
     let pt = screen_point(hwnd, x, y);
+    // A click on a note outside the popover closes it, also where the note
+    // does not take the activation (the header, the grip, a box). The colour
+    // button toggles it on its release instead.
+    let on_colour = with(|s| {
+        let i = idx_of(s, hwnd)?;
+        Some(target_at(&s.wins[i], pt.x, pt.y) == Target::Button(Btn::Colour))
+    })
+    .flatten()
+    .unwrap_or(false);
+    if !on_colour && pop::is_open() {
+        pop::close();
+    }
     let act = with(|s| {
         let i = idx_of(s, hwnd)?;
         let lock = s.prefs.lock;
@@ -1457,7 +1469,13 @@ fn button(hwnd: HWND, b: Btn) {
                 Some(())
             });
         }
-        Btn::Colour => open_popover(hwnd),
+        Btn::Colour => {
+            if pop::is_open_for(hwnd) {
+                pop::close();
+            } else {
+                open_popover(hwnd);
+            }
+        }
         Btn::More => {
             let at = with(|s| {
                 let i = idx_of(s, hwnd)?;

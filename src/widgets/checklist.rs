@@ -338,6 +338,33 @@ pub fn to_edit_text(text: &str) -> String {
     normalize(text).replace('\n', "\r\n")
 }
 
+/// Whether the EDIT's raw text holds a break that is not a `\r\n` pair. A
+/// plain multi-line EDIT keeps a pasted lone `\n` (an LF-only source) or `\r`
+/// as one character, and then `edit_index` / `model_index` (every break is
+/// two units) are off by one for each of them.
+pub fn has_lone_break(raw: &str) -> bool {
+    let u = units(raw);
+    let (cr, lf) = (u16::from(b'\r'), u16::from(b'\n'));
+    u.iter().enumerate().any(|(i, &c)| {
+        (c == cr && u.get(i + 1) != Some(&lf)) || (c == lf && (i == 0 || u[i - 1] != cr))
+    })
+}
+
+/// An index of the EDIT's raw text, whatever its breaks (`\r\n`, a lone `\r`
+/// or `\n`), as the model (`normalize`d) text counts it. Inside a `\r\n` pair
+/// it is after the break.
+pub fn raw_model_index(raw: &str, edit: usize) -> usize {
+    let u = units(raw);
+    let (cr, lf) = (u16::from(b'\r'), u16::from(b'\n'));
+    let (mut i, mut model) = (0, 0);
+    while i < u.len() && i < edit {
+        let pair = u[i] == cr && u.get(i + 1) == Some(&lf);
+        i += if pair { 2 } else { 1 };
+        model += 1;
+    }
+    model
+}
+
 /// The words under a note's rolled-up title: the first line without its
 /// marker, trimmed.
 pub fn title_of(text: &str) -> String {
@@ -521,6 +548,37 @@ mod tests {
         assert_eq!(to_edit_text("a\nb"), "a\r\nb");
         assert_eq!(to_edit_text("a\r\nb"), "a\r\nb");
         assert_eq!(normalize("a\r\nb\rc"), "a\nb\nc");
+    }
+
+    #[test]
+    fn a_lone_break_in_the_edit_is_found_and_counted_as_one() {
+        // "a\nb" pasted from an LF-only source, the caret after the "b".
+        let raw = "a\nb";
+        let model = normalize(raw);
+        assert!(has_lone_break(raw));
+        // The pair-only map is one short: the bug the rewrite prevents.
+        assert_eq!(model_index(&model, 3), 2);
+        assert_eq!(raw_model_index(raw, 3), 3);
+        // After the rewrite the EDIT holds pairs and the maps agree again.
+        let fixed = to_edit_text(&model);
+        assert!(!has_lone_break(&fixed));
+        assert_eq!(edit_index(&model, raw_model_index(raw, 3)), 4);
+        assert_eq!(model_index(&model, 4), 3);
+
+        // Mixed breaks: a pair, a lone CR, a lone LF.
+        let raw = "x\r\ny\rz\nw";
+        assert!(has_lone_break(raw));
+        assert_eq!(normalize(raw), "x\ny\nz\nw");
+        let expect = [0, 1, 2, 2, 3, 4, 5, 6, 7];
+        for (e, m) in expect.iter().enumerate() {
+            assert_eq!(raw_model_index(raw, e), *m, "{e}");
+        }
+        assert_eq!(raw_model_index(raw, 99), 7);
+        assert!(has_lone_break("\n"));
+        assert!(has_lone_break("a\r"));
+        assert!(has_lone_break("\r\r\n"));
+        assert!(!has_lone_break("a\r\nb\r\n"));
+        assert!(!has_lone_break(""));
     }
 
     #[test]

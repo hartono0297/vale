@@ -1131,8 +1131,6 @@ impl Painter<'_> {
         self.icon(icon, r, 12.0, self.p.text, a, true);
     }
 
-    /// An accent dot; the chosen one gets a text-coloured ring with a
-    /// card-coloured gap, the one under the pointer a fainter ring.
     /// A gallery card: its plate, and on it the still picture of a note (a
     /// cream sticky note with a title and two checklist lines; never animated).
     fn widget_tile(&self, t: &WidgetTile, s: &Scene) {
@@ -1226,6 +1224,8 @@ impl Painter<'_> {
         }
     }
 
+    /// An accent dot; the chosen one gets a text-coloured ring with a
+    /// card-coloured gap, the one under the pointer a fainter ring.
     fn swatch(&self, r: Rect, accent: Accent, selected: bool, hover: bool) {
         let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
         let ring = r.w / 2.0 + SWATCH_RING_GAP + SWATCH_RING_W / 2.0;

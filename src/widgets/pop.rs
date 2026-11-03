@@ -104,6 +104,15 @@ pub fn is_open() -> bool {
     POP.with(|cell| cell.try_borrow().map(|p| p.is_some()).unwrap_or(true))
 }
 
+/// Whether the popover is open, and for `note`.
+pub fn is_open_for(note: HWND) -> bool {
+    POP.with(|cell| {
+        cell.try_borrow()
+            .map(|p| p.as_ref().is_some_and(|p| p.note == note))
+            .unwrap_or(false)
+    })
+}
+
 /// Whether `h` is the popover of `note`.
 pub fn is_popover_of(h: HWND, note: HWND) -> bool {
     POP.with(|cell| {

@@ -13,10 +13,16 @@
 //! undoes them.
 //!
 //! Indices outside this file are UTF-16 units of the text with `\n` breaks;
-//! the EDIT counts `\r\n` as two, `checklist::edit_index` converts.
+//! the EDIT counts `\r\n` as two, `checklist::edit_index` converts. That
+//! holds only while every break in the EDIT is a `\r\n` pair: a plain
+//! multi-line EDIT keeps a pasted lone `\n` or `\r` as one unit. So a paste
+//! goes in with pairs (`paste`, undo kept), and `text` rewrites any lone break
+//! that still got in before anything reads an index.
 
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Foundation::{HGLOBAL, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
 use windows::Win32::UI::Controls::{EM_GETSEL, EM_LIMITTEXT, EM_REPLACESEL, EM_SETSEL};
 use windows::Win32::UI::Input::Ime::{
     CFS_POINT, COMPOSITIONFORM, ImmGetContext, ImmReleaseContext, ImmSetCompositionWindow,
@@ -86,12 +92,89 @@ pub fn create(parent: HWND, text: &str, size: (i32, i32)) -> Result<HWND> {
     Ok(hwnd)
 }
 
-/// The EDIT's text as model text (`\n` breaks).
-pub fn text(edit: HWND) -> String {
+/// The EDIT's own text, breaks as they are.
+fn raw_text(edit: HWND) -> String {
     let len = unsafe { GetWindowTextLengthW(edit) }.max(0) as usize;
     let mut buf = vec![0u16; len + 1];
     let n = unsafe { GetWindowTextW(edit, &mut buf) }.max(0) as usize;
-    checklist::normalize(&String::from_utf16_lossy(&buf[..n.min(len)]))
+    String::from_utf16_lossy(&buf[..n.min(len)])
+}
+
+/// The EDIT's text as model text (`\n` breaks). A lone `\n` or `\r` that got
+/// into the EDIT is rewritten as `\r\n` first, the selection kept, so the
+/// EDIT and the model count the same again (`selection`, `set_selection` and
+/// `apply` rely on it, and they read after this).
+pub fn text(edit: HWND) -> String {
+    let raw = raw_text(edit);
+    let model = checklist::normalize(&raw);
+    if checklist::has_lone_break(&raw) {
+        let (a, b) = raw_selection(edit);
+        let (a, b) = (
+            checklist::raw_model_index(&raw, a),
+            checklist::raw_model_index(&raw, b),
+        );
+        unsafe {
+            let _ = SetWindowTextW(edit, &HSTRING::from(checklist::to_edit_text(&model)));
+        }
+        set_selection(edit, &model, a, b);
+    }
+    model
+}
+
+/// The clipboard's text, when it has some (and not far more than a note
+/// holds).
+fn clipboard_text(edit: HWND) -> Option<String> {
+    const CF_UNICODETEXT: u32 = 13;
+    unsafe { OpenClipboard(Some(edit)) }.ok()?;
+    let read = || {
+        let handle = unsafe { GetClipboardData(CF_UNICODETEXT) }.ok()?;
+        let mem = HGLOBAL(handle.0);
+        let units = unsafe { GlobalSize(mem) } / 2;
+        if units == 0 || units > 4 * LIMIT {
+            return None;
+        }
+        let ptr = unsafe { GlobalLock(mem) } as *const u16;
+        if ptr.is_null() {
+            return None;
+        }
+        let all = unsafe { std::slice::from_raw_parts(ptr, units) };
+        let end = all.iter().position(|&u| u == 0).unwrap_or(units);
+        let text = String::from_utf16_lossy(&all[..end]);
+        unsafe {
+            let _ = GlobalUnlock(mem);
+        }
+        Some(text)
+    };
+    let text = read();
+    unsafe {
+        let _ = CloseClipboard();
+    }
+    text
+}
+
+/// A paste whose text has a lone break (an LF-only source): it goes in with
+/// `\r\n` pairs through `EM_REPLACESEL`, so Ctrl+Z still undoes it. False
+/// when the EDIT's own paste can do it.
+fn paste(edit: HWND) -> bool {
+    let Some(clip) = clipboard_text(edit) else {
+        return false;
+    };
+    if !checklist::has_lone_break(&clip) {
+        return false;
+    }
+    let wide: Vec<u16> = checklist::to_edit_text(&clip)
+        .encode_utf16()
+        .chain([0])
+        .collect();
+    unsafe {
+        SendMessageW(
+            edit,
+            EM_REPLACESEL,
+            Some(WPARAM(1)),
+            Some(LPARAM(wide.as_ptr() as isize)),
+        );
+    }
+    true
 }
 
 fn raw_selection(edit: HWND) -> (usize, usize) {
@@ -183,11 +266,12 @@ fn notify(edit: HWND, ev: EditEvent) {
 
 /// A collapsed caret in the text, or `None` while something is selected.
 fn caret(edit: HWND) -> Option<(String, usize)> {
+    // The text first: it settles any lone break the selection is counted in.
+    let t = text(edit);
     let (a, b) = raw_selection(edit);
     if a != b {
         return None;
     }
-    let t = text(edit);
     let c = checklist::model_index(&t, a);
     Some((t, c))
 }
@@ -252,6 +336,13 @@ unsafe extern "system" fn edit_proc(
             if ch == 0x1B || ch == 0x01 {
                 return LRESULT(0);
             }
+            // Ctrl+V goes through our own paste.
+            if ch == 0x16 {
+                unsafe {
+                    SendMessageW(hwnd, WM_PASTE, None, None);
+                }
+                return LRESULT(0);
+            }
             let collapsed = caret(hwnd);
             let edit = collapsed.as_ref().and_then(|(t, c)| match ch {
                 0x0D => checklist::enter(t, *c),
@@ -268,7 +359,16 @@ unsafe extern "system" fn edit_proc(
             notify(hwnd, EditEvent::Changed);
             return result;
         }
-        WM_PASTE | WM_CUT | WM_CLEAR | WM_UNDO => {
+        WM_PASTE => {
+            let result = if paste(hwnd) {
+                LRESULT(0)
+            } else {
+                unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+            };
+            notify(hwnd, EditEvent::Changed);
+            return result;
+        }
+        WM_CUT | WM_CLEAR | WM_UNDO => {
             let result = unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) };
             notify(hwnd, EditEvent::Changed);
             return result;
