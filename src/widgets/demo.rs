@@ -20,9 +20,9 @@ use chrono::Local;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, HWND_MESSAGE, KillTimer, MSG,
-    PostQuitMessage, RegisterClassExW, SetTimer, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE,
-    WM_DESTROY, WM_DISPLAYCHANGE, WM_TIMER, WNDCLASSEXW,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, KillTimer, MSG,
+    PostQuitMessage, RegisterClassExW, SetTimer, TranslateMessage, WM_DESTROY, WM_DISPLAYCHANGE,
+    WM_TIMER, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_POPUP,
 };
 use windows::core::w;
 
@@ -281,16 +281,22 @@ fn create_owner() -> Option<HWND> {
     };
     unsafe {
         RegisterClassExW(&wc);
+        // A hidden top-level window, not a message-only one: only a top-level
+        // window gets the broadcasts (`WM_DISPLAYCHANGE`, `TaskbarCreated`), so
+        // the demo follows a resolution change and an Explorer restart like the
+        // island does. No parent, never shown, a tool window: no taskbar button
+        // and no Alt+Tab entry. It is only the event and timer target; the
+        // notes' own owner is still the shell window (`GWLP_HWNDPARENT`).
         CreateWindowExW(
-            WINDOW_EX_STYLE(0),
+            WS_EX_TOOLWINDOW,
             w!("ValeWidgetsDemoOwner"),
             w!(""),
-            WINDOW_STYLE(0),
+            WS_POPUP,
             0,
             0,
             0,
             0,
-            Some(HWND_MESSAGE),
+            None,
             None,
             Some(module.into()),
             None,
