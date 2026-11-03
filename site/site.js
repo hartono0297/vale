@@ -1873,6 +1873,9 @@
           shownX = x;
           pos.style.transform = 'translate3d(' + x + 'px,0,0)';
           trail.style.width = (x + 15) + 'px';
+          /* The bubble hangs to the left of the cat; near the left edge it hangs to the right. */
+          var flip = x < 200;
+          if (bubble.classList.contains('flip') !== flip) bubble.classList.toggle('flip', flip);
         }
         var walking = state === 'walk' && S.moving && !reduce.matches;
         if (btn.classList.contains('is-walking') !== walking) btn.classList.toggle('is-walking', walking);
