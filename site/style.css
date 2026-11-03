@@ -1,10 +1,11 @@
 /* Vale site. One stylesheet for index, 404, privacy and terms.
-   Tokens first, then base, the header pills, the footer and the go-to-top
-   link, the notch, the landing page sections (hero, tiles, screenshots,
-   Susun, cat, install, Google Calendar, privacy), the legal pages. Dark is the
-   default whatever the system scheme says; html[data-theme="light"] (the
-   theme button, stored as vale-theme) switches to the light set. Contrast
-   ratios are listed in docs/memory/site-landing.md. */
+   Tokens first, then the sky behind every page, the base, the header pills,
+   the footer and the go-to-top link, the notch, the landing page (hero and
+   its cat, marquee, story, playground, install, Google Calendar, privacy),
+   the walking cat, the legal pages. Dark is the default whatever the system
+   scheme says; html[data-theme="light"] (the theme button, stored as
+   vale-theme) switches to the light set. Contrast ratios are listed in
+   docs/memory/site-landing.md. */
 
 /* Geist and Geist Mono (SIL OFL 1.1, fonts/OFL.txt). Geist is the variable
    file (smaller than three statics); Geist Mono is only used at 400. */
@@ -25,7 +26,12 @@
   --btn-bg: #E2683C;
   --btn-bg-hover: #EC7C55;
   --btn-text: #17120F;
-  --shot-shadow: drop-shadow(0 0 1px rgba(244, 237, 228, .6));
+  /* A tint behind text that would otherwise sit on a sky glow, and the card face. */
+  --panel: rgba(18, 14, 13, .86);
+  --card: rgba(30, 24, 21, .88);
+  --sky-fallback: #110D10;
+  --bubble-bg: #F4EDE4;
+  --bubble-text: #17120F;
 
   /* The notch is the same in both themes; in the dark theme its surface is
      the page colour, so a 1 px edge (3.41 on the page) keeps its outline. */
@@ -36,15 +42,23 @@
   --notch-line: #3A302A;
   --notch-edge: #75675B;
 
-  /* The Susun drawing is a dark screen in both themes. */
-  --scr-bg: #1E1815;
-  --scr-tile: #2A221D;
-  --scr-line: #4A3F37;
-  --scr-edge: #75675B;
+  /* Screens (the story mock, the playground pictures) are dark in both themes. */
+  --scr-bg: #0E0B09;
+  --scr-edge: #3A302A;
   --scr-text: #F4EDE4;
   --scr-2: #A89A8B;
-  --scr-accent: #E2683C;
-  --scr-bar: #3A302A;
+
+  /* The cat's coat. site.js changes these on <html> when a coat chip is chosen;
+     the hero cat, the notch cats, the picture cats and the walking cat read them. */
+  --coat: #E2683C;
+  --earl: #E2683C;
+  --earr: #E2683C;
+  --eye: #17120F;
+  --rim: transparent;
+  --pa: 0;
+
+  /* Page progress 0 to 1, set by site.js: the sky mixes dusk, night and dawn. */
+  --p: 0;
 
   --gutter: clamp(16px, 4vw, 40px);
   /* The header pills sit this far from the left and right edges. */
@@ -64,24 +78,67 @@
   --ink: #A8431C;
   --focus: #A8431C;
   --code-bg: #EBEAE6;
-  --shot-shadow: drop-shadow(0 1px 2px rgba(23, 18, 15, .28)) drop-shadow(0 6px 14px rgba(23, 18, 15, .12));
+  --panel: rgba(252, 249, 244, .92);
+  --card: rgba(255, 253, 249, .86);
+  --sky-fallback: #F8F1E7;
+  --bubble-bg: #17120F;
+  --bubble-text: #F4EDE4;
   --notch-edge: #17120F;
   color-scheme: light;
 }
 @media (min-width: 40em) { :root { --edge: 24px; } }
 
 *, *::before, *::after { box-sizing: border-box; }
-html { -webkit-text-size-adjust: 100%; }
+html { -webkit-text-size-adjust: 100%; background-color: var(--sky-fallback); }
 @media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+/* The body has no background of its own: html carries the fallback colour and
+   the sky layers below sit between the two. body is a stacking context, so
+   its two pseudo layers stay behind the page and above html::before. */
 body {
+  position: relative;
+  isolation: isolate;
   margin: 0;
-  background: var(--bg);
   color: var(--text);
   font-family: var(--font);
   font-size: 1.0625rem;
   line-height: 1.6;
   overflow-wrap: break-word;
 }
+
+/* ---------- the sky ----------
+   Three fixed full-viewport moods mixed by --p (0 at the top of the page, 1
+   at the end): html::before is the night, always there; body::before is dusk
+   (full at the top, gone by p = .45); body::after is dawn with the terracotta
+   horizon glow (from p = .62). Without script --p stays 0, so the page shows
+   dusk. Opacity only, so the mix is cheap. The star canvas (site.js, index
+   only) sits above all three, behind the page. */
+html::before, body::before, body::after { content: ""; position: fixed; inset: 0; pointer-events: none; }
+html::before {
+  z-index: -1;
+  background: radial-gradient(80% 60% at 80% 0, #1F1A2E 0, transparent 60%), linear-gradient(#0E0B10, #130F12);
+}
+body::before {
+  z-index: -3;
+  background: radial-gradient(120% 70% at 50% 110%, #7A3424 0, #3A1A22 35%, transparent 70%), linear-gradient(#120D12, #1A1015);
+  opacity: calc(1 - var(--p) * 2.2);
+}
+body::after {
+  z-index: -2;
+  background: radial-gradient(130% 80% at 50% 120%, #E2683C 0, #7A3424 30%, #2A1712 60%, transparent 85%), linear-gradient(#140F10, #1E1410);
+  opacity: calc(max(0, var(--p) - .62) * 2.8);
+}
+/* Light: a warm pale day. A soft sun glow at the top, a peach glow at the end. */
+:root[data-theme="light"]::before {
+  background: linear-gradient(#F8F2E9, #F6F1E9);
+}
+html[data-theme="light"] body::before {
+  background: radial-gradient(70% 55% at 50% 0, #FFE6C4 0, rgba(255, 230, 196, 0) 70%), linear-gradient(#FCEEDC, #F8F2E9);
+}
+html[data-theme="light"] body::after {
+  background: radial-gradient(130% 80% at 50% 120%, #F7BE9A 0, #F9D6BC 35%, rgba(249, 214, 188, 0) 80%), linear-gradient(#F8EFE4, #F7E8D9);
+}
+#sky { position: fixed; inset: 0; z-index: -1; width: 100%; height: 100%; pointer-events: none; }
+
 img, svg { max-width: 100%; }
 img { height: auto; display: block; }
 /* Anchored headings land below the fixed header (pills end at 60 px). */
@@ -95,6 +152,7 @@ a:hover { text-decoration-thickness: 2px; }
 code, kbd { font-family: var(--mono); font-size: .9em; font-weight: 400; }
 :focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
 .sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 /* Helpers for what only makes sense with or without script (the inline head
    script adds .js). They only hide, so the element keeps its own display. */
 html:not(.js) .js-only { display: none !important; }
@@ -193,8 +251,9 @@ html:not(.js) .js-only { display: none !important; }
 }
 
 /* ---------- footer ---------- */
-/* The bottom padding keeps the last links above the go-to-top button. */
-.site-footer { margin-top: clamp(4rem, 10vw, 8rem); border-top: 1px solid var(--line); padding-block: 2.5rem 6rem; }
+/* The footer text sits on the tint, never straight on the dawn glow. The
+   bottom padding keeps the last links above the go-to-top button. */
+.site-footer { margin-top: clamp(4rem, 10vw, 8rem); border-top: 1px solid var(--line); padding-block: 2.5rem 6rem; background: var(--panel); }
 .footer-inner { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 2rem; width: min(100% - 2 * var(--gutter), 78rem); margin-inline: auto; }
 .footer-brand { margin: 0 auto 0 0; font-size: .9375rem; }
 .footer-brand img { display: inline-block; width: 20px; height: 20px; margin-right: 4px; vertical-align: -4px; }
@@ -233,38 +292,40 @@ html:not(.js) .js-only { display: none !important; }
   border-radius: 0 0 var(--nr) var(--nr);
   overflow: hidden;
   font-size: 13px; line-height: 1.3;
-  transition: width .35s ease-out, height .35s ease-out, border-radius .35s ease-out;
+  transition: width .35s ease-out, height .35s ease-out, border-radius .35s ease-out, box-shadow .3s ease-out;
 }
-.notch[data-state="music"] { --nw: min(300px, calc(100vw - 32px)); --nh: 36px; --nr: 18px; }
-.notch[data-state="panel"] { --nw: min(400px, calc(100vw - 32px)); --nh: 128px; --nr: 24px; }
 .notch[data-state="clipboard"] { --nw: min(340px, calc(100vw - 32px)); --nh: 56px; --nr: 24px; }
+.notch[data-state="greet"] { --nw: min(230px, calc(100vw - 32px)); --nh: 38px; --nr: 19px; }
 /* .is-tight (site.js): the state keeps the idle footprint, because at full
-   size it would touch a header pill, or (the clipboard section state) cover
-   text. Music then shows the cover and the bars without the lyric line. */
-.notch:is([data-state="clipboard"], [data-state="music"]).is-tight { --nw: min(190px, calc(100vw - 32px)); --nh: 34px; --nr: 17px; }
+   size it would touch a header pill. */
+.notch:is([data-state="clipboard"], [data-state="greet"]).is-tight { --nw: min(190px, calc(100vw - 32px)); --nh: 34px; --nr: 17px; }
 .notch.is-tight .nf-clip { justify-content: center; gap: 10px; }
-.notch.is-tight .nc-lg { width: 26px; height: 26px; }
+.notch.is-tight .nc-lg { width: 24px; height: 24px; }
 .notch.is-tight .clip-preview { display: none; }
-.notch.is-tight .lyric { display: none; }
-.notch.is-tight .nf-music { justify-content: space-between; }
+.notch.is-tight .nf-greet { justify-content: center; gap: 8px; }
 .notch[data-state].is-open { --nw: min(460px, calc(100vw - 32px)); --nh: 300px; --nr: 26px; }
+/* The dragged hero cat is over the notch. */
+.notch.is-glow { box-shadow: 0 0 0 3px rgba(226, 104, 60, .55), 0 0 50px rgba(226, 104, 60, .6); }
 @media (max-width: 32.5em) {
-  .notch[data-state="idle"], .notch[data-state="cat"], .notch[data-state="arrange"],
-  .notch:is([data-state="clipboard"], [data-state="music"]).is-tight { --nw: 120px; --nh: 45px; --nr: 22px; }
+  .notch[data-state="idle"],
+  .notch:is([data-state="clipboard"], [data-state="greet"]).is-tight { --nw: 120px; --nh: 45px; --nr: 22px; }
   .notch .nf-idle { padding: 0 14px; }
-  .notch[data-state="music"] { --nh: 45px; --nr: 22px; }
+  .notch.is-tight .nf-greet { padding: 0 10px; gap: 6px; }
+  .notch.is-tight .greet-text { font-size: 12px; }
+  .notch.is-tight .nf-greet .nc-lg { width: 20px; height: 20px; }
 }
 /* Below 23.5em (376 px) the idle footprint is 96 px, so the Menu and
    Download pills keep 12 px from it at 320 px. */
 @media (max-width: 23.49em) {
-  .notch[data-state="idle"], .notch[data-state="cat"], .notch[data-state="arrange"],
-  .notch:is([data-state="clipboard"], [data-state="music"]).is-tight { --nw: 96px; }
+  .notch[data-state="idle"],
+  .notch:is([data-state="clipboard"], [data-state="greet"]).is-tight { --nw: 96px; }
   /* 94 px inside the 1 px edges: cat 26 + gap 10 + clock 39 + 2 x 9. */
-  .notch .nf-idle, .notch .nf-arrange, .notch.is-tight .nf-clip, .notch.is-tight .nf-music { padding: 0 9px; }
+  .notch .nf-idle, .notch.is-tight .nf-clip, .notch.is-tight .nf-greet { padding: 0 9px; }
   .notch.is-tight .nf-clip { gap: 8px; }
   /* 42 px are left for the title (76 - cat 26 - gap 8); "Copied" is 47 px at
      14 px and 41 px at 12 px. */
   .notch.is-tight .clip-title { font-size: 12px; }
+  .notch.is-tight .nf-greet .nc-lg { display: none; }
 }
 .notch-face { position: absolute; top: 0; left: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .notch.is-open .notch-face { height: 44px; }
@@ -275,74 +336,20 @@ html:not(.js) #notch { display: none; }
 
 .nf { position: absolute; inset: 0; display: flex; align-items: center; gap: 10px; padding: 0 20px; opacity: 0; pointer-events: none; transition: opacity .18s ease-out; }
 .notch[data-state="idle"] .nf-idle,
-.notch[data-state="music"] .nf-music,
-.notch[data-state="panel"] .nf-panel,
 .notch[data-state="clipboard"] .nf-clip,
-.notch[data-state="arrange"] .nf-arrange,
-.notch[data-state="cat"] .nf-cat { opacity: 1; transition-delay: .12s; }
+.notch[data-state="greet"] .nf-greet { opacity: 1; transition-delay: .12s; }
 .notch.is-open .nf { opacity: 0; transition-delay: 0s; }
 .notch.is-open .nf-open { opacity: 1; transition-delay: .1s; }
 
 .nf-idle { justify-content: space-between; }
 .nf-idle .clock { font-family: var(--mono); font-weight: 400; font-size: 13px; font-variant-numeric: tabular-nums; }
 .nc { flex: none; overflow: visible; }
-.nf-cat { justify-content: center; }
-.nf-music { padding: 0 14px; }
-.cover { position: relative; flex: none; width: 22px; height: 22px; border-radius: 5px; background: var(--notch-line); }
-.cover::after { content: ""; position: absolute; left: 6px; top: 6px; width: 10px; height: 10px; border-radius: 50%; background: var(--notch-accent); }
-.cover-lg { width: 72px; height: 72px; border-radius: 12px; }
-.cover-lg::after { left: 22px; top: 22px; width: 28px; height: 28px; }
-.lyric { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
-/* Two identical animations, so a new line can restart it by swapping the
-   class instead of forcing a reflow. */
-.lyric.swap-a { animation: lyric-in-a .3s ease-out; }
-.lyric.swap-b { animation: lyric-in-b .3s ease-out; }
-@keyframes lyric-in-a { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
-@keyframes lyric-in-b { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
-.eq { flex: none; display: flex; align-items: flex-end; gap: 2px; height: 14px; }
-.eq i { display: block; width: 3px; height: 100%; border-radius: 1px; background: var(--notch-accent); transform-origin: 50% 100%; transform: scaleY(.4); }
-.eq i:nth-child(1) { transform: scaleY(.45); }
-.eq i:nth-child(2) { transform: scaleY(.8); }
-.eq i:nth-child(3) { transform: scaleY(.55); }
-.eq i:nth-child(4) { transform: scaleY(1); }
-.eq i:nth-child(5) { transform: scaleY(.65); }
-@media (prefers-reduced-motion: no-preference) {
-  .notch[data-state="music"]:not(.is-open) .eq i { animation: eq 820ms ease-in-out infinite alternate; }
-  .notch[data-state="music"]:not(.is-open) .eq i:nth-child(2) { animation-duration: 640ms; }
-  .notch[data-state="music"]:not(.is-open) .eq i:nth-child(3) { animation-duration: 980ms; }
-  .notch[data-state="music"]:not(.is-open) .eq i:nth-child(4) { animation-duration: 720ms; }
-  .notch[data-state="music"]:not(.is-open) .eq i:nth-child(5) { animation-duration: 900ms; }
-  html.is-hidden .eq i { animation-play-state: paused !important; }
-}
-@keyframes eq { from { transform: scaleY(.22); } to { transform: scaleY(1); } }
-
-.nf-panel { flex-direction: column; align-items: stretch; justify-content: flex-start; gap: 2px; padding: 14px 18px 0; }
-.peek-title { font-size: 15px; font-weight: 600; }
-.peek-line { color: var(--notch-2); font-size: 13px; }
-.peek-dock { display: flex; justify-content: space-between; margin-top: auto; padding-bottom: 14px; }
-.peek-dock svg { width: 17px; height: 17px; color: var(--notch-2); }
-.peek-dock svg.on { color: var(--notch-accent); }
-@media (max-width: 32.5em) {
-  .notch[data-state="panel"] { --nh: 64px; }
-  .peek-dock { display: none; }
-}
-
 .nf-clip { padding: 0 16px; gap: 12px; }
 .clip-text { display: flex; flex-direction: column; min-width: 0; }
 .clip-title { font-weight: 600; font-size: 14px; white-space: nowrap; }
 .clip-preview { color: var(--notch-2); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-/* Susun while its stage is pinned: "Tile n of 3", then "Arranged", at the
-   idle footprint, so it never needs room beside the pills. */
-.nf-arrange { justify-content: center; gap: 8px; }
-.ar-ico { flex: none; color: var(--notch-accent); }
-.ar-text { display: grid; font-size: 13px; font-weight: 500; white-space: nowrap; }
-.ar-pick, .ar-done { grid-area: 1 / 1; transition: opacity .18s ease-out; }
-.ar-done { opacity: 0; }
-.notch[data-ar="done"] .ar-pick { opacity: 0; }
-.notch[data-ar="done"] .ar-done { opacity: 1; }
-@media (max-width: 32.5em) { .ar-long { display: none; } }
-@media (max-width: 23.49em) { .ar-ico { display: none; } }
+.nf-greet { padding: 0 16px; gap: 10px; }
+.greet-text { font-weight: 600; font-size: 14px; white-space: nowrap; }
 
 .nf-open { justify-content: space-between; padding: 0 20px; }
 .nf-title { font-size: 16px; font-weight: 600; }
@@ -363,6 +370,10 @@ html:not(.js) #notch { display: none; }
 .pg-grow { flex: 1; min-width: 0; }
 .pg-bar { display: block; height: 6px; border-radius: 3px; background: var(--notch-line); overflow: hidden; }
 .pg-bar > span { display: block; height: 100%; border-radius: 3px; background: var(--notch-accent); }
+.cover { position: relative; flex: none; width: 22px; height: 22px; border-radius: 5px; background: var(--notch-line); }
+.cover::after { content: ""; position: absolute; left: 6px; top: 6px; width: 10px; height: 10px; border-radius: 50%; background: var(--notch-accent); }
+.cover-lg { width: 72px; height: 72px; border-radius: 12px; }
+.cover-lg::after { left: 22px; top: 22px; width: 28px; height: 28px; }
 .pg-grow .pg-bar { margin-top: 14px; }
 .pg-meters li { display: grid; grid-template-columns: 7.5rem minmax(0, 1fr); gap: 12px; align-items: center; padding: 10px 0; font-size: 14px; }
 .pg-tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding-top: 6px; }
@@ -387,7 +398,7 @@ html:not(.js) #notch { display: none; }
 }
 
 /* ---------- landing page: type and buttons ---------- */
-h1 { font-size: clamp(2.5rem, 1rem + 6.4vw, 6rem); line-height: .98; letter-spacing: -.045em; }
+h1 { font-size: clamp(2.5rem, 1rem + 6.4vw, 5.75rem); line-height: .98; letter-spacing: -.045em; }
 h2 { font-size: clamp(2rem, 1.25rem + 3vw, 3.5rem); line-height: 1.02; letter-spacing: -.035em; }
 h3 { font-size: clamp(1.25rem, 1.1rem + .6vw, 1.5rem); letter-spacing: -.015em; }
 .lead { font-size: clamp(1.125rem, 1rem + .5vw, 1.3125rem); line-height: 1.5; max-width: 36rem; color: var(--text-2); }
@@ -398,124 +409,267 @@ h3 { font-size: clamp(1.25rem, 1.1rem + .6vw, 1.5rem); letter-spacing: -.015em; 
 .btn-copy { min-height: 44px; padding: 0 18px; border-color: var(--control); background: var(--bg); color: var(--text); font-weight: 500; }
 .btn-copy:hover { background: var(--bg-2); }
 .btn-copy.is-copied { border-color: var(--ink); color: var(--ink); }
+.btn-s { min-height: 44px; padding: 0 18px; border-color: var(--control); background: transparent; color: var(--text); font-size: .9375rem; font-weight: 500; }
+.btn-s:hover:not(:disabled) { border-color: var(--ink); }
+.btn-s:disabled { opacity: .6; cursor: default; }
 .actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin: 2.25rem 0 0; }
-.hint { margin: 1.75rem auto 0; font-size: .875rem; color: var(--text-2); }
 
 /* ---------- hero ----------
-   Centred: the cat, a two-line headline, one line, Download and the install
-   line. As the hero scrolls away, site.js scales the headline to 0.92 and
-   fades it to 0.2 (transform and opacity only); reduced motion leaves it
-   alone. The top padding keeps the notch and the header pills clear. */
-.hero { display: flex; align-items: center; min-height: min(100vh, 56rem); min-height: min(100svh, 56rem); padding-block: clamp(6.5rem, 15vh, 9rem) clamp(4rem, 10vh, 7rem); text-align: center; }
+   Centred: the cat, four coat chips, a two-line headline, one line, Download
+   and the install line, on the night horizon. The top padding keeps the notch
+   and the header pills clear. Without script the cat is a still picture and
+   the chips are not shown. */
+.hero { position: relative; display: flex; align-items: center; justify-content: center; min-height: min(100vh, 62rem); min-height: min(100svh, 62rem); padding-block: clamp(6.5rem, 14vh, 8.5rem) clamp(4rem, 9vh, 6rem); text-align: center; overflow-x: clip; }
 html:not(.js) .hero { min-height: 0; }
-.hero-inner { display: flex; flex-direction: column; align-items: center; }
-.hero-logo { width: clamp(56px, 7vw, 80px); height: auto; margin-bottom: 2rem; }
-.hero-title { transform-origin: 50% 40%; }
+.hero-inner { position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; }
 .hero-title .l { display: block; }
 .hero-line { max-width: 34rem; margin: 1.5rem 0 0; font-size: clamp(1.125rem, 1rem + .5vw, 1.3125rem); line-height: 1.5; color: var(--text-2); }
 .hero-cmd { width: min(100%, 49rem); margin-top: 1.25rem; text-align: left; }
-@media (prefers-reduced-motion: reduce) { .hero-title { transform: none !important; opacity: 1 !important; } }
+/* The horizon: a big dark disc whose rim glows terracotta (a pale sun in the
+   light theme), clipped to the hero so it never causes overflow. */
+.horizon-clip { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.horizon { position: absolute; left: 50%; bottom: -78vw; width: 150vw; height: 86vw; translate: -50% 0; border-radius: 50%; background: radial-gradient(closest-side, #1A1215 96%, rgba(26, 18, 21, 0) 100%); box-shadow: 0 -2px 0 rgba(226, 104, 60, .5), 0 -26px 110px rgba(226, 104, 60, .26); }
+html[data-theme="light"] .horizon { background: radial-gradient(closest-side, #FFE9CF 55%, rgba(255, 233, 207, 0) 100%); box-shadow: 0 -2px 0 rgba(224, 140, 90, .35), 0 -26px 110px rgba(246, 181, 142, .4); }
 
-/* ---------- features: the tiles ---------- */
-.features { padding-top: clamp(3rem, 8vw, 6rem); }
-.features h2, .shot-sec h2 { text-align: center; margin-bottom: clamp(1.75rem, 4vw, 3rem); }
-.tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 0; padding: 0; list-style: none; }
-@media (min-width: 48em) { .tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; } }
-.tile { min-width: 0; padding: 16px; border-radius: 16px; background: var(--bg-2); }
-@media (min-width: 40em) { .tile { padding: 22px; } }
-.tile-ico { display: block; width: 28px; height: 28px; margin-bottom: 14px; color: var(--ink); }
-.tile h3 { margin-bottom: 4px; font-size: 1.0625rem; letter-spacing: -.01em; }
-.tile p { margin: 0; font-size: .9375rem; line-height: 1.45; color: var(--text-2); }
-.also { max-width: 40rem; margin: 1.75rem auto 0; text-align: center; font-size: .9375rem; color: var(--text-2); }
+/* The cat: logo geometry in a 256 grid. Pieces are separate so the ears can
+   twitch, the eyes follow the pointer, and the eyes swap for the happy and
+   squint shapes. Colours come from the coat variables on <html>. */
+.cat-wrap { position: relative; width: clamp(128px, 36vw, 164px); aspect-ratio: 1; margin-bottom: 6px; }
+.stage { position: relative; width: 100%; height: 100%; z-index: 5; -webkit-tap-highlight-color: transparent; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.js .stage { cursor: grab; }
+.stage.is-held { cursor: grabbing; z-index: 95; }
+.stage:focus-visible { outline: 3px solid var(--focus); outline-offset: 6px; border-radius: 24px; }
+.cat { display: block; width: 100%; height: 100%; overflow: visible; }
+.cat .ear { transform-box: fill-box; transition: transform .3s cubic-bezier(.3, 1.6, .5, 1); }
+.cat .el { transform-origin: 100% 100%; }
+.cat .er { transform-origin: 0 100%; }
+.stage:hover .el { transform: rotate(-7deg); }
+.stage:hover .er { transform: rotate(7deg); }
+.cat .eye { transform-box: fill-box; transform-origin: center; transition: transform .09s; }
+.cat.blink .eye { transform: scaleY(.12); }
+.cat .happy, .cat .squint { opacity: 0; }
+.cat.purr .eyes, .cat.is-held .eyes { opacity: 0; }
+.cat.purr .happy { opacity: 1; }
+.cat.is-held .squint { opacity: 1; }
+.cat.purr { animation: purr .12s linear infinite; }
+@keyframes purr { 50% { translate: 1.5px 0; } }
+.bubble { position: absolute; left: 62%; top: -22px; z-index: 6; margin: 0; padding: 6px 12px; border-radius: 14px 14px 14px 4px; background: var(--bubble-bg); color: var(--bubble-text); font-weight: 600; font-size: .875rem; line-height: 1.4; white-space: nowrap; opacity: 0; transform: translateY(8px) scale(.8); transform-origin: 0 100%; transition: opacity .25s, transform .25s cubic-bezier(.3, 1.6, .5, 1); pointer-events: none; }
+.bubble.on { opacity: 1; transform: none; }
+.fx { position: absolute; left: 50%; top: 50%; z-index: 6; pointer-events: none; font-size: 18px; line-height: 1; color: var(--ink); }
 
-/* ---------- the three screenshots ---------- */
-.shot-sec { padding-top: clamp(4.5rem, 11vw, 8.5rem); }
-.shot { display: grid; justify-items: center; margin: 0; min-width: 0; max-width: 100%; }
-.shot img { filter: var(--shot-shadow); }
-.shot figcaption { margin-top: .9rem; font-size: .875rem; color: var(--text-2); text-align: center; }
+.coats { display: flex; gap: 4px; justify-content: center; margin: 0 0 1.5rem; }
+.coat-chip { position: relative; width: 36px; height: 36px; padding: 0; border: 0; border-radius: 50%; background: transparent; cursor: pointer; }
+.coat-chip i { position: absolute; inset: 5px; border-radius: 50%; border: 1px solid var(--control); }
+.coat-chip[aria-pressed="true"]::after { content: ""; position: absolute; inset: 0; border-radius: 50%; border: 2px solid var(--text); }
+.coat-chip[data-coat="terracotta"] i { background: #E2683C; }
+.coat-chip[data-coat="calico"] i { background: conic-gradient(#F4EDE4 0 50%, #E2683C 0 75%, #2B2420 0); }
+.coat-chip[data-coat="white"] i { background: #F6F1EA; }
+.coat-chip[data-coat="black"] i { background: #1E1B22; border-color: #75675B; }
 
-/* ---------- Susun ----------
-   The final, arranged state is the default (no script, reduced motion, a
-   viewport too short for the stage). site.js adds .is-scrub when the stage
-   fits the viewport and motion is welcome: the wrapper grows by 130vh (70vh
-   on phones), the stage sticks to the top, and data-step on the drawing
-   (0 to 3) says how many tiles are filled. Only opacity and transform move. */
-.susun { padding-top: clamp(2.5rem, 7vw, 5rem); }
-.ar-stage { display: flex; flex-direction: column; justify-content: center; padding-block: 5rem 2rem; }
-.js .susun.is-scrub .ar-scrub { height: 230vh; }
-.js .susun.is-scrub .ar-stage { position: sticky; top: 0; height: 100vh; height: 100svh; }
-@media (max-width: 32.5em) { .js .susun.is-scrub .ar-scrub { height: 170vh; } }
-@media (prefers-reduced-motion: reduce) {
-  .susun .ar-scrub { height: auto !important; }
-  .susun .ar-stage { position: static !important; height: auto !important; }
+/* ---------- marquee ----------
+   The 14 page names, moved sideways by scroll (site.js). Static without
+   script or with reduced motion; clipped, so it never causes overflow. */
+.marquee { overflow: hidden; padding: 26px 0; border-block: 1px solid rgba(244, 237, 228, .06); background: rgba(18, 14, 16, .45); -webkit-mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent); mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent); }
+html[data-theme="light"] .marquee { border-color: rgba(23, 18, 15, .08); background: rgba(255, 253, 249, .5); }
+.marquee-row { display: flex; gap: 44px; width: max-content; font-size: clamp(1.625rem, 3.6vw, 2.5rem); font-weight: 600; letter-spacing: -.03em; line-height: 1.2; will-change: transform; }
+.marquee-row span { display: flex; align-items: center; gap: 44px; color: rgba(244, 237, 228, .3); white-space: nowrap; }
+.marquee-row span:nth-child(3n + 1) { color: var(--text); }
+.marquee-row span::after { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--ink); }
+html[data-theme="light"] .marquee-row span { color: rgba(23, 18, 15, .3); }
+html[data-theme="light"] .marquee-row span:nth-child(3n + 1) { color: var(--text); }
+
+/* ---------- story: one hover, fourteen pages ----------
+   Without script, with reduced motion, or when the stage does not fit the
+   viewport: static. The first page shows on the screen and the 14 pages are
+   a readable list. site.js adds .is-pin when motion is welcome and the stage
+   fits 100svh: the wrapper is tall, the stage sticks, and scroll progress
+   grows the panel from notch size and flips through the pages. */
+.story { padding-top: clamp(3rem, 8vw, 6rem); }
+.story-grid { display: grid; gap: 1.5rem 3rem; grid-template-columns: minmax(0, 1fr); grid-template-areas: "copy" "visual" "list"; }
+.story-copy { grid-area: copy; min-width: 0; }
+.story-list { grid-area: list; min-width: 0; margin: 0; padding: 0; list-style: none; display: grid; gap: 0 2rem; grid-template-columns: minmax(0, 1fr); }
+.story-visual { grid-area: visual; min-width: 0; }
+@media (min-width: 40em) { .story-list { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (min-width: 56.25em) {
+  .story-grid { grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); grid-template-areas: "copy visual" "list visual"; grid-template-rows: auto 1fr; align-items: start; }
+  .story-list { grid-template-columns: minmax(0, 1fr); }
 }
-/* The stage must fit the viewport to scrub (site.js measures it): stacked,
-   the drawing stays at most 32rem wide; on phones the top padding clears the
-   pills (they end at 60 px) and the 45 px notch, and no more. */
-.ar-grid { display: grid; gap: 1.5rem; align-items: center; }
-@media (max-width: 51.99em) { .ar-fig .ar-demo { max-width: 32rem; } }
-@media (max-width: 32.5em) { .ar-stage { padding-block: 4.5rem 1rem; } }
-@media (min-width: 52em) { .ar-grid { grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); gap: clamp(2.5rem, 5vw, 5rem); } }
-.ar-copy { min-width: 0; }
-.ar-copy .lead { margin: 1.25rem 0 0; }
-.ar-fig { margin: 0; min-width: 0; }
-.ar-fig figcaption { margin-top: .75rem; font-size: .875rem; color: var(--text-2); }
-.ar-demo { width: 100%; max-width: 40rem; }
-.ar-minis { display: flex; flex-wrap: wrap; gap: 10px 14px; margin-bottom: 14px; color: var(--text-2); }
-.ar-mini { display: block; width: 40px; height: 25px; }
-.ar-mini.is-on { color: var(--ink); }
-.ar-screen { display: grid; grid-template-columns: 2fr 1fr; grid-template-rows: 1fr 1fr; gap: 6px; aspect-ratio: 16 / 10; padding: 8px; background: var(--scr-bg); border: 1px solid var(--scr-edge); border-radius: 12px; }
-.ar-tile { position: relative; min-width: 0; border: 1px solid var(--scr-line); border-radius: 6px; }
-.ar-tile[data-n="1"] { grid-row: 1 / span 2; }
-.ar-tile::after { content: ""; position: absolute; inset: -1px; border: 2px solid var(--scr-accent); border-radius: 6px; opacity: 0; pointer-events: none; }
-.ar-num { position: absolute; left: 10px; top: 8px; font-family: var(--mono); font-weight: 400; font-size: .8125rem; color: var(--scr-2); }
-.ar-fill { position: absolute; inset: -1px; display: flex; flex-direction: column; gap: 7px; padding: 10px 12px; overflow: hidden; background: var(--scr-tile); border-radius: 6px; }
-.ar-fill b { font-size: .8125rem; font-weight: 600; color: var(--scr-text); }
-.ar-fill i { display: block; height: 5px; border-radius: 3px; background: var(--scr-bar); }
-.ar-fill i:nth-of-type(1) { width: 78%; }
-.ar-fill i:nth-of-type(2) { width: 56%; }
-.ar-fill i:nth-of-type(3) { width: 66%; }
-.ar-status { display: grid; margin-top: 14px; font-size: .9375rem; color: var(--text); }
-.ar-st-pick, .ar-st-done { grid-area: 1 / 1; }
-.ar-st-pick { opacity: 0; color: var(--text-2); }
-.ar-undo { margin-left: .5rem; color: var(--text-2); }
-.js .ar-tile::after, .js .ar-fill, .js .ar-st-pick, .js .ar-st-done { transition: opacity .3s ease-out, transform .3s ease-out; }
-/* While scrubbing: the tiles before data-step are filled, the one at it is current. */
-.js .is-scrub .ar-demo:not([data-step="3"]) .ar-st-done { opacity: 0; transform: translateY(6px); }
-.js .is-scrub .ar-demo:not([data-step="3"]) .ar-st-pick { opacity: 1; }
-.js .is-scrub [data-step="0"] .ar-fill,
-.js .is-scrub [data-step="1"] .ar-tile:not([data-n="1"]) .ar-fill,
-.js .is-scrub [data-step="2"] .ar-tile[data-n="3"] .ar-fill { opacity: 0; transform: translateY(8px) scale(.97); }
-.js .is-scrub [data-step="0"] .ar-tile[data-n="1"]::after,
-.js .is-scrub [data-step="1"] .ar-tile[data-n="2"]::after,
-.js .is-scrub [data-step="2"] .ar-tile[data-n="3"]::after { opacity: 1; }
+.story-list li { padding: .7rem 0; border-top: 1px solid var(--line); line-height: 1.45; }
+.story-list b { display: block; color: var(--text); font-weight: 600; }
+.story-list span { color: var(--text-2); font-size: .9375rem; }
+.story-count, .story-now, .story-bar { display: none; }
+.story-count { margin-bottom: 14px; font-family: var(--mono); font-size: .8125rem; color: var(--ink); }
+.story-now { min-height: 5.5rem; }
+.st-name { min-height: 2.25rem; font-size: 1.75rem; font-weight: 600; letter-spacing: -.02em; line-height: 1.2; color: var(--ink); }
+.st-line { max-width: 24em; min-height: 3rem; margin: 6px 0 26px; font-size: 1rem; line-height: 1.5; color: var(--text-2); }
+.story-bar { max-width: 320px; height: 2px; border-radius: 2px; background: var(--line); }
+.story-bar i { display: block; height: 100%; width: calc(var(--sp, 0) * 100%); border-radius: 2px; background: var(--ink); }
+.story-copy h2 { margin-bottom: 1.25rem; }
+.js .st-name, .js .st-line { transition: opacity .2s, transform .2s; }
+.story-copy.swap .st-name, .story-copy.swap .st-line { opacity: 0; transform: translateY(6px); }
 
-/* ---------- Try the cat ---------- */
-.cat-section { margin-top: clamp(3rem, 8vw, 6rem); padding-block: clamp(4rem, 9vw, 7rem); background: var(--bg-2); }
-.cat-section .lead { margin: 1.25rem 0 0; }
-.cat-stage { display: grid; gap: clamp(2rem, 5vw, 4rem); margin-top: clamp(2rem, 5vw, 3rem); align-items: center; }
-@media (min-width: 52em) { .cat-stage { grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); } }
-html:not(.js) .cat-stage { grid-template-columns: minmax(0, 1fr); }
-.cat-view { min-width: 0; }
-.cat-bubble { position: relative; display: inline-block; margin: 0 0 1.25rem; padding: .5rem 1rem; background: var(--bg); border-radius: 12px; font-weight: 500; }
-.cat-bubble::after { content: ""; position: absolute; left: 1.5rem; bottom: -5px; width: 12px; height: 12px; background: var(--bg); border-radius: 0 0 3px 0; transform: rotate(45deg); }
-.cat-bubble[hidden] { display: none; }
-.big-cat { display: block; width: 100%; max-width: 30rem; height: auto; overflow: visible; touch-action: manipulation; }
-.cat-pickers { display: grid; gap: 1.75rem; min-width: 0; }
-.picker { margin: 0; padding: 0; border: 0; min-width: 0; }
-.picker legend { padding: 0; margin-bottom: .6rem; font-weight: 600; }
-.picker-row { display: flex; flex-wrap: wrap; gap: 8px; }
-.picker label { position: relative; display: block; }
-.picker input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
-.picker label > span { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 16px; border: 1px solid var(--control); border-radius: 999px; background: var(--bg); font-size: .9375rem; }
-.picker input:checked + span { background: var(--text); color: var(--bg); border-color: var(--text); font-weight: 600; }
-.picker input:checked + span::before { content: "\2713"; font-weight: 600; }
-.picker input:focus-visible + span { outline: 3px solid var(--focus); outline-offset: 2px; }
-.picker input:hover + span { border-color: var(--text); }
-.sw { display: inline-block; width: 14px; height: 14px; border-radius: 50%; background: var(--sw); border: 1px solid var(--control); }
+.story.is-pin .story-pin { height: 560vh; }
+@media (max-width: 40em) { .story.is-pin .story-pin { height: 420vh; } }
+.story.is-pin .story-stage { position: sticky; top: 0; height: 100vh; height: 100svh; display: flex; flex-direction: column; justify-content: center; padding-block: 5rem 2rem; }
+@media (max-width: 32.5em) { .story.is-pin .story-stage { padding-block: 4.5rem 1rem; } }
+.story.is-pin .story-grid { grid-template-areas: "copy" "visual"; gap: 1.25rem; align-items: center; }
+@media (min-width: 56.25em) { .story.is-pin .story-grid { grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); grid-template-areas: "copy visual"; grid-template-rows: auto; gap: 3.5rem; } }
+.story.is-pin .story-count, .story.is-pin .story-now, .story.is-pin .story-bar { display: block; }
+.story.is-pin .story-copy h2 { margin-bottom: 1.5rem; font-size: clamp(2rem, 1.25rem + 2.4vw, 3.5rem); }
+.story.is-pin .story-list { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+@media (max-width: 56.24em) {
+  .story.is-pin .st-line { margin-bottom: 14px; min-height: 0; }
+  .story.is-pin .story-now { min-height: 0; }
+  .story.is-pin .story-copy h2 { margin-bottom: .75rem; font-size: clamp(1.75rem, 1rem + 3vw, 2.25rem); }
+  .story.is-pin .story-count { margin-bottom: 8px; }
+  .story.is-pin .st-name { font-size: 1.375rem; min-height: 0; }
+}
 
-/* ---------- install, Google Calendar, privacy ---------- */
-.gcal, .privacy-short, .install { padding-top: clamp(4rem, 9vw, 7rem); }
+/* The screen: a wallpaper, two windows, and the panel growing from the notch. */
+.screen { --z: 1; position: relative; aspect-ratio: 16 / 10; width: 100%; max-width: 40rem; margin-inline: auto; padding: 8px; border: 1px solid var(--scr-edge); border-radius: 18px; background: var(--scr-bg); box-shadow: 0 50px 120px -40px rgba(0, 0, 0, .9); transform: scale(calc(.86 + var(--z) * .14)); }
+html[data-theme="light"] .screen { box-shadow: 0 30px 80px -30px rgba(40, 24, 16, .45); }
+.wall { position: relative; height: 100%; overflow: hidden; border-radius: 12px; background: radial-gradient(90% 80% at 20% 100%, #5A2638 0, transparent 60%), radial-gradient(80% 70% at 90% 10%, #9A4426 0, transparent 55%), linear-gradient(160deg, #241A18, #100C0C); }
+.wall::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 9%; background: rgba(18, 14, 12, .72); border-top: 1px solid rgba(244, 237, 228, .06); }
+.story .win { position: absolute; border-radius: 8px; background: rgba(30, 24, 21, .8); border: 1px solid rgba(244, 237, 228, .08); }
+.story .win::before { content: ""; position: absolute; left: 10px; top: 9px; width: 30%; height: 6px; border-radius: 3px; background: rgba(244, 237, 228, .12); }
+.win-a { left: 6%; top: 58%; width: 40%; height: 30%; }
+.win-b { left: 62%; top: 62%; width: 32%; height: 26%; }
+.bigpanel { position: absolute; top: 0; left: 50%; translate: -50% 0; z-index: 2; display: flex; flex-direction: column; width: min(560px, 88%); height: 72%; padding: 12px 18px; border: 1px solid var(--notch-edge); border-top: 0; border-radius: 0 0 26px 26px; background: #17120F; color: var(--scr-text); font-size: .8125rem; transform-origin: 50% 0; transform: scale(calc(.35 + var(--z) * .65), calc(.14 + var(--z) * .86)); }
+.bp-top { display: flex; align-items: center; gap: 10px; font-size: .875rem; }
+.bp-top .clk { margin-left: auto; font: 12px var(--mono); color: var(--scr-2); }
+.bp-pages { position: relative; flex: 1; margin: 10px 0; opacity: var(--z); }
+.bp-pg { position: absolute; inset: 0; visibility: hidden; opacity: 0; transform: translateX(24px); transition: opacity .3s, transform .35s cubic-bezier(.2, .8, .2, 1), visibility 0s .35s; font-size: .84375rem; }
+.bp-pg.on { visibility: visible; opacity: 1; transform: none; transition-delay: 0s; }
+.bp-pg.prev { transform: translateX(-24px); }
+.bp-pg .r { display: flex; gap: 14px; padding: 7px 0; border-bottom: 1px solid rgba(244, 237, 228, .06); }
+.bp-pg .r span { flex: none; width: 64px; color: var(--scr-2); font: 12px var(--mono); }
+.bp-pg .m { display: flex; align-items: center; gap: 12px; padding: 6px 0; }
+.bp-pg .m span { width: 96px; color: var(--scr-2); }
+.bp-pg .m i { position: relative; flex: 1; height: 6px; overflow: hidden; border-radius: 3px; background: rgba(244, 237, 228, .1); }
+.bp-pg .m i::after { content: ""; position: absolute; inset: 0; width: var(--v); border-radius: 3px; background: #E2683C; }
+.bp-pg .tl { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.bp-pg .tl div { padding: 10px 12px; border-radius: 12px; background: #211A17; }
+.bp-pg .tl b { display: block; font-size: .8125rem; }
+.bp-pg .tl span { color: var(--scr-2); font-size: .75rem; }
+.bp-pg .big { display: flex; align-items: center; gap: 18px; }
+.bp-pg .big b { display: block; font-size: 1.375rem; }
+.bp-pg .big span { color: var(--scr-2); }
+.bp-pg .cv { flex: none; width: 84px; height: 84px; border-radius: 16px; background: linear-gradient(135deg, #E2683C, #7A2E45); }
+.bp-pg .bar-w { width: 220px; max-width: 100%; margin-top: 10px; }
+.bp-pg code { font: 12px var(--mono); line-height: 1.8; color: var(--scr-text); }
+.bp-pg .pr { color: #E2683C; }
+.bp-dock { display: flex; align-items: flex-end; justify-content: center; gap: 6px; height: 34px; opacity: var(--z); }
+.bp-dock svg { flex: none; width: 20px; height: 20px; color: var(--scr-2); transform-origin: 50% 100%; transform: scale(var(--s, 1)); }
+.bp-dock svg.on { color: #E2683C; }
+@media (max-width: 40em) {
+  .screen { padding: 5px; border-radius: 14px; }
+  .bigpanel { width: 94%; padding: 8px 12px; border-radius: 0 0 18px 18px; }
+  .bp-pg { font-size: .75rem; }
+  .bp-pg .r { padding: 4px 0; gap: 8px; }
+  .bp-pg .r span { width: 54px; }
+  .bp-pg .m span { width: 76px; }
+  .bp-pg .big { gap: 10px; }
+  .bp-pg .big b { font-size: 1.0625rem; }
+  .bp-pg .cv { width: 52px; height: 52px; border-radius: 10px; }
+  .bp-pg .big svg { width: 64px; height: 64px; }
+  .bp-pg .tl div { padding: 6px 8px; }
+  .bp-dock { gap: 2px; height: 28px; }
+  .bp-dock svg { width: 15px; height: 15px; }
+  .bp-top { font-size: .8125rem; }
+}
+
+/* ---------- playground ---------- */
+.play { padding-block: clamp(5rem, 11vw, 8rem) clamp(3rem, 7vw, 5rem); }
+.play h2 { margin-bottom: .875rem; text-align: center; }
+.sub { max-width: 34em; margin: 0 auto clamp(2.25rem, 6vw, 3.5rem); font-size: 1.125rem; color: var(--text-2); text-align: center; }
+.play-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+@media (min-width: 40em) { .play-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (min-width: 60em) { .play-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.play-card { display: flex; flex-direction: column; min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 24px; background: var(--card); }
+.play-pic { position: relative; flex: none; height: 190px; overflow: hidden; background: radial-gradient(90% 90% at 20% 110%, #4A2030 0, transparent 60%), radial-gradient(70% 70% at 95% 0, #7A3A22 0, transparent 60%), #120E0E; color: var(--scr-text); }
+.play-body { display: flex; flex: 1; flex-direction: column; gap: 8px; padding: 20px 22px 22px; }
+.play-body h3 { font-size: 1.1875rem; font-weight: 600; }
+.play-body p { flex: 1; margin: 0; font-size: .90625rem; line-height: 1.5; color: var(--text-2); }
+.ctl { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+/* The mini notch inside a picture. */
+.mn { position: absolute; top: 0; left: 50%; translate: -50% 0; display: flex; align-items: center; gap: 8px; width: var(--w, 150px); height: var(--h, 30px); max-width: calc(100% - 16px); overflow: hidden; padding: 0 12px; border: 1px solid #75675B; border-top: 0; border-radius: 0 0 16px 16px; background: #17120F; color: #F4EDE4; font: 11px var(--mono); transition: width .45s cubic-bezier(.3, 1.3, .5, 1), height .45s cubic-bezier(.3, 1.3, .5, 1), border-radius .45s; }
+.mn svg { flex: none; }
+.clk { font: 11px var(--mono); color: #A89A8B; }
+.mn-wide { --w: 230px; --h: 34px; }
+/* dance */
+.mn .lyric { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 11px var(--font); }
+.mn .eq { flex: none; display: flex; align-items: flex-end; gap: 2px; height: 14px; }
+.mn .eq i { display: block; width: 3px; height: 100%; border-radius: 2px; background: #E2683C; transform-origin: 50% 100%; transform: scaleY(.5); animation: eq .9s ease-in-out infinite alternate paused; }
+.mn .eq i:nth-child(2) { animation-delay: -.3s; transform: scaleY(.85); }
+.mn .eq i:nth-child(3) { animation-delay: -.6s; transform: scaleY(.6); }
+.mn .eq i:nth-child(4) { animation-delay: -.15s; transform: scaleY(1); }
+@keyframes eq { from { transform: scaleY(.22); } to { transform: scaleY(1); } }
+.play-card.is-on .eq i { animation-play-state: running; }
+.dance-cat { position: absolute; left: 50%; bottom: -18px; width: 120px; height: 120px; translate: -50% 0; transform-origin: 50% 100%; }
+.play-card.is-on .dance-cat { animation: nod .5s ease-in-out infinite; }
+@keyframes nod { 30% { transform: translateY(2px) rotate(-6deg); } 60% { transform: translateY(-1px) rotate(5deg); } }
+.note { position: absolute; top: 40px; left: 50%; font-size: 16px; line-height: 1; color: #E2683C; pointer-events: none; }
+/* typing */
+.mn-type { justify-content: space-between; }
+.mn-type .ti { display: flex; align-items: center; justify-content: space-between; width: 100%; }
+.mn-type .tw, .mn-type .td { display: none; align-items: center; gap: 8px; font: 12px var(--font); width: 100%; }
+.play-card[data-s="work"] .mn-type { --w: 200px; }
+.play-card[data-s="done"] .mn-type { --w: 250px; --h: 40px; }
+.play-card[data-s="work"] .mn-type .ti, .play-card[data-s="done"] .mn-type .ti { display: none; }
+.play-card[data-s="work"] .mn-type .tw, .play-card[data-s="done"] .mn-type .td { display: flex; }
+.td b { font-weight: 600; font-size: 12px; white-space: nowrap; }
+.td .open { margin-left: auto; padding: 4px 10px; border-radius: 999px; background: #E2683C; color: #17120F; font-weight: 600; font-size: 11px; }
+.paw { transform-box: fill-box; animation: paw .18s ease-in-out infinite alternate; }
+.paw2 { animation-delay: -.09s; }
+@keyframes paw { to { transform: translateY(-3px); } }
+.dots { white-space: nowrap; }
+.dots::after { content: ""; animation: dots 1.2s steps(4) infinite; }
+@keyframes dots { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; } }
+.term-lines { position: absolute; left: 18px; right: 18px; bottom: 14px; font: 11px var(--mono); line-height: 1.6; color: rgba(244, 237, 228, .7); }
+/* peek */
+.play-card[data-card="peek"] .play-pic { cursor: crosshair; }
+.play-pic .full { position: absolute; left: 10px; right: 10px; top: 10px; bottom: 0; border-radius: 10px 10px 0 0; background: #211A17; border: 1px solid rgba(244, 237, 228, .07); }
+.play-pic .full::before { content: ""; position: absolute; left: 14px; top: 14px; width: 40%; height: 7px; border-radius: 4px; background: rgba(244, 237, 228, .1); }
+.play-pic .full::after { content: ""; position: absolute; left: 14px; top: 34px; right: 30%; height: 60px; border-radius: 6px; background: repeating-linear-gradient(rgba(244, 237, 228, .06) 0 6px, transparent 6px 14px); }
+.mn-peek { z-index: 2; }
+.mn-peek .pi { display: flex; align-items: center; justify-content: space-between; width: 100%; }
+.mn-peek .pe { display: none; gap: 10px; margin: 0 auto; }
+.mn-peek .pe i { display: block; width: 7px; height: 12px; border-radius: 4px; background: #E2683C; transition: transform .08s; }
+.play-card.is-eyes .mn-peek { --w: 58px; --h: 22px; padding: 0 12px; border-radius: 0 0 12px 12px; }
+.play-card.is-eyes .mn-peek .pi { display: none; }
+.play-card.is-eyes .mn-peek .pe { display: flex; }
+.play-card.is-blink .pe i { transform: scaleY(.15) !important; }
+/* susun */
+.mn-susun { justify-content: center; font-family: var(--font); font-size: 12px; }
+.play-pic .win { position: absolute; border-radius: 6px; background: rgba(30, 24, 21, .85); border: 1px solid rgba(244, 237, 228, .16); transition: left .5s cubic-bezier(.3, 1.2, .5, 1), top .5s cubic-bezier(.3, 1.2, .5, 1), width .5s cubic-bezier(.3, 1.2, .5, 1), height .5s cubic-bezier(.3, 1.2, .5, 1); }
+.play-pic .win::before { content: ""; position: absolute; left: 10px; top: 9px; width: 30%; height: 6px; border-radius: 3px; background: rgba(244, 237, 228, .14); }
+.lay button { width: 48px; height: 44px; padding: 6px 7px; border: 1px solid var(--control); border-radius: 10px; background: transparent; color: var(--text-2); cursor: pointer; }
+.lay button[aria-pressed="true"] { border-color: var(--ink); color: var(--ink); }
+.lay button:hover { border-color: var(--ink); }
+.lay svg { display: block; width: 100%; height: 100%; }
+/* draw */
+.play-card[data-card="draw"] .play-pic { cursor: crosshair; }
+.frozen { position: absolute; inset: 0; background: rgba(10, 8, 8, .45); }
+.sel { position: absolute; left: 12%; top: 22%; width: 76%; height: 54%; border: 1.5px dashed rgba(244, 237, 228, .7); background: radial-gradient(90% 90% at 20% 110%, #5A2638 0, transparent 60%), #1A1414; }
+.js .sel { touch-action: none; }
+.sel::before { content: "640 x 360"; position: absolute; left: 0; top: -20px; padding: 2px 6px; border-radius: 4px; background: #17120F; color: #F4EDE4; font: 10px var(--mono); }
+.draw-cv { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.tools { position: absolute; left: 50%; bottom: 8px; translate: -50% 0; z-index: 2; display: flex; gap: 4px; padding: 4px; border: 1px solid var(--scr-edge); border-radius: 12px; background: #17120F; }
+.tools button { min-width: 44px; height: 36px; padding: 0 10px; border: 0; border-radius: 8px; background: transparent; color: #A89A8B; font: inherit; font-size: .8125rem; cursor: pointer; }
+.tools button[aria-pressed="true"] { background: rgba(226, 104, 60, .22); color: #F4EDE4; }
+.tools button:hover { color: #F4EDE4; }
+/* copy */
+.play-card[data-card="copy"] .play-pic { display: grid; place-items: center; padding: 30px 24px 20px; }
+.play-pic blockquote { margin: 0; font-size: 1.0625rem; line-height: 1.45; font-weight: 500; text-align: center; user-select: text; -webkit-user-select: text; }
+.play-pic blockquote::selection, .play-pic blockquote *::selection { background: rgba(226, 104, 60, .55); }
+.play-pic kbd { padding: 1px 6px; border: 1px solid #75675B; border-radius: 6px; font: 12px var(--mono); color: #F4EDE4; }
+
+/* ---------- install, Google Calendar, privacy ----------
+   On a tint panel, so their text never sits straight on the dawn glow. */
+.tint-panel { margin-top: clamp(3rem, 8vw, 6rem); border-top: 1px solid var(--line); background: var(--panel); padding-bottom: 1px; }
+main > .tint-panel:last-child { margin-bottom: calc(-1 * clamp(4rem, 10vw, 8rem)); }
+.gcal, .privacy-short, .install { padding-top: clamp(3.5rem, 8vw, 6rem); }
+.privacy-short { padding-bottom: clamp(3rem, 7vw, 5rem); }
 .gcal h2, .privacy-short h2, .install h2 { margin-bottom: 1.25rem; }
 .gcal .lead, .privacy-short .lead, .install .lead { color: var(--text); }
 .install-dl { margin: 1.75rem 0 1rem; }
@@ -548,7 +702,7 @@ html:not(.js) .cmd { grid-template-columns: minmax(0, 1fr); }
 .copy-msg.is-error { color: var(--ink); font-weight: 500; }
 @media (max-width: 32.5em) { .cmd { grid-template-columns: minmax(0, 1fr); } .btn-copy { justify-self: start; } }
 
-/* ---------- scroll reveal (headings, tiles and screenshots only) ----------
+/* ---------- scroll reveal (headings and the playground cards only) ----------
    Once only, in every browser: site.js adds .is-in the first time the element
    is on screen and stops watching it, so it never replays on scroll back. The
    hiding rule exists only under .js; site.js adds .is-in to everything already
@@ -557,16 +711,44 @@ html:not(.js) .cmd { grid-template-columns: minmax(0, 1fr); }
    site.js is merely slow, so the text shows without the layout switching. */
 .js .reveal:not(.is-in) { opacity: 0; transform: translateY(16px); }
 .js .reveal { transition: opacity .5s ease-out, transform .5s ease-out; }
-.js .tile.reveal:nth-child(4n + 2) { transition-delay: 60ms; }
-.js .tile.reveal:nth-child(4n + 3) { transition-delay: 120ms; }
-.js .tile.reveal:nth-child(4n + 4) { transition-delay: 180ms; }
+@media (min-width: 60em) {
+  .js .play-card.reveal:nth-child(3n + 2) { transition-delay: 60ms; }
+  .js .play-card.reveal:nth-child(3n + 3) { transition-delay: 120ms; }
+}
 .js.reveal-off .reveal, .js.reveal-off .reveal:not(.is-in) { opacity: 1; transform: none; }
 @media (prefers-reduced-motion: reduce) {
   .js .reveal, .js .reveal:not(.is-in) { opacity: 1; transform: none; transition: none; }
 }
 
+/* ---------- the walking cat ----------
+   Index only, made by site.js: a 3 px trail at the very bottom and a 30 px cat
+   head that walks along it with page progress. Its track ends before the
+   go-to-top button. At the end of the page it curls up and sleeps; asleep
+   it is a real button that wakes it. */
+.walk { position: fixed; left: 0; right: 0; bottom: 0; z-index: 70; height: 3px; pointer-events: none; }
+.walk-trail { position: absolute; left: 0; bottom: 0; height: 3px; width: 0; background: linear-gradient(90deg, transparent, var(--ink)); }
+.walk-pos { position: absolute; left: 0; bottom: 0; width: 30px; height: 33px; will-change: transform; }
+.walk-cat { position: absolute; left: 0; bottom: 2px; width: 30px; height: 30px; margin: 0; padding: 0; border: 0; background: transparent; pointer-events: none; }
+.walk-cat svg { display: block; width: 30px; height: 30px; overflow: visible; transform-origin: 50% 100%; }
+.walk-cat.is-walking svg { animation: bob .4s ease-in-out infinite alternate; }
+@keyframes bob { to { translate: 0 -3px; } }
+.walk-cat.is-asleep { pointer-events: auto; cursor: pointer; }
+.walk-cat.is-asleep svg { transform: translateY(3px) scale(1.08, .8) rotate(-5deg); }
+.walk-cat:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; border-radius: 8px; }
+.walk-cat.is-stretch svg { animation: stretch .5s ease-out; }
+@keyframes stretch { 0% { transform: translateY(3px) scale(1.08, .8) rotate(-5deg); } 50% { transform: scale(.86, 1.3); } 100% { transform: none; } }
+.walk-cat.is-dash svg { animation: bob .12s ease-in-out infinite alternate; transform: rotate(-10deg); }
+.walk-bubble { position: absolute; right: -4px; bottom: 38px; margin: 0; padding: 5px 11px; border-radius: 12px 12px 4px 12px; background: var(--bubble-bg); color: var(--bubble-text); font-size: .8125rem; font-weight: 600; line-height: 1.4; white-space: nowrap; opacity: 0; transform: translateY(6px); transition: opacity .25s, transform .25s; pointer-events: none; }
+.walk-bubble.on { opacity: 1; transform: none; }
+.zz { position: absolute; left: 20px; bottom: 28px; display: none; color: var(--ink); font-size: 12px; font-weight: 700; line-height: 1; pointer-events: none; }
+.walk-pos.is-asleep .zz { display: block; animation: zz 2.4s ease-out infinite; }
+.walk-pos.is-asleep .zz:nth-of-type(2) { animation-delay: -.8s; }
+.walk-pos.is-asleep .zz:nth-of-type(3) { animation-delay: -1.6s; }
+@keyframes zz { 0% { opacity: 0; transform: translate(0, 0) scale(.7); } 25% { opacity: 1; } 100% { opacity: 0; transform: translate(10px, -22px) scale(1.1); } }
+
 /* ---------- 404 ---------- */
 .lost { padding-block: clamp(6.5rem, 16vw, 11rem) 2rem; text-align: center; }
+.lost .wrap { width: min(100% - 2 * var(--gutter), 40rem); padding: clamp(2rem, 6vw, 3.5rem) clamp(1.25rem, 4vw, 3rem); border: 1px solid var(--line); border-radius: 28px; background: var(--panel); }
 .lost h1 { max-width: 12ch; margin-inline: auto; }
 .lost p { max-width: 32rem; margin: 1.5rem auto 0; }
 .lost .btn { margin-top: 1rem; }
@@ -581,7 +763,8 @@ html:not(.js) .cmd { grid-template-columns: minmax(0, 1fr); }
 .legal { padding-block: clamp(3rem, 7vw, 5.5rem) 0; }
 /* With script the header is fixed over the page: start below its pills. */
 .js .legal { padding-top: calc(4.5rem + clamp(1rem, 4vw, 3rem)); }
-.legal-doc { width: min(100% - 2 * var(--gutter), 68ch); margin-inline: auto; }
+/* The text sits on a tint, never straight on the sky. */
+.legal-doc { width: min(100% - 2 * var(--gutter), 78ch); margin-inline: auto; padding: clamp(1.25rem, 4vw, 3rem); border: 1px solid var(--line); border-radius: 28px; background: var(--panel); }
 .legal-doc h1 { max-width: none; font-size: clamp(2.25rem, 1.4rem + 3.4vw, 3.75rem); line-height: 1; letter-spacing: -.04em; }
 .legal-updated { margin: 1rem 0 2.5rem; color: var(--text-2); font-family: var(--mono); font-weight: 400; font-size: .875rem; }
 .legal-summary { margin: 0 0 2.5rem; padding: 1.5rem 1.75rem; background: var(--bg-2); border: 1px solid var(--line); border-radius: 16px; }
@@ -608,19 +791,25 @@ html:not(.js) .cmd { grid-template-columns: minmax(0, 1fr); }
 .table-wrap thead th { background: var(--bg-2); font-weight: 600; }
 
 @media print {
+  html::before, body::before, body::after, #sky, .walk { display: none !important; }
+  html { background: #fff; }
   .notch, .skip, .menu-btn, .theme-btn, .to-top { display: none !important; }
   .js .site-header { position: static; }
-  .susun .ar-scrub { height: auto !important; }
-  .susun .ar-stage { position: static !important; height: auto !important; }
+  .story .story-pin { height: auto !important; }
+  .story .story-stage { position: static !important; height: auto !important; }
 }
 
 /* Reduced motion: states still change, but at once. */
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
-  .notch, .nf, .notch-panel, .ar-pick, .ar-done { transition: none; }
-  .lyric.swap-a, .lyric.swap-b { animation: none; }
-  .eq i { animation: none; }
-  .js .ar-tile::after, .js .ar-fill, .js .ar-st-pick, .js .ar-st-done { transition: none; }
+  .notch, .nf, .notch-panel { transition: none; }
+  .eq i, .paw, .dots::after, .cat.purr, .play-card.is-on .dance-cat { animation: none !important; }
+  .dots::after { content: "..."; }
+  .cat .ear, .cat .eye, .bubble, .mn, .play-pic .win, .bp-pg, .walk-bubble, .mn-peek .pe i { transition: none; }
+  .walk-cat svg, .zz { animation: none !important; }
+  .walk-pos.is-asleep .zz { opacity: .9; }
+  .marquee-row { transform: none !important; will-change: auto; }
+  .screen, .bigpanel { transition: none; }
 }
 
 /* Links inside running text get a taller hit area (padding on an inline box does not move the lines). */
