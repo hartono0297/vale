@@ -117,6 +117,9 @@ impl App {
             self.lyrics_card.open = true;
             self.lyrics_card.hidden = self.state.fullscreen();
             self.lyrics_card.last = None;
+            // The card's own monitor decides, not the notch monitor's state:
+            // settle it before the first frame is shown.
+            self.check_lyrics_card_fullscreen();
             // The Musik page's button lights up.
             self.draw(Instant::now());
         }

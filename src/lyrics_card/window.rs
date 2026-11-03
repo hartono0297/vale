@@ -1063,6 +1063,15 @@ impl Card {
         }
     }
 
+    /// Whether the extrapolated position has reached the end of the track
+    /// (`position_at` stops there): nothing moves any more, so no line timer
+    /// is armed; the next snapshot re-arms it through `follow`.
+    fn at_track_end(&self, now: Instant) -> bool {
+        self.c
+            .timeline
+            .is_some_and(|t| t.end_ms > 0 && lyrics::position_at(&t, true, now) >= t.end_ms)
+    }
+
     /// The one-shot timers: the next line (only while visible and playing
     /// with synced lyrics) and the manual-scroll return (only while held).
     fn sync_timers(&mut self, now: Instant) {
@@ -1071,7 +1080,8 @@ impl Card {
             && self.c.status == Status::Synced
             && !self.c.lines.is_empty()
             && self.c.timeline.is_some()
-            && self.frozen_ms.is_none();
+            && self.frozen_ms.is_none()
+            && !self.at_track_end(now);
         unsafe {
             if line {
                 let t = self.c.timeline.unwrap_or_else(|| Timeline {
@@ -1301,7 +1311,8 @@ impl Card {
                         layout::PAD - 8.0,
                         top - 5.0,
                         body.w - 2.0 * (layout::PAD - 8.0),
-                        h * s + 10.0,
+                        // `h` is the slot, which already holds the scaled line.
+                        h + 10.0,
                     );
                     self.surf.fill_round(hr, 10.0, 0xFFFFFF, 0.08);
                 }
@@ -1851,6 +1862,22 @@ mod tests {
         assert!(set_hidden(true));
         assert!(!timer_set(h, TIMER_LINE), "hidden: none");
         assert!(!timer_set(h, TIMER_MANUAL));
+        close();
+    }
+
+    #[test]
+    fn no_line_timer_runs_once_the_track_has_reached_its_end() {
+        use windows::Win32::UI::WindowsAndMessaging::KillTimer;
+        let timer_set = |h: HWND, id: usize| unsafe { KillTimer(Some(h), id) }.is_ok();
+        assert!(open(args(), content(Status::Synced, true)));
+        let h = hwnd().unwrap();
+        assert!(timer_set(h, TIMER_LINE), "mid-track: armed");
+        let mut at_end = content(Status::Synced, true);
+        if let Some(t) = at_end.timeline.as_mut() {
+            t.position_ms = t.end_ms;
+        }
+        update(at_end);
+        assert!(!timer_set(h, TIMER_LINE), "at the end: nothing left to move");
         close();
     }
 
