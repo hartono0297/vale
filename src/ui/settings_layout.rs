@@ -152,7 +152,7 @@ pub enum Section {
     /// Panel: how it opens, its pages, its shortcut tiles.
     Panel,
     Clipboard,
-    /// Tombol pintas: the five global hotkeys, each recorded by pressing it.
+    /// Tombol pintas: the six global hotkeys, each recorded by pressing it.
     Hotkeys,
     /// Fitur: the pomodoro, music, the CLI, devices, the cleaner.
     Features,
@@ -1266,10 +1266,10 @@ pub struct State<'a> {
     pub open_mode: OpenMode,
     /// The plug-in and safe-to-remove notices.
     pub device_notices: bool,
-    /// The five hotkeys, and by `HotkeyId::index` whether a set one could not
+    /// The six hotkeys, and by `HotkeyId::index` whether a set one could not
     /// be registered (taken by another app, or the PrtSc hook failed).
     pub hotkeys: Hotkeys,
-    pub hotkey_failed: [bool; 5],
+    pub hotkey_failed: [bool; HotkeyId::ALL.len()],
     /// The row being recorded, and why the last combo typed was refused
     /// (window state, not saved).
     pub hotkey_recording: Option<HotkeyId>,
@@ -4293,6 +4293,7 @@ pub fn hotkey_row_key(id: HotkeyId) -> Key {
         HotkeyId::Devices => Key::HotkeyRowDevices,
         HotkeyId::Arrange => Key::HotkeyRowArrange,
         HotkeyId::Screenshot => Key::HotkeyRowScreenshot,
+        HotkeyId::LyricsCard => Key::HotkeyRowLyricsCard,
     }
 }
 
@@ -4303,6 +4304,7 @@ fn hotkey_row_desc_key(id: HotkeyId) -> Key {
         HotkeyId::Devices => Key::HotkeyRowDevicesDesc,
         HotkeyId::Arrange => Key::HotkeyRowArrangeDesc,
         HotkeyId::Screenshot => Key::HotkeyRowScreenshotDesc,
+        HotkeyId::LyricsCard => Key::HotkeyRowLyricsCardDesc,
     }
 }
 
@@ -4351,7 +4353,7 @@ fn hotkey_field_w(b: &Builder, caps: &[String], recording: bool) -> f32 {
 }
 
 /// Tombol pintas: one card, a header (the hint and "Kembalikan semua") and a
-/// row for each hotkey: its name and description (red when the last combo was
+/// row for each of the six hotkeys: its name and description (red when the last combo was
 /// refused, or the one set is taken), the field that records it and its own
 /// reset button.
 fn hotkeys_page(b: &mut Builder, s: &State) {
@@ -4847,6 +4849,7 @@ mod tests {
             devices: hk("Ctrl+Alt+F13"),
             arrange: hk("Win+Alt+S"),
             screenshot: hk("Ctrl+PrtSc"),
+            lyrics_card: hk("Win+Ctrl+Alt+Shift+PageUp"),
         }
     }
 
@@ -4981,7 +4984,7 @@ mod tests {
                         } else {
                             Hotkeys::default()
                         },
-                        hotkey_failed: [locked; 5],
+                        hotkey_failed: [locked; HotkeyId::ALL.len()],
                         hotkey_recording: locked.then_some(HotkeyId::Devices),
                         hotkey_error: locked.then_some((
                             HotkeyId::Clipboard,
@@ -6247,7 +6250,7 @@ mod tests {
         State {
             lang,
             hotkeys: Hotkeys::default(),
-            hotkey_failed: [false; 5],
+            hotkey_failed: [false; HotkeyId::ALL.len()],
             hotkey_recording: None,
             hotkey_error: None,
             scroll: 0.0,
@@ -6256,7 +6259,7 @@ mod tests {
     }
 
     #[test]
-    fn tombol_pintas_sits_after_clipboard_with_a_header_and_five_rows() {
+    fn tombol_pintas_sits_after_clipboard_with_a_header_and_six_rows() {
         assert_eq!(
             Section::ALL,
             [
@@ -6277,10 +6280,10 @@ mod tests {
             let l = layout(Section::Hotkeys, &s, &Estimate);
             // The section needs no viewport at the minimum size.
             assert!(l.viewport.is_none() && l.scroll_max == 0.0, "{lang:?}");
-            // One card of the header and five rows, under its eyebrow.
+            // One card of the header and six rows, under its eyebrow.
             assert_eq!(l.cards.len(), 1);
             let card = l.cards[0];
-            assert_eq!(card.h, HEADER_H + 5.0 * ROW_H);
+            assert_eq!(card.h, HEADER_H + 6.0 * ROW_H);
             assert!(
                 l.texts
                     .iter()
@@ -6400,7 +6403,7 @@ mod tests {
             let f = hotkey_fields(&layout(Section::Hotkeys, &rec, &Estimate));
             assert_eq!(
                 f.iter().map(|x| x.3).collect::<Vec<_>>(),
-                [false, false, true, false, false]
+                [false, false, true, false, false, false]
             );
             // The description: red for a refusal on that row, red for a taken
             // one that is set, otherwise secondary.
@@ -6431,12 +6434,16 @@ mod tests {
             }
             // A set row taken by another app is red; an off one never is.
             let taken = State {
-                hotkey_failed: [true; 5],
+                hotkey_failed: [true; HotkeyId::ALL.len()],
                 ..s.clone()
             };
             let l = layout(Section::Hotkeys, &taken, &Estimate);
             let reds: Vec<&Text> = l.texts.iter().filter(|t| t.tone == Tone::Bad).collect();
-            assert_eq!(reds.len(), 3, "search, clipboard and screenshot are set");
+            assert_eq!(
+                reds.len(),
+                4,
+                "search, clipboard, screenshot and the lyrics card are set"
+            );
             assert!(reds.iter().all(|t| t.text == text(lang, Key::HotkeyTaken)));
         }
     }

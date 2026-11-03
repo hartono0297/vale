@@ -28,6 +28,7 @@ mod hotkey;
 mod i18n;
 mod identify_overlay;
 mod lyrics;
+mod lyrics_card;
 mod media_log;
 mod model;
 mod mole;
@@ -91,6 +92,7 @@ fn opens_windows(arg: Option<&str>) -> bool {
             | "--demo-notice-close"
             | "--demo-snap"
             | "--demo-shot-editor"
+            | "--demo-lyrics-card"
             | "--settings",
         ) => true,
         Some(_) => false,
@@ -215,6 +217,14 @@ fn main() {
             demo_lang_from_env();
             let empty = std::env::args().nth(2).as_deref() == Some("empty");
             shot_edit::window::run_demo(empty);
+        }
+        // The lyrics card on made-up data: `--demo-lyrics-card [scene]`.
+        #[cfg(debug_assertions)]
+        Some("--demo-lyrics-card") => {
+            attach_parent_console();
+            demo_lang_from_env();
+            let scene = std::env::args().nth(2);
+            lyrics_card::demo::run(scene.as_deref());
         }
         #[cfg(debug_assertions)]
         Some("--settings") => {

@@ -1914,6 +1914,7 @@ impl IslandState {
                 self.lyrics_on = !self.lyrics_on;
                 effects.push(Effect::SaveLyrics(self.lyrics_on));
             }
+            Hit::LyricsCard => effects.push(Effect::ToggleLyricsCard),
             // The slider is set by the press itself (`Event::MixerLevel`); the
             // click that ends it has nothing left to do.
             Hit::MixerSlider(_) => {}
@@ -3095,6 +3096,7 @@ mod tests {
             art: None,
             source_app: "Chrome".into(),
             session_key: 0,
+            can_seek: false,
         }
     }
 
@@ -8258,6 +8260,21 @@ mod tests {
             vec![Effect::SaveLyrics(false)]
         );
         assert!(!s.lyrics_on());
+        assert_eq!(s.view(), View::Panel(Page::Media));
+    }
+
+    #[test]
+    fn the_lyrics_card_button_asks_for_the_card_and_changes_nothing_else() {
+        let t0 = Instant::now();
+        let mut s = st();
+        open_on(&mut s, Page::Media, t0);
+        let before = s.lyrics_on();
+        assert_eq!(
+            s.apply(Event::Click(Hit::LyricsCard), t0),
+            vec![Effect::ToggleLyricsCard]
+        );
+        // "Lirik" keeps its meaning: the setting is untouched, the panel stays.
+        assert_eq!(s.lyrics_on(), before);
         assert_eq!(s.view(), View::Panel(Page::Media));
     }
 

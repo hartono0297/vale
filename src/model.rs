@@ -183,6 +183,10 @@ pub struct MediaInfo {
     /// An id the watcher gives the shown session, 0 when unknown (demo,
     /// tests). Transport commands go to the session with this key.
     pub session_key: u64,
+    /// The shown session lets a seek through (`IsPlaybackPositionEnabled`);
+    /// false when unknown or unreadable. The lyrics card shows its click-to-
+    /// seek affordance only with it.
+    pub can_seek: bool,
 }
 
 /// Where the current track's playback was at a known moment, from the media
@@ -466,6 +470,9 @@ pub enum Hit {
     RemindersMore,
     /// The Musik page's "Lirik" button: lyrics in the notch on or off.
     LyricsToggle,
+    /// The Musik page's round button left of "Lirik": opens or closes the
+    /// floating lyrics card. Only there while the lyrics setting is on.
+    LyricsCard,
     /// The strip at the top of the open panel: the newest Claude waiting or
     /// due reminder notice.
     Strip,
@@ -608,6 +615,9 @@ pub enum MediaCommand {
     Play,
     Pause,
     Next,
+    /// Jump to this position (milliseconds from the track's start): the
+    /// lyrics card's click on a line.
+    Seek(u64),
 }
 
 /// What the island knows about a caught toast when the user opens it: enough
@@ -654,6 +664,9 @@ pub enum Effect {
     ReminderDone(String),
     /// The Musik page's lyric button changed the setting; save it.
     SaveLyrics(bool),
+    /// The Musik page's lyrics card button: open or close the card (`App`
+    /// applies `lyrics_card::card_next`).
+    ToggleLyricsCard,
     /// Run a shortcut once the panel has collapsed.
     RunShortcut(Shortcut),
     /// Vale's own capture, whatever the "Alat screenshot" choice is (the

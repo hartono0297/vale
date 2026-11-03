@@ -169,7 +169,7 @@ pub struct Config {
     /// release about once a day (default on). A manual check ignores it.
     #[serde(deserialize_with = "default_on")]
     pub update_check: bool,
-    /// "Tombol pintas": the five global hotkeys (Settings -> Tombol pintas).
+    /// "Tombol pintas": the global hotkeys (Settings -> Tombol pintas).
     /// Read leniently (`Hotkeys`'s deserializer never fails); an old file
     /// without the key gets the old presets as combos (`migrate_hotkeys`).
     /// Owned by the island, so a Settings choice sticks across saves.
@@ -192,6 +192,38 @@ pub struct Config {
     /// "Monitor" (Settings -> Tampilan -> Notch, tray): the screen the island
     /// shows on. Owned by the island; a bad value reads as Primary.
     pub notch_monitor: NotchMonitor,
+    /// Where the floating lyrics card was last (screen coordinates, physical
+    /// px), so it opens there again. Owned by the island (`merge_owned`); a
+    /// malformed value reads as None and never fails the rest of the file.
+    #[serde(deserialize_with = "card_place")]
+    pub lyrics_card: Option<CardPlace>,
+}
+
+/// The lyrics card's rectangle in screen coordinates, physical pixels.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CardPlace {
+    pub left: i32,
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
+}
+
+/// `lyrics_card` read leniently, like `settings_window`.
+fn card_place<'de, D: Deserializer<'de>>(d: D) -> Result<Option<CardPlace>, D::Error> {
+    Ok(card_place_from_json(serde_json::Value::deserialize(d)?))
+}
+
+/// A `CardPlace` from a JSON value, or None when it is not well formed (a
+/// missing or non-number edge, a width or height of 0 or less, a coordinate
+/// beyond +-100000).
+pub fn card_place_from_json(v: serde_json::Value) -> Option<CardPlace> {
+    let p = serde_json::from_value::<CardPlace>(v).ok()?;
+    let sane = [p.left, p.top, p.right, p.bottom]
+        .iter()
+        .all(|c| (-WINDOW_COORD_MAX..=WINDOW_COORD_MAX).contains(c))
+        && p.right > p.left
+        && p.bottom > p.top;
+    sane.then_some(p)
 }
 
 /// Which screen the island shows on. `Primary` follows whichever monitor
@@ -734,6 +766,7 @@ impl Default for Config {
             update_offered: String::new(),
             font: UiFont::Sans,
             notch_monitor: NotchMonitor::Primary,
+            lyrics_card: None,
         }
     }
 }
@@ -878,6 +911,7 @@ pub fn merge_owned(disk: Config, mem: &Config) -> Config {
         update_offered: mem.update_offered.clone(),
         font: mem.font,
         notch_monitor: mem.notch_monitor.clone(),
+        lyrics_card: mem.lyrics_card,
         ..disk
     }
 }
@@ -1269,6 +1303,7 @@ mod tests {
                 devices: crate::hotkey::parse("Ctrl+Alt+D").unwrap(),
                 arrange: crate::hotkey::parse("Win+Shift+F13").unwrap(),
                 screenshot: crate::hotkey::parse("Ctrl+PrtSc").unwrap(),
+                lyrics_card: crate::hotkey::parse("Win+Alt+L").unwrap(),
             },
             settings_window: Some(WindowPlace {
                 left: 20,
@@ -1282,6 +1317,12 @@ mod tests {
                 path: r"\\?\DISPLAY#X#1".into(),
                 name: "Dell".into(),
             },
+            lyrics_card: Some(CardPlace {
+                left: -500,
+                top: 72,
+                right: -200,
+                bottom: 492,
+            }),
         };
         assert_eq!(parse(&serde_json::to_string(&c).unwrap()), c);
     }
@@ -1861,6 +1902,78 @@ mod tests {
     }
 
     #[test]
+    fn the_lyrics_card_place_round_trips_and_reads_leniently() {
+        let place = CardPlace {
+            left: -1500,
+            top: 40,
+            right: -1200,
+            bottom: 460,
+        };
+        let c = Config {
+            lyrics_card: Some(place),
+            ..Config::default()
+        };
+        let text = serde_json::to_string(&c).unwrap();
+        assert_eq!(parse(&text).lyrics_card, Some(place));
+        // An old config without the key, and a default one: None.
+        assert_eq!(parse(r#"{"style":"Notch"}"#).lyrics_card, None);
+        assert_eq!(Config::default().lyrics_card, None);
+        let card = |json: &str| parse(&format!(r#"{{"style":"Notch","lyrics_card":{json}}}"#));
+        for bad in [
+            "\"x\"",
+            "7",
+            "null",
+            "[]",
+            "{}",
+            r#"{"left":0,"top":0,"right":-10,"bottom":10}"#,
+            r#"{"left":0,"top":0,"right":0,"bottom":10}"#,
+            r#"{"left":0,"top":0,"right":10,"bottom":0}"#,
+            r#"{"left":0,"top":0,"right":100001,"bottom":10}"#,
+            r#"{"left":-100001,"top":0,"right":10,"bottom":10}"#,
+            r#"{"left":0,"top":0,"right":10}"#,
+            r#"{"left":"a","top":0,"right":10,"bottom":10}"#,
+            r#"{"left":-2147483648,"top":0,"right":2147483647,"bottom":10}"#,
+        ] {
+            let c = card(bad);
+            assert_eq!(c.lyrics_card, None, "{bad}");
+            assert_eq!(c.style, Style::Notch, "{bad}: the rest of the file loads");
+        }
+        assert_eq!(
+            card(r#"{"left":1,"top":2,"right":301,"bottom":422}"#).lyrics_card,
+            Some(CardPlace {
+                left: 1,
+                top: 2,
+                right: 301,
+                bottom: 422
+            })
+        );
+    }
+
+    #[test]
+    fn the_lyrics_card_place_belongs_to_the_island() {
+        let place = CardPlace {
+            left: 10,
+            top: 10,
+            right: 310,
+            bottom: 430,
+        };
+        let mem = Config {
+            lyrics_card: Some(place),
+            ..Config::default()
+        };
+        assert_eq!(
+            merge_owned(Config::default(), &mem).lyrics_card,
+            Some(place)
+        );
+        // The island's None wins over a stale file value too.
+        let disk = Config {
+            lyrics_card: Some(place),
+            ..Config::default()
+        };
+        assert_eq!(merge_owned(disk, &Config::default()).lyrics_card, None);
+    }
+
+    #[test]
     fn settings_window_is_not_owned_by_the_island() {
         let place = WindowPlace {
             left: 10,
@@ -1959,6 +2072,8 @@ mod tests {
         assert_eq!(c.hotkeys.clipboard, combo("Win+Alt+V"));
         assert_eq!(c.hotkeys.arrange, combo("Ctrl+Alt+S"));
         assert_eq!(c.hotkeys.screenshot, None);
+        // The lyrics card row did not exist then: it gets its default.
+        assert_eq!(c.hotkeys.lyrics_card, combo("Ctrl+Alt+L"));
         // The rest of each group stays.
         assert!(!c.clipboard.enabled);
         assert_eq!((c.arrange.gap, c.screenshot.show_secs), (4, 10));
@@ -1996,6 +2111,8 @@ mod tests {
         assert_eq!(c.hotkeys.search, hk("Ctrl+Alt+K").unwrap());
         assert_eq!(c.hotkeys.devices, None);
         assert_eq!(c.hotkeys.screenshot, HotkeyId::Screenshot.default());
+        // A `hotkeys` object from before the lyrics card has no such key: default.
+        assert_eq!(c.hotkeys.lyrics_card, HotkeyId::LyricsCard.default());
         // A bad shape anywhere never loses the rest of the file.
         for bad in [
             "null",
@@ -2019,9 +2136,13 @@ mod tests {
         assert_eq!(c.hotkeys.devices, None);
         assert_eq!(c.hotkeys.arrange, hk("Win+Alt+S").unwrap());
         assert_eq!(c.hotkeys.screenshot, hk("F13").unwrap());
-        // It is written as five strings, and the old keys are gone.
+        // It is written as six strings, and the old keys are gone.
         let json = serde_json::to_value(&c).unwrap();
         assert_eq!(json["hotkeys"]["devices"], serde_json::json!("None"));
+        assert_eq!(
+            json["hotkeys"]["lyrics_card"],
+            serde_json::json!("Ctrl+Alt+L")
+        );
         assert!(json.get("quick_search_hotkey").is_none());
         assert!(json.get("devices_hotkey").is_none());
         assert!(json["clipboard"].get("hotkey").is_none());

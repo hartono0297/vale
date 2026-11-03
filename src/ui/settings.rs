@@ -348,10 +348,10 @@ pub struct Model {
     pub cli_start: CliStart,
     pub open_mode: OpenMode,
     pub device_notices: bool,
-    /// The five hotkeys, and by `HotkeyId::index` whether the one set could
+    /// The six hotkeys, and by `HotkeyId::index` whether the one set could
     /// not be registered (another app has it, or the PrtSc hook failed).
     pub hotkeys: Hotkeys,
-    pub hotkey_failed: [bool; 5],
+    pub hotkey_failed: [bool; HotkeyId::ALL.len()],
     /// Susun's gap, templates and saved arrangements.
     pub arrange: ArrangeSettings,
     pub robot: bool,
@@ -416,7 +416,7 @@ impl Model {
             open_mode: cfg.open_mode,
             device_notices: cfg.device_notices,
             hotkeys: cfg.hotkeys,
-            hotkey_failed: [false; 5],
+            hotkey_failed: [false; HotkeyId::ALL.len()],
             arrange: cfg.arrange.clone(),
             robot: cfg.robot,
             robot_motion: cfg.robot_animation,
@@ -3858,7 +3858,7 @@ pub fn run_demo(args: &[String]) {
     }
 
     /// The failed flags for `keys`: every set row when `on`.
-    fn demo_failed(keys: &Hotkeys, on: bool) -> [bool; 5] {
+    fn demo_failed(keys: &Hotkeys, on: bool) -> [bool; HotkeyId::ALL.len()] {
         std::array::from_fn(|i| {
             on && HotkeyId::from_index(i).is_some_and(|id| keys.get(id).is_some())
         })

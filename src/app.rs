@@ -158,6 +158,10 @@ use notif_page::{NotifSetting, NotifState, TIMER_NOTIF_SAVE};
 mod update_page;
 use update_page::{TIMER_UPDATE, UpdateState};
 
+#[path = "app_lyrics_card.rs"]
+mod card;
+use card::LyricsCardState;
+
 #[path = "app_prtsc.rs"]
 mod prtsc;
 use prtsc::WM_APP_PRTSC;
@@ -532,6 +536,7 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
             mixer_drag: None,
             shelf: ShelfState::default(),
             dock: DockState::default(),
+            lyrics_card: LyricsCardState::default(),
             devices: DevicesState::default(),
             arrange: ArrangeState::default(),
             hotkeys: HotkeyState::default(),
@@ -735,6 +740,7 @@ fn release_graphics() {
     arrange_overlay::release();
     crate::capture::overlay::release();
     identify_overlay::release();
+    crate::lyrics_card::release();
     crate::shot_edit::window::release();
 }
 
@@ -1026,6 +1032,8 @@ struct App {
     shelf: ShelfState,
     /// The page dots' dock: values, pointer, frame step.
     dock: DockState,
+    /// The floating lyrics card: open for this run only.
+    lyrics_card: LyricsCardState,
     /// The Devices page: the drives, their worker and the page's state
     /// (`app_devices`).
     devices: DevicesState,
@@ -1350,7 +1358,10 @@ impl App {
                 }
                 // Lyrics are `App`'s too; `refresh` tells the reducer they exist.
                 Event::Lyrics(found) => {
-                    if self.lyrics.found(found) {
+                    let retry = self.lyrics.found(found);
+                    // The card says "not found" or shows the lines now.
+                    self.sync_lyrics_card(now);
+                    if retry {
                         // A failed lookup: asked again after the back-off.
                         unsafe {
                             SetTimer(
@@ -2127,7 +2138,11 @@ impl App {
             Effect::SaveLyrics(on) => {
                 self.config.lyrics = on;
                 self.save_config();
+                if !on {
+                    self.lyrics_card_lyrics_off();
+                }
             }
+            Effect::ToggleLyricsCard => self.toggle_lyrics_card(),
             // The Clipboard tile has no action: the reducer opened its page.
             Effect::RunShortcut(s) => self.queue_shortcut(shortcuts::shortcut_action(s)?),
             Effect::RunCustom(tile) => self.queue_shortcut(shortcuts::Action::Custom(tile)),
@@ -3737,6 +3752,7 @@ impl App {
         }
         self.arm_deadline(now);
         self.sync_timers(now);
+        self.sync_lyrics_card(now);
         self.sync_settings();
     }
 
@@ -5019,6 +5035,7 @@ impl App {
         match id {
             TIMER_SYSTEM => {
                 self.check_fullscreen();
+                self.check_lyrics_card_fullscreen();
                 self.check_editor();
                 // A focus lost without its message must not pin the panel.
                 if self.state.cli_focused() && !self.cli_has_keyboard() {
@@ -6429,6 +6446,7 @@ impl App {
             },
             lyric_prev_scroll: self.lyric_fit.prev_scroll,
             lyrics_on: state.lyrics_on(),
+            lyrics_card_open: self.lyrics_card.open,
             volume: self.volume_hud,
             cli: CliView {
                 output: &self.cli.output,
@@ -8364,6 +8382,13 @@ unsafe extern "system" fn wnd_proc(
         WM_APP_PRTSC => {
             let row = wparam.0;
             with_app(|app| app.on_hook_row(row));
+            LRESULT(0)
+        }
+        // The floating lyrics card: what the user did in it (it never calls
+        // `App` itself).
+        crate::lyrics_card::WM_APP_LYRICS_CARD => {
+            let (code, value) = (wparam.0, lparam.0);
+            with_app(|app| app.on_lyrics_card_msg(code, value));
             LRESULT(0)
         }
         // A drive came or went: only an arrival or a removal of a volume or
