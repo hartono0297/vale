@@ -81,7 +81,9 @@ fn notice(key: &str, title: String, body: String, kind: NoticeKind) -> Notice {
     }
 }
 
-/// "Vale X.Y.Z tersedia" with the "Update" chip.
+/// "Vale X.Y.Z tersedia" with the "Nanti" and "Update" chips. Sticky: it stays
+/// until a chip is clicked, an install starts, a newer offer replaces it or a
+/// check finds no newer release.
 fn available_notice(lang: Lang, version: &str) -> Notice {
     notice(
         "update-available",
@@ -276,7 +278,10 @@ impl App {
                 }
             }
             Ok(_) => {
+                // No newer release (the offered one was pulled): the offer
+                // goes with it, or its "Update" would have nothing to install.
                 self.update.known = None;
+                self.apply_now(Event::UpdateWithdrawn);
                 if manual {
                     self.apply_now(Event::Notice(up_to_date_notice(lang)));
                 }

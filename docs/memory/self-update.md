@@ -121,7 +121,11 @@ sticky notice ([[toast-while-busy]]).
   over the notice: nothing in Hover mode; in Click mode it opens the panel
   like for other sticky notices ([[open-mode]]), the offer in the strip.
   `Hit::Strip` outside the chips: nothing. (`dismiss_sticky` never clears an
-  offer; only the chips, `UpdateProgress` or a replacement do.)
+  offer; only the chips, `UpdateProgress`, a replacement or
+  `Event::UpdateWithdrawn` do.)
+- **Withdrawn**: a check that finds no newer release (the offered one was
+  pulled) forgets `known` and sends `Event::UpdateWithdrawn`, which clears
+  `Sticky::Update`, so no "Update" chip is left that would install nothing.
 - **Notch geometry** (`geometry.rs`): `notice_actions_layout(shape, widths)`
   lays a row of chips at the right (6 dip apart, "Nanti" `LATER_CHIP_W` 48 then
   "Update" `UPDATE_CHIP_W` 56) and the title and body stop short of the first;
@@ -159,9 +163,6 @@ an `UpdateFailed` removes it. A manual check that fails reuses `UpdateFailed`
 
 Demo: `update-available` (the sticky notch form, made-up 9.9.9) and
 `update-available-strip` (Calendar panel, the offer as the strip, both chips).
-Not looked at live on a real screen: the session was locked while this was
-built, so only the layout and renderer tests were run (chips and text fit in
-both languages and both fonts).
 
 Related: [[open-mode]] (notices with a button), [[settings-structure]],
 [[tray-dark-menu]].

@@ -835,6 +835,7 @@ impl IslandState {
             }
             Event::Today(date) => self.set_today(date),
             Event::ReminderCleared(id) => self.clear_sticky(Sticky::Reminder(&id)),
+            Event::UpdateWithdrawn => self.clear_sticky(Sticky::Update),
             Event::Click(hit) => self.click(hit, now, &mut effects),
             Event::Calendar(_)
             | Event::Toast(_)
@@ -6109,6 +6110,25 @@ mod tests {
         assert!(s.sticky.is_empty());
         // Nothing to install once it is gone: a stray chip click does nothing.
         assert_eq!(s.apply(Event::Click(Hit::UpdateNow), t0), vec![]);
+    }
+
+    #[test]
+    fn a_check_without_a_newer_release_withdraws_the_offer() {
+        // The newer release was pulled: `App` forgets it, so the offer goes
+        // too (its "Update" would have nothing to install).
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Notice(available()), t0);
+        assert_eq!(s.view(), View::Notice(available()));
+        assert_eq!(s.apply(Event::UpdateWithdrawn, t0), vec![]);
+        assert_eq!(s.view(), View::Idle);
+        assert!(s.sticky.is_empty() && s.queue.is_empty() && s.current.is_none());
+        assert_eq!(s.apply(Event::Click(Hit::UpdateNow), t0), vec![]);
+        // Nothing else sticky is touched, and with no offer it is a no-op.
+        let mut s = st();
+        s.apply(Event::Notice(reminder("r1")), t0);
+        s.apply(Event::UpdateWithdrawn, t0);
+        assert_eq!(s.sticky.len(), 1);
     }
 
     #[test]

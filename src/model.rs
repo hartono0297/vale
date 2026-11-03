@@ -246,6 +246,9 @@ pub enum Event {
     /// The reminder was edited, deleted or dismissed elsewhere: its sticky
     /// notice goes.
     ReminderCleared(String),
+    /// A check found no newer release (the one offered was pulled): `App`
+    /// forgot it, so the sticky update offer goes too.
+    UpdateWithdrawn,
     /// The CLI page's input has the keyboard (true) or lost it: like an open
     /// editor, it keeps the panel open meanwhile.
     CliFocus(bool),

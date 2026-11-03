@@ -4046,8 +4046,10 @@ impl Renderer {
         self.text_colored(label, &self.fonts.button, area, ink, 1.0);
     }
 
-    /// Orange dot and "Claude butuh respon · {project}", or an accent dot and
-    /// "{reminder} · 09.30".
+    /// Orange dot and "Claude butuh respon · {project}", an accent dot and
+    /// "{reminder} · 09.30", or the update offer's accent dot, "Vale X.Y.Z
+    /// tersedia" and its "Nanti" and "Update" chips (a busy toast has its own
+    /// form, see `paint_strip_inner`).
     fn paint_strip(
         &self,
         s: ShapeRect,
@@ -4067,6 +4069,9 @@ impl Renderer {
         painted
     }
 
+    /// The strip's forms: a busy toast (logo and "Source · title"), the update
+    /// offer (dot, title, "Nanti" and "Update" chips), else the Claude or
+    /// reminder dot and text.
     fn paint_strip_inner(
         &self,
         s: ShapeRect,
