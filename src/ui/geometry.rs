@@ -901,6 +901,28 @@ pub fn update_offer_regions(later: Rect, update: Rect) -> Vec<Region> {
     ]
 }
 
+/// How far the due reminder's "Selesai" chip's click target grows past the
+/// painted chip on every side. Less than `ACTION_GAP`, so it never reaches
+/// the text.
+pub const NOTICE_CHIP_HIT_MARGIN: f32 = 4.0;
+
+/// The due reminder notice's click target: the painted chip grown by
+/// `NOTICE_CHIP_HIT_MARGIN`. Points outside the island's shape never reach
+/// it (`HitRegions::hit` tests the shape first). Anywhere else on the notice
+/// is the body.
+pub fn reminder_done_regions(chip: Rect) -> Vec<Region> {
+    let m = NOTICE_CHIP_HIT_MARGIN;
+    vec![Region {
+        rect: Rect {
+            x: chip.x - m,
+            y: chip.y - m,
+            w: chip.w + 2.0 * m,
+            h: chip.h + 2.0 * m,
+        },
+        hit: Hit::ReminderDone,
+    }]
+}
+
 /// `action`: room for a chip this wide naming what a click does at the
 /// right, the text stopping short of it.
 pub fn notice_layout(s: ShapeRect, action: Option<f32>) -> NoticeLayout {
@@ -3692,6 +3714,42 @@ mod tests {
             // The text side and the badge are the body.
             assert_eq!(regions.hit(n.x + 30.0, n.y + n.h / 2.0), Some(Hit::Body));
             assert_eq!(regions.hit(chips[0].x - 20.0, chips[0].y), Some(Hit::Body));
+        }
+    }
+
+    #[test]
+    fn the_reminders_done_chip_region_hit_tests_in_the_notice() {
+        let intersects = |a: Rect, b: Rect| {
+            a.x < b.right() && b.x < a.right() && a.y < b.bottom() && b.y < a.bottom()
+        };
+        for style in [Style::Pill, Style::Notch] {
+            for robot in [false, true] {
+                let n = shape_with_robot_sized(style, NotchSize::DEFAULT, ShapeKind::Notice, robot);
+                let l = notice_layout(n, Some(ACTION_W));
+                let chip = l.action.unwrap();
+                let regions = HitRegions {
+                    shape: Some((style, n)),
+                    regions: reminder_done_regions(chip),
+                    ..HitRegions::default()
+                };
+                let tag = format!("{style:?} robot={robot}");
+                let mid = |r: Rect| (r.x + r.w / 2.0, r.y + r.h / 2.0);
+                let (x, y) = mid(chip);
+                assert_eq!(regions.hit(x, y), Some(Hit::ReminderDone), "{tag}");
+                assert_eq!(
+                    regions.hit(chip.x - 2.0, y),
+                    Some(Hit::ReminderDone),
+                    "{tag}"
+                );
+                let (x, y) = mid(l.badge);
+                assert_eq!(regions.hit(x, y), Some(Hit::Body), "{tag}");
+                let (x, y) = mid(l.title);
+                assert_eq!(regions.hit(x, y), Some(Hit::Body), "{tag}");
+                let grown = reminder_done_regions(chip)[0].rect;
+                for (name, r) in [("title", l.title), ("body", l.body), ("badge", l.badge)] {
+                    assert!(!intersects(grown, r), "{tag}: grown rect meets {name}");
+                }
+            }
         }
     }
 

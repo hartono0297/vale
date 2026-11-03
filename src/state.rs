@@ -1542,6 +1542,8 @@ impl IslandState {
             // A click on the panel's content. A media button the hover guard
             // drops did nothing.
             Event::Click(Hit::PanelPage(_)) => LingerTrigger::PageTurn,
+            // The reminder's Done chip is the closed notch's: no panel behind it.
+            Event::Click(Hit::ReminderDone) => LingerTrigger::No,
             Event::Click(hit) if !(is_media_hit(hit) && self.media_guarded(now)) => {
                 LingerTrigger::Panel
             }
@@ -1757,7 +1759,8 @@ impl IslandState {
             // pomodoro starts from inside it).
             // A sticky notice (Claude waiting, a due reminder) is what the
             // closed island shows: the click opens the panel, whose strip
-            // keeps the notice and its own click.
+            // keeps the notice and its own click. The reminder's Done chip is
+            // its own hit (`Hit::ReminderDone`), not the body.
             Hit::Body
                 if self.open_mode == OpenMode::Click
                     && (matches!(
@@ -1767,6 +1770,14 @@ impl IslandState {
                         && matches!(self.view(), View::Notice(_)))) =>
             {
                 self.open_by_click(now)
+            }
+            // The due reminder's "Selesai" chip on the closed notch: done at
+            // once, in every mode. It opens nothing and latches nothing.
+            Hit::ReminderDone => {
+                if matches!(self.view(), View::Notice(n) if matches!(n.kind, NoticeKind::Reminder { .. }))
+                {
+                    effects.extend(self.dismiss_visible_notice(now));
+                }
             }
             Hit::Body => match self.view() {
                 View::Notice(n) => {
@@ -3958,6 +3969,50 @@ mod tests {
         s.apply(Event::Notice(waiting("s1")), t0);
         s.apply(Event::Click(Hit::Body), t0);
         assert_eq!(s.waiting_strip(), Some(&waiting("s1")));
+    }
+
+    #[test]
+    fn the_reminder_done_chip_marks_it_done_in_every_mode_without_opening_the_panel() {
+        let t0 = Instant::now();
+        for m in [OpenMode::Hover, OpenMode::HoverStay, OpenMode::Click] {
+            for hovered in [false, true] {
+                let mut s = mode(m, t0);
+                s.apply(Event::Notice(reminder("r1")), t0);
+                if hovered {
+                    s.apply(Event::Hover(true), t0);
+                }
+                assert_eq!(s.view(), View::Notice(reminder("r1")), "{m:?} {hovered}");
+                let effects = s.apply(Event::Click(Hit::ReminderDone), t0);
+                assert!(
+                    effects.contains(&Effect::ReminderDone("r1".into())),
+                    "{m:?} {hovered}: {effects:?}"
+                );
+                assert_ne!(s.view(), View::Notice(reminder("r1")), "{m:?} {hovered}");
+                assert!(!matches!(s.view(), View::Panel(_)), "{m:?} {hovered}");
+                assert_ne!(s.waiting_strip(), Some(&reminder("r1")), "{m:?} {hovered}");
+                assert!(!s.outside_click_wanted(), "{m:?} {hovered}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_reminder_done_chip_does_nothing_over_the_panel_or_another_notice() {
+        let t0 = Instant::now();
+        // Click mode: the body click opens the panel; the chip's hit is then a no-op.
+        let mut s = mode(OpenMode::Click, t0);
+        s.apply(Event::Notice(reminder("r1")), t0);
+        s.apply(Event::Click(Hit::Body), t0);
+        assert!(matches!(s.view(), View::Panel(_)));
+        let effects = s.apply(Event::Click(Hit::ReminderDone), t0);
+        assert!(effects.is_empty(), "{effects:?}");
+        assert!(matches!(s.view(), View::Panel(_)));
+        assert_eq!(s.waiting_strip(), Some(&reminder("r1")));
+        // Another notice shows: nothing is marked done.
+        let mut s = mode(OpenMode::Hover, t0);
+        s.apply(Event::Notice(waiting("s1")), t0);
+        let effects = s.apply(Event::Click(Hit::ReminderDone), t0);
+        assert!(effects.is_empty(), "{effects:?}");
+        assert_eq!(s.view(), View::Notice(waiting("s1")));
     }
 
     #[test]
