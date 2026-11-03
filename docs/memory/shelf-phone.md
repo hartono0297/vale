@@ -26,6 +26,14 @@ agreed mockup is `docs/design/rak-hp.html` (never committed).
   `panel_layout.rs` has `phone_qr/warn/ask/recv_layout` and `phone_page_layout`;
   `render_panel.rs` paints them. The reducer knows only `PhoneStage`
   (`Qr`, `Approval`, `Receiving`) and the hits, like the cleaner over System.
+- English words are short on purpose (the Pill's title and the shelf tag are
+  tight): "From phone" (not "Receiving from phone"), "phone" on the card tag,
+  "Finding the network...". `every_phone_string_holds_its_box_in_both_fonts` in
+  `render_panel.rs` measures every phone string in the box the painter uses
+  (the layouts and `phone_chip_text`) in both fonts, both styles and both
+  languages; a text that overflows by a pixel in JetBrains Mono fails it.
+- Video files (`ShelfKind::Video`, mp4 m4v mov mkv avi webm wmv 3gp) get the
+  camcorder `Icon::Video` in the rows and on the shelf cards ([[shelf]]).
 - Demo scenes `phone-qr`, `phone-qr-expired`, `phone-public`, `phone-nolan`,
   `phone-approve`, `phone-receive`; the `shelf` scene has two "dari HP" cards.
 
@@ -47,6 +55,10 @@ agreed mockup is `docs/design/rak-hp.html` (never committed).
   (opens only `GET /` and `GET /api/state`), and on approval its own random
   session cookie `vs` (the next `/api/state` sets it and clears `vp`). Both
   are `HttpOnly; SameSite=Strict; Path=/`.
+- **Stop before bind:** `server::run` looks at the stop flag after the adapters
+  were read and before `bind`; a Back pressed meanwhile ends the session
+  (`SessionEnded`, `ended`) with nothing listening, so no Firewall prompt
+  appears afterwards. Tested with `Mode::Fixed` and the flag already set.
 - **Session end:** Selesai, Back with nothing connected, 10 idle minutes, the
   address leaving the adapters (`BoundCheck`, read at most every 5 s on a new
   connection and on the loop tick), sleep (`PBT_APMSUSPEND`), lock, and a session
@@ -61,8 +73,14 @@ agreed mockup is `docs/design/rak-hp.html` (never committed).
   `IMG_1 (2).png`). Max 4 GiB a file (413), 1 GiB must stay free (507), a
   cancelled batch gets 409. Cancel, stop or a broken connection deletes the
   `.part`. Names are cut to the last path part, lose control characters and
-  `<>:"|?*` and `..`, Windows device names get an `_`, 150 characters, "berkas"/"file"
-  when empty.
+  `<>:"|?*` and `..`, Windows device names get an `_`, "berkas"/"file" when empty.
+  Format and bidi controls are dropped too (`names::is_format`: the whole Cf
+  category by explicit ranges, plus U+2028/2029), so a right-to-left override
+  cannot make `photo<RLO>gnp.exe` read as `photoexe.png`; the zero width joiner
+  goes with them, so emoji ZWJ sequences fall apart (accepted, the name is a
+  label). The cap is **150 UTF-16 units**, not characters (an emoji is two), cut
+  on a character boundary with a short extension kept, so the name plus
+  ` (9999)` and `.part` stays under NTFS's 255 units a component.
 - **Shelf landing:** `shelf::phone_landing(len, batch)`: a batch that would pass 12
   cards gives one card for `Downloads\Vale` instead of its files (deduped). Taking
   a card off or "Kosongkan" never deletes a file (tested).
@@ -112,6 +130,9 @@ isolation (the QR view cannot know nobody connects). What was run: the loopback
 end-to-end test, `--phone-debug` with a browser (pairing, auto approval, three
 uploads, reload keeps the session, "connection lost" after the server stops) and
 the demo scenes by eye.
+
+Exe size: +115,712 bytes (3,235,328 to 3,351,040, +3.6 %) on `main` f83dbf0, see
+[[exe-size]].
 
 Related: [[shelf]], [[shelf-motion]], [[bata-idle-power-budget]], [[exe-size]],
 [[panel-linger-and-motion]].
