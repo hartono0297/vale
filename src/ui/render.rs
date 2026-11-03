@@ -49,13 +49,13 @@ use super::cat_style::CatLook;
 use super::dock::{DockFrame, DockZone};
 use super::fonts::{self, Face, Role};
 use super::geometry::{
-    BAR_COUNT, BAR_GAP, BAR_W, HitRegions, LYRIC_FADE_W, NoticeLayout, Rect, SHOT_BUTTON_PAD,
-    SHOT_THUMB_RADIUS, ShapeRect, Under, badge_letter, badge_style, compact_layout,
+    BAR_COUNT, BAR_GAP, BAR_W, HitRegions, LYRIC_FADE_W, NOTICE_CLOSE_DISC, NOTICE_CLOSE_GLYPH,
+    NoticeLayout, Rect, SHOT_BUTTON_PAD, SHOT_THUMB_RADIUS, ShapeRect, Under, badge_letter, badge_style, compact_layout,
     compact_layout_robot, corner_radius, equalizer_heights, idle_layout_lead, lyric_layout,
     lyric_layout_robot, lyric_overflow, notice_action, notice_action_w, notice_actions_layout,
-    notice_chip_widths, notice_layout, reminder_done_regions, shot_fit, shot_layout, shot_regions,
-    shoulder_depth, toast_dot, toast_eyebrow, toast_notice_layout, toast_slot_parts,
-    update_offer_regions,
+    notice_chip_widths, notice_close_rect, notice_close_regions, notice_layout_with,
+    reminder_done_regions, shot_fit, shot_layout, shot_regions, shoulder_depth, toast_dot,
+    toast_eyebrow, toast_notice_layout_with, toast_slot_parts, update_offer_regions,
 };
 use super::icons::{Icon, IconSet};
 use super::motion::{StripFrame, Transit};
@@ -83,7 +83,7 @@ use crate::reminders::Reminder;
 use crate::search::SearchResult;
 use crate::search_details::Detail;
 use crate::shelf::ShelfCard;
-use crate::state::MolePhase;
+use crate::state::{MolePhase, notice_closable};
 use crate::system::SystemSample;
 use crate::theme::{self, Accent, Palette, radius};
 use crate::tiles::Tile;
@@ -240,9 +240,19 @@ pub struct Frame<'a> {
     /// The strip arriving or leaving the open panel (`motion::StripMotion`);
     /// `None` at rest.
     pub strip_motion: Option<StripFrame>,
+    /// The ✕ of a timed full notice, while it shows or fades; `None` when it
+    /// is not shown (alpha 0), which also leaves its click region out.
+    pub notice_close: Option<NoticeCloseView>,
     /// What transitions add to this frame (`ui::motion`); all at rest by
     /// default.
     pub transit: Transit,
+}
+
+/// The notice's ✕ this frame: its fade and whether the pointer is on it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NoticeCloseView {
+    pub alpha: f32,
+    pub hot: bool,
 }
 
 /// What a copy preview draws in its badge spot (`NoticeKind::ClipPreview`):
@@ -1681,6 +1691,7 @@ impl Renderer {
                     robot,
                     frame.clip_notice,
                     frame.toast_logo,
+                    frame.notice_close,
                 ),
             },
             View::Idle => {
@@ -2095,9 +2106,13 @@ impl Renderer {
         robot: Option<RobotFrame>,
         clip: Option<ClipNoticeView>,
         toast_logo: Option<ToastLogoView>,
+        close: Option<NoticeCloseView>,
     ) -> Result<()> {
         let p = self.palette;
         let next = pomo.phase();
+        // A closable notice always leaves the ✕'s room at its right end,
+        // shown or not, so nothing moves when the pointer arrives.
+        let closable = notice_closable(notice);
         let action = notice_action(&notice.kind, pomo.status()).map(|key| {
             let fill = match notice.kind {
                 NoticeKind::Pomodoro => p.phase(next),
@@ -2116,7 +2131,7 @@ impl Renderer {
         };
         let (layout, eyebrow) = match toast {
             Some(_) => {
-                let l = toast_notice_layout(shape, action_w);
+                let l = toast_notice_layout_with(shape, action_w, closable);
                 (
                     NoticeLayout {
                         badge: l.badge,
@@ -2127,7 +2142,7 @@ impl Renderer {
                     Some(l.eyebrow),
                 )
             }
-            None => (notice_layout(shape, action_w), None),
+            None => (notice_layout_with(shape, action_w, closable), None),
         };
         let badge = badge_style(notice, &p, next);
         // A copied image: its thumbnail takes the badge spot, never Bata.
@@ -2187,7 +2202,32 @@ impl Renderer {
                 self.regions.regions = reminder_done_regions(chip);
             }
         }
+        if closable && let Some(close) = close.filter(|c| c.alpha > 0.0) {
+            self.paint_notice_close(shape, close);
+        }
         Ok(())
+    }
+
+    /// The notice's ✕: a `NOTICE_CLOSE_DISC` circle on `raised` (`raised_hi`
+    /// while the pointer is on it) with the glyph in the text colour, both at
+    /// the fade's alpha. Its click region is registered here, only because it
+    /// is painted, so drawing and hit testing cannot drift.
+    fn paint_notice_close(&mut self, shape: ShapeRect, close: NoticeCloseView) {
+        let p = self.palette;
+        let hit = notice_close_rect(shape);
+        let alpha = close.alpha.clamp(0.0, 1.0);
+        let disc = Rect {
+            x: hit.x + (hit.w - NOTICE_CLOSE_DISC) / 2.0,
+            y: hit.y + (hit.h - NOTICE_CLOSE_DISC) / 2.0,
+            w: NOTICE_CLOSE_DISC,
+            h: NOTICE_CLOSE_DISC,
+        };
+        self.set_color(if close.hot { p.raised_hi } else { p.raised }, alpha);
+        self.fill_round(disc, NOTICE_CLOSE_DISC / 2.0);
+        self.solid_ink(|| {
+            self.icon_colored(Icon::X, disc, NOTICE_CLOSE_GLYPH, p.text, alpha, None);
+        });
+        self.regions.regions.extend(notice_close_regions(hit));
     }
 
     /// The update offer: the badge (or Bata), the title over the body, and two

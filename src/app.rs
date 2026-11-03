@@ -114,15 +114,15 @@ use crate::ui::geometry::{
     with_toast_slot,
 };
 use crate::ui::motion::{
-    FadeStart, MorphCurve, PAGE_FADE_MS, Reveal, SlideStrip, Snap, StripDir, StripMotion,
+    CloseFade, FadeStart, MorphCurve, PAGE_FADE_MS, Reveal, SlideStrip, Snap, StripDir, StripMotion,
     StripSnap, SubView, Transit, Transition, content_alpha_from, ease_in_out_cubic, fade_floor,
-    mole_code, morph_timing, page_fade_frame, panel_fade, strip_dir, transition,
+    close_fade_ms, mole_code, morph_timing, page_fade_frame, panel_fade, strip_dir, transition,
 };
 use crate::ui::notch_fill;
 use crate::ui::panel_layout::{CliHead, STRIP_H, cli_layout};
 use crate::ui::render::{
-    CleanerView, CliView, DevicesView, FolderMenuView, Frame, MoleView, Progress, Renderer,
-    RobotFrame, SearchView, SystemView,
+    CleanerView, CliView, DevicesView, FolderMenuView, Frame, MoleView, NoticeCloseView, Progress,
+    Renderer, RobotFrame, SearchView, SystemView,
 };
 use crate::ui::settings_layout::MonitorRow;
 use crate::ui::robot::{
@@ -461,6 +461,8 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
             reveal: None,
             strip_motion: None,
             toast_over: false,
+            close_fade: CloseFade::settled(0.0, Instant::now()),
+            close_hot: false,
             slot_keep: None,
             slot_share: SlotShare::default(),
             leaving: None,
@@ -860,6 +862,12 @@ struct App {
     /// The pointer is on the busy toast's own spot, as the reducer last
     /// heard (`Event::ToastPointer`); synced from the state at each refresh.
     toast_over: bool,
+    /// The notice's ✕ fading in or out (`ui::motion::CloseFade`); its target
+    /// is 1 while the pointer is on the island and a closable notice shows
+    /// in its full form.
+    close_fade: CloseFade,
+    /// The pointer is on the ✕ (the lit disc), as the last move saw it.
+    close_hot: bool,
     /// The toast whose logo the slot shows, kept while the island shrinks
     /// back so the logo fades out instead of vanishing.
     slot_keep: Option<Notice>,
@@ -3521,6 +3529,9 @@ impl App {
         if self.robot_moving(now) {
             self.ensure_clock();
         }
+        // The notice's ✕ comes with the pointer on the island and goes with
+        // it; its fade needs frames only while it runs.
+        self.sync_close_fade(now);
         let notch = self.notch_size();
         if view == View::MediaLyric {
             let max_w = self.lyric_max_w();
@@ -3726,6 +3737,46 @@ impl App {
         self.animating_at(Instant::now())
     }
 
+    /// The ✕'s fade target now: shown while the pointer is on the island this
+    /// visit (hover tracking is armed), the notice is closable and in its full
+    /// form, and the notch is not shrunk to the eyes.
+    fn close_target(&self) -> f32 {
+        let on = !self.hover.needs_arming()
+            && self.state.notice_close_shown()
+            && !self.peek.is_shrunk();
+        if on { 1.0 } else { 0.0 }
+    }
+
+    /// Aims the ✕'s fade at its target when that changed, starting the frame
+    /// clock only if the fade runs (no other timer). True when it changed; the
+    /// caller makes sure a frame is drawn.
+    fn sync_close_fade(&mut self, now: Instant) -> bool {
+        let to = self.close_target();
+        if self.close_fade.to == to {
+            return false;
+        }
+        let ms = close_fade_ms(
+            self.animations,
+            self.config.robot_animation,
+            self.bata.energy_saver,
+        );
+        self.close_fade.retarget(to, now, ms);
+        if self.close_fade.moving(now) {
+            self.ensure_clock();
+        }
+        true
+    }
+
+    /// What the renderer gets for the ✕ at `now`: `None` while it is fully
+    /// faded out (nothing painted, no click region).
+    fn notice_close_view(&self, now: Instant) -> Option<NoticeCloseView> {
+        let alpha = self.close_fade.alpha(now);
+        (alpha > 0.0).then_some(NoticeCloseView {
+            alpha,
+            hot: self.close_hot,
+        })
+    }
+
     /// The System page shows and a figure on it is still gliding.
     fn system_easing(&self, now: Instant) -> bool {
         self.system.ease.running(now)
@@ -3742,6 +3793,7 @@ impl App {
             || self.slide.is_some()
             || self.reveal.is_some()
             || self.strip_motion.is_some()
+            || self.close_fade.moving(now)
             || self.page_fade.is_some()
             || self.lyric_fading
             || self.lyric_scrolling
@@ -5293,6 +5345,7 @@ impl App {
             return;
         }
         self.dock_follow(lparam);
+        self.track_close_hot(Some(lparam));
         if self.state.view() == View::Panel(Page::Arrange) {
             let hit = self.hit_at(lparam);
             self.arrange_hover(hit.as_ref());
@@ -5311,6 +5364,19 @@ impl App {
         self.begin_hover();
     }
 
+    /// The pointer is on the ✕ (or, with `None`, off the island): redraws only
+    /// when that changed, so the lit disc follows the pointer with no timer.
+    fn track_close_hot(&mut self, lparam: Option<LPARAM>) {
+        let hot = lparam.is_some_and(|l| self.hit_at(l) == Some(Hit::NoticeClose));
+        if hot != self.close_hot {
+            self.close_hot = hot;
+            let now = Instant::now();
+            if self.close_fade.alpha(now) > 0.0 && !self.animating_at(now) {
+                self.draw(now);
+            }
+        }
+    }
+
     /// The pointer's first move over the island: Bata wakes, looks happy and
     /// lifts before the dwell opens the panel; hover and leave tracking start.
     fn begin_hover(&mut self) {
@@ -5325,6 +5391,11 @@ impl App {
         };
         if unsafe { TrackMouseEvent(&mut track) }.is_ok() {
             self.hover.armed();
+            // The pointer is on the island this visit now: a closable notice
+            // gets its ✕.
+            if self.sync_close_fade(now) && !self.animating_at(now) {
+                self.draw(now);
+            }
         }
     }
 
@@ -5352,6 +5423,7 @@ impl App {
         // The pointer left the busy toast's spot with the island, whether or
         // not the hover dwell had passed.
         self.set_toast_pointer(false);
+        self.track_close_hot(None);
         self.click.clear();
         self.dock_leave();
         self.arrange_hover(None);
@@ -5476,6 +5548,11 @@ impl App {
         }
         let hit = self.hit_at(lparam);
         if let Some(hit) = self.click.release(hit) {
+            // The ✕ may be clicked before the hover dwell: this visit must
+            // not turn into a hover that opens the panel under the pointer.
+            if hit == Hit::NoticeClose {
+                self.hover.close_quiet();
+            }
             self.apply_now(Event::Click(hit));
         }
     }
@@ -6399,6 +6476,7 @@ impl App {
                 .strip_motion
                 .as_ref()
                 .and_then(|m| m.motion.frame(now, STRIP_H)),
+            notice_close: self.notice_close_view(now),
             transit,
         };
         if let Err(error) = self
@@ -6432,6 +6510,10 @@ struct HoverTracking {
     armed: bool,
     /// `Hover(true)` was sent for this visit.
     hovered: bool,
+    /// The ✕ of a notice closed it before the dwell: this visit never sends
+    /// `Hover(true)`, so the panel does not open by hover under the pointer
+    /// (`close_quiet`, cleared when the pointer leaves).
+    quiet: bool,
 }
 
 impl HoverTracking {
@@ -6449,14 +6531,24 @@ impl HoverTracking {
         self.armed = true;
     }
 
-    /// `Hover(true)` the first time the pointer dwells during a visit.
+    /// `Hover(true)` the first time the pointer dwells during a visit; never
+    /// after the ✕ closed a notice in it.
     fn on_hover(&mut self) -> Option<Event> {
+        if self.quiet {
+            return None;
+        }
         (!std::mem::replace(&mut self.hovered, true)).then_some(Event::Hover(true))
+    }
+
+    /// The ✕ closed a notice: no hover for the rest of this visit.
+    fn close_quiet(&mut self) {
+        self.quiet = true;
     }
 
     /// `Hover(false)` when this visit expanded the island.
     fn on_leave(&mut self) -> Option<Event> {
         self.armed = false;
+        self.quiet = false;
         std::mem::take(&mut self.hovered).then_some(Event::Hover(false))
     }
 }
@@ -8896,6 +8988,35 @@ mod tests {
         assert_eq!(h.on_leave(), Some(Event::Hover(false)));
         // Tracking ends on leave; the next move re-arms it.
         assert!(h.needs_arming());
+    }
+
+    #[test]
+    fn a_notice_close_before_the_dwell_keeps_the_visit_from_hovering() {
+        let mut h = HoverTracking::default();
+        h.armed();
+        // The ✕ was clicked before WM_MOUSEHOVER fired.
+        h.close_quiet();
+        assert_eq!(h.on_hover(), None);
+        assert_eq!(h.on_hover(), None);
+        // Hover(true) was never sent, so there is no Hover(false) either, and
+        // the quiet flag ends with the visit.
+        assert_eq!(h.on_leave(), None);
+        assert!(h.needs_arming());
+        h.armed();
+        assert_eq!(h.on_hover(), Some(Event::Hover(true)));
+        assert_eq!(h.on_leave(), Some(Event::Hover(false)));
+    }
+
+    #[test]
+    fn a_notice_close_after_the_dwell_still_ends_the_visit_with_hover_false() {
+        let mut h = HoverTracking::default();
+        h.armed();
+        assert_eq!(h.on_hover(), Some(Event::Hover(true)));
+        h.close_quiet();
+        assert_eq!(h.on_hover(), None);
+        assert_eq!(h.on_leave(), Some(Event::Hover(false)));
+        h.armed();
+        assert_eq!(h.on_hover(), Some(Event::Hover(true)));
     }
 
     #[test]
