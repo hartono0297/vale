@@ -533,9 +533,9 @@ keys! {
     ShelfEmpty => "Seret berkas ke notch, ambil lagi nanti",
         "Drag files to the notch, take them out later";
     ShelfPhone => "HP", "Phone";
-    ShelfFromPhone => "dari HP", "from phone";
+    ShelfFromPhone => "dari HP", "phone";
     PhoneTitle => "Sambungkan HP", "Connect a phone";
-    PhoneStarting => "Mencari jaringan\u{2026}", "Looking for the network\u{2026}";
+    PhoneStarting => "Mencari jaringan\u{2026}", "Finding the network\u{2026}";
     PhoneStep1 => "Scan pakai kamera HP", "Scan with the phone's camera";
     PhoneStep1Sub => "iPhone: Kamera \u{b7} Android: Kamera / Google Lens",
         "iPhone: Camera \u{b7} Android: Camera / Google Lens";
@@ -567,7 +567,7 @@ keys! {
     PhoneDeny => "Tolak", "Deny";
     PhoneAllow => "Izinkan", "Allow";
     PhoneAskFoot => "Kode beda dari yang di HP? Tolak.", "Code differs from the phone's? Deny.";
-    PhoneReceiving => "Menerima dari HP", "Receiving from phone";
+    PhoneReceiving => "Menerima dari HP", "From phone";
     PhonePickOnPhone => "Pilih berkas di HP", "Choose files on the phone";
     PhoneRowDone => "\u{2713} selesai", "\u{2713} done";
     PhoneRowCancelled => "dibatalkan", "cancelled";

@@ -3512,11 +3512,7 @@ impl Renderer {
         };
         self.set_color(p.sage, 1.0);
         self.fill_round(dot, 3.0);
-        let chip_text = Rect {
-            x: dot.right() + 6.0,
-            w: l.chip.right() - 8.0 - dot.right() - 6.0,
-            ..l.chip
-        };
+        let chip_text = crate::ui::panel_layout::phone_chip_text(l.chip);
         self.text_colored(v.recv.chip, &self.fonts.small, chip_text, p.text, 1.0);
         // Another phone: the small QR button.
         self.set_color(p.raised, 1.0);
@@ -5874,6 +5870,208 @@ mod tests {
                 }
             }
         }
+        cut.dedup();
+        assert!(cut.is_empty(), "cut:\n{}", cut.join("\n"));
+    }
+
+    /// `s` in `format` wrapped to `area`'s width needs no more height than
+    /// `area` has: a body that wraps stays inside its box, no line cut.
+    fn wrap_check(
+        r: &Renderer,
+        s: &str,
+        format: &IDWriteTextFormat,
+        area: Rect,
+    ) -> std::result::Result<(), String> {
+        let wide: Vec<u16> = s.encode_utf16().collect();
+        let layout = r.layout(&wide, format, area.w, 4096.0).expect("layout");
+        let mut m = windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_METRICS::default();
+        unsafe { layout.GetMetrics(&mut m) }.expect("metrics");
+        if m.height <= area.h + 0.5 {
+            Ok(())
+        } else {
+            Err(format!(
+                "{s:?}: {} lines, {} px in a {} x {} px box",
+                m.lineCount, m.height, area.w, area.h
+            ))
+        }
+    }
+
+    /// Every phone string in its real box: the chip and the row status, the
+    /// buttons, the steps, the hints and feet, the warning cards and the
+    /// approval line, in both languages, in DM Sans and in JetBrains Mono, in
+    /// both styles, with and without the strip. The boxes come from the
+    /// layouts (and `phone_chip_text`), the formats from the renderer's own
+    /// `Fonts`, so what is measured is what `paint_phone_*` draws. The
+    /// worst case of each variable text: the longest browser name, an
+    /// address of 15 characters, "99 phones", a 100 % row, a 99 GB summary.
+    #[test]
+    fn every_phone_string_holds_its_box_in_both_fonts() {
+        use crate::config::Style;
+        use crate::phone::DeviceKind;
+        use crate::ui::fonts;
+        use crate::ui::panel_layout::{
+            phone_ask_layout, phone_chip_text, phone_qr_layout, phone_recv_layout,
+            phone_warn_layout,
+        };
+        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+
+        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let mut r = Renderer::new().expect("renderer");
+        if !fonts::embedded(&r.dwrite).loaded.jetbrains_mono {
+            eprintln!("skipped: the embedded fonts are not in this binary");
+            return;
+        }
+        let inset = |b: Rect, by: f32| Rect {
+            x: b.x + by,
+            w: b.w - 2.0 * by,
+            ..b
+        };
+        let mut cut = Vec::new();
+        let mut checked = 0usize;
+        for ui in [UiFont::Sans, UiFont::Mono] {
+            r.set_ui_font(ui).expect("font");
+            for style in [Style::Pill, Style::Notch] {
+                let s = shape_for(style, ShapeKind::Panel);
+                for strip in [false, true] {
+                    let qr = phone_qr_layout(s, strip, true);
+                    let warn = phone_warn_layout(s, strip);
+                    let ask = phone_ask_layout(s, strip, 1, 2);
+                    let recv = phone_recv_layout(s, strip, 3);
+                    let row = recv.rows.first().expect("one row");
+                    let chip_text = phone_chip_text(recv.chip);
+                    let shelf = shelf_layout(s, strip, 3);
+                    for lang in [Lang::Id, Lang::En] {
+                        let f = &r.fonts;
+                        let mut singles: Vec<(String, &IDWriteTextFormat, Rect)> = Vec::new();
+                        let mut add = |s: &str, fmt: &'static str, area: Rect| {
+                            let format = match fmt {
+                                "small" => &f.small,
+                                "small_center" => &f.small_center,
+                                "small_right" => &f.small_right,
+                                "button" => &f.button_center,
+                                "eleven_center" => &f.eleven_center,
+                                "eleven" => &f.eleven,
+                                "secondary" => &f.secondary,
+                                "title" => &f.title,
+                                _ => unreachable!("{fmt}"),
+                            };
+                            singles.push((s.to_owned(), format, area));
+                        };
+                        // The receiving view.
+                        let kinds = [
+                            DeviceKind::Android,
+                            DeviceKind::IPhone,
+                            DeviceKind::IPad,
+                            DeviceKind::Other,
+                        ];
+                        for k in kinds {
+                            add(&i18n::phone_devices_chip(lang, &[k]), "small", chip_text);
+                        }
+                        add(&i18n::phone_devices_chip(lang, &[DeviceKind::Other; 99]), "small", chip_text);
+                        for key in [Key::PhoneRowDone, Key::PhoneRowCancelled, Key::PhoneRowFailed] {
+                            add(text(lang, key), "small_right", row.status);
+                        }
+                        add("100%", "small_right", row.status);
+                        add(text(lang, Key::PhonePickOnPhone), "eleven_center", recv.empty);
+                        add(
+                            &i18n::phone_received_summary(lang, 99, 99 * 1024 * 1024 * 1024),
+                            "small",
+                            recv.summary,
+                        );
+                        add(text(lang, Key::PhoneCancelAll), "button", recv.cancel);
+                        add(text(lang, Key::PhoneFinish), "button", recv.done);
+                        // The QR view.
+                        add(&i18n::phone_valid_for(lang, 299), "small_center", qr.chip);
+                        add(text(lang, Key::PhoneQrExpired), "small_center", qr.chip);
+                        add(text(lang, Key::PhoneQrVoid), "small_center", qr.chip);
+                        add(text(lang, Key::PhoneNewQr), "button", qr.renew.expect("renew"));
+                        add(text(lang, Key::PhoneStarting), "small_center", qr.qr);
+                        for (step, (t, sub)) in qr.steps.iter().zip([
+                            (Key::PhoneStep1, Key::PhoneStep1Sub),
+                            (Key::PhoneStep2, Key::PhoneStep2Sub),
+                        ]) {
+                            add(text(lang, t), "secondary", step.title);
+                            add(text(lang, sub), "small", step.sub);
+                        }
+                        add(text(lang, Key::PhoneFirewall), "small", inset(qr.hint, 10.0));
+                        add(text(lang, Key::PhoneLocalOnly), "small", qr.foot);
+                        add(
+                            &i18n::phone_network(lang, "Rumah-5G"),
+                            "eleven",
+                            Rect {
+                                x: qr.net.x + 32.0,
+                                w: qr.net.w - 40.0,
+                                h: 14.0,
+                                ..qr.net
+                            },
+                        );
+                        // The warning card.
+                        for key in [
+                            Key::PhoneWarnPublic,
+                            Key::PhoneWarnNoLan,
+                            Key::PhoneWarnBusy,
+                            Key::PhoneWarnFailed,
+                        ] {
+                            add(text(lang, key), "title", warn.heading);
+                        }
+                        add(text(lang, Key::PhoneRetry), "button", warn.retry);
+                        add(text(lang, Key::PhoneLocalOnly), "small", warn.foot);
+                        // The approval view.
+                        add(text(lang, Key::PhoneAsk), "title", ask.heading);
+                        add(
+                            &i18n::phone_ask_line(
+                                lang,
+                                DeviceKind::Android,
+                                Some("Samsung Internet"),
+                                "192.168.100.200",
+                            ),
+                            "small",
+                            ask.device,
+                        );
+                        add(
+                            &text(lang, Key::PhoneCodeLabel).to_uppercase(),
+                            "small_right",
+                            ask.label,
+                        );
+                        add(text(lang, Key::PhoneDeny), "button", ask.deny);
+                        add(text(lang, Key::PhoneAllow), "button", ask.allow);
+                        add(text(lang, Key::PhoneAskFoot), "small", ask.foot);
+                        // The shelf's own header: the phone pill and Clear.
+                        let pill_x = shelf.phone.x + 8.0 + 14.0 + 4.0;
+                        add(
+                            text(lang, Key::ShelfPhone),
+                            "small",
+                            Rect {
+                                x: pill_x,
+                                w: shelf.phone.right() - 8.0 - pill_x,
+                                ..shelf.phone
+                            },
+                        );
+                        add(text(lang, Key::ShelfClear), "small_center", shelf.clear.expect("clear"));
+                        for (label, format, area) in singles {
+                            checked += 1;
+                            if let Err(why) = ink_check(&r, &label, format, area) {
+                                cut.push(format!("{ui:?} {style:?} strip={strip} {lang:?}: {why}"));
+                            }
+                        }
+                        // The bodies wrap inside their boxes.
+                        for key in [
+                            Key::PhoneWarnPublicBody,
+                            Key::PhoneWarnNoLanBody,
+                            Key::PhoneWarnBusyBody,
+                            Key::PhoneWarnFailedBody,
+                        ] {
+                            checked += 1;
+                            if let Err(why) = wrap_check(&r, text(lang, key), &r.fonts.snippet, warn.body)
+                            {
+                                cut.push(format!("{ui:?} {style:?} strip={strip} {lang:?}: {why}"));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 500, "only {checked} strings checked");
         cut.dedup();
         assert!(cut.is_empty(), "cut:\n{}", cut.join("\n"));
     }

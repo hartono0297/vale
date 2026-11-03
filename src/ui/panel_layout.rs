@@ -3401,6 +3401,18 @@ pub fn phone_rows_fit(s: ShapeRect, strip: bool) -> usize {
         .max(0.0) as usize
 }
 
+/// Where the receiving view's chip text goes: after the green dot (10 px in,
+/// 6 px wide, a 6 px gap) and 8 px short of the chip's right end. The painter
+/// and the fit test both read it from here.
+pub fn phone_chip_text(chip: Rect) -> Rect {
+    let x = chip.x + 10.0 + 6.0 + 6.0;
+    Rect {
+        x,
+        w: chip.right() - 8.0 - x,
+        ..chip
+    }
+}
+
 /// The receiving view with room for `n` rows (at most what fits).
 pub fn phone_recv_layout(s: ShapeRect, strip: bool, n: usize) -> PhoneRecvLayout {
     let (top, back, title) = phone_head(s, strip);
