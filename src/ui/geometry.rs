@@ -499,6 +499,10 @@ pub struct ExpandedLayout {
     pub buttons: [Rect; 3],
     /// "Lirik": lyrics in the notch on or off.
     pub lyrics: Rect,
+    /// The round button left of "Lirik" that opens the floating lyrics card.
+    /// Always laid out; its hit region and its paint only exist while the
+    /// lyrics setting is on (`panel_layout::media_hits_for`).
+    pub lyrics_card: Rect,
 }
 
 /// Notice: rounded badge, title over body, an optional action chip.

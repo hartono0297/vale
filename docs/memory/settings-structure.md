@@ -22,7 +22,7 @@ integrasi, about / tentang. The window opens on Umum.
 | Kucing | the preview (cat about 64 px on the resolved surface, the idle notch at real size with the clock, chips Diam / Senang / Kedip / Tidur / Menyapa); **Kucing**: Kucing di notch, Warna, "Latar: <name>" with "Ubah", Aksesori tiles; **Gerak**: Animasi, Tidur setelah, Ikuti kursor, Joget ikut musik ([[cat-dances-to-music]]), Mengecil jadi mata; **Sapaan**: the toggle (one key, `CatGreeting`, with `MorningGreetingDesc` under it) and one read-only line of the five periods, built from `greeting.rs` (`DayPeriod::ALL`, `hours()`) and `i18n::greeting_title` by `i18n::greeting_periods_line`, so the hours cannot drift from `period_at` ([[greeting-periods]]) |
 | Panel | **Perilaku**: Mode buka, Di belakang jendela. **Halaman panel**, **Pintasan**, **Tersedia** (the lists and the own-tile form, [[panel-pages]], [[shortcut-tiles]]) |
 | Clipboard | **Riwayat** (7 rows: no hotkey row); **Screenshot** ([[screenshot-preview]]; 6 rows: Alat screenshot, Setelah capture, Salin otomatis, Pratinjau di notch, Jika diabaikan, Lama tampil; no PrtSc row). *Setelah capture* is a segmented control, "Jendela editor" / "Langsung di layar" (Editor window / On screen), `screenshot.after_capture`, right under the tool, never faded ([[screenshot-snap]], "Inline mode"); its description is "Untuk tile dan PrtSc" / "For tile and PrtSc" because the longer "Screenshot Vale: tile dan PrtSc" needs 202 px and the row leaves 149 beside the two wide choices |
-| Tombol pintas | **Di semua aplikasi**: one card, a header (hint and "Kembalikan semua") and five recordable rows ([[hotkeys]]) |
+| Tombol pintas | **Di semua aplikasi**: one card, a header (hint and "Kembalikan semua") and six recordable rows (the sixth, "Buka lirik", is the lyrics card, [[lyrics-card]]; [[hotkeys]]) |
 | Fitur | **Pomodoro** (4 steppers and the running note), **Musik** (Lirik di notch), **Notifikasi** (Simpan notifikasi, Jumlah maksimal, Simpan setelah restart, Aplikasi dikecualikan with a remove button each and a field with *Tambah*, Hapus riwayat notifikasi with two clicks; [[notification-history]]), **CLI** (Folder awal, Shell), **Perangkat** (Notifikasi perangkat; one row), **Susun** (gap slider first, then the templates and saved lists), **Pembersih** (Lindungi cache Cargo & Autodesk di Mole) |
 | Integrasi, Tentang | the same content, each card under a title (Tentang's is "Tautan": 4 rows since [[self-update]], Kode sumber, Pembaruan with "Cek sekarang" / "Update", the toggle "Cek pembaruan otomatis", Folder data) |
 
@@ -76,7 +76,7 @@ Clipboard and Fitur always do; Umum, Tombol pintas, Integrasi and Tentang
 never. Umum used to fit the 520 px window to the pixel and trim its gaps when
 the search-hotkey label wrapped (`UMUM_TRIM_*`, `LABEL_LINE_H`); with that row
 gone to Tombol pintas it is 2 + 4 rows and never wraps, so all that logic was
-deleted. Tombol pintas is one card of a 48 px header and five rows, well
+deleted. Tombol pintas is one card of a 48 px header and six rows (the lyrics card row added 2026-11-04; still no viewport at 720x520), well
 inside the window.
 `exactly_the_overflowing_sections_get_a_viewport` and
 `everything_fits_in_the_window_height` assert it, and that the last card meets

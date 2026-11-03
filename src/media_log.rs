@@ -210,6 +210,7 @@ mod tests {
             art: None,
             source_app: "Chrome".into(),
             session_key: 0,
+            can_seek: false,
         };
         let click = Click {
             hit: Hit::PlayPause,
@@ -281,6 +282,27 @@ mod tests {
         );
         assert!(line.contains("hover_open=none"), "{line}");
         assert!(line.contains("app=- session=none"), "{line}");
+    }
+
+    #[test]
+    fn a_seek_is_logged_by_its_position_only() {
+        let click = Click {
+            hit: Hit::Next,
+            page: Page::Media,
+            hover_open_ms: None,
+            guarded: false,
+        };
+        let line = format_command(
+            at(),
+            &click,
+            Outcome::Sent {
+                cmd: &MediaCommand::Seek(95_030),
+                session_found: true,
+            },
+            "Spotify.exe",
+        );
+        assert!(line.contains("cmd=Seek(95030)"), "{line}");
+        assert!(line.contains("session=found"), "{line}");
     }
 
     #[test]

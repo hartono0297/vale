@@ -887,7 +887,7 @@ keys! {
     SecCat => "Kucing", "Cat";
     SecPanel => "Panel", "Panel";
     SecFeatures => "Fitur", "Features";
-    // Settings → Tombol pintas: five hotkeys recorded by pressing them.
+    // Settings → Tombol pintas: six hotkeys recorded by pressing them.
     SecHotkeys => "Tombol pintas", "Hotkeys";
     GroupHotkeys => "Di semua aplikasi", "In every app";
     HotkeysHint => "Klik kolom, lalu tekan tombolnya", "Click a field, then press the keys";
@@ -902,6 +902,12 @@ keys! {
     HotkeyRowArrangeDesc => "Atur jendela jadi tata letak", "Arrange windows into a layout";
     HotkeyRowScreenshot => "Screenshot Vale", "Vale screenshot";
     HotkeyRowScreenshotDesc => "Ambil area layar, lalu edit", "Capture an area, then edit";
+    HotkeyRowLyricsCard => "Buka lirik", "Open lyrics";
+    HotkeyRowLyricsCardDesc => "Kartu lirik melayang", "Floating lyrics card";
+    // The floating lyrics card's messages.
+    LyricsCardSearching => "Mencari lirik…", "Searching for lyrics…";
+    LyricsCardNone => "Lirik sinkron nggak ketemu buat lagu ini", "No synced lyrics found for this song";
+    LyricsCardNoMedia => "Nggak ada lagu yang diputer", "Nothing is playing";
     HotkeyNone => "Tidak ada", "None";
     HotkeyRecording => "Tekan tombol… (Esc batal)", "Press keys… (Esc cancels)";
     HotkeyTaken => "Sudah dipakai aplikasi lain", "Taken by another app";

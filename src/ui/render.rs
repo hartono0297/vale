@@ -184,6 +184,9 @@ pub struct Frame<'a> {
     pub lyric_prev_scroll: f32,
     /// "Lirik di notch" is on: the Musik page's button is lit.
     pub lyrics_on: bool,
+    /// The floating lyrics card is open: the Musik page's round button next
+    /// to "Lirik" is outlined in the accent.
+    pub lyrics_card_open: bool,
     /// The volume the wheel is turning (0..1): a plate shows it for a moment.
     pub volume: Option<f32>,
     /// The CLI page.

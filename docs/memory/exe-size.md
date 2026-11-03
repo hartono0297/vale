@@ -114,6 +114,15 @@ are already dropped from the subset ([[studio-font-sources]]). No new crate
 and no new `windows` feature; the code added is the font selection, the
 Mono sizes and the Settings row.
 
+## The lyrics card (2026-11-04)
+
+[[lyrics-card]] (its window, pure layout and colour modules, the sixth hotkey row,
+the Musik button, `MediaCommand::Seek` and `can_seek`) took the release exe from
+3,186,688 to 3,233,280 bytes (+46,592, +1.46 %). Built with `cargo build
+--release --locked` from `git archive` of `main` and from the branch, each in its
+own `CARGO_TARGET_DIR` (folder names of different length, so up to 512 bytes of
+the difference is the PDB path). No new crate and no new `windows` feature.
+
 ## Idle RAM and CPU
 
 Not measured. The release exe is single-instance and reads real user data, and

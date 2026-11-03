@@ -354,16 +354,20 @@ pub enum HotkeyId {
     Devices,
     Arrange,
     Screenshot,
+    /// The floating lyrics card ("Buka lirik"), appended last so the ids and
+    /// the order of the earlier rows never change.
+    LyricsCard,
 }
 
 impl HotkeyId {
     /// Every row, in Settings order.
-    pub const ALL: [HotkeyId; 5] = [
+    pub const ALL: [HotkeyId; 6] = [
         HotkeyId::Search,
         HotkeyId::Clipboard,
         HotkeyId::Devices,
         HotkeyId::Arrange,
         HotkeyId::Screenshot,
+        HotkeyId::LyricsCard,
     ];
 
     /// The row's key in config.json.
@@ -374,6 +378,7 @@ impl HotkeyId {
             HotkeyId::Devices => "devices",
             HotkeyId::Arrange => "arrange",
             HotkeyId::Screenshot => "screenshot",
+            HotkeyId::LyricsCard => "lyrics_card",
         }
     }
 
@@ -390,11 +395,19 @@ impl HotkeyId {
                 VK_SPACE,
             ),
             HotkeyId::Screenshot => hk(Mods::default(), VK_SNAPSHOT),
+            HotkeyId::LyricsCard => hk(
+                Mods {
+                    ctrl: true,
+                    alt: true,
+                    ..Mods::default()
+                },
+                u16::from(b'L'),
+            ),
             _ => None,
         }
     }
 
-    /// The position in `ALL` (0..5).
+    /// The position in `ALL` (0..6).
     pub fn index(self) -> usize {
         self as usize
     }
@@ -405,7 +418,7 @@ impl HotkeyId {
     }
 }
 
-/// The five rows' values; `None` is off.
+/// The rows' values; `None` is off.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Hotkeys {
     pub search: Option<Hotkey>,
@@ -413,6 +426,7 @@ pub struct Hotkeys {
     pub devices: Option<Hotkey>,
     pub arrange: Option<Hotkey>,
     pub screenshot: Option<Hotkey>,
+    pub lyrics_card: Option<Hotkey>,
 }
 
 impl Default for Hotkeys {
@@ -423,6 +437,7 @@ impl Default for Hotkeys {
             devices: HotkeyId::Devices.default(),
             arrange: HotkeyId::Arrange.default(),
             screenshot: HotkeyId::Screenshot.default(),
+            lyrics_card: HotkeyId::LyricsCard.default(),
         }
     }
 }
@@ -436,6 +451,7 @@ impl Hotkeys {
             devices: None,
             arrange: None,
             screenshot: None,
+            lyrics_card: None,
         }
     }
 
@@ -446,6 +462,7 @@ impl Hotkeys {
             HotkeyId::Devices => self.devices,
             HotkeyId::Arrange => self.arrange,
             HotkeyId::Screenshot => self.screenshot,
+            HotkeyId::LyricsCard => self.lyrics_card,
         }
     }
 
@@ -456,6 +473,7 @@ impl Hotkeys {
             HotkeyId::Devices => self.devices = value,
             HotkeyId::Arrange => self.arrange = value,
             HotkeyId::Screenshot => self.screenshot = value,
+            HotkeyId::LyricsCard => self.lyrics_card = value,
         }
     }
 
@@ -631,6 +649,7 @@ pub fn from_legacy(root: &serde_json::Value) -> Hotkeys {
         devices,
         arrange,
         screenshot,
+        lyrics_card: HotkeyId::LyricsCard.default(),
     }
 }
 
@@ -865,13 +884,21 @@ mod tests {
     fn the_defaults_and_the_row_order() {
         assert_eq!(
             HotkeyId::ALL.map(HotkeyId::config_key),
-            ["search", "clipboard", "devices", "arrange", "screenshot"]
+            [
+                "search",
+                "clipboard",
+                "devices",
+                "arrange",
+                "screenshot",
+                "lyrics_card"
+            ]
         );
         for (i, id) in HotkeyId::ALL.iter().enumerate() {
             assert_eq!(id.index(), i);
             assert_eq!(HotkeyId::from_index(i), Some(*id));
         }
-        assert_eq!(HotkeyId::from_index(5), None);
+        assert_eq!(HotkeyId::from_index(6), None);
+        assert_eq!(HotkeyId::LyricsCard.index(), 5, "appended last");
         let d = Hotkeys::default();
         assert_eq!(d.search, Some(hk("Ctrl+Alt+Space")));
         assert_eq!(
@@ -882,6 +909,7 @@ mod tests {
             })
         );
         assert_eq!((d.clipboard, d.devices, d.arrange), (None, None, None));
+        assert_eq!(d.lyrics_card, Some(hk("Ctrl+Alt+L")));
         assert!(d.all_default());
     }
 
@@ -903,7 +931,7 @@ mod tests {
     }
 
     #[test]
-    fn the_config_form_is_five_strings_and_round_trips() {
+    fn the_config_form_is_six_strings_and_round_trips() {
         let mut keys = Hotkeys::default();
         keys.set(HotkeyId::Clipboard, Some(hk("Win+Alt+V")));
         keys.set(HotkeyId::Screenshot, None);
@@ -911,7 +939,7 @@ mod tests {
         assert_eq!(
             v,
             json!({"search":"Ctrl+Alt+Space","clipboard":"Win+Alt+V","devices":"None",
-                   "arrange":"None","screenshot":"None"})
+                   "arrange":"None","screenshot":"None","lyrics_card":"Ctrl+Alt+L"})
         );
         assert_eq!(Hotkeys::from_json(&v), keys);
         let back: Hotkeys = serde_json::from_value(v).unwrap();
@@ -956,6 +984,49 @@ mod tests {
         let got = Hotkeys::from_json(&json!({"clipboard":"Ctrl+Alt+Space"}));
         assert_eq!(got.clipboard, None);
         assert_eq!(got.search, HotkeyId::Search.default());
+    }
+
+    #[test]
+    fn the_lyrics_card_row_reads_leniently() {
+        let l = Some(hk("Ctrl+Alt+L"));
+        // An old config without the key: the default.
+        assert_eq!(
+            Hotkeys::from_json(&json!({"search": "Ctrl+Alt+K"})).lyrics_card,
+            l
+        );
+        assert_eq!(Hotkeys::from_json(&json!({})).lyrics_card, l);
+        // A deliberate off.
+        assert_eq!(
+            Hotkeys::from_json(&json!({"lyrics_card": "None"})).lyrics_card,
+            None
+        );
+        assert_eq!(
+            Hotkeys::from_json(&json!({"lyrics_card": null})).lyrics_card,
+            None
+        );
+        // Garbage, a refused combo and a wrong type: the default.
+        for bad in [json!("Banana"), json!("Alt+Tab"), json!("L"), json!(7)] {
+            let got = Hotkeys::from_json(&json!({ "lyrics_card": bad }));
+            assert_eq!(got.lyrics_card, l, "{bad}");
+        }
+        // A combo of its own survives.
+        let got = Hotkeys::from_json(&json!({"lyrics_card": "Win+Alt+L"}));
+        assert_eq!(got.lyrics_card, Some(hk("Win+Alt+L")));
+        // A combo an earlier row has reads as off (the earlier row keeps it).
+        let got = Hotkeys::from_json(&json!({"devices": "Ctrl+Alt+L"}));
+        assert_eq!(got.devices, l);
+        assert_eq!(got.lyrics_card, None);
+        let got = Hotkeys::from_json(
+            &json!({"screenshot": "Ctrl+Alt+L", "lyrics_card": "ctrl+alt+l"}),
+        );
+        assert_eq!(got.lyrics_card, None);
+        // The default does not collide with another row's default.
+        let d = Hotkeys::default();
+        for id in HotkeyId::ALL {
+            if id != HotkeyId::LyricsCard {
+                assert_ne!(d.get(id), d.lyrics_card, "{id:?}");
+            }
+        }
     }
 
     #[test]

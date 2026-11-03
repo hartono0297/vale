@@ -1056,6 +1056,23 @@ pub struct LyricsState {
     stale_end: Option<u64>,
     current: Option<(String, Lines)>,
     shown: Option<Shown>,
+    /// The track a definitive "no synced lyrics" answer was last given for
+    /// (read by the lyrics card only; no request depends on it).
+    none_key: Option<String>,
+    /// The track whose lookup failed on the way until the retries ran out.
+    gave_up: Option<String>,
+}
+
+/// What the lyrics card says about a track's lyrics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CardStatus {
+    /// Not answered yet (a lookup is due, running or waiting to be retried).
+    Pending,
+    /// Synced lyrics with words exist.
+    Synced,
+    /// A definitive "none" (also instrumental or plain only), or the retries
+    /// are used up.
+    Missing,
 }
 
 /// The line on screen, and the one fading out since `since`.
@@ -1095,6 +1112,13 @@ impl LyricsState {
                 self.retries = None;
             }
             self.asked = Some(q.key.clone());
+            // Asked again: an earlier "none" or "gave up" no longer holds.
+            if self.none_key.as_deref() == Some(q.key.as_str()) {
+                self.none_key = None;
+            }
+            if self.gave_up.as_deref() == Some(q.key.as_str()) {
+                self.gave_up = None;
+            }
             return Some(Query {
                 provisional,
                 ..q.clone()
@@ -1140,6 +1164,7 @@ impl LyricsState {
                 _ => 0,
             };
             if tries >= RETRIES {
+                self.gave_up = Some(f.key);
                 return false;
             }
             self.asked = None;
@@ -1147,10 +1172,11 @@ impl LyricsState {
             self.retries = Some((f.key, tries + 1));
             return true;
         }
-        if let Some(lines) = f.lines
-            && self.wanted.as_deref() == Some(f.key.as_str())
-        {
-            self.set_current(f.key, lines);
+        if self.wanted.as_deref() == Some(f.key.as_str()) {
+            match f.lines {
+                Some(lines) => self.set_current(f.key, lines),
+                None => self.none_key = Some(f.key),
+            }
         }
         false
     }
@@ -1176,6 +1202,40 @@ impl LyricsState {
 
     fn lines(&self) -> &[LrcLine] {
         self.current.as_ref().map_or(&[], |(_, l)| l.as_slice())
+    }
+
+    /// The lines held for the track `q` (the cache's, intro shift already
+    /// applied), `None` while they are another track's or not there yet.
+    /// Read only: it asks for nothing.
+    pub fn lines_for(&self, q: Option<&Query>) -> Option<&[LrcLine]> {
+        match (q, &self.current) {
+            (Some(q), Some((key, lines))) if *key == q.key => Some(lines.as_slice()),
+            _ => None,
+        }
+    }
+
+    /// What the lyrics card should say about `q`: `Synced` when `ready`
+    /// would be, `Missing` for a definitive "none" (or lines with no words)
+    /// or when the retries are used up, else `Pending`. Read only.
+    pub fn card_status(&self, q: Option<&Query>) -> CardStatus {
+        let Some(q) = q else {
+            return CardStatus::Pending;
+        };
+        if let Some((key, lines)) = &self.current
+            && *key == q.key
+        {
+            return if has_words(lines) {
+                CardStatus::Synced
+            } else {
+                CardStatus::Missing
+            };
+        }
+        let is = |k: &Option<String>| k.as_deref() == Some(q.key.as_str());
+        if is(&self.none_key) || is(&self.gave_up) {
+            CardStatus::Missing
+        } else {
+            CardStatus::Pending
+        }
     }
 
     /// Moves the shown line to the one at `pos_ms`. True when the text on
@@ -1245,11 +1305,22 @@ impl LyricsState {
     /// position stops at the track's end, so a timer for it would fire and
     /// re-arm for ever.
     pub fn wait_ms(&self, pos_ms: u64, rate: f32, reach_ms: Option<u64>) -> Option<u64> {
-        let rate = usable_rate(rate);
-        next_change(self.lines(), pos_ms)
-            .filter(|&at| reach_ms.is_none_or(|reach| at <= reach))
-            .map(|at| (((at - pos_ms) as f64 / rate).ceil() as u64).saturating_add(1))
+        wait_for(self.lines(), pos_ms, rate, reach_ms)
     }
+}
+
+/// `LyricsState::wait_ms` for any lines (the lyrics card's own timer uses it
+/// with the lines it was handed): the same numbers.
+pub fn wait_for(
+    lines: &[LrcLine],
+    pos_ms: u64,
+    rate: f32,
+    reach_ms: Option<u64>,
+) -> Option<u64> {
+    let rate = usable_rate(rate);
+    next_change(lines, pos_ms)
+        .filter(|&at| reach_ms.is_none_or(|reach| at <= reach))
+        .map(|at| (((at - pos_ms) as f64 / rate).ceil() as u64).saturating_add(1))
 }
 
 /// Sends lookups to the lyrics thread.
@@ -1823,6 +1894,7 @@ mod tests {
             art: None,
             source_app: String::new(),
             session_key: 0,
+            can_seek: false,
         }
     }
 
@@ -2190,6 +2262,87 @@ mod tests {
         assert!(st.want(Some(&c), true).is_some());
         assert!(!st.found(found(&c.key, None, false)));
         assert_eq!(st.want(Some(&c), true), None);
+    }
+
+    #[test]
+    fn the_card_status_tells_pending_synced_and_missing_apart() {
+        let mut st = LyricsState::default();
+        let (a, b, c) = (query("a"), query_len("b", 245_000), query("c"));
+        // Nothing known yet, and no query at all: still pending.
+        assert_eq!(st.card_status(Some(&a)), CardStatus::Pending);
+        assert_eq!(st.card_status(None), CardStatus::Pending);
+        assert!(st.lines_for(Some(&a)).is_none());
+        // Asked, not answered: pending.
+        assert!(st.want(Some(&a), true).is_some());
+        assert_eq!(st.card_status(Some(&a)), CardStatus::Pending);
+        // Answered with lines: synced, and the lines are readable.
+        st.found(found(&a.key, Some(song()), false));
+        assert_eq!(st.card_status(Some(&a)), CardStatus::Synced);
+        assert_eq!(st.lines_for(Some(&a)), Some(song().as_slice()));
+        assert!(st.lines_for(Some(&b)).is_none(), "another track's");
+        assert_eq!(st.card_status(Some(&b)), CardStatus::Pending);
+        // A definitive "none" for the next track: missing.
+        assert!(st.want(Some(&b), true).is_some());
+        assert!(!st.found(found(&b.key, None, false)));
+        assert_eq!(st.card_status(Some(&b)), CardStatus::Missing);
+        assert!(st.lines_for(Some(&b)).is_none());
+        // A failure on the way is not "missing" while retries are left...
+        assert!(st.want(Some(&c), true).is_some());
+        assert!(st.found(found(&c.key, None, true)));
+        assert_eq!(st.card_status(Some(&c)), CardStatus::Pending);
+        // ...but is once they are used up.
+        for _ in 1..RETRIES {
+            st.retry_due();
+            assert!(st.want(Some(&c), true).is_some());
+            assert!(st.found(found(&c.key, None, true)));
+        }
+        st.retry_due();
+        assert!(st.want(Some(&c), true).is_some());
+        assert!(!st.found(found(&c.key, None, true)));
+        assert_eq!(st.card_status(Some(&c)), CardStatus::Missing);
+        // Asked again later (after another track): pending until answered.
+        assert!(st.want(Some(&b), true).is_some());
+        assert_eq!(st.card_status(Some(&b)), CardStatus::Pending);
+        assert!(st.want(Some(&c), true).is_some());
+        assert_eq!(st.card_status(Some(&c)), CardStatus::Pending);
+    }
+
+    #[test]
+    fn lyrics_with_no_words_are_missing_for_the_card() {
+        let mut st = LyricsState::default();
+        let a = query("a");
+        st.want(Some(&a), true);
+        st.found(found(&a.key, Some(vec![l(0, ""), l(5_000, "")]), false));
+        assert_eq!(st.card_status(Some(&a)), CardStatus::Missing);
+        assert!(!st.ready(Some(&a)));
+    }
+
+    #[test]
+    fn the_card_accessors_change_no_request_or_answer() {
+        // The same calls as `state_asks_each_track_once`, with the card's
+        // reads between them: what `want`, `found` and `ready` give is the same.
+        let mut st = LyricsState::default();
+        let a = query("a");
+        assert_eq!(st.want(Some(&a), false), None);
+        let _ = (st.card_status(Some(&a)), st.lines_for(Some(&a)));
+        assert_eq!(st.want(Some(&a), true), Some(a.clone()));
+        let _ = st.card_status(Some(&a));
+        assert_eq!(st.want(Some(&a), true), None);
+        assert!(!st.found(found(&a.key, Some(song()), false)));
+        assert!(st.ready(Some(&a)));
+        // `wait_for` is `wait_ms` on the same lines.
+        let lines = song();
+        for pos in [0, 1_500, 4_999, 5_000, 90_000] {
+            for rate in [0.5, 1.0, 2.0, f32::NAN] {
+                for reach in [None, Some(10_000), Some(0)] {
+                    assert_eq!(
+                        wait_for(&lines, pos, rate, reach),
+                        st.wait_ms(pos, rate, reach),
+                        "{pos} {rate} {reach:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

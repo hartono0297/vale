@@ -247,6 +247,9 @@ struct Tracked {
     /// `rank_playing` of the last status read: what ranking uses.
     rank_live: Option<bool>,
     status: &'static str,
+    /// `IsPlaybackPositionEnabled` of the last playback info read; false when
+    /// unreadable.
+    can_seek: bool,
     meta: Meta,
     /// The metadata was read (or tried) once.
     meta_tried: bool,
@@ -283,6 +286,7 @@ impl Tracked {
             live: None,
             rank_live: None,
             status: "Unreadable",
+            can_seek: false,
             meta: Meta::default(),
             meta_tried: false,
             properties_token,
@@ -314,10 +318,9 @@ impl Tracked {
 
     /// Re-reads the playback status.
     fn read_status(&mut self) {
-        let status = self
-            .session
-            .GetPlaybackInfo()
-            .and_then(|i| i.PlaybackStatus());
+        let info = self.session.GetPlaybackInfo();
+        self.can_seek = info.as_ref().is_ok_and(can_seek_of);
+        let status = info.and_then(|i| i.PlaybackStatus());
         self.status = status_name(&status);
         self.rank_live = rank_playing(&status);
         self.live = shown_playing(status);
@@ -655,6 +658,7 @@ impl Watcher {
             },
             source_app: t.app.clone(),
             session_key: t.key,
+            can_seek: t.can_seek,
         })
     }
 
@@ -885,8 +889,23 @@ fn try_send_command(cmd: &MediaCommand, target: &Target, click: Option<&Click>) 
         MediaCommand::Play => session.TryPlayAsync()?,
         MediaCommand::Pause => session.TryPauseAsync()?,
         MediaCommand::Next => session.TrySkipNextAsync()?,
+        MediaCommand::Seek(ms) => session.TryChangePlaybackPositionAsync(seek_ticks(*ms))?,
     };
     op.join()
+}
+
+/// A seek target in WinRT ticks (100 ns), saturating.
+fn seek_ticks(ms: u64) -> i64 {
+    i64::try_from(ms.saturating_mul(10_000)).unwrap_or(i64::MAX)
+}
+
+/// Whether the session accepts a change of position.
+fn can_seek_of(
+    info: &windows::Media::Control::GlobalSystemMediaTransportControlsSessionPlaybackInfo,
+) -> bool {
+    info.Controls()
+        .and_then(|c| c.IsPlaybackPositionEnabled())
+        .unwrap_or(false)
 }
 
 /// The tracked session with `key`, cloned out of the registry so the lock is
@@ -1046,6 +1065,7 @@ mod tests {
             art,
             source_app: "Chrome".to_string(),
             session_key: 1,
+            can_seek: false,
         })
     }
 

@@ -1392,6 +1392,9 @@ const MEDIA_SIDE_W: f32 = 32.0;
 const MEDIA_BUTTON_GAP: f32 = 12.0;
 const LYRICS_W: f32 = 66.0;
 const LYRICS_H: f32 = 26.0;
+/// The lyrics card's round button: a 26 dip square, this far left of "Lirik".
+pub const LYRICS_CARD_SIZE: f32 = 26.0;
+const LYRICS_CARD_GAP: f32 = 8.0;
 
 fn rect(x: f32, y: f32, w: f32, h: f32) -> Rect {
     Rect {
@@ -2270,6 +2273,13 @@ pub fn media_panel_layout(s: ShapeRect, strip: bool) -> ExpandedLayout {
     if reaches(&lyrics) {
         lyrics.x = hr - lyrics.w;
     }
+    // Left of "Lirik" with a gap, centred on the transport row.
+    let lyrics_card = rect(
+        lyrics.x - LYRICS_CARD_GAP - LYRICS_CARD_SIZE,
+        row_y + (MEDIA_PLAY - LYRICS_CARD_SIZE) / 2.0,
+        LYRICS_CARD_SIZE,
+        LYRICS_CARD_SIZE,
+    );
     ExpandedLayout {
         art,
         label,
@@ -2277,7 +2287,19 @@ pub fn media_panel_layout(s: ShapeRect, strip: bool) -> ExpandedLayout {
         artist,
         buttons: [prev, play, next],
         lyrics,
+        lyrics_card,
     }
+}
+
+/// The Music page's regions as the island may use them: without a media
+/// session the transport buttons go; the lyrics card's button exists only
+/// while the lyrics setting is on.
+pub fn media_hits_for(hits: &mut Vec<Region>, has_media: bool, lyrics_on: bool) {
+    hits.retain(|r| match r.hit {
+        Hit::Prev | Hit::PlayPause | Hit::Next => has_media,
+        Hit::LyricsCard => lyrics_on,
+        _ => true,
+    });
 }
 
 /// The bar under the artist, as wide as the text column, and the times
@@ -3631,6 +3653,7 @@ pub fn regions(s: ShapeRect, layout: &PageLayout, strip: impl Into<StripKind>) -
             add(play, Hit::PlayPause);
             add(next, Hit::Next);
             add(l.lyrics, Hit::LyricsToggle);
+            add(l.lyrics_card, Hit::LyricsCard);
         }
         PageLayout::Cli(l) => {
             let folder = l.chips[..l.folder_chips].iter().filter(|c| c.w > 0.0);
@@ -5564,12 +5587,32 @@ mod tests {
 
         let media = media_panel_layout(s, false);
         let r = regions(s, &PageLayout::Media(media), false);
-        for hit in [Hit::Prev, Hit::PlayPause, Hit::Next, Hit::LyricsToggle] {
+        for hit in [
+            Hit::Prev,
+            Hit::PlayPause,
+            Hit::Next,
+            Hit::LyricsToggle,
+            Hit::LyricsCard,
+        ] {
             assert!(has(&r, hit.clone()), "{hit:?}");
         }
-        // The Settings button and the four buttons: no lyric offset region
+        // The Settings button and the five buttons: no lyric offset region
         // is left.
-        assert_eq!(r.len(), 5);
+        assert_eq!(r.len(), 6);
+        // The lyrics card's region is dropped with the lyrics setting off,
+        // and the transport's with no media; nothing else goes.
+        let mut off = r.clone();
+        media_hits_for(&mut off, true, false);
+        assert!(!has(&off, Hit::LyricsCard));
+        assert_eq!(off.len(), 5);
+        let mut on = r.clone();
+        media_hits_for(&mut on, true, true);
+        assert_eq!(on, r);
+        let mut idle = r.clone();
+        media_hits_for(&mut idle, false, true);
+        assert!(has(&idle, Hit::LyricsCard) && has(&idle, Hit::LyricsToggle));
+        assert!(!has(&idle, Hit::Prev) && !has(&idle, Hit::PlayPause) && !has(&idle, Hit::Next));
+        assert_eq!(idle.len(), 3);
         // "Lirik" ends at the text column's right edge, clear of the transport
         // buttons.
         assert_eq!(
@@ -5577,6 +5620,9 @@ mod tests {
             media.title.x + media.title.w
         );
         assert!(media.buttons.iter().all(|b| b.x + b.w <= media.lyrics.x));
+        // The card's button sits between `next` and "Lirik".
+        assert!(media.buttons[2].right() < media.lyrics_card.x);
+        assert!(media.lyrics_card.right() < media.lyrics.x);
         // The progress bar shows the position only: no click lands on it.
         let bar = media_progress_layout(&media).bar;
         let mid = (bar.x + bar.w / 2.0, bar.y + bar.h / 2.0);
@@ -6310,7 +6356,7 @@ mod tests {
                 drawn.extend(l.groups.iter().map(|(_, r)| *r));
             }
             PageLayout::Media(l) => {
-                drawn.extend([l.art, l.label, l.title, l.artist, l.lyrics]);
+                drawn.extend([l.art, l.label, l.title, l.artist, l.lyrics, l.lyrics_card]);
                 drawn.extend(l.buttons);
                 let p = media_progress_layout(l);
                 drawn.extend([p.bar, p.elapsed, p.total]);
@@ -6754,6 +6800,14 @@ mod media_tests {
                 assert!((mid(l.lyrics) - mid(play)).abs() < 0.01);
                 assert!(prev.right() < play.x && play.right() < next.x);
                 assert!(next.right() < l.lyrics.x);
+                // The lyrics card's round button: 26 square, 8 left of "Lirik",
+                // centred on the row, right of `next` (never over it).
+                let card = l.lyrics_card;
+                assert_eq!((card.w, card.h), (26.0, 26.0));
+                assert!((l.lyrics.x - card.right() - 8.0).abs() < 0.01);
+                assert!((mid(card) - mid(play)).abs() < 0.01);
+                assert!(next.right() < card.x, "{style:?} strip={strip}");
+                assert!(card.right() < l.lyrics.x);
                 assert_eq!(play.w, play.h, "the round primary button");
                 // The text column: label, title, artist, then the row.
                 assert!(l.label.bottom() <= l.title.y && l.title.bottom() <= l.artist.y);

@@ -1,4 +1,4 @@
-//! The island's side of the five global hotkeys (`crate::hotkey`): which combo
+//! The island's side of the global hotkeys (`crate::hotkey`): which combo
 //! each row has in effect, registering it with Windows, the PrtSc hook for the
 //! combos Windows keeps (`app_prtsc`), the retry of one that is taken, the
 //! pause while Settings records a new combo, and what a press does. A child of
@@ -29,6 +29,10 @@ pub(super) const HOTKEY_SEARCH: i32 = 2;
 pub(super) const HOTKEY_DEVICES: i32 = 3;
 pub(super) const HOTKEY_ARRANGE: i32 = 4;
 pub(super) const HOTKEY_SCREENSHOT: i32 = 5;
+pub(super) const HOTKEY_LYRICS_CARD: i32 = 6;
+
+/// How many rows there are (the size of the per-row tables).
+pub(super) const ROWS: usize = HotkeyId::ALL.len();
 
 /// The `RegisterHotKey` id of a row.
 pub(super) fn wm_id(id: HotkeyId) -> i32 {
@@ -38,6 +42,7 @@ pub(super) fn wm_id(id: HotkeyId) -> i32 {
         HotkeyId::Devices => HOTKEY_DEVICES,
         HotkeyId::Arrange => HOTKEY_ARRANGE,
         HotkeyId::Screenshot => HOTKEY_SCREENSHOT,
+        HotkeyId::LyricsCard => HOTKEY_LYRICS_CARD,
     }
 }
 
@@ -76,9 +81,9 @@ pub(super) fn plan_row(want: Option<Hotkey>, applied: Option<Hotkey>, failed: bo
 #[derive(Default)]
 pub(super) struct HotkeyState {
     /// What each row has in effect (registered or in the hook's table).
-    applied: [Option<Hotkey>; 5],
+    applied: [Option<Hotkey>; ROWS],
     /// A row whose combo could not be registered or hooked.
-    failed: [bool; 5],
+    failed: [bool; ROWS],
     /// The PrtSc hook thread, while a row needs it.
     hook: Option<HookThread>,
     /// Settings is recording: nothing is registered and no sync does anything.
@@ -97,7 +102,7 @@ impl HotkeyState {
     }
 
     /// The rows in effect that are failed, by row index.
-    pub(super) fn failed_flags(&self) -> [bool; 5] {
+    pub(super) fn failed_flags(&self) -> [bool; ROWS] {
         self.failed
     }
 
@@ -240,7 +245,7 @@ impl App {
         self.sync_hotkeys();
     }
 
-    /// Unregisters all five ids, empties the hook's table and stops the hook;
+    /// Unregisters every row's id, empties the hook's table and stops the hook;
     /// every row reads as not in effect.
     fn unregister_all_hotkeys(&mut self) {
         for id in HotkeyId::ALL {
@@ -249,7 +254,7 @@ impl App {
             }
             prtsc::table_clear(id);
         }
-        self.hotkeys.applied = [None; 5];
+        self.hotkeys.applied = [None; ROWS];
         if let Some(hook) = self.hotkeys.hook.take() {
             hook.stop();
         }
@@ -300,6 +305,7 @@ impl App {
             HotkeyId::Devices => self.on_devices_hotkey(),
             HotkeyId::Arrange => self.on_arrange_hotkey(),
             HotkeyId::Screenshot => self.on_screenshot_hotkey(),
+            HotkeyId::LyricsCard => self.on_lyrics_card_hotkey(),
         }
     }
 
@@ -332,22 +338,24 @@ mod tests {
     }
 
     #[test]
-    fn the_ids_stay_and_screenshot_is_the_fifth() {
+    fn the_ids_stay_and_the_lyrics_card_is_the_sixth() {
         assert_eq!(HOTKEY_CLIP, 1);
         assert_eq!(HOTKEY_SEARCH, 2);
         assert_eq!(HOTKEY_DEVICES, 3);
         assert_eq!(HOTKEY_ARRANGE, 4);
         assert_eq!(HOTKEY_SCREENSHOT, 5);
+        assert_eq!(HOTKEY_LYRICS_CARD, 6);
+        assert_eq!(ROWS, 6);
         for id in HotkeyId::ALL {
             assert_eq!(row_of_wm_id(wm_id(id)), Some(id));
         }
         assert_eq!(row_of_wm_id(0), None);
-        assert_eq!(row_of_wm_id(6), None);
-        // The hook's `wparam` is the row index, and the five ids are distinct.
+        assert_eq!(row_of_wm_id(7), None);
+        // The hook's `wparam` is the row index, and the six ids are distinct.
         let mut ids: Vec<i32> = HotkeyId::ALL.iter().map(|i| wm_id(*i)).collect();
         ids.sort_unstable();
         ids.dedup();
-        assert_eq!(ids.len(), 5);
+        assert_eq!(ids.len(), 6);
     }
 
     #[test]
@@ -390,7 +398,10 @@ mod tests {
         assert!(!s.any_failed());
         s.failed[2] = true;
         assert!(s.any_failed());
-        assert_eq!(s.failed_flags(), [false, false, true, false, false]);
+        assert_eq!(
+            s.failed_flags(),
+            [false, false, true, false, false, false]
+        );
     }
 
     /// `RegisterHotKey` as Windows does it: a combo is refused while any id
@@ -398,7 +409,7 @@ mod tests {
     #[derive(Default)]
     struct FakeOps {
         registered: std::collections::HashMap<HotkeyId, Hotkey>,
-        table: [Option<Hotkey>; 5],
+        table: [Option<Hotkey>; ROWS],
         taken_elsewhere: Vec<Hotkey>,
     }
 
@@ -500,9 +511,43 @@ mod tests {
             (HotkeyId::Devices, "Ctrl+Alt+D"),
         ]);
         s.apply(&off, &mut ops);
-        assert_eq!(ops.table, [None; 5]);
+        assert_eq!(ops.table, [None; ROWS]);
         assert!(!s.needs_hook());
         assert_eq!(ops.registered.len(), 2);
+    }
+
+    #[test]
+    fn the_lyrics_card_row_registers_like_any_other_and_never_uses_the_hook() {
+        let mut s = HotkeyState::default();
+        let mut ops = FakeOps::default();
+        let want = rows(&[
+            (HotkeyId::Search, "Ctrl+Alt+Space"),
+            (HotkeyId::LyricsCard, "Ctrl+Alt+L"),
+        ]);
+        s.apply(&want, &mut ops);
+        assert!(!s.any_failed());
+        assert_eq!(
+            ops.registered.get(&HotkeyId::LyricsCard),
+            Some(&hk("Ctrl+Alt+L"))
+        );
+        assert!(!s.needs_hook());
+        assert_eq!(
+            plan_row(want.get(HotkeyId::LyricsCard), None, false),
+            RowPlan::Register(hk("Ctrl+Alt+L"))
+        );
+        // Taken by another app: only this row fails, the others stay.
+        let mut s = HotkeyState::default();
+        let mut ops = FakeOps {
+            taken_elsewhere: vec![hk("Ctrl+Alt+L")],
+            ..FakeOps::default()
+        };
+        s.apply(&want, &mut ops);
+        assert!(s.failed_flags()[HotkeyId::LyricsCard.index()]);
+        assert_eq!(s.failed.iter().filter(|f| **f).count(), 1);
+        // Off: let go.
+        s.apply(&rows(&[(HotkeyId::Search, "Ctrl+Alt+Space")]), &mut ops);
+        assert!(!s.any_failed());
+        assert_eq!(ops.registered.get(&HotkeyId::LyricsCard), None);
     }
 
     #[test]

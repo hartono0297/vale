@@ -71,7 +71,7 @@ use crate::ui::panel_layout::{
     SEG_PAD, SYS_RING_STROKE, SearchLayout, ShelfLayout, ShortcutsLayout, SystemHead, SystemLayout,
     VOLUME_HUD_H, WEEK_HEAD_H, arrange_layout, calendar_layout, cleaner_layout, cli_folder_menu,
     cli_layout, cli_suggestions, clipboard_layout, device_shapes, devices_layout,
-    media_panel_layout, media_progress_layout, mixer_layout, mole_layout, mole_log_rows,
+    media_hits_for, media_panel_layout, media_progress_layout, mixer_layout, mole_layout, mole_log_rows,
     mole_log_skip, notes_layout, notif_layout, page_dots, pomodoro_compact_layout,
     pomodoro_compact_layout_robot, pomodoro_layout, regions, reminders_layout, search_layout,
     settings_button, shelf_card_layout, shelf_layout, shortcuts_layout, system_layout,
@@ -562,8 +562,8 @@ impl Renderer {
                 None => StripKind::None,
             };
             hits.extend(regions(s, &layout, strip_kind));
-            if matches!(layout, PageLayout::Media(_)) && frame.media.is_none() {
-                hits.retain(|r| !matches!(r.hit, Hit::Prev | Hit::PlayPause | Hit::Next));
+            if matches!(layout, PageLayout::Media(_)) {
+                media_hits_for(&mut hits, frame.media.is_some(), frame.lyrics_on);
             }
             self.regions.regions = hits;
             // The v1 media buttons must never fire on another page.
@@ -809,6 +809,7 @@ impl Renderer {
                 l,
                 frame.media,
                 frame.lyrics_on,
+                frame.lyrics_card_open,
                 frame.progress,
                 frame.volume,
             ),
@@ -3908,6 +3909,7 @@ impl Renderer {
         l: &ExpandedLayout,
         media: Option<&MediaInfo>,
         lyrics_on: bool,
+        card_open: bool,
         progress: Option<Progress>,
         volume: Option<f32>,
     ) -> Result<()> {
@@ -3924,6 +3926,9 @@ impl Renderer {
             self.paint_volume(strip, level, 0.72);
         }
         self.paint_lyrics_button(l.lyrics, lyrics_on);
+        if lyrics_on {
+            self.paint_lyrics_card_button(l.lyrics_card, card_open);
+        }
         let Some(media) = media else {
             self.text(
                 i18n::tr(Key::NothingPlaying),
@@ -4017,6 +4022,24 @@ impl Renderer {
         self.text2(&elapsed, &self.fonts.track_time, m.elapsed);
         let total = track_time(progress.end_ms);
         self.text2(&total, &self.fonts.track_time_right, m.total);
+    }
+
+    /// The round button that opens the floating lyrics card: the external-
+    /// window icon in a quiet ring, outlined in the accent while the card is
+    /// open.
+    fn paint_lyrics_card_button(&self, r: Rect, open: bool) {
+        let p = self.palette;
+        let ink = if open { p.accent } else { p.secondary };
+        if open {
+            self.set_color(p.accent, TAG_TINT);
+            self.fill_round(r, r.h / 2.0);
+        }
+        self.stroke_round(
+            inset(r, 0.5, 0.5),
+            r.h / 2.0,
+            if open { p.accent } else { p.dot_off },
+        );
+        self.icon_colored(Icon::Ext, r, 14.0, ink, 1.0, None);
     }
 
     /// "Lirik" with a quote mark: outlined in the accent while lyrics show in
