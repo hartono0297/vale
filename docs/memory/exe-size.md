@@ -145,3 +145,5 @@ after:
 No new crate and no new `windows` feature: the host, the drawing, the
 checklist, snap and placement maths, the colour popover, the Settings page and
 the extra strings. `--demo-widgets` is debug-only and not in the release exe.
+
+After the finish merge with the lyrics card (`cargo build --release --locked`, 0 warnings) `vale.exe` is 3,346,944 bytes; the part from the lyrics card is on [[lyrics-card]].
