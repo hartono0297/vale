@@ -81,6 +81,12 @@ struct Pop {
     res: Res,
     canvas: Option<Canvas>,
     hover: Option<Item>,
+    /// `close` is running (Esc, a command of the note, a new popover): the
+    /// deactivation that follows is ours, not the user's going elsewhere.
+    closing: bool,
+    /// Deactivated in favour of a window that is not the note: the user went
+    /// to another app, so the note must not take the keyboard back.
+    away: bool,
 }
 
 thread_local! {
@@ -253,6 +259,8 @@ pub fn open(note: HWND, anchor: Rect, area: Rect, scale: f32, state: PopState) {
             res,
             canvas,
             hover: None,
+            closing: false,
+            away: false,
         });
     });
     redraw();
@@ -268,7 +276,15 @@ pub fn update(state: PopState) {
     redraw();
 }
 
+/// Whether the popover losing the activation to `to` (0 for none) is the
+/// user going somewhere else: not the note it belongs to, and not our own
+/// `close`.
+fn left_for_other(to: isize, note: isize, closing: bool) -> bool {
+    !closing && to != note
+}
+
 pub fn close() {
+    let _ = with(|p| p.closing = true);
     let hwnd = POP.with(|cell| {
         cell.try_borrow()
             .ok()
@@ -474,18 +490,24 @@ unsafe extern "system" fn pop_proc(
         }
         WM_ACTIVATE => {
             if (wparam.0 & 0xFFFF) as u32 == WA_INACTIVE {
+                let to = lparam.0;
+                let _ = with(|p| {
+                    if left_for_other(to, p.note.0 as isize, p.closing) {
+                        p.away = true;
+                    }
+                });
                 close();
             }
             return LRESULT(0);
         }
         WM_DESTROY => {
-            let note = POP.with(|cell| {
+            let gone = POP.with(|cell| {
                 cell.try_borrow_mut()
                     .ok()
-                    .and_then(|mut p| p.take().map(|p| p.note))
+                    .and_then(|mut p| p.take().map(|p| (p.note, p.away)))
             });
-            if let Some(note) = note {
-                host::pop_closed(note);
+            if let Some((note, away)) = gone {
+                host::pop_closed(note, away);
             }
             return LRESULT(0);
         }
@@ -493,4 +515,21 @@ unsafe extern "system" fn pop_proc(
     }
     let _ = unsafe { GetWindowLongPtrW(hwnd, GWLP_HWNDPARENT) };
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::left_for_other;
+
+    #[test]
+    fn going_to_another_app_is_not_a_return_to_the_note() {
+        // A click into another app (a window that is not the note).
+        assert!(left_for_other(0x2222, 0x1111, false));
+        // No window at all (the desktop, a lock screen).
+        assert!(left_for_other(0, 0x1111, false));
+        // A click on the note itself: the editing goes on.
+        assert!(!left_for_other(0x1111, 0x1111, false));
+        // Esc or a command of ours: close() runs, whoever gets the activation.
+        assert!(!left_for_other(0x2222, 0x1111, true));
+    }
 }

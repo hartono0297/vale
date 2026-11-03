@@ -62,7 +62,7 @@ use crate::widgets::paint::{
 use crate::widgets::place;
 use crate::widgets::pop::{self, PopCmd, PopState};
 use crate::widgets::prefs::{FullscreenRule, WidgetLayer, WidgetPrefs};
-use crate::widgets::snap::{Axis, snap_move, snap_resize};
+use crate::widgets::snap::{Axis, snap_move_for, snap_resize};
 use crate::widgets::sticky::{self, DipRect, Paper, Sticky, TextSize};
 
 /// Posted to the owner when `WidgetEvent`s wait. One message until `drain`.
@@ -264,8 +264,18 @@ fn push(s: &mut State, ev: WidgetEvent) {
     }
 }
 
+/// The two-click delete goes back to its first click (the footer follows).
+fn disarm_delete(s: &mut State, i: usize) {
+    if s.wins[i].confirm_delete {
+        s.wins[i].confirm_delete = false;
+        s.wins[i].dirty = true;
+    }
+}
+
 /// The note was used: now it is the one touched last.
 fn touch(s: &mut State, i: usize) {
+    // Any change to the note is an "other action": the delete is not armed.
+    disarm_delete(s, i);
     let at = unix_now();
     let id = s.wins[i].id.clone();
     s.wins[i].sticky.touched = at;
@@ -1545,6 +1555,9 @@ pub(crate) fn pop_command(note: HWND, cmd: PopCmd) {
         PopCmd::Pin(on) => set_pinned(note, on),
         PopCmd::Peek(on) => {
             let _ = with(|s| {
+                if let Some(i) = idx_of(s, note) {
+                    disarm_delete(s, i);
+                }
                 s.prefs.cat_peek = on;
                 for w in &mut s.wins {
                     w.dirty = true;
@@ -1599,8 +1612,16 @@ fn open_popover(hwnd: HWND) {
     }
 }
 
-/// The popover closed: a note that was being edited gets its keyboard back.
-pub(crate) fn pop_closed(note: HWND) {
+/// The popover closed: a note that was being edited gets its keyboard back,
+/// unless the user left for another app (`away`): then the editing ends, as
+/// it does when the note itself loses the activation.
+pub(crate) fn pop_closed(note: HWND, away: bool) {
+    if away {
+        unsafe {
+            let _ = PostMessageW(Some(note), WM_END_EDIT, WPARAM(0), LPARAM(0));
+        }
+        return;
+    }
     let edit_hwnd = with(|s| {
         let i = idx_of(s, note)?;
         s.wins[i].edit
@@ -1703,6 +1724,15 @@ fn context_menu(hwnd: HWND, at: POINT) {
         let _ = DestroyMenu(menu);
         chosen.0 as usize
     };
+    if cmd != 0 && cmd != CMD_DELETE {
+        // Any other choice is the next other action (a dismissed menu is not).
+        let _ = with(|s| {
+            let i = idx_of(s, hwnd)?;
+            disarm_delete(s, i);
+            Some(())
+        });
+        flush_dirty();
+    }
     match cmd {
         0 => {}
         c if (CMD_PAPER..CMD_PAPER + Paper::ALL.len()).contains(&c) => {
@@ -1828,11 +1858,12 @@ fn drag_move(s: &mut State, i: usize, cursor: (i32, i32), alt: bool) {
         }
     }
     let snapped = match kind {
-        DragKind::Move => snap_move(
+        DragKind::Move => snap_move_for(
             DipRect::new(rel.x, rel.y, start_dip.w, start_dip.h),
             &area,
             &others,
             alt,
+            rolled,
         ),
         DragKind::Resize => {
             let w = &s.wins[i];

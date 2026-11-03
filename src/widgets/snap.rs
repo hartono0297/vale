@@ -7,7 +7,7 @@
 //! numbers hold on any monitor and at any DPI.
 
 use crate::widgets::sticky::{
-    DEFAULT_H, DEFAULT_W, DipRect, MAX_H, MAX_W, MIN_H, MIN_W,
+    DEFAULT_H, DEFAULT_W, DipRect, MAX_H, MAX_W, MIN_H, MIN_W, ROLLED_H,
 };
 
 pub const GRID: f32 = 8.0;
@@ -62,15 +62,32 @@ fn grid(v: f32) -> f32 {
 /// The size of `r` inside the limits, and in an area too small for them, the
 /// area's own.
 fn clamp_size(w: f32, h: f32, area: &DipRect) -> (f32, f32) {
+    clamp_size_min(w, h, area, MIN_H)
+}
+
+/// `clamp_size` with its own smallest height: a rolled-up note is shown
+/// `ROLLED_H` tall, below `MIN_H`.
+fn clamp_size_min(w: f32, h: f32, area: &DipRect, min_h: f32) -> (f32, f32) {
     let max_w = MAX_W.min(area.w).max(0.0);
     let max_h = MAX_H.min(area.h).max(0.0);
-    (w.clamp(MIN_W.min(max_w), max_w), h.clamp(MIN_H.min(max_h), max_h))
+    (w.clamp(MIN_W.min(max_w), max_w), h.clamp(min_h.min(max_h), max_h))
+}
+
+/// The smallest height a note is shown at.
+fn min_h_of(rolled: bool) -> f32 {
+    if rolled { ROLLED_H } else { MIN_H }
 }
 
 /// `r` with its size inside the limits and the whole rect inside `area`
 /// (never over the Dock's zone or the taskbar).
 pub fn clamp_rect(r: DipRect, area: &DipRect) -> DipRect {
-    let (w, h) = clamp_size(r.w, r.h, area);
+    clamp_rect_for(r, area, false)
+}
+
+/// `clamp_rect` for a rect as shown: `rolled` lets it be `ROLLED_H` tall, so
+/// a rolled-up note keeps its true height and can sit at the bottom edge.
+pub fn clamp_rect_for(r: DipRect, area: &DipRect, rolled: bool) -> DipRect {
+    let (w, h) = clamp_size_min(r.w, r.h, area, min_h_of(rolled));
     let x = r.x.clamp(area.x, (area.right() - w).max(area.x));
     let y = r.y.clamp(area.y, (area.bottom() - h).max(area.y));
     DipRect { x, y, w, h }
@@ -137,8 +154,21 @@ fn guides_of(r: &DipRect, area: &DipRect, others: &[DipRect]) -> Vec<Guide> {
 /// A widget of size `want.w` x `want.h` dragged to `want`'s place: the place
 /// it snaps to. The size stays. `alt` (Alt held) turns snapping off; the
 /// clamp stays.
+#[cfg(test)]
 pub fn snap_move(want: DipRect, area: &DipRect, others: &[DipRect], alt: bool) -> Snapped {
-    let base = clamp_rect(want, area);
+    snap_move_for(want, area, others, alt, false)
+}
+
+/// `snap_move` for a note that is rolled up (`want.h` is `ROLLED_H`): its
+/// edges are the ones on screen.
+pub fn snap_move_for(
+    want: DipRect,
+    area: &DipRect,
+    others: &[DipRect],
+    alt: bool,
+    rolled: bool,
+) -> Snapped {
+    let base = clamp_rect_for(want, area, rolled);
     if alt {
         return Snapped { rect: base, guides: Vec::new() };
     }
@@ -160,7 +190,7 @@ pub fn snap_move(want: DipRect, area: &DipRect, others: &[DipRect], alt: bool) -
         }
     }
     let y = nearest(want.y, &ys).unwrap_or_else(|| grid(want.y));
-    let rect = clamp_rect(DipRect { x, y, w, h }, area);
+    let rect = clamp_rect_for(DipRect { x, y, w, h }, area, rolled);
     let guides = guides_of(&rect, area, others);
     Snapped { rect, guides }
 }
@@ -306,6 +336,28 @@ mod tests {
         // Right edges: 600 - 240 = 360.
         let s = snap_move(r(357.0, 400.0, 240.0, 208.0), &AREA, &[other], false);
         assert_eq!(s.rect.right(), 600.0);
+    }
+
+    #[test]
+    fn a_rolled_note_keeps_its_shown_height_at_the_bottom_and_under_a_neighbour() {
+        let h = ROLLED_H;
+        // The clamp keeps 56 tall and lets it sit on the bottom edge.
+        let c = clamp_rect_for(r(10.0, 5000.0, 240.0, h), &AREA, true);
+        assert_eq!((c.h, c.bottom()), (h, AREA.bottom()));
+        // Without the flag the old 120 minimum raises it.
+        assert_eq!(clamp_rect(r(10.0, 5000.0, 240.0, h), &AREA).h, MIN_H);
+        // Dragged to the bottom: it snaps to the area's bottom, no 64 dip lost.
+        let s = snap_move_for(r(100.0, 720.0 - h - 3.0, 240.0, h), &AREA, &[], false, true);
+        assert_eq!((s.rect.h, s.rect.bottom()), (h, AREA.bottom()));
+        assert!(s.guides.iter().any(|g| g.axis == Axis::Y && g.pos == AREA.bottom()));
+        // Above a neighbour: the gap is 12, not 12 + 64.
+        let other = r(100.0, 400.0, 240.0, 150.0);
+        let s = snap_move_for(r(100.0, 400.0 - GAP - h + 3.0, 240.0, h), &AREA, &[other], false, true);
+        assert_eq!(s.rect.bottom() + GAP, other.y);
+        // Under it likewise.
+        let s = snap_move_for(r(100.0, other.bottom() + GAP - 3.0, 240.0, h), &AREA, &[other], false, true);
+        assert_eq!(s.rect.y, other.bottom() + GAP);
+        assert_eq!(s.rect.h, h);
     }
 
     #[test]

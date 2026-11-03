@@ -2077,9 +2077,6 @@ fn list_header(s: ShapeRect, strip: bool) -> (Rect, Rect, f32) {
     (header, new_button, header.bottom() + LIST_TOP_GAP)
 }
 
-/// Cards in two columns, newest top left, two rows of them. When there are
-/// more, the page shows chunk `notes_page` (wrapping) and a "+N lagi" /
-/// "Kembali ke atas" line under the cards.
 /// A note card's pin button: 22 dip, at the card's top-right.
 pub const NOTE_PIN: f32 = 22.0;
 
@@ -2087,6 +2084,9 @@ pub fn note_pin_rect(card: Rect) -> Rect {
     rect(card.right() - NOTE_PIN - 5.0, card.y + 5.0, NOTE_PIN, NOTE_PIN)
 }
 
+/// Cards in two columns, newest top left, two rows of them. When there are
+/// more, the page shows chunk `notes_page` (wrapping) and a "+N lagi" /
+/// "Kembali ke atas" line under the cards.
 pub fn notes_layout(s: ShapeRect, notes: &[Note], notes_page: usize, strip: bool) -> ListLayout {
     let (header, new_button, list_y) = list_header(s, strip);
     let (l, r) = (left(s), right(s));

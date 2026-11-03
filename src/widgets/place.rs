@@ -9,7 +9,7 @@
 
 use crate::capture::Rect;
 use crate::notch_monitor::{Display, find_path};
-use crate::widgets::snap::{self, clamp_rect, reserved_bottom_dip};
+use crate::widgets::snap::{self, clamp_rect_for, reserved_bottom_dip};
 use crate::widgets::sticky::{DipRect, Sticky};
 
 /// Where a sticky is shown now.
@@ -94,7 +94,8 @@ pub fn place(sticky: &Sticky, displays: &[Display]) -> Option<Placement> {
     let scale = scale_of(d.monitor.dpi);
     let area = area_px(d);
     // Clamped for the screen it is shown on, not written back.
-    let rel = clamp_rect(sticky.rect, &area_dip(d));
+    // A rolled-up note arrives with its shown height (`ROLLED_H`).
+    let rel = clamp_rect_for(sticky.rect, &area_dip(d), sticky.rolled);
     Some(Placement {
         display,
         rect: to_px(&rel, &area, scale),
@@ -117,8 +118,8 @@ pub fn display_at(displays: &[Display], point: (i32, i32)) -> Option<usize> {
     (0..displays.len()).min_by_key(|i| dist(&displays[*i]))
 }
 
-/// The monitor path to save for a note that now sits on `d`: "" for the
-/// primary monitor, which follows Windows' choice of primary.
+/// The monitor path to save for a note that now sits on `d`: always its own
+/// path, so the note follows that monitor, not Windows' choice of primary.
 pub fn path_to_save(d: &Display) -> String {
     d.path.clone()
 }
@@ -148,6 +149,8 @@ pub fn snap_area(d: &Display) -> DipRect {
 mod tests {
     use super::*;
     use crate::arrange::Monitor;
+    use crate::widgets::snap::clamp_rect;
+    use crate::widgets::sticky::ROLLED_H;
 
     fn display(n: usize, x: i32, primary: bool, path: &str, dpi: u32) -> Display {
         let (w, h) = (1920, 1080);
@@ -287,6 +290,21 @@ mod tests {
         let p = place(&s, &d).unwrap();
         assert_eq!(p.rect.right(), 1920);
         assert_eq!(p.rect.y, 0);
+    }
+
+    #[test]
+    fn a_rolled_note_is_placed_at_its_shown_height() {
+        let d = two();
+        // Shown 56 tall (as the host passes it), in the bottom 64 dip.
+        let mut s = sticky_on("A", DipRect::new(16.0, 1040.0, 240.0, ROLLED_H));
+        s.rolled = true;
+        let p = place(&s, &d).unwrap();
+        assert_eq!(p.rect.h, ROLLED_H as i32);
+        assert_eq!(p.rect.bottom(), 1040, "the area is 1040 tall; it sits on its edge");
+        let mut s = sticky_on("A", DipRect::new(16.0, 900.0, 240.0, ROLLED_H));
+        s.rolled = true;
+        let p = place(&s, &d).unwrap();
+        assert_eq!((p.rect.y, p.rect.h), (900, ROLLED_H as i32), "not raised to 120");
     }
 
     #[test]
