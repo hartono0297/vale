@@ -81,6 +81,8 @@ pub(super) struct PhoneState {
     /// Rows of the files received, oldest first, and the upload id of each.
     rows: Vec<RowView>,
     ids: Vec<u64>,
+    /// The batch each row belongs to, in the same order as `ids`.
+    row_batches: Vec<String>,
     /// Files and bytes that arrived whole.
     files: usize,
     bytes: u64,
@@ -388,9 +390,11 @@ impl App {
                 if self.phone.rows.len() >= MAX_ROWS {
                     self.phone.rows.remove(0);
                     self.phone.ids.remove(0);
+                    self.phone.row_batches.remove(0);
                 }
                 self.phone.rows.push(row_for(&name, size));
                 self.phone.ids.push(upload_id);
+                self.phone.row_batches.push(batch.clone());
                 if index == 0 || !self.phone.batches.iter().any(|b| b.batch == batch) {
                     // How the batch lands is decided once, with the whole
                     // batch in view: it must fit under the shelf's cap.
@@ -468,8 +472,9 @@ impl App {
         self.phone.rows[i].status = RowStatus::Done;
         self.phone.files += 1;
         self.phone.bytes += self.phone.rows[i].size;
-        // The batch of this upload: the newest one (uploads run in order).
-        let landing = self.phone.batches.last_mut();
+        // The batch this upload belongs to (two phones may send at once).
+        let batch = self.phone.row_batches[i].clone();
+        let landing = self.phone.batches.iter_mut().find(|b| b.batch == batch);
         let cards = match landing {
             Some(b) if b.landing == Landing::Folder => {
                 if b.folder_added {

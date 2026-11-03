@@ -99,30 +99,30 @@ pub(super) fn run(shared: &Arc<Shared>, mode: Mode) {
         if shared.stop.load(Ordering::SeqCst) {
             break;
         }
-        match listener.accept() {
-            Ok((stream, peer)) => {
-                // Stopped meanwhile: nobody new is served.
-                if shared.stop.load(Ordering::SeqCst) {
-                    break;
-                }
-                if let Some(ip) = watch
-                    && !still_bound(&mut bound, ip)
-                {
-                    shared.request_stop(EndReason::NetworkChanged);
-                    break;
-                }
-                accept(shared, rt, stream, peer);
-                // More may be waiting: look again before sleeping.
-                continue;
+        let mut busy = false;
+        if let Ok((stream, peer)) = listener.accept() {
+            // Stopped meanwhile: nobody new is served.
+            if shared.stop.load(Ordering::SeqCst) {
+                break;
             }
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
-            Err(_) => {}
+            if let Some(ip) = watch
+                && !still_bound(&mut bound, ip)
+            {
+                shared.request_stop(EndReason::NetworkChanged);
+                break;
+            }
+            accept(shared, rt, stream, peer);
+            busy = true;
         }
+        // The housekeeping runs on every pass, whatever the traffic.
         if let Some(reason) = tick(shared, watch, &mut bound) {
             shared.request_stop(reason);
             break;
         }
-        std::thread::park_timeout(TICK);
+        // More connections may be waiting: look again before sleeping.
+        if !busy {
+            std::thread::park_timeout(TICK);
+        }
     }
     drop(listener);
     // The connection threads see the flag between chunks.

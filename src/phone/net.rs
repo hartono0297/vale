@@ -245,7 +245,7 @@ pub fn read_adapters() -> Vec<AdapterInfo> {
 /// initialises it). `None` when nothing says what the adapter's network is.
 pub fn network_for(guid: &str) -> Option<(Category, String)> {
     use windows::Win32::Networking::NetworkListManager::{
-        INetworkListManager, NLM_ENUM_NETWORK_CONNECTED, NLM_NETWORK_CATEGORY_PRIVATE,
+        INetworkListManager, NLM_NETWORK_CATEGORY_PRIVATE,
         NLM_NETWORK_CATEGORY_PUBLIC, NLM_NETWORK_CATEGORY_DOMAIN_AUTHENTICATED,
         NetworkListManager,
     };
@@ -255,16 +255,13 @@ pub fn network_for(guid: &str) -> Option<(Category, String)> {
     unsafe {
         let nlm: INetworkListManager = CoCreateInstance(&NetworkListManager, None, CLSCTX_ALL).ok()?;
         let conns = nlm.GetNetworkConnections().ok()?;
-        let _ = NLM_ENUM_NETWORK_CONNECTED;
         loop {
             let mut one = [None];
             let mut fetched = 0u32;
             if conns.Next(&mut one, Some(&mut fetched)).is_err() || fetched == 0 {
                 return None;
             }
-            let Some(conn) = one[0].take() else {
-                return None;
-            };
+            let conn = one[0].take()?;
             let Ok(id) = conn.GetAdapterId() else {
                 continue;
             };

@@ -30,6 +30,13 @@
 //!   off (it shrinks and fades where it was, the rest slide over) and
 //!   `shelf-move` takes the third of nine off (three rows become two, so
 //!   every card changes place). Made-up names only.
+//! - The phone link over the shelf (made-up data, no network, no server):
+//!   `phone-qr` (the QR code of an invented link, with the cat and the
+//!   countdown), `phone-qr-expired` (dimmed, with "Buat QR baru"),
+//!   `phone-public` and `phone-nolan` (the warnings), `phone-approve` (a phone
+//!   and its code) and `phone-receive` (two files in, one at 62 %, one that
+//!   failed). The `shelf` scene has two cards tagged "dari HP". The real flow
+//!   in a browser on this PC: `--phone-debug` (see `phone/debug.rs`).
 //! - `DI_LANG=en` draws the UI in English (also for `--demo-editor`).
 //! - `DI_ACCENT=orange` and `DI_SURFACE=graphite` pick the island theme
 //!   (`espresso`, `graphite`, `sea`, `night`, `plum`; without it, or `auto`,
