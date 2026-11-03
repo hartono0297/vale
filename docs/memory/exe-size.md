@@ -114,6 +114,20 @@ are already dropped from the subset ([[studio-font-sources]]). No new crate
 and no new `windows` feature; the code added is the font selection, the
 Mono sizes and the Settings row.
 
+## The phone link, phase 1 (2026-11-04)
+
+[[shelf-phone]] (the local HTTP server, the page, the QR code, the four views
+and their drawing) took the release exe from 3,186,688 to 3,295,232 bytes
+(+108,544, +3.4 %). Built with `cargo build --release --locked` in two
+folders of the same name length (`main` from `git archive`, and the branch),
+each with its own `CARGO_TARGET_DIR`, so the running island's exe was never
+touched; no warning in either. The new parts: `qrcodegen` 1.8.0 (one crate, no
+dependency), four `windows` features (`Win32_NetworkManagement_IpHelper`,
+`Win32_NetworkManagement_Ndis`, `Win32_Networking_WinSock`,
+`Win32_Networking_NetworkListManager`), about 14 KB of page text, the
+Indonesian and English strings and the layout and paint code. No HTTP crate
+and no thread pool.
+
 ## Idle RAM and CPU
 
 Not measured. The release exe is single-instance and reads real user data, and
