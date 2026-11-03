@@ -12,7 +12,7 @@ use chrono::NaiveDate;
 
 use super::geometry::{ANIM_MS, LYRIC_RESIZE_MS, ease_out_back};
 use crate::clean::CleanMode;
-use crate::model::{CalView, Page};
+use crate::model::{CalView, Page, PhoneStage};
 use crate::state::MolePhase;
 
 /// A sub-view `Reveal`: the new content fades in over this long.
@@ -606,6 +606,8 @@ pub struct SubView {
     pub mole: u8,
     pub mole_log: bool,
     pub cli_menu: bool,
+    /// The phone link over the Shelf page and its stage.
+    pub phone: Option<PhoneStage>,
 }
 
 /// Mole's stage without its payload: a new dry-run with other options
@@ -710,6 +712,14 @@ pub fn reveal_dir(before: &SubView, after: &SubView, page: Page) -> Option<Revea
             }
             _ => None,
         },
+        // The phone link comes and goes over the shelf like the cleaner over
+        // System, and each stage change inside it reveals the new view.
+        Page::Shelf => match (before.phone, after.phone) {
+            (None, Some(_)) => Some(RevealDir::Open),
+            (Some(_), None) => Some(RevealDir::Close),
+            (Some(a), Some(b)) if a != b => Some(RevealDir::Open),
+            _ => None,
+        },
         Page::Cli => match (before.cli_menu, after.cli_menu) {
             // Only the menu appearing reveals; it closes at once.
             (false, true) => Some(RevealDir::Open),
@@ -735,6 +745,7 @@ mod tests {
             mole: 0,
             mole_log: false,
             cli_menu: false,
+            phone: None,
         }
     }
 
@@ -751,6 +762,36 @@ mod tests {
         assert_eq!(close_fade_ms(true, Motion::Off, false), 0);
         assert_eq!(close_fade_ms(true, Motion::Full, true), 0);
         assert_eq!(CLOSE_FADE_MS, 120);
+    }
+
+    #[test]
+    fn the_phone_stage_reveals_over_the_shelf_and_nowhere_else() {
+        let with = |phone| SubView { phone, ..sub() };
+        let shelf = |a, b| reveal_dir(&with(a), &with(b), Page::Shelf);
+        assert_eq!(shelf(None, Some(PhoneStage::Qr)), Some(RevealDir::Open));
+        assert_eq!(shelf(Some(PhoneStage::Qr), None), Some(RevealDir::Close));
+        assert_eq!(
+            shelf(Some(PhoneStage::Qr), Some(PhoneStage::Approval)),
+            Some(RevealDir::Open)
+        );
+        assert_eq!(
+            shelf(Some(PhoneStage::Approval), Some(PhoneStage::Receiving)),
+            Some(RevealDir::Open)
+        );
+        assert_eq!(shelf(Some(PhoneStage::Qr), Some(PhoneStage::Qr)), None);
+        assert_eq!(shelf(None, None), None);
+        // Another page shows nothing of it.
+        assert_eq!(
+            reveal_dir(&with(None), &with(Some(PhoneStage::Qr)), Page::Notes),
+            None
+        );
+        // The existing Reveal carries it, and animations off skip it.
+        let (a, b) = (snap(true, Page::Shelf, with(None)), snap(true, Page::Shelf, with(Some(PhoneStage::Qr))));
+        assert_eq!(
+            transition(&a, &b, true),
+            Transition::Reveal(RevealDir::Open)
+        );
+        assert_eq!(transition(&a, &b, false), Transition::None);
     }
 
     #[test]

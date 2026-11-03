@@ -123,6 +123,26 @@ the Musik button, `MediaCommand::Seek` and `can_seek`) took the release exe from
 own `CARGO_TARGET_DIR` (folder names of different length, so up to 512 bytes of
 the difference is the PDB path). No new crate and no new `windows` feature.
 
+## The phone link, phase 1 (2026-11-04)
+
+[[shelf-phone]] (the local HTTP server, the page, the QR code, the four views
+and their drawing, the video icon, the format-control and UTF-16 name rules)
+took the release exe from 3,235,328 to 3,351,040 bytes (+115,712, +3.6 %),
+measured on the fix-up branch's last code commit merged onto `main` f83dbf0
+(which already has the lyrics card; the first count, 3,186,688 to 3,299,840,
+was made before it and before the review fixes). Built with
+`cargo build --release --locked` in two folders of the same path length
+(`base` and `head`, both from `git archive`), each with its own
+`CARGO_TARGET_DIR`, so the running island's exe was never touched; no
+warning in either. A folder name of a different length moves the exe by up
+to 512 bytes (the embedded PDB path), so only same-length folders compare.
+The new parts: `qrcodegen` 1.8.0 (one crate, no
+dependency), four `windows` features (`Win32_NetworkManagement_IpHelper`,
+`Win32_NetworkManagement_Ndis`, `Win32_Networking_WinSock`,
+`Win32_Networking_NetworkListManager`), about 14 KB of page text, the
+Indonesian and English strings and the layout and paint code. No HTTP crate
+and no thread pool.
+
 ## Idle RAM and CPU
 
 Not measured. The release exe is single-instance and reads real user data, and

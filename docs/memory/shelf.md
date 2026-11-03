@@ -15,6 +15,10 @@ date: 2026-10-29
   gives name (`short_name`, cut to 14 chars keeping a short extension), icon
   kind (by extension, folder by probe) and `stale` (path gone), with the file
   system injected (`probe`) so tests never touch real files.
+  Kinds: Folder, Image, Media (sound: mp3 wav flac m4a aac ogg, the music note),
+  **Video** (mp4 m4v mov mkv avi webm wmv 3gp, the camcorder `Icon::Video`,
+  added with the phone link so a received video is not drawn as a song), Code,
+  Archive, Document. `shelf::icon` is the one `match` on the kind.
 - **Drop** (`src/shelf_ole.rs`): `RegisterDragDrop` on the island window
   after `OleInitialize` (the thread was already `CoInitializeEx` STA from
   `app::run`; OLE just adds drag and drop on top). `DropTarget`
@@ -187,3 +191,7 @@ Related: [[mixer]], [[open-mode]].
 ## v3.5: motion
 
 Cards animate in, out and across: see [[shelf-motion]].
+
+## v3.18: from a phone
+
+The HP pill, a QR link and the cards tagged "dari HP": see [[shelf-phone]].

@@ -532,6 +532,52 @@ keys! {
     ShelfDropHere => "Jatuhkan di sini", "Drop here";
     ShelfEmpty => "Seret berkas ke notch, ambil lagi nanti",
         "Drag files to the notch, take them out later";
+    ShelfPhone => "HP", "Phone";
+    ShelfFromPhone => "dari HP", "phone";
+    PhoneTitle => "Sambungkan HP", "Connect a phone";
+    PhoneStarting => "Mencari jaringan\u{2026}", "Finding the network\u{2026}";
+    PhoneStep1 => "Scan pakai kamera HP", "Scan with the phone's camera";
+    PhoneStep1Sub => "iPhone: Kamera \u{b7} Android: Kamera / Google Lens",
+        "iPhone: Camera \u{b7} Android: Camera / Google Lens";
+    PhoneStep2 => "Cocokkan kode, lalu Izinkan di sini", "Match the code, then Allow here";
+    PhoneStep2Sub => "Sekali per HP selama sesi ini", "Once per phone in this session";
+    PhoneNetPrivate => "pribadi", "private";
+    PhoneLocalOnly => "Langsung lewat Wi-Fi lokal, tidak lewat internet",
+        "Straight over local Wi-Fi, not through the internet";
+    PhoneFirewall => "Kalau Windows tanya, pilih Jaringan pribadi",
+        "If Windows asks, choose Private network";
+    PhoneNewQr => "Buat QR baru", "New QR code";
+    PhoneQrExpired => "QR habis", "QR expired";
+    PhoneQrVoid => "QR dibatalkan", "QR cancelled";
+    PhoneWarnPublic => "Jaringan ini Publik", "This network is Public";
+    PhoneWarnPublicBody => "Berkas lewat HTTP biasa dan bisa disadap orang di Wi-Fi yang sama. Ubah jadi Jaringan pribadi di Pengaturan Windows, lalu coba lagi.",
+        "Files travel over plain HTTP and anyone on the same Wi-Fi could read them. Set the network to Private in Windows settings, then try again.";
+    PhoneWarnNoLan => "Tidak ada jaringan lokal", "No local network";
+    PhoneWarnNoLanBody => "Sambungkan PC ke Wi-Fi atau kabel jaringan, lalu coba lagi.",
+        "Connect the PC to Wi-Fi or a network cable, then try again.";
+    PhoneWarnBusy => "Port sedang dipakai", "Ports are in use";
+    PhoneWarnBusyBody => "Port 47390 sampai 47399 dipakai program lain. Tutup programnya, lalu coba lagi.",
+        "Ports 47390 to 47399 are used by other programs. Close them, then try again.";
+    PhoneWarnFailed => "Tidak bisa memulai", "Could not start";
+    PhoneWarnFailedBody => "Server lokal gagal menyala. Coba lagi sebentar lagi.",
+        "The local server failed to start. Try again in a moment.";
+    PhoneRetry => "Coba lagi", "Try again";
+    PhoneAsk => "HP minta tersambung", "A phone wants to connect";
+    PhoneCodeLabel => "Kode di HP", "Code on the phone";
+    PhoneDeny => "Tolak", "Deny";
+    PhoneAllow => "Izinkan", "Allow";
+    PhoneAskFoot => "Kode beda dari yang di HP? Tolak.", "Code differs from the phone's? Deny.";
+    PhoneReceiving => "Menerima dari HP", "From phone";
+    PhonePickOnPhone => "Pilih berkas di HP", "Choose files on the phone";
+    PhoneRowDone => "\u{2713} selesai", "\u{2713} done";
+    PhoneRowCancelled => "dibatalkan", "cancelled";
+    PhoneRowFailed => "gagal", "failed";
+    PhoneCancelAll => "Batal", "Cancel";
+    PhoneFinish => "Selesai", "Done";
+    PhoneKindAndroid => "Android", "Android";
+    PhoneKindIPhone => "iPhone", "iPhone";
+    PhoneKindIPad => "iPad", "iPad";
+    PhoneKindOther => "HP", "Phone";
     PageSystem => "Sistem", "System";
     PageDevices => "Perangkat", "Devices";
     PageArrange => "Susun", "Arrange";
@@ -1416,6 +1462,82 @@ pub fn devices_connected(lang: Lang, n: usize) -> String {
     match lang {
         Lang::Id => format!("{n} tersambung"),
         Lang::En => format!("{n} connected"),
+    }
+}
+
+/// How long the QR code lives: "berlaku 4:52", "valid 4:52".
+pub fn phone_valid_for(lang: Lang, secs: u64) -> String {
+    let clock = format!("{}:{:02}", secs / 60, secs % 60);
+    match lang {
+        Lang::Id => format!("berlaku {clock}"),
+        Lang::En => format!("valid {clock}"),
+    }
+}
+
+/// The network line of the QR view: "Rumah-5G · pribadi".
+pub fn phone_network(lang: Lang, name: &str) -> String {
+    format!("{name} \u{b7} {}", text(lang, Key::PhoneNetPrivate))
+}
+
+/// What a phone is called: "Android", "iPhone", "iPad", else "HP".
+pub fn phone_kind(lang: Lang, kind: crate::phone::DeviceKind) -> &'static str {
+    use crate::phone::DeviceKind;
+    text(
+        lang,
+        match kind {
+            DeviceKind::Android => Key::PhoneKindAndroid,
+            DeviceKind::IPhone => Key::PhoneKindIPhone,
+            DeviceKind::IPad => Key::PhoneKindIPad,
+            DeviceKind::Other => Key::PhoneKindOther,
+        },
+    )
+}
+
+/// The header chip of the receiving view: one phone by its kind
+/// ("Android"), several by their number ("2 HP", "2 phones").
+pub fn phone_devices_chip(lang: Lang, kinds: &[crate::phone::DeviceKind]) -> String {
+    match kinds {
+        [] => String::new(),
+        [one] => phone_kind(lang, *one).to_owned(),
+        many => match lang {
+            Lang::Id => format!("{} HP", many.len()),
+            Lang::En => format!("{} phones", many.len()),
+        },
+    }
+}
+
+/// The asking phone: "Android · Chrome · 192.168.18.57" (the browser only
+/// when it is known).
+pub fn phone_ask_line(
+    lang: Lang,
+    kind: crate::phone::DeviceKind,
+    browser: Option<&str>,
+    ip: &str,
+) -> String {
+    let mut parts = vec![phone_kind(lang, kind)];
+    parts.extend(browser);
+    parts.push(ip);
+    parts.join(" \u{b7} ")
+}
+
+/// A received file's size: "812 KB", "5 MB", "1,8 GB".
+pub fn phone_size(lang: Lang, bytes: u64) -> String {
+    if bytes < MIB {
+        format!("{} KB", bytes.div_ceil(1024))
+    } else {
+        format_size(lang, bytes)
+    }
+}
+
+/// The receiving view's footer: "3 berkas · 55 MB → Unduhan\Vale".
+pub fn phone_received_summary(lang: Lang, files: usize, bytes: u64) -> String {
+    let size = phone_size(lang, bytes);
+    match lang {
+        Lang::Id => format!("{files} berkas \u{b7} {size} \u{2192} Unduhan\\Vale"),
+        Lang::En => {
+            let noun = if files == 1 { "file" } else { "files" };
+            format!("{files} {noun} \u{b7} {size} \u{2192} Downloads\\Vale")
+        }
     }
 }
 
@@ -3929,5 +4051,57 @@ mod copy_preview_tests {
         }
         assert_eq!(text(Lang::Id, Key::ClipCopyNotice), "Pratinjau salinan");
         assert_eq!(text(Lang::En, Key::ClipCopyNotice), "Copy preview");
+    }
+
+    #[test]
+    fn the_phone_link_strings_read_in_both_languages() {
+        use crate::phone::DeviceKind;
+        assert_eq!(phone_valid_for(Lang::Id, 292), "berlaku 4:52");
+        assert_eq!(phone_valid_for(Lang::En, 7), "valid 0:07");
+        assert_eq!(phone_network(Lang::Id, "Rumah-5G"), "Rumah-5G · pribadi");
+        assert_eq!(phone_network(Lang::En, "Home"), "Home · private");
+        assert_eq!(
+            phone_ask_line(Lang::Id, DeviceKind::Android, Some("Chrome"), "192.168.18.57"),
+            "Android · Chrome · 192.168.18.57"
+        );
+        assert_eq!(
+            phone_ask_line(Lang::En, DeviceKind::Other, None, "10.0.0.4"),
+            "Phone · 10.0.0.4"
+        );
+        // One phone by its kind, several by their number.
+        assert_eq!(phone_devices_chip(Lang::Id, &[]), "");
+        assert_eq!(phone_devices_chip(Lang::Id, &[DeviceKind::IPhone]), "iPhone");
+        assert_eq!(
+            phone_devices_chip(Lang::Id, &[DeviceKind::IPhone, DeviceKind::Android]),
+            "2 HP"
+        );
+        assert_eq!(
+            phone_devices_chip(Lang::En, &[DeviceKind::IPhone, DeviceKind::Android]),
+            "2 phones"
+        );
+        // Sizes go through `format_size` from 1 MB.
+        assert_eq!(phone_size(Lang::Id, 812 * 1024), "812 KB");
+        assert_eq!(phone_size(Lang::Id, 5 * MIB), "5 MB");
+        assert_eq!(phone_size(Lang::Id, 1900 * MIB), format_size(Lang::Id, 1900 * MIB));
+        assert_eq!(
+            phone_received_summary(Lang::Id, 3, 55 * MIB),
+            r"3 berkas · 55 MB → Unduhan\Vale"
+        );
+        assert_eq!(
+            phone_received_summary(Lang::En, 1, 2 * MIB),
+            r"1 file · 2 MB → Downloads\Vale"
+        );
+        for key in [
+            Key::ShelfPhone,
+            Key::PhoneTitle,
+            Key::PhoneAllow,
+            Key::PhoneDeny,
+            Key::PhoneCancelAll,
+            Key::PhoneFinish,
+            Key::PhoneNewQr,
+            Key::PhoneWarnPublicBody,
+        ] {
+            assert_ne!(text(Lang::Id, key), text(Lang::En, key), "{key:?}");
+        }
     }
 }

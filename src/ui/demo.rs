@@ -30,6 +30,13 @@
 //!   off (it shrinks and fades where it was, the rest slide over) and
 //!   `shelf-move` takes the third of nine off (three rows become two, so
 //!   every card changes place). Made-up names only.
+//! - The phone link over the shelf (made-up data, no network, no server):
+//!   `phone-qr` (the QR code of an invented link, with the cat and the
+//!   countdown), `phone-qr-expired` (dimmed, with "Buat QR baru"),
+//!   `phone-public` and `phone-nolan` (the warnings), `phone-approve` (a phone
+//!   and its code) and `phone-receive` (two files in, one at 62 %, one that
+//!   failed). The `shelf` scene has two cards tagged "dari HP". The real flow
+//!   in a browser on this PC: `--phone-debug` (see `phone/debug.rs`).
 //! - `DI_LANG=en` draws the UI in English (also for `--demo-editor`).
 //! - `DI_ACCENT=orange` and `DI_SURFACE=graphite` pick the island theme
 //!   (`espresso`, `graphite`, `sea`, `night`, `plum`; without it, or `auto`,
@@ -224,6 +231,24 @@ enum Pomo {
     Break,
 }
 
+/// What the phone link shows over the shelf in a scene (made-up data, no
+/// network).
+#[derive(Clone, Copy, PartialEq)]
+enum PhoneDemo {
+    No,
+    /// The QR code of a made-up link, with its clock.
+    Qr,
+    /// The same, run out: dimmed, with "Buat QR baru".
+    QrExpired,
+    /// A Public network: no code, a warning.
+    Public,
+    NoLan,
+    /// A phone asks, with its code.
+    Approve,
+    /// Two files in, one at 62 %, one that failed.
+    Receive,
+}
+
 /// The cat sheets a scene can draw instead of the island.
 #[derive(Clone, Copy, PartialEq)]
 enum Sheet {
@@ -256,6 +281,8 @@ struct Scene {
     custom_tiles: bool,
     /// The shelf with files being dragged over the island (its drop zone lit).
     shelf_drag: bool,
+    /// The phone link's view over the shelf.
+    phone: PhoneDemo,
     /// The quick search is open with the demo's made-up apps (and, in the
     /// `search-files` scene, made-up files and folders).
     search: bool,
@@ -536,6 +563,7 @@ const BASE: Scene = Scene {
     volume: None,
     custom_tiles: false,
     shelf_drag: false,
+    phone: PhoneDemo::No,
     search: false,
     cli: CliDemo::Empty,
     long_media: false,
@@ -766,7 +794,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 161] = [
+const SCENES: [Scene; 167] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -988,6 +1016,31 @@ const SCENES: [Scene; 161] = [
     panel("shelf-enter", Page::Shelf),
     panel("shelf-exit", Page::Shelf),
     panel("shelf-move", Page::Shelf),
+    // The phone link over the shelf, with made-up data and no network.
+    Scene {
+        phone: PhoneDemo::Qr,
+        ..panel("phone-qr", Page::Shelf)
+    },
+    Scene {
+        phone: PhoneDemo::QrExpired,
+        ..panel("phone-qr-expired", Page::Shelf)
+    },
+    Scene {
+        phone: PhoneDemo::Public,
+        ..panel("phone-public", Page::Shelf)
+    },
+    Scene {
+        phone: PhoneDemo::NoLan,
+        ..panel("phone-nolan", Page::Shelf)
+    },
+    Scene {
+        phone: PhoneDemo::Approve,
+        ..panel("phone-approve", Page::Shelf)
+    },
+    Scene {
+        phone: PhoneDemo::Receive,
+        ..panel("phone-receive", Page::Shelf)
+    },
     Scene {
         search: true,
         ..panel("search", Page::Search)
@@ -2021,6 +2074,8 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                             ShelfMotion::default(),
                         )
                     });
+            let demo_phone = DemoPhone::new(scene.phone);
+            let phone_view = demo_phone.view();
             let with_files = scene.name == "search-files";
             let search_query = if with_files {
                 DEMO_FILES_QUERY
@@ -2084,6 +2139,8 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                 shelf: &shelf_cards,
                 shelf_drag: scene.shelf_drag,
                 shelf_motion: &shelf_motion,
+                phone: phone_view.as_ref(),
+                phone_on: scene.phone != PhoneDemo::No,
                 devices: DevicesView {
                     list: &dev_list,
                     ejecting: &dev_ejecting,
@@ -3999,12 +4056,109 @@ fn demo_search_details()
 }
 
 /// Made-up files for the shelf scene (and an empty shelf elsewhere): never
-/// the machine's own. One of them is gone, as a card shows it.
+/// the machine's own. One of them is gone, as a card shows it, and two came
+/// from a phone (they carry the "dari HP" tag).
 fn demo_shelf(filled: bool) -> Vec<crate::shelf::ShelfCard> {
     if !filled {
         return Vec::new();
     }
-    demo_shelf_files().into_iter().take(6).collect()
+    let mut cards: Vec<crate::shelf::ShelfCard> = demo_shelf_files()
+        .into_iter()
+        .filter(|c| c.name != "render.mp4")
+        .take(5)
+        .collect();
+    for name in ["IMG_0531.png", "IMG_0533.png"] {
+        cards.push(crate::shelf::ShelfCard {
+            key: name.to_lowercase(),
+            name: name.into(),
+            kind: crate::shelf::ShelfKind::Image,
+            stale: false,
+            from_phone: true,
+        });
+    }
+    cards
+}
+
+/// The phone link's made-up data for a scene: a QR code of an invented link,
+/// a waiting phone, files in different states. Owned here so that the
+/// `PhoneView` can borrow it for the frame.
+struct DemoPhone {
+    mode: PhoneDemo,
+    qr: crate::phone::QrMatrix,
+    rows: Vec<crate::ui::phone_view::RowView>,
+}
+
+impl DemoPhone {
+    fn new(mode: PhoneDemo) -> Self {
+        use crate::shelf::ShelfKind;
+        use crate::ui::phone_view::{RowStatus, RowView};
+        let row = |name: &str, bytes: u64, kind, status| RowView {
+            name: name.into(),
+            size: bytes,
+            kind,
+            status,
+        };
+        let mib = |x: f64| (x * 1_048_576.0) as u64;
+        DemoPhone {
+            mode,
+            qr: crate::phone::qr::make("http://192.168.18.42:47390/s/AbCdEfGhIjKlMnOpQrStUv")
+                .expect("a link fits a QR code"),
+            rows: vec![
+                row("IMG_0531.png", mib(5.1), ShelfKind::Image, RowStatus::Done),
+                row("IMG_0533.png", mib(1.7), ShelfKind::Image, RowStatus::Done),
+                row(
+                    "VID_2026-11-04.mp4",
+                    mib(48.2),
+                    ShelfKind::Video,
+                    RowStatus::Receiving(62),
+                ),
+                row("scan-denah.pdf", mib(12.4), ShelfKind::Document, RowStatus::Failed),
+            ],
+        }
+    }
+
+    fn view(&self) -> Option<crate::ui::phone_view::PhoneView<'_>> {
+        use crate::model::PhoneStage;
+        use crate::ui::phone_view::{AskView, CodeView, PhoneView, QrView, RecvView, Warn};
+        let stage = match self.mode {
+            PhoneDemo::No => return None,
+            PhoneDemo::Qr | PhoneDemo::QrExpired | PhoneDemo::Public | PhoneDemo::NoLan => {
+                PhoneStage::Qr
+            }
+            PhoneDemo::Approve => PhoneStage::Approval,
+            PhoneDemo::Receive => PhoneStage::Receiving,
+        };
+        let qr = match self.mode {
+            PhoneDemo::Public => QrView::Warning(Warn::Public, "Kafe-Lantai-3"),
+            PhoneDemo::NoLan => QrView::Warning(Warn::NoLan, ""),
+            _ => QrView::Code(CodeView {
+                qr: &self.qr,
+                network: "Rumah-5G",
+                addr: "192.168.18.42:47390",
+                remaining: (self.mode != PhoneDemo::QrExpired).then_some(292),
+                timed: true,
+                void: false,
+            }),
+        };
+        Some(PhoneView {
+            stage,
+            qr,
+            ask: Some(AskView {
+                id: 1,
+                kind: crate::phone::DeviceKind::Android,
+                browser: Some("Chrome"),
+                ip: "192.168.18.57",
+                code: "4821",
+                more: 0,
+            }),
+            recv: RecvView {
+                rows: &self.rows,
+                chip: "Android",
+                files: 2,
+                bytes: self.rows[0].size + self.rows[1].size,
+            },
+        })
+    }
 }
 
 /// Twelve made-up cards, the shelf's most: the first six are the `shelf`
@@ -4016,6 +4170,7 @@ fn demo_shelf_files() -> Vec<crate::shelf::ShelfCard> {
         name: name.into(),
         kind,
         stale,
+        from_phone: false,
     };
     vec![
         card(
@@ -4026,13 +4181,13 @@ fn demo_shelf_files() -> Vec<crate::shelf::ShelfCard> {
         card("foto-lokasi.png", ShelfKind::Image, false),
         card("Gambar kerja", ShelfKind::Folder, false),
         card("rab-v3.xlsx", ShelfKind::Document, false),
-        card("render.mp4", ShelfKind::Media, false),
+        card("render.mp4", ShelfKind::Video, false),
         card("arsip-lama.zip", ShelfKind::Archive, true),
         card("sketsa-fasad.dwg", ShelfKind::Document, false),
         card("moodboard.jpg", ShelfKind::Image, false),
         card("Referensi", ShelfKind::Folder, false),
         card("notulen-rapat.docx", ShelfKind::Document, false),
-        card("walkthrough.mov", ShelfKind::Media, false),
+        card("walkthrough.mov", ShelfKind::Video, false),
         card("backup-proyek.7z", ShelfKind::Archive, false),
     ]
 }

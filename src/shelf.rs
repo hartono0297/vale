@@ -15,8 +15,10 @@ pub const MAX_ITEMS: usize = 12;
 pub enum ShelfKind {
     Folder,
     Image,
-    /// Sound and video.
+    /// Sound.
     Media,
+    /// Video: a camcorder on the card, not the note of a song.
+    Video,
     Code,
     Archive,
     /// Everything else.
@@ -35,8 +37,8 @@ pub fn kind_of(path: &Path, is_dir: bool) -> ShelfKind {
     match ext.as_str() {
         "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "svg" | "tif" | "tiff" | "ico"
         | "heic" | "avif" => ShelfKind::Image,
-        "mp3" | "wav" | "flac" | "m4a" | "aac" | "ogg" | "mp4" | "mkv" | "mov" | "avi" | "webm"
-        | "wmv" => ShelfKind::Media,
+        "mp3" | "wav" | "flac" | "m4a" | "aac" | "ogg" => ShelfKind::Media,
+        "mp4" | "m4v" | "mov" | "mkv" | "avi" | "webm" | "wmv" | "3gp" => ShelfKind::Video,
         "rs" | "py" | "js" | "ts" | "tsx" | "jsx" | "c" | "cpp" | "h" | "cs" | "java" | "go"
         | "html" | "css" | "json" | "xml" | "yaml" | "yml" | "toml" | "ps1" | "sh" | "bat"
         | "sql" => ShelfKind::Code,
@@ -51,6 +53,7 @@ pub fn icon(kind: ShelfKind) -> Icon {
         ShelfKind::Folder => Icon::Folder,
         ShelfKind::Image => Icon::Image,
         ShelfKind::Media => Icon::Music,
+        ShelfKind::Video => Icon::Video,
         ShelfKind::Code => Icon::Code,
         ShelfKind::Archive => Icon::Package,
         ShelfKind::Document => Icon::Note,
@@ -123,6 +126,8 @@ pub struct ShelfCard {
     pub kind: ShelfKind,
     /// The path is gone: the card is dimmed and cannot be dragged.
     pub stale: bool,
+    /// The file came from a phone over the QR link (a small tag says so).
+    pub from_phone: bool,
 }
 
 /// The name a card shows for `path`: its last part, or the whole path for
@@ -175,13 +180,42 @@ pub fn wrap_name(name: &str, per_line: usize, lines: usize) -> Vec<String> {
     ]
 }
 
+/// Where a shelf item came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Origin {
+    /// Dropped on the island.
+    Drop,
+    /// Received from a phone over the QR link.
+    Phone,
+}
+
+/// How a batch from a phone lands on the shelf.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Landing {
+    /// Each file gets its card as it arrives.
+    Files,
+    /// The whole batch would not fit: one card for the folder the files
+    /// went to, instead of any file card.
+    Folder,
+}
+
+/// How the files of a phone batch of `batch_count` land on a shelf that
+/// holds `shelf_len` cards: as cards of their own if all of them fit under
+/// `MAX_ITEMS`, else as one folder card.
+pub fn phone_landing(shelf_len: usize, batch_count: usize) -> Landing {
+    if shelf_len.saturating_add(batch_count) > MAX_ITEMS {
+        Landing::Folder
+    } else {
+        Landing::Files
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Shelf {
-    items: Vec<PathBuf>,
+    items: Vec<(PathBuf, Origin)>,
 }
 
 impl Shelf {
-    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.items.len()
     }
@@ -192,23 +226,28 @@ impl Shelf {
     }
 
     pub fn get(&self, i: usize) -> Option<&Path> {
-        self.items.get(i).map(PathBuf::as_path)
+        self.items.get(i).map(|(p, _)| p.as_path())
     }
 
     /// Puts `paths` on the shelf, newest last: a path already there (the
     /// same name in any letter case, as Windows sees it) and anything past
     /// `MAX_ITEMS` is left out. Returns how many were added.
     pub fn add(&mut self, paths: impl IntoIterator<Item = PathBuf>) -> usize {
+        self.add_from(paths, Origin::Drop)
+    }
+
+    /// `add`, for files that came from `origin`.
+    pub fn add_from(&mut self, paths: impl IntoIterator<Item = PathBuf>, origin: Origin) -> usize {
         let mut added = 0;
         for path in paths {
             if self.items.len() >= MAX_ITEMS {
                 break;
             }
             let key = key_of(&path);
-            if key.is_empty() || self.items.iter().any(|p| key_of(p) == key) {
+            if key.is_empty() || self.items.iter().any(|(p, _)| key_of(p) == key) {
                 continue;
             }
-            self.items.push(path);
+            self.items.push((path, origin));
             added += 1;
         }
         added
@@ -234,13 +273,14 @@ impl Shelf {
     pub fn cards(&self, probe: impl Fn(&Path) -> Probe) -> Vec<ShelfCard> {
         self.items
             .iter()
-            .map(|p| {
+            .map(|(p, origin)| {
                 let found = probe(p);
                 ShelfCard {
                     key: key_of(p),
                     name: display_name(p),
                     kind: kind_of(p, found == Probe::Folder),
                     stale: found == Probe::Missing,
+                    from_phone: *origin == Origin::Phone,
                 }
             })
             .collect()
@@ -362,6 +402,16 @@ mod tests {
         let kind = |name: &str| kind_of(Path::new(name), false);
         assert_eq!(kind("a.JPG"), ShelfKind::Image);
         assert_eq!(kind("a.mp3"), ShelfKind::Media);
+        for sound in ["a.wav", "a.flac", "a.m4a", "a.aac", "a.ogg"] {
+            assert_eq!(kind(sound), ShelfKind::Media, "{sound}");
+        }
+        for video in [
+            "a.mp4", "a.MOV", "a.m4v", "a.mkv", "a.avi", "a.webm", "a.wmv", "a.3gp",
+        ] {
+            assert_eq!(kind(video), ShelfKind::Video, "{video}");
+        }
+        assert_eq!(icon(ShelfKind::Video), Icon::Video);
+        assert_eq!(icon(ShelfKind::Media), Icon::Music);
         assert_eq!(kind("a.rs"), ShelfKind::Code);
         assert_eq!(kind("a.7z"), ShelfKind::Archive);
         assert_eq!(kind("a.xlsx"), ShelfKind::Document);
@@ -415,5 +465,62 @@ mod tests {
         assert_eq!(short_name("ééééééééééééééééé", 14).chars().count(), 14);
         // A drive root has no file name: its path shows.
         assert_eq!(display_name(Path::new(r"C:\")), r"C:\");
+    }
+
+    #[test]
+    fn a_batch_lands_as_files_unless_it_would_pass_the_cap() {
+        assert_eq!(phone_landing(0, 1), Landing::Files);
+        assert_eq!(phone_landing(0, MAX_ITEMS), Landing::Files);
+        assert_eq!(phone_landing(5, 7), Landing::Files);
+        assert_eq!(phone_landing(5, 8), Landing::Folder);
+        assert_eq!(phone_landing(0, MAX_ITEMS + 1), Landing::Folder);
+        assert_eq!(phone_landing(MAX_ITEMS, 1), Landing::Folder);
+        assert_eq!(phone_landing(usize::MAX, usize::MAX), Landing::Folder);
+    }
+
+    #[test]
+    fn a_folder_card_for_the_phone_folder_is_added_once() {
+        let mut s = Shelf::default();
+        let folder = p(r"C:\Users\x\Downloads\Vale");
+        assert_eq!(s.add_from([folder.clone()], Origin::Phone), 1);
+        assert_eq!(s.add_from([p(r"c:\users\X\downloads\vale\")], Origin::Phone), 0);
+        let cards = s.cards(|_| Probe::Folder);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].kind, ShelfKind::Folder);
+        assert_eq!(cards[0].name, "Vale");
+        assert!(cards[0].from_phone);
+    }
+
+    #[test]
+    fn cards_remember_where_they_came_from() {
+        let mut s = Shelf::default();
+        s.add([p(r"C:\a\denah.pdf")]);
+        s.add_from([p(r"C:\d\IMG_0531.png")], Origin::Phone);
+        let cards = s.cards(|_| Probe::File);
+        assert_eq!(
+            cards.iter().map(|c| c.from_phone).collect::<Vec<_>>(),
+            [false, true]
+        );
+        assert_eq!(s.len(), 2);
+    }
+
+    #[test]
+    fn taking_a_card_off_or_clearing_the_shelf_never_deletes_the_file() {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("test-tmp")
+            .join(format!("shelf-keep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        let (a, b) = (dir.join("a.txt"), dir.join("b.txt"));
+        std::fs::write(&a, "a").expect("write");
+        std::fs::write(&b, "b").expect("write");
+        let mut s = Shelf::default();
+        s.add_from([a.clone(), b.clone()], Origin::Phone);
+        assert!(s.remove(0));
+        assert!(a.exists(), "Remove only forgets the card");
+        assert!(s.clear());
+        assert!(a.exists() && b.exists(), "Kosongkan keeps every file");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
