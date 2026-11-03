@@ -3,7 +3,7 @@ tags: [decision, settings, layout, v3.8]
 date: 2026-11-02
 ---
 
-# Settings: nine sections, titled cards (v3.8, Tombol pintas added later)
+# Settings: ten sections, titled cards (v3.8, Tombol pintas and Widget added later)
 
 The window used to have six sections with Tampilan holding half the
 settings. v3.8 sorted them into eight (`Section`, `settings_layout.rs`); the

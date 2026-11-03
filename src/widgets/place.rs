@@ -9,7 +9,8 @@
 
 use crate::capture::Rect;
 use crate::notch_monitor::{Display, find_path};
-use crate::widgets::snap::{self, clamp_rect_for, reserved_bottom_dip};
+use crate::widgets::paint::shown_h;
+use crate::widgets::snap::{self, clamp_rect, clamp_rect_for, reserved_bottom_dip};
 use crate::widgets::sticky::{DipRect, Sticky};
 
 /// Where a sticky is shown now.
@@ -19,6 +20,12 @@ pub struct Placement {
     pub display: usize,
     /// The window rect of the note, physical px, desktop coordinates.
     pub rect: Rect,
+    /// The note as shown, dip from the area's top-left: the saved rect with
+    /// its size inside the limits and the area, and its place inside the
+    /// area. `h` is the height unrolled (a rolled-up note shows `ROLLED_H` of
+    /// it). The window, the layout and the hit-testing use this size, never
+    /// the saved one, which can be larger than this area.
+    pub view: DipRect,
     /// The monitor's DPI over 96.
     pub scale: f32,
     /// The placement area, physical px, desktop coordinates.
@@ -87,6 +94,18 @@ pub fn resolve(path: &str, displays: &[Display]) -> Option<(usize, bool)> {
     }
 }
 
+/// The note of saved rect `saved` as shown on `area` (dip, at the origin):
+/// see `Placement::view`. A rolled-up note is placed at its shown height.
+pub fn view_on(saved: DipRect, rolled: bool, area: &DipRect) -> DipRect {
+    let shown = DipRect {
+        h: shown_h(saved.h, rolled),
+        ..saved
+    };
+    let rel = clamp_rect_for(shown, area, rolled);
+    let full = clamp_rect(saved, area);
+    DipRect { h: full.h, ..rel }
+}
+
 /// Where `sticky` is shown on `displays`. `None` when there is no display.
 pub fn place(sticky: &Sticky, displays: &[Display]) -> Option<Placement> {
     let (display, fallback) = resolve(&sticky.monitor, displays)?;
@@ -94,11 +113,15 @@ pub fn place(sticky: &Sticky, displays: &[Display]) -> Option<Placement> {
     let scale = scale_of(d.monitor.dpi);
     let area = area_px(d);
     // Clamped for the screen it is shown on, not written back.
-    // A rolled-up note arrives with its shown height (`ROLLED_H`).
-    let rel = clamp_rect_for(sticky.rect, &area_dip(d), sticky.rolled);
+    let view = view_on(sticky.rect, sticky.rolled, &area_dip(d));
+    let shown = DipRect {
+        h: shown_h(view.h, sticky.rolled),
+        ..view
+    };
     Some(Placement {
         display,
-        rect: to_px(&rel, &area, scale),
+        rect: to_px(&shown, &area, scale),
+        view,
         scale,
         area,
         fallback,
@@ -295,16 +318,46 @@ mod tests {
     #[test]
     fn a_rolled_note_is_placed_at_its_shown_height() {
         let d = two();
-        // Shown 56 tall (as the host passes it), in the bottom 64 dip.
-        let mut s = sticky_on("A", DipRect::new(16.0, 1040.0, 240.0, ROLLED_H));
+        // Shown 56 tall, in the bottom 64 dip.
+        let mut s = sticky_on("A", DipRect::new(16.0, 1040.0, 240.0, 208.0));
         s.rolled = true;
         let p = place(&s, &d).unwrap();
         assert_eq!(p.rect.h, ROLLED_H as i32);
         assert_eq!(p.rect.bottom(), 1040, "the area is 1040 tall; it sits on its edge");
-        let mut s = sticky_on("A", DipRect::new(16.0, 900.0, 240.0, ROLLED_H));
+        assert_eq!(p.view.h, 208.0, "the unrolled height is kept for unrolling");
+        let mut s = sticky_on("A", DipRect::new(16.0, 900.0, 240.0, 208.0));
         s.rolled = true;
         let p = place(&s, &d).unwrap();
         assert_eq!((p.rect.y, p.rect.h), (900, ROLLED_H as i32), "not raised to 120");
+    }
+
+    #[test]
+    fn a_note_larger_than_the_area_is_shown_at_the_area_size() {
+        // Resized to the largest size on a big monitor, shown on 1920 x 1080
+        // at 150 %: the area is 1280 x 693.3 dip.
+        let mut d = two();
+        d[0].monitor.dpi = 144;
+        let saved = DipRect::new(400.0, 200.0, 640.0, 800.0);
+        let s = sticky_on("A", saved);
+        let p = place(&s, &d).unwrap();
+        let area = area_px(&d[0]);
+        assert!((p.view.h - 693.333).abs() < 0.01, "{:?}", p.view);
+        assert_eq!((p.view.y, p.view.w), (0.0, 640.0));
+        // The window is the view, fully inside the area (never over the taskbar).
+        assert_eq!(p.rect, to_px(&p.view, &area, 1.5));
+        assert_eq!(p.rect.y, area.y);
+        assert!(p.rect.bottom() <= area.bottom(), "{:?} in {area:?}", p.rect);
+        assert!(p.rect.right() <= area.right());
+        // The saved rect is untouched: on its own monitor it comes back.
+        assert_eq!(s.rect, saved);
+        let back = place(&s, &two()).unwrap();
+        assert_eq!(back.view, saved);
+        // Rolled up, it still unrolls to the area's height, not the saved one.
+        let mut rolled = s.clone();
+        rolled.rolled = true;
+        let p = place(&rolled, &d).unwrap();
+        assert_eq!(p.rect.h, (ROLLED_H * 1.5).round() as i32);
+        assert!((p.view.h - 693.333).abs() < 0.01);
     }
 
     #[test]

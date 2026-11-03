@@ -18,7 +18,7 @@ use windows::Win32::Graphics::DirectWrite::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GWLP_HWNDPARENT, GetWindowLongPtrW, IDC_ARROW,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, IDC_ARROW,
     LoadCursorW, RegisterClassExW, SW_SHOW, ShowWindow, WA_INACTIVE, WM_ACTIVATE, WM_DESTROY,
     WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MOUSEMOVE, WNDCLASSEXW, WS_EX_LAYERED,
     WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
@@ -320,8 +320,7 @@ fn redraw() {
             let Ok(rt) = rt.cast::<ID2D1RenderTarget>() else {
                 return;
             };
-            let rgb = |v: u32| v;
-            let set = |c: u32, a: f32| unsafe { brush.SetColor(&color(rgb(c), a)) };
+            let set = |c: u32, a: f32| unsafe { brush.SetColor(&color(c, a)) };
             let rr = |r: FRect, rad: f32| D2D1_ROUNDED_RECT {
                 rect: D2D_RECT_F {
                     left: r.x,
@@ -522,7 +521,6 @@ unsafe extern "system" fn pop_proc(
         }
         _ => {}
     }
-    let _ = unsafe { GetWindowLongPtrW(hwnd, GWLP_HWNDPARENT) };
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
 }
 

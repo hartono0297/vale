@@ -86,7 +86,12 @@ first free grid slot nearest under the notch on the notch's monitor (240x208);
 (+) in a header: right, else left, else below. `place.rs`: saved in dip relative
 to the monitor's placement area with the device path; a missing monitor falls
 back to the primary, clamped, **without** rewriting the save (it returns when
-the monitor does); a user move saves the monitor it ended on. Hot-plug rides
+the monitor does); a user move saves the monitor it ended on. The clamp shrinks
+the size too (a 640x800 note on a 1080p screen at 150 % is 693 dip tall), so
+the host keeps `Win::view` (`Placement::view`: shown place and clamped size,
+unrolled height) and uses it, never `sticky.rect`, for the window, the text
+layout, hit-testing, the EDIT and the resize origin; only a resize writes the
+size back. Hot-plug rides
 the existing `TIMER_DISPLAYS` / `reposition` path ([[notch-monitor]]), plus
 `WM_DPICHANGED` on the note itself; no polling.
 

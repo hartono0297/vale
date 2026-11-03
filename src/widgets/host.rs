@@ -36,7 +36,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CheckMenuRadioItem, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu,
     DestroyWindow, GWLP_HWNDPARENT, GWLP_USERDATA, GetCaretBlinkTime, GetCursorPos, GetShellWindow,
     GetWindowLongPtrW, HWND_BOTTOM, HWND_TOPMOST, IDC_ARROW, IDC_HAND, IDC_IBEAM, IDC_SIZENWSE,
-    KillTimer, LoadCursorW, MA_ACTIVATE, MA_NOACTIVATE, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR,
+    KillTimer, LoadCursorW, MA_ACTIVATE, MA_NOACTIVATE, MF_CHECKED, MF_POPUP, MF_SEPARATOR,
     MF_STRING, PostMessageW, RegisterClassExW, SW_HIDE, SW_SHOWNA, SWP_NOACTIVATE, SWP_NOMOVE,
     SWP_NOSIZE, SWP_NOZORDER, SetCursor, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow,
     TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, WINDOWPOS, WM_ACTIVATE, WM_APP,
@@ -62,7 +62,7 @@ use crate::widgets::paint::{
 use crate::widgets::place;
 use crate::widgets::pop::{self, PopCmd, PopState};
 use crate::widgets::prefs::{FullscreenRule, WidgetLayer, WidgetPrefs};
-use crate::widgets::snap::{Axis, snap_move_for, snap_resize};
+use crate::widgets::snap::{Axis, Snapped, snap_move_for, snap_resize};
 use crate::widgets::sticky::{self, DipRect, Paper, Sticky, TextSize};
 
 /// Posted to the owner when `WidgetEvent`s wait. One message until `drain`.
@@ -190,6 +190,11 @@ struct Win {
     /// The note's rect on the desktop (px), the monitor's scale and its place
     /// in the display list.
     note: Rect,
+    /// The note as shown (`place::Placement::view`): dip from its display's
+    /// placement area, the size clamped to that area. The window, the text
+    /// layout, the hit-testing and the EDIT use this size; `sticky.rect` is
+    /// the saved one, which may be larger than this display.
+    view: DipRect,
     scale: f32,
     display: usize,
     canvas: Option<Canvas>,
@@ -611,6 +616,7 @@ fn sync(ctx: &Ctx) {
                 text: note.text.clone(),
                 updated: note.updated,
                 note: Rect::default(),
+                view: DipRect::new(0.0, 0.0, 0.0, 0.0),
                 scale: 1.0,
                 display: 0,
                 canvas: None,
@@ -691,13 +697,12 @@ fn sync(ctx: &Ctx) {
 /// the window follows (position and size are the canvas's).
 fn relayout(s: &mut State, i: usize) {
     let w = &mut s.wins[i];
-    let mut shown = w.sticky.clone();
-    shown.rect.h = shown_h(shown.rect.h, shown.rolled);
-    let Some(p) = place::place(&shown, &s.displays) else {
+    let Some(p) = place::place(&w.sticky, &s.displays) else {
         return;
     };
-    if w.note != p.rect || w.scale != p.scale || w.display != p.display {
+    if w.note != p.rect || w.view != p.view || w.scale != p.scale || w.display != p.display {
         w.note = p.rect;
+        w.view = p.view;
         w.scale = p.scale;
         w.display = p.display;
         w.canvas = None;
@@ -808,6 +813,12 @@ fn flush_dirty() {
     });
 }
 
+/// The window's size (px) for a note shown as `view` at scale `k`.
+fn canvas_px(view: &DipRect, rolled: bool, k: f32) -> (i32, i32) {
+    let (mw, mh) = window_dip(view.w, shown_h(view.h, rolled));
+    ((mw * k).round() as i32, (mh * k).round() as i32)
+}
+
 fn draw(s: &mut State, i: usize) {
     s.wins[i].dirty = false;
     if s.wins[i].note.is_empty() {
@@ -829,8 +840,7 @@ fn draw(s: &mut State, i: usize) {
     let can_add_more = sticky::can_add(wins.len());
     let w = &mut wins[i];
     let k = w.scale;
-    let (mw, mh) = window_dip(w.sticky.rect.w, shown_h(w.sticky.rect.h, w.sticky.rolled));
-    let size = ((mw * k).round() as i32, (mh * k).round() as i32);
+    let size = canvas_px(&w.view, w.sticky.rolled, k);
     if w.canvas.as_ref().is_none_or(|c| c.size() != size) {
         w.canvas = Canvas::with_gfx(res.gfx.clone(), size).ok();
     }
@@ -840,7 +850,7 @@ fn draw(s: &mut State, i: usize) {
         w.note.y - (m.1 * k).round() as i32,
     );
     // The text, laid out for the width it is drawn at.
-    let (nw, nh) = (w.sticky.rect.w, w.sticky.rect.h);
+    let (nw, nh) = (w.view.w, w.view.h);
     let area = paint::body_rect(nw, nh);
     let key = (w.text.clone(), w.sticky.text_size, (area.w * 100.0) as i32);
     if w.body_key.as_ref() != Some(&key) {
@@ -1090,8 +1100,8 @@ fn target_at(w: &Win, sx: i32, sy: i32) -> Target {
     paint::target(
         x,
         y,
-        w.sticky.rect.w,
-        w.sticky.rect.h,
+        w.view.w,
+        w.view.h,
         w.sticky.rolled,
         w.body.as_ref(),
         w.scroll,
@@ -1267,7 +1277,8 @@ fn left_down(hwnd: HWND, x: i32, y: i32) {
         let i = idx_of(s, hwnd)?;
         let lock = s.prefs.lock;
         let t = target_at(&s.wins[i], pt.x, pt.y);
-        s.wins[i].confirm_delete = false;
+        // Any press on the note is the next other action: the footer follows.
+        disarm_delete(s, i);
         match t {
             Target::Button(b) => {
                 s.wins[i].pressed = Some(b);
@@ -1289,12 +1300,10 @@ fn left_down(hwnd: HWND, x: i32, y: i32) {
                     kind,
                     cursor: (pt.x, pt.y),
                     note: w.note,
-                    dip: DipRect::new(
-                        w.sticky.rect.x,
-                        w.sticky.rect.y,
-                        w.sticky.rect.w,
-                        shown_h(w.sticky.rect.h, w.sticky.rolled),
-                    ),
+                    dip: DipRect {
+                        h: shown_h(w.view.h, w.sticky.rolled),
+                        ..w.view
+                    },
                     moved: false,
                     lit: Vec::new(),
                 });
@@ -1480,7 +1489,7 @@ fn button(hwnd: HWND, b: Btn) {
             let at = with(|s| {
                 let i = idx_of(s, hwnd)?;
                 let w = &s.wins[i];
-                let r = paint::button_rect(Btn::More, w.sticky.rect.w);
+                let r = paint::button_rect(Btn::More, w.view.w);
                 Some(POINT {
                     x: w.note.x + (r.x * w.scale).round() as i32,
                     y: w.note.y + ((r.y + r.h) * w.scale).round() as i32,
@@ -1610,7 +1619,7 @@ fn open_popover(hwnd: HWND) {
     let info = with(|s| {
         let i = idx_of(s, hwnd)?;
         let w = &s.wins[i];
-        let r = paint::button_rect(Btn::Colour, w.sticky.rect.w);
+        let r = paint::button_rect(Btn::Colour, w.view.w);
         let anchor = Rect::new(
             w.note.x + (r.x * w.scale).round() as i32,
             w.note.y + (r.y * w.scale).round() as i32,
@@ -1721,7 +1730,6 @@ fn context_menu(hwnd: HWND, at: POINT) {
             CMD_DELETE,
             &h(if confirm { Key::StickyDeleteAgain } else { Key::StickyDelete }),
         );
-        let _ = MF_GRAYED;
         // Without the foreground the menu would not close on a click elsewhere.
         let _ = windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow(hwnd);
         let chosen = TrackPopupMenu(
@@ -1828,6 +1836,37 @@ fn flush_dirty_in(s: &mut State) {
     }
 }
 
+/// A note of saved rect `saved` dragged so its top-left is at `at` (dip on
+/// `area`): where it snaps, and how it is shown there (`Placement::view`: the
+/// saved size, clamped to this area).
+fn moved_view(
+    saved: DipRect,
+    rolled: bool,
+    at: (f32, f32),
+    area: &DipRect,
+    others: &[DipRect],
+    alt: bool,
+) -> (Snapped, DipRect) {
+    let want = DipRect::new(at.0, at.1, saved.w, shown_h(saved.h, rolled));
+    let snapped = snap_move_for(want, area, others, alt, rolled);
+    let r = snapped.rect;
+    let view = place::view_on(DipRect { x: r.x, y: r.y, ..saved }, rolled, area);
+    (snapped, view)
+}
+
+/// A note shown as `start` (when the grip was taken) resized to `size`: its
+/// top-left stays where it is shown, which for a note on a fallback monitor
+/// is not its saved place.
+fn resized(
+    start: &DipRect,
+    size: (f32, f32),
+    area: &DipRect,
+    others: &[DipRect],
+    alt: bool,
+) -> Snapped {
+    snap_resize(DipRect::new(start.x, start.y, size.0, size.1), area, others, alt)
+}
+
 /// The pointer moved at `cursor` (px) while a note is dragged or resized.
 fn drag_move(s: &mut State, i: usize, cursor: (i32, i32), alt: bool) {
     let (kind, start_cursor, start_note, start_dip, moved) = {
@@ -1870,45 +1909,48 @@ fn drag_move(s: &mut State, i: usize, cursor: (i32, i32), alt: bool) {
         if j != i && w.display == di {
             idxs.push(j);
             others.push(DipRect {
-                h: shown_h(w.sticky.rect.h, w.sticky.rolled),
-                ..w.sticky.rect
+                h: shown_h(w.view.h, w.sticky.rolled),
+                ..w.view
             });
         }
     }
-    let snapped = match kind {
-        DragKind::Move => snap_move_for(
-            DipRect::new(rel.x, rel.y, start_dip.w, start_dip.h),
+    let (snapped, view) = match kind {
+        DragKind::Move => moved_view(
+            s.wins[i].sticky.rect,
+            rolled,
+            (rel.x, rel.y),
             &area,
             &others,
             alt,
-            rolled,
         ),
         DragKind::Resize => {
-            let w = &s.wins[i];
-            snap_resize(
-                DipRect::new(w.sticky.rect.x, w.sticky.rect.y, rel.w, rel.h),
-                &area,
-                &others,
-                alt,
-            )
+            let snapped = resized(&start_dip, (rel.w, rel.h), &area, &others, alt);
+            let view = snapped.rect;
+            (snapped, view)
         }
     };
     let rect = snapped.rect;
     let w = &mut s.wins[i];
     let rescaled = w.scale != scale || w.display != di;
+    // Only a resize changes the saved size: a move onto a smaller display
+    // shows the note smaller there and keeps the size it was given.
     w.sticky.rect.x = rect.x;
     w.sticky.rect.y = rect.y;
     if kind == DragKind::Resize {
         w.sticky.rect.w = rect.w;
         w.sticky.rect.h = rect.h;
     }
-    let h_shown = shown_h(w.sticky.rect.h, rolled);
     let px = place::to_px(
-        &DipRect::new(rect.x, rect.y, w.sticky.rect.w, h_shown),
+        &DipRect {
+            h: shown_h(view.h, rolled),
+            ..view
+        },
         &area_px,
         scale,
     );
-    let size_changed = px.w != w.note.w || px.h != w.note.h;
+    let size_changed =
+        px.w != w.note.w || px.h != w.note.h || view.w != w.view.w || view.h != w.view.h;
+    w.view = view;
     w.note = px;
     w.scale = scale;
     w.display = di;
@@ -1992,7 +2034,7 @@ fn begin_editing(hwnd: HWND, at: Option<usize>) {
     let info = with(|s| {
         let i = idx_of(s, hwnd)?;
         let w = &s.wins[i];
-        let area = paint::body_rect(w.sticky.rect.w, w.sticky.rect.h);
+        let area = paint::body_rect(w.view.w, w.view.h);
         Some((
             w.edit,
             w.text.clone(),
@@ -2113,7 +2155,7 @@ fn sync_from_edit(parent: HWND, edit_hwnd: HWND) {
         let w = &s.wins[i];
         let (cx, cy, _) = w.body.as_ref()?.caret(sel.1)?;
         let m = margins();
-        let area = paint::body_rect(w.sticky.rect.w, w.sticky.rect.h);
+        let area = paint::body_rect(w.view.w, w.view.h);
         Some((
             ((m.0 + area.x + cx) * w.scale) as i32,
             ((m.1 + area.y + cy - w.scroll) * w.scale) as i32,
@@ -2126,7 +2168,7 @@ fn sync_from_edit(parent: HWND, edit_hwnd: HWND) {
 }
 
 /// An arrow up or down: the caret goes one visual line, where the drawn text
-/// says (the EDIT's own wrapping is not what is on screen).
+/// says (the EDIT does not wrap; the drawn text does).
 fn move_vertical(parent: HWND, edit_hwnd: HWND, up: bool, extend: bool) {
     let target = with(|s| {
         let i = idx_of(s, parent)?;
@@ -2150,4 +2192,96 @@ fn move_vertical(parent: HWND, edit_hwnd: HWND, up: bool, extend: bool) {
         edit::set_selection(edit_hwnd, &t, to, to);
     }
     sync_from_edit(parent, edit_hwnd);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::arrange::Monitor;
+    use crate::widgets::sticky::ROLLED_H;
+
+    fn display(path: &str, x: i32, primary: bool, dpi: u32) -> Display {
+        Display {
+            monitor: Monitor {
+                device: format!(r"\.\{path}"),
+                rect: Rect::new(x, 0, 1920, 1080),
+                work: Rect::new(x, 0, 1920, 1040),
+                dpi,
+            },
+            hmonitor: 1,
+            primary,
+            path: path.to_owned(),
+            name: String::new(),
+            number: 1,
+        }
+    }
+
+    fn sticky(path: &str, rect: DipRect) -> Sticky {
+        Sticky {
+            monitor: path.to_owned(),
+            rect,
+            ..Sticky::default()
+        }
+    }
+
+    #[test]
+    fn a_note_larger_than_its_display_is_drawn_and_hit_at_the_shown_size() {
+        // 640 x 800 dip, shown on 1920 x 1080 at 150 % (area 1280 x 693 dip).
+        let d = vec![display("A", 0, true, 144)];
+        let s = sticky("A", DipRect::new(400.0, 200.0, 640.0, 800.0));
+        let p = place::place(&s, &d).unwrap();
+        let area = place::area_px(&d[0]);
+        let k = p.scale;
+        // The window is made for the view, not the saved size: the note in it
+        // ends at the area's bottom, above the taskbar.
+        let (_, ch) = canvas_px(&p.view, false, k);
+        let m = margins();
+        let top = p.rect.y - (m.1 * k).round() as i32;
+        let note_bottom = top + ch - (m.3 * k).round() as i32;
+        assert!(note_bottom <= area.bottom(), "{note_bottom} > {}", area.bottom());
+        assert!(note_bottom >= area.bottom() - 1, "fills the area");
+        // The grip is where the shown note ends, inside the area.
+        let grip = paint::target(p.view.w - 4.0, p.view.h - 4.0, p.view.w, p.view.h, false, None, 0.0);
+        assert_eq!(grip, Target::Grip);
+        let grip_y = p.rect.y + ((p.view.h - 4.0) * k).round() as i32;
+        assert!(grip_y < area.bottom());
+        // The text area is the shown one.
+        let body = paint::body_rect(p.view.w, p.view.h);
+        assert!(body.y + body.h < 693.4 - paint::FOOTER_H + 0.5);
+    }
+
+    #[test]
+    fn a_move_onto_a_smaller_display_shows_it_smaller_and_keeps_the_saved_size() {
+        let area = DipRect::new(0.0, 0.0, 1280.0, 693.333);
+        let saved = DipRect::new(10.0, 10.0, 640.0, 800.0);
+        let (snapped, view) = moved_view(saved, false, (100.0, 50.0), &area, &[], true);
+        assert_eq!(snapped.rect.y, 0.0, "pushed up to fit");
+        assert!((snapped.rect.h - 693.333).abs() < 0.01);
+        assert_eq!(view, snapped.rect, "the window is what the snap made");
+        assert!(view.bottom() <= area.bottom());
+        // Rolled up: placed at its shown height, unrolls to the area's height.
+        let (snapped, view) = moved_view(saved, true, (100.0, 600.0), &area, &[], true);
+        assert_eq!(snapped.rect.h, ROLLED_H);
+        assert_eq!((view.x, view.y), (snapped.rect.x, snapped.rect.y));
+        assert!((view.h - 693.333).abs() < 0.01);
+        // On a display it fits, the size is the saved one.
+        let big = DipRect::new(0.0, 0.0, 1920.0, 1040.0);
+        let (_, view) = moved_view(saved, false, (100.0, 50.0), &big, &[], true);
+        assert_eq!((view.w, view.h), (640.0, 800.0));
+    }
+
+    #[test]
+    fn a_resize_on_the_fallback_monitor_starts_where_the_note_is_shown() {
+        // Saved at x 3000 on a monitor that is gone: shown at the primary's
+        // right edge.
+        let d = vec![display("A", 0, true, 96)];
+        let s = sticky("B", DipRect::new(3000.0, 500.0, 240.0, 208.0));
+        let p = place::place(&s, &d).unwrap();
+        assert!(p.fallback);
+        assert_eq!(p.view.x, 1680.0);
+        let area = place::snap_area(&d[0]);
+        let r = resized(&p.view, (200.0, 240.0), &area, &[], true).rect;
+        assert_eq!((r.x, r.y), (p.view.x, p.view.y), "no jump to the old offset");
+        assert_eq!((r.w, r.h), (200.0, 240.0));
+    }
 }

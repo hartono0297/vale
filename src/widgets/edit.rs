@@ -32,7 +32,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DLGC_WANTALLKEYS, ES_AUTOVSCROLL, ES_MULTILINE, ES_WANTRETURN, GetParent,
+    CreateWindowExW, DLGC_WANTALLKEYS, ES_AUTOHSCROLL, ES_AUTOVSCROLL, ES_MULTILINE, ES_WANTRETURN, GetParent,
     GetWindowTextLengthW, GetWindowTextW, HMENU, SendMessageW, SetWindowTextW, WINDOW_EX_STYLE,
     WINDOW_STYLE, WM_CHAR, WM_CLEAR, WM_CUT, WM_GETDLGCODE, WM_IME_COMPOSITION,
     WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KILLFOCUS, WM_NCDESTROY, WM_PASTE, WM_SETFOCUS,
@@ -60,14 +60,22 @@ const SUBCLASS_ID: usize = 7;
 /// A note is a note, not a document.
 const LIMIT: usize = 20_000;
 
+/// The EDIT's style. `ES_AUTOHSCROLL` turns its own word wrap off: it would
+/// wrap with its own font, which is not the drawn layout, so Home and End
+/// (and their Shift forms) would stop at line ends the user never sees.
+/// Without the wrap they go to the start and end of the line as typed; Up and
+/// Down follow the drawn lines (`EditEvent::Vertical`).
+fn style() -> WINDOW_STYLE {
+    WS_CHILD
+        | WS_VISIBLE
+        | WINDOW_STYLE((ES_MULTILINE | ES_WANTRETURN | ES_AUTOVSCROLL | ES_AUTOHSCROLL) as u32)
+}
+
 /// A hidden EDIT in `parent`'s corner holding `text` (model text, `\n`
-/// breaks), `size` px (the note's text area, so its own wrapping is close to
-/// what is drawn).
+/// breaks), `size` px (the note's text area).
 pub fn create(parent: HWND, text: &str, size: (i32, i32)) -> Result<HWND> {
     let instance = unsafe { GetModuleHandleW(None)? };
-    let style = WS_CHILD
-        | WS_VISIBLE
-        | WINDOW_STYLE((ES_MULTILINE | ES_WANTRETURN | ES_AUTOVSCROLL) as u32);
+    let style = style();
     let hwnd = unsafe {
         CreateWindowExW(
             WINDOW_EX_STYLE(0),
@@ -394,4 +402,18 @@ unsafe extern "system" fn edit_proc(
         _ => {}
     }
     unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_edit_does_not_wrap_on_its_own_metrics() {
+        // Home and End must work on the lines as typed, not on the EDIT's own
+        // soft wrap, which differs from the drawn layout.
+        let s = style().0;
+        assert_ne!(s & ES_AUTOHSCROLL as u32, 0, "no word wrap in the EDIT");
+        assert_ne!(s & ES_MULTILINE as u32, 0);
+    }
 }
