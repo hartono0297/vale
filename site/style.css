@@ -243,10 +243,10 @@ html:not(.js) .js-only { display: none !important; }
    accessible name) and Download gets smaller again (76 px room at 320 with a
    scrollbar). */
 @media (max-width: 32.5em) {
-  .btn-dl { padding: 0 10px; font-size: .875rem; }
+  .btn-dl { padding: 0 9px; font-size: .875rem; }
 }
 @media (max-width: 23.49em) {
-  .btn-dl { padding: 0 7px; font-size: .75rem; }
+  .btn-dl { padding: 0 6px; font-size: .75rem; }
 }
 /* Below 20em (fold cover screens, about 280 px) the word no longer fits
    beside the 96 px notch with 12 px clear (it needs 312 px with a
@@ -427,6 +427,8 @@ h3 { font-size: clamp(1.25rem, 1.1rem + .6vw, 1.5rem); letter-spacing: -.015em; 
 .btn-copy.is-copied .copy-ico { -webkit-mask-image: var(--i-check); mask-image: var(--i-check); }
 .btn-copy.is-copied { color: var(--ink); }
 .btn-copy:hover { background: color-mix(in srgb, var(--code-bg), var(--text) 7%); }
+/* The terracotta check on the hover tint is 4.2 to 4.4, so a copied control takes no tint. */
+.btn-copy.is-copied:hover { background: transparent; }
 @media (min-width: 32.51em) {
   .btn-copy { margin: 1px 1px 1px 0; padding: 0 18px; border: 0; border-left: 1px solid var(--line); border-radius: 0 11px 11px 0; }
   .btn-copy:focus-visible { outline-offset: -3px; }
