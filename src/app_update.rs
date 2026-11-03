@@ -268,7 +268,12 @@ impl App {
                 // "Nanti" only clears the notice; the next check asks again.
                 let version = release.version();
                 self.update.known = Some(release);
-                self.apply_now(Event::Notice(available_notice(lang, &version)));
+                // A check that lands while an install runs (the daily one was
+                // in flight when the tray's item was clicked) offers nothing:
+                // "Update" on it would do nothing.
+                if self.update.downloading.is_none() {
+                    self.apply_now(Event::Notice(available_notice(lang, &version)));
+                }
             }
             Ok(_) => {
                 self.update.known = None;

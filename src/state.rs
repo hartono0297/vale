@@ -2472,8 +2472,9 @@ impl IslandState {
     fn clear_sticky(&mut self, key: Sticky) {
         let is_key = |n: &Notice| sticky_key(n) == Some(key);
         // A new offer after this one is a fresh appearance: its first visit
-        // keeps hover off again, though its text is the same.
-        if key == Sticky::Update {
+        // keeps hover off again, though its text is the same. Only an offer
+        // that was seen resets: a reminder's first visit stays spent.
+        if key == Sticky::Update && self.reminder_seen.as_ref().is_some_and(is_update_offer) {
             self.reminder_seen = None;
         }
         self.sticky.retain(|n| !is_key(n));
@@ -3665,6 +3666,27 @@ mod tests {
         s.apply(Event::Notice(reminder("r2")), t0);
         s.apply(Event::Hover(true), t0);
         assert_eq!(s.view(), View::Notice(reminder("r2")));
+    }
+
+    #[test]
+    fn a_download_percent_does_not_give_a_seen_reminder_a_second_first_visit() {
+        let t0 = Instant::now();
+        let secs = Duration::from_secs;
+        let mut s = st();
+        s.apply(Event::Notice(reminder("r1")), t0);
+        // The first visit is for its Selesai button.
+        s.apply(Event::Hover(true), t0);
+        assert_eq!(s.view(), View::Notice(reminder("r1")));
+        s.apply(Event::Hover(false), t0);
+        // An install starts (tray or Tentang): percents come, no offer exists.
+        for pct in [1, 2, 3] {
+            s.apply(Event::Notice(progress(pct)), t0);
+        }
+        s.apply(Event::Tick, t0 + UPDATE_PROGRESS_DURATION + secs(1));
+        // The reminder was already seen: the next visit opens the panel.
+        s.apply(Event::Hover(true), t0 + UPDATE_PROGRESS_DURATION + secs(1));
+        assert_eq!(s.view(), View::Panel(Page::Calendar));
+        assert_eq!(s.waiting_strip(), Some(&reminder("r1")));
     }
 
     #[test]
