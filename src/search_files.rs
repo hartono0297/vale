@@ -476,13 +476,18 @@ mod tests {
     /// A junction (no privilege needed) or a directory symlink from `link` to
     /// `target`; `false` when neither can be made here.
     fn make_link(link: &Path, target: &Path) -> bool {
+        use std::os::windows::process::CommandExt;
+        use windows::Win32::System::Threading::CREATE_NO_WINDOW;
         if std::os::windows::fs::symlink_dir(target, link).is_ok() {
             return true;
         }
+        // No console window of its own: the test binary has none, so a bare
+        // `cmd` child would open a Windows Terminal window.
         std::process::Command::new("cmd")
             .args(["/C", "mklink", "/J"])
             .arg(link)
             .arg(target)
+            .creation_flags(CREATE_NO_WINDOW.0)
             .output()
             .is_ok_and(|o| o.status.success())
             && link.exists()

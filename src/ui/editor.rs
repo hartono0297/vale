@@ -643,6 +643,11 @@ struct Editor {
     finished: bool,
 }
 
+/// Whether the editor may appear on screen and take the foreground. Always
+/// true in the app; tests build the real window but never show it, so a test
+/// run opens no visible window and steals no focus.
+const ON_SCREEN: bool = !cfg!(test);
+
 thread_local! {
     static EDITOR: RefCell<Option<Editor>> = const { RefCell::new(None) };
     /// The window that last had the keyboard (an EDIT or the editor itself),
@@ -1099,8 +1104,10 @@ pub fn open_editor(owner: HWND, anchor_bottom_center: POINT, kind: EditorKind) -
         return Err(Error::empty());
     }
     refresh(hwnd);
-    unsafe {
-        let _ = ShowWindow(hwnd, SW_SHOW);
+    if ON_SCREEN {
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_SHOW);
+        }
     }
     bring_to_front(hwnd);
     if let Some((_, edit)) = first {
@@ -1127,10 +1134,12 @@ pub fn focus_open_editor() -> bool {
 /// set the foreground; `SwitchToThisWindow` is the fallback if Windows still
 /// refuses (it flashes the window rather than failing silently).
 fn bring_to_front(hwnd: HWND) {
-    unsafe {
-        let _ = SetForegroundWindow(hwnd);
-        if GetForegroundWindow() != hwnd {
-            SwitchToThisWindow(hwnd, true);
+    if ON_SCREEN {
+        unsafe {
+            let _ = SetForegroundWindow(hwnd);
+            if GetForegroundWindow() != hwnd {
+                SwitchToThisWindow(hwnd, true);
+            }
         }
     }
     focus_last(hwnd);
@@ -3145,11 +3154,14 @@ mod tests {
 
     const SIZE_400: SIZE = SIZE { cx: 400, cy: 220 };
 
-    /// Opens a real note editor (briefly on screen) and closes it the way the
-    /// island does on shutdown: the result comes back, nothing is posted.
+    /// Opens a real note editor (a real window, never shown under test) and
+    /// closes it the way the island does on shutdown: the result comes back,
+    /// nothing is posted.
     #[test]
     fn close_open_editor_returns_the_note_without_posting() {
-        use windows::Win32::UI::WindowsAndMessaging::{MSG, PM_REMOVE, PeekMessageW};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            IsWindowVisible, MSG, PM_REMOVE, PeekMessageW,
+        };
         unsafe {
             let owner = CreateWindowExW(
                 WS_EX_TOOLWINDOW,
@@ -3172,6 +3184,7 @@ mod tests {
             };
             let anchor = POINT { x: 400, y: 300 };
             let editor = open_editor(owner, anchor, kind.clone()).expect("editor");
+            assert!(!IsWindowVisible(editor).as_bool(), "never on screen in tests");
             // One editor at a time: a second open returns the same window.
             assert_eq!(open_editor(owner, anchor, kind).ok(), Some(editor));
             assert_eq!(
@@ -3200,6 +3213,7 @@ mod tests {
     /// closes with `Closed`.
     #[test]
     fn reminder_editor_opens_without_windows_date_controls() {
+        use windows::Win32::UI::WindowsAndMessaging::IsWindowVisible;
         unsafe {
             let owner = CreateWindowExW(
                 WS_EX_TOOLWINDOW,
@@ -3218,6 +3232,7 @@ mod tests {
             .expect("owner window");
             let editor = open_editor(owner, POINT { x: 400, y: 300 }, reminder_kind(Some("r1")))
                 .expect("editor");
+            assert!(!IsWindowVisible(editor).as_bool(), "never on screen in tests");
             let kids = with_editor(editor, |ed| ed.edits.len()).expect("editor state");
             assert_eq!(kids, 1, "only the text is an EDIT");
             let size = with_editor(editor, |ed| ed.layout.size).unwrap();
