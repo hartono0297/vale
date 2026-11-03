@@ -597,8 +597,7 @@ fn register() -> bool {
     true
 }
 
-fn create_window(r: layout::RectF, origin: (i32, i32), size: (i32, i32)) -> Option<HWND> {
-    let _ = r;
+fn create_window(origin: (i32, i32), size: (i32, i32)) -> Option<HWND> {
     let module = unsafe { GetModuleHandleW(None) }.ok()?;
     unsafe {
         CreateWindowExW(
@@ -697,7 +696,7 @@ pub(super) fn open(args: OpenArgs, content: CardContent) -> bool {
     let size_dip = layout::clamp_size(rc.width() as f32 / k, rc.height() as f32 / k);
     let size = (px(size_dip.0, dpi), px(size_dip.1, dpi));
     let origin = (rc.left, rc.top);
-    let Some(hwnd) = create_window(layout::RectF::default(), origin, size) else {
+    let Some(hwnd) = create_window(origin, size) else {
         return false;
     };
     let Ok(surf) = Surface::new(size, content.font) else {
@@ -746,7 +745,9 @@ pub(super) fn open(args: OpenArgs, content: CardContent) -> bool {
         hover_line: None,
         tracking: false,
         press: None,
-        hidden: args.hidden,
+        // Held back until the card is stored: a frame tick posted to a card
+        // nobody can find yet would never be acknowledged.
+        hidden: true,
         clock: None,
         placed: None,
         demo: args.demo,
@@ -756,6 +757,7 @@ pub(super) fn open(args: OpenArgs, content: CardContent) -> bool {
     card.apply(content, now, &mut fx);
     // Jump to where things are: no ease from nothing on the first frame.
     card.scroll = Tween::at_rest(card.scroll_goal(now), now);
+    card.hidden = args.hidden;
     card.render(now);
     let hidden = card.hidden;
     CARD.with(|c| *c.borrow_mut() = Some(card));
@@ -763,7 +765,12 @@ pub(super) fn open(args: OpenArgs, content: CardContent) -> bool {
         run_fx(hwnd, vec![Fx::Show(true)]);
     }
     run_fx(hwnd, fx);
-    let _ = with(|c, _| c.sync_timers(Instant::now()));
+    // The timers and the frame clock start now that the window can be found.
+    let _ = with(|c, _| {
+        let now = Instant::now();
+        c.sync_timers(now);
+        c.sync_clock(now);
+    });
     true
 }
 

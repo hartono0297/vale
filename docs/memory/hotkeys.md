@@ -1,9 +1,9 @@
 ---
 tags: [decision, hotkeys, settings, config, windows]
-date: 2026-11-01
+date: 2026-11-04
 ---
 
-# Hotkeys: five recordable combos in one Settings section
+# Hotkeys: six recordable combos in one Settings section
 
 The five fixed presets (Clipboard Ctrl+Alt+V / Win+Alt+V, search
 Ctrl+Alt+Space / Win+Alt+S, Devices Ctrl+Alt+D, Arrange Ctrl+Alt+S, the PrtSc
@@ -11,6 +11,17 @@ toggle) became **recordable combos**, one row each in Settings → **Tombol pint
 (Hotkeys), the ninth section right after Clipboard ([[settings-structure]]).
 Related: [[search]], [[clipboard-history]], [[devices]], [[arrange]],
 [[screenshot-snap]].
+
+**Sixth row (2026-11-04): "Buka lirik" / "Open lyrics"** opens the floating
+lyrics card ([[lyrics-card]]). `HotkeyId::LyricsCard`, appended LAST in
+`HotkeyId::ALL` (so the order and the ids of the first five never change),
+config key `lyrics_card` inside `config.hotkeys`, **default Ctrl+Alt+L**, may be
+None, `RegisterHotKey` id `HOTKEY_LYRICS_CARD` = 6, labels `HotkeyRowLyricsCard`
+("Buka lirik") and `HotkeyRowLyricsCardDesc` ("Kartu lirik melayang" /
+"Floating lyrics card"). The press does nothing while lyrics are off. Every
+table sized by the row count is `HotkeyId::ALL.len()` now (`ROWS` in
+`app_hotkeys.rs`, the PrtSc table, the Settings failed flags). Everything below
+that says "five" is five rows plus this one; the rest is unchanged.
 
 ## Model (`src/hotkey.rs`, pure)
 
@@ -47,7 +58,7 @@ Related: [[search]], [[clipboard-history]], [[devices]], [[arrange]],
 
 ## Config
 
-- `config.hotkeys` serializes as an object of five strings. It is read
+- `config.hotkeys` serializes as an object of six strings (five until 2026-11-04). It is read
   **leniently and never fails**: a missing key, a value that does not parse or
   fails `check` gives that row's default; anything that is not an object gives
   every default; a row that repeats an earlier row (in `ALL` order) reads as
@@ -67,7 +78,7 @@ Related: [[search]], [[clipboard-history]], [[devices]], [[arrange]],
 
 ## Registration (`src/app_hotkeys.rs`, child of `app`)
 
-- Ids: HOTKEY_CLIP 1, SEARCH 2, DEVICES 3, ARRANGE 4, SCREENSHOT 5.
+- Ids: HOTKEY_CLIP 1, SEARCH 2, DEVICES 3, ARRANGE 4, SCREENSHOT 5, LYRICS_CARD 6.
 - `HotkeyState` keeps what each row has in effect, a `failed` flag per row, the
   hook thread, `paused` and `started`. `sync_hotkeys()` (startup,
   `adopt_config`, after a Settings change) plans each row from want, in
@@ -81,14 +92,14 @@ Related: [[search]], [[clipboard-history]], [[devices]], [[arrange]],
   Search). Then it starts the hook thread if any row needs it, stops it when none
   does. A hook install failure marks every PrtSc row failed.
 - `retry_hotkeys()` retries failed rows when the tray menu or Settings opens.
-  `WM_DESTROY` (and `WM_ENDSESSION`) unregisters all five and stops the hook.
+  `WM_DESTROY` (and `WM_ENDSESSION`) unregisters every row and stops the hook.
 - `WM_HOTKEY` id -> `on_hotkey(row)`; `WM_APP_PRTSC` (WM_APP+60) carries the
   row index in `wparam`. Firing behaviour (the hold in `state.rs`,
   `TIMER_CLIP_HOLD`, focus handling) is unchanged.
 - Per-module `hotkey` / `hotkey_failed` fields and `sync_*_hotkey` are gone;
   `ClipState` got a plain `started` flag where `clip.hotkey.is_none()` used to
   mean "not started".
-- **The PrtSc hook** (`app_prtsc.rs`) reads a static table of five `AtomicU8`
+- **The PrtSc hook** (`app_prtsc.rs`) reads a static table of one `AtomicU8` per row (six)
   (0xFF unassigned, else the row's modifier bits). `prtsc_hook_action(vk,
   key_down, mods, swallowing, table)` swallows and fires a press whose
   modifiers EXACTLY equal an assigned row's, swallows its auto-repeat and
@@ -99,7 +110,7 @@ Related: [[search]], [[clipboard-history]], [[devices]], [[arrange]],
 
 ## Pausing while Settings records
 
-`Action::HotkeyRecording(true)` -> `pause_hotkeys()`: unregisters all five ids,
+`Action::HotkeyRecording(true)` -> `pause_hotkeys()`: unregisters every row's id,
 empties the table, stops the hook, sets `paused`, marks nothing failed; while
 paused `sync_hotkeys` does nothing. `HotkeyRecording(false)` (and
 `Action::Closed`, as a safety) -> `resume_hotkeys()` clears `paused` and runs a
@@ -159,7 +170,7 @@ too) would fire a capture right after recording. Only a key held past the
 
 ## Layout and icon
 
-`Icon::Keyboard` (71 icons now). `hotkeys_page`: one card of `HEADER_H` + 5 x
+`Icon::Keyboard` (71 icons now). `hotkeys_page`: one card of `HEADER_H` + 6 x
 `ROW_H`, a hint and "Kembalikan semua" in the header like a list's, then per
 row the name and description, a `Control::HotkeyField` (key caps joined by
 "+", "Tidak ada" when off; width measured from its content, min 150, max 260,
