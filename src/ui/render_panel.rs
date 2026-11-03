@@ -74,8 +74,8 @@ use crate::ui::panel_layout::{
     media_panel_layout, media_progress_layout, mixer_layout, mole_layout, mole_log_rows,
     mole_log_skip, notes_layout, notif_layout, page_dots, pomodoro_compact_layout,
     pomodoro_compact_layout_robot, pomodoro_layout, regions, reminders_layout, search_layout,
-    settings_button, shelf_card_layout, shelf_layout, shortcuts_layout, system_layout,
-    tile_parts, update_strip_parts, volume_hud_layout, waiting_strip,
+    settings_button, shelf_card_layout, shelf_layout, shelf_phone_tag, shortcuts_layout,
+    system_layout, tile_parts, update_strip_parts, volume_hud_layout, waiting_strip,
 };
 use crate::ui::robot::{Expr, Pose};
 use crate::ui::phone_view::PhoneView;
@@ -3236,19 +3236,9 @@ impl Renderer {
         self.icon_colored(Icon::X, lay.remove, 10.0, p.secondary, a, None);
         // Files that came from a phone say so, small, at the bottom right.
         if card.from_phone {
-            let tag = Rect {
-                x: lay.card.right() - 6.0 - 44.0,
-                y: lay.card.bottom() - 13.0,
-                w: 44.0,
-                h: 12.0,
-            };
-            self.text_colored(
-                text(lang, Key::ShelfFromPhone),
-                &self.fonts.micro_center,
-                tag,
-                p.accent,
-                0.85 * ink,
-            );
+            let label = text(lang, Key::ShelfFromPhone);
+            let tag = shelf_phone_tag(lay.card, self.text_width(label, &self.fonts.micro_center));
+            self.text_colored(label, &self.fonts.micro_center, tag, p.accent, 0.85 * ink);
         }
         if card.stale {
             self.set_color(p.track, a);
@@ -5799,6 +5789,70 @@ mod tests {
         );
         r.set_ui_font(UiFont::Mono).expect("mono formats");
         display_fits(&r);
+    }
+
+    /// The phone link's titles hold their words in their header boxes, and a
+    /// shelf card's "dari HP" tag holds its word on the card, in both
+    /// languages, in DM Sans and in JetBrains Mono, in both styles: no
+    /// ellipsis ("Receiving from p…", "from ph…").
+    #[test]
+    fn phone_titles_and_the_shelf_tag_hold_their_words_in_both_fonts() {
+        use crate::config::Style;
+        use crate::ui::fonts;
+        use crate::ui::panel_layout::{
+            phone_ask_layout, phone_qr_layout, phone_recv_layout, phone_warn_layout,
+        };
+        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+
+        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let mut r = Renderer::new().expect("renderer");
+        if !fonts::embedded(&r.dwrite).loaded.jetbrains_mono {
+            eprintln!("skipped: the embedded fonts are not in this binary");
+            return;
+        }
+        let heading = |h: Rect| Rect {
+            y: h.y - HEADING_BLEED,
+            h: h.h + 2.0 * HEADING_BLEED,
+            ..h
+        };
+        let mut cut = Vec::new();
+        for ui in [UiFont::Sans, UiFont::Mono] {
+            r.set_ui_font(ui).expect("font");
+            for style in [Style::Pill, Style::Notch] {
+                let s = shape_for(style, ShapeKind::Panel);
+                for strip in [false, true] {
+                    let titles = [
+                        (Key::PhoneTitle, phone_qr_layout(s, strip, false).title),
+                        (Key::PhoneTitle, phone_warn_layout(s, strip).title),
+                        (Key::PhoneTitle, phone_ask_layout(s, strip, 1, 2).title),
+                        (Key::PhoneReceiving, phone_recv_layout(s, strip, 3).title),
+                    ];
+                    let shelf = shelf_layout(s, strip, 12);
+                    for lang in [Lang::Id, Lang::En] {
+                        for (key, title) in titles {
+                            let label = text(lang, key);
+                            if let Err(why) = ink_check(&r, label, &r.fonts.heading, heading(title))
+                            {
+                                cut.push(format!("{ui:?} {style:?} strip={strip}: {why}"));
+                            }
+                        }
+                        let label = text(lang, Key::ShelfFromPhone);
+                        for card in &shelf.cards {
+                            let w = r.text_width(label, &r.fonts.micro_center);
+                            let tag = shelf_phone_tag(card.card, w);
+                            assert!(tag.x >= card.card.x + 6.0 && tag.right() < card.card.right());
+                            assert!(tag.bottom() <= card.card.bottom());
+                            assert!(tag.y >= card.remove.bottom(), "the tag clears the X");
+                            if let Err(why) = ink_check(&r, label, &r.fonts.micro_center, tag) {
+                                cut.push(format!("{ui:?} {style:?} strip={strip}: {why}"));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        cut.dedup();
+        assert!(cut.is_empty(), "cut:\n{}", cut.join("\n"));
     }
 
     /// The notice chips (their widths are constants: `ACTION_W`,

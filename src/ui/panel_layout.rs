@@ -3067,6 +3067,14 @@ pub fn shelf_card_layout(card: Rect, lines: usize) -> ShelfCardLayout {
     }
 }
 
+/// The "dari HP" tag at a card's bottom right, for a file that came from a
+/// phone: `text_w` is the tag's measured width, so a longer word in another
+/// language widens the box to the left instead of being cut.
+pub fn shelf_phone_tag(card: Rect, text_w: f32) -> Rect {
+    let w = (text_w.ceil() + 4.0).clamp(44.0, card.w - 12.0);
+    rect(card.right() - 6.0 - w, card.bottom() - 13.0, w, 12.0)
+}
+
 /// The Shelf page for `n` cards (at most twelve). Cards keep the size they
 /// have with two rows, so a single file is not a giant tile; they start at
 /// the top.
@@ -3111,13 +3119,24 @@ pub fn shelf_layout(s: ShapeRect, strip: bool, n: usize) -> ShelfLayout {
 }
 
 /// The round back button, the title and the row they sit in, shared by the
-/// phone link's four views: `(top, back, title)`.
+/// phone link's four views: `(top, back, title)`. The title is
+/// `PHONE_TITLE_W` wide; a view with nothing after it in the row widens it
+/// up to whatever comes next (`title_until`), so a longer word in English
+/// or in JetBrains Mono is not cut.
 fn phone_head(s: ShapeRect, strip: bool) -> (f32, Rect, Rect) {
     let top = content_top(s, strip);
     let l = left(s);
     let back = rect(l, top + (PHONE_HEAD_H - PHONE_BACK) / 2.0, PHONE_BACK, PHONE_BACK);
     let title = rect(back.right() + 8.0, top, PHONE_TITLE_W, PHONE_HEAD_H);
     (top, back, title)
+}
+
+/// `title` widened up to 8 px before `end` (the chip, the Settings gap).
+fn title_until(title: Rect, end: f32) -> Rect {
+    Rect {
+        w: (end - 8.0 - title.x).max(title.w),
+        ..title
+    }
 }
 
 /// The phone link's QR view (mockup page 1, view 2): the code on the left, the
@@ -3152,7 +3171,9 @@ pub struct PhoneStep {
 
 const PHONE_BACK: f32 = 24.0;
 const PHONE_HEAD_H: f32 = 26.0;
-const PHONE_TITLE_W: f32 = 170.0;
+/// The title's width where something follows it closely (the "+2" chip of
+/// the approval view): "Connect a phone" in JetBrains Mono is 180 px.
+const PHONE_TITLE_W: f32 = 190.0;
 const PHONE_CHIP_W: f32 = 96.0;
 const PHONE_CHIP_H: f32 = 22.0;
 /// The QR square, padding included.
@@ -3173,6 +3194,7 @@ pub fn phone_qr_layout(s: ShapeRect, strip: bool, expired: bool) -> PhoneQrLayou
         PHONE_CHIP_W,
         PHONE_CHIP_H,
     );
+    let title = title_until(title, chip.x);
     let foot = rect(l, content_bottom(s) - 14.0, r - l, 14.0);
     let body_top = top + PHONE_HEAD_H + 8.0;
     let avail = foot.y - 6.0 - body_top;
@@ -3228,6 +3250,7 @@ pub struct PhoneWarnLayout {
 
 pub fn phone_warn_layout(s: ShapeRect, strip: bool) -> PhoneWarnLayout {
     let (top, back, title) = phone_head(s, strip);
+    let title = title_until(title, header_right(s));
     let (l, r) = (left(s), right(s));
     let foot = rect(l, content_bottom(s) - 14.0, r - l, 14.0);
     let card = rect(l, top + PHONE_HEAD_H + 12.0, r - l, 124.0);
@@ -3372,6 +3395,7 @@ pub fn phone_recv_layout(s: ShapeRect, strip: bool, n: usize) -> PhoneRecvLayout
         PHONE_CHIP_W,
         PHONE_CHIP_H,
     );
+    let title = title_until(title, chip.x);
     let body = top + PHONE_HEAD_H + 8.0;
     let foot_y = content_bottom(s) - PHONE_BTN_H;
     let done = rect(r - 90.0, foot_y, 90.0, PHONE_BTN_H);
