@@ -2074,6 +2074,7 @@ mod tests {
             std::process::Command::new("powershell.exe")
                 .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"])
                 .arg(elevated_script(&call, &log.to_string_lossy()))
+                .creation_flags(CREATE_NO_WINDOW.0)
                 .status()
                 .unwrap()
                 .code()
