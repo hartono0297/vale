@@ -102,3 +102,18 @@ Settings window follows an exclusion made from the page's row. Fitur already
 scrolled; the extra rows only lengthen it.
 
 Related: [[cat-colours-and-surfaces]], [[bata-idle-power-budget]]
+
+## The tenth section: Widget (2026-11-04)
+
+`Section::Widgets` ("Widget" / "Widgets", `Icon::Widgets`, four rounded cards)
+sits right after Panel, so `Section::ALL` is 10 (`--settings widgets` or
+`widget` opens it). Cards: **Di desktop** (Tampilkan widget, Lapisan, Saat
+layar penuh, Kunci posisi, Kucing ngintip; the two segmented rows wrap their
+description to a second line) and **Galeri** (eyebrow with "n di desktop" at
+its right, a 2-column grid with one card: a still Krem note drawn in code, the
+title, a two-line description, a (+) that is off at 20 notes with the reason as
+its description, a count chip when n > 0; clicking an active card makes the
+notes flash an accent frame for about 600 ms on the frame clock). It scrolls at
+720x520 (about 460 px of content in a 400 px viewport) and not in a tall window
+(tested, `SCROLLING` has six sections). The Tombol pintas card has a sixth
+row. See [[widgets]].

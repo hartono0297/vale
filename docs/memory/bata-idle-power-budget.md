@@ -242,3 +242,25 @@ The notice ✕'s 120 ms fade ([[notice-close]]) rides the same `FrameClock`
 under Energy Saver, Motion Off or Windows animations off.
 
 Part of [[v3-studio-overview]]. Listed in [[index]].
+
+## Desktop widgets (2026-11-04, [[widgets]])
+
+Idle widgets cost nothing: no repeating timer, no frame thread, no redraw
+without input or data.
+
+- `TIMER_WIDGET_SAVE` (45): a one-shot armed 1.5 s after the last widget change
+  (typing, a drag, a colour), replaced by each new change, flushed on
+  `WM_DESTROY` / `WM_ENDSESSION`, cleared by any notes write.
+- `TIMER_WIDGET_CARET` (46): a timer of the note window itself,
+  `GetCaretBlinkTime`, alive only while that note has the keyboard, killed on
+  blur or when the window goes.
+- The header's hover fade (120 ms) and the gallery highlight (600 ms) run on
+  the existing `FrameClock` only while they move (`widgets_moving` in
+  `animating_at`, `NeedsClock` event), instant with Motion not Full, Energy
+  Saver or Windows animations off.
+- The fullscreen check rides the 1 s `TIMER_SYSTEM` tick: nothing unless a
+  pinned note (or the Top layer) is shown and "Sembunyikan" is on, then one
+  `is_fullscreen` per monitor holding such a note.
+- Hover tracking is `TrackMouseEvent(TME_LEAVE)`, no timer; the cat peek is a
+  still picture, no timer. One extra posted message type (`WM_APP + 71`) per
+  burst of events, until drained.

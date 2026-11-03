@@ -1122,11 +1122,29 @@ fn set_cursor(hwnd: HWND) -> bool {
     false
 }
 
+/// A client point of note window `hwnd` (px) on the desktop. The messages
+/// carry the point, so it holds whatever moved the window meanwhile.
+fn screen_point(hwnd: HWND, x: i32, y: i32) -> POINT {
+    with(|s| {
+        let w = &s.wins[idx_of(s, hwnd)?];
+        let m = margins();
+        Some(POINT {
+            x: w.note.x - (m.0 * w.scale).round() as i32 + x,
+            y: w.note.y - (m.1 * w.scale).round() as i32 + y,
+        })
+    })
+    .flatten()
+    .unwrap_or_else(|| {
+        let mut pt = POINT::default();
+        unsafe {
+            let _ = GetCursorPos(&mut pt);
+        }
+        pt
+    })
+}
+
 fn mouse_move(hwnd: HWND, x: i32, y: i32) {
-    let mut pt = POINT::default();
-    unsafe {
-        let _ = GetCursorPos(&mut pt);
-    }
+    let pt = screen_point(hwnd, x, y);
     let alt = unsafe { GetKeyState(i32::from(VK_MENU.0)) } < 0;
     let follow = with(|s| {
         let i = idx_of(s, hwnd)?;
@@ -1221,10 +1239,7 @@ enum Down {
 }
 
 fn left_down(hwnd: HWND, x: i32, y: i32) {
-    let mut pt = POINT::default();
-    unsafe {
-        let _ = GetCursorPos(&mut pt);
-    }
+    let pt = screen_point(hwnd, x, y);
     let act = with(|s| {
         let i = idx_of(s, hwnd)?;
         let lock = s.prefs.lock;
@@ -1297,11 +1312,8 @@ fn left_down(hwnd: HWND, x: i32, y: i32) {
     flush_dirty();
 }
 
-fn left_up(hwnd: HWND, _x: i32, _y: i32) {
-    let mut pt = POINT::default();
-    unsafe {
-        let _ = GetCursorPos(&mut pt);
-    }
+fn left_up(hwnd: HWND, x: i32, y: i32) {
+    let pt = screen_point(hwnd, x, y);
     let press = with(|s| {
         let i = idx_of(s, hwnd)?;
         let w = &mut s.wins[i];
@@ -1326,11 +1338,8 @@ fn left_up(hwnd: HWND, _x: i32, _y: i32) {
     }
 }
 
-fn double_click(hwnd: HWND, _x: i32, _y: i32) {
-    let mut pt = POINT::default();
-    unsafe {
-        let _ = GetCursorPos(&mut pt);
-    }
+fn double_click(hwnd: HWND, x: i32, y: i32) {
+    let pt = screen_point(hwnd, x, y);
     let on_header = with(|s| {
         let i = idx_of(s, hwnd)?;
         Some(matches!(target_at(&s.wins[i], pt.x, pt.y), Target::Header))
@@ -1343,7 +1352,7 @@ fn double_click(hwnd: HWND, _x: i32, _y: i32) {
         }
         toggle_rolled(hwnd);
     } else {
-        left_down(hwnd, _x, _y);
+        left_down(hwnd, x, y);
     }
 }
 
