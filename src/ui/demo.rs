@@ -3371,6 +3371,7 @@ fn demo_notes(today: NaiveDate) -> Vec<Note> {
         id: id.into(),
         text: text.into(),
         updated,
+        sticky: None,
     };
     vec![
         note(
@@ -3414,6 +3415,7 @@ fn many_notes(today: NaiveDate) -> Vec<Note> {
             id: format!("m{i}"),
             text: format!("Catatan nomor {}", i + 1),
             updated: base - i64::from(i) * 7 * 3600,
+            sticky: None,
         })
         .collect()
 }

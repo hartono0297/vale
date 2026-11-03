@@ -209,3 +209,11 @@ Not verified live (also: pointer and fullscreen on two real monitors): a real ho
 runs), the island actually moving to a second screen of a different DPI from the
 tray or Settings, a path-less display, the fade look at 120 / 200 ms, and the
 tray submenu with a real mouse (only its item model is tested).
+
+## Desktop widgets reuse this path (2026-11-04)
+
+The sticky notes ([[widgets]]) are saved with a monitor device path and place
+themselves with the same rule (`widgets::place`): a missing monitor falls back
+to the primary without rewriting the save. They are re-placed from
+`reposition` and the `TIMER_DISPLAYS` branch, and from `WM_DPICHANGED` on the
+note windows themselves; no new polling.

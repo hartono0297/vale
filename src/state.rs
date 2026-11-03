@@ -1906,6 +1906,7 @@ impl IslandState {
             Hit::CalConnect => effects.push(Effect::ConnectGoogle),
             Hit::NoteNew => effects.push(Effect::OpenNoteEditor(None)),
             Hit::NoteOpen(id) => effects.push(Effect::OpenNoteEditor(Some(id))),
+            Hit::NoteSticky(id) => effects.push(Effect::ToggleNoteSticky(id)),
             Hit::NotesMore => self.notes_page += 1,
             Hit::ReminderNew => effects.push(Effect::OpenReminderEditor(None)),
             Hit::ReminderOpen(id) => effects.push(Effect::OpenReminderEditor(Some(id))),

@@ -197,6 +197,9 @@ pub struct Config {
     /// malformed value reads as None and never fails the rest of the file.
     #[serde(deserialize_with = "card_place")]
     pub lyrics_card: Option<CardPlace>,
+    /// "Widget" (Settings -> Widget): where the desktop widgets sit and what
+    /// they do. Owned by the island; read leniently, field by field.
+    pub widgets: crate::widgets::prefs::WidgetPrefs,
 }
 
 /// The lyrics card's rectangle in screen coordinates, physical pixels.
@@ -767,6 +770,7 @@ impl Default for Config {
             font: UiFont::Sans,
             notch_monitor: NotchMonitor::Primary,
             lyrics_card: None,
+            widgets: crate::widgets::prefs::WidgetPrefs::default(),
         }
     }
 }
@@ -912,6 +916,7 @@ pub fn merge_owned(disk: Config, mem: &Config) -> Config {
         font: mem.font,
         notch_monitor: mem.notch_monitor.clone(),
         lyrics_card: mem.lyrics_card,
+        widgets: mem.widgets,
         ..disk
     }
 }
@@ -1304,6 +1309,7 @@ mod tests {
                 arrange: crate::hotkey::parse("Win+Shift+F13").unwrap(),
                 screenshot: crate::hotkey::parse("Ctrl+PrtSc").unwrap(),
                 lyrics_card: crate::hotkey::parse("Win+Alt+L").unwrap(),
+                sticky_note: crate::hotkey::parse("Ctrl+Alt+N").unwrap(),
             },
             settings_window: Some(WindowPlace {
                 left: 20,
@@ -1323,8 +1329,44 @@ mod tests {
                 right: -200,
                 bottom: 492,
             }),
+            widgets: crate::widgets::prefs::WidgetPrefs {
+                show: false,
+                layer: crate::widgets::prefs::WidgetLayer::Top,
+                fullscreen: crate::widgets::prefs::FullscreenRule::Keep,
+                lock: true,
+                cat_peek: false,
+            },
         };
         assert_eq!(parse(&serde_json::to_string(&c).unwrap()), c);
+    }
+
+    #[test]
+    fn widget_prefs_read_leniently_and_belong_to_the_island() {
+        use crate::widgets::prefs::{FullscreenRule, WidgetLayer, WidgetPrefs};
+        // An old config has no key: the defaults.
+        assert_eq!(parse(r#"{"style":"Notch"}"#).widgets, WidgetPrefs::default());
+        assert_eq!(parse(r#"{"style":"Notch"}"#).style, Style::Notch);
+        // A bad value never loses the rest of the file.
+        for bad in [r#""x""#, "7", "null", "[1]", r#"{"layer":5,"show":"no"}"#] {
+            let c = parse(&format!(r#"{{"style":"Notch","widgets":{bad}}}"#));
+            assert_eq!(c.style, Style::Notch, "{bad}");
+            assert_eq!(c.widgets, WidgetPrefs::default(), "{bad}");
+        }
+        let c = parse(r#"{"widgets":{"layer":"top","fullscreen":"Keep","lock":true}}"#);
+        assert_eq!(c.widgets.layer, WidgetLayer::Top);
+        assert_eq!(c.widgets.fullscreen, FullscreenRule::Keep);
+        assert!(c.widgets.lock && c.widgets.show && c.widgets.cat_peek);
+        // The island's copy wins over the file's.
+        let mem = Config {
+            widgets: WidgetPrefs {
+                show: false,
+                ..WidgetPrefs::default()
+            },
+            ..Config::default()
+        };
+        let merged = merge_owned(Config::default(), &mem);
+        assert!(!merged.widgets.show);
+        assert_eq!(parse(&serde_json::to_string(&merged).unwrap()).widgets, mem.widgets);
     }
 
     #[test]

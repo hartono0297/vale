@@ -308,7 +308,7 @@ mod tests {
         assert_eq!(WM_APP_PRTSC, WM_APP + 60);
         // Every `WM_APP + n` the crate uses.
         let taken = [
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 20, 21, 22, 41, 50, 51, 61, 70,
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 20, 21, 22, 41, 50, 51, 61, 70, 71,
         ];
         for n in taken {
             assert_ne!(WM_APP_PRTSC, WM_APP + n);

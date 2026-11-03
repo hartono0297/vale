@@ -197,3 +197,12 @@ window and cancels the recording), a hook under an elevated window (UIPI). The
 Settings page was only looked at in the debug demo (`--settings hotkeys`,
 `DI_HOTKEYS=failed` marks every set row as taken). Hand-edited combos that are
 reserved, lack a modifier or repeat another row are read leniently as above.
+
+## The sixth row: Catatan tempel baru (2026-11-04)
+
+`HotkeyId::StickyNote` is appended to `ALL` (six rows, config key
+`sticky_note`, default None, a config without the key reads None).
+`RegisterHotKey` id 7 (`HOTKEY_STICKY`); id 6 is reserved for the lyrics card
+and left unused. The per-row arrays follow `HotkeyId::ALL.len()` / `prtsc::ROWS`.
+A press makes one empty sticky note with the keyboard, or at 20 notes shows a
+short island notice ([[widgets]]).
