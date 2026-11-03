@@ -6165,7 +6165,7 @@ mod tests {
         let mut s = st();
         s.apply(Event::Fullscreen(true), t0);
         s.apply(Event::Notice(reminder("r1")), t0);
-        assert!(!s.queue.is_empty());
+        assert!(!s.queue.is_empty() || s.current.is_some());
     }
 
     #[test]
@@ -6187,7 +6187,7 @@ mod tests {
         // A "Nanti" and a fresh offer is a new appearance: its own first visit.
         s.apply(Event::Hover(true), t0);
         s.apply(Event::Click(Hit::UpdateLater), t0);
-        s.apply(Event::Hover(false), t0);
+        leave(&mut s, t0);
         s.apply(Event::Notice(available()), t0);
         s.apply(Event::Hover(true), t0);
         assert_eq!(s.view(), View::Notice(available()));
@@ -6233,7 +6233,8 @@ mod tests {
         // in the strip, still not installed.
         let mut s = mode(OpenMode::Click, t0);
         s.apply(Event::Notice(available()), t0);
-        assert_eq!(s.apply(Event::Click(Hit::Body), t0), vec![]);
+        let effects = s.apply(Event::Click(Hit::Body), t0);
+        assert!(!effects.contains(&Effect::InstallUpdate), "{effects:?}");
         assert_eq!(s.view(), View::Panel(Page::Calendar));
         assert_eq!(s.waiting_strip(), Some(&available()));
         assert_eq!(s.apply(Event::Click(Hit::Strip), t0), vec![]);

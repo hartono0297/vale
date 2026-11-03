@@ -83,9 +83,14 @@ and the reminder shrank into a small strip that moved during the opening.
   SystemLow, MoleDone and MoleFailed, whose click leads to the panel; in
   HoverStay and Click that click also latches it (`open_by_click`), so the
   panel opens and stays.
+- The sticky update offer ("Vale X.Y.Z tersedia", Update and Nanti buttons)
+  shares the reminder's first-visit rule: only the first visit after it
+  appeared is blocked, later visits open the panel with the offer in the
+  strip ([[self-update]]). Its body click opens the panel in Click mode, never
+  installs.
 - **Gotcha:** Claude waiting and a failed Mole run are sticky and only inform;
   they must NOT block hover, or the panel could not be opened while they
-  show. Only the reminder (its Selesai button) blocks for a sticky notice.
+  show. Only a sticky notice with buttons (the reminder, the update offer) blocks.
 - A sticky notice that arrives over an open panel changes nothing: the panel
   stays and shows it as a strip.
 

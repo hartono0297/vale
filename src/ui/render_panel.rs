@@ -5484,6 +5484,26 @@ mod tests {
         }
     }
 
+    /// The offer's title and body stay on one line beside the two chips in
+    /// DM Sans, in both languages, even for a long version ("10.11.12").
+    /// (JetBrains Mono is wider and trims with "...", as every notice does.)
+    #[test]
+    fn update_offer_text_fits_beside_both_chips_in_dm_sans() {
+        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let mut r = Renderer::new().expect("renderer");
+        r.set_ui_font(UiFont::Sans).expect("font");
+        let kind = NoticeKind::UpdateAvailable {
+            version: "10.11.12".into(),
+        };
+        for lang in [Lang::Id, Lang::En] {
+            let title = crate::i18n::update_available(lang, "10.11.12");
+            let body = crate::i18n::update_installed(lang, "10.11.12");
+            assert!(r.notice_text_fits(&kind, true, &title), "{lang:?} {title}");
+            assert!(r.notice_text_fits(&kind, false, &body), "{lang:?} {body}");
+        }
+    }
+
     /// The Notifikasi time column holds the longest line `relative_time`
     /// writes ("28 Okt 2025", "28 Oct 2025": an entry from an earlier year)
     /// in both languages, in DM Sans at `NOTIF_TIME_W` and in JetBrains Mono,
