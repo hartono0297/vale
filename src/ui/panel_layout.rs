@@ -6235,6 +6235,21 @@ mod tests {
                     }
                     for (i, a) in r.iter().enumerate() {
                         for b in &r[i + 1..] {
+                            // A note card's pin sits on its card, in front of it.
+                            let on_card = matches!(
+                                (&a.hit, &b.hit),
+                                (Hit::NoteSticky(x), Hit::NoteOpen(y)) if x == y
+                            );
+                            if on_card {
+                                assert!(
+                                    a.rect.x >= b.rect.x
+                                        && a.rect.y >= b.rect.y
+                                        && a.rect.right() <= b.rect.right()
+                                        && a.rect.bottom() <= b.rect.bottom(),
+                                    "the pin is inside its card"
+                                );
+                                continue;
+                            }
                             assert!(
                                 disjoint(a.rect, b.rect),
                                 "{style:?} strip={strip} {name}: {a:?} overlaps {b:?}"

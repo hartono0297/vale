@@ -303,8 +303,8 @@ pub fn blend(fg: u32, bg: u32, alpha: f32) -> u32 {
 }
 
 /// How much of the ink the secondary text and a done item keep.
-const SECONDARY_ALPHA: f32 = 0.72;
-const DONE_ALPHA: f32 = 0.62;
+const SECONDARY_ALPHA: f32 = 0.82;
+const DONE_ALPHA: f32 = 0.74;
 
 /// `paper`'s colours under the island palette `island` and the accent. Every
 /// text tone holds 4.5:1 on the fill (a test checks every paper on every
@@ -317,8 +317,9 @@ pub fn tones(paper: Paper, island: &Palette, accent: Accent) -> Tones {
             body: INK,
             secondary: blend(INK, fill, SECONDARY_ALPHA),
             done: blend(INK, fill, DONE_ALPHA),
-            // The darker accent of the light windows reads on a pastel.
-            accent: accent.light_rgb(),
+            // The darker accent of the light windows, a touch toward the ink,
+            // reads on every pastel (the Terakota paper is the hardest).
+            accent: blend(INK, accent.light_rgb(), 0.22),
             strip: None,
         },
         None => Tones {

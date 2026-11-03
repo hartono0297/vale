@@ -1000,8 +1000,7 @@ keys! {
     StickyOffDesktopTip => "Lepas dari desktop", "Unstick from desktop";
     StickyNew => "Catatan tempel baru", "New sticky note";
     StickyNewMax => "Catatan tempel baru (maksimal 20)", "New sticky note (at most 20)";
-    StickyNewDesc => "Satu catatan kosong baru di desktop",
-        "One new empty note on the desktop";
+    StickyNewDesc => "Catatan kosong baru di desktop", "New empty note on the desktop";
     StickyPinTop => "Sematkan di atas", "Pin on top";
     StickyRoll => "Gulung", "Roll up";
     StickyUnroll => "Buka gulungan", "Unroll";

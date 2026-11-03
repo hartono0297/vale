@@ -439,7 +439,7 @@ mod tests {
         assert_eq!(e.caret, text.len() + 7);
         // In the middle: the rest moves to the new item.
         let e = enter(text, 11).unwrap();
-        assert_eq!(apply(text, &e), "t\n- [ ] mi\n- [ ] lk");
+        assert_eq!(apply(text, &e), "t\n- [ ] mil\n- [ ] k");
         assert_eq!(e.caret, 11 + 7);
         // A done item continues with an open one.
         let done = "- [x] a";
@@ -493,7 +493,7 @@ mod tests {
         assert_eq!(raw_to_display(text, 10), 8, "inside a marker");
         assert_eq!(raw_to_display(text, 14), 8);
         assert_eq!(raw_to_display(text, 15), 9);
-        assert_eq!(raw_to_display(text, text.len()), 22);
+        assert_eq!(raw_to_display(text, text.len()), 23);
         // display -> raw
         assert_eq!(display_to_raw(text, 0), 0);
         assert_eq!(display_to_raw(text, 8), 14);
@@ -501,7 +501,7 @@ mod tests {
         assert_eq!(display_to_raw(text, 13), 19);
         assert_eq!(display_to_raw(text, 99), text.len());
         // Round trip over every display index.
-        for d in 0..=22 {
+        for d in 0..=23 {
             assert_eq!(raw_to_display(text, display_to_raw(text, d)), d, "{d}");
         }
     }

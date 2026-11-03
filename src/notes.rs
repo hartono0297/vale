@@ -142,7 +142,8 @@ impl NotesStore {
     /// The desktop window's edit: the text of note `id`. A note on the
     /// desktop keeps an empty text (a fresh one starts empty); any other note
     /// follows `upsert`, where empty text deletes it. False when the note is
-    /// gone. Unchanged text touches nothing.
+    /// gone (a plain note emptied is deleted, and the call still counts).
+    /// Unchanged text touches nothing.
     pub fn set_text(&mut self, id: &str, text: &str, now: i64) -> bool {
         let Some(i) = self.notes.iter().position(|n| n.id == id) else {
             return false;
@@ -151,7 +152,8 @@ impl NotesStore {
             return true;
         }
         if self.notes[i].sticky.is_none() {
-            return self.upsert(Some(id), text, now).is_some();
+            self.upsert(Some(id), text, now);
+            return true;
         }
         let mut note = self.notes.remove(i);
         note.text = text.to_owned();
