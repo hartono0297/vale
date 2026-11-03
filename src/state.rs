@@ -525,9 +525,14 @@ impl IslandState {
                 // version (a newer or repeated offer replaces the old one).
                 // An offer is not urgent: no brief copy over a fullscreen app,
                 // it simply shows once the app is gone.
+                // The very same offer again (the daily check, a restart, a
+                // manual check) is not a new appearance: it stays where it
+                // stands and keeps its spent first visit.
                 NoticeKind::UpdateAvailable { .. } => {
-                    self.clear_sticky(Sticky::Update);
-                    self.sticky.push(notice);
+                    if !self.sticky.contains(&notice) {
+                        self.clear_sticky(Sticky::Update);
+                        self.sticky.push(notice);
+                    }
                 }
                 NoticeKind::ClaudeDone { session_id } => {
                     self.clear_sticky(Sticky::Session(session_id));
@@ -6233,6 +6238,38 @@ mod tests {
         s.apply(Event::Notice(available()), t0);
         s.apply(Event::Hover(true), t0);
         assert_eq!(s.view(), View::Notice(available()));
+    }
+
+    #[test]
+    fn the_same_offer_again_keeps_its_spent_first_visit() {
+        // The daily check (or a restart, or a manual check) repeats the offer
+        // that already shows: it is the same notice in the same slot, not a
+        // new appearance, so hover keeps opening the panel.
+        let t0 = Instant::now();
+        let day = Duration::from_secs(24 * 3600);
+        let mut s = st();
+        s.apply(Event::Notice(available()), t0);
+        s.apply(Event::Hover(true), t0);
+        assert_eq!(s.view(), View::Notice(available()), "the first visit");
+        s.apply(Event::Hover(false), t0);
+        s.apply(Event::Notice(available()), t0 + day);
+        assert_eq!(s.sticky.len(), 1);
+        s.apply(Event::Hover(true), t0 + day);
+        assert_eq!(s.view(), View::Panel(Page::Calendar));
+        assert_eq!(s.waiting_strip(), Some(&available()));
+        s.apply(Event::Hover(false), t0 + day);
+        // A newer version is a new appearance: its own first visit.
+        s.apply(Event::Notice(available_version("3.12.0")), t0 + day);
+        s.apply(Event::Hover(true), t0 + day);
+        assert_eq!(s.view(), View::Notice(available_version("3.12.0")));
+        s.apply(Event::Hover(false), t0 + day);
+        // The repeat stays where it stands: a newer reminder still shows on top.
+        let mut s = st();
+        s.apply(Event::Notice(available()), t0);
+        s.apply(Event::Notice(reminder("r1")), t0);
+        s.apply(Event::Notice(available()), t0 + day);
+        assert_eq!(s.sticky.len(), 2);
+        assert_eq!(s.sticky.last(), Some(&reminder("r1")));
     }
 
     #[test]
