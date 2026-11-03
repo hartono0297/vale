@@ -1,6 +1,6 @@
 ---
 tags: [decision, cat, painter, geometry, v3.8]
-date: 2026-10-31
+date: 2026-11-03
 ---
 
 # Cat accessories and the paint order (v3.8)
@@ -19,20 +19,29 @@ the accessory) from every caller: the renderer (`Frame::cat`, set by
    than their 5-unit stroke and the head stroked 3.2 wide, #8E7CB8.
 2. The silhouette in the base colour: both ears (turned for the droop,
    filled, 5-unit round stroke) and the head, one colour, as before.
-3. Calico only: the two patches, **cut to the whole silhouette**: the head
-   united with both turned ears *including their stroke*
-   (`CombineWithGeometry` UNION of the head, each ear's fill and its
-   `Widen`ed stroke), the patches then intersected with it. Never clipped to
-   the head alone. The forehead between the patches stays cream.
+3. Calico only: the two patches, as the landing page cat. Orange = (left
+   ear EXCLUDE head) UNION (circle (17.217, 28.565) r 13.478 INTERSECT head);
+   dark = (right ear EXCLUDE head) UNION (circle (50.696, 52.043) r 10
+   INTERSECT head); one geometry per colour, so no anti-aliasing seam shows
+   between an ear and its circle. `ear_whole` is the ear exactly as drawn
+   (lifted, turned for the droop, fill UNION its `Widen`ed stroke). The site
+   paints the cream head over the ears, so the parts of an ear inside the
+   head stay cream (assumption: the visible ear above and beside the head is
+   fully its colour and follows droop and alert lift). The forehead and the
+   face centre stay cream. `silhouette()` is kept for the tests.
 4. The face marks.
 5. All accessories on top.
 
 The owner rejected: a bow or flower behind the head; a light seam between a
 calico ear and the head; ears painted over the head. The test
-`calico_patches_are_cut_to_the_whole_silhouette_ears_included` checks that a
-point in the ear above the head is in the patch (a head-only clip would drop
-it), that the forehead is in neither patch and that nothing lies outside the
-silhouette, for every ear state (rest, alert lift, asleep, sad).
+`calico_patches_match_the_site_in_every_ear_state` checks, for every ear
+state (rest, alert lift, asleep, sad): (14, 18) orange and (50, 18) dark (the
+ears, not crossed); (12, 30) orange and (50, 50) dark (the circles); the
+forehead (32, 30) and the face centre (32, 40) in neither; the ear corners
+under the head (38, 27) and (55, 38) in neither; and nothing outside the
+silhouette, (3, 30) included (the orange circle is clipped to the head). The
+cache holds one entry per ear state. `the_calico_swatch_is_the_sites_conic_gradient`
+pins the swatch slices.
 
 Paths are built once: the head, ears and marks as before, the silhouette and
 patches per ear state (`RobotPainter::calico`, keyed by the ear's `up` and
