@@ -5847,6 +5847,9 @@ impl App {
         self.apply_ui_font();
         // Stay-behind, the cat and its motion decide the pointer poll.
         self.follow_pointer_settings(Instant::now());
+        // A hand edit of the language (or the font) reaches an open lyrics
+        // card here; nothing is sent when nothing it shows changed.
+        self.sync_lyrics_card(Instant::now());
     }
 
     /// Puts a changed UI font (from Settings) into effect now: the
@@ -6011,6 +6014,8 @@ impl App {
                 // `adopt_config` switches the strings; everything showing text relabels.
                 self.save_config();
                 editor::relabel_open_editor();
+                // The lyrics card draws its own messages in this language.
+                self.sync_lyrics_card(now);
                 self.draw(now);
             }
             SettingsAction::Autostart(on) => self.set_autostart(on),

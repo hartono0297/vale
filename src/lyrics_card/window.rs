@@ -564,6 +564,9 @@ pub(super) struct Card {
     hovering: bool,
     hover_zone: Zone,
     hover_line: Option<usize>,
+    /// The last pointer position inside the card (client dip), while it is in:
+    /// `rehover` finds the line under it again when the list moves.
+    last_pt: Option<(f32, f32)>,
     tracking: bool,
     press: Option<Press>,
     hidden: bool,
@@ -747,6 +750,7 @@ pub(super) fn open(args: OpenArgs, content: CardContent) -> bool {
         hovering: false,
         hover_zone: Zone::Outside,
         hover_line: None,
+        last_pt: None,
         tracking: false,
         press: None,
         // Held back until the card is stored: a frame tick posted to a card
@@ -1047,6 +1051,8 @@ impl Card {
         if (goal - self.scroll.to).abs() > 0.01 {
             self.scroll.go(goal, layout::SCROLL_MS, self.animations, now);
         }
+        // The list moves under a resting pointer: the highlight follows.
+        self.rehover(now);
         self.sync_timers(now);
         self.sync_clock(now);
     }
@@ -1415,19 +1421,43 @@ impl Card {
             .go(if on { 1.0 } else { 0.0 }, layout::HOVER_MS, self.animations, now);
     }
 
+    /// Asks Windows for `WM_MOUSELEAVE` (once; it is one-shot).
+    fn arm_tracking(&mut self) {
+        if self.tracking {
+            return;
+        }
+        let mut t = TRACKMOUSEEVENT {
+            cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
+            dwFlags: TME_LEAVE,
+            hwndTrack: self.hwnd,
+            dwHoverTime: 0,
+        };
+        if unsafe { TrackMouseEvent(&mut t) }.is_ok() {
+            self.tracking = true;
+        }
+    }
+
+    /// The zone and the line under the resting pointer, found again after the
+    /// list moved (the follow, the wheel, the manual return, the ease). Not
+    /// while a press is held (a drag or a click in progress keeps what it
+    /// had); without a pointer inside there is no highlight.
+    fn rehover(&mut self, now: Instant) {
+        if self.press.is_some() {
+            return;
+        }
+        match self.last_pt {
+            Some((x, y)) if self.hovering => {
+                let zone = self.zone(x, y);
+                self.hover_line = if zone == Zone::Body { self.line_at(y, now) } else { None };
+                self.hover_zone = zone;
+            }
+            _ => self.hover_line = None,
+        }
+    }
+
     fn pointer_move(&mut self, x: i32, y: i32, fx: &mut Vec<Fx>, post: &mut Vec<(Msg, isize)>) {
         let now = Instant::now();
-        if !self.tracking {
-            let mut t = TRACKMOUSEEVENT {
-                cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
-                dwFlags: TME_LEAVE,
-                hwndTrack: self.hwnd,
-                dwHoverTime: 0,
-            };
-            if unsafe { TrackMouseEvent(&mut t) }.is_ok() {
-                self.tracking = true;
-            }
-        }
+        self.arm_tracking();
         if let Some(press) = &self.press {
             // A press that moves is a drag (or a resize from the grip).
             let mut cursor = POINT::default();
@@ -1454,6 +1484,7 @@ impl Card {
             return;
         }
         let (dx, dy) = self.to_dip(x, y);
+        self.last_pt = Some((dx, dy));
         self.set_hover(true, now);
         let zone = self.zone(dx, dy);
         let line = if zone == Zone::Body { self.line_at(dy, now) } else { None };
@@ -1497,6 +1528,7 @@ impl Card {
             return;
         }
         let now = Instant::now();
+        self.last_pt = None;
         self.set_hover(false, now);
         self.hover_zone = Zone::Outside;
         self.hover_line = None;
@@ -1531,6 +1563,50 @@ impl Card {
             return;
         };
         fx.push(Fx::Capture(false));
+        self.release(&press, x, y, post);
+        self.after_press();
+    }
+
+    /// Capture was taken away mid-press (Alt+Tab, the Win key, a UAC prompt):
+    /// a drag or resize that already moved the window is finished and saved,
+    /// as a button release would. Our own `ReleaseCapture` in `button_up`
+    /// lands here with the press already gone: nothing happens twice.
+    fn capture_lost(&mut self, post: &mut Vec<(Msg, isize)>) {
+        let Some(press) = self.press.take() else {
+            return;
+        };
+        if press.dragging {
+            self.finish_move(post);
+        }
+        self.after_press();
+    }
+
+    /// The press ended: the pointer may be outside the card now (`hovering`
+    /// stayed true, `WM_MOUSELEAVE` was ignored while pressed) or inside
+    /// with its tracking used up.
+    fn after_press(&mut self) {
+        let mut cursor = POINT::default();
+        if unsafe { GetCursorPos(&mut cursor) }.is_err() {
+            return;
+        }
+        let size = self.size_px();
+        if !layout::point_in((cursor.x, cursor.y), self.origin, size) {
+            self.pointer_leave();
+            return;
+        }
+        let now = Instant::now();
+        let (before_zone, before_line) = (self.hover_zone, self.hover_line);
+        self.tracking = false;
+        self.arm_tracking();
+        self.last_pt = Some(self.to_dip(cursor.x - self.origin.0, cursor.y - self.origin.1));
+        self.rehover(now);
+        if (self.hover_zone, self.hover_line) != (before_zone, before_line) {
+            self.render(now);
+        }
+    }
+
+    /// What a release does: ends a drag, or clicks what was pressed.
+    fn release(&mut self, press: &Press, x: i32, y: i32, post: &mut Vec<(Msg, isize)>) {
         let now = Instant::now();
         if press.dragging {
             self.finish_move(post);
@@ -1595,6 +1671,7 @@ impl Card {
     fn destroyed(&mut self) {
         self.gone = true;
         self.press = None;
+        self.last_pt = None;
         self.kill_timers();
         self.clock = None;
     }
@@ -1618,6 +1695,7 @@ impl Card {
         let notches = f32::from(delta) / 120.0;
         let goal = self.manual.wheel(base, notches, bounds, self.elapsed_ms(now));
         self.scroll.go(goal, 120, self.animations, now);
+        self.rehover(now);
         self.sync_timers(now);
         self.sync_clock(now);
         self.render(now);
@@ -1651,6 +1729,9 @@ impl Card {
     fn frame(&mut self, now: Instant) {
         if let Some(clock) = &self.clock {
             clock.ack();
+        }
+        if self.scroll.moving(now) {
+            self.rehover(now);
         }
         self.render(now);
         self.sync_clock(now);
@@ -1746,7 +1827,18 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             return LRESULT(0);
         }
         WM_CAPTURECHANGED => {
-            with(|c, _| c.press = None);
+            // A drag or resize cut short (Alt+Tab, the Win key, a UAC prompt)
+            // still saves where the card is. Posted after the borrow.
+            let mut post = Vec::new();
+            let info = with(|c, _| {
+                c.capture_lost(&mut post);
+                (c.island, c.demo)
+            });
+            if let Some((island, demo)) = info {
+                for (m, v) in post {
+                    emit(island, demo, m, v);
+                }
+            }
             return LRESULT(0);
         }
         WM_MOUSEWHEEL => {

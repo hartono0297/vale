@@ -184,6 +184,12 @@ pub fn scroll_bounds(tops: &[f32], heights: &[f32], body_h: f32) -> (f32, f32) {
     (lo.min(hi), hi.max(lo))
 }
 
+/// Whether a screen point (px) is inside a window at `origin` of `size` (px):
+/// the right and bottom edges are outside.
+pub fn point_in(pt: (i32, i32), origin: (i32, i32), size: (i32, i32)) -> bool {
+    pt.0 >= origin.0 && pt.0 < origin.0 + size.0 && pt.1 >= origin.1 && pt.1 < origin.1 + size.1
+}
+
 /// The line under `y` (DIPs from the card's top), for a list scrolled by
 /// `scroll` in a body at `body_top` that is `body_h` tall. A point in the gap
 /// between two lines belongs to the nearer one; outside the body, none.
@@ -458,6 +464,21 @@ pub fn place(saved: Option<CardPlace>, monitors: &[Mon], notch: Option<Mon>) -> 
 mod tests {
     use super::*;
     use crate::lyrics::{current_line, lyric_position};
+
+    #[test]
+    fn a_point_is_in_a_window_until_its_right_and_bottom_edge() {
+        let (origin, size) = ((100, 200), (300, 420));
+        assert!(point_in((100, 200), origin, size), "the top left corner is in");
+        assert!(point_in((250, 300), origin, size));
+        assert!(point_in((399, 619), origin, size), "the last pixel is in");
+        assert!(!point_in((400, 300), origin, size), "the right edge is out");
+        assert!(!point_in((250, 620), origin, size), "the bottom edge is out");
+        assert!(!point_in((99, 300), origin, size));
+        assert!(!point_in((250, 199), origin, size));
+        assert!(!point_in((-5000, -5000), origin, size));
+        // Monitors left of or above the primary have negative origins.
+        assert!(point_in((-250, -100), (-300, -200), size));
+    }
 
     fn lines(times: &[u64]) -> Vec<LrcLine> {
         times

@@ -42,6 +42,27 @@ struct Sent {
     palette: [u32; 3],
     font: crate::config::UiFont,
     animations: bool,
+    /// The card draws its own messages (searching, none, no media) at render
+    /// time in the language in effect, so a language change must reach it.
+    lang: crate::i18n::Lang,
+}
+
+/// What `content` makes the card show, in language `lang`: two snapshots
+/// compare equal only when nothing visible differs (no extra update).
+fn sent_of(c: &CardContent, lang: crate::i18n::Lang) -> Sent {
+    Sent {
+        status: c.status,
+        title: c.title.clone(),
+        artist: c.artist.clone(),
+        timeline: c.timeline,
+        playing: c.playing,
+        can_seek: c.can_seek,
+        session_key: c.session_key,
+        palette: c.palette,
+        font: c.font,
+        animations: c.animations,
+        lang,
+    }
 }
 
 #[derive(Default)]
@@ -204,18 +225,7 @@ impl App {
             return;
         }
         let content = self.card_content(false);
-        let sent = Sent {
-            status: content.status,
-            title: content.title.clone(),
-            artist: content.artist.clone(),
-            timeline: content.timeline,
-            playing: content.playing,
-            can_seek: content.can_seek,
-            session_key: content.session_key,
-            palette: content.palette,
-            font: content.font,
-            animations: content.animations,
-        };
+        let sent = sent_of(&content, crate::i18n::lang());
         let heavy = matches!(content.art, Change::Set(_)) || matches!(content.lines, Change::Set(_));
         if !heavy && self.lyrics_card.last.as_ref() == Some(&sent) {
             return;
@@ -319,6 +329,35 @@ mod tests {
         // Short, even empty, covers do not panic.
         assert!(art_sig(Some(&[])).is_some());
         assert!(art_sig(Some(&[1])).is_some());
+    }
+
+    fn sample() -> CardContent {
+        CardContent {
+            status: Status::Pending,
+            title: "Title".into(),
+            artist: "Artist".into(),
+            art: Change::Keep,
+            lines: Change::Keep,
+            timeline: None,
+            playing: true,
+            can_seek: false,
+            session_key: 3,
+            palette: [1, 2, 3],
+            font: crate::config::UiFont::Sans,
+            animations: true,
+        }
+    }
+
+    #[test]
+    fn a_language_change_makes_the_snapshot_differ() {
+        use crate::i18n::Lang;
+        let c = sample();
+        // The same content in the same language: equal, so no extra update.
+        assert_eq!(sent_of(&c, Lang::Id), sent_of(&c, Lang::Id));
+        assert_eq!(sent_of(&c, Lang::En), sent_of(&c.clone(), Lang::En));
+        // Another language: not equal, so the card is updated and redraws its
+        // messages.
+        assert_ne!(sent_of(&c, Lang::Id), sent_of(&c, Lang::En));
     }
 
     #[test]
