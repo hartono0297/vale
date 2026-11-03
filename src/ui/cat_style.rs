@@ -7,10 +7,13 @@
 //!    than their own stroke and the head stroked wider than its outline.
 //! 2. The silhouette in the base colour: both ears (turned, filled, round
 //!    stroke) and the head, all one colour.
-//! 3. Calico only: two patches over the silhouette, cut to the WHOLE
-//!    silhouette (the head united with both turned ears, their stroke
-//!    included), never to the head alone, so no light seam shows between an
-//!    ear and the head and no bite is taken out of an ear.
+//! 3. Calico only: two patches over the silhouette, as on the landing page
+//!    cat: the left ear orange, the right ear dark, an orange circle top-left
+//!    and a dark circle bottom-right on the head, cream elsewhere. The site
+//!    paints the cream head over the ears, so each patch is its ear (turned
+//!    and lifted, stroke included) minus the head, united with its circle
+//!    clipped to the head: one geometry per colour, no seam between the ear
+//!    and the circle.
 //! 4. The face marks.
 //! 5. The accessories, on top of everything.
 //!
@@ -23,8 +26,9 @@ use std::rc::Rc;
 
 use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
 use windows::Win32::Graphics::Direct2D::{
-    D2D1_COMBINE_MODE_INTERSECT, D2D1_COMBINE_MODE_UNION, ID2D1Geometry, ID2D1PathGeometry,
-    ID2D1RenderTarget, ID2D1SolidColorBrush,
+    D2D1_COMBINE_MODE, D2D1_COMBINE_MODE_EXCLUDE, D2D1_COMBINE_MODE_INTERSECT,
+    D2D1_COMBINE_MODE_UNION, ID2D1Geometry, ID2D1PathGeometry, ID2D1RenderTarget,
+    ID2D1SolidColorBrush,
 };
 use windows::core::{Interface, Result as WinResult};
 use windows_numerics::{Matrix3x2, Vector2};
@@ -49,9 +53,24 @@ pub const AMBER: u32 = 0xF2B33D;
 pub const RIM: u32 = 0x8E7CB8;
 /// How far the rim reaches past the silhouette, in grid units.
 pub const RIM_WIDTH: f32 = 1.6;
-/// Calico's patches: the orange one on the left, the dark one on the right.
+/// Calico's orange: the left ear and the circle top-left on the head.
 pub const PATCH_ORANGE: u32 = 0xE2683C;
+/// Calico's dark: the right ear and the circle bottom-right on the head.
 pub const PATCH_DARK: u32 = 0x2B2420;
+/// Calico's cream, the head's own colour, as the swatch's first slice.
+const CALICO_CREAM: u32 = 0xF4EDE4;
+
+/// The Calico swatch as a conic gradient, like the site's chip
+/// `conic-gradient(#F4EDE4 0 50%, #E2683C 0 75%, #2B2420 0)`: (from, to,
+/// colour) in degrees clockwise from 12 o'clock. The right half is cream, the
+/// bottom-left quarter orange, the top-left quarter dark.
+pub fn calico_swatch_slices() -> [(f32, f32, u32); 3] {
+    [
+        (0.0, 180.0, CALICO_CREAM),
+        (180.0, 270.0, PATCH_ORANGE),
+        (270.0, 360.0, PATCH_DARK),
+    ]
+}
 
 impl CatLook {
     pub fn of(cfg: &Config) -> Self {
@@ -65,7 +84,7 @@ impl CatLook {
     pub fn head_rgb(self) -> u32 {
         match self.color {
             CatColor::Terracotta => 0xE2683C,
-            CatColor::Calico => 0xF4EDE4,
+            CatColor::Calico => CALICO_CREAM,
             CatColor::White => 0xF6F1EA,
             CatColor::Black => 0x1E1B22,
         }
@@ -431,30 +450,15 @@ fn piece_bounds(piece: &Piece) -> (f32, f32, f32, f32) {
 
 // ---- Calico patches (grid units) ----
 
-/// Left orange patch: `M-12 -12H30Q30 25 27 28Q19 34 4 40L-12 42Z`.
-fn patch_left() -> Vec<Seg> {
-    use Seg::{Close, Line as To, Move, Quad};
-    vec![
-        Move(-12.0, -12.0),
-        To(30.0, -12.0),
-        Quad(30.0, 25.0, 27.0, 28.0),
-        Quad(19.0, 34.0, 4.0, 40.0),
-        To(-12.0, 42.0),
-        Close,
-    ]
-}
+/// The orange circle on the head, top-left: the site's circle cx 60 cy 118
+/// r 62 on the 256 grid, mapped to the 64 grid (`x = sx / 4.6 + 4.17391`,
+/// `y = sy / 4.6 + 2.91304`).
+const ORANGE_CIRCLE: (f32, f32, f32) = (17.217, 28.565, 13.478);
+/// The dark circle on the head, bottom-right: the site's cx 214 cy 226 r 46.
+const DARK_CIRCLE: (f32, f32, f32) = (50.696, 52.043, 10.0);
 
-/// Right dark patch: `M76 -12H34Q34 25 37 27Q46 32 60 36L76 38Z`.
-fn patch_right() -> Vec<Seg> {
-    use Seg::{Close, Line as To, Move, Quad};
-    vec![
-        Move(76.0, -12.0),
-        To(34.0, -12.0),
-        Quad(34.0, 25.0, 37.0, 27.0),
-        Quad(46.0, 32.0, 60.0, 36.0),
-        To(76.0, 38.0),
-        Close,
-    ]
+fn missing_geometry() -> windows::core::Error {
+    windows::core::Error::from(windows::Win32::Foundation::E_FAIL)
 }
 
 /// Flattening tolerance of the geometry operations, in grid units.
@@ -468,68 +472,89 @@ pub(super) struct Placed {
 }
 
 impl RobotPainter {
-    /// The head united with both ears as drawn for `ears` (each turned about
-    /// its pivot, fill and round stroke), in grid units.
-    fn silhouette(&self, ears: Ears) -> WinResult<ID2D1PathGeometry> {
-        let missing = || windows::core::Error::from(windows::Win32::Foundation::E_FAIL);
-        let head = self.path(Shape::Head).ok_or_else(missing)?;
-        let mut acc: ID2D1Geometry = head.cast()?;
-        for side in [Side::Left, Side::Right] {
-            let ear = self.path(Shape::Ear(side, ears.up)).ok_or_else(missing)?;
-            let turn = Matrix3x2::rotation_around(side.turn(ears.droop), side.pivot());
-            unsafe {
-                let fill = self.factory.CreateTransformedGeometry(&ear, &turn)?;
-                acc = self.union(&acc, &fill.cast::<ID2D1Geometry>()?)?;
-                let band = self.factory.CreatePathGeometry()?;
-                let sink = band.Open()?;
-                ear.Widen(EAR_STROKE, &self.round, Some(&turn), TOLERANCE, &sink)?;
-                sink.Close()?;
-                acc = self.union(&acc, &band.cast::<ID2D1Geometry>()?)?;
-            }
+    /// One ear as drawn for `ears`: lifted, turned about its pivot, its fill
+    /// united with its round stroke band, in grid units.
+    fn ear_whole(&self, side: Side, ears: Ears) -> WinResult<ID2D1Geometry> {
+        let ear = self
+            .path(Shape::Ear(side, ears.up))
+            .ok_or_else(missing_geometry)?;
+        let turn = Matrix3x2::rotation_around(side.turn(ears.droop), side.pivot());
+        unsafe {
+            let fill = self.factory.CreateTransformedGeometry(&ear, &turn)?;
+            let band = self.factory.CreatePathGeometry()?;
+            let sink = band.Open()?;
+            ear.Widen(EAR_STROKE, &self.round, Some(&turn), TOLERANCE, &sink)?;
+            sink.Close()?;
+            self.combine(
+                &fill.cast::<ID2D1Geometry>()?,
+                &band.cast::<ID2D1Geometry>()?,
+                D2D1_COMBINE_MODE_UNION,
+            )
         }
-        acc.cast::<ID2D1PathGeometry>().or_else(|_| {
-            // `acc` is a path geometry from the second union on; the cast only
-            // fails if both ears were skipped, which `missing` rules out.
-            Err(missing())
-        })
     }
 
-    fn union(&self, a: &ID2D1Geometry, b: &ID2D1Geometry) -> WinResult<ID2D1Geometry> {
+    /// The head united with both ears as drawn for `ears` (each turned about
+    /// its pivot, fill and round stroke), in grid units. The painter no longer
+    /// needs it (the patches are built from the ears and the head); the tests
+    /// use it as the outline nothing may leave.
+    #[cfg(test)]
+    fn silhouette(&self, ears: Ears) -> WinResult<ID2D1PathGeometry> {
+        let head = self.path(Shape::Head).ok_or_else(missing_geometry)?;
+        let mut acc: ID2D1Geometry = head.cast()?;
+        for side in [Side::Left, Side::Right] {
+            acc = self.combine(&acc, &self.ear_whole(side, ears)?, D2D1_COMBINE_MODE_UNION)?;
+        }
+        acc.cast()
+    }
+
+    /// `a` combined with `b` by `mode`, as a new path geometry.
+    fn combine(
+        &self,
+        a: &ID2D1Geometry,
+        b: &ID2D1Geometry,
+        mode: D2D1_COMBINE_MODE,
+    ) -> WinResult<ID2D1Geometry> {
         unsafe {
             let out = self.factory.CreatePathGeometry()?;
             let sink = out.Open()?;
-            a.CombineWithGeometry(b, D2D1_COMBINE_MODE_UNION, None, TOLERANCE, &sink)?;
+            a.CombineWithGeometry(b, mode, None, TOLERANCE, &sink)?;
             sink.Close()?;
             out.cast()
         }
     }
 
-    /// The two calico patches cut to the whole silhouette for `ears`
-    /// (orange, dark), built the first time that ear state is drawn.
+    /// The two calico patches for `ears` (orange, dark), built the first time
+    /// that ear state is drawn. Each is its ear minus the head (the site
+    /// paints the cream head over the ears) united with its circle clipped to
+    /// the head.
     fn calico_patches(&self, ears: Ears) -> Option<[ID2D1PathGeometry; 2]> {
         let key = (ears.up.to_bits(), ears.droop.to_bits());
         if let Some((_, g)) = self.calico.borrow().iter().find(|(k, _)| *k == key) {
             return Some(g.clone());
         }
         let built = (|| -> WinResult<[ID2D1PathGeometry; 2]> {
-            let whole = self.silhouette(ears)?;
-            let cut = |segs: Vec<Seg>| -> WinResult<ID2D1PathGeometry> {
-                let patch = path(&self.factory, &segs)?;
-                unsafe {
-                    let out = self.factory.CreatePathGeometry()?;
-                    let sink = out.Open()?;
-                    patch.CombineWithGeometry(
-                        &whole,
-                        D2D1_COMBINE_MODE_INTERSECT,
-                        None,
-                        TOLERANCE,
-                        &sink,
-                    )?;
-                    sink.Close()?;
-                    Ok(out)
-                }
+            let head: ID2D1Geometry = self
+                .path(Shape::Head)
+                .ok_or_else(missing_geometry)?
+                .cast()?;
+            let patch = |side: Side,
+                         (cx, cy, r): (f32, f32, f32)|
+             -> WinResult<ID2D1PathGeometry> {
+                let ear_only = self.combine(
+                    &self.ear_whole(side, ears)?,
+                    &head,
+                    D2D1_COMBINE_MODE_EXCLUDE,
+                )?;
+                let disc: ID2D1Geometry =
+                    unsafe { self.factory.CreateEllipseGeometry(&circle(cx, cy, r))? }.cast()?;
+                let on_head = self.combine(&disc, &head, D2D1_COMBINE_MODE_INTERSECT)?;
+                self.combine(&ear_only, &on_head, D2D1_COMBINE_MODE_UNION)?
+                    .cast()
             };
-            Ok([cut(patch_left())?, cut(patch_right())?])
+            Ok([
+                patch(Side::Left, ORANGE_CIRCLE)?,
+                patch(Side::Right, DARK_CIRCLE)?,
+            ])
         })()
         .ok()?;
         self.calico.borrow_mut().push((key, built.clone()));
@@ -898,7 +923,7 @@ mod tests {
     }
 
     #[test]
-    fn calico_patches_are_cut_to_the_whole_silhouette_ears_included() {
+    fn calico_patches_match_the_site_in_every_ear_state() {
         let p = painter();
         for ears in [
             Ears::default(),
@@ -916,24 +941,32 @@ mod tests {
             },
         ] {
             let [orange, dark] = p.calico_patches(ears).expect("patches build");
-            // Inside a left ear, above the head: the orange patch covers it
-            // (clipped to the head alone it would be cut off).
-            assert!(contains(&orange, 14.0, 18.0), "{ears:?}");
-            assert!(contains(&dark, 50.0, 18.0), "{ears:?}");
-            // The forehead between the patches stays cream.
-            assert!(
-                !contains(&orange, 32.0, 32.0) && !contains(&dark, 32.0, 32.0),
-                "{ears:?}"
-            );
-            // Nothing outside the silhouette: far above the head, and the
-            // left patch never reaches the right side.
-            for (x, y) in [(0.0, 0.0), (32.0, 2.0), (60.0, 60.0), (-5.0, 30.0)] {
-                assert!(
-                    !contains(&orange, x, y) && !contains(&dark, x, y),
-                    "({x}, {y})"
-                );
+            let both = |x: f32, y: f32| (contains(&orange, x, y), contains(&dark, x, y));
+            // The ears above the head: the left one orange, the right one dark.
+            assert_eq!(both(14.0, 18.0), (true, false), "{ears:?}");
+            assert_eq!(both(50.0, 18.0), (false, true), "{ears:?}");
+            // The circles on the head: orange top-left, dark bottom-right.
+            assert_eq!(both(12.0, 30.0), (true, false), "{ears:?}");
+            assert_eq!(both(50.0, 50.0), (false, true), "{ears:?}");
+            // The forehead and the face centre stay cream.
+            for (x, y) in [(32.0, 30.0), (32.0, 40.0)] {
+                assert_eq!(both(x, y), (false, false), "{ears:?} ({x}, {y})");
             }
-            assert!(!contains(&orange, 50.0, 18.0) && !contains(&dark, 14.0, 18.0));
+            // The ears' base corners lie under the cream head, as on the site.
+            for (x, y) in [(38.0, 27.0), (55.0, 38.0)] {
+                assert_eq!(both(x, y), (false, false), "{ears:?} ({x}, {y})");
+            }
+            // Nothing outside the silhouette; the orange circle reaches x 3.7
+            // but is clipped to the head.
+            for (x, y) in [
+                (0.0, 0.0),
+                (32.0, 2.0),
+                (60.0, 60.0),
+                (-5.0, 30.0),
+                (3.0, 30.0),
+            ] {
+                assert_eq!(both(x, y), (false, false), "{ears:?} ({x}, {y})");
+            }
             // The silhouette itself holds the head and both ears with their stroke.
             let whole = p.silhouette(ears).unwrap();
             for (x, y) in [(32.0, 40.0), (14.0, 18.0), (50.0, 18.0)] {
@@ -945,6 +978,29 @@ mod tests {
         assert_eq!(p.calico.borrow().len(), 4);
         p.calico_patches(Ears::default()).unwrap();
         assert_eq!(p.calico.borrow().len(), 4);
+    }
+
+    #[test]
+    fn the_calico_swatch_is_the_sites_conic_gradient() {
+        let slices = calico_swatch_slices();
+        assert_eq!(slices[0].0, 0.0);
+        assert_eq!(slices[2].1, 360.0);
+        for w in slices.windows(2) {
+            assert_eq!(w[0].1, w[1].0, "slices are contiguous");
+        }
+        assert_eq!(
+            slices.map(|(_, _, rgb)| rgb),
+            [0xF4EDE4, PATCH_ORANGE, PATCH_DARK]
+        );
+        let calico = CatLook {
+            color: CatColor::Calico,
+            accessory: CatAccessory::None,
+        };
+        assert_eq!(slices[0].2, calico.head_rgb());
+        assert_eq!(
+            slices.map(|(a, b, _)| (a, b)),
+            [(0.0, 180.0), (180.0, 270.0), (270.0, 360.0)]
+        );
     }
 
     #[test]
