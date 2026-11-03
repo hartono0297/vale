@@ -9735,7 +9735,10 @@ mod tests {
             TIMER_DISPLAYS,
             TIMER_PHONE,
         ];
-        assert_eq!(TIMER_PHONE, 42);
+        assert_eq!(TIMER_PHONE, 48);
+        // 42-47 are taken by other runs (the lyrics card's and the widgets'
+        // ids); the phone never reuses one of them.
+        assert!(!(42..48).contains(&TIMER_PHONE));
         assert_eq!(TIMER_POINTER, 33);
         assert_eq!(TIMER_NOTIF_SAVE, 34);
         assert_eq!(TIMER_TYPING, 40);

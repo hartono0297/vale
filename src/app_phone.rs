@@ -28,8 +28,9 @@ use crate::ui::phone_view::{
     AskView, CodeView, PhoneView, QrView, RecvView, RowStatus, RowView, Warn,
 };
 
-/// One-shot: the QR view's countdown, once a second while it shows.
-pub(super) const TIMER_PHONE: usize = 42;
+/// One-shot: the QR view's countdown, once a second while it shows. 42-47
+/// are claimed by other runs (lyrics card, widgets); this run owns 48.
+pub(super) const TIMER_PHONE: usize = 48;
 
 /// Rows kept for the receiving view (the oldest go first).
 const MAX_ROWS: usize = 200;

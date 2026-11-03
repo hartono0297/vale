@@ -68,7 +68,7 @@ agreed mockup is `docs/design/rak-hp.html` (never committed).
   a card off or "Kosongkan" never deletes a file (tested).
 - **Power:** the server thread exists only while a session runs (accept loop sleeps
   200 ms with `park_timeout`, so 5 wake-ups a second during a session only). One
-  one-shot timer, `TIMER_PHONE` (42), re-armed each second only while the QR
+  one-shot timer, `TIMER_PHONE` (48; 42-47 belong to other features), re-armed each second only while the QR
   view with a counting code is on screen. Progress events (at most 6 a second)
   draw only the receiving view and never refresh the island. An idle island is
   unchanged ([[bata-idle-power-budget]]).
