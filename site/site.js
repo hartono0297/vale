@@ -495,6 +495,7 @@
     var hideTimer = 0;
     var openTimer = 0;
     var dockTimer = 0;
+    var holdTimer = 0;
     var lastPointerType = 'mouse';
 
     /* ----- clock: one timeout aimed at the next minute, only while idle and visible ----- */
@@ -607,7 +608,14 @@
         loop.kick(pillFx);
       },
       /* The glow while the dragged hero cat is over the notch. */
-      glow: function (on) { notch.classList.toggle('is-glow', !!on); }
+      glow: function (on) { notch.classList.toggle('is-glow', !!on); },
+      /* The pointer is still on the notch right after the cat is dropped
+         there: the panel must not hover-open over the greeting. */
+      hold: function (ms) {
+        cancelHoverOpen();
+        clearTimeout(holdTimer);
+        holdTimer = setTimeout(function () { holdTimer = 0; }, ms);
+      }
     };
 
     /* Any copy on the page with a non-empty selection shows the copy toast. */
@@ -785,7 +793,7 @@
     notch.addEventListener('pointerenter', function (e) {
       if (e.pointerType === 'touch') return;
       clearTimeout(closeTimer);
-      if (!open) armHoverOpen(e);
+      if (!open && !holdTimer) armHoverOpen(e);
     });
     notch.addEventListener('pointermove', function (e) {
       if (e.pointerType === 'touch' || open || !openTimer) return;
@@ -1072,6 +1080,7 @@
       if (notchApi) notchApi.glow(false);
       absorbed = true;
       returning = false;
+      if (notchApi) notchApi.hold(2800);
       var a = stage.getBoundingClientRect();
       var b = notchEl ? notchEl.getBoundingClientRect() : a;
       var dx = b.left + b.width / 2 - (a.left + a.width / 2);

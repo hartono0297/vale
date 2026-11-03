@@ -27,7 +27,7 @@
   --btn-bg-hover: #EC7C55;
   --btn-text: #17120F;
   /* A tint behind text that would otherwise sit on a sky glow, and the card face. */
-  --panel: rgba(18, 14, 13, .86);
+  --panel: rgba(18, 14, 13, .74);
   --card: rgba(30, 24, 21, .88);
   --sky-fallback: #110D10;
   --bubble-bg: #F4EDE4;
@@ -78,7 +78,7 @@
   --ink: #A8431C;
   --focus: #A8431C;
   --code-bg: #EBEAE6;
-  --panel: rgba(252, 249, 244, .92);
+  --panel: rgba(252, 249, 244, .9);
   --card: rgba(255, 253, 249, .86);
   --sky-fallback: #F8F1E7;
   --bubble-bg: #17120F;
