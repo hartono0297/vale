@@ -1,6 +1,6 @@
 ---
 tags: [decision, robot, power, timers]
-date: 2026-11-02
+date: 2026-11-03
 ---
 
 # The notch assistant's idle power budget
@@ -70,6 +70,13 @@ Bata adds only one-shots (`app.rs`, planned by `robot::plan_timers`):
   The glance rides `TIMER_POINTER` (below) and the frame clock only while its
   ease moves. `TIMER_BLINK` and `TIMER_ROBOT` already carry the cat's blink
   and `next_change`, which is why the paws have their own id.
+
+- The fullscreen check ([[notch-monitor]], "Follows the notch's monitor") rides
+  the existing 1 s `TIMER_SYSTEM` tick and adds no timer. Its z-order walk runs
+  only with 2+ monitors and the foreground window off the notch's monitor, at
+  most once per tick, stops at the first window that touches the notch's
+  monitor and reads at most 1024 windows. With one monitor, or the foreground
+  on the notch's monitor, it adds one `GetSystemMetrics` and two monitor lookups.
 
 Motion policy (`Motion`, config `robot_animation`):
 

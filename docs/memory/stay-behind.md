@@ -1,6 +1,6 @@
 ---
 tags: [decision, window, experimental, v3.2.1, v3.3, animation]
-date: 2026-11-02
+date: 2026-11-03
 ---
 
 # Stay behind windows (v3.2.1)
@@ -75,7 +75,10 @@ pure and tested; `App::rise`, `rise_frame`):
   island as before; the order is reset to top when fullscreen starts. The
   detection is per monitor: a fullscreen app only counts while the foreground
   window is on the notch's monitor (`is_fullscreen(Some(island))`,
-  `hides_notch`), so a game on another monitor leaves the island alone.
+  `hides_notch`), so a game on another monitor leaves the island alone. With 2+
+  monitors and the foreground on another one, a z-order walk finds a fullscreen
+  window that covers the notch's own monitor and hides the island too
+  (2026-11-03, [[notch-monitor]]).
 
 Related: [[open-mode]], [[v3-2-handoff]]. With this setting off, the notch can
 instead shrink to the cat's eyes over a window ([[notch-peek-eyes]]); with it
