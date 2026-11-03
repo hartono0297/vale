@@ -497,6 +497,7 @@ impl WidgetHost {
     }
 
     /// How many windows there are.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     pub fn count(&self) -> usize {
         with(|s| s.wins.len()).unwrap_or(0)
     }
