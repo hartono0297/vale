@@ -122,7 +122,7 @@ function show(){
   app.appendChild(brand());
   app.appendChild(pcCard(false,t("wait")));
   app.appendChild(h("div",{class:"big"},h("p",null,t("mine")),h("span",{class:"code",id:"code"},code),
-   h("p",null,t("look"),h("br"),t("same")+" ",h("b",null,t("allow"))+"."),h("div",{class:"spin"})));
+   h("p",null,t("look"),h("br"),t("same")+" ",h("b",null,t("allow")),"."),h("div",{class:"spin"})));
   app.appendChild(h("div",{class:"fine"},t("fine")));return}
  /* approved */
  app.appendChild(brand());
@@ -173,11 +173,34 @@ function pickFiles(list){
    the refusal cannot be lost to a connection reset mid-send. */
 var MAX=4*1024*1024*1024;
 
+/* Picks cancelled on the PC: what still waits of them is refused too, so it
+   is not sent. True if anything changed. */
+function dropBatches(list){
+ var hit=false;if(!list||!list.length)return hit;
+ items.forEach(function(o){if(o.s==="wait"&&list.indexOf(o.batch)>=0){o.s="err";o.msg=t("cancelled");o.file=null;hit=true}});
+ return hit}
+
 function fail(it,status){
  it.s="err";
  it.msg=status===409?t("cancelled"):status===413?t("big"):status===507?t("full"):t("fail");
- /* Cancelled on the PC: the rest of that pick would be refused too. */
- if(status===409)items.forEach(function(o){if(o.s==="wait"&&o.batch===it.batch){o.s="err";o.msg=t("cancelled");o.file=null}})}
+ if(status===409)dropBatches([it.batch])}
+
+/* An upload ended with no answer: the PC may have refused it early (cancelled,
+   disk full) and closed while the phone was still sending, which the browser
+   reports as a network error. /api/state tells which. */
+function why(it,done){
+ var x=new XMLHttpRequest(),end=false;
+ function fin(st){if(!end){end=true;done(st)}}
+ x.open("GET","/api/state");
+ x.onload=function(){
+  var j=null;try{j=JSON.parse(x.responseText)}catch(e){}
+  if(x.status!==200||!j){fin(0);return}
+  if(j.cancelled&&j.cancelled.indexOf(it.batch)>=0)fin(409);
+  else if(typeof j.room==="number"&&it.size>j.room)fin(507);
+  else fin(0)};
+ x.onerror=x.ontimeout=function(){fin(0)};
+ x.timeout=8000;
+ x.send()}
 
 function next(){
  var it=null,i;
@@ -201,7 +224,7 @@ function next(){
  x.onload=function(){
   if(x.status===200){it.s="done";it.pct=100}else fail(it,x.status);
   it.file=null;drawList();next()};
- x.onerror=x.ontimeout=function(){fail(it,0);it.file=null;drawList();next()};
+ x.onerror=x.ontimeout=function(){it.file=null;why(it,function(st){fail(it,st);drawList();next()})};
  x.send(it.file)}
 
 function setState(s,c){
@@ -218,6 +241,7 @@ function poll(){
   if(x.status!==200){setState("lost");return}
   var j;try{j=JSON.parse(x.responseText)}catch(e){setState("lost");return}
   if(j.pc)B.pc=j.pc;if(j.net)B.net=j.net;
+  if(dropBatches(j.cancelled))drawList();
   if(j.state==="approved")setState("approved");
   else if(j.state==="rejected"){setState("rejected");return}
   else{if(state!=="waiting"||code!==(j.code||"")){state="waiting";code=j.code||"";show()}}

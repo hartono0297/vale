@@ -226,6 +226,29 @@ fn a_phone_pairs_uploads_is_cancelled_and_the_server_stops() {
     assert_eq!(dir_names(&dest), ["a (2).txt", "a.txt", "evil.txt"], "no .part left");
     let queued = request(addr, &upload_head("next.bin", "bx", 1, 2, 3, &vs), b"abc");
     assert_eq!(queued.status, 409);
+    // A queued file the phone keeps sending for longer than a second still
+    // gets its 409: the early answer is not lost to a reset.
+    let mut slow = connect(addr);
+    let chunk = [5u8; 4096];
+    let chunks = 30;
+    slow.write_all(upload_head("slow.bin", "bx", 1, 2, chunk.len() * chunks, &vs).as_bytes())
+        .expect("head");
+    for _ in 0..chunks {
+        if slow.write_all(&chunk).is_err() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(60));
+    }
+    let mut raw = Vec::new();
+    let _ = slow.read_to_end(&mut raw);
+    assert_eq!(parse_reply(&raw).status, 409, "slow queued upload");
+    // The page learns the cancelled batches from its poll, so it can stop
+    // the rest of a pick even when an answer was lost.
+    let s = get(addr, "/api/state", Some(&vs), ua);
+    let j: serde_json::Value = serde_json::from_str(&s.body).expect("state json");
+    let cancelled = j["cancelled"].as_array().expect("cancelled list");
+    assert!(cancelled.iter().any(|b| b == "bx"), "{}", s.body);
+    assert!(j["room"].is_u64(), "{}", s.body);
     // A new pick is a new batch and works.
     let fresh = request(addr, &upload_head("next.bin", "by", 0, 1, 3, &vs), b"abc");
     assert_eq!(fresh.status, 200);

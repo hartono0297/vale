@@ -32,6 +32,10 @@ const READ_SLICE: Duration = Duration::from_secs(1);
 const CHUNK: usize = 64 * 1024;
 /// At most this often per upload the progress is reported.
 const PROGRESS_EVERY: Duration = Duration::from_millis(150);
+/// After an early answer the rest of the body is read away, up to this much
+/// and this long, so the close is not a reset (see `drain`).
+const DRAIN_MAX: u64 = 64 * 1024 * 1024;
+const DRAIN_TIME: Duration = Duration::from_secs(10);
 /// One file may be this big.
 const MAX_FILE: u64 = 4 * 1024 * 1024 * 1024;
 /// The disk keeps at least this much free after a file.
@@ -273,16 +277,28 @@ fn serve(shared: &Shared, mut stream: TcpStream, peer: SocketAddr) {
         Err(None) => return,
     };
     let _ = response.write_to(&mut stream);
-    // Whatever body was not read must not turn the close into a reset that
-    // hides the answer from the phone.
     let _ = stream.shutdown(Shutdown::Write);
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
-    let deadline = Instant::now() + Duration::from_secs(1);
-    let mut sink = [0u8; 8192];
-    while Instant::now() < deadline {
+    drain(shared, &mut stream);
+}
+
+/// Reads and drops what the phone still sends after the answer (the body of
+/// an upload refused before or while it was read: 409, 413, 507, 400), until
+/// it closes or goes quiet. Closing a socket with unread data sends a reset,
+/// and the phone's browser then reports a network error instead of the
+/// answer. A body past `DRAIN_MAX` or `DRAIN_TIME` is given up on; the page
+/// then asks `/api/state` why the file failed.
+fn drain(shared: &Shared, stream: &mut TcpStream) {
+    let _ = stream.set_read_timeout(Some(READ_SLICE));
+    let deadline = Instant::now() + DRAIN_TIME;
+    let mut sink = vec![0u8; CHUNK];
+    let mut drained = 0u64;
+    while drained < DRAIN_MAX
+        && Instant::now() < deadline
+        && !shared.stop.load(Ordering::SeqCst)
+    {
         match stream.read(&mut sink) {
             Ok(0) | Err(_) => break,
-            Ok(_) => {}
+            Ok(n) => drained += n as u64,
         }
     }
 }
@@ -414,11 +430,14 @@ fn page(shared: &Shared, req: &Request) -> Response {
 /// `GET /api/state`: how far the pairing is.
 fn state(shared: &Shared, req: &Request) -> Response {
     let now = Instant::now();
-    let answer = {
+    let (answer, cancelled) = {
         let Ok(mut s) = shared.session.lock() else {
             return Response::not_found();
         };
-        s.answer_state(req.cookie("vp"), req.cookie("vs"), now)
+        let answer = s.answer_state(req.cookie("vp"), req.cookie("vs"), now);
+        let cancelled = matches!(answer, StateAnswer::Approved { .. })
+            .then(|| s.cancelled_batches());
+        (answer, cancelled)
     };
     let Some(rt) = shared.runtime.get() else {
         return Response::not_found();
@@ -429,13 +448,22 @@ fn state(shared: &Shared, req: &Request) -> Response {
         StateAnswer::Approved { .. } => ("approved", None),
         StateAnswer::Rejected => ("rejected", None),
     };
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "state": name,
         "code": code,
         "pc": rt.pc_name,
         "net": rt.network_name,
-    })
-    .to_string();
+    });
+    // An approved phone also learns why an upload may have failed when its
+    // answer was lost to a reset: the cancelled picks and how big a file the
+    // disk still takes (the 507 rule).
+    if let Some(cancelled) = cancelled {
+        body["cancelled"] = serde_json::json!(cancelled);
+        if let Some(free) = free_bytes(&rt.dest_dir) {
+            body["room"] = serde_json::json!(free.saturating_sub(MIN_FREE));
+        }
+    }
+    let body = body.to_string();
     state_cookies(Response::json(200, body), &answer)
 }
 
@@ -677,3 +705,61 @@ fn receive(
     Ok(())
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::PAGE;
+
+    /// The end of the call that opens at `open` (the index of its `(`),
+    /// skipping string literals.
+    fn call_end(s: &[u8], open: usize) -> usize {
+        let (mut depth, mut i, mut quote) = (0usize, open, None::<u8>);
+        while i < s.len() {
+            let c = s[i];
+            match quote {
+                Some(q) => {
+                    if c == b'\\' {
+                        i += 1;
+                    } else if c == q {
+                        quote = None;
+                    }
+                }
+                None => match c {
+                    b'"' | b'\'' => quote = Some(c),
+                    b'(' => depth += 1,
+                    b')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return i;
+                        }
+                    }
+                    _ => {}
+                },
+            }
+            i += 1;
+        }
+        panic!("unclosed call at {open}");
+    }
+
+    /// `h(...)` makes an element: `+` after it turns the element into the
+    /// text "[object HTMLElement]" on the phone.
+    #[test]
+    fn no_page_element_is_added_to_a_string() {
+        let s = PAGE.as_bytes();
+        let mut checked = 0;
+        for (at, _) in PAGE.match_indices("h(\"") {
+            if at > 0 && (s[at - 1].is_ascii_alphanumeric() || s[at - 1] == b'_') {
+                continue;
+            }
+            let end = call_end(s, at + 1);
+            let after = PAGE[end + 1..].trim_start();
+            assert!(
+                !after.starts_with('+'),
+                "an element is added to a string: {}",
+                &PAGE[at..=end]
+            );
+            checked += 1;
+        }
+        assert!(checked > 20, "only {checked} calls found");
+    }
+}

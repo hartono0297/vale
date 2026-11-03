@@ -477,6 +477,14 @@ impl Session {
         self.cancelled.contains(batch)
     }
 
+    /// The cancelled batch ids, sorted: the page stops the rest of such a
+    /// pick and names the reason when an upload's answer was lost.
+    pub fn cancelled_batches(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.cancelled.iter().cloned().collect();
+        v.sort();
+        v
+    }
+
     /// "Batal": every batch begun so far is cancelled, so the upload in
     /// flight stops and the rest of each queue is refused (409).
     pub fn cancel_batches(&mut self) {
@@ -932,6 +940,7 @@ mod tests {
         assert!(!s.start_batch("b1"), "queued uploads of it get 409");
         assert!(s.start_batch("b2"), "a new pick is a new batch");
         assert!(!s.is_cancelled("b2"));
+        assert_eq!(s.cancelled_batches(), ["b1"]);
     }
 
     #[test]
