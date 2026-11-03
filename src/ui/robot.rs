@@ -944,7 +944,8 @@ fn polygon(points: &[(f32, f32)]) -> Vec<Seg> {
 pub struct RobotPainter {
     pub(super) factory: ID2D1Factory,
     paths: RefCell<Vec<(Shape, ID2D1PathGeometry)>>,
-    /// The calico patches cut to the silhouette, per ear state (`cat_style`).
+    /// The calico patches (orange, dark) per ear state, built from the ears
+    /// and the head (`cat_style`).
     pub(super) calico: RefCell<Vec<((u32, u32), [ID2D1PathGeometry; 2])>>,
     /// Each accessory's pieces and their paths (`cat_style`).
     pub(super) extras: RefCell<Vec<(CatAccessory, Rc<Vec<Placed>>)>>,
@@ -1101,7 +1102,8 @@ impl RobotPainter {
             if let Some(g) = self.path(Shape::Head) {
                 rt.FillGeometry(&g, brush, None);
             }
-            // 3. Calico: the patches, cut to the whole silhouette.
+            // 3. Calico: each patch is its ear minus the head, united with its
+            // circle clipped to the head.
             if look.color == CatColor::Calico {
                 self.paint_patches(rt, brush, &world, face.ears, alpha);
             }

@@ -1,6 +1,6 @@
 ---
 tags: [decision, cat, theme, settings, v3.8]
-date: 2026-10-31
+date: 2026-11-03
 ---
 
 # Cat colours and island surfaces (v3.8)
@@ -15,7 +15,7 @@ Kucing page. The accessories and the paint order are in [[cat-accessories]].
 | Coat | Head and ears | Eyes and every eye mark | Extra |
 |---|---|---|---|
 | Terracotta (default) | #E2683C | #17120F | as before v3.8 |
-| Calico | #F4EDE4 | #17120F | an orange #E2683C patch left, a dark #2B2420 one right |
+| Calico | #F4EDE4 | #17120F | as the landing page cat: left ear orange #E2683C, right ear dark #2B2420, an orange circle top-left and a dark circle bottom-right on the head, cream elsewhere. The Settings swatch is the site chip's conic: right half cream, bottom-left quarter orange, top-left quarter dark (`calico_swatch_slices`) |
 | White | #F6F1EA | #17120F | |
 | Black | #1E1B22 | amber #F2B33D | a light rim #8E7CB8, 1.6 grid units round head and ears |
 

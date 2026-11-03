@@ -9,11 +9,11 @@ use std::mem::ManuallyDrop;
 
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D_RECT_F, D2D_SIZE_U, D2D1_ALPHA_MODE_IGNORE, D2D1_COLOR_F, D2D1_FIGURE_BEGIN_FILLED,
-    D2D1_FIGURE_END_CLOSED, D2D1_GRADIENT_STOP, D2D1_PIXEL_FORMAT,
+    D2D_RECT_F, D2D_SIZE_F, D2D_SIZE_U, D2D1_ALPHA_MODE_IGNORE, D2D1_COLOR_F,
+    D2D1_FIGURE_BEGIN_FILLED, D2D1_FIGURE_END_CLOSED, D2D1_GRADIENT_STOP, D2D1_PIXEL_FORMAT,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_ARC_SEGMENT, D2D1_ARC_SIZE_SMALL,
+    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_ARC_SEGMENT, D2D1_ARC_SIZE_LARGE, D2D1_ARC_SIZE_SMALL,
     D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_ELLIPSE, D2D1_EXTEND_MODE_CLAMP,
     D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_GAMMA_2_2, D2D1_HWND_RENDER_TARGET_PROPERTIES,
     D2D1_LAYER_OPTIONS_NONE, D2D1_LAYER_PARAMETERS, D2D1_LINE_JOIN_ROUND,
@@ -425,6 +425,44 @@ impl Painter<'_> {
                 },
                 self.brush,
             );
+        }
+    }
+
+    /// A pie slice of the disc at (`cx`, `cy`): from `from` to `to` degrees,
+    /// clockwise from 12 o'clock. Built per paint; Settings paints rarely.
+    fn pie(&self, cx: f32, cy: f32, radius: f32, from: f32, to: f32, rgb: u32) {
+        let at = |deg: f32| {
+            let a = deg.to_radians();
+            Vector2::new(cx + radius * a.sin(), cy - radius * a.cos())
+        };
+        let build = || -> Result<ID2D1PathGeometry> {
+            unsafe {
+                let path = self.rt.GetFactory()?.CreatePathGeometry()?;
+                let sink = path.Open()?;
+                sink.BeginFigure(Vector2::new(cx, cy), D2D1_FIGURE_BEGIN_FILLED);
+                sink.AddLine(at(from));
+                sink.AddArc(&D2D1_ARC_SEGMENT {
+                    point: at(to),
+                    size: D2D_SIZE_F {
+                        width: radius,
+                        height: radius,
+                    },
+                    rotationAngle: 0.0,
+                    sweepDirection: D2D1_SWEEP_DIRECTION_CLOCKWISE,
+                    arcSize: if to - from > 180.0 {
+                        D2D1_ARC_SIZE_LARGE
+                    } else {
+                        D2D1_ARC_SIZE_SMALL
+                    },
+                });
+                sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+                sink.Close()?;
+                Ok(path)
+            }
+        };
+        if let Ok(path) = build() {
+            self.set(rgb, 1.0);
+            unsafe { self.rt.FillGeometry(&path, self.brush, None) };
         }
     }
 
@@ -1127,8 +1165,8 @@ impl Painter<'_> {
         }
     }
 
-    /// A coat dot: the cat's head colour (Calico shows its two patches,
-    /// Black its rim).
+    /// A coat dot: the cat's head colour (Calico a conic of cream, orange and
+    /// dark, Black its rim).
     fn cat_swatch(&self, r: Rect, color: CatColor, selected: bool, hover: bool) {
         let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
         let ring = r.w / 2.0 + SWATCH_RING_GAP + SWATCH_RING_W / 2.0;
@@ -1145,19 +1183,11 @@ impl Painter<'_> {
             self.circle(cx, cy, radius, look.head_rgb(), 1.0);
         }
         if color == CatColor::Calico {
-            // The orange patch on the left, the dark one on the right, as a
-            // half circle each.
-            for (dx, rgb) in [
-                (-1.0, super::cat_style::PATCH_ORANGE),
-                (1.0, super::cat_style::PATCH_DARK),
-            ] {
-                self.circle(
-                    cx + dx * radius * 0.42,
-                    cy - radius * 0.2,
-                    radius * 0.38,
-                    rgb,
-                    1.0,
-                );
+            // The site's conic chip: slice 0 is the cream disc already drawn;
+            // each later colour paints from its start to 12 o'clock again, so
+            // the overlap hides any seam between slices.
+            for &(from, _, rgb) in &super::cat_style::calico_swatch_slices()[1..] {
+                self.pie(cx, cy, radius, from, 360.0, rgb);
             }
         }
         self.ring(cx, cy, radius - 0.5, 1.0, self.p.secondary, 0.35);
