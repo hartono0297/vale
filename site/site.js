@@ -284,7 +284,6 @@
         S.vh = root.clientHeight;
         S.max = Math.max(0, root.scrollHeight - S.vh);
         S.p = S.max > 0 ? clamp(S.sy / S.max, 0, 1) : 0;
-        S.moving = performance.now() - S.scrollAt < 160;
       },
       write: function () {
         if (shown < 0 || Math.abs(S.p - shown) >= 0.004 || ((S.p === 0 || S.p === 1) && S.p !== shown)) {
@@ -986,6 +985,8 @@
     var ly = null;
     var lastHeart = 0;
     var DRAG_PX = 6;
+    /* .hero-inner is its own stacking context, so the stage's z-index alone cannot lift the carried cat above the header. */
+    var heroInner = stage.closest ? stage.closest('.hero-inner') : null;
     var LONG_PRESS_MS = 350;
 
     function startHold() {
@@ -993,6 +994,7 @@
       returning = false;
       cat.classList.add('is-held');
       stage.classList.add('is-held');
+      if (heroInner) heroInner.classList.add('is-carrying');
       stopPurr();
       loop.kick(catFx);
     }
@@ -1068,6 +1070,7 @@
       held = false;
       cat.classList.remove('is-held');
       stage.classList.remove('is-held');
+      if (heroInner) heroInner.classList.remove('is-carrying');
       if (e && e.type === 'pointercancel') { returning = true; loop.kick(catFx); return; }
       if (!wasHeld) { poke(); return; }
       if (over) absorb(); else { returning = true; loop.kick(catFx); }
@@ -1863,7 +1866,10 @@
     btn.addEventListener('click', wake);
     var fx = {
       on: function () { return S.dirty || state !== 'walk'; },
-      read: function () { vw = root.clientWidth; },
+      /* S.moving is worked out here, not in the progress task: that task runs only
+         on dirty frames, so a value kept there would stay true after the scroll stops
+         and keep the loop (and the bob) going. */
+      read: function () { vw = root.clientWidth; S.moving = performance.now() - S.scrollAt < 160; },
       write: function () {
         var edge = wide.matches ? 24 : 16;
         track = Math.max(0, vw - edge - 48 - 12 - 30);

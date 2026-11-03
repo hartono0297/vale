@@ -445,6 +445,7 @@ html[data-theme="light"] .horizon { background: radial-gradient(closest-side, #F
 .stage { position: relative; width: 100%; height: 100%; z-index: 5; -webkit-tap-highlight-color: transparent; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 .js .stage { cursor: grab; }
 .stage.is-held { cursor: grabbing; z-index: 95; }
+.hero-inner.is-carrying { z-index: 95; }
 .stage:focus-visible { outline: 3px solid var(--focus); outline-offset: 6px; border-radius: 24px; }
 .cat { display: block; width: 100%; height: 100%; overflow: visible; }
 .cat .ear { transform-box: fill-box; transition: transform .3s cubic-bezier(.3, 1.6, .5, 1); }
@@ -569,12 +570,13 @@ html[data-theme="light"] .screen { box-shadow: 0 30px 80px -30px rgba(40, 24, 16
 .bp-dock svg { flex: none; width: 20px; height: 20px; color: var(--scr-2); transform-origin: 50% 100%; transform: scale(var(--s, 1)); }
 .bp-dock svg.on { color: #E2683C; }
 @media (max-width: 40em) {
-  .screen { padding: 5px; border-radius: 14px; }
-  .bigpanel { width: 94%; padding: 8px 12px; border-radius: 0 0 18px 18px; }
+  .screen { aspect-ratio: 5 / 4; padding: 5px; border-radius: 14px; }
+  .bigpanel { width: 94%; height: 88%; padding: 8px 12px; border-radius: 0 0 18px 18px; }
   .bp-pg { font-size: .75rem; }
   .bp-pg .r { padding: 4px 0; gap: 8px; }
   .bp-pg .r span { width: 54px; }
-  .bp-pg .m span { width: 76px; }
+  .bp-pg .m { gap: 8px; padding: 4px 0; }
+  .bp-pg .m span { width: 84px; }
   .bp-pg .big { gap: 10px; }
   .bp-pg .big b { font-size: 1.0625rem; }
   .bp-pg .cv { width: 52px; height: 52px; border-radius: 10px; }
@@ -584,6 +586,7 @@ html[data-theme="light"] .screen { box-shadow: 0 30px 80px -30px rgba(40, 24, 16
   .bp-dock svg { width: 15px; height: 15px; }
   .bp-top { font-size: .8125rem; }
 }
+@media (max-width: 24em) { .screen { aspect-ratio: 10 / 9; } }
 
 /* ---------- playground ---------- */
 .play { padding-block: clamp(5rem, 11vw, 8rem) clamp(3rem, 7vw, 5rem); }
@@ -677,6 +680,8 @@ html[data-theme="light"] .screen { box-shadow: 0 30px 80px -30px rgba(40, 24, 16
 main > .tint-panel:last-child { margin-bottom: calc(-1 * clamp(4rem, 10vw, 8rem)); }
 .gcal, .privacy-short, .install { padding-top: clamp(3.5rem, 8vw, 6rem); }
 .privacy-short { padding-bottom: clamp(3rem, 7vw, 5rem); }
+/* The last section: with the footer it is at least a screen less the 5rem scroll margin, so #privacy can scroll up to 80 px from the top. */
+.privacy-short { min-height: calc(100vh - 18rem); min-height: calc(100svh - 18rem); }
 .gcal h2, .privacy-short h2, .install h2 { margin-bottom: 1.25rem; }
 .gcal .lead, .privacy-short .lead, .install .lead { color: var(--text); }
 .install-dl { margin: 1.75rem 0 1rem; }
