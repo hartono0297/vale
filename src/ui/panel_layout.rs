@@ -2091,6 +2091,13 @@ fn list_header(s: ShapeRect, strip: bool) -> (Rect, Rect, f32) {
     (header, new_button, header.bottom() + LIST_TOP_GAP)
 }
 
+/// A note card's pin button: 22 dip, at the card's top-right.
+pub const NOTE_PIN: f32 = 22.0;
+
+pub fn note_pin_rect(card: Rect) -> Rect {
+    rect(card.right() - NOTE_PIN - 5.0, card.y + 5.0, NOTE_PIN, NOTE_PIN)
+}
+
 /// Cards in two columns, newest top left, two rows of them. When there are
 /// more, the page shows chunk `notes_page` (wrapping) and a "+N lagi" /
 /// "Kembali ke atas" line under the cards.
@@ -4024,6 +4031,8 @@ pub fn regions(s: ShapeRect, layout: &PageLayout, strip: impl Into<StripKind>) -
         PageLayout::Notes(l) => {
             add(l.new_button, Hit::NoteNew);
             for (id, r) in &l.rows {
+                // The pin sits on the card, so it comes before it.
+                add(note_pin_rect(*r), Hit::NoteSticky(id.clone()));
                 add(*r, Hit::NoteOpen(id.clone()));
             }
             if let Some((_, r)) = l.more {
@@ -4359,6 +4368,7 @@ mod tests {
                 id: format!("n{i}"),
                 text: format!("note {i}"),
                 updated: 1000 - i as i64,
+                sticky: None,
             })
             .collect()
     }
@@ -6808,6 +6818,21 @@ mod tests {
                     }
                     for (i, a) in r.iter().enumerate() {
                         for b in &r[i + 1..] {
+                            // A note card's pin sits on its card, in front of it.
+                            let on_card = matches!(
+                                (&a.hit, &b.hit),
+                                (Hit::NoteSticky(x), Hit::NoteOpen(y)) if x == y
+                            );
+                            if on_card {
+                                assert!(
+                                    a.rect.x >= b.rect.x
+                                        && a.rect.y >= b.rect.y
+                                        && a.rect.right() <= b.rect.right()
+                                        && a.rect.bottom() <= b.rect.bottom(),
+                                    "the pin is inside its card"
+                                );
+                                continue;
+                            }
                             assert!(
                                 disjoint(a.rect, b.rect),
                                 "{style:?} strip={strip} {name}: {a:?} overlaps {b:?}"

@@ -55,6 +55,7 @@ mod theme;
 mod tiles;
 mod ui;
 mod update;
+mod widgets;
 
 use windows::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
 
@@ -91,6 +92,7 @@ fn opens_windows(arg: Option<&str>) -> bool {
             | "--demo-devices"
             | "--demo-arrange"
             | "--demo-notice-close"
+            | "--demo-widgets"
             | "--demo-snap"
             | "--demo-shot-editor"
             | "--demo-lyrics-card"
@@ -192,6 +194,15 @@ fn main() {
             attach_parent_console();
             demo_lang_from_env();
             ui::demo::run_arrange();
+        }
+        // The desktop widgets alone, on a made-up notes file in the temp
+        // folder; `reset` seeds it again.
+        #[cfg(debug_assertions)]
+        Some("--demo-widgets") => {
+            attach_parent_console();
+            demo_lang_from_env();
+            let reset = std::env::args().nth(2).as_deref() == Some("reset");
+            widgets::demo::run(reset);
         }
         // The notice ✕ on a real `IslandState` fed made-up notices: effects are
         // printed, never run.

@@ -1,0 +1,546 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Widget Vale</title>
+<style>
+  @font-face { font-family: 'DM Sans'; font-weight: 400; src: url('../../assets/fonts/DMSans-400.ttf'); }
+  @font-face { font-family: 'DM Sans'; font-weight: 500; src: url('../../assets/fonts/DMSans-500.ttf'); }
+  @font-face { font-family: 'DM Sans'; font-weight: 600; src: url('../../assets/fonts/DMSans-600.ttf'); }
+  @font-face { font-family: 'DM Mono'; font-weight: 400; src: url('../../assets/fonts/DMMono-400.ttf'); }
+  :root {
+    --paper: #F1ECE4; --ink: #221A14; --ink2: #7A6B5D; --rule: #DDD3C6; --card: #FBF7F1;
+    --s: #17120F; --r: #241D18; --t: #332A23; --tx: #F4EDE4; --tx2: #A89A8B;
+    --a: #E2683C; --sage: #9DB59A; --ochre: #D9A441; --plum: #B07A9A; --red: #D9604F;
+    --body: 'DM Sans', sans-serif; --mono: 'DM Mono', monospace;
+    /* sticky paper */
+    --p-krem: #F4E7C6; --p-tera: #F3CDBB; --p-sage: #D3DFCF; --p-plum: #E6CFDC; --p-laut: #CCDCE4; --p-ink: #2B211A;
+  }
+  @page { size: 297mm 210mm; margin: 0; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: #9a948c; }
+  body { font-family: var(--body); color: var(--ink); -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .page { width: 297mm; height: 210mm; overflow: hidden; position: relative; margin: 0 auto 16px; padding: 28px 38px; background: var(--paper); break-after: page; }
+  .page.dark { background: var(--s); color: var(--tx); }
+  @media print { html, body { background: none; } .page { margin: 0; } }
+  .folio { position: absolute; left: 38px; right: 38px; bottom: 14px; display: flex; justify-content: space-between; font-size: 9.5px; letter-spacing: .1em; text-transform: uppercase; opacity: .5; }
+  .eyebrow { font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase; font-weight: 600; color: var(--ink2); }
+  .dark .eyebrow { color: var(--tx2); }
+  h1 { font-weight: 600; font-size: 27px; letter-spacing: -.025em; margin: 2px 0 10px; }
+  h2 { font-weight: 600; font-size: 15.5px; letter-spacing: -.02em; margin-bottom: 4px; }
+  .lbl { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; font-weight: 600; color: var(--ink2); margin-bottom: 6px; }
+  .dark .lbl { color: var(--tx2); }
+  p, li { font-size: 11px; line-height: 1.5; color: #3E3229; }
+  .dark p, .dark li { color: var(--tx2); }
+  code { font-family: var(--mono); font-size: 9.8px; background: #E8E0D4; padding: 0 4px; border-radius: 4px; }
+  .dark code { background: var(--t); color: var(--tx); }
+  b { font-weight: 600; }
+  .grid { display: grid; gap: 14px; }
+  .g2 { grid-template-columns: 1fr 1fr; } .g3 { grid-template-columns: 1fr 1fr 1fr; }
+  .card { background: var(--card); border: 1px solid var(--rule); border-radius: 16px; padding: 12px 14px; }
+  .card.pick { border: 2px solid var(--a); }
+  .card ul, .bul { margin: 4px 0 0; }
+  .card li, .bul li { list-style: none; position: relative; padding-left: 13px; margin-bottom: 3px; }
+  .card li::before, .bul li::before { content: ""; position: absolute; left: 0; top: 7px; width: 5px; height: 5px; border-radius: 50%; background: var(--a); }
+  .dark .bul li::before { background: var(--a); }
+  .tag { display: inline-block; font-size: 9px; letter-spacing: .08em; text-transform: uppercase; font-weight: 600; padding: 2px 7px; border-radius: 99px; background: #E6DCCF; color: #4A3D33; white-space: nowrap; }
+  .tag.a { background: rgba(226,104,60,.18); color: #A8431F; } .tag.g { background: rgba(157,181,154,.3); color: #3F5A3C; } .tag.o { background: rgba(217,164,65,.25); color: #7A5A12; } .tag.r { background: rgba(217,96,79,.18); color: #9A3426; }
+  table { border-collapse: collapse; width: 100%; }
+  th { text-align: left; font-size: 9.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink2); font-weight: 600; padding: 5px 7px; border-bottom: 1.5px solid var(--rule); }
+  td { font-size: 10.2px; line-height: 1.36; padding: 4.5px 7px; border-bottom: 1px solid var(--rule); vertical-align: top; color: #3E3229; }
+  td b { color: var(--ink); }
+  .note { font-size: 10.3px; background: rgba(157,181,154,.2); border-radius: 10px; padding: 7px 10px; color: #3F5A3C; line-height: 1.45; }
+  .warn { font-size: 10.3px; background: rgba(217,164,65,.2); border-radius: 10px; padding: 7px 10px; color: #6B4E10; line-height: 1.45; }
+  .dark .note { background: rgba(157,181,154,.12); color: #BFD2BC; }
+  .dark .warn { background: rgba(217,164,65,.12); color: #E5C487; }
+  .cap { font-size: 10px; color: var(--ink2); margin-top: 5px; line-height: 1.4; }
+  .dark .cap { color: var(--tx2); }
+
+  /* ---------- placement diagrams (page 1) ---------- */
+  .mini { position: relative; height: 112px; border-radius: 10px; background: #3A2F27; overflow: hidden; margin: 6px 0 8px; }
+  .mini .n { position: absolute; top: 0; left: 50%; transform: translateX(-50%); width: 64px; height: 12px; border-radius: 0 0 8px 8px; background: var(--s); }
+  .mini .n.open { width: 150px; height: 64px; border-radius: 0 0 14px 14px; padding: 16px 10px 0; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px; }
+  .mini .n.open i { display: block; height: 18px; border-radius: 4px; background: #33291F; }
+  .mini .n.open i.a { background: var(--p-krem); }
+  .mini .w { position: absolute; border-radius: 5px; background: #272019; border: 1px solid #4A3E35; }
+  .mini .s { position: absolute; border-radius: 4px; background: var(--p-krem); box-shadow: 0 2px 4px rgba(0,0,0,.35); }
+  .mini .s.t { background: var(--p-tera); } .mini .s.g { background: var(--p-sage); }
+  .mini .k { position: absolute; border-radius: 6px; background: rgba(23,18,15,.85); border: 1px solid #4A3E35; }
+
+  /* ---------- Settings window mock ---------- */
+  .sw { width: 100%; height: 600px; border-radius: 10px; background: #1E1814; border: 1px solid #3A2F27; overflow: hidden; color: var(--tx); box-shadow: 0 18px 50px rgba(0,0,0,.45); display: grid; grid-template-rows: 30px 1fr; }
+  .sw .tb { display: flex; align-items: center; gap: 8px; padding: 0 12px; font-size: 11px; color: var(--tx); }
+  .sw .tb .ctl { margin-left: auto; display: flex; gap: 24px; color: var(--tx2); font-size: 11px; }
+  .sw .main { display: grid; grid-template-columns: 178px 1fr; min-height: 0; }
+  .sw .nav { padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; }
+  .sw .brand { display: flex; align-items: center; gap: 9px; font-size: 16px; font-weight: 600; padding: 6px 8px 16px; }
+  .sw .ni { display: flex; align-items: center; gap: 11px; padding: 6.5px 12px; border-radius: 9px; font-size: 11.5px; color: #D9CEC2; }
+  .sw .ni svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+  .sw .ni.a { background: #33291F; color: var(--tx); }
+  .sw .ni .new { margin-left: auto; font-size: 8px; letter-spacing: .08em; text-transform: uppercase; font-weight: 600; color: var(--a); }
+  .sw .body { padding: 14px 22px 0 14px; overflow: hidden; position: relative; }
+  .sw h3 { font-size: 19px; font-weight: 600; letter-spacing: -.02em; margin: 2px 0 12px; }
+  .sw .eb { font-size: 9px; letter-spacing: .12em; text-transform: uppercase; font-weight: 600; color: var(--tx2); margin: 0 0 6px 4px; display: flex; align-items: center; gap: 8px; }
+  .sw .eb .r { margin-left: auto; letter-spacing: 0; text-transform: none; font-weight: 500; font-size: 10px; }
+  .sw .box { background: #29211B; border: 1px solid #33291F; border-radius: 12px; margin-bottom: 14px; }
+  .sw .row { display: flex; align-items: center; gap: 10px; padding: 9px 14px; font-size: 11.5px; border-top: 1px solid #33291F; }
+  .sw .row:first-child { border-top: 0; }
+  .sw .row .d { font-size: 9.5px; color: var(--tx2); margin-top: 1px; }
+  .sw .row .sp { margin-left: auto; }
+  .sw .chip { font-size: 10px; padding: 4px 10px; border-radius: 99px; background: #382D24; color: var(--tx); }
+  .sw .ic { width: 26px; height: 26px; border-radius: 8px; background: #33291F; display: flex; align-items: center; justify-content: center; flex: none; }
+  .sw .ic svg { width: 14px; height: 14px; stroke: var(--tx2); fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+  .tg { width: 34px; height: 19px; border-radius: 10px; background: var(--a); position: relative; flex: none; }
+  .tg::after { content: ""; position: absolute; right: 3px; top: 3px; width: 13px; height: 13px; border-radius: 50%; background: #1E1814; }
+  .tg.off { background: #4A3E35; } .tg.off::after { left: 3px; right: auto; background: var(--tx2); }
+  .seg { display: flex; background: #211A15; border-radius: 8px; padding: 2px; font-size: 10px; }
+  .seg span { padding: 4px 9px; border-radius: 6px; color: var(--tx2); } .seg span.a { background: #3A2F26; color: var(--tx); }
+  .gal { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .wc { background: #29211B; border: 1px solid #33291F; border-radius: 13px; padding: 8px 8px 9px; position: relative; }
+  .wc.on { border: 1.5px solid #8F7A68; }
+  .wc .pv { height: 74px; border-radius: 9px; background: #1F1915; border: 1px solid #33291F; position: relative; overflow: hidden; padding: 8px 10px; }
+  .wc .ti { display: flex; align-items: center; margin: 8px 4px 1px; font-size: 11.5px; font-weight: 600; }
+  .wc .de { font-size: 9.5px; color: var(--tx2); margin: 0 4px; line-height: 1.35; padding-right: 26px; }
+  .wc .add { position: absolute; right: 10px; bottom: 11px; width: 21px; height: 21px; border-radius: 50%; border: 1.5px solid #6A5A4C; display: flex; align-items: center; justify-content: center; color: var(--tx2); font-size: 13px; line-height: 1; }
+  .wc .add.f { background: var(--a); border-color: var(--a); color: #1E1814; font-weight: 600; }
+  .wc .bdg { position: absolute; right: 15px; top: 14px; box-shadow: 0 0 0 2px #1F1915; min-width: 18px; height: 18px; border-radius: 9px; background: var(--tx); color: #1E1814; font-size: 10px; font-weight: 600; display: flex; align-items: center; justify-content: center; padding: 0 5px; }
+  .wc .soon { margin-left: 7px; font-size: 7.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--tx2); border: 1px solid #4A3E35; border-radius: 99px; padding: 1px 6px; font-weight: 600; }
+  .scroll { position: absolute; right: 6px; top: 70px; width: 4px; height: 120px; border-radius: 2px; background: #4A3E35; }
+
+  /* ---------- sticky notes ---------- */
+  .sn { position: absolute; border-radius: 12px; background: var(--p-krem); color: var(--p-ink); box-shadow: 0 1px 0 rgba(255,255,255,.4) inset, 0 10px 24px rgba(0,0,0,.32), 0 2px 5px rgba(0,0,0,.2); padding: 0 14px 12px; font-size: 12px; }
+  .sn.tera { background: var(--p-tera); } .sn.sage { background: var(--p-sage); } .sn.plum { background: var(--p-plum); } .sn.laut { background: var(--p-laut); }
+  .sn.gelap { background: #241D18; color: var(--tx); border: 1px solid #3A2F27; }
+  .sn.gelap::before { content: ""; position: absolute; left: 14px; right: 14px; top: 0; height: 3px; border-radius: 0 0 3px 3px; background: var(--a); }
+  .sn .hd { display: flex; align-items: center; gap: 6px; height: 30px; font-size: 10px; opacity: .55; }
+  .sn .hd .tl { margin-left: auto; display: flex; gap: 9px; align-items: center; }
+  .sn .hd svg { width: 13px; height: 13px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .sn.act .hd { opacity: 1; }
+  .sn.act .hd .tl svg { opacity: .7; }
+  .sn h5 { font-size: 13.5px; font-weight: 600; letter-spacing: -.01em; margin-bottom: 4px; }
+  .sn p { color: inherit; font-size: 11.5px; line-height: 1.45; opacity: .86; }
+  .sn .ck { display: flex; align-items: flex-start; gap: 7px; font-size: 11.5px; line-height: 1.35; margin: 4px 0; }
+  .sn .ck i { width: 13px; height: 13px; border-radius: 4px; border: 1.6px solid currentColor; opacity: .55; flex: none; margin-top: 1px; position: relative; }
+  .sn .ck.x { opacity: .5; } .sn .ck.x span { text-decoration: line-through; }
+  .sn .ck.x i { background: var(--p-ink); border-color: var(--p-ink); opacity: .8; }
+  .sn .ck.x i::after { content: ""; position: absolute; left: 3px; top: 0px; width: 3px; height: 7px; border: solid var(--p-krem); border-width: 0 1.6px 1.6px 0; transform: rotate(45deg); }
+  .sn .ft { position: absolute; left: 14px; bottom: 8px; font-size: 9px; opacity: .45; }
+  .sn .grip { position: absolute; right: 5px; bottom: 5px; width: 9px; height: 9px; border-right: 1.6px solid currentColor; border-bottom: 1.6px solid currentColor; border-radius: 0 0 4px 0; opacity: .35; }
+  .sn .pin { color: var(--a); opacity: 1 !important; }
+  .sn.roll { padding-bottom: 0; height: 32px !important; }
+  .catpeek { position: absolute; width: 46px; height: 24px; }
+  .pop { position: absolute; background: #241D18; border: 1px solid #3A2F27; border-radius: 12px; padding: 9px 10px; color: var(--tx); box-shadow: 0 12px 28px rgba(0,0,0,.4); font-size: 10px; }
+  .pop .sw6 { display: flex; gap: 7px; margin: 5px 0 9px; }
+  .pop .sw6 span { width: 18px; height: 18px; border-radius: 50%; border: 1px solid rgba(0,0,0,.2); }
+  .pop .sw6 span.on { outline: 2px solid var(--a); outline-offset: 2px; }
+  .pop .ln { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 3px 0; }
+  .callout { position: absolute; width: 18px; height: 18px; border-radius: 50%; background: var(--a); color: #1E1814; font-size: 10px; font-weight: 600; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 0 3px rgba(23,18,15,.6); z-index: 5; }
+  .legend { counter-reset: c; }
+  .legend li { list-style: none; position: relative; padding-left: 26px; margin-bottom: 6px; font-size: 10.6px; }
+  .legend li::before { counter-increment: c; content: counter(c); position: absolute; left: 0; top: 0; width: 17px; height: 17px; border-radius: 50%; background: var(--a); color: #1E1814; font-size: 9.5px; font-weight: 600; display: flex; align-items: center; justify-content: center; }
+
+  /* ---------- desktop composition ---------- */
+  .desk { position: relative; border-radius: 14px; overflow: hidden; height: 404px; background: radial-gradient(120% 90% at 30% 20%, #6D5747 0%, #3E3128 55%, #2A211B 100%); }
+  .desk .notch { position: absolute; top: 0; left: 50%; transform: translateX(-50%); width: 168px; height: 28px; border-radius: 0 0 16px 16px; background: var(--s); color: var(--tx); font-size: 10px; display: flex; align-items: center; justify-content: center; gap: 8px; }
+  .desk .win { position: absolute; border-radius: 10px; background: #F7F2EB; border: 1px solid #CFC3B4; box-shadow: 0 16px 40px rgba(0,0,0,.4); }
+  .desk .win .bar { height: 22px; border-bottom: 1px solid #E2D8CB; display: flex; align-items: center; padding: 0 9px; font-size: 9px; color: #7A6B5D; }
+  .desk .grid8 { position: absolute; inset: 0; background-image: radial-gradient(rgba(244,237,228,.22) 1px, transparent 1.2px); background-size: 16px 16px; }
+  .desk .guide { position: absolute; border: 0 dashed var(--a); }
+  .desk .zone { position: absolute; left: 0; right: 0; bottom: 0; height: 46px; border-top: 1.5px dashed rgba(244,237,228,.35); display: flex; align-items: center; justify-content: center; font-size: 9.5px; color: rgba(244,237,228,.6); letter-spacing: .08em; text-transform: uppercase; }
+  .wd { position: absolute; border-radius: 16px; background: rgba(28,22,18,.9); border: 1px solid rgba(244,237,228,.08); color: var(--tx); box-shadow: 0 10px 26px rgba(0,0,0,.3); padding: 12px 14px; }
+  .wd .k { font-size: 8.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--tx2); font-weight: 600; }
+  .mono { font-family: var(--mono); }
+</style>
+</head>
+<body>
+
+<!-- ===================================================== 1 -->
+<section class="page">
+  <div class="eyebrow">Vale · Rencana fitur · 2026-11-04 · draf untuk dibahas</div>
+  <h1>Widget di Vale, dimulai dari catatan tempel</h1>
+  <p style="max-width:820px;margin-bottom:14px">Widget = kartu kecil yang menampilkan sesuatu yang sudah Vale tahu (kalender, musik, Claude, catatan) tanpa harus membuka notch. Referensinya NotchPixel: galeri widget di Settings, tiap kartu ada pratinjau, judul, satu baris keterangan dan tombol (+). Bedanya di Vale: datanya sudah ada semua, jadi tiap widget cuma "jendela kedua" untuk data yang sama. Pertanyaan pertama: <b>widget tinggal di mana?</b></p>
+
+  <div class="grid g3">
+    <div class="card pick">
+      <div style="display:flex;align-items:center;gap:8px"><h2>A · Di desktop</h2><span class="tag a">rekomendasi</span></div>
+      <div class="mini">
+        <div class="n"></div>
+        <div class="w" style="left:60px;top:22px;width:150px;height:72px"></div>
+        <div class="s" style="left:224px;top:20px;width:46px;height:42px"></div>
+        <div class="s t" style="left:278px;top:28px;width:40px;height:38px;transform:rotate(1deg)"></div>
+        <div class="k" style="left:14px;top:20px;width:40px;height:24px"></div>
+        <div class="k" style="left:14px;top:50px;width:40px;height:40px"></div>
+      </div>
+      <p>Tiap widget jendela kecil sendiri yang bisa ditaruh di mana saja di layar, seperti gadget desktop / Rainmeter. Default <b>di lapisan desktop</b> (di belakang jendela biasa), catatan bisa "disematkan" di atas semua jendela.</p>
+      <ul><li>Ini yang beda dari notch: notch sudah punya 14 halaman untuk data yang sama</li><li>Catatan tempel memang paling masuk akal di desktop</li><li>Kerjanya paling banyak: jendela baru, drag, snap, simpan posisi per monitor</li></ul>
+    </div>
+    <div class="card">
+      <h2>B · Halaman "Widget" di notch</h2>
+      <div class="mini">
+        <div class="n open"><i class="a"></i><i></i><i></i><i></i><i class="a"></i><i></i></div>
+        <div class="w" style="left:30px;top:70px;width:120px;height:40px"></div>
+      </div>
+      <p>Satu halaman panel baru berisi kotak-kotak widget pilihan (seperti Today View di macOS).</p>
+      <ul><li>Murah: pakai panel, renderer dan halaman yang sudah ada</li><li>Tapi isinya tumpang tindih dengan halaman yang sudah ada (Kalender, Musik, Sistem)</li><li>Catatan tempel jadi tidak "nempel" di mana-mana, cuma muncul saat notch dibuka</li></ul>
+    </div>
+    <div class="card">
+      <h2>C · Dua-duanya</h2>
+      <div class="mini">
+        <div class="n open" style="width:120px;height:52px;padding-top:14px"><i class="a"></i><i></i><i></i></div>
+        <div class="s" style="left:236px;top:22px;width:46px;height:42px"></div>
+        <div class="k" style="left:14px;top:20px;width:40px;height:24px"></div>
+      </div>
+      <p>Widget yang sama bisa ditaruh di desktop atau di halaman Widget notch.</p>
+      <ul><li>Paling fleksibel</li><li>Tiap widget harus didesain di dua ukuran dan dua tempat: kerjanya hampir dua kali lipat</li><li>Bisa jadi fase akhir kalau A sudah jalan</li></ul>
+    </div>
+  </div>
+
+  <div class="grid g2" style="margin-top:14px">
+    <div class="note"><b>Usul:</b> A dulu. Desktop adalah tempat yang belum dipakai Vale, dan catatan tempel butuh itu. Halaman Widget di notch (B) bisa ditambah nanti sebagai fase terakhir kalau masih terasa kurang.</div>
+    <div class="warn"><b>Batas yang dijaga:</b> widget tidak boleh bikin Vale boros saat idle (<code>bata-idle-power-budget</code>): tidak ada timer berulang kecuali yang memang perlu, gambar ulang hanya saat datanya berubah. Halaman 5 berisi anggaran per widget.</div>
+  </div>
+  <div class="folio"><span>Vale · Widget</span><span>1 / 6 · Tempat</span></div>
+</section>
+
+<!-- ===================================================== 2 -->
+<section class="page">
+  <div class="eyebrow">Daftar widget</div>
+  <h1 style="font-size:23px">Widget yang masuk akal untuk Vale</h1>
+  <p style="margin-bottom:8px;max-width:900px">Disusun dari fitur yang sudah ada, jadi kebanyakan tinggal "menggambar ulang" data yang sudah jalan. Bobot: <span class="tag g">S</span> data sudah ada, tinggal tampilan · <span class="tag o">M</span> perlu kontrol / interaksi atau pembaruan berkala · <span class="tag r">L</span> sumber data atau jenis jendela baru.</p>
+  <table>
+    <tr><th style="width:118px">Widget</th><th style="width:210px">Isinya</th><th style="width:150px">Data dari Vale</th><th>Kenapa layak</th><th style="width:40px">Bobot</th><th style="width:44px">Fase</th></tr>
+    <tr><td><b>Catatan tempel</b></td><td>Catatan berwarna, teks + checklist, banyak catatan, bisa diubah ukuran, kucing ngintip</td><td>Halaman Catatan (<code>notes.json</code>)</td><td>Yang lu minta. Satu data dengan halaman Catatan, jadi catatan dari notch bisa "ditempel" ke desktop dan sebaliknya</td><td><span class="tag r">L</span></td><td><b>1</b></td></tr>
+    <tr><td><b>Jam</b></td><td>Jam besar + satu kota kedua (zona waktu), tanggal</td><td>Jam saat kosong di notch</td><td>Paling sering dilihat; gampang, cocok jadi widget kedua untuk membuktikan host-nya umum</td><td><span class="tag g">S</span></td><td>2</td></tr>
+    <tr><td><b>Hari ini</b></td><td>Tanggal, strip minggu, 2-3 acara berikutnya</td><td>Kalender + Google Calendar</td><td>Sama dengan kartu "Today" di referensi, tapi pakai acara asli lu</td><td><span class="tag g">S</span></td><td>2</td></tr>
+    <tr><td><b>Claude &amp; CLI</b></td><td>Sesi Claude Code yang jalan / selesai / butuh respon, klik membuka sesinya</td><td>Hook Claude, CLI, <code>claude-notice-open</code></td><td>Khas Vale, tidak ada di app lain. Kelihatan sekilas mana sesi yang nunggu lu</td><td><span class="tag o">M</span></td><td>2</td></tr>
+    <tr><td><b>Pengingat</b></td><td>Pengingat berikutnya + tombol selesai</td><td>Halaman Pengingat</td><td>Pasangan alami catatan tempel</td><td><span class="tag g">S</span></td><td>2</td></tr>
+    <tr><td><b>Musik</b></td><td>Cover, judul, tombol main/lanjut, opsional satu baris lirik</td><td>Media + lirik (LRCLIB)</td><td>Kontrol musik tanpa buka notch; baris lirik jadi "karaoke" kecil di desktop</td><td><span class="tag o">M</span></td><td>3</td></tr>
+    <tr><td><b>Pomodoro</b></td><td>Lingkaran waktu, main/jeda, ± durasi</td><td>Pomodoro</td><td>Persis kartu Focus timer di referensi; state yang sama dengan notch</td><td><span class="tag o">M</span></td><td>3</td></tr>
+    <tr><td><b>Clipboard</b></td><td>3 salinan terakhir, klik untuk salin lagi</td><td>Riwayat clipboard</td><td>Akses cepat tanpa hotkey; ikut aturan privasi clipboard</td><td><span class="tag g">S</span></td><td>3</td></tr>
+    <tr><td><b>Pintasan</b></td><td>Grid tile pilihan (app, folder, situs)</td><td>Tile Pintasan</td><td>Peluncur kecil di desktop; berguna kalau Dock belum ada</td><td><span class="tag g">S</span></td><td>3</td></tr>
+    <tr><td><b>Sistem</b></td><td>CPU, RAM, disk, jaringan, garis kecil</td><td>Halaman Sistem (sampler)</td><td>Sama dengan referensi, tapi ini satu-satunya yang wajib sampling terus: hanya saat terlihat</td><td><span class="tag o">M</span></td><td>4</td></tr>
+    <tr><td><b>Baterai</b></td><td>Baterai laptop + perangkat Bluetooth</td><td>Baterai, halaman Perangkat</td><td>Kartu Batteries di referensi; di PC tanpa baterai, sembunyi sendiri</td><td><span class="tag o">M</span></td><td>4</td></tr>
+    <tr><td><b>Rak file</b></td><td>Kotak drop di desktop, file bisa di-drag keluar lagi</td><td>Rak file (OLE drop)</td><td>Tempat transit file yang selalu kelihatan, bukan cuma saat notch terbuka</td><td><span class="tag o">M</span></td><td>4</td></tr>
+    <tr><td><b>Foto</b></td><td>Bingkai foto dari satu folder, ganti tiap N menit</td><td>baru (WIC)</td><td>Manis, tapi tidak memakai data Vale</td><td><span class="tag o">M</span></td><td>5</td></tr>
+    <tr><td><b>Cuaca</b></td><td>Suhu, kondisi, tinggi/rendah hari ini</td><td>baru (mis. Open-Meteo, tanpa kunci API)</td><td>Populer, tapi perlu sumber data, lokasi dan jaringan baru</td><td><span class="tag r">L</span></td><td>5</td></tr>
+    <tr><td><b>Hitung mundur</b></td><td>"12 hari lagi: Serah terima"</td><td>Acara kalender</td><td>Kecil dan menyenangkan, pakai acara yang sudah ada</td><td><span class="tag g">S</span></td><td>5</td></tr>
+    <tr><td><b>Kucing di desktop</b></td><td>Kucing Vale duduk di atas widget / tepi jendela, tidur, menyapa</td><td>Kucing (RobotPainter)</td><td>Paling "Vale", tapi animasi = biaya daya; perlu dirancang hemat</td><td><span class="tag r">L</span></td><td>5</td></tr>
+  </table>
+  <div class="folio"><span>Vale · Widget</span><span>2 / 6 · Daftar</span></div>
+</section>
+
+<!-- ===================================================== 3 -->
+<section class="page dark">
+  <div style="display:grid;grid-template-columns:1fr 258px;gap:22px;height:100%">
+    <div>
+      <div class="eyebrow">Mockup · Settings → Widget</div>
+      <h1 style="font-size:22px;margin-bottom:12px">Galeri widget dengan gaya Settings Vale</h1>
+      <div class="sw">
+        <div class="tb">
+          <svg width="16" height="14" viewBox="0 0 32 28"><path d="M3 26V4l7 6h12l7-6v22z" fill="#E2683C"/><circle cx="11" cy="17" r="2" fill="#1E1814"/><circle cx="21" cy="17" r="2" fill="#1E1814"/></svg>
+          Vale Settings
+          <div class="ctl"><span>—</span><span>☐</span><span>✕</span></div>
+        </div>
+        <div class="main">
+          <div class="nav">
+            <div class="brand"><svg width="26" height="23" viewBox="0 0 32 28"><path d="M3 26V4l7 6h12l7-6v22z" fill="#E2683C"/><circle cx="11" cy="17" r="2" fill="#1E1814"/><circle cx="21" cy="17" r="2" fill="#1E1814"/></svg>Vale</div>
+            <div class="ni"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>Umum</div>
+            <div class="ni"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="8" cy="10" r="1.2"/><circle cx="12" cy="7.5" r="1.2"/><circle cx="16" cy="10" r="1.2"/></svg>Tampilan</div>
+            <div class="ni"><svg viewBox="0 0 24 24"><path d="M4 20V5l4 4h8l4-4v15z"/></svg>Kucing</div>
+            <div class="ni"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>Panel</div>
+            <div class="ni a"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="8" height="10" rx="2"/><rect x="13" y="4" width="8" height="6" rx="2"/><rect x="13" y="12" width="8" height="8" rx="2"/><rect x="3" y="16" width="8" height="4" rx="2"/></svg>Widget<span class="new">baru</span></div>
+            <div class="ni"><svg viewBox="0 0 24 24"><rect x="6" y="4" width="12" height="17" rx="2"/><path d="M9 4V3h6v1"/></svg>Clipboard</div>
+            <div class="ni"><svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 10h1M11 10h2M16 10h1M8 14h8"/></svg>Tombol pintas</div>
+            <div class="ni"><svg viewBox="0 0 24 24"><path d="M12 3l2 6 6 2-6 2-2 6-2-6-6-2 6-2z"/></svg>Fitur</div>
+            <div class="ni"><svg viewBox="0 0 24 24"><path d="M10 14l4-4M8 12l-2 2a3 3 0 004 4l2-2M16 12l2-2a3 3 0 00-4-4l-2 2"/></svg>Integrasi</div>
+            <div class="ni"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>Tentang</div>
+          </div>
+          <div class="body">
+            <h3>Widget</h3>
+            <div class="eb">Di desktop</div>
+            <div class="box">
+              <div class="row"><div><div>Tampilkan widget</div><div class="d">Semua widget di desktop · Win+Shift+W</div></div><div class="sp"></div><div class="tg"></div></div>
+              <div class="row"><div><div>Lapisan</div><div class="d">Catatan yang disematkan selalu di atas</div></div><div class="sp"></div><div class="seg"><span class="a">Di desktop</span><span>Di atas jendela</span></div></div>
+              <div class="row"><div><div>Saat layar penuh</div><div class="d">Game, video, presentasi</div></div><div class="sp"></div><div class="seg"><span class="a">Sembunyikan</span><span>Biarkan</span></div></div>
+              <div class="row"><div>Kunci posisi</div><div class="sp"></div><div class="tg off"></div></div>
+            </div>
+            <div class="eb">Galeri <span class="r">4 di desktop</span></div>
+            <div class="gal">
+              <div class="wc on">
+                <div class="pv" style="background:#3A2F27;padding:6px">
+                  <div style="position:absolute;left:12px;top:9px;width:86px;height:58px;border-radius:7px;background:var(--p-krem);transform:rotate(-2deg);padding:6px 7px;color:var(--p-ink);font-size:8px;line-height:1.35;box-shadow:0 3px 8px rgba(0,0,0,.35)"><b style="font-size:8.5px">Belanja</b><br>☑ <s style="opacity:.55">Bata ekspos</s><br>☐ Kaca low-e</div>
+                  <div style="position:absolute;left:92px;top:14px;width:78px;height:52px;border-radius:7px;background:var(--p-tera);transform:rotate(2deg);padding:6px 7px;color:var(--p-ink);font-size:8px;line-height:1.35;box-shadow:0 3px 8px rgba(0,0,0,.35)"><b style="font-size:8.5px">Telp Pak Budi</b><br>jam 3, revisi atap</div>
+                  <svg style="position:absolute;left:40px;top:-1px" width="30" height="14" viewBox="0 0 46 24"><path d="M6 24V4l9 7h16l9-7v20z" fill="#E2683C"/><circle cx="17" cy="17" r="2.4" fill="#1E1814"/><circle cx="29" cy="17" r="2.4" fill="#1E1814"/></svg>
+                </div>
+                <div class="ti">Catatan tempel</div>
+                <div class="de">Catatan berwarna yang nempel di desktop.</div>
+                <div class="bdg">3</div>
+                <div class="add f">+</div>
+              </div>
+              <div class="wc on">
+                <div class="pv"><div style="display:flex;justify-content:space-between;align-items:flex-start"><div><span style="font-size:24px;font-weight:600;letter-spacing:-.03em">8:47</span><span style="font-size:9px;color:var(--tx2)"> PM</span></div><span style="font-size:9px;font-weight:600">RAB</span></div><div style="display:flex;justify-content:space-between;font-size:9px;color:var(--tx2);margin-top:4px"><span>◎ Tokyo</span><span style="color:var(--tx)">10.47 AM</span></div></div>
+                <div class="ti">Jam<span class="soon">fase 2</span></div>
+                <div class="de">Jam lu dan jam satu kota pilihan.</div>
+                <div class="bdg">1</div>
+                <div class="add">+</div>
+              </div>
+              <div class="wc">
+                <div class="pv"><div style="display:flex;gap:8px;align-items:baseline"><span style="font-size:22px;font-weight:600">4</span><span style="font-size:9px;line-height:1.1">RAB<br><span style="color:var(--tx2)">NOV</span></span><span style="margin-left:auto;font-size:9px;color:var(--tx2)">Minggu 45</span></div><div style="font-size:9px;margin-top:6px;display:flex;gap:6px;align-items:center"><i style="width:3px;height:14px;border-radius:2px;background:var(--a)"></i>14.00 Rapat klien · Kemang</div></div>
+                <div class="ti">Hari ini<span class="soon">fase 2</span></div>
+                <div class="de">Tanggal dan acara berikutnya.</div>
+                <div class="add">+</div>
+              </div>
+              <div class="wc">
+                <div class="pv"><div style="font-size:9px;display:flex;flex-direction:column;gap:5px"><span style="display:flex;gap:6px;align-items:center"><i style="width:7px;height:7px;border-radius:50%;background:var(--ochre)"></i>vale · butuh respon<span style="margin-left:auto;color:var(--tx2)">2 mnt</span></span><span style="display:flex;gap:6px;align-items:center"><i style="width:7px;height:7px;border-radius:50%;background:var(--sage)"></i>site · selesai<span style="margin-left:auto;color:var(--tx2)">14 mnt</span></span><span style="display:flex;gap:6px;align-items:center;color:var(--tx2)"><i style="width:7px;height:7px;border-radius:50%;border:1.5px solid var(--tx2)"></i>cargo test · jalan</span></div></div>
+                <div class="ti">Claude &amp; CLI<span class="soon">fase 2</span></div>
+                <div class="de">Sesi yang jalan atau nunggu lu.</div>
+                <div class="add">+</div>
+              </div>
+            </div>
+            <div class="scroll"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div style="padding-top:62px">
+      <div class="lbl">Cara kerjanya</div>
+      <ul class="bul">
+        <li><b style="color:var(--tx)">Seksi baru "Widget"</b> setelah Panel. Tidak menyentuh seksi lain.</li>
+        <li><b style="color:var(--tx)">Galeri 2 kolom</b> seperti referensi: pratinjau diam (gambar, tanpa animasi), judul, satu baris, tombol (+).</li>
+        <li><b style="color:var(--tx)">(+)</b> menaruh widget baru di desktop, di tempat kosong dekat notch. Untuk catatan, (+) selalu bikin catatan baru.</li>
+        <li><b style="color:var(--tx)">Angka di kartu</b> = berapa yang ada di desktop sekarang (di referensi ini kelihatannya juga jumlah atau urutan). Klik kartu yang aktif: widget-nya berkedip sebentar di desktop supaya ketemu.</li>
+        <li><b style="color:var(--tx)">Hapus widget</b> dari menu klik-kanan widget itu sendiri, bukan dari Settings.</li>
+        <li>Widget yang belum dibuat <b style="color:var(--tx)">tidak tampil</b> di galeri. Label "fase 2" di mockup cuma penanda untuk dokumen ini.</li>
+      </ul>
+      <div class="lbl" style="margin-top:14px">Jalan lain menambah catatan</div>
+      <ul class="bul">
+        <li>Menu tray: <b style="color:var(--tx)">Catatan tempel baru</b></li>
+        <li>Hotkey ke-6 di Tombol pintas (bisa direkam)</li>
+        <li>Halaman Catatan di notch: tombol <b style="color:var(--tx)">Tempel ke desktop</b> di tiap catatan, atau drag kartunya keluar dari notch</li>
+        <li>Tombol + di kepala catatan yang sudah ada</li>
+      </ul>
+    </div>
+  </div>
+  <div class="folio"><span>Vale · Widget</span><span>3 / 6 · Settings</span></div>
+</section>
+
+<!-- ===================================================== 4 -->
+<section class="page dark">
+  <div class="eyebrow">Mockup · Catatan tempel</div>
+  <h1 style="font-size:22px;margin-bottom:10px">Catatan tempel khas Vale</h1>
+  <div style="display:grid;grid-template-columns:1fr 268px;gap:22px">
+    <div style="position:relative;height:590px;border-radius:14px;background:radial-gradient(120% 90% at 30% 20%, #6D5747 0%, #3E3128 55%, #2A211B 100%);overflow:hidden">
+
+      <!-- note 1: krem, checklist, active, cat peek -->
+      <svg class="catpeek" style="left:66px;top:30px" viewBox="0 0 46 24"><path d="M6 24V3l9 8h16l9-8v21z" fill="#E2683C"/><path d="M9 9l4 4M37 9l-4 4" stroke="#B9502B" stroke-width="1.4"/><ellipse cx="17" cy="18" rx="2.4" ry="2.8" fill="#1E1814"/><ellipse cx="29" cy="18" rx="2.4" ry="2.8" fill="#1E1814"/></svg>
+      <div class="sn act" style="left:34px;top:52px;width:236px;height:236px">
+        <div class="hd">
+          <svg viewBox="0 0 24 24" class="pin"><path d="M9 4h6l-1 6 3 3H7l3-3zM12 13v7"/></svg>
+          <div class="tl">
+            <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+            <svg viewBox="0 0 24 24"><rect x="4" y="5" width="5" height="5" rx="1"/><path d="M12 7.5h8M12 16.5h8"/><rect x="4" y="14" width="5" height="5" rx="1"/></svg>
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.5" fill="currentColor"/></svg>
+            <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg>
+            <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
+          </div>
+        </div>
+        <h5>Belanja material</h5>
+        <div class="ck x"><i></i><span>Bata ekspos 2.000 bh</span></div>
+        <div class="ck x"><i></i><span>Terakota lantai 30×30</span></div>
+        <div class="ck"><i></i><span>Kaca low-e 6 mm</span></div>
+        <div class="ck"><i></i><span>Baja ringan C75</span></div>
+        <div class="ck" style="opacity:.45"><i style="border-style:dashed"></i><span>Tambah…</span></div>
+        <div class="ft">2 dari 4 · diubah 13.22</div>
+        <div class="grip"></div>
+      </div>
+
+      <!-- note 2: terakota, plain text -->
+      <div class="sn tera" style="left:300px;top:46px;width:208px;height:168px">
+        <div class="hd"><span>Hari ini 09.10</span></div>
+        <h5>Telp Pak Budi</h5>
+        <p>Jam 3 sore soal revisi atap. Tanya juga jadwal pengecoran lantai 2.</p>
+        <div class="grip"></div>
+      </div>
+
+      <!-- note 3: gelap Vale style -->
+      <div class="sn gelap" style="left:300px;top:236px;width:208px;height:150px">
+        <div class="hd" style="opacity:.6"><span>Kemarin</span></div>
+        <h5>Ide fasad</h5>
+        <p style="color:var(--tx2)">Kisi-kisi kayu vertikal, jarak 8 cm, bayangan sore jatuh ke ruang tamu.</p>
+        <div class="grip" style="color:var(--tx2)"></div>
+      </div>
+
+      <!-- note 4: sage rolled up -->
+      <div class="sn sage roll" style="left:34px;top:318px;width:236px">
+        <div class="hd" style="opacity:1;height:32px"><span style="font-size:12px;font-weight:600;opacity:.9">Catatan rapat</span><div class="tl" style="opacity:.5"><span style="font-size:10px">5 baris</span><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></div></div>
+      </div>
+
+      <!-- note 5: plum, done checklist, happy cat -->
+      <svg class="catpeek" style="left:72px;top:374px" viewBox="0 0 46 24"><path d="M6 24V3l9 8h16l9-8v21z" fill="#F4EDE4"/><path d="M14 19q3-3 6 0M26 19q3-3 6 0" stroke="#1E1814" stroke-width="1.8" fill="none" stroke-linecap="round"/></svg>
+      <div class="sn plum" style="left:34px;top:396px;width:236px;height:140px">
+        <div class="hd"><span>Senin</span></div>
+        <h5>Sebelum rilis</h5>
+        <div class="ck x"><i></i><span>Tes di monitor kedua</span></div>
+        <div class="ck x"><i></i><span>Cek mode hemat daya</span></div>
+        <div class="ck x"><i></i><span>Update README</span></div>
+        <div class="grip"></div>
+      </div>
+
+      <!-- colour popover -->
+      <div class="pop" style="left:116px;top:84px;width:178px;z-index:4">
+        <div style="color:var(--tx2);font-size:9px;letter-spacing:.1em;text-transform:uppercase;font-weight:600">Warna</div>
+        <div class="sw6"><span class="on" style="background:var(--p-krem)"></span><span style="background:var(--p-tera)"></span><span style="background:var(--p-sage)"></span><span style="background:var(--p-plum)"></span><span style="background:var(--p-laut)"></span><span style="background:#241D18;border-color:#4A3E35"></span></div>
+        <div class="ln"><span>Ukuran teks</span><span class="seg" style="font-size:9px"><span>S</span><span class="a">M</span><span>L</span></span></div>
+        <div class="ln"><span>Sematkan di atas</span><span class="tg" style="transform:scale(.8)"></span></div>
+        <div class="ln"><span>Kucing ngintip</span><span class="tg" style="transform:scale(.8)"></span></div>
+      </div>
+
+      <!-- a window, to show the layer -->
+      <div style="position:absolute;left:528px;top:70px;width:212px;height:300px;border-radius:10px;background:#F7F2EB;border:1px solid #CFC3B4;box-shadow:0 16px 40px rgba(0,0,0,.4)">
+        <div style="height:24px;border-bottom:1px solid #E2D8CB;font-size:9px;color:#7A6B5D;display:flex;align-items:center;padding:0 10px">Jendela biasa (Revit, Chrome, …)</div>
+        <div style="padding:12px;font-size:9.5px;color:#7A6B5D;line-height:1.5">Catatan biasa ada <b>di belakang</b> jendela ini (lapisan desktop). Catatan yang disematkan (ikon pin oranye) tetap di atas.</div>
+      </div>
+      <div class="sn tera" style="left:574px;top:262px;width:166px;height:110px;z-index:3">
+        <div class="hd" style="opacity:1"><svg viewBox="0 0 24 24" class="pin"><path d="M9 4h6l-1 6 3 3H7l3-3zM12 13v7"/></svg><span style="opacity:.55">disematkan</span></div>
+        <h5>Transfer DP</h5>
+        <p>Jangan lupa transfer DP sebelum jam 4.</p>
+      </div>
+
+      <!-- callouts -->
+      <div class="callout" style="left:118px;top:26px">1</div>
+      <div class="callout" style="left:30px;top:56px">2</div>
+      <div class="callout" style="left:250px;top:56px">3</div>
+      <div class="callout" style="left:30px;top:140px">4</div>
+      <div class="callout" style="left:262px;top:278px">5</div>
+      <div class="callout" style="left:262px;top:322px">6</div>
+      <div class="callout" style="left:500px;top:240px">7</div>
+      <div class="callout" style="left:118px;top:380px">8</div>
+      <div class="callout" style="left:564px;top:254px">9</div>
+    </div>
+
+    <div>
+      <div class="lbl">Yang kelihatan</div>
+      <ol class="legend">
+        <li><b style="color:var(--tx)">Kucing ngintip</b> di atas catatan yang terakhir disentuh, warna bulu ikut setelan Kucing. Diam (gambar saja), tidak ada timer.</li>
+        <li><b style="color:var(--tx)">Pin</b>: catatan ini tetap di atas semua jendela. Tanpa pin, catatan ada di lapisan desktop.</li>
+        <li><b style="color:var(--tx)">Kepala catatan</b> muncul penuh saat hover: + catatan baru, checklist, warna, menu (···), tutup. Drag di kepala untuk memindah.</li>
+        <li><b style="color:var(--tx)">Checklist</b>: klik kotak untuk centang; yang selesai dicoret dan pudar. Enter bikin baris baru, "- " di awal baris jadi kotak.</li>
+        <li><b style="color:var(--tx)">Ukuran</b>: tarik sudut kanan bawah, ikut snap ke grid 8 dip.</li>
+        <li><b style="color:var(--tx)">Gulung</b>: klik dua kali di kepala, catatan jadi satu baris judul.</li>
+        <li><b style="color:var(--tx)">Gaya gelap</b>: pakai warna dasar Vale dengan garis aksen, untuk yang tidak suka kertas pastel.</li>
+        <li><b style="color:var(--tx)">Semua tercentang</b>: kucing tersenyum (wajah Senang), sampai ada baris yang belum.</li>
+        <li><b style="color:var(--tx)">Catatan disematkan</b> di atas jendela lain.</li>
+      </ol>
+      <div class="lbl" style="margin-top:10px">Warna kertas</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;font-size:9.5px;color:var(--tx2)">
+        <span style="display:flex;align-items:center;gap:4px"><i style="width:12px;height:12px;border-radius:4px;background:var(--p-krem)"></i>Krem</span>
+        <span style="display:flex;align-items:center;gap:4px"><i style="width:12px;height:12px;border-radius:4px;background:var(--p-tera)"></i>Terakota</span>
+        <span style="display:flex;align-items:center;gap:4px"><i style="width:12px;height:12px;border-radius:4px;background:var(--p-sage)"></i>Sage</span>
+        <span style="display:flex;align-items:center;gap:4px"><i style="width:12px;height:12px;border-radius:4px;background:var(--p-plum)"></i>Plum</span>
+        <span style="display:flex;align-items:center;gap:4px"><i style="width:12px;height:12px;border-radius:4px;background:var(--p-laut)"></i>Laut</span>
+        <span style="display:flex;align-items:center;gap:4px"><i style="width:12px;height:12px;border-radius:4px;background:#241D18;border:1px solid #4A3E35"></i>Gelap</span>
+      </div>
+      <p style="margin-top:6px;font-size:10px">Diturunkan dari palet aksen Vale (Terakota, Sage, Oker, Plum, Laut), dibuat pucat supaya teks gelap tetap terbaca.</p>
+      <div class="note" style="margin-top:10px"><b>Satu data dengan halaman Catatan.</b> Catatan tempel = catatan biasa dengan tambahan warna, posisi dan ukuran. Edit di notch, berubah di desktop; "Lepas dari desktop" tidak menghapus catatannya.</div>
+    </div>
+  </div>
+  <div class="folio"><span>Vale · Widget</span><span>4 / 6 · Catatan tempel</span></div>
+</section>
+
+<!-- ===================================================== 5 -->
+<section class="page">
+  <div class="eyebrow">Tata letak, lapisan, daya</div>
+  <h1 style="font-size:22px;margin-bottom:10px">Widget di desktop: snap, monitor, layar penuh, Susun, Dock</h1>
+  <div style="display:grid;grid-template-columns:1fr 330px;gap:20px">
+    <div>
+      <div class="desk">
+        <div class="grid8"></div>
+        <div class="notch"><svg width="14" height="12" viewBox="0 0 32 28"><path d="M3 26V4l7 6h12l7-6v22z" fill="#E2683C"/></svg>20.47</div>
+        <!-- clock + today, left column -->
+        <div class="wd" style="left:24px;top:24px;width:176px;height:92px">
+          <div style="display:flex;justify-content:space-between"><span style="font-size:30px;font-weight:600;letter-spacing:-.03em;line-height:1">8:47</span><span class="k">Rab</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--tx2);margin-top:10px"><span>Tokyo</span><span style="color:var(--tx)">10.47</span></div>
+        </div>
+        <div class="wd" style="left:24px;top:128px;width:176px;height:108px">
+          <div class="k">Hari ini · Rab 4 Nov</div>
+          <div style="font-size:10.5px;margin-top:8px;display:flex;gap:7px"><i style="width:3px;border-radius:2px;background:var(--a)"></i><span>14.00 Rapat klien<br><span style="color:var(--tx2)">Kemang</span></span></div>
+          <div style="font-size:10.5px;margin-top:6px;display:flex;gap:7px"><i style="width:3px;border-radius:2px;background:var(--sage)"></i><span>16.30 Survei lokasi</span></div>
+        </div>
+        <!-- snap guide -->
+        <div style="position:absolute;left:24px;top:242px;width:176px;border-top:1.5px dashed var(--a)"></div>
+        <div style="position:absolute;left:24px;top:252px;width:176px;height:74px;border-radius:16px;border:1.5px dashed var(--a);background:rgba(226,104,60,.1);display:flex;align-items:center;justify-content:center;font-size:9.5px;color:#F3C3AE">lepas di sini · snap</div>
+        <div style="position:absolute;left:60px;top:268px;width:176px;height:74px;border-radius:16px;background:rgba(28,22,18,.75);border:1px solid rgba(244,237,228,.15);color:var(--tx);padding:12px 14px;transform:rotate(-1.5deg);box-shadow:0 18px 30px rgba(0,0,0,.4)"><div class="k">Claude &amp; CLI</div><div style="font-size:10.5px;margin-top:7px">● vale · butuh respon</div></div>
+        <!-- window over the desktop -->
+        <div class="win" style="left:222px;top:58px;width:240px;height:250px"><div class="bar">Jendela yang dimaksimalkan / di-Susun</div><div style="padding:12px;font-size:9.5px;color:#7A6B5D;line-height:1.5">Widget di lapisan desktop tertutup jendela, seperti ikon desktop. Susun tidak pernah memindah atau menghitung widget.</div></div>
+        <!-- stickies right -->
+        <div class="sn" style="left:484px;top:40px;width:150px;height:130px;padding:0 11px"><div class="hd"><svg viewBox="0 0 24 24" class="pin"><path d="M9 4h6l-1 6 3 3H7l3-3zM12 13v7"/></svg></div><h5 style="font-size:12px">Belanja</h5><div class="ck x" style="font-size:10px"><i></i><span>Bata ekspos</span></div><div class="ck" style="font-size:10px"><i></i><span>Kaca low-e</span></div></div>
+        <div class="sn tera" style="left:520px;top:186px;width:150px;height:100px;padding:0 11px"><div class="hd"></div><h5 style="font-size:12px">Telp Pak Budi</h5><p style="font-size:10px">Jam 3, revisi atap</p></div>
+        <div class="zone">Zona taskbar / Dock: widget tidak bisa ditaruh di sini</div>
+      </div>
+      <div class="cap">Titik-titik = grid snap 8 dip (cuma kelihatan saat sedang menarik). Garis oranye = tepi yang sejajar dengan widget lain. Jarak antar widget 12 dip.</div>
+    </div>
+    <div>
+      <table>
+        <tr><th style="width:92px">Hal</th><th>Usul</th></tr>
+        <tr><td><b>Pindah</b></td><td>Drag di mana saja pada widget (catatan: di kepalanya). Snap ke grid, tepi layar, dan tepi widget lain. Alt saat drag = bebas tanpa snap</td></tr>
+        <tr><td><b>Monitor</b></td><td>Posisi disimpan per monitor (path perangkat, seperti <code>notch_monitor</code>). Monitor dicabut: widget pindah ke monitor utama, kembali saat dicolok lagi</td></tr>
+        <tr><td><b>Layar penuh</b></td><td>Di lapisan desktop otomatis tertutup. Catatan yang disematkan disembunyikan saat ada jendela fullscreen di monitornya (cek yang sama dengan notch, tanpa timer baru)</td></tr>
+        <tr><td><b>Win+D</b></td><td>Usul: widget tetap kelihatan di desktop (seperti Rainmeter). Perlu dicoba dulu; kalau Windows tetap menyembunyikannya, kita terima</td></tr>
+        <tr><td><b>Susun</b></td><td>Widget tidak ikut Susun (jendela tool, tidak dihitung, tidak bisa dipilih)</td></tr>
+        <tr><td><b>Dock</b></td><td>Widget menghormati area kerja + zona bawah yang dipesan Dock nanti; Dock Fase 2 (ganti taskbar) cukup memberi tahu tinggi zonanya</td></tr>
+        <tr><td><b>Tema</b></td><td>Widget ikut Warna dasar, aksen, Font dan mode jendela Vale (termasuk Terminal). Catatan punya warna kertasnya sendiri</td></tr>
+      </table>
+      <div class="lbl" style="margin-top:12px">Anggaran daya per widget</div>
+      <table>
+        <tr><th>Widget</th><th>Kapan gambar ulang</th></tr>
+        <tr><td>Catatan</td><td>Hanya saat diketik / dipindah. Idle: <b>0</b>. Simpan 1,5 s setelah ketikan terakhir</td></tr>
+        <tr><td>Jam</td><td>Satu one-shot ke menit berikutnya: 1×/menit</td></tr>
+        <tr><td>Hari ini, Claude, Pengingat</td><td>Saat datanya berubah + tengah malam: ~0</td></tr>
+        <tr><td>Musik, Pomodoro</td><td>1×/detik hanya saat main / jalan</td></tr>
+        <tr><td>Sistem</td><td>2 s hanya saat kelihatan; berhenti saat terkunci, layar mati, atau tertutup jendela</td></tr>
+      </table>
+    </div>
+  </div>
+  <div class="folio"><span>Vale · Widget</span><span>5 / 6 · Tata letak</span></div>
+</section>
+
+<!-- ===================================================== 6 -->
+<section class="page">
+  <div class="eyebrow">Yang perlu lu putuskan</div>
+  <h1 style="font-size:22px;margin-bottom:10px">Keputusan dan fase</h1>
+  <div style="display:grid;grid-template-columns:1.25fr 1fr;gap:20px">
+    <div>
+      <table>
+        <tr><th style="width:24px">#</th><th style="width:150px">Pertanyaan</th><th>Pilihan</th><th style="width:150px">Usul gw</th></tr>
+        <tr><td>1</td><td><b>Tempat widget</b></td><td>A desktop · B halaman notch · C dua-duanya</td><td><b>A</b>, B mungkin nanti</td></tr>
+        <tr><td>2</td><td><b>Lapisan default</b></td><td>Di desktop (di belakang jendela) · selalu di atas</td><td>Di desktop + pin per catatan</td></tr>
+        <tr><td>3</td><td><b>Hubungan dengan halaman Catatan</b></td><td>Satu data (catatan bisa ditempel) · terpisah total</td><td><b>Satu data</b></td></tr>
+        <tr><td>4</td><td><b>Isi catatan</b></td><td>Teks polos · teks + checklist · markdown (tebal, judul, list)</td><td>Teks + checklist</td></tr>
+        <tr><td>5</td><td><b>Gaya</b></td><td>Kertas pastel · gelap Vale · dua-duanya per catatan</td><td>Dua-duanya, default Krem</td></tr>
+        <tr><td>6</td><td><b>Sentuhan kucing</b></td><td>Ngintip di catatan terakhir · di semua catatan · mati</td><td>Terakhir disentuh, diam, senang kalau checklist beres; bisa dimatikan</td></tr>
+        <tr><td>7</td><td><b>Banyak catatan</b></td><td>Tanpa batas · dibatasi</td><td>Maks 20 di desktop</td></tr>
+        <tr><td>8</td><td><b>Isi Fase 1</b></td><td>Host + catatan saja · Host + catatan + Jam</td><td>Host + catatan saja</td></tr>
+        <tr><td>9</td><td><b>Cara bikin catatan</b></td><td>Galeri (+) · tray · hotkey · Tempel dari halaman Catatan · drag keluar notch</td><td>Semua kecuali drag keluar notch (fase 2)</td></tr>
+        <tr><td>10</td><td><b>Win+D</b></td><td>Tetap kelihatan · ikut tersembunyi</td><td>Tetap kelihatan kalau bisa</td></tr>
+      </table>
+    </div>
+    <div>
+      <div class="lbl">Fase (masing-masing satu run <code>build</code>)</div>
+      <table>
+        <tr><th style="width:44px">Fase</th><th>Isi</th></tr>
+        <tr><td><b>1</b></td><td><b>Host widget + catatan tempel.</b> Jendela widget (lapisan desktop / pin), drag + snap + ubah ukuran, posisi per monitor, fullscreen, Settings → Widget (perilaku + galeri berisi satu kartu), catatan: warna, teks + checklist, gulung, kucing ngintip, satu data dengan Catatan, tray + hotkey + "Tempel ke desktop"</td></tr>
+        <tr><td>2</td><td>Jam, Hari ini, Claude &amp; CLI, Pengingat. Drag kartu catatan keluar dari notch</td></tr>
+        <tr><td>3</td><td>Musik (+ baris lirik), Pomodoro, Clipboard, Pintasan</td></tr>
+        <tr><td>4</td><td>Sistem, Baterai, Rak file</td></tr>
+        <tr><td>5</td><td>Foto, Cuaca, Hitung mundur, kucing di desktop; mungkin halaman Widget di notch (B)</td></tr>
+      </table>
+      <div class="warn" style="margin-top:12px"><b>Bentrok file dengan sesi lain.</b> Fase 1 pasti menyentuh <code>config.rs</code>, <code>ui/settings_window.rs</code>, <code>i18n.rs</code>, <code>app.rs</code>. Sesi Dock (on hold) dan sesi lirik (masih rencana) juga akan ke sana. Sebelum <code>build</code> jalan gw cek dulu tidak ada run lain yang sedang aktif.</div>
+      <div class="note" style="margin-top:8px"><b>Fase 1 dianggap selesai</b> kalau: bisa bikin, tulis, centang, warnai, pindah, ubah ukuran, gulung, sematkan dan hapus catatan di desktop; posisi kembali setelah restart dan setelah monitor dicabut-colok; catatan sama di halaman Catatan; tidak ada timer baru saat idle; tes lulus, di-merge dan di-push ke <code>main</code>. Tanpa rilis.</div>
+    </div>
+  </div>
+  <div class="folio"><span>Vale · Widget</span><span>6 / 6 · Keputusan</span></div>
+</section>
+
+</body>
+</html>

@@ -186,3 +186,12 @@ top right, in the header row. It opens Vale's Settings window.
 - **Tests.** `settings_button_is_clear_of_every_page` checks the rect against
   every page's regions and drawn rects (`drawn_rects`, shared with
   `drawn_rects_inside_panel`), strip on and off, both styles.
+
+## The pin on a note card (2026-11-04)
+
+Each Notes card has a 22 dip `Icon::Pin` button at its top-right
+(`panel_layout::note_pin_rect`, `Hit::NoteSticky(id)`, registered before the
+card's `NoteOpen` region; the region-overlap test allows exactly that
+containment). Secondary ink when the note is not on the desktop, accent when it
+is; the click sticks or unsticks it (`Effect::ToggleNoteSticky`). An empty
+desktop note shows "Catatan kosong" as its title. See [[widgets]].

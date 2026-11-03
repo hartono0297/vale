@@ -98,6 +98,7 @@ use crate::pomodoro::PomoSettings;
 use crate::sources::battery::battery_present;
 use crate::theme::{self, Accent, CatAccessory, CatColor, Surface, WindowPalette, WindowTheme};
 use crate::tiles::{CustomKind, CustomProblem, CustomTile, LABEL_MAX, ShortcutTiles, TARGET_MAX};
+use crate::widgets::prefs::{FullscreenRule, WidgetLayer, WidgetPrefs};
 
 /// Posted to the owner for each change: `lparam` is a `Box<Action>` raw
 /// pointer the owner frees (`take_action`). WM_APP + 1..7 are taken.
@@ -148,6 +149,15 @@ pub enum Action {
     Lyrics(bool),
     Shell(Shell),
     OpenMode(OpenMode),
+    /// Settings -> Widget: the five settings, the gallery's (+) and a click
+    /// on its active card.
+    WidgetsShow(bool),
+    WidgetsLayer(WidgetLayer),
+    WidgetsFullscreen(FullscreenRule),
+    WidgetsLock(bool),
+    WidgetsPeek(bool),
+    WidgetAdd,
+    WidgetHighlight,
     CliStart(CliStart),
     Robot(bool),
     RobotMotion(Motion),
@@ -352,6 +362,9 @@ pub struct Model {
     /// not be registered (another app has it, or the PrtSc hook failed).
     pub hotkeys: Hotkeys,
     pub hotkey_failed: [bool; HotkeyId::ALL.len()],
+    /// The widgets' settings, and how many sticky notes are on the desktop.
+    pub widgets: WidgetPrefs,
+    pub sticky_count: usize,
     /// Susun's gap, templates and saved arrangements.
     pub arrange: ArrangeSettings,
     pub robot: bool,
@@ -417,6 +430,8 @@ impl Model {
             device_notices: cfg.device_notices,
             hotkeys: cfg.hotkeys,
             hotkey_failed: [false; HotkeyId::ALL.len()],
+            widgets: cfg.widgets,
+            sticky_count: 0,
             arrange: cfg.arrange.clone(),
             robot: cfg.robot,
             robot_motion: cfg.robot_animation,
@@ -1512,6 +1527,8 @@ impl Settings {
             device_notices: m.device_notices,
             hotkeys: m.hotkeys,
             hotkey_failed: m.hotkey_failed,
+            widgets: m.widgets,
+            sticky_count: m.sticky_count,
             hotkey_recording: self.recording,
             hotkey_error: self.hotkey_error,
             arrange: m.arrange.clone(),
@@ -1689,6 +1706,10 @@ impl Settings {
                 }
                 Group::NotchFill => usize::from(m.notch_fill == NotchFill::Transparent) as f32,
                 Group::Font => UiFont::ALL.iter().position(|v| *v == m.font).unwrap_or(0) as f32,
+                Group::WidgetLayer => usize::from(m.widgets.layer == WidgetLayer::Top) as f32,
+                Group::WidgetFullscreen => {
+                    usize::from(m.widgets.fullscreen == FullscreenRule::Keep) as f32
+                }
             }
         };
         for group in [
@@ -1705,6 +1726,8 @@ impl Settings {
             Group::ShotTool,
             Group::ShotAfterCapture,
             Group::NotifToastStyle,
+            Group::WidgetLayer,
+            Group::WidgetFullscreen,
         ] {
             let (from, to) = (index(group, &old), index(group, new));
             if from != to {
@@ -1731,6 +1754,15 @@ impl Settings {
         if old.stay_behind != new.stay_behind {
             self.anims
                 .slide_toggle(Hit::StayBehind, old.stay_behind, new.stay_behind, now);
+        }
+        for (hit, was, is) in [
+            (Hit::WidgetsShow, old.widgets.show, new.widgets.show),
+            (Hit::WidgetsLock, old.widgets.lock, new.widgets.lock),
+            (Hit::WidgetsPeek, old.widgets.cat_peek, new.widgets.cat_peek),
+        ] {
+            if was != is {
+                self.anims.slide_toggle(hit, was, is, now);
+            }
         }
         if old.update_auto != new.update_auto {
             self.anims
@@ -2218,6 +2250,16 @@ impl Settings {
             Hit::Shell(v) if v != m.shell => post(Action::Shell(v)),
             Hit::CliStart(v) if v != m.cli_start => post(Action::CliStart(v)),
             Hit::OpenMode(v) if v != m.open_mode => post(Action::OpenMode(v)),
+            Hit::WidgetsShow => post(Action::WidgetsShow(!m.widgets.show)),
+            Hit::WidgetsLayer(v) if v != m.widgets.layer => post(Action::WidgetsLayer(v)),
+            Hit::WidgetsFullscreen(v) if v != m.widgets.fullscreen => {
+                post(Action::WidgetsFullscreen(v))
+            }
+            Hit::WidgetsLock => post(Action::WidgetsLock(!m.widgets.lock)),
+            Hit::WidgetsPeek => post(Action::WidgetsPeek(!m.widgets.cat_peek)),
+            // At the cap the (+) is off and takes no click; a stray one adds nothing.
+            Hit::WidgetAdd => post(Action::WidgetAdd),
+            Hit::WidgetCard => post(Action::WidgetHighlight),
             Hit::Robot => post(Action::Robot(!m.robot)),
             Hit::Motion(v) if v != m.robot_motion => post(Action::RobotMotion(v)),
             Hit::RobotSleep(dir) => {
@@ -2576,6 +2618,8 @@ impl Settings {
             | Hit::Shell(_)
             | Hit::CliStart(_)
             | Hit::OpenMode(_)
+            | Hit::WidgetsLayer(_)
+            | Hit::WidgetsFullscreen(_)
             | Hit::Motion(_)
             | Hit::ShotIgnore(_)
             | Hit::ShotTool(_)
@@ -3956,6 +4000,13 @@ pub fn run_demo(args: &[String]) {
             Action::Shell(v) => m.shell = v,
             Action::CliStart(v) => m.cli_start = v,
             Action::OpenMode(v) => m.open_mode = v,
+            Action::WidgetsShow(v) => m.widgets.show = v,
+            Action::WidgetsLayer(v) => m.widgets.layer = v,
+            Action::WidgetsFullscreen(v) => m.widgets.fullscreen = v,
+            Action::WidgetsLock(v) => m.widgets.lock = v,
+            Action::WidgetsPeek(v) => m.widgets.cat_peek = v,
+            Action::WidgetAdd => m.sticky_count = (m.sticky_count + 1).min(crate::widgets::sticky::MAX_STICKY),
+            Action::WidgetHighlight => {}
             Action::Robot(v) => m.robot = v,
             Action::RobotMotion(v) => m.robot_motion = v,
             Action::RobotSleep(v) => m.robot_sleep = v,

@@ -33,6 +33,8 @@ pub(super) const HOTKEY_LYRICS_CARD: i32 = 6;
 
 /// How many rows there are (the size of the per-row tables).
 pub(super) const ROWS: usize = HotkeyId::ALL.len();
+/// Id 6 is the lyrics card's (another branch); the sticky note takes 7.
+pub(super) const HOTKEY_STICKY: i32 = 7;
 
 /// The `RegisterHotKey` id of a row.
 pub(super) fn wm_id(id: HotkeyId) -> i32 {
@@ -43,6 +45,7 @@ pub(super) fn wm_id(id: HotkeyId) -> i32 {
         HotkeyId::Arrange => HOTKEY_ARRANGE,
         HotkeyId::Screenshot => HOTKEY_SCREENSHOT,
         HotkeyId::LyricsCard => HOTKEY_LYRICS_CARD,
+        HotkeyId::StickyNote => HOTKEY_STICKY,
     }
 }
 
@@ -306,6 +309,7 @@ impl App {
             HotkeyId::Arrange => self.on_arrange_hotkey(),
             HotkeyId::Screenshot => self.on_screenshot_hotkey(),
             HotkeyId::LyricsCard => self.on_lyrics_card_hotkey(),
+            HotkeyId::StickyNote => self.on_sticky_hotkey(),
         }
     }
 
@@ -338,24 +342,25 @@ mod tests {
     }
 
     #[test]
-    fn the_ids_stay_and_the_lyrics_card_is_the_sixth() {
+    fn the_ids_stay_the_lyrics_card_is_6_and_the_sticky_note_7() {
         assert_eq!(HOTKEY_CLIP, 1);
         assert_eq!(HOTKEY_SEARCH, 2);
         assert_eq!(HOTKEY_DEVICES, 3);
         assert_eq!(HOTKEY_ARRANGE, 4);
         assert_eq!(HOTKEY_SCREENSHOT, 5);
         assert_eq!(HOTKEY_LYRICS_CARD, 6);
-        assert_eq!(ROWS, 6);
+        assert_eq!(ROWS, 7);
+        assert_eq!(HOTKEY_STICKY, 7, "6 is reserved for the lyrics card");
         for id in HotkeyId::ALL {
             assert_eq!(row_of_wm_id(wm_id(id)), Some(id));
         }
         assert_eq!(row_of_wm_id(0), None);
-        assert_eq!(row_of_wm_id(7), None);
-        // The hook's `wparam` is the row index, and the six ids are distinct.
+        assert_eq!(row_of_wm_id(8), None);
+        // The hook's `wparam` is the row index, and the seven ids are distinct.
         let mut ids: Vec<i32> = HotkeyId::ALL.iter().map(|i| wm_id(*i)).collect();
         ids.sort_unstable();
         ids.dedup();
-        assert_eq!(ids.len(), 6);
+        assert_eq!(ids.len(), 7);
     }
 
     #[test]
@@ -400,7 +405,7 @@ mod tests {
         assert!(s.any_failed());
         assert_eq!(
             s.failed_flags(),
-            [false, false, true, false, false, false]
+            [false, false, true, false, false, false, false]
         );
     }
 
