@@ -35,6 +35,7 @@ mod notes;
 mod notch_monitor;
 mod notif;
 mod pages;
+mod phone;
 mod pointer_watch;
 mod pomodoro;
 mod reminders;

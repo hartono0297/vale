@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="referrer" content="no-referrer">
+<title>Vale</title>
+<style>
+:root{--bg:#120E0C;--card:#1E1814;--card2:#2A221D;--line:#4A3F37;--acc:#E2683C;--accs:#F4A27F;--tx:#F4EDE4;--tx2:#A89A8B;--ok:#8FCB92;--warn:#E5C27A;--err:#E57C6B;
+--sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:15px;line-height:1.4;-webkit-text-size-adjust:100%}
+body{min-height:100vh;min-height:100dvh;padding:max(18px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) max(24px,env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left))}
+main{max-width:480px;margin:0 auto;display:flex;flex-direction:column;gap:12px}
+.brand{display:flex;align-items:center;gap:12px}
+.lg{width:44px;height:44px;border-radius:13px;background:var(--card);display:grid;place-items:center;flex:none}
+.nm{font-size:19px;font-weight:600;letter-spacing:-.01em}
+.tag{font-size:10px;letter-spacing:.1em;font-weight:600;color:var(--accs);background:rgba(226,104,60,.16);padding:2px 8px;border-radius:99px;margin-left:8px;vertical-align:3px}
+.sub{color:var(--tx2);font-size:13px;font-weight:400}
+.pc{border-radius:16px;background:var(--card);padding:12px 14px;display:flex;align-items:center;gap:10px}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--warn);flex:none}
+.dot.ok{background:var(--ok)}
+.pc b{display:block;font-size:14px;font-weight:600;overflow-wrap:anywhere}
+.pc small{display:block;font-size:12px;color:var(--warn)}
+.pc.ok small{color:var(--ok)}
+.chip{margin-left:auto;font-size:11px;color:var(--tx2);background:var(--card2);padding:4px 10px;border-radius:99px;max-width:40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.big{text-align:center;margin-top:18px}
+.big p{color:var(--tx2);font-size:14px}
+.big .code{display:block;font-family:var(--mono);font-size:52px;letter-spacing:.28em;margin:10px 0 10px .28em;color:var(--tx)}
+.big p b{color:var(--tx)}
+.spin{width:30px;height:30px;border-radius:50%;border:3px solid #332A23;border-top-color:var(--acc);margin:22px auto 0;animation:sp 1s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.spin{animation-duration:3s}}
+.fine{text-align:center;font-size:12px;color:var(--tx2);margin-top:6px}
+.tabs{display:grid;grid-template-columns:1fr 1fr;background:var(--card);border-radius:14px;padding:4px}
+.tabs button{font:inherit;font-size:13px;color:var(--tx2);background:none;border:0;border-radius:10px;padding:9px 4px;min-height:40px}
+.tabs button.on{background:#332A23;color:var(--tx);font-weight:600}
+.tabs button[disabled]{opacity:.6}
+.tabs i{font-style:normal;font-size:10px;margin-left:4px;color:var(--accs)}
+.pick{position:relative;display:block;border:2px dashed var(--line);border-radius:18px;padding:18px 12px;text-align:center;cursor:pointer}
+.pick input{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer;font-size:0}
+.pick .ib{width:42px;height:42px;border-radius:12px;background:rgba(226,104,60,.16);display:grid;place-items:center;margin:0 auto 8px}
+.pick b{display:block;font-size:15px}
+.pick small{color:var(--tx2);font-size:12px}
+.list{display:flex;flex-direction:column;gap:8px}
+.row{position:relative;overflow:hidden;border-radius:14px;background:var(--card);padding:10px 12px 12px 10px;display:flex;align-items:center;gap:10px}
+.th{width:36px;height:36px;border-radius:10px;background:var(--card2);display:grid;place-items:center;flex:none}
+.row .n{min-width:0;flex:1}
+.row .fn{font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .sz{font-size:12px;color:var(--tx2)}
+.row .st{font-size:12px;color:var(--ok);flex:none;text-align:right;max-width:45%}
+.row .st.p{color:var(--accs);font-family:var(--mono)}
+.row .st.e{color:var(--err)}
+.row .bar{position:absolute;left:0;bottom:0;height:3px;background:var(--acc);width:0}
+.cta{border-radius:14px;background:var(--card2);color:var(--tx2);text-align:center;padding:13px 10px;font-size:14px}
+.cta.done{color:var(--ok)}
+.note{border-radius:12px;background:rgba(217,164,65,.12);color:var(--warn);font-size:12px;line-height:1.45;padding:9px 11px}
+.lost{border-radius:16px;background:var(--card);padding:18px 16px;text-align:center}
+.lost b{display:block;font-size:16px;margin-bottom:6px}
+.lost p{color:var(--tx2);font-size:13px}
+.lost button{margin-top:12px;font:inherit;font-size:14px;color:#fff;background:var(--acc);border:0;border-radius:12px;padding:10px 18px;min-height:44px}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<main id="app"></main>
+<script>
+(function(){
+"use strict";
+var B=/*BOOT*/null;
+var S={
+id:{tag:"RAK BERKAS",sub:"Kirim berkas ke laptop",wait:"Menunggu izin di PC…",conn:"Tersambung di jaringan lokal",
+mine:"Kode kamu",look:"Lihat notch di PC.",same:"Kalau kodenya sama, tekan",allow:"Izinkan",
+fine:"Langsung lewat Wi‑Fi lokal, tidak lewat internet",rej:"Ditolak di PC",rejSub:"Scan QR di notch lagi kalau mau mencoba lagi.",
+send:"Kirim ke laptop",from:"Dari laptop",soon:"segera",pick:"Pilih foto, video, atau file",pickSub:"Bisa banyak sekaligus dari galeri / Files",
+sending:"Mengirim ke laptop… {0} dari {1}",sent:"✓ Terkirim: {0} berkas",sentErr:"Selesai, {0} gagal",
+done:"✓ Selesai",queued:"Menunggu",cancelled:"Dibatalkan di PC",big:"Terlalu besar (maks 4 GB)",full:"Disk PC penuh",fail:"Gagal terkirim",
+awake:"Biarkan layar HP tetap menyala selama mengirim.",lost:"Koneksi terputus, scan QR lagi",lostSub:"Sesi di PC mungkin sudah selesai atau Wi‑Fi berganti.",retry:"Coba lagi",
+unit:["B","KB","MB","GB"]},
+en:{tag:"FILE SHELF",sub:"Send files to your laptop",wait:"Waiting for permission on the PC…",conn:"Connected on the local network",
+mine:"Your code",look:"Look at the notch on the PC.",same:"If the code matches, tap",allow:"Allow",
+fine:"Straight over local Wi‑Fi, not through the internet",rej:"Declined on the PC",rejSub:"Scan the QR on the notch again to try again.",
+send:"Send to laptop",from:"From laptop",soon:"soon",pick:"Choose photos, videos, or files",pickSub:"Pick many at once from the gallery / Files",
+sending:"Sending to laptop… {0} of {1}",sent:"✓ Sent: {0} files",sentErr:"Finished, {0} failed",
+done:"✓ Done",queued:"Waiting",cancelled:"Cancelled on the PC",big:"Too big (4 GB max)",full:"PC disk is full",fail:"Could not send",
+awake:"Keep the phone screen on while sending.",lost:"Connection lost, scan the QR again",lostSub:"The session on the PC may have ended or the Wi‑Fi changed.",retry:"Try again",
+unit:["B","KB","MB","GB"]}};
+B=B||{};
+var L=(B.lang==="en"||(!B.lang&&/^en/i.test(navigator.language||"")))?"en":"id";
+var T=S[L];
+document.documentElement.lang=L;
+function t(k){var s=T[k],a=arguments;return typeof s==="string"?s.replace(/\{(\d)\}/g,function(_,i){return a[+i+1]}):s}
+function h(tag,attrs){var e=document.createElement(tag),i,c;
+for(var k in (attrs||{})){if(k==="class")e.className=attrs[k];else e.setAttribute(k,attrs[k])}
+for(i=2;i<arguments.length;i++){c=arguments[i];if(c==null)continue;e.appendChild(typeof c==="string"?document.createTextNode(c):c)}return e}
+var NS="http://www.w3.org/2000/svg";
+function svg(d,w,extra){var s=document.createElementNS(NS,"svg");s.setAttribute("viewBox","0 0 24 24");s.setAttribute("width",w);s.setAttribute("height",w);
+s.setAttribute("fill","none");s.setAttribute("stroke",extra||"#F4A27F");s.setAttribute("stroke-width","2");s.setAttribute("stroke-linecap","round");s.setAttribute("stroke-linejoin","round");
+var p=document.createElementNS(NS,"path");p.setAttribute("d",d);s.appendChild(p);return s}
+function logo(){var s=document.createElementNS(NS,"svg");s.setAttribute("viewBox","0 0 256 256");s.setAttribute("width","28");s.setAttribute("height","28");
+s.innerHTML='<path d="M22 157L36 32.5L105 106Z" fill="#E2683C" stroke="#E2683C" stroke-width="23" stroke-linejoin="round"/><path d="M234 157L220 32.5L151 106Z" fill="#E2683C" stroke="#E2683C" stroke-width="23" stroke-linejoin="round"/><path d="M13 216.5V175Q13 97 128 97Q243 97 243 175V216.5Q243 235 224.6 235H31.4Q13 235 13 216.5Z" fill="#E2683C"/><rect x="78" y="147.5" width="26" height="46" rx="13" fill="#17120F"/><rect x="152" y="147.5" width="26" height="46" rx="13" fill="#17120F"/>';return s}
+function size(n){var u=T.unit,i=0,v=n;while(v>=1024&&i<3){v/=1024;i++}
+var s=i===0?String(v):(v>=100?v.toFixed(0):v.toFixed(1));if(L==="id")s=s.replace(".",",");return s+" "+u[i]}
+function brand(){return h("div",{class:"brand"},h("div",{class:"lg"},logo()),h("div",{class:"nm"},"Vale",h("span",{class:"tag"},t("tag")),h("div",{class:"sub"},t("sub"))))}
+function pcCard(ok,line){return h("div",{class:"pc"+(ok?" ok":"")},h("span",{class:"dot"+(ok?" ok":"")}),h("div",null,h("b",null,B.pc||"PC"),h("small",null,line)),B.net?h("span",{class:"chip"},B.net):null)}
+
+var state=B.state||"waiting",code=B.code||"",timer=0,uploading=false;
+var items=[],running=false,view=null;
+var app=document.getElementById("app");
+
+function show(){
+ app.textContent="";
+ if(state==="lost"){
+  app.appendChild(brand());
+  var rb=h("button",{type:"button"},t("retry"));rb.onclick=function(){state="waiting";show();poll()};
+  app.appendChild(h("div",{class:"lost"},h("b",null,t("lost")),h("p",null,t("lostSub")),rb));return}
+ if(state==="rejected"){
+  app.appendChild(brand());
+  app.appendChild(h("div",{class:"lost"},h("b",null,t("rej")),h("p",null,t("rejSub"))));return}
+ if(state==="waiting"){
+  app.appendChild(brand());
+  app.appendChild(pcCard(false,t("wait")));
+  app.appendChild(h("div",{class:"big"},h("p",null,t("mine")),h("span",{class:"code",id:"code"},code),
+   h("p",null,t("look"),h("br"),t("same")+" ",h("b",null,t("allow"))+"."),h("div",{class:"spin"})));
+  app.appendChild(h("div",{class:"fine"},t("fine")));return}
+ /* approved */
+ app.appendChild(brand());
+ app.appendChild(pcCard(true,t("conn")));
+ var tabs=h("div",{class:"tabs"},h("button",{type:"button",class:"on"},t("send")),
+  h("button",{type:"button",disabled:"disabled","aria-disabled":"true"},t("from"),h("i",null,t("soon"))));
+ app.appendChild(tabs);
+ var inp=h("input",{type:"file",multiple:"multiple"});
+ inp.onchange=function(){pickFiles(inp.files);inp.value=""};
+ app.appendChild(h("label",{class:"pick"},inp,h("div",{class:"ib"},svg("M12 16V4M7 9l5-5 5 5M5 20h14",22)),h("b",null,t("pick")),h("small",null,t("pickSub"))));
+ view=h("div",{class:"list",id:"list"});app.appendChild(view);
+ view.parentNode.appendChild(h("div",{class:"cta",id:"cta",hidden:"hidden"}));
+ app.appendChild(h("div",{class:"note"},t("awake")));
+ app.appendChild(h("div",{class:"fine"},t("fine")));
+ drawList()}
+
+function drawList(){
+ if(!view||!document.getElementById("list"))return;
+ view.textContent="";
+ var shown=items.slice(-40);
+ shown.forEach(function(it){
+  var st,cls="st";
+  if(it.s==="done")st=t("done");else if(it.s==="err"){st=it.msg;cls+=" e"}
+  else if(it.s==="up"){st=it.pct+"%";cls+=" p"}else st=t("queued");
+  var bar=h("span",{class:"bar"});bar.style.width=(it.s==="up"?it.pct:0)+"%";
+  it.bar=bar;it.stEl=null;
+  var stEl=h("span",{class:cls},st);it.stEl=stEl;
+  view.appendChild(h("div",{class:"row"},h("div",{class:"th"},svg("M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5",18,"#E8916D")),
+   h("div",{class:"n"},h("div",{class:"fn"},it.name),h("div",{class:"sz"},size(it.size))),stEl,bar))});
+ var cta=document.getElementById("cta");if(!cta)return;
+ var total=items.length,done=items.filter(function(i){return i.s==="done"}).length,bad=items.filter(function(i){return i.s==="err"}).length;
+ if(!total){cta.hidden=true;return}
+ cta.hidden=false;
+ if(running){cta.className="cta";cta.textContent=t("sending",done+bad+1>total?total:done+bad+1,total)}
+ else{cta.className="cta done";cta.textContent=bad?t("sentErr",bad):t("sent",done)}}
+
+function rid(){var a=new Uint8Array(12),s="",i;
+ if(window.crypto&&crypto.getRandomValues)crypto.getRandomValues(a);else for(i=0;i<12;i++)a[i]=Math.floor(Math.random()*256);
+ for(i=0;i<12;i++)s+=("0"+a[i].toString(16)).slice(-2);return s}
+
+var pending=[];
+function pickFiles(list){
+ if(!list||!list.length)return;
+ var batch=rid(),n=list.length,i;
+ for(i=0;i<n;i++)items.push({file:list[i],name:list[i].name||("file-"+i),size:list[i].size,batch:batch,index:i,count:n,s:"wait",pct:0,msg:""});
+ drawList();if(!running)next()}
+
+function fail(it,status){
+ it.s="err";
+ it.msg=status===409?t("cancelled"):status===413?t("big"):status===507?t("full"):t("fail")}
+
+function next(){
+ var it=null,i;
+ for(i=0;i<items.length;i++)if(items[i].s==="wait"){it=items[i];break}
+ if(!it){running=false;drawList();return}
+ running=true;it.s="up";drawList();
+ var x=new XMLHttpRequest();
+ x.open("POST","/api/upload");
+ x.setRequestHeader("X-Vale-Name",encodeURIComponent(it.name));
+ x.setRequestHeader("X-Vale-Batch",it.batch);
+ x.setRequestHeader("X-Vale-Index",String(it.index));
+ x.setRequestHeader("X-Vale-Count",String(it.count));
+ x.upload.onprogress=function(e){
+  if(!e.lengthComputable)return;
+  it.pct=Math.min(99,Math.floor(e.loaded*100/Math.max(1,e.total)));
+  if(it.stEl){it.stEl.textContent=it.pct+"%";it.stEl.className="st p"}
+  if(it.bar)it.bar.style.width=it.pct+"%"};
+ x.onload=function(){
+  if(x.status===200){it.s="done";it.pct=100}else fail(it,x.status);
+  it.file=null;drawList();next()};
+ x.onerror=x.ontimeout=function(){fail(it,0);it.file=null;drawList();next()};
+ x.send(it.file)}
+
+function setState(s,c){
+ if(s===state&&(c===undefined||c===code))return;
+ var was=state;state=s;if(c!==undefined)code=c||"";
+ if(was==="approved"&&s==="approved")return;
+ show()}
+
+function poll(){
+ clearTimeout(timer);
+ var x=new XMLHttpRequest();
+ x.open("GET","/api/state");
+ x.onload=function(){
+  if(x.status!==200){setState("lost");return}
+  var j;try{j=JSON.parse(x.responseText)}catch(e){setState("lost");return}
+  if(j.pc)B.pc=j.pc;if(j.net)B.net=j.net;
+  if(j.state==="approved")setState("approved");
+  else if(j.state==="rejected"){setState("rejected");return}
+  else{if(state!=="waiting"||code!==(j.code||"")){state="waiting";code=j.code||"";show()}}
+  timer=setTimeout(poll,state==="approved"?5000:1000)};
+ x.onerror=x.ontimeout=function(){setState("lost")};
+ x.timeout=8000;
+ x.send()}
+
+try{if(history.replaceState&&location.pathname!=="/")history.replaceState(null,"","/")}catch(e){}
+show();poll();
+})();
+</script>
+</body>
+</html>
