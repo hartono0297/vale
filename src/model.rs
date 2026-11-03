@@ -469,6 +469,9 @@ pub enum Hit {
     /// The strip at the top of the open panel: the newest Claude waiting or
     /// due reminder notice.
     Strip,
+    /// The due-reminder notice's "Selesai" chip (the closed notch only; the
+    /// strip keeps `Hit::Strip`): marks it done.
+    ReminderDone,
     /// The update offer's "Update" chip (notice or strip): install now.
     UpdateNow,
     /// The update offer's "Nanti" chip (notice or strip): clear the offer; the

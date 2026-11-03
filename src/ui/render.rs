@@ -53,8 +53,9 @@ use super::geometry::{
     SHOT_THUMB_RADIUS, ShapeRect, Under, badge_letter, badge_style, compact_layout,
     compact_layout_robot, corner_radius, equalizer_heights, idle_layout_lead, lyric_layout,
     lyric_layout_robot, lyric_overflow, notice_action, notice_action_w, notice_actions_layout,
-    notice_chip_widths, notice_layout, shot_fit, shot_layout, shot_regions, shoulder_depth,
-    toast_dot, toast_eyebrow, toast_notice_layout, toast_slot_parts, update_offer_regions,
+    notice_chip_widths, notice_layout, reminder_done_regions, shot_fit, shot_layout, shot_regions,
+    shoulder_depth, toast_dot, toast_eyebrow, toast_notice_layout, toast_slot_parts,
+    update_offer_regions,
 };
 use super::icons::{Icon, IconSet};
 use super::motion::{StripFrame, Transit};
@@ -2180,6 +2181,11 @@ impl Renderer {
             self.solid_ink(|| {
                 self.text_colored(label, &self.fonts.button_center, chip, ink, 1.0);
             });
+            // The due reminder's "Selesai" is its own hit: the rect just
+            // painted, so drawing and hit-testing cannot drift.
+            if matches!(notice.kind, NoticeKind::Reminder { .. }) {
+                self.regions.regions = reminder_done_regions(chip);
+            }
         }
         Ok(())
     }
