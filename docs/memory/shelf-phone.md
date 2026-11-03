@@ -146,16 +146,28 @@ only those files. Agreed with the owner: nothing else of the PC is visible.
   (`Mirror { key, id, size, taken }`), pruned after every shelf change, cleared with the
   session; `phone_send_layout` / `paint_phone_send`; demo scene `phone-send`.
 - **Routes** (all need an approved device's `vs`; anything else, `vp` included, an unknown
-  or revoked id: the bare 404): `GET /api/files` (id, name, size read now, kind, `view`,
+  or revoked id: the bare 404): `GET /api/files` (id, name, size read now, `v` (the
+  file's version: its strong ETag, size and mtime, without the quotes), kind, `view`,
   `saved` and `busy` for that phone, plus `rev`; never a path), `GET|HEAD
   /api/file/<id>` (attachment), `GET|HEAD /api/view/<id>` (images, inline), `GET
-  /api/thumb/<id>`. `/api/state` of an approved phone also carries `rev` and `shared`
+  /api/thumb/<id>?v=<v>` (the page puts the version in the URL, so a file written over
+  in place gets a new thumbnail and the phone's cache never shows the old one). `/api/state` of an approved phone also carries `rev` and `shared`
   (the tab count and the page's refresh trigger).
 - **Ids:** 16 random bytes from the session's own filler (base64url, 22 characters),
   compared in constant time over every entry; a path already shared (by `shelf::key_of`)
   gives its id again; at most 12; a failing filler shares nothing. Revoked on untick, card
-  removal, "Kosongkan", session end (the thread calls `unshare_all` in `end()`). Network
-  paths (UNC or mapped) cannot be ticked: looking at them could hold the UI thread.
+  removal, "Kosongkan", session end (the thread calls `unshare_all` in `end()`).
+- **Network paths (UNC or mapped) can be ticked, but are never looked at on the UI
+  thread** (a slow or gone share could hold it for seconds). `Handle::share` sends any
+  path where `shelf::is_network` is true to `share_unseen`: the id is made at once with
+  `ShareInfo { size: None }` (the mirror holds 0, so the send footer counts 0 B for it
+  until the size arrives), and a `phone-share-check` thread runs `server::check_shared`:
+  a regular file still shared emits `PhoneEvent::SharedSized { id, size }` (`app_phone.rs`
+  fills in the mirror's size and redraws only the open send view); anything else revokes
+  the id and emits `SharedGone` (the card is unticked and turns stale). A thread that
+  cannot be spawned unshares the id and shares nothing. `shelf::probe` does not look at
+  network paths either. Tested by the e2e
+  `a_file_on_the_network_is_shared_without_being_looked_at_then_sized_or_revoked`.
 - **The taken rule** (`counts_as_taken`): only a GET of `/api/file` or `/api/view` that wrote
   every byte of the whole body (200) or of a resume `bytes=N-` running to the last byte.
   Never HEAD, a suffix `bytes=-N`, a closed `a-b` (even one reaching the end) or a
@@ -176,7 +188,8 @@ only those files. Agreed with the owner: nothing else of the PC is visible.
   `CreateDecoderFromFileHandle` on the file already opened with the share flags, frame 0,
   EXIF orientation 3, 6 or 8 through a flip-rotator, Fant scaler to at most 192 px on the
   long side (never enlarged), 24bpp BGR, JPEG at quality 0.8 into a memory stream,
-  cached per id in the set (a few KB), sent with `Cache-Control: private, max-age=3600`.
+  cached per id in the set with the ETag it was made from (a few KB; a new version is
+  made again), sent with `Cache-Control: private, max-age=3600`.
   Files over 64 MB, a HEIC without the codec or anything else: 404 and the page keeps the
   type icon. **Never the full image as a fallback**: a phone tab decoding a dozen 12 MP
   photos can crash. No new `windows` feature was needed.
@@ -213,7 +226,11 @@ only those files. Agreed with the owner: nothing else of the PC is visible.
   Send works as before. A ticked card whose file is gone turns stale and is unshared at
   `SharedGone`; `FileTaken` redraws only the open send view (no refresh). The fit test tags
   ("folder", "hilang", "diambil") may enter the 24 px icon box's empty margin (about 3 px)
-  in JetBrains Mono, never the drawing.
+  in JetBrains Mono, never the drawing. With three rows and the strip a send card is 50 px
+  high and "✓ diambil" (bottom right) reaches the one name line, so `phone_send_name` ends a
+  taken card's name 4 px left of the tag (cut shorter by the 6.4 px rule); tested by
+  `the_taken_tag_never_sits_on_a_cards_name` and the fit test. The Shelf page's "dari HP"
+  tag still meets a one-line name with the strip (an older compromise, not changed).
 
 ### Not verified live (phase 2)
 

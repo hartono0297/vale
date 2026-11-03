@@ -3551,6 +3551,22 @@ pub fn phone_send_tag(card: Rect, text_w: f32) -> Rect {
     rect(card.x + 6.0, card.y + 6.0, w, 15.0)
 }
 
+/// The name's box on a taken send card, whose "✓ diambil" tag is `tag`
+/// (`shelf_phone_tag`). With three rows of cards and the strip a card is
+/// only 50 px high, so the tag at its bottom right reaches the one name
+/// line: the name then ends 4 px left of the tag (and is cut shorter to
+/// fit). A name the tag does not reach keeps its whole box.
+pub fn phone_send_name(label: Rect, tag: Rect) -> Rect {
+    let reaches = tag.y < label.bottom() && tag.bottom() > label.y && tag.x < label.right();
+    if !reaches {
+        return label;
+    }
+    Rect {
+        w: (tag.x - 4.0 - label.x).max(0.0),
+        ..label
+    }
+}
+
 /// The send view for the shelf's cards: `shareable[i]` says card `i` can be
 /// ticked (a file that is there). `chip`: a phone has been approved.
 pub fn phone_send_layout(
@@ -6652,6 +6668,44 @@ mod tests {
                 assert_eq!(hit.rect, l.cards[0].card);
             }
         }
+    }
+
+    /// "✓ diambil" sits at a taken card's bottom right. With three rows and
+    /// the strip a card is 50 px high and its one name line reaches the
+    /// tag's height, so the name ends left of the tag there; everywhere else
+    /// the name keeps its whole box.
+    #[test]
+    fn the_taken_tag_never_sits_on_a_cards_name() {
+        let apart = |a: Rect, b: Rect| {
+            a.right() <= b.x || b.right() <= a.x || a.bottom() <= b.y || b.bottom() <= a.y
+        };
+        let mut narrowed = 0;
+        for style in [Style::Pill, Style::Notch] {
+            let s = panel(style);
+            for strip in [false, true] {
+                for n in [1usize, 4, 5, 8, 9, 12] {
+                    let l = phone_send_layout(s, strip, &vec![true; n], true);
+                    for c in &l.cards {
+                        // The narrowest tag (44 px) and a wide word's.
+                        for text_w in [0.0, 60.0] {
+                            let tag = shelf_phone_tag(c.card, text_w);
+                            let name = phone_send_name(c.label, tag);
+                            assert!(apart(name, tag), "{style:?} strip={strip} {n}: {name:?} under {tag:?}");
+                            if apart(c.label, tag) {
+                                assert_eq!(name, c.label, "a clear name keeps its box");
+                            } else {
+                                narrowed += 1;
+                                assert_eq!((name.x, name.y, name.h), (c.label.x, c.label.y, c.label.h));
+                                assert!(name.right() <= tag.x - 4.0 + 0.01);
+                                // Room for a short name still (6 characters).
+                                assert!(name.w >= 6.0 * 6.4, "{name:?}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(narrowed > 0, "the tight case (three rows with the strip) is covered");
     }
 
     #[test]

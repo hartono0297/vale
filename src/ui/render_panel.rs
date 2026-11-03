@@ -3606,7 +3606,7 @@ impl Renderer {
     /// ticked card has the accent outline; a folder or a missing file is
     /// dimmed with a tag where the box would be and cannot be ticked.
     fn paint_phone_send(&self, l: &crate::ui::panel_layout::PhoneSendLayout, v: &PhoneView) {
-        use crate::ui::panel_layout::{PHONE_SEND_GLYPH, phone_send_tag};
+        use crate::ui::panel_layout::{PHONE_SEND_GLYPH, phone_send_name, phone_send_tag};
         use crate::ui::phone_view::CardState;
         let lang = i18n::lang();
         let p = self.palette;
@@ -3641,14 +3641,21 @@ impl Renderer {
                 self.stroke_round_width(edge, radius::TILE, p.accent, 1.5);
             }
             self.icon(crate::shelf::icon(card.kind), lay.glyph, PHONE_SEND_GLYPH, a, true);
-            // As long as a name fits the card: about 6.4 px a character.
-            let per_line = (lay.label.w / 6.4) as usize;
+            // "✓ diambil" at the bottom right; the name ends left of it
+            // where the two would meet.
+            let taken_tag = taken.then(|| {
+                let word = text(lang, Key::PhoneTagTaken);
+                (word, shelf_phone_tag(lay.card, self.text_width(word, &self.fonts.micro_center)))
+            });
+            let label = taken_tag.map_or(lay.label, |(_, tag)| phone_send_name(lay.label, tag));
+            // As long as a name fits its box: about 6.4 px a character.
+            let per_line = (label.w / 6.4) as usize;
             let names = crate::shelf::wrap_name(&card.name, per_line.max(6), l.lines);
             for (i, line) in names.iter().enumerate() {
                 let row = Rect {
-                    y: lay.label.y + i as f32 * (lay.label.h / l.lines as f32),
-                    h: lay.label.h / l.lines as f32,
-                    ..lay.label
+                    y: label.y + i as f32 * (label.h / l.lines as f32),
+                    h: label.h / l.lines as f32,
+                    ..label
                 };
                 self.text(line, &self.fonts.eleven_center, row, a);
             }
@@ -3677,10 +3684,8 @@ impl Renderer {
                     self.text(word, &self.fonts.micro_center, tag, a);
                 }
             }
-            if taken {
-                let label = text(lang, Key::PhoneTagTaken);
-                let tag = shelf_phone_tag(lay.card, self.text_width(label, &self.fonts.micro_center));
-                self.text_colored(label, &self.fonts.micro_center, tag, p.sage, 1.0);
+            if let Some((word, tag)) = taken_tag {
+                self.text_colored(word, &self.fonts.micro_center, tag, p.sage, 1.0);
             }
         }
         let summary = i18n::phone_shared_summary(lang, v.send.count, v.send.bytes);
@@ -6015,7 +6020,7 @@ mod tests {
         use crate::ui::fonts;
         use crate::ui::panel_layout::{
             phone_ask_layout, phone_chip_text, phone_qr_layout, phone_recv_layout,
-            phone_send_layout, phone_send_tag, phone_warn_layout,
+            phone_send_layout, phone_send_name, phone_send_tag, phone_warn_layout,
         };
         use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
 
@@ -6203,6 +6208,24 @@ mod tests {
                                 let tag = shelf_phone_tag(card.card, w);
                                 assert!(tag.right() < card.card.right() && tag.bottom() <= card.card.bottom());
                                 add(word, "micro_center", tag);
+                                // The name of a taken card stays clear of the
+                                // tag (three rows with the strip: it ends left
+                                // of it), cut by the renderer's own rule.
+                                let name = phone_send_name(card.label, tag);
+                                let row_h = name.h / send.lines as f32;
+                                let first = Rect { h: row_h, ..name };
+                                assert!(
+                                    first.right() <= tag.x || first.bottom() <= tag.y,
+                                    "{lang:?} {ui:?} strip={strip}: the name {first:?} under {tag:?}"
+                                );
+                                // A shortened name holds its narrower box.
+                                if name != card.label {
+                                    let per_line = ((name.w / 6.4) as usize).max(6);
+                                    for long in ["foto-lokasi-proyek-kemang.png", "Laporan_Mingguan_Final.docx"] {
+                                        let lines = crate::shelf::wrap_name(long, per_line, send.lines);
+                                        add(&lines[0], "eleven_center", first);
+                                    }
+                                }
                             }
                         }
                         for (label, format, area) in singles {
