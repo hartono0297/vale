@@ -81,8 +81,13 @@ fn is_clip_preview(notice: &Notice) -> bool {
 /// offer), which stay until acted on even when one is shown briefly as the
 /// current notice in fullscreen (docs/memory/notice-close.md).
 pub fn notice_closable(n: &Notice) -> bool {
+    notice_kind_closable(&n.kind)
+}
+
+/// `notice_closable` by kind (the renderer's text-fit check has only the kind).
+pub fn notice_kind_closable(kind: &NoticeKind) -> bool {
     !matches!(
-        n.kind,
+        kind,
         NoticeKind::Screenshot { .. }
             | NoticeKind::ClipPreview { .. }
             | NoticeKind::Arranged { .. }

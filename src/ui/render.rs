@@ -53,6 +53,7 @@ use super::geometry::{
     NoticeLayout, Rect, SHOT_BUTTON_PAD, SHOT_THUMB_RADIUS, ShapeRect, Under, badge_letter, badge_style, compact_layout,
     compact_layout_robot, corner_radius, equalizer_heights, idle_layout_lead, lyric_layout,
     lyric_layout_robot, lyric_overflow, notice_action, notice_action_w, notice_actions_layout,
+    notice_actions_layout_with,
     notice_chip_widths, notice_close_rect, notice_close_regions, notice_layout_with,
     reminder_done_regions, shot_fit, shot_layout, shot_regions, shoulder_depth, toast_dot,
     toast_eyebrow, toast_notice_layout_with, toast_slot_parts, update_offer_regions,
@@ -83,7 +84,7 @@ use crate::reminders::Reminder;
 use crate::search::SearchResult;
 use crate::search_details::Detail;
 use crate::shelf::ShelfCard;
-use crate::state::{MolePhase, notice_closable};
+use crate::state::{MolePhase, notice_closable, notice_kind_closable};
 use crate::system::SystemSample;
 use crate::theme::{self, Accent, Palette, radius};
 use crate::tiles::Tile;
@@ -2868,7 +2869,12 @@ impl Renderer {
     /// any): its title (`title`) or its body, measured as it is drawn.
     pub fn notice_text_fits(&self, kind: &NoticeKind, title: bool, text: &str) -> bool {
         let s = super::geometry::shape_for(Style::Pill, super::geometry::ShapeKind::Notice);
-        let (l, _) = notice_actions_layout(s, &notice_chip_widths(kind, PomoStatus::Idle));
+        // A closable notice keeps the ✕'s room, shown or not.
+        let (l, _) = notice_actions_layout_with(
+            s,
+            &notice_chip_widths(kind, PomoStatus::Idle),
+            notice_kind_closable(kind),
+        );
         let (format, area) = if title {
             (&self.fonts.title, l.title)
         } else {

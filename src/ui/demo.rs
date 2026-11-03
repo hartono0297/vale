@@ -129,35 +129,59 @@
 //! compact music view with the terracotta dot) and `notice-unread-dot-idle`
 //! (the idle notch with it). A scene's morph from the one before plays as
 //! in the island: the notch grows by the slot while the logo fades in.
+//!
+//! The notice ✕ (`docs/memory/notice-close.md`), made-up data only:
+//! `notice-close` (the made-up chat toast with its logo, the ✕ shown),
+//! `notice-close-hot` (the pointer on it), `notice-close-claude` (a Vale
+//! notice with Bata), `notice-close-chip` (the Ready Pomodoro chip plus the ✕)
+//! and `notice-close-reminder` (a sticky reminder: no ✕ even with the pointer
+//! over it). `DI_DEMO_CLOSE=0.5` freezes the ✕'s fade at that alpha.
+//!
+//! `--demo-notice-close` runs the island window with a real `IslandState` fed
+//! made-up notices: a chat toast with its logo, "Claude finished" with a made-up
+//! session id, a finished clean and a sticky reminder, one after the other
+//! (the queue refills when it is empty). The pointer on the island shows the ✕
+//! with the same fade; a click applies `Event::Click(hit)` from the renderer's
+//! hit test. Effects are never executed: they are printed to stderr
+//! (`effects: [...]`), so a body click prints `OpenTarget` and a ✕ click prints
+//! `[]`, and nothing is opened, focused or launched. No real clipboard,
+//! notifications, media keys, config writes or history. `DI_DEMO_FULLSCREEN=1`
+//! applies `Event::Fullscreen(true)` first (a closed notice then leaves the
+//! island hidden); `DI_DEMO_STEP=notch:notice-close-live` is the Notch style.
 
 use std::time::{Duration, Instant};
 
 use chrono::{Days, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Timelike};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
+use windows::Win32::UI::Input::KeyboardAndMouse::{TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent};
 use windows::Win32::UI::WindowsAndMessaging::{
     DefWindowProcW, DispatchMessageW, MA_NOACTIVATE, MSG, PM_REMOVE, PeekMessageW, PostQuitMessage,
-    TranslateMessage, WM_DESTROY, WM_MOUSEACTIVATE, WM_QUIT,
+    TranslateMessage, WM_DESTROY, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_QUIT,
 };
+
+/// `WM_MOUSELEAVE` (the `windows` crate keeps it under Controls).
+const WM_MOUSELEAVE: u32 = 0x02A3;
 
 use super::cat_style::CatLook;
 use super::dock::{self, DockFrame};
 use super::geometry::{
-    ANIM_MS, NOTCH_OPACITY_DEFAULT, NotchSize, ShapeKind, ShapeRect, TOAST_SLOT_EXTRA,
+    ANIM_MS, NOTCH_OPACITY_DEFAULT, NotchSize, ShapeKind, ShapeRect, TOAST_SLOT_EXTRA, Under,
     ease_out_back, idle_shape_typing, lerp_shape, lyric_box_w, lyric_max_w, lyric_scroll_offset,
     lyric_shape_sized, lyric_slot_width, lyric_width_min, shape_with_robot_sized, typing_lead,
     with_toast_slot,
 };
 use super::motion::{
-    PAGE_FADE_MS, REVEAL_MS, RevealDir, Transit, content_alpha, page_fade_frame, reveal_frame,
+    CloseFade, PAGE_FADE_MS, REVEAL_MS, RevealDir, Transit, close_fade_ms, content_alpha,
+    page_fade_frame, reveal_frame,
 };
 use super::notch_fill::{self, fill_alpha};
 use super::render::{
     CleanerView, CliView, ClipNoticeView, ClipView, DevicesView, FolderMenuView, Frame, MoleView,
-    NotifView, Progress, Renderer, RobotFrame, SearchView, SheetKind, ShotView, SystemView,
-    ToastBadgeView, ToastLogoView,
+    NoticeCloseView, NotifView, Progress, Renderer, RobotFrame, SearchView, SheetKind, ShotView,
+    SystemView, ToastBadgeView, ToastLogoView,
 };
-use super::robot::{Expr, EyesPose, PAW_LIFT, Pose};
+use super::robot::{Expr, EyesPose, Motion, PAW_LIFT, Pose};
 use super::shelf_motion::{SHELF_ENTER_MS, SHELF_MOVE_MS, SHELF_STAGGER_MS, ShelfMotion};
 use super::window::IslandWindow;
 use crate::calendar::{CalEvent, CalStatus, CalendarSnapshot, EventTime};
@@ -172,13 +196,13 @@ use crate::config::{NotchFill, Style, UiFont};
 use crate::devices::{self, Bus, Device, DeviceKind, Partition, Veto, VetoKind};
 use crate::i18n::{Key, tr};
 use crate::lyrics::{self, FADE, LyricsFound, LyricsState, Query};
-use crate::model::{CalView, MediaInfo, Notice, NoticeKind, Page, ToastOrigin, View};
+use crate::model::{CalView, Event, Hit, MediaInfo, Notice, NoticeKind, Page, ToastOrigin, View};
 use crate::mole::{CleanRun, GroupSize, MoleOpts, MoleReport, PreviewSummary};
 use crate::notes::Note;
 use crate::notif::{NotifEntry, logo_key};
 use crate::pomodoro::{PomoSettings, Pomodoro};
 use crate::reminders::{Reminder, Repeat};
-use crate::state::MolePhase;
+use crate::state::{IslandState, MolePhase};
 use crate::system::{Alert, Drive, GIB, ProcUsage, SampleKind, SystemSample, alert_notice};
 use crate::theme::{self, Accent, CatAccessory, CatColor, Palette, Surface};
 use crate::tiles::{CustomKind, CustomTile, ShortcutTiles};
@@ -290,6 +314,9 @@ struct Scene {
     offer_strip: bool,
     /// The unread dot on the closed notch.
     dot: bool,
+    /// The notice's ✕ is drawn (at `DI_DEMO_CLOSE`'s alpha, else fully); the
+    /// flag says the pointer is on it. A notice that is not closable draws none.
+    close: Option<bool>,
 }
 
 /// The cleaner's states (deepclean-opsi-d.html p10 and d1).
@@ -394,6 +421,8 @@ enum DemoNotice {
     /// A finished focus phase: badge and "Mulai" in the break's sage.
     Pomodoro,
     Claude,
+    /// "Claude finished": a timed notice with a made-up session id.
+    ClaudeDone,
     Battery,
     /// An app's notification: the letter badge.
     App,
@@ -533,6 +562,7 @@ const BASE: Scene = Scene {
     toast_strip: false,
     offer_strip: false,
     dot: false,
+    close: None,
 };
 
 const fn clipboard(name: &'static str, which: ClipDemo) -> Scene {
@@ -736,7 +766,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 156] = [
+const SCENES: [Scene; 161] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -885,6 +915,30 @@ const SCENES: [Scene; 156] = [
         robot: Some(Expr::Idle),
         clock: Some("14:32"),
         ..BASE
+    },
+    // The ✕ of a timed full notice: shown, lit under the pointer, on a Vale
+    // notice with Bata, beside a chip, and absent on a sticky reminder.
+    Scene {
+        close: Some(false),
+        ..notice("notice-close", DemoNotice::AppLogo)
+    },
+    Scene {
+        close: Some(true),
+        ..notice("notice-close-hot", DemoNotice::AppLogo)
+    },
+    Scene {
+        robot: Some(Expr::Happy),
+        close: Some(false),
+        ..notice("notice-close-claude", DemoNotice::ClaudeDone)
+    },
+    Scene {
+        pomo: Pomo::Ready,
+        close: Some(false),
+        ..notice("notice-close-chip", DemoNotice::Pomodoro)
+    },
+    Scene {
+        close: Some(true),
+        ..notice("notice-close-reminder", DemoNotice::Reminder)
     },
     panel("notes-4", Page::Notes),
     Scene {
@@ -1647,6 +1701,12 @@ pub fn run_cli() {
 }
 
 fn run_scenes(scenes: &[Scene]) {
+    run_scenes_with(scenes, None);
+}
+
+/// The demo loop; `live` is `--demo-notice-close`'s state, which then decides
+/// the view, the pointer and the ✕ (the one scene only gives the look).
+fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
     }
@@ -1657,7 +1717,12 @@ fn run_scenes(scenes: &[Scene]) {
         .ok()
         .and_then(|v| v.trim().parse::<usize>().ok())
         .and_then(|n| displays.iter().find(|d| d.number == n));
-    let mut win = IslandWindow::create(Some(wnd_proc), target).expect("create island window");
+    let proc = if live.is_some() {
+        live_wnd_proc
+    } else {
+        wnd_proc
+    };
+    let mut win = IslandWindow::create(Some(proc), target).expect("create island window");
     // Room for the enlarged CLI panel in every scene.
     win.set_tall(true);
     let mut renderer = Renderer::new().expect("create renderer");
@@ -1740,6 +1805,9 @@ fn run_scenes(scenes: &[Scene]) {
     let hold: Option<usize> = std::env::var("DI_DEMO_STEP")
         .ok()
         .and_then(|v| held_step(scenes, &v));
+    // The live ✕ demo has one scene and never cycles.
+    let hold = if live.is_some() { hold.or(Some(0)) } else { hold };
+    let frozen_close: Option<f32> = env("DI_DEMO_CLOSE");
     let frozen_t: Option<f32> = env("DI_DEMO_T");
     let slide: f32 = env("DI_DEMO_SLIDE").unwrap_or(0.0);
     let clock_on = std::env::var("DI_CLOCK").map_or(true, |v| v != "0");
@@ -1758,6 +1826,9 @@ fn run_scenes(scenes: &[Scene]) {
         if !pump_messages() {
             return;
         }
+        if let Some(l) = live.as_mut() {
+            l.step(&renderer, Instant::now());
+        }
         let elapsed = start.elapsed();
         let (step, into) = match hold {
             Some(n) => (n % steps, elapsed.as_millis()),
@@ -1767,7 +1838,17 @@ fn run_scenes(scenes: &[Scene]) {
             ),
         };
         let t = frozen_t.unwrap_or((into as f32 / ANIM_MS as f32).min(1.0));
-        let (style, scene) = scene(scenes, step);
+        let (style, mut scene) = scene(scenes, step);
+        // The live demo's island is whatever its state shows now.
+        let live_view = live.as_ref().map(LiveNoticeClose::view);
+        if let (Some(l), Some(view)) = (live.as_ref(), live_view.as_ref()) {
+            scene.robot = l.robot();
+            scene.kind = if matches!(view, View::Notice(_)) {
+                ShapeKind::Notice
+            } else {
+                ShapeKind::Idle
+            };
+        }
         if scene.sheet != Sheet::No {
             if step != settled {
                 println!("demo: step {step} {:?} {}", style, scene.name);
@@ -1811,7 +1892,8 @@ fn run_scenes(scenes: &[Scene]) {
         let animated = scene.view == View0::MediaCompact
             || (scene.view == View0::MediaLyric && lyric_scroll.is_none() && scroll > 0.0)
             || reveal_playing
-            || shelf_playing;
+            || shelf_playing
+            || live.is_some();
         if step != settled || animated {
             if t >= 1.0 {
                 if settled != step {
@@ -1830,14 +1912,24 @@ fn run_scenes(scenes: &[Scene]) {
             let fill_alpha =
                 notch_fill::morph_fill(scene_fill(&prev), scene_fill(&scene), ease_out_back(t));
             let pomodoro = demo_pomodoro(scene.pomo, now);
-            let view = match scene.view {
+            let view = live_view.unwrap_or_else(|| match scene.view {
                 View0::Idle => View::Idle,
                 View0::MediaCompact => View::MediaCompact,
                 View0::PomodoroCompact => View::PomodoroCompact,
                 View0::Panel(page) => View::Panel(page),
                 View0::Notice(which) => View::Notice(demo_notice(which, &renderer)),
                 View0::MediaLyric => View::MediaLyric,
-            };
+            });
+            // A fullscreen app with no notice left: nothing is drawn.
+            let opacity = if view == View::Hidden { 0.0 } else { 1.0 };
+            let notice_close = match &live {
+                Some(l) => l.close_view(now),
+                None => scene.close.map(|hot| NoticeCloseView {
+                    alpha: frozen_close.unwrap_or(1.0).clamp(0.0, 1.0),
+                    hot,
+                }),
+            }
+            .filter(|c| c.alpha > 0.0);
             let page = match scene.view {
                 View0::Panel(page) => page,
                 _ => Page::Calendar,
@@ -2134,6 +2226,7 @@ fn run_scenes(scenes: &[Scene]) {
                         .map(|(key, thumb)| ToastLogoView { key, thumb }),
                 }),
                 strip_motion: None,
+                notice_close,
                 transit: {
                     let reveal_at =
                         frozen_reveal.unwrap_or((into as f32 / REVEAL_MS as f32).min(1.0));
@@ -2168,7 +2261,7 @@ fn run_scenes(scenes: &[Scene]) {
                     }
                 },
             };
-            if let Err(error) = renderer.draw(&win, style, shape, &frame, 1.0) {
+            if let Err(error) = renderer.draw(&win, style, shape, &frame, opacity) {
                 eprintln!("demo: draw failed: {error}");
             }
         }
@@ -2554,6 +2647,14 @@ fn demo_notice(which: DemoNotice, renderer: &Renderer) -> Notice {
             format!("vale · {}", tr(Key::DemoClaudeAsks)),
             NoticeKind::ClaudeWaiting {
                 session_id: "demo".into(),
+            },
+        ),
+        DemoNotice::ClaudeDone => notice(
+            "Claude",
+            tr(Key::ClaudeDone),
+            "vale \u{b7} tugas selesai".into(),
+            NoticeKind::ClaudeDone {
+                session_id: "demo-session".into(),
             },
         ),
         DemoNotice::Battery => notice(
@@ -3434,6 +3535,201 @@ fn test_art() -> Vec<u8> {
         }
     }
     bmp
+}
+
+/// What the window procedure of `--demo-notice-close` saw, in client pixels,
+/// for the demo loop to act on (it owns the renderer that maps a point to a
+/// target).
+#[derive(Clone, Copy)]
+enum LiveInput {
+    Move(i32, i32),
+    Leave,
+    Up(i32, i32),
+}
+
+thread_local! {
+    static LIVE_INPUT: std::cell::RefCell<Vec<LiveInput>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn live_push(input: LiveInput) {
+    LIVE_INPUT.with(|q| q.borrow_mut().push(input));
+}
+
+fn live_take() -> Vec<LiveInput> {
+    LIVE_INPUT.with(|q| std::mem::take(&mut *q.borrow_mut()))
+}
+
+/// The client point of a mouse message's `lparam` (signed 16 bits each).
+fn live_point(lparam: LPARAM) -> (i32, i32) {
+    (
+        (lparam.0 & 0xFFFF) as i16 as i32,
+        ((lparam.0 >> 16) & 0xFFFF) as i16 as i32,
+    )
+}
+
+/// The window procedure of `--demo-notice-close`: the plain demo's plus the
+/// mouse (move, leave, left button up), queued for the loop.
+unsafe extern "system" fn live_wnd_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    match msg {
+        WM_MOUSEMOVE => {
+            let mut track = TRACKMOUSEEVENT {
+                cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
+                dwFlags: TME_LEAVE,
+                hwndTrack: hwnd,
+                dwHoverTime: 0,
+            };
+            let _ = unsafe { TrackMouseEvent(&mut track) };
+            let (x, y) = live_point(lparam);
+            live_push(LiveInput::Move(x, y));
+            LRESULT(0)
+        }
+        WM_MOUSELEAVE => {
+            live_push(LiveInput::Leave);
+            LRESULT(0)
+        }
+        WM_LBUTTONUP => {
+            let (x, y) = live_point(lparam);
+            live_push(LiveInput::Up(x, y));
+            LRESULT(0)
+        }
+        _ => unsafe { wnd_proc(hwnd, msg, wparam, lparam) },
+    }
+}
+
+/// The made-up notices `--demo-notice-close` cycles through: a chat toast
+/// (with its logo), "Claude finished", a clean that finished, and a sticky
+/// reminder (no ✕).
+const LIVE_NOTICES: [DemoNotice; 4] = [
+    DemoNotice::AppLogo,
+    DemoNotice::ClaudeDone,
+    DemoNotice::CleanDone,
+    DemoNotice::Reminder,
+];
+
+/// A pause before the next made-up notice, so the end of one shows.
+const LIVE_REFILL: Duration = Duration::from_millis(800);
+
+/// `--demo-notice-close`: a real `IslandState` fed made-up notices, with the
+/// pointer and the ✕ on the real path (`Event::Click(hit)` from the
+/// renderer's hit test). Effects are printed, never run.
+struct LiveNoticeClose {
+    state: IslandState,
+    /// The next made-up notice to push, by place in `LIVE_NOTICES`.
+    next: usize,
+    /// When no notice showed first (the queue refills `LIVE_REFILL` later).
+    empty_since: Option<Instant>,
+    pointer_on: bool,
+    hot: bool,
+    fade: CloseFade,
+    /// `DI_DEMO_CLOSE`: the fade frozen at this alpha while the ✕ is on.
+    frozen: Option<f32>,
+}
+
+impl LiveNoticeClose {
+    fn new(fullscreen: bool, frozen: Option<f32>, now: Instant) -> Self {
+        let mut state = IslandState::new(Local::now().date_naive(), PomoSettings::default());
+        if fullscreen {
+            state.apply(Event::Fullscreen(true), now);
+        }
+        Self {
+            state,
+            next: 0,
+            empty_since: None,
+            pointer_on: false,
+            hot: false,
+            fade: CloseFade::settled(0.0, now),
+            frozen,
+        }
+    }
+
+    /// The pointer and clicks seen since the last frame, the notices'
+    /// expiry, the refill and the ✕'s fade target.
+    fn step(&mut self, renderer: &Renderer, now: Instant) {
+        for input in live_take() {
+            match input {
+                LiveInput::Move(x, y) => {
+                    let (x, y) = (x as f32, y as f32);
+                    self.pointer_on = matches!(renderer.under(x, y), Under::Island(_));
+                    self.hot = renderer.hit_test(x, y) == Some(Hit::NoticeClose);
+                }
+                LiveInput::Leave => {
+                    self.pointer_on = false;
+                    self.hot = false;
+                }
+                LiveInput::Up(x, y) => {
+                    if let Some(hit) = renderer.hit_test(x as f32, y as f32) {
+                        let effects = self.state.apply(Event::Click(hit), now);
+                        eprintln!("effects: {effects:?}");
+                    }
+                }
+            }
+        }
+        self.state.apply(Event::Tick, now);
+        if matches!(self.state.view(), View::Notice(_)) {
+            self.empty_since = None;
+        } else {
+            let since = *self.empty_since.get_or_insert(now);
+            if now.duration_since(since) >= LIVE_REFILL {
+                let mut notice = demo_notice(LIVE_NOTICES[self.next % LIVE_NOTICES.len()], renderer);
+                notice.key = format!("demo-live-{}", self.next);
+                self.next += 1;
+                self.empty_since = None;
+                self.state.apply(Event::Notice(notice), now);
+            }
+        }
+        let to = if self.pointer_on && self.state.notice_close_shown() {
+            1.0
+        } else {
+            0.0
+        };
+        if self.fade.to != to {
+            let ms = close_fade_ms(true, Motion::Full, false);
+            self.fade.retarget(to, now, ms);
+        }
+    }
+
+    fn view(&self) -> View {
+        self.state.view()
+    }
+
+    /// Bata for the island's own notices, the app's logo for a toast.
+    fn robot(&self) -> Option<Expr> {
+        match self.state.view() {
+            View::Notice(n) if matches!(n.kind, NoticeKind::App { toast: Some(_), .. }) => None,
+            View::Notice(_) => Some(Expr::Happy),
+            _ => None,
+        }
+    }
+
+    fn close_view(&self, now: Instant) -> Option<NoticeCloseView> {
+        let alpha = match self.frozen {
+            Some(a) if self.fade.to > 0.0 => a.clamp(0.0, 1.0),
+            Some(_) => 0.0,
+            None => self.fade.alpha(now),
+        };
+        (alpha > 0.0).then_some(NoticeCloseView {
+            alpha,
+            hot: self.hot,
+        })
+    }
+}
+
+/// `--demo-notice-close` (debug builds): see the module docs.
+pub fn run_notice_close() {
+    let scene = Scene {
+        kind: ShapeKind::Notice,
+        ..notice("notice-close-live", DemoNotice::AppLogo)
+    };
+    let fullscreen = std::env::var("DI_DEMO_FULLSCREEN").is_ok_and(|v| v.trim() == "1");
+    let frozen: Option<f32> = env("DI_DEMO_CLOSE");
+    let live = LiveNoticeClose::new(fullscreen, frozen, Instant::now());
+    run_scenes_with(&[scene], Some(live));
 }
 
 /// Dispatches pending messages; false once WM_QUIT arrives.

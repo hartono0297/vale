@@ -867,12 +867,21 @@ pub fn notice_chip_widths(kind: &NoticeKind, pomo: PomoStatus) -> Vec<f32> {
 /// Returns the layout (its `action` is the whole block of chips) and each
 /// chip's rect, in the order of `widths`.
 pub fn notice_actions_layout(s: ShapeRect, widths: &[f32]) -> (NoticeLayout, Vec<Rect>) {
+    notice_actions_layout_with(s, widths, false)
+}
+
+/// `notice_actions_layout` with the room for the ✕ (`notice_layout_with`).
+pub fn notice_actions_layout_with(
+    s: ShapeRect,
+    widths: &[f32],
+    close: bool,
+) -> (NoticeLayout, Vec<Rect>) {
     if widths.is_empty() {
-        return (notice_layout(s, None), Vec::new());
+        return (notice_layout_with(s, None, close), Vec::new());
     }
     let gaps = NOTICE_CHIP_GAP * (widths.len() - 1) as f32;
     let total = widths.iter().sum::<f32>() + gaps;
-    let layout = notice_layout(s, Some(total));
+    let layout = notice_layout_with(s, Some(total), close);
     let block = layout.action.expect("room for the chips was asked for");
     let mut x = block.x;
     let chips = widths
@@ -1003,6 +1012,8 @@ pub struct ToastNoticeLayout {
 
 /// `notice_layout`'s badge, chip and text edges with the text split in three
 /// lines (eyebrow, title, body) around the shape's middle.
+// The renderer asks for the ✕'s room itself (`toast_notice_layout_with`).
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn toast_notice_layout(s: ShapeRect, action: Option<f32>) -> ToastNoticeLayout {
     toast_notice_layout_with(s, action, false)
 }
