@@ -117,11 +117,15 @@ Mono sizes and the Settings row.
 ## The phone link, phase 1 (2026-11-04)
 
 [[shelf-phone]] (the local HTTP server, the page, the QR code, the four views
-and their drawing) took the release exe from 3,186,688 to 3,295,232 bytes
-(+108,544, +3.4 %). Built with `cargo build --release --locked` in two
-folders of the same name length (`main` from `git archive`, and the branch),
-each with its own `CARGO_TARGET_DIR`, so the running island's exe was never
-touched; no warning in either. The new parts: `qrcodegen` 1.8.0 (one crate, no
+and their drawing) took the release exe from 3,186,688 to 3,299,840 bytes
+(+113,152, +3.6 %), measured at the branch's last code commit (an earlier
+count, 3,295,232, was taken before the review fixes). Built with
+`cargo build --release --locked` in two folders of the same name length
+(`main` and `phon`, both from `git archive`), each with its own
+`CARGO_TARGET_DIR`, so the running island's exe was never touched; no
+warning in either. The same branch built in the longer worktree path came
+out 512 bytes smaller (the embedded PDB path), so only same-length folders
+compare. The new parts: `qrcodegen` 1.8.0 (one crate, no
 dependency), four `windows` features (`Win32_NetworkManagement_IpHelper`,
 `Win32_NetworkManagement_Ndis`, `Win32_Networking_WinSock`,
 `Win32_Networking_NetworkListManager`), about 14 KB of page text, the
