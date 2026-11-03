@@ -3833,7 +3833,10 @@ mod tests {
                     // Without the ✕ the layouts are the old ones, 18 dip wider.
                     let plain = notice_layout(n, action);
                     assert_eq!(plain, notice_layout_with(n, action, false), "{tag}");
-                    assert_eq!(toast_notice_layout(n, action), toast_notice_layout_with(n, action, false));
+                    assert_eq!(
+                        toast_notice_layout(n, action),
+                        toast_notice_layout_with(n, action, false)
+                    );
                     assert_eq!(plain.title.right() - l.title.right(), 18.0, "{tag}");
                 }
             }

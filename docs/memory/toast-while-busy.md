@@ -202,6 +202,9 @@ Settings switched to Penuh and back; the strip's motion and the slot's morph by
 eye; the hover over a slot on a real island (the window is a layered one, so a
 pointer off the drawn pixels sends no moves).
 
+The ✕ ([[notice-close]]) shows on the Full form and on the peek of a toast,
+never on the Strip or the Slot; it closes without an effect and without the dot.
+
 Related: [[hotkeys]], [[cat-types-while-working]], [[open-mode]], [[notification-history]], [[lyric-notch-width]],
 [[compact-padding]], [[notch-peek-eyes]], [[panel-linger-and-motion]],
 [[bata-idle-power-budget]]. Listed in [[index]].

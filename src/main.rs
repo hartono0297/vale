@@ -82,8 +82,15 @@ fn opens_windows(arg: Option<&str>) -> bool {
         Some("--updated") => true,
         #[cfg(debug_assertions)]
         Some(
-            "--demo" | "--demo-editor" | "--demo-cli" | "--demo-robot" | "--demo-devices"
-            | "--demo-arrange" | "--demo-notice-close" | "--demo-snap" | "--demo-shot-editor"
+            "--demo"
+            | "--demo-editor"
+            | "--demo-cli"
+            | "--demo-robot"
+            | "--demo-devices"
+            | "--demo-arrange"
+            | "--demo-notice-close"
+            | "--demo-snap"
+            | "--demo-shot-editor"
             | "--settings",
         ) => true,
         Some(_) => false,

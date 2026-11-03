@@ -114,9 +114,10 @@ use crate::ui::geometry::{
     with_toast_slot,
 };
 use crate::ui::motion::{
-    CloseFade, FadeStart, MorphCurve, PAGE_FADE_MS, Reveal, SlideStrip, Snap, StripDir, StripMotion,
-    StripSnap, SubView, Transit, Transition, content_alpha_from, ease_in_out_cubic, fade_floor,
-    close_fade_ms, mole_code, morph_timing, page_fade_frame, panel_fade, strip_dir, transition,
+    CloseFade, FadeStart, MorphCurve, PAGE_FADE_MS, Reveal, SlideStrip, Snap, StripDir,
+    StripMotion, StripSnap, SubView, Transit, Transition, close_fade_ms, content_alpha_from,
+    ease_in_out_cubic, fade_floor, mole_code, morph_timing, page_fade_frame, panel_fade, strip_dir,
+    transition,
 };
 use crate::ui::notch_fill;
 use crate::ui::panel_layout::{CliHead, STRIP_H, cli_layout};
@@ -3741,9 +3742,8 @@ impl App {
     /// visit (hover tracking is armed), the notice is closable and in its full
     /// form, and the notch is not shrunk to the eyes.
     fn close_target(&self) -> f32 {
-        let on = !self.hover.needs_arming()
-            && self.state.notice_close_shown()
-            && !self.peek.is_shrunk();
+        let on =
+            !self.hover.needs_arming() && self.state.notice_close_shown() && !self.peek.is_shrunk();
         if on { 1.0 } else { 0.0 }
     }
 

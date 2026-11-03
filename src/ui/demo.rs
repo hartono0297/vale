@@ -1806,7 +1806,11 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
         .ok()
         .and_then(|v| held_step(scenes, &v));
     // The live ✕ demo has one scene and never cycles.
-    let hold = if live.is_some() { hold.or(Some(0)) } else { hold };
+    let hold = if live.is_some() {
+        hold.or(Some(0))
+    } else {
+        hold
+    };
     let frozen_close: Option<f32> = env("DI_DEMO_CLOSE");
     let frozen_t: Option<f32> = env("DI_DEMO_T");
     let slide: f32 = env("DI_DEMO_SLIDE").unwrap_or(0.0);
@@ -3676,7 +3680,8 @@ impl LiveNoticeClose {
         } else {
             let since = *self.empty_since.get_or_insert(now);
             if now.duration_since(since) >= LIVE_REFILL {
-                let mut notice = demo_notice(LIVE_NOTICES[self.next % LIVE_NOTICES.len()], renderer);
+                let mut notice =
+                    demo_notice(LIVE_NOTICES[self.next % LIVE_NOTICES.len()], renderer);
                 notice.key = format!("demo-live-{}", self.next);
                 self.next += 1;
                 self.empty_since = None;
