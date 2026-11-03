@@ -957,6 +957,56 @@ mod tests {
     }
 
     #[test]
+    fn a_read_only_api_request_is_not_activity_and_only_an_approved_session_cookie_opens_it() {
+        let (mut s, t0) = session();
+        let p = pair(&mut s, t0);
+        // The pairing cookie opens none of the file routes.
+        assert_eq!(s.device_for_view_api(Some(&p.cookie)), None);
+        s.approve(p.device_id, t0);
+        assert_eq!(s.device_for_view_api(Some(&p.cookie)), None, "still only `vp`");
+        let StateAnswer::Approved {
+            session_cookie: Some(vs),
+            ..
+        } = s.answer_state(Some(&p.cookie), None, t0)
+        else {
+            panic!("cookie")
+        };
+        assert_eq!(s.device_for_view_api(Some(&vs)), Some(p.device_id));
+        assert_eq!(s.device_for_view_api(Some("nope")), None);
+        assert_eq!(s.device_for_view_api(None), None);
+        // Asking for the list or a thumbnail all day does not keep it alive.
+        for _ in 0..200 {
+            assert!(s.device_for_view_api(Some(&vs)).is_some());
+        }
+        assert!(s.idle(t0 + secs(600)), "reading the list is not activity");
+        // The start of a download and each chunk of it is.
+        s.touch(t0 + secs(590));
+        assert!(!s.idle(t0 + secs(1189)));
+        s.touch(t0 + secs(1180));
+        assert!(!s.idle(t0 + secs(1779)));
+        assert!(s.idle(t0 + secs(1780)));
+    }
+
+    #[test]
+    fn the_shared_files_live_in_the_session_and_go_with_it() {
+        let (mut s, _) = session();
+        let a = s.share(std::path::Path::new(r"C:\x\a.pdf")).expect("id");
+        assert_eq!(s.shared().len(), 1);
+        assert_eq!(s.shared().find(&a).expect("a").name, "a.pdf");
+        assert!(s.shared_mut().unshare(&a));
+        assert!(s.shared().is_empty());
+        // With no random bytes nothing is shared.
+        let mut dead = Session::new(Instant::now(), fake).expect("session");
+        dead.fill = none;
+        assert_eq!(dead.share(std::path::Path::new(r"C:\x\b.pdf")), None);
+        // Another session never knows an id of this one.
+        let (mut other, _) = session();
+        let b = other.share(std::path::Path::new(r"C:\x\a.pdf")).expect("id");
+        assert_ne!(a, b);
+        assert!(s.shared().find(&b).is_none());
+    }
+
+    #[test]
     fn a_cancelled_batch_stays_cancelled_and_a_new_one_is_free() {
         let (mut s, _) = session();
         assert!(s.start_batch("b1"));

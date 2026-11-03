@@ -668,7 +668,7 @@ mod tests {
         // The encoding is the name's UTF-8 bytes.
         let d = content_disposition("attachment", "catatan ruang \u{e9}.txt");
         assert!(d.ends_with("UTF-8''catatan%20ruang%20%C3%A9.txt"), "{d}");
-        assert!(d.contains("filename=\"catatan ruang __.txt\""), "{d}");
+        assert!(d.contains("filename=\"catatan ruang _.txt\""), "{d}");
         let d = content_disposition("attachment", "a\r\nb.txt");
         assert!(d.contains("a%0D%0Ab.txt"), "{d}");
         assert!(d.contains("filename=\"a__b.txt\""), "{d}");

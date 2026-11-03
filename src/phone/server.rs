@@ -1136,6 +1136,200 @@ mod tests {
         assert!(checked > 20, "only {checked} calls found");
     }
 
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+
+    /// Not random: a counter run through a mixer, so each call differs.
+    fn counter(buf: &mut [u8]) -> bool {
+        static N: AtomicU64 = AtomicU64::new(1);
+        for b in buf.iter_mut() {
+            let mut x = N.fetch_add(0x9E37_79B9_7F4A_7C15, AtomicOrdering::Relaxed);
+            x ^= x >> 29;
+            x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            *b = (x >> 13) as u8;
+        }
+        true
+    }
+
+    /// A server's shared state whose last activity was `ago` back, with one
+    /// approved phone: its session cookie comes with it.
+    fn quiet_server(ago: std::time::Duration) -> Option<(Arc<super::Shared>, String, std::time::Instant)> {
+        use super::super::session::{Session, StateAnswer};
+        use super::super::{EndReason, Shared};
+        use std::sync::atomic::{AtomicBool, AtomicUsize};
+        use std::sync::{Mutex, OnceLock};
+        let now = std::time::Instant::now();
+        let old = now.checked_sub(ago)?;
+        let mut session = Session::new(old, counter).expect("a session");
+        let token = session.token().to_owned();
+        let p = session.begin_pairing(&token, old).expect("pairing");
+        session.approve(p.device_id, old).expect("approved");
+        let StateAnswer::Approved {
+            session_cookie: Some(vs),
+            ..
+        } = session.answer_state(Some(&p.cookie), None, old)
+        else {
+            panic!("a session cookie");
+        };
+        let shared = Arc::new(Shared {
+            session: Mutex::new(session),
+            stop: AtomicBool::new(false),
+            reason: Mutex::new(EndReason::Done),
+            ended: AtomicBool::new(false),
+            sink: Arc::new(|_| {}),
+            runtime: OnceLock::new(),
+            conns: AtomicUsize::new(0),
+            next_upload: AtomicU64::new(1),
+        });
+        Some((shared, format!("vs={vs}"), now))
+    }
+
+    fn get_request(path: &str, cookie: &str) -> super::Request {
+        super::Request {
+            method: super::Method::Get,
+            path: path.to_owned(),
+            headers: vec![("cookie".to_owned(), cookie.to_owned())],
+            content_length: None,
+        }
+    }
+
+    /// The idle rule: the file list, a thumbnail and the approved state polls
+    /// are not activity (an open page cannot keep the server alive); the
+    /// start of a download and each chunk of it are.
+    #[test]
+    fn the_list_a_thumbnail_and_state_polls_do_not_keep_the_server_alive_but_a_download_does() {
+        use std::io::Write;
+        use std::net::{TcpListener, TcpStream};
+        let ago = std::time::Duration::from_secs(700);
+        let Some((shared, cookie, _)) = quiet_server(ago) else {
+            eprintln!("skipped: the clock has not run {ago:?} yet");
+            return;
+        };
+        let idle = |s: &super::Shared| s.session.lock().expect("lock").idle(std::time::Instant::now());
+        assert!(idle(&shared), "it starts idle");
+        // The list, a thumbnail, a state poll: still idle.
+        assert_eq!(super::file_list(&shared, &get_request("/api/files", &cookie)).status, 200);
+        assert_eq!(super::thumbnail(&shared, &get_request("/api/thumb/x", &cookie), "x").status, 404);
+        assert!(super::api_device(&shared, &get_request("/api/files", &cookie), false).is_some());
+        assert!(idle(&shared), "the list and a thumbnail are not activity");
+        // A request that starts a download is.
+        assert!(super::api_device(&shared, &get_request("/api/file/x", &cookie), true).is_some());
+        assert!(!idle(&shared));
+
+        // Each chunk written counts: a long download keeps it alive.
+        let (shared, _cookie, _) = quiet_server(ago).expect("a clock");
+        let dir = crate::phone::files::tests::temp_dir("phone-idle");
+        let path = dir.join("a.bin");
+        std::fs::write(&path, vec![7u8; 100_000]).expect("write");
+        let id = shared
+            .session
+            .lock()
+            .expect("lock")
+            .share(&path)
+            .expect("shared");
+        assert!(idle(&shared));
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let client = TcpStream::connect(listener.local_addr().expect("addr")).expect("connect");
+        let (mut server_side, _) = listener.accept().expect("accept");
+        let mut file = std::fs::File::open(&path).expect("open");
+        assert!(super::stream_body(&shared, &mut server_side, &mut file, 0, 100_000, &id));
+        server_side.flush().expect("flush");
+        assert!(!idle(&shared), "a chunk written is activity");
+        // A stop (or an unticked id) ends the stream before the next chunk.
+        let mut file = std::fs::File::open(&path).expect("open");
+        shared.session.lock().expect("lock").shared_mut().unshare(&id);
+        assert!(!super::stream_body(&shared, &mut server_side, &mut file, 0, 100_000, &id));
+        client.shutdown(std::net::Shutdown::Both).expect("shutdown");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The page is one file and stays under its cap.
+    #[test]
+    fn the_page_stays_under_30_kb() {
+        assert!(PAGE.len() < 30 * 1024, "{} bytes", PAGE.len());
+    }
+
+    /// The keys of the language `lang` ("id" or "en") in the page's `S`
+    /// object: every `name:` outside strings and arrays, between that
+    /// language's `{` and its matching `}`.
+    fn dict_keys(lang: &str) -> Vec<String> {
+        let start = PAGE.find("var S={").expect("the dictionary");
+        let open = format!("{lang}:{{");
+        let at = start + PAGE[start..].find(&open).expect("a language") + open.len();
+        let b = PAGE.as_bytes();
+        let (mut depth, mut i, mut quote) = (0i32, at, None::<u8>);
+        let mut keys = Vec::new();
+        let mut word = String::new();
+        while i < b.len() {
+            let c = b[i];
+            match quote {
+                Some(q) => {
+                    if c == b'\\' {
+                        i += 1;
+                    } else if c == q {
+                        quote = None;
+                    }
+                }
+                None => match c {
+                    b'"' => quote = Some(c),
+                    b'[' | b'{' => depth += 1,
+                    b']' => depth -= 1,
+                    b'}' => {
+                        if depth == 0 {
+                            break;
+                        }
+                        depth -= 1;
+                    }
+                    b':' if depth == 0 && !word.is_empty() => {
+                        keys.push(std::mem::take(&mut word));
+                    }
+                    c if (c as char).is_ascii_alphanumeric() || c == b'_' => word.push(c as char),
+                    _ => word.clear(),
+                },
+            }
+            i += 1;
+        }
+        keys
+    }
+
+    /// Both languages say the same things: a word missing in one would show
+    /// as "undefined" on the phone.
+    #[test]
+    fn the_id_and_en_dictionaries_have_exactly_the_same_keys() {
+        let (id, en) = (dict_keys("id"), dict_keys("en"));
+        assert!(id.len() > 35, "only {} keys found", id.len());
+        let mut a = id.clone();
+        let mut b = en.clone();
+        a.sort();
+        b.sort();
+        assert_eq!(a, b);
+        let mut dup = a.clone();
+        dup.dedup();
+        assert_eq!(dup.len(), a.len(), "a key twice in one language");
+        // The "soon" tag is gone with the tab enabled.
+        assert!(!id.contains(&"soon".to_owned()));
+        for key in ["save", "saved", "saveAll", "saving", "gone", "noFiles", "only", "hintIos", "hintAnd"] {
+            assert!(id.contains(&key.to_owned()), "{key}");
+        }
+    }
+
+    /// The new tab reads the list and the download routes and nothing more:
+    /// no path, no `innerHTML`, no outside address.
+    #[test]
+    fn the_page_builds_names_with_text_nodes_and_loads_nothing_outside() {
+        // The logo's own SVG is the one `innerHTML` assignment, a literal.
+        assert_eq!(PAGE.matches(".innerHTML").count(), 1);
+        for outside in ["http://", "https://", "//cdn", "@import", "url("] {
+            let n = PAGE.matches(outside).count();
+            // The SVG namespace is the only http:// there is.
+            let allowed = usize::from(outside == "http://");
+            assert!(n <= allowed, "{outside}: {n}");
+        }
+        for route in ["/api/files", "/api/file/", "/api/view/", "/api/thumb/"] {
+            assert!(PAGE.contains(route), "{route}");
+        }
+    }
+
     /// A stop asked before the thread got to `bind` (Back pressed while the
     /// adapters were read) ends the session with nothing listening.
     #[test]

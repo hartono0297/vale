@@ -3547,7 +3547,7 @@ const PHONE_SEND_ROW_GAP: f32 = 6.0;
 /// The tag that takes the tick box's place on a folder or a missing file:
 /// `text_w` is its measured width.
 pub fn phone_send_tag(card: Rect, text_w: f32) -> Rect {
-    let w = (text_w.ceil() + 10.0).clamp(30.0, card.w - 12.0);
+    let w = (text_w.ceil() + 6.0).clamp(30.0, card.w - 12.0);
     rect(card.x + 6.0, card.y + 6.0, w, 15.0)
 }
 

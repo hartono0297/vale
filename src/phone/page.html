@@ -36,8 +36,6 @@ main{max-width:480px;margin:0 auto;display:flex;flex-direction:column;gap:12px}
 .tabs{display:grid;grid-template-columns:1fr 1fr;background:var(--card);border-radius:14px;padding:4px}
 .tabs button{font:inherit;font-size:13px;color:var(--tx2);background:none;border:0;border-radius:10px;padding:9px 4px;min-height:40px}
 .tabs button.on{background:#332A23;color:var(--tx);font-weight:600}
-.tabs button[disabled]{opacity:.6}
-.tabs i{font-style:normal;font-size:10px;margin-left:4px;color:var(--accs)}
 .pick{position:relative;display:block;border:2px dashed var(--line);border-radius:18px;padding:18px 12px;text-align:center;cursor:pointer}
 .pick input{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer;font-size:0}
 .pick .ib{width:42px;height:42px;border-radius:12px;background:rgba(226,104,60,.16);display:grid;place-items:center;margin:0 auto 8px}
@@ -45,7 +43,17 @@ main{max-width:480px;margin:0 auto;display:flex;flex-direction:column;gap:12px}
 .pick small{color:var(--tx2);font-size:12px}
 .list{display:flex;flex-direction:column;gap:8px}
 .row{position:relative;overflow:hidden;border-radius:14px;background:var(--card);padding:10px 12px 12px 10px;display:flex;align-items:center;gap:10px}
-.th{width:36px;height:36px;border-radius:10px;background:var(--card2);display:grid;place-items:center;flex:none}
+.th{width:36px;height:36px;border-radius:10px;background:var(--card2);display:grid;place-items:center;flex:none;overflow:hidden}
+.th img{width:100%;height:100%;object-fit:cover;display:block}
+.from{display:flex;flex-direction:column;gap:12px}
+.dl{flex:none;font:inherit;font-size:13px;font-weight:600;color:#fff;background:var(--acc);border:0;border-radius:99px;padding:8px 14px;min-height:36px;white-space:nowrap}
+.dl.ghost{background:var(--card2);color:var(--tx);font-weight:500}
+.dl[disabled]{opacity:.6}
+.row .gn{font-size:12px;color:var(--warn);flex:none;text-align:right;max-width:45%}
+.hint{border-radius:12px;background:rgba(217,164,65,.12);color:var(--warn);font-size:12px;line-height:1.45;padding:9px 11px}
+.hint p+p{margin-top:4px}
+.sa{font:inherit;font-size:14px;font-weight:600;color:#fff;background:var(--acc);border:0;border-radius:14px;padding:13px 10px;min-height:46px;width:100%}
+.sa[disabled]{background:var(--card2);color:var(--tx2);font-weight:500}
 .row .n{min-width:0;flex:1}
 .row .fn{font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .row .sz{font-size:12px;color:var(--tx2)}
@@ -73,7 +81,10 @@ var S={
 id:{tag:"RAK BERKAS",sub:"Kirim berkas ke laptop",wait:"Menunggu izin di PC…",conn:"Tersambung di jaringan lokal",
 mine:"Kode kamu",look:"Lihat notch di PC.",same:"Kalau kodenya sama, tekan",allow:"Izinkan",
 fine:"Langsung lewat Wi‑Fi lokal, tidak lewat internet",rej:"Ditolak di PC",rejSub:"Scan QR di notch lagi kalau mau mencoba lagi.",
-send:"Kirim ke laptop",from:"Dari laptop",soon:"segera",pick:"Pilih foto, video, atau file",pickSub:"Bisa banyak sekaligus dari galeri / Files",
+send:"Kirim ke laptop",from:"Dari laptop",pick:"Pilih foto, video, atau file",pickSub:"Bisa banyak sekaligus dari galeri / Files",
+save:"Simpan",saved:"✓ Tersimpan",savingOne:"Menyimpan…",saveAll:"Simpan semua ({0})",saving:"Menyimpan… {0} dari {1}",gone:"Tidak dibagikan lagi",openErr:"Tidak bisa dibuka di PC",
+noFiles:"Belum ada berkas. Centang berkas di notch PC (Rak → HP → Kirim ke HP).",only:"Hanya berkas yang kamu bagikan dari PC yang terlihat di sini",
+hintIos:"iPhone: foto terbuka dulu, tekan lama gambarnya → Simpan ke Foto. Video & file lain masuk ke app Files → Unduhan.",hintAnd:"Android: masuk folder Download, muncul di Galeri.",
 sending:"Mengirim ke laptop… {0} dari {1}",sent:"✓ Terkirim: {0} berkas",sentErr:"Selesai, {0} gagal",
 done:"✓ Selesai",queued:"Menunggu",cancelled:"Dibatalkan di PC",big:"Terlalu besar (maks 4 GB)",full:"Disk PC penuh",fail:"Gagal terkirim",
 awake:"Biarkan layar HP tetap menyala selama mengirim.",lost:"Koneksi terputus, scan QR lagi",lostSub:"Sesi di PC mungkin sudah selesai atau Wi‑Fi berganti.",retry:"Coba lagi",
@@ -81,7 +92,10 @@ unit:["B","KB","MB","GB"]},
 en:{tag:"FILE SHELF",sub:"Send files to your laptop",wait:"Waiting for permission on the PC…",conn:"Connected on the local network",
 mine:"Your code",look:"Look at the notch on the PC.",same:"If the code matches, tap",allow:"Allow",
 fine:"Straight over local Wi‑Fi, not through the internet",rej:"Declined on the PC",rejSub:"Scan the QR on the notch again to try again.",
-send:"Send to laptop",from:"From laptop",soon:"soon",pick:"Choose photos, videos, or files",pickSub:"Pick many at once from the gallery / Files",
+send:"Send to laptop",from:"From laptop",pick:"Choose photos, videos, or files",pickSub:"Pick many at once from the gallery / Files",
+save:"Save",saved:"✓ Saved",savingOne:"Saving…",saveAll:"Save all ({0})",saving:"Saving… {0} of {1}",gone:"No longer shared",openErr:"Can't be opened on the PC",
+noFiles:"No files yet. Tick files on the PC's notch (Shelf → Phone → Send to phone).",only:"Only files you share from the PC show up here",
+hintIos:"iPhone: photos open first, long-press the image → Add to Photos. Videos and other files go to the Files app → Downloads.",hintAnd:"Android: saved to the Download folder and shown in the Gallery.",
 sending:"Sending to laptop… {0} of {1}",sent:"✓ Sent: {0} files",sentErr:"Finished, {0} failed",
 done:"✓ Done",queued:"Waiting",cancelled:"Cancelled on the PC",big:"Too big (4 GB max)",full:"PC disk is full",fail:"Could not send",
 awake:"Keep the phone screen on while sending.",lost:"Connection lost, scan the QR again",lostSub:"The session on the PC may have ended or the Wi‑Fi changed.",retry:"Try again",
@@ -108,6 +122,11 @@ function pcCard(ok,line){return h("div",{class:"pc"+(ok?" ok":"")},h("span",{cla
 var state=B.state||"waiting",code=B.code||"",timer=0;
 var items=[],running=false,view=null;
 var app=document.getElementById("app");
+/* The tab shown stays across redraws and polls; uploads go on whichever it is. */
+var tab="send",shared=0,files=[],loaded=false,seenRev=-1,tabBtn=null,saveRun=null;
+var thState={},thQ=[],thBusy=false,thEls={};
+var UA=navigator.userAgent||"";
+var IOS=/iPhone|iPad|iPod/.test(UA)||(/Macintosh/.test(UA)&&navigator.maxTouchPoints>1),AND=/Android/.test(UA);
 
 function show(){
  app.textContent="";
@@ -127,9 +146,8 @@ function show(){
  /* approved */
  app.appendChild(brand());
  app.appendChild(pcCard(true,t("conn")));
- var tabs=h("div",{class:"tabs"},h("button",{type:"button",class:"on"},t("send")),
-  h("button",{type:"button",disabled:"disabled","aria-disabled":"true"},t("from"),h("i",null,t("soon"))));
- app.appendChild(tabs);
+ app.appendChild(tabBar());
+ if(tab==="from"){view=null;showFrom();return}
  var inp=h("input",{type:"file",multiple:"multiple"});
  inp.onchange=function(){pickFiles(inp.files);inp.value=""};
  app.appendChild(h("label",{class:"pick"},inp,h("div",{class:"ib"},svg("M12 16V4M7 9l5-5 5 5M5 20h14",22)),h("b",null,t("pick")),h("small",null,t("pickSub"))));
@@ -138,6 +156,147 @@ function show(){
  app.appendChild(h("div",{class:"note"},t("awake")));
  app.appendChild(h("div",{class:"fine"},t("fine")));
  drawList()}
+
+function fromLabel(){return t("from")+" · "+shared}
+function tabBar(){
+ var a=h("button",{type:"button",class:tab==="send"?"on":""},t("send")),
+  b=h("button",{type:"button",class:tab==="from"?"on":""},fromLabel());
+ tabBtn=b;
+ a.onclick=function(){if(tab!=="send"){tab="send";show()}};
+ b.onclick=function(){if(tab!=="from"){tab="from";show()}};
+ return h("div",{class:"tabs"},a,b)}
+
+/* ---- Dari laptop: what the PC shares ---- */
+var KIND={image:"M4 5h16v14H4zM4 16l5-5 4 4 3-3 4 4",video:"M3 6h12v12H3zM15 10l6-3v10l-6-3",audio:"M9 18V6l10-2v12M9 18a3 3 0 1 1-3-3M19 16a3 3 0 1 1-3-3",
+ archive:"M4 4h16v4H4zM5 8h14v12H5zM10 12h4",code:"M8 8l-4 4 4 4M16 8l4 4-4 4M13 6l-2 12",doc:"M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5"};
+function find(id){for(var i=0;i<files.length;i++)if(files[i].id===id)return files[i];return null}
+function unsaved(f){return !f.saved&&!f.gone}
+
+function showFrom(){
+ app.appendChild(h("div",{class:"from",id:"from"}));
+ drawFiles();fetchFiles()}
+
+function paintTh(f,th){
+ if(thState[f.id]===1)th.appendChild(h("img",{src:"/api/thumb/"+f.id,alt:""}));
+ else th.appendChild(svg(KIND[f.kind]||KIND.doc,18,"#E8916D"))}
+
+function fileRow(f){
+ var th=h("div",{class:"th"}),act;
+ thEls[f.id]=th;paintTh(f,th);
+ if(f.gone)act=h("span",{class:"gn"},t("gone"));
+ else if(f.err)act=h("span",{class:"gn"},f.err);
+ else{
+  act=h("button",{type:"button",class:"dl"+(f.saved?" ghost":"")},f.saved?t("saved"):(f.busy||f.wait)?t("savingOne"):t("save"));
+  if(f.busy||f.wait||saveRun)act.disabled=true;
+  act.onclick=function(){saveOne(f.id)}}
+ return h("div",{class:"row"},th,h("div",{class:"n"},h("div",{class:"fn"},f.name),h("div",{class:"sz"},size(f.size))),act)}
+
+function hint(){
+ var a=[];
+ if(!AND)a.push(h("p",null,t("hintIos")));
+ if(!IOS)a.push(h("p",null,t("hintAnd")));
+ return h("div",{class:"hint"},a[0],a[1])}
+
+function drawFiles(){
+ var box=document.getElementById("from");if(!box)return;
+ box.textContent="";thEls={};
+ if(loaded&&!files.length)box.appendChild(h("div",{class:"cta"},t("noFiles")));
+ var list=h("div",{class:"list"});
+ files.forEach(function(f){list.appendChild(fileRow(f))});
+ box.appendChild(list);
+ box.appendChild(hint());
+ var n=files.filter(unsaved).length;
+ if(saveRun||n){
+  var b=h("button",{type:"button",class:"sa"},saveRun?t("saving",saveRun.at,saveRun.total):t("saveAll",n));
+  if(saveRun)b.disabled=true;
+  b.onclick=saveAll;box.appendChild(b)}
+ box.appendChild(h("div",{class:"fine"},t("only")));
+ files.forEach(function(f){if(f.view&&thState[f.id]===undefined){thState[f.id]=0;thQ.push(f.id)}});
+ pumpThumbs()}
+
+/* One thumbnail at a time, so the PC's 8 connections are never all taken
+   by a list of previews; one that fails leaves the type icon. */
+function pumpThumbs(){
+ if(thBusy||!thQ.length)return;
+ var id=thQ.shift(),im=new Image();thBusy=true;
+ im.onload=function(){
+  thState[id]=1;thBusy=false;
+  var th=thEls[id],f=find(id);if(th&&f){th.textContent="";paintTh(f,th)}
+  pumpThumbs()};
+ im.onerror=function(){thState[id]=2;thBusy=false;pumpThumbs()};
+ im.src="/api/thumb/"+id}
+
+function fetchFiles(cb){
+ var x=new XMLHttpRequest();
+ x.open("GET","/api/files");
+ x.onload=function(){
+  var j=null;if(x.status===200){try{j=JSON.parse(x.responseText)}catch(e){}}
+  if(!j||!j.files){if(cb)cb(false);return}
+  var old={};files.forEach(function(f){old[f.id]=f});
+  files=j.files.map(function(f){var o=old[f.id];if(o)f.wait=o.wait;return f});
+  loaded=true;seenRev=j.rev;shared=files.length;
+  if(tabBtn)tabBtn.textContent=fromLabel();
+  drawFiles();if(cb)cb(true)};
+ x.onerror=x.ontimeout=function(){if(cb)cb(false)};
+ x.timeout=8000;
+ x.send()}
+
+/* A HEAD first: a file the PC no longer shares is 404 or 410. */
+function check(f,cb){
+ var x=new XMLHttpRequest();
+ x.open("HEAD","/api/file/"+f.id);
+ x.onload=function(){
+  if(x.status===404||x.status===410){f.gone=true;drawFiles();fetchFiles();cb(false)}
+  else if(x.status!==200){f.err=t("openErr");drawFiles();cb(false)}
+  else cb(true)};
+ x.onerror=x.ontimeout=function(){f.err=t("openErr");drawFiles();cb(false)};
+ x.timeout=8000;
+ x.send()}
+
+/* iPhone: a photo opens in a tab, where a long press offers Add to Photos
+   (`all`: a run of Save all uses the file route for everything). Anything
+   else is a download link. */
+function trigger(f,all){
+ var inline=IOS&&f.view&&!all,a=h("a",{href:(inline?"/api/view/":"/api/file/")+f.id});
+ if(inline){a.target="_blank";a.rel="noopener"}else a.setAttribute("download","");
+ a.style.display="none";document.body.appendChild(a);a.click();document.body.removeChild(a)}
+
+/* Polls the list every 2 s until the file is saved; goes on when it is neither
+   saved nor in flight for 3 polls in a row (a prompt was dismissed). */
+function waitSaved(id,cb){
+ var idle=0;
+ (function tick(){setTimeout(function(){
+  fetchFiles(function(ok){
+   var f=find(id);
+   if(ok&&!f){cb();return}
+   if(ok&&f.saved){cb();return}
+   if(ok&&f.busy)idle=0;else if(++idle>=3){cb();return}
+   tick()})},2000)})()}
+
+function saveOne(id){
+ var f=find(id);if(!f||f.wait||saveRun)return;
+ f.wait=true;drawFiles();
+ function done(){var g=find(id);if(g)g.wait=false;drawFiles()}
+ check(f,function(ok){
+  if(!ok){done();return}
+  trigger(f,false);
+  if(f.saved){done();return}
+  waitSaved(id,done)})}
+
+function saveAll(){
+ if(saveRun)return;
+ var ids=files.filter(unsaved).map(function(f){return f.id});
+ if(!ids.length)return;
+ saveRun={at:0,total:ids.length};
+ (function step(i){
+  if(i>=ids.length){saveRun=null;drawFiles();return}
+  saveRun.at=i+1;drawFiles();
+  var f=find(ids[i]);
+  if(!f||f.gone){step(i+1);return}
+  check(f,function(ok){
+   if(!ok){step(i+1);return}
+   trigger(f,true);
+   waitSaved(f.id,function(){step(i+1)})})})(0)}
 
 function drawList(){
  if(!view||!document.getElementById("list"))return;
@@ -242,6 +401,11 @@ function poll(){
   var j;try{j=JSON.parse(x.responseText)}catch(e){setState("lost");return}
   if(j.pc)B.pc=j.pc;if(j.net)B.net=j.net;
   if(dropBatches(j.cancelled))drawList();
+  /* The same poll tells the tab's count and when the list changed: no
+     second timer, and the list is asked for only on the tab that shows it. */
+  if(j.state==="approved"&&typeof j.rev==="number"){
+   if(j.shared!==shared){shared=j.shared|0;if(tabBtn)tabBtn.textContent=fromLabel()}
+   if(j.rev!==seenRev&&tab==="from"&&state==="approved")fetchFiles()}
   if(j.state==="approved")setState("approved");
   else if(j.state==="rejected"){setState("rejected");return}
   else{if(state!=="waiting"||code!==(j.code||"")){state="waiting";code=j.code||"";show()}}

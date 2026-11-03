@@ -167,7 +167,7 @@ fn decode_and_encode(file: &File) -> Option<Vec<u8>> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::phone::files::tests::temp_dir;
 

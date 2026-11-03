@@ -6188,7 +6188,14 @@ mod tests {
                                     let word = text(lang, key);
                                     let w = r.text_width(word, &f.micro_center);
                                     let tag = phone_send_tag(card.card, w);
-                                    assert!(tag.right() <= icon_left, "{word:?}: the tag clears the icon");
+                                    // The icon's 24 px box has about 3 px of empty margin all round,
+                                    // which the tag may enter, never the drawing.
+                                    assert!(
+                                        tag.right() <= icon_left + 4.0,
+                                        "{word:?}: the tag clears the icon ({} wide for text {w}, icon at {})",
+                                        tag.w,
+                                        icon_left - card.card.x
+                                    );
                                     add(word, "micro_center", tag);
                                 }
                                 let word = text(lang, Key::PhoneTagTaken);

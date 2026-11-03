@@ -781,6 +781,78 @@ mod tests {
         assert!(!s.running());
     }
 
+    fn card(key: &str, kind: ShelfKind, stale: bool) -> ShelfCard {
+        ShelfCard {
+            key: key.to_owned(),
+            name: key.to_owned(),
+            kind,
+            stale,
+            from_phone: false,
+        }
+    }
+
+    fn mirror(key: &str, id: &str, taken: bool) -> Mirror {
+        Mirror {
+            key: key.to_owned(),
+            id: id.to_owned(),
+            size: 10,
+            taken,
+        }
+    }
+
+    #[test]
+    fn a_card_is_ticked_taken_unticked_a_folder_or_stale() {
+        let shared = [mirror("a.pdf", "id1", false), mirror("b.png", "id2", true)];
+        let state = |c: &ShelfCard| card_state(c, &shared);
+        assert_eq!(
+            state(&card("a.pdf", ShelfKind::Document, false)),
+            CardState::Ticked { taken: false }
+        );
+        assert_eq!(
+            state(&card("b.png", ShelfKind::Image, false)),
+            CardState::Ticked { taken: true }
+        );
+        assert_eq!(
+            state(&card("c.xlsx", ShelfKind::Document, false)),
+            CardState::Unticked
+        );
+        // A folder and a missing file cannot be ticked, whatever the mirror says.
+        assert_eq!(state(&card("d", ShelfKind::Folder, false)), CardState::Folder);
+        assert_eq!(
+            state(&card("a.pdf", ShelfKind::Document, true)),
+            CardState::Stale,
+            "a file that went missing after it was ticked"
+        );
+        assert_eq!(state(&card("d", ShelfKind::Folder, true)), CardState::Folder);
+    }
+
+    #[test]
+    fn what_left_the_shelf_is_unshared_and_nothing_else() {
+        let shared = [
+            mirror("a.pdf", "id1", false),
+            mirror("b.png", "id2", true),
+            mirror("c.txt", "id3", false),
+        ];
+        let keys = |k: &[&str]| k.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        // A card taken off.
+        assert_eq!(orphans(&shared, &keys(&["a.pdf", "c.txt"])), ["id2"]);
+        // Everything still there: nothing to revoke.
+        assert!(orphans(&shared, &keys(&["a.pdf", "b.png", "c.txt", "z"])).is_empty());
+        // Cleared: all of them, in order.
+        assert_eq!(orphans(&shared, &[]), ["id1", "id2", "id3"]);
+        assert!(orphans(&[], &keys(&["a.pdf"])).is_empty());
+    }
+
+    #[test]
+    fn a_session_that_goes_forgets_what_was_ticked_for_it() {
+        let mut s = PhoneState {
+            shared: vec![mirror("a.pdf", "id1", false)],
+            ..PhoneState::default()
+        };
+        s.forget_session();
+        assert!(s.shared.is_empty(), "the next session starts with nothing shared");
+    }
+
     #[test]
     fn forgetting_a_session_keeps_only_the_timer_flag() {
         let mut s = PhoneState {
