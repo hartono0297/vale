@@ -380,6 +380,15 @@ pub(super) fn close() {
     }
 }
 
+/// The island is ending: closes the popover and drops what is left in its
+/// slot (its Direct2D objects) now, not in the thread-local destructors
+/// during process exit.
+pub(super) fn release() {
+    close();
+    let left = POPOVER.with(|cell| cell.try_borrow_mut().ok().and_then(|mut s| s.take()));
+    drop(left);
+}
+
 /// Repaints in the palette (and language) now in effect.
 pub(super) fn restyle() {
     let Some((hwnd, edit)) = with(|p| (p.hwnd, p.edit)) else {

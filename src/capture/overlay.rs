@@ -155,6 +155,23 @@ fn take_state(hwnd: Option<HWND>) -> Option<State> {
     })
 }
 
+/// The island is ending: an overlay still up is closed with nothing copied or
+/// opened, and its frame and Direct2D objects are freed now (not in the
+/// thread-local destructors during process exit).
+pub fn release() {
+    let Some(state) = take_state(None) else {
+        return;
+    };
+    state.stop.store(true, Ordering::Relaxed);
+    let hwnd = state.hwnd;
+    drop(state);
+    unsafe {
+        if IsWindow(Some(hwnd)).as_bool() {
+            let _ = DestroyWindow(hwnd);
+        }
+    }
+}
+
 /// True while an overlay is up or being made.
 pub fn active() -> bool {
     STARTING.get() || OVERLAY.with(|c| c.try_borrow().map_or(true, |s| s.is_some()))

@@ -602,6 +602,14 @@ pub fn close() {
     }
 }
 
+/// The island is ending: takes down the outline and the pick overlay and
+/// frees their Direct2D canvases now (not in the thread-local destructors
+/// during process exit).
+pub fn release() {
+    outline_hide();
+    close();
+}
+
 /// The island goes back above the overlay (the overlay is topmost too, and
 /// a click on it raises it).
 fn raise_island() {

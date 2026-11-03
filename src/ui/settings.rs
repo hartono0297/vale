@@ -1410,6 +1410,18 @@ pub fn close() {
     }
 }
 
+/// The island is ending: closes the window and drops what is left in its
+/// slot (the Direct2D objects) now, not in the thread-local destructors during
+/// process exit.
+pub fn release() {
+    close();
+    let left = SETTINGS.with(|cell| cell.try_borrow_mut().ok().and_then(|mut s| s.take()));
+    if let Some(st) = left {
+        destroy_icons(st.icons);
+        drop(st);
+    }
+}
+
 /// What `on_model` leaves to do once the state is released.
 struct ModelChanges {
     title: Option<(HWND, Lang)>,

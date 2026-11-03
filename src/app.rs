@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use chrono::{Datelike, Local, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, POINT, WPARAM,
+    CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HWND, LPARAM, LRESULT, POINT, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::ScreenToClient;
 use windows::Win32::Media::Audio::{PlaySoundW, SND_ALIAS, SND_ASYNC, SND_NODEFAULT};
@@ -33,7 +33,7 @@ use windows::Win32::System::RemoteDesktop::{
 };
 use windows::Win32::System::SystemInformation::GetTickCount;
 use windows::Win32::System::SystemServices::GUID_CONSOLE_DISPLAY_STATE;
-use windows::Win32::System::Threading::CreateMutexW;
+use windows::Win32::System::Threading::{CreateMutexW, GetCurrentProcess, TerminateProcess};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, GetLastInputInfo, LASTINPUTINFO, ReleaseCapture, SetCapture, SetFocus,
     TME_HOVER, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent, VIRTUAL_KEY, VK_LBUTTON, VK_MBUTTON,
@@ -61,7 +61,7 @@ use crate::audio;
 use crate::behind;
 use crate::calendar::sync::{SyncHandle, SyncRequest, post_status, save_failed_notice, spawn_sync};
 use crate::calendar::{CalEvent, CalStatus, CalendarSnapshot, draft_from, new_draft};
-use crate::claude::pipe_server::spawn_pipe_server;
+use crate::claude::pipe_server::{PipeServer, spawn_pipe_server};
 use crate::clean::{self, CleanCat, CleanEvent, Cleaner, ScanResult};
 use crate::cli::{self, Builtin, CliEvent, History, HistoryCursor, RunHandle, Session};
 use crate::cli_folders::{self, FolderList, ListKind};
@@ -290,8 +290,25 @@ const MIXER_MS: u32 = 1_000;
 /// the volume read for it is forgotten (the next wheel reads it again).
 const TIMER_VOLUME: usize = 28;
 const VOLUME_HUD_MS: u32 = 1_200;
-/// How long a start after an update waits for the old island's mutex.
-const UPDATE_CLAIM_WAIT: Duration = Duration::from_secs(10);
+/// How long a start after an update waits for the old island's mutex. The old
+/// island frees it itself at the end of its teardown (`release_single_instance`),
+/// so this is only the margin for a slow exit (antivirus, Windows Error
+/// Reporting keeping a dying process for about 12 s).
+const UPDATE_CLAIM_WAIT: Duration = Duration::from_secs(60);
+/// The longest the teardown after the message loop may take before the
+/// watchdog ends the process anyway.
+const TEARDOWN_LIMIT: Duration = Duration::from_secs(5);
+
+/// How long a start waits for the single-instance mutex: `updated_from` is the
+/// updater's `--updated <old version>`, whose old island is still closing;
+/// any other start quits at once when another island runs.
+fn claim_wait(updated_from: Option<&str>) -> Duration {
+    if updated_from.is_some() {
+        UPDATE_CLAIM_WAIT
+    } else {
+        Duration::ZERO
+    }
+}
 const SYSTEM_PAGE_MS: u32 = crate::system::LIVE_MS;
 const SYSTEM_WARN_MS: u32 = 300_000;
 const CLI_MS: u32 = 1000;
@@ -339,18 +356,19 @@ thread_local! {
     static DEFERRED_ARRANGE: RefCell<Vec<(usize, isize)>> = const { RefCell::new(Vec::new()) };
     /// The tray menu's modal loop is running; a second click must not nest another.
     static MENU_OPEN: Cell<bool> = const { Cell::new(false) };
+    /// The single-instance mutexes this process holds (`try_claim`), closed by
+    /// `release_single_instance` at the end of the teardown.
+    static INSTANCE_MUTEXES: RefCell<Vec<HANDLE>> = const { RefCell::new(Vec::new()) };
+    /// The Claude hook pipe's thread, stopped in the teardown before the
+    /// mutexes are released (the new island needs the pipe name too).
+    static PIPE_SERVER: RefCell<Option<PipeServer>> = const { RefCell::new(None) };
 }
 
 /// `media_log_flag`: started with `--media-log`. `updated_from`: started by
 /// the updater (`--updated <old version>`).
 pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
     // After an update the old island may still be closing: wait for its mutex.
-    let wait = if updated_from.is_some() {
-        UPDATE_CLAIM_WAIT
-    } else {
-        Duration::ZERO
-    };
-    if !claim_single_instance(wait) {
+    if !claim_single_instance(claim_wait(updated_from)) {
         return;
     }
     // Before anything reads the data folder: DynamicIsland becomes Vale once.
@@ -617,7 +635,7 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
 
     let wake = poster(hwnd, WM_APP_EVENT);
     media::spawn_watcher(tx.clone(), wake);
-    spawn_pipe_server(tx, wake);
+    PIPE_SERVER.with_borrow_mut(|slot| *slot = Some(spawn_pipe_server(tx, wake)));
 
     // Fails when Explorer's taskbar is not up yet; `TaskbarCreated` retries.
     let _ = tray::add_tray(hwnd);
@@ -630,6 +648,92 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
+    }
+    // Every way out (tray Quit, the update's shutdown, WM_CLOSE) ends here.
+    end_process();
+}
+
+/// The teardown after the message loop, then the end of the process. The
+/// window is already destroyed (`WM_DESTROY`: stores and history saved, tray
+/// icon removed, timers and hotkeys gone).
+///
+/// ROOT CAUSE (v3.15.0, crash dumps): on every exit the process crashed with
+/// 0xc000000d in ntdll, raised on a threadpool thread and called from
+/// D3D10Warp.dll during the DLL detach / FLS cleanup in `LdrShutdownProcess`.
+/// Our Direct2D render targets are `D2D1_RENDER_TARGET_TYPE_SOFTWARE`, which
+/// run on WARP, and they were still alive then: `App` (it owns `Renderer`)
+/// sits in the `APP` thread-local, which only the TLS destructors dropped,
+/// inside `LdrShutdownProcess`. Windows Error Reporting then kept the dying
+/// process, and its `Local\Vale` / `Local\DynamicIsland` mutexes, for about
+/// 12 s, while the `--updated` process waited 10 s and quit silently: Vale did
+/// not come back after "Update".
+///
+/// So: drop `App` and every other Direct2D holder explicitly while the process
+/// is healthy, stop the pipe, hand over the mutexes ourselves, and then end
+/// with `TerminateProcess` instead of returning. The explicit drops are the
+/// real fix of our side; `TerminateProcess` is belt and braces, because the
+/// crash is inside D3D10Warp's own threadpool cleanup, which runs on the DLL
+/// detach even when none of our objects are left. Terminating skips that
+/// detach, so an exit can never hang on WER again (the OS closes the handles
+/// of a terminated process at once). Child processes are unaffected: the CLI's
+/// job object kills them when its handle closes.
+///
+/// Everything that must reach the disk is written before this runs (config,
+/// notes and reminders are saved at each change; the clipboard and
+/// notification history in `WM_DESTROY`).
+fn end_process() -> ! {
+    // A drop that blocks must not keep the island alive (and its mutexes).
+    std::thread::spawn(|| {
+        std::thread::sleep(TEARDOWN_LIMIT);
+        terminate_process();
+    });
+    // A panic in a destructor must not skip the rest, nor unwind into the
+    // normal exit that crashes.
+    let _ = std::panic::catch_unwind(|| {
+        drop_app();
+        release_graphics();
+        stop_pipe_server();
+        release_single_instance();
+    });
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    terminate_process()
+}
+
+/// Ends this process at once, without running the DLL detaches.
+fn terminate_process() -> ! {
+    // SAFETY: the pseudo handle of the current process is always valid.
+    unsafe {
+        let _ = TerminateProcess(GetCurrentProcess(), 0);
+    }
+    // Not reached; only in case Windows refuses.
+    std::process::exit(0)
+}
+
+/// Takes `App` out of `APP` and drops it (its `Renderer`, the CLI inputs, the
+/// window, the stores). Outside the borrow, so a destructor that sends a
+/// window message finds no app instead of a held borrow.
+fn drop_app() {
+    let app = APP.with(|cell| cell.try_borrow_mut().ok().and_then(|mut slot| slot.take()));
+    drop(app);
+}
+
+/// Every other holder of Direct2D / DirectWrite objects on the UI thread:
+/// each window still open is destroyed and its slot emptied. (`fonts.rs`'s
+/// DirectWrite loader is not WARP and may stay.)
+fn release_graphics() {
+    settings::release();
+    editor::release();
+    arrange_overlay::release();
+    crate::capture::overlay::release();
+    identify_overlay::release();
+    crate::shot_edit::window::release();
+}
+
+/// Stops the Claude hook pipe, so the new island can own the name.
+fn stop_pipe_server() {
+    if let Some(server) = PIPE_SERVER.with_borrow_mut(Option::take) {
+        server.stop();
     }
 }
 
@@ -644,12 +748,14 @@ fn poster(hwnd: HWND, msg: u32) -> impl Fn() + Send + Copy + 'static {
 
 /// False when another island already runs in this session, this name or the
 /// one from before the rename (whose data folder must not be moved under
-/// it). The mutex handles are never closed, so they are held for the life of
-/// the process, which also keeps an old Dynamic Island from starting beside it.
+/// it). The mutex handles are held for the life of the process, which also
+/// keeps an old Dynamic Island from starting beside it, and closed by the
+/// island itself at the end of its teardown (`release_single_instance`), so a
+/// start waiting for them (after an update) gets them as soon as it is done.
 ///
 /// `wait`: how long a taken name is retried (every 200 ms) before giving up;
-/// zero is a normal start (quit at once), about 10 s is a start after an
-/// update, while the old island is still closing.
+/// zero is a normal start (quit at once), `UPDATE_CLAIM_WAIT` (60 s) is a start
+/// after an update, while the old island is still closing.
 fn claim_single_instance(wait: Duration) -> bool {
     claim_names(&[w!("Local\\Vale"), w!("Local\\DynamicIsland")], wait)
 }
@@ -672,7 +778,7 @@ fn claim_names(names: &[PCWSTR], wait: Duration) -> bool {
 /// already exists (`ERROR_ALREADY_EXISTS`), and that handle keeps it alive:
 /// after a failed try every handle is closed, or the mutex would outlive its
 /// owner and a waiting start would never get it. A successful try keeps its
-/// handles for the life of the process.
+/// handles in `INSTANCE_MUTEXES` until `release_single_instance`.
 fn try_claim(names: &[PCWSTR]) -> bool {
     let mut handles = Vec::new();
     let mut free = true;
@@ -688,12 +794,24 @@ fn try_claim(names: &[PCWSTR]) -> bool {
             Err(_) => {}
         }
     }
-    if !free {
+    if free {
+        INSTANCE_MUTEXES.with_borrow_mut(|held| held.extend(handles));
+    } else {
         for handle in handles {
             let _ = unsafe { CloseHandle(handle) };
         }
     }
     free
+}
+
+/// Closes the single-instance mutexes this process holds, so the next island
+/// (the `--updated` one, waiting) can claim them at once. Called last in the
+/// teardown: the window is destroyed, the data saved, the tray icon removed
+/// and the Claude pipe stopped, so nothing of this island is left to clash.
+fn release_single_instance() {
+    for handle in INSTANCE_MUTEXES.with_borrow_mut(std::mem::take) {
+        let _ = unsafe { CloseHandle(handle) };
+    }
 }
 
 struct App {
@@ -8338,8 +8456,37 @@ mod tests {
             let _ = CloseHandle(owner);
         }
         assert!(try_claim(&[free_p, held_p]));
-        // Held for the rest of the process by design; claimed again it is taken.
+        // Held until `release_single_instance`; claimed again it is taken.
         assert!(!try_claim(&[free_p]));
+    }
+
+    #[test]
+    fn only_a_start_after_an_update_waits_for_the_old_island() {
+        assert_eq!(claim_wait(None), Duration::ZERO);
+        assert_eq!(claim_wait(Some("3.15.0")), Duration::from_secs(60));
+        // Even an empty old version (the updater passed none) is an update.
+        assert_eq!(claim_wait(Some("")), UPDATE_CLAIM_WAIT);
+        // Longer than Windows Error Reporting keeps a crashing process (~12 s).
+        assert!(UPDATE_CLAIM_WAIT >= Duration::from_secs(60));
+    }
+
+    #[test]
+    fn releasing_the_mutexes_lets_the_next_island_claim_them() {
+        let first = mutex_name("release-a");
+        let second = mutex_name("release-b");
+        let names = [PCWSTR(first.as_ptr()), PCWSTR(second.as_ptr())];
+        assert!(claim_names(&names, Duration::ZERO), "unique names are free");
+        // The island holds both: a second start quits at once.
+        assert!(!claim_names(&names, Duration::ZERO));
+        assert!(!try_claim(&names[..1]));
+        assert!(!try_claim(&names[1..]));
+        // Its teardown hands them over: both names are free again.
+        release_single_instance();
+        assert!(claim_names(&names, Duration::ZERO));
+        // And once more, to leave nothing held by this test thread.
+        release_single_instance();
+        assert!(try_claim(&names));
+        release_single_instance();
     }
 
     #[test]

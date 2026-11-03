@@ -637,6 +637,31 @@ pub fn restyle_open() {
     }
 }
 
+/// The island is ending: every open editor window is destroyed (its
+/// `WM_DESTROY` frees the picture and the Direct2D objects), and whatever is
+/// still registered after that is dropped here, so nothing is left to the
+/// thread-local destructors during process exit.
+pub fn release() {
+    let open: Vec<HWND> = EDITORS.with(|m| match m.try_borrow() {
+        Ok(m) => m.keys().map(|h| HWND(*h as *mut c_void)).collect(),
+        Err(_) => Vec::new(),
+    });
+    for hwnd in open {
+        unsafe {
+            let _ = DestroyWindow(hwnd);
+        }
+    }
+    let left = EDITORS.with(|m| match m.try_borrow_mut() {
+        Ok(mut m) => std::mem::take(&mut *m),
+        Err(_) => HashMap::new(),
+    });
+    for (_, mut e) in left {
+        if let Some(t) = e.text.take() {
+            text::free_gdi(&t);
+        }
+    }
+}
+
 /// The picture centred in the canvas.
 fn recompute_view(e: &mut Editor) {
     let ui = e.dpi as f32 / 96.0;

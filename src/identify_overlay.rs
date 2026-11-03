@@ -173,6 +173,28 @@ pub fn show(displays: &[Display], fade: bool) {
     });
 }
 
+/// The island is ending: stops the timers, destroys the plates and frees
+/// their Direct2D canvases now, instead of leaving them to the thread-local
+/// destructors during process exit.
+pub fn release() {
+    let plates = OVERLAY.with(|o| {
+        let Ok(mut o) = o.try_borrow_mut() else {
+            return Vec::new();
+        };
+        o.kill_timers();
+        o.phase = Phase::Hidden;
+        o.alpha = 0.0;
+        std::mem::take(&mut o.plates)
+    });
+    for plate in plates {
+        let Plate { hwnd, canvas, .. } = plate;
+        drop(canvas);
+        unsafe {
+            let _ = DestroyWindow(hwnd);
+        }
+    }
+}
+
 impl Overlay {
     fn show(&mut self, displays: &[Display], fade: bool) {
         self.fade = fade;
