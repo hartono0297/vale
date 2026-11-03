@@ -961,7 +961,10 @@
       burst(['✦', '•', '•'], 9);
     }
     stage.addEventListener('keydown', function (e) {
-      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); poke(); }
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();
+      if (e.repeat) return; /* a held key is one press, not a run toward the wish */
+      poke();
     });
 
     /* ----- the pointer: press = poke, drag = carry, rub = purr ----- */
