@@ -4107,7 +4107,7 @@ impl DemoPhone {
                 row(
                     "VID_2026-11-04.mp4",
                     mib(48.2),
-                    ShelfKind::Media,
+                    ShelfKind::Video,
                     RowStatus::Receiving(62),
                 ),
                 row("scan-denah.pdf", mib(12.4), ShelfKind::Document, RowStatus::Failed),
@@ -4179,13 +4179,13 @@ fn demo_shelf_files() -> Vec<crate::shelf::ShelfCard> {
         card("foto-lokasi.png", ShelfKind::Image, false),
         card("Gambar kerja", ShelfKind::Folder, false),
         card("rab-v3.xlsx", ShelfKind::Document, false),
-        card("render.mp4", ShelfKind::Media, false),
+        card("render.mp4", ShelfKind::Video, false),
         card("arsip-lama.zip", ShelfKind::Archive, true),
         card("sketsa-fasad.dwg", ShelfKind::Document, false),
         card("moodboard.jpg", ShelfKind::Image, false),
         card("Referensi", ShelfKind::Folder, false),
         card("notulen-rapat.docx", ShelfKind::Document, false),
-        card("walkthrough.mov", ShelfKind::Media, false),
+        card("walkthrough.mov", ShelfKind::Video, false),
         card("backup-proyek.7z", ShelfKind::Archive, false),
     ]
 }

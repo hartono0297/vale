@@ -138,11 +138,14 @@ pub enum Icon {
     Keyboard,
     /// The phone link: a phone, rounded body with its home bar. Duotone.
     Phone,
+    /// A video file on the shelf and in the phone's receiving rows: a
+    /// camcorder, a rounded body with a lens triangle on its right. Duotone.
+    Video,
 }
 
 impl Icon {
     /// Every icon, in declaration order (`ALL[i] as usize == i`).
-    pub const ALL: [Icon; 72] = [
+    pub const ALL: [Icon; 73] = [
         Icon::Camera,
         Icon::Clipboard,
         Icon::Emoji,
@@ -215,6 +218,7 @@ impl Icon {
         Icon::Layout,
         Icon::Keyboard,
         Icon::Phone,
+        Icon::Video,
     ];
 
     /// The icon's primitives on the 24-unit grid, in drawing order.
@@ -506,6 +510,11 @@ impl Icon {
                 Part::FillRect(6.0, 2.0, 12.0, 20.0, 3.0),
                 Part::Rect(6.0, 2.0, 12.0, 20.0, 3.0),
                 Part::Path("M11 18h2"),
+            ],
+            Icon::Video => &[
+                Part::FillRect(3.0, 6.0, 12.0, 12.0, 3.0),
+                Part::Rect(3.0, 6.0, 12.0, 12.0, 3.0),
+                Part::Path("M15 10.5l5.5-3v9L15 13.5"),
             ],
         }
     }

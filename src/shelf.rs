@@ -15,8 +15,10 @@ pub const MAX_ITEMS: usize = 12;
 pub enum ShelfKind {
     Folder,
     Image,
-    /// Sound and video.
+    /// Sound.
     Media,
+    /// Video: a camcorder on the card, not the note of a song.
+    Video,
     Code,
     Archive,
     /// Everything else.
@@ -35,8 +37,8 @@ pub fn kind_of(path: &Path, is_dir: bool) -> ShelfKind {
     match ext.as_str() {
         "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "svg" | "tif" | "tiff" | "ico"
         | "heic" | "avif" => ShelfKind::Image,
-        "mp3" | "wav" | "flac" | "m4a" | "aac" | "ogg" | "mp4" | "mkv" | "mov" | "avi" | "webm"
-        | "wmv" => ShelfKind::Media,
+        "mp3" | "wav" | "flac" | "m4a" | "aac" | "ogg" => ShelfKind::Media,
+        "mp4" | "m4v" | "mov" | "mkv" | "avi" | "webm" | "wmv" | "3gp" => ShelfKind::Video,
         "rs" | "py" | "js" | "ts" | "tsx" | "jsx" | "c" | "cpp" | "h" | "cs" | "java" | "go"
         | "html" | "css" | "json" | "xml" | "yaml" | "yml" | "toml" | "ps1" | "sh" | "bat"
         | "sql" => ShelfKind::Code,
@@ -51,6 +53,7 @@ pub fn icon(kind: ShelfKind) -> Icon {
         ShelfKind::Folder => Icon::Folder,
         ShelfKind::Image => Icon::Image,
         ShelfKind::Media => Icon::Music,
+        ShelfKind::Video => Icon::Video,
         ShelfKind::Code => Icon::Code,
         ShelfKind::Archive => Icon::Package,
         ShelfKind::Document => Icon::Note,
@@ -399,6 +402,16 @@ mod tests {
         let kind = |name: &str| kind_of(Path::new(name), false);
         assert_eq!(kind("a.JPG"), ShelfKind::Image);
         assert_eq!(kind("a.mp3"), ShelfKind::Media);
+        for sound in ["a.wav", "a.flac", "a.m4a", "a.aac", "a.ogg"] {
+            assert_eq!(kind(sound), ShelfKind::Media, "{sound}");
+        }
+        for video in [
+            "a.mp4", "a.MOV", "a.m4v", "a.mkv", "a.avi", "a.webm", "a.wmv", "a.3gp",
+        ] {
+            assert_eq!(kind(video), ShelfKind::Video, "{video}");
+        }
+        assert_eq!(icon(ShelfKind::Video), Icon::Video);
+        assert_eq!(icon(ShelfKind::Media), Icon::Music);
         assert_eq!(kind("a.rs"), ShelfKind::Code);
         assert_eq!(kind("a.7z"), ShelfKind::Archive);
         assert_eq!(kind("a.xlsx"), ShelfKind::Document);

@@ -575,7 +575,8 @@ mod tests {
     fn a_row_takes_its_icon_from_the_extension() {
         use crate::shelf::ShelfKind;
         assert_eq!(row_for("IMG_0531.png", 5).kind, ShelfKind::Image);
-        assert_eq!(row_for("VID.mp4", 5).kind, ShelfKind::Media);
+        assert_eq!(row_for("VID.mp4", 5).kind, ShelfKind::Video);
+        assert_eq!(row_for("song.m4a", 5).kind, ShelfKind::Media);
         assert_eq!(row_for("a.zip", 5).kind, ShelfKind::Archive);
         assert_eq!(row_for("notes", 5).kind, ShelfKind::Document);
         assert_eq!(row_for("x.png", 7).status, RowStatus::Receiving(0));
