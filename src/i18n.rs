@@ -1094,6 +1094,8 @@ keys! {
     StickyOpacity => "Tembus pandang", "See-through";
     WidgetsTilt => "Miring sedikit", "Tilt slightly";
     WidgetsTiltDesc => "Setiap catatan sedikit miring, seperti ditempel tangan.", "Each note leans a little, as if stuck by hand.";
+    WidgetsClipFill => "Isi dari clipboard", "Fill from clipboard";
+    WidgetsClipFillDesc => "Catatan baru dari hotkey atau tray berisi teks yang disalin", "New notes from the hotkey or tray start with the copied text";
     TplKosong => "Kosong", "Blank";
     TplBelanja => "Belanja", "Shopping";
     TplHariIni => "Hari ini", "Today";

@@ -510,6 +510,11 @@ impl App {
         self.save_config();
     }
 
+    pub(super) fn widgets_clip_fill(&mut self, on: bool) {
+        self.config.widgets.clip_fill = on;
+        self.save_config();
+    }
+
     pub(super) fn widgets_peek(&mut self, on: bool) {
         self.config.widgets.cat_peek = on;
         self.save_config();
