@@ -3200,8 +3200,8 @@ pub struct PhoneStep {
 
 const PHONE_BACK: f32 = 24.0;
 const PHONE_HEAD_H: f32 = 26.0;
-/// The title's width where something follows it closely (the "+2" chip of
-/// the approval view): "Connect a phone" in JetBrains Mono is 180 px.
+/// The title's width where something follows it closely: "Connect a phone"
+/// in JetBrains Mono is 180 px.
 const PHONE_TITLE_W: f32 = 190.0;
 const PHONE_CHIP_W: f32 = 96.0;
 const PHONE_CHIP_H: f32 = 22.0;

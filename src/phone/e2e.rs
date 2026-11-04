@@ -859,7 +859,7 @@ fn a_file_on_the_network_is_shared_without_being_looked_at_then_revoked_if_gone(
 }
 
 #[test]
-fn an_untick_cuts_a_download_in_flight_and_a_stalled_one_is_busy() {
+fn a_card_taken_off_cuts_a_download_in_flight_and_a_stalled_one_is_busy() {
     let r = rig("phone-e2e-cut");
     let big = r.dir.join("big.bin");
     // Bigger than the socket buffers, so the server is still writing while
@@ -894,7 +894,8 @@ fn an_untick_cuts_a_download_in_flight_and_a_stalled_one_is_busy() {
     }
     assert!(busy, "a download in flight is busy");
     assert_eq!(entry_of(&files_of(&r, &vs), &id)["saved"], false);
-    // Untick: the connection is closed mid-body.
+    // The card leaves the shelf (its id is revoked): the connection is closed
+    // mid-body.
     r.handle.unshare(&id);
     let mut rest = Vec::new();
     s.set_read_timeout(Some(Duration::from_secs(20))).expect("timeout");

@@ -544,7 +544,7 @@ keys! {
     PhoneNetPrivate => "pribadi", "private";
     PhoneNetPublic => "publik", "public";
     PhoneConnected => "Tersambung", "Connected";
-    PhonePublicHint => "Wi-Fi publik: hindari di kafe/hotel", "Public Wi-Fi: avoid caf\u{e9}s and hotels";
+    PhonePublicHint => "Wi-Fi publik \u{2014} jangan dipakai di kafe/hotel", "Public Wi-Fi \u{2014} don't use at a caf\u{e9} or hotel";
     PhoneLocalOnly => "Langsung lewat Wi-Fi lokal, tidak lewat internet",
         "Straight over local Wi-Fi, not through the internet";
     PhoneFirewall => "Kalau Windows tanya, pilih Jaringan pribadi",

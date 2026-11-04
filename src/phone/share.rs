@@ -435,7 +435,7 @@ mod tests {
         // A full body, either route.
         assert!(taken(File, Get, RangeAns::Full, 100, true));
         assert!(taken(View, Get, RangeAns::Full, 100, true));
-        // Not all of it written (a dropped connection, an untick).
+        // Not all of it written (a dropped connection, a card taken off).
         assert!(!taken(File, Get, RangeAns::Full, 100, false));
         // Never a HEAD or a thumbnail.
         assert!(!taken(File, Head, RangeAns::Full, 100, true));

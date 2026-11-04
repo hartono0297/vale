@@ -194,4 +194,6 @@ Cards animate in, out and across: see [[shelf-motion]].
 
 ## v3.18: from a phone
 
-The HP pill, a QR link and the cards tagged "dari HP": see [[shelf-phone]].
+The HP pill, a QR link and the cards tagged "dari HP": see [[shelf-phone]]. Since v3.19 the
+whole shelf (every file card, no ticking) is shared with the phones that scanned the QR, and
+a card taken off the shelf or "Kosongkan" stops being shared at once.

@@ -500,7 +500,7 @@ impl Drop for Busy<'_> {
 
 /// The body of a file in 64 KB chunks from `start`, `len` bytes: it stops
 /// (and the connection is closed short) when the session ends or the id is
-/// no longer shared (unticked), or the phone stops reading. Every chunk
+/// no longer shared (its card left the shelf), or the phone stops reading. Every chunk
 /// counts as activity. `true` if every byte was written.
 fn stream_body(
     shared: &Shared,
@@ -1197,7 +1197,7 @@ mod tests {
         assert!(super::stream_body(&shared, &mut server_side, &mut file, 0, 100_000, &id));
         server_side.flush().expect("flush");
         assert!(!idle(&shared), "a chunk written is activity");
-        // A stop (or an unticked id) ends the stream before the next chunk.
+        // A stop (or an id no longer shared) ends the stream before the next chunk.
         let mut file = std::fs::File::open(&path).expect("open");
         shared.session.lock().expect("lock").shared_mut().unshare(&id);
         assert!(!super::stream_body(&shared, &mut server_side, &mut file, 0, 100_000, &id));
