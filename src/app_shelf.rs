@@ -56,12 +56,13 @@ pub(super) struct ShelfState {
 }
 
 impl App {
-    /// Looks at the files again (the page opened, the list changed).
+    /// Looks at the files again (the page opened, the list changed). Every
+    /// change of the shelf (a drop, a file from a phone, a card taken off,
+    /// "Kosongkan") ends with this, so it is also where what the phones can
+    /// take follows the shelf (`phone_sync_shared`).
     pub(super) fn shelf_look(&mut self) {
         self.shelf.cards = self.shelf.shelf.cards(shelf::probe);
-        let cards = std::mem::take(&mut self.shelf.cards);
-        self.phone_drop_stale(&cards);
-        self.shelf.cards = cards;
+        self.phone_sync_shared();
     }
 
     /// The OLE drop target saw files enter the island or leave it.
@@ -139,7 +140,6 @@ impl App {
         let old = self.shelf.cards.clone();
         self.shelf.shelf.add(paths);
         self.shelf_look();
-        self.phone_prune_shared();
         // The cards on a page that is already showing come in at once; a
         // panel that is still opening gets them once it has grown a little.
         let delay = if self.shelf.shown {
@@ -157,16 +157,16 @@ impl App {
     }
 
     /// Files (or the folder) that came from a phone: cards on the shelf that
-    /// say so. The panel is already open on the phone link, latched by
-    /// `PhoneAttention`, so nothing is applied to the reducer; the cards come
-    /// in through the shelf's own motion like dropped ones.
+    /// say so, shared back with the phones like the rest of the shelf. The
+    /// panel is already open on the phone link, latched by `PhoneAttention`,
+    /// so nothing is applied to the reducer; the cards come in through the
+    /// shelf's own motion like dropped ones.
     pub(super) fn shelf_add_phone(&mut self, paths: Vec<PathBuf>, now: Instant) {
         let old = self.shelf.cards.clone();
         if self.shelf.shelf.add_from(paths, shelf::Origin::Phone) == 0 {
             return;
         }
         self.shelf_look();
-        self.phone_prune_shared();
         let delay = if self.shelf.shown {
             Duration::ZERO
         } else {
@@ -199,9 +199,8 @@ impl App {
     pub(super) fn shelf_remove(&mut self, i: usize) {
         let old = self.shelf.cards.clone();
         if self.shelf.shelf.remove(i) {
+            // A card taken off stops being shared with the phones.
             self.shelf_look();
-            // A card taken off stops being shared with the phone.
-            self.phone_prune_shared();
             let now = Instant::now();
             self.shelf_animate(&old, now, Duration::ZERO);
             self.refresh(now);
@@ -211,8 +210,8 @@ impl App {
     pub(super) fn shelf_clear(&mut self) {
         let old = self.shelf.cards.clone();
         if self.shelf.shelf.clear() {
+            // Nothing stays shared with the phones.
             self.shelf_look();
-            self.phone_unshare_all();
             let now = Instant::now();
             self.shelf_animate(&old, now, Duration::ZERO);
             self.refresh(now);

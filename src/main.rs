@@ -238,8 +238,8 @@ fn main() {
             let scene = std::env::args().nth(2);
             lyrics_card::demo::run(scene.as_deref());
         }
-        // The phone link on 127.0.0.1 into target/phone-debug/, each pairing
-        // approved after 2 s, printed to the console. No LAN, no Downloads.
+        // The phone link on 127.0.0.1 into target/phone-debug/, each phone
+        // that joined printed to the console. No LAN, no Downloads.
         #[cfg(debug_assertions)]
         Some("--phone-debug") => {
             attach_parent_console();

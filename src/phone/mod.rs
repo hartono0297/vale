@@ -6,8 +6,12 @@
 //! a session runs. `app_phone.rs` is the island's side of it.
 //!
 //! The server is plain HTTP on the PC's local address (never 0.0.0.0), for
-//! private peers only, behind a token in the QR code, the owner's approval of
-//! each phone (a four digit code on both screens) and a session cookie.
+//! private peers only. There is no approval and no code to compare: a phone
+//! that opens the link in the QR code while its token is good (five minutes
+//! after it was made; the island makes a new one by itself while the QR view
+//! shows) joins at once and gets a session cookie of its own. It can send
+//! files to the PC and download every file on the shelf. Public networks are
+//! allowed, with a warning on the notch; the Windows Firewall is not touched.
 
 #[cfg(test)]
 mod e2e;
@@ -37,7 +41,7 @@ use windows::Win32::Security::Cryptography::{BCRYPT_USE_SYSTEM_PREFERRED_RNG, BC
 use crate::i18n::Lang;
 pub use qr::QrMatrix;
 use session::Session;
-pub use ua::{Browser, DeviceKind};
+pub use ua::DeviceKind;
 
 /// The first port tried, and how far the next ones go when it is taken.
 pub const PORTS: RangeInclusive<u16> = 47390..=47399;
@@ -58,6 +62,9 @@ pub struct ServerConfig {
     pub lang: Lang,
     pub pc_name: String,
     pub network_name: String,
+    /// The network is Public (or its category could not be read): the notch
+    /// says so. Nothing else changes.
+    pub public: bool,
     /// Loopback peers count as private: only for the debug flag and tests.
     pub allow_loopback: bool,
 }
@@ -65,20 +72,11 @@ pub struct ServerConfig {
 /// Why a session did not start.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Refusal {
-    /// The network is Public (or its category is not known).
-    Public { network_name: String },
     /// No usable local network.
     NoLan,
     /// Every port of the range is taken.
     PortsBusy,
     Failed,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Outcome {
-    Approved,
-    Rejected,
-    TimedOut,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -114,28 +112,18 @@ pub enum PhoneEvent {
         url: String,
         qr: QrMatrix,
         network_name: String,
+        /// The network is Public (or unknown).
+        public: bool,
         token_made: Instant,
     },
     Refused(Refusal),
-    Pairing {
+    /// A phone opened the link with a good token and joined.
+    Joined {
         device_id: u64,
         kind: DeviceKind,
-        browser: Browser,
-        ip: IpAddr,
-        code: String,
     },
-    PairingEnded {
-        device_id: u64,
-        outcome: Outcome,
-    },
+    /// The token ran out (told once per token).
     TokenExpired,
-    TokenVoid,
-    /// A phone was approved with the token made at `token_made` while it
-    /// was good: it no longer runs out. An approval of a phone that paired
-    /// with an older token, or after the token expired, does not say this.
-    TokenKept {
-        token_made: Instant,
-    },
     UploadStarted {
         upload_id: u64,
         device_id: u64,
@@ -157,34 +145,13 @@ pub enum PhoneEvent {
         upload_id: u64,
         reason: FailReason,
     },
-    /// A phone downloaded a shared file whole, the first time any phone did
-    /// (said once per id).
-    FileTaken {
-        id: String,
-    },
     /// A shared file was found missing, or no longer a regular file, when a
     /// phone asked for it or for the list, or when a file on the network was
     /// looked at after it was shared: its id is revoked.
     SharedGone {
         id: String,
     },
-    /// A file on the network, shared without being looked at
-    /// (`ShareInfo::size` is `None`), was looked at on a thread of its own:
-    /// it is a regular file of `size` bytes.
-    SharedSized {
-        id: String,
-        size: u64,
-    },
     SessionEnded(EndReason),
-}
-
-/// A file that was shared with the phones: its id and its size now.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ShareInfo {
-    pub id: String,
-    /// `None` for a file on the network: it is looked at on a thread of its
-    /// own, which says `SharedSized` or `SharedGone` for the id.
-    pub size: Option<u64>,
 }
 
 /// A fresh link for the QR code.
@@ -203,6 +170,7 @@ pub(crate) struct Runtime {
     pub lang: Lang,
     pub pc_name: String,
     pub network_name: String,
+    pub public: bool,
     pub allow_loopback: bool,
 }
 
@@ -334,8 +302,8 @@ pub fn start(cfg: ServerConfig, sink: Sink) -> Handle {
 
 /// Starts a session on the PC's real local network: the adapter, its
 /// category and the Downloads folder are looked up on the server thread
-/// (never the caller's), and the sink gets `Refused` (a Public network, no
-/// LAN) or `Ready`.
+/// (never the caller's), and the sink gets `Refused` (no LAN, ports taken)
+/// or `Ready` (which says whether the network is Public).
 pub fn start_lan(lang: Lang, sink: Sink) -> Handle {
     launch(
         Mode::Lan {
@@ -347,40 +315,6 @@ pub fn start_lan(lang: Lang, sink: Sink) -> Handle {
 }
 
 impl Handle {
-    /// The owner said yes to `device_id`.
-    pub fn approve(&self, device_id: u64) {
-        let answer = self.shared.session.lock().ok().and_then(|mut s| {
-            let approval = s.approve(device_id, Instant::now())?;
-            Some((approval, s.token_made()))
-        });
-        let Some((approval, token_made)) = answer else {
-            return;
-        };
-        self.shared.emit(PhoneEvent::PairingEnded {
-            device_id,
-            outcome: Outcome::Approved,
-        });
-        if approval.token_kept {
-            self.shared.emit(PhoneEvent::TokenKept { token_made });
-        }
-    }
-
-    /// The owner said no. Three in a session void the token.
-    pub fn reject(&self, device_id: u64) {
-        let r = self.shared.session.lock().map(|mut s| s.reject(device_id));
-        if let Ok(r) = r
-            && r.was_pending
-        {
-            self.shared.emit(PhoneEvent::PairingEnded {
-                device_id,
-                outcome: Outcome::Rejected,
-            });
-            if r.voided {
-                self.shared.emit(PhoneEvent::TokenVoid);
-            }
-        }
-    }
-
     /// Shares the file at `path` with the phones: it is looked at now (a
     /// regular file, not a folder, a symlink or a junction), added to the
     /// session's set and given a random id. `None` for anything else, a full
@@ -390,24 +324,19 @@ impl Handle {
     /// the caller is the UI thread, and a share that is slow or gone can
     /// hold it for seconds. It is added at once and looked at on a thread of
     /// its own (`share_unseen`).
-    pub fn share(&self, path: &Path) -> Option<ShareInfo> {
+    pub fn share(&self, path: &Path) -> Option<String> {
         if crate::shelf::is_network(path) {
             return self.share_unseen(path);
         }
-        let size = files::regular_size(path)?;
-        let id = self.shared.session.lock().ok()?.share(path)?;
-        Some(ShareInfo {
-            id,
-            size: Some(size),
-        })
+        files::regular_size(path)?;
+        self.shared.session.lock().ok()?.share(path)
     }
 
     /// Shares `path` without looking at it; a thread of its own then does
-    /// (`server::check_shared`) and says `SharedSized`, or revokes the id
-    /// and says `SharedGone`. The server looks at the file again at every
-    /// request anyway (the list, a download, a thumbnail), on its own
-    /// threads.
-    fn share_unseen(&self, path: &Path) -> Option<ShareInfo> {
+    /// (`server::check_shared`) and, if it is gone, revokes the id and says
+    /// `SharedGone`. The server looks at the file again at every request
+    /// anyway (the list, a download, a thumbnail), on its own threads.
+    fn share_unseen(&self, path: &Path) -> Option<String> {
         let id = self.shared.session.lock().ok()?.share(path)?;
         let shared = Arc::clone(&self.shared);
         let (check_id, check_path) = (id.clone(), path.to_path_buf());
@@ -418,7 +347,7 @@ impl Handle {
             self.unshare(&id);
             return None;
         }
-        Some(ShareInfo { id, size: None })
+        Some(id)
     }
 
     /// Stops sharing `id`: a download of it in flight is cut and later
@@ -429,7 +358,9 @@ impl Handle {
         }
     }
 
-    /// Stops sharing everything.
+    /// Stops sharing everything (the server does it at the end of a session
+    /// itself; the tests do it to see a download cut).
+    #[cfg(test)]
     pub fn unshare_all(&self) {
         if let Ok(mut s) = self.shared.session.lock() {
             s.shared_mut().unshare_all();
@@ -443,8 +374,9 @@ impl Handle {
         }
     }
 
-    /// A new token and its QR ("Buat QR baru"). `None` before the server
-    /// listens.
+    /// A new token and its QR (the island makes one by itself when the code
+    /// ran out while it shows, and "Buat QR baru" asks for one). `None`
+    /// before the server listens.
     pub fn new_token(&self) -> Option<NewLink> {
         let rt = self.shared.runtime.get()?;
         let mut s = self.shared.session.lock().ok()?;
@@ -511,9 +443,9 @@ fn downloads_vale() -> Option<PathBuf> {
 }
 
 /// Finds the local network a session may use: the adapter, its Network List
-/// Manager category (Public is refused) and the destination folder. Runs on
-/// the server thread, with COM initialised there. The binding address is the
-/// adapter's local IPv4.
+/// Manager category (a Public one is allowed, and flagged so the notch can
+/// warn) and the destination folder. Runs on the server thread, with COM
+/// initialised there. The binding address is the adapter's local IPv4.
 pub(crate) fn detect_lan(lang: Lang, pc_name: &str) -> Result<(ServerConfig, Ipv4Addr), Refusal> {
     use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
     let com = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
@@ -526,12 +458,7 @@ pub(crate) fn detect_lan(lang: Lang, pc_name: &str) -> Result<(ServerConfig, Ipv
             .map(|(_, n)| n.clone())
             .filter(|n| !n.trim().is_empty())
             .unwrap_or_else(|| adapter.name.clone());
-        net::start_allowed(known.map(|(c, _)| c)).map_err(|r| match r {
-            Refusal::Public { .. } => Refusal::Public {
-                network_name: name.clone(),
-            },
-            other => other,
-        })?;
+        let public = net::network_trust(known.map(|(c, _)| c)) == net::Trust::Public;
         let dest_dir = downloads_vale().ok_or(Refusal::Failed)?;
         Ok((
             ServerConfig {
@@ -541,6 +468,7 @@ pub(crate) fn detect_lan(lang: Lang, pc_name: &str) -> Result<(ServerConfig, Ipv
                 lang,
                 pc_name: pc_name.to_owned(),
                 network_name: name,
+                public,
                 allow_loopback: false,
             },
             ip,

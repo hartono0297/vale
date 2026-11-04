@@ -1,16 +1,21 @@
 ---
-tags: [decision, shelf, phone, network, security, power, download, range, thumbnail, v3.18]
+tags: [decision, shelf, phone, network, security, power, download, range, thumbnail, v3.18, simplified, v3.19]
 date: 2026-11-04
 ---
 
-# The shelf and the phone, phase 1: receive from a phone over a QR
+# The shelf and the phone: send and receive files over a QR
+
+**v3.19 simplified this: scan the QR and you are in, no approval, no code, no ticking.
+Read "Simplified (v3.19)" at the end first; lines marked superseded below describe
+v3.18 (phase 1 and 2) and are kept for the reasons behind the code that remains.**
 
 The shelf's **HP** pill opens a link: a phone on the same Wi-Fi scans a QR code,
-opens a page the island serves, the owner allows it on the notch (a four digit
-code on both screens), and the phone's files land in `Downloads\Vale` and on the
-[[shelf]] as cards tagged "dari HP". Phase 2 (shelf files to the phone, below) added
-routes in `server.rs::route`, a second tab on the page and a notch view. The
-agreed mockup is `docs/design/rak-hp.html` (never committed).
+opens a page the island serves, ~~the owner allows it on the notch (a four digit
+code on both screens)~~ (superseded: it joins at once), and the phone's files land in
+`Downloads\Vale` and on the [[shelf]] as cards tagged "dari HP". Phase 2 (shelf files
+to the phone, below; since v3.19 all of them) added routes in `server.rs::route`, a
+second tab on the page and a notch view. The agreed mockup is `docs/design/rak-hp.html`
+(never committed).
 
 ## Where it lives
 
@@ -23,9 +28,11 @@ agreed mockup is `docs/design/rak-hp.html` (never committed).
   `debug.rs` (`--phone-debug`, debug builds), `e2e.rs` (loopback test).
 - `src/app_phone.rs` (a child of `app`) keeps the `Handle` and what the events
   said; `ui/phone_view.rs` is the data the renderer borrows;
-  `panel_layout.rs` has `phone_qr/warn/ask/recv_layout` and `phone_page_layout`;
+  `panel_layout.rs` has `phone_qr/warn/recv_layout` and `phone_page_layout`
+  (superseded: `phone_ask_layout` and `phone_send_layout` are gone);
   `render_panel.rs` paints them. The reducer knows only `PhoneStage`
-  (`Qr`, `Approval`, `Receiving`) and the hits, like the cleaner over System.
+  (`Qr`, `Receiving`; superseded: it had `Approval` and `Send` too) and the hits, like
+  the cleaner over System.
 - English words are short on purpose (the Pill's title and the shelf tag are
   tight): "From phone" (not "Receiving from phone"), "phone" on the card tag,
   "Finding the network...". `every_phone_string_holds_its_box_in_both_fonts` in
@@ -34,8 +41,9 @@ agreed mockup is `docs/design/rak-hp.html` (never committed).
   languages; a text that overflows by a pixel in JetBrains Mono fails it.
 - Video files (`ShelfKind::Video`, mp4 m4v mov mkv avi webm wmv 3gp) get the
   camcorder `Icon::Video` in the rows and on the shelf cards ([[shelf]]).
-- Demo scenes `phone-qr`, `phone-qr-expired`, `phone-public`, `phone-nolan`,
-  `phone-approve`, `phone-receive`, `phone-send` (phase 2); the `shelf` scene has two "dari HP" cards.
+- Demo scenes (superseded, see v3.19 for the list now): `phone-qr`, `phone-qr-expired`,
+  `phone-public`, `phone-nolan`, ~~`phone-approve`~~, `phone-receive`, ~~`phone-send`~~;
+  the `shelf` scene has two "dari HP" cards.
 
 ## Decisions
 
@@ -44,17 +52,15 @@ agreed mockup is `docs/design/rak-hp.html` (never committed).
   `Content-Length` for POST (411), refuses `Transfer-Encoding` (400), takes at
   most 8 connections (dropped over the cap) and uses no pool.
 - **Plain HTTP, no HTTPS.** A self-signed certificate gives a red warning page.
-  Instead: a 128-bit token in the QR, the owner's approval of each phone with a
-  four digit code (unbiased by rejection sampling, `< 60000` of a `u16`), private
-  peers only, and Public networks refused (an unknown category counts as Public,
-  the safe default). The risk left: someone on the same Wi-Fi who can sniff
-  traffic can read the files.
-- **Token:** 5 minutes unless a phone was approved with it; then it lives until the
-  session ends. Three rejections (Tolak or a 60 s time out) void it
-  (`TokenVoid`); "Buat QR baru" starts over. A phone gets a pairing cookie `vp`
-  (opens only `GET /` and `GET /api/state`), and on approval its own random
-  session cookie `vs` (the next `/api/state` sets it and clears `vp`). Both
-  are `HttpOnly; SameSite=Strict; Path=/`.
+  Instead: a 128-bit token in the QR, private peers only. **Superseded in v3.19:** the
+  owner's approval with a four digit code is gone, and Public networks are allowed with
+  a warning (an unknown category still counts as Public). The risk left: someone on the
+  same Wi-Fi who can sniff traffic can read the files, and whoever sees the QR can join.
+- **Token (superseded in v3.19):** it was 5 minutes unless a phone was approved with
+  it, three rejections voided it (`TokenVoid`), and a phone got a pairing cookie `vp`
+  then, on approval, its own `vs`. Now: always 5 minutes, renewed by the island, no
+  `vp`, a phone gets its own `vs` when it joins. The cookie is
+  `HttpOnly; SameSite=Strict; Path=/`.
 - **Stop before bind:** `server::run` looks at the stop flag after the adapters
   were read and before `bind`; a Back pressed meanwhile ends the session
   (`SessionEnded`, `ended`) with nothing listening, so no Firewall prompt
@@ -65,9 +71,10 @@ agreed mockup is `docs/design/rak-hp.html` (never committed).
   left over on resume. The stop never waits for the thread (`Handle::stop_with`
   and `Drop` do not join; only the test-only `stop()` does), so the UI thread
   never blocks on a Windows network call.
-- **Idle rule:** a page load, an upload (each chunk touches the clock) and a poll
-  of a phone still waiting for its answer count; polls of an approved phone do
-  **not**, so an open but unused phone tab cannot keep the server alive.
+- **Idle rule:** a page load, a join, an upload (each chunk touches the clock) count;
+  polls of a joined phone do **not**, so an open but unused phone tab cannot keep the
+  server alive. (v3.18 also counted the polls of a phone still waiting for its answer:
+  gone with the waiting page.)
 - **Files:** `<name>.part` opened with `create_new`, 64 KB chunks, moved to the final
   name with `MoveFileExW` **without** `MOVEFILE_REPLACE_EXISTING` (looping
   `IMG_1 (2).png`). Max 4 GiB a file (413), 1 GiB must stay free (507), a
@@ -90,12 +97,12 @@ agreed mockup is `docs/design/rak-hp.html` (never committed).
   view with a counting code is on screen. Progress events (at most 6 a second)
   draw only the receiving view and never refresh the island. An idle island is
   unchanged ([[bata-idle-power-budget]]).
-- **Stage rules (`app_phone.rs`):** a phone asking sends `PhoneAttention(Approval)`
-  (opens the panel on the shelf, latched like a drop, the Hover-mode `DropVisit`
-  rule included, not in fullscreen); approval moves to Receiving, a rejection back
-  to Qr (to Receiving if a phone is already in); the first upload of a batch sends
-  `PhoneAttention(Receiving)` but never over a waiting phone. Stage changes use the
-  existing 160 ms `Reveal` ([[panel-linger-and-motion]]) through `SubView.phone`.
+- **Stage rules (`app_phone.rs`):** the first upload of a batch sends
+  `PhoneAttention(Receiving)` (opens the panel on the shelf, latched like a drop, the
+  Hover-mode `DropVisit` rule included, not in fullscreen). Superseded: a phone asking
+  sent `PhoneAttention(Approval)` and approval moved to Receiving; a join now changes
+  nothing on screen but the chip. Stage changes use the existing 160 ms `Reveal`
+  ([[panel-linger-and-motion]]) through `SubView.phone`.
 - A late `SessionEnded` from an earlier session is ignored: the app only acts on
   it when its current handle `has_ended()`.
 
@@ -104,8 +111,9 @@ agreed mockup is `docs/design/rak-hp.html` (never committed).
 - **`std::fs::rename` overwrites on Windows.** Never use it for the final move.
 - **`SameSite=Strict` and reload:** a reload of `/` sends the cookie, but opening the
   link `/s/<token>` from another app (Notes, a chat) is a cross-site navigation and
-  does not, so that phone pairs again and the owner must allow it again. The page
-  does `history.replaceState` to `/` after landing for this reason.
+  does not, so that phone joins again as a new device (v3.18: the owner had to allow it
+  again; now it just counts once more in "Tersambung: n HP", and fails if the token has
+  run out). The page does `history.replaceState` to `/` after landing for this reason.
 - `qrcodegen::encode_text` boosts the error correction when it costs no size, so
   the logo rule reads the level that came out, not the one asked for. A typical
   link (`http://192.168.100.200:47399/s/<22>`, 53 bytes) is version 6 at High (41
@@ -122,31 +130,33 @@ agreed mockup is `docs/design/rak-hp.html` (never committed).
 
 ## Not verified live
 
-A real iPhone (Safari) and an Android (Chrome) scanning the QR on one Wi-Fi; the
-Windows Firewall prompt on the first listen; a Public network refusal; two phones in
-one session; PC sleep in the middle of a transfer; a 1 GB+ video; Batal in the
+(v3.18. See the end of the note for v3.19.) A real iPhone (Safari) and an Android
+(Chrome) scanning the QR on one Wi-Fi; the Windows Firewall prompt on the first listen;
+a Public network refusal (superseded: Public is allowed now); two phones in one session; PC sleep in the middle of a transfer; a 1 GB+ video; Batal in the
 middle of an upload; reloading the phone page after approval; a Wi-Fi with client
 isolation (the QR view cannot know nobody connects). What was run: the loopback
 end-to-end test, `--phone-debug` with a browser (pairing, auto approval, three
 uploads, reload keeps the session, "connection lost" after the server stops) and
 the demo scenes by eye.
 
-## Phase 2: send the ticked shelf files to the phone
+## Phase 2: send the shelf files to the phone
 
-The owner ticks shelf cards in **Kirim ke HP** (`PhoneStage::Send`, reached from the QR
-or the receiving view, left with Selesai or Back to the same one, never ends the session;
-`resume_stage()` never returns it). The phone's second tab, **Dari laptop**, lists
-only those files. Agreed with the owner: nothing else of the PC is visible.
+**Superseded in v3.19:** the owner no longer ticks anything. `PhoneStage::Send` and the
+Kirim ke HP view are gone; every file card of the shelf is shared (`phone_sync_shared`).
+What follows is the phase 2 text for the serving rules, which are unchanged; read "ticked"
+as "on the shelf". The phone's second tab, **Dari laptop**, lists the shared files.
+Agreed with the owner: nothing else of the PC is visible.
 
 - **Where:** `phone/share.rs` (the `SharedSet` held inside `Session`, ids, the taken rule,
   `RangeAns`), `phone/files.rs` (path look and open), `phone/thumb.rs` (WIC),
   `http.rs` (`parse_range`, `answer_range`, `content_disposition`, `mime_for`,
   `write_file_head`), `server.rs` (`file_list`, `download`, `thumbnail`, `Routed`).
   Notch side: `app_phone.rs` keeps a mirror of the set keyed by the shelf card key
-  (`Mirror { key, id, size, taken }`), pruned after every shelf change, cleared with the
-  session; `phone_send_layout` / `paint_phone_send`; demo scene `phone-send`.
-- **Routes** (all need an approved device's `vs`; anything else, `vp` included, an unknown
-  or revoked id: the bare 404): `GET /api/files` (id, name, size read now, `v` (the
+  (v3.19: `Mirror { key, id }`; v3.18 also had `size` and `taken`), synced after every
+  shelf change, cleared with the session. Superseded: `phone_send_layout` /
+  `paint_phone_send`, demo scene `phone-send`.
+- **Routes** (all need a joined device's `vs`; anything else, an old `vp` included, an
+  unknown or revoked id: the bare 404): `GET /api/files` (id, name, size read now, `v` (the
   file's version: its strong ETag, size and mtime, without the quotes), kind, `view`,
   `saved` and `busy` for that phone, plus `rev`; never a path), `GET|HEAD
   /api/file/<id>` (attachment), `GET|HEAD /api/view/<id>` (images, inline), `GET
@@ -160,19 +170,20 @@ only those files. Agreed with the owner: nothing else of the PC is visible.
 - **Network paths (UNC or mapped) can be ticked, but are never looked at on the UI
   thread** (a slow or gone share could hold it for seconds). `Handle::share` sends any
   path where `shelf::is_network` is true to `share_unseen`: the id is made at once with
-  `ShareInfo { size: None }` (the mirror holds 0, so the send footer counts 0 B for it
-  until the size arrives), and a `phone-share-check` thread runs `server::check_shared`:
-  a regular file still shared emits `PhoneEvent::SharedSized { id, size }` (`app_phone.rs`
-  fills in the mirror's size and redraws only the open send view); anything else revokes
-  the id and emits `SharedGone` (the card is unticked and turns stale). A thread that
+  `ShareInfo { size: None }`, and a `phone-share-check` thread runs
+  `server::check_shared`. Superseded in v3.19: `ShareInfo` and `SharedSized` are gone
+  (v3.18 filled in the send footer's size); a file that is not a regular file has its
+  id revoked and emits `SharedGone`, and the app puts its key on the loop guard's list
+  and looks at the shelf again (the card turns stale if it is a local file). A thread that
   cannot be spawned unshares the id and shares nothing. `shelf::probe` does not look at
   network paths either. Tested by the e2e
   `a_file_on_the_network_is_shared_without_being_looked_at_then_sized_or_revoked`.
 - **The taken rule** (`counts_as_taken`): only a GET of `/api/file` or `/api/view` that wrote
   every byte of the whole body (200) or of a resume `bytes=N-` running to the last byte.
   Never HEAD, a suffix `bytes=-N`, a closed `a-b` (even one reaching the end) or a
-  thumbnail. A zero-length file served whole counts. `FileTaken` is sent once per id (any
-  phone); `saved` is per device. `RangeAns::Partial` carries `open_ended` for this.
+  thumbnail. A zero-length file served whole counts. `saved` is per device (the page's
+  "Tersimpan"); superseded: `FileTaken` (once per id, for the notch's "diambil") is gone.
+  `RangeAns::Partial` carries `open_ended` for this.
 - **Range:** `a-b` (b clamped), `a-`, `-n` (n clamped); start past the end, `a > b`, `-0`,
   any range on an empty file, another unit, non-digits, overflow: 416 with `Content-Range:
   bytes */len`. A **multi-range** (a comma) is ignored and answered 200 in full, which
@@ -194,7 +205,7 @@ only those files. Agreed with the owner: nothing else of the PC is visible.
   type icon. **Never the full image as a fallback**: a phone tab decoding a dozen 12 MP
   photos can crash. No new `windows` feature was needed.
 - **Idle rule:** the start of `/api/file` and `/api/view` and every 64 KB chunk call
-  `Session::touch`; `/api/files`, `/api/thumb` and approved `/api/state` polls do not
+  `Session::touch`; `/api/files`, `/api/thumb` and `/api/state` polls do not
   (`device_for_view_api` does not touch), so an open page cannot keep the server alive.
   Tested at session level and with a real socket pair (`stream_body`).
 - **Serving:** the path is looked at every time: `symlink_metadata` must say a regular file
@@ -221,18 +232,14 @@ only those files. Agreed with the owner: nothing else of the PC is visible.
   hint shows the iPhone or Android part by user agent, both when unknown (iPadOS reports
   as a Mac: `maxTouchPoints > 1`). Tests: the page under 30 KB, `id` and `en` dictionaries
   with the same keys, no `innerHTML` but the logo, no outside address.
-- **Notch rules:** files arriving while the owner ticks do not pull the view away (the
-  reducer remembers Receiving as the stage to return to); `PhoneAttention(Approval)` over
-  Send works as before. A ticked card whose file is gone turns stale and is unshared at
-  `SharedGone`; `FileTaken` redraws only the open send view (no refresh). The fit test tags
-  ("folder", "hilang", "diambil") may enter the 24 px icon box's empty margin (about 3 px)
-  in JetBrains Mono, never the drawing. With three rows and the strip a send card is 50 px
-  high and "✓ diambil" (bottom right) reaches the one name line, so `phone_send_name` ends a
-  taken card's name 4 px left of the tag (cut shorter by the 6.4 px rule); tested by
-  `the_taken_tag_never_sits_on_a_cards_name` and the fit test. The Shelf page's "dari HP"
-  tag still meets a one-line name with the strip (an older compromise, not changed).
+- **Notch rules (superseded in v3.19, the whole send view is gone):** v3.18 let files arriving
+  while the owner ticked not pull the view away, redrew the send view at `FileTaken`, and
+  fitted the tags "folder", "hilang" and "diambil" on the send cards (`phone_send_name`,
+  `the_taken_tag_never_sits_on_a_cards_name`). Kept: a shared file whose card turns stale is
+  unshared by the sync. The Shelf page's "dari HP" tag still meets a one-line name with the
+  strip (an older compromise, not changed).
 
-### Not verified live (phase 2)
+### Not verified live (phase 2, v3.18)
 
 A real iPhone Safari (a photo to Photos by long press, a video to Files, Save all) and an
 Android Chrome (Download folder, Gallery) on one Wi-Fi; a 1 GB+ video download and a
@@ -248,3 +255,100 @@ Exe size: +115,712 bytes (3,235,328 to 3,351,040, +3.6 %) on `main` f83dbf0, see
 
 Related: [[shelf]], [[shelf-motion]], [[bata-idle-power-budget]], [[exe-size]],
 [[panel-linger-and-motion]].
+
+## Simplified (v3.19): QR only, whole shelf shared
+
+Owner's decision, in his words: "asalkan punya QR nya uda bisa send atau terima file,
+gitu aja ga perlu ribet". Whoever scans the QR is in; nothing is approved, compared or
+ticked. This section is the current behaviour; statements in the older sections that
+say otherwise are marked **superseded**.
+
+**Removed:** the four-digit code (`random_code`), the owner's approval view and
+`PhoneAttention(Approval)`, the waiting and rejected pages of the phone, the pairing
+cookie `vp`, rejections / the void token (`MAX_REJECTIONS`, `TokenVoid`, `APPROVE_TTL`,
+`MAX_PENDING`), `TokenKept` (a phone no longer keeps the token alive), the Kirim ke HP
+tick view (`PhoneStage::Send`, `Hit::PhoneSend` / `PhoneShareToggle` / `PhoneSendDone`,
+`phone_send_layout`, `paint_phone_send`, `SendView`, `CardState`), `PhoneEvent::FileTaken`
+and the notch's "diambil" tag (the page's own "Tersimpan" per phone stays),
+`PhoneEvent::SharedSized` and `ShareInfo.size` (`Handle::share` returns the id), the
+`Browser` of the User-Agent, and the Public refusal (`Refusal::Public`,
+`net::start_allowed`, `Warn::Public`, `PhoneWarnPublic*`).
+
+**New rules**
+
+- **Join on token.** `Session::join(token, now)`: a valid token (`same`, constant time;
+  younger than `TOKEN_TTL` 300 s) makes a device with its own random 16-byte `vs` cookie
+  at once; that is activity. The token **always** expires 5 minutes after it was made,
+  whoever joined (no "kept"); `new_token()` makes a fresh one (same CSPRNG filler, 16
+  bytes, 22 characters). Phones that joined keep their `vs` until the session ends. A
+  phone that already has a valid `vs` and opens the link again gets the page and no new
+  device, whatever the token. `MAX_DEVICES = 64` is the only limit on how many join; over
+  it a valid link is a bare 404. Wrong, expired, replaced token, no random bytes, full:
+  the bare 404 (no cookie, no event). `GET /`, `/api/state`, `/api/files`, `/api/upload`
+  and the file routes need a valid `vs`; no cookie, an old `vp` or a made-up one: bare
+  404. `/api/state` still says `"state":"approved"` (kept as the word the page reads).
+- **Idle:** page load, join, upload chunks, the start and every 64 KB chunk of
+  `/api/file` and `/api/view` count; `/api/state` polls, `/api/files` and `/api/thumb`
+  do not.
+- **Auto-rotation.** While the QR view is on screen the code always counts down
+  ("berlaku m:ss") and, when it ran out (`TokenExpired`, the 1 s `TIMER_PHONE`, or the QR
+  view coming back with a dead code), the app calls `Handle::new_token()` by itself
+  (`phone_keep_fresh`). Only if that returns `None` (no random bytes) does the dimmed code
+  + "QR habis" + "Buat QR baru" show (`renew_failed`; the `phone-qr-expired` scene).
+  `TIMER_PHONE = 48` is still the only timer, one-shot, re-armed each second only while
+  the QR view with a counting code is on screen. Phones that joined are not touched by a
+  new token. Behind another view an expired token waits and is renewed when the QR view
+  shows again.
+- **Whole shelf shared, `phone_sync_shared`.** While a session listens (at `Ready`, and at
+  every `shelf_look`, which every shelf change ends with: drop, file from a phone, card
+  removed, Kosongkan) every card that is a file (not a folder), not stale, is shared once;
+  a mirror entry whose card left the shelf or turned stale (or became a folder) is
+  unshared. Pure decision: `sync_plan(cards, mirror, skipped)`. Network paths keep the
+  phase 2 rule (never looked at on the UI thread: `share_unseen` + `phone-share-check`).
+  **Loop guard:** `skipped` holds the keys of cards whose `share` returned `None` or whose
+  id came back as `SharedGone`; they are not retried while the card stays on the shelf
+  (pruned by `prune_skipped`; a key also goes when its card is stale, so a file that is
+  back gets a fresh try). Without it a gone network file would be shared again on every
+  sync. Files received from a phone are on the shelf, so they are listed too. The mirror
+  is `{key, id}` only; ids are unchanged (16 random bytes, max 12 = the shelf's cap, the
+  path never leaves the PC, same path gives the same id).
+- **Notch.** The QR view stays while the session runs; `Joined` only redraws (never opens
+  the panel or changes the stage) and puts the kind on the chip. Step 2 reads "Kirim atau
+  ambil berkas di HP" with "Semua berkas di rak ikut tampil", and once a phone joined
+  "Tersambung: Android" / "Tersambung: 2 HP" (`i18n::phone_connected`). The device count
+  is one per join, so a phone that opens the link from another app (no `vs` sent:
+  SameSite=Strict) counts again. `resume_stage()` is Receiving if any phone joined or rows
+  exist, else Qr; `phone_back` ends a session no phone ever joined. The receiving view lost
+  its "Kirim ke HP" button, nothing else.
+- **Public networks** are allowed: `net::network_trust(category) -> Trust` (Private and
+  Domain are Private; Public and unknown are Public). `detect_lan` never refuses for it;
+  `public` goes into `ServerConfig`, `Runtime` and `PhoneEvent::Ready`. On the QR view the
+  network line reads "<name> · publik" / "public" and the ochre hint box shows
+  "Wi-Fi publik — jangan dipakai di kafe/hotel" / "Public Wi-Fi — don't use at a café or
+  hotel" instead of the firewall text (it fits in both fonts, both styles; checked by
+  `every_phone_string_holds_its_box_in_both_fonts`). Vale does not elevate, run netsh or
+  add firewall rules.
+- **Firewall gotcha (docs only):** on a Public network Windows Firewall may block the
+  incoming connection unless Vale is allowed on public networks; the phone then cannot
+  connect and nothing on the notch can tell. It is in the README and the guide, not on the
+  notch.
+
+**Residual risk (accepted by the owner's request):** anyone on the same network who can
+see the QR while it is on screen (a camera, a screen share, someone looking) can send files
+to `Downloads\Vale` and download the whole shelf; plain HTTP on the Wi-Fi can be read by
+someone who can sniff it, and a Public network makes that likelier. The limits that
+remain: local addresses only, 5-minute token, 64 devices, the shelf's 12 files, no
+folders, no paths, nothing outside the shelf, a revoked id stops at once, session end
+drops everything.
+
+**Demo scenes** now: `phone-qr`, `phone-qr-joined` (step 2 "Tersambung: Android"),
+`phone-qr-expired`, `phone-public` (QR view with the Public warning, "Kenzie_5G ·
+publik"), `phone-nolan`, `phone-receive`. `phone-approve` and `phone-send` are gone.
+`--phone-debug` has no approval loop: it prints each `Joined`.
+
+**Not verified live (v3.19):** a real iPhone and Android scanning the QR on a Private and
+a Public network (and the Firewall behaviour on Public); two real phones at once; the
+rotation after five real minutes on the notch (the rules are unit-tested, the loopback test
+covers a replaced token); the new demo scenes by eye in DM Sans and JetBrains Mono
+(only the fit test measured them). Run: `cargo test --locked` (session rules, network
+trust, sync plan, loopback end to end).

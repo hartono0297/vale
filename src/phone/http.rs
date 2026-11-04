@@ -502,11 +502,6 @@ pub fn session_cookie(name: &str, value: &str) -> String {
     format!("{name}={value}; HttpOnly; SameSite=Strict; Path=/")
 }
 
-/// The same cookie, told to go.
-pub fn clear_cookie(name: &str) -> String {
-    format!("{name}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -889,7 +884,7 @@ mod tests {
     fn a_response_carries_the_safety_headers_and_the_cookies() {
         let r = Response::json(200, "{\"ok\":true}".into())
             .with_cookie(session_cookie("vs", "abc"))
-            .with_cookie(clear_cookie("vp"));
+            .with_cookie(session_cookie("other", "x"));
         let mut out = Vec::new();
         r.write_to(&mut out).expect("write");
         let text = String::from_utf8(out).expect("utf8");
@@ -901,7 +896,7 @@ mod tests {
             "Referrer-Policy: no-referrer",
             "Content-Length: 11",
             "Set-Cookie: vs=abc; HttpOnly; SameSite=Strict; Path=/",
-            "Set-Cookie: vp=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0",
+            "Set-Cookie: other=x; HttpOnly; SameSite=Strict; Path=/",
         ] {
             assert!(text.contains(h), "{h}\n{text}");
         }
