@@ -150,9 +150,11 @@ colour popover keeps the editing (the note gets the EDIT back when it closes).
 
 ## Timers and messages
 
-`TIMER_WIDGET_SAVE` 45 (one-shot, 1.5 s after the last widget change, flushed
-on `WM_DESTROY` / `WM_ENDSESSION`, cleared by any notes write), 46 and 47 (the
-reminders' one-shot, run A below). App
+`TIMER_WIDGET_SAVE` 45 on the island window (one-shot, 1.5 s after the last
+widget change, flushed on `WM_DESTROY` / `WM_ENDSESSION`, cleared by any notes
+write). `TIMER_WIDGET_CARET` 46 on the note's own window (the caret blink,
+only while it has the keyboard). `TIMER_STICKY_REMIND` 47 on the island window
+(the reminders' one-shot, run A below). App
 message `WM_APP_WIDGET = WM_APP + 71` (the event drain). Hotkey id 7 (6 is
 the lyrics card's, merged on main; `WM_APP + 70` is the card's, 71 is ours). Idle cost: [[bata-idle-power-budget]].
 

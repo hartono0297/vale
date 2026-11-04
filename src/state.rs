@@ -1825,6 +1825,13 @@ impl IslandState {
             self.notif_armed = None;
         }
         match hit {
+            // A click on a sticky note reminder's body is its "Buka", in every
+            // mode (Click mode too, before and after its notice time): it
+            // opens nothing of the island's. Ahead of the Click-mode arm,
+            // which would open the panel instead.
+            Hit::Body if matches!(self.view(), View::Notice(n) if is_sticky_reminder(&n)) => {
+                effects.extend(self.dismiss_visible_notice(now));
+            }
             // Click mode: the compact island opens the panel (a ready
             // pomodoro starts from inside it).
             // A sticky notice (Claude waiting, a due reminder) is what the
@@ -1840,11 +1847,6 @@ impl IslandState {
                         && matches!(self.view(), View::Notice(_)))) =>
             {
                 self.open_by_click(now)
-            }
-            // A click on a sticky note reminder's body is its "Buka", in every
-            // mode: it opens nothing of the island's.
-            Hit::Body if matches!(self.view(), View::Notice(n) if is_sticky_reminder(&n)) => {
-                effects.extend(self.dismiss_visible_notice(now));
             }
             // The due reminder's "Selesai" chip on the closed notch: done at
             // once, in every mode. It opens nothing and latches nothing.
@@ -10371,6 +10373,25 @@ mod tests {
         let mut s = st();
         assert_eq!(s.apply(Event::Click(Hit::StickySnooze), t0), vec![]);
         assert_eq!(s.apply(Event::Click(Hit::StickyOpen), t0), vec![]);
+    }
+
+    #[test]
+    fn in_click_mode_the_body_of_a_sticky_reminder_is_open_after_its_notice_time_too() {
+        let t0 = Instant::now();
+        for at in [t0 + secs(1), t0 + NOTICE_DURATION + secs(1)] {
+            let mut s = st();
+            s.apply(Event::OpenMode(OpenMode::Click), t0);
+            s.apply(Event::Notice(sticky_reminder("a")), t0);
+            s.apply(Event::Tick, at);
+            assert_eq!(s.view(), View::Notice(sticky_reminder("a")));
+            assert_eq!(
+                s.apply(Event::Click(Hit::Body), at),
+                vec![Effect::StickyOpen("a".into())],
+                "{:?} after the notice",
+                at - t0
+            );
+            assert_eq!(s.view(), View::Idle, "the click opens no panel");
+        }
     }
 
     #[test]

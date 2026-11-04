@@ -26,7 +26,7 @@
 use std::cell::RefCell;
 use std::time::Instant;
 
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Local, NaiveDate};
 use windows::Win32::Foundation::{ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -368,6 +368,9 @@ struct State {
     posted: bool,
     /// The note the cat sits on.
     peek: Option<String>,
+    /// The local date the 1 s tick last saw: the notes' labels (a
+    /// reminder's chip, the footer's "Hari ini") are drawn against it.
+    day: Option<NaiveDate>,
 }
 
 thread_local! {
@@ -387,6 +390,14 @@ fn idx_of(s: &State, hwnd: HWND) -> Option<usize> {
 
 fn unix_now() -> i64 {
     Local::now().timestamp()
+}
+
+/// Whether the local date moved on from `last`, and remember `today`. The
+/// first look only remembers it: the notes were just drawn against it.
+fn day_turned(last: &mut Option<NaiveDate>, today: NaiveDate) -> bool {
+    let turned = last.is_some_and(|d| d != today);
+    *last = Some(today);
+    turned
 }
 
 fn push(s: &mut State, ev: WidgetEvent) {
@@ -469,6 +480,7 @@ impl WidgetHost {
                 events: Vec::new(),
                 posted: false,
                 peek: None,
+                day: None,
             });
         });
         WidgetHost { _private: () }
@@ -662,10 +674,17 @@ impl WidgetHost {
     }
 
     /// The 1 s system tick, next to the fullscreen check: the cat's note is
-    /// drawn again only when its mood changed (asleep after three days). Nothing
-    /// else moves; no timer of its own.
+    /// drawn again only when its mood changed (asleep after three days), and
+    /// every note once when the local date turns (a reminder's chip gains its
+    /// day, "Hari ini 10.00" becomes "Kemarin"). Nothing else moves; no timer
+    /// of its own.
     pub fn mood_tick(&mut self, unix: i64) {
         let _ = with(|s| {
+            if day_turned(&mut s.day, remind::from_unix(unix).date()) {
+                for w in &mut s.wins {
+                    w.dirty = true;
+                }
+            }
             if !s.prefs.cat_peek {
                 return;
             }
@@ -1319,10 +1338,11 @@ unsafe extern "system" fn wnd_proc(
             unsafe {
                 let _ = GetCursorPos(&mut pt);
             }
-            // A right click on the header's (+) offers the templates.
+            // A right click on the header's (+) offers the templates; on the
+            // disabled one (the note cap) it is the plain context menu.
             let on_plus = with(|s| {
                 let i = idx_of(s, hwnd)?;
-                Some(target_at(&s.wins[i], pt.x, pt.y) == Target::Button(Btn::Plus))
+                Some(opens_templates(target_at(&s.wins[i], pt.x, pt.y), s.wins.len()))
             })
             .flatten()
             .unwrap_or(false);
@@ -2051,17 +2071,22 @@ pub fn template_menu(owner: HWND, at: POINT, lang: Lang) -> Option<Template> {
         .then(|| Template::ALL[chosen - CMD_TEMPLATE])
 }
 
-/// A right click on a note's (+): the templates, and the new note beside it.
+/// A right click at `target` offers the templates: only the enabled (+). At
+/// the note cap the (+) is drawn disabled and still hits as itself, and that
+/// right click is the plain context menu like the rest of the header.
+fn opens_templates(target: Target, notes: usize) -> bool {
+    target == Target::Button(Btn::Plus) && sticky::can_add(notes)
+}
+
+/// A right click on a note's enabled (+) (`opens_templates`): the templates,
+/// and the new note beside it.
 fn plus_menu(hwnd: HWND, at: POINT) {
     let info = with(|s| {
         let i = idx_of(s, hwnd)?;
-        Some((s.wins[i].id.clone(), s.lang, sticky::can_add(s.wins.len())))
+        Some((s.wins[i].id.clone(), s.lang))
     })
     .flatten();
-    let Some((id, lang, room)) = info else { return };
-    if !room {
-        return;
-    }
+    let Some((id, lang)) = info else { return };
     if let Some(template) = template_menu(hwnd, at, lang) {
         let _ = with(|s| push(s, WidgetEvent::NewBeside { id, template }));
     }
@@ -3354,5 +3379,27 @@ mod tests {
         let r = resized(&p.view, (200.0, 240.0), &area, &[], true).rect;
         assert_eq!((r.x, r.y), (p.view.x, p.view.y), "no jump to the old offset");
         assert_eq!((r.w, r.h), (200.0, 240.0));
+    }
+
+    #[test]
+    fn a_right_click_on_the_disabled_plus_is_the_context_menu() {
+        let plus = Target::Button(Btn::Plus);
+        assert!(opens_templates(plus, 1));
+        assert!(opens_templates(plus, sticky::MAX_STICKY - 1));
+        assert!(!opens_templates(plus, sticky::MAX_STICKY), "at the cap: the plain menu");
+        assert!(!opens_templates(Target::Button(Btn::More), 1));
+        assert!(!opens_templates(Target::Header, 1));
+    }
+
+    #[test]
+    fn a_new_local_day_redraws_once_and_the_first_look_only_remembers() {
+        let day = |d| NaiveDate::from_ymd_opt(2026, 11, d).unwrap();
+        let mut last = None;
+        assert!(!day_turned(&mut last, day(4)), "the first tick: just drawn");
+        assert!(!day_turned(&mut last, day(4)));
+        assert!(day_turned(&mut last, day(5)), "midnight");
+        assert!(!day_turned(&mut last, day(5)), "once a day");
+        // The clock set back is a new day for the labels too.
+        assert!(day_turned(&mut last, day(4)));
     }
 }
