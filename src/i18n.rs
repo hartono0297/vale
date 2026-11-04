@@ -1049,6 +1049,9 @@ keys! {
     StickyPinTop => "Sematkan di atas", "Pin on top";
     StickyRoll => "Gulung", "Roll up";
     StickyUnroll => "Buka gulungan", "Unroll";
+    StickyTakeOut => "Keluarkan dari tumpukan", "Take out of stack";
+    StickyTuck => "Selipkan ke tepi", "Tuck to edge";
+    StickyUntuck => "Keluarkan", "Bring out";
     StickyDelete => "Hapus catatan", "Delete note";
     StickyDeleteAgain => "Klik lagi untuk hapus", "Click again to delete";
     StickyTextSize => "Ukuran teks", "Text size";

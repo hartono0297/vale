@@ -72,8 +72,8 @@ impl Unit<'_> {
 /// The units of `notes`: every sticky note is one, or a sheet of one. A stack
 /// id that one live sheet carries alone is a plain note. Units come in the
 /// order their first sheet appears in `notes`.
-pub fn units(notes: &[Note]) -> Vec<Unit<'_>> {
-    let sticky: Vec<&Note> = notes.iter().filter(|n| n.sticky.is_some()).collect();
+pub fn units<'a>(notes: impl IntoIterator<Item = &'a Note>) -> Vec<Unit<'a>> {
+    let sticky: Vec<&Note> = notes.into_iter().filter(|n| n.sticky.is_some()).collect();
     fn carried(n: &Note) -> Option<&str> {
         sticky_of(n).stack.as_deref()
     }
@@ -220,6 +220,7 @@ pub fn flip_pos(pos: usize, len: usize, delta: i32) -> usize {
 }
 
 /// The sheet of `unit` that shows after flipping by `delta`.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn flip(unit: &Unit, delta: i32) -> usize {
     flip_pos(unit.top(), unit.sheets.len(), delta)
 }

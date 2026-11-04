@@ -12,6 +12,7 @@ use crate::notch_monitor::{Display, find_path};
 use crate::widgets::paint::shown_h;
 use crate::widgets::snap::{self, clamp_rect, clamp_rect_for, reserved_bottom_dip};
 use crate::widgets::sticky::{DipRect, Sticky};
+use crate::widgets::tuck;
 
 /// Where a sticky is shown now.
 #[derive(Clone, Debug, PartialEq)]
@@ -113,7 +114,17 @@ pub fn place(sticky: &Sticky, displays: &[Display]) -> Option<Placement> {
     let scale = scale_of(d.monitor.dpi);
     let area = area_px(d);
     // Clamped for the screen it is shown on, not written back.
-    let view = view_on(sticky.rect, sticky.rolled, &area_dip(d));
+    let mut view = view_on(sticky.rect, sticky.rolled, &area_dip(d));
+    // A tucked note stays at its out rect on the display it lands on: flush
+    // with the same edge, its height clamped there.
+    if let Some(edge) = sticky.tuck {
+        let shown = DipRect {
+            h: shown_h(view.h, sticky.rolled),
+            ..view
+        };
+        let out = tuck::out_rect(&shown, edge, &area_dip(d));
+        view = DipRect { x: out.x, y: out.y, ..view };
+    }
     let shown = DipRect {
         h: shown_h(view.h, sticky.rolled),
         ..view
@@ -157,6 +168,8 @@ pub fn others_on(
     notes
         .iter()
         .filter(|(id, _)| *id != except)
+        // A tucked note is only a tab: nothing to line up with or avoid.
+        .filter(|(_, s)| s.tuck.is_none())
         .filter(|(_, s)| resolve(&s.monitor, displays).is_some_and(|(i, _)| i == display))
         .map(|(_, s)| s.rect)
         .collect()
@@ -360,6 +373,80 @@ mod tests {
         assert!((p.view.h - 693.333).abs() < 0.01);
     }
 
+    fn tucked(path: &str, edge: tuck::Edge, y: f32) -> Sticky {
+        Sticky {
+            tuck: Some(edge),
+            ..sticky_on(path, DipRect::new(1680.0, y, 240.0, 208.0))
+        }
+    }
+
+    #[test]
+    fn a_tucked_note_stays_flush_with_its_edge_on_whatever_display_it_lands_on() {
+        use tuck::Edge;
+        // Saved flush right on A (1920 wide).
+        let s = tucked("A", Edge::Right, 300.0);
+        let p = place(&s, &two()).unwrap();
+        assert_eq!((p.display, p.fallback), (0, false));
+        assert_eq!(p.rect, Rect::new(1920 - 240, 300, 240, 208));
+        // A is replaced by a narrower screen (1600 wide): the out rect is
+        // recomputed there, the saved rect is not touched.
+        let mut narrow = two();
+        narrow[0].monitor.rect.w = 1600;
+        narrow[0].monitor.work.w = 1600;
+        let p = place(&s, &narrow).unwrap();
+        assert_eq!(p.rect.right(), 1600, "flush with the new right edge");
+        assert_eq!(p.rect.y, 300);
+        assert_eq!(s.rect.x, 1680.0);
+        // The other edge: flush left, wherever the saved x was.
+        let left = tucked("A", Edge::Left, 300.0);
+        assert_eq!(place(&left, &two()).unwrap().rect.x, 0);
+        // On the second display (at x 1920): its own edge.
+        let on_b = tucked("B", Edge::Right, 100.0);
+        let p = place(&on_b, &two()).unwrap();
+        assert_eq!((p.display, p.rect.right()), (1, 1920 + 1920));
+        let on_b = tucked("B", Edge::Left, 100.0);
+        assert_eq!(place(&on_b, &two()).unwrap().rect.x, 1920, "B's left edge, an inner one only if A is beside it");
+    }
+
+    #[test]
+    fn a_tucked_note_keeps_its_height_clamped_when_the_display_is_shorter() {
+        use tuck::Edge;
+        let s = tucked("A", Edge::Right, 900.0);
+        let mut short = two();
+        short[0].monitor.work.h = 700;
+        let p = place(&s, &short).unwrap();
+        assert_eq!(p.rect.bottom(), 700, "clamped into the area");
+        assert_eq!(p.rect.right(), 1920);
+        // Rolled: clamped at its shown height.
+        let mut r = s.clone();
+        r.rolled = true;
+        let p = place(&r, &short).unwrap();
+        assert_eq!((p.rect.h, p.rect.bottom()), (ROLLED_H as i32, 700));
+        assert_eq!(p.view.h, 208.0, "the unrolled height is kept");
+    }
+
+    #[test]
+    fn a_tucked_note_whose_monitor_is_gone_goes_to_the_primary_edge_and_the_save_is_left_alone() {
+        use tuck::Edge;
+        let one = vec![display(1, 0, true, "A", 96)];
+        // Tucked right on B, a 3840 wide monitor that is not connected now.
+        let s = Sticky {
+            tuck: Some(Edge::Right),
+            ..sticky_on("B", DipRect::new(3840.0 - 240.0, 500.0, 240.0, 208.0))
+        };
+        let p = place(&s, &one).unwrap();
+        assert!(p.fallback);
+        assert_eq!((p.display, p.rect.right(), p.rect.y), (0, 1920, 500));
+        assert_eq!((s.monitor.as_str(), s.rect.x, s.tuck), ("B", 3600.0, Some(Edge::Right)));
+        // B returns (wide again): back flush with its own right edge.
+        let mut wide = two();
+        wide[1].monitor.rect.w = 3840;
+        wide[1].monitor.work.w = 3840;
+        let back = place(&s, &wide).unwrap();
+        assert!(!back.fallback);
+        assert_eq!((back.display, back.rect.right()), (1, 1920 + 3840));
+    }
+
     #[test]
     fn no_display_places_nothing() {
         assert_eq!(place(&Sticky::default(), &[]), None);
@@ -386,5 +473,9 @@ mod tests {
         let on_first = others_on(&all, &d, 0, 0);
         assert_eq!(on_first, vec![c.rect], "c is on the primary, a is the one moved");
         assert_eq!(others_on(&all, &d, 1, 9), vec![b.rect]);
+        // A tucked note is not a neighbour.
+        let t = Sticky { tuck: Some(tuck::Edge::Left), ..c.clone() };
+        let with_tucked = [(0usize, &a), (1, &b), (2, &t)];
+        assert!(others_on(&with_tucked, &d, 0, 0).is_empty());
     }
 }

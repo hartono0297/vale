@@ -8,7 +8,7 @@ use crate::notes::{Note, NotesStore};
 use crate::widgets::host::WidgetEvent;
 use crate::widgets::sticky::{DipRect, Sticky};
 use crate::widgets::templates::Template;
-use crate::widgets::{paint, place, snap};
+use crate::widgets::{paint, place, snap, stack};
 
 /// What applying a batch of events asks of the owner.
 #[derive(Debug, Default, PartialEq)]
@@ -28,6 +28,9 @@ pub struct Outcome {
     pub reminders: bool,
     /// Notes that came off the desktop or went: their notices go too.
     pub gone: Vec<String>,
+    /// Sheets to take out of their stack (the owner places them beside it,
+    /// `stack_out`, since that needs the displays).
+    pub unstack: Vec<String>,
 }
 
 /// Edits note `id`'s sticky part. False when it has none or nothing changed.
@@ -37,6 +40,44 @@ fn edit_sticky(notes: &mut NotesStore, id: &str, f: impl FnOnce(&mut Sticky)) ->
     };
     f(&mut s);
     notes.set_sticky(id, Some(s))
+}
+
+/// The sticky parts in `edits` written to the store. True when one changed.
+pub fn write_edits(notes: &mut NotesStore, edits: stack::Edits) -> bool {
+    let mut changed = false;
+    for (id, s) in edits {
+        changed |= notes.set_sticky(&id, Some(s));
+    }
+    changed
+}
+
+/// What a sheet shares with its stack (place, size, pin, roll, tuck) written
+/// to every other sheet of it.
+fn spread(notes: &mut NotesStore, id: &str) -> bool {
+    let edits = stack::propagate(notes.list(), id);
+    write_edits(notes, edits)
+}
+
+/// The stacks made right (`stack::normalise`): one sheet shown, orders 0..n-1,
+/// a stack id one sheet carries alone cleared. `overdue_top` brings a sheet
+/// whose reminder is overdue to the top (at startup and when one fires).
+/// True when something changed.
+pub fn settle(notes: &mut NotesStore, now: i64, overdue_top: bool) -> bool {
+    let edits = stack::normalise(notes.list(), now, overdue_top);
+    write_edits(notes, edits)
+}
+
+/// Sheet `id` taken out of its stack and placed beside it, on the display the
+/// stack is on. True when something changed.
+pub fn stack_out(notes: &mut NotesStore, displays: &[Display], id: &str) -> bool {
+    let Some(sticky) = notes.get(id).and_then(|n| n.sticky.as_ref()) else {
+        return false;
+    };
+    let area = place::resolve(&sticky.monitor, displays)
+        .and_then(|(i, _)| displays.get(i))
+        .map_or(DipRect::new(0.0, 0.0, 1920.0, 1040.0), place::snap_area);
+    let edits = stack::take_out(notes.list(), id, &area);
+    write_edits(notes, edits)
 }
 
 /// Note `id`'s reminder set to `at` (unix seconds; `None` clears it), not
@@ -60,6 +101,7 @@ pub fn apply(notes: &mut NotesStore, events: Vec<WidgetEvent>, unix: i64) -> Out
                     s.monitor = monitor;
                     s.rect = rect;
                 });
+                out.changed |= spread(notes, &id);
             }
             WidgetEvent::Paper { id, paper } => {
                 out.changed |= edit_sticky(notes, &id, |s| s.paper = paper);
@@ -86,9 +128,27 @@ pub fn apply(notes: &mut NotesStore, events: Vec<WidgetEvent>, unix: i64) -> Out
             }
             WidgetEvent::Pinned { id, on } => {
                 out.changed |= edit_sticky(notes, &id, |s| s.pinned = on);
+                out.changed |= spread(notes, &id);
             }
             WidgetEvent::Rolled { id, on } => {
                 out.changed |= edit_sticky(notes, &id, |s| s.rolled = on);
+                out.changed |= spread(notes, &id);
+            }
+            WidgetEvent::Tuck { id, edge } => {
+                out.changed |= edit_sticky(notes, &id, |s| s.tuck = edge);
+                out.changed |= spread(notes, &id);
+            }
+            WidgetEvent::Stack { dragged, target } => {
+                let done = write_edits(notes, stack::join(notes.list(), &dragged, &target));
+                out.changed |= done;
+                out.structural |= done;
+            }
+            WidgetEvent::StackShow { id } => {
+                out.changed |= write_edits(notes, stack::show(notes.list(), &id));
+            }
+            WidgetEvent::StackOut { id } => {
+                out.unstack.push(id);
+                out.structural = true;
             }
             WidgetEvent::Remind { id, at } => {
                 out.changed |= set_reminder(notes, &id, at, false);
@@ -100,6 +160,8 @@ pub fn apply(notes: &mut NotesStore, events: Vec<WidgetEvent>, unix: i64) -> Out
             WidgetEvent::CatPeek(on) => out.cat_peek = Some(on),
             WidgetEvent::NewBeside { id, template } => out.beside.push((id, template)),
             WidgetEvent::Unstick { id } => {
+                // The rest of its stack closes up first.
+                out.changed |= write_edits(notes, stack::leave(notes.list(), &id));
                 let done = notes.set_sticky(&id, None);
                 out.changed |= done;
                 out.structural |= done;
@@ -108,6 +170,7 @@ pub fn apply(notes: &mut NotesStore, events: Vec<WidgetEvent>, unix: i64) -> Out
                 }
             }
             WidgetEvent::Delete { id } => {
+                out.changed |= write_edits(notes, stack::leave(notes.list(), &id));
                 let done = notes.delete(&id);
                 out.changed |= done;
                 out.structural |= done;
@@ -118,6 +181,8 @@ pub fn apply(notes: &mut NotesStore, events: Vec<WidgetEvent>, unix: i64) -> Out
             WidgetEvent::NeedsClock => out.clock = true,
         }
     }
+    // A stack left with one sheet is a plain note; one sheet shows.
+    out.changed |= settle(notes, unix, false);
     out
 }
 

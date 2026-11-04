@@ -31,6 +31,7 @@ use windows::Win32::Foundation::{ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESU
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent, VK_MENU,
+    VK_SHIFT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CheckMenuRadioItem, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu,
@@ -63,6 +64,8 @@ use crate::widgets::paint::{
 };
 use crate::widgets::place;
 use crate::widgets::pop::{self, PopCmd, PopState};
+use crate::widgets::stack::{self, Existing};
+use crate::widgets::tuck::{self, Edge};
 use crate::widgets::remind::{self, Preset};
 use crate::widgets::remind_pop;
 use crate::widgets::prefs::{FullscreenRule, WidgetLayer, WidgetPrefs};
@@ -119,6 +122,16 @@ pub enum WidgetEvent {
     Delete { id: String },
     /// The note was used: the cat goes to the one touched last.
     Touched { id: String, at: i64 },
+    /// A note was dropped on another with Shift held: the units of these
+    /// sheets (in order) become one stack. Structural.
+    Stack { dragged: Vec<String>, target: Vec<String> },
+    /// The stack now shows this sheet (a flip: the wheel, the arrows).
+    StackShow { id: String },
+    /// "Keluarkan dari tumpukan": this sheet leaves its stack and is placed
+    /// beside it. Structural.
+    StackOut { id: String },
+    /// The note was tucked to an edge, or brought out (`None`).
+    Tuck { id: String, edge: Option<Edge> },
     /// Something eases: the owner starts its frame clock.
     NeedsClock,
 }
@@ -171,13 +184,18 @@ impl Ease {
     }
 
     fn toward(&mut self, to: f32, now: Instant, animate: bool) {
+        self.toward_in(to, now, animate, FADE_MS);
+    }
+
+    /// `toward` over `ms` (instant when nothing animates).
+    fn toward_in(&mut self, to: f32, now: Instant, animate: bool, ms: f32) {
         if (self.to - to).abs() < f32::EPSILON {
             return;
         }
         self.from = self.value(now);
         self.to = to;
         self.start = now;
-        self.ms = if animate { FADE_MS } else { 0.0 };
+        self.ms = if animate { ms } else { 0.0 };
     }
 }
 
@@ -196,9 +214,35 @@ struct Drag {
     moved: bool,
     /// Windows whose guide lines the drag lit.
     lit: Vec<usize>,
+    /// Where the pointer was last (desktop px).
+    last: (i32, i32),
+    /// The edge a release here would tuck to.
+    cue: Option<Edge>,
+    /// The unit a release here (Shift held) would stack on.
+    target: Option<HWND>,
+}
+
+/// The stack a window shows: its id, its sheets' note ids in order, and the
+/// place of the shown one.
+#[derive(Clone, Debug, PartialEq)]
+struct StackView {
+    id: String,
+    ids: Vec<String>,
+    pos: usize,
+}
+
+/// What the window knows of one sheet of its stack: the shown sheet's data
+/// here is stale (the window's own fields are live).
+#[derive(Clone, Debug)]
+struct Sheet {
+    id: String,
+    sticky: Sticky,
+    text: String,
+    updated: i64,
 }
 
 struct Win {
+    /// The note id of the sheet this window shows.
     id: String,
     hwnd: HWND,
     sticky: Sticky,
@@ -263,14 +307,37 @@ struct Win {
     away: bool,
     shown: bool,
     dirty: bool,
+    /// Set for a stack: the window shows one sheet of it.
+    stack: Option<StackView>,
+    /// Every sheet of the stack in order (empty for a plain note).
+    sheets: Vec<Sheet>,
+    /// How far a tucked note is out: 0 only the tab, 1 the whole note (1 for a
+    /// note that is not tucked). `slide_at` is what was last drawn.
+    slide: Ease,
+    slide_at: f32,
+    /// The pointer left a note that is out: it slides back in at this time
+    /// plus `tuck::GRACE_MS`.
+    grace: Option<Instant>,
+    /// Wheel delta not yet worth a flip.
+    wheel: i32,
+    /// A release here would tuck to this edge (drawn as an accent bar).
+    cue: Option<Edge>,
+    /// A dragged note would stack on this one (drawn with the highlight frame).
+    targeted: bool,
 }
 
 impl Win {
+    /// What the lean follows: the stack's id (so a flip does not change it),
+    /// else the note's. It is also the key a unit's window goes by.
+    fn key(&self) -> &str {
+        self.stack.as_ref().map_or(self.id.as_str(), |s| s.id.as_str())
+    }
+
     /// The angle the note is drawn at: leaning while "Miring sedikit" is on,
-    /// straight while it has the keyboard.
+    /// straight while it has the keyboard and while it is tucked.
     fn lean(&self) -> f32 {
-        if self.tilt && self.edit.is_none() {
-            art::tilt_deg(&self.id)
+        if self.tilt && self.edit.is_none() && self.sticky.tuck.is_none() {
+            art::tilt_deg(self.key())
         } else {
             0.0
         }
@@ -279,8 +346,61 @@ impl Win {
     /// The window's margin round the note (grown for the lean, whether or not
     /// the note has the keyboard, so the window keeps its size).
     fn margins(&self) -> (f32, f32, f32, f32) {
-        let deg = if self.tilt { art::tilt_deg(&self.id) } else { 0.0 };
+        let deg = if self.tilt { art::tilt_deg(self.key()) } else { 0.0 };
         art::margins_for(self.view.w, shown_h(self.view.h, self.sticky.rolled), deg)
+    }
+
+    /// Whether this window shows note `id` (as its sheet or one hidden under it).
+    fn has(&self, id: &str) -> bool {
+        self.id == id || self.stack.as_ref().is_some_and(|s| s.ids.iter().any(|i| i == id))
+    }
+
+    /// The note ids of the unit, in order.
+    fn unit_ids(&self) -> Vec<String> {
+        self.stack
+            .as_ref()
+            .map_or_else(|| vec![self.id.clone()], |s| s.ids.clone())
+    }
+
+    /// How many sheets (notes) the window stands for.
+    fn sheet_count(&self) -> usize {
+        self.stack.as_ref().map_or(1, |s| s.ids.len())
+    }
+
+    /// Every sheet's sticky part, the shown one live.
+    fn stickies(&self) -> Vec<(&str, &Sticky)> {
+        if self.sheets.is_empty() {
+            return vec![(self.id.as_str(), &self.sticky)];
+        }
+        self.sheets
+            .iter()
+            .map(|sh| {
+                if sh.id == self.id {
+                    (self.id.as_str(), &self.sticky)
+                } else {
+                    (sh.id.as_str(), &sh.sticky)
+                }
+            })
+            .collect()
+    }
+
+    /// A reminder of the unit is overdue (on any sheet).
+    fn any_overdue(&self, unix: i64) -> bool {
+        self.stickies().iter().any(|(_, s)| remind::overdue(s, unix))
+    }
+
+    /// How far the note is drawn off its edge now, dip: signed, 0 while it
+    /// is not tucked or all the way out.
+    fn shift(&self, now: Instant) -> f32 {
+        match self.sticky.tuck {
+            Some(edge) => edge.sign() * tuck::slide_offset(self.slide.value(now), self.view.w),
+            None => 0.0,
+        }
+    }
+
+    /// The tab is what shows: tucked and not (all the way) out.
+    fn tab_showing(&self, now: Instant) -> bool {
+        self.sticky.tuck.is_some() && self.slide.value(now) < 0.999
     }
 
     /// The window's top-left on the desktop (px).
@@ -343,10 +463,80 @@ fn present_alpha(s: &mut State, i: usize) {
     }
 }
 
+/// Something keeps a tucked note out: the pointer is over it, it has the
+/// keyboard, it is being dragged, a reminder raised it, or one of its
+/// popovers is open.
+fn keep_out(w: &Win) -> bool {
+    w.pointer_in
+        || w.edit.is_some()
+        || w.drag.is_some()
+        || w.raised
+        || pop::is_open_for(w.hwnd)
+        || remind_pop::is_open_for(w.hwnd)
+}
+
+/// A tucked note follows what keeps it out. While something does it comes
+/// out (the slide on the frame clock, instant when nothing animates) and the
+/// grace is off; once nothing does, the grace starts, and the slide back in
+/// happens when it ends (`WidgetHost::tick`). The grace counts on the frame
+/// clock too, even without animation. Draws what changed at once when the
+/// slide is instant.
+fn tuck_settle(s: &mut State, i: usize) {
+    let (now, animate) = (Instant::now(), s.animate);
+    let w = &mut s.wins[i];
+    if w.sticky.tuck.is_none() {
+        return;
+    }
+    let mut clock = false;
+    if keep_out(w) {
+        w.grace = None;
+        if w.slide.to < 1.0 {
+            w.slide.toward_in(1.0, now, animate, tuck::SLIDE_MS);
+            w.dirty = true;
+            clock = animate;
+        }
+    } else if w.slide.to > 0.0 && w.grace.is_none() {
+        w.grace = Some(now);
+        clock = true;
+    }
+    if clock {
+        push(s, WidgetEvent::NeedsClock);
+    }
+    if s.wins[i].dirty && !s.animate {
+        draw(s, i);
+    }
+}
+
+/// The note is all the way out at once, and nothing is waiting to pull it back.
+fn slide_out_now(w: &mut Win) {
+    w.slide = Ease::at(1.0);
+    w.grace = None;
+    w.dirty = true;
+}
+
+/// How many notes (sheets) the windows stand for: what the cap counts.
+fn sheet_total(wins: &[Win]) -> usize {
+    wins.iter().map(Win::sheet_count).sum()
+}
+
+/// Shift is held (read on every move, like Alt). The tests set it.
+fn shift_down() -> bool {
+    #[cfg(test)]
+    if let Some(v) = TEST_SHIFT.with(std::cell::Cell::get) {
+        return v;
+    }
+    (unsafe { GetKeyState(i32::from(VK_SHIFT.0)) }) < 0
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_SHIFT: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
 /// What the cat looks like on note `w` at `unix`.
 fn win_mood(w: &Win, unix: i64) -> Mood {
     mood::mood(
-        remind::overdue(&w.sticky, unix),
+        w.any_overdue(unix),
         checklist::all_done(&w.text),
         w.sticky.touched,
         unix,
@@ -438,18 +628,15 @@ fn touch(s: &mut State, i: usize) {
 fn refresh_peek(s: &mut State) {
     // The note with an overdue reminder (the earliest), else the one touched
     // last.
-    let owner = mood::cat_owner(
-        s.wins.iter().map(|w| (w.id.as_str(), &w.sticky)),
-        unix_now(),
-    )
-    .map(str::to_owned);
+    // Every sheet of a stack counts: the cat sits on the window holding it.
+    let owner = mood::cat_owner(s.wins.iter().flat_map(Win::stickies), unix_now()).map(str::to_owned);
     if owner == s.peek {
         return;
     }
     let before = s.peek.take();
     s.peek = owner.clone();
     for w in &mut s.wins {
-        if Some(&w.id) == before.as_ref() || Some(&w.id) == owner.as_ref() {
+        if before.as_deref().is_some_and(|id| w.has(id)) || owner.as_deref().is_some_and(|id| w.has(id)) {
             w.dirty = true;
         }
     }
@@ -522,8 +709,19 @@ impl WidgetHost {
     /// end of the text when `None`): a template's caret is the end of its
     /// first line.
     pub fn focus_at(&mut self, id: &str, at: Option<usize>) {
-        let hwnd = with(|s| s.wins.iter().find(|w| w.id == id).map(|w| w.hwnd)).flatten();
-        if let Some(hwnd) = hwnd {
+        let hwnd = with(|s| s.wins.iter().find(|w| w.has(id)).map(|w| (w.hwnd, w.id != id))).flatten();
+        if let Some((hwnd, other_sheet)) = hwnd {
+            // A sheet hidden in a stack comes to the top first.
+            if other_sheet {
+                end_editing(hwnd);
+                let _ = with(|s| {
+                    let i = idx_of(s, hwnd)?;
+                    let to = s.wins[i].stack.as_ref()?.ids.iter().position(|x| x == id)?;
+                    show_sheet(s, i, to);
+                    Some(())
+                });
+                flush_dirty();
+            }
             take_foreground(hwnd);
             begin_editing(hwnd, at);
         }
@@ -539,7 +737,7 @@ impl WidgetHost {
             let (animate, now) = (s.animate, Instant::now());
             let mut out = Vec::new();
             for (i, w) in s.wins.iter_mut().enumerate() {
-                if ids.contains(&w.id) {
+                if ids.iter().any(|id| w.has(id)) {
                     w.raised = true;
                     if animate {
                         w.wiggle = Some(now);
@@ -553,6 +751,8 @@ impl WidgetHost {
             }
             for i in &out {
                 settle_alpha(s, *i);
+                // A tucked note (or stack) slides out and stays out.
+                tuck_settle(s, *i);
             }
             // The overdue note gets the cat (with a clock).
             refresh_peek(s);
@@ -604,6 +804,9 @@ impl WidgetHost {
                         .confetti
                         .is_some_and(|(t, _)| elapsed_ms(t, now) < art::CONFETTI_MS)
                     || w.alpha.running(now)
+                    // The tuck: the grace and the slide run on the frame clock.
+                    || w.grace.is_some()
+                    || w.slide.running(now)
             })
         })
         .unwrap_or(false)
@@ -612,7 +815,22 @@ impl WidgetHost {
     /// One frame of the easing: the notes that move are drawn.
     pub fn tick(&mut self, now: Instant) {
         let _ = with(|s| {
+            let animate = s.animate;
             for w in &mut s.wins {
+                // A note that was out and lost what kept it out slides back in
+                // once the grace is over; re-entering cancelled it.
+                if let Some(t) = w.grace
+                    && elapsed_ms(t, now) >= tuck::GRACE_MS
+                {
+                    w.grace = None;
+                    if w.sticky.tuck.is_some() && !keep_out(w) {
+                        w.slide.toward_in(0.0, now, animate, tuck::SLIDE_MS);
+                    }
+                }
+                // The slide's last frame is drawn too.
+                if (w.slide.value(now) - w.slide_at).abs() > 1e-3 {
+                    w.dirty = true;
+                }
                 let fading = w.header.running(now);
                 let lit = match w.highlight {
                     Some(t) if elapsed_ms(t, now) >= HIGHLIGHT_MS => {
@@ -691,7 +909,7 @@ impl WidgetHost {
             let Some(i) = s
                 .peek
                 .as_deref()
-                .and_then(|id| s.wins.iter().position(|w| w.id == id))
+                .and_then(|id| s.wins.iter().position(|w| w.has(id)))
             else {
                 return;
             };
@@ -755,10 +973,10 @@ impl WidgetHost {
         }
     }
 
-    /// How many windows there are.
+    /// How many notes there are on the desktop (every sheet of a stack counts).
     #[cfg_attr(not(debug_assertions), allow(dead_code))]
     pub fn count(&self) -> usize {
-        with(|s| s.wins.len()).unwrap_or(0)
+        with(|s| sheet_total(&s.wins)).unwrap_or(0)
     }
 
     /// A message the owner got and the host cares about (the shell restarted).
@@ -796,18 +1014,39 @@ fn above_windows(s: &State, w: &Win) -> bool {
 // ------------------------------------------------------------------ sync
 
 fn sync(ctx: &Ctx) {
-    // 1. What the notes are, against the windows there are.
-    let wanted: Vec<&Note> = ctx
-        .notes
-        .iter()
-        .filter(|n| n.sticky.is_some())
-        .take(sticky::MAX_STICKY)
-        .collect();
+    // 1. What the notes are: one unit each, a plain note or a whole stack (the
+    // cap counts sheets, so the first twenty), against the windows there are.
+    let units = stack::units(
+        ctx.notes
+            .iter()
+            .filter(|n| n.sticky.is_some())
+            .take(sticky::MAX_STICKY),
+    );
+    let matched: Vec<Option<HWND>> = with(|s| {
+        let existing: Vec<Existing> = s
+            .wins
+            .iter()
+            .map(|w| Existing {
+                key: w.key(),
+                shown: w.id.as_str(),
+                ids: w.stack.as_ref().map_or_else(
+                    || vec![w.id.as_str()],
+                    |st| st.ids.iter().map(String::as_str).collect(),
+                ),
+            })
+            .collect();
+        stack::match_units(&existing, &units)
+            .into_iter()
+            .map(|m| m.map(|e| s.wins[e].hwnd))
+            .collect()
+    })
+    .unwrap_or_else(|| vec![None; units.len()]);
+    let keep: Vec<HWND> = matched.iter().flatten().copied().collect();
     let gone: Vec<HWND> = with(|s| {
         s.wins
             .iter()
-            .filter(|w| !wanted.iter().any(|n| n.id == w.id))
             .map(|w| w.hwnd)
+            .filter(|h| !keep.contains(h))
             .collect()
     })
     .unwrap_or_default();
@@ -817,18 +1056,31 @@ fn sync(ctx: &Ctx) {
             let _ = DestroyWindow(hwnd);
         }
     }
-    let missing: Vec<&Note> = with(|s| {
-        wanted
+    // A window that is to show another sheet than it does stops editing first.
+    let swap: Vec<HWND> = with(|s| {
+        units
             .iter()
-            .copied()
-            .filter(|n| !s.wins.iter().any(|w| w.id == n.id))
+            .zip(&matched)
+            .filter_map(|(u, m)| {
+                let hwnd = (*m)?;
+                let top = &u.sheets[u.top()].id;
+                s.wins
+                    .iter()
+                    .find(|w| w.hwnd == hwnd && w.id != *top)
+                    .map(|w| w.hwnd)
+            })
             .collect()
     })
     .unwrap_or_default();
-    let mut created: Vec<(String, HWND)> = Vec::new();
-    for n in missing {
-        if let Some(hwnd) = create_window() {
-            created.push((n.id.clone(), hwnd));
+    for hwnd in swap {
+        end_editing(hwnd);
+    }
+    let mut assigned = matched;
+    let mut fresh = vec![false; units.len()];
+    for (ui, slot) in assigned.iter_mut().enumerate() {
+        if slot.is_none() {
+            *slot = create_window();
+            fresh[ui] = slot.is_some();
         }
     }
     let _ = with(|s| {
@@ -848,109 +1100,20 @@ fn sync(ctx: &Ctx) {
                 w.dirty = true;
             }
         }
-        for (id, hwnd) in created {
-            let Some(note) = wanted.iter().find(|n| n.id == id) else {
+        for (ui, unit) in units.iter().enumerate() {
+            let Some(hwnd) = assigned[ui] else { continue };
+            if fresh[ui] {
+                let top = unit.sheets[unit.top()];
+                s.wins.push(blank_win(hwnd, top, s.prefs.tilt));
+            }
+            let Some(i) = s.wins.iter().position(|w| w.hwnd == hwnd) else {
                 continue;
             };
-            let sticky = note.sticky.clone().unwrap_or_default();
-            let opacity = sticky.opacity;
-            s.wins.push(Win {
-                id,
-                hwnd,
-                sticky,
-                text: note.text.clone(),
-                updated: note.updated,
-                note: Rect::default(),
-                view: DipRect::new(0.0, 0.0, 0.0, 0.0),
-                scale: 1.0,
-                display: 0,
-                canvas: None,
-                body: None,
-                body_key: None,
-                scroll: 0.0,
-                header: Ease::at(0.0),
-                hot: None,
-                tracking: false,
-                pressed: None,
-                press_at: (0, 0),
-                edit: None,
-                sel: (0, 0),
-                anchor: 0,
-                caret_on: true,
-                follow_caret: false,
-                selecting: false,
-                drag: None,
-                guides: Vec::new(),
-                highlight: None,
-                footer_msg: None,
-                confirm_delete: false,
-                raised: false,
-                wiggle: None,
-                confetti: None,
-                tilt: s.prefs.tilt,
-                pointer_in: false,
-                look: 0,
-                mood: Mood::Idle,
-                alpha: Ease::at(f32::from(opacity) / 100.0),
-                alpha_shown: 255,
-                away: false,
-                shown: false,
-                dirty: true,
-            });
-        }
-        for note in &wanted {
-            let Some(i) = s.wins.iter().position(|w| w.id == note.id) else {
-                continue;
-            };
-            let sticky = note.sticky.clone().unwrap_or_default();
-            let w = &mut s.wins[i];
-            let moving = w.drag.is_some();
-            if w.sticky != sticky && !moving {
-                w.sticky = sticky;
-                w.dirty = true;
-            } else if moving {
-                // The drag owns the place; the rest still follows.
-                let rect = w.sticky.rect;
-                let monitor = w.sticky.monitor.clone();
-                if w.sticky != sticky {
-                    w.sticky = Sticky {
-                        rect,
-                        monitor,
-                        ..sticky
-                    };
-                    w.dirty = true;
-                }
-            }
-            // A raised note comes back down once its reminder is no longer
-            // fired (snoozed, cleared, opened).
-            if w.raised && !w.sticky.remind_fired {
-                w.raised = false;
-                w.wiggle = None;
-            }
-            // While the note has the keyboard the EDIT is the truth.
-            if w.edit.is_none() && w.text != note.text {
-                w.text = note.text.clone();
-                w.dirty = true;
-            }
-            if w.updated != note.updated {
-                w.updated = note.updated;
-                w.dirty = true;
-            }
-            if prefs_changed {
-                w.dirty = true;
-            }
-            if w.tilt != ctx.prefs.tilt {
-                // The window's margin changes with the lean: a new window size.
-                w.tilt = ctx.prefs.tilt;
-                w.canvas = None;
-                w.dirty = true;
-            }
-            if !moving {
-                relayout(s, i);
-            }
+            update_win(s, i, unit, prefs_changed, ctx.prefs.tilt);
         }
         for i in 0..s.wins.len() {
             settle_alpha(s, i);
+            tuck_settle(s, i);
         }
         refresh_peek(s);
     });
@@ -961,6 +1124,229 @@ fn sync(ctx: &Ctx) {
         apply_visibility(i);
     }
     flush_dirty();
+}
+
+/// A window for a note that has none yet: nothing is placed or drawn until
+/// `update_win` and `relayout` have run.
+fn blank_win(hwnd: HWND, note: &Note, tilt: bool) -> Win {
+    let sticky = note.sticky.clone().unwrap_or_default();
+    let opacity = sticky.opacity;
+    let out = if sticky.tuck.is_some() { 0.0 } else { 1.0 };
+    Win {
+        id: note.id.clone(),
+        hwnd,
+        sticky,
+        text: note.text.clone(),
+        updated: note.updated,
+        note: Rect::default(),
+        view: DipRect::new(0.0, 0.0, 0.0, 0.0),
+        scale: 1.0,
+        display: 0,
+        canvas: None,
+        body: None,
+        body_key: None,
+        scroll: 0.0,
+        header: Ease::at(0.0),
+        hot: None,
+        tracking: false,
+        pressed: None,
+        press_at: (0, 0),
+        edit: None,
+        sel: (0, 0),
+        anchor: 0,
+        caret_on: true,
+        follow_caret: false,
+        selecting: false,
+        drag: None,
+        guides: Vec::new(),
+        highlight: None,
+        footer_msg: None,
+        confirm_delete: false,
+        raised: false,
+        wiggle: None,
+        confetti: None,
+        tilt,
+        pointer_in: false,
+        look: 0,
+        mood: Mood::Idle,
+        alpha: Ease::at(f32::from(opacity) / 100.0),
+        alpha_shown: 255,
+        away: false,
+        shown: false,
+        dirty: true,
+        stack: None,
+        sheets: Vec::new(),
+        slide: Ease::at(out),
+        slide_at: out,
+        grace: None,
+        wheel: 0,
+        cue: None,
+        targeted: false,
+    }
+}
+
+/// What a note's view of its text starts from again when another sheet takes
+/// the window.
+fn reset_sheet_view(w: &mut Win) {
+    w.body_key = None;
+    w.scroll = 0.0;
+    w.sel = (0, 0);
+    w.anchor = 0;
+    w.follow_caret = false;
+    w.selecting = false;
+    w.footer_msg = None;
+    w.confirm_delete = false;
+    w.pressed = None;
+    w.dirty = true;
+}
+
+/// The window shows `note` (another sheet of its stack): its id, sticky part,
+/// text and edit time are swapped in. The editing ended before.
+fn load_sheet(w: &mut Win, note: &Note) {
+    w.id = note.id.clone();
+    w.sticky = note.sticky.clone().unwrap_or_default();
+    w.text = note.text.clone();
+    w.updated = note.updated;
+    reset_sheet_view(w);
+}
+
+/// Window `i` shows sheet `to` of its stack (a flip): the sheet it showed
+/// keeps its live data in the window's copy, the new one takes the window.
+/// Editing ended before. The window is never destroyed or remade. The lean
+/// follows the stack, so it does not change. Tells the owner.
+fn show_sheet(s: &mut State, i: usize, to: usize) {
+    let w = &mut s.wins[i];
+    let Some(pos) = w.stack.as_ref().map(|st| st.pos) else {
+        return;
+    };
+    if pos == to || to >= w.sheets.len() {
+        return;
+    }
+    let live = Sticky {
+        stack_top: false,
+        ..w.sticky.clone()
+    };
+    let (text, updated) = (w.text.clone(), w.updated);
+    if let Some(sheet) = w.sheets.get_mut(pos) {
+        *sheet = Sheet {
+            id: sheet.id.clone(),
+            sticky: live.clone(),
+            text,
+            updated,
+        };
+    }
+    let next = w.sheets[to].clone();
+    // Place, size, pin, roll and tuck are the stack's, the rest the sheet's.
+    let mut sticky = Sticky {
+        stack_top: true,
+        ..next.sticky
+    };
+    stack::share(&live, &mut sticky);
+    w.id = next.id;
+    w.sticky = sticky;
+    w.text = next.text;
+    w.updated = next.updated;
+    if let Some(view) = &mut w.stack {
+        view.pos = to;
+    }
+    reset_sheet_view(w);
+    let id = w.id.clone();
+    push(s, WidgetEvent::StackShow { id });
+    settle_alpha(s, i);
+}
+
+/// Brings window `i` to `unit` as the notes are now.
+fn update_win(s: &mut State, i: usize, unit: &stack::Unit, prefs_changed: bool, tilt: bool) {
+    let note = unit.sheets[unit.top()];
+    let sticky = note.sticky.clone().unwrap_or_default();
+    let fired = unit
+        .sheets
+        .iter()
+        .any(|n| n.sticky.as_ref().is_some_and(|st| st.remind_fired));
+    let w = &mut s.wins[i];
+    // The unit: a stack's sheets and the place of the one shown.
+    let view = unit.is_stack().then(|| StackView {
+        id: unit.key().to_owned(),
+        ids: unit.ids(),
+        pos: unit.top(),
+    });
+    if w.stack != view {
+        w.stack = view;
+        w.dirty = true;
+    }
+    w.sheets = if unit.is_stack() {
+        unit.sheets
+            .iter()
+            .map(|n| Sheet {
+                id: n.id.clone(),
+                sticky: n.sticky.clone().unwrap_or_default(),
+                text: n.text.clone(),
+                updated: n.updated,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let was_tucked = w.sticky.tuck.is_some();
+    // Another sheet shows now (a flip the owner applied, an overdue sheet
+    // coming to the top, one taken out).
+    if w.id != note.id {
+        load_sheet(w, note);
+    }
+    let moving = w.drag.is_some();
+    if w.sticky != sticky && !moving {
+        w.sticky = sticky;
+        w.dirty = true;
+    } else if moving {
+        // The drag owns the place (and the tuck); the rest still follows.
+        let rect = w.sticky.rect;
+        let monitor = w.sticky.monitor.clone();
+        let tuck = w.sticky.tuck;
+        if w.sticky != sticky {
+            w.sticky = Sticky {
+                rect,
+                monitor,
+                tuck,
+                ..sticky
+            };
+            w.dirty = true;
+        }
+    }
+    // Tucked or brought out by the owner's data (a stack mate, a restart):
+    // a note that just got tucked is out until the pointer leaves it.
+    if w.sticky.tuck.is_some() != was_tucked {
+        w.slide = Ease::at(1.0);
+        w.slide_at = 1.0;
+        w.grace = None;
+        w.dirty = true;
+    }
+    // A raised note comes back down once its reminder is no longer
+    // fired (snoozed, cleared, opened).
+    if w.raised && !fired {
+        w.raised = false;
+        w.wiggle = None;
+    }
+    // While the note has the keyboard the EDIT is the truth.
+    if w.edit.is_none() && w.text != note.text {
+        w.text = note.text.clone();
+        w.dirty = true;
+    }
+    if w.updated != note.updated {
+        w.updated = note.updated;
+        w.dirty = true;
+    }
+    if prefs_changed {
+        w.dirty = true;
+    }
+    if w.tilt != tilt {
+        // The window's margin changes with the lean: a new window size.
+        w.tilt = tilt;
+        w.canvas = None;
+        w.dirty = true;
+    }
+    if !moving {
+        relayout(s, i);
+    }
 }
 
 /// The note's rect on the desktop from its saved place and the displays now;
@@ -1107,7 +1493,7 @@ fn draw(s: &mut State, i: usize) {
         ..
     } = s;
     let Some(res) = res.as_ref() else { return };
-    let can_add_more = sticky::can_add(wins.len());
+    let can_add_more = sticky::can_add(sheet_total(wins));
     let w = &mut wins[i];
     let k = w.scale;
     let m = w.margins();
@@ -1160,7 +1546,12 @@ fn draw(s: &mut State, i: usize) {
         None if w.confirm_delete => text(*lang, Key::StickyDeleteAgain).to_owned(),
         None => sticky::footer_label(*lang, &w.text, updated, today),
     };
-    let peek_on = prefs.cat_peek && peek.as_deref() == Some(w.id.as_str());
+    // The slide: the cat shows only on a note that is all the way out.
+    let slide_t = w.slide.value(now);
+    w.slide_at = slide_t;
+    let peek_on = prefs.cat_peek
+        && peek.as_deref().is_some_and(|id| w.has(id))
+        && (w.sticky.tuck.is_none() || slide_t >= 1.0);
     let cat_mood = win_mood(w, unix_now());
     if peek_on {
         w.mood = cat_mood;
@@ -1180,6 +1571,8 @@ fn draw(s: &mut State, i: usize) {
             (p * std::f32::consts::PI).sin()
         })
         .unwrap_or(0.0);
+    // A note a dragged one would stack on keeps the frame lit.
+    let highlight = if w.targeted { 1.0 } else { highlight };
     let title = checklist::title_of(&w.text);
     let unix = unix_now();
     let chip = w.sticky.remind_at.map(|at| {
@@ -1190,7 +1583,26 @@ fn draw(s: &mut State, i: usize) {
     });
     let dx = w
         .wiggle
-        .map_or(0.0, |t| paint::wiggle_dx(elapsed_ms(t, now)));
+        .map_or(0.0, |t| paint::wiggle_dx(elapsed_ms(t, now)))
+        + w.shift(now);
+    // A stack: "2 / 5", and the next two sheets' paper peeking out underneath.
+    let stack = w.stack.as_ref().map(|st| {
+        let len = st.ids.len();
+        let accent = theme::current().accent;
+        let edges = (1..=2usize.min(len.saturating_sub(1)))
+            .filter_map(|k| w.sheets.get((st.pos + k) % len))
+            .map(|sh| sticky::tones(sh.sticky.paper, &island, accent).fill)
+            .collect();
+        paint::StackScene {
+            label: stack::counter_label(st.pos, len),
+            edges,
+        }
+    });
+    let tuck_scene = w.sticky.tuck.map(|edge| paint::TuckScene {
+        edge,
+        t: slide_t,
+        overdue: w.any_overdue(unix),
+    });
     let scene = Scene {
         w: nw,
         h: nh,
@@ -1239,6 +1651,9 @@ fn draw(s: &mut State, i: usize) {
         peek: peek_on.then(|| mood::expr(cat_mood)),
         cat: paint::peek_look(*coat),
         frame_accent: tones.accent,
+        stack,
+        tuck: tuck_scene,
+        cue: w.cue,
     };
     let alpha = alpha_u8(w, now);
     if let Some(canvas) = &w.canvas
@@ -1342,7 +1757,7 @@ unsafe extern "system" fn wnd_proc(
             // disabled one (the note cap) it is the plain context menu.
             let on_plus = with(|s| {
                 let i = idx_of(s, hwnd)?;
-                Some(opens_templates(target_at(&s.wins[i], pt.x, pt.y), s.wins.len()))
+                Some(opens_templates(target_at(&s.wins[i], pt.x, pt.y), sheet_total(&s.wins)))
             })
             .flatten()
             .unwrap_or(false);
@@ -1354,15 +1769,9 @@ unsafe extern "system" fn wnd_proc(
             return LRESULT(0);
         }
         WM_MOUSEWHEEL => {
-            let delta = ((wparam.0 >> 16) & 0xFFFF) as i16 as f32 / 120.0;
-            let _ = with(|s| {
-                if let Some(i) = idx_of(s, hwnd) {
-                    let line = s.wins[i].sticky.text_size.line();
-                    s.wins[i].scroll -= delta * 3.0 * line;
-                    s.wins[i].dirty = true;
-                    draw(s, i);
-                }
-            });
+            let raw = ((wparam.0 >> 16) & 0xFFFF) as i16 as i32;
+            // The message carries the pointer in screen coordinates.
+            mouse_wheel(hwnd, lo(lparam), hi(lparam), raw);
             return LRESULT(0);
         }
         WM_TIMER if wparam.0 == TIMER_WIDGET_CARET => {
@@ -1430,10 +1839,12 @@ fn mouse_activate(hwnd: HWND) -> LRESULT {
     let alt = alt_down();
     let text = with(|s| {
         let i = idx_of(s, hwnd)?;
-        Some(matches!(
-            target_at(&s.wins[i], pt.x, pt.y),
-            Target::Body | Target::Footer
-        ))
+        let w = &s.wins[i];
+        // A press on a tab moves the note; it takes no keyboard.
+        Some(
+            !w.tab_showing(Instant::now())
+                && matches!(target_at(w, pt.x, pt.y), Target::Body | Target::Footer),
+        )
     })
     .flatten()
     .unwrap_or(false);
@@ -1448,15 +1859,17 @@ fn buttons_shown(w: &Win, now: Instant) -> bool {
 
 /// What is under a point of the desktop (px) on this note.
 fn target_at(w: &Win, sx: i32, sy: i32) -> Target {
-    // A leaning note is hit through the inverse rotation.
+    let now = Instant::now();
+    // A leaning note is hit through the inverse rotation; a tucked one is
+    // drawn off its edge by the slide.
     let (x, y) = art::unrotate(
-        (sx - w.note.x) as f32 / w.scale,
+        (sx - w.note.x) as f32 / w.scale - w.shift(now),
         (sy - w.note.y) as f32 / w.scale,
         w.view.w,
         shown_h(w.view.h, w.sticky.rolled),
         w.lean(),
     );
-    paint::target(
+    paint::target_in(
         x,
         y,
         w.view.w,
@@ -1464,7 +1877,8 @@ fn target_at(w: &Win, sx: i32, sy: i32) -> Target {
         w.sticky.rolled,
         w.body.as_ref(),
         w.scroll,
-        buttons_shown(w, Instant::now()),
+        buttons_shown(w, now),
+        w.stack.is_some(),
     )
 }
 
@@ -1477,7 +1891,7 @@ fn alt_down() -> bool {
 fn client_to_dip(w: &Win, x: i32, y: i32) -> (f32, f32) {
     let m = w.margins();
     art::unrotate(
-        x as f32 / w.scale - m.0,
+        x as f32 / w.scale - m.0 - w.shift(Instant::now()),
         y as f32 / w.scale - m.1,
         w.view.w,
         shown_h(w.view.h, w.sticky.rolled),
@@ -1499,6 +1913,9 @@ fn set_cursor(hwnd: HWND) -> bool {
             } else {
                 IDC_SIZENWSE
             });
+        }
+        if w.tab_showing(Instant::now()) {
+            return Some(if s.prefs.lock { IDC_ARROW } else { IDC_SIZEALL });
         }
         match target_at(w, pt.x, pt.y) {
             Target::Body => Some(IDC_IBEAM),
@@ -1540,11 +1957,12 @@ fn screen_point(hwnd: HWND, x: i32, y: i32) -> POINT {
 fn mouse_move(hwnd: HWND, x: i32, y: i32) {
     let pt = screen_point(hwnd, x, y);
     let alt = alt_down();
+    let shift = shift_down();
     let follow = with(|s| {
         let i = idx_of(s, hwnd)?;
         let now = Instant::now();
         let animate = s.animate;
-        let lang_cap = !sticky::can_add(s.wins.len());
+        let lang_cap = !sticky::can_add(sheet_total(&s.wins));
         if !s.wins[i].tracking {
             let mut track = TRACKMOUSEEVENT {
                 cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
@@ -1568,7 +1986,7 @@ fn mouse_move(hwnd: HWND, x: i32, y: i32) {
             start_move(s, i, s.wins[i].press_at);
         }
         if s.wins[i].drag.is_some() {
-            drag_move(s, i, (pt.x, pt.y), alt);
+            drag_move(s, i, (pt.x, pt.y), alt, shift);
             return None;
         }
         let hot_target = target_at(&s.wins[i], pt.x, pt.y);
@@ -1617,6 +2035,11 @@ fn mouse_move(hwnd: HWND, x: i32, y: i32) {
         if entered {
             settle_alpha(s, i);
         }
+        // The pointer on a tucked note keeps it out (and brings it out).
+        tuck_settle(s, i);
+        if s.wins[i].dirty {
+            changed = true;
+        }
         let w = &mut s.wins[i];
         if w.selecting && w.edit.is_some() {
             let (dx, dy) = client_to_dip(w, x, y);
@@ -1656,6 +2079,8 @@ fn mouse_leave(hwnd: HWND) {
         }
         s.wins[i].dirty = true;
         settle_alpha(s, i);
+        // A tucked note that is out waits the grace, then slides back in.
+        tuck_settle(s, i);
         draw(s, i);
         Some(())
     });
@@ -1678,6 +2103,7 @@ fn lower(hwnd: HWND) {
         s.wins[i].wiggle = None;
         s.wins[i].dirty = true;
         settle_alpha(s, i);
+        tuck_settle(s, i);
         Some(i)
     })
     .flatten();
@@ -1711,6 +2137,15 @@ fn left_down(hwnd: HWND, x: i32, y: i32) {
         let t = target_at(&s.wins[i], pt.x, pt.y);
         // Any press on the note is the next other action: the footer follows.
         disarm_delete(s, i);
+        // A press on the tab of a tucked note: it comes out at once and moves.
+        if s.wins[i].tab_showing(Instant::now()) && t != Target::Outside {
+            if lock {
+                return Some(Down::Nothing);
+            }
+            slide_out_now(&mut s.wins[i]);
+            start_move(s, i, (pt.x, pt.y));
+            return Some(Down::Capture);
+        }
         // Alt + press anywhere on the note moves it.
         if alt_down() && t != Target::Outside {
             if lock {
@@ -1785,6 +2220,9 @@ fn begin_drag(s: &mut State, i: usize, kind: DragKind, from: (i32, i32)) {
         },
         moved: false,
         lit: Vec::new(),
+        last: from,
+        cue: None,
+        target: None,
     });
     touch(s, i);
     settle_alpha(s, i);
@@ -1803,7 +2241,7 @@ fn left_up(hwnd: HWND, x: i32, y: i32) {
         w.selecting = false;
         let pressed = w.pressed.take();
         if w.drag.is_some() {
-            end_drag(s, i);
+            finish_drag(s, i, true);
             return None;
         }
         let over = match target_at(&s.wins[i], pt.x, pt.y) {
@@ -1925,7 +2363,7 @@ fn button(hwnd: HWND, b: Btn) {
         Btn::Plus => {
             let _ = with(|s| {
                 let i = idx_of(s, hwnd)?;
-                if sticky::can_add(s.wins.len()) {
+                if sticky::can_add(sheet_total(&s.wins)) {
                     let id = s.wins[i].id.clone();
                     push(
                         s,
@@ -1983,7 +2421,51 @@ fn button(hwnd: HWND, b: Btn) {
                 Some(())
             });
         }
+        Btn::Prev => flip_by(hwnd, -1),
+        Btn::Next => flip_by(hwnd, 1),
     }
+}
+
+/// The wheel at desktop point (`sx`, `sy`): over a stack's strip it flips one
+/// sheet per notch (down is next, up is previous, wrapping), over the text it
+/// scrolls the text.
+fn mouse_wheel(hwnd: HWND, sx: i32, sy: i32, raw: i32) {
+    let flips = with(|s| {
+        let i = idx_of(s, hwnd)?;
+        let w = &mut s.wins[i];
+        let on_strip = w.stack.is_some()
+            && matches!(target_at(w, sx, sy), Target::Header | Target::Button(_));
+        if on_strip {
+            let (flips, rest) = stack::wheel_flips(w.wheel, raw);
+            w.wheel = rest;
+            return Some(flips);
+        }
+        w.wheel = 0;
+        let line = w.sticky.text_size.line();
+        w.scroll -= raw as f32 / 120.0 * 3.0 * line;
+        w.dirty = true;
+        draw(s, i);
+        Some(0)
+    })
+    .flatten()
+    .unwrap_or(0);
+    if flips != 0 {
+        flip_by(hwnd, flips);
+    }
+}
+
+/// The stack of `hwnd` shows the sheet `delta` places on (wrapping). The
+/// editing ends first; the window is kept and retargeted.
+fn flip_by(hwnd: HWND, delta: i32) {
+    end_editing(hwnd);
+    let _ = with(|s| {
+        let i = idx_of(s, hwnd)?;
+        let st = s.wins[i].stack.as_ref()?;
+        let to = stack::flip_pos(st.pos, st.ids.len(), delta);
+        show_sheet(s, i, to);
+        Some(())
+    });
+    flush_dirty();
 }
 
 fn toggle_rolled(hwnd: HWND) {
@@ -2289,6 +2771,12 @@ fn open_popover(hwnd: HWND) {
 /// unless the user left for another app (`away`): then the editing ends, as
 /// it does when the note itself loses the activation.
 pub(crate) fn pop_closed(note: HWND, away: bool) {
+    // A tucked note the popover held out lets go of it.
+    let _ = with(|s| {
+        let i = idx_of(s, note)?;
+        tuck_settle(s, i);
+        Some(())
+    });
     if away {
         unsafe {
             let _ = PostMessageW(Some(note), WM_END_EDIT, WPARAM(0), LPARAM(0));
@@ -2319,23 +2807,60 @@ const CMD_PIN: usize = 20;
 const CMD_ROLL: usize = 21;
 const CMD_UNSTICK: usize = 22;
 const CMD_DELETE: usize = 23;
+/// Take the sheet out of its stack, and tuck to the edge or bring out (right
+/// after "Roll up").
+const CMD_UNSTACK: usize = 24;
+const CMD_TUCK: usize = 25;
+
+/// What the right-click menu needs to know about a note.
+struct MenuInfo {
+    paper: Paper,
+    pinned: bool,
+    rolled: bool,
+    confirm: bool,
+    lang: Lang,
+    has_remind: bool,
+    stamp: Stamp,
+    in_stack: bool,
+    tucked: bool,
+    /// The edge "Selipkan ke tepi" would use; `None` greys the item.
+    tuck_edge: Option<Edge>,
+    lock: bool,
+}
 
 fn context_menu(hwnd: HWND, at: POINT) {
     let data = with(|s| {
         let i = idx_of(s, hwnd)?;
         let w = &s.wins[i];
-        Some((
-            w.sticky.paper,
-            w.sticky.pinned,
-            w.sticky.rolled,
-            w.confirm_delete,
-            s.lang,
-            w.sticky.remind_at.is_some(),
-            w.sticky.stamp,
-        ))
+        Some(MenuInfo {
+            paper: w.sticky.paper,
+            pinned: w.sticky.pinned,
+            rolled: w.sticky.rolled,
+            confirm: w.confirm_delete,
+            lang: s.lang,
+            has_remind: w.sticky.remind_at.is_some(),
+            stamp: w.sticky.stamp,
+            in_stack: w.stack.is_some(),
+            tucked: w.sticky.tuck.is_some(),
+            tuck_edge: menu_edge_of(s, i),
+            lock: s.prefs.lock,
+        })
     })
     .flatten();
-    let Some((paper, pinned, rolled, confirm, lang, has_remind, stamp)) = data else {
+    let Some(MenuInfo {
+        paper,
+        pinned,
+        rolled,
+        confirm,
+        lang,
+        has_remind,
+        stamp,
+        in_stack,
+        tucked,
+        tuck_edge,
+        lock,
+    }) = data
+    else {
         return;
     };
     let cmd = unsafe {
@@ -2404,6 +2929,19 @@ fn context_menu(hwnd: HWND, at: POINT) {
             CMD_ROLL,
             &h(if rolled { Key::StickyUnroll } else { Key::StickyRoll }),
         );
+        if in_stack {
+            let _ = AppendMenuW(menu, MF_STRING, CMD_UNSTACK, &h(Key::StickyTakeOut));
+        }
+        // Tuck to the nearer outer edge (greyed with Kunci posisi, and when
+        // neither side is an outer edge), or bring the tucked note out.
+        let (tuck_label, tuck_flags) = if tucked {
+            (Key::StickyUntuck, MF_STRING)
+        } else if lock || tuck_edge.is_none() {
+            (Key::StickyTuck, MF_STRING | MF_GRAYED)
+        } else {
+            (Key::StickyTuck, MF_STRING)
+        };
+        let _ = AppendMenuW(menu, tuck_flags, CMD_TUCK, &h(tuck_label));
         let _ = AppendMenuW(menu, MF_STRING, CMD_UNSTICK, &h(Key::StickyOffDesktopTip));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
         let _ = AppendMenuW(
@@ -2457,6 +2995,27 @@ fn context_menu(hwnd: HWND, at: POINT) {
         CMD_REMIND_CLEAR => set_remind(hwnd, None),
         CMD_PIN => set_pinned(hwnd, !pinned),
         CMD_ROLL => toggle_rolled(hwnd),
+        CMD_UNSTACK => {
+            let _ = with(|s| {
+                let i = idx_of(s, hwnd)?;
+                let id = s.wins[i].id.clone();
+                push(s, WidgetEvent::StackOut { id });
+                Some(())
+            });
+        }
+        CMD_TUCK => {
+            let _ = with(|s| {
+                let i = idx_of(s, hwnd)?;
+                let edge = if s.wins[i].sticky.tuck.is_some() {
+                    None
+                } else {
+                    Some(menu_edge_of(s, i)?)
+                };
+                set_tuck(s, i, edge);
+                Some(())
+            });
+            flush_dirty();
+        }
         CMD_UNSTICK => {
             let _ = with(|s| {
                 let i = idx_of(s, hwnd)?;
@@ -2484,9 +3043,83 @@ fn context_menu(hwnd: HWND, at: POINT) {
     }
 }
 
+// ------------------------------------------------------------------ tucking
+
+/// Which sides of display `di` have another display's work area against them
+/// across the physical-px span `span` (an inner edge: the note crosses to the
+/// next monitor there and never tucks).
+fn adjoin_at(s: &State, di: usize, span: (i32, i32)) -> tuck::Adjoin {
+    let Some(d) = s.displays.get(di) else {
+        return tuck::Adjoin::default();
+    };
+    let others: Vec<Rect> = s.displays.iter().map(|o| o.monitor.work).collect();
+    tuck::adjoin(&d.monitor.work, &others, span)
+}
+
+/// The edge "Selipkan ke tepi" tucks note `i` to: the nearer outer one to its
+/// centre on its display; `None` when neither side is an outer edge.
+fn menu_edge_of(s: &State, i: usize) -> Option<Edge> {
+    let w = &s.wins[i];
+    let d = s.displays.get(w.display)?;
+    let area = place::area_dip(d);
+    let shown = DipRect {
+        h: shown_h(w.view.h, w.sticky.rolled),
+        ..w.view
+    };
+    let adj = adjoin_at(s, w.display, (w.note.y, w.note.bottom()));
+    tuck::menu_edge(&shown, &area, adj)
+}
+
+/// Note `i` is tucked to `edge` (its window stays at the out rect, flush with
+/// the edge; it is out until the pointer is away and the grace is over) or
+/// brought out (`None`, where it is). Tells the owner.
+fn set_tuck(s: &mut State, i: usize, edge: Option<Edge>) {
+    let w = &mut s.wins[i];
+    match edge {
+        Some(e) => {
+            let Some(d) = s.displays.get(w.display) else {
+                return;
+            };
+            let shown = DipRect {
+                h: shown_h(w.view.h, w.sticky.rolled),
+                ..w.view
+            };
+            let out = tuck::out_rect(&shown, e, &place::area_dip(d));
+            w.sticky.rect.x = out.x;
+            w.sticky.rect.y = out.y;
+            w.sticky.monitor = place::path_to_save(d);
+            w.sticky.tuck = Some(e);
+            // It stays out until the pointer is away: nothing keeps it now.
+            w.pointer_in = false;
+            w.dirty = true;
+            let (id, monitor, rect) = (w.id.clone(), w.sticky.monitor.clone(), w.sticky.rect);
+            push(s, WidgetEvent::Placed { id: id.clone(), monitor, rect });
+            push(s, WidgetEvent::Tuck { id, edge });
+            relayout(s, i);
+        }
+        None => {
+            w.sticky.tuck = None;
+            slide_out_now(w);
+            let id = w.id.clone();
+            push(s, WidgetEvent::Tuck { id, edge: None });
+        }
+    }
+    touch(s, i);
+    tuck_settle(s, i);
+}
+
 // ------------------------------------------------------------------ dragging
 
+/// The drag ended because the window lost the mouse (not a release): nothing
+/// stacks.
 fn end_drag(s: &mut State, i: usize) {
+    finish_drag(s, i, false);
+}
+
+/// The drag of note `i` ends. A `release` of a Move with Shift still down over
+/// another unit stacks on it; one pressed against an outer edge tucks; any
+/// other tucks no more (a tucked note dragged away comes out where dropped).
+fn finish_drag(s: &mut State, i: usize, release: bool) {
     let Some(d) = s.wins[i].drag.take() else {
         return;
     };
@@ -2497,26 +3130,66 @@ fn end_drag(s: &mut State, i: usize) {
             w.dirty = true;
         }
     }
+    for w in &mut s.wins {
+        if w.targeted {
+            w.targeted = false;
+            w.dirty = true;
+        }
+    }
+    let stack_on = d
+        .target
+        .filter(|_| release && d.moved && d.kind == DragKind::Move && shift_down())
+        .and_then(|h| s.wins.iter().position(|w| w.hwnd == h))
+        .filter(|j| *j != i && s.wins[*j].sticky.tuck.is_none());
     let w = &mut s.wins[i];
     w.guides.clear();
+    w.cue = None;
     w.dirty = true;
-    if d.moved {
+    if let Some(j) = stack_on {
+        let (dragged, target) = (w.unit_ids(), s.wins[j].unit_ids());
+        push(s, WidgetEvent::Stack { dragged, target });
+    } else if d.moved {
         let monitor = s
             .displays
             .get(w.display)
             .map(place::path_to_save)
             .unwrap_or_default();
         w.sticky.monitor = monitor.clone();
+        // Only a Move changes the tuck: pressed against an outer edge it
+        // tucks, anywhere else it is out in the open.
+        let tuck_to = if d.kind == DragKind::Move { d.cue } else { w.sticky.tuck };
+        let changed = tuck_to != w.sticky.tuck;
+        if let (Some(edge), Some(disp)) = (tuck_to, s.displays.get(w.display)) {
+            // Flush with the edge, exactly.
+            let shown = DipRect {
+                h: shown_h(w.view.h, w.sticky.rolled),
+                ..w.view
+            };
+            let out = tuck::out_rect(&shown, edge, &place::area_dip(disp));
+            w.sticky.rect.x = out.x;
+            w.sticky.rect.y = out.y;
+        }
+        w.sticky.tuck = tuck_to;
         let (id, rect) = (w.id.clone(), w.sticky.rect);
         push(
             s,
             WidgetEvent::Placed {
-                id,
+                id: id.clone(),
                 monitor,
                 rect,
             },
         );
+        if changed {
+            push(s, WidgetEvent::Tuck { id, edge: tuck_to });
+        }
+        if tuck_to.is_some() {
+            relayout(s, i);
+        }
     }
+    // The pointer is where the drag left it: a note it is over stays out.
+    let w = &mut s.wins[i];
+    w.pointer_in = target_at(w, d.last.0, d.last.1) != Target::Outside;
+    tuck_settle(s, i);
     flush_dirty_in(s);
 }
 
@@ -2560,9 +3233,10 @@ fn resized(
 }
 
 /// The pointer moved at `cursor` (px) while a note is dragged or resized.
-fn drag_move(s: &mut State, i: usize, cursor: (i32, i32), alt: bool) {
+fn drag_move(s: &mut State, i: usize, cursor: (i32, i32), alt: bool, shift: bool) {
     let (kind, start_cursor, start_note, start_dip, moved) = {
-        let d = s.wins[i].drag.as_ref().expect("a drag");
+        let d = s.wins[i].drag.as_mut().expect("a drag");
+        d.last = cursor;
         (d.kind, d.cursor, d.note, d.dip, d.moved)
     };
     let (dx, dy) = (cursor.0 - start_cursor.0, cursor.1 - start_cursor.1);
@@ -2598,7 +3272,8 @@ fn drag_move(s: &mut State, i: usize, cursor: (i32, i32), alt: bool) {
     let mut idxs: Vec<usize> = Vec::new();
     let mut others: Vec<DipRect> = Vec::new();
     for (j, w) in s.wins.iter().enumerate() {
-        if j != i && w.display == di {
+        // A tucked note is only a tab: nothing to line up with.
+        if j != i && w.display == di && w.sticky.tuck.is_none() {
             idxs.push(j);
             others.push(DipRect {
                 h: shown_h(w.view.h, w.sticky.rolled),
@@ -2616,7 +3291,11 @@ fn drag_move(s: &mut State, i: usize, cursor: (i32, i32), alt: bool) {
             alt,
         ),
         DragKind::Resize => {
-            let snapped = resized(&start_dip, (rel.w, rel.h), &area, &others, alt);
+            let mut snapped = resized(&start_dip, (rel.w, rel.h), &area, &others, alt);
+            // A stack is never narrower than its counter and arrows need.
+            if s.wins[i].stack.is_some() && snapped.rect.w < stack::MIN_W {
+                snapped.rect.w = stack::MIN_W.min((area.right() - snapped.rect.x).max(0.0));
+            }
             let view = snapped.rect;
             (snapped, view)
         }
@@ -2651,6 +3330,9 @@ fn drag_move(s: &mut State, i: usize, cursor: (i32, i32), alt: bool) {
         w.canvas = None;
         w.body_key = None;
         w.dirty = true;
+    }
+    if kind == DragKind::Move {
+        drag_cues(s, i, cursor, shift, (di, &rect, &area, &area_px, scale));
     }
     // Guide lines, in this note and in the ones it lines up with.
     let mut mine: Vec<GuideLine> = Vec::new();
@@ -2708,6 +3390,67 @@ fn drag_move(s: &mut State, i: usize, cursor: (i32, i32), alt: bool) {
     flush_dirty_in(s);
 }
 
+/// What a release here would do to a Move drag of note `i`: with Shift held and
+/// the pointer inside another unit's shown rect (tucked ones are left out) it
+/// would stack on it, and that note is lit; else, pressed against an outer edge
+/// it would tuck, and the dragged note shows an accent bar on that edge.
+/// `on` is the display, the dragged rect (dip), the placement area (dip and
+/// px) and the scale.
+fn drag_cues(
+    s: &mut State,
+    i: usize,
+    cursor: (i32, i32),
+    shift: bool,
+    on: (usize, &DipRect, &DipRect, &Rect, f32),
+) {
+    let (di, rect, area, area_px, scale) = on;
+    let target = if shift {
+        s.wins
+            .iter()
+            .enumerate()
+            .find(|(j, w)| {
+                *j != i
+                    && w.shown
+                    && !w.away
+                    && w.sticky.tuck.is_none()
+                    && !w.note.is_empty()
+                    && w.note.contains(cursor)
+            })
+            .map(|(_, w)| w.hwnd)
+    } else {
+        None
+    };
+    let cue = if target.is_none() {
+        let span = (
+            area_px.y + (rect.y * scale).round() as i32,
+            area_px.y + (rect.bottom() * scale).round() as i32,
+        );
+        let adj = adjoin_at(s, di, span);
+        let at = place::to_dip(&Rect::new(cursor.0, cursor.1, 0, 0), area_px, scale);
+        tuck::press_edge(rect, area, (at.x, at.y), adj)
+    } else {
+        None
+    };
+    let before = s.wins[i].drag.as_ref().and_then(|d| d.target);
+    if before != target {
+        for w in &mut s.wins {
+            let on = Some(w.hwnd) == target;
+            if w.targeted != on {
+                w.targeted = on;
+                w.dirty = true;
+            }
+        }
+    }
+    if let Some(d) = s.wins[i].drag.as_mut() {
+        d.target = target;
+        d.cue = cue;
+    }
+    if s.wins[i].cue != cue {
+        s.wins[i].cue = cue;
+        s.wins[i].dirty = true;
+    }
+}
+
 // ------------------------------------------------------------------ keyboard
 
 fn blink_ms() -> Option<u32> {
@@ -2760,6 +3503,8 @@ fn begin_editing(hwnd: HWND, at: Option<usize>) {
             refresh_peek(s);
         }
         settle_alpha(s, i);
+        // A tucked note that gets the keyboard slides out and stays out.
+        tuck_settle(s, i);
         Some(())
     });
     lower(hwnd);
@@ -2787,6 +3532,8 @@ fn end_editing(hwnd: HWND) {
         w.selecting = false;
         w.dirty = true;
         settle_alpha(s, i);
+        // Nothing keeps a tucked note out now: the grace starts.
+        tuck_settle(s, i);
         Some(e)
     })
     .flatten();
