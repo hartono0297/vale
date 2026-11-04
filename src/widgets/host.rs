@@ -533,12 +533,14 @@ thread_local! {
     static TEST_SHIFT: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
 }
 
-/// What the cat looks like on note `w` at `unix`.
+/// What the cat looks like on note `w` at `unix`. On a stack the cat may sit
+/// on a hidden sheet, so the touch that counts is the latest of any sheet.
 fn win_mood(w: &Win, unix: i64) -> Mood {
+    let touched = w.stickies().iter().map(|(_, s)| s.touched).max().unwrap_or(0);
     mood::mood(
         w.any_overdue(unix),
         checklist::all_done(&w.text),
-        w.sticky.touched,
+        touched,
         unix,
         w.pointer_in,
     )
@@ -1990,7 +1992,7 @@ fn mouse_move(hwnd: HWND, x: i32, y: i32) {
             return None;
         }
         let hot_target = target_at(&s.wins[i], pt.x, pt.y);
-        let cat_here = s.prefs.cat_peek && s.peek.as_deref() == Some(s.wins[i].id.as_str());
+        let cat_here = s.prefs.cat_peek && s.peek.as_deref().is_some_and(|id| s.wins[i].has(id));
         let w = &mut s.wins[i];
         let hot = match hot_target {
             Target::Button(b) => Some(b),
@@ -2433,6 +2435,11 @@ fn mouse_wheel(hwnd: HWND, sx: i32, sy: i32, raw: i32) {
     let flips = with(|s| {
         let i = idx_of(s, hwnd)?;
         let w = &mut s.wins[i];
+        // A tucked stack shows only its tab: the wheel there flips nothing.
+        if w.tab_showing(Instant::now()) {
+            w.wheel = 0;
+            return Some(0);
+        }
         let on_strip = w.stack.is_some()
             && matches!(target_at(w, sx, sy), Target::Header | Target::Button(_));
         if on_strip {
@@ -4801,7 +4808,7 @@ mod tests {
 
     #[test]
     fn a_drag_never_tucks_on_an_inner_edge() {
-        TEST_SHIFT.with(|c| c.set(Some(false)));
+        let _shift = hold_shift(false);
         // B sits against A's right edge.
         let displays = vec![display("A", 0, true, 96), display("B", 1920, false, 96)];
         let notes = vec![note("n1", DipRect::new(1300.0, 200.0, 240.0, 208.0))];

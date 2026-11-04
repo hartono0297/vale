@@ -175,9 +175,30 @@ pub fn propagate(notes: &[Note], id: &str) -> Edits {
     out
 }
 
+/// A stack id for a new stack made on note `base`: `stk-` and its id, with a
+/// number added while a sticky note still carries that id (the sheets left
+/// behind by a take-out or an unstick keep the old stack's id, and a new stack
+/// with the same id would swallow them).
+fn fresh_id(notes: &[Note], base: &str) -> String {
+    let used = |id: &str| {
+        notes
+            .iter()
+            .filter_map(|n| n.sticky.as_ref())
+            .any(|s| s.stack.as_deref() == Some(id))
+    };
+    let first = format!("{ID_PREFIX}{base}");
+    let mut id = first.clone();
+    let mut k = 2;
+    while used(&id) {
+        id = format!("{first}-{k}");
+        k += 1;
+    }
+    id
+}
+
 /// The dragged unit (the unit holding `dragged[0]`) dropped on the target unit
 /// (holding `target[0]`): one stack. Its id is the target's when it has one,
-/// else `stk-` and the target's note id. The dragged sheets go first, in their
+/// else `stk-` and the target's note id (numbered when that id is taken). The dragged sheets go first, in their
 /// own order, then the target's; the sheet shown is the dragged unit's. Every
 /// sheet takes the target's rect, monitor, pin, roll and tuck, and the width is
 /// at least `MIN_W`. Nothing when either is missing or they are one unit.
@@ -192,7 +213,7 @@ pub fn join(notes: &[Note], dragged: &[String], target: &[String]) -> Edits {
     }
     let id = t
         .stack
-        .map_or_else(|| format!("{ID_PREFIX}{}", t.sheets[0].id), str::to_owned);
+        .map_or_else(|| fresh_id(notes, &t.sheets[0].id), str::to_owned);
     let base = sticky_of(t.sheets[t.top()]).clone();
     let mut rect = base.rect;
     rect.w = rect.w.max(MIN_W);
@@ -555,6 +576,28 @@ mod tests {
         // Their own looks stay.
         assert_eq!(u.sheets[0].sticky.as_ref().unwrap().paper, Paper::Plum);
         assert_eq!(u.sheets[1].sticky.as_ref().unwrap().paper, Paper::Sage);
+    }
+
+    #[test]
+    fn a_stack_made_on_a_note_taken_out_of_one_gets_a_fresh_id() {
+        let mut notes = vec![plain("a", 50.0), plain("x", 500.0), plain("b", 900.0), plain("c", 1300.0)];
+        let e = join(&notes, &["a".into()], &["x".into()]);
+        apply_edits(&mut notes, e);
+        let e = join(&notes, &["b".into()], &["x".into()]);
+        apply_edits(&mut notes, e);
+        let e = take_out(&notes, "x", &AREA);
+        apply_edits(&mut notes, e);
+        let e = join(&notes, &["c".into()], &["x".into()]);
+        apply_edits(&mut notes, e);
+        let us = units(&notes);
+        assert_eq!(us.len(), 2, "the old stack and the new one stay apart");
+        let old = us.iter().find(|u| u.has("a")).unwrap();
+        let new = us.iter().find(|u| u.has("c")).unwrap();
+        assert_eq!(ids(old).len(), 2);
+        assert!(old.has("b") && !old.has("x"));
+        assert_eq!(ids(new), ["c", "x"]);
+        assert_ne!(old.key(), new.key());
+        assert!(normalise(&notes, 0, false).is_empty(), "both stacks are consistent");
     }
 
     #[test]
