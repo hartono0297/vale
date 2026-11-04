@@ -1335,6 +1335,7 @@ mod tests {
                 fullscreen: crate::widgets::prefs::FullscreenRule::Keep,
                 lock: true,
                 cat_peek: false,
+                tilt: true,
             },
         };
         assert_eq!(parse(&serde_json::to_string(&c).unwrap()), c);

@@ -17,10 +17,10 @@ use windows::Win32::Graphics::Direct2D::{
     D2D1_ROUNDED_RECT, ID2D1RenderTarget,
 };
 use windows::Win32::Graphics::DirectWrite::{
-    DWRITE_FONT_WEIGHT, DWRITE_HIT_TEST_METRICS, DWRITE_TEXT_METRICS, DWRITE_TEXT_RANGE,
-    IDWriteTextFormat, IDWriteTextLayout,
+    DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT, DWRITE_HIT_TEST_METRICS, DWRITE_TEXT_METRICS,
+    DWRITE_TEXT_RANGE, IDWriteTextFormat, IDWriteTextLayout,
 };
-use windows::core::{BOOL, Interface, Result};
+use windows::core::{BOOL, HSTRING, Interface, Result};
 use windows_numerics::{Matrix3x2, Vector2};
 
 use crate::arrange_overlay::Canvas;
@@ -28,16 +28,22 @@ use crate::config::UiFont;
 use crate::shot_edit::gfx::{Gfx, color};
 use crate::theme::{CatAccessory, CatColor};
 use crate::ui::cat_style::CatLook;
-use crate::ui::fonts::{Face, Role};
+use crate::i18n::Lang;
+use crate::ui::fonts::{self, Face, Role};
 use crate::ui::geometry::Rect;
 use crate::ui::icons::{Icon, IconSet};
 use crate::ui::robot::{Expr, Pose, RobotPainter};
+use crate::widgets::art::{self, Piece};
 use crate::widgets::checklist::{self, Line};
-use crate::widgets::sticky::{ROLLED_H, TextSize, Tones};
+use crate::widgets::sticky::{
+    Deco, NoteFont, Pattern, ROLLED_H, Stamp, TextSize, Tones, chip_tones, tangan_family,
+};
 
 // ------------------------------------------------------------------ geometry
 
-pub const HEADER_H: f32 = 28.0;
+/// The strip along the top: the date at rest, the buttons while the pointer
+/// is on the note. All of it moves the note.
+pub const HEADER_H: f32 = 36.0;
 pub const FOOTER_H: f32 = 24.0;
 pub const PAD_X: f32 = 12.0;
 pub const BTN: f32 = 22.0;
@@ -52,10 +58,24 @@ pub const SHADOW: f32 = 8.0;
 pub const CAT_ROOM: f32 = 30.0;
 /// The cat: its square, and how much of its 64-unit grid is above the note's
 /// top edge (the grid row of its eyes' lower edge).
-const CAT_SIZE: f32 = 44.0;
+pub const CAT_SIZE: f32 = 44.0;
 const CAT_VISIBLE_ROWS: f32 = 47.0;
 /// The accent frame the Settings gallery's highlight draws.
 const FRAME_W: f32 = 3.0;
+/// How long a reminder shakes its note, in ms, and how far it goes (dip).
+pub const WIGGLE_MS: f32 = 600.0;
+const WIGGLE_DIP: f32 = 4.0;
+
+/// The note's sideways shake `ms` after a reminder fired: a few quick swings
+/// that die away inside the window's margin. Zero before it starts and after
+/// `WIGGLE_MS`.
+pub fn wiggle_dx(ms: f32) -> f32 {
+    if !(0.0..WIGGLE_MS).contains(&ms) {
+        return 0.0;
+    }
+    let t = ms / WIGGLE_MS;
+    WIGGLE_DIP * (1.0 - t) * (1.0 - t) * (t * std::f32::consts::TAU * 4.0).sin()
+}
 
 /// The header's buttons, left to right.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -85,9 +105,8 @@ pub fn margins() -> (f32, f32, f32, f32) {
     (SHADOW, SHADOW + CAT_ROOM, SHADOW, SHADOW)
 }
 
-/// The window's size in dip for a note of `w` x `h`.
-pub fn window_dip(w: f32, h: f32) -> (f32, f32) {
-    let m = margins();
+/// The window's size in dip for a note of `w` x `h` with margin `m`.
+pub fn window_dip(w: f32, h: f32, m: (f32, f32, f32, f32)) -> (f32, f32) {
     (w + m.0 + m.2, h + m.1 + m.3)
 }
 
@@ -159,7 +178,10 @@ fn grown(r: Rect, by: f32) -> Rect {
 
 /// What a point (dip from the note's top-left) of a note `w` x `h` is on.
 /// `body` is the text layout (for the item boxes) and `scroll` how far it is
-/// scrolled.
+/// scrolled. `buttons_shown` is whether the header's buttons are visible: a
+/// hidden button takes no press, so the whole strip (full width, the pinned
+/// pin included) is `Header`.
+#[allow(clippy::too_many_arguments)]
 pub fn target(
     x: f32,
     y: f32,
@@ -168,15 +190,18 @@ pub fn target(
     rolled: bool,
     body: Option<&BodyLayout>,
     scroll: f32,
+    buttons_shown: bool,
 ) -> Target {
     let h = shown_h(h, rolled);
     if x < 0.0 || y < 0.0 || x >= w || y >= h {
         return Target::Outside;
     }
     if y < HEADER_H {
-        for b in Btn::ALL {
-            if inside(button_rect(b, w), x, y) {
-                return Target::Button(b);
+        if buttons_shown {
+            for b in Btn::ALL {
+                if inside(button_rect(b, w), x, y) {
+                    return Target::Button(b);
+                }
             }
         }
         return Target::Header;
@@ -220,11 +245,15 @@ pub fn box_rect(l: &BodyLine, area: Rect, scroll: f32) -> Rect {
 /// font (Vale's Font setting).
 pub struct Res {
     pub gfx: Rc<Gfx>,
-    icons: IconSet,
+    pub(super) icons: IconSet,
     robot: RobotPainter,
+    /// Vale's face (the Font setting).
     face: Face,
+    /// The faces of Tangan and Mono, made when a note first asks for one.
+    extra: RefCell<[Option<Face>; 2]>,
     ui: UiFont,
-    formats: RefCell<HashMap<(u32, u16), IDWriteTextFormat>>,
+    /// One format per (font, size, weight).
+    formats: RefCell<HashMap<(NoteFont, u32, u16), IDWriteTextFormat>>,
 }
 
 impl Res {
@@ -241,6 +270,7 @@ impl Res {
             icons,
             robot,
             face,
+            extra: RefCell::new([None, None]),
             ui,
             formats: RefCell::new(HashMap::new()),
         })
@@ -251,26 +281,65 @@ impl Res {
         if ui != self.ui {
             self.ui = ui;
             self.face = Face::for_role_in(&self.gfx.dwrite, Role::Text, ui);
+            // Mono and the Tangan fallback follow the UI font too.
+            *self.extra.borrow_mut() = [None, None];
             self.formats.borrow_mut().clear();
         }
     }
 
-    fn format(&self, size: f32, weight: u16) -> Result<IDWriteTextFormat> {
-        let key = (size.to_bits(), weight);
+    /// The face of Tangan or Mono: Ink Free, else Segoe Print, else Vale's
+    /// own face; the bundled DM Mono.
+    fn make_face(&self, font: NoteFont) -> Face {
+        let dwrite = &self.gfx.dwrite;
+        match font {
+            NoteFont::Vale => Face::for_role_in(dwrite, Role::Text, self.ui),
+            NoteFont::Mono => Face::for_role_in(dwrite, Role::Mono, self.ui),
+            NoteFont::Tangan => match tangan_family(|name| fonts::system_has(dwrite, name)) {
+                Some(family) => Face {
+                    family: HSTRING::from(family),
+                    collection: None,
+                    style: DWRITE_FONT_STYLE_NORMAL,
+                },
+                None => Face::for_role_in(dwrite, Role::Text, self.ui),
+            },
+        }
+    }
+
+    fn format(&self, font: NoteFont, size: f32, weight: u16) -> Result<IDWriteTextFormat> {
+        let key = (font, size.to_bits(), weight);
         if let Some(f) = self.formats.borrow().get(&key) {
             return Ok(f.clone());
         }
-        let f = self
-            .face
-            .format(&self.gfx.dwrite, DWRITE_FONT_WEIGHT(i32::from(weight)), size)?;
+        let w = DWRITE_FONT_WEIGHT(i32::from(weight));
+        let f = match font {
+            NoteFont::Vale => self.face.format(&self.gfx.dwrite, w, size)?,
+            other => {
+                let slot = usize::from(other == NoteFont::Mono);
+                let mut extra = self.extra.borrow_mut();
+                let face = extra[slot].get_or_insert_with(|| self.make_face(other));
+                face.format(&self.gfx.dwrite, w, size)?
+            }
+        };
         self.formats.borrow_mut().insert(key, f.clone());
         Ok(f)
     }
 
-    /// `text` wrapped at `width` dip, drawn at `size` dip.
+    /// `text` wrapped at `width` dip, drawn at `size` dip in Vale's face.
     pub fn layout(&self, text: &str, size: f32, weight: u16, width: f32) -> Result<IDWriteTextLayout> {
+        self.layout_in(NoteFont::Vale, text, size, weight, width)
+    }
+
+    /// `layout` in a note's own font.
+    pub fn layout_in(
+        &self,
+        font: NoteFont,
+        text: &str,
+        size: f32,
+        weight: u16,
+        width: f32,
+    ) -> Result<IDWriteTextLayout> {
         let wide: Vec<u16> = text.encode_utf16().collect();
-        let format = self.format(size, weight)?;
+        let format = self.format(font, size, weight)?;
         unsafe {
             self.gfx
                 .dwrite
@@ -303,8 +372,8 @@ pub struct BodyLayout {
     pub height: f32,
 }
 
-/// The text of a note laid out for a body `width` wide.
-pub fn build_body(res: &Res, text: &str, size: TextSize, width: f32) -> BodyLayout {
+/// The text of a note laid out for a body `width` wide, in the note's `font`.
+pub fn build_body(res: &Res, text: &str, font: NoteFont, size: TextSize, width: f32) -> BodyLayout {
     let units: Vec<u16> = text.encode_utf16().collect();
     let mut lines = Vec::new();
     let mut y = 0.0;
@@ -317,7 +386,7 @@ pub fn build_body(res: &Res, text: &str, size: TextSize, width: f32) -> BodyLayo
         };
         let x = if raw.is_item() { INDENT } else { 0.0 };
         let content = String::from_utf16_lossy(&units[raw.content_start()..raw.end]);
-        let layout = res.layout(&content, fs, weight, width - x).ok();
+        let layout = res.layout_in(font, &content, fs, weight, width - x).ok();
         let h = layout
             .as_ref()
             .and_then(|l| {
@@ -538,6 +607,16 @@ pub struct GuideLine {
     pub pos: f32,
 }
 
+/// How the cat above a note is drawn besides its face.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CatPose {
+    pub pose: Pose,
+    /// A small alarm clock beside it (an overdue reminder).
+    pub clock: bool,
+    /// A small "z" (asleep).
+    pub zzz: bool,
+}
+
 /// Everything one frame of a note shows.
 pub struct Scene<'a> {
     pub w: f32,
@@ -551,6 +630,8 @@ pub struct Scene<'a> {
     pub plus_enabled: bool,
     pub date: String,
     pub footer: String,
+    /// The body text size (the ruling's line pitch follows it).
+    pub text_size: TextSize,
     pub rolled_note: String,
     pub title: String,
     pub body: Option<&'a BodyLayout>,
@@ -559,6 +640,27 @@ pub struct Scene<'a> {
     pub selection: Option<(usize, usize)>,
     pub caret_on: bool,
     pub guides: &'a [GuideLine],
+    /// The window's margin round the note (left, top, right, bottom, dip):
+    /// `art::margins_for` for this note.
+    pub margins: (f32, f32, f32, f32),
+    /// The note's own font (the rolled title), pattern, decoration and stamp.
+    pub font: NoteFont,
+    pub pattern: Pattern,
+    pub deco: Deco,
+    pub stamp: Stamp,
+    pub lang: Lang,
+    /// How far the note leans (degrees clockwise): 0 while it has the keyboard.
+    pub tilt: f32,
+    /// Checklist progress, done and total, when the note has items.
+    pub progress: Option<(usize, usize)>,
+    /// The confetti of the moment, in window dip.
+    pub confetti: &'a [Piece],
+    /// The cat's pose, its alarm clock and its "z".
+    pub cat_pose: CatPose,
+    /// The whole note is shifted sideways by this (the reminder's shake), dip.
+    pub dx: f32,
+    /// The reminder chip: its text, and whether it is overdue.
+    pub chip: Option<(String, bool)>,
     /// The gallery's highlight frame, 0 to 1.
     pub highlight: f32,
     /// The cat above the note, and its coat.
@@ -587,11 +689,18 @@ pub fn draw(c: &Canvas, res: &Res, s: &Scene) {
         Ok(rt) => rt,
         Err(_) => return,
     };
-    let m = margins();
+    let m = s.margins;
     let h = shown_h(s.h, s.rolled);
-    let (ox, oy) = (m.0, m.1);
+    let (ox, oy) = (m.0 + s.dx, m.1);
+    // The note leans about its centre; the confetti does not.
+    let straight = Matrix3x2::scale(s.scale, s.scale);
+    let base = if s.tilt == 0.0 {
+        straight
+    } else {
+        art::tilt_transform(s.tilt, ox + s.w / 2.0, oy + h / 2.0, s.scale)
+    };
     unsafe {
-        rt.SetTransform(&Matrix3x2::scale(s.scale, s.scale));
+        rt.SetTransform(&base);
     }
     let set = |rgb: u32, a: f32| unsafe { brush.SetColor(&color(rgb, a)) };
     let t = &s.tones;
@@ -622,11 +731,32 @@ pub fn draw(c: &Canvas, res: &Res, s: &Scene) {
                 h: CAT_SIZE,
             },
             expr,
-            Pose::default(),
+            s.cat_pose.pose,
             1.0,
             s.cat,
         );
         unsafe { rt.PopAxisAlignedClip() };
+        // An overdue reminder: a small alarm clock beside the cat.
+        if s.cat_pose.clock {
+            let (cx, cy) = art::clock_centre(s.w);
+            art::draw_clock(&rt, brush, (ox + cx, oy + cy), t.fill, t.body, t.accent);
+        }
+        // Asleep: a small "z" over its head.
+        if s.cat_pose.zzz {
+            for (dx, dy, size, a) in [(CAT_SIZE - 10.0, -26.0, 10.0, 0.9), (CAT_SIZE - 2.0, -30.0, 7.5, 0.6)] {
+                if let Ok(l) = res.layout("z", size, 600, 14.0) {
+                    unsafe {
+                        brush.SetColor(&color(t.secondary, a));
+                        rt.DrawTextLayout(
+                            Vector2::new(x + dx, oy + dy),
+                            &l,
+                            brush,
+                            D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        );
+                    }
+                }
+            }
+        }
     }
 
     // A soft shadow, then the paper.
@@ -680,11 +810,11 @@ pub fn draw(c: &Canvas, res: &Res, s: &Scene) {
             None,
         );
     };
-    let line_text = |text: &str, x: f32, y: f32, w: f32, hh: f32, size: f32, weight: u16, rgb: u32, a: f32, right: bool| {
+    let line_text = |font: NoteFont, text: &str, x: f32, y: f32, w: f32, hh: f32, size: f32, weight: u16, rgb: u32, a: f32, right: bool| {
         if text.is_empty() || w <= 0.0 {
             return;
         }
-        let Ok(layout) = res.layout(text, size, weight, w) else {
+        let Ok(layout) = res.layout_in(font, text, size, weight, w) else {
             return;
         };
         unsafe {
@@ -710,12 +840,51 @@ pub fn draw(c: &Canvas, res: &Res, s: &Scene) {
         }
     };
     let right_edge = button_rect(Btn::Pin, s.w).x;
-    if s.header < 1.0 {
+    // The reminder chip, right-aligned in the strip, fading with the date.
+    let mut date_end = right_edge;
+    if let Some((label, overdue)) = &s.chip
+        && s.header < 1.0
+    {
+        let (fill, ink) = chip_tones(t, *overdue);
+        let tw = text_width(res, label, CHIP_TEXT, 600);
+        let (cw, ch) = (tw + 2.0 * CHIP_PAD + CHIP_ICON + 3.0, CHIP_H);
+        let cx = (s.w - PAD_X - cw).max(PAD_X);
+        let cy = (HEADER_H - ch) / 2.0;
+        let a = 1.0 - s.header;
+        set(fill, a);
+        unsafe {
+            rt.FillRoundedRectangle(&rr(ox + cx, oy + cy, cw, ch, ch / 2.0), brush);
+        }
+        icon(
+            Icon::Bell,
+            Rect { x: cx + CHIP_PAD - 1.0, y: cy + (ch - CHIP_ICON - 2.0) / 2.0, w: CHIP_ICON + 2.0, h: CHIP_ICON + 2.0 },
+            ink,
+            a,
+        );
         line_text(
+            NoteFont::Vale,
+            label,
+            ox + cx + CHIP_PAD + CHIP_ICON + 3.0,
+            oy + cy,
+            tw + 2.0,
+            ch,
+            CHIP_TEXT,
+            600,
+            ink,
+            a,
+            false,
+        );
+        date_end = date_end.min(cx - 6.0);
+    }
+    if s.header < 1.0 {
+        // The date, and after it "2/5" for a checklist.
+        let date_room = (date_end - PAD_X).max(0.0);
+        line_text(
+            NoteFont::Vale,
             &s.date,
             ox + PAD_X,
             oy,
-            (right_edge - PAD_X).max(0.0),
+            date_room,
             HEADER_H,
             10.5,
             400,
@@ -723,6 +892,27 @@ pub fn draw(c: &Canvas, res: &Res, s: &Scene) {
             (1.0 - s.header) * 0.95,
             false,
         );
+        if let Some((done, total)) = s.progress {
+            let count = format!("{done}/{total}");
+            let dw = text_width(res, &s.date, 10.5, 400);
+            let cw = text_width(res, &count, 10.5, 600);
+            let x = PAD_X + dw + 8.0;
+            if x + cw <= date_end && !s.rolled {
+                line_text(
+                    NoteFont::Vale,
+                    &count,
+                    ox + x,
+                    oy,
+                    cw + 2.0,
+                    HEADER_H,
+                    10.5,
+                    600,
+                    if done == total { t.accent } else { t.secondary },
+                    (1.0 - s.header) * 0.95,
+                    false,
+                );
+            }
+        }
     }
     for b in Btn::ALL {
         let r = button_rect(b, s.w);
@@ -769,6 +959,7 @@ pub fn draw(c: &Canvas, res: &Res, s: &Scene) {
         let note = &s.rolled_note;
         let note_w = if note.is_empty() { 0.0 } else { 64.0 };
         line_text(
+            s.font,
             &s.title,
             ox + PAD_X,
             oy + HEADER_H - 4.0,
@@ -781,6 +972,7 @@ pub fn draw(c: &Canvas, res: &Res, s: &Scene) {
             false,
         );
         line_text(
+            NoteFont::Vale,
             note,
             ox + s.w - PAD_X - note_w,
             oy + HEADER_H - 4.0,
@@ -793,7 +985,23 @@ pub fn draw(c: &Canvas, res: &Res, s: &Scene) {
             true,
         );
     } else {
+        // The progress of a checklist, right above the text.
+        if let Some((done, total)) = s.progress {
+            let r = art::progress_rect(s.w);
+            set(t.secondary, 0.22);
+            unsafe {
+                rt.FillRoundedRectangle(&rr(ox + r.x, oy + r.y, r.w, r.h, r.h / 2.0), brush);
+            }
+            let full = r.w * art::progress_fraction(done, total);
+            if full > 0.0 {
+                set(t.accent, 1.0);
+                unsafe {
+                    rt.FillRoundedRectangle(&rr(ox + r.x, oy + r.y, full, r.h, r.h / 2.0), brush);
+                }
+            }
+        }
         draw_body(&rt, brush, s, ox, oy);
+        art::draw_stamp(&rt, brush, res, s.stamp, s.lang, t, (ox, oy, s.w, s.h));
         // The footer and the resize grip.
         let foot = Rect {
             x: PAD_X,
@@ -801,7 +1009,7 @@ pub fn draw(c: &Canvas, res: &Res, s: &Scene) {
             w: s.w - PAD_X - GRIP - 4.0,
             h: FOOTER_H,
         };
-        line_text(&s.footer, ox + foot.x, oy + foot.y, foot.w, foot.h, 10.5, 400, t.secondary, 1.0, false);
+        line_text(NoteFont::Vale, &s.footer, ox + foot.x, oy + foot.y, foot.w, foot.h, 10.5, 400, t.secondary, 1.0, false);
         set(t.secondary, 0.7);
         for (dx, dy) in [(0.0, 0.0), (-4.0, 0.0), (0.0, -4.0), (-8.0, 0.0), (-4.0, -4.0), (0.0, -8.0)] {
             unsafe {
@@ -816,6 +1024,9 @@ pub fn draw(c: &Canvas, res: &Res, s: &Scene) {
             }
         }
     }
+
+    // The tape or the pin over the top edge.
+    art::draw_deco(&rt, brush, s.deco, t, (ox, oy, s.w));
 
     // Alignment guides while dragging, and the gallery's highlight.
     if !s.guides.is_empty() {
@@ -839,6 +1050,11 @@ pub fn draw(c: &Canvas, res: &Res, s: &Scene) {
                 None,
             );
         }
+    }
+    // The confetti is the window's, not the leaning note's.
+    if !s.confetti.is_empty() {
+        unsafe { rt.SetTransform(&straight) };
+        art::draw_confetti(&rt, brush, s.confetti, &art::confetti_palette(t));
     }
     unsafe { rt.SetTransform(&Matrix3x2::identity()) };
 }
@@ -865,6 +1081,16 @@ fn draw_body(
         );
     }
     let (bx, by) = (ox + area.x, oy + area.y - s.scroll);
+    // The ruling, under everything and scrolling with the text.
+    art::draw_pattern(
+        rt,
+        brush,
+        s.pattern,
+        s.text_size,
+        (ox + area.x, oy + area.y, area.w, area.h),
+        s.scroll,
+        t.line,
+    );
     // The selection under the text.
     if let Some((a, b)) = s.selection
         && a != b
@@ -954,13 +1180,23 @@ fn draw_body(
     unsafe { rt.PopAxisAlignedClip() };
 }
 
-/// The cat's face above a note: Happy while every item is done, else Idle.
-pub fn peek_face(note_text: &str) -> Expr {
-    if checklist::all_done(note_text) {
-        Expr::Happy
-    } else {
-        Expr::Idle
-    }
+/// The reminder chip's text size, padding, height and bell (dip).
+const CHIP_TEXT: f32 = 10.0;
+const CHIP_PAD: f32 = 7.0;
+const CHIP_H: f32 = 18.0;
+const CHIP_ICON: f32 = 10.0;
+
+/// How wide `text` is laid out in one line, dip.
+fn text_width(res: &Res, text: &str, size: f32, weight: u16) -> f32 {
+    res.layout(text, size, weight, 2000.0)
+        .ok()
+        .and_then(|l| {
+            let mut m = DWRITE_TEXT_METRICS::default();
+            unsafe { l.GetMetrics(&mut m) }
+                .ok()
+                .map(|_| m.widthIncludingTrailingWhitespace)
+        })
+        .unwrap_or(0.0)
 }
 
 /// The coat the peek uses: the configured coat, no accessory (a hat would be
@@ -993,7 +1229,7 @@ mod tests {
     #[test]
     fn a_point_is_classified() {
         let (w, h) = (240.0, 208.0);
-        let t = |x, y| target(x, y, w, h, false, None, 0.0);
+        let t = |x, y| target(x, y, w, h, false, None, 0.0, true);
         assert_eq!(t(20.0, 10.0), Target::Header);
         let close = button_rect(Btn::Close, w);
         assert_eq!(t(close.x + 2.0, close.y + 2.0), Target::Button(Btn::Close));
@@ -1003,14 +1239,69 @@ mod tests {
         assert_eq!(t(-1.0, 5.0), Target::Outside);
         assert_eq!(t(5.0, h + 1.0), Target::Outside);
         // Rolled: one line tall, and all of it drags.
-        let r = |x, y| target(x, y, w, h, true, None, 0.0);
+        let r = |x, y| target(x, y, w, h, true, None, 0.0, true);
         assert_eq!(r(20.0, 40.0), Target::Header);
         assert_eq!(r(20.0, 80.0), Target::Outside);
     }
 
     #[test]
+    fn hidden_buttons_take_no_press_and_the_whole_strip_drags() {
+        for w in [160.0f32, 240.0, 640.0] {
+            let mut x = 0.0;
+            while x < w {
+                for y in [0.0, 10.0, HEADER_H - 0.5] {
+                    assert_eq!(
+                        target(x, y, w, 208.0, false, None, 0.0, false),
+                        Target::Header,
+                        "{w} wide, x {x} y {y}"
+                    );
+                }
+                x += 1.0;
+            }
+            // Just under the strip is the text.
+            assert_eq!(target(20.0, HEADER_H + 1.0, w, 208.0, false, None, 0.0, false), Target::Body);
+        }
+    }
+
+    #[test]
+    fn shown_buttons_take_the_press_and_the_rest_of_the_strip_drags() {
+        let w = 240.0;
+        for b in Btn::ALL {
+            let r = button_rect(b, w);
+            assert_eq!(
+                target(r.x + r.w / 2.0, r.y + r.h / 2.0, w, 208.0, false, None, 0.0, true),
+                Target::Button(b)
+            );
+        }
+        let first = button_rect(Btn::Pin, w);
+        assert_eq!(target(first.x - 3.0, 10.0, w, 208.0, false, None, 0.0, true), Target::Header);
+        assert_eq!(target(20.0, 3.0, w, 208.0, false, None, 0.0, true), Target::Header);
+        // Above and under the buttons, still inside the strip: the strip.
+        assert_eq!(target(first.x + 5.0, 1.0, w, 208.0, false, None, 0.0, true), Target::Header);
+        assert_eq!(
+            target(first.x + 5.0, HEADER_H - 1.0, w, 208.0, false, None, 0.0, true),
+            Target::Header
+        );
+    }
+
+    #[test]
+    fn a_rolled_note_is_all_strip_and_the_strip_is_36_dip() {
+        assert_eq!(HEADER_H, 36.0);
+        assert_eq!(ROLLED_H, 64.0, "the strip and one 28 dip line");
+        for shown in [false, true] {
+            for y in [2.0, 20.0, 50.0, 63.0] {
+                assert_eq!(
+                    target(20.0, y, 240.0, 208.0, true, None, 0.0, shown),
+                    Target::Header,
+                    "y {y}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn the_window_has_room_for_the_shadow_and_the_cat() {
-        let (ww, wh) = window_dip(240.0, 208.0);
+        let (ww, wh) = window_dip(240.0, 208.0, margins());
         assert_eq!(ww, 256.0);
         assert_eq!(wh, 208.0 + 2.0 * SHADOW + CAT_ROOM);
         assert_eq!(shown_h(208.0, true), ROLLED_H);
@@ -1018,18 +1309,40 @@ mod tests {
     }
 
     #[test]
-    fn the_cat_is_happy_only_when_everything_is_done() {
-        assert_eq!(peek_face("t\n- [x] a\n- [x] b"), Expr::Happy);
-        assert_eq!(peek_face("t\n- [x] a\n- [ ] b"), Expr::Idle);
-        assert_eq!(peek_face("plain"), Expr::Idle);
+    fn the_shake_starts_and_ends_still_and_stays_in_the_margin() {
+        assert_eq!(wiggle_dx(0.0), 0.0);
+        assert_eq!(wiggle_dx(-5.0), 0.0);
+        assert_eq!(wiggle_dx(WIGGLE_MS), 0.0);
+        assert_eq!(wiggle_dx(10_000.0), 0.0);
+        let mut peak: f32 = 0.0;
+        let mut moved = false;
+        let mut ms = 0.0;
+        while ms < WIGGLE_MS {
+            let dx = wiggle_dx(ms);
+            peak = peak.max(dx.abs());
+            moved |= dx.abs() > 0.5;
+            ms += 5.0;
+        }
+        assert!(moved, "it really moves");
+        assert!(peak <= WIGGLE_DIP, "{peak}");
+        assert!(peak < SHADOW, "inside the margin, with room for the shadow");
+        // It decays: the late swings are smaller than the early ones.
+        let early = (0..20).map(|i| wiggle_dx(i as f32 * 5.0).abs()).fold(0.0, f32::max);
+        let late = (0..20).map(|i| wiggle_dx(500.0 + i as f32 * 5.0).abs()).fold(0.0, f32::max);
+        assert!(late < early);
+    }
+
+    #[test]
+    fn the_peek_has_the_coat_and_no_accessory() {
         assert_eq!(peek_look(CatColor::Calico).accessory, CatAccessory::None);
+        assert_eq!(peek_look(CatColor::Calico).color, CatColor::Calico);
     }
 
     #[test]
     fn text_is_laid_out_and_clicks_map_back_to_indices() {
         let res = Res::new(UiFont::Sans).expect("DirectWrite works without a window");
         let text = "Belanja\n- [ ] bata\n- [x] kaca\nbiasa";
-        let body = build_body(&res, text, TextSize::M, 200.0);
+        let body = build_body(&res, text, NoteFont::Vale, TextSize::M, 200.0);
         assert_eq!(body.lines.len(), 4);
         assert!(body.lines[0].title);
         assert!(body.lines[1].raw.is_item());
@@ -1060,11 +1373,11 @@ mod tests {
         let area = body_rect(240.0, 208.0);
         let item = box_rect(&body.lines[1], area, 0.0);
         assert_eq!(
-            target(item.x + 3.0, item.y + 3.0, 240.0, 208.0, false, Some(&body), 0.0),
+            target(item.x + 3.0, item.y + 3.0, 240.0, 208.0, false, Some(&body), 0.0, true),
             Target::Check(1)
         );
         assert_eq!(
-            target(item.x + 80.0, item.y + 3.0, 240.0, 208.0, false, Some(&body), 0.0),
+            target(item.x + 80.0, item.y + 3.0, 240.0, 208.0, false, Some(&body), 0.0, true),
             Target::Body
         );
     }
@@ -1139,7 +1452,7 @@ mod tests {
     fn a_click_on_an_emoji_never_lands_between_its_two_halves() {
         let res = Res::new(UiFont::Sans).expect("DirectWrite works without a window");
         let text = "ab\u{1F600}cd";
-        let body = build_body(&res, text, TextSize::M, 400.0);
+        let body = build_body(&res, text, NoteFont::Vale, TextSize::M, 400.0);
         let (x_before, y, h) = body.caret(2).expect("caret before the emoji");
         let (x_after, _, _) = body.caret(4).expect("caret after the emoji");
         assert!(x_after > x_before + 4.0, "the emoji has a width");
@@ -1158,7 +1471,7 @@ mod tests {
         // The drag-selection path (a later line too) goes through the same
         // function: an emoji on the second line, the third being an item.
         let text = "t\nxy\u{1F600}\n- [ ] \u{1F600}\u{1F601}z";
-        let body = build_body(&res, text, TextSize::M, 400.0);
+        let body = build_body(&res, text, NoteFont::Vale, TextSize::M, 400.0);
         for (li, line) in body.lines.iter().enumerate() {
             let cs = line.raw.content_start();
             let (_, y, h) = body.caret(cs).expect("caret");
@@ -1174,7 +1487,7 @@ mod tests {
         let res = Res::new(UiFont::Sans).expect("DirectWrite works without a window");
         let text = "cafe\u{0301} x";
         // c0 a1 f2 e3 (U+0301)4 space5 x6
-        let body = build_body(&res, text, TextSize::M, 400.0);
+        let body = build_body(&res, text, NoteFont::Vale, TextSize::M, 400.0);
         let (x_base, y, h) = body.caret(3).expect("caret before the e");
         let (x_after, _, _) = body.caret(5).expect("caret after the mark");
         assert!(x_after > x_base + 2.0);
@@ -1194,8 +1507,8 @@ mod tests {
     fn wrapping_makes_a_long_line_taller() {
         let res = Res::new(UiFont::Sans).unwrap();
         let long = "a very long line of text that will certainly have to wrap at this width";
-        let narrow = build_body(&res, long, TextSize::M, 120.0);
-        let wide = build_body(&res, long, TextSize::M, 900.0);
+        let narrow = build_body(&res, long, NoteFont::Vale, TextSize::M, 120.0);
+        let wide = build_body(&res, long, NoteFont::Vale, TextSize::M, 900.0);
         assert!(narrow.height > wide.height * 1.5);
     }
 }

@@ -424,6 +424,7 @@ pub enum Hit {
     WidgetsFullscreen(FullscreenRule),
     WidgetsLock,
     WidgetsPeek,
+    WidgetsTilt,
     /// The (+) of a gallery card: one new empty sticky note.
     WidgetAdd,
     /// The gallery's active card: the notes flash on the desktop.
@@ -3661,12 +3662,13 @@ fn widgets_page(b: &mut Builder, s: &State) {
         wrapped_row_h(full_desc.len()),
         ROW_H,
         ROW_H,
+        ROW_H,
     ];
 
     titled(b, Key::GroupWidgetsDesktop);
     let card = b.card(heights.iter().sum());
-    let mut rows = [card.y; 5];
-    for i in 1..5 {
+    let mut rows = [card.y; 6];
+    for i in 1..6 {
         rows[i] = rows[i - 1] + heights[i - 1];
     }
     let cy = |i: usize| rows[i] + heights[i] / 2.0;
@@ -3694,6 +3696,11 @@ fn widgets_page(b: &mut Builder, s: &State) {
     let desc = Some((b.t(Key::WidgetsPeekDesc), Tone::Secondary));
     b.row_text(card, rows[4], b.t(Key::WidgetsPeek), desc, false, x);
     b.divider(card, rows[4]);
+
+    let x = b.toggle(Hit::WidgetsTilt, b.g.right, cy(5), p.tilt);
+    let desc = Some((b.t(Key::WidgetsTiltDesc), Tone::Secondary));
+    b.row_text(card, rows[5], b.t(Key::WidgetsTilt), desc, false, x);
+    b.divider(card, rows[5]);
 
     // The gallery: its eyebrow with how many are on the desktop at the right.
     let eyebrow_y = b.y;
@@ -5190,6 +5197,7 @@ mod tests {
                                 fullscreen: FullscreenRule::Keep,
                                 lock: true,
                                 cat_peek: false,
+                                tilt: false,
                             }
                         } else {
                             WidgetPrefs::default()
@@ -8897,12 +8905,12 @@ mod tests {
     fn widget_has_its_settings_and_a_gallery_with_one_card() {
         for lang in [Lang::Id, Lang::En] {
             let l = layout_in(Section::Widgets, &widgets_state(lang, 0), &Estimate, TALL);
-            // The five settings, then the gallery's grid, each under its eyebrow.
+            // The six settings, then the gallery's grid, each under its eyebrow.
             assert_eq!(l.cards.len(), 2, "{lang:?}");
             let has = |t: &str| l.texts.iter().any(|x| x.text == t);
             assert!(has(&text(lang, Key::GroupWidgetsDesktop).to_uppercase()));
             assert!(has(&text(lang, Key::GroupWidgetsGallery).to_uppercase()));
-            for key in [Key::WidgetsShow, Key::WidgetsLayer, Key::WidgetsFullscreen, Key::WidgetsLock, Key::WidgetsPeek, Key::StickyName] {
+            for key in [Key::WidgetsShow, Key::WidgetsLayer, Key::WidgetsFullscreen, Key::WidgetsLock, Key::WidgetsPeek, Key::WidgetsTilt, Key::StickyName] {
                 assert!(has(text(lang, key)), "{lang:?} {key:?}");
             }
             assert_eq!(l.title.as_ref().unwrap().text, text(lang, Key::SecWidgets));
@@ -8916,7 +8924,7 @@ mod tests {
             assert_eq!(full[1].hit, Hit::WidgetsFullscreen(FullscreenRule::Keep));
             // The three toggles.
             let hits: Vec<Hit> = l.hits().into_iter().map(|(h, _)| h).collect();
-            for h in [Hit::WidgetsShow, Hit::WidgetsLock, Hit::WidgetsPeek, Hit::WidgetAdd] {
+            for h in [Hit::WidgetsShow, Hit::WidgetsLock, Hit::WidgetsPeek, Hit::WidgetsTilt, Hit::WidgetAdd] {
                 assert!(hits.contains(&h), "{lang:?} {h:?}");
             }
             // The gallery has exactly one card, with its picture; none is on
@@ -8996,6 +9004,7 @@ mod tests {
             fullscreen: FullscreenRule::Keep,
             lock: true,
             cat_peek: false,
+            tilt: true,
         };
         let s = State {
             widgets: prefs,
@@ -9015,6 +9024,7 @@ mod tests {
         assert_eq!(on(Hit::WidgetsShow), Some(false));
         assert_eq!(on(Hit::WidgetsLock), Some(true));
         assert_eq!(on(Hit::WidgetsPeek), Some(false));
+        assert_eq!(on(Hit::WidgetsTilt), Some(true));
     }
 
     #[test]

@@ -264,3 +264,26 @@ without input or data.
 - Hover tracking is `TrackMouseEvent(TME_LEAVE)`, no timer; the cat peek is a
   still picture, no timer. One extra posted message type (`WM_APP + 71`) per
   burst of events, until drained.
+
+The sticky notes' v2 ([[widgets]], 2026-11-04) adds one timer and three
+FrameClock users, nothing else:
+
+- `TIMER_STICKY_REMIND` (47): a one-shot on the island's window for the nearest
+  unfired sticky note reminder (`remind::nearest`, wait clamped to the timer
+  limits). Killed and re-armed on every reminder change (`widgets_sync`, which
+  also runs at startup), on `WM_TIMECHANGE` and resume (`on_clock_jump`) and on
+  each fire, where it is killed first. No polling; with no reminder the timer
+  does not exist. A fire marks the due notes, raises them and puts a sticky
+  island notice up, which then costs what any sticky notice costs.
+- FrameClock, only while it moves (`WidgetHost::moving`, counted with the header
+  and highlight fades): the reminder's 600 ms shake, the 0.8 s confetti of a
+  finished checklist, and the 120 ms see-through fade of a note's window alpha
+  (`present` only, no redraw). None of them starts when `animate` is false
+  (Motion not Full, Energy Saver, Windows animations off); the fade is then
+  instant.
+- The cat's mood check (asleep after three days untouched) rides the existing
+  1 s `TIMER_SYSTEM` tick (`WidgetHost::mood_tick`, next to the fullscreen
+  check): one mood evaluation of the cat's note, a redraw of that note only when
+  the mood changed. The cat looking at the pointer is computed on mouse moves
+  over the note, quantised so it redraws only when the step changes.
+- Idle notes still cost nothing: no redraw, no timer of their own.

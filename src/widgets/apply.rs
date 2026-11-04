@@ -7,6 +7,7 @@ use crate::notch_monitor::{self, Display};
 use crate::notes::{Note, NotesStore};
 use crate::widgets::host::WidgetEvent;
 use crate::widgets::sticky::{DipRect, Sticky};
+use crate::widgets::templates::Template;
 use crate::widgets::{paint, place, snap};
 
 /// What applying a batch of events asks of the owner.
@@ -18,10 +19,15 @@ pub struct Outcome {
     pub structural: bool,
     /// Something eases: the frame clock must run.
     pub clock: bool,
-    /// The notes whose (+) was pressed.
-    pub beside: Vec<String>,
+    /// The notes whose (+) was pressed (a right click chose a template).
+    pub beside: Vec<(String, Template)>,
     /// "Kucing ngintip" was switched from a note's popover.
     pub cat_peek: Option<bool>,
+    /// A reminder was set or cleared: the timer is armed again and the
+    /// notices are settled.
+    pub reminders: bool,
+    /// Notes that came off the desktop or went: their notices go too.
+    pub gone: Vec<String>,
 }
 
 /// Edits note `id`'s sticky part. False when it has none or nothing changed.
@@ -31,6 +37,16 @@ fn edit_sticky(notes: &mut NotesStore, id: &str, f: impl FnOnce(&mut Sticky)) ->
     };
     f(&mut s);
     notes.set_sticky(id, Some(s))
+}
+
+/// Note `id`'s reminder set to `at` (unix seconds; `None` clears it), not
+/// fired. `fired` marks it as gone off (the island's timer). False when the
+/// note has no sticky part or nothing changed.
+pub fn set_reminder(notes: &mut NotesStore, id: &str, at: Option<i64>, fired: bool) -> bool {
+    edit_sticky(notes, id, |s| {
+        s.remind_at = at;
+        s.remind_fired = fired && at.is_some();
+    })
 }
 
 /// Applies `events` in order. `unix` is now, for the edit time of a text.
@@ -51,26 +67,53 @@ pub fn apply(notes: &mut NotesStore, events: Vec<WidgetEvent>, unix: i64) -> Out
             WidgetEvent::Size { id, size } => {
                 out.changed |= edit_sticky(notes, &id, |s| s.text_size = size);
             }
+            WidgetEvent::Font { id, font } => {
+                out.changed |= edit_sticky(notes, &id, |s| s.font = font);
+            }
+            WidgetEvent::Pattern { id, pattern } => {
+                out.changed |= edit_sticky(notes, &id, |s| s.pattern = pattern);
+            }
+            WidgetEvent::Deco { id, deco } => {
+                out.changed |= edit_sticky(notes, &id, |s| s.deco = deco);
+            }
+            WidgetEvent::Stamp { id, stamp } => {
+                out.changed |= edit_sticky(notes, &id, |s| s.stamp = stamp);
+            }
+            WidgetEvent::Opacity { id, percent } => {
+                out.changed |= edit_sticky(notes, &id, |s| {
+                    s.opacity = crate::widgets::sticky::snap_opacity(i64::from(percent));
+                });
+            }
             WidgetEvent::Pinned { id, on } => {
                 out.changed |= edit_sticky(notes, &id, |s| s.pinned = on);
             }
             WidgetEvent::Rolled { id, on } => {
                 out.changed |= edit_sticky(notes, &id, |s| s.rolled = on);
             }
+            WidgetEvent::Remind { id, at } => {
+                out.changed |= set_reminder(notes, &id, at, false);
+                out.reminders = true;
+            }
             WidgetEvent::Touched { id, at } => {
                 out.changed |= edit_sticky(notes, &id, |s| s.touched = at);
             }
             WidgetEvent::CatPeek(on) => out.cat_peek = Some(on),
-            WidgetEvent::NewBeside { id } => out.beside.push(id),
+            WidgetEvent::NewBeside { id, template } => out.beside.push((id, template)),
             WidgetEvent::Unstick { id } => {
                 let done = notes.set_sticky(&id, None);
                 out.changed |= done;
                 out.structural |= done;
+                if done {
+                    out.gone.push(id);
+                }
             }
             WidgetEvent::Delete { id } => {
                 let done = notes.delete(&id);
                 out.changed |= done;
                 out.structural |= done;
+                if done {
+                    out.gone.push(id);
+                }
             }
             WidgetEvent::NeedsClock => out.clock = true,
         }
@@ -133,6 +176,7 @@ mod tests {
     use crate::capture::Rect;
     use crate::widgets::sticky::{Paper, TextSize};
     use std::path::PathBuf;
+
 
     fn display(n: usize, x: i32, primary: bool, path: &str) -> Display {
         Display {
@@ -239,6 +283,93 @@ mod tests {
     }
 
     #[test]
+    fn the_look_of_a_note_is_applied_field_by_field() {
+        use crate::widgets::sticky::{Deco, NoteFont, Pattern, Stamp};
+        let mut notes = store("looks");
+        let id = id_of(&mut notes);
+        let out = apply(
+            &mut notes,
+            vec![
+                WidgetEvent::Font { id: id.clone(), font: NoteFont::Tangan },
+                WidgetEvent::Pattern { id: id.clone(), pattern: Pattern::Kotak },
+                WidgetEvent::Deco { id: id.clone(), deco: Deco::Selotip },
+                WidgetEvent::Stamp { id: id.clone(), stamp: Stamp::Beres },
+                WidgetEvent::Opacity { id: id.clone(), percent: 60 },
+            ],
+            1,
+        );
+        assert!(out.changed && !out.structural && !out.reminders);
+        let s = notes.get(&id).unwrap().sticky.clone().unwrap();
+        assert_eq!(
+            (s.font, s.pattern, s.deco, s.stamp, s.opacity),
+            (NoteFont::Tangan, Pattern::Kotak, Deco::Selotip, Stamp::Beres, 60)
+        );
+        // Setting the same again changes nothing to save.
+        let out = apply(&mut notes, vec![WidgetEvent::Stamp { id: id.clone(), stamp: Stamp::Beres }], 1);
+        assert!(!out.changed);
+        // Back to the defaults; an off-grid opacity snaps.
+        apply(
+            &mut notes,
+            vec![
+                WidgetEvent::Font { id: id.clone(), font: NoteFont::Vale },
+                WidgetEvent::Stamp { id: id.clone(), stamp: Stamp::None },
+                WidgetEvent::Opacity { id: id.clone(), percent: 75 },
+            ],
+            1,
+        );
+        let s = notes.get(&id).unwrap().sticky.clone().unwrap();
+        assert_eq!((s.font, s.stamp, s.opacity), (NoteFont::Vale, Stamp::None, 80));
+        // A note that is gone changes nothing.
+        let out = apply(
+            &mut notes,
+            vec![
+                WidgetEvent::Font { id: "n0-nope".into(), font: NoteFont::Mono },
+                WidgetEvent::Opacity { id: "n0-nope".into(), percent: 40 },
+            ],
+            1,
+        );
+        assert_eq!(out, Outcome::default());
+    }
+
+    #[test]
+    fn a_reminder_is_set_and_cleared() {
+        let mut notes = store("remind");
+        let id = id_of(&mut notes);
+        let out = apply(
+            &mut notes,
+            vec![WidgetEvent::Remind { id: id.clone(), at: Some(5_000) }],
+            1,
+        );
+        assert!(out.changed && out.reminders && !out.structural);
+        let s = notes.get(&id).unwrap().sticky.clone().unwrap();
+        assert_eq!((s.remind_at, s.remind_fired), (Some(5_000), false));
+        // The timer marks it fired; a new time (a snooze) un-fires it.
+        assert!(set_reminder(&mut notes, &id, Some(5_000), true));
+        assert!(notes.get(&id).unwrap().sticky.as_ref().unwrap().remind_fired);
+        apply(
+            &mut notes,
+            vec![WidgetEvent::Remind { id: id.clone(), at: Some(5_600) }],
+            1,
+        );
+        let s = notes.get(&id).unwrap().sticky.clone().unwrap();
+        assert_eq!((s.remind_at, s.remind_fired), (Some(5_600), false));
+        // Clearing it.
+        let out = apply(
+            &mut notes,
+            vec![WidgetEvent::Remind { id: id.clone(), at: None }],
+            1,
+        );
+        assert!(out.changed && out.reminders);
+        let s = notes.get(&id).unwrap().sticky.clone().unwrap();
+        assert_eq!((s.remind_at, s.remind_fired), (None, false));
+        // Clearing it again changes nothing to save (the owner still re-arms).
+        let out = apply(&mut notes, vec![WidgetEvent::Remind { id, at: None }], 1);
+        assert!(!out.changed && out.reminders);
+        // A note that is gone: nothing changes.
+        assert!(!set_reminder(&mut notes, "n0-nope", Some(1), false));
+    }
+
+    #[test]
     fn unsticking_and_deleting_are_structural() {
         let mut notes = store("structural");
         let empty = id_of(&mut notes);
@@ -255,6 +386,7 @@ mod tests {
             3,
         );
         assert!(out.changed && out.structural);
+        assert_eq!(out.gone, vec![empty.clone(), kept.clone(), gone.clone()], "their notices go");
         assert!(notes.get(&empty).is_none(), "an empty note leaves nothing");
         assert!(notes.get(&kept).is_some_and(|n| n.sticky.is_none()));
         assert!(notes.get(&gone).is_none());
@@ -267,13 +399,13 @@ mod tests {
         let out = apply(
             &mut notes,
             vec![
-                WidgetEvent::NewBeside { id: id.clone() },
+                WidgetEvent::NewBeside { id: id.clone(), template: Template::Rapat },
                 WidgetEvent::CatPeek(false),
                 WidgetEvent::NeedsClock,
             ],
             1,
         );
-        assert_eq!(out.beside, vec![id]);
+        assert_eq!(out.beside, vec![(id, Template::Rapat)]);
         assert_eq!(out.cat_peek, Some(false));
         assert!(out.clock && !out.changed && !out.structural);
         // An event for a note that is gone changes nothing.

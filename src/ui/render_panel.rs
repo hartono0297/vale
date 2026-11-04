@@ -4520,7 +4520,7 @@ impl Renderer {
             return Ok(());
         }
         let dot = match notice.kind {
-            NoticeKind::Reminder { .. } => self.palette.accent,
+            NoticeKind::Reminder { .. } | NoticeKind::StickyReminder { .. } => self.palette.accent,
             _ => CLAUDE,
         };
         self.set_color(dot, 1.0);
@@ -5638,6 +5638,31 @@ mod tests {
     }
 
     #[test]
+    fn the_notes_page_reads_a_template_s_title_and_snippet() {
+        use crate::widgets::templates::{Template, text_of};
+        let today = NaiveDate::from_ymd_opt(2026, 11, 4).unwrap();
+        for lang in [Lang::Id, Lang::En] {
+            for t in Template::ALL {
+                let text = text_of(lang, t, today);
+                if t == Template::Kosong {
+                    assert_eq!(first_line(&text), "");
+                    continue;
+                }
+                let title = first_line(&text);
+                assert!(!title.is_empty(), "{t:?} {lang:?}");
+                assert_eq!(title, crate::widgets::checklist::title_of(&text));
+                assert!(!title.starts_with("- ["), "the title is not an item: {title}");
+                // Everything but the title is the snippet.
+                let snippet = note_snippet(&text);
+                assert_eq!(snippet.is_empty(), t == Template::Ide, "{t:?}");
+            }
+        }
+        let week = text_of(Lang::Id, Template::Mingguan, today);
+        assert_eq!(first_line(&week), "Mingguan");
+        assert!(note_snippet(&week).contains("Senin"));
+    }
+
+    #[test]
     fn first_line_skips_blank_lines() {
         assert_eq!(first_line("\n  \n  Beli tinta  \nlain"), "Beli tinta");
         assert_eq!(first_line(""), "");
@@ -6107,6 +6132,32 @@ mod tests {
                     let label = text(lang, key);
                     ink_fits(&r, label, &r.fonts.button_center, chip(notch_w, 24.0));
                     ink_fits(&r, label, &r.fonts.button_center, chip(strip_w, 18.0));
+                }
+            }
+        }
+    }
+
+    /// A sticky note reminder's chips ("Tunda 10 mnt" / "Snooze 10 min", "Buka"
+    /// / "Open") hold their words in both languages, in DM Sans and in
+    /// JetBrains Mono.
+    #[test]
+    fn sticky_reminder_chips_hold_their_words_in_both_fonts() {
+        use crate::ui::fonts;
+        use crate::ui::geometry::{SNOOZE_CHIP_W, UPDATE_CHIP_W};
+        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+
+        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let mut r = Renderer::new().expect("renderer");
+        if !fonts::embedded(&r.dwrite).loaded.jetbrains_mono {
+            eprintln!("skipped: the embedded fonts are not in this binary");
+            return;
+        }
+        for ui in [UiFont::Sans, UiFont::Mono] {
+            r.set_ui_font(ui).expect("font");
+            for lang in [Lang::Id, Lang::En] {
+                for (key, w) in [(Key::StickySnooze, SNOOZE_CHIP_W), (Key::Open, UPDATE_CHIP_W)] {
+                    let chip = Rect { x: 0.0, y: 0.0, w, h: 24.0 };
+                    ink_fits(&r, text(lang, key), &r.fonts.button_center, chip);
                 }
             }
         }

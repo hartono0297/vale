@@ -35,9 +35,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DLGC_WANTALLKEYS, ES_AUTOHSCROLL, ES_AUTOVSCROLL, ES_MULTILINE, ES_WANTRETURN, GetParent,
     GetWindowTextLengthW, GetWindowTextW, HMENU, SendMessageW, SetWindowTextW, WINDOW_EX_STYLE,
     WINDOW_STYLE, WM_CHAR, WM_CLEAR, WM_CUT, WM_GETDLGCODE, WM_IME_COMPOSITION,
-    WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KILLFOCUS, WM_NCDESTROY, WM_PASTE, WM_SETFOCUS,
+    WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KILLFOCUS, WM_NCDESTROY, WM_NCHITTEST, WM_PASTE, WM_SETFOCUS,
     WM_UNDO, WS_CHILD, WS_VISIBLE,
 };
+
+/// `WM_NCHITTEST`'s "look through me" answer (-1).
+const HTTRANSPARENT: i32 = -1;
 use windows::core::{HSTRING, Result, w};
 
 use crate::widgets::checklist::{self, Edit};
@@ -324,6 +327,11 @@ unsafe extern "system" fn edit_proc(
     _data: usize,
 ) -> LRESULT {
     match msg {
+        // The EDIT is a child covering the note's corner and is never drawn:
+        // every press goes through it to the note's own procedure (it used to
+        // swallow the presses on a fresh note's header, so it could not be
+        // dragged).
+        WM_NCHITTEST => return LRESULT(HTTRANSPARENT as isize),
         WM_GETDLGCODE => {
             let code = unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) };
             return LRESULT(code.0 | DLGC_WANTALLKEYS as isize);
@@ -493,6 +501,40 @@ mod tests {
         let applied = checklist::apply(text, &e);
         assert_eq!(applied, "ax\u{1F600}\n- [ ] \u{1F601}b\n\u{1F600}");
         assert!(!applied.contains('\u{FFFD}'));
+    }
+
+    #[test]
+    fn the_hidden_edit_lets_every_press_through_to_the_note() {
+        use windows::Win32::UI::WindowsAndMessaging::{DestroyWindow, WM_NCHITTEST, WS_POPUP};
+        // A real parent and a real EDIT: the EDIT covers the parent's corner,
+        // and a press there must reach the parent (HTTRANSPARENT), or a fresh
+        // note's header can not be dragged.
+        let parent = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                w!("STATIC"),
+                w!(""),
+                WS_POPUP,
+                0,
+                0,
+                300,
+                300,
+                None,
+                None,
+                None,
+                None,
+            )
+        }
+        .expect("a parent window");
+        let edit = create(parent, "text", (200, 150)).expect("the EDIT");
+        let answer = unsafe {
+            SendMessageW(edit, WM_NCHITTEST, Some(WPARAM(0)), Some(LPARAM(((10 << 16) | 10) as isize)))
+        };
+        assert_eq!(answer.0, HTTRANSPARENT as isize);
+        assert_eq!(HTTRANSPARENT, -1);
+        unsafe {
+            let _ = DestroyWindow(parent);
+        }
     }
 
     #[test]

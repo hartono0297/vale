@@ -1059,6 +1059,50 @@ keys! {
     PaperPlum => "Plum", "Plum";
     PaperLaut => "Laut", "Sea";
     PaperGelap => "Gelap", "Dark";
+    StickyNoteTitle => "Catatan tempel", "Sticky note";
+    StickyRemind => "Ingatkan aku", "Remind me";
+    StickyRemind15 => "15 mnt", "15 min";
+    StickyRemind1h => "1 jam", "1 hour";
+    StickyRemindEvening => "17.00", "17:00";
+    StickyRemindTomorrow => "besok 09.00", "tomorrow 09:00";
+    StickyRemindCustom => "Atur sendiri\u{2026}", "Custom\u{2026}";
+    StickyRemindClear => "Hapus pengingat", "Clear reminder";
+    StickySnooze => "Tunda 10 mnt", "Snooze 10 min";
+    StickyDayToday => "Hari ini", "Today";
+    StickyDayTomorrow => "Besok", "Tomorrow";
+    FontVale => "Vale", "Vale";
+    FontTangan => "Tangan", "Hand";
+    FontMono => "Mono", "Mono";
+    StickyFont => "Huruf", "Font";
+    StickyPattern => "Kertas", "Paper";
+    PatternPolos => "Polos", "Plain";
+    PatternGaris => "Garis", "Lines";
+    PatternKotak => "Kotak", "Grid";
+    PatternTitik => "Titik", "Dots";
+    StickyDeco => "Hiasan", "Decoration";
+    DecoNone => "Tidak ada", "None";
+    DecoSelotip => "Selotip", "Tape";
+    DecoPaku => "Paku", "Pin";
+    StickyStamp => "Cap", "Stamp";
+    StampNone => "Tidak ada", "None";
+    StampPenting => "Penting", "Important";
+    StampBeres => "Beres", "Done";
+    StampMendesak => "Mendesak", "Urgent";
+    StampSuka => "Suka", "Love";
+    StampNanti => "Nanti", "Later";
+    StampIde => "Ide", "Idea";
+    StickyOpacity => "Tembus pandang", "See-through";
+    WidgetsTilt => "Miring sedikit", "Tilt slightly";
+    WidgetsTiltDesc => "Setiap catatan sedikit miring, seperti ditempel tangan.", "Each note leans a little, as if stuck by hand.";
+    TplKosong => "Kosong", "Blank";
+    TplBelanja => "Belanja", "Shopping";
+    TplHariIni => "Hari ini", "Today";
+    TplRapat => "Rapat", "Meeting";
+    TplIde => "Ide", "Idea";
+    TplMingguan => "Mingguan", "This week";
+    TplAgenda => "Agenda", "Agenda";
+    TplDecisions => "Keputusan", "Decisions";
+    TplFollowUp => "Tindak lanjut", "Follow-up";
 }
 
 /// `key` in `lang`.
@@ -2407,6 +2451,11 @@ pub fn day_title_long(lang: Lang, d: NaiveDate) -> String {
         d.day(),
         months[d.month0() as usize]
     )
+}
+
+/// "Rabu, 4 Nov", "Wednesday, 4 Nov": a day's name and its short date.
+pub fn day_title_short(lang: Lang, d: NaiveDate) -> String {
+    format!("{}, {}", day_long(lang, d), short_date(lang, d))
 }
 
 /// The week from `monday`: "19 – 25 Okt 2026", "28 Sep – 4 Okt 2026",

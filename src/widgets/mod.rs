@@ -4,16 +4,21 @@
 //! drawing, and `demo` is the debug scene.
 
 pub mod apply;
+pub mod art;
 pub mod checklist;
 pub mod place;
 pub mod prefs;
+pub mod remind;
 pub mod snap;
 pub mod sticky;
+pub mod templates;
 
 pub mod edit;
 pub mod host;
+pub mod mood;
 pub mod paint;
 pub mod pop;
+pub mod remind_pop;
 
 #[cfg(debug_assertions)]
 pub mod demo;

@@ -150,8 +150,11 @@ colour popover keeps the editing (the note gets the EDIT back when it closes).
 
 ## Timers and messages
 
-`TIMER_WIDGET_SAVE` 45 (one-shot, 1.5 s after the last widget change, flushed
-on `WM_DESTROY` / `WM_ENDSESSION`, cleared by any notes write) and 46. App
+`TIMER_WIDGET_SAVE` 45 on the island window (one-shot, 1.5 s after the last
+widget change, flushed on `WM_DESTROY` / `WM_ENDSESSION`, cleared by any notes
+write). `TIMER_WIDGET_CARET` 46 on the note's own window (the caret blink,
+only while it has the keyboard). `TIMER_STICKY_REMIND` 47 on the island window
+(the reminders' one-shot, run A below). App
 message `WM_APP_WIDGET = WM_APP + 71` (the event drain). Hotkey id 7 (6 is
 the lyrics card's, merged on main; `WM_APP + 70` is the card's, 71 is ours). Idle cost: [[bata-idle-power-budget]].
 
@@ -161,16 +164,17 @@ Settings -> Widget gallery (+), tray "Catatan tempel baru" (greyed at 20 with
 the reason in the label), the seventh hotkey row (no default; a short island
 notice at 20), the pin on a Notes card (`Hit::NoteSticky`, 22 dip, top-right:
 accent when on the desktop), and the (+) in a note's header. Each makes an
-empty Krem note, gives it the keyboard (except the pin, the note has text) and
-turns `show` back on. Settings -> Widget: [[settings-structure]]. The hotkey:
+empty Krem note (a right click on the header (+) or the gallery's (+) picks a
+template, run A below), gives it the keyboard (except the pin, the note has
+text) and turns `show` back on. Settings -> Widget: [[settings-structure]]. The hotkey:
 [[hotkeys]].
 
 ## Assumptions
 
 - No drag-out-of-the-notch in phase 1.
 - The cat peek paints the coat only, no accessory (a hat would be cut by the
-  note's edge); Happy while the checklist is all done, else Idle; on the note
-  touched last (max `touched`), a still picture.
+  note's edge); on the note with an overdue reminder, else the note touched last
+  (run A: Clock, Happy, Asleep, Looking, Idle moods), a still picture.
 - Delete from the right-click menu is two clicks (the menu item reads "Klik
   lagi untuk hapus" on the next opening and the footer says it); it disarms on
   any other action.
@@ -178,8 +182,9 @@ turns `show` back on. Settings -> Widget: [[settings-structure]]. The hotkey:
 ## Demo
 
 `--demo-widgets [reset]` (debug): its own notes file in
-`%TEMP%\vale-widgets-demo\notes.json`, six seeded notes (all papers, a 2 of 4
-checklist, an all-done one, a rolled one, a pinned Gelap one), live
+`%TEMP%\vale-widgets-demo\notes.json`, seeded notes (since run A eleven: all
+papers, a 2 of 4 checklist, an all-done one, a rolled one, a pinned Gelap one and
+the v2 things, see below), live
 everything; `DI_WIDGETS_LAYER=top`, `DI_WIDGETS_LOCK=1`, `DI_WIDGETS_PEEK=0`,
 `DI_LANG`, `DI_FONT`, theme variables. It ends when its last note is gone.
 
@@ -212,3 +217,238 @@ Run in the finish pass (2026-11-04, after merging main with the lyrics card):
 demo owner is top-level and hidden). A click on an emoji or an accented letter
 is covered by real-layout tests, not by a mouse. Settings -> Tombol pintas has
 seven rows and scrolls at the minimum size (tested).
+
+# Widgets, v2 ("Catatan tempel v2", run A, 2026-11-04)
+
+Spec: `docs/design/catatan-tempel-v2.html` (mockups) and the owner's brief
+(drag bug, features 1-7 and 11; run B is the clipboard and drop, stacks, tuck
+and send to phone, not here). Every new thing is a field of the sticky part or
+a pure module with tests; the window code only draws and routes.
+
+## The drag bug, and the 36 dip strip
+
+**Root cause.** `edit::create` makes the hidden EDIT as `WS_CHILD | WS_VISIBLE`
+at the window's client (0, 0), sized to the text area in px. Every new note
+gets the keyboard (`WidgetHost::focus` -> `begin_editing`), so that invisible
+child covered the top-left of the window: the cat's margin and the strip from
+x = 0 to about the text area's width (about 208 dip of a 240 dip note). Windows
+sent the presses there, not to the note, and the six header buttons covered the
+rest of the strip (from about x = 92), so a fresh note had no draggable spot at
+all. A resize widened the note past the EDIT's fixed size, which is why
+"harus di gedein dlu". The same child also took body clicks while editing.
+
+**Fix.** The EDIT's subclass answers `WM_NCHITTEST` with `HTTRANSPARENT`, so
+every press reaches the note's own procedure (IME placement is untouched).
+And:
+
+- The strip is `HEADER_H` 36 dip (was 28); `ROLLED_H` 64 (the strip and one
+  28 dip line; it lives in `sticky.rs`).
+- `paint::target(.., buttons_shown)`: with the buttons hidden (the header ease
+  under 0.5) the whole strip, full width, is `Target::Header` (the at-rest pin
+  of a pinned note is a status mark and drags too). The host passes
+  `header.value(now) >= 0.5`. A hidden button never eats a press.
+- A press on a button that then moves 4 px or more (`|dx| + |dy|`) becomes a
+  Move drag from the press point (`Win::press_at`), `pressed` cleared so
+  release is no click. Kunci posisi blocks it.
+- Alt + press anywhere (text, box, footer, button, grip) starts a Move drag;
+  `mouse_activate` answers `MA_NOACTIVATE` for it so no editing starts. Snap
+  reads Alt on every move, so it comes back when Alt goes up mid-drag. The
+  note swallows `WM_SYSKEYDOWN/UP` for `VK_MENU` and `WM_SYSCOMMAND`
+  `SC_KEYMENU` (no menu mode, no beep). A note that does not have the
+  keyboard never sees the Alt key at all: the foreground app does.
+- Cursor: `IDC_SIZEALL` over the strip (not when locked) and during a Move,
+  `IDC_SIZENWSE` for the grip and a resize, `IDC_HAND` over shown buttons and
+  boxes.
+- Unchanged: snap (8 dip grid, 12 dip gap, work-area clamp), Kunci posisi,
+  double click on the strip rolls up.
+- Every creation path was checked (Settings (+), tray, hotkey, the Notes pin,
+  the header (+)): `w.note` and `w.view` are set by `relayout` inside `sync`
+  before the first draw, and the only leftover state was the EDIT.
+- Tests: pure `paint::target` (hidden buttons, 160 / 240 / 640 wide, rolled),
+  a real EDIT answering `HTTRANSPARENT` (`edit.rs`), and "a new note can be
+  dragged straight away" in `host.rs` (a real hidden window, `focus`, a strip
+  point that `ChildWindowFromPointEx` says is the EDIT's, press, move, release,
+  a `Placed` event). Tests that give a window the keyboard take a lock
+  (`keyboard_lock`): activating one window deactivates another test's, which
+  ends its editing.
+
+## New fields in the sticky part (all skipped at their default)
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `remind_at` | unix seconds | none | "Ingatkan aku" |
+| `remind_fired` | bool | false | only meaningful with `remind_at` |
+| `font` | `Vale` / `Tangan` / `Mono` | Vale | |
+| `pattern` | `Polos` / `Garis` / `Kotak` / `Titik` | Polos | |
+| `deco` | `None` / `Selotip` / `Paku` | None | |
+| `stamp` | `None` / `Penting` / `Beres` / `Mendesak` / `Suka` / `Nanti` / `Ide` | None | |
+| `opacity` | 100 / 80 / 60 / 40 | 100 | any other number snaps to the nearest allowed (a tie goes to the more opaque) |
+
+`sticky::lenient` reads each on its own (a wrong type is the default; names are
+trimmed, any case). A phase-1 file loads to the defaults and saves back with
+exactly its old keys (tested). `WidgetPrefs.tilt` (config `widgets.tilt`,
+lenient, default off) is written with the other prefs.
+
+## Reminders (Ingatkan aku)
+
+- `widgets/remind.rs` (pure, tested across midnight): presets 15 mnt, 1 jam,
+  17.00 (tomorrow once 17.00 has passed, 17.00 exactly counts as passed),
+  besok 09.00; `snooze` = +10 min; `nearest(notes)` = the earliest unfired
+  `remind_at` (no `now`: a due one is `due`'s job); `due(notes, now)` also
+  covers the ones missed while off or asleep; `overdue(sticky, now)` = fired and
+  past; `wait_ms` clamped to `USER_TIMER_MINIMUM` .. `USER_TIMER_MAXIMUM`
+  (`0x7FFFFFFF`, a clamped wait just recomputes on fire); `chip_label` ("17.00",
+  "17:00", "Kam 09.00", "Thu 09:00"); `Entry` is the day / hour / minute
+  stepper of "Atur sendiri" (5 min steps, wraps, never before today).
+- **TIMER 47** `TIMER_STICKY_REMIND`, one one-shot on the island's window
+  (`app_widgets.rs`). Armed for `nearest`, killed and re-armed on every
+  reminder change (`widgets_sync` -> `sticky_remind_settle`, which also runs at
+  startup), on `on_clock_jump` (`WM_TIMECHANGE`, resume) and on each fire (killed
+  first). `sticky_remind_fire` also runs at startup, so the missed ones fire.
+  It applies the windows' queued events first (`widgets_events`), so a reminder
+  just cleared or moved in the menu does not ring at its old time. `reminded`
+  (the notes with a notice) lives in memory only, so each fire also posts the
+  notice, quietly (no raise, no shake), for every `remind::overdue_ids` note not
+  in it: a note that rang before Vale was closed gets Tunda/Buka back.
+  No polling. `app::tests::timer_ids_never_collide` asserts 47.
+- A fire: each due note gets `remind_fired = true` (saved), the host raises it
+  (`WidgetHost::raise`: `raised` makes `above_windows` true, so `apply_z` makes
+  it topmost even on the desktop layer; a press on the note, Tunda, Buka,
+  clearing or opening drops it; `sync` also drops it once `remind_fired` is
+  false), it shakes 600 ms (`paint::wiggle_dx`, a decaying sideways swing of at
+  most 4 dip inside the 8 dip margin, since a rotation would need margin; on the
+  FrameClock only while it lasts, skipped when `!animate`), and the island gets
+  one `NoticeKind::StickyReminder { id }`.
+- The notice: sticky like `Reminder` (one slot per note id, cleared by
+  `Event::StickyReminderCleared`, brief copy in fullscreen), no x, two chips
+  `Tunda 10 mnt` and `Buka` (`SNOOZE_CHIP_W` 88 and the update offer's primary
+  chip, drawn by `paint_update_offer`, hits `Hit::StickySnooze` /
+  `Hit::StickyOpen`), a click on the body is Buka (`Effect::StickyOpen`), over
+  an open panel it is the strip (the strip's click is Buka too), the robot face
+  is Reminder's. It stays while the note is overdue and goes when the note is
+  opened, snoozed, cleared, unstuck or deleted: `App::sticky_remind_settle`
+  clears the notice of every note in `reminded` that is no longer overdue. No
+  sound, no toast.
+- Overdue = `remind_fired && remind_at <= now`: the header chip is in the accent
+  (`sticky::chip_tones`, ink 4.5:1 on every paper and surface, tested) and the
+  cat sits on that note with a small alarm clock. Opening the note
+  (`begin_editing`, a click or Buka) clears the reminder (`Remind { at: None }`).
+- Menu (`context_menu`, the ... button opens the same one): "Ingatkan aku" with
+  the four presets, "Atur sendiri..." (`remind_pop.rs`, a layered popover in
+  the colour popover's style: day, hour, minute steppers, the wheel works,
+  Simpan disabled unless the time is ahead) and "Hapus pengingat" (grey with no
+  reminder). Each change is `WidgetEvent::Remind`.
+- `--demo-widgets` has no island: the demo owner handles 47 itself (raise and
+  shake, no notice).
+
+## Fonts, paper, decoration, tilt
+
+- `NoteFont`: Tangan is Ink Free if `fonts::system_has`, else Segoe Print, else
+  Vale's face (`sticky::tangan_family`, tested); Mono is the bundled DM Mono
+  (`Role::Mono`). No new font file, the exe does not grow. `Res` keeps Vale's
+  `Face` and makes the other two lazily; the format cache is keyed by
+  (font, size, weight); `body_key` includes the font; the title and the rolled
+  title use it.
+- `Pattern` (Garis, Kotak, Titik): `art::draw_pattern`, vector rules in the
+  text area, scrolling with the text, under it. Garis falls under every text line
+  (pitch `line + 1`), Kotak and Titik use a 12 dip grid. Line colour
+  `Tones::line` = a hair of ink on the fill (8 %) and 10 % of the island text on
+  Gelap; every text tone keeps 4.5:1 over it on every paper and surface (tested).
+- `Deco`: `Selotip` (a washi strip of accent and light stripes, leaning -3
+  degrees) and `Paku` (a round pin) drawn over the top edge in the margin. Their
+  centre is the top centre, moved left on a narrow note so they never meet the
+  overdue alarm clock left of the cat (`art::clock_centre` +- `CLOCK_REACH`, 2
+  dip gap) nor the cat's face (`art::deco_centre`, tested at every width; the
+  room is kept whether or not the cat or clock is there, so they do not jump).
+  The deco is painted after both, so overlapping would hide the clock. The tape
+  is centred from 246 dip, the pin from 201.
+- `Stamp`: round, -12 degrees, bottom right of the text area above the footer,
+  clear of the grip (`art::stamp_centre`, tested); a line icon (star, check, !,
+  heart, cup, sparkle: `Icon::Tick`, `Mark`, `Heart`, `Cup` were added to
+  `ui/icons.rs`, the others exist) and the uppercase label (smaller for a long
+  word). Ink `art::stamp_ink`: the accent toward the ink on pastels, the island's
+  accent on Gelap; 3:1 on every paper, surface and accent (tested). Chosen from
+  the right-click menu "Cap" as radio items.
+- Tilt ("Miring sedikit", Settings -> Widget, off by default; the Widget card has
+  six rows now): `art::tilt_deg(id)` (FNV-1a with a splitmix finaliser, within
+  +-2 degrees, notes differ). `Win::margins()` is one function per note used by
+  `canvas_px`, the origin, `client_to_dip`, `screen_point`, the IME point and the
+  drag's `present`: the usual margin plus the rotated overhang
+  (`art::margins_for`). `paint::draw` rotates about the note's centre
+  (`art::tilt_transform`); `target_at` and `client_to_dip` map the pointer through
+  `art::unrotate` before `paint::target` (tested: a corner maps back to its
+  Target, a round trip is the identity). A note with the keyboard is drawn and hit
+  straight (`Win::lean()` is 0) in the same window (the margin does not depend on
+  editing, so no resize). Known approximation: `PushAxisAlignedClip` under a
+  rotation uses the rotated rect's bounding box, so a leaning note that is
+  scrolled can show text up to about 4 dip into the strip or footer.
+- The colour popover (`pop.rs`) grew to 292 x about 290 dip (`pop::open` clamps
+  it inside the work area): swatches, then segmented rows Ukuran teks, Huruf
+  (Vale / Tangan / Mono), Kertas (Polos / Garis / Kotak / Titik), Hiasan and
+  Tembus pandang (100 / 80 / 60 / 40 %), then the two switches. Segment widths
+  hold the longest label in both languages (tested with real text).
+
+## Progress, confetti, cat moods, templates, see-through
+
+- A note with items shows a 2 dip bar right above the text (`art::progress_rect`,
+  full width minus `PAD_X`, accent on a faint track) and "done/total" after the
+  date at rest (accent when all done).
+- Confetti: `art::confetti(seed, t_ms, w, h)` (pure, seeded: 40 pieces fly up
+  from the middle and fall, each clamped inside the window, empty from 800 ms)
+  starts only from `toggle_line` when a tick takes the note from not-all-done to
+  all-done, and only when `animate`. It runs the FrameClock while it lasts
+  (`moving()` counts it) and is drawn in window coordinates, not leaning.
+- Cat moods (`widgets/mood.rs`, pure): `mood(overdue, all_done, touched, now,
+  pointer_over)`: Clock, Happy, Asleep (touched 3 days ago or more; never touched
+  is not asleep), Looking, Idle, in that order. `cat_owner`: the note with an
+  overdue reminder (the earliest), else the last touched. Looking turns the eyes
+  and head toward the pointer in `look_step` quantised steps (-2..2), recomputed
+  only from `mouse_move` on that note and redrawn only when the mood or the step
+  changes. Asleep is re-evaluated by `WidgetHost::mood_tick(unix)` on the
+  existing 1 s `TIMER_SYSTEM` tick, next to the fullscreen check: it redraws only
+  the cat's note and only if its mood changed. The demo calls it from its sync.
+- Templates (`widgets/templates.rs`, pure): `Template { Kosong, Belanja, HariIni,
+  Rapat, Ide, Mingguan }`, `text_of(lang, t, today)`, `caret_of` (end of the first
+  line). A right click on the header (+) opens a native menu (`WM_RBUTTONUP` on
+  `Target::Button(Plus)`), its choice is `WidgetEvent::NewBeside { id, template }`;
+  a left click stays Kosong. Settings' gallery (+) opens the same menu under the
+  button (`After::TemplateMenu`, `host::template_menu`) and posts
+  `Action::WidgetAdd(Template)`. `App::new_sticky(beside, template)` fills the
+  text through the store and focuses the caret at `caret_of`. The tray, the hotkey
+  and the Notes pin stay Kosong. They are plain text, so the Notes page reads them
+  (tested through `first_line`).
+- See-through: `Win::alpha` is an `Ease` of the layered window's alpha: the
+  note's `opacity` % while the pointer is away, full over it, with the keyboard,
+  raised or dragged (`alpha_goal`, `settle_alpha`). Only `present` moves, never a
+  redraw (`present_alpha`); eased on the FrameClock about 120 ms, instant when
+  `!animate`. Counted in `moving()`.
+
+## Power (run A)
+
+No repeating timer and no idle redraw. The one new timer is the one-shot 47.
+The wiggle, confetti and see-through fade run the FrameClock only while they
+move (`host.moving()`); the mood check rides `TIMER_SYSTEM`; the pointer look
+rides mouse moves. See [[bata-idle-power-budget]].
+
+## Demo (run A)
+
+`--demo-widgets [reset]` seeds eleven notes: the six of phase 1 (now with stamps
+and a ruling) plus a reminder in 3 hours, an overdue one (the clock cat), Tangan
+with Kotak and tape, Mono with Titik and a pin, a 60 % see-through one with a
+heart, and a Kotak checklist (0 of 3). `DI_WIDGETS_TILT=1` turns the lean on. The
+island notice has its own scene, `sticky-reminder`, in the demo sheet.
+
+## Verified and not verified (run A)
+
+Verified: `cargo test --locked` (pure modules, the real-window host tests above,
+settings layout), and the debug demo on this PC captured window by window with
+`PrintWindow` (every paper, the chip, the clock cat, the progress bars and
+counts, the stamps, the rulings, the tape and the pin, Tangan and Mono, the lean
+with `DI_WIDGETS_TILT=1`, Indonesian and English).
+Not verified live: a real mouse drag and Alt-drag, the Alt key-up swallow, a
+reminder over other apps and after sleep or a clock change, the wiggle and
+confetti as motion, the see-through over real windows (alpha does not show in
+`PrintWindow`), Ink Free's look on a machine that lacks it (it was on this one),
+the colour popover and the "Atur sendiri" entry on screen (their layout and
+labels are tested; they were not opened because they take the foreground), the
+native menus, the island notice on the real island.

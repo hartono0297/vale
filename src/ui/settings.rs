@@ -99,6 +99,7 @@ use crate::sources::battery::battery_present;
 use crate::theme::{self, Accent, CatAccessory, CatColor, Surface, WindowPalette, WindowTheme};
 use crate::tiles::{CustomKind, CustomProblem, CustomTile, LABEL_MAX, ShortcutTiles, TARGET_MAX};
 use crate::widgets::prefs::{FullscreenRule, WidgetLayer, WidgetPrefs};
+use crate::widgets::templates::Template;
 
 /// Posted to the owner for each change: `lparam` is a `Box<Action>` raw
 /// pointer the owner frees (`take_action`). WM_APP + 1..7 are taken.
@@ -156,7 +157,10 @@ pub enum Action {
     WidgetsFullscreen(FullscreenRule),
     WidgetsLock(bool),
     WidgetsPeek(bool),
-    WidgetAdd,
+    /// "Miring sedikit".
+    WidgetsTilt(bool),
+    /// The gallery card's (+): a note, from the template chosen in its menu.
+    WidgetAdd(Template),
     WidgetHighlight,
     CliStart(CliStart),
     Robot(bool),
@@ -1759,6 +1763,7 @@ impl Settings {
             (Hit::WidgetsShow, old.widgets.show, new.widgets.show),
             (Hit::WidgetsLock, old.widgets.lock, new.widgets.lock),
             (Hit::WidgetsPeek, old.widgets.cat_peek, new.widgets.cat_peek),
+            (Hit::WidgetsTilt, old.widgets.tilt, new.widgets.tilt),
         ] {
             if was != is {
                 self.anims.slide_toggle(hit, was, is, now);
@@ -2212,6 +2217,25 @@ impl Settings {
         }
     }
 
+    /// The gallery (+): the template menu is opened under the button once the
+    /// state is released. No button in the layout (it scrolled away) is no menu.
+    fn template_menu_after(&self) -> Vec<After> {
+        let rect = self.layout.controls.iter().find_map(|c| match c {
+            Control::IconButton { hit: Hit::WidgetAdd, rect, .. } => Some(*rect),
+            _ => None,
+        });
+        let Some(rect) = rect else { return Vec::new() };
+        let k = self.scale();
+        let mut at = windows::Win32::Foundation::POINT {
+            x: (rect.x * k).round() as i32,
+            y: ((rect.y + rect.h) * k).round() as i32 + 2,
+        };
+        unsafe {
+            let _ = windows::Win32::Graphics::Gdi::ClientToScreen(self.hwnd, &mut at);
+        }
+        vec![After::TemplateMenu(at.x, at.y, self.model.lang)]
+    }
+
     /// A click on `hit`. Returns what must happen once the state is released.
     fn on_click(&mut self, hit: Hit) -> Vec<After> {
         if hit != Hit::GoogleDisconnect && self.confirm {
@@ -2257,8 +2281,11 @@ impl Settings {
             }
             Hit::WidgetsLock => post(Action::WidgetsLock(!m.widgets.lock)),
             Hit::WidgetsPeek => post(Action::WidgetsPeek(!m.widgets.cat_peek)),
+            Hit::WidgetsTilt => post(Action::WidgetsTilt(!m.widgets.tilt)),
             // At the cap the (+) is off and takes no click; a stray one adds nothing.
-            Hit::WidgetAdd => post(Action::WidgetAdd),
+            // It opens the template menu under the button (`After::TemplateMenu`),
+            // which posts `WidgetAdd` with the choice.
+            Hit::WidgetAdd => self.template_menu_after(),
             Hit::WidgetCard => post(Action::WidgetHighlight),
             Hit::Robot => post(Action::Robot(!m.robot)),
             Hit::Motion(v) if v != m.robot_motion => post(Action::RobotMotion(v)),
@@ -2963,6 +2990,8 @@ enum After {
     Browse,
     /// The Nama field takes this text (the template editor opening).
     SetName(String),
+    /// The sticky note templates, as a native menu at this screen point.
+    TemplateMenu(i32, i32, Lang),
 }
 
 fn run_after(hwnd: HWND, owner: HWND, after: Vec<After>) {
@@ -2978,6 +3007,12 @@ fn run_after(hwnd: HWND, owner: HWND, after: Vec<After>) {
             },
             After::Browse => browse(hwnd),
             After::SetName(text) => set_name_text(&text),
+            After::TemplateMenu(x, y, lang) => {
+                let at = windows::Win32::Foundation::POINT { x, y };
+                if let Some(t) = crate::widgets::host::template_menu(hwnd, at, lang) {
+                    post_action(owner, Action::WidgetAdd(t));
+                }
+            }
             After::OpenDataFolder => {
                 let dir = crate::config::path()
                     .parent()
@@ -4005,7 +4040,8 @@ pub fn run_demo(args: &[String]) {
             Action::WidgetsFullscreen(v) => m.widgets.fullscreen = v,
             Action::WidgetsLock(v) => m.widgets.lock = v,
             Action::WidgetsPeek(v) => m.widgets.cat_peek = v,
-            Action::WidgetAdd => m.sticky_count = (m.sticky_count + 1).min(crate::widgets::sticky::MAX_STICKY),
+            Action::WidgetsTilt(v) => m.widgets.tilt = v,
+            Action::WidgetAdd(_) => m.sticky_count = (m.sticky_count + 1).min(crate::widgets::sticky::MAX_STICKY),
             Action::WidgetHighlight => {}
             Action::Robot(v) => m.robot = v,
             Action::RobotMotion(v) => m.robot_motion = v,

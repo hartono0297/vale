@@ -447,6 +447,8 @@ enum View0 {
 enum DemoNotice {
     /// A due reminder: accent badge, "Selesai".
     Reminder,
+    /// A sticky note's reminder: "Belanja material" with Tunda 10 mnt and Buka.
+    StickyReminder,
     /// A finished focus phase: badge and "Mulai" in the break's sage.
     Pomodoro,
     Claude,
@@ -796,7 +798,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 167] = [
+const SCENES: [Scene; 168] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -888,6 +890,8 @@ const SCENES: [Scene; 167] = [
         ..panel("reminders-12", Page::Reminders)
     },
     notice("reminder-notice", DemoNotice::Reminder),
+    // A sticky note's reminder: Tunda 10 mnt and Buka.
+    notice("sticky-reminder", DemoNotice::StickyReminder),
     // Focus done: the short break waits, so badge and chip are sage.
     Scene {
         pomo: Pomo::Ready,
@@ -2699,6 +2703,15 @@ fn demo_notice(which: DemoNotice, renderer: &Renderer) -> Notice {
                 ),
             ),
             NoticeKind::Reminder { id: "demo".into() },
+        ),
+        DemoNotice::StickyReminder => notice(
+            "Vale",
+            "Belanja material",
+            crate::i18n::time_label(
+                crate::i18n::lang(),
+                NaiveTime::from_hms_opt(17, 0, 0).expect("valid time"),
+            ),
+            NoticeKind::StickyReminder { id: "demo".into() },
         ),
         DemoNotice::Pomodoro => notice(
             tr(Key::Pomodoro),
