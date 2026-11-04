@@ -498,7 +498,7 @@ impl App {
     /// clipboard, for a copy a password manager excluded, and for files and
     /// pictures. The text is never logged.
     fn sticky_prefill(&self) -> Option<String> {
-        if !self.config.widgets.clip_fill || !can_add(self.notes.sticky_count()) {
+        if !cliptext::fill_wanted(self.config.widgets.clip_fill, self.notes.sticky_count()) {
             return None;
         }
         match crate::clipboard::win::read_now(self.hwnd) {

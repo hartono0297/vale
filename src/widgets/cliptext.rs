@@ -7,6 +7,7 @@
 
 use crate::clipboard::kinds::should_skip;
 use crate::clipboard::store::ClipSnapshot;
+use crate::widgets::sticky::can_add;
 
 /// The longest text a prefill (or one drop's block) puts in a note, in chars.
 pub const CLIP_MAX: usize = 2000;
@@ -90,6 +91,14 @@ pub fn cut_before(text: &str, end: usize) -> String {
 pub fn prefill(raw: &str) -> Option<String> {
     let text = cap(&normalize(raw));
     (!text.is_empty()).then_some(text)
+}
+
+/// Whether a new note should read the clipboard at all: "Isi dari clipboard"
+/// is on and one more note fits. Every sheet of every stack counts toward the
+/// cap, a prefilled note is one sheet like any other, and at the cap nothing
+/// is read (no note is made).
+pub fn fill_wanted(on: bool, sheets: usize) -> bool {
+    on && can_add(sheets)
 }
 
 /// The prefill for what `win::read` found. The excluded formats (a password

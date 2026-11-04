@@ -469,11 +469,12 @@ fn present_alpha(s: &mut State, i: usize) {
     }
 }
 
-/// Something keeps a tucked note out: the pointer is over it, it has the
-/// keyboard, it is being dragged, a reminder raised it, or one of its
-/// popovers is open.
+/// Something keeps a tucked note out: the pointer is over it, something is
+/// being dragged over it to be dropped, it has the keyboard, it is being
+/// dragged, a reminder raised it, or one of its popovers is open.
 fn keep_out(w: &Win) -> bool {
     w.pointer_in
+        || w.drop_hover
         || w.edit.is_some()
         || w.drag.is_some()
         || w.raised
@@ -2341,7 +2342,8 @@ fn apply_edit(s: &mut State, i: usize, e: &Edit) {
 }
 
 /// A drag that a note takes is over (or has left) window `hwnd`: its dashed
-/// outline shows. Called from the drop target's callbacks, which reach the
+/// outline shows. A tucked note slides out while it is over (`keep_out`), so
+/// the drop lands in the note, never in a tab. Called from the drop target's callbacks, which reach the
 /// state only through `with` (a busy state just skips the redraw).
 pub(super) fn drop_hover(hwnd: HWND, on: bool) {
     let _ = with(|s| {
@@ -2349,6 +2351,10 @@ pub(super) fn drop_hover(hwnd: HWND, on: bool) {
         if s.wins[i].drop_hover != on {
             s.wins[i].drop_hover = on;
             s.wins[i].dirty = true;
+            // A tucked note comes out under a drag like under a hover, and
+            // goes back after the grace once the drag leaves or drops (the
+            // same rule as every other thing that keeps it out; no timer).
+            tuck_settle(s, i);
             draw(s, i);
         }
         Some(())
@@ -2916,6 +2922,17 @@ struct MenuInfo {
     lock: bool,
 }
 
+/// "Kirim ke HP" on window `hwnd`: the id of the sheet the window shows now
+/// (after any flips) goes to the owner, never a stack's first or bottom sheet.
+fn send_to_phone(hwnd: HWND) {
+    let _ = with(|s| {
+        let i = idx_of(s, hwnd)?;
+        let id = s.wins[i].id.clone();
+        push(s, WidgetEvent::SendToPhone { id });
+        Some(())
+    });
+}
+
 fn context_menu(hwnd: HWND, at: POINT) {
     let data = with(|s| {
         let i = idx_of(s, hwnd)?;
@@ -3082,14 +3099,7 @@ fn context_menu(hwnd: HWND, at: POINT) {
         }
         CMD_REMIND_CUSTOM => open_remind_entry(hwnd),
         CMD_REMIND_CLEAR => set_remind(hwnd, None),
-        CMD_SEND_PHONE => {
-            let _ = with(|s| {
-                let i = idx_of(s, hwnd)?;
-                let id = s.wins[i].id.clone();
-                push(s, WidgetEvent::SendToPhone { id });
-                Some(())
-            });
-        }
+        CMD_SEND_PHONE => send_to_phone(hwnd),
         CMD_PIN => set_pinned(hwnd, !pinned),
         CMD_ROLL => toggle_rolled(hwnd),
         CMD_UNSTACK => {
@@ -5168,6 +5178,184 @@ mod tests {
     fn the_stack_menu_item_and_the_tuck_item_are_the_documented_commands() {
         assert_eq!((CMD_UNSTACK, CMD_TUCK), (24, 25));
         assert_eq!(CMD_ROLL, 21);
+    }
+
+    // ------------------------------------------------ Run B finish: interplay
+
+    #[test]
+    fn the_menu_ids_are_distinct_and_the_documented_ones() {
+        assert_eq!((CMD_UNSTACK, CMD_TUCK, CMD_SEND_PHONE), (24, 25, 26));
+        let all = [
+            CMD_PIN,
+            CMD_ROLL,
+            CMD_UNSTICK,
+            CMD_DELETE,
+            CMD_UNSTACK,
+            CMD_TUCK,
+            CMD_SEND_PHONE,
+            CMD_REMIND_CUSTOM,
+            CMD_REMIND_CLEAR,
+        ];
+        for (i, a) in all.iter().enumerate() {
+            for b in &all[i + 1..] {
+                assert_ne!(a, b);
+            }
+        }
+        // The ranges (paper 1.., remind 30.., stamp 50..) hold none of them.
+        let ranges = [
+            (CMD_PAPER, CMD_PAPER + Paper::ALL.len()),
+            (CMD_REMIND, CMD_REMIND + Preset::ALL.len()),
+            (CMD_STAMP, CMD_STAMP + Stamp::ALL.len()),
+        ];
+        for id in all {
+            for (lo, hi) in ranges {
+                assert!(!(lo..hi).contains(&id), "{id} in {lo}..{hi}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_drop_on_a_tucked_note_brings_it_out_and_appends_to_that_note() {
+        let displays = vec![display("A", 0, true, 96)];
+        for animate in [true, false] {
+            let notes = vec![tucked_note("n1", Edge::Right, 300.0)];
+            let mut host = WidgetHost::new(HWND::default());
+            let mut c = ctx(&notes, &displays);
+            c.animate = animate;
+            host.sync(&c);
+            let hwnd = with(|s| s.wins[0].hwnd).unwrap();
+            assert_eq!(with(|s| s.wins[0].slide.to).unwrap(), 0.0, "only the tab");
+            // A drag arrives over the tab: the note comes out like under a hover.
+            drop_hover(hwnd, true);
+            assert_eq!(with(|s| s.wins[0].slide.to).unwrap(), 1.0, "out (animate {animate})");
+            assert!(with(|s| s.wins[0].grace.is_none()).unwrap());
+            // The drop appends to that note.
+            let _ = host.drain();
+            assert!(drop_into(hwnd, &lines(&["https://example.com"])));
+            assert_eq!(
+                with(|s| s.wins[0].text.clone()).unwrap(),
+                "Nomor penting\nhttps://example.com"
+            );
+            // The drag is over (a drop clears the outline the same way as a
+            // leave): the grace starts, then it is a tab again. Nothing stuck.
+            drop_hover(hwnd, false);
+            assert!(!with(|s| s.wins[0].drop_hover).unwrap());
+            assert!(with(|s| s.wins[0].grace.is_some()).unwrap(), "the grace runs");
+            let t0 = Instant::now();
+            host.tick(t0 + Duration::from_millis(400));
+            assert_eq!(with(|s| s.wins[0].slide.to).unwrap(), 0.0, "back in");
+            let end = t0 + Duration::from_millis(900);
+            host.tick(end);
+            assert!(!host.moving(end), "nothing is left running");
+            assert_eq!(with(|s| s.wins[0].slide.value(end)).unwrap(), 0.0);
+            host.shutdown();
+        }
+    }
+
+    #[test]
+    fn a_drag_that_leaves_a_tucked_note_without_a_drop_lets_it_slide_back() {
+        let displays = vec![display("A", 0, true, 96)];
+        let notes = vec![tucked_note("n1", Edge::Left, 100.0)];
+        let mut host = WidgetHost::new(HWND::default());
+        let mut c = ctx(&notes, &displays);
+        c.animate = false;
+        host.sync(&c);
+        let hwnd = with(|s| s.wins[0].hwnd).unwrap();
+        drop_hover(hwnd, true);
+        assert_eq!(with(|s| s.wins[0].slide.to).unwrap(), 1.0);
+        // Two enters in a row (a second DragEnter) change nothing more.
+        drop_hover(hwnd, true);
+        drop_hover(hwnd, false);
+        let t0 = Instant::now();
+        host.tick(t0 + Duration::from_millis(400));
+        assert_eq!(with(|s| s.wins[0].slide.to).unwrap(), 0.0, "a tab again, no drop needed");
+        assert!(!host.moving(t0 + Duration::from_millis(900)));
+        host.shutdown();
+    }
+
+    #[test]
+    fn a_drop_on_a_stack_lands_in_the_shown_sheet_not_the_first() {
+        let displays = vec![display("A", 0, true, 96)];
+        let mut store = stack_of_three("stack-drop");
+        let (a, b, c) = (id_with(&store, "a"), id_with(&store, "b"), id_with(&store, "c"));
+        let mut host = WidgetHost::new(HWND::default());
+        host.sync(&ctx(store.list(), &displays));
+        let hwnd = with(|s| s.wins[0].hwnd).unwrap();
+        assert_eq!(with(|s| s.wins[0].id.clone()).unwrap(), a, "sheet 1 is shown");
+        // Flip to the third sheet, then drop.
+        let _ = with(|s| show_sheet(s, 0, 2));
+        assert_eq!(with(|s| s.wins[0].id.clone()).unwrap(), c);
+        let _ = host.drain();
+        assert!(drop_into(hwnd, &lines(&["C:\\x.txt"])));
+        let events = host.drain();
+        assert!(
+            events.contains(&WidgetEvent::Text {
+                id: c.clone(),
+                text: "c\nC:\\x.txt".into(),
+            }),
+            "{events:?}"
+        );
+        assert!(
+            !events.iter().any(|e| matches!(e, WidgetEvent::Text { id, .. } if *id == a || *id == b)),
+            "no other sheet gets text: {events:?}"
+        );
+        // Applied: only the shown sheet changed.
+        let out = apply(&mut store, events, 100);
+        assert!(out.changed);
+        let text = |id: &str| store.get(id).unwrap().text.clone();
+        assert_eq!((text(&a), text(&b), text(&c)), ("a".into(), "b".into(), "c\nC:\\x.txt".into()));
+        // Flip back: sheet c keeps what the drop added in the window's copy.
+        let _ = with(|s| show_sheet(s, 0, 0));
+        let _ = with(|s| show_sheet(s, 0, 2));
+        assert_eq!(with(|s| s.wins[0].text.clone()).unwrap(), "c\nC:\\x.txt");
+        host.shutdown();
+    }
+
+    #[test]
+    fn send_to_phone_on_a_stack_sends_the_sheet_the_window_shows() {
+        let displays = vec![display("A", 0, true, 96)];
+        let store = stack_of_three("stack-phone");
+        let (a, b) = (id_with(&store, "a"), id_with(&store, "b"));
+        let mut host = WidgetHost::new(HWND::default());
+        host.sync(&ctx(store.list(), &displays));
+        let hwnd = with(|s| s.wins[0].hwnd).unwrap();
+        let _ = host.drain();
+        send_to_phone(hwnd);
+        assert_eq!(host.drain(), vec![WidgetEvent::SendToPhone { id: a }], "the shown one at first");
+        let _ = with(|s| show_sheet(s, 0, 1));
+        let _ = host.drain();
+        send_to_phone(hwnd);
+        let events = host.drain();
+        assert!(events.contains(&WidgetEvent::SendToPhone { id: b.clone() }), "{events:?}");
+        let sent: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, WidgetEvent::SendToPhone { .. }))
+            .collect();
+        assert_eq!(sent.len(), 1);
+        host.shutdown();
+    }
+
+    #[test]
+    fn the_drop_target_is_registered_once_per_window_and_a_stack_change_keeps_it() {
+        let displays = vec![display("A", 0, true, 96)];
+        let mut store = stack_of_three("stack-register");
+        let a = id_with(&store, "a");
+        let mut host = WidgetHost::new(HWND::default());
+        host.sync(&ctx(store.list(), &displays));
+        assert_eq!(drop::live_targets(), 1, "one window for the whole stack");
+        // A sheet leaves: a second window, a second target; the stack's own
+        // window keeps the one it has.
+        let stack_hwnd = with(|s| s.wins[0].hwnd).unwrap();
+        crate::widgets::apply::stack_out(&mut store, &displays, &a);
+        host.sync(&ctx(store.list(), &displays));
+        assert_eq!(with(|s| s.wins.len()).unwrap(), 2);
+        assert_eq!(drop::live_targets(), 2);
+        assert!(with(|s| s.wins.iter().any(|w| w.hwnd == stack_hwnd)).unwrap());
+        // Syncing again changes nothing.
+        host.sync(&ctx(store.list(), &displays));
+        assert_eq!(drop::live_targets(), 2);
+        host.shutdown();
+        assert_eq!(drop::live_targets(), 0, "every window revoked");
     }
 
     #[test]

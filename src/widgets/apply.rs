@@ -659,4 +659,60 @@ mod tests {
         );
         assert_eq!(out, Outcome::default());
     }
+
+    /// A store with `n` sticky sheets: the first `stacked` of them in stacks of
+    /// at most four, the rest plain.
+    fn crowded(name: &str, n: usize, stacked: usize) -> NotesStore {
+        let mut notes = store(name);
+        for k in 0..n {
+            let mut s = Sticky::default();
+            if k < stacked {
+                s.stack = Some(format!("stk{}", k / 4));
+                s.stack_order = (k % 4) as u32;
+                s.stack_top = k % 4 == 0;
+            }
+            notes.create_sticky(s, k as i64).expect("room");
+        }
+        notes
+    }
+
+    #[test]
+    fn at_twenty_sheets_with_stacks_every_way_to_make_a_note_makes_nothing() {
+        use crate::widgets::sticky::{MAX_STICKY, can_add};
+        // 20 sheets: 8 of them inside two stacks, 12 plain (14 windows).
+        let mut notes = crowded("cap20", MAX_STICKY, 8);
+        assert_eq!(notes.sticky_count(), MAX_STICKY, "sheets, not windows, are counted");
+        // The count every way to make a note asks (the gallery +, the tray,
+        // hotkey 7, the header (+), the Notes page pin and the prefill all ask
+        // `can_add(sticky_count())`; the host's (+) asks `sheet_total`, the same
+        // number, tested in the host).
+        assert!(!can_add(notes.sticky_count()));
+        // The store itself refuses, whatever the caller does.
+        assert_eq!(notes.create_sticky(Sticky::default(), 99), None);
+        assert_eq!(notes.sticky_count(), MAX_STICKY);
+        // A prefill is not read at the cap, with the switch on or off.
+        assert!(!crate::widgets::cliptext::fill_wanted(true, notes.sticky_count()));
+        assert!(!crate::widgets::cliptext::fill_wanted(false, notes.sticky_count()));
+        // One sheet fewer: a note fits, and the prefill is wanted only when on.
+        let notes = crowded("cap19", MAX_STICKY - 1, 8);
+        assert!(crate::widgets::cliptext::fill_wanted(true, notes.sticky_count()));
+        assert!(!crate::widgets::cliptext::fill_wanted(false, notes.sticky_count()));
+    }
+
+    #[test]
+    fn a_prefilled_note_counts_as_one_sheet_like_any_other() {
+        use crate::widgets::sticky::{MAX_STICKY, can_add};
+        let mut notes = crowded("cap-prefill", MAX_STICKY - 1, 4);
+        let filled = crate::widgets::cliptext::prefill("Jl. Kenanga 12\r\nKirim sebelum Jumat").unwrap();
+        let id = notes.create_sticky(Sticky::default(), 50).expect("the 20th fits");
+        notes.set_text(&id, &filled, 50);
+        assert_eq!(notes.sticky_count(), MAX_STICKY, "one sheet, not one per line");
+        assert!(!can_add(notes.sticky_count()), "now full");
+        assert_eq!(notes.create_sticky(Sticky::default(), 51), None);
+        // Taking a sheet out of its stack and off the desktop frees one place.
+        let stacked = notes.list().iter().find(|n| n.sticky.as_ref().is_some_and(|s| s.stack.is_some())).unwrap().id.clone();
+        assert!(notes.set_sticky(&stacked, None));
+        assert_eq!(notes.sticky_count(), MAX_STICKY - 1);
+        assert!(can_add(notes.sticky_count()));
+    }
 }
