@@ -150,7 +150,7 @@ pub enum Action {
     Lyrics(bool),
     Shell(Shell),
     OpenMode(OpenMode),
-    /// Settings -> Widget: the five settings, the gallery's (+) and a click
+    /// Settings -> Widget: the seven settings, the gallery's (+) and a click
     /// on its active card.
     WidgetsShow(bool),
     WidgetsLayer(WidgetLayer),

@@ -3632,7 +3632,7 @@ const TILE_PREVIEW_H: f32 = 104.0;
 const TILE_H: f32 = 190.0;
 const TILE_PAD: f32 = 12.0;
 
-/// Widget: "Di desktop" (five settings), then "Galeri" with the card of the
+/// Widget: "Di desktop" (seven settings), then "Galeri" with the card of the
 /// one widget there is, the sticky notes.
 fn widgets_page(b: &mut Builder, s: &State) {
     let p = s.widgets;
@@ -5650,7 +5650,7 @@ mod tests {
     /// lists), Clipboard (history and screenshot), Tombol pintas (the header
     /// and seven rows, 10 px past the margin at the minimum size) and Fitur
     /// (five cards).
-    // Widget holds the five settings and the gallery's card: 460 px of
+    // Widget holds the seven settings and the gallery's card: 460 px of
     // content in a 400 px high viewport at the minimum size, so it scrolls.
     const SCROLLING: [Section; 7] = [
         Section::Appearance,
@@ -8930,7 +8930,7 @@ mod tests {
             let (_, full, sel) = l.segmented(Group::WidgetFullscreen).expect("Layar penuh");
             assert_eq!(full[sel].hit, Hit::WidgetsFullscreen(FullscreenRule::Hide));
             assert_eq!(full[1].hit, Hit::WidgetsFullscreen(FullscreenRule::Keep));
-            // The four toggles.
+            // The five toggles and the gallery's (+).
             let hits: Vec<Hit> = l.hits().into_iter().map(|(h, _)| h).collect();
             for h in [Hit::WidgetsShow, Hit::WidgetsLock, Hit::WidgetsPeek, Hit::WidgetsTilt, Hit::WidgetsClipFill, Hit::WidgetAdd] {
                 assert!(hits.contains(&h), "{lang:?} {h:?}");
@@ -9039,7 +9039,7 @@ mod tests {
 
     #[test]
     fn the_widget_section_scrolls_at_the_minimum_size_and_not_in_a_tall_window() {
-        // At 720 x 520 the five settings and the gallery are taller than the
+        // At 720 x 520 the seven settings and the gallery are taller than the
         // viewport (see SCROLLING); a tall window shows them whole.
         let s = widgets_state(Lang::Id, 2);
         let small = layout(Section::Widgets, &s, &Estimate);

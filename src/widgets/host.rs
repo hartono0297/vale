@@ -3130,6 +3130,35 @@ mod tests {
     }
 
     #[test]
+    fn a_drop_without_the_keyboard_keeps_the_note_within_the_edit_limit() {
+        // The EDIT takes at most `edit::LIMIT` units (each break is two), so a
+        // note set past it could be shown but no longer typed into.
+        let edit_units = |t: &str| t.encode_utf16().count() + t.matches('\n').count();
+        let displays = vec![display("A", 0, true, 96)];
+        let near = "n".repeat(edit::LIMIT - 500);
+        let notes = vec![note_with("n1", &near, |_| {})];
+        let mut host = WidgetHost::new(HWND::default());
+        host.sync(&ctx(&notes, &displays));
+        let hwnd = with(|s| s.wins[0].hwnd).unwrap();
+        let block = vec!["x".repeat(99); 20];
+        assert!(drop_into(hwnd, &block), "there is room for some of it");
+        let text = with(|s| s.wins[0].text.clone()).unwrap();
+        assert!(text.starts_with(&near), "what was there stays");
+        assert!(edit_units(&text) <= edit::LIMIT, "{}", edit_units(&text));
+        assert!(edit_units(&text) > edit::LIMIT - 120, "it fills what fits");
+        // One long line fills it to the limit exactly.
+        assert!(drop_into(hwnd, &lines(&[&"y".repeat(500)])));
+        let text = with(|s| s.wins[0].text.clone()).unwrap();
+        assert_eq!(edit_units(&text), edit::LIMIT);
+        // Full: a drop adds nothing and says so, with no event.
+        let _ = host.drain();
+        assert!(!drop_into(hwnd, &lines(&["more"])));
+        assert_eq!(with(|s| s.wins[0].text.clone()).unwrap(), text);
+        assert!(host.drain().is_empty());
+        host.shutdown();
+    }
+
+    #[test]
     fn a_drop_onto_a_note_with_the_keyboard_goes_through_its_edit() {
         let _focus = keyboard_lock();
         let displays = vec![display("A", 0, true, 96)];

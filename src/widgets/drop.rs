@@ -34,7 +34,8 @@ use windows::Win32::System::SystemServices::MODIFIERKEYS_FLAGS;
 use windows::core::{Ref, implement, w};
 
 use crate::shelf_ole::{choose_effect, read_paths_max};
-use crate::widgets::cliptext::{cap, normalize};
+use crate::widgets::cliptext::{cap, cut_before, normalize};
+use crate::widgets::edit;
 use crate::widgets::host;
 
 /// The most paths one drop adds.
@@ -87,16 +88,40 @@ pub fn drop_lines(kind: DropKind) -> Vec<String> {
 
 /// `text` with `lines` added at the end. An empty note becomes just the
 /// lines joined with LF; otherwise `text`, an LF (none when it already ends
-/// with one), then the lines. The added block is cut to `CLIP_MAX` chars.
+/// with one), then the lines. The added block is cut to `CLIP_MAX` chars,
+/// and further so the note stays within the EDIT's `edit::LIMIT`: a note set
+/// past it shows whole but takes no more typing. No room: `text` unchanged.
 pub fn append_lines(text: &str, lines: &[String]) -> String {
+    append_within(text, lines, edit::LIMIT)
+}
+
+/// The length of model text `t` in the EDIT, where each break is `\r\n`.
+fn edit_units(t: &str) -> usize {
+    t.encode_utf16().count() + t.matches('\n').count()
+}
+
+/// `append_lines` with the note held to `limit` EDIT units.
+fn append_within(text: &str, lines: &[String], limit: usize) -> String {
     let block = cap(&lines.join("\n"));
+    let sep = if text.is_empty() || text.ends_with('\n') { "" } else { "\n" };
+    let room = limit.saturating_sub(edit_units(text) + edit_units(sep));
+    let block = if edit_units(&block) <= room {
+        block
+    } else {
+        // The longest prefix that fits, then the clip cut rule on it.
+        let mut used = 0;
+        let end = block
+            .char_indices()
+            .find(|&(_, c)| {
+                used += c.len_utf16() + usize::from(c == '\n');
+                used > room
+            })
+            .map_or(block.len(), |(i, _)| i);
+        cut_before(&block, end)
+    };
     if block.is_empty() {
         return text.to_owned();
     }
-    if text.is_empty() {
-        return block;
-    }
-    let sep = if text.ends_with('\n') { "" } else { "\n" };
     format!("{text}{sep}{block}")
 }
 
@@ -479,6 +504,30 @@ mod tests {
         // A single huge line is cut at the cap.
         let got = append_lines("", &[ "y".repeat(CLIP_MAX + 500) ]);
         assert_eq!(got.chars().count(), CLIP_MAX);
+    }
+
+    #[test]
+    fn the_note_stays_within_the_edit_limit() {
+        // Each break is two EDIT units (`\r\n`).
+        assert_eq!(edit_units("a\nb"), 4);
+        assert_eq!(edit_units("\u{1F600}"), 2);
+        // Room for the separator and 5 more: one line is cut at the room.
+        assert_eq!(append_within("abc", &s(&["xxxxxxxxxx"]), 10), "abc\nxxxxx");
+        // Whole lines when a break is near the cut: "one" fits, "two" does not.
+        assert_eq!(append_within("abc", &s(&["one", "two"]), 12), "abc\none");
+        // A note already at the limit, or one past it, takes nothing.
+        assert_eq!(append_within("abcd", &s(&["x"]), 4), "abcd");
+        assert_eq!(append_within("abc", &s(&["x"]), 5), "abc", "only the separator fits");
+        assert_eq!(append_within("abcdef", &s(&["x"]), 4), "abcdef");
+        // An empty note has no separator; a pair is never split.
+        assert_eq!(append_within("", &s(&["\u{1F600}\u{1F600}"]), 3), "\u{1F600}");
+        // The real limit: a note near it ends at it, never past.
+        let near = "n".repeat(edit::LIMIT - 500);
+        let got = append_lines(&near, &vec!["x".repeat(99); 20]);
+        assert!(got.starts_with(&near));
+        assert!(edit_units(&got) <= edit::LIMIT, "{}", edit_units(&got));
+        let full = "n".repeat(edit::LIMIT);
+        assert_eq!(append_lines(&full, &s(&["x"])), full);
     }
 
     #[test]

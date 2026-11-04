@@ -63,13 +63,21 @@ pub fn normalize(raw: &str) -> String {
 /// `CUT_WINDOW` chars before the cap when there is one, else at the cap
 /// (always a char boundary). No ellipsis. Trailing whitespace is trimmed.
 pub fn cap(text: &str) -> String {
-    let Some((end, _)) = text.char_indices().nth(CLIP_MAX) else {
-        return text.to_owned();
-    };
+    match text.char_indices().nth(CLIP_MAX) {
+        Some((end, _)) => cut_before(text, end),
+        None => text.to_owned(),
+    }
+}
+
+/// `text` cut at or before byte `end` (a char boundary), the rule `cap`
+/// uses: at the last line break in the final `CUT_WINDOW` chars before `end`
+/// when there is one, else at `end`. Trailing whitespace is trimmed.
+pub fn cut_before(text: &str, end: usize) -> String {
     let head = &text[..end];
     let window_start = head
         .char_indices()
-        .nth(CLIP_MAX - CUT_WINDOW)
+        .rev()
+        .nth(CUT_WINDOW - 1)
         .map_or(0, |(i, _)| i);
     let cut = head[window_start..]
         .rfind('\n')
