@@ -434,6 +434,175 @@ mod tests {
         assert!(!set_reminder(&mut notes, "n0-nope", Some(1), false));
     }
 
+
+    /// Three sheets of one stack in a store: ids in order.
+    fn stack_store(name: &str) -> (NotesStore, [String; 3]) {
+        let mut notes = store(name);
+        let ids: Vec<String> = (0..3u32)
+            .map(|k| {
+                let id = notes
+                    .create_sticky(
+                        Sticky {
+                            stack: Some("s1".into()),
+                            stack_order: k,
+                            stack_top: k == 0,
+                            rect: DipRect::new(400.0, 200.0, 280.0, 208.0),
+                            monitor: "A".into(),
+                            ..Sticky::default()
+                        },
+                        1 + i64::from(k),
+                    )
+                    .unwrap();
+                notes.set_text(&id, &format!("sheet {k}"), 1 + i64::from(k));
+                id
+            })
+            .collect();
+        (notes, [ids[0].clone(), ids[1].clone(), ids[2].clone()])
+    }
+
+    fn sticky_of(notes: &NotesStore, id: &str) -> Sticky {
+        notes.get(id).unwrap().sticky.clone().unwrap()
+    }
+
+    #[test]
+    fn a_move_a_pin_a_roll_and_a_tuck_of_one_sheet_reach_the_whole_stack() {
+        use crate::widgets::tuck::Edge;
+        let (mut notes, ids) = stack_store("stack-propagate");
+        let out = apply(
+            &mut notes,
+            vec![
+                WidgetEvent::Placed {
+                    id: ids[0].clone(),
+                    monitor: "B".into(),
+                    rect: DipRect::new(40.0, 56.0, 300.0, 220.0),
+                },
+                WidgetEvent::Pinned { id: ids[0].clone(), on: true },
+                WidgetEvent::Rolled { id: ids[0].clone(), on: true },
+                WidgetEvent::Tuck { id: ids[0].clone(), edge: Some(Edge::Left) },
+            ],
+            9,
+        );
+        assert!(out.changed && !out.structural);
+        for id in &ids {
+            let s = sticky_of(&notes, id);
+            assert_eq!(s.rect, DipRect::new(40.0, 56.0, 300.0, 220.0), "{id}");
+            assert_eq!((s.monitor.as_str(), s.pinned, s.rolled, s.tuck), ("B", true, true, Some(Edge::Left)), "{id}");
+        }
+        // Brought out again: every sheet is.
+        apply(&mut notes, vec![WidgetEvent::Tuck { id: ids[1].clone(), edge: None }], 9);
+        assert!(ids.iter().all(|id| sticky_of(&notes, id).tuck.is_none()));
+        // A paper is the sheet's own.
+        apply(&mut notes, vec![WidgetEvent::Paper { id: ids[2].clone(), paper: Paper::Plum }], 9);
+        assert_eq!(sticky_of(&notes, &ids[0]).paper, Paper::Krem);
+        assert_eq!(sticky_of(&notes, &ids[2]).paper, Paper::Plum);
+    }
+
+    #[test]
+    fn dropping_a_note_on_another_is_structural_and_makes_a_stack() {
+        let mut notes = store("stack-join");
+        let a = notes
+            .create_sticky(Sticky { rect: DipRect::new(10.0, 10.0, 240.0, 208.0), ..Sticky::default() }, 1)
+            .unwrap();
+        let b = notes
+            .create_sticky(Sticky { rect: DipRect::new(500.0, 100.0, 200.0, 160.0), ..Sticky::default() }, 2)
+            .unwrap();
+        let out = apply(
+            &mut notes,
+            vec![WidgetEvent::Stack { dragged: vec![a.clone()], target: vec![b.clone()] }],
+            5,
+        );
+        assert!(out.changed && out.structural);
+        let (sa, sb) = (sticky_of(&notes, &a), sticky_of(&notes, &b));
+        assert_eq!(sa.stack.as_deref(), Some(format!("stk-{b}").as_str()));
+        assert_eq!(sa.stack, sb.stack);
+        assert_eq!((sa.stack_order, sa.stack_top), (0, true), "the dragged sheet first and shown");
+        assert_eq!((sb.stack_order, sb.stack_top), (1, false));
+        assert_eq!(sa.rect, DipRect::new(500.0, 100.0, 260.0, 160.0), "the target's, at least MIN_W wide");
+        assert_eq!(sa.rect, sb.rect);
+        // Joining something that is gone changes nothing.
+        let out = apply(
+            &mut notes,
+            vec![WidgetEvent::Stack { dragged: vec![a.clone()], target: vec!["n0-nope".into()] }],
+            5,
+        );
+        assert_eq!(out, Outcome::default());
+    }
+
+    #[test]
+    fn a_flip_is_saved_as_the_top_and_taking_a_sheet_out_is_left_to_the_owner() {
+        let (mut notes, ids) = stack_store("stack-show");
+        let out = apply(&mut notes, vec![WidgetEvent::StackShow { id: ids[2].clone() }], 5);
+        assert!(out.changed && !out.structural, "the window already shows it");
+        let tops: Vec<bool> = ids.iter().map(|id| sticky_of(&notes, id).stack_top).collect();
+        assert_eq!(tops, [false, false, true]);
+        let out = apply(&mut notes, vec![WidgetEvent::StackOut { id: ids[2].clone() }], 5);
+        assert_eq!(out.unstack, vec![ids[2].clone()]);
+        assert!(out.structural && !out.changed);
+        // The owner places it beside the stack on the displays it knows.
+        let d = two();
+        assert!(stack_out(&mut notes, &d, &ids[2]));
+        let s = sticky_of(&notes, &ids[2]);
+        assert_eq!((s.stack.clone(), s.stack_order, s.stack_top, s.tuck), (None, 0, false, None));
+        assert_eq!(s.monitor, "A", "stays on its monitor");
+        assert_eq!((s.rect.x, s.rect.y, s.rect.w), (696.0, 200.0, 280.0), "to the right of the stack: gap 12, on the grid");
+        // The next sheet in order shows now: the first.
+        assert!(sticky_of(&notes, &ids[0]).stack_top, "wraps to the first");
+        assert!(!sticky_of(&notes, &ids[1]).stack_top);
+    }
+
+    #[test]
+    fn deleting_or_unsticking_a_sheet_leaves_the_rest_of_the_stack() {
+        let (mut notes, ids) = stack_store("stack-leave");
+        // The shown sheet is deleted: the next one shows.
+        let out = apply(&mut notes, vec![WidgetEvent::Delete { id: ids[0].clone() }], 5);
+        assert!(out.changed && out.structural);
+        assert!(notes.get(&ids[0]).is_none());
+        let (b, c) = (sticky_of(&notes, &ids[1]), sticky_of(&notes, &ids[2]));
+        assert_eq!((b.stack.as_deref(), b.stack_order, b.stack_top), (Some("s1"), 0, true));
+        assert_eq!((c.stack.as_deref(), c.stack_order, c.stack_top), (Some("s1"), 1, false));
+        // Unstick one of the last two: the other is a plain note.
+        apply(&mut notes, vec![WidgetEvent::Unstick { id: ids[1].clone() }], 6);
+        assert!(notes.get(&ids[1]).is_some_and(|n| n.sticky.is_none()), "its text stays on the Notes page");
+        let c = sticky_of(&notes, &ids[2]);
+        assert_eq!((c.stack, c.stack_order, c.stack_top), (None, 0, false));
+    }
+
+    #[test]
+    fn a_lone_sheet_of_an_old_or_edited_file_is_made_plain_by_the_next_apply() {
+        let mut notes = store("stack-lone");
+        let id = notes
+            .create_sticky(Sticky { stack: Some("ghost".into()), stack_order: 3, stack_top: true, ..Sticky::default() }, 1)
+            .unwrap();
+        // Any event settles it; so does `settle`.
+        assert!(settle(&mut notes, 1, false));
+        let s = sticky_of(&notes, &id);
+        assert_eq!((s.stack, s.stack_order, s.stack_top), (None, 0, false));
+        assert!(!settle(&mut notes, 1, false), "settled");
+        // A plain note's file is not touched by an apply.
+        let out = apply(&mut notes, vec![WidgetEvent::NeedsClock], 1);
+        assert!(!out.changed);
+    }
+
+    #[test]
+    fn an_overdue_sheet_comes_to_the_top_when_asked() {
+        let (mut notes, ids) = stack_store("stack-overdue");
+        assert!(set_reminder(&mut notes, &ids[2], Some(100), true));
+        assert!(!settle(&mut notes, 1_000, false), "not on every sync: a flip away from it stays");
+        assert!(sticky_of(&notes, &ids[0]).stack_top);
+        assert!(settle(&mut notes, 1_000, true), "at startup and when it fires");
+        assert!(sticky_of(&notes, &ids[2]).stack_top);
+        assert!(!sticky_of(&notes, &ids[0]).stack_top);
+    }
+
+    #[test]
+    fn a_new_note_does_not_land_on_a_stack() {
+        let (notes, _) = stack_store("stack-new");
+        let d = two();
+        let s = sticky_for(notes.list(), &d, &NotchMonitor::Primary, None, 9);
+        let stack_rect = DipRect::new(400.0, 200.0, 280.0, 208.0);
+        assert!(!s.rect.intersects(&stack_rect), "the new note is not on the stack: {:?}", s.rect);
+    }
+
     #[test]
     fn unsticking_and_deleting_are_structural() {
         let mut notes = store("structural");

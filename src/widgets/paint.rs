@@ -1543,6 +1543,78 @@ mod tests {
         );
     }
 
+
+    /// How wide `label` is laid out with tabular figures, dip.
+    fn counter_width(res: &Res, label: &str) -> f32 {
+        let l = res.layout_tabular(label, 10.5, 600, 400.0).expect("a layout");
+        let mut m = DWRITE_TEXT_METRICS::default();
+        unsafe { l.GetMetrics(&mut m) }.expect("metrics");
+        m.widthIncludingTrailingWhitespace
+    }
+
+    #[test]
+    fn a_stacks_counter_and_arrows_fit_left_of_the_six_buttons_at_the_smallest_width() {
+        let res = Res::new(UiFont::Sans).expect("DirectWrite works without a window");
+        let strip = stack_strip();
+        assert_eq!((strip.prev.w, strip.prev.h, strip.next.w, strip.next.h), (20.0, 20.0, 20.0, 20.0));
+        // The widest counter, in the real font with tabular figures, fits its box.
+        for label in ["20 / 20", "10 / 10", "1 / 3", "9 / 20"] {
+            let w = counter_width(&res, label);
+            assert!(w <= strip.counter.w, "{label} is {w} wide, the box is {}", strip.counter.w);
+        }
+        assert_eq!(counter_width(&res, "10 / 20"), counter_width(&res, "88 / 88"), "tabular: the figures do not jitter");
+        // Left to right: previous, counter, next; none overlapping.
+        assert!(strip.prev.x + strip.prev.w <= strip.counter.x);
+        assert!(strip.counter.x + strip.counter.w <= strip.next.x);
+        assert!(strip.prev.x >= 0.0 && strip.prev.y >= 0.0 && strip.prev.y + strip.prev.h <= HEADER_H);
+        // At every width a stack can have, from `stack::MIN_W`: the last arrow
+        // ends before the first of the six right-hand buttons begins.
+        let mut w = crate::widgets::stack::MIN_W;
+        while w <= crate::widgets::sticky::MAX_W {
+            let pin = button_rect(Btn::Pin, w);
+            assert!(strip.next.x + strip.next.w < pin.x, "{w} wide: next ends at {}, Pin starts at {}", strip.next.x + strip.next.w, pin.x);
+            w += 10.0;
+        }
+        // And it is the widest the 20 / 20 can be with both arrows: the same
+        // layout would not fit at the plain minimum (160), which is why a
+        // stack is at least 260.
+        let pin = button_rect(Btn::Pin, crate::widgets::sticky::MIN_W);
+        assert!(strip.next.x + strip.next.w >= pin.x, "a plain minimum note could not hold it");
+    }
+
+    #[test]
+    fn a_stacks_arrows_take_presses_only_while_shown_and_only_on_a_stack() {
+        let (w, h) = (280.0, 208.0);
+        let at = |b: Btn| {
+            let r = button_rect(b, w);
+            (r.x + r.w / 2.0, r.y + r.h / 2.0)
+        };
+        for b in [Btn::Prev, Btn::Next] {
+            let (x, y) = at(b);
+            assert_eq!(target_in(x, y, w, h, false, None, 0.0, true, true), Target::Button(b));
+            // Hidden: the strip, so it drags.
+            assert_eq!(target_in(x, y, w, h, false, None, 0.0, false, true), Target::Header);
+            // Not a stack: no arrows there.
+            assert_eq!(target_in(x, y, w, h, false, None, 0.0, true, false), Target::Header);
+            // Rolled up: the strip is the same.
+            assert_eq!(target_in(x, y, w, 208.0, true, None, 0.0, true, true), Target::Button(b));
+        }
+        // The counter between them is the strip.
+        let strip = stack_strip();
+        assert_eq!(
+            target_in(strip.counter.x + strip.counter.w / 2.0, 18.0, w, h, false, None, 0.0, true, true),
+            Target::Header
+        );
+        // The six buttons are where they were.
+        for b in Btn::ALL {
+            let r = button_rect(b, w);
+            assert_eq!(
+                target_in(r.x + r.w / 2.0, r.y + r.h / 2.0, w, h, false, None, 0.0, true, true),
+                Target::Button(b)
+            );
+        }
+    }
+
     #[test]
     fn a_rolled_note_is_all_strip_and_the_strip_is_36_dip() {
         assert_eq!(HEADER_H, 36.0);
