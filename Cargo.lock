@@ -389,7 +389,7 @@ checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
 
 [[package]]
 name = "vale"
-version = "3.18.0"
+version = "3.19.0"
 dependencies = [
  "chrono",
  "embed-resource",
