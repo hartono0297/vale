@@ -1,6 +1,6 @@
 ---
 tags: [decision, robot, power, timers]
-date: 2026-11-03
+date: 2026-11-04
 ---
 
 # The notch assistant's idle power budget
@@ -313,3 +313,9 @@ adds no timer and no thread, only two more FrameClock users in `WidgetHost::movi
   thread added. The note's snapshot sits in the phone session's state and is read
   only when a phone asks for `/note` or scans the QR; `TIMER_PHONE` 48 and ids
   49-50 are untouched, and nothing polls.
+
+- Sticky notes, Run B finished ([[widgets]], "Integration (Run B finish)"): the
+  four features together still add **no timer, no thread and no `WM_APP`**. A drag
+  over a tucked note brings it out through the same `keep_out` and 300 ms grace
+  on the frame clock as a hover; nothing polls and `TIMER_*` ids stay 45-47 for
+  widgets and 48-50 for the phone.

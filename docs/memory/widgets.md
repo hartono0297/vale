@@ -653,7 +653,7 @@ Spec: feature 10, page 3 card 10 of the mockup.
 
 ### Demo
 
-`--demo-widgets reset` now seeds fifteen notes: the eleven of run A, a stack of
+`--demo-widgets reset` seeds fifteen notes without the clipboard sample note (sixteen with it, see "Integration (Run B finish)"): the eleven of run A, a stack of
 three sheets ("Proyek Dago", Krem, Laut, Plum, sheet 1 shown), and one note tucked
 on the right edge of the notch's monitor. The demo owner gets `NeedsClock` like the
 island, so the slide and the grace run on its own frame clock. Hold Shift while
@@ -821,3 +821,87 @@ read-only page. Spec: the owner's brief (feature 12), mockup page 3 card 12 of
   server's `end`). Editing the note afterwards does not change the page.
 - **Not touched:** the shelf's files, uploads, downloads, thumbnails, page.html,
   share ids, the token and the idle rules; `TIMER_PHONE` 48 and ids 49-50.
+
+
+## Integration (Run B finish)
+
+Run B's four features were built in parallel (clip-drop and send-phone on `main`,
+stacks and tuck on `task/sticky-v2b-stack-tuck`) and merged here with real merge
+commits (never a rebase). The rules where they meet, all decided from the merged
+code and covered by host or apply tests:
+
+- **Window setup.** `sync` makes one window per unit (a stack is one window,
+  `stack::match_units`). After every `create_window()` that returns a window,
+  `drop::register(hwnd)` runs at once, so every unit window is a drop target; a
+  window that is only retargeted (a flip, a join, a split that keeps it) keeps its
+  single registration (registered once per HWND, never twice). `WM_DESTROY` calls
+  `drop::revoke` first, and every way a unit window goes (a sheet leaving, the last
+  sheet gone, `shutdown`) is a `DestroyWindow`, so each passes there. Test:
+  `the_drop_target_is_registered_once_per_window_and_a_stack_change_keeps_it`
+  (count 1, then 2 after a sheet is taken out, then 0 after shutdown).
+  `blank_win` sets `drop_hover: false` next to the stack and tuck fields.
+- **Drop + stack = the shown sheet.** The drop target works by HWND, and
+  `drop_into` reads the window's own `id` / `text`, which a flip swaps
+  (`show_sheet`), so the lines land in the sheet the window shows, never the
+  stack's first or bottom one; the `Text` event carries that sheet's id. The
+  dashed outline follows the visible shape: the top sheet's rectangle (the paper
+  edges under it are not outlined), the note itself while a tucked note is out.
+  Test: `a_drop_on_a_stack_lands_in_the_shown_sheet_not_the_first` (flip to sheet 3,
+  drop, apply: only sheet 3 changed, and flipping back and forth keeps it).
+- **Drop + tuck: the note comes out.** A tab alone is only 16 dip wide and the rest
+  of the window is click-through, so a drag can only reach a tucked note over its
+  tab. `drop_hover(hwnd, true)` (the drop target's `DragEnter`) is now part of
+  `keep_out`, like the pointer, the keyboard, a drag or a popover: the note slides
+  out under the drag (the same slide on the frame clock, instant without
+  animation), and the drop then appends to that note. `drop_hover(hwnd, false)`
+  (`DragLeave` and `Drop` both call it) runs `tuck_settle`, which starts the usual
+  300 ms grace and the slide back in. Nothing can stay stuck out: leaving, dropping
+  or the window going all clear it, and **no timer was added** (the grace counts on
+  the existing frame clock). Tests:
+  `a_drop_on_a_tucked_note_brings_it_out_and_appends_to_that_note` (animate on
+  and off, drop, leave, back to a tab, clock off) and
+  `a_drag_that_leaves_a_tucked_note_without_a_drop_lets_it_slide_back`.
+- **Send to phone on a stack.** "Kirim ke HP" (id 26) is the `send_to_phone(hwnd)`
+  helper, which pushes `SendToPhone` with the window's current `id`: the sheet it
+  shows after flips. Test: `send_to_phone_on_a_stack_sends_the_sheet_the_window_shows`
+  (first sheet, then after a flip to sheet 2). The island then snapshots that note
+  (`apply` -> `Outcome::send_phone`), unchanged from [[shelf-phone]]'s page.
+- **The cap counts sheets, prefill included.** `NotesStore::sticky_count` counts
+  notes that have a sticky part, and every sheet of a stack is one, so a stack of 3
+  is 3 and the host's `sheet_total` agrees with it. Every way to make a note asks
+  `can_add(sticky_count())`: the gallery (+), the tray, hotkey 7, the header (+),
+  the Notes page pin, and the clipboard prefill. `new_sticky_with` checks the cap
+  before anything and shows the "sticky-full" notice; a prefilled note is one sheet
+  however many lines it has; `cliptext::fill_wanted(on, sheets)` (on and below the
+  cap) decides whether the clipboard is read at all, so at the cap it is not read.
+  Tests: `at_twenty_sheets_with_stacks_every_way_to_make_a_note_makes_nothing`,
+  `a_prefilled_note_counts_as_one_sheet_like_any_other` (apply.rs) and the host's
+  `the_cap_counts_every_sheet_of_every_stack`. Not unit-tested, so a manual check:
+  each of the five entry points at 20 sheets really shows the notice on the
+  island (the `App` methods need the island window).
+- **Menu ids.** `CMD_UNSTACK` 24, `CMD_TUCK` 25, `CMD_SEND_PHONE` 26, all distinct
+  and outside the paper (1..), remind (30..), stamp (50..) ranges
+  (`the_menu_ids_are_distinct_and_the_documented_ones`). The menu keeps both
+  sides' items: Cap, Kirim ke HP, Pin, Roll, Keluarkan dari tumpukan (stacks only),
+  Selipkan / Keluarkan (tuck), Unstick, Delete.
+- **Demo.** `--demo-widgets reset` seeds sixteen notes: the twelve of main (eleven
+  of run A and the clipboard sample note, Krem, from the fixed sample string, never
+  the real clipboard, stamped `now - 40`), the three "Proyek Dago" sheets
+  (`now - 30 .. now - 28`) and the note tucked on the right (`now - 20`). 16 stays
+  under the cap of 20; `the_demo_seeds_sixteen_notes_with_the_clip_note_a_stack_and_a_tuck`.
+- **Shared slots.** No new `TIMER_*`, `WM_APP` or hotkey id: widgets use timers 45,
+  46 (the host's caret) and 47; 48-50 are the phone's; `WM_APP` +60 PrtSc, +61
+  Arrange, +70 lyrics card, +71 the host's own message; hotkey ids 1-7.
+- **Run A's drag rules are intact** (the 36 dip strip drags, hidden buttons take no
+  press, Alt + drag anywhere, a just-created note drags at once): their tests pass
+  unchanged. Shift + drag onto a note makes a stack only with Shift held; a plain
+  drag still just moves and never stacks (`a_plain_drag_over_another_note_does_not_stack`).
+
+### Verified and not verified (Run B finish)
+
+Verified: `cargo test --locked` green (2791 passed, 16 ignored, the same 16 as on
+main), `cargo build --release --locked` with no warnings.
+Not verified live (manual checks): a real OLE drag of text, a link and a file from
+another app onto a stack's top sheet and onto a tucked note's tab (the unit tests
+call `drop_hover` and `drop_into` as the drop target does); the island notice at 20
+sheets from each entry point; Send to phone from a flipped stack with a real phone.

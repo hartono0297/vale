@@ -586,6 +586,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_demo_seeds_sixteen_notes_with_the_clip_note_a_stack_and_a_tuck() {
+        let dir = std::env::temp_dir().join(format!("vale-demo-seed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut store = NotesStore::open(dir.join("notes.json"));
+        seed(&mut store, &[]);
+        assert_eq!(store.sticky_count(), 16, "sixteen notes");
+        assert!(crate::widgets::sticky::can_add(store.sticky_count()), "under the cap of 20");
+        let sample = clip_sample_text();
+        assert_eq!(store.list().iter().filter(|n| n.text == sample).count(), 1, "the clip note");
+        let dago: Vec<_> = store
+            .list()
+            .iter()
+            .filter(|n| n.sticky.as_ref().is_some_and(|s| s.stack.as_deref() == Some("stk-dago")))
+            .collect();
+        assert_eq!(dago.len(), 3, "three sheets of 'Proyek Dago'");
+        assert_eq!(
+            dago.iter().filter(|n| n.sticky.as_ref().is_some_and(|s| s.stack_top)).count(),
+            1,
+            "one shown"
+        );
+        assert_eq!(
+            store
+                .list()
+                .iter()
+                .filter(|n| n.sticky.as_ref().is_some_and(|s| s.tuck.is_some()))
+                .count(),
+            1,
+            "one tucked note"
+        );
+        let mut ids: Vec<&str> = store.list().iter().map(|n| n.id.as_str()).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), 16, "no two notes share an id");
+    }
+
+    #[test]
     fn the_sample_note_is_what_a_prefill_makes_of_a_copied_address() {
         assert_eq!(
             clip_sample_text(),
