@@ -471,7 +471,7 @@ Settings gallery (+), a header (+), the Notes page pin and the templates never
 do. With the setting on, `App::sticky_prefill` reads the clipboard once, at that
 moment, with `clipboard::win::read_now(island hwnd)`: `read` minus the
 "own copy" check (a card copied from the history is a fine text) and minus the
-picture bytes. No listener, no retry timer, no polling; an `OpenClipboard` that
+picture bytes, and a text over the history cap is read as a bounded prefix (16 x `CLIP_MAX` UTF-16 units; `read_text(true)`) rather than skipped. No listener, no retry timer, no polling; an `OpenClipboard` that
 fails (`Read::Busy`) gives an empty note. It is not read at all at the 20-note
 cap. The text is never logged.
 
@@ -498,7 +498,7 @@ after `create_window` succeeds; `drop::revoke(hwnd)` is the first thing in the
 note window's `WM_DESTROY`, so every destroy path (a note leaving the desktop,
 `shutdown`) revokes. Formats, in priority: `CF_HDROP` (each full path on a
 line, at most 32), `UniformResourceLocatorW`, then `UniformResourceLocator`
-(ANSI, read as UTF-8 lossy: URLs are ASCII), then `CF_UNICODETEXT`. Anything
+(ANSI, decoded with the system code page via `MultiByteToWideChar(CP_ACP)`), then `CF_UNICODETEXT`. Anything
 else: `DROPEFFECT_NONE`, no outline. The answer is LINK for files when offered
 else COPY (`shelf_ole::choose_effect`); COPY for a link or text, NONE when COPY
 is not offered. **Never MOVE**: a move would make the source app delete what

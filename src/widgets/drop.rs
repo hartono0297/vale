@@ -22,6 +22,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use windows::Win32::Foundation::{HGLOBAL, HWND, POINTL, S_OK};
+use windows::Win32::Globalization::{CP_ACP, MULTI_BYTE_TO_WIDE_CHAR_FLAGS, MultiByteToWideChar};
 use windows::Win32::System::Com::{DVASPECT_CONTENT, FORMATETC, IDataObject, TYMED_HGLOBAL};
 use windows::Win32::System::DataExchange::RegisterClipboardFormatW;
 use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
@@ -202,9 +203,28 @@ fn wide_text(bytes: &[u8]) -> String {
     String::from_utf16_lossy(&units)
 }
 
+/// The ANSI `UniformResourceLocator` is in the system ANSI code page, not
+/// UTF-8: decoded with it, up to the NUL.
 fn ansi_text(bytes: &[u8]) -> String {
     let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
-    String::from_utf8_lossy(&bytes[..end]).into_owned()
+    let bytes = &bytes[..end];
+    if bytes.is_empty() {
+        return String::new();
+    }
+    let len = unsafe { MultiByteToWideChar(CP_ACP, MULTI_BYTE_TO_WIDE_CHAR_FLAGS(0), bytes, None) };
+    if len <= 0 {
+        return String::from_utf8_lossy(bytes).into_owned();
+    }
+    let mut units = vec![0u16; len as usize];
+    let n = unsafe {
+        MultiByteToWideChar(
+            CP_ACP,
+            MULTI_BYTE_TO_WIDE_CHAR_FLAGS(0),
+            bytes,
+            Some(&mut units),
+        )
+    };
+    String::from_utf16_lossy(&units[..n.max(0) as usize])
 }
 
 /// What `data` carries, in the format `offer`.
@@ -495,5 +515,14 @@ mod tests {
         assert_eq!(wide_text(&bytes), "Jl. Kenanga \u{1F600}");
         assert_eq!(ansi_text(b"https://a.example\0junk"), "https://a.example");
         assert_eq!(ansi_text(b"abc"), "abc");
+        assert_eq!(ansi_text(b""), "");
+    }
+
+    #[test]
+    fn an_ansi_link_is_decoded_with_the_ansi_code_page() {
+        // 0xE9 is e-acute in Windows-1252 and not valid UTF-8 on its own.
+        if unsafe { windows::Win32::Globalization::GetACP() } == 1252 {
+            assert_eq!(ansi_text(b"http://caf\xE9.example/\xE9"), "http://caf\u{E9}.example/\u{E9}");
+        }
     }
 }
