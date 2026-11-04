@@ -26,7 +26,9 @@ use super::{App, Event, Page, View, WM_APP_EVENT, poster};
 use crate::i18n;
 use crate::model::PhoneStage;
 use crate::phone::session::TOKEN_TTL;
-use crate::phone::{DeviceKind, EndReason, FailReason, Handle, PhoneEvent, QrMatrix, Refusal};
+use crate::phone::{
+    DeviceKind, EndReason, FailReason, Handle, NoteShare, PhoneEvent, QrMatrix, Refusal,
+};
 use crate::shelf::{self, Landing, ShelfCard, ShelfKind};
 use crate::ui::phone_view::{CodeView, PhoneView, QrView, RecvView, RowStatus, RowView, Warn};
 
@@ -148,6 +150,9 @@ pub(super) struct PhoneState {
     /// Keys of cards that could not be shared, or whose id was revoked as
     /// gone: not tried again while the card stays on the shelf.
     skipped: Vec<String>,
+    /// The id of the sticky note on the phones ("Kirim ke HP"); the snapshot
+    /// itself lives in the session. Gone with the session.
+    note: Option<String>,
 }
 
 /// What `phone_keep_fresh` did to the code on screen.
@@ -199,6 +204,13 @@ impl PhoneState {
             PhoneStage::Qr
         }
     }
+}
+
+/// Whether the note on the phones (`shared`, a note id) must come off: it
+/// went or left the desktop (`gone`), or it is no longer a desktop note at
+/// all (`on_desktop` says whether it still is one).
+fn note_must_go(shared: Option<&str>, gone: &[String], on_desktop: impl Fn(&str) -> bool) -> bool {
+    shared.is_some_and(|id| gone.iter().any(|g| g == id) || !on_desktop(id))
 }
 
 fn warn_of(r: &Refusal) -> Warn {
@@ -297,6 +309,71 @@ impl App {
                 Some(id) => self.phone.shared.push(Mirror { key, id }),
                 None => self.phone.skipped.push(key),
             }
+        }
+    }
+
+    /// "Kirim ke HP" on sticky note `id`: the note as it is now is handed to
+    /// the phone server (it replaces the one before), a session starts if none
+    /// runs (as the shelf's HP pill does), and the island panel opens on the
+    /// Shelf page at the QR view, latched like a drop. With a session already
+    /// running it shows the QR view too. Nothing is written about the note by
+    /// the phone side: the page is read only.
+    pub(super) fn phone_send_note(&mut self, id: &str) {
+        let Some(note) = self.notes.get(id) else {
+            return;
+        };
+        let Some(sticky) = note.sticky.as_ref() else {
+            return;
+        };
+        let accent = crate::theme::current().accent;
+        let island = crate::theme::island(accent, crate::theme::current().surface);
+        let share = NoteShare::from_note(
+            &note.text,
+            sticky.paper,
+            &island,
+            accent,
+            &crate::phone::pc_name(),
+        );
+        if self.phone.handle.is_none() {
+            self.phone_begin();
+        }
+        let Some(handle) = &self.phone.handle else {
+            return;
+        };
+        handle.share_note(Some(share));
+        self.phone.note = Some(id.to_owned());
+        let now = Instant::now();
+        // The QR view, with the panel opened and latched like `PhoneAttention`
+        // does for a drop (nothing in fullscreen, where the island is hidden).
+        self.apply(Event::PhoneAttention(PhoneStage::Qr), now);
+        self.refresh(now);
+    }
+
+    /// Takes the note off the phones (the owner's side forgets it too).
+    fn phone_note_off(&mut self) {
+        if let Some(handle) = &self.phone.handle {
+            handle.share_note(None);
+        }
+        self.phone.note = None;
+    }
+
+    /// Note `id` was deleted or taken off the desktop: if it is the one on
+    /// the phones, it leaves them.
+    pub(super) fn phone_note_gone(&mut self, id: &str) {
+        if self.phone.note.as_deref() == Some(id) {
+            self.phone_note_off();
+        }
+    }
+
+    /// After a sync of the notes: a shared note that is no longer a desktop
+    /// note (deleted or unstuck from the Notes page) leaves the phones.
+    pub(super) fn phone_note_check(&mut self) {
+        let notes = &self.notes;
+        let goes = note_must_go(self.phone.note.as_deref(), &[], |id| {
+            notes.get(id).is_some_and(|n| n.sticky.is_some())
+        });
+        if goes {
+            self.phone_note_off();
         }
     }
 
@@ -465,6 +542,7 @@ impl App {
                 self.phone.refusal = Some(refusal);
                 self.phone.shared.clear();
                 self.phone.skipped.clear();
+                self.phone.note = None;
             }
             PhoneEvent::SharedGone { id } => {
                 // The file is missing: its id was revoked, and the card is
@@ -883,6 +961,26 @@ mod tests {
         s.forget_session();
         assert!(s.timer && s.files == 0 && !s.renew_failed);
         assert_eq!(s.generation, 7, "the session number goes on counting");
+    }
+
+    #[test]
+    fn the_note_on_the_phones_leaves_when_it_goes_or_is_no_longer_on_the_desktop() {
+        let gone = vec!["n1".to_owned()];
+        let desktop = |id: &str| id != "n2";
+        assert!(note_must_go(Some("n1"), &gone, desktop), "deleted or unstuck by the widget");
+        assert!(note_must_go(Some("n2"), &[], desktop), "unstuck from the Notes page");
+        assert!(!note_must_go(Some("n3"), &gone, desktop), "another note went");
+        assert!(!note_must_go(None, &gone, desktop), "nothing is shared");
+    }
+
+    #[test]
+    fn a_session_that_goes_forgets_the_note_it_showed() {
+        let mut s = PhoneState {
+            note: Some("n1".into()),
+            ..PhoneState::default()
+        };
+        s.forget_session();
+        assert!(s.note.is_none(), "the next session starts with no note");
     }
 
     #[test]

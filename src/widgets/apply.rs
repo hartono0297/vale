@@ -28,6 +28,9 @@ pub struct Outcome {
     pub reminders: bool,
     /// Notes that came off the desktop or went: their notices go too.
     pub gone: Vec<String>,
+    /// "Kirim ke HP" was chosen on this note (the last one wins): the island
+    /// shows it on the phone link.
+    pub send_phone: Option<String>,
 }
 
 /// Edits note `id`'s sticky part. False when it has none or nothing changed.
@@ -115,6 +118,7 @@ pub fn apply(notes: &mut NotesStore, events: Vec<WidgetEvent>, unix: i64) -> Out
                     out.gone.push(id);
                 }
             }
+            WidgetEvent::SendToPhone { id } => out.send_phone = Some(id),
             WidgetEvent::NeedsClock => out.clock = true,
         }
     }
@@ -401,10 +405,12 @@ mod tests {
             vec![
                 WidgetEvent::NewBeside { id: id.clone(), template: Template::Rapat },
                 WidgetEvent::CatPeek(false),
+                WidgetEvent::SendToPhone { id: id.clone() },
                 WidgetEvent::NeedsClock,
             ],
             1,
         );
+        assert_eq!(out.send_phone.as_deref(), Some(id.as_str()));
         assert_eq!(out.beside, vec![(id, Template::Rapat)]);
         assert_eq!(out.cat_peek, Some(false));
         assert!(out.clock && !out.changed && !out.structural);

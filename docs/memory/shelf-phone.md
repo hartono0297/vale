@@ -352,3 +352,56 @@ rotation after five real minutes on the notch (the rules are unit-tested, the lo
 covers a replaced token); the new demo scenes by eye in DM Sans and JetBrains Mono
 (only the fit test measured them). Run: `cargo test --locked` (session rules, network
 trust, sync plan, loopback end to end).
+
+
+## Run B: a note on the phone (Kirim ke HP, sticky notes v2)
+
+A sticky note can be shown on the phone link as a read-only page; the island side
+(menu item, snapshot, clearing) is in [[widgets]] ("Run B: send a note to the
+phone"). This is the server side.
+
+- **`phone/note_page.rs`** (pure): `NoteShare { title, lines, fill, ink, soft, pc }`
+  and `render(&NoteShare, Lang) -> String`, one complete small document (about 1.3
+  KB for a short note): charset and viewport metas, inline CSS only, **no script, no
+  link or image, no outside address**, the body background is the paper and the
+  text the ink, the title in an `h1`, lines in `p` with `white-space: pre-wrap`,
+  checklist items as `<input type="checkbox" disabled>` (`checked` for done) with
+  done text struck through, footer "Hanya baca · dari <PC>" / "Read only · from
+  <PC>" and a link "Berkas di rak" / "Shelf files" to `/`. Every note string and
+  the PC name go through `escape` (& < > " '). Strings are an id/en pair in the
+  module, language from the runtime like page.html's.
+- **`GET /note`** needs a joined phone's `vs` exactly like `GET /` (`page_access`;
+  a page load counts as activity). It answers the page when a note is shared, else
+  the bare 404 (no cookie, a wrong or old cookie and POST are the bare 404 too).
+- **`GET /s/<token>`** answers the note page instead of the shelf page when a note
+  is shared (also for a phone that already holds a good `vs`, which still makes no
+  second device). Join, cookie, the 404s and the token rules are unchanged; with no
+  note the shelf page is exactly as before.
+- **Headers** (`Response::note_page`): `Content-Security-Policy: default-src 'none';
+  style-src 'unsafe-inline'`, `X-Content-Type-Options: nosniff`, `Cache-Control:
+  no-store` (and the existing `Referrer-Policy`). `Response` got a `csp: Option`
+  that is `None` and not written for every other answer.
+- **Read only:** no route writes anything about the note; the boxes are disabled and
+  the page has no script and no form, so ticking on the phone cannot reach the PC.
+- **State:** `Session::note` (an `Option<NoteShare>` behind the session lock, set by
+  `Handle::share_note`), dropped by `server::end` with the shared ids and with the
+  session itself. One note at a time.
+- **`--phone-debug`** also shares a fixed sample (Daftar belanja, Telur unticked,
+  Kopi ticked, a line with `<b>&amp"`, Krem paper), so the printed link lands on
+  the page in a browser; `/` and the shelf still work after joining.
+- **Tests:** `note_page.rs` (escaping of every special character, checklist
+  rendering, contrast of ink and soft on every paper including Gelap over every
+  surface and accent, no script and no `http`, both languages, the snapshot rules),
+  `http.rs` (only the note page carries the policy), and in `e2e.rs` two loopback
+  tests (`/note` without a cookie, joined with no note, with a note and its
+  headers and escaped title, replace and take off; a scan with a note gives the
+  note page and the `vs` cookie, a scan without gives the shelf page, a re-scan
+  makes no second device, the session end drops the note).
+- **Verified live:** `--phone-debug` on loopback, the link fetched with curl (status,
+  all four headers, the cookie, `/` with the cookie 200, `/note` without it 404) and
+  looked at in the browser pane at 375x812 (title, two boxes, strike-through, the
+  escaped line, footer). **Not verified:** a real iPhone or Android scanning the QR
+  for a note, the menu item and the QR view opening on the real island by mouse
+  (the stage logic is the existing `PhoneAttention` and is unit-tested; the item
+  was not clicked), a real phone's rendering of the disabled boxes, Gelap on a
+  device.

@@ -10,6 +10,7 @@ use std::collections::HashSet;
 
 use std::time::{Duration, Instant};
 
+use super::note_page::NoteShare;
 use super::share::SharedSet;
 
 /// A token is good for this long, whoever joined with it: it never lives
@@ -78,6 +79,9 @@ pub struct Session {
     cancelled: HashSet<String>,
     /// The shelf files shared with the phones.
     shared: SharedSet,
+    /// The sticky note sent to the phones ("Kirim ke HP"), as it was when it
+    /// was sent. One at a time; dropped with the session.
+    note: Option<NoteShare>,
 }
 
 /// Equal without stopping at the first difference.
@@ -108,6 +112,7 @@ impl Session {
             seen_batches: Vec::new(),
             cancelled: HashSet::new(),
             shared: SharedSet::new(),
+            note: None,
         })
     }
 
@@ -206,6 +211,16 @@ impl Session {
     pub fn device_for_view_api(&self, vs: Option<&str>) -> Option<u64> {
         let i = vs.and_then(|c| self.by_cookie(c))?;
         Some(self.devices[i].id)
+    }
+
+    /// The note on the phones, if one was sent.
+    pub fn note(&self) -> Option<&NoteShare> {
+        self.note.as_ref()
+    }
+
+    /// Replaces the note on the phones (`None` takes it off).
+    pub fn set_note(&mut self, note: Option<NoteShare>) {
+        self.note = note;
     }
 
     /// The files shared with the phones.

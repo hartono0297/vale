@@ -118,6 +118,8 @@ pub enum WidgetEvent {
     Unstick { id: String },
     /// "Hapus catatan".
     Delete { id: String },
+    /// "Kirim ke HP": the island shows this note on the phone link.
+    SendToPhone { id: String },
     /// The note was used: the cat goes to the one touched last.
     Touched { id: String, at: i64 },
     /// Something eases: the owner starts its frame clock.
@@ -2387,6 +2389,7 @@ const CMD_PIN: usize = 20;
 const CMD_ROLL: usize = 21;
 const CMD_UNSTICK: usize = 22;
 const CMD_DELETE: usize = 23;
+const CMD_SEND_PHONE: usize = 26;
 
 fn context_menu(hwnd: HWND, at: POINT) {
     let data = with(|s| {
@@ -2460,6 +2463,7 @@ fn context_menu(hwnd: HWND, at: POINT) {
             );
             let _ = AppendMenuW(menu, MF_POPUP, stamps.0 as usize, &h(Key::StickyStamp));
         }
+        let _ = AppendMenuW(menu, MF_STRING, CMD_SEND_PHONE, &h(Key::StickySendPhone));
         let _ = AppendMenuW(
             menu,
             if pinned { MF_STRING | MF_CHECKED } else { MF_STRING },
@@ -2523,6 +2527,14 @@ fn context_menu(hwnd: HWND, at: POINT) {
         }
         CMD_REMIND_CUSTOM => open_remind_entry(hwnd),
         CMD_REMIND_CLEAR => set_remind(hwnd, None),
+        CMD_SEND_PHONE => {
+            let _ = with(|s| {
+                let i = idx_of(s, hwnd)?;
+                let id = s.wins[i].id.clone();
+                push(s, WidgetEvent::SendToPhone { id });
+                Some(())
+            });
+        }
         CMD_PIN => set_pinned(hwnd, !pinned),
         CMD_ROLL => toggle_rolled(hwnd),
         CMD_UNSTICK => {

@@ -292,3 +292,8 @@ FrameClock users, nothing else:
   clipboard" is on (and none at the 20-note cap); no retry timer. A note's
   `IDropTarget` costs nothing at idle: no timer, no polling, no new WM_APP; it
   only runs while a drag is over a note.
+
+- Sticky notes run B, "Kirim ke HP" ([[widgets]], [[shelf-phone]]): no timer and no
+  thread added. The note's snapshot sits in the phone session's state and is read
+  only when a phone asks for `/note` or scans the QR; `TIMER_PHONE` 48 and ids
+  49-50 are untouched, and nothing polls.

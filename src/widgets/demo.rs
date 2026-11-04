@@ -376,6 +376,10 @@ impl Demo {
         if let Some(on) = out.cat_peek {
             self.prefs.cat_peek = on;
         }
+        // The demo has no island and no phone link: the choice is only said.
+        if let Some(id) = &out.send_phone {
+            println!("demo-widgets: send to phone ignored (note {id}): no phone link here");
+        }
         for (id, template) in out.beside {
             self.make(Some(&id), template);
         }
