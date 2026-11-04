@@ -1,6 +1,6 @@
 ---
 tags: [decision, settings, layout, v3.8]
-date: 2026-11-02
+date: 2026-11-04
 ---
 
 # Settings: ten sections, titled cards (v3.8, Tombol pintas and Widget added later)
