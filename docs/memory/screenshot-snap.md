@@ -282,11 +282,67 @@ window glue: `capture/overlay.rs` (Pick phase, `finish`, `finish_inline`) and
   bar, resize and move of the selection, an open text EDIT, Copy's notice,
   Save (the file matched the selection with the mosaic), Buka di editor.
 - **Limits and not verified.** A Save that fails after the overlay is gone is
-  only `eprintln!`-ed (no window is left to say it). Not verified live: the
+  `eprintln!`-ed and now also shown as "Gagal menyimpan" through the saved sink
+  (see "The saved notice is clickable"). Not verified live: the
   real clipboard (managed own-copy, history card, no notch preview), a text
   typed through an IME inside the overlay, several monitors with different DPI,
   and whether an IME or a system popup deactivates the overlay (that would
   cancel).
+
+## The saved notice is clickable: reveal in Explorer (2026-11-04)
+
+Owner: after Save, the notch says "saved to ..." and a click goes to that
+folder. Choices ("u atur terbaiknya"). Code: `app_shot.rs` (`kept_notice`,
+`saved_body`, `file_saved_notice`), `sources/reveal.rs`, `shot_edit/mod.rs`
+(the sink), `state.rs`. Related: [[notice-close]], [[open-mode]],
+[[notification-open]].
+
+- **The path rides in the kind.** `NoticeKind::ShotSaved { path:
+  Option<PathBuf> }`: the saved file, `None` for "Belum ada file" and "Gagal
+  menyimpan". `kept_notice(file, written, fits)` builds it: title "Disimpan"
+  (Vale wrote it) or "Sudah tersimpan" (Windows' own file, `plan.file.path`);
+  body is the first that `fits` of `Pictures\Screenshots · klik untuk buka`
+  (`Key::ShotClickToOpen`), `Screenshots · klik untuk buka`, the label alone
+  (the renderer ellipsizes). `fits` is `Renderer::notice_text_fits` with the
+  ✕ reservation ([[notice-close]]); `saved_body` is pure and tested.
+- **Reducer.** A body click on `ShotSaved { path: Some(p) }` gives
+  `Effect::RevealFile(p)` (`dismiss_visible_notice`); `path: None` only
+  dismisses. The ✕ (`Hit::NoticeClose`) stays effect-free. `notice_has_action`
+  holds for a `ShotSaved` with a path: hover does not open the panel over it,
+  it waits while a visit that began on it stays and gets `SHOT_LEAVE_GRACE`
+  after; otherwise its time is `SHOT_DONE_DURATION` 2.5 s. Queueing and
+  fullscreen rules are unchanged (queued like before, never a toast form).
+- **Reveal** (`sources/reveal.rs`, worker `shot-reveal`, never the UI thread):
+  pure `reveal_step(file_exists, dir_exists)`: `SelectFile` ->
+  `ILCreateFromPathW` + `SHOpenFolderAndSelectItems(pidl, None, 0)` (the shell
+  reuses an Explorer window already on that folder); `OpenFolder` (file gone)
+  -> `ShellExecuteW "open"`; `Nothing` -> `eprintln!`. Foreground: `App`
+  calls `AllowSetForegroundWindow(ASFW_ANY)` on the UI thread first (the
+  island just got the click, same as `notif_open::allow_foreground`); then the
+  worker polls up to 1.5 s (100 ms) for the Explorer window whose shown tab is
+  that folder (`explorer::shown_folders`, `explorer::same_folder`: case and a
+  trailing separator ignored) and calls `notif_open::bring_forward` unless it
+  already is `GetForegroundWindow()`. No AttachThreadInput, no synthetic keys;
+  the island stays no-activate.
+- **Inline capture and editor** report through a process-wide sink:
+  `shot_edit::set_saved_sink` (set by `App` at startup next to
+  `shelf_ole::register`, cleared with `capture::overlay::release()`),
+  `tell_saved(path)` (no-op when unset). `export::save_detached(.., tell)` tells
+  after the write (`Some(path)`, or `None` on failure, so a failed inline save
+  now shows "Gagal menyimpan": no window is left to say it);
+  `finish_inline` passes `tell = !demo`. The editor's `on_saved` tells
+  `Some(path)` on every successful Save (a failed editor save is footer-only,
+  as before). `App` turns `Event::ShotFileSaved { path }` into
+  `file_saved_notice` (equal to the Simpan-written notice for the same path).
+- **Demos** never set the sink and pass `demo = true`: no notice, no real
+  folder touched (saves stay in `target/demo-shots/`). `--demo` scenes
+  `screenshot-saved` (made-up `Pictures\Screenshots` path) and
+  `screenshot-saved-long` (made-up OneDrive `Gambar\Tangkapan Layar`, to see
+  the fallback); `--demo-notice-close` cycles a saved notice: a body click
+  prints `effects: [RevealFile(..)]`, a ✕ click `[]` (never executed).
+- **Not verified live:** the real Explorer reveal and its foreground step from
+  a click on the notch (the shell's own rules can still keep the window
+  behind), the Controlled-folder-access case, OneDrive-redirected folders.
 
 ## Auto-copy (2026-11-02, "Salin otomatis")
 

@@ -282,3 +282,13 @@ posts for PrtSc (the merge is read from the symptom, not captured); whether
 the 16-bit lax distance is enough for the preview in the owner's low-contrast
 cases (Simpan no longer depends on it when one file is in the window); the
 file stamp of a cold-start Snipping Tool beyond 7 s.
+
+## The saved notice is clickable (2026-11-04)
+
+"Disimpan" / "Sudah tersimpan" now read "Pictures\Screenshots · klik untuk
+buka" and a body click shows the file in Explorer (`NoticeKind::ShotSaved {
+path }`, `Effect::RevealFile`, `sources/reveal.rs`). `kept_notice` takes the
+saved file (Windows' `plan.file.path` or the worker's path) and the renderer's
+`fits`. Simpan's matching, "never a duplicate", `save_path`, `taken` and
+Hapus are untouched. Details, the foreground rule and the inline / editor sink
+in [[screenshot-snap]] ("The saved notice is clickable").

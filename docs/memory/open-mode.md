@@ -68,7 +68,8 @@ Root cause of "hover gets in the way of Selesai": `view()` checked
 `panel_open()` before the sticky notice, so a 120 ms dwell opened the panel
 and the reminder shrank into a small strip that moved during the opening.
 
-- `notice_has_action`: Reminder, MoleDone, SystemLow, Pomodoro, Screenshot
+- `notice_has_action`: Reminder, MoleDone, SystemLow, Pomodoro, Screenshot,
+  a `ShotSaved` with a path (its click reveals the file, `Effect::RevealFile`)
   and an App notice with an app id. A hover that starts on one sets
   `hover_blocked`: the panel stays shut for that visit.
 - A sticky reminder blocks **only the first visit after it appeared**
