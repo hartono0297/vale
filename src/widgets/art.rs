@@ -103,10 +103,6 @@ pub fn tilt_transform(deg: f32, cx: f32, cy: f32, k: f32) -> Matrix3x2 {
 /// The pitch of a Kotak grid and the dots of Titik, dip.
 pub const GRID_PITCH: f32 = 12.0;
 
-/// Where the horizontal rules of Garis sit under the text lines: the rule is
-/// this far above the bottom of a text line's pitch.
-const RULE_INSET: f32 = 4.0;
-
 /// The ruling's offsets (dip from the text area's top-left) that show in an
 /// area `len` long when the text is scrolled by `scroll`: one every `pitch`,
 /// the first at `first` into the unscrolled text.
@@ -143,8 +139,11 @@ pub fn draw_pattern(
     match pattern {
         Pattern::Polos => {}
         Pattern::Garis => {
+            // One rule under every text line: lines are `line` tall with a dip
+            // between them (the title is two taller), so the rules fall at
+            // multiples of `line + 1`.
             let pitch = size.line() + 1.0;
-            for y in rows(pitch, pitch - RULE_INSET) {
+            for y in rows(pitch, pitch) {
                 unsafe {
                     rt.DrawLine(
                         Vector2::new(ax, ay + y),
@@ -405,7 +404,9 @@ pub fn draw_stamp(
         None,
     );
     let label = text(lang, stamp.label_key()).to_uppercase();
-    if let Ok(l) = res.layout(&label, 6.5, 700, STAMP_R * 2.0 - 8.0) {
+    // A long word ("IMPORTANT") is set a little smaller to stay in the ring.
+    let size = if label.chars().count() > 8 { 5.6 } else { 6.5 };
+    if let Ok(l) = res.layout(&label, size, 700, STAMP_R * 2.0 - 8.0) {
         unsafe {
             let _ = l.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
             let _ = l.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);

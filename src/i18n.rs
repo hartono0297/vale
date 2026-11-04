@@ -1082,7 +1082,7 @@ keys! {
     StickyDayToday => "Hari ini", "Today";
     StickyDayTomorrow => "Besok", "Tomorrow";
     FontVale => "Vale", "Vale";
-    FontTangan => "Tangan", "Handwriting";
+    FontTangan => "Tangan", "Hand";
     FontMono => "Mono", "Mono";
     StickyFont => "Huruf", "Font";
     StickyPattern => "Kertas", "Paper";

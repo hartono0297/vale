@@ -1,13 +1,17 @@
 //! `--demo-widgets` (debug builds): the desktop widgets on their own, with a
 //! made-up notes file in the temp folder (never `%APPDATA%`, never the real
-//! config). It seeds one note per paper colour (the Gelap one pinned), a
-//! half-done checklist, an all-done one (the cat smiles), and a rolled-up one,
-//! the first time or with the argument `reset`; after that the file keeps what
-//! was typed, moved and ticked, so a restart shows it back.
+//! config). It seeds eleven notes, the first time or with the argument
+//! `reset`: one per paper colour (the Gelap one pinned), a half-done checklist
+//! (with its progress bar), an all-done one, a rolled-up one, and the v2 things
+//! (a reminder chip, an overdue reminder with the clock cat, Tangan and Mono,
+//! each ruling, tape and a pin, the stamps, a 60 % see-through note). After
+//! that the file keeps what was typed, moved and ticked, so a restart shows it
+//! back.
 //!
 //! Everything is live: type, tick, colour, drag, resize, roll, pin, the +, the
 //! x and delete. The widget settings come from the environment
-//! (`DI_WIDGETS_LAYER=top`, `DI_WIDGETS_LOCK=1`, `DI_WIDGETS_PEEK=0`), the
+//! (`DI_WIDGETS_LAYER=top`, `DI_WIDGETS_LOCK=1`, `DI_WIDGETS_PEEK=0`,
+//! `DI_WIDGETS_TILT=1` for "Miring sedikit"), the
 //! theme from `DI_ACCENT`, `DI_SURFACE`, `DI_WINDOW`, the font from `DI_FONT`
 //! and the language from `DI_LANG`. The scene ends when its last note is gone
 //! (or with Ctrl+C in the console).
@@ -38,7 +42,7 @@ use crate::widgets::apply::{apply, set_reminder, sticky_for};
 use crate::widgets::host::{Ctx, WM_APP_WIDGET, WidgetHost};
 use crate::widgets::prefs::{WidgetLayer, WidgetPrefs};
 use crate::widgets::remind;
-use crate::widgets::sticky::{Paper, Sticky};
+use crate::widgets::sticky::{Deco, NoteFont, Paper, Pattern, Stamp, Sticky};
 use crate::widgets::templates::{self, Template};
 
 /// The save timer of this scene (the island's own is 45 too).
@@ -77,6 +81,7 @@ fn prefs_from_env() -> WidgetPrefs {
     }
     p.lock = var("DI_WIDGETS_LOCK") == "1";
     p.cat_peek = var("DI_WIDGETS_PEEK") != "0";
+    p.tilt = var("DI_WIDGETS_TILT") == "1";
     p
 }
 
@@ -86,64 +91,149 @@ fn store_path() -> PathBuf {
         .join("notes.json")
 }
 
-/// The first run, or `reset`: the notes the scene shows.
+/// One seeded note: its paper, text, whether it is rolled and pinned, and
+/// what else it shows (a reminder, a font, a ruling, tape, a stamp, ...).
+struct Seed {
+    paper: Paper,
+    text: &'static str,
+    rolled: bool,
+    pinned: bool,
+    more: fn(&mut Sticky, i64),
+}
+
+fn nothing(_: &mut Sticky, _: i64) {}
+
+/// The first run, or `reset`: the notes the scene shows. Eleven notes: every
+/// paper, a checklist with its progress bar (2 of 4), an all-done one, a
+/// rolled one, a pinned Gelap one, and the v2 things: a reminder chip in the
+/// future, an overdue one (the cat holds a clock), Tangan and Mono, each ruling
+/// (Garis, Kotak, Titik), tape and a pin, every stamp but two, and a note at
+/// 60 % see-through.
 fn seed(store: &mut NotesStore, displays: &[Display]) {
     let now = Local::now().timestamp();
-    let notes: [(&str, Paper, &str, bool, bool); 6] = [
-        (
-            "Krem",
-            Paper::Krem,
-            "Belanja material\n- [x] Bata ekspos 2.000 bh\n- [x] Terakota lantai 30x30\n- [ ] Kaca low-e 6 mm\n- [ ] Baja ringan C75",
-            false,
-            false,
-        ),
-        (
-            "Terakota",
-            Paper::Terakota,
-            "Telp Pak Budi\nJam 3 sore soal revisi atap. Tanya juga jadwal pengecoran lantai 2.",
-            false,
-            false,
-        ),
-        (
-            "Plum",
-            Paper::Plum,
-            "Ide fasad\nKisi-kisi kayu vertikal, jarak 8 cm, bayangan sore jatuh ke ruang tamu.",
-            false,
-            false,
-        ),
-        (
-            "Laut",
-            Paper::Laut,
-            "Catatan rapat\nSenin\nCek gambar kerja\nRevisi RAB\nJadwal survei\nKirim notulen",
-            true,
-            false,
-        ),
-        (
-            "Gelap",
-            Paper::Gelap,
-            "Transfer DP\nJangan lupa transfer DP sebelum jam 4.",
-            false,
-            true,
-        ),
-        (
-            "Sage",
-            Paper::Sage,
-            "Sebelum rilis\n- [x] Tes di monitor kedua\n- [x] Cek mode hemat daya\n- [x] Update README",
-            false,
-            false,
-        ),
+    let notes: [Seed; 11] = [
+        Seed {
+            paper: Paper::Krem,
+            text: "Belanja material\n- [x] Bata ekspos 2.000 bh\n- [x] Terakota lantai 30x30\n- [ ] Kaca low-e 6 mm\n- [ ] Baja ringan C75",
+            rolled: false,
+            pinned: false,
+            more: |s, _| {
+                s.stamp = Stamp::Penting;
+                s.pattern = Pattern::Garis;
+            },
+        },
+        Seed {
+            paper: Paper::Terakota,
+            text: "Telp Pak Budi\nJam 3 sore soal revisi atap. Tanya juga jadwal pengecoran lantai 2.",
+            rolled: false,
+            pinned: false,
+            // Overdue: it went off half an hour ago and nobody opened it.
+            more: |s, now| {
+                s.remind_at = Some(now - 1800);
+                s.remind_fired = true;
+                s.stamp = Stamp::Mendesak;
+                s.touched = now + 5;
+            },
+        },
+        Seed {
+            paper: Paper::Plum,
+            text: "Ide fasad\nKisi-kisi kayu vertikal, jarak 8 cm, bayangan sore jatuh ke ruang tamu.",
+            rolled: false,
+            pinned: false,
+            more: |s, _| {
+                s.stamp = Stamp::Ide;
+                s.opacity = 60;
+            },
+        },
+        Seed {
+            paper: Paper::Laut,
+            text: "Catatan rapat\nSenin\nCek gambar kerja\nRevisi RAB\nJadwal survei\nKirim notulen",
+            rolled: true,
+            pinned: false,
+            more: nothing,
+        },
+        Seed {
+            paper: Paper::Gelap,
+            text: "Transfer DP\nJangan lupa transfer DP sebelum jam 4.",
+            rolled: false,
+            pinned: true,
+            more: |s, _| s.stamp = Stamp::Nanti,
+        },
+        Seed {
+            paper: Paper::Sage,
+            text: "Sebelum rilis\n- [x] Tes di monitor kedua\n- [x] Cek mode hemat daya\n- [x] Update README",
+            rolled: false,
+            pinned: false,
+            more: |s, _| s.stamp = Stamp::Beres,
+        },
+        // A reminder later today (or tomorrow), with a ruled page.
+        Seed {
+            paper: Paper::Krem,
+            text: "Kirim revisi denah\nKe klien sebelum jam 5.",
+            rolled: false,
+            pinned: false,
+            more: |s, now| {
+                s.remind_at = Some(now + 3 * 3600);
+                s.pattern = Pattern::Garis;
+                s.deco = Deco::Selotip;
+            },
+        },
+        // Handwriting, a grid and tape.
+        Seed {
+            paper: Paper::Sage,
+            text: "Tulisan tangan\nCatatan ini pakai huruf Tangan, di atas kertas kotak.",
+            rolled: false,
+            pinned: false,
+            more: |s, _| {
+                s.font = NoteFont::Tangan;
+                s.pattern = Pattern::Kotak;
+                s.deco = Deco::Selotip;
+            },
+        },
+        // Mono, dots and a pin.
+        Seed {
+            paper: Paper::Laut,
+            text: "cargo test --locked\nHuruf Mono di atas kertas titik, dengan paku.",
+            rolled: false,
+            pinned: false,
+            more: |s, _| {
+                s.font = NoteFont::Mono;
+                s.pattern = Pattern::Titik;
+                s.deco = Deco::Paku;
+            },
+        },
+        // See-through, with a heart.
+        Seed {
+            paper: Paper::Plum,
+            text: "Tembus pandang\nCatatan ini 60 persen sampai kursor datang.",
+            rolled: false,
+            pinned: false,
+            more: |s, _| {
+                s.opacity = 60;
+                s.stamp = Stamp::Suka;
+            },
+        },
+        Seed {
+            paper: Paper::Terakota,
+            text: "Besok\n- [ ] Survei lokasi\n- [ ] Foto kondisi eksisting\n- [ ] Ukur ulang bentang",
+            rolled: false,
+            pinned: false,
+            more: |s, _| s.pattern = Pattern::Kotak,
+        },
     ];
-    for (i, (_, paper, text, rolled, pinned)) in notes.into_iter().enumerate() {
-        let at = now - 60 * (6 - i as i64);
+    let count = notes.len() as i64;
+    for (i, n) in notes.into_iter().enumerate() {
+        let at = now - 60 * (count - i as i64);
         let base = sticky_for(store.list(), displays, &NotchMonitor::Primary, None, at);
-        let sticky = Sticky {
-            paper,
-            rolled,
-            pinned,
+        let mut sticky = Sticky {
+            paper: n.paper,
+            rolled: n.rolled,
+            pinned: n.pinned,
             ..base
         };
+        (n.more)(&mut sticky, now);
         if let Some(id) = store.create_sticky(sticky, at) {
-            store.set_text(&id, text, at);
+            store.set_text(&id, n.text, at);
         }
     }
 }

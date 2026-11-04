@@ -17,7 +17,8 @@ click does), [[notification-history]], [[clipboard-notice]],
 
 Every kind except: `Screenshot`, `ClipPreview`, `Arranged` (they have buttons of
 their own: Salin / Simpan / Hapus, Riwayat, Batalkan / Simpan) and the sticky
-kinds `Reminder`, `ClaudeWaiting`, `MoleFailed`, `UpdateAvailable` (they stay
+kinds `Reminder`, `ClaudeWaiting`, `MoleFailed`, `UpdateAvailable` and
+`StickyReminder` (a sticky note's reminder, with its own chips; they stay
 until acted on, so a ✕ that drops them unseen would lose what they say). The
 sticky ones stay excluded even when one is shown briefly as `current` in
 fullscreen. What is left: `App` (real toasts and the island's own App

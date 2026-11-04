@@ -107,8 +107,8 @@ Related: [[cat-colours-and-surfaces]], [[bata-idle-power-budget]]
 `Section::Widgets` ("Widget" / "Widgets", `Icon::Widgets`, four rounded cards)
 sits right after Panel, so `Section::ALL` is 10 (`--settings widgets` or
 `widget` opens it). Cards: **Di desktop** (Tampilkan widget, Lapisan, Saat
-layar penuh, Kunci posisi, Kucing ngintip; the two segmented rows wrap their
-description to a second line) and **Galeri** (eyebrow with "n di desktop" at
+layar penuh, Kunci posisi, Kucing ngintip, and since v2 Miring sedikit (the
+notes lean); the two segmented rows wrap their description to a second line) and **Galeri** (eyebrow with "n di desktop" at
 its right, a 2-column grid with one card: a still Krem note drawn in code, the
 title, a two-line description, a (+) that is off at 20 notes with the reason as
 its description, a count chip when n > 0; clicking an active card makes the

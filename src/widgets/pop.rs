@@ -39,7 +39,7 @@ use crate::widgets::paint::Res;
 use crate::widgets::sticky::{Deco, NoteFont, OPACITIES, Paper, Pattern, TextSize};
 
 const CLASS: PCWSTR = w!("ValeWidgetPop");
-const W: f32 = 268.0;
+const W: f32 = 292.0;
 const PAD: f32 = 14.0;
 const SWATCH: f32 = 24.0;
 const ROW_H: f32 = 34.0;
@@ -167,10 +167,10 @@ const ROW_PEEK: usize = 6;
 /// How wide one segment of a segmented row is, dip.
 fn seg_w(row: usize) -> f32 {
     match row {
-        ROW_SIZE => 32.0,
-        ROW_FONT | ROW_DECO => 54.0,
-        ROW_PATTERN => 44.0,
-        _ => 40.0,
+        ROW_SIZE => 34.0,
+        ROW_FONT | ROW_DECO => 62.0,
+        ROW_PATTERN => 46.0,
+        _ => 38.0,
     }
 }
 
@@ -653,7 +653,107 @@ unsafe extern "system" fn pop_proc(
 
 #[cfg(test)]
 mod tests {
-    use super::left_for_other;
+    use super::*;
+    use windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_METRICS;
+
+    fn width(res: &Res, s: &str, size: f32, weight: u16) -> f32 {
+        let l = res.layout(s, size, weight, 1000.0).expect("layout");
+        let mut m = DWRITE_TEXT_METRICS::default();
+        unsafe { l.GetMetrics(&mut m) }.expect("metrics");
+        m.widthIncludingTrailingWhitespace
+    }
+
+    #[test]
+    fn the_popover_holds_its_rows_inside_the_plate_and_clear_of_each_other() {
+        let mut rects = Vec::new();
+        for i in 0..6 {
+            rects.push(swatch_rect(i));
+        }
+        for row in ROW_SIZE..=ROW_OPACITY {
+            for i in 0..seg_n(row) {
+                rects.push(seg_rect(row, i));
+            }
+        }
+        rects.push(toggle_rect(ROW_PIN));
+        rects.push(toggle_rect(ROW_PEEK));
+        for r in &rects {
+            assert!(r.x >= 0.0 && r.y >= 0.0 && r.x + r.w <= W && r.y + r.h <= H, "{r:?}");
+        }
+        for (i, a) in rects.iter().enumerate() {
+            for b in &rects[i + 1..] {
+                let apart = a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y;
+                assert!(apart, "{a:?} overlaps {b:?}");
+            }
+        }
+        // Every row has a hit item; a segment is its own item.
+        for row in ROW_SIZE..=ROW_OPACITY {
+            for i in 0..seg_n(row) {
+                let r = seg_rect(row, i);
+                assert_eq!(item_at(r.x + 2.0, r.y + 2.0), Some(seg_item(row, i)));
+            }
+        }
+        assert_eq!(item_at(row_rect(ROW_PIN).x + 4.0, row_y(ROW_PIN) + 4.0), Some(Item::Pin));
+        assert_eq!(item_at(row_rect(ROW_PEEK).x + 4.0, row_y(ROW_PEEK) + 4.0), Some(Item::Peek));
+        assert!(H > 250.0, "the plate grew for the new rows: {H}");
+    }
+
+    #[test]
+    fn every_label_fits_its_segment_and_every_row_label_its_room_in_both_languages() {
+        let res = Res::new(UiFont::Sans).expect("DirectWrite works without a window");
+        for lang in [Lang::Id, Lang::En] {
+            for row in ROW_SIZE..=ROW_OPACITY {
+                for i in 0..seg_n(row) {
+                    let item = seg_item(row, i);
+                    let label = seg_label(item, lang);
+                    let w = width(&res, &label, 11.5, 500);
+                    assert!(w + 8.0 <= seg_w(row), "{lang:?} {label:?}: {w} in {}", seg_w(row));
+                }
+                let label = text(lang, row_label(row));
+                let room = W - 2.0 * PAD - seg_track(row).w - 6.0;
+                let w = width(&res, label, 12.0, 500);
+                assert!(w <= room, "{lang:?} {label:?}: {w} in {room}");
+            }
+            for key in [Key::StickyPinTop, Key::WidgetsPeek] {
+                let w = width(&res, text(lang, key), 12.0, 400);
+                assert!(w <= W - 2.0 * PAD - 44.0, "{lang:?} {key:?}: {w}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_current_choice_is_the_one_marked() {
+        let st = PopState {
+            paper: Paper::Krem,
+            size: TextSize::L,
+            font: NoteFont::Mono,
+            pattern: Pattern::Titik,
+            deco: Deco::Paku,
+            opacity: 40,
+            pinned: false,
+            peek: true,
+            lang: Lang::Id,
+            ui: UiFont::Sans,
+        };
+        for row in ROW_SIZE..=ROW_OPACITY {
+            let current: Vec<usize> = (0..seg_n(row))
+                .filter(|i| is_current(seg_item(row, *i), &st))
+                .collect();
+            assert_eq!(current.len(), 1, "row {row}: exactly one is on");
+        }
+        assert!(is_current(Item::Size(TextSize::L), &st));
+        assert!(is_current(Item::Font(NoteFont::Mono), &st));
+        assert!(is_current(Item::Opacity(40), &st));
+        assert!(!is_current(Item::Opacity(100), &st));
+        assert!(!is_current(Item::Pin, &st));
+        // The opacity choices are the four allowed ones, in order.
+        let vals: Vec<u8> = (0..4)
+            .map(|i| match seg_item(ROW_OPACITY, i) {
+                Item::Opacity(o) => o,
+                _ => 0,
+            })
+            .collect();
+        assert_eq!(vals, [100, 80, 60, 40]);
+    }
 
     #[test]
     fn going_to_another_app_is_not_a_return_to_the_note() {

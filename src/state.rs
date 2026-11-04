@@ -882,7 +882,7 @@ impl IslandState {
             }
             Event::Today(date) => self.set_today(date),
             Event::ReminderCleared(id) => self.clear_sticky(Sticky::Reminder(&id)),
-            Event::StickyReminderCleared(id) => self.clear_sticky(Sticky::StickyNote(&id)),
+            Event::StickyReminderCleared(id) => self.clear_sticky(Sticky::Note(&id)),
             Event::UpdateWithdrawn => self.clear_sticky(Sticky::Update),
             Event::Click(hit) => self.click(hit, now, &mut effects),
             Event::Calendar(_)
@@ -2151,7 +2151,7 @@ impl IslandState {
             // A sticky note reminder's chips, on the notice or in the strip.
             Hit::StickySnooze | Hit::StickyOpen => {
                 if let Some(id) = self.sticky_reminder_shown() {
-                    self.clear_sticky(Sticky::StickyNote(&id));
+                    self.clear_sticky(Sticky::Note(&id));
                     effects.push(if hit == Hit::StickySnooze {
                         Effect::StickySnooze(id)
                     } else {
@@ -3163,7 +3163,7 @@ enum Sticky<'a> {
     Session(&'a str),
     Reminder(&'a str),
     /// A sticky note's reminder, by note id.
-    StickyNote(&'a str),
+    Note(&'a str),
     /// The failed Mole clean (one at a time).
     Mole,
     /// The update offer (one at a time, whatever the version).
@@ -3190,7 +3190,7 @@ fn sticky_key(notice: &Notice) -> Option<Sticky<'_>> {
     match &notice.kind {
         NoticeKind::ClaudeWaiting { session_id } => Some(Sticky::Session(session_id)),
         NoticeKind::Reminder { id } => Some(Sticky::Reminder(id)),
-        NoticeKind::StickyReminder { id } => Some(Sticky::StickyNote(id)),
+        NoticeKind::StickyReminder { id } => Some(Sticky::Note(id)),
         NoticeKind::MoleFailed => Some(Sticky::Mole),
         NoticeKind::UpdateAvailable { .. } => Some(Sticky::Update),
         _ => None,
