@@ -124,8 +124,13 @@ pub enum NoticeKind {
         secs: u32,
         delete_if_ignored: bool,
     },
-    /// "Disimpan · Pictures\Screenshots" after Simpan (Bata happy).
-    ShotSaved,
+    /// "Disimpan · Pictures\Screenshots · klik untuk buka" after a save (Bata
+    /// happy). `path` is the saved file: a click on the body reveals it in
+    /// Explorer (`Effect::RevealFile`). `None` when there is no file ("Belum
+    /// ada file", "Gagal menyimpan"): a click only dismisses.
+    ShotSaved {
+        path: Option<PathBuf>,
+    },
     /// "Dihapus · clipboard dikosongkan" after Hapus (Bata idle).
     ShotDeleted,
     /// A flash drive or disk was plugged in: "Buka" opens Explorer on its
@@ -450,6 +455,12 @@ pub enum Event {
         path: Option<PathBuf>,
         written: bool,
     },
+    /// A save finished in the inline capture or the editor: the saved file,
+    /// `None` when the write failed. `App` raises the "Disimpan" notice (or
+    /// "Gagal menyimpan"); the reducer ignores it.
+    ShotFileSaved {
+        path: Option<PathBuf>,
+    },
     /// "Hapus" ran for `shot`: what became of the file, and whether the
     /// clipboard was emptied. `App` raises the notice; the reducer ignores it.
     ShotRecycled {
@@ -720,6 +731,9 @@ pub enum Effect {
     /// Set the Mixer row's level / toggle its mute; `App` knows the rows.
     MixerLevel(usize, f32),
     MixerMute(usize),
+    /// Show the saved screenshot in Explorer (`sources::reveal`): its folder
+    /// opens with the file selected. `App` runs it on a worker.
+    RevealFile(PathBuf),
     /// Open shelf card `i`'s file / take it off / empty the shelf; `App`
     /// keeps the shelf.
     ShelfOpen(usize),

@@ -188,7 +188,7 @@ mod widgets_page;
 use widgets_page::{TIMER_STICKY_REMIND, TIMER_WIDGET_SAVE, WidgetsState};
 
 #[path = "app_shot.rs"]
-mod shot;
+pub(crate) mod shot;
 use shot::{ShotSetting, Shots};
 
 /// Posted by background sources after queueing an event.
@@ -453,6 +453,15 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
     let sync = spawn_sync(tx.clone(), poster(hwnd, WM_APP_EVENT), config.clone());
     // Files dropped on the island go to the shelf.
     shelf_ole::register(hwnd, tx.clone(), poster(hwnd, WM_APP_EVENT));
+    // A save finished in the inline capture or the editor: "Disimpan".
+    {
+        let (tx, wake) = (tx.clone(), poster(hwnd, WM_APP_EVENT));
+        crate::shot_edit::set_saved_sink(move |path| {
+            if tx.send(Event::ShotFileSaved { path }).is_ok() {
+                wake();
+            }
+        });
+    }
     APP.with(|cell| {
         *cell.borrow_mut() = Some(App {
             hwnd,
@@ -755,6 +764,7 @@ fn release_graphics() {
     editor::release();
     arrange_overlay::release();
     crate::capture::overlay::release();
+    crate::shot_edit::clear_saved_sink();
     identify_overlay::release();
     crate::lyrics_card::release();
     crate::shot_edit::window::release();
@@ -1490,6 +1500,10 @@ impl App {
                     self.on_shot_save_done(path, written, now);
                     continue;
                 }
+                Event::ShotFileSaved { path } => {
+                    self.on_shot_file_saved(path, now);
+                    continue;
+                }
                 Event::ShotRecycled { file, emptied, .. } => {
                     self.on_shot_recycled(file, emptied, now);
                     continue;
@@ -2137,6 +2151,14 @@ impl App {
         match effect {
             Effect::OpenTarget(target) => notif_open::open(target),
             Effect::OpenClaudeSession { session_id } => notif_open::open_claude(session_id),
+            // The saved screenshot's notice was clicked: Explorer opens on
+            // its folder with the file selected. The island just got the
+            // click, so it may let that window take the foreground; the rest
+            // runs on a worker.
+            Effect::RevealFile(file) => {
+                notif_open::allow_foreground();
+                crate::sources::reveal::reveal(file);
+            }
             // To the session the island shows (by key), not whichever is current.
             Effect::Media(cmd) => {
                 let target = self.state.media().map_or_else(

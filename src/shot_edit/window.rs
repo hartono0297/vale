@@ -1100,6 +1100,10 @@ fn on_saved(hwnd: HWND) {
                     let dir = path.parent().map(crate::screenshot::folder_label);
                     let msg = format!("{} · {}", tr(Key::ShotSaved), dir.unwrap_or_default());
                     say(e, msg, Tone::Ok);
+                    // The notch says it too (not in the demo).
+                    if !e.demo {
+                        super::tell_saved(Some(path.clone()));
+                    }
                 }
                 SaveResult::Failed => {
                     let msg = format!(

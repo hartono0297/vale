@@ -54,7 +54,7 @@ fn duration_of(notice: &Notice) -> Duration {
         NoticeKind::Copied => COPIED_DURATION,
         NoticeKind::ClipPreview { .. } => CLIP_NOTICE_DURATION,
         NoticeKind::Screenshot { secs, .. } => Duration::from_secs(u64::from(secs)),
-        NoticeKind::ShotSaved | NoticeKind::ShotDeleted => SHOT_DONE_DURATION,
+        NoticeKind::ShotSaved { .. } | NoticeKind::ShotDeleted => SHOT_DONE_DURATION,
         NoticeKind::Arranged { .. } => ARRANGE_NOTICE_DURATION,
         NoticeKind::UpdateFailed => UPDATE_NOTICE_DURATION,
         NoticeKind::UpdateProgress { .. } => UPDATE_PROGRESS_DURATION,
@@ -117,6 +117,7 @@ fn notice_has_action(notice: &Notice) -> bool {
             | NoticeKind::ClipPreview { .. }
             | NoticeKind::Arranged { .. }
             | NoticeKind::UpdateFailed
+            | NoticeKind::ShotSaved { path: Some(_) }
             | NoticeKind::App {
                 app_id: Some(_),
                 ..
@@ -601,7 +602,7 @@ impl IslandState {
                 | NoticeKind::SystemLow
                 | NoticeKind::CleanDone
                 | NoticeKind::MoleDone
-                | NoticeKind::ShotSaved
+                | NoticeKind::ShotSaved { .. }
                 | NoticeKind::ShotDeleted
                 | NoticeKind::DevicePlugged { .. }
                 | NoticeKind::DeviceSafe
@@ -900,6 +901,7 @@ impl IslandState {
             | Event::Mole(_)
             | Event::ShotFolder { .. }
             | Event::ShotSaveDone { .. }
+            | Event::ShotFileSaved { .. }
             | Event::ShotRecycled { .. }
             | Event::Tick => {}
             Event::CleanFinished => self.clean_finished(now, &mut effects),
@@ -2700,6 +2702,8 @@ impl IslandState {
                 }))
             }
             NoticeKind::ClaudeDone { session_id } => Some(Effect::OpenClaudeSession { session_id }),
+            // A saved screenshot: the body click shows the file in Explorer.
+            NoticeKind::ShotSaved { path: Some(path) } => Some(Effect::RevealFile(path)),
             NoticeKind::ClaudeWaiting { .. }
             | NoticeKind::Reminder { .. }
             | NoticeKind::StickyReminder { .. }
@@ -9408,12 +9412,85 @@ mod tests {
         let t0 = Instant::now();
         let mut s = st();
         let saved = Notice {
-            kind: NoticeKind::ShotSaved,
+            kind: NoticeKind::ShotSaved { path: None },
             ..copied("x")
         };
         s.apply(Event::Notice(saved.clone()), t0);
         assert_eq!(s.view(), View::Notice(saved));
         assert_eq!(s.next_deadline(), Some(t0 + SHOT_DONE_DURATION));
+    }
+
+    fn saved_with(path: Option<&str>) -> Notice {
+        Notice {
+            kind: NoticeKind::ShotSaved {
+                path: path.map(std::path::PathBuf::from),
+            },
+            ..copied("x")
+        }
+    }
+
+    const SAVED_FILE: &str = r"C:\Users\vale\Pictures\Screenshots\Screenshot 1.png";
+
+    #[test]
+    fn a_click_on_a_saved_notice_reveals_its_file() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Notice(saved_with(Some(SAVED_FILE))), t0);
+        assert_eq!(s.next_deadline(), Some(t0 + SHOT_DONE_DURATION));
+        let fx = s.apply(Event::Click(Hit::Body), t0 + secs(1));
+        assert_eq!(fx, vec![Effect::RevealFile(SAVED_FILE.into())]);
+        assert_eq!(s.view(), View::Idle);
+    }
+
+    #[test]
+    fn the_close_button_of_a_saved_notice_reveals_nothing() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Notice(saved_with(Some(SAVED_FILE))), t0);
+        assert!(s.notice_close_shown());
+        let fx = s.apply(Event::Click(Hit::NoticeClose), t0 + secs(1));
+        assert_eq!(fx, vec![]);
+        assert_eq!(s.view(), View::Idle);
+    }
+
+    #[test]
+    fn a_saved_notice_without_a_file_only_dismisses() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Notice(saved_with(None)), t0);
+        let fx = s.apply(Event::Click(Hit::Body), t0 + secs(1));
+        assert_eq!(fx, vec![]);
+        assert_eq!(s.view(), View::Idle);
+        assert!(!notice_has_action(&saved_with(None)));
+        assert!(notice_has_action(&saved_with(Some(SAVED_FILE))));
+    }
+
+    #[test]
+    fn hover_does_not_open_the_panel_over_a_saved_notice_with_a_file() {
+        let t0 = Instant::now();
+        let mut s = st();
+        let notice = saved_with(Some(SAVED_FILE));
+        s.apply(Event::Notice(notice.clone()), t0);
+        // The visit began on it: no panel over the click target, and it
+        // waits while the pointer does.
+        s.apply(Event::Hover(true), t0);
+        assert_eq!(s.view(), View::Notice(notice.clone()));
+        s.apply(Event::Tick, t0 + SHOT_DONE_DURATION + secs(5));
+        assert_eq!(s.view(), View::Notice(notice.clone()), "held");
+        // After the pointer leaves, the grace, then it goes.
+        let left = t0 + secs(10);
+        s.apply(Event::Hover(false), left);
+        s.apply(Event::Tick, left + secs(1));
+        assert_eq!(s.view(), View::Notice(notice));
+        s.apply(Event::Tick, left + SHOT_LEAVE_GRACE);
+        assert_eq!(s.view(), View::Idle);
+        // A pathless one keeps today's behaviour: no action, so no hold.
+        let mut s = st();
+        s.apply(Event::Notice(saved_with(None)), t0);
+        s.apply(Event::Hover(true), t0);
+        assert!(!s.notice_blocks_hover());
+        s.apply(Event::Tick, t0 + SHOT_DONE_DURATION);
+        assert_ne!(s.view(), View::Notice(saved_with(None)), "not held");
     }
 
     // ---- a real toast over a busy notch ----
@@ -10045,7 +10122,7 @@ mod tests {
             NoticeKind::CleanDone,
             NoticeKind::MoleDone,
             NoticeKind::Copied,
-            NoticeKind::ShotSaved,
+            NoticeKind::ShotSaved { path: None },
             NoticeKind::ShotDeleted,
             NoticeKind::DevicePlugged { letter: 'E' },
             NoticeKind::DeviceSafe,
