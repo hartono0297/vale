@@ -453,6 +453,232 @@ the colour popover and the "Atur sendiri" entry on screen (their layout and
 labels are tested; they were not opened because they take the foreground), the
 native menus, the island notice on the real island.
 
+## Run B: stacks ("Tumpuk catatan", 2026-11-04)
+
+Spec: the owner's brief (run B, feature 9) and `docs/design/catatan-tempel-v2.html`
+page 3, card 9. Built together with the tuck below, because both rework the one
+window per note model, the drag release and the painting.
+
+### Data (sticky part, all skipped at the default)
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `stack` | string | none | the stack id; a made stack is `stk-` + the target's note id |
+| `stack_order` | u32 | 0 | the sheet's place, 0-based |
+| `stack_top` | bool | false | the sheet the stack shows |
+| `tuck` | `left` / `right` | none | any case on read, a wrong value is none (below) |
+
+`sticky::lenient` reads each on its own. A phase-1 and a run A `notes.json` load
+to the defaults and save back with exactly their old keys (tested with literal
+JSON). Every sheet is an ordinary note on the Notes page.
+
+### Units, windows, retarget
+
+- A *unit* is what has a window: a plain note or a whole stack (`stack::units`,
+  sheets by `stack_order` then id). A stack id that only one live sticky sheet
+  carries is a plain note.
+- `Win::id` still means "the note id of the sheet this window shows" (a dropped
+  clip or a send-to-phone acts on it). `Win::stack: Option<StackView { id, ids,
+  pos }>` names the stack; `Win::sheets` keeps every sheet's sticky part, text
+  and edit time (the shown sheet's copy is stale, the window's own fields are
+  live). `Win::key()` is the stack id, else the note id; the lean uses it, so a
+  flip does not change it (`art::tilt_deg(stack id)`).
+- **A flip, or a new shown sheet, retargets the window**: editing ends first
+  (`end_editing`, and a popover of the note closes), then `id`, `sticky`, `text`
+  and `updated` are swapped, `body_key = None`, the scroll, selection and footer
+  message reset, `dirty`. The window is never destroyed or recreated. The leaving
+  sheet's live text is written back into `sheets` first, and place, size, pin,
+  roll and tuck of the new sheet are the stack's (`stack::share`).
+- `sync` matches windows to units by key first, then (`stack::match_units`) by a
+  sheet the window holds, preferring the window that shows the unit's top sheet:
+  a note that joined a stack, or a stack that came apart, keeps a window and the
+  others are destroyed or made. The `.take(MAX_STICKY)` still counts sheets.
+  `count()`, the cap (`sheet_total`), the tray and Settings are sheet counts.
+- The cat, a raise, `focus` and `mood_tick` map a hidden sheet's id to its unit's
+  window (`Win::has`); the cat's mood and `raise` look at every sheet's reminder.
+  Buka on a hidden sheet brings it to the top first. See-through uses the shown
+  sheet's `opacity` (`settle_alpha` runs on every flip).
+
+### Pure rules (`widgets/stack.rs`)
+
+`normalise` (one sheet shown: the first flagged, else the first; orders 0..n-1; a
+lone stack id cleared), `shown` (an overdue sheet comes to the top, the earliest
+if several), `join` (the stack id is the target's, else `stk-` + its note id; the
+dragged sheets first in their own order, then the target's; the shown sheet is the
+dragged unit's; every sheet takes the target's rect, monitor, pin, roll and tuck;
+width at least `MIN_W` 260), `flip` / `flip_pos` (wraps), `show`, `take_out` (the
+sheet is placed with the (+) rule, right, else left, else below, keeping its own
+size, untucked; the next sheet in order shows if it was the shown one), `leave`
+(what the rest becomes when a sheet is deleted or unstuck), `propagate` (a Placed,
+Pinned, Rolled or tuck change on one sheet is written to every sheet),
+`wheel_flips`, `match_units`. `apply.rs` applies the new events (`Stack` and
+`StackOut` structural; `StackShow` and `Tuck` not), runs `settle` (= `normalise`)
+at the end of every apply and in `widgets_sync`, and `Outcome::unstack` carries
+the sheets to take out: the owner does it with the displays (`apply::stack_out`).
+
+**The overdue sheet comes to the top at startup and when a reminder fires, not on
+every sync.** `settle(.., overdue_top)` is true only from `widgets_start`,
+`sticky_remind_fire` and the demo's start. Always applying it would undo a flip
+away from an overdue sheet at the next unrelated sync.
+
+### Making a stack: Shift, not a rest
+
+Run B allowed either "rest 0.5 s over the target" or Shift. **Shift is the
+trigger.** A rest needs a clock while the pointer stands still (a timer or the
+frame clock for half a second of nothing), and it stacks whenever one drags over
+a note and hesitates. Shift is read on every move, like `alt_down` (`shift_down`,
+with a test hook), costs nothing, and cannot stack by accident.
+
+- During a Move drag with Shift held and the pointer inside another unit's shown
+  rect (`Win::note`, not the margin; tucked units are left out), that unit is lit
+  with the highlight frame, static while targeted (`Win::targeted`, `Scene::
+  highlight` = 1).
+- Release with Shift still down over it: `WidgetEvent::Stack { dragged, target }`
+  (the two units' ids, in order), no `Placed`: the join places it.
+- Without Shift a drag never stacks, with or without snap. Snap, Alt and Kunci
+  posisi are as in run A. A drag that ends because the window lost the mouse
+  never stacks.
+
+### Drawing
+
+- Up to two paper edges peek out under the note at (+3, +3) and (+6, +6) dip, in
+  the fill of the next sheets in order, with a soft shadow, inside the 8 dip
+  margin, in the note's own transform (they lean with it).
+- The strip's left, where the date sits, shows "1 / 3" (tabular figures:
+  `Res::layout_tabular`, `fonts::tabular_figures`) between two 20 dip arrows
+  `Btn::Prev` / `Btn::Next` (`paint::stack_strip`: arrow 6..26, counter 28..74,
+  arrow 76..96). The counter is always drawn; the arrows fade with the other
+  buttons (the header ease) and, like them, take no press while hidden, so the
+  strip drags (`paint::target_in(.., stack)`). The date and the checklist count
+  are not drawn on a stack. At `MIN_W` 260 the Pin button starts at 112, so the 96
+  end of the arrows clears it by 16 dip (tested with the real font for "20 / 20").
+- The wheel over a stack's strip (`WM_MOUSEWHEEL`, whose position is in screen
+  coordinates) flips one sheet per 120 delta, accumulated (`Win::wheel`): down is
+  next, up is previous, wrapping. Over the text it scrolls the text. A flip is
+  saved through `StackShow { id }` as `stack_top`.
+- Context menu: "Keluarkan dari tumpukan" (id 24) only in a stack, right after
+  Roll.
+
+### Verified and not verified (stacks)
+
+Verified: `cargo test --locked`: the pure module (ordering, normalise, overdue,
+join, flip with wrap, show, take-out, leave, propagate, wheel, matching, the cap of
+a 3-sheet stack plus 17 notes), `apply` (events, structural, propagate, delete and
+unstick), the paint geometry (counter and arrows at `MIN_W`, hit-testing of the
+arrows), and real hidden windows in `host.rs`: a plain drag over a note does not
+stack, a Shift release does (the dragged window survives, one window, two sheets),
+a stack drag moves all sheets, the wheel on the strip flips and retargets without
+a new HWND, the arrows, the lean by stack id, the cap, a stack coming apart, the
+hidden sheet's id reaching the unit's window.
+Also run on this PC, in the debug demo with `PrintWindow` and window messages sent
+to the windows (the real pointer was not moved): the stack drawn (counter "1 / 3",
+the Laut and Plum edges under the Krem sheet), and `WM_MOUSEWHEEL` over its strip
+flipping the one window 1 / 3 -> 2 / 3 -> 3 / 3 and back with the new text, paper
+and peeking edges each time.
+Not verified live: a real mouse drag with a real Shift key, the wheel from a real
+wheel.
+
+## Run B: tuck to the edge ("Selip ke tepi", 2026-11-04)
+
+Spec: feature 10, page 3 card 10 of the mockup.
+
+### Geometry (`widgets/tuck.rs`, pure, dip in the placement area)
+
+- `Edge { Left, Right }`, saved as `left` / `right`.
+- **Outer edge rule.** A note tucks only to an edge that no other display's
+  *work area* adjoins across the note's vertical span (`tuck::adjoin`, physical
+  px, 1 px slack for rounding). On an inner edge the note simply crosses to the
+  next monitor. A smaller display beside only the upper part leaves the lower
+  part of that edge outer.
+- `press_edge(note, area, cursor, adjoin)`: a Move drag tucks when the note's
+  left (or right) side sits at the area's edge within 0.5 dip after the snap
+  clamp and the cursor is within 4 dip of, or past, that edge, and the edge is
+  outer. A note as wide as the area goes to the side the pointer is on.
+- `menu_edge`: "Selipkan ke tepi" uses the nearer outer edge to the note's
+  centre, the other side if the nearer is inner, greyed when neither is outer
+  (and with Kunci posisi).
+- `out_rect(view, edge, area)`: x flush with the edge, y clamped into the area.
+  `tab_rect(out, edge)`: 16 dip wide, `min(72, shown height)` tall, at the note's
+  top, flush with the edge. `slide_offset(t, w)`: how far the note is drawn off
+  the edge, `w - 16` at t = 0 (only the tab shows), 0 at t = 1.
+- **Place across a monitor change** reuses `place::place`: a tucked note's view
+  is replaced by `out_rect` on the display it lands on (the same edge, the y
+  clamped there, a rolled note at its shown height). The fallback to the primary
+  monitor still does not rewrite the save: a note tucked right on a missing
+  3840 wide monitor sits flush right on the primary and is flush right on its own
+  monitor again when it returns (tested with two fake displays and a missing
+  one). `place::others_on` leaves tucked notes out (snap neighbours, where a new
+  note goes).
+
+### Behaviour
+
+- The window stays at the out rect. Tucked all the way in (`Win::slide` = 0) only
+  the tab is drawn (`paint::draw_tab`): paper fill rounded on its inner side, a
+  1 dip ink line on the inner side, three short grip lines, an accent dot while
+  a reminder of the unit is overdue; every other pixel has alpha 0, so it is
+  click-through. The cat, the tilt and the paper edges are not drawn on the tab.
+  Sliding out draws the note shifted off the edge by `slide_offset` (`Win::
+  shift`; `target_at` and `client_to_dip` subtract it) with the tab fading; a
+  tucked note never leans, and the cat shows only when it is all the way out.
+- Hover: `WM_MOUSEMOVE` over the tab slides it out (180 ms ease; the existing
+  `TrackMouseEvent(TME_LEAVE)` arms the leave). `WM_MOUSELEAVE` while out starts a
+  300 ms **grace** (`Win::grace`), then it slides back in. Re-entering cancels.
+- **No new timer.** The grace and the slide run on the owner's FrameClock: they
+  are counted in `WidgetHost::moving()` (`grace.is_some() || slide.running`), the
+  owner starts the clock on `NeedsClock`, `tick` ends the grace and starts the
+  slide back in, and nothing is drawn during the grace (a frame is drawn only when
+  the slide's value differs from what was last drawn, so the last frame of the
+  slide is drawn too). Without animation (Motion not Full, Energy Saver, Windows
+  animations off) the slide is instant and the grace still applies.
+  `app::tests::timer_ids_never_collide` is unchanged.
+- It stays out while it has the keyboard, is dragged, is raised by a reminder, a
+  popover of it is open, or the pointer is over it (`keep_out`); `tuck_settle`
+  runs wherever one of these may have ended (leave, end of editing, `lower`, a
+  popover closing, the end of a drag, a sync) and starts the grace.
+  `WidgetHost::raise` (a due reminder, also by a hidden sheet's id) and `focus`
+  slide it out and keep it out.
+- A press on the tab starts a Move drag with the note shown out at once (Kunci
+  posisi blocks it; `mouse_activate` gives no keyboard). A Move drag that ends
+  without pressing an outer edge untucks (`Tuck { edge: None }`) and places the
+  note where dropped; one that ends pressing an outer edge tucks (`Placed` flush
+  with the edge, then `Tuck`). While a release would tuck, the dragged note shows
+  a 3 dip accent bar on that edge (`Win::cue`). A drag that did not move changes
+  nothing. Tucked units are excluded from the snap neighbours and from the stack
+  targets. A stack tucks as one (the tuck is written to every sheet).
+- Context menu, right after Roll (and after "Keluarkan dari tumpukan"): "Selipkan
+  ke tepi" / "Tuck to edge" (id 25; greyed with Kunci posisi and when neither side
+  is outer), "Keluarkan" / "Bring out" once tucked (same id), which untucks in
+  place.
+- Tucks survive a restart (the sticky part) and a monitor change (above).
+
+### Demo
+
+`--demo-widgets reset` seeds fifteen notes without the clipboard sample note (sixteen with it, see "Integration (Run B finish)"): the eleven of run A, a stack of
+three sheets ("Proyek Dago", Krem, Laut, Plum, sheet 1 shown), and one note tucked
+on the right edge of the notch's monitor. The demo owner gets `NeedsClock` like the
+island, so the slide and the grace run on its own frame clock. Hold Shift while
+dragging a note onto another to stack; the wheel over a stack's strip flips.
+
+### Verified and not verified (tuck)
+
+Verified: `cargo test --locked`: `tuck.rs` (press_edge outer against inner, the
+0.5 and 4 dip limits, adjoin across a span, menu_edge, out_rect clamp, tab_rect,
+slide_offset), `place.rs` (flush on another display, a shorter display, a missing
+monitor and its return), and real hidden windows: a tucked note slides out on
+`WM_MOUSEMOVE` and `moving()` is false once settled, with and without animation,
+the grace and re-entering, staying out for the keyboard and a raise, a drag that
+ends on an outer edge tucks and elsewhere untucks, the cue, an inner edge never
+tucks, the menu's edge, a tab is not a snap neighbour.
+Also run on this PC in the debug demo: the tab drawn flush right on the notch's
+monitor (Sage paper, grip lines), and a `WM_MOUSEMOVE` sent to it caught mid-slide
+with the tab fading on the note's edge. A sent move is not a real pointer, so
+Windows' own `WM_MOUSELEAVE` came at once and the grace and the slide back in
+ran: the note was a tab again about half a second later (the way a pointer that
+leaves behaves).
+Not verified live: a real mouse drag to a real screen edge, hover with a real
+pointer that stays, the look of the slide as motion, two real monitors, the tab
+at 150 % DPI.
+
 ## Run B: clipboard prefill and drops
 
 Feature 8 of sticky notes v2 (2026-11-04). New pure module `cliptext.rs`, new
@@ -595,3 +821,87 @@ read-only page. Spec: the owner's brief (feature 12), mockup page 3 card 12 of
   server's `end`). Editing the note afterwards does not change the page.
 - **Not touched:** the shelf's files, uploads, downloads, thumbnails, page.html,
   share ids, the token and the idle rules; `TIMER_PHONE` 48 and ids 49-50.
+
+
+## Integration (Run B finish)
+
+Run B's four features were built in parallel (clip-drop and send-phone on `main`,
+stacks and tuck on `task/sticky-v2b-stack-tuck`) and merged here with real merge
+commits (never a rebase). The rules where they meet, all decided from the merged
+code and covered by host or apply tests:
+
+- **Window setup.** `sync` makes one window per unit (a stack is one window,
+  `stack::match_units`). After every `create_window()` that returns a window,
+  `drop::register(hwnd)` runs at once, so every unit window is a drop target; a
+  window that is only retargeted (a flip, a join, a split that keeps it) keeps its
+  single registration (registered once per HWND, never twice). `WM_DESTROY` calls
+  `drop::revoke` first, and every way a unit window goes (a sheet leaving, the last
+  sheet gone, `shutdown`) is a `DestroyWindow`, so each passes there. Test:
+  `the_drop_target_is_registered_once_per_window_and_a_stack_change_keeps_it`
+  (count 1, then 2 after a sheet is taken out, then 0 after shutdown).
+  `blank_win` sets `drop_hover: false` next to the stack and tuck fields.
+- **Drop + stack = the shown sheet.** The drop target works by HWND, and
+  `drop_into` reads the window's own `id` / `text`, which a flip swaps
+  (`show_sheet`), so the lines land in the sheet the window shows, never the
+  stack's first or bottom one; the `Text` event carries that sheet's id. The
+  dashed outline follows the visible shape: the top sheet's rectangle (the paper
+  edges under it are not outlined), the note itself while a tucked note is out.
+  Test: `a_drop_on_a_stack_lands_in_the_shown_sheet_not_the_first` (flip to sheet 3,
+  drop, apply: only sheet 3 changed, and flipping back and forth keeps it).
+- **Drop + tuck: the note comes out.** A tab alone is only 16 dip wide and the rest
+  of the window is click-through, so a drag can only reach a tucked note over its
+  tab. `drop_hover(hwnd, true)` (the drop target's `DragEnter`) is now part of
+  `keep_out`, like the pointer, the keyboard, a drag or a popover: the note slides
+  out under the drag (the same slide on the frame clock, instant without
+  animation), and the drop then appends to that note. `drop_hover(hwnd, false)`
+  (`DragLeave` and `Drop` both call it) runs `tuck_settle`, which starts the usual
+  300 ms grace and the slide back in. Nothing can stay stuck out: leaving, dropping
+  or the window going all clear it, and **no timer was added** (the grace counts on
+  the existing frame clock). Tests:
+  `a_drop_on_a_tucked_note_brings_it_out_and_appends_to_that_note` (animate on
+  and off, drop, leave, back to a tab, clock off) and
+  `a_drag_that_leaves_a_tucked_note_without_a_drop_lets_it_slide_back`.
+- **Send to phone on a stack.** "Kirim ke HP" (id 26) is the `send_to_phone(hwnd)`
+  helper, which pushes `SendToPhone` with the window's current `id`: the sheet it
+  shows after flips. Test: `send_to_phone_on_a_stack_sends_the_sheet_the_window_shows`
+  (first sheet, then after a flip to sheet 2). The island then snapshots that note
+  (`apply` -> `Outcome::send_phone`), unchanged from [[shelf-phone]]'s page.
+- **The cap counts sheets, prefill included.** `NotesStore::sticky_count` counts
+  notes that have a sticky part, and every sheet of a stack is one, so a stack of 3
+  is 3 and the host's `sheet_total` agrees with it. Every way to make a note asks
+  `can_add(sticky_count())`: the gallery (+), the tray, hotkey 7, the header (+),
+  the Notes page pin, and the clipboard prefill. `new_sticky_with` checks the cap
+  before anything and shows the "sticky-full" notice; a prefilled note is one sheet
+  however many lines it has; `cliptext::fill_wanted(on, sheets)` (on and below the
+  cap) decides whether the clipboard is read at all, so at the cap it is not read.
+  Tests: `at_twenty_sheets_with_stacks_every_way_to_make_a_note_makes_nothing`,
+  `a_prefilled_note_counts_as_one_sheet_like_any_other` (apply.rs) and the host's
+  `the_cap_counts_every_sheet_of_every_stack`. Not unit-tested, so a manual check:
+  each of the five entry points at 20 sheets really shows the notice on the
+  island (the `App` methods need the island window).
+- **Menu ids.** `CMD_UNSTACK` 24, `CMD_TUCK` 25, `CMD_SEND_PHONE` 26, all distinct
+  and outside the paper (1..), remind (30..), stamp (50..) ranges
+  (`the_menu_ids_are_distinct_and_the_documented_ones`). The menu keeps both
+  sides' items: Cap, Kirim ke HP, Pin, Roll, Keluarkan dari tumpukan (stacks only),
+  Selipkan / Keluarkan (tuck), Unstick, Delete.
+- **Demo.** `--demo-widgets reset` seeds sixteen notes: the twelve of main (eleven
+  of run A and the clipboard sample note, Krem, from the fixed sample string, never
+  the real clipboard, stamped `now - 40`), the three "Proyek Dago" sheets
+  (`now - 30 .. now - 28`) and the note tucked on the right (`now - 20`). 16 stays
+  under the cap of 20; `the_demo_seeds_sixteen_notes_with_the_clip_note_a_stack_and_a_tuck`.
+- **Shared slots.** No new `TIMER_*`, `WM_APP` or hotkey id: widgets use timers 45,
+  46 (the host's caret) and 47; 48-50 are the phone's; `WM_APP` +60 PrtSc, +61
+  Arrange, +70 lyrics card, +71 the host's own message; hotkey ids 1-7.
+- **Run A's drag rules are intact** (the 36 dip strip drags, hidden buttons take no
+  press, Alt + drag anywhere, a just-created note drags at once): their tests pass
+  unchanged. Shift + drag onto a note makes a stack only with Shift held; a plain
+  drag still just moves and never stacks (`a_plain_drag_over_another_note_does_not_stack`).
+
+### Verified and not verified (Run B finish)
+
+Verified: `cargo test --locked` green (2791 passed, 16 ignored, the same 16 as on
+main), `cargo build --release --locked` with no warnings.
+Not verified live (manual checks): a real OLE drag of text, a link and a file from
+another app onto a stack's top sheet and onto a tucked note's tab (the unit tests
+call `drop_hover` and `drop_into` as the drop target does); the island notice at 20
+sheets from each entry point; Send to phone from a flipped stack with a real phone.

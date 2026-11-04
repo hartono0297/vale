@@ -19,7 +19,7 @@ use windows::Win32::Graphics::Direct2D::{
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT, DWRITE_HIT_TEST_METRICS, DWRITE_TEXT_METRICS,
-    DWRITE_TEXT_RANGE, IDWriteTextFormat, IDWriteTextLayout,
+    DWRITE_TEXT_RANGE, IDWriteTextFormat, IDWriteTextLayout, IDWriteTypography,
 };
 use windows::core::{BOOL, HSTRING, Interface, Result};
 use windows_numerics::{Matrix3x2, Vector2};
@@ -37,8 +37,9 @@ use crate::ui::robot::{Expr, Pose, RobotPainter};
 use crate::widgets::art::{self, Piece};
 use crate::widgets::checklist::{self, Line};
 use crate::widgets::sticky::{
-    Deco, NoteFont, Pattern, ROLLED_H, Stamp, TextSize, Tones, chip_tones, tangan_family,
+    Deco, DipRect, NoteFont, Pattern, ROLLED_H, Stamp, TextSize, Tones, chip_tones, tangan_family,
 };
+use crate::widgets::tuck::{self, Edge};
 
 // ------------------------------------------------------------------ geometry
 
@@ -107,6 +108,9 @@ pub enum Btn {
     Colour,
     More,
     Close,
+    /// A stack's arrows, left of the strip (`stack_strip`): only on a stack.
+    Prev,
+    Next,
 }
 
 impl Btn {
@@ -118,6 +122,28 @@ impl Btn {
         Btn::More,
         Btn::Close,
     ];
+}
+
+/// A stack's arrows are this big (dip), and the counter between them has room
+/// for "20 / 20" in tabular figures.
+pub const ARROW: f32 = 20.0;
+pub const COUNTER_W: f32 = 46.0;
+
+/// Where a stack's strip puts its arrows and its counter: from the strip's
+/// left, in the place the date takes on a plain note.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StackStrip {
+    pub prev: Rect,
+    pub counter: Rect,
+    pub next: Rect,
+}
+
+pub fn stack_strip() -> StackStrip {
+    let y = (HEADER_H - ARROW) / 2.0;
+    let prev = Rect { x: 6.0, y, w: ARROW, h: ARROW };
+    let counter = Rect { x: prev.x + ARROW + 2.0, y: 0.0, w: COUNTER_W, h: HEADER_H };
+    let next = Rect { x: counter.x + COUNTER_W + 2.0, y, w: ARROW, h: ARROW };
+    StackStrip { prev, counter, next }
 }
 
 /// The margin around the note inside its window, in dip: left, top, right,
@@ -136,8 +162,14 @@ pub fn shown_h(h: f32, rolled: bool) -> f32 {
     if rolled { ROLLED_H } else { h }
 }
 
-/// A header button's rect, right-aligned in a note `w` wide.
+/// A header button's rect, right-aligned in a note `w` wide (a stack's
+/// arrows are at the left).
 pub fn button_rect(btn: Btn, w: f32) -> Rect {
+    match btn {
+        Btn::Prev => return stack_strip().prev,
+        Btn::Next => return stack_strip().next,
+        _ => {}
+    }
     let i = Btn::ALL.iter().position(|b| *b == btn).unwrap_or(0) as f32;
     let n = Btn::ALL.len() as f32;
     let right = w - 6.0;
@@ -201,9 +233,10 @@ fn grown(r: Rect, by: f32) -> Rect {
 /// `body` is the text layout (for the item boxes) and `scroll` how far it is
 /// scrolled. `buttons_shown` is whether the header's buttons are visible: a
 /// hidden button takes no press, so the whole strip (full width, the pinned
-/// pin included) is `Header`.
+/// pin included) is `Header`. A `stack` also has the two arrows in the strip's
+/// left, shown with the other buttons.
 #[allow(clippy::too_many_arguments)]
-pub fn target(
+pub fn target_in(
     x: f32,
     y: f32,
     w: f32,
@@ -212,6 +245,7 @@ pub fn target(
     body: Option<&BodyLayout>,
     scroll: f32,
     buttons_shown: bool,
+    stack: bool,
 ) -> Target {
     let h = shown_h(h, rolled);
     if x < 0.0 || y < 0.0 || x >= w || y >= h {
@@ -222,6 +256,13 @@ pub fn target(
             for b in Btn::ALL {
                 if inside(button_rect(b, w), x, y) {
                     return Target::Button(b);
+                }
+            }
+            if stack {
+                for b in [Btn::Prev, Btn::Next] {
+                    if inside(button_rect(b, w), x, y) {
+                        return Target::Button(b);
+                    }
                 }
             }
         }
@@ -250,6 +291,22 @@ pub fn target(
     Target::Body
 }
 
+/// `target_in` for a note that is not a stack.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub fn target(
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    rolled: bool,
+    body: Option<&BodyLayout>,
+    scroll: f32,
+    buttons_shown: bool,
+) -> Target {
+    target_in(x, y, w, h, rolled, body, scroll, buttons_shown, false)
+}
+
 /// An item's checkbox, in the note's dip.
 pub fn box_rect(l: &BodyLine, area: Rect, scroll: f32) -> Rect {
     Rect {
@@ -275,6 +332,8 @@ pub struct Res {
     ui: UiFont,
     /// One format per (font, size, weight).
     formats: RefCell<HashMap<(NoteFont, u32, u16), IDWriteTextFormat>>,
+    /// Fixed-width figures, for a stack's counter.
+    tabular: IDWriteTypography,
     /// The drop outline's dashes (6 on, 4 off at 2 wide: 3 and 2 stroke
     /// widths); `None` when the factory would not make it (no outline then).
     drop_dash: Option<ID2D1StrokeStyle>,
@@ -289,6 +348,7 @@ impl Res {
         let icons = IconSet::new(&gfx.d2d)?;
         let robot = RobotPainter::new(&gfx.d2d)?;
         let face = Face::for_role_in(&gfx.dwrite, Role::Text, ui);
+        let tabular = fonts::tabular_figures(&gfx.dwrite)?;
         let dashes = [DROP_DASH / DROP_W, DROP_GAP / DROP_W];
         let drop_dash = unsafe {
             gfx.d2d.CreateStrokeStyle(
@@ -313,6 +373,7 @@ impl Res {
             extra: RefCell::new([None, None]),
             ui,
             formats: RefCell::new(HashMap::new()),
+            tabular,
             drop_dash,
         })
     }
@@ -363,6 +424,13 @@ impl Res {
         };
         self.formats.borrow_mut().insert(key, f.clone());
         Ok(f)
+    }
+
+    /// `layout` with tabular figures on its digits: a counter does not jitter.
+    pub fn layout_tabular(&self, text: &str, size: f32, weight: u16, width: f32) -> Result<IDWriteTextLayout> {
+        let wide: Vec<u16> = text.encode_utf16().collect();
+        let format = self.format(NoteFont::Vale, size, weight)?;
+        fonts::text_layout(&self.gfx.dwrite, &wide, &format, width.max(1.0), 100_000.0, &self.tabular)
     }
 
     /// `text` wrapped at `width` dip, drawn at `size` dip in Vale's face.
@@ -658,6 +726,26 @@ pub struct CatPose {
     pub zzz: bool,
 }
 
+/// What a stack adds to its top sheet: the counter ("2 / 5") and the fills of
+/// the next sheets in order (up to two) that peek out under the paper.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StackScene {
+    pub label: String,
+    pub edges: Vec<u32>,
+}
+
+/// A tucked note: its edge, how far out it is (0 only the tab shows, 1 the
+/// whole note) and whether its reminder is overdue (the tab's dot).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TuckScene {
+    pub edge: Edge,
+    pub t: f32,
+    pub overdue: bool,
+}
+
+/// How far a stack's paper edges peek out under the note, each (dip).
+pub const STACK_STEP: f32 = 3.0;
+
 /// Everything one frame of a note shows.
 pub struct Scene<'a> {
     pub w: f32,
@@ -710,6 +798,12 @@ pub struct Scene<'a> {
     pub peek: Option<Expr>,
     pub cat: CatLook,
     pub frame_accent: u32,
+    /// Set for a stack's top sheet.
+    pub stack: Option<StackScene>,
+    /// Set while the note is tucked to an edge.
+    pub tuck: Option<TuckScene>,
+    /// A release here would tuck: the edge that gets the accent bar.
+    pub cue: Option<Edge>,
 }
 
 fn rr(x: f32, y: f32, w: f32, h: f32, r: f32) -> D2D1_ROUNDED_RECT {
@@ -742,6 +836,14 @@ pub fn draw(c: &Canvas, res: &Res, s: &Scene) {
     } else {
         art::tilt_transform(s.tilt, ox + s.w / 2.0, oy + h / 2.0, s.scale)
     };
+    // Tucked all the way in: only the tab, in the window's own place (the
+    // cat, the tilt and the paper are not drawn).
+    if let Some(tk) = s.tuck.filter(|tk| tk.t <= 0.0) {
+        unsafe { rt.SetTransform(&straight) };
+        draw_tab(&rt, brush, s, &tk, 1.0);
+        unsafe { rt.SetTransform(&Matrix3x2::identity()) };
+        return;
+    }
     unsafe {
         rt.SetTransform(&base);
     }
@@ -798,6 +900,25 @@ pub fn draw(c: &Canvas, res: &Res, s: &Scene) {
                         );
                     }
                 }
+            }
+        }
+    }
+
+    // A stack: the next sheets' edges peek out under the paper, down and to the
+    // right (inside the margin), the farthest first.
+    if let Some(st) = &s.stack {
+        for (k, fill) in st.edges.iter().enumerate().rev() {
+            let off = STACK_STEP * (k as f32 + 1.0);
+            set(0x000000, 0.07);
+            unsafe {
+                rt.FillRoundedRectangle(
+                    &rr(ox + off - 1.5, oy + off - 1.5 + 2.0, s.w + 3.0, h + 3.0, RADIUS + 1.5),
+                    brush,
+                );
+            }
+            set(*fill, 1.0);
+            unsafe {
+                rt.FillRoundedRectangle(&rr(ox + off, oy + off, s.w, h, RADIUS), brush);
             }
         }
     }
@@ -919,7 +1040,7 @@ pub fn draw(c: &Canvas, res: &Res, s: &Scene) {
         );
         date_end = date_end.min(cx - 6.0);
     }
-    if s.header < 1.0 {
+    if s.header < 1.0 && s.stack.is_none() {
         // The date, and after it "2/5" for a checklist.
         let date_room = (date_end - PAD_X).max(0.0);
         line_text(
@@ -957,6 +1078,44 @@ pub fn draw(c: &Canvas, res: &Res, s: &Scene) {
             }
         }
     }
+    if let Some(st) = &s.stack {
+        // Where the date sits: "1 / 3" always, with the arrows beside it while
+        // the other buttons show.
+        let strip = stack_strip();
+        if let Ok(layout) = res.layout_tabular(&st.label, 10.5, 600, strip.counter.w) {
+            unsafe {
+                let _ = layout.SetWordWrapping(
+                    windows::Win32::Graphics::DirectWrite::DWRITE_WORD_WRAPPING_NO_WRAP,
+                );
+                let _ = layout.SetMaxHeight(HEADER_H);
+                let _ = layout.SetParagraphAlignment(
+                    windows::Win32::Graphics::DirectWrite::DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+                );
+                let _ = layout.SetTextAlignment(
+                    windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_ALIGNMENT_CENTER,
+                );
+                brush.SetColor(&color(t.secondary, 0.95));
+                rt.DrawTextLayout(
+                    Vector2::new(ox + strip.counter.x, oy),
+                    &layout,
+                    brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                );
+            }
+        }
+        if s.header > 0.01 {
+            for (b, glyph) in [(Btn::Prev, Icon::ChevL), (Btn::Next, Icon::ChevR)] {
+                let r = button_rect(b, s.w);
+                if s.hot == Some(b) && s.header > 0.3 {
+                    set(t.body, 0.10 * s.header);
+                    unsafe {
+                        rt.FillRoundedRectangle(&rr(ox + r.x, oy + r.y, r.w, r.h, 6.0), brush);
+                    }
+                }
+                icon(glyph, r, t.secondary, s.header);
+            }
+        }
+    }
     for b in Btn::ALL {
         let r = button_rect(b, s.w);
         let pinned_rest = b == Btn::Pin && s.pinned;
@@ -979,6 +1138,7 @@ pub fn draw(c: &Canvas, res: &Res, s: &Scene) {
             Btn::Check => icon(Icon::Check, r, ink, a),
             Btn::Colour => icon(Icon::Swatch, r, ink, a),
             Btn::Close => icon(Icon::X, r, ink, a),
+            Btn::Prev | Btn::Next => {}
             Btn::More => {
                 set(ink, a);
                 for dx in [-4.5f32, 0.0, 4.5] {
@@ -1102,12 +1262,111 @@ pub fn draw(c: &Canvas, res: &Res, s: &Scene) {
         let (x, y, fw, fh, r) = drop_frame(ox, oy, s.w, h);
         unsafe { rt.DrawRoundedRectangle(&rr(x, y, fw, fh, r), brush, DROP_W, dash) };
     }
+    // A release here would tuck: an accent bar on that edge.
+    if let Some(edge) = s.cue {
+        let x = match edge {
+            Edge::Left => ox,
+            Edge::Right => ox + s.w - tuck::CUE_W,
+        };
+        set(t.accent, 1.0);
+        unsafe {
+            rt.FillRoundedRectangle(&rr(x, oy, tuck::CUE_W, h, tuck::CUE_W / 2.0), brush);
+        }
+    }
+    // Sliding out: the tab is still there, fading as the note comes.
+    if let Some(tk) = s.tuck.filter(|tk| tk.t < 1.0) {
+        unsafe { rt.SetTransform(&straight) };
+        draw_tab(&rt, brush, s, &tk, 1.0 - tk.t);
+    }
     // The confetti is the window's, not the leaning note's.
     if !s.confetti.is_empty() {
         unsafe { rt.SetTransform(&straight) };
         art::draw_confetti(&rt, brush, s.confetti, &art::confetti_palette(t));
     }
     unsafe { rt.SetTransform(&Matrix3x2::identity()) };
+}
+
+/// The tab of a tucked note at its screen edge, in the window's own place (not
+/// shifted by the slide): paper, a 1 dip ink line on the inner side, three
+/// short grip lines, and an accent dot while the reminder is overdue. `a` is
+/// its opacity.
+fn draw_tab(
+    rt: &ID2D1RenderTarget,
+    brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush,
+    s: &Scene,
+    tk: &TuckScene,
+    a: f32,
+) {
+    let t = &s.tones;
+    let m = s.margins;
+    let out = DipRect::new(0.0, 0.0, s.w, shown_h(s.h, s.rolled));
+    let tab = tuck::tab_rect(&out, tk.edge);
+    let (x, y) = (m.0 + tab.x, m.1 + tab.y);
+    // Round on the inner side only: the shape runs on past the screen edge,
+    // where the window ends.
+    let ext = 12.0;
+    let sx = match tk.edge {
+        Edge::Left => x - ext,
+        Edge::Right => x,
+    };
+    let sw = tab.w + ext;
+    let set = |rgb: u32, alpha: f32| unsafe { brush.SetColor(&color(rgb, alpha)) };
+    for (grow, alpha) in [(5.0, 0.035), (3.0, 0.05), (1.5, 0.07)] {
+        set(0x000000, alpha * a);
+        unsafe {
+            rt.FillRoundedRectangle(
+                &rr(sx - grow, y - grow + 2.0, sw + 2.0 * grow, tab.h + 2.0 * grow, 7.0 + grow),
+                brush,
+            );
+        }
+    }
+    set(t.fill, a);
+    unsafe {
+        rt.FillRoundedRectangle(&rr(sx, y, sw, tab.h, 7.0), brush);
+    }
+    // The ink line on the inner side.
+    let line_x = match tk.edge {
+        Edge::Left => x + tab.w - 0.5,
+        Edge::Right => x + 0.5,
+    };
+    set(t.body, 0.5 * a);
+    unsafe {
+        rt.DrawLine(
+            Vector2::new(line_x, y + 7.0),
+            Vector2::new(line_x, y + tab.h - 7.0),
+            brush,
+            1.0,
+            None,
+        );
+    }
+    // Three short grip lines.
+    let cx = x + tab.w / 2.0;
+    let cy = y + tab.h / 2.0;
+    set(t.body, 0.55 * a);
+    for k in [-1.0f32, 0.0, 1.0] {
+        unsafe {
+            rt.DrawLine(
+                Vector2::new(cx - 3.0, cy + k * 4.0),
+                Vector2::new(cx + 3.0, cy + k * 4.0),
+                brush,
+                1.5,
+                None,
+            );
+        }
+    }
+    if tk.overdue {
+        set(t.accent, a);
+        unsafe {
+            rt.FillEllipse(
+                &D2D1_ELLIPSE {
+                    point: Vector2::new(cx, y + 12.0),
+                    radiusX: 3.0,
+                    radiusY: 3.0,
+                },
+                brush,
+            );
+        }
+    }
 }
 
 fn draw_body(
@@ -1344,6 +1603,78 @@ mod tests {
             target(first.x + 5.0, HEADER_H - 1.0, w, 208.0, false, None, 0.0, true),
             Target::Header
         );
+    }
+
+
+    /// How wide `label` is laid out with tabular figures, dip.
+    fn counter_width(res: &Res, label: &str) -> f32 {
+        let l = res.layout_tabular(label, 10.5, 600, 400.0).expect("a layout");
+        let mut m = DWRITE_TEXT_METRICS::default();
+        unsafe { l.GetMetrics(&mut m) }.expect("metrics");
+        m.widthIncludingTrailingWhitespace
+    }
+
+    #[test]
+    fn a_stacks_counter_and_arrows_fit_left_of_the_six_buttons_at_the_smallest_width() {
+        let res = Res::new(UiFont::Sans).expect("DirectWrite works without a window");
+        let strip = stack_strip();
+        assert_eq!((strip.prev.w, strip.prev.h, strip.next.w, strip.next.h), (20.0, 20.0, 20.0, 20.0));
+        // The widest counter, in the real font with tabular figures, fits its box.
+        for label in ["20 / 20", "10 / 10", "1 / 3", "9 / 20"] {
+            let w = counter_width(&res, label);
+            assert!(w <= strip.counter.w, "{label} is {w} wide, the box is {}", strip.counter.w);
+        }
+        assert_eq!(counter_width(&res, "10 / 20"), counter_width(&res, "88 / 88"), "tabular: the figures do not jitter");
+        // Left to right: previous, counter, next; none overlapping.
+        assert!(strip.prev.x + strip.prev.w <= strip.counter.x);
+        assert!(strip.counter.x + strip.counter.w <= strip.next.x);
+        assert!(strip.prev.x >= 0.0 && strip.prev.y >= 0.0 && strip.prev.y + strip.prev.h <= HEADER_H);
+        // At every width a stack can have, from `stack::MIN_W`: the last arrow
+        // ends before the first of the six right-hand buttons begins.
+        let mut w = crate::widgets::stack::MIN_W;
+        while w <= crate::widgets::sticky::MAX_W {
+            let pin = button_rect(Btn::Pin, w);
+            assert!(strip.next.x + strip.next.w < pin.x, "{w} wide: next ends at {}, Pin starts at {}", strip.next.x + strip.next.w, pin.x);
+            w += 10.0;
+        }
+        // And it is the widest the 20 / 20 can be with both arrows: the same
+        // layout would not fit at the plain minimum (160), which is why a
+        // stack is at least 260.
+        let pin = button_rect(Btn::Pin, crate::widgets::sticky::MIN_W);
+        assert!(strip.next.x + strip.next.w >= pin.x, "a plain minimum note could not hold it");
+    }
+
+    #[test]
+    fn a_stacks_arrows_take_presses_only_while_shown_and_only_on_a_stack() {
+        let (w, h) = (280.0, 208.0);
+        let at = |b: Btn| {
+            let r = button_rect(b, w);
+            (r.x + r.w / 2.0, r.y + r.h / 2.0)
+        };
+        for b in [Btn::Prev, Btn::Next] {
+            let (x, y) = at(b);
+            assert_eq!(target_in(x, y, w, h, false, None, 0.0, true, true), Target::Button(b));
+            // Hidden: the strip, so it drags.
+            assert_eq!(target_in(x, y, w, h, false, None, 0.0, false, true), Target::Header);
+            // Not a stack: no arrows there.
+            assert_eq!(target_in(x, y, w, h, false, None, 0.0, true, false), Target::Header);
+            // Rolled up: the strip is the same.
+            assert_eq!(target_in(x, y, w, 208.0, true, None, 0.0, true, true), Target::Button(b));
+        }
+        // The counter between them is the strip.
+        let strip = stack_strip();
+        assert_eq!(
+            target_in(strip.counter.x + strip.counter.w / 2.0, 18.0, w, h, false, None, 0.0, true, true),
+            Target::Header
+        );
+        // The six buttons are where they were.
+        for b in Btn::ALL {
+            let r = button_rect(b, w);
+            assert_eq!(
+                target_in(r.x + r.w / 2.0, r.y + r.h / 2.0, w, h, false, None, 0.0, true, true),
+                Target::Button(b)
+            );
+        }
     }
 
     #[test]

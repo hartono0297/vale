@@ -31,7 +31,7 @@ use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
 use super::App;
 use crate::i18n::{self, Key, tr};
 use crate::model::Event;
-use crate::widgets::apply::{apply, set_reminder, sticky_for};
+use crate::widgets::apply::{apply, set_reminder, settle, stack_out, sticky_for};
 use crate::widgets::cliptext;
 use crate::widgets::host::{Ctx, WidgetHost};
 use crate::widgets::prefs::{FullscreenRule, WidgetLayer};
@@ -60,6 +60,10 @@ impl App {
         if self.widgets.host.is_none() {
             self.widgets.host = Some(WidgetHost::new(self.hwnd));
         }
+        // A stack shows the sheet whose reminder is overdue.
+        if settle(&mut self.notes, Local::now().timestamp(), true) {
+            self.arm_widget_save();
+        }
         self.widgets_sync();
     }
 
@@ -69,6 +73,11 @@ impl App {
     /// on the window.
     pub(super) fn widgets_sync(&mut self) {
         self.widgets_apply_events(true);
+        // Stacks made right: one sheet shown, a lone sheet is a plain note
+        // (a sheet deleted on the Notes page).
+        if settle(&mut self.notes, Local::now().timestamp(), false) {
+            self.arm_widget_save();
+        }
         let animate = self.motion().moves() && self.animations;
         let App {
             notes,
@@ -227,7 +236,7 @@ impl App {
             return false;
         }
         let out = apply(&mut self.notes, events, Local::now().timestamp());
-        let (changed, structural, clock) = (out.changed, out.structural, out.clock);
+        let (mut changed, structural, clock) = (out.changed, out.structural, out.clock);
         if let Some(on) = out.cat_peek {
             self.config.widgets.cat_peek = on;
             self.save_config();
@@ -240,6 +249,10 @@ impl App {
         }
         for (id, template) in out.beside {
             self.new_sticky(Some(&id), template);
+        }
+        // A sheet taken out of its stack goes beside it (needs the displays).
+        for id in &out.unstack {
+            changed |= stack_out(&mut self.notes, &self.displays, id);
         }
         if out.reminders || !out.gone.is_empty() {
             self.sticky_remind_settle();
@@ -349,6 +362,8 @@ impl App {
             };
             set_reminder(&mut self.notes, id, Some(at), true);
         }
+        // A stack that holds the sheet shows it now.
+        settle(&mut self.notes, unix, true);
         self.arm_widget_save();
         self.widgets_sync();
         if let Some(host) = self.widgets.host.as_mut() {
@@ -483,7 +498,7 @@ impl App {
     /// clipboard, for a copy a password manager excluded, and for files and
     /// pictures. The text is never logged.
     fn sticky_prefill(&self) -> Option<String> {
-        if !self.config.widgets.clip_fill || !can_add(self.notes.sticky_count()) {
+        if !cliptext::fill_wanted(self.config.widgets.clip_fill, self.notes.sticky_count()) {
             return None;
         }
         match crate::clipboard::win::read_now(self.hwnd) {

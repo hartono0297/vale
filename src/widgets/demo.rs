@@ -1,13 +1,14 @@
 //! `--demo-widgets` (debug builds): the desktop widgets on their own, with a
 //! made-up notes file in the temp folder (never `%APPDATA%`, never the real
-//! config). It seeds twelve notes, the first time or with the argument
+//! config). It seeds sixteen notes, the first time or with the argument
 //! `reset`: one per paper colour (the Gelap one pinned), a half-done checklist
 //! (with its progress bar), an all-done one, a rolled-up one, and the v2 things
 //! (a reminder chip, an overdue reminder with the clock cat, Tangan and Mono,
-//! each ruling, tape and a pin, the stamps, a 60 % see-through note, and one
-//! as "Isi dari clipboard" would start it, from a fixed sample string, never
-//! the real clipboard). After
-//! that the file keeps what was typed, moved and ticked, so a restart shows it
+//! each ruling, tape and a pin, the stamps, a 60 % see-through note), one as
+//! "Isi dari clipboard" would start it (from a fixed sample string, never the
+//! real clipboard), a stack of three sheets ("Proyek Dago") and a note tucked
+//! to the right edge of the notch's monitor (hover its tab). After that the
+//! file keeps what was typed, moved and ticked, so a restart shows it
 //! back.
 //!
 //! Everything is live: type, tick, colour, drag, resize, roll, pin, the +, the
@@ -40,13 +41,14 @@ use crate::notes::NotesStore;
 use crate::theme::{self, CatColor};
 use crate::ui::frame_clock::{FrameClock, WM_APP_FRAME};
 use crate::ui::tray;
-use crate::widgets::apply::{apply, set_reminder, sticky_for};
+use crate::widgets::apply::{apply, set_reminder, settle, stack_out, sticky_for};
 use crate::widgets::cliptext;
 use crate::widgets::host::{Ctx, WM_APP_WIDGET, WidgetHost};
 use crate::widgets::prefs::{WidgetLayer, WidgetPrefs};
 use crate::widgets::remind;
-use crate::widgets::sticky::{Deco, NoteFont, Paper, Pattern, Stamp, Sticky};
+use crate::widgets::sticky::{Deco, DipRect, NoteFont, Paper, Pattern, Stamp, Sticky};
 use crate::widgets::templates::{self, Template};
+use crate::widgets::{place, tuck};
 
 /// The save timer of this scene (the island's own is 45 too).
 const SAVE_TIMER: usize = 45;
@@ -250,10 +252,65 @@ fn seed(store: &mut NotesStore, displays: &[Display]) {
         }
     }
     // The clipboard prefill's note: the first line is its title.
-    let at = now - 30;
+    let at = now - 40;
     let base = sticky_for(store.list(), displays, &NotchMonitor::Primary, None, at);
     if let Some(id) = store.create_sticky(Sticky { paper: Paper::Krem, ..base }, at) {
         store.set_text(&id, &clip_sample_text(), at);
+    }
+    seed_stack_and_tuck(store, displays, now);
+}
+
+/// A stack of three sheets on different papers ("Proyek Dago", sheet 1
+/// shown: flip it with the wheel over its strip or the arrows, drag another
+/// note onto it with Shift held to add one) and a note tucked to the right
+/// edge of the notch's monitor (hover its tab).
+fn seed_stack_and_tuck(store: &mut NotesStore, displays: &[Display], now: i64) {
+    let base = sticky_for(store.list(), displays, &NotchMonitor::Primary, None, now);
+    let sheets = [
+        (
+            Paper::Krem,
+            "Proyek Dago
+Revisi fasad, cek ulang RAB
+- [x] Gambar fasad
+- [ ] Hitung ulang RAB",
+        ),
+        (Paper::Laut, "Dago: struktur
+Kolom lantai 2 pakai K-300, cek sengkang."),
+        (Paper::Plum, "Dago: finishing
+Pilih cat eksterior dan contoh bata ekspos."),
+    ];
+    for (k, (paper, text)) in sheets.into_iter().enumerate() {
+        let at = now - 30 + k as i64;
+        let sticky = Sticky {
+            paper,
+            rect: DipRect {
+                w: 280.0,
+                ..base.rect
+            },
+            stack: Some("stk-dago".into()),
+            stack_order: k as u32,
+            stack_top: k == 0,
+            ..base.clone()
+        };
+        if let Some(id) = store.create_sticky(sticky, at) {
+            store.set_text(&id, text, at);
+        }
+    }
+    // Tucked right on the notch's monitor: flush with its edge, 160 dip down.
+    let area = place::resolve(&base.monitor, displays)
+        .and_then(|(i, _)| displays.get(i))
+        .map_or(DipRect::new(0.0, 0.0, 1920.0, 1040.0), place::snap_area);
+    let size = Sticky::default().rect;
+    let at = DipRect::new(0.0, 160.0, size.w, size.h);
+    let sticky = Sticky {
+        paper: Paper::Sage,
+        rect: tuck::out_rect(&at, tuck::Edge::Right, &area),
+        tuck: Some(tuck::Edge::Right),
+        ..base
+    };
+    if let Some(id) = store.create_sticky(sticky, now - 20) {
+        store.set_text(&id, "Nomor penting
+Pak Budi 0812-555-0147 (kontraktor).", now - 20);
     }
 }
 
@@ -272,6 +329,8 @@ pub fn run(reset: bool) {
         seed(&mut store, &displays);
         let _ = store.save();
     }
+    // A stack shows the sheet whose reminder is overdue.
+    settle(&mut store, Local::now().timestamp(), true);
     let Some(owner) = create_owner() else {
         eprintln!("widgets-demo: cannot create the owner window");
         return;
@@ -383,12 +442,16 @@ impl Demo {
         for (id, template) in out.beside {
             self.make(Some(&id), template);
         }
+        let mut changed = out.changed;
+        for id in &out.unstack {
+            changed |= stack_out(&mut self.store, &self.displays, id);
+        }
         if out.structural {
             self.sync();
         } else if out.reminders {
             self.remind_arm();
         }
-        if out.changed {
+        if changed {
             unsafe {
                 SetTimer(Some(self.owner), SAVE_TIMER, SAVE_MS, None);
             }
@@ -521,6 +584,42 @@ unsafe extern "system" fn owner_proc(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_demo_seeds_sixteen_notes_with_the_clip_note_a_stack_and_a_tuck() {
+        let dir = std::env::temp_dir().join(format!("vale-demo-seed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut store = NotesStore::open(dir.join("notes.json"));
+        seed(&mut store, &[]);
+        assert_eq!(store.sticky_count(), 16, "sixteen notes");
+        assert!(crate::widgets::sticky::can_add(store.sticky_count()), "under the cap of 20");
+        let sample = clip_sample_text();
+        assert_eq!(store.list().iter().filter(|n| n.text == sample).count(), 1, "the clip note");
+        let dago: Vec<_> = store
+            .list()
+            .iter()
+            .filter(|n| n.sticky.as_ref().is_some_and(|s| s.stack.as_deref() == Some("stk-dago")))
+            .collect();
+        assert_eq!(dago.len(), 3, "three sheets of 'Proyek Dago'");
+        assert_eq!(
+            dago.iter().filter(|n| n.sticky.as_ref().is_some_and(|s| s.stack_top)).count(),
+            1,
+            "one shown"
+        );
+        assert_eq!(
+            store
+                .list()
+                .iter()
+                .filter(|n| n.sticky.as_ref().is_some_and(|s| s.tuck.is_some()))
+                .count(),
+            1,
+            "one tucked note"
+        );
+        let mut ids: Vec<&str> = store.list().iter().map(|n| n.id.as_str()).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), 16, "no two notes share an id");
+    }
 
     #[test]
     fn the_sample_note_is_what_a_prefill_makes_of_a_copied_address() {

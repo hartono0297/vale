@@ -1,5 +1,5 @@
 //! Desktop widgets (phase 1: sticky notes). The pure rules live in `prefs`,
-//! `sticky`, `checklist`, `snap` and `place` and are tested without a window;
+//! `sticky`, `checklist`, `snap`, `place`, `stack` and `tuck` and are tested without a window;
 //! `host` owns the layered windows, `edit` their keyboard, `paint` their
 //! drawing, and `demo` is the debug scene.
 
@@ -11,8 +11,10 @@ pub mod place;
 pub mod prefs;
 pub mod remind;
 pub mod snap;
+pub mod stack;
 pub mod sticky;
 pub mod templates;
+pub mod tuck;
 
 pub mod drop;
 pub mod edit;

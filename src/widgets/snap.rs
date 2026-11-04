@@ -262,7 +262,12 @@ pub fn place_new(area: &DipRect, others: &[DipRect]) -> DipRect {
 /// The place of a note made from the (+) in `source`'s header: to its right
 /// with the gap if that fits, else to its left, else below, clamped.
 pub fn place_beside(source: &DipRect, area: &DipRect) -> DipRect {
-    let (w, h) = clamp_size(DEFAULT_W, DEFAULT_H, area);
+    place_beside_sized(source, area, DEFAULT_W, DEFAULT_H)
+}
+
+/// `place_beside` for a note of its own size (a sheet taken out of a stack).
+pub fn place_beside_sized(source: &DipRect, area: &DipRect, want_w: f32, want_h: f32) -> DipRect {
+    let (w, h) = clamp_size(want_w, want_h, area);
     let right = source.right() + GAP;
     let left = source.x - GAP - w;
     let below = source.bottom() + GAP;

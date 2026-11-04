@@ -13,6 +13,7 @@ use serde_json::Value;
 use crate::i18n::{self, Key, Lang, text};
 use crate::theme::{Accent, Palette};
 use crate::widgets::checklist;
+use crate::widgets::tuck::Edge;
 
 /// At most this many notes on the desktop.
 pub const MAX_STICKY: usize = 20;
@@ -392,6 +393,10 @@ fn is_full(v: &u8) -> bool {
     *v == 100
 }
 
+fn is_zero(v: &u32) -> bool {
+    *v == 0
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Sticky {
     pub paper: Paper,
@@ -428,6 +433,20 @@ pub struct Sticky {
     /// Not written at 100.
     #[serde(skip_serializing_if = "is_full")]
     pub opacity: u8,
+    /// The stack this sheet belongs to (`widgets::stack`). Not written when
+    /// the note is on its own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stack: Option<String>,
+    /// The sheet's place in its stack, 0-based. Not written at 0.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub stack_order: u32,
+    /// The sheet the stack shows. Not written when false.
+    #[serde(skip_serializing_if = "is_false")]
+    pub stack_top: bool,
+    /// The screen edge the note is tucked to (`widgets::tuck`). Not written
+    /// while it is out in the open.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tuck: Option<Edge>,
 }
 
 impl Default for Sticky {
@@ -447,6 +466,10 @@ impl Default for Sticky {
             deco: Deco::None,
             stamp: Stamp::None,
             opacity: 100,
+            stack: None,
+            stack_order: 0,
+            stack_top: false,
+            tuck: None,
         }
     }
 }
@@ -527,6 +550,23 @@ pub fn lenient(v: &Value) -> Option<Sticky> {
             .get("opacity")
             .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f.round() as i64)))
             .map_or(d.opacity, snap_opacity),
+        // A stack id is a non-empty string; a number is that many places
+        // (negative is none); the edge is any case and a wrong name is none.
+        stack: map
+            .get("stack")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned),
+        stack_order: map
+            .get("stack_order")
+            .and_then(Value::as_u64)
+            .map_or(0, |n| n.min(u64::from(u32::MAX)) as u32),
+        stack_top: flag("stack_top"),
+        tuck: map
+            .get("tuck")
+            .and_then(Value::as_str)
+            .and_then(Edge::from_name),
     })
 }
 
@@ -821,6 +861,10 @@ mod tests {
             deco: Deco::Paku,
             stamp: Stamp::Mendesak,
             opacity: 60,
+            stack: Some("stk-n1700-1".into()),
+            stack_order: 2,
+            stack_top: true,
+            tuck: Some(Edge::Right),
         };
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(lenient(&json), Some(s));
@@ -858,6 +902,7 @@ mod tests {
         let keys: Vec<&str> = json.as_object().unwrap().keys().map(String::as_str).collect();
         for new in [
             "remind_at", "remind_fired", "font", "pattern", "deco", "stamp", "opacity",
+            "stack", "stack_order", "stack_top", "tuck",
         ] {
             assert!(!keys.contains(&new), "{new} written at its default: {keys:?}");
         }
@@ -915,6 +960,57 @@ mod tests {
         assert_eq!(lenient(&json!({"opacity": i64::MIN})).unwrap().opacity, 40);
         assert_eq!(lenient(&json!({"opacity": -1e300})).unwrap().opacity, 40);
         assert_eq!(lenient(&json!({"opacity": 1e300})).unwrap().opacity, 100);
+    }
+
+    #[test]
+    fn the_stack_and_tuck_keys_read_and_write_as_documented() {
+        let s = lenient(&json!({
+            "stack": "stk-n1", "stack_order": 2, "stack_top": true, "tuck": "right",
+        }))
+        .unwrap();
+        assert_eq!(
+            (s.stack.as_deref(), s.stack_order, s.stack_top, s.tuck),
+            (Some("stk-n1"), 2, true, Some(Edge::Right))
+        );
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["stack"], "stk-n1");
+        assert_eq!(json["stack_order"], 2);
+        assert_eq!(json["stack_top"], true);
+        assert_eq!(json["tuck"], "right");
+        // Any case and spaces for the edge, a wrong value is none.
+        for (given, want) in [("LEFT", Some(Edge::Left)), (" Right ", Some(Edge::Right)), ("top", None), ("", None)] {
+            assert_eq!(lenient(&json!({"tuck": given})).unwrap().tuck, want, "{given:?}");
+        }
+        assert_eq!(lenient(&json!({"tuck": 3})).unwrap().tuck, None);
+        assert_eq!(lenient(&json!({"tuck": null})).unwrap().tuck, None);
+        // Wrong types are the defaults.
+        let s = lenient(&json!({"stack": 5, "stack_order": "first", "stack_top": "yes"})).unwrap();
+        assert_eq!((s.stack, s.stack_order, s.stack_top), (None, 0, false));
+        let s = lenient(&json!({"stack": "  ", "stack_order": -3})).unwrap();
+        assert_eq!((s.stack, s.stack_order), (None, 0));
+        assert_eq!(lenient(&json!({"stack_order": 1e30})).unwrap().stack_order, 0, "a float is not a place");
+        assert_eq!(lenient(&json!({"stack_order": u64::MAX})).unwrap().stack_order, u32::MAX);
+    }
+
+    #[test]
+    fn a_phase_1_and_a_run_a_file_load_to_the_defaults_and_save_back_with_their_old_keys() {
+        let phase1 = json!({
+            "paper": "Sage", "text_size": "L", "pinned": true, "rolled": false,
+            "rect": {"x": 8.0, "y": 8.0, "w": 240.0, "h": 208.0},
+            "monitor": "", "touched": 5,
+        });
+        let run_a = json!({
+            "paper": "Plum", "text_size": "M", "pinned": false, "rolled": true,
+            "rect": {"x": 16.0, "y": 24.0, "w": 300.0, "h": 200.0},
+            "monitor": "DISPLAY#X", "touched": 99,
+            "remind_at": 1700003600, "remind_fired": true, "font": "Tangan",
+            "pattern": "Kotak", "deco": "Paku", "stamp": "Beres", "opacity": 60,
+        });
+        for file in [phase1, run_a] {
+            let s = lenient(&file).unwrap();
+            assert_eq!((s.stack.clone(), s.stack_order, s.stack_top, s.tuck), (None, 0, false, None));
+            assert_eq!(serde_json::to_value(&s).unwrap(), file, "saved back with exactly its keys");
+        }
     }
 
     #[test]

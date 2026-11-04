@@ -1,6 +1,6 @@
 ---
 tags: [decision, robot, power, timers]
-date: 2026-11-03
+date: 2026-11-04
 ---
 
 # The notch assistant's idle power budget
@@ -287,6 +287,22 @@ FrameClock users, nothing else:
   the mood changed. The cat looking at the pointer is computed on mouse moves
   over the note, quantised so it redraws only when the step changes.
 - Idle notes still cost nothing: no redraw, no timer of their own.
+
+Run B of the sticky notes ([[widgets]], 2026-11-04: stacks and tuck to the edge)
+adds no timer and no thread, only two more FrameClock users in `WidgetHost::moving`:
+
+- The tuck's slide (180 ms ease out and back in: `Win::slide`) and the **300 ms
+  grace** between the pointer leaving a note that is out and its slide back in
+  (`Win::grace`). The grace has no timer of its own: it is counted in `moving()`,
+  so the frame clock runs for it, and `tick` ends it and starts the slide; nothing
+  is drawn while it waits. Both start from a `NeedsClock` event like the other
+  fades. The slide is instant with Motion not Full, Energy Saver or Windows
+  animations off; the grace still waits its 300 ms on the clock. A tucked note
+  at rest, a tab, and a stack at rest cost nothing: no redraw, no timer.
+- The hover and leave ride the existing `TrackMouseEvent(TME_LEAVE)`; the stack's
+  Shift highlight is read on mouse moves of a drag only (no polling), and the wheel
+  flip is a message handler.
+
 - Sticky notes, run B (clipboard fill and drops): there is no clipboard
   listener. One clipboard read per hotkey or tray press, only while "Isi dari
   clipboard" is on (and none at the 20-note cap); no retry timer. A note's
@@ -297,3 +313,9 @@ FrameClock users, nothing else:
   thread added. The note's snapshot sits in the phone session's state and is read
   only when a phone asks for `/note` or scans the QR; `TIMER_PHONE` 48 and ids
   49-50 are untouched, and nothing polls.
+
+- Sticky notes, Run B finished ([[widgets]], "Integration (Run B finish)"): the
+  four features together still add **no timer, no thread and no `WM_APP`**. A drag
+  over a tucked note brings it out through the same `keep_out` and 300 ms grace
+  on the frame clock as a hover; nothing polls and `TIMER_*` ids stay 45-47 for
+  widgets and 48-50 for the phone.
