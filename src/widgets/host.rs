@@ -2457,6 +2457,13 @@ fn mouse_wheel(hwnd: HWND, sx: i32, sy: i32, raw: i32) {
 /// The stack of `hwnd` shows the sheet `delta` places on (wrapping). The
 /// editing ends first; the window is kept and retargeted.
 fn flip_by(hwnd: HWND, delta: i32) {
+    // A popover of this note describes the sheet it is leaving.
+    if pop::is_open_for(hwnd) {
+        pop::close();
+    }
+    if remind_pop::is_open_for(hwnd) {
+        remind_pop::close();
+    }
     end_editing(hwnd);
     let _ = with(|s| {
         let i = idx_of(s, hwnd)?;
@@ -4227,6 +4234,12 @@ mod tests {
         TEST_SHIFT.with(|c| c.set(Some(down)));
     }
 
+    /// A stand-in for the hidden EDIT (no real focus, which another test's
+    /// window could take away): `end_editing` just fails to destroy it.
+    fn fake_edit() -> HWND {
+        HWND(std::ptr::dangling_mut())
+    }
+
     fn win_of(id: &str) -> usize {
         with(|s| s.wins.iter().position(|w| w.has(id)).expect("a window")).unwrap()
     }
@@ -4413,7 +4426,7 @@ mod tests {
         let hwnd = with(|s| s.wins[0].hwnd).unwrap();
         // The note has the keyboard (a stand-in for the hidden EDIT: no real
         // focus, so another test cannot take it away).
-        let _ = with(|s| s.wins[0].edit = Some(HWND(1 as *mut _)));
+        let _ = with(|s| s.wins[0].edit = Some(fake_edit()));
         // Type into the shown sheet.
         let _ = with(|s| {
             s.wins[0].text = "a, edited".to_owned();
@@ -4552,11 +4565,11 @@ mod tests {
         host.sync(&ctx(store.list(), &displays));
         // "c" is hidden under "a" and overdue: it owns the cat, in this window.
         assert_eq!(with(|s| s.peek.clone()).unwrap().as_deref(), Some(c.as_str()));
-        assert_eq!(with(|s| s.wins[0].has(&c) && s.wins[0].id == a).unwrap(), true);
+        assert!(with(|s| s.wins[0].has(&c) && s.wins[0].id == a).unwrap());
         assert!(with(|s| s.wins[0].any_overdue(1_000)).unwrap());
         assert_eq!(with(|s| win_mood(&s.wins[0], 1_000)).unwrap(), Mood::Clock);
         // A raise by the hidden sheet's id raises the unit's window.
-        host.raise(&[c.clone()]);
+        host.raise(std::slice::from_ref(&c));
         assert!(with(|s| s.wins[0].raised).unwrap());
         // Buka on the hidden sheet brings it to the top and gives it the keyboard.
         host.focus(&c);
@@ -4697,7 +4710,7 @@ mod tests {
         // away. A stand-in for the hidden EDIT: real focus can be taken by
         // another test's window.
         let _ = with(|s| {
-            s.wins[0].edit = Some(HWND(1 as *mut _));
+            s.wins[0].edit = Some(fake_edit());
             tuck_settle(s, 0);
         });
         assert_eq!(with(|s| s.wins[0].slide.to).unwrap(), 1.0, "the keyboard slides it out");

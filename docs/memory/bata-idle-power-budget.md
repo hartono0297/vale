@@ -287,3 +287,18 @@ FrameClock users, nothing else:
   the mood changed. The cat looking at the pointer is computed on mouse moves
   over the note, quantised so it redraws only when the step changes.
 - Idle notes still cost nothing: no redraw, no timer of their own.
+
+Run B of the sticky notes ([[widgets]], 2026-11-04: stacks and tuck to the edge)
+adds no timer and no thread, only two more FrameClock users in `WidgetHost::moving`:
+
+- The tuck's slide (180 ms ease out and back in: `Win::slide`) and the **300 ms
+  grace** between the pointer leaving a note that is out and its slide back in
+  (`Win::grace`). The grace has no timer of its own: it is counted in `moving()`,
+  so the frame clock runs for it, and `tick` ends it and starts the slide; nothing
+  is drawn while it waits. Both start from a `NeedsClock` event like the other
+  fades. The slide is instant with Motion not Full, Energy Saver or Windows
+  animations off; the grace still waits its 300 ms on the clock. A tucked note
+  at rest, a tab, and a stack at rest cost nothing: no redraw, no timer.
+- The hover and leave ride the existing `TrackMouseEvent(TME_LEAVE)`; the stack's
+  Shift highlight is read on mouse moves of a drag only (no polling), and the wheel
+  flip is a message handler.

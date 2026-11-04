@@ -266,12 +266,12 @@ mod tests {
         assert_eq!(adjoin(&a, &[a], (200, 400)), Adjoin::default());
         // A smaller display beside the upper part only: the span decides.
         let small = Rect::new(1920, 0, 1280, 500);
-        assert_eq!(adjoin(&a, &[a, small], (100, 300)).right, true);
-        assert_eq!(adjoin(&a, &[a, small], (600, 800)).right, false, "below it: outer");
+        assert!(adjoin(&a, &[a, small], (100, 300)).right);
+        assert!(!adjoin(&a, &[a, small], (600, 800)).right, "below it: outer");
         // A display that only touches at a corner is not adjoining.
-        assert_eq!(adjoin(&a, &[a, Rect::new(1920, 1040, 1920, 1040)], (800, 1040)).right, false);
+        assert!(!adjoin(&a, &[a, Rect::new(1920, 1040, 1920, 1040)], (800, 1040)).right);
         // Not touching (a gap): outer.
-        assert_eq!(adjoin(&a, &[a, Rect::new(2100, 0, 1920, 1040)], (0, 1040)).right, false);
+        assert!(!adjoin(&a, &[a, Rect::new(2100, 0, 1920, 1040)], (0, 1040)).right);
     }
 
     #[test]
