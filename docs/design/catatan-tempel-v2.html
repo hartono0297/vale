@@ -1,0 +1,417 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Catatan tempel v2</title>
+<style>
+  @font-face { font-family: 'DM Sans'; font-weight: 400; src: url('../../assets/fonts/DMSans-400.ttf'); }
+  @font-face { font-family: 'DM Sans'; font-weight: 500; src: url('../../assets/fonts/DMSans-500.ttf'); }
+  @font-face { font-family: 'DM Sans'; font-weight: 600; src: url('../../assets/fonts/DMSans-600.ttf'); }
+  @font-face { font-family: 'DM Mono'; font-weight: 400; src: url('../../assets/fonts/DMMono-400.ttf'); }
+  :root {
+    --paper: #F1ECE4; --ink: #221A14; --ink2: #7A6B5D; --rule: #DDD3C6; --card: #FBF7F1;
+    --s: #17120F; --r: #241D18; --t: #332A23; --tx: #F4EDE4; --tx2: #A89A8B;
+    --a: #E2683C; --sage: #9DB59A; --ochre: #D9A441; --plum: #B07A9A; --red: #D9604F;
+    --body: 'DM Sans', sans-serif; --mono: 'DM Mono', monospace;
+    --hand: 'Ink Free', 'Segoe Print', 'Comic Sans MS', cursive;
+    --p-krem: #F4E7C6; --p-tera: #F3CDBB; --p-sage: #D3DFCF; --p-plum: #E6CFDC; --p-laut: #CCDCE4; --p-ink: #2B211A;
+  }
+  @page { size: 297mm 210mm; margin: 0; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: #9a948c; }
+  body { font-family: var(--body); color: var(--ink); -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .page { width: 297mm; height: 210mm; overflow: hidden; position: relative; margin: 0 auto 16px; padding: 28px 38px; background: var(--paper); break-after: page; }
+  @media print { html, body { background: none; } .page { margin: 0; } }
+  .folio { position: absolute; left: 38px; right: 38px; bottom: 14px; display: flex; justify-content: space-between; font-size: 9.5px; letter-spacing: .1em; text-transform: uppercase; opacity: .5; }
+  .eyebrow { font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase; font-weight: 600; color: var(--ink2); }
+  h1 { font-weight: 600; font-size: 27px; letter-spacing: -.025em; margin: 2px 0 8px; }
+  h2 { font-weight: 600; font-size: 15px; letter-spacing: -.02em; }
+  p, li { font-size: 11px; line-height: 1.5; color: #3E3229; }
+  code { font-family: var(--mono); font-size: 9.8px; background: #E8E0D4; padding: 0 4px; border-radius: 4px; }
+  b { font-weight: 600; }
+  .grid { display: grid; gap: 14px; }
+  .g2 { grid-template-columns: 1fr 1fr; } .g3 { grid-template-columns: 1fr 1fr 1fr; }
+  .card { background: var(--card); border: 1px solid var(--rule); border-radius: 16px; padding: 10px 12px 11px; }
+  .card.pick { border: 2px solid var(--a); padding: 9px 11px 10px; }
+  .card ul, .bul { margin: 4px 0 0; }
+  .card li, .bul li { list-style: none; position: relative; padding-left: 13px; margin-bottom: 2px; }
+  .card li::before, .bul li::before { content: ""; position: absolute; left: 0; top: 7px; width: 5px; height: 5px; border-radius: 50%; background: var(--a); }
+  .ttl { display: flex; align-items: center; gap: 7px; margin: 8px 0 3px; }
+  .ttl .num { width: 19px; height: 19px; border-radius: 50%; background: var(--ink); color: var(--paper); font-size: 10px; font-weight: 600; display: flex; align-items: center; justify-content: center; flex: none; }
+  .ttl .tags { margin-left: auto; display: flex; gap: 4px; }
+  .tag { display: inline-block; font-size: 8.5px; letter-spacing: .08em; text-transform: uppercase; font-weight: 600; padding: 2px 7px; border-radius: 99px; background: #E6DCCF; color: #4A3D33; white-space: nowrap; }
+  .tag.a { background: rgba(226,104,60,.18); color: #A8431F; } .tag.g { background: rgba(157,181,154,.3); color: #3F5A3C; } .tag.o { background: rgba(217,164,65,.25); color: #7A5A12; } .tag.r { background: rgba(217,96,79,.18); color: #9A3426; }
+  .card p { font-size: 10.4px; line-height: 1.45; }
+  .cost { font-size: 9.6px; color: var(--ink2); margin-top: 4px; line-height: 1.4; }
+  .cost b { color: #5A4B3E; }
+  table { border-collapse: collapse; width: 100%; }
+  th { text-align: left; font-size: 9.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink2); font-weight: 600; padding: 5px 7px; border-bottom: 1.5px solid var(--rule); }
+  td { font-size: 10.2px; line-height: 1.36; padding: 4.5px 7px; border-bottom: 1px solid var(--rule); vertical-align: top; color: #3E3229; }
+  td b { color: var(--ink); }
+  .note { font-size: 10.3px; background: rgba(157,181,154,.2); border-radius: 10px; padding: 7px 10px; color: #3F5A3C; line-height: 1.45; }
+  .warn { font-size: 10.3px; background: rgba(217,164,65,.2); border-radius: 10px; padding: 7px 10px; color: #6B4E10; line-height: 1.45; }
+  .bad { font-size: 10.3px; background: rgba(217,96,79,.13); border-radius: 10px; padding: 7px 10px; color: #8A3022; line-height: 1.45; }
+
+  /* desk stage */
+  .st { position: relative; height: 150px; border-radius: 11px; overflow: hidden; background: radial-gradient(120% 90% at 30% 20%, #6D5747 0%, #3E3128 55%, #2A211B 100%); }
+  .st.tall { height: 330px; }
+
+  /* sticky note */
+  .sn { position: absolute; border-radius: 10px; background: var(--p-krem); color: var(--p-ink); box-shadow: 0 1px 0 rgba(255,255,255,.4) inset, 0 8px 18px rgba(0,0,0,.32), 0 2px 4px rgba(0,0,0,.2); padding: 0 11px 10px; font-size: 10.5px; }
+  .sn.tera { background: var(--p-tera); } .sn.sage { background: var(--p-sage); } .sn.plum { background: var(--p-plum); } .sn.laut { background: var(--p-laut); }
+  .sn.gelap { background: #241D18; color: var(--tx); border: 1px solid #3A2F27; }
+  .sn.gelap::before { content: ""; position: absolute; left: 12px; right: 12px; top: 0; height: 3px; border-radius: 0 0 3px 3px; background: var(--a); }
+  .sn .hd { display: flex; align-items: center; gap: 6px; height: 24px; font-size: 8.8px; }
+  .sn .hd .dt { opacity: .55; }
+  .sn .hd .tl { margin-left: auto; display: flex; gap: 7px; align-items: center; opacity: .7; }
+  .sn .hd svg { width: 11px; height: 11px; stroke: currentColor; fill: none; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+  .sn h5 { font-size: 11.6px; font-weight: 600; letter-spacing: -.01em; margin-bottom: 3px; }
+  .sn p { color: inherit; font-size: 10px; line-height: 1.42; opacity: .86; }
+  .sn .ck { display: flex; align-items: flex-start; gap: 6px; font-size: 10px; line-height: 1.3; margin: 3px 0; }
+  .sn .ck i { width: 11px; height: 11px; border-radius: 3px; border: 1.5px solid currentColor; opacity: .55; flex: none; margin-top: 1px; position: relative; }
+  .sn .ck.x { opacity: .5; } .sn .ck.x span { text-decoration: line-through; }
+  .sn .ck.x i { background: var(--p-ink); border-color: var(--p-ink); opacity: .8; }
+  .sn .ck.x i::after { content: ""; position: absolute; left: 2.5px; top: -0.5px; width: 3px; height: 6px; border: solid var(--p-krem); border-width: 0 1.5px 1.5px 0; transform: rotate(45deg); }
+  .sn .ft { position: absolute; left: 11px; bottom: 6px; font-size: 8px; opacity: .45; }
+  .sn .grip { position: absolute; right: 4px; bottom: 4px; width: 8px; height: 8px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; border-radius: 0 0 3px 0; opacity: .35; }
+  .sn.hand h5, .sn.hand p, .sn.hand .ck { font-family: var(--hand); }
+  .sn.hand h5 { font-size: 13px; font-weight: 600; } .sn.hand p, .sn.hand .ck { font-size: 11px; }
+  .sn.lined { background-image: repeating-linear-gradient(to bottom, transparent 0 14px, rgba(43,33,26,.13) 14px 15px); background-position: 0 30px; }
+  .sn.grid5 { background-image: linear-gradient(rgba(43,33,26,.09) 1px, transparent 1px), linear-gradient(90deg, rgba(43,33,26,.09) 1px, transparent 1px); background-size: 12px 12px; }
+  .sn.dots { background-image: radial-gradient(rgba(43,33,26,.22) 1px, transparent 1.3px); background-size: 12px 12px; }
+  .tape { position: absolute; width: 58px; height: 16px; top: -7px; left: 50%; margin-left: -29px; background: repeating-linear-gradient(45deg, rgba(226,104,60,.55) 0 5px, rgba(244,231,198,.55) 5px 10px); transform: rotate(-3deg); box-shadow: 0 1px 2px rgba(0,0,0,.15); }
+  .tape.sage { background: repeating-linear-gradient(90deg, rgba(157,181,154,.75) 0 4px, rgba(255,255,255,.35) 4px 8px); }
+  .tack { position: absolute; width: 12px; height: 12px; border-radius: 50%; top: -4px; left: 50%; margin-left: -6px; background: radial-gradient(circle at 35% 35%, #F08A62, #B9502B 70%); box-shadow: 0 2px 3px rgba(0,0,0,.35); }
+  .cat { position: absolute; width: 40px; height: 21px; }
+  .chip { display: inline-flex; align-items: center; gap: 3px; font-size: 8.5px; font-weight: 600; padding: 1px 6px; border-radius: 99px; background: rgba(226,104,60,.18); color: #A8431F; }
+  .chip svg { width: 9px; height: 9px; }
+  .prog { position: absolute; left: 11px; right: 11px; top: 24px; height: 2.5px; border-radius: 2px; background: rgba(43,33,26,.12); }
+  .prog i { display: block; height: 100%; border-radius: 2px; background: #B9502B; }
+  .stamp { position: absolute; width: 38px; height: 38px; border-radius: 50%; border: 2px solid #B9502B; color: #B9502B; font-size: 6.5px; font-weight: 700; letter-spacing: .08em; display: flex; align-items: center; justify-content: center; flex-direction: column; transform: rotate(-14deg); opacity: .85; }
+  .stamp svg { width: 13px; height: 13px; fill: #B9502B; }
+  .conf { position: absolute; width: 5px; height: 8px; border-radius: 1px; }
+  .island { position: absolute; top: 0; left: 50%; transform: translateX(-50%); border-radius: 0 0 16px 16px; background: var(--s); color: var(--tx); font-size: 9px; display: flex; align-items: center; gap: 8px; padding: 7px 12px 8px; white-space: nowrap; box-shadow: 0 6px 16px rgba(0,0,0,.35); }
+  .island .bt { padding: 2px 8px; border-radius: 99px; background: #33291F; font-size: 8.5px; }
+  .island .bt.a { background: var(--a); color: #1E1814; font-weight: 600; }
+  .menu { position: absolute; background: #241D18; border: 1px solid #3A2F27; border-radius: 10px; padding: 5px; color: var(--tx); box-shadow: 0 10px 24px rgba(0,0,0,.4); font-size: 9.5px; }
+  .menu div { padding: 4px 8px; border-radius: 6px; display: flex; gap: 10px; justify-content: space-between; }
+  .menu div.on { background: #33291F; }
+  .menu .k { color: var(--tx2); }
+  .menu hr { border: 0; border-top: 1px solid #33291F; margin: 3px 2px; }
+
+  /* page 1 header diagram */
+  .hdx { position: relative; width: 300px; height: 74px; border-radius: 12px 12px 4px 4px; background: var(--p-krem); color: var(--p-ink); box-shadow: 0 8px 18px rgba(0,0,0,.25); }
+  .hdx .row { position: absolute; left: 0; right: 0; top: 0; height: 34px; display: flex; align-items: center; padding: 0 12px; font-size: 10px; }
+  .hdx .zone { position: absolute; top: 0; height: 34px; }
+  .hdx .zone.move { background: repeating-linear-gradient(135deg, rgba(157,181,154,.55) 0 6px, rgba(157,181,154,.25) 6px 12px); border-radius: 12px 0 0 0; }
+  .hdx .zone.btn { background: repeating-linear-gradient(135deg, rgba(217,96,79,.45) 0 6px, rgba(217,96,79,.18) 6px 12px); }
+  .hdx .zone.btn.small { }
+  .hdx .bx { position: absolute; top: 7px; width: 20px; height: 20px; border-radius: 6px; border: 1.3px dashed rgba(43,33,26,.5); }
+  .hdx .bx.v { border: 0; background: rgba(43,33,26,.1); }
+  .hdx .bx svg { width: 12px; height: 12px; margin: 4px; stroke: currentColor; fill: none; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+  .hdx .body { position: absolute; left: 12px; right: 12px; top: 42px; font-size: 10px; opacity: .7; }
+  .lg { display: flex; gap: 14px; font-size: 9.5px; color: var(--ink2); margin-top: 8px; }
+  .lg i { display: inline-block; width: 12px; height: 10px; border-radius: 3px; vertical-align: -1px; margin-right: 5px; }
+  .cursor { position: absolute; width: 18px; height: 18px; }
+  .ruler { position: absolute; top: -14px; font-size: 8.5px; color: var(--ink2); font-family: var(--mono); }
+</style>
+</head>
+<body>
+
+<!-- ======================================================= 1 · bug -->
+<section class="page">
+  <div class="eyebrow">Vale · Catatan tempel v2 · 2026-11-04 · draf untuk dibahas</div>
+  <h1>Dulu benerin: catatan susah dipindah</h1>
+  <p style="max-width:880px;margin-bottom:14px">Laporan: "kadang bisa kadang ga bisa", dan catatan yang baru dibuat sama sekali nggak bisa dipindah sebelum di-resize dulu. Dari kodenya (<code>paint::target</code>, <code>host::left_down</code>) ada dua hal yang kelihatan. Penyebab pastinya dicari lagi waktu <code>build</code>, dengan tes yang mengulang kasus "catatan baru langsung ditarik".</p>
+
+  <div class="grid g2">
+    <div class="card">
+      <h2>Sekarang</h2>
+      <div style="padding:22px 0 6px 6px">
+        <div class="hdx">
+          <span class="ruler" style="left:0">0</span><span class="ruler" style="left:84px">±86 dip</span><span class="ruler" style="right:0">240 dip (lebar catatan baru)</span>
+          <div class="zone move" style="left:0;width:92px;height:30px"></div>
+          <div class="zone btn" style="left:92px;right:0;height:30px"></div>
+          <div class="row" style="height:30px"><span style="opacity:.55">4 Nov</span></div>
+          <div class="bx" style="right:156px;top:5px"></div><div class="bx" style="right:131px;top:5px"></div><div class="bx" style="right:106px;top:5px"></div><div class="bx" style="right:81px;top:5px"></div><div class="bx" style="right:56px;top:5px"></div><div class="bx" style="right:31px;top:5px"></div>
+          <div class="body" style="top:38px"><b style="opacity:1">Belanja material</b><br>Semen 10 sak…</div>
+        </div>
+      </div>
+      <div class="lg"><span><i style="background:rgba(157,181,154,.7)"></i>bisa ditarik</span><span><i style="background:rgba(217,96,79,.5)"></i>nangkep klik walaupun tombolnya nggak kelihatan</span></div>
+      <ul style="margin-top:8px">
+        <li>Header cuma <b>28 dip</b>. Enam tombol (pin, +, checklist, warna, ···, ×) makan <b>±148 dip</b> dari kanan, <b>juga waktu tombolnya lagi disembunyiin</b>. Di catatan 240 dip, yang bisa ditarik cuma ±86 dip di kiri. Klik di kanan atas = klik tombol yang nggak kelihatan. Ini sumber "kadang bisa kadang nggak".</li>
+        <li>Catatan baru: kemungkinan rect-nya (<code>w.note</code>) atau status edit/capture belum beres sampai ada layout ulang. Resize maksa layout ulang, makanya habis di-resize jadi bisa.</li>
+        <li>Kursor di header masih panah biasa, jadi nggak kelihatan bagian mana yang bisa ditarik.</li>
+      </ul>
+    </div>
+    <div class="card pick">
+      <div style="display:flex;align-items:center;gap:8px"><h2>Usul</h2><span class="tag a">rekomendasi</span></div>
+      <div style="padding:22px 0 6px 6px">
+        <div class="hdx">
+          <span class="ruler" style="left:0">0</span><span class="ruler" style="left:120px">36 dip tinggi</span>
+          <div class="zone move" style="left:0;right:0;height:34px;border-radius:12px 12px 0 0"></div>
+          <div class="row"><span style="opacity:.55">4 Nov</span></div>
+          <div class="bx v" style="right:10px"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg></div>
+          <svg class="cursor" style="left:150px;top:9px" viewBox="0 0 24 24"><path d="M12 2l3 3h-2v6h6V9l3 3-3 3v-2h-6v6h2l-3 3-3-3h2v-6H5v2l-3-3 3-3v2h6V5H9z" fill="#2B211A" stroke="#F4E7C6" stroke-width=".8"/></svg>
+          <div class="body"><b style="opacity:1">Belanja material</b><br>Semen 10 sak…</div>
+        </div>
+      </div>
+      <div class="lg"><span><i style="background:rgba(157,181,154,.7)"></i>bisa ditarik, selebar catatan</span></div>
+      <ul style="margin-top:8px">
+        <li><b>Seluruh strip atas bisa ditarik</b>, tingginya 36 dip, termasuk tanggal dan judul waktu catatan digulung.</li>
+        <li><b>Tombol cuma nangkep klik waktu kelihatan</b> (pas di-hover). Begitu mouse masuk catatan, tombol muncul. Tarik dari jarak ≥ 4 px tetap jadi geser, bukan klik tombol.</li>
+        <li>Kursor <b>panah empat arah</b> di strip atas, supaya kelihatan bisa dipegang.</li>
+        <li><b>Alt + tarik dari mana aja</b> di catatan (juga di teks) = geser. Ini cadangan buat catatan kecil.</li>
+        <li><b>Catatan baru langsung bisa ditarik</b>, ada tesnya. Sama juga buat catatan dari (+), tray, hotkey dan halaman Notes.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="note" style="margin-top:12px"><b>Yang nggak berubah:</b> snap 8 dip, jarak 12 dip ke catatan lain, Alt waktu narik = tanpa snap, Kunci posisi tetap ngunci, dobel klik strip atas tetap menggulung.</div>
+  <div class="folio"><span>Vale · Catatan tempel v2</span><span>1 / 4 · Bug geser</span></div>
+</section>
+
+<!-- ======================================================= 2 · usul v2 -->
+<section class="page">
+  <div class="eyebrow">Ide fitur · usul untuk v2</div>
+  <h1>Enam hal yang bikin catatan terasa hidup</h1>
+  <div class="grid g3">
+
+    <!-- 1 reminder -->
+    <div class="card pick">
+      <div class="st">
+        <div class="island" style="top:0"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="#E2683C" stroke-width="2" stroke-linecap="round"><path d="M6 8a6 6 0 1112 0c0 7 3 8 3 8H3s3-1 3-8M10 20a2 2 0 004 0"/></svg><b>Belanja material</b><span style="color:var(--tx2)">17.00</span><span class="bt">Tunda 10 mnt</span><span class="bt a">Buka</span></div>
+        <div class="sn" style="left:56px;top:46px;width:178px;height:96px;transform:rotate(-1.2deg)">
+          <div class="hd"><span class="chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2 2"/></svg>17.00</span></div>
+          <h5>Belanja material</h5><p>Semen 10 sak, pasir 2 truk, besi 10 mm</p>
+        </div>
+      </div>
+      <div class="ttl"><span class="num">1</span><h2>Ingatkan aku</h2><span class="tags"><span class="tag o">M</span></span></div>
+      <p>Pasang jam di catatan: 15 mnt, 1 jam, 17.00, besok 09.00, atau atur sendiri. Waktu jamnya tiba, catatan naik ke depan dan goyang sebentar, lalu island kasih pemberitahuan dengan <b>Tunda</b> / <b>Buka</b>. Pengingat yang kelewat (PC mati) muncul waktu Vale nyala.</p>
+      <div class="cost"><b>Daya:</b> satu timer sekali jalan untuk pengingat terdekat (id 47), tanpa polling.</div>
+    </div>
+
+    <!-- 2 handwriting -->
+    <div class="card pick">
+      <div class="st">
+        <div class="sn hand" style="left:22px;top:22px;width:150px;height:112px;transform:rotate(1.5deg)">
+          <div class="hd"><span class="dt">Senin</span></div>
+          <h5>Ide nama kafe</h5><p>Sudut Senja<br>Rumah Kopi Pelan<br>Teras 17</p>
+        </div>
+        <div class="sn laut" style="left:186px;top:30px;width:118px;height:100px">
+          <div class="hd"><span class="dt">Aa</span></div>
+          <p style="font-size:9px;line-height:1.7;opacity:.9">Vale <span style="opacity:.5">· ikut Settings</span><br><span style="font-family:var(--hand);font-size:11px">Tangan</span> <span style="opacity:.5">· Ink Free</span><br><span style="font-family:var(--mono)">Mono</span> <span style="opacity:.5">· DM Mono</span></p>
+        </div>
+      </div>
+      <div class="ttl"><span class="num">2</span><h2>Tulisan tangan</h2><span class="tags"><span class="tag g">S</span></span></div>
+      <p>Font per catatan: <b>Vale</b> (ikut setting Font), <b>Tangan</b> (Ink Free, sudah ada di Windows), atau <b>Mono</b>. Pilihannya di popover warna, sebelahan sama Ukuran teks.</p>
+      <div class="cost"><b>Exe:</b> +0 KB, karena fontnya bawaan Windows. Kalau Ink Free nggak ada, pakai Segoe Print, lalu font Vale.</div>
+    </div>
+
+    <!-- 3 paper -->
+    <div class="card pick">
+      <div class="st">
+        <div class="sn lined" style="left:16px;top:24px;width:92px;height:106px;transform:rotate(-2deg)"><div class="tape"></div><div class="hd"></div><h5>Garis</h5></div>
+        <div class="sn sage grid5" style="left:118px;top:22px;width:88px;height:108px"><div class="tack"></div><div class="hd"></div><h5>Kotak</h5></div>
+        <div class="sn plum dots" style="left:216px;top:26px;width:88px;height:104px;transform:rotate(1.8deg)"><div class="tape sage"></div><div class="hd"></div><h5>Titik</h5></div>
+      </div>
+      <div class="ttl"><span class="num">3</span><h2>Kertas &amp; hiasan</h2><span class="tags"><span class="tag g">S</span></span></div>
+      <p>Pola kertas: <b>Polos · Garis · Kotak · Titik</b>. Hiasan atas: <b>Tidak ada · Selotip · Paku</b>, warnanya ikut aksen. Plus <b>Miring sedikit</b> (±2°) biar meja terasa berantakan yang enak; kalau dimatiin, catatan lurus.</p>
+      <div class="cost"><b>Daya:</b> digambar sekali waktu catatan digambar ulang; nggak ada gambar bitmap.</div>
+    </div>
+
+    <!-- 4 stickers -->
+    <div class="card pick">
+      <div class="st">
+        <div class="sn tera" style="left:22px;top:22px;width:164px;height:112px">
+          <div class="hd"><span class="dt">Rabu</span></div>
+          <h5>Bayar listrik kantor</h5><p>Sebelum tanggal 20, nomor pelanggan di email.</p>
+        </div>
+        <div class="stamp" style="left:150px;top:92px"><svg viewBox="0 0 24 24"><path d="M12 2l2.9 6.6 7.1.6-5.4 4.7 1.6 7L12 17.3 5.8 20.9l1.6-7L2 9.2l7.1-.6z"/></svg>PENTING</div>
+        <div class="menu" style="left:204px;top:18px;width:104px">
+          <div class="on"><span>★ Penting</span></div><div><span>✓ Beres</span></div><div><span>! Mendesak</span></div><div><span>♥ Suka</span></div><div><span>☕ Nanti</span></div><div><span>✦ Ide</span></div>
+        </div>
+      </div>
+      <div class="ttl"><span class="num">4</span><h2>Cap / stiker</h2><span class="tags"><span class="tag g">S</span></span></div>
+      <p>Satu cap bulat miring di pojok kanan bawah: Penting, Beres, Mendesak, Suka, Nanti, Ide. Bentuknya ikon garis, bukan emoji, jadi warnanya ikut aksen di semua kertas. Pilihannya dari menu klik kanan.</p>
+      <div class="cost"><b>Daya:</b> nol, cuma gambar diam.</div>
+    </div>
+
+    <!-- 5 celebrate -->
+    <div class="card pick">
+      <div class="st">
+        <svg class="cat" style="left:150px;top:6px" viewBox="0 0 46 24"><path d="M6 24V3l9 8h16l9-8v21z" fill="#F4EDE4"/><path d="M14 19q3-3 6 0M26 19q3-3 6 0" stroke="#1E1814" stroke-width="1.8" fill="none" stroke-linecap="round"/></svg>
+        <div class="sn sage" style="left:70px;top:26px;width:180px;height:116px">
+          <div class="hd"><span class="dt">Hari ini</span><span style="margin-left:auto;font-size:8.5px;font-weight:600;opacity:.7">4/4</span></div>
+          <div class="prog"><i style="width:100%"></i></div>
+          <h5 style="margin-top:2px">Sebelum rilis</h5>
+          <div class="ck x"><i></i><span>Tes di monitor kedua</span></div>
+          <div class="ck x"><i></i><span>Update README</span></div>
+          <div class="ck x"><i></i><span>Kirim ke Joni</span></div>
+        </div>
+        <i class="conf" style="left:58px;top:30px;background:#E2683C;transform:rotate(20deg)"></i><i class="conf" style="left:46px;top:62px;background:#D9A441;transform:rotate(-30deg)"></i><i class="conf" style="left:262px;top:40px;background:#B07A9A;transform:rotate(40deg)"></i><i class="conf" style="left:272px;top:80px;background:#E2683C;transform:rotate(-10deg)"></i><i class="conf" style="left:106px;top:12px;background:#9DB59A;transform:rotate(60deg)"></i><i class="conf" style="left:226px;top:14px;background:#D9A441;transform:rotate(15deg)"></i><i class="conf" style="left:40px;top:100px;background:#9DB59A;transform:rotate(70deg)"></i>
+      </div>
+      <div class="ttl"><span class="num">5</span><h2>Progres &amp; rayakan</h2><span class="tags"><span class="tag o">M</span></span></div>
+      <p>Garis progres tipis di bawah header plus angka "3/4" buat catatan checklist. Waktu kotak terakhir dicentang: potongan kertas warna-warni muncrat ±0,8 detik dan kucingnya senang.</p>
+      <div class="cost"><b>Daya:</b> animasinya di FrameClock cuma selama 0,8 detik itu; langsung diam kalau gerakan dikurangi / Hemat daya.</div>
+    </div>
+
+    <!-- 6 cat moods -->
+    <div class="card pick">
+      <div class="st">
+        <svg class="cat" style="left:30px;top:30px" viewBox="0 0 46 24"><path d="M6 24V3l9 8h16l9-8v21z" fill="#E2683C"/><path d="M13 18h7M26 18h7" stroke="#1E1814" stroke-width="1.8" stroke-linecap="round"/><text x="38" y="7" font-size="7" font-weight="700" fill="#F4EDE4">z</text></svg>
+        <div class="sn" style="left:16px;top:50px;width:84px;height:80px"><div class="hd"><span class="dt">5 hari</span></div><h5>Pajak</h5></div>
+        <svg class="cat" style="left:128px;top:30px" viewBox="0 0 46 24"><path d="M6 24V3l9 8h16l9-8v21z" fill="#3A302A"/><ellipse cx="19.5" cy="17" rx="2.4" ry="2.8" fill="#F4E7C6"/><ellipse cx="31.5" cy="17" rx="2.4" ry="2.8" fill="#F4E7C6"/></svg>
+        <div class="sn laut" style="left:114px;top:50px;width:84px;height:80px"><div class="hd"><span class="dt">hover</span></div><h5>Ide</h5></div>
+        <svg class="cursor" style="left:184px;top:92px" viewBox="0 0 24 24"><path d="M5 3l14 8-6 2-3 6z" fill="#F4EDE4" stroke="#1E1814" stroke-width="1.2"/></svg>
+        <svg class="cat" style="left:226px;top:30px" viewBox="0 0 46 24"><path d="M6 24V3l9 8h16l9-8v21z" fill="#F4EDE4"/><path d="M9 9l4 4M37 9l-4 4" stroke="#C9826B" stroke-width="1.4"/><ellipse cx="17" cy="18" rx="2.6" ry="3.2" fill="#1E1814"/><ellipse cx="29" cy="18" rx="2.6" ry="3.2" fill="#1E1814"/><circle cx="41" cy="5" r="4" fill="#D9A441"/><path d="M41 3v2l1.2 1" stroke="#1E1814" stroke-width=".9" fill="none"/></svg>
+        <div class="sn tera" style="left:212px;top:50px;width:84px;height:80px"><div class="hd"><span class="chip">17.00</span></div><h5>Telat!</h5></div>
+      </div>
+      <div class="ttl"><span class="num">6</span><h2>Kucing punya mood</h2><span class="tags"><span class="tag g">S</span></span></div>
+      <p><b>Tidur</b> (zzz) di catatan yang ≥ 3 hari nggak disentuh. <b>Melirik</b> ke arah kursor waktu mouse ada di atas catatan. <b>Bawa jam</b> kalau pengingatnya kelewat. Ditambah <b>senang</b> yang sudah ada.</p>
+      <div class="cost"><b>Daya:</b> gambar diam semua. Melirik cuma digambar ulang pas mouse gerak di atas catatan; "≥ 3 hari" dicek di tick sistem 1 detik yang sudah ada.</div>
+    </div>
+
+  </div>
+  <div class="folio"><span>Vale · Catatan tempel v2</span><span>2 / 4 · Usul v2</span></div>
+</section>
+
+<!-- ======================================================= 3 · ide lain -->
+<section class="page">
+  <div class="eyebrow">Ide fitur · bisa ikut v2 atau nanti</div>
+  <h1>Ide lain, pilih kalau mau</h1>
+  <div class="grid g3">
+
+    <!-- 7 templates -->
+    <div class="card">
+      <div class="st">
+        <div class="sn" style="left:18px;top:24px;width:150px;height:110px">
+          <div class="hd"><span class="dt">4 Nov</span></div>
+          <h5>Rapat klien · Kamis</h5>
+          <p style="font-size:9.3px"><b>Agenda</b><br><b>Keputusan</b><br><b>Tindak lanjut</b></p>
+          <div class="ck"><i></i><span>&nbsp;</span></div>
+        </div>
+        <div class="menu" style="left:184px;top:10px;width:120px">
+          <div><span>Kosong</span></div><div><span>Belanja</span></div><div><span>Hari ini</span></div><div class="on"><span>Rapat</span></div><div><span>Ide</span></div><div><span>Mingguan</span></div>
+        </div>
+      </div>
+      <div class="ttl"><span class="num">7</span><h2>Template</h2><span class="tags"><span class="tag g">S</span></span></div>
+      <p>Klik kanan (+) → isi awal: Belanja (checklist), Hari ini (tanggal + 3 kotak), Rapat, Ide, Mingguan (Sen–Jum). Isinya teks biasa, jadi halaman Notes tetap kebaca.</p>
+    </div>
+
+    <!-- 8 clipboard / drop -->
+    <div class="card">
+      <div class="st">
+        <div style="position:absolute;left:16px;top:22px;width:130px;height:62px;border-radius:7px;background:#F7F2EB;border:1px solid #CFC3B4;padding:8px;font-size:9px;color:#3E3229;line-height:1.4">Jl. Kenanga No. <span style="background:rgba(226,104,60,.3)">12, Bandung 40115</span></div>
+        <svg style="position:absolute;left:120px;top:70px" width="60" height="40" viewBox="0 0 60 40"><path d="M4 4q30 0 48 28" stroke="#F4EDE4" stroke-width="1.6" fill="none" stroke-dasharray="3 3"/><path d="M46 30l6 3 0-7" stroke="#F4EDE4" stroke-width="1.6" fill="none"/></svg>
+        <div class="sn plum" style="left:168px;top:56px;width:138px;height:84px;outline:2px dashed var(--a);outline-offset:2px">
+          <div class="hd"><span class="dt">Kirim</span></div><h5>Alamat kirim</h5><p>12, Bandung 40115</p>
+        </div>
+      </div>
+      <div class="ttl"><span class="num">8</span><h2>Dari clipboard &amp; tarik-lepas</h2><span class="tags"><span class="tag o">M</span></span></div>
+      <p>Hotkey catatan baru waktu ada teks di clipboard → catatan langsung berisi teks itu (bisa dimatiin). Tarik teks, link atau file ke catatan → ditambah sebagai baris baru.</p>
+    </div>
+
+    <!-- 9 stack -->
+    <div class="card">
+      <div class="st">
+        <div class="sn laut" style="left:46px;top:34px;width:150px;height:100px;transform:rotate(3deg)"></div>
+        <div class="sn plum" style="left:42px;top:30px;width:150px;height:100px;transform:rotate(-2deg)"></div>
+        <div class="sn" style="left:38px;top:26px;width:150px;height:100px">
+          <div class="hd"><span class="dt">1 / 3</span><span style="margin-left:auto;opacity:.6;font-size:10px">‹ ›</span></div><h5>Proyek Dago</h5><p>Revisi fasad, cek ulang RAB</p>
+        </div>
+        <p style="position:absolute;left:214px;top:48px;width:96px;font-size:9.4px;color:#F4EDE4;line-height:1.45">Lepas satu catatan di atas catatan lain → jadi tumpukan. Gulir atau ‹ › buat ganti lembar.</p>
+      </div>
+      <div class="ttl"><span class="num">9</span><h2>Tumpuk catatan</h2><span class="tags"><span class="tag r">L</span></span></div>
+      <p>Beberapa catatan jadi satu bloknote. Hemat tempat di desktop; tiap lembar tetap catatan biasa di halaman Notes.</p>
+    </div>
+
+    <!-- 10 edge tuck -->
+    <div class="card">
+      <div class="st">
+        <div style="position:absolute;right:0;top:20px;width:16px;height:52px;border-radius:7px 0 0 7px;background:var(--p-tera);box-shadow:-2px 3px 8px rgba(0,0,0,.3)"></div>
+        <div style="position:absolute;right:0;top:78px;width:16px;height:44px;border-radius:7px 0 0 7px;background:var(--p-sage);box-shadow:-2px 3px 8px rgba(0,0,0,.3)"></div>
+        <div class="sn" style="right:22px;top:66px;width:140px;height:78px">
+          <div class="hd"><span class="dt">keluar waktu di-hover</span></div><h5>Nomor penting</h5><p>Pak Budi 0812…</p>
+        </div>
+        <svg class="cursor" style="right:4px;top:96px" viewBox="0 0 24 24"><path d="M5 3l14 8-6 2-3 6z" fill="#F4EDE4" stroke="#1E1814" stroke-width="1.2"/></svg>
+      </div>
+      <div class="ttl"><span class="num">10</span><h2>Selip ke tepi layar</h2><span class="tags"><span class="tag o">M</span></span></div>
+      <p>Tarik catatan sampai mentok tepi kiri/kanan layar → jadi tab kecil berwarna. Hover tab → catatan keluar; mouse pergi → masuk lagi.</p>
+    </div>
+
+    <!-- 11 ghost -->
+    <div class="card">
+      <div class="st">
+        <div style="position:absolute;left:20px;top:20px;width:290px;height:110px;border-radius:9px;background:#F7F2EB;border:1px solid #CFC3B4;padding:8px 10px;font-size:9px;color:#7A6B5D;line-height:1.6">Laporan_Q3.xlsx · tabel penjualan · Jan 120 · Feb 134 · Mar 141 · Apr 129 · Mei 150 · Jun 162 · Jul 158 · Agu 171</div>
+        <div class="sn" style="left:150px;top:40px;width:140px;height:84px;opacity:.55">
+          <div class="hd"><span class="dt">60%</span></div><h5>Cek angka Juli</h5><p>Kok turun?</p>
+        </div>
+      </div>
+      <div class="ttl"><span class="num">11</span><h2>Tembus pandang</h2><span class="tags"><span class="tag g">S</span></span></div>
+      <p>Catatan yang disematkan di atas bisa dibuat 40–90% transparan selama mouse nggak di atasnya. Begitu di-hover, langsung penuh lagi.</p>
+    </div>
+
+    <!-- 12 phone -->
+    <div class="card">
+      <div class="st">
+        <div class="sn sage" style="left:20px;top:26px;width:140px;height:104px"><div class="hd"><span class="dt">Belanja</span></div><h5>Daftar belanja</h5><div class="ck"><i></i><span>Telur</span></div><div class="ck"><i></i><span>Kopi</span></div></div>
+        <div style="position:absolute;left:182px;top:16px;width:70px;height:124px;border-radius:12px;background:#17120F;border:2px solid #4A3E35;padding:10px 6px">
+          <div style="background:var(--p-sage);border-radius:5px;height:100%;padding:5px;font-size:7px;color:#2B211A;line-height:1.5"><b>Daftar belanja</b><br>☐ Telur<br>☐ Kopi</div>
+        </div>
+        <svg style="position:absolute;left:262px;top:46px" width="40" height="40" viewBox="0 0 7 7"><path d="M0 0h3v3H0zM4 0h3v3H4zM0 4h3v3H0zM4 4h1v1H4zM6 5h1v2H5V6h1z" fill="#F4EDE4"/></svg>
+      </div>
+      <div class="ttl"><span class="num">12</span><h2>Kirim ke HP</h2><span class="tags"><span class="tag o">M</span></span></div>
+      <p>Menu ··· → <b>Kirim ke HP</b> → QR yang sama dengan rak ↔ HP, buka di HP untuk baca catatannya (contoh: daftar belanja dibawa ke toko). Pakai kode rak ↔ HP yang sudah ada.</p>
+    </div>
+
+  </div>
+  <div class="folio"><span>Vale · Catatan tempel v2</span><span>3 / 4 · Ide lain</span></div>
+</section>
+
+<!-- ======================================================= 4 · scope -->
+<section class="page">
+  <div class="eyebrow">Usul cakupan</div>
+  <h1>Semua bareng di meja</h1>
+  <div class="grid" style="grid-template-columns: 1.15fr 1fr">
+    <div class="st tall">
+      <div class="island"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="#E2683C" stroke-width="2" stroke-linecap="round"><path d="M6 8a6 6 0 1112 0c0 7 3 8 3 8H3s3-1 3-8M10 20a2 2 0 004 0"/></svg><b>Telepon tukang</b><span style="color:var(--tx2)">14.00</span><span class="bt">Tunda</span><span class="bt a">Buka</span></div>
+
+      <div class="sn lined hand" style="left:26px;top:56px;width:168px;height:140px;transform:rotate(-1.5deg)"><div class="tape"></div><div class="hd"><span class="dt">Senin</span></div><h5>Ide nama kafe</h5><p>Sudut Senja<br>Rumah Kopi Pelan<br>Teras 17</p></div>
+
+      <svg class="cat" style="left:258px;top:36px" viewBox="0 0 46 24"><path d="M6 24V3l9 8h16l9-8v21z" fill="#F4EDE4"/><path d="M14 19q3-3 6 0M26 19q3-3 6 0" stroke="#1E1814" stroke-width="1.8" fill="none" stroke-linecap="round"/></svg>
+      <div class="sn sage" style="left:214px;top:56px;width:180px;height:130px"><div class="hd"><span class="dt">Hari ini</span><span style="margin-left:auto;font-size:8.5px;font-weight:600;opacity:.7">3/3</span></div><div class="prog"><i style="width:100%"></i></div><h5 style="margin-top:2px">Sebelum rilis</h5><div class="ck x"><i></i><span>Tes monitor kedua</span></div><div class="ck x"><i></i><span>Update README</span></div><div class="ck x"><i></i><span>Kirim ke Joni</span></div></div>
+
+      <div class="sn tera" style="left:40px;top:214px;width:178px;height:100px;transform:rotate(1deg)"><div class="hd"><span class="chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2 2"/></svg>14.00</span></div><h5>Telepon tukang</h5><p>Tanya jadwal pasang kusen.</p></div>
+      <div class="stamp" style="left:180px;top:278px"><svg viewBox="0 0 24 24"><path d="M12 2l2.9 6.6 7.1.6-5.4 4.7 1.6 7L12 17.3 5.8 20.9l1.6-7L2 9.2l7.1-.6z"/></svg>PENTING</div>
+
+      <svg class="cat" style="left:264px;top:184px" viewBox="0 0 46 24"><path d="M6 24V3l9 8h16l9-8v21z" fill="#E2683C"/><path d="M13 18h7M26 18h7" stroke="#1E1814" stroke-width="1.8" stroke-linecap="round"/><text x="38" y="7" font-size="7" font-weight="700" fill="#F4EDE4">z</text></svg>
+      <div class="sn plum grid5" style="left:250px;top:204px;width:144px;height:104px;transform:rotate(-1deg)"><div class="tack"></div><div class="hd"><span class="dt">5 hari lalu</span></div><h5>Pajak tahunan</h5><p>Bukti potong dari kantor</p></div>
+    </div>
+
+    <div>
+      <table>
+        <tr><th>#</th><th>Fitur</th><th>Ukuran</th><th>Usul</th></tr>
+        <tr><td>0</td><td><b>Bug geser</b>: strip atas penuh, tombol cuma aktif kalau kelihatan, Alt + tarik, catatan baru langsung bisa ditarik</td><td>S</td><td><span class="tag a">wajib</span></td></tr>
+        <tr><td>1</td><td><b>Ingatkan aku</b>: jam di catatan, pemberitahuan di island</td><td>M</td><td><span class="tag a">v2</span></td></tr>
+        <tr><td>2</td><td><b>Tulisan tangan</b>: font Vale / Tangan / Mono</td><td>S</td><td><span class="tag a">v2</span></td></tr>
+        <tr><td>3</td><td><b>Kertas &amp; hiasan</b>: garis/kotak/titik, selotip/paku, miring</td><td>S</td><td><span class="tag a">v2</span></td></tr>
+        <tr><td>4</td><td><b>Cap / stiker</b> di pojok</td><td>S</td><td><span class="tag a">v2</span></td></tr>
+        <tr><td>5</td><td><b>Progres &amp; rayakan</b> waktu checklist beres</td><td>M</td><td><span class="tag a">v2</span></td></tr>
+        <tr><td>6</td><td><b>Kucing punya mood</b>: tidur, melirik, bawa jam</td><td>S</td><td><span class="tag a">v2</span></td></tr>
+        <tr><td>7</td><td>Template</td><td>S</td><td><span class="tag g">gampang ditambah</span></td></tr>
+        <tr><td>8</td><td>Dari clipboard &amp; tarik-lepas</td><td>M</td><td><span class="tag">nanti</span></td></tr>
+        <tr><td>9</td><td>Tumpuk catatan</td><td>L</td><td><span class="tag">nanti</span></td></tr>
+        <tr><td>10</td><td>Selip ke tepi layar</td><td>M</td><td><span class="tag">nanti</span></td></tr>
+        <tr><td>11</td><td>Tembus pandang</td><td>S</td><td><span class="tag g">gampang ditambah</span></td></tr>
+        <tr><td>12</td><td>Kirim ke HP</td><td>M</td><td><span class="tag">nanti</span></td></tr>
+      </table>
+      <div class="note" style="margin-top:10px"><b>Usul:</b> bug (0) dulu, lalu 1–6 di run <code>build</code> yang sama. 7 dan 11 kecil, bisa ikut kalau mau. 8, 9, 10, 12 lebih besar dan nyentuh hal lain (clipboard, rak ↔ HP), jadi fase berikutnya.</div>
+      <div class="warn" style="margin-top:8px"><b>Yang tetap dijaga:</b> catatan diam = nol biaya (tanpa timer berulang). Data baru disimpan sebagai field tambahan di <code>sticky</code>, jadi <code>notes.json</code> lama tetap kebaca dan halaman Notes tetap teks biasa.</div>
+    </div>
+  </div>
+  <div class="folio"><span>Vale · Catatan tempel v2</span><span>4 / 4 · Cakupan</span></div>
+</section>
+
+</body>
+</html>

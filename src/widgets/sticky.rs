@@ -30,8 +30,8 @@ pub const MAX_W: f32 = 640.0;
 pub const MAX_H: f32 = 800.0;
 pub const DEFAULT_W: f32 = 240.0;
 pub const DEFAULT_H: f32 = 208.0;
-/// A rolled-up note: one line tall.
-pub const ROLLED_H: f32 = 56.0;
+/// A rolled-up note: the 36 dip strip and one 28 dip line.
+pub const ROLLED_H: f32 = 64.0;
 
 /// A rectangle in device-independent pixels. For a sticky it is relative to
 /// the top-left of its monitor's placement area.

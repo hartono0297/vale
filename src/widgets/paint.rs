@@ -37,7 +37,9 @@ use crate::widgets::sticky::{ROLLED_H, TextSize, Tones};
 
 // ------------------------------------------------------------------ geometry
 
-pub const HEADER_H: f32 = 28.0;
+/// The strip along the top: the date at rest, the buttons while the pointer
+/// is on the note. All of it moves the note.
+pub const HEADER_H: f32 = 36.0;
 pub const FOOTER_H: f32 = 24.0;
 pub const PAD_X: f32 = 12.0;
 pub const BTN: f32 = 22.0;
@@ -159,7 +161,10 @@ fn grown(r: Rect, by: f32) -> Rect {
 
 /// What a point (dip from the note's top-left) of a note `w` x `h` is on.
 /// `body` is the text layout (for the item boxes) and `scroll` how far it is
-/// scrolled.
+/// scrolled. `buttons_shown` is whether the header's buttons are visible: a
+/// hidden button takes no press, so the whole strip (full width, the pinned
+/// pin included) is `Header`.
+#[allow(clippy::too_many_arguments)]
 pub fn target(
     x: f32,
     y: f32,
@@ -168,15 +173,18 @@ pub fn target(
     rolled: bool,
     body: Option<&BodyLayout>,
     scroll: f32,
+    buttons_shown: bool,
 ) -> Target {
     let h = shown_h(h, rolled);
     if x < 0.0 || y < 0.0 || x >= w || y >= h {
         return Target::Outside;
     }
     if y < HEADER_H {
-        for b in Btn::ALL {
-            if inside(button_rect(b, w), x, y) {
-                return Target::Button(b);
+        if buttons_shown {
+            for b in Btn::ALL {
+                if inside(button_rect(b, w), x, y) {
+                    return Target::Button(b);
+                }
             }
         }
         return Target::Header;
@@ -993,7 +1001,7 @@ mod tests {
     #[test]
     fn a_point_is_classified() {
         let (w, h) = (240.0, 208.0);
-        let t = |x, y| target(x, y, w, h, false, None, 0.0);
+        let t = |x, y| target(x, y, w, h, false, None, 0.0, true);
         assert_eq!(t(20.0, 10.0), Target::Header);
         let close = button_rect(Btn::Close, w);
         assert_eq!(t(close.x + 2.0, close.y + 2.0), Target::Button(Btn::Close));
@@ -1003,9 +1011,64 @@ mod tests {
         assert_eq!(t(-1.0, 5.0), Target::Outside);
         assert_eq!(t(5.0, h + 1.0), Target::Outside);
         // Rolled: one line tall, and all of it drags.
-        let r = |x, y| target(x, y, w, h, true, None, 0.0);
+        let r = |x, y| target(x, y, w, h, true, None, 0.0, true);
         assert_eq!(r(20.0, 40.0), Target::Header);
         assert_eq!(r(20.0, 80.0), Target::Outside);
+    }
+
+    #[test]
+    fn hidden_buttons_take_no_press_and_the_whole_strip_drags() {
+        for w in [160.0f32, 240.0, 640.0] {
+            let mut x = 0.0;
+            while x < w {
+                for y in [0.0, 10.0, HEADER_H - 0.5] {
+                    assert_eq!(
+                        target(x, y, w, 208.0, false, None, 0.0, false),
+                        Target::Header,
+                        "{w} wide, x {x} y {y}"
+                    );
+                }
+                x += 1.0;
+            }
+            // Just under the strip is the text.
+            assert_eq!(target(20.0, HEADER_H + 1.0, w, 208.0, false, None, 0.0, false), Target::Body);
+        }
+    }
+
+    #[test]
+    fn shown_buttons_take_the_press_and_the_rest_of_the_strip_drags() {
+        let w = 240.0;
+        for b in Btn::ALL {
+            let r = button_rect(b, w);
+            assert_eq!(
+                target(r.x + r.w / 2.0, r.y + r.h / 2.0, w, 208.0, false, None, 0.0, true),
+                Target::Button(b)
+            );
+        }
+        let first = button_rect(Btn::Pin, w);
+        assert_eq!(target(first.x - 3.0, 10.0, w, 208.0, false, None, 0.0, true), Target::Header);
+        assert_eq!(target(20.0, 3.0, w, 208.0, false, None, 0.0, true), Target::Header);
+        // Above and under the buttons, still inside the strip: the strip.
+        assert_eq!(target(first.x + 5.0, 1.0, w, 208.0, false, None, 0.0, true), Target::Header);
+        assert_eq!(
+            target(first.x + 5.0, HEADER_H - 1.0, w, 208.0, false, None, 0.0, true),
+            Target::Header
+        );
+    }
+
+    #[test]
+    fn a_rolled_note_is_all_strip_and_the_strip_is_36_dip() {
+        assert_eq!(HEADER_H, 36.0);
+        assert_eq!(ROLLED_H, 64.0, "the strip and one 28 dip line");
+        for shown in [false, true] {
+            for y in [2.0, 20.0, 50.0, 63.0] {
+                assert_eq!(
+                    target(20.0, y, 240.0, 208.0, true, None, 0.0, shown),
+                    Target::Header,
+                    "y {y}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1060,11 +1123,11 @@ mod tests {
         let area = body_rect(240.0, 208.0);
         let item = box_rect(&body.lines[1], area, 0.0);
         assert_eq!(
-            target(item.x + 3.0, item.y + 3.0, 240.0, 208.0, false, Some(&body), 0.0),
+            target(item.x + 3.0, item.y + 3.0, 240.0, 208.0, false, Some(&body), 0.0, true),
             Target::Check(1)
         );
         assert_eq!(
-            target(item.x + 80.0, item.y + 3.0, 240.0, 208.0, false, Some(&body), 0.0),
+            target(item.x + 80.0, item.y + 3.0, 240.0, 208.0, false, Some(&body), 0.0, true),
             Target::Body
         );
     }

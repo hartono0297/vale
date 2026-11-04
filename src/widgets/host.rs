@@ -35,14 +35,14 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CheckMenuRadioItem, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu,
     DestroyWindow, GWLP_HWNDPARENT, GWLP_USERDATA, GetCaretBlinkTime, GetCursorPos, GetShellWindow,
-    GetWindowLongPtrW, HWND_BOTTOM, HWND_TOPMOST, IDC_ARROW, IDC_HAND, IDC_IBEAM, IDC_SIZENWSE,
+    GetWindowLongPtrW, HWND_BOTTOM, HWND_TOPMOST, IDC_ARROW, IDC_HAND, IDC_IBEAM, IDC_SIZEALL, IDC_SIZENWSE,
     KillTimer, LoadCursorW, MA_ACTIVATE, MA_NOACTIVATE, MF_CHECKED, MF_POPUP, MF_SEPARATOR,
     MF_STRING, PostMessageW, RegisterClassExW, SW_HIDE, SW_SHOWNA, SWP_NOACTIVATE, SWP_NOMOVE,
     SWP_NOSIZE, SWP_NOZORDER, SetCursor, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow,
     TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, WINDOWPOS, WM_ACTIVATE, WM_APP,
     WM_CAPTURECHANGED, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
     WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-    WM_RBUTTONUP, WM_SETCURSOR, WM_TIMER, WM_WINDOWPOSCHANGING, WNDCLASSEXW, WS_EX_LAYERED,
+    WM_RBUTTONUP, WM_SETCURSOR, WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WM_WINDOWPOSCHANGING, WNDCLASSEXW, WS_EX_LAYERED,
     WS_EX_TOOLWINDOW, WS_POPUP, WA_INACTIVE, CS_DBLCLKS,
 };
 use windows::core::{PCWSTR, w};
@@ -205,6 +205,9 @@ struct Win {
     hot: Option<Btn>,
     tracking: bool,
     pressed: Option<Btn>,
+    /// Where the press on `pressed` was (desktop px): a move of 4 px or more
+    /// from here turns the press into a drag of the note.
+    press_at: (i32, i32),
     edit: Option<HWND>,
     sel: (usize, usize),
     /// Where the selection started (a drag or a shift move extends from it).
@@ -627,6 +630,7 @@ fn sync(ctx: &Ctx) {
                 hot: None,
                 tracking: false,
                 pressed: None,
+                press_at: (0, 0),
                 edit: None,
                 sel: (0, 0),
                 anchor: 0,
@@ -928,6 +932,8 @@ fn draw(s: &mut State, i: usize) {
 
 /// In the Controls feature of `windows`; the value is fixed by Win32.
 const WM_MOUSELEAVE: u32 = 0x02A3;
+/// `WM_SYSCOMMAND`'s menu key (Alt released alone).
+const SC_KEYMENU: u32 = 0xF100;
 
 /// Private to the note windows: leave editing (posted from inside the EDIT's
 /// own handlers, which must not destroy it themselves).
@@ -963,6 +969,11 @@ unsafe extern "system" fn wnd_proc(
         }
         WM_ERASEBKGND => return LRESULT(1),
         WM_MOUSEACTIVATE => return mouse_activate(hwnd),
+        // Alt moves a note: its release must not open a menu mode or beep.
+        WM_SYSKEYDOWN | WM_SYSKEYUP if (wparam.0 & 0xFFFF) as u16 == VK_MENU.0 => {
+            return LRESULT(0);
+        }
+        WM_SYSCOMMAND if (wparam.0 & 0xFFF0) as u32 == SC_KEYMENU => return LRESULT(0),
         WM_SETCURSOR => {
             if set_cursor(hwnd) {
                 return LRESULT(1);
@@ -1081,6 +1092,8 @@ fn mouse_activate(hwnd: HWND) -> LRESULT {
     unsafe {
         let _ = GetCursorPos(&mut pt);
     }
+    // An Alt press moves the note: no editing starts.
+    let alt = alt_down();
     let text = with(|s| {
         let i = idx_of(s, hwnd)?;
         Some(matches!(
@@ -1090,7 +1103,13 @@ fn mouse_activate(hwnd: HWND) -> LRESULT {
     })
     .flatten()
     .unwrap_or(false);
-    LRESULT((if text { MA_ACTIVATE } else { MA_NOACTIVATE }) as isize)
+    LRESULT((if text && !alt { MA_ACTIVATE } else { MA_NOACTIVATE }) as isize)
+}
+
+/// Whether the header's buttons are visible enough to take a press: a hidden
+/// button never eats one (the strip underneath drags the note).
+fn buttons_shown(w: &Win, now: Instant) -> bool {
+    w.header.value(now) >= 0.5
 }
 
 /// What is under a point of the desktop (px) on this note.
@@ -1105,7 +1124,13 @@ fn target_at(w: &Win, sx: i32, sy: i32) -> Target {
         w.sticky.rolled,
         w.body.as_ref(),
         w.scroll,
+        buttons_shown(w, Instant::now()),
     )
+}
+
+/// Alt is held: a press anywhere on the note moves it.
+fn alt_down() -> bool {
+    (unsafe { GetKeyState(i32::from(VK_MENU.0)) }) < 0
 }
 
 /// A client point (px) as dip from the note's top-left.
@@ -1122,12 +1147,17 @@ fn set_cursor(hwnd: HWND) -> bool {
     let id = with(|s| {
         let i = idx_of(s, hwnd)?;
         let w = &s.wins[i];
-        if w.drag.is_some() {
-            return Some(IDC_SIZENWSE);
+        if let Some(d) = &w.drag {
+            return Some(if d.kind == DragKind::Move {
+                IDC_SIZEALL
+            } else {
+                IDC_SIZENWSE
+            });
         }
         match target_at(w, pt.x, pt.y) {
             Target::Body => Some(IDC_IBEAM),
             Target::Button(_) | Target::Check(_) => Some(IDC_HAND),
+            Target::Header if !s.prefs.lock => Some(IDC_SIZEALL),
             Target::Grip if !s.prefs.lock => Some(IDC_SIZENWSE),
             _ => Some(IDC_ARROW),
         }
@@ -1166,7 +1196,7 @@ fn screen_point(hwnd: HWND, x: i32, y: i32) -> POINT {
 
 fn mouse_move(hwnd: HWND, x: i32, y: i32) {
     let pt = screen_point(hwnd, x, y);
-    let alt = unsafe { GetKeyState(i32::from(VK_MENU.0)) } < 0;
+    let alt = alt_down();
     let follow = with(|s| {
         let i = idx_of(s, hwnd)?;
         let now = Instant::now();
@@ -1182,6 +1212,17 @@ fn mouse_move(hwnd: HWND, x: i32, y: i32) {
             if unsafe { TrackMouseEvent(&mut track) }.is_ok() {
                 s.wins[i].tracking = true;
             }
+        }
+        // A press on a button that then moves 4 px or more is a drag of the
+        // note from where the press was, not a click (Kunci posisi blocks it,
+        // as it blocks every move).
+        if s.wins[i].drag.is_none()
+            && s.wins[i].pressed.is_some()
+            && !s.prefs.lock
+            && (pt.x - s.wins[i].press_at.0).abs() + (pt.y - s.wins[i].press_at.1).abs() >= 4
+        {
+            s.wins[i].pressed = None;
+            start_move(s, i, s.wins[i].press_at);
         }
         if s.wins[i].drag.is_some() {
             drag_move(s, i, (pt.x, pt.y), alt);
@@ -1279,9 +1320,18 @@ fn left_down(hwnd: HWND, x: i32, y: i32) {
         let t = target_at(&s.wins[i], pt.x, pt.y);
         // Any press on the note is the next other action: the footer follows.
         disarm_delete(s, i);
+        // Alt + press anywhere on the note moves it.
+        if alt_down() && t != Target::Outside {
+            if lock {
+                return Some(Down::Nothing);
+            }
+            start_move(s, i, (pt.x, pt.y));
+            return Some(Down::Capture);
+        }
         match t {
             Target::Button(b) => {
                 s.wins[i].pressed = Some(b);
+                s.wins[i].press_at = (pt.x, pt.y);
                 Some(Down::Capture)
             }
             Target::Check(line) => {
@@ -1289,25 +1339,12 @@ fn left_down(hwnd: HWND, x: i32, y: i32) {
                 Some(Down::Nothing)
             }
             Target::Header | Target::Grip if lock => Some(Down::Nothing),
-            Target::Header | Target::Grip => {
-                let kind = if t == Target::Grip {
-                    DragKind::Resize
-                } else {
-                    DragKind::Move
-                };
-                let w = &mut s.wins[i];
-                w.drag = Some(Drag {
-                    kind,
-                    cursor: (pt.x, pt.y),
-                    note: w.note,
-                    dip: DipRect {
-                        h: shown_h(w.view.h, w.sticky.rolled),
-                        ..w.view
-                    },
-                    moved: false,
-                    lit: Vec::new(),
-                });
-                touch(s, i);
+            Target::Header => {
+                start_move(s, i, (pt.x, pt.y));
+                Some(Down::Capture)
+            }
+            Target::Grip => {
+                begin_drag(s, i, DragKind::Resize, (pt.x, pt.y));
                 Some(Down::Capture)
             }
             Target::Body | Target::Footer => {
@@ -1342,6 +1379,28 @@ fn left_down(hwnd: HWND, x: i32, y: i32) {
         _ => {}
     }
     flush_dirty();
+}
+
+/// A drag of note `i` that began with the pointer at `from` (desktop px).
+fn begin_drag(s: &mut State, i: usize, kind: DragKind, from: (i32, i32)) {
+    let w = &mut s.wins[i];
+    w.drag = Some(Drag {
+        kind,
+        cursor: from,
+        note: w.note,
+        dip: DipRect {
+            h: shown_h(w.view.h, w.sticky.rolled),
+            ..w.view
+        },
+        moved: false,
+        lit: Vec::new(),
+    });
+    touch(s, i);
+}
+
+/// The note is moved from `from`.
+fn start_move(s: &mut State, i: usize, from: (i32, i32)) {
+    begin_drag(s, i, DragKind::Move, from);
 }
 
 fn left_up(hwnd: HWND, x: i32, y: i32) {
@@ -2224,6 +2283,145 @@ mod tests {
         }
     }
 
+    fn ctx<'a>(notes: &'a [Note], displays: &'a [Display]) -> Ctx<'a> {
+        Ctx {
+            notes,
+            // Hidden windows: nothing appears on the tester's desktop.
+            prefs: WidgetPrefs {
+                show: false,
+                ..WidgetPrefs::default()
+            },
+            displays,
+            lang: Lang::Id,
+            font: UiFont::Sans,
+            coat: CatColor::Terracotta,
+            animate: false,
+        }
+    }
+
+    fn note(id: &str, rect: DipRect) -> Note {
+        Note {
+            id: id.to_owned(),
+            text: "Belanja".into(),
+            updated: 1,
+            sticky: Some(sticky("A", rect)),
+        }
+    }
+
+    #[test]
+    fn a_new_note_can_be_dragged_straight_away() {
+        use windows::Win32::UI::WindowsAndMessaging::{CWP_ALL, ChildWindowFromPointEx};
+        let displays = vec![display("A", 0, true, 96)];
+        let notes = vec![note("n1", DipRect::new(400.0, 200.0, 240.0, 208.0))];
+        let mut host = WidgetHost::new(HWND::default());
+        host.sync(&ctx(&notes, &displays));
+        // A fresh note gets the keyboard: the hidden EDIT exists.
+        host.focus("n1");
+        let (hwnd, edit_hwnd, start, k) = with(|s| {
+            let w = &s.wins[0];
+            (w.hwnd, w.edit, w.note, w.scale)
+        })
+        .expect("the host has a window");
+        let edit_hwnd = edit_hwnd.expect("the note has the keyboard");
+        // A point of the strip that lies under the EDIT's rectangle.
+        let m = margins();
+        let (x, y) = (((m.0 + 20.0) * k) as i32, ((m.1 + 10.0) * k) as i32);
+        let under = unsafe { ChildWindowFromPointEx(hwnd, POINT { x, y }, CWP_ALL) };
+        assert_eq!(under, edit_hwnd, "the EDIT really covers this point of the strip");
+        // The EDIT lets the press through to the note.
+        let answer = unsafe {
+            windows::Win32::UI::WindowsAndMessaging::SendMessageW(
+                edit_hwnd,
+                windows::Win32::UI::WindowsAndMessaging::WM_NCHITTEST,
+                Some(WPARAM(0)),
+                Some(LPARAM(((y << 16) | x) as isize)),
+            )
+        };
+        assert_eq!(answer.0, -1, "HTTRANSPARENT");
+        let _ = host.drain();
+        left_down(hwnd, x, y);
+        mouse_move(hwnd, x + 40, y);
+        left_up(hwnd, x + 40, y);
+        let events = host.drain();
+        let placed = events.iter().find_map(|e| match e {
+            WidgetEvent::Placed { rect, .. } => Some(*rect),
+            _ => None,
+        });
+        let rect = placed.expect("the drag ended with a Placed event");
+        assert!(rect.x > 400.0 + 20.0, "moved right: {rect:?}");
+        assert!((rect.y - 200.0).abs() <= 8.0, "kept its height: {rect:?}");
+        assert_eq!((rect.w, rect.h), (240.0, 208.0), "a move keeps the size");
+        let now = with(|s| s.wins[0].note).unwrap();
+        assert!(now.x > start.x, "the window followed");
+        host.shutdown();
+    }
+
+    #[test]
+    fn a_press_on_a_button_that_moves_becomes_a_drag_not_a_click() {
+        let displays = vec![display("A", 0, true, 96)];
+        let notes = vec![note("n1", DipRect::new(400.0, 200.0, 240.0, 208.0))];
+        let mut host = WidgetHost::new(HWND::default());
+        host.sync(&ctx(&notes, &displays));
+        let (hwnd, k) = with(|s| (s.wins[0].hwnd, s.wins[0].scale)).unwrap();
+        // The buttons are shown (the pointer is over the note).
+        let _ = with(|s| s.wins[0].header = Ease::at(1.0));
+        let r = paint::button_rect(Btn::Pin, 240.0);
+        let m = margins();
+        let (x, y) = (
+            ((m.0 + r.x + r.w / 2.0) * k) as i32,
+            ((m.1 + r.y + r.h / 2.0) * k) as i32,
+        );
+        let _ = host.drain();
+        left_down(hwnd, x, y);
+        assert_eq!(with(|s| s.wins[0].pressed).unwrap(), Some(Btn::Pin));
+        mouse_move(hwnd, x + 2, y + 1);
+        assert_eq!(
+            with(|s| s.wins[0].pressed).unwrap(),
+            Some(Btn::Pin),
+            "3 px is still a click"
+        );
+        mouse_move(hwnd, x + 30, y);
+        assert_eq!(with(|s| s.wins[0].pressed).unwrap(), None, "now it is a drag");
+        left_up(hwnd, x + 30, y);
+        let events = host.drain();
+        assert!(events.iter().any(|e| matches!(e, WidgetEvent::Placed { .. })));
+        assert!(
+            !events.iter().any(|e| matches!(e, WidgetEvent::Pinned { .. })),
+            "no click on release"
+        );
+        host.shutdown();
+    }
+
+    #[test]
+    fn a_locked_note_does_not_turn_a_button_press_into_a_drag() {
+        let displays = vec![display("A", 0, true, 96)];
+        let notes = vec![note("n1", DipRect::new(400.0, 200.0, 240.0, 208.0))];
+        let mut host = WidgetHost::new(HWND::default());
+        let mut c = ctx(&notes, &displays);
+        c.prefs.lock = true;
+        host.sync(&c);
+        let (hwnd, k) = with(|s| (s.wins[0].hwnd, s.wins[0].scale)).unwrap();
+        let _ = with(|s| s.wins[0].header = Ease::at(1.0));
+        let r = paint::button_rect(Btn::Pin, 240.0);
+        let m = margins();
+        let (x, y) = (
+            ((m.0 + r.x + r.w / 2.0) * k) as i32,
+            ((m.1 + r.y + r.h / 2.0) * k) as i32,
+        );
+        let _ = host.drain();
+        left_down(hwnd, x, y);
+        mouse_move(hwnd, x + 40, y);
+        assert!(with(|s| s.wins[0].drag.is_none()).unwrap());
+        left_up(hwnd, x + 40, y);
+        assert!(
+            !host
+                .drain()
+                .iter()
+                .any(|e| matches!(e, WidgetEvent::Placed { .. }))
+        );
+        host.shutdown();
+    }
+
     #[test]
     fn a_note_larger_than_its_display_is_drawn_and_hit_at_the_shown_size() {
         // 640 x 800 dip, shown on 1920 x 1080 at 150 % (area 1280 x 693 dip).
@@ -2241,7 +2439,7 @@ mod tests {
         assert!(note_bottom <= area.bottom(), "{note_bottom} > {}", area.bottom());
         assert!(note_bottom >= area.bottom() - 1, "fills the area");
         // The grip is where the shown note ends, inside the area.
-        let grip = paint::target(p.view.w - 4.0, p.view.h - 4.0, p.view.w, p.view.h, false, None, 0.0);
+        let grip = paint::target(p.view.w - 4.0, p.view.h - 4.0, p.view.w, p.view.h, false, None, 0.0, true);
         assert_eq!(grip, Target::Grip);
         let grip_y = p.rect.y + ((p.view.h - 4.0) * k).round() as i32;
         assert!(grip_y < area.bottom());
