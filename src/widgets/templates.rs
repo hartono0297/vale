@@ -217,7 +217,7 @@ mod tests {
                 made.push((id, s));
             }
             // Free the desktop for the next language (the cap is 20).
-            for (id, _) in made.drain(..).collect::<Vec<_>>() {
+            for (id, _) in std::mem::take(&mut made) {
                 let _ = store.set_sticky(&id, None);
             }
         }

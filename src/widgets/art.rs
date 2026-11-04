@@ -215,15 +215,17 @@ pub fn cat_left(w: f32) -> f32 {
 }
 
 /// The tape's or pin's horizontal centre on a note `w` wide: the top centre,
-/// moved left on a narrow note so it never reaches the cat's face (the cat
-/// may come to any note, so the room is kept whether it is there or not).
+/// moved left on a narrow note so it never reaches the overdue alarm clock
+/// left of the cat, nor the cat's face (the cat and the clock may come to any
+/// note, so the room is kept whether they are there or not). The deco is
+/// drawn after both and would hide them.
 pub fn deco_centre(w: f32, half: f32) -> f32 {
-    let cat = cat_left(w);
+    let clear = clock_centre(w).0 - CLOCK_REACH - 2.0;
     let centre = w / 2.0;
-    if centre + half + 4.0 <= cat {
+    if centre + half <= clear {
         return centre;
     }
-    (cat - 6.0 - half).max(half + 10.0)
+    (clear - half).max(half + 6.0)
 }
 
 /// The tape's stripe colours: the paper's accent and a light one.
@@ -588,6 +590,10 @@ pub fn clock_centre(w: f32) -> (f32, f32) {
 
 pub const CLOCK_R: f32 = 7.0;
 
+/// How far the clock reaches either side of its centre, its bells included
+/// (they sit at 5.2 out, 2.6 wide).
+pub const CLOCK_REACH: f32 = 8.0;
+
 /// Draws the alarm clock about (`cx`, `cy`) in window dip: a face, two bells
 /// on top, two feet and the hands.
 pub fn draw_clock(
@@ -809,14 +815,18 @@ mod tests {
             let grip = grip_rect(w, h);
             let (nx, ny) = (cx.clamp(grip.x, grip.x + grip.w), cy.clamp(grip.y, grip.y + grip.h));
             assert!(((cx - nx).powi(2) + (cy - ny).powi(2)).sqrt() > r, "{w}x{h}: the grip");
-            assert!(GRIP <= 16.0);
+            const { assert!(GRIP <= 16.0) };
         }
     }
 
     #[test]
-    fn the_tape_and_the_pin_keep_clear_of_the_cats_face() {
-        for w in [MIN_W, 180.0, 200.0, 220.0, 240.0, 320.0, 480.0, MAX_W] {
+    fn the_tape_and_the_pin_keep_clear_of_the_cats_face_and_the_clock() {
+        // Every whole width a note can take, and the default.
+        let widths = (MIN_W as i32..=MAX_W as i32).map(|w| w as f32).chain([240.0]);
+        for w in widths {
             let cat = cat_left(w);
+            let (clock, _) = clock_centre(w);
+            let (clock_l, clock_r) = (clock - CLOCK_REACH, clock + CLOCK_REACH);
             for half in [TAPE_W / 2.0, PIN_R] {
                 let c = deco_centre(w, half);
                 assert!(c - half >= 0.0 && c + half <= w, "{w}: inside the note");
@@ -827,6 +837,14 @@ mod tests {
                     c + half,
                     cat,
                     cat + CAT_SIZE
+                );
+                // The overdue clock is drawn before the deco: the tape (and
+                // its lean, under a dip) or the pin must leave it showing.
+                assert!(
+                    c + half + 1.0 <= clock_l || c - half - 1.0 >= clock_r,
+                    "{w}: deco {}..{} hides the clock {clock_l}..{clock_r}",
+                    c - half,
+                    c + half,
                 );
             }
         }

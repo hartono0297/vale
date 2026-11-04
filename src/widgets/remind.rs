@@ -141,6 +141,17 @@ pub fn overdue(s: &Sticky, now: i64) -> bool {
     s.remind_fired && s.remind_at.is_some_and(|t| t <= now)
 }
 
+/// The notes whose reminder is overdue at `now` (fired, not opened since):
+/// the ones that rang before the island was last closed come back with their
+/// notice at startup.
+pub fn overdue_ids(notes: &[Note], now: i64) -> Vec<String> {
+    notes
+        .iter()
+        .filter(|n| n.sticky.as_ref().is_some_and(|s| overdue(s, now)))
+        .map(|n| n.id.clone())
+        .collect()
+}
+
 /// How long the one-shot timer waits (ms) for a reminder at `at`, from `now`
 /// (unix seconds): never below `USER_TIMER_MINIMUM`, never above
 /// `USER_TIMER_MAXIMUM`. A clamped wait just recomputes when it fires.
@@ -375,6 +386,15 @@ mod tests {
         assert!(!overdue(&s(Some(100), false), 500), "not fired yet");
         assert!(!overdue(&s(Some(900), true), 500), "snoozed into the future");
         assert!(!overdue(&s(None, true), 500));
+        // Over the notes: the fired and past ones only.
+        let notes = vec![
+            note("rang", Some(10), true),
+            note("due", Some(10), false),
+            note("ahead", Some(900), true),
+            note("none", None, true),
+        ];
+        assert_eq!(overdue_ids(&notes, 500), vec!["rang".to_owned()]);
+        assert_eq!(overdue_ids(&notes, 5), Vec::<String>::new());
     }
 
     #[test]

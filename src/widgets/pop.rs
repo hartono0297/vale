@@ -694,7 +694,7 @@ mod tests {
         }
         assert_eq!(item_at(row_rect(ROW_PIN).x + 4.0, row_y(ROW_PIN) + 4.0), Some(Item::Pin));
         assert_eq!(item_at(row_rect(ROW_PEEK).x + 4.0, row_y(ROW_PEEK) + 4.0), Some(Item::Peek));
-        assert!(H > 250.0, "the plate grew for the new rows: {H}");
+        const { assert!(H > 250.0, "the plate grew for the new rows") };
     }
 
     #[test]

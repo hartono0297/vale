@@ -303,6 +303,11 @@ lenient, default off) is written with the other prefs.
   reminder change (`widgets_sync` -> `sticky_remind_settle`, which also runs at
   startup), on `on_clock_jump` (`WM_TIMECHANGE`, resume) and on each fire (killed
   first). `sticky_remind_fire` also runs at startup, so the missed ones fire.
+  It applies the windows' queued events first (`widgets_events`), so a reminder
+  just cleared or moved in the menu does not ring at its old time. `reminded`
+  (the notes with a notice) lives in memory only, so each fire also posts the
+  notice, quietly (no raise, no shake), for every `remind::overdue_ids` note not
+  in it: a note that rang before Vale was closed gets Tunda/Buka back.
   No polling. `app::tests::timer_ids_never_collide` asserts 47.
 - A fire: each due note gets `remind_fired = true` (saved), the host raises it
   (`WidgetHost::raise`: `raised` makes `above_windows` true, so `apply_z` makes
@@ -350,8 +355,11 @@ lenient, default off) is written with the other prefs.
 - `Deco`: `Selotip` (a washi strip of accent and light stripes, leaning -3
   degrees) and `Paku` (a round pin) drawn over the top edge in the margin. Their
   centre is the top centre, moved left on a narrow note so they never meet the
-  cat's face (`art::deco_centre`, tested; the room is kept whether or not the
-  cat is there, so they do not jump).
+  overdue alarm clock left of the cat (`art::clock_centre` +- `CLOCK_REACH`, 2
+  dip gap) nor the cat's face (`art::deco_centre`, tested at every width; the
+  room is kept whether or not the cat or clock is there, so they do not jump).
+  The deco is painted after both, so overlapping would hide the clock. The tape
+  is centred from about 248 dip, the pin from about 203.
 - `Stamp`: round, -12 degrees, bottom right of the text area above the footer,
   clear of the grip (`art::stamp_centre`, tested); a line icon (star, check, !,
   heart, cup, sparkle: `Icon::Tick`, `Mark`, `Heart`, `Cup` were added to

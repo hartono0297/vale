@@ -169,7 +169,7 @@ mod tests {
         });
         let p = WidgetPrefs::from_json(&v);
         assert!(p.tilt);
-        assert_eq!(WidgetPrefs::from_json(&json!({"tilt": "yes"})).tilt, false, "a wrong type is off");
+        assert!(!WidgetPrefs::from_json(&json!({"tilt": "yes"})).tilt, "a wrong type is off");
         let p = WidgetPrefs::from_json(&v);
         assert!(!p.show, "a good bool is kept");
         assert_eq!(p.layer, WidgetLayer::Top, "names are trimmed, any case");
