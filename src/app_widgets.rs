@@ -132,6 +132,14 @@ impl App {
         }
     }
 
+    /// The 1 s system tick, after the fullscreen check: the cat's note is
+    /// drawn again only when its mood changed (asleep after three days).
+    pub(super) fn widgets_mood_tick(&mut self) {
+        if let Some(host) = self.widgets.host.as_mut() {
+            host.mood_tick(Local::now().timestamp());
+        }
+    }
+
     pub(super) fn widgets_moving(&self, now: Instant) -> bool {
         self.widgets
             .host
@@ -456,6 +464,11 @@ impl App {
 
     pub(super) fn widgets_lock(&mut self, on: bool) {
         self.config.widgets.lock = on;
+        self.save_config();
+    }
+
+    pub(super) fn widgets_tilt(&mut self, on: bool) {
+        self.config.widgets.tilt = on;
         self.save_config();
     }
 

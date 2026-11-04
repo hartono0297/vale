@@ -17,10 +17,10 @@ use windows::Win32::Graphics::Direct2D::{
     D2D1_ROUNDED_RECT, ID2D1RenderTarget,
 };
 use windows::Win32::Graphics::DirectWrite::{
-    DWRITE_FONT_WEIGHT, DWRITE_HIT_TEST_METRICS, DWRITE_TEXT_METRICS, DWRITE_TEXT_RANGE,
-    IDWriteTextFormat, IDWriteTextLayout,
+    DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT, DWRITE_HIT_TEST_METRICS, DWRITE_TEXT_METRICS,
+    DWRITE_TEXT_RANGE, IDWriteTextFormat, IDWriteTextLayout,
 };
-use windows::core::{BOOL, Interface, Result};
+use windows::core::{BOOL, HSTRING, Interface, Result};
 use windows_numerics::{Matrix3x2, Vector2};
 
 use crate::arrange_overlay::Canvas;
@@ -28,12 +28,16 @@ use crate::config::UiFont;
 use crate::shot_edit::gfx::{Gfx, color};
 use crate::theme::{CatAccessory, CatColor};
 use crate::ui::cat_style::CatLook;
-use crate::ui::fonts::{Face, Role};
+use crate::i18n::Lang;
+use crate::ui::fonts::{self, Face, Role};
 use crate::ui::geometry::Rect;
 use crate::ui::icons::{Icon, IconSet};
 use crate::ui::robot::{Expr, Pose, RobotPainter};
+use crate::widgets::art::{self, Piece};
 use crate::widgets::checklist::{self, Line};
-use crate::widgets::sticky::{ROLLED_H, TextSize, Tones, chip_tones};
+use crate::widgets::sticky::{
+    Deco, NoteFont, Pattern, ROLLED_H, Stamp, TextSize, Tones, chip_tones, tangan_family,
+};
 
 // ------------------------------------------------------------------ geometry
 
@@ -54,7 +58,7 @@ pub const SHADOW: f32 = 8.0;
 pub const CAT_ROOM: f32 = 30.0;
 /// The cat: its square, and how much of its 64-unit grid is above the note's
 /// top edge (the grid row of its eyes' lower edge).
-const CAT_SIZE: f32 = 44.0;
+pub const CAT_SIZE: f32 = 44.0;
 const CAT_VISIBLE_ROWS: f32 = 47.0;
 /// The accent frame the Settings gallery's highlight draws.
 const FRAME_W: f32 = 3.0;
@@ -101,9 +105,8 @@ pub fn margins() -> (f32, f32, f32, f32) {
     (SHADOW, SHADOW + CAT_ROOM, SHADOW, SHADOW)
 }
 
-/// The window's size in dip for a note of `w` x `h`.
-pub fn window_dip(w: f32, h: f32) -> (f32, f32) {
-    let m = margins();
+/// The window's size in dip for a note of `w` x `h` with margin `m`.
+pub fn window_dip(w: f32, h: f32, m: (f32, f32, f32, f32)) -> (f32, f32) {
     (w + m.0 + m.2, h + m.1 + m.3)
 }
 
@@ -242,11 +245,15 @@ pub fn box_rect(l: &BodyLine, area: Rect, scroll: f32) -> Rect {
 /// font (Vale's Font setting).
 pub struct Res {
     pub gfx: Rc<Gfx>,
-    icons: IconSet,
+    pub(super) icons: IconSet,
     robot: RobotPainter,
+    /// Vale's face (the Font setting).
     face: Face,
+    /// The faces of Tangan and Mono, made when a note first asks for one.
+    extra: RefCell<[Option<Face>; 2]>,
     ui: UiFont,
-    formats: RefCell<HashMap<(u32, u16), IDWriteTextFormat>>,
+    /// One format per (font, size, weight).
+    formats: RefCell<HashMap<(NoteFont, u32, u16), IDWriteTextFormat>>,
 }
 
 impl Res {
@@ -263,6 +270,7 @@ impl Res {
             icons,
             robot,
             face,
+            extra: RefCell::new([None, None]),
             ui,
             formats: RefCell::new(HashMap::new()),
         })
@@ -273,26 +281,65 @@ impl Res {
         if ui != self.ui {
             self.ui = ui;
             self.face = Face::for_role_in(&self.gfx.dwrite, Role::Text, ui);
+            // Mono and the Tangan fallback follow the UI font too.
+            *self.extra.borrow_mut() = [None, None];
             self.formats.borrow_mut().clear();
         }
     }
 
-    fn format(&self, size: f32, weight: u16) -> Result<IDWriteTextFormat> {
-        let key = (size.to_bits(), weight);
+    /// The face of Tangan or Mono: Ink Free, else Segoe Print, else Vale's
+    /// own face; the bundled DM Mono.
+    fn make_face(&self, font: NoteFont) -> Face {
+        let dwrite = &self.gfx.dwrite;
+        match font {
+            NoteFont::Vale => Face::for_role_in(dwrite, Role::Text, self.ui),
+            NoteFont::Mono => Face::for_role_in(dwrite, Role::Mono, self.ui),
+            NoteFont::Tangan => match tangan_family(|name| fonts::system_has(dwrite, name)) {
+                Some(family) => Face {
+                    family: HSTRING::from(family),
+                    collection: None,
+                    style: DWRITE_FONT_STYLE_NORMAL,
+                },
+                None => Face::for_role_in(dwrite, Role::Text, self.ui),
+            },
+        }
+    }
+
+    fn format(&self, font: NoteFont, size: f32, weight: u16) -> Result<IDWriteTextFormat> {
+        let key = (font, size.to_bits(), weight);
         if let Some(f) = self.formats.borrow().get(&key) {
             return Ok(f.clone());
         }
-        let f = self
-            .face
-            .format(&self.gfx.dwrite, DWRITE_FONT_WEIGHT(i32::from(weight)), size)?;
+        let w = DWRITE_FONT_WEIGHT(i32::from(weight));
+        let f = match font {
+            NoteFont::Vale => self.face.format(&self.gfx.dwrite, w, size)?,
+            other => {
+                let slot = usize::from(other == NoteFont::Mono);
+                let mut extra = self.extra.borrow_mut();
+                let face = extra[slot].get_or_insert_with(|| self.make_face(other));
+                face.format(&self.gfx.dwrite, w, size)?
+            }
+        };
         self.formats.borrow_mut().insert(key, f.clone());
         Ok(f)
     }
 
-    /// `text` wrapped at `width` dip, drawn at `size` dip.
+    /// `text` wrapped at `width` dip, drawn at `size` dip in Vale's face.
     pub fn layout(&self, text: &str, size: f32, weight: u16, width: f32) -> Result<IDWriteTextLayout> {
+        self.layout_in(NoteFont::Vale, text, size, weight, width)
+    }
+
+    /// `layout` in a note's own font.
+    pub fn layout_in(
+        &self,
+        font: NoteFont,
+        text: &str,
+        size: f32,
+        weight: u16,
+        width: f32,
+    ) -> Result<IDWriteTextLayout> {
         let wide: Vec<u16> = text.encode_utf16().collect();
-        let format = self.format(size, weight)?;
+        let format = self.format(font, size, weight)?;
         unsafe {
             self.gfx
                 .dwrite
@@ -325,8 +372,8 @@ pub struct BodyLayout {
     pub height: f32,
 }
 
-/// The text of a note laid out for a body `width` wide.
-pub fn build_body(res: &Res, text: &str, size: TextSize, width: f32) -> BodyLayout {
+/// The text of a note laid out for a body `width` wide, in the note's `font`.
+pub fn build_body(res: &Res, text: &str, font: NoteFont, size: TextSize, width: f32) -> BodyLayout {
     let units: Vec<u16> = text.encode_utf16().collect();
     let mut lines = Vec::new();
     let mut y = 0.0;
@@ -339,7 +386,7 @@ pub fn build_body(res: &Res, text: &str, size: TextSize, width: f32) -> BodyLayo
         };
         let x = if raw.is_item() { INDENT } else { 0.0 };
         let content = String::from_utf16_lossy(&units[raw.content_start()..raw.end]);
-        let layout = res.layout(&content, fs, weight, width - x).ok();
+        let layout = res.layout_in(font, &content, fs, weight, width - x).ok();
         let h = layout
             .as_ref()
             .and_then(|l| {
@@ -560,6 +607,16 @@ pub struct GuideLine {
     pub pos: f32,
 }
 
+/// How the cat above a note is drawn besides its face.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CatPose {
+    pub pose: Pose,
+    /// A small alarm clock beside it (an overdue reminder).
+    pub clock: bool,
+    /// A small "z" (asleep).
+    pub zzz: bool,
+}
+
 /// Everything one frame of a note shows.
 pub struct Scene<'a> {
     pub w: f32,
@@ -573,6 +630,8 @@ pub struct Scene<'a> {
     pub plus_enabled: bool,
     pub date: String,
     pub footer: String,
+    /// The body text size (the ruling's line pitch follows it).
+    pub text_size: TextSize,
     pub rolled_note: String,
     pub title: String,
     pub body: Option<&'a BodyLayout>,
@@ -581,6 +640,23 @@ pub struct Scene<'a> {
     pub selection: Option<(usize, usize)>,
     pub caret_on: bool,
     pub guides: &'a [GuideLine],
+    /// The window's margin round the note (left, top, right, bottom, dip):
+    /// `art::margins_for` for this note.
+    pub margins: (f32, f32, f32, f32),
+    /// The note's own font (the rolled title), pattern, decoration and stamp.
+    pub font: NoteFont,
+    pub pattern: Pattern,
+    pub deco: Deco,
+    pub stamp: Stamp,
+    pub lang: Lang,
+    /// How far the note leans (degrees clockwise): 0 while it has the keyboard.
+    pub tilt: f32,
+    /// Checklist progress, done and total, when the note has items.
+    pub progress: Option<(usize, usize)>,
+    /// The confetti of the moment, in window dip.
+    pub confetti: &'a [Piece],
+    /// The cat's pose, its alarm clock and its "z".
+    pub cat_pose: CatPose,
     /// The whole note is shifted sideways by this (the reminder's shake), dip.
     pub dx: f32,
     /// The reminder chip: its text, and whether it is overdue.
@@ -613,11 +689,18 @@ pub fn draw(c: &Canvas, res: &Res, s: &Scene) {
         Ok(rt) => rt,
         Err(_) => return,
     };
-    let m = margins();
+    let m = s.margins;
     let h = shown_h(s.h, s.rolled);
     let (ox, oy) = (m.0 + s.dx, m.1);
+    // The note leans about its centre; the confetti does not.
+    let straight = Matrix3x2::scale(s.scale, s.scale);
+    let base = if s.tilt == 0.0 {
+        straight
+    } else {
+        art::tilt_transform(s.tilt, ox + s.w / 2.0, oy + h / 2.0, s.scale)
+    };
     unsafe {
-        rt.SetTransform(&Matrix3x2::scale(s.scale, s.scale));
+        rt.SetTransform(&base);
     }
     let set = |rgb: u32, a: f32| unsafe { brush.SetColor(&color(rgb, a)) };
     let t = &s.tones;
@@ -648,11 +731,32 @@ pub fn draw(c: &Canvas, res: &Res, s: &Scene) {
                 h: CAT_SIZE,
             },
             expr,
-            Pose::default(),
+            s.cat_pose.pose,
             1.0,
             s.cat,
         );
         unsafe { rt.PopAxisAlignedClip() };
+        // An overdue reminder: a small alarm clock beside the cat.
+        if s.cat_pose.clock {
+            let (cx, cy) = art::clock_centre(s.w);
+            art::draw_clock(&rt, brush, (ox + cx, oy + cy), t.fill, t.body, t.accent);
+        }
+        // Asleep: a small "z" over its head.
+        if s.cat_pose.zzz {
+            for (dx, dy, size, a) in [(CAT_SIZE - 10.0, -26.0, 10.0, 0.9), (CAT_SIZE - 2.0, -30.0, 7.5, 0.6)] {
+                if let Ok(l) = res.layout("z", size, 600, 14.0) {
+                    unsafe {
+                        brush.SetColor(&color(t.secondary, a));
+                        rt.DrawTextLayout(
+                            Vector2::new(x + dx, oy + dy),
+                            &l,
+                            brush,
+                            D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        );
+                    }
+                }
+            }
+        }
     }
 
     // A soft shadow, then the paper.
@@ -706,11 +810,11 @@ pub fn draw(c: &Canvas, res: &Res, s: &Scene) {
             None,
         );
     };
-    let line_text = |text: &str, x: f32, y: f32, w: f32, hh: f32, size: f32, weight: u16, rgb: u32, a: f32, right: bool| {
+    let line_text = |font: NoteFont, text: &str, x: f32, y: f32, w: f32, hh: f32, size: f32, weight: u16, rgb: u32, a: f32, right: bool| {
         if text.is_empty() || w <= 0.0 {
             return;
         }
-        let Ok(layout) = res.layout(text, size, weight, w) else {
+        let Ok(layout) = res.layout_in(font, text, size, weight, w) else {
             return;
         };
         unsafe {
@@ -758,6 +862,7 @@ pub fn draw(c: &Canvas, res: &Res, s: &Scene) {
             a,
         );
         line_text(
+            NoteFont::Vale,
             label,
             ox + cx + CHIP_PAD + CHIP_ICON + 3.0,
             oy + cy,
@@ -772,11 +877,14 @@ pub fn draw(c: &Canvas, res: &Res, s: &Scene) {
         date_end = date_end.min(cx - 6.0);
     }
     if s.header < 1.0 {
+        // The date, and after it "2/5" for a checklist.
+        let date_room = (date_end - PAD_X).max(0.0);
         line_text(
+            NoteFont::Vale,
             &s.date,
             ox + PAD_X,
             oy,
-            (date_end - PAD_X).max(0.0),
+            date_room,
             HEADER_H,
             10.5,
             400,
@@ -784,6 +892,27 @@ pub fn draw(c: &Canvas, res: &Res, s: &Scene) {
             (1.0 - s.header) * 0.95,
             false,
         );
+        if let Some((done, total)) = s.progress {
+            let count = format!("{done}/{total}");
+            let dw = text_width(res, &s.date, 10.5, 400);
+            let cw = text_width(res, &count, 10.5, 600);
+            let x = PAD_X + dw + 8.0;
+            if x + cw <= date_end && !s.rolled {
+                line_text(
+                    NoteFont::Vale,
+                    &count,
+                    ox + x,
+                    oy,
+                    cw + 2.0,
+                    HEADER_H,
+                    10.5,
+                    600,
+                    if done == total { t.accent } else { t.secondary },
+                    (1.0 - s.header) * 0.95,
+                    false,
+                );
+            }
+        }
     }
     for b in Btn::ALL {
         let r = button_rect(b, s.w);
@@ -830,6 +959,7 @@ pub fn draw(c: &Canvas, res: &Res, s: &Scene) {
         let note = &s.rolled_note;
         let note_w = if note.is_empty() { 0.0 } else { 64.0 };
         line_text(
+            s.font,
             &s.title,
             ox + PAD_X,
             oy + HEADER_H - 4.0,
@@ -842,6 +972,7 @@ pub fn draw(c: &Canvas, res: &Res, s: &Scene) {
             false,
         );
         line_text(
+            NoteFont::Vale,
             note,
             ox + s.w - PAD_X - note_w,
             oy + HEADER_H - 4.0,
@@ -854,7 +985,23 @@ pub fn draw(c: &Canvas, res: &Res, s: &Scene) {
             true,
         );
     } else {
+        // The progress of a checklist, right above the text.
+        if let Some((done, total)) = s.progress {
+            let r = art::progress_rect(s.w);
+            set(t.secondary, 0.22);
+            unsafe {
+                rt.FillRoundedRectangle(&rr(ox + r.x, oy + r.y, r.w, r.h, r.h / 2.0), brush);
+            }
+            let full = r.w * art::progress_fraction(done, total);
+            if full > 0.0 {
+                set(t.accent, 1.0);
+                unsafe {
+                    rt.FillRoundedRectangle(&rr(ox + r.x, oy + r.y, full, r.h, r.h / 2.0), brush);
+                }
+            }
+        }
         draw_body(&rt, brush, s, ox, oy);
+        art::draw_stamp(&rt, brush, res, s.stamp, s.lang, t, (ox, oy, s.w, s.h));
         // The footer and the resize grip.
         let foot = Rect {
             x: PAD_X,
@@ -862,7 +1009,7 @@ pub fn draw(c: &Canvas, res: &Res, s: &Scene) {
             w: s.w - PAD_X - GRIP - 4.0,
             h: FOOTER_H,
         };
-        line_text(&s.footer, ox + foot.x, oy + foot.y, foot.w, foot.h, 10.5, 400, t.secondary, 1.0, false);
+        line_text(NoteFont::Vale, &s.footer, ox + foot.x, oy + foot.y, foot.w, foot.h, 10.5, 400, t.secondary, 1.0, false);
         set(t.secondary, 0.7);
         for (dx, dy) in [(0.0, 0.0), (-4.0, 0.0), (0.0, -4.0), (-8.0, 0.0), (-4.0, -4.0), (0.0, -8.0)] {
             unsafe {
@@ -877,6 +1024,9 @@ pub fn draw(c: &Canvas, res: &Res, s: &Scene) {
             }
         }
     }
+
+    // The tape or the pin over the top edge.
+    art::draw_deco(&rt, brush, s.deco, t, (ox, oy, s.w));
 
     // Alignment guides while dragging, and the gallery's highlight.
     if !s.guides.is_empty() {
@@ -900,6 +1050,11 @@ pub fn draw(c: &Canvas, res: &Res, s: &Scene) {
                 None,
             );
         }
+    }
+    // The confetti is the window's, not the leaning note's.
+    if !s.confetti.is_empty() {
+        unsafe { rt.SetTransform(&straight) };
+        art::draw_confetti(&rt, brush, s.confetti, &art::confetti_palette(t));
     }
     unsafe { rt.SetTransform(&Matrix3x2::identity()) };
 }
@@ -926,6 +1081,16 @@ fn draw_body(
         );
     }
     let (bx, by) = (ox + area.x, oy + area.y - s.scroll);
+    // The ruling, under everything and scrolling with the text.
+    art::draw_pattern(
+        rt,
+        brush,
+        s.pattern,
+        s.text_size,
+        (ox + area.x, oy + area.y, area.w, area.h),
+        s.scroll,
+        t.line,
+    );
     // The selection under the text.
     if let Some((a, b)) = s.selection
         && a != b
@@ -1034,15 +1199,6 @@ fn text_width(res: &Res, text: &str, size: f32, weight: u16) -> f32 {
         .unwrap_or(0.0)
 }
 
-/// The cat's face above a note: Happy while every item is done, else Idle.
-pub fn peek_face(note_text: &str) -> Expr {
-    if checklist::all_done(note_text) {
-        Expr::Happy
-    } else {
-        Expr::Idle
-    }
-}
-
 /// The coat the peek uses: the configured coat, no accessory (a hat would be
 /// cut by the note's edge).
 pub fn peek_look(coat: CatColor) -> CatLook {
@@ -1145,7 +1301,7 @@ mod tests {
 
     #[test]
     fn the_window_has_room_for_the_shadow_and_the_cat() {
-        let (ww, wh) = window_dip(240.0, 208.0);
+        let (ww, wh) = window_dip(240.0, 208.0, margins());
         assert_eq!(ww, 256.0);
         assert_eq!(wh, 208.0 + 2.0 * SHADOW + CAT_ROOM);
         assert_eq!(shown_h(208.0, true), ROLLED_H);
@@ -1177,18 +1333,16 @@ mod tests {
     }
 
     #[test]
-    fn the_cat_is_happy_only_when_everything_is_done() {
-        assert_eq!(peek_face("t\n- [x] a\n- [x] b"), Expr::Happy);
-        assert_eq!(peek_face("t\n- [x] a\n- [ ] b"), Expr::Idle);
-        assert_eq!(peek_face("plain"), Expr::Idle);
+    fn the_peek_has_the_coat_and_no_accessory() {
         assert_eq!(peek_look(CatColor::Calico).accessory, CatAccessory::None);
+        assert_eq!(peek_look(CatColor::Calico).color, CatColor::Calico);
     }
 
     #[test]
     fn text_is_laid_out_and_clicks_map_back_to_indices() {
         let res = Res::new(UiFont::Sans).expect("DirectWrite works without a window");
         let text = "Belanja\n- [ ] bata\n- [x] kaca\nbiasa";
-        let body = build_body(&res, text, TextSize::M, 200.0);
+        let body = build_body(&res, text, NoteFont::Vale, TextSize::M, 200.0);
         assert_eq!(body.lines.len(), 4);
         assert!(body.lines[0].title);
         assert!(body.lines[1].raw.is_item());
@@ -1298,7 +1452,7 @@ mod tests {
     fn a_click_on_an_emoji_never_lands_between_its_two_halves() {
         let res = Res::new(UiFont::Sans).expect("DirectWrite works without a window");
         let text = "ab\u{1F600}cd";
-        let body = build_body(&res, text, TextSize::M, 400.0);
+        let body = build_body(&res, text, NoteFont::Vale, TextSize::M, 400.0);
         let (x_before, y, h) = body.caret(2).expect("caret before the emoji");
         let (x_after, _, _) = body.caret(4).expect("caret after the emoji");
         assert!(x_after > x_before + 4.0, "the emoji has a width");
@@ -1317,7 +1471,7 @@ mod tests {
         // The drag-selection path (a later line too) goes through the same
         // function: an emoji on the second line, the third being an item.
         let text = "t\nxy\u{1F600}\n- [ ] \u{1F600}\u{1F601}z";
-        let body = build_body(&res, text, TextSize::M, 400.0);
+        let body = build_body(&res, text, NoteFont::Vale, TextSize::M, 400.0);
         for (li, line) in body.lines.iter().enumerate() {
             let cs = line.raw.content_start();
             let (_, y, h) = body.caret(cs).expect("caret");
@@ -1333,7 +1487,7 @@ mod tests {
         let res = Res::new(UiFont::Sans).expect("DirectWrite works without a window");
         let text = "cafe\u{0301} x";
         // c0 a1 f2 e3 (U+0301)4 space5 x6
-        let body = build_body(&res, text, TextSize::M, 400.0);
+        let body = build_body(&res, text, NoteFont::Vale, TextSize::M, 400.0);
         let (x_base, y, h) = body.caret(3).expect("caret before the e");
         let (x_after, _, _) = body.caret(5).expect("caret after the mark");
         assert!(x_after > x_base + 2.0);
@@ -1353,8 +1507,8 @@ mod tests {
     fn wrapping_makes_a_long_line_taller() {
         let res = Res::new(UiFont::Sans).unwrap();
         let long = "a very long line of text that will certainly have to wrap at this width";
-        let narrow = build_body(&res, long, TextSize::M, 120.0);
-        let wide = build_body(&res, long, TextSize::M, 900.0);
+        let narrow = build_body(&res, long, NoteFont::Vale, TextSize::M, 120.0);
+        let wide = build_body(&res, long, NoteFont::Vale, TextSize::M, 900.0);
         assert!(narrow.height > wide.height * 1.5);
     }
 }

@@ -143,11 +143,17 @@ pub enum Icon {
     Video,
     /// The Widget section: four rounded cards of different sizes.
     Widgets,
+    /// The sticky note stamps' glyphs (line only): a plain check, an
+    /// exclamation mark, a heart and a cup with steam.
+    Tick,
+    Mark,
+    Heart,
+    Cup,
 }
 
 impl Icon {
     /// Every icon, in declaration order (`ALL[i] as usize == i`).
-    pub const ALL: [Icon; 74] = [
+    pub const ALL: [Icon; 78] = [
         Icon::Camera,
         Icon::Clipboard,
         Icon::Emoji,
@@ -222,6 +228,10 @@ impl Icon {
         Icon::Phone,
         Icon::Video,
         Icon::Widgets,
+        Icon::Tick,
+        Icon::Mark,
+        Icon::Heart,
+        Icon::Cup,
     ];
 
     /// The icon's primitives on the 24-unit grid, in drawing order.
@@ -521,6 +531,16 @@ impl Icon {
             ],
             // Four rounded cards of different sizes: a tall one and a small
             // one on top, a short one and a tall one below.
+            Icon::Tick => &[Part::Path("M5.5 12.5l4.5 4.5 8.5-9.5")],
+            Icon::Mark => &[Part::Path("M12 5v9.5"), Part::Dot(12.0, 19.0)],
+            Icon::Heart => &[Part::Path(
+                "M12 19.5C12 19.5 4.5 15 4.5 9.6C4.5 7.2 6.3 5.6 8.3 5.6C9.9 5.6 11.4 6.5 12 8C12.6 6.5 14.1 5.6 15.7 5.6C17.7 5.6 19.5 7.2 19.5 9.6C19.5 15 12 19.5 12 19.5Z",
+            )],
+            Icon::Cup => &[
+                Part::Path("M5 10h11v4a5 5 0 0 1-5 5h-1a5 5 0 0 1-5-5z"),
+                Part::Path("M16 11.5h1.4a2.4 2.4 0 0 1 0 4.8H16"),
+                Part::Path("M8.5 3.5v3M12 3.5v3"),
+            ],
             Icon::Widgets => &[
                 Part::FillRect(3.0, 3.0, 8.0, 11.0, 2.0),
                 Part::Rect(3.0, 3.0, 8.0, 11.0, 2.0),

@@ -157,6 +157,8 @@ pub enum Action {
     WidgetsFullscreen(FullscreenRule),
     WidgetsLock(bool),
     WidgetsPeek(bool),
+    /// "Miring sedikit".
+    WidgetsTilt(bool),
     /// The gallery card's (+): a note, from the template chosen in its menu.
     WidgetAdd(Template),
     WidgetHighlight,
@@ -1761,6 +1763,7 @@ impl Settings {
             (Hit::WidgetsShow, old.widgets.show, new.widgets.show),
             (Hit::WidgetsLock, old.widgets.lock, new.widgets.lock),
             (Hit::WidgetsPeek, old.widgets.cat_peek, new.widgets.cat_peek),
+            (Hit::WidgetsTilt, old.widgets.tilt, new.widgets.tilt),
         ] {
             if was != is {
                 self.anims.slide_toggle(hit, was, is, now);
@@ -2278,6 +2281,7 @@ impl Settings {
             }
             Hit::WidgetsLock => post(Action::WidgetsLock(!m.widgets.lock)),
             Hit::WidgetsPeek => post(Action::WidgetsPeek(!m.widgets.cat_peek)),
+            Hit::WidgetsTilt => post(Action::WidgetsTilt(!m.widgets.tilt)),
             // At the cap the (+) is off and takes no click; a stray one adds nothing.
             // It opens the template menu under the button (`After::TemplateMenu`),
             // which posts `WidgetAdd` with the choice.
@@ -4036,6 +4040,7 @@ pub fn run_demo(args: &[String]) {
             Action::WidgetsFullscreen(v) => m.widgets.fullscreen = v,
             Action::WidgetsLock(v) => m.widgets.lock = v,
             Action::WidgetsPeek(v) => m.widgets.cat_peek = v,
+            Action::WidgetsTilt(v) => m.widgets.tilt = v,
             Action::WidgetAdd(_) => m.sticky_count = (m.sticky_count + 1).min(crate::widgets::sticky::MAX_STICKY),
             Action::WidgetHighlight => {}
             Action::Robot(v) => m.robot = v,

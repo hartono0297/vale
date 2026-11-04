@@ -5095,6 +5095,7 @@ impl App {
                 self.check_lyrics_card_fullscreen();
                 // Pinned notes hide over a fullscreen app; free when none are.
                 self.widgets_fullscreen_tick();
+                self.widgets_mood_tick();
                 self.check_editor();
                 // A focus lost without its message must not pin the panel.
                 if self.state.cli_focused() && !self.cli_has_keyboard() {
@@ -6108,6 +6109,7 @@ impl App {
             SettingsAction::WidgetsFullscreen(rule) => self.widgets_fullscreen(rule),
             SettingsAction::WidgetsLock(on) => self.widgets_lock(on),
             SettingsAction::WidgetsPeek(on) => self.widgets_peek(on),
+            SettingsAction::WidgetsTilt(on) => self.widgets_tilt(on),
             SettingsAction::WidgetAdd(template) => {
                 self.new_sticky(None, template);
             }

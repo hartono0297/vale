@@ -218,6 +218,7 @@ impl Demo {
             animate: true,
         });
         crate::widgets::set_sticky_count(store.sticky_count());
+        host.mood_tick(Local::now().timestamp());
         if host.count() == 0 {
             unsafe { PostQuitMessage(0) };
         }

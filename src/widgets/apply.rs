@@ -67,6 +67,23 @@ pub fn apply(notes: &mut NotesStore, events: Vec<WidgetEvent>, unix: i64) -> Out
             WidgetEvent::Size { id, size } => {
                 out.changed |= edit_sticky(notes, &id, |s| s.text_size = size);
             }
+            WidgetEvent::Font { id, font } => {
+                out.changed |= edit_sticky(notes, &id, |s| s.font = font);
+            }
+            WidgetEvent::Pattern { id, pattern } => {
+                out.changed |= edit_sticky(notes, &id, |s| s.pattern = pattern);
+            }
+            WidgetEvent::Deco { id, deco } => {
+                out.changed |= edit_sticky(notes, &id, |s| s.deco = deco);
+            }
+            WidgetEvent::Stamp { id, stamp } => {
+                out.changed |= edit_sticky(notes, &id, |s| s.stamp = stamp);
+            }
+            WidgetEvent::Opacity { id, percent } => {
+                out.changed |= edit_sticky(notes, &id, |s| {
+                    s.opacity = crate::widgets::sticky::snap_opacity(i64::from(percent));
+                });
+            }
             WidgetEvent::Pinned { id, on } => {
                 out.changed |= edit_sticky(notes, &id, |s| s.pinned = on);
             }
@@ -263,6 +280,55 @@ mod tests {
         assert_eq!((s.paper, s.text_size), (Paper::Sage, TextSize::L));
         assert!(s.pinned && s.rolled);
         assert_eq!(s.touched, 99);
+    }
+
+    #[test]
+    fn the_look_of_a_note_is_applied_field_by_field() {
+        use crate::widgets::sticky::{Deco, NoteFont, Pattern, Stamp};
+        let mut notes = store("looks");
+        let id = id_of(&mut notes);
+        let out = apply(
+            &mut notes,
+            vec![
+                WidgetEvent::Font { id: id.clone(), font: NoteFont::Tangan },
+                WidgetEvent::Pattern { id: id.clone(), pattern: Pattern::Kotak },
+                WidgetEvent::Deco { id: id.clone(), deco: Deco::Selotip },
+                WidgetEvent::Stamp { id: id.clone(), stamp: Stamp::Beres },
+                WidgetEvent::Opacity { id: id.clone(), percent: 60 },
+            ],
+            1,
+        );
+        assert!(out.changed && !out.structural && !out.reminders);
+        let s = notes.get(&id).unwrap().sticky.clone().unwrap();
+        assert_eq!(
+            (s.font, s.pattern, s.deco, s.stamp, s.opacity),
+            (NoteFont::Tangan, Pattern::Kotak, Deco::Selotip, Stamp::Beres, 60)
+        );
+        // Setting the same again changes nothing to save.
+        let out = apply(&mut notes, vec![WidgetEvent::Stamp { id: id.clone(), stamp: Stamp::Beres }], 1);
+        assert!(!out.changed);
+        // Back to the defaults; an off-grid opacity snaps.
+        apply(
+            &mut notes,
+            vec![
+                WidgetEvent::Font { id: id.clone(), font: NoteFont::Vale },
+                WidgetEvent::Stamp { id: id.clone(), stamp: Stamp::None },
+                WidgetEvent::Opacity { id: id.clone(), percent: 75 },
+            ],
+            1,
+        );
+        let s = notes.get(&id).unwrap().sticky.clone().unwrap();
+        assert_eq!((s.font, s.stamp, s.opacity), (NoteFont::Vale, Stamp::None, 80));
+        // A note that is gone changes nothing.
+        let out = apply(
+            &mut notes,
+            vec![
+                WidgetEvent::Font { id: "n0-nope".into(), font: NoteFont::Mono },
+                WidgetEvent::Opacity { id: "n0-nope".into(), percent: 40 },
+            ],
+            1,
+        );
+        assert_eq!(out, Outcome::default());
     }
 
     #[test]

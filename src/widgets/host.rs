@@ -54,10 +54,12 @@ use crate::i18n::{self, Key, Lang, text};
 use crate::notch_monitor::Display;
 use crate::notes::Note;
 use crate::theme::{self, CatColor};
+use crate::widgets::art;
 use crate::widgets::checklist::{self, Edit};
+use crate::widgets::mood::{self, Mood};
 use crate::widgets::edit::{self, EditEvent};
 use crate::widgets::paint::{
-    self, BodyLayout, Btn, GuideLine, HEADER_H, Res, Scene, Target, margins, shown_h, window_dip,
+    self, BodyLayout, Btn, CatPose, GuideLine, HEADER_H, Res, Scene, Target, shown_h, window_dip,
 };
 use crate::widgets::place;
 use crate::widgets::pop::{self, PopCmd, PopState};
@@ -65,7 +67,9 @@ use crate::widgets::remind::{self, Preset};
 use crate::widgets::remind_pop;
 use crate::widgets::prefs::{FullscreenRule, WidgetLayer, WidgetPrefs};
 use crate::widgets::snap::{Axis, Snapped, snap_move_for, snap_resize};
-use crate::widgets::sticky::{self, DipRect, Paper, Sticky, TextSize};
+use crate::widgets::sticky::{
+    self, Deco, DipRect, NoteFont, Paper, Pattern, Stamp, Sticky, TextSize,
+};
 use crate::widgets::templates::Template;
 
 /// Posted to the owner when `WidgetEvent`s wait. One message until `drain`.
@@ -93,6 +97,12 @@ pub enum WidgetEvent {
     },
     Paper { id: String, paper: Paper },
     Size { id: String, size: TextSize },
+    Font { id: String, font: NoteFont },
+    Pattern { id: String, pattern: Pattern },
+    Deco { id: String, deco: Deco },
+    Stamp { id: String, stamp: Stamp },
+    /// "Tembus pandang": 100, 80, 60 or 40 percent while the pointer is away.
+    Opacity { id: String, percent: u8 },
     Pinned { id: String, on: bool },
     Rolled { id: String, on: bool },
     /// The note's reminder was set (unix seconds) or cleared (`None`): "Ingatkan
@@ -206,7 +216,7 @@ struct Win {
     display: usize,
     canvas: Option<Canvas>,
     body: Option<BodyLayout>,
-    body_key: Option<(String, TextSize, i32)>,
+    body_key: Option<(String, NoteFont, TextSize, i32)>,
     scroll: f32,
     header: Ease,
     hot: Option<Btn>,
@@ -233,10 +243,115 @@ struct Win {
     raised: bool,
     /// When the reminder's shake began.
     wiggle: Option<Instant>,
+    /// When the confetti began, and its seed.
+    confetti: Option<(Instant, u64)>,
+    /// "Miring sedikit" is on (mirrors the prefs): the note leans.
+    tilt: bool,
+    /// The pointer is over the note, and where along the cat it points (a
+    /// step, see `mood::look_step`).
+    pointer_in: bool,
+    look: i8,
+    /// The mood the cat was last drawn in on this note.
+    mood: Mood,
+    /// The window's opacity, 0 to 1: the note's see-through level while the
+    /// pointer is away, full while it is over, has the keyboard, is raised or
+    /// dragged.
+    alpha: Ease,
+    /// The opacity (0..=255) the window was last shown at.
+    alpha_shown: u8,
     /// Hidden by a fullscreen app on its monitor.
     away: bool,
     shown: bool,
     dirty: bool,
+}
+
+impl Win {
+    /// The angle the note is drawn at: leaning while "Miring sedikit" is on,
+    /// straight while it has the keyboard.
+    fn lean(&self) -> f32 {
+        if self.tilt && self.edit.is_none() {
+            art::tilt_deg(&self.id)
+        } else {
+            0.0
+        }
+    }
+
+    /// The window's margin round the note (grown for the lean, whether or not
+    /// the note has the keyboard, so the window keeps its size).
+    fn margins(&self) -> (f32, f32, f32, f32) {
+        let deg = if self.tilt { art::tilt_deg(&self.id) } else { 0.0 };
+        art::margins_for(self.view.w, shown_h(self.view.h, self.sticky.rolled), deg)
+    }
+
+    /// The window's top-left on the desktop (px).
+    fn origin(&self) -> (i32, i32) {
+        let m = self.margins();
+        (
+            self.note.x - (m.0 * self.scale).round() as i32,
+            self.note.y - (m.1 * self.scale).round() as i32,
+        )
+    }
+}
+
+/// Window opacity 0 to 1 as the 0..=255 `UpdateLayeredWindow` takes.
+fn alpha_u8(w: &Win, now: Instant) -> u8 {
+    (w.alpha.value(now).clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+/// Where the opacity is heading: full while the pointer is over the note, it
+/// has the keyboard, a reminder raised it or it is being dragged; else its
+/// see-through level.
+fn alpha_goal(w: &Win) -> f32 {
+    let full = w.pointer_in || w.edit.is_some() || w.raised || w.drag.is_some();
+    if full {
+        1.0
+    } else {
+        f32::from(w.sticky.opacity) / 100.0
+    }
+}
+
+/// Note `i`'s opacity follows its state: eased on the frame clock, instant
+/// when nothing animates. Only the layered window's alpha moves (`present`),
+/// never a redraw.
+fn settle_alpha(s: &mut State, i: usize) {
+    let (now, animate) = (Instant::now(), s.animate);
+    let w = &mut s.wins[i];
+    let to = alpha_goal(w);
+    if (w.alpha.to - to).abs() < f32::EPSILON {
+        return;
+    }
+    w.alpha.toward(to, now, animate);
+    if animate {
+        push(s, WidgetEvent::NeedsClock);
+    } else {
+        present_alpha(s, i);
+    }
+}
+
+/// Pushes the note's current opacity to its window, without drawing.
+fn present_alpha(s: &mut State, i: usize) {
+    let w = &mut s.wins[i];
+    let a = alpha_u8(w, Instant::now());
+    if a == w.alpha_shown {
+        return;
+    }
+    let origin = w.origin();
+    if let Some(canvas) = &w.canvas
+        && canvas.present(w.hwnd, origin, a).is_ok()
+    {
+        w.alpha_shown = a;
+    }
+}
+
+/// What the cat looks like on note `w` at `unix`.
+fn win_mood(w: &Win, unix: i64) -> Mood {
+    mood::mood(
+        remind::overdue(&w.sticky, unix),
+        checklist::all_done(&w.text),
+        w.sticky.touched,
+        unix,
+        w.pointer_in,
+    )
 }
 
 struct State {
@@ -310,12 +425,13 @@ fn touch(s: &mut State, i: usize) {
 /// The note with the largest `touched` gets the cat (the first one on a tie);
 /// the notes it leaves and joins are redrawn.
 fn refresh_peek(s: &mut State) {
-    let owner = s
-        .wins
-        .iter()
-        .filter(|w| w.sticky.touched > 0)
-        .max_by_key(|w| w.sticky.touched)
-        .map(|w| w.id.clone());
+    // The note with an overdue reminder (the earliest), else the one touched
+    // last.
+    let owner = mood::cat_owner(
+        s.wins.iter().map(|w| (w.id.as_str(), &w.sticky)),
+        unix_now(),
+    )
+    .map(str::to_owned);
     if owner == s.peek {
         return;
     }
@@ -423,6 +539,11 @@ impl WidgetHost {
             if animate && !out.is_empty() {
                 push(s, WidgetEvent::NeedsClock);
             }
+            for i in &out {
+                settle_alpha(s, *i);
+            }
+            // The overdue note gets the cat (with a clock).
+            refresh_peek(s);
             out
         })
         .unwrap_or_default();
@@ -467,6 +588,10 @@ impl WidgetHost {
                     || w
                         .wiggle
                         .is_some_and(|t| elapsed_ms(t, now) < paint::WIGGLE_MS)
+                    || w
+                        .confetti
+                        .is_some_and(|(t, _)| elapsed_ms(t, now) < art::CONFETTI_MS)
+                    || w.alpha.running(now)
             })
         })
         .unwrap_or(false)
@@ -493,8 +618,22 @@ impl WidgetHost {
                     Some(_) => true,
                     None => false,
                 };
-                if fading || lit || shaking {
+                let sprinkling = match w.confetti {
+                    Some((t, _)) if elapsed_ms(t, now) >= art::CONFETTI_MS => {
+                        w.confetti = None;
+                        true
+                    }
+                    Some(_) => true,
+                    None => false,
+                };
+                if fading || lit || shaking || sprinkling {
                     w.dirty = true;
+                }
+            }
+            // The see-through fade only moves the window's alpha.
+            for i in 0..s.wins.len() {
+                if !s.wins[i].dirty {
+                    present_alpha(s, i);
                 }
             }
         });
@@ -517,6 +656,28 @@ impl WidgetHost {
             s.displays = displays.to_vec();
             for i in 0..s.wins.len() {
                 relayout(s, i);
+            }
+        });
+        flush_dirty();
+    }
+
+    /// The 1 s system tick, next to the fullscreen check: the cat's note is
+    /// drawn again only when its mood changed (asleep after three days). Nothing
+    /// else moves; no timer of its own.
+    pub fn mood_tick(&mut self, unix: i64) {
+        let _ = with(|s| {
+            if !s.prefs.cat_peek {
+                return;
+            }
+            let Some(i) = s
+                .peek
+                .as_deref()
+                .and_then(|id| s.wins.iter().position(|w| w.id == id))
+            else {
+                return;
+            };
+            if win_mood(&s.wins[i], unix) != s.wins[i].mood {
+                s.wins[i].dirty = true;
             }
         });
         flush_dirty();
@@ -673,6 +834,7 @@ fn sync(ctx: &Ctx) {
                 continue;
             };
             let sticky = note.sticky.clone().unwrap_or_default();
+            let opacity = sticky.opacity;
             s.wins.push(Win {
                 id,
                 hwnd,
@@ -705,6 +867,13 @@ fn sync(ctx: &Ctx) {
                 confirm_delete: false,
                 raised: false,
                 wiggle: None,
+                confetti: None,
+                tilt: s.prefs.tilt,
+                pointer_in: false,
+                look: 0,
+                mood: Mood::Idle,
+                alpha: Ease::at(f32::from(opacity) / 100.0),
+                alpha_shown: 255,
                 away: false,
                 shown: false,
                 dirty: true,
@@ -751,9 +920,18 @@ fn sync(ctx: &Ctx) {
             if prefs_changed {
                 w.dirty = true;
             }
+            if w.tilt != ctx.prefs.tilt {
+                // The window's margin changes with the lean: a new window size.
+                w.tilt = ctx.prefs.tilt;
+                w.canvas = None;
+                w.dirty = true;
+            }
             if !moving {
                 relayout(s, i);
             }
+        }
+        for i in 0..s.wins.len() {
+            settle_alpha(s, i);
         }
         refresh_peek(s);
     });
@@ -886,9 +1064,9 @@ fn flush_dirty() {
     });
 }
 
-/// The window's size (px) for a note shown as `view` at scale `k`.
-fn canvas_px(view: &DipRect, rolled: bool, k: f32) -> (i32, i32) {
-    let (mw, mh) = window_dip(view.w, shown_h(view.h, rolled));
+/// The window's size (px) for a note shown as `view` at scale `k` with margin `m`.
+fn canvas_px(view: &DipRect, rolled: bool, k: f32, m: (f32, f32, f32, f32)) -> (i32, i32) {
+    let (mw, mh) = window_dip(view.w, shown_h(view.h, rolled), m);
     ((mw * k).round() as i32, (mh * k).round() as i32)
 }
 
@@ -913,21 +1091,29 @@ fn draw(s: &mut State, i: usize) {
     let can_add_more = sticky::can_add(wins.len());
     let w = &mut wins[i];
     let k = w.scale;
-    let size = canvas_px(&w.view, w.sticky.rolled, k);
+    let m = w.margins();
+    let size = canvas_px(&w.view, w.sticky.rolled, k, m);
     if w.canvas.as_ref().is_none_or(|c| c.size() != size) {
         w.canvas = Canvas::with_gfx(res.gfx.clone(), size).ok();
     }
-    let m = margins();
-    let origin = (
-        w.note.x - (m.0 * k).round() as i32,
-        w.note.y - (m.1 * k).round() as i32,
-    );
-    // The text, laid out for the width it is drawn at.
+    let origin = w.origin();
+    // The text, laid out for the width it is drawn at, in the note's font.
     let (nw, nh) = (w.view.w, w.view.h);
     let area = paint::body_rect(nw, nh);
-    let key = (w.text.clone(), w.sticky.text_size, (area.w * 100.0) as i32);
+    let key = (
+        w.text.clone(),
+        w.sticky.font,
+        w.sticky.text_size,
+        (area.w * 100.0) as i32,
+    );
     if w.body_key.as_ref() != Some(&key) {
-        w.body = Some(paint::build_body(res, &w.text, w.sticky.text_size, area.w));
+        w.body = Some(paint::build_body(
+            res,
+            &w.text,
+            w.sticky.font,
+            w.sticky.text_size,
+            area.w,
+        ));
         w.body_key = Some(key);
     }
     let body_h = w.body.as_ref().map_or(0.0, |b| b.height);
@@ -956,6 +1142,18 @@ fn draw(s: &mut State, i: usize) {
         None => sticky::footer_label(*lang, &w.text, updated, today),
     };
     let peek_on = prefs.cat_peek && peek.as_deref() == Some(w.id.as_str());
+    let cat_mood = win_mood(w, unix_now());
+    if peek_on {
+        w.mood = cat_mood;
+    }
+    let progress = {
+        let (done, total) = checklist::counts(&w.text);
+        (total > 0).then_some((done, total))
+    };
+    let (win_w, win_h) = window_dip(nw, shown_h(nh, w.sticky.rolled), m);
+    let confetti = w.confetti.map_or_else(Vec::new, |(t, seed)| {
+        art::confetti(seed, elapsed_ms(t, now), win_w, win_h)
+    });
     let highlight = w
         .highlight
         .map(|t| {
@@ -986,6 +1184,7 @@ fn draw(s: &mut State, i: usize) {
         plus_enabled: can_add_more,
         date: i18n::short_date(*lang, updated.date()),
         footer,
+        text_size: w.sticky.text_size,
         rolled_note: sticky::rolled_label(*lang, &w.text),
         title: if title.is_empty() {
             text(*lang, Key::StickyEmpty).to_owned()
@@ -997,15 +1196,38 @@ fn draw(s: &mut State, i: usize) {
         selection: w.edit.map(|_| w.sel),
         caret_on: w.caret_on && w.edit.is_some(),
         guides: &w.guides,
+        margins: m,
+        font: w.sticky.font,
+        pattern: w.sticky.pattern,
+        deco: w.sticky.deco,
+        stamp: w.sticky.stamp,
+        lang: *lang,
+        tilt: w.lean(),
+        progress,
+        confetti: &confetti,
+        cat_pose: CatPose {
+            pose: if cat_mood == Mood::Looking {
+                mood::look_pose(w.look)
+            } else {
+                Default::default()
+            },
+            clock: cat_mood == Mood::Clock,
+            zzz: cat_mood == Mood::Asleep,
+        },
         dx,
         chip,
         highlight,
-        peek: peek_on.then(|| paint::peek_face(&w.text)),
+        peek: peek_on.then(|| mood::expr(cat_mood)),
         cat: paint::peek_look(*coat),
         frame_accent: tones.accent,
     };
-    if let Some(canvas) = &w.canvas {
-        let _ = canvas.paint_with(w.hwnd, origin, 0.0, 255, |c| paint::draw(c, res, &scene));
+    let alpha = alpha_u8(w, now);
+    if let Some(canvas) = &w.canvas
+        && canvas
+            .paint_with(w.hwnd, origin, 0.0, alpha, |c| paint::draw(c, res, &scene))
+            .is_ok()
+    {
+        w.alpha_shown = alpha;
     }
 }
 
@@ -1206,8 +1428,14 @@ fn buttons_shown(w: &Win, now: Instant) -> bool {
 
 /// What is under a point of the desktop (px) on this note.
 fn target_at(w: &Win, sx: i32, sy: i32) -> Target {
-    let x = (sx - w.note.x) as f32 / w.scale;
-    let y = (sy - w.note.y) as f32 / w.scale;
+    // A leaning note is hit through the inverse rotation.
+    let (x, y) = art::unrotate(
+        (sx - w.note.x) as f32 / w.scale,
+        (sy - w.note.y) as f32 / w.scale,
+        w.view.w,
+        shown_h(w.view.h, w.sticky.rolled),
+        w.lean(),
+    );
     paint::target(
         x,
         y,
@@ -1227,8 +1455,14 @@ fn alt_down() -> bool {
 
 /// A client point (px) as dip from the note's top-left.
 fn client_to_dip(w: &Win, x: i32, y: i32) -> (f32, f32) {
-    let m = margins();
-    (x as f32 / w.scale - m.0, y as f32 / w.scale - m.1)
+    let m = w.margins();
+    art::unrotate(
+        x as f32 / w.scale - m.0,
+        y as f32 / w.scale - m.1,
+        w.view.w,
+        shown_h(w.view.h, w.sticky.rolled),
+        w.lean(),
+    )
 }
 
 fn set_cursor(hwnd: HWND) -> bool {
@@ -1270,11 +1504,8 @@ fn set_cursor(hwnd: HWND) -> bool {
 fn screen_point(hwnd: HWND, x: i32, y: i32) -> POINT {
     with(|s| {
         let w = &s.wins[idx_of(s, hwnd)?];
-        let m = margins();
-        Some(POINT {
-            x: w.note.x - (m.0 * w.scale).round() as i32 + x,
-            y: w.note.y - (m.1 * w.scale).round() as i32 + y,
-        })
+        let (ox, oy) = w.origin();
+        Some(POINT { x: ox + x, y: oy + y })
     })
     .flatten()
     .unwrap_or_else(|| {
@@ -1321,6 +1552,7 @@ fn mouse_move(hwnd: HWND, x: i32, y: i32) {
             return None;
         }
         let hot_target = target_at(&s.wins[i], pt.x, pt.y);
+        let cat_here = s.prefs.cat_peek && s.peek.as_deref() == Some(s.wins[i].id.as_str());
         let w = &mut s.wins[i];
         let hot = match hot_target {
             Target::Button(b) => Some(b),
@@ -1328,6 +1560,23 @@ fn mouse_move(hwnd: HWND, x: i32, y: i32) {
         };
         let inside = !matches!(hot_target, Target::Outside);
         let mut changed = false;
+        // The cat looks along the pointer while it is over this note; the
+        // picture is redrawn only when the pointer enters or the step changes.
+        let pointer_note_x = (pt.x - w.note.x) as f32 / w.scale;
+        let look = mood::look_step(
+            pointer_note_x,
+            art::cat_left(w.view.w) + paint::CAT_SIZE / 2.0,
+        );
+        let look_moved = w.look != look;
+        w.look = look;
+        let entered = w.pointer_in != inside;
+        w.pointer_in = inside;
+        if cat_here {
+            let now_mood = win_mood(w, unix_now());
+            if now_mood != w.mood || (now_mood == Mood::Looking && look_moved) {
+                changed = true;
+            }
+        }
         if w.hot != hot {
             w.hot = hot;
             changed = true;
@@ -1344,6 +1593,9 @@ fn mouse_move(hwnd: HWND, x: i32, y: i32) {
             if animate {
                 push(s, WidgetEvent::NeedsClock);
             }
+        }
+        if entered {
+            settle_alpha(s, i);
         }
         let w = &mut s.wins[i];
         if w.selecting && w.edit.is_some() {
@@ -1374,6 +1626,8 @@ fn mouse_leave(hwnd: HWND) {
         w.tracking = false;
         w.hot = None;
         w.footer_msg = None;
+        w.pointer_in = false;
+        w.look = 0;
         if w.drag.is_none() {
             w.header.toward(0.0, Instant::now(), animate);
             if animate {
@@ -1381,6 +1635,7 @@ fn mouse_leave(hwnd: HWND) {
             }
         }
         s.wins[i].dirty = true;
+        settle_alpha(s, i);
         draw(s, i);
         Some(())
     });
@@ -1402,6 +1657,7 @@ fn lower(hwnd: HWND) {
         s.wins[i].raised = false;
         s.wins[i].wiggle = None;
         s.wins[i].dirty = true;
+        settle_alpha(s, i);
         Some(i)
     })
     .flatten();
@@ -1511,6 +1767,7 @@ fn begin_drag(s: &mut State, i: usize, kind: DragKind, from: (i32, i32)) {
         lit: Vec::new(),
     });
     touch(s, i);
+    settle_alpha(s, i);
 }
 
 /// The note is moved from `from`.
@@ -1568,8 +1825,26 @@ fn toggle_line(s: &mut State, i: usize, line: usize) {
     let Some(e) = checklist::toggle(&s.wins[i].text, line) else {
         return;
     };
+    let was_done = checklist::all_done(&s.wins[i].text);
     apply_edit(s, i, &e);
+    // The tick that finishes the list: paper confetti for 0.8 s, unless
+    // nothing animates.
+    if !was_done && checklist::all_done(&s.wins[i].text) && s.animate {
+        let seed = art_seed(&s.wins[i].id, unix_now());
+        s.wins[i].confetti = Some((Instant::now(), seed));
+        push(s, WidgetEvent::NeedsClock);
+    }
     touch(s, i);
+}
+
+/// A seed for one burst of confetti: the note and the moment.
+fn art_seed(id: &str, unix: i64) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325 ^ unix as u64;
+    for b in id.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    h
 }
 
 /// `e` applied to note `i`'s text: through the EDIT while it has the keyboard
@@ -1806,6 +2081,8 @@ fn set_remind(hwnd: HWND, at: Option<i64>) {
         let id = w.id.clone();
         push(s, WidgetEvent::Remind { id, at });
         touch(s, i);
+        settle_alpha(s, i);
+        refresh_peek(s);
         Some(i)
     })
     .flatten();
@@ -1861,11 +2138,64 @@ fn set_pinned(hwnd: HWND, on: bool) {
     }
 }
 
+/// A change to note `hwnd`'s sticky part, and the event that tells the owner.
+/// `new_body` when the text must be laid out again (a font).
+fn set_field(
+    hwnd: HWND,
+    change: impl FnOnce(&mut Sticky),
+    event: impl FnOnce(String) -> WidgetEvent,
+    new_body: bool,
+) {
+    let _ = with(|s| {
+        let i = idx_of(s, hwnd)?;
+        change(&mut s.wins[i].sticky);
+        if new_body {
+            s.wins[i].body_key = None;
+        }
+        s.wins[i].dirty = true;
+        let id = s.wins[i].id.clone();
+        push(s, event(id));
+        touch(s, i);
+        settle_alpha(s, i);
+        Some(())
+    });
+    flush_dirty();
+}
+
+fn set_font(hwnd: HWND, font: NoteFont) {
+    set_field(hwnd, |s| s.font = font, |id| WidgetEvent::Font { id, font }, true);
+}
+
+fn set_pattern(hwnd: HWND, pattern: Pattern) {
+    set_field(hwnd, |s| s.pattern = pattern, |id| WidgetEvent::Pattern { id, pattern }, false);
+}
+
+fn set_deco(hwnd: HWND, deco: Deco) {
+    set_field(hwnd, |s| s.deco = deco, |id| WidgetEvent::Deco { id, deco }, false);
+}
+
+fn set_stamp(hwnd: HWND, stamp: Stamp) {
+    set_field(hwnd, |s| s.stamp = stamp, |id| WidgetEvent::Stamp { id, stamp }, false);
+}
+
+fn set_opacity(hwnd: HWND, percent: u8) {
+    set_field(
+        hwnd,
+        |s| s.opacity = percent,
+        |id| WidgetEvent::Opacity { id, percent },
+        false,
+    );
+}
+
 /// A command of the colour popover, for the note it belongs to.
 pub(crate) fn pop_command(note: HWND, cmd: PopCmd) {
     match cmd {
         PopCmd::Paper(p) => set_paper(note, p),
         PopCmd::Size(sz) => set_size(note, sz),
+        PopCmd::Font(f) => set_font(note, f),
+        PopCmd::Pattern(p) => set_pattern(note, p),
+        PopCmd::Deco(d) => set_deco(note, d),
+        PopCmd::Opacity(o) => set_opacity(note, o),
         PopCmd::Pin(on) => set_pinned(note, on),
         PopCmd::Peek(on) => {
             let _ = with(|s| {
@@ -1893,10 +2223,14 @@ fn pop_state(note: HWND) -> Option<PopState> {
         Some(PopState {
             paper: w.sticky.paper,
             size: w.sticky.text_size,
+            font: w.sticky.font,
+            pattern: w.sticky.pattern,
+            deco: w.sticky.deco,
+            opacity: w.sticky.opacity,
             pinned: w.sticky.pinned,
             peek: s.prefs.cat_peek,
             lang: s.lang,
-            font: s.font,
+            ui: s.font,
         })
     })
     .flatten()
@@ -1952,6 +2286,7 @@ pub(crate) fn pop_closed(note: HWND, away: bool) {
 // ------------------------------------------------------------------ the menu
 
 const CMD_PAPER: usize = 1;
+const CMD_STAMP: usize = 50;
 const CMD_REMIND: usize = 30;
 const CMD_REMIND_CUSTOM: usize = 40;
 const CMD_REMIND_CLEAR: usize = 41;
@@ -1971,10 +2306,11 @@ fn context_menu(hwnd: HWND, at: POINT) {
             w.confirm_delete,
             s.lang,
             w.sticky.remind_at.is_some(),
+            w.sticky.stamp,
         ))
     })
     .flatten();
-    let Some((paper, pinned, rolled, confirm, lang, has_remind)) = data else {
+    let Some((paper, pinned, rolled, confirm, lang, has_remind, stamp)) = data else {
         return;
     };
     let cmd = unsafe {
@@ -2015,6 +2351,21 @@ fn context_menu(hwnd: HWND, at: POINT) {
                 &h(Key::StickyRemindClear),
             );
             let _ = AppendMenuW(menu, MF_POPUP, remind_menu.0 as usize, &h(Key::StickyRemind));
+        }
+        // "Cap": none, or one of the six, as radio items.
+        if let Ok(stamps) = CreatePopupMenu() {
+            for (n, st) in Stamp::ALL.iter().enumerate() {
+                let _ = AppendMenuW(stamps, MF_STRING, CMD_STAMP + n, &h(st.label_key()));
+            }
+            let at_stamp = Stamp::ALL.iter().position(|x| *x == stamp).unwrap_or(0);
+            let _ = CheckMenuRadioItem(
+                stamps,
+                CMD_STAMP as u32,
+                (CMD_STAMP + Stamp::ALL.len() - 1) as u32,
+                (CMD_STAMP + at_stamp) as u32,
+                windows::Win32::UI::WindowsAndMessaging::MF_BYCOMMAND.0,
+            );
+            let _ = AppendMenuW(menu, MF_POPUP, stamps.0 as usize, &h(Key::StickyStamp));
         }
         let _ = AppendMenuW(
             menu,
@@ -2070,6 +2421,9 @@ fn context_menu(hwnd: HWND, at: POINT) {
         c if (CMD_PAPER..CMD_PAPER + Paper::ALL.len()).contains(&c) => {
             set_paper(hwnd, Paper::ALL[c - CMD_PAPER]);
         }
+        c if (CMD_STAMP..CMD_STAMP + Stamp::ALL.len()).contains(&c) => {
+            set_stamp(hwnd, Stamp::ALL[c - CMD_STAMP]);
+        }
         c if (CMD_REMIND..CMD_REMIND + Preset::ALL.len()).contains(&c) => {
             let now = chrono::Local::now().naive_local();
             set_remind(hwnd, Some(remind::to_unix(Preset::ALL[c - CMD_REMIND].at(now))));
@@ -2111,6 +2465,7 @@ fn end_drag(s: &mut State, i: usize) {
     let Some(d) = s.wins[i].drag.take() else {
         return;
     };
+    settle_alpha(s, i);
     for j in d.lit {
         if let Some(w) = s.wins.get_mut(j) {
             w.guides.clear();
@@ -2322,12 +2677,8 @@ fn drag_move(s: &mut State, i: usize, cursor: (i32, i32), alt: bool) {
     if !w.dirty
         && let Some(canvas) = &w.canvas
     {
-        let m = margins();
-        let origin = (
-            w.note.x - (m.0 * w.scale).round() as i32,
-            w.note.y - (m.1 * w.scale).round() as i32,
-        );
-        let _ = canvas.present(w.hwnd, origin, 255);
+        let origin = w.origin();
+        let _ = canvas.present(w.hwnd, origin, alpha_u8(w, Instant::now()));
     }
     flush_dirty_in(s);
 }
@@ -2381,7 +2732,9 @@ fn begin_editing(hwnd: HWND, at: Option<usize>) {
             w.sticky.remind_fired = false;
             let id = w.id.clone();
             push(s, WidgetEvent::Remind { id, at: None });
+            refresh_peek(s);
         }
+        settle_alpha(s, i);
         Some(())
     });
     lower(hwnd);
@@ -2408,6 +2761,7 @@ fn end_editing(hwnd: HWND) {
         w.caret_on = false;
         w.selecting = false;
         w.dirty = true;
+        settle_alpha(s, i);
         Some(e)
     })
     .flatten();
@@ -2475,7 +2829,7 @@ fn sync_from_edit(parent: HWND, edit_hwnd: HWND) {
         text_changed(s, i, &before);
         let w = &s.wins[i];
         let (cx, cy, _) = w.body.as_ref()?.caret(sel.1)?;
-        let m = margins();
+        let m = w.margins();
         let area = paint::body_rect(w.view.w, w.view.h);
         Some((
             ((m.0 + area.x + cx) * w.scale) as i32,
@@ -2519,6 +2873,7 @@ fn move_vertical(parent: HWND, edit_hwnd: HWND, up: bool, extend: bool) {
 mod tests {
     use super::*;
     use crate::arrange::Monitor;
+    use crate::widgets::paint::margins;
     use crate::widgets::sticky::ROLLED_H;
 
     fn display(path: &str, x: i32, primary: bool, dpi: u32) -> Display {
@@ -2543,6 +2898,14 @@ mod tests {
             rect,
             ..Sticky::default()
         }
+    }
+
+    /// Giving a window the keyboard activates it, and the window that loses the
+    /// activation ends its editing: tests that do it run one at a time, or one
+    /// test's window would take the keyboard from another's.
+    fn keyboard_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     fn ctx<'a>(notes: &'a [Note], displays: &'a [Display]) -> Ctx<'a> {
@@ -2572,6 +2935,7 @@ mod tests {
 
     #[test]
     fn a_new_note_can_be_dragged_straight_away() {
+        let _focus = keyboard_lock();
         use windows::Win32::UI::WindowsAndMessaging::{CWP_ALL, ChildWindowFromPointEx};
         let displays = vec![display("A", 0, true, 96)];
         let notes = vec![note("n1", DipRect::new(400.0, 200.0, 240.0, 208.0))];
@@ -2684,6 +3048,235 @@ mod tests {
         host.shutdown();
     }
 
+    fn note_with(id: &str, text: &str, f: impl FnOnce(&mut Sticky)) -> Note {
+        let mut s = sticky("A", DipRect::new(400.0, 200.0, 240.0, 208.0));
+        f(&mut s);
+        Note {
+            id: id.to_owned(),
+            text: text.to_owned(),
+            updated: 1,
+            sticky: Some(s),
+        }
+    }
+
+    /// The client point (px) of note-dip point (`x`, `y`) of window 0, as drawn.
+    fn client_of(x: f32, y: f32) -> (i32, i32) {
+        with(|s| {
+            let w = &s.wins[0];
+            let m = w.margins();
+            let (nw, nh) = (w.view.w, shown_h(w.view.h, w.sticky.rolled));
+            let (rx, ry) = art::rotate_about(x, y, w.lean(), nw / 2.0, nh / 2.0);
+            (
+                ((m.0 + rx) * w.scale).round() as i32,
+                ((m.1 + ry) * w.scale).round() as i32,
+            )
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn a_leaning_note_is_hit_through_the_inverse_rotation_and_straight_while_editing() {
+        let _focus = keyboard_lock();
+        let displays = vec![display("A", 0, true, 96)];
+        let notes = vec![note_with("n1700-3", "Belanja", |_| {})];
+        let mut host = WidgetHost::new(HWND::default());
+        let mut c = ctx(&notes, &displays);
+        c.prefs.tilt = true;
+        host.sync(&c);
+        let (hwnd, lean) = with(|s| (s.wins[0].hwnd, s.wins[0].lean())).unwrap();
+        assert!(lean != 0.0 && lean.abs() <= 2.0, "it leans: {lean}");
+        // Where the grip's corner and the strip's end are drawn, the targets are
+        // still the grip and the strip.
+        let (gx, gy) = client_of(236.0, 204.0);
+        let (sx, sy) = client_of(6.0, 8.0);
+        let at = |x: i32, y: i32| {
+            let pt = screen_point(hwnd, x, y);
+            with(|s| target_at(&s.wins[0], pt.x, pt.y)).unwrap()
+        };
+        assert_eq!(at(gx, gy), Target::Grip);
+        assert_eq!(at(sx, sy), Target::Header);
+        // The window is bigger than a straight note's by the overhang.
+        let (straight, leaning) = with(|s| {
+            let w = &s.wins[0];
+            (paint::margins(), w.margins())
+        })
+        .unwrap();
+        assert!(leaning.0 > straight.0 && leaning.1 > straight.1);
+        // With the keyboard the note is drawn and hit straight, in the same window.
+        host.focus("n1700-3");
+        assert_eq!(with(|s| s.wins[0].lean()).unwrap(), 0.0);
+        assert_eq!(with(|s| s.wins[0].margins()).unwrap(), leaning, "the window keeps its size");
+        let (gx, gy) = client_of(236.0, 204.0);
+        assert_eq!(at(gx, gy), Target::Grip);
+        // Tilt off: straight, the usual margin.
+        let mut off = ctx(&notes, &displays);
+        off.prefs.tilt = false;
+        host.sync(&off);
+        assert_eq!(with(|s| s.wins[0].margins()).unwrap(), straight);
+        host.shutdown();
+    }
+
+    #[test]
+    fn the_last_tick_throws_confetti_only_when_things_animate() {
+        let displays = vec![display("A", 0, true, 96)];
+        for animate in [true, false] {
+            let notes = vec![note_with("n1", "Daftar\n- [x] a\n- [ ] b", |_| {})];
+            let mut host = WidgetHost::new(HWND::default());
+            let mut c = ctx(&notes, &displays);
+            c.animate = animate;
+            host.sync(&c);
+            let _ = with(|s| {
+                // The first tick is not the last: nothing yet.
+                toggle_line(s, 0, 1);
+                assert!(s.wins[0].confetti.is_none(), "an unticking is not a finish");
+                toggle_line(s, 0, 1);
+                assert!(s.wins[0].confetti.is_none(), "still one open after re-ticking: {}", s.wins[0].text);
+            });
+            let _ = with(|s| {
+                // Tick the open one: now everything is done.
+                let text = s.wins[0].text.clone();
+                assert!(!checklist::all_done(&text), "{text}");
+                toggle_line(s, 0, 2);
+                assert!(checklist::all_done(&s.wins[0].text));
+                assert_eq!(s.wins[0].confetti.is_some(), animate, "animate {animate}");
+            });
+            if animate {
+                assert!(host.moving(Instant::now()), "the frame clock runs for it");
+                // Gone after 0.8 s.
+                let later = Instant::now() + std::time::Duration::from_millis(900);
+                assert!(!host.moving(later));
+                host.tick(later);
+                assert!(with(|s| s.wins[0].confetti.is_none()).unwrap());
+            } else {
+                assert!(!host.moving(Instant::now()), "idle: no clock");
+            }
+            host.shutdown();
+        }
+    }
+
+    #[test]
+    fn a_see_through_note_is_full_over_the_pointer_the_keyboard_and_a_raise() {
+        let _focus = keyboard_lock();
+        let displays = vec![display("A", 0, true, 96)];
+        let notes = vec![note_with("n1", "Belanja", |s| s.opacity = 60)];
+        let mut host = WidgetHost::new(HWND::default());
+        host.sync(&ctx(&notes, &displays)); // animate off: instant
+        let hwnd = with(|s| s.wins[0].hwnd).unwrap();
+        let shown = || with(|s| (s.wins[0].alpha_shown, alpha_u8(&s.wins[0], Instant::now()))).unwrap();
+        assert_eq!(shown(), (153, 153), "60 % while the pointer is away");
+        // The pointer comes over the note: full.
+        let (x, y) = client_of(100.0, 100.0);
+        mouse_move(hwnd, x, y);
+        assert_eq!(shown(), (255, 255));
+        // And away again: back to 60 %.
+        mouse_leave(hwnd);
+        assert_eq!(shown(), (153, 153));
+        // The keyboard keeps it full.
+        host.focus("n1");
+        assert_eq!(shown(), (255, 255));
+        end_editing(hwnd);
+        assert_eq!(shown(), (153, 153));
+        // A raise (a reminder fired) too.
+        let fired = vec![note_with("n1", "Belanja", |s| {
+            s.opacity = 60;
+            s.remind_at = Some(5);
+            s.remind_fired = true;
+        })];
+        host.sync(&ctx(&fired, &displays));
+        host.raise(&["n1".to_owned()]);
+        assert!(with(|s| s.wins[0].raised).unwrap());
+        assert_eq!(shown(), (255, 255));
+        // Snoozed (no longer fired): lowered, see-through again.
+        host.sync(&ctx(&notes, &displays));
+        assert!(!with(|s| s.wins[0].raised).unwrap());
+        assert_eq!(shown(), (153, 153));
+        // An opaque note never changes.
+        let plain = vec![note_with("n1", "Belanja", |_| {})];
+        host.sync(&ctx(&plain, &displays));
+        assert_eq!(shown(), (255, 255));
+        host.shutdown();
+    }
+
+    #[test]
+    fn the_see_through_fade_runs_the_frame_clock_only_while_it_moves() {
+        let displays = vec![display("A", 0, true, 96)];
+        let notes = vec![note_with("n1", "Belanja", |s| s.opacity = 40)];
+        let mut host = WidgetHost::new(HWND::default());
+        let mut c = ctx(&notes, &displays);
+        c.animate = true;
+        host.sync(&c);
+        let hwnd = with(|s| s.wins[0].hwnd).unwrap();
+        assert!(!host.moving(Instant::now()), "at rest: nothing runs");
+        let (x, y) = client_of(100.0, 100.0);
+        mouse_move(hwnd, x, y);
+        assert!(host.moving(Instant::now()), "the fade in runs the clock");
+        let later = Instant::now() + std::time::Duration::from_millis(400);
+        host.tick(later);
+        assert!(!host.moving(later), "and stops");
+        assert_eq!(with(|s| alpha_u8(&s.wins[0], later)).unwrap(), 255);
+        host.shutdown();
+    }
+
+    #[test]
+    fn a_raised_note_sits_above_other_windows_until_snoozed_and_wiggles_only_when_animated() {
+        let displays = vec![display("A", 0, true, 96)];
+        let fired = vec![note_with("n1", "Belanja", |s| {
+            s.remind_at = Some(5);
+            s.remind_fired = true;
+        })];
+        for animate in [true, false] {
+            let mut host = WidgetHost::new(HWND::default());
+            let mut c = ctx(&fired, &displays);
+            c.animate = animate;
+            host.sync(&c);
+            let desktop = with(|s| !above_windows(s, &s.wins[0])).unwrap();
+            assert!(desktop, "a desktop-layer note sits at the bottom");
+            host.raise(&["n1".to_owned()]);
+            assert!(with(|s| above_windows(s, &s.wins[0])).unwrap(), "raised: above");
+            assert_eq!(with(|s| s.wins[0].wiggle.is_some()).unwrap(), animate);
+            assert_eq!(host.moving(Instant::now()), animate, "the wiggle runs the clock");
+            if animate {
+                let later = Instant::now() + std::time::Duration::from_millis(700);
+                assert!(!host.moving(later), "600 ms and done");
+                host.tick(later);
+                assert!(with(|s| s.wins[0].wiggle.is_none()).unwrap());
+            }
+            // A press on the note drops the raise.
+            let hwnd = with(|s| s.wins[0].hwnd).unwrap();
+            let (x, y) = client_of(100.0, 12.0);
+            left_down(hwnd, x, y);
+            assert!(!with(|s| s.wins[0].raised).unwrap(), "touched: back down");
+            left_up(hwnd, x, y);
+            host.shutdown();
+        }
+    }
+
+    #[test]
+    fn opening_an_overdue_note_clears_its_reminder_and_the_cat_follows_the_overdue_note() {
+        let _focus = keyboard_lock();
+        let displays = vec![display("A", 0, true, 96)];
+        let mut late = note_with("late", "Telat", |s| {
+            s.remind_at = Some(100);
+            s.remind_fired = true;
+            s.touched = 5;
+        });
+        late.sticky.as_mut().unwrap().rect = DipRect::new(700.0, 200.0, 240.0, 208.0);
+        let touched = note_with("touched", "Baru", |s| s.touched = 9_999_999_999);
+        let notes = vec![touched, late];
+        let mut host = WidgetHost::new(HWND::default());
+        host.sync(&ctx(&notes, &displays));
+        // The overdue note has the cat even though the other was touched last.
+        assert_eq!(with(|s| s.peek.clone()).unwrap().as_deref(), Some("late"));
+        let _ = host.drain();
+        host.focus("late");
+        let events = host.drain();
+        assert!(
+            events.iter().any(|e| matches!(e, WidgetEvent::Remind { id, at: None } if id == "late")),
+            "opening it ends the reminder: {events:?}"
+        );
+        host.shutdown();
+    }
+
     #[test]
     fn a_note_larger_than_its_display_is_drawn_and_hit_at_the_shown_size() {
         // 640 x 800 dip, shown on 1920 x 1080 at 150 % (area 1280 x 693 dip).
@@ -2694,7 +3287,7 @@ mod tests {
         let k = p.scale;
         // The window is made for the view, not the saved size: the note in it
         // ends at the area's bottom, above the taskbar.
-        let (_, ch) = canvas_px(&p.view, false, k);
+        let (_, ch) = canvas_px(&p.view, false, k, margins());
         let m = margins();
         let top = p.rect.y - (m.1 * k).round() as i32;
         let note_bottom = top + ch - (m.3 * k).round() as i32;

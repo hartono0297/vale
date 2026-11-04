@@ -1,6 +1,7 @@
 //! The colour popover of a sticky note: a small layered popup owned by the
 //! note, below its colour button, clamped to the work area. Six swatches, the
-//! text size (S, M, L), "Sematkan di atas" and "Kucing ngintip". It closes on
+//! text size (S, M, L), the font (Vale, Tangan, Mono), the paper's ruling, the
+//! decoration, "Tembus pandang", "Sematkan di atas" and "Kucing ngintip". It closes on
 //! Esc, on a click outside or when it is deactivated, and it follows the
 //! Windows palette of Vale's window theme (`theme::current_window`, Terminal
 //! included).
@@ -35,20 +36,26 @@ use crate::theme;
 use crate::ui::geometry::Rect as FRect;
 use crate::widgets::host;
 use crate::widgets::paint::Res;
-use crate::widgets::sticky::{Paper, TextSize};
+use crate::widgets::sticky::{Deco, NoteFont, OPACITIES, Paper, Pattern, TextSize};
 
 const CLASS: PCWSTR = w!("ValeWidgetPop");
-const W: f32 = 240.0;
-const H: f32 = 172.0;
+const W: f32 = 268.0;
 const PAD: f32 = 14.0;
 const SWATCH: f32 = 24.0;
-const ROW_H: f32 = 36.0;
+const ROW_H: f32 = 34.0;
+/// The rows under the swatches: the five segmented ones, then the switches.
+const ROWS: usize = 7;
+const H: f32 = PAD + SWATCH + 10.0 + ROWS as f32 * ROW_H + 6.0;
 
 /// What a pick in the popover does to its note.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PopCmd {
     Paper(Paper),
     Size(TextSize),
+    Font(NoteFont),
+    Pattern(Pattern),
+    Deco(Deco),
+    Opacity(u8),
     Pin(bool),
     Peek(bool),
 }
@@ -58,16 +65,25 @@ pub enum PopCmd {
 pub struct PopState {
     pub paper: Paper,
     pub size: TextSize,
+    pub font: NoteFont,
+    pub pattern: Pattern,
+    pub deco: Deco,
+    pub opacity: u8,
     pub pinned: bool,
     pub peek: bool,
     pub lang: Lang,
-    pub font: UiFont,
+    /// Vale's UI font (the popover's own text).
+    pub ui: UiFont,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Item {
     Swatch(Paper),
     Size(TextSize),
+    Font(NoteFont),
+    Pattern(Pattern),
+    Deco(Deco),
+    Opacity(u8),
     Pin,
     Peek,
 }
@@ -138,12 +154,53 @@ fn row_y(n: usize) -> f32 {
     PAD + SWATCH + 10.0 + n as f32 * ROW_H
 }
 
-fn size_rect(i: usize) -> FRect {
+/// The rows: 0 text size, 1 font, 2 paper, 3 decoration, 4 see-through (all
+/// segmented), 5 pin on top, 6 the cat.
+const ROW_SIZE: usize = 0;
+const ROW_FONT: usize = 1;
+const ROW_PATTERN: usize = 2;
+const ROW_DECO: usize = 3;
+const ROW_OPACITY: usize = 4;
+const ROW_PIN: usize = 5;
+const ROW_PEEK: usize = 6;
+
+/// How wide one segment of a segmented row is, dip.
+fn seg_w(row: usize) -> f32 {
+    match row {
+        ROW_SIZE => 32.0,
+        ROW_FONT | ROW_DECO => 54.0,
+        ROW_PATTERN => 44.0,
+        _ => 40.0,
+    }
+}
+
+/// How many segments the row has.
+fn seg_n(row: usize) -> usize {
+    match row {
+        ROW_SIZE | ROW_FONT | ROW_DECO => 3,
+        _ => 4,
+    }
+}
+
+/// Segment `i` of segmented row `row`, right-aligned in the row.
+fn seg_rect(row: usize, i: usize) -> FRect {
+    let (w, n) = (seg_w(row), seg_n(row));
     FRect {
-        x: W - PAD - 3.0 * 32.0 + i as f32 * 32.0,
-        y: row_y(0) + (ROW_H - 24.0) / 2.0,
-        w: 32.0,
+        x: W - PAD - n as f32 * w + i as f32 * w,
+        y: row_y(row) + (ROW_H - 24.0) / 2.0,
+        w,
         h: 24.0,
+    }
+}
+
+/// The track behind a segmented row's segments.
+fn seg_track(row: usize) -> FRect {
+    let first = seg_rect(row, 0);
+    FRect {
+        x: first.x - 2.0,
+        y: first.y - 2.0,
+        w: seg_w(row) * seg_n(row) as f32 + 4.0,
+        h: 28.0,
     }
 }
 
@@ -169,6 +226,17 @@ fn inside(r: FRect, x: f32, y: f32) -> bool {
     x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h
 }
 
+/// The item of segmented row `row`'s segment `i`.
+fn seg_item(row: usize, i: usize) -> Item {
+    match row {
+        ROW_SIZE => Item::Size(TextSize::ALL[i]),
+        ROW_FONT => Item::Font(NoteFont::ALL[i]),
+        ROW_PATTERN => Item::Pattern(Pattern::ALL[i]),
+        ROW_DECO => Item::Deco(Deco::ALL[i]),
+        _ => Item::Opacity(OPACITIES[i]),
+    }
+}
+
 fn item_at(x: f32, y: f32) -> Option<Item> {
     for (i, p) in Paper::ALL.iter().enumerate() {
         let r = swatch_rect(i);
@@ -182,18 +250,55 @@ fn item_at(x: f32, y: f32) -> Option<Item> {
             return Some(Item::Swatch(*p));
         }
     }
-    for (i, s) in TextSize::ALL.iter().enumerate() {
-        if inside(size_rect(i), x, y) {
-            return Some(Item::Size(*s));
+    for row in ROW_SIZE..=ROW_OPACITY {
+        for i in 0..seg_n(row) {
+            if inside(seg_rect(row, i), x, y) {
+                return Some(seg_item(row, i));
+            }
         }
     }
-    if inside(row_rect(1), x, y) {
+    if inside(row_rect(ROW_PIN), x, y) {
         return Some(Item::Pin);
     }
-    if inside(row_rect(2), x, y) {
+    if inside(row_rect(ROW_PEEK), x, y) {
         return Some(Item::Peek);
     }
     None
+}
+
+/// What `item` shows as the current choice in `st`.
+fn is_current(item: Item, st: &PopState) -> bool {
+    match item {
+        Item::Size(v) => st.size == v,
+        Item::Font(v) => st.font == v,
+        Item::Pattern(v) => st.pattern == v,
+        Item::Deco(v) => st.deco == v,
+        Item::Opacity(v) => st.opacity == v,
+        _ => false,
+    }
+}
+
+/// The label of a segment.
+fn seg_label(item: Item, lang: Lang) -> String {
+    match item {
+        Item::Size(v) => v.name().to_owned(),
+        Item::Font(v) => text(lang, v.label_key()).to_owned(),
+        Item::Pattern(v) => text(lang, v.label_key()).to_owned(),
+        Item::Deco(v) => text(lang, v.label_key()).to_owned(),
+        Item::Opacity(v) => format!("{v}%"),
+        _ => String::new(),
+    }
+}
+
+/// The label at the left of segmented row `row`.
+fn row_label(row: usize) -> Key {
+    match row {
+        ROW_SIZE => Key::StickyTextSize,
+        ROW_FONT => Key::StickyFont,
+        ROW_PATTERN => Key::StickyPattern,
+        ROW_DECO => Key::StickyDeco,
+        _ => Key::StickyOpacity,
+    }
 }
 
 // ------------------------------------------------------------------ window
@@ -227,7 +332,7 @@ pub fn open(note: HWND, anchor: Rect, area: Rect, scale: f32, state: PopState) {
     if !register() {
         return;
     }
-    let Ok(res) = Res::new(state.font) else { return };
+    let Ok(res) = Res::new(state.ui) else { return };
     let (w, h) = ((W * scale).round() as i32, (H * scale).round() as i32);
     let gap = (4.0 * scale).round() as i32;
     let x = (anchor.right() - w).clamp(area.x, (area.right() - w).max(area.x));
@@ -277,6 +382,26 @@ pub fn open(note: HWND, anchor: Rect, area: Rect, scale: f32, state: PopState) {
         let _ = ShowWindow(hwnd, SW_SHOW);
     }
     take_foreground(hwnd);
+}
+
+/// A segment's label, centred in its rect.
+fn seg_text(
+    res: &Res,
+    rt: ID2D1RenderTarget,
+    brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush,
+    s: &str,
+    r: FRect,
+    ink: u32,
+) {
+    let Ok(l) = res.layout(s, 11.5, 500, r.w) else { return };
+    unsafe {
+        let _ = l.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        let _ = l.SetMaxHeight(r.h);
+        let _ = l.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        let _ = l.SetTextAlignment(windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_ALIGNMENT_CENTER);
+        brush.SetColor(&color(ink, 1.0));
+        rt.DrawTextLayout(Vector2::new(r.x, r.y), &l, brush, D2D1_DRAW_TEXT_OPTIONS_NONE);
+    }
 }
 
 /// The note's state changed: the popover shows the new one.
@@ -383,33 +508,31 @@ fn redraw() {
                     unsafe { rt.DrawEllipse(&ring, brush, 1.5, None) };
                 }
             }
-            // Text size.
-            label(text(st.lang, Key::StickyTextSize), PAD, row_y(0), 100.0, ROW_H, 12.0, 500, pal.text, false);
-            let track = FRect {
-                x: size_rect(0).x - 2.0,
-                y: size_rect(0).y - 2.0,
-                w: 3.0 * 32.0 + 4.0,
-                h: 28.0,
-            };
-            set(pal.button, 1.0);
-            unsafe { rt.FillRoundedRectangle(&rr(track, 9.0), brush) };
-            for (i, sz) in TextSize::ALL.iter().enumerate() {
-                let r = size_rect(i);
-                if st.size == *sz {
-                    set(pal.accent, 1.0);
-                    unsafe { rt.FillRoundedRectangle(&rr(r, 7.0), brush) };
-                } else if hover == Some(Item::Size(*sz)) {
-                    set(pal.button_hover, 1.0);
-                    unsafe { rt.FillRoundedRectangle(&rr(r, 7.0), brush) };
+            // The five segmented rows: size, font, paper, decoration,
+            // see-through. Each has its label at the left.
+            for row in ROW_SIZE..=ROW_OPACITY {
+                label(text(st.lang, row_label(row)), PAD, row_y(row), W - 2.0 * PAD - seg_track(row).w - 6.0, ROW_H, 12.0, 500, pal.text, false);
+                set(pal.button, 1.0);
+                unsafe { rt.FillRoundedRectangle(&rr(seg_track(row), 9.0), brush) };
+                for i in 0..seg_n(row) {
+                    let r = seg_rect(row, i);
+                    let item = seg_item(row, i);
+                    let on = is_current(item, &st);
+                    if on {
+                        set(pal.accent, 1.0);
+                        unsafe { rt.FillRoundedRectangle(&rr(r, 7.0), brush) };
+                    } else if hover == Some(item) {
+                        set(pal.button_hover, 1.0);
+                        unsafe { rt.FillRoundedRectangle(&rr(r, 7.0), brush) };
+                    }
+                    let ink = if on { pal.on_accent } else { pal.text };
+                    seg_text(res, rt.clone(), brush, &seg_label(item, st.lang), r, ink);
                 }
-                let ink = if st.size == *sz { pal.on_accent } else { pal.text };
-                label(sz.name(), r.x, r.y, r.w, r.h, 12.0, 500, ink, false);
-                // Centred: the label above is leading, so nudge by the glyph.
             }
             // The two switches.
             for (row, item, key, on) in [
-                (1, Item::Pin, Key::StickyPinTop, st.pinned),
-                (2, Item::Peek, Key::WidgetsPeek, st.peek),
+                (ROW_PIN, Item::Pin, Key::StickyPinTop, st.pinned),
+                (ROW_PEEK, Item::Peek, Key::WidgetsPeek, st.peek),
             ] {
                 if hover == Some(item) {
                     set(pal.hover, 1.0);
@@ -478,6 +601,10 @@ unsafe extern "system" fn pop_proc(
                     let cmd = match item {
                         Item::Swatch(paper) => PopCmd::Paper(paper),
                         Item::Size(s) => PopCmd::Size(s),
+                        Item::Font(f) => PopCmd::Font(f),
+                        Item::Pattern(p) => PopCmd::Pattern(p),
+                        Item::Deco(d) => PopCmd::Deco(d),
+                        Item::Opacity(o) => PopCmd::Opacity(o),
                         Item::Pin => PopCmd::Pin(!p.state.pinned),
                         Item::Peek => PopCmd::Peek(!p.state.peek),
                     };

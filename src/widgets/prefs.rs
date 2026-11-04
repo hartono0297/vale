@@ -70,6 +70,9 @@ pub struct WidgetPrefs {
     pub lock: bool,
     /// "Kucing ngintip": the cat looks over the last touched note.
     pub cat_peek: bool,
+    /// "Miring sedikit": every note is drawn leaning a fixed angle within 2
+    /// degrees (from its id). Off by default.
+    pub tilt: bool,
 }
 
 impl Default for WidgetPrefs {
@@ -80,6 +83,7 @@ impl Default for WidgetPrefs {
             fullscreen: FullscreenRule::Hide,
             lock: false,
             cat_peek: true,
+            tilt: false,
         }
     }
 }
@@ -107,6 +111,7 @@ impl WidgetPrefs {
                 .unwrap_or(d.fullscreen),
             lock: flag("lock", d.lock),
             cat_peek: flag("cat_peek", d.cat_peek),
+            tilt: flag("tilt", d.tilt),
         }
     }
 }
@@ -114,12 +119,13 @@ impl WidgetPrefs {
 impl Serialize for WidgetPrefs {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
-        let mut map = s.serialize_map(Some(5))?;
+        let mut map = s.serialize_map(Some(6))?;
         map.serialize_entry("show", &self.show)?;
         map.serialize_entry("layer", self.layer.name())?;
         map.serialize_entry("fullscreen", self.fullscreen.name())?;
         map.serialize_entry("lock", &self.lock)?;
         map.serialize_entry("cat_peek", &self.cat_peek)?;
+        map.serialize_entry("tilt", &self.tilt)?;
         map.end()
     }
 }
@@ -139,7 +145,7 @@ mod tests {
     #[test]
     fn defaults_are_the_documented_ones() {
         let d = WidgetPrefs::default();
-        assert!(d.show && d.cat_peek && !d.lock);
+        assert!(d.show && d.cat_peek && !d.lock && !d.tilt, "tilt is off by default");
         assert_eq!(d.layer, WidgetLayer::Desktop);
         assert_eq!(d.fullscreen, FullscreenRule::Hide);
     }
@@ -159,7 +165,11 @@ mod tests {
             "fullscreen": 7,
             "lock": "yes",
             "cat_peek": false,
+            "tilt": true,
         });
+        let p = WidgetPrefs::from_json(&v);
+        assert!(p.tilt);
+        assert_eq!(WidgetPrefs::from_json(&json!({"tilt": "yes"})).tilt, false, "a wrong type is off");
         let p = WidgetPrefs::from_json(&v);
         assert!(!p.show, "a good bool is kept");
         assert_eq!(p.layer, WidgetLayer::Top, "names are trimmed, any case");
@@ -179,6 +189,7 @@ mod tests {
             fullscreen: FullscreenRule::Keep,
             lock: true,
             cat_peek: false,
+            tilt: true,
         };
         let text = serde_json::to_string(&p).unwrap();
         assert_eq!(serde_json::from_str::<WidgetPrefs>(&text).unwrap(), p);
