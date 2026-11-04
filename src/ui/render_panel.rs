@@ -4662,7 +4662,7 @@ impl Renderer {
             return Ok(());
         }
         let dot = match notice.kind {
-            NoticeKind::Reminder { .. } => self.palette.accent,
+            NoticeKind::Reminder { .. } | NoticeKind::StickyReminder { .. } => self.palette.accent,
             _ => CLAUDE,
         };
         self.set_color(dot, 1.0);
@@ -6339,6 +6339,32 @@ mod tests {
                     let label = text(lang, key);
                     ink_fits(&r, label, &r.fonts.button_center, chip(notch_w, 24.0));
                     ink_fits(&r, label, &r.fonts.button_center, chip(strip_w, 18.0));
+                }
+            }
+        }
+    }
+
+    /// A sticky note reminder's chips ("Tunda 10 mnt" / "Snooze 10 min", "Buka"
+    /// / "Open") hold their words in both languages, in DM Sans and in
+    /// JetBrains Mono.
+    #[test]
+    fn sticky_reminder_chips_hold_their_words_in_both_fonts() {
+        use crate::ui::fonts;
+        use crate::ui::geometry::{SNOOZE_CHIP_W, UPDATE_CHIP_W};
+        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+
+        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let mut r = Renderer::new().expect("renderer");
+        if !fonts::embedded(&r.dwrite).loaded.jetbrains_mono {
+            eprintln!("skipped: the embedded fonts are not in this binary");
+            return;
+        }
+        for ui in [UiFont::Sans, UiFont::Mono] {
+            r.set_ui_font(ui).expect("font");
+            for lang in [Lang::Id, Lang::En] {
+                for (key, w) in [(Key::StickySnooze, SNOOZE_CHIP_W), (Key::Open, UPDATE_CHIP_W)] {
+                    let chip = Rect { x: 0.0, y: 0.0, w, h: 24.0 };
+                    ink_fits(&r, text(lang, key), &r.fonts.button_center, chip);
                 }
             }
         }

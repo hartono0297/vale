@@ -34,14 +34,18 @@ use crate::notes::NotesStore;
 use crate::theme::{self, CatColor};
 use crate::ui::frame_clock::{FrameClock, WM_APP_FRAME};
 use crate::ui::tray;
-use crate::widgets::apply::{apply, sticky_for};
+use crate::widgets::apply::{apply, set_reminder, sticky_for};
 use crate::widgets::host::{Ctx, WM_APP_WIDGET, WidgetHost};
 use crate::widgets::prefs::{WidgetLayer, WidgetPrefs};
+use crate::widgets::remind;
 use crate::widgets::sticky::{Paper, Sticky};
 
 /// The save timer of this scene (the island's own is 45 too).
 const SAVE_TIMER: usize = 45;
 const SAVE_MS: u32 = 1500;
+/// The reminders' one-shot, the island's `TIMER_STICKY_REMIND` (47). The demo
+/// has no island: a fire raises the note and shakes it, and shows no notice.
+const REMIND_TIMER: usize = 47;
 
 struct Demo {
     owner: HWND,
@@ -176,6 +180,7 @@ pub fn run(reset: bool) {
         });
     });
     with_demo(Demo::sync);
+    with_demo(Demo::remind_fire);
     println!("widgets-demo: notes in {}", store_path().display());
     unsafe {
         let mut msg = MSG::default();
@@ -215,6 +220,43 @@ impl Demo {
         if host.count() == 0 {
             unsafe { PostQuitMessage(0) };
         }
+        self.remind_arm();
+    }
+
+    /// The one-shot for the nearest unfired reminder.
+    fn remind_arm(&self) {
+        unsafe {
+            let _ = KillTimer(Some(self.owner), REMIND_TIMER);
+            if let Some(at) = remind::nearest(self.store.list()) {
+                let wait = remind::wait_ms(at, Local::now().timestamp());
+                SetTimer(Some(self.owner), REMIND_TIMER, wait, None);
+            }
+        }
+    }
+
+    /// The reminders that are due fire (at startup also the missed ones): the
+    /// note is raised and shakes; no notice, there is no island.
+    fn remind_fire(&mut self) {
+        unsafe {
+            let _ = KillTimer(Some(self.owner), REMIND_TIMER);
+        }
+        let due = remind::due(self.store.list(), Local::now().timestamp());
+        for id in &due {
+            let at = self
+                .store
+                .get(id)
+                .and_then(|n| n.sticky.as_ref())
+                .and_then(|s| s.remind_at);
+            set_reminder(&mut self.store, id, at, true);
+        }
+        if !due.is_empty() {
+            self.sync();
+            self.host.raise(&due);
+            unsafe {
+                SetTimer(Some(self.owner), SAVE_TIMER, SAVE_MS, None);
+            }
+        }
+        self.remind_arm();
     }
 
     fn events(&mut self) {
@@ -228,6 +270,8 @@ impl Demo {
         }
         if out.structural {
             self.sync();
+        } else if out.reminders {
+            self.remind_arm();
         }
         if out.changed {
             unsafe {
@@ -327,6 +371,10 @@ unsafe extern "system" fn owner_proc(
             with_demo(|d| {
                 let _ = d.store.save();
             });
+            return LRESULT(0);
+        }
+        WM_TIMER if wparam.0 == REMIND_TIMER => {
+            with_demo(Demo::remind_fire);
             return LRESULT(0);
         }
         WM_DISPLAYCHANGE => {

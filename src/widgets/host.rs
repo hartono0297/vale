@@ -37,7 +37,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     DestroyWindow, GWLP_HWNDPARENT, GWLP_USERDATA, GetCaretBlinkTime, GetCursorPos, GetShellWindow,
     GetWindowLongPtrW, HWND_BOTTOM, HWND_TOPMOST, IDC_ARROW, IDC_HAND, IDC_IBEAM, IDC_SIZEALL, IDC_SIZENWSE,
     KillTimer, LoadCursorW, MA_ACTIVATE, MA_NOACTIVATE, MF_CHECKED, MF_POPUP, MF_SEPARATOR,
-    MF_STRING, PostMessageW, RegisterClassExW, SW_HIDE, SW_SHOWNA, SWP_NOACTIVATE, SWP_NOMOVE,
+    MF_GRAYED, MF_STRING, PostMessageW, RegisterClassExW, SW_HIDE, SW_SHOWNA, SWP_NOACTIVATE, SWP_NOMOVE,
     SWP_NOSIZE, SWP_NOZORDER, SetCursor, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow,
     TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, WINDOWPOS, WM_ACTIVATE, WM_APP,
     WM_CAPTURECHANGED, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
@@ -61,6 +61,8 @@ use crate::widgets::paint::{
 };
 use crate::widgets::place;
 use crate::widgets::pop::{self, PopCmd, PopState};
+use crate::widgets::remind::{self, Preset};
+use crate::widgets::remind_pop;
 use crate::widgets::prefs::{FullscreenRule, WidgetLayer, WidgetPrefs};
 use crate::widgets::snap::{Axis, Snapped, snap_move_for, snap_resize};
 use crate::widgets::sticky::{self, DipRect, Paper, Sticky, TextSize};
@@ -92,6 +94,9 @@ pub enum WidgetEvent {
     Size { id: String, size: TextSize },
     Pinned { id: String, on: bool },
     Rolled { id: String, on: bool },
+    /// The note's reminder was set (unix seconds) or cleared (`None`): "Ingatkan
+    /// aku", the chip's menu, or opening an overdue note.
+    Remind { id: String, at: Option<i64> },
     /// "Kucing ngintip" was switched from a note's popover.
     CatPeek(bool),
     /// The (+) of this note's header.
@@ -221,6 +226,11 @@ struct Win {
     highlight: Option<Instant>,
     footer_msg: Option<Key>,
     confirm_delete: bool,
+    /// A reminder fired: the note sits above other windows until it is
+    /// touched, snoozed, opened or its reminder cleared.
+    raised: bool,
+    /// When the reminder's shake began.
+    wiggle: Option<Instant>,
     /// Hidden by a fullscreen app on its monitor.
     away: bool,
     shown: bool,
@@ -382,6 +392,37 @@ impl WidgetHost {
         }
     }
 
+    /// The reminders of notes `ids` went off: each note sits above other
+    /// windows (even on the desktop layer) until it is touched, snoozed,
+    /// opened or its reminder cleared, and shakes for 600 ms unless the owner
+    /// does not animate (Motion not Full, Energy Saver, Windows animations
+    /// off). The island's notice is the owner's.
+    pub fn raise(&mut self, ids: &[String]) {
+        let raised: Vec<usize> = with(|s| {
+            let (animate, now) = (s.animate, Instant::now());
+            let mut out = Vec::new();
+            for (i, w) in s.wins.iter_mut().enumerate() {
+                if ids.contains(&w.id) {
+                    w.raised = true;
+                    if animate {
+                        w.wiggle = Some(now);
+                    }
+                    w.dirty = true;
+                    out.push(i);
+                }
+            }
+            if animate && !out.is_empty() {
+                push(s, WidgetEvent::NeedsClock);
+            }
+            out
+        })
+        .unwrap_or_default();
+        for i in raised {
+            apply_z(i);
+        }
+        flush_dirty();
+    }
+
     /// The gallery card was clicked: every note flashes an accent frame.
     pub fn highlight(&mut self) {
         let animate = with(|s| s.animate).unwrap_or(false);
@@ -414,6 +455,9 @@ impl WidgetHost {
                     || w
                         .highlight
                         .is_some_and(|t| elapsed_ms(t, now) < HIGHLIGHT_MS)
+                    || w
+                        .wiggle
+                        .is_some_and(|t| elapsed_ms(t, now) < paint::WIGGLE_MS)
             })
         })
         .unwrap_or(false)
@@ -432,7 +476,15 @@ impl WidgetHost {
                     Some(_) => true,
                     None => false,
                 };
-                if fading || lit {
+                let shaking = match w.wiggle {
+                    Some(t) if elapsed_ms(t, now) >= paint::WIGGLE_MS => {
+                        w.wiggle = None;
+                        true
+                    }
+                    Some(_) => true,
+                    None => false,
+                };
+                if fading || lit || shaking {
                     w.dirty = true;
                 }
             }
@@ -549,7 +601,7 @@ fn elapsed_ms(t: Instant, now: Instant) -> f32 {
 
 /// A note that sits above ordinary windows.
 fn above_windows(s: &State, w: &Win) -> bool {
-    w.sticky.pinned || s.prefs.layer == WidgetLayer::Top
+    w.sticky.pinned || s.prefs.layer == WidgetLayer::Top || w.raised
 }
 
 // ------------------------------------------------------------------ sync
@@ -642,6 +694,8 @@ fn sync(ctx: &Ctx) {
                 highlight: None,
                 footer_msg: None,
                 confirm_delete: false,
+                raised: false,
+                wiggle: None,
                 away: false,
                 shown: false,
                 dirty: true,
@@ -669,6 +723,12 @@ fn sync(ctx: &Ctx) {
                     };
                     w.dirty = true;
                 }
+            }
+            // A raised note comes back down once its reminder is no longer
+            // fired (snoozed, cleared, opened).
+            if w.raised && !w.sticky.remind_fired {
+                w.raised = false;
+                w.wiggle = None;
             }
             // While the note has the keyboard the EDIT is the truth.
             if w.edit.is_none() && w.text != note.text {
@@ -895,6 +955,16 @@ fn draw(s: &mut State, i: usize) {
         })
         .unwrap_or(0.0);
     let title = checklist::title_of(&w.text);
+    let unix = unix_now();
+    let chip = w.sticky.remind_at.map(|at| {
+        (
+            remind::chip_label(*lang, remind::from_unix(at), today),
+            remind::overdue(&w.sticky, unix),
+        )
+    });
+    let dx = w
+        .wiggle
+        .map_or(0.0, |t| paint::wiggle_dx(elapsed_ms(t, now)));
     let scene = Scene {
         w: nw,
         h: nh,
@@ -918,6 +988,8 @@ fn draw(s: &mut State, i: usize) {
         selection: w.edit.map(|_| w.sel),
         caret_on: w.caret_on && w.edit.is_some(),
         guides: &w.guides,
+        dx,
+        chip,
         highlight,
         peek: peek_on.then(|| paint::peek_face(&w.text)),
         cat: paint::peek_look(*coat),
@@ -1050,7 +1122,7 @@ unsafe extern "system" fn wnd_proc(
             // ends the editing.
             if (wparam.0 & 0xFFFF) as u32 == WA_INACTIVE {
                 let to = HWND(lparam.0 as *mut _);
-                if !pop::is_popover_of(to, hwnd) {
+                if !pop::is_popover_of(to, hwnd) && !remind_pop::is_popover_of(to, hwnd) {
                     end_editing(hwnd);
                 }
             }
@@ -1300,7 +1372,27 @@ enum Down {
     Edit(usize),
 }
 
+/// A raised note (a reminder fired) goes back to its layer.
+fn lower(hwnd: HWND) {
+    let i = with(|s| {
+        let i = idx_of(s, hwnd)?;
+        if !s.wins[i].raised {
+            return None;
+        }
+        s.wins[i].raised = false;
+        s.wins[i].wiggle = None;
+        s.wins[i].dirty = true;
+        Some(i)
+    })
+    .flatten();
+    if let Some(i) = i {
+        apply_z(i);
+    }
+}
+
 fn left_down(hwnd: HWND, x: i32, y: i32) {
+    // Any press on a note is "touching" it: a reminder's raise ends.
+    lower(hwnd);
     let pt = screen_point(hwnd, x, y);
     // A click on a note outside the popover closes it, also where the note
     // does not take the activation (the header, the grip, a box). The colour
@@ -1313,6 +1405,9 @@ fn left_down(hwnd: HWND, x: i32, y: i32) {
     .unwrap_or(false);
     if !on_colour && pop::is_open() {
         pop::close();
+    }
+    if remind_pop::is_open() {
+        remind_pop::close();
     }
     let act = with(|s| {
         let i = idx_of(s, hwnd)?;
@@ -1613,6 +1708,55 @@ fn set_size(hwnd: HWND, size: TextSize) {
     flush_dirty();
 }
 
+/// Note `hwnd`'s reminder set to `at` (unix seconds), or cleared. The note
+/// is not fired then: a raise ends, the chip is the plain one.
+fn set_remind(hwnd: HWND, at: Option<i64>) {
+    let i = with(|s| {
+        let i = idx_of(s, hwnd)?;
+        let w = &mut s.wins[i];
+        w.sticky.remind_at = at;
+        w.sticky.remind_fired = false;
+        w.raised = false;
+        w.wiggle = None;
+        w.dirty = true;
+        let id = w.id.clone();
+        push(s, WidgetEvent::Remind { id, at });
+        touch(s, i);
+        Some(i)
+    })
+    .flatten();
+    if let Some(i) = i {
+        apply_z(i);
+        flush_dirty();
+    }
+}
+
+/// The entry ("Atur sendiri...") chose a time.
+pub(crate) fn remind_chosen(note: HWND, at: i64) {
+    set_remind(note, Some(at));
+}
+
+/// Opens the day and time entry under the colour button.
+fn open_remind_entry(hwnd: HWND) {
+    let info = with(|s| {
+        let i = idx_of(s, hwnd)?;
+        let w = &s.wins[i];
+        let r = paint::button_rect(Btn::Colour, w.view.w);
+        let anchor = Rect::new(
+            w.note.x + (r.x * w.scale).round() as i32,
+            w.note.y + (r.y * w.scale).round() as i32,
+            (r.w * w.scale).round() as i32,
+            (r.h * w.scale).round() as i32,
+        );
+        let area = s.displays.get(w.display).map_or(w.note, place::area_px);
+        Some((anchor, area, w.scale, s.lang, s.font))
+    })
+    .flatten();
+    if let Some((anchor, area, scale, lang, font)) = info {
+        remind_pop::open(hwnd, anchor, area, scale, lang, font);
+    }
+}
+
 fn set_pinned(hwnd: HWND, on: bool) {
     let i = with(|s| {
         let i = idx_of(s, hwnd)?;
@@ -1724,6 +1868,9 @@ pub(crate) fn pop_closed(note: HWND, away: bool) {
 // ------------------------------------------------------------------ the menu
 
 const CMD_PAPER: usize = 1;
+const CMD_REMIND: usize = 30;
+const CMD_REMIND_CUSTOM: usize = 40;
+const CMD_REMIND_CLEAR: usize = 41;
 const CMD_PIN: usize = 20;
 const CMD_ROLL: usize = 21;
 const CMD_UNSTICK: usize = 22;
@@ -1739,10 +1886,11 @@ fn context_menu(hwnd: HWND, at: POINT) {
             w.sticky.rolled,
             w.confirm_delete,
             s.lang,
+            w.sticky.remind_at.is_some(),
         ))
     })
     .flatten();
-    let Some((paper, pinned, rolled, confirm, lang)) = data else {
+    let Some((paper, pinned, rolled, confirm, lang, has_remind)) = data else {
         return;
     };
     let cmd = unsafe {
@@ -1769,6 +1917,21 @@ fn context_menu(hwnd: HWND, at: POINT) {
         );
         let h = |key: Key| windows::core::HSTRING::from(text(lang, key));
         let _ = AppendMenuW(menu, MF_POPUP, colours.0 as usize, &h(Key::CatColorLabel));
+        // "Ingatkan aku": the quick choices, a time of one's own, and off.
+        if let Ok(remind_menu) = CreatePopupMenu() {
+            for (n, p) in Preset::ALL.iter().enumerate() {
+                let _ = AppendMenuW(remind_menu, MF_STRING, CMD_REMIND + n, &h(p.label_key()));
+            }
+            let _ = AppendMenuW(remind_menu, MF_STRING, CMD_REMIND_CUSTOM, &h(Key::StickyRemindCustom));
+            let _ = AppendMenuW(remind_menu, MF_SEPARATOR, 0, None);
+            let _ = AppendMenuW(
+                remind_menu,
+                if has_remind { MF_STRING } else { MF_STRING | MF_GRAYED },
+                CMD_REMIND_CLEAR,
+                &h(Key::StickyRemindClear),
+            );
+            let _ = AppendMenuW(menu, MF_POPUP, remind_menu.0 as usize, &h(Key::StickyRemind));
+        }
         let _ = AppendMenuW(
             menu,
             if pinned { MF_STRING | MF_CHECKED } else { MF_STRING },
@@ -1823,6 +1986,12 @@ fn context_menu(hwnd: HWND, at: POINT) {
         c if (CMD_PAPER..CMD_PAPER + Paper::ALL.len()).contains(&c) => {
             set_paper(hwnd, Paper::ALL[c - CMD_PAPER]);
         }
+        c if (CMD_REMIND..CMD_REMIND + Preset::ALL.len()).contains(&c) => {
+            let now = chrono::Local::now().naive_local();
+            set_remind(hwnd, Some(remind::to_unix(Preset::ALL[c - CMD_REMIND].at(now))));
+        }
+        CMD_REMIND_CUSTOM => open_remind_entry(hwnd),
+        CMD_REMIND_CLEAR => set_remind(hwnd, None),
         CMD_PIN => set_pinned(hwnd, !pinned),
         CMD_ROLL => toggle_rolled(hwnd),
         CMD_UNSTICK => {
@@ -2122,8 +2291,16 @@ fn begin_editing(hwnd: HWND, at: Option<usize>) {
         w.anchor = at;
         w.follow_caret = true;
         w.dirty = true;
+        // Opening a note whose reminder went off ends it: no chip, no notice.
+        if remind::overdue(&w.sticky, unix_now()) {
+            w.sticky.remind_at = None;
+            w.sticky.remind_fired = false;
+            let id = w.id.clone();
+            push(s, WidgetEvent::Remind { id, at: None });
+        }
         Some(())
     });
+    lower(hwnd);
     unsafe {
         let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(edit_hwnd));
     }
@@ -2164,8 +2341,9 @@ pub(crate) fn edit_event(parent: HWND, edit_hwnd: HWND, ev: EditEvent) {
     match ev {
         EditEvent::Changed => sync_from_edit(parent, edit_hwnd),
         EditEvent::Escape => {
-            if pop::is_open() {
+            if pop::is_open() || remind_pop::is_open() {
                 pop::close();
+                remind_pop::close();
             } else {
                 unsafe {
                     let _ = PostMessageW(Some(parent), WM_END_EDIT, WPARAM(0), LPARAM(0));
@@ -2180,7 +2358,7 @@ pub(crate) fn edit_event(parent: HWND, edit_hwnd: HWND, ev: EditEvent) {
             .flatten()
             .unwrap_or(false);
             // A popover taking the focus is not the end of the editing.
-            if current && !pop::is_open() {
+            if current && !pop::is_open() && !remind_pop::is_open() {
                 unsafe {
                     let _ = PostMessageW(Some(parent), WM_END_EDIT, WPARAM(0), LPARAM(0));
                 }

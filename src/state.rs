@@ -95,6 +95,7 @@ pub fn notice_kind_closable(kind: &NoticeKind) -> bool {
             | NoticeKind::ClaudeWaiting { .. }
             | NoticeKind::MoleFailed
             | NoticeKind::UpdateAvailable { .. }
+            | NoticeKind::StickyReminder { .. }
     )
 }
 
@@ -107,6 +108,7 @@ fn notice_has_action(notice: &Notice) -> bool {
     matches!(
         notice.kind,
         NoticeKind::Reminder { .. }
+            | NoticeKind::StickyReminder { .. }
             | NoticeKind::MoleDone
             | NoticeKind::SystemLow
             | NoticeKind::Pomodoro
@@ -129,8 +131,15 @@ fn notice_has_action(notice: &Notice) -> bool {
 fn sticky_has_buttons(notice: &Notice) -> bool {
     matches!(
         notice.kind,
-        NoticeKind::Reminder { .. } | NoticeKind::UpdateAvailable { .. }
+        NoticeKind::Reminder { .. }
+            | NoticeKind::UpdateAvailable { .. }
+            | NoticeKind::StickyReminder { .. }
     )
+}
+
+/// A sticky note's reminder notice.
+fn is_sticky_reminder(notice: &Notice) -> bool {
+    matches!(notice.kind, NoticeKind::StickyReminder { .. })
 }
 
 /// The update offer ("Vale X.Y.Z tersedia").
@@ -542,6 +551,7 @@ impl IslandState {
             Event::Notice(notice) => match &notice.kind {
                 NoticeKind::ClaudeWaiting { .. }
                 | NoticeKind::Reminder { .. }
+                | NoticeKind::StickyReminder { .. }
                 | NoticeKind::MoleFailed => {
                     if let Some(key) = sticky_key(&notice) {
                         self.clear_sticky(key);
@@ -872,6 +882,7 @@ impl IslandState {
             }
             Event::Today(date) => self.set_today(date),
             Event::ReminderCleared(id) => self.clear_sticky(Sticky::Reminder(&id)),
+            Event::StickyReminderCleared(id) => self.clear_sticky(Sticky::StickyNote(&id)),
             Event::UpdateWithdrawn => self.clear_sticky(Sticky::Update),
             Event::Click(hit) => self.click(hit, now, &mut effects),
             Event::Calendar(_)
@@ -1615,6 +1626,8 @@ impl IslandState {
             Event::Click(Hit::PanelPage(_)) => LingerTrigger::PageTurn,
             // The reminder's Done chip is the closed notch's: no panel behind it.
             Event::Click(Hit::ReminderDone) => LingerTrigger::No,
+            // A sticky reminder's chips are the closed notch's too.
+            Event::Click(Hit::StickySnooze | Hit::StickyOpen) => LingerTrigger::No,
             // The ✕ closes a notice on the closed notch: no panel behind it.
             Event::Click(Hit::NoticeClose) => LingerTrigger::No,
             Event::Click(hit) if !(is_media_hit(hit) && self.media_guarded(now)) => {
@@ -1843,6 +1856,11 @@ impl IslandState {
                         && matches!(self.view(), View::Notice(_)))) =>
             {
                 self.open_by_click(now)
+            }
+            // A click on a sticky note reminder's body is its "Buka", in every
+            // mode: it opens nothing of the island's.
+            Hit::Body if matches!(self.view(), View::Notice(n) if is_sticky_reminder(&n)) => {
+                effects.extend(self.dismiss_visible_notice(now));
             }
             // The due reminder's "Selesai" chip on the closed notch: done at
             // once, in every mode. It opens nothing and latches nothing.
@@ -2128,6 +2146,17 @@ impl IslandState {
             Hit::UpdateLater => {
                 if self.update_offer_shown() {
                     self.clear_sticky(Sticky::Update);
+                }
+            }
+            // A sticky note reminder's chips, on the notice or in the strip.
+            Hit::StickySnooze | Hit::StickyOpen => {
+                if let Some(id) = self.sticky_reminder_shown() {
+                    self.clear_sticky(Sticky::StickyNote(&id));
+                    effects.push(if hit == Hit::StickySnooze {
+                        Effect::StickySnooze(id)
+                    } else {
+                        Effect::StickyOpen(id)
+                    });
                 }
             }
             // The strip shows the newest sticky notice; clicking it dismisses
@@ -2638,6 +2667,20 @@ impl IslandState {
         }
     }
 
+    /// The id of the sticky note whose reminder is what the island shows: the
+    /// notice, or the open panel's strip. Its chips act only then.
+    fn sticky_reminder_shown(&self) -> Option<String> {
+        let notice = match self.view() {
+            View::Notice(n) => n.clone(),
+            View::Panel(_) => self.waiting_strip()?.clone(),
+            _ => return None,
+        };
+        match notice.kind {
+            NoticeKind::StickyReminder { id } => Some(id),
+            _ => None,
+        }
+    }
+
     /// Removes the sticky notice for `key`, including a brief fullscreen copy
     /// that is queued or showing, so a resolved wait or a dismissed reminder is
     /// never displayed.
@@ -2674,6 +2717,8 @@ impl IslandState {
                 session_id: session_id.clone(),
             }),
             NoticeKind::Reminder { id } => Some(Effect::ReminderDone(id.clone())),
+            // The strip's click, and the notice's body: "Buka".
+            NoticeKind::StickyReminder { id } => Some(Effect::StickyOpen(id.clone())),
             NoticeKind::MoleFailed => {
                 self.open_mole_log();
                 None
@@ -2701,6 +2746,7 @@ impl IslandState {
             NoticeKind::ClaudeDone { session_id } => Some(Effect::OpenClaudeSession { session_id }),
             NoticeKind::ClaudeWaiting { .. }
             | NoticeKind::Reminder { .. }
+            | NoticeKind::StickyReminder { .. }
             | NoticeKind::MoleFailed => self.dismiss_sticky(&notice),
             NoticeKind::MoleDone => {
                 self.open_mole_log();
@@ -3116,6 +3162,8 @@ enum DropVisit {
 enum Sticky<'a> {
     Session(&'a str),
     Reminder(&'a str),
+    /// A sticky note's reminder, by note id.
+    StickyNote(&'a str),
     /// The failed Mole clean (one at a time).
     Mole,
     /// The update offer (one at a time, whatever the version).
@@ -3142,6 +3190,7 @@ fn sticky_key(notice: &Notice) -> Option<Sticky<'_>> {
     match &notice.kind {
         NoticeKind::ClaudeWaiting { session_id } => Some(Sticky::Session(session_id)),
         NoticeKind::Reminder { id } => Some(Sticky::Reminder(id)),
+        NoticeKind::StickyReminder { id } => Some(Sticky::StickyNote(id)),
         NoticeKind::MoleFailed => Some(Sticky::Mole),
         NoticeKind::UpdateAvailable { .. } => Some(Sticky::Update),
         _ => None,
@@ -10443,5 +10492,88 @@ mod tests {
         // The second one met a busy notch fresh: a slot, no latch from the
         // first one's full time.
         assert_eq!(s.toast_form(), Some(ToastForm::Slot));
+    }
+
+    // ---- sticky note reminders ----
+
+    fn sticky_reminder(id: &str) -> Notice {
+        Notice {
+            key: format!("vale-sticky-remind-{id}"),
+            source: "Vale".into(),
+            title: format!("Belanja {id}"),
+            body: "17.00".into(),
+            kind: NoticeKind::StickyReminder { id: id.into() },
+        }
+    }
+
+    #[test]
+    fn a_sticky_note_reminder_is_sticky_has_no_close_button_and_one_slot_per_note() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Notice(sticky_reminder("a")), t0);
+        assert_eq!(s.view(), View::Notice(sticky_reminder("a")));
+        assert!(!notice_closable(&sticky_reminder("a")), "not closable by x, like a reminder");
+        assert!(notice_has_action(&sticky_reminder("a")));
+        // It outlives the notice time: it is sticky.
+        s.apply(Event::Tick, t0 + NOTICE_DURATION + secs(1));
+        assert_eq!(s.view(), View::Notice(sticky_reminder("a")));
+        // The same note again replaces its slot; another note has its own.
+        s.apply(Event::Notice(sticky_reminder("a")), t0 + secs(30));
+        s.apply(Event::Notice(sticky_reminder("b")), t0 + secs(31));
+        assert_eq!(s.view(), View::Notice(sticky_reminder("b")), "the newest is shown");
+        s.apply(Event::StickyReminderCleared("b".into()), t0 + secs(32));
+        assert_eq!(s.view(), View::Notice(sticky_reminder("a")), "a's slot stayed");
+        s.apply(Event::StickyReminderCleared("a".into()), t0 + secs(33));
+        assert_eq!(s.view(), View::Idle);
+        s.apply(Event::StickyReminderCleared("gone".into()), t0 + secs(34));
+    }
+
+    #[test]
+    fn the_chips_snooze_and_open_and_the_body_is_open() {
+        let t0 = Instant::now();
+        for (hit, want) in [
+            (Hit::StickySnooze, Effect::StickySnooze("a".into())),
+            (Hit::StickyOpen, Effect::StickyOpen("a".into())),
+            (Hit::Body, Effect::StickyOpen("a".into())),
+        ] {
+            let mut s = st();
+            s.apply(Event::Notice(sticky_reminder("a")), t0);
+            assert_eq!(s.apply(Event::Click(hit.clone()), t0 + secs(1)), vec![want], "{hit:?}");
+            assert_eq!(s.view(), View::Idle, "{hit:?} takes the notice down");
+        }
+        // A chip with no sticky reminder showing does nothing.
+        let mut s = st();
+        assert_eq!(s.apply(Event::Click(Hit::StickySnooze), t0), vec![]);
+        assert_eq!(s.apply(Event::Click(Hit::StickyOpen), t0), vec![]);
+    }
+
+    #[test]
+    fn a_sticky_note_reminder_over_an_open_panel_is_the_strip_and_its_click_opens_the_note() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Notice(sticky_reminder("a")), t0);
+        s.apply(Event::Hover(true), t0 + secs(1));
+        s.apply(Event::Hover(false), t0 + secs(2));
+        s.apply(Event::Hover(true), t0 + secs(3));
+        if matches!(s.view(), View::Panel(_)) {
+            assert_eq!(s.waiting_strip().map(|n| n.kind.clone()), Some(sticky_reminder("a").kind));
+            assert_eq!(
+                s.apply(Event::Click(Hit::StickyOpen), t0 + secs(4)),
+                vec![Effect::StickyOpen("a".into())]
+            );
+        }
+    }
+
+    #[test]
+    fn a_sticky_note_reminder_in_fullscreen_shows_briefly_and_returns() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Fullscreen(true), t0);
+        s.apply(Event::Notice(sticky_reminder("a")), t0);
+        assert_eq!(s.view(), View::Notice(sticky_reminder("a")));
+        s.apply(Event::Tick, t0 + secs(5));
+        assert_eq!(s.view(), View::Hidden);
+        s.apply(Event::Fullscreen(false), t0 + secs(6));
+        assert_eq!(s.view(), View::Notice(sticky_reminder("a")));
     }
 }

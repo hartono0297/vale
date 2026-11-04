@@ -185,7 +185,7 @@ use phone_page::{PhoneState, TIMER_PHONE};
 
 #[path = "app_widgets.rs"]
 mod widgets_page;
-use widgets_page::{TIMER_WIDGET_SAVE, WidgetsState};
+use widgets_page::{TIMER_STICKY_REMIND, TIMER_WIDGET_SAVE, WidgetsState};
 
 #[path = "app_shot.rs"]
 mod shot;
@@ -636,6 +636,8 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
         }
         // Reminders that came due while the island was off ring now.
         app.fire_reminders(true);
+        // The sticky notes' too: the ones that came due while it was off.
+        app.sticky_remind_fire();
         // The updated notice, the update timer and the leftover cleanup.
         app.update_start(updated_from);
         unsafe {
@@ -2251,6 +2253,8 @@ impl App {
                 }
                 self.arm_reminders();
             }
+            Effect::StickySnooze(id) => self.sticky_snooze(&id),
+            Effect::StickyOpen(id) => self.sticky_open(&id),
             Effect::OpenSettings => DEFERRED_OPEN_SETTINGS.set(true),
             Effect::InstallUpdate => self.update_install(),
             Effect::OpenReleases => self.update_open_releases(),
@@ -5052,6 +5056,9 @@ impl App {
     /// showing clock redraws now and re-aligns to the new minute boundary.
     fn on_clock_jump(&mut self) {
         self.fire_reminders(false);
+        // The sticky notes' reminders too: the missed ones fire, and the
+        // one-shot is armed for the new time.
+        self.sticky_remind_fire();
         if !self.clock_timer {
             return;
         }
@@ -5105,6 +5112,7 @@ impl App {
             }
             TIMER_NOTIF_SAVE => self.on_notif_timer(),
             TIMER_WIDGET_SAVE => self.on_widget_timer(),
+            TIMER_STICKY_REMIND => self.sticky_remind_fire(),
             clip::TIMER_CLIP_RETRY | clip::TIMER_CLIP_SAVE | clip::TIMER_CLIP_HOLD => {
                 self.on_clip_timer(id)
             }
@@ -7647,6 +7655,18 @@ fn island_notice(key: &str, title: &str, body: &str) -> Notice {
     }
 }
 
+/// A sticky note's reminder went off: the note's title over its time, with
+/// "Tunda 10 mnt" and "Buka". Sticky, one per note.
+fn sticky_reminder_notice(id: &str, title: &str, body: &str) -> Notice {
+    Notice {
+        key: format!("vale-sticky-remind-{id}"),
+        source: "Vale".into(),
+        title: title.into(),
+        body: body.into(),
+        kind: NoticeKind::StickyReminder { id: id.to_owned() },
+    }
+}
+
 /// At startup: notes.json exists but could not be read or parsed.
 fn notes_unreadable_notice(notes: &NotesStore) -> Option<Notice> {
     notes.load_failed().then(|| {
@@ -9798,6 +9818,7 @@ mod tests {
             TIMER_PHONE,
             TIMER_WIDGET_SAVE,
             crate::widgets::host::TIMER_WIDGET_CARET,
+            TIMER_STICKY_REMIND,
         ];
         assert_eq!(TIMER_PHONE, 48);
         // 42-47 are taken by other runs (the lyrics card's and the widgets'
@@ -9805,6 +9826,7 @@ mod tests {
         assert!(!(42..48).contains(&TIMER_PHONE));
         assert_eq!(TIMER_WIDGET_SAVE, 45);
         assert_eq!(crate::widgets::host::TIMER_WIDGET_CARET, 46);
+        assert_eq!(TIMER_STICKY_REMIND, 47);
         assert_eq!(TIMER_POINTER, 33);
         assert_eq!(TIMER_NOTIF_SAVE, 34);
         assert_eq!(TIMER_TYPING, 40);

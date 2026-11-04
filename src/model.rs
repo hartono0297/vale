@@ -158,6 +158,13 @@ pub enum NoticeKind {
     /// "Vale sudah versi terbaru", "Diperbarui ke X.Y.Z", the debug-build
     /// note: temporary, a click dismisses.
     UpdateInfo,
+    /// A sticky note's reminder went off: the note's title over its time,
+    /// with the chips "Tunda 10 mnt" and "Buka". Sticky like `Reminder` (one
+    /// slot per note `id`, hidden in fullscreen, no close button); a click on
+    /// the body is "Buka".
+    StickyReminder {
+        id: String,
+    },
 }
 
 /// What the Arranged notice offers beside "Batalkan".
@@ -250,6 +257,9 @@ pub enum Event {
     /// The reminder was edited, deleted or dismissed elsewhere: its sticky
     /// notice goes.
     ReminderCleared(String),
+    /// A sticky note's reminder was snoozed, cleared, opened or its note
+    /// went: its sticky notice goes.
+    StickyReminderCleared(String),
     /// A check found no newer release (the one offered was pulled): `App`
     /// forgot it, so the sticky update offer goes too.
     UpdateWithdrawn,
@@ -498,6 +508,10 @@ pub enum Hit {
     /// The update offer's "Nanti" chip (notice or strip): clear the offer; the
     /// next check offers again.
     UpdateLater,
+    /// The sticky note reminder's "Tunda 10 mnt" chip (notice or strip).
+    StickySnooze,
+    /// The sticky note reminder's "Buka" chip (notice or strip).
+    StickyOpen,
     /// The panel header's Settings button, at the top right of every page:
     /// opens Vale's Settings window.
     OpenSettings,
@@ -696,6 +710,11 @@ pub enum Effect {
     OpenReminderEditor(Option<String>),
     /// A due reminder's notice was clicked: done, or on to its next time.
     ReminderDone(String),
+    /// A sticky note's "Tunda 10 mnt": remind again in ten minutes.
+    StickySnooze(String),
+    /// A sticky note's "Buka" (or a click on the notice): the note takes the
+    /// keyboard and its reminder is cleared.
+    StickyOpen(String),
     /// The Musik page's lyric button changed the setting; save it.
     SaveLyrics(bool),
     /// The Musik page's lyrics card button: open or close the card (`App`

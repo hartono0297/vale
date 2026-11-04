@@ -1384,7 +1384,8 @@ impl NoticeSort {
     pub fn of(kind: &NoticeKind) -> Self {
         match kind {
             NoticeKind::App { .. } => NoticeSort::App,
-            NoticeKind::Reminder { .. } => NoticeSort::Reminder,
+            // A sticky note's reminder looks like a reminder.
+            NoticeKind::Reminder { .. } | NoticeKind::StickyReminder { .. } => NoticeSort::Reminder,
             NoticeKind::Pomodoro => NoticeSort::PomodoroDone,
             NoticeKind::ClaudeWaiting { .. } => NoticeSort::ClaudeWaiting,
             NoticeKind::ClaudeDone { .. } => NoticeSort::ClaudeDone,

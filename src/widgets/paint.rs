@@ -33,7 +33,7 @@ use crate::ui::geometry::Rect;
 use crate::ui::icons::{Icon, IconSet};
 use crate::ui::robot::{Expr, Pose, RobotPainter};
 use crate::widgets::checklist::{self, Line};
-use crate::widgets::sticky::{ROLLED_H, TextSize, Tones};
+use crate::widgets::sticky::{ROLLED_H, TextSize, Tones, chip_tones};
 
 // ------------------------------------------------------------------ geometry
 
@@ -58,6 +58,20 @@ const CAT_SIZE: f32 = 44.0;
 const CAT_VISIBLE_ROWS: f32 = 47.0;
 /// The accent frame the Settings gallery's highlight draws.
 const FRAME_W: f32 = 3.0;
+/// How long a reminder shakes its note, in ms, and how far it goes (dip).
+pub const WIGGLE_MS: f32 = 600.0;
+const WIGGLE_DIP: f32 = 4.0;
+
+/// The note's sideways shake `ms` after a reminder fired: a few quick swings
+/// that die away inside the window's margin. Zero before it starts and after
+/// `WIGGLE_MS`.
+pub fn wiggle_dx(ms: f32) -> f32 {
+    if !(0.0..WIGGLE_MS).contains(&ms) {
+        return 0.0;
+    }
+    let t = ms / WIGGLE_MS;
+    WIGGLE_DIP * (1.0 - t) * (1.0 - t) * (t * std::f32::consts::TAU * 4.0).sin()
+}
 
 /// The header's buttons, left to right.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -567,6 +581,10 @@ pub struct Scene<'a> {
     pub selection: Option<(usize, usize)>,
     pub caret_on: bool,
     pub guides: &'a [GuideLine],
+    /// The whole note is shifted sideways by this (the reminder's shake), dip.
+    pub dx: f32,
+    /// The reminder chip: its text, and whether it is overdue.
+    pub chip: Option<(String, bool)>,
     /// The gallery's highlight frame, 0 to 1.
     pub highlight: f32,
     /// The cat above the note, and its coat.
@@ -597,7 +615,7 @@ pub fn draw(c: &Canvas, res: &Res, s: &Scene) {
     };
     let m = margins();
     let h = shown_h(s.h, s.rolled);
-    let (ox, oy) = (m.0, m.1);
+    let (ox, oy) = (m.0 + s.dx, m.1);
     unsafe {
         rt.SetTransform(&Matrix3x2::scale(s.scale, s.scale));
     }
@@ -718,12 +736,47 @@ pub fn draw(c: &Canvas, res: &Res, s: &Scene) {
         }
     };
     let right_edge = button_rect(Btn::Pin, s.w).x;
+    // The reminder chip, right-aligned in the strip, fading with the date.
+    let mut date_end = right_edge;
+    if let Some((label, overdue)) = &s.chip
+        && s.header < 1.0
+    {
+        let (fill, ink) = chip_tones(t, *overdue);
+        let tw = text_width(res, label, CHIP_TEXT, 600);
+        let (cw, ch) = (tw + 2.0 * CHIP_PAD + CHIP_ICON + 3.0, CHIP_H);
+        let cx = (s.w - PAD_X - cw).max(PAD_X);
+        let cy = (HEADER_H - ch) / 2.0;
+        let a = 1.0 - s.header;
+        set(fill, a);
+        unsafe {
+            rt.FillRoundedRectangle(&rr(ox + cx, oy + cy, cw, ch, ch / 2.0), brush);
+        }
+        icon(
+            Icon::Bell,
+            Rect { x: cx + CHIP_PAD - 1.0, y: cy + (ch - CHIP_ICON - 2.0) / 2.0, w: CHIP_ICON + 2.0, h: CHIP_ICON + 2.0 },
+            ink,
+            a,
+        );
+        line_text(
+            label,
+            ox + cx + CHIP_PAD + CHIP_ICON + 3.0,
+            oy + cy,
+            tw + 2.0,
+            ch,
+            CHIP_TEXT,
+            600,
+            ink,
+            a,
+            false,
+        );
+        date_end = date_end.min(cx - 6.0);
+    }
     if s.header < 1.0 {
         line_text(
             &s.date,
             ox + PAD_X,
             oy,
-            (right_edge - PAD_X).max(0.0),
+            (date_end - PAD_X).max(0.0),
             HEADER_H,
             10.5,
             400,
@@ -962,6 +1015,25 @@ fn draw_body(
     unsafe { rt.PopAxisAlignedClip() };
 }
 
+/// The reminder chip's text size, padding, height and bell (dip).
+const CHIP_TEXT: f32 = 10.0;
+const CHIP_PAD: f32 = 7.0;
+const CHIP_H: f32 = 18.0;
+const CHIP_ICON: f32 = 10.0;
+
+/// How wide `text` is laid out in one line, dip.
+fn text_width(res: &Res, text: &str, size: f32, weight: u16) -> f32 {
+    res.layout(text, size, weight, 2000.0)
+        .ok()
+        .and_then(|l| {
+            let mut m = DWRITE_TEXT_METRICS::default();
+            unsafe { l.GetMetrics(&mut m) }
+                .ok()
+                .map(|_| m.widthIncludingTrailingWhitespace)
+        })
+        .unwrap_or(0.0)
+}
+
 /// The cat's face above a note: Happy while every item is done, else Idle.
 pub fn peek_face(note_text: &str) -> Expr {
     if checklist::all_done(note_text) {
@@ -1078,6 +1150,30 @@ mod tests {
         assert_eq!(wh, 208.0 + 2.0 * SHADOW + CAT_ROOM);
         assert_eq!(shown_h(208.0, true), ROLLED_H);
         assert_eq!(shown_h(208.0, false), 208.0);
+    }
+
+    #[test]
+    fn the_shake_starts_and_ends_still_and_stays_in_the_margin() {
+        assert_eq!(wiggle_dx(0.0), 0.0);
+        assert_eq!(wiggle_dx(-5.0), 0.0);
+        assert_eq!(wiggle_dx(WIGGLE_MS), 0.0);
+        assert_eq!(wiggle_dx(10_000.0), 0.0);
+        let mut peak: f32 = 0.0;
+        let mut moved = false;
+        let mut ms = 0.0;
+        while ms < WIGGLE_MS {
+            let dx = wiggle_dx(ms);
+            peak = peak.max(dx.abs());
+            moved |= dx.abs() > 0.5;
+            ms += 5.0;
+        }
+        assert!(moved, "it really moves");
+        assert!(peak <= WIGGLE_DIP, "{peak}");
+        assert!(peak < SHADOW, "inside the margin, with room for the shadow");
+        // It decays: the late swings are smaller than the early ones.
+        let early = (0..20).map(|i| wiggle_dx(i as f32 * 5.0).abs()).fold(0.0, f32::max);
+        let late = (0..20).map(|i| wiggle_dx(500.0 + i as f32 * 5.0).abs()).fold(0.0, f32::max);
+        assert!(late < early);
     }
 
     #[test]

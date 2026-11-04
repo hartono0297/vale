@@ -22,6 +22,11 @@ pub struct Outcome {
     pub beside: Vec<String>,
     /// "Kucing ngintip" was switched from a note's popover.
     pub cat_peek: Option<bool>,
+    /// A reminder was set or cleared: the timer is armed again and the
+    /// notices are settled.
+    pub reminders: bool,
+    /// Notes that came off the desktop or went: their notices go too.
+    pub gone: Vec<String>,
 }
 
 /// Edits note `id`'s sticky part. False when it has none or nothing changed.
@@ -31,6 +36,16 @@ fn edit_sticky(notes: &mut NotesStore, id: &str, f: impl FnOnce(&mut Sticky)) ->
     };
     f(&mut s);
     notes.set_sticky(id, Some(s))
+}
+
+/// Note `id`'s reminder set to `at` (unix seconds; `None` clears it), not
+/// fired. `fired` marks it as gone off (the island's timer). False when the
+/// note has no sticky part or nothing changed.
+pub fn set_reminder(notes: &mut NotesStore, id: &str, at: Option<i64>, fired: bool) -> bool {
+    edit_sticky(notes, id, |s| {
+        s.remind_at = at;
+        s.remind_fired = fired && at.is_some();
+    })
 }
 
 /// Applies `events` in order. `unix` is now, for the edit time of a text.
@@ -57,6 +72,10 @@ pub fn apply(notes: &mut NotesStore, events: Vec<WidgetEvent>, unix: i64) -> Out
             WidgetEvent::Rolled { id, on } => {
                 out.changed |= edit_sticky(notes, &id, |s| s.rolled = on);
             }
+            WidgetEvent::Remind { id, at } => {
+                out.changed |= set_reminder(notes, &id, at, false);
+                out.reminders = true;
+            }
             WidgetEvent::Touched { id, at } => {
                 out.changed |= edit_sticky(notes, &id, |s| s.touched = at);
             }
@@ -66,11 +85,17 @@ pub fn apply(notes: &mut NotesStore, events: Vec<WidgetEvent>, unix: i64) -> Out
                 let done = notes.set_sticky(&id, None);
                 out.changed |= done;
                 out.structural |= done;
+                if done {
+                    out.gone.push(id);
+                }
             }
             WidgetEvent::Delete { id } => {
                 let done = notes.delete(&id);
                 out.changed |= done;
                 out.structural |= done;
+                if done {
+                    out.gone.push(id);
+                }
             }
             WidgetEvent::NeedsClock => out.clock = true,
         }
@@ -133,6 +158,7 @@ mod tests {
     use crate::capture::Rect;
     use crate::widgets::sticky::{Paper, TextSize};
     use std::path::PathBuf;
+
 
     fn display(n: usize, x: i32, primary: bool, path: &str) -> Display {
         Display {
@@ -239,6 +265,44 @@ mod tests {
     }
 
     #[test]
+    fn a_reminder_is_set_and_cleared() {
+        let mut notes = store("remind");
+        let id = id_of(&mut notes);
+        let out = apply(
+            &mut notes,
+            vec![WidgetEvent::Remind { id: id.clone(), at: Some(5_000) }],
+            1,
+        );
+        assert!(out.changed && out.reminders && !out.structural);
+        let s = notes.get(&id).unwrap().sticky.clone().unwrap();
+        assert_eq!((s.remind_at, s.remind_fired), (Some(5_000), false));
+        // The timer marks it fired; a new time (a snooze) un-fires it.
+        assert!(set_reminder(&mut notes, &id, Some(5_000), true));
+        assert!(notes.get(&id).unwrap().sticky.as_ref().unwrap().remind_fired);
+        apply(
+            &mut notes,
+            vec![WidgetEvent::Remind { id: id.clone(), at: Some(5_600) }],
+            1,
+        );
+        let s = notes.get(&id).unwrap().sticky.clone().unwrap();
+        assert_eq!((s.remind_at, s.remind_fired), (Some(5_600), false));
+        // Clearing it.
+        let out = apply(
+            &mut notes,
+            vec![WidgetEvent::Remind { id: id.clone(), at: None }],
+            1,
+        );
+        assert!(out.changed && out.reminders);
+        let s = notes.get(&id).unwrap().sticky.clone().unwrap();
+        assert_eq!((s.remind_at, s.remind_fired), (None, false));
+        // Clearing it again changes nothing to save (the owner still re-arms).
+        let out = apply(&mut notes, vec![WidgetEvent::Remind { id, at: None }], 1);
+        assert!(!out.changed && out.reminders);
+        // A note that is gone: nothing changes.
+        assert!(!set_reminder(&mut notes, "n0-nope", Some(1), false));
+    }
+
+    #[test]
     fn unsticking_and_deleting_are_structural() {
         let mut notes = store("structural");
         let empty = id_of(&mut notes);
@@ -255,6 +319,7 @@ mod tests {
             3,
         );
         assert!(out.changed && out.structural);
+        assert_eq!(out.gone, vec![empty.clone(), kept.clone(), gone.clone()], "their notices go");
         assert!(notes.get(&empty).is_none(), "an empty note leaves nothing");
         assert!(notes.get(&kept).is_some_and(|n| n.sticky.is_none()));
         assert!(notes.get(&gone).is_none());

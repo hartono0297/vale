@@ -186,6 +186,10 @@ impl TextSize {
     }
 }
 
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Sticky {
     pub paper: Paper,
@@ -197,6 +201,15 @@ pub struct Sticky {
     pub monitor: String,
     /// Unix seconds of the last touch: the most recent one gets the cat.
     pub touched: i64,
+    /// "Ingatkan aku": unix seconds the note reminds at. Not written while
+    /// there is none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remind_at: Option<i64>,
+    /// The reminder went off (the note was raised and the island told). Until
+    /// the note is opened, or the reminder cleared or snoozed, it is overdue.
+    /// Not written while false.
+    #[serde(skip_serializing_if = "is_false")]
+    pub remind_fired: bool,
 }
 
 impl Default for Sticky {
@@ -209,6 +222,8 @@ impl Default for Sticky {
             rect: DipRect::new(0.0, 0.0, DEFAULT_W, DEFAULT_H),
             monitor: String::new(),
             touched: 0,
+            remind_at: None,
+            remind_fired: false,
         }
     }
 }
@@ -236,6 +251,7 @@ pub fn lenient(v: &Value) -> Option<Sticky> {
     let map = v.as_object()?;
     let d = Sticky::default();
     let flag = |key: &str| map.get(key).and_then(Value::as_bool).unwrap_or(false);
+    let remind_at = map.get("remind_at").and_then(Value::as_i64);
     let rect = map.get("rect").and_then(Value::as_object);
     let at = |key: &str, default: f32| number(rect.and_then(|r| r.get(key)), default);
     Some(Sticky {
@@ -263,6 +279,9 @@ pub fn lenient(v: &Value) -> Option<Sticky> {
             .unwrap_or_default()
             .to_owned(),
         touched: map.get("touched").and_then(Value::as_i64).unwrap_or(0),
+        remind_at,
+        // A fired flag without a time means nothing.
+        remind_fired: flag("remind_fired") && remind_at.is_some(),
     })
 }
 
@@ -334,6 +353,46 @@ pub fn tones(paper: Paper, island: &Palette, accent: Accent) -> Tones {
     }
 }
 
+/// WCAG relative luminance of an `0xRRGGBB` colour.
+pub fn luminance(rgb: u32) -> f64 {
+    let lin = |shift: u32| {
+        let c = ((rgb >> shift) & 0xFF) as f64 / 255.0;
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * lin(16) + 0.7152 * lin(8) + 0.0722 * lin(0)
+}
+
+/// WCAG contrast ratio of two opaque colours.
+pub fn contrast(a: u32, b: u32) -> f64 {
+    let (la, lb) = (luminance(a), luminance(b));
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+}
+
+/// White or black, whichever reads better on `fill` (at least 4.5:1 on any
+/// fill: the two cross over at 4.58:1).
+pub fn readable_on(fill: u32) -> u32 {
+    if contrast(0xFFFFFF, fill) >= contrast(0x000000, fill) {
+        0xFFFFFF
+    } else {
+        0x000000
+    }
+}
+
+/// The header's reminder chip, `(fill, ink)`: a faint tint of the text at
+/// rest, the paper's accent once the reminder is overdue. The ink holds 4.5:1
+/// on its fill on every paper and surface (a test checks).
+pub fn chip_tones(t: &Tones, overdue: bool) -> (u32, u32) {
+    if overdue {
+        (t.accent, readable_on(t.accent))
+    } else {
+        (blend(t.body, t.fill, 0.12), t.body)
+    }
+}
+
 // ------------------------------------------------------------------ labels
 
 /// "2 dari 4 · diubah 13.22" for a checklist, else the edit time as the
@@ -380,23 +439,6 @@ mod tests {
     use crate::theme::{Surface, WindowTheme, island, window_for};
     use serde_json::json;
 
-    fn luminance(rgb: u32) -> f64 {
-        let lin = |shift: u32| {
-            let c = ((rgb >> shift) & 0xFF) as f64 / 255.0;
-            if c <= 0.04045 {
-                c / 12.92
-            } else {
-                ((c + 0.055) / 1.055).powf(2.4)
-            }
-        };
-        0.2126 * lin(16) + 0.7152 * lin(8) + 0.0722 * lin(0)
-    }
-
-    fn contrast(a: u32, b: u32) -> f64 {
-        let (la, lb) = (luminance(a), luminance(b));
-        (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
-    }
-
     const SURFACES: [Surface; 6] = [
         Surface::Espresso,
         Surface::Graphite,
@@ -427,6 +469,29 @@ mod tests {
                     }
                     let c = contrast(t.accent, t.fill);
                     assert!(c >= 3.0, "{paper:?} accent on {surface:?}/{accent:?}: {c:.2}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_reminder_chip_reads_on_every_paper_and_surface() {
+        for surface in SURFACES {
+            for accent in Accent::ALL {
+                let island = island(*accent, surface);
+                for paper in Paper::ALL {
+                    let t = tones(paper, &island, *accent);
+                    for overdue in [false, true] {
+                        let (fill, ink) = chip_tones(&t, overdue);
+                        let c = contrast(ink, fill);
+                        assert!(
+                            c >= 4.5,
+                            "{paper:?} chip (overdue {overdue}) on {surface:?}/{accent:?}: {c:.2}"
+                        );
+                    }
+                    // The overdue chip stands out of the paper.
+                    let (fill, _) = chip_tones(&t, true);
+                    assert!(contrast(fill, t.fill) >= 3.0, "{paper:?} {surface:?}/{accent:?}");
                 }
             }
         }
@@ -495,6 +560,8 @@ mod tests {
             rect: DipRect::new(16.0, 24.5, 300.0, 200.0),
             monitor: r"\\?\DISPLAY#X".into(),
             touched: 1_700_000_000,
+            remind_at: Some(1_700_003_600),
+            remind_fired: true,
         };
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(lenient(&json), Some(s));
@@ -510,7 +577,7 @@ mod tests {
         let s = lenient(&json!({
             "paper": 5, "text_size": "XL", "pinned": "yes", "rolled": 1,
             "rect": {"x": "a", "y": null, "w": 1.0, "h": 99999},
-            "monitor": 3, "touched": "now",
+            "monitor": 3, "touched": "now", "remind_at": "soon", "remind_fired": true,
         }))
         .unwrap();
         assert_eq!(s.paper, Paper::Krem);
@@ -519,6 +586,10 @@ mod tests {
         assert_eq!(s.rect, DipRect::new(0.0, 0.0, MIN_W, MAX_H), "clamped, place 0");
         assert_eq!(s.monitor, "");
         assert_eq!(s.touched, 0);
+        assert_eq!(s.remind_at, None, "a wrong type is none");
+        assert!(!s.remind_fired, "and a fired flag with no time is false");
+        let s = lenient(&json!({"remind_at": 1.5, "remind_fired": "yes"})).unwrap();
+        assert_eq!((s.remind_at, s.remind_fired), (None, false));
         // A rect that is not an object is the default size.
         let s = lenient(&json!({"rect": [1, 2]})).unwrap();
         assert_eq!(s.rect, Sticky::default().rect);

@@ -13,6 +13,15 @@
 //! move (`widgets_moving` in `animating_at`). The fullscreen check rides the
 //! existing 1 s `TIMER_SYSTEM` tick and does nothing unless a pinned note (or
 //! the whole "Di atas jendela" layer) is on screen.
+//!
+//! Reminders ("Ingatkan aku"): exactly one more one-shot, `TIMER_STICKY_REMIND`
+//! (47) on the island's window, armed for the nearest unfired reminder
+//! (`remind::nearest`) and killed and re-armed on every reminder change, in
+//! `widgets_sync` (startup included), on a clock jump (`WM_TIMECHANGE`, resume)
+//! and on each fire. It is killed first on a fire; nothing polls. A fire marks
+//! the due notes fired, raises them (`WidgetHost::raise`) and puts one sticky
+//! notice on the island per note; the notice stays while the note is overdue
+//! and goes when it is opened, snoozed, cleared, unstuck or deleted.
 
 use std::time::Instant;
 
@@ -22,20 +31,25 @@ use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
 use super::App;
 use crate::i18n::{self, Key, tr};
 use crate::model::Event;
-use crate::widgets::apply::{apply, sticky_for};
+use crate::widgets::apply::{apply, set_reminder, sticky_for};
 use crate::widgets::host::{Ctx, WidgetHost};
 use crate::widgets::prefs::{FullscreenRule, WidgetLayer};
+use crate::widgets::remind;
 use crate::widgets::sticky::{Sticky, can_add};
 
 /// One-shot: write the notes once widget changes settle.
 pub(super) const TIMER_WIDGET_SAVE: usize = 45;
 const SAVE_MS: u32 = 1500;
+/// One-shot: the nearest sticky note reminder is due.
+pub(super) const TIMER_STICKY_REMIND: usize = 47;
 
 #[derive(Default)]
 pub(super) struct WidgetsState {
     host: Option<WidgetHost>,
     /// `TIMER_WIDGET_SAVE` is set: a write is due.
     save_due: bool,
+    /// The notes whose reminder notice is on the island.
+    reminded: Vec<String>,
 }
 
 impl App {
@@ -74,6 +88,9 @@ impl App {
             coat: config.cat_color,
             animate,
         });
+        // A reminder may have changed: the notices are settled and the one
+        // timer follows the new nearest one.
+        self.sticky_remind_settle();
     }
 
     /// The config was adopted (a save, a hand edit): the widgets follow it and
@@ -211,6 +228,9 @@ impl App {
         for id in out.beside {
             self.new_sticky(Some(&id));
         }
+        if out.reminders || !out.gone.is_empty() {
+            self.sticky_remind_settle();
+        }
         if changed {
             self.arm_widget_save();
             // The Notes page shows the same notes: it follows what is typed.
@@ -223,6 +243,109 @@ impl App {
             self.ensure_clock();
         }
         structural
+    }
+
+    // ------------------------------------------------------------ reminders
+
+    /// Arms `TIMER_STICKY_REMIND` for the nearest unfired reminder, or leaves
+    /// it killed when there is none. A wait longer than a timer takes is
+    /// clamped; the fire just recomputes.
+    fn sticky_remind_arm(&self) {
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), TIMER_STICKY_REMIND);
+            if let Some(at) = remind::nearest(self.notes.list()) {
+                let wait = remind::wait_ms(at, Local::now().timestamp());
+                SetTimer(Some(self.hwnd), TIMER_STICKY_REMIND, wait, None);
+            }
+        }
+    }
+
+    /// The notice of every note that is not overdue any more (snoozed, cleared,
+    /// opened, unstuck, deleted) comes down; the timer is armed again.
+    pub(super) fn sticky_remind_settle(&mut self) {
+        let unix = Local::now().timestamp();
+        let stale: Vec<String> = self
+            .widgets
+            .reminded
+            .iter()
+            .filter(|id| {
+                !self
+                    .notes
+                    .get(id)
+                    .and_then(|n| n.sticky.as_ref())
+                    .is_some_and(|s| remind::overdue(s, unix))
+            })
+            .cloned()
+            .collect();
+        for id in stale {
+            self.widgets.reminded.retain(|r| *r != id);
+            self.apply_now(Event::StickyReminderCleared(id));
+        }
+        self.sticky_remind_arm();
+    }
+
+    /// `TIMER_STICKY_REMIND`, startup and a clock jump: the reminders that are
+    /// due (also the ones missed while the PC was off or asleep) fire. Killed
+    /// first; re-armed for the next one.
+    pub(super) fn sticky_remind_fire(&mut self) {
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), TIMER_STICKY_REMIND);
+        }
+        let unix = Local::now().timestamp();
+        let due = remind::due(self.notes.list(), unix);
+        if due.is_empty() {
+            self.sticky_remind_arm();
+            return;
+        }
+        let mut notices = Vec::new();
+        for id in &due {
+            let Some(note) = self.notes.get(id) else { continue };
+            let Some(at) = note.sticky.as_ref().and_then(|s| s.remind_at) else {
+                continue;
+            };
+            let title = crate::widgets::checklist::title_of(&note.text);
+            let title = if title.is_empty() {
+                tr(Key::StickyNoteTitle).to_owned()
+            } else {
+                title
+            };
+            let body = remind::chip_label(i18n::lang(), remind::from_unix(at), Local::now().date_naive());
+            notices.push((id.clone(), title, body));
+            set_reminder(&mut self.notes, id, Some(at), true);
+        }
+        self.arm_widget_save();
+        self.widgets_sync();
+        if let Some(host) = self.widgets.host.as_mut() {
+            host.raise(&due);
+        }
+        for (id, title, body) in notices {
+            if !self.widgets.reminded.contains(&id) {
+                self.widgets.reminded.push(id.clone());
+            }
+            self.apply_now(Event::Notice(super::sticky_reminder_notice(&id, &title, &body)));
+        }
+        self.sync_settings();
+        self.sticky_remind_arm();
+    }
+
+    /// "Tunda 10 mnt": remind again ten minutes from now.
+    pub(super) fn sticky_snooze(&mut self, id: &str) {
+        let at = remind::snooze(Local::now().timestamp());
+        if set_reminder(&mut self.notes, id, Some(at), false) {
+            self.arm_widget_save();
+        }
+        self.widgets_sync();
+    }
+
+    /// "Buka": the note's reminder is done, and the note takes the keyboard.
+    pub(super) fn sticky_open(&mut self, id: &str) {
+        if set_reminder(&mut self.notes, id, None, false) {
+            self.arm_widget_save();
+        }
+        self.widgets_sync();
+        if let Some(host) = self.widgets.host.as_mut() {
+            host.focus(id);
+        }
     }
 
     // ------------------------------------------------------------ new notes

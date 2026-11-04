@@ -7,6 +7,7 @@ pub mod apply;
 pub mod checklist;
 pub mod place;
 pub mod prefs;
+pub mod remind;
 pub mod snap;
 pub mod sticky;
 
@@ -14,6 +15,7 @@ pub mod edit;
 pub mod host;
 pub mod paint;
 pub mod pop;
+pub mod remind_pop;
 
 #[cfg(debug_assertions)]
 pub mod demo;

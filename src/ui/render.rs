@@ -56,7 +56,7 @@ use super::geometry::{
     notice_action_w, notice_actions_layout, notice_actions_layout_with, notice_chip_widths,
     notice_close_rect, notice_close_regions, notice_layout_with, reminder_done_regions, shot_fit,
     shot_layout, shot_regions, shoulder_depth, toast_dot, toast_eyebrow, toast_notice_layout_with,
-    toast_slot_parts, update_offer_regions,
+    sticky_reminder_regions, toast_slot_parts, update_offer_regions,
 };
 use super::icons::{Icon, IconSet};
 use super::motion::{StripFrame, Transit};
@@ -1691,7 +1691,7 @@ impl Renderer {
                 (NoticeKind::Arranged { save }, _) => {
                     self.paint_arranged(shape, notice, *save, &frame.arrange, robot)
                 }
-                (NoticeKind::UpdateAvailable { .. }, _) => {
+                (NoticeKind::UpdateAvailable { .. } | NoticeKind::StickyReminder { .. }, _) => {
                     self.paint_update_offer(shape, notice, robot)
                 }
                 _ => self.paint_notice(
@@ -2243,7 +2243,8 @@ impl Renderer {
     /// The update offer: the badge (or Bata), the title over the body, and two
     /// chips at the right, "Nanti" (quiet) then "Update" (accent). Both are
     /// hit regions (`Hit::UpdateLater`, `Hit::UpdateNow`); the text stops
-    /// short of them.
+    /// short of them. A sticky note's reminder is the same shape with
+    /// "Tunda 10 mnt" and "Buka" (`Hit::StickySnooze`, `Hit::StickyOpen`).
     fn paint_update_offer(
         &mut self,
         shape: ShapeRect,
@@ -2290,6 +2291,12 @@ impl Renderer {
                 );
             });
         };
+        if matches!(notice.kind, NoticeKind::StickyReminder { .. }) {
+            chip(later, Key::StickySnooze, p.raised_hi, p.text);
+            chip(update, Key::Open, p.accent, p.on_accent);
+            self.regions.regions = sticky_reminder_regions(later, update);
+            return Ok(());
+        }
         chip(later, Key::UpdateLater, p.raised_hi, p.text);
         chip(update, Key::UpdateButton, p.accent, p.on_accent);
         self.regions.regions = update_offer_regions(later, update);

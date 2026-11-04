@@ -851,6 +851,9 @@ pub fn notice_action_w(kind: &NoticeKind) -> f32 {
 pub const UPDATE_CHIP_W: f32 = 56.0;
 /// The update offer's "Nanti" / "Later" chip, left of "Update".
 pub const LATER_CHIP_W: f32 = 48.0;
+/// A sticky note reminder's "Tunda 10 mnt" chip, left of its "Buka" one (which
+/// is as wide as the update offer's primary chip).
+pub const SNOOZE_CHIP_W: f32 = 88.0;
 /// Space between a notice's chips.
 pub const NOTICE_CHIP_GAP: f32 = 6.0;
 
@@ -859,6 +862,7 @@ pub const NOTICE_CHIP_GAP: f32 = 6.0;
 pub fn notice_chip_widths(kind: &NoticeKind, pomo: PomoStatus) -> Vec<f32> {
     match kind {
         NoticeKind::UpdateAvailable { .. } => vec![LATER_CHIP_W, UPDATE_CHIP_W],
+        NoticeKind::StickyReminder { .. } => vec![SNOOZE_CHIP_W, UPDATE_CHIP_W],
         _ => notice_action(kind, pomo)
             .map(|_| notice_action_w(kind))
             .into_iter()
@@ -910,6 +914,20 @@ pub fn update_offer_regions(later: Rect, update: Rect) -> Vec<Region> {
         Region {
             rect: update,
             hit: Hit::UpdateNow,
+        },
+    ]
+}
+
+/// A sticky note reminder's click targets: "Tunda 10 mnt" and "Buka".
+pub fn sticky_reminder_regions(snooze: Rect, open: Rect) -> Vec<Region> {
+    vec![
+        Region {
+            rect: snooze,
+            hit: Hit::StickySnooze,
+        },
+        Region {
+            rect: open,
+            hit: Hit::StickyOpen,
         },
     ]
 }
@@ -1276,7 +1294,7 @@ pub fn badge_style(notice: &Notice, p: &Palette, pomo_next: Phase) -> BadgeStyle
         NoticeKind::ShotSaved => tint(p.sage, Icon::Download),
         NoticeKind::ShotDeleted => tint(crate::theme::SOFT_RED, Icon::Trash),
         NoticeKind::Pomodoro => tint(p.phase(pomo_next), Icon::Timer),
-        NoticeKind::Reminder { .. } => BadgeStyle {
+        NoticeKind::Reminder { .. } | NoticeKind::StickyReminder { .. } => BadgeStyle {
             fill: p.accent,
             alpha: 1.0,
             ink: p.on_accent,
@@ -2768,6 +2786,56 @@ mod tests {
             notice_action_w(&NoticeKind::ClipPreview { id: 1 }),
             ACTION_W
         );
+    }
+
+    #[test]
+    fn a_sticky_note_reminder_has_two_chips_and_the_reminders_badge() {
+        use crate::theme::{Accent, Surface, island};
+        let p = island(Accent::Plum, Surface::Espresso);
+        let kind = NoticeKind::StickyReminder { id: "n1".into() };
+        assert_eq!(notice_action(&kind, PomoStatus::Idle), None, "two chips of its own");
+        let widths = notice_chip_widths(&kind, PomoStatus::Idle);
+        assert_eq!(widths, vec![SNOOZE_CHIP_W, UPDATE_CHIP_W]);
+        for style in [Style::Pill, Style::Notch] {
+            for robot in [false, true] {
+                let n = shape_with_robot_sized(style, NotchSize::DEFAULT, ShapeKind::Notice, robot);
+                let (l, chips) = notice_actions_layout(n, &widths);
+                let [snooze, open] = chips[..] else {
+                    panic!("two chips");
+                };
+                let tag = format!("{style:?} robot {robot}");
+                for chip in [snooze, open] {
+                    assert!(inside(n, chip), "{tag} {chip:?}");
+                    for text in [l.title, l.body, l.badge] {
+                        assert!(!intersects(chip, text), "{tag} {chip:?} {text:?}");
+                    }
+                }
+                assert!(snooze.right() + NOTICE_CHIP_GAP <= open.x + 0.001, "{tag}");
+                assert!(l.title.right() < snooze.x, "{tag}: the text stops short");
+                // Both chips are click targets; the rest is the body.
+                let regions = HitRegions {
+                    shape: Some((style, n)),
+                    regions: sticky_reminder_regions(snooze, open),
+                    ..HitRegions::default()
+                };
+                let mid = |r: Rect| (r.x + r.w / 2.0, r.y + r.h / 2.0);
+                let (x, y) = mid(snooze);
+                assert_eq!(regions.hit(x, y), Some(Hit::StickySnooze), "{tag}");
+                let (x, y) = mid(open);
+                assert_eq!(regions.hit(x, y), Some(Hit::StickyOpen), "{tag}");
+                assert_eq!(regions.hit(n.x + 30.0, n.y + n.h / 2.0), Some(Hit::Body), "{tag}");
+            }
+        }
+        // The same bell badge as a reminder.
+        let notice = Notice {
+            key: "k".into(),
+            source: "Vale".into(),
+            title: "t".into(),
+            body: "b".into(),
+            kind,
+        };
+        let badge = badge_style(&notice, &p, Phase::Focus);
+        assert_eq!((badge.fill, badge.alpha, badge.icon), (p.accent, 1.0, Some(Icon::Bell)));
     }
 
     #[test]

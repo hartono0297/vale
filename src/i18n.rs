@@ -1070,6 +1070,17 @@ keys! {
     PaperPlum => "Plum", "Plum";
     PaperLaut => "Laut", "Sea";
     PaperGelap => "Gelap", "Dark";
+    StickyNoteTitle => "Catatan tempel", "Sticky note";
+    StickyRemind => "Ingatkan aku", "Remind me";
+    StickyRemind15 => "15 mnt", "15 min";
+    StickyRemind1h => "1 jam", "1 hour";
+    StickyRemindEvening => "17.00", "17:00";
+    StickyRemindTomorrow => "besok 09.00", "tomorrow 09:00";
+    StickyRemindCustom => "Atur sendiri\u{2026}", "Custom\u{2026}";
+    StickyRemindClear => "Hapus pengingat", "Clear reminder";
+    StickySnooze => "Tunda 10 mnt", "Snooze 10 min";
+    StickyDayToday => "Hari ini", "Today";
+    StickyDayTomorrow => "Besok", "Tomorrow";
 }
 
 /// `key` in `lang`.
