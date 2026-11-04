@@ -73,6 +73,9 @@ pub struct WidgetPrefs {
     /// "Miring sedikit": every note is drawn leaning a fixed angle within 2
     /// degrees (from its id). Off by default.
     pub tilt: bool,
+    /// "Isi dari clipboard": a note made from the hotkey or the tray starts
+    /// with the copied text. Off by default.
+    pub clip_fill: bool,
 }
 
 impl Default for WidgetPrefs {
@@ -84,6 +87,7 @@ impl Default for WidgetPrefs {
             lock: false,
             cat_peek: true,
             tilt: false,
+            clip_fill: false,
         }
     }
 }
@@ -112,6 +116,7 @@ impl WidgetPrefs {
             lock: flag("lock", d.lock),
             cat_peek: flag("cat_peek", d.cat_peek),
             tilt: flag("tilt", d.tilt),
+            clip_fill: flag("clip_fill", d.clip_fill),
         }
     }
 }
@@ -119,13 +124,14 @@ impl WidgetPrefs {
 impl Serialize for WidgetPrefs {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
-        let mut map = s.serialize_map(Some(6))?;
+        let mut map = s.serialize_map(Some(7))?;
         map.serialize_entry("show", &self.show)?;
         map.serialize_entry("layer", self.layer.name())?;
         map.serialize_entry("fullscreen", self.fullscreen.name())?;
         map.serialize_entry("lock", &self.lock)?;
         map.serialize_entry("cat_peek", &self.cat_peek)?;
         map.serialize_entry("tilt", &self.tilt)?;
+        map.serialize_entry("clip_fill", &self.clip_fill)?;
         map.end()
     }
 }
@@ -146,6 +152,7 @@ mod tests {
     fn defaults_are_the_documented_ones() {
         let d = WidgetPrefs::default();
         assert!(d.show && d.cat_peek && !d.lock && !d.tilt, "tilt is off by default");
+        assert!(!d.clip_fill, "clipboard fill is off by default");
         assert_eq!(d.layer, WidgetLayer::Desktop);
         assert_eq!(d.fullscreen, FullscreenRule::Hide);
     }
@@ -166,9 +173,14 @@ mod tests {
             "lock": "yes",
             "cat_peek": false,
             "tilt": true,
+            "clip_fill": true,
         });
         let p = WidgetPrefs::from_json(&v);
         assert!(p.tilt);
+        assert!(p.clip_fill);
+        assert!(!WidgetPrefs::from_json(&json!({"clip_fill": "yes"})).clip_fill, "a wrong type is off");
+        assert!(!WidgetPrefs::from_json(&json!({"clip_fill": 1})).clip_fill);
+        assert!(!WidgetPrefs::from_json(&json!({})).clip_fill, "missing is off");
         assert!(!WidgetPrefs::from_json(&json!({"tilt": "yes"})).tilt, "a wrong type is off");
         let p = WidgetPrefs::from_json(&v);
         assert!(!p.show, "a good bool is kept");
@@ -190,6 +202,7 @@ mod tests {
             lock: true,
             cat_peek: false,
             tilt: true,
+            clip_fill: true,
         };
         let text = serde_json::to_string(&p).unwrap();
         assert_eq!(serde_json::from_str::<WidgetPrefs>(&text).unwrap(), p);

@@ -6107,6 +6107,7 @@ impl App {
             SettingsAction::WidgetsLock(on) => self.widgets_lock(on),
             SettingsAction::WidgetsPeek(on) => self.widgets_peek(on),
             SettingsAction::WidgetsTilt(on) => self.widgets_tilt(on),
+            SettingsAction::WidgetsClipFill(on) => self.widgets_clip_fill(on),
             SettingsAction::WidgetAdd(template) => {
                 self.new_sticky(None, template);
             }

@@ -61,7 +61,7 @@ pub enum EditEvent {
 
 const SUBCLASS_ID: usize = 7;
 /// A note is a note, not a document.
-const LIMIT: usize = 20_000;
+pub const LIMIT: usize = 20_000;
 
 /// The EDIT's style. `ES_AUTOHSCROLL` turns its own word wrap off: it would
 /// wrap with its own font, which is not the drawn layout, so Home and End

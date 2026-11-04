@@ -56,6 +56,7 @@ use crate::notes::Note;
 use crate::theme::{self, CatColor};
 use crate::widgets::art;
 use crate::widgets::checklist::{self, Edit};
+use crate::widgets::drop;
 use crate::widgets::mood::{self, Mood};
 use crate::widgets::edit::{self, EditEvent};
 use crate::widgets::paint::{
@@ -262,6 +263,9 @@ struct Win {
     /// Hidden by a fullscreen app on its monitor.
     away: bool,
     shown: bool,
+    /// Something a note takes is being dragged over it (the accent dashed
+    /// outline): set on an accepted `DragEnter`, cleared on a leave or a drop.
+    drop_hover: bool,
     dirty: bool,
 }
 
@@ -828,6 +832,7 @@ fn sync(ctx: &Ctx) {
     let mut created: Vec<(String, HWND)> = Vec::new();
     for n in missing {
         if let Some(hwnd) = create_window() {
+            drop::register(hwnd);
             created.push((n.id.clone(), hwnd));
         }
     }
@@ -895,6 +900,7 @@ fn sync(ctx: &Ctx) {
                 alpha_shown: 255,
                 away: false,
                 shown: false,
+                drop_hover: false,
                 dirty: true,
             });
         }
@@ -1236,6 +1242,7 @@ fn draw(s: &mut State, i: usize) {
         dx,
         chip,
         highlight,
+        drop_hover: w.drop_hover,
         peek: peek_on.then(|| mood::expr(cat_mood)),
         cat: paint::peek_look(*coat),
         frame_accent: tones.accent,
@@ -1404,6 +1411,9 @@ unsafe extern "system" fn wnd_proc(
             return LRESULT(0);
         }
         WM_DESTROY => {
+            // Every way a note window goes passes here: its drop target is
+            // revoked with it.
+            drop::revoke(hwnd);
             unsafe {
                 let _ = KillTimer(Some(hwnd), TIMER_WIDGET_CARET);
             }
@@ -1884,6 +1894,64 @@ fn apply_edit(s: &mut State, i: usize, e: &Edit) {
         }
     }
     text_changed(s, i, &before);
+}
+
+/// A drag that a note takes is over (or has left) window `hwnd`: its dashed
+/// outline shows. Called from the drop target's callbacks, which reach the
+/// state only through `with` (a busy state just skips the redraw).
+pub(super) fn drop_hover(hwnd: HWND, on: bool) {
+    let _ = with(|s| {
+        let i = idx_of(s, hwnd)?;
+        if s.wins[i].drop_hover != on {
+            s.wins[i].drop_hover = on;
+            s.wins[i].dirty = true;
+            draw(s, i);
+        }
+        Some(())
+    });
+}
+
+/// `lines` dropped onto note window `hwnd`: they go at the end of its text.
+/// While the note has the keyboard they go in through its EDIT (the selection
+/// moved to the end, `EM_REPLACESEL`, so Ctrl+Z undoes them); otherwise the
+/// text is set. Either way `text_changed` draws and announces it. A rolled
+/// note stays rolled and a locked one takes drops (Kunci posisi locks the
+/// place only). True when text was added.
+pub(super) fn drop_into(hwnd: HWND, lines: &[String]) -> bool {
+    with(|s| {
+        let i = idx_of(s, hwnd)?;
+        let before = s.wins[i].text.clone();
+        let after = drop::append_lines(&before, lines);
+        let insert = after.strip_prefix(before.as_str())?.to_owned();
+        if insert.is_empty() {
+            return None;
+        }
+        let end = before.encode_utf16().count();
+        let caret = after.encode_utf16().count();
+        // First, so the draw of the new text is the last one.
+        touch(s, i);
+        match s.wins[i].edit {
+            Some(_) => {
+                let e = Edit {
+                    start: end,
+                    end,
+                    insert,
+                    caret,
+                };
+                apply_edit(s, i, &e);
+            }
+            None => {
+                let w = &mut s.wins[i];
+                w.text = after;
+                w.sel = (caret, caret);
+                w.anchor = caret;
+                text_changed(s, i, &before);
+            }
+        }
+        Some(())
+    })
+    .flatten()
+    .is_some()
 }
 
 /// The text of note `i` changed from `before`: tell the owner, redraw.
@@ -3005,6 +3073,161 @@ mod tests {
         let now = with(|s| s.wins[0].note).unwrap();
         assert!(now.x > start.x, "the window followed");
         host.shutdown();
+    }
+
+    fn lines(v: &[&str]) -> Vec<String> {
+        v.iter().map(|l| (*l).to_owned()).collect()
+    }
+
+    #[test]
+    fn a_drop_adds_its_lines_to_a_note_without_the_keyboard() {
+        let displays = vec![display("A", 0, true, 96)];
+        // Locked and rolled: neither blocks a drop.
+        let notes = vec![note_with("n1", "Belanja", |s| s.rolled = true)];
+        let mut host = WidgetHost::new(HWND::default());
+        let mut c = ctx(&notes, &displays);
+        c.prefs.lock = true;
+        host.sync(&c);
+        let hwnd = with(|s| s.wins[0].hwnd).unwrap();
+        let _ = host.drain();
+        assert!(drop_into(hwnd, &lines(&["https://example.com", "C:\\a.txt"])));
+        let expected = "Belanja\nhttps://example.com\nC:\\a.txt";
+        assert_eq!(with(|s| s.wins[0].text.clone()).unwrap(), expected);
+        assert!(with(|s| s.wins[0].sticky.rolled).unwrap(), "a rolled note stays rolled");
+        let events = host.drain();
+        assert!(
+            events.contains(&WidgetEvent::Text {
+                id: "n1".into(),
+                text: expected.into(),
+            }),
+            "{events:?}"
+        );
+        assert!(events.iter().any(|e| matches!(e, WidgetEvent::Touched { id, .. } if id == "n1")));
+        assert!(with(|s| !s.wins[0].dirty).unwrap(), "drawn");
+        // A second drop goes after the first.
+        assert!(drop_into(hwnd, &lines(&["x"])));
+        assert_eq!(
+            with(|s| s.wins[0].text.clone()).unwrap(),
+            "Belanja\nhttps://example.com\nC:\\a.txt\nx"
+        );
+        // Nothing to add: nothing happens, no event.
+        let _ = host.drain();
+        assert!(!drop_into(hwnd, &[]));
+        assert!(host.drain().is_empty());
+        host.shutdown();
+    }
+
+    #[test]
+    fn a_drop_onto_an_empty_note_is_just_the_lines() {
+        let displays = vec![display("A", 0, true, 96)];
+        let notes = vec![note_with("n1", "", |_| {})];
+        let mut host = WidgetHost::new(HWND::default());
+        host.sync(&ctx(&notes, &displays));
+        let hwnd = with(|s| s.wins[0].hwnd).unwrap();
+        assert!(drop_into(hwnd, &lines(&["a", "b"])));
+        assert_eq!(with(|s| s.wins[0].text.clone()).unwrap(), "a\nb");
+        host.shutdown();
+    }
+
+    #[test]
+    fn a_drop_without_the_keyboard_keeps_the_note_within_the_edit_limit() {
+        // The EDIT takes at most `edit::LIMIT` units (each break is two), so a
+        // note set past it could be shown but no longer typed into.
+        let edit_units = |t: &str| t.encode_utf16().count() + t.matches('\n').count();
+        let displays = vec![display("A", 0, true, 96)];
+        let near = "n".repeat(edit::LIMIT - 500);
+        let notes = vec![note_with("n1", &near, |_| {})];
+        let mut host = WidgetHost::new(HWND::default());
+        host.sync(&ctx(&notes, &displays));
+        let hwnd = with(|s| s.wins[0].hwnd).unwrap();
+        let block = vec!["x".repeat(99); 20];
+        assert!(drop_into(hwnd, &block), "there is room for some of it");
+        let text = with(|s| s.wins[0].text.clone()).unwrap();
+        assert!(text.starts_with(&near), "what was there stays");
+        assert!(edit_units(&text) <= edit::LIMIT, "{}", edit_units(&text));
+        assert!(edit_units(&text) > edit::LIMIT - 120, "it fills what fits");
+        // One long line fills it to the limit exactly.
+        assert!(drop_into(hwnd, &lines(&[&"y".repeat(500)])));
+        let text = with(|s| s.wins[0].text.clone()).unwrap();
+        assert_eq!(edit_units(&text), edit::LIMIT);
+        // Full: a drop adds nothing and says so, with no event.
+        let _ = host.drain();
+        assert!(!drop_into(hwnd, &lines(&["more"])));
+        assert_eq!(with(|s| s.wins[0].text.clone()).unwrap(), text);
+        assert!(host.drain().is_empty());
+        host.shutdown();
+    }
+
+    #[test]
+    fn a_drop_onto_a_note_with_the_keyboard_goes_through_its_edit() {
+        let _focus = keyboard_lock();
+        let displays = vec![display("A", 0, true, 96)];
+        let notes = vec![note_with("n1", "Belanja", |_| {})];
+        let mut host = WidgetHost::new(HWND::default());
+        host.sync(&ctx(&notes, &displays));
+        host.focus("n1");
+        let (hwnd, edit_hwnd) = with(|s| (s.wins[0].hwnd, s.wins[0].edit)).unwrap();
+        let edit_hwnd = edit_hwnd.expect("the note has the keyboard");
+        // The caret is somewhere else: a drop still goes to the end.
+        let _ = with(|s| edit::set_selection(edit_hwnd, &s.wins[0].text, 0, 0));
+        let _ = host.drain();
+        assert!(drop_into(hwnd, &lines(&["one", "two"])));
+        let expected = "Belanja\none\ntwo";
+        assert_eq!(edit::text(edit_hwnd), expected, "the EDIT holds it");
+        assert_eq!(with(|s| s.wins[0].text.clone()).unwrap(), expected);
+        let end = expected.encode_utf16().count();
+        assert_eq!(with(|s| s.wins[0].sel).unwrap(), (end, end), "the caret is at the end");
+        let events = host.drain();
+        assert!(events.contains(&WidgetEvent::Text {
+            id: "n1".into(),
+            text: expected.into(),
+        }));
+        // Ctrl+Z takes the drop back: it went in through EM_REPLACESEL.
+        unsafe {
+            windows::Win32::UI::WindowsAndMessaging::SendMessageW(
+                edit_hwnd,
+                windows::Win32::UI::Controls::EM_UNDO,
+                Some(WPARAM(0)),
+                Some(LPARAM(0)),
+            );
+        }
+        assert_eq!(edit::text(edit_hwnd), "Belanja");
+        host.shutdown();
+    }
+
+    #[test]
+    fn the_drop_outline_shows_while_a_drag_is_over_and_goes_on_leave() {
+        let displays = vec![display("A", 0, true, 96)];
+        let notes = vec![note("n1", DipRect::new(400.0, 200.0, 240.0, 208.0))];
+        let mut host = WidgetHost::new(HWND::default());
+        host.sync(&ctx(&notes, &displays));
+        let hwnd = with(|s| s.wins[0].hwnd).unwrap();
+        assert!(!with(|s| s.wins[0].drop_hover).unwrap());
+        drop_hover(hwnd, true);
+        assert!(with(|s| s.wins[0].drop_hover).unwrap());
+        assert!(with(|s| !s.wins[0].dirty).unwrap(), "drawn with the outline");
+        drop_hover(hwnd, false);
+        assert!(!with(|s| s.wins[0].drop_hover).unwrap());
+        host.shutdown();
+    }
+
+    #[test]
+    fn every_note_window_takes_drops_and_revokes_when_it_is_destroyed() {
+        let displays = vec![display("A", 0, true, 96)];
+        let notes = vec![
+            note("n1", DipRect::new(400.0, 200.0, 240.0, 208.0)),
+            note("n2", DipRect::new(700.0, 200.0, 240.0, 208.0)),
+        ];
+        let mut host = WidgetHost::new(HWND::default());
+        assert_eq!(drop::live_targets(), 0);
+        host.sync(&ctx(&notes, &displays));
+        assert_eq!(drop::live_targets(), 2, "one target per note window");
+        // One note leaves the desktop (`sync` destroys its window): its target
+        // is revoked, the other stays.
+        host.sync(&ctx(&notes[1..], &displays));
+        assert_eq!(drop::live_targets(), 1, "the removed note revoked its target");
+        host.shutdown();
+        assert_eq!(drop::live_targets(), 0, "every destroyed window revoked");
     }
 
     #[test]

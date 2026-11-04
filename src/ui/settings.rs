@@ -150,7 +150,7 @@ pub enum Action {
     Lyrics(bool),
     Shell(Shell),
     OpenMode(OpenMode),
-    /// Settings -> Widget: the five settings, the gallery's (+) and a click
+    /// Settings -> Widget: the seven settings, the gallery's (+) and a click
     /// on its active card.
     WidgetsShow(bool),
     WidgetsLayer(WidgetLayer),
@@ -159,6 +159,8 @@ pub enum Action {
     WidgetsPeek(bool),
     /// "Miring sedikit".
     WidgetsTilt(bool),
+    /// "Isi dari clipboard".
+    WidgetsClipFill(bool),
     /// The gallery card's (+): a note, from the template chosen in its menu.
     WidgetAdd(Template),
     WidgetHighlight,
@@ -1764,6 +1766,7 @@ impl Settings {
             (Hit::WidgetsLock, old.widgets.lock, new.widgets.lock),
             (Hit::WidgetsPeek, old.widgets.cat_peek, new.widgets.cat_peek),
             (Hit::WidgetsTilt, old.widgets.tilt, new.widgets.tilt),
+            (Hit::WidgetsClipFill, old.widgets.clip_fill, new.widgets.clip_fill),
         ] {
             if was != is {
                 self.anims.slide_toggle(hit, was, is, now);
@@ -2282,6 +2285,7 @@ impl Settings {
             Hit::WidgetsLock => post(Action::WidgetsLock(!m.widgets.lock)),
             Hit::WidgetsPeek => post(Action::WidgetsPeek(!m.widgets.cat_peek)),
             Hit::WidgetsTilt => post(Action::WidgetsTilt(!m.widgets.tilt)),
+            Hit::WidgetsClipFill => post(Action::WidgetsClipFill(!m.widgets.clip_fill)),
             // At the cap the (+) is off and takes no click; a stray one adds nothing.
             // It opens the template menu under the button (`After::TemplateMenu`),
             // which posts `WidgetAdd` with the choice.
@@ -4041,6 +4045,7 @@ pub fn run_demo(args: &[String]) {
             Action::WidgetsLock(v) => m.widgets.lock = v,
             Action::WidgetsPeek(v) => m.widgets.cat_peek = v,
             Action::WidgetsTilt(v) => m.widgets.tilt = v,
+            Action::WidgetsClipFill(v) => m.widgets.clip_fill = v,
             Action::WidgetAdd(_) => m.sticky_count = (m.sticky_count + 1).min(crate::widgets::sticky::MAX_STICKY),
             Action::WidgetHighlight => {}
             Action::Robot(v) => m.robot = v,

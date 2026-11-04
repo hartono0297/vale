@@ -6,6 +6,7 @@
 pub mod apply;
 pub mod art;
 pub mod checklist;
+pub mod cliptext;
 pub mod place;
 pub mod prefs;
 pub mod remind;
@@ -13,6 +14,7 @@ pub mod snap;
 pub mod sticky;
 pub mod templates;
 
+pub mod drop;
 pub mod edit;
 pub mod host;
 pub mod mood;

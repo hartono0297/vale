@@ -13,8 +13,9 @@ use std::rc::Rc;
 
 use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
 use windows::Win32::Graphics::Direct2D::{
-    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ELLIPSE,
-    D2D1_ROUNDED_RECT, ID2D1RenderTarget,
+    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_CAP_STYLE_FLAT, D2D1_DASH_STYLE_CUSTOM,
+    D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ELLIPSE, D2D1_LINE_JOIN_ROUND, D2D1_ROUNDED_RECT,
+    D2D1_STROKE_STYLE_PROPERTIES, ID2D1RenderTarget, ID2D1StrokeStyle,
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT, DWRITE_HIT_TEST_METRICS, DWRITE_TEXT_METRICS,
@@ -62,6 +63,26 @@ pub const CAT_SIZE: f32 = 44.0;
 const CAT_VISIBLE_ROWS: f32 = 47.0;
 /// The accent frame the Settings gallery's highlight draws.
 const FRAME_W: f32 = 3.0;
+/// The outline of a note that a drop would land on: 2 dip wide, dashes of 6
+/// and gaps of 4, inset 1 dip so it sits inside the note's edge.
+pub const DROP_W: f32 = 2.0;
+pub const DROP_DASH: f32 = 6.0;
+pub const DROP_GAP: f32 = 4.0;
+pub const DROP_INSET: f32 = 1.0;
+
+/// The rounded rect (x, y, w, h, radius) the drop outline is stroked along,
+/// for a note at (`ox`, `oy`) of `w` x `h` dip: the note's own rounded rect
+/// pulled in by `DROP_INSET`, so the 2 dip stroke fills the outer 2 dip.
+pub fn drop_frame(ox: f32, oy: f32, w: f32, h: f32) -> (f32, f32, f32, f32, f32) {
+    (
+        ox + DROP_INSET,
+        oy + DROP_INSET,
+        w - 2.0 * DROP_INSET,
+        h - 2.0 * DROP_INSET,
+        RADIUS - DROP_INSET,
+    )
+}
+
 /// How long a reminder shakes its note, in ms, and how far it goes (dip).
 pub const WIGGLE_MS: f32 = 600.0;
 const WIGGLE_DIP: f32 = 4.0;
@@ -254,6 +275,9 @@ pub struct Res {
     ui: UiFont,
     /// One format per (font, size, weight).
     formats: RefCell<HashMap<(NoteFont, u32, u16), IDWriteTextFormat>>,
+    /// The drop outline's dashes (6 on, 4 off at 2 wide: 3 and 2 stroke
+    /// widths); `None` when the factory would not make it (no outline then).
+    drop_dash: Option<ID2D1StrokeStyle>,
 }
 
 impl Res {
@@ -265,6 +289,22 @@ impl Res {
         let icons = IconSet::new(&gfx.d2d)?;
         let robot = RobotPainter::new(&gfx.d2d)?;
         let face = Face::for_role_in(&gfx.dwrite, Role::Text, ui);
+        let dashes = [DROP_DASH / DROP_W, DROP_GAP / DROP_W];
+        let drop_dash = unsafe {
+            gfx.d2d.CreateStrokeStyle(
+                &D2D1_STROKE_STYLE_PROPERTIES {
+                    startCap: D2D1_CAP_STYLE_FLAT,
+                    endCap: D2D1_CAP_STYLE_FLAT,
+                    dashCap: D2D1_CAP_STYLE_FLAT,
+                    lineJoin: D2D1_LINE_JOIN_ROUND,
+                    miterLimit: 10.0,
+                    dashStyle: D2D1_DASH_STYLE_CUSTOM,
+                    dashOffset: 0.0,
+                },
+                Some(&dashes),
+            )
+        }
+        .ok();
         Ok(Res {
             gfx,
             icons,
@@ -273,6 +313,7 @@ impl Res {
             extra: RefCell::new([None, None]),
             ui,
             formats: RefCell::new(HashMap::new()),
+            drop_dash,
         })
     }
 
@@ -663,6 +704,8 @@ pub struct Scene<'a> {
     pub chip: Option<(String, bool)>,
     /// The gallery's highlight frame, 0 to 1.
     pub highlight: f32,
+    /// Something a note takes is being dragged over it: the dashed outline.
+    pub drop_hover: bool,
     /// The cat above the note, and its coat.
     pub peek: Option<Expr>,
     pub cat: CatLook,
@@ -1051,6 +1094,14 @@ pub fn draw(c: &Canvas, res: &Res, s: &Scene) {
             );
         }
     }
+    // A drop would land here: the accent dashed outline inside the edge.
+    if s.drop_hover
+        && let Some(dash) = res.drop_dash.as_ref()
+    {
+        set(s.frame_accent, 1.0);
+        let (x, y, fw, fh, r) = drop_frame(ox, oy, s.w, h);
+        unsafe { rt.DrawRoundedRectangle(&rr(x, y, fw, fh, r), brush, DROP_W, dash) };
+    }
     // The confetti is the window's, not the leaning note's.
     if !s.confetti.is_empty() {
         unsafe { rt.SetTransform(&straight) };
@@ -1211,6 +1262,17 @@ pub fn peek_look(coat: CatColor) -> CatLook {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_drop_outline_is_two_dip_inset_one_inside_the_rounded_edge() {
+        assert_eq!((DROP_W, DROP_DASH, DROP_GAP, DROP_INSET), (2.0, 6.0, 4.0, 1.0));
+        let (x, y, w, h, r) = drop_frame(8.0, 38.0, 240.0, 208.0);
+        // The stroke is centred on the path: 1 dip either side of it is the
+        // outermost 2 dip of the note, never outside it.
+        assert_eq!((x - DROP_W / 2.0, y - DROP_W / 2.0), (8.0, 38.0));
+        assert_eq!((x + w + DROP_W / 2.0, y + h + DROP_W / 2.0), (248.0, 246.0));
+        assert_eq!(r, RADIUS - DROP_INSET);
+    }
 
     #[test]
     fn the_header_buttons_fit_inside_the_smallest_note() {

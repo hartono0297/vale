@@ -20,6 +20,7 @@ use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
 
 use super::image;
 use super::kinds::{Rule, excluded_rule, is_own_change, should_skip};
+use crate::widgets::cliptext::CLIP_MAX;
 use super::store::{Clip, ClipData, ClipSnapshot, MAX_IMAGE_BYTES, MAX_TEXT_BYTES};
 
 const CF_TEXT: u32 = 1;
@@ -81,6 +82,21 @@ pub fn read(hwnd: HWND, own_sequence: Option<u32>) -> Read {
     if is_own_change(sequence, own_sequence, owner == Some(hwnd)) {
         return Read::Own;
     }
+    read_open(hwnd, sequence, false)
+}
+
+/// Reads what the clipboard holds right now, once (a note's "Isi dari
+/// clipboard"): `read` without the own-copy check, since a copy the island
+/// made itself is as good a text as any. `Busy` when another app holds the
+/// clipboard open; nothing is retried.
+pub fn read_now(hwnd: HWND) -> Read {
+    read_open(hwnd, unsafe { GetClipboardSequenceNumber() }, true)
+}
+
+/// `once` is the single read for a note's prefill: no picture is read, and a
+/// text over the history's cap is read as a bounded prefix (the prefill cuts
+/// it to `CLIP_MAX` itself) instead of being left out.
+fn read_open(hwnd: HWND, sequence: u32, once: bool) -> Read {
     let Some(open) = Open::new(hwnd) else {
         return Read::Busy;
     };
@@ -118,14 +134,14 @@ pub fn read(hwnd: HWND, own_sequence: Option<u32>) -> Read {
         snap.files = read_files();
     }
     if snap.files.is_empty() && ids.contains(&CF_UNICODETEXT) {
-        snap.text = read_text();
+        snap.text = read_text(once);
     }
     let image = wants_image(
         !snap.files.is_empty(),
         ids.contains(&CF_UNICODETEXT),
         snap.text.as_deref(),
     );
-    if image && ids.contains(&CF_DIB) {
+    if !once && image && ids.contains(&CF_DIB) {
         snap.dib = read_global(CF_DIB, MAX_IMAGE_BYTES);
     }
     drop(open);
@@ -186,17 +202,27 @@ fn wants_image(has_files: bool, text_offered: bool, text: Option<&str>) -> bool 
 
 /// The bytes of format `f` (the clipboard is open), when not over `max`.
 fn read_global(f: u32, max: usize) -> Option<Vec<u8>> {
+    read_global_with(f, max, false)
+}
+
+/// The first `max` bytes of format `f` (the clipboard is open): a longer
+/// block is cut, not left out.
+fn read_global_prefix(f: u32, max: usize) -> Option<Vec<u8>> {
+    read_global_with(f, max, true)
+}
+
+fn read_global_with(f: u32, max: usize, cut: bool) -> Option<Vec<u8>> {
     let handle = unsafe { GetClipboardData(f) }.ok()?;
     let mem = HGLOBAL(handle.0);
     let size = unsafe { GlobalSize(mem) };
-    if size == 0 || size > max {
+    if size == 0 || (size > max && !cut) {
         return None;
     }
     let ptr = unsafe { GlobalLock(mem) } as *const u8;
     if ptr.is_null() {
         return None;
     }
-    let bytes = unsafe { std::slice::from_raw_parts(ptr, size) }.to_vec();
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, size.min(max)) }.to_vec();
     unsafe {
         let _ = GlobalUnlock(mem);
     }
@@ -208,17 +234,36 @@ fn read_dword(f: u32) -> Option<u32> {
     Some(u32::from_le_bytes(bytes.get(..4)?.try_into().ok()?))
 }
 
-fn read_text() -> Option<String> {
-    // UTF-16 takes at most twice the UTF-8 cap for the text the history keeps.
-    let bytes = read_global(CF_UNICODETEXT, 2 * MAX_TEXT_BYTES + 2)?;
+/// A prefill reads this many UTF-16 units of a long text: well beyond what
+/// `CLIP_MAX` chars need, even when the clean-up drops blank lines and
+/// control characters.
+const PREFILL_UNITS: usize = 16 * CLIP_MAX;
+
+/// The text up to its NUL, at most `max_units` UTF-16 units. A cut in the
+/// middle of a surrogate pair gives U+FFFD at the end, far past the point
+/// where the prefill cuts the text.
+fn wide_prefix(bytes: &[u8], max_units: usize) -> String {
     let units: Vec<u16> = bytes
         .as_chunks::<2>()
         .0
         .iter()
         .map(|c| u16::from_le_bytes(*c))
+        .take(max_units)
         .take_while(|&u| u != 0)
         .collect();
-    Some(String::from_utf16_lossy(&units))
+    String::from_utf16_lossy(&units)
+}
+
+/// `prefix` reads a bounded part of any length of text (the note prefill);
+/// otherwise a text the history would not keep gives `None`.
+fn read_text(prefix: bool) -> Option<String> {
+    if prefix {
+        let bytes = read_global_prefix(CF_UNICODETEXT, 2 * PREFILL_UNITS)?;
+        return Some(wide_prefix(&bytes, PREFILL_UNITS));
+    }
+    // UTF-16 takes at most twice the UTF-8 cap for the text the history keeps.
+    let bytes = read_global(CF_UNICODETEXT, 2 * MAX_TEXT_BYTES + 2)?;
+    Some(wide_prefix(&bytes, usize::MAX))
 }
 
 fn read_files() -> Vec<PathBuf> {
@@ -437,6 +482,32 @@ mod tests {
         assert!(wants_image(false, true, Some("  ")));
         // Files win.
         assert!(!wants_image(true, false, None));
+    }
+
+    fn utf16_bytes(text: &str) -> Vec<u8> {
+        text.encode_utf16().flat_map(u16::to_le_bytes).collect()
+    }
+
+    #[test]
+    fn a_long_text_prefix_ends_in_a_split_pair_that_the_prefill_cuts_away() {
+        // A copy of a whole document: the pair of the emoji straddles the cut.
+        let raw = format!("{}\u{1F600}tail", "a".repeat(PREFILL_UNITS - 1));
+        let bytes = utf16_bytes(&raw);
+        assert!(bytes.len() > 2 * PREFILL_UNITS);
+        let prefix = wide_prefix(&bytes, PREFILL_UNITS);
+        assert_eq!(prefix.chars().count(), PREFILL_UNITS);
+        assert!(prefix.ends_with('\u{FFFD}'));
+        let note = crate::widgets::cliptext::prefill(&prefix).unwrap();
+        assert_eq!(note.chars().count(), CLIP_MAX);
+        assert!(!note.contains('\u{FFFD}'));
+    }
+
+    #[test]
+    fn a_text_prefix_stops_at_the_nul_and_keeps_a_short_text_whole() {
+        let mut bytes = utf16_bytes("abc");
+        bytes.extend([0, 0, b'x', 0]);
+        assert_eq!(wide_prefix(&bytes, PREFILL_UNITS), "abc");
+        assert_eq!(wide_prefix(&utf16_bytes("h\u{E9}llo"), usize::MAX), "h\u{E9}llo");
     }
 
     fn clip(data: ClipData, kind: ClipKind) -> Clip {
