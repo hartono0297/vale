@@ -951,3 +951,119 @@ fn a_resume_after_a_cut_download_is_saved_and_ending_the_session_drops_the_ids()
     assert!(shared.session.lock().expect("lock").shared().is_empty());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+fn sample_note(title: &str) -> super::NoteShare {
+    use super::note_page::NoteLine;
+    super::NoteShare {
+        title: title.into(),
+        lines: vec![
+            NoteLine::Item { done: false, text: "Telur".into() },
+            NoteLine::Item { done: true, text: "Kopi".into() },
+        ],
+        fill: 0xF4E7C6,
+        ink: 0x2B211A,
+        soft: 0x4A3F36,
+        pc: "TEST-PC".into(),
+    }
+}
+
+#[test]
+fn the_note_page_needs_a_joined_phone_and_a_note_and_carries_its_headers() {
+    let r = rig("phone-e2e-note");
+    let bare = |x: Reply| assert_eq!((x.status, x.body.as_str()), (404, ""), "{}", x.head);
+    // No cookie: the bare 404, with or without a note.
+    bare(get(r.addr, "/note", None, UA));
+    let (_d, vs) = r.join();
+    // Joined, but nothing was sent: the bare 404.
+    bare(get(r.addr, "/note", Some(&vs), UA));
+    r.handle.share_note(Some(sample_note("A <b>&\"' title")));
+    // A note, but no (or a wrong) cookie: still the bare 404.
+    for cookie in [None, Some(OLD_VP), Some(MADE_UP)] {
+        bare(get(r.addr, "/note", cookie, UA));
+    }
+    let n = get(r.addr, "/note", Some(&vs), UA);
+    assert_eq!(n.status, 200, "{}", n.head);
+    for h in [
+        "Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'",
+        "X-Content-Type-Options: nosniff",
+        "Cache-Control: no-store",
+        "Content-Type: text/html; charset=utf-8",
+    ] {
+        assert!(n.head.contains(h), "{h}\n{}", n.head);
+    }
+    assert!(n.body.contains("A &lt;b&gt;&amp;&quot;&#39; title"), "{}", n.body);
+    assert!(!n.body.contains("<b>"), "{}", n.body);
+    assert!(n.body.contains("<input type=\"checkbox\" disabled>"), "{}", n.body);
+    assert!(n.body.contains("Read only \u{b7} from TEST-PC"), "{}", n.body);
+    assert!(!n.body.contains("<script"));
+    assert!(!n.head.contains("Set-Cookie"), "a page load sets no cookie");
+    // Only GET.
+    let post = send(r.addr, "POST", "/note", Some(&vs), "Content-Length: 0\r\n");
+    assert_eq!(post.status, 404);
+    // The shelf page is as it was, and carries no policy.
+    let page = get(r.addr, "/", Some(&vs), UA);
+    assert_eq!(page.status, 200);
+    assert!(page.body.contains("\"state\":\"approved\""));
+    assert!(!page.head.contains("Content-Security-Policy"), "{}", page.head);
+    // One note at a time: a later one replaces it; taking it off gives the 404 again.
+    r.handle.share_note(Some(sample_note("Second")));
+    let n = get(r.addr, "/note", Some(&vs), UA);
+    assert!(n.body.contains("<h1>Second</h1>") && !n.body.contains("&amp;"), "{}", n.body);
+    r.handle.share_note(None);
+    bare(get(r.addr, "/note", Some(&vs), UA));
+    let dir = r.dir.clone();
+    r.handle.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_scan_lands_on_the_note_when_one_is_shared_else_on_the_shelf_page() {
+    let r = rig("phone-e2e-note-scan");
+    // Nothing sent: the shelf page, as before.
+    let first = get(r.addr, &format!("/s/{}", r.token), None, UA);
+    assert_eq!(first.status, 200);
+    assert!(first.body.contains("\"state\":\"approved\""), "{}", first.body);
+    assert!(!first.head.contains("Content-Security-Policy"), "{}", first.head);
+    let vs1 = cookie_of(&first, "vs");
+    wait_for(&r.rx, |e| matches!(e, PhoneEvent::Joined { .. }));
+    // A note is shared: a new phone scanning gets the note page and its own cookie.
+    r.handle.share_note(Some(sample_note("Daftar belanja")));
+    let second = get(r.addr, &format!("/s/{}", r.token), None, UA);
+    assert_eq!(second.status, 200, "{}", second.head);
+    assert!(second.body.contains("<h1>Daftar belanja</h1>"), "{}", second.body);
+    assert!(!second.body.contains("\"state\":\"approved\""));
+    assert!(second.head.contains("Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'"));
+    assert!(second.head.contains("Cache-Control: no-store"));
+    let vs2 = cookie_of(&second, "vs");
+    assert_ne!(vs1, vs2);
+    assert!(second.head.contains("HttpOnly; SameSite=Strict; Path=/"));
+    wait_for(&r.rx, |e| matches!(e, PhoneEvent::Joined { .. }));
+    // The new cookie opens the note and the shelf page both.
+    assert_eq!(get(r.addr, "/note", Some(&vs2), UA).status, 200);
+    assert_eq!(get(r.addr, "/", Some(&vs2), UA).status, 200);
+    // A phone that already joined and scans again gets the note, no second device.
+    let again = get(r.addr, &format!("/s/{}", r.token), Some(&vs1), UA);
+    assert!(again.body.contains("<h1>Daftar belanja</h1>"), "{}", again.body);
+    assert!(!again.head.contains("Set-Cookie"), "{}", again.head);
+    assert!(
+        r.events().iter().all(|e| !matches!(e, PhoneEvent::Joined { .. })),
+        "no second device"
+    );
+    // A wrong token is still the bare 404, note or no note.
+    let wrong = get(r.addr, &format!("/s/{}", "A".repeat(22)), None, UA);
+    assert_eq!((wrong.status, wrong.body.as_str()), (404, ""));
+    assert!(!wrong.head.contains("Set-Cookie"));
+    // Taken off: the shelf page again.
+    r.handle.share_note(None);
+    let back = get(r.addr, &format!("/s/{}", r.token), Some(&vs1), UA);
+    assert!(back.body.contains("\"state\":\"approved\""), "{}", back.body);
+    // The session end drops the note with everything else.
+    r.handle.share_note(Some(sample_note("Bye")));
+    let shared = Arc::clone(&r.handle.shared);
+    let dir = r.dir.clone();
+    let Rig { handle, rx, .. } = r;
+    handle.stop();
+    wait_for(&rx, |e| matches!(e, PhoneEvent::SessionEnded(_)));
+    assert!(shared.session.lock().expect("lock").note().is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}

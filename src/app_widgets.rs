@@ -32,6 +32,7 @@ use super::App;
 use crate::i18n::{self, Key, tr};
 use crate::model::Event;
 use crate::widgets::apply::{apply, set_reminder, settle, stack_out, sticky_for};
+use crate::widgets::cliptext;
 use crate::widgets::host::{Ctx, WidgetHost};
 use crate::widgets::prefs::{FullscreenRule, WidgetLayer};
 use crate::widgets::remind;
@@ -101,6 +102,9 @@ impl App {
         // A reminder may have changed: the notices are settled and the one
         // timer follows the new nearest one.
         self.sticky_remind_settle();
+        // A shared note that is not a desktop note any more (deleted or
+        // unstuck from the Notes page) leaves the phone.
+        self.phone_note_check();
     }
 
     /// The config was adopted (a save, a hand edit): the widgets follow it and
@@ -252,6 +256,13 @@ impl App {
         }
         if out.reminders || !out.gone.is_empty() {
             self.sticky_remind_settle();
+        }
+        // A note that went or came off the desktop is no longer on the phone.
+        for id in &out.gone {
+            self.phone_note_gone(id);
+        }
+        if let Some(id) = &out.send_phone {
+            self.phone_send_note(id);
         }
         if changed {
             self.arm_widget_save();
@@ -434,6 +445,18 @@ impl App {
     /// back if they were hidden. At the cap nothing is made and the island
     /// says why. True when a note was made.
     pub(super) fn new_sticky(&mut self, beside: Option<&str>, template: Template) -> bool {
+        self.new_sticky_with(beside, template, None)
+    }
+
+    /// `new_sticky`, starting with `prefill` (the clipboard's text, already
+    /// cleaned by `cliptext::prefill`) instead of a template's text: the caret
+    /// goes to the end of it. The cap and its notice are unchanged.
+    pub(super) fn new_sticky_with(
+        &mut self,
+        beside: Option<&str>,
+        template: Template,
+        prefill: Option<String>,
+    ) -> bool {
         if !can_add(self.notes.sticky_count()) {
             self.sticky_full_notice();
             return false;
@@ -445,15 +468,19 @@ impl App {
             return false;
         };
         // A template starts the note with its text; the caret goes to the end
-        // of its first line.
-        let start = templates::text_of(i18n::lang(), template, now.date_naive());
+        // of its first line. A prefill is the text copied: the caret goes to
+        // the end of it.
+        let filled = prefill.is_some();
+        let start = prefill
+            .unwrap_or_else(|| templates::text_of(i18n::lang(), template, now.date_naive()));
         if !start.is_empty() {
             self.notes.set_text(&id, &start, now.timestamp());
         }
         self.arm_widget_save();
         self.widgets_sync();
         if let Some(host) = self.widgets.host.as_mut() {
-            host.focus_at(&id, (!start.is_empty()).then(|| templates::caret_of(&start)));
+            let caret = (!start.is_empty() && !filled).then(|| templates::caret_of(&start));
+            host.focus_at(&id, caret);
         }
         self.sync_settings();
         true
@@ -464,14 +491,32 @@ impl App {
         self.apply_now(Event::Notice(notice));
     }
 
+    /// The text a new note from the hotkey or the tray starts with, when
+    /// "Isi dari clipboard" is on: the clipboard is read once, now, on the
+    /// island's window (no listener, no retry, no polling). Nothing at the
+    /// cap (no note is made, so nothing is read), when another app holds the
+    /// clipboard, for a copy a password manager excluded, and for files and
+    /// pictures. The text is never logged.
+    fn sticky_prefill(&self) -> Option<String> {
+        if !self.config.widgets.clip_fill || !can_add(self.notes.sticky_count()) {
+            return None;
+        }
+        match crate::clipboard::win::read_now(self.hwnd) {
+            crate::clipboard::win::Read::Snapshot(snap) => cliptext::from_snapshot(&snap),
+            _ => None,
+        }
+    }
+
     /// The hotkey row "Catatan tempel baru".
     pub(super) fn on_sticky_hotkey(&mut self) {
-        self.new_sticky(None, Template::Kosong);
+        let fill = self.sticky_prefill();
+        self.new_sticky_with(None, Template::Kosong, fill);
     }
 
     /// The tray's "Catatan tempel baru".
     pub(super) fn on_sticky_menu(&mut self) {
-        self.new_sticky(None, Template::Kosong);
+        let fill = self.sticky_prefill();
+        self.new_sticky_with(None, Template::Kosong, fill);
     }
 
     /// The pin on a Notes page card: stick the note to the desktop, or unstick
@@ -522,6 +567,11 @@ impl App {
 
     pub(super) fn widgets_tilt(&mut self, on: bool) {
         self.config.widgets.tilt = on;
+        self.save_config();
+    }
+
+    pub(super) fn widgets_clip_fill(&mut self, on: bool) {
+        self.config.widgets.clip_fill = on;
         self.save_config();
     }
 

@@ -92,6 +92,11 @@ fn has_files(data: &IDataObject) -> bool {
 /// `shelf::MAX_ITEMS` of them: the shelf keeps no more. A medium that is not
 /// an HGLOBAL holding at least a `DROPFILES` header is not read.
 fn read_paths(data: &IDataObject) -> Vec<PathBuf> {
+    read_paths_max(data, MAX_ITEMS)
+}
+
+/// `read_paths` with another limit (a note takes fewer paths than the shelf).
+pub(crate) fn read_paths_max(data: &IDataObject, max: usize) -> Vec<PathBuf> {
     let format = FORMATETC {
         cfFormat: CF_HDROP.0,
         ptd: std::ptr::null_mut(),
@@ -112,7 +117,7 @@ fn read_paths(data: &IDataObject) -> Vec<PathBuf> {
             return paths;
         }
         let hdrop = HDROP(medium.u.hGlobal.0);
-        let count = DragQueryFileW(hdrop, u32::MAX, None).min(MAX_ITEMS as u32);
+        let count = DragQueryFileW(hdrop, u32::MAX, None).min(max as u32);
         for i in 0..count {
             let len = DragQueryFileW(hdrop, i, None) as usize;
             if len == 0 {

@@ -1,12 +1,14 @@
 //! `--demo-widgets` (debug builds): the desktop widgets on their own, with a
 //! made-up notes file in the temp folder (never `%APPDATA%`, never the real
-//! config). It seeds fifteen notes, the first time or with the argument
+//! config). It seeds sixteen notes, the first time or with the argument
 //! `reset`: one per paper colour (the Gelap one pinned), a half-done checklist
 //! (with its progress bar), an all-done one, a rolled-up one, and the v2 things
 //! (a reminder chip, an overdue reminder with the clock cat, Tangan and Mono,
-//! each ruling, tape and a pin, the stamps, a 60 % see-through note), a stack
-//! of three sheets ("Proyek Dago") and a note tucked to the right edge of the
-//! notch's monitor (hover its tab). After that the file keeps what was typed, moved and ticked, so a restart shows it
+//! each ruling, tape and a pin, the stamps, a 60 % see-through note), one as
+//! "Isi dari clipboard" would start it (from a fixed sample string, never the
+//! real clipboard), a stack of three sheets ("Proyek Dago") and a note tucked
+//! to the right edge of the notch's monitor (hover its tab). After that the
+//! file keeps what was typed, moved and ticked, so a restart shows it
 //! back.
 //!
 //! Everything is live: type, tick, colour, drag, resize, roll, pin, the +, the
@@ -40,6 +42,7 @@ use crate::theme::{self, CatColor};
 use crate::ui::frame_clock::{FrameClock, WM_APP_FRAME};
 use crate::ui::tray;
 use crate::widgets::apply::{apply, set_reminder, settle, stack_out, sticky_for};
+use crate::widgets::cliptext;
 use crate::widgets::host::{Ctx, WM_APP_WIDGET, WidgetHost};
 use crate::widgets::prefs::{WidgetLayer, WidgetPrefs};
 use crate::widgets::remind;
@@ -105,12 +108,22 @@ struct Seed {
 
 fn nothing(_: &mut Sticky, _: i64) {}
 
-/// The first run, or `reset`: the notes the scene shows. Eleven notes: every
+/// What a copied address would make of itself in a new note ("Isi dari
+/// clipboard"): a fixed sample, with the line breaks, trailing blank lines and
+/// spaces a real copy brings, run through the real clean-up. The demo never
+/// reads or writes the clipboard.
+const CLIP_SAMPLE: &str = "Jl. Kenanga No. 12, Bandung 40115\r\nKirim sebelum Jumat\r\n\r\n\r\n\r\n  ";
+
+fn clip_sample_text() -> String {
+    cliptext::prefill(CLIP_SAMPLE).unwrap_or_default()
+}
+
+/// The first run, or `reset`: the notes the scene shows. Twelve notes: every
 /// paper, a checklist with its progress bar (2 of 4), an all-done one, a
 /// rolled one, a pinned Gelap one, and the v2 things: a reminder chip in the
 /// future, an overdue one (the cat holds a clock), Tangan and Mono, each ruling
 /// (Garis, Kotak, Titik), tape and a pin, every stamp but two, and a note at
-/// 60 % see-through.
+/// 60 % see-through, and the one a clipboard prefill makes.
 fn seed(store: &mut NotesStore, displays: &[Display]) {
     let now = Local::now().timestamp();
     let notes: [Seed; 11] = [
@@ -223,7 +236,7 @@ fn seed(store: &mut NotesStore, displays: &[Display]) {
             more: |s, _| s.pattern = Pattern::Kotak,
         },
     ];
-    let count = notes.len() as i64;
+    let count = notes.len() as i64 + 1;
     for (i, n) in notes.into_iter().enumerate() {
         let at = now - 60 * (count - i as i64);
         let base = sticky_for(store.list(), displays, &NotchMonitor::Primary, None, at);
@@ -237,6 +250,12 @@ fn seed(store: &mut NotesStore, displays: &[Display]) {
         if let Some(id) = store.create_sticky(sticky, at) {
             store.set_text(&id, n.text, at);
         }
+    }
+    // The clipboard prefill's note: the first line is its title.
+    let at = now - 40;
+    let base = sticky_for(store.list(), displays, &NotchMonitor::Primary, None, at);
+    if let Some(id) = store.create_sticky(Sticky { paper: Paper::Krem, ..base }, at) {
+        store.set_text(&id, &clip_sample_text(), at);
     }
     seed_stack_and_tuck(store, displays, now);
 }
@@ -416,6 +435,10 @@ impl Demo {
         if let Some(on) = out.cat_peek {
             self.prefs.cat_peek = on;
         }
+        // The demo has no island and no phone link: the choice is only said.
+        if let Some(id) = &out.send_phone {
+            println!("demo-widgets: send to phone ignored (note {id}): no phone link here");
+        }
         for (id, template) in out.beside {
             self.make(Some(&id), template);
         }
@@ -556,4 +579,17 @@ unsafe extern "system" fn owner_proc(
         _ => {}
     }
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_sample_note_is_what_a_prefill_makes_of_a_copied_address() {
+        assert_eq!(
+            clip_sample_text(),
+            "Jl. Kenanga No. 12, Bandung 40115\nKirim sebelum Jumat"
+        );
+    }
 }

@@ -1336,6 +1336,7 @@ mod tests {
                 lock: true,
                 cat_peek: false,
                 tilt: true,
+                clip_fill: true,
             },
         };
         assert_eq!(parse(&serde_json::to_string(&c).unwrap()), c);

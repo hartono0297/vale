@@ -20,6 +20,7 @@ qrcodegen = "=1.8.0"
 version = "0.62"
 features = [
     "Win32_Foundation",
+    "Win32_Globalization",
     "Win32_Devices_DeviceAndDriverInstallation",
     "Win32_Devices_Display",
     "Win32_Devices_Usb",

@@ -21,6 +21,7 @@ pub mod files;
 pub mod http;
 pub mod names;
 pub mod net;
+pub mod note_page;
 pub mod qr;
 mod server;
 pub mod session;
@@ -39,6 +40,7 @@ use std::time::Instant;
 use windows::Win32::Security::Cryptography::{BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom};
 
 use crate::i18n::Lang;
+pub use note_page::NoteShare;
 pub use qr::QrMatrix;
 use session::Session;
 pub use ua::DeviceKind;
@@ -348,6 +350,17 @@ impl Handle {
             return None;
         }
         Some(id)
+    }
+
+    /// Puts a sticky note on the phones ("Kirim ke HP"): a phone that joined
+    /// can open it at `/note`, and a phone scanning the QR lands on it. It
+    /// replaces the one before; `None` takes it off. The page shows the note
+    /// as it is now, so sending again refreshes it. Read only: nothing a
+    /// phone does reaches the PC. It lives in the session and goes with it.
+    pub fn share_note(&self, note: Option<NoteShare>) {
+        if let Ok(mut s) = self.shared.session.lock() {
+            s.set_note(note);
+        }
     }
 
     /// Stops sharing `id`: a download of it in flight is cut and later

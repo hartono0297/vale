@@ -678,3 +678,146 @@ leaves behaves).
 Not verified live: a real mouse drag to a real screen edge, hover with a real
 pointer that stays, the look of the slide as motion, two real monitors, the tab
 at 150 % DPI.
+
+## Run B: clipboard prefill and drops
+
+Feature 8 of sticky notes v2 (2026-11-04). New pure module `cliptext.rs`, new
+Win32 module `drop.rs`; [[clipboard-privacy]] is the rulebook for the first.
+
+**The setting.** Settings -> Widget -> "Di desktop", a seventh row right after
+"Miring sedikit": "Isi dari clipboard" / "Fill from clipboard", off by default
+(`WidgetPrefs::clip_fill`, config key `widgets.clip_fill`, read leniently per
+field like `tilt`: a wrong type is false). Wired as `Hit::WidgetsClipFill` ->
+`Action` -> `SettingsAction::WidgetsClipFill` -> `App::widgets_clip_fill` ->
+`save_config`. The card is 7 rows now (the section tests count them). See
+[[settings-structure]].
+
+**Who prefills.** Only `on_sticky_hotkey` and `on_sticky_menu` (the tray). The
+Settings gallery (+), a header (+), the Notes page pin and the templates never
+do. With the setting on, `App::sticky_prefill` reads the clipboard once, at that
+moment, with `clipboard::win::read_now(island hwnd)`: `read` minus the
+"own copy" check (a card copied from the history is a fine text) and minus the
+picture bytes, and a text over the history cap is read as a bounded prefix (16 x `CLIP_MAX` UTF-16 units; `read_text(true)`) rather than skipped. No listener, no retry timer, no polling; an `OpenClipboard` that
+fails (`Read::Busy`) gives an empty note. It is not read at all at the 20-note
+cap. The text is never logged.
+
+**What counts.** `cliptext::from_snapshot`: the `kinds::should_skip` rules
+(`ExcludeClipboardContentFromMonitorProcessing` or `Clipboard Viewer Ignore`
+present, `CanIncludeInClipboardHistory` or `CanUploadToCloudClipboard` 0 or
+unreadable) give nothing; so do files and pictures. Only Unicode text starts a
+note. `new_sticky_with(beside, Template::Kosong, Some(text))` sets the text like
+a template and puts the caret at the end (`focus_at(id, None)`); `new_sticky`
+stays the same for its other callers.
+
+**`cliptext::prefill`.** CRLF and CR to LF; control characters other than LF
+dropped, TAB to 4 spaces; trailing whitespace trimmed on every line; blank
+lines at both ends and the outer whitespace trimmed; more than 2 blank lines in
+a row become 2; capped at `CLIP_MAX` = 2000 chars (Unicode scalars, so emoji
+never split): cut at the last LF in the final 200 chars before the cap if there
+is one, else at the cap; no ellipsis; empty is `None`. The first line is the
+title, as the checklist rules already say. `normalize` is the same without the
+cap (the drop reuses it).
+
+**Dropping onto a note.** Every note window is an OLE `IDropTarget`
+(`drop.rs`, `#[implement]`, like `shelf_ole`). `drop::register(hwnd)` runs right
+after `create_window` succeeds; `drop::revoke(hwnd)` is the first thing in the
+note window's `WM_DESTROY`, so every destroy path (a note leaving the desktop,
+`shutdown`) revokes. Formats, in priority: `CF_HDROP` (each full path on a
+line, at most 32), `UniformResourceLocatorW`, then `UniformResourceLocator`
+(ANSI, decoded with the system code page via `MultiByteToWideChar(CP_ACP)`), then `CF_UNICODETEXT`. Anything
+else: `DROPEFFECT_NONE`, no outline. The answer is LINK for files when offered
+else COPY (`shelf_ole::choose_effect`); COPY for a link or text, NONE when COPY
+is not offered. **Never MOVE**: a move would make the source app delete what
+was dragged. `shelf_ole::read_paths_max` is the one shared helper (the shelf's
+`read_paths` calls it with its own limit).
+
+**OLE init.** `ole_ready()` calls `OleInitialize(None)` once per thread before
+the first `RegisterDragDrop`. On the island thread COM is already an STA
+(`app.rs` `CoInitializeEx`), so it answers S_FALSE, as `shelf_ole::register`
+does; the `--demo-widgets` thread and test threads get OLE from it. A failure
+(a thread in MTA mode) is logged once with `eprintln!` and the note simply takes
+no drops; never fatal, never a panic.
+
+**What a drop does.** Pure `drop_lines(DropKind)`: text through
+`cliptext::normalize` with blank lines removed; a link one trimmed line (the
+first non-empty one, control characters out); files trimmed, at most 32.
+Pure `append_lines(text, &lines)`: empty note is the lines joined with LF,
+otherwise text + LF (none if it already ends with one) + lines; the added block
+is capped by `CLIP_MAX` (the note itself is not). `host::drop_into(hwnd, lines)`
+applies it: without the keyboard `Win.text` is set and `text_changed` draws and
+pushes `WidgetEvent::Text`; with the keyboard (`Win.edit` is Some) the edit goes
+through `apply_edit` (selection moved to the end, `EM_REPLACESEL`, undo works).
+Both then `touch`. A rolled note stays rolled; Kunci posisi does not block a
+drop (it locks the place only). The window's `Win::id` note gets it, so a drop
+onto a stack goes to the top sheet.
+
+**Highlight.** `Win::drop_hover`, set by an accepted `DragEnter`, cleared on
+`DragLeave` and `Drop`. `paint.rs` strokes a 2 dip accent outline, dash 6 gap 4
+(a custom stroke style of 3 and 2 stroke widths, made once in `Res`), inset 1
+dip along the note's rounded rect (`drop_frame`). The callbacks reach the host
+only through `with` (`try_borrow_mut`; a busy state skips the redraw) and never
+borrow `App`, because the shelf's own `DoDragDrop` may be pumping. No new
+WM_APP message, no timer id, no hotkey id.
+
+**Demo.** `--demo-widgets` seeds a twelfth note from a fixed sample string run
+through `cliptext::prefill` (an address and a line, with CRLF and trailing blank
+lines). The demo and the tests never read or write the real clipboard.
+
+**Verified.** `cargo test --locked`: cliptext (CRLF, controls, tabs, blank-line
+collapse, the cap at a line break and on an emoji boundary, empty to None, the
+exclusion rules on `ClipSnapshot` fakes), `drop_lines`, `append_lines`, `pick`,
+`effect_for`, the lenient `clip_fill` read, the Settings layout tests (fit in
+both fonts and languages, viewport at 720x520, none in a tall window, last card
+meets the bottom margin), and real-window host tests: a hidden note takes a drop
+(Text and Touched events, rolled and locked), a note with the keyboard gets it
+through its EDIT (caret at the end, EM_UNDO takes it back), the outline flag,
+and that each note window registers one target and revokes it when destroyed (a
+live-target counter, which also proves OLE starts on a test thread).
+`timer_ids_never_collide` is unchanged.
+
+**Not verified live:** a real drag from Explorer, a browser (link, text) or an
+editor onto a note, and the look of the dashed outline on screen; reading the
+real clipboard (no test or demo may touch it) for the hotkey and tray paths,
+including a password manager's copy; the ANSI link format from a real source.
+
+
+## Run B: send a note to the phone
+
+"Kirim ke HP" (EN "Send to phone") shows one sticky note on the phone link as a
+read-only page. Spec: the owner's brief (feature 12), mockup page 3 card 12 of
+`docs/design/catatan-tempel-v2.html`. The server side is in [[shelf-phone]]
+("Run B: a note on the phone").
+
+- **Menu.** `CMD_SEND_PHONE = 26`, one item in the note's context menu between
+  the Cap submenu and Pin; the ... button opens the same menu. It pushes
+  `WidgetEvent::SendToPhone { id }`; `apply` puts it in `Outcome::send_phone`
+  (the last one in a batch wins). `--demo-widgets` has no island and no phone
+  link: it prints a line and ignores it.
+- **Snapshot rule.** `App::phone_send_note(id)` (`app_phone.rs`) builds a
+  `phone::NoteShare` from the note as it is when the item is chosen:
+  `NoteShare::from_note(text, paper, island, accent, pc)`. Title = the first line
+  (a checklist marker on it is dropped, `checklist::title_of`); the lines after it
+  in order, `- [ ] ` / `- [x] ` / `- [X] ` as items (the `checklist.rs` marker
+  rules, a marker with no space after it stays text), trailing blank lines
+  dropped. Colours come from `sticky::tones`: fill and body ink, `soft` =
+  `tones.secondary` for the footer and done items. **Gelap** is the fixed fill
+  #1B1D1F with the island's light text tone (`island.text`) so the page looks the
+  same whatever surface the island wears; the contrast of ink and soft on the
+  fill is >= 4.5:1 for every paper, surface and accent (test in `note_page.rs`).
+  The page shows the note **as it was when sent**; sending again refreshes it.
+- **One note at a time.** A later Kirim ke HP replaces the snapshot
+  (`Handle::share_note(Some(..))`).
+- **Reuses the session.** If no session runs, `phone_begin` starts one exactly
+  like the shelf HP pill; the snapshot is handed over at once (it lives in the
+  session's own state, so it is there before `Ready`). Then
+  `Event::PhoneAttention(PhoneStage::Qr)` opens the island panel on the Shelf
+  page at the QR view and latches it like a drop (nothing in fullscreen). With
+  a session already running the QR view shows too. No new timer, thread or poll.
+- **Clearing.** `Handle::share_note(None)` and `PhoneState::note` (the note id)
+  go when: the note is deleted or taken off the desktop (the apply `Outcome`'s
+  `gone` list, `phone_note_gone`), or a sync finds it is no longer a desktop
+  note (`phone_note_check` in `widgets_sync`, which covers the Notes page's pin
+  and delete); a refused start; the session ending (`forget_session` and the
+  server's `end`). Editing the note afterwards does not change the page.
+- **Not touched:** the shelf's files, uploads, downloads, thumbnails, page.html,
+  share ids, the token and the idle rules; `TIMER_PHONE` 48 and ids 49-50.

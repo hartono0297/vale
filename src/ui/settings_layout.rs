@@ -425,6 +425,7 @@ pub enum Hit {
     WidgetsLock,
     WidgetsPeek,
     WidgetsTilt,
+    WidgetsClipFill,
     /// The (+) of a gallery card: one new empty sticky note.
     WidgetAdd,
     /// The gallery's active card: the notes flash on the desktop.
@@ -3631,7 +3632,7 @@ const TILE_PREVIEW_H: f32 = 104.0;
 const TILE_H: f32 = 190.0;
 const TILE_PAD: f32 = 12.0;
 
-/// Widget: "Di desktop" (five settings), then "Galeri" with the card of the
+/// Widget: "Di desktop" (seven settings), then "Galeri" with the card of the
 /// one widget there is, the sticky notes.
 fn widgets_page(b: &mut Builder, s: &State) {
     let p = s.widgets;
@@ -3663,12 +3664,13 @@ fn widgets_page(b: &mut Builder, s: &State) {
         ROW_H,
         ROW_H,
         ROW_H,
+        ROW_H,
     ];
 
     titled(b, Key::GroupWidgetsDesktop);
     let card = b.card(heights.iter().sum());
-    let mut rows = [card.y; 6];
-    for i in 1..6 {
+    let mut rows = [card.y; 7];
+    for i in 1..7 {
         rows[i] = rows[i - 1] + heights[i - 1];
     }
     let cy = |i: usize| rows[i] + heights[i] / 2.0;
@@ -3701,6 +3703,11 @@ fn widgets_page(b: &mut Builder, s: &State) {
     let desc = Some((b.t(Key::WidgetsTiltDesc), Tone::Secondary));
     b.row_text(card, rows[5], b.t(Key::WidgetsTilt), desc, false, x);
     b.divider(card, rows[5]);
+
+    let x = b.toggle(Hit::WidgetsClipFill, b.g.right, cy(6), p.clip_fill);
+    let desc = Some((b.t(Key::WidgetsClipFillDesc), Tone::Secondary));
+    b.row_text(card, rows[6], b.t(Key::WidgetsClipFill), desc, false, x);
+    b.divider(card, rows[6]);
 
     // The gallery: its eyebrow with how many are on the desktop at the right.
     let eyebrow_y = b.y;
@@ -5198,6 +5205,7 @@ mod tests {
                                 lock: true,
                                 cat_peek: false,
                                 tilt: false,
+                                clip_fill: true,
                             }
                         } else {
                             WidgetPrefs::default()
@@ -5642,7 +5650,7 @@ mod tests {
     /// lists), Clipboard (history and screenshot), Tombol pintas (the header
     /// and seven rows, 10 px past the margin at the minimum size) and Fitur
     /// (five cards).
-    // Widget holds the five settings and the gallery's card: 460 px of
+    // Widget holds the seven settings and the gallery's card: 460 px of
     // content in a 400 px high viewport at the minimum size, so it scrolls.
     const SCROLLING: [Section; 7] = [
         Section::Appearance,
@@ -8905,12 +8913,12 @@ mod tests {
     fn widget_has_its_settings_and_a_gallery_with_one_card() {
         for lang in [Lang::Id, Lang::En] {
             let l = layout_in(Section::Widgets, &widgets_state(lang, 0), &Estimate, TALL);
-            // The six settings, then the gallery's grid, each under its eyebrow.
+            // The seven settings, then the gallery's grid, each under its eyebrow.
             assert_eq!(l.cards.len(), 2, "{lang:?}");
             let has = |t: &str| l.texts.iter().any(|x| x.text == t);
             assert!(has(&text(lang, Key::GroupWidgetsDesktop).to_uppercase()));
             assert!(has(&text(lang, Key::GroupWidgetsGallery).to_uppercase()));
-            for key in [Key::WidgetsShow, Key::WidgetsLayer, Key::WidgetsFullscreen, Key::WidgetsLock, Key::WidgetsPeek, Key::WidgetsTilt, Key::StickyName] {
+            for key in [Key::WidgetsShow, Key::WidgetsLayer, Key::WidgetsFullscreen, Key::WidgetsLock, Key::WidgetsPeek, Key::WidgetsTilt, Key::WidgetsClipFill, Key::StickyName] {
                 assert!(has(text(lang, key)), "{lang:?} {key:?}");
             }
             assert_eq!(l.title.as_ref().unwrap().text, text(lang, Key::SecWidgets));
@@ -8922,9 +8930,9 @@ mod tests {
             let (_, full, sel) = l.segmented(Group::WidgetFullscreen).expect("Layar penuh");
             assert_eq!(full[sel].hit, Hit::WidgetsFullscreen(FullscreenRule::Hide));
             assert_eq!(full[1].hit, Hit::WidgetsFullscreen(FullscreenRule::Keep));
-            // The three toggles.
+            // The five toggles and the gallery's (+).
             let hits: Vec<Hit> = l.hits().into_iter().map(|(h, _)| h).collect();
-            for h in [Hit::WidgetsShow, Hit::WidgetsLock, Hit::WidgetsPeek, Hit::WidgetsTilt, Hit::WidgetAdd] {
+            for h in [Hit::WidgetsShow, Hit::WidgetsLock, Hit::WidgetsPeek, Hit::WidgetsTilt, Hit::WidgetsClipFill, Hit::WidgetAdd] {
                 assert!(hits.contains(&h), "{lang:?} {h:?}");
             }
             // The gallery has exactly one card, with its picture; none is on
@@ -9005,6 +9013,7 @@ mod tests {
             lock: true,
             cat_peek: false,
             tilt: true,
+            clip_fill: true,
         };
         let s = State {
             widgets: prefs,
@@ -9025,11 +9034,12 @@ mod tests {
         assert_eq!(on(Hit::WidgetsLock), Some(true));
         assert_eq!(on(Hit::WidgetsPeek), Some(false));
         assert_eq!(on(Hit::WidgetsTilt), Some(true));
+        assert_eq!(on(Hit::WidgetsClipFill), Some(true));
     }
 
     #[test]
     fn the_widget_section_scrolls_at_the_minimum_size_and_not_in_a_tall_window() {
-        // At 720 x 520 the five settings and the gallery are taller than the
+        // At 720 x 520 the seven settings and the gallery are taller than the
         // viewport (see SCROLLING); a tall window shows them whole.
         let s = widgets_state(Lang::Id, 2);
         let small = layout(Section::Widgets, &s, &Estimate);
