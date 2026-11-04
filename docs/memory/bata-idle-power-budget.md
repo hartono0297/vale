@@ -287,3 +287,7 @@ FrameClock users, nothing else:
   the mood changed. The cat looking at the pointer is computed on mouse moves
   over the note, quantised so it redraws only when the step changes.
 - Idle notes still cost nothing: no redraw, no timer of their own.
+- Sticky notes run B, "Kirim ke HP" ([[widgets]], [[shelf-phone]]): no timer and no
+  thread added. The note's snapshot sits in the phone session's state and is read
+  only when a phone asks for `/note` or scans the QR; `TIMER_PHONE` 48 and ids
+  49-50 are untouched, and nothing polls.

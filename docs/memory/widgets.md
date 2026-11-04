@@ -452,3 +452,45 @@ confetti as motion, the see-through over real windows (alpha does not show in
 the colour popover and the "Atur sendiri" entry on screen (their layout and
 labels are tested; they were not opened because they take the foreground), the
 native menus, the island notice on the real island.
+
+
+## Run B: send a note to the phone
+
+"Kirim ke HP" (EN "Send to phone") shows one sticky note on the phone link as a
+read-only page. Spec: the owner's brief (feature 12), mockup page 3 card 12 of
+`docs/design/catatan-tempel-v2.html`. The server side is in [[shelf-phone]]
+("Run B: a note on the phone").
+
+- **Menu.** `CMD_SEND_PHONE = 26`, one item in the note's context menu between
+  the Cap submenu and Pin; the ... button opens the same menu. It pushes
+  `WidgetEvent::SendToPhone { id }`; `apply` puts it in `Outcome::send_phone`
+  (the last one in a batch wins). `--demo-widgets` has no island and no phone
+  link: it prints a line and ignores it.
+- **Snapshot rule.** `App::phone_send_note(id)` (`app_phone.rs`) builds a
+  `phone::NoteShare` from the note as it is when the item is chosen:
+  `NoteShare::from_note(text, paper, island, accent, pc)`. Title = the first line
+  (a checklist marker on it is dropped, `checklist::title_of`); the lines after it
+  in order, `- [ ] ` / `- [x] ` / `- [X] ` as items (the `checklist.rs` marker
+  rules, a marker with no space after it stays text), trailing blank lines
+  dropped. Colours come from `sticky::tones`: fill and body ink, `soft` =
+  `tones.secondary` for the footer and done items. **Gelap** is the fixed fill
+  #1B1D1F with the island's light text tone (`island.text`) so the page looks the
+  same whatever surface the island wears; the contrast of ink and soft on the
+  fill is >= 4.5:1 for every paper, surface and accent (test in `note_page.rs`).
+  The page shows the note **as it was when sent**; sending again refreshes it.
+- **One note at a time.** A later Kirim ke HP replaces the snapshot
+  (`Handle::share_note(Some(..))`).
+- **Reuses the session.** If no session runs, `phone_begin` starts one exactly
+  like the shelf HP pill; the snapshot is handed over at once (it lives in the
+  session's own state, so it is there before `Ready`). Then
+  `Event::PhoneAttention(PhoneStage::Qr)` opens the island panel on the Shelf
+  page at the QR view and latches it like a drop (nothing in fullscreen). With
+  a session already running the QR view shows too. No new timer, thread or poll.
+- **Clearing.** `Handle::share_note(None)` and `PhoneState::note` (the note id)
+  go when: the note is deleted or taken off the desktop (the apply `Outcome`'s
+  `gone` list, `phone_note_gone`), or a sync finds it is no longer a desktop
+  note (`phone_note_check` in `widgets_sync`, which covers the Notes page's pin
+  and delete); a refused start; the session ending (`forget_session` and the
+  server's `end`). Editing the note afterwards does not change the page.
+- **Not touched:** the shelf's files, uploads, downloads, thumbnails, page.html,
+  share ids, the token and the idle rules; `TIMER_PHONE` 48 and ids 49-50.
