@@ -287,3 +287,8 @@ FrameClock users, nothing else:
   the mood changed. The cat looking at the pointer is computed on mouse moves
   over the note, quantised so it redraws only when the step changes.
 - Idle notes still cost nothing: no redraw, no timer of their own.
+- Sticky notes, run B (clipboard fill and drops): there is no clipboard
+  listener. One clipboard read per hotkey or tray press, only while "Isi dari
+  clipboard" is on (and none at the 20-note cap); no retry timer. A note's
+  `IDropTarget` costs nothing at idle: no timer, no polling, no new WM_APP; it
+  only runs while a drag is over a note.

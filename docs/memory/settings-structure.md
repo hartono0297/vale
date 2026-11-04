@@ -116,3 +116,8 @@ notes flash an accent frame for about 600 ms on the frame clock). It scrolls at
 720x520 (about 460 px of content in a 400 px viewport) and not in a tall window
 (tested, `SCROLLING` has seven sections since Tombol pintas joined). The Tombol pintas card has a seventh
 row. See [[widgets]].
+
+Run B adds a seventh row to "Di desktop": **Isi dari clipboard** / Fill from
+clipboard (a toggle after "Miring sedikit", `WidgetsClipFill`), described as
+"Catatan baru dari hotkey atau tray berisi teks yang disalin". The section still
+scrolls at 720x520 and not in a tall window ([[widgets]], Run B).
