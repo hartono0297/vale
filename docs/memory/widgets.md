@@ -359,7 +359,7 @@ lenient, default off) is written with the other prefs.
   dip gap) nor the cat's face (`art::deco_centre`, tested at every width; the
   room is kept whether or not the cat or clock is there, so they do not jump).
   The deco is painted after both, so overlapping would hide the clock. The tape
-  is centred from about 248 dip, the pin from about 203.
+  is centred from 246 dip, the pin from 201.
 - `Stamp`: round, -12 degrees, bottom right of the text area above the footer,
   clear of the grip (`art::stamp_centre`, tested); a line icon (star, check, !,
   heart, cup, sparkle: `Icon::Tick`, `Mark`, `Heart`, `Cup` were added to
