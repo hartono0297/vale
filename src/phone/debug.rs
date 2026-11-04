@@ -1,10 +1,10 @@
 //! `--phone-debug` (debug builds only): the phone link on the loopback
 //! address with the files going to `target/phone-debug/`, so the page and the
 //! whole flow can be tried from a browser on this PC without a phone, a
-//! network, or the real Downloads folder. It prints the link and every
-//! pairing's code to the console, and approves each pairing two seconds
-//! after it shows, so the waiting screen is seen first. The language comes
-//! from `DI_LANG`. Runs until the process is killed.
+//! network, or the real Downloads folder. It prints the link and every phone
+//! (browser tab) that joined to the console: there is no approval, opening
+//! the link is enough. The language comes from `DI_LANG`. Runs until the
+//! process is killed.
 //!
 //! Once the server listens, every regular file of
 //! `target/phone-debug/share/` is shared with the phones (made-up ones are
@@ -17,13 +17,10 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use super::{Handle, PORTS, PhoneEvent, ServerConfig, pc_name, start};
 use crate::i18n;
-
-/// How long a pairing waits before it is approved.
-const APPROVE_AFTER: Duration = Duration::from_secs(2);
 
 /// A 640 x 480 colour gradient as a PNG (WIC, with COM joined for the call).
 fn gradient_png() -> Option<Vec<u8>> {
@@ -83,11 +80,9 @@ fn share_made_up(handle: &Handle, dir: &Path) {
     }
     for path in regular_files(dir) {
         match handle.share(&path) {
-            Some(info) => println!(
-                "phone-debug: sharing {} ({} bytes), id {}",
+            Some(id) => println!(
+                "phone-debug: sharing {}, id {id}",
                 path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default(),
-                info.size.map_or_else(|| "?".to_owned(), |n| n.to_string()),
-                info.id
             ),
             None => println!("phone-debug: could not share {}", path.display()),
         }
@@ -105,6 +100,7 @@ pub fn run() {
         lang: i18n::lang(),
         pc_name: pc_name(),
         network_name: "phone-debug (loopback)".into(),
+        public: false,
         allow_loopback: true,
     };
     let (tx, rx) = mpsc::channel();
@@ -118,7 +114,6 @@ pub fn run() {
         }),
     );
     println!("phone-debug: files go to {}", dest.display());
-    let mut due: Vec<(u64, Instant)> = Vec::new();
     loop {
         if let Ok(event) = rx.recv_timeout(Duration::from_millis(100)) {
             match event {
@@ -130,11 +125,8 @@ pub fn run() {
                     println!("phone-debug: refused: {why:?}");
                     return;
                 }
-                PhoneEvent::Pairing {
-                    device_id, code, ..
-                } => {
-                    println!("phone-debug: pairing {device_id}, code {code}, approving in 2 s");
-                    due.push((device_id, Instant::now() + APPROVE_AFTER));
+                PhoneEvent::Joined { device_id, kind } => {
+                    println!("phone-debug: phone {device_id} joined ({kind:?})");
                 }
                 PhoneEvent::SessionEnded(reason) => {
                     println!("phone-debug: session ended: {reason:?}");
@@ -143,14 +135,5 @@ pub fn run() {
                 other => println!("phone-debug: {other:?}"),
             }
         }
-        let now = Instant::now();
-        due.retain(|&(id, at)| {
-            if at <= now {
-                handle.approve(id);
-                false
-            } else {
-                true
-            }
-        });
     }
 }

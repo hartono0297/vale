@@ -1,8 +1,8 @@
 //! The server thread: it exists only while a session runs. A non-blocking
 //! listener on the PC's local address, polled every 200 ms (the same loop
-//! watches the stop flag, the token, unanswered pairings, the idle time and
-//! the network), one short-lived thread per connection (at most eight), and
-//! the routes in one `match` so a later phase only adds lines to it.
+//! watches the stop flag, the token, the idle time and the network), one
+//! short-lived thread per connection (at most eight), and the routes in one
+//! `match` so a later phase only adds lines to it.
 
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -14,12 +14,11 @@ use std::time::{Duration, Instant};
 
 use super::files::{self, OpenError};
 use super::http::{
-    self, FileHead, HttpError, Method, Parsed, Request, Response, clear_cookie, parse_head,
-    session_cookie,
+    self, FileHead, HttpError, Method, Parsed, Request, Response, parse_head, session_cookie,
 };
 use super::names::{clash_name, sanitize};
 use super::net::{self, BoundCheck, is_private};
-use super::session::{PairError, StateAnswer, Tick};
+use super::session::Tick;
 use super::share::{RangeAns, Route, counts_as_taken};
 use super::{thumb, ua};
 use super::{EndReason, FailReason, Mode, PhoneEvent, Refusal, Runtime, ServerConfig, Shared};
@@ -82,6 +81,7 @@ pub(super) fn run(shared: &Arc<Shared>, mode: Mode) {
         lang: cfg.lang,
         pc_name: cfg.pc_name.clone(),
         network_name: cfg.network_name.clone(),
+        public: cfg.public,
         allow_loopback: cfg.allow_loopback,
     });
     let Some(rt) = shared.runtime.get() else {
@@ -97,6 +97,7 @@ pub(super) fn run(shared: &Arc<Shared>, mode: Mode) {
             url,
             qr,
             network_name: rt.network_name.clone(),
+            public: rt.public,
             token_made: s.token_made(),
         })
     });
@@ -186,19 +187,15 @@ fn bind(cfg: &ServerConfig) -> Result<TcpListener, Refusal> {
     })
 }
 
-/// One pass of the housekeeping: unanswered pairings, the token, the idle
-/// time and (on a real network) whether the address is still ours. `Some`
-/// when the session must end.
+/// One pass of the housekeeping: the token, the idle time and (on a real
+/// network) whether the address is still ours. `Some` when the session must
+/// end.
 fn tick(shared: &Shared, watch: Option<Ipv4Addr>, bound: &mut BoundCheck) -> Option<EndReason> {
     let ticks = shared.session.lock().ok()?.tick(Instant::now());
     let mut end = None;
     for t in ticks {
         match t {
-            Tick::PairingEnded { device_id, outcome } => {
-                shared.emit(PhoneEvent::PairingEnded { device_id, outcome })
-            }
             Tick::TokenExpired => shared.emit(PhoneEvent::TokenExpired),
-            Tick::TokenVoid => shared.emit(PhoneEvent::TokenVoid),
             Tick::Idle => end = Some(EndReason::Idle),
         }
     }
@@ -357,15 +354,15 @@ fn route(
         (Method::Get, path) if path.starts_with("/api/thumb/") => {
             reply(thumbnail(shared, req, &path["/api/thumb/".len()..]))
         }
-        (Method::Get, path) if path.starts_with("/s/") => reply(scan(shared, req, &path[3..], peer)),
+        (Method::Get, path) if path.starts_with("/s/") => reply(scan(shared, req, &path[3..])),
         _ => reply(Response::not_found()),
     }
 }
 
-/// The approved phone behind a read-only API request, or `None` (a bare
-/// 404): anything but a session cookie, a pairing cookie included. Only
-/// `touch` makes it activity: a list or a thumbnail is not, so an open page
-/// cannot keep the server alive.
+/// The joined phone behind a read-only API request, or `None` (a bare 404):
+/// anything but a session cookie of this session. Only `touch` makes it
+/// activity: a list or a thumbnail is not, so an open page cannot keep the
+/// server alive.
 fn api_device(shared: &Shared, req: &Request, touch: bool) -> Option<u64> {
     let mut s = shared.session.lock().ok()?;
     let device = s.device_for_view_api(req.cookie("vs"))?;
@@ -376,25 +373,11 @@ fn api_device(shared: &Shared, req: &Request, touch: bool) -> Option<u64> {
 }
 
 /// Looks at a file that was shared without being looked at (one on the
-/// network), on the caller's thread, never the UI's: while it is still
-/// shared, a regular file's size is told (`SharedSized`); anything else has
-/// its id revoked (`SharedGone`).
+/// network), on the caller's thread, never the UI's: anything that is not a
+/// regular file has its id revoked (`SharedGone`, told once).
 pub(crate) fn check_shared(shared: &Shared, id: &str, path: &Path) {
-    match files::regular_size(path) {
-        Some(size) => {
-            let still = shared
-                .session
-                .lock()
-                .map(|s| s.shared().contains(id))
-                .unwrap_or(false);
-            if still {
-                shared.emit(PhoneEvent::SharedSized {
-                    id: id.to_owned(),
-                    size,
-                });
-            }
-        }
-        None => revoke_gone(shared, id),
+    if files::regular_size(path).is_none() {
+        revoke_gone(shared, id);
     }
 }
 
@@ -566,7 +549,7 @@ fn stream_body(
 /// If-Range are honoured (200, 206, 416). The start of a request for a shared
 /// id (by a route that fits it) and each chunk keep the session alive. After
 /// the last byte of a request that counts (`counts_as_taken`) the file is
-/// marked saved for this phone and, the first time, `FileTaken` is sent.
+/// marked saved for this phone (the page's "Tersimpan").
 fn download(
     shared: &Shared,
     stream: &mut TcpStream,
@@ -661,15 +644,10 @@ fn download(
     }
     let busy = Busy::new(shared, id, device);
     let all = stream_body(shared, stream, &mut opened.file, start, body_len, id);
-    if counts_as_taken(route, req.method, answer, len, all) {
-        let first = shared
-            .session
-            .lock()
-            .ok()
-            .and_then(|mut s| s.shared_mut().mark_saved(id, device));
-        if first == Some(true) {
-            shared.emit(PhoneEvent::FileTaken { id: id.to_owned() });
-        }
+    if counts_as_taken(route, req.method, answer, len, all)
+        && let Ok(mut s) = shared.session.lock()
+    {
+        s.shared_mut().mark_saved(id, device);
     }
     drop(busy);
     Routed::Streamed
@@ -718,9 +696,9 @@ fn thumbnail(shared: &Shared, req: &Request, id: &str) -> Response {
     Response::jpeg_thumb(jpeg)
 }
 
-/// The page with its boot data (language, PC, network, how far the pairing
-/// is), JSON-escaped so that nothing in it can close the script.
-fn page_with(shared: &Shared, state: &str, code: Option<&str>) -> Response {
+/// The page with its boot data (language, PC, network, the joined state),
+/// JSON-escaped so that nothing in it can close the script.
+fn page_with(shared: &Shared) -> Response {
     let Some(rt) = shared.runtime.get() else {
         return Response::not_found();
     };
@@ -728,8 +706,7 @@ fn page_with(shared: &Shared, state: &str, code: Option<&str>) -> Response {
         "lang": rt.lang.code(),
         "pc": rt.pc_name,
         "net": rt.network_name,
-        "state": state,
-        "code": code,
+        "state": "approved",
     });
     let json = boot
         .to_string()
@@ -741,135 +718,84 @@ fn page_with(shared: &Shared, state: &str, code: Option<&str>) -> Response {
     Response::html(PAGE.replacen(BOOT_MARK, &json, 1))
 }
 
-/// What a state answer sets on the phone.
-fn state_cookies(mut r: Response, answer: &StateAnswer) -> Response {
-    if let StateAnswer::Approved {
-        session_cookie: vs,
-        clear_pairing,
-    } = answer
-    {
-        if let Some(vs) = vs {
-            r = r.with_cookie(session_cookie("vs", vs));
-        }
-        if *clear_pairing {
-            r = r.with_cookie(clear_cookie("vp"));
-        }
-    }
-    r
-}
-
-/// The page for what `answer_state` said (the pairing's progress).
-fn answer_page(shared: &Shared, answer: &StateAnswer) -> Response {
-    match answer {
-        StateAnswer::Unknown => Response::not_found(),
-        StateAnswer::Waiting { code } => page_with(shared, "waiting", Some(code)),
-        StateAnswer::Approved { .. } => state_cookies(page_with(shared, "approved", None), answer),
-        StateAnswer::Rejected => page_with(shared, "rejected", None),
-    }
-}
-
-/// `GET /s/<token>`: the QR's address. A valid token makes a pairing (the
-/// owner is told and the phone gets its pairing cookie); a phone that already
-/// has a cookie of this session just gets the page again, except one whose
-/// pairing is over (turned down or timed out): the page tells it to scan
-/// again, so a valid token starts a new pairing for it. With a bad token it
-/// still gets the "rejected" page.
-fn scan(shared: &Shared, req: &Request, token: &str, peer: SocketAddr) -> Response {
+/// `GET /s/<token>`: the QR's address. A phone that already has a cookie of
+/// this session just gets the page again (whatever the token, so a reload
+/// through the link makes no second device). Otherwise a good token joins a
+/// new phone at once: the owner is told, and the phone gets the page and its
+/// own session cookie. A wrong, expired or replaced token, no random bytes or
+/// a full session is the bare 404.
+fn scan(shared: &Shared, req: &Request, token: &str) -> Response {
     let now = Instant::now();
-    let (vp, vs) = (req.cookie("vp"), req.cookie("vs"));
-    let Ok(mut s) = shared.session.lock() else {
-        return Response::not_found();
-    };
-    let retry = s.pairing_over(vp, vs);
-    if !retry && s.page_access(vp, vs, now) {
-        let answer = s.answer_state(vp, vs, now);
-        drop(s);
-        return answer_page(shared, &answer);
-    }
-    let pairing = match s.begin_pairing(token, now) {
-        Ok(p) => p,
-        Err(_) if retry => {
-            s.page_access(vp, vs, now);
-            let answer = s.answer_state(vp, vs, now);
-            drop(s);
-            return answer_page(shared, &answer);
-        }
-        Err(PairError::BadToken | PairError::Busy | PairError::NoRandom) => {
-            return Response::not_found();
-        }
-    };
-    drop(s);
-    let (kind, browser) = ua::parse(req.header("user-agent").unwrap_or(""));
-    shared.emit(PhoneEvent::Pairing {
-        device_id: pairing.device_id,
-        kind,
-        browser,
-        ip: peer.ip(),
-        code: pairing.code.clone(),
-    });
-    page_with(shared, "waiting", Some(&pairing.code)).with_cookie(session_cookie("vp", &pairing.cookie))
-}
-
-/// `GET /`: the page, for a phone with either cookie.
-fn page(shared: &Shared, req: &Request) -> Response {
-    let now = Instant::now();
-    let (vp, vs) = (req.cookie("vp"), req.cookie("vs"));
-    let Ok(mut s) = shared.session.lock() else {
-        return Response::not_found();
-    };
-    if !s.page_access(vp, vs, now) {
-        return Response::not_found();
-    }
-    let answer = s.answer_state(vp, vs, now);
-    drop(s);
-    answer_page(shared, &answer)
-}
-
-/// `GET /api/state`: how far the pairing is.
-fn state(shared: &Shared, req: &Request) -> Response {
-    let now = Instant::now();
-    let (answer, cancelled, set) = {
+    let joined = {
         let Ok(mut s) = shared.session.lock() else {
             return Response::not_found();
         };
-        let answer = s.answer_state(req.cookie("vp"), req.cookie("vs"), now);
-        let approved = matches!(answer, StateAnswer::Approved { .. });
-        let cancelled = approved.then(|| s.cancelled_batches());
-        let set = approved.then(|| (s.shared().rev(), s.shared().len()));
-        (answer, cancelled, set)
+        if s.page_access(req.cookie("vs"), now) {
+            drop(s);
+            return page_with(shared);
+        }
+        match s.join(token, now) {
+            Ok(joined) => joined,
+            Err(_) => return Response::not_found(),
+        }
+    };
+    let kind = ua::parse(req.header("user-agent").unwrap_or(""));
+    shared.emit(PhoneEvent::Joined {
+        device_id: joined.device_id,
+        kind,
+    });
+    page_with(shared).with_cookie(session_cookie("vs", &joined.cookie))
+}
+
+/// `GET /`: the page, for a phone that joined (its `vs`); anything else is a
+/// bare 404. A page load counts as activity.
+fn page(shared: &Shared, req: &Request) -> Response {
+    let now = Instant::now();
+    let Ok(mut s) = shared.session.lock() else {
+        return Response::not_found();
+    };
+    if !s.page_access(req.cookie("vs"), now) {
+        return Response::not_found();
+    }
+    drop(s);
+    page_with(shared)
+}
+
+/// `GET /api/state`: for a phone that joined, the PC and network names, the
+/// cancelled picks, how big a file the disk still takes and the shared list's
+/// revision and count. Anything else is a bare 404. A poll is not activity,
+/// so a phone tab left open cannot keep the session alive.
+fn state(shared: &Shared, req: &Request) -> Response {
+    let (cancelled, rev, count) = {
+        let Ok(s) = shared.session.lock() else {
+            return Response::not_found();
+        };
+        if s.device_for_view_api(req.cookie("vs")).is_none() {
+            return Response::not_found();
+        }
+        (s.cancelled_batches(), s.shared().rev(), s.shared().len())
     };
     let Some(rt) = shared.runtime.get() else {
         return Response::not_found();
     };
-    let (name, code) = match &answer {
-        StateAnswer::Unknown => return Response::not_found(),
-        StateAnswer::Waiting { code } => ("waiting", Some(code.as_str())),
-        StateAnswer::Approved { .. } => ("approved", None),
-        StateAnswer::Rejected => ("rejected", None),
-    };
     let mut body = serde_json::json!({
-        "state": name,
-        "code": code,
+        "state": "approved",
         "pc": rt.pc_name,
         "net": rt.network_name,
+        "cancelled": cancelled,
+        // The files shared with the phone: how many (the page's tab count)
+        // and the list's revision (when it differs from the page's, it
+        // fetches the list).
+        "rev": rev,
+        "shared": count,
     });
-    // An approved phone also learns why an upload may have failed when its
-    // answer was lost to a reset: the cancelled picks and how big a file the
-    // disk still takes (the 507 rule).
-    if let Some(cancelled) = cancelled {
-        body["cancelled"] = serde_json::json!(cancelled);
-        if let Some(free) = free_bytes(&rt.dest_dir) {
-            body["room"] = serde_json::json!(free.saturating_sub(MIN_FREE));
-        }
+    // A phone also learns why an upload may have failed when its answer was
+    // lost to a reset: the cancelled picks and how big a file the disk still
+    // takes (the 507 rule).
+    if let Some(free) = free_bytes(&rt.dest_dir) {
+        body["room"] = serde_json::json!(free.saturating_sub(MIN_FREE));
     }
-    // The files ticked for the phone: how many (the page's tab count) and the
-    // list's revision (when it differs from the page's, it fetches the list).
-    if let Some((rev, count)) = set {
-        body["rev"] = serde_json::json!(rev);
-        body["shared"] = serde_json::json!(count);
-    }
-    let body = body.to_string();
-    state_cookies(Response::json(200, body), &answer)
+    Response::json(200, body.to_string())
 }
 
 /// A batch id from the phone: short, plain characters.
@@ -1184,9 +1110,9 @@ mod tests {
     }
 
     /// A server's shared state whose last activity was `ago` back, with one
-    /// approved phone: its session cookie comes with it.
+    /// phone that joined: its session cookie comes with it.
     fn quiet_server(ago: std::time::Duration) -> Option<(Arc<super::Shared>, String, std::time::Instant)> {
-        use super::super::session::{Session, StateAnswer};
+        use super::super::session::Session;
         use super::super::{EndReason, Shared};
         use std::sync::atomic::{AtomicBool, AtomicUsize};
         use std::sync::{Mutex, OnceLock};
@@ -1194,15 +1120,7 @@ mod tests {
         let old = now.checked_sub(ago)?;
         let mut session = Session::new(old, counter).expect("a session");
         let token = session.token().to_owned();
-        let p = session.begin_pairing(&token, old).expect("pairing");
-        session.approve(p.device_id, old).expect("approved");
-        let StateAnswer::Approved {
-            session_cookie: Some(vs),
-            ..
-        } = session.answer_state(Some(&p.cookie), None, old)
-        else {
-            panic!("a session cookie");
-        };
+        let vs = session.join(&token, old).expect("joined").cookie;
         let shared = Arc::new(Shared {
             session: Mutex::new(session),
             stop: AtomicBool::new(false),
@@ -1212,6 +1130,16 @@ mod tests {
             runtime: OnceLock::new(),
             conns: AtomicUsize::new(0),
             next_upload: AtomicU64::new(1),
+        });
+        let _ = shared.runtime.set(super::super::Runtime {
+            ip: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            port: 1,
+            dest_dir: std::env::temp_dir().join("vale-never-made"),
+            lang: crate::i18n::Lang::En,
+            pc_name: "TEST-PC".into(),
+            network_name: "Test net".into(),
+            public: false,
+            allow_loopback: true,
         });
         Some((shared, format!("vs={vs}"), now))
     }
@@ -1225,7 +1153,7 @@ mod tests {
         }
     }
 
-    /// The idle rule: the file list, a thumbnail and the approved state polls
+    /// The idle rule: the file list, a thumbnail and the state polls
     /// are not activity (an open page cannot keep the server alive); the
     /// start of a download and each chunk of it are.
     #[test]
@@ -1243,7 +1171,9 @@ mod tests {
         assert_eq!(super::file_list(&shared, &get_request("/api/files", &cookie)).status, 200);
         assert_eq!(super::thumbnail(&shared, &get_request("/api/thumb/x", &cookie), "x").status, 404);
         assert!(super::api_device(&shared, &get_request("/api/files", &cookie), false).is_some());
-        assert!(idle(&shared), "the list and a thumbnail are not activity");
+        assert_eq!(super::state(&shared, &get_request("/api/state", &cookie)).status, 200);
+        assert_eq!(super::state(&shared, &get_request("/api/state", "vs=nope")).status, 404);
+        assert!(idle(&shared), "the list, a thumbnail and a state poll are not activity");
         // A request that starts a download is.
         assert!(super::api_device(&shared, &get_request("/api/file/x", &cookie), true).is_some());
         assert!(!idle(&shared));
@@ -1365,7 +1295,7 @@ mod tests {
     #[test]
     fn the_id_and_en_dictionaries_have_exactly_the_same_keys() {
         let (id, en) = (dict_keys("id"), dict_keys("en"));
-        assert!(id.len() > 35, "only {} keys found", id.len());
+        assert!(id.len() > 30, "only {} keys found", id.len());
         let mut a = id.clone();
         let mut b = en.clone();
         a.sort();
@@ -1435,6 +1365,7 @@ mod tests {
             lang: Lang::En,
             pc_name: "TEST-PC".into(),
             network_name: "Test net".into(),
+            public: false,
             allow_loopback: true,
         };
         super::run(&shared, Mode::Fixed(cfg));

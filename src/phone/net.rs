@@ -1,12 +1,10 @@
 //! Which network the phone link may use. The decisions are pure (which peers
-//! are private, which adapter is the real LAN, whether the network's category
-//! allows a session); the readers of Windows' adapter list and of the Network
-//! List Manager are the only code that looks at the machine.
+//! are private, which adapter is the real LAN, how far the network's category
+//! is trusted); the readers of Windows' adapter list and of the Network List
+//! Manager are the only code that looks at the machine.
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::time::{Duration, Instant};
-
-use super::Refusal;
 
 /// `IF_TYPE_IEEE80211`.
 pub const IF_WIFI: u32 = 71;
@@ -107,15 +105,22 @@ pub enum Category {
     Domain,
 }
 
-/// Whether a session may start on a network of this category. A Public one
-/// is refused, and so is one whose category could not be read: not knowing
-/// is treated as Public (the safe default).
-pub fn start_allowed(category: Option<Category>) -> Result<(), Refusal> {
+/// How far a network is trusted. A session starts on either: on a Public
+/// one the notch only warns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Trust {
+    Private,
+    Public,
+}
+
+/// The trust a network's category earns: Private and Domain networks are
+/// `Private`; a Public one, and one whose category could not be read (not
+/// knowing is treated as Public, the careful default), is `Public`. Neither
+/// refuses a session.
+pub fn network_trust(category: Option<Category>) -> Trust {
     match category {
-        Some(Category::Private | Category::Domain) => Ok(()),
-        Some(Category::Public) | None => Err(Refusal::Public {
-            network_name: String::new(),
-        }),
+        Some(Category::Private | Category::Domain) => Trust::Private,
+        Some(Category::Public) | None => Trust::Public,
     }
 }
 
@@ -424,14 +429,19 @@ mod tests {
     }
 
     #[test]
-    fn a_public_or_unknown_network_is_refused() {
-        assert_eq!(start_allowed(Some(Category::Private)), Ok(()));
-        assert_eq!(start_allowed(Some(Category::Domain)), Ok(()));
-        assert!(matches!(
-            start_allowed(Some(Category::Public)),
-            Err(Refusal::Public { .. })
-        ));
-        assert!(matches!(start_allowed(None), Err(Refusal::Public { .. })));
+    fn a_public_or_unknown_network_is_trusted_less_but_never_refused() {
+        assert_eq!(network_trust(Some(Category::Private)), Trust::Private);
+        assert_eq!(network_trust(Some(Category::Domain)), Trust::Private);
+        assert_eq!(network_trust(Some(Category::Public)), Trust::Public);
+        assert_eq!(network_trust(None), Trust::Public);
+        // The decision is only a flag: `detect_lan` carries it into the
+        // config and the `Ready` event. `Refusal` has no variant a category
+        // could produce (this match stops compiling if one is added).
+        use crate::phone::Refusal;
+        let from_the_network = |r: Refusal| match r {
+            Refusal::NoLan | Refusal::PortsBusy | Refusal::Failed => true,
+        };
+        assert!(from_the_network(Refusal::NoLan));
     }
 
     #[test]

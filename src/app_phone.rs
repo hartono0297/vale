@@ -1,8 +1,14 @@
 //! The island's side of the phone link: the session (`phone::Handle`), what
-//! its events said (the QR code and its clock, the phones that ask, the files
-//! arriving), and the stage the shelf shows. A child of `app`, so it works on
-//! `App` directly. The server, its rules and its network checks are `phone/`;
-//! the reducer only knows the stage (`PhoneStage`) and which button was hit.
+//! its events said (the QR code and its clock, the phones that joined, the
+//! files arriving), the shelf files shared with the phones, and the stage the
+//! shelf shows. A child of `app`, so it works on `App` directly. The server,
+//! its rules and its network checks are `phone/`; the reducer only knows the
+//! stage (`PhoneStage`) and which button was hit.
+//!
+//! There is no approval: a phone that scans the QR joins at once, and the
+//! whole shelf (every file card, no folders, no missing files) is shared with
+//! the phones that joined (`phone_sync_shared`). The QR view stays on screen
+//! while the session runs and its code renews itself every five minutes.
 //!
 //! Nothing runs while no session does. During one the server thread is the
 //! only cost, plus `TIMER_PHONE`: a one-shot re-armed each second only while
@@ -20,14 +26,9 @@ use super::{App, Event, Page, View, WM_APP_EVENT, poster};
 use crate::i18n;
 use crate::model::PhoneStage;
 use crate::phone::session::TOKEN_TTL;
-use crate::phone::{
-    Browser, DeviceKind, EndReason, FailReason, Handle, PhoneEvent, QrMatrix, Refusal,
-};
-use crate::shelf::{self, Landing, Probe, ShelfCard, ShelfKind};
-use crate::ui::phone_view::{
-    AskView, CardState, CodeView, PhoneView, QrView, RecvView, RowStatus, RowView, SendCard,
-    SendView, Warn,
-};
+use crate::phone::{DeviceKind, EndReason, FailReason, Handle, PhoneEvent, QrMatrix, Refusal};
+use crate::shelf::{self, Landing, ShelfCard, ShelfKind};
+use crate::ui::phone_view::{CodeView, PhoneView, QrView, RecvView, RowStatus, RowView, Warn};
 
 /// One-shot: the QR view's countdown, once a second while it shows. 42-47
 /// are claimed by other runs (lyrics card, widgets); this run owns 48.
@@ -43,61 +44,60 @@ struct Ready {
     /// "192.168.18.42:47390".
     addr: String,
     made: Instant,
+    /// The network is Public (or unknown): the QR view warns.
+    public: bool,
 }
 
-/// A phone that asked and has not been answered.
-struct Pending {
-    id: u64,
-    kind: DeviceKind,
-    browser: Browser,
-    ip: String,
-    code: String,
-}
-
-/// A shelf card that is ticked for the phone, as the session's set has it:
+/// A shelf card that is shared with the phones, as the session's set has it:
 /// matched to the card by its key (`shelf::key_of` of the path).
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Mirror {
     key: String,
     id: String,
-    size: u64,
-    /// A phone downloaded the whole file.
-    taken: bool,
 }
 
-/// How a shelf card stands in the send view.
-fn card_state(card: &ShelfCard, shared: &[Mirror]) -> CardState {
-    if card.kind == ShelfKind::Folder {
-        CardState::Folder
-    } else if card.stale {
-        CardState::Stale
-    } else {
-        match shared.iter().find(|m| m.key == card.key) {
-            Some(m) => CardState::Ticked { taken: m.taken },
-            None => CardState::Unticked,
-        }
-    }
+/// What one look at the shelf changes in what the phones can take.
+#[derive(Debug, PartialEq, Eq)]
+struct SyncPlan {
+    /// The ids to stop sharing: their card left the shelf, went stale (the
+    /// file is gone) or is no longer a file.
+    unshare: Vec<String>,
+    /// The cards (by place on the shelf) to share: files that are there, not
+    /// shared yet and not on the loop guard's list.
+    share: Vec<usize>,
 }
 
-/// The ids to stop sharing: those whose card is no longer on the shelf (its
-/// key is not among `shelf_keys`), in the mirror's order.
-fn orphans(shared: &[Mirror], shelf_keys: &[String]) -> Vec<String> {
-    shared
+/// The whole shelf is shared: every card that is a file (no folder) and is
+/// not stale, once. `skipped` holds the keys of cards that could not be
+/// shared (or whose id was revoked as gone): they are not tried again while
+/// the card stays.
+fn sync_plan(cards: &[ShelfCard], mirror: &[Mirror], skipped: &[String]) -> SyncPlan {
+    let shareable = |c: &ShelfCard| c.kind != ShelfKind::Folder && !c.stale;
+    let unshare = mirror
         .iter()
-        .filter(|m| !shelf_keys.contains(&m.key))
+        .filter(|m| !cards.iter().any(|c| c.key == m.key && shareable(c)))
         .map(|m| m.id.clone())
-        .collect()
+        .collect();
+    let share = cards
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| {
+            shareable(c)
+                && !mirror.iter().any(|m| m.key == c.key)
+                && !skipped.contains(&c.key)
+        })
+        .map(|(i, _)| i)
+        .collect();
+    SyncPlan { unshare, share }
 }
 
-/// The ids to stop sharing because their card went stale (the file is
-/// gone): the footer must not count a file nobody can take, and a stale card
-/// cannot be unticked.
-fn stale_ids(shared: &[Mirror], cards: &[ShelfCard]) -> Vec<String> {
-    shared
-        .iter()
-        .filter(|m| cards.iter().any(|c| c.key == m.key && c.stale))
-        .map(|m| m.id.clone())
-        .collect()
+/// The loop guard's list after a look at the shelf: a key stays only while
+/// its card is on the shelf (it is forgotten when the card leaves), and a
+/// card that went stale is forgotten too, so the file gets a fresh try when
+/// it is back. Nothing here runs on a timer: a gone network file is skipped
+/// once, not shared again on every sync.
+fn prune_skipped(skipped: &mut Vec<String>, cards: &[ShelfCard]) {
+    skipped.retain(|k| cards.iter().any(|c| &c.key == k && !c.stale));
 }
 
 /// How a batch of files is landing on the shelf.
@@ -119,17 +119,16 @@ pub(super) struct PhoneState {
     starting: bool,
     ready: Option<Ready>,
     refusal: Option<Refusal>,
-    /// The token was voided (3 rejections) or ran out of time.
-    void: bool,
-    expired: bool,
-    /// The token counts down: until a phone is approved (after that it
-    /// lives as long as the session).
-    timed: bool,
-    /// Phones waiting for an answer, oldest first.
-    pending: Vec<Pending>,
-    /// The kinds of the phones approved in this session.
+    /// A new code was asked for (the old one ran out while the QR view
+    /// showed) and could not be made: the code shows dead, with "Buat QR
+    /// baru". Cleared by a code that was made.
+    renew_failed: bool,
+    /// The kinds of the phones that joined in this session, one per join.
     devices: Vec<DeviceKind>,
+    /// The receiving view's header chip: "Android", "2 HP".
     chip: String,
+    /// Step 2's line once a phone joined: "Tersambung: Android".
+    connected: String,
     /// Rows of the files received, oldest first, and the upload id of each.
     rows: Vec<RowView>,
     ids: Vec<u64>,
@@ -143,9 +142,23 @@ pub(super) struct PhoneState {
     attended: Option<String>,
     /// `TIMER_PHONE` is armed.
     timer: bool,
-    /// The shelf cards ticked for the phone, in the order they were ticked;
-    /// gone with the session (it is rebuilt empty by `forget_session`).
+    /// The shelf cards shared with the phones; gone with the session (it is
+    /// rebuilt empty by `forget_session`).
     shared: Vec<Mirror>,
+    /// Keys of cards that could not be shared, or whose id was revoked as
+    /// gone: not tried again while the card stays on the shelf.
+    skipped: Vec<String>,
+}
+
+/// What `phone_keep_fresh` did to the code on screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Fresh {
+    /// It had not run out (or the QR view is not on screen).
+    Same,
+    /// It had run out and a new one was made.
+    Renewed,
+    /// It had run out and no new one could be made: it shows dead.
+    Dead,
 }
 
 impl PhoneState {
@@ -162,28 +175,25 @@ impl PhoneState {
         };
     }
 
-    fn ever_approved(&self) -> bool {
+    fn ever_joined(&self) -> bool {
         !self.devices.is_empty()
     }
 
+    /// Seconds the code is still good for, counting down from five minutes
+    /// whoever joined; `None` once it ran out (or could not be renewed).
     fn remaining(&self, now: Instant) -> Option<u64> {
         let made = self.ready.as_ref()?.made;
-        if self.void || self.expired {
+        if self.renew_failed {
             return None;
-        }
-        if !self.timed {
-            return Some(0);
         }
         let left = TOKEN_TTL.saturating_sub(now.saturating_duration_since(made));
         (!left.is_zero()).then_some(left.as_secs() + u64::from(left.subsec_nanos() > 0))
     }
 
-    /// The stage a returning owner sees: a phone waiting, files or a
-    /// connected phone, else the code.
+    /// The stage a returning owner sees: files or a connected phone, else
+    /// the code.
     fn resume_stage(&self) -> PhoneStage {
-        if !self.pending.is_empty() {
-            PhoneStage::Approval
-        } else if self.ever_approved() || !self.rows.is_empty() {
+        if self.ever_joined() || !self.rows.is_empty() {
             PhoneStage::Receiving
         } else {
             PhoneStage::Qr
@@ -191,12 +201,11 @@ impl PhoneState {
     }
 }
 
-fn warn_of(r: &Refusal) -> (Warn, &str) {
+fn warn_of(r: &Refusal) -> Warn {
     match r {
-        Refusal::Public { network_name } => (Warn::Public, network_name),
-        Refusal::NoLan => (Warn::NoLan, ""),
-        Refusal::PortsBusy => (Warn::PortsBusy, ""),
-        Refusal::Failed => (Warn::Failed, ""),
+        Refusal::NoLan => Warn::NoLan,
+        Refusal::PortsBusy => Warn::PortsBusy,
+        Refusal::Failed => Warn::Failed,
     }
 }
 
@@ -220,159 +229,75 @@ fn percent(received: u64, size: u64) -> u8 {
 }
 
 impl App {
-    /// The shelf's cards as the send view draws them (empty when no phone
-    /// view could show them: nothing is built then).
-    pub(super) fn phone_send_cards(
-        state: &crate::state::IslandState,
-        cards: &[ShelfCard],
-        st: &PhoneState,
-    ) -> Vec<SendCard> {
-        if state.phone_stage() != Some(PhoneStage::Send) {
-            return Vec::new();
-        }
-        cards
-            .iter()
-            .map(|c| SendCard {
-                name: c.name.clone(),
-                kind: c.kind,
-                state: card_state(c, &st.shared),
-            })
-            .collect()
-    }
-
-    /// What the phone views draw, while the shelf shows one. `send` is what
-    /// `phone_send_cards` made.
+    /// What the phone views draw, while the shelf shows one.
     pub(super) fn phone_view<'a>(
         state: &crate::state::IslandState,
         st: &'a PhoneState,
-        send: &'a [SendCard],
         now: Instant,
     ) -> Option<PhoneView<'a>> {
         let stage = state.phone_stage()?;
         let qr = match (&st.refusal, &st.ready) {
-            (Some(r), _) => {
-                let (w, n) = warn_of(r);
-                QrView::Warning(w, n)
-            }
+            (Some(r), _) => QrView::Warning(warn_of(r)),
             (None, Some(r)) => QrView::Code(CodeView {
                 qr: &r.qr,
                 network: &r.network,
                 addr: &r.addr,
                 remaining: st.remaining(now),
-                timed: st.timed,
-                void: st.void,
+                public: r.public,
+                joined: &st.connected,
             }),
             (None, None) => QrView::Starting,
         };
-        let ask = st.pending.first().map(|p| AskView {
-            id: p.id,
-            kind: p.kind,
-            browser: p.browser.label(),
-            ip: &p.ip,
-            code: &p.code,
-            more: st.pending.len() - 1,
-        });
         Some(PhoneView {
             stage,
             qr,
-            ask,
             recv: RecvView {
                 rows: &st.rows,
                 chip: &st.chip,
                 files: st.files,
                 bytes: st.bytes,
             },
-            send: SendView {
-                cards: send,
-                count: st.shared.len(),
-                bytes: st.shared.iter().map(|m| m.size).sum(),
-                chip: &st.chip,
-            },
         })
     }
 
-    /// A card was clicked in the send view: ticked files are shared with the
-    /// phones, ticked again they are not. A path that is gone turns the card
-    /// stale and shares nothing; a folder is never shared. A file on the
-    /// network is not looked at here (that could hold the UI thread): it is
-    /// shared at once, its size follows (`SharedSized`), and if it is not
-    /// there it is unticked again (`SharedGone`).
-    pub(super) fn phone_share_toggle(&mut self, i: usize, now: Instant) {
-        let Some(path) = self.shelf.shelf.get(i).map(PathBuf::from) else {
+    /// The whole shelf is shared with the phones while a session listens:
+    /// every card that is a file and is there, once; what left the shelf or
+    /// went missing stops being shared at once (and "Kosongkan" stops
+    /// everything). Runs at `Ready` and at every look at the shelf
+    /// (`shelf_look`, which every change of the shelf ends with).
+    ///
+    /// A file on the network is never looked at here (that could hold the
+    /// UI thread): `Handle::share` hands it to a thread of its own, which
+    /// revokes it if it is not there (`SharedGone`). A card that cannot be
+    /// shared, or whose id was revoked as gone, is on the loop guard's list
+    /// and is not tried again while it stays on the shelf.
+    pub(super) fn phone_sync_shared(&mut self) {
+        if self.phone.ready.is_none() {
+            return;
+        }
+        let Some(handle) = &self.phone.handle else {
             return;
         };
-        let key = shelf::key_of(&path);
-        if let Some(at) = self.phone.shared.iter().position(|m| m.key == key) {
-            let gone = self.phone.shared.remove(at);
-            if let Some(handle) = &self.phone.handle {
-                handle.unshare(&gone.id);
-            }
-        } else if let Some(handle) = &self.phone.handle {
-            // `probe` does not look at a path on the network either.
-            match shelf::probe(&path) {
-                Probe::Missing => self.shelf_look(),
-                Probe::Folder => {}
-                Probe::File => {
-                    if let Some(info) = handle.share(&path) {
-                        self.phone.shared.push(Mirror {
-                            key,
-                            id: info.id,
-                            // A file on the network: `SharedSized` follows.
-                            size: info.size.unwrap_or(0),
-                            taken: false,
-                        });
-                    }
-                }
+        let cards = &self.shelf.cards;
+        prune_skipped(&mut self.phone.skipped, cards);
+        let plan = sync_plan(cards, &self.phone.shared, &self.phone.skipped);
+        for id in &plan.unshare {
+            handle.unshare(id);
+        }
+        self.phone.shared.retain(|m| !plan.unshare.contains(&m.id));
+        for i in plan.share {
+            let key = cards[i].key.clone();
+            let id = self
+                .shelf
+                .shelf
+                .get(i)
+                .map(PathBuf::from)
+                .and_then(|path| handle.share(&path));
+            match id {
+                Some(id) => self.phone.shared.push(Mirror { key, id }),
+                None => self.phone.skipped.push(key),
             }
         }
-        if !self.animating() {
-            self.draw(now);
-        }
-    }
-
-    /// The shelf changed: whatever was ticked and is no longer on it stops
-    /// being shared.
-    pub(super) fn phone_prune_shared(&mut self) {
-        if self.phone.shared.is_empty() {
-            return;
-        }
-        let keys: Vec<String> = (0..self.shelf.shelf.len())
-            .filter_map(|i| self.shelf.shelf.get(i))
-            .map(shelf::key_of)
-            .collect();
-        let gone = orphans(&self.phone.shared, &keys);
-        if gone.is_empty() {
-            return;
-        }
-        if let Some(handle) = &self.phone.handle {
-            for id in &gone {
-                handle.unshare(id);
-            }
-        }
-        self.phone.shared.retain(|m| !gone.contains(&m.id));
-    }
-
-    /// The shelf was looked at: a ticked file whose card is now stale (it
-    /// went missing) stops being shared.
-    pub(super) fn phone_drop_stale(&mut self, cards: &[ShelfCard]) {
-        let gone = stale_ids(&self.phone.shared, cards);
-        if gone.is_empty() {
-            return;
-        }
-        if let Some(handle) = &self.phone.handle {
-            for id in &gone {
-                handle.unshare(id);
-            }
-        }
-        self.phone.shared.retain(|m| !gone.contains(&m.id));
-    }
-
-    /// "Kosongkan": nothing stays shared.
-    pub(super) fn phone_unshare_all(&mut self) {
-        if let Some(handle) = &self.phone.handle {
-            handle.unshare_all();
-        }
-        self.phone.shared.clear();
     }
 
     /// Starts a session on the PC's local network. The network, the adapter
@@ -388,7 +313,6 @@ impl App {
             wake();
         });
         self.phone.starting = true;
-        self.phone.timed = true;
         self.phone.handle = Some(crate::phone::start_lan(i18n::lang(), sink));
     }
 
@@ -424,33 +348,20 @@ impl App {
                 ready.qr = link.qr;
                 ready.made = link.token_made;
             }
-            self.phone.void = false;
-            self.phone.expired = false;
-            self.phone.timed = true;
+            self.phone.renew_failed = false;
             return;
         }
         self.phone_begin();
     }
 
-    /// The back button: a session nobody connected to (no phone approved or
-    /// waiting) ends; otherwise it goes on, and the "HP" pill stays lit.
+    /// The back button: a session no phone ever joined ends; otherwise it
+    /// goes on, and the "HP" pill stays lit.
     pub(super) fn phone_back(&mut self) {
         self.phone.refusal = None;
-        if self.phone.handle.is_some() && !self.phone.ever_approved() && self.phone.pending.is_empty()
-        {
+        if self.phone.handle.is_some() && !self.phone.ever_joined() {
             self.phone_stop(EndReason::Done);
         } else if self.phone.handle.is_none() {
             self.phone.forget_session();
-        }
-    }
-
-    pub(super) fn phone_answer(&mut self, id: u64, allow: bool) {
-        if let Some(handle) = &self.phone.handle {
-            if allow {
-                handle.approve(id);
-            } else {
-                handle.reject(id);
-            }
         }
     }
 
@@ -475,6 +386,46 @@ impl App {
         self.phone_on_away(EndReason::Suspend, now);
     }
 
+    /// The Shelf page shows a phone view on an open panel.
+    fn phone_view_shown(&self) -> bool {
+        self.state.phone_stage().is_some() && self.state.view() == View::Panel(Page::Shelf)
+    }
+
+    /// The QR view with a code is what the panel shows.
+    fn phone_qr_on_screen(&self) -> bool {
+        self.state.view() == View::Panel(Page::Shelf)
+            && self.state.phone_stage() == Some(PhoneStage::Qr)
+            && self.phone.handle.is_some()
+            && self.phone.ready.is_some()
+            && self.phone.refusal.is_none()
+    }
+
+    /// While the QR view is on screen its code never stays run out: a new
+    /// one is made by itself, so the owner never has to press anything. Only
+    /// when the system gives no random bytes does the code show dead (with
+    /// "Buat QR baru"). The phones that joined are not touched.
+    fn phone_keep_fresh(&mut self, now: Instant) -> Fresh {
+        if !self.phone_qr_on_screen()
+            || self.phone.renew_failed
+            || self.phone.remaining(now).is_some()
+        {
+            return Fresh::Same;
+        }
+        match self.phone.handle.as_ref().and_then(Handle::new_token) {
+            Some(link) => {
+                if let Some(ready) = &mut self.phone.ready {
+                    ready.qr = link.qr;
+                    ready.made = link.token_made;
+                }
+                Fresh::Renewed
+            }
+            None => {
+                self.phone.renew_failed = true;
+                Fresh::Dead
+            }
+        }
+    }
+
     /// One thing the phone link said.
     pub(super) fn on_phone_event(&mut self, session: u64, event: PhoneEvent, now: Instant) {
         if session != self.phone.generation {
@@ -486,6 +437,7 @@ impl App {
                 port,
                 qr,
                 network_name,
+                public,
                 token_made,
                 ..
             } => {
@@ -494,12 +446,16 @@ impl App {
                 }
                 self.phone.starting = false;
                 self.phone.refusal = None;
+                self.phone.renew_failed = false;
                 self.phone.ready = Some(Ready {
                     qr,
                     network: network_name,
                     addr: format!("{ip}:{port}"),
                     made: token_made,
+                    public,
                 });
+                // The shelf as it is now goes to the phones.
+                self.shelf_look();
             }
             PhoneEvent::Refused(refusal) => {
                 // The thread is done: drop the handle, say why on the card.
@@ -508,89 +464,47 @@ impl App {
                 self.phone.ready = None;
                 self.phone.refusal = Some(refusal);
                 self.phone.shared.clear();
-            }
-            PhoneEvent::FileTaken { id } => {
-                if let Some(m) = self.phone.shared.iter_mut().find(|m| m.id == id) {
-                    m.taken = true;
-                }
-                // Only the send view shows it: a redraw, never a refresh.
-                if self.state.phone_stage() == Some(PhoneStage::Send)
-                    && self.state.view() == View::Panel(Page::Shelf)
-                    && !self.animating()
-                {
-                    self.draw(now);
-                }
-            }
-            PhoneEvent::SharedSized { id, size } => {
-                if let Some(m) = self.phone.shared.iter_mut().find(|m| m.id == id) {
-                    m.size = size;
-                }
-                // Only the send view's footer shows it.
-                if self.state.phone_stage() == Some(PhoneStage::Send)
-                    && self.state.view() == View::Panel(Page::Shelf)
-                    && !self.animating()
-                {
-                    self.draw(now);
-                }
+                self.phone.skipped.clear();
             }
             PhoneEvent::SharedGone { id } => {
-                self.phone.shared.retain(|m| m.id != id);
-                // The file is missing: its card turns dim.
+                // The file is missing: its id was revoked, and the card is
+                // not shared again while it stays (the loop guard).
+                if let Some(at) = self.phone.shared.iter().position(|m| m.id == id) {
+                    let gone = self.phone.shared.remove(at);
+                    if !self.phone.skipped.contains(&gone.key) {
+                        self.phone.skipped.push(gone.key);
+                    }
+                }
+                // Its card turns dim.
                 self.shelf_look();
                 if self.state.view() == View::Panel(Page::Shelf) && !self.animating() {
                     self.draw(now);
                 }
             }
-            PhoneEvent::Pairing {
-                device_id,
-                kind,
-                browser,
-                ip,
-                code,
-            } => {
+            PhoneEvent::Joined { kind, .. } => {
                 if self.phone.handle.is_none() {
                     return;
                 }
-                self.phone.pending.push(Pending {
-                    id: device_id,
-                    kind,
-                    browser,
-                    ip: ip.to_string(),
-                    code,
-                });
-                self.apply(Event::PhoneAttention(PhoneStage::Approval), now);
-            }
-            PhoneEvent::PairingEnded { device_id, outcome } => {
-                let Some(at) = self.phone.pending.iter().position(|p| p.id == device_id) else {
-                    return;
-                };
-                let gone = self.phone.pending.remove(at);
-                if outcome == crate::phone::Outcome::Approved {
-                    // The token stops counting down only on `TokenKept`: a
-                    // phone of an older or expired token leaves it as it is.
-                    self.phone.devices.push(gone.kind);
-                    self.phone.chip = i18n::phone_devices_chip(i18n::lang(), &self.phone.devices);
+                // The view that shows stays as it is; only who is connected
+                // changes (the chip and step 2's line).
+                self.phone.devices.push(kind);
+                let lang = i18n::lang();
+                self.phone.chip = i18n::phone_devices_chip(lang, &self.phone.devices);
+                self.phone.connected = i18n::phone_connected(lang, &self.phone.devices);
+                if self.phone_view_shown() && !self.animating() {
+                    self.draw(now);
                 }
-                // The view that was answering moves on to what is next. The
-                // stage is read as the reducer keeps it: another page may
-                // be showing, and a stage left at Approval with nobody
-                // waiting would make the QR view's buttons do nothing.
-                if self.state.phone_stage_kept() == Some(PhoneStage::Approval)
-                    && self.phone.pending.is_empty()
+            }
+            PhoneEvent::TokenExpired => {
+                // The code on screen renews itself; with another view
+                // showing it is renewed when the QR view comes back.
+                if self.phone_keep_fresh(now) != Fresh::Same
+                    && self.phone_view_shown()
+                    && !self.animating()
                 {
-                    let next = self.phone.resume_stage();
-                    self.apply(Event::PhoneStage(Some(next)), now);
+                    self.draw(now);
                 }
             }
-            PhoneEvent::TokenExpired => self.phone.expired = true,
-            PhoneEvent::TokenKept { token_made } => {
-                // Only for the token on screen: a late one of a token
-                // replaced since ("Buat QR baru") changes nothing.
-                if self.phone.ready.as_ref().is_some_and(|r| r.made == token_made) {
-                    self.phone.timed = false;
-                }
-            }
-            PhoneEvent::TokenVoid => self.phone.void = true,
             PhoneEvent::UploadStarted {
                 upload_id,
                 name,
@@ -625,11 +539,8 @@ impl App {
                         self.phone.batches.remove(0);
                     }
                 }
-                // The owner is told once per batch, and never over a phone
-                // that is waiting for its answer.
-                if self.phone.pending.is_empty()
-                    && self.phone.attended.as_deref() != Some(batch.as_str())
-                {
+                // The owner is told once per batch.
+                if self.phone.attended.as_deref() != Some(batch.as_str()) {
                     self.phone.attended = Some(batch);
                     self.apply(Event::PhoneAttention(PhoneStage::Receiving), now);
                 }
@@ -681,7 +592,7 @@ impl App {
 
     /// A file arrived whole: its row is done, and its card lands on the
     /// shelf (a card of its own, or one for the folder when the batch would
-    /// not fit).
+    /// not fit). The shelf is shared, so the phones see it too.
     fn phone_upload_done(&mut self, upload_id: u64, path: PathBuf, now: Instant) {
         let Some(i) = self.phone.ids.iter().position(|&id| id == upload_id) else {
             return;
@@ -718,14 +629,13 @@ impl App {
     }
 
     /// The countdown runs only while the QR view with a ticking code is on
-    /// screen. Called after every refresh.
+    /// screen. Called after every refresh. A code that had run out (the QR
+    /// view was away, or it came back to one) is renewed first.
     pub(super) fn sync_phone_timer(&mut self, now: Instant) {
-        let wanted = self.state.view() == View::Panel(Page::Shelf)
-            && self.state.phone_stage() == Some(PhoneStage::Qr)
-            && self.phone.ready.is_some()
-            && self.phone.refusal.is_none()
-            && self.phone.timed
-            && self.phone.remaining(now).is_some();
+        if self.phone_keep_fresh(now) != Fresh::Same && !self.animating() {
+            self.draw(now);
+        }
+        let wanted = self.phone_qr_on_screen() && self.phone.remaining(now).is_some();
         if wanted && !self.phone.timer {
             unsafe {
                 SetTimer(Some(self.hwnd), TIMER_PHONE, 1000, None);
@@ -736,16 +646,19 @@ impl App {
         }
     }
 
-    /// `TIMER_PHONE`: one second passed on the QR view.
+    /// `TIMER_PHONE`: one second passed on the QR view. The code that ran
+    /// out is renewed before the frame is drawn.
     pub(super) fn on_phone_timer(&mut self) {
         self.kill_phone_timer();
         let now = Instant::now();
+        let fresh = self.phone_keep_fresh(now);
         if !self.animating() {
             self.draw(now);
         }
         self.sync_phone_timer(now);
-        // When it ran out the view shows "Buat QR baru": a full refresh.
-        if self.phone.remaining(now).is_none() && self.phone.ready.is_some() {
+        // A code that could not be renewed shows "Buat QR baru": a full
+        // refresh.
+        if fresh == Fresh::Dead {
             self.refresh(now);
         }
     }
@@ -768,7 +681,6 @@ mod tests {
 
     #[test]
     fn a_row_takes_its_icon_from_the_extension() {
-        use crate::shelf::ShelfKind;
         assert_eq!(row_for("IMG_0531.png", 5).kind, ShelfKind::Image);
         assert_eq!(row_for("VID.mp4", 5).kind, ShelfKind::Video);
         assert_eq!(row_for("song.m4a", 5).kind, ShelfKind::Media);
@@ -783,41 +695,43 @@ mod tests {
         assert_eq!(s.resume_stage(), PhoneStage::Qr);
         s.devices.push(DeviceKind::Android);
         assert_eq!(s.resume_stage(), PhoneStage::Receiving);
-        s.pending.push(Pending {
-            id: 1,
-            kind: DeviceKind::IPhone,
-            browser: Browser::Safari,
-            ip: "192.168.1.5".into(),
-            code: "1234".into(),
-        });
-        assert_eq!(s.resume_stage(), PhoneStage::Approval);
+        // Files received without a device on record (rows only) show too.
+        let mut s = PhoneState::default();
+        s.rows.push(row_for("a.png", 1));
+        assert_eq!(s.resume_stage(), PhoneStage::Receiving);
+    }
+
+    fn ready_at(made: Instant) -> Ready {
+        Ready {
+            qr: crate::phone::qr::make("http://10.0.0.2:47390/s/x").expect("qr"),
+            network: "n".into(),
+            addr: "10.0.0.2:47390".into(),
+            made,
+            public: false,
+        }
     }
 
     #[test]
-    fn the_token_counts_down_until_a_phone_is_approved() {
+    fn the_token_always_counts_down_whoever_joined() {
         let t0 = Instant::now();
         let mut s = PhoneState {
-            ready: Some(Ready {
-                qr: crate::phone::qr::make("http://10.0.0.2:47390/s/x").expect("qr"),
-                network: "n".into(),
-                addr: "10.0.0.2:47390".into(),
-                made: t0,
-            }),
-            timed: true,
+            ready: Some(ready_at(t0)),
             ..PhoneState::default()
         };
         assert_eq!(s.remaining(t0), Some(300));
         assert_eq!(s.remaining(t0 + Duration::from_millis(100)), Some(300));
         assert_eq!(s.remaining(t0 + Duration::from_secs(299)), Some(1));
         assert_eq!(s.remaining(t0 + Duration::from_secs(300)), None);
-        s.expired = true;
-        assert_eq!(s.remaining(t0), None);
-        s.expired = false;
-        s.void = true;
-        assert_eq!(s.remaining(t0), None);
-        s.void = false;
-        s.timed = false;
-        assert_eq!(s.remaining(t0 + Duration::from_secs(9000)), Some(0));
+        // A phone that joined does not stop the clock: no "never runs out".
+        s.devices.push(DeviceKind::IPhone);
+        assert_eq!(s.remaining(t0 + Duration::from_secs(120)), Some(180));
+        assert_eq!(s.remaining(t0 + Duration::from_secs(9000)), None);
+        // A new code starts its five minutes over.
+        s.ready = Some(ready_at(t0 + Duration::from_secs(400)));
+        assert_eq!(s.remaining(t0 + Duration::from_secs(400)), Some(300));
+        // A code that could not be renewed shows dead.
+        s.renew_failed = true;
+        assert_eq!(s.remaining(t0 + Duration::from_secs(400)), None);
         assert!(!s.running());
     }
 
@@ -831,92 +745,130 @@ mod tests {
         }
     }
 
-    fn mirror(key: &str, id: &str, taken: bool) -> Mirror {
+    fn mirror(key: &str, id: &str) -> Mirror {
         Mirror {
             key: key.to_owned(),
             id: id.to_owned(),
-            size: 10,
-            taken,
         }
     }
 
-    #[test]
-    fn a_card_is_ticked_taken_unticked_a_folder_or_stale() {
-        let shared = [mirror("a.pdf", "id1", false), mirror("b.png", "id2", true)];
-        let state = |c: &ShelfCard| card_state(c, &shared);
-        assert_eq!(
-            state(&card("a.pdf", ShelfKind::Document, false)),
-            CardState::Ticked { taken: false }
-        );
-        assert_eq!(
-            state(&card("b.png", ShelfKind::Image, false)),
-            CardState::Ticked { taken: true }
-        );
-        assert_eq!(
-            state(&card("c.xlsx", ShelfKind::Document, false)),
-            CardState::Unticked
-        );
-        // A folder and a missing file cannot be ticked, whatever the mirror says.
-        assert_eq!(state(&card("d", ShelfKind::Folder, false)), CardState::Folder);
-        assert_eq!(
-            state(&card("a.pdf", ShelfKind::Document, true)),
-            CardState::Stale,
-            "a file that went missing after it was ticked"
-        );
-        assert_eq!(state(&card("d", ShelfKind::Folder, true)), CardState::Folder);
+    fn keys(k: &[&str]) -> Vec<String> {
+        k.iter().map(|s| (*s).to_owned()).collect()
     }
 
     #[test]
-    fn a_file_on_the_network_can_be_ticked_like_any_other() {
-        let net = card(r"\\srv\x\a.pdf", ShelfKind::Document, false);
-        assert_eq!(card_state(&net, &[]), CardState::Unticked);
-        assert!(card_state(&net, &[]).shareable());
-        let shared = [mirror(r"\\srv\x\a.pdf", "id1", false)];
-        assert_eq!(card_state(&net, &shared), CardState::Ticked { taken: false });
-    }
-
-    #[test]
-    fn a_ticked_file_that_went_missing_is_unshared_with_its_card() {
-        let shared = [
-            mirror("a.pdf", "id1", false),
-            mirror("b.png", "id2", true),
-            mirror("c.txt", "id3", false),
+    fn every_file_card_is_listed_and_folders_and_stale_cards_are_not() {
+        let cards = [
+            card("a.pdf", ShelfKind::Document, false),
+            card("b.png", ShelfKind::Image, false),
+            card("gambar kerja", ShelfKind::Folder, false),
+            card("c.zip", ShelfKind::Archive, true),
+            card(r"\\srv\x\d.mp4", ShelfKind::Video, false),
         ];
+        let plan = sync_plan(&cards, &[], &[]);
+        assert_eq!(plan.share, [0, 1, 4], "files that are there, a network one too");
+        assert!(plan.unshare.is_empty());
+        // The empty shelf lists nothing.
+        assert_eq!(sync_plan(&[], &[], &[]), SyncPlan { unshare: vec![], share: vec![] });
+    }
+
+    #[test]
+    fn a_shared_card_is_not_shared_again() {
+        let cards = [
+            card("a.pdf", ShelfKind::Document, false),
+            card("b.png", ShelfKind::Image, false),
+        ];
+        let shared = [mirror("a.pdf", "id1")];
+        let plan = sync_plan(&cards, &shared, &[]);
+        assert_eq!(plan.share, [1]);
+        assert!(plan.unshare.is_empty());
+        // Everything shared: nothing to do (a sync is cheap and repeatable).
+        let both = [mirror("a.pdf", "id1"), mirror("b.png", "id2")];
+        assert_eq!(
+            sync_plan(&cards, &both, &[]),
+            SyncPlan { unshare: vec![], share: vec![] }
+        );
+    }
+
+    #[test]
+    fn a_card_removed_or_gone_stale_or_the_shelf_cleared_revokes_its_id() {
+        let shared = [
+            mirror("a.pdf", "id1"),
+            mirror("b.png", "id2"),
+            mirror("c.txt", "id3"),
+        ];
+        // A card taken off.
+        let cards = [
+            card("a.pdf", ShelfKind::Document, false),
+            card("c.txt", ShelfKind::Document, false),
+        ];
+        let plan = sync_plan(&cards, &shared, &[]);
+        assert_eq!(plan.unshare, ["id2"]);
+        assert!(plan.share.is_empty());
+        // A file that went missing: its card is stale.
         let cards = [
             card("a.pdf", ShelfKind::Document, true),
             card("b.png", ShelfKind::Image, false),
-            card("z.txt", ShelfKind::Document, true),
+            card("c.txt", ShelfKind::Document, false),
         ];
-        assert_eq!(stale_ids(&shared, &cards), ["id1"]);
-        assert!(stale_ids(&shared, &[]).is_empty());
-        assert!(stale_ids(&[], &cards).is_empty());
+        assert_eq!(sync_plan(&cards, &shared, &[]).unshare, ["id1"]);
+        // A path that became a folder is not shared either.
+        let cards = [
+            card("a.pdf", ShelfKind::Folder, false),
+            card("b.png", ShelfKind::Image, false),
+            card("c.txt", ShelfKind::Document, false),
+        ];
+        assert_eq!(sync_plan(&cards, &shared, &[]).unshare, ["id1"]);
+        // Kosongkan: all of them, in order.
+        assert_eq!(sync_plan(&[], &shared, &[]).unshare, ["id1", "id2", "id3"]);
+        assert!(sync_plan(&cards, &[], &[]).unshare.is_empty());
     }
 
     #[test]
-    fn what_left_the_shelf_is_unshared_and_nothing_else() {
-        let shared = [
-            mirror("a.pdf", "id1", false),
-            mirror("b.png", "id2", true),
-            mirror("c.txt", "id3", false),
+    fn a_skipped_card_is_not_retried_while_it_stays_and_is_forgotten_when_it_leaves() {
+        let cards = [
+            card(r"\\srv\x\gone.pdf", ShelfKind::Document, false),
+            card("b.png", ShelfKind::Image, false),
         ];
-        let keys = |k: &[&str]| k.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
-        // A card taken off.
-        assert_eq!(orphans(&shared, &keys(&["a.pdf", "c.txt"])), ["id2"]);
-        // Everything still there: nothing to revoke.
-        assert!(orphans(&shared, &keys(&["a.pdf", "b.png", "c.txt", "z"])).is_empty());
-        // Cleared: all of them, in order.
-        assert_eq!(orphans(&shared, &[]), ["id1", "id2", "id3"]);
-        assert!(orphans(&[], &keys(&["a.pdf"])).is_empty());
+        let mut skipped = keys(&[r"\\srv\x\gone.pdf"]);
+        // Sync after sync: the gone file is not shared again, the other is.
+        for _ in 0..3 {
+            prune_skipped(&mut skipped, &cards);
+            assert_eq!(skipped, [r"\\srv\x\gone.pdf"]);
+            assert_eq!(sync_plan(&cards, &[], &skipped).share, [1]);
+        }
+        // Its card leaves: the key is forgotten (a new card of that path is
+        // a fresh try).
+        let after = [card("b.png", ShelfKind::Image, false)];
+        prune_skipped(&mut skipped, &after);
+        assert!(skipped.is_empty());
+        assert_eq!(sync_plan(&cards, &[], &skipped).share, [0, 1]);
+        // A skipped card that went stale is forgotten too: when the file is
+        // back it gets a fresh try (a stale card is never shared meanwhile).
+        let mut skipped = keys(&["a.pdf"]);
+        let stale = [card("a.pdf", ShelfKind::Document, true)];
+        prune_skipped(&mut skipped, &stale);
+        assert!(skipped.is_empty());
+        assert!(sync_plan(&stale, &[], &skipped).share.is_empty());
+        // The shelf cleared: nothing is kept.
+        let mut skipped = keys(&["a.pdf", "b.png"]);
+        prune_skipped(&mut skipped, &[]);
+        assert!(skipped.is_empty());
     }
 
     #[test]
-    fn a_session_that_goes_forgets_what_was_ticked_for_it() {
+    fn a_session_that_goes_forgets_what_was_shared_and_skipped() {
         let mut s = PhoneState {
-            shared: vec![mirror("a.pdf", "id1", false)],
+            shared: vec![mirror("a.pdf", "id1")],
+            skipped: keys(&["b.png"]),
+            devices: vec![DeviceKind::Android],
+            connected: "Tersambung: Android".into(),
             ..PhoneState::default()
         };
         s.forget_session();
         assert!(s.shared.is_empty(), "the next session starts with nothing shared");
+        assert!(s.skipped.is_empty());
+        assert!(s.devices.is_empty() && s.connected.is_empty());
     }
 
     #[test]
@@ -924,12 +876,19 @@ mod tests {
         let mut s = PhoneState {
             timer: true,
             files: 3,
-            void: true,
+            renew_failed: true,
             ..PhoneState::default()
         };
         s.generation = 7;
         s.forget_session();
-        assert!(s.timer && s.files == 0 && !s.void);
+        assert!(s.timer && s.files == 0 && !s.renew_failed);
         assert_eq!(s.generation, 7, "the session number goes on counting");
+    }
+
+    #[test]
+    fn the_warnings_follow_the_refusal() {
+        assert_eq!(warn_of(&Refusal::NoLan), Warn::NoLan);
+        assert_eq!(warn_of(&Refusal::PortsBusy), Warn::PortsBusy);
+        assert_eq!(warn_of(&Refusal::Failed), Warn::Failed);
     }
 }

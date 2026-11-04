@@ -1,7 +1,8 @@
-//! The files the owner ticked for the phone: a small set that lives and
-//! dies with the session (`Session` holds it). No sockets, no clock and no
-//! file system here: the caller checks that a path is a regular file before
-//! it asks to share it (for a file on the network, right after, off the UI
+//! The shelf files shared with the phones: a small set that lives and dies
+//! with the session (`Session` holds it). The app shares every file card of
+//! the shelf, so the set follows the shelf. No sockets, no clock and no file
+//! system here: the caller checks that a path is a regular file before it
+//! asks to share it (for a file on the network, right after, off the UI
 //! thread), so every rule is tested without a network.
 //!
 //! Each shared file gets a random 128-bit id from the session's filler (the
@@ -30,8 +31,6 @@ pub struct Entry {
     /// The path's last part.
     pub name: String,
     pub kind: ShelfKind,
-    /// A phone downloaded the whole file at least once.
-    pub taken: bool,
     /// Devices that finished a download of it.
     pub saved_by: Vec<u64>,
     /// Devices with a download of it in flight.
@@ -59,7 +58,7 @@ impl SharedSet {
         Self::default()
     }
 
-    /// Goes up on every change (share, unshare, taken, saved, gone).
+    /// Goes up on every change (share, unshare, saved, gone).
     pub fn rev(&self) -> u64 {
         self.rev
     }
@@ -132,7 +131,6 @@ impl SharedSet {
             key,
             name,
             kind: shelf::kind_of(path, false),
-            taken: false,
             saved_by: Vec::new(),
             busy: Vec::new(),
             thumb: None,
@@ -161,22 +159,20 @@ impl SharedSet {
         true
     }
 
-    /// A phone finished downloading `id`. Returns `Some(true)` the first
-    /// time any phone does (the caller says so once), `Some(false)` after,
-    /// `None` when the id is not shared.
-    pub fn mark_saved(&mut self, id: &str, device: u64) -> Option<bool> {
-        let i = self.position(id)?;
+    /// A phone finished downloading `id` (the page shows "Tersimpan" for
+    /// it). `true` the first time this phone does; `false` after, or when
+    /// the id is not shared.
+    pub fn mark_saved(&mut self, id: &str, device: u64) -> bool {
+        let Some(i) = self.position(id) else {
+            return false;
+        };
         let e = &mut self.entries[i];
-        let first = !e.taken;
-        let new_device = !e.saved_by.contains(&device);
-        e.taken = true;
-        if new_device {
-            e.saved_by.push(device);
+        if e.saved_by.contains(&device) {
+            return false;
         }
-        if first || new_device {
-            self.bump();
-        }
-        Some(first)
+        e.saved_by.push(device);
+        self.bump();
+        true
     }
 
     /// `device` starts or ends a download of `id` (no `rev` change: the
@@ -232,8 +228,8 @@ pub enum RangeAns {
     Unsatisfiable,
 }
 
-/// Whether a finished request makes the file "taken" (the notch shows
-/// "diambil"): only a GET of the file or the view that wrote every byte of
+/// Whether a finished request makes the file "saved" for that phone (the
+/// page shows "Tersimpan"): only a GET of the file or the view that wrote every byte of
 /// either the whole body (200) or a resume `bytes=N-` that ran to the last
 /// byte. Never a HEAD, a suffix or a closed range, or a thumbnail. A zero
 /// length file served in full counts.
@@ -364,30 +360,30 @@ mod tests {
         step(&set, true);
         set.set_busy(&a, 1, true);
         step(&set, false);
-        assert_eq!(set.mark_saved(&a, 1), Some(true));
+        assert!(set.mark_saved(&a, 1));
         step(&set, true);
-        assert_eq!(set.mark_saved(&a, 1), Some(false));
+        assert!(!set.mark_saved(&a, 1));
         step(&set, false);
-        assert_eq!(set.mark_saved(&a, 2), Some(false), "a second phone");
+        assert!(set.mark_saved(&a, 2), "a second phone");
         step(&set, true);
         assert!(set.unshare_all());
         step(&set, true);
         assert!(!set.unshare_all());
         step(&set, false);
-        assert_eq!(set.mark_saved(&a, 1), None);
+        assert!(!set.mark_saved(&a, 1));
         step(&set, false);
     }
 
     #[test]
-    fn taken_is_said_once_and_saved_is_per_device() {
+    fn saved_is_per_device() {
         let mut set = SharedSet::new();
         let a = set.share(fake, &p(r"C:\x\a.pdf")).expect("id");
-        assert!(!set.find(&a).expect("a").taken);
-        assert_eq!(set.mark_saved(&a, 4), Some(true));
-        assert_eq!(set.mark_saved(&a, 4), Some(false));
-        assert_eq!(set.mark_saved(&a, 5), Some(false));
+        assert!(set.find(&a).expect("a").saved_by.is_empty());
+        assert!(set.mark_saved(&a, 4));
+        assert!(!set.mark_saved(&a, 4));
+        assert!(set.mark_saved(&a, 5));
+        assert!(!set.mark_saved("nope", 4), "not shared");
         let e = set.find(&a).expect("a");
-        assert!(e.taken);
         assert_eq!(e.saved_by, [4, 5]);
     }
 
