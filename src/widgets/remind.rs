@@ -122,6 +122,19 @@ pub fn due(notes: &[Note], now: i64) -> Vec<String> {
         .collect()
 }
 
+/// The fired reminders that are ahead of `now` again (the clock was set back
+/// past them), with their time. They have not rung at this time yet.
+pub fn fired_in_future(notes: &[Note], now: i64) -> Vec<(String, i64)> {
+    notes
+        .iter()
+        .filter_map(|n| {
+            let s = n.sticky.as_ref()?;
+            let at = s.remind_at.filter(|t| s.remind_fired && *t > now)?;
+            Some((n.id.clone(), at))
+        })
+        .collect()
+}
+
 /// The reminder fired and the note has not been opened since: its chip is in
 /// the accent colour and the cat holds a clock.
 pub fn overdue(s: &Sticky, now: i64) -> bool {
@@ -336,6 +349,18 @@ mod tests {
         assert_eq!(due(&notes, 500), vec!["missed".to_owned(), "exact".to_owned()]);
         assert_eq!(due(&notes, 5), Vec::<String>::new());
         assert_eq!(due(&notes, 2_000), vec!["soon".to_owned(), "missed".to_owned(), "exact".to_owned()]);
+    }
+
+    #[test]
+    fn a_fired_reminder_the_clock_went_back_past_is_found() {
+        let notes = vec![
+            note("back", Some(1_000), true),
+            note("past", Some(10), true),
+            note("unfired", Some(1_000), false),
+            note("none", None, false),
+        ];
+        assert_eq!(fired_in_future(&notes, 500), vec![("back".to_owned(), 1_000)]);
+        assert_eq!(fired_in_future(&notes, 1_000), Vec::<(String, i64)>::new());
     }
 
     #[test]

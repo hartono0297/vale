@@ -373,6 +373,8 @@ pub const OPACITIES: [u8; 4] = [100, 80, 60, 40];
 
 /// The allowed opacity nearest to `n` (a tie goes to the more opaque one).
 pub fn snap_opacity(n: i64) -> u8 {
+    // Any file can hold any number: clamped, the distance never overflows.
+    let n = n.clamp(0, 100);
     let mut best = OPACITIES[0];
     for o in OPACITIES {
         if (i64::from(o) - n).abs() < (i64::from(best) - n).abs() {
@@ -906,6 +908,13 @@ mod tests {
             assert_eq!(lenient(&json!({"opacity": given})).unwrap().opacity, want, "{given}");
         }
         assert_eq!(lenient(&json!({"opacity": 71.4})).unwrap().opacity, 80);
+        // A malformed file never panics, whatever the number.
+        for given in [i64::MIN, i64::MAX] {
+            assert_eq!(snap_opacity(given), if given < 0 { 40 } else { 100 });
+        }
+        assert_eq!(lenient(&json!({"opacity": i64::MIN})).unwrap().opacity, 40);
+        assert_eq!(lenient(&json!({"opacity": -1e300})).unwrap().opacity, 40);
+        assert_eq!(lenient(&json!({"opacity": 1e300})).unwrap().opacity, 100);
     }
 
     #[test]

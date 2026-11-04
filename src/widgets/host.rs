@@ -3252,6 +3252,24 @@ mod tests {
     }
 
     #[test]
+    fn hidden_notes_stay_hidden_when_raised_so_the_owner_shows_them_first() {
+        // The tester's context has prefs.show = false: a raise sets the flag
+        // and the layer, but the window is never shown. A reminder therefore
+        // turns the widgets on (App::widgets_reveal) before it raises.
+        let displays = vec![display("A", 0, true, 96)];
+        let fired = vec![note_with("n1", "Belanja", |s| {
+            s.remind_at = Some(5);
+            s.remind_fired = true;
+        })];
+        let mut host = WidgetHost::new(HWND::default());
+        host.sync(&ctx(&fired, &displays));
+        host.raise(&["n1".to_owned()]);
+        assert!(with(|s| s.wins[0].raised).unwrap());
+        assert!(!with(|s| s.wins[0].shown).unwrap(), "raised but nobody can see it");
+        host.shutdown();
+    }
+
+    #[test]
     fn opening_an_overdue_note_clears_its_reminder_and_the_cat_follows_the_overdue_note() {
         let _focus = keyboard_lock();
         let displays = vec![display("A", 0, true, 96)];

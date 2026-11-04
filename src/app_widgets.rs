@@ -301,11 +301,23 @@ impl App {
             let _ = KillTimer(Some(self.hwnd), TIMER_STICKY_REMIND);
         }
         let unix = Local::now().timestamp();
+        // The clock went back past a fired reminder: it is ahead of us again
+        // and will ring when its time comes.
+        let mut rearmed = false;
+        for (id, at) in remind::fired_in_future(self.notes.list(), unix) {
+            rearmed |= set_reminder(&mut self.notes, &id, Some(at), false);
+        }
+        if rearmed {
+            self.arm_widget_save();
+            self.widgets_sync();
+        }
         let due = remind::due(self.notes.list(), unix);
         if due.is_empty() {
             self.sticky_remind_arm();
             return;
         }
+        // A note that comes to the front must be somewhere to be seen.
+        self.widgets_reveal();
         let mut notices = Vec::new();
         for id in &due {
             let Some(note) = self.notes.get(id) else { continue };
@@ -337,6 +349,15 @@ impl App {
         self.sticky_remind_arm();
     }
 
+    /// The notes come back when they were hidden (Settings, "Tampilkan"), for
+    /// whatever is about to bring one to the front. Saved; the caller syncs.
+    fn widgets_reveal(&mut self) {
+        if !self.config.widgets.show {
+            self.config.widgets.show = true;
+            self.save_config();
+        }
+    }
+
     /// "Tunda 10 mnt": remind again ten minutes from now.
     pub(super) fn sticky_snooze(&mut self, id: &str) {
         let at = remind::snooze(Local::now().timestamp());
@@ -351,6 +372,8 @@ impl App {
         if set_reminder(&mut self.notes, id, None, false) {
             self.arm_widget_save();
         }
+        // The keyboard must not go to a note nobody can see.
+        self.widgets_reveal();
         self.widgets_sync();
         if let Some(host) = self.widgets.host.as_mut() {
             host.focus(id);
@@ -379,10 +402,7 @@ impl App {
             self.sticky_full_notice();
             return false;
         }
-        if !self.config.widgets.show {
-            self.config.widgets.show = true;
-            self.save_config();
-        }
+        self.widgets_reveal();
         let sticky = self.sticky_for(beside);
         let now = Local::now();
         let Some(id) = self.notes.create_sticky(sticky, now.timestamp()) else {
@@ -429,10 +449,7 @@ impl App {
                 self.sticky_full_notice();
                 return;
             }
-            if !self.config.widgets.show {
-                self.config.widgets.show = true;
-                self.save_config();
-            }
+            self.widgets_reveal();
             let sticky = self.sticky_for(None);
             self.notes.set_sticky(id, Some(sticky))
         };
