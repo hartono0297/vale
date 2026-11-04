@@ -177,3 +177,13 @@ checklist, snap and placement maths, the colour popover, the Settings page and
 the extra strings. `--demo-widgets` is debug-only and not in the release exe.
 
 After the finish merge with the lyrics card (`cargo build --release --locked`, 0 warnings) `vale.exe` is 3,346,944 bytes; the part from the lyrics card is on [[lyrics-card]].
+
+## The phone link, simplified (v3.19, 2026-11-04)
+
+[[shelf-phone]] lost the approval (code, pairing cookie, rejections), the Kirim ke HP
+tick view and its drawing, and gained the Public warning, the shelf sync with its loop
+guard and the token's auto-rotation. The release exe went from 3,510,272 (`main`
+81babbc, v3.18.0) to 3,488,256 bytes (-22,016, -0.63 %). Built with `cargo build
+--release --locked` in two folders of the same path length (`base` and `head`, both
+from `git archive`), each with its own `CARGO_TARGET_DIR`, so the running island's exe was
+never touched; no warning in either. No new crate and no new `windows` feature.
