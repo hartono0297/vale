@@ -7,7 +7,7 @@ export const meta = {
     { title: 'Build', detail: 'one builder per task, in its own worktree', model: 'sonnet' },
     { title: 'Review', detail: 'heavy only: blind review (Opus) of a pinned commit; fixes land in the builder worktree (Sonnet first, Opus from round 2)', model: 'opus' },
     { title: 'Check', detail: 'heavy only: tests + the written checklist; a failed item goes back to a fix (Opus), one more review, then the check again (2 checks at most)', model: 'sonnet' },
-    { title: 'Ship', detail: 'merge passing tasks into local main, test once; no push', model: 'sonnet' },
+    { title: 'Ship', detail: 'merge passing tasks into local main, test once; if main is red: fix (Opus), review, test again (2 fixes at most); no push', model: 'sonnet' },
     { title: 'Finish', detail: 'only when everything is ready: update Obsidian memory + README, commit, push main', model: 'sonnet' },
     { title: 'Clean', detail: 'only after Finish pushed: remove this run\'s merged worktrees and branches, never forced', model: 'sonnet' },
   ],
@@ -19,6 +19,8 @@ const MAX_TASKS = 4
 const FIX_ROUNDS = 3
 // Checks per heavy task: a failed check gets one fix + review + check again
 const CHECK_ROUNDS = 2
+// Fixes when main is red after Ship merged the tasks: fix + review + test again
+const SHIP_FIX_ROUNDS = 2
 
 // First fix round is Sonnet; if the reviewer still says FIX, later rounds escalate to Opus
 const fixModel = attempt => (attempt === 0 ? SONNET : OPUS)
@@ -113,6 +115,16 @@ const SHIP = {
   required: ['merged', 'base', 'head', 'tests_passed', 'notes'],
 }
 
+const RETEST = {
+  type: 'object',
+  properties: {
+    head: { type: 'string', description: 'git rev-parse HEAD on main' },
+    tests_passed: { type: 'boolean' },
+    notes: { type: 'string', description: 'the failing tests with their errors, or that everything passed' },
+  },
+  required: ['head', 'tests_passed', 'notes'],
+}
+
 const FINISH = {
   type: 'object',
   properties: {
@@ -193,7 +205,7 @@ function reviewPrompt(subject, brief, sha) {
 
 async function reviewAt(label, subject, brief, sha) {
   for (let attempt = 1; attempt <= 2; attempt++) {
-    const r = await safe(label, reviewPrompt(subject, brief, sha) + TOOLS, { phase: 'Review', model: OPUS, schema: REVIEW })
+    const r = await safe(label, reviewPrompt(subject, brief, sha) + TOOLS, { phase: 'Review', model: OPUS, effort: 'high', schema: REVIEW })
     if (!r) return null
     if (r.reviewed_sha && r.reviewed_sha.startsWith(sha.slice(0, 7))) return r
     log(`${label}: reviewer looked at ${r.reviewed_sha}, not ${sha}; asking again`)
@@ -227,8 +239,52 @@ async function ship(label, ready, request) {
     `3. Run the full test suite once on main (the project's test command, see 'Project commands' in AGENTS.md). If it fails, report the failures. Note main's sha as head.\n` +
     `4. Do NOT update docs and do NOT push; the Finish step does both once everything is ready. Do not delete branches or worktrees; the Clean step does that after the push.\n\n` +
     `Request: ${request}\nTasks:\n${ready.map(r => `- ${r.id}: ${r.summary}`).join('\n')}` + TOOLS,
-    { phase: 'Ship', model: SONNET, schema: SHIP }
+    { phase: 'Ship', model: SONNET, effort: 'medium', schema: SHIP }
   )
+}
+
+// Ship, then if the merged tasks break main together: a fixer (Opus) commits on main, a blind review of that fix,
+// and an independent test run. Up to SHIP_FIX_ROUNDS fixes; main stays red (no Finish, no push) if they fail.
+async function shipWithFixes(label, ready, request) {
+  const shipped = await ship(label, ready, request)
+  if (!shipped || shipped.tests_passed || !shipped.merged.length) return shipped
+  const tasks = ready.map(r => `- ${r.id}: ${r.summary}`).join('\n')
+  let head = shipped.head
+  let failures = shipped.notes
+  for (let round = 1; round <= SHIP_FIX_ROUNDS; round++) {
+    log(`${label}: main is red after the merge; fix round ${round}`)
+    const fix = await safe(
+      `${label}:fix#${round}`,
+      `The full test suite fails on local main after these task branches were merged into it. Each passed its own tests, so look first at how the merged work breaks together.\n` +
+      `Work in the main repository on branch main: no worktree, no new branch. Confirm git rev-parse HEAD is ${head} and the working tree is clean (the untracked .claude/worktrees/ folder is fine); if not, STOP, commit nothing and say why in summary.\n` +
+      `Fix the failures, run the full test suite (see 'Project commands' in AGENTS.md), and commit on main as "fix: make main green after merge". Return the new sha (git rev-parse HEAD). Do not push.\n\nFailures:\n${failures}` +
+      FIX_RULES + `\n\nRequest: ${request}\nTasks:\n${tasks}` + TOOLS,
+      { phase: 'Ship', model: OPUS, effort: 'high', schema: FIX }
+    )
+    if (!fix || !fix.sha || fix.sha === head) { log(`${label}: the fix for red main produced no new commit`); break }
+    head = fix.sha
+    const review = await reviewAt(
+      `review:${label}:fix#${round}`,
+      `You get the request and the diff git diff ${shipped.head}..${head} on main (in the main repository): a fix for tests that failed after merging the tasks below`,
+      `Request: ${request}\nTasks:\n${tasks}\nTest failures the fix must resolve without weakening or skipping tests:\n${failures}`,
+      head
+    )
+    if (!review || review.verdict !== 'SHIP') {
+      log(`${label}: the fix for red main did not pass review`)
+      return { ...shipped, head, tests_passed: false, notes: `${shipped.notes}\nMain was red after the merge; fix ${head} is on local main but did not pass review: ${review ? review.findings.join('; ') : 'the review did not finish'}` }
+    }
+    const t = await safe(
+      `${label}:retest#${round}`,
+      `Work in the main repository on branch main. Confirm git rev-parse HEAD is ${head}; if not, report tests_passed=false and say so in notes. Run the full test suite once (see 'Project commands' in AGENTS.md). Do not modify files, do not commit, do not push. Report every failing test with its error.` + TOOLS,
+      { phase: 'Ship', model: SONNET, effort: 'medium', schema: RETEST }
+    )
+    if (!t) break
+    if (t.tests_passed && t.head && t.head.startsWith(head.slice(0, 7))) {
+      return { ...shipped, head, tests_passed: true, notes: `${shipped.notes}\nMain was red after the merge; fixed on main in ${round} round(s) (${head}): ${fix.summary}` }
+    }
+    failures = t.notes
+  }
+  return { ...shipped, head, tests_passed: false, notes: `${shipped.notes}\nMain is still red after the fixes (local main at ${head}): ${failures}` }
 }
 
 // Runs only when every task is merged, reviewed/checked where required, and main is green
@@ -242,7 +298,7 @@ async function finish(label, request, head, lines) {
     `4. If anything changed, commit only those docs as "docs: update memory and README" and report the sha. Do not touch code.\n` +
     `5. Push main to origin (git push origin main). Never force-push. If the push is rejected, do not pull, rebase or retry: report it with pushed=false.\n\n` +
     `Request: ${request}\nWhat was done:\n${lines.join('\n')}` + TOOLS,
-    { phase: 'Finish', model: SONNET, schema: FINISH }
+    { phase: 'Finish', model: SONNET, effort: 'medium', schema: FINISH }
   )
 }
 
@@ -258,7 +314,7 @@ async function clean(label, items) {
     `3. Run git worktree prune.\n` +
     `Report every removed worktree with its size, every deleted branch, everything skipped (worktree, branch, reason), and the rough total freed. Do not commit and do not push.\n\n` +
     `Items:\n${list}` + TOOLS,
-    { phase: 'Clean', model: SONNET, schema: CLEAN }
+    { phase: 'Clean', model: SONNET, effort: 'medium', schema: CLEAN }
   )
 }
 
@@ -273,7 +329,7 @@ async function checkWithFixes(id, task, state, base) {
     const where = worktree
       ? `Work in the worktree ${worktree} (cd there); branch "${branch}".`
       : `Check out ${sha} detached in your own worktree, and report that worktree's absolute path as worktree.`
-    const c = await safe(`check:${id}#${round}`, checkPrompt(where, sha, task), { phase: 'Check', isolation: worktree ? undefined : 'worktree', model: SONNET, schema: CHECK })
+    const c = await safe(`check:${id}#${round}`, checkPrompt(where, sha, task), { phase: 'Check', isolation: worktree ? undefined : 'worktree', model: SONNET, effort: 'high', schema: CHECK })
     if (!worktree && c && c.worktree) checkWorktree = c.worktree
     check = checkResult(c)
     if (check.passed || !c || round === CHECK_ROUNDS) break
@@ -285,7 +341,7 @@ async function checkWithFixes(id, task, state, base) {
       worktree
         ? `Work ONLY in the worktree ${worktree} (cd there; use git -C ${worktree}); it has branch "${branch}" checked out. Do not create another branch. ${what}\nFix them, run the project's test command (see 'Project commands' in AGENTS.md), and commit on that branch. Return the new sha (git rev-parse HEAD).` + FIX_RULES + TOOLS
         : `Create a new branch "fix/${id}" from the current main (HEAD). ${what}\nFix them in the code that was added by ${base}..${state.sha}, run the project's test command, commit, and report sha, branch and worktree path.` + FIX_RULES + TOOLS,
-      { phase: 'Check', isolation: worktree ? undefined : 'worktree', model: OPUS, schema: FIX }
+      { phase: 'Check', isolation: worktree ? undefined : 'worktree', model: OPUS, effort: 'high', schema: FIX }
     )
     if (!fix || fix.sha === sha) { log(`${id}: the fix for the failed check produced no new commit`); break }
     sha = fix.sha
@@ -336,7 +392,7 @@ if (input.verify) {
           branch
             ? `Work ONLY in the worktree ${worktree} (cd there; use git -C ${worktree}). Fix these findings, run the project's test command (see 'Project commands' in AGENTS.md), and commit on branch ${branch}:\n- ${review.findings.join('\n- ')}` + FIX_RULES + TOOLS
             : `Create a new branch "fix/${it.id}" from the current main (HEAD), fix these findings in the code that was added by ${it.base}..${it.head}, run the project's test command, commit, and report sha, branch and worktree path:\n- ${review.findings.join('\n- ')}` + FIX_RULES + TOOLS,
-          { phase: 'Review', isolation: branch ? undefined : 'worktree', model: fixModel(attempt), schema: FIX }
+          { phase: 'Review', isolation: branch ? undefined : 'worktree', model: fixModel(attempt), effort: 'high', schema: FIX }
         )
         if (!fix || fix.sha === sha) { log(`${it.id}: the fix produced no new commit`); break }
         sha = fix.sha
@@ -357,7 +413,7 @@ if (input.verify) {
   let shipped = { merged: [], tests_passed: true, notes: 'no fix branches to merge' }
   if (fixed.length) {
     phase('Ship')
-    shipped = (await ship('ship:verify', fixed.map(r => ({ ...r, summary: `fixes for ${r.id}` })), 'deferred verification fixes')) || { merged: [], tests_passed: false, notes: 'ship agent failed' }
+    shipped = (await shipWithFixes('ship:verify', fixed.map(r => ({ ...r, summary: `fixes for ${r.id}` })), 'deferred verification fixes')) || { merged: [], tests_passed: false, notes: 'ship agent failed' }
   }
 
   const allReady =
@@ -411,7 +467,7 @@ const plan = await safe(
   `When unsure, pick "heavy".\n\n` +
   `For every heavy task also write "checklist": 3 to 10 concrete things a checker must verify (which demo mode to open, what to compare with which design file, which flows to exercise, which old data to load) and say what must NOT be touched (for example media buttons).\n\n` +
   `Request: ${input.request}` + TOOLS,
-  { phase: 'Plan', model: OPUS, schema: PLAN }
+  { phase: 'Plan', model: OPUS, effort: 'high', schema: PLAN }
 )
 if (!plan || !plan.tasks || !plan.tasks.length) throw new Error('Plan failed: ' + incomplete.join('; '))
 const tasks = plan.tasks.slice(0, MAX_TASKS)
@@ -426,7 +482,7 @@ const results = await pipeline(
     const b = await safe(
       `build:${task.id}`,
       `Build this task. FIRST: your worktree may start from an older commit (the last pushed origin/main), not from the local main that holds all finished work. Before anything else run git log -1 --format=%H main and create your branch from that commit: git checkout -b "task/${task.id}" main. Verify with git merge-base --is-ancestor main HEAD. Then work and commit on that branch. Commit early and often (a small WIP commit every time something compiles or a milestone is done) so the work survives if you are cut off; amend or squash at the end is optional. Test first: for each new behaviour or bug fix, write a test that fails, then the code that makes it pass; if some part has no test setup, say so in your summary. Run the relevant tests (the project's test command, see 'Project commands' in AGENTS.md) before finishing and make sure the build is warning-free. Report the branch, the final commit sha (git rev-parse HEAD) and this worktree's absolute path (git rev-parse --show-toplevel).\n\nBrief:\n${task.brief}` + TOOLS,
-      { phase: 'Build', isolation: 'worktree', model: SONNET, schema: BUILD }
+      { phase: 'Build', isolation: 'worktree', model: SONNET, effort: 'high', schema: BUILD }
     )
     return b ? { ...b, id: task.id, weight: task.weight, state: 'built' } : { id: task.id, weight: task.weight, state: 'build-failed' }
   },
@@ -445,7 +501,7 @@ const results = await pipeline(
       const fix = await safe(
         `fix:${task.id}#${attempt + 1}`,
         `Work ONLY in the builder's worktree ${r.worktree} (cd there; use git -C ${r.worktree}); it has branch "${r.branch}" checked out. Do not create another branch and do not check the branch out anywhere else. Fix these findings, run the project's test command, and commit on that branch. Return the new sha (git rev-parse HEAD).\n- ${review.findings.join('\n- ')}` + FIX_RULES + TOOLS,
-        { phase: 'Review', model: fixModel(attempt), schema: FIX }
+        { phase: 'Review', model: fixModel(attempt), effort: 'high', schema: FIX }
       )
       if (!fix || fix.sha === sha) { log(`${task.id}: the fix produced no new commit`); break }
       sha = fix.sha
@@ -473,7 +529,7 @@ if (held.length) log(`Not shipped: ${held.map(r => r.id).join(', ')}`)
 let shipped = { merged: [], base: '', head: '', tests_passed: false, notes: 'Nothing passed' }
 if (ready.length) {
   phase('Ship')
-  shipped = (await ship('ship:main', ready, input.request)) || { merged: [], base: '', head: '', tests_passed: false, notes: 'the ship agent failed' }
+  shipped = (await shipWithFixes('ship:main', ready, input.request)) || { merged: [], base: '', head: '', tests_passed: false, notes: 'the ship agent failed' }
 }
 
 // Finish: docs + push only when nothing is held, deferred or incomplete and main is green

@@ -2,16 +2,16 @@
 
 ## Models per phase (set in `.claude/workflows/build.js`)
 
-| Phase | Model |
-|---|---|
-| Plan | Opus 5.5 (`claude-opus-5-5`) |
-| Build (write the code) | Sonnet 5.5 (`claude-sonnet-5-5`) |
-| Review | Opus 5.5 (`claude-opus-5-5`) |
-| Fix | Sonnet 5.5 (`claude-sonnet-5-5`) in round 1, Opus 5.5 (`claude-opus-5-5`) from round 2 if the reviewer still says FIX |
-| Check | Sonnet 5.5 (`claude-sonnet-5-5`) |
-| Ship | Sonnet 5.5 (`claude-sonnet-5-5`) |
-| Finish (memory, README, push) | Sonnet 5.5 (`claude-sonnet-5-5`) |
-| Clean (worktrees, branches) | Sonnet 5.5 (`claude-sonnet-5-5`) |
+| Phase | Model | Effort |
+|---|---|---|
+| Plan | Opus 5.5 (`claude-opus-5-5`) | high |
+| Build (write the code) | Sonnet 5.5 (`claude-sonnet-5-5`) | high |
+| Review | Opus 5.5 (`claude-opus-5-5`) | high |
+| Fix | Sonnet 5.5 (`claude-sonnet-5-5`) in round 1, Opus 5.5 (`claude-opus-5-5`) from round 2 if the reviewer still says FIX; Opus for a failed check | high |
+| Check | Sonnet 5.5 (`claude-sonnet-5-5`) | high |
+| Ship (merge, test) | Sonnet 5.5 (`claude-sonnet-5-5`); a red `main` goes to an Opus fixer | medium (fixer high) |
+| Finish (memory, README, push) | Sonnet 5.5 (`claude-sonnet-5-5`) | medium |
+| Clean (worktrees, branches) | Sonnet 5.5 (`claude-sonnet-5-5`) | medium |
 
 - Spawning subagents (Agent tool) is allowed whenever it helps: parallel
   reading, independent tasks, blind reviewers, fixers. Set each agent's model
@@ -38,7 +38,9 @@ yourself in the main session.
   written checklist. A failed check item goes back to a fix (Opus), then one more
   review; only a SHIP is checked again, and a task gets 2 checks at most. What
   the checker cannot test lands in `manualChecks` for me.
-- The workflow merges passing tasks into `main` locally. Once everything is
+- The workflow merges passing tasks into `main` locally and runs the tests. If
+  `main` is red, an Opus fixer commits a fix on `main`, it gets a blind review,
+  and the tests run again (2 fix rounds at most). Once everything is
   ready (every task merged, reviewed, fixed and checked where required, tests
   green on `main`, nothing `incomplete`), its Finish step **always** updates the
   Obsidian memory and `README.md`, commits those docs, and pushes `main`. This
@@ -170,3 +172,27 @@ the MSVC target (`rustup`, `cargo`); CI builds with `cargo build --release --loc
 - Demo and debug modes for visuals (no real user data, no media keys):
   `--demo`, `--demo-editor`, `--demo-cli`, `--demo-robot`, `--demo-devices`, `--settings`.
 - Release: push a `v*` tag; `.github/workflows/release.yml` builds and publishes.
+
+## Push and release (main session, this project only)
+
+When I say "push" or "push dan rilis", do these in order:
+
+1. **Docs first.** Before pushing, check what landed since the last tag
+   (`git log <last tag>..HEAD`) that the Obsidian memory (`docs/memory/`, index
+   included) or `README.md` does not describe yet, and update them. Commit them
+   as "docs: update memory and README". If nothing is missing, say so.
+2. **Release** (only when I ask for a release): bump the version in
+   `Cargo.toml`, `Cargo.lock` (`cargo update --workspace --offline`),
+   `app.manifest` and `packaging/AppxManifest.xml`; run `cargo test --locked`;
+   commit "chore(release): version X.Y.Z"; push `main`; then
+   `git tag -a vX.Y.Z -m "Vale X.Y.Z"` and push the tag. Wait for the release
+   workflow and verify that the latest release has `vale.exe`,
+   `vale.exe.sha256` and the zip, and that the checksum matches.
+3. **Clean up after the push.** Remove worktrees and branches that are merged
+   and pushed (the rules in "Clean up worktrees once they are pushed"), and
+   delete the sessions this session started for this project whose work is
+   merged and pushed and that are idle. Never touch sessions of other projects
+   or sessions with running work; report what was removed and what was kept.
+
+If the tests fail, or another session still has a `build` running, stop and
+tell me instead of pushing.
