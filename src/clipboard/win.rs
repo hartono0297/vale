@@ -81,6 +81,19 @@ pub fn read(hwnd: HWND, own_sequence: Option<u32>) -> Read {
     if is_own_change(sequence, own_sequence, owner == Some(hwnd)) {
         return Read::Own;
     }
+    read_open(hwnd, sequence, true)
+}
+
+/// Reads what the clipboard holds right now, once (a note's "Isi dari
+/// clipboard"): `read` without the own-copy check, since a copy the island
+/// made itself is as good a text as any. `Busy` when another app holds the
+/// clipboard open; nothing is retried.
+pub fn read_now(hwnd: HWND) -> Read {
+    read_open(hwnd, unsafe { GetClipboardSequenceNumber() }, false)
+}
+
+/// `images` false leaves a picture on the clipboard unread.
+fn read_open(hwnd: HWND, sequence: u32, images: bool) -> Read {
     let Some(open) = Open::new(hwnd) else {
         return Read::Busy;
     };
@@ -125,7 +138,7 @@ pub fn read(hwnd: HWND, own_sequence: Option<u32>) -> Read {
         ids.contains(&CF_UNICODETEXT),
         snap.text.as_deref(),
     );
-    if image && ids.contains(&CF_DIB) {
+    if images && image && ids.contains(&CF_DIB) {
         snap.dib = read_global(CF_DIB, MAX_IMAGE_BYTES);
     }
     drop(open);

@@ -56,6 +56,7 @@ use crate::notes::Note;
 use crate::theme::{self, CatColor};
 use crate::widgets::art;
 use crate::widgets::checklist::{self, Edit};
+use crate::widgets::drop;
 use crate::widgets::mood::{self, Mood};
 use crate::widgets::edit::{self, EditEvent};
 use crate::widgets::paint::{
@@ -262,6 +263,9 @@ struct Win {
     /// Hidden by a fullscreen app on its monitor.
     away: bool,
     shown: bool,
+    /// Something a note takes is being dragged over it (the accent dashed
+    /// outline): set on an accepted `DragEnter`, cleared on a leave or a drop.
+    drop_hover: bool,
     dirty: bool,
 }
 
@@ -828,6 +832,7 @@ fn sync(ctx: &Ctx) {
     let mut created: Vec<(String, HWND)> = Vec::new();
     for n in missing {
         if let Some(hwnd) = create_window() {
+            drop::register(hwnd);
             created.push((n.id.clone(), hwnd));
         }
     }
@@ -895,6 +900,7 @@ fn sync(ctx: &Ctx) {
                 alpha_shown: 255,
                 away: false,
                 shown: false,
+                drop_hover: false,
                 dirty: true,
             });
         }
@@ -1236,6 +1242,7 @@ fn draw(s: &mut State, i: usize) {
         dx,
         chip,
         highlight,
+        drop_hover: w.drop_hover,
         peek: peek_on.then(|| mood::expr(cat_mood)),
         cat: paint::peek_look(*coat),
         frame_accent: tones.accent,
@@ -1404,6 +1411,9 @@ unsafe extern "system" fn wnd_proc(
             return LRESULT(0);
         }
         WM_DESTROY => {
+            // Every way a note window goes passes here: its drop target is
+            // revoked with it.
+            drop::revoke(hwnd);
             unsafe {
                 let _ = KillTimer(Some(hwnd), TIMER_WIDGET_CARET);
             }
@@ -1884,6 +1894,63 @@ fn apply_edit(s: &mut State, i: usize, e: &Edit) {
         }
     }
     text_changed(s, i, &before);
+}
+
+/// A drag that a note takes is over (or has left) window `hwnd`: its dashed
+/// outline shows. Called from the drop target's callbacks, which reach the
+/// state only through `with` (a busy state just skips the redraw).
+pub(super) fn drop_hover(hwnd: HWND, on: bool) {
+    let _ = with(|s| {
+        let i = idx_of(s, hwnd)?;
+        if s.wins[i].drop_hover != on {
+            s.wins[i].drop_hover = on;
+            s.wins[i].dirty = true;
+            draw(s, i);
+        }
+        Some(())
+    });
+}
+
+/// `lines` dropped onto note window `hwnd`: they go at the end of its text.
+/// While the note has the keyboard they go in through its EDIT (the selection
+/// moved to the end, `EM_REPLACESEL`, so Ctrl+Z undoes them) and
+/// `sync_from_edit`-style bookkeeping is `text_changed`'s; otherwise the text
+/// is set, drawn and announced. A rolled note stays rolled and a locked one
+/// takes drops (Kunci posisi locks the place only). True when text was added.
+pub(super) fn drop_into(hwnd: HWND, lines: &[String]) -> bool {
+    with(|s| {
+        let i = idx_of(s, hwnd)?;
+        let before = s.wins[i].text.clone();
+        let after = drop::append_lines(&before, lines);
+        let insert = after.strip_prefix(before.as_str())?.to_owned();
+        if insert.is_empty() {
+            return None;
+        }
+        let end = before.encode_utf16().count();
+        let caret = after.encode_utf16().count();
+        match s.wins[i].edit {
+            Some(_) => {
+                let e = Edit {
+                    start: end,
+                    end,
+                    insert,
+                    caret,
+                };
+                apply_edit(s, i, &e);
+            }
+            None => {
+                let w = &mut s.wins[i];
+                w.text = after;
+                w.sel = (caret, caret);
+                w.anchor = caret;
+                text_changed(s, i, &before);
+            }
+        }
+        touch(s, i);
+        Some(())
+    })
+    .flatten()
+    .is_some()
 }
 
 /// The text of note `i` changed from `before`: tell the owner, redraw.
