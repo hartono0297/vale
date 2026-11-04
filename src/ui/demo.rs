@@ -488,8 +488,10 @@ enum DemoNotice {
     ClipFiles,
     /// The screenshot preview (keputusan-v3.1 p6): 1280 × 720 · 245 KB.
     Shot,
-    /// "Disimpan · Pictures\Screenshots" after Simpan.
+    /// "Disimpan · Pictures\Screenshots · klik untuk buka" after Simpan.
     ShotSaved,
+    /// The same with a long OneDrive folder label (the body falls back).
+    ShotSavedLong,
     /// "Dihapus · clipboard dikosongkan" after Hapus.
     ShotDeleted,
     /// A drive plugged in: SanDisk Ultra, E:, 38,9 GB free (rencana-v3.5 p3).
@@ -798,7 +800,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 168] = [
+const SCENES: [Scene; 169] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -1192,6 +1194,13 @@ const SCENES: [Scene; 168] = [
         "screenshot-saved",
         ShapeKind::Notice,
         View0::Notice(DemoNotice::ShotSaved),
+        Expr::Happy,
+    ),
+    // The long OneDrive label: the body falls back until it fits.
+    bata(
+        "screenshot-saved-long",
+        ShapeKind::Notice,
+        View0::Notice(DemoNotice::ShotSavedLong),
         Expr::Happy,
     ),
     bata(
@@ -2858,12 +2867,17 @@ fn demo_notice(which: DemoNotice, renderer: &Renderer) -> Notice {
                 delete_if_ignored: false,
             },
         ),
-        DemoNotice::ShotSaved => notice(
-            tr(Key::ShotTitle),
-            tr(Key::ShotSaved),
-            r"Pictures\Screenshots".into(),
-            NoticeKind::ShotSaved,
-        ),
+        DemoNotice::ShotSaved | DemoNotice::ShotSavedLong => {
+            // Made-up paths: nothing is opened from the demo.
+            let file = if which == DemoNotice::ShotSaved {
+                r"C:\Users\vale\Pictures\Screenshots\Screenshot 2026-11-04 101500.png"
+            } else {
+                r"C:\Users\vale\OneDrive\Gambar\Tangkapan Layar\Screenshot 2026-11-04 101500.png"
+            };
+            let kind = NoticeKind::ShotSaved { path: None };
+            let fits = |s: &str| renderer.notice_text_fits(&kind, false, s);
+            crate::app::shot::kept_notice(Some(file.into()), true, &fits)
+        }
         DemoNotice::ShotDeleted => {
             let lang = crate::i18n::lang();
             let (title, body) =
@@ -3685,9 +3699,11 @@ unsafe extern "system" fn live_wnd_proc(
 /// The made-up notices `--demo-notice-close` cycles through: a chat toast
 /// (with its logo), "Claude finished", a clean that finished, and a sticky
 /// reminder (no ✕).
-const LIVE_NOTICES: [DemoNotice; 4] = [
+const LIVE_NOTICES: [DemoNotice; 5] = [
     DemoNotice::AppLogo,
     DemoNotice::ClaudeDone,
+    // A body click prints `RevealFile(..)` (made-up path), a ✕ click `[]`.
+    DemoNotice::ShotSaved,
     DemoNotice::CleanDone,
     DemoNotice::Reminder,
 ];

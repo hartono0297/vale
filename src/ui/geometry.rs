@@ -1291,7 +1291,7 @@ pub fn badge_style(notice: &Notice, p: &Palette, pomo_next: Phase) -> BadgeStyle
         NoticeKind::ClipPreview { .. } => tint(p.accent, Icon::Clipboard),
         // With the robot off: the Camera, as on the Pintasan tile.
         NoticeKind::Screenshot { .. } => tint(p.accent, Icon::Camera),
-        NoticeKind::ShotSaved => tint(p.sage, Icon::Download),
+        NoticeKind::ShotSaved { .. } => tint(p.sage, Icon::Download),
         NoticeKind::ShotDeleted => tint(crate::theme::SOFT_RED, Icon::Trash),
         NoticeKind::Pomodoro => tint(p.phase(pomo_next), Icon::Timer),
         NoticeKind::Reminder { .. } | NoticeKind::StickyReminder { .. } => BadgeStyle {

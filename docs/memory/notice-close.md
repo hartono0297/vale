@@ -23,7 +23,7 @@ until acted on, so a ✕ that drops them unseen would lose what they say). The
 sticky ones stay excluded even when one is shown briefly as `current` in
 fullscreen. What is left: `App` (real toasts and the island's own App
 notices), `ClaudeDone`, `BatteryLow`, `Pomodoro`, `Greeting`, `SystemLow`,
-`CleanDone`, `MoleDone`, `Copied`, `ShotSaved`, `ShotDeleted`,
+`CleanDone`, `MoleDone`, `Copied`, `ShotSaved { .. }` (with a path its body click is `Effect::RevealFile`; the ✕ is still effect-free), `ShotDeleted`,
 `DevicePlugged`, `DeviceSafe`, `UpdateProgress`, `UpdateFailed`, `UpdateInfo`.
 `notice_kind_closable(&NoticeKind)` is the same by kind (the renderer's
 `notice_text_fits` has only the kind).
@@ -135,7 +135,7 @@ ClaudeDone with a made-up session id, CleanDone, a sticky Reminder), refilled
 when empty. A thread-local queue carries WM_MOUSEMOVE / WM_MOUSELEAVE
 (`TrackMouseEvent`) / WM_LBUTTONUP from its window procedure; a click applies
 `Event::Click(hit)` from `renderer.hit_test`. Effects are never executed: they
-are printed to stderr as `effects: [...]` (a body click prints `OpenTarget`, a ✕
+are printed to stderr as `effects: [...]` (a body click prints `OpenTarget`, on the saved screenshot notice `RevealFile(..)`; a ✕
 click prints `[]`). `DI_DEMO_FULLSCREEN=1` first applies `Event::Fullscreen(true)`.
 No clipboard, notifications, media keys, config writes or history. A sticky
 reminder in the cycle holds it until its Selesai chip is clicked (it prints

@@ -152,20 +152,28 @@ fn save_blocking(base: &Shot, doc: &[Annotation], dir: Option<PathBuf>) -> Optio
 /// and write as `spawn_save`, never over a file. The handle says whether a
 /// file was written; nobody has to join it (the demo does, so the file
 /// lands before the process ends). `None` when the thread could not start.
+/// With `tell`, the result goes to the notch through the saved sink
+/// (`shot_edit::tell_saved`: the file, or `None` when the write failed, so a
+/// failed save is not silent); the demo passes false.
 pub fn save_detached(
     base: Arc<Shot>,
     doc: Vec<Annotation>,
     dir: Option<PathBuf>,
+    tell: bool,
 ) -> Option<std::thread::JoinHandle<bool>> {
     std::thread::Builder::new()
         .name("shot-inline-save".into())
         .spawn(move || {
             let saved = save_blocking(&base, &doc, dir);
             if saved.is_none() {
-                // No window is left to say it.
+                // The notch says it: no window is left to.
                 eprintln!("vale: the inline screenshot could not be saved");
             }
-            saved.is_some()
+            let ok = saved.is_some();
+            if tell {
+                super::tell_saved(saved);
+            }
+            ok
         })
         .ok()
 }
@@ -391,7 +399,7 @@ mod tests {
             bgra: [200u8, 100, 50, 255].repeat(24 * 16),
         });
         for _ in 0..2 {
-            let done = save_detached(base.clone(), Vec::new(), Some(dir.clone()))
+            let done = save_detached(base.clone(), Vec::new(), Some(dir.clone()), false)
                 .expect("a worker")
                 .join()
                 .expect("no panic");
@@ -410,7 +418,7 @@ mod tests {
         );
         // A folder that cannot be made is a false, not a panic.
         let file = dir.join(&names[0]);
-        let blocked = save_detached(base, Vec::new(), Some(file.join("sub")))
+        let blocked = save_detached(base, Vec::new(), Some(file.join("sub")), false)
             .expect("a worker")
             .join()
             .expect("no panic");

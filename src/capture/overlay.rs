@@ -485,9 +485,13 @@ fn finish_inline(kind: FinishKind) {
                         .join("target")
                         .join("demo-shots")
                 });
-                saved = crate::shot_edit::export::save_detached(Arc::new(shot), doc, dir);
+                saved = crate::shot_edit::export::save_detached(Arc::new(shot), doc, dir, !demo);
                 if saved.is_none() {
                     eprintln!("vale: the inline screenshot could not be saved");
+                    // The worker never started: the notch still says it.
+                    if !demo {
+                        crate::shot_edit::tell_saved(None);
+                    }
                 }
             }
             // The overlay closes first below, then the editor opens on the

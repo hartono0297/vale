@@ -855,6 +855,7 @@ keys! {
     ShotAlreadySaved => "Sudah tersimpan", "Already saved";
     ShotNotSaved => "Belum ada file", "No file yet";
     ShotOnClipboard => "tetap di clipboard", "still on the clipboard";
+    ShotClickToOpen => "klik untuk buka", "click to open";
     ShotMaybeBlocked => "mungkin diblokir Controlled folder access",
         "maybe blocked by Controlled folder access";
     ShotDeleted => "Dihapus", "Deleted";
@@ -3169,6 +3170,12 @@ mod tests {
             "dihentikan · 3,8 dtk"
         );
         assert_eq!(cli_result(Lang::En, Some(1), true, took), "stopped · 3.8 s");
+    }
+
+    #[test]
+    fn saved_notice_hint_exists_in_both_languages() {
+        assert_eq!(text(Lang::Id, Key::ShotClickToOpen), "klik untuk buka");
+        assert_eq!(text(Lang::En, Key::ShotClickToOpen), "click to open");
     }
 
     #[test]

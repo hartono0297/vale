@@ -1398,7 +1398,7 @@ impl NoticeSort {
             NoticeKind::Copied => NoticeSort::Copied,
             NoticeKind::ClipPreview { .. } => NoticeSort::ClipPreview,
             NoticeKind::Screenshot { .. } => NoticeSort::Screenshot,
-            NoticeKind::ShotSaved => NoticeSort::ShotSaved,
+            NoticeKind::ShotSaved { .. } => NoticeSort::ShotSaved,
             NoticeKind::ShotDeleted => NoticeSort::ShotDeleted,
             NoticeKind::DevicePlugged { .. } => NoticeSort::DevicePlugged,
             NoticeKind::DeviceSafe => NoticeSort::DeviceSafe,

@@ -852,6 +852,35 @@ pub fn own_copy(seq: u32) -> Option<OwnCopy> {
         .and_then(|log| recognise(&log, seq))
 }
 
+/// Where a finished Save is told: `App` sets it at startup (it sends
+/// `Event::ShotFileSaved` and wakes the island), so the inline capture and the
+/// editor can raise the "Disimpan · … · klik untuk buka" notice without
+/// knowing about `App`. Unset in the demo processes: they raise no notice.
+type SavedSink = Box<dyn Fn(Option<std::path::PathBuf>) + Send>;
+static SAVED_SINK: Mutex<Option<SavedSink>> = Mutex::new(None);
+
+pub fn set_saved_sink(sink: impl Fn(Option<std::path::PathBuf>) + Send + 'static) {
+    if let Ok(mut slot) = SAVED_SINK.lock() {
+        *slot = Some(Box::new(sink));
+    }
+}
+
+pub fn clear_saved_sink() {
+    if let Ok(mut slot) = SAVED_SINK.lock() {
+        *slot = None;
+    }
+}
+
+/// A Save finished: the file written (`None` when the write failed). Does
+/// nothing while no sink is set. Callable from any thread.
+pub(crate) fn tell_saved(path: Option<std::path::PathBuf>) {
+    if let Ok(slot) = SAVED_SINK.lock()
+        && let Some(sink) = slot.as_ref()
+    {
+        sink(path);
+    }
+}
+
 /// "Salin otomatis", as `App` last saw it in the config (on by default).
 static AUTO_COPY: AtomicBool = AtomicBool::new(true);
 
@@ -886,6 +915,25 @@ mod tests {
             b: Pt::new(b.0, b.1),
             style: RED,
         }
+    }
+
+    #[test]
+    fn a_save_is_told_only_while_a_sink_is_set() {
+        use std::path::PathBuf;
+        use std::sync::Arc;
+        // Nothing set: a no-op (the demo processes never set it).
+        tell_saved(Some(PathBuf::from("ignored.png")));
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        set_saved_sink(move |p| sink.lock().expect("lock").push(p));
+        tell_saved(Some(PathBuf::from("a.png")));
+        tell_saved(None);
+        clear_saved_sink();
+        tell_saved(Some(PathBuf::from("late.png")));
+        assert_eq!(
+            *seen.lock().expect("lock"),
+            vec![Some(PathBuf::from("a.png")), None]
+        );
     }
 
     #[test]

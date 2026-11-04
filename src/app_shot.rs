@@ -376,33 +376,71 @@ pub(super) fn card_to_remove(
     entry.filter(|&id| history.get(id).is_some_and(|c| !c.pinned))
 }
 
-/// The notice after "Simpan": "Disimpan · Pictures\Screenshots" when Simpan
-/// wrote the file (`written`) in `dir`, "Sudah tersimpan · ..." when Windows
-/// had already written it; without a file (no picture to write) "Belum ada
-/// file · tetap di clipboard", so no one thinks it is on disk.
-pub(super) fn kept_notice(has_file: bool, written: bool, dir: Option<PathBuf>) -> Notice {
-    let (title, body) = match (has_file, dir) {
-        (true, Some(dir)) => (
-            if written {
-                Key::ShotSaved
-            } else {
-                Key::ShotAlreadySaved
-            },
-            screenshot::folder_label(&dir),
-        ),
-        _ => (Key::ShotNotSaved, tr(Key::ShotOnClipboard).into()),
+/// The notice after "Simpan": "Disimpan · Pictures\Screenshots · klik untuk
+/// buka" when Simpan wrote `file` (`written`), "Sudah tersimpan · ..." when
+/// Windows had already written it. A click on it shows the file in Explorer
+/// (`NoticeKind::ShotSaved { path: Some(file) }`). Without a file (no picture
+/// to write) "Belum ada file · tetap di clipboard", so no one thinks it is
+/// on disk. `fits` says whether a body fits the notice's line.
+pub(crate) fn kept_notice(
+    file: Option<PathBuf>,
+    written: bool,
+    fits: &dyn Fn(&str) -> bool,
+) -> Notice {
+    let (title, body, path) = match file {
+        Some(file) => {
+            let dir = file.parent().unwrap_or(&file).to_path_buf();
+            (
+                if written {
+                    Key::ShotSaved
+                } else {
+                    Key::ShotAlreadySaved
+                },
+                saved_body(&dir, tr(Key::ShotClickToOpen), fits),
+                Some(file),
+            )
+        }
+        None => (Key::ShotNotSaved, tr(Key::ShotOnClipboard).into(), None),
     };
     Notice {
         key: "shot-saved".into(),
         source: tr(Key::ShotTitle).into(),
         title: tr(title).into(),
         body,
-        kind: NoticeKind::ShotSaved,
+        kind: NoticeKind::ShotSaved { path },
+    }
+}
+
+/// The body of a saved notice: the first that fits of "Pictures\Screenshots
+/// · klik untuk buka", "Screenshots · klik untuk buka", then the folder
+/// label alone (the renderer ellipsizes it if it still does not fit).
+fn saved_body(dir: &std::path::Path, hint: &str, fits: &dyn Fn(&str) -> bool) -> String {
+    let label = screenshot::folder_label(dir);
+    let full = format!("{label} · {hint}");
+    if fits(&full) {
+        return full;
+    }
+    if let Some(name) = dir.file_name().map(|n| n.to_string_lossy()) {
+        let short = format!("{name} · {hint}");
+        if fits(&short) {
+            return short;
+        }
+    }
+    label
+}
+
+/// The notice for a save made in the inline capture or the editor
+/// (`Event::ShotFileSaved`): the saved file's, or "Gagal menyimpan" when the
+/// write failed.
+pub(crate) fn file_saved_notice(path: Option<PathBuf>, fits: &dyn Fn(&str) -> bool) -> Notice {
+    match path {
+        Some(path) => kept_notice(Some(path), true, fits),
+        None => save_failed_notice(),
     }
 }
 
 /// "Gagal menyimpan": Simpan could not write the file.
-fn save_failed_notice() -> Notice {
+pub(crate) fn save_failed_notice() -> Notice {
     Notice {
         key: "shot-saved".into(),
         source: tr(Key::ShotTitle).into(),
@@ -414,7 +452,7 @@ fn save_failed_notice() -> Notice {
             tr(Key::ShotOnClipboard),
             tr(Key::ShotMaybeBlocked)
         ),
-        kind: NoticeKind::ShotSaved,
+        kind: NoticeKind::ShotSaved { path: None },
     }
 }
 
@@ -894,11 +932,12 @@ impl App {
                     .and_then(|f| f.path.parent().map(PathBuf::from))
                     .or_else(|| self.shots.dir.clone());
                 // Windows' own file: nothing to write, "Sudah tersimpan".
-                if plan.file.is_some() {
-                    return Some(Event::Notice(kept_notice(true, false, dir)));
+                if let Some(file) = &plan.file {
+                    let notice = self.kept_notice_for(Some(file.path.clone()), false);
+                    return Some(Event::Notice(notice));
                 }
                 let Some(dib) = plan.dib else {
-                    return Some(Event::Notice(kept_notice(false, false, dir)));
+                    return Some(Event::Notice(self.kept_notice_for(None, false)));
                 };
                 // No file yet: the worker waits for Snipping Tool's (it may
                 // still be on its way), else writes one. Its name is chosen
@@ -1034,10 +1073,29 @@ impl App {
                 if dir.is_some() {
                     self.shots.dir = dir.clone();
                 }
-                remember_taken(&mut self.shots.taken, path);
-                kept_notice(true, written, dir)
+                remember_taken(&mut self.shots.taken, path.clone());
+                self.kept_notice_for(Some(path), written)
             }
             None => save_failed_notice(),
+        };
+        self.apply(Event::Notice(notice), now);
+    }
+
+    /// `kept_notice` with the renderer's own measure of the notice's line.
+    pub(super) fn kept_notice_for(&self, file: Option<PathBuf>, written: bool) -> Notice {
+        let kind = NoticeKind::ShotSaved { path: None };
+        let fits = |s: &str| self.renderer.notice_text_fits(&kind, false, s);
+        kept_notice(file, written, &fits)
+    }
+
+    /// A save finished in the inline capture or the editor
+    /// (`Event::ShotFileSaved`): "Disimpan" with the folder, or "Gagal
+    /// menyimpan".
+    pub(super) fn on_shot_file_saved(&mut self, path: Option<PathBuf>, now: Instant) {
+        let kind = NoticeKind::ShotSaved { path: None };
+        let notice = {
+            let fits = |s: &str| self.renderer.notice_text_fits(&kind, false, s);
+            file_saved_notice(path, &fits)
         };
         self.apply(Event::Notice(notice), now);
     }
@@ -1083,8 +1141,9 @@ mod tests {
 
     use super::{
         RETRY_MS, SHOW_RETRY_MS, SHOW_TRIES, ShowStep, card_to_remove, delete_when_ignored,
-        kept_notice, show_step,
+        file_saved_notice, kept_notice, save_failed_notice, saved_body, show_step,
     };
+    use crate::model::NoticeKind;
 
     #[test]
     fn the_file_looks_cover_the_whole_match_window() {
@@ -1215,36 +1274,84 @@ mod tests {
         assert_eq!(card_to_remove(&h, None), None);
     }
 
+    fn always(_: &str) -> bool {
+        true
+    }
+
     #[test]
     fn simpan_without_a_file_does_not_say_saved() {
-        let dir = PathBuf::from(r"C:\Users\x\Pictures\Screenshots");
-        let saved = kept_notice(true, true, Some(dir.clone()));
+        let file = PathBuf::from(r"C:\Users\x\Pictures\Screenshots\Screenshot 1.png");
+        let saved = kept_notice(Some(file.clone()), true, &always);
         assert_eq!(
             (saved.title.as_str(), saved.body.as_str()),
-            ("Disimpan", r"Pictures\Screenshots")
+            ("Disimpan", r"Pictures\Screenshots · klik untuk buka")
         );
+        assert_eq!(saved.kind, NoticeKind::ShotSaved { path: Some(file) });
         // A PrtSc without auto-save left no file: it is only on the clipboard.
-        for dir in [None, Some(dir)] {
-            let n = kept_notice(false, false, dir);
-            assert_eq!(
-                (n.title.as_str(), n.body.as_str()),
-                ("Belum ada file", "tetap di clipboard")
-            );
-        }
+        let n = kept_notice(None, false, &always);
+        assert_eq!(
+            (n.title.as_str(), n.body.as_str()),
+            ("Belum ada file", "tetap di clipboard")
+        );
+        assert_eq!(n.kind, NoticeKind::ShotSaved { path: None });
     }
 
     #[test]
     fn a_file_windows_wrote_says_already_saved_and_only_ours_says_saved() {
-        let dir = PathBuf::from(r"C:\Users\x\Pictures\Screenshots");
-        let already = kept_notice(true, false, Some(dir.clone()));
+        let file = PathBuf::from(r"C:\Users\x\Pictures\Screenshots\Screenshot 1.png");
+        let already = kept_notice(Some(file.clone()), false, &always);
         assert_eq!(
             (already.title.as_str(), already.body.as_str()),
-            ("Sudah tersimpan", r"Pictures\Screenshots")
+            ("Sudah tersimpan", r"Pictures\Screenshots · klik untuk buka")
         );
-        let ours = kept_notice(true, true, Some(dir));
+        assert_eq!(
+            already.kind,
+            NoticeKind::ShotSaved {
+                path: Some(file.clone())
+            }
+        );
+        let ours = kept_notice(Some(file), true, &always);
         assert_eq!(ours.title, "Disimpan");
         // Not a file written, nothing to claim: no file, no "saved" at all.
-        assert_eq!(kept_notice(false, true, None).title, "Belum ada file");
+        assert_eq!(kept_notice(None, true, &always).title, "Belum ada file");
+    }
+
+    #[test]
+    fn a_failed_save_has_no_path() {
+        let n = save_failed_notice();
+        assert_eq!(n.title, "Gagal menyimpan");
+        assert_eq!(n.kind, NoticeKind::ShotSaved { path: None });
+    }
+
+    #[test]
+    fn the_saved_body_falls_back_until_it_fits() {
+        let dir = std::path::Path::new(r"C:\Users\vale\OneDrive\Gambar\Tangkapan Layar");
+        let hint = "klik untuk buka";
+        assert_eq!(
+            saved_body(dir, hint, &|_| true),
+            r"Gambar\Tangkapan Layar · klik untuk buka"
+        );
+        // Too long for the line: the last folder name only.
+        assert_eq!(
+            saved_body(dir, hint, &|s| s.chars().count() <= 34),
+            "Tangkapan Layar · klik untuk buka"
+        );
+        // Nothing with the hint fits: the label alone (ellipsized by the renderer).
+        assert_eq!(
+            saved_body(dir, hint, &|s| !s.contains(hint)),
+            r"Gambar\Tangkapan Layar"
+        );
+        assert_eq!(saved_body(dir, hint, &|_| false), r"Gambar\Tangkapan Layar");
+    }
+
+    #[test]
+    fn a_save_from_the_overlay_or_editor_says_the_same_as_simpan() {
+        let file = PathBuf::from(r"C:\Users\x\Pictures\Screenshots\Screenshot 1.png");
+        assert_eq!(
+            file_saved_notice(Some(file.clone()), &always),
+            kept_notice(Some(file), true, &always)
+        );
+        assert_eq!(file_saved_notice(None, &always), save_failed_notice());
     }
 
     fn clip_at(at: i64, from: i64, hash: Option<u64>) -> ClipCandidate {
