@@ -5780,6 +5780,31 @@ mod tests {
     }
 
     #[test]
+    fn the_notes_page_reads_a_template_s_title_and_snippet() {
+        use crate::widgets::templates::{Template, text_of};
+        let today = NaiveDate::from_ymd_opt(2026, 11, 4).unwrap();
+        for lang in [Lang::Id, Lang::En] {
+            for t in Template::ALL {
+                let text = text_of(lang, t, today);
+                if t == Template::Kosong {
+                    assert_eq!(first_line(&text), "");
+                    continue;
+                }
+                let title = first_line(&text);
+                assert!(!title.is_empty(), "{t:?} {lang:?}");
+                assert_eq!(title, crate::widgets::checklist::title_of(&text));
+                assert!(!title.starts_with("- ["), "the title is not an item: {title}");
+                // Everything but the title is the snippet.
+                let snippet = note_snippet(&text);
+                assert_eq!(snippet.is_empty(), t == Template::Ide, "{t:?}");
+            }
+        }
+        let week = text_of(Lang::Id, Template::Mingguan, today);
+        assert_eq!(first_line(&week), "Mingguan");
+        assert!(note_snippet(&week).contains("Senin"));
+    }
+
+    #[test]
     fn first_line_skips_blank_lines() {
         assert_eq!(first_line("\n  \n  Beli tinta  \nlain"), "Beli tinta");
         assert_eq!(first_line(""), "");

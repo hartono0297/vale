@@ -6108,8 +6108,8 @@ impl App {
             SettingsAction::WidgetsFullscreen(rule) => self.widgets_fullscreen(rule),
             SettingsAction::WidgetsLock(on) => self.widgets_lock(on),
             SettingsAction::WidgetsPeek(on) => self.widgets_peek(on),
-            SettingsAction::WidgetAdd => {
-                self.new_sticky(None);
+            SettingsAction::WidgetAdd(template) => {
+                self.new_sticky(None, template);
             }
             SettingsAction::WidgetHighlight => self.widgets_highlight(),
             SettingsAction::StayBehind(on) => {

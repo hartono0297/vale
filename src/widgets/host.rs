@@ -66,6 +66,7 @@ use crate::widgets::remind_pop;
 use crate::widgets::prefs::{FullscreenRule, WidgetLayer, WidgetPrefs};
 use crate::widgets::snap::{Axis, Snapped, snap_move_for, snap_resize};
 use crate::widgets::sticky::{self, DipRect, Paper, Sticky, TextSize};
+use crate::widgets::templates::Template;
 
 /// Posted to the owner when `WidgetEvent`s wait. One message until `drain`.
 pub const WM_APP_WIDGET: u32 = WM_APP + 71;
@@ -99,8 +100,9 @@ pub enum WidgetEvent {
     Remind { id: String, at: Option<i64> },
     /// "Kucing ngintip" was switched from a note's popover.
     CatPeek(bool),
-    /// The (+) of this note's header.
-    NewBeside { id: String },
+    /// The (+) of this note's header: a left click is `Template::Kosong`, a
+    /// right click chose one.
+    NewBeside { id: String, template: Template },
     /// "Lepas dari desktop" (the x): the note stays unless it is empty.
     Unstick { id: String },
     /// "Hapus catatan".
@@ -383,12 +385,19 @@ impl WidgetHost {
         .unwrap_or_default()
     }
 
-    /// Gives note `id` the keyboard (a fresh note).
+    /// Gives note `id` the keyboard (a fresh note), the caret at the end.
     pub fn focus(&mut self, id: &str) {
+        self.focus_at(id, None);
+    }
+
+    /// Gives note `id` the keyboard with the caret at model index `at` (the
+    /// end of the text when `None`): a template's caret is the end of its
+    /// first line.
+    pub fn focus_at(&mut self, id: &str, at: Option<usize>) {
         let hwnd = with(|s| s.wins.iter().find(|w| w.id == id).map(|w| w.hwnd)).flatten();
         if let Some(hwnd) = hwnd {
             take_foreground(hwnd);
-            begin_editing(hwnd, None);
+            begin_editing(hwnd, at);
         }
     }
 
@@ -1088,7 +1097,18 @@ unsafe extern "system" fn wnd_proc(
             unsafe {
                 let _ = GetCursorPos(&mut pt);
             }
-            context_menu(hwnd, pt);
+            // A right click on the header's (+) offers the templates.
+            let on_plus = with(|s| {
+                let i = idx_of(s, hwnd)?;
+                Some(target_at(&s.wins[i], pt.x, pt.y) == Target::Button(Btn::Plus))
+            })
+            .flatten()
+            .unwrap_or(false);
+            if on_plus {
+                plus_menu(hwnd, pt);
+            } else {
+                context_menu(hwnd, pt);
+            }
             return LRESULT(0);
         }
         WM_MOUSEWHEEL => {
@@ -1612,7 +1632,13 @@ fn button(hwnd: HWND, b: Btn) {
                 let i = idx_of(s, hwnd)?;
                 if sticky::can_add(s.wins.len()) {
                     let id = s.wins[i].id.clone();
-                    push(s, WidgetEvent::NewBeside { id });
+                    push(
+                        s,
+                        WidgetEvent::NewBeside {
+                            id,
+                            template: Template::Kosong,
+                        },
+                    );
                 }
                 Some(())
             });
@@ -1706,6 +1732,64 @@ fn set_size(hwnd: HWND, size: TextSize) {
         Some(())
     });
     flush_dirty();
+}
+
+/// The commands of the template menu.
+const CMD_TEMPLATE: usize = 100;
+
+/// The six templates as a native menu at `at` (desktop px), owned by
+/// `owner`: the one chosen, or `None` when it was dismissed. Shared by the
+/// note header's (+) and Settings' gallery card.
+pub fn template_menu(owner: HWND, at: POINT, lang: Lang) -> Option<Template> {
+    let chosen = unsafe {
+        let menu = CreatePopupMenu().ok()?;
+        for (n, t) in Template::ALL.iter().enumerate() {
+            let _ = AppendMenuW(
+                menu,
+                MF_STRING,
+                CMD_TEMPLATE + n,
+                &windows::core::HSTRING::from(text(lang, t.label_key())),
+            );
+        }
+        // Without the foreground the menu would not close on a click elsewhere.
+        let _ = windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow(owner);
+        let chosen = TrackPopupMenu(
+            menu,
+            TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
+            at.x,
+            at.y,
+            None,
+            owner,
+            None,
+        );
+        let _ = PostMessageW(
+            Some(owner),
+            windows::Win32::UI::WindowsAndMessaging::WM_NULL,
+            WPARAM(0),
+            LPARAM(0),
+        );
+        let _ = DestroyMenu(menu);
+        chosen.0 as usize
+    };
+    (CMD_TEMPLATE..CMD_TEMPLATE + Template::ALL.len())
+        .contains(&chosen)
+        .then(|| Template::ALL[chosen - CMD_TEMPLATE])
+}
+
+/// A right click on a note's (+): the templates, and the new note beside it.
+fn plus_menu(hwnd: HWND, at: POINT) {
+    let info = with(|s| {
+        let i = idx_of(s, hwnd)?;
+        Some((s.wins[i].id.clone(), s.lang, sticky::can_add(s.wins.len())))
+    })
+    .flatten();
+    let Some((id, lang, room)) = info else { return };
+    if !room {
+        return;
+    }
+    if let Some(template) = template_menu(hwnd, at, lang) {
+        let _ = with(|s| push(s, WidgetEvent::NewBeside { id, template }));
+    }
 }
 
 /// Note `hwnd`'s reminder set to `at` (unix seconds), or cleared. The note

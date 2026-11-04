@@ -1081,6 +1081,15 @@ keys! {
     StickySnooze => "Tunda 10 mnt", "Snooze 10 min";
     StickyDayToday => "Hari ini", "Today";
     StickyDayTomorrow => "Besok", "Tomorrow";
+    TplKosong => "Kosong", "Blank";
+    TplBelanja => "Belanja", "Shopping";
+    TplHariIni => "Hari ini", "Today";
+    TplRapat => "Rapat", "Meeting";
+    TplIde => "Ide", "Idea";
+    TplMingguan => "Mingguan", "This week";
+    TplAgenda => "Agenda", "Agenda";
+    TplDecisions => "Keputusan", "Decisions";
+    TplFollowUp => "Tindak lanjut", "Follow-up";
 }
 
 /// `key` in `lang`.
@@ -2440,6 +2449,11 @@ pub fn day_title_long(lang: Lang, d: NaiveDate) -> String {
         d.day(),
         months[d.month0() as usize]
     )
+}
+
+/// "Rabu, 4 Nov", "Wednesday, 4 Nov": a day's name and its short date.
+pub fn day_title_short(lang: Lang, d: NaiveDate) -> String {
+    format!("{}, {}", day_long(lang, d), short_date(lang, d))
 }
 
 /// The week from `monday`: "19 – 25 Okt 2026", "28 Sep – 4 Okt 2026",

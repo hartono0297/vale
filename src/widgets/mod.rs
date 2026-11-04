@@ -10,6 +10,7 @@ pub mod prefs;
 pub mod remind;
 pub mod snap;
 pub mod sticky;
+pub mod templates;
 
 pub mod edit;
 pub mod host;

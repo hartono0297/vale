@@ -36,6 +36,7 @@ use crate::widgets::host::{Ctx, WidgetHost};
 use crate::widgets::prefs::{FullscreenRule, WidgetLayer};
 use crate::widgets::remind;
 use crate::widgets::sticky::{Sticky, can_add};
+use crate::widgets::templates::{self, Template};
 
 /// One-shot: write the notes once widget changes settle.
 pub(super) const TIMER_WIDGET_SAVE: usize = 45;
@@ -225,8 +226,8 @@ impl App {
             }
             return structural;
         }
-        for id in out.beside {
-            self.new_sticky(Some(&id));
+        for (id, template) in out.beside {
+            self.new_sticky(Some(&id), template);
         }
         if out.reminders || !out.gone.is_empty() {
             self.sticky_remind_settle();
@@ -365,7 +366,7 @@ impl App {
     /// One empty note on the desktop, with the keyboard. The widgets come
     /// back if they were hidden. At the cap nothing is made and the island
     /// says why. True when a note was made.
-    pub(super) fn new_sticky(&mut self, beside: Option<&str>) -> bool {
+    pub(super) fn new_sticky(&mut self, beside: Option<&str>, template: Template) -> bool {
         if !can_add(self.notes.sticky_count()) {
             self.sticky_full_notice();
             return false;
@@ -375,13 +376,20 @@ impl App {
             self.save_config();
         }
         let sticky = self.sticky_for(beside);
-        let Some(id) = self.notes.create_sticky(sticky, Local::now().timestamp()) else {
+        let now = Local::now();
+        let Some(id) = self.notes.create_sticky(sticky, now.timestamp()) else {
             return false;
         };
+        // A template starts the note with its text; the caret goes to the end
+        // of its first line.
+        let start = templates::text_of(i18n::lang(), template, now.date_naive());
+        if !start.is_empty() {
+            self.notes.set_text(&id, &start, now.timestamp());
+        }
         self.arm_widget_save();
         self.widgets_sync();
         if let Some(host) = self.widgets.host.as_mut() {
-            host.focus(&id);
+            host.focus_at(&id, (!start.is_empty()).then(|| templates::caret_of(&start)));
         }
         self.sync_settings();
         true
@@ -394,12 +402,12 @@ impl App {
 
     /// The hotkey row "Catatan tempel baru".
     pub(super) fn on_sticky_hotkey(&mut self) {
-        self.new_sticky(None);
+        self.new_sticky(None, Template::Kosong);
     }
 
     /// The tray's "Catatan tempel baru".
     pub(super) fn on_sticky_menu(&mut self) {
-        self.new_sticky(None);
+        self.new_sticky(None, Template::Kosong);
     }
 
     /// The pin on a Notes page card: stick the note to the desktop, or unstick

@@ -39,6 +39,7 @@ use crate::widgets::host::{Ctx, WM_APP_WIDGET, WidgetHost};
 use crate::widgets::prefs::{WidgetLayer, WidgetPrefs};
 use crate::widgets::remind;
 use crate::widgets::sticky::{Paper, Sticky};
+use crate::widgets::templates::{self, Template};
 
 /// The save timer of this scene (the island's own is 45 too).
 const SAVE_TIMER: usize = 45;
@@ -265,8 +266,8 @@ impl Demo {
         if let Some(on) = out.cat_peek {
             self.prefs.cat_peek = on;
         }
-        for id in out.beside {
-            self.make(Some(&id));
+        for (id, template) in out.beside {
+            self.make(Some(&id), template);
         }
         if out.structural {
             self.sync();
@@ -284,7 +285,7 @@ impl Demo {
     }
 
     /// A new empty note, with the keyboard (the + of a note's header).
-    fn make(&mut self, beside: Option<&str>) {
+    fn make(&mut self, beside: Option<&str>, template: Template) {
         let now = Local::now().timestamp();
         let sticky = sticky_for(
             self.store.list(),
@@ -294,8 +295,13 @@ impl Demo {
             now,
         );
         if let Some(id) = self.store.create_sticky(sticky, now) {
+            let start = templates::text_of(i18n::lang(), template, Local::now().date_naive());
+            if !start.is_empty() {
+                self.store.set_text(&id, &start, now);
+            }
             self.sync();
-            self.host.focus(&id);
+            self.host
+                .focus_at(&id, (!start.is_empty()).then(|| templates::caret_of(&start)));
             unsafe {
                 SetTimer(Some(self.owner), SAVE_TIMER, SAVE_MS, None);
             }

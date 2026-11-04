@@ -7,6 +7,7 @@ use crate::notch_monitor::{self, Display};
 use crate::notes::{Note, NotesStore};
 use crate::widgets::host::WidgetEvent;
 use crate::widgets::sticky::{DipRect, Sticky};
+use crate::widgets::templates::Template;
 use crate::widgets::{paint, place, snap};
 
 /// What applying a batch of events asks of the owner.
@@ -18,8 +19,8 @@ pub struct Outcome {
     pub structural: bool,
     /// Something eases: the frame clock must run.
     pub clock: bool,
-    /// The notes whose (+) was pressed.
-    pub beside: Vec<String>,
+    /// The notes whose (+) was pressed (a right click chose a template).
+    pub beside: Vec<(String, Template)>,
     /// "Kucing ngintip" was switched from a note's popover.
     pub cat_peek: Option<bool>,
     /// A reminder was set or cleared: the timer is armed again and the
@@ -80,7 +81,7 @@ pub fn apply(notes: &mut NotesStore, events: Vec<WidgetEvent>, unix: i64) -> Out
                 out.changed |= edit_sticky(notes, &id, |s| s.touched = at);
             }
             WidgetEvent::CatPeek(on) => out.cat_peek = Some(on),
-            WidgetEvent::NewBeside { id } => out.beside.push(id),
+            WidgetEvent::NewBeside { id, template } => out.beside.push((id, template)),
             WidgetEvent::Unstick { id } => {
                 let done = notes.set_sticky(&id, None);
                 out.changed |= done;
@@ -332,13 +333,13 @@ mod tests {
         let out = apply(
             &mut notes,
             vec![
-                WidgetEvent::NewBeside { id: id.clone() },
+                WidgetEvent::NewBeside { id: id.clone(), template: Template::Rapat },
                 WidgetEvent::CatPeek(false),
                 WidgetEvent::NeedsClock,
             ],
             1,
         );
-        assert_eq!(out.beside, vec![id]);
+        assert_eq!(out.beside, vec![(id, Template::Rapat)]);
         assert_eq!(out.cat_peek, Some(false));
         assert!(out.clock && !out.changed && !out.structural);
         // An event for a note that is gone changes nothing.
