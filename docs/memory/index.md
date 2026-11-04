@@ -14,7 +14,7 @@ One note per decision, gotcha or convention. Link each new note here.
 
 - [[studio-palette-accent-aliases]]
 - [[studio-font-sources]]
-- [[exe-size]]: size measured per change; icon small sizes as PNG (-38 KB), opt-level z option (-326 KB) left to the owner
+- [[exe-size]]: size measured per change (the phone link simplification, v3.19, is the last entry); icon small sizes as PNG (-38 KB), opt-level z option (-326 KB) left to the owner
 - [[studio-icons]]
 - [[studio-calendar-day-view]]
 - [[studio-media-progress-timer]]
@@ -63,7 +63,7 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[readme-structure]]: README with gallery, install and uninstall, credits in THIRD-PARTY-NOTICES.md; long guide in docs/guide.md; APNG tours
 - [[stay-behind]]: experimental setting, island below ordinary windows, rises at the top edge with a short fade and slide (v3.3)
 - [[shelf]]: file shelf page, OLE drop target, drag out (paths only, in memory); a drop latches the panel (v3.3)
-- [[shelf-phone]]: the HP pill, a QR link and a small local HTTP server to receive files from a phone (phase 1): token + approval code + cookies, private LAN only, `Downloads\Vale`, session ends, power, gotchas, what is not verified live (2026-11-04); phase 2 sends the ticked shelf files to the phone: ids, Range, the taken rule, SVG never inline, WIC thumbnails, the Kirim ke HP view
+- [[shelf-phone]]: the HP pill, a QR link and a small local HTTP server to receive files from a phone and send it the shelf: private LAN only, `Downloads\Vale`, session ends, power, ids, Range, SVG never inline, WIC thumbnails, gotchas, what is not verified live (2026-11-04). **v3.19 simplified it:** scan the QR and you are in (no approval, no code, no ticking), the token renews itself every 5 minutes, the whole shelf is shared (`phone_sync_shared` + a loop guard), Public networks are allowed with a warning, the Firewall gotcha is docs only
 - [[shelf-motion]]: shelf cards animate in (200 ms), out as ghosts (180 ms) and across (220 ms), no timer, per-draw alpha, reduced motion (v3.5)
 - [[search]]: quick search on a hotkey: apps, calculator, Windows settings, web; back button returns to the previous page
 - [[search-files]]: files and folders by name in six user folders, own walker with caps, icons/sizes/counts from a background worker

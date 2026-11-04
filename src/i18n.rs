@@ -539,19 +539,18 @@ keys! {
     PhoneStep1 => "Scan pakai kamera HP", "Scan with the phone's camera";
     PhoneStep1Sub => "iPhone: Kamera \u{b7} Android: Kamera / Google Lens",
         "iPhone: Camera \u{b7} Android: Camera / Google Lens";
-    PhoneStep2 => "Cocokkan kode, lalu Izinkan di sini", "Match the code, then Allow here";
-    PhoneStep2Sub => "Sekali per HP selama sesi ini", "Once per phone in this session";
+    PhoneStep2 => "Kirim atau ambil berkas di HP", "Send or take files on the phone";
+    PhoneStep2Sub => "Semua berkas di rak ikut tampil", "Every shelf file shows there";
     PhoneNetPrivate => "pribadi", "private";
+    PhoneNetPublic => "publik", "public";
+    PhoneConnected => "Tersambung", "Connected";
+    PhonePublicHint => "Wi-Fi publik \u{2014} jangan dipakai di kafe/hotel", "Public Wi-Fi \u{2014} don't use at a caf\u{e9} or hotel";
     PhoneLocalOnly => "Langsung lewat Wi-Fi lokal, tidak lewat internet",
         "Straight over local Wi-Fi, not through the internet";
     PhoneFirewall => "Kalau Windows tanya, pilih Jaringan pribadi",
         "If Windows asks, choose Private network";
     PhoneNewQr => "Buat QR baru", "New QR code";
     PhoneQrExpired => "QR habis", "QR expired";
-    PhoneQrVoid => "QR dibatalkan", "QR cancelled";
-    PhoneWarnPublic => "Jaringan ini Publik", "This network is Public";
-    PhoneWarnPublicBody => "Berkas lewat HTTP biasa dan bisa disadap orang di Wi-Fi yang sama. Ubah jadi Jaringan pribadi di Pengaturan Windows, lalu coba lagi.",
-        "Files travel over plain HTTP and anyone on the same Wi-Fi could read them. Set the network to Private in Windows settings, then try again.";
     PhoneWarnNoLan => "Tidak ada jaringan lokal", "No local network";
     PhoneWarnNoLanBody => "Sambungkan PC ke Wi-Fi atau kabel jaringan, lalu coba lagi.",
         "Connect the PC to Wi-Fi or a network cable, then try again.";
@@ -562,11 +561,6 @@ keys! {
     PhoneWarnFailedBody => "Server lokal gagal menyala. Coba lagi sebentar lagi.",
         "The local server failed to start. Try again in a moment.";
     PhoneRetry => "Coba lagi", "Try again";
-    PhoneAsk => "HP minta tersambung", "A phone wants to connect";
-    PhoneCodeLabel => "Kode di HP", "Code on the phone";
-    PhoneDeny => "Tolak", "Deny";
-    PhoneAllow => "Izinkan", "Allow";
-    PhoneAskFoot => "Kode beda dari yang di HP? Tolak.", "Code differs from the phone's? Deny.";
     PhoneReceiving => "Menerima dari HP", "From phone";
     PhonePickOnPhone => "Pilih berkas di HP", "Choose files on the phone";
     PhoneRowDone => "\u{2713} selesai", "\u{2713} done";
@@ -574,11 +568,6 @@ keys! {
     PhoneRowFailed => "gagal", "failed";
     PhoneCancelAll => "Batal", "Cancel";
     PhoneFinish => "Selesai", "Done";
-    PhoneSend => "Kirim ke HP", "Send to phone";
-    PhoneSendNone => "Centang berkas untuk HP", "Tick files for the phone";
-    PhoneSendEmpty => "Rak masih kosong", "The shelf is empty";
-    PhoneTagFolder => "folder", "folder";
-    PhoneTagTaken => "\u{2713} diambil", "\u{2713} taken";
     PhoneKindAndroid => "Android", "Android";
     PhoneKindIPhone => "iPhone", "iPhone";
     PhoneKindIPad => "iPad", "iPad";
@@ -1523,9 +1512,25 @@ pub fn phone_valid_for(lang: Lang, secs: u64) -> String {
     }
 }
 
-/// The network line of the QR view: "Rumah-5G · pribadi".
-pub fn phone_network(lang: Lang, name: &str) -> String {
-    format!("{name} \u{b7} {}", text(lang, Key::PhoneNetPrivate))
+/// The network line of the QR view: "Rumah-5G \u{b7} pribadi", or
+/// "Kenzie_5G \u{b7} publik" on a Public network.
+pub fn phone_network(lang: Lang, name: &str, trust: crate::phone::net::Trust) -> String {
+    use crate::phone::net::Trust;
+    let word = match trust {
+        Trust::Private => Key::PhoneNetPrivate,
+        Trust::Public => Key::PhoneNetPublic,
+    };
+    format!("{name} \u{b7} {}", text(lang, word))
+}
+
+/// Step 2's sub line once a phone joined: "Tersambung: Android",
+/// "Connected: 2 phones".
+pub fn phone_connected(lang: Lang, kinds: &[crate::phone::DeviceKind]) -> String {
+    format!(
+        "{}: {}",
+        text(lang, Key::PhoneConnected),
+        phone_devices_chip(lang, kinds)
+    )
 }
 
 /// What a phone is called: "Android", "iPhone", "iPad", else "HP".
@@ -1555,20 +1560,6 @@ pub fn phone_devices_chip(lang: Lang, kinds: &[crate::phone::DeviceKind]) -> Str
     }
 }
 
-/// The asking phone: "Android · Chrome · 192.168.18.57" (the browser only
-/// when it is known).
-pub fn phone_ask_line(
-    lang: Lang,
-    kind: crate::phone::DeviceKind,
-    browser: Option<&str>,
-    ip: &str,
-) -> String {
-    let mut parts = vec![phone_kind(lang, kind)];
-    parts.extend(browser);
-    parts.push(ip);
-    parts.join(" \u{b7} ")
-}
-
 /// A received file's size: "812 KB", "5 MB", "1,8 GB".
 pub fn phone_size(lang: Lang, bytes: u64) -> String {
     if bytes < MIB {
@@ -1587,19 +1578,6 @@ pub fn phone_received_summary(lang: Lang, files: usize, bytes: u64) -> String {
             let noun = if files == 1 { "file" } else { "files" };
             format!("{files} {noun} \u{b7} {size} \u{2192} Downloads\\Vale")
         }
-    }
-}
-
-/// The send view's footer: "3 dibagikan · 55 MB", "3 shared · 55 MB"; with
-/// nothing ticked, "Centang berkas untuk HP".
-pub fn phone_shared_summary(lang: Lang, files: usize, bytes: u64) -> String {
-    if files == 0 {
-        return text(lang, Key::PhoneSendNone).to_owned();
-    }
-    let size = phone_size(lang, bytes);
-    match lang {
-        Lang::Id => format!("{files} dibagikan \u{b7} {size}"),
-        Lang::En => format!("{files} shared \u{b7} {size}"),
     }
 }
 
@@ -4123,17 +4101,24 @@ mod copy_preview_tests {
     #[test]
     fn the_phone_link_strings_read_in_both_languages() {
         use crate::phone::DeviceKind;
+        use crate::phone::net::Trust;
         assert_eq!(phone_valid_for(Lang::Id, 292), "berlaku 4:52");
         assert_eq!(phone_valid_for(Lang::En, 7), "valid 0:07");
-        assert_eq!(phone_network(Lang::Id, "Rumah-5G"), "Rumah-5G · pribadi");
-        assert_eq!(phone_network(Lang::En, "Home"), "Home · private");
         assert_eq!(
-            phone_ask_line(Lang::Id, DeviceKind::Android, Some("Chrome"), "192.168.18.57"),
-            "Android · Chrome · 192.168.18.57"
+            phone_network(Lang::Id, "Rumah-5G", Trust::Private),
+            "Rumah-5G · pribadi"
         );
         assert_eq!(
-            phone_ask_line(Lang::En, DeviceKind::Other, None, "10.0.0.4"),
-            "Phone · 10.0.0.4"
+            phone_network(Lang::En, "Home", Trust::Private),
+            "Home · private"
+        );
+        assert_eq!(
+            phone_network(Lang::Id, "Kenzie_5G", Trust::Public),
+            "Kenzie_5G · publik"
+        );
+        assert_eq!(
+            phone_network(Lang::En, "Cafe", Trust::Public),
+            "Cafe · public"
         );
         // One phone by its kind, several by their number.
         assert_eq!(phone_devices_chip(Lang::Id, &[]), "");
@@ -4145,6 +4130,23 @@ mod copy_preview_tests {
         assert_eq!(
             phone_devices_chip(Lang::En, &[DeviceKind::IPhone, DeviceKind::Android]),
             "2 phones"
+        );
+        // Step 2's line once a phone joined.
+        assert_eq!(
+            phone_connected(Lang::Id, &[DeviceKind::Android]),
+            "Tersambung: Android"
+        );
+        assert_eq!(
+            phone_connected(Lang::Id, &[DeviceKind::Android, DeviceKind::IPhone]),
+            "Tersambung: 2 HP"
+        );
+        assert_eq!(
+            phone_connected(Lang::En, &[DeviceKind::IPhone]),
+            "Connected: iPhone"
+        );
+        assert_eq!(
+            phone_connected(Lang::En, &[DeviceKind::Other; 2]),
+            "Connected: 2 phones"
         );
         // Sizes go through `format_size` from 1 MB.
         assert_eq!(phone_size(Lang::Id, 812 * 1024), "812 KB");
@@ -4158,43 +4160,26 @@ mod copy_preview_tests {
             phone_received_summary(Lang::En, 1, 2 * MIB),
             r"1 file · 2 MB → Downloads\Vale"
         );
-        // The send view's footer: how many are ticked and how big.
-        assert_eq!(
-            phone_shared_summary(Lang::Id, 3, 55 * MIB),
-            "3 dibagikan · 55 MB"
-        );
-        assert_eq!(
-            phone_shared_summary(Lang::En, 1, 812 * 1024),
-            "1 shared · 812 KB"
-        );
-        assert_eq!(
-            phone_shared_summary(Lang::Id, 0, 0),
-            "Centang berkas untuk HP"
-        );
-        assert_eq!(
-            phone_shared_summary(Lang::En, 0, 5),
-            "Tick files for the phone"
-        );
-        assert_eq!(text(Lang::Id, Key::PhoneSend), "Kirim ke HP");
-        assert_eq!(text(Lang::En, Key::PhoneSend), "Send to phone");
-        assert_eq!(text(Lang::Id, Key::PhoneSendEmpty), "Rak masih kosong");
-        assert_eq!(text(Lang::En, Key::PhoneSendEmpty), "The shelf is empty");
-        assert_eq!(text(Lang::Id, Key::PhoneTagTaken), "\u{2713} diambil");
-        assert_eq!(text(Lang::En, Key::PhoneTagTaken), "\u{2713} taken");
         assert_eq!(text(Lang::Id, Key::ShelfMissing), "hilang");
+        assert_eq!(
+            text(Lang::Id, Key::PhoneStep2),
+            "Kirim atau ambil berkas di HP"
+        );
+        assert_eq!(
+            text(Lang::En, Key::PhoneStep2Sub),
+            "Every shelf file shows there"
+        );
         for key in [
             Key::ShelfPhone,
             Key::PhoneTitle,
-            Key::PhoneAllow,
-            Key::PhoneDeny,
             Key::PhoneCancelAll,
             Key::PhoneFinish,
             Key::PhoneNewQr,
-            Key::PhoneWarnPublicBody,
-            Key::PhoneSend,
-            Key::PhoneSendNone,
-            Key::PhoneSendEmpty,
-            Key::PhoneTagTaken,
+            Key::PhoneStep2,
+            Key::PhoneStep2Sub,
+            Key::PhoneNetPublic,
+            Key::PhoneConnected,
+            Key::PhonePublicHint,
         ] {
             assert_ne!(text(Lang::Id, key), text(Lang::En, key), "{key:?}");
         }

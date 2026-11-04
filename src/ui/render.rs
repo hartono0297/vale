@@ -824,8 +824,6 @@ struct Fonts {
     clip_kind: IDWriteTextFormat,
     /// The search field: DM Sans 11.5.
     clip_search: IDWriteTextFormat,
-    /// The phone approval's four digit code: DM Mono 26, right-aligned.
-    phone_code: IDWriteTextFormat,
 }
 
 /// Device-dependent drawing state; rebuilt if Direct2D reports the target lost.
@@ -3150,7 +3148,6 @@ impl Fonts {
             clip_mono,
             clip_kind: line(&text, medium, 9.0)?,
             clip_search: line(&text, normal, 11.5)?,
-            phone_code: aligned(&mono, medium, 26.0, DWRITE_TEXT_ALIGNMENT_TRAILING)?,
         })
     }
 }

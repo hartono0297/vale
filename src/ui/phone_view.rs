@@ -1,17 +1,15 @@
 //! What the phone link's views draw, as plain data the renderer borrows: the
-//! QR code (or why there is none), the phone asking, the files arriving.
+//! QR code (or why there is none) and the files arriving.
 //! `app_phone.rs` builds it from its state every frame; the demo builds it
 //! from made-up data.
 
 use crate::model::PhoneStage;
-use crate::phone::{DeviceKind, QrMatrix};
+use crate::phone::QrMatrix;
 use crate::shelf::ShelfKind;
 
 /// Why there is no code to scan.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Warn {
-    /// The network is Public (or its category is unknown).
-    Public,
     NoLan,
     PortsBusy,
     Failed,
@@ -25,35 +23,24 @@ pub struct CodeView<'a> {
     pub network: &'a str,
     /// "192.168.18.42:47390".
     pub addr: &'a str,
-    /// Seconds the code is still good for; `None` once it is not (expired
-    /// or voided): the code is dimmed and "Buat QR baru" shows.
+    /// Seconds the code is still good for; `None` once it is not (it could
+    /// not be renewed): the code is dimmed and "Buat QR baru" shows.
     pub remaining: Option<u64>,
-    /// The code counts down (until a phone is approved); then the chip says
-    /// how long, and afterwards says nothing.
-    pub timed: bool,
-    /// The code was voided by three rejections (the chip says so).
-    pub void: bool,
+    /// The network is Public: the network line says so and the hint is the
+    /// warning instead of the firewall one.
+    pub public: bool,
+    /// "Tersambung: Android" once a phone joined (step 2's sub line); empty
+    /// before.
+    pub joined: &'a str,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum QrView<'a> {
     /// The network is being looked at on the server thread.
     Starting,
-    /// Why there is no code, and the network's name when it is known.
-    Warning(Warn, &'a str),
+    /// Why there is no code.
+    Warning(Warn),
     Code(CodeView<'a>),
-}
-
-/// The phone that waits for an answer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct AskView<'a> {
-    pub id: u64,
-    pub kind: DeviceKind,
-    pub browser: Option<&'static str>,
-    pub ip: &'a str,
-    pub code: &'a str,
-    /// Others waiting behind it.
-    pub more: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -85,52 +72,12 @@ pub struct RecvView<'a> {
     pub bytes: u64,
 }
 
-/// How a shelf card stands in the send view.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CardState {
-    /// Ticked for the phone. `taken`: a phone has downloaded the whole file.
-    Ticked { taken: bool },
-    Unticked,
-    /// A folder: it cannot be sent.
-    Folder,
-    /// The file is gone: it cannot be sent.
-    Stale,
-}
-
-impl CardState {
-    /// The card can be ticked (a file that is there).
-    pub fn shareable(self) -> bool {
-        matches!(self, CardState::Ticked { .. } | CardState::Unticked)
-    }
-}
-
-/// A shelf card as the send view draws it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SendCard {
-    pub name: String,
-    pub kind: ShelfKind,
-    pub state: CardState,
-}
-
-/// The send view ("Kirim ke HP"): the shelf's cards in the shelf's order.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct SendView<'a> {
-    pub cards: &'a [SendCard],
-    /// Files ticked, and their size, for the footer.
-    pub count: usize,
-    pub bytes: u64,
-    /// "Android", "2 HP"; empty while no phone has been approved.
-    pub chip: &'a str,
-}
-
 /// The phone link's view over the shelf.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PhoneView<'a> {
     pub stage: PhoneStage,
     pub qr: QrView<'a>,
-    pub ask: Option<AskView<'a>>,
     pub recv: RecvView<'a>,
-    pub send: SendView<'a>,
 }
 
 impl PhoneView<'_> {
@@ -191,33 +138,17 @@ mod tests {
                 network: "n",
                 addr: "a",
                 remaining,
-                timed: true,
-                void: false,
+                public: false,
+                joined: "",
             }),
-            ask: None,
             recv: RecvView {
                 rows: &[],
                 chip: "",
                 files: 0,
                 bytes: 0,
             },
-            send: SendView {
-                cards: &[],
-                count: 0,
-                bytes: 0,
-                chip: "",
-            },
         };
         assert!(!view(Some(5)).code_dead());
         assert!(view(None).code_dead());
-    }
-
-    #[test]
-    fn only_a_ticked_or_unticked_card_can_be_ticked() {
-        assert!(CardState::Ticked { taken: false }.shareable());
-        assert!(CardState::Ticked { taken: true }.shareable());
-        assert!(CardState::Unticked.shareable());
-        assert!(!CardState::Folder.shareable());
-        assert!(!CardState::Stale.shareable());
     }
 }

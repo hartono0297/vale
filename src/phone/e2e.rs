@@ -9,7 +9,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use super::{EndReason, Outcome, PhoneEvent, ServerConfig, start};
+use super::{EndReason, PhoneEvent, ServerConfig, start};
 use crate::i18n::Lang;
 
 struct Reply {
@@ -94,8 +94,22 @@ fn dir_names(dir: &PathBuf) -> Vec<String> {
     v
 }
 
+/// A cookie that looks like the old pairing cookie, and one made up: neither
+/// is any session's.
+const OLD_VP: &str = "vp=AAAAAAAAAAAAAAAAAAAAAA";
+const MADE_UP: &str = "vs=AAAAAAAAAAAAAAAAAAAAAA";
+
+/// A phone opens the QR's link: the page and its session cookie come back at
+/// once, with a `Joined` event. There is no approval step.
+fn join(addr: SocketAddr, token: &str) -> String {
+    let r = get(addr, &format!("/s/{token}"), None, UA);
+    assert_eq!(r.status, 200, "{}", r.head);
+    assert!(r.body.contains("\"state\":\"approved\""), "{}", r.body);
+    cookie_of(&r, "vs")
+}
+
 #[test]
-fn a_phone_pairs_uploads_is_cancelled_and_the_server_stops() {
+fn a_phone_joins_with_the_token_uploads_is_cancelled_and_the_server_stops() {
     let dest = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("target")
         .join("test-tmp")
@@ -108,6 +122,7 @@ fn a_phone_pairs_uploads_is_cancelled_and_the_server_stops() {
         lang: Lang::En,
         pc_name: "TEST-PC".into(),
         network_name: "Test net".into(),
+        public: false,
         allow_loopback: true,
     };
     let (tx, rx) = mpsc::channel();
@@ -118,58 +133,45 @@ fn a_phone_pairs_uploads_is_cancelled_and_the_server_stops() {
             let _ = tx.lock().expect("lock").send(e);
         }),
     );
-    let PhoneEvent::Ready { port, url, .. } =
+    let PhoneEvent::Ready { port, url, public, .. } =
         wait_for(&rx, |e| matches!(e, PhoneEvent::Ready { .. }))
     else {
         unreachable!()
     };
+    assert!(!public);
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
     let token = url.rsplit('/').next().expect("token").to_owned();
     let ua = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Chrome/126.0.0.0 Mobile Safari/537.36";
 
-    // The QR's address: the page, a pairing cookie and a pairing event.
+    // The QR's address: the page, a session cookie and a join event, with
+    // nobody to answer.
     let r = get(addr, &format!("/s/{token}"), None, ua);
     assert_eq!(r.status, 200);
     assert!(r.body.contains("TEST-PC"), "boot data is in the page");
-    assert!(r.body.contains("\"state\":\"waiting\""));
+    assert!(r.body.contains("\"state\":\"approved\""));
+    assert!(
+        !r.body.contains("\"state\":\"waiting\"") && !r.body.contains("\"code\":"),
+        "no pairing code"
+    );
     assert!(!r.body.contains("/*BOOT*/"), "the placeholder is replaced");
     assert!(r.head.contains("Cache-Control: no-store"));
-    let vp = cookie_of(&r, "vp");
-    assert!(r.head.contains("HttpOnly; SameSite=Strict"));
-    let PhoneEvent::Pairing {
-        device_id,
-        code,
-        kind,
-        ..
-    } = wait_for(&rx, |e| matches!(e, PhoneEvent::Pairing { .. }))
+    let vs = cookie_of(&r, "vs");
+    assert!(r.head.contains("Set-Cookie: vs="));
+    assert!(r.head.contains("HttpOnly; SameSite=Strict; Path=/"));
+    assert!(!r.head.contains("Set-Cookie: vp="), "no pairing cookie any more");
+    let PhoneEvent::Joined { kind, .. } = wait_for(&rx, |e| matches!(e, PhoneEvent::Joined { .. }))
     else {
         unreachable!()
     };
     assert_eq!(kind, super::DeviceKind::Android);
-    let s = get(addr, "/api/state", Some(&vp), ua);
+    // The state and the page are open at once, and set no cookie.
+    let s = get(addr, "/api/state", Some(&vs), ua);
     assert_eq!(s.status, 200);
-    assert!(s.body.contains("\"state\":\"waiting\"") && s.body.contains(&code));
-    // Not yet: the pairing cookie opens no upload.
-    let early = request(addr, &upload_head("a.txt", "b0", 0, 1, 1, &vp), b"x");
-    assert_eq!((early.status, early.body.as_str()), (404, ""));
-
-    // The owner says yes; the next state answer gives the session cookie.
-    handle.approve(device_id);
-    wait_for(&rx, |e| {
-        matches!(e, PhoneEvent::PairingEnded { outcome: Outcome::Approved, .. })
-    });
-    let s = get(addr, "/api/state", Some(&vp), ua);
     assert!(s.body.contains("\"state\":\"approved\""));
-    let vs = cookie_of(&s, "vs");
-    assert!(s.head.contains("Set-Cookie: vp=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"));
-    // A second tab (or a reload racing that poll) still sends `vp`: it is
-    // told "approved" and cleared, and no other `vs` replaces the first.
-    let again = get(addr, "/api/state", Some(&vp), ua);
-    assert!(again.body.contains("\"state\":\"approved\""));
-    assert!(!again.head.contains("Set-Cookie: vs="));
-    assert!(again.head.contains("Set-Cookie: vp=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"));
+    assert!(!s.head.contains("Set-Cookie"));
     let page = get(addr, "/", Some(&vs), ua);
     assert_eq!(page.status, 200);
+    assert!(page.body.contains("\"state\":\"approved\""));
 
     // Three files: two with one name and one that tries to leave the folder.
     for (name, body) in [
@@ -190,14 +192,20 @@ fn a_phone_pairs_uploads_is_cancelled_and_the_server_stops() {
         "nothing leaves the folder"
     );
 
-    // Everything else is a bare 404.
+    // Everything else is a bare 404: no cookie, the old pairing cookie, a
+    // made-up session cookie, the token as a cookie, a wrong token.
     let bare = |r: Reply| assert_eq!((r.status, r.body.as_str()), (404, ""), "{}", r.head);
-    bare(request(addr, &upload_head("n.txt", "b2", 0, 1, 1, "x=y"), b"x"));
-    bare(request(addr, &upload_head("n.txt", "b2", 0, 1, 1, &vp), b"x"));
+    bare(request(addr, &upload_head("n.txt", "b2", 0, 1, 1, MADE_UP), b"x"));
+    bare(request(addr, &upload_head("n.txt", "b2", 0, 1, 1, OLD_VP), b"x"));
+    bare(request(addr, &upload_head("n.txt", "b2", 0, 1, 1, &format!("vs={token}")), b"x"));
+    for cookie in [None, Some(OLD_VP), Some(MADE_UP)] {
+        bare(get(addr, "/", cookie, ua));
+        bare(get(addr, "/api/state", cookie, ua));
+        bare(get(addr, "/api/files", cookie, ua));
+    }
     bare(get(addr, "/etc/passwd", Some(&vs), ua));
-    bare(get(addr, "/api/state", None, ua));
-    bare(get(addr, "/", None, ua));
     bare(get(addr, &format!("/s/{}", "A".repeat(22)), None, ua));
+    bare(get(addr, &format!("/s/{}", "A".repeat(22)), Some(OLD_VP), ua));
     bare(get(addr, "/api/upload", Some(&vs), ua));
     assert_eq!(dir_names(&dest).len(), 3);
 
@@ -277,6 +285,7 @@ fn a_mid_upload_stop_removes_the_part_file() {
         lang: Lang::Id,
         pc_name: "PC".into(),
         network_name: "n".into(),
+        public: false,
         allow_loopback: true,
     };
     let (tx, rx) = mpsc::channel();
@@ -294,16 +303,7 @@ fn a_mid_upload_stop_removes_the_part_file() {
     };
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
     let token = url.rsplit('/').next().expect("token").to_owned();
-    let r = get(addr, &format!("/s/{token}"), None, "x");
-    let vp = cookie_of(&r, "vp");
-    let PhoneEvent::Pairing { device_id, .. } =
-        wait_for(&rx, |e| matches!(e, PhoneEvent::Pairing { .. }))
-    else {
-        unreachable!()
-    };
-    handle.approve(device_id);
-    let s = get(addr, "/api/state", Some(&vp), "x");
-    let vs = cookie_of(&s, "vs");
+    let vs = join(addr, &token);
     let mut up = connect(addr);
     up.write_all(upload_head("half.bin", "b", 0, 1, 1000, &vs).as_bytes())
         .expect("head");
@@ -317,76 +317,103 @@ fn a_mid_upload_stop_removes_the_part_file() {
 }
 
 #[test]
-fn a_phone_that_was_turned_down_scans_again_and_gets_a_new_pairing() {
-    let dest = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("target")
-        .join("test-tmp")
-        .join(format!("phone-e2e-retry-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dest);
-    let cfg = ServerConfig {
-        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
-        ports: 0..=0,
-        dest_dir: dest.clone(),
-        lang: Lang::En,
-        pc_name: "TEST-PC".into(),
-        network_name: "Test net".into(),
-        allow_loopback: true,
+fn two_phones_join_with_one_token_and_a_replaced_token_gets_a_404_with_no_cookie() {
+    let r = rig("phone-e2e-two");
+    let first = get(r.addr, &format!("/s/{}", r.token), None, UA);
+    let vs1 = cookie_of(&first, "vs");
+    let PhoneEvent::Joined { device_id: d1, kind: k1 } =
+        wait_for(&r.rx, |e| matches!(e, PhoneEvent::Joined { .. }))
+    else {
+        unreachable!()
     };
-    let (tx, rx) = mpsc::channel();
-    let tx = Mutex::new(tx);
-    let handle = start(
-        cfg,
-        Arc::new(move |e| {
-            let _ = tx.lock().expect("lock").send(e);
-        }),
+    assert_eq!(k1, super::DeviceKind::Android);
+    // A second phone (an iPhone) with the very same token: its own cookie.
+    let iphone = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) Mobile/15E148 Safari/604.1";
+    let second = get(r.addr, &format!("/s/{}", r.token), None, iphone);
+    assert_eq!(second.status, 200);
+    let vs2 = cookie_of(&second, "vs");
+    assert_ne!(vs1, vs2);
+    let PhoneEvent::Joined { device_id: d2, kind: k2 } =
+        wait_for(&r.rx, |e| matches!(e, PhoneEvent::Joined { .. }))
+    else {
+        unreachable!()
+    };
+    assert_ne!(d1, d2);
+    assert_eq!(k2, super::DeviceKind::IPhone);
+    // Both open the API: each uploads a file.
+    for (n, vs) in [(1, &vs1), (2, &vs2)] {
+        let body = format!("from phone {n}");
+        let up = request(
+            r.addr,
+            &upload_head(&format!("p{n}.txt"), &format!("b{n}"), 0, 1, body.len(), vs),
+            body.as_bytes(),
+        );
+        assert_eq!(up.status, 200, "{}", up.body);
+    }
+
+    // A phone that opens the link again with its cookie is no new device,
+    // and is not told to join again.
+    let reload = get(r.addr, &format!("/s/{}", r.token), Some(&vs1), UA);
+    assert_eq!(reload.status, 200);
+    assert!(!reload.head.contains("Set-Cookie"), "{}", reload.head);
+    // ... even through a token that is no longer good.
+    let link = r.handle.new_token().expect("a new token");
+    let new_token = link.url.rsplit('/').next().expect("token").to_owned();
+    assert_ne!(new_token, r.token);
+    let still = get(r.addr, &format!("/s/{}", r.token), Some(&vs2), UA);
+    assert_eq!(still.status, 200, "a phone that is in stays in");
+    assert!(!still.head.contains("Set-Cookie"));
+    assert!(
+        r.events().iter().all(|e| !matches!(e, PhoneEvent::Joined { .. })),
+        "a reload is not a join"
     );
-    let PhoneEvent::Ready { port, url, .. } =
-        wait_for(&rx, |e| matches!(e, PhoneEvent::Ready { .. }))
+
+    // The replaced token is a bare 404 with no cookie and no event.
+    let old = get(r.addr, &format!("/s/{}", r.token), None, UA);
+    assert_eq!((old.status, old.body.as_str()), (404, ""));
+    assert!(!old.head.contains("Set-Cookie"));
+    // A wrong token too, and an old pairing cookie does not help.
+    for cookie in [None, Some(OLD_VP)] {
+        let wrong = get(r.addr, &format!("/s/{}", "B".repeat(22)), cookie, UA);
+        assert_eq!((wrong.status, wrong.body.as_str()), (404, ""));
+        assert!(!wrong.head.contains("Set-Cookie"));
+    }
+    assert!(
+        r.events().iter().all(|e| !matches!(e, PhoneEvent::Joined { .. })),
+        "a refused link is no join"
+    );
+    // The phones that joined carry on with the new token in place.
+    assert_eq!(get(r.addr, "/api/state", Some(&vs1), UA).status, 200);
+    assert_eq!(get(r.addr, "/", Some(&vs2), UA).status, 200);
+    // The new token joins a third phone.
+    let vs3 = join(r.addr, &new_token);
+    let PhoneEvent::Joined { device_id: d3, .. } =
+        wait_for(&r.rx, |e| matches!(e, PhoneEvent::Joined { .. }))
     else {
         unreachable!()
     };
-    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
-    let token = url.rsplit('/').next().expect("token").to_owned();
-    let ua = "Mozilla/5.0 (Linux; Android 14; Pixel 8) Chrome/126.0.0.0 Mobile Safari/537.36";
-
-    let r = get(addr, &format!("/s/{token}"), None, ua);
-    let vp = cookie_of(&r, "vp");
-    let PhoneEvent::Pairing { device_id: first, .. } =
-        wait_for(&rx, |e| matches!(e, PhoneEvent::Pairing { .. }))
-    else {
-        unreachable!()
-    };
-    handle.reject(first);
-    wait_for(&rx, |e| matches!(e, PhoneEvent::PairingEnded { outcome: Outcome::Rejected, .. }));
-    let s = get(addr, "/api/state", Some(&vp), ua);
-    assert!(s.body.contains("\"state\":\"rejected\""));
-
-    // The same phone scans the QR again with its old cookie.
-    let again = get(addr, &format!("/s/{token}"), Some(&vp), ua);
-    assert_eq!(again.status, 200);
-    assert!(again.body.contains("\"state\":\"waiting\""), "a new pairing, not the old answer");
-    let vp2 = cookie_of(&again, "vp");
-    assert_ne!(vp2, vp);
-    let PhoneEvent::Pairing { device_id: second, .. } =
-        wait_for(&rx, |e| matches!(e, PhoneEvent::Pairing { .. }))
-    else {
-        unreachable!()
-    };
-    assert_ne!(second, first);
-    handle.approve(second);
-    wait_for(&rx, |e| matches!(e, PhoneEvent::PairingEnded { outcome: Outcome::Approved, .. }));
-    assert!(get(addr, "/api/state", Some(&vp2), ua).body.contains("\"state\":\"approved\""));
-
-    // With a bad token the old cookie still gets the "rejected" page.
-    let bad = get(addr, &format!("/s/{}", "A".repeat(22)), Some(&vp), ua);
-    assert_eq!(bad.status, 200);
-    assert!(bad.body.contains("\"state\":\"rejected\""));
-
-    handle.stop();
-    let _ = std::fs::remove_dir_all(&dest);
+    assert!(d3 > d2);
+    assert_ne!(vs3, vs1);
+    let dir = r.dir.clone();
+    r.handle.stop();
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ---- Phase 2: the files shared with the phone ----
+#[test]
+fn a_public_network_is_flagged_in_ready_and_changes_nothing_else() {
+    for public in [true, false] {
+        let r = rig_with("phone-e2e-public", public);
+        // The flag is what the notch reads; the server behaves the same.
+        assert_eq!(r.public, public);
+        let vs = join(r.addr, &r.token);
+        assert_eq!(get(r.addr, "/api/state", Some(&vs), UA).status, 200);
+        let dir = r.dir.clone();
+        r.handle.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+// ---- The files shared with the phone ----
 
 /// A reply with the body as bytes (a PNG or a JPEG is not text).
 struct Raw {
@@ -440,11 +467,17 @@ struct Rig {
     addr: SocketAddr,
     token: String,
     dir: PathBuf,
+    /// What `Ready` said about the network.
+    public: bool,
 }
 
 const UA: &str = "Mozilla/5.0 (Linux; Android 14; Pixel 8) Chrome/126.0.0.0 Mobile Safari/537.36";
 
 fn rig(name: &str) -> Rig {
+    rig_with(name, false)
+}
+
+fn rig_with(name: &str, public: bool) -> Rig {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("target")
         .join("test-tmp")
@@ -458,6 +491,7 @@ fn rig(name: &str) -> Rig {
         lang: Lang::En,
         pc_name: "TEST-PC".into(),
         network_name: "Test net".into(),
+        public,
         allow_loopback: true,
     };
     let (tx, rx) = mpsc::channel();
@@ -468,8 +502,12 @@ fn rig(name: &str) -> Rig {
             let _ = tx.lock().expect("lock").send(e);
         }),
     );
-    let PhoneEvent::Ready { port, url, .. } =
-        wait_for(&rx, |e| matches!(e, PhoneEvent::Ready { .. }))
+    let PhoneEvent::Ready {
+        port,
+        url,
+        public: said,
+        ..
+    } = wait_for(&rx, |e| matches!(e, PhoneEvent::Ready { .. }))
     else {
         unreachable!()
     };
@@ -479,40 +517,25 @@ fn rig(name: &str) -> Rig {
         addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port),
         token: url.rsplit('/').next().expect("token").to_owned(),
         dir,
+        public: said,
     }
 }
 
 impl Rig {
-    /// Pairs a phone, the owner says yes, and its session cookie is back.
-    fn pair(&self) -> (u64, String, String) {
-        let r = get(self.addr, &format!("/s/{}", self.token), None, UA);
-        let vp = cookie_of(&r, "vp");
-        let PhoneEvent::Pairing { device_id, .. } =
-            wait_for(&self.rx, |e| matches!(e, PhoneEvent::Pairing { .. }))
+    /// A phone opens the link: it is in at once, with its session cookie.
+    fn join(&self) -> (u64, String) {
+        let vs = join(self.addr, &self.token);
+        let PhoneEvent::Joined { device_id, .. } =
+            wait_for(&self.rx, |e| matches!(e, PhoneEvent::Joined { .. }))
         else {
             unreachable!()
         };
-        self.handle.approve(device_id);
-        wait_for(&self.rx, |e| {
-            matches!(e, PhoneEvent::PairingEnded { outcome: Outcome::Approved, .. })
-        });
-        let s = get(self.addr, "/api/state", Some(&vp), UA);
-        (device_id, vp, cookie_of(&s, "vs"))
+        (device_id, vs)
     }
 
     /// Every event waiting now.
     fn events(&self) -> Vec<PhoneEvent> {
         self.rx.try_iter().collect()
-    }
-
-    fn taken(&self) -> Vec<String> {
-        self.events()
-            .into_iter()
-            .filter_map(|e| match e {
-                PhoneEvent::FileTaken { id } => Some(id),
-                _ => None,
-            })
-            .collect()
     }
 }
 
@@ -520,6 +543,11 @@ fn files_of(r: &Rig, vs: &str) -> Vec<serde_json::Value> {
     let l = send(r.addr, "GET", "/api/files", Some(vs), "");
     assert_eq!(l.status, 200);
     l.json()["files"].as_array().expect("files").clone()
+}
+
+/// The page's "Tersimpan" for this phone: it took the whole file.
+fn saved(r: &Rig, vs: &str, id: &str) -> bool {
+    entry_of(&files_of(r, vs), id)["saved"] == true
 }
 
 fn entry_of(files: &[serde_json::Value], id: &str) -> serde_json::Value {
@@ -542,19 +570,16 @@ fn a_phone_lists_downloads_resumes_and_is_cut_off_by_the_shared_files() {
     let png = share.join("foto.png");
     super::thumb::tests::write_gradient_png(&png, 640, 480);
     let png_bytes = std::fs::read(&png).expect("read png");
-    let (_d1, vp, vs) = r.pair();
+    let (_d1, vs) = r.join();
 
     // Only a regular file can be shared.
     assert!(r.handle.share(&share).is_none(), "a folder");
     assert!(r.handle.share(&share.join("nothing.pdf")).is_none(), "a missing path");
-    let txt_info = r.handle.share(&txt).expect("share txt");
-    let png_info = r.handle.share(&png).expect("share png");
-    assert_eq!(
-        (txt_info.size, png_info.size),
-        (Some(text.len() as u64), Some(png_bytes.len() as u64))
-    );
-    assert_eq!(r.handle.share(&txt).expect("again").id, txt_info.id, "the same path, the same id");
-    let (txt_id, png_id) = (txt_info.id, png_info.id);
+    let txt_id = r.handle.share(&txt).expect("share txt");
+    let png_id = r.handle.share(&png).expect("share png");
+    assert_eq!(r.handle.share(&txt).expect("again"), txt_id, "the same path, the same id");
+    assert_eq!(png_id.len(), 22, "16 random bytes, base64url");
+    assert_ne!(txt_id, png_id);
 
     // /api/state carries the list's revision and the count.
     let st = send(r.addr, "GET", "/api/state", Some(&vs), "").json();
@@ -600,8 +625,7 @@ fn a_phone_lists_downloads_resumes_and_is_cut_off_by_the_shared_files() {
     let etag = got.header("etag").expect("etag").to_owned();
     let date = got.header("last-modified").expect("date").to_owned();
     assert!(date.ends_with(" GMT"));
-    // The first whole download says so once.
-    assert_eq!(r.taken(), [txt_id.clone()]);
+    // A whole download is saved for this phone.
     let after = files_of(&r, &vs);
     assert_eq!(entry_of(&after, &txt_id)["saved"], true);
     assert_eq!(entry_of(&after, &txt_id)["busy"], false);
@@ -617,7 +641,6 @@ fn a_phone_lists_downloads_resumes_and_is_cut_off_by_the_shared_files() {
     assert_eq!(head.header("content-disposition"), Some(cd));
     assert_eq!(head.header("etag"), Some(etag.as_str()));
     assert_eq!(head.header("accept-ranges"), Some("bytes"));
-    assert!(r.taken().is_empty(), "a HEAD takes nothing (and nothing is taken twice)");
 
     // Range: a slice, 206 and Content-Range.
     let part = send(r.addr, "GET", &format!("/api/file/{txt_id}"), Some(&vs), "Range: bytes=10-19\r\n");
@@ -654,10 +677,9 @@ fn a_phone_lists_downloads_resumes_and_is_cut_off_by_the_shared_files() {
     assert_eq!(past.status, 416);
     assert_eq!(past.header("content-range"), Some("bytes */300"));
     assert!(past.body.is_empty());
-    assert!(r.taken().is_empty(), "a file already taken is not taken again");
 
-    // A range request takes nothing unless it is a resume to the end:
-    // tried on the PNG, which nobody has taken yet.
+    // A range request saves nothing unless it is a resume to the end:
+    // tried on the PNG, which this phone has not saved yet.
     let n = png_bytes.len();
     let ranged = |range: String| {
         send(r.addr, "GET", &format!("/api/file/{png_id}"), Some(&vs), &format!("Range: {range}\r\n"))
@@ -667,24 +689,24 @@ fn a_phone_lists_downloads_resumes_and_is_cut_off_by_the_shared_files() {
     // A closed range that reaches the last byte is still not a download.
     let closed = ranged(format!("bytes={}-{}", n - 5, n - 1));
     assert_eq!((closed.status, closed.body.as_slice()), (206, &png_bytes[n - 5..]));
-    assert!(r.taken().is_empty(), "closed and suffix ranges take nothing");
-    // A HEAD of the whole file takes nothing either.
+    assert!(!saved(&r, &vs, &png_id), "closed and suffix ranges save nothing");
+    // A HEAD of the whole file saves nothing either.
     assert_eq!(send(r.addr, "HEAD", &format!("/api/file/{png_id}"), Some(&vs), "").status, 200);
-    assert!(r.taken().is_empty());
+    assert!(!saved(&r, &vs, &png_id));
     // A resume `bytes=N-` to the end does.
     let resume = ranged(format!("bytes={}-", n - 100));
     assert_eq!((resume.status, resume.body.as_slice()), (206, &png_bytes[n - 100..]));
-    assert_eq!(r.taken(), [png_id.clone()], "once, for the resume to the end");
+    assert!(saved(&r, &vs, &png_id), "saved by the resume to the end");
 
-    // Two phones taking one file: the event comes once; saved is per phone.
-    let (_d2, _vp2, vs2) = r.pair();
+    // Two phones taking one file: saved is per phone.
+    let (_d2, vs2) = r.join();
     let second = r.dir.join("two.txt");
     std::fs::write(&second, b"two phones").expect("write");
-    let two = r.handle.share(&second).expect("share two").id;
+    let two = r.handle.share(&second).expect("share two");
     assert_eq!(send(r.addr, "GET", &format!("/api/file/{two}"), Some(&vs), "").body, b"two phones");
     assert_eq!(send(r.addr, "GET", &format!("/api/file/{two}"), Some(&vs2), "").body, b"two phones");
     assert_eq!(send(r.addr, "GET", &format!("/api/file/{two}"), Some(&vs2), "").status, 200);
-    assert_eq!(r.taken(), [two.clone()], "once, though fetched by two phones and twice");
+    assert!(saved(&r, &vs, &two) && saved(&r, &vs2, &two), "saved for each phone");
     assert_eq!(entry_of(&files_of(&r, &vs2), &two)["saved"], true);
     assert_eq!(entry_of(&files_of(&r, &vs2), &png_id)["saved"], false, "phone 2 has not saved the PNG");
     assert_eq!(entry_of(&files_of(&r, &vs), &png_id)["saved"], true);
@@ -729,7 +751,7 @@ fn a_phone_lists_downloads_resumes_and_is_cut_off_by_the_shared_files() {
     // An SVG is never shown inline, never a thumbnail; only a download.
     let svg = r.dir.join("logo.svg");
     std::fs::write(&svg, b"<svg xmlns='http://www.w3.org/2000/svg'><script>alert(1)</script></svg>").expect("write");
-    let svg_id = r.handle.share(&svg).expect("share svg").id;
+    let svg_id = r.handle.share(&svg).expect("share svg");
     assert_eq!(entry_of(&files_of(&r, &vs), &svg_id)["view"], false);
     assert_eq!(send(r.addr, "GET", &format!("/api/view/{svg_id}"), Some(&vs), "").status, 404);
     assert_eq!(send(r.addr, "GET", &format!("/api/thumb/{svg_id}"), Some(&vs), "").status, 404);
@@ -738,7 +760,7 @@ fn a_phone_lists_downloads_resumes_and_is_cut_off_by_the_shared_files() {
     assert_eq!(dl.header("content-type"), Some("application/octet-stream"));
     assert!(dl.header("content-disposition").expect("cd").starts_with("attachment;"));
 
-    // Anything but an approved phone's session cookie gets the bare 404.
+    // Anything but a joined phone's session cookie gets the bare 404.
     for (method, path) in [
         ("GET", "/api/files".to_owned()),
         ("GET", format!("/api/file/{txt_id}")),
@@ -746,7 +768,7 @@ fn a_phone_lists_downloads_resumes_and_is_cut_off_by_the_shared_files() {
         ("GET", format!("/api/view/{png_id}")),
         ("GET", format!("/api/thumb/{png_id}")),
     ] {
-        for cookie in [None, Some("vs=nope"), Some(vp.as_str())] {
+        for cookie in [None, Some("vs=nope"), Some(OLD_VP), Some(MADE_UP)] {
             let x = send(r.addr, method, &path, cookie, "");
             assert_eq!(x.status, 404, "{method} {path} {cookie:?}");
             assert!(x.body.is_empty());
@@ -765,7 +787,7 @@ fn a_phone_lists_downloads_resumes_and_is_cut_off_by_the_shared_files() {
     // A file deleted on the PC: 410 and the id is revoked, once told.
     let doomed = r.dir.join("doomed.bin");
     std::fs::write(&doomed, b"soon gone").expect("write");
-    let doomed_id = r.handle.share(&doomed).expect("share").id;
+    let doomed_id = r.handle.share(&doomed).expect("share");
     std::fs::remove_file(&doomed).expect("remove");
     let gone = send(r.addr, "GET", &format!("/api/file/{doomed_id}"), Some(&vs), "");
     assert_eq!((gone.status, gone.body.is_empty()), (410, true));
@@ -775,7 +797,7 @@ fn a_phone_lists_downloads_resumes_and_is_cut_off_by_the_shared_files() {
     // One found missing by the list is left out, revoked and reported.
     let listed = r.dir.join("listed.txt");
     std::fs::write(&listed, b"x").expect("write");
-    let listed_id = r.handle.share(&listed).expect("share").id;
+    let listed_id = r.handle.share(&listed).expect("share");
     assert_eq!(files_of(&r, &vs).len(), 4);
     std::fs::remove_file(&listed).expect("remove");
     let now = files_of(&r, &vs);
@@ -785,7 +807,7 @@ fn a_phone_lists_downloads_resumes_and_is_cut_off_by_the_shared_files() {
     // A file replaced by a folder is gone too.
     let swap = r.dir.join("swap.txt");
     std::fs::write(&swap, b"x").expect("write");
-    let swap_id = r.handle.share(&swap).expect("share").id;
+    let swap_id = r.handle.share(&swap).expect("share");
     std::fs::remove_file(&swap).expect("remove");
     std::fs::create_dir(&swap).expect("dir");
     assert_eq!(send(r.addr, "GET", &format!("/api/file/{swap_id}"), Some(&vs), "").status, 410);
@@ -794,7 +816,7 @@ fn a_phone_lists_downloads_resumes_and_is_cut_off_by_the_shared_files() {
     r.handle.unshare_all();
     assert!(files_of(&r, &vs).is_empty());
     let kept = r.handle.share(&txt).expect("share again");
-    assert_ne!(kept.id, txt_id, "a new id for a path shared again");
+    assert_ne!(kept, txt_id, "a new id for a path shared again");
     assert_eq!(send(r.addr, "GET", &format!("/api/file/{txt_id}"), Some(&vs), "").status, 404);
     let dir = r.dir.clone();
     let Rig { handle, rx, .. } = r;
@@ -804,56 +826,48 @@ fn a_phone_lists_downloads_resumes_and_is_cut_off_by_the_shared_files() {
 }
 
 /// A file on the network is shared like any other, but not looked at by the
-/// caller (the UI thread): its id comes at once with no size, and a thread
-/// of its own then says `SharedSized`, or revokes it with `SharedGone`. A
-/// `\\?\` path counts as the network (any `\\` form does), so the
-/// loopback test needs no real share.
+/// caller (the UI thread): its id comes at once, and a thread of its own then
+/// looks, and revokes it with `SharedGone` if it is not there. A `\\?\` path
+/// counts as the network (any `\\` form does), so the loopback test needs no
+/// real share.
 #[test]
-fn a_file_on_the_network_is_shared_without_being_looked_at_then_sized_or_revoked() {
+fn a_file_on_the_network_is_shared_without_being_looked_at_then_revoked_if_gone() {
     let r = rig("phone-e2e-network");
-    let (_d, _vp, vs) = r.pair();
+    let (_d, vs) = r.join();
     let local = r.dir.join("denah.pdf");
     std::fs::write(&local, vec![1u8; 4321]).expect("write");
     // `canonicalize` gives the `\\?\C:\…` form.
     let net = std::fs::canonicalize(&local).expect("canonical");
     assert!(crate::shelf::is_network(&net), "{}", net.display());
-    let info = r.handle.share(&net).expect("shared at once");
-    assert_eq!(info.size, None, "not looked at by the caller");
-    let sized = wait_for(&r.rx, |e| matches!(e, PhoneEvent::SharedSized { .. }));
-    assert_eq!(
-        sized,
-        PhoneEvent::SharedSized {
-            id: info.id.clone(),
-            size: 4321
-        }
-    );
-    // The phone gets it like any other file.
-    assert_eq!(entry_of(&files_of(&r, &vs), &info.id)["size"], 4321);
-    let got = send(r.addr, "GET", &format!("/api/file/{}", info.id), Some(&vs), "");
+    let id = r.handle.share(&net).expect("shared at once");
+    // The phone gets it like any other file; its size is read when listed.
+    assert_eq!(entry_of(&files_of(&r, &vs), &id)["size"], 4321);
+    let got = send(r.addr, "GET", &format!("/api/file/{id}"), Some(&vs), "");
     assert_eq!((got.status, got.body.len()), (200, 4321));
 
-    // One that is not there is revoked once it has been looked at.
+    // One that is not there is revoked once it has been looked at, and said
+    // once.
     let missing = net.with_file_name("hilang.pdf");
     let gone = r.handle.share(&missing).expect("shared at once");
-    assert_eq!(gone.size, None);
     let said = wait_for(&r.rx, |e| matches!(e, PhoneEvent::SharedGone { .. }));
-    assert_eq!(said, PhoneEvent::SharedGone { id: gone.id.clone() });
+    assert_eq!(said, PhoneEvent::SharedGone { id: gone.clone() });
     let ids: Vec<_> = files_of(&r, &vs).iter().map(|f| f["id"].clone()).collect();
-    assert_eq!(ids, [serde_json::Value::from(info.id.as_str())], "only the one that is there");
-    assert_eq!(send(r.addr, "GET", &format!("/api/file/{}", gone.id), Some(&vs), "").status, 404);
+    assert_eq!(ids, [serde_json::Value::from(id.as_str())], "only the one that is there");
+    assert_eq!(send(r.addr, "GET", &format!("/api/file/{gone}"), Some(&vs), "").status, 404);
+    assert!(r.events().iter().all(|e| !matches!(e, PhoneEvent::SharedGone { .. })), "told once");
     let _ = std::fs::remove_dir_all(&r.dir);
 }
 
 #[test]
-fn an_untick_cuts_a_download_in_flight_and_a_stalled_one_is_busy() {
+fn a_card_taken_off_cuts_a_download_in_flight_and_a_stalled_one_is_busy() {
     let r = rig("phone-e2e-cut");
     let big = r.dir.join("big.bin");
     // Bigger than the socket buffers, so the server is still writing while
     // the phone has read only a little.
     let bytes: Vec<u8> = (0..24 * 1024 * 1024u32).map(|i| (i % 251) as u8).collect();
     std::fs::write(&big, &bytes).expect("write");
-    let (_d, _vp, vs) = r.pair();
-    let id = r.handle.share(&big).expect("share").id;
+    let (_d, vs) = r.join();
+    let id = r.handle.share(&big).expect("share");
 
     let mut s = connect(r.addr);
     s.write_all(
@@ -880,7 +894,8 @@ fn an_untick_cuts_a_download_in_flight_and_a_stalled_one_is_busy() {
     }
     assert!(busy, "a download in flight is busy");
     assert_eq!(entry_of(&files_of(&r, &vs), &id)["saved"], false);
-    // Untick: the connection is closed mid-body.
+    // The card leaves the shelf (its id is revoked): the connection is closed
+    // mid-body.
     r.handle.unshare(&id);
     let mut rest = Vec::new();
     s.set_read_timeout(Some(Duration::from_secs(20))).expect("timeout");
@@ -891,39 +906,39 @@ fn an_untick_cuts_a_download_in_flight_and_a_stalled_one_is_busy() {
         got + rest.len(),
         bytes.len()
     );
-    assert!(r.taken().is_empty(), "a cut download is not taken");
     assert_eq!(send(r.addr, "GET", &format!("/api/file/{id}"), Some(&vs), "").status, 404);
     // Busy is cleared whatever way the stream ended: the set no longer has
     // the id, so a new share shows it free.
-    let again = r.handle.share(&big).expect("share again").id;
+    let again = r.handle.share(&big).expect("share again");
     assert_eq!(entry_of(&files_of(&r, &vs), &again)["busy"], false);
+    assert_eq!(entry_of(&files_of(&r, &vs), &again)["saved"], false, "a cut download is not saved");
     let dir = r.dir.clone();
     r.handle.stop();
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
-fn a_resume_after_a_cut_download_is_taken_and_ending_the_session_drops_the_ids() {
+fn a_resume_after_a_cut_download_is_saved_and_ending_the_session_drops_the_ids() {
     let r = rig("phone-e2e-end");
     let f = r.dir.join("a.txt");
     let text: Vec<u8> = (0..100u8).collect();
     std::fs::write(&f, &text).expect("write");
-    let (_d, _vp, vs) = r.pair();
-    let id = r.handle.share(&f).expect("share").id;
+    let (_d, vs) = r.join();
+    let id = r.handle.share(&f).expect("share");
     // A half read, then a resume from where it stopped.
     let part = send(r.addr, "GET", &format!("/api/file/{id}"), Some(&vs), "Range: bytes=0-49\r\n");
     assert_eq!(part.status, 206);
-    assert!(r.taken().is_empty());
+    assert!(!saved(&r, &vs, &id));
     let rest = send(r.addr, "GET", &format!("/api/file/{id}"), Some(&vs), "Range: bytes=50-\r\n");
     assert_eq!((rest.status, rest.body.as_slice()), (206, &text[50..]));
-    assert_eq!(r.taken(), [id.clone()]);
-    // A zero length file served in full counts as taken.
+    assert!(saved(&r, &vs, &id));
+    // A zero length file served in full counts as saved.
     let empty = r.dir.join("empty.txt");
     std::fs::write(&empty, b"").expect("write");
-    let empty_id = r.handle.share(&empty).expect("share empty").id;
+    let empty_id = r.handle.share(&empty).expect("share empty");
     let none = send(r.addr, "GET", &format!("/api/file/{empty_id}"), Some(&vs), "");
     assert_eq!((none.status, none.body.len()), (200, 0));
-    assert_eq!(r.taken(), [empty_id.clone()]);
+    assert!(saved(&r, &vs, &empty_id));
     // Any range on it is 416.
     let bad = send(r.addr, "GET", &format!("/api/file/{empty_id}"), Some(&vs), "Range: bytes=0-\r\n");
     assert_eq!(bad.status, 416);

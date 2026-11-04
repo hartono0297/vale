@@ -25,13 +25,6 @@ main{max-width:480px;margin:0 auto;display:flex;flex-direction:column;gap:12px}
 .pc small{display:block;font-size:12px;color:var(--warn)}
 .pc.ok small{color:var(--ok)}
 .chip{margin-left:auto;font-size:11px;color:var(--tx2);background:var(--card2);padding:4px 10px;border-radius:99px;max-width:40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.big{text-align:center;margin-top:18px}
-.big p{color:var(--tx2);font-size:14px}
-.big .code{display:block;font-family:var(--mono);font-size:52px;letter-spacing:.28em;margin:10px 0 10px .28em;color:var(--tx)}
-.big p b{color:var(--tx)}
-.spin{width:30px;height:30px;border-radius:50%;border:3px solid #332A23;border-top-color:var(--acc);margin:22px auto 0;animation:sp 1s linear infinite}
-@keyframes sp{to{transform:rotate(360deg)}}
-@media (prefers-reduced-motion:reduce){.spin{animation-duration:3s}}
 .fine{text-align:center;font-size:12px;color:var(--tx2);margin-top:6px}
 .tabs{display:grid;grid-template-columns:1fr 1fr;background:var(--card);border-radius:14px;padding:4px}
 .tabs button{font:inherit;font-size:13px;color:var(--tx2);background:none;border:0;border-radius:10px;padding:9px 4px;min-height:40px}
@@ -78,23 +71,21 @@ main{max-width:480px;margin:0 auto;display:flex;flex-direction:column;gap:12px}
 "use strict";
 var B=/*BOOT*/null;
 var S={
-id:{tag:"RAK BERKAS",sub:"Kirim berkas ke laptop",wait:"Menunggu izin di PC…",conn:"Tersambung di jaringan lokal",
-mine:"Kode kamu",look:"Lihat notch di PC.",same:"Kalau kodenya sama, tekan",allow:"Izinkan",
-fine:"Langsung lewat Wi‑Fi lokal, tidak lewat internet",rej:"Ditolak di PC",rejSub:"Scan QR di notch lagi kalau mau mencoba lagi.",
+id:{tag:"RAK BERKAS",sub:"Kirim berkas ke laptop",conn:"Tersambung di jaringan lokal",
+fine:"Langsung lewat Wi‑Fi lokal, tidak lewat internet",
 send:"Kirim ke laptop",from:"Dari laptop",pick:"Pilih foto, video, atau file",pickSub:"Bisa banyak sekaligus dari galeri / Files",
 save:"Simpan",saved:"✓ Tersimpan",savingOne:"Menyimpan…",saveAll:"Simpan semua ({0})",saving:"Menyimpan… {0} dari {1}",gone:"Tidak dibagikan lagi",openErr:"Tidak bisa dibuka di PC",
-noFiles:"Belum ada berkas. Centang berkas di notch PC (Rak → HP → Kirim ke HP).",only:"Hanya berkas yang kamu bagikan dari PC yang terlihat di sini",
+noFiles:"Belum ada berkas. Semua berkas di rak PC muncul di sini.",only:"Hanya berkas dari rak PC yang terlihat di sini",
 hintIos:"iPhone: foto terbuka dulu, tekan lama gambarnya → Simpan ke Foto. Video & file lain masuk ke app Files → Unduhan.",hintAnd:"Android: masuk folder Download, muncul di Galeri.",
 sending:"Mengirim ke laptop… {0} dari {1}",sent:"✓ Terkirim: {0} berkas",sentErr:"Selesai, {0} gagal",
 done:"✓ Selesai",queued:"Menunggu",cancelled:"Dibatalkan di PC",big:"Terlalu besar (maks 4 GB)",full:"Disk PC penuh",fail:"Gagal terkirim",
 awake:"Biarkan layar HP tetap menyala selama mengirim.",lost:"Koneksi terputus, scan QR lagi",lostSub:"Sesi di PC mungkin sudah selesai atau Wi‑Fi berganti.",retry:"Coba lagi",
 unit:["B","KB","MB","GB"]},
-en:{tag:"FILE SHELF",sub:"Send files to your laptop",wait:"Waiting for permission on the PC…",conn:"Connected on the local network",
-mine:"Your code",look:"Look at the notch on the PC.",same:"If the code matches, tap",allow:"Allow",
-fine:"Straight over local Wi‑Fi, not through the internet",rej:"Declined on the PC",rejSub:"Scan the QR on the notch again to try again.",
+en:{tag:"FILE SHELF",sub:"Send files to your laptop",conn:"Connected on the local network",
+fine:"Straight over local Wi‑Fi, not through the internet",
 send:"Send to laptop",from:"From laptop",pick:"Choose photos, videos, or files",pickSub:"Pick many at once from the gallery / Files",
 save:"Save",saved:"✓ Saved",savingOne:"Saving…",saveAll:"Save all ({0})",saving:"Saving… {0} of {1}",gone:"No longer shared",openErr:"Can't be opened on the PC",
-noFiles:"No files yet. Tick files on the PC's notch (Shelf → Phone → Send to phone).",only:"Only files you share from the PC show up here",
+noFiles:"No files yet. Add files to the PC's shelf to see them here.",only:"Only files from the PC's shelf show up here",
 hintIos:"iPhone: photos open first, long-press the image → Add to Photos. Videos and other files go to the Files app → Downloads.",hintAnd:"Android: saved to the Download folder and shown in the Gallery.",
 sending:"Sending to laptop… {0} of {1}",sent:"✓ Sent: {0} files",sentErr:"Finished, {0} failed",
 done:"✓ Done",queued:"Waiting",cancelled:"Cancelled on the PC",big:"Too big (4 GB max)",full:"PC disk is full",fail:"Could not send",
@@ -117,9 +108,11 @@ s.innerHTML='<path d="M22 157L36 32.5L105 106Z" fill="#E2683C" stroke="#E2683C" 
 function size(n){var u=T.unit,i=0,v=n;while(v>=1024&&i<3){v/=1024;i++}
 var s=i===0?String(v):(v>=100?v.toFixed(0):v.toFixed(1));if(L==="id")s=s.replace(".",",");return s+" "+u[i]}
 function brand(){return h("div",{class:"brand"},h("div",{class:"lg"},logo()),h("div",{class:"nm"},"Vale",h("span",{class:"tag"},t("tag")),h("div",{class:"sub"},t("sub"))))}
-function pcCard(ok,line){return h("div",{class:"pc"+(ok?" ok":"")},h("span",{class:"dot"+(ok?" ok":"")}),h("div",null,h("b",null,B.pc||"PC"),h("small",null,line)),B.net?h("span",{class:"chip"},B.net):null)}
+function pcCard(line){return h("div",{class:"pc ok"},h("span",{class:"dot ok"}),h("div",null,h("b",null,B.pc||"PC"),h("small",null,line)),B.net?h("span",{class:"chip"},B.net):null)}
 
-var state=B.state||"waiting",code=B.code||"",timer=0;
+/* The page opens joined: whoever scanned the QR is in, there is no waiting
+   or code screen. "lost" is the only other state. */
+var state="approved",timer=0;
 var items=[],running=false,view=null;
 var app=document.getElementById("app");
 /* The tab shown stays across redraws and polls; uploads go on whichever it is. */
@@ -132,20 +125,10 @@ function show(){
  app.textContent="";
  if(state==="lost"){
   app.appendChild(brand());
-  var rb=h("button",{type:"button"},t("retry"));rb.onclick=function(){state="waiting";show();poll()};
+  var rb=h("button",{type:"button"},t("retry"));rb.onclick=function(){state="approved";show();poll()};
   app.appendChild(h("div",{class:"lost"},h("b",null,t("lost")),h("p",null,t("lostSub")),rb));return}
- if(state==="rejected"){
-  app.appendChild(brand());
-  app.appendChild(h("div",{class:"lost"},h("b",null,t("rej")),h("p",null,t("rejSub"))));return}
- if(state==="waiting"){
-  app.appendChild(brand());
-  app.appendChild(pcCard(false,t("wait")));
-  app.appendChild(h("div",{class:"big"},h("p",null,t("mine")),h("span",{class:"code",id:"code"},code),
-   h("p",null,t("look"),h("br"),t("same")+" ",h("b",null,t("allow")),"."),h("div",{class:"spin"})));
-  app.appendChild(h("div",{class:"fine"},t("fine")));return}
- /* approved */
  app.appendChild(brand());
- app.appendChild(pcCard(true,t("conn")));
+ app.appendChild(pcCard(t("conn")));
  app.appendChild(tabBar());
  if(tab==="from"){view=null;showFrom();return}
  var inp=h("input",{type:"file",multiple:"multiple"});
@@ -399,11 +382,9 @@ function next(){
  x.onerror=x.ontimeout=function(){it.file=null;why(it,function(st){fail(it,st);drawList();next()})};
  x.send(it.file)}
 
-function setState(s,c){
- if(s===state&&(c===undefined||c===code))return;
- var was=state;state=s;if(c!==undefined)code=c||"";
- if(was==="approved"&&s==="approved")return;
- show()}
+function setState(s){
+ if(s===state)return;
+ state=s;show()}
 
 function poll(){
  clearTimeout(timer);
@@ -416,13 +397,11 @@ function poll(){
   if(dropBatches(j.cancelled))drawList();
   /* The same poll tells the tab's count and when the list changed: no
      second timer, and the list is asked for only on the tab that shows it. */
-  if(j.state==="approved"&&typeof j.rev==="number"){
+  if(typeof j.rev==="number"){
    if(j.shared!==shared){shared=j.shared|0;if(tabBtn)tabBtn.textContent=fromLabel()}
    if(j.rev!==seenRev&&tab==="from"&&state==="approved")fetchFiles()}
-  if(j.state==="approved")setState("approved");
-  else if(j.state==="rejected"){setState("rejected");return}
-  else{if(state!=="waiting"||code!==(j.code||"")){state="waiting";code=j.code||"";show()}}
-  timer=setTimeout(poll,state==="approved"?5000:1000)};
+  setState("approved");
+  timer=setTimeout(poll,5000)};
  x.onerror=x.ontimeout=function(){setState("lost")};
  x.timeout=8000;
  x.send()}

@@ -427,8 +427,7 @@ pub enum Event {
     /// What the phone link said, with the number of the session that said it
     /// (`App` ignores a session that is no longer the current one).
     Phone(u64, crate::phone::PhoneEvent),
-    /// The phone link needs the owner now (a phone asks to connect, files
-    /// start to arrive): the panel opens on the shelf at that stage and
+    /// The phone link needs the owner now (files start to arrive): the panel opens on the shelf at that stage and
     /// stays, latched like a drop (`ShelfDropped`). Not in fullscreen.
     PhoneAttention(PhoneStage),
     /// `App` sets (or clears) the phone stage on the open shelf; it opens
@@ -540,22 +539,13 @@ pub enum Hit {
     ShelfClear,
     /// The shelf's "HP" pill (opens the phone link), and the phone link's
     /// own controls while its view shows: its back button, "Buat QR baru",
-    /// the small QR button of the receiving view, Izinkan / Tolak for the
-    /// phone `id` (the oldest one waiting), Batal and Selesai.
+    /// the small QR button of the receiving view, Batal and Selesai.
     ShelfPhone,
     PhoneBack,
     PhoneNewQr,
     PhoneShowQr,
-    PhoneApprove(u64),
-    PhoneReject(u64),
     PhoneCancel,
     PhoneDone,
-    /// "Kirim ke HP" (opens the send view over the QR or the receiving
-    /// view), a shelf card ticked or unticked for the phone (its place on the
-    /// shelf) and "Selesai" of the send view (back to where it came from).
-    PhoneSend,
-    PhoneShareToggle(usize),
-    PhoneSendDone,
     /// The Devices page, by the card's place in the list as last drawn:
     /// "Eject" (and "Coba lagi", which asks the same again), the folder
     /// button, the info button, and "Eject semua".
@@ -740,13 +730,9 @@ pub enum Effect {
     /// view shows), `PhoneBack` stops it only if no phone ever connected.
     PhoneStart,
     PhoneNewQr,
-    PhoneApprove(u64),
-    PhoneReject(u64),
     PhoneCancel,
     PhoneStop,
     PhoneBack,
-    /// Card `i` of the shelf is ticked for the phone, or unticked.
-    PhoneShareToggle(usize),
     /// Devices page: eject card `i`'s device / open Explorer on its first
     /// drive (the panel has collapsed) / expand or fold its details / eject
     /// every listed device. `App` keeps the list.
@@ -886,17 +872,12 @@ pub enum PomoField {
 }
 
 /// What the phone link shows over the Shelf page: the QR code (or why there
-/// is none), a phone asking to connect, the files arriving. Like the cleaner
-/// over System it is not a page: it comes with its own back button.
+/// is none) and the files arriving. Like the cleaner over System it is not a
+/// page: it comes with its own back button.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PhoneStage {
     Qr,
-    Approval,
     Receiving,
-    /// "Kirim ke HP": the shelf's cards with a tick box each, for the files
-    /// the phone may take. Reached from the QR or the receiving view and
-    /// left to the same one; never what the app asks for.
-    Send,
 }
 
 /// Panel pages, in scroll order: Kalender, Pomodoro, Pengingat, Catatan,

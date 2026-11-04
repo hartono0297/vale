@@ -32,14 +32,13 @@
 //!   every card changes place). Made-up names only.
 //! - The phone link over the shelf (made-up data, no network, no server):
 //!   `phone-qr` (the QR code of an invented link, with the cat and the
-//!   countdown), `phone-qr-expired` (dimmed, with "Buat QR baru"),
-//!   `phone-public` and `phone-nolan` (the warnings), `phone-approve` (a phone
-//!   and its code), `phone-receive` (two files in, one at 62 %, one that
-//!   failed) and `phone-send` ("Kirim ke HP": a shelf of six with three cards
-//!   ticked for the phone, one of them taken, one not ticked, a folder and a
-//!   missing file). `phone-qr` and `phone-receive` show the "Kirim ke HP"
-//!   button. The `shelf` scene has two cards tagged "dari HP". The real flow
-//!   in a browser on this PC: `--phone-debug` (see `phone/debug.rs`).
+//!   countdown), `phone-qr-joined` (the same with a phone in: step 2 reads
+//!   "Tersambung: Android"), `phone-qr-expired` (dimmed, with "Buat QR
+//!   baru"), `phone-public` (the QR view on a Public network: "publik" on
+//!   the network line and the warning in the hint box), `phone-nolan` (the
+//!   warning card) and `phone-receive` (two files in, one at 62 %, one that
+//!   failed). The `shelf` scene has two cards tagged "dari HP". The real
+//!   flow in a browser on this PC: `--phone-debug` (see `phone/debug.rs`).
 //! - `DI_LANG=en` draws the UI in English (also for `--demo-editor`).
 //! - `DI_ACCENT=orange` and `DI_SURFACE=graphite` pick the island theme
 //!   (`espresso`, `graphite`, `sea`, `night`, `plum`; without it, or `auto`,
@@ -243,16 +242,13 @@ enum PhoneDemo {
     Qr,
     /// The same, run out: dimmed, with "Buat QR baru".
     QrExpired,
-    /// A Public network: no code, a warning.
+    /// The same with a phone in: step 2 says who is connected.
+    QrJoined,
+    /// A Public network: the code with the network warning.
     Public,
     NoLan,
-    /// A phone asks, with its code.
-    Approve,
     /// Two files in, one at 62 %, one that failed.
     Receive,
-    /// "Kirim ke HP": a shelf of six, three ticked (one taken), one not, a
-    /// folder and a missing file.
-    Send,
 }
 
 /// The cat sheets a scene can draw instead of the island.
@@ -802,7 +798,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 169] = [
+const SCENES: [Scene; 168] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -1032,6 +1028,10 @@ const SCENES: [Scene; 169] = [
         ..panel("phone-qr", Page::Shelf)
     },
     Scene {
+        phone: PhoneDemo::QrJoined,
+        ..panel("phone-qr-joined", Page::Shelf)
+    },
+    Scene {
         phone: PhoneDemo::QrExpired,
         ..panel("phone-qr-expired", Page::Shelf)
     },
@@ -1044,16 +1044,8 @@ const SCENES: [Scene; 169] = [
         ..panel("phone-nolan", Page::Shelf)
     },
     Scene {
-        phone: PhoneDemo::Approve,
-        ..panel("phone-approve", Page::Shelf)
-    },
-    Scene {
         phone: PhoneDemo::Receive,
         ..panel("phone-receive", Page::Shelf)
-    },
-    Scene {
-        phone: PhoneDemo::Send,
-        ..panel("phone-send", Page::Shelf)
     },
     Scene {
         search: true,
@@ -4103,25 +4095,20 @@ fn demo_shelf(filled: bool) -> Vec<crate::shelf::ShelfCard> {
 }
 
 /// The phone link's made-up data for a scene: a QR code of an invented link,
-/// a waiting phone, files in different states. Owned here so that the
+/// files in different states. Owned here so that the
 /// `PhoneView` can borrow it for the frame.
 struct DemoPhone {
     mode: PhoneDemo,
     qr: crate::phone::QrMatrix,
     rows: Vec<crate::ui::phone_view::RowView>,
-    /// The send view's cards.
-    cards: Vec<crate::ui::phone_view::SendCard>,
+    /// Step 2's line once a phone is in ("Tersambung: Android").
+    joined: String,
 }
 
 impl DemoPhone {
     fn new(mode: PhoneDemo) -> Self {
         use crate::shelf::ShelfKind;
-        use crate::ui::phone_view::{CardState, RowStatus, RowView, SendCard};
-        let card = |name: &str, kind, state| SendCard {
-            name: name.into(),
-            kind,
-            state,
-        };
+        use crate::ui::phone_view::{RowStatus, RowView};
         let row = |name: &str, bytes: u64, kind, status| RowView {
             name: name.into(),
             size: bytes,
@@ -4131,6 +4118,10 @@ impl DemoPhone {
         let mib = |x: f64| (x * 1_048_576.0) as u64;
         DemoPhone {
             mode,
+            joined: crate::i18n::phone_connected(
+                crate::i18n::lang(),
+                &[crate::phone::DeviceKind::Android],
+            ),
             qr: crate::phone::qr::make("http://192.168.18.42:47390/s/AbCdEfGhIjKlMnOpQrStUv")
                 .expect("a link fits a QR code"),
             rows: vec![
@@ -4144,79 +4135,52 @@ impl DemoPhone {
                 ),
                 row("scan-denah.pdf", mib(12.4), ShelfKind::Document, RowStatus::Failed),
             ],
-            cards: vec![
-                card(
-                    "foto-lokasi.png",
-                    ShelfKind::Image,
-                    CardState::Ticked { taken: true },
-                ),
-                card(
-                    "denah-lantai-2.pdf",
-                    ShelfKind::Document,
-                    CardState::Ticked { taken: false },
-                ),
-                card(
-                    "IMG_0533.png",
-                    ShelfKind::Image,
-                    CardState::Ticked { taken: false },
-                ),
-                card("rab-v3.xlsx", ShelfKind::Document, CardState::Unticked),
-                card("Gambar kerja", ShelfKind::Folder, CardState::Folder),
-                card("IMG_0531.png", ShelfKind::Image, CardState::Stale),
-            ],
         }
     }
 
     fn view(&self) -> Option<crate::ui::phone_view::PhoneView<'_>> {
         use crate::model::PhoneStage;
-        use crate::ui::phone_view::{
-            AskView, CodeView, PhoneView, QrView, RecvView, SendView, Warn,
-        };
+        use crate::ui::phone_view::{CodeView, PhoneView, QrView, RecvView, Warn};
         let stage = match self.mode {
             PhoneDemo::No => return None,
-            PhoneDemo::Qr | PhoneDemo::QrExpired | PhoneDemo::Public | PhoneDemo::NoLan => {
-                PhoneStage::Qr
-            }
-            PhoneDemo::Approve => PhoneStage::Approval,
+            PhoneDemo::Qr
+            | PhoneDemo::QrJoined
+            | PhoneDemo::QrExpired
+            | PhoneDemo::Public
+            | PhoneDemo::NoLan => PhoneStage::Qr,
             PhoneDemo::Receive => PhoneStage::Receiving,
-            PhoneDemo::Send => PhoneStage::Send,
         };
         let qr = match self.mode {
-            PhoneDemo::Public => QrView::Warning(Warn::Public, "Kafe-Lantai-3"),
-            PhoneDemo::NoLan => QrView::Warning(Warn::NoLan, ""),
+            PhoneDemo::NoLan => QrView::Warning(Warn::NoLan),
+            PhoneDemo::Public => QrView::Code(CodeView {
+                qr: &self.qr,
+                network: "Kenzie_5G",
+                addr: "192.168.18.42:47390",
+                remaining: Some(292),
+                public: true,
+                joined: "",
+            }),
             _ => QrView::Code(CodeView {
                 qr: &self.qr,
                 network: "Rumah-5G",
                 addr: "192.168.18.42:47390",
                 remaining: (self.mode != PhoneDemo::QrExpired).then_some(292),
-                timed: true,
-                void: false,
+                public: false,
+                joined: if self.mode == PhoneDemo::QrJoined {
+                    &self.joined
+                } else {
+                    ""
+                },
             }),
         };
         Some(PhoneView {
             stage,
             qr,
-            ask: Some(AskView {
-                id: 1,
-                kind: crate::phone::DeviceKind::Android,
-                browser: Some("Chrome"),
-                ip: "192.168.18.57",
-                code: "4821",
-                more: 0,
-            }),
             recv: RecvView {
                 rows: &self.rows,
                 chip: "Android",
                 files: 2,
                 bytes: self.rows[0].size + self.rows[1].size,
-            },
-            send: SendView {
-                cards: &self.cards,
-                count: 3,
-                // foto-lokasi.png 2.4 MB, denah-lantai-2.pdf 300 KB,
-                // IMG_0533.png 1.7 MB.
-                bytes: (4.4 * 1_048_576.0) as u64,
-                chip: "Android",
             },
         })
     }
