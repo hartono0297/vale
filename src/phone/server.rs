@@ -20,7 +20,7 @@ use super::names::{clash_name, sanitize};
 use super::net::{self, BoundCheck, is_private};
 use super::session::Tick;
 use super::share::{RangeAns, Route, counts_as_taken};
-use super::{thumb, ua};
+use super::{note_page, thumb, ua};
 use super::{EndReason, FailReason, Mode, PhoneEvent, Refusal, Runtime, ServerConfig, Shared};
 
 /// The accept loop's sleep between empty polls.
@@ -146,9 +146,10 @@ pub(super) fn run(shared: &Arc<Shared>, mode: Mode) {
 /// chunks), then `ended`, then `SessionEnded` with the reason the stop recorded.
 fn end(shared: &Shared) {
     shared.stop.store(true, Ordering::SeqCst);
-    // Every shared id goes with the session.
+    // Every shared id and the note go with the session.
     if let Ok(mut s) = shared.session.lock() {
         s.shared_mut().unshare_all();
+        s.set_note(None);
     }
     let reason = shared
         .reason
@@ -342,6 +343,7 @@ fn route(
     let reply = Routed::Reply;
     match (req.method, req.path.as_str()) {
         (Method::Get, "/") => reply(page(shared, req)),
+        (Method::Get, "/note") => reply(note(shared, req)),
         (Method::Get, "/api/state") => reply(state(shared, req)),
         (Method::Get, "/api/files") => reply(file_list(shared, req)),
         (Method::Post, "/api/upload") => reply(upload(shared, stream, req, rest, peer)),
@@ -718,6 +720,36 @@ fn page_with(shared: &Shared) -> Response {
     Response::html(PAGE.replacen(BOOT_MARK, &json, 1))
 }
 
+/// The note page, when a note was sent (its language is the session's, like
+/// the shelf page's); the bare 404 when none was.
+fn note_with(shared: &Shared) -> Option<Response> {
+    let rt = shared.runtime.get()?;
+    let note = shared.session.lock().ok()?.note().cloned()?;
+    Some(Response::note_page(note_page::render(&note, rt.lang)))
+}
+
+/// `GET /note`: the sent note, read only, for a phone that joined (its `vs`,
+/// exactly like `GET /`; a page load counts as activity). The bare 404 for
+/// anything else, and when no note was sent.
+fn note(shared: &Shared, req: &Request) -> Response {
+    let now = Instant::now();
+    {
+        let Ok(mut s) = shared.session.lock() else {
+            return Response::not_found();
+        };
+        if !s.page_access(req.cookie("vs"), now) {
+            return Response::not_found();
+        }
+    }
+    note_with(shared).unwrap_or_else(Response::not_found)
+}
+
+/// What a scan or a reload lands on: the note when one was sent, else the
+/// shelf page.
+fn landing(shared: &Shared) -> Response {
+    note_with(shared).unwrap_or_else(|| page_with(shared))
+}
+
 /// `GET /s/<token>`: the QR's address. A phone that already has a cookie of
 /// this session just gets the page again (whatever the token, so a reload
 /// through the link makes no second device). Otherwise a good token joins a
@@ -732,7 +764,7 @@ fn scan(shared: &Shared, req: &Request, token: &str) -> Response {
         };
         if s.page_access(req.cookie("vs"), now) {
             drop(s);
-            return page_with(shared);
+            return landing(shared);
         }
         match s.join(token, now) {
             Ok(joined) => joined,
@@ -744,7 +776,7 @@ fn scan(shared: &Shared, req: &Request, token: &str) -> Response {
         device_id: joined.device_id,
         kind,
     });
-    page_with(shared).with_cookie(session_cookie("vs", &joined.cookie))
+    landing(shared).with_cookie(session_cookie("vs", &joined.cookie))
 }
 
 /// `GET /`: the page, for a phone that joined (its `vs`); anything else is a

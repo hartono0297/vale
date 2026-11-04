@@ -189,7 +189,14 @@ pub struct Response {
     pub cookies: Vec<String>,
     /// The `Cache-Control` value: `no-store` unless a thumbnail says more.
     pub cache: &'static str,
+    /// A `Content-Security-Policy` value, written only when there is one (the
+    /// note page has one; no other answer does).
+    pub csp: Option<&'static str>,
 }
+
+/// What a note page may do: nothing but apply its own inline style. No
+/// script, no image, no font, no frame, no form and no outside address.
+pub const NOTE_CSP: &str = "default-src 'none'; style-src 'unsafe-inline'";
 
 impl Response {
     /// A 404 with nothing in it: what every request that has no business
@@ -201,6 +208,7 @@ impl Response {
             body: Vec::new(),
             cookies: Vec::new(),
             cache: "no-store",
+            csp: None,
         }
     }
 
@@ -227,6 +235,15 @@ impl Response {
             content_type: "text/html; charset=utf-8",
             body: body.into_bytes(),
             ..Self::not_found()
+        }
+    }
+
+    /// The read-only page of a shared note: HTML under a policy that allows
+    /// its inline style and nothing else, never cached.
+    pub fn note_page(body: String) -> Self {
+        Self {
+            csp: Some(NOTE_CSP),
+            ..Self::html(body)
         }
     }
 
@@ -268,6 +285,11 @@ impl Response {
             self.body.len(),
             self.cache
         );
+        if let Some(csp) = self.csp {
+            head.push_str("Content-Security-Policy: ");
+            head.push_str(csp);
+            head.push_str("\r\n");
+        }
         for c in &self.cookies {
             head.push_str("Set-Cookie: ");
             head.push_str(c);
@@ -901,6 +923,33 @@ mod tests {
             assert!(text.contains(h), "{h}\n{text}");
         }
         assert!(text.ends_with("\r\n\r\n{\"ok\":true}"));
+    }
+
+    #[test]
+    fn only_the_note_page_carries_a_content_security_policy() {
+        let mut out = Vec::new();
+        Response::note_page("<p>x</p>".into()).write_to(&mut out).expect("write");
+        let text = String::from_utf8(out).expect("utf8");
+        for h in [
+            "HTTP/1.1 200 OK\r\n",
+            "Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'\r\n",
+            "X-Content-Type-Options: nosniff\r\n",
+            "Cache-Control: no-store\r\n",
+            "Content-Type: text/html; charset=utf-8\r\n",
+        ] {
+            assert!(text.contains(h), "{h}\n{text}");
+        }
+        for plain in [
+            Response::html("x".into()),
+            Response::json(200, "{}".into()),
+            Response::not_found(),
+            Response::jpeg_thumb(vec![1]),
+        ] {
+            let mut out = Vec::new();
+            plain.write_to(&mut out).expect("write");
+            let text = String::from_utf8(out).expect("utf8");
+            assert!(!text.contains("Content-Security-Policy"), "{text}");
+        }
     }
 
     #[test]

@@ -92,6 +92,9 @@ impl App {
         // A reminder may have changed: the notices are settled and the one
         // timer follows the new nearest one.
         self.sticky_remind_settle();
+        // A shared note that is not a desktop note any more (deleted or
+        // unstuck from the Notes page) leaves the phone.
+        self.phone_note_check();
     }
 
     /// The config was adopted (a save, a hand edit): the widgets follow it and
@@ -239,6 +242,13 @@ impl App {
         }
         if out.reminders || !out.gone.is_empty() {
             self.sticky_remind_settle();
+        }
+        // A note that went or came off the desktop is no longer on the phone.
+        for id in &out.gone {
+            self.phone_note_gone(id);
+        }
+        if let Some(id) = &out.send_phone {
+            self.phone_send_note(id);
         }
         if changed {
             self.arm_widget_save();

@@ -12,6 +12,11 @@
 //! so the "Dari laptop" tab can be tried: the list, the thumbnails, a save, a
 //! resume with `curl -r`, an id that is revoked. Nothing outside `target/` is
 //! read or written, the real Downloads folder least of all.
+//!
+//! It also sends a fixed sample note (`sample_note`), so the read-only note
+//! page can be checked in the browser: open `/note` after joining, or the
+//! printed link itself, which lands on the note. The sample's text is made
+//! to show escaping: a line with `<b>&amp"` in it.
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
@@ -19,8 +24,18 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use super::{Handle, PORTS, PhoneEvent, ServerConfig, pc_name, start};
+use super::{Handle, NoteShare, PORTS, PhoneEvent, ServerConfig, pc_name, start};
 use crate::i18n;
+use crate::theme::{Accent, Surface, island};
+use crate::widgets::sticky::Paper;
+
+/// The note `--phone-debug` sends: a shopping list on Kuning (Krem) paper,
+/// one box ticked, one not, and a plain line of characters HTML must escape.
+fn sample_note() -> NoteShare {
+    let text = "Daftar belanja\n- [ ] Telur\n- [x] Kopi\nSatu baris biasa: <b>&amp\"";
+    let isl = island(Accent::Terracotta, Surface::Espresso);
+    NoteShare::from_note(text, Paper::Krem, &isl, Accent::Terracotta, &pc_name())
+}
 
 /// A 640 x 480 colour gradient as a PNG (WIC, with COM joined for the call).
 fn gradient_png() -> Option<Vec<u8>> {
@@ -120,6 +135,8 @@ pub fn run() {
                 PhoneEvent::Ready { url, .. } => {
                     println!("phone-debug: open {url}");
                     share_made_up(&handle, &dest.join("share"));
+                    handle.share_note(Some(sample_note()));
+                    println!("phone-debug: sending the sample note (the link lands on it, or open /note)");
                 }
                 PhoneEvent::Refused(why) => {
                     println!("phone-debug: refused: {why:?}");

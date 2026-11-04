@@ -1,0 +1,411 @@
+//! The read-only page of a sticky note sent to the phone ("Kirim ke HP").
+//!
+//! Pure: a `NoteShare` (the note as it was when it was sent) goes in, one
+//! small HTML document comes out. It has inline CSS only: no script, no image,
+//! no font and no outside address, so the server can answer it under
+//! `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'`.
+//! The boxes of a checklist are `disabled` and there is no form and no
+//! script, so nothing ticked on the phone can reach the PC.
+//!
+//! Every string of the note is HTML-escaped. The page's own words are an
+//! `id` / `en` pair, chosen by the runtime language like the shelf page's.
+
+use crate::i18n::Lang;
+use crate::theme::{Accent, Palette};
+use crate::widgets::checklist;
+use crate::widgets::sticky::{self, Paper};
+
+/// One line under the title.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NoteLine {
+    /// A plain line (possibly empty), shown as it is typed.
+    Text(String),
+    /// A checklist item (`- [ ] ` or `- [x] `): shown, never tickable.
+    Item { done: bool, text: String },
+}
+
+/// A note as it was when the owner sent it: the island makes it, the phone
+/// server holds it and `render` draws it. The colours are `0xRRGGBB`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NoteShare {
+    pub title: String,
+    pub lines: Vec<NoteLine>,
+    /// The paper.
+    pub fill: u32,
+    /// The text on it.
+    pub ink: u32,
+    /// The footer and the done items: a little softer than `ink`, still
+    /// 4.5:1 on `fill`.
+    pub soft: u32,
+    /// The PC's name, for "dari <PC>".
+    pub pc: String,
+}
+
+/// The fixed fill of a Gelap note on the phone, whatever surface the island
+/// wears: its light text always reads on it.
+pub const GELAP_FILL: u32 = 0x1B1D1F;
+
+impl NoteShare {
+    /// The snapshot of a note's `text` on `paper`. The title is the first
+    /// line (a checklist marker on it is dropped); the rest follow in order,
+    /// `- [ ] ` and `- [x] ` lines as items. The colours are the note's own
+    /// (`sticky::tones`); Gelap is `GELAP_FILL` with the island's light text.
+    pub fn from_note(
+        text: &str,
+        paper: Paper,
+        island: &Palette,
+        accent: Accent,
+        pc: &str,
+    ) -> NoteShare {
+        let text = checklist::normalize(text);
+        let tones = sticky::tones(paper, island, accent);
+        let fill = if paper == Paper::Gelap { GELAP_FILL } else { tones.fill };
+        let mut lines: Vec<NoteLine> = text
+            .split('\n')
+            .skip(1)
+            .map(|l| {
+                let item = l
+                    .strip_prefix(checklist::OPEN)
+                    .map(|t| (false, t))
+                    .or_else(|| l.strip_prefix(checklist::DONE).map(|t| (true, t)))
+                    .or_else(|| l.strip_prefix("- [X] ").map(|t| (true, t)));
+                match item {
+                    Some((done, t)) => NoteLine::Item { done, text: t.to_owned() },
+                    None => NoteLine::Text(l.to_owned()),
+                }
+            })
+            .collect();
+        while matches!(lines.last(), Some(NoteLine::Text(t)) if t.trim().is_empty()) {
+            lines.pop();
+        }
+        NoteShare {
+            title: checklist::title_of(&text),
+            lines,
+            fill,
+            ink: tones.body,
+            soft: tones.secondary,
+            pc: pc.to_owned(),
+        }
+    }
+}
+
+/// The page's own words.
+struct Words {
+    code: &'static str,
+    read_only: &'static str,
+    from: &'static str,
+    shelf: &'static str,
+    untitled: &'static str,
+}
+
+fn words(lang: Lang) -> Words {
+    match lang {
+        Lang::Id => Words {
+            code: "id",
+            read_only: "Hanya baca",
+            from: "dari",
+            shelf: "Berkas di rak",
+            untitled: "Catatan tempel",
+        },
+        Lang::En => Words {
+            code: "en",
+            read_only: "Read only",
+            from: "from",
+            shelf: "Shelf files",
+            untitled: "Sticky note",
+        },
+    }
+}
+
+/// `s` safe in element text and in a double or single quoted attribute.
+pub fn escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 8);
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+fn hex(rgb: u32) -> String {
+    format!("#{:06X}", rgb & 0xFF_FFFF)
+}
+
+const CSS: &str = "\
+html{-webkit-text-size-adjust:100%}\
+body{margin:0;font:17px/1.5 system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}\
+main{box-sizing:border-box;max-width:640px;margin:0 auto;padding:28px 20px 12px}\
+h1{margin:0 0 14px;font-size:1.4rem;line-height:1.25;overflow-wrap:anywhere;white-space:pre-wrap}\
+p{margin:0;min-height:1.5em;overflow-wrap:anywhere;white-space:pre-wrap}\
+p.i{display:flex;gap:10px;align-items:flex-start}\
+input{flex:none;width:20px;height:20px;margin:3px 0 0}\
+.d{text-decoration:line-through}\
+footer{box-sizing:border-box;max-width:640px;margin:0 auto;padding:12px 20px 32px;font-size:.875rem;display:flex;flex-wrap:wrap;gap:6px 16px;justify-content:space-between}\
+a{padding:8px 0}";
+
+/// The note's page: one complete HTML document, read only.
+pub fn render(note: &NoteShare, lang: Lang) -> String {
+    let w = words(lang);
+    let title = if note.title.trim().is_empty() {
+        w.untitled.to_owned()
+    } else {
+        escape(&note.title)
+    };
+    let dark = sticky::luminance(note.fill) < 0.2;
+    let (fill, ink, soft) = (hex(note.fill), hex(note.ink), hex(note.soft));
+    let mut html = String::with_capacity(1024 + note.lines.len() * 64);
+    html.push_str("<!doctype html><html lang=\"");
+    html.push_str(w.code);
+    html.push_str("\"><head><meta charset=\"utf-8\">");
+    html.push_str("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
+    html.push_str("<title>");
+    html.push_str(&title);
+    html.push_str("</title><style>");
+    html.push_str(CSS);
+    html.push_str(&format!(
+        "body{{background:{fill};color:{ink};color-scheme:{}}}\
+         footer{{color:{soft}}}a{{color:{ink}}}.d{{color:{soft}}}input{{accent-color:{ink}}}",
+        if dark { "dark" } else { "light" }
+    ));
+    html.push_str("</style></head><body><main><h1>");
+    html.push_str(&title);
+    html.push_str("</h1>");
+    for line in &note.lines {
+        match line {
+            NoteLine::Text(t) => {
+                html.push_str("<p>");
+                html.push_str(&escape(t));
+                html.push_str("</p>");
+            }
+            NoteLine::Item { done, text } => {
+                html.push_str("<p class=\"i\"><input type=\"checkbox\" disabled");
+                if *done {
+                    html.push_str(" checked");
+                }
+                html.push_str("><span");
+                if *done {
+                    html.push_str(" class=\"d\"");
+                }
+                html.push('>');
+                html.push_str(&escape(text));
+                html.push_str("</span></p>");
+            }
+        }
+    }
+    html.push_str("</main><footer><span>");
+    html.push_str(w.read_only);
+    html.push_str(" \u{b7} ");
+    html.push_str(w.from);
+    html.push(' ');
+    html.push_str(&escape(&note.pc));
+    html.push_str("</span><a href=\"/\">");
+    html.push_str(w.shelf);
+    html.push_str("</a></footer></body></html>");
+    html
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::{Surface, island};
+    use crate::widgets::sticky::contrast;
+
+    const SURFACES: [Surface; 6] = [
+        Surface::Espresso,
+        Surface::Graphite,
+        Surface::Sea,
+        Surface::Night,
+        Surface::Plum,
+        Surface::Terminal,
+    ];
+
+    const NASTY: &str = "<b>&amp\"'";
+
+    fn note(title: &str, lines: Vec<NoteLine>) -> NoteShare {
+        NoteShare {
+            title: title.into(),
+            lines,
+            fill: 0xF4E7C6,
+            ink: 0x2B211A,
+            soft: 0x4A3F36,
+            pc: "KANTOR".into(),
+        }
+    }
+
+    fn snapshot(text: &str, paper: Paper) -> NoteShare {
+        let isl = island(Accent::Terracotta, Surface::Espresso);
+        NoteShare::from_note(text, paper, &isl, Accent::Terracotta, "KANTOR")
+    }
+
+    #[test]
+    fn every_special_character_of_the_title_and_the_lines_is_escaped() {
+        let n = note(
+            NASTY,
+            vec![
+                NoteLine::Text(NASTY.into()),
+                NoteLine::Item { done: false, text: NASTY.into() },
+                NoteLine::Item { done: true, text: NASTY.into() },
+            ],
+        );
+        let page = render(&n, Lang::En);
+        let safe = "&lt;b&gt;&amp;amp&quot;&#39;";
+        // The title (h1 and <title>) and three lines.
+        assert_eq!(page.matches(safe).count(), 5, "{page}");
+        assert!(!page.contains("<b>"), "{page}");
+        assert!(!page.contains("&amp\""), "{page}");
+        assert_eq!(escape("a&b<c>d\"e'f"), "a&amp;b&lt;c&gt;d&quot;e&#39;f");
+        // The PC name too.
+        let mut n = n;
+        n.pc = "<PC>".into();
+        assert!(render(&n, Lang::En).contains("from &lt;PC&gt;"));
+    }
+
+    #[test]
+    fn a_checklist_is_shown_with_disabled_boxes_and_done_items_struck_through() {
+        let n = note(
+            "Daftar belanja",
+            vec![
+                NoteLine::Item { done: false, text: "Telur".into() },
+                NoteLine::Item { done: true, text: "Kopi".into() },
+                NoteLine::Text("  dua  spasi".into()),
+            ],
+        );
+        let page = render(&n, Lang::Id);
+        assert!(page.contains("<input type=\"checkbox\" disabled><span>Telur</span>"), "{page}");
+        assert!(
+            page.contains("<input type=\"checkbox\" disabled checked><span class=\"d\">Kopi</span>"),
+            "{page}"
+        );
+        assert_eq!(page.matches("type=\"checkbox\"").count(), 2);
+        assert_eq!(page.matches("disabled").count(), 2, "every box is disabled");
+        assert!(page.contains(".d{text-decoration:line-through}"));
+        // Whitespace is kept.
+        assert!(page.contains("white-space:pre-wrap"));
+        assert!(page.contains("<p>  dua  spasi</p>"));
+        // In order, under the title in an h1.
+        let at = |s: &str| page.find(s).unwrap_or_else(|| panic!("{s}"));
+        assert!(at("<h1>Daftar belanja</h1>") < at("Telur"));
+        assert!(at("Telur") < at("Kopi") && at("Kopi") < at("dua  spasi"));
+    }
+
+    #[test]
+    fn the_page_is_one_small_document_with_no_script_and_no_outside_address() {
+        let n = note(
+            "T",
+            vec![NoteLine::Text("javascript:alert(1) http://evil.example".into())],
+        );
+        // The note's own words may say "http"; the page itself adds none.
+        let mut plain = n.clone();
+        plain.lines = vec![];
+        for lang in [Lang::Id, Lang::En] {
+            let page = render(&plain, lang);
+            assert!(page.starts_with("<!doctype html>"));
+            assert!(page.contains("<meta charset=\"utf-8\">"));
+            assert!(page.contains("name=\"viewport\""));
+            let lower = page.to_ascii_lowercase();
+            for bad in ["<script", "http", "//", "<link", "<img", "<form", "<iframe", "url(", "@import", "onload", "onclick"] {
+                assert!(!lower.contains(bad), "{bad} in {page}");
+            }
+            assert_eq!(page.matches("<a ").count(), 1);
+            assert!(page.contains("<a href=\"/\">"));
+            assert!(page.len() < 4096, "{} bytes", page.len());
+        }
+        // A note that quotes an address shows it as text, escaped, never a tag.
+        let page = render(&n, Lang::En);
+        assert!(page.contains("<p>javascript:alert(1) http://evil.example</p>"));
+        assert!(!page.contains("<script"));
+    }
+
+    #[test]
+    fn both_languages_have_the_footer_and_the_link() {
+        let n = note("T", vec![]);
+        let id = render(&n, Lang::Id);
+        assert!(id.contains("<html lang=\"id\">"));
+        assert!(id.contains("Hanya baca \u{b7} dari KANTOR"));
+        assert!(id.contains(">Berkas di rak</a>"));
+        let en = render(&n, Lang::En);
+        assert!(en.contains("<html lang=\"en\">"));
+        assert!(en.contains("Read only \u{b7} from KANTOR"));
+        assert!(en.contains(">Shelf files</a>"));
+        // An empty title gets the page's own word.
+        let blank = note("  ", vec![]);
+        assert!(render(&blank, Lang::Id).contains("<h1>Catatan tempel</h1>"));
+        assert!(render(&blank, Lang::En).contains("<h1>Sticky note</h1>"));
+    }
+
+    #[test]
+    fn the_body_is_the_paper_and_the_text_is_the_ink() {
+        let n = snapshot("Judul\n- [ ] a", Paper::Sage);
+        let page = render(&n, Lang::En);
+        assert!(page.contains("body{background:#D3DFCF;color:#2B211A;color-scheme:light}"), "{page}");
+        let g = snapshot("Judul", Paper::Gelap);
+        let page = render(&g, Lang::En);
+        assert!(page.contains("background:#1B1D1F;"), "{page}");
+        assert!(page.contains("color-scheme:dark"), "{page}");
+    }
+
+    #[test]
+    fn the_ink_reads_on_every_paper_including_gelap_on_every_surface() {
+        for surface in SURFACES {
+            for accent in Accent::ALL {
+                let isl = island(*accent, surface);
+                for paper in Paper::ALL {
+                    let n = NoteShare::from_note("T\n- [x] a", paper, &isl, *accent, "PC");
+                    for (name, ink) in [("ink", n.ink), ("soft", n.soft)] {
+                        let c = contrast(ink, n.fill);
+                        assert!(c >= 4.5, "{paper:?} {name} on {surface:?}/{accent:?}: {c:.2}");
+                    }
+                    if paper == Paper::Gelap {
+                        assert_eq!(n.fill, GELAP_FILL);
+                        assert_eq!(n.ink, isl.text, "the island's light text");
+                    } else {
+                        assert_eq!(n.fill, sticky::tones(paper, &isl, *accent).fill);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_note_text_becomes_a_title_plain_lines_and_items() {
+        let n = snapshot("Daftar belanja\n- [ ] Telur\n- [x] Kopi\n- [X] Susu\nbiasa\n\n", Paper::Krem);
+        assert_eq!(n.title, "Daftar belanja");
+        assert_eq!(
+            n.lines,
+            vec![
+                NoteLine::Item { done: false, text: "Telur".into() },
+                NoteLine::Item { done: true, text: "Kopi".into() },
+                NoteLine::Item { done: true, text: "Susu".into() },
+                NoteLine::Text("biasa".into()),
+            ],
+            "trailing blank lines are dropped"
+        );
+        assert_eq!(n.pc, "KANTOR");
+        // CRLF is read like LF; a marker on the first line is not shown in the title.
+        let n = snapshot("- [ ] Judul\r\nsatu\r\n\r\ndua", Paper::Krem);
+        assert_eq!(n.title, "Judul");
+        assert_eq!(
+            n.lines,
+            vec![
+                NoteLine::Text("satu".into()),
+                NoteLine::Text(String::new()),
+                NoteLine::Text("dua".into()),
+            ]
+        );
+        // `- [ ]` with no space after it is just text.
+        let n = snapshot("T\n- [ ]\n-[ ] x", Paper::Krem);
+        assert_eq!(
+            n.lines,
+            vec![NoteLine::Text("- [ ]".into()), NoteLine::Text("-[ ] x".into())]
+        );
+        // An empty note has an empty title and no lines.
+        let n = snapshot("", Paper::Krem);
+        assert!(n.title.is_empty() && n.lines.is_empty());
+    }
+}
