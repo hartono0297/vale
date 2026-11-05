@@ -3373,6 +3373,20 @@ fn slice_units(text: &str, a: usize, b: usize) -> String {
     String::from_utf16_lossy(&u[a.min(u.len())..b.min(u.len())])
 }
 
+/// What a copy takes: the selection `a..b`, its text and its runs relative to
+/// it; `None` for a collapsed caret.
+fn copy_payload(w: &Win) -> Option<(usize, usize, String, Vec<Run>)> {
+    let (a, b) = ordered(w.sel);
+    (a != b).then(|| {
+        (
+            a,
+            b,
+            slice_units(&w.text, a, b),
+            styles::slice(&w.sticky.styles, a, b),
+        )
+    })
+}
+
 /// Ctrl+C and Ctrl+X (and Ctrl+Insert, Shift+Delete, WM_COPY, WM_CUT): the
 /// selection as plain text (`\r\n` breaks, a bullet and a box as their
 /// marker text) plus the note's own `Vale.NoteRich` runs. A cut then deletes
@@ -3384,12 +3398,7 @@ fn copy_selection(parent: HWND, edit_hwnd: HWND, cut: bool) {
         if w.edit != Some(edit_hwnd) {
             return None;
         }
-        let (a, b) = ordered(w.sel);
-        (a != b).then(|| {
-            let part = slice_units(&w.text, a, b);
-            let runs = styles::slice(&w.sticky.styles, a, b);
-            (a, b, part, runs)
-        })
+        copy_payload(w)
     })
     .flatten();
     let Some((a, b, part, runs)) = picked else { return };
@@ -6977,5 +6986,575 @@ mod tests {
             assert_eq!(with(|s| s.wins[1].room).unwrap(), (0.0, 0.0, 0.0, 0.0));
             host.shutdown();
         }
+    }
+
+    // ------------------------------------------------ format bar, images, clipboard
+
+    use crate::widgets::toolbar::BAR_BLOCK;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, SendMessageW, TranslateMessage, WM_LBUTTONDOWN,
+        WM_LBUTTONUP,
+    };
+
+    fn pack(x: i32, y: i32) -> LPARAM {
+        LPARAM(((y << 16) | (x & 0xFFFF)) as isize)
+    }
+
+    /// A note with the keyboard, its EDIT and the window.
+    fn editing(text: &str, extra: impl FnOnce(&mut Sticky)) -> (WidgetHost, HWND, HWND) {
+        let displays = vec![display("A", 0, true, 96)];
+        let notes = vec![note_with("n1", text, extra)];
+        let mut host = WidgetHost::new(HWND::default());
+        host.sync(&ctx(&notes, &displays));
+        host.focus("n1");
+        let (hwnd, edit_hwnd) = with(|s| (s.wins[0].hwnd, s.wins[0].edit)).unwrap();
+        (host, hwnd, edit_hwnd.expect("the note has the keyboard"))
+    }
+
+    /// The EDIT's selection set the way a drag would, and the note told.
+    fn select(hwnd: HWND, edit_hwnd: HWND, a: usize, b: usize) {
+        let text = with(|s| s.wins[0].text.clone()).unwrap();
+        edit::set_selection(edit_hwnd, &text, a, b);
+        edit_event(hwnd, edit_hwnd, EditEvent::Changed);
+    }
+
+    /// The client point of the bar's button `tool` in window 0.
+    fn bar_point(tool: Tool) -> (i32, i32) {
+        let (w, h) = with(|s| (s.wins[0].view.w, s.wins[0].view.h)).unwrap();
+        let r = toolbar::rect_of(&toolbar::layout(w), tool).expect("the tool is on the bar");
+        client_of(r.x + 4.0, h - BAR_BLOCK + r.y + 12.0)
+    }
+
+    fn target_of(x: i32, y: i32) -> Target {
+        with(|s| {
+            let w = &s.wins[0];
+            let (ox, oy) = w.origin();
+            target_at(w, ox + x, oy + y)
+        })
+        .unwrap()
+    }
+
+    fn styles_of() -> Vec<Run> {
+        with(|s| s.wins[0].sticky.styles.clone()).unwrap()
+    }
+
+    fn click(hwnd: HWND, (x, y): (i32, i32)) {
+        unsafe {
+            SendMessageW(hwnd, WM_LBUTTONDOWN, Some(WPARAM(1)), Some(pack(x, y)));
+            SendMessageW(hwnd, WM_LBUTTONUP, Some(WPARAM(0)), Some(pack(x, y)));
+        }
+    }
+
+    #[test]
+    fn ctrl_b_on_a_selection_is_bold_in_the_styles_and_the_drain_has_them_after_the_text() {
+        let _focus = keyboard_lock();
+        let (mut host, hwnd, edit_hwnd) = editing("Belanja", |_| {});
+        select(hwnd, edit_hwnd, 0, 3);
+        let _ = host.drain();
+        // What the EDIT's key handler does for Ctrl+B.
+        edit_event(hwnd, edit_hwnd, EditEvent::Format(Tool::Bold));
+        assert_eq!(styles_of(), [Run { s: 0, e: 3, style: Style { b: true, ..Style::default() } }]);
+        let events = host.drain();
+        assert!(
+            events.iter().any(|e| matches!(e, WidgetEvent::Styles { id, runs } if id == "n1" && runs.len() == 1)),
+            "{events:?}"
+        );
+        // The text did not change, so no Text event comes with it.
+        assert!(!events.iter().any(|e| matches!(e, WidgetEvent::Text { .. })), "{events:?}");
+        // Again: the whole range has it, so it comes off.
+        edit_event(hwnd, edit_hwnd, EditEvent::Format(Tool::Bold));
+        assert!(styles_of().is_empty());
+        // The EDIT and the selection are untouched by a style.
+        assert_eq!(with(|s| (s.wins[0].sel, s.wins[0].text.clone())).unwrap(), ((0, 3), "Belanja".to_owned()));
+        // Typing then pushes Text and, after it, Styles.
+        edit_event(hwnd, edit_hwnd, EditEvent::Format(Tool::Italic));
+        let _ = host.drain();
+        with(|s| {
+            let e = Edit { start: 7, end: 7, insert: "!".into(), caret: 8 };
+            apply_edit(s, 0, &e);
+        });
+        let events = host.drain();
+        let at = |f: fn(&WidgetEvent) -> bool| events.iter().position(f);
+        let text = at(|e| matches!(e, WidgetEvent::Text { .. })).expect("a Text event");
+        let styles = at(|e| matches!(e, WidgetEvent::Styles { .. })).expect("a Styles event");
+        assert!(text < styles, "Text first, then Styles: {events:?}");
+        host.shutdown();
+    }
+
+    #[test]
+    fn the_bar_shows_only_while_the_note_has_the_keyboard() {
+        let _focus = keyboard_lock();
+        let displays = vec![display("A", 0, true, 96)];
+        let notes = vec![note_with("n1", "Belanja", |_| {})];
+        let mut host = WidgetHost::new(HWND::default());
+        host.sync(&ctx(&notes, &displays));
+        let (w, h) = with(|s| (s.wins[0].view.w, s.wins[0].view.h)).unwrap();
+        let bold = toolbar::rect_of(&toolbar::layout(w), Tool::Bold).unwrap();
+        let bar_pt = client_of(bold.x + 4.0, h - BAR_BLOCK + bold.y + 12.0);
+        let footer_pt = client_of(w / 2.0, h - 10.0);
+        // Not editing: no bar, the footer is the footer.
+        assert_ne!(target_of(bar_pt.0, bar_pt.1), Target::Bar(BarHit::Tool(Tool::Bold)));
+        assert_eq!(target_of(footer_pt.0, footer_pt.1), Target::Footer);
+        assert!(!with(|s| s.wins[0].bar_shown(Instant::now())).unwrap());
+        // Editing: the bar takes the footer's place.
+        host.focus("n1");
+        assert_eq!(target_of(bar_pt.0, bar_pt.1), Target::Bar(BarHit::Tool(Tool::Bold)));
+        assert!(matches!(target_of(footer_pt.0, footer_pt.1), Target::Bar(_)));
+        let area = with(|s| s.wins[0].body_area()).unwrap();
+        assert_eq!(area.h, h - HEADER_H - BAR_BLOCK);
+        // Esc ends the editing: the footer is back.
+        let hwnd = with(|s| s.wins[0].hwnd).unwrap();
+        end_editing(hwnd);
+        assert_eq!(target_of(footer_pt.0, footer_pt.1), Target::Footer);
+        assert_ne!(target_of(bar_pt.0, bar_pt.1), Target::Bar(BarHit::Tool(Tool::Bold)));
+        assert_eq!(with(|s| s.wins[0].body_area().h).unwrap(), h - HEADER_H - paint::FOOTER_H);
+        host.shutdown();
+    }
+
+    #[test]
+    fn a_click_on_a_bar_button_keeps_the_editing_and_the_selection_and_applies_the_style() {
+        let _focus = keyboard_lock();
+        let (mut host, hwnd, edit_hwnd) = editing("Belanja", |_| {});
+        select(hwnd, edit_hwnd, 1, 5);
+        let _ = host.drain();
+        let before = with(|s| (s.wins[0].edit, s.wins[0].sel, s.wins[0].anchor, s.wins[0].scroll)).unwrap();
+        click(hwnd, bar_point(Tool::Bold));
+        let after = with(|s| (s.wins[0].edit, s.wins[0].sel, s.wins[0].anchor, s.wins[0].scroll)).unwrap();
+        assert!(after.0.is_some(), "still editing");
+        assert_eq!(after, before, "the caret and the selection did not move");
+        assert_eq!(styles_of(), [Run { s: 1, e: 5, style: Style { b: true, ..Style::default() } }]);
+        // A press that moves is never a drag of the note, and the note stays put.
+        let placed_before = with(|s| s.wins[0].sticky.rect).unwrap();
+        let (x, y) = bar_point(Tool::Italic);
+        unsafe {
+            SendMessageW(hwnd, WM_LBUTTONDOWN, Some(WPARAM(1)), Some(pack(x, y)));
+        }
+        mouse_move(hwnd, x + 30, y);
+        unsafe {
+            SendMessageW(hwnd, WM_LBUTTONUP, Some(WPARAM(0)), Some(pack(x + 30, y)));
+        }
+        assert!(with(|s| s.wins[0].drag.is_none()).unwrap());
+        assert_eq!(with(|s| s.wins[0].sticky.rect).unwrap(), placed_before);
+        assert!(!host.drain().iter().any(|e| matches!(e, WidgetEvent::Placed { .. })));
+        // A click on the bar's background does nothing at all.
+        let (w, h) = with(|s| (s.wins[0].view.w, s.wins[0].view.h)).unwrap();
+        let layout = toolbar::layout(w);
+        let bg = client_of(layout.bar.right() - 3.0, h - BAR_BLOCK + 15.0);
+        let styles_before = styles_of();
+        click(hwnd, bg);
+        assert_eq!(styles_of(), styles_before);
+        assert!(with(|s| s.wins[0].edit.is_some()).unwrap());
+        host.shutdown();
+    }
+
+    #[test]
+    fn a_bar_button_fires_only_when_released_over_the_same_one() {
+        let _focus = keyboard_lock();
+        let (mut host, hwnd, edit_hwnd) = editing("Belanja", |_| {});
+        select(hwnd, edit_hwnd, 0, 3);
+        let _ = host.drain();
+        let (bx, by) = bar_point(Tool::Bold);
+        let (ix, iy) = bar_point(Tool::Italic);
+        unsafe {
+            SendMessageW(hwnd, WM_LBUTTONDOWN, Some(WPARAM(1)), Some(pack(bx, by)));
+            SendMessageW(hwnd, WM_LBUTTONUP, Some(WPARAM(0)), Some(pack(ix, iy)));
+        }
+        assert!(styles_of().is_empty(), "released over another button: nothing");
+        assert!(with(|s| s.wins[0].bar_press.is_none()).unwrap(), "the press is forgotten");
+        host.shutdown();
+    }
+
+    #[test]
+    fn a_style_chosen_with_a_collapsed_caret_is_for_the_next_typed_text() {
+        let _focus = keyboard_lock();
+        let (mut host, hwnd, edit_hwnd) = editing("Belanja", |_| {});
+        select(hwnd, edit_hwnd, 7, 7);
+        edit_event(hwnd, edit_hwnd, EditEvent::Format(Tool::Bold));
+        assert!(styles_of().is_empty(), "nothing is selected: no run yet");
+        assert!(with(|s| s.wins[0].pending.is_some_and(|p| p.b)).unwrap());
+        assert!(with(|s| tool_states(&s.wins[0])[0]).unwrap(), "the B is lit at the caret");
+        // Typed text takes it.
+        with(|s| apply_edit(s, 0, &Edit { start: 7, end: 7, insert: " baru".into(), caret: 12 }));
+        assert_eq!(styles_of(), [Run { s: 7, e: 12, style: Style { b: true, ..Style::default() } }]);
+        // Toggling again with the caret still there turns the next text plain.
+        edit_event(hwnd, edit_hwnd, EditEvent::Format(Tool::Bold));
+        with(|s| apply_edit(s, 0, &Edit { start: 12, end: 12, insert: "!".into(), caret: 13 }));
+        assert_eq!(styles_of(), [Run { s: 7, e: 12, style: Style { b: true, ..Style::default() } }]);
+        // Moving the caret without typing drops the pending style.
+        edit_event(hwnd, edit_hwnd, EditEvent::Format(Tool::Italic));
+        assert!(with(|s| s.wins[0].pending.is_some()).unwrap());
+        select(hwnd, edit_hwnd, 2, 2);
+        assert!(with(|s| s.wins[0].pending.is_none()).unwrap());
+        host.shutdown();
+    }
+
+    #[test]
+    fn the_marker_highlights_with_the_last_colour_and_the_popover_choices_are_remembered() {
+        let _focus = keyboard_lock();
+        let (mut host, hwnd, edit_hwnd) = editing("Belanja", |_| {});
+        select(hwnd, edit_hwnd, 0, 4);
+        edit_event(hwnd, edit_hwnd, EditEvent::Format(Tool::Marker));
+        assert_eq!(styles_of().len(), 1);
+        assert_eq!(styles_of()[0].style.hl, Some(Hl::Kuning), "Kuning is the first");
+        // Again: it comes off.
+        edit_event(hwnd, edit_hwnd, EditEvent::Format(Tool::Marker));
+        assert!(styles_of().is_empty());
+        // A colour from the popover is applied and becomes the last one.
+        fmt_choice(hwnd, fmt_pop::Item::Hl(Some(Hl::Pink)));
+        assert_eq!(styles_of()[0].style.hl, Some(Hl::Pink));
+        assert_eq!(with(|s| s.last_hl).unwrap(), Hl::Pink);
+        // A text colour keeps the highlight; "none" and "automatic" clear them.
+        fmt_choice(hwnd, fmt_pop::Item::Fg(Some(styles::Fg::Merah)));
+        assert_eq!(styles_of()[0].style.fg, Some(styles::Fg::Merah));
+        assert_eq!(styles_of()[0].style.hl, Some(Hl::Pink));
+        fmt_choice(hwnd, fmt_pop::Item::Hl(None));
+        fmt_choice(hwnd, fmt_pop::Item::Fg(None));
+        assert!(styles_of().is_empty());
+        assert_eq!(with(|s| s.last_hl).unwrap(), Hl::Pink, "clearing keeps the last colour");
+        host.shutdown();
+    }
+
+    #[test]
+    fn the_list_buttons_toggle_every_line_of_the_selection_and_keep_it() {
+        let _focus = keyboard_lock();
+        let (mut host, hwnd, edit_hwnd) = editing("Judul\nsatu\ndua", |_| {});
+        select(hwnd, edit_hwnd, 6, 14);
+        edit_event(hwnd, edit_hwnd, EditEvent::Format(Tool::Bullet));
+        let t = with(|s| s.wins[0].text.clone()).unwrap();
+        assert_eq!(t, "Judul\n\u{2022} satu\n\u{2022} dua");
+        // The selection follows its text.
+        assert_eq!(with(|s| s.wins[0].sel).unwrap(), (8, 18));
+        edit_event(hwnd, edit_hwnd, EditEvent::Format(Tool::Check));
+        assert_eq!(with(|s| s.wins[0].text.clone()).unwrap(), "Judul\n- [ ] satu\n- [ ] dua");
+        edit_event(hwnd, edit_hwnd, EditEvent::Format(Tool::Check));
+        assert_eq!(with(|s| s.wins[0].text.clone()).unwrap(), "Judul\nsatu\ndua");
+        // Ctrl+Z (the EDIT's undo) takes each back.
+        unsafe { SendMessageW(edit_hwnd, windows::Win32::UI::WindowsAndMessaging::WM_UNDO, None, None) };
+        assert_eq!(with(|s| s.wins[0].text.clone()).unwrap(), "Judul\n- [ ] satu\n- [ ] dua");
+        host.shutdown();
+    }
+
+    #[test]
+    fn the_runs_follow_an_edit_the_edit_undoes_and_a_paste() {
+        let _focus = keyboard_lock();
+        let (mut host, hwnd, edit_hwnd) = editing("Belanja", |s| {
+            s.styles = vec![Run { s: 3, e: 7, style: Style { b: true, ..Style::default() } }];
+        });
+        // Typing before the run shifts it.
+        with(|s| apply_edit(s, 0, &Edit { start: 0, end: 0, insert: "xx".into(), caret: 2 }));
+        assert_eq!(styles_of(), [Run { s: 5, e: 9, style: Style { b: true, ..Style::default() } }]);
+        // Undo takes the text back and the run follows.
+        unsafe { SendMessageW(edit_hwnd, windows::Win32::UI::WindowsAndMessaging::WM_UNDO, None, None) };
+        assert_eq!(with(|s| s.wins[0].text.clone()).unwrap(), "Belanja");
+        assert_eq!(styles_of(), [Run { s: 3, e: 7, style: Style { b: true, ..Style::default() } }]);
+        // A paste (what `paste_into` hands to `paste_text`) takes the style at the caret.
+        select(hwnd, edit_hwnd, 5, 5);
+        with(|s| paste_text(s, 0, "ABC", None));
+        assert_eq!(with(|s| s.wins[0].text.clone()).unwrap(), "BelanABCja");
+        assert_eq!(styles_of(), [Run { s: 3, e: 10, style: Style { b: true, ..Style::default() } }]);
+        // A matching Vale.NoteRich payload overlays its own runs on the pasted text.
+        let italic = Style { i: true, ..Style::default() };
+        let payload = richclip::encode("XYZ", &[Run { s: 1, e: 2, style: italic }]);
+        select(hwnd, edit_hwnd, 0, 0);
+        with(|s| paste_text(s, 0, "XYZ", Some(&payload)));
+        assert_eq!(with(|s| s.wins[0].text.clone()).unwrap(), "XYZBelanABCja");
+        let runs = styles_of();
+        assert!(runs.contains(&Run { s: 1, e: 2, style: italic }), "{runs:?}");
+        assert!(!runs.iter().any(|r| r.s == 0 && r.style.b), "the pasted text is not bold: {runs:?}");
+        // A payload for other text is ignored (plain text, the style at the caret).
+        select(hwnd, edit_hwnd, 0, 0);
+        with(|s| paste_text(s, 0, "QQ", Some(&payload)));
+        assert!(!styles_of().iter().any(|r| r.style.i && r.s < 2));
+        host.shutdown();
+    }
+
+    #[test]
+    fn a_selection_is_copied_as_text_and_runs_and_a_cut_removes_it() {
+        let _focus = keyboard_lock();
+        let (mut host, hwnd, edit_hwnd) = editing("Belanja", |s| {
+            s.styles = vec![Run { s: 0, e: 4, style: Style { b: true, ..Style::default() } }];
+        });
+        select(hwnd, edit_hwnd, 2, 6);
+        let (a, b, part, runs) = with(|s| copy_payload(&s.wins[0])).unwrap().expect("a selection");
+        assert_eq!((a, b, part.as_str()), (2, 6, "lanj"));
+        assert_eq!(runs, [Run { s: 0, e: 2, style: Style { b: true, ..Style::default() } }]);
+        // What a paste into another note reads back.
+        let bytes = richclip::encode(&part, &runs);
+        assert_eq!(richclip::decode(&bytes, &part), Some(runs));
+        // A collapsed caret copies nothing.
+        select(hwnd, edit_hwnd, 3, 3);
+        assert!(with(|s| copy_payload(&s.wins[0])).unwrap().is_none());
+        host.shutdown();
+    }
+
+    #[test]
+    fn a_dropped_png_becomes_an_image_and_a_fifth_is_refused() {
+        let _focus = keyboard_lock();
+        let dir = std::env::temp_dir().join(format!("vale-host-images-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = crate::notes::NotesStore::open(dir.join("notes.json"));
+        let images_dir = store.images_dir();
+        let src = dir.join("pic.png");
+        assert!(image_io::write_gradient(&src, 120, 90, 7));
+        let displays = vec![display("A", 0, true, 96)];
+        let notes = vec![note_with("n1", "Belanja", |_| {})];
+        let mut host = WidgetHost::new(HWND::default());
+        host.set_images_dir(images_dir.clone());
+        host.sync(&ctx(&notes, &displays));
+        let hwnd = with(|s| s.wins[0].hwnd).unwrap();
+        let _ = host.drain();
+        let wait_for = |n: usize| {
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            while Instant::now() < deadline {
+                let mut msg = MSG::default();
+                unsafe {
+                    while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                        let _ = TranslateMessage(&msg);
+                        DispatchMessageW(&msg);
+                    }
+                }
+                if with(|s| s.wins[0].sticky.images.len()).unwrap() >= n {
+                    return true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            false
+        };
+        drop_images(hwnd, vec![src.clone()]);
+        assert_eq!(with(|s| s.in_flight.len()).unwrap(), 1, "one import is in flight");
+        assert!(wait_for(1), "the import came back within 5 s");
+        assert_eq!(with(|s| s.in_flight.len()).unwrap(), 0);
+        let events = host.drain();
+        let list = events
+            .iter()
+            .find_map(|e| match e {
+                WidgetEvent::Images { id, images } if id == "n1" => Some(images.clone()),
+                _ => None,
+            })
+            .expect("an Images event");
+        assert_eq!(list.len(), 1);
+        assert!(images::valid_name(&list[0]));
+        assert!(images_dir.join(&list[0]).is_file(), "in the test store's folder");
+        assert!(!crate::config::path().starts_with(&images_dir), "never the real data folder");
+        // Three more fill it up; the fifth is refused with the message and no file.
+        drop_images(hwnd, vec![src.clone(), src.clone(), src.clone()]);
+        assert!(wait_for(4));
+        assert_eq!(with(|s| s.wins[0].sticky.images.len()).unwrap(), 4);
+        let _ = host.drain();
+        drop_images(hwnd, vec![src.clone()]);
+        assert_eq!(with(|s| s.in_flight.len()).unwrap(), 0, "nothing started for the fifth");
+        assert_eq!(with(|s| s.wins[0].footer_msg).unwrap(), Some(Key::FmtImgMax));
+        assert!(host.drain().iter().all(|e| !matches!(e, WidgetEvent::Images { .. })));
+        let files = std::fs::read_dir(&images_dir).unwrap().filter_map(Result::ok).count();
+        assert_eq!(files, 4, "four files, no fifth");
+        // Four in flight at once are counted: with two imports pending, only two more fit.
+        host.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_import_that_finishes_for_a_note_that_is_gone_deletes_its_file() {
+        let _focus = keyboard_lock();
+        let dir = std::env::temp_dir().join(format!("vale-host-gone-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("note-images");
+        let src = dir.join("p.png");
+        assert!(image_io::write_gradient(&src, 40, 30, 1));
+        let name = image_io::import(image_io::Source::Path(src), &out).expect("imported");
+        assert!(out.join(&name).is_file());
+        let displays = vec![display("A", 0, true, 96)];
+        let notes = vec![note_with("n1", "x", |_| {})];
+        let mut host = WidgetHost::new(HWND::default());
+        host.sync(&ctx(&notes, &displays));
+        let hwnd = with(|s| s.wins[0].hwnd).unwrap();
+        // The result names a note no window has.
+        let done = Box::new(image_io::Done {
+            note: "n-nobody".into(),
+            result: Ok(name.clone()),
+            dir: out.clone(),
+        });
+        import_done(hwnd, LPARAM(Box::into_raw(done) as isize));
+        assert!(!out.join(&name).exists(), "no window took it: the new file is deleted");
+        assert!(with(|s| s.wins[0].sticky.images.is_empty()).unwrap());
+        host.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_image_opens_on_a_click_and_the_x_removes_it() {
+        let _focus = keyboard_lock();
+        let dir = std::env::temp_dir().join(format!("vale-host-click-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let out = dir.join("note-images");
+        assert!(image_io::write_gradient(&out.join("a.png"), 200, 100, 1));
+        assert!(image_io::write_gradient(&out.join("b.png"), 200, 100, 2));
+        let displays = vec![display("A", 0, true, 96)];
+        let notes = vec![note_with("n1", "Belanja", |s| {
+            s.images = vec!["a.png".into(), "b.png".into()];
+        })];
+        let mut host = WidgetHost::new(HWND::default());
+        host.set_images_dir(out.clone());
+        host.sync(&ctx(&notes, &displays));
+        let hwnd = with(|s| s.wins[0].hwnd).unwrap();
+        let rects = with(|s| s.wins[0].img_rects.clone()).unwrap();
+        assert_eq!(rects.len(), 2, "two images, side by side");
+        let top = with(|s| s.wins[0].body_area().y).unwrap();
+        // The text starts below the block.
+        assert!(with(|s| s.wins[0].body.as_ref().unwrap().lines[0].y).unwrap() > 40.0);
+        let _ = host.drain();
+        image_io::OPENED.with(|o| o.borrow_mut().clear());
+        // A click on the first image (not moving) opens its file.
+        let r = rects[0];
+        let (x, y) = client_of(r.x + r.w / 2.0, top + r.y + r.h / 2.0);
+        assert_eq!(target_of(x, y), Target::Image(0));
+        click(hwnd, (x, y));
+        let opened = image_io::OPENED.with(|o| o.borrow().clone());
+        assert_eq!(opened, [out.join("a.png")]);
+        // A press that moves 4 px or more is no click.
+        image_io::OPENED.with(|o| o.borrow_mut().clear());
+        unsafe {
+            SendMessageW(hwnd, WM_LBUTTONDOWN, Some(WPARAM(1)), Some(pack(x, y)));
+            SendMessageW(hwnd, WM_LBUTTONUP, Some(WPARAM(0)), Some(pack(x + 6, y)));
+        }
+        assert!(image_io::OPENED.with(|o| o.borrow().is_empty()));
+        // The x of the second image removes it (the file is released at save).
+        let xr = paint::image_remove_rect(DipR { x: rects[1].x, y: top + rects[1].y, w: rects[1].w, h: rects[1].h });
+        let (x, y) = client_of(xr.x + xr.w / 2.0, xr.y + xr.h / 2.0);
+        assert_eq!(target_of(x, y), Target::ImageRemove(1));
+        click(hwnd, (x, y));
+        assert_eq!(with(|s| s.wins[0].sticky.images.clone()).unwrap(), ["a.png"]);
+        let events = host.drain();
+        assert!(events.contains(&WidgetEvent::Images { id: "n1".into(), images: vec!["a.png".into()] }), "{events:?}");
+        assert!(out.join("b.png").exists(), "the file stays until the owner's save");
+        host.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_rolled_note_never_shows_the_bar_or_images() {
+        let _focus = keyboard_lock();
+        let displays = vec![display("A", 0, true, 96)];
+        let notes = vec![note_with("n1", "Belanja", |s| {
+            s.rolled = true;
+            s.images = vec!["a.png".into()];
+        })];
+        let mut host = WidgetHost::new(HWND::default());
+        host.sync(&ctx(&notes, &displays));
+        host.focus("n1");
+        assert!(with(|s| s.wins[0].edit.is_some()).unwrap(), "it has the keyboard");
+        assert!(!with(|s| s.wins[0].bar_shown(Instant::now())).unwrap(), "but no bar while rolled up");
+        for (x, y) in [(60.0, 50.0), (60.0, 40.0), (120.0, 60.0)] {
+            let (px, py) = client_of(x, y);
+            assert!(
+                !matches!(target_of(px, py), Target::Bar(_) | Target::Image(_) | Target::ImageRemove(_)),
+                "{x},{y}"
+            );
+        }
+        host.shutdown();
+    }
+
+    #[test]
+    fn a_tucked_note_that_is_not_all_the_way_out_has_no_bar() {
+        let _focus = keyboard_lock();
+        let (mut host, _hwnd, _edit) = editing("Belanja", |_| {});
+        assert!(with(|s| s.wins[0].bar_shown(Instant::now())).unwrap());
+        with(|s| {
+            s.wins[0].sticky.tuck = Some(Edge::Right);
+            s.wins[0].pop = tuck::Pop::at(0.5);
+        });
+        assert!(!with(|s| s.wins[0].bar_shown(Instant::now())).unwrap(), "no room in the tab");
+        with(|s| s.wins[0].pop = tuck::Pop::at(1.0));
+        assert!(with(|s| s.wins[0].bar_shown(Instant::now())).unwrap(), "all the way out: the bar shows");
+        host.shutdown();
+    }
+
+    #[test]
+    fn a_footer_message_is_cleared_by_the_pointer_leaving_like_every_other() {
+        let _focus = keyboard_lock();
+        let (mut host, hwnd, _edit) = editing("Belanja", |_| {});
+        with(|s| {
+            s.wins[0].footer_msg = Some(Key::FmtImgMax);
+            s.wins[0].dirty = true;
+        });
+        assert_eq!(with(|s| s.wins[0].footer_msg).unwrap(), Some(Key::FmtImgMax));
+        mouse_leave(hwnd);
+        assert_eq!(with(|s| s.wins[0].footer_msg).unwrap(), None);
+        host.shutdown();
+    }
+
+    #[test]
+    fn the_marker_popover_opens_above_its_button_and_closes_on_esc_and_on_a_choice() {
+        let _focus = keyboard_lock();
+        let (mut host, hwnd, edit_hwnd) = editing("Belanja", |_| {});
+        assert!(!fmt_pop::is_open());
+        open_marker_pop(hwnd);
+        assert!(fmt_pop::is_open_for(hwnd), "the popover is open");
+        // The note keeps the keyboard.
+        assert!(with(|s| s.wins[0].edit.is_some()).unwrap());
+        // Esc closes it first, and the editing goes on.
+        edit_event(hwnd, edit_hwnd, EditEvent::Escape);
+        assert!(!fmt_pop::is_open());
+        assert!(with(|s| s.wins[0].edit.is_some()).unwrap());
+        // A second press on the chevron toggles.
+        open_marker_pop(hwnd);
+        open_marker_pop(hwnd);
+        assert!(!fmt_pop::is_open());
+        // A choice closes it.
+        open_marker_pop(hwnd);
+        fmt_choice(hwnd, fmt_pop::Item::Hl(Some(Hl::Biru)));
+        assert!(!fmt_pop::is_open());
+        // Ending the editing closes it too.
+        open_marker_pop(hwnd);
+        end_editing(hwnd);
+        assert!(!fmt_pop::is_open());
+        // A narrow note keeps the Marker in the overflow menu.
+        host.shutdown();
+        let displays = vec![display("A", 0, true, 96)];
+        let notes = vec![note_with("n2", "x", |s| s.rect.w = 180.0)];
+        let mut host = WidgetHost::new(HWND::default());
+        host.sync(&ctx(&notes, &displays));
+        host.focus("n2");
+        let hwnd = with(|s| s.wins[0].hwnd).unwrap();
+        open_overflow(hwnd);
+        assert!(fmt_pop::is_open_for(hwnd), "the overflow menu opens on a narrow note");
+        fmt_pop::close();
+        host.shutdown();
+        assert!(!fmt_pop::is_open());
+    }
+
+    #[test]
+    fn formatting_and_images_are_not_shared_between_sheets_of_a_window() {
+        let displays = vec![display("A", 0, true, 96)];
+        let bold = Style { b: true, ..Style::default() };
+        let mk = |id: &str, order: u32, top: bool, images: &[&str], styles: Vec<Run>| {
+            let mut n = note_with(id, "sheet text", |s| {
+                s.stack = Some("stk".into());
+                s.stack_order = order;
+                s.stack_top = top;
+                s.images = images.iter().map(|i| (*i).to_owned()).collect();
+                s.styles = styles;
+            });
+            n.updated = 1 + i64::from(order);
+            n
+        };
+        let notes = vec![
+            mk("a", 0, true, &["a.png"], vec![Run { s: 0, e: 5, style: bold }]),
+            mk("b", 1, false, &[], vec![]),
+        ];
+        let mut host = WidgetHost::new(HWND::default());
+        host.sync(&ctx(&notes, &displays));
+        assert_eq!(with(|s| s.wins[0].sticky.images.clone()).unwrap(), ["a.png"]);
+        let hwnd = with(|s| s.wins[0].hwnd).unwrap();
+        // Flip to sheet b: it has neither.
+        with(|s| show_sheet(s, 0, 1));
+        assert!(with(|s| s.wins[0].sticky.images.is_empty() && s.wins[0].sticky.styles.is_empty()).unwrap());
+        // And back: sheet a keeps its own.
+        with(|s| show_sheet(s, 0, 0));
+        assert_eq!(with(|s| s.wins[0].sticky.images.clone()).unwrap(), ["a.png"]);
+        assert_eq!(styles_of().len(), 1);
+        let _ = hwnd;
+        host.shutdown();
     }
 }
