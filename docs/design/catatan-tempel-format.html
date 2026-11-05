@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Format catatan tempel</title>
+<style>
+  @font-face { font-family: 'DM Sans'; font-weight: 400; src: url('../../assets/fonts/DMSans-400.ttf'); }
+  @font-face { font-family: 'DM Sans'; font-weight: 500; src: url('../../assets/fonts/DMSans-500.ttf'); }
+  @font-face { font-family: 'DM Sans'; font-weight: 600; src: url('../../assets/fonts/DMSans-600.ttf'); }
+  @font-face { font-family: 'DM Mono'; font-weight: 400; src: url('../../assets/fonts/DMMono-400.ttf'); }
+  :root {
+    --paper: #F1ECE4; --ink: #221A14; --ink2: #7A6B5D; --rule: #DDD3C6; --card: #FBF7F1;
+    --tx: #F4EDE4; --a: #E2683C;
+    --body: 'DM Sans', 'Segoe UI', sans-serif; --mono: 'DM Mono', Consolas, monospace;
+    --p-krem: #F4E7C6; --p-tera: #F3CDBB; --p-sage: #D3DFCF; --p-plum: #E6CFDC; --p-laut: #CCDCE4; --p-ink: #2B211A;
+    --hl-kuning: #FFE36E; --hl-hijau: #B9E6A5; --hl-pink: #F7B8CF; --hl-biru: #AED4F2;
+    --fg-merah: #B3261E; --fg-biru: #1D4E9E; --fg-hijau: #2E6B2F;
+    --bar: #1F1B18; --bar2: #2C2622; --bar-tx: #E9E2DA; --bar-dim: #9C918A;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: #9a948c; }
+  body { font-family: var(--body); color: var(--ink); padding: 18px 0; }
+  .page { width: 1120px; max-width: calc(100% - 32px); margin: 0 auto 18px; padding: 28px 36px 34px; background: var(--paper); border-radius: 6px; }
+  .eyebrow { font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase; font-weight: 600; color: var(--ink2); }
+  h1 { font-weight: 600; font-size: 27px; letter-spacing: -.025em; margin: 2px 0 6px; }
+  h2 { font-weight: 600; font-size: 15px; letter-spacing: -.02em; margin: 0 0 6px; }
+  p, li { font-size: 12px; line-height: 1.5; color: #3E3229; }
+  .lead { max-width: 820px; margin-bottom: 18px; }
+  code { font-family: var(--mono); font-size: 10.8px; background: #E8E0D4; padding: 0 4px; border-radius: 4px; }
+  b { font-weight: 600; }
+  .grid { display: grid; gap: 16px; }
+  .g2 { grid-template-columns: 1fr 1fr; } .g3 { grid-template-columns: 1fr 1fr 1fr; }
+  .card { background: var(--card); border: 1px solid var(--rule); border-radius: 16px; padding: 12px 14px 13px; }
+  .card ul { margin: 4px 0 0; }
+  .card li { list-style: none; position: relative; padding-left: 13px; margin-bottom: 3px; }
+  .card li::before { content: ""; position: absolute; left: 0; top: 7px; width: 5px; height: 5px; border-radius: 50%; background: var(--a); }
+  .cap { font-size: 10.5px; color: var(--ink2); text-align: center; margin-top: 8px; }
+  table { border-collapse: collapse; width: 100%; }
+  th { text-align: left; font-size: 9.8px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink2); font-weight: 600; padding: 6px 8px; border-bottom: 1.5px solid var(--rule); }
+  td { font-size: 11.4px; line-height: 1.42; padding: 6px 8px; border-bottom: 1px solid var(--rule); vertical-align: top; color: #3E3229; }
+  td b { color: var(--ink); }
+  kbd { font-family: var(--mono); font-size: 10.4px; background: #fff; border: 1px solid var(--rule); border-bottom-width: 2px; border-radius: 5px; padding: 0 5px; white-space: nowrap; }
+
+  /* desk */
+  .st { position: relative; height: 400px; border-radius: 12px; overflow: hidden; background: radial-gradient(120% 90% at 30% 20%, #6D5747 0%, #3E3128 55%, #2A211B 100%); }
+  .st.short { height: 330px; }
+
+  /* sticky note (1px = 1 dip) */
+  .sn { position: absolute; width: 240px; border-radius: 10px; background: var(--p-krem); color: var(--p-ink); box-shadow: 0 1px 0 rgba(255,255,255,.4) inset, 0 8px 18px rgba(0,0,0,.32), 0 2px 4px rgba(0,0,0,.2); font-size: 13px; overflow: hidden; }
+  .sn.laut { background: var(--p-laut); } .sn.sage { background: var(--p-sage); } .sn.plum { background: var(--p-plum); }
+  .sn.gelap { background: #1B1D1F; color: var(--tx); border: 1px solid #2E3134; }
+  .sn.gelap::before { content: ""; position: absolute; left: 12px; right: 12px; top: 0; height: 3px; border-radius: 0 0 3px 3px; background: var(--a); z-index: 2; }
+  .sn .hd { display: flex; align-items: center; gap: 6px; height: 36px; padding: 0 12px; font-size: 10.5px; }
+  .sn .hd .dt { opacity: .55; }
+  .sn .hd .tl { margin-left: auto; display: flex; gap: 9px; opacity: .65; }
+  .sn svg { width: 13px; height: 13px; stroke: currentColor; fill: none; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+  .sn .body { padding: 0 12px; line-height: 1.42; }
+  .sn .t { font-weight: 600; font-size: 14px; letter-spacing: -.01em; margin-bottom: 2px; }
+  .sn .ln { min-height: 18px; }
+  .sn .bl { position: relative; padding-left: 16px; }
+  .sn .bl::before { content: ""; position: absolute; left: 4px; top: 8px; width: 5px; height: 5px; border-radius: 50%; background: currentColor; opacity: .7; }
+  .sn .ck { position: relative; padding-left: 20px; }
+  .sn .ck::before { content: ""; position: absolute; left: 1px; top: 3px; width: 12px; height: 12px; border-radius: 3px; border: 1.5px solid currentColor; opacity: .55; }
+  .sn .ck.x { opacity: .5; text-decoration: line-through; }
+  .sn .ck.x::before { background: currentColor; opacity: .8; }
+  .sn .ft { height: 26px; padding: 6px 12px 0; font-size: 10px; opacity: .45; }
+  .sn .grip { position: absolute; right: 5px; bottom: 5px; width: 8px; height: 8px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; border-radius: 0 0 3px 0; opacity: .35; }
+  .u { text-decoration: underline; text-underline-offset: 2px; }
+  .s { text-decoration: line-through; }
+  .hl-k { background: var(--hl-kuning); border-radius: 2px; padding: 0 1px; color: var(--p-ink); }
+  .hl-p { background: var(--hl-pink); border-radius: 2px; padding: 0 1px; color: var(--p-ink); }
+  .fg-m { color: var(--fg-merah); } .fg-b { color: var(--fg-biru); }
+  .sel { background: rgba(226,104,60,.32); }
+  .caret { display: inline-block; width: 1.5px; height: 15px; background: currentColor; vertical-align: -3px; margin: 0 -1px; }
+
+  /* images (Keep style, top of the text area) */
+  .imgs { display: grid; gap: 4px; padding: 0 8px 8px; }
+  .imgs.one { grid-template-columns: 1fr; }
+  .imgs.two { grid-template-columns: 1fr 1fr; }
+  .im { position: relative; border-radius: 7px; overflow: hidden; height: 112px; }
+  .imgs.two .im { height: 84px; }
+  .im .pic { position: absolute; inset: 0; }
+  .pic.a { background: linear-gradient(160deg, #F6C28B 0%, #E2683C 45%, #6A3A4A 100%); }
+  .pic.a::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 42%; background: linear-gradient(180deg, #3A2E3C, #241C26); clip-path: polygon(0 40%, 18% 10%, 34% 45%, 52% 0, 70% 50%, 86% 20%, 100% 45%, 100% 100%, 0 100%); }
+  .pic.b { background: repeating-linear-gradient(0deg, #EDEFF2 0 10px, #E2E6EA 10px 11px), #EDEFF2; }
+  .pic.b::after { content: ""; position: absolute; left: 10px; right: 26px; top: 12px; height: 7px; border-radius: 3px; background: #5B7EA6; box-shadow: 0 14px 0 #9BB0C8, 0 28px 0 #9BB0C8, -0px 42px 0 #C9D3DE; }
+  .im .x { position: absolute; right: 5px; top: 5px; width: 20px; height: 20px; border-radius: 50%; background: rgba(20,16,14,.72); color: #fff; display: flex; align-items: center; justify-content: center; }
+  .im .x svg { width: 10px; height: 10px; stroke-width: 2.4; }
+  .im .open { position: absolute; left: 5px; bottom: 5px; font-size: 9.5px; color: #fff; background: rgba(20,16,14,.72); border-radius: 99px; padding: 2px 7px; }
+  .im.hov { outline: 2px solid var(--a); outline-offset: -2px; }
+
+  /* the format bar */
+  .fb { margin: 6px 6px 6px; height: 30px; border-radius: 8px; background: var(--bar); display: flex; align-items: center; padding: 0 4px; gap: 1px; color: var(--bar-tx); box-shadow: 0 1px 0 rgba(255,255,255,.06) inset; }
+  .sn.gelap .fb { background: var(--bar2); }
+  .fb .b { width: 24px; height: 24px; border-radius: 5px; display: flex; align-items: center; justify-content: center; font-size: 13px; color: var(--bar-dim); position: relative; flex: none; }
+  .fb .b.on { background: rgba(255,255,255,.12); color: #fff; }
+  .fb .b.hov { background: rgba(255,255,255,.07); color: var(--bar-tx); }
+  .fb .b svg { width: 14px; height: 14px; stroke-width: 1.8; }
+  .fb .sep { width: 1px; height: 14px; background: rgba(255,255,255,.14); margin: 0 3px; flex: none; }
+  .fb .bb { font-weight: 700; font-family: Georgia, serif; }
+  .fb .ii { font-style: italic; font-family: Georgia, serif; }
+  .fb .uu { text-decoration: underline; text-underline-offset: 2px; }
+  .fb .ss { text-decoration: line-through; font-size: 12px; }
+  .fb .mk::after { content: ""; position: absolute; left: 6px; right: 6px; bottom: 3px; height: 3px; border-radius: 2px; background: var(--hl-kuning); }
+  .tip { position: absolute; background: #14110F; color: #F4EDE4; font-size: 10px; padding: 3px 7px; border-radius: 5px; white-space: nowrap; z-index: 5; }
+  .tip kbd { background: #2C2622; border-color: #3E3631; color: #F4EDE4; font-size: 9.5px; }
+
+  /* popover */
+  .pop { position: absolute; width: 196px; border-radius: 10px; background: var(--bar); color: var(--bar-tx); padding: 9px 10px 10px; box-shadow: 0 10px 26px rgba(0,0,0,.45); font-size: 10.5px; z-index: 4; }
+  .pop .lb { color: var(--bar-dim); font-size: 9.5px; letter-spacing: .08em; text-transform: uppercase; font-weight: 600; margin: 2px 0 6px; }
+  .pop .row { display: flex; gap: 7px; margin-bottom: 9px; }
+  .sw { width: 24px; height: 24px; border-radius: 50%; border: 1.5px solid rgba(255,255,255,.18); position: relative; flex: none; }
+  .sw.on { box-shadow: 0 0 0 2px var(--bar), 0 0 0 3.5px var(--a); }
+  .sw.none { background: transparent; }
+  .sw.none::after { content: ""; position: absolute; left: 50%; top: 3px; bottom: 3px; width: 1.5px; background: #C55; transform: rotate(45deg); }
+  .sw.fg { display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 12px; background: #F4E7C6; }
+
+  /* overflow menu */
+  .menu { position: absolute; width: 168px; border-radius: 9px; background: var(--bar); color: var(--bar-tx); padding: 4px; box-shadow: 0 10px 26px rgba(0,0,0,.45); font-size: 11px; z-index: 4; }
+  .menu div { display: flex; align-items: center; gap: 8px; padding: 5px 7px; border-radius: 5px; }
+  .menu div:first-child { background: rgba(255,255,255,.08); }
+  .menu svg { width: 13px; height: 13px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .menu span.k { margin-left: auto; color: var(--bar-dim); font-family: var(--mono); font-size: 9.5px; }
+
+  .drop { outline: 2px dashed var(--a); outline-offset: -3px; }
+  .ghost { position: absolute; width: 74px; height: 54px; border-radius: 6px; background: linear-gradient(160deg,#9BD3C0,#3F7F86); box-shadow: 0 8px 18px rgba(0,0,0,.35); transform: rotate(-6deg); opacity: .9; z-index: 6; }
+  .ghost::after { content: "+ Gambar"; position: absolute; left: 50%; bottom: -18px; transform: translateX(-50%); font-size: 9.5px; color: #fff; background: var(--a); border-radius: 99px; padding: 1px 7px; white-space: nowrap; }
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="i-list" viewBox="0 0 24 24"><circle cx="5" cy="7" r="1.2" fill="currentColor"/><circle cx="5" cy="12" r="1.2" fill="currentColor"/><circle cx="5" cy="17" r="1.2" fill="currentColor"/><path d="M9.5 7h10M9.5 12h10M9.5 17h10"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="7" height="7" rx="1.6"/><path d="M5.3 8l1.4 1.4 2.3-2.6"/><rect x="3.5" y="14" width="7" height="6" rx="1.6"/><path d="M13.5 8h7M13.5 17h7"/></symbol>
+  <symbol id="i-mark" viewBox="0 0 24 24"><path d="M14.5 4.5l5 5-8.5 8.5H6v-5z"/><path d="M12 7l5 5"/></symbol>
+  <symbol id="i-img" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><circle cx="9" cy="10" r="1.7"/><path d="M20.5 16l-5-5-8.5 8.5"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><circle cx="6" cy="12" r="1.2" fill="currentColor"/><circle cx="12" cy="12" r="1.2" fill="currentColor"/><circle cx="18" cy="12" r="1.2" fill="currentColor"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol id="i-pin" viewBox="0 0 24 24"><path d="M9 4h6l-1 6 3 3H7l3-3z"/><path d="M12 13v7"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-dots" viewBox="0 0 24 24"><circle cx="6" cy="12" r="1" fill="currentColor"/><circle cx="12" cy="12" r="1" fill="currentColor"/><circle cx="18" cy="12" r="1" fill="currentColor"/></symbol>
+</svg>
+
+<!-- ============ PAGE 1 ============ -->
+<section class="page">
+  <div class="eyebrow">Vale · Catatan tempel · mockup</div>
+  <h1>Toolbar format: tebal, miring, stabilo, gambar</h1>
+  <p class="lead">Strip gelap tipis seperti contohmu muncul <b>di bawah catatan hanya saat kamu mengetik di dalamnya</b> (catatan memegang keyboard). Begitu klik di luar atau Esc, strip hilang dan catatan kembali bersih dengan footer tanggal biasa. Gambar duduk di atas teks, gaya Google Keep, supaya catatan kecil tetap rapi.</p>
+
+  <div class="grid g3">
+    <!-- A: editing -->
+    <div>
+      <div class="st">
+        <div class="sn" style="left:28px; top:26px;">
+          <div class="hd"><span class="dt">hari ini 09.12</span><span class="tl"><svg><use href="#i-plus"/></svg><svg><use href="#i-pin"/></svg><svg><use href="#i-dots"/></svg></span></div>
+          <div class="imgs one"><div class="im"><div class="pic a"></div></div></div>
+          <div class="body">
+            <div class="t">Trip Bandung</div>
+            <div class="ln">Berangkat <b>Sabtu 06.00</b>, kumpul di <span class="hl-k">stasiun</span>.</div>
+            <div class="ln bl"><i>Bawa jaket</i></div>
+            <div class="ln bl"><span class="sel"><b>Tiket kereta</b></span><span class="caret"></span></div>
+            <div class="ln ck x">Booking hotel</div>
+          </div>
+          <div class="fb">
+            <span class="b bb on">B</span><span class="b ii">I</span><span class="b uu">U</span><span class="b ss">ab</span>
+            <span class="sep"></span>
+            <span class="b"><svg><use href="#i-list"/></svg></span><span class="b"><svg><use href="#i-check"/></svg></span>
+            <span class="sep"></span>
+            <span class="b mk"><svg><use href="#i-mark"/></svg></span><span class="b"><svg><use href="#i-img"/></svg></span>
+          </div>
+        </div>
+      </div>
+      <p class="cap"><b>A. Sedang mengetik.</b> Seleksi "Tiket kereta": tombol B menyala karena sudah tebal semua; klik B melepasnya. Kalau baru sebagian yang tebal, B mati dan klik menebalkan semuanya.</p>
+    </div>
+
+    <!-- B: at rest -->
+    <div>
+      <div class="st">
+        <div class="sn" style="left:28px; top:26px;">
+          <div class="hd"><span class="dt">hari ini 09.14</span></div>
+          <div class="imgs one"><div class="im"><div class="pic a"></div></div></div>
+          <div class="body">
+            <div class="t">Trip Bandung</div>
+            <div class="ln">Berangkat <b>Sabtu 06.00</b>, kumpul di <span class="hl-k">stasiun</span>.</div>
+            <div class="ln bl"><i>Bawa jaket</i></div>
+            <div class="ln bl"><b>Tiket kereta</b></div>
+            <div class="ln ck x">Booking hotel</div>
+          </div>
+          <div class="ft">1/1 selesai</div>
+          <div class="grip"></div>
+        </div>
+      </div>
+      <p class="cap"><b>B. Tidak diedit.</b> Toolbar hilang, footer tanggal kembali. Format tetap tampil.</p>
+    </div>
+
+    <!-- C: marker popover + tooltip -->
+    <div>
+      <div class="st">
+        <div class="sn laut" style="left:28px; top:26px;">
+          <div class="hd"><span class="dt">kemarin</span></div>
+          <div class="body">
+            <div class="t">Rapat Senin</div>
+            <div class="ln">Target Q4 <span class="sel"><span class="fg-m">belum aman</span></span><span class="caret"></span></div>
+            <div class="ln bl">Revisi <span class="hl-p">harga</span> paket</div>
+            <div class="ln bl"><span class="u">Deadline</span> Jumat</div>
+            <div class="ln bl"><span class="s">Undang vendor</span></div>
+            <div class="ln">&nbsp;</div>
+          </div>
+          <div class="fb">
+            <span class="b bb">B</span><span class="b ii">I</span><span class="b uu">U</span><span class="b ss">ab</span>
+            <span class="sep"></span>
+            <span class="b"><svg><use href="#i-list"/></svg></span><span class="b"><svg><use href="#i-check"/></svg></span>
+            <span class="sep"></span>
+            <span class="b mk on"><svg><use href="#i-mark"/></svg></span><span class="b"><svg><use href="#i-img"/></svg></span>
+          </div>
+        </div>
+        <div class="pop" style="left:86px; top:256px;">
+          <div class="lb">Stabilo</div>
+          <div class="row"><span class="sw" style="background:var(--hl-kuning)"></span><span class="sw" style="background:var(--hl-hijau)"></span><span class="sw" style="background:var(--hl-pink)"></span><span class="sw" style="background:var(--hl-biru)"></span><span class="sw none"></span></div>
+          <div class="lb">Warna teks</div>
+          <div class="row" style="margin-bottom:0"><span class="sw fg" style="color:var(--p-ink)">A</span><span class="sw fg on" style="color:var(--fg-merah)">A</span><span class="sw fg" style="color:var(--fg-biru)">A</span><span class="sw fg" style="color:var(--fg-hijau)">A</span></div>
+        </div>
+      </div>
+      <p class="cap"><b>C. Tombol stabilo.</b> Satu popover: 4 stabilo + hapus, dan warna teks (otomatis, merah, biru, hijau).</p>
+    </div>
+  </div>
+
+  <div class="grid g3" style="margin-top:16px">
+    <!-- D: narrow overflow -->
+    <div>
+      <div class="st short">
+        <div class="sn sage" style="left:40px; top:26px; width:180px;">
+          <div class="hd"><span class="dt">hari ini 10.02</span></div>
+          <div class="body">
+            <div class="t">Belanja</div>
+            <div class="ln bl">Telur <b>2 kg</b></div>
+            <div class="ln bl">Kopi<span class="caret"></span></div>
+            <div class="ln">&nbsp;</div>
+          </div>
+          <div class="fb">
+            <span class="b bb">B</span><span class="b ii">I</span><span class="b uu">U</span>
+            <span class="sep"></span>
+            <span class="b on"><svg><use href="#i-list"/></svg></span><span class="b"><svg><use href="#i-img"/></svg></span>
+            <span class="sep"></span>
+            <span class="b hov"><svg><use href="#i-more"/></svg></span>
+          </div>
+        </div>
+        <div class="menu" style="left:96px; top:206px;">
+          <div><span style="text-decoration:line-through">ab</span>&nbsp;Coret<span class="k">Ctrl+Shift+X</span></div>
+          <div><svg><use href="#i-check"/></svg>Checklist<span class="k">Ctrl+Shift+9</span></div>
+          <div><svg><use href="#i-mark"/></svg>Stabilo &amp; warna</div>
+        </div>
+      </div>
+      <p class="cap"><b>D. Catatan sempit (&lt; 236 dip).</b> Yang tidak muat pindah ke tombol ⋯.</p>
+    </div>
+
+    <!-- E: Gelap + image hover -->
+    <div>
+      <div class="st short">
+        <div class="sn gelap" style="left:28px; top:26px;">
+          <div class="hd"><span class="dt">hari ini 08.40</span></div>
+          <div class="imgs two"><div class="im hov"><div class="pic b"></div><span class="x"><svg><use href="#i-x"/></svg></span><span class="open">Buka</span></div><div class="im"><div class="pic a"></div></div></div>
+          <div class="body">
+            <div class="t">Bug login</div>
+            <div class="ln">Muncul di <span class="hl-k">Android 14</span> saja<span class="caret"></span></div>
+          </div>
+          <div class="fb">
+            <span class="b bb">B</span><span class="b ii">I</span><span class="b uu">U</span><span class="b ss">ab</span>
+            <span class="sep"></span>
+            <span class="b"><svg><use href="#i-list"/></svg></span><span class="b"><svg><use href="#i-check"/></svg></span>
+            <span class="sep"></span>
+            <span class="b mk"><svg><use href="#i-mark"/></svg></span><span class="b"><svg><use href="#i-img"/></svg></span>
+          </div>
+        </div>
+      </div>
+      <p class="cap"><b>E. Kertas Gelap, 2 gambar.</b> Hover gambar: ✕ hapus, klik = buka di Photos.</p>
+    </div>
+
+    <!-- F: drop image -->
+    <div>
+      <div class="st short">
+        <div class="sn plum drop" style="left:28px; top:26px;">
+          <div class="hd"><span class="dt">hari ini 11.20</span></div>
+          <div class="body">
+            <div class="t">Ide logo</div>
+            <div class="ln">Warna hangat, <i>kucing</i> tetap.</div>
+            <div class="ln">&nbsp;</div>
+            <div class="ln">&nbsp;</div>
+          </div>
+          <div class="ft">hari ini 11.20</div>
+          <div class="grip"></div>
+        </div>
+        <div class="ghost" style="left:150px; top:96px;"></div>
+        <div class="tip" style="left:116px; top:42px;">Gambar tebal <kbd>Ctrl+B</kbd></div>
+      </div>
+      <p class="cap"><b>F. Seret file gambar</b> dari Explorer, atau Ctrl+V gambar dari clipboard. Garis putus-putus seperti drop teks sekarang.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ PAGE 2 ============ -->
+<section class="page">
+  <div class="eyebrow">Keputusan · yang akan dibangun</div>
+  <h1>Perilaku</h1>
+  <div class="grid g2">
+    <div class="card">
+      <h2>Toolbar</h2>
+      <table>
+        <tr><th>Tombol</th><th>Aksi</th><th>Pintasan</th></tr>
+        <tr><td><b>B</b></td><td>Tebal</td><td><kbd>Ctrl+B</kbd></td></tr>
+        <tr><td><i>I</i></td><td>Miring</td><td><kbd>Ctrl+I</kbd></td></tr>
+        <tr><td><span class="u">U</span></td><td>Garis bawah</td><td><kbd>Ctrl+U</kbd></td></tr>
+        <tr><td><span class="s">ab</span></td><td>Coret</td><td><kbd>Ctrl+Shift+X</kbd></td></tr>
+        <tr><td>• list</td><td>Baris jadi butir (•); Enter lanjut, Enter di butir kosong berhenti</td><td><kbd>Ctrl+Shift+8</kbd></td></tr>
+        <tr><td>☑ checklist</td><td>Baris jadi kotak centang (aturan checklist yang sudah ada)</td><td><kbd>Ctrl+Shift+9</kbd></td></tr>
+        <tr><td>Stabilo</td><td>Popover: 4 stabilo + hapus, 3 warna teks + otomatis. Klik ikonnya langsung = warna terakhir</td><td><kbd>Ctrl+Shift+H</kbd> (stabilo terakhir)</td></tr>
+        <tr><td>Gambar</td><td>Pilih file (PNG, JPG, GIF, BMP, WebP)</td><td>–</td></tr>
+      </table>
+      <ul style="margin-top:8px">
+        <li>Dengan seleksi: klik mengubah seleksi (kalau semuanya sudah tebal, klik melepasnya). Tanpa seleksi: gaya berlaku untuk huruf yang diketik berikutnya, seperti Word.</li>
+        <li>Tombol menyala sesuai gaya di caret / seleksi. Tooltip dengan pintasan saat hover.</li>
+        <li>Toolbar tidak menggeser teks: tinggi 42 dip menggantikan footer 26 dip, area teks sedikit mengecil saat mengetik.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h2>Gambar</h2>
+      <ul>
+        <li>Tiga cara: tombol gambar (pilih file), <kbd>Ctrl+V</kbd> gambar dari clipboard (mis. screenshot), seret file gambar ke catatan. File bukan gambar tetap jadi baris path seperti sekarang.</li>
+        <li>Tampil di atas teks: 1 gambar selebar catatan (tinggi maks 45% catatan, dipotong rapi), 2 berdampingan, 3–4 jadi kisi 2×2. Maks <b>4 gambar per catatan</b>.</li>
+        <li>Hover: ✕ untuk hapus (bisa Ctrl+Z selama masih mengedit), klik gambar membuka di aplikasi foto Windows.</li>
+        <li>Disimpan sebagai salinan di folder data Vale (<code>note-images\</code>), diperkecil ke sisi terpanjang 1600 px. File asal maks 25 MB; lebih besar ditolak dengan pesan di footer. Hapus catatan = hapus gambarnya.</li>
+        <li>Catatan digulung: gambar tidak tampil. Tumpukan, selip ke tepi, tembus pandang: tetap berlaku.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h2>Penyimpanan &amp; catatan lama</h2>
+      <ul>
+        <li>Teks tetap plain text di <code>notes.json</code>. Format disimpan sebagai daftar rentang di bagian <code>sticky</code> (tebal 3..8, stabilo kuning 12..19, dst), gambar sebagai daftar nama file. Butir list ditulis <code>• </code> di awal baris, jadi terbaca di mana saja.</li>
+        <li>Catatan lama tidak perlu migrasi: tanpa rentang = tanpa format. File lama dibaca dan disimpan balik tanpa kunci baru.</li>
+        <li>Saat teks berubah (dari catatan, halaman Notes, atau drop), rentang digeser otomatis; yang terhapus ikut hilang.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h2>Copy-paste, halaman Notes, HP</h2>
+      <ul>
+        <li><b>Copy dari catatan</b>: clipboard berisi teks biasa (untuk aplikasi lain) <i>dan</i> format Vale sendiri. Paste ke catatan Vale lain = format ikut.</li>
+        <li><b>Paste dari luar</b>: teks biasa, mengikuti gaya di caret (tidak membawa font/warna aneh dari web).</li>
+        <li><b>Halaman Notes di panel</b>: tetap teks biasa (butir • terlihat), mengedit di sana menjaga format di bagian yang tidak diubah. Kartu catatan bergambar dapat ikon gambar kecil + jumlah.</li>
+        <li><b>Kirim ke HP</b>: halaman HP menampilkan tebal, miring, garis bawah, coret, stabilo, warna, dan butir. Gambar tidak ikut dikirim.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+</body>
+</html>
