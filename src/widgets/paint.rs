@@ -1346,7 +1346,7 @@ pub fn draw(c: &Canvas, res: &Res, s: &Scene) {
 }
 
 /// The tab of a tucked note at its screen edge, in the window's own place (not
-/// shifted by the slide): paper, a 1 dip ink line on the inner side, three
+/// scaled by the pop): paper, a 1 dip ink line on the inner side, three
 /// short grip lines, and an accent dot while the reminder is overdue. `a` is
 /// its opacity.
 fn draw_tab(
