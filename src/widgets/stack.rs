@@ -889,4 +889,59 @@ mod tests {
     fn min_w_is_260() {
         assert_eq!(MIN_W, 260.0);
     }
+
+    #[test]
+    fn formatting_and_images_belong_to_their_sheet_and_never_travel_along_a_stack() {
+        use crate::widgets::styles::{Run, Style};
+        let mark = |n: &mut Note, name: &str| {
+            let s = n.sticky.as_mut().unwrap();
+            s.styles = vec![Run {
+                s: 0,
+                e: 4,
+                style: Style { b: true, ..Style::default() },
+            }];
+            s.images = vec![format!("{name}.png")];
+        };
+        let mut notes = vec![plain("a", 50.0), plain("b", 500.0), plain("c", 900.0)];
+        // Only "a" is formatted and has an image.
+        mark(&mut notes[0], "a");
+        let want = |notes: &[Note], id: &str| {
+            let s = notes.iter().find(|n| n.id == id).unwrap().sticky.clone().unwrap();
+            (s.styles, s.images)
+        };
+        let (a_styles, a_images) = want(&notes, "a");
+        let check = |notes: &[Note], what: &str| {
+            assert_eq!(want(notes, "a"), (a_styles.clone(), a_images.clone()), "{what}: a keeps its own");
+            for id in ["b", "c"] {
+                let (st, im) = want(notes, id);
+                assert!(st.is_empty() && im.is_empty(), "{what}: {id} got something");
+            }
+        };
+        let e = join(&notes, &["a".into()], &["b".into()]);
+        apply_edits(&mut notes, e);
+        check(&notes, "join");
+        let e = join(&notes, &["c".into()], &["b".into()]);
+        apply_edits(&mut notes, e);
+        check(&notes, "join again");
+        let e = propagate(&notes, "a");
+        apply_edits(&mut notes, e);
+        check(&notes, "propagate");
+        let e = show(&notes, "c");
+        apply_edits(&mut notes, e);
+        check(&notes, "show");
+        let e = normalise(&notes, 0, true);
+        apply_edits(&mut notes, e);
+        check(&notes, "normalise");
+        let e = leave(&notes, "c");
+        apply_edits(&mut notes, e);
+        check(&notes, "leave");
+        let e = take_out(&notes, "b", &AREA);
+        apply_edits(&mut notes, e);
+        check(&notes, "take_out");
+        // `share` is field-wise: a sheet's own formatting survives it.
+        let mut to = Sticky::default();
+        to.images = vec!["own.png".into()];
+        share(&Sticky::default(), &mut to);
+        assert_eq!(to.images, ["own.png"]);
+    }
 }

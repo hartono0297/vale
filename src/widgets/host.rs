@@ -74,6 +74,7 @@ use crate::widgets::snap::{Axis, Snapped, snap_move_for, snap_resize};
 use crate::widgets::sticky::{
     self, Deco, DipRect, NoteFont, Paper, Pattern, Stamp, Sticky, TextSize,
 };
+use crate::widgets::styles::Run;
 use crate::widgets::templates::Template;
 
 /// Posted to the owner when `WidgetEvent`s wait. One message until `drain`.
@@ -93,6 +94,14 @@ const HIGHLIGHT_MS: f32 = 600.0;
 pub enum WidgetEvent {
     /// The text is now this (model text, `\n` breaks).
     Text { id: String, text: String },
+    /// The note's formatting is now these runs (over the note's text; the
+    /// owner normalises them). Pushed right after a `Text` when the text
+    /// changed, and alone for a style-only change: it wins over the store's
+    /// own rebase of the text edit.
+    Styles { id: String, runs: Vec<Run> },
+    /// The note's images are now these file names (the owner keeps only valid
+    /// names, at most four).
+    Images { id: String, images: Vec<String> },
     /// The note was moved or resized: its monitor and rect (dip).
     Placed {
         id: String,
