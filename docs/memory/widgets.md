@@ -1201,11 +1201,11 @@ but never show it (`ON_SCREEN = !cfg!(test)`).
   is two then one full width, four 2 x 2) sits above the text and scrolls with it
   (`build_body_with(.., top, ..)`: lines start at `top`, so carets, hits,
   selection and boxes follow). Each image is a bitmap brush (cover crop) filling a
-  radius 7 rounded rect; bitmaps are decoded at the drawn size times the DPI by
-  `image_io::decode_cover`, kept in a per-window `ImgCache` keyed by (name, px
-  size) and dropped when the canvas is recreated, the images change or the window
-  goes. Aspects come from `image_io::size_of` (header only, cached). Not drawn on
-  a rolled note or the tab; drawn inside the scaled note during a pop. Hover: 2
+  radius 7 rounded rect; pixels are decoded at the drawn size times the DPI by
+  `image_io::decode_cover` (see "Image cache policy" below). Aspects come from
+  `image_io::size_of` (header only, cached). Not drawn on a rolled note or when
+  only the tab shows (tucked all the way in, pop progress 0); drawn inside the
+  scaled note during a pop (progress above 0). Hover: 2
   dip accent outline, the round 20 dip x (rgba(20,16,14,.72)) 5 dip in from the
   corner and an "Buka" pill. A click (press and release within 4 px) opens the
   file (`ShellExecuteW`; a test records the path instead); the x removes it
@@ -1217,8 +1217,55 @@ but never show it (`ON_SCREEN = !cfg!(test)`).
   apply, so an image added and removed before any save is still deleted. Covers a
   delete, an unstick, the Notes page, the x and an emptied note. At startup one
   `image_io::sweep` removes unreferenced files older than 24 h (valid names only,
-  inside the folder). The demo owner does the same with its own store and folder.
+  inside the folder, regular files only) and, in the same pass, the stale import
+  leftovers (below). The demo owner does the same with its own store and folder.
   No new timer.
+- **`.tmp` sweep rule** (`images::stale_tmps`, pure): an import writes
+  `<name>.tmp` and renames it, so a cut-off one leaves `img-<ms>-<n>.png.tmp`
+  that `valid_name` rejects. The sweep deletes an entry named exactly
+  `<valid image name>.tmp` (one suffix, `images::TMP_SUFFIX`), a regular file,
+  with a modified time at least 24 h old at `now`, whether or not anything
+  references the base (a `.tmp` never is). A fresh one stays (a running import
+  owns it); so do `notes.txt.tmp`, `old name.png.tmp`, `foo.png.tmp.tmp`, a
+  folder named like a tmp and any link. The path is `dir.join(name)` after the
+  rule is checked again (`delete_tmps`), so nothing leaves the folder.
+  `sweep` returns orphans plus tmps; `sweep_store` still does nothing for a store
+  whose file failed to load.
+
+### Image cache policy (`paint::ImgCache`, `host::prepare_images`)
+
+Resizing used to wipe the cache on every pointer move (a new canvas per size)
+and decode every image again on the UI thread. Now:
+
+- **Pixels outlive the canvas.** `ImgCache` holds `decoded` (CPU pixels, `Rc`,
+  keyed by (name, w px, h px)), `bitmaps` (D2D, made from the pixels on the
+  canvas that draws them) and `failed`. A recreated canvas calls only
+  `drop_bitmaps()`; `draw_images` reads the pixels with `get`, never `remove`.
+  The whole cache is still reset where the images really change or the folder
+  moves (`set_images_dir`, a sheet flip `reset_sheet_view`, an image added or
+  removed, the store's list differing); it goes with the window.
+- **The decision is pure**: `paint::image_plan(want, have, failed, moving)` gives
+  `Use(key)` / `Decode` / `Skip`. The exact key is used when there. While
+  `moving` (`w.drag.is_some()`, a resize or a move, or `w.pop.running(now)`) the
+  NEAREST size of that name (smallest area difference, a tie to the larger) stands
+  in and `draw_images` scales any bitmap to cover the cell (`cover` through the
+  brush transform), so a stretched frame is briefly soft. A decode happens
+  while moving only when the name has nothing at all (once per name, never per
+  move; a failed name is not retried while moving). Settled, the exact size is
+  decoded once, then `keep_only` drops that name's other sizes; a failed name is
+  tried once per exact key.
+- **Memory bound**: `retain_names` keeps pixels, bitmaps and failures only for
+  names still in `w.sticky.images`; at most the exact size per name once settled.
+- **Rolled note, or only the tab** (`Win::tab_only`: tucked and pop progress <= 0):
+  `prepare_images` returns no keys and decodes nothing. The brief said "tab
+  showing" (`tab_showing`, progress < 0.999) but that also covers the pop, when the
+  note IS drawn scaled and faded, so it would show quiet tiles during the pop; only
+  progress 0 draws no note (`paint::draw` returns after the tab).
+- **Drag end**: `finish_drag` already sets `dirty` and calls `flush_dirty_in`, so
+  the first settled frame decodes the exact size once. No timer, no idle redraw.
+- Not done (optional in the brief): decoding the source once and cropping per
+  size, or decoding off the UI thread. A note first drawn while tucked all the way
+  in (never drawn since startup) decodes at the start of its first pop.
 
 ### Clipboard (`clip_io.rs`, `richclip.rs`)
 
@@ -1264,12 +1311,23 @@ note without the bar, pending style, the marker and its popover choices, list
 buttons on a selection, runs following an edit, undo and a paste, copy payloads,
 a dropped PNG becoming an image through the worker and a fifth refused, an import
 for a gone note deleted, a click opening and the x removing an image, the popup
-opening and closing, per-sheet separation), and the debug demo on this PC captured
+opening and closing, per-sheet separation; and for the image cache: the pure
+`image_plan` (exact hit, nearest while moving with a tie to the larger, one decode
+per name, settled decode, failed once), `drop_bitmaps` keeping pixels and failures,
+the memory bound, a real host test with a per-folder decode counter
+(`image_io::decodes_in`): 3 photos, 24 resize-drag moves through `drag_move` with no
+decode and a bitmap per photo each move, then the release decodes the exact size
+once per photo and drops the stand-in sizes, no more on later frames; a rolled
+note and a fully tucked tab decode nothing, a half-popped note draws its images;
+and for the sweep: the pure name and age rule and a temp-folder test with old and
+fresh `.tmp`, foreign names, `foo.png.tmp.tmp` and a folder), and the debug demo on this PC captured
 window by window with `PrintWindow` (the bar with B lit on the title, the formatted
 note in Vale and Mono, the two images, the marker popover and the overflow menu).
 `cargo build --release --locked` has no warning.
 
-Manual checks left (not done here): real mouse hover and the tooltip; the real
+Manual checks left (not done here): resizing a note with 4 photos with a real mouse
+feels smooth; a tucked note with images pops out without a hitch; real mouse hover
+and the tooltip; the real
 file dialog (several files, cancel); Ctrl+V of a real screenshot, of a browser
 image copy and of Excel cells (text must win); an Explorer drag of images, of a
 mix, of a non-image file; the Photos open on a click; IME composition with
