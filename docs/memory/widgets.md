@@ -1,6 +1,6 @@
 ---
 tags: [feature, widgets, sticky-notes, win32, power]
-date: 2026-11-04
+date: 2026-11-05
 ---
 
 # Widgets, phase 1: the host and the sticky notes (Catatan tempel)
@@ -578,7 +578,12 @@ and peeking edges each time.
 Not verified live: a real mouse drag with a real Shift key, the wheel from a real
 wheel.
 
-## Run B: tuck to the edge ("Selip ke tepi", 2026-11-04)
+## Run B: tuck to the edge ("Selip ke tepi", 2026-11-04; pop 2026-11-05)
+
+**2026-11-05: the horizontal slide is gone.** A tucked note now grows out of its
+tab as a scale and fade (the owner picked option C of the mockups): see "Pop"
+below. Everything else here (outer-edge rule, grace, `keep_out`, drag, menu,
+demo) is as before.
 
 Spec: feature 10, page 3 card 10 of the mockup.
 
@@ -599,8 +604,32 @@ Spec: feature 10, page 3 card 10 of the mockup.
   (and with Kunci posisi).
 - `out_rect(view, edge, area)`: x flush with the edge, y clamped into the area.
   `tab_rect(out, edge)`: 16 dip wide, `min(72, shown height)` tall, at the note's
-  top, flush with the edge. `slide_offset(t, w)`: how far the note is drawn off
-  the edge, `w - 16` at t = 0 (only the tab shows), 0 at t = 1.
+  top, flush with the edge.
+- **Pop (`tuck.rs`, pure).** Progress p runs 0 (only the tab) to 1 (out), linear
+  in time. The note is scaled about `origin(edge, w, shown_h)` (the tab's vertical
+  centre on the edge side: x = w on the right, 0 on the left, y = min(72, h) / 2)
+  and faded; the tab stays unscaled and fades the other way.
+  - Way out: 300 ms (`OUT_MS`), `out_scale(u) = 0.12 + 0.88 * back_out(u)`,
+    ease-out-back with `BACK` 1.1, so it overshoots to about 1.039 (peak at
+    u = 0.65; `PEAK_SCALE` = 1.0394) and settles at 1. Way in: 200 ms (`IN_MS`),
+    `in_scale(u) = 1 - 0.88 * u^3` (ease-in cubic, no bounce). `MIN_SCALE` = 0.12.
+  - Opacity is a function of p, the same in both directions (the way in is the
+    mirror of the way out): `note_alpha(p) = smoothstep(p / 0.45)` (the note is
+    solid from 45 % of the way), `tab_alpha(p) = 1 - smoothstep(p / 0.35)` (the
+    tab is gone at 35 %).
+  - `Pop { from, to, from_scale, start, ms }` replaces the old `Ease` for the
+    slide. `toward(to, now, animate)` starts from the current progress **and the
+    current scale**, so a reversal part way has no jump in scale or opacity, and a
+    partial trip takes proportionally less time (`ms = 300 or 200 * |to - from|`);
+    without animation it is instant (ms 0). `scale`, `note_alpha`, `tab_alpha`,
+    `progress`, `running` are all of `now`.
+  - `scale_about` / `unscale` (the exact inverse) map points through the scale.
+  - `room(w, shown_h, edge)`: the extra window margin (dip, rounded up) the
+    tucked note's paper plus shadow needs at `PEAK_SCALE` about the origin
+    (`SHADOW_REACH` 6 / 4 / 6 / 8: the shadow reaches 5 dip around and sits 2
+    down, plus 1 slack), over the base margins (8 each side, 30 more on top).
+    A 240 x 208 note needs about 8 on the open side and 8 at the bottom, never
+    anything on top.
 - **Place across a monitor change** reuses `place::place`: a tucked note's view
   is replaced by `out_rect` on the display it lands on (the same edge, the y
   clamped there, a rolled note at its shown height). The fallback to the primary
@@ -612,31 +641,65 @@ Spec: feature 10, page 3 card 10 of the mockup.
 
 ### Behaviour
 
-- The window stays at the out rect. Tucked all the way in (`Win::slide` = 0) only
-  the tab is drawn (`paint::draw_tab`): paper fill rounded on its inner side, a
-  1 dip ink line on the inner side, three short grip lines, an accent dot while
-  a reminder of the unit is overdue; every other pixel has alpha 0, so it is
-  click-through. The cat, the tilt and the paper edges are not drawn on the tab.
-  Sliding out draws the note shifted off the edge by `slide_offset` (`Win::
-  shift`; `target_at` and `client_to_dip` subtract it) with the tab fading; a
-  tucked note never leans, and the cat shows only when it is all the way out.
-- Hover: `WM_MOUSEMOVE` over the tab slides it out (180 ms ease; the existing
-  `TrackMouseEvent(TME_LEAVE)` arms the leave). `WM_MOUSELEAVE` while out starts a
-  300 ms **grace** (`Win::grace`), then it slides back in. Re-entering cancels.
-- **No new timer.** The grace and the slide run on the owner's FrameClock: they
-  are counted in `WidgetHost::moving()` (`grace.is_some() || slide.running`), the
-  owner starts the clock on `NeedsClock`, `tick` ends the grace and starts the
-  slide back in, and nothing is drawn during the grace (a frame is drawn only when
-  the slide's value differs from what was last drawn, so the last frame of the
-  slide is drawn too). Without animation (Motion not Full, Energy Saver, Windows
-  animations off) the slide is instant and the grace still applies.
+- The window stays at the out rect. Tucked all the way in (`Win::pop` at
+  progress 0) only the tab is drawn (`paint::draw_tab`): paper fill rounded on its
+  inner side, a 1 dip ink line on the inner side, three short grip lines, an
+  accent dot while a reminder of the unit is overdue; every other pixel has alpha
+  0, so it is click-through. The cat, the tilt and the paper edges are not drawn
+  on the tab. Popping draws the note scaled about the tab (`TuckScene { edge,
+  progress, scale, note_alpha, tab_alpha, overdue }`; the transform is the scale
+  about the window point of `origin`, then dip to px) inside a Direct2D layer at
+  `note_alpha` while that is under 1, then the tab unscaled on top at `tab_alpha`.
+  `Scene.dx` is only the reminder's wiggle again. A tucked note never leans (and
+  an untuck that animates does not lean mid-scale: `Win::lean()` is 0 while the
+  pop runs), and the cat shows only when it is all the way out and settled.
+- **Hit keeper.** The layered window only gets the pointer where alpha is above 0,
+  and part way out there is a gap where the faded tab was and the scaled note does
+  not reach yet (at scale 0.9 its top starts about 3.6 dip below the tab's top).
+  While tucked and 0 < progress < 1, `paint` fills the tab rect at 3/255
+  (`tuck::KEEPER_ALPHA`, about 0.012, over the faded tab). A pointer resting there
+  keeps the window, so no `WM_MOUSELEAVE` fires and the note stays out.
+- **Window room.** `Win::margins()` is the base `art::margins_for` plus `Win::room`,
+  which `draw` sets to `tuck::room(..)` while the note is tucked or its pop runs
+  (`tuck_edge(now)`: `sticky.tuck`, else `pop_edge` while the pop runs, so an
+  untuck can still be drawn). The canvas is resized by the existing check in
+  `draw` and `origin()` follows, so a tucked note is never clipped at the
+  overshoot; the extra margin is alpha 0, so it is click-through. `room` is
+  stored (not derived from the clock) so that `origin()` always matches the
+  window as it was last drawn; the room is given back by the frame after the pop
+  ends.
+- Hover: `WM_MOUSEMOVE` over the tab pops it out (300 ms ease-out-back; the
+  existing `TrackMouseEvent(TME_LEAVE)` arms the leave). `WM_MOUSELEAVE` while out
+  starts a 300 ms **grace** (`Win::grace`), then it shrinks back into the tab
+  (200 ms ease-in). Re-entering cancels the grace, or reverses a pop part way
+  with no jump.
+- **No new timer.** The grace and the pop run on the owner's FrameClock: they
+  are counted in `WidgetHost::moving()` (`grace.is_some() || pop.running(now)`),
+  the owner starts the clock on `NeedsClock`, `tick` ends the grace and starts the
+  pop back in, and nothing is drawn during the grace (a frame is drawn only when
+  the drawn values, `pop_drawn` = scale, note and tab opacity, or the window room,
+  differ from what was last drawn, so the last frame of the pop is drawn too).
+  Without animation (Motion not Full, Energy Saver, Windows animations off) the
+  pop is instant and the grace still applies.
   `app::tests::timer_ids_never_collide` is unchanged.
+- **Hit testing while it pops.** `target_at` first checks the tab rect: while a tab
+  shows (progress under 0.999) a point in it is `Target::Header`, so the tab counts
+  as part of the note all the way up (the keeper holds the pointer there). Otherwise,
+  while tucked or popping, the note point goes through `tuck::unscale` by the
+  current scale before `paint::target_in`; at progress 0 anything outside the tab
+  is `Outside`. `client_to_dip` uses the same inverse (no shift). `Win::on_tab`
+  (the tab shows, `tab_alpha` above 0, the point in `tab_rect`) is what a press, the
+  cursor and `mouse_activate` use: a press on the visible tab shows the note out at
+  once (`pop_out_now`) and starts a Move. A press anywhere else on a note that is
+  part way maps through the inverse scale, then the pop is finished at once and the
+  press is handled as on a note that is out (a drag from any press does the same,
+  in `begin_drag`). The wheel still ignores flips while the tab shows.
 - It stays out while it has the keyboard, is dragged, is raised by a reminder, a
   popover of it is open, or the pointer is over it (`keep_out`); `tuck_settle`
   runs wherever one of these may have ended (leave, end of editing, `lower`, a
   popover closing, the end of a drag, a sync) and starts the grace.
   `WidgetHost::raise` (a due reminder, also by a hidden sheet's id) and `focus`
-  slide it out and keep it out.
+  pop it out (300 ms) and keep it out.
 - A press on the tab starts a Move drag with the note shown out at once (Kunci
   posisi blocks it; `mouse_activate` gives no keyboard). A Move drag that ends
   without pressing an outer edge untucks (`Tuck { edge: None }`) and places the
@@ -648,7 +711,14 @@ Spec: feature 10, page 3 card 10 of the mockup.
 - Context menu, right after Roll (and after "Keluarkan dari tumpukan"): "Selipkan
   ke tepi" / "Tuck to edge" (id 25; greyed with Kunci posisi and when neither side
   is outer), "Keluarkan" / "Bring out" once tucked (same id), which untucks in
-  place.
+  place: the note pops out of its tab (`pop.toward(1.0)`, 300 ms, instant without
+  animation, nothing if it was out) with `pop_edge` kept for drawing until the
+  pop settles.
+- Tucking by a drag release on an outer edge or by the menu leaves the note out
+  (pop at 1, `pop_edge` set); once nothing keeps it out the grace runs, then the
+  200 ms scale-in into the tab. (Assumption: the grace still applies before the
+  tuck animation, as before.) The apply path (a tuck change from the owner's data)
+  sets `Pop::at(1)` and `pop_edge`, as it set the slide.
 - Tucks survive a restart (the sticky part) and a monitor change (above).
 
 ### Demo
@@ -656,28 +726,46 @@ Spec: feature 10, page 3 card 10 of the mockup.
 `--demo-widgets reset` seeds fifteen notes without the clipboard sample note (sixteen with it, see "Integration (Run B finish)"): the eleven of run A, a stack of
 three sheets ("Proyek Dago", Krem, Laut, Plum, sheet 1 shown), and one note tucked
 on the right edge of the notch's monitor. The demo owner gets `NeedsClock` like the
-island, so the slide and the grace run on its own frame clock. Hold Shift while
+island, so the pop and the grace run on its own frame clock: hover the tab of the
+tucked note and it grows out of it. Hold Shift while
 dragging a note onto another to stack; the wheel over a stack's strip flips.
 
 ### Verified and not verified (tuck)
 
 Verified: `cargo test --locked`: `tuck.rs` (press_edge outer against inner, the
-0.5 and 4 dip limits, adjoin across a span, menu_edge, out_rect clamp, tab_rect,
-slide_offset), `place.rs` (flush on another display, a shorter display, a missing
-monitor and its return), and real hidden windows: a tucked note slides out on
-`WM_MOUSEMOVE` and `moving()` is false once settled, with and without animation,
-the grace and re-entering, staying out for the keyboard and a raise, a drag that
-ends on an outer edge tucks and elsewhere untucks, the cue, an inner edge never
-tucks, the menu's edge, a tab is not a snap neighbour.
-Also run on this PC in the debug demo: the tab drawn flush right on the notch's
-monitor (Sage paper, grip lines), and a `WM_MOUSEMOVE` sent to it caught mid-slide
-with the tab fading on the note's edge. A sent move is not a real pointer, so
-Windows' own `WM_MOUSELEAVE` came at once and the grace and the slide back in
-ran: the note was a tab again about half a second later (the way a pointer that
-leaves behaves).
+0.5 and 4 dip limits, adjoin across a span, menu_edge, out_rect clamp, tab_rect;
+the pop: `out_scale` 0.12 to 1 with a peak above 1 and at most 1.041 that
+`PEAK_SCALE` covers, non-increasing after it, `in_scale` monotonic, `note_alpha`
+and `tab_alpha` at 0, 45 %, 35 % and 1, `origin` per edge and for a rolled note,
+`unscale(scale_about(p))` round trip, a full `Pop` trip equal to the curves, a
+reversal part way in both directions with no jump in scale or opacity, a half
+trip taking half the time, no animation instant, `room` for 240 x 208 on both
+edges and 0 on top), `place.rs` (flush on another display, a shorter display, a
+missing monitor and its return), and real hidden windows: hovering the tab grows
+the note (scale rises from 0.12, `moving()` true while it runs and false once
+settled, with and without animation), the grace then the 200 ms scale-in, nothing
+drawn during the grace, re-entering part way reverses without a jump, a click part
+way maps through the inverse scale to the body, header and grip (and the tab rect
+is `Header` while the tab shows), a press part way finishes the pop, tucking by
+the menu ends with the scale-in after the grace, bringing a tucked note out pops
+(instant without animation, no lean mid-scale, the room given back after), the
+margins include `room` and the peak-scale paper plus shadow fit in the canvas,
+staying out for the keyboard and a raise, a drag that ends on an outer edge tucks
+and elsewhere untucks, the cue, an inner edge never tucks, the menu's edge, a tab
+is not a snap neighbour, the frame clock stays off at rest.
+Also run on this PC in the debug demo (`--demo-widgets reset`, `PrintWindow` and a
+sent `WM_MOUSEMOVE` to the tucked note's window, the real pointer not used): the
+tab alone (Sage paper, grip lines); then frames at 60, 120 and 180 ms with the note
+scaled about the tab on the right edge, translucent while it grows, full size and
+unclipped at 180 ms (window 264 x 262 dip: the note's 256 x 254 plus the 8 dip of
+room on the open side and at the bottom). A sent move is not a real pointer, so
+Windows' own `WM_MOUSELEAVE` came at once and the grace and the scale back in ran:
+the note was a tab again at the last frame.
 Not verified live: a real mouse drag to a real screen edge, hover with a real
-pointer that stays, the look of the slide as motion, two real monitors, the tab
-at 150 % DPI.
+pointer that stays (the hit keeper at 3/255 is tested as geometry only: no pixel
+test of the alpha, and that Windows really keeps the pointer in the window there is
+not checked), the look of the pop as motion (only still frames), two real monitors,
+the tab at 150 % DPI.
 
 ## Run B: clipboard prefill and drops
 

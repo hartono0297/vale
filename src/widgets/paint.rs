@@ -9,13 +9,15 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::mem::ManuallyDrop;
 use std::rc::Rc;
 
 use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
 use windows::Win32::Graphics::Direct2D::{
     D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_CAP_STYLE_FLAT, D2D1_DASH_STYLE_CUSTOM,
-    D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ELLIPSE, D2D1_LINE_JOIN_ROUND, D2D1_ROUNDED_RECT,
-    D2D1_STROKE_STYLE_PROPERTIES, ID2D1RenderTarget, ID2D1StrokeStyle,
+    D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ELLIPSE, D2D1_LAYER_OPTIONS_NONE, D2D1_LAYER_PARAMETERS,
+    D2D1_LINE_JOIN_ROUND, D2D1_ROUNDED_RECT, D2D1_STROKE_STYLE_PROPERTIES, ID2D1RenderTarget,
+    ID2D1StrokeStyle,
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT, DWRITE_HIT_TEST_METRICS, DWRITE_TEXT_METRICS,
@@ -734,12 +736,17 @@ pub struct StackScene {
     pub edges: Vec<u32>,
 }
 
-/// A tucked note: its edge, how far out it is (0 only the tab shows, 1 the
-/// whole note) and whether its reminder is overdue (the tab's dot).
+/// A tucked note: its edge, how far out it is (`progress`, 0 only the tab
+/// shows, 1 the whole note), the note's scale about the tab's centre and its
+/// and the tab's opacity (`tuck::Pop`), and whether its reminder is overdue
+/// (the tab's dot).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TuckScene {
     pub edge: Edge,
-    pub t: f32,
+    pub progress: f32,
+    pub scale: f32,
+    pub note_alpha: f32,
+    pub tab_alpha: f32,
     pub overdue: bool,
 }
 
@@ -831,22 +838,59 @@ pub fn draw(c: &Canvas, res: &Res, s: &Scene) {
     let (ox, oy) = (m.0 + s.dx, m.1);
     // The note leans about its centre; the confetti does not.
     let straight = Matrix3x2::scale(s.scale, s.scale);
-    let base = if s.tilt == 0.0 {
+    // A tucked note that is popping out or in is scaled about the tab's
+    // centre (it does not lean) and, while it is fading, drawn in a layer.
+    let pop = s
+        .tuck
+        .filter(|tk| tk.progress > 0.0 && (tk.scale != 1.0 || tk.note_alpha < 1.0));
+    let base = if let Some(tk) = pop {
+        let (px, py) = tuck::origin(tk.edge, s.w, h);
+        let (cx, cy) = (ox + px, oy + py);
+        Matrix3x2 {
+            M11: tk.scale * s.scale,
+            M12: 0.0,
+            M21: 0.0,
+            M22: tk.scale * s.scale,
+            M31: (cx - cx * tk.scale) * s.scale,
+            M32: (cy - cy * tk.scale) * s.scale,
+        }
+    } else if s.tilt == 0.0 {
         straight
     } else {
         art::tilt_transform(s.tilt, ox + s.w / 2.0, oy + h / 2.0, s.scale)
     };
     // Tucked all the way in: only the tab, in the window's own place (the
     // cat, the tilt and the paper are not drawn).
-    if let Some(tk) = s.tuck.filter(|tk| tk.t <= 0.0) {
+    if let Some(tk) = s.tuck.filter(|tk| tk.progress <= 0.0) {
         unsafe { rt.SetTransform(&straight) };
-        draw_tab(&rt, brush, s, &tk, 1.0);
+        draw_tab(&rt, brush, s, &tk, tk.tab_alpha);
         unsafe { rt.SetTransform(&Matrix3x2::identity()) };
         return;
     }
     unsafe {
         rt.SetTransform(&base);
     }
+    // The paper, shadow and content go through a layer while the note fades.
+    let layer_open = pop.filter(|tk| tk.note_alpha < 1.0).and_then(|tk| {
+        let layer = unsafe { rt.CreateLayer(None) }.ok()?;
+        let params = D2D1_LAYER_PARAMETERS {
+            contentBounds: D2D_RECT_F {
+                left: f32::MIN,
+                top: f32::MIN,
+                right: f32::MAX,
+                bottom: f32::MAX,
+            },
+            geometricMask: ManuallyDrop::new(None),
+            maskAntialiasMode: D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+            maskTransform: Matrix3x2::identity(),
+            opacity: tk.note_alpha,
+            opacityBrush: ManuallyDrop::new(None),
+            layerOptions: D2D1_LAYER_OPTIONS_NONE,
+        };
+        unsafe { rt.PushLayer(&params, &layer) };
+        drop(ManuallyDrop::into_inner(params.opacityBrush));
+        Some(layer)
+    });
     let set = |rgb: u32, a: f32| unsafe { brush.SetColor(&color(rgb, a)) };
     let t = &s.tones;
 
@@ -1273,10 +1317,25 @@ pub fn draw(c: &Canvas, res: &Res, s: &Scene) {
             rt.FillRoundedRectangle(&rr(x, oy, tuck::CUE_W, h, tuck::CUE_W / 2.0), brush);
         }
     }
-    // Sliding out: the tab is still there, fading as the note comes.
-    if let Some(tk) = s.tuck.filter(|tk| tk.t < 1.0) {
+    if layer_open.is_some() {
+        unsafe { rt.PopLayer() };
+    }
+    // Popping: the tab is still there, unscaled, fading as the note comes; and
+    // over it a nearly clear fill of its rect so the pointer resting where the
+    // faded tab was still reaches the window (the hit keeper).
+    if let Some(tk) = s.tuck.filter(|tk| tk.progress < 1.0) {
         unsafe { rt.SetTransform(&straight) };
-        draw_tab(&rt, brush, s, &tk, 1.0 - tk.t);
+        if tk.tab_alpha > 0.0 {
+            draw_tab(&rt, brush, s, &tk, tk.tab_alpha);
+        }
+        if tk.progress > 0.0 {
+            let out = DipRect::new(0.0, 0.0, s.w, h);
+            let tab = tuck::tab_rect(&out, tk.edge);
+            set(t.fill, tuck::KEEPER_ALPHA);
+            unsafe {
+                rt.FillRoundedRectangle(&rr(m.0 + tab.x, m.1 + tab.y, tab.w, tab.h, 0.0), brush);
+            }
+        }
     }
     // The confetti is the window's, not the leaning note's.
     if !s.confetti.is_empty() {
@@ -1287,7 +1346,7 @@ pub fn draw(c: &Canvas, res: &Res, s: &Scene) {
 }
 
 /// The tab of a tucked note at its screen edge, in the window's own place (not
-/// shifted by the slide): paper, a 1 dip ink line on the inner side, three
+/// scaled by the pop): paper, a 1 dip ink line on the inner side, three
 /// short grip lines, and an accent dot while the reminder is overdue. `a` is
 /// its opacity.
 fn draw_tab(

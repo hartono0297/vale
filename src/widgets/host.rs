@@ -187,19 +187,23 @@ impl Ease {
     }
 
     fn toward(&mut self, to: f32, now: Instant, animate: bool) {
-        self.toward_in(to, now, animate, FADE_MS);
-    }
-
-    /// `toward` over `ms` (instant when nothing animates).
-    fn toward_in(&mut self, to: f32, now: Instant, animate: bool, ms: f32) {
         if (self.to - to).abs() < f32::EPSILON {
             return;
         }
         self.from = self.value(now);
         self.to = to;
         self.start = now;
-        self.ms = if animate { ms } else { 0.0 };
+        self.ms = if animate { FADE_MS } else { 0.0 };
     }
+}
+
+/// What a pop looked like when it was last drawn: the note's scale, the note's
+/// and the tab's opacity.
+#[derive(Clone, Copy, PartialEq)]
+struct PopDrawn {
+    scale: f32,
+    note: f32,
+    tab: f32,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -317,12 +321,19 @@ struct Win {
     stack: Option<StackView>,
     /// Every sheet of the stack in order (empty for a plain note).
     sheets: Vec<Sheet>,
-    /// How far a tucked note is out: 0 only the tab, 1 the whole note (1 for a
-    /// note that is not tucked). `slide_at` is what was last drawn.
-    slide: Ease,
-    slide_at: f32,
-    /// The pointer left a note that is out: it slides back in at this time
-    /// plus `tuck::GRACE_MS`.
+    /// How far a tucked note is out: progress 0 only the tab, 1 the whole note
+    /// (settled at 1 for a note that is not tucked), and its scale and opacity
+    /// on the way. `pop_drawn` is what was last drawn.
+    pop: tuck::Pop,
+    pop_drawn: PopDrawn,
+    /// The edge the note was last tucked to, so an untuck can still animate
+    /// (and be drawn) after `sticky.tuck` is none.
+    pop_edge: Option<Edge>,
+    /// The extra window margin the last frame was drawn with (`tuck::room`
+    /// while the note is tucked or popping): the window's real size.
+    room: (f32, f32, f32, f32),
+    /// The pointer left a note that is out: it pops back into its tab at this
+    /// time plus `tuck::GRACE_MS`.
     grace: Option<Instant>,
     /// Wheel delta not yet worth a flip.
     wheel: i32,
@@ -340,9 +351,14 @@ impl Win {
     }
 
     /// The angle the note is drawn at: leaning while "Miring sedikit" is on,
-    /// straight while it has the keyboard and while it is tucked.
+    /// straight while it has the keyboard, while it is tucked and while it
+    /// pops (an untuck that animates does not lean mid-scale).
     fn lean(&self) -> f32 {
-        if self.tilt && self.edit.is_none() && self.sticky.tuck.is_none() {
+        if self.tilt
+            && self.edit.is_none()
+            && self.sticky.tuck.is_none()
+            && !self.pop.running(Instant::now())
+        {
             art::tilt_deg(self.key())
         } else {
             0.0
@@ -350,10 +366,45 @@ impl Win {
     }
 
     /// The window's margin round the note (grown for the lean, whether or not
-    /// the note has the keyboard, so the window keeps its size).
+    /// the note has the keyboard, so the window keeps its size), plus the
+    /// room a tucked note needs for its pop (`room`, set by `draw`).
     fn margins(&self) -> (f32, f32, f32, f32) {
         let deg = if self.tilt { art::tilt_deg(self.key()) } else { 0.0 };
-        art::margins_for(self.view.w, shown_h(self.view.h, self.sticky.rolled), deg)
+        let b = art::margins_for(self.view.w, shown_h(self.view.h, self.sticky.rolled), deg);
+        (
+            b.0 + self.room.0,
+            b.1 + self.room.1,
+            b.2 + self.room.2,
+            b.3 + self.room.3,
+        )
+    }
+
+    /// The edge the note is tucked to, or still popping from after an untuck.
+    fn tuck_edge(&self, now: Instant) -> Option<Edge> {
+        self.sticky
+            .tuck
+            .or_else(|| self.pop_edge.filter(|_| self.pop.running(now)))
+    }
+
+    /// The room the window should have now (what `draw` will set).
+    fn room_now(&self, now: Instant) -> (f32, f32, f32, f32) {
+        self.tuck_edge(now).map_or((0.0, 0.0, 0.0, 0.0), |edge| {
+            tuck::room(self.view.w, shown_h(self.view.h, self.sticky.rolled), edge, self.stack_edges())
+        })
+    }
+
+    /// How many sheet edges peek out under a stack's paper (0 for a note).
+    fn stack_edges(&self) -> usize {
+        self.sheet_count().saturating_sub(1).min(2)
+    }
+
+    /// The pop as it is now.
+    fn pop_now(&self, now: Instant) -> PopDrawn {
+        PopDrawn {
+            scale: self.pop.scale(now),
+            note: self.pop.note_alpha(now),
+            tab: self.pop.tab_alpha(now),
+        }
     }
 
     /// Whether this window shows note `id` (as its sheet or one hidden under it).
@@ -395,18 +446,32 @@ impl Win {
         self.stickies().iter().any(|(_, s)| remind::overdue(s, unix))
     }
 
-    /// How far the note is drawn off its edge now, dip: signed, 0 while it
-    /// is not tucked or all the way out.
-    fn shift(&self, now: Instant) -> f32 {
-        match self.sticky.tuck {
-            Some(edge) => edge.sign() * tuck::slide_offset(self.slide.value(now), self.view.w),
-            None => 0.0,
-        }
+    /// The tab is what shows: tucked (or popping) and not (all the way) out.
+    fn tab_showing(&self, now: Instant) -> bool {
+        self.tuck_edge(now).is_some() && self.pop.progress(now) < 0.999
     }
 
-    /// The tab is what shows: tucked and not (all the way) out.
-    fn tab_showing(&self, now: Instant) -> bool {
-        self.sticky.tuck.is_some() && self.slide.value(now) < 0.999
+    /// The tab's rect in the note's dip, while a tab shows.
+    fn tab_dip(&self, now: Instant) -> Option<DipRect> {
+        let edge = self.tuck_edge(now)?;
+        if self.pop.progress(now) >= 0.999 {
+            return None;
+        }
+        let out = DipRect::new(0.0, 0.0, self.view.w, shown_h(self.view.h, self.sticky.rolled));
+        Some(tuck::tab_rect(&out, edge))
+    }
+
+    /// The desktop point (px) is on the tab and the tab is drawn (visible
+    /// enough to be pressed): a press there moves the note.
+    fn on_tab(&self, sx: i32, sy: i32, now: Instant) -> bool {
+        self.pop.tab_alpha(now) > 0.0
+            && self.tab_dip(now).is_some_and(|tab| {
+                let (x, y) = (
+                    (sx - self.note.x) as f32 / self.scale,
+                    (sy - self.note.y) as f32 / self.scale,
+                );
+                x >= tab.x && x < tab.right() && y >= tab.y && y < tab.bottom()
+            })
     }
 
     /// The window's top-left on the desktop (px).
@@ -482,27 +547,28 @@ fn keep_out(w: &Win) -> bool {
         || remind_pop::is_open_for(w.hwnd)
 }
 
-/// A tucked note follows what keeps it out. While something does it comes
-/// out (the slide on the frame clock, instant when nothing animates) and the
-/// grace is off; once nothing does, the grace starts, and the slide back in
-/// happens when it ends (`WidgetHost::tick`). The grace counts on the frame
-/// clock too, even without animation. Draws what changed at once when the
-/// slide is instant.
+/// A tucked note follows what keeps it out. While something does it pops out
+/// (300 ms on the frame clock, instant when nothing animates) and the grace is
+/// off; once nothing does, the grace starts, and the pop back into the tab
+/// (200 ms) happens when it ends (`WidgetHost::tick`). The grace counts on the
+/// frame clock too, even without animation. Draws what changed at once when
+/// the pop is instant.
 fn tuck_settle(s: &mut State, i: usize) {
     let (now, animate) = (Instant::now(), s.animate);
     let w = &mut s.wins[i];
-    if w.sticky.tuck.is_none() {
+    let Some(edge) = w.sticky.tuck else {
         return;
-    }
+    };
+    w.pop_edge = Some(edge);
     let mut clock = false;
     if keep_out(w) {
         w.grace = None;
-        if w.slide.to < 1.0 {
-            w.slide.toward_in(1.0, now, animate, tuck::SLIDE_MS);
+        if w.pop.to < 1.0 {
+            w.pop.toward(1.0, now, animate);
             w.dirty = true;
             clock = animate;
         }
-    } else if w.slide.to > 0.0 && w.grace.is_none() {
+    } else if w.pop.to > 0.0 && w.grace.is_none() {
         w.grace = Some(now);
         clock = true;
     }
@@ -515,8 +581,8 @@ fn tuck_settle(s: &mut State, i: usize) {
 }
 
 /// The note is all the way out at once, and nothing is waiting to pull it back.
-fn slide_out_now(w: &mut Win) {
-    w.slide = Ease::at(1.0);
+fn pop_out_now(w: &mut Win) {
+    w.pop = tuck::Pop::at(1.0);
     w.grace = None;
     w.dirty = true;
 }
@@ -760,7 +826,7 @@ impl WidgetHost {
             }
             for i in &out {
                 settle_alpha(s, *i);
-                // A tucked note (or stack) slides out and stays out.
+                // A tucked note (or stack) pops out and stays out.
                 tuck_settle(s, *i);
             }
             // The overdue note gets the cat (with a clock).
@@ -813,9 +879,9 @@ impl WidgetHost {
                         .confetti
                         .is_some_and(|(t, _)| elapsed_ms(t, now) < art::CONFETTI_MS)
                     || w.alpha.running(now)
-                    // The tuck: the grace and the slide run on the frame clock.
+                    // The tuck: the grace and the pop run on the frame clock.
                     || w.grace.is_some()
-                    || w.slide.running(now)
+                    || w.pop.running(now)
             })
         })
         .unwrap_or(false)
@@ -826,18 +892,20 @@ impl WidgetHost {
         let _ = with(|s| {
             let animate = s.animate;
             for w in &mut s.wins {
-                // A note that was out and lost what kept it out slides back in
-                // once the grace is over; re-entering cancelled it.
+                // A note that was out and lost what kept it out pops back into its
+                // tab once the grace is over; re-entering cancelled it.
                 if let Some(t) = w.grace
                     && elapsed_ms(t, now) >= tuck::GRACE_MS
                 {
                     w.grace = None;
                     if w.sticky.tuck.is_some() && !keep_out(w) {
-                        w.slide.toward_in(0.0, now, animate, tuck::SLIDE_MS);
+                        w.pop.toward(0.0, now, animate);
                     }
                 }
-                // The slide's last frame is drawn too.
-                if (w.slide.value(now) - w.slide_at).abs() > 1e-3 {
+                // Only a change is drawn (nothing during the grace), so the
+                // pop's last frame is drawn too, and the window gives its extra
+                // room back once the pop is over.
+                if w.pop_now(now) != w.pop_drawn || w.room_now(now) != w.room {
                     w.dirty = true;
                 }
                 let fading = w.header.running(now);
@@ -1144,6 +1212,7 @@ fn blank_win(hwnd: HWND, note: &Note, tilt: bool) -> Win {
     let sticky = note.sticky.clone().unwrap_or_default();
     let opacity = sticky.opacity;
     let out = if sticky.tuck.is_some() { 0.0 } else { 1.0 };
+    let sticky_tuck = sticky.tuck;
     Win {
         id: note.id.clone(),
         hwnd,
@@ -1189,8 +1258,14 @@ fn blank_win(hwnd: HWND, note: &Note, tilt: bool) -> Win {
         dirty: true,
         stack: None,
         sheets: Vec::new(),
-        slide: Ease::at(out),
-        slide_at: out,
+        pop: tuck::Pop::at(out),
+        pop_drawn: PopDrawn {
+            scale: 1.0,
+            note: 1.0,
+            tab: 0.0,
+        },
+        pop_edge: sticky_tuck,
+        room: (0.0, 0.0, 0.0, 0.0),
         grace: None,
         wheel: 0,
         cue: None,
@@ -1328,8 +1403,8 @@ fn update_win(s: &mut State, i: usize, unit: &stack::Unit, prefs_changed: bool, 
     // Tucked or brought out by the owner's data (a stack mate, a restart):
     // a note that just got tucked is out until the pointer leaves it.
     if w.sticky.tuck.is_some() != was_tucked {
-        w.slide = Ease::at(1.0);
-        w.slide_at = 1.0;
+        w.pop = tuck::Pop::at(1.0);
+        w.pop_edge = w.sticky.tuck.or(w.pop_edge);
         w.grace = None;
         w.dirty = true;
     }
@@ -1509,6 +1584,10 @@ fn draw(s: &mut State, i: usize) {
     let can_add_more = sticky::can_add(sheet_total(wins));
     let w = &mut wins[i];
     let k = w.scale;
+    let now = Instant::now();
+    // A tucked note keeps room for the overshoot of its pop (the window grows
+    // while it is tucked or popping and gives the room back after).
+    w.room = w.room_now(now);
     let m = w.margins();
     let size = canvas_px(&w.view, w.sticky.rolled, k, m);
     if w.canvas.as_ref().is_none_or(|c| c.size() != size) {
@@ -1547,7 +1626,6 @@ fn draw(s: &mut State, i: usize) {
         }
     }
     w.scroll = w.scroll.clamp(0.0, max_scroll);
-    let now = Instant::now();
     let island = theme::island(theme::current().accent, theme::current().surface);
     let tones = sticky::tones(w.sticky.paper, &island, theme::current().accent);
     let today = Local::now().date_naive();
@@ -1559,12 +1637,14 @@ fn draw(s: &mut State, i: usize) {
         None if w.confirm_delete => text(*lang, Key::StickyDeleteAgain).to_owned(),
         None => sticky::footer_label(*lang, &w.text, updated, today),
     };
-    // The slide: the cat shows only on a note that is all the way out.
-    let slide_t = w.slide.value(now);
-    w.slide_at = slide_t;
+    // The pop: the cat shows only on a note that is all the way out.
+    let edge = w.tuck_edge(now);
+    let popped = w.pop_now(now);
+    let progress_now = w.pop.progress(now);
+    w.pop_drawn = popped;
     let peek_on = prefs.cat_peek
         && peek.as_deref().is_some_and(|id| w.has(id))
-        && (w.sticky.tuck.is_none() || slide_t >= 1.0);
+        && (edge.is_none() || (progress_now >= 1.0 && !w.pop.running(now)));
     let cat_mood = win_mood(w, unix_now());
     if peek_on {
         w.mood = cat_mood;
@@ -1596,8 +1676,7 @@ fn draw(s: &mut State, i: usize) {
     });
     let dx = w
         .wiggle
-        .map_or(0.0, |t| paint::wiggle_dx(elapsed_ms(t, now)))
-        + w.shift(now);
+        .map_or(0.0, |t| paint::wiggle_dx(elapsed_ms(t, now)));
     // A stack: "2 / 5", and the next two sheets' paper peeking out underneath.
     let stack = w.stack.as_ref().map(|st| {
         let len = st.ids.len();
@@ -1611,9 +1690,12 @@ fn draw(s: &mut State, i: usize) {
             edges,
         }
     });
-    let tuck_scene = w.sticky.tuck.map(|edge| paint::TuckScene {
+    let tuck_scene = edge.map(|edge| paint::TuckScene {
         edge,
-        t: slide_t,
+        progress: progress_now,
+        scale: popped.scale,
+        note_alpha: popped.note,
+        tab_alpha: popped.tab,
         overdue: w.any_overdue(unix),
     });
     let scene = Scene {
@@ -1859,7 +1941,7 @@ fn mouse_activate(hwnd: HWND) -> LRESULT {
         let w = &s.wins[i];
         // A press on a tab moves the note; it takes no keyboard.
         Some(
-            !w.tab_showing(Instant::now())
+            !w.on_tab(pt.x, pt.y, Instant::now())
                 && matches!(target_at(w, pt.x, pt.y), Target::Body | Target::Footer),
         )
     })
@@ -1876,12 +1958,35 @@ fn buttons_shown(w: &Win, now: Instant) -> bool {
 
 /// What is under a point of the desktop (px) on this note.
 fn target_at(w: &Win, sx: i32, sy: i32) -> Target {
-    let now = Instant::now();
-    // A leaning note is hit through the inverse rotation; a tucked one is
-    // drawn off its edge by the slide.
-    let (x, y) = art::unrotate(
-        (sx - w.note.x) as f32 / w.scale - w.shift(now),
+    target_at_in(w, sx, sy, Instant::now())
+}
+
+/// `target_at` at the moment `now` (the pop's scale depends on it).
+fn target_at_in(w: &Win, sx: i32, sy: i32, now: Instant) -> Target {
+    let (px, py) = (
+        (sx - w.note.x) as f32 / w.scale,
         (sy - w.note.y) as f32 / w.scale,
+    );
+    // The tab counts as part of the note while it shows, all the way to the
+    // end of the pop (the hit keeper holds the pointer there).
+    if let Some(tab) = w.tab_dip(now)
+        && px >= tab.x
+        && px < tab.right()
+        && py >= tab.y
+        && py < tab.bottom()
+    {
+        return Target::Header;
+    }
+    let (px, py) = pop_unscale(w, (px, py), now);
+    // Only the tab is drawn at progress 0: nothing else is the note.
+    if w.tuck_edge(now).is_some() && w.pop.progress(now) <= 0.0 {
+        return Target::Outside;
+    }
+    // A leaning note is hit through the inverse rotation; a tucked or popping
+    // one through the inverse of its scale about the tab.
+    let (x, y) = art::unrotate(
+        px,
+        py,
         w.view.w,
         shown_h(w.view.h, w.sticky.rolled),
         w.lean(),
@@ -1899,6 +2004,18 @@ fn target_at(w: &Win, sx: i32, sy: i32) -> Target {
     )
 }
 
+/// A note point as drawn (dip from the note's top-left) taken back through the
+/// pop's scale about the tab: the point of the note it shows.
+fn pop_unscale(w: &Win, pt: (f32, f32), now: Instant) -> (f32, f32) {
+    match w.tuck_edge(now) {
+        Some(edge) => {
+            let h = shown_h(w.view.h, w.sticky.rolled);
+            tuck::unscale(pt, tuck::origin(edge, w.view.w, h), w.pop.scale(now))
+        }
+        None => pt,
+    }
+}
+
 /// Alt is held: a press anywhere on the note moves it.
 fn alt_down() -> bool {
     (unsafe { GetKeyState(i32::from(VK_MENU.0)) }) < 0
@@ -1907,9 +2024,14 @@ fn alt_down() -> bool {
 /// A client point (px) as dip from the note's top-left.
 fn client_to_dip(w: &Win, x: i32, y: i32) -> (f32, f32) {
     let m = w.margins();
+    let (x, y) = pop_unscale(
+        w,
+        (x as f32 / w.scale - m.0, y as f32 / w.scale - m.1),
+        Instant::now(),
+    );
     art::unrotate(
-        x as f32 / w.scale - m.0 - w.shift(Instant::now()),
-        y as f32 / w.scale - m.1,
+        x,
+        y,
         w.view.w,
         shown_h(w.view.h, w.sticky.rolled),
         w.lean(),
@@ -1931,7 +2053,7 @@ fn set_cursor(hwnd: HWND) -> bool {
                 IDC_SIZENWSE
             });
         }
-        if w.tab_showing(Instant::now()) {
+        if w.on_tab(pt.x, pt.y, Instant::now()) {
             return Some(if s.prefs.lock { IDC_ARROW } else { IDC_SIZEALL });
         }
         match target_at(w, pt.x, pt.y) {
@@ -2096,7 +2218,7 @@ fn mouse_leave(hwnd: HWND) {
         }
         s.wins[i].dirty = true;
         settle_alpha(s, i);
-        // A tucked note that is out waits the grace, then slides back in.
+        // A tucked note that is out waits the grace, then pops back into its tab.
         tuck_settle(s, i);
         draw(s, i);
         Some(())
@@ -2151,17 +2273,26 @@ fn left_down(hwnd: HWND, x: i32, y: i32) {
     let act = with(|s| {
         let i = idx_of(s, hwnd)?;
         let lock = s.prefs.lock;
-        let t = target_at(&s.wins[i], pt.x, pt.y);
+        let now = Instant::now();
+        let t = target_at_in(&s.wins[i], pt.x, pt.y, now);
+        // Where the press lands on the note, through the pop's scale, before
+        // the pop is finished.
+        let dip = client_to_dip(&s.wins[i], x, y);
         // Any press on the note is the next other action: the footer follows.
         disarm_delete(s, i);
         // A press on the tab of a tucked note: it comes out at once and moves.
-        if s.wins[i].tab_showing(Instant::now()) && t != Target::Outside {
+        if s.wins[i].on_tab(pt.x, pt.y, now) && t != Target::Outside {
             if lock {
                 return Some(Down::Nothing);
             }
-            slide_out_now(&mut s.wins[i]);
+            pop_out_now(&mut s.wins[i]);
             start_move(s, i, (pt.x, pt.y));
             return Some(Down::Capture);
+        }
+        // A press elsewhere on a note that is part way: the pop is finished
+        // at once and the press is handled as on a note that is out.
+        if s.wins[i].tab_showing(now) && t != Target::Outside {
+            pop_out_now(&mut s.wins[i]);
         }
         // Alt + press anywhere on the note moves it.
         if alt_down() && t != Target::Outside {
@@ -2192,7 +2323,7 @@ fn left_down(hwnd: HWND, x: i32, y: i32) {
             }
             Target::Body | Target::Footer => {
                 let w = &s.wins[i];
-                let (dx, dy) = client_to_dip(w, x, y);
+                let (dx, dy) = dip;
                 let at = w.body.as_ref().map_or(0, |b| {
                     b.index_at(dx - paint::PAD_X, dy - HEADER_H + w.scroll)
                 });
@@ -2227,6 +2358,10 @@ fn left_down(hwnd: HWND, x: i32, y: i32) {
 /// A drag of note `i` that began with the pointer at `from` (desktop px).
 fn begin_drag(s: &mut State, i: usize, kind: DragKind, from: (i32, i32)) {
     let w = &mut s.wins[i];
+    // A dragged note is out at once, however it was pressed.
+    if w.tuck_edge(Instant::now()).is_some() && (w.pop.to < 1.0 || w.pop.running(Instant::now())) {
+        pop_out_now(w);
+    }
     w.drag = Some(Drag {
         kind,
         cursor: from,
@@ -2342,7 +2477,7 @@ fn apply_edit(s: &mut State, i: usize, e: &Edit) {
 }
 
 /// A drag that a note takes is over (or has left) window `hwnd`: its dashed
-/// outline shows. A tucked note slides out while it is over (`keep_out`), so
+/// outline shows. A tucked note pops out while it is over (`keep_out`), so
 /// the drop lands in the note, never in a tab. Called from the drop target's callbacks, which reach the
 /// state only through `with` (a busy state just skips the redraw).
 pub(super) fn drop_hover(hwnd: HWND, on: bool) {
@@ -3196,6 +3331,7 @@ fn set_tuck(s: &mut State, i: usize, edge: Option<Edge>) {
             w.sticky.rect.y = out.y;
             w.sticky.monitor = place::path_to_save(d);
             w.sticky.tuck = Some(e);
+            w.pop_edge = Some(e);
             // It stays out until the pointer is away: nothing keeps it now.
             w.pointer_in = false;
             w.dirty = true;
@@ -3205,10 +3341,19 @@ fn set_tuck(s: &mut State, i: usize, edge: Option<Edge>) {
             relayout(s, i);
         }
         None => {
+            // Brought out: it pops out of its tab where it is (instant when
+            // nothing animates, nothing at all if it was out already).
+            let (now, animate) = (Instant::now(), s.animate);
+            w.pop_edge = w.sticky.tuck.or(w.pop_edge);
             w.sticky.tuck = None;
-            slide_out_now(w);
-            let id = w.id.clone();
+            w.grace = None;
+            w.pop.toward(1.0, now, animate);
+            w.dirty = true;
+            let (id, running) = (w.id.clone(), w.pop.running(now));
             push(s, WidgetEvent::Tuck { id, edge: None });
+            if running {
+                push(s, WidgetEvent::NeedsClock);
+            }
         }
     }
     touch(s, i);
@@ -3277,6 +3422,7 @@ fn finish_drag(s: &mut State, i: usize, release: bool) {
             w.sticky.rect.y = out.y;
         }
         w.sticky.tuck = tuck_to;
+        w.pop_edge = tuck_to.or(w.pop_edge);
         let (id, rect) = (w.id.clone(), w.sticky.rect);
         push(
             s,
@@ -3609,7 +3755,7 @@ fn begin_editing(hwnd: HWND, at: Option<usize>) {
             refresh_peek(s);
         }
         settle_alpha(s, i);
-        // A tucked note that gets the keyboard slides out and stays out.
+        // A tucked note that gets the keyboard pops out and stays out.
         tuck_settle(s, i);
         Some(())
     });
@@ -4873,34 +5019,34 @@ mod tests {
             let now = Instant::now();
             let (hwnd, win_rect, k) = with(|s| (s.wins[0].hwnd, s.wins[0].note, s.wins[0].scale)).unwrap();
             assert_eq!(win_rect.right(), 1920, "the window stays at the out rect, flush right");
-            assert_eq!(with(|s| s.wins[0].slide.value(now)).unwrap(), 0.0, "only the tab");
+            assert_eq!(with(|s| s.wins[0].pop.progress(now)).unwrap(), 0.0, "only the tab");
             assert!(!host.moving(now), "at rest nothing runs");
-            // The pointer comes onto the tab: the note slides out.
+            // The pointer comes onto the tab: the note pops out.
             let (x, y) = on_the_tab();
             let _ = host.drain();
             mouse_move(hwnd, x, y);
             assert!(with(|s| s.wins[0].pointer_in).unwrap());
-            assert_eq!(with(|s| s.wins[0].slide.to).unwrap(), 1.0);
+            assert_eq!(with(|s| s.wins[0].pop.to).unwrap(), 1.0);
             let _ = k;
             if animate {
                 assert!(host.moving(Instant::now()), "the slide runs the frame clock");
                 assert!(host.drain().contains(&WidgetEvent::NeedsClock));
-                assert!(with(|s| s.wins[0].slide.value(Instant::now())).unwrap() < 1.0);
+                assert!(with(|s| s.wins[0].pop.progress(Instant::now())).unwrap() < 1.0);
             } else {
                 assert!(!host.moving(Instant::now()), "instant: no clock");
-                assert_eq!(with(|s| s.wins[0].slide.value(Instant::now())).unwrap(), 1.0);
+                assert_eq!(with(|s| s.wins[0].pop.progress(Instant::now())).unwrap(), 1.0);
             }
             // Settled: the clock stops, the note is out.
             let later = Instant::now() + Duration::from_millis(400);
             host.tick(later);
             assert!(!host.moving(later), "settled (animate {animate})");
-            assert_eq!(with(|s| s.wins[0].slide.value(later)).unwrap(), 1.0);
+            assert_eq!(with(|s| s.wins[0].pop.progress(later)).unwrap(), 1.0);
             host.shutdown();
         }
     }
 
     #[test]
-    fn a_note_that_is_out_waits_the_grace_then_slides_back_and_re_entering_cancels() {
+    fn a_note_that_is_out_waits_the_grace_then_shrinks_back_and_re_entering_cancels() {
         let displays = vec![display("A", 0, true, 96)];
         for animate in [true, false] {
             let notes = vec![tucked_note("n1", Edge::Right, 300.0)];
@@ -4913,7 +5059,7 @@ mod tests {
             mouse_move(hwnd, x, y);
             let out = Instant::now() + Duration::from_millis(400);
             host.tick(out);
-            assert_eq!(with(|s| s.wins[0].slide.value(out)).unwrap(), 1.0);
+            assert_eq!(with(|s| s.wins[0].pop.progress(out)).unwrap(), 1.0);
             let _ = host.drain();
             // The pointer leaves: nothing moves, the grace runs on the frame clock.
             mouse_leave(hwnd);
@@ -4923,7 +5069,7 @@ mod tests {
             assert!(host.drain().contains(&WidgetEvent::NeedsClock));
             // 100 ms later it is still out, and nothing was drawn for it.
             host.tick(left + Duration::from_millis(100));
-            assert_eq!(with(|s| s.wins[0].slide.to).unwrap(), 1.0);
+            assert_eq!(with(|s| s.wins[0].pop.to).unwrap(), 1.0);
             // The pointer comes back in time: the grace is off.
             move_to_client(hwnd, x, y);
             assert!(with(|s| s.wins[0].grace.is_none()).unwrap(), "re-entering cancels it");
@@ -4932,10 +5078,10 @@ mod tests {
             mouse_leave(hwnd);
             let t0 = Instant::now();
             host.tick(t0 + Duration::from_millis(250));
-            assert_eq!(with(|s| s.wins[0].slide.to).unwrap(), 1.0, "300 ms is not over");
+            assert_eq!(with(|s| s.wins[0].pop.to).unwrap(), 1.0, "300 ms is not over");
             let after = t0 + Duration::from_millis(330);
             host.tick(after);
-            assert_eq!(with(|s| s.wins[0].slide.to).unwrap(), 0.0, "the grace is over: back in");
+            assert_eq!(with(|s| s.wins[0].pop.to).unwrap(), 0.0, "the grace is over: back in");
             let end = after + Duration::from_millis(400);
             if animate {
                 assert!(host.moving(after), "the slide runs");
@@ -4944,7 +5090,7 @@ mod tests {
                 assert!(!host.moving(after), "reduced motion: the slide is instant, the grace still applied");
             }
             assert!(!host.moving(end));
-            assert_eq!(with(|s| s.wins[0].slide.value(end)).unwrap(), 0.0, "only the tab again");
+            assert_eq!(with(|s| s.wins[0].pop.progress(end)).unwrap(), 0.0, "only the tab again");
             host.shutdown();
         }
     }
@@ -4968,18 +5114,18 @@ mod tests {
             s.wins[0].edit = Some(fake_edit());
             tuck_settle(s, 0);
         });
-        assert_eq!(with(|s| s.wins[0].slide.to).unwrap(), 1.0, "the keyboard slides it out");
+        assert_eq!(with(|s| s.wins[0].pop.to).unwrap(), 1.0, "the keyboard pops it out");
         mouse_leave(hwnd);
         assert!(with(|s| s.wins[0].grace.is_none()).unwrap(), "the keyboard keeps it out");
         end_editing(hwnd);
         assert!(with(|s| s.wins[0].grace.is_some()).unwrap(), "now nothing does: the grace starts");
-        // A due reminder (raise) slides it out and keeps it out until it ends.
+        // A due reminder (raise) pops it out and keeps it out until it ends.
         let _ = with(|s| {
             s.wins[0].grace = None;
-            s.wins[0].slide = Ease::at(0.0);
+            s.wins[0].pop = tuck::Pop::at(0.0);
         });
         host.raise(&["n1".to_owned()]);
-        assert_eq!(with(|s| s.wins[0].slide.to).unwrap(), 1.0);
+        assert_eq!(with(|s| s.wins[0].pop.to).unwrap(), 1.0);
         mouse_leave(hwnd);
         assert!(with(|s| s.wins[0].grace.is_none()).unwrap(), "raised: stays out");
         lower(hwnd);
@@ -5025,15 +5171,15 @@ mod tests {
         mouse_leave(hwnd);
         let later = Instant::now() + Duration::from_millis(400);
         host.tick(later);
-        assert_eq!(with(|s| s.wins[0].slide.to).unwrap(), 0.0);
+        assert_eq!(with(|s| s.wins[0].pop.to).unwrap(), 0.0);
         // A press on the tab starts a drag with the note out at once; dropped
         // away from the edge it is out in the open where it was dropped.
         let (tx, ty) = on_the_tab();
-        let _ = with(|s| s.wins[0].slide = Ease::at(0.0));
+        let _ = with(|s| s.wins[0].pop = tuck::Pop::at(0.0));
         let _ = host.drain();
         left_down(hwnd, tx, ty);
         assert!(with(|s| s.wins[0].drag.is_some()).unwrap(), "the press on the tab drags");
-        assert_eq!(with(|s| s.wins[0].slide.value(Instant::now())).unwrap(), 1.0, "shown out at once");
+        assert_eq!(with(|s| s.wins[0].pop.progress(Instant::now())).unwrap(), 1.0, "shown out at once");
         move_to(hwnd, 900, 400);
         let (ox, oy) = with(|s| s.wins[0].origin()).unwrap();
         left_up(hwnd, 900 - ox, 400 - oy);
@@ -5051,6 +5197,75 @@ mod tests {
             })
             .expect("placed where dropped");
         assert!(rect.x < 1500.0, "not at the edge any more: {rect:?}");
+        host.shutdown();
+    }
+
+    #[test]
+    fn tucking_by_a_drag_release_ends_with_the_scale_in_after_the_grace() {
+        let _shift = hold_shift(false);
+        let displays = vec![display("A", 0, true, 96)];
+        let notes = vec![note("n1", DipRect::new(1300.0, 200.0, 240.0, 208.0))];
+        let mut host = WidgetHost::new(HWND::default());
+        let mut c = ctx(&notes, &displays);
+        c.animate = true;
+        host.sync(&c);
+        let hwnd = with(|s| s.wins[0].hwnd).unwrap();
+        let (x, y) = client_of(20.0, 10.0);
+        let _ = host.drain();
+        left_down(hwnd, x, y);
+        move_to(hwnd, 1919, 250);
+        assert_eq!(with(|s| s.wins[0].cue).unwrap(), Some(Edge::Right), "the cue");
+        let (ox, oy) = with(|s| s.wins[0].origin()).unwrap();
+        left_up(hwnd, 1919 - ox, 250 - oy);
+        let events = host.drain();
+        assert!(
+            events.contains(&WidgetEvent::Tuck { id: "n1".into(), edge: Some(Edge::Right) }),
+            "{events:?}"
+        );
+        // Dropped on the edge it is still out (the pointer is on it); once the
+        // pointer leaves, the grace runs, and it keeps its edge.
+        assert_eq!(with(|s| s.wins[0].sticky.tuck).unwrap(), Some(Edge::Right));
+        assert_eq!(with(|s| s.wins[0].pop_edge).unwrap(), Some(Edge::Right));
+        assert!(with(|s| s.wins[0].grace.is_none()).unwrap(), "the pointer is on it");
+        mouse_leave(hwnd);
+        let p = pop_of(0);
+        assert_eq!((p.to, p.ms), (1.0, 0.0), "out, nothing running");
+        assert!(with(|s| s.wins[0].grace.is_some()).unwrap(), "the grace runs");
+        let now = Instant::now();
+        assert!(host.moving(now), "the grace runs on the frame clock");
+        // After the grace: the 200 ms scale-in toward the tab.
+        let after = now + Duration::from_millis(400);
+        host.tick(after);
+        let p = pop_of(0);
+        assert_eq!((p.to, p.ms), (0.0, tuck::IN_MS), "200 ms scale-in");
+        assert_eq!(with(|s| s.wins[0].pop_edge).unwrap(), Some(Edge::Right));
+        assert!(host.moving(after), "running");
+        assert!(p.scale(p.start + Duration::from_millis(100)) < 1.0, "the scale goes down");
+        assert!(p.scale(p.start + Duration::from_millis(100)) < p.scale(p.start + Duration::from_millis(50)));
+        let end = p.start + Duration::from_millis(300);
+        host.tick(end);
+        assert!(!host.moving(end));
+        assert_eq!(look_of(&p, end), [tuck::MIN_SCALE, 0.0, 1.0], "settles at the tab");
+        host.shutdown();
+    }
+
+    #[test]
+    fn a_tucked_stack_keeps_room_for_its_sheet_edges() {
+        let displays = vec![display("A", 0, true, 96)];
+        let store = stack_of_three("stack-tuck-room");
+        let mut notes = store.list().to_vec();
+        for n in &mut notes {
+            if let Some(s) = n.sticky.as_mut() {
+                s.tuck = Some(Edge::Right);
+                s.rect = DipRect::new(1640.0, 200.0, 280.0, 208.0);
+            }
+        }
+        let mut host = WidgetHost::new(HWND::default());
+        host.sync(&ctx(&notes, &displays));
+        let (room, view, edges) = with(|s| (s.wins[0].room, s.wins[0].view, s.wins[0].stack_edges())).unwrap();
+        assert_eq!(edges, 2, "three sheets: two edges peek out");
+        assert_eq!(room, tuck::room(view.w, view.h, Edge::Right, 2));
+        assert!(room.3 > tuck::room(view.w, view.h, Edge::Right, 0).3, "more room below than a plain note");
         host.shutdown();
     }
 
@@ -5106,7 +5321,7 @@ mod tests {
         // Brought out: untucked, in place, out.
         let _ = with(|s| set_tuck(s, 0, None));
         assert_eq!(with(|s| s.wins[0].sticky.tuck).unwrap(), None);
-        assert_eq!(with(|s| s.wins[0].slide.value(Instant::now())).unwrap(), 1.0);
+        assert_eq!(with(|s| s.wins[0].pop.progress(Instant::now())).unwrap(), 1.0);
         // Two displays side by side: A's right side is inner, so the left one.
         let both = vec![display("A", 0, true, 96), display("B", 1920, false, 96)];
         host.displays_changed(&both);
@@ -5224,10 +5439,10 @@ mod tests {
             c.animate = animate;
             host.sync(&c);
             let hwnd = with(|s| s.wins[0].hwnd).unwrap();
-            assert_eq!(with(|s| s.wins[0].slide.to).unwrap(), 0.0, "only the tab");
+            assert_eq!(with(|s| s.wins[0].pop.to).unwrap(), 0.0, "only the tab");
             // A drag arrives over the tab: the note comes out like under a hover.
             drop_hover(hwnd, true);
-            assert_eq!(with(|s| s.wins[0].slide.to).unwrap(), 1.0, "out (animate {animate})");
+            assert_eq!(with(|s| s.wins[0].pop.to).unwrap(), 1.0, "out (animate {animate})");
             assert!(with(|s| s.wins[0].grace.is_none()).unwrap());
             // The drop appends to that note.
             let _ = host.drain();
@@ -5243,17 +5458,17 @@ mod tests {
             assert!(with(|s| s.wins[0].grace.is_some()).unwrap(), "the grace runs");
             let t0 = Instant::now();
             host.tick(t0 + Duration::from_millis(400));
-            assert_eq!(with(|s| s.wins[0].slide.to).unwrap(), 0.0, "back in");
+            assert_eq!(with(|s| s.wins[0].pop.to).unwrap(), 0.0, "back in");
             let end = t0 + Duration::from_millis(900);
             host.tick(end);
             assert!(!host.moving(end), "nothing is left running");
-            assert_eq!(with(|s| s.wins[0].slide.value(end)).unwrap(), 0.0);
+            assert_eq!(with(|s| s.wins[0].pop.progress(end)).unwrap(), 0.0);
             host.shutdown();
         }
     }
 
     #[test]
-    fn a_drag_that_leaves_a_tucked_note_without_a_drop_lets_it_slide_back() {
+    fn a_drag_that_leaves_a_tucked_note_without_a_drop_lets_it_shrink_back() {
         let displays = vec![display("A", 0, true, 96)];
         let notes = vec![tucked_note("n1", Edge::Left, 100.0)];
         let mut host = WidgetHost::new(HWND::default());
@@ -5262,13 +5477,13 @@ mod tests {
         host.sync(&c);
         let hwnd = with(|s| s.wins[0].hwnd).unwrap();
         drop_hover(hwnd, true);
-        assert_eq!(with(|s| s.wins[0].slide.to).unwrap(), 1.0);
+        assert_eq!(with(|s| s.wins[0].pop.to).unwrap(), 1.0);
         // Two enters in a row (a second DragEnter) change nothing more.
         drop_hover(hwnd, true);
         drop_hover(hwnd, false);
         let t0 = Instant::now();
         host.tick(t0 + Duration::from_millis(400));
-        assert_eq!(with(|s| s.wins[0].slide.to).unwrap(), 0.0, "a tab again, no drop needed");
+        assert_eq!(with(|s| s.wins[0].pop.to).unwrap(), 0.0, "a tab again, no drop needed");
         assert!(!host.moving(t0 + Duration::from_millis(900)));
         host.shutdown();
     }
@@ -5359,7 +5574,7 @@ mod tests {
     }
 
     #[test]
-    fn the_tab_and_the_slide_keep_the_frame_clock_off_when_nothing_moves() {
+    fn the_tab_and_the_pop_keep_the_frame_clock_off_when_nothing_moves() {
         let displays = vec![display("A", 0, true, 96)];
         let notes = vec![tucked_note("n1", Edge::Left, 100.0), note("n2", DipRect::new(500.0, 100.0, 240.0, 208.0))];
         let mut host = WidgetHost::new(HWND::default());
@@ -5368,5 +5583,371 @@ mod tests {
         host.sync(&c);
         assert!(!host.moving(Instant::now()), "a tab at rest and a note at rest cost nothing");
         host.shutdown();
+    }
+
+    // ------------------------------------------------ the pop (scale and fade)
+
+    /// Window `i`'s pop, as a copy.
+    fn pop_of(i: usize) -> tuck::Pop {
+        with(|s| s.wins[i].pop).unwrap()
+    }
+
+    /// The scale and both opacities of a pop at `t`.
+    fn look_of(p: &tuck::Pop, t: Instant) -> [f32; 3] {
+        [p.scale(t), p.note_alpha(t), p.tab_alpha(t)]
+    }
+
+    #[test]
+    fn hovering_the_tab_grows_the_note_out_of_it() {
+        let displays = vec![display("A", 0, true, 96)];
+        for animate in [true, false] {
+            let notes = vec![tucked_note("n1", Edge::Right, 300.0)];
+            let mut host = WidgetHost::new(HWND::default());
+            let mut c = ctx(&notes, &displays);
+            c.animate = animate;
+            host.sync(&c);
+            let hwnd = with(|s| s.wins[0].hwnd).unwrap();
+            let now = Instant::now();
+            let p = pop_of(0);
+            assert_eq!(look_of(&p, now), [tuck::MIN_SCALE, 0.0, 1.0], "only the tab");
+            let (x, y) = on_the_tab();
+            let _ = host.drain();
+            mouse_move(hwnd, x, y);
+            let p = pop_of(0);
+            assert_eq!(p.to, 1.0);
+            if animate {
+                assert_eq!(p.ms, tuck::OUT_MS, "300 ms");
+                assert!(host.moving(Instant::now()), "running on the frame clock");
+                assert!(host.drain().contains(&WidgetEvent::NeedsClock));
+                // It grows from the tab: bigger and more opaque as it goes.
+                let a = look_of(&p, p.start + Duration::from_millis(50));
+                let b = look_of(&p, p.start + Duration::from_millis(150));
+                assert!(a[0] > tuck::MIN_SCALE && b[0] > a[0] && b[0] < 1.05, "{a:?} {b:?}");
+                assert!(b[1] > a[1] && b[2] < a[2], "the note fades in as the tab fades out");
+                // Past the end it is whole, and the clock stops.
+                let later = p.start + Duration::from_millis(400);
+                host.tick(later);
+                assert!(!host.moving(later));
+                assert_eq!(look_of(&p, later), [1.0, 1.0, 0.0]);
+            } else {
+                assert!(!host.moving(Instant::now()), "instant: no clock");
+                assert_eq!(look_of(&p, Instant::now()), [1.0, 1.0, 0.0]);
+            }
+            host.shutdown();
+        }
+    }
+
+    #[test]
+    fn a_note_that_leaves_waits_the_grace_then_shrinks_into_its_tab() {
+        let displays = vec![display("A", 0, true, 96)];
+        for animate in [true, false] {
+            let notes = vec![tucked_note("n1", Edge::Right, 300.0)];
+            let mut host = WidgetHost::new(HWND::default());
+            let mut c = ctx(&notes, &displays);
+            c.animate = animate;
+            host.sync(&c);
+            let hwnd = with(|s| s.wins[0].hwnd).unwrap();
+            let (x, y) = on_the_tab();
+            mouse_move(hwnd, x, y);
+            host.tick(Instant::now() + Duration::from_millis(400));
+            mouse_leave(hwnd);
+            let left = Instant::now();
+            // Nothing is drawn during the grace.
+            host.tick(left + Duration::from_millis(100));
+            assert!(!with(|s| s.wins[0].dirty).unwrap(), "no frame during the grace");
+            assert_eq!(pop_of(0).to, 1.0);
+            let after = left + Duration::from_millis(330);
+            host.tick(after);
+            let p = pop_of(0);
+            assert_eq!(p.to, 0.0, "the grace is over");
+            assert_eq!(with(|s| s.wins[0].pop_edge).unwrap(), Some(Edge::Right));
+            if animate {
+                assert_eq!(p.ms, tuck::IN_MS, "200 ms");
+                assert!(host.moving(after));
+                let a = p.scale(p.start + Duration::from_millis(60));
+                let b = p.scale(p.start + Duration::from_millis(140));
+                assert!(a < 1.0 && b < a, "shrinking: {a} then {b}");
+                let end = p.start + Duration::from_millis(250);
+                assert_eq!(look_of(&p, end), [tuck::MIN_SCALE, 0.0, 1.0], "only the tab");
+                host.tick(end);
+                assert!(!host.moving(end));
+            } else {
+                assert!(!host.moving(after), "instant");
+                assert_eq!(look_of(&p, after), [tuck::MIN_SCALE, 0.0, 1.0]);
+            }
+            host.shutdown();
+        }
+    }
+
+    #[test]
+    fn re_entering_part_way_reverses_without_a_jump() {
+        let displays = vec![display("A", 0, true, 96)];
+        for coming_in in [true, false] {
+            let notes = vec![tucked_note("n1", Edge::Right, 300.0)];
+            let mut host = WidgetHost::new(HWND::default());
+            let mut c = ctx(&notes, &displays);
+            c.animate = true;
+            host.sync(&c);
+            let hwnd = with(|s| s.wins[0].hwnd).unwrap();
+            let (x, y) = on_the_tab();
+            // Half way back in (the pointer comes back onto the tab), or part
+            // way out and turned back in because the pointer is gone.
+            let start = Instant::now() - Duration::from_millis(100);
+            let _ = with(|s| {
+                s.wins[0].pop = if coming_in {
+                    tuck::Pop { from: 1.0, to: 0.0, from_scale: 1.0, start, ms: tuck::IN_MS }
+                } else {
+                    tuck::Pop { from: 0.0, to: 1.0, from_scale: tuck::MIN_SCALE, start, ms: tuck::OUT_MS }
+                };
+            });
+            let old = pop_of(0);
+            if coming_in {
+                mouse_move(hwnd, x, y);
+                assert_eq!(pop_of(0).to, 1.0, "back out");
+            } else {
+                let _ = with(|s| {
+                    s.wins[0].pointer_in = false;
+                    s.wins[0].grace = Some(Instant::now() - Duration::from_millis(400));
+                });
+                host.tick(Instant::now());
+                assert_eq!(pop_of(0).to, 0.0, "back in");
+            }
+            // The two pops compared at the moment of the reversal.
+            let new = pop_of(0);
+            let (before, after) = (look_of(&old, new.start), look_of(&new, new.start));
+            for k in 0..3 {
+                assert!((before[k] - after[k]).abs() < 1e-3, "{before:?} {after:?}");
+            }
+            host.shutdown();
+        }
+    }
+
+    /// The desktop px where window `i`'s note point `pt` is drawn when the pop
+    /// is at `at` (the note tucked right).
+    fn drawn_px(i: usize, pt: (f32, f32), at: Instant) -> (i32, i32) {
+        with(|s| {
+            let w = &s.wins[i];
+            let h = shown_h(w.view.h, w.sticky.rolled);
+            let o = tuck::origin(Edge::Right, w.view.w, h);
+            let d = tuck::scale_about(pt, o, w.pop.scale(at));
+            (
+                w.note.x + (d.0 * w.scale).round() as i32,
+                w.note.y + (d.1 * w.scale).round() as i32,
+            )
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn a_click_part_way_through_the_pop_lands_on_the_part_it_shows() {
+        let displays = vec![display("A", 0, true, 96)];
+        let notes = vec![tucked_note("n1", Edge::Right, 300.0)];
+        let mut host = WidgetHost::new(HWND::default());
+        let mut c = ctx(&notes, &displays);
+        c.animate = true;
+        host.sync(&c);
+        // Frozen part way: half out at a scale of 0.6 (the trip is very long).
+        let at = Instant::now();
+        let part = tuck::Pop { from: 0.5, to: 1.0, from_scale: 0.6, start: at, ms: 1.0e9 };
+        let _ = with(|s| s.wins[0].pop = part);
+        let t = |pt: (f32, f32)| {
+            let (x, y) = drawn_px(0, pt, at);
+            with(|s| target_at_in(&s.wins[0], x, y, at)).unwrap()
+        };
+        assert_eq!(t((100.0, 100.0)), Target::Body);
+        assert_eq!(t((20.0, 10.0)), Target::Header);
+        assert_eq!(t((237.0, 205.0)), Target::Grip);
+        // Left of where the scaled note reaches: not the note.
+        let (x, y) = drawn_px(0, (240.0, 100.0), at);
+        let left = with(|s| target_at_in(&s.wins[0], x - 150, y, at)).unwrap();
+        assert_eq!(left, Target::Outside, "beyond the scaled note's left edge");
+        // The tab rect counts as long as the tab shows, though the scaled note
+        // does not reach it there (its top is below the tab's top).
+        let tab_top = with(|s| (s.wins[0].note.x + 232, s.wins[0].note.y + 3)).unwrap();
+        assert_eq!(
+            with(|s| target_at_in(&s.wins[0], tab_top.0, tab_top.1, at)).unwrap(),
+            Target::Header
+        );
+        // Client points map back through the inverse scale.
+        let (cx, cy) = {
+            let (x, y) = drawn_px(0, (100.0, 100.0), at);
+            let (ox, oy) = with(|s| s.wins[0].origin()).unwrap();
+            (x - ox, y - oy)
+        };
+        let (dx, dy) = with(|s| client_to_dip(&s.wins[0], cx, cy)).unwrap();
+        assert!((dx - 100.0).abs() < 2.0 && (dy - 100.0).abs() < 2.0, "({dx}, {dy})");
+        // Only the tab is hit at progress 0, not the rest of the window.
+        let _ = with(|s| s.wins[0].pop = tuck::Pop::at(0.0));
+        let (x, y) = with(|s| (s.wins[0].note.x + 20, s.wins[0].note.y + 12)).unwrap();
+        assert_eq!(with(|s| target_at(&s.wins[0], x, y)).unwrap(), Target::Outside);
+        host.shutdown();
+    }
+
+    #[test]
+    fn a_press_part_way_finishes_the_pop_and_moves_the_note_from_the_header() {
+        let _shift = hold_shift(false);
+        let displays = vec![display("A", 0, true, 96)];
+        let notes = vec![tucked_note("n1", Edge::Right, 300.0)];
+        let mut host = WidgetHost::new(HWND::default());
+        let mut c = ctx(&notes, &displays);
+        c.animate = true;
+        host.sync(&c);
+        let hwnd = with(|s| s.wins[0].hwnd).unwrap();
+        // Part way, scale 0.6: a press on the scaled header starts a Move with
+        // the note out at once.
+        let at = Instant::now();
+        let _ = with(|s| {
+            s.wins[0].pop = tuck::Pop { from: 0.5, to: 1.0, from_scale: 0.6, start: at, ms: 1.0e9 };
+        });
+        let (x, y) = drawn_px(0, (20.0, 10.0), at);
+        let (ox, oy) = with(|s| s.wins[0].origin()).unwrap();
+        left_down(hwnd, x - ox, y - oy);
+        assert!(with(|s| s.wins[0].drag.is_some()).unwrap(), "the header drags");
+        let p = pop_of(0);
+        assert_eq!((p.to, p.ms), (1.0, 0.0), "finished at once");
+        assert_eq!(look_of(&p, Instant::now()), [1.0, 1.0, 0.0]);
+        left_up(hwnd, x - ox, y - oy);
+        host.shutdown();
+    }
+
+    #[test]
+    fn the_tab_counts_as_the_note_for_the_pointer_while_it_shows() {
+        let displays = vec![display("A", 0, true, 96)];
+        let notes = vec![tucked_note("n1", Edge::Right, 300.0)];
+        let mut host = WidgetHost::new(HWND::default());
+        host.sync(&ctx(&notes, &displays));
+        let tab = with(|s| (s.wins[0].note.x + 230, s.wins[0].note.y + 30)).unwrap();
+        let now = Instant::now();
+        assert!(with(|s| s.wins[0].on_tab(tab.0, tab.1, now)).unwrap());
+        assert!(with(|s| s.wins[0].tab_showing(now)).unwrap());
+        // Part way (progress 0.5, the tab is gone from the picture): the tab
+        // rect is still part of the note for the pointer, but a press is not
+        // "on" the tab.
+        let _ = with(|s| {
+            s.wins[0].pop = tuck::Pop { from: 0.5, to: 1.0, from_scale: 0.8, start: now, ms: 1.0e9 };
+        });
+        assert!(!with(|s| s.wins[0].on_tab(tab.0, tab.1, now)).unwrap());
+        assert!(with(|s| s.wins[0].tab_showing(now)).unwrap());
+        assert_ne!(with(|s| target_at_in(&s.wins[0], tab.0, tab.1, now)).unwrap(), Target::Outside);
+        // All the way out: no tab.
+        let _ = with(|s| s.wins[0].pop = tuck::Pop::at(1.0));
+        assert!(!with(|s| s.wins[0].tab_showing(now)).unwrap());
+        assert!(!with(|s| s.wins[0].on_tab(tab.0, tab.1, now)).unwrap());
+        host.shutdown();
+    }
+
+    #[test]
+    fn tucking_through_the_menu_ends_with_the_scale_in_after_the_grace() {
+        let displays = vec![display("A", 0, true, 96)];
+        let notes = vec![note("n1", DipRect::new(1300.0, 200.0, 240.0, 208.0))];
+        let mut host = WidgetHost::new(HWND::default());
+        let mut c = ctx(&notes, &displays);
+        c.animate = true;
+        host.sync(&c);
+        let _ = host.drain();
+        let _ = with(|s| set_tuck(s, 0, Some(Edge::Right)));
+        flush_dirty();
+        // It is out (a note that was open) with the grace running, nothing else.
+        let p = pop_of(0);
+        assert_eq!((p.to, p.ms), (1.0, 0.0));
+        assert_eq!(with(|s| s.wins[0].pop_edge).unwrap(), Some(Edge::Right));
+        assert!(with(|s| s.wins[0].grace.is_some()).unwrap());
+        let now = Instant::now();
+        assert!(host.moving(now), "the grace runs on the frame clock");
+        let after = now + Duration::from_millis(330);
+        host.tick(after);
+        let p = pop_of(0);
+        assert_eq!((p.to, p.ms), (0.0, tuck::IN_MS), "200 ms scale-in");
+        assert!(host.moving(after), "running");
+        assert!(p.scale(p.start + Duration::from_millis(100)) < 1.0);
+        let end = p.start + Duration::from_millis(300);
+        host.tick(end);
+        assert!(!host.moving(end));
+        assert_eq!(look_of(&p, end), [tuck::MIN_SCALE, 0.0, 1.0], "settles at the tab");
+        host.shutdown();
+    }
+
+    #[test]
+    fn bringing_a_tucked_note_out_pops_it_and_without_animation_it_is_instant() {
+        let displays = vec![display("A", 0, true, 96)];
+        for animate in [true, false] {
+            let notes = vec![tucked_note("n1", Edge::Right, 300.0)];
+            let mut host = WidgetHost::new(HWND::default());
+            let mut c = ctx(&notes, &displays);
+            c.animate = animate;
+            host.sync(&c);
+            let _ = with(|s| s.wins[0].tilt = true);
+            assert_eq!(with(|s| s.wins[0].pop.to).unwrap(), 0.0);
+            let _ = host.drain();
+            let _ = with(|s| set_tuck(s, 0, None));
+            flush_dirty();
+            assert_eq!(with(|s| s.wins[0].sticky.tuck).unwrap(), None);
+            let now = Instant::now();
+            let p = pop_of(0);
+            assert_eq!(p.to, 1.0);
+            if animate {
+                assert!(p.running(now) && host.moving(now), "it pops out");
+                assert!(host.drain().contains(&WidgetEvent::NeedsClock));
+                // Drawn as the tucked note while it pops: the edge is kept, the
+                // window keeps its room, and it does not lean mid-scale.
+                assert_eq!(with(|s| s.wins[0].tuck_edge(now)).unwrap(), Some(Edge::Right));
+                assert!(with(|s| s.wins[0].room.0 > 0.0).unwrap());
+                assert_eq!(with(|s| s.wins[0].lean()).unwrap(), 0.0);
+                // Settled: the room is given back, and it leans again.
+                std::thread::sleep(Duration::from_millis(340));
+                host.tick(Instant::now());
+                assert!(!host.moving(Instant::now()));
+                assert_eq!(with(|s| s.wins[0].room).unwrap(), (0.0, 0.0, 0.0, 0.0));
+                assert_eq!(with(|s| s.wins[0].tuck_edge(Instant::now())).unwrap(), None);
+                assert_ne!(with(|s| s.wins[0].lean()).unwrap(), 0.0);
+            } else {
+                assert!(!p.running(now) && !host.moving(now), "instant");
+                assert_eq!(look_of(&p, now), [1.0, 1.0, 0.0]);
+                assert_eq!(with(|s| s.wins[0].room).unwrap(), (0.0, 0.0, 0.0, 0.0));
+            }
+            // A note that is out already: nothing to animate.
+            let _ = with(|s| set_tuck(s, 0, Some(Edge::Left)));
+            let _ = with(|s| s.wins[0].pop = tuck::Pop::at(1.0));
+            let _ = with(|s| set_tuck(s, 0, None));
+            assert!(!pop_of(0).running(Instant::now()));
+            host.shutdown();
+        }
+    }
+
+    #[test]
+    fn a_tucked_note_has_room_for_its_overshoot_in_the_window() {
+        let displays = vec![display("A", 0, true, 96)];
+        for edge in [Edge::Right, Edge::Left] {
+            let notes = vec![
+                tucked_note("n1", edge, 300.0),
+                note("n2", DipRect::new(500.0, 100.0, 240.0, 208.0)),
+            ];
+            let mut host = WidgetHost::new(HWND::default());
+            host.sync(&ctx(&notes, &displays));
+            let (m, room, size, k, view, bare) = with(|s| {
+                let w = &s.wins[0];
+                let bare = art::margins_for(w.view.w, w.view.h, 0.0);
+                (w.margins(), w.room, w.canvas.as_ref().map(|c| c.size()), w.scale, w.view, bare)
+            })
+            .unwrap();
+            let want = tuck::room(view.w, view.h, edge, 0);
+            assert_eq!(room, want);
+            assert_eq!(m, (bare.0 + want.0, bare.1 + want.1, bare.2 + want.2, bare.3 + want.3));
+            assert!(room.0 + room.2 + room.3 > 0.0, "some room is needed");
+            // The paper and its shadow at the peak scale are inside the window.
+            let o = tuck::origin(edge, view.w, view.h);
+            let (r, h) = (tuck::SHADOW_REACH, view.h);
+            let lo = tuck::scale_about((-r.0, -r.1), o, tuck::PEAK_SCALE);
+            let hi = tuck::scale_about((view.w + r.2, h + r.3), o, tuck::PEAK_SCALE);
+            let (w_px, h_px) = size.expect("drawn");
+            assert!((m.0 + lo.0) * k >= 0.0 && (m.1 + lo.1) * k >= 0.0, "{edge:?}");
+            assert!(
+                ((m.0 + hi.0) * k).ceil() as i32 <= w_px && ((m.1 + hi.1) * k).ceil() as i32 <= h_px,
+                "{edge:?}"
+            );
+            // A note that is not tucked gets none.
+            assert_eq!(with(|s| s.wins[1].room).unwrap(), (0.0, 0.0, 0.0, 0.0));
+            host.shutdown();
+        }
     }
 }

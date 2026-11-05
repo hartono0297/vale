@@ -1,10 +1,13 @@
 //! Tucking a note to the left or right edge of the screen ("Selip ke tepi"):
 //! when a drag ends pressed against an outer edge of the placement area the
-//! note becomes a small tab (`TAB_W` wide) at that edge, and slides out while
-//! the pointer is on it. Pure geometry and timing, tested without a window.
+//! note becomes a small tab (`TAB_W` wide) at that edge, and pops out of it
+//! (scale and fade, `Pop`) while the pointer is on it. Pure geometry and
+//! timing, tested without a window.
 //!
 //! Everything is in dip relative to the top-left of the monitor's placement
 //! area, except `adjoin`, which compares work areas in physical pixels.
+
+use std::time::Instant;
 
 use serde::{Serialize, Serializer};
 
@@ -19,10 +22,26 @@ pub const TAB_MAX_H: f32 = 72.0;
 /// past it) the pointer must be, for a release to tuck.
 pub const EDGE_EPS: f32 = 0.5;
 pub const PRESS_REACH: f32 = 4.0;
-/// The slide in and out, and the wait between the pointer leaving a note
-/// that is out and the slide back in. Both run on the owner's frame clock.
-pub const SLIDE_MS: f32 = 180.0;
+/// The wait between the pointer leaving a note that is out and the pop back
+/// into the tab. It runs on the owner's frame clock, like the pop.
 pub const GRACE_MS: f32 = 300.0;
+/// The pop: the smallest the note gets (about its tab), the way out (ease-out
+/// with a little overshoot) and the way in (ease-in), in ms for a whole trip.
+pub const MIN_SCALE: f32 = 0.12;
+pub const OUT_MS: f32 = 300.0;
+pub const IN_MS: f32 = 200.0;
+/// The overshoot of the way out (ease-out-back's c1).
+pub const BACK: f32 = 1.1;
+/// The note is faded in over the first `NOTE_FADE` of the progress, the tab
+/// out over the first `TAB_FADE` (the way in is the mirror of this).
+pub const NOTE_FADE: f32 = 0.45;
+pub const TAB_FADE: f32 = 0.35;
+/// The largest scale of `out_scale`: 1 + 0.88 * 4 c^3 / (27 (c + 1)^2) for
+/// `BACK` c, rounded up a hair. The window keeps `room` for it.
+pub const PEAK_SCALE: f32 = 1.0394;
+/// The hit keeper: while the pop is part way, the tab's rect is filled at
+/// this alpha so the pointer there still reaches the window.
+pub const KEEPER_ALPHA: f32 = 3.0 / 255.0;
 /// The accent bar a dragged note shows on the edge a release would tuck to.
 pub const CUE_W: f32 = 3.0;
 
@@ -56,13 +75,6 @@ impl Edge {
         }
     }
 
-    /// The direction the note slides off: -1 to the left, 1 to the right.
-    pub fn sign(self) -> f32 {
-        match self {
-            Edge::Left => -1.0,
-            Edge::Right => 1.0,
-        }
-    }
 }
 
 impl Serialize for Edge {
@@ -173,10 +185,189 @@ pub fn tab_rect(out: &DipRect, edge: Edge) -> DipRect {
     }
 }
 
-/// How far a note `w` wide is drawn off the edge `t` of the way out: all but
-/// the tab at 0 (only the tab shows), none at 1 (the full note).
-pub fn slide_offset(t: f32, w: f32) -> f32 {
-    (w - TAB_W).max(0.0) * (1.0 - t.clamp(0.0, 1.0))
+fn smoothstep(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    x * x * (3.0 - 2.0 * x)
+}
+
+/// Ease-out-back: 0 at 0, 1 at 1, a little over 1 (`BACK`) on the way.
+pub fn back_out(u: f32) -> f32 {
+    let u = u.clamp(0.0, 1.0) - 1.0;
+    1.0 + (BACK + 1.0) * u * u * u + BACK * u * u
+}
+
+/// The note's scale on the way out, `u` of the trip (0 to 1): `MIN_SCALE` to 1
+/// with a small overshoot. A whole trip of `Pop` follows it (a part one starts
+/// from where the scale was); the tests hold them together.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn out_scale(u: f32) -> f32 {
+    MIN_SCALE + (1.0 - MIN_SCALE) * back_out(u)
+}
+
+/// The note's scale on the way in, `u` of the trip: 1 to `MIN_SCALE`, ease-in.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn in_scale(u: f32) -> f32 {
+    let u = u.clamp(0.0, 1.0);
+    1.0 - (1.0 - MIN_SCALE) * u * u * u
+}
+
+/// How opaque the note is at progress `p` (0 only the tab, 1 all the way out).
+pub fn note_alpha(p: f32) -> f32 {
+    smoothstep(p / NOTE_FADE)
+}
+
+/// How opaque the tab is at progress `p`.
+pub fn tab_alpha(p: f32) -> f32 {
+    1.0 - smoothstep(p / TAB_FADE)
+}
+
+/// The point the note grows from, in note dip (0, 0 is its top-left): the
+/// tab's vertical centre on the note's edge side.
+pub fn origin(edge: Edge, w: f32, shown_h: f32) -> (f32, f32) {
+    let x = match edge {
+        Edge::Left => 0.0,
+        Edge::Right => w,
+    };
+    (x, TAB_MAX_H.min(shown_h) / 2.0)
+}
+
+/// `pt` scaled by `s` about `origin`.
+pub fn scale_about(pt: (f32, f32), origin: (f32, f32), s: f32) -> (f32, f32) {
+    (
+        origin.0 + (pt.0 - origin.0) * s,
+        origin.1 + (pt.1 - origin.1) * s,
+    )
+}
+
+/// The inverse of `scale_about`: the note point that is drawn at `pt`.
+pub fn unscale(pt: (f32, f32), origin: (f32, f32), s: f32) -> (f32, f32) {
+    if s <= 0.0 {
+        return pt;
+    }
+    (
+        origin.0 + (pt.0 - origin.0) / s,
+        origin.1 + (pt.1 - origin.1) / s,
+    )
+}
+
+/// How far the paper's shadow reaches beyond the note, in dip: left, top,
+/// right, bottom (the shadow rects grow 5 and sit 2 down), and one dip slack.
+pub const SHADOW_REACH: (f32, f32, f32, f32) = (6.0, 4.0, 6.0, 8.0);
+
+/// How far the paper, its shadow and the `edges` sheet edges of a stack (0
+/// for a plain note, 2 at most) reach beyond the note, dip: left, top, right,
+/// bottom. A stack edge `k` (1-based) sits `k * STACK_STEP` down and right and
+/// its shadow grows 1.5 (and sits 2 down), so it reaches 1.5 and 3.5 further.
+pub fn reach(edges: usize) -> (f32, f32, f32, f32) {
+    let r = SHADOW_REACH;
+    if edges == 0 {
+        return r;
+    }
+    let off = crate::widgets::paint::STACK_STEP * edges as f32;
+    (r.0, r.1, r.2.max(off + 1.5), r.3.max(off + 3.5))
+}
+
+/// The margin a tucked note's window needs on top of the base one
+/// (`paint::margins()`), dip, so that the paper, its shadow and a stack's
+/// `edges` sheet edges, scaled by `PEAK_SCALE` about the `origin`, fit inside
+/// it. Left, top, right, bottom.
+pub fn room(w: f32, shown_h: f32, edge: Edge, edges: usize) -> (f32, f32, f32, f32) {
+    let o = origin(edge, w, shown_h);
+    let base = crate::widgets::paint::margins();
+    let r = reach(edges);
+    // The corners of the paper plus shadow, scaled about the origin.
+    let lo = scale_about((-r.0, -r.1), o, PEAK_SCALE);
+    let hi = scale_about((w + r.2, shown_h + r.3), o, PEAK_SCALE);
+    let need = (-lo.0, -lo.1, hi.0 - w, hi.1 - shown_h);
+    let side = |need: f32, base: f32| (need - base).max(0.0).ceil();
+    (
+        side(need.0, base.0),
+        side(need.1, base.1),
+        side(need.2, base.2),
+        side(need.3, base.3),
+    )
+}
+
+/// A trip of a tucked note between the tab (progress 0) and out (1): the
+/// progress runs linearly, the scale follows its own curve, and a trip that
+/// starts part way (a reversal) continues from the scale it was at.
+#[derive(Clone, Copy, Debug)]
+pub struct Pop {
+    pub from: f32,
+    pub to: f32,
+    pub from_scale: f32,
+    pub start: Instant,
+    pub ms: f32,
+}
+
+impl Pop {
+    /// Settled at progress `p` (0 or 1).
+    pub fn at(p: f32) -> Pop {
+        Pop {
+            from: p,
+            to: p,
+            from_scale: if p >= 1.0 { 1.0 } else { MIN_SCALE },
+            start: Instant::now(),
+            ms: 0.0,
+        }
+    }
+
+    /// How much of the trip is done, 0 to 1 (1 for a settled one).
+    pub fn u(&self, now: Instant) -> f32 {
+        if self.ms <= 0.0 {
+            return 1.0;
+        }
+        (now.saturating_duration_since(self.start).as_secs_f32() * 1000.0 / self.ms).clamp(0.0, 1.0)
+    }
+
+    /// 0 only the tab, 1 all the way out.
+    pub fn progress(&self, now: Instant) -> f32 {
+        self.from + (self.to - self.from) * self.u(now)
+    }
+
+    pub fn running(&self, now: Instant) -> bool {
+        self.ms > 0.0 && now.saturating_duration_since(self.start).as_secs_f32() * 1000.0 < self.ms
+    }
+
+    pub fn scale(&self, now: Instant) -> f32 {
+        let u = self.u(now);
+        if u >= 1.0 {
+            // Settled: exactly the end, whatever the trip started from.
+            return if self.to >= 1.0 { 1.0 } else { MIN_SCALE };
+        }
+        if self.to >= 1.0 {
+            self.from_scale + (1.0 - self.from_scale) * back_out(u)
+        } else {
+            self.from_scale + (MIN_SCALE - self.from_scale) * u * u * u
+        }
+    }
+
+    pub fn note_alpha(&self, now: Instant) -> f32 {
+        note_alpha(self.progress(now))
+    }
+
+    pub fn tab_alpha(&self, now: Instant) -> f32 {
+        tab_alpha(self.progress(now))
+    }
+
+    /// Heads for `to` (0 or 1) from wherever it is. The same target again
+    /// changes nothing; a partial trip takes proportionally less time; without
+    /// `animate` it is there at once.
+    pub fn toward(&mut self, to: f32, now: Instant, animate: bool) {
+        if (self.to - to).abs() < f32::EPSILON {
+            return;
+        }
+        let from = self.progress(now);
+        let from_scale = self.scale(now);
+        let full = if to >= 1.0 { OUT_MS } else { IN_MS };
+        *self = Pop {
+            from,
+            to,
+            from_scale,
+            start: now,
+            ms: if animate { full * (to - from).abs() } else { 0.0 },
+        };
+    }
 }
 
 #[cfg(test)]
@@ -321,28 +512,266 @@ mod tests {
         assert_eq!(TAB_W, 16.0);
     }
 
+    use std::time::Duration;
+
+    fn near(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-4
+    }
+
     #[test]
-    fn the_slide_offset_runs_from_the_tab_to_the_full_note() {
-        assert_eq!(slide_offset(0.0, 240.0), 240.0 - TAB_W, "only the tab shows");
-        assert_eq!(slide_offset(1.0, 240.0), 0.0, "the whole note");
-        assert!((slide_offset(0.5, 240.0) - 112.0).abs() < 1e-4);
-        // Out of range is clamped; a note narrower than the tab never moves.
-        assert_eq!(slide_offset(-1.0, 240.0), 240.0 - TAB_W);
-        assert_eq!(slide_offset(2.0, 240.0), 0.0);
-        assert_eq!(slide_offset(0.0, 10.0), 0.0);
-        // Monotonic.
+    fn the_way_out_grows_from_the_tab_with_a_small_overshoot() {
+        assert!(near(out_scale(0.0), MIN_SCALE));
+        assert!(near(out_scale(1.0), 1.0));
+        // Out of range is clamped.
+        assert!(near(out_scale(-1.0), MIN_SCALE));
+        assert!(near(out_scale(2.0), 1.0));
+        let (mut peak, mut at) = (0.0f32, 0.0f32);
+        for i in 0..=1000 {
+            let u = i as f32 / 1000.0;
+            let v = out_scale(u);
+            if v > peak {
+                (peak, at) = (v, u);
+            }
+        }
+        assert!(peak > 1.0 && peak <= 1.041, "peak {peak}");
+        assert!((0.6..0.7).contains(&at), "at {at}");
+        // The constant covers the peak, closely.
+        assert!(PEAK_SCALE >= peak && PEAK_SCALE - peak < 1e-3, "{PEAK_SCALE} vs {peak}");
+        // Non-increasing after the peak.
         let mut last = f32::MAX;
-        for i in 0..=20 {
-            let o = slide_offset(i as f32 / 20.0, 300.0);
-            assert!(o <= last);
-            last = o;
+        for i in 0..=200 {
+            let u = at + (1.0 - at) * i as f32 / 200.0;
+            let v = out_scale(u);
+            assert!(v <= last + 1e-6);
+            last = v;
         }
     }
 
     #[test]
+    fn the_way_in_shrinks_to_the_tab_without_a_bounce() {
+        assert!(near(in_scale(0.0), 1.0));
+        assert!(near(in_scale(1.0), MIN_SCALE));
+        let mut last = f32::MAX;
+        for i in 0..=100 {
+            let v = in_scale(i as f32 / 100.0);
+            assert!(v <= last);
+            last = v;
+        }
+    }
+
+    #[test]
+    fn the_note_and_the_tab_cross_fade_the_same_way_in_both_directions() {
+        assert_eq!(note_alpha(0.0), 0.0);
+        assert!(near(note_alpha(NOTE_FADE), 1.0));
+        assert_eq!(note_alpha(1.0), 1.0);
+        assert!(near(note_alpha(NOTE_FADE / 2.0), 0.5), "smoothstep midpoint");
+        assert_eq!(tab_alpha(0.0), 1.0);
+        assert!(near(tab_alpha(TAB_FADE), 0.0));
+        assert_eq!(tab_alpha(1.0), 0.0);
+        assert!(near(tab_alpha(TAB_FADE / 2.0), 0.5));
+        assert_eq!(note_alpha(-1.0), 0.0);
+        assert_eq!(tab_alpha(3.0), 0.0);
+    }
+
+    #[test]
+    fn the_note_grows_from_the_tabs_centre_on_its_edge_side() {
+        assert_eq!(origin(Edge::Right, 240.0, 208.0), (240.0, 36.0));
+        assert_eq!(origin(Edge::Left, 240.0, 208.0), (0.0, 36.0));
+        // A rolled note is shorter than the tab: the centre of what shows.
+        assert_eq!(origin(Edge::Left, 240.0, 40.0), (0.0, 20.0));
+        assert_eq!(origin(Edge::Right, 300.0, 64.0), (300.0, 32.0));
+    }
+
+    #[test]
+    fn unscale_undoes_scale_about() {
+        let o = (240.0, 36.0);
+        for s in [0.12, 0.5, 1.0, 1.039] {
+            for p in [(0.0, 0.0), (120.0, 90.0), (240.0, 36.0), (-10.0, 300.0)] {
+                let q = unscale(scale_about(p, o, s), o, s);
+                assert!(near(q.0, p.0) && near(q.1, p.1), "{p:?} at {s}: {q:?}");
+            }
+        }
+        // The origin does not move, and a bad scale leaves the point alone.
+        assert_eq!(scale_about(o, o, 0.3), o);
+        assert_eq!(unscale((5.0, 6.0), o, 0.0), (5.0, 6.0));
+    }
+
+    fn at(p: &Pop, ms: u64) -> Instant {
+        p.start + Duration::from_millis(ms)
+    }
+
+    #[test]
+    fn a_pop_settles_at_its_ends() {
+        let now = Instant::now();
+        let tab = Pop::at(0.0);
+        assert!(!tab.running(now));
+        assert_eq!((tab.progress(now), tab.scale(now)), (0.0, MIN_SCALE));
+        assert_eq!((tab.note_alpha(now), tab.tab_alpha(now)), (0.0, 1.0));
+        let out = Pop::at(1.0);
+        assert_eq!((out.progress(now), out.scale(now)), (1.0, 1.0));
+        assert_eq!((out.note_alpha(now), out.tab_alpha(now)), (1.0, 0.0));
+    }
+
+    #[test]
+    fn a_full_trip_follows_the_curves() {
+        let now = Instant::now();
+        let mut p = Pop::at(0.0);
+        p.toward(1.0, now, true);
+        assert!(p.running(now));
+        assert_eq!(p.ms, OUT_MS);
+        for ms in [0u64, 60, 150, 195, 250, 300, 500] {
+            let t = at(&p, ms);
+            let u = (ms as f32 / OUT_MS).min(1.0);
+            assert!(near(p.scale(t), out_scale(u)), "out at {ms}");
+            assert!(near(p.progress(t), u), "progress at {ms}");
+        }
+        assert!(!p.running(at(&p, 300)));
+        assert!(p.running(at(&p, 299)));
+        let mut q = Pop::at(1.0);
+        q.toward(0.0, now, true);
+        assert_eq!(q.ms, IN_MS);
+        for ms in [0u64, 50, 100, 150, 200, 400] {
+            let t = at(&q, ms);
+            let u = (ms as f32 / IN_MS).min(1.0);
+            assert!(near(q.scale(t), in_scale(u)), "in at {ms}");
+            assert!(near(q.progress(t), 1.0 - u), "progress at {ms}");
+        }
+    }
+
+    fn state(p: &Pop, t: Instant) -> [f32; 3] {
+        [p.scale(t), p.note_alpha(t), p.tab_alpha(t)]
+    }
+
+    #[test]
+    fn a_reversal_part_way_continues_without_a_jump() {
+        // Going out, turned back at several points.
+        for cut in [20u64, 90, 180, 240, 290] {
+            let mut p = Pop::at(0.0);
+            let t0 = p.start;
+            p.toward(1.0, t0, true);
+            let t = t0 + Duration::from_millis(cut);
+            let before = state(&p, t);
+            p.toward(0.0, t, true);
+            let after = state(&p, t);
+            for k in 0..3 {
+                assert!((before[k] - after[k]).abs() < 1e-4, "out then in at {cut}: {before:?} {after:?}");
+            }
+            assert_eq!(p.to, 0.0);
+            // And it ends at the tab.
+            let end = t + Duration::from_millis(400);
+            assert!(near(p.scale(end), MIN_SCALE) && near(p.progress(end), 0.0));
+        }
+        // Going in, turned back.
+        for cut in [20u64, 80, 140, 190] {
+            let mut p = Pop::at(1.0);
+            let t0 = p.start;
+            p.toward(0.0, t0, true);
+            let t = t0 + Duration::from_millis(cut);
+            let before = state(&p, t);
+            p.toward(1.0, t, true);
+            let after = state(&p, t);
+            for k in 0..3 {
+                assert!((before[k] - after[k]).abs() < 1e-4, "in then out at {cut}: {before:?} {after:?}");
+            }
+            let end = t + Duration::from_millis(400);
+            assert!(near(p.scale(end), 1.0) && near(p.progress(end), 1.0));
+        }
+    }
+
+    #[test]
+    fn a_partial_trip_takes_proportionally_less_time() {
+        let mut p = Pop::at(0.0);
+        let t0 = p.start;
+        p.toward(1.0, t0, true);
+        let t = t0 + Duration::from_millis(150);
+        assert!(near(p.progress(t), 0.5));
+        p.toward(0.0, t, true);
+        assert!(near(p.ms, IN_MS * 0.5), "{}", p.ms);
+        // Out again from a quarter.
+        let mut q = Pop::at(1.0);
+        q.toward(0.0, q.start, true);
+        let t = q.start + Duration::from_millis(150);
+        assert!(near(q.progress(t), 0.25));
+        q.toward(1.0, t, true);
+        assert!(near(q.ms, OUT_MS * 0.75), "{}", q.ms);
+    }
+
+    #[test]
+    fn the_same_target_again_changes_nothing_and_without_animation_it_is_instant() {
+        let now = Instant::now();
+        let mut p = Pop::at(0.0);
+        p.toward(1.0, now, true);
+        let before = p;
+        p.toward(1.0, now + Duration::from_millis(50), true);
+        assert_eq!((p.from, p.ms), (before.from, before.ms));
+        assert_eq!(p.start, before.start);
+        let mut q = Pop::at(0.0);
+        q.toward(1.0, now, false);
+        assert!(!q.running(now));
+        assert_eq!((q.progress(now), q.scale(now)), (1.0, 1.0));
+        q.toward(0.0, now, false);
+        assert_eq!((q.progress(now), q.scale(now)), (0.0, MIN_SCALE));
+        assert_eq!((q.note_alpha(now), q.tab_alpha(now)), (0.0, 1.0));
+    }
+
+    #[test]
+    fn the_window_keeps_room_for_the_overshoot() {
+        let base = crate::widgets::paint::margins();
+        for edge in [Edge::Left, Edge::Right] {
+            let (w, h) = (240.0, 208.0);
+            let r = room(w, h, edge, 0);
+            assert!(r.0 >= 0.0 && r.1 >= 0.0 && r.2 >= 0.0 && r.3 >= 0.0);
+            assert_eq!(r.1, 0.0, "nothing on top");
+            let o = origin(edge, w, h);
+            let reach = SHADOW_REACH;
+            let lo = scale_about((-reach.0, -reach.1), o, PEAK_SCALE);
+            let hi = scale_about((w + reach.2, h + reach.3), o, PEAK_SCALE);
+            assert!(lo.0 >= -(base.0 + r.0) && lo.1 >= -(base.1 + r.1), "{edge:?} top-left");
+            assert!(hi.0 <= w + base.2 + r.2 && hi.1 <= h + base.3 + r.3, "{edge:?} bottom-right");
+        }
+        // The side the note grows from takes the room: the left of a right-edge note.
+        let r = room(240.0, 208.0, Edge::Right, 0);
+        assert!((7.0..=9.0).contains(&r.0) && (7.0..=9.0).contains(&r.3), "{r:?}");
+        assert_eq!(r.2, 0.0);
+        let l = room(240.0, 208.0, Edge::Left, 0);
+        assert!((7.0..=9.0).contains(&l.2) && (7.0..=9.0).contains(&l.3) && l.0 == 0.0, "{l:?}");
+        // A rolled note is short: nothing on top either.
+        assert_eq!(room(240.0, 40.0, Edge::Right, 0).1, 0.0);
+    }
+
+    #[test]
+    fn the_window_keeps_room_for_a_stacks_edges_at_the_peak() {
+        let base = crate::widgets::paint::margins();
+        for edges in [1usize, 2] {
+            for edge in [Edge::Left, Edge::Right] {
+                let (w, h) = (240.0, 208.0);
+                let r = room(w, h, edge, edges);
+                let o = origin(edge, w, h);
+                let reach = reach(edges);
+                let lo = scale_about((-reach.0, -reach.1), o, PEAK_SCALE);
+                let hi = scale_about((w + reach.2, h + reach.3), o, PEAK_SCALE);
+                assert!(lo.0 >= -(base.0 + r.0) && lo.1 >= -(base.1 + r.1), "{edge:?} {edges} top-left");
+                assert!(hi.0 <= w + base.2 + r.2 && hi.1 <= h + base.3 + r.3, "{edge:?} {edges} bottom-right");
+            }
+        }
+        // The two edges reach 7.5 right and 9.5 down, beyond a plain note's 6 and 8.
+        assert_eq!(reach(2), (6.0, 4.0, 7.5, 9.5));
+        assert_eq!(reach(0), SHADOW_REACH);
+        // A stack needs at least as much room as a plain note, more at the far side.
+        let (plain, stack) = (room(240.0, 208.0, Edge::Left, 0), room(240.0, 208.0, Edge::Left, 2));
+        assert!(stack.2 > plain.2 && stack.3 >= plain.3, "{plain:?} {stack:?}");
+    }
+
+    #[test]
     fn the_timing_constants() {
-        assert_eq!(SLIDE_MS, 180.0);
         assert_eq!(GRACE_MS, 300.0);
+        assert_eq!(OUT_MS, 300.0);
+        assert_eq!(IN_MS, 200.0);
+        assert_eq!(MIN_SCALE, 0.12);
+        assert_eq!(BACK, 1.1);
+        assert_eq!(NOTE_FADE, 0.45);
+        assert_eq!(TAB_FADE, 0.35);
+        assert!((KEEPER_ALPHA - 0.012).abs() < 1e-3);
         assert_eq!(CUE_W, 3.0);
     }
 }
