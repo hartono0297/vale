@@ -135,6 +135,9 @@ pub enum WidgetEvent {
     StackOut { id: String },
     /// The note was tucked to an edge, or brought out (`None`).
     Tuck { id: String, edge: Option<Edge> },
+    /// The list button of this note's header: the owner opens the sticky note
+    /// list beside it.
+    OpenList { id: String },
     /// Something eases: the owner starts its frame clock.
     NeedsClock,
 }
@@ -292,6 +295,10 @@ struct Win {
     /// A reminder fired: the note sits above other windows until it is
     /// touched, snoozed, opened or its reminder cleared.
     raised: bool,
+    /// The sticky note list brought this note to the front (`bring_front`):
+    /// it sits above other windows, even on the desktop layer, until it loses
+    /// the keyboard.
+    lifted: bool,
     /// When the reminder's shake began.
     wiggle: Option<Instant>,
     /// When the confetti began, and its seed.
@@ -802,6 +809,33 @@ impl WidgetHost {
         }
     }
 
+    /// The note's window on the desktop (px), the note itself without the
+    /// margin: what the sticky note list sits beside. `None` when no window
+    /// shows note `id`.
+    pub fn note_rect_px(&self, id: &str) -> Option<Rect> {
+        with(|s| s.wins.iter().find(|w| w.has(id)).map(|w| w.note)).flatten()
+    }
+
+    /// Gives note `id` the keyboard and puts it over other windows, even on
+    /// the desktop layer (the sticky note list's "show and focus"). It goes
+    /// back to its layer when it loses the keyboard (`end_editing`).
+    pub fn bring_front(&mut self, id: &str) {
+        self.focus(id);
+        let i = with(|s| {
+            let i = s.wins.iter().position(|w| w.has(id))?;
+            // Only a note that did get the keyboard: nothing would end it.
+            if s.wins[i].edit.is_none() {
+                return None;
+            }
+            s.wins[i].lifted = true;
+            Some(i)
+        })
+        .flatten();
+        if let Some(i) = i {
+            apply_z(i);
+        }
+    }
+
     /// The reminders of notes `ids` went off: each note sits above other
     /// windows (even on the desktop layer) until it is touched, snoozed,
     /// opened or its reminder cleared, and shakes for 600 ms unless the owner
@@ -1085,7 +1119,7 @@ fn elapsed_ms(t: Instant, now: Instant) -> f32 {
 
 /// A note that sits above ordinary windows.
 fn above_windows(s: &State, w: &Win) -> bool {
-    w.sticky.pinned || s.prefs.layer == WidgetLayer::Top || w.raised
+    w.sticky.pinned || s.prefs.layer == WidgetLayer::Top || w.raised || w.lifted
 }
 
 // ------------------------------------------------------------------ sync
@@ -1244,6 +1278,7 @@ fn blank_win(hwnd: HWND, note: &Note, tilt: bool) -> Win {
         footer_msg: None,
         confirm_delete: false,
         raised: false,
+        lifted: false,
         wiggle: None,
         confetti: None,
         tilt,
@@ -2638,6 +2673,14 @@ fn button(hwnd: HWND, b: Btn) {
         }
         Btn::Prev => flip_by(hwnd, -1),
         Btn::Next => flip_by(hwnd, 1),
+        Btn::List => {
+            let _ = with(|s| {
+                let i = idx_of(s, hwnd)?;
+                let id = s.wins[i].id.clone();
+                push(s, WidgetEvent::OpenList { id });
+                Some(())
+            });
+        }
     }
 }
 
@@ -3776,23 +3819,28 @@ fn begin_editing(hwnd: HWND, at: Option<usize>) {
 
 /// The note lets go of the keyboard.
 fn end_editing(hwnd: HWND) {
-    let edit_hwnd = with(|s| {
+    let ended = with(|s| {
         let i = idx_of(s, hwnd)?;
         let w = &mut s.wins[i];
         let e = w.edit.take()?;
         w.caret_on = false;
         w.selecting = false;
         w.dirty = true;
+        // A note the list brought to the front goes back to its layer.
+        let lifted = std::mem::take(&mut w.lifted);
         settle_alpha(s, i);
         // Nothing keeps a tucked note out now: the grace starts.
         tuck_settle(s, i);
-        Some(e)
+        Some((e, lifted.then_some(i)))
     })
     .flatten();
-    if let Some(e) = edit_hwnd {
+    if let Some((e, lifted)) = ended {
         unsafe {
             let _ = KillTimer(Some(hwnd), TIMER_WIDGET_CARET);
             let _ = DestroyWindow(e);
+        }
+        if let Some(i) = lifted {
+            apply_z(i);
         }
     }
     flush_dirty();
@@ -4543,6 +4591,46 @@ mod tests {
         assert!(!opens_templates(plus, sticky::MAX_STICKY), "at the cap: the plain menu");
         assert!(!opens_templates(Target::Button(Btn::More), 1));
         assert!(!opens_templates(Target::Header, 1));
+    }
+
+    #[test]
+    fn the_list_button_asks_the_owner_to_open_the_list_and_the_note_tells_where_it_is() {
+        let displays = vec![display("A", 0, true, 96)];
+        let notes = vec![note("n1", DipRect::new(100.0, 100.0, 240.0, 208.0))];
+        let mut host = WidgetHost::new(HWND::default());
+        host.sync(&ctx(&notes, &displays));
+        let hwnd = with(|s| s.wins[0].hwnd).unwrap();
+        button(hwnd, Btn::List);
+        assert_eq!(host.drain(), vec![WidgetEvent::OpenList { id: "n1".into() }]);
+        // The note's own rect (px, without the margin) is what the list sits beside.
+        let r = host.note_rect_px("n1").expect("the note has a window");
+        assert!(r.w > 0 && r.h > 0, "{r:?}");
+        assert!(host.note_rect_px("nope").is_none());
+        host.shutdown();
+    }
+
+    #[test]
+    fn bringing_a_note_to_the_front_lifts_it_over_other_windows_until_it_loses_the_keyboard() {
+        let _k = keyboard_lock();
+        let displays = vec![display("A", 0, true, 96)];
+        let notes = vec![note("n1", DipRect::new(100.0, 100.0, 240.0, 208.0))];
+        let mut host = WidgetHost::new(HWND::default());
+        host.sync(&ctx(&notes, &displays));
+        let hwnd = with(|s| s.wins[0].hwnd).unwrap();
+        let mode = || unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) };
+        assert!(with(|s| !above_windows(s, &s.wins[0])).unwrap(), "a desktop-layer note is at the bottom");
+        assert_eq!(mode(), 1);
+        host.bring_front("nope");
+        assert!(with(|s| !s.wins[0].lifted).unwrap(), "no such note: nothing lifts");
+        host.bring_front("n1");
+        assert!(with(|s| s.wins[0].edit.is_some()).unwrap(), "it has the keyboard");
+        assert!(with(|s| s.wins[0].lifted && above_windows(s, &s.wins[0])).unwrap(), "lifted: over other windows");
+        assert_eq!(mode(), 2, "the window procedure keeps it topmost");
+        // Losing the keyboard puts it back on its layer.
+        end_editing(hwnd);
+        assert!(with(|s| !s.wins[0].lifted && !above_windows(s, &s.wins[0])).unwrap());
+        assert_eq!(mode(), 1, "back at the bottom, owned by the shell again");
+        host.shutdown();
     }
 
     #[test]

@@ -93,6 +93,7 @@ fn opens_windows(arg: Option<&str>) -> bool {
             | "--demo-arrange"
             | "--demo-notice-close"
             | "--demo-widgets"
+            | "--demo-note-list"
             | "--demo-snap"
             | "--demo-shot-editor"
             | "--demo-lyrics-card"
@@ -203,6 +204,16 @@ fn main() {
             demo_lang_from_env();
             let reset = std::env::args().nth(2).as_deref() == Some("reset");
             widgets::demo::run(reset);
+        }
+        // The sticky note list on the same scene, notes file and seeded notes
+        // as `--demo-widgets`, opened at the default anchor; `reset` seeds
+        // it again.
+        #[cfg(debug_assertions)]
+        Some("--demo-note-list") => {
+            attach_parent_console();
+            demo_lang_from_env();
+            let reset = std::env::args().nth(2).as_deref() == Some("reset");
+            widgets::demo::run_list(reset);
         }
         // The notice ✕ on a real `IslandState` fed made-up notices: effects are
         // printed, never run.

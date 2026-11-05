@@ -3,7 +3,7 @@ tags: [decision, hotkeys, settings, config, windows]
 date: 2026-11-04
 ---
 
-# Hotkeys: seven recordable combos in one Settings section
+# Hotkeys: eight recordable combos in one Settings section
 
 The five fixed presets (Clipboard Ctrl+Alt+V / Win+Alt+V, search
 Ctrl+Alt+Space / Win+Alt+S, Devices Ctrl+Alt+D, Arrange Ctrl+Alt+S, the PrtSc
@@ -22,6 +22,16 @@ None, `RegisterHotKey` id `HOTKEY_LYRICS_CARD` = 6, labels `HotkeyRowLyricsCard`
 table sized by the row count is `HotkeyId::ALL.len()` now (`ROWS` in
 `app_hotkeys.rs`, the PrtSc table, the Settings failed flags). Everything below
 that says "five" is five rows plus this one; the rest is unchanged.
+
+**Eighth row (2026-11-05): "Daftar catatan tempel" / "Sticky note list"** opens
+the sticky note list window ([[sticky-note-list]]). `HotkeyId::StickyList`,
+appended after `StickyNote` (index 7), config key `sticky_list`, **no default**,
+`RegisterHotKey` id `HOTKEY_STICKY_LIST` = 8, labels `Key::StickyList` and
+`Key::StickyListDesc` ("Cari dan buka catatan tempel" / "Search and open sticky
+notes"). The press calls `open_note_list(None)`. A config from before the row
+has no `sticky_list` key and reads None (tested). The ids are 1-8 (6 lyrics card,
+7 new sticky note, 8 the list) and Settings -> Tombol pintas has **eight rows**
+and still scrolls at the minimum size.
 
 ## Model (`src/hotkey.rs`, pure)
 

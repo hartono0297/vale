@@ -49,6 +49,8 @@ pub enum MenuCmd {
     Search,
     /// "Catatan tempel baru": one empty sticky note on the desktop.
     StickyNote,
+    /// "Daftar catatan tempel": opens the sticky note list window.
+    StickyList,
     StylePill,
     StyleNotch,
     /// "Jalan saat Windows mulai": a check item that flips `start_with_windows`.
@@ -61,10 +63,11 @@ pub enum MenuCmd {
     Exit,
 }
 
-const COMMANDS: [MenuCmd; 9] = [
+const COMMANDS: [MenuCmd; 10] = [
     MenuCmd::Settings,
     MenuCmd::Search,
     MenuCmd::StickyNote,
+    MenuCmd::StickyList,
     MenuCmd::StylePill,
     MenuCmd::StyleNotch,
     MenuCmd::Autostart,
@@ -92,7 +95,7 @@ pub enum MenuChoice {
     Monitor(NotchMonitor),
 }
 
-/// The Monitor submenu's ids start here, clear of `MenuCmd::id` (1..=9):
+/// The Monitor submenu's ids start here, clear of `MenuCmd::id` (1..=10):
 /// 100 is "Monitor utama", 101 + i the display at place i of the list the menu
 /// was built from.
 const MONITOR_ID_PRIMARY: usize = 100;
@@ -223,6 +226,7 @@ fn menu_items_with(
         entry(MenuCmd::Settings, Key::MenuSettings, false),
         entry(MenuCmd::Search, Key::MenuSearch, false),
         sticky,
+        entry(MenuCmd::StickyList, Key::StickyList, false),
         MenuItem::Separator,
         entry(
             MenuCmd::StylePill,
@@ -634,6 +638,7 @@ mod tests {
                 "Pengaturan…",
                 "Cari…",
                 "Catatan tempel baru",
+                "Daftar catatan tempel",
                 "-",
                 "Gaya: Pill",
                 "Gaya: Notch",
@@ -672,11 +677,33 @@ mod tests {
     }
 
     #[test]
+    fn the_list_entry_follows_the_new_note_entry_and_is_always_enabled() {
+        let pos = COMMANDS.iter().position(|c| *c == MenuCmd::StickyNote).unwrap();
+        assert_eq!(COMMANDS[pos + 1], MenuCmd::StickyList, "right after the new note entry");
+        for lang in [Lang::Id, Lang::En] {
+            let cfg = Config { language: lang, ..Config::default() };
+            let want = match lang {
+                Lang::Id => "Daftar catatan tempel",
+                Lang::En => "Sticky note list",
+            };
+            // Enabled with few notes, with none and at the cap.
+            for n in [0, 5, 19, 20] {
+                let items = menu_items_with(&cfg, None, &[], n);
+                assert!(
+                    matches!(&items[3], MenuItem::Entry { cmd: MenuCmd::StickyList, label, checked: false } if label == want),
+                    "{lang:?} with {n}: {:?}",
+                    items[3]
+                );
+            }
+        }
+    }
+
+    #[test]
     fn a_known_update_takes_the_place_of_the_check_item() {
         let id = labels(&menu_items(&Config::default(), Some("3.11.0"), &[])).join("|");
         assert_eq!(
             id,
-            "Pengaturan…|Cari…|Catatan tempel baru|-|Gaya: Pill|Gaya: Notch|Monitor|-|Jalan saat Windows mulai|-|Update ke 3.11.0|Keluar"
+            "Pengaturan…|Cari…|Catatan tempel baru|Daftar catatan tempel|-|Gaya: Pill|Gaya: Notch|Monitor|-|Jalan saat Windows mulai|-|Update ke 3.11.0|Keluar"
         );
         let en = Config {
             language: Lang::En,
@@ -685,7 +712,7 @@ mod tests {
         let en = labels(&menu_items(&en, Some("3.11.0"), &[])).join("|");
         assert_eq!(
             en,
-            "Settings…|Search…|New sticky note|-|Style: Pill|Style: Notch|Monitor|-|Start with Windows|-|Update to 3.11.0|Quit"
+            "Settings…|Search…|New sticky note|Sticky note list|-|Style: Pill|Style: Notch|Monitor|-|Start with Windows|-|Update to 3.11.0|Quit"
         );
         let with = commands(&menu_items(&Config::default(), Some("3.11.0"), &[]));
         assert!(with.contains(&MenuCmd::InstallUpdate));
@@ -707,6 +734,7 @@ mod tests {
                 "Settings…",
                 "Search…",
                 "New sticky note",
+                "Sticky note list",
                 "-",
                 "Style: Pill",
                 "Style: Notch",
