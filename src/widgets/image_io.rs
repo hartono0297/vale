@@ -344,7 +344,7 @@ pub fn import(src: Source, dir: &Path) -> Result<String, ImportError> {
     let name = images::unique_name(unix_ms(), COUNTER.fetch_add(1, Ordering::Relaxed), ext);
     let path = dir.join(&name);
     let mut tmp = path.clone().into_os_string();
-    tmp.push(".tmp");
+    tmp.push(images::TMP_SUFFIX);
     let tmp = PathBuf::from(tmp);
     let written = std::fs::write(&tmp, &encoded).and_then(|()| std::fs::rename(&tmp, &path));
     if written.is_err() {
@@ -589,14 +589,18 @@ pub fn delete_named(dir: &Path, names: &[String]) {
 
 /// The startup sweep: the files of `dir` that nothing in `referenced` names and
 /// that are older than a day at `now` (a crash, a note deleted while the
-/// island was off) are deleted; returns how many. Only valid names inside the
-/// folder: a stray file the owner put there is left alone.
+/// island was off) are deleted, and so are the `<valid name>.tmp` files an
+/// interrupted import left (`images::stale_tmps`, also older than a day: a
+/// running import owns a fresh one); returns how many. Only regular files with
+/// valid names inside the folder: a stray file the owner put there is left alone.
 pub fn sweep(dir: &Path, referenced: &std::collections::HashSet<String>, now: i64) -> usize {
     let Ok(read) = std::fs::read_dir(dir) else {
         return 0;
     };
     let listing: Vec<(String, i64)> = read
         .filter_map(Result::ok)
+        // Regular files only: a folder or a link is never ours to delete.
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
         .filter_map(|e| {
             let name = e.file_name().into_string().ok()?;
             let secs = e
@@ -612,7 +616,23 @@ pub fn sweep(dir: &Path, referenced: &std::collections::HashSet<String>, now: i6
         .collect();
     let gone = images::orphans(&listing, referenced, now);
     delete_named(dir, &gone);
-    gone.len()
+    let tmps = images::stale_tmps(&listing, now);
+    delete_tmps(dir, &tmps);
+    gone.len() + tmps.len()
+}
+
+/// Deletes the stale import leftovers `names` (`images::stale_tmps`) from
+/// `dir`. The rule is checked again here, so the path is always
+/// `dir.join("<valid name>.tmp")`: nothing with a separator or `..` meets the disk.
+fn delete_tmps(dir: &Path, names: &[String]) {
+    for name in names {
+        if name
+            .strip_suffix(images::TMP_SUFFIX)
+            .is_some_and(images::valid_name)
+        {
+            let _ = std::fs::remove_file(dir.join(name));
+        }
+    }
 }
 
 /// The startup sweep for `store`'s folder: `sweep` with what the store
@@ -792,6 +812,63 @@ mod tests {
             assert!(dir.join(kept).exists(), "{kept}");
         }
         assert_eq!(sweep(&dir.join("missing"), &used, now), 0, "no folder, nothing");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_sweep_also_deletes_old_import_tmps_and_only_those() {
+        let dir = temp("sweep_tmp");
+        let day = std::time::Duration::from_secs(25 * 3600);
+        let write = |name: &str, old: bool| {
+            let path = dir.join(name);
+            std::fs::write(&path, b"x").unwrap();
+            if old {
+                let f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+                f.set_modified(std::time::SystemTime::now() - day).unwrap();
+            }
+        };
+        write("img-1-1.png.tmp", true);
+        write("img-1-2.jpg.tmp", true);
+        write("img-3-1.png.tmp", false);
+        write("notes.txt.tmp", true);
+        write("old name.png.tmp", true);
+        write("x.png.tmp.tmp", true);
+        write("old-unused.png", true);
+        write("old-used.png", true);
+        // A folder with a tmp name, old: never touched, never counted.
+        let sub = dir.join("img-2-1.png.tmp");
+        std::fs::create_dir_all(&sub).unwrap();
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            // FILE_WRITE_ATTRIBUTES on a folder needs FILE_FLAG_BACKUP_SEMANTICS.
+            let f = std::fs::OpenOptions::new()
+                .access_mode(0x100)
+                .custom_flags(0x0200_0000)
+                .open(&sub)
+                .unwrap();
+            f.set_modified(std::time::SystemTime::now() - day).unwrap();
+        }
+        std::fs::write(sub.join("inner.png.tmp"), b"x").unwrap();
+        let used: std::collections::HashSet<String> = ["old-used.png".to_owned()].into();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        assert_eq!(sweep(&dir, &used, now), 3, "one orphan and two tmps");
+        for gone in ["img-1-1.png.tmp", "img-1-2.jpg.tmp", "old-unused.png"] {
+            assert!(!dir.join(gone).exists(), "{gone}");
+        }
+        for kept in [
+            "img-3-1.png.tmp",
+            "notes.txt.tmp",
+            "old name.png.tmp",
+            "x.png.tmp.tmp",
+            "old-used.png",
+        ] {
+            assert!(dir.join(kept).exists(), "{kept}");
+        }
+        assert!(sub.is_dir() && sub.join("inner.png.tmp").exists(), "a folder stays");
+        assert_eq!(sweep(&dir, &used, now), 0, "nothing more the second time");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

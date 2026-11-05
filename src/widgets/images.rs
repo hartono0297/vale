@@ -180,6 +180,26 @@ pub fn orphans(
     out
 }
 
+/// The `.tmp` files of an import that was cut off between the write and the
+/// rename: exactly `<valid image name>.tmp` (one suffix; `x.png.tmp.tmp` and
+/// `old name.png.tmp` are not ours) and older than 24 hours at `now`, so a
+/// running import's fresh one is never taken. A `.tmp` is never referenced by
+/// a note, so no reference list is needed. Sorted.
+pub fn stale_tmps(listing: &[(String, i64)], now: i64) -> Vec<String> {
+    let mut out: Vec<String> = listing
+        .iter()
+        .filter(|(name, modified)| {
+            name.strip_suffix(TMP_SUFFIX).is_some_and(valid_name) && now - modified >= ORPHAN_AGE_SECS
+        })
+        .map(|(name, _)| name.clone())
+        .collect();
+    out.sort();
+    out
+}
+
+/// What `import` appends to a file's name while it writes it.
+pub const TMP_SUFFIX: &str = ".tmp";
+
 /// A new file name: the moment (unix ms), a counter for several in the same
 /// millisecond and the extension (`jpg` for a JPEG, anything else `png`).
 pub fn unique_name(unix_ms: u64, n: u32, ext: &str) -> String {
@@ -386,6 +406,32 @@ mod tests {
         assert!(to_release(&known, &known).is_empty());
         assert!(to_release(&set(&[]), &now).is_empty());
         assert_eq!(to_release(&known, &set(&[])), ["a.png", "b.png", "c.png"]);
+    }
+
+    #[test]
+    fn stale_tmps_are_old_tmp_copies_of_valid_names_only() {
+        let day = ORPHAN_AGE_SECS;
+        let now = 1_000_000;
+        let listing: Vec<(String, i64)> = [
+            ("img-1-1.png.tmp", now - day - 1),
+            ("a.jpg.tmp", now - day),
+            ("fresh.png.tmp", now - day + 1),
+            ("img-1-1.png", now - 10 * day),
+            ("notes.txt.tmp", now - 10 * day),
+            ("old name.png.tmp", now - 10 * day),
+            ("x.png.tmp.tmp", now - 10 * day),
+            (".tmp", now - 10 * day),
+            ("..\\x.png.tmp", now - 10 * day),
+            ("sub/x.png.tmp", now - 10 * day),
+            ("..x.png.tmp", now - 10 * day),
+            ("CON.png.tmp", now - 10 * day),
+        ]
+        .iter()
+        .map(|(n, t)| ((*n).to_owned(), *t))
+        .collect();
+        assert_eq!(stale_tmps(&listing, now), ["a.jpg.tmp", "img-1-1.png.tmp"]);
+        // Referenced or not makes no difference: a tmp is never referenced.
+        assert_eq!(orphans(&listing, &HashSet::new(), now), ["img-1-1.png"]);
     }
 
     #[test]
