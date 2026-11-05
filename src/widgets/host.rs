@@ -2149,10 +2149,21 @@ unsafe extern "system" fn wnd_proc(
             unsafe {
                 let _ = KillTimer(Some(hwnd), TIMER_WIDGET_CARET);
             }
+            // Results posted to this window that it will never pump: their
+            // files go, and the pending count they held.
+            let orphans = image_io::claim_window(hwnd);
             let _ = with(|s| {
+                for done in &orphans {
+                    if let Some(at) = s.in_flight.iter().position(|n| *n == done.note) {
+                        s.in_flight.remove(at);
+                    }
+                }
                 s.wins.retain(|w| w.hwnd != hwnd);
                 refresh_peek(s);
             });
+            for done in &orphans {
+                image_io::discard(done);
+            }
             flush_dirty();
             return LRESULT(0);
         }
@@ -2772,6 +2783,13 @@ fn art_seed(id: &str, unix: i64) -> u64 {
 /// `e` applied to note `i`'s text: through the EDIT while it has the keyboard
 /// (so it can be undone), else straight to the text.
 fn apply_edit(s: &mut State, i: usize, e: &Edit) {
+    apply_edit_marks(s, i, e, None);
+}
+
+/// `apply_edit` for an edit that only changed list markers (`marks` are the
+/// toggle's `(line start, old marker length, new marker length)`): the
+/// formatting moves by those, not by the single region the edit replaces.
+fn apply_edit_marks(s: &mut State, i: usize, e: &Edit, marks: Option<&[(usize, usize, usize)]>) {
     let w = &mut s.wins[i];
     let before = w.text.clone();
     match w.edit {
@@ -2785,7 +2803,7 @@ fn apply_edit(s: &mut State, i: usize, e: &Edit) {
             w.text = checklist::apply(&before, e);
         }
     }
-    text_changed(s, i, &before);
+    text_changed_marks(s, i, &before, marks);
 }
 
 /// A drag that a note takes is over (or has left) window `hwnd`: its dashed
@@ -2853,6 +2871,17 @@ pub(super) fn drop_into(hwnd: HWND, lines: &[String]) -> bool {
 
 /// The text of note `i` changed from `before`: tell the owner, redraw.
 fn text_changed(s: &mut State, i: usize, before: &str) {
+    text_changed_marks(s, i, before, None);
+}
+
+/// `text_changed`; with `marks` the formatting follows the marker changes of
+/// a list toggle (`styles::rebase_marks`) instead of the prefix/suffix diff.
+fn text_changed_marks(
+    s: &mut State,
+    i: usize,
+    before: &str,
+    marks: Option<&[(usize, usize, usize)]>,
+) {
     let w = &mut s.wins[i];
     if w.text == before {
         w.dirty = true;
@@ -2868,7 +2897,10 @@ fn text_changed(s: &mut State, i: usize, before: &str) {
     // runs with it. The owner is told the text first, then the runs, which win
     // over the store's own rebase of the same edit.
     let had = !w.sticky.styles.is_empty();
-    w.sticky.styles = styles::rebase_with(before, &w.text, &w.sticky.styles, w.pending);
+    w.sticky.styles = match marks {
+        Some(spans) => styles::rebase_marks(before, &w.text, &w.sticky.styles, spans),
+        None => styles::rebase_with(before, &w.text, &w.sticky.styles, w.pending),
+    };
     let has = !w.sticky.styles.is_empty();
     let (id, t) = (w.id.clone(), w.text.clone());
     let runs = w.sticky.styles.clone();
@@ -2959,7 +2991,9 @@ fn tool_states(w: &Win) -> [bool; 8] {
         }
     };
     let lines = checklist::lines(&w.text);
-    let (first, last) = (checklist::line_at(&lines, a), checklist::line_at(&lines, b));
+    // The same lines the list buttons act on (a selection that ends at the
+    // start of a line does not touch it).
+    let (first, last) = checklist::touched(&lines, a, b);
     let touched = &lines[first..=last.max(first)];
     let hl = if a != b {
         (a..b).all(|i| styles::style_at(runs, i + 1).hl.is_some())
@@ -3109,8 +3143,9 @@ fn toggle_list_in(s: &mut State, i: usize, kind: checklist::ListKind) {
         let end = t.encode_utf16().count();
         (end, end)
     };
-    let (e, (na, nb)) = checklist::toggle_list_sel(&t, a, b, kind);
-    apply_edit(s, i, &e);
+    let plan = checklist::toggle_list_plan(&t, a, b, kind);
+    let (na, nb) = plan.sel;
+    apply_edit_marks(s, i, &plan.edit, Some(&plan.spans));
     if a != b
         && let Some(edit_hwnd) = s.wins[i].edit
     {
@@ -3310,11 +3345,12 @@ pub(super) fn import_sources(hwnd: HWND, sources: Vec<image_io::Source>) {
 /// has that id (the shown one, or a copy under a stack's top sheet); over the
 /// cap, or with no window that has the id any more, it is deleted again.
 fn import_done(hwnd: HWND, lparam: LPARAM) {
-    if lparam.0 == 0 {
+    // The message carries a token, never a pointer: a result is claimed from
+    // the registry once, and a token it does not know (a stray post by another
+    // process) is ignored.
+    let Some(done) = image_io::claim(lparam.0 as u64) else {
         return;
-    }
-    // SAFETY: `spawn_import` sent a `Box<Done>` raw pointer, once.
-    let done = unsafe { Box::from_raw(lparam.0 as *mut image_io::Done) };
+    };
     let kept = with(|s| {
         if let Some(at) = s.in_flight.iter().position(|n| *n == done.note) {
             s.in_flight.remove(at);
@@ -7245,6 +7281,57 @@ mod tests {
     }
 
     #[test]
+    fn a_list_toggle_over_several_lines_keeps_the_runs_of_the_lines_between() {
+        let _focus = keyboard_lock();
+        let bold = Style { b: true, ..Style::default() };
+        let (mut host, hwnd, edit_hwnd) = editing("one\ntwo\nthree", |s| {
+            s.styles = vec![Run { s: 4, e: 7, style: bold }];
+        });
+        select(hwnd, edit_hwnd, 0, 13);
+        edit_event(hwnd, edit_hwnd, EditEvent::Format(Tool::Bullet));
+        assert_eq!(with(|s| s.wins[0].text.clone()).unwrap(), "\u{2022} one\n\u{2022} two\n\u{2022} three");
+        // "two" moved with its line (its marker takes the line's style); nothing else turned bold.
+        assert_eq!(styles_of(), [Run { s: 6, e: 11, style: bold }]);
+        // To a checklist: the other marker kind, the same.
+        edit_event(hwnd, edit_hwnd, EditEvent::Format(Tool::Check));
+        assert_eq!(with(|s| s.wins[0].text.clone()).unwrap(), "- [ ] one\n- [ ] two\n- [ ] three");
+        assert_eq!(styles_of(), [Run { s: 10, e: 19, style: bold }]);
+        // Off again.
+        edit_event(hwnd, edit_hwnd, EditEvent::Format(Tool::Check));
+        assert_eq!(with(|s| s.wins[0].text.clone()).unwrap(), "one\ntwo\nthree");
+        assert_eq!(styles_of(), [Run { s: 4, e: 7, style: bold }]);
+        host.shutdown();
+    }
+
+    #[test]
+    fn a_list_toggle_does_not_turn_the_lines_bold_when_the_first_one_is() {
+        let _focus = keyboard_lock();
+        let bold = Style { b: true, ..Style::default() };
+        let (mut host, hwnd, edit_hwnd) = editing("one\ntwo\nthree", |s| {
+            s.styles = vec![Run { s: 0, e: 3, style: bold }];
+        });
+        select(hwnd, edit_hwnd, 0, 13);
+        edit_event(hwnd, edit_hwnd, EditEvent::Format(Tool::Bullet));
+        // The first line's own marker and letters are bold, no more.
+        assert_eq!(styles_of(), [Run { s: 0, e: 5, style: bold }]);
+        host.shutdown();
+    }
+
+    #[test]
+    fn the_list_buttons_light_for_the_lines_the_toggle_acts_on() {
+        let _focus = keyboard_lock();
+        let (mut host, hwnd, edit_hwnd) = editing("\u{2022} a\nb", |_| {});
+        // Line 1 whole, selection ending at the start of line 2: only line 1
+        // is touched, so Bullet is on and the button would take it off.
+        select(hwnd, edit_hwnd, 0, 4);
+        let on = with(|s| tool_states(&s.wins[0])).unwrap();
+        assert!(on[4], "Bullet is on for the touched line only: {on:?}");
+        edit_event(hwnd, edit_hwnd, EditEvent::Format(Tool::Bullet));
+        assert_eq!(with(|s| s.wins[0].text.clone()).unwrap(), "a\nb");
+        host.shutdown();
+    }
+
+    #[test]
     fn the_runs_follow_an_edit_the_edit_undoes_and_a_paste() {
         let _focus = keyboard_lock();
         let (mut host, hwnd, edit_hwnd) = editing("Belanja", |s| {
@@ -7380,13 +7467,28 @@ mod tests {
         host.sync(&ctx(&notes, &displays));
         let hwnd = with(|s| s.wins[0].hwnd).unwrap();
         // The result names a note no window has.
-        let done = Box::new(image_io::Done {
+        let done = image_io::Done {
             note: "n-nobody".into(),
             result: Ok(name.clone()),
             dir: out.clone(),
-        });
-        import_done(hwnd, LPARAM(Box::into_raw(done) as isize));
+        };
+        import_done(hwnd, LPARAM(image_io::stash(hwnd, done) as isize));
         assert!(!out.join(&name).exists(), "no window took it: the new file is deleted");
+        assert!(with(|s| s.wins[0].sticky.images.is_empty()).unwrap());
+        // A message with a token nothing stashed is ignored, never read as a
+        // pointer, and a token is good once.
+        import_done(hwnd, LPARAM(0));
+        import_done(hwnd, LPARAM(0x1234_5678));
+        import_done(hwnd, LPARAM(-1));
+        let again = image_io::Done { note: "n1".into(), result: Err(image_io::ImportError::Io), dir: out.clone() };
+        let token = image_io::stash(hwnd, again);
+        import_done(hwnd, LPARAM(token as isize));
+        assert!(image_io::claim(token).is_none(), "taken once");
+        assert!(with(|s| s.wins[0].sticky.images.is_empty()).unwrap());
+        // A foreign WM_NOTE_IMPORT through the window procedure: nothing happens.
+        unsafe {
+            SendMessageW(hwnd, image_io::WM_NOTE_IMPORT, Some(WPARAM(0)), Some(LPARAM(0xDEAD_BEEF)));
+        }
         assert!(with(|s| s.wins[0].sticky.images.is_empty()).unwrap());
         host.shutdown();
         let _ = std::fs::remove_dir_all(&dir);

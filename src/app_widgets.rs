@@ -78,11 +78,9 @@ impl App {
         // that are a day old (a crash, a note deleted while the island was
         // off) are cleaned out.
         self.widgets.known_images = self.notes.referenced_images();
-        crate::widgets::image_io::sweep(
-            &self.notes.images_dir(),
-            &self.widgets.known_images,
-            Local::now().timestamp(),
-        );
+        // Not when notes.json failed to load: the store is empty then and
+        // would sweep away the images of the notes that come back.
+        crate::widgets::image_io::sweep_store(&self.notes, Local::now().timestamp());
         self.widgets_sync();
     }
 

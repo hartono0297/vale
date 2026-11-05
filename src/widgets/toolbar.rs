@@ -90,9 +90,11 @@ pub fn shortcut(t: Tool) -> &'static str {
 
 /// The tool a key press with Ctrl held is. Plain Ctrl+X, Ctrl+C and Ctrl+V
 /// are not tools (they cut, copy and paste), and with Shift Ctrl+B, I and U
-/// are not either.
-pub fn shortcut_of(vk: u16, ctrl: bool, shift: bool) -> Option<Tool> {
-    if !ctrl {
+/// are not either. With Alt down it is nothing: AltGr reaches a key down as
+/// Ctrl+Alt, and AltGr+B, U, I or Shift+X type a character on several layouts
+/// (Hungarian, Czech, Slovak, Polish), which must not flip the formatting.
+pub fn shortcut_of(vk: u16, ctrl: bool, shift: bool, alt: bool) -> Option<Tool> {
+    if !ctrl || alt {
         return None;
     }
     match (vk, shift) {
@@ -443,16 +445,20 @@ mod tests {
             }
             let shift = sc.contains("Shift");
             let vk = u16::from(sc.as_bytes()[sc.len() - 1]);
-            assert_eq!(shortcut_of(vk, true, shift), Some(t), "{sc}");
+            assert_eq!(shortcut_of(vk, true, shift, false), Some(t), "{sc}");
         }
-        assert_eq!(shortcut_of(0x42, false, false), None, "no Ctrl");
-        assert_eq!(shortcut_of(0x42, true, true), None, "Ctrl+Shift+B is nothing");
-        assert_eq!(shortcut_of(0x58, true, false), None, "plain Ctrl+X cuts");
-        assert_eq!(shortcut_of(0x43, true, false), None, "Ctrl+C copies");
-        assert_eq!(shortcut_of(0x56, true, false), None, "Ctrl+V pastes");
-        assert_eq!(shortcut_of(0x48, true, false), None, "plain Ctrl+H is backspace");
-        assert_eq!(shortcut_of(0x41, true, false), None, "Ctrl+A is the EDIT's");
-        assert_eq!(shortcut_of(0x39, true, false), None);
+        assert_eq!(shortcut_of(0x42, false, false, false), None, "no Ctrl");
+        assert_eq!(shortcut_of(0x42, true, true, false), None, "Ctrl+Shift+B is nothing");
+        assert_eq!(shortcut_of(0x58, true, false, false), None, "plain Ctrl+X cuts");
+        assert_eq!(shortcut_of(0x43, true, false, false), None, "Ctrl+C copies");
+        assert_eq!(shortcut_of(0x56, true, false, false), None, "Ctrl+V pastes");
+        assert_eq!(shortcut_of(0x48, true, false, false), None, "plain Ctrl+H is backspace");
+        assert_eq!(shortcut_of(0x41, true, false, false), None, "Ctrl+A is the EDIT's");
+        assert_eq!(shortcut_of(0x39, true, false, false), None);
+        // AltGr is Ctrl+Alt: it types a character, it is never a shortcut.
+        for (vk, shift) in [(0x42, false), (0x49, false), (0x55, false), (0x58, true), (0x38, true), (0x39, true), (0x48, true)] {
+            assert_eq!(shortcut_of(vk, true, shift, true), None, "AltGr+{vk:#x}");
+        }
     }
 
     #[test]

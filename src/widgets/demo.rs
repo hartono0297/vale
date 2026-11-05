@@ -424,7 +424,7 @@ fn run_scene(reset: bool, with_list: bool) {
     settle(&mut store, Local::now().timestamp(), true);
     // The images in use are known; the day-old strays are cleaned, once.
     let known_images = store.referenced_images();
-    crate::widgets::image_io::sweep(&store.images_dir(), &known_images, Local::now().timestamp());
+    crate::widgets::image_io::sweep_store(&store, Local::now().timestamp());
     let Some(owner) = create_owner() else {
         eprintln!("widgets-demo: cannot create the owner window");
         return;

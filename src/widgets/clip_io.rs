@@ -29,7 +29,7 @@ const CF_UNICODETEXT: u32 = 13;
 const CF_HDROP: u32 = 15;
 const CF_DIB: u32 = 8;
 const CF_DIBV5: u32 = 17;
-/// Text longer than this is not pasted whole (a note holds 20 000).
+/// Text longer than this is cut before the note's own limit (it holds 20 000).
 const MAX_TEXT_UNITS: usize = 200_000;
 /// A file list longer than this is cut (more than the cap can take anyway).
 const MAX_FILES: u32 = 64;
@@ -101,14 +101,49 @@ fn read_format(id: u32, cap: usize) -> Option<Result<Vec<u8>, ()>> {
     }
 }
 
-fn read_unicode() -> Option<String> {
-    let bytes = read_format(CF_UNICODETEXT, MAX_TEXT_UNITS * 2).and_then(Result::ok)?;
-    let units: Vec<u16> = bytes
+/// The first `cap` bytes of clipboard format `id` (all of it when smaller):
+/// what is there, cut, never "absent" because it is big.
+fn read_head(id: u32, cap: usize) -> Option<Vec<u8>> {
+    unsafe {
+        let handle: HANDLE = GetClipboardData(id).ok()?;
+        let mem = HGLOBAL(handle.0);
+        let size = GlobalSize(mem).min(cap);
+        if size == 0 {
+            return None;
+        }
+        let ptr = GlobalLock(mem) as *const u8;
+        if ptr.is_null() {
+            return None;
+        }
+        let bytes = std::slice::from_raw_parts(ptr, size).to_vec();
+        let _ = GlobalUnlock(mem);
+        Some(bytes)
+    }
+}
+
+/// The text of CF_UNICODETEXT `bytes` (UTF-16, zero-terminated): at most
+/// `max_units` units, never ending in half a surrogate pair.
+fn text_of_bytes(bytes: &[u8], max_units: usize) -> String {
+    let mut units: Vec<u16> = bytes
         .chunks_exact(2)
+        .take(max_units)
         .map(|c| u16::from_le_bytes([c[0], c[1]]))
         .collect();
-    let end = units.iter().position(|&u| u == 0).unwrap_or(units.len());
-    Some(String::from_utf16_lossy(&units[..end]))
+    if let Some(end) = units.iter().position(|&u| u == 0) {
+        units.truncate(end);
+    } else if units.last().is_some_and(|u| (0xD800..0xDC00).contains(u)) {
+        // Cut in the middle of a pair.
+        units.pop();
+    }
+    String::from_utf16_lossy(&units)
+}
+
+/// The clipboard's text. Text over `MAX_TEXT_UNITS` is still text: it is cut
+/// (the note takes far less), never read as "no text", which would let a
+/// bitmap that a big Excel or Word copy brings along win.
+fn read_unicode() -> Option<String> {
+    let bytes = read_head(CF_UNICODETEXT, MAX_TEXT_UNITS * 2)?;
+    Some(text_of_bytes(&bytes, MAX_TEXT_UNITS))
 }
 
 fn read_files() -> Vec<PathBuf> {
@@ -244,5 +279,26 @@ mod tests {
         assert_eq!(order(false, true, false), Kind::Files);
         assert_eq!(order(false, false, true), Kind::Bitmap);
         assert_eq!(order(false, false, false), Kind::Nothing);
+    }
+
+    fn bytes_of(units: &[u16]) -> Vec<u8> {
+        units.iter().flat_map(|u| u.to_le_bytes()).collect()
+    }
+
+    #[test]
+    fn oversized_text_is_cut_not_dropped() {
+        // A text over the cap is still text (so a bitmap beside it never wins).
+        let long: Vec<u16> = std::iter::repeat_n(u16::from(b'a'), 50).collect();
+        assert_eq!(text_of_bytes(&bytes_of(&long), 10), "a".repeat(10));
+        // A terminator inside the cap ends it.
+        let mut with_nul = bytes_of(&[u16::from(b'h'), u16::from(b'i'), 0]);
+        with_nul.extend(bytes_of(&[u16::from(b'x')]));
+        assert_eq!(text_of_bytes(&with_nul, 10), "hi");
+        // A cut that falls inside a surrogate pair drops the high half.
+        let pair: Vec<u16> = "ab\u{1F600}".encode_utf16().collect();
+        assert_eq!(pair.len(), 4);
+        assert_eq!(text_of_bytes(&bytes_of(&pair), 3), "ab");
+        assert_eq!(text_of_bytes(&bytes_of(&pair), 4), "ab\u{1F600}");
+        assert_eq!(text_of_bytes(&[], 4), "");
     }
 }

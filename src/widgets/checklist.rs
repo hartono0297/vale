@@ -210,7 +210,7 @@ pub fn toggle(text: &str, index: usize) -> Option<Edit> {
 
 /// The lines of `text` a selection `a..b` touches, as indices. A selection
 /// that ends exactly at the start of a later line does not touch that line.
-fn touched(all: &[Line], a: usize, b: usize) -> (usize, usize) {
+pub fn touched(all: &[Line], a: usize, b: usize) -> (usize, usize) {
     let (a, b) = if a <= b { (a, b) } else { (b, a) };
     let first = line_at(all, a);
     let mut last = line_at(all, b);
@@ -232,12 +232,33 @@ pub fn toggle_list(text: &str, sel_a: usize, sel_b: usize, kind: ListKind) -> Ed
 }
 
 /// `toggle_list` and the selection (both ends) in the new text.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn toggle_list_sel(
     text: &str,
     sel_a: usize,
     sel_b: usize,
     kind: ListKind,
 ) -> (Edit, (usize, usize)) {
+    let plan = toggle_list_plan(text, sel_a, sel_b, kind);
+    (plan.edit, plan.sel)
+}
+
+/// A list toggle in full: the `Edit` (one replacement of the touched lines),
+/// the selection after it, and where the markers changed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListToggle {
+    pub edit: Edit,
+    pub sel: (usize, usize),
+    /// Per touched line, in the OLD text: where it starts, its old marker's
+    /// length and its new marker's length. The text between the markers is
+    /// untouched, so the formatting can move by these alone (the `Edit` as a
+    /// whole replaces every line between the first and the last).
+    pub spans: Vec<(usize, usize, usize)>,
+}
+
+/// `toggle_list_sel` with the marker changes, for callers that move the
+/// formatting of the lines in between.
+pub fn toggle_list_plan(text: &str, sel_a: usize, sel_b: usize, kind: ListKind) -> ListToggle {
     let u = units(text);
     let all = lines_of(&u);
     let (first, last) = touched(&all, sel_a, sel_b);
@@ -292,7 +313,11 @@ pub fn toggle_list_sel(
         insert: from_units(&insert),
         caret,
     };
-    (edit, (map(sel_a.max(region_start)), caret))
+    ListToggle {
+        edit,
+        sel: (map(sel_a.max(region_start)), caret),
+        spans,
+    }
 }
 
 /// Typing a space at `caret` (an empty selection): right after a `-` that

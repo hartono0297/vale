@@ -28,7 +28,7 @@ use windows::Win32::UI::Input::Ime::{
     CFS_POINT, COMPOSITIONFORM, ImmGetContext, ImmReleaseContext, ImmSetCompositionWindow,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, VK_A, VK_CONTROL, VK_DELETE, VK_DOWN, VK_ESCAPE, VK_INSERT, VK_SHIFT, VK_UP,
+    GetKeyState, VK_A, VK_CONTROL, VK_DELETE, VK_DOWN, VK_ESCAPE, VK_INSERT, VK_MENU, VK_SHIFT, VK_UP,
 };
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -307,7 +307,9 @@ unsafe extern "system" fn edit_proc(
                 return LRESULT(0);
             }
             let (ctrl, shift) = (down(VK_CONTROL.0), down(VK_SHIFT.0));
-            if let Some(tool) = toolbar::shortcut_of(key, ctrl, shift) {
+            // AltGr arrives as Ctrl+Alt: with Alt down no key is a shortcut.
+            let alt = down(VK_MENU.0);
+            if let Some(tool) = toolbar::shortcut_of(key, ctrl, shift, alt) {
                 SWALLOW.with(|c| c.set(toolbar::control_char_of(tool)));
                 notify(hwnd, EditEvent::Format(tool));
                 return LRESULT(0);

@@ -456,6 +456,46 @@ pub fn rebase_with(old: &str, new: &str, runs: &[Run], pending: Option<Style>) -
     normalise_units(&out, &nu)
 }
 
+/// `runs` of `old` moved onto `new` when only list markers changed: `spans`
+/// are `(line start, old marker length, new marker length)` in `old`, in
+/// order (what `checklist::toggle_list_plan` returns). Every unit outside the
+/// markers keeps its style and moves by the markers before it, so the
+/// formatting of the lines between the first and the last touched line
+/// survives (a common-prefix diff would see them as replaced). A dropped
+/// marker takes its runs with it; a new one takes the style of the line's
+/// first letter (plain on an empty line); a marker that stays is untouched.
+pub fn rebase_marks(old: &str, new: &str, runs: &[Run], spans: &[(usize, usize, usize)]) -> Vec<Run> {
+    let (ou, nu) = (units(old), units(new));
+    let base = normalise_units(runs, &ou);
+    let mut per_old = vec![Style::default(); ou.len()];
+    for r in &base {
+        per_old[r.s..r.e].fill(r.style);
+    }
+    let mut out: Vec<Style> = Vec::with_capacity(nu.len());
+    let mut pos = 0;
+    for &(start, old_len, new_len) in spans {
+        let start = start.max(pos).min(ou.len());
+        out.extend_from_slice(&per_old[pos..start]);
+        let content = start + old_len;
+        if old_len == new_len {
+            // The marker stays as it is.
+            let end = content.min(ou.len());
+            out.extend_from_slice(&per_old[start..end]);
+        } else {
+            let st = match ou.get(content) {
+                Some(&c) if c != u16::from(b'\n') => per_old[content],
+                _ => Style::default(),
+            };
+            out.extend(std::iter::repeat_n(st, new_len));
+        }
+        pos = content.min(ou.len());
+    }
+    out.extend_from_slice(&per_old[pos..]);
+    // Whatever the lengths came to, the result is clamped to the new text.
+    out.resize(nu.len(), Style::default());
+    normalise_units(&coalesce(&out), &nu)
+}
+
 // ------------------------------------------------------------- copy, paste
 
 /// The runs of `a..b`, relative to the start of the cut-out.
@@ -535,6 +575,39 @@ mod tests {
         );
         assert!(normalise(&[run(30, 40, BOLD)], "abc").is_empty());
         assert!(normalise(&[], "abc").is_empty());
+    }
+
+    #[test]
+    fn rebase_marks_moves_every_run_by_the_markers_before_it() {
+        // "one\ntwo\nthree" with "two" bold; a bullet on every line.
+        let old = "one\ntwo\nthree";
+        let new = "\u{2022} one\n\u{2022} two\n\u{2022} three";
+        let spans = [(0, 0, 2), (4, 0, 2), (8, 0, 2)];
+        // The marker takes the style of its line's first letter.
+        assert_eq!(
+            rebase_marks(old, new, &[run(4, 7, BOLD)], &spans),
+            [run(6, 11, BOLD)]
+        );
+        // A plain line's marker stays plain; a bold first line is not spread.
+        assert_eq!(
+            rebase_marks(old, new, &[run(0, 3, BOLD)], &spans),
+            [run(0, 5, BOLD)]
+        );
+        // Taking the markers off moves the runs back and drops the markers' own.
+        let spans = [(0, 2, 0), (6, 2, 0), (12, 2, 0)];
+        assert_eq!(
+            rebase_marks(new, old, &[run(6, 11, BOLD), run(0, 1, ITAL)], &spans),
+            [run(4, 7, BOLD)]
+        );
+        // A marker that stays keeps its runs; a run across lines survives whole.
+        let spans = [(0, 2, 2), (6, 2, 2)];
+        assert_eq!(
+            rebase_marks(new, new, &[run(0, 14, BOLD)], &spans),
+            [run(0, 14, BOLD)]
+        );
+        // No runs, no spans.
+        assert!(rebase_marks(old, old, &[], &[]).is_empty());
+        assert_eq!(rebase_marks(old, old, &[run(1, 2, BOLD)], &[]), [run(1, 2, BOLD)]);
     }
 
     #[test]

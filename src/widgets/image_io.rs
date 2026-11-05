@@ -6,9 +6,14 @@
 //! An import runs on a worker thread (COM on its own, multithreaded) so a big
 //! photo never stalls the island. The result goes back to the note window as
 //! `WM_NOTE_IMPORT` (`WM_APP + 2`). It is NOTE-LOCAL, like `WM_END_EDIT`
-//! (`WM_APP + 1`): the note window's own procedure takes it, so it needs no
-//! id the island would have to keep unique (the island's own `WM_APP`
-//! messages are above 50). No `WM_APP` message is global for it.
+//! (`WM_APP + 1`): the note window's own procedure takes it. It is the same
+//! number as the tray's `WM_APP_TRAY` and others on other windows, which is
+//! harmless because each window has its own procedure, but it means a message
+//! with that number is NOT trusted: the result never travels in the message.
+//! It sits in a registry (`stash`) and the message carries only a token,
+//! which `claim` turns back into the result once; an unknown token (a stray
+//! post from another process) is ignored. A window that goes before it pumps
+//! hands its results back (`claim_window`), so none is leaked.
 //!
 //! The original file is only ever opened for READING (WIC's decoder); the saved
 //! copy is a new file written to a `.tmp` and renamed. A source over 25 MiB is
@@ -16,7 +21,7 @@
 //! as the phone's thumbnails), so the copy is upright and carries no EXIF.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use windows::Win32::Foundation::{GENERIC_READ, HWND, LPARAM, WPARAM};
 use windows::Win32::Graphics::Imaging::{
@@ -38,7 +43,8 @@ use windows::core::{HSTRING, Interface, PWSTR, w};
 
 use crate::widgets::images::{self, MAX_SIDE, MAX_SOURCE_BYTES};
 
-/// An import finished: sent to the note window (`lParam` is a `Box<Done>`).
+/// An import finished: posted to the note window (`lParam` is the token of
+/// the result in the registry, see `stash`).
 pub const WM_NOTE_IMPORT: u32 = WM_APP + 2;
 
 /// JPEG quality of a saved copy of a JPEG (0 to 1).
@@ -72,6 +78,57 @@ pub struct Done {
     pub result: Result<String, ImportError>,
     /// The folder the file went to (to delete it when no window takes it).
     pub dir: PathBuf,
+}
+
+/// The results that were posted and not yet taken: token, window, result.
+static OUTBOX: std::sync::Mutex<Vec<(u64, isize, Done)>> = std::sync::Mutex::new(Vec::new());
+static NEXT_TOKEN: AtomicU64 = AtomicU64::new(1);
+
+/// A token no other process can guess from the counter alone: the counter
+/// (unique, so the token is) mixed with a per-process secret.
+fn next_token() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    static SECRET: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    let secret = *SECRET.get_or_init(|| {
+        std::collections::hash_map::RandomState::new().build_hasher().finish() | 1
+    });
+    // An odd multiplier and an xor are bijections, so tokens never repeat.
+    NEXT_TOKEN
+        .fetch_add(1, Ordering::Relaxed)
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        ^ secret
+}
+
+/// Keeps `done` for window `hwnd` until `claim` takes it; the token goes in
+/// the message.
+pub fn stash(hwnd: HWND, done: Done) -> u64 {
+    let token = next_token();
+    if let Ok(mut out) = OUTBOX.lock() {
+        out.push((token, hwnd.0 as isize, done));
+    }
+    token
+}
+
+/// The result `token` stands for, once. `None` for a token nothing stashed
+/// (or one already taken).
+pub fn claim(token: u64) -> Option<Done> {
+    let mut out = OUTBOX.lock().ok()?;
+    let at = out.iter().position(|(t, ..)| *t == token)?;
+    Some(out.swap_remove(at).2)
+}
+
+/// Every result stashed for window `hwnd` that it has not taken: the window
+/// is going, so the caller discards them.
+pub fn claim_window(hwnd: HWND) -> Vec<Done> {
+    let Ok(mut out) = OUTBOX.lock() else {
+        return Vec::new();
+    };
+    let target = hwnd.0 as isize;
+    let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut *out)
+        .into_iter()
+        .partition(|(_, h, _)| *h == target);
+    *out = rest;
+    mine.into_iter().map(|(.., d)| d).collect()
 }
 
 /// The path of image `name` in `dir`, only for a valid name: the one place a
@@ -390,19 +447,15 @@ pub fn spawn_import(hwnd: HWND, note: String, src: Source, dir: PathBuf) -> bool
         .name("note-image".into())
         .spawn(move || {
             let result = import(src, &dir);
-            let done = Box::new(Done { note, result, dir });
-            let raw = Box::into_raw(done);
+            let window = HWND(target as *mut _);
+            let token = stash(window, Done { note, result, dir });
             let posted = unsafe {
-                PostMessageW(
-                    Some(HWND(target as *mut _)),
-                    WM_NOTE_IMPORT,
-                    WPARAM(0),
-                    LPARAM(raw as isize),
-                )
+                PostMessageW(Some(window), WM_NOTE_IMPORT, WPARAM(0), LPARAM(token as isize))
             };
-            if posted.is_err() {
+            if posted.is_err()
+                && let Some(done) = claim(token)
+            {
                 // No window to take it: nobody else will, so the file goes.
-                let done = unsafe { Box::from_raw(raw) };
                 discard(&done);
             }
         })
@@ -456,6 +509,18 @@ pub fn sweep(dir: &Path, referenced: &std::collections::HashSet<String>, now: i6
     let gone = images::orphans(&listing, referenced, now);
     delete_named(dir, &gone);
     gone.len()
+}
+
+/// The startup sweep for `store`'s folder: `sweep` with what the store
+/// references. A store whose file failed to load is EMPTY and the file waits
+/// to be restored (`load_failed`), so nothing is referenced by it: sweeping
+/// then would delete every image of the notes the owner is about to get back.
+/// That case does nothing.
+pub fn sweep_store(store: &crate::notes::NotesStore, now: i64) -> usize {
+    if store.load_failed() {
+        return 0;
+    }
+    sweep(&store.images_dir(), &store.referenced_images(), now)
 }
 
 /// A `w` x `h` gradient PNG at `path`, for the demo (debug builds) and the
@@ -624,6 +689,62 @@ mod tests {
         }
         assert_eq!(sweep(&dir.join("missing"), &used, now), 0, "no folder, nothing");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_sweep_does_nothing_for_a_store_whose_file_failed_to_load() {
+        let dir = temp("sweep_failed");
+        let images = dir.join("note-images");
+        std::fs::create_dir_all(&images).unwrap();
+        let old = images.join("old-used.png");
+        std::fs::write(&old, b"x").unwrap();
+        let f = std::fs::OpenOptions::new().write(true).open(&old).unwrap();
+        f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(25 * 3600))
+            .unwrap();
+        drop(f);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        // A malformed notes file: the store is empty and says so.
+        let path = dir.join("notes.json");
+        std::fs::write(&path, b"{ not json").unwrap();
+        let store = crate::notes::NotesStore::open(path.clone());
+        assert!(store.load_failed());
+        assert_eq!(sweep_store(&store, now), 0);
+        assert!(old.exists(), "the image of the notes to be restored stays");
+        // A missing file is a fresh install, not a failure: the sweep runs.
+        std::fs::remove_file(&path).unwrap();
+        let fresh = crate::notes::NotesStore::open(path);
+        assert!(!fresh.load_failed());
+        assert_eq!(sweep_store(&fresh, now), 1);
+        assert!(!old.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_posted_result_is_claimed_once_by_its_token_and_a_gone_window_hands_its_back() {
+        let done = |n: &str| Done {
+            note: n.to_owned(),
+            result: Err(ImportError::Io),
+            dir: PathBuf::new(),
+        };
+        let (w1, w2) = (HWND(0x1111 as *mut _), HWND(0x2222 as *mut _));
+        let (a, b, c) = (stash(w1, done("a")), stash(w2, done("b")), stash(w1, done("c")));
+        assert!(a != b && b != c && a != c, "tokens are unique");
+        // A token nobody stashed gives nothing.
+        assert!(claim(0).is_none());
+        assert!(claim(u64::MAX).is_none());
+        // Once.
+        assert_eq!(claim(a).map(|d| d.note), Some("a".to_owned()));
+        assert!(claim(a).is_none());
+        // The window that goes gives back what it never took, only its own.
+        let back = claim_window(w1);
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].note, "c");
+        assert!(claim(c).is_none());
+        assert_eq!(claim(b).map(|d| d.note), Some("b".to_owned()));
+        assert!(claim_window(w2).is_empty());
     }
 
     #[test]
