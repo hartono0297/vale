@@ -30,6 +30,7 @@ pub struct Span {
 }
 
 impl Span {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn plain(text: &str) -> Span {
         Span { text: text.to_owned(), style: Style::default() }
     }
@@ -48,16 +49,19 @@ pub enum NoteLine {
 
 impl NoteLine {
     /// A plain line of one unstyled span.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn text(s: &str) -> NoteLine {
         NoteLine::Text(vec![Span::plain(s)])
     }
 
     /// An item of one unstyled span.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn item(done: bool, s: &str) -> NoteLine {
         NoteLine::Item { done, spans: vec![Span::plain(s)] }
     }
 
     /// A bullet of one unstyled span.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn bullet(s: &str) -> NoteLine {
         NoteLine::Bullet(vec![Span::plain(s)])
     }

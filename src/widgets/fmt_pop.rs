@@ -403,6 +403,26 @@ fn redraw() {
                     };
                     label(Key::FmtHlLabel, PAD);
                     label(Key::FmtFgLabel, fg_label_y());
+                    // The name of the colour under the pointer, at the right of
+                    // its row's label.
+                    let (name, y) = match hover {
+                        Some(Item::Hl(h)) => (Some(h.map_or(Key::FmtHlNone, Hl::label_key)), PAD),
+                        Some(Item::Fg(f)) => (Some(f.map_or(Key::FmtFgAuto, Fg::label_key)), fg_label_y()),
+                        _ => (None, 0.0),
+                    };
+                    if let Some(key) = name {
+                        fmt_text(
+                            res,
+                            &rt,
+                            brush,
+                            text(lang, key),
+                            FRect { x: PAD, y, w: POP_W - 2.0 * PAD, h: LABEL_H },
+                            11.0,
+                            500,
+                            pal.text,
+                            2,
+                        );
+                    }
                     let ring = |r: FRect, on: bool, hot: bool| {
                         let centre = Vector2::new(r.x + r.w / 2.0, r.y + r.h / 2.0);
                         if on || hot {

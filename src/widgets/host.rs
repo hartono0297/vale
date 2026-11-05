@@ -1442,6 +1442,13 @@ fn reset_sheet_view(w: &mut Win) {
     w.footer_msg = None;
     w.confirm_delete = false;
     w.pressed = None;
+    w.pending = None;
+    w.hot_bar = None;
+    w.hot_image = None;
+    w.bar_press = None;
+    w.image_press = None;
+    w.img_sizes.clear();
+    *w.img.borrow_mut() = ImgCache::default();
     w.dirty = true;
 }
 
@@ -4713,6 +4720,9 @@ fn begin_editing(hwnd: HWND, at: Option<usize>) {
         let i = idx_of(s, hwnd)?;
         let w = &mut s.wins[i];
         w.edit = Some(edit_hwnd);
+        if existing.is_none() {
+            w.pending = None;
+        }
         w.caret_on = true;
         w.sel = (at, at);
         w.anchor = at;

@@ -200,6 +200,7 @@ pub fn button_rect(btn: Btn, w: f32) -> Rect {
 }
 
 /// The text area of a note `w` x `h` (not rolled), with the footer under it.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn body_rect(w: f32, h: f32) -> Rect {
     body_rect_in(w, h, false)
 }
@@ -238,6 +239,7 @@ pub struct Extras<'a> {
 }
 
 impl Extras<'static> {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub const NONE: Extras<'static> = Extras { bar: false, images: &[] };
 }
 
@@ -292,6 +294,7 @@ fn grown(r: Rect, by: f32) -> Rect {
 /// hidden button takes no press, so the whole strip (full width, the pinned
 /// pin included) is `Header`. A `stack` also has the two arrows in the strip's
 /// left, shown with the other buttons.
+#[cfg_attr(not(test), allow(dead_code))]
 #[allow(clippy::too_many_arguments)]
 pub fn target_in(
     x: f32,
@@ -602,6 +605,7 @@ pub struct BodyLayout {
 }
 
 /// The text of a note laid out for a body `width` wide, in the note's `font`.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn build_body(res: &Res, text: &str, font: NoteFont, size: TextSize, width: f32) -> BodyLayout {
     build_body_with(res, text, font, size, width, 0.0, &[])
 }
@@ -2183,6 +2187,7 @@ fn draw_tip(
 const TIP_TEXT: f32 = 10.5;
 
 /// The tooltip of a button: its label and shortcut. The width of both.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn tip_width(res: &Res, lang: Lang, tool: Tool) -> f32 {
     let label = text(lang, tool.label_key());
     let hint = toolbar::shortcut(tool);

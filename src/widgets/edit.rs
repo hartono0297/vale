@@ -544,4 +544,78 @@ mod tests {
         assert_ne!(s & ES_AUTOHSCROLL as u32, 0, "no word wrap in the EDIT");
         assert_ne!(s & ES_MULTILINE as u32, 0);
     }
+
+    /// A real EDIT with `text`, in a hidden parent that is not a note (so the
+    /// events it sends go nowhere).
+    fn an_edit(text: &str) -> (HWND, HWND) {
+        use windows::Win32::UI::WindowsAndMessaging::WS_POPUP;
+        let parent = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                w!("STATIC"),
+                w!(""),
+                WS_POPUP,
+                0,
+                0,
+                300,
+                300,
+                None,
+                None,
+                None,
+                None,
+            )
+        }
+        .expect("a parent window");
+        (parent, create(parent, text, (200, 150)).expect("the EDIT"))
+    }
+
+    fn type_char(edit: HWND, ch: u16) {
+        unsafe {
+            SendMessageW(edit, WM_CHAR, Some(WPARAM(ch as usize)), Some(LPARAM(0)));
+        }
+    }
+
+    #[test]
+    fn the_character_a_format_shortcut_leaves_never_reaches_the_edit() {
+        use windows::Win32::UI::WindowsAndMessaging::DestroyWindow;
+        let (parent, edit) = an_edit("abc");
+        set_selection(edit, "abc", 3, 3);
+        // Ctrl+I leaves a Tab (0x09): swallowed once, then a real Tab types.
+        SWALLOW.with(|c| c.set(Some(0x09)));
+        type_char(edit, 0x09);
+        assert_eq!(text(edit), "abc", "the swallowed Tab typed nothing");
+        assert_eq!(SWALLOW.with(Cell::get), None, "and the flag is used up");
+        type_char(edit, 0x09);
+        assert_eq!(text(edit), "abc\t", "the next Tab is the user's");
+        // Ctrl+Shift+H leaves a Backspace (0x08): it must not delete.
+        SWALLOW.with(|c| c.set(Some(0x08)));
+        type_char(edit, 0x08);
+        assert_eq!(text(edit), "abc\t", "no backspace");
+        // Ctrl+Shift+X leaves 0x18, which would cut: with a selection it must not.
+        set_selection(edit, "abc\t", 0, 3);
+        SWALLOW.with(|c| c.set(Some(0x18)));
+        type_char(edit, 0x18);
+        assert_eq!(text(edit), "abc\t", "nothing was cut");
+        // A different character first clears the flag and is typed.
+        SWALLOW.with(|c| c.set(Some(0x02)));
+        type_char(edit, u16::from(b'z'));
+        assert_eq!(SWALLOW.with(Cell::get), None);
+        assert!(text(edit).contains('z'));
+        unsafe {
+            let _ = DestroyWindow(parent);
+        }
+    }
+
+    #[test]
+    fn every_shortcut_control_character_is_one_the_edit_would_act_on() {
+        // These are the characters the swallow flag exists for.
+        for t in Tool::ALL {
+            if let Some(c) = toolbar::control_char_of(t) {
+                assert!(c < 0x20, "{t:?}: {c:#x} is a control character");
+            }
+        }
+        assert_eq!(toolbar::control_char_of(Tool::Italic), Some(0x09));
+        assert_eq!(toolbar::control_char_of(Tool::Strike), Some(0x18));
+        assert_eq!(toolbar::control_char_of(Tool::Marker), Some(0x08));
+    }
 }

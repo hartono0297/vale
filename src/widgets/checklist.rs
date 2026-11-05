@@ -226,6 +226,7 @@ fn touched(all: &[Line], a: usize, b: usize) -> (usize, usize) {
 /// `kind` it comes off, otherwise `kind` is put on all of them, replacing the
 /// other kind. The caret of the `Edit` is where `sel_b` goes; use
 /// `toggle_list_sel` for both ends.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn toggle_list(text: &str, sel_a: usize, sel_b: usize, kind: ListKind) -> Edit {
     toggle_list_sel(text, sel_a, sel_b, kind).0
 }
