@@ -41,7 +41,7 @@ strip drags), like the other six.
   sticky note, every stack sheet has its own with its 1-based place from
   `stack::units`; a stack id one live sheet carries alone is no stack), the
   title (`checklist::title_of`), the snippet (lines after the first, checklist
-  markers removed, blank lines dropped, joined with " . ", whitespace collapsed,
+  markers removed, blank lines dropped, joined with " · ", whitespace collapsed,
   capped at 120 chars on a char boundary), the reminder (`Some(overdue)` when a
   reminder is set and unfired or overdue), progress, sort by `updated` desc then
   id; `filter` (trimmed, `to_lowercase` on both sides, title or whole body);
@@ -145,7 +145,7 @@ one window again. The caller runs `apply::settle`. If every mate is gone,
 3-sheet stack (identical file after delete + undo), a mate changed meanwhile, a
 missing mate, an existing id and a full desktop.
 
-The strip ("Catatan dihapus . Urungkan", 40 dip at the bottom, shrinks the row
+The strip ("Catatan dihapus · Urungkan", 40 dip at the bottom, shrinks the row
 viewport) is owned by the window: a delete shows it for 5 s. `TIMER_LIST_UNDO`
 = 49 is a **one-shot on the list's own window**, set only while the strip shows
 (a second delete restarts it), killed when it hides (time up, "Urungkan"
@@ -174,6 +174,61 @@ owner handles the `ListEvent`s itself with the same pure functions
 (`show_events`, `Undo`) and the host's `bring_front`. Never real user data,
 never the real clipboard.
 
+## Gotcha: the search EDIT painted a white box
+
+The first version made the one-line EDIT as wide as the search box. On screen
+(`CopyFromScreen` of the real desktop, not only `PrintWindow`) it showed as a
+white rectangle over the layered bitmap: a child of a layered window **can**
+paint over what `UpdateLayeredWindow` put there. Fixed the way the CLI page's
+input does it plus one more step: the EDIT is **1 x 1 px** at the text origin
+(the IME's composition window is placed from there), and its subclass answers
+`WM_PAINT` (`ValidateRect`), `WM_ERASEBKGND` and `WM_NCPAINT` without drawing and
+destroys the caret the EDIT makes on `WM_SETFOCUS`. It is also created after the
+window is shown and drawn once. Test: `the_search_edit_is_transparent_to_the_pointer_and_takes_the_query`
+covers the hit-test answer; the look was checked on screen.
+
 ## Verified and not verified
 
-See the end of this note (filled in by the finish pass of this task).
+Verified (run in this session):
+
+- `cargo test --locked`: 2872 passed, 16 ignored (the same 16 as on `main`), and
+  `cargo build --release --locked` with no warning. New tests: `list.rs` (title and
+  snippet with markers and emoji, the cap on a char boundary, sort, filter case and
+  Unicode, every status flag, the stack badge and a lone stack id, layout and hit
+  geometry, scroll and wheel, `ensure_visible`, placement right / left / clamped on
+  two monitors and at 150 %, selection, `Undo` for a plain note and for each sheet
+  of a 3-sheet stack, identical file after delete + undo, a changed or missing mate,
+  an existing id, a full desktop, `show_events` and applying them), `list_win.rs`
+  (17 tests on a real hidden window: one window only, ex-style, filtering, the keys,
+  the Delete rule, the strip, Urungkan greyed at the cap, clicks, the empty-state
+  button, refresh and a gone selection, `Closed`, the posted close, no close while a
+  menu is up, `HTCAPTION` only on the header, one posted message per batch), the
+  header buttons (seven fit at 160, 240, 260 and 640; Next ends before List at every
+  stack width; a hidden List button is the strip), `host.rs` (`OpenList`,
+  `note_rect_px`, `bring_front` and `lifted`), the hotkey id and table, the tray item
+  in both languages, `NotesStore::restore`, `count_label` and the stack badge,
+  Settings with eight hotkey rows.
+- The debug `--demo-note-list` on this PC, in an isolated temp folder (`TEMP` and
+  `TMP` redirected), looked at with `CopyFromScreen` and driven with window messages
+  (not a real mouse or keyboard): the list in Indonesian, English and the light window
+  theme (rows with papers, the tucked note's icon, stack badges, checklist counts,
+  ellipsis, the focus ring and the steady caret); typing "dago" filters to the three
+  sheets; two Down and Delete remove "Dago: struktur" (the stack is 2/2, the strip
+  "Catatan dihapus · Urungkan" shows, the pick moves to the next row); a click on
+  Urungkan brings it back as sheet 2/3; searching "tulisan" and Enter closes the list,
+  and the foreground window is that note, topmost, drawn over a browser window with the
+  caret in it.
+
+Not verified live: a real mouse drag of the header (`HTCAPTION`, the modal move loop),
+a real IME (the composition window's place), the native row menu with a real right
+click, the wheel from a real wheel, `WM_DPICHANGED` and a second monitor or 150 % scale
+(only the placement maths is tested), the real island's three entry points (the tray
+item, the hotkey, the header button; the demo owner and the island share the pure
+functions and `bring_front`, but `app_note_list.rs` itself has no test since `App` needs
+the island window), Show on a tucked or rolled note on screen (the events and their
+application are tested, and the host retargets by the same `sync`), and the list
+closing by deactivation while the machine is busy: on a heavily loaded PC the first
+demo launches opened no list window at all, which a quiet re-run did not repeat (the
+likely cause is the foreground changing hands during start-up, which closes the list
+by design). Also: the demo run reset `%TEMP%\vale-widgets-demo\notes.json` once by
+mistake (TMP was not redirected), which only reseeds `--demo-widgets`.

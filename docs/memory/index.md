@@ -14,7 +14,7 @@ One note per decision, gotcha or convention. Link each new note here.
 
 - [[studio-palette-accent-aliases]]
 - [[studio-font-sources]]
-- [[exe-size]]: size measured per change (the phone link simplification, v3.19, is the last entry); icon small sizes as PNG (-38 KB), opt-level z option (-326 KB) left to the owner
+- [[exe-size]]: size measured per change (the sticky note list, 2026-11-05, is the last entry); icon small sizes as PNG (-38 KB), opt-level z option (-326 KB) left to the owner
 - [[studio-icons]]
 - [[studio-calendar-day-view]]
 - [[studio-media-progress-timer]]

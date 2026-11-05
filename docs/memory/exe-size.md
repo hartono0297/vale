@@ -187,3 +187,21 @@ guard and the token's auto-rotation. The release exe went from 3,510,272 (`main`
 --release --locked` in two folders of the same path length (`base` and `head`, both
 from `git archive`), each with its own `CARGO_TARGET_DIR`, so the running island's exe was
 never touched; no warning in either. No new crate and no new `windows` feature.
+
+## The sticky note list (2026-11-05)
+
+[[sticky-note-list]]: the list window, its pure rules, the hidden-EDIT search,
+the header's list button, the eighth hotkey row, the tray item, `NotesStore::restore`
+and the strings (both languages). `cargo build --release --locked`, 0 warnings, the
+same toolchain, built from `git archive` of the base and from this branch, each with
+its own `CARGO_TARGET_DIR` (the two folders do not have the same path length, so the
+embedded PDB path moves either exe by up to 512 bytes):
+
+| Build | Bytes |
+|---|---|
+| `main` (9cfa869, 3.20.0 plus docs) | 3,632,128 |
+| branch (sticky note list) | 3,686,400 (+54,272, +1.5 %) |
+
+No new crate and no new `windows` feature (`MonitorFromPoint`, `GetDpiForMonitor`,
+the EDIT and DirectWrite calls were already in use). `--demo-note-list` is debug-only
+and not in the release exe.
