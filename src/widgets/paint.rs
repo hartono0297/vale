@@ -48,8 +48,8 @@ use crate::widgets::tuck::{self, Edge};
 pub const HEADER_H: f32 = 36.0;
 pub const FOOTER_H: f32 = 24.0;
 pub const PAD_X: f32 = 12.0;
-pub const BTN: f32 = 22.0;
-pub const BTN_GAP: f32 = 2.0;
+pub const BTN: f32 = 20.0;
+pub const BTN_GAP: f32 = 1.0;
 pub const GRIP: f32 = 16.0;
 pub const RADIUS: f32 = 10.0;
 /// A checklist item's box, and the indent of its text.
@@ -102,6 +102,8 @@ pub fn wiggle_dx(ms: f32) -> f32 {
 /// The header's buttons, left to right.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Btn {
+    /// "Daftar catatan tempel": opens the list window.
+    List,
     Pin,
     Plus,
     Check,
@@ -114,7 +116,8 @@ pub enum Btn {
 }
 
 impl Btn {
-    pub const ALL: [Btn; 6] = [
+    pub const ALL: [Btn; 7] = [
+        Btn::List,
         Btn::Pin,
         Btn::Plus,
         Btn::Check,
@@ -551,7 +554,7 @@ pub fn build_body(res: &Res, text: &str, font: NoteFont, size: TextSize, width: 
 /// units, 2 for an emoji (a surrogate pair), 2 or more for a base letter with
 /// combining marks. Adding 1 puts the caret inside the cluster, and a typed
 /// character or a delete there splits the pair.
-fn hit_index(text_position: u32, length: u32, trailing: bool) -> usize {
+pub(crate) fn hit_index(text_position: u32, length: u32, trailing: bool) -> usize {
     text_position as usize + if trailing { length as usize } else { 0 }
 }
 
@@ -577,7 +580,7 @@ fn is_extend(unit: u16) -> bool {
 /// letter and the combining marks after it. DirectWrite's hit metrics can
 /// name a one-unit cluster for a letter whose mark is a unit of its own, so
 /// `hit_index` alone is not enough there.
-fn settle_index(content: &[u16], pos: usize) -> usize {
+pub(crate) fn settle_index(content: &[u16], pos: usize) -> usize {
     let mut pos = pos.min(content.len());
     let low = |u: u16| (0xDC00..0xE000).contains(&u);
     let high = |u: u16| (0xD800..0xDC00).contains(&u);
@@ -1138,6 +1141,22 @@ pub fn draw(c: &Canvas, res: &Res, s: &Scene) {
             Btn::Check => icon(Icon::Check, r, ink, a),
             Btn::Colour => icon(Icon::Swatch, r, ink, a),
             Btn::Close => icon(Icon::X, r, ink, a),
+            Btn::List => {
+                // A hamburger: three short horizontal lines.
+                set(ink, a);
+                for dy in [-4.0f32, 0.0, 4.0] {
+                    let (cx, cy) = (ox + r.x + r.w / 2.0, oy + r.y + r.h / 2.0 + dy);
+                    unsafe {
+                        rt.DrawLine(
+                            Vector2::new(cx - 5.0, cy),
+                            Vector2::new(cx + 5.0, cy),
+                            brush,
+                            1.6,
+                            None,
+                        );
+                    }
+                }
+            }
             Btn::Prev | Btn::Next => {}
             Btn::More => {
                 set(ink, a);
@@ -1548,6 +1567,37 @@ mod tests {
     }
 
     #[test]
+    fn all_seven_buttons_fit_the_strip_without_overlap_at_every_width() {
+        assert_eq!(Btn::ALL.len(), 7);
+        assert_eq!(Btn::ALL[0], Btn::List, "the list is the leftmost");
+        assert_eq!((BTN, BTN_GAP), (20.0, 1.0));
+        for w in [160.0f32, 240.0, 260.0, 640.0] {
+            let mut last = f32::MIN;
+            for b in Btn::ALL {
+                let r = button_rect(b, w);
+                assert!(r.x >= 0.0 && r.x + r.w <= w, "{b:?} at {w}: {r:?}");
+                assert!(r.y >= 0.0 && r.y + r.h <= HEADER_H, "{b:?} at {w}");
+                assert!(r.x >= last, "{b:?} overlaps the one before at {w}");
+                last = r.x + r.w;
+            }
+        }
+        // At the smallest note the row spans x 8 .. 154.
+        assert_eq!(button_rect(Btn::List, 160.0).x, 8.0);
+        let close = button_rect(Btn::Close, 160.0);
+        assert_eq!(close.x + close.w, 154.0);
+    }
+
+    #[test]
+    fn the_list_button_takes_the_press_while_shown_and_the_strip_while_hidden() {
+        for w in [160.0f32, 240.0, 260.0] {
+            let r = button_rect(Btn::List, w);
+            let (x, y) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
+            assert_eq!(target(x, y, w, 208.0, false, None, 0.0, true), Target::Button(Btn::List));
+            assert_eq!(target(x, y, w, 208.0, false, None, 0.0, false), Target::Header);
+        }
+    }
+
+    #[test]
     fn a_point_is_classified() {
         let (w, h) = (240.0, 208.0);
         let t = |x, y| target(x, y, w, h, false, None, 0.0, true);
@@ -1615,7 +1665,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stacks_counter_and_arrows_fit_left_of_the_six_buttons_at_the_smallest_width() {
+    fn a_stacks_counter_and_arrows_fit_left_of_the_seven_buttons_at_the_smallest_width() {
         let res = Res::new(UiFont::Sans).expect("DirectWrite works without a window");
         let strip = stack_strip();
         assert_eq!((strip.prev.w, strip.prev.h, strip.next.w, strip.next.h), (20.0, 20.0, 20.0, 20.0));
@@ -1630,18 +1680,20 @@ mod tests {
         assert!(strip.counter.x + strip.counter.w <= strip.next.x);
         assert!(strip.prev.x >= 0.0 && strip.prev.y >= 0.0 && strip.prev.y + strip.prev.h <= HEADER_H);
         // At every width a stack can have, from `stack::MIN_W`: the last arrow
-        // ends before the first of the six right-hand buttons begins.
+        // ends before the first of the seven right-hand buttons (the list's
+        // hamburger) begins.
         let mut w = crate::widgets::stack::MIN_W;
         while w <= crate::widgets::sticky::MAX_W {
-            let pin = button_rect(Btn::Pin, w);
-            assert!(strip.next.x + strip.next.w < pin.x, "{w} wide: next ends at {}, Pin starts at {}", strip.next.x + strip.next.w, pin.x);
+            let first = button_rect(Btn::List, w);
+            assert!(strip.next.x + strip.next.w < first.x, "{w} wide: next ends at {}, List starts at {}", strip.next.x + strip.next.w, first.x);
             w += 10.0;
         }
+        assert_eq!(button_rect(Btn::List, crate::widgets::stack::MIN_W).x, 108.0);
         // And it is the widest the 20 / 20 can be with both arrows: the same
         // layout would not fit at the plain minimum (160), which is why a
         // stack is at least 260.
-        let pin = button_rect(Btn::Pin, crate::widgets::sticky::MIN_W);
-        assert!(strip.next.x + strip.next.w >= pin.x, "a plain minimum note could not hold it");
+        let first = button_rect(Btn::List, crate::widgets::sticky::MIN_W);
+        assert!(strip.next.x + strip.next.w >= first.x, "a plain minimum note could not hold it");
     }
 
     #[test]
@@ -1667,7 +1719,7 @@ mod tests {
             target_in(strip.counter.x + strip.counter.w / 2.0, 18.0, w, h, false, None, 0.0, true, true),
             Target::Header
         );
-        // The six buttons are where they were.
+        // The seven buttons are where they were.
         for b in Btn::ALL {
             let r = button_rect(b, w);
             assert_eq!(

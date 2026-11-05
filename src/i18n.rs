@@ -1096,6 +1096,17 @@ keys! {
     StampNanti => "Nanti", "Later";
     StampIde => "Ide", "Idea";
     StickySendPhone => "Kirim ke HP", "Send to phone";
+    StickyList => "Daftar catatan tempel", "Sticky note list";
+    StickyListDesc => "Cari dan buka catatan tempel", "Search and open sticky notes";
+    StickyListSearch => "Cari catatan\u{2026}", "Search notes\u{2026}";
+    StickyListStack => "Tumpukan", "Stack";
+    StickyListNone => "Belum ada catatan tempel", "No sticky notes yet";
+    StickyListNew => "Buat catatan", "New note";
+    StickyListNoMatch => "Tidak ada yang cocok", "No matches";
+    StickyListDeleted => "Catatan dihapus", "Note deleted";
+    StickyListUndo => "Urungkan", "Undo";
+    StickyListOpen => "Buka", "Open";
+    StickyListDelete => "Hapus", "Delete";
     StickyOpacity => "Tembus pandang", "See-through";
     WidgetsTilt => "Miring sedikit", "Tilt slightly";
     WidgetsTiltDesc => "Setiap catatan sedikit miring, seperti ditempel tangan.", "Each note leans a little, as if stuck by hand.";
@@ -2237,6 +2248,21 @@ pub fn hotkey_used_by(lang: Lang, label: &str) -> String {
     }
 }
 
+/// The sticky note list's count: "7 catatan" / "7 notes", "1 note".
+pub fn count_label(lang: Lang, n: usize) -> String {
+    match lang {
+        Lang::Id => format!("{n} catatan"),
+        Lang::En if n == 1 => "1 note".to_owned(),
+        Lang::En => format!("{n} notes"),
+    }
+}
+
+/// "Tumpukan 2/3" / "Stack 2/3": a stack sheet's badge in the sticky note
+/// list (`pos` is 1-based).
+pub fn stack_badge(lang: Lang, pos: usize, len: usize) -> String {
+    format!("{} {pos}/{len}", text(lang, Key::StickyListStack))
+}
+
 /// A running command's time on the clock: "0:42", "12:05", "1:02:03".
 pub fn run_clock(elapsed: std::time::Duration) -> String {
     let secs = elapsed.as_secs();
@@ -2731,6 +2757,22 @@ pub fn duration_label(lang: Lang, minutes: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_sticky_list_labels_count_and_badge() {
+        assert_eq!(count_label(Lang::Id, 7), "7 catatan");
+        assert_eq!(count_label(Lang::Id, 1), "1 catatan");
+        assert_eq!(count_label(Lang::En, 7), "7 notes");
+        assert_eq!(count_label(Lang::En, 1), "1 note");
+        assert_eq!(count_label(Lang::En, 0), "0 notes");
+        assert_eq!(stack_badge(Lang::Id, 2, 3), "Tumpukan 2/3");
+        assert_eq!(stack_badge(Lang::En, 2, 3), "Stack 2/3");
+        assert_eq!(text(Lang::Id, Key::StickyList), "Daftar catatan tempel");
+        assert_eq!(text(Lang::En, Key::StickyList), "Sticky note list");
+        assert_eq!(text(Lang::Id, Key::StickyListSearch), "Cari catatan\u{2026}");
+        assert_eq!(text(Lang::Id, Key::StickyListNone), "Belum ada catatan tempel");
+        assert_eq!(text(Lang::En, Key::StickyListNoMatch), "No matches");
+    }
 
     /// True when `s` holds a run like "10/26/2026": digits, slash, digits,
     /// slash, digits (the Windows short date the old picker showed).

@@ -1310,6 +1310,7 @@ mod tests {
                 screenshot: crate::hotkey::parse("Ctrl+PrtSc").unwrap(),
                 lyrics_card: crate::hotkey::parse("Win+Alt+L").unwrap(),
                 sticky_note: crate::hotkey::parse("Ctrl+Alt+N").unwrap(),
+                sticky_list: crate::hotkey::parse("Ctrl+Alt+J").unwrap(),
             },
             settings_window: Some(WindowPlace {
                 left: 20,

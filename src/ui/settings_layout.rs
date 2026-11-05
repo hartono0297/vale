@@ -156,7 +156,7 @@ pub enum Section {
     /// Widget: how the desktop widgets behave, and the gallery to add them.
     Widgets,
     Clipboard,
-    /// Tombol pintas: the six global hotkeys, each recorded by pressing it.
+    /// Tombol pintas: the global hotkeys, each recorded by pressing it.
     Hotkeys,
     /// Fitur: the pomodoro, music, the CLI, devices, the cleaner.
     Features,
@@ -4504,6 +4504,7 @@ pub fn hotkey_row_key(id: HotkeyId) -> Key {
         HotkeyId::Screenshot => Key::HotkeyRowScreenshot,
         HotkeyId::LyricsCard => Key::HotkeyRowLyricsCard,
         HotkeyId::StickyNote => Key::StickyNew,
+        HotkeyId::StickyList => Key::StickyList,
     }
 }
 
@@ -4516,6 +4517,7 @@ fn hotkey_row_desc_key(id: HotkeyId) -> Key {
         HotkeyId::Screenshot => Key::HotkeyRowScreenshotDesc,
         HotkeyId::LyricsCard => Key::HotkeyRowLyricsCardDesc,
         HotkeyId::StickyNote => Key::StickyNewDesc,
+        HotkeyId::StickyList => Key::StickyListDesc,
     }
 }
 
@@ -5062,6 +5064,7 @@ mod tests {
             screenshot: hk("Ctrl+PrtSc"),
             lyrics_card: hk("Win+Ctrl+Alt+Shift+PageUp"),
             sticky_note: hk("Win+Ctrl+Alt+Shift+End"),
+            sticky_list: hk("Win+Ctrl+Alt+Shift+Home"),
         }
     }
 
@@ -5648,7 +5651,7 @@ mod tests {
     /// The sections that overflow the window and so scroll, whatever the
     /// state: Tampilan (three cards and the preview), Kucing, Panel (the two
     /// lists), Clipboard (history and screenshot), Tombol pintas (the header
-    /// and seven rows, 10 px past the margin at the minimum size) and Fitur
+    /// and eight rows, past the margin at the minimum size) and Fitur
     /// (five cards).
     // Widget holds the seven settings and the gallery's card: 460 px of
     // content in a 400 px high viewport at the minimum size, so it scrolls.
@@ -6488,7 +6491,7 @@ mod tests {
     }
 
     #[test]
-    fn tombol_pintas_sits_after_clipboard_with_a_header_and_seven_rows() {
+    fn tombol_pintas_sits_after_clipboard_with_a_header_and_eight_rows() {
         assert_eq!(
             Section::ALL,
             [
@@ -6508,15 +6511,15 @@ mod tests {
         for lang in [Lang::Id, Lang::En] {
             let s = hotkey_base(lang);
             let l = layout(Section::Hotkeys, &s, &Estimate);
-            // Seven rows overflow the minimum size by a few px, so the section
+            // Eight rows overflow the minimum size, so the section
             // scrolls (and fits with room to spare in a taller window).
             assert!(l.viewport.is_some() && l.scroll_max > 0.0, "{lang:?}");
             let tall = layout_in(Section::Hotkeys, &s, &Estimate, (CLIENT_W, 700.0));
             assert!(tall.viewport.is_none() && tall.scroll_max == 0.0, "{lang:?}");
-            // One card of the header and seven rows, under its eyebrow.
+            // One card of the header and eight rows, under its eyebrow.
             assert_eq!(l.cards.len(), 1);
             let card = l.cards[0];
-            assert_eq!(card.h, HEADER_H + 7.0 * ROW_H);
+            assert_eq!(card.h, HEADER_H + 8.0 * ROW_H);
             assert!(
                 l.texts
                     .iter()

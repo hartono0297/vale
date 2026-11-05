@@ -33,7 +33,8 @@ use crate::i18n::{self, Key, tr};
 use crate::model::Event;
 use crate::widgets::apply::{apply, set_reminder, settle, stack_out, sticky_for};
 use crate::widgets::cliptext;
-use crate::widgets::host::{Ctx, WidgetHost};
+use crate::widgets::host::{Ctx, WidgetEvent, WidgetHost};
+use crate::widgets::list::Undo;
 use crate::widgets::prefs::{FullscreenRule, WidgetLayer};
 use crate::widgets::remind;
 use crate::widgets::sticky::{Sticky, can_add};
@@ -47,11 +48,14 @@ pub(super) const TIMER_STICKY_REMIND: usize = 47;
 
 #[derive(Default)]
 pub(super) struct WidgetsState {
-    host: Option<WidgetHost>,
+    pub(super) host: Option<WidgetHost>,
     /// `TIMER_WIDGET_SAVE` is set: a write is due.
     save_due: bool,
     /// The notes whose reminder notice is on the island.
     reminded: Vec<String>,
+    /// What the sticky note list's last delete took away, until it is
+    /// committed (the strip's 5 s, the next delete, the list closing).
+    pub(super) list_undo: Option<Undo>,
 }
 
 impl App {
@@ -105,6 +109,8 @@ impl App {
         // A shared note that is not a desktop note any more (deleted or
         // unstuck from the Notes page) leaves the phone.
         self.phone_note_check();
+        // The sticky note list (when open) follows the notes.
+        self.note_list_refresh();
     }
 
     /// The config was adopted (a save, a hand edit): the widgets follow it and
@@ -119,6 +125,7 @@ impl App {
         if let Some(host) = self.widgets.host.as_mut() {
             host.restyle();
         }
+        crate::widgets::list_win::restyle();
     }
 
     /// `TaskbarCreated`: the shell is new, the notes are owned by it again.
@@ -169,7 +176,7 @@ impl App {
 
     // ------------------------------------------------------------ saving
 
-    fn arm_widget_save(&mut self) {
+    pub(super) fn arm_widget_save(&mut self) {
         self.widgets.save_due = true;
         unsafe {
             SetTimer(Some(self.hwnd), TIMER_WIDGET_SAVE, SAVE_MS, None);
@@ -208,6 +215,8 @@ impl App {
     /// `WM_DESTROY`: the last save, then the windows and their Direct2D
     /// objects go (they must not outlive the loop).
     pub(super) fn widgets_shutdown(&mut self) {
+        crate::widgets::list_win::close();
+        self.widgets.list_undo = None;
         self.widgets_flush();
         if let Some(mut host) = self.widgets.host.take() {
             host.shutdown();
@@ -221,6 +230,8 @@ impl App {
         if self.widgets_apply_events(true) {
             self.widgets_sync();
         }
+        // The sticky note list's own events (a row chosen, a delete, ...).
+        self.note_list_events();
     }
 
     /// Applies what the windows queued to the notes (the queue is emptied, so
@@ -235,6 +246,15 @@ impl App {
         if events.is_empty() {
             return false;
         }
+        self.widgets_apply_list(events, live)
+    }
+
+    /// Applies `events` to the notes and does what follows from them (a new
+    /// note, a sheet taken out, the notices, the phone, the save, the Notes
+    /// page and Settings). Shared by the windows' queue and the sticky note
+    /// list's delete. True when a note came off the desktop or went, and the
+    /// windows need a sync.
+    pub(super) fn widgets_apply_list(&mut self, events: Vec<WidgetEvent>, live: bool) -> bool {
         let out = apply(&mut self.notes, events, Local::now().timestamp());
         let (mut changed, structural, clock) = (out.changed, out.structural, out.clock);
         if let Some(on) = out.cat_peek {
@@ -264,6 +284,10 @@ impl App {
         if let Some(id) = &out.send_phone {
             self.phone_send_note(id);
         }
+        // The list button of a note's header.
+        if let Some(id) = &out.open_list {
+            self.open_note_list(Some(id));
+        }
         if changed {
             self.arm_widget_save();
             // The Notes page shows the same notes: it follows what is typed.
@@ -271,6 +295,8 @@ impl App {
                 self.draw(Instant::now());
             }
             self.sync_settings();
+            // The sticky note list shows the same notes.
+            self.note_list_refresh();
         }
         if clock {
             self.ensure_clock();
@@ -398,7 +424,7 @@ impl App {
 
     /// The notes come back when they were hidden (Settings, "Tampilkan"), for
     /// whatever is about to bring one to the front. Saved; the caller syncs.
-    fn widgets_reveal(&mut self) {
+    pub(super) fn widgets_reveal(&mut self) {
         if !self.config.widgets.show {
             self.config.widgets.show = true;
             self.save_config();

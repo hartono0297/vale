@@ -210,6 +210,21 @@ impl NotesStore {
         Some(id)
     }
 
+    /// Puts back a note that was deleted (the sticky list's "Urungkan"): it
+    /// keeps its own id, text, edit time and sticky part, and goes where its
+    /// time puts it. Refused when a note with that id exists, or when it is a
+    /// desktop note and the desktop is full. True when it is back.
+    pub fn restore(&mut self, note: Note) -> bool {
+        if self.get(&note.id).is_some() {
+            return false;
+        }
+        if note.sticky.is_some() && !sticky::can_add(self.sticky_count()) {
+            return false;
+        }
+        self.place_by_time(note);
+        true
+    }
+
     /// How many notes are on the desktop.
     pub fn sticky_count(&self) -> usize {
         self.notes.iter().filter(|n| n.sticky.is_some()).count()
@@ -538,6 +553,53 @@ mod tests {
         // And it can go back on.
         assert!(store.set_sticky(&kept, Some(stuck(16.0))));
         assert_eq!(store.sticky_count(), 1);
+    }
+
+    #[test]
+    fn a_deleted_note_comes_back_with_its_id_text_time_and_sticky_part() {
+        let tmp = TempDir::new("restore");
+        let mut store = NotesStore::open(tmp.file());
+        let old = store.upsert(None, "old", 10).unwrap();
+        let id = store.create_sticky(stuck(24.0), 20).unwrap();
+        store.set_text(&id, "Belanja\n- [ ] bata", 30);
+        let new = store.upsert(None, "new", 40).unwrap();
+        let note = store.get(&id).unwrap().clone();
+        assert!(store.delete(&id));
+        assert!(store.get(&id).is_none());
+        assert!(store.restore(note.clone()));
+        assert_eq!(store.get(&id), Some(&note), "the same id, text, time and sticky");
+        // It sits where its time puts it: between the old and the new one.
+        let ids: Vec<&str> = store.list().iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(ids, vec![new.as_str(), id.as_str(), old.as_str()]);
+        // An id that exists is refused, and nothing changes.
+        assert!(!store.restore(note));
+        assert_eq!(store.list().len(), 3);
+        // A delete, a restore and a save write the same file as before.
+        store.save().unwrap();
+        let before = std::fs::read_to_string(tmp.file()).unwrap();
+        let again = store.get(&id).unwrap().clone();
+        assert!(store.delete(&id));
+        assert!(store.restore(again));
+        store.save().unwrap();
+        assert_eq!(std::fs::read_to_string(tmp.file()).unwrap(), before);
+    }
+
+    #[test]
+    fn a_desktop_note_is_not_restored_onto_a_full_desktop() {
+        let tmp = TempDir::new("restore-cap");
+        let mut store = NotesStore::open(tmp.file());
+        let first = store.create_sticky(stuck(0.0), 1).unwrap();
+        let note = store.get(&first).unwrap().clone();
+        assert!(store.delete(&first));
+        for k in 0..sticky::MAX_STICKY {
+            store.create_sticky(stuck(k as f32), 2 + k as i64).unwrap();
+        }
+        assert!(!store.restore(note.clone()), "the desktop is full");
+        assert!(store.get(&first).is_none());
+        // A plain note is not a desktop note: the cap does not apply.
+        let plain = Note { sticky: None, ..note };
+        assert!(store.restore(plain));
+        assert_eq!(store.sticky_count(), sticky::MAX_STICKY);
     }
 
     #[test]

@@ -43,7 +43,9 @@ use crate::ui::frame_clock::{FrameClock, WM_APP_FRAME};
 use crate::ui::tray;
 use crate::widgets::apply::{apply, set_reminder, settle, stack_out, sticky_for};
 use crate::widgets::cliptext;
-use crate::widgets::host::{Ctx, WM_APP_WIDGET, WidgetHost};
+use crate::widgets::host::{Ctx, WM_APP_WIDGET, WidgetEvent, WidgetHost};
+use crate::widgets::list::{self, Undo};
+use crate::widgets::list_win::{self, Anchor, ListData, ListEvent};
 use crate::widgets::prefs::{WidgetLayer, WidgetPrefs};
 use crate::widgets::remind;
 use crate::widgets::sticky::{Deco, DipRect, NoteFont, Paper, Pattern, Stamp, Sticky};
@@ -65,6 +67,8 @@ struct Demo {
     displays: Vec<Display>,
     clock: Option<FrameClock>,
     font: UiFont,
+    /// What the list's last delete took away (`--demo-note-list`).
+    undo: Option<Undo>,
 }
 
 thread_local! {
@@ -316,6 +320,18 @@ Pak Budi 0812-555-0147 (kontraktor).", now - 20);
 
 /// `reset`: start from the seed again.
 pub fn run(reset: bool) {
+    run_scene(reset, false);
+}
+
+/// `--demo-note-list [reset]`: the same scene, notes file and seeded notes,
+/// with the sticky note list opened at its default anchor once the windows are
+/// up. The owner handles the list's events itself, with the same pure
+/// functions the island uses.
+pub fn run_list(reset: bool) {
+    run_scene(reset, true);
+}
+
+fn run_scene(reset: bool, with_list: bool) {
     theme::set_system_light(theme::read_system_light());
     theme::set_current(theme::theme_from_env());
     tray::follow_system_menu_theme();
@@ -346,10 +362,14 @@ pub fn run(reset: bool) {
             displays,
             clock: None,
             font,
+            undo: None,
         });
     });
     with_demo(Demo::sync);
     with_demo(Demo::remind_fire);
+    if with_list {
+        with_demo(|d| d.open_list(None));
+    }
     println!("widgets-demo: notes in {}", store_path().display());
     unsafe {
         let mut msg = MSG::default();
@@ -387,10 +407,94 @@ impl Demo {
         });
         crate::widgets::set_sticky_count(store.sticky_count());
         host.mood_tick(Local::now().timestamp());
-        if host.count() == 0 {
+        // The scene ends with its last note, unless the list is open (it may
+        // still undo the delete).
+        if host.count() == 0 && !list_win::is_open() {
             unsafe { PostQuitMessage(0) };
         }
         self.remind_arm();
+        self.list_refresh();
+    }
+
+    // ------------------------------------------------------------ the list
+
+    fn list_data(&self) -> ListData {
+        let room = crate::widgets::sticky::can_add(self.store.sticky_count());
+        ListData {
+            notes: self.store.list().to_vec(),
+            lang: i18n::lang(),
+            ui: self.font,
+            can_add: room,
+            can_undo: self.undo.is_some() && room,
+        }
+    }
+
+    fn list_refresh(&self) {
+        if list_win::is_open() {
+            list_win::refresh(self.list_data());
+        }
+    }
+
+    /// Opens the list beside `beside`, else at the top right of the notch's
+    /// monitor.
+    fn open_list(&mut self, beside: Option<&str>) {
+        let anchor = match beside.and_then(|id| self.host.note_rect_px(id)) {
+            Some(note_px) => Anchor::Beside { note_px },
+            None => {
+                let work = crate::notch_monitor::resolve(&NotchMonitor::Primary, &self.displays)
+                    .and_then(|i| self.displays.get(i))
+                    .map_or(crate::capture::Rect::new(0, 0, 1920, 1040), |d| d.monitor.work);
+                Anchor::Default { work_px: work }
+            }
+        };
+        list_win::open(self.owner, anchor, self.list_data());
+    }
+
+    fn save_soon(&self) {
+        unsafe {
+            SetTimer(Some(self.owner), SAVE_TIMER, SAVE_MS, None);
+        }
+    }
+
+    /// What the user did in the list, applied with the same pure rules as the
+    /// island (`list::show_events`, `Undo`) and the host's `bring_front`.
+    fn list_events(&mut self) {
+        let now = Local::now().timestamp();
+        for ev in list_win::drain() {
+            match ev {
+                ListEvent::Show(id) => {
+                    let events = list::show_events(self.store.list(), &id);
+                    if !events.is_empty() {
+                        apply(&mut self.store, events, now);
+                    }
+                    self.sync();
+                    self.host.bring_front(&id);
+                    list_win::close();
+                    self.save_soon();
+                }
+                ListEvent::Delete(id) => {
+                    self.undo = Undo::capture(self.store.list(), &id);
+                    let out = apply(&mut self.store, vec![WidgetEvent::Delete { id }], now);
+                    if out.structural {
+                        self.sync();
+                    }
+                    self.list_refresh();
+                    self.save_soon();
+                }
+                ListEvent::Undo => {
+                    if let Some(undo) = self.undo.clone()
+                        && undo.restore(&mut self.store)
+                    {
+                        self.undo = None;
+                        settle(&mut self.store, now, false);
+                        self.sync();
+                        self.save_soon();
+                    }
+                }
+                ListEvent::New => self.make(None, Template::Kosong),
+                ListEvent::Closed => self.undo = None,
+            }
+        }
     }
 
     /// The one-shot for the nearest unfired reminder.
@@ -430,10 +534,14 @@ impl Demo {
     }
 
     fn events(&mut self) {
+        self.list_events();
         let events = self.host.drain();
         let out = apply(&mut self.store, events, Local::now().timestamp());
         if let Some(on) = out.cat_peek {
             self.prefs.cat_peek = on;
+        }
+        if let Some(id) = &out.open_list {
+            self.open_list(Some(id));
         }
         // The demo has no island and no phone link: the choice is only said.
         if let Some(id) = &out.send_phone {

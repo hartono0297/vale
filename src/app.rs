@@ -187,6 +187,9 @@ use phone_page::{PhoneState, TIMER_PHONE};
 mod widgets_page;
 use widgets_page::{TIMER_STICKY_REMIND, TIMER_WIDGET_SAVE, WidgetsState};
 
+#[path = "app_note_list.rs"]
+mod note_list;
+
 #[path = "app_shot.rs"]
 pub(crate) mod shot;
 use shot::{ShotSetting, Shots};
@@ -7937,6 +7940,9 @@ fn open_menu(hwnd: HWND) {
         Some(MenuCmd::StickyNote) => {
             with_app(|app| app.on_sticky_menu());
         }
+        Some(MenuCmd::StickyList) => {
+            with_app(|app| app.open_note_list(None));
+        }
         Some(MenuCmd::StylePill) => {
             with_app(|app| app.set_style(Style::Pill));
         }
@@ -9840,8 +9846,10 @@ mod tests {
             TIMER_WIDGET_SAVE,
             crate::widgets::host::TIMER_WIDGET_CARET,
             TIMER_STICKY_REMIND,
+            crate::widgets::list_win::TIMER_LIST_UNDO,
         ];
         assert_eq!(TIMER_PHONE, 48);
+        assert_eq!(crate::widgets::list_win::TIMER_LIST_UNDO, 49);
         // 42-47 are taken by other runs (the lyrics card's and the widgets'
         // ids); the phone never reuses one of them.
         assert!(!(42..48).contains(&TIMER_PHONE));
