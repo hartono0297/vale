@@ -62,7 +62,9 @@ pub fn make(file: &File) -> Option<Vec<u8>> {
 
 /// The EXIF orientation of the first frame as a WIC rotation, when it says
 /// 3, 6 or 8 (the others, mirrored ones included, are ignored).
-fn orientation(frame: &windows::Win32::Graphics::Imaging::IWICBitmapFrameDecode) -> Option<i32> {
+pub(crate) fn orientation(
+    frame: &windows::Win32::Graphics::Imaging::IWICBitmapFrameDecode,
+) -> Option<i32> {
     unsafe {
         let reader = frame.GetMetadataQueryReader().ok()?;
         let mut value = PROPVARIANT::default();

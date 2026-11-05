@@ -23,6 +23,7 @@
 //! notice on the island per note; the notice stays while the note is overdue
 //! and goes when it is opened, snoozed, cleared, unstuck or deleted.
 
+use std::collections::HashSet;
 use std::time::Instant;
 
 use chrono::Local;
@@ -34,6 +35,7 @@ use crate::model::Event;
 use crate::widgets::apply::{apply, set_reminder, settle, stack_out, sticky_for};
 use crate::widgets::cliptext;
 use crate::widgets::host::{Ctx, WidgetEvent, WidgetHost};
+use crate::widgets::images;
 use crate::widgets::list::Undo;
 use crate::widgets::prefs::{FullscreenRule, WidgetLayer};
 use crate::widgets::remind;
@@ -56,6 +58,10 @@ pub(super) struct WidgetsState {
     /// What the sticky note list's last delete took away, until it is
     /// committed (the strip's 5 s, the next delete, the list closing).
     pub(super) list_undo: Option<Undo>,
+    /// The image files some note referenced since the last save (and the ones
+    /// the list's undo still holds): what a save no longer finds referenced is
+    /// deleted. No timer: the diff runs after every notes save.
+    known_images: HashSet<String>,
 }
 
 impl App {
@@ -68,7 +74,27 @@ impl App {
         if settle(&mut self.notes, Local::now().timestamp(), true) {
             self.arm_widget_save();
         }
+        // The images in use are known; once, the files nothing refers to and
+        // that are a day old (a crash, a note deleted while the island was
+        // off) are cleaned out.
+        self.widgets.known_images = self.notes.referenced_images();
+        // Not when notes.json failed to load: the store is empty then and
+        // would sweep away the images of the notes that come back.
+        crate::widgets::image_io::sweep_store(&self.notes, Local::now().timestamp());
         self.widgets_sync();
+    }
+
+    /// After a notes save, and when the list's undo ends: the image files that
+    /// were referenced and are not now (and that "Urungkan" does not hold) are
+    /// deleted. Only valid names ever meet the disk.
+    pub(super) fn widgets_images_release(&mut self) {
+        let mut keep = self.notes.referenced_images();
+        if let Some(undo) = &self.widgets.list_undo {
+            keep.extend(undo.images());
+        }
+        let gone = images::to_release(&self.widgets.known_images, &keep);
+        crate::widgets::image_io::delete_named(&self.notes.images_dir(), &gone);
+        self.widgets.known_images = keep;
     }
 
     /// Brings the windows to the notes and the settings, and the tray's count.
@@ -94,6 +120,7 @@ impl App {
         let Some(host) = widgets.host.as_mut() else {
             return;
         };
+        host.set_images_dir(notes.images_dir());
         host.sync(&Ctx {
             notes: notes.list(),
             prefs: config.widgets,
@@ -256,6 +283,9 @@ impl App {
     /// windows need a sync.
     pub(super) fn widgets_apply_list(&mut self, events: Vec<WidgetEvent>, live: bool) -> bool {
         let out = apply(&mut self.notes, events, Local::now().timestamp());
+        // An image added and taken off again before any save is still known,
+        // so the next save deletes its file.
+        self.widgets.known_images.extend(self.notes.referenced_images());
         let (mut changed, structural, clock) = (out.changed, out.structural, out.clock);
         if let Some(on) = out.cat_peek {
             self.config.widgets.cat_peek = on;

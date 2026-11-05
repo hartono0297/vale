@@ -205,3 +205,23 @@ embedded PDB path moves either exe by up to 512 bytes):
 No new crate and no new `windows` feature (`MonitorFromPoint`, `GetDpiForMonitor`,
 the EDIT and DirectWrite calls were already in use). `--demo-note-list` is debug-only
 and not in the release exe.
+
+## Format toolbar and images (2026-11-05)
+
+[[widgets]], "Format toolbar and images": the rich-text runs, the bar and its popup,
+bullets, up to four images (WIC import, decode, drawing), the clipboard format,
+the phone page's formatting and the strings (both languages). `cargo build
+--release --locked`, 0 warnings, built in this worktree (its path is not the same
+length as the folders of the earlier entries, so the embedded PDB path moves the
+exe by up to 512 bytes):
+
+| Build | Bytes |
+|---|---|
+| sticky note list (entry above, 3.20.0 plus the list) | 3,686,400 |
+| this branch (format toolbar and images) | 3,810,816 (+124,416, +3.4 %) |
+
+No new crate and no new `windows` feature (WIC, `IFileOpenDialog`, the clipboard,
+`DragQueryFileW` and Direct2D bitmap brushes were all in use already). The demo's
+two gradient PNGs are generated at run time in debug builds only: no image is
+bundled, so the exe grew by code and strings alone.
+

@@ -6,7 +6,8 @@ use crate::config::NotchMonitor;
 use crate::notch_monitor::{self, Display};
 use crate::notes::{Note, NotesStore};
 use crate::widgets::host::WidgetEvent;
-use crate::widgets::sticky::{DipRect, Sticky};
+use crate::widgets::sticky::{self, DipRect, Sticky};
+use crate::widgets::styles;
 use crate::widgets::templates::Template;
 use crate::widgets::{paint, place, snap, stack};
 
@@ -102,6 +103,19 @@ pub fn apply(notes: &mut NotesStore, events: Vec<WidgetEvent>, unix: i64) -> Out
     for ev in events {
         match ev {
             WidgetEvent::Text { id, text } => out.changed |= notes.set_text(&id, &text, unix),
+            WidgetEvent::Styles { id, runs } => {
+                // Fitted to the text the store has now (after any `Text` of
+                // the same batch); it wins over the store's own rebase.
+                let text = notes.get(&id).map(|n| n.text.clone()).unwrap_or_default();
+                out.changed |= edit_sticky(notes, &id, |s| {
+                    s.styles = styles::normalise(&runs, &text);
+                });
+            }
+            WidgetEvent::Images { id, images } => {
+                out.changed |= edit_sticky(notes, &id, |s| {
+                    s.images = sticky::clean_images(images.iter().map(String::as_str));
+                });
+            }
             WidgetEvent::Placed { id, monitor, rect } => {
                 out.changed |= edit_sticky(notes, &id, |s| {
                     s.monitor = monitor;
@@ -720,5 +734,104 @@ mod tests {
         assert!(notes.set_sticky(&stacked, None));
         assert_eq!(notes.sticky_count(), MAX_STICKY - 1);
         assert!(can_add(notes.sticky_count()));
+    }
+
+    #[test]
+    fn styles_are_fitted_to_the_text_and_win_over_the_stores_rebase() {
+        use crate::widgets::styles::{Run, Style};
+        let bold = Style { b: true, ..Style::default() };
+        let mut notes = store("styles-event");
+        let id = id_of(&mut notes);
+        // Text then Styles in one batch: the runs are the host's.
+        let out = apply(
+            &mut notes,
+            vec![
+                WidgetEvent::Text { id: id.clone(), text: "Hello world".into() },
+                WidgetEvent::Styles {
+                    id: id.clone(),
+                    runs: vec![Run { s: 0, e: 5, style: bold }],
+                },
+            ],
+            5,
+        );
+        assert!(out.changed && !out.structural);
+        assert_eq!(sticky_of(&notes, &id).styles, [Run { s: 0, e: 5, style: bold }]);
+        // Runs past the text and empty ones are cleaned.
+        apply(
+            &mut notes,
+            vec![WidgetEvent::Styles {
+                id: id.clone(),
+                runs: vec![
+                    Run { s: 6, e: 99, style: bold },
+                    Run { s: 3, e: 3, style: bold },
+                ],
+            }],
+            6,
+        );
+        assert_eq!(sticky_of(&notes, &id).styles, [Run { s: 6, e: 11, style: bold }]);
+        // The same runs again change nothing to save.
+        let out = apply(
+            &mut notes,
+            vec![WidgetEvent::Styles {
+                id: id.clone(),
+                runs: vec![Run { s: 6, e: 11, style: bold }],
+            }],
+            7,
+        );
+        assert!(!out.changed);
+        // No runs clears them; a style-only change leaves the text and time alone.
+        let before = notes.get(&id).unwrap().clone();
+        apply(&mut notes, vec![WidgetEvent::Styles { id: id.clone(), runs: vec![] }], 8);
+        assert!(sticky_of(&notes, &id).styles.is_empty());
+        assert_eq!(notes.get(&id).unwrap().text, before.text);
+        assert_eq!(notes.get(&id).unwrap().updated, before.updated);
+        // A note that is gone changes nothing.
+        let out = apply(
+            &mut notes,
+            vec![WidgetEvent::Styles { id: "n0-nope".into(), runs: vec![Run { s: 0, e: 1, style: bold }] }],
+            9,
+        );
+        assert_eq!(out, Outcome::default());
+    }
+
+    #[test]
+    fn images_are_kept_only_when_valid_once_each_and_at_most_four() {
+        let mut notes = store("images-event");
+        let id = id_of(&mut notes);
+        let out = apply(
+            &mut notes,
+            vec![WidgetEvent::Images {
+                id: id.clone(),
+                images: ["a.png", "../evil.png", "b.jpg", "a.png", "c.gif", "d.png", "e.png", "f.png"]
+                    .iter()
+                    .map(|s| (*s).to_owned())
+                    .collect(),
+            }],
+            1,
+        );
+        assert!(out.changed && !out.structural);
+        assert_eq!(sticky_of(&notes, &id).images, ["a.png", "b.jpg", "d.png", "e.png"]);
+        assert_eq!(notes.referenced_images().len(), 4);
+        let out = apply(
+            &mut notes,
+            vec![WidgetEvent::Images { id: id.clone(), images: vec!["a.png".into(), "b.jpg".into(), "d.png".into(), "e.png".into()] }],
+            2,
+        );
+        assert!(!out.changed, "the same list is nothing to save");
+        apply(&mut notes, vec![WidgetEvent::Images { id: id.clone(), images: vec![] }], 3);
+        assert!(sticky_of(&notes, &id).images.is_empty());
+        assert!(notes.referenced_images().is_empty());
+    }
+
+    #[test]
+    fn a_text_event_shifts_the_runs_when_no_styles_follow() {
+        use crate::widgets::styles::{Run, Style};
+        let bold = Style { b: true, ..Style::default() };
+        let mut notes = store("text-rebase");
+        let id = id_of(&mut notes);
+        apply(&mut notes, vec![WidgetEvent::Text { id: id.clone(), text: "abc def".into() }], 1);
+        apply(&mut notes, vec![WidgetEvent::Styles { id: id.clone(), runs: vec![Run { s: 4, e: 7, style: bold }] }], 2);
+        apply(&mut notes, vec![WidgetEvent::Text { id: id.clone(), text: ">> abc def".into() }], 3);
+        assert_eq!(sticky_of(&notes, &id).styles, [Run { s: 7, e: 10, style: bold }]);
     }
 }

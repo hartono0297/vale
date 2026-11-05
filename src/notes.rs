@@ -1,11 +1,13 @@
 use chrono::{Datelike, NaiveDate, NaiveDateTime};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::io;
 use std::path::PathBuf;
 
 use crate::config::backup_path;
 use crate::i18n::{self, Key, Lang, text};
 use crate::widgets::sticky::{self, Sticky};
+use crate::widgets::styles;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Note {
@@ -66,6 +68,20 @@ fn load(read: io::Result<String>) -> (Vec<Note>, bool) {
     }
 }
 
+/// Puts `new` in `note` and moves its formatting along: the runs are rebased
+/// from the old text to the new (typed text takes the style at the change,
+/// deleted text takes its runs with it). Every text change of a note goes
+/// through here (`set_text` for the desktop window, `upsert` for the Notes
+/// page), so the formatting follows an edit made anywhere.
+fn replace_text(note: &mut Note, new: &str) {
+    if let Some(s) = note.sticky.as_mut()
+        && !s.styles.is_empty()
+    {
+        s.styles = styles::rebase(&note.text, new, &s.styles);
+    }
+    note.text = new.to_owned();
+}
+
 impl NotesStore {
     /// A missing, unreadable or malformed file yields an empty store. The file itself
     /// is left untouched until the next `save`, which first renames an unreadable or
@@ -73,6 +89,16 @@ impl NotesStore {
     pub fn open(path: PathBuf) -> Self {
         let (mut notes, keep_old) = load(std::fs::read_to_string(&path));
         notes.sort_by_key(|n| std::cmp::Reverse(n.updated));
+        // The formatting is fitted to each note's text once, here: a run past
+        // the end, an empty or an overlapping one is cleaned, so nothing
+        // downstream has to guard against a hand-edited file.
+        for n in &mut notes {
+            if let Some(s) = n.sticky.as_mut()
+                && !s.styles.is_empty()
+            {
+                s.styles = styles::normalise(&s.styles, &n.text);
+            }
+        }
         NotesStore {
             path,
             notes,
@@ -120,7 +146,7 @@ impl NotesStore {
                 sticky: None,
             },
         };
-        note.text = text.to_string();
+        replace_text(&mut note, text);
         note.updated = now;
         let id = note.id.clone();
         self.place_by_time(note);
@@ -156,7 +182,7 @@ impl NotesStore {
             return true;
         }
         let mut note = self.notes.remove(i);
-        note.text = text.to_owned();
+        replace_text(&mut note, text);
         note.updated = now;
         self.place_by_time(note);
         true
@@ -223,6 +249,23 @@ impl NotesStore {
         }
         self.place_by_time(note);
         true
+    }
+
+    /// Where the sticky notes' image files live: `note-images` next to the
+    /// notes file (so the real app, the demo and every test have their own).
+    pub fn images_dir(&self) -> PathBuf {
+        self.path
+            .parent()
+            .map_or_else(|| PathBuf::from("note-images"), |d| d.join("note-images"))
+    }
+
+    /// Every image name some note refers to.
+    pub fn referenced_images(&self) -> HashSet<String> {
+        self.notes
+            .iter()
+            .filter_map(|n| n.sticky.as_ref())
+            .flat_map(|s| s.images.iter().cloned())
+            .collect()
     }
 
     /// How many notes are on the desktop.
@@ -653,5 +696,213 @@ mod tests {
         store.save().unwrap();
         assert!(!tmp.0.join("notes.json.bak").exists());
         assert_eq!(NotesStore::open(tmp.file()).list().len(), 2);
+    }
+
+    // ------------------------------------------------- formatting and images
+
+    /// The keys of the sticky part of note `i` in the saved file.
+    fn sticky_keys(file: &std::path::Path, i: usize) -> Vec<String> {
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(file).unwrap()).unwrap();
+        v[i]["sticky"].as_object().unwrap().keys().cloned().collect()
+    }
+
+    const PHASE_ONE: &str = r#"[
+  {"id": "n9-0", "text": "Belanja\n- [ ] bata", "updated": 9, "sticky": {
+    "paper": "Terakota", "text_size": "M", "pinned": false, "rolled": false,
+    "rect": {"x": 10.0, "y": 20.0, "w": 240.0, "h": 208.0}, "monitor": "", "touched": 0}}
+]"#;
+
+    const RUN_B: &str = r#"[
+  {"id": "n9-0", "text": "Proyek\nsatu", "updated": 9, "sticky": {
+    "paper": "Laut", "text_size": "L", "pinned": true, "rolled": false,
+    "rect": {"x": 10.0, "y": 20.0, "w": 260.0, "h": 208.0}, "monitor": "", "touched": 5,
+    "remind_at": 100, "font": "Mono", "pattern": "Kotak", "deco": "Paku", "stamp": "Ide",
+    "opacity": 60, "stack": "stk-n9-0", "stack_order": 1, "stack_top": true, "tuck": "right"}}
+]"#;
+
+    #[test]
+    fn a_phase_one_and_a_run_b_file_save_back_with_exactly_their_old_keys() {
+        for (name, json) in [("phase1", PHASE_ONE), ("runb", RUN_B)] {
+            let tmp = TempDir::new(name);
+            std::fs::write(tmp.file(), json).unwrap();
+            let before = {
+                let v: serde_json::Value = serde_json::from_str(json).unwrap();
+                v[0]["sticky"].as_object().unwrap().keys().cloned().collect::<Vec<_>>()
+            };
+            let mut store = NotesStore::open(tmp.file());
+            assert!(!store.load_failed());
+            let s = store.list()[0].sticky.clone().unwrap();
+            assert!(s.styles.is_empty() && s.images.is_empty(), "{name}");
+            store.save().unwrap();
+            let mut after = sticky_keys(&tmp.file(), 0);
+            let mut before = before;
+            after.sort();
+            before.sort();
+            assert_eq!(after, before, "{name}: no new key");
+            assert!(!tmp.0.join("notes.json.bak").exists(), "{name}");
+        }
+    }
+
+    #[test]
+    fn styles_and_images_round_trip_and_are_written_only_when_there() {
+        let tmp = TempDir::new("fmt-roundtrip");
+        std::fs::write(
+            tmp.file(),
+            r#"[{"id":"n1-0","text":"Hello world","updated":1,"sticky":{
+              "paper":"Krem","rect":{"x":0,"y":0,"w":240,"h":208},
+              "styles":[{"s":0,"e":5,"b":true,"hl":"kuning"},{"s":6,"e":11,"i":true,"fg":"merah"}],
+              "images":["a.png","b.jpg"]}}]"#,
+        )
+        .unwrap();
+        let mut store = NotesStore::open(tmp.file());
+        let s = store.list()[0].sticky.clone().unwrap();
+        assert_eq!(s.styles.len(), 2);
+        assert!(s.styles[0].style.b && s.styles[1].style.i);
+        assert_eq!(s.images, ["a.png", "b.jpg"]);
+        store.save().unwrap();
+        let json = std::fs::read_to_string(tmp.file()).unwrap();
+        assert!(json.contains(r#""hl": "kuning""#), "names, not hex: {json}");
+        assert!(json.contains(r#""fg": "merah""#), "{json}");
+        assert!(!json.contains('#'), "no hex colour is ever saved: {json}");
+        let again = NotesStore::open(tmp.file());
+        assert_eq!(again.list(), store.list());
+        assert_eq!(
+            again.referenced_images(),
+            ["a.png", "b.jpg"].iter().map(|s| s.to_string()).collect()
+        );
+    }
+
+    #[test]
+    fn bad_styles_and_images_give_no_formatting_and_no_backup() {
+        let bad = r#"[
+  {"id":"n1-0","text":"abc","updated":4,"sticky":{"styles":"oops","images":{"a":1}}},
+  {"id":"n2-0","text":"abcdef","updated":3,"sticky":{
+     "styles":[5,{"s":"x","e":2,"b":true},{"s":-1,"e":2},{"s":1,"e":3,"hl":"ungu","fg":"merah","b":"yes"},
+               {"s":2,"e":999,"i":true},{"s":4,"e":4,"b":true}],
+     "images":["../x.png","a.gif","ok.png","ok.png",7,null,"c:\\d.png","b.png","c.png","d.png","e.png"]}},
+  {"id":"n3-0","text":"x","updated":2,"sticky":{"styles":null,"images":null}}
+]"#;
+        let tmp = TempDir::new("fmt-bad");
+        std::fs::write(tmp.file(), bad).unwrap();
+        let mut store = NotesStore::open(tmp.file());
+        assert!(!store.load_failed(), "the file is still good");
+        let a = store.get("n1-0").unwrap().sticky.clone().unwrap();
+        assert!(a.styles.is_empty() && a.images.is_empty());
+        let b = store.get("n2-0").unwrap().sticky.clone().unwrap();
+        // The bad runs are gone, the bad hl dropped, the rest fitted to the text.
+        assert_eq!(b.styles.len(), 2);
+        assert_eq!((b.styles[0].s, b.styles[0].e), (1, 2));
+        assert_eq!(b.styles[0].style.fg, Some(crate::widgets::styles::Fg::Merah));
+        assert!(!b.styles[0].style.b && b.styles[0].style.hl.is_none());
+        assert_eq!((b.styles[1].s, b.styles[1].e), (2, 6));
+        assert!(b.styles[1].style.i);
+        // Only valid names, once each, at most four.
+        assert_eq!(b.images, ["ok.png", "b.png", "c.png", "d.png"]);
+        store.save().unwrap();
+        assert!(!tmp.0.join("notes.json.bak").exists(), "a wrong value never backs the file up");
+    }
+
+    #[test]
+    fn a_wrong_style_run_is_normalised_against_the_text_on_load() {
+        let tmp = TempDir::new("fmt-normalise");
+        std::fs::write(
+            tmp.file(),
+            r#"[{"id":"n1-0","text":"abc","updated":1,"sticky":{"styles":[
+              {"s":0,"e":2,"b":true},{"s":1,"e":50,"b":true},{"s":2,"e":2,"i":true}]}}]"#,
+        )
+        .unwrap();
+        let store = NotesStore::open(tmp.file());
+        let s = store.list()[0].sticky.clone().unwrap();
+        assert_eq!(s.styles.len(), 1, "merged and clamped");
+        assert_eq!((s.styles[0].s, s.styles[0].e), (0, 3));
+    }
+
+    fn with_bold(store: &mut NotesStore, text: &str, a: usize, b: usize) -> String {
+        use crate::widgets::styles::{Run, Style};
+        let id = store.create_sticky(stuck(0.0), 1).unwrap();
+        store.set_text(&id, text, 2);
+        let mut s = store.get(&id).unwrap().sticky.clone().unwrap();
+        s.styles = vec![Run { s: a, e: b, style: Style { b: true, ..Style::default() } }];
+        assert!(store.set_sticky(&id, Some(s)));
+        id
+    }
+
+    fn bold_of(store: &NotesStore, id: &str) -> Vec<(usize, usize)> {
+        store
+            .get(id)
+            .unwrap()
+            .sticky
+            .as_ref()
+            .unwrap()
+            .styles
+            .iter()
+            .map(|r| (r.s, r.e))
+            .collect()
+    }
+
+    #[test]
+    fn editing_through_set_text_shifts_the_runs() {
+        let tmp = TempDir::new("fmt-set-text");
+        let mut store = NotesStore::open(tmp.file());
+        let id = with_bold(&mut store, "Title\nsome bold here", 11, 15);
+        // Typing before the bold shifts it.
+        store.set_text(&id, "Title!!\nsome bold here", 3);
+        assert_eq!(bold_of(&store, &id), [(13, 17)]);
+        // Typing inside grows it.
+        store.set_text(&id, "Title!!\nsome boXld here", 4);
+        assert_eq!(bold_of(&store, &id), [(13, 18)]);
+        // Deleting all of it drops it.
+        store.set_text(&id, "Title!!\nsome  here", 5);
+        assert!(bold_of(&store, &id).is_empty());
+        let s = store.get(&id).unwrap().sticky.clone().unwrap();
+        assert!(s.styles.is_empty());
+        // The formatting follows an emptied text too (a desktop note keeps it).
+        store.set_text(&id, "", 6);
+        assert_eq!(store.get(&id).unwrap().text, "");
+    }
+
+    #[test]
+    fn editing_through_upsert_shifts_the_runs_too() {
+        // The Notes page's editor saves through `upsert`.
+        let tmp = TempDir::new("fmt-upsert");
+        let mut store = NotesStore::open(tmp.file());
+        let id = with_bold(&mut store, "Title\nsome bold here", 11, 15);
+        store.upsert(Some(&id), "Title\n>> some bold here", 3);
+        assert_eq!(bold_of(&store, &id), [(14, 18)]);
+        // Replacing the text in the middle of the run.
+        store.upsert(Some(&id), "Title\n>> some bXXd here", 4);
+        let runs = bold_of(&store, &id);
+        assert_eq!(runs, [(14, 18)]);
+        // A note that is only plain text has no styles to move.
+        let plain = store.upsert(None, "plain", 5).unwrap();
+        store.upsert(Some(&plain), "plain!", 6);
+        assert!(store.get(&plain).unwrap().sticky.is_none());
+    }
+
+    #[test]
+    fn the_images_folder_sits_next_to_the_notes_file() {
+        let tmp = TempDir::new("images-dir");
+        let store = NotesStore::open(tmp.file());
+        assert_eq!(store.images_dir(), tmp.0.join("note-images"));
+        assert!(store.referenced_images().is_empty());
+    }
+
+    #[test]
+    fn an_image_only_note_stays_on_the_desktop_with_empty_text() {
+        let tmp = TempDir::new("image-only");
+        let mut store = NotesStore::open(tmp.file());
+        let id = store.create_sticky(stuck(0.0), 1).unwrap();
+        let mut s = store.get(&id).unwrap().sticky.clone().unwrap();
+        s.images = vec!["a.png".into()];
+        assert!(store.set_sticky(&id, Some(s)));
+        assert!(store.set_text(&id, "", 2), "an empty text is allowed on the desktop");
+        assert!(store.get(&id).is_some());
+        assert_eq!(store.referenced_images().len(), 1);
+        // Taking it off the desktop deletes an empty note, as before; its
+        // images are no longer referenced.
+        assert!(store.set_sticky(&id, None));
+        assert!(store.get(&id).is_none());
+        assert!(store.referenced_images().is_empty());
     }
 }

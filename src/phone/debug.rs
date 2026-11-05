@@ -34,7 +34,7 @@ use crate::widgets::sticky::Paper;
 fn sample_note() -> NoteShare {
     let text = "Daftar belanja\n- [ ] Telur\n- [x] Kopi\nSatu baris biasa: <b>&amp\"";
     let isl = island(Accent::Terracotta, Surface::Espresso);
-    NoteShare::from_note(text, Paper::Krem, &isl, Accent::Terracotta, &pc_name())
+    NoteShare::from_note(text, &[], Paper::Krem, &isl, Accent::Terracotta, &pc_name())
 }
 
 /// A 640 x 480 colour gradient as a PNG (WIC, with COM joined for the call).
