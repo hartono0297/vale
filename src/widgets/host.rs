@@ -69,7 +69,7 @@ use crate::ui::geometry::Rect as DipR;
 use crate::widgets::image_io;
 use crate::widgets::images;
 use crate::widgets::paint::{
-    self, BarScene, BodyLayout, Btn, CatPose, Extras, GuideLine, HEADER_H, ImgCache, ImgScene, Res,
+    self, BarScene, BodyLayout, Btn, CatPose, Extras, GuideLine, HEADER_H, ImgCache, ImgPlan, ImgScene, Res,
     Scene, Target, shown_h, window_dip,
 };
 use crate::widgets::toolbar::{self, BarHit, Tool};
@@ -519,6 +519,12 @@ impl Win {
     /// The tab is what shows: tucked (or popping) and not (all the way) out.
     fn tab_showing(&self, now: Instant) -> bool {
         self.tuck_edge(now).is_some() && self.pop.progress(now) < 0.999
+    }
+
+    /// Only the tab is drawn (tucked all the way in): no note, so no image.
+    /// While the note pops out or in (progress above 0) it is drawn, scaled.
+    fn tab_only(&self, now: Instant) -> bool {
+        self.tuck_edge(now).is_some() && self.pop.progress(now) <= 0.0
     }
 
     /// The tab's rect in the note's dip, while a tab shows.
@@ -1772,8 +1778,9 @@ fn draw(s: &mut State, i: usize) {
     let size = canvas_px(&w.view, w.sticky.rolled, k, m);
     if w.canvas.as_ref().is_none_or(|c| c.size() != size) {
         w.canvas = Canvas::with_gfx(res.gfx.clone(), size).ok();
-        // The bitmaps belong to the render target that made them.
-        *w.img.borrow_mut() = ImgCache::default();
+        // The bitmaps belong to the render target that made them; the decoded
+        // pixels do not, and are kept (a resize recreates the canvas on every move).
+        w.img.borrow_mut().drop_bitmaps();
     }
     let origin = w.origin();
     // The text, laid out for the width it is drawn at, in the note's font,
@@ -1802,7 +1809,7 @@ fn draw(s: &mut State, i: usize) {
         ));
         w.body_key = Some(key);
     }
-    let img_keys = prepare_images(w, images_dir, k);
+    let img_keys = prepare_images(w, images_dir, k, now);
     let body_h = w.body.as_ref().map_or(0.0, |b| b.height);
     let max_scroll = (body_h - area.h).max(0.0);
     if w.follow_caret {
@@ -2988,24 +2995,49 @@ fn refresh_images(w: &mut Win, dir: &Path) {
 
 /// The drawn size of each image in pixels with its name, and the pixels of
 /// the ones the canvas has no bitmap for yet decoded (scaled to cover the
-/// cell at this DPI, never enlarged). A file that fails is tried once.
-fn prepare_images(w: &Win, dir: &Path, k: f32) -> Vec<paint::ImgKey> {
+/// cell at this DPI, never enlarged).
+///
+/// The decoded pixels outlive the canvas (`ImgCache::drop_bitmaps`). While the
+/// note is being resized or its pop is running, the nearest size already
+/// decoded stands in (`draw_images` scales any bitmap to cover the cell) and a
+/// decode happens only when a name has nothing at all, so there is no decode
+/// per pointer move; once settled the exact size is decoded once and the
+/// other sizes of that name are dropped. A file that fails is tried once per
+/// exact size. A rolled note and a note that is only its tab draw no image:
+/// nothing is decoded for them.
+fn prepare_images(w: &Win, dir: &Path, k: f32, now: Instant) -> Vec<paint::ImgKey> {
+    if w.sticky.rolled || w.tab_only(now) {
+        return Vec::new();
+    }
+    let moving = w.drag.is_some() || w.pop.running(now);
     let mut cache = w.img.borrow_mut();
+    cache.retain_names(&w.sticky.images);
     let mut keys = Vec::new();
     for (name, r) in w.sticky.images.iter().zip(&w.img_rects) {
-        let key: paint::ImgKey = (name.clone(), (r.w * k).ceil() as u32, (r.h * k).ceil() as u32);
-        if !cache.bitmaps.contains_key(&key)
-            && !cache.fresh.contains_key(&key)
-            && !cache.failed.contains(&key)
-        {
-            match image_io::decode_cover(dir, name, key.1, key.2) {
-                Some(px) => {
-                    cache.fresh.insert(key.clone(), px);
+        let want: paint::ImgKey = (name.clone(), (r.w * k).ceil() as u32, (r.h * k).ceil() as u32);
+        let failed = if moving {
+            cache.failed_name(name)
+        } else {
+            cache.failed.contains(&want)
+        };
+        let plan = paint::image_plan(&want, &cache.keys_of(name), failed, moving);
+        let key = match plan {
+            ImgPlan::Use(key) => key,
+            ImgPlan::Decode => {
+                match image_io::decode_cover(dir, name, want.1, want.2) {
+                    Some(px) => {
+                        cache.decoded.insert(want.clone(), std::rc::Rc::new(px));
+                    }
+                    None => {
+                        cache.failed.insert(want.clone());
+                    }
                 }
-                None => {
-                    cache.failed.insert(key.clone());
-                }
+                want.clone()
             }
+            ImgPlan::Skip => want.clone(),
+        };
+        if !moving && key == want && cache.decoded.contains_key(&want) {
+            cache.keep_only(&want);
         }
         keys.push(key);
     }
@@ -7855,5 +7887,123 @@ mod tests {
         assert_eq!(styles_of().len(), 1);
         let _ = hwnd;
         host.shutdown();
+    }
+
+    /// Opens a hidden note with three photos in a folder of its own and draws it.
+    fn note_with_photos(tag: &str) -> (WidgetHost, PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("vale-host-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let out = dir.join("note-images");
+        let names = ["a.png", "b.png", "c.png"];
+        for (n, seed) in names.iter().zip(1u8..) {
+            assert!(image_io::write_gradient(&out.join(n), 900, 700, seed));
+        }
+        let displays = vec![display("A", 0, true, 96)];
+        let notes = vec![note_with("n1", "Belanja", |s| {
+            s.images = names.iter().map(|n| (*n).to_owned()).collect();
+        })];
+        let mut host = WidgetHost::new(HWND::default());
+        host.set_images_dir(out.clone());
+        host.sync(&ctx(&notes, &displays));
+        with(|s| draw(s, 0));
+        (host, dir, out)
+    }
+
+    #[test]
+    fn resizing_a_note_with_photos_decodes_each_once_and_the_exact_size_after() {
+        let _focus = keyboard_lock();
+        let (mut host, dir, out) = note_with_photos("resize-decode");
+        let names = ["a.png", "b.png", "c.png"];
+        let decodes = || image_io::decodes_in(&out);
+        let first = decodes();
+        assert_eq!(first, 3, "one decode per photo on the first draw");
+        let cache_keys = |n: &str| with(|s| s.wins[0].img.borrow().keys_of(n)).unwrap();
+        let start_keys: Vec<_> = names.iter().map(|n| cache_keys(n)).collect();
+        assert!(start_keys.iter().all(|k| k.len() == 1));
+        assert_eq!(
+            with(|s| s.wins[0].img.borrow().bitmaps.len()).unwrap(),
+            3,
+            "the canvas made a bitmap per photo"
+        );
+        // Press the grip and drag wider and taller in 24 small moves.
+        let (x0, y0) = (1000, 500);
+        with(|s| begin_drag(s, 0, DragKind::Resize, (x0, y0)));
+        let w0 = with(|s| s.wins[0].view.w).unwrap();
+        let mut sizes = std::collections::HashSet::new();
+        for step in 1..=24 {
+            with(|s| drag_move(s, 0, (x0 + 4 * step, y0 + 3 * step), true, false));
+            sizes.insert(with(|s| (s.wins[0].view.w as i32, s.wins[0].view.h as i32)).unwrap());
+            assert_eq!(decodes(), first, "move {step}: no decode while resizing");
+            assert_eq!(
+                with(|s| s.wins[0].img.borrow().bitmaps.len()).unwrap(),
+                3,
+                "move {step}: every photo is drawn from the pixels it has"
+            );
+        }
+        assert!(with(|s| s.wins[0].view.w).unwrap() > w0 + 50.0, "the note really grew");
+        assert!(sizes.len() > 10, "many different sizes were drawn: {}", sizes.len());
+        assert!(with(|s| s.wins[0].drag.is_some()).unwrap());
+        // The release draws once more at the final size: one exact decode each.
+        with(|s| finish_drag(s, 0, true));
+        assert_eq!(decodes(), first + 3, "the exact size once per photo after the drag");
+        for n in names {
+            assert_eq!(cache_keys(n).len(), 1, "{n}: the stand-in size was dropped");
+        }
+        let after: Vec<_> = names.iter().map(|n| cache_keys(n)).collect();
+        assert_ne!(after, start_keys);
+        // Nothing more to decode on later frames.
+        with(|s| {
+            s.wins[0].dirty = true;
+            draw(s, 0);
+        });
+        assert_eq!(decodes(), first + 3);
+        host.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_rolled_note_and_a_tab_decode_nothing_and_a_pop_decodes_nothing_new() {
+        let _focus = keyboard_lock();
+        let (mut host, dir, out) = note_with_photos("tab-decode");
+        let decodes = || image_io::decodes_in(&out);
+        let first = decodes();
+        let now = Instant::now();
+        // The pixels outlive the canvas: a new canvas (a tuck's room) decodes nothing.
+        with(|s| {
+            s.wins[0].canvas = None;
+            s.wins[0].dirty = true;
+            draw(s, 0);
+        });
+        assert_eq!(decodes(), first);
+        assert_eq!(with(|s| s.wins[0].img.borrow().bitmaps.len()).unwrap(), 3);
+        // Tucked all the way in: only the tab, no image keys, no decode.
+        with(|s| {
+            s.wins[0].img.replace(ImgCache::default());
+            s.wins[0].sticky.tuck = Some(Edge::Right);
+            s.wins[0].pop = tuck::Pop::at(0.0);
+            assert!(s.wins[0].tab_only(now));
+            let w = &s.wins[0];
+            assert!(prepare_images(w, &s.images_dir, w.scale, now).is_empty());
+        });
+        assert_eq!(decodes(), first, "a tab decodes nothing");
+        // Part of the way out the note is drawn (scaled): its images are too.
+        with(|s| {
+            s.wins[0].pop = tuck::Pop::at(0.5);
+            assert!(!s.wins[0].tab_only(now));
+            let w = &s.wins[0];
+            assert_eq!(prepare_images(w, &s.images_dir, w.scale, now).len(), 3);
+        });
+        assert_eq!(decodes(), first + 3);
+        // A rolled note draws no image: no keys, no decode.
+        with(|s| {
+            s.wins[0].sticky.tuck = None;
+            s.wins[0].sticky.rolled = true;
+            s.wins[0].img.replace(ImgCache::default());
+            let w = &s.wins[0];
+            assert!(prepare_images(w, &s.images_dir, w.scale, now).is_empty());
+        });
+        assert_eq!(decodes(), first + 3);
+        host.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

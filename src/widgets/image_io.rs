@@ -220,10 +220,33 @@ pub fn size_of(dir: &Path, name: &str) -> Option<(u32, u32)> {
     }
 }
 
+#[cfg(test)]
+static DECODES: std::sync::Mutex<Vec<(PathBuf, usize)>> = std::sync::Mutex::new(Vec::new());
+
+/// Counts a decode per folder, so parallel tests (each with its own folder)
+/// never mix.
+#[cfg(test)]
+fn count_decode(dir: &Path) {
+    let mut all = DECODES.lock().unwrap_or_else(|e| e.into_inner());
+    match all.iter_mut().find(|(d, _)| d == dir) {
+        Some((_, n)) => *n += 1,
+        None => all.push((dir.to_path_buf(), 1)),
+    }
+}
+
+/// How many `decode_cover` calls `dir` has had (tests only).
+#[cfg(test)]
+pub fn decodes_in(dir: &Path) -> usize {
+    let all = DECODES.lock().unwrap_or_else(|e| e.into_inner());
+    all.iter().find(|(d, _)| d == dir).map_or(0, |(_, n)| *n)
+}
+
 /// Image `name` in `dir` decoded to premultiplied BGRA at the size that
 /// covers a `tw` x `th` cell (`cover_size`): `(width, height, pixels)`.
 pub fn decode_cover(dir: &Path, name: &str, tw: u32, th: u32) -> Option<(u32, u32, Vec<u8>)> {
     let path = path_of(dir, name)?;
+    #[cfg(test)]
+    count_decode(dir);
     let _com = com();
     let wic = factory()?;
     unsafe {

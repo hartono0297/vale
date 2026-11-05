@@ -978,17 +978,100 @@ pub struct BarScene {
 /// cached by (a resize or another DPI makes a new one).
 pub type ImgKey = (String, u32, u32);
 
-/// The bitmaps of one window's images: made from decoded pixels
-/// (`fresh`, put there by the host) on the canvas that draws them, dropped
-/// whenever the canvas is recreated (they belong to a render target), when the
-/// images change and when the window goes.
+/// Decoded premultiplied BGRA pixels (width, height, bytes), shared so a frame
+/// can hold them while the cache is borrowed.
+pub type Pixels = Rc<(u32, u32, Vec<u8>)>;
+
+/// The images of one window. The pixels (`decoded`) are CPU memory and outlive
+/// a render target; the bitmaps are made from them on the canvas that draws
+/// them and belong to that render target, so `drop_bitmaps` (a recreated
+/// canvas) clears only those. The whole cache is reset when the images change
+/// or the folder moves; it goes with the window.
 #[derive(Default)]
 pub struct ImgCache {
     pub bitmaps: HashMap<ImgKey, ID2D1Bitmap>,
-    /// Decoded premultiplied BGRA pixels (width, height, bytes) not yet a bitmap.
-    pub fresh: HashMap<ImgKey, (u32, u32, Vec<u8>)>,
+    /// Decoded pixels per size, kept while the name is in the note.
+    pub decoded: HashMap<ImgKey, Pixels>,
     /// Sizes that failed to decode (tried once, drawn as a quiet tile).
     pub failed: std::collections::HashSet<ImgKey>,
+}
+
+impl ImgCache {
+    /// The canvas was recreated: its bitmaps are gone, the pixels stay.
+    pub fn drop_bitmaps(&mut self) {
+        self.bitmaps.clear();
+    }
+
+    /// Every size of `name` with pixels or a bitmap (sorted: a stable answer).
+    pub fn keys_of(&self, name: &str) -> Vec<ImgKey> {
+        let mut keys: Vec<ImgKey> = self
+            .decoded
+            .keys()
+            .chain(self.bitmaps.keys())
+            .filter(|k| k.0 == name)
+            .cloned()
+            .collect();
+        keys.sort();
+        keys.dedup();
+        keys
+    }
+
+    /// A size of `name` failed to decode.
+    pub fn failed_name(&self, name: &str) -> bool {
+        self.failed.iter().any(|k| k.0 == name)
+    }
+
+    /// Forgets what belongs to a name that is no longer in the note.
+    pub fn retain_names(&mut self, names: &[String]) {
+        let keep = |k: &ImgKey| names.contains(&k.0);
+        self.decoded.retain(|k, _| keep(k));
+        self.bitmaps.retain(|k, _| keep(k));
+        self.failed.retain(keep);
+    }
+
+    /// The exact size is there: the other sizes of its name are not needed.
+    pub fn keep_only(&mut self, key: &ImgKey) {
+        let keep = |k: &ImgKey| k.0 != key.0 || k == key;
+        self.decoded.retain(|k, _| keep(k));
+        self.bitmaps.retain(|k, _| keep(k));
+        self.failed.retain(keep);
+    }
+}
+
+/// What to do for one image this frame.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ImgPlan {
+    /// Draw with this size (the exact one, or the nearest while moving).
+    Use(ImgKey),
+    /// Decode the exact size now.
+    Decode,
+    /// Nothing to draw with and nothing to try (a quiet tile).
+    Skip,
+}
+
+/// The decision of `prepare_images`, pure so a test can drive it: `want` is the
+/// exact size, `have` the sizes of this name already decoded or with a bitmap,
+/// `failed` whether decoding already failed (for `want` when settled, for any
+/// size of the name while `moving`), `moving` a resize drag or a tuck pop.
+/// While moving the nearest size stands in (smallest area difference, a tie to
+/// the larger one) and a decode happens only when there is nothing at all, so
+/// never one per pointer move.
+pub fn image_plan(want: &ImgKey, have: &[ImgKey], failed: bool, moving: bool) -> ImgPlan {
+    if have.contains(want) {
+        return ImgPlan::Use(want.clone());
+    }
+    if moving {
+        let area = |k: &ImgKey| u64::from(k.1) * u64::from(k.2);
+        let target = area(want);
+        let nearest = have
+            .iter()
+            .filter(|k| k.0 == want.0)
+            .min_by_key(|k| (area(k).abs_diff(target), std::cmp::Reverse(area(k))));
+        if let Some(k) = nearest {
+            return ImgPlan::Use(k.clone());
+        }
+    }
+    if failed { ImgPlan::Skip } else { ImgPlan::Decode }
 }
 
 /// The images of one frame: where each goes (note x, y from the text's top),
@@ -1933,8 +2016,8 @@ fn draw_images(
             let mut c = im.cache.borrow_mut();
             if let Some(b) = c.bitmaps.get(key) {
                 Some(b.clone())
-            } else if let Some((w, h, px)) = c.fresh.remove(key) {
-                crate::shot_edit::gfx::bitmap(rt, w, h, &px).ok().inspect(|b| {
+            } else if let Some(pix) = c.decoded.get(key).cloned() {
+                crate::shot_edit::gfx::bitmap(rt, pix.0, pix.1, &pix.2).ok().inspect(|b| {
                     c.bitmaps.insert(key.clone(), b.clone());
                 })
             } else {
@@ -2382,6 +2465,92 @@ pub fn peek_look(coat: CatColor) -> CatLook {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn key(name: &str, w: u32, h: u32) -> ImgKey {
+        (name.to_owned(), w, h)
+    }
+
+    #[test]
+    fn an_exact_size_is_used_whatever_else_is_there() {
+        let want = key("a.png", 200, 150);
+        let have = [key("a.png", 100, 75), want.clone()];
+        for moving in [false, true] {
+            for failed in [false, true] {
+                assert_eq!(image_plan(&want, &have, failed, moving), ImgPlan::Use(want.clone()));
+            }
+        }
+    }
+
+    #[test]
+    fn while_moving_the_nearest_size_stands_in_and_nothing_is_decoded() {
+        let want = key("a.png", 200, 150);
+        let have = [key("a.png", 100, 75), key("a.png", 180, 140), key("b.png", 200, 149)];
+        assert_eq!(
+            image_plan(&want, &have, false, true),
+            ImgPlan::Use(key("a.png", 180, 140)),
+            "the closest area of the same name"
+        );
+        // A tie in the area difference goes to the larger one.
+        let tie = [key("a.png", 100, 100), key("a.png", 100, 300)];
+        assert_eq!(
+            image_plan(&key("a.png", 100, 200), &tie, false, true),
+            ImgPlan::Use(key("a.png", 100, 300))
+        );
+        // Even a failed mark does not stop a size that is already there.
+        assert_eq!(
+            image_plan(&want, &have, true, true),
+            ImgPlan::Use(key("a.png", 180, 140))
+        );
+    }
+
+    #[test]
+    fn with_nothing_decoded_a_move_decodes_once_then_stops() {
+        let want = key("a.png", 200, 150);
+        assert_eq!(image_plan(&want, &[], false, true), ImgPlan::Decode);
+        // The sizes of other names are no help.
+        let other = [key("b.png", 200, 150)];
+        assert_eq!(image_plan(&want, &other, false, true), ImgPlan::Decode);
+        // After a failure the name is not tried again on every move.
+        assert_eq!(image_plan(&want, &[], true, true), ImgPlan::Skip);
+    }
+
+    #[test]
+    fn once_settled_the_exact_size_is_decoded_even_when_another_is_there() {
+        let want = key("a.png", 200, 150);
+        let have = [key("a.png", 100, 75)];
+        assert_eq!(image_plan(&want, &have, false, false), ImgPlan::Decode);
+        assert_eq!(image_plan(&want, &have, true, false), ImgPlan::Skip, "failed once at this size");
+    }
+
+    #[test]
+    fn a_recreated_canvas_keeps_the_pixels_and_the_failures() {
+        let mut c = ImgCache::default();
+        c.decoded.insert(key("a.png", 10, 10), Rc::new((10, 10, vec![0; 400])));
+        c.failed.insert(key("b.png", 10, 10));
+        c.drop_bitmaps();
+        assert_eq!(c.decoded.len(), 1);
+        assert!(c.failed.contains(&key("b.png", 10, 10)));
+        assert!(c.bitmaps.is_empty());
+    }
+
+    #[test]
+    fn the_cache_forgets_names_that_left_the_note_and_other_sizes_once_exact() {
+        let px = || Rc::new((1, 1, vec![0; 4]));
+        let mut c = ImgCache::default();
+        for k in [key("a.png", 10, 10), key("a.png", 20, 20), key("b.png", 10, 10)] {
+            c.decoded.insert(k, px());
+        }
+        c.failed.insert(key("gone.png", 5, 5));
+        c.retain_names(&["a.png".to_owned(), "b.png".to_owned()]);
+        assert_eq!(c.decoded.len(), 3);
+        assert!(c.failed.is_empty());
+        assert_eq!(c.keys_of("a.png"), [key("a.png", 10, 10), key("a.png", 20, 20)]);
+        c.keep_only(&key("a.png", 20, 20));
+        assert_eq!(c.keys_of("a.png"), [key("a.png", 20, 20)]);
+        assert_eq!(c.keys_of("b.png"), [key("b.png", 10, 10)], "other names untouched");
+        c.retain_names(&[]);
+        assert!(c.decoded.is_empty());
+    }
 
     #[test]
     fn the_drop_outline_is_two_dip_inset_one_inside_the_rounded_edge() {
