@@ -3541,9 +3541,13 @@ impl App {
     fn persist_notes(&mut self, now: Instant) {
         // Whatever the desktop notes had waiting goes out with this write.
         self.widgets_saved();
-        if let Err(error) = self.notes.save() {
-            let notice = island_notice("notes", tr(Key::NotesSaveFailed), &error.to_string());
-            self.apply(Event::Notice(notice), now);
+        match self.notes.save() {
+            // What the file no longer refers to goes from the images folder.
+            Ok(()) => self.widgets_images_release(),
+            Err(error) => {
+                let notice = island_notice("notes", tr(Key::NotesSaveFailed), &error.to_string());
+                self.apply(Event::Notice(notice), now);
+            }
         }
     }
 

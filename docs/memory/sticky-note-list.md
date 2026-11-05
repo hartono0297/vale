@@ -232,3 +232,14 @@ demo launches opened no list window at all, which a quiet re-run did not repeat 
 likely cause is the foreground changing hands during start-up, which closes the list
 by design). Also: the demo run reset `%TEMP%\vale-widgets-demo\notes.json` once by
 mistake (TMP was not redirected), which only reseeds `--demo-widgets`.
+
+## Images and the undo (2026-11-05)
+
+A deleted note's image files stay on disk while "Urungkan" can still bring the
+note back: `App::widgets_images_release` keeps the images of `list_undo` and
+deletes the rest of what is no longer referenced after every notes save. The undo
+ends (and the release runs again) on `ListEvent::Closed` and on the new
+`ListEvent::UndoExpired`, which the list window pushes when its 5 s timer 49
+fires; the owner then drops the snapshot too (`list_undo = None`). See [[widgets]],
+"Format toolbar and images".
+

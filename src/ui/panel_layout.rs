@@ -2097,6 +2097,17 @@ pub fn note_pin_rect(card: Rect) -> Rect {
     rect(card.right() - NOTE_PIN - 5.0, card.y + 5.0, NOTE_PIN, NOTE_PIN)
 }
 
+/// The mark of a note card with pictures: a small image icon and the count,
+/// right-aligned at the card's foot, where the time sits at the left. It is
+/// below the title and the pin (which have the card's top), so it overlaps
+/// neither.
+pub fn note_images_rects(card: Rect) -> (Rect, Rect) {
+    let y = card.bottom() - 22.0;
+    let count = rect(card.right() - 13.0 - 16.0, y, 16.0, 14.0);
+    let icon = rect(count.x - 15.0, y, 14.0, 14.0);
+    (icon, count)
+}
+
 /// Cards in two columns, newest top left, two rows of them. When there are
 /// more, the page shows chunk `notes_page` (wrapping) and a "+N lagi" /
 /// "Kembali ke atas" line under the cards.
@@ -4212,6 +4223,28 @@ mod tests {
     use crate::calendar::EventTime;
     use crate::config::Style;
     use crate::ui::geometry::{ShapeKind, shape_contains, shape_for};
+
+    #[test]
+    fn the_image_mark_of_a_note_card_overlaps_neither_the_pin_nor_the_title() {
+        for w in [120.0, 150.0, 200.0, 330.0] {
+            for h in [60.0, 80.0, NOTE_MAX_H] {
+                let card = rect(40.0, 100.0, w, h);
+                let (icon, count) = note_images_rects(card);
+                let pin = note_pin_rect(card);
+                // The title is the card's top 9..27 dip.
+                let title = rect(card.x + 13.0, card.y + 9.0, w - 26.0 - NOTE_PIN - 4.0, 18.0);
+                for r in [icon, count] {
+                    let apart = |a: Rect, b: Rect| {
+                        a.right() <= b.x || b.right() <= a.x || a.bottom() <= b.y || b.bottom() <= a.y
+                    };
+                    assert!(apart(r, pin), "{w}x{h}: {r:?} meets the pin");
+                    assert!(apart(r, title), "{w}x{h}: {r:?} meets the title");
+                    assert!(r.x >= card.x && r.right() <= card.right() && r.bottom() <= card.bottom());
+                }
+                assert!(icon.right() <= count.x + 1.0, "the icon is left of its count");
+            }
+        }
+    }
 
     fn date(y: i32, m: u32, d: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(y, m, d).unwrap()

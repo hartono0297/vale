@@ -13,6 +13,8 @@ use serde_json::Value;
 use crate::i18n::{self, Key, Lang, text};
 use crate::theme::{Accent, Palette};
 use crate::widgets::checklist;
+use crate::widgets::images;
+use crate::widgets::styles::{self, Run};
 use crate::widgets::tuck::Edge;
 
 /// At most this many notes on the desktop.
@@ -447,6 +449,16 @@ pub struct Sticky {
     /// while it is out in the open.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tuck: Option<Edge>,
+    /// The rich text: bold, italic, highlight... as runs over the note's text
+    /// (`widgets::styles`). Per sheet, never shared along a stack. Not written
+    /// while there are none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub styles: Vec<Run>,
+    /// The names of the image files in `note-images` (`widgets::images`), at
+    /// most four, every one a valid name. Per sheet. Not written while there
+    /// are none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<String>,
 }
 
 impl Default for Sticky {
@@ -470,8 +482,36 @@ impl Default for Sticky {
             stack_order: 0,
             stack_top: false,
             tuck: None,
+            styles: Vec::new(),
+            images: Vec::new(),
         }
     }
+}
+
+/// `names` kept only when valid (`images::valid_name`), once each, at most
+/// `MAX_IMAGES`: what a note may hold, whoever gave the list.
+pub fn clean_images<'a>(names: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for name in names {
+        if images::valid_name(name)
+            && out.len() < images::MAX_IMAGES
+            && !out.iter().any(|o| o == name)
+        {
+            out.push(name.to_owned());
+        }
+    }
+    out
+}
+
+/// The image names of a JSON value, leniently: not an array is none, an
+/// element that is not a valid name is skipped (see `clean_images`).
+pub fn images_from_value(v: Option<&Value>) -> Vec<String> {
+    clean_images(
+        v.and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str),
+    )
 }
 
 /// `v` as a finite number, else `default`.
@@ -567,6 +607,10 @@ pub fn lenient(v: &Value) -> Option<Sticky> {
             .get("tuck")
             .and_then(Value::as_str)
             .and_then(Edge::from_name),
+        // Each on its own: a wrong value is none and never fails the file.
+        // The runs are fitted to the text when the store has it.
+        styles: map.get("styles").map(styles::runs_from_value).unwrap_or_default(),
+        images: images_from_value(map.get("images")),
     })
 }
 
@@ -865,6 +909,16 @@ mod tests {
             stack_order: 2,
             stack_top: true,
             tuck: Some(Edge::Right),
+            styles: vec![crate::widgets::styles::Run {
+                s: 1,
+                e: 4,
+                style: crate::widgets::styles::Style {
+                    b: true,
+                    hl: Some(crate::widgets::styles::Hl::Pink),
+                    ..Default::default()
+                },
+            }],
+            images: vec!["img-1-0.png".into(), "b.jpg".into()],
         };
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(lenient(&json), Some(s));
@@ -902,7 +956,7 @@ mod tests {
         let keys: Vec<&str> = json.as_object().unwrap().keys().map(String::as_str).collect();
         for new in [
             "remind_at", "remind_fired", "font", "pattern", "deco", "stamp", "opacity",
-            "stack", "stack_order", "stack_top", "tuck",
+            "stack", "stack_order", "stack_top", "tuck", "styles", "images",
         ] {
             assert!(!keys.contains(&new), "{new} written at its default: {keys:?}");
         }

@@ -145,6 +145,8 @@ pub enum ListEvent {
     New,
     /// The window went: what is not undone now is final.
     Closed,
+    /// The undo strip's 5 s are up: the delete stands.
+    UndoExpired,
 }
 
 // ------------------------------------------------------------------ events
@@ -1152,6 +1154,20 @@ fn paint(l: &mut List) {
                             1.0,
                             Align::Left,
                         );
+                        x += 16.0 + 40.0 + 10.0;
+                    }
+                    // The images: the image icon and how many.
+                    if row.images > 0 {
+                        icon(Icon::Image, Rect { x, y: meta.y, w: 12.0, h: meta.h }, 12.0, pal.secondary, 1.0);
+                        text(
+                            &row.images.to_string(),
+                            Rect { x: x + 16.0, y: meta.y, w: 24.0, h: meta.h },
+                            10.5,
+                            500,
+                            pal.secondary,
+                            1.0,
+                            Align::Left,
+                        );
                     }
                 }
             }
@@ -1528,6 +1544,7 @@ unsafe extern "system" fn list_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
         WM_TIMER if wparam.0 == TIMER_LIST_UNDO => {
             // Five seconds are up: the delete stands.
             let _ = with(hide_strip);
+            push(ListEvent::UndoExpired);
             redraw();
             return LRESULT(0);
         }

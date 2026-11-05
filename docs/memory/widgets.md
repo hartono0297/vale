@@ -998,3 +998,280 @@ Not verified live (manual checks): a real OLE drag of text, a link and a file fr
 another app onto a stack's top sheet and onto a tucked note's tab (the unit tests
 call `drop_hover` and `drop_into` as the drop target does); the island notice at 20
 sheets from each entry point; Send to phone from a flipped stack with a real phone.
+
+
+## Format toolbar and images (2026-11-05)
+
+Spec: `docs/design/catatan-tempel-format.html` (page 1 mockups A-F, page 2
+behaviour). A rich-text bar under the note while it has the keyboard, bullet
+lists, and up to four images above the text. The text stays plain text in
+`notes.json`; the formatting is a list of runs in the sticky part.
+
+### Data keys (sticky part, both skipped while empty)
+
+| Key | Type | Notes |
+|---|---|---|
+| `styles` | array of `{s, e, b?, i?, u?, x?, hl?, fg?}` | `s`/`e` UTF-16 units of the `\n` text; flags written only when true; `hl` is `kuning` / `hijau` / `pink` / `biru`, `fg` is `merah` / `biru` / `hijau` (NAMES, never hex, so the palette can change) |
+| `images` | array of file names | valid names only (below), at most 4, no duplicates |
+
+`sticky::lenient` reads each on its own: not an array is empty, a bad run is
+skipped (`s` / `e` not unsigned ints), a bad `hl` / `fg` drops that attribute, a
+bad image name is skipped. A wrong value never moves the file to `.bak`. After
+load `NotesStore::open` normalises each note's runs against its text. A phase-1
+file and a run B file load and save back with exactly their old keys (tested
+with literal JSON). Bullets are `\u{2022} ` at the start of a line, so they read
+anywhere. Styles and images are per sheet: `stack::share`, `join`, `propagate`,
+`take_out`, `leave` and `normalise` copy field by field and never move them
+(test). "Lepas dari desktop" removes the sticky part, so the formatting and the
+images of that note go with it (its images are released at the next save).
+
+### Runs (`widgets/styles.rs`, pure)
+
+- `normalise`: clamp to the text, snap both ends back off a surrogate pair,
+  drop empty and plain runs, a later run wins an overlap, sort, merge touching
+  runs of equal style.
+- `style_at(i)` is the style of the character BEFORE the caret (the first one at
+  0). `toggle`: if the whole range has the attribute it comes off, else it goes
+  on the whole range (a partly bold selection becomes all bold). `set_hl`,
+  `set_fg`. `slice` / `insert_runs` are copy and paste.
+- `rebase(old, new, runs)` finds the change by common prefix and suffix in
+  UTF-16 units (never splitting a pair); deleted units take their runs, runs
+  after the change shift, inserted text takes `style_at(old, p)` (or the
+  `pending` style). A replace therefore takes the style before the change; typing
+  at the END of a bold run stays bold, at its START stays outside it.
+- **Rebase is central, in `NotesStore`** (`replace_text`): `set_text` (the
+  desktop window) AND `upsert` (the Notes page editor) both rebase, so a text
+  edited anywhere keeps its formatting. The host also rebases and pushes
+  `Text` then `Styles` in the same batch; `Styles` wins over the store's own
+  rebase (`apply.rs`, both are tested).
+- Colours: highlights kuning #FFE36E, hijau #B9E6A5, pink #F7B8CF, biru
+  #AED4F2; highlighted text is ALWAYS the dark ink `sticky::INK` (12.3, 11.2,
+  9.5, 10.1 : 1), even on Gelap and even when the run has a text colour. Text
+  colours on the pastels merah #A11F18, biru #1D4E9E, hijau #285E29 (the
+  mockup's #B3261E and #2E6B2F fail 4.5:1 on Terakota and Plum; the spec's
+  starting values passed the tests unchanged): at least 5.23 / 5.41 / 5.24 : 1
+  on the paper and 4.53 / 4.68 / 4.53 : 1 on its ruling (the hardest is
+  Terakota); on Gelap #FF8A80, #8AB4F8, #81C995 are at least 6.62 / 7.17 / 7.71
+  : 1 on all six island surfaces. Tests: every colour on every paper fill AND on
+  `Tones::line`, across all five pastels and Gelap on all six surfaces.
+
+### Bullets (`checklist.rs`)
+
+`Line` has a `marker: Marker { None, Item { checked }, Bullet }` plus the old
+`marker_len` / `checked`; `is_item()` is a checklist box only (boxes, counts,
+progress, `target_in`'s `Check`), `is_bullet()` and `has_marker()` cover the
+rest (indent, caret snap, Enter, Backspace, `display_text` and the index maps,
+`title_of`, the list snippet and the phone page). Enter on a bullet continues
+with `\n\u{2022} `, on an empty one it takes the marker; Backspace at the text
+start takes the marker; `autobox` is unchanged. `toggle_list(text, a, b, kind)`
+works on every line the selection touches (a selection ending exactly at a
+line's start does not touch that line): all have the kind, it comes off; else
+the kind goes on every line and the other kind is converted. The header's
+checklist button, Ctrl+Shift+9 and the bar button all use it (`toggle_list_sel`
+also returns the moved selection, which the host restores). A collapsed caret
+behaves exactly like the old `toggle_current_line`.
+
+### The bar (`widgets/toolbar.rs`, `paint.rs`)
+
+Tools in order B, I, U, strike | bullet, checklist | marker, image. Geometry
+in note dip: a 42 dip block at the note's bottom (it replaces the 24 dip footer
+while the note has the keyboard; `FOOTER_H` is still 24), the bar inset 6 on all
+sides (30 tall, radius 8), 4 dip padding, 24 dip buttons, 1 dip between any two
+elements, a separator is 1 dip with 3 dip each side. All eight fit when the row
+ends within `w - 10`, i.e. from **235 dip** (the default 240 shows them all);
+narrower, the leading tools that fit stay (a separator next to the cut is
+dropped) and the rest go behind a 24 dip More button (160 dip: B I U strike and
+More). The Marker button's left 16 dip apply the last highlight, its right 8
+(the chevron) open the popover; a right click on it opens the popover too.
+`paint::body_rect_in(w, h, bar)` is the text area (the host's one helper,
+`Win::body_area`, so the EDIT size, the IME point, scroll and hit-testing agree);
+the bar shows iff the note has the keyboard and is not rolled and not tucked in
+(pop progress < 1): `Win::bar_shown`. The window never resizes.
+
+Drawing: fill #1F1B18 (#2C2622 on Gelap), glyph #9C918A, hover tint 7 % white
+with glyph #E9E2DA, "on" a white glyph on 12 % white; B, I and the marker's A in
+Georgia (bold, italic), U underlined, "ab" struck; the marker shows the last
+highlight as a 3 dip bar under its glyph and a chevron. The tooltip (#14110F,
+label + shortcut) shows at once on hover, no timer, redrawn only when the hot
+item changes (`Win::hot_bar`); a footer message (image refusals, "Klik lagi
+untuk hapus") is the same label above the bar's left end and ends by the
+existing `footer_msg` rule. A bar button wins over the grip, the grip over the
+bar background; the whole block outside the buttons is inert (never a caret
+move). Bar presses never end editing, never move the caret or selection, never
+start a drag (Alt + press still starts a Move); the action fires on release over
+the same item. The tooltip and the More menu fit in both languages (tests with
+real text; `FmtMarker` is "Stabilo" / "Highlight" so the longest menu row,
+"Strikethrough" + "Ctrl+Shift+X", fits 208 dip; the mockup's ~168 was too narrow).
+
+Per-line styles: runs are sliced into each line's content and set with
+`SetFontWeight` (bold 600 on the body, 700 on the title), `SetFontStyle`,
+`SetUnderline`, `SetStrikethrough`. **The text colour and the highlight's ink
+are drawing effects set at every draw** (`ID2D1SolidColorBrush` of that frame's
+render target), not cached with the layout: the cached layout is keyed on the
+text, font, size, width, a hash of the runs and the image block's top, and
+nothing in it belongs to a render target, so a recreated canvas can never draw
+a stale brush (instead of keying on the paper and a canvas generation). A done
+checklist line stays struck and dimmed whatever its runs say (no colour or
+highlight; bold and italic still show). Highlights are rounded rects (radius 2)
+from `HitTestTextRange`, drawn after the ruling and before the selection and
+the text. Bullets are a 5 dip dot (0.7 of the body ink) at the line's left; the
+marker text is never drawn. **Fonts:** checked in the demo with Vale and Mono
+(and the layout code is the same for Tangan): where the face has no bold or
+italic DirectWrite simulates them; it looked fine for Mono.
+
+### Shortcuts and the swallowed control characters (`edit.rs`)
+
+Ctrl+B, Ctrl+I, Ctrl+U, Ctrl+Shift+X (strike), Ctrl+Shift+8 (bullet),
+Ctrl+Shift+9 (checklist), Ctrl+Shift+H (marker) go through
+`toolbar::shortcut_of` on the key down: `EditEvent::Format(tool)` and swallowed.
+The control characters they leave in the stream (Ctrl+B 0x02, **Ctrl+I 0x09 =
+Tab**, Ctrl+U 0x15, **Ctrl+Shift+X 0x18 = cut**, **Ctrl+Shift+H 0x08 =
+Backspace**) are dropped by a thread-local swallow flag, cleared on the next key
+down or the next character (tested with a real EDIT). Plain Ctrl+X, C, V and H
+are unchanged. Ctrl+C / Ctrl+X (the 0x03 / 0x18 characters), Ctrl+Insert,
+Shift+Delete, `WM_COPY` and `WM_CUT` become `EditEvent::Copy { cut }`;
+Ctrl+V, Shift+Insert and `WM_PASTE` become `EditEvent::Paste`.
+
+### The popup (`widgets/fmt_pop.rs`)
+
+One layered popup (`WS_EX_LAYERED | TOOLWINDOW | TOPMOST | NOACTIVATE`,
+`MA_NOACTIVATE`, `SW_SHOWNA`), two modes: the marker popover (196 dip: four
+highlights and none, automatic and three colours as an "A" on a chip of the
+paper's lightness, a ring on the current choice, the hovered colour's name at the
+right of its label) and the overflow menu (the hidden tools with icon, label and
+shortcut; its Marker row opens the popover). The EDIT keeps the focus, so
+nothing changes in `Blur`. It closes on Esc (`edit_event` checks
+`fmt_pop::is_open()` first, like the colour popover), a choice, `end_editing`,
+the note's `WM_DESTROY` and a click elsewhere on the note (its own two buttons
+toggle it); it keeps a tucked note out like the other popovers
+(`keep_out`). Placed above the bar, clamped to the work area. Tests create it
+but never show it (`ON_SCREEN = !cfg!(test)`).
+
+### Pending style, undo, the last highlight
+
+- `Win::pending`: a toggle with a collapsed caret sets the style for the next
+  typed text (`rebase_with(.., pending)`), shown by the lit buttons; it is cleared
+  when the caret moves without a text change and when editing starts.
+- **Undo limits:** the style toggles are NOT in the EDIT's undo (it only knows
+  text). Ctrl+Z restores the text and the runs follow by rebase: typed text that
+  is undone loses its runs; a deletion that is undone comes back with the style
+  at the caret, not the old one. Undoing a list toggle (an `EM_REPLACESEL`) works.
+- The last highlight (Kuning at first, then the last one chosen in the popover) is
+  `State::last_hl`, in memory per host and NOT saved.
+
+### Images (`widgets/images.rs` pure, `image_io.rs` Win32, `paint.rs`)
+
+- Caps: 4 per note, source at most 25 MiB (refused before decoding, with the
+  message), saved copy longest side at most 1600 px, never enlarged.
+- **`valid_name` is SECURITY:** only `[A-Za-z0-9._-]+` ending `.png`, `.jpg` or
+  `.jpeg` (any case), at most 64 characters, no separator, no `..`, and no
+  Windows device name (`con.png` still opens the console). Every name read from
+  JSON is checked at `lenient`, `apply` (`clean_images`) and again at the one
+  place a name meets a path (`image_io::path_of`, so a hand-edited file can not
+  point outside the folder; tested including `..\x.png`, `c:a.png`, `NUL.jpg`).
+- Folder: `NotesStore::images_dir()` = the notes file's parent + `note-images`
+  (`%APPDATA%\Vale\note-images`; the demo and tests have their own).
+- Pipeline: `image_io::import` runs on a worker thread (std::thread, COM
+  multithreaded there): WIC decode (GIF first frame; WebP only where the codec
+  exists, else "Can't read"), EXIF orientation applied (`phone::thumb::orientation`
+  shared, so the copy is upright and carries no EXIF), Fant downscale to 1600,
+  JPEG (quality 0.9) when the source is a JPEG else PNG, written to `.tmp` then
+  renamed, name from `images::unique_name`. The original is only ever read.
+  The result returns to the note window as **`WM_NOTE_IMPORT` = `WM_APP + 2`, a
+  NOTE-LOCAL message like `WM_END_EDIT` (`WM_APP + 1`)**: the note's own
+  procedure takes it, so no global `WM_APP` id exists for it. A failed post
+  deletes the new file. The host adds the name to the sheet that has the id (the
+  shown one or a `w.sheets` copy), refuses over the cap (and deletes the file),
+  pushes `Images`, drops the bitmap cache. Imports in flight count in
+  `images::admit` (`State::in_flight`).
+- Three ways in: the bar's Image tool (`IFileOpenDialog`, several files, png jpg
+  jpeg gif bmp webp; `Win::dialog` keeps the EDIT's `Blur` and the note's
+  deactivation from ending the editing, no borrow held across the dialog, the
+  focus goes back); Ctrl+V (`clip_io::read_paste`, decided in this order: Unicode
+  text that is not empty wins because Excel and Word also put bitmaps; else
+  CF_HDROP image files; else a bitmap: the registered "PNG", then CF_DIBV5, then
+  CF_DIB, read on the UI thread with a byte cap, decoded on the worker); a drop
+  (`drop.rs` splits the files: images go to the import and do not count toward
+  `MAX_PATHS`, the others keep their path lines, a mixed drop does both; the
+  dashed outline and the tuck and stack rules are unchanged).
+- Refusals are footer messages ("Maks 4 gambar", "Gambar terlalu besar (maks
+  25 MB)", "Gambar tidak bisa dibaca", and the English twins).
+- Drawing: the grid (`images::grid`: 8 dip sides, 4 dip gaps, 8 dip below; one
+  image full width at its aspect up to 45 % of the note, two side by side, three
+  is two then one full width, four 2 x 2) sits above the text and scrolls with it
+  (`build_body_with(.., top, ..)`: lines start at `top`, so carets, hits,
+  selection and boxes follow). Each image is a bitmap brush (cover crop) filling a
+  radius 7 rounded rect; bitmaps are decoded at the drawn size times the DPI by
+  `image_io::decode_cover`, kept in a per-window `ImgCache` keyed by (name, px
+  size) and dropped when the canvas is recreated, the images change or the window
+  goes. Aspects come from `image_io::size_of` (header only, cached). Not drawn on
+  a rolled note or the tab; drawn inside the scaled note during a pop. Hover: 2
+  dip accent outline, the round 20 dip x (rgba(20,16,14,.72)) 5 dip in from the
+  corner and an "Buka" pill. A click (press and release within 4 px) opens the
+  file (`ShellExecuteW`; a test records the path instead); the x removes it
+  (`Images` event, the file stays until the next save).
+- Release: `App::widgets_images_release` after every successful notes save (so
+  the timer-45 flush too) and when the list's undo ends (`ListEvent::Closed` and
+  the new `ListEvent::UndoExpired` from timer 49): `to_release(known, referenced ∪
+  held)` is deleted, `held` = the images of `list_undo`. `known` grows at every
+  apply, so an image added and removed before any save is still deleted. Covers a
+  delete, an unstick, the Notes page, the x and an emptied note. At startup one
+  `image_io::sweep` removes unreferenced files older than 24 h (valid names only,
+  inside the folder). The demo owner does the same with its own store and folder.
+  No new timer.
+
+### Clipboard (`clip_io.rs`, `richclip.rs`)
+
+Copy / cut write CF_UNICODETEXT (`\r\n` breaks, a bullet and a box as their
+marker text) plus the private `Vale.NoteRich` format (UTF-8 JSON `{"v":1,"text",
+"runs"}`, `styles::slice` of the selection). A cut then deletes the selection
+through `apply_edit` (undo works). Paste of text goes through `apply_edit` (the
+pasted text takes the style at the caret; a web or Word paste never brings fonts
+or colours), then `styles::insert_runs` overlays the runs when `richclip::decode`
+matches: version 1, under 1 MiB, and its text (CRLF as LF) equal to the
+clipboard's text. No test and no demo touches the real clipboard
+([[clipboard-privacy]]); the decision order (`clip_io::order`) is pure and tested,
+and `paste_text` / `copy_payload` are tested directly.
+
+### Elsewhere
+
+The sticky note list's row shows an image icon and the count in its third line
+(`Row.images`); bullets are stripped from its snippet. The Notes page card shows
+a small image icon and count at the right of the foot (`note_images_rects`, tested
+not to meet the pin or the title); the Notes editor stays plain text, bullets read
+as `• `, and its edits keep the formatting by the central rebase. The phone page
+shows bold, italic, underline, strike, highlight, colour and bullets (`NoteLine`
+carries `Span`s; every segment escaped; colours fixed hex, the lighter variants on
+the fixed Gelap fill; a done item keeps its dimmed look); images are not sent.
+`--demo-widgets reset` seeds 18 notes (the two new ones: a formatted note like
+mockup B and a Gelap note with two generated gradient PNGs in the demo's own
+`note-images`; the exe grows by no image). `DI_WIDGETS_BAR=1|marker|more` (debug)
+draws the bar on the formatted note without the keyboard or the foreground, and
+`marker` / `more` also show the popup (`SW_SHOWNA`; `more` narrows the note to 200
+dip).
+
+### Verified and not verified (format and images)
+
+Verified: `cargo test --locked` (the pure modules `styles`, `toolbar`, `images`,
+`richclip`, bullets in `checklist`, the store and lenient reads with literal JSON,
+the `Styles` / `Images` events, stacks never sharing them, paint geometry and hit
+priorities, real-DirectWrite layouts with the image block and runs, tooltip and
+menu widths in both languages, the contrast of every colour, the phone page, the
+list rows and Notes cards, and real hidden-window host tests: Ctrl+B on a
+selection and the drain order, the bar only while editing, a click on a button
+keeping the editing and selection, release over another button, a rolled or tucked
+note without the bar, pending style, the marker and its popover choices, list
+buttons on a selection, runs following an edit, undo and a paste, copy payloads,
+a dropped PNG becoming an image through the worker and a fifth refused, an import
+for a gone note deleted, a click opening and the x removing an image, the popup
+opening and closing, per-sheet separation), and the debug demo on this PC captured
+window by window with `PrintWindow` (the bar with B lit on the title, the formatted
+note in Vale and Mono, the two images, the marker popover and the overflow menu).
+`cargo build --release --locked` has no warning.
+
+Manual checks left (not done here): real mouse hover and the tooltip; the real
+file dialog (several files, cancel); Ctrl+V of a real screenshot, of a browser
+image copy and of Excel cells (text must win); an Explorer drag of images, of a
+mix, of a non-image file; the Photos open on a click; IME composition with
+formatting; the first startup sweep against a real folder; the overflow menu with
+a mouse; the look of bold on Tangan.

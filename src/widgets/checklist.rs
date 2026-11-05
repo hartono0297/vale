@@ -13,6 +13,27 @@ pub const OPEN: &str = "- [ ] ";
 pub const DONE: &str = "- [x] ";
 /// Length of either marker.
 pub const MARKER_LEN: usize = 6;
+/// A bullet line starts with this: a bullet and a space, two UTF-16 units.
+pub const BULLET: &str = "\u{2022} ";
+/// Length of the bullet marker.
+pub const BULLET_LEN: usize = 2;
+
+/// What a line starts with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Marker {
+    None,
+    /// A checklist item (`- [ ] ` or `- [x] `).
+    Item { checked: bool },
+    /// A bullet (`\u{2022} `).
+    Bullet,
+}
+
+/// What the list buttons toggle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ListKind {
+    Bullet,
+    Check,
+}
 
 /// One line of the text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -21,9 +42,10 @@ pub struct Line {
     pub start: usize,
     /// Index just past its last unit (before the `\n`).
     pub end: usize,
-    /// 6 for a checklist item, else 0.
+    /// 6 for a checklist item, 2 for a bullet, else 0.
     pub marker_len: usize,
     pub checked: bool,
+    pub marker: Marker,
 }
 
 impl Line {
@@ -32,13 +54,24 @@ impl Line {
         self.start + self.marker_len
     }
 
+    /// A checklist item: the only line that has a box and counts.
     pub fn is_item(&self) -> bool {
+        matches!(self.marker, Marker::Item { .. })
+    }
+
+    pub fn is_bullet(&self) -> bool {
+        self.marker == Marker::Bullet
+    }
+
+    /// Any marker (a box or a bullet): the text is indented and the marker is
+    /// never drawn as text.
+    pub fn has_marker(&self) -> bool {
         self.marker_len > 0
     }
 
-    /// An item with nothing after its marker.
-    pub fn is_empty_item(&self) -> bool {
-        self.is_item() && self.end <= self.content_start()
+    /// A marker with nothing after it.
+    pub fn is_empty_marker(&self) -> bool {
+        self.has_marker() && self.end <= self.content_start()
     }
 }
 
@@ -68,8 +101,8 @@ pub fn normalize(text: &str) -> String {
     text.replace("\r\n", "\n").replace('\r', "\n")
 }
 
-/// The marker at the start of `line` (`Some(checked)`).
-fn marker_at(u: &[u16]) -> Option<bool> {
+/// The checklist marker at the start of `line` (`Some(checked)`).
+fn item_at(u: &[u16]) -> Option<bool> {
     let at = |i: usize| u.get(i).copied();
     let open = at(0) == Some(u16::from(b'-'))
         && at(1) == Some(u16::from(b' '))
@@ -94,12 +127,20 @@ fn lines_of(u: &[u16]) -> Vec<Line> {
             .iter()
             .position(|c| *c == u16::from(b'\n'))
             .map_or(u.len(), |p| start + p);
-        let marker = marker_at(&u[start..end]);
+        let row = &u[start..end];
+        let (marker, marker_len) = match item_at(row) {
+            Some(checked) => (Marker::Item { checked }, MARKER_LEN),
+            None if row.first() == Some(&0x2022) && row.get(1) == Some(&u16::from(b' ')) => {
+                (Marker::Bullet, BULLET_LEN)
+            }
+            None => (Marker::None, 0),
+        };
         out.push(Line {
             start,
             end,
-            marker_len: if marker.is_some() { MARKER_LEN } else { 0 },
-            checked: marker == Some(true),
+            marker_len,
+            checked: marker == (Marker::Item { checked: true }),
+            marker,
         });
         if end >= u.len() {
             break;
@@ -167,26 +208,115 @@ pub fn toggle(text: &str, index: usize) -> Option<Edit> {
     })
 }
 
-/// The header's checklist button: a plain line gets an open marker, an item
-/// loses its marker. `caret` is only used to find the line and to keep it
-/// at the same place in the text.
-pub fn toggle_current_line(text: &str, caret: usize) -> Edit {
-    let all = lines(text);
-    let line = all[line_at(&all, caret)];
-    if line.is_item() {
-        Edit {
-            start: line.start,
-            end: line.content_start(),
-            insert: String::new(),
-            caret: caret.saturating_sub(MARKER_LEN).max(line.start),
+/// The lines of `text` a selection `a..b` touches, as indices. A selection
+/// that ends exactly at the start of a later line does not touch that line.
+pub fn touched(all: &[Line], a: usize, b: usize) -> (usize, usize) {
+    let (a, b) = if a <= b { (a, b) } else { (b, a) };
+    let first = line_at(all, a);
+    let mut last = line_at(all, b);
+    if b > a && last > first && all[last].start == b {
+        last -= 1;
+    }
+    (first, last)
+}
+
+/// A list button (the bar's bullet and checklist buttons, Ctrl+Shift+8 and
+/// 9, the header's checklist button) on every line the selection `sel_a..sel_b`
+/// touches (a collapsed caret is its line): when all of them already have
+/// `kind` it comes off, otherwise `kind` is put on all of them, replacing the
+/// other kind. The caret of the `Edit` is where `sel_b` goes; use
+/// `toggle_list_sel` for both ends.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn toggle_list(text: &str, sel_a: usize, sel_b: usize, kind: ListKind) -> Edit {
+    toggle_list_sel(text, sel_a, sel_b, kind).0
+}
+
+/// `toggle_list` and the selection (both ends) in the new text.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn toggle_list_sel(
+    text: &str,
+    sel_a: usize,
+    sel_b: usize,
+    kind: ListKind,
+) -> (Edit, (usize, usize)) {
+    let plan = toggle_list_plan(text, sel_a, sel_b, kind);
+    (plan.edit, plan.sel)
+}
+
+/// A list toggle in full: the `Edit` (one replacement of the touched lines),
+/// the selection after it, and where the markers changed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListToggle {
+    pub edit: Edit,
+    pub sel: (usize, usize),
+    /// Per touched line, in the OLD text: where it starts, its old marker's
+    /// length and its new marker's length. The text between the markers is
+    /// untouched, so the formatting can move by these alone (the `Edit` as a
+    /// whole replaces every line between the first and the last).
+    pub spans: Vec<(usize, usize, usize)>,
+}
+
+/// `toggle_list_sel` with the marker changes, for callers that move the
+/// formatting of the lines in between.
+pub fn toggle_list_plan(text: &str, sel_a: usize, sel_b: usize, kind: ListKind) -> ListToggle {
+    let u = units(text);
+    let all = lines_of(&u);
+    let (first, last) = touched(&all, sel_a, sel_b);
+    let has = |l: &Line| match kind {
+        ListKind::Bullet => l.is_bullet(),
+        ListKind::Check => l.is_item(),
+    };
+    let remove = all[first..=last].iter().all(has);
+    let new_marker = match kind {
+        ListKind::Bullet => BULLET,
+        ListKind::Check => OPEN,
+    };
+    let mut insert: Vec<u16> = Vec::new();
+    // Per touched line: where it starts, its old marker's length and the new
+    // marker's length.
+    let mut spans: Vec<(usize, usize, usize)> = Vec::new();
+    for (n, l) in all[first..=last].iter().enumerate() {
+        if n > 0 {
+            insert.push(u16::from(b'\n'));
         }
-    } else {
-        Edit {
-            start: line.start,
-            end: line.start,
-            insert: OPEN.to_owned(),
-            caret: caret + MARKER_LEN,
+        let marker: Vec<u16> = if remove {
+            Vec::new()
+        } else if has(l) {
+            u[l.start..l.content_start()].to_vec()
+        } else {
+            new_marker.encode_utf16().collect()
+        };
+        spans.push((l.start, l.marker_len, marker.len()));
+        insert.extend_from_slice(&marker);
+        insert.extend_from_slice(&u[l.content_start()..l.end]);
+    }
+    let region_start = all[first].start;
+    // Where an old index lands: inside a marker it is the text's start, after
+    // it the shift of every marker so far.
+    let map = |p: usize| -> usize {
+        let mut shift: isize = 0;
+        for &(start, old_len, new_len) in &spans {
+            if p < start {
+                break;
+            }
+            if p < start + old_len {
+                return (start as isize + shift) as usize + new_len;
+            }
+            shift += new_len as isize - old_len as isize;
         }
+        (p as isize + shift) as usize
+    };
+    let caret = map(sel_b.max(region_start));
+    let edit = Edit {
+        start: region_start,
+        end: all[last].end,
+        insert: from_units(&insert),
+        caret,
+    };
+    ListToggle {
+        edit,
+        sel: (map(sel_a.max(region_start)), caret),
+        spans,
     }
 }
 
@@ -209,16 +339,16 @@ pub fn autobox(text: &str, caret: usize) -> Option<Edit> {
     })
 }
 
-/// Enter at `caret` on an item: a non-empty item continues the list (a new
-/// open item starts at the caret), an empty one ends it (its marker goes).
-/// `None` on a plain line: the EDIT inserts the break itself.
+/// Enter at `caret` on an item or a bullet: a non-empty one continues the list
+/// (a new open item or bullet starts at the caret), an empty one ends it (its
+/// marker goes). `None` on a plain line: the EDIT inserts the break itself.
 pub fn enter(text: &str, caret: usize) -> Option<Edit> {
     let all = lines(text);
     let line = all[line_at(&all, caret)];
-    if !line.is_item() {
+    if !line.has_marker() {
         return None;
     }
-    if line.is_empty_item() {
+    if line.is_empty_marker() {
         return Some(Edit {
             start: line.start,
             end: line.end,
@@ -227,11 +357,12 @@ pub fn enter(text: &str, caret: usize) -> Option<Edit> {
         });
     }
     let at = caret.clamp(line.content_start(), line.end);
+    let marker = if line.is_bullet() { BULLET } else { OPEN };
     Some(Edit {
         start: at,
         end: at,
-        insert: format!("\n{OPEN}"),
-        caret: at + 1 + MARKER_LEN,
+        insert: format!("\n{marker}"),
+        caret: at + 1 + line.marker_len,
     })
 }
 
@@ -240,7 +371,7 @@ pub fn enter(text: &str, caret: usize) -> Option<Edit> {
 pub fn backspace(text: &str, caret: usize) -> Option<Edit> {
     let all = lines(text);
     let line = all[line_at(&all, caret)];
-    (line.is_item() && caret == line.content_start()).then(|| Edit {
+    (line.has_marker() && caret == line.content_start()).then(|| Edit {
         start: line.start,
         end: line.content_start(),
         insert: String::new(),
@@ -254,7 +385,7 @@ pub fn backspace(text: &str, caret: usize) -> Option<Edit> {
 pub fn snap_caret(text: &str, caret: usize, prev: usize) -> usize {
     let all = lines(text);
     let line = all[line_at(&all, caret)];
-    if !line.is_item() || caret >= line.content_start() {
+    if !line.has_marker() || caret >= line.content_start() {
         return caret;
     }
     let stepping_left = prev >= line.content_start() && caret != line.start && line.start > 0;
@@ -373,6 +504,7 @@ pub fn title_of(text: &str) -> String {
         .strip_prefix(OPEN)
         .or_else(|| first.strip_prefix(DONE))
         .or_else(|| first.strip_prefix("- [X] "))
+        .or_else(|| first.strip_prefix(BULLET))
         .unwrap_or(first);
     first.trim().to_owned()
 }
@@ -424,6 +556,10 @@ mod tests {
         assert_eq!(toggle(LIST, 0), None);
         assert_eq!(toggle(LIST, 4), None);
         assert_eq!(toggle(LIST, 9), None);
+    }
+
+    fn toggle_current_line(text: &str, caret: usize) -> Edit {
+        toggle_list(text, caret, caret, ListKind::Check)
     }
 
     #[test]
@@ -600,5 +736,159 @@ mod tests {
         assert_eq!(title_of("Belanja\n- [ ] a"), "Belanja");
         assert_eq!(title_of("- [x]  Done thing \nx"), "Done thing");
         assert_eq!(title_of(""), "");
+    }
+
+    // ---------------------------------------------------------------- bullets
+
+    #[test]
+    fn a_bullet_line_is_a_marker_but_not_a_box() {
+        let t = "Title\n\u{2022} one\n\u{2022} \nplain\n- [ ] box";
+        let l = lines(t);
+        assert!(l[1].is_bullet() && !l[1].is_item() && l[1].has_marker());
+        assert_eq!(l[1].marker_len, BULLET_LEN);
+        assert_eq!(l[1].content_start(), l[1].start + 2);
+        assert!(l[2].is_bullet() && l[2].is_empty_marker());
+        assert!(!l[3].has_marker());
+        assert!(l[4].is_item() && !l[4].is_bullet());
+        // A bullet without its space, or another dot, is text.
+        for plain in ["\u{2022}x", "* x", "\u{00b7} x", " \u{2022} x"] {
+            assert!(!lines(plain)[0].has_marker(), "{plain:?}");
+        }
+    }
+
+    #[test]
+    fn bullets_are_not_counted_or_boxed() {
+        let t = "t\n\u{2022} a\n\u{2022} b\n- [x] c\n- [ ] d";
+        assert_eq!(counts(t), (1, 2), "boxes and counts stay checklist only");
+        assert!(!all_done(t));
+        assert!(all_done("t\n\u{2022} a\n- [x] c"));
+        assert!(!all_done("t\n\u{2022} a"), "bullets alone are never all done");
+        assert_eq!(title_of("\u{2022} Heading\nx"), "Heading");
+    }
+
+    #[test]
+    fn enter_continues_a_bullet_and_ends_it_when_empty() {
+        let t = "t\n\u{2022} milk";
+        let n = t.encode_utf16().count();
+        let e = enter(t, n).unwrap();
+        assert_eq!(apply(t, &e), "t\n\u{2022} milk\n\u{2022} ");
+        assert_eq!(e.caret, n + 3);
+        // In the middle the rest moves to the new bullet.
+        let e = enter(t, n - 2).unwrap();
+        assert_eq!(apply(t, &e), "t\n\u{2022} mi\n\u{2022} lk");
+        // An empty bullet loses its marker.
+        let t = "t\n\u{2022} ";
+        let e = enter(t, 4).unwrap();
+        assert_eq!(apply(t, &e), "t\n");
+        assert_eq!(e.caret, 2);
+        // An emoji on a bullet line: the caret counts units.
+        let t = "t\n\u{2022} \u{1F600}";
+        let n = t.encode_utf16().count();
+        let e = enter(t, n).unwrap();
+        assert_eq!(apply(t, &e), "t\n\u{2022} \u{1F600}\n\u{2022} ");
+        assert_eq!(e.caret, n + 3);
+    }
+
+    #[test]
+    fn backspace_at_a_bullets_text_start_takes_the_marker() {
+        let t = "t\n\u{2022} abc";
+        let e = backspace(t, 4).unwrap();
+        assert_eq!(apply(t, &e), "t\nabc");
+        assert_eq!(e.caret, 2);
+        assert_eq!(backspace(t, 5), None, "inside the text it is the EDIT's");
+        assert_eq!(backspace("t\nabc", 2), None);
+    }
+
+    #[test]
+    fn the_caret_never_rests_in_a_bullet_marker() {
+        let t = "ab\n\u{2022} cd";
+        // Home on the bullet line lands on its text.
+        assert_eq!(snap_caret(t, 3, 6), 5);
+        // A step left from the text goes to the end of the line before.
+        assert_eq!(snap_caret(t, 4, 5), 2);
+        assert_eq!(snap_caret(t, 5, 3), 5);
+    }
+
+    #[test]
+    fn display_hides_a_bullet_marker_and_maps_both_ways() {
+        let t = "ab\n\u{2022} cd\nef";
+        assert_eq!(display_text(t), "ab\ncd\nef");
+        assert_eq!(raw_to_display(t, 5), 3);
+        assert_eq!(raw_to_display(t, 4), 3, "inside the marker is the text start");
+        assert_eq!(display_to_raw(t, 3), 5);
+        assert_eq!(display_to_raw(t, 5), 7);
+        let t = "\u{1F600}\n\u{2022} \u{1F601}x";
+        assert_eq!(display_text(t), "\u{1F600}\n\u{1F601}x");
+        assert_eq!(display_to_raw(t, 3), 5);
+    }
+
+    #[test]
+    fn autobox_is_unchanged_by_bullets() {
+        let e = autobox("-", 1).unwrap();
+        assert_eq!(apply("-", &e), "- [ ] ");
+        assert_eq!(autobox("\u{2022} -", 3), None, "not at the line start");
+    }
+
+    #[test]
+    fn toggle_list_bullets_a_line_and_takes_it_off_again() {
+        let t = "abc\ndef";
+        let e = toggle_list(t, 5, 5, ListKind::Bullet);
+        assert_eq!(apply(t, &e), "abc\n\u{2022} def");
+        assert_eq!(e.caret, 7);
+        let t2 = "abc\n\u{2022} def";
+        let e = toggle_list(t2, 7, 7, ListKind::Bullet);
+        assert_eq!(apply(t2, &e), t);
+        assert_eq!(e.caret, 5);
+    }
+
+    #[test]
+    fn toggle_list_converts_the_other_kind() {
+        let t = "t\n- [x] done\nplain";
+        // Bullet over a checklist line and a plain line: both become bullets.
+        let e = toggle_list(t, 2, t.len(), ListKind::Bullet);
+        assert_eq!(apply(t, &e), "t\n\u{2022} done\n\u{2022} plain");
+        // And back to checks: all bullets convert (not all have checks).
+        let u = "\u{2022} a\n\u{2022} b";
+        let e = toggle_list(u, 0, u.len(), ListKind::Check);
+        assert_eq!(apply(u, &e), "- [ ] a\n- [ ] b");
+        // All are checks now: the same call removes them.
+        let v = "- [ ] a\n- [x] b";
+        let e = toggle_list(v, 0, v.len(), ListKind::Check);
+        assert_eq!(apply(v, &e), "a\nb");
+    }
+
+    #[test]
+    fn toggle_list_over_a_selection_touches_every_line_it_reaches() {
+        let t = "one\ntwo\nthree\nfour";
+        // From inside "two" to inside "three".
+        let (e, (a, b)) = toggle_list_sel(t, 5, 10, ListKind::Bullet);
+        assert_eq!(apply(t, &e), "one\n\u{2022} two\n\u{2022} three\nfour");
+        assert_eq!((a, b), (7, 14), "the selection moves with its text");
+        // A selection that ends at the start of a line does not touch it.
+        let e = toggle_list(t, 0, 4, ListKind::Bullet);
+        assert_eq!(apply(t, &e), "\u{2022} one\ntwo\nthree\nfour");
+        // A reversed selection is the same.
+        let e2 = toggle_list(t, 4, 0, ListKind::Bullet);
+        assert_eq!(e2.insert, e.insert);
+        // Mixed lines: some already have it, the rest get it.
+        let m = "\u{2022} a\nb";
+        let e = toggle_list(m, 0, m.len(), ListKind::Bullet);
+        assert_eq!(apply(m, &e), "\u{2022} a\n\u{2022} b");
+    }
+
+    #[test]
+    fn toggle_list_on_an_emoji_line_counts_units() {
+        let t = "t\n\u{1F600} hi";
+        let e = toggle_list(t, 5, 5, ListKind::Bullet);
+        assert_eq!(apply(t, &e), "t\n\u{2022} \u{1F600} hi");
+        assert_eq!(e.caret, 5 + 2);
+        let t = "t\n\u{2022} \u{1F600} hi";
+        let e = toggle_list(t, 8, 8, ListKind::Bullet);
+        assert_eq!(apply(t, &e), "t\n\u{1F600} hi");
+        assert_eq!(e.caret, 6);
+        // An empty line takes a marker too (a caret on a blank line).
+        let e = toggle_list("a\n", 2, 2, ListKind::Bullet);
+        assert_eq!(apply("a\n", &e), "a\n\u{2022} ");
+        assert_eq!(e.caret, 4);
     }
 }
