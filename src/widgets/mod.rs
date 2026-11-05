@@ -7,15 +7,18 @@ pub mod apply;
 pub mod art;
 pub mod checklist;
 pub mod cliptext;
+pub mod images;
 pub mod list;
 pub mod place;
 pub mod prefs;
 pub mod remind;
+pub mod richclip;
 pub mod snap;
 pub mod stack;
 pub mod sticky;
 pub mod styles;
 pub mod templates;
+pub mod toolbar;
 pub mod tuck;
 
 pub mod drop;
