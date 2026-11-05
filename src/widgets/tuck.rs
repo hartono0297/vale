@@ -254,13 +254,27 @@ pub fn unscale(pt: (f32, f32), origin: (f32, f32), s: f32) -> (f32, f32) {
 /// right, bottom (the shadow rects grow 5 and sit 2 down), and one dip slack.
 pub const SHADOW_REACH: (f32, f32, f32, f32) = (6.0, 4.0, 6.0, 8.0);
 
+/// How far the paper, its shadow and the `edges` sheet edges of a stack (0
+/// for a plain note, 2 at most) reach beyond the note, dip: left, top, right,
+/// bottom. A stack edge `k` (1-based) sits `k * STACK_STEP` down and right and
+/// its shadow grows 1.5 (and sits 2 down), so it reaches 1.5 and 3.5 further.
+pub fn reach(edges: usize) -> (f32, f32, f32, f32) {
+    let r = SHADOW_REACH;
+    if edges == 0 {
+        return r;
+    }
+    let off = crate::widgets::paint::STACK_STEP * edges as f32;
+    (r.0, r.1, r.2.max(off + 1.5), r.3.max(off + 3.5))
+}
+
 /// The margin a tucked note's window needs on top of the base one
-/// (`paint::margins()`), dip, so that the paper and its shadow, scaled by
-/// `PEAK_SCALE` about the `origin`, fit inside it. Left, top, right, bottom.
-pub fn room(w: f32, shown_h: f32, edge: Edge) -> (f32, f32, f32, f32) {
+/// (`paint::margins()`), dip, so that the paper, its shadow and a stack's
+/// `edges` sheet edges, scaled by `PEAK_SCALE` about the `origin`, fit inside
+/// it. Left, top, right, bottom.
+pub fn room(w: f32, shown_h: f32, edge: Edge, edges: usize) -> (f32, f32, f32, f32) {
     let o = origin(edge, w, shown_h);
     let base = crate::widgets::paint::margins();
-    let r = SHADOW_REACH;
+    let r = reach(edges);
     // The corners of the paper plus shadow, scaled about the origin.
     let lo = scale_about((-r.0, -r.1), o, PEAK_SCALE);
     let hi = scale_about((w + r.2, shown_h + r.3), o, PEAK_SCALE);
@@ -705,7 +719,7 @@ mod tests {
         let base = crate::widgets::paint::margins();
         for edge in [Edge::Left, Edge::Right] {
             let (w, h) = (240.0, 208.0);
-            let r = room(w, h, edge);
+            let r = room(w, h, edge, 0);
             assert!(r.0 >= 0.0 && r.1 >= 0.0 && r.2 >= 0.0 && r.3 >= 0.0);
             assert_eq!(r.1, 0.0, "nothing on top");
             let o = origin(edge, w, h);
@@ -716,13 +730,36 @@ mod tests {
             assert!(hi.0 <= w + base.2 + r.2 && hi.1 <= h + base.3 + r.3, "{edge:?} bottom-right");
         }
         // The side the note grows from takes the room: the left of a right-edge note.
-        let r = room(240.0, 208.0, Edge::Right);
+        let r = room(240.0, 208.0, Edge::Right, 0);
         assert!((7.0..=9.0).contains(&r.0) && (7.0..=9.0).contains(&r.3), "{r:?}");
         assert_eq!(r.2, 0.0);
-        let l = room(240.0, 208.0, Edge::Left);
+        let l = room(240.0, 208.0, Edge::Left, 0);
         assert!((7.0..=9.0).contains(&l.2) && (7.0..=9.0).contains(&l.3) && l.0 == 0.0, "{l:?}");
         // A rolled note is short: nothing on top either.
-        assert_eq!(room(240.0, 40.0, Edge::Right).1, 0.0);
+        assert_eq!(room(240.0, 40.0, Edge::Right, 0).1, 0.0);
+    }
+
+    #[test]
+    fn the_window_keeps_room_for_a_stacks_edges_at_the_peak() {
+        let base = crate::widgets::paint::margins();
+        for edges in [1usize, 2] {
+            for edge in [Edge::Left, Edge::Right] {
+                let (w, h) = (240.0, 208.0);
+                let r = room(w, h, edge, edges);
+                let o = origin(edge, w, h);
+                let reach = reach(edges);
+                let lo = scale_about((-reach.0, -reach.1), o, PEAK_SCALE);
+                let hi = scale_about((w + reach.2, h + reach.3), o, PEAK_SCALE);
+                assert!(lo.0 >= -(base.0 + r.0) && lo.1 >= -(base.1 + r.1), "{edge:?} {edges} top-left");
+                assert!(hi.0 <= w + base.2 + r.2 && hi.1 <= h + base.3 + r.3, "{edge:?} {edges} bottom-right");
+            }
+        }
+        // The two edges reach 7.5 right and 9.5 down, beyond a plain note's 6 and 8.
+        assert_eq!(reach(2), (6.0, 4.0, 7.5, 9.5));
+        assert_eq!(reach(0), SHADOW_REACH);
+        // A stack needs at least as much room as a plain note, more at the far side.
+        let (plain, stack) = (room(240.0, 208.0, Edge::Left, 0), room(240.0, 208.0, Edge::Left, 2));
+        assert!(stack.2 > plain.2 && stack.3 >= plain.3, "{plain:?} {stack:?}");
     }
 
     #[test]

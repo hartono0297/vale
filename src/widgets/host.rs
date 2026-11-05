@@ -389,8 +389,13 @@ impl Win {
     /// The room the window should have now (what `draw` will set).
     fn room_now(&self, now: Instant) -> (f32, f32, f32, f32) {
         self.tuck_edge(now).map_or((0.0, 0.0, 0.0, 0.0), |edge| {
-            tuck::room(self.view.w, shown_h(self.view.h, self.sticky.rolled), edge)
+            tuck::room(self.view.w, shown_h(self.view.h, self.sticky.rolled), edge, self.stack_edges())
         })
+    }
+
+    /// How many sheet edges peek out under a stack's paper (0 for a note).
+    fn stack_edges(&self) -> usize {
+        self.sheet_count().saturating_sub(1).min(2)
     }
 
     /// The pop as it is now.
@@ -5196,6 +5201,75 @@ mod tests {
     }
 
     #[test]
+    fn tucking_by_a_drag_release_ends_with_the_scale_in_after_the_grace() {
+        let _shift = hold_shift(false);
+        let displays = vec![display("A", 0, true, 96)];
+        let notes = vec![note("n1", DipRect::new(1300.0, 200.0, 240.0, 208.0))];
+        let mut host = WidgetHost::new(HWND::default());
+        let mut c = ctx(&notes, &displays);
+        c.animate = true;
+        host.sync(&c);
+        let hwnd = with(|s| s.wins[0].hwnd).unwrap();
+        let (x, y) = client_of(20.0, 10.0);
+        let _ = host.drain();
+        left_down(hwnd, x, y);
+        move_to(hwnd, 1919, 250);
+        assert_eq!(with(|s| s.wins[0].cue).unwrap(), Some(Edge::Right), "the cue");
+        let (ox, oy) = with(|s| s.wins[0].origin()).unwrap();
+        left_up(hwnd, 1919 - ox, 250 - oy);
+        let events = host.drain();
+        assert!(
+            events.contains(&WidgetEvent::Tuck { id: "n1".into(), edge: Some(Edge::Right) }),
+            "{events:?}"
+        );
+        // Dropped on the edge it is still out (the pointer is on it); once the
+        // pointer leaves, the grace runs, and it keeps its edge.
+        assert_eq!(with(|s| s.wins[0].sticky.tuck).unwrap(), Some(Edge::Right));
+        assert_eq!(with(|s| s.wins[0].pop_edge).unwrap(), Some(Edge::Right));
+        assert!(with(|s| s.wins[0].grace.is_none()).unwrap(), "the pointer is on it");
+        mouse_leave(hwnd);
+        let p = pop_of(0);
+        assert_eq!((p.to, p.ms), (1.0, 0.0), "out, nothing running");
+        assert!(with(|s| s.wins[0].grace.is_some()).unwrap(), "the grace runs");
+        let now = Instant::now();
+        assert!(host.moving(now), "the grace runs on the frame clock");
+        // After the grace: the 200 ms scale-in toward the tab.
+        let after = now + Duration::from_millis(400);
+        host.tick(after);
+        let p = pop_of(0);
+        assert_eq!((p.to, p.ms), (0.0, tuck::IN_MS), "200 ms scale-in");
+        assert_eq!(with(|s| s.wins[0].pop_edge).unwrap(), Some(Edge::Right));
+        assert!(host.moving(after), "running");
+        assert!(p.scale(p.start + Duration::from_millis(100)) < 1.0, "the scale goes down");
+        assert!(p.scale(p.start + Duration::from_millis(100)) < p.scale(p.start + Duration::from_millis(50)));
+        let end = p.start + Duration::from_millis(300);
+        host.tick(end);
+        assert!(!host.moving(end));
+        assert_eq!(look_of(&p, end), [tuck::MIN_SCALE, 0.0, 1.0], "settles at the tab");
+        host.shutdown();
+    }
+
+    #[test]
+    fn a_tucked_stack_keeps_room_for_its_sheet_edges() {
+        let displays = vec![display("A", 0, true, 96)];
+        let store = stack_of_three("stack-tuck-room");
+        let mut notes = store.list().to_vec();
+        for n in &mut notes {
+            if let Some(s) = n.sticky.as_mut() {
+                s.tuck = Some(Edge::Right);
+                s.rect = DipRect::new(1640.0, 200.0, 280.0, 208.0);
+            }
+        }
+        let mut host = WidgetHost::new(HWND::default());
+        host.sync(&ctx(&notes, &displays));
+        let (room, view, edges) = with(|s| (s.wins[0].room, s.wins[0].view, s.wins[0].stack_edges())).unwrap();
+        assert_eq!(edges, 2, "three sheets: two edges peek out");
+        assert_eq!(room, tuck::room(view.w, view.h, Edge::Right, 2));
+        assert!(room.3 > tuck::room(view.w, view.h, Edge::Right, 0).3, "more room below than a plain note");
+        host.shutdown();
+    }
+
+    #[test]
     fn a_drag_never_tucks_on_an_inner_edge() {
         let _shift = hold_shift(false);
         // B sits against A's right edge.
@@ -5856,7 +5930,7 @@ mod tests {
                 (w.margins(), w.room, w.canvas.as_ref().map(|c| c.size()), w.scale, w.view, bare)
             })
             .unwrap();
-            let want = tuck::room(view.w, view.h, edge);
+            let want = tuck::room(view.w, view.h, edge, 0);
             assert_eq!(room, want);
             assert_eq!(m, (bare.0 + want.0, bare.1 + want.1, bare.2 + want.2, bare.3 + want.3));
             assert!(room.0 + room.2 + room.3 > 0.0, "some room is needed");
