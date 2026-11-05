@@ -14,6 +14,7 @@ pub mod remind;
 pub mod snap;
 pub mod stack;
 pub mod sticky;
+pub mod styles;
 pub mod templates;
 pub mod tuck;
 
