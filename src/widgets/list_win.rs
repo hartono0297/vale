@@ -45,7 +45,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DLGC_WANTALLKEYS, DefWindowProcW, DestroyMenu,
-    DestroyCaret, DestroyWindow, ES_AUTOHSCROLL, GetCursorPos, GetWindowTextLengthW, GetWindowTextW, HMENU,
+    DestroyCaret, DestroyWindow, ES_AUTOHSCROLL, GetCursorPos, GetForegroundWindow, GetWindowTextLengthW, GetWindowTextW, HMENU,
     IDC_ARROW, IDC_HAND, IDC_IBEAM, KillTimer, LoadCursorW, MF_STRING, PostMessageW,
     RegisterClassExW, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SendMessageW, SetCursor, SetTimer,
     SetWindowPos, ShowWindow, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
@@ -1346,6 +1346,13 @@ fn mouse_move(hwnd: HWND, x: i32, y: i32) {
     }
 }
 
+/// Whether the list closes once its row menu is down: it lost the foreground
+/// while the menu was up (the deactivation was ignored then), and the choice
+/// was not to open a note.
+fn leaves_after_menu(chosen: usize, list_is_foreground: bool) -> bool {
+    !list_is_foreground && chosen != CMD_OPEN
+}
+
 fn right_up(hwnd: HWND, x: i32, y: i32) {
     let row = with(|l| {
         let (dx, dy) = to_dip(l, x, y);
@@ -1386,6 +1393,13 @@ fn right_up(hwnd: HWND, x: i32, y: i32) {
         l.menu_open = false;
         l.edit
     });
+    // The window may have been deactivated while the menu was up (Win key,
+    // Alt+Tab): that WM_ACTIVATE was ignored, so check once the menu is down.
+    let foreground = unsafe { GetForegroundWindow() };
+    if leaves_after_menu(chosen, foreground == hwnd) {
+        post_close();
+        return;
+    }
     match chosen {
         CMD_OPEN => push(ListEvent::Show(id)),
         CMD_DELETE => {
@@ -2077,6 +2091,15 @@ mod tests {
         }
         assert!(!is_open());
         drain();
+    }
+
+    #[test]
+    fn a_list_deactivated_under_its_row_menu_closes_when_the_menu_is_down() {
+        assert!(leaves_after_menu(0, false), "dismissed by Alt+Tab or the Win key");
+        assert!(leaves_after_menu(CMD_DELETE, false));
+        assert!(!leaves_after_menu(0, true), "still the foreground: stays");
+        assert!(!leaves_after_menu(CMD_DELETE, true));
+        assert!(!leaves_after_menu(CMD_OPEN, false), "opening a note is the app's to handle");
     }
 
     #[test]

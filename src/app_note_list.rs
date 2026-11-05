@@ -8,6 +8,8 @@
 //! while the window is open (`note_list_refresh` does nothing otherwise), and
 //! the list's one timer (`TIMER_LIST_UNDO`, 49) lives on its own window.
 
+use std::time::Instant;
+
 use chrono::Local;
 
 use super::App;
@@ -132,6 +134,10 @@ impl App {
             settle(&mut self.notes, Local::now().timestamp(), false);
             self.arm_widget_save();
             self.widgets_sync();
+            // The Notes page shows the same notes: it takes the restored one back.
+            if matches!(self.state.view(), crate::model::View::Panel(crate::model::Page::Notes)) {
+                self.draw(Instant::now());
+            }
             self.sync_settings();
         } else {
             self.note_list_refresh();
