@@ -169,6 +169,11 @@ template, run A below), gives it the keyboard (except the pin, the note has
 text) and turns `show` back on. Settings -> Widget: [[settings-structure]]. The hotkey:
 [[hotkeys]].
 
+The sticky note list (a header button, a tray item and an eighth hotkey row open
+one window that lists and searches every note, shows and focuses one, deletes
+with an undo): [[sticky-note-list]]. The header buttons are 20 dip with a 1 dip
+gap since then (seven of them).
+
 ## Assumptions
 
 - No drag-out-of-the-notch in phase 1.

@@ -33,7 +33,7 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_TRIMMING, DWRITE_TRIMMING_GRANULARITY_CHARACTER, DWRITE_WORD_WRAPPING_NO_WRAP,
 };
 use windows::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint,
+    GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, ValidateRect,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::{EM_GETSEL, EM_LIMITTEXT, EM_SETSEL};
@@ -45,7 +45,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DLGC_WANTALLKEYS, DefWindowProcW, DestroyMenu,
-    DestroyWindow, ES_AUTOHSCROLL, GetCursorPos, GetWindowTextLengthW, GetWindowTextW, HMENU,
+    DestroyCaret, DestroyWindow, ES_AUTOHSCROLL, GetCursorPos, GetWindowTextLengthW, GetWindowTextW, HMENU,
     IDC_ARROW, IDC_HAND, IDC_IBEAM, KillTimer, LoadCursorW, MF_STRING, PostMessageW,
     RegisterClassExW, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SendMessageW, SetCursor, SetTimer,
     SetWindowPos, ShowWindow, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
@@ -53,7 +53,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_CLOSE, WM_COMMAND, WM_CUT, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_GETDLGCODE,
     WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KILLFOCUS,
     WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_MOVE, WM_NCDESTROY, WM_NCHITTEST,
-    WM_NULL, WM_PASTE, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SYSCOMMAND, WM_TIMER, WM_UNDO,
+    WM_NCPAINT, WM_NULL, WM_PAINT, WM_PASTE, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SYSCOMMAND, WM_TIMER, WM_UNDO,
     WNDCLASSEXW, WS_CHILD, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
 };
 use windows::core::{HSTRING, Interface, PCWSTR, w};
@@ -366,15 +366,18 @@ fn register() -> bool {
     true
 }
 
-/// The search EDIT's place: the box's text area (px, client of the window).
+/// The search EDIT's place (px, client of the window): one pixel at the
+/// box's text origin, like the CLI page's input. It must exist and have the
+/// keyboard, never be seen: it paints nothing (`edit_proc`), and the IME's
+/// composition window is placed from this origin.
 fn edit_rect(h_dip: f32, scale: f32) -> (i32, i32, i32, i32) {
     let lay = layout(WIN_W, h_dip, false);
     let r = lay.search;
     (
         ((r.x + FIELD_TEXT_X) * scale).round() as i32,
         (r.y * scale).round() as i32,
-        ((r.w - FIELD_TEXT_X - FIELD_TEXT_PAD).max(20.0) * scale).round() as i32,
-        (r.h * scale).round() as i32,
+        1,
+        1,
     )
 }
 
@@ -411,16 +414,10 @@ pub fn open(owner: HWND, anchor: Anchor, data: ListData) {
         )
     };
     let Ok(hwnd) = hwnd else { return };
-    let Some(edit_hwnd) = create_edit(hwnd, &spot) else {
-        unsafe {
-            let _ = DestroyWindow(hwnd);
-        }
-        return;
-    };
     let canvas = Canvas::with_gfx(res.gfx.clone(), spot.size).ok();
     let mut state = List {
         hwnd,
-        edit: edit_hwnd,
+        edit: HWND::default(),
         scale: spot.scale,
         origin: spot.origin,
         h_dip: spot.h_dip,
@@ -451,9 +448,19 @@ pub fn open(owner: HWND, anchor: Anchor, data: ListData) {
         }
         take_foreground(hwnd);
     }
+    // The search EDIT comes last, once the window is up and has been drawn,
+    // as the sticky notes' own EDIT does: made earlier, it painted its white
+    // box over the bitmap.
+    let Some(edit_hwnd) = create_edit(hwnd, &spot) else {
+        close();
+        return;
+    };
+    let _ = with(|l| l.edit = edit_hwnd);
+    redraw();
     unsafe {
         let _ = SetFocus(Some(edit_hwnd));
     }
+    redraw();
 }
 
 fn create_edit(parent: HWND, spot: &Spot) -> Option<HWND> {
@@ -829,8 +836,8 @@ fn paint(l: &mut List) {
     // The caret's place decides how the search text is scrolled.
     let view_w = lay.search.w - FIELD_TEXT_X - FIELD_TEXT_PAD;
     let q_layout = query_layout(&l.res, &l.query);
-    let caret_index = if l.sel.0 == l.sel.1 { l.sel.1 } else { l.sel.1 };
-    let caret_at = q_layout.as_ref().map_or(0.0, |q| caret_x(q, caret_index));
+    // The EDIT reports the selection as (start, end): the caret is at the end.
+    let caret_at = q_layout.as_ref().map_or(0.0, |q| caret_x(q, l.sel.1));
     l.scroll_x = list::follow_caret(l.scroll_x, caret_at, view_w);
     // The IME's composition window goes at the caret.
     edit::place_ime(l.edit, ((caret_at - l.scroll_x) * k).round() as i32, 0);
@@ -849,7 +856,6 @@ fn paint(l: &mut List) {
         scroll_x,
         hover,
         selected,
-        strip,
         ..
     } = &*l;
     let Some(canvas) = canvas else { return };
@@ -1005,7 +1011,7 @@ fn paint(l: &mut List) {
                 let b = list::empty_button(&lay);
                 let on = data.can_add;
                 if on {
-                    set(pal.accent, if *hover == Hit::None { 1.0 } else { 1.0 });
+                    set(pal.accent, if *hover == Hit::Plus { 0.88 } else { 1.0 });
                 } else {
                     set(pal.button, 1.0);
                 }
@@ -1206,7 +1212,6 @@ fn paint(l: &mut List) {
                 Align::Center,
             );
         }
-        let _ = strip;
         unsafe { rt.SetTransform(&Matrix3x2::identity()) };
     });
 }
@@ -1590,6 +1595,16 @@ unsafe extern "system" fn edit_proc(
     match msg {
         // Never hit: every press goes through it to the list's own procedure.
         WM_NCHITTEST => return LRESULT(HTTRANSPARENT),
+        // Never drawn: a layered window's children can still paint over its
+        // bitmap, so the EDIT paints nothing at all.
+        WM_PAINT => {
+            unsafe {
+                let _ = ValidateRect(Some(hwnd), None);
+            }
+            return LRESULT(0);
+        }
+        WM_ERASEBKGND => return LRESULT(1),
+        WM_NCPAINT => return LRESULT(0),
         WM_GETDLGCODE => {
             let code = unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) };
             return LRESULT(code.0 | DLGC_WANTALLKEYS as isize);
@@ -1641,6 +1656,10 @@ unsafe extern "system" fn edit_proc(
         }
         WM_SETFOCUS => {
             let r = unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) };
+            // The EDIT's own caret is not wanted: the list draws a steady one.
+            unsafe {
+                let _ = DestroyCaret();
+            }
             edit_key(EditKey::Focus(true));
             return r;
         }

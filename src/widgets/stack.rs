@@ -14,7 +14,7 @@ use crate::widgets::snap;
 use crate::widgets::sticky::{DipRect, Sticky};
 
 /// A stack is at least this wide (dip): the counter and both arrows have to
-/// fit left of the six header buttons.
+/// fit left of the seven header buttons.
 pub const MIN_W: f32 = 260.0;
 /// A stack made from a plain note takes this prefix plus that note's id.
 pub const ID_PREFIX: &str = "stk-";

@@ -4448,6 +4448,46 @@ mod tests {
     }
 
     #[test]
+    fn the_list_button_asks_the_owner_to_open_the_list_and_the_note_tells_where_it_is() {
+        let displays = vec![display("A", 0, true, 96)];
+        let notes = vec![note("n1", DipRect::new(100.0, 100.0, 240.0, 208.0))];
+        let mut host = WidgetHost::new(HWND::default());
+        host.sync(&ctx(&notes, &displays));
+        let hwnd = with(|s| s.wins[0].hwnd).unwrap();
+        button(hwnd, Btn::List);
+        assert_eq!(host.drain(), vec![WidgetEvent::OpenList { id: "n1".into() }]);
+        // The note's own rect (px, without the margin) is what the list sits beside.
+        let r = host.note_rect_px("n1").expect("the note has a window");
+        assert!(r.w > 0 && r.h > 0, "{r:?}");
+        assert!(host.note_rect_px("nope").is_none());
+        host.shutdown();
+    }
+
+    #[test]
+    fn bringing_a_note_to_the_front_lifts_it_over_other_windows_until_it_loses_the_keyboard() {
+        let _k = keyboard_lock();
+        let displays = vec![display("A", 0, true, 96)];
+        let notes = vec![note("n1", DipRect::new(100.0, 100.0, 240.0, 208.0))];
+        let mut host = WidgetHost::new(HWND::default());
+        host.sync(&ctx(&notes, &displays));
+        let hwnd = with(|s| s.wins[0].hwnd).unwrap();
+        let mode = || unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) };
+        assert!(with(|s| !above_windows(s, &s.wins[0])).unwrap(), "a desktop-layer note is at the bottom");
+        assert_eq!(mode(), 1);
+        host.bring_front("nope");
+        assert!(with(|s| !s.wins[0].lifted).unwrap(), "no such note: nothing lifts");
+        host.bring_front("n1");
+        assert!(with(|s| s.wins[0].edit.is_some()).unwrap(), "it has the keyboard");
+        assert!(with(|s| s.wins[0].lifted && above_windows(s, &s.wins[0])).unwrap(), "lifted: over other windows");
+        assert_eq!(mode(), 2, "the window procedure keeps it topmost");
+        // Losing the keyboard puts it back on its layer.
+        end_editing(hwnd);
+        assert!(with(|s| !s.wins[0].lifted && !above_windows(s, &s.wins[0])).unwrap());
+        assert_eq!(mode(), 1, "back at the bottom, owned by the shell again");
+        host.shutdown();
+    }
+
+    #[test]
     fn a_new_local_day_redraws_once_and_the_first_look_only_remembers() {
         let day = |d| NaiveDate::from_ymd_opt(2026, 11, d).unwrap();
         let mut last = None;

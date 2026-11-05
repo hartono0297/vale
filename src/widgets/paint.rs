@@ -1644,7 +1644,7 @@ mod tests {
                 Target::Button(b)
             );
         }
-        let first = button_rect(Btn::Pin, w);
+        let first = button_rect(Btn::List, w);
         assert_eq!(target(first.x - 3.0, 10.0, w, 208.0, false, None, 0.0, true), Target::Header);
         assert_eq!(target(20.0, 3.0, w, 208.0, false, None, 0.0, true), Target::Header);
         // Above and under the buttons, still inside the strip: the strip.

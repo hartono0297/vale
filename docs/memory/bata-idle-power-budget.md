@@ -319,3 +319,13 @@ adds no timer and no thread, only two more FrameClock users in `WidgetHost::movi
   over a tucked note brings it out through the same `keep_out` and 300 ms grace
   on the frame clock as a hover; nothing polls and `TIMER_*` ids stay 45-47 for
   widgets and 48-50 for the phone.
+
+- The sticky note list ([[sticky-note-list]], 2026-11-05): **nothing while it is
+  closed**: no timer, hook, poll or pointer tracking, and its data (a clone of the
+  notes) is built only while the window is open (`list_win::is_open()` gates every
+  refresh). Open, it reacts to messages of its own window only (hover is
+  `TrackMouseEvent(TME_LEAVE)`, no FrameClock). The one timer, `TIMER_LIST_UNDO`
+  (49), is a one-shot **on the list's own window** (timer ids are per window, so it
+  cannot meet the island window's 45-48), set only while the 5 s undo strip shows
+  and killed when it hides, is clicked or the window goes. The header's list button
+  is one more `Btn` in the note's strip (no hover cost beyond the other six).
