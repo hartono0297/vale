@@ -2825,7 +2825,11 @@ fn apply_edit_marks(s: &mut State, i: usize, e: &Edit, marks: Option<&[(usize, u
             w.text = checklist::apply(&before, e);
         }
     }
-    text_changed_marks(s, i, &before, marks);
+    let change = match marks {
+        Some(spans) => Change::Marks(spans),
+        None => Change::Edit(e),
+    };
+    text_changed_by(s, i, &before, change);
 }
 
 /// A drag that a note takes is over (or has left) window `hwnd`: its dashed
@@ -2882,7 +2886,7 @@ pub(super) fn drop_into(hwnd: HWND, lines: &[String]) -> bool {
                 w.text = after;
                 w.sel = (caret, caret);
                 w.anchor = caret;
-                text_changed(s, i, &before);
+                text_changed(s, i, &before, end);
             }
         }
         Some(())
@@ -2891,19 +2895,28 @@ pub(super) fn drop_into(hwnd: HWND, lines: &[String]) -> bool {
     .is_some()
 }
 
-/// The text of note `i` changed from `before`: tell the owner, redraw.
-fn text_changed(s: &mut State, i: usize, before: &str) {
-    text_changed_marks(s, i, before, None);
+/// What the host knows of a text change, so the formatting moves with the
+/// letters that were really typed or deleted (a blind prefix/suffix diff
+/// cannot tell two equal letters at a style boundary apart).
+#[derive(Clone, Copy)]
+enum Change<'a> {
+    /// The change starts at this unit or after it (where the caret was).
+    Near(usize),
+    /// Exactly this edit (`styles::rebase_edit`).
+    Edit(&'a Edit),
+    /// Only list markers changed: a toggle's `(line start, old marker
+    /// length, new marker length)` (`styles::rebase_marks`).
+    Marks(&'a [(usize, usize, usize)]),
 }
 
-/// `text_changed`; with `marks` the formatting follows the marker changes of
-/// a list toggle (`styles::rebase_marks`) instead of the prefix/suffix diff.
-fn text_changed_marks(
-    s: &mut State,
-    i: usize,
-    before: &str,
-    marks: Option<&[(usize, usize, usize)]>,
-) {
+/// The text of note `i` changed from `before`, at `near` or after it: tell
+/// the owner, redraw.
+fn text_changed(s: &mut State, i: usize, before: &str, near: usize) {
+    text_changed_by(s, i, before, Change::Near(near));
+}
+
+/// `text_changed`, with what is known of the change.
+fn text_changed_by(s: &mut State, i: usize, before: &str, change: Change<'_>) {
     let w = &mut s.wins[i];
     if w.text == before {
         w.dirty = true;
@@ -2919,9 +2932,14 @@ fn text_changed_marks(
     // runs with it. The owner is told the text first, then the runs, which win
     // over the store's own rebase of the same edit.
     let had = !w.sticky.styles.is_empty();
-    w.sticky.styles = match marks {
-        Some(spans) => styles::rebase_marks(before, &w.text, &w.sticky.styles, spans),
-        None => styles::rebase_with(before, &w.text, &w.sticky.styles, w.pending),
+    w.sticky.styles = match change {
+        Change::Marks(spans) => styles::rebase_marks(before, &w.text, &w.sticky.styles, spans),
+        Change::Edit(e) => {
+            let start = e.start.min(e.end);
+            let span = (start, e.end.max(start), e.insert.encode_utf16().count());
+            styles::rebase_edit(before, &w.text, &w.sticky.styles, w.pending, span)
+        }
+        Change::Near(hint) => styles::rebase_at(before, &w.text, &w.sticky.styles, w.pending, hint),
     };
     let has = !w.sticky.styles.is_empty();
     let (id, t) = (w.id.clone(), w.text.clone());
@@ -4902,6 +4920,14 @@ fn sync_from_edit(parent: HWND, edit_hwnd: HWND) {
         }
         let w = &mut s.wins[i];
         let before = std::mem::replace(&mut w.text, t);
+        // Where the change starts, at most: the selection start before it
+        // (typing, a paste) or after it (a delete), and for text that grew
+        // the caret less what grew (in case `sel` was stale).
+        let grew = w.text.encode_utf16().count() as isize - before.encode_utf16().count() as isize;
+        let mut near = w.sel.0.min(w.sel.1).min(sel.0).min(sel.1);
+        if grew > 0 {
+            near = near.min(sel.1.saturating_sub(grew as usize));
+        }
         if w.sel != sel && sel.0 == sel.1 {
             w.anchor = sel.0;
         }
@@ -4916,7 +4942,7 @@ fn sync_from_edit(parent: HWND, edit_hwnd: HWND) {
         if w.text != before {
             touch(s, i);
         }
-        text_changed(s, i, &before);
+        text_changed(s, i, &before, near);
         let w = &s.wins[i];
         let (cx, cy, _) = w.body.as_ref()?.caret(sel.1)?;
         let m = w.margins();
@@ -7254,6 +7280,60 @@ mod tests {
         assert!(with(|s| s.wins[0].pending.is_some()).unwrap());
         select(hwnd, edit_hwnd, 2, 2);
         assert!(with(|s| s.wins[0].pending.is_none()).unwrap());
+        host.shutdown();
+    }
+
+    #[test]
+    fn a_letter_typed_or_deleted_next_to_its_twin_at_a_bold_edge_keeps_the_bold_where_it_was() {
+        let _focus = keyboard_lock();
+        let bold = Style { b: true, ..Style::default() };
+        // "hello" with "lo" bold.
+        let (mut host, hwnd, edit_hwnd) = editing("hello", |st| {
+            st.styles = vec![Run { s: 3, e: 5, style: bold }];
+        });
+        let type_char = |ch: u16| unsafe {
+            SendMessageW(edit_hwnd, windows::Win32::UI::WindowsAndMessaging::WM_CHAR, Some(WPARAM(ch as usize)), Some(LPARAM(0)));
+        };
+        // (a) A plain `l` typed at "hel|lo": the typed letter is plain.
+        select(hwnd, edit_hwnd, 3, 3);
+        type_char(u16::from(b'l'));
+        assert_eq!(with(|s| s.wins[0].text.clone()).unwrap(), "helllo");
+        assert_eq!(styles_of(), [Run { s: 4, e: 6, style: bold }]);
+        // Backspace takes it back out: "lo" is bold again.
+        type_char(0x08);
+        assert_eq!(with(|s| s.wins[0].text.clone()).unwrap(), "hello");
+        assert_eq!(styles_of(), [Run { s: 3, e: 5, style: bold }]);
+        // (b) Backspace on the plain `l` at 2 ("hel|lo"): the bold `l` stays bold.
+        select(hwnd, edit_hwnd, 3, 3);
+        type_char(0x08);
+        assert_eq!(with(|s| s.wins[0].text.clone()).unwrap(), "helo");
+        assert_eq!(styles_of(), [Run { s: 2, e: 4, style: bold }]);
+        // A pending style lands on the typed letter: "he|lo" + italic `l`.
+        select(hwnd, edit_hwnd, 2, 2);
+        edit_event(hwnd, edit_hwnd, EditEvent::Format(Tool::Italic));
+        type_char(u16::from(b'l'));
+        assert_eq!(with(|s| s.wins[0].text.clone()).unwrap(), "hello");
+        assert_eq!(
+            styles_of(),
+            [
+                Run { s: 2, e: 3, style: Style { i: true, ..Style::default() } },
+                Run { s: 3, e: 5, style: bold },
+            ]
+        );
+        host.shutdown();
+    }
+
+    #[test]
+    fn a_plain_paste_that_starts_with_the_next_letter_takes_the_style_at_the_caret() {
+        let _focus = keyboard_lock();
+        let bold = Style { b: true, ..Style::default() };
+        let (mut host, hwnd, edit_hwnd) = editing("hello", |st| {
+            st.styles = vec![Run { s: 3, e: 5, style: bold }];
+        });
+        select(hwnd, edit_hwnd, 3, 3);
+        with(|s| paste_text(s, 0, "lx", None));
+        assert_eq!(with(|s| s.wins[0].text.clone()).unwrap(), "hellxlo");
+        assert_eq!(styles_of(), [Run { s: 5, e: 7, style: bold }]);
         host.shutdown();
     }
 

@@ -420,23 +420,50 @@ fn diff(old: &[u16], new: &[u16]) -> Option<(usize, usize, usize)> {
     Some((p, old.len() - sf, new.len() - sf))
 }
 
-/// `runs` of `old` moved onto `new`; typed text takes the style at the change.
-pub fn rebase(old: &str, new: &str, runs: &[Run]) -> Vec<Run> {
-    rebase_with(old, new, runs, None)
+/// `diff`, slid left towards `hint` (where the host knows the change starts,
+/// at most) as far as it can go and still be a change of the same size. The
+/// prefix/suffix diff alone cannot tell which of two equal letters at a style
+/// boundary was typed or deleted: in "hel|lo" a typed `l` is the same change
+/// as one typed after it ("hell|lo"), and the diff picks the later one. A
+/// `hint` past the minimal start, or one the change cannot slide to, changes
+/// nothing; one before it only slides within the stretch of equal letters, so
+/// a stale hint never makes the change bigger.
+fn diff_at(old: &[u16], new: &[u16], hint: usize) -> Option<(usize, usize, usize)> {
+    let (p, old_end, new_end) = diff(old, new)?;
+    if hint >= p {
+        return Some((p, old_end, new_end));
+    }
+    // The change slides left by `k` while the `k` units before its end in
+    // `old` equal the `k` units before its end in `new`; never past 0.
+    let slide = old[..old_end]
+        .iter()
+        .rev()
+        .zip(new[..new_end].iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count()
+        .min(p);
+    let mid_pair = |u: &[u16], i: usize| i > 0 && i < u.len() && is_low(u[i]) && is_high(u[i - 1]);
+    // Never inside a surrogate pair (at the start or at either end).
+    let mut q = hint.max(p - slide);
+    while q < p && {
+        let k = p - q;
+        mid_pair(old, q) || mid_pair(old, old_end - k) || mid_pair(new, new_end - k)
+    } {
+        q += 1;
+    }
+    let k = p - q;
+    Some((q, old_end - k, new_end - k))
 }
 
-/// As `rebase`, but inserted text takes `pending` when it is given (a style
-/// chosen with a collapsed caret, before typing).
-pub fn rebase_with(old: &str, new: &str, runs: &[Run], pending: Option<Style>) -> Vec<Run> {
-    let (ou, nu) = (units(old), units(new));
-    let base = normalise_units(runs, &ou);
-    let Some((p, old_end, new_end)) = diff(&ou, &nu) else {
-        return normalise_units(&base, &nu);
-    };
+/// `base` (normalised runs of `old`) moved onto the units `nu` across the
+/// change `(start, old_end, new_end)`: runs before it stay, runs after it
+/// shift, deleted units take their runs with them, and inserted units take
+/// `pending` (or the style at the change).
+fn move_runs(base: &[Run], nu: &[u16], (p, old_end, new_end): (usize, usize, usize), pending: Option<Style>) -> Vec<Run> {
     let inserted = new_end - p;
     let shift = |i: usize| i + new_end - old_end;
     let mut out: Vec<Run> = Vec::new();
-    for r in &base {
+    for r in base {
         if r.s < p {
             out.push(Run { s: r.s, e: r.e.min(p), style: r.style });
         }
@@ -449,11 +476,71 @@ pub fn rebase_with(old: &str, new: &str, runs: &[Run], pending: Option<Style>) -
         }
     }
     if inserted > 0 {
-        let style = pending.unwrap_or_else(|| style_at(&base, p));
+        let style = pending.unwrap_or_else(|| style_at(base, p));
         out.push(Run { s: p, e: p + inserted, style });
     }
     // The inserted run is last, so it wins over nothing (nothing overlaps it).
-    normalise_units(&out, &nu)
+    normalise_units(&out, nu)
+}
+
+/// `runs` of `old` moved onto `new`; typed text takes the style at the change.
+/// Where the change is ambiguous it is taken as late as it can be: for an
+/// editor that knows where it happened, `rebase_at` or `rebase_edit`.
+pub fn rebase(old: &str, new: &str, runs: &[Run]) -> Vec<Run> {
+    rebase_with(old, new, runs, None)
+}
+
+/// As `rebase`, but inserted text takes `pending` when it is given (a style
+/// chosen with a collapsed caret, before typing).
+pub fn rebase_with(old: &str, new: &str, runs: &[Run], pending: Option<Style>) -> Vec<Run> {
+    let (ou, nu) = (units(old), units(new));
+    let base = normalise_units(runs, &ou);
+    match diff(&ou, &nu) {
+        Some(change) => move_runs(&base, &nu, change, pending),
+        None => normalise_units(&base, &nu),
+    }
+}
+
+/// As `rebase_with`, for a change known to start at `hint` or after it (the
+/// caret or selection start before the change, or the caret after a delete):
+/// of the equally small ways to read the change, the one closest to `hint`.
+pub fn rebase_at(old: &str, new: &str, runs: &[Run], pending: Option<Style>, hint: usize) -> Vec<Run> {
+    let (ou, nu) = (units(old), units(new));
+    let base = normalise_units(runs, &ou);
+    match diff_at(&ou, &nu, hint) {
+        Some(change) => move_runs(&base, &nu, change, pending),
+        None => normalise_units(&base, &nu),
+    }
+}
+
+/// As `rebase_with`, for a known edit: `old[start..end]` replaced by
+/// `inserted` units. When `new` is not what that edit makes of `old` (an
+/// EDIT that cut the text short, say), as `rebase_at` with `start`.
+pub fn rebase_edit(
+    old: &str,
+    new: &str,
+    runs: &[Run],
+    pending: Option<Style>,
+    (start, end, inserted): (usize, usize, usize),
+) -> Vec<Run> {
+    let (ou, nu) = (units(old), units(new));
+    let base = normalise_units(runs, &ou);
+    let exact = start <= end
+        && end <= ou.len()
+        && start + inserted <= nu.len()
+        && nu.len() - (start + inserted) == ou.len() - end
+        && ou[..start] == nu[..start]
+        && ou[end..] == nu[start + inserted..];
+    if exact {
+        if start == end && inserted == 0 {
+            return normalise_units(&base, &nu);
+        }
+        return move_runs(&base, &nu, (start, end, start + inserted), pending);
+    }
+    match diff_at(&ou, &nu, start) {
+        Some(change) => move_runs(&base, &nu, change, pending),
+        None => normalise_units(&base, &nu),
+    }
 }
 
 /// `runs` of `old` moved onto `new` when only list markers changed: `spans`
@@ -796,6 +883,70 @@ mod tests {
         // Pending does nothing for a pure delete.
         let out = rebase_with("abcd", "abc", &[run(0, 4, BOLD)], Some(ITAL));
         assert_eq!(out, [run(0, 3, BOLD)]);
+    }
+
+    #[test]
+    fn a_letter_typed_before_its_twin_at_a_run_start_stays_plain() {
+        // "hello" with "lo" bold; a plain `l` typed at "hel|lo".
+        let runs = [run(3, 5, BOLD)];
+        assert_eq!(style_at(&runs, 3), Style::default());
+        // The blind diff takes it as typed after the bold `l`.
+        assert_eq!(rebase("hello", "helllo", &runs), [run(3, 6, BOLD)]);
+        // The host knows the caret was at 3.
+        assert_eq!(rebase_at("hello", "helllo", &runs, None, 3), [run(4, 6, BOLD)]);
+        assert_eq!(rebase_edit("hello", "helllo", &runs, None, (3, 3, 1)), [run(4, 6, BOLD)]);
+        // A pending style lands on the typed letter, not one further.
+        assert_eq!(
+            rebase_at("hello", "helllo", &runs, Some(ITAL), 3),
+            [run(3, 4, ITAL), run(4, 6, BOLD)]
+        );
+    }
+
+    #[test]
+    fn deleting_a_letter_before_its_twin_at_a_run_start_keeps_the_twin_bold() {
+        // Backspace on the plain `l` at index 2 ("hel|lo", caret 3 -> 2).
+        let runs = [run(3, 5, BOLD)];
+        assert_eq!(rebase("hello", "helo", &runs), [run(3, 4, BOLD)]);
+        assert_eq!(rebase_at("hello", "helo", &runs, None, 2), [run(2, 4, BOLD)]);
+        assert_eq!(rebase_edit("hello", "helo", &runs, None, (2, 3, 0)), [run(2, 4, BOLD)]);
+    }
+
+    #[test]
+    fn a_paste_that_starts_with_the_next_letter_takes_the_style_at_the_caret() {
+        // "lx" pasted at "hel|lo" with "lo" bold: the pasted text is plain.
+        let runs = [run(3, 5, BOLD)];
+        assert_eq!(rebase_at("hello", "hellxlo", &runs, None, 3), [run(5, 7, BOLD)]);
+        assert_eq!(rebase_edit("hello", "hellxlo", &runs, None, (3, 3, 2)), [run(5, 7, BOLD)]);
+    }
+
+    #[test]
+    fn a_hint_never_makes_the_change_bigger() {
+        let runs = [run(1, 3, BOLD)];
+        // `X` typed at 3 of "abcdef": a hint of 1 (stale) cannot slide it.
+        assert_eq!(rebase_at("abcdef", "abcXdef", &runs, None, 1), rebase("abcdef", "abcXdef", &runs));
+        // A hint past the change changes nothing either.
+        assert_eq!(rebase_at("abcdef", "abcXdef", &runs, None, 6), rebase("abcdef", "abcXdef", &runs));
+        // Equal texts.
+        assert_eq!(rebase_at("abc", "abc", &runs, None, 0), runs);
+        // An edit that does not match the texts falls back to the hint.
+        assert_eq!(
+            rebase_edit("hello", "helllo", &[run(3, 5, BOLD)], None, (3, 3, 4)),
+            [run(4, 6, BOLD)]
+        );
+    }
+
+    #[test]
+    fn a_hint_never_splits_a_surrogate_pair() {
+        let old = "a\u{1F600}\u{1F600}b";
+        let new = "a\u{1F600}\u{1F600}\u{1F600}b";
+        let runs = [run(3, 5, BOLD)];
+        for hint in 0..6 {
+            let out = rebase_at(old, new, &runs, None, hint);
+            let u = units(new);
+            assert!(out.iter().all(|r| snap(&u, r.s) == r.s && snap(&u, r.e) == r.e), "{hint}: {out:?}");
+        }
+        // At the first pair's end (1+2 = 3): the new pair is plain.
+        assert_eq!(rebase_at(old, new, &runs, None, 3), [run(5, 7, BOLD)]);
     }
 
     #[test]
