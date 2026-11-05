@@ -218,6 +218,20 @@ pub fn body_rect_in(w: f32, h: f32, bar: bool) -> Rect {
     }
 }
 
+/// The clip of the images: the text area's rows (so they scroll out under the
+/// header and the footer like the text) but the grid's own width, 8 dip in from
+/// the note's sides, which is wider than the text area. Clipping the images to
+/// the text area would cut their outer rounded corners and the hover outline.
+pub fn images_clip_in(w: f32, h: f32, bar: bool) -> Rect {
+    let area = body_rect_in(w, h, bar);
+    Rect {
+        x: crate::widgets::images::SIDE,
+        y: area.y,
+        w: (w - 2.0 * crate::widgets::images::SIDE).max(0.0),
+        h: area.h,
+    }
+}
+
 /// The ✕ of an image at `r` (note dip, from the text's top): a 20 dip round
 /// button 5 dip in from the top-right corner.
 pub fn image_remove_rect(r: Rect) -> Rect {
@@ -1723,8 +1737,34 @@ fn draw_body(
         s.scroll,
         t.line,
     );
-    // The images, above the text.
+    // The images, above the text, under their own clip: the grid is wider
+    // than the text area (8 dip side padding against the text's 12).
+    let clip = images_clip_in(s.w, s.h, s.bar.is_some());
+    unsafe {
+        rt.PopAxisAlignedClip();
+        rt.PushAxisAlignedClip(
+            &D2D_RECT_F {
+                left: ox + clip.x,
+                top: oy + clip.y,
+                right: ox + clip.x + clip.w,
+                bottom: oy + clip.y + clip.h,
+            },
+            D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+        );
+    }
     draw_images(rt, brush, res, s, ox, oy + area.y - s.scroll);
+    unsafe {
+        rt.PopAxisAlignedClip();
+        rt.PushAxisAlignedClip(
+            &D2D_RECT_F {
+                left: ox + area.x,
+                top: oy + area.y,
+                right: ox + area.x + area.w,
+                bottom: oy + area.y + area.h,
+            },
+            D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+        );
+    }
     // Highlights, behind the glyphs (and behind the selection). A done item
     // keeps its dimmed look whatever its runs say.
     for r in s.styles {
@@ -2776,6 +2816,23 @@ mod tests {
         assert_eq!(FOOTER_H, 24.0, "the footer keeps its height");
         // Never negative in a tiny note.
         assert_eq!(body_rect_in(160.0, 40.0, true).h, 0.0);
+    }
+
+    #[test]
+    fn the_images_clip_holds_the_whole_grid_but_only_the_text_rows() {
+        for (w, h, bar) in [(240.0, 208.0, false), (240.0, 208.0, true), (320.0, 400.0, true)] {
+            let area = body_rect_in(w, h, bar);
+            let clip = images_clip_in(w, h, bar);
+            assert_eq!((clip.y, clip.h), (area.y, area.h), "bounded by the text rows");
+            for n in 1..=4 {
+                let (rects, _) = crate::widgets::images::grid(n, w, h, &[]);
+                for r in rects {
+                    assert!(r.x >= clip.x - 0.01 && r.right() <= clip.right() + 0.01, "{n}: {r:?} in {clip:?}");
+                    // The old text-area clip cut the outer edge of the side cells.
+                    assert!(r.x < area.x || r.right() > area.right());
+                }
+            }
+        }
     }
 
     #[test]

@@ -15,6 +15,13 @@
 //! post from another process) is ignored. A window that goes before it pumps
 //! hands its results back (`claim_window`), so none is leaked.
 //!
+//! An import that is still running when its window goes is not lost either:
+//! each import is a job whose target window can change (`retarget`), and the
+//! worker sends its result to the job's target at the moment it finishes.
+//! Taking the job off the list and stashing its result is one step under the
+//! jobs lock, so a window that goes either retargets the job or finds the
+//! result in its outbox, never neither.
+//!
 //! The original file is only ever opened for READING (WIC's decoder); the saved
 //! copy is a new file written to a `.tmp` and renamed. A source over 25 MiB is
 //! refused before it is decoded. EXIF orientation is applied (the same helper
@@ -74,6 +81,8 @@ pub enum ImportError {
 
 /// What the worker sends back to the note window.
 pub struct Done {
+    /// The import job this is the result of (`spawn_import`).
+    pub job: u64,
     pub note: String,
     pub result: Result<String, ImportError>,
     /// The folder the file went to (to delete it when no window takes it).
@@ -83,6 +92,10 @@ pub struct Done {
 /// The results that were posted and not yet taken: token, window, result.
 static OUTBOX: std::sync::Mutex<Vec<(u64, isize, Done)>> = std::sync::Mutex::new(Vec::new());
 static NEXT_TOKEN: AtomicU64 = AtomicU64::new(1);
+/// The imports still running: job, target window (0: none, the result is
+/// discarded), note.
+static JOBS: std::sync::Mutex<Vec<(u64, isize, String)>> = std::sync::Mutex::new(Vec::new());
+static NEXT_JOB: AtomicU64 = AtomicU64::new(1);
 
 /// A token no other process can guess from the counter alone: the counter
 /// (unique, so the token is) mixed with a per-process secret.
@@ -438,28 +451,96 @@ unsafe fn encode_copy(wic: &IWICImagingFactory, src: &Source) -> Option<(bool, V
 }
 
 /// Imports `src` for note `note` on a worker thread and tells window `hwnd`
-/// with `WM_NOTE_IMPORT` when it is done. The window may be gone by then: the
-/// message fails and the new file is deleted. False when the thread could not
-/// start (nothing will arrive).
-pub fn spawn_import(hwnd: HWND, note: String, src: Source, dir: PathBuf) -> bool {
-    let target = hwnd.0 as isize;
-    std::thread::Builder::new()
+/// with `WM_NOTE_IMPORT` when it is done (or the window the job was
+/// retargeted to, see `retarget`). The job id, which the result carries;
+/// `None` when the thread could not start (nothing will arrive).
+pub fn spawn_import(hwnd: HWND, note: String, src: Source, dir: PathBuf) -> Option<u64> {
+    let job = begin_job(hwnd, &note);
+    let spawned = std::thread::Builder::new()
         .name("note-image".into())
         .spawn(move || {
             let result = import(src, &dir);
-            let window = HWND(target as *mut _);
-            let token = stash(window, Done { note, result, dir });
-            let posted = unsafe {
-                PostMessageW(Some(window), WM_NOTE_IMPORT, WPARAM(0), LPARAM(token as isize))
-            };
-            if posted.is_err()
-                && let Some(done) = claim(token)
-            {
-                // No window to take it: nobody else will, so the file goes.
-                discard(&done);
+            finish(Done { job, note, result, dir });
+        });
+    if spawned.is_err() {
+        if let Ok(mut jobs) = JOBS.lock() {
+            jobs.retain(|j| j.0 != job);
+        }
+        return None;
+    }
+    Some(job)
+}
+
+/// A new import job for note `note`, its result going to window `hwnd`.
+pub fn begin_job(hwnd: HWND, note: &str) -> u64 {
+    let job = NEXT_JOB.fetch_add(1, Ordering::Relaxed);
+    if let Ok(mut jobs) = JOBS.lock() {
+        jobs.push((job, hwnd.0 as isize, note.to_owned()));
+    }
+    job
+}
+
+/// The worker's end: the job comes off the list and its result is stashed
+/// for the job's current target in one step (see the module docs), then that
+/// window is told. A job with no target (its window went and no other shows
+/// the note) has its file deleted.
+pub fn finish(done: Done) {
+    let target = {
+        let Ok(mut jobs) = JOBS.lock() else {
+            discard(&done);
+            return;
+        };
+        let target = jobs
+            .iter()
+            .position(|j| j.0 == done.job)
+            .map_or(0, |at| jobs.swap_remove(at).1);
+        if target == 0 {
+            drop(jobs);
+            discard(&done);
+            return;
+        }
+        let window = HWND(target as *mut _);
+        (window, stash(window, done))
+    };
+    post(target.0, target.1);
+}
+
+/// Hands `done` to window `hwnd` (a result whose window went, passed on to
+/// another window that shows the note).
+pub fn deliver(hwnd: HWND, done: Done) {
+    let token = stash(hwnd, done);
+    post(hwnd, token);
+}
+
+/// Tells `hwnd` that the result `token` waits; when the message cannot go,
+/// nobody will take it, so its file goes.
+fn post(hwnd: HWND, token: u64) {
+    let posted = unsafe { PostMessageW(Some(hwnd), WM_NOTE_IMPORT, WPARAM(0), LPARAM(token as isize)) };
+    if posted.is_err()
+        && let Some(done) = claim(token)
+    {
+        discard(&done);
+    }
+}
+
+/// Window `from` is going: each job still running for it goes to the window
+/// `to` names for its note, or to none (its result will be discarded). The
+/// jobs that went to none, so the caller can forget them.
+pub fn retarget(from: HWND, mut to: impl FnMut(&str) -> Option<HWND>) -> Vec<u64> {
+    let Ok(mut jobs) = JOBS.lock() else {
+        return Vec::new();
+    };
+    let from = from.0 as isize;
+    let mut dropped = Vec::new();
+    for (job, target, note) in jobs.iter_mut() {
+        if *target == from {
+            *target = to(note).map_or(0, |h| h.0 as isize);
+            if *target == 0 {
+                dropped.push(*job);
             }
-        })
-        .is_ok()
+        }
+    }
+    dropped
 }
 
 /// Deletes the file an import made (a refused or orphaned result).
@@ -725,6 +806,7 @@ mod tests {
     #[test]
     fn a_posted_result_is_claimed_once_by_its_token_and_a_gone_window_hands_its_back() {
         let done = |n: &str| Done {
+            job: 0,
             note: n.to_owned(),
             result: Err(ImportError::Io),
             dir: PathBuf::new(),

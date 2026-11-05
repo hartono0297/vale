@@ -49,7 +49,7 @@ use crate::notes::NotesStore;
 use crate::theme::{self, CatColor};
 use crate::ui::frame_clock::{FrameClock, WM_APP_FRAME};
 use crate::ui::tray;
-use crate::widgets::apply::{apply, set_reminder, settle, stack_out, sticky_for};
+use crate::widgets::apply::{Outcome, apply, set_reminder, settle, stack_out, sticky_for};
 use crate::widgets::cliptext;
 use crate::widgets::host::{Ctx, WM_APP_WIDGET, WidgetEvent, WidgetHost};
 use crate::widgets::styles::{Fg, Hl, Run, Style};
@@ -590,7 +590,7 @@ impl Demo {
                 ListEvent::Show(id) => {
                     let events = list::show_events(self.store.list(), &id);
                     if !events.is_empty() {
-                        apply(&mut self.store, events, now);
+                        apply_known(&mut self.store, &mut self.known_images, events, now);
                     }
                     self.sync();
                     self.host.bring_front(&id);
@@ -599,7 +599,12 @@ impl Demo {
                 }
                 ListEvent::Delete(id) => {
                     self.undo = Undo::capture(self.store.list(), &id);
-                    let out = apply(&mut self.store, vec![WidgetEvent::Delete { id }], now);
+                    let out = apply_known(
+                        &mut self.store,
+                        &mut self.known_images,
+                        vec![WidgetEvent::Delete { id }],
+                        now,
+                    );
                     if out.structural {
                         self.sync();
                     }
@@ -664,7 +669,7 @@ impl Demo {
     fn events(&mut self) {
         self.list_events();
         let events = self.host.drain();
-        let out = apply(&mut self.store, events, Local::now().timestamp());
+        let out = apply_known(&mut self.store, &mut self.known_images, events, Local::now().timestamp());
         if let Some(on) = out.cat_peek {
             self.prefs.cat_peek = on;
         }
@@ -815,9 +820,48 @@ unsafe extern "system" fn owner_proc(
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
 }
 
+/// `apply`, and the images the store then refers to join the known set: an
+/// image added and taken off again before any save is still known, so the
+/// next save deletes its file (the island's `widgets_apply_list` does the same).
+fn apply_known(
+    store: &mut NotesStore,
+    known: &mut HashSet<String>,
+    events: Vec<WidgetEvent>,
+    now: i64,
+) -> Outcome {
+    let out = apply(store, events, now);
+    known.extend(store.referenced_images());
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_image_added_and_removed_before_a_save_is_still_released() {
+        let dir = std::env::temp_dir().join(format!("vale-demo-known-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut store = NotesStore::open(dir.join("notes.json"));
+        let id = store
+            .create_sticky(crate::widgets::sticky::Sticky::default(), 1)
+            .unwrap();
+        let mut known = store.referenced_images();
+        assert!(known.is_empty());
+        let images = |list: &[&str]| WidgetEvent::Images {
+            id: id.clone(),
+            images: list.iter().map(|s| (*s).to_owned()).collect(),
+        };
+        apply_known(&mut store, &mut known, vec![images(&["a.png"])], 2);
+        apply_known(&mut store, &mut known, vec![images(&[])], 3);
+        let keep = store.referenced_images();
+        assert_eq!(
+            crate::widgets::images::to_release(&known, &keep),
+            vec!["a.png".to_owned()],
+            "the next save deletes its file"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn the_demo_seeds_eighteen_notes_with_the_clip_note_a_stack_a_tuck_and_the_two_format_notes() {

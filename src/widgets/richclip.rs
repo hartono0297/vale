@@ -29,10 +29,15 @@ pub fn encode(text: &str, runs: &[Run]) -> Vec<u8> {
 /// The runs of a payload, when it is well formed (version 1, under 1 MiB) and
 /// its text equals `clip_text` (the clipboard's plain text; `\r\n` and `\r`
 /// count as `\n` on both sides). The runs are normalised against the text.
+///
+/// Trailing NULs are padding, not payload: the clipboard block's size
+/// (`GlobalSize`) may be larger than what was written.
 pub fn decode(bytes: &[u8], clip_text: &str) -> Option<Vec<Run>> {
     if bytes.is_empty() || bytes.len() > MAX_BYTES {
         return None;
     }
+    let end = bytes.iter().rposition(|&b| b != 0).map_or(0, |i| i + 1);
+    let bytes = &bytes[..end];
     let v: Value = serde_json::from_slice(bytes).ok()?;
     let map = v.as_object()?;
     if map.get("v")?.as_u64()? != 1 {
@@ -70,6 +75,15 @@ mod tests {
         assert_eq!(json["v"], 1);
         assert_eq!(json["text"], "abc de");
         assert_eq!(decode(&bytes, "abc de"), Some(runs));
+    }
+
+    #[test]
+    fn a_payload_padded_with_nuls_by_the_clipboard_still_decodes() {
+        let mut bytes = encode("abc", &[bold(0, 3)]);
+        bytes.extend_from_slice(&[0; 13]);
+        assert_eq!(decode(&bytes, "abc"), Some(vec![bold(0, 3)]));
+        // Only padding: nothing.
+        assert_eq!(decode(&[0; 8], "abc"), None);
     }
 
     #[test]

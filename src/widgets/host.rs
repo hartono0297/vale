@@ -713,8 +713,8 @@ struct State {
     /// The highlight the Marker button and Ctrl+Shift+H apply: Kuning at
     /// first, then the last one chosen. In memory per host, never saved.
     last_hl: Hl,
-    /// The notes with an image import in flight (one entry per import).
-    in_flight: Vec<String>,
+    /// The image imports in flight: job (`image_io::spawn_import`), note.
+    in_flight: Vec<(u64, String)>,
 }
 
 thread_local! {
@@ -2149,19 +2149,41 @@ unsafe extern "system" fn wnd_proc(
             unsafe {
                 let _ = KillTimer(Some(hwnd), TIMER_WIDGET_CARET);
             }
-            // Results posted to this window that it will never pump: their
-            // files go, and the pending count they held.
-            let orphans = image_io::claim_window(hwnd);
-            let _ = with(|s| {
-                for done in &orphans {
-                    if let Some(at) = s.in_flight.iter().position(|n| *n == done.note) {
-                        s.in_flight.remove(at);
+            // Imports for this window: still running ones go to another
+            // window that shows the note (or to none, and their pending count
+            // goes); results posted that it will never pump are passed on the
+            // same way, or their files go. Retargeting first, then claiming,
+            // so a job that finishes meanwhile is caught by one or the other.
+            let other = |s: &State, note: &str| {
+                s.wins.iter().find(|w| w.hwnd != hwnd && w.has(note)).map(|w| w.hwnd)
+            };
+            let (forward, gone) = with(|s| {
+                let dropped = image_io::retarget(hwnd, |note| other(s, note));
+                s.in_flight.retain(|(job, _)| !dropped.contains(job));
+                let mut forward = Vec::new();
+                let mut gone = Vec::new();
+                for done in image_io::claim_window(hwnd) {
+                    match other(s, &done.note) {
+                        Some(to) => forward.push((to, done)),
+                        None => {
+                            s.in_flight.retain(|(job, _)| *job != done.job);
+                            gone.push(done);
+                        }
                     }
                 }
                 s.wins.retain(|w| w.hwnd != hwnd);
                 refresh_peek(s);
+                (forward, gone)
+            })
+            .unwrap_or_else(|| {
+                // No host state any more: nobody can take them.
+                let _ = image_io::retarget(hwnd, |_| None);
+                (Vec::new(), image_io::claim_window(hwnd))
             });
-            for done in &orphans {
+            for (to, done) in forward {
+                image_io::deliver(to, done);
+            }
+            for done in &gone {
                 image_io::discard(done);
             }
             flush_dirty();
@@ -3323,11 +3345,11 @@ pub(super) fn import_sources(hwnd: HWND, sources: Vec<image_io::Source>) {
             return None;
         };
         let current = s.wins[i].sticky.images.len();
-        let pending = s.in_flight.iter().filter(|n| **n == id).count();
+        let pending = s.in_flight.iter().filter(|(_, n)| *n == id).count();
         let (take, refused) = images::admit(current, pending, sources.len());
         for src in sources.into_iter().take(take) {
-            if image_io::spawn_import(hwnd, id.clone(), src, dir.clone()) {
-                s.in_flight.push(id.clone());
+            if let Some(job) = image_io::spawn_import(hwnd, id.clone(), src, dir.clone()) {
+                s.in_flight.push((job, id.clone()));
             } else {
                 s.wins[i].footer_msg = Some(Key::FmtImgBad);
             }
@@ -3352,9 +3374,7 @@ fn import_done(hwnd: HWND, lparam: LPARAM) {
         return;
     };
     let kept = with(|s| {
-        if let Some(at) = s.in_flight.iter().position(|n| *n == done.note) {
-            s.in_flight.remove(at);
-        }
+        s.in_flight.retain(|(job, _)| *job != done.job);
         // This window, else any window that shows the note.
         let i = idx_of(s, hwnd)
             .filter(|i| s.wins[*i].has(&done.note))
@@ -4756,7 +4776,10 @@ fn begin_editing(hwnd: HWND, at: Option<usize>) {
         let i = idx_of(s, hwnd)?;
         let w = &mut s.wins[i];
         w.edit = Some(edit_hwnd);
-        if existing.is_none() {
+        // A pending style is for text typed at the caret it was chosen at: a
+        // fresh editing session, or a click that moves the caret, drops it.
+        // (sync_from_edit cannot see the move: `sel` is set here first.)
+        if existing.is_none() || w.sel != (at, at) {
             w.pending = None;
         }
         w.caret_on = true;
@@ -7235,6 +7258,27 @@ mod tests {
     }
 
     #[test]
+    fn a_click_that_moves_the_caret_in_the_text_drops_the_pending_style() {
+        let _focus = keyboard_lock();
+        let (mut host, hwnd, edit_hwnd) = editing("Belanja", |_| {});
+        select(hwnd, edit_hwnd, 7, 7);
+        edit_event(hwnd, edit_hwnd, EditEvent::Format(Tool::Bold));
+        assert!(with(|s| s.wins[0].pending.is_some_and(|p| p.b)).unwrap());
+        // A click at the start of the first row: the caret moves to 0.
+        let area = with(|s| s.wins[0].body_area()).unwrap();
+        let pt = client_of(area.x + 1.0, area.y + 6.0);
+        assert_eq!(target_of(pt.0, pt.1), Target::Body);
+        click(hwnd, pt);
+        assert!(with(|s| s.wins[0].edit.is_some()).unwrap(), "still editing");
+        assert_eq!(with(|s| s.wins[0].sel).unwrap(), (0, 0));
+        assert!(with(|s| s.wins[0].pending.is_none()).unwrap(), "the caret moved: no pending style");
+        // Typed text there is plain.
+        with(|s| apply_edit(s, 0, &Edit { start: 0, end: 0, insert: "x".into(), caret: 1 }));
+        assert!(styles_of().is_empty(), "{:?}", styles_of());
+        host.shutdown();
+    }
+
+    #[test]
     fn the_marker_highlights_with_the_last_colour_and_the_popover_choices_are_remembered() {
         let _focus = keyboard_lock();
         let (mut host, hwnd, edit_hwnd) = editing("Belanja", |_| {});
@@ -7468,6 +7512,7 @@ mod tests {
         let hwnd = with(|s| s.wins[0].hwnd).unwrap();
         // The result names a note no window has.
         let done = image_io::Done {
+            job: 0,
             note: "n-nobody".into(),
             result: Ok(name.clone()),
             dir: out.clone(),
@@ -7480,7 +7525,7 @@ mod tests {
         import_done(hwnd, LPARAM(0));
         import_done(hwnd, LPARAM(0x1234_5678));
         import_done(hwnd, LPARAM(-1));
-        let again = image_io::Done { note: "n1".into(), result: Err(image_io::ImportError::Io), dir: out.clone() };
+        let again = image_io::Done { job: 0, note: "n1".into(), result: Err(image_io::ImportError::Io), dir: out.clone() };
         let token = image_io::stash(hwnd, again);
         import_done(hwnd, LPARAM(token as isize));
         assert!(image_io::claim(token).is_none(), "taken once");
@@ -7490,6 +7535,68 @@ mod tests {
             SendMessageW(hwnd, image_io::WM_NOTE_IMPORT, Some(WPARAM(0)), Some(LPARAM(0xDEAD_BEEF)));
         }
         assert!(with(|s| s.wins[0].sticky.images.is_empty()).unwrap());
+        host.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_import_still_running_when_its_window_goes_moves_on_or_lets_go_of_its_count() {
+        let _focus = keyboard_lock();
+        let dir = std::env::temp_dir().join(format!("vale-host-destroyed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("note-images");
+        let src = dir.join("p.png");
+        assert!(image_io::write_gradient(&src, 40, 30, 1));
+        let imported = || image_io::import(image_io::Source::Path(src.clone()), &out).expect("imported");
+        let displays = vec![display("A", 0, true, 96)];
+        let notes = vec![
+            note_with("n1", "x", |_| {}),
+            note_with("n2", "y", |s| s.rect = DipRect::new(800.0, 200.0, 240.0, 208.0)),
+        ];
+        let mut host = WidgetHost::new(HWND::default());
+        host.set_images_dir(out.clone());
+        host.sync(&ctx(&notes, &displays));
+        let (h1, h2) = with(|s| (s.wins[0].hwnd, s.wins[1].hwnd)).unwrap();
+        let id1 = with(|s| s.wins[0].id.clone()).unwrap();
+        let id2 = with(|s| s.wins[1].id.clone()).unwrap();
+        // Two imports start on window 1: one for its own note, one for the
+        // note window 2 shows (as a copy under a stack's top sheet would be).
+        let own = image_io::begin_job(h1, &id1);
+        let shown = image_io::begin_job(h1, &id2);
+        with(|s| {
+            s.in_flight.push((own, id1.clone()));
+            s.in_flight.push((shown, id2.clone()));
+        });
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::DestroyWindow(h1);
+        }
+        // The one no window shows lets go of its pending count at once ...
+        assert_eq!(with(|s| s.in_flight.clone()).unwrap(), vec![(shown, id2.clone())]);
+        // ... and its file goes when it finishes.
+        let name = imported();
+        image_io::finish(image_io::Done { job: own, note: id1.clone(), result: Ok(name.clone()), dir: out.clone() });
+        assert!(!out.join(&name).exists(), "no window has the note: the file is deleted");
+        // The other finishes into window 2, which still shows its note.
+        let name = imported();
+        image_io::finish(image_io::Done { job: shown, note: id2.clone(), result: Ok(name.clone()), dir: out.clone() });
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while with(|s| s.wins.iter().find(|w| w.hwnd == h2).unwrap().sticky.images.len()).unwrap() == 0
+            && Instant::now() < deadline
+        {
+            let mut msg = MSG::default();
+            unsafe {
+                while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                    let _ = TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let images = with(|s| s.wins.iter().find(|w| w.hwnd == h2).unwrap().sticky.images.clone()).unwrap();
+        assert_eq!(images, vec![name.clone()]);
+        assert!(out.join(&name).is_file(), "kept");
+        assert!(with(|s| s.in_flight.is_empty()).unwrap(), "no phantom pending import");
         host.shutdown();
         let _ = std::fs::remove_dir_all(&dir);
     }
