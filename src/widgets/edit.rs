@@ -19,22 +19,22 @@
 //! goes in with pairs (`paste`, undo kept), and `text` rewrites any lone break
 //! that still got in before anything reads an index.
 
-use windows::Win32::Foundation::{HGLOBAL, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
-use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
+use std::cell::Cell;
+
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
 use windows::Win32::UI::Controls::{EM_GETSEL, EM_LIMITTEXT, EM_REPLACESEL, EM_SETSEL};
 use windows::Win32::UI::Input::Ime::{
     CFS_POINT, COMPOSITIONFORM, ImmGetContext, ImmReleaseContext, ImmSetCompositionWindow,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, VK_A, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_SHIFT, VK_UP,
+    GetKeyState, VK_A, VK_CONTROL, VK_DELETE, VK_DOWN, VK_ESCAPE, VK_INSERT, VK_SHIFT, VK_UP,
 };
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DLGC_WANTALLKEYS, ES_AUTOHSCROLL, ES_AUTOVSCROLL, ES_MULTILINE, ES_WANTRETURN, GetParent,
     GetWindowTextLengthW, GetWindowTextW, HMENU, SendMessageW, SetWindowTextW, WINDOW_EX_STYLE,
-    WINDOW_STYLE, WM_CHAR, WM_CLEAR, WM_CUT, WM_GETDLGCODE, WM_IME_COMPOSITION,
+    WINDOW_STYLE, WM_CHAR, WM_CLEAR, WM_COPY, WM_CUT, WM_GETDLGCODE, WM_IME_COMPOSITION,
     WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KILLFOCUS, WM_NCDESTROY, WM_NCHITTEST, WM_PASTE, WM_SETFOCUS,
     WM_UNDO, WS_CHILD, WS_VISIBLE,
 };
@@ -45,6 +45,7 @@ use windows::core::{HSTRING, Result, w};
 
 use crate::widgets::checklist::{self, Edit};
 use crate::widgets::host;
+use crate::widgets::toolbar::{self, Tool};
 
 /// What the EDIT tells the note.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,6 +58,23 @@ pub enum EditEvent {
     Vertical { up: bool, extend: bool },
     /// The EDIT lost the keyboard.
     Blur,
+    /// A format shortcut (Ctrl+B, I, U, Ctrl+Shift+X, 8, 9, H): the note does
+    /// it. The character it leaves in the stream is swallowed here.
+    Format(Tool),
+    /// Ctrl+C or Ctrl+X (also Ctrl+Insert, Shift+Delete, WM_COPY, WM_CUT): the
+    /// note writes the clipboard (plain text and its own format) and, for a
+    /// cut, deletes the selection through the EDIT.
+    Copy { cut: bool },
+    /// Ctrl+V, Shift+Insert or WM_PASTE: the note reads the clipboard.
+    Paste,
+}
+
+thread_local! {
+    /// The control character a format shortcut makes (Ctrl+B 0x02, Ctrl+I
+    /// 0x09 which is Tab, Ctrl+U 0x15, Ctrl+Shift+X 0x18 which would cut,
+    /// Ctrl+Shift+H 0x08 which would backspace) is dropped when it comes as a
+    /// `WM_CHAR` right after the key down. Cleared by the next key down.
+    static SWALLOW: Cell<Option<u16>> = const { Cell::new(None) };
 }
 
 const SUBCLASS_ID: usize = 7;
@@ -130,62 +148,6 @@ pub fn text(edit: HWND) -> String {
         set_selection(edit, &model, a, b);
     }
     model
-}
-
-/// The clipboard's text, when it has some (and not far more than a note
-/// holds).
-fn clipboard_text(edit: HWND) -> Option<String> {
-    const CF_UNICODETEXT: u32 = 13;
-    unsafe { OpenClipboard(Some(edit)) }.ok()?;
-    let read = || {
-        let handle = unsafe { GetClipboardData(CF_UNICODETEXT) }.ok()?;
-        let mem = HGLOBAL(handle.0);
-        let units = unsafe { GlobalSize(mem) } / 2;
-        if units == 0 || units > 4 * LIMIT {
-            return None;
-        }
-        let ptr = unsafe { GlobalLock(mem) } as *const u16;
-        if ptr.is_null() {
-            return None;
-        }
-        let all = unsafe { std::slice::from_raw_parts(ptr, units) };
-        let end = all.iter().position(|&u| u == 0).unwrap_or(units);
-        let text = String::from_utf16_lossy(&all[..end]);
-        unsafe {
-            let _ = GlobalUnlock(mem);
-        }
-        Some(text)
-    };
-    let text = read();
-    unsafe {
-        let _ = CloseClipboard();
-    }
-    text
-}
-
-/// A paste whose text has a lone break (an LF-only source): it goes in with
-/// `\r\n` pairs through `EM_REPLACESEL`, so Ctrl+Z still undoes it. False
-/// when the EDIT's own paste can do it.
-fn paste(edit: HWND) -> bool {
-    let Some(clip) = clipboard_text(edit) else {
-        return false;
-    };
-    if !checklist::has_lone_break(&clip) {
-        return false;
-    }
-    let wide: Vec<u16> = checklist::to_edit_text(&clip)
-        .encode_utf16()
-        .chain([0])
-        .collect();
-    unsafe {
-        SendMessageW(
-            edit,
-            EM_REPLACESEL,
-            Some(WPARAM(1)),
-            Some(LPARAM(wide.as_ptr() as isize)),
-        );
-    }
-    true
 }
 
 fn raw_selection(edit: HWND) -> (usize, usize) {
@@ -338,8 +300,31 @@ unsafe extern "system" fn edit_proc(
         }
         WM_KEYDOWN => {
             let key = (wparam.0 & 0xFFFF) as u16;
+            // A swallowed character belongs to the key down before it only.
+            SWALLOW.with(|c| c.set(None));
             if key == VK_ESCAPE.0 {
                 notify(hwnd, EditEvent::Escape);
+                return LRESULT(0);
+            }
+            let (ctrl, shift) = (down(VK_CONTROL.0), down(VK_SHIFT.0));
+            if let Some(tool) = toolbar::shortcut_of(key, ctrl, shift) {
+                SWALLOW.with(|c| c.set(toolbar::control_char_of(tool)));
+                notify(hwnd, EditEvent::Format(tool));
+                return LRESULT(0);
+            }
+            // The classic clipboard keys go to the note as well.
+            if ctrl && !shift && key == VK_INSERT.0 {
+                notify(hwnd, EditEvent::Copy { cut: false });
+                return LRESULT(0);
+            }
+            if shift && !ctrl && key == VK_DELETE.0 {
+                notify(hwnd, EditEvent::Copy { cut: true });
+                return LRESULT(0);
+            }
+            if shift && !ctrl && key == VK_INSERT.0 {
+                unsafe {
+                    SendMessageW(hwnd, WM_PASTE, None, None);
+                }
                 return LRESULT(0);
             }
             if key == VK_UP.0 || key == VK_DOWN.0 {
@@ -369,16 +354,26 @@ unsafe extern "system" fn edit_proc(
         }
         WM_CHAR => {
             let ch = (wparam.0 & 0xFFFF) as u16;
+            // The character a format shortcut made: dropped, so Ctrl+Shift+X
+            // never cuts, Ctrl+Shift+H never backspaces and Ctrl+I never tabs.
+            if SWALLOW.with(|c| c.take()) == Some(ch) {
+                return LRESULT(0);
+            }
             // Esc and Ctrl+A are handled on the key down; their characters
             // must not beep or type.
             if ch == 0x1B || ch == 0x01 {
                 return LRESULT(0);
             }
-            // Ctrl+V goes through our own paste.
+            // Ctrl+V goes through the note's own paste.
             if ch == 0x16 {
                 unsafe {
                     SendMessageW(hwnd, WM_PASTE, None, None);
                 }
+                return LRESULT(0);
+            }
+            // Ctrl+C and Ctrl+X write the clipboard through the note.
+            if ch == 0x03 || ch == 0x18 {
+                notify(hwnd, EditEvent::Copy { cut: ch == 0x18 });
                 return LRESULT(0);
             }
             let collapsed = caret(hwnd);
@@ -397,16 +392,20 @@ unsafe extern "system" fn edit_proc(
             notify(hwnd, EditEvent::Changed);
             return result;
         }
+        // The note reads and writes the clipboard (text, its own runs, images).
         WM_PASTE => {
-            let result = if paste(hwnd) {
-                LRESULT(0)
-            } else {
-                unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
-            };
-            notify(hwnd, EditEvent::Changed);
-            return result;
+            notify(hwnd, EditEvent::Paste);
+            return LRESULT(0);
         }
-        WM_CUT | WM_CLEAR | WM_UNDO => {
+        WM_COPY => {
+            notify(hwnd, EditEvent::Copy { cut: false });
+            return LRESULT(0);
+        }
+        WM_CUT => {
+            notify(hwnd, EditEvent::Copy { cut: true });
+            return LRESULT(0);
+        }
+        WM_CLEAR | WM_UNDO => {
             let result = unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) };
             notify(hwnd, EditEvent::Changed);
             return result;

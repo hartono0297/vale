@@ -24,6 +24,8 @@
 //! the note's own window only while that note has the keyboard.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use chrono::{DateTime, Local, NaiveDate};
@@ -60,9 +62,17 @@ use crate::widgets::checklist::{self, Edit};
 use crate::widgets::drop;
 use crate::widgets::mood::{self, Mood};
 use crate::widgets::edit::{self, EditEvent};
+use crate::widgets::clip_io;
+use crate::widgets::fmt_pop;
+use crate::widgets::richclip;
+use crate::ui::geometry::Rect as DipR;
+use crate::widgets::image_io;
+use crate::widgets::images;
 use crate::widgets::paint::{
-    self, BodyLayout, Btn, CatPose, GuideLine, HEADER_H, Res, Scene, Target, shown_h, window_dip,
+    self, BarScene, BodyLayout, Btn, CatPose, Extras, GuideLine, HEADER_H, ImgCache, ImgScene, Res,
+    Scene, Target, shown_h, window_dip,
 };
+use crate::widgets::toolbar::{self, BarHit, Tool};
 use crate::widgets::place;
 use crate::widgets::pop::{self, PopCmd, PopState};
 use crate::widgets::stack::{self, Existing};
@@ -74,7 +84,7 @@ use crate::widgets::snap::{Axis, Snapped, snap_move_for, snap_resize};
 use crate::widgets::sticky::{
     self, Deco, DipRect, NoteFont, Paper, Pattern, Stamp, Sticky, TextSize,
 };
-use crate::widgets::styles::Run;
+use crate::widgets::styles::{self, Attr, Hl, Run, Style};
 use crate::widgets::templates::Template;
 
 /// Posted to the owner when `WidgetEvent`s wait. One message until `drain`.
@@ -279,7 +289,11 @@ struct Win {
     display: usize,
     canvas: Option<Canvas>,
     body: Option<BodyLayout>,
-    body_key: Option<(String, NoteFont, TextSize, i32)>,
+    /// What the laid-out text was made from: the text, the font, the size,
+    /// the width, a hash of the formatting and the image block's height. (The
+    /// text colours are drawing effects made at each draw, so neither the paper
+    /// nor the canvas is part of it.)
+    body_key: Option<(String, NoteFont, TextSize, i32, u64, i32)>,
     scroll: f32,
     header: Ease,
     hot: Option<Btn>,
@@ -357,9 +371,49 @@ struct Win {
     cue: Option<Edge>,
     /// A dragged note would stack on this one (drawn with the highlight frame).
     targeted: bool,
+    /// A style chosen with a collapsed caret, for the text typed next (cleared
+    /// when the caret moves without a text change).
+    pending: Option<Style>,
+    /// The bar button under the pointer (its tooltip shows), and the one a
+    /// press began on.
+    hot_bar: Option<BarHit>,
+    bar_press: Option<BarHit>,
+    /// The image under the pointer, and a press on an image or its remove
+    /// button (index, remove, desktop px where it began).
+    hot_image: Option<usize>,
+    image_press: Option<(usize, bool, (i32, i32))>,
+    /// The size of each image file by name (`None`: unreadable), and where
+    /// the images go (note dip, from the text's top) with the height of the
+    /// block they make above the text.
+    img_sizes: HashMap<String, Option<(u32, u32)>>,
+    img_rects: Vec<DipR>,
+    img_top: f32,
+    /// The images' bitmaps (they belong to the canvas).
+    img: RefCell<ImgCache>,
+    /// A file dialog of this note is open: it taking the keyboard is not the
+    /// end of the editing.
+    dialog: bool,
+    /// The bar is drawn without the keyboard (`DI_WIDGETS_BAR`, debug builds):
+    /// a look at the drawing that takes no focus.
+    preview: bool,
 }
 
 impl Win {
+    /// The format bar shows while the note has the keyboard, is not rolled up
+    /// and is not tucked in (a tucked note that is not all the way out has no
+    /// room for it).
+    fn bar_shown(&self, now: Instant) -> bool {
+        (self.edit.is_some() || self.preview)
+            && !self.sticky.rolled
+            && !(self.tuck_edge(now).is_some() && self.pop.progress(now) < 1.0)
+    }
+
+    /// The text area as it is now: shorter by the bar while it shows (the
+    /// window never resizes). Every user of the area goes through this.
+    fn body_area(&self) -> DipR {
+        paint::body_rect_in(self.view.w, self.view.h, self.bar_shown(Instant::now()))
+    }
+
     /// What the lean follows: the stack's id (so a flip does not change it),
     /// else the note's. It is also the key a unit's window goes by.
     fn key(&self) -> &str {
@@ -561,6 +615,7 @@ fn keep_out(w: &Win) -> bool {
         || w.raised
         || pop::is_open_for(w.hwnd)
         || remind_pop::is_open_for(w.hwnd)
+        || fmt_pop::is_open_for(w.hwnd)
 }
 
 /// A tucked note follows what keeps it out. While something does it pops out
@@ -652,6 +707,14 @@ struct State {
     /// The local date the 1 s tick last saw: the notes' labels (a
     /// reminder's chip, the footer's "Hari ini") are drawn against it.
     day: Option<NaiveDate>,
+    /// Where the images live (`NotesStore::images_dir`); empty until the owner
+    /// says (`WidgetHost::set_images_dir`): nothing loads then.
+    images_dir: PathBuf,
+    /// The highlight the Marker button and Ctrl+Shift+H apply: Kuning at
+    /// first, then the last one chosen. In memory per host, never saved.
+    last_hl: Hl,
+    /// The notes with an image import in flight (one entry per import).
+    in_flight: Vec<String>,
 }
 
 thread_local! {
@@ -759,6 +822,9 @@ impl WidgetHost {
                 posted: false,
                 peek: None,
                 day: None,
+                images_dir: PathBuf::new(),
+                last_hl: Hl::Kuning,
+                in_flight: Vec::new(),
             });
         });
         WidgetHost { _private: () }
@@ -768,6 +834,42 @@ impl WidgetHost {
     /// created, moved, styled and hidden or shown as the settings say.
     pub fn sync(&mut self, ctx: &Ctx) {
         sync(ctx);
+    }
+
+    /// `DI_WIDGETS_BAR` (debug builds): draws note `id`'s format bar without the
+    /// keyboard or the foreground; `marker` and `more` also show the popup
+    /// (with `SW_SHOWNA`: no activation).
+    #[cfg(debug_assertions)]
+    pub fn preview_bar(&mut self, id: &str, mode: &str) {
+        let hwnd = with(|s| {
+            let i = s.wins.iter().position(|w| w.has(id))?;
+            s.wins[i].preview = true;
+            s.wins[i].dirty = true;
+            Some(s.wins[i].hwnd)
+        })
+        .flatten();
+        flush_dirty();
+        let Some(hwnd) = hwnd else { return };
+        match mode {
+            "marker" => open_marker_pop(hwnd),
+            "more" => open_overflow(hwnd),
+            _ => {}
+        }
+    }
+
+    /// Where the notes' images live (`NotesStore::images_dir`). Until the owner
+    /// says, no image is loaded or imported.
+    pub fn set_images_dir(&mut self, dir: PathBuf) {
+        let _ = with(|s| {
+            if s.images_dir != dir {
+                s.images_dir = dir;
+                for w in &mut s.wins {
+                    *w.img.borrow_mut() = ImgCache::default();
+                    w.img_sizes.clear();
+                    w.dirty = true;
+                }
+            }
+        });
     }
 
     /// The theme, language or font changed (or Windows said so): every note
@@ -1314,6 +1416,17 @@ fn blank_win(hwnd: HWND, note: &Note, tilt: bool) -> Win {
         wheel: 0,
         cue: None,
         targeted: false,
+        pending: None,
+        hot_bar: None,
+        bar_press: None,
+        hot_image: None,
+        image_press: None,
+        img_sizes: HashMap::new(),
+        img_rects: Vec::new(),
+        img_top: 0.0,
+        img: RefCell::new(ImgCache::default()),
+        dialog: false,
+        preview: false,
     }
 }
 
@@ -1426,6 +1539,20 @@ fn update_win(s: &mut State, i: usize, unit: &stack::Unit, prefs_changed: bool, 
         load_sheet(w, note);
     }
     let moving = w.drag.is_some();
+    // While the note has the keyboard its formatting is live in the window (the
+    // EDIT's text is the truth, and the runs follow it): the store has them
+    // after the owner applied the batch, and the same again.
+    let sticky = if w.edit.is_some() && w.id == note.id {
+        Sticky { styles: w.sticky.styles.clone(), ..sticky }
+    } else {
+        sticky
+    };
+    if w.sticky.images != sticky.images {
+        let mut cache = w.img.borrow_mut();
+        *cache = ImgCache::default();
+        w.img_sizes.clear();
+        w.dirty = true;
+    }
     if w.sticky != sticky && !moving {
         w.sticky = sticky;
         w.dirty = true;
@@ -1622,6 +1749,8 @@ fn draw(s: &mut State, i: usize) {
         lang,
         coat,
         peek,
+        images_dir,
+        last_hl,
         ..
     } = s;
     let Some(res) = res.as_ref() else { return };
@@ -1636,27 +1765,37 @@ fn draw(s: &mut State, i: usize) {
     let size = canvas_px(&w.view, w.sticky.rolled, k, m);
     if w.canvas.as_ref().is_none_or(|c| c.size() != size) {
         w.canvas = Canvas::with_gfx(res.gfx.clone(), size).ok();
+        // The bitmaps belong to the render target that made them.
+        *w.img.borrow_mut() = ImgCache::default();
     }
     let origin = w.origin();
-    // The text, laid out for the width it is drawn at, in the note's font.
+    // The text, laid out for the width it is drawn at, in the note's font,
+    // below the images and with the note's formatting.
     let (nw, nh) = (w.view.w, w.view.h);
-    let area = paint::body_rect(nw, nh);
+    let bar_on = w.bar_shown(now);
+    let area = paint::body_rect_in(nw, nh, bar_on);
+    refresh_images(w, images_dir);
     let key = (
         w.text.clone(),
         w.sticky.font,
         w.sticky.text_size,
         (area.w * 100.0) as i32,
+        styles_hash(&w.sticky.styles),
+        (w.img_top * 100.0) as i32,
     );
     if w.body_key.as_ref() != Some(&key) {
-        w.body = Some(paint::build_body(
+        w.body = Some(paint::build_body_with(
             res,
             &w.text,
             w.sticky.font,
             w.sticky.text_size,
             area.w,
+            w.img_top,
+            &w.sticky.styles,
         ));
         w.body_key = Some(key);
     }
+    let img_keys = prepare_images(w, images_dir, k);
     let body_h = w.body.as_ref().map_or(0.0, |b| b.height);
     let max_scroll = (body_h - area.h).max(0.0);
     if w.follow_caret {
@@ -1676,11 +1815,20 @@ fn draw(s: &mut State, i: usize) {
     let updated = DateTime::from_timestamp(w.updated, 0)
         .map(|t| t.with_timezone(&Local).naive_local())
         .unwrap_or_default();
-    let footer = match w.footer_msg {
-        Some(key) => text(*lang, key).to_owned(),
-        None if w.confirm_delete => text(*lang, Key::StickyDeleteAgain).to_owned(),
-        None => sticky::footer_label(*lang, &w.text, updated, today),
+    let message = match w.footer_msg {
+        Some(key) => Some(text(*lang, key).to_owned()),
+        None if w.confirm_delete => Some(text(*lang, Key::StickyDeleteAgain).to_owned()),
+        None => None,
     };
+    let footer = message
+        .clone()
+        .unwrap_or_else(|| sticky::footer_label(*lang, &w.text, updated, today));
+    let bar = bar_on.then(|| BarScene {
+        hot: w.hot_bar,
+        on: tool_states(w),
+        marker_hl: *last_hl,
+        msg: message,
+    });
     // The pop: the cat shows only on a note that is all the way out.
     let edge = w.tuck_edge(now);
     let popped = w.pop_now(now);
@@ -1794,6 +1942,15 @@ fn draw(s: &mut State, i: usize) {
         stack,
         tuck: tuck_scene,
         cue: w.cue,
+        bar,
+        styles: &w.sticky.styles,
+        dark_paper: w.sticky.paper == Paper::Gelap,
+        images: (!w.sticky.rolled && !w.img_rects.is_empty()).then(|| ImgScene {
+            rects: &w.img_rects,
+            keys: &img_keys,
+            hot: w.hot_image,
+            cache: &w.img,
+        }),
     };
     let alpha = alpha_u8(w, now);
     if let Some(canvas) = &w.canvas
@@ -1815,6 +1972,7 @@ const SC_KEYMENU: u32 = 0xF100;
 /// Private to the note windows: leave editing (posted from inside the EDIT's
 /// own handlers, which must not destroy it themselves).
 const WM_END_EDIT: u32 = WM_APP + 1;
+use crate::widgets::image_io::WM_NOTE_IMPORT;
 
 fn lo(l: LPARAM) -> i32 {
     (l.0 & 0xFFFF) as i16 as i32
@@ -1901,7 +2059,19 @@ unsafe extern "system" fn wnd_proc(
             })
             .flatten()
             .unwrap_or(false);
-            if on_plus {
+            // A right click on the Marker button opens its popover too.
+            let on_marker = with(|s| {
+                let i = idx_of(s, hwnd)?;
+                Some(matches!(
+                    target_at(&s.wins[i], pt.x, pt.y),
+                    Target::Bar(BarHit::Tool(Tool::Marker) | BarHit::MarkerMenu)
+                ))
+            })
+            .flatten()
+            .unwrap_or(false);
+            if on_marker {
+                open_marker_pop(hwnd);
+            } else if on_plus {
                 plus_menu(hwnd, pt);
             } else {
                 context_menu(hwnd, pt);
@@ -1933,7 +2103,13 @@ unsafe extern "system" fn wnd_proc(
             // ends the editing.
             if (wparam.0 & 0xFFFF) as u32 == WA_INACTIVE {
                 let to = HWND(lparam.0 as *mut _);
-                if !pop::is_popover_of(to, hwnd) && !remind_pop::is_popover_of(to, hwnd) {
+                let dialog =
+                    with(|s| idx_of(s, hwnd).is_some_and(|i| s.wins[i].dialog)).unwrap_or(false);
+                if !pop::is_popover_of(to, hwnd)
+                    && !remind_pop::is_popover_of(to, hwnd)
+                    && !fmt_pop::is_popover_of(to, hwnd)
+                    && !dialog
+                {
                     end_editing(hwnd);
                 }
             }
@@ -1952,10 +2128,17 @@ unsafe extern "system" fn wnd_proc(
             flush_dirty();
             return LRESULT(0);
         }
+        WM_NOTE_IMPORT => {
+            import_done(hwnd, lparam);
+            return LRESULT(0);
+        }
         WM_DESTROY => {
             // Every way a note window goes passes here: its drop target is
-            // revoked with it.
+            // revoked with it, and its popup goes.
             drop::revoke(hwnd);
+            if fmt_pop::is_open_for(hwnd) {
+                fmt_pop::close();
+            }
             unsafe {
                 let _ = KillTimer(Some(hwnd), TIMER_WIDGET_CARET);
             }
@@ -2035,7 +2218,7 @@ fn target_at_in(w: &Win, sx: i32, sy: i32, now: Instant) -> Target {
         shown_h(w.view.h, w.sticky.rolled),
         w.lean(),
     );
-    paint::target_in(
+    paint::target_full(
         x,
         y,
         w.view.w,
@@ -2045,6 +2228,10 @@ fn target_at_in(w: &Win, sx: i32, sy: i32, now: Instant) -> Target {
         w.scroll,
         buttons_shown(w, now),
         w.stack.is_some(),
+        &Extras {
+            bar: w.bar_shown(now),
+            images: &w.img_rects,
+        },
     )
 }
 
@@ -2103,6 +2290,8 @@ fn set_cursor(hwnd: HWND) -> bool {
         match target_at(w, pt.x, pt.y) {
             Target::Body => Some(IDC_IBEAM),
             Target::Button(_) | Target::Check(_) => Some(IDC_HAND),
+            Target::Bar(BarHit::Bar) => Some(IDC_ARROW),
+            Target::Bar(_) | Target::Image(_) | Target::ImageRemove(_) => Some(IDC_HAND),
             Target::Header if !s.prefs.lock => Some(IDC_SIZEALL),
             Target::Grip if !s.prefs.lock => Some(IDC_SIZENWSE),
             _ => Some(IDC_ARROW),
@@ -2179,6 +2368,16 @@ fn mouse_move(hwnd: HWND, x: i32, y: i32) {
             Target::Button(b) => Some(b),
             _ => None,
         };
+        // The bar's hot button (its tooltip, at once, no timer) and the image
+        // under the pointer redraw only when they change.
+        let hot_bar = match hot_target {
+            Target::Bar(h) if h != BarHit::Bar => Some(h),
+            _ => None,
+        };
+        let hot_image = match hot_target {
+            Target::Image(n) | Target::ImageRemove(n) => Some(n),
+            _ => None,
+        };
         let inside = !matches!(hot_target, Target::Outside);
         let mut changed = false;
         // The cat looks along the pointer while it is over this note; the
@@ -2200,6 +2399,14 @@ fn mouse_move(hwnd: HWND, x: i32, y: i32) {
         }
         if w.hot != hot {
             w.hot = hot;
+            changed = true;
+        }
+        if w.hot_bar != hot_bar {
+            w.hot_bar = hot_bar;
+            changed = true;
+        }
+        if w.hot_image != hot_image {
+            w.hot_image = hot_image;
             changed = true;
         }
         let msg = (hot == Some(Btn::Plus) && lang_cap).then_some(Key::StickyMax);
@@ -2251,6 +2458,8 @@ fn mouse_leave(hwnd: HWND) {
         let w = &mut s.wins[i];
         w.tracking = false;
         w.hot = None;
+        w.hot_bar = None;
+        w.hot_image = None;
         w.footer_msg = None;
         w.pointer_in = false;
         w.look = 0;
@@ -2311,6 +2520,20 @@ fn left_down(hwnd: HWND, x: i32, y: i32) {
     if !on_colour && pop::is_open() {
         pop::close();
     }
+    // A click elsewhere on the note closes the format popup; its own two
+    // buttons toggle it on release.
+    let on_fmt = with(|s| {
+        let i = idx_of(s, hwnd)?;
+        Some(matches!(
+            target_at(&s.wins[i], pt.x, pt.y),
+            Target::Bar(BarHit::MarkerMenu | BarHit::More)
+        ))
+    })
+    .flatten()
+    .unwrap_or(false);
+    if !on_fmt && fmt_pop::is_open() {
+        fmt_pop::close();
+    }
     if remind_pop::is_open() {
         remind_pop::close();
     }
@@ -2355,6 +2578,18 @@ fn left_down(hwnd: HWND, x: i32, y: i32) {
             Target::Check(line) => {
                 toggle_line(s, i, line);
                 Some(Down::Nothing)
+            }
+            // A bar press never ends editing, never moves the caret or the
+            // selection and never starts a drag: the action fires on release.
+            Target::Bar(BarHit::Bar) => Some(Down::Nothing),
+            Target::Bar(hit) => {
+                s.wins[i].bar_press = Some(hit);
+                Some(Down::Capture)
+            }
+            Target::Image(n) | Target::ImageRemove(n) => {
+                let remove = matches!(t, Target::ImageRemove(_));
+                s.wins[i].image_press = Some((n, remove, (pt.x, pt.y)));
+                Some(Down::Capture)
             }
             Target::Header | Target::Grip if lock => Some(Down::Nothing),
             Target::Header => {
@@ -2431,27 +2666,53 @@ fn start_move(s: &mut State, i: usize, from: (i32, i32)) {
 
 fn left_up(hwnd: HWND, x: i32, y: i32) {
     let pt = screen_point(hwnd, x, y);
-    let press = with(|s| {
+    let (press, bar, image) = with(|s| {
         let i = idx_of(s, hwnd)?;
         let w = &mut s.wins[i];
         w.selecting = false;
         let pressed = w.pressed.take();
+        let bar_pressed = w.bar_press.take();
+        let image_pressed = w.image_press.take();
         if w.drag.is_some() {
             finish_drag(s, i, true);
             return None;
         }
-        let over = match target_at(&s.wins[i], pt.x, pt.y) {
+        let at = target_at(&s.wins[i], pt.x, pt.y);
+        let over = match at {
             Target::Button(b) => Some(b),
             _ => None,
         };
-        pressed.filter(|p| Some(*p) == over)
+        // A bar button fires when released over the same one.
+        let bar = bar_pressed.filter(|p| at == Target::Bar(*p));
+        // A click on an image: released over the same one without moving 4 px.
+        let image = image_pressed.and_then(|(n, remove, from)| {
+            let still = (pt.x - from.0).abs() + (pt.y - from.1).abs() < 4;
+            let same = if remove {
+                at == Target::ImageRemove(n)
+            } else {
+                at == Target::Image(n)
+            };
+            (still && same).then_some((n, remove))
+        });
+        Some((pressed.filter(|p| Some(*p) == over), bar, image))
     })
-    .flatten();
+    .flatten()
+    .unwrap_or((None, None, None));
     unsafe {
         let _ = ReleaseCapture();
     }
     if let Some(b) = press {
         button(hwnd, b);
+    }
+    if let Some(hit) = bar {
+        bar_action(hwnd, hit);
+    }
+    if let Some((n, remove)) = image {
+        if remove {
+            remove_image(hwnd, n);
+        } else {
+            open_image(hwnd, n);
+        }
     }
 }
 
@@ -2595,10 +2856,666 @@ fn text_changed(s: &mut State, i: usize, before: &str) {
     w.caret_on = true;
     w.follow_caret = true;
     w.dirty = true;
+    // The formatting follows the edit: typed text takes the style at the
+    // change (or the one chosen with a collapsed caret), deleted text takes its
+    // runs with it. The owner is told the text first, then the runs, which win
+    // over the store's own rebase of the same edit.
+    let had = !w.sticky.styles.is_empty();
+    w.sticky.styles = styles::rebase_with(before, &w.text, &w.sticky.styles, w.pending);
+    let has = !w.sticky.styles.is_empty();
     let (id, t) = (w.id.clone(), w.text.clone());
-    push(s, WidgetEvent::Text { id, text: t });
+    let runs = w.sticky.styles.clone();
+    push(s, WidgetEvent::Text { id: id.clone(), text: t });
+    if had || has {
+        push(s, WidgetEvent::Styles { id, runs });
+    }
     draw(s, i);
 }
+
+// ------------------------------------------------------------------ format
+
+/// A hash of the formatting: the laid-out text is cached on it.
+fn styles_hash(runs: &[Run]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    runs.hash(&mut h);
+    h.finish()
+}
+
+/// The place of the images (and the block above the text) for the note's
+/// size and the images' aspects, which are read from the files once.
+fn refresh_images(w: &mut Win, dir: &Path) {
+    let names = w.sticky.images.clone();
+    for n in &names {
+        if !w.img_sizes.contains_key(n) {
+            w.img_sizes.insert(n.clone(), image_io::size_of(dir, n));
+        }
+    }
+    w.img_sizes.retain(|k, _| names.contains(k));
+    let aspects: Vec<f32> = names
+        .iter()
+        .map(|n| {
+            w.img_sizes
+                .get(n)
+                .copied()
+                .flatten()
+                .map_or(4.0 / 3.0, |(a, b)| a as f32 / b.max(1) as f32)
+        })
+        .collect();
+    let (rects, top) = images::grid(names.len(), w.view.w, w.view.h, &aspects);
+    w.img_rects = rects;
+    w.img_top = top;
+}
+
+/// The drawn size of each image in pixels with its name, and the pixels of
+/// the ones the canvas has no bitmap for yet decoded (scaled to cover the
+/// cell at this DPI, never enlarged). A file that fails is tried once.
+fn prepare_images(w: &Win, dir: &Path, k: f32) -> Vec<paint::ImgKey> {
+    let mut cache = w.img.borrow_mut();
+    let mut keys = Vec::new();
+    for (name, r) in w.sticky.images.iter().zip(&w.img_rects) {
+        let key: paint::ImgKey = (name.clone(), (r.w * k).ceil() as u32, (r.h * k).ceil() as u32);
+        if !cache.bitmaps.contains_key(&key)
+            && !cache.fresh.contains_key(&key)
+            && !cache.failed.contains(&key)
+        {
+            match image_io::decode_cover(dir, name, key.1, key.2) {
+                Some(px) => {
+                    cache.fresh.insert(key.clone(), px);
+                }
+                None => {
+                    cache.failed.insert(key.clone());
+                }
+            }
+        }
+        keys.push(key);
+    }
+    keys
+}
+
+fn ordered((a, b): (usize, usize)) -> (usize, usize) {
+    (a.min(b), a.max(b))
+}
+
+/// Which tools are lit at the caret or over the selection, in `Tool::ALL`
+/// order: the attributes of the whole selection, or of the style the next
+/// typed letter takes; the list kinds of every line it touches.
+fn tool_states(w: &Win) -> [bool; 8] {
+    let (a, b) = ordered(w.sel);
+    let runs = &w.sticky.styles;
+    let caret_style = || w.pending.unwrap_or_else(|| styles::style_at(runs, a));
+    let attr = |at: Attr| {
+        if a != b {
+            styles::all_have(runs, a, b, at)
+        } else {
+            caret_style().has(at)
+        }
+    };
+    let lines = checklist::lines(&w.text);
+    let (first, last) = (checklist::line_at(&lines, a), checklist::line_at(&lines, b));
+    let touched = &lines[first..=last.max(first)];
+    let hl = if a != b {
+        (a..b).all(|i| styles::style_at(runs, i + 1).hl.is_some())
+    } else {
+        caret_style().hl.is_some()
+    };
+    [
+        attr(Attr::Bold),
+        attr(Attr::Italic),
+        attr(Attr::Underline),
+        attr(Attr::Strike),
+        touched.iter().all(|l| l.is_bullet()),
+        touched.iter().all(|l| l.is_item()),
+        hl,
+        false,
+    ]
+}
+
+/// A bar button was released (or its shortcut pressed).
+fn bar_action(hwnd: HWND, hit: BarHit) {
+    match hit {
+        BarHit::Tool(t) => format_tool(hwnd, t),
+        BarHit::MarkerMenu => open_marker_pop(hwnd),
+        BarHit::More => open_overflow(hwnd),
+        BarHit::Bar => {}
+    }
+}
+
+/// What a tool does to the note that has the keyboard (the formatting
+/// shortcuts, `EditEvent::Format`, call it too).
+pub(crate) fn format_tool(hwnd: HWND, tool: Tool) {
+    // A choice made in a popover ends it.
+    crate::widgets::fmt_pop::close();
+    match tool {
+        Tool::Bold => toggle_attr(hwnd, Attr::Bold),
+        Tool::Italic => toggle_attr(hwnd, Attr::Italic),
+        Tool::Underline => toggle_attr(hwnd, Attr::Underline),
+        Tool::Strike => toggle_attr(hwnd, Attr::Strike),
+        Tool::Bullet => toggle_list_tool(hwnd, checklist::ListKind::Bullet),
+        Tool::Check => toggle_list_tool(hwnd, checklist::ListKind::Check),
+        Tool::Marker => apply_marker(hwnd, MarkerChoice::Last),
+        Tool::Image => pick_images(hwnd),
+    }
+}
+
+/// Pushes the window's formatting for note `i` and draws.
+fn styles_changed(s: &mut State, i: usize) {
+    let w = &mut s.wins[i];
+    w.body_key = None;
+    w.dirty = true;
+    let (id, runs) = (w.id.clone(), w.sticky.styles.clone());
+    push(s, WidgetEvent::Styles { id, runs });
+    touch(s, i);
+    draw(s, i);
+}
+
+/// B, I, U or strike: over a selection it toggles the whole range (all of it
+/// has it: off; else on); with a collapsed caret it is the style of the next
+/// typed text (`Win::pending`). Not part of the EDIT's undo.
+fn toggle_attr(hwnd: HWND, attr: Attr) {
+    let _ = with(|s| {
+        let i = idx_of(s, hwnd)?;
+        let w = &mut s.wins[i];
+        w.edit?;
+        let (a, b) = ordered(w.sel);
+        if a != b {
+            w.sticky.styles = styles::toggle(&w.sticky.styles, &w.text, a, b, attr);
+            styles_changed(s, i);
+        } else {
+            let cur = w.pending.unwrap_or_else(|| styles::style_at(&w.sticky.styles, a));
+            w.pending = Some(cur.with(attr, !cur.has(attr)));
+            w.dirty = true;
+            draw(s, i);
+        }
+        Some(())
+    });
+}
+
+/// What the Marker button, Ctrl+Shift+H and the popover choose.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MarkerChoice {
+    /// The last used highlight, toggled.
+    Last,
+    /// A highlight (remembered as the last), or none.
+    Hl(Option<Hl>),
+    /// A text colour, or automatic.
+    Fg(Option<styles::Fg>),
+}
+
+fn apply_marker(hwnd: HWND, choice: MarkerChoice) {
+    let _ = with(|s| {
+        let i = idx_of(s, hwnd)?;
+        let last = s.last_hl;
+        let w = &mut s.wins[i];
+        w.edit?;
+        let (a, b) = ordered(w.sel);
+        let mut remember = None;
+        let apply: Box<dyn Fn(Style) -> Style> = match choice {
+            MarkerChoice::Last => {
+                let on = if a != b {
+                    styles::all_hl(&w.sticky.styles, a, b, last)
+                } else {
+                    w.pending
+                        .unwrap_or_else(|| styles::style_at(&w.sticky.styles, a))
+                        .hl
+                        == Some(last)
+                };
+                Box::new(move |st| Style { hl: (!on).then_some(last), ..st })
+            }
+            MarkerChoice::Hl(hl) => {
+                remember = hl;
+                Box::new(move |st| Style { hl, ..st })
+            }
+            MarkerChoice::Fg(fg) => Box::new(move |st| Style { fg, ..st }),
+        };
+        if a != b {
+            w.sticky.styles = match (choice, apply(Style::default())) {
+                (MarkerChoice::Fg(fg), _) => styles::set_fg(&w.sticky.styles, &w.text, a, b, fg),
+                (_, st) => styles::set_hl(&w.sticky.styles, &w.text, a, b, st.hl),
+            };
+            if let Some(h) = remember {
+                s.last_hl = h;
+            }
+            styles_changed(s, i);
+        } else {
+            let cur = w.pending.unwrap_or_else(|| styles::style_at(&w.sticky.styles, a));
+            w.pending = Some(apply(cur));
+            if let Some(h) = remember {
+                s.last_hl = h;
+            }
+            s.wins[i].dirty = true;
+            draw(s, i);
+        }
+        Some(())
+    });
+}
+
+/// The bullet and checklist buttons, Ctrl+Shift+8 and 9, and the header's
+/// checklist button: every line the selection touches (a collapsed caret, its
+/// line; a note without the keyboard, the last line).
+fn toggle_list_in(s: &mut State, i: usize, kind: checklist::ListKind) {
+    let w = &s.wins[i];
+    let t = w.text.clone();
+    let (a, b) = if w.edit.is_some() {
+        w.sel
+    } else {
+        let end = t.encode_utf16().count();
+        (end, end)
+    };
+    let (e, (na, nb)) = checklist::toggle_list_sel(&t, a, b, kind);
+    apply_edit(s, i, &e);
+    if a != b
+        && let Some(edit_hwnd) = s.wins[i].edit
+    {
+        let now_text = s.wins[i].text.clone();
+        edit::set_selection(edit_hwnd, &now_text, na, nb);
+        s.wins[i].sel = (na, nb);
+        s.wins[i].anchor = na;
+        s.wins[i].dirty = true;
+        draw(s, i);
+    }
+}
+
+fn toggle_list_tool(hwnd: HWND, kind: checklist::ListKind) {
+    let _ = with(|s| {
+        let i = idx_of(s, hwnd)?;
+        s.wins[i].edit?;
+        toggle_list_in(s, i, kind);
+        touch(s, i);
+        Some(())
+    });
+}
+
+// ------------------------------------------------------------------ popups
+
+/// The bar button's rect on the desktop (px) and the work area it must stay
+/// in, for a popup of note `hwnd`: the button is the marker's, the More
+/// button's, or (when the bar is not shown) none.
+fn bar_anchor(hwnd: HWND, tool: Option<Tool>) -> Option<(Rect, Rect, f32, UiFont)> {
+    with(|s| {
+        let i = idx_of(s, hwnd)?;
+        let w = &s.wins[i];
+        if !w.bar_shown(Instant::now()) {
+            return None;
+        }
+        let layout = toolbar::layout(w.view.w);
+        let r = match tool {
+            Some(t) => toolbar::rect_of(&layout, t).or(layout.more)?,
+            None => layout.more?,
+        };
+        let top = w.view.h - toolbar::BAR_BLOCK;
+        let anchor = Rect::new(
+            w.note.x + (r.x * w.scale).round() as i32,
+            w.note.y + ((top + r.y) * w.scale).round() as i32,
+            (r.w * w.scale).round() as i32,
+            (r.h * w.scale).round() as i32,
+        );
+        let area = s.displays.get(w.display).map_or(w.note, place::area_px);
+        Some((anchor, area, w.scale, s.font))
+    })
+    .flatten()
+}
+
+/// The highlighter popover, above the Marker button (above More when the
+/// marker moved into the overflow menu). Toggles: a second press closes it.
+fn open_marker_pop(hwnd: HWND) {
+    if fmt_pop::is_open_for(hwnd) {
+        fmt_pop::close();
+        return;
+    }
+    let Some((anchor, area, scale, ui)) = bar_anchor(hwnd, Some(Tool::Marker)) else {
+        return;
+    };
+    let state = with(|s| {
+        let i = idx_of(s, hwnd)?;
+        let w = &s.wins[i];
+        let (a, b) = ordered(w.sel);
+        let st = w.pending.unwrap_or_else(|| {
+            if a != b {
+                styles::style_at(&w.sticky.styles, a + 1)
+            } else {
+                styles::style_at(&w.sticky.styles, a)
+            }
+        });
+        Some((
+            fmt_pop::MarkerState {
+                hl: st.hl,
+                fg: st.fg,
+                dark_paper: w.sticky.paper == Paper::Gelap,
+            },
+            s.lang,
+        ))
+    })
+    .flatten();
+    if let Some((state, lang)) = state {
+        fmt_pop::open(hwnd, anchor, area, scale, fmt_pop::Mode::Marker(state), lang, ui);
+    }
+}
+
+/// The overflow menu: the tools that did not fit the bar of a narrow note.
+fn open_overflow(hwnd: HWND) {
+    if fmt_pop::is_open_for(hwnd) {
+        fmt_pop::close();
+        return;
+    }
+    let Some((anchor, area, scale, ui)) = bar_anchor(hwnd, None) else {
+        return;
+    };
+    let info = with(|s| {
+        let i = idx_of(s, hwnd)?;
+        Some((toolbar::layout(s.wins[i].view.w).hidden, s.lang))
+    })
+    .flatten();
+    if let Some((tools, lang)) = info.filter(|(t, _)| !t.is_empty()) {
+        fmt_pop::open(hwnd, anchor, area, scale, fmt_pop::Mode::Menu(tools), lang, ui);
+    }
+}
+
+/// A choice in the popup (called by its window): it closes, then acts. From
+/// the overflow menu the Marker row opens the popover (above the same button).
+pub(crate) fn fmt_choice(note: HWND, item: fmt_pop::Item) {
+    fmt_pop::close();
+    match item {
+        fmt_pop::Item::Hl(h) => apply_marker(note, MarkerChoice::Hl(h)),
+        fmt_pop::Item::Fg(f) => apply_marker(note, MarkerChoice::Fg(f)),
+        fmt_pop::Item::Tool(Tool::Marker) => open_marker_pop(note),
+        fmt_pop::Item::Tool(t) => format_tool(note, t),
+    }
+}
+
+/// Where the owner says the images live (`NotesStore::images_dir`).
+fn images_dir_of(s: &State) -> Option<PathBuf> {
+    (!s.images_dir.as_os_str().is_empty()).then(|| s.images_dir.clone())
+}
+
+/// The bar's Image tool: the system's file dialog (several files), owned by
+/// the note. The EDIT keeps the editing while it is up (`Win::dialog`), no
+/// borrow is held across it, and the EDIT gets the focus back after.
+fn pick_images(hwnd: HWND) {
+    let info = with(|s| {
+        let i = idx_of(s, hwnd)?;
+        s.wins[i].edit?;
+        s.wins[i].dialog = true;
+        Some(s.lang)
+    })
+    .flatten();
+    let Some(lang) = info else { return };
+    let files = image_io::pick_files(
+        hwnd,
+        text(lang, Key::FmtPickImages),
+        text(lang, Key::FmtImagesFilter),
+    );
+    let edit_hwnd = with(|s| {
+        let i = idx_of(s, hwnd)?;
+        s.wins[i].dialog = false;
+        s.wins[i].edit
+    })
+    .flatten();
+    if let Some(e) = edit_hwnd {
+        unsafe {
+            let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(e));
+        }
+    }
+    import_files(hwnd, files);
+}
+
+/// Image files (from the dialog, a drop or the clipboard's file list) go to
+/// the note: as many as fit under the cap (counting the imports in flight)
+/// start on the worker thread; the rest are refused with a message.
+pub(super) fn import_files(hwnd: HWND, files: Vec<PathBuf>) {
+    import_sources(hwnd, files.into_iter().map(image_io::Source::Path).collect());
+}
+
+/// `import_files` for any source (a pasted bitmap is one too).
+pub(super) fn import_sources(hwnd: HWND, sources: Vec<image_io::Source>) {
+    if sources.is_empty() {
+        return;
+    }
+    let _ = with(|s| {
+        let i = idx_of(s, hwnd)?;
+        let id = s.wins[i].id.clone();
+        let Some(dir) = images_dir_of(s) else {
+            s.wins[i].footer_msg = Some(Key::FmtImgBad);
+            s.wins[i].dirty = true;
+            draw(s, i);
+            return None;
+        };
+        let current = s.wins[i].sticky.images.len();
+        let pending = s.in_flight.iter().filter(|n| **n == id).count();
+        let (take, refused) = images::admit(current, pending, sources.len());
+        for src in sources.into_iter().take(take) {
+            if image_io::spawn_import(hwnd, id.clone(), src, dir.clone()) {
+                s.in_flight.push(id.clone());
+            } else {
+                s.wins[i].footer_msg = Some(Key::FmtImgBad);
+            }
+        }
+        if refused > 0 {
+            s.wins[i].footer_msg = Some(Key::FmtImgMax);
+        }
+        s.wins[i].dirty = true;
+        draw(s, i);
+        Some(())
+    });
+}
+
+/// `WM_NOTE_IMPORT`: an import finished. The file is added to the sheet that
+/// has that id (the shown one, or a copy under a stack's top sheet); over the
+/// cap, or with no window that has the id any more, it is deleted again.
+fn import_done(hwnd: HWND, lparam: LPARAM) {
+    if lparam.0 == 0 {
+        return;
+    }
+    // SAFETY: `spawn_import` sent a `Box<Done>` raw pointer, once.
+    let done = unsafe { Box::from_raw(lparam.0 as *mut image_io::Done) };
+    let kept = with(|s| {
+        if let Some(at) = s.in_flight.iter().position(|n| *n == done.note) {
+            s.in_flight.remove(at);
+        }
+        // This window, else any window that shows the note.
+        let i = idx_of(s, hwnd)
+            .filter(|i| s.wins[*i].has(&done.note))
+            .or_else(|| s.wins.iter().position(|w| w.has(&done.note)))?;
+        let name = match &done.result {
+            Ok(name) => name.clone(),
+            Err(e) => {
+                s.wins[i].footer_msg = Some(match e {
+                    image_io::ImportError::TooBig => Key::FmtImgTooBig,
+                    _ => Key::FmtImgBad,
+                });
+                s.wins[i].dirty = true;
+                draw(s, i);
+                return Some(true);
+            }
+        };
+        let w = &mut s.wins[i];
+        let list: &mut Vec<String> = if w.id == done.note {
+            &mut w.sticky.images
+        } else {
+            &mut w.sheets.iter_mut().find(|sh| sh.id == done.note)?.sticky.images
+        };
+        if list.len() >= images::MAX_IMAGES || !images::valid_name(&name) {
+            w.footer_msg = Some(Key::FmtImgMax);
+            w.dirty = true;
+            draw(s, i);
+            return None;
+        }
+        list.push(name);
+        let images = list.clone();
+        let id = done.note.clone();
+        *w.img.borrow_mut() = ImgCache::default();
+        w.img_sizes.clear();
+        w.body_key = None;
+        w.dirty = true;
+        push(s, WidgetEvent::Images { id, images });
+        touch(s, i);
+        draw(s, i);
+        Some(true)
+    })
+    .flatten()
+    .unwrap_or(false);
+    if !kept {
+        // Nobody took it: the copy goes.
+        image_io::discard(&done);
+    }
+}
+
+/// Image files dropped on note window `hwnd` (the drop target calls this).
+pub(super) fn drop_images(hwnd: HWND, files: Vec<PathBuf>) {
+    import_files(hwnd, files);
+}
+
+// ------------------------------------------------------------------ clipboard
+
+/// `a..b` of `text` (UTF-16 units).
+fn slice_units(text: &str, a: usize, b: usize) -> String {
+    let u: Vec<u16> = text.encode_utf16().collect();
+    String::from_utf16_lossy(&u[a.min(u.len())..b.min(u.len())])
+}
+
+/// Ctrl+C and Ctrl+X (and Ctrl+Insert, Shift+Delete, WM_COPY, WM_CUT): the
+/// selection as plain text (`\r\n` breaks, a bullet and a box as their
+/// marker text) plus the note's own `Vale.NoteRich` runs. A cut then deletes
+/// the selection through the EDIT (undo works). Never logged.
+fn copy_selection(parent: HWND, edit_hwnd: HWND, cut: bool) {
+    let picked = with(|s| {
+        let i = idx_of(s, parent)?;
+        let w = &s.wins[i];
+        if w.edit != Some(edit_hwnd) {
+            return None;
+        }
+        let (a, b) = ordered(w.sel);
+        (a != b).then(|| {
+            let part = slice_units(&w.text, a, b);
+            let runs = styles::slice(&w.sticky.styles, a, b);
+            (a, b, part, runs)
+        })
+    })
+    .flatten();
+    let Some((a, b, part, runs)) = picked else { return };
+    let rich = richclip::encode(&part, &runs);
+    let wrote = clip_io::write_note(parent, &checklist::to_edit_text(&part), &rich);
+    if cut && wrote {
+        let _ = with(|s| {
+            let i = idx_of(s, parent)?;
+            let e = Edit { start: a, end: b, insert: String::new(), caret: a };
+            apply_edit(s, i, &e);
+            touch(s, i);
+            Some(())
+        });
+    }
+}
+
+/// Ctrl+V, Shift+Insert and WM_PASTE. Text wins (Excel and Word put a bitmap
+/// beside their text); else image files; else a bitmap.
+fn paste_into(parent: HWND, edit_hwnd: HWND) {
+    let current = with(|s| {
+        let i = idx_of(s, parent)?;
+        Some(s.wins[i].edit == Some(edit_hwnd))
+    })
+    .flatten()
+    .unwrap_or(false);
+    if !current {
+        return;
+    }
+    match clip_io::read_paste(parent) {
+        clip_io::Paste::Text { text, rich } => {
+            let _ = with(|s| {
+                let i = idx_of(s, parent)?;
+                paste_text(s, i, &text, rich.as_deref());
+                touch(s, i);
+                Some(())
+            });
+        }
+        clip_io::Paste::Files(files) => {
+            let (imgs, _) = images::split_files(
+                &files.iter().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>(),
+            );
+            let wanted: Vec<PathBuf> = files
+                .into_iter()
+                .filter(|p| imgs.iter().any(|i| *i == p.to_string_lossy()))
+                .collect();
+            import_files(parent, wanted);
+        }
+        clip_io::Paste::Image(src) => import_sources(parent, vec![src]),
+        clip_io::Paste::TooBig => {
+            let _ = with(|s| {
+                let i = idx_of(s, parent)?;
+                s.wins[i].footer_msg = Some(Key::FmtImgTooBig);
+                s.wins[i].dirty = true;
+                draw(s, i);
+                Some(())
+            });
+        }
+        clip_io::Paste::Nothing => {}
+    }
+}
+
+/// `text` (the clipboard's, any breaks) in place of the selection, through the
+/// EDIT (undo works). The pasted text takes the style at the caret (a web or
+/// Word paste never brings fonts or colours); a `Vale.NoteRich` payload of
+/// the same text then overlays its own runs.
+fn paste_text(s: &mut State, i: usize, clip: &str, rich: Option<&[u8]>) {
+    let model = checklist::normalize(clip);
+    if model.is_empty() {
+        return;
+    }
+    let w = &s.wins[i];
+    let (a, b) = ordered(w.sel);
+    let before_len = w.text.encode_utf16().count();
+    let len = model.encode_utf16().count();
+    let e = Edit { start: a, end: b, insert: model.clone(), caret: a + len };
+    apply_edit(s, i, &e);
+    let w = &mut s.wins[i];
+    // The EDIT may have cut the text short (its limit): overlay only when the
+    // whole of it went in.
+    let grew = w.text.encode_utf16().count() + (b - a) == before_len + len;
+    if grew
+        && let Some(runs) = rich.and_then(|bytes| richclip::decode(bytes, clip))
+    {
+        w.sticky.styles = styles::insert_runs(&w.sticky.styles, a, &runs, len);
+        styles_changed(s, i);
+    }
+}
+
+// ------------------------------------------------------------------ images
+
+/// The ✕ of image `n`: it leaves the note (its file goes at the next save,
+/// when nothing references it).
+fn remove_image(hwnd: HWND, n: usize) {
+    let _ = with(|s| {
+        let i = idx_of(s, hwnd)?;
+        let w = &mut s.wins[i];
+        if n >= w.sticky.images.len() {
+            return None;
+        }
+        w.sticky.images.remove(n);
+        w.hot_image = None;
+        *w.img.borrow_mut() = ImgCache::default();
+        w.img_sizes.clear();
+        w.body_key = None;
+        w.dirty = true;
+        let (id, list) = (w.id.clone(), w.sticky.images.clone());
+        push(s, WidgetEvent::Images { id, images: list });
+        touch(s, i);
+        draw(s, i);
+        Some(())
+    });
+}
+
+/// A click on image `n` opens its file in the system's viewer.
+fn open_image(hwnd: HWND, n: usize) {
+    let path = with(|s| {
+        let i = idx_of(s, hwnd)?;
+        let name = s.wins[i].sticky.images.get(n)?.clone();
+        image_io::path_of(&s.images_dir, &name)
+    })
+    .flatten();
+    if let Some(path) = path {
+        image_io::shell_open(&path);
+    }
+}
+
 
 fn button(hwnd: HWND, b: Btn) {
     match b {
@@ -2638,15 +3555,7 @@ fn button(hwnd: HWND, b: Btn) {
         Btn::Check => {
             let _ = with(|s| {
                 let i = idx_of(s, hwnd)?;
-                let t = s.wins[i].text.clone();
-                let (a, b) = if s.wins[i].edit.is_some() {
-                    s.wins[i].sel
-                } else {
-                    let end = t.encode_utf16().count();
-                    (end, end)
-                };
-                let e = checklist::toggle_list(&t, a, b, checklist::ListKind::Check);
-                apply_edit(s, i, &e);
+                toggle_list_in(s, i, checklist::ListKind::Check);
                 touch(s, i);
                 Some(())
             });
@@ -3770,7 +4679,8 @@ fn begin_editing(hwnd: HWND, at: Option<usize>) {
     let info = with(|s| {
         let i = idx_of(s, hwnd)?;
         let w = &s.wins[i];
-        let area = paint::body_rect(w.view.w, w.view.h);
+        // With the bar (it shows as soon as the note has the keyboard).
+        let area = paint::body_rect_in(w.view.w, w.view.h, true);
         Some((
             w.edit,
             w.text.clone(),
@@ -3829,6 +4739,9 @@ fn begin_editing(hwnd: HWND, at: Option<usize>) {
 
 /// The note lets go of the keyboard.
 fn end_editing(hwnd: HWND) {
+    if fmt_pop::is_open_for(hwnd) {
+        fmt_pop::close();
+    }
     let ended = with(|s| {
         let i = idx_of(s, hwnd)?;
         let w = &mut s.wins[i];
@@ -3861,9 +4774,10 @@ pub(crate) fn edit_event(parent: HWND, edit_hwnd: HWND, ev: EditEvent) {
     match ev {
         EditEvent::Changed => sync_from_edit(parent, edit_hwnd),
         EditEvent::Escape => {
-            if pop::is_open() || remind_pop::is_open() {
+            if pop::is_open() || remind_pop::is_open() || fmt_pop::is_open() {
                 pop::close();
                 remind_pop::close();
+                fmt_pop::close();
             } else {
                 unsafe {
                     let _ = PostMessageW(Some(parent), WM_END_EDIT, WPARAM(0), LPARAM(0));
@@ -3877,14 +4791,25 @@ pub(crate) fn edit_event(parent: HWND, edit_hwnd: HWND, ev: EditEvent) {
             })
             .flatten()
             .unwrap_or(false);
-            // A popover taking the focus is not the end of the editing.
-            if current && !pop::is_open() && !remind_pop::is_open() {
+            // A popover taking the focus is not the end of the editing, and
+            // neither is the file dialog of this note.
+            let dialog = with(|s| idx_of(s, parent).is_some_and(|i| s.wins[i].dialog)).unwrap_or(false);
+            if current && !pop::is_open() && !remind_pop::is_open() && !dialog {
                 unsafe {
                     let _ = PostMessageW(Some(parent), WM_END_EDIT, WPARAM(0), LPARAM(0));
                 }
             }
         }
         EditEvent::Vertical { up, extend } => move_vertical(parent, edit_hwnd, up, extend),
+        EditEvent::Format(tool) => {
+            let current = with(|s| idx_of(s, parent).is_some_and(|i| s.wins[i].edit == Some(edit_hwnd)))
+                .unwrap_or(false);
+            if current {
+                format_tool(parent, tool);
+            }
+        }
+        EditEvent::Copy { cut } => copy_selection(parent, edit_hwnd, cut),
+        EditEvent::Paste => paste_into(parent, edit_hwnd),
     }
 }
 
@@ -3902,6 +4827,11 @@ fn sync_from_edit(parent: HWND, edit_hwnd: HWND) {
         if w.sel != sel && sel.0 == sel.1 {
             w.anchor = sel.0;
         }
+        // A style chosen for the next letter is gone once the caret moves
+        // without any typing.
+        if w.text == before && w.sel != sel {
+            w.pending = None;
+        }
         w.sel = sel;
         w.caret_on = true;
         w.follow_caret = true;
@@ -3912,7 +4842,7 @@ fn sync_from_edit(parent: HWND, edit_hwnd: HWND) {
         let w = &s.wins[i];
         let (cx, cy, _) = w.body.as_ref()?.caret(sel.1)?;
         let m = w.margins();
-        let area = paint::body_rect(w.view.w, w.view.h);
+        let area = w.body_area();
         Some((
             ((m.0 + area.x + cx) * w.scale) as i32,
             ((m.1 + area.y + cy - w.scroll) * w.scale) as i32,

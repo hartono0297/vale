@@ -145,6 +145,8 @@ pub enum ListEvent {
     New,
     /// The window went: what is not undone now is final.
     Closed,
+    /// The undo strip's 5 s are up: the delete stands.
+    UndoExpired,
 }
 
 // ------------------------------------------------------------------ events
@@ -1528,6 +1530,7 @@ unsafe extern "system" fn list_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
         WM_TIMER if wparam.0 == TIMER_LIST_UNDO => {
             // Five seconds are up: the delete stands.
             let _ = with(hide_strip);
+            push(ListEvent::UndoExpired);
             redraw();
             return LRESULT(0);
         }

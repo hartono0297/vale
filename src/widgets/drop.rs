@@ -41,6 +41,19 @@ use crate::widgets::host;
 /// The most paths one drop adds.
 pub const MAX_PATHS: usize = 32;
 
+/// How many dropped files are looked at: the images among them go to the
+/// note's images (they do not count toward `MAX_PATHS`), the rest keep their
+/// path lines.
+const MAX_DROP_FILES: usize = 64;
+
+/// The dropped files split in order: the image files (`images::is_image_path`)
+/// first, everything else second.
+pub fn split_drop(paths: Vec<PathBuf>) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    paths
+        .into_iter()
+        .partition(|p| crate::widgets::images::is_image_path(&p.to_string_lossy()))
+}
+
 /// The most bytes read from a dropped text: the block is cut to `CLIP_MAX`
 /// chars anyway, and a drag can carry a whole book.
 const MAX_READ_BYTES: usize = 512 * 1024;
@@ -339,16 +352,29 @@ impl IDropTarget_Impl for NoteDrop_Impl {
         self.effect(effect);
         self.accepting.set(None);
         host::drop_hover(self.hwnd, false);
+        // Image files become images; every other file keeps its path line (a
+        // mixed drop does both). Text and links are as before.
+        let mut images = Vec::new();
         let lines = match (data.as_ref(), offer) {
+            (Some(data), Some(Offer::Files)) => {
+                let (imgs, others) = split_drop(read_paths_max(data, MAX_DROP_FILES));
+                images = imgs;
+                drop_lines(DropKind::Files(others))
+            }
             (Some(data), Some(offer)) => read(data, offer).map(drop_lines).unwrap_or_default(),
             _ => Vec::new(),
         };
-        if lines.is_empty() {
+        if lines.is_empty() && images.is_empty() {
             if !effect.is_null() {
                 unsafe { *effect = DROPEFFECT_NONE };
             }
         } else {
-            host::drop_into(self.hwnd, &lines);
+            if !lines.is_empty() {
+                host::drop_into(self.hwnd, &lines);
+            }
+            if !images.is_empty() {
+                host::drop_images(self.hwnd, images);
+            }
         }
         Ok(())
     }

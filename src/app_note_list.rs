@@ -86,7 +86,12 @@ impl App {
                     // being deactivated.
                     self.new_sticky(None, Template::Kosong);
                 }
-                ListEvent::Closed => self.widgets.list_undo = None,
+                // The undo is final: what only it kept (a deleted note's
+                // images) can go now.
+                ListEvent::Closed | ListEvent::UndoExpired => {
+                    self.widgets.list_undo = None;
+                    self.widgets_images_release();
+                }
             }
         }
     }

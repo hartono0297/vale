@@ -1,15 +1,22 @@
 //! `--demo-widgets` (debug builds): the desktop widgets on their own, with a
 //! made-up notes file in the temp folder (never `%APPDATA%`, never the real
-//! config). It seeds sixteen notes, the first time or with the argument
+//! config). It seeds eighteen notes, the first time or with the argument
 //! `reset`: one per paper colour (the Gelap one pinned), a half-done checklist
 //! (with its progress bar), an all-done one, a rolled-up one, and the v2 things
 //! (a reminder chip, an overdue reminder with the clock cat, Tangan and Mono,
 //! each ruling, tape and a pin, the stamps, a 60 % see-through note), one as
 //! "Isi dari clipboard" would start it (from a fixed sample string, never the
 //! real clipboard), a stack of three sheets ("Proyek Dago") and a note tucked
-//! to the right edge of the notch's monitor (hover its tab). After that the
-//! file keeps what was typed, moved and ticked, so a restart shows it
-//! back.
+//! to the right edge of the notch's monitor (hover its tab), one formatted like
+//! mockup B (bold, italic, underline, strike, two highlights, red text, bullets
+//! and a checklist) and one with two images (gradients made up here and written
+//! to the demo's own `note-images` folder). After that the file keeps what was
+//! typed, moved and ticked, so a restart shows it back.
+//!
+//! `DI_WIDGETS_BAR=1|marker|more` (debug only) draws the format bar on the
+//! formatted note WITHOUT giving it the keyboard or the foreground, for a
+//! look at the drawing; `marker` and `more` also show the popover or the
+//! overflow menu (a 200 dip wide note) with `SW_SHOWNA`.
 //!
 //! Everything is live: type, tick, colour, drag, resize, roll, pin, the +, the
 //! x and delete. The widget settings come from the environment
@@ -20,6 +27,7 @@
 //! (or with Ctrl+C in the console).
 
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -44,6 +52,7 @@ use crate::ui::tray;
 use crate::widgets::apply::{apply, set_reminder, settle, stack_out, sticky_for};
 use crate::widgets::cliptext;
 use crate::widgets::host::{Ctx, WM_APP_WIDGET, WidgetEvent, WidgetHost};
+use crate::widgets::styles::{Fg, Hl, Run, Style};
 use crate::widgets::list::{self, Undo};
 use crate::widgets::list_win::{self, Anchor, ListData, ListEvent};
 use crate::widgets::prefs::{WidgetLayer, WidgetPrefs};
@@ -69,6 +78,9 @@ struct Demo {
     font: UiFont,
     /// What the list's last delete took away (`--demo-note-list`).
     undo: Option<Undo>,
+    /// The image files some note referenced since the last save, as the
+    /// island keeps them (`App::widgets_images_release`).
+    known_images: HashSet<String>,
 }
 
 thread_local! {
@@ -262,6 +274,69 @@ fn seed(store: &mut NotesStore, displays: &[Display]) {
         store.set_text(&id, &clip_sample_text(), at);
     }
     seed_stack_and_tuck(store, displays, now);
+    seed_format_notes(store, displays, now);
+}
+
+/// The utf-16 span of `needle` in `text` (its first occurrence).
+fn span(text: &str, needle: &str) -> (usize, usize) {
+    let at = text.find(needle).unwrap_or(0);
+    let s = text[..at].encode_utf16().count();
+    (s, s + needle.encode_utf16().count())
+}
+
+/// Two more notes: one formatted like mockup B, one with two images. The
+/// images are gradients made here, written to the demo's own folder.
+fn seed_format_notes(store: &mut NotesStore, displays: &[Display], now: i64) {
+    let text = "Trip Bandung\nBerangkat Sabtu 06.00, kumpul di stasiun, jangan telat.\n\u{2022} Bawa jaket tebal\n\u{2022} Charger dan power bank\n- [x] Tiket kereta\n- [ ] Booking hotel";
+    let style = |b, i, u, x, hl, fg| Style { b, i, u, x, hl, fg };
+    let marks = [
+        ("Trip Bandung", style(true, false, false, false, None, None)),
+        ("06.00", style(true, false, false, false, Some(Hl::Kuning), None)),
+        ("kumpul di stasiun", style(false, true, false, false, None, None)),
+        ("jangan telat", style(false, false, true, false, None, Some(Fg::Merah))),
+        ("jaket tebal", style(false, false, false, true, None, None)),
+        ("power bank", style(false, false, false, false, Some(Hl::Pink), None)),
+    ];
+    let runs: Vec<Run> = marks
+        .iter()
+        .map(|(needle, style)| {
+            let (s, e) = span(text, needle);
+            Run { s, e, style: *style }
+        })
+        .collect();
+    let at = now - 50;
+    let base = sticky_for(store.list(), displays, &NotchMonitor::Primary, None, at);
+    let sticky = Sticky {
+        paper: Paper::Krem,
+        ..base
+    };
+    if let Some(id) = store.create_sticky(sticky, at) {
+        store.set_text(&id, text, at);
+        // The runs go in after the text: they are fitted to the text there is.
+        if let Some(mut s) = store.get(&id).and_then(|n| n.sticky.clone()) {
+            s.styles = runs;
+            store.set_sticky(&id, Some(s));
+        }
+    }
+    // Two generated images on a Gelap note.
+    let dir = store.images_dir();
+    let names = ["demo-1.png", "demo-2.png"];
+    let mut have = Vec::new();
+    for (k, name) in names.iter().enumerate() {
+        if crate::widgets::image_io::write_gradient(&dir.join(name), 320, 220, 40 * k as u8) {
+            have.push((*name).to_owned());
+        }
+    }
+    let at = now - 45;
+    let base = sticky_for(store.list(), displays, &NotchMonitor::Primary, None, at);
+    let sticky = Sticky {
+        paper: Paper::Gelap,
+        images: have,
+        ..base
+    };
+    if let Some(id) = store.create_sticky(sticky, at) {
+        store.set_text(&id, "Bug login\nMuncul di Android 14 saja", at);
+    }
 }
 
 /// A stack of three sheets on different papers ("Proyek Dago", sheet 1
@@ -347,6 +422,9 @@ fn run_scene(reset: bool, with_list: bool) {
     }
     // A stack shows the sheet whose reminder is overdue.
     settle(&mut store, Local::now().timestamp(), true);
+    // The images in use are known; the day-old strays are cleaned, once.
+    let known_images = store.referenced_images();
+    crate::widgets::image_io::sweep(&store.images_dir(), &known_images, Local::now().timestamp());
     let Some(owner) = create_owner() else {
         eprintln!("widgets-demo: cannot create the owner window");
         return;
@@ -363,10 +441,12 @@ fn run_scene(reset: bool, with_list: bool) {
             clock: None,
             font,
             undo: None,
+            known_images,
         });
     });
     with_demo(Demo::sync);
     with_demo(Demo::remind_fire);
+    with_demo(Demo::bar_preview);
     if with_list {
         with_demo(|d| d.open_list(None));
     }
@@ -379,7 +459,7 @@ fn run_scene(reset: bool, with_list: bool) {
         }
     }
     with_demo(|d| {
-        let _ = d.store.save();
+        d.save();
         d.clock = None;
         d.host.shutdown();
     });
@@ -396,6 +476,7 @@ impl Demo {
             font,
             ..
         } = self;
+        host.set_images_dir(store.images_dir());
         host.sync(&Ctx {
             notes: store.list(),
             prefs: *prefs,
@@ -450,6 +531,50 @@ impl Demo {
         list_win::open(self.owner, anchor, self.list_data());
     }
 
+    /// Writes the notes, then deletes the image files nothing refers to (and
+    /// the list's undo does not hold): the island's rule with the demo's store.
+    fn save(&mut self) {
+        if self.store.save().is_ok() {
+            self.release_images();
+        }
+    }
+
+    /// The files that were referenced and are not now go from the folder.
+    fn release_images(&mut self) {
+        let mut keep = self.store.referenced_images();
+        if let Some(undo) = &self.undo {
+            keep.extend(undo.images());
+        }
+        let gone = crate::widgets::images::to_release(&self.known_images, &keep);
+        crate::widgets::image_io::delete_named(&self.store.images_dir(), &gone);
+        self.known_images = keep;
+    }
+
+    /// `DI_WIDGETS_BAR` (debug builds): the bar on the formatted note without
+    /// the keyboard or the foreground; `marker` and `more` also show the popup.
+    fn bar_preview(&mut self) {
+        let mode = std::env::var("DI_WIDGETS_BAR").unwrap_or_default();
+        if mode.is_empty() || mode == "0" {
+            return;
+        }
+        let id = self
+            .store
+            .list()
+            .iter()
+            .find(|n| n.sticky.as_ref().is_some_and(|s| !s.styles.is_empty()))
+            .map(|n| n.id.clone());
+        let Some(id) = id else { return };
+        if mode == "more" {
+            // A narrow note, so some tools move into the menu.
+            if let Some(mut s) = self.store.get(&id).and_then(|n| n.sticky.clone()) {
+                s.rect.w = 200.0;
+                self.store.set_sticky(&id, Some(s));
+                self.sync();
+            }
+        }
+        self.host.preview_bar(&id, &mode);
+    }
+
     fn save_soon(&self) {
         unsafe {
             SetTimer(Some(self.owner), SAVE_TIMER, SAVE_MS, None);
@@ -492,7 +617,10 @@ impl Demo {
                     }
                 }
                 ListEvent::New => self.make(None, Template::Kosong),
-                ListEvent::Closed => self.undo = None,
+                ListEvent::Closed | ListEvent::UndoExpired => {
+                    self.undo = None;
+                    self.release_images();
+                }
             }
         }
     }
@@ -659,9 +787,7 @@ unsafe extern "system" fn owner_proc(
             unsafe {
                 let _ = KillTimer(Some(hwnd), SAVE_TIMER);
             }
-            with_demo(|d| {
-                let _ = d.store.save();
-            });
+            with_demo(Demo::save);
             return LRESULT(0);
         }
         WM_TIMER if wparam.0 == REMIND_TIMER => {
@@ -694,12 +820,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_demo_seeds_sixteen_notes_with_the_clip_note_a_stack_and_a_tuck() {
+    fn the_demo_seeds_eighteen_notes_with_the_clip_note_a_stack_a_tuck_and_the_two_format_notes() {
         let dir = std::env::temp_dir().join(format!("vale-demo-seed-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let mut store = NotesStore::open(dir.join("notes.json"));
         seed(&mut store, &[]);
-        assert_eq!(store.sticky_count(), 16, "sixteen notes");
+        assert_eq!(store.sticky_count(), 18, "eighteen notes");
         assert!(crate::widgets::sticky::can_add(store.sticky_count()), "under the cap of 20");
         let sample = clip_sample_text();
         assert_eq!(store.list().iter().filter(|n| n.text == sample).count(), 1, "the clip note");
@@ -726,7 +852,37 @@ mod tests {
         let mut ids: Vec<&str> = store.list().iter().map(|n| n.id.as_str()).collect();
         ids.sort_unstable();
         ids.dedup();
-        assert_eq!(ids.len(), 16, "no two notes share an id");
+        assert_eq!(ids.len(), 18, "no two notes share an id");
+        // The formatted note: runs inside its text, every kind of formatting.
+        let formatted = store
+            .list()
+            .iter()
+            .find(|n| n.sticky.as_ref().is_some_and(|s| !s.styles.is_empty()))
+            .expect("the formatted note");
+        let runs = &formatted.sticky.as_ref().unwrap().styles;
+        let len = formatted.text.encode_utf16().count();
+        assert!(runs.iter().all(|r| r.e <= len && r.s < r.e));
+        assert!(runs.iter().any(|r| r.style.b) && runs.iter().any(|r| r.style.i));
+        assert!(runs.iter().any(|r| r.style.u) && runs.iter().any(|r| r.style.x));
+        assert!(runs.iter().any(|r| r.style.hl == Some(Hl::Kuning)));
+        assert!(runs.iter().any(|r| r.style.hl == Some(Hl::Pink)));
+        assert!(runs.iter().any(|r| r.style.fg == Some(Fg::Merah)));
+        assert_eq!(formatted.text.matches('\u{2022}').count(), 2, "two bullets");
+        assert_eq!(crate::widgets::checklist::counts(&formatted.text), (1, 2));
+        // The image note: two generated files in the demo's own folder.
+        let imaged = store
+            .list()
+            .iter()
+            .find(|n| n.sticky.as_ref().is_some_and(|s| !s.images.is_empty()))
+            .expect("the image note");
+        let images = &imaged.sticky.as_ref().unwrap().images;
+        assert_eq!(images.len(), 2);
+        for name in images {
+            assert!(crate::widgets::images::valid_name(name));
+            assert!(store.images_dir().join(name).is_file(), "{name} was written");
+        }
+        assert!(store.images_dir().starts_with(&dir), "in the demo's own folder");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

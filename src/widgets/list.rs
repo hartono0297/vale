@@ -523,6 +523,16 @@ pub struct Undo {
 }
 
 impl Undo {
+    /// The image files the deleted note held: they stay on disk while "Urungkan"
+    /// can still bring the note back.
+    pub fn images(&self) -> Vec<String> {
+        self.note
+            .sticky
+            .as_ref()
+            .map(|s| s.images.clone())
+            .unwrap_or_default()
+    }
+
     /// The snapshot of note `id`, taken before it is deleted.
     pub fn capture(notes: &[Note], id: &str) -> Option<Undo> {
         let note = notes.iter().find(|n| n.id == id)?.clone();

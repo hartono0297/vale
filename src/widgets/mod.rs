@@ -21,9 +21,12 @@ pub mod templates;
 pub mod toolbar;
 pub mod tuck;
 
+pub mod clip_io;
 pub mod drop;
 pub mod edit;
+pub mod fmt_pop;
 pub mod host;
+pub mod image_io;
 pub mod list_win;
 pub mod mood;
 pub mod paint;
