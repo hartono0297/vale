@@ -2630,12 +2630,13 @@ fn button(hwnd: HWND, b: Btn) {
             let _ = with(|s| {
                 let i = idx_of(s, hwnd)?;
                 let t = s.wins[i].text.clone();
-                let caret = if s.wins[i].edit.is_some() {
-                    s.wins[i].sel.1
+                let (a, b) = if s.wins[i].edit.is_some() {
+                    s.wins[i].sel
                 } else {
-                    t.encode_utf16().count()
+                    let end = t.encode_utf16().count();
+                    (end, end)
                 };
-                let e = checklist::toggle_current_line(&t, caret);
+                let e = checklist::toggle_list(&t, a, b, checklist::ListKind::Check);
                 apply_edit(s, i, &e);
                 touch(s, i);
                 Some(())

@@ -42,11 +42,12 @@ pub struct Row {
     pub progress: Option<(usize, usize)>,
 }
 
-/// `text` without a checklist marker at its start.
+/// `text` without a checklist or bullet marker at its start.
 fn unmarked(line: &str) -> &str {
     line.strip_prefix(checklist::OPEN)
         .or_else(|| line.strip_prefix(checklist::DONE))
         .or_else(|| line.strip_prefix("- [X] "))
+        .or_else(|| line.strip_prefix(checklist::BULLET))
         .unwrap_or(line)
 }
 
