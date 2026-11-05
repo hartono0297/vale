@@ -2753,4 +2753,220 @@ mod tests {
         let wide = build_body(&res, long, NoteFont::Vale, TextSize::M, 900.0);
         assert!(narrow.height > wide.height * 1.5);
     }
+
+    // ------------------------------------------------- the format bar, images
+
+    fn target_with(x: f32, y: f32, w: f32, h: f32, extra: &Extras) -> Target {
+        target_full(x, y, w, h, false, None, 0.0, true, false, extra)
+    }
+
+    #[test]
+    fn the_bar_takes_the_footers_place_and_shortens_the_text_area() {
+        let plain = body_rect_in(240.0, 208.0, false);
+        let with_bar = body_rect_in(240.0, 208.0, true);
+        assert_eq!(plain, body_rect(240.0, 208.0));
+        assert_eq!(plain.h, 208.0 - HEADER_H - FOOTER_H);
+        assert_eq!(with_bar.h, 208.0 - HEADER_H - 42.0);
+        assert_eq!((with_bar.x, with_bar.y, with_bar.w), (plain.x, plain.y, plain.w));
+        assert_eq!(FOOTER_H, 24.0, "the footer keeps its height");
+        // Never negative in a tiny note.
+        assert_eq!(body_rect_in(160.0, 40.0, true).h, 0.0);
+    }
+
+    #[test]
+    fn the_bar_is_a_target_only_while_it_shows() {
+        let (w, h) = (240.0, 208.0);
+        let l = toolbar::layout(w);
+        let bold = toolbar::rect_of(&l, Tool::Bold).unwrap();
+        let (x, y) = (bold.x + 4.0, h - BAR_BLOCK + bold.y + 4.0);
+        let bar = Extras { bar: true, images: &[] };
+        assert_eq!(target_with(x, y, w, h, &bar), Target::Bar(BarHit::Tool(Tool::Bold)));
+        // Without the bar the same point is still the text (the 24 dip footer
+        // is lower), and the footer is where it was.
+        assert_eq!(target_with(x, y, w, h, &Extras::NONE), Target::Body);
+        assert_eq!(target_with(x, h - 10.0, w, h, &Extras::NONE), Target::Footer);
+        // The bar's background and margin are inert (never the footer's text
+        // press, which would move the caret).
+        assert_eq!(target_with(x + 100.0, y, w, h, &bar), Target::Bar(BarHit::Bar));
+        assert_eq!(target_with(2.0, h - 2.0, w, h, &bar), Target::Bar(BarHit::Bar));
+        // The text area above it is the text.
+        assert_eq!(target_with(30.0, HEADER_H + 5.0, w, h, &bar), Target::Body);
+        // Just above the block is still the body; the block starts at h - 42.
+        assert_eq!(target_with(30.0, h - BAR_BLOCK - 1.0, w, h, &bar), Target::Body);
+        assert!(matches!(target_with(30.0, h - BAR_BLOCK + 1.0, w, h, &bar), Target::Bar(_)));
+        // A rolled note has no bar and no body.
+        let rolled = target_full(x, 60.0, w, h, true, None, 0.0, true, false, &bar);
+        assert_eq!(rolled, Target::Header);
+    }
+
+    #[test]
+    fn a_bar_button_wins_over_the_grip_and_the_grip_over_the_bar_background() {
+        let (w, h) = (235.0, 208.0);
+        let l = toolbar::layout(w);
+        let last = toolbar::rect_of(&l, Tool::Image).unwrap();
+        let bar = Extras { bar: true, images: &[] };
+        let grip = grip_rect(w, h);
+        // The last button reaches into the grip's x range at 235 dip.
+        assert!(last.right() + 0.0 > grip.x, "the geometry overlaps the grip");
+        let (bx, by) = (grip.x + 1.0, h - BAR_BLOCK + last.y + 4.0);
+        assert!(inside(Rect { x: last.x, y: h - BAR_BLOCK + last.y, w: last.w, h: last.h }, bx, by));
+        assert_eq!(target_with(bx, by, w, h, &bar), Target::Bar(BarHit::Tool(Tool::Image)));
+        // Where the grip is but no button: the grip.
+        assert_eq!(target_with(w - 3.0, h - 3.0, w, h, &bar), Target::Grip);
+        // The bar's background left of the grip is the bar.
+        assert_eq!(target_with(w - 40.0, h - 3.0, w, h, &bar), Target::Bar(BarHit::Bar));
+    }
+
+    #[test]
+    fn an_image_and_its_x_are_targets_after_the_scroll() {
+        let (w, h) = (240.0, 300.0);
+        let (rects, _) = crate::widgets::images::grid(2, w, h, &[]);
+        let ex = Extras { bar: false, images: &rects };
+        let area = body_rect_in(w, h, false);
+        let r = rects[0];
+        // The middle of the first image, unscrolled.
+        let (x, y) = (r.x + r.w / 2.0, area.y + r.y + r.h / 2.0);
+        assert_eq!(target_with(x, y, w, h, &ex), Target::Image(0));
+        // Its x button wins over the image.
+        let xr = image_remove_rect(Rect { x: r.x, y: area.y + r.y, w: r.w, h: r.h });
+        assert_eq!(
+            target_with(xr.x + xr.w / 2.0, xr.y + xr.h / 2.0, w, h, &ex),
+            Target::ImageRemove(0)
+        );
+        assert_eq!((xr.w, xr.h), (20.0, 20.0));
+        assert_eq!(xr.right(), r.right() - 5.0, "5 dip in from the right");
+        assert_eq!(xr.y - (area.y + r.y), 5.0, "and from the top");
+        // The second one.
+        let r1 = rects[1];
+        assert_eq!(
+            target_with(r1.x + 4.0, area.y + r1.y + r1.h - 4.0, w, h, &ex),
+            Target::Image(1)
+        );
+        // Scrolled 20 dip: the rects move up with the text.
+        let scrolled = target_full(x, y - 20.0, w, h, false, None, 20.0, true, false, &ex);
+        assert_eq!(scrolled, Target::Image(0));
+        let moved_off = target_full(x, y, w, h, false, None, 20.0, true, false, &ex);
+        assert_eq!(moved_off, Target::Image(0), "still inside the image, 20 dip lower");
+        // Between the two images (the gap) it is the body.
+        let gap_x = r.right() + 2.0;
+        assert_eq!(target_with(gap_x, area.y + r.y + 10.0, w, h, &ex), Target::Body);
+        // Below the block is the text, and an image scrolled out of the area is
+        // not hit through the header.
+        let far = target_full(x, HEADER_H - 1.0, w, h, false, None, 100.0, true, false, &ex);
+        assert!(!matches!(far, Target::Image(_) | Target::ImageRemove(_)));
+        // Without images nothing changes.
+        assert_eq!(target_with(x, y, w, h, &Extras::NONE), Target::Body);
+    }
+
+    #[test]
+    fn the_image_block_pushes_the_text_down_and_hits_follow() {
+        let res = Res::new(UiFont::Sans).expect("DirectWrite works without a window");
+        let text = "Title\n\u{2022} one\n- [ ] two";
+        let plain = build_body(&res, text, NoteFont::Vale, TextSize::M, 200.0);
+        let with = build_body_with(&res, text, NoteFont::Vale, TextSize::M, 200.0, 90.0, &[]);
+        assert_eq!(with.lines.len(), plain.lines.len());
+        for (a, b) in plain.lines.iter().zip(&with.lines) {
+            assert!((b.y - a.y - 90.0).abs() < 0.01, "every line is 90 dip lower");
+            assert_eq!(a.h, b.h);
+            assert_eq!(a.x, b.x);
+        }
+        assert!((with.height - plain.height - 90.0).abs() < 0.01, "height includes the block");
+        // A hit above the text is the first line; a caret is at its place.
+        assert_eq!(with.index_at(5.0, 10.0), plain.index_at(5.0, 0.0));
+        let (_, cy, _) = with.caret(0).unwrap();
+        let (_, cy0, _) = plain.caret(0).unwrap();
+        assert!((cy - cy0 - 90.0).abs() < 0.01);
+        // The item's box follows the line.
+        let item = &with.lines[2];
+        let area = body_rect(240.0, 208.0);
+        let r = box_rect(item, area, 0.0);
+        let r0 = box_rect(&plain.lines[2], area, 0.0);
+        assert!((r.y - r0.y - 90.0).abs() < 0.01);
+        // A selection rect follows too.
+        let sel = with.selection(0, 3);
+        let sel0 = plain.selection(0, 3);
+        assert!((sel[0].y - sel0[0].y - 90.0).abs() < 0.01);
+        // An empty top is the old layout.
+        let same = build_body_with(&res, text, NoteFont::Vale, TextSize::M, 200.0, 0.0, &[]);
+        assert_eq!(same.height, plain.height);
+    }
+
+    #[test]
+    fn a_bullet_line_is_indented_and_its_marker_is_never_a_hit_target() {
+        let res = Res::new(UiFont::Sans).expect("DirectWrite works without a window");
+        let text = "T\n\u{2022} item\n- [ ] box\nplain";
+        let body = build_body(&res, text, NoteFont::Vale, TextSize::M, 200.0);
+        assert_eq!(body.lines[1].x, BULLET_INDENT);
+        assert_eq!(body.lines[2].x, INDENT);
+        assert_eq!(body.lines[3].x, 0.0);
+        // A bullet has no box to tick: only the checklist line is a `Check`.
+        let area = body_rect(240.0, 208.0);
+        let bullet = &body.lines[1];
+        let r = Rect { x: area.x + 2.0, y: area.y + bullet.y + 3.0, w: 1.0, h: 1.0 };
+        assert_eq!(
+            target(r.x, r.y, 240.0, 208.0, false, Some(&body), 0.0, true),
+            Target::Body
+        );
+        let item = &body.lines[2];
+        let b = box_rect(item, area, 0.0);
+        assert_eq!(
+            target(b.x + 3.0, b.y + 3.0, 240.0, 208.0, false, Some(&body), 0.0, true),
+            Target::Check(2)
+        );
+        // The caret on a bullet line sits after its marker.
+        let (cx, _, _) = body.caret(text.find('i').map_or(0, |_| 4)).unwrap();
+        assert!(cx >= BULLET_INDENT - 0.01, "{cx}");
+    }
+
+    #[test]
+    fn formatting_changes_the_layout_it_is_drawn_from() {
+        use crate::widgets::styles::{Run, Style};
+        let res = Res::new(UiFont::Sans).expect("DirectWrite works without a window");
+        let text = "Title\nthe quick brown fox jumps over the lazy dog again and again";
+        let start = text.find("quick").unwrap();
+        let bold = Style { b: true, ..Style::default() };
+        let runs = [Run { s: start, e: text.encode_utf16().count(), style: bold }];
+        let plain = build_body_with(&res, text, NoteFont::Vale, TextSize::M, 150.0, 0.0, &[]);
+        let styled = build_body_with(&res, text, NoteFont::Vale, TextSize::M, 150.0, 0.0, &runs);
+        // Bold is wider: the line is at least as tall (it may wrap further) and
+        // the caret at its end is further right or lower.
+        assert!(styled.lines[1].h >= plain.lines[1].h);
+        let end = text.encode_utf16().count();
+        let (x0, y0, _) = plain.caret(end).unwrap();
+        let (x1, y1, _) = styled.caret(end).unwrap();
+        assert!(x1 != x0 || y1 != y0, "the weight reached the layout");
+        // A run over the title line is relative to the line: no panic and the
+        // title is laid out as before in size.
+        let on_title = [Run { s: 0, e: 5, style: bold }];
+        let t = build_body_with(&res, text, NoteFont::Vale, TextSize::M, 150.0, 0.0, &on_title);
+        assert_eq!(t.lines[0].h, plain.lines[0].h);
+        // A run that crosses a bullet marker is clipped to the line's text.
+        let b = "T\n\u{2022} abc";
+        let crossing = [Run { s: 0, e: 100, style: bold }];
+        let body = build_body_with(&res, b, NoteFont::Vale, TextSize::M, 150.0, 0.0, &crossing);
+        assert_eq!(body.lines.len(), 2);
+    }
+
+    #[test]
+    fn every_tooltip_fits_the_smallest_note_in_both_languages() {
+        let res = Res::new(UiFont::Sans).expect("DirectWrite works without a window");
+        let min_w = crate::widgets::sticky::MIN_W;
+        for lang in [Lang::Id, Lang::En] {
+            for t in Tool::ALL {
+                let w = tip_width(&res, lang, t);
+                let r = toolbar::tooltip_rect(Rect { x: 10.0, y: 100.0, w: 24.0, h: 24.0 }, w, min_w);
+                assert!(
+                    w + 16.0 <= min_w - 8.0 + 0.01,
+                    "{lang:?} {t:?}: the text ({w:.1}) needs {:.1} of a {min_w} dip note",
+                    w + 16.0
+                );
+                assert!(r.w >= w + 16.0 - 0.01, "{lang:?} {t:?} is not cut");
+            }
+            // The footer message in the same style.
+            for key in [Key::FmtImgMax, Key::FmtImgTooBig, Key::FmtImgBad, Key::StickyDeleteAgain] {
+                let w = text_width(&res, text(lang, key), TIP_TEXT, 600) + 16.0;
+                assert!(w <= 240.0 - 12.0, "{lang:?} {key:?}: {w:.1} in a default note");
+            }
+        }
+    }
 }

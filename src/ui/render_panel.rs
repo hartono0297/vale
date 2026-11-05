@@ -4186,6 +4186,13 @@ impl Renderer {
                 .unwrap_or_default();
             let ink = p.secondary;
             self.text_colored(&when, &self.fonts.micro, foot, ink, NOTE_TIME_ALPHA);
+            // A note with pictures: a small image icon and how many.
+            let pictures = note.sticky.as_ref().map_or(0, |s| s.images.len());
+            if pictures > 0 {
+                let (icon, count) = crate::ui::panel_layout::note_images_rects(*r);
+                self.icon_colored(Icon::Image, icon, 12.0, ink, NOTE_TIME_ALPHA, None);
+                self.text_colored(&pictures.to_string(), &self.fonts.micro, count, ink, NOTE_TIME_ALPHA);
+            }
         }
         if let Some((n, r)) = l.more {
             self.text2(&more_label(lang, n), &self.fonts.small, r);

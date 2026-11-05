@@ -957,8 +957,8 @@ fn sample_note(title: &str) -> super::NoteShare {
     super::NoteShare {
         title: title.into(),
         lines: vec![
-            NoteLine::Item { done: false, text: "Telur".into() },
-            NoteLine::Item { done: true, text: "Kopi".into() },
+            NoteLine::item(false, "Telur"),
+            NoteLine::item(true, "Kopi"),
         ],
         fill: 0xF4E7C6,
         ink: 0x2B211A,

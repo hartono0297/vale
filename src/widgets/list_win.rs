@@ -1154,6 +1154,20 @@ fn paint(l: &mut List) {
                             1.0,
                             Align::Left,
                         );
+                        x += 16.0 + 40.0 + 10.0;
+                    }
+                    // The images: the image icon and how many.
+                    if row.images > 0 {
+                        icon(Icon::Image, Rect { x, y: meta.y, w: 12.0, h: meta.h }, 12.0, pal.secondary, 1.0);
+                        text(
+                            &row.images.to_string(),
+                            Rect { x: x + 16.0, y: meta.y, w: 24.0, h: meta.h },
+                            10.5,
+                            500,
+                            pal.secondary,
+                            1.0,
+                            Align::Left,
+                        );
                     }
                 }
             }

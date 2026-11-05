@@ -58,7 +58,7 @@ const CELL: f32 = 24.0;
 const LABEL_H: f32 = 14.0;
 /// The overflow menu's width and row height. Wide enough for the longest label
 /// with its shortcut in both languages (a test measures it with real text).
-pub const MENU_W: f32 = 224.0;
+pub const MENU_W: f32 = 208.0;
 const ROW_H: f32 = 28.0;
 const MENU_PAD: f32 = 6.0;
 const GAP: f32 = 6.0;
@@ -458,11 +458,18 @@ fn redraw() {
                     ring(r, st.hl.is_none(), hover == Some(Item::Hl(None)));
                     // The text colours: an "A" in each (automatic is the plain text).
                     let fg_items = [None, Some(Fg::Merah), Some(Fg::Biru), Some(Fg::Hijau)];
+                    // Each "A" sits on a chip of the paper's own lightness, so the
+                    // colour is seen as it will be (the plate itself may be dark).
+                    let (chip, plain) = if st.dark_paper {
+                        (0x24201E, 0xEDE7E1)
+                    } else {
+                        (0xF7EFD9, crate::widgets::sticky::INK)
+                    };
                     for (i, f) in fg_items.iter().enumerate() {
                         let r = fg_cell(i);
-                        set(pal.button, 1.0);
+                        set(chip, 1.0);
                         unsafe { rt.FillRoundedRectangle(&rr(r, 7.0), brush) };
-                        let ink = f.map_or(pal.text, |f| styles::fg_rgb(f, st.dark_paper));
+                        let ink = f.map_or(plain, |f| styles::fg_rgb(f, st.dark_paper));
                         fmt_text(res, &rt, brush, "A", r, 13.0, 700, ink, 1);
                         ring_round(&rt, brush, &rr, r, st.fg == *f, hover == Some(Item::Fg(*f)), pal.accent, pal.text);
                     }

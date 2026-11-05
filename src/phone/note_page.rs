@@ -7,6 +7,12 @@
 //! The boxes of a checklist are `disabled` and there is no form and no
 //! script, so nothing ticked on the phone can reach the PC.
 //!
+//! The note's formatting is shown (bold, italic, underline, strike, a
+//! highlight and a text colour, and bullets), every text segment escaped; the
+//! colours are fixed hex values from `styles` (the lighter variants on a Gelap
+//! note, which is a fixed dark fill here). The title stays plain. Images are
+//! never sent.
+//!
 //! Every string of the note is HTML-escaped. The page's own words are an
 //! `id` / `en` pair, chosen by the runtime language like the shelf page's.
 
@@ -14,14 +20,47 @@ use crate::i18n::Lang;
 use crate::theme::{Accent, Palette};
 use crate::widgets::checklist;
 use crate::widgets::sticky::{self, Paper};
+use crate::widgets::styles::{self, Run, Style};
+
+/// A stretch of one line in one style.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Span {
+    pub text: String,
+    pub style: Style,
+}
+
+impl Span {
+    pub fn plain(text: &str) -> Span {
+        Span { text: text.to_owned(), style: Style::default() }
+    }
+}
 
 /// One line under the title.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NoteLine {
     /// A plain line (possibly empty), shown as it is typed.
-    Text(String),
+    Text(Vec<Span>),
     /// A checklist item (`- [ ] ` or `- [x] `): shown, never tickable.
-    Item { done: bool, text: String },
+    Item { done: bool, spans: Vec<Span> },
+    /// A bullet (`\u{2022} `).
+    Bullet(Vec<Span>),
+}
+
+impl NoteLine {
+    /// A plain line of one unstyled span.
+    pub fn text(s: &str) -> NoteLine {
+        NoteLine::Text(vec![Span::plain(s)])
+    }
+
+    /// An item of one unstyled span.
+    pub fn item(done: bool, s: &str) -> NoteLine {
+        NoteLine::Item { done, spans: vec![Span::plain(s)] }
+    }
+
+    /// A bullet of one unstyled span.
+    pub fn bullet(s: &str) -> NoteLine {
+        NoteLine::Bullet(vec![Span::plain(s)])
+    }
 }
 
 /// A note as it was when the owner sent it: the island makes it, the phone
@@ -46,12 +85,15 @@ pub struct NoteShare {
 pub const GELAP_FILL: u32 = 0x1B1D1F;
 
 impl NoteShare {
-    /// The snapshot of a note's `text` on `paper`. The title is the first
-    /// line (a checklist marker on it is dropped); the rest follow in order,
-    /// `- [ ] ` and `- [x] ` lines as items. The colours are the note's own
-    /// (`sticky::tones`); Gelap is `GELAP_FILL` with the island's light text.
+    /// The snapshot of a note's `text` and formatting `runs` on `paper`. The
+    /// title is the first line (a marker on it is dropped, and it stays
+    /// plain); the rest follow in order, `- [ ] ` and `- [x] ` lines as items,
+    /// `\u{2022} ` lines as bullets, every line cut into spans by the runs. The
+    /// colours are the note's own (`sticky::tones`); Gelap is `GELAP_FILL` with
+    /// the island's light text.
     pub fn from_note(
         text: &str,
+        runs: &[Run],
         paper: Paper,
         island: &Palette,
         accent: Accent,
@@ -60,22 +102,21 @@ impl NoteShare {
         let text = checklist::normalize(text);
         let tones = sticky::tones(paper, island, accent);
         let fill = if paper == Paper::Gelap { GELAP_FILL } else { tones.fill };
-        let mut lines: Vec<NoteLine> = text
-            .split('\n')
+        let runs = styles::normalise(runs, &text);
+        let units: Vec<u16> = text.encode_utf16().collect();
+        let mut lines: Vec<NoteLine> = checklist::lines(&text)
+            .into_iter()
             .skip(1)
             .map(|l| {
-                let item = l
-                    .strip_prefix(checklist::OPEN)
-                    .map(|t| (false, t))
-                    .or_else(|| l.strip_prefix(checklist::DONE).map(|t| (true, t)))
-                    .or_else(|| l.strip_prefix("- [X] ").map(|t| (true, t)));
-                match item {
-                    Some((done, t)) => NoteLine::Item { done, text: t.to_owned() },
-                    None => NoteLine::Text(l.to_owned()),
+                let spans = spans_of(&units, l.content_start(), l.end, &runs);
+                match l.marker {
+                    checklist::Marker::Item { checked } => NoteLine::Item { done: checked, spans },
+                    checklist::Marker::Bullet => NoteLine::Bullet(spans),
+                    checklist::Marker::None => NoteLine::Text(spans),
                 }
             })
             .collect();
-        while matches!(lines.last(), Some(NoteLine::Text(t)) if t.trim().is_empty()) {
+        while matches!(lines.last(), Some(NoteLine::Text(t)) if t.iter().all(|s| s.text.trim().is_empty())) {
             lines.pop();
         }
         NoteShare {
@@ -87,6 +128,25 @@ impl NoteShare {
             pc: pc.to_owned(),
         }
     }
+}
+
+/// The units `a..b` of the text cut into spans at every change of style.
+fn spans_of(units: &[u16], a: usize, b: usize, runs: &[Run]) -> Vec<Span> {
+    let mut out: Vec<Span> = Vec::new();
+    let mut start = a;
+    while start < b {
+        let style = styles::style_at(runs, start + 1);
+        let mut end = start + 1;
+        while end < b && styles::style_at(runs, end + 1) == style {
+            end += 1;
+        }
+        out.push(Span {
+            text: String::from_utf16_lossy(&units[start..end]),
+            style,
+        });
+        start = end;
+    }
+    out
 }
 
 /// The page's own words.
@@ -146,8 +206,50 @@ p{margin:0;min-height:1.5em;overflow-wrap:anywhere;white-space:pre-wrap}\
 p.i{display:flex;gap:10px;align-items:flex-start}\
 input{flex:none;width:20px;height:20px;margin:3px 0 0}\
 .d{text-decoration:line-through}\
+.m{flex:none;width:20px;text-align:center}\
+mark{border-radius:3px;padding:0 1px}\
 footer{box-sizing:border-box;max-width:640px;margin:0 auto;padding:12px 20px 32px;font-size:.875rem;display:flex;flex-wrap:wrap;gap:6px 16px;justify-content:space-between}\
 a{padding:8px 0}";
+
+/// The spans of a line as HTML: each text escaped, wrapped in `<b>`, `<i>`,
+/// `<u>`, `<s>` and, inside them, `<mark>` (the highlight, always in the dark
+/// ink) or a coloured `<span>`. A done item keeps its dimmed look, so it takes
+/// no colour or highlight (a bold or an italic still shows).
+fn push_spans(html: &mut String, spans: &[Span], dark: bool, done: bool) {
+    for span in spans {
+        let st = span.style;
+        let (hl, fg) = if done { (None, None) } else { (st.hl, st.fg) };
+        for (on, tag) in [(st.b, "b"), (st.i, "i"), (st.u, "u"), (st.x, "s")] {
+            if on {
+                html.push('<');
+                html.push_str(tag);
+                html.push('>');
+            }
+        }
+        if let Some(h) = hl {
+            html.push_str(&format!(
+                "<mark style=\"background:{};color:{}\">",
+                hex(styles::hl_rgb(h)),
+                hex(styles::HL_INK)
+            ));
+        } else if let Some(f) = fg {
+            html.push_str(&format!("<span style=\"color:{}\">", hex(styles::fg_rgb(f, dark))));
+        }
+        html.push_str(&escape(&span.text));
+        if hl.is_some() {
+            html.push_str("</mark>");
+        } else if fg.is_some() {
+            html.push_str("</span>");
+        }
+        for (on, tag) in [(st.x, "s"), (st.u, "u"), (st.i, "i"), (st.b, "b")] {
+            if on {
+                html.push_str("</");
+                html.push_str(tag);
+                html.push('>');
+            }
+        }
+    }
+}
 
 /// The note's page: one complete HTML document, read only.
 pub fn render(note: &NoteShare, lang: Lang) -> String {
@@ -178,12 +280,17 @@ pub fn render(note: &NoteShare, lang: Lang) -> String {
     html.push_str("</h1>");
     for line in &note.lines {
         match line {
-            NoteLine::Text(t) => {
+            NoteLine::Text(spans) => {
                 html.push_str("<p>");
-                html.push_str(&escape(t));
+                push_spans(&mut html, spans, dark, false);
                 html.push_str("</p>");
             }
-            NoteLine::Item { done, text } => {
+            NoteLine::Bullet(spans) => {
+                html.push_str("<p class=\"i\"><span class=\"m\">&#8226;</span><span>");
+                push_spans(&mut html, spans, dark, false);
+                html.push_str("</span></p>");
+            }
+            NoteLine::Item { done, spans } => {
                 html.push_str("<p class=\"i\"><input type=\"checkbox\" disabled");
                 if *done {
                     html.push_str(" checked");
@@ -193,7 +300,7 @@ pub fn render(note: &NoteShare, lang: Lang) -> String {
                     html.push_str(" class=\"d\"");
                 }
                 html.push('>');
-                html.push_str(&escape(text));
+                push_spans(&mut html, spans, dark, *done);
                 html.push_str("</span></p>");
             }
         }
@@ -240,7 +347,7 @@ mod tests {
 
     fn snapshot(text: &str, paper: Paper) -> NoteShare {
         let isl = island(Accent::Terracotta, Surface::Espresso);
-        NoteShare::from_note(text, paper, &isl, Accent::Terracotta, "KANTOR")
+        NoteShare::from_note(text, &[], paper, &isl, Accent::Terracotta, "KANTOR")
     }
 
     #[test]
@@ -248,9 +355,9 @@ mod tests {
         let n = note(
             NASTY,
             vec![
-                NoteLine::Text(NASTY.into()),
-                NoteLine::Item { done: false, text: NASTY.into() },
-                NoteLine::Item { done: true, text: NASTY.into() },
+                NoteLine::text(NASTY),
+                NoteLine::item(false, NASTY),
+                NoteLine::item(true, NASTY),
             ],
         );
         let page = render(&n, Lang::En);
@@ -271,9 +378,9 @@ mod tests {
         let n = note(
             "Daftar belanja",
             vec![
-                NoteLine::Item { done: false, text: "Telur".into() },
-                NoteLine::Item { done: true, text: "Kopi".into() },
-                NoteLine::Text("  dua  spasi".into()),
+                NoteLine::item(false, "Telur"),
+                NoteLine::item(true, "Kopi"),
+                NoteLine::text("  dua  spasi"),
             ],
         );
         let page = render(&n, Lang::Id);
@@ -298,7 +405,7 @@ mod tests {
     fn the_page_is_one_small_document_with_no_script_and_no_outside_address() {
         let n = note(
             "T",
-            vec![NoteLine::Text("javascript:alert(1) http://evil.example".into())],
+            vec![NoteLine::text("javascript:alert(1) http://evil.example")],
         );
         // The note's own words may say "http"; the page itself adds none.
         let mut plain = n.clone();
@@ -356,7 +463,7 @@ mod tests {
             for accent in Accent::ALL {
                 let isl = island(*accent, surface);
                 for paper in Paper::ALL {
-                    let n = NoteShare::from_note("T\n- [x] a", paper, &isl, *accent, "PC");
+                    let n = NoteShare::from_note("T\n- [x] a", &[], paper, &isl, *accent, "PC");
                     for (name, ink) in [("ink", n.ink), ("soft", n.soft)] {
                         let c = contrast(ink, n.fill);
                         assert!(c >= 4.5, "{paper:?} {name} on {surface:?}/{accent:?}: {c:.2}");
@@ -379,10 +486,10 @@ mod tests {
         assert_eq!(
             n.lines,
             vec![
-                NoteLine::Item { done: false, text: "Telur".into() },
-                NoteLine::Item { done: true, text: "Kopi".into() },
-                NoteLine::Item { done: true, text: "Susu".into() },
-                NoteLine::Text("biasa".into()),
+                NoteLine::item(false, "Telur"),
+                NoteLine::item(true, "Kopi"),
+                NoteLine::item(true, "Susu"),
+                NoteLine::text("biasa"),
             ],
             "trailing blank lines are dropped"
         );
@@ -393,19 +500,175 @@ mod tests {
         assert_eq!(
             n.lines,
             vec![
-                NoteLine::Text("satu".into()),
-                NoteLine::Text(String::new()),
-                NoteLine::Text("dua".into()),
+                NoteLine::text("satu"),
+                NoteLine::Text(vec![]),
+                NoteLine::text("dua"),
             ]
         );
         // `- [ ]` with no space after it is just text.
         let n = snapshot("T\n- [ ]\n-[ ] x", Paper::Krem);
         assert_eq!(
             n.lines,
-            vec![NoteLine::Text("- [ ]".into()), NoteLine::Text("-[ ] x".into())]
+            vec![NoteLine::text("- [ ]"), NoteLine::text("-[ ] x")]
         );
         // An empty note has an empty title and no lines.
         let n = snapshot("", Paper::Krem);
         assert!(n.title.is_empty() && n.lines.is_empty());
+    }
+
+    // ------------------------------------------------------ formatting, bullets
+
+    fn run(s: usize, e: usize, style: Style) -> Run {
+        Run { s, e, style }
+    }
+
+    fn bold() -> Style {
+        Style { b: true, ..Style::default() }
+    }
+
+    fn formatted(text: &str, runs: &[Run], paper: Paper) -> NoteShare {
+        let isl = island(Accent::Terracotta, Surface::Espresso);
+        NoteShare::from_note(text, runs, paper, &isl, Accent::Terracotta, "KANTOR")
+    }
+
+    #[test]
+    fn a_line_is_cut_into_spans_at_every_change_of_style() {
+        let text = "T\nbold plain ital";
+        // "bold" is 2..6, "ital" 13..17.
+        let ital = Style { i: true, ..Style::default() };
+        let n = formatted(text, &[run(2, 6, bold()), run(13, 17, ital)], Paper::Krem);
+        assert_eq!(
+            n.lines,
+            vec![NoteLine::Text(vec![
+                Span { text: "bold".into(), style: bold() },
+                Span::plain(" plain "),
+                Span { text: "ital".into(), style: ital },
+            ])]
+        );
+        // The title is plain whatever the runs say.
+        let n = formatted(text, &[run(0, 1, bold())], Paper::Krem);
+        assert_eq!(n.title, "T");
+        assert_eq!(n.lines, vec![NoteLine::text("bold plain ital")]);
+    }
+
+    #[test]
+    fn bullets_and_items_keep_their_markers_out_of_the_spans() {
+        let text = "T\n\u{2022} one\n- [x] two\n\u{2022} \u{1F600} three";
+        let n = formatted(text, &[run(4, 7, bold())], Paper::Krem);
+        assert_eq!(n.lines.len(), 3);
+        assert_eq!(
+            n.lines[0],
+            NoteLine::Bullet(vec![Span { text: "one".into(), style: bold() }])
+        );
+        assert_eq!(n.lines[1], NoteLine::item(true, "two"));
+        assert_eq!(n.lines[2], NoteLine::bullet("\u{1F600} three"), "an emoji stays whole");
+        // A run over a marker never puts the marker in a span.
+        let n = formatted(text, &[run(0, 100, bold())], Paper::Krem);
+        assert_eq!(n.lines[0], NoteLine::Bullet(vec![Span { text: "one".into(), style: bold() }]));
+    }
+
+    #[test]
+    fn every_segment_is_escaped_inside_styled_spans() {
+        let st = Style { b: true, hl: Some(styles::Hl::Pink), ..Style::default() };
+        let n = note(
+            "T",
+            vec![
+                NoteLine::Text(vec![Span { text: NASTY.into(), style: st }]),
+                NoteLine::Bullet(vec![Span {
+                    text: NASTY.into(),
+                    style: Style { fg: Some(styles::Fg::Merah), ..Style::default() },
+                }]),
+            ],
+        );
+        let page = render(&n, Lang::En);
+        let safe = "&lt;b&gt;&amp;amp&quot;&#39;";
+        assert_eq!(page.matches(safe).count(), 2, "the two spans: {page}");
+        assert!(!page.contains("<b>&amp"), "{page}");
+        assert!(!page.contains("&amp\""), "{page}");
+        // The styles are tags around the escaped text.
+        assert!(page.contains(&format!("<b><mark style=\"background:#F7B8CF;color:#2B211A\">{safe}</mark></b>")), "{page}");
+        assert!(page.contains(&format!("<span style=\"color:#A11F18\">{safe}</span>")), "{page}");
+    }
+
+    #[test]
+    fn styles_nest_in_a_fixed_order_and_close_in_reverse() {
+        let all = Style {
+            b: true,
+            i: true,
+            u: true,
+            x: true,
+            hl: None,
+            fg: Some(styles::Fg::Biru),
+        };
+        let n = note("T", vec![NoteLine::Text(vec![Span { text: "x".into(), style: all }])]);
+        let page = render(&n, Lang::En);
+        assert!(
+            page.contains("<p><b><i><u><s><span style=\"color:#1D4E9E\">x</span></s></u></i></b></p>"),
+            "{page}"
+        );
+        // Plain text has no tag at all.
+        let n = note("T", vec![NoteLine::text("plain")]);
+        assert!(render(&n, Lang::En).contains("<p>plain</p>"));
+    }
+
+    #[test]
+    fn a_bullet_is_a_dot_and_its_text_and_no_image_is_ever_sent() {
+        let n = note("T", vec![NoteLine::bullet("satu")]);
+        let page = render(&n, Lang::Id);
+        assert!(page.contains("<p class=\"i\"><span class=\"m\">&#8226;</span><span>satu</span></p>"), "{page}");
+        assert!(!page.to_ascii_lowercase().contains("<img"));
+        // The page with every kind of formatting is still one small document.
+        let st = Style { b: true, i: true, hl: Some(styles::Hl::Kuning), ..Style::default() };
+        let n = note("T", vec![NoteLine::Text(vec![Span { text: "a".into(), style: st }])]);
+        let page = render(&n, Lang::En);
+        for bad in ["<script", "http", "//", "<link", "<img", "url(", "@import"] {
+            assert!(!page.to_ascii_lowercase().contains(bad), "{bad} in {page}");
+        }
+    }
+
+    #[test]
+    fn a_done_item_keeps_its_dimmed_look_whatever_its_runs_say() {
+        let st = Style { b: true, hl: Some(styles::Hl::Kuning), fg: Some(styles::Fg::Merah), ..Style::default() };
+        let n = note(
+            "T",
+            vec![NoteLine::Item { done: true, spans: vec![Span { text: "x".into(), style: st }] }],
+        );
+        let page = render(&n, Lang::En);
+        assert!(page.contains("<span class=\"d\"><b>x</b></span>"), "bold stays, colour and highlight do not: {page}");
+        assert!(!page.contains("<mark"));
+    }
+
+    #[test]
+    fn the_text_colours_read_on_every_phone_fill() {
+        for surface in SURFACES {
+            for accent in Accent::ALL {
+                let isl = island(*accent, surface);
+                for paper in Paper::ALL {
+                    let n = NoteShare::from_note("T\nx", &[], paper, &isl, *accent, "PC");
+                    let dark = n.fill == GELAP_FILL;
+                    for f in styles::Fg::ALL {
+                        let c = contrast(styles::fg_rgb(f, dark), n.fill);
+                        assert!(c >= 4.5, "{f:?} on {paper:?} ({surface:?}/{accent:?}): {c:.2}");
+                    }
+                    // A highlight is its own fill with the dark ink.
+                    for h in styles::Hl::ALL {
+                        assert!(contrast(styles::HL_INK, styles::hl_rgb(h)) >= 4.5);
+                    }
+                }
+            }
+        }
+        // The Gelap fill itself, with the light variants.
+        for f in styles::Fg::ALL {
+            assert!(contrast(styles::fg_rgb(f, true), GELAP_FILL) >= 4.5);
+        }
+    }
+
+    #[test]
+    fn the_page_picks_the_variant_of_the_fill() {
+        let st = Style { fg: Some(styles::Fg::Merah), ..Style::default() };
+        let mut n = note("T", vec![NoteLine::Text(vec![Span { text: "x".into(), style: st }])]);
+        assert!(render(&n, Lang::En).contains("color:#A11F18"), "a pastel fill");
+        n.fill = GELAP_FILL;
+        assert!(render(&n, Lang::En).contains("color:#FF8A80"), "the Gelap fill");
     }
 }

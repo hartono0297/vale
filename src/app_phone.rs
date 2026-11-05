@@ -329,6 +329,7 @@ impl App {
         let island = crate::theme::island(accent, crate::theme::current().surface);
         let share = NoteShare::from_note(
             &note.text,
+            &sticky.styles,
             sticky.paper,
             &island,
             accent,

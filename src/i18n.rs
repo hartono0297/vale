@@ -1064,7 +1064,7 @@ keys! {
     FmtStrike => "Coret", "Strikethrough";
     FmtBullet => "Daftar butir", "Bullet list";
     FmtCheck => "Checklist", "Checklist";
-    FmtMarker => "Stabilo & warna", "Highlight & colour";
+    FmtMarker => "Stabilo", "Highlight";
     FmtImage => "Gambar", "Image";
     FmtMore => "Lainnya", "More";
     FmtHlLabel => "Stabilo", "Highlighter";

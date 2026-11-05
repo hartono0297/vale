@@ -40,6 +40,8 @@ pub struct Row {
     pub reminder: Option<bool>,
     /// Done and total items of a checklist.
     pub progress: Option<(usize, usize)>,
+    /// How many images the note holds (shown with an image icon).
+    pub images: usize,
 }
 
 /// `text` without a checklist or bullet marker at its start.
@@ -105,6 +107,7 @@ pub fn rows(notes: &[Note], now: i64) -> Vec<Row> {
                 stack: unit.is_stack().then_some((k + 1, len)),
                 reminder: reminder_of(s, now),
                 progress: (total > 0).then_some((done, total)),
+                images: s.images.len(),
             });
         }
     }
@@ -367,9 +370,10 @@ pub fn row_geo(w: f32, meta: bool) -> RowGeo {
     }
 }
 
-/// Whether the row shows a third line.
+/// Whether the row shows a third line (a stack badge, a checklist count or
+/// the images).
 pub fn has_meta(r: &Row) -> bool {
-    r.stack.is_some() || r.progress.is_some()
+    r.stack.is_some() || r.progress.is_some() || r.images > 0
 }
 
 /// The icons a row shows right-aligned under its time, left to right.
@@ -652,6 +656,30 @@ mod tests {
         assert_eq!(snippet_of("J\n- [ ]tanpa spasi"), "- [ ]tanpa spasi");
         assert_eq!(snippet_of("J\r\nbaris\r\ndua"), "baris \u{b7} dua");
         assert_eq!(snippet_of("J\n\tbertab\tdi\ttengah"), "bertab di tengah");
+    }
+
+    #[test]
+    fn a_bullet_marker_is_stripped_from_the_snippet_and_the_title() {
+        assert_eq!(snippet_of("J\n\u{2022} satu\n\u{2022}   dua  tiga\n- [ ] empat"), "satu \u{b7} dua tiga \u{b7} empat");
+        // A bullet alone leaves nothing; a bullet without its space is text.
+        assert_eq!(snippet_of("J\n\u{2022} \nbiasa"), "biasa");
+        assert_eq!(snippet_of("J\n\u{2022}tanpa"), "\u{2022}tanpa");
+        assert_eq!(title_of("\u{2022} Judul\nx"), "Judul");
+        // An emoji after the bullet stays whole.
+        assert_eq!(snippet_of("J\n\u{2022} \u{1F600} ok"), "\u{1F600} ok");
+    }
+
+    #[test]
+    fn a_row_counts_the_notes_images_and_shows_a_third_line_for_them() {
+        let notes = [
+            note("a", "with pictures", 50, |s| s.images = vec!["a.png".into(), "b.jpg".into()]),
+            note("b", "none", 40, |_| {}),
+        ];
+        let r = rows(&notes, 100);
+        assert_eq!(r[0].images, 2);
+        assert_eq!(r[1].images, 0);
+        assert!(has_meta(&r[0]), "the image count has a line of its own");
+        assert!(!has_meta(&r[1]));
     }
 
     #[test]
