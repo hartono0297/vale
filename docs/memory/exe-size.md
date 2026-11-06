@@ -225,3 +225,22 @@ No new crate and no new `windows` feature (WIC, `IFileOpenDialog`, the clipboard
 two gradient PNGs are generated at run time in debug builds only: no image is
 bundled, so the exe grew by code and strings alone.
 
+## Dirty-rect present and the EQ skip (2026-11-06)
+
+[[bata-idle-power-budget]], "Dirty-rect present and the EQ skip": `ui/dirty.rs` (pure
+plan, bounds and `EqKey`, with its tests), the renderer's dirty clip and
+`UpdateLayeredWindowIndirect` present, the app's `full_redraw` flags and
+`draw_eq_tick`. The self-check (`DI_DIRTY_CHECK`) and the demo's `DI_HALO` are
+debug-only. `cargo build --release --locked`, 0 warnings. Both exes were built
+from clean copies of the sources in scratchpad folders (the embedded PDB path
+moves either exe by up to 512 bytes), `main` at 996b646 (5.0.0) against this
+branch:
+
+| Build | Bytes |
+|---|---|
+| `main` (996b646, 5.0.0) | 3,830,784 |
+| this branch (dirty rect and EQ skip) | 3,841,536 (+10,752, +0.3 %) |
+
+No new crate and no new `windows` feature (`UpdateLayeredWindowIndirect` and
+`UPDATELAYEREDWINDOWINFO` are in `Win32_UI_WindowsAndMessaging`, already on). The
+growth is the planner, the clip and the key; the self-check compiles out.

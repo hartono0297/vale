@@ -1,6 +1,7 @@
 pub mod app_icon;
 pub mod cat_style;
 pub mod cli_input;
+pub mod dirty;
 #[cfg(debug_assertions)]
 pub mod demo;
 pub mod dock;

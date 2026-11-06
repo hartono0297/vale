@@ -66,6 +66,9 @@
 //! - `DI_NOTCH=WxH` sizes the closed island in every scene (`160x28` to
 //!   `300x44`, clamped; 190x34 without it): the idle, music, timer and
 //!   lyric views follow it, notices and the panel do not.
+//! - `DI_HALO=1` draws the faint drag margin round the closed island;
+//!   `DI_DIRTY_CHECK=1` makes the renderer compare every dirty-rect frame with
+//!   a full redraw and keeps settled scenes redrawing (prints any mismatch).
 //! - `DI_NOTCH_FILL=transparent` draws the compact views and notices with the
 //!   see-through background in every scene (the panel stays solid), at
 //!   `DI_NOTCH_OPACITY=0..100` percent (30 by default); the scenes
@@ -1890,6 +1893,12 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
     let frozen_reveal: Option<f32> = env("DI_DEMO_REVEAL");
     let notch = demo_notch();
     let frozen_shelf: Option<f32> = env("DI_DEMO_SHELF");
+    // `DI_DIRTY_CHECK=1` (the renderer's dirty-rect self-check): every settled
+    // scene keeps redrawing, so each one is also drawn as a dirty rect.
+    let dirty_check = std::env::var("DI_DIRTY_CHECK").is_ok_and(|v| v == "1");
+    // `DI_HALO=1` draws the drag halo (the app's `halo` poll turns it on while
+    // the pointer nears the island): its rect is part of the dirty bounds.
+    renderer.set_halo(std::env::var("DI_HALO").is_ok_and(|v| v == "1"));
     let dock_x: Option<f32> = env("DI_DOCK_X");
     let steps = 2 * scenes.len();
     println!("demo: 2 s per view, Pill then Notch ({steps} steps); kill the process to stop");
@@ -1966,6 +1975,7 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
             || (scene.view == View0::MediaLyric && lyric_scroll.is_none() && scroll > 0.0)
             || reveal_playing
             || shelf_playing
+            || dirty_check
             || live.is_some();
         if step != settled || animated {
             if t >= 1.0 {
@@ -2338,6 +2348,11 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                         },
                     }
                 },
+                // A morph, a slide, a reveal or a fade is on: all of it.
+                full_redraw: t < 1.0
+                    || slide != 0.0
+                    || scene.reveal.is_some()
+                    || scene.fade_from.is_some(),
             };
             if let Err(error) = renderer.draw(&win, style, shape, &frame, opacity) {
                 eprintln!("demo: draw failed: {error}");
