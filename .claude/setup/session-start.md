@@ -21,6 +21,6 @@ install whatever is missing. Then create `.claude/preflight.done` (today's date
 | Obsidian vault | `docs/memory/index.md` exists in this project | Create it with the Decisions / Gotchas / Conventions sections and commit it. If the Obsidian app is missing (Windows: `winget list --id Obsidian.Obsidian`), install it with `winget install --id Obsidian.Obsidian -e` |
 
 - A newly added MCP server only loads in a new session. If Context7 was just
-  installed, tell me to restart Claude Code before running `build`.
+  installed, tell me to restart Claude Code before starting work.
 - Opening `docs/` as a vault in the Obsidian app is my step; remind me if it's new.
 - To run it again (e.g. on a new machine), I delete `.claude/preflight.done`.
