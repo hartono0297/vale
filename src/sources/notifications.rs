@@ -1,7 +1,8 @@
 use std::collections::HashSet;
 use std::process::Command;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::time::Duration;
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 use windows::Foundation::{Size, TypedEventHandler};
 use windows::Storage::Streams::DataReader;
@@ -16,10 +17,12 @@ use windows::Win32::Graphics::Imaging::{
     WICBitmapDitherTypeNone, WICBitmapInterpolationModeFant, WICBitmapPaletteTypeMedianCut,
     WICBitmapUsePremultipliedAlpha, WICDecodeMetadataCacheOnDemand,
 };
+use windows::Win32::System::SystemInformation::GetTickCount;
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, COINIT_MULTITHREADED, CoCreateInstance,
     CoInitializeEx, CoUninitialize,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
 use windows::Win32::UI::Shell::{
     IShellItemImageFactory, SHCreateItemFromParsingName, SHCreateMemStream, SIIGBF_BIGGERSIZEOK,
     SIIGBF_ICONONLY,
@@ -44,6 +47,84 @@ const POLL_INTERVAL: Duration = Duration::from_millis(1000);
 /// Re-read interval when change events are delivered, so a missed event
 /// delays a toast by at most this long.
 const SAFETY_NET_INTERVAL: Duration = Duration::from_secs(60);
+/// Poll mode: input within this many ms counts as "at the PC" (1 s pace).
+const ACTIVE_WINDOW_MS: u32 = 60_000;
+/// Poll mode: the pace once there has been no input for `ACTIVE_WINDOW_MS`.
+const IDLE_POLL_MS: u64 = 5_000;
+
+/// Poll mode: whether this wake should read the Action Center. With input in
+/// the last `ACTIVE_WINDOW_MS` every wake (1 s) does; otherwise only once
+/// `IDLE_POLL_MS` have passed since the last read. The thread wake and the
+/// input read are cheap, the `GetNotificationsAsync` RPC is what costs.
+fn poll_due(input_idle_ms: u32, ms_since_last_poll: u64) -> bool {
+    input_idle_ms < ACTIVE_WINDOW_MS || ms_since_last_poll >= IDLE_POLL_MS
+}
+
+/// Milliseconds since the last input, from `GetLastInputInfo`'s tick
+/// (`last_input`) and the current tick; a failed read (`None`) counts as
+/// "just now", so the pace stays quick. Both ticks wrap at 49.7 days.
+fn idle_ms(last_input: Option<u32>, now_tick: u32) -> u32 {
+    last_input.map_or(0, |tick| now_tick.wrapping_sub(tick))
+}
+
+/// Milliseconds since the last keyboard or mouse input in this session.
+fn input_idle_ms() -> u32 {
+    let mut info = LASTINPUTINFO {
+        cbSize: size_of::<LASTINPUTINFO>() as u32,
+        dwTime: 0,
+    };
+    let last = unsafe { GetLastInputInfo(&mut info) }
+        .as_bool()
+        .then_some(info.dwTime);
+    idle_ms(last, unsafe { GetTickCount() })
+}
+
+/// Tells the Poll-mode poller when nobody is at the screen (locked, display
+/// off): while paused it blocks on the condvar and reads nothing. Shared
+/// between the island (`set_paused`) and the poller thread; cloning shares.
+#[derive(Clone, Default)]
+pub struct PollGate(Arc<(Mutex<bool>, Condvar)>);
+
+impl PollGate {
+    pub fn new(paused: bool) -> Self {
+        Self(Arc::new((Mutex::new(paused), Condvar::new())))
+    }
+
+    /// Pauses or resumes the poller; wakes it at once either way.
+    pub fn set_paused(&self, paused: bool) {
+        let (lock, cv) = &*self.0;
+        *lock.lock().unwrap_or_else(|e| e.into_inner()) = paused;
+        cv.notify_all();
+    }
+
+    fn is_paused(&self) -> bool {
+        *self.0.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Blocks (no timeout) while paused. True when it had to wait.
+    fn block_while_paused(&self) -> bool {
+        let (lock, cv) = &*self.0;
+        let guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+        if !*guard {
+            return false;
+        }
+        drop(
+            cv.wait_while(guard, |paused| *paused)
+                .unwrap_or_else(|e| e.into_inner()),
+        );
+        true
+    }
+
+    /// Sleeps up to `timeout`, or less when a pause arrives meanwhile.
+    fn sleep_unless_paused(&self, timeout: Duration) {
+        let (lock, cv) = &*self.0;
+        let guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+        drop(
+            cv.wait_timeout_while(guard, timeout, |paused| !*paused)
+                .unwrap_or_else(|e| e.into_inner()),
+        );
+    }
+}
 
 /// Reports which notification ids are new since the previous poll. The first
 /// update only records ids, so notifications already in the Action Center
@@ -138,21 +219,32 @@ impl Trigger {
         }
     }
 
-    /// Blocks until the next re-read is due. Returns true when woken by a
-    /// change event rather than by the timer.
-    fn wait(&mut self) -> bool {
+    /// Blocks until the next re-read is due. Returns `(signalled, resumed)`:
+    /// woken by a change event rather than by the timer, and woken after a
+    /// pause (Poll mode only; the read then is immediate and quiet).
+    /// `polled_at` is when the last read started. Event mode ignores `gate`.
+    fn wait(&mut self, gate: &PollGate, polled_at: Instant) -> (bool, bool) {
         match self {
             Trigger::Events {
                 signals, delivered, ..
             } => {
                 let signalled = wait_for_signal(signals, SAFETY_NET_INTERVAL);
                 *delivered |= signalled;
-                signalled
+                (signalled, false)
             }
-            Trigger::Poll => {
-                std::thread::sleep(POLL_INTERVAL);
-                false
-            }
+            Trigger::Poll => loop {
+                if gate.block_while_paused() {
+                    return (false, true);
+                }
+                gate.sleep_unless_paused(POLL_INTERVAL);
+                if gate.is_paused() {
+                    continue;
+                }
+                let since = polled_at.elapsed().as_millis() as u64;
+                if poll_due(input_idle_ms(), since) {
+                    return (false, false);
+                }
+            },
         }
     }
 
@@ -194,9 +286,11 @@ fn wait_for_signal(signals: &Receiver<()>, timeout: Duration) -> bool {
 /// `Event::Toast` for every new toast, whatever app it is from: `App` decides
 /// (muted apps, the history). The first time a logo key is seen this run its
 /// app logo rides along. Re-reads on `NotificationChanged` events when the
-/// listener supports them, else polls once a second. Exits quietly when
+/// listener supports them, else polls (once a second while someone is at the
+/// PC, every 5 s after 60 s without input, not at all while `gate` is paused;
+/// the first read after a pause sends its toasts `quiet`). Exits quietly when
 /// listener access has not been granted.
-pub fn spawn_poller(tx: Sender<Event>, wake: impl Fn() + Send + 'static) {
+pub fn spawn_poller(tx: Sender<Event>, wake: impl Fn() + Send + 'static, gate: PollGate) {
     std::thread::spawn(move || {
         unsafe {
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
@@ -211,9 +305,12 @@ pub fn spawn_poller(tx: Sender<Event>, wake: impl Fn() + Send + 'static) {
         let mut trigger = Trigger::new(&listener);
         let mut tracker = NotificationTracker::new();
         let mut signalled = false;
+        // The read after a pause sends its toasts quiet (history only).
+        let mut quiet = false;
         // Logo keys looked at this run; a key that failed is not retried.
         let mut tried: HashSet<String> = HashSet::new();
         loop {
+            let polled_at = Instant::now();
             if let Ok(fresh) = new_notifications(&listener, &mut tracker) {
                 trigger.after_fetch(signalled, !fresh.is_empty());
                 for toast in &fresh {
@@ -231,13 +328,19 @@ pub fn spawn_poller(tx: Sender<Event>, wake: impl Fn() + Send + 'static) {
                         None
                     };
                     let at = chrono::Local::now().timestamp();
-                    if tx.send(Event::Toast(Toast { notice, at, logo })).is_err() {
+                    let toast = Toast {
+                        notice,
+                        at,
+                        logo,
+                        quiet,
+                    };
+                    if tx.send(Event::Toast(toast)).is_err() {
                         return;
                     }
                     wake();
                 }
             }
-            signalled = trigger.wait();
+            (signalled, quiet) = trigger.wait(&gate, polled_at);
         }
     });
 }
@@ -793,6 +896,67 @@ mod tests {
         assert!(!events_not_firing(true, false, true));
         assert!(!events_not_firing(false, true, true));
         assert!(!events_not_firing(false, false, false));
+    }
+
+    #[test]
+    fn active_input_polls_every_wake() {
+        for since in [0, 1_000, 4_999, 5_000] {
+            assert!(poll_due(0, since), "just typed, since {since}");
+            assert!(poll_due(59_999, since), "59 999 ms is still active");
+        }
+    }
+
+    #[test]
+    fn idle_input_polls_every_five_seconds() {
+        assert!(!poll_due(60_000, 1_000), "60 000 ms is idle");
+        assert!(!poll_due(60_001, 4_999));
+        assert!(poll_due(60_000, 5_000));
+        assert!(poll_due(60_001, 5_000));
+        assert!(poll_due(u32::MAX, 60_000));
+        assert!(!poll_due(u32::MAX, 0));
+    }
+
+    #[test]
+    fn idle_age_is_the_tick_difference_and_a_failed_read_is_just_now() {
+        assert_eq!(idle_ms(Some(1_000), 3_500), 2_500);
+        assert_eq!(idle_ms(Some(u32::MAX - 9), 10), 20, "tick wrapped");
+        assert_eq!(idle_ms(None, 123_456), 0);
+        assert!(
+            poll_due(idle_ms(None, 9_999_999), 0),
+            "a failed read polls at the 1 s pace"
+        );
+    }
+
+    #[test]
+    fn gate_does_not_block_unpaused_and_resumes_a_blocked_waiter() {
+        let gate = PollGate::new(false);
+        assert!(!gate.block_while_paused());
+        gate.set_paused(true);
+        assert!(gate.is_paused());
+        let waiter = gate.clone();
+        let handle = std::thread::spawn(move || waiter.block_while_paused());
+        std::thread::sleep(Duration::from_millis(30));
+        gate.set_paused(false);
+        assert!(handle.join().unwrap(), "it had to wait");
+        assert!(!gate.is_paused());
+    }
+
+    #[test]
+    fn a_pause_cuts_a_sleep_short_and_an_unpaused_sleep_runs_full() {
+        let gate = PollGate::new(false);
+        let start = Instant::now();
+        gate.sleep_unless_paused(Duration::from_millis(40));
+        assert!(start.elapsed() >= Duration::from_millis(30));
+        let pauser = gate.clone();
+        let handle = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            pauser.set_paused(true);
+        });
+        let start = Instant::now();
+        gate.sleep_unless_paused(Duration::from_secs(10));
+        assert!(start.elapsed() < Duration::from_secs(5));
+        handle.join().unwrap();
+        assert!(gate.is_paused());
     }
 
     fn texts(items: &[&str]) -> Vec<String> {

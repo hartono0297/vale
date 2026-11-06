@@ -117,7 +117,11 @@ relative times ("5 mnt", "Kemarin") are worked out only when a frame is drawn,
 and a toast while the page is hidden redraws nothing (the notch notice does
 what it always did). Its keyboard input is a hidden EDIT, not a timer; the
 poller thread already existed and now only also reads one logo per app per
-run.
+run. Since 2026-11-06 that thread (Poll mode, the only mode an unpackaged Vale
+gets) is paced and paused: 1 s reads while there was input in the last 60 s,
+5 s after that, and it blocks on a condvar (no read, no `GetLastInputInfo`)
+while the session is locked or the display is off (`screen_away`, through
+`sync_pointer_polls`); see "Poll pace and pause" in [[notification-history]].
 
 The screenshot preview ([[screenshot-preview]]) adds `TIMER_SHOT_RETRY`
 (23), a one-shot that runs at most twice after a new clipboard image; its

@@ -26,7 +26,7 @@ use crate::model::{Event, Hit, Notice, NoticeKind, NotifAction, OpenTarget, Page
 use crate::notif::persist::{self, Saved, Write};
 use crate::notif::store::clamp_cap;
 use crate::notif::{NotifHistory, logo_key, route_toast};
-use crate::sources::notifications::{self, is_muted};
+use crate::sources::notifications::{self, PollGate, is_muted};
 use crate::sources::notif_open;
 use crate::ui::cli_input::{CliInput, Key as InputKey};
 use crate::ui::editor;
@@ -62,6 +62,9 @@ pub(super) struct NotifState {
     /// opens and after the access answer).
     pub access: bool,
     pub poller_started: bool,
+    /// Pauses the Poll-mode poller while the screen is locked or the display
+    /// is off (`notif_sync_away`).
+    pub gate: PollGate,
     /// `notif_start` ran: the config may be followed.
     started: bool,
     /// The page showed at the last `sync_notif`.
@@ -154,14 +157,22 @@ impl App {
         self.notif.access = notifications::access_allowed();
         if self.notif.access && !self.notif.poller_started {
             self.notif.poller_started = true;
+            self.notif.gate = PollGate::new(self.screen_away());
             notifications::spawn_poller(
                 self.tx.clone(),
                 super::poster(self.hwnd, super::WM_APP_EVENT),
+                self.notif.gate.clone(),
             );
         }
         if was != self.notif.access {
             self.redraw_notif();
         }
+    }
+
+    /// Locked or display off: the poller stops reading (Poll mode); back at
+    /// the screen it reads at once, quietly. Called from `sync_pointer_polls`.
+    pub(super) fn notif_sync_away(&mut self) {
+        self.notif.gate.set_paused(self.screen_away());
     }
 
     /// The Notifikasi page just opened: access is read again (the poller
@@ -182,11 +193,18 @@ impl App {
     }
 
     /// A toast from the poller: its logo is kept, then `route_toast` decides.
+    /// A `quiet` toast (the first read after the screen was away) goes to the
+    /// history only, never the notch.
     /// The notch gets its notice exactly as before (a muted app's never
     /// reaches it; `muted_apps` is read now, not when the poller started),
     /// the history gets an entry while recording and not paused.
     pub(super) fn on_toast(&mut self, toast: Toast, now: Instant) {
-        let Toast { notice, at, logo } = toast;
+        let Toast {
+            notice,
+            at,
+            logo,
+            quiet,
+        } = toast;
         // `notif.logos` is never pruned during a run (clear, remove and mute
         // leave it alone): the notch notice of a later toast, one with
         // "Simpan notifikasi" off, paused or unrecorded, still finds its
@@ -200,6 +218,7 @@ impl App {
             &self.config.muted_apps,
             cfg.record,
             cfg.paused,
+            quiet,
         );
         if history {
             let (app_id, site) = match &notice.kind {

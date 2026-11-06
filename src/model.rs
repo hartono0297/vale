@@ -44,6 +44,10 @@ pub struct Toast {
     pub at: i64,
     /// The logo key (`notif::logo_key`) and the picture, at most 48 x 48.
     pub logo: Option<(String, Thumb)>,
+    /// Caught by the first read after the poller was paused (locked screen,
+    /// display off): it goes to the history by the usual rules but never to
+    /// the notch.
+    pub quiet: bool,
 }
 
 /// What a notice made from a real Windows toast carries

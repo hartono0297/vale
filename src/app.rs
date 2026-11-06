@@ -4332,6 +4332,7 @@ impl App {
     /// Locking, unlocking, the display going off or on: the pointer polls
     /// stop or start again.
     fn sync_pointer_polls(&mut self) {
+        self.notif_sync_away();
         self.sync_outside_timer();
         self.sync_behind(Instant::now());
         self.sync_halo_timer();
