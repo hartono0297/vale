@@ -1166,6 +1166,19 @@ impl Renderer {
             if unsafe { UpdateLayeredWindowIndirect(win.hwnd(), &info) }.as_bool() {
                 return Ok(true);
             }
+            // Falls back to the full update below; a call that always fails
+            // would make the dirty rect quietly do nothing, so say it once.
+            #[cfg(debug_assertions)]
+            {
+                static WARNED: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(false);
+                if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    eprintln!(
+                        "vale: UpdateLayeredWindowIndirect failed ({}), presenting in full",
+                        std::io::Error::last_os_error()
+                    );
+                }
+            }
         }
         unsafe {
             UpdateLayeredWindow(
@@ -3468,8 +3481,8 @@ fn line_format(
 /// The margin's opacity: enough to count as a pixel the window owns (8-bit
 /// alpha 3), too little to see.
 const HALO_ALPHA: f32 = 0.012;
-/// How far the margin reaches beside and below the island: `dirty::HALO_SIDE`
-/// and `dirty::HALO_BELOW`, which the dirty rect needs too.
+// How far the margin reaches beside and below the island: `dirty::HALO_SIDE`
+// and `dirty::HALO_BELOW`, which the dirty rect needs too.
 
 /// `DI_DIRTY_CHECK=1` turns the dirty-rect self-check on (debug builds only).
 #[cfg(debug_assertions)]

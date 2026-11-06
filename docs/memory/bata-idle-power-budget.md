@@ -387,10 +387,15 @@ the skip in `app.rs`. Links: [[eq-follow-audio]], [[cat-dances-to-music]],
   `draw_gen` is bumped by `apply`, `refresh`, `drain` and by `with_app` (every
   message, event and input that reaches the app) but not by the equalizer tick's
   own message (`with_app_quiet`). A full draw always stores its key (a failed one
-  clears it). A moving progress line (position changes every tick while it
+  clears it). `progress` is keyed in the compact view only (the lyric view never
+  draws it). A moving progress line (position changes every tick while it
   plays) or the dancing cat's floating note (time-based pose) means **no
-  skip**; the dirty rect still applies there. The skip pays off with silence
-  (live bars at rest), a player that reports no length and a lyric view.
+  skip**; the dirty rect still applies there. A tick skips only in the compact
+  view with live bars unchanged, no progress line or a paused one (or a player
+  that reports no length), and no dancing note; in the lyric view when the
+  line, scroll and cat pose are unchanged. `with_app` bumps `draw_gen` again
+  after the handler returns, so a handler that draws and then changes the
+  closed view cannot leave a matching key behind.
 - **Self-check.** In debug builds `DI_DIRTY_CHECK=1` redraws every dirty frame
   in full on a second scratch DIB, compares the bytes with the presented
   surface and prints `vale: dirty mismatch at x,y (rect ...)` for the first

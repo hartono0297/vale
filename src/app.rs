@@ -6704,6 +6704,12 @@ impl App {
     }
 }
 
+/// The progress line is drawn by the compact view only: elsewhere a moving
+/// position must not defeat the equalizer tick's skip.
+fn key_progress(compact: bool, progress: Option<Progress>) -> Option<Progress> {
+    progress.filter(|_| compact)
+}
+
 /// What `frame` draws that can change between two equalizer ticks.
 fn eq_key(draw_gen: u64, frame: &Frame, shape: ShapeRect, opacity: f32) -> EqKey {
     use std::hash::{DefaultHasher, Hash, Hasher};
@@ -6727,7 +6733,7 @@ fn eq_key(draw_gen: u64, frame: &Frame, shape: ShapeRect, opacity: f32) -> EqKey
             .map(|h| h.map(f32::to_bits)),
         time_based,
         robot: frame.robot,
-        progress: frame.progress,
+        progress: key_progress(compact, frame.progress),
         lyric: frame
             .lyric
             .map(|l| (hash(l.text), l.prev.map(hash), l.fade.to_bits())),
@@ -8158,7 +8164,11 @@ fn with_app<R>(f: impl FnOnce(&mut App) -> R) -> Option<R> {
         // Every message, event and input reaches the app here: the
         // equalizer tick's skip (`draw_eq_tick`) sees that something ran.
         app.draw_gen = app.draw_gen.wrapping_add(1);
-        f(app)
+        let result = f(app);
+        // A handler may draw and then change what the closed view shows: the
+        // key it stored must not match the next tick.
+        app.draw_gen = app.draw_gen.wrapping_add(1);
+        result
     })
 }
 
@@ -8797,6 +8807,16 @@ unsafe extern "system" fn wnd_proc(
 mod tests {
     use super::*;
     use crate::ui::geometry::{LYRIC_RESIZE_MS, lyric_shape, lyric_width};
+
+    #[test]
+    fn eq_key_keeps_progress_for_the_compact_view_only() {
+        let p = Some(Progress {
+            position_ms: 1_000,
+            end_ms: 200_000,
+        });
+        assert_eq!(key_progress(true, p), p);
+        assert_eq!(key_progress(false, p), None);
+    }
 
     fn progress_view(pct: u8) -> View {
         View::Notice(Notice {
