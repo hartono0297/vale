@@ -1354,6 +1354,7 @@ impl App {
                     | Event::Devices(_)
                     | Event::Arrange(_)
                     | Event::Toast(_)
+                    | Event::ClipPacked { .. }
                     | Event::Update(_)
                     // A progress tick draws the receiving view itself, at
                     // most six a second; nothing else changed.
@@ -1454,6 +1455,10 @@ impl App {
                 // The notch notice and the history entry are decided here.
                 Event::Toast(toast) => {
                     self.on_toast(toast, now);
+                    continue;
+                }
+                Event::ClipPacked { id, fingerprint, packed } => {
+                    self.on_clip_packed(id, fingerprint, packed);
                     continue;
                 }
                 // The self-update's workers: `App` decides what shows.

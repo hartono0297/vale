@@ -21,12 +21,72 @@ pub const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 /// All thumbnails together (memory and file); the oldest unpinned image
 /// entries go first when a new one would pass it.
 pub const THUMB_BUDGET: usize = 4 * 1024 * 1024;
-/// Full-size image data, memory only; the oldest images lose theirs first
-/// and then copy back at thumbnail size.
-pub const FULL_BUDGET: usize = 48 * 1024 * 1024;
+/// Full-size image data, memory only, counted in the bytes it takes (the
+/// compressed size once an original is packed, see `Original`); the oldest
+/// images lose theirs first and then copy back at thumbnail size. The newest
+/// image is outside it.
+pub const FULL_BUDGET: usize = 16 * 1024 * 1024;
 
 pub fn clamp_items(n: u32) -> u32 {
     n.clamp(MIN_ITEMS, MAX_ITEMS)
+}
+
+/// How a packed original's pixel array is laid out in its PNG (`clipboard::pack`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PngLayout {
+    /// 32 bpp: `w` x `h` BGRA, stride `w * 4`.
+    Bgra { w: u32, h: u32 },
+    /// 24 bpp: 8-bit gray, `stride` x `h` (the rows with their padding, so
+    /// the bytes come back exactly).
+    Gray { stride: u32, h: u32 },
+}
+
+/// An original DIB with its pixel array PNG-compressed: `head` (the bytes
+/// before the pixels: header, masks, colour table) and `tail` (any bytes
+/// after them) verbatim, so `head + pixels + tail` is the DIB again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Packed {
+    pub head: Vec<u8>,
+    pub png: Vec<u8>,
+    pub tail: Vec<u8>,
+    /// The length of the whole DIB.
+    pub raw_len: usize,
+    pub layout: PngLayout,
+}
+
+impl Packed {
+    /// The bytes it takes in memory (what the budget counts).
+    pub fn bytes(&self) -> usize {
+        self.head.len() + self.png.len() + self.tail.len()
+    }
+}
+
+/// The original of an image: the packed DIB as the clipboard gave it, or the
+/// same PNG-compressed (memory only, never saved).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Original {
+    Raw(Arc<Vec<u8>>),
+    Packed(Arc<Packed>),
+}
+
+/// Where a raw original is on its way to being packed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PackState {
+    /// Not handed to a worker (yet).
+    #[default]
+    Idle,
+    /// A worker has it; its answer is awaited.
+    Pending,
+    /// The worker could not pack it (or the check failed): stays raw.
+    Failed,
+}
+
+/// A raw original for a worker to pack.
+#[derive(Clone, Debug)]
+pub struct PackJob {
+    pub id: u64,
+    pub fingerprint: u64,
+    pub raw: Arc<Vec<u8>>,
 }
 
 /// A bitmap entry: the thumbnail (kept and saved) and, while the budget
@@ -40,7 +100,30 @@ pub struct ClipImage {
     pub fingerprint: u64,
     /// Only bitmap formats were on the clipboard (PrtSc, Snipping Tool).
     pub screenshot: bool,
-    pub full: Option<Arc<Vec<u8>>>,
+    pub full: Option<Original>,
+    pub pack: PackState,
+}
+
+impl ClipImage {
+    /// Any original is kept (else it copies back at thumbnail size).
+    pub fn has_original(&self) -> bool {
+        self.full.is_some()
+    }
+
+    /// The original as the clipboard gave it (not packed).
+    pub fn raw(&self) -> Option<&Arc<Vec<u8>>> {
+        match &self.full {
+            Some(Original::Raw(raw)) => Some(raw),
+            _ => None,
+        }
+    }
+
+    pub fn packed(&self) -> Option<&Arc<Packed>> {
+        match &self.full {
+            Some(Original::Packed(p)) => Some(p),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -193,11 +276,13 @@ impl History {
         if let Some(i) = self.items.iter().position(|c| c.same_content(&data)) {
             let mut clip = self.items.remove(i);
             clip.at = at;
-            // A newer copy of an image may bring its full size back.
+            // A newer copy of an image brings its raw original back over a
+            // packed one or none.
             if let (ClipData::Image(old), ClipData::Image(new)) = (&mut clip.data, data)
-                && old.full.is_none()
+                && old.raw().is_none()
             {
                 old.full = new.full;
+                old.pack = PackState::Idle;
             }
             let id = clip.id;
             self.items.insert(0, clip);
@@ -275,19 +360,124 @@ impl History {
             };
             self.items.remove(i);
         }
-        // The newest keeps its original whatever its size; older images
-        // share the budget, newest first.
+        // The newest image keeps its original whatever its size or form (a
+        // text copied after it changes nothing); the others share the budget,
+        // newest first.
+        let newest = self.newest_image();
         let mut full = 0usize;
-        for clip in self.items.iter_mut().skip(1) {
-            if let ClipData::Image(img) = &mut clip.data
-                && let Some(bytes) = &img.full
-            {
-                if full + bytes.len() > FULL_BUDGET {
-                    img.full = None;
-                } else {
-                    full += bytes.len();
-                }
+        for (i, clip) in self.items.iter_mut().enumerate() {
+            if Some(i) == newest {
+                continue;
             }
+            let ClipData::Image(img) = &mut clip.data else {
+                continue;
+            };
+            let cost = match (&img.full, img.pack) {
+                (None, _) => continue,
+                // Waiting for (or about to be handed to) a worker: exempt
+                // until it answers, else a 4K picture would be dropped in
+                // the very call that makes it older.
+                (Some(Original::Raw(_)), PackState::Idle | PackState::Pending) => continue,
+                (Some(Original::Raw(raw)), PackState::Failed) => raw.len(),
+                (Some(Original::Packed(p)), _) => p.bytes(),
+            };
+            if full + cost > FULL_BUDGET {
+                img.full = None;
+                img.pack = PackState::Idle;
+            } else {
+                full += cost;
+            }
+        }
+    }
+
+    /// The index of the newest image entry (not necessarily entry 0).
+    fn newest_image(&self) -> Option<usize> {
+        self.items.iter().position(|c| c.image().is_some())
+    }
+
+    /// The raw originals of the images that are not the newest and not yet
+    /// handed out, to pack on a worker. They are marked `Pending`.
+    pub fn pack_jobs(&mut self) -> Vec<PackJob> {
+        let newest = self.newest_image();
+        let mut jobs = Vec::new();
+        for (i, clip) in self.items.iter_mut().enumerate() {
+            if Some(i) == newest {
+                continue;
+            }
+            let id = clip.id;
+            if let ClipData::Image(img) = &mut clip.data
+                && img.pack == PackState::Idle
+                && let Some(Original::Raw(raw)) = &img.full
+            {
+                jobs.push(PackJob {
+                    id,
+                    fingerprint: img.fingerprint,
+                    raw: raw.clone(),
+                });
+                img.pack = PackState::Pending;
+            }
+        }
+        jobs
+    }
+
+    /// A worker's answer for entry `id`. Applied only while the entry still
+    /// exists with that fingerprint, still holds its raw original and is
+    /// waiting for this answer; if it became the newest image meanwhile it
+    /// just stays raw. `Some` replaces the raw original, `None` marks it
+    /// `Failed` (stays raw). True when applied.
+    pub fn set_packed(&mut self, id: u64, fingerprint: u64, result: Option<Arc<Packed>>) -> bool {
+        let newest = self.newest_image();
+        let Some(i) = self.items.iter().position(|c| c.id == id) else {
+            return false;
+        };
+        let ClipData::Image(img) = &mut self.items[i].data else {
+            return false;
+        };
+        if img.fingerprint != fingerprint || img.pack != PackState::Pending || img.raw().is_none() {
+            return false;
+        }
+        if newest == Some(i) {
+            img.pack = PackState::Idle;
+            return false;
+        }
+        match result {
+            Some(p) => {
+                img.full = Some(Original::Packed(p));
+                img.pack = PackState::Idle;
+            }
+            None => img.pack = PackState::Failed,
+        }
+        self.enforce();
+        true
+    }
+
+    /// Entry `id` was pasted from its packed original: `raw` is that decoded
+    /// DIB (it must be as long as the packed one), kept raw as the entry is
+    /// now the newest. True when applied.
+    pub fn set_raw(&mut self, id: u64, raw: Arc<Vec<u8>>) -> bool {
+        let Some(clip) = self.items.iter_mut().find(|c| c.id == id) else {
+            return false;
+        };
+        let ClipData::Image(img) = &mut clip.data else {
+            return false;
+        };
+        if img.packed().is_none_or(|p| p.raw_len != raw.len()) {
+            return false;
+        }
+        img.full = Some(Original::Raw(raw));
+        img.pack = PackState::Idle;
+        self.enforce();
+        true
+    }
+
+    /// Entry `id`'s original is unusable (its pack did not decode): only the
+    /// thumbnail is left.
+    pub fn forget_original(&mut self, id: u64) {
+        if let Some(clip) = self.items.iter_mut().find(|c| c.id == id)
+            && let ClipData::Image(img) = &mut clip.data
+        {
+            img.full = None;
+            img.pack = PackState::Idle;
         }
     }
 
@@ -427,7 +617,8 @@ fn make_image(dib: Option<Vec<u8>>, only_bitmaps: bool) -> Option<ClipImage> {
         fingerprint: image::fingerprint(&dib),
         screenshot: only_bitmaps,
         // Kept even past the budget: the newest pastes at full size.
-        full: Some(Arc::new(dib)),
+        full: Some(Original::Raw(Arc::new(dib))),
+        pack: PackState::Idle,
     })
 }
 
@@ -648,7 +839,7 @@ pub mod tests {
         let img = h.items()[0].image().unwrap();
         assert_eq!((img.width, img.height), (1280, 720));
         assert!(img.thumb.w <= image::THUMB_MAX_W && img.thumb.h <= image::THUMB_MAX_H);
-        assert!(img.screenshot && img.full.is_some());
+        assert!(img.screenshot && img.raw().is_some());
         assert!(matches!(
             ingest(&mut h, image(1280, 720), 1),
             Ingested::Bumped { .. }
@@ -692,22 +883,222 @@ pub mod tests {
         assert_eq!(h.items()[0].image().unwrap().width, 427);
     }
 
+    /// A packed original of `bytes` (a stand-in: the store never decodes it).
+    fn fake_packed(bytes: usize, raw_len: usize) -> Arc<Packed> {
+        Arc::new(Packed {
+            head: Vec::new(),
+            png: vec![0; bytes],
+            tail: Vec::new(),
+            raw_len,
+            layout: PngLayout::Gray { stride: 4, h: 1 },
+        })
+    }
+
+    fn img_of(h: &History, id: u64) -> &ClipImage {
+        h.get(id).unwrap().image().unwrap()
+    }
+
+    /// Adds an image of `w` x `rows` and returns its id.
+    fn add(h: &mut History, w: u32, rows: u32, at: i64) -> u64 {
+        id_of(ingest(h, image(w, rows), at))
+    }
+
+    /// Hands out the jobs and answers each with a packed original of
+    /// `bytes`.
+    fn pack_all(h: &mut History, bytes: usize) {
+        for job in h.pack_jobs() {
+            h.set_packed(job.id, job.fingerprint, Some(fake_packed(bytes, job.raw.len())));
+        }
+    }
+
     #[test]
-    fn the_newest_image_always_keeps_its_original() {
+    fn the_newest_image_keeps_its_original_whatever_its_size() {
         // A 4K or 5K screenshot alone can pass the full-size budget; the
         // newest still pastes at full size ("Salin lagi", its card).
         let mut h = History::new(MAX_ITEMS);
         // 24-bit rows: a little over the whole budget each.
         let big = |w: u32| image(w, (FULL_BUDGET / 3 / w as usize) as u32 + 8);
-        ingest(&mut h, big(5120), 0);
-        assert!(h.items()[0].image().unwrap().full.is_some(), "alone");
-        ingest(&mut h, big(5100), 1);
-        let items = h.items();
-        assert!(items[0].image().unwrap().full.is_some(), "the newest");
-        assert!(
-            items[1].image().unwrap().full.is_none(),
-            "the older one gave way"
-        );
+        let first = id_of(ingest(&mut h, big(5120), 0));
+        assert!(img_of(&h, first).raw().is_some(), "alone");
+        let second = id_of(ingest(&mut h, big(5100), 1));
+        assert!(img_of(&h, second).raw().is_some(), "the newest");
+        // The older one is handed out and exempt while it waits.
+        assert_eq!(h.pack_jobs().len(), 1);
+        assert!(img_of(&h, first).has_original());
+        // Failing to pack it, it counts raw and gives way.
+        assert!(h.set_packed(first, img_of(&h, first).fingerprint, None));
+        assert!(!img_of(&h, first).has_original(), "over 16 MB raw");
+        assert!(img_of(&h, second).raw().is_some());
+    }
+
+    #[test]
+    fn the_newest_image_stays_raw_and_exempt_when_a_text_is_newer() {
+        let mut h = History::new(MAX_ITEMS);
+        let shot = add(&mut h, 4096, 2048, 0);
+        ingest(&mut h, text("after the screenshot"), 1);
+        assert_eq!(h.items()[0].plain_text().as_deref(), Some("after the screenshot"));
+        // Not index 0, but the newest image: no job, original kept.
+        assert!(h.pack_jobs().is_empty());
+        assert!(img_of(&h, shot).raw().is_some());
+        assert!(img_of(&h, shot).raw().unwrap().len() > FULL_BUDGET);
+        ingest(&mut h, text("and another"), 2);
+        assert!(img_of(&h, shot).has_original());
+    }
+
+    #[test]
+    fn pack_jobs_hand_out_the_older_images_once() {
+        let mut h = History::new(50);
+        let a = add(&mut h, 64, 48, 0);
+        let b = add(&mut h, 65, 48, 1);
+        let c = add(&mut h, 66, 48, 2);
+        assert!(h.pack_jobs().iter().all(|j| j.id != c));
+        let _ = (a, b);
+        // The second call finds both already out.
+        assert!(h.pack_jobs().is_empty());
+        assert_eq!(img_of(&h, a).pack, PackState::Pending);
+        assert_eq!(img_of(&h, b).pack, PackState::Pending);
+        assert_eq!(img_of(&h, c).pack, PackState::Idle);
+        // Texts and files never are.
+        ingest(&mut h, text("t"), 3);
+        assert!(h.pack_jobs().is_empty());
+    }
+
+    #[test]
+    fn the_jobs_carry_what_the_answer_must_match() {
+        let mut h = History::new(50);
+        let a = add(&mut h, 64, 48, 0);
+        add(&mut h, 65, 48, 1);
+        let jobs = h.pack_jobs();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].id, a);
+        assert_eq!(jobs[0].fingerprint, img_of(&h, a).fingerprint);
+        assert_eq!(&**jobs[0].raw, &**img_of(&h, a).raw().unwrap());
+    }
+
+    #[test]
+    fn a_waiting_original_is_exempt_from_the_budget() {
+        let mut h = History::new(MAX_ITEMS);
+        // 25 MB raw, then a newer image makes it older.
+        let big = add(&mut h, 4096, 2048, 0);
+        add(&mut h, 64, 48, 1);
+        // Before and after it is handed out.
+        assert!(img_of(&h, big).has_original(), "about to be handed out");
+        h.pack_jobs();
+        assert_eq!(img_of(&h, big).pack, PackState::Pending);
+        assert!(img_of(&h, big).has_original(), "pending");
+        // Another change runs the budget again.
+        add(&mut h, 65, 48, 2);
+        assert!(img_of(&h, big).has_original());
+    }
+
+    #[test]
+    fn a_packed_original_counts_its_compressed_bytes_and_the_oldest_lose_first() {
+        let mut h = History::new(MAX_ITEMS);
+        let ids: Vec<u64> = (0..5).map(|i| add(&mut h, 64 + i, 48, i64::from(i))).collect();
+        // Four older ones of 6 MB packed each: 16 MB holds two.
+        pack_all(&mut h, 6 * 1024 * 1024);
+        let has = |i: usize| img_of(&h, ids[i]).has_original();
+        assert!(has(4), "the newest, raw");
+        assert!(has(3) && has(2), "12 MB");
+        assert!(!has(1) && !has(0), "the oldest lost theirs");
+        assert!(img_of(&h, ids[3]).packed().is_some());
+        // Small ones all fit.
+        let mut h = History::new(MAX_ITEMS);
+        for i in 0..20 {
+            add(&mut h, 64 + i, 48, i64::from(i));
+        }
+        pack_all(&mut h, 100 * 1024);
+        assert!(h.items().iter().filter_map(Clip::image).all(ClipImage::has_original));
+    }
+
+    #[test]
+    fn a_failed_pack_counts_its_raw_length() {
+        let mut h = History::new(MAX_ITEMS);
+        let a = add(&mut h, 4096, 2048, 0); // 25 MB raw
+        let b = add(&mut h, 64, 48, 1);
+        add(&mut h, 65, 48, 2);
+        for job in h.pack_jobs() {
+            let fp = job.fingerprint;
+            h.set_packed(job.id, fp, if job.id == b { None } else { Some(fake_packed(1, 0)) });
+        }
+        assert_eq!(img_of(&h, b).pack, PackState::Failed);
+        assert!(img_of(&h, b).raw().is_some(), "small and raw, it fits");
+        assert!(img_of(&h, a).packed().is_some());
+        // A failed 25 MB one does not fit.
+        let mut h = History::new(MAX_ITEMS);
+        let a = add(&mut h, 4096, 2048, 0);
+        add(&mut h, 65, 48, 1);
+        let job = h.pack_jobs().remove(0);
+        assert!(h.set_packed(a, job.fingerprint, None));
+        assert!(!img_of(&h, a).has_original());
+    }
+
+    #[test]
+    fn an_answer_for_a_gone_changed_or_newest_entry_is_ignored() {
+        let mut h = History::new(50);
+        let a = add(&mut h, 64, 48, 0);
+        let b = add(&mut h, 65, 48, 1);
+        let c = add(&mut h, 66, 48, 2);
+        let jobs = h.pack_jobs();
+        let fp = |id: u64| jobs.iter().find(|j| j.id == id).unwrap().fingerprint;
+        let packed = || Some(fake_packed(10, 0));
+        // Deleted.
+        h.delete(a);
+        assert!(!h.set_packed(a, fp(a), packed()));
+        // A different fingerprint: another picture under that id.
+        assert!(!h.set_packed(b, fp(b) ^ 1, packed()));
+        assert!(img_of(&h, b).raw().is_some());
+        // It became the newest image while the worker packed it.
+        h.delete(c);
+        assert!(!h.set_packed(b, fp(b), packed()));
+        assert!(img_of(&h, b).raw().is_some(), "stays raw");
+        assert_eq!(img_of(&h, b).pack, PackState::Idle);
+        // An answer nobody waits for.
+        assert!(!h.set_packed(b, fp(b), packed()));
+        // And when it is older again it is handed out again.
+        add(&mut h, 70, 48, 3);
+        assert_eq!(h.pack_jobs().len(), 1);
+        assert!(h.set_packed(b, fp(b), packed()));
+        assert!(img_of(&h, b).packed().is_some());
+    }
+
+    #[test]
+    fn a_recopy_brings_the_raw_original_back() {
+        let mut h = History::new(50);
+        let a = add(&mut h, 64, 48, 0);
+        add(&mut h, 65, 48, 1);
+        pack_all(&mut h, 10);
+        assert!(img_of(&h, a).packed().is_some());
+        assert_eq!(ingest(&mut h, image(64, 48), 2), Ingested::Bumped { id: a });
+        assert!(img_of(&h, a).raw().is_some());
+        assert_eq!(img_of(&h, a).pack, PackState::Idle);
+        // The one it pushed down is packed next.
+        assert_eq!(h.pack_jobs().len(), 1);
+        // The same after it lost its original altogether.
+        h.forget_original(a);
+        assert!(!img_of(&h, a).has_original());
+        ingest(&mut h, text("x"), 3);
+        ingest(&mut h, image(64, 48), 4);
+        assert!(img_of(&h, a).raw().is_some());
+    }
+
+    #[test]
+    fn a_paste_keeps_the_decoded_original_raw() {
+        let mut h = History::new(50);
+        let a = add(&mut h, 64, 48, 0);
+        let raw = img_of(&h, a).raw().unwrap().clone();
+        add(&mut h, 65, 48, 1);
+        pack_all(&mut h, 10);
+        assert!(img_of(&h, a).packed().is_some());
+        // The decoded DIB must be as long as the original was.
+        assert!(!h.set_raw(a, Arc::new(vec![0; 5])));
+        assert!(h.set_raw(a, raw.clone()));
+        assert_eq!(img_of(&h, a).raw(), Some(&raw));
+        assert!(!h.set_raw(999, raw.clone()));
+        // Raw already, or a text: nothing to set.
+        assert!(!h.set_raw(a, raw.clone()));
+        let t = id_of(ingest(&mut h, text("t"), 2));
+        assert!(!h.set_raw(t, raw));
     }
 
     fn id_of(i: Ingested) -> u64 {

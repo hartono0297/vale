@@ -7,20 +7,23 @@
 //! redraws nothing (unless a notice shows); saves are one one-shot after a
 //! change; a busy clipboard is retried with a short one-shot.
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use chrono::Local;
+use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, KillTimer, SetForegroundWindow, SetTimer,
 };
 
-use super::App;
 use super::shot::ShotArrival;
+use super::{App, WM_APP_EVENT, poster};
 use crate::clipboard::notice::{
     NoticeCtx, NoticeGate, PREVIEW_CHARS, clip_notice_lines, clip_notice_wanted,
 };
 use crate::clipboard::persist::{self, Write};
-use crate::clipboard::store::{self, ClipSnapshot, Ingested, ingest};
+use crate::clipboard::pack;
+use crate::clipboard::store::{self, ClipSnapshot, Ingested, Packed, ingest};
 use crate::clipboard::win::{self, Read};
 use crate::clipboard::{Clip, ClipData, History};
 use crate::config::AfterCapture;
@@ -198,7 +201,9 @@ fn copied_notice(clip: &Clip) -> Notice {
             i18n::clip_files(lang, paths.len(), &first)
         }
         // Only the thumbnail is left: it pastes small, and says so.
-        ClipData::Image(img) if img.full.is_none() => i18n::clip_image_small(lang, img.screenshot),
+        ClipData::Image(img) if !img.has_original() => {
+            i18n::clip_image_small(lang, img.screenshot)
+        }
         ClipData::Image(img) => i18n::clip_image_meta(lang, img.screenshot, img.width, img.height),
     };
     Notice {
@@ -301,6 +306,7 @@ impl App {
             return;
         }
         self.clip.history.set_cap(self.config.clipboard.max_items);
+        self.clip_schedule_packing();
         self.sync_clip_listener();
     }
 
@@ -398,6 +404,7 @@ impl App {
                 (id, arrival)
             }
         };
+        self.clip_schedule_packing();
         self.schedule_clip_save();
         // The preview took the notice's place ("Disalin" would only be
         // replaced by it); an update of a capture Simpan or Hapus already
@@ -427,6 +434,7 @@ impl App {
             return;
         };
         self.clip.captures.set(capture, id);
+        self.clip_schedule_packing();
         self.schedule_clip_save();
         self.redraw_clip();
     }
@@ -527,6 +535,7 @@ impl App {
     /// go from memory and the file. Pins stay.
     pub(super) fn clip_on_lock(&mut self) {
         if self.config.clipboard.clear_on_lock && self.clip.history.clear_unpinned() {
+            self.clip_schedule_packing();
             self.clip.selected = None;
             self.clip.scroll = 0;
             self.write_clip_file_now();
@@ -571,6 +580,7 @@ impl App {
                     .map(|c| c.id);
                 if self.clip.history.delete(id) {
                     self.clip.selected = next;
+                    self.clip_schedule_packing();
                     self.clamp_clip_scroll();
                     self.schedule_clip_save();
                 }
@@ -584,15 +594,80 @@ impl App {
     /// to the front, no duplicate, and "Disalin" shows.
     fn copy_clip(&mut self, id: u64, plain: bool) -> Option<Event> {
         let clip = self.clip.history.get(id)?;
-        let formats = win::formats_for(clip, plain);
+        let packed = !plain && clip.image().is_some_and(|i| i.packed().is_some());
+        let mut formats = win::formats_for(clip, plain);
         let sequence = win::write(self.hwnd, &formats)?;
         self.clip.own_sequence = Some(sequence);
-        let notice = copied_notice(clip);
+        let mut notice = copied_notice(clip);
         self.clip.history.bump(id, Local::now().timestamp());
+        if packed {
+            // The entry is the newest image now: keep what was decoded for
+            // the paste as its raw original (it must be as long as the
+            // original, else the pack did not decode and the paste was the
+            // thumbnail's).
+            let decoded = formats.pop().map(|(_, dib)| Arc::new(dib));
+            if !decoded.is_some_and(|dib| self.clip.history.set_raw(id, dib)) {
+                self.clip.history.forget_original(id);
+                if let Some(c) = self.clip.history.get(id) {
+                    notice = copied_notice(c);
+                }
+            }
+        }
+        self.clip_schedule_packing();
         self.clip.selected = Some(id);
         self.clip.scroll = 0;
         self.schedule_clip_save();
         Some(Event::Notice(notice))
+    }
+
+    /// Hands the originals that are not the newest image's to one short-lived
+    /// worker thread (never the UI thread) to pack; each answer comes back as
+    /// `Event::ClipPacked`. Called after every change that can make another
+    /// image the newest.
+    pub(super) fn clip_schedule_packing(&mut self) {
+        let jobs = self.clip.history.pack_jobs();
+        if jobs.is_empty() {
+            return;
+        }
+        let keys: Vec<(u64, u64)> = jobs.iter().map(|j| (j.id, j.fingerprint)).collect();
+        let (tx, wake) = (self.tx.clone(), poster(self.hwnd, WM_APP_EVENT));
+        let spawned = std::thread::Builder::new()
+            .name("clip-pack".into())
+            .spawn(move || {
+                let inited = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
+                for job in jobs {
+                    let packed = pack::pack(&job.raw).map(Arc::new);
+                    let (id, fingerprint) = (job.id, job.fingerprint);
+                    // The big picture is not held while the next one packs.
+                    drop(job);
+                    if tx
+                        .send(Event::ClipPacked {
+                            id,
+                            fingerprint,
+                            packed,
+                        })
+                        .is_ok()
+                    {
+                        wake();
+                    }
+                }
+                if inited {
+                    unsafe { CoUninitialize() };
+                }
+            });
+        if spawned.is_err() {
+            // No thread: they stay raw.
+            for (id, fingerprint) in keys {
+                self.clip.history.set_packed(id, fingerprint, None);
+            }
+        }
+    }
+
+    /// A worker's answer: the entry swaps its raw original for the packed
+    /// one if it is still waiting for it. Nothing to draw or save (originals
+    /// are never saved).
+    pub(super) fn on_clip_packed(&mut self, id: u64, fingerprint: u64, packed: Option<Arc<Packed>>) {
+        self.clip.history.set_packed(id, fingerprint, packed);
     }
 
     pub(super) fn clamp_clip_scroll(&mut self) {
@@ -814,6 +889,7 @@ impl App {
             ClipSetting::CopyNotice(on) => cfg.copy_notice = on,
             ClipSetting::Clear => {
                 if self.clip.history.clear_unpinned() {
+                    self.clip_schedule_packing();
                     self.clip.selected = None;
                     self.clip.scroll = 0;
                     self.write_clip_file_now();
@@ -830,6 +906,7 @@ impl App {
             }
             ClipSetting::Items(_) => {
                 self.clip.history.set_cap(self.config.clipboard.max_items);
+                self.clip_schedule_packing();
                 self.clamp_clip_scroll();
                 self.schedule_clip_save();
                 self.redraw_clip();

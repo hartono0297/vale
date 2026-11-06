@@ -571,7 +571,8 @@ impl App {
         self.shots.next_id += 1;
         let id = self.shots.next_id;
         let at_ms = screenshot::unix_ms(SystemTime::now());
-        let dib = img.full.clone();
+        // A new image is the newest, so its original is still raw.
+        let dib = img.raw().cloned();
         let thumb = dib
             .as_deref()
             .and_then(|d| {

@@ -21,7 +21,7 @@ use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
 use super::image;
 use super::kinds::{Rule, excluded_rule, is_own_change, should_skip};
 use crate::widgets::cliptext::CLIP_MAX;
-use super::store::{Clip, ClipData, ClipSnapshot, MAX_IMAGE_BYTES, MAX_TEXT_BYTES};
+use super::store::{Clip, ClipData, ClipSnapshot, MAX_IMAGE_BYTES, MAX_TEXT_BYTES, Original};
 
 const CF_TEXT: u32 = 1;
 const CF_BITMAP: u32 = 2;
@@ -289,7 +289,12 @@ pub fn formats_for(clip: &Clip, plain: bool) -> Vec<(u32, Vec<u8>)> {
         (ClipData::Image(_), true) => Vec::new(),
         (ClipData::Image(img), false) => {
             let dib = match &img.full {
-                Some(full) => full.as_ref().clone(),
+                Some(Original::Raw(raw)) => raw.as_ref().clone(),
+                // Decoded here, on the UI thread, which already has COM.
+                // A pack that does not decode pastes small like none.
+                Some(Original::Packed(packed)) => {
+                    super::pack::unpack(packed).unwrap_or_else(|| image::dib_from_thumb(&img.thumb))
+                }
                 // Restored from the file: the thumbnail is all there is.
                 None => image::dib_from_thumb(&img.thumb),
             };
