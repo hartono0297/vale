@@ -102,6 +102,7 @@ use crate::theme::{self, Theme};
 use crate::tiles::ShortcutTiles;
 use crate::ui::app_icon;
 use crate::ui::cat_style::CatLook;
+use crate::ui::dirty::{self, EqKey};
 use crate::ui::cli_input::{self, CliInput, Key as InputKey, WM_APP_CLI_REDRAW};
 use crate::ui::editor::{self, EditorKind, EditorResult, WM_APP_EDITOR_RESULT};
 use crate::ui::frame_clock::{FrameClock, WM_APP_FRAME};
@@ -513,6 +514,8 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
             hwheel: gestures::HWheel::default(),
             media_click: None,
             eq_timer: false,
+            draw_gen: 0,
+            eq_key: None,
             eq_capture: None,
             eq_capture_on: false,
             dance_anchor: Instant::now(),
@@ -960,6 +963,13 @@ struct App {
     media_click: Option<media_log::Click>,
     /// `TIMER_EQ` / `TIMER_POMO` are set.
     eq_timer: bool,
+    /// Bumped by every message, event and input that reaches the app (every
+    /// `with_app` but the equalizer tick's own): an equalizer tick with the
+    /// same number as the last drawn frame has nothing new from the app.
+    draw_gen: u64,
+    /// What the frame on screen drew (`ui::dirty::EqKey`); `None` after a
+    /// draw that failed.
+    eq_key: Option<EqKey>,
     /// The loopback capture behind the equalizer bars (`eq_audio`), created
     /// the first time it is wanted; `eq_capture_on` is the last
     /// `set_running` sent to it.
@@ -1327,6 +1337,7 @@ impl Bata {
 
 impl App {
     fn drain(&mut self) {
+        self.draw_gen = self.draw_gen.wrapping_add(1);
         let now = Instant::now();
         // Before reading: output queued after this posts a new wake.
         self.cli_wake.store(false, Ordering::SeqCst);
@@ -1383,6 +1394,7 @@ impl App {
     /// Runs `event` through the reducer and performs its effects; events an
     /// effect produces (an editor opened, a notice) follow in order.
     fn apply(&mut self, event: Event, now: Instant) {
+        self.draw_gen = self.draw_gen.wrapping_add(1);
         let mut queue = VecDeque::from([event]);
         while let Some(event) = queue.pop_front() {
             self.robot_hears(&event, now);
@@ -3585,6 +3597,7 @@ impl App {
 
     /// Retargets the animation at the state's view and re-arms the notice deadline.
     fn refresh(&mut self, now: Instant) {
+        self.draw_gen = self.draw_gen.wrapping_add(1);
         // The sleep clock follows mouse and keyboard input anywhere on the PC.
         self.fold_pc_input(now);
         self.sync_lyrics(now);
@@ -3914,7 +3927,11 @@ impl App {
         let tall = |s: ShapeRect| s.y + s.h > small.y + small.h + 1.0;
         let need = tall(self.anim.to)
             || (self.anim.running && (tall(self.anim.from) || tall(self.anim.frame(now).0)));
-        self.win.as_mut().is_some_and(|w| w.set_tall(need))
+        let changed = self.win.as_mut().is_some_and(|w| w.set_tall(need));
+        if changed {
+            self.renderer.invalidate();
+        }
+        changed
     }
 
     /// Looks up lyrics for the playing track (memory first, else the worker;
@@ -4332,6 +4349,8 @@ impl App {
     /// Locking, unlocking, the display going off or on: the pointer polls
     /// stop or start again.
     fn sync_pointer_polls(&mut self) {
+        // Display on and unlock: whatever the screen kept is not trusted.
+        self.renderer.invalidate();
         self.sync_outside_timer();
         self.sync_behind(Instant::now());
         self.sync_halo_timer();
@@ -5155,7 +5174,7 @@ impl App {
             // While an animation runs, the frame clock draws anyway.
             TIMER_EQ => {
                 if !self.animating() {
-                    self.draw(Instant::now());
+                    self.draw_eq_tick(Instant::now());
                 }
             }
             TIMER_POMO => {
@@ -5912,6 +5931,9 @@ impl App {
         let changed = google(&cfg) != google(&self.config);
         let toast_style_was = self.config.notifications.toast_style;
         self.config = cfg;
+        // Palette, surface, accent, fill, notch size, style and font may all
+        // have changed: the next frame is drawn in full.
+        self.renderer.invalidate();
         i18n::set_lang(self.config.language);
         // A hand edit of "Notifikasi saat notch dipakai" applies live.
         let toast_style = self.config.notifications.toast_style;
@@ -6380,7 +6402,21 @@ impl App {
         }
     }
 
+    /// Draws the frame now.
     fn draw(&mut self, now: Instant) {
+        self.draw_frame(now, false);
+    }
+
+    /// The `TIMER_EQ` tick: draws only when the frame would differ from the
+    /// last one drawn (`dirty::eq_draw_needed`). Nothing the app changed
+    /// since (`draw_gen`), no new bar heights and nothing time-based (the
+    /// sine bars, a moving progress line, the dancing cat's floating note)
+    /// means the screen already shows this frame.
+    fn draw_eq_tick(&mut self, now: Instant) {
+        self.draw_frame(now, true);
+    }
+
+    fn draw_frame(&mut self, now: Instant, eq_tick: bool) {
         self.dock_sync();
         // Clicks on the Devices page mean the cards of the frame drawn here.
         self.devices_sync_drawn();
@@ -6489,6 +6525,17 @@ impl App {
                 .or_else(|| self.strip_motion.as_ref().and_then(|m| m.leaving.as_ref())),
         };
         let phone_view = App::phone_view(state, &self.phone, now);
+        // Anything that moves outside the shape, or the shape itself: the
+        // renderer redraws the whole surface (`ui::dirty`).
+        let full_redraw = self.anim.running
+            || self.rise.is_some()
+            || self.slide.is_some()
+            || self.reveal.is_some()
+            || self.page_fade.is_some()
+            || leaving.is_some()
+            || transit.content_alpha < 1.0
+            || self.strip_motion.is_some()
+            || self.eyes_morph;
         let frame = Frame {
             view: &self.drawn,
             media: state.media(),
@@ -6615,13 +6662,23 @@ impl App {
                 .and_then(|m| m.motion.frame(now, STRIP_H)),
             notice_close: self.notice_close_view(now),
             transit,
+            full_redraw,
         };
-        if let Err(error) = self
+        let key = eq_key(self.draw_gen, &frame, shape, opacity);
+        if eq_tick && !dirty::eq_draw_needed(self.eq_key.as_ref(), &key) {
+            return;
+        }
+        let drawn = match self
             .renderer
             .draw(win, self.config.style, shape, &frame, opacity)
         {
-            eprintln!("vale: draw failed: {error}");
-        }
+            Ok(()) => true,
+            Err(error) => {
+                eprintln!("vale: draw failed: {error}");
+                false
+            }
+        };
+        self.eq_key = drawn.then_some(key);
         // The IME composes where the panel drew the caret.
         if focused && let (Some(input), Some(caret)) = (input, self.renderer.cli_caret()) {
             input.set_ime_caret(caret);
@@ -6644,6 +6701,44 @@ impl App {
                 self.draw(now);
             }
         }
+    }
+}
+
+/// What `frame` draws that can change between two equalizer ticks.
+fn eq_key(draw_gen: u64, frame: &Frame, shape: ShapeRect, opacity: f32) -> EqKey {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let hash = |text: &str| {
+        let mut h = DefaultHasher::new();
+        text.hash(&mut h);
+        h.finish()
+    };
+    let compact = *frame.view == View::MediaCompact;
+    let playing = frame.media.is_some_and(|m| m.playing);
+    // The renderer draws the sine (the clock's) for compact media playing
+    // without live bars.
+    let time_based = compact && playing && frame.eq_heights.is_none();
+    EqKey {
+        draw_gen,
+        shape: [shape.x, shape.y, shape.w, shape.h, shape.radius].map(f32::to_bits),
+        opacity: opacity.to_bits(),
+        eq_heights: frame
+            .eq_heights
+            .filter(|_| compact)
+            .map(|h| h.map(f32::to_bits)),
+        time_based,
+        robot: frame.robot,
+        progress: frame.progress,
+        lyric: frame
+            .lyric
+            .map(|l| (hash(l.text), l.prev.map(hash), l.fade.to_bits())),
+        lyric_scroll: [frame.lyric_scroll, frame.lyric_prev_scroll].map(f32::to_bits),
+        fill_alpha: frame.fill_alpha.to_bits(),
+        toast_slot_w: frame.toast_slot_w.to_bits(),
+        toast_dot: frame.toast_dot,
+        volume: frame.volume.map(f32::to_bits),
+        notice_close: frame.notice_close,
+        clock: frame.clock.clone(),
+        view: frame.view.clone(),
     }
 }
 
@@ -8059,6 +8154,16 @@ fn drain_editor_results(hwnd: HWND) {
 /// Runs `f` on the app, or returns `None` when it does not exist yet or is
 /// already borrowed by a handler further up the stack.
 fn with_app<R>(f: impl FnOnce(&mut App) -> R) -> Option<R> {
+    with_app_quiet(|app| {
+        // Every message, event and input reaches the app here: the
+        // equalizer tick's skip (`draw_eq_tick`) sees that something ran.
+        app.draw_gen = app.draw_gen.wrapping_add(1);
+        f(app)
+    })
+}
+
+/// `with_app` without the `draw_gen` bump: the equalizer tick alone.
+fn with_app_quiet<R>(f: impl FnOnce(&mut App) -> R) -> Option<R> {
     APP.with(|cell| {
         let mut app = cell.try_borrow_mut().ok()?;
         app.as_mut().map(f)
@@ -8091,6 +8196,8 @@ fn reposition() {
         app.win = Some(win);
         app.placed = target;
         app.displays = displays;
+        // Another screen, DPI or position: all of it is drawn again.
+        app.renderer.invalidate();
         // The screen's width caps the lyric notch; refresh draws.
         app.refresh(Instant::now());
         app.sync_settings();
@@ -8392,6 +8499,11 @@ unsafe extern "system" fn wnd_proc(
                     let _ = PostMessageW(Some(hwnd), WM_APP_WIDGET, WPARAM(0), LPARAM(0));
                 }
             }
+            LRESULT(0)
+        }
+        // The tick that may draw nothing: it does not count as news.
+        WM_TIMER if wparam.0 == TIMER_EQ => {
+            with_app_quiet(|app| app.on_timer(TIMER_EQ));
             LRESULT(0)
         }
         WM_TIMER => {

@@ -4,7 +4,7 @@ use windows::Win32::Graphics::Direct2D::Common::{
     D2D1_FIGURE_END_CLOSED, D2D1_GRADIENT_STOP, D2D1_PIXEL_FORMAT,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_ARC_SEGMENT, D2D1_ARC_SIZE_SMALL, D2D1_CAP_STYLE_ROUND,
+    D2D1_ANTIALIAS_MODE_ALIASED, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_ARC_SEGMENT, D2D1_ARC_SIZE_SMALL, D2D1_CAP_STYLE_ROUND,
     D2D1_COMBINE_MODE_UNION, D2D1_DASH_STYLE_DASH, D2D1_DASH_STYLE_SOLID, D2D1_DRAW_TEXT_OPTIONS,
     D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_EXTEND_MODE_CLAMP,
     D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_GAMMA_2_2, D2D1_LAYER_OPTIONS_NONE,
@@ -36,7 +36,9 @@ use windows::Win32::Graphics::Imaging::{
     WICDecodeMetadataCacheOnDemand,
 };
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
-use windows::Win32::UI::WindowsAndMessaging::{ULW_ALPHA, UpdateLayeredWindow};
+use windows::Win32::UI::WindowsAndMessaging::{
+    ULW_ALPHA, UPDATELAYEREDWINDOWINFO, UpdateLayeredWindow, UpdateLayeredWindowIndirect,
+};
 use windows::core::{Interface, Result};
 use windows_numerics::{Matrix3x2, Vector2};
 
@@ -46,6 +48,7 @@ use std::time::Instant;
 use chrono::{DateTime, Local, NaiveDate, NaiveDateTime};
 
 use super::cat_style::CatLook;
+use super::dirty::{self, Drawn, Plan, ViewKind};
 use super::dock::{DockFrame, DockZone};
 use super::fonts::{self, Face, Role};
 use super::geometry::{
@@ -254,6 +257,11 @@ pub struct Frame<'a> {
     /// What transitions add to this frame (`ui::motion`); all at rest by
     /// default.
     pub transit: Transit,
+    /// Something moves outside the shape or the shape itself is morphing (a
+    /// panel opening or closing, a hover lift, a rise, a slide, a reveal, a
+    /// fade, a strip): the whole surface is redrawn and presented, not just
+    /// what the shape covers (`ui::dirty`).
+    pub full_redraw: bool,
 }
 
 /// The notice's ✕ this frame: its fade and whether the pointer is on it.
@@ -738,6 +746,13 @@ pub struct Renderer {
     /// The compact pomodoro's countdown box (`pomo_compact_time_w`);
     /// `set_ui_font` clears it.
     pomo_time_cache: std::cell::Cell<Option<f32>>,
+    /// The signature of the frame on the surface now, set only after a
+    /// successful present; `None` makes the next frame a full redraw
+    /// (`invalidate`).
+    last: Option<Drawn>,
+    /// The second surface the debug self-check redraws a frame in full on.
+    #[cfg(debug_assertions)]
+    check_surface: Option<Surface>,
 }
 
 struct Fonts {
@@ -843,6 +858,10 @@ struct Surface {
     bitmap: HBITMAP,
     previous: HGDIOBJ,
     size: SIZE,
+    /// The DIB's pixels (`size.cx * size.cy` BGRA), read by the debug
+    /// dirty-rect self-check.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
+    bits: *mut std::ffi::c_void,
 }
 
 impl Drop for Surface {
@@ -973,6 +992,9 @@ impl Renderer {
                 cat: std::cell::Cell::new(CatLook::default()),
                 notif_time_cache: std::cell::Cell::new(None),
                 pomo_time_cache: std::cell::Cell::new(None),
+                last: None,
+                #[cfg(debug_assertions)]
+                check_surface: None,
             })
         }
     }
@@ -992,14 +1014,24 @@ impl Renderer {
         }
         self.fonts = Fonts::new(&self.dwrite, ui)?;
         self.ui_font = ui;
+        self.invalidate();
         // Widths measured in the old font.
         self.notif_time_cache.set(None);
         self.pomo_time_cache.set(None);
         Ok(())
     }
 
+    /// The next frame redraws and presents the whole surface (what is on it
+    /// can no longer be trusted: the target was rebuilt, the surface, the
+    /// font or the halo changed, the window moved).
+    pub fn invalidate(&mut self) {
+        self.last = None;
+    }
+
     /// Renders one frame. `shape` is in logical pixels; `opacity` 0 clears
     /// every pixel so the window is fully invisible and click-through.
+    /// Only what changed since the last presented frame is redrawn and
+    /// presented when `ui::dirty` says the pixels would be the same.
     pub fn draw(
         &mut self,
         win: &IslandWindow,
@@ -1017,8 +1049,13 @@ impl Renderer {
         self.clip_caret.set(None);
         self.search_caret.set(None);
         self.ensure_surface(win.size())?;
+        // Taken: it is only set again once this frame is on the screen, so a
+        // failed frame leaves the next one a full redraw.
+        let prev = self.last.take();
+        let cur = self.signature(win, style, shape, frame, opacity);
+        let mut plan = dirty::plan(prev.as_ref(), &cur);
         // A lost target is rebuilt once; a second failure is reported.
-        if let Err(error) = self.paint(style, shape, frame, opacity) {
+        if let Err(error) = self.paint(style, shape, frame, opacity, plan) {
             if error.code() != D2DERR_RECREATE_TARGET {
                 return Err(error);
             }
@@ -1030,13 +1067,71 @@ impl Renderer {
             self.arrange_icons.borrow_mut().clear();
             self.shot_thumb.borrow_mut().take();
             self.regions = HitRegions::default();
-            self.paint(style, shape, frame, opacity)?;
+            // The new target starts from nothing: all of it is drawn again.
+            plan = Plan::Full;
+            self.paint(style, shape, frame, opacity, plan)?;
         }
-        self.present(win, opacity)
+        if self.present(win, opacity, plan)? {
+            self.last = Some(cur);
+        }
+        #[cfg(debug_assertions)]
+        if let Plan::Dirty(rect) = plan
+            && dirty_check_on()
+        {
+            self.verify_dirty(style, shape, frame, opacity, rect);
+        }
+        Ok(())
     }
 
-    /// Pushes the drawn surface to the layered window at `opacity`.
-    fn present(&self, win: &IslandWindow, opacity: f32) -> Result<()> {
+    /// What this frame is, for `dirty::plan`.
+    fn signature(
+        &self,
+        win: &IslandWindow,
+        style: Style,
+        shape: ShapeRect,
+        frame: &Frame,
+        opacity: f32,
+    ) -> Drawn {
+        let size = win.size();
+        let origin = win.origin();
+        let kind = ViewKind::of(frame.view);
+        let t = &frame.transit;
+        // What the renderer can see for itself: the panel, and any transition
+        // that moves content past the shape.
+        let force_full = frame.full_redraw
+            || kind == ViewKind::Panel
+            || t.reveal.is_some()
+            || t.page_fade.is_some()
+            || t.leaving.is_some()
+            || t.content_alpha < 1.0
+            || frame.page_slide != 0.0
+            || frame.strip_motion.is_some()
+            || frame.robot_fades;
+        let bounds = dirty::painted_bounds(style, shape, kind, frame.eyes, self.halo)
+            .map(|r| dirty::to_device(r, self.scale, dirty::margin_px(self.scale)));
+        Drawn {
+            size: (size.cx, size.cy),
+            scale: self.scale,
+            origin: (origin.x, origin.y),
+            opacity,
+            fill_alpha: frame.fill_alpha,
+            legibility: frame.legibility,
+            palette: frame.palette,
+            ui_font: self.ui_font,
+            cat: frame.cat,
+            style,
+            halo: self.halo,
+            force_full,
+            bounds,
+        }
+    }
+
+    /// Pushes the drawn surface to the layered window at `opacity`: all of it
+    /// for `Plan::Full`, only the dirty rect for `Plan::Dirty` (the surface
+    /// size has not changed then, which a dirty rect needs). Returns whether
+    /// the frame may be remembered as presented: false after a failed dirty
+    /// update, which falls back to the full one at once.
+    fn present(&self, win: &IslandWindow, opacity: f32, plan: Plan) -> Result<bool> {
         let surface = self
             .surface
             .as_ref()
@@ -1047,19 +1142,45 @@ impl Renderer {
             SourceConstantAlpha: (opacity * 255.0).round() as u8,
             AlphaFormat: AC_SRC_ALPHA as u8,
         };
+        let origin = win.origin();
+        let source = POINT { x: 0, y: 0 };
+        if let Plan::Dirty(rect) = plan {
+            let dirty = RECT {
+                left: rect.left,
+                top: rect.top,
+                right: rect.right,
+                bottom: rect.bottom,
+            };
+            let info = UPDATELAYEREDWINDOWINFO {
+                cbSize: size_of::<UPDATELAYEREDWINDOWINFO>() as u32,
+                hdcDst: HDC::default(),
+                pptDst: &origin,
+                psize: &surface.size,
+                hdcSrc: surface.dc,
+                pptSrc: &source,
+                crKey: COLORREF(0),
+                pblend: &blend,
+                dwFlags: ULW_ALPHA,
+                prcDirty: &dirty,
+            };
+            if unsafe { UpdateLayeredWindowIndirect(win.hwnd(), &info) }.as_bool() {
+                return Ok(true);
+            }
+        }
         unsafe {
             UpdateLayeredWindow(
                 win.hwnd(),
                 None,
-                Some(&win.origin()),
+                Some(&origin),
                 Some(&surface.size),
                 Some(surface.dc),
-                Some(&POINT { x: 0, y: 0 }),
+                Some(&source),
                 COLORREF(0),
                 Some(&blend),
                 ULW_ALPHA,
             )
-        }
+        }?;
+        Ok(matches!(plan, Plan::Full))
     }
 
     /// `--demo-robot`'s sheet (studio-robot.html page 2): the ten faces at
@@ -1076,6 +1197,7 @@ impl Renderer {
         self.palette = palette;
         self.scale = win.scale();
         self.regions = HitRegions::default();
+        self.invalidate();
         self.ensure_surface(win.size())?;
         self.ensure_target()?;
         let surface = self.surface.as_ref().expect("surface ensured above");
@@ -1100,7 +1222,7 @@ impl Renderer {
         }
         let target = self.target.as_ref().expect("target ensured above");
         unsafe { target.rt.EndDraw(None, None) }?;
-        self.present(win, 1.0)
+        self.present(win, 1.0, Plan::Full).map(|_| ())
     }
 
     /// `bata-colors`: the four coats, each on the surface `chosen` gives it
@@ -1365,6 +1487,9 @@ impl Renderer {
 
     /// The drag margin shows from the next frame on.
     pub fn set_halo(&mut self, on: bool) {
+        if on != self.halo {
+            self.invalidate();
+        }
         self.halo = on;
     }
 
@@ -1483,6 +1608,14 @@ impl Renderer {
             return Ok(());
         }
         self.surface = None;
+        // The new surface is empty.
+        self.invalidate();
+        self.surface = Some(Self::make_surface(size)?);
+        Ok(())
+    }
+
+    /// A 32-bpp top-down DIB of `size` in a memory DC.
+    fn make_surface(size: SIZE) -> Result<Surface> {
         let info = BITMAPINFO {
             bmiHeader: BITMAPINFOHEADER {
                 biSize: size_of::<BITMAPINFOHEADER>() as u32,
@@ -1508,14 +1641,14 @@ impl Renderer {
                 }
             };
             let previous = SelectObject(dc, bitmap.into());
-            self.surface = Some(Surface {
+            Ok(Surface {
                 dc,
                 bitmap,
                 previous,
                 size,
-            });
+                bits,
+            })
         }
-        Ok(())
     }
 
     fn ensure_target(&mut self) -> Result<()> {
@@ -1549,22 +1682,55 @@ impl Renderer {
         Ok(())
     }
 
-    fn paint(&mut self, style: Style, shape: ShapeRect, frame: &Frame, opacity: f32) -> Result<()> {
-        self.ensure_target()?;
+    fn paint(
+        &mut self,
+        style: Style,
+        shape: ShapeRect,
+        frame: &Frame,
+        opacity: f32,
+        plan: Plan,
+    ) -> Result<()> {
         let surface = self.surface.as_ref().expect("surface ensured by draw");
+        let (dc, size) = (surface.dc, surface.size);
+        self.paint_on(dc, size, style, shape, frame, opacity, plan)
+    }
+
+    /// Draws the frame on the surface `dc` is bound to. A `Dirty` plan
+    /// clears and draws only inside its rect: an aliased clip on whole
+    /// physical pixels (an antialiased edge would blend the old pixels with
+    /// the new ones). The island is painted in full either way, so the hit
+    /// regions are rebuilt as ever.
+    #[allow(clippy::too_many_arguments)]
+    fn paint_on(
+        &mut self,
+        dc: HDC,
+        size: SIZE,
+        style: Style,
+        shape: ShapeRect,
+        frame: &Frame,
+        opacity: f32,
+        plan: Plan,
+    ) -> Result<()> {
+        self.ensure_target()?;
         let target = self.target.as_ref().expect("target ensured above");
         let rt = &target.rt;
         let bounds = RECT {
             left: 0,
             top: 0,
-            right: surface.size.cx,
-            bottom: surface.size.cy,
+            right: size.cx,
+            bottom: size.cy,
         };
         unsafe {
-            rt.BindDC(surface.dc, &bounds)?;
+            rt.BindDC(dc, &bounds)?;
             // Draw in logical pixels; the target scales to the window's DPI.
             rt.SetDpi(96.0 * self.scale, 96.0 * self.scale);
             rt.BeginDraw();
+            if let Plan::Dirty(rect) = plan {
+                rt.PushAxisAlignedClip(
+                    &d2d_rect(dirty::to_dip(rect, self.scale)),
+                    D2D1_ANTIALIAS_MODE_ALIASED,
+                );
+            }
             rt.Clear(Some(&color(0, 0.0)));
         }
         let painted = if opacity > 0.0 {
@@ -1575,7 +1741,73 @@ impl Renderer {
         // EndDraw always runs so a failed frame never leaves the target mid-draw;
         // its error (e.g. a lost target) takes precedence.
         let rt = &self.target.as_ref().expect("target ensured above").rt;
+        if matches!(plan, Plan::Dirty(_)) {
+            unsafe { rt.PopAxisAlignedClip() };
+        }
         unsafe { rt.EndDraw(None, None) }.and(painted)
+    }
+
+    /// `DI_DIRTY_CHECK=1` (debug builds): redraws the frame in full on a
+    /// second surface and compares it with the one just presented; the first
+    /// pixel that differs is reported on stderr.
+    #[cfg(debug_assertions)]
+    fn verify_dirty(
+        &mut self,
+        style: Style,
+        shape: ShapeRect,
+        frame: &Frame,
+        opacity: f32,
+        rect: dirty::RectI,
+    ) {
+        let Some(size) = self.surface.as_ref().map(|s| s.size) else {
+            return;
+        };
+        if self.check_surface.as_ref().is_none_or(|s| s.size != size) {
+            self.check_surface = None;
+            match Self::make_surface(size) {
+                Ok(surface) => self.check_surface = Some(surface),
+                Err(error) => {
+                    eprintln!("vale: dirty check surface failed: {error}");
+                    return;
+                }
+            }
+        }
+        let dc = self.check_surface.as_ref().map(|s| s.dc).expect("made above");
+        // The check paints the same island again: keep the real hit regions.
+        let regions = std::mem::take(&mut self.regions);
+        let painted = self.paint_on(dc, size, style, shape, frame, opacity, Plan::Full);
+        self.regions = regions;
+        if let Err(error) = painted {
+            eprintln!("vale: dirty check draw failed: {error}");
+            return;
+        }
+        unsafe {
+            let _ = windows::Win32::Graphics::Gdi::GdiFlush();
+        }
+        let (Some(shown), Some(full)) = (&self.surface, &self.check_surface) else {
+            return;
+        };
+        let len = size.cx as usize * size.cy as usize * 4;
+        // SAFETY: both are DIB sections of `size` (32 bpp), alive here.
+        let (a, b) = unsafe {
+            (
+                std::slice::from_raw_parts(shown.bits as *const u8, len),
+                std::slice::from_raw_parts(full.bits as *const u8, len),
+            )
+        };
+        if let Some(i) = a.iter().zip(b).position(|(x, y)| x != y) {
+            let px = i / 4;
+            let (x, y) = (px % size.cx as usize, px / size.cx as usize);
+            eprintln!(
+                "vale: dirty mismatch at {x},{y} (rect {},{},{},{}) presented {:02x?} full {:02x?}",
+                rect.left,
+                rect.top,
+                rect.right,
+                rect.bottom,
+                &a[px * 4..px * 4 + 4],
+                &b[px * 4..px * 4 + 4],
+            );
+        }
     }
 
     fn paint_island(&mut self, style: Style, shape: ShapeRect, frame: &Frame) -> Result<()> {
@@ -1589,10 +1821,10 @@ impl Renderer {
             if self.halo && !frame.eyes && !matches!(view, View::Panel(_) | View::Hidden) {
                 let r = shape_rect(shape);
                 let halo = Rect {
-                    x: r.x - HALO_SIDE,
+                    x: r.x - dirty::HALO_SIDE,
                     y: 0.0,
-                    w: r.w + 2.0 * HALO_SIDE,
-                    h: r.bottom() + HALO_BELOW,
+                    w: r.w + 2.0 * dirty::HALO_SIDE,
+                    h: r.bottom() + dirty::HALO_BELOW,
                 };
                 target.brush.SetColor(&color(0x000000, HALO_ALPHA));
                 target.rt.FillRectangle(&d2d_rect(halo), &target.brush);
@@ -3230,9 +3462,15 @@ fn line_format(
 /// The margin's opacity: enough to count as a pixel the window owns (8-bit
 /// alpha 3), too little to see.
 const HALO_ALPHA: f32 = 0.012;
-/// How far the margin reaches beside and below the island, logical px.
-const HALO_SIDE: f32 = 14.0;
-const HALO_BELOW: f32 = 8.0;
+/// How far the margin reaches beside and below the island: `dirty::HALO_SIDE`
+/// and `dirty::HALO_BELOW`, which the dirty rect needs too.
+
+/// `DI_DIRTY_CHECK=1` turns the dirty-rect self-check on (debug builds only).
+#[cfg(debug_assertions)]
+fn dirty_check_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("DI_DIRTY_CHECK").is_ok_and(|v| v == "1"))
+}
 
 fn shape_rect(s: ShapeRect) -> Rect {
     Rect {
