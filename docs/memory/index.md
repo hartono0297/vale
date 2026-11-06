@@ -21,7 +21,7 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[studio-editor-frame]]
 - [[studio-reminder-editor]]
 - [[bata-robot-expressions]]
-- [[bata-idle-power-budget]]: no continuous timer or thread at idle (one-shots, frame clock only while something moves); since 2026-11-06 the closed island redraws and presents only a dirty rect (`ui/dirty.rs`, `UpdateLayeredWindowIndirect`, aliased pixel-aligned clip, Full on morphs/panel/any signature change) and a `TIMER_EQ` tick that would repeat the last frame is skipped (`EqKey`, `draw_gen`), `DI_DIRTY_CHECK=1` self-check
+- [[bata-idle-power-budget]]: no continuous timer or thread at idle (one-shots, frame clock only while something moves); since 2026-11-06 the closed island redraws and presents only a dirty rect (`ui/dirty.rs`, `UpdateLayeredWindowIndirect`, aliased pixel-aligned clip, Full on morphs/panel/any signature change), drawn on a persistent software WIC bitmap target the size of the surface (rebuilt with it) and copied row by row into the DIB, no `BindDC` and a `TIMER_EQ` tick that would repeat the last frame is skipped (`EqKey`, `draw_gen`), `DI_DIRTY_CHECK=1` self-check
 - [[bata-morning-greeting]]
 - [[greeting-periods]]: the cat greets once per period (5) per day by local time, not just mornings
 - [[lyric-notch-width]]
@@ -102,6 +102,7 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[install-script-follows-latest-release]]
 - [[shot-editor-paint-order]]: Direct2D paints in call order; the editor's footer background must come before the buttons in it (the Discard bar)
 - [[taskbar-icon-from-exe]]: the Win11 taskbar shows the exe's cached icon, not WM_SETICON; the installer and the app tell the shell
+- [[d2d-dc-target-full-copy]]: a Direct2D DC render target copies the whole bound DC rect at BeginDraw and EndDraw whatever the clip; the island draws on a WIC bitmap target and copies only the dirty rows
 - [[test-spawns-no-window]]: tests spawn console children with CREATE_NO_WINDOW and never show windows (editor `ON_SCREEN`), or Windows Terminal windows pop up
 - [[tray-dark-menu]]: the tray menu follows the Windows app mode via uxtheme ordinals 135/136/104 (AllowDark), not Vale's window theme
 

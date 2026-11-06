@@ -33,7 +33,7 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::Graphics::Imaging::{
     CLSID_WICImagingFactory, GUID_WICPixelFormat32bppPBGRA, IWICBitmap, IWICBitmapSource,
     IWICImagingFactory, WICBitmapCacheOnLoad, WICBitmapDitherTypeNone, WICBitmapLockRead,
-    WICBitmapLockWrite, WICRect, WICBitmapInterpolationModeFant, WICBitmapPaletteTypeMedianCut,
+    WICRect, WICBitmapInterpolationModeFant, WICBitmapPaletteTypeMedianCut,
     WICDecodeMetadataCacheOnDemand,
 };
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
@@ -1962,7 +1962,8 @@ impl Renderer {
                 Width: size.cx,
                 Height: size.cy,
             };
-            let lock = target.bitmap.Lock(&area, WICBitmapLockWrite.0 as u32)?;
+            let flags = windows::Win32::Graphics::Imaging::WICBitmapLockWrite.0 as u32;
+            let lock = target.bitmap.Lock(&area, flags)?;
             let stride = lock.GetStride()? as usize;
             let mut len = 0u32;
             let mut data = std::ptr::null_mut();

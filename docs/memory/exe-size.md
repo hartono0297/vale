@@ -244,3 +244,19 @@ branch:
 No new crate and no new `windows` feature (`UpdateLayeredWindowIndirect` and
 `UPDATELAYEREDWINDOWINFO` are in `Win32_UI_WindowsAndMessaging`, already on). The
 growth is the planner, the clip and the key; the self-check compiles out.
+
+## Island on a WIC bitmap target (2026-11-06)
+
+[[bata-idle-power-budget]], "The WIC bitmap target", and [[d2d-dc-target-full-copy]]: the island
+draws on a persistent software WIC bitmap target and copies the dirty rows into
+the DIB, no `BindDC` per frame. `cargo build --release --locked`, 0 warnings. Both
+exes were built from clean `git archive` copies of the sources in two scratchpad
+folders of the same path length (the embedded PDB path moves an exe by up to 512
+bytes), `main` at fcf5dd7 against this branch:
+
+| Build | Bytes |
+|---|---|
+| `main` (fcf5dd7) | 3,851,264 |
+| this branch (WIC target) | 3,852,800 (+1,536, +0.04 %) |
+
+No new crate and no new `windows` feature (WIC and Direct2D were on already).
