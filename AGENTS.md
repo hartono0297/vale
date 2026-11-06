@@ -1,72 +1,49 @@
 # Agent rules
 
-## Models per phase (set in `.claude/workflows/build.js`)
+## Every code change goes through Superpowers
 
-| Phase | Model | Effort |
-|---|---|---|
-| Plan | Opus 5.5 (`claude-opus-5-5`) | high |
-| Build (write the code) | Sonnet 5.5 (`claude-sonnet-5-5`) | high |
-| Review | Opus 5.5 (`claude-opus-5-5`) | high |
-| Fix | Sonnet 5.5 (`claude-sonnet-5-5`) in round 1, Opus 5.5 (`claude-opus-5-5`) from round 2 if the reviewer still says FIX; Opus for a failed check | high |
-| Check | Sonnet 5.5 (`claude-sonnet-5-5`) | high |
-| Ship (merge, test) | Sonnet 5.5 (`claude-sonnet-5-5`); a red `main` goes to an Opus fixer | medium (fixer high) |
-| Finish (memory, README, push) | Sonnet 5.5 (`claude-sonnet-5-5`) | medium |
-| Clean (worktrees, branches) | Sonnet 5.5 (`claude-sonnet-5-5`) | medium |
+Superpowers (`superpowers@superpowers-marketplace`) is on for this project
+(`.claude/settings.json`). Whenever I ask for a code change (new feature, bug
+fix, refactor), follow its flow:
 
-- Spawning subagents (Agent tool) is allowed whenever it helps: parallel
-  reading, independent tasks, blind reviewers, fixers. Set each agent's model
-  from the table above for the phase it works in.
-- Review and fix loop until the review comes back clean (up to 3 rounds).
-- If a model cannot be selected (for example `model_not_found`), say so and
-  ask before falling back to another model.
+1. `superpowers:brainstorming`: settle the goal, the exact behaviour, edge cases,
+   what must not change and what "done" means, with me, and wait for my OK.
+2. `superpowers:writing-plans`: write the plan.
+3. `superpowers:subagent-driven-development` (or `executing-plans`): implement it
+   test-first (`test-driven-development`), with reviews
+   (`requesting-code-review`). Use `systematic-debugging` for bugs and
+   `verification-before-completion` before claiming anything works.
+4. `superpowers:finishing-a-development-branch`: this project uses a single
+   branch, so always pick **merge locally into `main`**. Then run
+   `cargo test --locked` on `main`.
+5. Once `main` is green and everything is merged: update the Obsidian memory and
+   `README.md` (see "Tools"), commit them as "docs: update memory and README",
+   and push `main`. That push is pre-approved. Deploy stays with me.
+6. After the push, clean up the worktrees and branches the change left behind
+   (see "Clean up worktrees").
 
-## Every code change goes through the `build` workflow
+- Put worktrees under `.claude/worktrees/` (gitignored).
+- If anything is not ready (tests red, review findings open, a task unfinished),
+  skip docs and push and tell me what is left.
+- When it finishes, report what was merged, what was written to memory and
+  README, whether `main` was pushed, what cleanup removed (and the space freed)
+  or kept, what I still have to check by hand, and any open findings.
+- The old `build` workflow (`.claude/workflows/build.js`) stays in the repo but
+  is not used.
 
-The workflow is the one from Gxl-WorkFlow (`D:\GitHub\Gxl-WorkFlow`,
-`template/.claude/workflows/build.js`), copied unchanged with its model rules
-(the table above). To update it, copy the template file again.
+## Models
 
-I opt in to multi-agent orchestration for this project. Whenever I ask for a code
-change (new feature, bug fix, refactor), run the `build` workflow
-(`.claude/workflows/build.js`) with my request as `args`. Do not edit the code
-yourself in the main session.
+Let Superpowers pick each subagent's model with its own "Model Selection" rules
+(`subagent-driven-development`): the cheapest model for mechanical work, a
+standard one for integration and debugging, the most capable one for design and
+the final whole-branch review. Always name the model explicitly when spawning a
+subagent. If a model cannot be selected (for example `model_not_found`), say so
+and ask before falling back to another model.
 
-- Do not weigh the tasks yourself. The workflow's Plan step (Opus) splits the
-  request and marks each task `light` or `heavy`. Light tasks get build only
-  (the builder and Ship run the tests). Heavy tasks get build, a blind review of
-  a pinned commit (fixes land in the builder's worktree), and a check against a
-  written checklist. A failed check item goes back to a fix (Opus), then one more
-  review; only a SHIP is checked again, and a task gets 2 checks at most. What
-  the checker cannot test lands in `manualChecks` for me.
-- The workflow merges passing tasks into `main` locally and runs the tests. If
-  `main` is red, an Opus fixer commits a fix on `main`, it gets a blind review,
-  and the tests run again (2 fix rounds at most). Once everything is
-  ready (every task merged, reviewed, fixed and checked where required, tests
-  green on `main`, nothing `incomplete`), its Finish step **always** updates the
-  Obsidian memory and `README.md`, commits those docs, and pushes `main`. This
-  project uses a single branch (`main`), so that push is pre-approved. Deploy
-  stays with me.
-- Once that push succeeded, its Clean step removes the worktrees and branches
-  the run left behind (never forced). Anything not merged into `main` or with
-  changes is kept and reported. If Finish did not run or the push failed,
-  nothing is removed and the result lists them in `leftovers`.
-- If anything is not ready, the workflow skips docs and push. Fix what it
-  reports first; don't push half-finished work from the main session.
-- For a long batch of runs, pass `args: {request, defer: true}` to build now,
-  then run one verify pass with `args: {verify: [...]}` (the `deferred` list the
-  runs returned) at the end. Deferred runs never push; the verify pass does the
-  Finish step.
-- When it finishes, report: which tasks were merged and their weight, what the
-  Finish step wrote to memory and README, whether `main` was pushed, what Clean
-  removed (and the space freed) or kept, `manualChecks`, `incomplete`, and any
-  open findings or failed checks.
+## Clean up worktrees once they are pushed
 
-## Clean up worktrees once they are pushed (main session)
-
-Clean only touches what its own run created. The main session cleans the rest
-the same way, once its branch is merged into `main` and `main` is pushed:
-worktrees you create yourself with the Agent tool's `isolation: "worktree"`, and
-a run's `leftovers` once what held them is fixed and pushed.
+Once a branch is merged into `main` and `main` is pushed, remove its worktree
+and branch:
 
 - If a folder in the worktree is a link to a folder outside it (a Windows
   junction or a symlink, such as a shared `node_modules`), remove only the link
@@ -83,57 +60,37 @@ a run's `leftovers` once what held them is fixed and pushed.
 ## Every new task starts in a new session
 
 The main session only takes tasks in; the thinking happens elsewhere. When I give
-a new task that would run `build` (new feature, bug fix, refactor), do not
-brainstorm or plan it here. Start a new session for it right away, without
-asking me first, and tell me in one line which session it is.
+a new code-change task (new feature, bug fix, refactor), do not brainstorm or
+plan it here. Start a new session for it right away, without asking me first,
+and tell me in one line which session it is.
 
 - Start it with `start_session`, context `fresh`. If this session has no
   `start_session` tool, use `spawn_task` instead (the Claude desktop app shows it
   as a card; one click starts the session). The brief holds my request in my own
   words plus whatever from this conversation it needs, stands on its own, and
   says: "You were started by the main session to brainstorm and plan this task
-  with the user, then run `build`. Follow 'Always brainstorm before `build`' in
-  AGENTS.md. Skip 'Session start'. Do not start another session."
-- A session started that way brainstorms and plans in itself and runs `build`
-  itself. This rule does not apply inside it, so it never spawns another one:
-  anything I add or change there, even a new request, stays in that session.
+  with the user, then implement it. Follow 'Every code change goes through
+  Superpowers' in AGENTS.md. Skip 'Session start'. Do not start another session."
+- A session started that way brainstorms, plans and implements in itself. This
+  rule does not apply inside it, so it never spawns another one: anything I add
+  or change there, even a new request, stays in that session.
 - One session per task. If I give several tasks at once, start one session each.
 - Follow-ups, corrections or answers about a task that already has a session go
   to that session (`SendMessage`), not to a new one.
 - What is not a new task stays here: questions, explanations, reading code, and
-  anything under "When NOT to run it".
-- Do not brainstorm, read code for the task, or run `build` in the main
-  session while waiting for the new one. Only if neither `start_session` nor
-  `spawn_task` exists, say so and brainstorm in the current session.
-
-## Always brainstorm before `build`
-
-Agents inside the workflow cannot ask me anything, so every open question gets
-settled first, in the session that owns the task, with me. Before every `build`
-run:
-
-- Restate what you understood in a few lines, then ask about whatever is
-  unclear: the goal, who uses it, the exact behaviour and edge cases, what must
-  not change, and what "done" means. Ask a few focused questions at a time.
-- For larger or open-ended work, propose 2-3 approaches with trade-offs and
-  recommend one.
-- Even for a small, clear request, restate it in one or two lines and wait for
-  my OK.
-- Only when I confirm, run `build` with the agreed request written out
-  concretely, including the acceptance criteria.
+  anything under "When not to use the flow".
+- Do not brainstorm, read code for the task, or implement it in the main session
+  while waiting for the new one. Only if neither `start_session` nor `spawn_task`
+  exists, say so and brainstorm in the current session.
 
 ## Session start (main session only)
 
 Runs only in the session I first talk to in this project, never in a session
-started from it (those skip it; the main session already did it). No commands
-unless a check says so:
+started from it. If `.claude/preflight.done` does not exist, read
+`.claude/setup/session-start.md` and follow its "Preflight" section. Otherwise
+run no command.
 
-- If `.claude/preflight.done` does not exist, read `.claude/setup/session-start.md`
-  and follow its "Preflight" section.
-- If a `superpowers:*` skill is in your skill list, read the same file and follow
-  its "Superpowers" section. With none in the list, do nothing.
-
-## Tools (main session and every workflow agent)
+## Tools (main session and every subagent)
 
 - **RTK**: shell output goes through RTK to save tokens. The global Bash hook
   rewrites commands. Prefer `rtk git`, `rtk test`, `rtk grep`, etc., and use
@@ -149,11 +106,11 @@ unless a check says so:
   - After work that taught something worth keeping (a decision, gotcha,
     convention), add or update one note per fact. Give it frontmatter with
     `tags` and `date`, `[[wikilinks]]` to related notes, and a link from the
-    index. The `build` workflow does this in its Finish step.
+    index. Step 5 of the Superpowers flow does this before the push.
   - Don't save what the code or git history already records. Update an
     existing note instead of creating a duplicate.
 
-## When NOT to run it
+## When not to use the flow
 
 - Questions, explanations, reading code, or planning without changes.
 - Edits that are not code: docs, README, comments, config values, typos.
@@ -194,5 +151,5 @@ When I say "push" or "push dan rilis", do these in order:
    merged and pushed and that are idle. Never touch sessions of other projects
    or sessions with running work; report what was removed and what was kept.
 
-If the tests fail, or another session still has a `build` running, stop and
-tell me instead of pushing.
+If the tests fail, or another session is still in the middle of a code change
+(implementing or merging), stop and tell me instead of pushing.

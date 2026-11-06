@@ -1,4 +1,4 @@
-# Session start: Preflight and Superpowers
+# Session start: Preflight
 
 Read only when `AGENTS.md` ("Session start") sends you here. Every agent loads
 `AGENTS.md`, so the long rules live in this file instead.
@@ -24,28 +24,3 @@ install whatever is missing. Then create `.claude/preflight.done` (today's date
   installed, tell me to restart Claude Code before running `build`.
 - Opening `docs/` as a vault in the Obsidian app is my step; remind me if it's new.
 - To run it again (e.g. on a new machine), I delete `.claude/preflight.done`.
-
-## Superpowers must be off
-
-Runs when a `superpowers:*` skill is in your skill list. That list is the whole
-check: if there is none, do nothing and run no command.
-
-Do not turn it off yourself. Tell me, explain why, and ask me to confirm
-turning it off:
-
-- Its skills overlap with `build` (orchestration, worktrees, finishing
-  branches, code review), so two systems steer the same work: duplicate
-  branches and worktrees, slower runs.
-- Its "MUST" rules (such as brainstorming before any creative work) make
-  workflow agents stop to ask questions nobody inside the workflow can answer.
-- `using-superpowers` makes every agent check for skills before each reply,
-  which costs tokens in every workflow agent.
-- What is useful from it already lives here: brainstorming before `build`
-  (`AGENTS.md`), and test-first, root-cause fixing and proof-before-claims in
-  the `build` prompts.
-
-If I agree, ask whether to turn it off for all projects (`~/.claude/settings.json`)
-or only this one (`.claude/settings.json`), set
-`"superpowers@superpowers-marketplace": false` there (on this machine the id is
-`superpowers@claude-plugins-official`), and tell me to restart
-Claude Code. If I say keep it, don't ask again in this session.
