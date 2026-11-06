@@ -903,6 +903,7 @@ impl IslandState {
             | Event::ShotSaveDone { .. }
             | Event::ShotFileSaved { .. }
             | Event::ShotRecycled { .. }
+            | Event::ClipPacked { .. }
             | Event::Tick => {}
             Event::CleanFinished => self.clean_finished(now, &mut effects),
             Event::CleanScanFailed => self.own_scan_at = None,

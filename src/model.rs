@@ -469,6 +469,14 @@ pub enum Event {
         emptied: bool,
     },
     Tick,
+    /// A worker packed (or failed to pack) the original of clipboard entry
+    /// `id` (`fingerprint` is the image's, to catch a replaced entry). `App`
+    /// keeps it; the reducer ignores it.
+    ClipPacked {
+        id: u64,
+        fingerprint: u64,
+        packed: Option<std::sync::Arc<crate::clipboard::store::Packed>>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]

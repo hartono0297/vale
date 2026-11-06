@@ -7,6 +7,7 @@
 pub mod image;
 pub mod kinds;
 pub mod notice;
+pub mod pack;
 pub mod persist;
 pub mod store;
 pub mod win;

@@ -12,7 +12,7 @@ use windows::core::w;
 
 use super::image::Thumb;
 use super::kinds::ClipKind;
-use super::store::{Clip, ClipData, ClipImage};
+use super::store::{Clip, ClipData, ClipImage, PackState};
 use crate::dpapi;
 
 const MAGIC: &[u8; 4] = b"DICB";
@@ -145,6 +145,7 @@ pub fn decode(plain: &[u8]) -> Option<Vec<Clip>> {
                     fingerprint,
                     screenshot,
                     full: None,
+                    pack: PackState::Idle,
                 })
             }
             _ => return None,
@@ -309,6 +310,7 @@ mod tests {
                 c.id = 0;
                 if let ClipData::Image(img) = &mut c.data {
                     img.full = None;
+                    img.pack = PackState::Idle;
                 }
                 c
             })

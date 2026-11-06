@@ -199,7 +199,7 @@ use crate::cli::{self, Output, Shell};
 use crate::cli_folders::{FolderList, ListKind};
 use crate::cli_panel::{Echoes, RunState};
 use crate::clipboard::image::Thumb;
-use crate::clipboard::store::ClipImage;
+use crate::clipboard::store::{ClipImage, PackState};
 use crate::clipboard::{Clip, ClipData, ClipKind};
 use crate::config::{NotchFill, Style, UiFont};
 use crate::devices::{self, Bus, Device, DeviceKind, Partition, Veto, VetoKind};
@@ -2398,6 +2398,7 @@ fn demo_clips() -> Vec<Clip> {
                     fingerprint: 1,
                     screenshot: true,
                     full: None,
+                    pack: PackState::Idle,
                 }),
                 _ => ClipData::Text(value.into()),
             };
