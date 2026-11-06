@@ -17,11 +17,11 @@ use windows::Win32::Graphics::Imaging::{
     WICBitmapDitherTypeNone, WICBitmapInterpolationModeFant, WICBitmapPaletteTypeMedianCut,
     WICBitmapUsePremultipliedAlpha, WICDecodeMetadataCacheOnDemand,
 };
-use windows::Win32::System::SystemInformation::GetTickCount;
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, COINIT_MULTITHREADED, CoCreateInstance,
     CoInitializeEx, CoUninitialize,
 };
+use windows::Win32::System::SystemInformation::GetTickCount;
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
 use windows::Win32::UI::Shell::{
     IShellItemImageFactory, SHCreateItemFromParsingName, SHCreateMemStream, SIIGBF_BIGGERSIZEOK,
@@ -58,6 +58,13 @@ const IDLE_POLL_MS: u64 = 5_000;
 /// input read are cheap, the `GetNotificationsAsync` RPC is what costs.
 fn poll_due(input_idle_ms: u32, ms_since_last_poll: u64) -> bool {
     input_idle_ms < ACTIVE_WINDOW_MS || ms_since_last_poll >= IDLE_POLL_MS
+}
+
+/// Whether the next read is quiet. A wake after a pause makes it quiet, and it
+/// stays quiet until a read succeeds: a failed first read after a pause must
+/// not let the toasts that arrived meanwhile through the next time.
+fn next_quiet(resumed: bool, was_quiet: bool, fetched: bool) -> bool {
+    resumed || (was_quiet && !fetched)
 }
 
 /// Milliseconds since the last input, from `GetLastInputInfo`'s tick
@@ -311,7 +318,9 @@ pub fn spawn_poller(tx: Sender<Event>, wake: impl Fn() + Send + 'static, gate: P
         let mut tried: HashSet<String> = HashSet::new();
         loop {
             let polled_at = Instant::now();
-            if let Ok(fresh) = new_notifications(&listener, &mut tracker) {
+            let fetched = new_notifications(&listener, &mut tracker);
+            let read_ok = fetched.is_ok();
+            if let Ok(fresh) = fetched {
                 trigger.after_fetch(signalled, !fresh.is_empty());
                 for toast in &fresh {
                     let Some(notice) = to_notice(toast) else {
@@ -340,7 +349,9 @@ pub fn spawn_poller(tx: Sender<Event>, wake: impl Fn() + Send + 'static, gate: P
                     wake();
                 }
             }
-            (signalled, quiet) = trigger.wait(&gate, polled_at);
+            let resumed;
+            (signalled, resumed) = trigger.wait(&gate, polled_at);
+            quiet = next_quiet(resumed, quiet, read_ok);
         }
     });
 }
@@ -873,6 +884,21 @@ mod tests {
         }
         assert!(wait_for_signal(&rx, Duration::from_millis(10)));
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn quiet_holds_until_a_read_succeeds() {
+        // Resumed from a pause: quiet.
+        assert!(next_quiet(true, false, true));
+        // The quiet read failed: the next one stays quiet.
+        assert!(next_quiet(false, true, false));
+        // The quiet read succeeded: back to normal.
+        assert!(!next_quiet(false, true, true));
+        // Normal reads stay normal, failed or not.
+        assert!(!next_quiet(false, false, false));
+        assert!(!next_quiet(false, false, true));
+        // A new pause during a quiet period re-arms it.
+        assert!(next_quiet(true, true, true));
     }
 
     #[test]

@@ -408,6 +408,9 @@ mod tests {
         assert_eq!(route(true, true), (false, false));
         assert_eq!(route(false, false), (false, false));
         assert_eq!(route(false, true), (false, false));
-        assert_eq!(route_toast("WhatsApp", &[], true, false, true), (false, true));
+        assert_eq!(
+            route_toast("WhatsApp", &[], true, false, true),
+            (false, true)
+        );
     }
 }
