@@ -28,7 +28,8 @@ Run 7 of the v3.1 plan (Keputusan #5). Code in `src/clipboard/` (pure:
   opaque) is made straight from the DIB on the UI thread: cheap, no full
   decode. All thumbnails together stay under 4 MB (memory and file): the
   oldest unpinned image entries go first. The original DIB is kept in memory
-  only, within 48 MB (oldest images lose theirs first).
+  only, within 16 MB counted in compressed bytes (oldest images lose theirs
+  first; see "Originals packed in memory").
   **A restored image (after a restart) copies back at thumbnail size**: the
   file never holds full-size pixels.
   "Screenshot · W × H" when only bitmap formats were on the clipboard,
@@ -157,3 +158,58 @@ auto-copy was on (`OwnCopy.managed`) do not take the normal `ingest` path:
   `schedule_clip_save` and `redraw_clip`. With the history off nothing is kept.
 - Not announced: see [[clipboard-notice]]. Windows' own Win+V history still
   records every write; Vale cannot replace those.
+
+## Originals packed in memory (2026-11-06)
+
+`ClipImage.full` is an `Original`: `Raw` (the CF_DIB as the clipboard gave it)
+or `Packed` (`store::Packed`: `head` = the DIB bytes before the pixels,
+`png` = the pixel array as PNG, `tail` = any bytes after it, `raw_len`, and the
+`PngLayout` used). Memory only, as before: `persist` still writes no originals
+(DICB v1 unchanged). `FULL_BUDGET` is 16 MB, counted in the bytes an original
+takes (a packed one counts head + png + tail).
+
+- **Newest image rule.** The newest *image* entry (the first entry whose data
+  is an image, **not necessarily index 0**: a text copied after a screenshot
+  leaves it raw and exempt) keeps its `Raw` original whatever its size. This is
+  a deliberate change: before, only index 0 was exempt. Every other image is
+  packed.
+- **Pack state.** `PackState { Idle, Pending, Failed }` per image.
+  `History::pack_jobs()` hands out the non-newest `Raw` + `Idle` originals
+  (`PackJob { id, fingerprint, raw }`) and marks them `Pending`.
+  `set_packed(id, fingerprint, result)` applies an answer only if the entry
+  still exists, has that fingerprint, is still `Raw` + `Pending` and is not now
+  the newest image (then it goes back to `Idle`, raw). `Some` -> `Packed`;
+  `None` -> `Failed` (stays raw). Then `enforce` runs.
+- **Budget cost.** Newest image 0; `Raw` + `Pending` 0 (exempt until the worker
+  answers, else a 33 MB 4K raw would be dropped at once against 16 MB);
+  `Raw` + `Idle` (just made older, not yet handed out) also 0 for the same
+  reason, because `push` runs `enforce` before `pack_jobs`; `Packed` its
+  compressed bytes; `Failed` its raw length. Eviction as before: walk newest
+  first, an original that would pass the budget is dropped (thumbnail only).
+- **Byte-exact layout** (`clipboard/pack.rs`, WIC PNG): `dib_info` splits the
+  DIB. 32 bpp -> `GUID_WICPixelFormat32bppBGRA`, `w` x `h`, stride `w * 4`
+  (PNG is not premultiplied, so colour under alpha 0 survives). 24 bpp ->
+  `GUID_WICPixelFormat8bppGray` of width = row stride and height = `h`, which
+  carries the row padding too. Decode uses the same format and `CopyPixels`
+  into the same layout; head and tail are put back verbatim.
+- **Verify on encode.** `pack` decodes its own output and compares it
+  byte for byte with the input; a mismatch, a WIC error or a codec that
+  would convert the pixel format returns `None`, and the original stays raw
+  (`Failed`, counted raw).
+- **Decode on paste, keep raw.** `win::formats_for` unpacks a `Packed`
+  original on the UI thread (COM is already there); `None` or a failed unpack
+  pastes `dib_from_thumb` as for no original. `copy_clip` then moves the entry
+  to the front, `set_raw(id, decoded)` keeps the decoded DIB as its `Raw`
+  original (it must be as long as `raw_len`, else the original is forgotten:
+  `forget_original`) and `clip_schedule_packing` packs the image that is no
+  longer the newest. A re-copy of the same image (`push`) also brings a `Raw`
+  original back over a `Packed` one or none.
+- **Worker and event.** `App::clip_schedule_packing` (app_clip.rs) takes
+  `pack_jobs()` after every ingest, `keep_capture`, delete, clear, cap change
+  and paste, and spawns one short-lived `clip-pack` thread per batch (never
+  the UI thread; `CoInitializeEx` MTA, `CoUninitialize`). Each result goes back
+  as `Event::ClipPacked { id, fingerprint, packed }` through `tx` and the
+  `WM_APP_EVENT` poster; `on_clip_packed` calls `set_packed`. No redraw, no
+  save. A thread that cannot start marks its jobs `Failed`.
+- `app_shot` reads `img.raw()` (a new image is the newest, so raw);
+  `copied_notice` says "pratinjau kecil" only when `!has_original()`.
