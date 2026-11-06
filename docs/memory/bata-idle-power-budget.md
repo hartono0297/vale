@@ -329,3 +329,71 @@ adds no timer and no thread, only two more FrameClock users in `WidgetHost::movi
   cannot meet the island window's 45-48), set only while the 5 s undo strip shows
   and killed when it hides, is clicked or the window goes. The header's list button
   is one more `Btn` in the note's strip (no hover cost beyond the other six).
+
+## Dirty-rect present and the EQ skip (2026-11-06)
+
+The closed island no longer redraws and presents its whole window for every
+frame; no visual changed (the pixels equal a full redraw at every scale). Pure
+logic in `src/ui/dirty.rs` (unit tested), drawing in `render.rs`, the flags and
+the skip in `app.rs`. Links: [[eq-follow-audio]], [[cat-dances-to-music]],
+[[notch-peek-eyes]], [[toast-while-busy]], [[notice-close]], [[stay-behind]],
+[[exe-size]].
+
+- **What is redrawn.** `Renderer::draw` keeps `last: Option<Drawn>` (the
+  signature of the frame on the surface). `dirty::plan(prev, cur)` gives
+  `Full` or `Dirty(rect)`. A dirty rect is the union of the previous and the
+  current frame's `painted_bounds` (the outline, a Notch's shoulders
+  `shoulder_depth` to each side included, plus the drag halo's rectangle when
+  it is drawn), floored/ceiled to whole physical pixels, grown by
+  `margin_px` = `ceil(2 * scale) + 1`, and clamped to the surface. A shrinking
+  shape is covered because the previous bounds are in the union. The island is
+  painted in full inside the clip (`paint_island` is untouched), so `HitRegions`
+  are rebuilt as ever.
+- **Full triggers.** No previous frame (`last` is only set after a successful
+  present); either frame has no bounds (Panel views); either frame has
+  `force_full` (`Frame::full_redraw` from `App::draw`: `anim.running`,
+  `rise`, `slide`, `reveal`, `page_fade`, a leaving panel, a strip motion, the
+  eyes morph; the renderer adds Panel, `transit.content_alpha < 1`, `leaving`,
+  `reveal`, `page_fade`, `page_slide != 0`, `strip_motion`, `robot_fades`);
+  the frame after a forced one too (it may have painted past its bounds); any
+  signature field differs: surface size, scale, window origin, opacity,
+  fill alpha, legibility, palette, UI font, cat look, style, halo flag.
+  `Renderer::invalidate()` clears `last`: called on a rebuilt target
+  (`D2DERR_RECREATE_TARGET`), a new surface, `set_ui_font`, `set_halo` when the
+  value changes and `draw_robot_sheet`; the app adds it on `reposition`, a
+  tall/small window (`sync_window_height`), `adopt_config` and
+  `sync_pointer_polls` (lock, unlock, display on/off) as belt and braces.
+- **Gotcha: the clip must be aliased and on whole pixels.** The dirty draw is
+  `PushAxisAlignedClip(px / scale in dip, D2D1_ANTIALIAS_MODE_ALIASED)`, then
+  `Clear`, then the normal paint, then `PopAxisAlignedClip` before `EndDraw`
+  (`Clear` honours the axis-aligned clip). An antialiased clip edge would blend
+  the new pixels with the old ones outside it and the result would not equal a
+  full redraw.
+- **`prcDirty` only at the same size.** The present is
+  `UpdateLayeredWindowIndirect` with the same `hdcSrc`, `pptSrc` (0,0), `psize`,
+  `pptDst` and `ULW_ALPHA` as before, plus `prcDirty`. Windows rejects a dirty
+  rect when the size changed, so a size change is always a `Full` frame (plan).
+  If the Indirect call fails anyway, the full `UpdateLayeredWindow` runs at once
+  and the frame is not remembered (the next one is full).
+- **The EQ skip.** `TIMER_EQ` (33 ms, unchanged) now calls `draw_eq_tick`, which
+  builds the frame like `draw` but returns before `Renderer::draw` when
+  `dirty::eq_draw_needed(last, cur)` says the key is the one already on
+  screen. `EqKey` holds `draw_gen`, the animated shape and opacity (f32 bits),
+  `eq_heights` bits, `time_based`, `RobotFrame` (pose included), `Progress`,
+  the lyric line and the line fading out (hashes) with the crossfade and both
+  scrolls, `fill_alpha`, `toast_slot_w`, `toast_dot`, `volume`, `notice_close`,
+  the clock string and the drawn view. `time_based` is compact media playing
+  with no live bars: the sine follows the clock, so such a key is never equal.
+  `draw_gen` is bumped by `apply`, `refresh`, `drain` and by `with_app` (every
+  message, event and input that reaches the app) but not by the equalizer tick's
+  own message (`with_app_quiet`). A full draw always stores its key (a failed one
+  clears it). A moving progress line (position changes every tick while it
+  plays) or the dancing cat's floating note (time-based pose) means **no
+  skip**; the dirty rect still applies there. The skip pays off with silence
+  (live bars at rest), a player that reports no length and a lyric view.
+- **Self-check.** In debug builds `DI_DIRTY_CHECK=1` redraws every dirty frame
+  in full on a second scratch DIB, compares the bytes with the presented
+  surface and prints `vale: dirty mismatch at x,y (rect ...)` for the first
+  differing pixel (and `vale: dirty check: N dirty frames compared` as a sign of
+  life). It works in `--demo` (where it also keeps every settled scene redrawing
+  so each is drawn as a dirty rect) and compiles out of release.

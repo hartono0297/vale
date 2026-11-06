@@ -1795,6 +1795,12 @@ impl Renderer {
                 std::slice::from_raw_parts(full.bits as *const u8, len),
             )
         };
+        // A sign of life: the self-check really compared dirty frames.
+        static COMPARED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COMPARED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        if n == 1 || n % 500 == 0 {
+            eprintln!("vale: dirty check: {n} dirty frames compared");
+        }
         if let Some(i) = a.iter().zip(b).position(|(x, y)| x != y) {
             let px = i / 4;
             let (x, y) = (px % size.cx as usize, px / size.cx as usize);
