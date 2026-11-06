@@ -12,8 +12,8 @@ use windows::Win32::Graphics::Direct2D::{
     D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_SOFTWARE, D2D1_ROUNDED_RECT,
     D2D1_STROKE_STYLE_PROPERTIES, D2D1_SWEEP_DIRECTION, D2D1_SWEEP_DIRECTION_CLOCKWISE,
     D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE, D2D1CreateFactory,
-    ID2D1Bitmap, ID2D1Brush, ID2D1DCRenderTarget, ID2D1Factory, ID2D1Geometry, ID2D1Layer,
-    ID2D1PathGeometry, ID2D1SolidColorBrush, ID2D1StrokeStyle,
+    ID2D1Bitmap, ID2D1Brush, ID2D1Factory, ID2D1Geometry, ID2D1Layer, ID2D1PathGeometry,
+    ID2D1RenderTarget, ID2D1SolidColorBrush, ID2D1StrokeStyle,
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_WEIGHT, DWRITE_FONT_WEIGHT_MEDIUM,
@@ -28,11 +28,12 @@ use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Gdi::{
     AC_SRC_ALPHA, AC_SRC_OVER, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION,
     CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, DeleteDC, DeleteObject, HBITMAP, HDC,
-    HGDIOBJ, SelectObject,
+    GdiFlush, HGDIOBJ, SelectObject,
 };
 use windows::Win32::Graphics::Imaging::{
-    CLSID_WICImagingFactory, GUID_WICPixelFormat32bppPBGRA, IWICBitmapSource, IWICImagingFactory,
-    WICBitmapDitherTypeNone, WICBitmapInterpolationModeFant, WICBitmapPaletteTypeMedianCut,
+    CLSID_WICImagingFactory, GUID_WICPixelFormat32bppPBGRA, IWICBitmap, IWICBitmapSource,
+    IWICImagingFactory, WICBitmapCacheOnLoad, WICBitmapDitherTypeNone, WICBitmapLockRead,
+    WICRect, WICBitmapInterpolationModeFant, WICBitmapPaletteTypeMedianCut,
     WICDecodeMetadataCacheOnDemand,
 };
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
@@ -750,9 +751,10 @@ pub struct Renderer {
     /// successful present; `None` makes the next frame a full redraw
     /// (`invalidate`).
     last: Option<Drawn>,
-    /// The second surface the debug self-check redraws a frame in full on.
+    /// The WIC bitmap's pixels as they were before the debug self-check's
+    /// full redraw, written back after it; reused between frames.
     #[cfg(debug_assertions)]
-    check_surface: Option<Surface>,
+    check_saved: Vec<u8>,
 }
 
 struct Fonts {
@@ -841,9 +843,16 @@ struct Fonts {
     clip_search: IDWriteTextFormat,
 }
 
-/// Device-dependent drawing state; rebuilt if Direct2D reports the target lost.
+/// Device-dependent drawing state; rebuilt if Direct2D reports the target lost
+/// and with the surface. A software target on a WIC bitmap the size of the
+/// surface: the bitmap keeps the last frame's pixels, so a dirty frame draws
+/// only inside its clip, and only the dirty rows are copied to the DIB.
 struct Target {
-    rt: ID2D1DCRenderTarget,
+    rt: ID2D1RenderTarget,
+    /// What `rt` draws on (32 bpp premultiplied BGRA).
+    bitmap: IWICBitmap,
+    /// The surface size `bitmap` was made for.
+    size: SIZE,
     brush: ID2D1SolidColorBrush,
     /// Clips panel content to the rounded shape.
     layer: ID2D1Layer,
@@ -852,15 +861,15 @@ struct Target {
     layer2: ID2D1Layer,
 }
 
-/// 32-bpp top-down DIB selected into a memory DC; the render target draws here.
+/// 32-bpp top-down DIB selected into a memory DC; the layered window is
+/// updated from it. The render target draws on its own WIC bitmap and the
+/// finished rows are copied here (`Renderer::copy_to_surface`).
 struct Surface {
     dc: HDC,
     bitmap: HBITMAP,
     previous: HGDIOBJ,
     size: SIZE,
-    /// The DIB's pixels (`size.cx * size.cy` BGRA), read by the debug
-    /// dirty-rect self-check.
-    #[cfg_attr(not(debug_assertions), allow(dead_code))]
+    /// The DIB's pixels (`size.cx * size.cy` BGRA, stride `size.cx * 4`).
     bits: *mut std::ffi::c_void,
 }
 
@@ -994,7 +1003,7 @@ impl Renderer {
                 pomo_time_cache: std::cell::Cell::new(None),
                 last: None,
                 #[cfg(debug_assertions)]
-                check_surface: None,
+                check_saved: Vec::new(),
             })
         }
     }
@@ -1059,18 +1068,15 @@ impl Renderer {
             if error.code() != D2DERR_RECREATE_TARGET {
                 return Err(error);
             }
-            self.target = None;
-            self.art.clear();
-            self.clip_thumbs.borrow_mut().clear();
-            self.notif_logos.borrow_mut().clear();
-            self.search_icons.borrow_mut().clear();
-            self.arrange_icons.borrow_mut().clear();
-            self.shot_thumb.borrow_mut().take();
-            self.regions = HitRegions::default();
+            self.drop_target();
             // The new target starts from nothing: all of it is drawn again.
             plan = Plan::Full;
             self.paint(style, shape, frame, opacity, plan)?;
         }
+        // The dirty rows (all of them for a full plan) go to the DIB the
+        // window is updated from; a failure leaves `last` empty like a paint
+        // failure does.
+        self.copy_to_surface(plan)?;
         if self.present(win, opacity, plan)? {
             self.last = Some(cur);
         }
@@ -1081,6 +1087,20 @@ impl Renderer {
             self.verify_dirty(style, shape, frame, opacity, rect);
         }
         Ok(())
+    }
+
+    /// Drops the render target and everything made on it: Direct2D bitmaps
+    /// belong to their target, so the caches go too (the next draw uploads
+    /// again). The target is tied to the surface size and rebuilt with it.
+    fn drop_target(&mut self) {
+        self.target = None;
+        self.art.clear();
+        self.clip_thumbs.borrow_mut().clear();
+        self.notif_logos.borrow_mut().clear();
+        self.search_icons.borrow_mut().clear();
+        self.arrange_icons.borrow_mut().clear();
+        self.shot_thumb.borrow_mut().take();
+        self.regions = HitRegions::default();
     }
 
     /// What this frame is, for `dirty::plan`.
@@ -1212,17 +1232,10 @@ impl Renderer {
         self.regions = HitRegions::default();
         self.invalidate();
         self.ensure_surface(win.size())?;
-        self.ensure_target()?;
-        let surface = self.surface.as_ref().expect("surface ensured above");
+        let size = self.surface.as_ref().expect("surface ensured above").size;
+        self.ensure_target(size)?;
         let target = self.target.as_ref().expect("target ensured above");
-        let bounds = RECT {
-            left: 0,
-            top: 0,
-            right: surface.size.cx,
-            bottom: surface.size.cy,
-        };
         unsafe {
-            target.rt.BindDC(surface.dc, &bounds)?;
             target.rt.SetDpi(96.0 * self.scale, 96.0 * self.scale);
             target.rt.BeginDraw();
             target.rt.Clear(Some(&color(0, 0.0)));
@@ -1235,6 +1248,7 @@ impl Renderer {
         }
         let target = self.target.as_ref().expect("target ensured above");
         unsafe { target.rt.EndDraw(None, None) }?;
+        self.copy_to_surface(Plan::Full)?;
         self.present(win, 1.0, Plan::Full).map(|_| ())
     }
 
@@ -1621,7 +1635,9 @@ impl Renderer {
             return Ok(());
         }
         self.surface = None;
-        // The new surface is empty.
+        // The new surface is empty, and the target (and every bitmap made on
+        // it) was sized for the old one.
+        self.drop_target();
         self.invalidate();
         self.surface = Some(Self::make_surface(size)?);
         Ok(())
@@ -1664,9 +1680,16 @@ impl Renderer {
         }
     }
 
-    fn ensure_target(&mut self) -> Result<()> {
-        if self.target.is_some() {
+    /// The render target for a surface of `size`, made once per size: a
+    /// software target on a WIC bitmap of that size. (A DC render target
+    /// would copy the whole bound DC rect in and out of its buffer on every
+    /// frame, whatever clip is pushed.)
+    fn ensure_target(&mut self, size: SIZE) -> Result<()> {
+        if self.target.as_ref().is_some_and(|t| t.size == size) {
             return Ok(());
+        }
+        if self.target.is_some() {
+            self.drop_target();
         }
         // Software rendering: the canvas is tiny and GDI-bound anyway, and it
         // keeps GPU drivers out of the idle working set.
@@ -1679,7 +1702,13 @@ impl Renderer {
             ..Default::default()
         };
         unsafe {
-            let rt = self.d2d.CreateDCRenderTarget(&props)?;
+            let bitmap = self.wic.CreateBitmap(
+                size.cx as u32,
+                size.cy as u32,
+                &GUID_WICPixelFormat32bppPBGRA,
+                WICBitmapCacheOnLoad,
+            )?;
+            let rt = self.d2d.CreateWicBitmapRenderTarget(&bitmap, &props)?;
             // Layered windows cannot use ClearType: it has no alpha channel.
             rt.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
             let brush = rt.CreateSolidColorBrush(&color(self.palette.text, 1.0), None)?;
@@ -1687,6 +1716,8 @@ impl Renderer {
             let layer2 = rt.CreateLayer(None)?;
             self.target = Some(Target {
                 rt,
+                bitmap,
+                size,
                 brush,
                 layer,
                 layer2,
@@ -1703,20 +1734,18 @@ impl Renderer {
         opacity: f32,
         plan: Plan,
     ) -> Result<()> {
-        let surface = self.surface.as_ref().expect("surface ensured by draw");
-        let (dc, size) = (surface.dc, surface.size);
-        self.paint_on(dc, size, style, shape, frame, opacity, plan)
+        let size = self.surface.as_ref().expect("surface ensured by draw").size;
+        self.paint_on(size, style, shape, frame, opacity, plan)
     }
 
-    /// Draws the frame on the surface `dc` is bound to. A `Dirty` plan
-    /// clears and draws only inside its rect: an aliased clip on whole
-    /// physical pixels (an antialiased edge would blend the old pixels with
-    /// the new ones). The island is painted in full either way, so the hit
+    /// Draws the frame on the target's WIC bitmap (`size` is the surface's).
+    /// A `Dirty` plan clears and draws only inside its rect: an aliased clip
+    /// on whole physical pixels (an antialiased edge would blend the old
+    /// pixels with the new ones), and the bitmap keeps the previous frame
+    /// outside it. The island is painted in full either way, so the hit
     /// regions are rebuilt as ever.
-    #[allow(clippy::too_many_arguments)]
     fn paint_on(
         &mut self,
-        dc: HDC,
         size: SIZE,
         style: Style,
         shape: ShapeRect,
@@ -1724,17 +1753,10 @@ impl Renderer {
         opacity: f32,
         plan: Plan,
     ) -> Result<()> {
-        self.ensure_target()?;
+        self.ensure_target(size)?;
         let target = self.target.as_ref().expect("target ensured above");
         let rt = &target.rt;
-        let bounds = RECT {
-            left: 0,
-            top: 0,
-            right: size.cx,
-            bottom: size.cy,
-        };
         unsafe {
-            rt.BindDC(dc, &bounds)?;
             // Draw in logical pixels; the target scales to the window's DPI.
             rt.SetDpi(96.0 * self.scale, 96.0 * self.scale);
             rt.BeginDraw();
@@ -1760,9 +1782,62 @@ impl Renderer {
         unsafe { rt.EndDraw(None, None) }.and(painted)
     }
 
-    /// `DI_DIRTY_CHECK=1` (debug builds): redraws the frame in full on a
-    /// second surface and compares it with the one just presented; the first
-    /// pixel that differs is reported on stderr.
+    /// Copies the rows `plan` redrew from the WIC bitmap to the DIB the
+    /// window is updated from: the whole surface for `Full`, the dirty rect
+    /// for `Dirty`. Never called between BeginDraw and EndDraw (the lock
+    /// would fail), and the lock is released before it returns.
+    fn copy_to_surface(&self, plan: Plan) -> Result<()> {
+        let surface = self.surface.as_ref().expect("surface ensured by draw");
+        let target = self.target.as_ref().expect("target ensured by paint");
+        let size = (surface.size.cx, surface.size.cy);
+        let rect = match plan {
+            Plan::Dirty(rect) => dirty::clamp(rect, size),
+            Plan::Full => dirty::RectI {
+                left: 0,
+                top: 0,
+                right: size.0,
+                bottom: size.1,
+            },
+        };
+        if rect.is_empty() {
+            return Ok(());
+        }
+        unsafe {
+            // Nothing draws on the DIB through GDI any more; this only makes
+            // sure no batched call is still pending on it.
+            let _ = GdiFlush();
+            let area = WICRect {
+                X: rect.left,
+                Y: rect.top,
+                Width: rect.right - rect.left,
+                Height: rect.bottom - rect.top,
+            };
+            let lock = target.bitmap.Lock(&area, WICBitmapLockRead.0 as u32)?;
+            let stride = lock.GetStride()? as usize;
+            let mut len = 0u32;
+            let mut data = std::ptr::null_mut();
+            lock.GetDataPointer(&mut len, &mut data)?;
+            // SAFETY: the lock keeps `len` bytes at `data` alive until it is
+            // dropped at the end of this block; the DIB holds `size.0 * size.1`
+            // BGRA pixels, alive as long as `surface`.
+            let src = std::slice::from_raw_parts(data as *const u8, len as usize);
+            let dst = std::slice::from_raw_parts_mut(
+                surface.bits as *mut u8,
+                size.0 as usize * size.1 as usize * 4,
+            );
+            if !copy_rect(src, stride, dst, size.0 as usize * 4, rect) {
+                return Err(windows::core::Error::from(
+                    windows::Win32::Foundation::E_FAIL,
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// `DI_DIRTY_CHECK=1` (debug builds): redraws the frame in full on the
+    /// same target and compares it with the DIB just presented; the first
+    /// pixel that differs is reported on stderr. The WIC bitmap is put back
+    /// as it was (the presented frame) so the next dirty frame starts from it.
     #[cfg(debug_assertions)]
     fn verify_dirty(
         &mut self,
@@ -1775,58 +1850,127 @@ impl Renderer {
         let Some(size) = self.surface.as_ref().map(|s| s.size) else {
             return;
         };
-        if self.check_surface.as_ref().is_none_or(|s| s.size != size) {
-            self.check_surface = None;
-            match Self::make_surface(size) {
-                Ok(surface) => self.check_surface = Some(surface),
-                Err(error) => {
-                    eprintln!("vale: dirty check surface failed: {error}");
-                    return;
+        let row = size.cx as usize * 4;
+        let len = row * size.cy as usize;
+        // (a) What the dirty path left on the bitmap.
+        let mut saved = std::mem::take(&mut self.check_saved);
+        saved.resize(len, 0);
+        let read = self.lock_rows(size, WICBitmapLockRead, |src, stride| {
+            for (y, line) in saved.chunks_exact_mut(row).enumerate() {
+                line.copy_from_slice(&src[y * stride..y * stride + row]);
+            }
+        });
+        if let Err(error) = read {
+            eprintln!("vale: dirty check lock failed: {error}");
+            self.check_saved = saved;
+            return;
+        }
+        // (b) The same frame in full, with the real hit regions kept.
+        let regions = std::mem::take(&mut self.regions);
+        let painted = self.paint_on(size, style, shape, frame, opacity, Plan::Full);
+        self.regions = regions;
+        // (c) Compare it with what was presented, row by row.
+        let mut first: Option<(usize, [u8; 4], [u8; 4])> = None;
+        match painted {
+            Err(error) => eprintln!("vale: dirty check draw failed: {error}"),
+            Ok(()) => {
+                let shown = self.surface.as_ref().map_or(std::ptr::null(), |s| s.bits as *const u8);
+                let compared = self.lock_rows(size, WICBitmapLockRead, |full, stride| {
+                    // SAFETY: the DIB is `len` bytes (32 bpp, stride `row`), alive here.
+                    let shown = unsafe { std::slice::from_raw_parts(shown, len) };
+                    for y in 0..size.cy as usize {
+                        let a = &shown[y * row..(y + 1) * row];
+                        let b = &full[y * stride..y * stride + row];
+                        if let Some(i) = a.iter().zip(b).position(|(p, q)| p != q) {
+                            let px = i / 4;
+                            let quad = |s: &[u8]| [s[px * 4], s[px * 4 + 1], s[px * 4 + 2], s[px * 4 + 3]];
+                            first = Some((y * size.cx as usize + px, quad(a), quad(b)));
+                            break;
+                        }
+                    }
+                });
+                match compared {
+                    Err(error) => eprintln!("vale: dirty check lock failed: {error}"),
+                    Ok(()) => {
+                        // A sign of life: the self-check really compared dirty frames.
+                        static COMPARED: std::sync::atomic::AtomicU64 =
+                            std::sync::atomic::AtomicU64::new(0);
+                        let n = COMPARED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                        if n == 1 || n % 500 == 0 {
+                            eprintln!("vale: dirty check: {n} dirty frames compared");
+                        }
+                        if let Some((at, a, b)) = first {
+                            let (x, y) = (at % size.cx as usize, at / size.cx as usize);
+                            eprintln!(
+                                "vale: dirty mismatch at {x},{y} (rect {},{},{},{}) presented {a:02x?} full {b:02x?}",
+                                rect.left, rect.top, rect.right, rect.bottom,
+                            );
+                        }
+                    }
                 }
             }
         }
-        let dc = self.check_surface.as_ref().map(|s| s.dc).expect("made above");
-        // The check paints the same island again: keep the real hit regions.
-        let regions = std::mem::take(&mut self.regions);
-        let painted = self.paint_on(dc, size, style, shape, frame, opacity, Plan::Full);
-        self.regions = regions;
-        if let Err(error) = painted {
-            eprintln!("vale: dirty check draw failed: {error}");
-            return;
+        // (d) Back to the presented frame, for the next dirty draw to start from.
+        let written = self.lock_rows_mut(size, |dst, stride| {
+            for (y, line) in saved.chunks_exact(row).enumerate() {
+                dst[y * stride..y * stride + row].copy_from_slice(line);
+            }
+        });
+        if let Err(error) = written {
+            eprintln!("vale: dirty check restore failed: {error}");
+            // The bitmap is unknown now: the next frame redraws everything.
+            self.invalidate();
         }
+        self.check_saved = saved;
+    }
+
+    /// Locks the whole WIC bitmap and hands `f` its bytes and stride; the lock
+    /// is released before this returns.
+    #[cfg(debug_assertions)]
+    fn lock_rows(
+        &self,
+        size: SIZE,
+        flags: windows::Win32::Graphics::Imaging::WICBitmapLockFlags,
+        f: impl FnOnce(&[u8], usize),
+    ) -> Result<()> {
+        let target = self.target.as_ref().expect("target ensured by paint");
         unsafe {
-            let _ = windows::Win32::Graphics::Gdi::GdiFlush();
+            let area = WICRect {
+                X: 0,
+                Y: 0,
+                Width: size.cx,
+                Height: size.cy,
+            };
+            let lock = target.bitmap.Lock(&area, flags.0 as u32)?;
+            let stride = lock.GetStride()? as usize;
+            let mut len = 0u32;
+            let mut data = std::ptr::null_mut();
+            lock.GetDataPointer(&mut len, &mut data)?;
+            f(std::slice::from_raw_parts(data as *const u8, len as usize), stride);
         }
-        let (Some(shown), Some(full)) = (&self.surface, &self.check_surface) else {
-            return;
-        };
-        let len = size.cx as usize * size.cy as usize * 4;
-        // SAFETY: both are DIB sections of `size` (32 bpp), alive here.
-        let (a, b) = unsafe {
-            (
-                std::slice::from_raw_parts(shown.bits as *const u8, len),
-                std::slice::from_raw_parts(full.bits as *const u8, len),
-            )
-        };
-        // A sign of life: the self-check really compared dirty frames.
-        static COMPARED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let n = COMPARED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-        if n == 1 || n % 500 == 0 {
-            eprintln!("vale: dirty check: {n} dirty frames compared");
+        Ok(())
+    }
+
+    /// The same for writing.
+    #[cfg(debug_assertions)]
+    fn lock_rows_mut(&self, size: SIZE, f: impl FnOnce(&mut [u8], usize)) -> Result<()> {
+        let target = self.target.as_ref().expect("target ensured by paint");
+        unsafe {
+            let area = WICRect {
+                X: 0,
+                Y: 0,
+                Width: size.cx,
+                Height: size.cy,
+            };
+            let flags = windows::Win32::Graphics::Imaging::WICBitmapLockWrite.0 as u32;
+            let lock = target.bitmap.Lock(&area, flags)?;
+            let stride = lock.GetStride()? as usize;
+            let mut len = 0u32;
+            let mut data = std::ptr::null_mut();
+            lock.GetDataPointer(&mut len, &mut data)?;
+            f(std::slice::from_raw_parts_mut(data, len as usize), stride);
         }
-        if let Some(i) = a.iter().zip(b).position(|(x, y)| x != y) {
-            let px = i / 4;
-            let (x, y) = (px % size.cx as usize, px / size.cx as usize);
-            eprintln!(
-                "vale: dirty mismatch at {x},{y} (rect {},{},{},{}) presented {:02x?} full {:02x?}",
-                rect.left,
-                rect.top,
-                rect.right,
-                rect.bottom,
-                &a[px * 4..px * 4 + 4],
-                &b[px * 4..px * 4 + 4],
-            );
-        }
+        Ok(())
     }
 
     fn paint_island(&mut self, style: Style, shape: ShapeRect, frame: &Frame) -> Result<()> {
@@ -3484,6 +3628,37 @@ const HALO_ALPHA: f32 = 0.012;
 // How far the margin reaches beside and below the island: `dirty::HALO_SIDE`
 // and `dirty::HALO_BELOW`, which the dirty rect needs too.
 
+/// Copies `rect` (whole pixels, 4 bytes each) from `src`, whose first byte is
+/// the rect's top-left pixel and whose rows are `src_stride` apart (a WIC lock
+/// of that rect), into `dst`, a whole surface with rows `dst_stride` apart.
+/// Pixels outside the rect are not touched. False, nothing copied, when
+/// either slice is too short for the rect.
+fn copy_rect(
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    rect: dirty::RectI,
+) -> bool {
+    if rect.is_empty() || rect.left < 0 || rect.top < 0 {
+        return false;
+    }
+    let (left, top) = (rect.left as usize, rect.top as usize);
+    let width = (rect.right - rect.left) as usize * 4;
+    let rows = (rect.bottom - rect.top) as usize;
+    let src_end = (rows - 1) * src_stride + width;
+    let dst_end = (top + rows - 1) * dst_stride + left * 4 + width;
+    if width > src_stride || width > dst_stride || src.len() < src_end || dst.len() < dst_end {
+        return false;
+    }
+    for row in 0..rows {
+        let from = &src[row * src_stride..row * src_stride + width];
+        let at = (top + row) * dst_stride + left * 4;
+        dst[at..at + width].copy_from_slice(from);
+    }
+    true
+}
+
 /// `DI_DIRTY_CHECK=1` turns the dirty-rect self-check on (debug builds only).
 #[cfg(debug_assertions)]
 fn dirty_check_on() -> bool {
@@ -3645,5 +3820,81 @@ mod tests {
         assert_eq!(art_lookup(&mut cache, &bad, 36), Some(None));
         // A new track drops the old one's art.
         assert_eq!(sizes(&cache), [(10, 36)]);
+    }
+
+    /// A `w` x `h` surface whose pixel (x, y) bytes are all `1 + (x + y * w)
+    /// mod 250` (never 0), rows `stride` bytes apart.
+    fn surface_with_stride(w: usize, h: usize, stride: usize) -> Vec<u8> {
+        let mut v = vec![0u8; stride * h];
+        for y in 0..h {
+            for x in 0..w {
+                let b = (1 + (x + y * w) % 250) as u8;
+                v[y * stride + x * 4..y * stride + x * 4 + 4].fill(b);
+            }
+        }
+        v
+    }
+
+    /// What a WIC lock of `rect` hands out: the bytes from the rect's top-left.
+    fn lock_of(full: &[u8], stride: usize, rect: dirty::RectI) -> &[u8] {
+        &full[rect.top as usize * stride + rect.left as usize * 4..]
+    }
+
+    fn check_copy(rect: dirty::RectI) {
+        let (w, h) = (10usize, 7usize);
+        // The source rows are padded (stride larger than the width).
+        let src_stride = w * 4 + 12;
+        let src = surface_with_stride(w, h, src_stride);
+        let mut dst = vec![0xEEu8; w * 4 * h];
+        assert!(copy_rect(lock_of(&src, src_stride, rect), src_stride, &mut dst, w * 4, rect));
+        for y in 0..h {
+            for x in 0..w {
+                let inside = (rect.left as usize..rect.right as usize).contains(&x)
+                    && (rect.top as usize..rect.bottom as usize).contains(&y);
+                let got = &dst[y * w * 4 + x * 4..y * w * 4 + x * 4 + 4];
+                if inside {
+                    let want = &src[y * src_stride + x * 4..y * src_stride + x * 4 + 4];
+                    assert_eq!(got, want, "pixel {x},{y} inside {rect:?}");
+                } else {
+                    assert_eq!(got, [0xEE; 4], "pixel {x},{y} outside {rect:?} touched");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn copy_rect_in_the_middle() {
+        check_copy(dirty::RectI { left: 3, top: 2, right: 8, bottom: 5 });
+    }
+
+    #[test]
+    fn copy_rect_at_the_edges() {
+        check_copy(dirty::RectI { left: 0, top: 0, right: 4, bottom: 3 });
+        check_copy(dirty::RectI { left: 6, top: 4, right: 10, bottom: 7 });
+        check_copy(dirty::RectI { left: 0, top: 6, right: 10, bottom: 7 });
+        check_copy(dirty::RectI { left: 9, top: 0, right: 10, bottom: 7 });
+    }
+
+    #[test]
+    fn copy_rect_over_the_full_surface() {
+        check_copy(dirty::RectI { left: 0, top: 0, right: 10, bottom: 7 });
+    }
+
+    #[test]
+    fn copy_rect_refuses_short_buffers() {
+        let rect = dirty::RectI { left: 2, top: 1, right: 6, bottom: 4 };
+        let mut dst = vec![0u8; 10 * 4 * 7];
+        // A source one byte short of (rows - 1) * stride + row bytes.
+        let src = vec![1u8; 2 * 56 + 16 - 1];
+        assert!(!copy_rect(&src, 56, &mut dst, 40, rect));
+        assert!(dst.iter().all(|&b| b == 0), "nothing copied");
+        // A destination too small for the rect.
+        let src = vec![1u8; 2 * 56 + 16];
+        // Needs (1 + 2) * 40 + 2 * 4 + 16 = 144 bytes.
+        let mut small = vec![0u8; 143];
+        assert!(!copy_rect(&src, 56, &mut small, 40, rect));
+        // An empty rect is not a copy.
+        let none = dirty::RectI { left: 3, top: 3, right: 3, bottom: 5 };
+        assert!(!copy_rect(&src, 56, &mut dst, 40, none));
     }
 }

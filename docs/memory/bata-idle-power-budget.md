@@ -400,9 +400,59 @@ the skip in `app.rs`. Links: [[eq-follow-audio]], [[cat-dances-to-music]],
   line, scroll and cat pose are unchanged. `with_app` bumps `draw_gen` again
   after the handler returns, so a handler that draws and then changes the
   closed view cannot leave a matching key behind.
-- **Self-check.** In debug builds `DI_DIRTY_CHECK=1` redraws every dirty frame
-  in full on a second scratch DIB, compares the bytes with the presented
-  surface and prints `vale: dirty mismatch at x,y (rect ...)` for the first
-  differing pixel (and `vale: dirty check: N dirty frames compared` as a sign of
-  life). It works in `--demo` (where it also keeps every settled scene redrawing
-  so each is drawn as a dirty rect) and compiles out of release.
+- **Self-check.** In debug builds `DI_DIRTY_CHECK=1` checks every dirty frame
+  after it was presented, in four steps: (a) it saves the WIC bitmap's bytes
+  (what the dirty path drew) in a scratch `Vec<u8>` kept between frames;
+  (b) it paints the same frame again in full into the same target (the real
+  hit regions are kept); (c) it compares that bitmap, row by row and honouring
+  the lock's stride, with the DIB the window was **presented** from, and prints
+  `vale: dirty mismatch at x,y (rect ...) presented [..] full [..]` for the
+  first differing pixel (and `vale: dirty check: N dirty frames compared` as a
+  sign of life); (d) it writes the saved bytes back, so the next dirty frame
+  starts from what was presented. Because the DIB is the left side, a copy step
+  that missed pixels shows up too. It works in `--demo` (where it also keeps
+  every settled scene redrawing so each is drawn as a dirty rect) and compiles
+  out of release (no second DIB any more).
+
+### The WIC bitmap target (2026-11-06)
+
+The first dirty-rect version still bound a software `ID2D1DCRenderTarget` to
+the surface's DC every frame (`BindDC` with the whole surface). Gotcha: a DC
+render target copies the whole bound DC rect into its own buffer at `BeginDraw`
+and back at `EndDraw`, whatever clip is pushed, so the clip plus `prcDirty`
+saved little. Measured 2026-11-06 with music playing, the lyric view and the
+dancing cat: 81-87 ms CPU/s against 97 ms/s before the dirty rect, the main
+thread 86 ms/s of which 59 ms/s kernel time (win32k, two full-surface GDI
+copies per frame). Note: [[d2d-dc-target-full-copy]].
+
+- **The target.** `Target` now holds an `ID2D1RenderTarget` made by
+  `CreateWicBitmapRenderTarget` on an `IWICBitmap` (`GUID_WICPixelFormat32bppPBGRA`,
+  `WICBitmapCacheOnLoad`) the size of the surface, with the same software,
+  `B8G8R8A8_UNORM`, premultiplied properties, grayscale text, the brush and the
+  two layers as before. It is made once per surface size in `ensure_target(size)`
+  and the painters see the same `&ID2D1RenderTarget` they always did. The bitmap
+  keeps the previous frame's pixels outside the clip, which the dirty path relies
+  on. `SetDpi(96 * scale)` still runs before each `BeginDraw` (a property set, no
+  GDI).
+- **Lifetime.** The target belongs to the surface size. `ensure_surface` makes
+  a new surface only on a size change and then calls `drop_target`, which is the
+  same routine the `D2DERR_RECREATE_TARGET` path uses: target gone, the art,
+  clipboard thumbnails, notification logos, search and arrange icons and the
+  screenshot thumbnail dropped (D2D bitmaps die with their target, see
+  [[d2d-bitmaps-vs-pixels]]), hit regions reset. `invalidate()` runs there as
+  before.
+- **Copy and present.** After a successful paint `copy_to_surface(plan)` calls
+  `GdiFlush`, locks the WIC bitmap for reading (the dirty rect, or all of it for
+  `Full`; never inside `BeginDraw`/`EndDraw`), and copies each row of the rect
+  with a memcpy (`copy_rect`, unit tested, with the lock's stride, which may be
+  wider than `width * 4`) into the DIB's bits (top-down, stride `cx * 4`); the
+  lock is released on drop. The `Surface` (DIB in a memory DC, selected for its
+  whole life), `UpdateLayeredWindow`, the Indirect call with `prcDirty` and its
+  full fallback are unchanged. A copy failure is an error like a paint failure
+  and leaves `last` empty. `draw_robot_sheet` (debug) takes the same road.
+- **Per frame, checked.** Nothing binds a DC, reads a DC back, calls
+  `GetDC`/`ReleaseDC` or `SelectObject`; `CreateLayer` happens only in
+  `ensure_target`; the `Clear` is inside the clip on a dirty frame;
+  `HitRegions::default()` per frame is a small struct. The remaining
+  per-frame costs are the paint itself (clipped by the rect), the row copy
+  (dirty rows only) and `UpdateLayeredWindowIndirect` (dirty rect only).
