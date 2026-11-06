@@ -241,7 +241,7 @@ The C runtime is linked statically (`.cargo/config.toml`), so the exe runs witho
 
 - Primary monitor only.
 - No inline replies or action buttons on notifications; apps that don't use Windows toasts aren't seen.
-- Notifications are polled every second (about 2–3% of one core) because the installed exe has no package identity. Builds from source can use `scripts/package.ps1` for event-driven mode.
+- Notifications are polled because the installed exe has no package identity: every second while you used the PC in the last minute, every 5 seconds after that, and not at all while the session is locked or the display is off (toasts that arrive meanwhile go to the history only, with no notice in the notch). Builds from source can use `scripts/package.ps1` for event-driven mode.
 - Calendar is Google only; events can't be deleted from the island, and repeating events, events over several days and events on read-only calendars can't be edited. New events are single-day.
 - Devices lists only drives with a drive letter on a removable device (not phones, network drives or internal disks), and the USB speed is shown only when Windows reports it. Eject needs no administrator rights, but a refused one can only be retried: Vale never closes an app for you.
 - CLI commands get no input (stdin), so interactive programs won't work; one command runs at a time.
