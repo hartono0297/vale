@@ -187,4 +187,45 @@ the year when it differs). Demo scenes: `notifications`, `-selected`, `-long`,
 
 After v3.11 a real toast over a busy notch no longer covers it by default (a strip or a small logo, an unread dot): see [[toast-while-busy]].
 
+## Poll pace and pause (2026-11-06)
+
+Cause (measured): Vale is unpackaged, so `NotificationChanged` fails with
+`0x80070490` ("Element not found") and the poller runs in `Trigger::Poll`,
+calling `GetNotificationsAsync` every second for as long as Vale runs. Each
+call costs the `WpnUserService` process about 1-1.7 ms a second. Event mode
+(a packaged build) is unchanged and ignores everything below.
+
+- **Pace** (`poll_due(input_idle_ms, ms_since_last_poll)`, pure, tested): the
+  thread still wakes every 1 s and reads `GetLastInputInfo` (a failed read
+  counts as "just now"), but only calls `GetNotificationsAsync` when due: input
+  within `ACTIVE_WINDOW_MS` (60 000, strictly less) means every wake (1 s),
+  otherwise once `IDLE_POLL_MS` (5 000) have passed since the last read. The
+  user coming back gets the 1 s pace on the next wake. A wake and the input
+  read are cheap, the RPC is what costs.
+- **Pause** (`PollGate`, an `Arc` of `Mutex<bool>` + `Condvar`, owned by
+  `NotifState.gate`): `App::notif_sync_away()` calls `set_paused(screen_away())`
+  from `sync_pointer_polls` (lock/unlock, display off/on). While paused the
+  Poll-mode thread blocks on the condvar with no timeout: no
+  `GetNotificationsAsync`, no `GetLastInputInfo`. Unpaused it waits 1 s on the
+  condvar, so a pause or an unpause wakes it at once. The wake after a pause
+  reads immediately, not waiting for `poll_due`. Event mode ignores the gate;
+  the switch from Events to Poll (`after_fetch`) keeps working and the gate
+  applies from then on. The gate is created with the `screen_away()` value when
+  the poller starts.
+- **Quiet resume**: `Toast.quiet` is true for the fresh toasts of the first
+  read after a pause, false for every other read. `route_toast(source, muted,
+  record, paused, quiet)`: muted -> (false, false); quiet -> (false, record &&
+  !paused); else (true, record && !paused). So what arrived while the screen
+  was locked lands in the history by the usual rules but never wakes the notch
+  (no notice, no unread dot, no strip, no slot). Logos still ride along.
+- Unchanged: priming at startup, muted apps read live, the logo path,
+  `--probe-notifications` (own 1 s loop), the history file and
+  `TIMER_NOTIF_SAVE`, access handling.
+- Tried and dropped: watching `%LOCALAPPDATA%\Microsoft\Windows\Notifications`
+  for a change instead of polling. It does not work: a toast writes nothing
+  there within 4 s.
+- Not measured live after the change (the pure pace and the gate are unit
+  tested); the Poll-mode gaps are: 1 s active, 5 s after 60 s without input,
+  none while locked or the display is off. See [[bata-idle-power-budget]].
+
 Related: [[clipboard-privacy]], [[settings-structure]], [[devices]]

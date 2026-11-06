@@ -57,13 +57,20 @@ fn cut(text: &str) -> String {
 }
 
 /// Where a fresh toast goes: `(notch, history)`. A muted app's toast goes
-/// nowhere; any other reaches the notch, and the history when recording is on
-/// and not paused.
-pub fn route_toast(source: &str, muted: &[String], record_on: bool, paused: bool) -> (bool, bool) {
+/// nowhere; any other reaches the history when recording is on and not
+/// paused, and the notch unless it is `quiet` (caught by the first read after
+/// the poller's pause).
+pub fn route_toast(
+    source: &str,
+    muted: &[String],
+    record_on: bool,
+    paused: bool,
+    quiet: bool,
+) -> (bool, bool) {
     if is_muted(source, muted) {
         return (false, false);
     }
-    (true, record_on && !paused)
+    (!quiet, record_on && !paused)
 }
 
 /// The entries, newest first.
@@ -374,16 +381,36 @@ mod tests {
         // Muted: nowhere, whatever the switches.
         for record in [false, true] {
             for paused in [false, true] {
-                assert_eq!(
-                    route_toast("Claude", &muted, record, paused),
-                    (false, false)
-                );
+                for quiet in [false, true] {
+                    assert_eq!(
+                        route_toast("Claude", &muted, record, paused, quiet),
+                        (false, false)
+                    );
+                }
             }
         }
-        assert_eq!(route_toast("WhatsApp", &muted, true, false), (true, true));
-        assert_eq!(route_toast("WhatsApp", &muted, true, true), (true, false));
-        assert_eq!(route_toast("WhatsApp", &muted, false, false), (true, false));
-        assert_eq!(route_toast("WhatsApp", &muted, false, true), (true, false));
-        assert_eq!(route_toast("WhatsApp", &[], true, false), (true, true));
+        let route = |record, paused| route_toast("WhatsApp", &muted, record, paused, false);
+        assert_eq!(route(true, false), (true, true));
+        assert_eq!(route(true, true), (true, false));
+        assert_eq!(route(false, false), (true, false));
+        assert_eq!(route(false, true), (true, false));
+        assert_eq!(
+            route_toast("WhatsApp", &[], true, false, false),
+            (true, true)
+        );
+    }
+
+    #[test]
+    fn a_quiet_toast_reaches_the_history_never_the_notch() {
+        let muted = vec!["Claude".to_owned()];
+        let route = |record, paused| route_toast("WhatsApp", &muted, record, paused, true);
+        assert_eq!(route(true, false), (false, true));
+        assert_eq!(route(true, true), (false, false));
+        assert_eq!(route(false, false), (false, false));
+        assert_eq!(route(false, true), (false, false));
+        assert_eq!(
+            route_toast("WhatsApp", &[], true, false, true),
+            (false, true)
+        );
     }
 }

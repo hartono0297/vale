@@ -4351,6 +4351,7 @@ impl App {
     fn sync_pointer_polls(&mut self) {
         // Display on and unlock: whatever the screen kept is not trusted.
         self.renderer.invalidate();
+        self.notif_sync_away();
         self.sync_outside_timer();
         self.sync_behind(Instant::now());
         self.sync_halo_timer();
