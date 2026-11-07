@@ -1043,6 +1043,7 @@ keys! {
     StickyLineOne => "baris", "line";
     StickyLineMany => "baris", "lines";
     StickyEmpty => "Catatan kosong", "Empty note";
+    StickyOnDesktopTip => "Tempel ke desktop", "Stick to desktop";
     StickyOffDesktopTip => "Lepas dari desktop", "Unstick from desktop";
     StickyNew => "Catatan tempel baru", "New sticky note";
     StickyNewMax => "Catatan tempel baru (maksimal 20)", "New sticky note (at most 20)";
@@ -3331,6 +3332,12 @@ mod tests {
                 assert_eq!(s, s.trim(), "{key:?} {lang:?} has stray blanks");
             }
         }
+    }
+
+    #[test]
+    fn sticky_on_desktop_tip_in_both_languages() {
+        assert_eq!(text(Lang::Id, Key::StickyOnDesktopTip), "Tempel ke desktop");
+        assert_eq!(text(Lang::En, Key::StickyOnDesktopTip), "Stick to desktop");
     }
 
     /// Common Indonesian words, never in English text.

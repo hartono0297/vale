@@ -4169,7 +4169,7 @@ impl Renderer {
             let pin = note_pin_rect(*r);
             let on_desktop = note.sticky.is_some();
             let ink = if on_desktop { p.accent } else { p.secondary };
-            self.icon_colored(Icon::Pin, pin, 14.0, ink, 1.0, None);
+            self.icon_colored(Icon::StickyNote, pin, 14.0, ink, 1.0, None);
             let foot = Rect {
                 y: r.bottom() - 22.0,
                 h: 14.0,

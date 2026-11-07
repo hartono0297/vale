@@ -1758,27 +1758,31 @@ impl App {
         }
     }
 
-    /// A right-click on a favourite in the open menu unstars it (true);
-    /// anywhere else the tray menu opens as always (false).
-    fn on_right_click(&mut self, lparam: LPARAM) -> bool {
+    /// A right-click on a favourite in the open menu unstars it, one on a
+    /// Notes card asks for the card menu, anywhere else the tray menu opens
+    /// as always.
+    fn on_right_click(&mut self, lparam: LPARAM) -> RightClick {
         // The faint drag margin is not the island: no menu from it.
         let hit = match self.under_at(lparam) {
             Under::Island(hit) => Some(hit),
-            Under::Halo | Under::Off => return true,
+            Under::Halo | Under::Off => return RightClick::Done,
         };
         if self.clip_right_click(hit.as_ref()) {
-            return true;
+            return RightClick::Done;
+        }
+        if let Some(id) = note_card_menu_target(self.state.view(), hit.as_ref()) {
+            return RightClick::NoteMenu(id);
         }
         if !self.state.cli_menu() || self.state.view() != View::Panel(Page::Cli) {
-            return false;
+            return RightClick::Tray;
         }
         match menu_right_click(self.hit_at(lparam)) {
             MenuRightClick::Unstar(path) => {
                 self.set_cli_favorite(&path, false);
-                true
+                RightClick::Done
             }
-            MenuRightClick::Swallow => true,
-            MenuRightClick::Tray => false,
+            MenuRightClick::Swallow => RightClick::Done,
+            MenuRightClick::Tray => RightClick::Tray,
         }
     }
 
@@ -7510,6 +7514,27 @@ fn is_activity(event: &Event) -> bool {
     )
 }
 
+/// What `WM_RBUTTONUP` does next, once `on_right_click` has looked.
+#[derive(Debug, PartialEq)]
+enum RightClick {
+    /// Handled (or ignored): nothing more.
+    Done,
+    /// The tray menu opens.
+    Tray,
+    /// The card menu opens for this note.
+    NoteMenu(String),
+}
+
+/// The note whose card a right-click at `hit` is on, on the Notes page.
+fn note_card_menu_target(view: View, hit: Option<&Hit>) -> Option<String> {
+    match hit {
+        Some(Hit::NoteOpen(id) | Hit::NoteSticky(id)) if view == View::Panel(Page::Notes) => {
+            Some(id.clone())
+        }
+        _ => None,
+    }
+}
+
 /// What a right-click does while the CLI folder menu is open.
 #[derive(Debug, PartialEq)]
 enum MenuRightClick {
@@ -7996,6 +8021,31 @@ fn show_dnd_help() {
             None,
             SW_SHOWNORMAL,
         );
+    }
+}
+
+/// The Notes card menu: one item, stick or unstick. Modal like `open_menu`,
+/// so the app is borrowed only before and after it.
+fn open_note_card_menu(hwnd: HWND, id: &str) {
+    if MENU_OPEN.get() {
+        return;
+    }
+    let Some(label) = with_app(|app| {
+        let on = app.notes.get(id).is_some_and(|n| n.sticky.is_some());
+        let key = if on {
+            Key::StickyOffDesktopTip
+        } else {
+            Key::StickyOnDesktopTip
+        };
+        i18n::text(i18n::lang(), key)
+    }) else {
+        return;
+    };
+    MENU_OPEN.set(true);
+    let chosen = tray::note_card_menu(hwnd, label);
+    MENU_OPEN.set(false);
+    if chosen {
+        with_app(|app| app.sticky_toggle(id));
     }
 }
 
@@ -8716,8 +8766,10 @@ unsafe extern "system" fn wnd_proc(
         WM_RBUTTONUP => {
             // A favourite in the open CLI folder menu unstars; elsewhere
             // the tray menu opens (outside the app borrow: it is modal).
-            if !with_app(|app| app.on_right_click(lparam)).unwrap_or(false) {
-                open_menu(hwnd);
+            match with_app(|app| app.on_right_click(lparam)) {
+                Some(RightClick::Tray) | None => open_menu(hwnd),
+                Some(RightClick::NoteMenu(id)) => open_note_card_menu(hwnd, &id),
+                Some(RightClick::Done) => {}
             }
             LRESULT(0)
         }
@@ -10689,6 +10741,28 @@ mod tests {
         // A COM call that never comes back (a hung Explorer) is given up on;
         // a late answer is told apart by its request id.
         assert!(!reads.busy(t0 + EXPLORER_READ_TIMEOUT));
+    }
+
+    #[test]
+    fn note_card_menu_target_only_on_a_notes_card() {
+        let notes = View::Panel(Page::Notes);
+        assert_eq!(
+            note_card_menu_target(notes.clone(), Some(&Hit::NoteOpen("n1".into()))),
+            Some("n1".into())
+        );
+        assert_eq!(
+            note_card_menu_target(notes.clone(), Some(&Hit::NoteSticky("n1".into()))),
+            Some("n1".into())
+        );
+        assert_eq!(note_card_menu_target(notes.clone(), Some(&Hit::NoteNew)), None);
+        assert_eq!(note_card_menu_target(notes, None), None);
+        assert_eq!(
+            note_card_menu_target(
+                View::Panel(Page::Clipboard),
+                Some(&Hit::NoteOpen("n1".into()))
+            ),
+            None
+        );
     }
 
     #[test]

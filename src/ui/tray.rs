@@ -460,6 +460,35 @@ pub fn show_menu(
     }
 }
 
+/// Shows a one-item menu (`label`) at the cursor; true when it was chosen.
+/// Modal like `show_menu`: the caller must not hold any state borrow.
+pub fn note_card_menu(hwnd: HWND, label: &str) -> bool {
+    const CMD: usize = 1;
+    unsafe {
+        let Ok(menu) = CreatePopupMenu() else {
+            return false;
+        };
+        let _ = AppendMenuW(menu, MF_STRING, CMD, &HSTRING::from(label));
+        let mut pt = POINT::default();
+        let _ = GetCursorPos(&mut pt);
+        // Without the foreground the menu would not close on a click elsewhere.
+        let _ = SetForegroundWindow(hwnd);
+        let chosen = TrackPopupMenu(
+            menu,
+            TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
+            pt.x,
+            pt.y,
+            None,
+            hwnd,
+            None,
+        );
+        // Lets the menu dismiss properly the next time it opens.
+        let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
+        let _ = DestroyMenu(menu);
+        chosen.0 as usize == CMD
+    }
+}
+
 /// Fills `menu` with the Monitor entries as a radio group: the checked one
 /// gets the radio bullet (`CheckMenuRadioItem` sets `MFT_RADIOCHECK` on it),
 /// the entries that cannot be chosen are greyed.

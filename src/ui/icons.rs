@@ -149,11 +149,13 @@ pub enum Icon {
     Mark,
     Heart,
     Cup,
+    /// A sticky paper with a folded corner: the Notes card's desktop toggle.
+    StickyNote,
 }
 
 impl Icon {
     /// Every icon, in declaration order (`ALL[i] as usize == i`).
-    pub const ALL: [Icon; 78] = [
+    pub const ALL: [Icon; 79] = [
         Icon::Camera,
         Icon::Clipboard,
         Icon::Emoji,
@@ -232,6 +234,7 @@ impl Icon {
         Icon::Mark,
         Icon::Heart,
         Icon::Cup,
+        Icon::StickyNote,
     ];
 
     /// The icon's primitives on the 24-unit grid, in drawing order.
@@ -540,6 +543,11 @@ impl Icon {
                 Part::Path("M5 10h11v4a5 5 0 0 1-5 5h-1a5 5 0 0 1-5-5z"),
                 Part::Path("M16 11.5h1.4a2.4 2.4 0 0 1 0 4.8H16"),
                 Part::Path("M8.5 3.5v3M12 3.5v3"),
+            ],
+            Icon::StickyNote => &[
+                Part::Fill("M5 4h14v10l-6 6H5z"),
+                Part::Path("M5 4h14v10l-6 6H5z"),
+                Part::Path("M13 20v-6h6"),
             ],
             Icon::Widgets => &[
                 Part::FillRect(3.0, 3.0, 8.0, 11.0, 2.0),
