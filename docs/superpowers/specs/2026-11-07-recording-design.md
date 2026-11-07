@@ -126,7 +126,7 @@ change one asks the owner session first (SendMessage).
   `YYYY-MM-DD HHmm <title>.<ext>`, title from the app using the mic or empty
   (then `YYYY-MM-DD HHmm.<ext>`); a clash adds ` (2)`.
 - **Audio file (A writes, B reads).** `.m4a`: AAC-LC in MP4, 48 kHz,
-  96 kbps stereo or 64 kbps mono. Both sources: channel 0 = mic, channel 1 =
+  96 kbps (stereo or mono; the Windows AAC encoder has no lower documented rate). Both sources: channel 0 = mic, channel 1 =
   system. One source: mono. Paused audio is dropped, not kept as silence.
 - **Sidecar (A writes, B and C add to it).** `<same name>.vale.json`, UTF-8:
   `{ "v": 1, "kind": "audio" | "screen", "title": string, "started": RFC 3339

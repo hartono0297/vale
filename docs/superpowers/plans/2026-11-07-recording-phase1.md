@@ -77,7 +77,7 @@ rate: 48000) -> Result<Self, EncodeError>`, `write(interleaved_f32)`,
 `finish() -> Result<Duration>`. `MFStartup` once per writer thread, sink
 writer from URL with the container attribute (FMPEG4 then MPEG4), input
 `MFAudioFormat_Float` 48 kHz, output `MFAudioFormat_AAC` 96 kbps stereo /
-64 kbps mono (`MF_MT_AUDIO_AVG_BYTES_PER_SECOND` 12000 / 8000), sample
+96 kbps mono (`MF_MT_AUDIO_AVG_BYTES_PER_SECOND` 12000 for both; 8000 is not a documented rate), sample
 times in 100 ns units from the frame count. `EncodeError::NoMediaFoundation`
 when `MFStartup` fails (N editions). Test: write 2 s of a 440 Hz tone to
 `target/test-tmp/`, then read it back with `IMFSourceReader` and assert the

@@ -39,6 +39,9 @@ mod pages;
 mod phone;
 mod pointer_watch;
 mod pomodoro;
+// Release builds have no caller until the app (T6) records; the debug CLI
+// `--record-test` is the only one so far.
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
 mod recorder;
 mod reminders;
 mod screenshot;
@@ -265,6 +268,14 @@ fn main() {
             attach_parent_console();
             demo_lang_from_env();
             phone::debug::run();
+        }
+        // `--record-test <seconds> [mic|system|both]`: a real recording into
+        // DI_REC_DIR or target/rec-test/, with the levels seen. No window.
+        #[cfg(debug_assertions)]
+        Some("--record-test") => {
+            attach_parent_console();
+            let args: Vec<String> = std::env::args().skip(2).collect();
+            std::process::exit(recorder::record_test(&args));
         }
         #[cfg(debug_assertions)]
         Some("--settings") => {

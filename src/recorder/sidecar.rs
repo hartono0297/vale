@@ -1,8 +1,6 @@
 //! The `<name>.vale.json` file next to a recording. Other tracks add their
 //! own keys (`"transcript"`, `"cursor_log"`), so rewriting merges into the
 //! existing JSON and keeps every key it does not own.
-// The recorder session (T3) uses these; until it lands they look unused.
-#![allow(dead_code)]
 
 use chrono::{DateTime, FixedOffset};
 use serde_json::{Value, json};
@@ -53,6 +51,8 @@ impl Sidecar {
 
     /// Reads a sidecar leniently: a missing or wrong-typed field gives its
     /// default, and anything that is not an object gives all defaults.
+    // The Rekam page's recent list (the app, T5/T6) is the first caller.
+    #[allow(dead_code)]
     pub fn from_value(value: &Value) -> Self {
         let d = Self::default();
         let str_of = |k: &str| value.get(k).and_then(Value::as_str);
