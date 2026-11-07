@@ -41,6 +41,8 @@ pub struct Timeline {
     read: i64,
     /// Paused spans in raw frames, sorted, `[start, end)`; the last may be open.
     spans: Vec<(i64, i64)>,
+    /// See [`Timeline::heard`].
+    heard: u64,
 }
 
 impl Timeline {
@@ -50,6 +52,7 @@ impl Timeline {
             lanes: (0..channels.max(1)).map(|_| Lane::default()).collect(),
             read: 0,
             spans: Vec::new(),
+            heard: 0,
         }
     }
 
@@ -65,7 +68,7 @@ impl Timeline {
 
     /// Starts removing time from `frame` on. Ignored while already paused.
     pub fn pause_at(&mut self, frame: i64) {
-        if self.spans.last().is_some_and(|s| s.1 == OPEN) {
+        if self.paused() {
             return;
         }
         let start = self.spans.last().map_or(frame, |s| frame.max(s.1));
@@ -151,26 +154,47 @@ impl Timeline {
     /// Takes every frame before raw frame `up_to_frame` that was not taken
     /// yet, channels interleaved. Unwritten frames are zeros. Frames older
     /// than this are freed, and later writes to them are dropped.
+    #[cfg(test)]
     pub fn take(&mut self, up_to_frame: i64) -> Vec<f32> {
+        self.take_max(up_to_frame, usize::MAX)
+    }
+
+    /// `take`, but at most `max` frames; the rest stays for the next call.
+    /// The writer takes a second at a time, so a far `up_to_frame` (a clock
+    /// that ran on through a sleep) never makes one huge buffer.
+    pub fn take_max(&mut self, up_to_frame: i64, max: usize) -> Vec<f32> {
         let target = self.map(up_to_frame);
         if target <= self.read {
             return Vec::new();
         }
-        let n = (target - self.read) as usize;
+        let n = ((target - self.read) as u64).min(max as u64) as usize;
         let ch = self.lanes.len();
         let mut out = vec![0.0f32; n * ch];
+        let mut heard = vec![false; n];
         for (c, lane) in self.lanes.iter_mut().enumerate() {
             let have = lane.samples.len().min(n);
             for i in 0..have {
                 if lane.set[i] {
                     out[i * ch + c] = lane.samples[i];
+                    heard[i] = true;
                 }
             }
             lane.samples.drain(..have);
             lane.set.drain(..have);
         }
-        self.read = target;
+        self.heard += heard.iter().filter(|h| **h).count() as u64;
+        self.read += n as i64;
         out
+    }
+
+    /// A pause is open (between `pause_at` and `resume_at`).
+    pub fn paused(&self) -> bool {
+        self.spans.last().is_some_and(|s| s.1 == OPEN)
+    }
+
+    /// Frames taken so far that held a sample of some channel (not a gap).
+    pub fn heard(&self) -> u64 {
+        self.heard
     }
 }
 
@@ -332,6 +356,35 @@ mod tests {
         assert_eq!(out[9_999], 1.0);
         assert_eq!(out[10_000], 0.0);
         assert_eq!(t.buffered_frames(), 0);
+    }
+
+    #[test]
+    fn a_capped_take_returns_at_most_the_cap_and_the_rest_later() {
+        let mut t = Timeline::new(RATE, 2);
+        t.put(0, 0, &ramp(1, 10));
+        let first = t.take_max(10, 4);
+        assert_eq!(first.len(), 4 * 2);
+        assert_eq!(lane0(&first), ramp(1, 4));
+        assert_eq!(lane0(&t.take_max(10, 4)), ramp(5, 4));
+        assert_eq!(lane0(&t.take_max(10, 4)), ramp(9, 2));
+        assert!(t.take_max(10, 4).is_empty());
+    }
+
+    fn lane0(x: &[f32]) -> Vec<f32> {
+        x.iter().step_by(2).copied().collect()
+    }
+
+    #[test]
+    fn it_tells_whether_it_is_paused_and_what_was_heard() {
+        let mut t = one();
+        assert!(!t.paused());
+        t.put(0, 2, &[1.0, 1.0]);
+        t.pause_at(6);
+        assert!(t.paused());
+        t.take(10);
+        assert_eq!(t.heard(), 2, "two frames held a sample, four were gaps");
+        t.resume_at(10);
+        assert!(!t.paused());
     }
 
     #[test]

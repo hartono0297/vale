@@ -46,18 +46,29 @@ pub fn file_stem(started: NaiveDateTime, title: &str) -> String {
     }
 }
 
-/// `dir/stem.ext`, or `dir/stem (2).ext`, `(3)`, ... for the first name
-/// `exists` does not report as taken.
-pub fn unique_path(dir: &Path, stem: &str, ext: &str, exists: impl Fn(&Path) -> bool) -> PathBuf {
-    let first = dir.join(format!("{stem}.{ext}"));
-    if !exists(&first) {
-        return first;
+/// The files one recording named `stem` uses in `dir`: the audio, the audio
+/// while it is written, and the sidecar.
+pub fn files_of(dir: &Path, stem: &str) -> [PathBuf; 3] {
+    [
+        dir.join(format!("{stem}.m4a")),
+        dir.join(format!("{stem}.m4a.part")),
+        dir.join(format!("{stem}.vale.json")),
+    ]
+}
+
+/// `stem`, or `stem (2)`, `(3)`, ... for the first stem none of whose files
+/// ([`files_of`]) `exists` reports as taken: a sidecar or an unfinished
+/// `.part` left by another recording claims its name too.
+pub fn unique_stem(dir: &Path, stem: &str, exists: impl Fn(&Path) -> bool) -> String {
+    let free = |s: &str| !files_of(dir, s).iter().any(|p| exists(p));
+    if free(stem) {
+        return stem.to_string();
     }
     let mut n = 2u32;
     loop {
-        let p = dir.join(format!("{stem} ({n}).{ext}"));
-        if !exists(&p) {
-            return p;
+        let s = format!("{stem} ({n})");
+        if free(&s) {
+            return s;
         }
         n += 1;
     }
@@ -117,12 +128,25 @@ mod tests {
     }
 
     #[test]
-    fn unique_path_adds_a_counter() {
+    fn unique_stem_adds_a_counter() {
         let dir = Path::new("D:/r");
         let none = |_: &Path| false;
-        assert_eq!(unique_path(dir, "a", "m4a", none), dir.join("a.m4a"));
+        assert_eq!(unique_stem(dir, "a", none), "a");
         let taken = [dir.join("a.m4a"), dir.join("a (2).m4a")];
         let exists = |p: &Path| taken.iter().any(|t| t == p);
-        assert_eq!(unique_path(dir, "a", "m4a", exists), dir.join("a (3).m4a"));
+        assert_eq!(unique_stem(dir, "a", exists), "a (3)");
+    }
+
+    #[test]
+    fn a_part_or_a_sidecar_also_takes_the_name() {
+        let dir = Path::new("D:/r");
+        // A crash left `a.m4a.part`; another track wrote `a (2).vale.json`.
+        let taken = [dir.join("a.m4a.part"), dir.join("a (2).vale.json")];
+        let exists = |p: &Path| taken.iter().any(|t| t == p);
+        assert_eq!(unique_stem(dir, "a", exists), "a (3)");
+        assert_eq!(
+            files_of(dir, "x"),
+            [dir.join("x.m4a"), dir.join("x.m4a.part"), dir.join("x.vale.json")]
+        );
     }
 }

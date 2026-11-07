@@ -55,7 +55,7 @@ fn notice(key: &str, lang: Lang, title: String, body: String, kind: NoticeKind) 
     }
 }
 
-/// "Rekaman tersimpan" over "42 mnt · klik untuk buka". A click shows the
+/// "Rekaman tersimpan" over "42 mnt Â· klik untuk buka". A click shows the
 /// file in Explorer.
 pub(crate) fn saved_notice(lang: Lang, path: PathBuf, duration: Duration) -> Notice {
     notice(
@@ -327,12 +327,13 @@ impl App {
                     tray::set_recording(self.hwnd, false);
                     self.apply_now(Event::RecStatus(None));
                 }
-                self.apply_now(Event::Notice(failed_notice(lang, &reason)));
+                self.apply_now(Event::Notice(failed_notice(lang, &format!("{reason:?}"))));
             }
             RecEvent::SourceLost(source) => {
                 self.apply_now(Event::Notice(source_lost_notice(lang, source)));
             }
             RecEvent::MicDenied => self.apply_now(Event::Notice(mic_denied_notice(lang))),
+            RecEvent::NoInput => {}
         }
     }
 
