@@ -1047,8 +1047,7 @@ impl Renderer {
             self.fill_round(row.well, radius::SEGMENT);
             self.icon_colored(Icon::Mic, row.well, 14.0, p.secondary, 1.0, None);
             self.text_colored(&entry.title, &self.fonts.row_name, row.title, p.text, 1.0);
-            let length = i18n::rec_duration(lang, entry.duration);
-            let sub = format!("{} \u{b7} {}", entry.started, length);
+            let sub = i18n::rec_entry_sub(lang, &entry.started, entry.duration, entry.unfinished);
             self.text_colored(&sub, &self.fonts.small, row.sub, p.secondary, 1.0);
             self.set_color(p.raised_hi, 1.0);
             self.fill_round(row.pill, row.pill.h / 2.0);
@@ -6629,6 +6628,45 @@ mod tests {
                     let l = record_compact_layout(s, robot);
                     for secs in [0, 59 * 60 + 59, 3600 + 125, 10 * 3600 + 59 * 60 + 59] {
                         ink_fits(&r, &rec_clock(Duration::from_secs(secs)), &r.fonts.title, l.time);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Paused, "Dijeda" / "Paused" fits beside a long clock ("10:09:09") in
+    /// both fonts, at the narrowest island and beside Bata, placed as
+    /// `paint_record_compact` places it.
+    #[test]
+    fn the_paused_word_fits_beside_a_long_rec_clock_in_both_fonts() {
+        use crate::ui::fonts;
+        use crate::ui::geometry::{NOTCH_H_MIN, NOTCH_W_MIN, NotchSize, shape_with_robot_sized};
+        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+
+        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let mut r = Renderer::new().expect("renderer");
+        if !fonts::embedded(&r.dwrite).loaded.jetbrains_mono {
+            eprintln!("skipped: the embedded fonts are not in this binary");
+            return;
+        }
+        let size = NotchSize::from_px(NOTCH_W_MIN, NOTCH_H_MIN);
+        let clock = rec_clock(Duration::from_secs(10 * 3600 + 9 * 60 + 9));
+        assert_eq!(clock, "10:09:09");
+        for ui in [UiFont::Sans, UiFont::Mono] {
+            r.set_ui_font(ui).expect("font");
+            for style in [Style::Pill, Style::Notch] {
+                for robot in [false, true] {
+                    let s = shape_with_robot_sized(style, size, ShapeKind::RecordCompact, robot);
+                    let l = record_compact_layout(s, robot);
+                    let gap = r.text_width(&clock, &r.fonts.title).ceil() + 6.0;
+                    let x = (l.time.x + gap).min(l.label.right());
+                    let label = Rect {
+                        x,
+                        w: (l.label.right() - x).max(0.0),
+                        ..l.label
+                    };
+                    for lang in [Lang::Id, Lang::En] {
+                        ink_fits(&r, text(lang, Key::Paused), &r.fonts.eleven, label);
                     }
                 }
             }

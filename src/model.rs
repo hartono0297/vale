@@ -179,11 +179,21 @@ pub enum NoticeKind {
     RecSaved {
         path: PathBuf,
     },
-    /// "Rekaman gagal" with the reason (Bata sad). A click dismisses.
-    RecFailed,
+    /// "Rekaman gagal" with the reason (Bata sad). A click dismisses, or,
+    /// with `reveal` (the audio kept in a `.m4a.part`), shows that file in
+    /// Explorer (`Effect::RevealFile`).
+    RecFailed {
+        reveal: Option<PathBuf>,
+    },
     /// Windows refused the mic. A click opens its privacy page
     /// (`Effect::RecMicSettings`).
     RecMicDenied,
+    /// Windows refused to write in the recordings folder `dir` (Controlled
+    /// folder access). A click opens the folder picker
+    /// (`Effect::RecPickFolder`).
+    RecFolderBlocked {
+        dir: PathBuf,
+    },
     /// A short word about a recording: the one-time "ask everyone first" and
     /// a source that dropped out. A click dismisses.
     RecInfo,
@@ -248,6 +258,21 @@ pub struct RecEntry {
     /// "Hari ini 10:02", as the page shows it.
     pub started: String,
     pub duration: Duration,
+    /// A `.m4a.part` a crash left: the page says "belum selesai" instead of
+    /// a length (it still plays, and a click still shows it).
+    pub unfinished: bool,
+}
+
+/// What reaches `App` about a recording, tagged in `Event::Rec` with the
+/// session it belongs to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RecNote {
+    /// The writer thread's word.
+    Recorder(crate::recorder::RecEvent),
+    /// The start thread is done; `App` joins it for the recorder.
+    Started,
+    /// The stop thread is done (the writer's word came before).
+    Stopped,
 }
 
 /// A recording in progress, as the notch and the Rekam page show it. The
@@ -284,9 +309,9 @@ pub enum Event {
     RecStatus(Option<RecStatus>),
     /// The newest recordings found in the folder (the page shows five).
     RecRecent(Vec<RecEntry>),
-    /// What the recorder reported from its thread (`App` handles it; the
-    /// reducer ignores it).
-    Rec(crate::recorder::RecEvent),
+    /// What a recording's threads reported, with the session number they
+    /// belong to (`App` handles it; the reducer ignores it).
+    Rec(u64, RecNote),
     /// `None` means no media session is active.
     Media(Option<MediaInfo>),
     /// The session's timeline (seek, track change, play/pause); `None` when
@@ -851,6 +876,8 @@ pub enum Effect {
     RecOpenFolder,
     /// The mic notice's click: Windows' microphone privacy page.
     RecMicSettings,
+    /// The blocked-folder notice's click: the recordings folder picker.
+    RecPickFolder,
     /// Susun, as the hits of the same names.
     ArrangeMonitor(usize),
     ArrangeCard(usize),

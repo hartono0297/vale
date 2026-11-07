@@ -3,43 +3,132 @@
 //! levels, the notices, the list of recent recordings and the tray's red dot.
 //! A child of `app`, so it works on `App` directly.
 //!
+//! Start and stop run on short-lived threads (`rec-start`, `rec-stop`): the
+//! devices and the encoder open, and the file finalizes, off the UI thread.
+//! Each posts `RecNote::Started` / `RecNote::Stopped` back, tagged with its
+//! session number like every word of the recorder, and a word of an older
+//! session is ignored. A toggle while a start or a stop runs is ignored.
+//!
 //! Power: no thread and no timer exist outside a recording. The recorder's
 //! own threads (`rec-capture`, `rec-writer`) live from Start to Stop; the UI
 //! only reads three atomics at draw time (`levels`), and the clock and the
 //! meter redraws are the `TIMER_REC` / `TIMER_REC_LEVEL` one-shots of
-//! `sync_rec_timers`. The recent list is read when the Rekam page comes on
-//! screen and after a save, never at startup and never on a timer.
+//! `sync_rec_timers`. The recent list is read on a short-lived thread
+//! (`rec-scan`) when the Rekam page comes on screen and after a save, never
+//! at startup and never on a timer.
 
 use std::path::{Path, PathBuf};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use chrono::{Local, NaiveDate, NaiveDateTime};
 
 use super::{App, WM_APP_EVENT, notif_open, poster};
 use crate::i18n::{self, Key, Lang, text};
-use crate::model::{Event, Notice, NoticeKind, Page, RecEntry, RecSources, RecStatus, View};
+use crate::model::{
+    Event, Notice, NoticeKind, Page, RecEntry, RecNote, RecSources, RecStatus, View,
+};
 use crate::recorder::sidecar::Sidecar;
-use crate::recorder::{RecEvent, RecOptions, Recorder, Source, Sources};
+use crate::recorder::{Failure, RecError, RecEvent, RecOptions, Recorder, Source, Sources};
 use crate::shortcuts;
-use crate::ui::tray;
+use crate::ui::{settings, tray};
 
 /// How many recordings the Rekam page lists.
 pub(super) const RECENT_LIMIT: usize = 5;
-/// The consent notice's time (the default notice time).
+/// Windows' microphone privacy page, which the mic notice's click opens.
 const MIC_SETTINGS: &str = "ms-settings:privacy-microphone";
 
-/// What the island keeps of the recorder: the running session, and whether
-/// the Rekam page was on screen at the last refresh (a new showing re-reads
-/// the folder).
+/// What the island keeps of the recorder.
 #[derive(Default)]
 pub(super) struct RecState {
     recorder: Option<Recorder>,
+    /// The newest session's number; a word of an older one is ignored.
+    session: u64,
+    /// A start or a stop running on its own thread.
+    busy: Option<Busy>,
+    /// Why the recording is paused: the user or a sleep.
+    sleep: SleepPause,
+    /// The session ran out of input (`RecEvent::NoInput`) and stopped.
+    no_input: bool,
+    /// The session's `Saved` arrived.
+    saved: bool,
+    /// The writer finished by itself (`Failed`, `NoInput`), perhaps before
+    /// the start thread reported.
+    ended: bool,
+    /// The Rekam page was on screen at the last refresh (a new showing
+    /// re-reads the folder).
     page_shown: bool,
+}
+
+enum Busy {
+    Starting(JoinHandle<Result<Recorder, RecError>>),
+    Stopping(JoinHandle<()>),
 }
 
 impl RecState {
     pub fn active(&self) -> bool {
         self.recorder.is_some()
+    }
+
+    /// A recording runs, or one is starting or stopping.
+    pub fn engaged(&self) -> bool {
+        self.recorder.is_some() || self.busy.is_some()
+    }
+
+    /// What a toggle does now: nothing while a start or a stop runs.
+    fn toggle(&self) -> Option<Toggle> {
+        toggle_of(self.busy.is_some(), self.recorder.is_some())
+    }
+
+    /// A word of `session` is for the newest session (older ones are
+    /// ignored, so a late `Failed` never ends the next recording).
+    fn current(&self, session: u64) -> bool {
+        session == self.session
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Toggle {
+    Start,
+    Stop,
+}
+
+fn toggle_of(busy: bool, active: bool) -> Option<Toggle> {
+    match (busy, active) {
+        (true, _) => None,
+        (false, true) => Some(Toggle::Stop),
+        (false, false) => Some(Toggle::Start),
+    }
+}
+
+/// The pause a sleep puts on a recording, kept apart from the user's own: a
+/// recording the user paused stays paused after the wake, and one the sleep
+/// paused goes on, unless the user touched the pause meanwhile.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct SleepPause {
+    /// The recording was paused because the PC went to sleep.
+    paused_for_sleep: bool,
+}
+
+impl SleepPause {
+    /// Going to sleep; `paused`: the recording is paused now. True when it
+    /// should be paused for the sleep.
+    fn suspend(&mut self, paused: bool) -> bool {
+        if paused {
+            return false;
+        }
+        self.paused_for_sleep = true;
+        true
+    }
+
+    /// Awake again; true when the recording should go on.
+    fn resume(&mut self, paused: bool) -> bool {
+        std::mem::take(&mut self.paused_for_sleep) && paused
+    }
+
+    /// The user paused or resumed: theirs is the pause from now on.
+    fn user(&mut self) {
+        self.paused_for_sleep = false;
     }
 }
 
@@ -55,13 +144,19 @@ fn notice(key: &str, lang: Lang, title: String, body: String, kind: NoticeKind) 
     }
 }
 
-/// "Rekaman tersimpan" over "42 mnt Â· klik untuk buka". A click shows the
-/// file in Explorer.
-pub(crate) fn saved_notice(lang: Lang, path: PathBuf, duration: Duration) -> Notice {
+/// "Rekaman tersimpan" over "42 mnt · klik untuk buka"; "Rekaman dihentikan:
+/// tidak ada suara masuk" when every source was lost (`no_input`). A click
+/// shows the file in Explorer.
+pub(crate) fn saved_notice(lang: Lang, path: PathBuf, duration: Duration, no_input: bool) -> Notice {
+    let title = if no_input {
+        Key::RecStoppedNoInput
+    } else {
+        Key::RecSavedTitle
+    };
     notice(
         "rec-saved",
         lang,
-        text(lang, Key::RecSavedTitle).into(),
+        text(lang, title).into(),
         format!(
             "{} \u{b7} {}",
             i18n::rec_duration(lang, duration),
@@ -71,14 +166,61 @@ pub(crate) fn saved_notice(lang: Lang, path: PathBuf, duration: Duration) -> Not
     )
 }
 
-/// "Rekaman gagal" with what went wrong.
-pub(crate) fn failed_notice(lang: Lang, reason: &str) -> Notice {
+/// Every source was lost before anything worth keeping was recorded.
+pub(crate) fn no_input_notice(lang: Lang) -> Notice {
+    notice(
+        "rec-lost",
+        lang,
+        text(lang, Key::RecStoppedNoInput).into(),
+        String::new(),
+        NoticeKind::RecInfo,
+    )
+}
+
+/// What went wrong, in words: "Rekaman gagal" over the reason. A blocked
+/// folder (`dir`) gets its own notice whose click picks another folder, and
+/// an unfinished file one whose click shows the `.part`.
+pub(crate) fn failure_notice(lang: Lang, failure: &Failure, dir: &Path) -> Notice {
+    let why = match failure {
+        Failure::FolderBlocked => return folder_blocked_notice(lang, dir.to_path_buf()),
+        Failure::Unfinished { part } => {
+            return notice(
+                "rec-failed",
+                lang,
+                text(lang, Key::RecFailedTitle).into(),
+                text(lang, Key::RecWhyUnfinished).into(),
+                NoticeKind::RecFailed {
+                    reveal: Some(part.clone()),
+                },
+            );
+        }
+        Failure::FolderGone => Key::RecWhyFolderGone,
+        Failure::DiskFull => Key::RecWhyDiskFull,
+        Failure::NoMediaFoundation => Key::RecWhyNoMf,
+        Failure::NoDevice => Key::RecWhyNoDevice,
+        Failure::NoAudio => Key::RecWhyNoAudio,
+        Failure::Other(detail) => {
+            eprintln!("vale: recording failed: {detail}");
+            Key::RecWhyOther
+        }
+    };
     notice(
         "rec-failed",
         lang,
         text(lang, Key::RecFailedTitle).into(),
-        reason.trim().to_owned(),
-        NoticeKind::RecFailed,
+        text(lang, why).into(),
+        NoticeKind::RecFailed { reveal: None },
+    )
+}
+
+/// Windows refused to write in `dir`: a click picks another folder.
+pub(crate) fn folder_blocked_notice(lang: Lang, dir: PathBuf) -> Notice {
+    notice(
+        "rec-folder",
+        lang,
+        text(lang, Key::RecFolderBlockedTitle).into(),
+        text(lang, Key::RecFolderBlockedBody).into(),
+        NoticeKind::RecFolderBlocked { dir },
     )
 }
 
@@ -119,50 +261,124 @@ pub(crate) fn consent_notice(lang: Lang) -> Notice {
     )
 }
 
+/// The island's REC clock from the recorder's own, so the clock shows what
+/// the file will hold.
+fn status_of(recorder: &Recorder, sources: RecSources) -> RecStatus {
+    let (started, paused_total, paused_since) = recorder.clock();
+    RecStatus {
+        started,
+        paused_total,
+        paused_since,
+        sources,
+    }
+}
+
+// ---- the folder ----------------------------------------------------------------
+
+/// Whether recordings can be written in `dir`: it is made when missing, then
+/// a probe file is created and deleted. Controlled folder access refuses the
+/// create.
+pub(super) fn probe_writable(dir: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let probe = dir.join(format!(".vale-probe-{}.tmp", std::process::id()));
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&probe)?;
+    std::fs::remove_file(&probe)
+}
+
+/// `<name>.m4a.part` beside `<name>.m4a`.
+fn part_of(audio: &Path) -> PathBuf {
+    let mut name = audio.as_os_str().to_owned();
+    name.push(".part");
+    PathBuf::from(name)
+}
+
 // ---- the recent list ---------------------------------------------------------
 
-/// The `limit` newest `.m4a` files of `dir` as the page lists them. The
-/// title and the start come from the sidecar; a file with none shows its
-/// name and its file time, and an unknown length is zero (the page draws a
-/// dash). Never fails: an unreadable folder is an empty list.
-pub(super) fn scan_recent(dir: &Path, lang: Lang, today: NaiveDate, limit: usize) -> Vec<RecEntry> {
+/// What a recordings folder file is to the list: a finished `.m4a`, an
+/// unfinished `.m4a.part` (a crash left it), or nothing.
+fn listed(path: &Path) -> Option<bool> {
+    let name = path.file_name()?.to_string_lossy().to_ascii_lowercase();
+    if name.ends_with(".m4a.part") {
+        Some(true)
+    } else if name.ends_with(".m4a") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// The `limit` newest recordings of `dir` as the page lists them, `skip`
+/// (the running recording's `.part`) left out. The title and the start come
+/// from the sidecar; a file with none shows its name and its file time, and
+/// an unknown length is zero. A `.m4a.part` is listed as unfinished. Never
+/// fails: an unreadable folder is an empty list.
+pub(super) fn scan_recent(
+    dir: &Path,
+    lang: Lang,
+    today: NaiveDate,
+    limit: usize,
+    skip: Option<&Path>,
+) -> Vec<RecEntry> {
     let Ok(read) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
     // `DirEntry::metadata` is free on Windows (the listing carries it), so
     // the cost is the sort; only the newest few files are opened further.
-    let mut files: Vec<(std::time::SystemTime, PathBuf)> = read
+    let mut files: Vec<(std::time::SystemTime, PathBuf, bool)> = read
         .filter_map(Result::ok)
-        .filter(|e| {
-            e.path()
-                .extension()
-                .is_some_and(|x| x.eq_ignore_ascii_case("m4a"))
-        })
         .filter_map(|e| {
+            let path = e.path();
+            let unfinished = listed(&path)?;
+            if skip.is_some_and(|s| s == path) {
+                return None;
+            }
             let meta = e.metadata().ok()?;
-            meta.is_file().then(|| (meta.modified().unwrap_or(std::time::UNIX_EPOCH), e.path()))
+            meta.is_file()
+                .then(|| (meta.modified().unwrap_or(std::time::UNIX_EPOCH), path, unfinished))
         })
         .collect();
-    files.sort_by(|a, b| b.0.cmp(&a.0));
+    files.sort_by_key(|f| std::cmp::Reverse(f.0));
     files.truncate(limit);
     files
         .into_iter()
-        .map(|(modified, path)| entry_of(&path, modified, lang, today))
+        .map(|(modified, path, unfinished)| entry_of(&path, modified, unfinished, lang, today))
         .collect()
 }
 
-fn entry_of(path: &Path, modified: std::time::SystemTime, lang: Lang, today: NaiveDate) -> RecEntry {
-    let side = sidecar_of(path);
+/// The recording's name without `.m4a` or `.m4a.part`.
+fn stem_of(path: &Path) -> String {
+    let name = path
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let lower = name.to_ascii_lowercase();
+    for ext in [".m4a.part", ".m4a"] {
+        if lower.ends_with(ext) {
+            return name[..name.len() - ext.len()].to_string();
+        }
+    }
+    name
+}
+
+fn entry_of(
+    path: &Path,
+    modified: std::time::SystemTime,
+    unfinished: bool,
+    lang: Lang,
+    today: NaiveDate,
+) -> RecEntry {
+    let stem = stem_of(path);
+    let side = sidecar_of(path, &stem);
     let file_time: NaiveDateTime = chrono::DateTime::<Local>::from(modified).naive_local();
     // A sidecar with no start (epoch) says nothing about when.
     let started = side
         .as_ref()
         .filter(|s| s.started.timestamp() > 0)
         .map_or(file_time, |s| s.started.with_timezone(&Local).naive_local());
-    let stem = path
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default();
     let title = match &side {
         Some(s) if !s.title.trim().is_empty() => s.title.trim().to_owned(),
         Some(_) => format!(
@@ -178,13 +394,13 @@ fn entry_of(path: &Path, modified: std::time::SystemTime, lang: Lang, today: Nai
         title,
         started: i18n::rec_started(lang, started, today),
         duration: side.map_or(Duration::ZERO, |s| Duration::from_millis(s.duration_ms)),
+        unfinished,
     }
 }
 
-/// `<name>.vale.json` next to `<name>.m4a`, read leniently; `None` when it is
+/// `<stem>.vale.json` beside the recording, read leniently; `None` when it is
 /// missing or not JSON.
-fn sidecar_of(audio: &Path) -> Option<Sidecar> {
-    let stem = audio.file_stem()?.to_string_lossy();
+fn sidecar_of(audio: &Path, stem: &str) -> Option<Sidecar> {
     let file = audio.with_file_name(format!("{stem}.vale.json"));
     let value: serde_json::Value = serde_json::from_slice(&std::fs::read(file).ok()?).ok()?;
     Some(Sidecar::from_value(&value))
@@ -193,17 +409,34 @@ fn sidecar_of(audio: &Path) -> Option<Sidecar> {
 // ---- the App side --------------------------------------------------------------
 
 impl App {
-    /// The Rekam page's start button, the hotkey and the tray entry.
+    /// The Rekam page's start button, the hotkey and the tray entry. Ignored
+    /// while a start or a stop is still running.
     pub(super) fn rec_toggle(&mut self) {
-        if self.rec.active() {
-            self.rec_stop();
-        } else {
-            self.rec_start();
+        match self.rec.toggle() {
+            Some(Toggle::Stop) => self.rec_stop(),
+            Some(Toggle::Start) => self.rec_start(),
+            None => {}
         }
     }
 
+    /// Posts `note` of `session` to the island from any thread.
+    fn rec_poster(&self, session: u64) -> impl Fn(RecNote) + Send + 'static {
+        let (tx, wake) = (self.tx.clone(), poster(self.hwnd, WM_APP_EVENT));
+        move |note| {
+            let _ = tx.send(Event::Rec(session, note));
+            wake();
+        }
+    }
+
+    /// Starts a recording on the `rec-start` thread; the REC view shows once
+    /// it reports (`rec_started`). `DI_REC_TIMING` prints how long it took.
     fn rec_start(&mut self) {
-        let lang = self.config.language;
+        self.rec.session += 1;
+        let session = self.rec.session;
+        self.rec.no_input = false;
+        self.rec.saved = false;
+        self.rec.ended = false;
+        self.rec.sleep = SleepPause::default();
         let sources = self.rec_sources;
         let opts = RecOptions {
             sources: Sources {
@@ -215,28 +448,61 @@ impl App {
             title: String::new(),
             app: None,
         };
-        let (tx, wake) = (self.tx.clone(), poster(self.hwnd, WM_APP_EVENT));
-        let events = Box::new(move |event: RecEvent| {
-            let _ = tx.send(Event::Rec(event));
-            wake();
+        let say = self.rec_poster(session);
+        let events: Box<dyn Fn(RecEvent) + Send> = Box::new({
+            let say = self.rec_poster(session);
+            move |event| say(RecNote::Recorder(event))
         });
-        match Recorder::start(opts, events) {
+        let timing = std::env::var_os("DI_REC_TIMING").is_some();
+        let started = std::thread::Builder::new()
+            .name("rec-start".into())
+            .spawn(move || {
+                let t0 = Instant::now();
+                let result = Recorder::start(opts, events);
+                if timing {
+                    eprintln!("vale: recorder start took {:?}", t0.elapsed());
+                }
+                say(RecNote::Started);
+                result
+            });
+        match started {
+            Ok(handle) => self.rec.busy = Some(Busy::Starting(handle)),
+            Err(e) => {
+                let lang = self.config.language;
+                let n = failure_notice(lang, &Failure::Other(e.to_string()), &self.config.recording.dir());
+                self.apply_now(Event::Notice(n));
+            }
+        }
+    }
+
+    /// The start thread is done: the recorder runs, or the notice says why not.
+    fn rec_started(&mut self) {
+        let Some(Busy::Starting(handle)) = self.rec.busy.take() else {
+            return;
+        };
+        let lang = self.config.language;
+        let result = handle
+            .join()
+            .unwrap_or_else(|_| Err(RecError::Thread("the start thread panicked".into())));
+        match result {
+            // The writer already gave up: only its threads are let go of.
+            Ok(recorder) if self.rec.ended => {
+                self.rec.recorder = Some(recorder);
+                self.rec_stop();
+            }
             Ok(recorder) => {
+                let status = status_of(&recorder, self.rec_sources);
                 self.rec.recorder = Some(recorder);
                 tray::set_recording(self.hwnd, true);
-                self.apply_now(Event::RecStatus(Some(RecStatus {
-                    started: Instant::now(),
-                    paused_total: Duration::ZERO,
-                    paused_since: None,
-                    sources,
-                })));
+                self.apply_now(Event::RecStatus(Some(status)));
                 self.rec_consent_once();
             }
             Err(e) if e.is_mic_denied() => {
                 self.apply_now(Event::Notice(mic_denied_notice(lang)));
             }
             Err(e) => {
-                self.apply_now(Event::Notice(failed_notice(lang, &e.to_string())));
+                let dir = self.config.recording.dir();
+                self.apply_now(Event::Notice(failure_notice(lang, &e.failure(), &dir)));
             }
         }
     }
@@ -252,49 +518,102 @@ impl App {
         self.apply_now(Event::Notice(consent_notice(lang)));
     }
 
-    /// Stops and finalizes on this thread (the file closes in well under a
-    /// second); the writer's `Saved` event makes the notice.
+    /// Ends the recording now on screen and finalizes it on the `rec-stop`
+    /// thread; the writer's `Saved` (or `Failed`) makes the notice, then the
+    /// thread reports `Stopped`.
     fn rec_stop(&mut self) {
         let Some(recorder) = self.rec.recorder.take() else {
             return;
         };
-        let t0 = Instant::now();
-        let outcome = recorder.stop();
-        if std::env::var_os("DI_REC_TIMING").is_some() {
-            eprintln!("vale: recorder stop took {:?}", t0.elapsed());
-        }
         tray::set_recording(self.hwnd, false);
         self.apply_now(Event::RecStatus(None));
-        // The writer already sent `Saved` or `Failed` through the events;
-        // only a thread that died without a word is told here.
-        if let Err(e @ crate::recorder::RecError::Thread(_)) = outcome {
-            let lang = self.config.language;
-            self.apply_now(Event::Notice(failed_notice(lang, &e.to_string())));
+        let say = self.rec_poster(self.rec.session);
+        let timing = std::env::var_os("DI_REC_TIMING").is_some();
+        // A spawn that fails drops the closure, and the recorder's `Drop`
+        // finishes it here instead.
+        if let Ok(handle) = std::thread::Builder::new()
+            .name("rec-stop".into())
+            .spawn(move || {
+                let t0 = Instant::now();
+                let outcome = recorder.stop();
+                if timing {
+                    eprintln!("vale: recorder stop took {:?}", t0.elapsed());
+                }
+                // The writer already told `Saved` or `Failed`; only a
+                // thread that died without a word is told here.
+                if let Err(e @ RecError::Thread(_)) = outcome {
+                    say(RecNote::Recorder(RecEvent::Failed(e.failure())));
+                }
+                say(RecNote::Stopped);
+            })
+        {
+            self.rec.busy = Some(Busy::Stopping(handle));
         }
+    }
+
+    /// The stop thread is done.
+    fn rec_stopped(&mut self) {
+        if let Some(Busy::Stopping(handle)) = self.rec.busy.take() {
+            let _ = handle.join();
+        }
+        // Every source went before anything was kept: say so all the same.
+        if self.rec.no_input && !self.rec.saved {
+            let lang = self.config.language;
+            self.apply_now(Event::Notice(no_input_notice(lang)));
+        }
+        self.rec_rescan();
+    }
+
+    /// The status the island shows, from the running recorder.
+    fn rec_show_status(&mut self) {
+        let Some(recorder) = self.rec.recorder.as_ref() else {
+            return;
+        };
+        let sources = self.state.rec().map_or(self.rec_sources, |s| s.sources);
+        let status = status_of(recorder, sources);
+        self.apply_now(Event::RecStatus(Some(status)));
     }
 
     /// Pause when recording, resume when paused.
     pub(super) fn rec_pause(&mut self) {
-        let (Some(recorder), Some(mut status)) = (self.rec.recorder.as_mut(), self.state.rec().cloned())
-        else {
+        let Some(recorder) = self.rec.recorder.as_mut() else {
             return;
         };
-        let now = Instant::now();
         if recorder.paused() {
             recorder.resume();
-            if let Some(since) = status.paused_since.take() {
-                status.paused_total += now.saturating_duration_since(since);
-            }
         } else {
             recorder.pause();
-            status.paused_since = Some(now);
         }
-        self.apply_now(Event::RecStatus(Some(status)));
+        self.rec.sleep.user();
+        self.rec_show_status();
+    }
+
+    /// The PC is going to sleep: a running recording pauses.
+    pub(super) fn rec_on_suspend(&mut self) {
+        let Some(recorder) = self.rec.recorder.as_mut() else {
+            return;
+        };
+        if self.rec.sleep.suspend(recorder.paused()) {
+            recorder.pause();
+            self.rec_show_status();
+        }
+    }
+
+    /// Awake again: a recording the sleep paused goes on; one the user
+    /// paused stays paused.
+    pub(super) fn rec_on_resume(&mut self) {
+        let Some(recorder) = self.rec.recorder.as_mut() else {
+            return;
+        };
+        if self.rec.sleep.resume(recorder.paused()) {
+            recorder.resume();
+            self.rec_show_status();
+        }
     }
 
     /// The Rekam page's or Settings' source choice: kept and saved.
     pub(super) fn rec_set_sources(&mut self, sources: RecSources) {
-        if self.rec.active() || !(sources.mic || sources.system) {
+        if self.rec.engaged() || !(sources.mic || sources.system) {
             // Settings shows the choice that is really in effect.
             self.sync_settings();
             return;
@@ -307,51 +626,100 @@ impl App {
         }
     }
 
+    /// Settings' (or the picker's) folder choice. Refused while a recording
+    /// runs (Settings snaps back); a folder Windows will not let Vale write
+    /// in is not saved, and the blocked notice shows again.
+    pub(super) fn rec_set_folder(&mut self, dir: Option<PathBuf>) {
+        if self.rec.engaged() {
+            self.sync_settings();
+            return;
+        }
+        if let Some(d) = &dir
+            && let Err(e) = probe_writable(d)
+        {
+            eprintln!("vale: recordings folder {} refused: {e}", d.display());
+            let lang = self.config.language;
+            self.apply_now(Event::Notice(folder_blocked_notice(lang, d.clone())));
+            self.sync_settings();
+            return;
+        }
+        self.config.recording.folder = dir;
+        self.save_config();
+        self.sync_settings();
+        if self.rec.page_shown {
+            self.rec_rescan();
+        }
+    }
+
+    /// The blocked-folder notice's click: the folder picker, whose choice
+    /// comes back through `rec_set_folder`.
+    pub(super) fn rec_pick_folder(&mut self) {
+        notif_open::allow_foreground();
+        settings::pick_rec_folder(self.hwnd);
+    }
+
     /// The levels `(mic, system)` for the frame; zero when not recording.
     pub(super) fn rec_levels(&self) -> (f32, f32) {
         self.rec.recorder.as_ref().map_or((0.0, 0.0), Recorder::levels)
     }
 
-    /// The writer thread's word, from the event queue.
-    pub(super) fn on_rec_event(&mut self, event: RecEvent) {
+    /// A word from a recording's threads, from the event queue. One of an
+    /// older session than the newest is ignored.
+    pub(super) fn on_rec_note(&mut self, session: u64, note: RecNote) {
+        if !self.rec.current(session) {
+            return;
+        }
+        match note {
+            RecNote::Started => self.rec_started(),
+            RecNote::Stopped => self.rec_stopped(),
+            RecNote::Recorder(event) => self.on_rec_event(event),
+        }
+    }
+
+    fn on_rec_event(&mut self, event: RecEvent) {
         let lang = self.config.language;
         match event {
             RecEvent::Saved { path, duration } => {
-                self.apply_now(Event::Notice(saved_notice(lang, path, duration)));
-                self.rec_rescan();
+                self.rec.saved = true;
+                let n = saved_notice(lang, path, duration, self.rec.no_input);
+                self.apply_now(Event::Notice(n));
             }
-            RecEvent::Failed(reason) => {
+            RecEvent::Failed(failure) => {
                 // The recording is over whatever the reason: let go of it.
-                if let Some(recorder) = self.rec.recorder.take() {
-                    drop(recorder);
-                    tray::set_recording(self.hwnd, false);
-                    self.apply_now(Event::RecStatus(None));
-                }
-                self.apply_now(Event::Notice(failed_notice(lang, &format!("{reason:?}"))));
+                self.rec.ended = true;
+                self.rec_stop();
+                let dir = self.config.recording.dir();
+                self.apply_now(Event::Notice(failure_notice(lang, &failure, &dir)));
             }
             RecEvent::SourceLost(source) => {
                 self.apply_now(Event::Notice(source_lost_notice(lang, source)));
             }
             RecEvent::MicDenied => self.apply_now(Event::Notice(mic_denied_notice(lang))),
-            RecEvent::NoInput => {}
+            // The writer finishes by itself; the threads are let go of.
+            RecEvent::NoInput => {
+                self.rec.no_input = true;
+                self.rec.ended = true;
+                self.rec_stop();
+            }
         }
     }
 
-    /// The folder's newest recordings, as the page's event.
-    fn rec_recent_event(&self) -> Event {
-        let today = Local::now().date_naive();
-        Event::RecRecent(scan_recent(
-            &self.config.recording.dir(),
-            self.config.language,
-            today,
-            RECENT_LIMIT,
-        ))
-    }
-
-    /// Reads the folder for the Rekam page (after a save).
+    /// Reads the folder for the Rekam page on the `rec-scan` thread (a
+    /// OneDrive folder may fetch a sidecar while it is read); the list comes
+    /// back as `Event::RecRecent`.
     pub(super) fn rec_rescan(&mut self) {
-        let event = self.rec_recent_event();
-        self.apply_now(event);
+        let dir = self.config.recording.dir();
+        let lang = self.config.language;
+        let skip = self.rec.recorder.as_ref().map(|r| part_of(r.path()));
+        let (tx, wake) = (self.tx.clone(), poster(self.hwnd, WM_APP_EVENT));
+        let _ = std::thread::Builder::new()
+            .name("rec-scan".into())
+            .spawn(move || {
+                let today = Local::now().date_naive();
+                let list = scan_recent(&dir, lang, today, RECENT_LIMIT, skip.as_deref());
+                let _ = tx.send(Event::RecRecent(list));
+                wake();
+            });
     }
 
     /// Called from `refresh`: a new showing of the Rekam page re-reads the
@@ -360,9 +728,7 @@ impl App {
         let shown = matches!(view, View::Panel(Page::Record));
         if shown && !self.rec.page_shown {
             self.rec.page_shown = true;
-            // Inside `refresh`: apply without another refresh.
-            let event = self.rec_recent_event();
-            self.apply(event, Instant::now());
+            self.rec_rescan();
         } else if !shown {
             self.rec.page_shown = false;
         }
@@ -387,9 +753,21 @@ impl App {
         self.queue_shortcut(shortcuts::Action::Open(MIC_SETTINGS));
     }
 
-    /// Vale is closing (or the session ends): finalize a running recording
-    /// first, so the file is closed and the sidecar written.
+    /// Vale is closing (or the session ends): a start or a stop in flight is
+    /// waited for, and a running recording is finalized, so the file is
+    /// closed and the sidecar written.
     pub(super) fn rec_shutdown(&mut self) {
+        match self.rec.busy.take() {
+            Some(Busy::Starting(handle)) => {
+                if let Ok(Ok(recorder)) = handle.join() {
+                    let _ = recorder.stop();
+                }
+            }
+            Some(Busy::Stopping(handle)) => {
+                let _ = handle.join();
+            }
+            None => {}
+        }
         if let Some(recorder) = self.rec.recorder.take() {
             let _ = recorder.stop();
         }
@@ -405,8 +783,12 @@ mod tests {
         NaiveDate::from_ymd_opt(2026, 11, 7).unwrap()
     }
 
+    /// A fresh folder under `target/test-tmp/`.
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("vale-rec-{name}-{}", std::process::id()));
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("test-tmp")
+            .join(format!("app-rec-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -414,12 +796,68 @@ mod tests {
 
     #[test]
     fn the_saved_notice_names_the_length_and_a_click_reveals_the_file() {
-        let n = saved_notice(Lang::Id, PathBuf::from(r"C:\r\a.m4a"), Duration::from_secs(42 * 60));
+        let n = saved_notice(Lang::Id, PathBuf::from(r"C:\r\a.m4a"), Duration::from_secs(42 * 60), false);
         assert_eq!(n.title, "Rekaman tersimpan");
         assert_eq!(n.body, "42 mnt \u{b7} klik untuk buka");
         assert_eq!(n.kind, NoticeKind::RecSaved { path: PathBuf::from(r"C:\r\a.m4a") });
-        let en = saved_notice(Lang::En, PathBuf::new(), Duration::from_secs(5));
+        let en = saved_notice(Lang::En, PathBuf::new(), Duration::from_secs(5), false);
         assert_eq!((en.title.as_str(), en.body.as_str()), ("Recording saved", "5 s \u{b7} click to open"));
+    }
+
+    #[test]
+    fn a_recording_that_ran_out_of_input_says_so() {
+        let n = saved_notice(Lang::Id, PathBuf::from(r"C:\r\a.m4a"), Duration::from_secs(90), true);
+        assert_eq!(n.title, "Rekaman dihentikan: tidak ada suara masuk");
+        assert!(matches!(n.kind, NoticeKind::RecSaved { .. }));
+        let en = no_input_notice(Lang::En);
+        assert_eq!(en.title, "Recording stopped: no audio input");
+        assert_eq!(en.kind, NoticeKind::RecInfo);
+    }
+
+    #[test]
+    fn every_failure_reads_in_both_languages() {
+        let dir = Path::new(r"C:\Users\a\Documents\Vale\Rekaman");
+        let cases = [
+            (Failure::FolderGone, "Folder rekaman tidak ditemukan", "The recordings folder is gone"),
+            (Failure::DiskFull, "Disk penuh", "The disk is full"),
+            (
+                Failure::NoMediaFoundation,
+                "Media Foundation tidak ada di Windows ini",
+                "Media Foundation is missing on this Windows",
+            ),
+            (Failure::NoDevice, "Mic atau speaker tidak ditemukan", "No microphone or speaker found"),
+            (Failure::NoAudio, "Tidak ada suara masuk", "No audio came in"),
+            (
+                Failure::Other("audio encoder failed: 0x1234".into()),
+                "Ada yang tidak beres saat merekam",
+                "Something went wrong while recording",
+            ),
+        ];
+        for (failure, id, en) in cases {
+            let n = failure_notice(Lang::Id, &failure, dir);
+            assert_eq!((n.title.as_str(), n.body.as_str()), ("Rekaman gagal", id));
+            assert_eq!(n.kind, NoticeKind::RecFailed { reveal: None });
+            let n = failure_notice(Lang::En, &failure, dir);
+            assert_eq!((n.title.as_str(), n.body.as_str()), ("Recording failed", en));
+        }
+    }
+
+    #[test]
+    fn a_blocked_folder_and_an_unfinished_file_get_their_own_click() {
+        let dir = Path::new(r"C:\Users\a\Documents\Vale\Rekaman");
+        let n = failure_notice(Lang::Id, &Failure::FolderBlocked, dir);
+        assert_eq!(n.title, "Folder rekaman diblokir Windows");
+        assert_eq!(n.body, "Klik untuk pilih folder lain");
+        assert_eq!(n.kind, NoticeKind::RecFolderBlocked { dir: dir.to_path_buf() });
+        let en = folder_blocked_notice(Lang::En, dir.to_path_buf());
+        assert_eq!(
+            (en.title.as_str(), en.body.as_str()),
+            ("Windows blocked the recordings folder", "Click to choose another folder")
+        );
+        let part = PathBuf::from(r"C:\r\a.m4a.part");
+        let n = failure_notice(Lang::En, &Failure::Unfinished { part: part.clone() }, dir);
+        assert_eq!(n.kind, NoticeKind::RecFailed { reveal: Some(part) });
+        assert_eq!(n.body, "The file kept its temporary name \u{b7} click to show");
     }
 
     #[test]
@@ -430,8 +868,6 @@ mod tests {
         assert_eq!(source_lost_notice(Lang::En, Source::System).title, "PC audio disconnected");
         assert_eq!(source_lost_notice(Lang::En, Source::Mic).kind, NoticeKind::RecInfo);
         assert_eq!(mic_denied_notice(Lang::En).kind, NoticeKind::RecMicDenied);
-        assert_eq!(failed_notice(Lang::Id, " disk penuh ").body, "disk penuh");
-        assert_eq!(failed_notice(Lang::En, "x").title, "Recording failed");
         assert_eq!(
             consent_notice(Lang::Id).body,
             "Ingat: minta izin peserta sebelum merekam"
@@ -440,6 +876,57 @@ mod tests {
             consent_notice(Lang::En).body,
             "Remember to ask everyone before recording"
         );
+    }
+
+    #[test]
+    fn a_toggle_waits_for_a_start_or_a_stop_and_old_words_are_ignored() {
+        assert_eq!(toggle_of(false, false), Some(Toggle::Start));
+        assert_eq!(toggle_of(false, true), Some(Toggle::Stop));
+        assert_eq!(toggle_of(true, false), None, "starting");
+        assert_eq!(toggle_of(true, true), None, "stopping");
+        let mut s = RecState::default();
+        assert!(!s.engaged());
+        assert_eq!(s.toggle(), Some(Toggle::Start));
+        s.session = 3;
+        assert!(s.current(3));
+        assert!(!s.current(2), "a word of the session before");
+    }
+
+    #[test]
+    fn a_sleep_pause_never_overrides_the_users_own() {
+        // Recording, the PC sleeps and wakes: paused, then on again.
+        let mut s = SleepPause::default();
+        assert!(s.suspend(false));
+        assert!(s.resume(true));
+        // Paused by the user before the sleep: stays paused after it.
+        let mut s = SleepPause::default();
+        assert!(!s.suspend(true));
+        assert!(!s.resume(true));
+        // The user resumed or paused meanwhile: theirs stands.
+        let mut s = SleepPause::default();
+        assert!(s.suspend(false));
+        s.user();
+        assert!(!s.resume(true));
+        // A wake without a sleep before it does nothing.
+        let mut s = SleepPause::default();
+        assert!(!s.resume(true));
+        // Two wakes after one sleep resume once.
+        let mut s = SleepPause::default();
+        assert!(s.suspend(false));
+        assert!(s.resume(true));
+        assert!(!s.resume(true));
+    }
+
+    #[test]
+    fn a_folder_is_writable_only_when_a_file_can_be_made_in_it() {
+        let dir = scratch("probe");
+        assert!(probe_writable(&dir.join("new").join("deeper")).is_ok(), "made when missing");
+        assert_eq!(fs::read_dir(dir.join("new").join("deeper")).unwrap().count(), 0, "no probe left");
+        let file = dir.join("a file");
+        fs::write(&file, b"x").unwrap();
+        assert!(probe_writable(&file).is_err(), "a file is not a folder");
+        assert!(probe_writable(Path::new(r"Z:\no\such\drive")).is_err());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -460,13 +947,13 @@ mod tests {
             write(&format!("filler{i}"), None);
         }
         fs::write(dir.join("notes.txt"), b"x").unwrap();
-        fs::write(dir.join("half.m4a.part"), b"x").unwrap();
-        let list = scan_recent(&dir, Lang::Id, today(), RECENT_LIMIT);
+        let list = scan_recent(&dir, Lang::Id, today(), RECENT_LIMIT, None);
         assert_eq!(list.len(), 5, "five at most: {list:?}");
-        assert_eq!(list[0].title, "filler3", "newest first, no .part, no .txt");
+        assert_eq!(list[0].title, "filler3", "newest first, no .txt");
         assert_eq!(list[0].duration, Duration::ZERO, "no sidecar: the length is unknown");
-        assert_eq!(list[0].started.len() > 0, true);
-        let all = scan_recent(&dir, Lang::Id, today(), 20);
+        assert!(!list[0].started.is_empty());
+        assert!(!list[0].unfinished);
+        let all = scan_recent(&dir, Lang::Id, today(), 20, None);
         assert_eq!(all.len(), 7);
         let titled = all.iter().find(|e| e.path.ends_with("titled.m4a")).unwrap();
         assert_eq!(titled.title, "Sync mingguan");
@@ -480,30 +967,54 @@ mod tests {
     }
 
     #[test]
+    fn a_part_left_by_a_crash_is_listed_unfinished_but_not_the_running_one() {
+        let dir = scratch("parts");
+        fs::write(dir.join("2026-11-07 0900.m4a.part"), b"x").unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        let running = dir.join("2026-11-07 1000.m4a.part");
+        fs::write(&running, b"x").unwrap();
+        let list = scan_recent(&dir, Lang::Id, today(), RECENT_LIMIT, Some(&running));
+        assert_eq!(list.len(), 1, "{list:?}");
+        assert_eq!(list[0].title, "2026-11-07 0900");
+        assert!(list[0].unfinished);
+        assert_eq!(
+            i18n::rec_entry_sub(Lang::Id, &list[0].started, list[0].duration, true),
+            format!("{} \u{b7} belum selesai", list[0].started)
+        );
+        assert_eq!(
+            i18n::rec_entry_sub(Lang::En, "Today 10:02", Duration::ZERO, true),
+            "Today 10:02 \u{b7} unfinished"
+        );
+        assert_eq!(part_of(Path::new(r"C:\r\a.m4a")), PathBuf::from(r"C:\r\a.m4a.part"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_missing_folder_or_a_broken_sidecar_is_not_an_error() {
-        assert!(scan_recent(Path::new(r"Z:\no\such\folder"), Lang::Id, today(), 5).is_empty());
+        assert!(scan_recent(Path::new(r"Z:\no\such\folder"), Lang::Id, today(), 5, None).is_empty());
         let dir = scratch("broken");
         fs::write(dir.join("a.m4a"), b"x").unwrap();
         fs::write(dir.join("a.vale.json"), b"{not json").unwrap();
-        let list = scan_recent(&dir, Lang::En, today(), 5);
+        let list = scan_recent(&dir, Lang::En, today(), 5, None);
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].title, "a");
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn scanning_two_hundred_files_is_fast_enough_for_the_ui_thread() {
+    fn scanning_two_hundred_files_stays_quick() {
         let dir = scratch("many");
         for i in 0..200 {
             fs::write(dir.join(format!("2026-11-07 {i:04}.m4a")), b"x").unwrap();
         }
         let t0 = Instant::now();
-        let list = scan_recent(&dir, Lang::Id, today(), RECENT_LIMIT);
+        let list = scan_recent(&dir, Lang::Id, today(), RECENT_LIMIT, None);
         let took = t0.elapsed();
         println!("scan of 200 files: {took:?}");
         assert_eq!(list.len(), 5);
-        // The budget is about 5 ms; the bound leaves room for a busy CI box.
-        assert!(took < Duration::from_millis(100), "{took:?}");
+        // It runs on its own thread now; the bound only catches a blow-up
+        // and leaves room for a busy machine.
+        assert!(took < Duration::from_millis(500), "{took:?}");
         let _ = fs::remove_dir_all(&dir);
     }
 }

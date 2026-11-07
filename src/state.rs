@@ -121,6 +121,8 @@ fn notice_has_action(notice: &Notice) -> bool {
             | NoticeKind::ShotSaved { path: Some(_) }
             | NoticeKind::RecSaved { .. }
             | NoticeKind::RecMicDenied
+            | NoticeKind::RecFolderBlocked { .. }
+            | NoticeKind::RecFailed { reveal: Some(_) }
             | NoticeKind::App {
                 app_id: Some(_),
                 ..
@@ -615,8 +617,9 @@ impl IslandState {
                 | NoticeKind::MoleDone
                 | NoticeKind::ShotSaved { .. }
                 | NoticeKind::RecSaved { .. }
-                | NoticeKind::RecFailed
+                | NoticeKind::RecFailed { .. }
                 | NoticeKind::RecMicDenied
+                | NoticeKind::RecFolderBlocked { .. }
                 | NoticeKind::RecInfo
                 | NoticeKind::ShotDeleted
                 | NoticeKind::DevicePlugged { .. }
@@ -899,7 +902,7 @@ impl IslandState {
             Event::Calendar(_)
             | Event::Toast(_)
             | Event::Update(_)
-            | Event::Rec(_)
+            | Event::Rec(..)
             | Event::Lyrics(_)
             | Event::Cli(_)
             | Event::ExplorerFolders { .. }
@@ -2765,11 +2768,14 @@ impl IslandState {
             }
             NoticeKind::ClaudeDone { session_id } => Some(Effect::OpenClaudeSession { session_id }),
             // A saved screenshot: the body click shows the file in Explorer.
-            NoticeKind::ShotSaved { path: Some(path) } | NoticeKind::RecSaved { path } => {
-                Some(Effect::RevealFile(path))
-            }
+            // A failed rename shows the `.part` that holds the audio.
+            NoticeKind::ShotSaved { path: Some(path) }
+            | NoticeKind::RecSaved { path }
+            | NoticeKind::RecFailed { reveal: Some(path) } => Some(Effect::RevealFile(path)),
             // The mic was refused: the click opens Windows' mic privacy page.
             NoticeKind::RecMicDenied => Some(Effect::RecMicSettings),
+            // The folder was refused: the click picks another one.
+            NoticeKind::RecFolderBlocked { .. } => Some(Effect::RecPickFolder),
             NoticeKind::ClaudeWaiting { .. }
             | NoticeKind::Reminder { .. }
             | NoticeKind::StickyReminder { .. }
@@ -7783,6 +7789,7 @@ mod tests {
             title: name.into(),
             started: "Hari ini 10:02".into(),
             duration: Duration::from_secs(42 * 60),
+            unfinished: false,
         }
     }
 
@@ -9695,16 +9702,14 @@ mod tests {
     fn a_click_on_a_recording_saved_notice_reveals_the_file_and_the_mic_notice_opens_settings() {
         let t0 = Instant::now();
         let saved = rec_notice(NoticeKind::RecSaved {
-            path: r"C:
-.m4a".into(),
+            path: r"C:\r\a.m4a".into(),
         });
         assert!(notice_has_action(&saved));
         assert!(notice_closable(&saved));
         let mut s = st();
         s.apply(Event::Notice(saved), t0);
         let fx = s.apply(Event::Click(Hit::Body), t0 + secs(1));
-        assert_eq!(fx, vec![Effect::RevealFile(r"C:
-.m4a".into())]);
+        assert_eq!(fx, vec![Effect::RevealFile(r"C:\r\a.m4a".into())]);
         assert_eq!(s.view(), View::Idle);
 
         let denied = rec_notice(NoticeKind::RecMicDenied);
@@ -9714,8 +9719,28 @@ mod tests {
         let fx = s.apply(Event::Click(Hit::Body), t0 + secs(1));
         assert_eq!(fx, vec![Effect::RecMicSettings]);
 
+        // A blocked folder: the click picks another.
+        let blocked = rec_notice(NoticeKind::RecFolderBlocked {
+            dir: r"C:\Users\a\Documents\Vale\Rekaman".into(),
+        });
+        assert!(notice_has_action(&blocked));
+        let mut s = st();
+        s.apply(Event::Notice(blocked), t0);
+        let fx = s.apply(Event::Click(Hit::Body), t0 + secs(1));
+        assert_eq!(fx, vec![Effect::RecPickFolder]);
+
+        // A file left unfinished: the click shows the `.part`.
+        let part = rec_notice(NoticeKind::RecFailed {
+            reveal: Some(r"C:\r\a.m4a.part".into()),
+        });
+        assert!(notice_has_action(&part));
+        let mut s = st();
+        s.apply(Event::Notice(part), t0);
+        let fx = s.apply(Event::Click(Hit::Body), t0 + secs(1));
+        assert_eq!(fx, vec![Effect::RevealFile(r"C:\r\a.m4a.part".into())]);
+
         // A failure and a plain word only dismiss, and last the usual time.
-        for kind in [NoticeKind::RecFailed, NoticeKind::RecInfo] {
+        for kind in [NoticeKind::RecFailed { reveal: None }, NoticeKind::RecInfo] {
             let n = rec_notice(kind);
             assert!(!notice_has_action(&n));
             let mut s = st();

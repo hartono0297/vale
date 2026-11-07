@@ -642,6 +642,7 @@ fn demo_rec_recent() -> Vec<RecEntry> {
         title: title.to_owned(),
         started: started.to_owned(),
         duration: Duration::from_secs(mins * 60),
+        unfinished: false,
     };
     vec![
         entry("Sync mingguan", "Hari ini 10:02", 42),
@@ -3032,6 +3033,7 @@ fn demo_notice(which: DemoNotice, renderer: &Renderer) -> Notice {
             crate::i18n::lang(),
             r"C:\Users\vale\Documents\Vale\Rekaman\2026-11-07 1002.m4a".into(),
             Duration::from_secs(42 * 60),
+            false,
         ),
         DemoNotice::RecMicDenied => crate::app::record::mic_denied_notice(crate::i18n::lang()),
         DemoNotice::ShotDeleted => {

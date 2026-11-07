@@ -595,6 +595,21 @@ keys! {
     RecMicLost => "Mic terputus", "Mic disconnected";
     RecSystemLost => "Suara PC terputus", "PC audio disconnected";
     RecKeepsGoing => "Rekaman tetap berjalan", "Recording continues";
+    RecFolderBlockedTitle => "Folder rekaman diblokir Windows",
+        "Windows blocked the recordings folder";
+    RecFolderBlockedBody => "Klik untuk pilih folder lain", "Click to choose another folder";
+    RecStoppedNoInput => "Rekaman dihentikan: tidak ada suara masuk",
+        "Recording stopped: no audio input";
+    RecUnfinished => "belum selesai", "unfinished";
+    RecWhyNoMf => "Media Foundation tidak ada di Windows ini",
+        "Media Foundation is missing on this Windows";
+    RecWhyNoDevice => "Mic atau speaker tidak ditemukan", "No microphone or speaker found";
+    RecWhyDiskFull => "Disk penuh", "The disk is full";
+    RecWhyFolderGone => "Folder rekaman tidak ditemukan", "The recordings folder is gone";
+    RecWhyNoAudio => "Tidak ada suara masuk", "No audio came in";
+    RecWhyUnfinished => "File belum diberi nama \u{b7} klik untuk lihat",
+        "The file kept its temporary name \u{b7} click to show";
+    RecWhyOther => "Ada yang tidak beres saat merekam", "Something went wrong while recording";
     RecConsent => "Ingat: minta izin peserta sebelum merekam",
         "Remember to ask everyone before recording";
     TrayRecStart => "Mulai rekam", "Start recording";
@@ -1582,8 +1597,6 @@ pub fn devices_connected(lang: Lang, n: usize) -> String {
     }
 }
 
-/// A recording's length on the Rekam page: "45 dtk", "42 mnt", "1 j 05 mnt"
-/// ("45 s", "42 min", "1 h 05 min"). Minutes round down.
 /// When a recording started, for the Rekam page: "Hari ini 10:02", "Kemarin
 /// 14:30", else the date ("5 Nov").
 pub fn rec_started(lang: Lang, at: chrono::NaiveDateTime, today: NaiveDate) -> String {
@@ -1597,6 +1610,19 @@ pub fn rec_started(lang: Lang, at: chrono::NaiveDateTime, today: NaiveDate) -> S
     }
 }
 
+/// The line under a recording on the Rekam page: "Hari ini 10:02 · 42 mnt",
+/// or "· belum selesai" for a `.part` a crash left.
+pub fn rec_entry_sub(lang: Lang, started: &str, d: std::time::Duration, unfinished: bool) -> String {
+    let length = if unfinished {
+        text(lang, Key::RecUnfinished).to_string()
+    } else {
+        rec_duration(lang, d)
+    };
+    format!("{started} \u{b7} {length}")
+}
+
+/// A recording's length on the Rekam page: "45 dtk", "42 mnt", "1 j 05 mnt"
+/// ("45 s", "42 min", "1 h 05 min"). Minutes round down.
 pub fn rec_duration(lang: Lang, d: std::time::Duration) -> String {
     let secs = d.as_secs();
     let (h, m) = (secs / 3600, secs / 60 % 60);

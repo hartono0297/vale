@@ -1301,9 +1301,10 @@ pub fn badge_style(notice: &Notice, p: &Palette, pomo_next: Phase) -> BadgeStyle
         NoticeKind::Screenshot { .. } => tint(p.accent, Icon::Camera),
         NoticeKind::ShotSaved { .. } => tint(p.sage, Icon::Download),
         NoticeKind::RecSaved { .. } => tint(p.sage, Icon::Mic),
-        NoticeKind::RecFailed | NoticeKind::RecMicDenied => {
+        NoticeKind::RecFailed { .. } | NoticeKind::RecMicDenied => {
             tint(crate::theme::REC_RED, Icon::Mic)
         }
+        NoticeKind::RecFolderBlocked { .. } => tint(crate::theme::REC_RED, Icon::Folder),
         NoticeKind::RecInfo => tint(p.accent, Icon::Mic),
         NoticeKind::ShotDeleted => tint(crate::theme::SOFT_RED, Icon::Trash),
         NoticeKind::Pomodoro => tint(p.phase(pomo_next), Icon::Timer),

@@ -3167,6 +3167,28 @@ fn browse(hwnd: HWND) {
     }
 }
 
+/// The recordings folder picker for the island itself (the blocked-folder
+/// notice's click), on a short-lived thread of its own so the island keeps
+/// running while the dialog is up. The choice comes back to `owner` as
+/// `Action::RecFolder`, the same way Settings' "Ganti" sends it.
+pub fn pick_rec_folder(owner: HWND) {
+    use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
+    let raw = owner.0 as isize;
+    let _ = std::thread::Builder::new()
+        .name("rec-pick-folder".into())
+        .spawn(move || {
+            let owner = HWND(raw as *mut c_void);
+            // The dialog wants a single-threaded apartment.
+            if unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_err() {
+                return;
+            }
+            if let Some(dir) = pick_path(owner, CustomKind::Folder) {
+                post_action(owner, Action::RecFolder(Some(dir)));
+            }
+            unsafe { CoUninitialize() };
+        });
+}
+
 /// The path the owner picks in the system dialog: an exe or any file for an
 /// app, a folder for a folder. `None` when it is cancelled or cannot open.
 fn pick_path(owner: HWND, kind: CustomKind) -> Option<std::path::PathBuf> {

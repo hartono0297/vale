@@ -237,8 +237,9 @@ const TIMER_DAY: usize = 7;
 /// redraw, only while the REC view (or the Rekam page) shows a recording that
 /// is not paused (`rec_clock_timer_wanted`).
 const TIMER_REC: usize = 60;
-/// One-shot, `REC_LEVEL_MS` apart: the REC view's level meters redraw, only
-/// while that view is on screen, the recording runs and Motion is not Off
+/// One-shot, `REC_LEVEL_MS` apart (coalescable, re-armed after each redraw):
+/// the REC view's level meters redraw, only while that view is on screen at a
+/// screen somebody can see, the recording runs and Motion is not Off
 /// (`rec_level_timer_wanted`).
 const TIMER_REC_LEVEL: usize = 61;
 const REC_LEVEL_MS: u32 = 120;
@@ -1387,7 +1388,7 @@ impl App {
                     | Event::Toast(_)
                     | Event::ClipPacked { .. }
                     | Event::Update(_)
-                    | Event::Rec(_)
+                    | Event::Rec(..)
                     // A progress tick draws the receiving view itself, at
                     // most six a second; nothing else changed.
                     | Event::Phone(_, crate::phone::PhoneEvent::UploadProgress { .. })
@@ -1499,8 +1500,8 @@ impl App {
                     continue;
                 }
                 // The recorder's thread: `App` makes the notice.
-                Event::Rec(event) => {
-                    self.on_rec_event(event);
+                Event::Rec(session, note) => {
+                    self.on_rec_note(session, note);
                     continue;
                 }
                 Event::SearchIndex(apps) => {
@@ -2282,6 +2283,7 @@ impl App {
             Effect::RecReveal(path) => self.rec_reveal(path),
             Effect::RecOpenFolder => self.rec_open_folder(),
             Effect::RecMicSettings => self.rec_mic_settings(),
+            Effect::RecPickFolder => self.rec_pick_folder(),
             Effect::DeviceEject(i) => self.devices_eject(i),
             Effect::DeviceOpen(i) => self.devices_open(i),
             Effect::DeviceDetail(i) => self.devices_toggle_detail(i),
@@ -4413,6 +4415,8 @@ impl App {
         self.sync_eq();
         // A lock or a display change stops the paws and starts them again.
         self.sync_typing_timer(Instant::now());
+        // The REC clock and meters stop too, and come back on unlock.
+        self.sync_rec_timers(Instant::now());
         self.follow_pointer_settings(Instant::now());
         // The sleeping cat's wake poll stops while nobody is at the screen.
         // Back again, input made meanwhile wakes the cat at once.
@@ -5174,13 +5178,27 @@ impl App {
         );
         if level != self.rec_level_timer {
             self.rec_level_timer = level;
-            unsafe {
-                if level {
-                    SetTimer(Some(self.hwnd), TIMER_REC_LEVEL, REC_LEVEL_MS, None);
-                } else {
+            if level {
+                self.arm_rec_level();
+            } else {
+                unsafe {
                     let _ = KillTimer(Some(self.hwnd), TIMER_REC_LEVEL);
                 }
             }
+        }
+    }
+
+    /// One-shot `REC_LEVEL_MS` from now; Windows may fold it into another
+    /// wake within the usual slack.
+    fn arm_rec_level(&self) {
+        unsafe {
+            SetCoalescableTimer(
+                Some(self.hwnd),
+                TIMER_REC_LEVEL,
+                REC_LEVEL_MS,
+                None,
+                timer_slack(REC_LEVEL_MS),
+            );
         }
     }
 
@@ -5303,8 +5321,15 @@ impl App {
                 }
             }
             TIMER_REC_LEVEL => {
+                // A one-shot: gone unless re-armed.
+                unsafe {
+                    let _ = KillTimer(Some(self.hwnd), TIMER_REC_LEVEL);
+                }
                 if !self.animating() {
                     self.draw(Instant::now());
+                }
+                if self.rec_level_timer {
+                    self.arm_rec_level();
                 }
             }
             TIMER_DAY => self.check_date(),
@@ -6361,11 +6386,7 @@ impl App {
                 self.save_config();
             }
             SettingsAction::RecSources(v) => self.rec_set_sources(v),
-            SettingsAction::RecFolder(dir) => {
-                self.config.recording.folder = dir;
-                self.save_config();
-                self.sync_settings();
-            }
+            SettingsAction::RecFolder(dir) => self.rec_set_folder(dir),
             // The thumb moves live; only the release is saved.
             SettingsAction::ArrangeGap { gap, commit } => {
                 self.config.arrange.gap = gap;
@@ -8767,15 +8788,19 @@ unsafe extern "system" fn wnd_proc(
                             by_user: wparam.0 == PBT_APMRESUMESUSPEND,
                         };
                         with_app(|app| {
+                            // A recording the sleep paused goes on.
+                            app.rec_on_resume();
                             // A phone session left over from before the
                             // sleep is ended: its connections are gone.
                             app.phone_on_resume(Instant::now());
                             app.maybe_greet(trigger)
                         });
                     }
-                    // Going to sleep: the phone link ends with it.
+                    // Going to sleep: the phone link ends with it, and a
+                    // recording pauses (QPC runs on through the sleep).
                     PBT_APMSUSPEND => {
                         with_app(|app| {
+                            app.rec_on_suspend();
                             app.phone_on_away(crate::phone::EndReason::Suspend, Instant::now())
                         });
                     }
@@ -10205,6 +10230,30 @@ mod tests {
         // Another view (or fullscreen's Hidden), locked, display off.
         assert_eq!(case(false, false, true, false), (false, false));
         assert_eq!(case(true, false, true, true), (false, false));
+    }
+
+    /// The body of `fn <name>` in this file, up to the next `fn` at the
+    /// same depth.
+    fn body_of(name: &str) -> &'static str {
+        let src = include_str!("app.rs");
+        let start = src.find(&format!("    fn {name}(")).expect(name);
+        let rest = &src[start + 4..];
+        let end = rest.find("\n    fn ").or_else(|| rest.find("\r\n    fn ")).unwrap_or(rest.len());
+        &rest[..end]
+    }
+
+    /// Locking or the display going off re-plans the REC timers like the
+    /// other polls (they then stop), and unlocking starts them again; the
+    /// meters' timer is a coalescable one-shot re-armed after each redraw.
+    #[test]
+    fn the_rec_timers_follow_the_lock_and_the_meter_timer_is_a_one_shot() {
+        assert!(body_of("sync_pointer_polls").contains("self.sync_rec_timers("));
+        let arm = body_of("arm_rec_level");
+        assert!(arm.contains("SetCoalescableTimer") && arm.contains("TIMER_REC_LEVEL"));
+        let tick = body_of("on_timer");
+        let at = tick.find("TIMER_REC_LEVEL =>").expect("the meter tick");
+        let arm = &tick[at..at + tick[at..].find("TIMER_DAY").unwrap()];
+        assert!(arm.contains("KillTimer") && arm.contains("self.arm_rec_level()"), "{arm}");
     }
 
     #[test]

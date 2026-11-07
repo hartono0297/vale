@@ -1406,7 +1406,9 @@ impl NoticeSort {
             NoticeKind::Screenshot { .. } => NoticeSort::Screenshot,
             NoticeKind::ShotSaved { .. } => NoticeSort::ShotSaved,
             NoticeKind::RecSaved { .. } => NoticeSort::RecSaved,
-            NoticeKind::RecFailed | NoticeKind::RecMicDenied => NoticeSort::RecFailed,
+            NoticeKind::RecFailed { .. }
+            | NoticeKind::RecMicDenied
+            | NoticeKind::RecFolderBlocked { .. } => NoticeSort::RecFailed,
             NoticeKind::RecInfo => NoticeSort::RecInfo,
             NoticeKind::ShotDeleted => NoticeSort::ShotDeleted,
             NoticeKind::DevicePlugged { .. } => NoticeSort::DevicePlugged,
