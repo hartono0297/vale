@@ -258,6 +258,16 @@ fn main() {
             demo_lang_from_env();
             phone::debug::run();
         }
+        // A few seconds of screen recording into %TEMP%\vale-screenrec\,
+        // read back and checked: `--screenrec-test <seconds> [--zoom]
+        // [--window [hwnd]] [--region x,y,w,h] [--fps 60] [--software]
+        // [--no-audio]`.
+        #[cfg(debug_assertions)]
+        Some("--screenrec-test") => {
+            attach_parent_console();
+            let args: Vec<String> = std::env::args().skip(2).collect();
+            screenrec::debug::run(&args);
+        }
         #[cfg(debug_assertions)]
         Some("--settings") => {
             attach_parent_console();
