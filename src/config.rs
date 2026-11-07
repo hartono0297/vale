@@ -1355,6 +1355,7 @@ mod tests {
                 consent_shown: true,
                 mic_device: Some("{0.0.1.00000000}.{abc}".into()),
                 system_device: None,
+                echo_cancel: false,
             },
         };
         assert_eq!(parse(&serde_json::to_string(&c).unwrap()), c);

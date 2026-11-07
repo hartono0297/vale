@@ -567,6 +567,7 @@ impl App {
                 self.config.recording.mic_device.clone(),
                 self.config.recording.system_device.clone(),
             ],
+            echo_cancel: self.config.recording.echo_cancel,
         };
         let say = self.rec_poster(session);
         let events: Box<dyn Fn(RecEvent) + Send> = Box::new({

@@ -24,6 +24,9 @@ pub struct RecordingPrefs {
     pub mic_device: Option<String>,
     /// The same for the PC audio (an output endpoint, recorded in loopback).
     pub system_device: Option<String>,
+    /// The mic stream asks Windows for echo cancellation (the communications
+    /// category), so speaker sound the mic picks up is removed. On by default.
+    pub echo_cancel: bool,
 }
 
 impl Default for RecordingPrefs {
@@ -37,6 +40,7 @@ impl Default for RecordingPrefs {
             consent_shown: false,
             mic_device: None,
             system_device: None,
+            echo_cancel: true,
         }
     }
 }
@@ -75,6 +79,10 @@ impl RecordingPrefs {
                 .unwrap_or(d.consent_shown),
             mic_device: device(map.get("mic_device")),
             system_device: device(map.get("system_device")),
+            echo_cancel: map
+                .get("echo_cancel")
+                .and_then(Value::as_bool)
+                .unwrap_or(d.echo_cancel),
         }
     }
 
@@ -144,7 +152,7 @@ pub fn folder_label(dir: &Path) -> String {
 impl Serialize for RecordingPrefs {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
-        let mut map = s.serialize_map(Some(5))?;
+        let mut map = s.serialize_map(Some(6))?;
         map.serialize_entry(
             "sources",
             &serde_json::json!({"mic": self.sources.mic, "system": self.sources.system}),
@@ -153,6 +161,7 @@ impl Serialize for RecordingPrefs {
         map.serialize_entry("consent_shown", &self.consent_shown)?;
         map.serialize_entry("mic_device", &self.mic_device)?;
         map.serialize_entry("system_device", &self.system_device)?;
+        map.serialize_entry("echo_cancel", &self.echo_cancel)?;
         map.end()
     }
 }
@@ -224,6 +233,7 @@ mod tests {
             consent_shown: true,
             mic_device: Some("{0.0.1.00000000}.{abc}".into()),
             system_device: Some("{0.0.0.00000000}.{def}".into()),
+            echo_cancel: false,
         };
         let v = serde_json::to_value(&p).unwrap();
         assert_eq!(RecordingPrefs::from_json(&v), p);
@@ -253,5 +263,18 @@ mod tests {
         assert_eq!(p.device(crate::recorder::Source::Mic), None);
         p.set_device(crate::recorder::Source::System, None);
         assert_eq!(p.system_device, None);
+    }
+
+    #[test]
+    fn echo_cancel_is_on_by_default_and_read_alone() {
+        assert!(RecordingPrefs::default().echo_cancel);
+        // An old config has no key.
+        assert!(RecordingPrefs::from_json(&json!({"consent_shown": true})).echo_cancel);
+        // A wrong type keeps the default; a real flag is kept.
+        assert!(RecordingPrefs::from_json(&json!({"echo_cancel": "no"})).echo_cancel);
+        let p = RecordingPrefs::from_json(&json!({"echo_cancel": false, "consent_shown": true}));
+        assert!(!p.echo_cancel && p.consent_shown);
+        let v = serde_json::to_value(RecordingPrefs::default()).unwrap();
+        assert_eq!(v["echo_cancel"], json!(true));
     }
 }

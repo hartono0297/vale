@@ -6393,6 +6393,10 @@ impl App {
             SettingsAction::RecSources(v) => self.rec_set_sources(v),
             SettingsAction::RecDevice(source, id) => self.rec_set_device(source, id),
             SettingsAction::RecFolder(dir) => self.rec_set_folder(dir),
+            SettingsAction::RecEchoCancel(on) => {
+                self.config.recording.echo_cancel = on;
+                self.save_config();
+            }
             // The thumb moves live; only the release is saved.
             SettingsAction::ArrangeGap { gap, commit } => {
                 self.config.arrange.gap = gap;

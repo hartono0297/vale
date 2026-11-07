@@ -448,6 +448,8 @@ pub enum Hit {
     /// Fitur -> Rekaman: "Ganti" on the mic row or the PC audio row, which
     /// opens the device menu.
     RecDevice(Source),
+    /// Fitur -> Rekaman: the mic echo cancellation switch.
+    RecEchoCancel,
     /// Settings -> Fitur -> Susun: "+ Template baru", a
     /// template's "Ubah" and "Hapus", a saved arrangement's "Ganti nama"
     /// and "Hapus" (by place in their lists), and the editor's "Belah"
@@ -4429,13 +4431,8 @@ pub fn rec_device_label(
 /// section.)
 fn recording_card(b: &mut Builder, s: &State) {
     titled(b, Key::RecSettingsTitle);
-    let card = b.card(4.0 * ROW_H);
-    let rows = [
-        card.y,
-        card.y + ROW_H,
-        card.y + 2.0 * ROW_H,
-        card.y + 3.0 * ROW_H,
-    ];
+    let card = b.card(5.0 * ROW_H);
+    let rows: [f32; 5] = std::array::from_fn(|i| card.y + i as f32 * ROW_H);
     let cy = |y: f32| y + ROW_H / 2.0;
     let items = vec![
         (Hit::RecSources(REC_CHOICES[0]), b.t(Key::RecSourceMic)),
@@ -4474,6 +4471,11 @@ fn recording_card(b: &mut Builder, s: &State) {
         b.divider(card, rows[2 + i]);
     }
 
+    let x = b.toggle(Hit::RecEchoCancel, b.g.right, cy(rows[3]), s.recording.echo_cancel);
+    let desc = Some((b.t(Key::RecEchoCancelDesc), Tone::Secondary));
+    b.row_text(card, rows[3], b.t(Key::RecEchoCancel), desc, false, x);
+    b.divider(card, rows[4]);
+
     let (open, change) = (b.t(Key::RecSettingsOpen), b.t(Key::RecSettingsChange));
     let (open_w, change_w) = (
         b.button_w(&[&open], ButtonKind::Secondary),
@@ -4481,7 +4483,7 @@ fn recording_card(b: &mut Builder, s: &State) {
     );
     let x = b.buttons(
         b.g.right,
-        cy(rows[3]),
+        cy(rows[4]),
         vec![
             (Hit::RecFolderOpen, open, ButtonKind::Secondary, true, open_w),
             (Hit::RecFolderChange, change, ButtonKind::Secondary, true, change_w),
@@ -4493,7 +4495,7 @@ fn recording_card(b: &mut Builder, s: &State) {
         .as_deref()
         .map_or_else(|| REC_DEFAULT_FOLDER.to_owned(), rec_folder_label);
     let desc = Some((folder, Tone::Secondary));
-    b.row_text(card, rows[3], b.t(Key::RecSettingsFolder), desc, false, x);
+    b.row_text(card, rows[4], b.t(Key::RecSettingsFolder), desc, false, x);
 }
 
 /// "Jumlah item" one step (10) up or down, kept in 10–200; a hand-edited
@@ -8471,9 +8473,9 @@ mod tests {
                         text(lang, Key::RecSourceBoth)
                     ]
                 );
-                // Its own four-row card under its label, before "Pembersih".
+                // Its own five-row card under its label, before "Pembersih".
                 let card = l.cards[l.cards.len() - 2];
-                assert_eq!(card.h, 4.0 * ROW_H);
+                assert_eq!(card.h, 5.0 * ROW_H);
                 assert!(l.texts.iter().any(|t| t.text == text(lang, Key::RecSettingsTitle).to_uppercase()));
                 // The folder shows like the screenshot one: parent and name.
                 assert!(l.texts.iter().any(|t| t.text == r"Audio\Rapat"), "{lang:?}");
@@ -8483,7 +8485,7 @@ mod tests {
                     hits.iter().find(|(h, _)| *h == Hit::RecFolderChange).expect("Ganti").1,
                 );
                 assert!(open.right() <= change.x, "Buka left of Ganti");
-                assert!(open.y >= card.y + 3.0 * ROW_H && change.bottom() <= card.bottom());
+                assert!(open.y >= card.y + 4.0 * ROW_H && change.bottom() <= card.bottom());
                 // The two device rows: a "Ganti" each, named after the
                 // source, showing what the state says, between the sources
                 // row and the folder row.

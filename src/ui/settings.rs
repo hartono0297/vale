@@ -193,6 +193,8 @@ pub enum Action {
     RecFolder(Option<std::path::PathBuf>),
     /// The device of a source: an endpoint id, `None` to follow Windows.
     RecDevice(Source, Option<String>),
+    /// The mic echo cancellation switch.
+    RecEchoCancel(bool),
     /// Settings → Tombol pintas: a row's new combo (`None`: off), every row
     /// back to its default, and the recorder starting (`true`: the island
     /// lets go of its hotkeys) or ending (`false`: it takes them again). A
@@ -2375,6 +2377,7 @@ impl Settings {
             Hit::DeviceNotices => post(Action::DeviceNotices(!m.device_notices)),
             Hit::RecSources(v) if v != m.recording.sources => post(Action::RecSources(v)),
             Hit::RecSources(_) => Vec::new(),
+            Hit::RecEchoCancel => post(Action::RecEchoCancel(!m.recording.echo_cancel)),
             Hit::RecFolderOpen => vec![After::OpenFolder(m.recording.dir())],
             Hit::RecFolderChange => vec![After::PickRecFolder],
             Hit::RecDevice(source) => vec![After::PickRecDevice(
@@ -4166,6 +4169,7 @@ pub fn run_demo(args: &[String]) {
             Action::RecSources(v) => m.recording.sources = v,
             Action::RecFolder(v) => m.recording.folder = v,
             Action::RecDevice(source, id) => m.recording.set_device(source, id),
+            Action::RecEchoCancel(v) => m.recording.echo_cancel = v,
             Action::Hotkey(id, value) => {
                 // What the island does: checked again, then set.
                 let fine = value.is_none_or(|hk| {

@@ -95,6 +95,8 @@ pub struct RecOptions {
     /// The endpoint each source starts on, `[mic, system]` (`None`: follow
     /// the Windows default).
     pub devices: [Option<String>; 2],
+    /// Ask Windows to cancel the echo of the speakers on the mic stream.
+    pub echo_cancel: bool,
 }
 
 /// A finished recording.
@@ -644,8 +646,9 @@ impl Recorder {
         events: Box<dyn Fn(RecEvent) + Send>,
     ) -> Result<Recorder, RecError> {
         let choices = Arc::new(Mutex::new(opts.devices.clone()));
+        let echo_cancel = opts.echo_cancel;
         Self::start_with(opts, events, |sources, sink| {
-            Capture::start(sources, choices, sink).map(|c| Box::new(c) as Box<dyn Feed>)
+            Capture::start(sources, choices, echo_cancel, sink).map(|c| Box::new(c) as Box<dyn Feed>)
         })
     }
 
@@ -1148,17 +1151,19 @@ fn write_sidecar(path: &Path, sidecar: &Sidecar) -> std::io::Result<()> {
 
 // ---- debug CLI ---------------------------------------------------------------
 
-/// `--record-test <seconds> [mic|system|both]` (debug builds): records into
+/// `--record-test <seconds> [mic|system|both] [--no-aec]` (debug builds): records into
 /// `DI_REC_DIR` or `target/rec-test/` and prints the path, the duration, the
 /// container, the highest mic and system levels seen and any lost source.
 /// Returns the process exit code.
 #[cfg(debug_assertions)]
 pub fn record_test(args: &[String]) -> i32 {
+    let echo_cancel = !args.iter().any(|a| a == "--no-aec");
+    let args: Vec<String> = args.iter().filter(|a| *a != "--no-aec").cloned().collect();
     let secs: f64 = match args.first().map(|s| s.parse::<f64>()) {
         None => 5.0,
         Some(Ok(s)) if s > 0.0 && s.is_finite() => s,
         Some(_) => {
-            eprintln!("usage: vale --record-test <seconds> [mic|system|both]");
+            eprintln!("usage: vale --record-test <seconds> [mic|system|both] [--no-aec]");
             return 2;
         }
     };
@@ -1194,6 +1199,7 @@ pub fn record_test(args: &[String]) -> i32 {
         title: "record-test".into(),
         app: None,
         devices: [None, None],
+        echo_cancel,
     };
     let rec = match Recorder::start(opts, events) {
         Ok(r) => r,
@@ -1955,6 +1961,7 @@ pub(super) mod tests {
             title: "Zoom".into(),
             app: Some("Zoom.exe".into()),
             devices: [None, None],
+            echo_cancel: true,
         }
     }
 

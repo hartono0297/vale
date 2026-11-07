@@ -631,6 +631,8 @@ keys! {
     RecSettingsChange => "Ganti", "Change";
     RecSettingsPickTitle => "Pilih folder rekaman", "Choose the recordings folder";
     RecDeviceFrom => "Suara PC dari", "PC audio from";
+    RecEchoCancel => "Peredam gema mic", "Mic echo cancellation";
+    RecEchoCancelDesc => "Buang suara speaker yang tertangkap mic", "Removes speaker sound picked up by the mic";
     RecFollowWindows => "Ikuti Windows", "Follow Windows";
     RecDeviceGone => "Perangkat tidak ada", "Device not found";
     RecMicSwitched => "Mic pindah", "Mic switched";

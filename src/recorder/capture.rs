@@ -44,6 +44,7 @@
 //!   100 ms timeout (loopback events fire only while audio renders), and
 //!   checks the devices once a second.
 
+use std::cell::Cell;
 use std::fmt;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -54,9 +55,10 @@ use windows::Win32::Foundation::{
     CloseHandle, E_ACCESSDENIED, E_INVALIDARG, HANDLE, WAIT_EVENT, WAIT_OBJECT_0,
 };
 use windows::Win32::Media::Audio::{
-    AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR, AUDCLNT_E_DEVICE_INVALIDATED,
+    AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_STREAMOPTIONS_NONE, AudioCategory_Communications,
+    AudioClientProperties, AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR, AUDCLNT_E_DEVICE_INVALIDATED,
     AUDCLNT_E_UNSUPPORTED_FORMAT, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-    AUDCLNT_STREAMFLAGS_LOOPBACK, EDataFlow, IAudioCaptureClient, IAudioClient,
+    AUDCLNT_STREAMFLAGS_LOOPBACK, EDataFlow, IAcousticEchoCancellationControl, IAudioCaptureClient, IAudioClient, IAudioClient2,
     IMMDeviceEnumerator, MMDeviceEnumerator, eCapture, eConsole, eRender,
 };
 use windows::Win32::System::Com::{
@@ -64,7 +66,7 @@ use windows::Win32::System::Com::{
     CoUninitialize,
 };
 use windows::Win32::System::Threading::{CreateEventW, SetEvent, WaitForMultipleObjects};
-use windows::core::{HRESULT, HSTRING};
+use windows::core::{HRESULT, HSTRING, Interface, PCWSTR};
 
 use super::devices;
 use crate::eq_audio::{SampleFormat, mix_to_mono, read_format};
@@ -272,10 +274,12 @@ impl Capture {
     /// when none of them could be opened (with `MicDenied` if the mic was
     /// refused); a source that failed while another works is reported
     /// through `sink.lost` on the capture thread, and a chosen device that
-    /// was missing through `sink.switched`.
+    /// was missing through `sink.switched`. With `echo_cancel` every open of
+    /// the mic asks Windows for echo cancellation (see [`Aec`]).
     pub fn start(
         sources: Sources,
         choices: Choices,
+        echo_cancel: bool,
         sink: Box<dyn AudioSink>,
     ) -> Result<Capture, CaptureError> {
         if !sources.any() {
@@ -285,7 +289,12 @@ impl Capture {
         let wake = Arc::new(Event::new(false).map_err(CaptureError::Com)?);
         let names = Names::default();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
-        let devs = Devices::new(Arc::clone(&choices), Arc::clone(&names), Arc::clone(&wake));
+        let devs = Devices::new(
+            Arc::clone(&choices),
+            Arc::clone(&names),
+            Arc::clone(&wake),
+            echo_cancel,
+        );
         let worker_stop = Arc::clone(&stop);
         let thread = std::thread::Builder::new()
             .name("rec-capture".into())
@@ -400,10 +409,14 @@ struct Devices {
     /// The endpoint each source last streamed from, to tell a switch from a
     /// reopen of the same device.
     last: [Option<String>; 2],
+    /// Mic echo cancellation is wanted for this recording.
+    echo_cancel: bool,
+    /// The echo cancellation outcome was logged (once per recording).
+    echo_logged: Cell<bool>,
 }
 
 impl Devices {
-    fn new(choices: Choices, names: Names, wake: Arc<Event>) -> Devices {
+    fn new(choices: Choices, names: Names, wake: Arc<Event>, echo_cancel: bool) -> Devices {
         let applied = choices.lock().unwrap_or_else(|e| e.into_inner()).clone();
         Devices {
             choices,
@@ -412,6 +425,20 @@ impl Devices {
             applied,
             fallen: [false; 2],
             last: [None, None],
+            echo_cancel,
+            echo_logged: Cell::new(false),
+        }
+    }
+
+    /// How to open `source` now: the echo cancellation settings for the mic,
+    /// pointed at the render endpoint the PC audio records (the open stream's,
+    /// else the choice).
+    fn aec(&self, source: Source) -> Aec<'_> {
+        let system = Source::System.index();
+        Aec {
+            on: self.echo_cancel && source == Source::Mic,
+            render: self.last[system].clone().or_else(|| self.wanted(Source::System)),
+            logged: &self.echo_logged,
         }
     }
 
@@ -501,7 +528,7 @@ fn open_and_serve(
     let mut failed = Vec::new();
     let mut fell_back = Vec::new();
     for source in sources.list() {
-        match open_wanted(&enumerator, source, devs.wanted(source).as_deref()) {
+        match open_wanted(&enumerator, source, devs.wanted(source).as_deref(), &devs.aec(source)) {
             Ok((s, fell)) => {
                 if devs.opened(&s, fell, true).is_some() {
                     fell_back.push((source, s.name.clone()));
@@ -587,12 +614,13 @@ fn open_pick(
     source: Source,
     pick: Pick,
     wanted: Option<&str>,
+    aec: &Aec,
 ) -> Result<(Stream, bool), CaptureError> {
-    match Stream::open(enumerator, source, &pick.id) {
+    match Stream::open(enumerator, source, &pick.id, aec) {
         Ok(s) => Ok((s, pick.fell_back)),
         Err(e) if wanted.is_some() && !pick.fell_back && !matches!(e, CaptureError::MicDenied) => {
             let default = default_id(enumerator, source).ok_or(e)?;
-            Stream::open(enumerator, source, &default).map(|s| (s, true))
+            Stream::open(enumerator, source, &default, aec).map(|s| (s, true))
         }
         Err(e) => Err(e),
     }
@@ -603,9 +631,10 @@ fn open_wanted(
     enumerator: &IMMDeviceEnumerator,
     source: Source,
     wanted: Option<&str>,
+    aec: &Aec,
 ) -> Result<(Stream, bool), CaptureError> {
     let pick = plan(enumerator, source, wanted).ok_or(CaptureError::NoDevice(source))?;
-    open_pick(enumerator, source, pick, wanted)
+    open_pick(enumerator, source, pick, wanted, aec)
 }
 
 /// The wait loop: drains every live stream on each wake, follows the devices
@@ -657,7 +686,7 @@ fn serve(
                     if let Some(pick) = plan(enumerator, source, wanted.as_deref()) {
                         if pick.id != stream.id {
                             if let Ok((new, fell)) =
-                                open_pick(enumerator, source, pick, wanted.as_deref())
+                                open_pick(enumerator, source, pick, wanted.as_deref(), &devs.aec(source))
                             {
                                 let report = devs.opened(&new, fell, changed[i]);
                                 let name = new.name.clone();
@@ -678,7 +707,7 @@ fn serve(
                 Slot::Retry { until, next, .. } if changed[i] || now >= *next => {
                     let until = *until;
                     let wanted = devs.wanted(source);
-                    match open_wanted(enumerator, source, wanted.as_deref()) {
+                    match open_wanted(enumerator, source, wanted.as_deref(), &devs.aec(source)) {
                         Ok((new, fell)) => {
                             let report = devs.opened(&new, fell, changed[i]);
                             let name = new.name.clone();
@@ -757,6 +786,94 @@ fn default_id(enumerator: &IMMDeviceEnumerator, source: Source) -> Option<String
     }
 }
 
+/// What the mic stream asks of Windows for echo cancellation: whether it is
+/// wanted for this source, the render endpoint to cancel (`None`: the default
+/// one) and where the outcome is logged, once per recording.
+struct Aec<'a> {
+    on: bool,
+    render: Option<String>,
+    logged: &'a Cell<bool>,
+}
+
+impl Aec<'_> {
+    /// Logs `echo` the first time only.
+    fn log_once(&self, echo: &Echo) {
+        if !self.logged.replace(true) {
+            eprintln!("vale: mic echo cancellation: {echo}");
+        }
+    }
+}
+
+/// How each best effort call went on one mic stream.
+#[derive(Default)]
+struct Echo {
+    category: Step,
+    endpoint: Step,
+}
+
+/// The outcome of one echo cancellation call.
+#[derive(Default)]
+enum Step {
+    #[default]
+    Skipped,
+    Done,
+    Failed(HRESULT),
+}
+
+impl Step {
+    fn of(r: windows::core::Result<()>) -> Step {
+        match r {
+            Ok(()) => Step::Done,
+            Err(e) => Step::Failed(e.code()),
+        }
+    }
+}
+
+impl fmt::Display for Echo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let one = |s: &Step| match s {
+            Step::Skipped => "skipped".to_owned(),
+            Step::Done => "ok".to_owned(),
+            Step::Failed(code) => format!("failed ({:#010x})", code.0),
+        };
+        write!(
+            f,
+            "communications category {}, render endpoint {}",
+            one(&self.category),
+            one(&self.endpoint)
+        )
+    }
+}
+
+/// Puts the stream in the communications category, which makes Windows (or
+/// the driver) run its echo cancellation. Before `Initialize`.
+fn set_communications(client: &IAudioClient) -> Step {
+    Step::of((|| unsafe {
+        let props = AudioClientProperties {
+            cbSize: std::mem::size_of::<AudioClientProperties>() as u32,
+            bIsOffload: false.into(),
+            eCategory: AudioCategory_Communications,
+            Options: AUDCLNT_STREAMOPTIONS_NONE,
+        };
+        client.cast::<IAudioClient2>()?.SetClientProperties(&props)
+    })())
+}
+
+/// Points the echo canceller at the render endpoint `render` (the PC audio
+/// being recorded; `None`: the default one). Only Windows 11 22H2 and later
+/// has the interface; on older builds it is skipped.
+fn point_echo_at(client: &IAudioClient, render: Option<&str>) -> Step {
+    unsafe {
+        let Ok(control) = client.GetService::<IAcousticEchoCancellationControl>() else {
+            return Step::Skipped;
+        };
+        Step::of(match render {
+            Some(id) => control.SetEchoCancellationRenderEndpoint(&HSTRING::from(id)),
+            None => control.SetEchoCancellationRenderEndpoint(PCWSTR::null()),
+        })
+    }
+}
+
 /// One open shared-mode stream, event driven.
 struct Stream {
     source: Source,
@@ -781,12 +898,17 @@ impl Stream {
         enumerator: &IMMDeviceEnumerator,
         source: Source,
         id: &str,
+        aec: &Aec,
     ) -> Result<Stream, CaptureError> {
         let err = |e| classify(source, e);
         unsafe {
             let device = enumerator.GetDevice(&HSTRING::from(id)).map_err(err)?;
             let name = devices::friendly_name(&device).unwrap_or_else(|| id.to_owned());
             let client: IAudioClient = device.Activate(CLSCTX_ALL, None).map_err(err)?;
+            let mut echo = aec.on.then(Echo::default);
+            if let Some(echo) = echo.as_mut() {
+                echo.category = set_communications(&client);
+            }
             let wfx = client.GetMixFormat().map_err(err)?;
             let parsed = read_format(wfx);
             let mut flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
@@ -802,6 +924,10 @@ impl Stream {
                 return Err(CaptureError::Com(AUDCLNT_E_UNSUPPORTED_FORMAT.into()));
             };
             init.expect("parsed is Some").map_err(err)?;
+            if let Some(echo) = echo.as_mut() {
+                echo.endpoint = point_echo_at(&client, aec.render.as_deref());
+                aec.log_once(echo);
+            }
             let event = Event::new(false).map_err(CaptureError::Com)?;
             client.SetEventHandle(event.0).map_err(err)?;
             let capture: IAudioCaptureClient = client.GetService().map_err(err)?;
@@ -927,10 +1053,28 @@ mod tests {
     }
 
     #[test]
+    fn only_the_mic_gets_echo_cancellation_and_it_follows_the_pc_audio_endpoint() {
+        let choices = follow();
+        let wake = Arc::new(Event::new(false).expect("event"));
+        let mut devs = Devices::new(Arc::clone(&choices), Names::default(), wake, true);
+        assert!(devs.aec(Source::Mic).on);
+        assert!(!devs.aec(Source::System).on, "the loopback stream is never changed");
+        // No PC audio stream and no choice: the default render endpoint (None).
+        assert_eq!(devs.aec(Source::Mic).render, None);
+        // A choice is the endpoint; the open stream's id wins over it.
+        devs.applied[1] = Some("chosen".into());
+        assert_eq!(devs.aec(Source::Mic).render.as_deref(), Some("chosen"));
+        devs.last[1] = Some("open".into());
+        assert_eq!(devs.aec(Source::Mic).render.as_deref(), Some("open"));
+        devs.echo_cancel = false;
+        assert!(!devs.aec(Source::Mic).on);
+    }
+
+    #[test]
     fn a_choice_is_set_from_another_thread_and_read_by_the_capture_thread() {
         let choices = follow();
         let wake = Arc::new(Event::new(false).expect("event"));
-        let mut devs = Devices::new(Arc::clone(&choices), Names::default(), wake);
+        let mut devs = Devices::new(Arc::clone(&choices), Names::default(), wake, true);
         assert_eq!(devs.refresh(), [false, false]);
         choices.lock().unwrap()[1] = Some("x".into());
         assert_eq!(devs.refresh(), [false, true]);
@@ -1084,7 +1228,7 @@ mod tests {
             mic: false,
             system: true,
         };
-        if let Ok(c) = Capture::start(system, follow(), Box::new(Probe(Arc::clone(&seen)))) {
+        if let Ok(c) = Capture::start(system, follow(), true, Box::new(Probe(Arc::clone(&seen)))) {
             c.stop();
         }
         assert_eq!(seen.load(Ordering::SeqCst), 1, "1: COM was up, 2: it was not");
@@ -1117,7 +1261,7 @@ mod tests {
         };
         let choices = follow();
         choices.lock().unwrap()[1] = Some("{0.0.0.00000000}.{no-such-device}".into());
-        let Ok(c) = Capture::start(system, Arc::clone(&choices), Box::new(Reports(tx))) else {
+        let Ok(c) = Capture::start(system, Arc::clone(&choices), true, Box::new(Reports(tx))) else {
             return;
         };
         // At the start: the default stands in, and the choice is left alone.
@@ -1159,7 +1303,7 @@ mod tests {
             mic: false,
             system: true,
         };
-        let Ok(c) = Capture::start(system, follow(), Box::new(Reports(tx))) else {
+        let Ok(c) = Capture::start(system, follow(), true, Box::new(Reports(tx))) else {
             return;
         };
         assert_eq!(c.device_names()[1], default.name);
@@ -1203,6 +1347,6 @@ mod tests {
             mic: false,
             system: false,
         };
-        assert!(Capture::start(none, follow(), Box::new(Nothing)).is_err());
+        assert!(Capture::start(none, follow(), true, Box::new(Nothing)).is_err());
     }
 }
