@@ -1,0 +1,561 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rekaman dan transkrip</title>
+<style>
+  @font-face { font-family: 'DM Sans'; font-weight: 400; src: url('../../assets/fonts/DMSans-400.ttf'); }
+  @font-face { font-family: 'DM Sans'; font-weight: 500; src: url('../../assets/fonts/DMSans-500.ttf'); }
+  @font-face { font-family: 'DM Sans'; font-weight: 600; src: url('../../assets/fonts/DMSans-600.ttf'); }
+  @font-face { font-family: 'DM Mono'; font-weight: 400; src: url('../../assets/fonts/DMMono-400.ttf'); }
+  :root {
+    --paper: #F1ECE4; --ink: #221A14; --ink2: #6F6152; --rule: #DDD3C6; --card: #FBF7F1;
+    --s: #17120F; --r: #241D18; --t: #332A23; --tx: #F4EDE4; --tx2: #A89A8B;
+    --a: #E2683C; --sage: #9DB59A; --ochre: #D9A441; --plum: #B07A9A; --rec: #E5484D;
+    --body: 'DM Sans', 'Segoe UI', sans-serif; --mono: 'DM Mono', Consolas, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--paper); color: var(--ink); font-family: var(--body); }
+  main { max-width: 1120px; margin: 0 auto; padding: 36px 16px 64px; }
+  .eyebrow { font-size: 11px; letter-spacing: .14em; text-transform: uppercase; font-weight: 600; color: var(--ink2); }
+  h1 { font-weight: 600; font-size: 30px; letter-spacing: -.025em; margin: 4px 0 8px; }
+  h2 { font-weight: 600; font-size: 19px; letter-spacing: -.02em; margin: 40px 0 4px; }
+  h3 { font-weight: 600; font-size: 14px; letter-spacing: -.01em; margin-bottom: 4px; }
+  p, li { font-size: 13.5px; line-height: 1.55; color: #3E3229; }
+  .lede { max-width: 720px; }
+  .sub { font-size: 12.5px; color: var(--ink2); margin-bottom: 14px; max-width: 760px; }
+  code { font-family: var(--mono); font-size: 12px; background: #E8E0D4; padding: 0 4px; border-radius: 4px; }
+  b { font-weight: 600; color: var(--ink); }
+  .grid { display: grid; gap: 16px; }
+  .g2 { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+  .g3 { grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); }
+  .card { background: var(--card); border: 1px solid var(--rule); border-radius: 16px; padding: 14px 16px; }
+  .card.pick { border: 2px solid var(--a); padding: 13px 15px; }
+  .cap { font-size: 12px; color: var(--ink2); margin-top: 10px; line-height: 1.45; }
+  .tag { display: inline-block; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; font-weight: 600; padding: 2px 8px; border-radius: 99px; background: #E6DCCF; color: #4A3D33; white-space: nowrap; }
+  .tag.a { background: rgba(226,104,60,.18); color: #9A3B19; } .tag.g { background: rgba(157,181,154,.32); color: #3B5538; } .tag.r { background: rgba(229,72,77,.15); color: #93262A; }
+  ul.b { margin-top: 6px; } ul.b li { list-style: none; position: relative; padding-left: 14px; margin-bottom: 3px; font-size: 12.8px; }
+  ul.b li::before { content: ""; position: absolute; left: 0; top: 8px; width: 5px; height: 5px; border-radius: 50%; background: var(--a); }
+  ul.b.minus li::before { background: #B5A898; }
+  table { border-collapse: collapse; width: 100%; }
+  .tw { overflow-x: auto; }
+  th { text-align: left; font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink2); font-weight: 600; padding: 7px 9px; border-bottom: 1.5px solid var(--rule); }
+  .cmp td:nth-child(n+2):nth-child(-n+6) { white-space: nowrap; }
+  td { font-size: 13px; line-height: 1.45; padding: 7px 9px; border-bottom: 1px solid var(--rule); vertical-align: top; color: #3E3229; }
+  .note { font-size: 12.8px; background: rgba(157,181,154,.22); border-radius: 10px; padding: 9px 12px; color: #34502F; line-height: 1.5; margin-top: 12px; }
+  .warn { font-size: 12.8px; background: rgba(217,164,65,.2); border-radius: 10px; padding: 9px 12px; color: #5E440C; line-height: 1.5; margin-top: 12px; }
+
+  /* desk stage */
+  .st { position: relative; border-radius: 12px; overflow: hidden; background: radial-gradient(120% 90% at 30% 20%, #5E5148 0%, #3A3029 55%, #261F1A 100%); padding: 0 0 18px; min-height: 120px; }
+  .st .top { display: flex; justify-content: center; }
+
+  /* notch */
+  .notch { background: var(--s); color: var(--tx); border-radius: 0 0 18px 18px; display: flex; align-items: center; gap: 9px; padding: 0 14px; height: 38px; font-size: 12.5px; box-shadow: 0 6px 16px rgba(0,0,0,.35); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--rec); box-shadow: 0 0 0 3px rgba(229,72,77,.25); flex: none; }
+  .dot.paused { background: var(--ochre); box-shadow: 0 0 0 3px rgba(217,164,65,.25); }
+  .time { font-family: var(--mono); font-size: 12.5px; letter-spacing: .02em; }
+  .lv { display: flex; align-items: center; gap: 2px; height: 16px; }
+  .lv i { display: block; width: 3px; border-radius: 2px; background: var(--tx2); }
+  .lv.mic i { background: #EBCFB8; } .lv.sys i { background: #9DB59A; }
+  .lbl { font-size: 9.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--tx2); }
+  .cat { width: 26px; height: 22px; flex: none; }
+
+  /* panel */
+  .panel { background: var(--s); color: var(--tx); border-radius: 0 0 26px 26px; width: min(520px, 100%); padding: 16px 18px 18px; box-shadow: 0 10px 26px rgba(0,0,0,.4); }
+  .panel .hd { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .panel .hd .t { font-weight: 600; font-size: 14px; }
+  .panel .hd .dots { margin-left: auto; display: flex; gap: 4px; } .panel .hd .dots i { width: 5px; height: 5px; border-radius: 50%; background: #4A3F36; display: block; } .panel .hd .dots i.on { background: var(--tx); }
+  .row { display: flex; gap: 12px; align-items: stretch; }
+  .big { width: 112px; flex: none; border-radius: 18px; background: var(--r); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 12px 0; }
+  .big .btn { width: 52px; height: 52px; border-radius: 50%; border: 3px solid #5A4C41; display: flex; align-items: center; justify-content: center; }
+  .big .btn i { width: 22px; height: 22px; border-radius: 50%; background: var(--rec); display: block; }
+  .big span { font-size: 11.5px; color: var(--tx2); }
+  .opts { flex: 1; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .seg { display: flex; background: var(--r); border-radius: 11px; padding: 3px; gap: 3px; }
+  .seg span { flex: 1; text-align: center; font-size: 11.5px; padding: 6px 4px; border-radius: 8px; color: var(--tx2); white-space: nowrap; }
+  .seg span.on { background: var(--t); color: var(--tx); }
+  .chk { display: flex; align-items: center; gap: 8px; font-size: 11.8px; color: var(--tx); background: var(--r); border-radius: 11px; padding: 7px 10px; }
+  .chk .sw { margin-left: auto; width: 28px; height: 16px; border-radius: 99px; background: var(--a); position: relative; flex: none; }
+  .chk .sw::after { content: ""; position: absolute; right: 2px; top: 2px; width: 12px; height: 12px; border-radius: 50%; background: #fff; }
+  .chk .sw.off { background: #4A3F36; } .chk .sw.off::after { right: auto; left: 2px; }
+  .chk small { color: var(--tx2); font-size: 10.5px; }
+  .list { margin-top: 12px; border-top: 1px solid #2E2620; padding-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+  .item { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+  .item .ic { width: 28px; height: 28px; border-radius: 8px; background: var(--r); display: flex; align-items: center; justify-content: center; flex: none; }
+  .item .ic svg { width: 14px; height: 14px; stroke: var(--tx2); fill: none; stroke-width: 1.8; stroke-linecap: round; }
+  .item .m { flex: 1; min-width: 0; } .item .m div:first-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .item .m div:last-child { color: var(--tx2); font-size: 10.8px; }
+  .pill { font-size: 10.5px; padding: 3px 8px; border-radius: 99px; background: var(--t); color: var(--tx); white-space: nowrap; }
+  .pill.busy { background: rgba(217,164,65,.22); color: #F0CB82; }
+
+  /* caption card */
+  .cc { width: min(470px, 100%); border-radius: 18px; background: linear-gradient(160deg, #2C241E, #1A1512); color: var(--tx); padding: 12px 16px 14px; box-shadow: 0 14px 30px rgba(0,0,0,.45); border: 1px solid #3A2F27; }
+  .cc .hd { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--tx2); margin-bottom: 8px; }
+  .cc .hd .x { margin-left: auto; display: flex; gap: 10px; }
+  .ln { display: grid; grid-template-columns: 58px 1fr; gap: 8px; font-size: 13.5px; line-height: 1.45; margin-bottom: 6px; }
+  .ln .who { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; font-weight: 600; padding-top: 3px; }
+  .ln .who.me { color: #F0B79C; } .ln .who.them { color: #B5CDB2; }
+  .ln.old { opacity: .5; }
+  .ln .live { color: var(--tx2); }
+  .ln .live::after { content: ""; display: inline-block; width: 7px; height: 13px; margin-left: 2px; vertical-align: -2px; background: var(--tx2); border-radius: 1px; }
+
+  /* transcript window */
+  .win { background: #FDFAF5; border-radius: 12px; border: 1px solid var(--rule); box-shadow: 0 10px 26px rgba(0,0,0,.25); overflow: hidden; }
+  .win .tb { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--rule); flex-wrap: wrap; }
+  .win .tb .t { font-weight: 600; font-size: 13.5px; }
+  .win .tb .meta { font-size: 11.5px; color: var(--ink2); }
+  .win .tb .acts { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; }
+  .bt { font-size: 11.5px; padding: 5px 10px; border-radius: 8px; background: #EFE8DE; color: var(--ink); white-space: nowrap; }
+  .bt.p { background: var(--a); color: #fff; }
+  .player { display: flex; align-items: center; gap: 10px; padding: 9px 14px; border-bottom: 1px solid var(--rule); font-size: 11.5px; color: var(--ink2); }
+  .player .bar { flex: 1; height: 4px; border-radius: 99px; background: #E6DCCF; position: relative; } .player .bar i { position: absolute; left: 0; top: 0; bottom: 0; width: 34%; border-radius: 99px; background: var(--a); }
+  .tx { padding: 10px 14px 14px; max-height: 280px; overflow: hidden; }
+  .tl { display: grid; grid-template-columns: 52px 68px 1fr; gap: 8px; font-size: 13px; line-height: 1.5; padding: 5px 0; border-bottom: 1px dashed #EAE2D7; }
+  .tl .ts { font-family: var(--mono); font-size: 11.5px; color: var(--ink2); padding-top: 2px; }
+  .tl .who { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; font-weight: 600; padding-top: 3px; }
+  .tl .who.me { color: #A8431F; } .tl .who.them { color: #3F5A3C; }
+  .tl.hl { background: rgba(226,104,60,.08); border-radius: 6px; }
+
+  /* notice */
+  .notice { background: var(--s); color: var(--tx); border-radius: 0 0 22px 22px; padding: 10px 16px 12px; display: flex; gap: 12px; align-items: center; width: min(400px, 100%); box-shadow: 0 8px 20px rgba(0,0,0,.4); }
+  .notice .ic { width: 34px; height: 34px; border-radius: 10px; background: rgba(157,181,154,.2); display: flex; align-items: center; justify-content: center; flex: none; }
+  .notice .ic svg { width: 17px; height: 17px; stroke: #B5CDB2; fill: none; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+  .notice .ey { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--tx2); }
+  .notice .tt { font-size: 13px; }
+  .prog { height: 3px; border-radius: 99px; background: #3A2F27; margin-top: 6px; position: relative; } .prog i { position: absolute; left: 0; top: 0; bottom: 0; width: 62%; background: var(--ochre); border-radius: 99px; }
+
+  .mrow { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 11px; border: 1px solid var(--rule); margin-bottom: 6px; background: #fff; }
+  .mrow.on { border-color: var(--a); background: rgba(226,104,60,.05); }
+  .rad { width: 15px; height: 15px; border-radius: 50%; border: 2px solid #B5A898; flex: none; }
+  .rad.on { border-color: var(--a); box-shadow: inset 0 0 0 3px #fff; background: var(--a); }
+  .mm { flex: 1; min-width: 0; font-size: 12.5px; } .mm div:nth-child(2) { font-size: 11px; color: var(--ink2); }
+  .ms { font-size: 11.5px; color: var(--ink2); white-space: nowrap; font-family: var(--mono); }
+  .dl { height: 3px; border-radius: 99px; background: #E6DCCF; margin-top: 5px; position: relative; } .dl i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--a); border-radius: 99px; }
+  .desk { position: absolute; inset: 0; overflow: hidden; }
+  .dwin { position: absolute; background: #F4EFE8; border-radius: 8px; box-shadow: 0 6px 18px rgba(0,0,0,.35); overflow: hidden; }
+  .dwin .dtb { height: 14px; background: #E2D9CC; }
+  .dim { position: absolute; inset: 0; background: rgba(10,8,6,.45); }
+  .sel { position: absolute; border: 2px solid var(--a); border-radius: 8px; box-shadow: 0 0 0 9999px rgba(10,8,6,0); background: rgba(255,255,255,.04); }
+  .sel { backdrop-filter: brightness(1.8); }
+  .selsz { position: absolute; left: 6px; top: -22px; font-family: var(--mono); font-size: 10.5px; color: #fff; background: var(--a); padding: 1px 6px; border-radius: 5px; }
+  .rbar { position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); display: flex; align-items: center; gap: 6px; background: var(--s); color: var(--tx); border-radius: 12px; padding: 5px 6px; box-shadow: 0 8px 18px rgba(0,0,0,.45); white-space: nowrap; }
+  .seg2 { display: flex; background: var(--r); border-radius: 8px; padding: 2px; gap: 2px; } .seg2 span { font-size: 11px; padding: 4px 8px; border-radius: 6px; color: var(--tx2); } .seg2 span.on { background: var(--t); color: var(--tx); }
+  .rbar .sep { width: 1px; height: 18px; background: #3A2F27; }
+  .rbar .ico { font-size: 12px; width: 26px; height: 24px; display: flex; align-items: center; justify-content: center; border-radius: 6px; opacity: .45; } .rbar .ico.on { opacity: 1; background: var(--r); }
+  .rbar .go { display: flex; align-items: center; gap: 6px; font-size: 11.5px; background: var(--rec); color: #fff; padding: 5px 10px; border-radius: 8px; } .rbar .go i { width: 8px; height: 8px; border-radius: 50%; background: #fff; display: block; }
+  .lines { padding: 14px 16px; display: flex; flex-direction: column; gap: 9px; } .lines i { display: block; height: 7px; border-radius: 4px; background: #D9CFC2; }
+  .lines.vbig { position: absolute; left: 0; right: 0; top: 0; padding: 34px 30px; gap: 20px; } .lines.vbig i { height: 16px; border-radius: 8px; }
+  .zf { position: absolute; border: 2px dashed rgba(226,104,60,.9); border-radius: 8px; } .zf span { position: absolute; right: 4px; top: 4px; font-size: 10px; background: var(--a); color: #fff; padding: 1px 6px; border-radius: 5px; }
+  .cur { position: absolute; width: 0; height: 0; border-left: 7px solid transparent; border-right: 7px solid transparent; border-bottom: 16px solid #17120F; transform-origin: top center; margin-left: -7px; rotate: -28deg; }
+  .ripple { position: absolute; width: 28px; height: 28px; margin: -12px 0 0 -14px; border-radius: 50%; border: 2px solid rgba(226,104,60,.8); background: rgba(226,104,60,.15); }
+  .vlabel { position: absolute; left: 10px; bottom: 8px; font-size: 10.5px; color: #6F6152; font-family: var(--mono); }
+  .thumb { width: 52px; height: 34px; border-radius: 6px; background: linear-gradient(135deg, #F4EFE8 0 60%, #D9CFC2 60%); flex: none; border: 1px solid #3A2F27; }
+  .phase { display: grid; grid-template-columns: 36px 1fr; gap: 10px; align-items: start; }
+  .phase .n { width: 30px; height: 30px; border-radius: 50%; background: var(--ink); color: var(--paper); font-weight: 600; display: flex; align-items: center; justify-content: center; font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="eyebrow">Vale · brainstorm · 7 Nov 2026</div>
+  <h1>Rekaman dan transkrip meeting</h1>
+  <p class="lede">Rekam suara meeting (mic kamu + suara orang lain dari Zoom, Meet atau Teams), terus jadiin teks. Semua jalan di PC, gak ada yang dikirim ke internet. Halaman ini isinya mockup UI dulu, abis itu pilihan engine dan pertanyaan yang perlu kamu putusin.</p>
+
+  <!-- ============ MOCKUPS ============ -->
+  <h2>1 · Notch saat merekam</h2>
+  <p class="sub">Titik merah selalu kelihatan selama rekaman jalan. Dua bar kecil: <b>mic</b> (krem) dan <b>suara PC</b> (hijau), jadi kamu tahu dua-duanya masuk. Kucingnya pakai headphone.</p>
+  <div class="grid g3">
+    <div>
+      <div class="st"><div class="top"><div class="notch">
+        <span class="dot"></span><span class="time">12:48</span>
+        <span class="lv mic"><i style="height:6px"></i><i style="height:12px"></i><i style="height:9px"></i><i style="height:14px"></i></span>
+        <span class="lv sys"><i style="height:10px"></i><i style="height:15px"></i><i style="height:7px"></i><i style="height:11px"></i></span>
+        <svg class="cat" viewBox="0 0 26 22"><path d="M5 9 L6 2 L10 6 L16 6 L20 2 L21 9 Q22 18 13 19 Q4 18 5 9Z" fill="#E2683C"/><circle cx="10" cy="11" r="1.4" fill="#17120F"/><circle cx="16" cy="11" r="1.4" fill="#17120F"/><path d="M3 12 Q3 3 13 3 Q23 3 23 12" stroke="#F4EDE4" stroke-width="1.6" fill="none"/><rect x="1.5" y="10" width="3.4" height="6" rx="1.5" fill="#F4EDE4"/><rect x="21.1" y="10" width="3.4" height="6" rx="1.5" fill="#F4EDE4"/></svg>
+      </div></div></div>
+      <p class="cap"><b>Ringkas, sedang merekam.</b> Ganti tampilan musik/idle selama rekaman. Klik buka panel Rekam, hover nampilin tombol jeda dan stop.</p>
+    </div>
+    <div>
+      <div class="st"><div class="top"><div class="notch">
+        <span class="dot paused"></span><span class="time" style="color:#F0CB82">12:48</span><span class="lbl">dijeda</span>
+        <svg class="cat" viewBox="0 0 26 22"><path d="M5 9 L6 2 L10 6 L16 6 L20 2 L21 9 Q22 18 13 19 Q4 18 5 9Z" fill="#E2683C"/><path d="M8.6 11 h2.8 M14.6 11 h2.8" stroke="#17120F" stroke-width="1.4" stroke-linecap="round"/><path d="M3 12 Q3 3 13 3 Q23 3 23 12" stroke="#F4EDE4" stroke-width="1.6" fill="none"/><rect x="1.5" y="10" width="3.4" height="6" rx="1.5" fill="#F4EDE4"/><rect x="21.1" y="10" width="3.4" height="6" rx="1.5" fill="#F4EDE4"/></svg>
+      </div></div></div>
+      <p class="cap"><b>Dijeda.</b> Titik jadi kuning, waktu berhenti, kucing merem. Audio yang masuk selama jeda dibuang, gak disimpan.</p>
+    </div>
+    <div>
+      <div class="st"><div class="top"><div class="notch">
+        <span class="dot"></span><span class="time">12:48</span>
+        <span style="width:1px;height:16px;background:#3A2F27"></span>
+        <span style="font-size:11.5px;color:#C9BBAC;max-width:150px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">…jadi deadline-nya Jumat ya</span>
+      </div></div></div>
+      <p class="cap"><b>Opsi: caption satu baris di notch</b> (fase 3). Cuma kalimat terakhir. Buat yang mau lebih panjang, ada kartu caption di bawah.</p>
+    </div>
+  </div>
+
+  <h2>2 · Halaman panel "Rekam"</h2>
+  <p class="sub">Halaman baru di panel (atau tile Pintasan). Pilih sumber, mulai, lihat rekaman terakhir.</p>
+  <div class="grid g2">
+    <div class="st" style="padding-bottom:24px"><div class="top"><div class="panel">
+      <div class="hd"><span class="t">Rekam</span><span class="dots"><i></i><i></i><i class="on"></i><i></i><i></i></span></div>
+      <div class="row">
+        <div class="big"><div class="btn"><i></i></div><span>Mulai</span></div>
+        <div class="opts">
+          <div class="seg"><span>Mic</span><span>Suara PC</span><span class="on">Dua-duanya</span></div>
+          <div class="chk">Transkrip otomatis <small>· setelah selesai</small><span class="sw"></span></div>
+          <div class="chk">Caption langsung<span class="sw off"></span></div>
+        </div>
+      </div>
+      <div class="list">
+        <div class="item"><div class="ic"><svg viewBox="0 0 16 16"><path d="M3 6v4M6 4v8M9 2v12M12 5v6"/></svg></div><div class="m"><div>Sync mingguan · Teams</div><div>Hari ini 10:02 · 42 mnt</div></div><span class="pill busy">Transkrip 62 %</span></div>
+        <div class="item"><div class="ic"><svg viewBox="0 0 16 16"><path d="M3 6v4M6 4v8M9 2v12M12 5v6"/></svg></div><div class="m"><div>Review desain klien · Zoom</div><div>Kemarin 14:30 · 1 j 05 mnt</div></div><span class="pill">Buka</span></div>
+        <div class="item"><div class="ic"><svg viewBox="0 0 16 16"><path d="M3 6v4M6 4v8M9 2v12M12 5v6"/></svg></div><div class="m"><div>Rekaman 5 Nov 09:15</div><div>5 Nov · 18 mnt · cuma audio</div></div><span class="pill">Transkrip</span></div>
+      </div>
+    </div></div></div>
+    <div class="card">
+      <h3>Cara mulai dan berhenti</h3>
+      <ul class="b">
+        <li><b>Panel:</b> tombol merah di halaman Rekam.</li>
+        <li><b>Hotkey:</b> baris baru di Tombol pintas, misalnya <code>Ctrl+Alt+R</code> mulai/stop. Jeda bisa hotkey kedua (opsional).</li>
+        <li><b>Tray:</b> item "Mulai rekam" / "Hentikan rekam". Ikon tray dapat titik merah selama rekaman, jadi tetap kelihatan walau notch sembunyi (fullscreen, presentasi).</li>
+        <li><b>Saran dari notch (fase 4):</b> pas Zoom/Teams/browser mulai pakai mic, notch nawarin "Zoom lagi pakai mic. Rekam?". Gak pernah mulai sendiri.</li>
+      </ul>
+      <h3 style="margin-top:12px">Nama "Saya" dan "Peserta"</h3>
+      <p>Mic dan suara PC direkam di dua jalur terpisah. Jadi tanpa AI tambahan, transkrip sudah bisa bilang mana omongan kamu dan mana omongan orang lain. Bedain antar peserta (Andi vs Budi) itu jauh lebih berat, gw sarankan nggak dulu.</p>
+    </div>
+  </div>
+
+  <h2>3 · Caption langsung (kartu melayang)</h2>
+  <p class="sub">Model-nya sama kayak kartu lirik: jendela sendiri, selalu di atas, bisa digeser dan di-resize, posisinya diingat. Kalimat terakhir masih abu-abu sampai kalimatnya selesai, telat sekitar 2–5 detik.</p>
+  <div class="grid g2">
+    <div class="st" style="padding:22px 16px"><div class="cc">
+      <div class="hd"><span class="dot" style="width:7px;height:7px"></span><span class="time" style="font-size:11px;color:#F4EDE4">12:48</span><span>· Caption langsung · ID + EN</span><span class="x"><span>Salin</span><span>⏸</span><span>✕</span></span></div>
+      <div class="ln old"><span class="who them">Peserta</span><span>Oke, untuk sprint ini kita fokus ke onboarding dulu.</span></div>
+      <div class="ln old"><span class="who me">Saya</span><span>Setuju. Design-nya udah final, tinggal review sama tim dev.</span></div>
+      <div class="ln"><span class="who them">Peserta</span><span>Can we push the release to next week? QA masih nemu dua bug.</span></div>
+      <div class="ln"><span class="who me">Saya</span><span class="live">Boleh, jadi deadline-nya Jumat ya</span></div>
+    </div></div>
+    <div class="card">
+      <h3>Kenapa kartu, bukan cuma notch</h3>
+      <ul class="b">
+        <li>Notch cuma muat satu baris pendek, meeting butuh konteks 3–5 kalimat.</li>
+        <li>Kartu lirik sudah punya semua bagiannya (jendela, drag, resize, fullscreen hide, posisi per monitor). Tinggal isinya beda.</li>
+        <li>Saat fullscreen (share screen, presentasi) kartu sembunyi seperti kartu lirik, rekaman tetap jalan.</li>
+      </ul>
+      <div class="warn"><b>Biaya:</b> caption langsung bikin CPU kerja terus selama meeting (di laptop tanpa GPU kira-kira 1 detik kerja penuh tiap 5 detik suara). Transkrip setelah meeting jauh lebih akurat dan cuma makan CPU sekali di akhir.</div>
+    </div>
+  </div>
+
+  <h2>4 · Setelah meeting</h2>
+  <p class="sub">Stop → notch kasih notice dengan progress → klik buka jendela transkrip.</p>
+  <div class="grid g2">
+    <div>
+      <div class="st"><div class="top"><div class="notice">
+        <div class="ic"><svg viewBox="0 0 18 18"><path d="M4 4h10M4 8h10M4 12h6"/></svg></div>
+        <div style="flex:1;min-width:0"><div class="ey">Transkrip · 42 mnt</div><div class="tt">Lagi diproses… sekitar 6 menit lagi</div><div class="prog"><i></i></div></div>
+      </div></div></div>
+      <p class="cap">Diproses di background dengan prioritas rendah, kamu bisa lanjut kerja. Kalau Vale ditutup di tengah jalan, lanjut lagi pas dibuka.</p>
+      <div class="st" style="margin-top:14px"><div class="top"><div class="notice">
+        <div class="ic"><svg viewBox="0 0 18 18"><path d="M4 9.5l3.2 3L14 5.5"/></svg></div>
+        <div style="flex:1;min-width:0"><div class="ey">Transkrip siap</div><div class="tt">Sync mingguan · klik untuk buka</div></div>
+      </div></div></div>
+    </div>
+    <div class="win">
+      <div class="tb"><span class="t">Sync mingguan · Teams</span><span class="meta">7 Nov 10:02 · 42 mnt</span>
+        <span class="acts"><span class="bt">Salin</span><span class="bt">Simpan .md</span><span class="bt">.srt</span><span class="bt">Jadikan catatan</span><span class="bt p">Salin + prompt ringkasan</span></span></div>
+      <div class="player"><span>▶</span><span class="time" style="color:#221A14">14:22</span><div class="bar"><i></i></div><span>42:07</span></div>
+      <div class="tx">
+        <div class="tl"><span class="ts">00:00</span><span class="who them">Peserta</span><span>Oke, kita mulai ya. Agenda hari ini tiga hal.</span></div>
+        <div class="tl"><span class="ts">00:07</span><span class="who them">Peserta</span><span>Pertama status onboarding, kedua release, ketiga budget Q1.</span></div>
+        <div class="tl"><span class="ts">00:15</span><span class="who me">Saya</span><span>Onboarding design udah final, link Figma gw share di chat.</span></div>
+        <div class="tl hl"><span class="ts">14:22</span><span class="who them">Peserta</span><span>Can we push the release to next week? QA masih nemu dua bug.</span></div>
+        <div class="tl"><span class="ts">14:30</span><span class="who me">Saya</span><span>Boleh, jadi deadline-nya Jumat ya.</span></div>
+      </div>
+    </div>
+  </div>
+  <p class="cap">Klik baris → audio loncat ke situ (kayak klik baris di kartu lirik). "Salin + prompt ringkasan" nyalin transkrip plus prompt "Ringkas meeting ini: keputusan, action item, siapa"; tempel ke Claude/ChatGPT sendiri. Jadi ringkasan ada tanpa Vale kirim apa-apa ke internet.</p>
+
+  <!-- ============ ENGINE ============ -->
+  <h2>5 · Engine speech-to-text: tiga pilihan</h2>
+  <p class="sub">Ini keputusan terbesar. Harus jalan juga di laptop kantor biasa tanpa GPU, bukan cuma PC kamu.</p>
+  <div class="grid g3">
+    <div class="card pick">
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px"><h3 style="margin:0">A · Offline (transcribe.cpp)</h3><span class="tag a">rekomendasi</span></div>
+      <p>Mesin speech-to-text yang dipakai Handy (MIT): Whisper, Qwen3-ASR dan lainnya, jalan di PC. Mesin dan model <b>diunduh sekali saat fitur dinyalakan</b> (versi dikunci + cek SHA-256, sama kayak update Vale), jadi <code>vale.exe</code> tetap ~3.9 MB.</p>
+      <ul class="b">
+        <li>Jalan di CPU doang; pakai GPU atau grafis bawaan laptop (Vulkan) kalau ada.</li>
+        <li>Privasi utuh: janji README gak berubah.</li>
+        <li>Model bisa dipilih sesuai PC (lihat 5b).</li>
+      </ul>
+      <ul class="b minus">
+        <li>Unduhan ~18 MB mesin + 170 MB–2 GB model.</li>
+        <li>Laptop tanpa GPU: meeting 1 jam ≈ 11 menit proses (Qwen3 0.6B).</li>
+      </ul>
+    </div>
+    <div class="card">
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px"><h3 style="margin:0">B · Bawaan Windows</h3><span class="tag">gak disaranin</span></div>
+      <p>API speech Windows (<code>Windows.Media.SpeechRecognition</code>) atau Live Captions Windows 11.</p>
+      <ul class="b">
+        <li>Gak perlu unduh model, CPU-nya kecil.</li>
+      </ul>
+      <ul class="b minus">
+        <li>Setahu gw belum ada Bahasa Indonesia di dua-duanya; campuran ID/EN pasti jelek.</li>
+        <li>Live Captions gak punya API resmi; harus "ngintip" jendelanya lewat UI Automation. Rapuh, bisa rusak tiap update Windows.</li>
+        <li>Gak bisa transkrip file setelah meeting.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px"><h3 style="margin:0">C · API cloud</h3><span class="tag r">opt-in aja</span></div>
+      <p>OpenAI / Groq Whisper, Deepgram, AssemblyAI. Kamu masukin API key sendiri.</p>
+      <ul class="b">
+        <li>Paling akurat dan cepat; bisa diarization (nama per peserta) dan ringkasan.</li>
+        <li>Gak makan CPU.</li>
+      </ul>
+      <ul class="b minus">
+        <li>Audio meeting keluar dari PC: melanggar janji privasi README kecuali opt-in jelas.</li>
+        <li>Bayar per menit, butuh internet, API key harus disimpan aman (DPAPI).</li>
+      </ul>
+    </div>
+  </div>
+  <div class="note"><b>Saran gw:</b> A dulu. Kalau nanti kerasa kurang (mau nama per peserta atau ringkasan otomatis), C bisa ditambah belakangan sebagai opsi yang default-nya mati, dengan peringatan jelas di Settings.</div>
+
+  <h2>5b · Perbandingan model di PC orang biasa</h2>
+  <p class="sub">Angka dari katalog benchmark resmi transcribe.cpp (mesin di dalam Handy, v0.4.1). Mesin acuannya <b>laptop AMD Ryzen 7 PRO 4750U</b> (2020, 15 W, tanpa GPU terpisah): "CPU" = prosesor doang, "iGPU" = grafis bawaan laptop lewat Vulkan (Intel/AMD iGPU modern juga punya Vulkan). Waktu = lama proses <b>meeting 60 menit</b>, dihitung dari kecepatan × realtime yang dipublikasikan. Akurasi = salah kata (WER) Bahasa Indonesia di dataset FLEURS; makin kecil makin bagus.</p>
+  <div class="tw"><table class="cmp">
+    <tr><th>Model</th><th>Unduhan</th><th>Salah kata (ID)</th><th>Laptop, CPU doang</th><th>Laptop, iGPU</th><th>Lisensi</th><th>Catatan</th></tr>
+    <tr><td><b>Whisper base</b></td><td>59 MB</td><td>38 %</td><td>~3 mnt</td><td>~2 mnt</td><td>Apache-2.0</td><td>Cepat tapi hampir 4 dari 10 kata salah. Gak layak buat ID.</td></tr>
+    <tr><td><b>Whisper small</b></td><td>172 MB</td><td>18 %</td><td>~10 mnt</td><td>~5 mnt</td><td>Apache-2.0</td><td>Cadangan buat disk/RAM kecil.</td></tr>
+    <tr style="background:rgba(226,104,60,.08)"><td><b>Qwen3-ASR 0.6B</b> <span class="tag a">usulan default</span></td><td>590 MB</td><td><b>8.5 %</b></td><td><b>~11 mnt</b></td><td><b>~6 mnt</b></td><td>Apache-2.0</td><td>Akurasi hampir setara turbo, 4× lebih cepat di CPU. 30 bahasa, ID termasuk. Gak ngasih timestamp sendiri (lihat bawah).</td></tr>
+    <tr><td><b>Whisper medium</b></td><td>504 MB</td><td>10.8 %</td><td>~31 mnt</td><td>~15 mnt</td><td>Apache-2.0</td><td>Kalah dari Qwen3 0.6B di dua-duanya.</td></tr>
+    <tr><td><b>Whisper large-v3-turbo</b></td><td>536 MB</td><td>7.2 %</td><td>~41 mnt</td><td>~19 mnt</td><td>MIT</td><td>Paling akurat dari yang ukurannya wajar, tapi di laptop tanpa GPU hampir sepanjang meeting-nya.</td></tr>
+    <tr><td><b>Qwen3-ASR 1.7B</b></td><td>2.2 GB*</td><td>5.4 %</td><td>~24 mnt</td><td>~15 mnt</td><td>Apache-2.0</td><td>Paling akurat, tapi unduhan dan RAM besar. Opsi "kualitas maksimal".</td></tr>
+    <tr><td style="color:#8C7E70">Fun-ASR MLT nano</td><td style="color:#8C7E70">–</td><td style="color:#8C7E70">7.3 %</td><td style="color:#8C7E70">~11 mnt</td><td style="color:#8C7E70">~7 mnt</td><td style="color:#8C7E70">khusus</td><td style="color:#8C7E70">Bagus, tapi lisensi model-nya bukan open source standar. Dicoret.</td></tr>
+  </table></div>
+  <p class="cap">* ukuran Q8; versi Q4 lebih kecil tapi belum gw cek. Unduhan lain = versi Q4_K_M. Laptop Intel i5/i7 seangkatan kira-kira mirip; PC 4 core lama bisa 2× lebih lambat (perkiraan, gak ada angka resminya). Model streaming (Parakeet, Nemotron, Moonshine) gak dukung Bahasa Indonesia, jadi gak masuk tabel.</p>
+  <div class="grid g2" style="margin-top:12px">
+    <div class="card">
+      <h3>Yang angka ini gak bilang</h3>
+      <ul class="b minus">
+        <li>FLEURS itu orang membaca kalimat dengan jelas. Audio meeting (suara Zoom dikompres, orang nyela, campur ID/EN) pasti lebih jelek, untuk semua model.</li>
+        <li>Campuran ID/EN dalam satu kalimat gak diukur sama sekali di benchmark ini.</li>
+        <li>Makanya sebelum mutusin, gw usul tes beneran pakai 5 menit rekaman meeting kamu sendiri: Qwen3 0.6B vs turbo vs small, dibandingin berdampingan.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Qwen3 gak ngasih timestamp: masalah?</h3>
+      <p>Gak terlalu. Vale tetap motong audio per kalimat pakai VAD (deteksi suara) di tiap jalur (mic, suara PC). Tiap potongan sudah tahu jam mulainya, jadi SRT, klik-untuk-loncat dan label Saya/Peserta tetap jalan. Yang hilang cuma timestamp per kata, yang memang gak kita butuhin.</p>
+      <h3 style="margin-top:10px">Caption langsung tanpa GPU</h3>
+      <p>Qwen3 0.6B di laptop CPU doang jalan ~5× realtime: tiap 5 detik suara butuh ~1 detik kerja penuh CPU. Bisa, tapi kipas laptop bakal kerja dan baterai lebih boros selama meeting. Usul: caption langsung default mati, dan otomatis berhenti kalau pakai baterai (bisa diubah).</p>
+    </div>
+  </div>
+
+  <h2>5c · Settings → Fitur → Transkrip</h2>
+  <p class="sub">Model dipilih sendiri. Gak ada yang diunduh sampai tombol Unduh diklik. Boleh pasang lebih dari satu, yang aktif cuma satu.</p>
+  <div class="grid g2">
+    <div class="win" style="background:#FBF7F1">
+      <div style="padding:14px 16px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px"><span style="font-weight:600;font-size:14px">Transkrip</span><span class="chk" style="margin-left:auto;background:none;padding:0;color:var(--ink)"><span class="sw"></span></span></div>
+        <p style="font-size:12px;color:var(--ink2);margin-bottom:12px">Ubah rekaman jadi teks, di PC ini. Gak ada audio yang dikirim ke internet.</p>
+        <div class="mrow on"><span class="rad on"></span><div class="mm"><div><b>Qwen3-ASR 0.6B</b> <span class="tag a">disarankan</span></div><div>Akurat · 1 jam meeting ≈ 11 mnt di laptop tanpa GPU</div></div><span class="ms">590 MB</span><span class="bt">Terpasang · Hapus</span></div>
+        <div class="mrow"><span class="rad"></span><div class="mm"><div><b>Whisper small</b></div><div>Ringan · kurang akurat buat Bahasa Indonesia</div></div><span class="ms">172 MB</span><span class="bt p">Unduh</span></div>
+        <div class="mrow"><span class="rad"></span><div class="mm"><div><b>Whisper large-v3-turbo</b></div><div>Paling akurat di PC dengan GPU · lambat tanpa GPU</div><div class="dl"><i style="width:41%"></i></div></div><span class="ms">220 / 536 MB</span><span class="bt">Batal</span></div>
+        <div class="mrow"><span class="rad"></span><div class="mm"><div><b>Qwen3-ASR 1.7B</b></div><div>Kualitas maksimal · unduhan dan RAM paling besar</div></div><span class="ms">2.2 GB</span><span class="bt p">Unduh</span></div>
+        <div style="display:flex;gap:10px;align-items:center;margin-top:12px;font-size:11.5px;color:var(--ink2);flex-wrap:wrap"><span>Akselerasi: <b>GPU (Vulkan) terdeteksi</b></span><span style="margin-left:auto">Terpakai 610 MB · <u>Buka folder</u></span></div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Alurnya</h3>
+      <ul class="b">
+        <li><b>Saklar Transkrip mati</b> (default): gak ada unduhan, Vale tetap ~3.9 MB. Rekam audio tetap bisa.</li>
+        <li><b>Saklar dinyalain pertama kali:</b> dialog kecil "Unduh Qwen3-ASR 0.6B (608 MB, termasuk mesin 18 MB)?" dengan pilihan ganti model. Gak ada yang turun tanpa klik.</li>
+        <li><b>Unduhan:</b> jalan di background, progress di sini dan di notch, bisa dibatalin, nyambung lagi kalau Vale ditutup. Dicek SHA-256 sebelum dipakai.</li>
+        <li><b>Ganti model:</b> klik radio model lain. Kalau belum terpasang, tombolnya jadi Unduh. Transkrip yang lagi jalan tetap pakai model lama sampai selesai.</li>
+        <li><b>Hapus:</b> balikin ruang disk. Rekaman dan transkrip lama gak ikut kehapus.</li>
+        <li><b>Transkrip ulang:</b> rekaman lama bisa ditranskrip ulang pakai model lain dari halaman Rekam.</li>
+        <li>Akselerasi dideteksi sendiri (GPU/iGPU lewat Vulkan, kalau gak ada pakai CPU). Gak ada yang perlu disetel.</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ============ PHASES ============ -->
+  <h2>6 · Fase</h2>
+  <p class="sub">Tiap fase bisa dirilis sendiri.</p>
+  <div class="grid g2">
+    <div class="card phase"><span class="n">1</span><div><h3>Rekam audio + indikator</h3><p>Mic + suara PC (dua jalur), jeda, stop. Indikator di notch dan tray. Hotkey, tray, halaman Rekam. Disimpan sebagai <code>.m4a</code> (~45 MB/jam, encoder AAC bawaan Windows, tanpa crate baru). Gak ada CPU kepake di luar rekaman.</p></div></div>
+    <div class="card phase"><span class="n">2</span><div><h3>Transkrip setelah meeting</h3><p>Unduh engine + model di Settings. Stop → proses di background → notice → jendela transkrip. Ekspor <code>.md</code>, <code>.srt</code>, salin, jadikan catatan, salin + prompt ringkasan. Label Saya/Peserta.</p></div></div>
+    <div class="card phase"><span class="n">3</span><div><h3>Caption langsung</h3><p>Kartu caption melayang (dan opsi satu baris di notch). Model kecil per potongan beberapa detik. Transkrip akhir tetap dibuat ulang pakai model besar.</p></div></div>
+    <div class="card phase"><span class="n">4</span><div><h3>Tambahan</h3><p>Saran rekam pas aplikasi meeting pakai mic; pembeda pembicara (Peserta 1, 2, …); opsional API cloud opt-in.</p></div></div>
+  </div>
+
+  <!-- ============ DECISIONS ============ -->
+  <h2>7 · Yang perlu kamu putusin</h2>
+  <p class="sub">Kolom kanan itu usulan gw. Cukup jawab yang kamu gak setuju.</p>
+  <div class="tw"><table>
+    <tr><th style="width:26%">Pertanyaan</th><th>Usulan gw</th></tr>
+    <tr><td><b>Sumber suara</b></td><td>Default "Dua-duanya" (mic + suara PC), bisa diganti mic aja / suara PC aja.</td></tr>
+    <tr><td><b>Engine</b></td><td>A · offline pakai transcribe.cpp (mesin Handy), unduh saat dinyalakan.</td></tr>
+    <tr><td><b>Model default</b></td><td>Qwen3-ASR 0.6B (590 MB): akurat dan tetap cepat di laptop tanpa GPU. Pilihan lain di Settings: Whisper small (kecil), large-v3-turbo, Qwen3-ASR 1.7B (kualitas maksimal). GPU/iGPU dipakai otomatis kalau ada, CPU kalau nggak. Final setelah tes rekaman asli.</td></tr>
+    <tr><td><b>Bahasa</b></td><td>Auto-deteksi, plus pilihan paksa Indonesia atau Inggris. Campuran dalam satu kalimat ikut ketangkep (gak sempurna).</td></tr>
+    <tr><td><b>Fase pertama yang dirilis</b></td><td>Fase 1 + 2 sekaligus (rekam + transkrip setelah meeting). Caption langsung di rilis berikutnya.</td></tr>
+    <tr><td><b>Tempat simpan</b></td><td><code>Documents\Vale\Rekaman\</code>, nama <code>2026-11-07 1002 Sync mingguan.m4a</code> + <code>.md</code> + <code>.srt</code>. Folder bisa diganti di Settings.</td></tr>
+    <tr><td><b>Retensi</b></td><td>Simpan selamanya. Opsi: hapus audio otomatis setelah N hari, teks tetap. File gak dienkripsi (biar bisa dibuka app lain), beda dengan clipboard.</td></tr>
+    <tr><td><b>Judul rekaman</b></td><td>Otomatis dari aplikasi yang lagi pakai mic ("Zoom", "Teams") atau jam; bisa di-rename di halaman Rekam.</td></tr>
+    <tr><td><b>Fullscreen</b></td><td>Notch dan kartu caption sembunyi, rekaman lanjut, titik merah di ikon tray tetap ada.</td></tr>
+    <tr><td><b>Persetujuan</b></td><td>Pertama kali: satu dialog pengingat "minta izin peserta sebelum merekam". Indikator merah gak bisa dimatikan.</td></tr>
+    <tr><td><b>Ringkasan</b></td><td>"Salin + prompt ringkasan" aja (gak ada AI di Vale). Cloud opt-in nanti kalau perlu.</td></tr>
+    <tr><td><b>Notes</b></td><td>"Jadikan catatan" bikin kartu Notes berisi judul, tanggal dan transkrip (atau 20 baris pertama + link ke file .md kalau panjang).</td></tr>
+  </table></div>
+  <div class="warn"><b>Batas yang dijaga:</b> idle = nol (gak ada thread audio atau timer kalau gak merekam); mic Windows 11: kalau "Izinkan aplikasi desktop akses mikrofon" mati, Vale kasih notice yang jelas dan link ke Settings Windows; ikon mic Windows juga muncul sendiri di taskbar selama rekaman; multi-monitor ikut aturan kartu lirik.</div>
+
+  <!-- ============ SCREEN RECORDING ============ -->
+  <div class="eyebrow" style="margin-top:56px">Bagian 2</div>
+  <h1 style="font-size:26px">Rekam layar + zoom</h1>
+  <p class="lede">Rekam layar jadi video MP4, pakai jalur audio yang sama (mic + suara PC), plus zoom yang ngikutin kursor selama merekam. Gak perlu unduhan: encoder video H.264 sudah ada di Windows dan pakai encoder GPU kalau ada.</p>
+
+  <h2>8 · Mulai: pilih area</h2>
+  <p class="sub">Pakai pemilih area yang sama dengan tool screenshot (yang sudah bisa nempel ke jendela dan kotak). Toolbar kecil muncul di bawah area.</p>
+  <div class="grid g2">
+    <div class="st" style="padding:0;min-height:260px;background:#3A3029">
+      <div class="desk">
+        <div class="dwin" style="left:6%;top:12%;width:54%;height:58%"><div class="dtb"></div></div>
+        <div class="dwin" style="left:40%;top:30%;width:52%;height:56%"><div class="dtb"></div></div>
+        <div class="dim"></div>
+        <div class="sel" style="left:40%;top:30%;width:52%;height:56%"><span class="selsz">1280 × 720</span></div>
+        <div class="rbar">
+          <span class="seg2"><span>Layar</span><span class="on">Jendela</span><span>Area</span></span>
+          <span class="sep"></span>
+          <span class="ico on" title="Mic">🎙</span><span class="ico on" title="Suara PC">🔊</span><span class="ico" title="Kamera">📷</span>
+          <span class="sep"></span>
+          <span class="go"><i></i>Rekam</span>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Cara mulai</h3>
+      <ul class="b">
+        <li><b>Hotkey baru</b> (misalnya <code>Ctrl+Alt+Shift+R</code>), halaman Rekam di panel ("Audio" / "Layar"), atau tray.</li>
+        <li><b>Layar</b> = satu monitor penuh, <b>Jendela</b> = klik jendela (ikut kalau jendelanya digeser), <b>Area</b> = tarik kotak bebas.</li>
+        <li>Hitung mundur 3-2-1 di notch, terus mulai.</li>
+        <li><b>Notch, kartu caption dan semua jendela Vale gak ikut kerekam</b> (Windows bisa ngecualiin jendela dari capture), jadi indikator REC tetap kelihatan buat kamu tapi gak ada di video.</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>9 · Zoom saat merekam</h2>
+  <p class="sub">Layar asli kamu gak berubah. Yang di-zoom cuma videonya: Vale motong bagian sekitar kursor lalu dibesarkan halus sebelum di-encode.</p>
+  <div class="grid g2">
+    <div>
+      <div class="st" style="padding:0;min-height:230px;background:#3A3029">
+        <div class="desk">
+          <div class="dwin" style="left:8%;top:10%;width:84%;height:80%"><div class="dtb"></div>
+            <div class="lines"><i style="width:60%"></i><i style="width:80%"></i><i style="width:45%"></i><i style="width:70%"></i><i style="width:55%"></i></div>
+          </div>
+          <div class="zf" style="left:42%;top:38%;width:40%;height:40%"><span>2×</span></div>
+          <div class="cur" style="left:61%;top:57%"></div>
+          <div class="ripple" style="left:61%;top:57%"></div>
+        </div>
+      </div>
+      <p class="cap"><b>Layar kamu:</b> kotak tipis (opsional) nunjukin bagian yang lagi masuk video. Kotaknya juga gak kerekam.</p>
+    </div>
+    <div>
+      <div class="st" style="padding:0;min-height:230px;background:#1E1915">
+        <div class="desk" style="background:#F4EFE8">
+          <div class="lines vbig"><i style="width:70%"></i><i style="width:90%"></i><i style="width:55%"></i></div>
+          <div class="cur" style="left:46%;top:58%;transform:scale(1.8)"></div>
+          <div class="ripple" style="left:46%;top:58%;transform:scale(1.8)"></div>
+          <span class="vlabel">Hasil video · 00:42</span>
+        </div>
+      </div>
+      <p class="cap"><b>Hasil video:</b> bagian itu dibesarkan 2×, kamera geser halus ngikutin kursor, klik dikasih riak.</p>
+    </div>
+  </div>
+  <div class="grid g3" style="margin-top:14px">
+    <div class="card pick">
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px"><h3 style="margin:0">Zoom manual (hotkey)</h3><span class="tag a">fase awal</span></div>
+      <p>Tekan <code>Ctrl+Alt+Z</code> buat zoom masuk ke kursor, tekan lagi buat keluar. Scroll + <code>Ctrl+Alt</code> ganti level (1.5× – 4×). Paling bisa dikontrol, paling gampang dibikin.</p>
+    </div>
+    <div class="card">
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px"><h3 style="margin:0">Zoom otomatis</h3><span class="tag">fase berikut</span></div>
+      <p>Zoom masuk sendiri pas kamu klik atau ngetik, keluar lagi setelah kursor diam atau gerak jauh. Gaya video tutorial. Bisa salah tebak, jadi bisa dimatikan.</p>
+    </div>
+    <div class="card">
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px"><h3 style="margin:0">Atur zoom setelah rekam</h3><span class="tag">nanti</span></div>
+      <p>Timeline kecil: geser, hapus, atau tambah titik zoom, lalu render ulang. Vale nyimpen posisi kursor dan klik di samping video, jadi ini bisa ditambah belakangan tanpa rekam ulang.</p>
+    </div>
+  </div>
+  <div class="warn"><b>Satu hal yang perlu kamu jawab:</b> "zoom" yang kamu maksud itu zoom di <b>videonya</b> (penonton video lihat bagian yang dibesarkan, layar kamu biasa), atau zoom <b>layar beneran</b> kayak kaca pembesar, misalnya pas share screen di meeting biar peserta lihat? Mockup di atas yang pertama. Yang kedua juga bisa (Windows punya API kaca pembesar), tapi itu fitur lain.</div>
+
+  <h2>10 · Saat merekam dan sesudahnya</h2>
+  <div class="grid g3">
+    <div>
+      <div class="st"><div class="top"><div class="notch">
+        <span class="dot"></span><span class="time">03:17</span><span class="lbl">Layar</span>
+        <span style="font-size:10.5px;padding:2px 7px;border-radius:99px;background:rgba(226,104,60,.25);color:#F3B79A">2×</span>
+        <span class="lv mic"><i style="height:6px"></i><i style="height:12px"></i><i style="height:9px"></i></span>
+      </div></div></div>
+      <p class="cap"><b>Notch:</b> REC, waktu, "Layar", level zoom saat ini, level mic. Hover: jeda, stop, buang.</p>
+    </div>
+    <div>
+      <div class="st"><div class="top"><div class="notice">
+        <div class="thumb"></div>
+        <div style="flex:1;min-width:0"><div class="ey">Video tersimpan · 3:17 · 84 MB</div><div class="tt">Klik untuk buka · Salin · Potong</div></div>
+      </div></div></div>
+      <p class="cap"><b>Setelah stop:</b> notice dengan thumbnail. Klik buka di Explorer (seperti screenshot sekarang), Salin buat tempel file ke chat.</p>
+    </div>
+    <div class="card">
+      <h3>Hasil file</h3>
+      <ul class="b">
+        <li><code>Videos\Vale\2026-11-07 1430.mp4</code> (H.264 + AAC, bisa diputar di mana aja).</li>
+        <li>30 atau 60 fps, resolusi asli atau 1080p.</li>
+        <li>Kira-kira 1–3 GB per jam di 1080p; tutorial 5 menit ≈ 80–250 MB.</li>
+        <li>Kalau transkrip nyala: <code>.srt</code> ikut dibuat, jadi video langsung ada subtitle.</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>11 · Fitur lain yang bisa nyusul</h2>
+  <p class="sub">Pilih yang kamu mau. Yang gak dipilih gak dibikin.</p>
+  <div class="tw"><table>
+    <tr><th style="width:26%">Fitur</th><th>Isinya</th><th style="width:16%">Berat</th></tr>
+    <tr><td><b>Sorot kursor dan klik</b></td><td>Lingkaran lembut di kursor, riak tiap klik, kursor bisa dibesarkan, kursor disembunyikan kalau diam.</td><td>Ringan</td></tr>
+    <tr><td><b>Tampilkan tombol pintas</b></td><td>Pojok video nampilin <code>Ctrl+C</code>, <code>Alt+Tab</code>, dll. Huruf biasa yang diketik gak pernah ditampilin (password aman).</td><td>Ringan</td></tr>
+    <tr><td><b>Coret-coret saat rekam</b></td><td>Pakai alat gambar dari screenshot (panah, kotak, stabilo) di atas layar, ikut kerekam, hilang sendiri.</td><td>Sedang</td></tr>
+    <tr><td><b>Bulatan kamera</b></td><td>Webcam di pojok video, bisa digeser.</td><td>Sedang</td></tr>
+    <tr><td><b>Ekspor GIF</b></td><td>Buat klip pendek (≤ 15 detik) ke chat atau README.</td><td>Ringan</td></tr>
+    <tr><td><b>Potong awal/akhir</b></td><td>Buang beberapa detik di awal dan akhir tanpa encode ulang.</td><td>Sedang</td></tr>
+    <tr><td><b>Kaca pembesar layar</b></td><td>Zoom layar beneran (buat presentasi/meeting), terpisah dari rekam.</td><td>Sedang</td></tr>
+    <tr><td><b>Editor zoom setelah rekam</b></td><td>Timeline titik zoom, render ulang.</td><td>Berat</td></tr>
+  </table></div>
+
+  <h2>12 · Ongkos teknis rekam layar</h2>
+  <div class="grid g2">
+    <div class="card">
+      <h3>Pakai bawaan Windows (usulan)</h3>
+      <ul class="b">
+        <li>Ambil layar: Windows Graphics Capture (API yang dipakai OBS), jalan di GPU.</li>
+        <li>Encode: Media Foundation H.264 + AAC, encoder GPU (NVIDIA/AMD/Intel) kalau ada, encoder software Windows kalau nggak.</li>
+        <li>Zoom dan efek kursor digambar di GPU sebelum encode.</li>
+        <li>Gak ada crate baru dan gak ada unduhan; <code>vale.exe</code> naik kira-kira ratusan KB (belum diukur).</li>
+        <li>Idle = nol: gak ada capture atau thread kalau gak merekam.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Yang perlu diwaspadai</h3>
+      <ul class="b minus">
+        <li>Windows edisi "N" gak punya Media Foundation sampai Media Feature Pack dipasang; Vale kasih pesan jelas.</li>
+        <li>Video yang dilindungi (Netflix dll.) kerekam hitam. Itu aturan Windows.</li>
+        <li>Laptop tanpa encoder GPU: encode software di 1080p30 makan CPU lumayan; default turun ke 30 fps.</li>
+        <li>Rekam layar + transkrip langsung + zoom sekaligus di laptop lemah bisa berat; transkrip sebaiknya setelah selesai.</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>13 · Urutan fase (gabungan)</h2>
+  <div class="grid g2">
+    <div class="card phase"><span class="n">1</span><div><h3>Rekam audio</h3><p>Mic + suara PC, notch, hotkey, tray, halaman Rekam.</p></div></div>
+    <div class="card phase"><span class="n">2</span><div><h3>Transkrip setelah meeting</h3><p>Pilih dan unduh model di Settings, jendela transkrip, .md/.srt.</p></div></div>
+    <div class="card phase"><span class="n">3</span><div><h3>Rekam layar dasar</h3><p>Layar/jendela/area, audio yang sama, jeda, MP4, Vale gak ikut kerekam.</p></div></div>
+    <div class="card phase"><span class="n">4</span><div><h3>Zoom + kursor</h3><p>Zoom hotkey, sorot kursor dan klik, lalu zoom otomatis.</p></div></div>
+    <div class="card phase"><span class="n">5</span><div><h3>Caption langsung</h3><p>Kartu caption saat meeting.</p></div></div>
+    <div class="card phase"><span class="n">6</span><div><h3>Sisanya</h3><p>Yang kamu pilih dari tabel 11.</p></div></div>
+  </div>
+</main>
+</body>
+</html>
