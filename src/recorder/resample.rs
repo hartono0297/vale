@@ -123,7 +123,7 @@ impl Resampler {
             out.push(if self.table.is_empty() {
                 self.interpolate(center, rem as f64 / self.to as f64)
             } else {
-                self.from_table(center, (rem / self.g) as usize)
+                self.interpolate_phase(center, (rem / self.g) as usize)
             });
             self.produced += 1;
         }
@@ -158,7 +158,7 @@ impl Resampler {
     }
 
     /// `interpolate` with the kernel of `phase` from the table.
-    fn from_table(&self, center: i64, phase: usize) -> f32 {
+    fn interpolate_phase(&self, center: i64, phase: usize) -> f32 {
         let width = 2 * self.reach as usize;
         let taps = &self.table[phase * width..(phase + 1) * width];
         let first = center - self.reach + 1;
