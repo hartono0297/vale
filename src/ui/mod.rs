@@ -1,6 +1,7 @@
 pub mod app_icon;
 pub mod cat_style;
 pub mod cli_input;
+pub mod device_menu;
 pub mod dirty;
 #[cfg(debug_assertions)]
 pub mod demo;
@@ -18,6 +19,7 @@ pub mod hotkey_rec;
 #[cfg(test)]
 mod icon_frames;
 pub mod icons;
+pub mod menu_pop;
 pub mod month_grid;
 pub mod motion;
 pub mod notch_fill;

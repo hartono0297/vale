@@ -310,6 +310,10 @@ pub struct IslandState {
     hover_opened: Option<Instant>,
     /// An editor window is open; it keeps the panel open like hover.
     editor_open: bool,
+    /// A dropdown opened from the panel is open (the Rekam page's device
+    /// list); it keeps the panel open like an editor, and a press on it is
+    /// not a click outside.
+    menu_open: bool,
     /// The CLI page's input has the keyboard; it keeps the panel open like
     /// an editor.
     cli_focused: bool,
@@ -475,6 +479,7 @@ impl IslandState {
             latched: false,
             hover_opened: None,
             editor_open: false,
+            menu_open: false,
             cli_focused: false,
             cli_tall: false,
             cli_scroll: 0,
@@ -825,6 +830,8 @@ impl IslandState {
                 }
             }
             Event::EditorOpen(on) => self.editor_open = on,
+            // Only a panel that shows may be held: a dropdown never opens one.
+            Event::MenuOpen(on) => self.menu_open = on && self.panel_open(),
             Event::CliFocus(on) => self.cli_focused = on,
             Event::ClipFocus(on) => self.clip_focused = on,
             Event::NotifFocus(on) => self.notif_focused = on,
@@ -1633,6 +1640,7 @@ impl IslandState {
             && (pointer
                 || self.latched
                 || self.editor_open
+                || self.menu_open
                 || self.cli_focused
                 || self.clip_focused
                 || self.notif_focused
@@ -1648,6 +1656,8 @@ impl IslandState {
             // An editor closed, saved, deleted or cancelled: the panel it
             // held would snap shut with the pointer away.
             Event::EditorOpen(false) => LingerTrigger::Always,
+            // The same for a dropdown: the pointer is on it, off the island.
+            Event::MenuOpen(false) => LingerTrigger::Always,
             // A click on the panel's content. A media button the hover guard
             // drops did nothing.
             Event::Click(Hit::PanelPage(_)) => LingerTrigger::PageTurn,
@@ -1784,9 +1794,11 @@ impl IslandState {
     }
 
     /// The panel stays open until a click outside the island: `App` watches
-    /// the mouse buttons only then, and sends `Event::Dismiss`.
+    /// the mouse buttons only then, and sends `Event::Dismiss`. Not while a
+    /// dropdown of the panel is open: a press on it is not outside, and one
+    /// anywhere else only closes the dropdown, as with a native menu.
     pub fn outside_click_wanted(&self) -> bool {
-        (self.latched || self.lingering) && self.panel_open() && !self.fullscreen
+        (self.latched || self.lingering) && self.panel_open() && !self.fullscreen && !self.menu_open
     }
 
     /// "Mode buka": a click on the compact island opens the panel and keeps it.
@@ -4191,6 +4203,44 @@ mod tests {
         s.apply(Event::Hover(false), t0);
         s.apply(Event::Hover(true), t0);
         assert_eq!(s.view(), View::Panel(Page::Calendar));
+    }
+
+    #[test]
+    fn a_dropdown_of_the_panel_holds_it_and_pauses_the_click_outside_watch() {
+        let t0 = Instant::now();
+        for m in [OpenMode::Hover, OpenMode::HoverStay] {
+            let mut s = mode(m, t0);
+            open_on(&mut s, Page::Record, t0);
+            // The device name was clicked: the panel lingers, then the
+            // dropdown opens.
+            s.apply(Event::Click(Hit::RecDevice(Source::Mic)), t0);
+            assert!(s.outside_click_wanted(), "{m:?}");
+            s.apply(Event::MenuOpen(true), t0);
+            assert!(!s.outside_click_wanted(), "{m:?}: a press on it is not outside");
+            // The pointer goes down to the dropdown, off the island, for long.
+            s.apply(Event::Hover(false), t0);
+            s.apply(Event::Tick, t0 + secs(30));
+            assert_eq!(s.view(), View::Panel(Page::Record), "{m:?}");
+            // It went: the panel lingers a moment, watching for a click outside.
+            s.apply(Event::MenuOpen(false), t0 + secs(30));
+            assert_eq!(s.view(), View::Panel(Page::Record), "{m:?}");
+            assert!(s.outside_click_wanted(), "{m:?}");
+            s.apply(Event::Tick, t0 + secs(30) + ACTIVITY_LINGER);
+            if m == OpenMode::HoverStay {
+                // Latched: it waits for that click outside.
+                assert_eq!(s.view(), View::Panel(Page::Record));
+                s.apply(Event::Dismiss, t0 + secs(31) + ACTIVITY_LINGER);
+            }
+            assert_eq!(s.view(), View::Idle, "{m:?}");
+        }
+        // A dropdown never opens a closed panel.
+        let mut s = st();
+        s.apply(Event::MenuOpen(true), t0);
+        assert_eq!(s.view(), View::Idle);
+        s.apply(Event::Hover(true), t0);
+        s.apply(Event::Hover(false), t0);
+        s.apply(Event::Dismiss, t0);
+        assert_eq!(s.view(), View::Idle, "no hold was left behind");
     }
 
     #[test]
