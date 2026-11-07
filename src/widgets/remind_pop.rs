@@ -79,7 +79,8 @@ struct Pop {
     canvas: Option<Canvas>,
     hover: Option<Item>,
     closing: bool,
-    away: bool,
+    /// The window the user left for (not the note).
+    away: Option<HWND>,
 }
 
 thread_local! {
@@ -304,7 +305,7 @@ pub fn open(note: HWND, anchor: Rect, area: Rect, scale: f32, lang: Lang, font: 
             canvas,
             hover: None,
             closing: false,
-            away: false,
+            away: None,
         });
     });
     redraw();
@@ -515,7 +516,7 @@ unsafe extern "system" fn pop_proc(
                 let to = lparam.0;
                 let _ = with(|p| {
                     if !p.closing && to != p.note.0 as isize {
-                        p.away = true;
+                        p.away = Some(HWND(to as _));
                     }
                 });
                 close();

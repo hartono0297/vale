@@ -100,9 +100,9 @@ struct Pop {
     /// `close` is running (Esc, a command of the note, a new popover): the
     /// deactivation that follows is ours, not the user's going elsewhere.
     closing: bool,
-    /// Deactivated in favour of a window that is not the note: the user went
-    /// to another app, so the note must not take the keyboard back.
-    away: bool,
+    /// Deactivated in favour of a window that is not the note (that window):
+    /// the user went elsewhere, so the note must not take the keyboard back.
+    away: Option<HWND>,
 }
 
 thread_local! {
@@ -374,7 +374,7 @@ pub fn open(note: HWND, anchor: Rect, area: Rect, scale: f32, state: PopState) {
             canvas,
             hover: None,
             closing: false,
-            away: false,
+            away: None,
         });
     });
     redraw();
@@ -628,7 +628,7 @@ unsafe extern "system" fn pop_proc(
                 let to = lparam.0;
                 let _ = with(|p| {
                     if left_for_other(to, p.note.0 as isize, p.closing) {
-                        p.away = true;
+                        p.away = Some(HWND(to as _));
                     }
                 });
                 close();

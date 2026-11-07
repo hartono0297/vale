@@ -37,16 +37,16 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CheckMenuRadioItem, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu,
-    DestroyWindow, GWLP_HWNDPARENT, GWLP_USERDATA, GetCaretBlinkTime, GetCursorPos, GetForegroundWindow,
+    DestroyWindow, GWL_EXSTYLE, GWLP_HWNDPARENT, GWLP_USERDATA, GetCaretBlinkTime, GetCursorPos, GetForegroundWindow,
     GetShellWindow, GetWindowLongPtrW, HWND_BOTTOM, HWND_TOPMOST, IDC_ARROW, IDC_HAND, IDC_IBEAM, IDC_SIZEALL, IDC_SIZENWSE,
-    KillTimer, LoadCursorW, MA_ACTIVATE, MA_NOACTIVATE, MF_CHECKED, MF_POPUP, MF_SEPARATOR,
+    IsWindowVisible, KillTimer, LoadCursorW, MA_ACTIVATE, MA_NOACTIVATE, MF_CHECKED, MF_POPUP, MF_SEPARATOR,
     MF_GRAYED, MF_STRING, PostMessageW, RegisterClassExW, SW_HIDE, SW_SHOWNA, SWP_NOACTIVATE, SWP_NOMOVE,
     SWP_NOSIZE, SWP_NOZORDER, SetCursor, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow,
     TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, WINDOWPOS, WM_ACTIVATE, WM_APP,
     WM_CAPTURECHANGED, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
     WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL,
     WM_RBUTTONUP, WM_SETCURSOR, WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WM_WINDOWPOSCHANGING, WNDCLASSEXW, WS_EX_LAYERED,
-    WS_EX_TOOLWINDOW, WS_POPUP, WA_INACTIVE, CS_DBLCLKS,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WA_INACTIVE, CS_DBLCLKS,
 };
 use windows::core::{PCWSTR, w};
 
@@ -947,34 +947,51 @@ impl WidgetHost {
         self.lift_if_active(id);
     }
 
-    /// Makes the window showing note `id` the foreground window, without
-    /// giving it the keyboard, and puts it over other windows until another
-    /// window is activated. Lifts only if the window did get the foreground
-    /// or has the keyboard: nothing would end the lift otherwise. Returns
-    /// whether it lifted; an unknown id is `false`.
+    /// Makes the window showing note `id` the foreground (active) window and
+    /// puts it over other windows until another window is activated. The
+    /// note opens no EDIT, so typed keys do not go into its text. Lifts only
+    /// if the window did get the foreground or has the keyboard: nothing
+    /// would end the lift otherwise. A note already above windows without a
+    /// lift (pinned, the "Di atas jendela" layer, a reminder raise) is left
+    /// alone, foreground included. Returns whether it lifted; an unknown id is
+    /// `false`.
     pub fn lift(&mut self, id: &str) -> bool {
-        let Some(hwnd) = with(|s| s.wins.iter().find(|w| w.has(id)).map(|w| w.hwnd)).flatten() else {
+        let Some(hwnd) = with(|s| {
+            let w = s.wins.iter().find(|w| w.has(id))?;
+            (!above_without_lift(s, w)).then_some(w.hwnd)
+        })
+        .flatten() else {
             return false;
         };
         take_foreground(hwnd);
         self.lift_if_active(id)
     }
 
+    /// Lifts note `id` if its window is the foreground or has the keyboard.
+    /// One lift at a time: any other lifted note drops back (it may not be
+    /// active, so no `WM_ACTIVATE` would end its lift).
     fn lift_if_active(&mut self, id: &str) -> bool {
-        let i = with(|s| {
+        let changed = with(|s| {
             let i = s.wins.iter().position(|w| w.has(id))?;
             let foreground = unsafe { GetForegroundWindow() } == s.wins[i].hwnd;
             if !foreground && s.wins[i].edit.is_none() {
                 return None;
             }
+            let mut out = vec![i];
+            for (j, w) in s.wins.iter_mut().enumerate() {
+                if j != i && std::mem::take(&mut w.lifted) {
+                    out.push(j);
+                }
+            }
             s.wins[i].lifted = true;
-            Some(i)
+            Some(out)
         })
         .flatten();
-        if let Some(i) = i {
+        let lifted = changed.is_some();
+        for i in changed.unwrap_or_default() {
             apply_z(i);
         }
-        i.is_some()
+        lifted
     }
 
     /// The island window lost the activation to `to`: every lift ends, unless
@@ -1288,7 +1305,12 @@ fn elapsed_ms(t: Instant, now: Instant) -> f32 {
 
 /// A note that sits above ordinary windows.
 fn above_windows(s: &State, w: &Win) -> bool {
-    w.sticky.pinned || s.prefs.layer == WidgetLayer::Top || w.raised || w.lifted
+    above_without_lift(s, w) || w.lifted
+}
+
+/// A note that sits above ordinary windows for a reason other than a lift.
+fn above_without_lift(s: &State, w: &Win) -> bool {
+    w.sticky.pinned || s.prefs.layer == WidgetLayer::Top || w.raised
 }
 
 // ------------------------------------------------------------------ sync
@@ -1709,28 +1731,53 @@ fn apply_visibility(i: usize) {
     }
 }
 
+/// Where a note goes in the z-order.
+#[derive(Debug, PartialEq)]
+enum Z {
+    /// The desktop layer, under every window.
+    Bottom,
+    /// Above ordinary windows.
+    Topmost,
+    /// Above ordinary windows, directly under the island (itself topmost).
+    UnderIsland,
+}
+
+/// The place for a note: `top` above windows at all, `lift_only` because of
+/// a lift alone (not pinned, not the Top layer, not raised), `island_on_top`
+/// the island a visible topmost window. A lifted note must not cover the
+/// island and its panel; the island's own place is never changed (its
+/// stay-behind mode keeps it under windows on purpose).
+fn z_place(top: bool, lift_only: bool, island_on_top: bool) -> Z {
+    match (top, lift_only && island_on_top) {
+        (false, _) => Z::Bottom,
+        (true, true) => Z::UnderIsland,
+        (true, false) => Z::Topmost,
+    }
+}
+
 /// The layer: bottom (owned by the shell's window) or topmost. The mode goes
 /// in the window's user data for `WM_WINDOWPOSCHANGING`, which cannot borrow
-/// the state.
+/// the state (mode 2 leaves any place above the desktop layer alone).
 fn apply_z(i: usize) {
     let todo = with(|s| {
         let w = &s.wins[i];
-        (w.hwnd, above_windows(s, w))
+        (w.hwnd, above_windows(s, w), w.lifted && !above_without_lift(s, w), s.owner)
     });
-    let Some((hwnd, top)) = todo else { return };
+    let Some((hwnd, top, lift_only, island)) = todo else { return };
+    let island_on_top = lift_only && unsafe {
+        IsWindowVisible(island).as_bool()
+            && GetWindowLongPtrW(island, GWL_EXSTYLE) & WS_EX_TOPMOST.0 as isize != 0
+    };
+    let after = match z_place(top, lift_only, island_on_top) {
+        Z::Bottom => HWND_BOTTOM,
+        Z::Topmost => HWND_TOPMOST,
+        Z::UnderIsland => island,
+    };
     unsafe {
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, if top { 2 } else { 1 });
         let owner = if top { 0 } else { GetShellWindow().0 as isize };
         SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, owner);
-        let _ = SetWindowPos(
-            hwnd,
-            Some(if top { HWND_TOPMOST } else { HWND_BOTTOM }),
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-        );
+        let _ = SetWindowPos(hwnd, Some(after), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     }
 }
 
@@ -3422,6 +3469,15 @@ fn pick_images(hwnd: HWND) {
         text(lang, Key::FmtPickImages),
         text(lang, Key::FmtImagesFilter),
     );
+    dialog_closed(hwnd);
+    import_files(hwnd, files);
+}
+
+/// The note's file dialog returned: the EDIT gets the focus back, and the
+/// lift ends if the user is now in another window (the note was not active
+/// while the dialog was, so no `WM_ACTIVATE` of its own would end it).
+fn dialog_closed(hwnd: HWND) {
+    end_lift_unless_to(hwnd, unsafe { GetForegroundWindow() });
     let edit_hwnd = with(|s| {
         let i = idx_of(s, hwnd)?;
         s.wins[i].dialog = false;
@@ -3433,7 +3489,6 @@ fn pick_images(hwnd: HWND) {
             let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(e));
         }
     }
-    import_files(hwnd, files);
 }
 
 /// Image files (from the dialog, a drop or the clipboard's file list) go to
@@ -4142,19 +4197,23 @@ fn open_popover(hwnd: HWND) {
 }
 
 /// The popover closed: a note that was being edited gets its keyboard back,
-/// unless the user left for another app (`away`): then the editing ends, as
-/// it does when the note itself loses the activation.
-pub(crate) fn pop_closed(note: HWND, away: bool) {
+/// unless the user left for another window (`away`, the window activated):
+/// then the editing ends, as it does when the note itself loses the
+/// activation.
+pub(crate) fn pop_closed(note: HWND, away: Option<HWND>) {
     // A tucked note the popover held out lets go of it.
     let _ = with(|s| {
         let i = idx_of(s, note)?;
         tuck_settle(s, i);
         Some(())
     });
-    if away {
+    if let Some(to) = away {
         unsafe {
             let _ = PostMessageW(Some(note), WM_END_EDIT, WPARAM(0), LPARAM(0));
         }
+        // The note was not active while its popover was: no `WM_ACTIVATE`
+        // of its own will end the lift.
+        end_lift_unless_to(note, to);
         return;
     }
     let edit_hwnd = with(|s| {
@@ -4932,6 +4991,23 @@ fn begin_editing(hwnd: HWND, at: Option<usize>) {
 /// own popover, its dialog, or the island window (`owner`) that lifted it.
 fn lift_survives(to: HWND, owner: HWND, popover: bool, dialog: bool) -> bool {
     popover || dialog || (!to.is_invalid() && to == owner)
+}
+
+/// The activation went to `to` while the note `note` was not the active
+/// window (its popover or dialog was): its lift ends unless `to` is the note
+/// itself or the island.
+fn end_lift_unless_to(note: HWND, to: HWND) {
+    let ended = with(|s| {
+        if to == note || lift_survives(to, s.owner, false, false) {
+            return None;
+        }
+        let i = idx_of(s, note)?;
+        std::mem::take(&mut s.wins[i].lifted).then_some(i)
+    })
+    .flatten();
+    if let Some(i) = ended {
+        apply_z(i);
+    }
 }
 
 /// The note lets go of the keyboard.
@@ -5844,15 +5920,138 @@ mod tests {
             (s.wins[i].hwnd, i)
         })
         .unwrap();
+        let (h2, i2) = with(|s| {
+            let i = s.wins.iter().position(|w| w.has("n2")).unwrap();
+            (s.wins[i].hwnd, i)
+        })
+        .unwrap();
         host.bring_front("n1");
         assert!(with(|s| s.wins[i1].lifted).unwrap());
+        // A second lift that outlived a hand-off (set by hand: a new lift
+        // ends the others).
+        with(|s| s.wins[i2].lifted = true).unwrap();
+        apply_z(i2);
         host.island_deactivated(h1);
-        assert!(with(|s| s.wins[i1].lifted).unwrap(), "activation went to the lifted note");
+        assert!(with(|s| s.wins[i1].lifted && s.wins[i2].lifted).unwrap(), "activation went to a lifted note");
         host.island_deactivated(HWND::default());
-        assert!(with(|s| !s.wins[i1].lifted).unwrap());
+        assert!(with(|s| !s.wins[i1].lifted && !s.wins[i2].lifted).unwrap());
         assert_eq!(unsafe { GetWindowLongPtrW(h1, GWLP_USERDATA) }, 1);
+        assert_eq!(unsafe { GetWindowLongPtrW(h2, GWLP_USERDATA) }, 1);
         host.shutdown();
     }
+
+    #[test]
+    fn a_new_lift_ends_the_one_before() {
+        let _k = keyboard_lock();
+        let displays = vec![display("A", 0, true, 96)];
+        let notes = vec![
+            note("n1", DipRect::new(100.0, 100.0, 240.0, 208.0)),
+            note("n2", DipRect::new(400.0, 100.0, 240.0, 208.0)),
+        ];
+        let mut host = WidgetHost::new(DUMMY_OWNER);
+        host.sync(&ctx(&notes, &displays));
+        let at = |id: &str| {
+            with(|s| {
+                let i = s.wins.iter().position(|w| w.has(id)).unwrap();
+                (s.wins[i].hwnd, i)
+            })
+            .unwrap()
+        };
+        let ((h1, i1), (h2, i2)) = (at("n1"), at("n2"));
+        // n1 is lifted but not active (its lift outlived a hand-off to the
+        // island): no WM_ACTIVATE reaches it when n2 takes the foreground.
+        with(|s| s.wins[i1].lifted = true).unwrap();
+        apply_z(i1);
+        assert_eq!(unsafe { GetWindowLongPtrW(h1, GWLP_USERDATA) }, 2);
+        host.bring_front("n2");
+        assert!(with(|s| !s.wins[i1].lifted && s.wins[i2].lifted).unwrap());
+        assert_eq!(unsafe { GetWindowLongPtrW(h1, GWLP_USERDATA) }, 1);
+        assert_eq!(unsafe { GetWindowLongPtrW(h2, GWLP_USERDATA) }, 2);
+        host.shutdown();
+    }
+
+    #[test]
+    fn a_popover_closed_away_ends_the_lift() {
+        let _k = keyboard_lock();
+        let displays = vec![display("A", 0, true, 96)];
+        let notes = vec![note("n1", DipRect::new(100.0, 100.0, 240.0, 208.0))];
+        let mut host = WidgetHost::new(DUMMY_OWNER);
+        host.sync(&ctx(&notes, &displays));
+        let hwnd = with(|s| s.wins[0].hwnd).unwrap();
+        let lifted = || with(|s| s.wins[0].lifted).unwrap();
+        host.bring_front("n1");
+        assert!(lifted());
+        // Closed by Esc or a command of ours: the note takes the keyboard back.
+        pop_closed(hwnd, None);
+        assert!(lifted());
+        // Left for the note itself or the island: still lifted.
+        pop_closed(hwnd, Some(hwnd));
+        assert!(lifted());
+        pop_closed(hwnd, Some(DUMMY_OWNER));
+        assert!(lifted());
+        // Left for another window: nothing would end it later.
+        pop_closed(hwnd, Some(HWND(0x20 as _)));
+        assert!(!lifted());
+        assert_eq!(unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) }, 1);
+        host.shutdown();
+    }
+
+    #[test]
+    fn the_image_dialog_closing_on_another_window_ends_the_lift() {
+        let _k = keyboard_lock();
+        let displays = vec![display("A", 0, true, 96)];
+        let notes = vec![
+            note("n1", DipRect::new(100.0, 100.0, 240.0, 208.0)),
+            note("n2", DipRect::new(400.0, 100.0, 240.0, 208.0)),
+        ];
+        let mut host = WidgetHost::new(DUMMY_OWNER);
+        host.sync(&ctx(&notes, &displays));
+        let (hwnd, i) = with(|s| {
+            let i = s.wins.iter().position(|w| w.has("n2")).unwrap();
+            (s.wins[i].hwnd, i)
+        })
+        .unwrap();
+        // n2, lifted with its dialog up; the foreground is elsewhere (n1, or
+        // whatever the test runs under), never n2 or the island.
+        host.bring_front("n1");
+        with(|s| {
+            s.wins[i].lifted = true;
+            s.wins[i].dialog = true;
+        })
+        .unwrap();
+        apply_z(i);
+        let fg = unsafe { GetForegroundWindow() };
+        assert!(fg != hwnd && fg != DUMMY_OWNER);
+        dialog_closed(hwnd);
+        assert!(with(|s| !s.wins[i].dialog && !s.wins[i].lifted).unwrap());
+        assert_eq!(unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) }, 1);
+        host.shutdown();
+    }
+
+    #[test]
+    fn a_note_already_above_windows_is_not_lifted() {
+        let _k = keyboard_lock();
+        let displays = vec![display("A", 0, true, 96)];
+        let mut n = note("n1", DipRect::new(100.0, 100.0, 240.0, 208.0));
+        n.sticky.as_mut().unwrap().pinned = true;
+        let notes = vec![n];
+        let mut host = WidgetHost::new(DUMMY_OWNER);
+        host.sync(&ctx(&notes, &displays));
+        // With the keyboard, a note on its layer would lift.
+        host.focus("n1");
+        assert!(!host.lift("n1"), "pinned: already above, nothing to do");
+        assert!(with(|s| !s.wins[0].lifted).unwrap());
+        host.shutdown();
+    }
+
+    #[test]
+    fn a_lift_alone_goes_under_a_topmost_island() {
+        assert_eq!(z_place(false, false, true), Z::Bottom);
+        assert_eq!(z_place(true, false, true), Z::Topmost, "pinned, Top layer or raised");
+        assert_eq!(z_place(true, true, true), Z::UnderIsland);
+        assert_eq!(z_place(true, true, false), Z::Topmost, "the island stays behind windows");
+    }
+
     #[test]
     fn a_new_local_day_redraws_once_and_the_first_look_only_remembers() {
         let day = |d| NaiveDate::from_ymd_opt(2026, 11, d).unwrap();
