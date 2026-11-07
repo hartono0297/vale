@@ -174,6 +174,19 @@ pub enum NoticeKind {
     StickyReminder {
         id: String,
     },
+    /// "Rekaman tersimpan · 42 mnt · klik untuk buka" (Bata happy). A click
+    /// on the body shows `path` in Explorer (`Effect::RevealFile`).
+    RecSaved {
+        path: PathBuf,
+    },
+    /// "Rekaman gagal" with the reason (Bata sad). A click dismisses.
+    RecFailed,
+    /// Windows refused the mic. A click opens its privacy page
+    /// (`Effect::RecMicSettings`).
+    RecMicDenied,
+    /// A short word about a recording: the one-time "ask everyone first" and
+    /// a source that dropped out. A click dismisses.
+    RecInfo,
 }
 
 /// What the Arranged notice offers beside "Batalkan".
@@ -268,11 +281,12 @@ impl RecStatus {
 pub enum Event {
     /// The recording started, paused, resumed or ended (`None`); the notch
     /// shows `View::RecordCompact` while one runs.
-    #[allow(dead_code)] // T6: the recorder session sends it.
     RecStatus(Option<RecStatus>),
     /// The newest recordings found in the folder (the page shows five).
-    #[allow(dead_code)] // T6: filled from the recordings folder.
     RecRecent(Vec<RecEntry>),
+    /// What the recorder reported from its thread (`App` handles it; the
+    /// reducer ignores it).
+    Rec(crate::recorder::RecEvent),
     /// `None` means no media session is active.
     Media(Option<MediaInfo>),
     /// The session's timeline (seek, track change, play/pause); `None` when
@@ -835,6 +849,8 @@ pub enum Effect {
     RecSources(RecSources),
     RecReveal(PathBuf),
     RecOpenFolder,
+    /// The mic notice's click: Windows' microphone privacy page.
+    RecMicSettings,
     /// Susun, as the hits of the same names.
     ArrangeMonitor(usize),
     ArrangeCard(usize),

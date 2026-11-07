@@ -85,6 +85,8 @@ use crate::calendar::CalStatus;
 use crate::claude::install::{self, InstallOutcome, UninstallOutcome};
 use crate::cli::Shell;
 use crate::cli_folders::CliStart;
+use crate::model::RecSources;
+use crate::recorder::prefs::RecordingPrefs;
 use crate::config::{
     AfterCapture, ClipboardSettings, Config, NotchFill, NotchMonitor, NotifSettings, OpenMode,
     ScreenshotSettings, ShotIgnore, ShotTool, Style, ToastStyle, UiFont, WindowPlace,
@@ -184,6 +186,10 @@ pub enum Action {
     ClipClearOnLock(bool),
     /// Settings → Fitur → Perangkat: the plug-in and safe-to-remove notices.
     DeviceNotices(bool),
+    /// Settings -> Fitur -> Rekaman: the sources, and the folder (`None`:
+    /// back to the default).
+    RecSources(RecSources),
+    RecFolder(Option<std::path::PathBuf>),
     /// Settings → Tombol pintas: a row's new combo (`None`: off), every row
     /// back to its default, and the recorder starting (`true`: the island
     /// lets go of its hotkeys) or ending (`false`: it takes them again). A
@@ -364,6 +370,7 @@ pub struct Model {
     pub cli_start: CliStart,
     pub open_mode: OpenMode,
     pub device_notices: bool,
+    pub recording: RecordingPrefs,
     /// The six hotkeys, and by `HotkeyId::index` whether the one set could
     /// not be registered (another app has it, or the PrtSc hook failed).
     pub hotkeys: Hotkeys,
@@ -434,6 +441,7 @@ impl Model {
             cli_start: cfg.cli_start,
             open_mode: cfg.open_mode,
             device_notices: cfg.device_notices,
+            recording: cfg.recording.clone(),
             hotkeys: cfg.hotkeys,
             hotkey_failed: [false; HotkeyId::ALL.len()],
             widgets: cfg.widgets,
@@ -1531,6 +1539,7 @@ impl Settings {
             cli_start: m.cli_start,
             open_mode: m.open_mode,
             device_notices: m.device_notices,
+            recording: m.recording.clone(),
             hotkeys: m.hotkeys,
             hotkey_failed: m.hotkey_failed,
             widgets: m.widgets,
@@ -1713,6 +1722,10 @@ impl Settings {
                 Group::NotchFill => usize::from(m.notch_fill == NotchFill::Transparent) as f32,
                 Group::Font => UiFont::ALL.iter().position(|v| *v == m.font).unwrap_or(0) as f32,
                 Group::WidgetLayer => usize::from(m.widgets.layer == WidgetLayer::Top) as f32,
+                Group::RecSources => crate::ui::settings_layout::REC_CHOICES
+                    .iter()
+                    .position(|c| *c == m.recording.sources)
+                    .unwrap_or(2) as f32,
                 Group::WidgetFullscreen => {
                     usize::from(m.widgets.fullscreen == FullscreenRule::Keep) as f32
                 }
@@ -1734,6 +1747,7 @@ impl Settings {
             Group::NotifToastStyle,
             Group::WidgetLayer,
             Group::WidgetFullscreen,
+            Group::RecSources,
         ] {
             let (from, to) = (index(group, &old), index(group, new));
             if from != to {
@@ -2326,6 +2340,10 @@ impl Settings {
             Hit::ClipPersist => post(Action::ClipPersist(!m.clip.persist)),
             Hit::ClipClearOnLock => post(Action::ClipClearOnLock(!m.clip.clear_on_lock)),
             Hit::DeviceNotices => post(Action::DeviceNotices(!m.device_notices)),
+            Hit::RecSources(v) if v != m.recording.sources => post(Action::RecSources(v)),
+            Hit::RecSources(_) => Vec::new(),
+            Hit::RecFolderOpen => vec![After::OpenFolder(m.recording.dir())],
+            Hit::RecFolderChange => vec![After::PickRecFolder],
             // A field: the first click records, the next on the same field
             // cancels.
             Hit::HotkeyField(id) => {
@@ -2984,6 +3002,10 @@ enum After {
     Section(Section),
     Open(String),
     OpenDataFolder,
+    /// Explorer on this folder (made first when missing): Rekaman's "Buka".
+    OpenFolder(std::path::PathBuf),
+    /// Rekaman's "Ganti": the folder dialog, then the choice is posted.
+    PickRecFolder,
     /// The own-shortcut form's fields go back to empty.
     ResetForm,
     /// The Target field's hint follows the kind chosen.
@@ -3015,6 +3037,15 @@ fn run_after(hwnd: HWND, owner: HWND, after: Vec<After>) {
                 let at = windows::Win32::Foundation::POINT { x, y };
                 if let Some(t) = crate::widgets::host::template_menu(hwnd, at, lang) {
                     post_action(owner, Action::WidgetAdd(t));
+                }
+            }
+            After::OpenFolder(dir) => {
+                let _ = std::fs::create_dir_all(&dir);
+                shell_open(&dir.display().to_string());
+            }
+            After::PickRecFolder => {
+                if let Some(dir) = pick_path(hwnd, CustomKind::Folder) {
+                    post_action(owner, Action::RecFolder(Some(dir)));
                 }
             }
             After::OpenDataFolder => {
@@ -4062,6 +4093,8 @@ pub fn run_demo(args: &[String]) {
             Action::ClipPersist(v) => m.clip.persist = v,
             Action::ClipClearOnLock(v) => m.clip.clear_on_lock = v,
             Action::DeviceNotices(v) => m.device_notices = v,
+            Action::RecSources(v) => m.recording.sources = v,
+            Action::RecFolder(v) => m.recording.folder = v,
             Action::Hotkey(id, value) => {
                 // What the island does: checked again, then set.
                 let fine = value.is_none_or(|hk| {

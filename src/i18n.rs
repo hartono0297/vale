@@ -584,6 +584,28 @@ keys! {
     RecSourceSystem => "Suara PC", "PC audio";
     RecSourceBoth => "Dua-duanya", "Both";
     RecOpenFolder => "Buka folder", "Open folder";
+    HotkeyRowRecord => "Rekam audio", "Record audio";
+    HotkeyRowRecordDesc => "Mulai atau hentikan rekaman", "Start or stop a recording";
+    RecNoticeSource => "Rekaman", "Recording";
+    RecSavedTitle => "Rekaman tersimpan", "Recording saved";
+    RecClickToOpen => "klik untuk buka", "click to open";
+    RecFailedTitle => "Rekaman gagal", "Recording failed";
+    RecMicDeniedTitle => "Mic diblokir Windows", "Windows blocked the mic";
+    RecMicDeniedBody => "Klik untuk buka pengaturan mic", "Click to open the mic settings";
+    RecMicLost => "Mic terputus", "Mic disconnected";
+    RecSystemLost => "Suara PC terputus", "PC audio disconnected";
+    RecKeepsGoing => "Rekaman tetap berjalan", "Recording continues";
+    RecConsent => "Ingat: minta izin peserta sebelum merekam",
+        "Remember to ask everyone before recording";
+    TrayRecStart => "Mulai rekam", "Start recording";
+    TrayRecStop => "Hentikan rekam", "Stop recording";
+    RecSettingsTitle => "Rekaman", "Recording";
+    RecSettingsSources => "Sumber suara", "Sound sources";
+    RecSettingsSourcesDesc => "Yang ikut direkam", "What gets recorded";
+    RecSettingsFolder => "Folder rekaman", "Recordings folder";
+    RecSettingsOpen => "Buka", "Open";
+    RecSettingsChange => "Ganti", "Change";
+    RecSettingsPickTitle => "Pilih folder rekaman", "Choose the recordings folder";
     RecEmpty => "Belum ada rekaman", "No recordings yet";
     ArrangeSkip => "Lewati ubin", "Skip tile";
     ArrangeSaved => "Tersimpan", "Saved";
@@ -1562,6 +1584,19 @@ pub fn devices_connected(lang: Lang, n: usize) -> String {
 
 /// A recording's length on the Rekam page: "45 dtk", "42 mnt", "1 j 05 mnt"
 /// ("45 s", "42 min", "1 h 05 min"). Minutes round down.
+/// When a recording started, for the Rekam page: "Hari ini 10:02", "Kemarin
+/// 14:30", else the date ("5 Nov").
+pub fn rec_started(lang: Lang, at: chrono::NaiveDateTime, today: NaiveDate) -> String {
+    let d = at.date();
+    match near(d, today) {
+        Some(Near::Today) => format!("{} {}", near_word(lang, Near::Today, true), at.format("%H:%M")),
+        Some(Near::Yesterday) => {
+            format!("{} {}", near_word(lang, Near::Yesterday, true), at.format("%H:%M"))
+        }
+        _ => short_date(lang, d),
+    }
+}
+
 pub fn rec_duration(lang: Lang, d: std::time::Duration) -> String {
     let secs = d.as_secs();
     let (h, m) = (secs / 3600, secs / 60 % 60);
@@ -3348,6 +3383,23 @@ mod tests {
         assert_eq!(search_folder_items(Lang::En, 999), "999 items");
         assert_eq!(search_folder_items(Lang::En, 1000), "999+ items");
         assert_eq!(search_folder_items(Lang::Id, 5000), "999+ item");
+    }
+
+    #[test]
+    fn a_recording_start_reads_today_yesterday_or_the_date() {
+        let at = |m, d, h, min| {
+            NaiveDate::from_ymd_opt(2026, m, d)
+                .unwrap()
+                .and_hms_opt(h, min, 0)
+                .unwrap()
+        };
+        let today = NaiveDate::from_ymd_opt(2026, 11, 7).unwrap();
+        assert_eq!(rec_started(Lang::Id, at(11, 7, 10, 2), today), "Hari ini 10:02");
+        assert_eq!(rec_started(Lang::Id, at(11, 6, 14, 30), today), "Kemarin 14:30");
+        assert_eq!(rec_started(Lang::Id, at(11, 5, 9, 15), today), "5 Nov");
+        assert_eq!(rec_started(Lang::En, at(11, 7, 9, 5), today), "Today 09:05");
+        assert_eq!(rec_started(Lang::En, at(11, 6, 23, 59), today), "Yesterday 23:59");
+        assert_eq!(rec_started(Lang::En, at(10, 25, 8, 0), today), "25 Oct");
     }
 
     #[test]

@@ -51,8 +51,6 @@ impl Sidecar {
 
     /// Reads a sidecar leniently: a missing or wrong-typed field gives its
     /// default, and anything that is not an object gives all defaults.
-    // The Rekam page's recent list (the app, T5/T6) is the first caller.
-    #[allow(dead_code)]
     pub fn from_value(value: &Value) -> Self {
         let d = Self::default();
         let str_of = |k: &str| value.get(k).and_then(Value::as_str);

@@ -200,6 +200,9 @@ pub struct Config {
     /// "Widget" (Settings -> Widget): where the desktop widgets sit and what
     /// they do. Owned by the island; read leniently, field by field.
     pub widgets: crate::widgets::prefs::WidgetPrefs,
+    /// "Rekaman" (Settings -> Fitur): the sources, the folder and the one-time
+    /// consent notice. Owned by the island; read leniently, field by field.
+    pub recording: crate::recorder::prefs::RecordingPrefs,
 }
 
 /// The lyrics card's rectangle in screen coordinates, physical pixels.
@@ -771,6 +774,7 @@ impl Default for Config {
             notch_monitor: NotchMonitor::Primary,
             lyrics_card: None,
             widgets: crate::widgets::prefs::WidgetPrefs::default(),
+            recording: crate::recorder::prefs::RecordingPrefs::default(),
         }
     }
 }
@@ -917,6 +921,7 @@ pub fn merge_owned(disk: Config, mem: &Config) -> Config {
         notch_monitor: mem.notch_monitor.clone(),
         lyrics_card: mem.lyrics_card,
         widgets: mem.widgets,
+        recording: mem.recording.clone(),
         ..disk
     }
 }
@@ -1311,6 +1316,7 @@ mod tests {
                 lyrics_card: crate::hotkey::parse("Win+Alt+L").unwrap(),
                 sticky_note: crate::hotkey::parse("Ctrl+Alt+N").unwrap(),
                 sticky_list: crate::hotkey::parse("Ctrl+Alt+J").unwrap(),
+                record: crate::hotkey::parse("Ctrl+Alt+Y").unwrap(),
             },
             settings_window: Some(WindowPlace {
                 left: 20,
@@ -1339,8 +1345,39 @@ mod tests {
                 tilt: true,
                 clip_fill: true,
             },
+            recording: crate::recorder::prefs::RecordingPrefs {
+                sources: crate::model::RecSources {
+                    mic: true,
+                    system: false,
+                },
+                folder: Some(std::path::PathBuf::from(r"E:\Rec")),
+                consent_shown: true,
+            },
         };
         assert_eq!(parse(&serde_json::to_string(&c).unwrap()), c);
+    }
+
+    #[test]
+    fn recording_prefs_read_leniently_and_belong_to_the_island() {
+        use crate::recorder::prefs::RecordingPrefs;
+        assert_eq!(parse(r#"{"style":"Notch"}"#).recording, RecordingPrefs::default());
+        for bad in [r#""x""#, "7", "null", "[1]", r#"{"sources":5,"consent_shown":"yes"}"#] {
+            let c = parse(&format!(r#"{{"style":"Notch","recording":{bad}}}"#));
+            assert_eq!(c.style, Style::Notch, "{bad}");
+            assert_eq!(c.recording, RecordingPrefs::default(), "{bad}");
+        }
+        let c = parse(r#"{"recording":{"consent_shown":true,"folder":"D:\\Audio"}}"#);
+        assert!(c.recording.consent_shown && c.recording.sources.mic && c.recording.sources.system);
+        assert_eq!(c.recording.folder, Some(std::path::PathBuf::from(r"D:\Audio")));
+        let mem = Config {
+            recording: RecordingPrefs {
+                consent_shown: true,
+                ..RecordingPrefs::default()
+            },
+            ..Config::default()
+        };
+        let merged = merge_owned(Config::default(), &mem);
+        assert!(merged.recording.consent_shown);
     }
 
     #[test]

@@ -2,7 +2,7 @@
 
 use std::path::Path;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, HWND, LPARAM, POINT, WPARAM};
 use windows::Win32::System::LibraryLoader::{
@@ -14,7 +14,7 @@ use windows::Win32::System::Registry::{
 };
 use windows::Win32::UI::HiDpi::GetDpiForSystem;
 use windows::Win32::UI::Shell::{
-    NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, Shell_NotifyIconW,
+    NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW, Shell_NotifyIconW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CheckMenuRadioItem, CreatePopupMenu, DestroyIcon, DestroyMenu, GetCursorPos,
@@ -28,6 +28,7 @@ use crate::config::{Config, NotchMonitor, Style};
 use crate::i18n::{Key, monitor_entry, text, update_menu_install};
 use crate::notch_monitor::{Display, choice_for, display_name, same_path, saved_missing};
 use crate::ui::app_icon;
+use crate::ui::tray_dot;
 
 /// Sent by the shell for mouse activity on the tray icon; `lparam` holds the
 /// mouse message (legacy notify-icon version).
@@ -43,6 +44,11 @@ const OLD_RUN_VALUE: &str = "DynamicIsland";
 /// alive while the icon is in the notification area and replaced on re-add.
 static TRAY_ICON: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
 
+/// A recording runs: the tray icon carries the red dot and the menu entry
+/// stops it. Kept here so a re-added icon (the taskbar was re-created) gets
+/// the dot back.
+static RECORDING: AtomicBool = AtomicBool::new(false);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuCmd {
     Settings,
@@ -51,6 +57,8 @@ pub enum MenuCmd {
     StickyNote,
     /// "Daftar catatan tempel": opens the sticky note list window.
     StickyList,
+    /// "Mulai rekam" / "Hentikan rekam": the audio recorder, like its hotkey.
+    Record,
     StylePill,
     StyleNotch,
     /// "Jalan saat Windows mulai": a check item that flips `start_with_windows`.
@@ -63,11 +71,12 @@ pub enum MenuCmd {
     Exit,
 }
 
-const COMMANDS: [MenuCmd; 10] = [
+const COMMANDS: [MenuCmd; 11] = [
     MenuCmd::Settings,
     MenuCmd::Search,
     MenuCmd::StickyNote,
     MenuCmd::StickyList,
+    MenuCmd::Record,
     MenuCmd::StylePill,
     MenuCmd::StyleNotch,
     MenuCmd::Autostart,
@@ -95,7 +104,7 @@ pub enum MenuChoice {
     Monitor(NotchMonitor),
 }
 
-/// The Monitor submenu's ids start here, clear of `MenuCmd::id` (1..=10):
+/// The Monitor submenu's ids start here, clear of `MenuCmd::id` (1..=11):
 /// 100 is "Monitor utama", 101 + i the display at place i of the list the menu
 /// was built from.
 const MONITOR_ID_PRIMARY: usize = 100;
@@ -186,16 +195,24 @@ fn monitor_choice(id: usize, displays: &[Display]) -> Option<NotchMonitor> {
 /// item then installs it instead of checking again. `displays`: the screens
 /// connected now (the Monitor submenu).
 fn menu_items(cfg: &Config, update: Option<&str>, displays: &[Display]) -> Vec<MenuItem> {
-    menu_items_with(cfg, update, displays, crate::widgets::sticky_count())
+    menu_items_with(
+        cfg,
+        update,
+        displays,
+        crate::widgets::sticky_count(),
+        RECORDING.load(Ordering::Relaxed),
+    )
 }
 
 /// `menu_items` with the number of sticky notes on the desktop (the new-note
-/// entry is greyed, with the reason, at the cap).
+/// entry is greyed, with the reason, at the cap) and whether a recording runs
+/// (the record entry then stops it).
 fn menu_items_with(
     cfg: &Config,
     update: Option<&str>,
     displays: &[Display],
     stickies: usize,
+    recording: bool,
 ) -> Vec<MenuItem> {
     let sticky = if crate::widgets::sticky::can_add(stickies) {
         MenuItem::Entry {
@@ -227,6 +244,11 @@ fn menu_items_with(
         entry(MenuCmd::Search, Key::MenuSearch, false),
         sticky,
         entry(MenuCmd::StickyList, Key::StickyList, false),
+        entry(
+            MenuCmd::Record,
+            if recording { Key::TrayRecStop } else { Key::TrayRecStart },
+            false,
+        ),
         MenuItem::Separator,
         entry(
             MenuCmd::StylePill,
@@ -272,7 +294,7 @@ pub fn add_tray(hwnd: HWND) -> Result<()> {
     data.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     data.uCallbackMessage = WM_APP_TRAY;
     // Small-icon size for the system DPI: 16 px at 100 %, 20 at 125 %, ...
-    let logo = app_icon::small_icon_for_dpi(unsafe { GetDpiForSystem() }).ok();
+    let logo = tray_icon();
     data.hIcon = match logo {
         Some(icon) => icon,
         None => unsafe { LoadIconW(None, IDI_APPLICATION)? },
@@ -284,6 +306,42 @@ pub fn add_tray(hwnd: HWND) -> Result<()> {
     let new = logo.map_or(std::ptr::null_mut(), |icon| icon.0);
     destroy_icon(TRAY_ICON.swap(new, Ordering::Relaxed));
     added
+}
+
+/// The icon the tray shows now: the logo at the small-icon size, with the
+/// recording dot while one runs (the plain logo if the dot cannot be made).
+fn tray_icon() -> Option<HICON> {
+    let logo = app_icon::small_icon_for_dpi(unsafe { GetDpiForSystem() }).ok()?;
+    if !RECORDING.load(Ordering::Relaxed) {
+        return Some(logo);
+    }
+    match tray_dot::with_rec_dot(logo) {
+        Some(dotted) => {
+            destroy_icon(logo.0);
+            Some(dotted)
+        }
+        None => Some(logo),
+    }
+}
+
+/// Starts or ends the recording state of the tray: swaps the icon in place
+/// (`NIM_MODIFY`) and flips the menu's entry. The old icon is destroyed after
+/// the shell has the new one.
+pub fn set_recording(hwnd: HWND, on: bool) {
+    if RECORDING.swap(on, Ordering::Relaxed) == on {
+        return;
+    }
+    let Some(icon) = tray_icon() else { return };
+    let mut data = icon_data(hwnd);
+    data.uFlags = NIF_ICON;
+    data.hIcon = icon;
+    if unsafe { Shell_NotifyIconW(NIM_MODIFY, &data) }.as_bool() {
+        destroy_icon(TRAY_ICON.swap(icon.0, Ordering::Relaxed));
+    } else {
+        // The icon is not in the notification area (yet): `add_tray` builds
+        // it from the flag when the taskbar comes back.
+        destroy_icon(icon.0);
+    }
 }
 
 pub fn remove_tray(hwnd: HWND) {
@@ -668,6 +726,7 @@ mod tests {
                 "Cari…",
                 "Catatan tempel baru",
                 "Daftar catatan tempel",
+                "Mulai rekam",
                 "-",
                 "Gaya: Pill",
                 "Gaya: Notch",
@@ -684,12 +743,12 @@ mod tests {
     #[test]
     fn the_new_note_entry_is_greyed_with_the_reason_at_the_cap() {
         let cfg = Config::default();
-        let few = menu_items_with(&cfg, None, &[], 19);
+        let few = menu_items_with(&cfg, None, &[], 19, false);
         assert!(matches!(
             &few[2],
             MenuItem::Entry { cmd: MenuCmd::StickyNote, label, .. } if label == "Catatan tempel baru"
         ));
-        let full = menu_items_with(&cfg, None, &[], 20);
+        let full = menu_items_with(&cfg, None, &[], 20, false);
         assert!(matches!(
             &full[2],
             MenuItem::Disabled { cmd: MenuCmd::StickyNote, label }
@@ -700,7 +759,7 @@ mod tests {
             ..Config::default()
         };
         assert_eq!(
-            labels(&menu_items_with(&en, None, &[], 20))[2],
+            labels(&menu_items_with(&en, None, &[], 20, false))[2],
             "New sticky note (at most 20)"
         );
     }
@@ -717,7 +776,7 @@ mod tests {
             };
             // Enabled with few notes, with none and at the cap.
             for n in [0, 5, 19, 20] {
-                let items = menu_items_with(&cfg, None, &[], n);
+                let items = menu_items_with(&cfg, None, &[], n, false);
                 assert!(
                     matches!(&items[3], MenuItem::Entry { cmd: MenuCmd::StickyList, label, checked: false } if label == want),
                     "{lang:?} with {n}: {:?}",
@@ -728,11 +787,37 @@ mod tests {
     }
 
     #[test]
+    fn the_record_entry_follows_the_sticky_list_and_turns_into_stop_while_recording() {
+        let pos = COMMANDS.iter().position(|c| *c == MenuCmd::StickyList).unwrap();
+        assert_eq!(COMMANDS[pos + 1], MenuCmd::Record);
+        for (lang, start, stop) in [
+            (Lang::Id, "Mulai rekam", "Hentikan rekam"),
+            (Lang::En, "Start recording", "Stop recording"),
+        ] {
+            let cfg = Config { language: lang, ..Config::default() };
+            for (recording, want) in [(false, start), (true, stop)] {
+                let items = menu_items_with(&cfg, None, &[], 0, recording);
+                assert!(
+                    matches!(&items[4], MenuItem::Entry { cmd: MenuCmd::Record, label, checked: false } if label == want),
+                    "{lang:?} {recording}: {:?}",
+                    items[4]
+                );
+            }
+        }
+        // The ids stay unique and clear of the Monitor submenu's.
+        let mut ids: Vec<usize> = COMMANDS.iter().map(|c| c.id()).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), COMMANDS.len());
+        assert!(ids.iter().all(|id| *id < MONITOR_ID_PRIMARY));
+    }
+
+    #[test]
     fn a_known_update_takes_the_place_of_the_check_item() {
         let id = labels(&menu_items(&Config::default(), Some("3.11.0"), &[])).join("|");
         assert_eq!(
             id,
-            "Pengaturan…|Cari…|Catatan tempel baru|Daftar catatan tempel|-|Gaya: Pill|Gaya: Notch|Monitor|-|Jalan saat Windows mulai|-|Update ke 3.11.0|Keluar"
+            "Pengaturan…|Cari…|Catatan tempel baru|Daftar catatan tempel|Mulai rekam|-|Gaya: Pill|Gaya: Notch|Monitor|-|Jalan saat Windows mulai|-|Update ke 3.11.0|Keluar"
         );
         let en = Config {
             language: Lang::En,
@@ -741,7 +826,7 @@ mod tests {
         let en = labels(&menu_items(&en, Some("3.11.0"), &[])).join("|");
         assert_eq!(
             en,
-            "Settings…|Search…|New sticky note|Sticky note list|-|Style: Pill|Style: Notch|Monitor|-|Start with Windows|-|Update to 3.11.0|Quit"
+            "Settings…|Search…|New sticky note|Sticky note list|Start recording|-|Style: Pill|Style: Notch|Monitor|-|Start with Windows|-|Update to 3.11.0|Quit"
         );
         let with = commands(&menu_items(&Config::default(), Some("3.11.0"), &[]));
         assert!(with.contains(&MenuCmd::InstallUpdate));
@@ -764,6 +849,7 @@ mod tests {
                 "Search…",
                 "New sticky note",
                 "Sticky note list",
+                "Start recording",
                 "-",
                 "Style: Pill",
                 "Style: Notch",

@@ -119,6 +119,8 @@ fn notice_has_action(notice: &Notice) -> bool {
             | NoticeKind::Arranged { .. }
             | NoticeKind::UpdateFailed
             | NoticeKind::ShotSaved { path: Some(_) }
+            | NoticeKind::RecSaved { .. }
+            | NoticeKind::RecMicDenied
             | NoticeKind::App {
                 app_id: Some(_),
                 ..
@@ -612,6 +614,10 @@ impl IslandState {
                 | NoticeKind::CleanDone
                 | NoticeKind::MoleDone
                 | NoticeKind::ShotSaved { .. }
+                | NoticeKind::RecSaved { .. }
+                | NoticeKind::RecFailed
+                | NoticeKind::RecMicDenied
+                | NoticeKind::RecInfo
                 | NoticeKind::ShotDeleted
                 | NoticeKind::DevicePlugged { .. }
                 | NoticeKind::DeviceSafe
@@ -893,6 +899,7 @@ impl IslandState {
             Event::Calendar(_)
             | Event::Toast(_)
             | Event::Update(_)
+            | Event::Rec(_)
             | Event::Lyrics(_)
             | Event::Cli(_)
             | Event::ExplorerFolders { .. }
@@ -2758,7 +2765,11 @@ impl IslandState {
             }
             NoticeKind::ClaudeDone { session_id } => Some(Effect::OpenClaudeSession { session_id }),
             // A saved screenshot: the body click shows the file in Explorer.
-            NoticeKind::ShotSaved { path: Some(path) } => Some(Effect::RevealFile(path)),
+            NoticeKind::ShotSaved { path: Some(path) } | NoticeKind::RecSaved { path } => {
+                Some(Effect::RevealFile(path))
+            }
+            // The mic was refused: the click opens Windows' mic privacy page.
+            NoticeKind::RecMicDenied => Some(Effect::RecMicSettings),
             NoticeKind::ClaudeWaiting { .. }
             | NoticeKind::Reminder { .. }
             | NoticeKind::StickyReminder { .. }
@@ -9674,6 +9685,45 @@ mod tests {
         let fx = s.apply(Event::Click(Hit::Body), t0 + secs(1));
         assert_eq!(fx, vec![Effect::RevealFile(SAVED_FILE.into())]);
         assert_eq!(s.view(), View::Idle);
+    }
+
+    fn rec_notice(kind: NoticeKind) -> Notice {
+        Notice { kind, ..copied("x") }
+    }
+
+    #[test]
+    fn a_click_on_a_recording_saved_notice_reveals_the_file_and_the_mic_notice_opens_settings() {
+        let t0 = Instant::now();
+        let saved = rec_notice(NoticeKind::RecSaved {
+            path: r"C:
+.m4a".into(),
+        });
+        assert!(notice_has_action(&saved));
+        assert!(notice_closable(&saved));
+        let mut s = st();
+        s.apply(Event::Notice(saved), t0);
+        let fx = s.apply(Event::Click(Hit::Body), t0 + secs(1));
+        assert_eq!(fx, vec![Effect::RevealFile(r"C:
+.m4a".into())]);
+        assert_eq!(s.view(), View::Idle);
+
+        let denied = rec_notice(NoticeKind::RecMicDenied);
+        assert!(notice_has_action(&denied));
+        let mut s = st();
+        s.apply(Event::Notice(denied), t0);
+        let fx = s.apply(Event::Click(Hit::Body), t0 + secs(1));
+        assert_eq!(fx, vec![Effect::RecMicSettings]);
+
+        // A failure and a plain word only dismiss, and last the usual time.
+        for kind in [NoticeKind::RecFailed, NoticeKind::RecInfo] {
+            let n = rec_notice(kind);
+            assert!(!notice_has_action(&n));
+            let mut s = st();
+            s.apply(Event::Notice(n), t0);
+            assert_eq!(s.next_deadline(), Some(t0 + NOTICE_DURATION));
+            assert_eq!(s.apply(Event::Click(Hit::Body), t0 + secs(1)), vec![]);
+            assert_eq!(s.view(), View::Idle);
+        }
     }
 
     #[test]

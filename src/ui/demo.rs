@@ -516,6 +516,10 @@ enum DemoNotice {
     ShotSavedLong,
     /// "Dihapus · clipboard dikosongkan" after Hapus.
     ShotDeleted,
+    /// "Rekaman tersimpan" after a recording (a made-up file).
+    RecSaved,
+    /// Windows refused the mic.
+    RecMicDenied,
     /// A drive plugged in: SanDisk Ultra, E:, 38,9 GB free (rencana-v3.5 p3).
     DevicePlugged,
     /// "Aman dicabut" after Eject: SanDisk Ultra.
@@ -863,7 +867,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 175] = [
+const SCENES: [Scene; 177] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -1291,6 +1295,18 @@ const SCENES: [Scene; 175] = [
         ShapeKind::Notice,
         View0::Notice(DemoNotice::ShotSavedLong),
         Expr::Happy,
+    ),
+    bata(
+        "rec-saved",
+        ShapeKind::Notice,
+        View0::Notice(DemoNotice::RecSaved),
+        Expr::Happy,
+    ),
+    bata(
+        "rec-mic-denied",
+        ShapeKind::Notice,
+        View0::Notice(DemoNotice::RecMicDenied),
+        Expr::Sad,
     ),
     bata(
         "screenshot-deleted",
@@ -3012,6 +3028,12 @@ fn demo_notice(which: DemoNotice, renderer: &Renderer) -> Notice {
             let fits = |s: &str| renderer.notice_text_fits(&kind, false, s);
             crate::app::shot::kept_notice(Some(file.into()), true, &fits)
         }
+        DemoNotice::RecSaved => crate::app::record::saved_notice(
+            crate::i18n::lang(),
+            r"C:\Users\vale\Documents\Vale\Rekaman\2026-11-07 1002.m4a".into(),
+            Duration::from_secs(42 * 60),
+        ),
+        DemoNotice::RecMicDenied => crate::app::record::mic_denied_notice(crate::i18n::lang()),
         DemoNotice::ShotDeleted => {
             let lang = crate::i18n::lang();
             let (title, body) =

@@ -22,6 +22,7 @@ pub mod capture;
 pub mod encode;
 pub mod level;
 pub mod naming;
+pub mod prefs;
 pub mod resample;
 pub mod sidecar;
 pub mod timeline;
@@ -434,8 +435,6 @@ impl Recorder {
     }
 
     /// Pauses: the audio from now until `resume` is left out of the file.
-    // `pause`, `resume` and `paused`: the app (T6) is the first caller.
-    #[allow(dead_code)]
     pub fn pause(&mut self) {
         if self.paused_since.is_some() {
             return;
@@ -446,7 +445,6 @@ impl Recorder {
         self.paused_since = Some(Instant::now());
     }
 
-    #[allow(dead_code)]
     pub fn resume(&mut self) {
         let Some(since) = self.paused_since.take() else {
             return;
@@ -457,7 +455,6 @@ impl Recorder {
         p.resume_at(frame);
     }
 
-    #[allow(dead_code)]
     pub fn paused(&self) -> bool {
         self.paused_since.is_some()
     }

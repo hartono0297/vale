@@ -949,7 +949,7 @@ impl Renderer {
             3.0,
         );
         let c = (l.button.x + l.button.w / 2.0, l.button.y + l.button.h / 2.0);
-        self.set_color(theme::SOFT_RED, 1.0);
+        self.set_color(theme::REC_RED, 1.0);
         if rec.is_some() {
             let side = REC_STOP_SIDE;
             self.fill_round(
@@ -1020,7 +1020,7 @@ impl Renderer {
                 ..l.elapsed
             };
             let key = if r.paused { Key::Paused } else { Key::RecRecording };
-            let ink = if r.paused { p.ochre } else { theme::SOFT_RED };
+            let ink = if r.paused { p.ochre } else { theme::REC_RED };
             self.text_colored(text(lang, key), &self.fonts.micro_center, state, ink, 1.0);
         }
 
@@ -4771,7 +4771,7 @@ impl Renderer {
         let tint = if rec.paused {
             self.palette.ochre
         } else {
-            theme::SOFT_RED
+            theme::REC_RED
         };
         let ((cx, cy), r) = l.dot;
         let halo = r + 3.0;
@@ -4798,7 +4798,15 @@ impl Renderer {
         let clock = rec_clock(rec.elapsed);
         if rec.paused {
             self.text_colored(&clock, &self.fonts.title, l.time, self.palette.ochre, 1.0);
-            self.text2(text(i18n::lang(), Key::Paused), &self.fonts.eleven, l.label);
+            // "dijeda" sits 6 dip after the clock's real width, not its box.
+            let gap = self.text_width(&clock, &self.fonts.title).ceil() + 6.0;
+            let x = (l.time.x + gap).min(l.label.right());
+            let label = Rect {
+                x,
+                w: (l.label.right() - x).max(0.0),
+                ..l.label
+            };
+            self.text2(text(i18n::lang(), Key::Paused), &self.fonts.eleven, label);
             return Ok(());
         }
         self.text(&clock, &self.fonts.title, l.time, 1.0);

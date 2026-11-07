@@ -160,6 +160,10 @@ use notif_page::{NotifSetting, NotifState, TIMER_NOTIF_SAVE};
 mod update_page;
 use update_page::{TIMER_UPDATE, UpdateState};
 
+#[path = "app_record.rs"]
+pub(crate) mod record;
+use record::RecState;
+
 #[path = "app_lyrics_card.rs"]
 mod card;
 use card::LyricsCardState;
@@ -479,6 +483,7 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
             }
         });
     }
+    let rec_sources = config.recording.sources;
     APP.with(|cell| {
         *cell.borrow_mut() = Some(App {
             hwnd,
@@ -584,10 +589,8 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
             pomo_timer: false,
             rec_timer: false,
             rec_level_timer: false,
-            rec_sources: RecSources {
-                mic: true,
-                system: true,
-            },
+            rec: RecState::default(),
+            rec_sources,
             clock_timer: false,
             progress_timer: false,
             lyrics: LyricsState::default(),
@@ -1109,8 +1112,10 @@ struct App {
     rec_timer: bool,
     /// `TIMER_REC_LEVEL` is set.
     rec_level_timer: bool,
+    /// The audio recorder's session (`app_record`).
+    rec: RecState,
     /// The sources the Rekam page's control chose for the next recording
-    /// (T6 keeps them in the config).
+    /// (kept in `config.recording.sources`).
     rec_sources: RecSources,
     /// `TIMER_CLOCK` is set.
     clock_timer: bool,
@@ -1382,6 +1387,7 @@ impl App {
                     | Event::Toast(_)
                     | Event::ClipPacked { .. }
                     | Event::Update(_)
+                    | Event::Rec(_)
                     // A progress tick draws the receiving view itself, at
                     // most six a second; nothing else changed.
                     | Event::Phone(_, crate::phone::PhoneEvent::UploadProgress { .. })
@@ -1490,6 +1496,11 @@ impl App {
                 // The self-update's workers: `App` decides what shows.
                 Event::Update(event) => {
                     self.on_update_event(event);
+                    continue;
+                }
+                // The recorder's thread: `App` makes the notice.
+                Event::Rec(event) => {
+                    self.on_rec_event(event);
                     continue;
                 }
                 Event::SearchIndex(apps) => {
@@ -2265,17 +2276,12 @@ impl App {
             Effect::PhoneCancel => self.phone_cancel(),
             Effect::PhoneStop => self.phone_stop(crate::phone::EndReason::Done),
             Effect::PhoneBack => self.phone_back(),
-            // T6: wire the recorder. Start or stop it, here and from the
-            // hotkey and the tray; the status goes back as `Event::RecStatus`.
-            Effect::RecToggle => {}
-            // T6: wire the recorder. Pause when recording, resume when paused.
-            Effect::RecPause => {}
-            // T6: save the choice in `config.recording.sources`.
-            Effect::RecSources(sources) => self.rec_sources = sources,
-            // T6: wire the recorder. Explorer on the file (`/select,`).
-            Effect::RecReveal(_path) => {}
-            // T6: wire the recorder. Explorer on the recordings folder.
-            Effect::RecOpenFolder => {}
+            Effect::RecToggle => self.rec_toggle(),
+            Effect::RecPause => self.rec_pause(),
+            Effect::RecSources(sources) => self.rec_set_sources(sources),
+            Effect::RecReveal(path) => self.rec_reveal(path),
+            Effect::RecOpenFolder => self.rec_open_folder(),
+            Effect::RecMicSettings => self.rec_mic_settings(),
             Effect::DeviceEject(i) => self.devices_eject(i),
             Effect::DeviceOpen(i) => self.devices_open(i),
             Effect::DeviceDetail(i) => self.devices_toggle_detail(i),
@@ -3643,6 +3649,7 @@ impl App {
 
     /// Retargets the animation at the state's view and re-arms the notice deadline.
     fn refresh(&mut self, now: Instant) {
+        self.rec_follow_page(&self.state.view());
         self.draw_gen = self.draw_gen.wrapping_add(1);
         // The sleep clock follows mouse and keyboard input anywhere on the PC.
         self.fold_pc_input(now);
@@ -5296,7 +5303,6 @@ impl App {
                 }
             }
             TIMER_REC_LEVEL => {
-                // T6: read `recorder.levels()` here; the frame has 0.0 for now.
                 if !self.animating() {
                     self.draw(Instant::now());
                 }
@@ -6065,6 +6071,11 @@ impl App {
         // The hotkeys follow a changed value (once started; not while
         // Settings records).
         self.hotkeys_follow_config();
+        // A hand edit of the recorder's sources reaches the Rekam page (not
+        // while a recording runs: it keeps what it started with).
+        if !self.rec.active() {
+            self.rec_sources = self.config.recording.sources;
+        }
         if changed && let Some(sync) = &self.sync {
             sync.send(SyncRequest::Config(self.config.clone()));
             // The next calendar view asks again, now with the new client.
@@ -6348,6 +6359,12 @@ impl App {
             SettingsAction::DeviceNotices(on) => {
                 self.config.device_notices = on;
                 self.save_config();
+            }
+            SettingsAction::RecSources(v) => self.rec_set_sources(v),
+            SettingsAction::RecFolder(dir) => {
+                self.config.recording.folder = dir;
+                self.save_config();
+                self.sync_settings();
             }
             // The thumb moves live; only the release is saved.
             SettingsAction::ArrangeGap { gap, commit } => {
@@ -6657,6 +6674,7 @@ impl App {
             || transit.content_alpha < 1.0
             || self.strip_motion.is_some()
             || self.eyes_morph;
+        let rec_levels = self.rec_levels();
         let frame = Frame {
             view: &self.drawn,
             media: state.media(),
@@ -6665,9 +6683,8 @@ impl App {
                 elapsed: r.elapsed(now),
                 paused: r.paused(),
                 sources: r.sources,
-                // T6: the recorder's `levels()`; 0.0 (the meters at rest) until then.
-                mic: 0.0,
-                system: 0.0,
+                mic: rec_levels.0,
+                system: rec_levels.1,
             }),
             now,
             today: state.today(),
@@ -8252,6 +8269,9 @@ fn open_menu(hwnd: HWND) {
         Some(MenuCmd::StickyList) => {
             with_app(|app| app.open_note_list(None));
         }
+        Some(MenuCmd::Record) => {
+            with_app(|app| app.rec_toggle());
+        }
         Some(MenuCmd::StylePill) => {
             with_app(|app| app.set_style(Style::Pill));
         }
@@ -8969,6 +8989,7 @@ unsafe extern "system" fn wnd_proc(
                 with_app(App::notif_shutdown);
                 with_app(App::widgets_flush);
                 with_app(App::hotkeys_shutdown);
+                with_app(App::rec_shutdown);
             }
             LRESULT(0)
         }
@@ -8998,6 +9019,7 @@ unsafe extern "system" fn wnd_proc(
             with_app(App::devices_shutdown);
             with_app(App::arrange_shutdown);
             with_app(App::hotkeys_shutdown);
+            with_app(App::rec_shutdown);
             unsafe {
                 let _ = WTSUnRegisterSessionNotification(hwnd);
                 let note = DISPLAY_NOTIFY.replace(0);

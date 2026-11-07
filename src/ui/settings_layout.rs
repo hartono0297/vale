@@ -33,6 +33,8 @@ use crate::ui::geometry::{
 };
 use crate::ui::icons::Icon;
 use crate::ui::robot::{Motion, SLEEP_MAX, SLEEP_MIN};
+use crate::model::RecSources;
+use crate::recorder::prefs::{RecordingPrefs, folder_label as rec_folder_label};
 use crate::widgets::prefs::{FullscreenRule, WidgetLayer, WidgetPrefs};
 use crate::widgets::sticky::can_add;
 
@@ -437,6 +439,11 @@ pub enum Hit {
     HotkeysResetAll,
     /// "Notifikasi perangkat": the plug-in and safe-to-remove notices.
     DeviceNotices,
+    /// Fitur -> Rekaman: the sources choice, "Buka" (the folder in Explorer)
+    /// and "Ganti" (the folder picker).
+    RecSources(RecSources),
+    RecFolderOpen,
+    RecFolderChange,
     /// Settings -> Fitur -> Susun: "+ Template baru", a
     /// template's "Ubah" and "Hapus", a saved arrangement's "Ganti nama"
     /// and "Hapus" (by place in their lists), and the editor's "Belah"
@@ -691,6 +698,8 @@ pub enum Group {
     /// Widget -> Lapisan and Saat layar penuh.
     WidgetLayer,
     WidgetFullscreen,
+    /// Fitur -> Rekaman -> Sumber suara.
+    RecSources,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1307,6 +1316,8 @@ pub struct State<'a> {
     pub open_mode: OpenMode,
     /// The plug-in and safe-to-remove notices.
     pub device_notices: bool,
+    /// Fitur -> Rekaman: the sources and the folder.
+    pub recording: RecordingPrefs,
     /// The hotkeys, and by `HotkeyId::index` whether a set one could not
     /// be registered (taken by another app, or the PrtSc hook failed).
     pub hotkeys: Hotkeys,
@@ -3880,6 +3891,7 @@ fn features_page(b: &mut Builder, s: &State) {
     b.divider(card, rows[1]);
 
     devices_card(b, s);
+    recording_card(b, s);
 
     titled(b, Key::GroupCleaner);
     let card = b.card(ROW_H);
@@ -4370,6 +4382,65 @@ fn devices_card(b: &mut Builder, s: &State) {
     b.row_text(card, card.y, b.t(Key::DeviceNotices), desc, false, x);
 }
 
+/// The sources a Rekaman segment stands for, in the control's order.
+pub const REC_CHOICES: [RecSources; 3] = [
+    RecSources {
+        mic: true,
+        system: false,
+    },
+    RecSources {
+        mic: false,
+        system: true,
+    },
+    RecSources {
+        mic: true,
+        system: true,
+    },
+];
+
+/// How the folder shows when none is chosen.
+pub const REC_DEFAULT_FOLDER: &str = r"Documents\Vale\Rekaman";
+
+/// "Rekaman" (Fitur): which sound is recorded, and the folder it goes to.
+/// (The hotkey is in the Tombol pintas section.)
+fn recording_card(b: &mut Builder, s: &State) {
+    titled(b, Key::RecSettingsTitle);
+    let card = b.card(2.0 * ROW_H);
+    let rows = [card.y, card.y + ROW_H];
+    let cy = |y: f32| y + ROW_H / 2.0;
+    let items = vec![
+        (Hit::RecSources(REC_CHOICES[0]), b.t(Key::RecSourceMic)),
+        (Hit::RecSources(REC_CHOICES[1]), b.t(Key::RecSourceSystem)),
+        (Hit::RecSources(REC_CHOICES[2]), b.t(Key::RecSourceBoth)),
+    ];
+    let selected = index_of(&REC_CHOICES, &s.recording.sources);
+    let x = b.segmented(Group::RecSources, b.g.right, cy(rows[0]), items, selected);
+    let desc = Some((b.t(Key::RecSettingsSourcesDesc), Tone::Secondary));
+    b.row_text(card, rows[0], b.t(Key::RecSettingsSources), desc, false, x);
+    b.divider(card, rows[1]);
+
+    let (open, change) = (b.t(Key::RecSettingsOpen), b.t(Key::RecSettingsChange));
+    let (open_w, change_w) = (
+        b.button_w(&[&open], ButtonKind::Secondary),
+        b.button_w(&[&change], ButtonKind::Secondary),
+    );
+    let x = b.buttons(
+        b.g.right,
+        cy(rows[1]),
+        vec![
+            (Hit::RecFolderOpen, open, ButtonKind::Secondary, true, open_w),
+            (Hit::RecFolderChange, change, ButtonKind::Secondary, true, change_w),
+        ],
+    );
+    let folder = s
+        .recording
+        .folder
+        .as_deref()
+        .map_or_else(|| REC_DEFAULT_FOLDER.to_owned(), rec_folder_label);
+    let desc = Some((folder, Tone::Secondary));
+    b.row_text(card, rows[1], b.t(Key::RecSettingsFolder), desc, false, x);
+}
+
 /// "Jumlah item" one step (10) up or down, kept in 10–200; a hand-edited
 /// value off the grid snaps onto it.
 pub fn clip_items_step(n: u32, dir: i32) -> u32 {
@@ -4506,6 +4577,7 @@ pub fn hotkey_row_key(id: HotkeyId) -> Key {
         HotkeyId::LyricsCard => Key::HotkeyRowLyricsCard,
         HotkeyId::StickyNote => Key::StickyNew,
         HotkeyId::StickyList => Key::StickyList,
+        HotkeyId::Record => Key::HotkeyRowRecord,
     }
 }
 
@@ -4519,6 +4591,7 @@ fn hotkey_row_desc_key(id: HotkeyId) -> Key {
         HotkeyId::LyricsCard => Key::HotkeyRowLyricsCardDesc,
         HotkeyId::StickyNote => Key::StickyNewDesc,
         HotkeyId::StickyList => Key::StickyListDesc,
+        HotkeyId::Record => Key::HotkeyRowRecordDesc,
     }
 }
 
@@ -5066,6 +5139,7 @@ mod tests {
             lyrics_card: hk("Win+Ctrl+Alt+Shift+PageUp"),
             sticky_note: hk("Win+Ctrl+Alt+Shift+End"),
             sticky_list: hk("Win+Ctrl+Alt+Shift+Home"),
+            record: hk("Win+Ctrl+Alt+Shift+Insert"),
         }
     }
 
@@ -5192,6 +5266,7 @@ mod tests {
                             OpenMode::Hover
                         },
                         device_notices: !locked,
+                        recording: RecordingPrefs::default(),
                         // Locked: every row set, the longest combos, taken,
                         // one being recorded and one refused. Otherwise the
                         // defaults.
@@ -6520,7 +6595,7 @@ mod tests {
             // One card of the header and eight rows, under its eyebrow.
             assert_eq!(l.cards.len(), 1);
             let card = l.cards[0];
-            assert_eq!(card.h, HEADER_H + 8.0 * ROW_H);
+            assert_eq!(card.h, HEADER_H + 9.0 * ROW_H);
             assert!(
                 l.texts
                     .iter()
@@ -6630,9 +6705,10 @@ mod tests {
             assert!(enabled(&l, HotkeyId::Clipboard));
             assert!(!enabled(&l, HotkeyId::Search));
             assert!(l.hits().iter().any(|(h, _)| *h == Hit::HotkeysResetAll));
-            // Every field takes a click.
+            // Every field takes a click (in a window tall enough for all nine rows).
+            let tall = layout_in(Section::Hotkeys, &s, &Estimate, (CLIENT_W, 800.0));
             for id in HotkeyId::ALL {
-                assert!(l.hits().iter().any(|(h, _)| *h == Hit::HotkeyField(id)));
+                assert!(tall.hits().iter().any(|(h, _)| *h == Hit::HotkeyField(id)));
             }
             // Recording: the flag on that field only.
             let rec = State {
@@ -6642,7 +6718,7 @@ mod tests {
             let f = hotkey_fields(&layout(Section::Hotkeys, &rec, &Estimate));
             assert_eq!(
                 f.iter().map(|x| x.3).collect::<Vec<_>>(),
-                [false, false, true, false, false, false, false, false]
+                [false, false, true, false, false, false, false, false, false]
             );
             // The description: red for a refusal on that row, red for a taken
             // one that is set, otherwise secondary.
@@ -6680,8 +6756,8 @@ mod tests {
             let reds: Vec<&Text> = l.texts.iter().filter(|t| t.tone == Tone::Bad).collect();
             assert_eq!(
                 reds.len(),
-                4,
-                "search, clipboard, screenshot and the lyrics card are set"
+                5,
+                "search, clipboard, screenshot, the lyrics card and the recorder are set"
             );
             assert!(reds.iter().all(|t| t.text == text(lang, Key::HotkeyTaken)));
         }
@@ -8303,6 +8379,56 @@ mod tests {
     }
 
     #[test]
+    fn the_recording_card_has_the_sources_choice_and_a_folder_row_with_two_buttons() {
+        for lang in [Lang::Id, Lang::En] {
+            for (i, want) in REC_CHOICES.iter().enumerate() {
+                let s = State {
+                    lang,
+                    recording: RecordingPrefs {
+                        sources: *want,
+                        folder: Some(std::path::PathBuf::from(r"D:\Audio\Rapat")),
+                        consent_shown: true,
+                    },
+                    scroll: 1e6,
+                    ..states()[0].clone()
+                };
+                let l = layout(Section::Features, &s, &Estimate);
+                let (_, items, selected) = l.segmented(Group::RecSources).expect("Sumber suara");
+                assert_eq!(selected, i);
+                assert_eq!(
+                    items.iter().map(|s| s.hit).collect::<Vec<_>>(),
+                    REC_CHOICES.map(Hit::RecSources)
+                );
+                assert_eq!(
+                    items.iter().map(|s| s.label.as_str()).collect::<Vec<_>>(),
+                    [
+                        text(lang, Key::RecSourceMic),
+                        text(lang, Key::RecSourceSystem),
+                        text(lang, Key::RecSourceBoth)
+                    ]
+                );
+                // Its own two-row card under its label, before "Pembersih".
+                let card = l.cards[l.cards.len() - 2];
+                assert_eq!(card.h, 2.0 * ROW_H);
+                assert!(l.texts.iter().any(|t| t.text == text(lang, Key::RecSettingsTitle).to_uppercase()));
+                // The folder shows like the screenshot one: parent and name.
+                assert!(l.texts.iter().any(|t| t.text == r"Audio\Rapat"), "{lang:?}");
+                let hits = l.hits();
+                let (open, change) = (
+                    hits.iter().find(|(h, _)| *h == Hit::RecFolderOpen).expect("Buka").1,
+                    hits.iter().find(|(h, _)| *h == Hit::RecFolderChange).expect("Ganti").1,
+                );
+                assert!(open.right() <= change.x, "Buka left of Ganti");
+                assert!(open.y >= card.y + ROW_H && change.bottom() <= card.bottom());
+            }
+        }
+        // No folder chosen: the default's label.
+        let s = State { scroll: 1e6, ..states()[0].clone() };
+        let l = layout(Section::Features, &s, &Estimate);
+        assert!(l.texts.iter().any(|t| t.text == REC_DEFAULT_FOLDER));
+    }
+
+    #[test]
     fn the_devices_card_is_one_row_with_the_notice_toggle_and_no_divider() {
         for lang in [Lang::Id, Lang::En] {
             for on in [true, false] {
@@ -8313,8 +8439,9 @@ mod tests {
                     ..states()[0].clone()
                 };
                 let l = layout(Section::Features, &s, &Estimate);
-                // Its own card under its label, before "Pembersih": one row.
-                let card = l.cards[l.cards.len() - 2];
+                // Its own card under its label, before "Rekaman" and
+                // "Pembersih": one row.
+                let card = l.cards[l.cards.len() - 3];
                 assert_eq!(card.h, ROW_H);
                 assert!(
                     l.texts

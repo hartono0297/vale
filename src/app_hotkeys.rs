@@ -37,6 +37,8 @@ pub(super) const ROWS: usize = HotkeyId::ALL.len();
 pub(super) const HOTKEY_STICKY: i32 = 7;
 /// The sticky note list takes 8.
 pub(super) const HOTKEY_STICKY_LIST: i32 = 8;
+/// The audio recorder takes 9.
+pub(super) const HOTKEY_RECORD: i32 = 9;
 
 /// The `RegisterHotKey` id of a row.
 pub(super) fn wm_id(id: HotkeyId) -> i32 {
@@ -49,6 +51,7 @@ pub(super) fn wm_id(id: HotkeyId) -> i32 {
         HotkeyId::LyricsCard => HOTKEY_LYRICS_CARD,
         HotkeyId::StickyNote => HOTKEY_STICKY,
         HotkeyId::StickyList => HOTKEY_STICKY_LIST,
+        HotkeyId::Record => HOTKEY_RECORD,
     }
 }
 
@@ -314,6 +317,7 @@ impl App {
             HotkeyId::LyricsCard => self.on_lyrics_card_hotkey(),
             HotkeyId::StickyNote => self.on_sticky_hotkey(),
             HotkeyId::StickyList => self.open_note_list(None),
+            HotkeyId::Record => self.rec_toggle(),
         }
     }
 
@@ -353,19 +357,20 @@ mod tests {
         assert_eq!(HOTKEY_ARRANGE, 4);
         assert_eq!(HOTKEY_SCREENSHOT, 5);
         assert_eq!(HOTKEY_LYRICS_CARD, 6);
-        assert_eq!(ROWS, 8);
+        assert_eq!(ROWS, 9);
         assert_eq!(HOTKEY_STICKY, 7, "6 is reserved for the lyrics card");
         assert_eq!(HOTKEY_STICKY_LIST, 8);
+        assert_eq!(HOTKEY_RECORD, 9);
         for id in HotkeyId::ALL {
             assert_eq!(row_of_wm_id(wm_id(id)), Some(id));
         }
         assert_eq!(row_of_wm_id(0), None);
-        assert_eq!(row_of_wm_id(9), None);
-        // The hook's `wparam` is the row index, and the eight ids are distinct.
+        assert_eq!(row_of_wm_id(10), None);
+        // The hook's `wparam` is the row index, and the nine ids are distinct.
         let mut ids: Vec<i32> = HotkeyId::ALL.iter().map(|i| wm_id(*i)).collect();
         ids.sort_unstable();
         ids.dedup();
-        assert_eq!(ids.len(), 8);
+        assert_eq!(ids.len(), 9);
     }
 
     #[test]
@@ -410,7 +415,7 @@ mod tests {
         assert!(s.any_failed());
         assert_eq!(
             s.failed_flags(),
-            [false, false, true, false, false, false, false, false]
+            [false, false, true, false, false, false, false, false, false]
         );
     }
 
