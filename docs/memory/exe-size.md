@@ -288,3 +288,15 @@ both built in the main checkout, `cargo build --release --locked`, 0 warnings:
 
 One new `windows` feature (`Win32_Devices_FunctionDiscovery`, for the device
 friendly name key); no new crate.
+
+## Notch mute and the themed dropdown (2026-11-08)
+
+[[notch-rec-mute]], [[menu-pop]]: `main` at 53652f6 against b19d860, both
+built in the main checkout, `cargo build --release --locked`, 0 warnings:
+
+| Build | Bytes |
+|---|---|
+| b19d860 (recording controls) | 4,016,640 |
+| 53652f6 (notch mute, `menu_pop`) | 4,034,560 (+17,920, +0.4 %) |
+
+No new crate and no new `windows` feature.

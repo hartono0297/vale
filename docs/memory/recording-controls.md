@@ -18,6 +18,8 @@ Added on top of [[recording-audio]] (plan:
   registered **only while a recording runs** (`wanted(&Hotkeys, recording)`
   in `sync_hotkeys`, called on start and stop), so the combo stays free for
   other apps at idle. See [[hotkeys]].
+- The closed notch mutes too: [[notch-rec-mute]]. The device picker is now
+  Vale's own dropdown ([[menu-pop]]), not the native menu below.
 - **Device choice** `recording.mic_device` / `system_device` (endpoint ids,
   `None` = follow Windows). Picked from a native popup menu
   (`tray::device_menu`) in Settings → Fitur → Rekaman and on the Rekam page
