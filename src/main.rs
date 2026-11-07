@@ -38,6 +38,7 @@ mod notif;
 mod pages;
 mod phone;
 mod pointer_watch;
+mod recorder;
 mod pomodoro;
 mod reminders;
 mod screenshot;
