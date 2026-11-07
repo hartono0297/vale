@@ -49,7 +49,12 @@ pub enum Z {
 pub fn view_needs_front(view: &View) -> bool {
     !matches!(
         view,
-        View::Hidden | View::Idle | View::MediaCompact | View::MediaLyric | View::PomodoroCompact
+        View::Hidden
+            | View::Idle
+            | View::MediaCompact
+            | View::MediaLyric
+            | View::PomodoroCompact
+            | View::RecordCompact
     )
 }
 

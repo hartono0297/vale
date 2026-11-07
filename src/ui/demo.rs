@@ -189,7 +189,7 @@ use super::motion::{
 };
 use super::notch_fill::{self, fill_alpha};
 use super::render::{
-    CleanerView, CliView, ClipNoticeView, ClipView, DevicesView, FolderMenuView, Frame, MoleView,
+    CleanerView, CliView, ClipNoticeView, ClipView, DevicesView, FolderMenuView, Frame, MoleView, RecFrame,
     NoticeCloseView, NotifView, Progress, Renderer, RobotFrame, SearchView, SheetKind, ShotView,
     SystemView, ToastBadgeView, ToastLogoView,
 };
@@ -208,7 +208,7 @@ use crate::config::{NotchFill, Style, UiFont};
 use crate::devices::{self, Bus, Device, DeviceKind, Partition, Veto, VetoKind};
 use crate::i18n::{Key, tr};
 use crate::lyrics::{self, FADE, LyricsFound, LyricsState, Query};
-use crate::model::{CalView, Event, Hit, MediaInfo, Notice, NoticeKind, Page, ToastOrigin, View};
+use crate::model::{CalView, Event, Hit, MediaInfo, Notice, NoticeKind, Page, RecSources, ToastOrigin, View};
 use crate::mole::{CleanRun, GroupSize, MoleOpts, MoleReport, PreviewSummary};
 use crate::notes::Note;
 use crate::notif::{NotifEntry, logo_key};
@@ -318,6 +318,8 @@ struct Scene {
     devices: DevicesDemo,
     /// What the Susun page shows (and which overlay is on the screen).
     arrange: ArrangeDemo,
+    /// The recording the REC view and the Rekam page show; `None` is idle.
+    rec: Option<DemoRec>,
     /// The page dots as the dock, the pointer over this icon (0-based).
     dock: Option<usize>,
     /// The compact view or notice has the see-through background
@@ -440,9 +442,23 @@ enum View0 {
     Idle,
     MediaCompact,
     PomodoroCompact,
+    /// The REC view; the scene's `rec` says what it shows.
+    RecordCompact,
     Panel(Page),
     Notice(DemoNotice),
     MediaLyric,
+}
+
+/// What a recording scene shows: the clock, pause, the sources and made-up
+/// levels. Never a real recording.
+#[derive(Clone, Copy, PartialEq)]
+struct DemoRec {
+    secs: u64,
+    paused: bool,
+    mic: bool,
+    system: bool,
+    mic_level: f32,
+    system_level: f32,
 }
 
 /// One notice of each badge style.
@@ -587,6 +603,7 @@ const BASE: Scene = Scene {
     fade_from: None,
     devices: DevicesDemo::Design,
     arrange: ArrangeDemo::No,
+    rec: None,
     dock: None,
     transparent: false,
     look: 0.0,
@@ -607,6 +624,31 @@ const fn clipboard(name: &'static str, which: ClipDemo) -> Scene {
         name,
         view: View0::Panel(Page::Clipboard),
         clip: which,
+        ..BASE
+    }
+}
+
+/// The REC view with Bata and made-up levels.
+const fn rec_scene(
+    name: &'static str,
+    secs: u64,
+    paused: bool,
+    mic: bool,
+    system: bool,
+) -> Scene {
+    Scene {
+        name,
+        kind: ShapeKind::RecordCompact,
+        view: View0::RecordCompact,
+        robot: Some(Expr::Focus),
+        rec: Some(DemoRec {
+            secs,
+            paused,
+            mic,
+            system,
+            mic_level: 0.55,
+            system_level: 0.8,
+        }),
         ..BASE
     }
 }
@@ -803,7 +845,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 169] = [
+const SCENES: [Scene; 173] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -816,6 +858,12 @@ const SCENES: [Scene; 169] = [
         transparent: true,
         ..BASE
     },
+    // The REC view (docs/design/rekaman.html, section 1): both sources, the
+    // mic alone, paused, and past the first hour.
+    rec_scene("rec-both", 12 * 60 + 48, false, true, true),
+    rec_scene("rec-mic", 3 * 60 + 5, false, true, false),
+    rec_scene("rec-paused", 12 * 60 + 48, true, true, true),
+    rec_scene("rec-long", 3600 + 2 * 60 + 7, false, true, true),
     Scene {
         name: "pomo-running",
         kind: ShapeKind::PomodoroCompact,
@@ -1750,6 +1798,19 @@ fn demo_arrange_overlays(
     }
 }
 
+/// `--demo-record`: only the recording scenes (`rec-both`, `rec-mic`,
+/// `rec-paused`, `rec-long`), Pill then Notch; `DI_DEMO_STEP` picks one by
+/// number or name as in `--demo`. Made-up times and levels: no microphone is
+/// opened and nothing is recorded.
+pub fn run_record() {
+    let scenes: Vec<Scene> = SCENES
+        .iter()
+        .copied()
+        .filter(|s| s.name.starts_with("rec-"))
+        .collect();
+    run_scenes(&scenes);
+}
+
 /// `--demo-arrange`: only the Susun page's scenes, Pill then Notch;
 /// `DI_DEMO_STEP` picks one by number or name as in `--demo`. The demo
 /// never calls the mover and never lists or moves a real window.
@@ -1999,6 +2060,7 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                 View0::Idle => View::Idle,
                 View0::MediaCompact => View::MediaCompact,
                 View0::PomodoroCompact => View::PomodoroCompact,
+                View0::RecordCompact => View::RecordCompact,
                 View0::Panel(page) => View::Panel(page),
                 View0::Notice(which) => View::Notice(demo_notice(which, &renderer)),
                 View0::MediaLyric => View::MediaLyric,
@@ -2146,6 +2208,16 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                     &media
                 }),
                 pomodoro: &pomodoro,
+                rec: scene.rec.map(|r| RecFrame {
+                    elapsed: Duration::from_secs(r.secs),
+                    paused: r.paused,
+                    sources: RecSources {
+                        mic: r.mic,
+                        system: r.system,
+                    },
+                    mic: r.mic_level,
+                    system: r.system_level,
+                }),
                 now,
                 today,
                 page,

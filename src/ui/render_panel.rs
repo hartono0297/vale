@@ -73,7 +73,7 @@ use crate::ui::panel_layout::{
     cli_layout, cli_suggestions, clipboard_layout, device_shapes, devices_layout,
     media_hits_for, media_panel_layout, media_progress_layout, mixer_layout, mole_layout, mole_log_rows,
     mole_log_skip, notes_layout, notif_layout, page_dots, pomodoro_compact_layout,
-    pomodoro_compact_layout_robot, pomodoro_layout, regions, reminders_layout, search_layout,
+    pomodoro_compact_layout_robot, pomodoro_layout, record_compact_layout, rec_meter_heights, regions, REC_BAR_GAP, REC_BAR_W, reminders_layout, search_layout,
     settings_button, shelf_card_layout, shelf_layout, shelf_phone_tag, shortcuts_layout,
     system_layout, tile_parts, update_strip_parts, volume_hud_layout, waiting_strip,
 };
@@ -4580,6 +4580,82 @@ impl Renderer {
         Ok(())
     }
 
+    /// The REC view: a red dot with a soft halo (ochre while paused), the
+    /// clock, and one level meter per source; paused, "dijeda" takes the
+    /// meters' place. Bata at the left as for the pomodoro.
+    pub(super) fn paint_record_compact(&mut self, shape: ShapeRect, frame: &Frame) -> Result<()> {
+        let Some(rec) = frame.rec else {
+            return Ok(());
+        };
+        let l = record_compact_layout(shape, frame.robot.is_some());
+        if let (Some(slot), Some(robot)) = (l.robot, frame.robot) {
+            self.paint_robot(slot, robot);
+        }
+        let tint = if rec.paused {
+            self.palette.ochre
+        } else {
+            theme::SOFT_RED
+        };
+        let ((cx, cy), r) = l.dot;
+        let halo = r + 3.0;
+        self.set_color(tint, 0.25);
+        self.fill_round(
+            Rect {
+                x: cx - halo,
+                y: cy - halo,
+                w: halo * 2.0,
+                h: halo * 2.0,
+            },
+            halo,
+        );
+        self.set_color(tint, 1.0);
+        self.fill_round(
+            Rect {
+                x: cx - r,
+                y: cy - r,
+                w: r * 2.0,
+                h: r * 2.0,
+            },
+            r,
+        );
+        let clock = rec_clock(rec.elapsed);
+        if rec.paused {
+            self.text_colored(&clock, &self.fonts.title, l.time, self.palette.ochre, 1.0);
+            self.text2(text(i18n::lang(), Key::Paused), &self.fonts.eleven, l.label);
+            return Ok(());
+        }
+        self.text(&clock, &self.fonts.title, l.time, 1.0);
+        // One source shows only its meter, at the far right.
+        let (mic_at, system_at) = (
+            if rec.sources.system { l.mic } else { l.system },
+            l.system,
+        );
+        if rec.sources.mic {
+            self.rec_meter(mic_at, rec.mic, REC_MIC_TINT);
+        }
+        if rec.sources.system {
+            self.rec_meter(system_at, rec.system, self.palette.sage);
+        }
+        Ok(())
+    }
+
+    /// Four bars from the bottom of `area`, their heights from `level`.
+    fn rec_meter(&self, area: Rect, level: f32, rgb: u32) {
+        self.set_color(rgb, 1.0);
+        let cy = area.y + area.h / 2.0;
+        for (i, h) in rec_meter_heights(level).into_iter().enumerate() {
+            self.fill_round(
+                Rect {
+                    x: area.x + i as f32 * (REC_BAR_W + REC_BAR_GAP),
+                    y: cy - h / 2.0,
+                    w: REC_BAR_W,
+                    h,
+                },
+                REC_BAR_W / 2.0,
+            );
+        }
+    }
+
     /// The compact pomodoro's countdown box: `POMO_COMPACT_TIME_W`, or the
     /// longest countdown it writes (`POMO_COMPACT_LONGEST`) in `title` when
     /// that is wider (JetBrains Mono), so "120:00" is never cut. Measured
@@ -4926,6 +5002,21 @@ fn pomodoro_compact_boxes(text: Rect, time_w: f32) -> (Rect, Rect) {
         ..text
     };
     (time, label)
+}
+
+/// The mic meter's cream tint (`.lv.mic` in docs/design/rekaman.html).
+const REC_MIC_TINT: u32 = 0xEBCFB8;
+
+/// The recorded time as the REC view writes it: "mm:ss", and "h:mm:ss" from
+/// the first hour. Whole seconds, rounded down.
+pub(crate) fn rec_clock(d: Duration) -> String {
+    let secs = d.as_secs();
+    let (h, m, s) = (secs / 3600, secs / 60 % 60, secs % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m:02}:{s:02}")
+    }
 }
 
 /// Whole seconds rounded up, so a fresh 25-minute phase shows "25:00".
@@ -5676,6 +5767,18 @@ mod tests {
     }
 
     #[test]
+    fn rec_clock_is_mm_ss_then_h_mm_ss_rounded_down() {
+        let secs = Duration::from_secs;
+        assert_eq!(rec_clock(Duration::ZERO), "00:00");
+        assert_eq!(rec_clock(Duration::from_millis(999)), "00:00");
+        assert_eq!(rec_clock(secs(12 * 60 + 48)), "12:48");
+        assert_eq!(rec_clock(secs(59 * 60 + 59)), "59:59");
+        assert_eq!(rec_clock(secs(3600)), "1:00:00");
+        assert_eq!(rec_clock(secs(3600 + 2 * 60 + 5)), "1:02:05");
+        assert_eq!(rec_clock(secs(10 * 3600 + 9 * 60 + 9)), "10:09:09");
+    }
+
+    #[test]
     fn mmss_rounds_up_and_allows_long_phases() {
         assert_eq!(mmss(Duration::from_secs(25 * 60)), "25:00");
         assert_eq!(mmss(Duration::from_millis(1_121_400)), "18:42");
@@ -6304,6 +6407,35 @@ mod tests {
                             ..time
                         };
                         assert!(ink_check(&r, "100:00", &r.fonts.title, box42).is_err());
+                    }
+                }
+            }
+        }
+    }
+
+    /// The REC clock's box holds the longest time it writes ("10:59:59",
+    /// 8 cells) in both fonts, at the narrowest island and beside Bata.
+    #[test]
+    fn rec_clock_fits_its_box_in_both_fonts() {
+        use crate::ui::fonts;
+        use crate::ui::geometry::{NOTCH_H_MIN, NOTCH_W_MIN, NotchSize, shape_with_robot_sized};
+        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+
+        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let mut r = Renderer::new().expect("renderer");
+        if !fonts::embedded(&r.dwrite).loaded.jetbrains_mono {
+            eprintln!("skipped: the embedded fonts are not in this binary");
+            return;
+        }
+        let size = NotchSize::from_px(NOTCH_W_MIN, NOTCH_H_MIN);
+        for ui in [UiFont::Sans, UiFont::Mono] {
+            r.set_ui_font(ui).expect("font");
+            for style in [Style::Pill, Style::Notch] {
+                for robot in [false, true] {
+                    let s = shape_with_robot_sized(style, size, ShapeKind::RecordCompact, robot);
+                    let l = record_compact_layout(s, robot);
+                    for secs in [0, 59 * 60 + 59, 3600 + 125, 10 * 3600 + 59 * 60 + 59] {
+                        ink_fits(&r, &rec_clock(Duration::from_secs(secs)), &r.fonts.title, l.time);
                     }
                 }
             }

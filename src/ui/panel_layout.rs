@@ -3910,6 +3910,92 @@ pub fn pomodoro_compact_layout_robot(s: ShapeRect) -> (Rect, (f32, f32), f32, Re
     (robot, center, RADIUS, text)
 }
 
+/// The REC compact view's parts: the red dot, the clock and two level
+/// meters.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RecLayout {
+    /// Bata's square, with the robot on.
+    pub robot: Option<Rect>,
+    /// The dot's centre and radius (its halo is drawn around it).
+    pub dot: ((f32, f32), f32),
+    /// The clock's box, left-aligned: holds "0:00:00".
+    pub time: Rect,
+    /// While paused the label takes the meters' place: from after the clock
+    /// to the right inset.
+    pub label: Rect,
+    /// The meter at the left and the one at the far right. A recording of
+    /// one source shows only its meter, at the far right.
+    pub mic: Rect,
+    pub system: Rect,
+}
+
+pub const REC_DOT_R: f32 = 4.5;
+pub const REC_TIME_W: f32 = 62.0;
+const REC_TEXT_H: f32 = 18.0;
+pub const REC_METER_W: f32 = 18.0;
+pub const REC_METER_H: f32 = 16.0;
+pub const REC_METER_GAP: f32 = 6.0;
+/// Bars in one level meter, their width and the gap between.
+pub const REC_BARS: usize = 4;
+pub const REC_BAR_W: f32 = 3.0;
+pub const REC_BAR_GAP: f32 = 2.0;
+
+/// The bar heights of one level meter for a `level` of 0 to 1: every bar
+/// rests at `REC_BAR_REST` and rises in its own proportion
+/// (`REC_BAR_SHAPE`) up to the meter's height. NaN and out-of-range levels
+/// are clamped.
+pub fn rec_meter_heights(level: f32) -> [f32; REC_BARS] {
+    let level = if level.is_nan() {
+        0.0
+    } else {
+        level.clamp(0.0, 1.0)
+    };
+    REC_BAR_SHAPE.map(|k| REC_BAR_REST + (REC_METER_H - REC_BAR_REST) * level * k)
+}
+
+/// A silent bar's height.
+pub const REC_BAR_REST: f32 = 3.0;
+/// How far each bar rises relative to the loudest (the third).
+const REC_BAR_SHAPE: [f32; REC_BARS] = [0.55, 0.85, 1.0, 0.7];
+
+/// The REC view on `s` (`shape_with_robot_sized`): the dot `COMPACT_INSET`
+/// in (after the robot's square with `robot`), the clock after it, the meters
+/// ending `COMPACT_INSET` from the right.
+pub fn record_compact_layout(s: ShapeRect, robot: bool) -> RecLayout {
+    let inset = crate::ui::geometry::COMPACT_INSET;
+    let cy = s.y + s.h / 2.0;
+    let robot_slot = robot.then(|| crate::ui::geometry::robot_slot(s));
+    let x0 = robot_slot.map_or(s.x + inset, |r| r.right() + 8.0);
+    let dot = ((x0 + REC_DOT_R, cy), REC_DOT_R);
+    // The text boxes are `REC_TEXT_H` tall, centred: a full-height box would
+    // poke past the rounded bottom corners.
+    let text_y = cy - REC_TEXT_H / 2.0;
+    let time = rect(x0 + REC_DOT_R * 2.0 + 8.0, text_y, REC_TIME_W, REC_TEXT_H);
+    let right = s.x + s.w - inset;
+    let meter_y = cy - REC_METER_H / 2.0;
+    let system = rect(right - REC_METER_W, meter_y, REC_METER_W, REC_METER_H);
+    let mic = rect(
+        system.x - REC_METER_GAP - REC_METER_W,
+        meter_y,
+        REC_METER_W,
+        REC_METER_H,
+    );
+    let label = rect(
+        time.right() + 4.0,
+        text_y,
+        (right - time.right() - 4.0).max(0.0),
+        REC_TEXT_H,
+    );
+    RecLayout {
+        robot: robot_slot,
+        dot,
+        time,
+        label,
+        mic,
+        system,
+    }
+}
+
 /// Clickable regions of a page, plus the waiting strip when it is shown.
 /// Clicks inside the panel that miss every region count as `Hit::Body`.
 /// The update offer's chips come first, so they win over the strip.
@@ -7073,6 +7159,67 @@ mod tests {
             assert!(text.right() <= s.x + s.w);
             assert!(rect_inside(style, s, text), "{style:?} {text:?}");
         }
+    }
+
+    #[test]
+    fn record_compact_fits_its_shape_in_order_without_overlap() {
+        use crate::ui::geometry::{COMPACT_INSET, shape_with_robot_sized};
+        for style in [Style::Pill, Style::Notch] {
+            for size in spread() {
+                for robot in [false, true] {
+                    let tag = format!("{style:?} {size:?} robot {robot}");
+                    let s = shape_with_robot_sized(style, size, ShapeKind::RecordCompact, robot);
+                    let l = record_compact_layout(s, robot);
+                    let ((dx, dy), dr) = l.dot;
+                    assert_eq!(dy, s.y + s.h / 2.0, "{tag}");
+                    let left = match l.robot {
+                        Some(r) => {
+                            assert!((r.x - (s.x + COMPACT_INSET)).abs() < 1e-3, "{tag}");
+                            assert!(r.right() + 8.0 <= dx - dr + 1e-3, "{tag}");
+                            r.x
+                        }
+                        None => {
+                            assert!(robot == false, "{tag}");
+                            dx - dr
+                        }
+                    };
+                    assert!(left >= s.x + COMPACT_INSET - 1e-3, "{tag}");
+                    // Dot, clock, then the meters, left to right.
+                    assert!(dx + dr + 8.0 <= l.time.x + 1e-3, "{tag}");
+                    assert!(l.time.right() <= l.mic.x, "{tag}: {l:?}");
+                    assert!(l.mic.right() < l.system.x, "{tag}");
+                    // The meters end the inset from the right.
+                    assert!(
+                        (l.system.right() - (s.x + s.w - COMPACT_INSET)).abs() < 1e-3,
+                        "{tag}"
+                    );
+                    // The paused label never reaches past the inset.
+                    assert!(l.label.x >= l.time.right() && l.label.w > 0.0, "{tag}");
+                    assert!(l.label.right() <= s.x + s.w - COMPACT_INSET + 1e-3, "{tag}");
+                    for r in [l.time, l.label, l.mic, l.system] {
+                        assert!(rect_inside(style, s, r), "{tag} {r:?}");
+                    }
+                    // Four bars fit their meter.
+                    let bars = REC_BARS as f32 * REC_BAR_W + (REC_BARS - 1) as f32 * REC_BAR_GAP;
+                    assert!(bars <= REC_METER_W + 1e-3);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rec_meter_rests_and_rises_with_the_level() {
+        assert_eq!(rec_meter_heights(0.0), [REC_BAR_REST; REC_BARS]);
+        let loud = rec_meter_heights(1.0);
+        assert_eq!(loud.iter().cloned().fold(0.0, f32::max), REC_METER_H);
+        let quiet = rec_meter_heights(0.3);
+        for (q, l) in quiet.iter().zip(loud) {
+            assert!(*q > REC_BAR_REST && *q < l);
+        }
+        // Out of range and NaN are clamped.
+        assert_eq!(rec_meter_heights(7.0), loud);
+        assert_eq!(rec_meter_heights(-1.0), [REC_BAR_REST; REC_BARS]);
+        assert_eq!(rec_meter_heights(f32::NAN), [REC_BAR_REST; REC_BARS]);
     }
 
     /// Sizes spanning the slider ranges, corners included.

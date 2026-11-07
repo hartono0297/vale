@@ -124,7 +124,7 @@ use crate::ui::notch_fill;
 use crate::ui::panel_layout::{CliHead, STRIP_H, cli_layout};
 use crate::ui::render::{
     CleanerView, CliView, DevicesView, FolderMenuView, Frame, MoleView, NoticeCloseView, Progress,
-    Renderer, RobotFrame, SearchView, SystemView,
+    RecFrame, Renderer, RobotFrame, SearchView, SystemView,
 };
 use crate::ui::settings_layout::MonitorRow;
 use crate::ui::robot::{
@@ -229,6 +229,15 @@ const TIMER_EQ: usize = 5;
 const TIMER_POMO: usize = 6;
 /// Date rollover check.
 const TIMER_DAY: usize = 7;
+/// One-shot to the next whole second of the REC clock, re-armed after each
+/// redraw, only while the REC view (or the Rekam page) shows a recording that
+/// is not paused (`rec_clock_timer_wanted`).
+const TIMER_REC: usize = 60;
+/// One-shot, `REC_LEVEL_MS` apart: the REC view's level meters redraw, only
+/// while that view is on screen, the recording runs and Motion is not Off
+/// (`rec_level_timer_wanted`).
+const TIMER_REC_LEVEL: usize = 61;
+const REC_LEVEL_MS: u32 = 120;
 /// Reminders: one-shot at the earliest due time (at most `REMINDER_MAX_MS` away).
 const TIMER_REMINDER: usize = 9;
 /// Idle clock redraws at each minute boundary, only while it shows.
@@ -573,6 +582,8 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
             hotkeys: HotkeyState::default(),
             widgets: WidgetsState::default(),
             pomo_timer: false,
+            rec_timer: false,
+            rec_level_timer: false,
             clock_timer: false,
             progress_timer: false,
             lyrics: LyricsState::default(),
@@ -1090,6 +1101,10 @@ struct App {
     /// The desktop widgets (sticky notes): the host and the pending save.
     widgets: WidgetsState,
     pomo_timer: bool,
+    /// `TIMER_REC` is set.
+    rec_timer: bool,
+    /// `TIMER_REC_LEVEL` is set.
+    rec_level_timer: bool,
     /// `TIMER_CLOCK` is set.
     clock_timer: bool,
     /// `TIMER_PROGRESS` is set.
@@ -3670,6 +3685,7 @@ impl App {
             View::MediaCompact => Some(ShapeKind::MediaCompact),
             View::MediaLyric => Some(ShapeKind::MediaLyric),
             View::PomodoroCompact => Some(ShapeKind::PomodoroCompact),
+            View::RecordCompact => Some(ShapeKind::RecordCompact),
             View::Panel(_) => Some(self.panel_kind()),
             View::Notice(n) if matches!(n.kind, NoticeKind::Screenshot { .. }) => {
                 Some(ShapeKind::NoticeShot)
@@ -3686,7 +3702,7 @@ impl App {
             // The idle island grows to the left for the typing cat's laptop.
             ShapeKind::Idle => self.idle_shape(now),
             // The compact views widen to hold the busy toast's logo.
-            ShapeKind::MediaCompact | ShapeKind::PomodoroCompact
+            ShapeKind::MediaCompact | ShapeKind::PomodoroCompact | ShapeKind::RecordCompact
                 if self.state.toast_slot().is_some() =>
             {
                 with_toast_slot(shape_with_robot_sized(style, notch, kind, robot))
@@ -4222,6 +4238,7 @@ impl App {
                 }
             }
         }
+        self.sync_rec_timers(now);
         self.sync_progress_timer(now);
         self.sync_robot_timers(now);
         self.sync_system_page();
@@ -5102,6 +5119,57 @@ impl App {
         self.progress_timer = wait.is_some();
     }
 
+    /// `TIMER_REC` and `TIMER_REC_LEVEL` run only while a recording shows and
+    /// moves; they are killed the moment the view leaves the screen.
+    fn sync_rec_timers(&mut self, now: Instant) {
+        let view = self.state.view();
+        let paused = self.state.rec().is_some_and(|r| r.paused());
+        let recording = self.state.rec().is_some();
+        let away = self.screen_away();
+        let clock = rec_clock_timer_wanted(
+            recording && view == View::RecordCompact,
+            paused,
+            away,
+        );
+        if clock != self.rec_timer {
+            self.rec_timer = clock;
+            if clock {
+                self.arm_rec(now);
+            } else {
+                unsafe {
+                    let _ = KillTimer(Some(self.hwnd), TIMER_REC);
+                }
+            }
+        }
+        let level = rec_level_timer_wanted(
+            recording && view == View::RecordCompact,
+            paused,
+            self.motion().timed(),
+            away,
+        );
+        if level != self.rec_level_timer {
+            self.rec_level_timer = level;
+            unsafe {
+                if level {
+                    SetTimer(Some(self.hwnd), TIMER_REC_LEVEL, REC_LEVEL_MS, None);
+                } else {
+                    let _ = KillTimer(Some(self.hwnd), TIMER_REC_LEVEL);
+                }
+            }
+        }
+    }
+
+    /// One-shot to the next whole second of the recorded time.
+    fn arm_rec(&self, now: Instant) {
+        let elapsed = self
+            .state
+            .rec()
+            .map_or(Duration::ZERO, |r| r.elapsed(now));
+        unsafe {
+            SetTimer(Some(self.hwnd), TIMER_REC, ms_to_next_whole_second(elapsed), None);
+        }
+    }
+
     /// One-shot, re-armed after each redraw, so the shown second ticks over on time.
     fn arm_pomo(&self, now: Instant) {
         let wait = ms_to_next_second(self.state.pomodoro().remaining(now));
@@ -5198,6 +5266,21 @@ impl App {
                 }
                 if self.pomo_timer {
                     self.arm_pomo(now);
+                }
+            }
+            TIMER_REC => {
+                let now = Instant::now();
+                if !self.animating() {
+                    self.draw(now);
+                }
+                if self.rec_timer {
+                    self.arm_rec(now);
+                }
+            }
+            TIMER_REC_LEVEL => {
+                // T6: read `recorder.levels()` here; the frame has 0.0 for now.
+                if !self.animating() {
+                    self.draw(Instant::now());
                 }
             }
             TIMER_DAY => self.check_date(),
@@ -6409,7 +6492,13 @@ impl App {
     /// no slot, or on any other view).
     fn slot_drawn(&self, now: Instant) -> f32 {
         match (&self.drawn, self.slot_keep.is_some()) {
-            (View::MediaCompact | View::MediaLyric | View::PomodoroCompact, true) => {
+            (
+                View::MediaCompact
+                | View::MediaLyric
+                | View::PomodoroCompact
+                | View::RecordCompact,
+                true,
+            ) => {
                 self.slot_share.at(&self.anim, now)
             }
             _ => 0.0,
@@ -6554,6 +6643,14 @@ impl App {
             view: &self.drawn,
             media: state.media(),
             pomodoro: state.pomodoro(),
+            rec: state.rec().map(|r| RecFrame {
+                elapsed: r.elapsed(now),
+                paused: r.paused(),
+                sources: r.sources,
+                // T6: the recorder's `levels()`; 0.0 (the meters at rest) until then.
+                mic: 0.0,
+                system: 0.0,
+            }),
             now,
             today: state.today(),
             page: leaving.map_or(state.page(), |shown| shown.page),
@@ -7328,6 +7425,30 @@ fn needs_fetch(
         }
         _ => true,
     }
+}
+
+/// Milliseconds until a clock that counts up changes its shown second
+/// (`elapsed` rounded down), plus 1 ms so the redraw lands after the change.
+fn ms_to_next_whole_second(elapsed: Duration) -> u32 {
+    1000 - (elapsed.as_millis() % 1000) as u32 + 1
+}
+
+/// `TIMER_REC` runs only while the REC view shows a recording that is not
+/// paused (a paused clock does not move) on a screen somebody can see.
+/// Fullscreen is already out: `base_view` hides the view there.
+fn rec_clock_timer_wanted(view_shown: bool, paused: bool, screen_away: bool) -> bool {
+    view_shown && !paused && !screen_away
+}
+
+/// `TIMER_REC_LEVEL` adds Motion not Off to the same conditions: with it off
+/// the meters stay at rest.
+fn rec_level_timer_wanted(
+    view_shown: bool,
+    paused: bool,
+    motion_on: bool,
+    screen_away: bool,
+) -> bool {
+    rec_clock_timer_wanted(view_shown, paused, screen_away) && motion_on
 }
 
 /// Milliseconds until the countdown's shown second changes (it rounds up, so
@@ -10015,6 +10136,34 @@ mod tests {
     }
 
     #[test]
+    fn the_rec_ticks_land_just_after_the_second_changes() {
+        let ms = Duration::from_millis;
+        assert_eq!(ms_to_next_whole_second(ms(0)), 1001);
+        assert_eq!(ms_to_next_whole_second(ms(250)), 751);
+        assert_eq!(ms_to_next_whole_second(ms(999)), 2);
+        assert_eq!(ms_to_next_whole_second(ms(61_400)), 601);
+    }
+
+    #[test]
+    fn the_rec_timers_run_only_while_the_view_shows_and_moves() {
+        // (shown, paused, motion_on, away) -> (clock, level)
+        let case = |shown, paused, motion, away| {
+            (
+                rec_clock_timer_wanted(shown, paused, away),
+                rec_level_timer_wanted(shown, paused, motion, away),
+            )
+        };
+        assert_eq!(case(true, false, true, false), (true, true));
+        // Motion Off keeps the clock, not the meters.
+        assert_eq!(case(true, false, false, false), (true, false));
+        // Paused: nothing moves.
+        assert_eq!(case(true, true, true, false), (false, false));
+        // Another view (or fullscreen's Hidden), locked, display off.
+        assert_eq!(case(false, false, true, false), (false, false));
+        assert_eq!(case(true, false, true, true), (false, false));
+    }
+
+    #[test]
     fn timer_ids_never_collide() {
         // The System page's and the clipboard's timers came in separate runs;
         // one id for two timers would kill or fire the other's.
@@ -10025,6 +10174,8 @@ mod tests {
             TIMER_EQ,
             TIMER_POMO,
             TIMER_DAY,
+            TIMER_REC,
+            TIMER_REC_LEVEL,
             TIMER_CLOCK,
             TIMER_REMINDER,
             TIMER_LYRIC,

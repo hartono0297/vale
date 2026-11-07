@@ -751,7 +751,13 @@ mod tests {
         }
         // A notice has to be seen; the panel is open on purpose; fullscreen
         // hides the notch, and it stays hidden.
-        for view in [notice, View::Panel(Page::Calendar), View::Hidden] {
+        // The REC dot must stay in view while it records.
+        for view in [
+            notice,
+            View::Panel(Page::Calendar),
+            View::Hidden,
+            View::RecordCompact,
+        ] {
             assert!(!peek_view(&view), "{view:?}");
         }
     }

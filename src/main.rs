@@ -91,6 +91,7 @@ fn opens_windows(arg: Option<&str>) -> bool {
             | "--demo-cli"
             | "--demo-robot"
             | "--demo-devices"
+            | "--demo-record"
             | "--demo-arrange"
             | "--demo-notice-close"
             | "--demo-widgets"
@@ -188,6 +189,13 @@ fn main() {
             attach_parent_console();
             demo_lang_from_env();
             ui::demo::run_devices();
+        }
+        // Only the recording scenes: made-up times and levels, no microphone.
+        #[cfg(debug_assertions)]
+        Some("--demo-record") => {
+            attach_parent_console();
+            demo_lang_from_env();
+            ui::demo::run_record();
         }
         // Only the Susun page's scenes: made-up windows and monitors, click-through
         // overlays; it never calls the mover and never lists a real window.

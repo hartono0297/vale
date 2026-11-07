@@ -111,11 +111,25 @@ const LYRIC_RISE: f32 = 5.0;
 /// Layout width for measuring one line: wider than any line drawn.
 const MEASURE_W: f32 = 4096.0;
 
+/// The REC view's data for one frame: built at draw time (the levels change
+/// many times a second and live outside the state).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RecFrame {
+    pub elapsed: std::time::Duration,
+    pub paused: bool,
+    pub sources: crate::model::RecSources,
+    /// Peak levels, 0 to 1.
+    pub mic: f32,
+    pub system: f32,
+}
+
 /// Everything a frame draws besides the shape: the view and the data behind it.
 pub struct Frame<'a> {
     pub view: &'a View,
     pub media: Option<&'a MediaInfo>,
     pub pomodoro: &'a Pomodoro,
+    /// The recording, while the view is `RecordCompact`.
+    pub rec: Option<RecFrame>,
     /// Drives the pomodoro countdown and the equalizer animation.
     pub now: Instant,
     /// The local date the island's state is on (today markers, note times).
@@ -2057,7 +2071,10 @@ impl Renderer {
         // A busy toast's logo beside a compact view: the view is laid out on
         // what the slot leaves of the shape, so nothing under it moves.
         let slot = match view {
-            View::MediaCompact | View::MediaLyric | View::PomodoroCompact
+            View::MediaCompact
+            | View::MediaLyric
+            | View::PomodoroCompact
+            | View::RecordCompact
                 if frame.toast_slot_w > 0.0 =>
             {
                 Some(toast_slot_parts(shape, shape.w - frame.toast_slot_w))
@@ -2076,6 +2093,7 @@ impl Renderer {
                 Ok(())
             }
             View::PomodoroCompact => self.paint_pomodoro_compact(body, frame),
+            View::RecordCompact => self.paint_record_compact(body, frame),
             // A pomodoro notice shows while the next phase waits (Ready).
             View::Notice(notice) => match (&notice.kind, frame.shot) {
                 (NoticeKind::Screenshot { shot, .. }, Some(view)) if view.id == *shot => {
@@ -2160,7 +2178,11 @@ impl Renderer {
             && !slot_drawn
             && matches!(
                 view,
-                View::Idle | View::MediaCompact | View::MediaLyric | View::PomodoroCompact
+                View::Idle
+                    | View::MediaCompact
+                    | View::MediaLyric
+                    | View::PomodoroCompact
+                    | View::RecordCompact
             )
         {
             let ((cx, cy), r) = toast_dot(shape);

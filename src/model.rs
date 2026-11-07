@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use chrono::NaiveDate;
 
@@ -219,8 +219,46 @@ pub struct Timeline {
     pub rate: f32,
 }
 
+/// Which sources an audio recording takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecSources {
+    pub mic: bool,
+    pub system: bool,
+}
+
+/// A recording in progress, as the notch and the Rekam page show it. The
+/// levels are not here: they change many times a second and ride the frame.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecStatus {
+    pub started: Instant,
+    /// The paused spans already over.
+    pub paused_total: Duration,
+    /// When the pause now running began.
+    pub paused_since: Option<Instant>,
+    pub sources: RecSources,
+}
+
+impl RecStatus {
+    /// The recorded time at `now`: the time since the start without the
+    /// paused spans, and frozen while paused.
+    pub fn elapsed(&self, now: Instant) -> Duration {
+        let until = self.paused_since.unwrap_or(now).max(self.started);
+        until
+            .saturating_duration_since(self.started)
+            .saturating_sub(self.paused_total)
+    }
+
+    pub fn paused(&self) -> bool {
+        self.paused_since.is_some()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
+    /// The recording started, paused, resumed or ended (`None`); the notch
+    /// shows `View::RecordCompact` while one runs.
+    #[allow(dead_code)] // T6: the recorder session sends it.
+    RecStatus(Option<RecStatus>),
     /// `None` means no media session is active.
     Media(Option<MediaInfo>),
     /// The session's timeline (seek, track change, play/pause); `None` when
@@ -1023,6 +1061,61 @@ pub enum View {
     /// The compact media view showing the current synced lyric line.
     MediaLyric,
     PomodoroCompact,
+    /// A recording runs: the red dot, the clock and the level bars.
+    RecordCompact,
     Panel(Page),
     Notice(Notice),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn status(started: Instant) -> RecStatus {
+        RecStatus {
+            started,
+            paused_total: Duration::ZERO,
+            paused_since: None,
+            sources: RecSources {
+                mic: true,
+                system: true,
+            },
+        }
+    }
+
+    #[test]
+    fn elapsed_counts_from_the_start() {
+        let t0 = Instant::now();
+        let s = status(t0);
+        assert_eq!(s.elapsed(t0), Duration::ZERO);
+        assert_eq!(s.elapsed(t0 + Duration::from_secs(75)), Duration::from_secs(75));
+    }
+
+    #[test]
+    fn elapsed_leaves_out_paused_spans() {
+        let t0 = Instant::now();
+        let mut s = status(t0);
+        s.paused_total = Duration::from_secs(20);
+        assert_eq!(s.elapsed(t0 + Duration::from_secs(100)), Duration::from_secs(80));
+    }
+
+    #[test]
+    fn elapsed_freezes_while_paused() {
+        let t0 = Instant::now();
+        let mut s = status(t0);
+        s.paused_total = Duration::from_secs(5);
+        s.paused_since = Some(t0 + Duration::from_secs(60));
+        assert!(s.paused());
+        assert_eq!(s.elapsed(t0 + Duration::from_secs(60)), Duration::from_secs(55));
+        assert_eq!(s.elapsed(t0 + Duration::from_secs(600)), Duration::from_secs(55));
+    }
+
+    #[test]
+    fn elapsed_never_goes_negative() {
+        let t0 = Instant::now();
+        let mut s = status(t0 + Duration::from_secs(10));
+        assert_eq!(s.elapsed(t0), Duration::ZERO);
+        s.paused_total = Duration::from_secs(99);
+        assert_eq!(s.elapsed(t0 + Duration::from_secs(20)), Duration::ZERO);
+    }
 }

@@ -10,7 +10,8 @@ use crate::i18n::{self, Key, text};
 use crate::lyrics;
 use crate::model::{
     ArrangeSave, CalView, ClipAction, Effect, Event, Hit, MediaCommand, MediaInfo, Notice,
-    NoticeKind, NotifAction, OpenTarget, Page, PhoneStage, Shortcut, ShotAction, Timeline, View,
+    NoticeKind, NotifAction, OpenTarget, Page, PhoneStage, RecStatus, Shortcut,
+    ShotAction, Timeline, View,
 };
 use crate::mole::MoleOpts;
 use crate::pages::PanelPages;
@@ -421,6 +422,8 @@ pub struct IslandState {
     /// A busy toast came and went unseen: a small dot on the compact notch
     /// says so until a peek or the Notifikasi page clears it. Not persisted.
     toast_dot: bool,
+    /// The audio recording in progress, as `App` last reported it.
+    rec: Option<RecStatus>,
 }
 
 /// How a real Windows toast shows now: the whole notice (`Full`), a strip
@@ -444,6 +447,7 @@ impl IslandState {
         Self {
             media: None,
             timeline: None,
+            rec: None,
             lyrics_on: false,
             lyrics_ready: false,
             queue: VecDeque::new(),
@@ -544,6 +548,7 @@ impl IslandState {
             Event::MediaTimeline(timeline) => self.timeline = timeline,
             Event::LyricsReady(ready) => self.lyrics_ready = ready,
             Event::LyricsSetting(on) => self.lyrics_on = on,
+            Event::RecStatus(status) => self.rec = status,
             Event::Notice(notice) => match &notice.kind {
                 NoticeKind::ClaudeWaiting { .. }
                 | NoticeKind::Reminder { .. }
@@ -1160,6 +1165,10 @@ impl IslandState {
         }
         if let Some(notice) = self.sticky.last() {
             return View::Notice(notice.clone());
+        }
+        // A recording outranks the pomodoro and the music: it must show.
+        if self.rec.is_some() {
+            return View::RecordCompact;
         }
         if self.pomodoro.is_active() {
             return View::PomodoroCompact;
@@ -1845,7 +1854,11 @@ impl IslandState {
                 if self.open_mode == OpenMode::Click
                     && (matches!(
                         self.view(),
-                        View::Idle | View::MediaCompact | View::MediaLyric | View::PomodoroCompact
+                        View::Idle
+                            | View::MediaCompact
+                            | View::MediaLyric
+                            | View::PomodoroCompact
+                            | View::RecordCompact
                     ) || (!self.notice_covers()
                         && matches!(self.view(), View::Notice(_)))) =>
             {
@@ -2751,7 +2764,11 @@ impl IslandState {
                 .is_some_and(|(n, _)| is_real_toast(n))
             && matches!(
                 self.base_view(),
-                View::Panel(_) | View::MediaLyric | View::MediaCompact | View::PomodoroCompact
+                View::Panel(_)
+                    | View::MediaLyric
+                    | View::MediaCompact
+                    | View::PomodoroCompact
+                    | View::RecordCompact
             )
     }
 
@@ -2815,7 +2832,11 @@ impl IslandState {
             && self.toast_slot().is_none()
             && matches!(
                 self.view(),
-                View::Idle | View::MediaCompact | View::MediaLyric | View::PomodoroCompact
+                View::Idle
+                    | View::MediaCompact
+                    | View::MediaLyric
+                    | View::PomodoroCompact
+                    | View::RecordCompact
             )
     }
 
@@ -2968,6 +2989,11 @@ impl IslandState {
 
     pub fn pomodoro(&self) -> &Pomodoro {
         &self.pomodoro
+    }
+
+    /// The recording in progress, if any.
+    pub fn rec(&self) -> Option<&RecStatus> {
+        self.rec.as_ref()
     }
 
     /// The local date as of the last `Event::Today`.
@@ -7613,6 +7639,71 @@ mod tests {
         assert!(s.media_guarded(early));
         assert_eq!(s.apply(Event::Click(Hit::PlayPause), early), vec![]);
         assert_eq!(s.next_deadline(), None);
+    }
+
+    // ---- recording ----
+
+    fn rec_status(t0: Instant) -> RecStatus {
+        RecStatus {
+            started: t0,
+            paused_total: Duration::ZERO,
+            paused_since: None,
+            sources: crate::model::RecSources {
+                mic: true,
+                system: true,
+            },
+        }
+    }
+
+    #[test]
+    fn a_recording_shows_the_rec_view_over_pomodoro_and_music() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Media(Some(media(true))), t0);
+        s.apply(Event::Click(Hit::PomoStartPause), t0);
+        assert_eq!(s.view(), View::PomodoroCompact);
+        s.apply(Event::RecStatus(Some(rec_status(t0))), t0);
+        assert_eq!(s.view(), View::RecordCompact);
+        assert!(s.rec().is_some());
+        // Paused still shows it.
+        let mut paused = rec_status(t0);
+        paused.paused_since = Some(t0 + secs(5));
+        s.apply(Event::RecStatus(Some(paused)), t0 + secs(5));
+        assert_eq!(s.view(), View::RecordCompact);
+        // Ending it gives the pomodoro back.
+        s.apply(Event::RecStatus(None), t0 + secs(9));
+        assert_eq!(s.view(), View::PomodoroCompact);
+        assert!(s.rec().is_none());
+    }
+
+    #[test]
+    fn a_sticky_notice_outranks_the_rec_view() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::RecStatus(Some(rec_status(t0))), t0);
+        s.apply(Event::Notice(waiting("a")), t0);
+        assert!(matches!(s.view(), View::Notice(_)));
+    }
+
+    #[test]
+    fn fullscreen_hides_the_rec_view() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::RecStatus(Some(rec_status(t0))), t0);
+        s.apply(Event::Fullscreen(true), t0);
+        assert_eq!(s.view(), View::Hidden);
+        s.apply(Event::Fullscreen(false), t0);
+        assert_eq!(s.view(), View::RecordCompact);
+    }
+
+    #[test]
+    fn click_mode_opens_the_panel_from_the_rec_view() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::OpenMode(OpenMode::Click), t0);
+        s.apply(Event::RecStatus(Some(rec_status(t0))), t0);
+        s.apply(Event::Click(Hit::Body), t0);
+        assert!(matches!(s.view(), View::Panel(_)));
     }
 
     // ---- v2: pomodoro ----

@@ -392,7 +392,12 @@ mod tests {
 
     #[test]
     fn notices_idle_and_the_rest_do_nothing() {
-        for view in [View::Hidden, View::Idle, View::PomodoroCompact] {
+        for view in [
+            View::Hidden,
+            View::Idle,
+            View::PomodoroCompact,
+            View::RecordCompact,
+        ] {
             assert_eq!(route(view, false, true, true), HRoute::Nothing);
         }
     }
