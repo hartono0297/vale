@@ -29,7 +29,8 @@
 //! - [`Capture::stop`] (or dropping the `Capture`) signals the thread, which
 //!   delivers the packets still buffered, releases the devices and ends;
 //!   `stop` returns after the thread has ended. No thread or timer exists
-//!   before `start` or after `stop`.
+//!   before `start` or after `stop`. When every source is lost for good the
+//!   thread ends by itself (no more 100 ms wakes); `stop` still joins it.
 //! - The thread blocks in `WaitForMultipleObjects` on the stop event and the
 //!   streams' buffer events, with a 100 ms timeout (loopback events fire only
 //!   while audio renders), and checks the default devices once a second.
@@ -178,6 +179,10 @@ impl fmt::Display for CaptureError {
 impl std::error::Error for CaptureError {}
 
 /// Receives the captured audio, on the capture thread.
+///
+/// The sink is dropped on the capture thread before that thread calls
+/// `CoUninitialize`, so a sink may own COM objects (released in its `Drop`)
+/// without outliving COM on the thread that releases them.
 pub trait AudioSink: Send {
     /// One packet of `source`: mono samples at `rate` Hz whose first frame
     /// was captured at `qpc` (100 ns units, see [`qpc_now`]).
@@ -323,7 +328,7 @@ enum Slot {
 /// The capture thread.
 fn run(
     sources: Sources,
-    mut sink: Box<dyn AudioSink>,
+    sink: Box<dyn AudioSink>,
     stop: &Event,
     ready: &mpsc::SyncSender<Result<(), CaptureError>>,
 ) {
@@ -332,41 +337,54 @@ fn run(
         let _ = ready.send(Err(CaptureError::Com(e)));
         return;
     }
-    // Everything COM lives in this block, so it is released before
+    // Takes the sink: it and every COM object are released in there, before
     // `CoUninitialize`.
-    {
-        let enumerator: windows::core::Result<IMMDeviceEnumerator> =
-            unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) };
-        let enumerator = match enumerator {
-            Ok(e) => e,
-            Err(e) => {
-                let _ = ready.send(Err(CaptureError::Com(e)));
-                unsafe { CoUninitialize() };
-                return;
-            }
-        };
-        let mut slots = [Slot::Off, Slot::Off];
-        let mut failed = Vec::new();
-        for source in sources.list() {
-            match Stream::open(&enumerator, source) {
-                Ok(s) => slots[source.index()] = Slot::Live(s),
-                Err(e) => failed.push((source, e)),
-            }
-        }
-        if slots.iter().all(|s| matches!(s, Slot::Off)) {
-            let err = pick_error(failed);
-            let _ = ready.send(Err(err));
-            drop(enumerator);
-            unsafe { CoUninitialize() };
+    open_and_serve(sources, sink, stop, ready);
+    unsafe { CoUninitialize() };
+}
+
+/// The capture thread's work with COM initialised. Everything it owns,
+/// the sink included, is dropped when it returns.
+fn open_and_serve(
+    sources: Sources,
+    mut sink: Box<dyn AudioSink>,
+    stop: &Event,
+    ready: &mpsc::SyncSender<Result<(), CaptureError>>,
+) {
+    let enumerator: windows::core::Result<IMMDeviceEnumerator> =
+        unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) };
+    let enumerator = match enumerator {
+        Ok(e) => e,
+        Err(e) => {
+            let _ = ready.send(Err(CaptureError::Com(e)));
             return;
         }
-        let _ = ready.send(Ok(()));
-        for (source, err) in failed {
-            sink.lost(source, err);
+    };
+    let mut slots = [Slot::Off, Slot::Off];
+    let mut failed = Vec::new();
+    for source in sources.list() {
+        match Stream::open(&enumerator, source) {
+            Ok(s) => slots[source.index()] = Slot::Live(s),
+            Err(e) => failed.push((source, e)),
         }
-        serve(&enumerator, &mut slots, sink.as_mut(), stop);
     }
-    unsafe { CoUninitialize() };
+    if all_off(&slots) {
+        let _ = ready.send(Err(pick_error(failed)));
+        return;
+    }
+    let _ = ready.send(Ok(()));
+    for (source, err) in failed {
+        sink.lost(source, err);
+    }
+    serve(&enumerator, &mut slots, sink.as_mut(), stop);
+    // The streams go first, then the sink, then the enumerator.
+    drop(slots);
+    drop(sink);
+}
+
+/// No source is open or being retried: nothing is left to wait for.
+fn all_off(slots: &[Slot]) -> bool {
+    slots.iter().all(|s| matches!(s, Slot::Off))
 }
 
 /// The error `start` returns when nothing opened: a refused mic first, so the
@@ -383,7 +401,9 @@ fn pick_error(failed: Vec<(Source, CaptureError)>) -> CaptureError {
 }
 
 /// The wait loop: drains every live stream on each wake, follows the default
-/// devices, reopens failed streams and ends on the stop event.
+/// devices, reopens failed streams and ends on the stop event, or once every
+/// source is lost for good (the thread then waits no more; the recorder
+/// finishes by itself).
 fn serve(
     enumerator: &IMMDeviceEnumerator,
     slots: &mut [Slot; 2],
@@ -423,10 +443,11 @@ fn serve(
                     // A default switch does not invalidate the old device,
                     // so the ids are compared (as `eq_audio` does).
                     let current = default_id(enumerator, source);
-                    if current.is_some() && current.as_deref() != Some(stream.id.as_str()) {
-                        if let Ok(new) = Stream::open(enumerator, source) {
-                            *slot = Slot::Live(new);
-                        }
+                    if current.is_some()
+                        && current.as_deref() != Some(stream.id.as_str())
+                        && let Ok(new) = Stream::open(enumerator, source)
+                    {
+                        *slot = Slot::Live(new);
                     }
                 }
                 Slot::Retry { until, next, .. } if now >= *next => {
@@ -451,6 +472,9 @@ fn serve(
                 }
                 _ => {}
             }
+        }
+        if all_off(slots) {
+            return;
         }
     }
 }
@@ -738,6 +762,41 @@ mod tests {
             "{diff_ms} ms vs {real:?}"
         );
         assert!(qpc_now() >= b as u64);
+    }
+
+    /// Works with or without an output device: the sink goes on either path.
+    #[test]
+    fn the_sink_is_dropped_while_com_still_runs_on_the_capture_thread() {
+        use std::sync::atomic::{AtomicU8, Ordering};
+        struct Probe(Arc<AtomicU8>);
+        impl AudioSink for Probe {
+            fn audio(&mut self, _: Source, _: u64, _: u32, _: &[f32]) {}
+            fn lost(&mut self, _: Source, _: CaptureError) {}
+        }
+        impl Drop for Probe {
+            fn drop(&mut self) {
+                use windows::Win32::System::Com::{
+                    APTTYPE, APTTYPEQUALIFIER, APTTYPEQUALIFIER_IMPLICIT_MTA, CoGetApartmentType,
+                };
+                let (mut t, mut q) = (APTTYPE(0), APTTYPEQUALIFIER(0));
+                // Without its own `CoInitializeEx` a thread still reads as
+                // the process's implicit MTA; that does not count.
+                let com = unsafe { CoGetApartmentType(&mut t, &mut q) }.is_ok()
+                    && q != APTTYPEQUALIFIER_IMPLICIT_MTA;
+                self.0.store(if com { 1 } else { 2 }, Ordering::SeqCst);
+            }
+        }
+        // A `rec-capture` thread: the recorder's sessions count those.
+        let _one = super::super::tests::session();
+        let seen = Arc::new(AtomicU8::new(0));
+        let system = Sources {
+            mic: false,
+            system: true,
+        };
+        if let Ok(c) = Capture::start(system, Box::new(Probe(Arc::clone(&seen)))) {
+            c.stop();
+        }
+        assert_eq!(seen.load(Ordering::SeqCst), 1, "1: COM was up, 2: it was not");
     }
 
     #[test]
