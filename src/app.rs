@@ -374,6 +374,10 @@ thread_local! {
     static DEFERRED_NOTIF: RefCell<Vec<InputKey>> = const { RefCell::new(Vec::new()) };
     static DEFERRED_SEARCH: RefCell<Vec<InputKey>> = const { RefCell::new(Vec::new()) };
     static DEFERRED_ARRANGE: RefCell<Vec<(usize, isize)>> = const { RefCell::new(Vec::new()) };
+    /// The island lost the activation (to this window) while the app was
+    /// borrowed (inside `SetForegroundWindow`): the lifted notes are told
+    /// once the handler returns.
+    static DEFERRED_ISLAND_INACTIVE: Cell<Option<isize>> = const { Cell::new(None) };
     /// The tray menu's modal loop is running; a second click must not nest another.
     static MENU_OPEN: Cell<bool> = const { Cell::new(false) };
     /// The single-instance mutexes this process holds (`try_claim`), closed by
@@ -8044,8 +8048,9 @@ fn open_note_card_menu(hwnd: HWND, id: &str) {
     MENU_OPEN.set(true);
     let chosen = tray::note_card_menu(hwnd, label);
     MENU_OPEN.set(false);
+    // The same path as a click on the card's icon, so the panel redraws.
     if chosen {
-        with_app(|app| app.sticky_toggle(id));
+        with_app(|app| app.apply_now(Event::Click(Hit::NoteSticky(id.to_owned()))));
     }
 }
 
@@ -8342,6 +8347,9 @@ fn run_deferred() {
     for (code, data) in DEFERRED_ARRANGE.take() {
         with_app(|app| app.on_arrange_msg(code, data));
     }
+    if let Some(to) = DEFERRED_ISLAND_INACTIVE.take() {
+        island_deactivated(to);
+    }
     if DEFERRED_CLI_REDRAW.take() {
         with_app(App::on_input_changed);
     }
@@ -8354,6 +8362,14 @@ fn run_deferred() {
         && let Some(hwnd) = with_app(|app| app.hwnd)
     {
         shutdown(hwnd);
+    }
+}
+
+/// The island lost the activation to window `to`: the lifted notes hear of
+/// it now, or once the handler holding the app returns.
+fn island_deactivated(to: isize) {
+    if with_app(|app| app.widgets_island_deactivated(HWND(to as _))).is_none() {
+        DEFERRED_ISLAND_INACTIVE.set(Some(to));
     }
 }
 
@@ -8747,7 +8763,7 @@ unsafe extern "system" fn wnd_proc(
                 deliver_clip_key(InputKey::Blur);
                 deliver_notif_key(InputKey::Blur);
                 deliver_search_key(InputKey::Blur);
-                with_app(|app| app.widgets_island_deactivated(HWND(lparam.0 as _)));
+                island_deactivated(lparam.0);
             }
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
