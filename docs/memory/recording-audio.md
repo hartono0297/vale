@@ -11,6 +11,7 @@ plan: `docs/superpowers/plans/2026-11-07-recording-phase1.md`, mockups:
 `docs/design/rekaman.html`. Transcript (track B) and screen recording (track C)
 build on it. Related: [[controlled-folder-access]], [[media-foundation-dynamic-load]],
 [[wasapi-capture-timestamps]], [[bata-idle-power-budget]], [[hotkeys]], [[exe-size]].
+Mute, device choice and echo cancellation: [[recording-controls]].
 
 ## Where it lives
 

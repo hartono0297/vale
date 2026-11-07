@@ -89,8 +89,10 @@ and still scrolls at the minimum size.
 ## Registration (`src/app_hotkeys.rs`, child of `app`)
 
 - Ids: HOTKEY_CLIP 1, SEARCH 2, DEVICES 3, ARRANGE 4, SCREENSHOT 5, LYRICS_CARD 6.
-  Since 2026-11-07 also RECORD 9 (`Ctrl+Alt+R`, [[recording-audio]]); ids 10
-  and 11 are reserved for screen recording and its zoom.
+  Since 2026-11-07 also RECORD 9 (`Ctrl+Alt+R`, [[recording-audio]]) and
+  RECORD_MUTE 12 (`Ctrl+Alt+M`, registered only while recording,
+  [[recording-controls]]); ids 10 and 11 are reserved for screen recording
+  and its zoom.
 - `HotkeyState` keeps what each row has in effect, a `failed` flag per row, the
   hook thread, `paused` and `started`. `sync_hotkeys()` (startup,
   `adopt_config`, after a Settings change) plans each row from want, in

@@ -275,3 +275,16 @@ so up to 512 bytes of noise):
 No new crate. New `windows` features for WASAPI capture and Media Foundation;
 Media Foundation is loaded at run time ([[media-foundation-dynamic-load]]), so
 it adds no import.
+
+## Recording controls (2026-11-08)
+
+[[recording-controls]]: `main` at 10e45b5 against `main` at 09a0ee5 (phase 1),
+both built in the main checkout, `cargo build --release --locked`, 0 warnings:
+
+| Build | Bytes |
+|---|---|
+| 09a0ee5 (phase 1) | 3,979,264 |
+| 10e45b5 (mute, devices, echo) | 4,016,640 (+37,376, +0.9 %) |
+
+One new `windows` feature (`Win32_Devices_FunctionDiscovery`, for the device
+friendly name key); no new crate.
