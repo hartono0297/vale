@@ -8697,6 +8697,7 @@ unsafe extern "system" fn wnd_proc(
                 deliver_clip_key(InputKey::Blur);
                 deliver_notif_key(InputKey::Blur);
                 deliver_search_key(InputKey::Blur);
+                with_app(|app| app.widgets_island_deactivated(HWND(lparam.0 as _)));
             }
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }

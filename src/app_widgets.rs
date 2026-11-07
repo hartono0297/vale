@@ -27,6 +27,7 @@ use std::collections::HashSet;
 use std::time::Instant;
 
 use chrono::Local;
+use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
 
 use super::App;
@@ -536,7 +537,7 @@ impl App {
         self.widgets_sync();
         if let Some(host) = self.widgets.host.as_mut() {
             let caret = (!start.is_empty() && !filled).then(|| templates::caret_of(&start));
-            host.focus_at(&id, caret);
+            host.bring_front_at(&id, caret);
         }
         self.sync_settings();
         true
@@ -593,7 +594,19 @@ impl App {
         if done {
             self.persist_notes(Instant::now());
             self.widgets_sync();
+            // Just stuck: the note comes up on top, like a new one.
+            if !on_desktop && let Some(host) = self.widgets.host.as_mut() {
+                host.lift(id);
+            }
             self.sync_settings();
+        }
+    }
+
+    /// The island lost activation to `to`: the lifted notes drop back unless
+    /// the activation went to one of them.
+    pub(super) fn widgets_island_deactivated(&mut self, to: HWND) {
+        if let Some(host) = self.widgets.host.as_mut() {
+            host.island_deactivated(to);
         }
     }
 

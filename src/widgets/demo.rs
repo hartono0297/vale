@@ -719,7 +719,7 @@ impl Demo {
             }
             self.sync();
             self.host
-                .focus_at(&id, (!start.is_empty()).then(|| templates::caret_of(&start)));
+                .bring_front_at(&id, (!start.is_empty()).then(|| templates::caret_of(&start)));
             unsafe {
                 SetTimer(Some(self.owner), SAVE_TIMER, SAVE_MS, None);
             }
