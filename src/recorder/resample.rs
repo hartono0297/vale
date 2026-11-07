@@ -13,6 +13,9 @@ use std::f64::consts::PI;
 
 /// Filter half-width in zero crossings of the sinc (per side).
 const HALF_WIDTH: f64 = 16.0;
+/// A rate pair needing more phases than this (rates that share almost no
+/// factor) computes each tap instead of keeping a table.
+const MAX_PHASES: u64 = 1024;
 
 /// Converts a mono stream from one rate to another, chunk by chunk.
 pub struct Resampler {
@@ -23,6 +26,11 @@ pub struct Resampler {
     cutoff: f64,
     /// Kernel reach in source frames on each side.
     reach: i64,
+    /// `gcd(from, to)`: output positions fall on multiples of `g / to`.
+    g: u64,
+    /// The normalized kernel per phase (`to / g` phases of `2 * reach`
+    /// taps), or empty for the direct path.
+    table: Vec<f32>,
     /// Source frames not yet released; `buf[0]` is padded index `base`.
     buf: Vec<f32>,
     base: i64,
@@ -30,16 +38,59 @@ pub struct Resampler {
     produced: u64,
 }
 
+fn gcd(mut a: u64, mut b: u64) -> u64 {
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a.max(1)
+}
+
 impl Resampler {
+    /// The ratio is exact (`from / to` reduced by their gcd, 44100 to 48000 is
+    /// 147/160), so every output frame falls on one of `to / gcd` phases; the
+    /// kernel of each is computed once here.
     pub fn new(from_hz: u32, to_hz: u32) -> Self {
+        let mut r = Self::direct(from_hz, to_hz);
+        let phases = r.to / r.g;
+        if r.from != r.to && phases <= MAX_PHASES {
+            let width = 2 * r.reach as usize;
+            r.table = Vec::with_capacity(phases as usize * width);
+            for p in 0..phases {
+                let frac = p as f64 / phases as f64;
+                let w: Vec<f64> = (0..width).map(|t| r.weight(frac + (r.reach - 1) as f64 - t as f64)).collect();
+                let norm: f64 = w.iter().sum();
+                r.table.extend(w.iter().map(|x| (x / norm) as f32));
+            }
+        }
+        r
+    }
+
+    /// Without the phase table: each tap is computed per output frame.
+    pub(crate) fn direct(from_hz: u32, to_hz: u32) -> Self {
         let (from, to) = (u64::from(from_hz.max(1)), u64::from(to_hz.max(1)));
         let cutoff = (to as f64 / from as f64).min(1.0);
         let reach = (HALF_WIDTH / cutoff).ceil() as i64;
-        let mut r = Self { from, to, cutoff, reach, buf: Vec::new(), base: 0, produced: 0 };
+        let mut r = Self {
+            from,
+            to,
+            cutoff,
+            reach,
+            g: gcd(from, to),
+            table: Vec::new(),
+            buf: Vec::new(),
+            base: 0,
+            produced: 0,
+        };
         if from != to {
             r.buf = vec![0.0; reach as usize];
         }
         r
+    }
+
+    /// The number of kernels in the table, `None` on the direct path.
+    #[cfg(test)]
+    fn phases(&self) -> Option<usize> {
+        (!self.table.is_empty()).then(|| self.table.len() / (2 * self.reach as usize))
     }
 
     /// How far the output lags the input, in output frames: output frame
@@ -68,8 +119,12 @@ impl Resampler {
             if center + self.reach >= end {
                 break;
             }
-            let frac = (num % self.to) as f64 / self.to as f64;
-            out.push(self.interpolate(center, frac));
+            let rem = num % self.to;
+            out.push(if self.table.is_empty() {
+                self.interpolate(center, rem as f64 / self.to as f64)
+            } else {
+                self.from_table(center, (rem / self.g) as usize)
+            });
             self.produced += 1;
         }
         // Frames left of the next output's kernel are never needed again.
@@ -80,22 +135,41 @@ impl Resampler {
         out
     }
 
+    /// The windowed-sinc tap for a source frame `d` frames before the
+    /// output position.
+    fn weight(&self, d: f64) -> f64 {
+        let x = PI * self.cutoff * d;
+        let sinc = if x.abs() < 1e-12 { 1.0 } else { x.sin() / x };
+        let window = 0.5 * (1.0 + (PI * d / self.reach as f64).cos());
+        self.cutoff * sinc * window
+    }
+
     /// One output sample at source position `center + frac`.
     fn interpolate(&self, center: i64, frac: f64) -> f32 {
-        let reach = self.reach as f64;
         let (mut acc, mut norm) = (0.0f64, 0.0f64);
         for j in (center - self.reach + 1)..=(center + self.reach) {
-            let d = center as f64 + frac - j as f64;
-            let x = PI * self.cutoff * d;
-            let sinc = if x.abs() < 1e-12 { 1.0 } else { x.sin() / x };
-            let window = 0.5 * (1.0 + (PI * d / reach).cos());
-            let w = self.cutoff * sinc * window;
+            let w = self.weight(center as f64 + frac - j as f64);
             norm += w;
             if j >= self.base {
                 acc += w * f64::from(self.buf[(j - self.base) as usize]);
             }
         }
         (acc / norm) as f32
+    }
+
+    /// `interpolate` with the kernel of `phase` from the table.
+    fn from_table(&self, center: i64, phase: usize) -> f32 {
+        let width = 2 * self.reach as usize;
+        let taps = &self.table[phase * width..(phase + 1) * width];
+        let first = center - self.reach + 1;
+        // Frames before `base` are the zero padding, already released.
+        let skip = (self.base - first).max(0) as usize;
+        let start = (first + skip as i64 - self.base) as usize;
+        taps[skip..]
+            .iter()
+            .zip(&self.buf[start..])
+            .map(|(w, x)| w * x)
+            .sum()
     }
 }
 
@@ -180,6 +254,30 @@ mod tests {
         let mut r = Resampler::new(16_000, 48_000);
         let y = r.process(&vec![0.5; 4_000]);
         assert!(y[200..].iter().all(|s| (s - 0.5).abs() < 1e-3));
+    }
+
+    #[test]
+    fn the_phase_table_matches_the_direct_formula() {
+        for (from, to, phases) in [
+            (44_100u32, 48_000u32, Some(160usize)),
+            (48_000, 44_100, Some(147)),
+            (16_000, 48_000, Some(3)),
+            (96_000, 48_000, Some(1)),
+            (22_050, 48_000, Some(320)),
+            // 48001 and 48000 share no factor: 48000 phases, the direct path.
+            (48_001, 48_000, None),
+        ] {
+            let table = Resampler::new(from, to);
+            assert_eq!(table.phases(), phases, "{from}->{to}");
+            let x = sine(997.0, from, 6_000, 0.7);
+            let (mut a, mut b) = (table, Resampler::direct(from, to));
+            let ya = run_chunked(&mut a, &x, &[441, 13, 1000]);
+            let yb = run_chunked(&mut b, &x, &[441, 13, 1000]);
+            assert_eq!(ya.len(), yb.len());
+            for (i, (p, q)) in ya.iter().zip(&yb).enumerate() {
+                assert!((p - q).abs() < 1e-5, "{from}->{to} frame {i}: {p} vs {q}");
+            }
+        }
     }
 
     #[test]
