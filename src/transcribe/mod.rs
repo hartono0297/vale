@@ -23,3 +23,4 @@ pub mod store;
 pub mod download;
 pub mod decode;
 pub mod chunk;
+pub mod output;
