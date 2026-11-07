@@ -89,6 +89,7 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[settings-window-size]]: Settings resizes and maximizes (min 720x520, column capped at 760 and centred, `layout_in`), the place is remembered (`settings_window`, screen coordinates), drag auto-scroll
 - [[settings-structure]]: Settings in ten sections (Umum, Tampilan, Kucing, Panel, Widget, Clipboard, Tombol pintas, Fitur, Integrasi, Tentang), titled cards, renamed labels, which sections scroll (v3.8; Umum no longer wraps)
 - [[self-update]]: Check for updates (tray, Tentang), release JSON, SHA-256, swap the running exe (rename to .old), `--updated` restart with the 60 s mutex-handle wait, rollback, sticky offer with Update / Nanti (re-offered at every check), exit-crash root cause (WARP objects released before exit, `end_process`), 24 h wall-clock timer (35), never in debug or demos (v3.11, v3.15.1)
+- [[recording-audio]]: audio recording, phase 1 (2026-11-07): mic, PC audio or both to `.m4a` + sidecar on a QPC timeline, AAC 96 kbps fragmented MP4, threads only while recording, TIMER_REC 60 / TIMER_REC_LEVEL 61, hotkey 9 `Ctrl+Alt+R`, Rekam page, tray dot, silent recordings not kept
 - [[lyrics-lookup]]: LRCLIB 503 + Retry-After retry (30 s budget), step order (field search, get, free-text search), None vs transient, the Artist - Title split, tight-window consensus pick of the best-synced version, intro shift for a longer video, `.lrc2` / `.none4`
 
 ## Gotchas
@@ -106,6 +107,9 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[taskbar-icon-from-exe]]: the Win11 taskbar shows the exe's cached icon, not WM_SETICON; the installer and the app tell the shell
 - [[d2d-dc-target-full-copy]]: a Direct2D DC render target copies the whole bound DC rect at BeginDraw and EndDraw whatever the clip; the island draws on a WIC bitmap target and copies only the dirty rows
 - [[test-spawns-no-window]]: tests spawn console children with CREATE_NO_WINDOW and never show windows (editor `ON_SCREEN`), or Windows Terminal windows pop up
+- [[controlled-folder-access]]: Windows' ransomware protection refuses unsigned Vale in Documents/Videos with "not found"; recordings fall back to `%USERPROFILE%\Vale\Rekaman` and the default moves there
+- [[media-foundation-dynamic-load]]: Media Foundation is loaded with LoadLibraryExW, never imported, or vale.exe will not start on Windows N
+- [[wasapi-capture-timestamps]]: GetBuffer's QPC position is in 100 ns units; loopback sends no packets in silence
 - [[tray-dark-menu]]: the tray menu follows the Windows app mode via uxtheme ordinals 135/136/104 (AllowDark), not Vale's window theme
 
 ## Conventions

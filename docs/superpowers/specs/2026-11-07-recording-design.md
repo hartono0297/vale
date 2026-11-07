@@ -121,7 +121,10 @@ These are fixed so the tracks can build in parallel. A track that needs to
 change one asks the owner session first (SendMessage).
 
 - **Folders.** Audio: `Documents\Vale\Rekaman\` (config
-  `recording.folder`, owned by A). Video: `Videos\Vale\` (config
+  `recording.folder`, owned by A); when Windows refuses it (Controlled folder
+  access) the recording goes to `%USERPROFILE%\Vale\Rekaman` and the default
+  moves there (`recorder::prefs::fallback_folder`, see the memory note
+  `controlled-folder-access`; C does the same for video). Video: `Videos\Vale\` (config
   `recording.video_folder`, added by C). Names:
   `YYYY-MM-DD HHmm <title>.<ext>`, title from the app using the mic or empty
   (then `YYYY-MM-DD HHmm.<ext>`); a clash adds ` (2)`.

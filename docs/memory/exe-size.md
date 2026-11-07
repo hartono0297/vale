@@ -260,3 +260,18 @@ bytes), `main` at fcf5dd7 against this branch:
 | this branch (WIC target) | 3,852,800 (+1,536, +0.04 %) |
 
 No new crate and no new `windows` feature (WIC and Direct2D were on already).
+
+## Audio recording, phase 1 (2026-11-07)
+
+[[recording-audio]]: `main` at f0df4bd, `cargo build --release --locked`, 0
+warnings, against the installed 5.1.0 release exe (built by CI in another path,
+so up to 512 bytes of noise):
+
+| Build | Bytes |
+|---|---|
+| 5.1.0 release | 3,856,384 |
+| `main` with recording | 3,979,264 (+122,880, +3.2 %) |
+
+No new crate. New `windows` features for WASAPI capture and Media Foundation;
+Media Foundation is loaded at run time ([[media-foundation-dynamic-load]]), so
+it adds no import.
