@@ -58,14 +58,18 @@ commit.
   when the menu opens (no cache, no watcher at idle).
 - **Echo:** with `recording.echo_cancel` (default on, Settings switch
   "Peredam gema mic" / "Mic echo cancellation") the mic stream is opened in
-  the communications category (`IAudioClient2::SetClientProperties`,
-  `AudioCategory_Communications`) so the device's or Windows' echo
-  cancellation runs, and on Windows 11 builds that have it,
-  `IAcousticEchoCancellationControl::SetEchoCancellationRenderEndpoint` points
-  it at the render endpoint being recorded. The session opts out of ducking
-  (`IAudioSessionControl2::SetDuckingPreference(TRUE)`) so other apps are not
-  turned down. Every one of these calls is best effort: a failure leaves a
-  plain stream and is logged once. The loopback stream is never changed.
+  the **speech** category (`IAudioClient2::SetClientProperties`,
+  `AudioCategory_Speech`), whose processing runs Windows' or the driver's echo
+  cancellation, and `IAcousticEchoCancellationControl::SetEchoCancellationRenderEndpoint`
+  points it at the PC audio being recorded where that interface exists.
+  *Changed after review (2026-11-08):* the first build used
+  `AudioCategory_Communications`, which can make Windows turn other apps down
+  ("communications activity" ducking, 80 % by default; `SetDuckingPreference`
+  cannot prevent that from a capture stream). Measured on the owner's PC, mic
+  RMS while the speakers played speech: speech category 0.0014 / 0.0002,
+  communications 0.0004 / 0.0012, off 0.024 / 0.020. Every call is best
+  effort; a driver that rejects the category gets a plain stream. The loopback
+  stream is never changed.
 - **Echo backup in the transcript** (track B, not this branch): a "Saya"
   segment whose text mostly repeats a "Peserta" segment overlapping it in time
   is dropped. Added to track B's integration list.

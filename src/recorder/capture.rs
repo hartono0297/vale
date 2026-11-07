@@ -55,7 +55,7 @@ use windows::Win32::Foundation::{
     CloseHandle, E_ACCESSDENIED, E_INVALIDARG, HANDLE, WAIT_EVENT, WAIT_OBJECT_0,
 };
 use windows::Win32::Media::Audio::{
-    AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_STREAMOPTIONS_NONE, AudioCategory_Communications,
+    AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_STREAMOPTIONS_NONE, AudioCategory_Speech,
     AudioClientProperties, AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR, AUDCLNT_E_DEVICE_INVALIDATED,
     AUDCLNT_E_UNSUPPORTED_FORMAT, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
     AUDCLNT_STREAMFLAGS_LOOPBACK, EDataFlow, IAcousticEchoCancellationControl, IAudioCaptureClient, IAudioClient, IAudioClient2,
@@ -951,21 +951,25 @@ impl fmt::Display for Echo {
         };
         write!(
             f,
-            "communications category {}, render endpoint {}",
+            "speech category {}, render endpoint {}",
             one(&self.category),
             one(&self.endpoint)
         )
     }
 }
 
-/// Puts the stream in the communications category, which makes Windows (or
-/// the driver) run its echo cancellation. Before `Initialize`.
-fn set_communications(client: &IAudioClient) -> Step {
+/// Puts the stream in the speech category, whose processing includes the
+/// echo cancellation of Windows (or of the driver). Not the communications
+/// category: that one makes Windows turn other apps down ("communications
+/// activity" ducking, 80 % by default), and the meeting audio being recorded
+/// with them. Measured on 2026-11-08: both categories cut the speaker sound in
+/// the mic by about 95 %. Before `Initialize`.
+fn set_speech_category(client: &IAudioClient) -> Step {
     Step::of((|| unsafe {
         let props = AudioClientProperties {
             cbSize: std::mem::size_of::<AudioClientProperties>() as u32,
             bIsOffload: false.into(),
-            eCategory: AudioCategory_Communications,
+            eCategory: AudioCategory_Speech,
             Options: AUDCLNT_STREAMOPTIONS_NONE,
         };
         client.cast::<IAudioClient2>()?.SetClientProperties(&props)
@@ -1013,7 +1017,7 @@ struct Stream {
 
 impl Stream {
     /// Opens the endpoint `id` of `source`'s kind. A driver that rejects the
-    /// communications category (`Initialize` fails after it was set) gets a
+    /// speech category (`Initialize` fails after it was set) gets a
     /// plain stream instead of losing the source.
     fn open(
         enumerator: &IMMDeviceEnumerator,
@@ -1026,7 +1030,7 @@ impl Stream {
             Err(e) if rejected => {
                 if !aec.logged.replace(true) {
                     eprintln!(
-                        "vale: mic echo cancellation: the driver rejected the communications                          category ({e}), falling back to a plain stream"
+                        "vale: mic echo cancellation: the driver rejected the speech category ({e}), falling back to a plain stream"
                     );
                 }
                 let plain = Aec {
@@ -1041,7 +1045,7 @@ impl Stream {
     }
 
     /// One try of [`Stream::open`]; `rejected` is set when `Initialize` failed
-    /// after the communications category was set.
+    /// after the speech category was set.
     fn open_with(
         enumerator: &IMMDeviceEnumerator,
         source: Source,
@@ -1056,7 +1060,7 @@ impl Stream {
             let client: IAudioClient = device.Activate(CLSCTX_ALL, None).map_err(err)?;
             let mut echo = aec.on.then(Echo::default);
             if let Some(echo) = echo.as_mut() {
-                echo.category = set_communications(&client);
+                echo.category = set_speech_category(&client);
             }
             let wfx = client.GetMixFormat().map_err(err)?;
             let parsed = read_format(wfx);

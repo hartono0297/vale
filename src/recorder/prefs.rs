@@ -24,7 +24,7 @@ pub struct RecordingPrefs {
     pub mic_device: Option<String>,
     /// The same for the PC audio (an output endpoint, recorded in loopback).
     pub system_device: Option<String>,
-    /// The mic stream asks Windows for echo cancellation (the communications
+    /// The mic stream asks Windows for echo cancellation (the speech
     /// category), so speaker sound the mic picks up is removed. On by default.
     pub echo_cancel: bool,
 }
