@@ -69,7 +69,7 @@ locally into `main`). **Merging into `main` takes turns** (see "Merge rules").
 
 | Track | Session | Phases | Owns |
 |---|---|---|---|
-| A | the session that wrote this file | 1 | `src/recorder/`, `src/app_record.rs`, the Rekam page, the recording notch views, hotkey id 9, the tray items, Settings "Rekaman" card, `config.recording` |
+| A | the session that wrote this file | 1 | `src/recorder/`, `src/app_record.rs`, the Rekam page, the recording notch views, hotkey ids 9 and 12, the tray items, Settings "Rekaman" card, `config.recording` |
 | B | "Transkrip" session | 2, later 5 | `src/transcribe/`, Settings "Transkrip" card, the transcript window, the transcript notice |
 | C | "Rekam layar" session | 3, 4 | `src/screenrec/`, hotkeys 10 and 11, the screen-recording toolbar, the screen notch view |
 
@@ -149,7 +149,7 @@ change one asks the owner session first (SendMessage).
 
   | Kind | A | B | C |
   |---|---|---|---|
-  | `RegisterHotKey` id | 9 (record audio, default `Ctrl+Alt+R`) | none | 10 (record screen, default `Ctrl+Alt+Shift+R`), 11 (zoom while recording, default `Ctrl+Alt+Z`, registered only while a screen recording runs) |
+  | `RegisterHotKey` id | 9 (record audio, default `Ctrl+Alt+R`), 12 (mute the recording mic, default `Ctrl+Alt+M`, registered only while a recording runs) | none | 10 (record screen, default `Ctrl+Alt+Shift+R`), 11 (zoom while recording, default `Ctrl+Alt+Z`, registered only while a screen recording runs) |
   | Timer ids | 60-64 | 65-69 | 70-74 |
   | `WM_APP + n` | 80-84 | 85-89 | 90-94 |
 

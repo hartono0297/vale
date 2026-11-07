@@ -586,6 +586,8 @@ keys! {
     RecOpenFolder => "Buka folder", "Open folder";
     HotkeyRowRecord => "Rekam audio", "Record audio";
     HotkeyRowRecordDesc => "Mulai atau hentikan rekaman", "Start or stop a recording";
+    HotkeyRowRecordMute => "Bisukan mic rekaman", "Mute recording mic";
+    HotkeyRowRecordMuteDesc => "Hanya aktif saat merekam", "Active only while recording";
     RecNoticeSource => "Rekaman", "Recording";
     RecSavedTitle => "Rekaman tersimpan", "Recording saved";
     RecClickToOpen => "klik untuk buka", "click to open";
@@ -619,6 +621,8 @@ keys! {
         "Remember to ask everyone before recording";
     TrayRecStart => "Mulai rekam", "Start recording";
     TrayRecStop => "Hentikan rekam", "Stop recording";
+    TrayMicMute => "Bisukan mic", "Mute mic";
+    TrayMicUnmute => "Nyalakan mic", "Unmute mic";
     RecSettingsTitle => "Rekaman", "Recording";
     RecSettingsSources => "Sumber suara", "Sound sources";
     RecSettingsSourcesDesc => "Yang ikut direkam", "What gets recorded";

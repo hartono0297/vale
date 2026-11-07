@@ -363,11 +363,14 @@ pub enum HotkeyId {
     StickyList,
     /// "Rekam audio": start or stop an audio recording.
     Record,
+    /// "Bisukan mic rekaman": mutes or unmutes the mic of the running
+    /// recording. Registered only while a recording runs.
+    RecordMute,
 }
 
 impl HotkeyId {
     /// Every row, in Settings order.
-    pub const ALL: [HotkeyId; 9] = [
+    pub const ALL: [HotkeyId; 10] = [
         HotkeyId::Search,
         HotkeyId::Clipboard,
         HotkeyId::Devices,
@@ -377,6 +380,7 @@ impl HotkeyId {
         HotkeyId::StickyNote,
         HotkeyId::StickyList,
         HotkeyId::Record,
+        HotkeyId::RecordMute,
     ];
 
     /// The row's key in config.json.
@@ -391,6 +395,7 @@ impl HotkeyId {
             HotkeyId::StickyNote => "sticky_note",
             HotkeyId::StickyList => "sticky_list",
             HotkeyId::Record => "record",
+            HotkeyId::RecordMute => "record_mute",
         }
     }
 
@@ -423,11 +428,19 @@ impl HotkeyId {
                 },
                 u16::from(b'R'),
             ),
+            HotkeyId::RecordMute => hk(
+                Mods {
+                    ctrl: true,
+                    alt: true,
+                    ..Mods::default()
+                },
+                u16::from(b'M'),
+            ),
             _ => None,
         }
     }
 
-    /// The position in `ALL` (0..9).
+    /// The position in `ALL` (0..10).
     pub fn index(self) -> usize {
         self as usize
     }
@@ -450,6 +463,7 @@ pub struct Hotkeys {
     pub sticky_note: Option<Hotkey>,
     pub sticky_list: Option<Hotkey>,
     pub record: Option<Hotkey>,
+    pub record_mute: Option<Hotkey>,
 }
 
 impl Default for Hotkeys {
@@ -464,6 +478,7 @@ impl Default for Hotkeys {
             sticky_note: HotkeyId::StickyNote.default(),
             sticky_list: HotkeyId::StickyList.default(),
             record: HotkeyId::Record.default(),
+            record_mute: HotkeyId::RecordMute.default(),
         }
     }
 }
@@ -481,6 +496,7 @@ impl Hotkeys {
             sticky_note: None,
             sticky_list: None,
             record: None,
+            record_mute: None,
         }
     }
 
@@ -495,6 +511,7 @@ impl Hotkeys {
             HotkeyId::StickyNote => self.sticky_note,
             HotkeyId::StickyList => self.sticky_list,
             HotkeyId::Record => self.record,
+            HotkeyId::RecordMute => self.record_mute,
         }
     }
 
@@ -509,6 +526,7 @@ impl Hotkeys {
             HotkeyId::StickyNote => self.sticky_note = value,
             HotkeyId::StickyList => self.sticky_list = value,
             HotkeyId::Record => self.record = value,
+            HotkeyId::RecordMute => self.record_mute = value,
         }
     }
 
@@ -688,6 +706,7 @@ pub fn from_legacy(root: &serde_json::Value) -> Hotkeys {
         sticky_note: None,
         sticky_list: None,
         record: HotkeyId::Record.default(),
+        record_mute: HotkeyId::RecordMute.default(),
     }
 }
 
@@ -931,19 +950,22 @@ mod tests {
                 "lyrics_card",
                 "sticky_note",
                 "sticky_list",
-                "record"
+                "record",
+                "record_mute"
             ]
         );
         for (i, id) in HotkeyId::ALL.iter().enumerate() {
             assert_eq!(id.index(), i);
             assert_eq!(HotkeyId::from_index(i), Some(*id));
         }
-        assert_eq!(HotkeyId::from_index(9), None);
+        assert_eq!(HotkeyId::from_index(10), None);
         assert_eq!(HotkeyId::LyricsCard.index(), 5, "appended last");
         assert_eq!(HotkeyId::StickyNote.index(), 6, "appended after the lyrics card");
         assert_eq!(HotkeyId::StickyList.index(), 7, "appended after the sticky note");
         assert_eq!(HotkeyId::Record.index(), 8, "appended after the sticky list");
+        assert_eq!(HotkeyId::RecordMute.index(), 9, "appended after the record row");
         let d = Hotkeys::default();
+        assert_eq!(d.record_mute, Some(hk("Ctrl+Alt+M")));
         assert_eq!(d.record, Some(hk("Ctrl+Alt+R")), "the record row defaults to Ctrl+Alt+R");
         assert_eq!(d.sticky_note, None, "the sticky note row has no default combo");
         assert_eq!(d.sticky_list, None, "the sticky list row has no default combo");
@@ -989,7 +1011,7 @@ mod tests {
             v,
             json!({"search":"Ctrl+Alt+Space","clipboard":"Win+Alt+V","devices":"None",
                    "arrange":"None","screenshot":"None","lyrics_card":"Ctrl+Alt+L",
-                   "sticky_note":"Ctrl+Alt+N","sticky_list":"Ctrl+Alt+J","record":"Ctrl+Alt+R"})
+                   "sticky_note":"Ctrl+Alt+N","sticky_list":"Ctrl+Alt+J","record":"Ctrl+Alt+R","record_mute":"Ctrl+Alt+M"})
         );
         // A config from before the row has no key: off, the rest as written.
         let old = Hotkeys::from_json(&json!({"search":"Ctrl+Alt+Space","clipboard":"Win+Alt+V",

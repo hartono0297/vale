@@ -1317,6 +1317,7 @@ mod tests {
                 sticky_note: crate::hotkey::parse("Ctrl+Alt+N").unwrap(),
                 sticky_list: crate::hotkey::parse("Ctrl+Alt+J").unwrap(),
                 record: crate::hotkey::parse("Ctrl+Alt+Y").unwrap(),
+                record_mute: crate::hotkey::parse("Ctrl+Alt+U").unwrap(),
             },
             settings_window: Some(WindowPlace {
                 left: 20,

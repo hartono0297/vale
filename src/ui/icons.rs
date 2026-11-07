@@ -156,11 +156,13 @@ pub enum Icon {
     Mic,
     /// A record mark: a ring with a smaller ring in its middle.
     Record,
+    /// The microphone struck through: a muted source of a recording.
+    MicOff,
 }
 
 impl Icon {
     /// Every icon, in declaration order (`ALL[i] as usize == i`).
-    pub const ALL: [Icon; 81] = [
+    pub const ALL: [Icon; 82] = [
         Icon::Camera,
         Icon::Clipboard,
         Icon::Emoji,
@@ -242,6 +244,7 @@ impl Icon {
         Icon::StickyNote,
         Icon::Mic,
         Icon::Record,
+        Icon::MicOff,
     ];
 
     /// The icon's primitives on the 24-unit grid, in drawing order.
@@ -562,6 +565,11 @@ impl Icon {
                 Part::Path("M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M9 21h6"),
             ],
             Icon::Record => &[Part::Circle(12.0, 12.0, 9.0), Part::Circle(12.0, 12.0, 3.5)],
+            Icon::MicOff => &[
+                Part::Rect(9.0, 3.0, 6.0, 11.0, 3.0),
+                Part::Path("M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M9 21h6"),
+                Part::Path("M4 4l16 16"),
+            ],
             Icon::Widgets => &[
                 Part::FillRect(3.0, 3.0, 8.0, 11.0, 2.0),
                 Part::Rect(3.0, 3.0, 8.0, 11.0, 2.0),

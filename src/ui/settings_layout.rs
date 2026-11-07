@@ -4578,6 +4578,7 @@ pub fn hotkey_row_key(id: HotkeyId) -> Key {
         HotkeyId::StickyNote => Key::StickyNew,
         HotkeyId::StickyList => Key::StickyList,
         HotkeyId::Record => Key::HotkeyRowRecord,
+        HotkeyId::RecordMute => Key::HotkeyRowRecordMute,
     }
 }
 
@@ -4592,6 +4593,7 @@ fn hotkey_row_desc_key(id: HotkeyId) -> Key {
         HotkeyId::StickyNote => Key::StickyNewDesc,
         HotkeyId::StickyList => Key::StickyListDesc,
         HotkeyId::Record => Key::HotkeyRowRecordDesc,
+        HotkeyId::RecordMute => Key::HotkeyRowRecordMuteDesc,
     }
 }
 
@@ -5140,6 +5142,7 @@ mod tests {
             sticky_note: hk("Win+Ctrl+Alt+Shift+End"),
             sticky_list: hk("Win+Ctrl+Alt+Shift+Home"),
             record: hk("Win+Ctrl+Alt+Shift+Insert"),
+            record_mute: hk("Win+Ctrl+Alt+Shift+Delete"),
         }
     }
 
@@ -6595,7 +6598,7 @@ mod tests {
             // One card of the header and eight rows, under its eyebrow.
             assert_eq!(l.cards.len(), 1);
             let card = l.cards[0];
-            assert_eq!(card.h, HEADER_H + 9.0 * ROW_H);
+            assert_eq!(card.h, HEADER_H + 10.0 * ROW_H);
             assert!(
                 l.texts
                     .iter()
@@ -6705,7 +6708,7 @@ mod tests {
             assert!(enabled(&l, HotkeyId::Clipboard));
             assert!(!enabled(&l, HotkeyId::Search));
             assert!(l.hits().iter().any(|(h, _)| *h == Hit::HotkeysResetAll));
-            // Every field takes a click (in a window tall enough for all nine rows).
+            // Every field takes a click (in a window tall enough for all ten rows).
             let tall = layout_in(Section::Hotkeys, &s, &Estimate, (CLIENT_W, 800.0));
             for id in HotkeyId::ALL {
                 assert!(tall.hits().iter().any(|(h, _)| *h == Hit::HotkeyField(id)));
@@ -6718,7 +6721,7 @@ mod tests {
             let f = hotkey_fields(&layout(Section::Hotkeys, &rec, &Estimate));
             assert_eq!(
                 f.iter().map(|x| x.3).collect::<Vec<_>>(),
-                [false, false, true, false, false, false, false, false, false]
+                [false, false, true, false, false, false, false, false, false, false]
             );
             // The description: red for a refusal on that row, red for a taken
             // one that is set, otherwise secondary.
@@ -6756,8 +6759,8 @@ mod tests {
             let reds: Vec<&Text> = l.texts.iter().filter(|t| t.tone == Tone::Bad).collect();
             assert_eq!(
                 reds.len(),
-                5,
-                "search, clipboard, screenshot, the lyrics card and the recorder are set"
+                6,
+                "search, clipboard, screenshot, the lyrics card, the recorder and its mute are set"
             );
             assert!(reds.iter().all(|t| t.text == text(lang, Key::HotkeyTaken)));
         }

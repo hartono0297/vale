@@ -121,6 +121,8 @@ pub struct RecFrame {
     /// Peak levels, 0 to 1.
     pub mic: f32,
     pub system: f32,
+    /// Which sources are muted, `[mic, system]`.
+    pub muted: [bool; 2],
 }
 
 /// Everything a frame draws besides the shape: the view and the data behind it.

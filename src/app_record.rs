@@ -93,6 +93,14 @@ enum Toggle {
     Stop,
 }
 
+/// Whether `source` is one of the sources chosen for the recording.
+fn is_recorded(sources: RecSources, source: Source) -> bool {
+    match source {
+        Source::Mic => sources.mic,
+        Source::System => sources.system,
+    }
+}
+
 fn toggle_of(busy: bool, active: bool) -> Option<Toggle> {
     match (busy, active) {
         (true, _) => None,
@@ -310,6 +318,7 @@ fn status_of(recorder: &Recorder, sources: RecSources) -> RecStatus {
         paused_total,
         paused_since,
         sources,
+        muted: recorder.muted(),
     }
 }
 
@@ -474,6 +483,23 @@ impl App {
         }
     }
 
+    /// The Rekam page's button, the hotkey and the tray entry: mutes or
+    /// unmutes `source` of the running recording. Ignored when none runs or
+    /// the source is not one of the recorded.
+    pub(super) fn rec_toggle_mute(&mut self, source: Source) {
+        let Some(recorder) = self.rec.recorder.as_ref() else {
+            return;
+        };
+        let sources = self.state.rec().map_or(self.rec_sources, |s| s.sources);
+        if !is_recorded(sources, source) {
+            return;
+        }
+        let now = !recorder.muted()[usize::from(source == Source::System)];
+        recorder.set_muted(source, now);
+        tray::set_mic_muted(recorder.muted()[0]);
+        self.rec_show_status();
+    }
+
     /// Posts `note` of `session` to the island from any thread.
     fn rec_poster(&self, session: u64) -> impl Fn(RecNote) + Send + 'static {
         let (tx, wake) = (self.tx.clone(), poster(self.hwnd, WM_APP_EVENT));
@@ -558,7 +584,10 @@ impl App {
                 let used = recorder.path().parent().map(Path::to_path_buf);
                 self.rec.recorder = Some(recorder);
                 tray::set_recording(self.hwnd, true);
+                tray::set_mic_muted(false);
                 self.apply_now(Event::RecStatus(Some(status)));
+                // The mute hotkey is registered while a recording runs.
+                self.sync_hotkeys();
                 if let Some(used) = used {
                     self.rec_fell_back(&used);
                 }
@@ -610,7 +639,9 @@ impl App {
             return;
         };
         tray::set_recording(self.hwnd, false);
+        tray::set_mic_muted(false);
         self.apply_now(Event::RecStatus(None));
+        self.sync_hotkeys();
         let say = self.rec_poster(self.rec.session);
         let timing = std::env::var_os("DI_REC_TIMING").is_some();
         // A spawn that fails drops the closure, and the recorder's `Drop`
@@ -1011,6 +1042,16 @@ mod tests {
         s.session = 3;
         assert!(s.current(3));
         assert!(!s.current(2), "a word of the session before");
+    }
+
+    #[test]
+    fn a_source_can_be_muted_only_when_it_is_recorded() {
+        let mic = RecSources { mic: true, system: false };
+        let system = RecSources { mic: false, system: true };
+        let both = RecSources { mic: true, system: true };
+        assert!(is_recorded(mic, Source::Mic) && !is_recorded(mic, Source::System));
+        assert!(!is_recorded(system, Source::Mic) && is_recorded(system, Source::System));
+        assert!(is_recorded(both, Source::Mic) && is_recorded(both, Source::System));
     }
 
     #[test]

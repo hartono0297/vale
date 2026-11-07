@@ -40,6 +40,7 @@ use crate::config::Style;
 use crate::devices::{self, DeviceKind};
 use crate::i18n::{self, Key, Lang, text};
 use crate::model::{CalView, Hit, MediaInfo, Notice, NoticeKind, Page};
+use crate::recorder::Source;
 use crate::mole::{MoleGroup, MoleOpt};
 use crate::notes::{Note, note_time_label};
 use crate::notif::NotifEntry;
@@ -794,7 +795,7 @@ impl Renderer {
                     s,
                     strip,
                     &head,
-                    frame.rec.is_some(),
+                    frame.rec.map(|r| r.sources),
                     frame.record.recent.len(),
                 ))
             }
@@ -986,24 +987,53 @@ impl Renderer {
         let name = text(lang, if rec.is_some() { Key::RecStop } else { Key::Start });
         self.text_colored(name, &self.fonts.small_center, l.button_label, p.secondary, 1.0);
 
-        // The source control: the chosen segment lit, all dim while locked.
-        let on = rec.map_or(frame.record.sources, |r| r.sources);
-        let alpha = if l.sources_enabled { 1.0 } else { REC_LOCKED };
-        self.set_color(p.raised, alpha);
-        self.fill_round(l.seg_track, radius::CONTROL);
-        for (sources, r) in l.segs {
-            let lit = sources == on;
-            if lit {
-                self.set_color(p.raised_hi, alpha);
-                self.fill_round(r, radius::SEGMENT);
+        // The source control while idle; while recording, each recorded
+        // source's mute button and meter take its place.
+        if let Some(r) = rec {
+            for cell in &l.live {
+                let (open, crossed, level, tint, muted) = match cell.source {
+                    Source::Mic => (Icon::Mic, Icon::MicOff, r.mic, REC_MIC_TINT, r.muted[0]),
+                    Source::System => {
+                        (Icon::Volume, Icon::VolumeMute, r.system, p.sage, r.muted[1])
+                    }
+                };
+                let (icon, ink) = if muted {
+                    (crossed, theme::REC_RED)
+                } else {
+                    (open, p.text)
+                };
+                let fill = if muted {
+                    mix(p.raised, theme::REC_RED, 0.25)
+                } else {
+                    p.raised_hi
+                };
+                self.set_color(fill, 1.0);
+                self.fill_round(cell.button, cell.button.h / 2.0);
+                self.icon_colored(icon, cell.button, REC_MUTE_GLYPH, ink, 1.0, None);
+                if muted {
+                    self.rec_meter(cell.meter, 0.0, mix(p.raised, p.secondary, 0.5));
+                } else {
+                    self.rec_meter(cell.meter, level, tint);
+                }
             }
-            let key = match (sources.mic, sources.system) {
-                (true, false) => Key::RecSourceMic,
-                (false, true) => Key::RecSourceSystem,
-                _ => Key::RecSourceBoth,
-            };
-            let ink = if lit { p.text } else { p.secondary };
-            self.text_colored(text(lang, key), &self.fonts.small_center, r, ink, alpha);
+        } else {
+            let on = frame.record.sources;
+            self.set_color(p.raised, 1.0);
+            self.fill_round(l.seg_track, radius::CONTROL);
+            for (sources, r) in l.segs {
+                let lit = sources == on;
+                if lit {
+                    self.set_color(p.raised_hi, 1.0);
+                    self.fill_round(r, radius::SEGMENT);
+                }
+                let key = match (sources.mic, sources.system) {
+                    (true, false) => Key::RecSourceMic,
+                    (false, true) => Key::RecSourceSystem,
+                    _ => Key::RecSourceBoth,
+                };
+                let ink = if lit { p.text } else { p.secondary };
+                self.text_colored(text(lang, key), &self.fonts.small_center, r, ink, 1.0);
+            }
         }
 
         // The recorded time and its state, while recording.
@@ -4815,12 +4845,25 @@ impl Renderer {
             l.system,
         );
         if rec.sources.mic {
-            self.rec_meter(mic_at, rec.mic, REC_MIC_TINT);
+            if rec.muted[0] {
+                self.rec_muted_glyph(mic_at, Icon::MicOff);
+            } else {
+                self.rec_meter(mic_at, rec.mic, REC_MIC_TINT);
+            }
         }
         if rec.sources.system {
-            self.rec_meter(system_at, rec.system, self.palette.sage);
+            if rec.muted[1] {
+                self.rec_muted_glyph(system_at, Icon::VolumeMute);
+            } else {
+                self.rec_meter(system_at, rec.system, self.palette.sage);
+            }
         }
         Ok(())
+    }
+
+    /// A muted source's crossed glyph in the place of its meter.
+    fn rec_muted_glyph(&self, area: Rect, icon: Icon) {
+        self.icon_colored(icon, area, REC_MUTED_GLYPH, self.palette.secondary, 1.0, None);
     }
 
     /// Four bars from the bottom of `area`, their heights from `level`.
@@ -5189,15 +5232,18 @@ fn pomodoro_compact_boxes(text: Rect, time_w: f32) -> (Rect, Rect) {
 }
 
 /// The Rekam page's link icon and its gap to the label, the stop square's
-/// side, the start dot's radius and how dim the locked source control is.
+/// side and the start dot's radius.
 const REC_LINK_ICON: f32 = 14.0;
 const REC_LINK_GAP: f32 = 4.0;
 const REC_STOP_SIDE: f32 = 18.0;
 const REC_DOT_BIG: f32 = 11.0;
-const REC_LOCKED: f32 = 0.5;
 
 /// The mic meter's cream tint (`.lv.mic` in docs/design/rekaman.html).
 const REC_MIC_TINT: u32 = 0xEBCFB8;
+/// The crossed glyph that stands in for a muted source's meter in the REC
+/// view, and the icon in the Rekam page's mute button.
+const REC_MUTED_GLYPH: f32 = 14.0;
+const REC_MUTE_GLYPH: f32 = 16.0;
 
 /// The recorded time as the REC view writes it: "mm:ss", and "h:mm:ss" from
 /// the first hour. Whole seconds, rounded down.

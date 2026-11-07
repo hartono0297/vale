@@ -2279,6 +2279,7 @@ impl App {
             Effect::PhoneBack => self.phone_back(),
             Effect::RecToggle => self.rec_toggle(),
             Effect::RecPause => self.rec_pause(),
+            Effect::RecMute(source) => self.rec_toggle_mute(source),
             Effect::RecSources(sources) => self.rec_set_sources(sources),
             Effect::RecReveal(path) => self.rec_reveal(path),
             Effect::RecOpenFolder => self.rec_open_folder(),
@@ -6706,6 +6707,7 @@ impl App {
                 sources: r.sources,
                 mic: rec_levels.0,
                 system: rec_levels.1,
+                muted: r.muted,
             }),
             now,
             today: state.today(),
@@ -8292,6 +8294,9 @@ fn open_menu(hwnd: HWND) {
         }
         Some(MenuCmd::Record) => {
             with_app(|app| app.rec_toggle());
+        }
+        Some(MenuCmd::RecordMute) => {
+            with_app(|app| app.rec_toggle_mute(crate::recorder::Source::Mic));
         }
         Some(MenuCmd::StylePill) => {
             with_app(|app| app.set_style(Style::Pill));

@@ -2088,6 +2088,11 @@ impl IslandState {
                     effects.push(Effect::RecPause);
                 }
             }
+            Hit::RecMute(source) => {
+                if self.view() == View::Panel(Page::Record) && self.rec.is_some() {
+                    effects.push(Effect::RecMute(source));
+                }
+            }
             Hit::RecSources(sources) => {
                 if self.view() == View::Panel(Page::Record) && self.rec.is_none() {
                     effects.push(Effect::RecSources(sources));
@@ -3253,6 +3258,7 @@ mod tests {
     use crate::model::*;
     use crate::mole::MoleOpt;
     use crate::pomodoro::{Phase, PomoSettings, PomoStatus};
+    use crate::recorder::Source;
     use chrono::NaiveDate;
     use std::time::{Duration, Instant};
 
@@ -7718,6 +7724,7 @@ mod tests {
                 mic: true,
                 system: true,
             },
+            muted: [false; 2],
         }
     }
 
@@ -7814,8 +7821,9 @@ mod tests {
             s.apply(Event::Click(Hit::RecSources(both)), t0),
             vec![Effect::RecSources(both)]
         );
-        // Pause needs a recording.
+        // Pause and mute need a recording.
         assert_eq!(s.apply(Event::Click(Hit::RecPause), t0), vec![]);
+        assert_eq!(s.apply(Event::Click(Hit::RecMute(Source::Mic)), t0), vec![]);
         s.apply(Event::RecStatus(Some(rec_status(t0))), t0);
         assert_eq!(s.view(), View::Panel(Page::Record), "the panel stays");
         assert_eq!(
@@ -7824,6 +7832,15 @@ mod tests {
         );
         // The sources are locked while recording.
         assert_eq!(s.apply(Event::Click(Hit::RecSources(both)), t0), vec![]);
+        // The mute buttons need a recording and give the source.
+        assert_eq!(
+            s.apply(Event::Click(Hit::RecMute(Source::Mic)), t0),
+            vec![Effect::RecMute(Source::Mic)]
+        );
+        assert_eq!(
+            s.apply(Event::Click(Hit::RecMute(Source::System)), t0),
+            vec![Effect::RecMute(Source::System)]
+        );
         // Stop is still the toggle.
         assert_eq!(
             s.apply(Event::Click(Hit::RecToggle), t0),

@@ -285,6 +285,8 @@ pub struct RecStatus {
     /// When the pause now running began.
     pub paused_since: Option<Instant>,
     pub sources: RecSources,
+    /// Which sources are muted, `[mic, system]`.
+    pub muted: [bool; 2],
 }
 
 impl RecStatus {
@@ -673,6 +675,8 @@ pub enum Hit {
     /// "Buka folder".
     RecToggle,
     RecPause,
+    /// A source's mute button, only while recording.
+    RecMute(crate::recorder::Source),
     RecSources(RecSources),
     RecOpen(usize),
     RecFolder,
@@ -871,6 +875,8 @@ pub enum Effect {
     /// (the panel has collapsed).
     RecToggle,
     RecPause,
+    /// Mute or unmute one source of the running recording.
+    RecMute(crate::recorder::Source),
     RecSources(RecSources),
     RecReveal(PathBuf),
     RecOpenFolder,
@@ -1159,6 +1165,7 @@ mod tests {
                 mic: true,
                 system: true,
             },
+            muted: [false; 2],
         }
     }
 

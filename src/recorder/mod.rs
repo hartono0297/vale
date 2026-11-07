@@ -33,6 +33,7 @@ pub mod timeline;
 
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
@@ -450,6 +451,11 @@ impl Placer {
         self.meters[source_index(source)].feed_at(mono, now);
     }
 
+    /// Drops `source`'s held peak: its meter reads 0 now.
+    fn silence_meter(&mut self, source: Source) {
+        self.meters[source_index(source)] = PeakMeter::new();
+    }
+
     /// At most a second of what lies before raw frame `frame`, interleaved
     /// (see `Timeline::take_max`); call again for the rest.
     pub fn take(&mut self, frame: i64) -> Vec<f32> {
@@ -515,11 +521,27 @@ enum Msg {
     Lost(Source, bool),
 }
 
+/// Which sources are muted, shared between the island (which flips them) and
+/// the capture thread (which reads them for every packet).
+#[derive(Default)]
+struct Muted([AtomicBool; 2]);
+
+impl Muted {
+    fn get(&self, source: Source) -> bool {
+        self.0[source_index(source)].load(Ordering::Relaxed)
+    }
+
+    fn set(&self, source: Source, on: bool) {
+        self.0[source_index(source)].store(on, Ordering::Relaxed);
+    }
+}
+
 /// The capture side: places packets and reports lost sources to the writer.
 struct Sink {
     lanes: Lanes,
     placer: Arc<Mutex<Placer>>,
     levels: Arc<SharedLevels>,
+    muted: Arc<Muted>,
     tx: Sender<Msg>,
 }
 
@@ -531,12 +553,22 @@ impl AudioSink for Sink {
         let now = Instant::now();
         // The resampling runs before the lock; the writer waits only for
         // the copy onto the timeline.
-        let placed = self.lanes.place(source, qpc, rate, mono);
+        let mut placed = self.lanes.place(source, qpc, rate, mono);
+        // A muted source keeps its packets (they hold the timeline) but
+        // writes zeros, and its meter reads 0 at once.
+        let muted = self.muted.get(source);
+        if muted && let Some(placed) = &mut placed {
+            placed.samples.fill(0.0);
+        }
         let p = &mut *lock(&self.placer);
         if let Some(placed) = &placed {
             p.put(placed);
         }
-        p.meter(source, mono, now);
+        if muted {
+            p.silence_meter(source);
+        } else {
+            p.meter(source, mono, now);
+        }
         p.publish(&self.levels, now);
     }
 
@@ -558,6 +590,7 @@ pub struct Recorder {
     container: Container,
     placer: Arc<Mutex<Placer>>,
     levels: Arc<SharedLevels>,
+    muted: Arc<Muted>,
     started: Instant,
     paused_since: Option<Instant>,
     paused_total: Duration,
@@ -625,6 +658,7 @@ impl Recorder {
 
         let placer = Arc::new(Mutex::new(Placer::new(opts.sources, qpc_now())));
         let levels = Arc::new(SharedLevels::new());
+        let muted = Arc::new(Muted::default());
         let (tx, rx) = mpsc::channel();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let writer = {
@@ -665,6 +699,7 @@ impl Recorder {
             lanes: Lanes::new(opts.sources, origin),
             placer: Arc::clone(&placer),
             levels: Arc::clone(&levels),
+            muted: Arc::clone(&muted),
             tx: tx.clone(),
         });
         let feed = match open(opts.sources, sink) {
@@ -682,6 +717,7 @@ impl Recorder {
             container: _container,
             placer,
             levels,
+            muted,
             started,
             paused_since: None,
             paused_total: Duration::ZERO,
@@ -736,6 +772,18 @@ impl Recorder {
     /// source that is not recorded reads 0. Never waits.
     pub fn levels(&self) -> (f32, f32) {
         (self.levels.mic(), self.levels.system())
+    }
+
+    /// Mutes or unmutes `source`: while muted its packets still arrive and
+    /// keep the timeline, but zeros are written and its meter reads 0. A
+    /// source that is not recorded is unaffected. Never waits.
+    pub fn set_muted(&self, source: Source, on: bool) {
+        self.muted.set(source, on);
+    }
+
+    /// Which sources are muted, `[mic, system]`.
+    pub fn muted(&self) -> [bool; 2] {
+        [self.muted.get(Source::Mic), self.muted.get(Source::System)]
     }
 
     /// The final `.m4a` path (the file is `<path>.part` until `stop`).
@@ -1931,6 +1979,54 @@ pub(super) mod tests {
             let f = dec.frequency(ch);
             assert!((f - hz).abs() < hz * 0.05, "channel {ch}: {f} Hz");
         }
+    }
+
+    /// The peak of one channel between `from_ms` and `to_ms` of a decoded file.
+    fn peak_between(dec: &encode::tests::Decoded, channel: usize, from_ms: usize, to_ms: usize) -> f32 {
+        let ch = dec.channels as usize;
+        let per_ms = dec.rate as usize / 1000;
+        dec.samples
+            .iter()
+            .skip(channel)
+            .step_by(ch)
+            .skip(from_ms * per_ms)
+            .take((to_ms - from_ms) * per_ms)
+            .fold(0.0f32, |m, s| m.max(s.abs()))
+    }
+
+    #[test]
+    fn a_mute_span_writes_zeros_in_that_channel_only_and_unmute_brings_the_audio_back() {
+        let _one = session();
+        com();
+        let dir = temp_dir("rec-mute");
+        let (rec, _rx) = fake(&dir, Sources::BOTH, Lose::Nothing);
+        assert_eq!(rec.muted(), [false, false], "a recording starts unmuted");
+        std::thread::sleep(Duration::from_millis(700));
+        rec.set_muted(Source::Mic, true);
+        assert_eq!(rec.muted(), [true, false]);
+        std::thread::sleep(Duration::from_millis(100));
+        let (mic, system) = rec.levels();
+        assert!(mic == 0.0 && system > 0.3, "levels {mic} {system}");
+        std::thread::sleep(Duration::from_millis(700));
+        rec.set_muted(Source::Mic, false);
+        assert_eq!(rec.muted(), [false, false]);
+        std::thread::sleep(Duration::from_millis(700));
+        let result = rec.stop().expect("stop");
+
+        let dec = encode::tests::decode(&result.path);
+        assert_eq!(dec.channels, 2);
+        // The span 700..1500 ms is muted; the edges are left out of the
+        // checks (the encoder smears a few ms, the packets are 10 ms).
+        assert!(peak_between(&dec, 0, 900, 1400) < 0.01, "the mic is silent while muted");
+        assert!(peak_between(&dec, 1, 900, 1400) > 0.3, "the other channel goes on");
+        assert!(peak_between(&dec, 1, 200, 600) > 0.3);
+        assert!(peak_between(&dec, 1, 1600, 2000) > 0.3);
+        assert!(peak_between(&dec, 0, 200, 600) > 0.3, "audio before the mute");
+        assert!(peak_between(&dec, 0, 1700, 2000) > 0.3, "audio after the unmute");
+        assert!(
+            (1900..2600).contains(&ms(result.duration)),
+            "the mute leaves the duration alone: {result:?}"
+        );
     }
 
     #[test]
