@@ -1571,6 +1571,12 @@ impl Renderer {
         self.regions.hit(x / self.scale, y / self.scale)
     }
 
+    /// Where the last frame put the panel region of `hit`, dip from the
+    /// window's top-left; `None` when it drew none.
+    pub fn region_of(&self, hit: &Hit) -> Option<Rect> {
+        self.regions.regions.iter().find(|r| r.hit == *hit).map(|r| r.rect)
+    }
+
     /// What a client point in physical pixels is over: a drawn island pixel
     /// (shoulders and anti-aliased edge included), only the drag margin, or
     /// nothing.

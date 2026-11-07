@@ -354,6 +354,9 @@ pub enum Event {
     },
     /// A note, event or reminder editor window opened (true) or closed (false).
     EditorOpen(bool),
+    /// One of Vale's own dropdowns (`menu_pop`) opened from the panel (true)
+    /// or went (false). It holds the panel open like an editor.
+    MenuOpen(bool),
     /// The local date rolled over.
     Today(NaiveDate),
     /// The reminder was edited, deleted or dismissed elsewhere: its sticky

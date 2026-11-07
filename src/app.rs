@@ -8247,26 +8247,37 @@ fn open_note_card_menu(hwnd: HWND, id: &str) {
     }
 }
 
-/// The device menu of `source` (from the Rekam page): the endpoints are
-/// listed as it opens, and a pick is saved and, while recording, applied at
-/// once. Modal like `open_menu`, so the app is borrowed only before and after.
+/// The device dropdown of `source` (from the Rekam page), under the device
+/// name that was clicked: the endpoints are listed as it opens. It holds the
+/// panel while it is open; its pick comes back as `WM_APP_MENU_DONE`
+/// (`App::rec_menu_done`). Opened outside the app borrow: it takes the
+/// foreground, which sends messages back here.
 fn open_rec_device_menu(hwnd: HWND, source: crate::recorder::Source) {
     if MENU_OPEN.get() {
         return;
     }
-    let Some((current, lang)) = with_app(|app| {
-        (
+    let Some(Some((current, lang, font, anchor))) = with_app(|app| {
+        let anchor = app.rec_device_anchor(source)?;
+        Some((
             app.config.recording.device(source).map(str::to_owned),
             app.config.language,
-        )
+            app.config.font,
+            anchor,
+        ))
     }) else {
         return;
     };
-    MENU_OPEN.set(true);
-    let pick = tray::device_menu(hwnd, source, current.as_deref(), lang);
-    MENU_OPEN.set(false);
-    if let Some(choice) = pick {
-        with_app(|app| app.rec_set_device(source, choice));
+    let opened = crate::ui::device_menu::open(
+        hwnd,
+        anchor,
+        crate::ui::menu_pop::Align::Start,
+        source,
+        current.as_deref(),
+        lang,
+        font,
+    );
+    if opened {
+        with_app(|app| app.apply_now(Event::MenuOpen(true)));
     }
 }
 
@@ -8994,6 +9005,13 @@ unsafe extern "system" fn wnd_proc(
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
         WM_LBUTTONDOWN => {
+            // The island never takes the activation, so the open dropdown
+            // does not lose it to a press here: the press only closes it, as
+            // a native menu's would.
+            if crate::ui::menu_pop::is_open_for(hwnd) {
+                crate::ui::menu_pop::close();
+                return LRESULT(0);
+            }
             with_app(|app| app.on_press(lparam));
             LRESULT(0)
         }
@@ -9023,6 +9041,14 @@ unsafe extern "system" fn wnd_proc(
         }
         WM_APP_ACCESS => {
             on_access_answered();
+            LRESULT(0)
+        }
+        // The device dropdown went (picked or not).
+        crate::ui::menu_pop::WM_APP_MENU_DONE => {
+            if let Some(done) = unsafe { crate::ui::menu_pop::take_done(lparam) } {
+                let pick = crate::ui::device_menu::picked(&done);
+                with_app(|app| app.rec_menu_done(pick));
+            }
             LRESULT(0)
         }
         WM_APP_REC_DEVICE => {

@@ -2288,6 +2288,41 @@ impl Settings {
         vec![After::TemplateMenu(at.x, at.y, self.model.lang)]
     }
 
+    /// A device row's "Ganti": the device dropdown opens under the button
+    /// once the state is released. No button in the layout (it scrolled
+    /// away) is no dropdown.
+    fn device_menu_after(&self, source: Source) -> Vec<After> {
+        let Some((_, rect)) = self
+            .layout
+            .hits()
+            .into_iter()
+            .find(|(h, _)| *h == Hit::RecDevice(source))
+        else {
+            return Vec::new();
+        };
+        let k = self.scale();
+        let mut at = windows::Win32::Foundation::POINT {
+            x: (rect.x * k).round() as i32,
+            y: (rect.y * k).round() as i32,
+        };
+        unsafe {
+            let _ = windows::Win32::Graphics::Gdi::ClientToScreen(self.hwnd, &mut at);
+        }
+        let anchor = crate::capture::Rect::new(
+            at.x,
+            at.y,
+            (rect.w * k).round() as i32,
+            (rect.h * k).round() as i32,
+        );
+        vec![After::PickRecDevice {
+            source,
+            current: self.model.recording.device(source).map(str::to_owned),
+            lang: self.model.lang,
+            font: self.model.font,
+            anchor,
+        }]
+    }
+
     /// A click on `hit`. Returns what must happen once the state is released.
     fn on_click(&mut self, hit: Hit) -> Vec<After> {
         if hit != Hit::GoogleDisconnect && self.confirm {
@@ -2380,11 +2415,7 @@ impl Settings {
             Hit::RecEchoCancel => post(Action::RecEchoCancel(!m.recording.echo_cancel)),
             Hit::RecFolderOpen => vec![After::OpenFolder(m.recording.dir())],
             Hit::RecFolderChange => vec![After::PickRecFolder],
-            Hit::RecDevice(source) => vec![After::PickRecDevice(
-                source,
-                m.recording.device(source).map(str::to_owned),
-                m.lang,
-            )],
+            Hit::RecDevice(source) => self.device_menu_after(source),
             // A field: the first click records, the next on the same field
             // cancels.
             Hit::HotkeyField(id) => {
@@ -3047,9 +3078,16 @@ enum After {
     OpenFolder(std::path::PathBuf),
     /// Rekaman's "Ganti": the folder dialog, then the choice is posted.
     PickRecFolder,
-    /// A device row's "Ganti": the device menu of that source at the cursor
-    /// (`current`: the endpoint id chosen), then the pick is posted.
-    PickRecDevice(Source, Option<String>, Lang),
+    /// A device row's "Ganti": Vale's device dropdown of that source under
+    /// the button (`anchor`, screen px; `current`: the endpoint id chosen).
+    /// The pick comes back as `menu_pop::WM_APP_MENU_DONE` and is posted.
+    PickRecDevice {
+        source: Source,
+        current: Option<String>,
+        lang: Lang,
+        font: UiFont,
+        anchor: crate::capture::Rect,
+    },
     /// The own-shortcut form's fields go back to empty.
     ResetForm,
     /// The Target field's hint follows the kind chosen.
@@ -3092,12 +3130,17 @@ fn run_after(hwnd: HWND, owner: HWND, after: Vec<After>) {
                     post_action(owner, Action::RecFolder(Some(dir)));
                 }
             }
-            After::PickRecDevice(source, current, lang) => {
-                if let Some(choice) =
-                    crate::ui::tray::device_menu(hwnd, source, current.as_deref(), lang)
-                {
-                    post_action(owner, Action::RecDevice(source, choice));
-                }
+            After::PickRecDevice { source, current, lang, font, anchor } => {
+                // "Ganti" sits at the row's right end: the list grows leftwards.
+                crate::ui::device_menu::open(
+                    hwnd,
+                    anchor,
+                    crate::ui::menu_pop::Align::End,
+                    source,
+                    current.as_deref(),
+                    lang,
+                    font,
+                );
             }
             After::OpenDataFolder => {
                 let dir = crate::config::path()
@@ -3742,6 +3785,16 @@ unsafe extern "system" fn wnd_proc(
         }
         WM_APP_PLACE => {
             relayout_and_place();
+            LRESULT(0)
+        }
+        // The device dropdown went: its pick goes to the island.
+        crate::ui::menu_pop::WM_APP_MENU_DONE => {
+            if let Some(done) = unsafe { crate::ui::menu_pop::take_done(lparam) }
+                && let Some((source, choice)) = crate::ui::device_menu::picked(&done)
+                && let Some(owner) = with(|st| st.owner)
+            {
+                post_action(owner, Action::RecDevice(source, choice));
+            }
             LRESULT(0)
         }
         WM_APP_SUBMIT => {
@@ -4457,6 +4510,19 @@ pub fn run_demo(args: &[String]) {
                     st.relayout();
                 });
                 relayout_and_place();
+                // `DI_REC_MENU=mic` (or `system`) opens that row's device
+                // dropdown; `DI_SETTINGS_SCROLL` brings the row into view.
+                let source = match std::env::var("DI_REC_MENU").unwrap_or_default().as_str() {
+                    "mic" => Some(Source::Mic),
+                    "system" => Some(Source::System),
+                    _ => None,
+                };
+                if let Some(source) = source
+                    && let Some((owner, after)) =
+                        with(|st| (st.owner, st.on_click(Hit::RecDevice(source))))
+                {
+                    run_after(hwnd, owner, after);
+                }
             }
             Err(error) => {
                 eprintln!("settings-demo: open failed: {error}");

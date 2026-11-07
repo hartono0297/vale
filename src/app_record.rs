@@ -26,7 +26,7 @@ use chrono::{Local, NaiveDate, NaiveDateTime};
 use super::{App, WM_APP_EVENT, WM_APP_REC_DEVICE, notif_open, poster};
 use crate::i18n::{self, Key, Lang, text};
 use crate::model::{
-    Event, Notice, NoticeKind, Page, RecEntry, RecNote, RecSources, RecStatus, View,
+    Event, Hit, Notice, NoticeKind, Page, RecEntry, RecNote, RecSources, RecStatus, View,
 };
 use crate::recorder::devices;
 use crate::recorder::sidecar::Sidecar;
@@ -857,8 +857,9 @@ impl App {
         self.rec.devices = names;
     }
 
-    /// The Rekam page's device name was clicked: the menu opens from the main
-    /// loop (it is modal and must not run inside the app's borrow).
+    /// The Rekam page's device name was clicked: the dropdown opens from the
+    /// main loop (taking the foreground sends messages back to the island, so
+    /// it must not run inside the app's borrow).
     pub(super) fn rec_open_device_menu(&mut self, source: Source) {
         use windows::Win32::Foundation::{LPARAM, WPARAM};
         use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
@@ -872,7 +873,30 @@ impl App {
         };
     }
 
-    /// A device picked in the menu or in Settings: saved, and while a
+    /// The device name of `source` on the Rekam page as last drawn, screen
+    /// px: where its dropdown opens. `None` when the page does not show it.
+    pub(super) fn rec_device_anchor(&self, source: Source) -> Option<crate::capture::Rect> {
+        let r = self.renderer.region_of(&Hit::RecDevice(source))?;
+        let (origin, k) = self.win.as_ref().map(|w| (w.screen_origin(), w.scale()))?;
+        let px = |v: f32| (v * k).round() as i32;
+        Some(crate::capture::Rect::new(
+            origin.0 + px(r.x),
+            origin.1 + px(r.y),
+            px(r.w),
+            px(r.h),
+        ))
+    }
+
+    /// The device dropdown went: the panel lets go of it (and lingers), and a
+    /// pick is applied.
+    pub(super) fn rec_menu_done(&mut self, pick: Option<(Source, Option<String>)>) {
+        if let Some((source, id)) = pick {
+            self.rec_set_device(source, id);
+        }
+        self.apply_now(Event::MenuOpen(false));
+    }
+
+    /// A device picked in the dropdown or in Settings: saved, and while a
     /// recording runs the source switches to it at once. A pick the user
     /// made by hand gives no notice. `None` follows the Windows default.
     pub(super) fn rec_set_device(&mut self, source: Source, id: Option<String>) {
@@ -1012,6 +1036,10 @@ impl App {
             self.rec_read_devices();
         } else if !shown {
             self.rec.page_shown = false;
+            // The device dropdown belongs to the page: it goes with it.
+            if crate::ui::menu_pop::is_open_for(self.hwnd) {
+                crate::ui::menu_pop::close();
+            }
         }
     }
 

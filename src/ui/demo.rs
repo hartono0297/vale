@@ -2050,6 +2050,18 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
     println!("demo: 2 s per view, Pill then Notch ({steps} steps); kill the process to stop");
     let start = Instant::now();
     let mut settled = usize::MAX;
+    // `DI_REC_MENU=mic` (or `system`): once the Rekam page is drawn, that
+    // device's dropdown opens under its name, as a click does in the app.
+    let mut rec_menu = match name("DI_REC_MENU").as_str() {
+        "mic" => Some(crate::recorder::Source::Mic),
+        "system" => Some(crate::recorder::Source::System),
+        _ => None,
+    };
+    // Its colours follow `DI_WINDOW` (and `DI_SURFACE`, `DI_ACCENT`).
+    if rec_menu.is_some() {
+        theme::set_system_light(theme::read_system_light());
+        theme::set_current(theme::theme_from_env());
+    }
     loop {
         if !pump_messages() {
             return;
@@ -2524,6 +2536,23 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
             };
             if let Err(error) = renderer.draw(&win, style, shape, &frame, opacity) {
                 eprintln!("demo: draw failed: {error}");
+            }
+            if let Some(source) = rec_menu
+                && let Some(r) = renderer.region_of(&Hit::RecDevice(source))
+            {
+                rec_menu = None;
+                let ((x, y), k) = (win.screen_origin(), win.scale());
+                let px = |v: f32| (v * k).round() as i32;
+                let anchor = crate::capture::Rect::new(x + px(r.x), y + px(r.y), px(r.w), px(r.h));
+                crate::ui::device_menu::open(
+                    win.hwnd(),
+                    anchor,
+                    crate::ui::menu_pop::Align::Start,
+                    source,
+                    None,
+                    crate::i18n::lang(),
+                    ui_font,
+                );
             }
         }
         std::thread::sleep(Duration::from_millis(if animated { 33 } else { 16 }));
@@ -4045,6 +4074,13 @@ unsafe extern "system" fn wnd_proc(
         WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
         WM_DESTROY => {
             unsafe { PostQuitMessage(0) };
+            LRESULT(0)
+        }
+        // `DI_REC_MENU`'s dropdown went: say what was picked.
+        crate::ui::menu_pop::WM_APP_MENU_DONE => {
+            if let Some(done) = unsafe { crate::ui::menu_pop::take_done(lparam) } {
+                println!("demo: device pick {:?}", crate::ui::device_menu::picked(&done));
+            }
             LRESULT(0)
         }
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
