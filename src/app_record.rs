@@ -17,7 +17,7 @@
 //! (`rec-scan`) when the Rekam page comes on screen and after a save, never
 //! at startup and never on a timer.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -50,8 +50,8 @@ pub(super) struct RecState {
     sleep: SleepPause,
     /// The session ran out of input (`RecEvent::NoInput`) and stopped.
     no_input: bool,
-    /// The session's `Saved` arrived.
-    saved: bool,
+    /// The session's `Saved` or `Failed` arrived (its notice is shown).
+    told: bool,
     /// The writer finished by itself (`Failed`, `NoInput`), perhaps before
     /// the start thread reported.
     ended: bool,
@@ -198,7 +198,16 @@ pub(crate) fn failure_notice(lang: Lang, failure: &Failure, dir: &Path) -> Notic
         Failure::DiskFull => Key::RecWhyDiskFull,
         Failure::NoMediaFoundation => Key::RecWhyNoMf,
         Failure::NoDevice => Key::RecWhyNoDevice,
-        Failure::NoAudio => Key::RecWhyNoAudio,
+        // Nothing came in: not a failure of Vale's, so a plain word.
+        Failure::NoAudio => {
+            return notice(
+                "rec-failed",
+                lang,
+                text(lang, Key::RecNotSavedTitle).into(),
+                text(lang, Key::RecWhyNoAudio).into(),
+                NoticeKind::RecInfo,
+            );
+        }
         Failure::Other(detail) => {
             eprintln!("vale: recording failed: {detail}");
             Key::RecWhyOther
@@ -222,6 +231,37 @@ pub(crate) fn folder_blocked_notice(lang: Lang, dir: PathBuf) -> Notice {
         text(lang, Key::RecFolderBlockedBody).into(),
         NoticeKind::RecFolderBlocked { dir },
     )
+}
+
+/// Windows refused the chosen folder and the recording went to `dir` (the
+/// profile folder's `Vale\Rekaman`) instead.
+pub(crate) fn fallback_notice(lang: Lang, dir: &Path) -> Notice {
+    notice(
+        "rec-folder",
+        lang,
+        text(lang, Key::RecFallbackTitle).into(),
+        format!(
+            "{} {} \u{b7} {}",
+            text(lang, Key::RecSavingTo),
+            short_dir(dir),
+            text(lang, Key::RecChangeInSettings)
+        ),
+        NoticeKind::RecInfo,
+    )
+}
+
+/// The last three names of `dir` (`a\Vale\Rekaman`), or all of it when it
+/// is shorter, so the notice says which `Vale\Rekaman` it is.
+fn short_dir(dir: &Path) -> String {
+    let names: Vec<_> = dir
+        .components()
+        .filter(|c| matches!(c, Component::Normal(_)))
+        .collect();
+    if names.len() < 3 {
+        return dir.display().to_string();
+    }
+    let tail: PathBuf = names[names.len() - 3..].iter().collect();
+    tail.display().to_string()
 }
 
 /// The mic was refused: a click opens Windows' mic privacy page.
@@ -287,6 +327,21 @@ pub(super) fn probe_writable(dir: &Path) -> std::io::Result<()> {
         .truncate(true)
         .open(&probe)?;
     std::fs::remove_file(&probe)
+}
+
+/// Where a recording goes: `chosen` when Vale may write there, else
+/// `fallback`; `None` when neither (the start then fails and the
+/// blocked-folder notice offers the picker).
+pub(super) fn choose_dir(
+    chosen: &Path,
+    fallback: Option<&Path>,
+    writable: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    if writable(chosen) {
+        return Some(chosen.to_path_buf());
+    }
+    let other = fallback.filter(|f| *f != chosen)?;
+    writable(other).then(|| other.to_path_buf())
 }
 
 /// `<name>.m4a.part` beside `<name>.m4a`.
@@ -434,7 +489,7 @@ impl App {
         self.rec.session += 1;
         let session = self.rec.session;
         self.rec.no_input = false;
-        self.rec.saved = false;
+        self.rec.told = false;
         self.rec.ended = false;
         self.rec.sleep = SleepPause::default();
         let sources = self.rec_sources;
@@ -458,6 +513,14 @@ impl App {
             .name("rec-start".into())
             .spawn(move || {
                 let t0 = Instant::now();
+                let mut opts = opts;
+                // Controlled folder access may guard the folder: then the
+                // profile folder's `Vale\Rekaman` takes the recording.
+                let fallback = crate::recorder::prefs::fallback_folder();
+                let writable = |d: &Path| probe_writable(d).is_ok();
+                if let Some(dir) = choose_dir(&opts.dir, fallback.as_deref(), writable) {
+                    opts.dir = dir;
+                }
                 let result = Recorder::start(opts, events);
                 if timing {
                     eprintln!("vale: recorder start took {:?}", t0.elapsed());
@@ -492,9 +555,13 @@ impl App {
             }
             Ok(recorder) => {
                 let status = status_of(&recorder, self.rec_sources);
+                let used = recorder.path().parent().map(Path::to_path_buf);
                 self.rec.recorder = Some(recorder);
                 tray::set_recording(self.hwnd, true);
                 self.apply_now(Event::RecStatus(Some(status)));
+                if let Some(used) = used {
+                    self.rec_fell_back(&used);
+                }
                 self.rec_consent_once();
             }
             Err(e) if e.is_mic_denied() => {
@@ -505,6 +572,23 @@ impl App {
                 self.apply_now(Event::Notice(failure_notice(lang, &e.failure(), &dir)));
             }
         }
+    }
+
+    /// The recording went to `used`, not to the configured folder (Windows
+    /// refused that one). The default folder moves there for good, so
+    /// Settings and the Rekam page show it; a folder the user picked stays
+    /// theirs. Either way a notice says where the recording goes.
+    fn rec_fell_back(&mut self, used: &Path) {
+        if used == self.config.recording.dir() {
+            return;
+        }
+        if self.config.recording.folder.is_none() {
+            self.config.recording.folder = Some(used.to_path_buf());
+            self.save_config();
+            self.sync_settings();
+        }
+        let lang = self.config.language;
+        self.apply_now(Event::Notice(fallback_notice(lang, used)));
     }
 
     /// The first recording ever: a short reminder to ask everyone first.
@@ -557,7 +641,7 @@ impl App {
             let _ = handle.join();
         }
         // Every source went before anything was kept: say so all the same.
-        if self.rec.no_input && !self.rec.saved {
+        if self.rec.no_input && !self.rec.told {
             let lang = self.config.language;
             self.apply_now(Event::Notice(no_input_notice(lang)));
         }
@@ -680,12 +764,13 @@ impl App {
         let lang = self.config.language;
         match event {
             RecEvent::Saved { path, duration } => {
-                self.rec.saved = true;
+                self.rec.told = true;
                 let n = saved_notice(lang, path, duration, self.rec.no_input);
                 self.apply_now(Event::Notice(n));
             }
             RecEvent::Failed(failure) => {
                 // The recording is over whatever the reason: let go of it.
+                self.rec.told = true;
                 self.rec.ended = true;
                 self.rec_stop();
                 let dir = self.config.recording.dir();
@@ -826,7 +911,6 @@ mod tests {
                 "Media Foundation is missing on this Windows",
             ),
             (Failure::NoDevice, "Mic atau speaker tidak ditemukan", "No microphone or speaker found"),
-            (Failure::NoAudio, "Tidak ada suara masuk", "No audio came in"),
             (
                 Failure::Other("audio encoder failed: 0x1234".into()),
                 "Ada yang tidak beres saat merekam",
@@ -840,6 +924,43 @@ mod tests {
             let n = failure_notice(Lang::En, &failure, dir);
             assert_eq!((n.title.as_str(), n.body.as_str()), ("Recording failed", en));
         }
+    }
+
+    #[test]
+    fn a_recording_that_heard_nothing_says_it_was_not_saved() {
+        let dir = Path::new(r"C:\r");
+        let n = failure_notice(Lang::Id, &Failure::NoAudio, dir);
+        assert_eq!((n.title.as_str(), n.body.as_str()), ("Rekaman tidak disimpan", "Tidak ada suara masuk"));
+        assert_eq!(n.kind, NoticeKind::RecInfo);
+        let en = failure_notice(Lang::En, &Failure::NoAudio, dir);
+        assert_eq!((en.title.as_str(), en.body.as_str()), ("Recording not saved", "No audio came in"));
+    }
+
+    #[test]
+    fn a_blocked_folder_falls_back_to_the_profile_folder() {
+        let docs = Path::new(r"C:\Users\a\Documents\Vale\Rekaman");
+        let home = Path::new(r"C:\Users\a\Vale\Rekaman");
+        let all = |_: &Path| true;
+        let none = |_: &Path| false;
+        let only_home = |d: &Path| d == home;
+        assert_eq!(choose_dir(docs, Some(home), all), Some(docs.to_path_buf()), "the choice when it works");
+        assert_eq!(choose_dir(docs, Some(home), only_home), Some(home.to_path_buf()));
+        assert_eq!(choose_dir(docs, Some(home), none), None, "both refused");
+        assert_eq!(choose_dir(docs, None, only_home), None, "no fallback known");
+        assert_eq!(choose_dir(home, Some(home), none), None, "the fallback itself refused");
+    }
+
+    #[test]
+    fn the_fallback_notice_names_the_folder_in_both_languages() {
+        let home = Path::new(r"C:\Users\a\Vale\Rekaman");
+        let n = fallback_notice(Lang::Id, home);
+        assert_eq!(n.title, "Windows melindungi folder rekaman");
+        assert_eq!(n.body, "Disimpan ke a\\Vale\\Rekaman \u{b7} ganti di Pengaturan");
+        assert_eq!(n.kind, NoticeKind::RecInfo);
+        let en = fallback_notice(Lang::En, home);
+        assert_eq!(en.title, "Windows protects the recordings folder");
+        assert_eq!(en.body, "Saving to a\\Vale\\Rekaman \u{b7} change it in Settings");
+        assert_eq!(short_dir(Path::new(r"D:\Rec")), r"D:\Rec");
     }
 
     #[test]

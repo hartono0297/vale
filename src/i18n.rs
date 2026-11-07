@@ -607,6 +607,11 @@ keys! {
     RecWhyDiskFull => "Disk penuh", "The disk is full";
     RecWhyFolderGone => "Folder rekaman tidak ditemukan", "The recordings folder is gone";
     RecWhyNoAudio => "Tidak ada suara masuk", "No audio came in";
+    RecNotSavedTitle => "Rekaman tidak disimpan", "Recording not saved";
+    RecFallbackTitle => "Windows melindungi folder rekaman",
+        "Windows protects the recordings folder";
+    RecSavingTo => "Disimpan ke", "Saving to";
+    RecChangeInSettings => "ganti di Pengaturan", "change it in Settings";
     RecWhyUnfinished => "File belum diberi nama \u{b7} klik untuk lihat",
         "The file kept its temporary name \u{b7} click to show";
     RecWhyOther => "Ada yang tidak beres saat merekam", "Something went wrong while recording";

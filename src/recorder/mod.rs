@@ -75,8 +75,9 @@ const JUMP_FRAMES: i64 = RATE as i64 / 50;
 const SLEW_FRAMES: f64 = RATE as f64 / 1000.0;
 /// Packets the stamp error is smoothed over (an exponential average).
 const SLEW_SMOOTHING: f64 = 16.0;
-/// A recording holding less than this (0.5 s), or nothing any source
-/// delivered, is not kept: no file, no notice.
+/// A recording holding less than this (0.5 s) is not kept: no file, no
+/// notice. A longer one that no source delivered anything to is not kept
+/// either, and says so (`RecError::Silent`).
 const MIN_KEEP_FRAMES: u64 = RATE as u64 / 2;
 
 /// What to record and where.
@@ -113,7 +114,8 @@ pub enum RecEvent {
     /// stays silent.
     MicDenied,
     /// Every recorded source is lost: the recording stops by itself. `Saved`
-    /// follows, or nothing when too little was recorded to keep.
+    /// follows, `Failed(NoAudio)` when nothing came in, or nothing when too
+    /// little was recorded to keep.
     NoInput,
 }
 
@@ -153,6 +155,9 @@ pub enum RecError {
     Refused(PathBuf),
     /// A thread could not start, panicked or ended early.
     Thread(String),
+    /// Long enough to keep, but no source delivered a single packet (the
+    /// PC's audio alone while nothing played): the file is removed.
+    Silent,
 }
 
 /// A "file or path not found" (os error 2 or 3) while making a folder or a
@@ -224,7 +229,9 @@ impl RecError {
         match self {
             Self::Io(e) if e.kind() == std::io::ErrorKind::NotFound => Failure::FolderGone,
             Self::Encode(EncodeError::NoMediaFoundation) => Failure::NoMediaFoundation,
-            Self::Encode(EncodeError::Empty) | Self::NoSources => Failure::NoAudio,
+            Self::Encode(EncodeError::Empty) | Self::NoSources | Self::Silent => {
+                Failure::NoAudio
+            }
             Self::Capture(CaptureError::NoDevice(_) | CaptureError::DeviceLost(_)) => {
                 Failure::NoDevice
             }
@@ -246,6 +253,7 @@ impl fmt::Display for RecError {
             Self::Com(e) => write!(f, "COM did not start on the writer thread: {e}"),
             Self::Refused(dir) => write!(f, "Windows refused to write in {}", dir.display()),
             Self::Thread(s) => f.write_str(s),
+            Self::Silent => f.write_str("no source delivered any audio"),
         }
     }
 }
@@ -969,12 +977,17 @@ impl Writing<'_> {
     }
 
     /// Finishes the file and renames it to its final name. Under half a
-    /// second, or with nothing heard from any source, the file is removed
-    /// instead (`EncodeError::Empty`).
+    /// second the file is removed instead (`EncodeError::Empty`, a quiet
+    /// cancel); with nothing heard from any source too (`RecError::Silent`,
+    /// which the island words).
     fn finalize(&mut self, heard: u64) -> Result<Duration, RecError> {
-        if self.written / self.channels.max(1) < MIN_KEEP_FRAMES || heard == 0 {
+        if self.written / self.channels.max(1) < MIN_KEEP_FRAMES {
             self.discard();
             return Err(RecError::Encode(EncodeError::Empty));
+        }
+        if heard == 0 {
+            self.discard();
+            return Err(RecError::Silent);
         }
         let writer = self.writer.take().expect("finalize runs once");
         let duration = match writer.finish() {
@@ -1642,6 +1655,8 @@ pub(super) mod tests {
         );
         assert_eq!(RecError::Encode(EncodeError::Empty).failure(), Failure::NoAudio);
         assert!(RecError::Encode(EncodeError::Empty).is_empty());
+        assert_eq!(RecError::Silent.failure(), Failure::NoAudio);
+        assert!(!RecError::Silent.is_empty());
         let part = PathBuf::from(r"C:\r\a.m4a.part");
         assert_eq!(
             RecError::Rename {
@@ -1741,6 +1756,9 @@ pub(super) mod tests {
         MicAtOpen,
         /// After 600 ms both devices go, and nothing comes any more.
         All,
+        /// The devices open but no packet ever comes (loopback while
+        /// nothing plays).
+        Silent,
     }
 
     /// A capture made up in code, on its own `rec-capture` thread: a 440 Hz
@@ -1778,7 +1796,7 @@ pub(super) mod tests {
                         };
                     }
                     for (i, &(source, rate, hz)) in tones.iter().enumerate() {
-                        if !sources.list().contains(&source) {
+                        if lose == Lose::Silent || !sources.list().contains(&source) {
                             continue;
                         }
                         let per = u64::from(rate) / 100;
@@ -1989,6 +2007,22 @@ pub(super) mod tests {
         let r = rec.stop();
         assert!(r.as_ref().err().is_some_and(RecError::is_empty), "{r:?}");
         assert!(rx.try_iter().next().is_none(), "no notice for nothing");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "no file left");
+    }
+
+    #[test]
+    fn a_recording_that_heard_nothing_is_not_kept_and_says_so() {
+        let _one = session();
+        let dir = temp_dir("rec-silent");
+        let (rec, rx) = fake(&dir, Sources::BOTH, Lose::Silent);
+        std::thread::sleep(Duration::from_millis(900));
+        let r = rec.stop();
+        assert!(matches!(r, Err(RecError::Silent)), "{r:?}");
+        assert!(!r.as_ref().err().is_some_and(RecError::is_empty), "not a quiet cancel");
+        assert_eq!(
+            rx.try_iter().collect::<Vec<_>>(),
+            vec![RecEvent::Failed(Failure::NoAudio)]
+        );
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "no file left");
     }
 

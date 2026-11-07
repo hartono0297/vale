@@ -77,15 +77,25 @@ impl RecordingPrefs {
 /// `Documents\Vale\Rekaman`; next to the exe's current directory when Windows
 /// cannot say where Documents is.
 pub fn default_folder() -> PathBuf {
-    let base = known_documents().unwrap_or_else(|| PathBuf::from("."));
+    use windows::Win32::UI::Shell::FOLDERID_Documents;
+    let base = known_folder(&FOLDERID_Documents).unwrap_or_else(|| PathBuf::from("."));
     base.join("Vale").join("Rekaman")
 }
 
-fn known_documents() -> Option<PathBuf> {
+/// `%USERPROFILE%\Vale\Rekaman`: where a recording goes when Windows will not
+/// let Vale write in the chosen folder. Controlled folder access guards
+/// Documents, Pictures, Videos, Music, Desktop and Favorites by default,
+/// never the profile folder itself.
+pub fn fallback_folder() -> Option<PathBuf> {
+    use windows::Win32::UI::Shell::FOLDERID_Profile;
+    known_folder(&FOLDERID_Profile).map(|p| p.join("Vale").join("Rekaman"))
+}
+
+fn known_folder(id: &windows::core::GUID) -> Option<PathBuf> {
     use windows::Win32::System::Com::CoTaskMemFree;
-    use windows::Win32::UI::Shell::{FOLDERID_Documents, KF_FLAG_DEFAULT, SHGetKnownFolderPath};
+    use windows::Win32::UI::Shell::{KF_FLAG_DEFAULT, SHGetKnownFolderPath};
     unsafe {
-        let raw = SHGetKnownFolderPath(&FOLDERID_Documents, KF_FLAG_DEFAULT, None).ok()?;
+        let raw = SHGetKnownFolderPath(id, KF_FLAG_DEFAULT, None).ok()?;
         let path = raw.to_string().ok().map(PathBuf::from);
         CoTaskMemFree(Some(raw.0 as *const _));
         path.filter(|p| p.is_absolute())
@@ -130,6 +140,16 @@ mod tests {
         assert_eq!(d.folder, None);
         assert!(!d.consent_shown);
         assert!(d.dir().ends_with(r"Vale\Rekaman"));
+    }
+
+    #[test]
+    fn the_fallback_is_vale_rekaman_in_the_profile_folder_not_in_documents() {
+        let f = fallback_folder().expect("the profile folder is known");
+        assert!(f.ends_with(r"Vale\Rekaman"), "{}", f.display());
+        assert!(f.is_absolute());
+        let docs = default_folder();
+        let docs_root = docs.parent().and_then(Path::parent).unwrap();
+        assert!(!f.starts_with(docs_root), "not under Documents: {}", f.display());
     }
 
     #[test]
