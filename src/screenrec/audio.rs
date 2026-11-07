@@ -15,10 +15,12 @@ pub const SAMPLE_RATE: u32 = 48_000;
 pub trait AudioInput: Send + Sync {
     /// `frames`: interleaved f32 samples (-1..1), `channels` per frame, at
     /// `sample_rate` (must be 48 000; other rates are counted as rejected
-    /// and dropped). `qpc`: `QueryPerformanceCounter` at the first frame.
-    /// Audio pushed while the recording is paused is dropped (the contract:
-    /// a pause leaves no silence).
-    fn push_audio(&self, frames: &[f32], channels: u16, sample_rate: u32, qpc: i64);
+    /// and dropped). `qpc_hns`: the QPC clock at the first frame in 100 ns
+    /// units, the unit WASAPI's `GetBuffer` reports (`u64QPCPosition`);
+    /// [`super::qpc_hns`] reads the same clock. Audio pushed while the
+    /// recording is paused is dropped (the contract: a pause leaves no
+    /// silence).
+    fn push_audio(&self, frames: &[f32], channels: u16, sample_rate: u32, qpc_hns: i64);
 }
 
 /// `frames` (interleaved, `from` channels) as 16-bit PCM with `to` channels:
@@ -45,6 +47,7 @@ pub fn to_pcm16(frames: &[f32], from: u16, to: u16) -> Vec<i16> {
 
 /// One pushed chunk, already in the video's format.
 pub struct Chunk {
+    /// 100 ns units of the QPC clock.
     pub qpc: i64,
     pub pcm: Vec<i16>,
 }
@@ -91,7 +94,7 @@ impl AudioFeed {
 }
 
 impl AudioInput for AudioFeed {
-    fn push_audio(&self, frames: &[f32], channels: u16, sample_rate: u32, qpc: i64) {
+    fn push_audio(&self, frames: &[f32], channels: u16, sample_rate: u32, qpc_hns: i64) {
         if sample_rate != SAMPLE_RATE || channels == 0 {
             self.rejected_chunks.fetch_add(1, Ordering::Relaxed);
             return;
@@ -102,7 +105,7 @@ impl AudioInput for AudioFeed {
         }
         let n = pcm.len() / self.channels as usize;
         let mut q = self.queue.lock().unwrap_or_else(|e| e.into_inner());
-        q.0.push_back(Chunk { qpc, pcm });
+        q.0.push_back(Chunk { qpc: qpc_hns, pcm });
         q.1 += n;
         while q.1 > self.max_frames {
             let Some(old) = q.0.pop_front() else { break };
