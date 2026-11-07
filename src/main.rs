@@ -40,6 +40,7 @@ mod phone;
 mod pointer_watch;
 mod pomodoro;
 mod reminders;
+mod screenrec;
 mod screenshot;
 mod search;
 mod search_details;
