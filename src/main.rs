@@ -39,9 +39,6 @@ mod pages;
 mod phone;
 mod pointer_watch;
 mod pomodoro;
-// Release builds have no caller until the app (T6) records; the debug CLI
-// `--record-test` is the only one so far.
-#[cfg_attr(not(debug_assertions), allow(dead_code))]
 mod recorder;
 mod reminders;
 mod screenshot;

@@ -528,6 +528,8 @@ fn lock(placer: &Mutex<Placer>) -> MutexGuard<'_, Placer> {
 /// One recording. Dropping it without `stop` stops and saves it all the same.
 pub struct Recorder {
     path: PathBuf,
+    /// For the debug CLI and the tests.
+    #[cfg(any(test, debug_assertions))]
     container: Container,
     placer: Arc<Mutex<Placer>>,
     levels: Arc<SharedLevels>,
@@ -601,7 +603,7 @@ impl Recorder {
                 .spawn(move || write_main(files, meta, &placer, &levels, &rx, &ready_tx, events))
                 .map_err(|e| RecError::Thread(format!("no writer thread: {e}")))?
         };
-        let container = match ready_rx.recv() {
+        let _container = match ready_rx.recv() {
             Ok(Ok(c)) => c,
             Ok(Err(e)) => {
                 let _ = writer.join();
@@ -636,7 +638,8 @@ impl Recorder {
         let _ = tx.send(Msg::Go);
         Ok(Recorder {
             path,
-            container,
+            #[cfg(any(test, debug_assertions))]
+            container: _container,
             placer,
             levels,
             started,
@@ -672,7 +675,9 @@ impl Recorder {
         self.paused_since.is_some()
     }
 
-    /// Time recorded so far, pauses excluded.
+    /// Time recorded so far, pauses excluded (the debug CLI and the tests;
+    /// the island draws from [Recorder::clock]).
+    #[cfg(any(test, debug_assertions))]
     pub fn elapsed(&self) -> Duration {
         let end = self.paused_since.unwrap_or_else(Instant::now);
         end.saturating_duration_since(self.started)
@@ -680,9 +685,9 @@ impl Recorder {
     }
 
     /// The recording's clock as `(started, paused_total, paused_since)`:
-    /// the time since `started` without the pauses is [`Recorder::elapsed`],
-    /// which the saved duration matches. The island's REC clock draws from
-    /// these.
+    /// the time since `started` without the pauses is the recorded time,
+    /// which the saved duration matches (`started` is taken with the
+    /// timeline's origin). The island's REC clock draws from these.
     pub fn clock(&self) -> (Instant, Duration, Option<Instant>) {
         (self.started, self.paused_total, self.paused_since)
     }
@@ -699,6 +704,7 @@ impl Recorder {
     }
 
     /// The MP4 flavour the encoder accepted.
+    #[cfg(any(test, debug_assertions))]
     pub fn container(&self) -> Container {
         self.container
     }

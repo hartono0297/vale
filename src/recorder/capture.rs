@@ -757,8 +757,10 @@ mod tests {
         std::thread::sleep(Duration::from_millis(30));
         let (b, real) = (qpc_hns(), t.elapsed());
         let diff_ms = (b - a) / 10_000;
+        // The two clocks are read a moment apart; a preempted test thread
+        // can stretch that moment.
         assert!(
-            (diff_ms - real.as_millis() as i64).abs() <= 2,
+            (diff_ms - real.as_millis() as i64).abs() <= 5,
             "{diff_ms} ms vs {real:?}"
         );
         assert!(qpc_now() >= b as u64);

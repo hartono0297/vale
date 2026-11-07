@@ -138,8 +138,8 @@ pub fn with_rec_dot(logo: HICON) -> Option<HICON> {
             return None;
         }
         // An icon with no alpha at all would read as invisible: make it opaque.
-        if bits.chunks_exact(4).all(|px| px[3] == 0) {
-            bits.chunks_exact_mut(4).for_each(|px| px[3] = 255);
+        if bits.as_chunks::<4>().0.iter().all(|px| px[3] == 0) {
+            bits.as_chunks_mut::<4>().0.iter_mut().for_each(|px| px[3] = 255);
         }
         overlay_rec_dot(&mut bits, w as usize, h as usize);
         let color = CreateBitmap(w, h, 1, 32, Some(bits.as_ptr().cast()));
@@ -173,7 +173,7 @@ mod tests {
         for size in [16usize, 20, 24, 32] {
             let mut buf = vec![0u8; size * size * 4];
             // A solid mid-grey logo, so what the dot leaves alone shows.
-            buf.chunks_exact_mut(4)
+            buf.as_chunks_mut::<4>().0.iter_mut()
                 .for_each(|p| p.copy_from_slice(&[0x80, 0x80, 0x80, 0xFF]));
             overlay_rec_dot(&mut buf, size, size);
             let (cx, cy, r, outer) = dot_geometry(size, size);
@@ -195,7 +195,7 @@ mod tests {
     fn a_dark_one_pixel_ring_surrounds_the_dot() {
         let size = 32;
         let mut buf = vec![0u8; size * size * 4];
-        buf.chunks_exact_mut(4)
+        buf.as_chunks_mut::<4>().0.iter_mut()
             .for_each(|p| p.copy_from_slice(&[0xF0, 0xF0, 0xF0, 0xFF]));
         overlay_rec_dot(&mut buf, size, size);
         let (cx, cy, r, _) = dot_geometry(size, size);
@@ -214,7 +214,7 @@ mod tests {
         assert_eq!(px(&buf, size, 0, 0), [0, 0, 0, 0]);
         let (cx, cy, ..) = dot_geometry(size, size);
         assert_eq!(px(&buf, size, cx as usize, cy as usize)[3], 0xFF);
-        let drawn = buf.chunks_exact(4).filter(|p| p[3] != 0).count();
+        let drawn = buf.as_chunks::<4>().0.iter().filter(|p| p[3] != 0).count();
         assert!((20..=90).contains(&drawn), "{drawn} px at 16 px");
     }
 

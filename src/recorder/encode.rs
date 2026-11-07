@@ -26,6 +26,7 @@
 use std::ffi::c_void;
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::mem::transmute;
 use std::ptr::null_mut;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -119,6 +120,8 @@ impl Input {
     }
 }
 
+/// What `GetProcAddress` returns (`FARPROC`).
+type Proc = unsafe extern "system" fn() -> isize;
 type StartupFn = unsafe extern "system" fn(u32, u32) -> HRESULT;
 type ShutdownFn = unsafe extern "system" fn() -> HRESULT;
 type CreateAttributesFn = unsafe extern "system" fn(*mut *mut c_void, u32) -> HRESULT;
@@ -148,16 +151,25 @@ fn mf() -> Option<&'static Mf> {
             LoadLibraryExW(w!("mfreadwrite.dll"), None, LOAD_LIBRARY_SEARCH_SYSTEM32).ok()?;
         // SAFETY: each target type is the documented signature of that export.
         Some(Mf {
-            startup: std::mem::transmute(GetProcAddress(plat, s!("MFStartup"))?),
-            shutdown: std::mem::transmute(GetProcAddress(plat, s!("MFShutdown"))?),
-            create_attributes: std::mem::transmute(GetProcAddress(plat, s!("MFCreateAttributes"))?),
-            create_media_type: std::mem::transmute(GetProcAddress(plat, s!("MFCreateMediaType"))?),
-            create_sample: std::mem::transmute(GetProcAddress(plat, s!("MFCreateSample"))?),
-            create_memory_buffer: std::mem::transmute(GetProcAddress(
+            startup: transmute::<Proc, StartupFn>(GetProcAddress(plat, s!("MFStartup"))?),
+            shutdown: transmute::<Proc, ShutdownFn>(GetProcAddress(plat, s!("MFShutdown"))?),
+            create_attributes: transmute::<Proc, CreateAttributesFn>(GetProcAddress(
+                plat,
+                s!("MFCreateAttributes"),
+            )?),
+            create_media_type: transmute::<Proc, CreateObjectFn>(GetProcAddress(
+                plat,
+                s!("MFCreateMediaType"),
+            )?),
+            create_sample: transmute::<Proc, CreateObjectFn>(GetProcAddress(
+                plat,
+                s!("MFCreateSample"),
+            )?),
+            create_memory_buffer: transmute::<Proc, CreateMemoryBufferFn>(GetProcAddress(
                 plat,
                 s!("MFCreateMemoryBuffer"),
             )?),
-            create_sink_writer: std::mem::transmute(GetProcAddress(
+            create_sink_writer: transmute::<Proc, CreateSinkWriterFn>(GetProcAddress(
                 rw,
                 s!("MFCreateSinkWriterFromURL"),
             )?),
@@ -269,7 +281,7 @@ impl M4aWriter {
     /// louder values are clipped by the encoder). An empty slice does nothing.
     pub fn write(&mut self, interleaved: &[f32]) -> Result<(), EncodeError> {
         let channels = usize::from(self.channels);
-        if interleaved.len() % channels != 0 {
+        if !interleaved.len().is_multiple_of(channels) {
             return Err(EncodeError::BadFormat);
         }
         for chunk in interleaved.chunks(FRAMES_PER_SAMPLE * channels) {

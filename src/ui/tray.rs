@@ -561,17 +561,17 @@ unsafe fn append_radio_items(menu: HMENU, items: &[MonitorItem]) {
             let _ = AppendMenuW(menu, flags, item.id, &HSTRING::from(item.label.as_str()));
         }
     }
-    if let (Some(first), Some(last)) = (items.first(), items.last()) {
-        if let Some(on) = items.iter().find(|i| i.checked) {
-            unsafe {
-                let _ = CheckMenuRadioItem(
-                    menu,
-                    first.id as u32,
-                    last.id as u32,
-                    on.id as u32,
-                    MF_BYCOMMAND.0,
-                );
-            }
+    if let (Some(first), Some(last)) = (items.first(), items.last())
+        && let Some(on) = items.iter().find(|i| i.checked)
+    {
+        unsafe {
+            let _ = CheckMenuRadioItem(
+                menu,
+                first.id as u32,
+                last.id as u32,
+                on.id as u32,
+                MF_BYCOMMAND.0,
+            );
         }
     }
 }
