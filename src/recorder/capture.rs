@@ -1,5 +1,6 @@
-//! Audio capture for recordings: the default microphone, the system audio
-//! (WASAPI loopback on the default output) or both, delivered as mono `f32`
+//! Audio capture for recordings: the microphone, the system audio (WASAPI
+//! loopback on an output) or both, each on the device the user chose or on the
+//! Windows default, delivered as mono `f32`
 //! packets with a QPC timestamp to an [`AudioSink`]. The recorder session
 //! (`recorder::Recorder`) and the screen recorder (track C) consume this.
 //!
@@ -19,10 +20,17 @@
 //!   clock. Packets of one source are in order; the two sources interleave
 //!   freely. The loopback source sends
 //!   nothing while nothing plays: a gap in `qpc` is silence.
-//! - A source whose default device changes is reopened on the new default
+//! - Each source has a choice (`Choices`, shared with the caller): the id of
+//!   an endpoint, or `None` to follow the Windows default. A source on the
+//!   default whose default device changes is reopened on the new default
+//!   and reported through [`AudioSink::switched`] (`fell_back: false`). A
+//!   chosen device that is missing at the start, or goes away while
+//!   recording, falls back to the default for the rest of the recording,
+//!   reported with `fell_back: true`; the choice itself is left alone.
+//!   [`Capture::set_device`] changes a choice and the switch happens at once,
 //!   without a report. A source that fails (the device is unplugged,
 //!   `AUDCLNT_E_DEVICE_INVALIDATED`, or the audio service restarts) is
-//!   reopened on the current default for up to [`RETRY_FOR`]; when that does
+//!   reopened for up to [`RETRY_FOR`]; when that does
 //!   not work, [`AudioSink::lost`] is called once and that source stays off.
 //!   The other source keeps running. A microphone refused by the Windows
 //!   privacy setting is [`CaptureError::MicDenied`], never retried.
@@ -31,23 +39,24 @@
 //!   `stop` returns after the thread has ended. No thread or timer exists
 //!   before `start` or after `stop`. When every source is lost for good the
 //!   thread ends by itself (no more 100 ms wakes); `stop` still joins it.
-//! - The thread blocks in `WaitForMultipleObjects` on the stop event and the
-//!   streams' buffer events, with a 100 ms timeout (loopback events fire only
-//!   while audio renders), and checks the default devices once a second.
+//! - The thread blocks in `WaitForMultipleObjects` on the stop event, the
+//!   wake event (a changed choice) and the streams' buffer events, with a
+//!   100 ms timeout (loopback events fire only while audio renders), and
+//!   checks the devices once a second.
 
 use std::fmt;
-use std::sync::Arc;
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{
-    CloseHandle, E_ACCESSDENIED, E_INVALIDARG, HANDLE, WAIT_OBJECT_0,
+    CloseHandle, E_ACCESSDENIED, E_INVALIDARG, HANDLE, WAIT_EVENT, WAIT_OBJECT_0,
 };
 use windows::Win32::Media::Audio::{
     AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR, AUDCLNT_E_DEVICE_INVALIDATED,
     AUDCLNT_E_UNSUPPORTED_FORMAT, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-    AUDCLNT_STREAMFLAGS_LOOPBACK, EDataFlow, IAudioCaptureClient, IAudioClient, IMMDevice,
+    AUDCLNT_STREAMFLAGS_LOOPBACK, EDataFlow, IAudioCaptureClient, IAudioClient,
     IMMDeviceEnumerator, MMDeviceEnumerator, eCapture, eConsole, eRender,
 };
 use windows::Win32::System::Com::{
@@ -55,8 +64,9 @@ use windows::Win32::System::Com::{
     CoUninitialize,
 };
 use windows::Win32::System::Threading::{CreateEventW, SetEvent, WaitForMultipleObjects};
-use windows::core::HRESULT;
+use windows::core::{HRESULT, HSTRING};
 
+use super::devices;
 use crate::eq_audio::{SampleFormat, mix_to_mono, read_format};
 
 /// 100 ns units per second: the unit of every `qpc` in this module.
@@ -81,21 +91,35 @@ const E_NOTFOUND: HRESULT = HRESULT(0x8007_0490_u32 as i32);
 /// One audio source.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Source {
-    /// The default capture endpoint (`eCapture`, `eConsole`).
+    /// A capture endpoint (`eCapture`); the default is the `eConsole` one.
     Mic,
-    /// The default render endpoint (`eRender`, `eConsole`) in loopback.
+    /// A render endpoint (`eRender`) in loopback; the default is the
+    /// `eConsole` one.
     System,
 }
 
+/// Which endpoint each source uses, `[mic, system]`: an endpoint id, or
+/// `None` to follow the Windows default. Shared between the caller (through
+/// [`Capture::set_device`]) and the capture thread.
+pub type Choices = Arc<Mutex<[Option<String>; 2]>>;
+
+/// The names of the devices the sources stream from now, `[mic, system]`
+/// (empty for a source that is not open).
+type Names = Arc<Mutex<[String; 2]>>;
+
+/// The sources in `Source::index` order.
+const SOURCES: [Source; 2] = [Source::Mic, Source::System];
+
 impl Source {
-    fn flow(self) -> EDataFlow {
+    pub(super) fn flow(self) -> EDataFlow {
         match self {
             Source::Mic => eCapture,
             Source::System => eRender,
         }
     }
 
-    fn index(self) -> usize {
+    /// The place of the source in the `[mic, system]` arrays.
+    pub fn index(self) -> usize {
         match self {
             Source::Mic => 0,
             Source::System => 1,
@@ -189,6 +213,12 @@ pub trait AudioSink: Send {
     fn audio(&mut self, source: Source, qpc: u64, rate: u32, mono: &[f32]);
     /// `source` stopped for good (it is not retried any more).
     fn lost(&mut self, source: Source, err: CaptureError);
+    /// `source` moved to another device on its own: the Windows default
+    /// changed (`fell_back` is false), or the device the user chose was
+    /// missing or went away and the default took over (`fell_back` is true).
+    /// `name` is the friendly name of the device now in use. A switch the
+    /// caller asked for with [`Capture::set_device`] is not reported.
+    fn switched(&mut self, _source: Source, _name: &str, _fell_back: bool) {}
 }
 
 /// The performance counter now, in the 100 ns units `AudioSink::audio` uses.
@@ -229,30 +259,46 @@ fn hns_from_ticks(ticks: i64, freq: i64) -> i64 {
 /// A running capture. Dropping it stops it like [`Capture::stop`].
 pub struct Capture {
     stop: Arc<Event>,
+    /// Signalled when a choice changed.
+    wake: Arc<Event>,
+    choices: Choices,
+    names: Names,
     thread: Option<JoinHandle<()>>,
 }
 
 impl Capture {
-    /// Opens `sources` and starts delivering packets to `sink`. Fails only
+    /// Opens `sources` on the devices in `choices` (the default where a
+    /// choice is `None`) and starts delivering packets to `sink`. Fails only
     /// when none of them could be opened (with `MicDenied` if the mic was
     /// refused); a source that failed while another works is reported
-    /// through `sink.lost` on the capture thread.
-    pub fn start(sources: Sources, sink: Box<dyn AudioSink>) -> Result<Capture, CaptureError> {
+    /// through `sink.lost` on the capture thread, and a chosen device that
+    /// was missing through `sink.switched`.
+    pub fn start(
+        sources: Sources,
+        choices: Choices,
+        sink: Box<dyn AudioSink>,
+    ) -> Result<Capture, CaptureError> {
         if !sources.any() {
             return Err(CaptureError::Com(E_INVALIDARG.into()));
         }
         let stop = Arc::new(Event::new(true).map_err(CaptureError::Com)?);
+        let wake = Arc::new(Event::new(false).map_err(CaptureError::Com)?);
+        let names = Names::default();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let devs = Devices::new(Arc::clone(&choices), Arc::clone(&names), Arc::clone(&wake));
         let worker_stop = Arc::clone(&stop);
         let thread = std::thread::Builder::new()
             .name("rec-capture".into())
-            .spawn(move || run(sources, sink, &worker_stop, &ready_tx))
+            .spawn(move || run(sources, devs, sink, &worker_stop, &ready_tx))
             .map_err(|e| {
                 CaptureError::Com(windows::core::Error::new(E_INVALIDARG, e.to_string()))
             })?;
         match ready_rx.recv() {
             Ok(Ok(())) => Ok(Capture {
                 stop,
+                wake,
+                choices,
+                names,
                 thread: Some(thread),
             }),
             Ok(Err(e)) => {
@@ -267,6 +313,20 @@ impl Capture {
                 )))
             }
         }
+    }
+
+    /// Points `source` at the endpoint `id`, or back at the Windows default
+    /// (`None`), and wakes the capture thread so it switches at once. Never
+    /// waits. A source that is not captured only remembers the choice.
+    pub fn set_device(&self, source: Source, id: Option<String>) {
+        self.choices.lock().unwrap_or_else(|e| e.into_inner())[source.index()] = id;
+        self.wake.set();
+    }
+
+    /// The friendly names of the devices the sources stream from now,
+    /// `[mic, system]`; empty for a source that is not open.
+    pub fn device_names(&self) -> [String; 2] {
+        self.names.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Stops the capture: the buffered packets are still delivered, then the
@@ -325,9 +385,85 @@ enum Slot {
     },
 }
 
+/// What the capture thread keeps about the devices.
+struct Devices {
+    choices: Choices,
+    names: Names,
+    /// Signalled by `Capture::set_device`.
+    wake: Arc<Event>,
+    /// The choices as the thread last read them, to see a change.
+    applied: [Option<String>; 2],
+    /// A chosen device was missing or went away: the Windows default serves
+    /// that source for the rest of the recording, until it is given a new
+    /// choice.
+    fallen: [bool; 2],
+    /// The endpoint each source last streamed from, to tell a switch from a
+    /// reopen of the same device.
+    last: [Option<String>; 2],
+}
+
+impl Devices {
+    fn new(choices: Choices, names: Names, wake: Arc<Event>) -> Devices {
+        let applied = choices.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        Devices {
+            choices,
+            names,
+            wake,
+            applied,
+            fallen: [false; 2],
+            last: [None, None],
+        }
+    }
+
+    /// Reads the shared choices: which sources were given a new one since
+    /// the last call. A new choice ends a fall back.
+    fn refresh(&mut self) -> [bool; 2] {
+        let now = self.choices.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let mut changed = [false; 2];
+        for i in 0..2 {
+            if now[i] != self.applied[i] {
+                changed[i] = true;
+                self.fallen[i] = false;
+            }
+        }
+        self.applied = now;
+        changed
+    }
+
+    /// The choice to open `source` by: none (the default) after a fall back.
+    fn wanted(&self, source: Source) -> Option<String> {
+        let i = source.index();
+        if self.fallen[i] {
+            None
+        } else {
+            self.applied[i].clone()
+        }
+    }
+
+    /// Notes that `stream` was opened: its name goes where the caller reads
+    /// it. Returns what to report to the sink, `Some(fell_back)`: a fall back
+    /// always, a move to another device only when `manual` is false (the
+    /// caller did not ask for it).
+    fn opened(&mut self, stream: &Stream, fell_back: bool, manual: bool) -> Option<bool> {
+        let i = stream.source.index();
+        self.names.lock().unwrap_or_else(|e| e.into_inner())[i] = stream.name.clone();
+        let moved = self.last[i].as_deref().is_some_and(|l| l != stream.id);
+        self.last[i] = Some(stream.id.clone());
+        if fell_back {
+            self.fallen[i] = true;
+            Some(true)
+        } else if moved && !manual {
+            Some(false)
+        } else {
+            None
+        }
+    }
+}
+
 /// The capture thread.
 fn run(
     sources: Sources,
+    devs: Devices,
     sink: Box<dyn AudioSink>,
     stop: &Event,
     ready: &mpsc::SyncSender<Result<(), CaptureError>>,
@@ -339,7 +475,7 @@ fn run(
     }
     // Takes the sink: it and every COM object are released in there, before
     // `CoUninitialize`.
-    open_and_serve(sources, sink, stop, ready);
+    open_and_serve(sources, devs, sink, stop, ready);
     unsafe { CoUninitialize() };
 }
 
@@ -347,6 +483,7 @@ fn run(
 /// the sink included, is dropped when it returns.
 fn open_and_serve(
     sources: Sources,
+    mut devs: Devices,
     mut sink: Box<dyn AudioSink>,
     stop: &Event,
     ready: &mpsc::SyncSender<Result<(), CaptureError>>,
@@ -362,9 +499,15 @@ fn open_and_serve(
     };
     let mut slots = [Slot::Off, Slot::Off];
     let mut failed = Vec::new();
+    let mut fell_back = Vec::new();
     for source in sources.list() {
-        match Stream::open(&enumerator, source) {
-            Ok(s) => slots[source.index()] = Slot::Live(s),
+        match open_wanted(&enumerator, source, devs.wanted(source).as_deref()) {
+            Ok((s, fell)) => {
+                if devs.opened(&s, fell, true).is_some() {
+                    fell_back.push((source, s.name.clone()));
+                }
+                slots[source.index()] = Slot::Live(s);
+            }
             Err(e) => failed.push((source, e)),
         }
     }
@@ -376,7 +519,10 @@ fn open_and_serve(
     for (source, err) in failed {
         sink.lost(source, err);
     }
-    serve(&enumerator, &mut slots, sink.as_mut(), stop);
+    for (source, name) in fell_back {
+        sink.switched(source, &name, true);
+    }
+    serve(&enumerator, &mut slots, sink.as_mut(), stop, &mut devs);
     // The streams go first, then the sink, then the enumerator.
     drop(slots);
     drop(sink);
@@ -400,19 +546,82 @@ fn pick_error(failed: Vec<(Source, CaptureError)>) -> CaptureError {
     first.unwrap_or(CaptureError::Com(E_INVALIDARG.into()))
 }
 
-/// The wait loop: drains every live stream on each wake, follows the default
-/// devices, reopens failed streams and ends on the stop event, or once every
-/// source is lost for good (the thread then waits no more; the recorder
-/// finishes by itself).
+/// The endpoint `choose` picks, with its reason.
+#[derive(Debug, PartialEq, Eq)]
+struct Pick {
+    id: String,
+    /// The choice was not available, so this is the default instead.
+    fell_back: bool,
+}
+
+/// Which endpoint to open: the one the user `wanted` when it is among the
+/// `available` ones, else the Windows `default` (and then, if something was
+/// wanted, it fell back). `None` when there is nothing to open.
+fn choose(wanted: Option<&str>, default: Option<&str>, available: &[String]) -> Option<Pick> {
+    let pick = |id: &str, fell_back| Pick {
+        id: id.to_owned(),
+        fell_back,
+    };
+    match wanted {
+        Some(id) if available.iter().any(|a| a == id) => Some(pick(id, false)),
+        Some(_) => default.map(|d| pick(d, true)),
+        None => default.map(|d| pick(d, false)),
+    }
+}
+
+/// What to open for `source` now: [`choose`] over the devices as they are.
+/// The active endpoints are listed only when something is wanted.
+fn plan(enumerator: &IMMDeviceEnumerator, source: Source, wanted: Option<&str>) -> Option<Pick> {
+    let available = if wanted.is_some() {
+        devices::ids_in(enumerator, source)
+    } else {
+        Vec::new()
+    };
+    choose(wanted, default_id(enumerator, source).as_deref(), &available)
+}
+
+/// Opens what `pick` says. A chosen device that is there but will not open
+/// (in use exclusively, a broken driver) is given up for the default.
+fn open_pick(
+    enumerator: &IMMDeviceEnumerator,
+    source: Source,
+    pick: Pick,
+    wanted: Option<&str>,
+) -> Result<(Stream, bool), CaptureError> {
+    match Stream::open(enumerator, source, &pick.id) {
+        Ok(s) => Ok((s, pick.fell_back)),
+        Err(e) if wanted.is_some() && !pick.fell_back && !matches!(e, CaptureError::MicDenied) => {
+            let default = default_id(enumerator, source).ok_or(e)?;
+            Stream::open(enumerator, source, &default).map(|s| (s, true))
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// [`plan`] and [`open_pick`] in one; `NoDevice` when there is nothing to open.
+fn open_wanted(
+    enumerator: &IMMDeviceEnumerator,
+    source: Source,
+    wanted: Option<&str>,
+) -> Result<(Stream, bool), CaptureError> {
+    let pick = plan(enumerator, source, wanted).ok_or(CaptureError::NoDevice(source))?;
+    open_pick(enumerator, source, pick, wanted)
+}
+
+/// The wait loop: drains every live stream on each wake, follows the devices
+/// (the default, or the choice), reopens failed streams and ends on the stop
+/// event, or once every source is lost for good (the thread then waits no
+/// more; the recorder finishes by itself).
 fn serve(
     enumerator: &IMMDeviceEnumerator,
     slots: &mut [Slot; 2],
     sink: &mut dyn AudioSink,
     stop: &Event,
+    devs: &mut Devices,
 ) {
     let mut last_check = Instant::now();
     loop {
-        let mut handles = vec![stop.0];
+        let mut handles = vec![stop.0, devs.wake.0];
         for slot in slots.iter() {
             if let Slot::Live(s) = slot {
                 handles.push(s.event.0);
@@ -420,8 +629,9 @@ fn serve(
         }
         let woke = unsafe { WaitForMultipleObjects(&handles, false, WAKE_MS) };
         let stopping = woke == WAIT_OBJECT_0;
+        let nudged = woke == WAIT_EVENT(WAIT_OBJECT_0.0 + 1);
         for (i, slot) in slots.iter_mut().enumerate() {
-            let source = if i == 0 { Source::Mic } else { Source::System };
+            let source = SOURCES[i];
             if let Slot::Live(stream) = slot
                 && let Err(e) = stream.drain(sink)
             {
@@ -432,28 +642,51 @@ fn serve(
             return;
         }
         let now = Instant::now();
-        let check = now.duration_since(last_check) >= DEVICE_EVERY;
+        let check = nudged || now.duration_since(last_check) >= DEVICE_EVERY;
         if check {
             last_check = now;
         }
+        let changed = if check { devs.refresh() } else { [false; 2] };
         for (i, slot) in slots.iter_mut().enumerate() {
-            let source = if i == 0 { Source::Mic } else { Source::System };
+            let source = SOURCES[i];
             match slot {
                 Slot::Live(stream) if check => {
                     // A default switch does not invalidate the old device,
                     // so the ids are compared (as `eq_audio` does).
-                    let current = default_id(enumerator, source);
-                    if current.is_some()
-                        && current.as_deref() != Some(stream.id.as_str())
-                        && let Ok(new) = Stream::open(enumerator, source)
-                    {
-                        *slot = Slot::Live(new);
+                    let wanted = devs.wanted(source);
+                    if let Some(pick) = plan(enumerator, source, wanted.as_deref()) {
+                        if pick.id != stream.id {
+                            if let Ok((new, fell)) =
+                                open_pick(enumerator, source, pick, wanted.as_deref())
+                            {
+                                let report = devs.opened(&new, fell, changed[i]);
+                                let name = new.name.clone();
+                                *slot = Slot::Live(new);
+                                if let Some(fell_back) = report {
+                                    sink.switched(source, &name, fell_back);
+                                }
+                            }
+                        } else if pick.fell_back
+                            && let Some(fell_back) = devs.opened(stream, true, changed[i])
+                        {
+                            // The chosen device is gone and the default is
+                            // already the one in use.
+                            sink.switched(source, &stream.name, fell_back);
+                        }
                     }
                 }
-                Slot::Retry { until, next, .. } if now >= *next => {
+                Slot::Retry { until, next, .. } if changed[i] || now >= *next => {
                     let until = *until;
-                    match Stream::open(enumerator, source) {
-                        Ok(new) => *slot = Slot::Live(new),
+                    let wanted = devs.wanted(source);
+                    match open_wanted(enumerator, source, wanted.as_deref()) {
+                        Ok((new, fell)) => {
+                            let report = devs.opened(&new, fell, changed[i]);
+                            let name = new.name.clone();
+                            *slot = Slot::Live(new);
+                            if let Some(fell_back) = report {
+                                sink.switched(source, &name, fell_back);
+                            }
+                        }
                         Err(CaptureError::MicDenied) => {
                             *slot = Slot::Off;
                             sink.lost(source, CaptureError::MicDenied);
@@ -520,16 +753,7 @@ fn default_id(enumerator: &IMMDeviceEnumerator, source: Source) -> Option<String
         enumerator
             .GetDefaultAudioEndpoint(source.flow(), eConsole)
             .ok()
-            .and_then(|d| device_id(&d))
-    }
-}
-
-fn device_id(device: &IMMDevice) -> Option<String> {
-    unsafe {
-        let raw = device.GetId().ok()?;
-        let id = raw.to_string().ok();
-        CoTaskMemFree(Some(raw.0.cast_const().cast()));
-        id
+            .and_then(|d| devices::device_id(&d))
     }
 }
 
@@ -537,6 +761,8 @@ fn device_id(device: &IMMDevice) -> Option<String> {
 struct Stream {
     source: Source,
     id: String,
+    /// The device's friendly name.
+    name: String,
     client: IAudioClient,
     capture: IAudioCaptureClient,
     fmt: SampleFormat,
@@ -550,13 +776,16 @@ struct Stream {
 }
 
 impl Stream {
-    fn open(enumerator: &IMMDeviceEnumerator, source: Source) -> Result<Stream, CaptureError> {
+    /// Opens the endpoint `id` of `source`'s kind.
+    fn open(
+        enumerator: &IMMDeviceEnumerator,
+        source: Source,
+        id: &str,
+    ) -> Result<Stream, CaptureError> {
         let err = |e| classify(source, e);
         unsafe {
-            let device = enumerator
-                .GetDefaultAudioEndpoint(source.flow(), eConsole)
-                .map_err(err)?;
-            let id = device_id(&device).unwrap_or_default();
+            let device = enumerator.GetDevice(&HSTRING::from(id)).map_err(err)?;
+            let name = devices::friendly_name(&device).unwrap_or_else(|| id.to_owned());
             let client: IAudioClient = device.Activate(CLSCTX_ALL, None).map_err(err)?;
             let wfx = client.GetMixFormat().map_err(err)?;
             let parsed = read_format(wfx);
@@ -579,7 +808,8 @@ impl Stream {
             client.Start().map_err(err)?;
             Ok(Stream {
                 source,
-                id,
+                id: id.to_owned(),
+                name,
                 client,
                 capture,
                 fmt,
@@ -656,6 +886,65 @@ fn frames_to_qpc(frames: u64, rate: u32) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Both sources on the Windows default.
+    fn follow() -> Choices {
+        Choices::default()
+    }
+
+    fn ids(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    fn pick(id: &str, fell_back: bool) -> Option<Pick> {
+        Some(Pick {
+            id: id.to_owned(),
+            fell_back,
+        })
+    }
+
+    #[test]
+    fn following_windows_opens_the_default() {
+        assert_eq!(choose(None, Some("d"), &ids(&["a", "d"])), pick("d", false));
+        // Even with an empty list: the default is the default.
+        assert_eq!(choose(None, Some("d"), &[]), pick("d", false));
+        assert_eq!(choose(None, None, &ids(&["a"])), None);
+    }
+
+    #[test]
+    fn a_chosen_device_that_is_there_wins_over_the_default() {
+        assert_eq!(choose(Some("a"), Some("d"), &ids(&["a", "d"])), pick("a", false));
+        assert_eq!(choose(Some("a"), None, &ids(&["a"])), pick("a", false));
+        assert_eq!(choose(Some("d"), Some("d"), &ids(&["d"])), pick("d", false));
+    }
+
+    #[test]
+    fn a_missing_chosen_device_falls_back_to_the_default() {
+        assert_eq!(choose(Some("gone"), Some("d"), &ids(&["d"])), pick("d", true));
+        assert_eq!(choose(Some("gone"), Some("d"), &[]), pick("d", true));
+        // Nothing to fall back to.
+        assert_eq!(choose(Some("gone"), None, &ids(&["a"])), None);
+    }
+
+    #[test]
+    fn a_choice_is_set_from_another_thread_and_read_by_the_capture_thread() {
+        let choices = follow();
+        let wake = Arc::new(Event::new(false).expect("event"));
+        let mut devs = Devices::new(Arc::clone(&choices), Names::default(), wake);
+        assert_eq!(devs.refresh(), [false, false]);
+        choices.lock().unwrap()[1] = Some("x".into());
+        assert_eq!(devs.refresh(), [false, true]);
+        assert_eq!(devs.wanted(Source::System).as_deref(), Some("x"));
+        assert_eq!(devs.wanted(Source::Mic), None);
+        // Read once: no change the second time.
+        assert_eq!(devs.refresh(), [false, false]);
+        // A fall back sets the choice aside until a new one comes.
+        devs.fallen[1] = true;
+        assert_eq!(devs.wanted(Source::System), None);
+        choices.lock().unwrap()[1] = Some("y".into());
+        assert_eq!(devs.refresh(), [false, true]);
+        assert_eq!(devs.wanted(Source::System).as_deref(), Some("y"));
+    }
 
     #[test]
     fn sources_list_mic_first() {
@@ -795,10 +1084,112 @@ mod tests {
             mic: false,
             system: true,
         };
-        if let Ok(c) = Capture::start(system, Box::new(Probe(Arc::clone(&seen)))) {
+        if let Ok(c) = Capture::start(system, follow(), Box::new(Probe(Arc::clone(&seen)))) {
             c.stop();
         }
         assert_eq!(seen.load(Ordering::SeqCst), 1, "1: COM was up, 2: it was not");
+    }
+
+    /// Reports what the capture says about devices, for the tests.
+    struct Reports(std::sync::mpsc::Sender<(Source, String, bool)>);
+
+    impl AudioSink for Reports {
+        fn audio(&mut self, _: Source, _: u64, _: u32, _: &[f32]) {}
+        fn lost(&mut self, _: Source, _: CaptureError) {}
+        fn switched(&mut self, source: Source, name: &str, fell_back: bool) {
+            let _ = self.0.send((source, name.to_owned(), fell_back));
+        }
+    }
+
+    /// Needs an output device (and says nothing without one).
+    #[test]
+    fn a_missing_chosen_output_falls_back_to_the_default_and_a_hand_pick_is_silent() {
+        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+        let _one = super::super::tests::session();
+        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let Some(default) = devices::default_endpoint(Source::System) else {
+            return;
+        };
+        let (tx, rx) = mpsc::channel();
+        let system = Sources {
+            mic: false,
+            system: true,
+        };
+        let choices = follow();
+        choices.lock().unwrap()[1] = Some("{0.0.0.00000000}.{no-such-device}".into());
+        let Ok(c) = Capture::start(system, Arc::clone(&choices), Box::new(Reports(tx))) else {
+            return;
+        };
+        // At the start: the default stands in, and the choice is left alone.
+        let got = rx.recv_timeout(Duration::from_secs(2)).expect("a report");
+        assert_eq!(got, (Source::System, default.name.clone(), true));
+        assert_eq!(c.device_names()[1], default.name);
+        assert_eq!(c.device_names()[0], "", "the mic is not captured");
+        assert_eq!(
+            choices.lock().unwrap()[1].as_deref(),
+            Some("{0.0.0.00000000}.{no-such-device}")
+        );
+        // Picking the default by hand switches nothing and says nothing.
+        c.set_device(Source::System, Some(default.id.clone()));
+        std::thread::sleep(Duration::from_millis(400));
+        assert!(rx.try_recv().is_err(), "a pick of the user's is not reported");
+        // Picking a device that is not there while on the default says so.
+        c.set_device(Source::System, Some("{0.0.0.00000000}.{another-missing}".into()));
+        let got = rx.recv_timeout(Duration::from_secs(2)).expect("a second report");
+        assert_eq!(got, (Source::System, default.name.clone(), true));
+        // Back to following Windows: silent again.
+        c.set_device(Source::System, None);
+        std::thread::sleep(Duration::from_millis(400));
+        assert!(rx.try_recv().is_err());
+        assert_eq!(c.device_names()[1], default.name);
+        c.stop();
+    }
+
+    /// Needs two output devices that open (and says nothing with fewer).
+    #[test]
+    fn a_picked_output_takes_over_at_once_and_back_to_the_default_follows_windows() {
+        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+        let _one = super::super::tests::session();
+        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let Some(default) = devices::default_endpoint(Source::System) else {
+            return;
+        };
+        let (tx, rx) = mpsc::channel();
+        let system = Sources {
+            mic: false,
+            system: true,
+        };
+        let Ok(c) = Capture::start(system, follow(), Box::new(Reports(tx))) else {
+            return;
+        };
+        assert_eq!(c.device_names()[1], default.name);
+        let others: Vec<_> = devices::list(Source::System)
+            .into_iter()
+            .filter(|e| e.id != default.id)
+            .collect();
+        for other in others {
+            c.set_device(Source::System, Some(other.id.clone()));
+            let until = Instant::now() + Duration::from_secs(2);
+            while c.device_names()[1] != other.name && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            // Opens on it, or (a device that will not open) stays on the default.
+            let now = c.device_names()[1].clone();
+            assert!(now == other.name || now == default.name, "{now}");
+            if now == other.name {
+                c.set_device(Source::System, None);
+                let until = Instant::now() + Duration::from_secs(2);
+                while c.device_names()[1] != default.name && Instant::now() < until {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                assert_eq!(c.device_names()[1], default.name);
+                assert!(rx.try_recv().is_err(), "hand picks are not reported");
+                break;
+            }
+            // A fall back was reported for the one that would not open.
+            assert!(rx.try_recv().is_ok());
+        }
+        c.stop();
     }
 
     #[test]
@@ -812,6 +1203,6 @@ mod tests {
             mic: false,
             system: false,
         };
-        assert!(Capture::start(none, Box::new(Nothing)).is_err());
+        assert!(Capture::start(none, follow(), Box::new(Nothing)).is_err());
     }
 }

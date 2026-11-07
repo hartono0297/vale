@@ -34,6 +34,7 @@ use crate::ui::geometry::{
 use crate::ui::icons::Icon;
 use crate::ui::robot::{Motion, SLEEP_MAX, SLEEP_MIN};
 use crate::model::RecSources;
+use crate::recorder::Source;
 use crate::recorder::prefs::{RecordingPrefs, folder_label as rec_folder_label};
 use crate::widgets::prefs::{FullscreenRule, WidgetLayer, WidgetPrefs};
 use crate::widgets::sticky::can_add;
@@ -444,6 +445,9 @@ pub enum Hit {
     RecSources(RecSources),
     RecFolderOpen,
     RecFolderChange,
+    /// Fitur -> Rekaman: "Ganti" on the mic row or the PC audio row, which
+    /// opens the device menu.
+    RecDevice(Source),
     /// Settings -> Fitur -> Susun: "+ Template baru", a
     /// template's "Ubah" and "Hapus", a saved arrangement's "Ganti nama"
     /// and "Hapus" (by place in their lists), and the editor's "Belah"
@@ -1316,8 +1320,10 @@ pub struct State<'a> {
     pub open_mode: OpenMode,
     /// The plug-in and safe-to-remove notices.
     pub device_notices: bool,
-    /// Fitur -> Rekaman: the sources and the folder.
+    /// Fitur -> Rekaman: the sources, the devices and the folder.
     pub recording: RecordingPrefs,
+    /// What the mic row and the PC audio row show (`rec_device_label`).
+    pub rec_devices: [String; 2],
     /// The hotkeys, and by `HotkeyId::index` whether a set one could not
     /// be registered (taken by another app, or the PrtSc hook failed).
     pub hotkeys: Hotkeys,
@@ -4401,12 +4407,35 @@ pub const REC_CHOICES: [RecSources; 3] = [
 /// How the folder shows when none is chosen.
 pub const REC_DEFAULT_FOLDER: &str = r"Documents\Vale\Rekaman";
 
-/// "Rekaman" (Fitur): which sound is recorded, and the folder it goes to.
-/// (The hotkey is in the Tombol pintas section.)
+/// What a device row shows: the chosen device's name (`name`, `None` when
+/// Windows no longer knows it), or "Ikuti Windows" with the default's name
+/// when no device is chosen.
+pub fn rec_device_label(
+    lang: Lang,
+    chosen: bool,
+    name: Option<&str>,
+    default: Option<&str>,
+) -> String {
+    match (chosen, name, default) {
+        (true, Some(name), _) => name.to_owned(),
+        (true, None, _) => text(lang, Key::RecDeviceGone).to_owned(),
+        (false, _, Some(d)) => format!("{} ({d})", text(lang, Key::RecFollowWindows)),
+        (false, _, None) => text(lang, Key::RecFollowWindows).to_owned(),
+    }
+}
+
+/// "Rekaman" (Fitur): which sound is recorded, the mic and the PC audio
+/// device, and the folder it goes to. (The hotkey is in the Tombol pintas
+/// section.)
 fn recording_card(b: &mut Builder, s: &State) {
     titled(b, Key::RecSettingsTitle);
-    let card = b.card(2.0 * ROW_H);
-    let rows = [card.y, card.y + ROW_H];
+    let card = b.card(4.0 * ROW_H);
+    let rows = [
+        card.y,
+        card.y + ROW_H,
+        card.y + 2.0 * ROW_H,
+        card.y + 3.0 * ROW_H,
+    ];
     let cy = |y: f32| y + ROW_H / 2.0;
     let items = vec![
         (Hit::RecSources(REC_CHOICES[0]), b.t(Key::RecSourceMic)),
@@ -4419,6 +4448,32 @@ fn recording_card(b: &mut Builder, s: &State) {
     b.row_text(card, rows[0], b.t(Key::RecSettingsSources), desc, false, x);
     b.divider(card, rows[1]);
 
+    let change = b.t(Key::RecSettingsChange);
+    let change_w = b.button_w(&[&change], ButtonKind::Secondary);
+    for (i, (source, title)) in [
+        (Source::Mic, Key::RecSourceMic),
+        (Source::System, Key::RecDeviceFrom),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let row = rows[1 + i];
+        let x = b.buttons(
+            b.g.right,
+            cy(row),
+            vec![(
+                Hit::RecDevice(source),
+                change.clone(),
+                ButtonKind::Secondary,
+                true,
+                change_w,
+            )],
+        );
+        let desc = Some((s.rec_devices[source.index()].clone(), Tone::Secondary));
+        b.row_text(card, row, b.t(title), desc, false, x);
+        b.divider(card, rows[2 + i]);
+    }
+
     let (open, change) = (b.t(Key::RecSettingsOpen), b.t(Key::RecSettingsChange));
     let (open_w, change_w) = (
         b.button_w(&[&open], ButtonKind::Secondary),
@@ -4426,7 +4481,7 @@ fn recording_card(b: &mut Builder, s: &State) {
     );
     let x = b.buttons(
         b.g.right,
-        cy(rows[1]),
+        cy(rows[3]),
         vec![
             (Hit::RecFolderOpen, open, ButtonKind::Secondary, true, open_w),
             (Hit::RecFolderChange, change, ButtonKind::Secondary, true, change_w),
@@ -4438,7 +4493,7 @@ fn recording_card(b: &mut Builder, s: &State) {
         .as_deref()
         .map_or_else(|| REC_DEFAULT_FOLDER.to_owned(), rec_folder_label);
     let desc = Some((folder, Tone::Secondary));
-    b.row_text(card, rows[1], b.t(Key::RecSettingsFolder), desc, false, x);
+    b.row_text(card, rows[3], b.t(Key::RecSettingsFolder), desc, false, x);
 }
 
 /// "Jumlah item" one step (10) up or down, kept in 10–200; a hand-edited
@@ -5270,6 +5325,7 @@ mod tests {
                         },
                         device_notices: !locked,
                         recording: RecordingPrefs::default(),
+                        rec_devices: [String::new(), String::new()],
                         // Locked: every row set, the longest combos, taken,
                         // one being recorded and one refused. Otherwise the
                         // defaults.
@@ -8279,14 +8335,17 @@ mod tests {
                 (CliStart::Explorer, Shell::PowerShell),
                 (CliStart::Last, Shell::Cmd),
             ] {
-                let s = State {
+                let mut s = State {
                     lang,
                     cli_start: start,
                     shell,
-                    // Notifikasi sits above it now: scrolled to the end.
-                    scroll: f32::MAX,
                     ..states()[0].clone()
                 };
+                // The cards under it (Perangkat, Rekaman, Pembersih) are tall
+                // now: scrolled so that the CLI card is the one in view.
+                let at_top = layout(Section::Features, &s, &Estimate);
+                let (top, _, _) = at_top.segmented(Group::CliStart).expect("Folder awal CLI");
+                s.scroll = top.y - 160.0;
                 let l = layout(Section::Features, &s, &Estimate);
                 let (track, items, selected) =
                     l.segmented(Group::CliStart).expect("Folder awal CLI");
@@ -8391,7 +8450,9 @@ mod tests {
                         sources: *want,
                         folder: Some(std::path::PathBuf::from(r"D:\Audio\Rapat")),
                         consent_shown: true,
+                        ..RecordingPrefs::default()
                     },
+                    rec_devices: ["Mikrofon A".to_owned(), "Speaker B".to_owned()],
                     scroll: 1e6,
                     ..states()[0].clone()
                 };
@@ -8410,9 +8471,9 @@ mod tests {
                         text(lang, Key::RecSourceBoth)
                     ]
                 );
-                // Its own two-row card under its label, before "Pembersih".
+                // Its own four-row card under its label, before "Pembersih".
                 let card = l.cards[l.cards.len() - 2];
-                assert_eq!(card.h, 2.0 * ROW_H);
+                assert_eq!(card.h, 4.0 * ROW_H);
                 assert!(l.texts.iter().any(|t| t.text == text(lang, Key::RecSettingsTitle).to_uppercase()));
                 // The folder shows like the screenshot one: parent and name.
                 assert!(l.texts.iter().any(|t| t.text == r"Audio\Rapat"), "{lang:?}");
@@ -8422,13 +8483,52 @@ mod tests {
                     hits.iter().find(|(h, _)| *h == Hit::RecFolderChange).expect("Ganti").1,
                 );
                 assert!(open.right() <= change.x, "Buka left of Ganti");
-                assert!(open.y >= card.y + ROW_H && change.bottom() <= card.bottom());
+                assert!(open.y >= card.y + 3.0 * ROW_H && change.bottom() <= card.bottom());
+                // The two device rows: a "Ganti" each, named after the
+                // source, showing what the state says, between the sources
+                // row and the folder row.
+                for (i, (source, title, shown)) in [
+                    (Source::Mic, Key::RecSourceMic, "Mikrofon A"),
+                    (Source::System, Key::RecDeviceFrom, "Speaker B"),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    assert!(l.texts.iter().any(|t| t.text == text(lang, title)), "{lang:?} {i}");
+                    assert!(l.texts.iter().any(|t| t.text == shown), "{lang:?} {shown}");
+                    let r = hits
+                        .iter()
+                        .find(|(h, _)| *h == Hit::RecDevice(source))
+                        .expect("a Ganti per device row")
+                        .1;
+                    let top = card.y + (1 + i) as f32 * ROW_H;
+                    let bottom = top + ROW_H;
+                    assert!(r.y >= top && r.bottom() <= bottom, "{lang:?} {i}");
+                    assert!(r.right() <= card.right());
+                }
             }
         }
         // No folder chosen: the default's label.
         let s = State { scroll: 1e6, ..states()[0].clone() };
         let l = layout(Section::Features, &s, &Estimate);
         assert!(l.texts.iter().any(|t| t.text == REC_DEFAULT_FOLDER));
+    }
+
+    #[test]
+    fn a_device_row_names_the_choice_or_follows_windows_with_the_default() {
+        assert_eq!(
+            rec_device_label(Lang::Id, false, None, Some("Speakers")),
+            "Ikuti Windows (Speakers)"
+        );
+        assert_eq!(
+            rec_device_label(Lang::En, false, None, Some("Speakers")),
+            "Follow Windows (Speakers)"
+        );
+        assert_eq!(rec_device_label(Lang::En, false, None, None), "Follow Windows");
+        assert_eq!(rec_device_label(Lang::Id, true, Some("Headset"), Some("Speakers")), "Headset");
+        // A chosen device Windows no longer knows says so, not "Ikuti Windows".
+        assert_eq!(rec_device_label(Lang::Id, true, None, Some("Speakers")), "Perangkat tidak ada");
+        assert_eq!(rec_device_label(Lang::En, true, None, None), "Device not found");
     }
 
     #[test]

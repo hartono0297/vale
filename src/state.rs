@@ -2093,6 +2093,11 @@ impl IslandState {
                     effects.push(Effect::RecMute(source));
                 }
             }
+            Hit::RecDevice(source) => {
+                if self.view() == View::Panel(Page::Record) {
+                    effects.push(Effect::RecDevice(source));
+                }
+            }
             Hit::RecSources(sources) => {
                 if self.view() == View::Panel(Page::Record) && self.rec.is_none() {
                     effects.push(Effect::RecSources(sources));
@@ -7845,6 +7850,24 @@ mod tests {
         assert_eq!(
             s.apply(Event::Click(Hit::RecToggle), t0),
             vec![Effect::RecToggle]
+        );
+    }
+
+    #[test]
+    fn a_device_name_opens_its_menu_on_the_rekam_page_idle_or_recording() {
+        let t0 = Instant::now();
+        let mut s = st();
+        assert_eq!(s.apply(Event::Click(Hit::RecDevice(Source::Mic)), t0), vec![]);
+        open_on(&mut s, Page::Record, t0);
+        assert_eq!(
+            s.apply(Event::Click(Hit::RecDevice(Source::Mic)), t0),
+            vec![Effect::RecDevice(Source::Mic)]
+        );
+        s.apply(Event::RecStatus(Some(rec_status(t0))), t0);
+        assert_eq!(s.view(), View::Panel(Page::Record), "the panel stays");
+        assert_eq!(
+            s.apply(Event::Click(Hit::RecDevice(Source::System)), t0),
+            vec![Effect::RecDevice(Source::System)]
         );
     }
 

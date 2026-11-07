@@ -638,6 +638,14 @@ const fn clipboard(name: &'static str, which: ClipDemo) -> Scene {
 }
 
 /// The Rekam page's made-up list: the three rows of the design's mockup.
+/// The device names the Rekam page's scenes show, `[mic, system]`.
+fn demo_rec_devices() -> [String; 2] {
+    [
+        "Microphone (Realtek Audio)".to_owned(),
+        "Speakers (Realtek Audio)".to_owned(),
+    ]
+}
+
 fn demo_rec_recent() -> Vec<RecEntry> {
     let entry = |title: &str, started: &str, mins: u64| RecEntry {
         path: std::path::PathBuf::from(format!("{title}.m4a")),
@@ -2133,6 +2141,7 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
             let fill_alpha =
                 notch_fill::morph_fill(scene_fill(&prev), scene_fill(&scene), ease_out_back(t));
             let rec_recent = demo_rec_recent();
+            let rec_devices = demo_rec_devices();
             let pomodoro = demo_pomodoro(scene.pomo, now);
             let view = live_view.unwrap_or_else(|| match scene.view {
                 View0::Idle => View::Idle,
@@ -2323,6 +2332,7 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                         system: true,
                     },
                     recent: &rec_recent,
+                    devices: &rec_devices,
                 },
                 devices: DevicesView {
                     list: &dev_list,

@@ -4029,8 +4029,13 @@ pub struct RecordLayout {
     /// The segments take clicks: not while recording.
     pub sources_enabled: bool,
     /// While recording, one cell per recorded source (mic first) in the
-    /// source control's place: its mute button and its level meter.
+    /// source control's place: its mute button, its level meter and the
+    /// name of its device.
     pub live: Vec<RecordLive>,
+    /// While idle, the device of each chosen source (mic first), one line
+    /// under the source control; each line is a click that opens the
+    /// device menu.
+    pub idle_devices: Vec<(Source, Rect)>,
     /// The recorded time (and under it, the state): drawn while recording.
     pub elapsed: Rect,
     /// Where the list is, and the rows shown (at most `REC_ROWS`, fewer
@@ -4042,12 +4047,14 @@ pub struct RecordLayout {
 }
 
 /// One recorded source on the Rekam page while recording: the round mute
-/// button and the meter beside it.
+/// button, the meter beside it and, under them, the name of the device (a
+/// click opens the device menu).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RecordLive {
     pub source: Source,
     pub button: Rect,
     pub meter: Rect,
+    pub device: Rect,
 }
 
 /// One recent recording: the icon well, the title and "date · duration"
@@ -4081,17 +4088,27 @@ const REC_PILL_H: f32 = 20.0;
 /// The mute button's diameter and the gap between it and its meter.
 const REC_MUTE: f32 = 26.0;
 const REC_MUTE_GAP: f32 = 8.0;
+/// The device lines under the source control while idle: their height, the
+/// gap between two, and the gap under the control.
+pub const REC_DEVICE_H: f32 = 16.0;
+const REC_DEVICE_GAP: f32 = 3.0;
+const REC_DEVICE_TOP: f32 = 6.0;
+/// While recording the block is this much taller, so each device name has a
+/// line under its button and meter.
+const REC_LIVE_EXTRA: f32 = 14.0;
 
 /// The Rekam page. `live` is the sources of the running recording, `None`
 /// when idle: it swaps the card's contents (stop and pause instead of start),
-/// locks the source control and puts a mute button and a meter per source
-/// where the control is. `rows` is how many recent recordings there are (at
-/// most `REC_ROWS` of them show).
+/// locks the source control and puts a mute button, a meter and the device
+/// name per source where the control is. `chosen` is the source control's
+/// choice: while idle a device line per chosen source goes under it. `rows`
+/// is how many recent recordings there are (at most `REC_ROWS` of them show).
 pub fn record_layout(
     s: ShapeRect,
     strip: bool,
     head: &RecordHead,
     live: Option<RecSources>,
+    chosen: RecSources,
     rows: usize,
 ) -> RecordLayout {
     let recording = live.is_some();
@@ -4105,8 +4122,9 @@ pub fn record_layout(
         HEADER_H,
     );
     let block_y = top + HEADER_H + REC_HEAD_GAP;
-    let card = rect(l, block_y, REC_CARD_W, REC_BLOCK_H);
-    let button_y = card.y + 8.0;
+    let extra = if recording { REC_LIVE_EXTRA } else { 0.0 };
+    let card = rect(l, block_y, REC_CARD_W, REC_BLOCK_H + extra);
+    let button_y = card.y + 8.0 + extra / 2.0;
     let (button, pause) = if recording {
         let pair = REC_BUTTON + REC_BUTTON_GAP + REC_PAUSE;
         let x = card.x + (card.w - pair) / 2.0;
@@ -4172,19 +4190,32 @@ pub fn record_layout(
                 REC_METER_W,
                 REC_METER_H,
             );
+            let device = rect(x, seg_track.bottom() + 2.0, cell_w, REC_DEVICE_H);
             RecordLive {
                 source,
                 button,
                 meter,
+                device,
             }
         })
         .collect();
-    let elapsed = rect(
-        opts_x,
-        seg_track.bottom() + 8.0,
-        r - opts_x,
-        card.bottom() - seg_track.bottom() - 8.0,
-    );
+    let idle_devices = if recording {
+        Vec::new()
+    } else {
+        [(chosen.mic, Source::Mic), (chosen.system, Source::System)]
+            .into_iter()
+            .filter_map(|(on, source)| on.then_some(source))
+            .enumerate()
+            .map(|(i, source)| {
+                let y = seg_track.bottom()
+                    + REC_DEVICE_TOP
+                    + i as f32 * (REC_DEVICE_H + REC_DEVICE_GAP);
+                (source, rect(opts_x, y, seg_track.w, REC_DEVICE_H))
+            })
+            .collect()
+    };
+    let elapsed_y = seg_track.bottom() + extra + 8.0;
+    let elapsed = rect(opts_x, elapsed_y, r - opts_x, card.bottom() - elapsed_y);
     let list = rect(
         l,
         card.bottom() + REC_LIST_GAP,
@@ -4227,6 +4258,7 @@ pub fn record_layout(
         segs,
         sources_enabled: !recording,
         live,
+        idle_devices,
         elapsed,
         list,
         rows,
@@ -4462,6 +4494,10 @@ pub fn regions(s: ShapeRect, layout: &PageLayout, strip: impl Into<StripKind>) -
             add(l.button, Hit::RecToggle);
             for cell in &l.live {
                 add(cell.button, Hit::RecMute(cell.source));
+                add(cell.device, Hit::RecDevice(cell.source));
+            }
+            for &(source, r) in &l.idle_devices {
+                add(r, Hit::RecDevice(source));
             }
             // The source control is locked while a recording runs.
             if l.sources_enabled {
@@ -4877,7 +4913,7 @@ mod tests {
             out.push((format!("arrange {name}"), PageLayout::Arrange(l)));
         }
         for (recording, n) in [(false, 0), (false, 3), (true, 3), (false, 5), (true, 9)] {
-            let l = record_layout(s, strip, &REC_HEAD, recording.then_some(BOTH), n);
+            let l = record_layout(s, strip, &REC_HEAD, recording.then_some(BOTH), BOTH, n);
             out.push((
                 format!("record rec={recording} n={n}"),
                 PageLayout::Record(l),
@@ -4993,7 +5029,7 @@ mod tests {
         for style in [Style::Pill, Style::Notch] {
             let s = panel(style);
             let (dots, _) = page_dots(s, &Page::ALL, Page::Record);
-            let l = record_layout(s, false, &REC_HEAD, None, 9);
+            let l = record_layout(s, false, &REC_HEAD, None, BOTH, 9);
             assert_eq!(l.rows.len(), REC_ROWS, "{style:?}: five at most");
             assert!(l.empty.is_none());
             for (i, r) in l.rows.iter().enumerate() {
@@ -5009,12 +5045,12 @@ mod tests {
             // The list starts under the card, and the card under the title.
             assert!(l.card.y >= l.header.bottom() && l.list.y >= l.card.bottom());
             // Fewer recordings show fewer rows; none show the empty state.
-            assert_eq!(record_layout(s, false, &REC_HEAD, None, 2).rows.len(), 2);
-            let none = record_layout(s, false, &REC_HEAD, None, 0);
+            assert_eq!(record_layout(s, false, &REC_HEAD, None, BOTH, 2).rows.len(), 2);
+            let none = record_layout(s, false, &REC_HEAD, None, BOTH, 0);
             assert!(none.rows.is_empty());
             assert!(none.empty.is_some_and(|e| rect_inside(style, s, e)));
             // Under the waiting strip one row less fits, never past the dots.
-            let strip = record_layout(s, true, &REC_HEAD, None, 9);
+            let strip = record_layout(s, true, &REC_HEAD, None, BOTH, 9);
             assert_eq!(strip.rows.len(), REC_ROWS - 1, "{style:?}");
             for r in &strip.rows {
                 assert!(r.row.bottom() <= content_bottom(s) + 0.01);
@@ -5025,14 +5061,14 @@ mod tests {
     #[test]
     fn the_rekam_card_swaps_start_for_stop_and_pause_and_locks_the_sources() {
         let s = panel(Style::Pill);
-        let idle = record_layout(s, false, &REC_HEAD, None, 0);
+        let idle = record_layout(s, false, &REC_HEAD, None, BOTH, 0);
         assert!(idle.pause.is_none() && idle.sources_enabled);
         // The lone button is centred in its card.
         assert!(
             ((idle.button.x + idle.button.w / 2.0) - (idle.card.x + idle.card.w / 2.0)).abs()
                 < 0.01
         );
-        let rec = record_layout(s, false, &REC_HEAD, Some(BOTH), 0);
+        let rec = record_layout(s, false, &REC_HEAD, Some(BOTH), BOTH, 0);
         let pause = rec.pause.expect("pause while recording");
         assert!(!rec.sources_enabled);
         assert!(disjoint(rec.button, pause));
@@ -5075,7 +5111,7 @@ mod tests {
             (mic, vec![Source::Mic]),
             (system, vec![Source::System]),
         ] {
-            let l = record_layout(s, false, &REC_HEAD, Some(live), 3);
+            let l = record_layout(s, false, &REC_HEAD, Some(live), BOTH, 3);
             assert_eq!(l.live.iter().map(|c| c.source).collect::<Vec<_>>(), want);
             for c in &l.live {
                 // The button and its meter sit side by side inside the
@@ -5088,9 +5124,57 @@ mod tests {
             }
             if let [a, b] = l.live[..] {
                 assert!(a.meter.right() <= b.button.x, "the cells do not overlap");
+                assert!(a.device.right() <= b.device.x, "nor do the device names");
+            }
+            // The device name sits under its button and meter, in the
+            // card's height and over the clock.
+            for c in &l.live {
+                assert!(c.device.y >= c.button.bottom() && c.device.y >= c.meter.bottom());
+                assert!(c.device.x == c.button.x && c.device.bottom() <= l.elapsed.y);
+                assert!(c.device.bottom() <= l.card.bottom());
+                assert!(c.device.right() <= l.seg_track.right() + 0.01);
+            }
+            assert!(l.idle_devices.is_empty());
+        }
+        assert!(record_layout(s, false, &REC_HEAD, None, BOTH, 3).live.is_empty());
+    }
+
+    #[test]
+    fn while_idle_each_chosen_source_has_a_device_line_under_the_control() {
+        let mic = RecSources { mic: true, system: false };
+        let system = RecSources { mic: false, system: true };
+        for style in [Style::Pill, Style::Notch] {
+            let s = panel(style);
+            for (chosen, want) in [
+                (BOTH, vec![Source::Mic, Source::System]),
+                (mic, vec![Source::Mic]),
+                (system, vec![Source::System]),
+            ] {
+                let l = record_layout(s, false, &REC_HEAD, None, chosen, 3);
+                assert_eq!(
+                    l.idle_devices.iter().map(|d| d.0).collect::<Vec<_>>(),
+                    want,
+                    "{style:?}"
+                );
+                let mut above = l.seg_track.bottom();
+                for &(_, r) in &l.idle_devices {
+                    // Clear of the control and of each other, inside the
+                    // card's height, left of nothing but the page's edge.
+                    assert!(r.y >= above && r.bottom() <= l.card.bottom(), "{style:?}");
+                    assert!(r.x >= l.card.right() && r.right() <= right(s) + 0.01);
+                    above = r.bottom();
+                }
+                assert!(l.live.is_empty());
+            }
+            // The extra height is for the recording only: idle keeps five rows.
+            let idle = record_layout(s, false, &REC_HEAD, None, BOTH, 9);
+            let rec = record_layout(s, false, &REC_HEAD, Some(BOTH), BOTH, 9);
+            assert_eq!(idle.rows.len(), REC_ROWS, "{style:?}");
+            assert!(rec.card.h > idle.card.h && !rec.rows.is_empty(), "{style:?}");
+            for r in &rec.rows {
+                assert!(r.row.bottom() <= content_bottom(s) + 0.01, "{style:?}");
             }
         }
-        assert!(record_layout(s, false, &REC_HEAD, None, 3).live.is_empty());
     }
 
     #[test]
@@ -5103,7 +5187,7 @@ mod tests {
                 .find(|g| x >= g.rect.x && x < g.rect.right() && y >= g.rect.y && y < g.rect.bottom())
                 .map(|g| g.hit)
         };
-        let idle = record_layout(s, false, &REC_HEAD, None, 3);
+        let idle = record_layout(s, false, &REC_HEAD, None, BOTH, 3);
         assert_eq!(hit_of(&idle, idle.button), Some(Hit::RecToggle));
         assert_eq!(hit_of(&idle, idle.folder), Some(Hit::RecFolder));
         for (sources, r) in idle.segs {
@@ -5113,7 +5197,7 @@ mod tests {
             assert_eq!(hit_of(&idle, row.pill), Some(Hit::RecOpen(i)));
             assert_eq!(hit_of(&idle, row.title), Some(Hit::RecOpen(i)));
         }
-        let rec = record_layout(s, false, &REC_HEAD, Some(BOTH), 3);
+        let rec = record_layout(s, false, &REC_HEAD, Some(BOTH), BOTH, 3);
         assert_eq!(hit_of(&rec, rec.button), Some(Hit::RecToggle));
         assert_eq!(hit_of(&rec, rec.pause.unwrap()), Some(Hit::RecPause));
         // While recording the source control takes no click.
@@ -5125,6 +5209,21 @@ mod tests {
         };
         assert_eq!(hit_of(&rec, mic.button), Some(Hit::RecMute(Source::Mic)));
         assert_eq!(hit_of(&rec, system.button), Some(Hit::RecMute(Source::System)));
+        // A device name opens that source's menu, idle or recording.
+        assert_eq!(hit_of(&rec, mic.device), Some(Hit::RecDevice(Source::Mic)));
+        assert_eq!(hit_of(&rec, system.device), Some(Hit::RecDevice(Source::System)));
+        let sources: Vec<_> = idle
+            .idle_devices
+            .iter()
+            .map(|&(s, r)| (s, hit_of(&idle, r)))
+            .collect();
+        assert_eq!(
+            sources,
+            [
+                (Source::Mic, Some(Hit::RecDevice(Source::Mic))),
+                (Source::System, Some(Hit::RecDevice(Source::System)))
+            ]
+        );
         assert!(idle.live.is_empty());
         assert!(
             !regions(s, &PageLayout::Record(idle.clone()), false)

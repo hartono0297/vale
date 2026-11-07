@@ -677,6 +677,8 @@ pub enum Hit {
     RecPause,
     /// A source's mute button, only while recording.
     RecMute(crate::recorder::Source),
+    /// A source's device name: opens the device menu (idle or recording).
+    RecDevice(crate::recorder::Source),
     RecSources(RecSources),
     RecOpen(usize),
     RecFolder,
@@ -877,6 +879,8 @@ pub enum Effect {
     RecPause,
     /// Mute or unmute one source of the running recording.
     RecMute(crate::recorder::Source),
+    /// Open the device menu of a source.
+    RecDevice(crate::recorder::Source),
     RecSources(RecSources),
     RecReveal(PathBuf),
     RecOpenFolder,

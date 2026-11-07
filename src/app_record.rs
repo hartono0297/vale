@@ -23,11 +23,12 @@ use std::time::{Duration, Instant};
 
 use chrono::{Local, NaiveDate, NaiveDateTime};
 
-use super::{App, WM_APP_EVENT, notif_open, poster};
+use super::{App, WM_APP_EVENT, WM_APP_REC_DEVICE, notif_open, poster};
 use crate::i18n::{self, Key, Lang, text};
 use crate::model::{
     Event, Notice, NoticeKind, Page, RecEntry, RecNote, RecSources, RecStatus, View,
 };
+use crate::recorder::devices;
 use crate::recorder::sidecar::Sidecar;
 use crate::recorder::{Failure, RecError, RecEvent, RecOptions, Recorder, Source, Sources};
 use crate::shortcuts;
@@ -58,6 +59,10 @@ pub(super) struct RecState {
     /// The Rekam page was on screen at the last refresh (a new showing
     /// re-reads the folder).
     page_shown: bool,
+    /// The device names the Rekam page shows, `[mic, system]`: the ones the
+    /// recording uses, or the chosen ones (the Windows default when none)
+    /// while idle. Read when the page opens and when a choice changes.
+    devices: [String; 2],
 }
 
 enum Busy {
@@ -78,6 +83,11 @@ impl RecState {
     /// What a toggle does now: nothing while a start or a stop runs.
     fn toggle(&self) -> Option<Toggle> {
         toggle_of(self.busy.is_some(), self.recorder.is_some())
+    }
+
+    /// The device names for the Rekam page.
+    pub fn devices(&self) -> &[String; 2] {
+        &self.devices
     }
 
     /// A word of `session` is for the newest session (older ones are
@@ -296,6 +306,31 @@ pub(crate) fn source_lost_notice(lang: Lang, source: Source) -> Notice {
         text(lang, Key::RecKeepsGoing).into(),
         NoticeKind::RecInfo,
     )
+}
+
+/// A source moved to another device by itself: the Windows default changed,
+/// or the device the user chose was not there (`fell_back`) and the default
+/// took over. `name` is the device in use now.
+pub(crate) fn device_switched_notice(
+    lang: Lang,
+    source: Source,
+    name: &str,
+    fell_back: bool,
+) -> Notice {
+    let using = format!("{} {name}", text(lang, Key::RecUsing));
+    let (title, body) = match (fell_back, source) {
+        (false, Source::Mic) => (Key::RecMicSwitched, name.to_owned()),
+        (false, Source::System) => (Key::RecSystemSwitched, name.to_owned()),
+        (true, Source::Mic) => (Key::RecMicMissing, using),
+        (true, Source::System) => (Key::RecSystemMissing, using),
+    };
+    notice("rec-device", lang, text(lang, title).into(), body, NoticeKind::RecInfo)
+}
+
+/// What the Rekam page shows for a source while idle: the chosen device's
+/// name, else the Windows default's (which is what a "follow" choice uses).
+fn idle_device_name(chosen: Option<String>, default: Option<String>) -> String {
+    chosen.or(default).unwrap_or_default()
 }
 
 /// The one-time "ask everyone first" note.
@@ -528,6 +563,10 @@ impl App {
             // Phase 1: no meeting-app detection, so no title and no app.
             title: String::new(),
             app: None,
+            devices: [
+                self.config.recording.mic_device.clone(),
+                self.config.recording.system_device.clone(),
+            ],
         };
         let say = self.rec_poster(session);
         let events: Box<dyn Fn(RecEvent) + Send> = Box::new({
@@ -583,6 +622,7 @@ impl App {
                 let status = status_of(&recorder, self.rec_sources);
                 let used = recorder.path().parent().map(Path::to_path_buf);
                 self.rec.recorder = Some(recorder);
+                self.rec_read_devices();
                 tray::set_recording(self.hwnd, true);
                 tray::set_mic_muted(false);
                 self.apply_now(Event::RecStatus(Some(status)));
@@ -671,6 +711,7 @@ impl App {
         if let Some(Busy::Stopping(handle)) = self.rec.busy.take() {
             let _ = handle.join();
         }
+        self.rec_read_devices();
         // Every source went before anything was kept: say so all the same.
         if self.rec.no_input && !self.rec.told {
             let lang = self.config.language;
@@ -739,6 +780,56 @@ impl App {
             self.save_config();
             self.sync_settings();
         }
+    }
+
+    /// Reads the device names the Rekam page shows: from the running
+    /// recorder, or from the choices (and the Windows default) while idle.
+    /// Called when the page opens, a recording starts or ends, and a choice
+    /// or a device changes: never on a timer.
+    fn rec_read_devices(&mut self) {
+        let names = match self.rec.recorder.as_ref() {
+            Some(recorder) => recorder.device_names(),
+            None => [Source::Mic, Source::System].map(|source| {
+                let chosen = self
+                    .config
+                    .recording
+                    .device(source)
+                    .and_then(devices::name_of);
+                idle_device_name(chosen, devices::default_endpoint(source).map(|d| d.name))
+            }),
+        };
+        self.rec.devices = names;
+    }
+
+    /// The Rekam page's device name was clicked: the menu opens from the main
+    /// loop (it is modal and must not run inside the app's borrow).
+    pub(super) fn rec_open_device_menu(&mut self, source: Source) {
+        use windows::Win32::Foundation::{LPARAM, WPARAM};
+        use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
+        let _ = unsafe {
+            PostMessageW(
+                Some(self.hwnd),
+                WM_APP_REC_DEVICE,
+                WPARAM(usize::from(source == Source::System)),
+                LPARAM(0),
+            )
+        };
+    }
+
+    /// A device picked in the menu or in Settings: saved, and while a
+    /// recording runs the source switches to it at once. A pick the user
+    /// made by hand gives no notice. `None` follows the Windows default.
+    pub(super) fn rec_set_device(&mut self, source: Source, id: Option<String>) {
+        if self.config.recording.device(source) != id.as_deref() {
+            self.config.recording.set_device(source, id.clone());
+            self.save_config();
+        }
+        if let Some(recorder) = self.rec.recorder.as_ref() {
+            recorder.set_device(source, id);
+        }
+        self.rec_read_devices();
+        self.sync_settings();
+        self.refresh(Instant::now());
     }
 
     /// Settings' (or the picker's) folder choice. Refused while a recording
@@ -811,6 +902,15 @@ impl App {
                 self.apply_now(Event::Notice(source_lost_notice(lang, source)));
             }
             RecEvent::MicDenied => self.apply_now(Event::Notice(mic_denied_notice(lang))),
+            RecEvent::DeviceSwitched {
+                source,
+                name,
+                fell_back,
+            } => {
+                self.rec_read_devices();
+                let n = device_switched_notice(lang, source, &name, fell_back);
+                self.apply_now(Event::Notice(n));
+            }
             // The writer finishes by itself; the threads are let go of.
             RecEvent::NoInput => {
                 self.rec.no_input = true;
@@ -845,6 +945,7 @@ impl App {
         if shown && !self.rec.page_shown {
             self.rec.page_shown = true;
             self.rec_rescan();
+            self.rec_read_devices();
         } else if !shown {
             self.rec.page_shown = false;
         }
@@ -1028,6 +1129,34 @@ mod tests {
             consent_notice(Lang::En).body,
             "Remember to ask everyone before recording"
         );
+    }
+
+    #[test]
+    fn a_device_switch_notice_says_which_source_moved_where() {
+        let n = device_switched_notice(Lang::Id, Source::Mic, "Headset", false);
+        assert_eq!((n.title.as_str(), n.body.as_str()), ("Mic pindah", "Headset"));
+        assert_eq!(n.kind, NoticeKind::RecInfo);
+        let n = device_switched_notice(Lang::En, Source::System, "Speakers", false);
+        assert_eq!((n.title.as_str(), n.body.as_str()), ("PC audio switched", "Speakers"));
+        let n = device_switched_notice(Lang::Id, Source::Mic, "Realtek", true);
+        assert_eq!(
+            (n.title.as_str(), n.body.as_str()),
+            ("Mic pilihan tidak ada", "Pakai Realtek")
+        );
+        let n = device_switched_notice(Lang::En, Source::System, "Speakers", true);
+        assert_eq!(
+            (n.title.as_str(), n.body.as_str()),
+            ("Chosen PC audio not found", "Using Speakers")
+        );
+        let n = device_switched_notice(Lang::Id, Source::System, "Speakers", true);
+        assert_eq!(n.title, "Suara PC pilihan tidak ada");
+    }
+
+    #[test]
+    fn idle_the_page_shows_the_chosen_device_else_the_default() {
+        assert_eq!(idle_device_name(Some("A".into()), Some("D".into())), "A");
+        assert_eq!(idle_device_name(None, Some("D".into())), "D");
+        assert_eq!(idle_device_name(None, None), "");
     }
 
     #[test]

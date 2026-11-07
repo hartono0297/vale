@@ -27,6 +27,8 @@ use windows::core::{Error, HSTRING, PCSTR, Result, w};
 use crate::config::{Config, NotchMonitor, Style};
 use crate::i18n::{Key, monitor_entry, text, update_menu_install};
 use crate::notch_monitor::{Display, choice_for, display_name, same_path, saved_missing};
+use crate::recorder::Source;
+use crate::recorder::devices::{self, Endpoint};
 use crate::ui::app_icon;
 use crate::ui::tray_dot;
 
@@ -572,6 +574,119 @@ pub fn note_card_menu(hwnd: HWND, label: &str) -> bool {
     }
 }
 
+/// The device menu's "Ikuti Windows" entry; the endpoints follow from
+/// `DEVICE_FIRST`.
+const DEVICE_FOLLOW: usize = 1;
+const DEVICE_FIRST: usize = 2;
+
+/// One line of the device menu.
+#[derive(Debug, PartialEq)]
+enum DeviceItem {
+    Entry {
+        id: usize,
+        label: String,
+        checked: bool,
+    },
+    Separator,
+}
+
+/// The device menu: "Ikuti Windows (<default's name>)", a separator, then
+/// every active endpoint by name. The check is on the current choice:
+/// `current` is the endpoint id chosen, `None` for following Windows. A choice
+/// that is not among `endpoints` (the device is unplugged) has no check.
+fn device_items(
+    lang: crate::i18n::Lang,
+    default: Option<&Endpoint>,
+    endpoints: &[Endpoint],
+    current: Option<&str>,
+) -> Vec<DeviceItem> {
+    let follow = text(lang, Key::RecFollowWindows);
+    let mut items = vec![DeviceItem::Entry {
+        id: DEVICE_FOLLOW,
+        label: match default {
+            Some(d) => format!("{follow} ({})", menu_text(&d.name)),
+            None => follow.to_owned(),
+        },
+        checked: current.is_none(),
+    }];
+    if !endpoints.is_empty() {
+        items.push(DeviceItem::Separator);
+    }
+    for (i, e) in endpoints.iter().enumerate() {
+        items.push(DeviceItem::Entry {
+            id: DEVICE_FIRST + i,
+            label: menu_text(&e.name),
+            checked: current == Some(e.id.as_str()),
+        });
+    }
+    items
+}
+
+/// `name` as menu text: an ampersand would make the next letter a shortcut.
+fn menu_text(name: &str) -> String {
+    name.replace('&', "&&")
+}
+
+/// The choice a device menu id stands for: `Some(None)` follows Windows,
+/// `Some(Some(id))` is an endpoint of the list the menu was built from, `None`
+/// is no pick.
+fn device_choice(id: usize, endpoints: &[Endpoint]) -> Option<Option<String>> {
+    if id == DEVICE_FOLLOW {
+        return Some(None);
+    }
+    let e = endpoints.get(id.checked_sub(DEVICE_FIRST)?)?;
+    Some(Some(e.id.clone()))
+}
+
+/// The device menu of `source` at the cursor: the endpoints are read as it
+/// opens. `current` is the endpoint id chosen (`None`: follow Windows). Returns
+/// the new choice (`Some(None)` for "Ikuti Windows"), `None` when nothing was
+/// picked. Modal like `show_menu`: the caller must not hold any state borrow.
+pub fn device_menu(
+    hwnd: HWND,
+    source: Source,
+    current: Option<&str>,
+    lang: crate::i18n::Lang,
+) -> Option<Option<String>> {
+    let endpoints = devices::list(source);
+    let default = devices::default_endpoint(source);
+    let items = device_items(lang, default.as_ref(), &endpoints, current);
+    let chosen = unsafe {
+        let menu = CreatePopupMenu().ok()?;
+        for item in items {
+            let _ = match item {
+                DeviceItem::Entry { id, label, checked } => {
+                    let flags = if checked {
+                        MF_STRING | MF_CHECKED
+                    } else {
+                        MF_STRING
+                    };
+                    AppendMenuW(menu, flags, id, &HSTRING::from(label))
+                }
+                DeviceItem::Separator => AppendMenuW(menu, MF_SEPARATOR, 0, None),
+            };
+        }
+        let mut pt = POINT::default();
+        let _ = GetCursorPos(&mut pt);
+        // Without the foreground the menu would not close on a click elsewhere.
+        let _ = SetForegroundWindow(hwnd);
+        let chosen = TrackPopupMenu(
+            menu,
+            TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
+            pt.x,
+            pt.y,
+            None,
+            hwnd,
+            None,
+        );
+        // Lets the menu dismiss properly the next time it opens.
+        let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
+        let _ = DestroyMenu(menu);
+        chosen.0 as usize
+    };
+    device_choice(chosen, &endpoints)
+}
+
 /// Fills `menu` with the Monitor entries as a radio group: the checked one
 /// gets the radio bullet (`CheckMenuRadioItem` sets `MFT_RADIOCHECK` on it),
 /// the entries that cannot be chosen are greyed.
@@ -694,6 +809,74 @@ unsafe fn write_run_value(key: HKEY) -> Result<()> {
 mod tests {
     use super::*;
     use crate::i18n::Lang;
+
+    fn endpoint(id: &str, name: &str) -> Endpoint {
+        Endpoint {
+            id: id.into(),
+            name: name.into(),
+        }
+    }
+
+    fn device_labels(items: &[DeviceItem]) -> Vec<(String, bool)> {
+        items
+            .iter()
+            .map(|i| match i {
+                DeviceItem::Entry { label, checked, .. } => (label.clone(), *checked),
+                DeviceItem::Separator => ("-".into(), false),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_device_menu_leads_with_follow_windows_then_the_endpoints() {
+        let list = [endpoint("a", "Headset (USB)"), endpoint("b", "Mic Q&A")];
+        let default = endpoint("b", "Mic Q&A");
+        let items = device_items(Lang::Id, Some(&default), &list, None);
+        assert_eq!(
+            device_labels(&items),
+            [
+                ("Ikuti Windows (Mic Q&&A)".to_string(), true),
+                ("-".to_string(), false),
+                ("Headset (USB)".to_string(), false),
+                ("Mic Q&&A".to_string(), false),
+            ]
+        );
+        let items = device_items(Lang::En, Some(&default), &list, Some("a"));
+        let labels = device_labels(&items);
+        assert_eq!(labels[0], ("Follow Windows (Mic Q&&A)".to_string(), false));
+        assert_eq!(labels[2], ("Headset (USB)".to_string(), true));
+        assert!(!labels[3].1);
+    }
+
+    #[test]
+    fn the_device_menu_copes_with_no_default_no_endpoints_and_a_missing_choice() {
+        let items = device_items(Lang::En, None, &[], None);
+        assert_eq!(device_labels(&items), [("Follow Windows".to_string(), true)]);
+        // The chosen device is unplugged: no check anywhere.
+        let list = [endpoint("a", "Headset")];
+        let items = device_items(Lang::Id, None, &list, Some("gone"));
+        assert!(device_labels(&items).iter().all(|(_, checked)| !checked));
+    }
+
+    #[test]
+    fn a_device_menu_id_maps_back_to_its_choice() {
+        let list = [endpoint("a", "A"), endpoint("b", "B")];
+        let items = device_items(Lang::En, None, &list, None);
+        let ids: Vec<usize> = items
+            .iter()
+            .filter_map(|i| match i {
+                DeviceItem::Entry { id, .. } => Some(*id),
+                DeviceItem::Separator => None,
+            })
+            .collect();
+        assert_eq!(ids, [1, 2, 3]);
+        assert_eq!(device_choice(1, &list), Some(None));
+        assert_eq!(device_choice(2, &list), Some(Some("a".to_string())));
+        assert_eq!(device_choice(3, &list), Some(Some("b".to_string())));
+        // Nothing chosen (0), or an id past the list.
+        assert_eq!(device_choice(0, &list), None);
+        assert_eq!(device_choice(4, &list), None);
+    }
 
     fn labels(items: &[MenuItem]) -> Vec<&str> {
         items

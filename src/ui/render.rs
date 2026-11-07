@@ -615,6 +615,8 @@ pub struct DevicesView<'a> {
 pub struct RecordView<'a> {
     pub sources: crate::model::RecSources,
     pub recent: &'a [crate::model::RecEntry],
+    /// The names of the devices the sources use, `[mic, system]`.
+    pub devices: &'a [String; 2],
 }
 
 /// What the quick search shows.

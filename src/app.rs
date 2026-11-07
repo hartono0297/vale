@@ -203,6 +203,9 @@ use shot::{ShotSetting, Shots};
 const WM_APP_EVENT: u32 = WM_APP + 1;
 /// Posted once the user has answered the notification-access prompt.
 const WM_APP_ACCESS: u32 = WM_APP + 3;
+/// Opens a source's device menu from the main loop, outside the `APP` borrow
+/// (`wparam`: 0 mic, 1 PC audio).
+const WM_APP_REC_DEVICE: u32 = WM_APP + 80;
 /// These live in the Controls feature of `windows`; the values are fixed by Win32.
 const WM_MOUSEHOVER: u32 = 0x02A1;
 const WM_MOUSELEAVE: u32 = 0x02A3;
@@ -2280,6 +2283,7 @@ impl App {
             Effect::RecToggle => self.rec_toggle(),
             Effect::RecPause => self.rec_pause(),
             Effect::RecMute(source) => self.rec_toggle_mute(source),
+            Effect::RecDevice(source) => self.rec_open_device_menu(source),
             Effect::RecSources(sources) => self.rec_set_sources(sources),
             Effect::RecReveal(path) => self.rec_reveal(path),
             Effect::RecOpenFolder => self.rec_open_folder(),
@@ -6387,6 +6391,7 @@ impl App {
                 self.save_config();
             }
             SettingsAction::RecSources(v) => self.rec_set_sources(v),
+            SettingsAction::RecDevice(source, id) => self.rec_set_device(source, id),
             SettingsAction::RecFolder(dir) => self.rec_set_folder(dir),
             // The thumb moves live; only the release is saved.
             SettingsAction::ArrangeGap { gap, commit } => {
@@ -6727,6 +6732,7 @@ impl App {
             record: RecordView {
                 sources: self.rec_sources,
                 recent: state.rec_recent(),
+                devices: self.rec.devices(),
             },
             devices: DevicesView {
                 list: &self.devices.list,
@@ -8237,6 +8243,29 @@ fn open_note_card_menu(hwnd: HWND, id: &str) {
     }
 }
 
+/// The device menu of `source` (from the Rekam page): the endpoints are
+/// listed as it opens, and a pick is saved and, while recording, applied at
+/// once. Modal like `open_menu`, so the app is borrowed only before and after.
+fn open_rec_device_menu(hwnd: HWND, source: crate::recorder::Source) {
+    if MENU_OPEN.get() {
+        return;
+    }
+    let Some((current, lang)) = with_app(|app| {
+        (
+            app.config.recording.device(source).map(str::to_owned),
+            app.config.language,
+        )
+    }) else {
+        return;
+    };
+    MENU_OPEN.set(true);
+    let pick = tray::device_menu(hwnd, source, current.as_deref(), lang);
+    MENU_OPEN.set(false);
+    if let Some(choice) = pick {
+        with_app(|app| app.rec_set_device(source, choice));
+    }
+}
+
 /// Shows the tray menu and runs the choice. The menu's modal loop dispatches
 /// timer and mouse messages to `wnd_proc`, so no `APP` borrow is held across it.
 fn open_menu(hwnd: HWND) {
@@ -8990,6 +9019,15 @@ unsafe extern "system" fn wnd_proc(
         }
         WM_APP_ACCESS => {
             on_access_answered();
+            LRESULT(0)
+        }
+        WM_APP_REC_DEVICE => {
+            let source = if wparam.0 == 0 {
+                crate::recorder::Source::Mic
+            } else {
+                crate::recorder::Source::System
+            };
+            open_rec_device_menu(hwnd, source);
             LRESULT(0)
         }
         WM_APP_SETTINGS_ACTION => {

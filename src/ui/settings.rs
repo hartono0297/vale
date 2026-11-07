@@ -86,6 +86,7 @@ use crate::claude::install::{self, InstallOutcome, UninstallOutcome};
 use crate::cli::Shell;
 use crate::cli_folders::CliStart;
 use crate::model::RecSources;
+use crate::recorder::Source;
 use crate::recorder::prefs::RecordingPrefs;
 use crate::config::{
     AfterCapture, ClipboardSettings, Config, NotchFill, NotchMonitor, NotifSettings, OpenMode,
@@ -190,6 +191,8 @@ pub enum Action {
     /// back to the default).
     RecSources(RecSources),
     RecFolder(Option<std::path::PathBuf>),
+    /// The device of a source: an endpoint id, `None` to follow Windows.
+    RecDevice(Source, Option<String>),
     /// Settings → Tombol pintas: a row's new combo (`None`: off), every row
     /// back to its default, and the recorder starting (`true`: the island
     /// lets go of its hotkeys) or ending (`false`: it takes them again). A
@@ -729,6 +732,9 @@ struct Settings {
     drag: Option<Drag>,
     /// The template editor (or the rename field) while it is open.
     arrange_edit: Option<ArrangeEdit>,
+    /// What the Rekaman card's device rows show (`rec_device_labels`), read
+    /// when the window opens and when a choice or the language changes.
+    rec_devices: [String; 2],
     /// The hotkey row being recorded, and why the last combo was refused
     /// (shown under that row until the next recording or a section change).
     recording: Option<HotkeyId>,
@@ -777,6 +783,24 @@ fn window_text(hwnd: HWND) -> String {
 /// `0xRRGGBB` as GDI's `0x00BBGGRR`.
 const fn colorref(rgb: u32) -> COLORREF {
     COLORREF((rgb >> 16) & 0xFF | (rgb & 0xFF00) | (rgb & 0xFF) << 16)
+}
+
+/// What the Rekaman card's device rows show for the choices in `prefs`:
+/// each name is read from Windows now (a few calls, when the window opens or
+/// a choice changes).
+fn rec_device_labels(prefs: &RecordingPrefs, lang: Lang) -> [String; 2] {
+    use crate::recorder::devices;
+    [Source::Mic, Source::System].map(|source| {
+        let chosen = prefs.device(source);
+        let name = chosen.and_then(devices::name_of);
+        let default = devices::default_endpoint(source).map(|d| d.name);
+        crate::ui::settings_layout::rec_device_label(
+            lang,
+            chosen.is_some(),
+            name.as_deref(),
+            default.as_deref(),
+        )
+    })
 }
 
 fn post_action(owner: HWND, action: Action) {
@@ -1150,6 +1174,7 @@ pub fn open(owner: HWND, model: Model, section: Option<Section>) -> Result<HWND>
     ];
     // Someone with their own Client ID sees it straight away.
     let google_advanced = !field_text[0].trim().is_empty();
+    let rec_devices = rec_device_labels(&model.recording, model.lang);
     let state = Settings {
         hwnd,
         owner,
@@ -1184,6 +1209,7 @@ pub fn open(owner: HWND, model: Model, section: Option<Section>) -> Result<HWND>
         tile_note: None,
         drag: None,
         arrange_edit: None,
+        rec_devices,
         recording: None,
         hotkey_error: None,
         rec_hook: None,
@@ -1540,6 +1566,7 @@ impl Settings {
             open_mode: m.open_mode,
             device_notices: m.device_notices,
             recording: m.recording.clone(),
+            rec_devices: self.rec_devices.clone(),
             hotkeys: m.hotkeys,
             hotkey_failed: m.hotkey_failed,
             widgets: m.widgets,
@@ -1689,6 +1716,12 @@ impl Settings {
         let now = Instant::now();
         let old = std::mem::replace(&mut self.model, model);
         let new = &self.model;
+        if old.recording.mic_device != new.recording.mic_device
+            || old.recording.system_device != new.recording.system_device
+            || old.lang != new.lang
+        {
+            self.rec_devices = rec_device_labels(&new.recording, new.lang);
+        }
         let index = |group: Group, m: &Model| -> f32 {
             match group {
                 Group::Style => usize::from(m.style == Style::Notch) as f32,
@@ -2344,6 +2377,11 @@ impl Settings {
             Hit::RecSources(_) => Vec::new(),
             Hit::RecFolderOpen => vec![After::OpenFolder(m.recording.dir())],
             Hit::RecFolderChange => vec![After::PickRecFolder],
+            Hit::RecDevice(source) => vec![After::PickRecDevice(
+                source,
+                m.recording.device(source).map(str::to_owned),
+                m.lang,
+            )],
             // A field: the first click records, the next on the same field
             // cancels.
             Hit::HotkeyField(id) => {
@@ -3006,6 +3044,9 @@ enum After {
     OpenFolder(std::path::PathBuf),
     /// Rekaman's "Ganti": the folder dialog, then the choice is posted.
     PickRecFolder,
+    /// A device row's "Ganti": the device menu of that source at the cursor
+    /// (`current`: the endpoint id chosen), then the pick is posted.
+    PickRecDevice(Source, Option<String>, Lang),
     /// The own-shortcut form's fields go back to empty.
     ResetForm,
     /// The Target field's hint follows the kind chosen.
@@ -3046,6 +3087,13 @@ fn run_after(hwnd: HWND, owner: HWND, after: Vec<After>) {
             After::PickRecFolder => {
                 if let Some(dir) = pick_path(hwnd, CustomKind::Folder) {
                     post_action(owner, Action::RecFolder(Some(dir)));
+                }
+            }
+            After::PickRecDevice(source, current, lang) => {
+                if let Some(choice) =
+                    crate::ui::tray::device_menu(hwnd, source, current.as_deref(), lang)
+                {
+                    post_action(owner, Action::RecDevice(source, choice));
                 }
             }
             After::OpenDataFolder => {
@@ -4117,6 +4165,7 @@ pub fn run_demo(args: &[String]) {
             Action::DeviceNotices(v) => m.device_notices = v,
             Action::RecSources(v) => m.recording.sources = v,
             Action::RecFolder(v) => m.recording.folder = v,
+            Action::RecDevice(source, id) => m.recording.set_device(source, id),
             Action::Hotkey(id, value) => {
                 // What the island does: checked again, then set.
                 let fine = value.is_none_or(|hk| {

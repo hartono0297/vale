@@ -796,6 +796,7 @@ impl Renderer {
                     strip,
                     &head,
                     frame.rec.map(|r| r.sources),
+                    frame.record.sources,
                     frame.record.recent.len(),
                 ))
             }
@@ -1015,6 +1016,8 @@ impl Renderer {
                 } else {
                     self.rec_meter(cell.meter, level, tint);
                 }
+                let name = &frame.record.devices[cell.source.index()];
+                self.rec_device_name(name, cell.device, None);
             }
         } else {
             let on = frame.record.sources;
@@ -1033,6 +1036,15 @@ impl Renderer {
                 };
                 let ink = if lit { p.text } else { p.secondary };
                 self.text_colored(text(lang, key), &self.fonts.small_center, r, ink, 1.0);
+            }
+            // Under it, the device of each chosen source.
+            for &(source, line) in &l.idle_devices {
+                let name = &frame.record.devices[source.index()];
+                let glyph = match source {
+                    Source::Mic => Icon::Mic,
+                    Source::System => Icon::Volume,
+                };
+                self.rec_device_name(name, line, Some(glyph));
             }
         }
 
@@ -1084,6 +1096,59 @@ impl Renderer {
             let open = text(lang, Key::Open);
             self.text_colored(open, &self.fonts.small_center, row.pill, p.text, 1.0);
         }
+    }
+
+    /// A source's device name in `area`, trimmed with an ellipsis to leave
+    /// room for the down chevron that follows it (it says "click to change");
+    /// `glyph` goes first when given. Nothing when the name is not known.
+    fn rec_device_name(&self, name: &str, area: Rect, glyph: Option<Icon>) {
+        let p = self.palette;
+        let mut x = area.x;
+        if let Some(glyph) = glyph {
+            let icon = Rect {
+                x,
+                w: REC_DEVICE_GLYPH,
+                ..area
+            };
+            self.icon_colored(glyph, icon, REC_DEVICE_GLYPH, p.secondary, 1.0, None);
+            x += REC_DEVICE_GLYPH + REC_LINK_GAP;
+        }
+        if name.is_empty() {
+            return;
+        }
+        let room = (area.right() - x - REC_CHEVRON - REC_LINK_GAP).max(0.0);
+        let font = &self.fonts.small;
+        let shown = self.fit_text(name, font, room);
+        let w = self.text_width(&shown, font).ceil() + 1.0;
+        let label = Rect { x, w, ..area };
+        self.text_colored(&shown, font, label, p.secondary, 1.0);
+        let chevron = Rect {
+            x: x + w + REC_LINK_GAP,
+            w: REC_CHEVRON,
+            ..area
+        };
+        self.icon_colored(Icon::ChevD, chevron, REC_CHEVRON, p.secondary, 0.8, None);
+    }
+
+    /// `text` as it is when it fits `width` in `font`, else cut with an
+    /// ellipsis at the last character that does.
+    fn fit_text(&self, text: &str, font: &IDWriteTextFormat, width: f32) -> String {
+        if self.text_width(text, font) <= width {
+            return text.to_owned();
+        }
+        let chars: Vec<char> = text.chars().collect();
+        let (mut lo, mut hi) = (0, chars.len());
+        while lo < hi {
+            let mid = (lo + hi).div_ceil(2);
+            let cut: String = chars[..mid].iter().collect::<String>() + "\u{2026}";
+            if self.text_width(&cut, font) <= width {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        let head: String = chars[..lo].iter().collect();
+        format!("{}\u{2026}", head.trim_end())
     }
 
     /// The Devices page's header widths: the title, the count chip and
@@ -5244,6 +5309,9 @@ const REC_MIC_TINT: u32 = 0xEBCFB8;
 /// view, and the icon in the Rekam page's mute button.
 const REC_MUTED_GLYPH: f32 = 14.0;
 const REC_MUTE_GLYPH: f32 = 16.0;
+/// A device line on the Rekam page: its source glyph and its chevron.
+const REC_DEVICE_GLYPH: f32 = 12.0;
+const REC_CHEVRON: f32 = 10.0;
 
 /// The recorded time as the REC view writes it: "mm:ss", and "h:mm:ss" from
 /// the first hour. Whole seconds, rounded down.

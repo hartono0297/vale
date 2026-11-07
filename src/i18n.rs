@@ -630,6 +630,14 @@ keys! {
     RecSettingsOpen => "Buka", "Open";
     RecSettingsChange => "Ganti", "Change";
     RecSettingsPickTitle => "Pilih folder rekaman", "Choose the recordings folder";
+    RecDeviceFrom => "Suara PC dari", "PC audio from";
+    RecFollowWindows => "Ikuti Windows", "Follow Windows";
+    RecDeviceGone => "Perangkat tidak ada", "Device not found";
+    RecMicSwitched => "Mic pindah", "Mic switched";
+    RecSystemSwitched => "Suara PC pindah", "PC audio switched";
+    RecMicMissing => "Mic pilihan tidak ada", "Chosen mic not found";
+    RecSystemMissing => "Suara PC pilihan tidak ada", "Chosen PC audio not found";
+    RecUsing => "Pakai", "Using";
     RecEmpty => "Belum ada rekaman", "No recordings yet";
     ArrangeSkip => "Lewati ubin", "Skip tile";
     ArrangeSaved => "Tersimpan", "Saved";

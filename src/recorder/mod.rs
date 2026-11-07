@@ -23,6 +23,7 @@
 //! ends and the writer finishes by itself ([`RecEvent::NoInput`]).
 
 pub mod capture;
+pub mod devices;
 pub mod encode;
 pub mod level;
 pub mod naming;
@@ -91,6 +92,9 @@ pub struct RecOptions {
     pub title: String,
     /// The app that was using the mic, for the sidecar.
     pub app: Option<String>,
+    /// The endpoint each source starts on, `[mic, system]` (`None`: follow
+    /// the Windows default).
+    pub devices: [Option<String>; 2],
 }
 
 /// A finished recording.
@@ -118,6 +122,15 @@ pub enum RecEvent {
     /// follows, `Failed(NoAudio)` when nothing came in, or nothing when too
     /// little was recorded to keep.
     NoInput,
+    /// `source` moved to another device on its own: `name` is the one it
+    /// records from now. `fell_back` says the device the user chose was
+    /// missing and the Windows default took over; otherwise the default
+    /// itself changed. A switch the user asked for is not reported.
+    DeviceSwitched {
+        source: Source,
+        name: String,
+        fell_back: bool,
+    },
 }
 
 /// Why a recording failed, in the terms the island words it in.
@@ -501,11 +514,23 @@ impl Placer {
 /// A running capture, as the recorder sees it (a fake one in tests).
 trait Feed: Send {
     fn stop(self: Box<Self>);
+    /// Switches `source` to the endpoint `id` (`None`: the Windows default).
+    fn set_device(&self, source: Source, id: Option<String>);
+    /// The names of the devices in use, `[mic, system]`.
+    fn device_names(&self) -> [String; 2];
 }
 
 impl Feed for Capture {
     fn stop(self: Box<Self>) {
         Capture::stop(*self);
+    }
+
+    fn set_device(&self, source: Source, id: Option<String>) {
+        Capture::set_device(self, source, id);
+    }
+
+    fn device_names(&self) -> [String; 2] {
+        Capture::device_names(self)
     }
 }
 
@@ -519,6 +544,9 @@ enum Msg {
     Stop(i64),
     /// From the capture thread: a source stopped (`true`: the mic was refused).
     Lost(Source, bool),
+    /// From the capture thread: a source moved to the device named, because
+    /// of a fall back (`true`) or a new Windows default.
+    Switched(Source, String, bool),
 }
 
 /// Which sources are muted, shared between the island (which flips them) and
@@ -576,6 +604,10 @@ impl AudioSink for Sink {
         let denied = matches!(err, CaptureError::MicDenied);
         let _ = self.tx.send(Msg::Lost(source, denied));
     }
+
+    fn switched(&mut self, source: Source, name: &str, fell_back: bool) {
+        let _ = self.tx.send(Msg::Switched(source, name.to_owned(), fell_back));
+    }
 }
 
 fn lock(placer: &Mutex<Placer>) -> MutexGuard<'_, Placer> {
@@ -611,8 +643,9 @@ impl Recorder {
         opts: RecOptions,
         events: Box<dyn Fn(RecEvent) + Send>,
     ) -> Result<Recorder, RecError> {
+        let choices = Arc::new(Mutex::new(opts.devices.clone()));
         Self::start_with(opts, events, |sources, sink| {
-            Capture::start(sources, sink).map(|c| Box::new(c) as Box<dyn Feed>)
+            Capture::start(sources, choices, sink).map(|c| Box::new(c) as Box<dyn Feed>)
         })
     }
 
@@ -781,6 +814,21 @@ impl Recorder {
         self.muted.set(source, on);
     }
 
+    /// Records `source` from the endpoint `id` from now on (`None`: the
+    /// Windows default, followed). The switch happens at once, with a gap of
+    /// about 100 ms. A source that is not recorded is unaffected. Never waits.
+    pub fn set_device(&self, source: Source, id: Option<String>) {
+        if let Some(feed) = &self.feed {
+            feed.set_device(source, id);
+        }
+    }
+
+    /// The names of the devices the sources record from now, `[mic, system]`
+    /// (empty for a source that is not recorded). Never waits on a device.
+    pub fn device_names(&self) -> [String; 2] {
+        self.feed.as_ref().map(|f| f.device_names()).unwrap_or_default()
+    }
+
     /// Which sources are muted, `[mic, system]`.
     pub fn muted(&self) -> [bool; 2] {
         [self.muted.get(Source::Mic), self.muted.get(Source::System)]
@@ -915,10 +963,14 @@ impl Writing<'_> {
         // Wait for the capture to start (or not). A source the capture lost
         // while it opened is told once the recording runs.
         let mut early = Vec::new();
+        let mut switched = Vec::new();
         loop {
             match rx.recv() {
                 Ok(Msg::Go) => break,
                 Ok(Msg::Lost(source, denied)) => early.push((source, denied)),
+                Ok(Msg::Switched(source, name, fell_back)) => {
+                    switched.push((source, name, fell_back));
+                }
                 Ok(Msg::Abort | Msg::Stop(_)) | Err(_) => {
                     self.discard();
                     return Err(None);
@@ -929,6 +981,13 @@ impl Writing<'_> {
         for (source, denied) in early {
             no_input |= self.lose(source, denied, events);
         }
+        for (source, name, fell_back) in switched {
+            events(RecEvent::DeviceSwitched {
+                source,
+                name,
+                fell_back,
+            });
+        }
         let mut next = Instant::now() + TICK;
         let stop_frame = loop {
             if no_input {
@@ -938,6 +997,13 @@ impl Writing<'_> {
             }
             match rx.recv_timeout(next.saturating_duration_since(Instant::now())) {
                 Ok(Msg::Lost(source, denied)) => no_input = self.lose(source, denied, events),
+                Ok(Msg::Switched(source, name, fell_back)) => {
+                    events(RecEvent::DeviceSwitched {
+                        source,
+                        name,
+                        fell_back,
+                    });
+                }
                 Ok(Msg::Stop(frame)) => break frame,
                 Ok(Msg::Go | Msg::Abort) => {}
                 Err(RecvTimeoutError::Timeout) => {
@@ -1127,6 +1193,7 @@ pub fn record_test(args: &[String]) -> i32 {
         dir,
         title: "record-test".into(),
         app: None,
+        devices: [None, None],
     };
     let rec = match Recorder::start(opts, events) {
         Ok(r) => r,
@@ -1147,6 +1214,11 @@ pub fn record_test(args: &[String]) -> i32 {
         RecEvent::MicDenied => println!("lost: microphone (denied by Windows)"),
         RecEvent::Failed(f) => println!("failed: {f:?}"),
         RecEvent::NoInput => println!("stopped: no source left"),
+        RecEvent::DeviceSwitched {
+            source,
+            name,
+            fell_back,
+        } => println!("switched: {source} to {name} (fell back: {fell_back})"),
         RecEvent::Saved { .. } => {}
     };
     let end = Instant::now() + Duration::from_secs_f64(secs);
@@ -1793,6 +1865,12 @@ pub(super) mod tests {
                 t.join().expect("fake capture thread");
             }
         }
+
+        fn set_device(&self, _: Source, _: Option<String>) {}
+
+        fn device_names(&self) -> [String; 2] {
+            ["Fake mic".into(), "Fake speakers".into()]
+        }
     }
 
     /// What a made-up capture loses.
@@ -1876,6 +1954,7 @@ pub(super) mod tests {
             dir: dir.to_path_buf(),
             title: "Zoom".into(),
             app: Some("Zoom.exe".into()),
+            devices: [None, None],
         }
     }
 
@@ -2177,6 +2256,64 @@ pub(super) mod tests {
             fake_open(s, sink, Lose::Nothing)
         });
         assert!(matches!(r, Err(RecError::NoSources)));
+    }
+
+    /// A capture that notes the devices asked for.
+    struct Spy {
+        inner: Box<dyn Feed>,
+        picked: Arc<Mutex<Vec<(Source, Option<String>)>>>,
+    }
+
+    impl Feed for Spy {
+        fn stop(self: Box<Self>) {
+            self.inner.stop();
+        }
+
+        fn set_device(&self, source: Source, id: Option<String>) {
+            self.picked.lock().unwrap().push((source, id));
+        }
+
+        fn device_names(&self) -> [String; 2] {
+            self.inner.device_names()
+        }
+    }
+
+    #[test]
+    fn a_picked_device_reaches_the_capture_and_a_switch_is_reported() {
+        let _one = session();
+        com();
+        let dir = temp_dir("rec-switch");
+        let (events, rx) = collect();
+        let picked = Arc::new(Mutex::new(Vec::new()));
+        let spy = Arc::clone(&picked);
+        let rec = Recorder::start_with(opts(&dir, Sources::BOTH), events, move |s, mut sink| {
+            // As `Capture` does when the chosen mic is missing at the start.
+            sink.switched(Source::Mic, "Speakers mic", true);
+            let inner = fake_open(s, sink, Lose::Nothing)?;
+            Ok(Box::new(Spy { inner, picked: spy }) as Box<dyn Feed>)
+        })
+        .expect("start");
+        assert_eq!(rec.device_names(), ["Fake mic", "Fake speakers"]);
+        rec.set_device(Source::System, Some("{id}".into()));
+        rec.set_device(Source::Mic, None);
+        std::thread::sleep(Duration::from_millis(900));
+        assert_eq!(
+            *picked.lock().unwrap(),
+            [(Source::System, Some("{id}".to_string())), (Source::Mic, None)]
+        );
+        let result = rec.stop().expect("saved");
+        assert!(result.duration > Duration::ZERO);
+        let events: Vec<RecEvent> = rx.try_iter().collect();
+        assert_eq!(
+            events.first(),
+            Some(&RecEvent::DeviceSwitched {
+                source: Source::Mic,
+                name: "Speakers mic".into(),
+                fell_back: true,
+            })
+        );
+        assert!(matches!(events.last(), Some(RecEvent::Saved { .. })));
+        assert_eq!(rec_threads(), 0);
     }
 
     #[test]
