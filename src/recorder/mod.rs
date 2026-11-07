@@ -149,8 +149,23 @@ pub enum RecError {
     Rename { part: PathBuf, err: std::io::Error },
     /// COM did not start on the writer thread.
     Com(windows::core::Error),
+    /// Windows refused to make the folder, or a file in it (see `refused`).
+    Refused(PathBuf),
     /// A thread could not start, panicked or ended early.
     Thread(String),
+}
+
+/// A "file or path not found" (os error 2 or 3) while making a folder or a
+/// file where the drive (or the folder) does exist: Controlled folder access
+/// refuses that way, not with "access denied". Where the drive itself is
+/// gone, it is a folder that is gone.
+fn refused(code: Option<u32>, there: bool) -> bool {
+    matches!(code, Some(2 | 3)) && there
+}
+
+/// The drive or share `dir` lives on is there.
+fn root_exists(dir: &Path) -> bool {
+    dir.ancestors().last().is_some_and(Path::exists)
 }
 
 /// `HRESULT_FROM_WIN32` codes carry the Win32 error in their low word.
@@ -185,7 +200,8 @@ impl RecError {
     /// `PermissionDenied` (os error 5), or the encoder's `E_ACCESSDENIED`
     /// (0x80070005). Controlled folder access refuses this way.
     pub fn is_access_denied(&self) -> bool {
-        matches!(self, Self::Io(e) if e.kind() == std::io::ErrorKind::PermissionDenied)
+        matches!(self, Self::Refused(_))
+            || matches!(self, Self::Io(e) if e.kind() == std::io::ErrorKind::PermissionDenied)
             || matches!(self, Self::Io(_) | Self::Encode(EncodeError::Io(_)) if self.win32() == Some(5))
     }
 
@@ -228,6 +244,7 @@ impl fmt::Display for RecError {
                 write!(f, "{} could not be renamed: {err}", part.display())
             }
             Self::Com(e) => write!(f, "COM did not start on the writer thread: {e}"),
+            Self::Refused(dir) => write!(f, "Windows refused to write in {}", dir.display()),
             Self::Thread(s) => f.write_str(s),
         }
     }
@@ -566,7 +583,14 @@ impl Recorder {
         if !opts.sources.any() {
             return Err(RecError::NoSources);
         }
-        std::fs::create_dir_all(&opts.dir).map_err(RecError::Io)?;
+        if let Err(e) = std::fs::create_dir_all(&opts.dir) {
+            let code = e.raw_os_error().and_then(|c| u32::try_from(c).ok());
+            return Err(if refused(code, root_exists(&opts.dir)) {
+                RecError::Refused(opts.dir.clone())
+            } else {
+                RecError::Io(e)
+            });
+        }
         let started_at = chrono::Local::now();
         let stem = naming::file_stem(started_at.naive_local(), &opts.title);
         let stem = naming::unique_stem(&opts.dir, &stem, Path::exists);
@@ -607,7 +631,15 @@ impl Recorder {
             Ok(Ok(c)) => c,
             Ok(Err(e)) => {
                 let _ = writer.join();
-                return Err(e);
+                // The folder is there, yet the file could not be made in it.
+                return Err(match e {
+                    RecError::Encode(EncodeError::Io(ref x))
+                        if refused(win32_of_hresult(x.code()), opts.dir.is_dir()) =>
+                    {
+                        RecError::Refused(opts.dir.clone())
+                    }
+                    e => e,
+                });
             }
             Err(_) => {
                 return Err(match writer.join() {
@@ -1555,6 +1587,22 @@ pub(super) mod tests {
         assert_eq!(RecError::NoSources.to_string(), "no source selected");
         assert!(RecError::Capture(CaptureError::MicDenied).is_mic_denied());
         assert!(!RecError::NoSources.is_mic_denied());
+    }
+
+    #[test]
+    fn a_not_found_under_a_root_or_folder_that_exists_is_a_refusal() {
+        // Controlled folder access answers a new folder or file in
+        // Documents with os error 2, although Documents is there.
+        assert!(refused(Some(2), true));
+        assert!(refused(Some(3), true));
+        assert!(!refused(Some(2), false), "the drive or share is gone");
+        assert!(!refused(Some(112), true));
+        assert!(!refused(None, true));
+        let e = RecError::Refused(PathBuf::from(r"C:\Users\a\Documents\Vale\Rekaman"));
+        assert!(e.is_access_denied());
+        assert_eq!(e.failure(), Failure::FolderBlocked);
+        assert!(root_exists(Path::new(env!("CARGO_MANIFEST_DIR"))));
+        assert!(!root_exists(Path::new(r"\\no-such-server-vale\share\x")));
     }
 
     #[test]
