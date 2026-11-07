@@ -74,7 +74,7 @@ use crate::ui::panel_layout::{
     cli_layout, cli_suggestions, clipboard_layout, device_shapes, devices_layout,
     media_hits_for, media_panel_layout, media_progress_layout, mixer_layout, mole_layout, mole_log_rows,
     mole_log_skip, notes_layout, notif_layout, page_dots, pomodoro_compact_layout,
-    pomodoro_compact_layout_robot, pomodoro_layout, record_compact_layout, rec_meter_heights, record_layout, RecordHead, RecordLayout, regions, REC_BAR_GAP, REC_BAR_W, reminders_layout, search_layout,
+    pomodoro_compact_layout_robot, pomodoro_layout, record_compact_layout, rec_meter_heights, rec_mute_regions, record_layout, RecordHead, RecordLayout, regions, REC_BAR_GAP, REC_BAR_W, reminders_layout, search_layout,
     settings_button, shelf_card_layout, shelf_layout, shelf_phone_tag, shortcuts_layout,
     system_layout, tile_parts, update_strip_parts, volume_hud_layout, waiting_strip,
 };
@@ -4909,21 +4909,54 @@ impl Renderer {
             if rec.sources.system { l.mic } else { l.system },
             l.system,
         );
+        let hot = |source| rec.hot == Some(source);
         if rec.sources.mic {
-            if rec.muted[0] {
+            if hot(Source::Mic) {
+                self.rec_mute_pill(mic_at, Icon::Mic, Icon::MicOff, REC_MIC_TINT, rec.muted[0]);
+            } else if rec.muted[0] {
                 self.rec_muted_glyph(mic_at, Icon::MicOff);
             } else {
                 self.rec_meter(mic_at, rec.mic, REC_MIC_TINT);
             }
         }
         if rec.sources.system {
-            if rec.muted[1] {
+            if hot(Source::System) {
+                let sage = self.palette.sage;
+                self.rec_mute_pill(system_at, Icon::Volume, Icon::VolumeMute, sage, rec.muted[1]);
+            } else if rec.muted[1] {
                 self.rec_muted_glyph(system_at, Icon::VolumeMute);
             } else {
                 self.rec_meter(system_at, rec.system, self.palette.sage);
             }
         }
+        // The groups take the click, and the pointer resting on one opens no
+        // panel: registered here, only because they are drawn.
+        self.regions
+            .regions
+            .extend(rec_mute_regions(shape, &l, rec.sources));
         Ok(())
+    }
+
+    /// A hot level group: a soft pill with the source's icon in the place of
+    /// its bars (`tint` on `raised_hi`); muted, the crossed icon in
+    /// `REC_RED` on a dark red pill.
+    fn rec_mute_pill(&self, area: Rect, open: Icon, crossed: Icon, tint: u32, muted: bool) {
+        let p = self.palette;
+        let (icon, ink, fill) = if muted {
+            (crossed, theme::REC_RED, mix(p.raised, theme::REC_RED, 0.25))
+        } else {
+            (open, tint, p.raised_hi)
+        };
+        let h = REC_MUTE_PILL_H.min(area.h + 6.0);
+        let pill = Rect {
+            x: area.x + (area.w - REC_MUTE_PILL_W) / 2.0,
+            y: area.y + (area.h - h) / 2.0,
+            w: REC_MUTE_PILL_W,
+            h,
+        };
+        self.set_color(fill, 1.0);
+        self.fill_round(pill, REC_MUTE_PILL_R);
+        self.icon_colored(icon, pill, REC_MUTED_GLYPH, ink, 1.0, None);
     }
 
     /// A muted source's crossed glyph in the place of its meter.
@@ -5308,6 +5341,10 @@ const REC_MIC_TINT: u32 = 0xEBCFB8;
 /// The crossed glyph that stands in for a muted source's meter in the REC
 /// view, and the icon in the Rekam page's mute button.
 const REC_MUTED_GLYPH: f32 = 14.0;
+/// The hot level group's pill on the closed REC view: its size and corner.
+const REC_MUTE_PILL_W: f32 = 24.0;
+const REC_MUTE_PILL_H: f32 = 22.0;
+const REC_MUTE_PILL_R: f32 = 8.0;
 const REC_MUTE_GLYPH: f32 = 16.0;
 /// A device line on the Rekam page: its source glyph and its chevron.
 const REC_DEVICE_GLYPH: f32 = 12.0;

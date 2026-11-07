@@ -214,6 +214,7 @@ use crate::model::{
 };
 use crate::mole::{CleanRun, GroupSize, MoleOpts, MoleReport, PreviewSummary};
 use crate::notes::Note;
+use crate::recorder::Source;
 use crate::notif::{NotifEntry, logo_key};
 use crate::pomodoro::{PomoSettings, Pomodoro};
 use crate::reminders::{Reminder, Repeat};
@@ -464,6 +465,8 @@ struct DemoRec {
     system_level: f32,
     /// Which sources are muted, `[mic, system]`.
     muted: [bool; 2],
+    /// The source whose level group the pointer is on.
+    hot: Option<Source>,
 }
 
 /// One notice of each badge style.
@@ -683,8 +686,26 @@ const fn rec_scene(
             mic_level: 0.55,
             system_level: 0.8,
             muted,
+            hot: None,
         }),
         ..BASE
+    }
+}
+
+/// The REC view with the pointer on `hot`'s level group: its pill shows.
+const fn rec_hot_scene(name: &'static str, muted: [bool; 2], hot: Source) -> Scene {
+    Scene {
+        rec: Some(DemoRec {
+            secs: 12 * 60 + 48,
+            paused: false,
+            mic: true,
+            system: true,
+            mic_level: 0.55,
+            system_level: 0.8,
+            muted,
+            hot: Some(hot),
+        }),
+        ..rec_scene(name, 0, false, true, true, muted)
     }
 }
 
@@ -880,7 +901,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 179] = [
+const SCENES: [Scene; 181] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -901,6 +922,10 @@ const SCENES: [Scene; 179] = [
     rec_scene("rec-long", 3600 + 2 * 60 + 7, false, true, true, [false; 2]),
     // The mic muted: its meter gives way to a crossed mic.
     rec_scene("rec-muted", 12 * 60 + 48, false, true, true, [true, false]),
+    // The pointer on a level group of the closed notch: the source's icon on
+    // a soft pill in the place of the bars (muted: crossed, on dark red).
+    rec_hot_scene("rec-hover-mic", [false; 2], Source::Mic),
+    rec_hot_scene("rec-hover-mic-muted", [true, false], Source::Mic),
     // The Rekam page (section 2): recording both sources, and idle with the
     // last three recordings.
     Scene {
@@ -914,6 +939,7 @@ const SCENES: [Scene; 179] = [
             mic_level: 0.0,
             system_level: 0.0,
             muted: [false; 2],
+            hot: None,
         }),
         ..BASE
     },
@@ -929,6 +955,7 @@ const SCENES: [Scene; 179] = [
             mic_level: 0.0,
             system_level: 0.7,
             muted: [true, false],
+            hot: None,
         }),
         ..BASE
     },
@@ -1884,7 +1911,7 @@ fn demo_arrange_overlays(
 }
 
 /// `--demo-record`: only the recording scenes (`rec-both`, `rec-mic`,
-/// `rec-paused`, `rec-long`, `rec-muted`), Pill then Notch; `DI_DEMO_STEP` picks one by
+/// `rec-paused`, `rec-long`, `rec-muted`, `rec-hover-mic`), Pill then Notch; `DI_DEMO_STEP` picks one by
 /// number or name as in `--demo`. Made-up times and levels: no microphone is
 /// opened and nothing is recorded.
 pub fn run_record() {
@@ -2305,6 +2332,7 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                     mic: r.mic_level,
                     system: r.system_level,
                     muted: r.muted,
+                    hot: r.hot,
                 }),
                 now,
                 today,

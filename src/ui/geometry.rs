@@ -3970,6 +3970,35 @@ mod tests {
     }
 
     #[test]
+    fn the_rec_level_groups_hit_test_apart_from_the_clock_and_the_dot() {
+        use super::super::panel_layout::{record_compact_layout, rec_mute_regions};
+        use crate::model::RecSources;
+        use crate::recorder::Source;
+        for style in [Style::Pill, Style::Notch] {
+            for robot in [false, true] {
+                let s = shape_with_robot_sized(style, NotchSize::DEFAULT, ShapeKind::RecordCompact, robot);
+                let l = record_compact_layout(s, robot);
+                let both = RecSources { mic: true, system: true };
+                let regions = HitRegions {
+                    shape: Some((style, s)),
+                    regions: rec_mute_regions(s, &l, both),
+                    ..HitRegions::default()
+                };
+                let tag = format!("{style:?} robot={robot}");
+                let cy = s.y + s.h / 2.0;
+                let mic = regions.hit(l.mic.x + l.mic.w / 2.0, cy);
+                let system = regions.hit(l.system.x + l.system.w / 2.0, cy);
+                assert_eq!(mic, Some(Hit::RecMuteCompact(Source::Mic)), "{tag}");
+                assert_eq!(system, Some(Hit::RecMuteCompact(Source::System)), "{tag}");
+                // The clock and the dot are the body.
+                let clock = regions.hit(l.time.x + 4.0, cy);
+                assert_eq!(clock, Some(Hit::Body), "{tag}");
+                assert_eq!(regions.hit(l.dot.0.0, cy), Some(Hit::Body), "{tag}");
+            }
+        }
+    }
+
+    #[test]
     fn the_reminders_done_chip_region_hit_tests_in_the_notice() {
         let intersects = |a: Rect, b: Rect| {
             a.x < b.right() && b.x < a.right() && a.y < b.bottom() && b.y < a.bottom()

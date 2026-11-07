@@ -470,6 +470,10 @@ pub enum Event {
     /// or the peeked full toast), or left it. Drives the peek and the strip's
     /// hold.
     ToastPointer(bool),
+    /// The pointer is on a source's level group of the REC view on the closed
+    /// notch (`Hit::RecMuteCompact`), or left it. While it is there the hover
+    /// opens no panel; moving onto the rest of the notch does.
+    RecMuteHot(Option<crate::recorder::Source>),
     /// A mouse button went down outside the island while the panel was kept
     /// open: it closes.
     Dismiss,
@@ -634,6 +638,9 @@ pub enum Hit {
     ToastSlot,
     /// The ✕ at the right end of a timed full notice: closes it, opens nothing.
     NoticeClose,
+    /// A recorded source's level group on the REC view of the closed notch:
+    /// a click mutes or unmutes it and opens nothing.
+    RecMuteCompact(crate::recorder::Source),
     /// A result row of the quick search (its place in the list).
     SearchResult(usize),
     /// The back button left of the quick search's field: closes it, as Esc.

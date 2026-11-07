@@ -512,6 +512,7 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
             reveal: None,
             strip_motion: None,
             toast_over: false,
+            rec_hot_over: None,
             close_fade: CloseFade::settled(0.0, Instant::now()),
             close_hot: false,
             close_ptr: None,
@@ -928,6 +929,9 @@ struct App {
     /// The pointer is on the busy toast's own spot, as the reducer last
     /// heard (`Event::ToastPointer`); synced from the state at each refresh.
     toast_over: bool,
+    /// The level group of the REC view the pointer is on, as the reducer last
+    /// heard (`Event::RecMuteHot`); synced from the state at each refresh.
+    rec_hot_over: Option<crate::recorder::Source>,
     /// The notice's ✕ fading in or out (`ui::motion::CloseFade`); its target
     /// is 1 while the pointer is on the island and a closable notice shows
     /// in its full form.
@@ -3673,6 +3677,7 @@ impl App {
         // (it lets go when a toast ends or the pointer leaves); the next
         // mouse move compares against that.
         self.toast_over = self.state.toast_pointer();
+        self.rec_hot_over = self.state.rec_mute_hot();
         if let Some(n) = self.state.toast_slot() {
             self.slot_keep = Some(n.clone());
         }
@@ -5629,6 +5634,11 @@ impl App {
         }
         self.dock_follow(lparam);
         self.track_close_hot(Some(lparam));
+        let group = match self.hit_at(lparam) {
+            Some(Hit::RecMuteCompact(source)) => Some(source),
+            _ => None,
+        };
+        self.set_rec_mute_hot(group);
         if self.state.view() == View::Panel(Page::Arrange) {
             let hit = self.hit_at(lparam);
             self.arrange_hover(hit.as_ref());
@@ -5707,6 +5717,7 @@ impl App {
         // The pointer left the busy toast's spot with the island, whether or
         // not the hover dwell had passed.
         self.set_toast_pointer(false);
+        self.set_rec_mute_hot(None);
         self.track_close_hot(None);
         self.click.clear();
         self.dock_leave();
@@ -5743,6 +5754,16 @@ impl App {
         let (x, y) = client_xy(lparam);
         let (x, y) = self.renderer.to_dip(x as f32, y as f32);
         toast_peek_reaches(self.config.style, self.notch_size(), x, y)
+    }
+
+    /// Tells the reducer the pointer reached or left a level group of the REC
+    /// view. Only a change is sent, and its redraw lights or clears the pill:
+    /// no timer.
+    fn set_rec_mute_hot(&mut self, group: Option<crate::recorder::Source>) {
+        if self.rec_hot_over != group {
+            self.rec_hot_over = group;
+            self.apply_now(Event::RecMuteHot(group));
+        }
     }
 
     /// Tells the reducer the pointer reached or left the busy toast's spot.
@@ -6717,6 +6738,7 @@ impl App {
                 mic: rec_levels.0,
                 system: rec_levels.1,
                 muted: r.muted,
+                hot: state.rec_mute_hot(),
             }),
             now,
             today: state.today(),

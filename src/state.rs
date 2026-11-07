@@ -15,6 +15,7 @@ use crate::model::{
 };
 use crate::mole::MoleOpts;
 use crate::pages::PanelPages;
+use crate::recorder::Source;
 use crate::pomodoro::{Phase, PhaseDone, PomoSettings, PomoStatus, Pomodoro};
 use crate::tiles::{ShortcutTiles, Tile};
 use crate::ui::geometry::ANIM_MS;
@@ -420,6 +421,9 @@ pub struct IslandState {
     /// The pointer is on the busy toast's own spot (its strip, its slot, or
     /// the peeked full toast).
     toast_pointer: bool,
+    /// The pointer is on a recorded source's level group of the REC view on
+    /// the closed notch: it keeps the hover from opening the panel.
+    rec_mute_hot: Option<Source>,
     /// The current toast's full content was on screen (full, peeked or
     /// clicked).
     toast_seen: bool,
@@ -513,6 +517,7 @@ impl IslandState {
             toast_style: ToastStyle::Compact,
             toast_full: false,
             toast_pointer: false,
+            rec_mute_hot: None,
             toast_seen: false,
             toast_dot: false,
         }
@@ -750,6 +755,7 @@ impl IslandState {
                     // The pointer left the island, and the busy toast's spot
                     // with it.
                     self.toast_pointer = false;
+                    self.rec_mute_hot = None;
                 }
                 self.hover = on;
                 // The drop's own visit ends when the pointer leaves it; a
@@ -786,6 +792,9 @@ impl IslandState {
                 if style == ToastStyle::Full {
                     self.toast_dot = false;
                 }
+            }
+            Event::RecMuteHot(source) => {
+                self.rec_mute_hot = source.filter(|_| self.rec_mute_groups_shown());
             }
             Event::ToastPointer(on) => {
                 // The pointer left what held the toast: at least the grace
@@ -1152,6 +1161,10 @@ impl IslandState {
             let (from, to) = self.cal_range();
             effects.push(Effect::RefreshCalendar { from, to });
         }
+        // The level groups are the REC view's: gone with it.
+        if self.rec_mute_hot.is_some() && !self.rec_mute_groups_shown() {
+            self.rec_mute_hot = None;
+        }
         // Last, once the linger, the latch and the inputs have settled what
         // shows: the toast is judged on the view this `apply` leaves.
         self.settle_toast(toast_held, now);
@@ -1305,6 +1318,7 @@ impl IslandState {
         self.open_mode == OpenMode::HoverStay
             && self.hover
             && !self.hover_blocked
+            && self.rec_mute_hot.is_none()
             && !self.notice_covers()
             && self.collapsed == Collapse::No
             && !self.fullscreen
@@ -1611,7 +1625,10 @@ impl IslandState {
 
     /// The panel is open for something other than the linger.
     fn panel_held(&self) -> bool {
-        let pointer = self.hover && !self.hover_blocked && self.open_mode != OpenMode::Click;
+        let pointer = self.hover
+            && !self.hover_blocked
+            && self.rec_mute_hot.is_none()
+            && self.open_mode != OpenMode::Click;
         self.collapsed == Collapse::No
             && (pointer
                 || self.latched
@@ -1640,6 +1657,8 @@ impl IslandState {
             Event::Click(Hit::StickySnooze | Hit::StickyOpen) => LingerTrigger::No,
             // The ✕ closes a notice on the closed notch: no panel behind it.
             Event::Click(Hit::NoticeClose) => LingerTrigger::No,
+            // So does a level group's mute on the REC view.
+            Event::Click(Hit::RecMuteCompact(_)) => LingerTrigger::No,
             Event::Click(hit) if !(is_media_hit(hit) && self.media_guarded(now)) => {
                 LingerTrigger::Panel
             }
@@ -2090,6 +2109,13 @@ impl IslandState {
             }
             Hit::RecMute(source) => {
                 if self.view() == View::Panel(Page::Record) && self.rec.is_some() {
+                    effects.push(Effect::RecMute(source));
+                }
+            }
+            // A level group of the REC view on the closed notch: the mute
+            // toggles in every mode and nothing opens.
+            Hit::RecMuteCompact(source) => {
+                if self.rec_mute_groups_shown() {
                     effects.push(Effect::RecMute(source));
                 }
             }
@@ -2906,6 +2932,16 @@ impl IslandState {
                     | View::PomodoroCompact
                     | View::RecordCompact
             )
+    }
+
+    /// The source whose level group on the closed REC view the pointer is on.
+    pub fn rec_mute_hot(&self) -> Option<Source> {
+        self.rec_mute_hot
+    }
+
+    /// The closed notch shows the REC view's level groups, which take clicks.
+    fn rec_mute_groups_shown(&self) -> bool {
+        self.rec.is_some() && self.view() == View::RecordCompact
     }
 
     /// The pointer is on the toast's spot, as the reducer last heard.
@@ -7793,6 +7829,106 @@ mod tests {
         assert_eq!(s.view(), View::RecordCompact, "a click alone opens nothing");
         s.apply(Event::Hover(true), t0);
         assert_eq!(s.view(), View::Panel(Page::Record));
+    }
+
+    /// The REC view recording both sources, in `mode`, the pointer not yet on it.
+    fn rec_closed(mode: OpenMode, t0: Instant) -> IslandState {
+        let mut s = st();
+        s.apply(Event::OpenMode(mode), t0);
+        s.apply(Event::RecStatus(Some(rec_status(t0))), t0);
+        assert_eq!(s.view(), View::RecordCompact);
+        s
+    }
+
+    #[test]
+    fn a_click_on_a_mute_group_toggles_that_source_in_every_open_mode() {
+        for mode in [OpenMode::Hover, OpenMode::HoverStay, OpenMode::Click] {
+            let t0 = Instant::now();
+            let mut s = rec_closed(mode, t0);
+            for source in [Source::Mic, Source::System] {
+                s.apply(Event::RecMuteHot(Some(source)), t0);
+                assert_eq!(
+                    s.apply(Event::Click(Hit::RecMuteCompact(source)), t0),
+                    vec![Effect::RecMute(source)],
+                    "{mode:?} {source:?}"
+                );
+                assert_eq!(s.view(), View::RecordCompact, "{mode:?}: no panel opens");
+                assert!(!s.panel_open(), "{mode:?}: no linger either");
+            }
+            // The reducer does not keep a linger after the click ends.
+            s.apply(Event::RecMuteHot(None), t0);
+            s.apply(Event::Hover(false), t0);
+            assert_eq!(s.view(), View::RecordCompact, "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn a_mute_click_needs_a_recording_on_the_closed_notch() {
+        let t0 = Instant::now();
+        let mut s = st();
+        assert_eq!(
+            s.apply(Event::Click(Hit::RecMuteCompact(Source::Mic)), t0),
+            vec![]
+        );
+        open_on(&mut s, Page::Record, t0);
+        assert_eq!(
+            s.apply(Event::Click(Hit::RecMuteCompact(Source::Mic)), t0),
+            vec![],
+            "only the REC view's own groups"
+        );
+    }
+
+    #[test]
+    fn resting_on_a_mute_group_opens_no_panel_in_the_hover_modes() {
+        for mode in [OpenMode::Hover, OpenMode::HoverStay] {
+            let t0 = Instant::now();
+            let mut s = rec_closed(mode, t0);
+            s.apply(Event::RecMuteHot(Some(Source::Mic)), t0);
+            assert_eq!(s.rec_mute_hot(), Some(Source::Mic));
+            s.apply(Event::Hover(true), t0 + Duration::from_millis(120));
+            assert_eq!(s.view(), View::RecordCompact, "{mode:?}: the dwell opens nothing");
+            // Onto the other group, still nothing.
+            s.apply(Event::RecMuteHot(Some(Source::System)), t0);
+            assert_eq!(s.view(), View::RecordCompact, "{mode:?}");
+            // Onto the rest of the notch: it opens as usual.
+            s.apply(Event::RecMuteHot(None), t0);
+            assert!(matches!(s.view(), View::Panel(_)), "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn hover_and_stay_latches_only_after_leaving_the_mute_group() {
+        let t0 = Instant::now();
+        let mut s = rec_closed(OpenMode::HoverStay, t0);
+        s.apply(Event::RecMuteHot(Some(Source::Mic)), t0);
+        s.apply(Event::Hover(true), t0);
+        s.apply(Event::Hover(false), t0);
+        assert_eq!(s.view(), View::RecordCompact, "nothing was latched on the group");
+    }
+
+    #[test]
+    fn hovering_the_rest_of_the_rec_notch_opens_the_panel_as_before() {
+        for mode in [OpenMode::Hover, OpenMode::HoverStay] {
+            let t0 = Instant::now();
+            let mut s = rec_closed(mode, t0);
+            s.apply(Event::Hover(true), t0);
+            assert!(matches!(s.view(), View::Panel(_)), "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn the_hot_group_is_forgotten_when_the_pointer_leaves_or_the_view_changes() {
+        let t0 = Instant::now();
+        let mut s = rec_closed(OpenMode::Hover, t0);
+        s.apply(Event::RecMuteHot(Some(Source::Mic)), t0);
+        s.apply(Event::Hover(false), t0);
+        assert_eq!(s.rec_mute_hot(), None, "the pointer left");
+        s.apply(Event::RecMuteHot(Some(Source::Mic)), t0);
+        s.apply(Event::RecStatus(None), t0);
+        assert_eq!(s.rec_mute_hot(), None, "no recording, no groups");
+        // A hot report off the REC view is ignored.
+        s.apply(Event::RecMuteHot(Some(Source::Mic)), t0);
+        assert_eq!(s.rec_mute_hot(), None);
     }
 
     fn rec_entry(name: &str) -> RecEntry {

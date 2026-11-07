@@ -3998,6 +3998,34 @@ pub fn record_compact_layout(s: ShapeRect, robot: bool) -> RecLayout {
     }
 }
 
+/// Width of a level group's click region on the closed REC view: the meter
+/// and the gap that separates it from its neighbour.
+pub const REC_MUTE_HIT_W: f32 = REC_METER_W + REC_METER_GAP;
+
+/// The click regions of the REC view's level groups: one per recorded source,
+/// `REC_MUTE_HIT_W` wide, centred on its meter, the notch's full height. A
+/// recording of one source has one region, over the meter at the far right.
+pub fn rec_mute_regions(s: ShapeRect, l: &RecLayout, sources: RecSources) -> Vec<Region> {
+    let over = |meter: Rect, source| Region {
+        rect: rect(
+            meter.x + (meter.w - REC_MUTE_HIT_W) / 2.0,
+            s.y,
+            REC_MUTE_HIT_W,
+            s.h,
+        ),
+        hit: Hit::RecMuteCompact(source),
+    };
+    let mic_at = if sources.system { l.mic } else { l.system };
+    let mut regions = Vec::new();
+    if sources.mic {
+        regions.push(over(mic_at, Source::Mic));
+    }
+    if sources.system {
+        regions.push(over(l.system, Source::System));
+    }
+    regions
+}
+
 /// The Rekam page's header as measured: the title and the "Buka folder" link.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct RecordHead {
@@ -7737,6 +7765,52 @@ mod tests {
                     // Four bars fit their meter.
                     let bars = REC_BARS as f32 * REC_BAR_W + (REC_BARS - 1) as f32 * REC_BAR_GAP;
                     assert!(bars <= REC_METER_W + 1e-3);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rec_mute_regions_sit_over_the_recorded_sources_bars() {
+        use crate::ui::geometry::shape_with_robot_sized;
+        let both = RecSources { mic: true, system: true };
+        let mic_only = RecSources { mic: true, system: false };
+        let system_only = RecSources { mic: false, system: true };
+        for style in [Style::Pill, Style::Notch] {
+            for size in spread() {
+                for robot in [false, true] {
+                    let tag = format!("{style:?} {size:?} robot {robot}");
+                    let s = shape_with_robot_sized(style, size, ShapeKind::RecordCompact, robot);
+                    let l = record_compact_layout(s, robot);
+                    let regions = rec_mute_regions(s, &l, both);
+                    let hits: Vec<_> = regions.iter().map(|r| r.hit.clone()).collect();
+                    assert_eq!(
+                        hits,
+                        [Hit::RecMuteCompact(Source::Mic), Hit::RecMuteCompact(Source::System)],
+                        "{tag}"
+                    );
+                    for (r, bars) in regions.iter().zip([l.mic, l.system]) {
+                        // Comfortable to hit, the whole height, over the bars.
+                        assert!(r.rect.w >= 24.0 - 1e-3, "{tag}: {:?}", r.rect);
+                        assert!((r.rect.h - s.h).abs() < 1e-3 && r.rect.y == s.y, "{tag}");
+                        assert!(r.rect.contains(bars.x + bars.w / 2.0, bars.y + bars.h / 2.0), "{tag}");
+                        assert!(r.rect.x >= s.x && r.rect.right() <= s.x + s.w, "{tag}");
+                    }
+                    assert!(regions[0].rect.right() <= regions[1].rect.x + 1e-3, "{tag}");
+                    // Clear of the clock.
+                    assert!(regions[0].rect.x >= l.time.right(), "{tag}");
+                    // One source: one region, over the far-right meter.
+                    for (src, source) in [(mic_only, Source::Mic), (system_only, Source::System)] {
+                        let one = rec_mute_regions(s, &l, src);
+                        assert_eq!(one.len(), 1, "{tag}");
+                        assert_eq!(one[0].hit, Hit::RecMuteCompact(source), "{tag}");
+                        assert!(
+                            one[0].rect.contains(l.system.x + l.system.w / 2.0, s.y + s.h / 2.0),
+                            "{tag}"
+                        );
+                    }
+                    let none = RecSources { mic: false, system: false };
+                    assert!(rec_mute_regions(s, &l, none).is_empty(), "{tag}");
                 }
             }
         }

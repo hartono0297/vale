@@ -123,6 +123,8 @@ pub struct RecFrame {
     pub system: f32,
     /// Which sources are muted, `[mic, system]`.
     pub muted: [bool; 2],
+    /// The source whose level group the pointer is on (its pill shows).
+    pub hot: Option<crate::recorder::Source>,
 }
 
 /// Everything a frame draws besides the shape: the view and the data behind it.
