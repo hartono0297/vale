@@ -643,8 +643,9 @@ fn device_id(device: &IMMDevice) -> Option<String> {
 }
 
 /// The mix format as the analysis reads it, with its sample rate. The
-/// structure is packed, so every field is read unaligned.
-unsafe fn read_format(wfx: *const WAVEFORMATEX) -> Option<(SampleFormat, u32)> {
+/// structure is packed, so every field is read unaligned. Also used by the
+/// recorder's capture worker (`recorder::capture`).
+pub(crate) unsafe fn read_format(wfx: *const WAVEFORMATEX) -> Option<(SampleFormat, u32)> {
     unsafe {
         let tag = std::ptr::addr_of!((*wfx).wFormatTag).read_unaligned();
         let channels = std::ptr::addr_of!((*wfx).nChannels).read_unaligned();

@@ -1,13 +1,13 @@
-//! Streaming sample-rate conversion (mono, `f32`) and the mono down-mix.
+//! Streaming sample-rate conversion (mono, `f32`). The down-mix of a capture
+//! packet to mono is `eq_audio::mix_to_mono`, shared with the equalizer.
 //!
 //! The resampler is a windowed-sinc interpolator that keeps its state across
 //! calls, so chunk boundaries do not show. Output positions are computed
-//! from integer counters (no drift). The signal comes out delayed by a
-//! fixed `HALF_WIDTH` source frames (well under a millisecond) because the
-//! filter is primed with that many zeros; in exchange the output length is
-//! `input * to / from` to within one frame at every point of the stream.
-// The recorder session (T3) uses these; until it lands they look unused.
-#![allow(dead_code)]
+//! from integer counters (no drift). The signal comes out delayed by the
+//! kernel's reach (`HALF_WIDTH` source frames when upsampling, more when
+//! downsampling; well under a millisecond, see [`Resampler::delay`]) because
+//! the filter is primed with that many zeros; in exchange the output length
+//! is `input * to / from` to within one frame at every point of the stream.
 
 use std::f64::consts::PI;
 
@@ -40,6 +40,17 @@ impl Resampler {
             r.buf = vec![0.0; reach as usize];
         }
         r
+    }
+
+    /// How far the output lags the input, in output frames: output frame
+    /// `j` holds the signal at input time `j - delay()` (output frames).
+    /// Zero when the rates are equal.
+    pub fn delay(&self) -> f64 {
+        if self.from == self.to {
+            0.0
+        } else {
+            self.reach as f64 * self.to as f64 / self.from as f64
+        }
     }
 
     /// Feeds source frames and returns every output frame that is now
@@ -86,16 +97,6 @@ impl Resampler {
         }
         (acc / norm) as f32
     }
-}
-
-/// Averages interleaved frames of `channels` channels into one mono channel.
-/// A trailing partial frame is ignored; 0 or 1 channels return a copy.
-pub fn downmix(interleaved: &[f32], channels: usize) -> Vec<f32> {
-    if channels <= 1 {
-        return interleaved.to_vec();
-    }
-    let inv = 1.0 / channels as f32;
-    interleaved.chunks_exact(channels).map(|f| f.iter().sum::<f32>() * inv).collect()
 }
 
 #[cfg(test)]
@@ -182,11 +183,17 @@ mod tests {
     }
 
     #[test]
-    fn downmix_averages_channels() {
-        assert_eq!(downmix(&[1.0, 3.0, 2.0, 4.0], 2), vec![2.0, 3.0]);
-        assert_eq!(downmix(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3), vec![2.0, 5.0]);
-        assert_eq!(downmix(&[0.1, 0.2], 1), vec![0.1, 0.2]);
-        assert_eq!(downmix(&[1.0, 2.0, 3.0], 2), vec![1.5]);
-        assert!(downmix(&[], 2).is_empty());
+    fn delay_says_where_an_impulse_lands() {
+        assert_eq!(Resampler::new(48_000, 48_000).delay(), 0.0);
+        for (from, to) in [(44_100u32, 48_000u32), (16_000, 48_000), (96_000, 48_000)] {
+            let mut r = Resampler::new(from, to);
+            let at = 1000usize; // input frame of the impulse
+            let mut x = vec![0.0f32; 4000];
+            x[at] = 1.0;
+            let y = r.process(&x);
+            let peak = (0..y.len()).max_by(|&a, &b| y[a].total_cmp(&y[b])).unwrap();
+            let want = at as f64 * f64::from(to) / f64::from(from) + r.delay();
+            assert!((peak as f64 - want).abs() <= 1.0, "{from}->{to}: peak {peak}, want {want}");
+        }
     }
 }

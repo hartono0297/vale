@@ -1,7 +1,5 @@
 //! Input level for the two REC bars: a peak meter that decays over 300 ms,
 //! and two atomics the capture threads write and the UI reads without waiting.
-// The recorder session (T3) uses these; until it lands they look unused.
-#![allow(dead_code)]
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
@@ -34,12 +32,7 @@ impl PeakMeter {
         (self.peak * (1.0 - dt / DECAY.as_secs_f32())).max(0.0)
     }
 
-    /// Feeds samples (any channel layout) as of the current time.
-    pub fn feed(&mut self, samples: &[f32]) {
-        self.feed_at(samples, Instant::now());
-    }
-
-    /// Feeds samples as of `now`; the new level is the larger of the decayed
+    /// Feeds samples (any channel layout) as of `now`; the new level is the larger of the decayed
     /// old one and the peak of `samples`.
     pub fn feed_at(&mut self, samples: &[f32], now: Instant) {
         let peak = samples.iter().fold(0.0f32, |m, s| if s.is_nan() { m } else { m.max(s.abs()) });

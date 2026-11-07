@@ -8,8 +8,6 @@
 //! Frames passed to `put`, `take`, `pause_at` and `resume_at` are "raw"
 //! (as measured from the recording origin, pauses included); what `take`
 //! returns is the paused-span-free stream.
-// The recorder session (T3) uses these; until it lands they look unused.
-#![allow(dead_code)]
 
 use std::collections::VecDeque;
 
@@ -59,12 +57,8 @@ impl Timeline {
         self.lanes.len()
     }
 
-    /// `qpc_to_frame` at this timeline's rate.
-    pub fn qpc_to_frame(&self, qpc: u64, qpc_freq: u64, origin: u64) -> i64 {
-        qpc_to_frame(qpc, qpc_freq, origin, self.rate)
-    }
-
-    /// Frames held in memory (the longest lane), for tests and diagnostics.
+    /// Frames held in memory (the longest lane), for tests.
+    #[cfg(test)]
     pub fn buffered_frames(&self) -> usize {
         self.lanes.iter().map(|l| l.samples.len()).max().unwrap_or(0)
     }
@@ -360,6 +354,5 @@ mod tests {
         let qpc = 10_000_000u64 * 86_400 * 100;
         let f = qpc_to_frame(qpc, 10_000_000, 0, 48_000);
         assert_eq!(f, 86_400 * 100 * 48_000);
-        assert_eq!(Timeline::new(48_000, 1).qpc_to_frame(qpc, 10_000_000, 0), f);
     }
 }

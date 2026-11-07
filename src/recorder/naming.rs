@@ -1,7 +1,5 @@
 //! File names for recordings: `YYYY-MM-DD HHmm <title>` plus a collision
 //! suffix. Pure; the caller supplies the existence check.
-// The recorder session (T3) uses these; until it lands they look unused.
-#![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
 

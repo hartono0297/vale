@@ -23,9 +23,6 @@
 //!   [`EncodeError::Empty`] and removes the file it created. A writer dropped
 //!   without `finish` is not finalized; its file is left for the caller.
 
-// T3 (the recorder session) is the first caller; until then only tests use it.
-#![allow(dead_code)]
-
 use std::ffi::c_void;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -415,7 +412,7 @@ fn to_pcm16(s: f32) -> i16 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::f32::consts::TAU;
     use windows::Win32::Media::MediaFoundation::{
@@ -454,26 +451,26 @@ mod tests {
     }
 
     /// What the source reader decodes from a file.
-    struct Decoded {
-        channels: u32,
-        rate: u32,
-        samples: Vec<f32>,
+    pub(crate) struct Decoded {
+        pub(crate) channels: u32,
+        pub(crate) rate: u32,
+        pub(crate) samples: Vec<f32>,
         /// `MF_PD_DURATION`, when the container reports one.
-        reported: Option<Duration>,
+        pub(crate) reported: Option<Duration>,
     }
 
     impl Decoded {
-        fn frames(&self) -> usize {
+        pub(crate) fn frames(&self) -> usize {
             self.samples.len() / self.channels as usize
         }
 
-        fn duration(&self) -> Duration {
+        pub(crate) fn duration(&self) -> Duration {
             duration(self.frames() as u64, self.rate)
         }
 
         /// The frequency of one channel by zero crossings, skipping 100 ms at
         /// either end (encoder priming and the final frame).
-        fn frequency(&self, channel: usize) -> f32 {
+        pub(crate) fn frequency(&self, channel: usize) -> f32 {
             let ch = self.channels as usize;
             let skip = self.rate as usize / 10;
             let mono: Vec<f32> = self
@@ -492,7 +489,7 @@ mod tests {
         }
     }
 
-    fn decode(path: &Path) -> Decoded {
+    pub(crate) fn decode(path: &Path) -> Decoded {
         unsafe {
             MFStartup(MF_VERSION, MFSTARTUP_LITE).expect("MFStartup");
             let decoded = {
