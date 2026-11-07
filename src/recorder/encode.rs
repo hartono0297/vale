@@ -1,6 +1,6 @@
 //! The `.m4a` writer: AAC-LC in MP4 through the Media Foundation sink writer,
 //! the "Audio file" contract of the recording spec (48 kHz, 96 kbps stereo with
-//! channel 0 = mic and channel 1 = system, or 64 kbps mono).
+//! channel 0 = mic and channel 1 = system, or 96 kbps mono).
 //!
 //! - **Threads and COM.** Any thread may own a writer, but the caller must have
 //!   initialised COM on it first (MTA: `CoInitializeEx(None,
@@ -392,9 +392,12 @@ fn open(
     }
 }
 
-/// AAC bitrate in bytes per second: 96 kbps stereo, 64 kbps mono.
-fn aac_bytes_per_second(channels: u16) -> u32 {
-    if channels == 2 { 12_000 } else { 8_000 }
+/// AAC bitrate in bytes per second.
+/// 96 kbps for mono and stereo: the Windows AAC encoder documents only
+/// 12000, 16000, 20000 and 24000 bytes per second, so a lower mono rate
+/// is not portable.
+fn aac_bytes_per_second(_channels: u16) -> u32 {
+    12_000
 }
 
 /// `frames` at `rate` in 100 ns units.
@@ -695,7 +698,7 @@ pub(crate) mod tests {
         assert_eq!(hns(1024, RATE), 213_333);
         assert_eq!(duration(96_000, RATE), Duration::from_secs(2));
         assert_eq!(aac_bytes_per_second(2), 12_000);
-        assert_eq!(aac_bytes_per_second(1), 8_000);
+        assert_eq!(aac_bytes_per_second(1), 12_000);
         assert_eq!(to_pcm16(1.5), 32767);
         assert_eq!(to_pcm16(-1.0), -32767);
         assert_eq!(to_pcm16(f32::NAN), 0);
