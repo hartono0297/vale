@@ -7,26 +7,34 @@
 //! files are 48 kHz; with both sources channel 0 is the mic and channel 1
 //! the system sound, one source is mono.
 
+use std::ffi::c_void;
 use std::path::Path;
+use std::sync::OnceLock;
 
+use windows::Win32::Foundation::{E_POINTER, HMODULE};
 use windows::Win32::Media::MediaFoundation::{
-    IMFSourceReader, MF_MT_AUDIO_NUM_CHANNELS, MF_MT_AUDIO_SAMPLES_PER_SECOND, MF_MT_MAJOR_TYPE,
-    MF_MT_SUBTYPE, MF_PD_DURATION, MF_SOURCE_READER_ALL_STREAMS,
+    IMFMediaType, IMFSourceReader, MF_MT_AUDIO_NUM_CHANNELS, MF_MT_AUDIO_SAMPLES_PER_SECOND,
+    MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_PD_DURATION, MF_SOURCE_READER_ALL_STREAMS,
     MF_SOURCE_READER_FIRST_AUDIO_STREAM, MF_SOURCE_READER_MEDIASOURCE,
     MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED, MF_SOURCE_READERF_ENDOFSTREAM, MF_VERSION,
-    MFAudioFormat_Float, MFCreateMediaType, MFCreateSourceReaderFromURL, MFMediaType_Audio,
-    MFSTARTUP_LITE, MFShutdown, MFStartup,
+    MFAudioFormat_Float, MFMediaType_Audio, MFSTARTUP_LITE,
 };
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
-use windows::core::HSTRING;
+use windows::Win32::System::LibraryLoader::{
+    GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
+};
+use windows::core::{HRESULT, HSTRING, Interface, PCWSTR, s, w};
 
 /// The engine's input rate.
 pub const RATE: u32 = 16_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecodeError {
-    /// Media Foundation could not open or read the file (missing, not audio,
-    /// no decoder).
+    /// `mfplat.dll` / `mfreadwrite.dll` are missing (Windows N without the
+    /// Media Feature Pack) or `MFStartup` failed.
+    NoMediaFoundation,
+    /// Media Foundation could not open the file (missing, not audio, no
+    /// decoder).
     Open(String),
     Read(String),
     /// The audio stream has no channels or no rate.
@@ -36,6 +44,7 @@ pub enum DecodeError {
 impl std::fmt::Display for DecodeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            DecodeError::NoMediaFoundation => write!(f, "no Media Foundation"),
             DecodeError::Open(why) => write!(f, "cannot open the audio: {why}"),
             DecodeError::Read(why) => write!(f, "cannot read the audio: {why}"),
             DecodeError::Format(why) => write!(f, "unsupported audio: {why}"),
@@ -43,30 +52,84 @@ impl std::fmt::Display for DecodeError {
     }
 }
 
+type StartupFn = unsafe extern "system" fn(u32, u32) -> HRESULT;
+type ShutdownFn = unsafe extern "system" fn() -> HRESULT;
+type CreateObjectFn = unsafe extern "system" fn(*mut *mut c_void) -> HRESULT;
+type CreateSourceReaderFn =
+    unsafe extern "system" fn(PCWSTR, *mut c_void, *mut *mut c_void) -> HRESULT;
+
+/// The Media Foundation entry points, resolved at run time from System32:
+/// a static import of `mfplat.dll` would stop `vale.exe` from starting at
+/// all on Windows N without the Media Feature Pack (the recorder does the
+/// same, `recorder::encode`). COM methods go through the crate as usual.
+struct Mf {
+    startup: StartupFn,
+    shutdown: ShutdownFn,
+    create_media_type: CreateObjectFn,
+    create_source_reader: CreateSourceReaderFn,
+}
+
+/// Loads the two DLLs once; `None` when either or an export is missing.
+fn mf() -> Option<&'static Mf> {
+    static MF: OnceLock<Option<Mf>> = OnceLock::new();
+    MF.get_or_init(|| unsafe {
+        let plat: HMODULE =
+            LoadLibraryExW(w!("mfplat.dll"), None, LOAD_LIBRARY_SEARCH_SYSTEM32).ok()?;
+        let rw: HMODULE =
+            LoadLibraryExW(w!("mfreadwrite.dll"), None, LOAD_LIBRARY_SEARCH_SYSTEM32).ok()?;
+        // SAFETY: each target type is the documented signature of that export.
+        Some(Mf {
+            startup: std::mem::transmute(GetProcAddress(plat, s!("MFStartup"))?),
+            shutdown: std::mem::transmute(GetProcAddress(plat, s!("MFShutdown"))?),
+            create_media_type: std::mem::transmute(GetProcAddress(plat, s!("MFCreateMediaType"))?),
+            create_source_reader: std::mem::transmute(GetProcAddress(
+                rw,
+                s!("MFCreateSourceReaderFromURL"),
+            )?),
+        })
+    })
+    .as_ref()
+}
+
+/// Calls a creator that returns an interface through an out pointer.
+fn created<T: Interface>(
+    call: impl FnOnce(*mut *mut c_void) -> HRESULT,
+) -> windows::core::Result<T> {
+    let mut raw = std::ptr::null_mut();
+    call(&mut raw).ok()?;
+    if raw.is_null() {
+        return Err(windows::core::Error::from_hresult(E_POINTER));
+    }
+    // SAFETY: on success the creator stored an owned reference of type T.
+    Ok(unsafe { T::from_raw(raw) })
+}
+
 /// Per-thread COM and Media Foundation, undone on drop in reverse order.
 struct MfSession {
+    mf: &'static Mf,
     com: bool,
 }
 
 impl MfSession {
     fn start() -> Result<Self, DecodeError> {
+        let mf = mf().ok_or(DecodeError::NoMediaFoundation)?;
         // S_FALSE (already initialised) still needs its CoUninitialize;
         // RPC_E_CHANGED_MODE (an STA thread) works as is and must not get one.
         let com = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
-        if let Err(error) = unsafe { MFStartup(MF_VERSION, MFSTARTUP_LITE) } {
+        if unsafe { (mf.startup)(MF_VERSION, MFSTARTUP_LITE) }.is_err() {
             if com {
                 unsafe { CoUninitialize() };
             }
-            return Err(DecodeError::Open(format!("MFStartup: {error}")));
+            return Err(DecodeError::NoMediaFoundation);
         }
-        Ok(MfSession { com })
+        Ok(MfSession { mf, com })
     }
 }
 
 impl Drop for MfSession {
     fn drop(&mut self) {
         unsafe {
-            let _ = MFShutdown();
+            let _ = (self.mf.shutdown)();
             if self.com {
                 CoUninitialize();
             }
@@ -91,14 +154,18 @@ impl Decoder {
         let mf = MfSession::start()?;
         let open = |e: windows::core::Error| DecodeError::Open(e.message());
         let url = HSTRING::from(path.as_os_str());
-        let reader = unsafe { MFCreateSourceReaderFromURL(&url, None) }.map_err(open)?;
+        let reader: IMFSourceReader = created(|out| unsafe {
+            (mf.mf.create_source_reader)(PCWSTR(url.as_ptr()), std::ptr::null_mut(), out)
+        })
+        .map_err(open)?;
         let audio = MF_SOURCE_READER_FIRST_AUDIO_STREAM.0 as u32;
         unsafe {
             reader
                 .SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS.0 as u32, false)
                 .map_err(open)?;
             reader.SetStreamSelection(audio, true).map_err(open)?;
-            let wanted = MFCreateMediaType().map_err(open)?;
+            let wanted: IMFMediaType =
+                created(|out| (mf.mf.create_media_type)(out)).map_err(open)?;
             wanted.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Audio).map_err(open)?;
             wanted.SetGUID(&MF_MT_SUBTYPE, &MFAudioFormat_Float).map_err(open)?;
             reader
