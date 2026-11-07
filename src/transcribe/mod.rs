@@ -22,3 +22,4 @@ pub mod catalog;
 pub mod store;
 pub mod download;
 pub mod decode;
+pub mod chunk;
