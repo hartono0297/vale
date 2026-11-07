@@ -258,6 +258,15 @@ fn main() {
             demo_lang_from_env();
             phone::debug::run();
         }
+        // `--transcribe <file> [--model <gguf|key>] [--engine <dir>] [--vad
+        // <gguf>|energy] [--lang id|en] [--cpu]`: one transcript, printed and
+        // written next to the file (`transcribe/debug.rs`). No window.
+        #[cfg(debug_assertions)]
+        Some("--transcribe") => {
+            attach_parent_console();
+            let args: Vec<String> = std::env::args().skip(2).collect();
+            std::process::exit(transcribe::debug::run(&args));
+        }
         #[cfg(debug_assertions)]
         Some("--settings") => {
             attach_parent_console();
