@@ -226,6 +226,17 @@ pub struct RecSources {
     pub system: bool,
 }
 
+/// One finished recording in the Rekam page's list.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecEntry {
+    pub path: PathBuf,
+    /// The sidecar's title, or the time the recording started when it has none.
+    pub title: String,
+    /// "Hari ini 10:02", as the page shows it.
+    pub started: String,
+    pub duration: Duration,
+}
+
 /// A recording in progress, as the notch and the Rekam page show it. The
 /// levels are not here: they change many times a second and ride the frame.
 #[derive(Clone, Debug, PartialEq)]
@@ -259,6 +270,9 @@ pub enum Event {
     /// shows `View::RecordCompact` while one runs.
     #[allow(dead_code)] // T6: the recorder session sends it.
     RecStatus(Option<RecStatus>),
+    /// The newest recordings found in the folder (the page shows five).
+    #[allow(dead_code)] // T6: filled from the recordings folder.
+    RecRecent(Vec<RecEntry>),
     /// `None` means no media session is active.
     Media(Option<MediaInfo>),
     /// The session's timeline (seek, track change, play/pause); `None` when
@@ -615,6 +629,14 @@ pub enum Hit {
     DeviceDetail(usize),
     DeviceRetry(usize),
     DevicesEjectAll,
+    /// The Rekam page: the big button (start or stop), pause or resume, the
+    /// source control, a recent recording (by its place in the list) and
+    /// "Buka folder".
+    RecToggle,
+    RecPause,
+    RecSources(RecSources),
+    RecOpen(usize),
+    RecFolder,
     /// Susun, template step: a monitor chip, a template card (built-ins
     /// first, then the user's) and a saved arrangement's play button, by
     /// place. Pick step: a window row by place in the list, and "Lewati
@@ -804,6 +826,15 @@ pub enum Effect {
     DeviceOpen(usize),
     DeviceDetail(usize),
     DevicesEjectAll,
+    /// The Rekam page's buttons, for `App`: start or stop the recording,
+    /// pause or resume it, choose the sources (never sent while recording),
+    /// show a finished recording in Explorer, open the recordings folder
+    /// (the panel has collapsed).
+    RecToggle,
+    RecPause,
+    RecSources(RecSources),
+    RecReveal(PathBuf),
+    RecOpenFolder,
     /// Susun, as the hits of the same names.
     ArrangeMonitor(usize),
     ArrangeCard(usize),
@@ -945,11 +976,13 @@ pub enum PhoneStage {
 }
 
 /// Panel pages, in scroll order: Kalender, Pomodoro, Pengingat, Catatan,
-/// Musik, Mixer, Clipboard, Rak, Sistem, Perangkat, then CLI and Pintasan.
+/// Rekam, Musik, Mixer, Clipboard, Rak, Sistem, Perangkat, then CLI and Pintasan.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page {
     Calendar,
     Pomodoro,
+    /// Rekam: start and stop an audio recording, and the last recordings.
+    Record,
     Reminders,
     Notes,
     Media,
@@ -977,9 +1010,10 @@ pub enum Page {
 }
 
 impl Page {
-    pub const ALL: [Page; 14] = [
+    pub const ALL: [Page; 15] = [
         Page::Calendar,
         Page::Pomodoro,
+        Page::Record,
         Page::Reminders,
         Page::Notes,
         Page::Media,
@@ -1012,7 +1046,7 @@ pub enum Shortcut {
 }
 
 impl Shortcut {
-    pub const ALL: [Shortcut; 21] = [
+    pub const ALL: [Shortcut; 22] = [
         Shortcut::Screenshot,
         Shortcut::Clipboard,
         Shortcut::Search,
@@ -1034,6 +1068,8 @@ impl Shortcut {
         Shortcut::Go(Page::Devices),
         Shortcut::Go(Page::Cli),
         Shortcut::Go(Page::Arrange),
+        // New tiles join at the end (off by default).
+        Shortcut::Go(Page::Record),
     ];
 
     /// Whether a fresh install shows this tile: the original nine, the

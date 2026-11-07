@@ -158,6 +158,8 @@ pub struct Frame<'a> {
     pub phone_on: bool,
     /// The Devices page.
     pub devices: DevicesView<'a>,
+    /// The Rekam page.
+    pub record: RecordView<'a>,
     pub notes: &'a [Note],
     pub notes_page: usize,
     /// Upcoming (not done) reminders, earliest first.
@@ -604,6 +606,13 @@ pub struct DevicesView<'a> {
     /// The key of the device whose details show.
     pub expanded: Option<&'a str>,
     pub scroll: f32,
+}
+
+/// What the Rekam page shows besides the recording itself (`Frame::rec`):
+/// the sources chosen while none runs, and the newest recordings.
+pub struct RecordView<'a> {
+    pub sources: crate::model::RecSources,
+    pub recent: &'a [crate::model::RecEntry],
 }
 
 /// What the quick search shows.

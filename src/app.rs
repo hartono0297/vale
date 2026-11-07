@@ -77,7 +77,7 @@ use crate::i18n::{self, Key, tr};
 use crate::identify_overlay;
 use crate::lyrics::{self, DiskCache, LyricsState, LyricsWorker, Query};
 use crate::media_log;
-use crate::model::{Effect, Event, Hit, Notice, NoticeKind, Page, View};
+use crate::model::{Effect, Event, Hit, Notice, NoticeKind, Page, RecSources, View};
 use crate::mole::{self, Confirmed, MoleEvent, MoleOpts, MoleWorker};
 use crate::notch_monitor::{self, Display};
 use crate::notes::NotesStore;
@@ -124,7 +124,7 @@ use crate::ui::notch_fill;
 use crate::ui::panel_layout::{CliHead, STRIP_H, cli_layout};
 use crate::ui::render::{
     CleanerView, CliView, DevicesView, FolderMenuView, Frame, MoleView, NoticeCloseView, Progress,
-    RecFrame, Renderer, RobotFrame, SearchView, SystemView,
+    RecFrame, RecordView, Renderer, RobotFrame, SearchView, SystemView,
 };
 use crate::ui::settings_layout::MonitorRow;
 use crate::ui::robot::{
@@ -584,6 +584,10 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
             pomo_timer: false,
             rec_timer: false,
             rec_level_timer: false,
+            rec_sources: RecSources {
+                mic: true,
+                system: true,
+            },
             clock_timer: false,
             progress_timer: false,
             lyrics: LyricsState::default(),
@@ -1105,6 +1109,9 @@ struct App {
     rec_timer: bool,
     /// `TIMER_REC_LEVEL` is set.
     rec_level_timer: bool,
+    /// The sources the Rekam page's control chose for the next recording
+    /// (T6 keeps them in the config).
+    rec_sources: RecSources,
     /// `TIMER_CLOCK` is set.
     clock_timer: bool,
     /// `TIMER_PROGRESS` is set.
@@ -2258,6 +2265,17 @@ impl App {
             Effect::PhoneCancel => self.phone_cancel(),
             Effect::PhoneStop => self.phone_stop(crate::phone::EndReason::Done),
             Effect::PhoneBack => self.phone_back(),
+            // T6: wire the recorder. Start or stop it, here and from the
+            // hotkey and the tray; the status goes back as `Event::RecStatus`.
+            Effect::RecToggle => {}
+            // T6: wire the recorder. Pause when recording, resume when paused.
+            Effect::RecPause => {}
+            // T6: save the choice in `config.recording.sources`.
+            Effect::RecSources(sources) => self.rec_sources = sources,
+            // T6: wire the recorder. Explorer on the file (`/select,`).
+            Effect::RecReveal(_path) => {}
+            // T6: wire the recorder. Explorer on the recordings folder.
+            Effect::RecOpenFolder => {}
             Effect::DeviceEject(i) => self.devices_eject(i),
             Effect::DeviceOpen(i) => self.devices_open(i),
             Effect::DeviceDetail(i) => self.devices_toggle_detail(i),
@@ -5127,7 +5145,7 @@ impl App {
         let recording = self.state.rec().is_some();
         let away = self.screen_away();
         let clock = rec_clock_timer_wanted(
-            recording && view == View::RecordCompact,
+            recording && matches!(view, View::RecordCompact | View::Panel(Page::Record)),
             paused,
             away,
         );
@@ -6666,6 +6684,10 @@ impl App {
             phone: phone_view.as_ref(),
             phone_on: self.phone.running(),
             arrange: App::arrange_view(&self.arrange, &self.config, self.search_input.as_ref()),
+            record: RecordView {
+                sources: self.rec_sources,
+                recent: state.rec_recent(),
+            },
             devices: DevicesView {
                 list: &self.devices.list,
                 ejecting: &self.devices.ejecting,

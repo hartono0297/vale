@@ -151,11 +151,16 @@ pub enum Icon {
     Cup,
     /// A sticky paper with a folded corner: the Notes card's desktop toggle.
     StickyNote,
+    /// The Rekam page and a recording's row: a microphone capsule on its
+    /// stand. Duotone.
+    Mic,
+    /// A record mark: a ring with a smaller ring in its middle.
+    Record,
 }
 
 impl Icon {
     /// Every icon, in declaration order (`ALL[i] as usize == i`).
-    pub const ALL: [Icon; 79] = [
+    pub const ALL: [Icon; 81] = [
         Icon::Camera,
         Icon::Clipboard,
         Icon::Emoji,
@@ -235,6 +240,8 @@ impl Icon {
         Icon::Heart,
         Icon::Cup,
         Icon::StickyNote,
+        Icon::Mic,
+        Icon::Record,
     ];
 
     /// The icon's primitives on the 24-unit grid, in drawing order.
@@ -549,6 +556,12 @@ impl Icon {
                 Part::Path("M5 4h14v10l-6 6H5z"),
                 Part::Path("M13 20v-6h6"),
             ],
+            Icon::Mic => &[
+                Part::FillRect(9.0, 3.0, 6.0, 11.0, 3.0),
+                Part::Rect(9.0, 3.0, 6.0, 11.0, 3.0),
+                Part::Path("M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M9 21h6"),
+            ],
+            Icon::Record => &[Part::Circle(12.0, 12.0, 9.0), Part::Circle(12.0, 12.0, 3.5)],
             Icon::Widgets => &[
                 Part::FillRect(3.0, 3.0, 8.0, 11.0, 2.0),
                 Part::Rect(3.0, 3.0, 8.0, 11.0, 2.0),

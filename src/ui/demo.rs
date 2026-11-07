@@ -189,7 +189,7 @@ use super::motion::{
 };
 use super::notch_fill::{self, fill_alpha};
 use super::render::{
-    CleanerView, CliView, ClipNoticeView, ClipView, DevicesView, FolderMenuView, Frame, MoleView, RecFrame,
+    CleanerView, CliView, ClipNoticeView, ClipView, DevicesView, FolderMenuView, Frame, MoleView, RecFrame, RecordView,
     NoticeCloseView, NotifView, Progress, Renderer, RobotFrame, SearchView, SheetKind, ShotView,
     SystemView, ToastBadgeView, ToastLogoView,
 };
@@ -208,7 +208,10 @@ use crate::config::{NotchFill, Style, UiFont};
 use crate::devices::{self, Bus, Device, DeviceKind, Partition, Veto, VetoKind};
 use crate::i18n::{Key, tr};
 use crate::lyrics::{self, FADE, LyricsFound, LyricsState, Query};
-use crate::model::{CalView, Event, Hit, MediaInfo, Notice, NoticeKind, Page, RecSources, ToastOrigin, View};
+use crate::model::{
+    CalView, Event, Hit, MediaInfo, Notice, NoticeKind, Page, RecEntry, RecSources, ToastOrigin,
+    View,
+};
 use crate::mole::{CleanRun, GroupSize, MoleOpts, MoleReport, PreviewSummary};
 use crate::notes::Note;
 use crate::notif::{NotifEntry, logo_key};
@@ -628,6 +631,21 @@ const fn clipboard(name: &'static str, which: ClipDemo) -> Scene {
     }
 }
 
+/// The Rekam page's made-up list: the three rows of the design's mockup.
+fn demo_rec_recent() -> Vec<RecEntry> {
+    let entry = |title: &str, started: &str, mins: u64| RecEntry {
+        path: std::path::PathBuf::from(format!("{title}.m4a")),
+        title: title.to_owned(),
+        started: started.to_owned(),
+        duration: Duration::from_secs(mins * 60),
+    };
+    vec![
+        entry("Sync mingguan", "Hari ini 10:02", 42),
+        entry("Review desain klien", "Kemarin 14:30", 65),
+        entry("Rekaman 5 Nov 09:15", "5 Nov", 18),
+    ]
+}
+
 /// The REC view with Bata and made-up levels.
 const fn rec_scene(
     name: &'static str,
@@ -845,7 +863,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 173] = [
+const SCENES: [Scene; 175] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -864,6 +882,26 @@ const SCENES: [Scene; 173] = [
     rec_scene("rec-mic", 3 * 60 + 5, false, true, false),
     rec_scene("rec-paused", 12 * 60 + 48, true, true, true),
     rec_scene("rec-long", 3600 + 2 * 60 + 7, false, true, true),
+    // The Rekam page (section 2): recording both sources, and idle with the
+    // last three recordings.
+    Scene {
+        name: "rec-page",
+        view: View0::Panel(Page::Record),
+        rec: Some(DemoRec {
+            secs: 12 * 60 + 48,
+            paused: false,
+            mic: true,
+            system: true,
+            mic_level: 0.0,
+            system_level: 0.0,
+        }),
+        ..BASE
+    },
+    Scene {
+        name: "rec-page-idle",
+        view: View0::Panel(Page::Record),
+        ..BASE
+    },
     Scene {
         name: "pomo-running",
         kind: ShapeKind::PomodoroCompact,
@@ -2055,6 +2093,7 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
             // The fill follows the morph as the island does (`App::fill_at`).
             let fill_alpha =
                 notch_fill::morph_fill(scene_fill(&prev), scene_fill(&scene), ease_out_back(t));
+            let rec_recent = demo_rec_recent();
             let pomodoro = demo_pomodoro(scene.pomo, now);
             let view = live_view.unwrap_or_else(|| match scene.view {
                 View0::Idle => View::Idle,
@@ -2238,6 +2277,13 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                 shelf_motion: &shelf_motion,
                 phone: phone_view.as_ref(),
                 phone_on: scene.phone != PhoneDemo::No,
+                record: RecordView {
+                    sources: RecSources {
+                        mic: true,
+                        system: true,
+                    },
+                    recent: &rec_recent,
+                },
                 devices: DevicesView {
                     list: &dev_list,
                     ejecting: &dev_ejecting,

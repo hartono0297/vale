@@ -575,6 +575,16 @@ keys! {
     PageSystem => "Sistem", "System";
     PageDevices => "Perangkat", "Devices";
     PageArrange => "Susun", "Arrange";
+    PageRecord => "Rekam", "Record";
+    RecStop => "Berhenti", "Stop";
+    RecPause => "Jeda", "Pause";
+    RecResume => "Lanjut", "Resume";
+    RecRecording => "Merekam", "Recording";
+    RecSourceMic => "Mic", "Mic";
+    RecSourceSystem => "Suara PC", "PC audio";
+    RecSourceBoth => "Dua-duanya", "Both";
+    RecOpenFolder => "Buka folder", "Open folder";
+    RecEmpty => "Belum ada rekaman", "No recordings yet";
     ArrangeSkip => "Lewati ubin", "Skip tile";
     ArrangeSaved => "Tersimpan", "Saved";
     ArrangeHint => "Backspace kembali \u{b7} Esc batal", "Backspace back \u{b7} Esc cancel";
@@ -1547,6 +1557,24 @@ pub fn devices_connected(lang: Lang, n: usize) -> String {
     match lang {
         Lang::Id => format!("{n} tersambung"),
         Lang::En => format!("{n} connected"),
+    }
+}
+
+/// A recording's length on the Rekam page: "45 dtk", "42 mnt", "1 j 05 mnt"
+/// ("45 s", "42 min", "1 h 05 min"). Minutes round down.
+pub fn rec_duration(lang: Lang, d: std::time::Duration) -> String {
+    let secs = d.as_secs();
+    let (h, m) = (secs / 3600, secs / 60 % 60);
+    let (hour, min, sec) = match lang {
+        Lang::Id => ("j", "mnt", "dtk"),
+        Lang::En => ("h", "min", "s"),
+    };
+    if h > 0 {
+        format!("{h} {hour} {m:02} {min}")
+    } else if m > 0 {
+        format!("{m} {min}")
+    } else {
+        format!("{secs} {sec}")
     }
 }
 
@@ -3577,6 +3605,24 @@ mod tests {
         assert_eq!(leaked("don't Settings' isn't", ENGLISH), ["settings"]);
         assert!(leaked("reminders.json tidak terbaca.", ENGLISH).is_empty());
         assert!(leaked("<title>x</title>", ENGLISH).is_empty());
+    }
+
+    #[test]
+    fn a_recording_length_reads_in_both_languages() {
+        use std::time::Duration;
+        let secs = Duration::from_secs;
+        assert_eq!(rec_duration(Lang::Id, secs(0)), "0 dtk");
+        assert_eq!(rec_duration(Lang::Id, secs(45)), "45 dtk");
+        assert_eq!(rec_duration(Lang::Id, secs(42 * 60 + 59)), "42 mnt");
+        assert_eq!(rec_duration(Lang::Id, secs(3600 + 5 * 60)), "1 j 05 mnt");
+        assert_eq!(rec_duration(Lang::En, secs(45)), "45 s");
+        assert_eq!(rec_duration(Lang::En, secs(18 * 60)), "18 min");
+        assert_eq!(rec_duration(Lang::En, secs(2 * 3600 + 30 * 60)), "2 h 30 min");
+        for lang in [Lang::Id, Lang::En] {
+            for d in [secs(5), secs(600), secs(7200)] {
+                assert_no_leak(lang, "rec_duration", &rec_duration(lang, d));
+            }
+        }
     }
 
     #[test]

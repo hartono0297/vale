@@ -2779,6 +2779,7 @@ fn page_key(p: Page) -> Key {
     match p {
         Page::Calendar => Key::PageCalendar,
         Page::Pomodoro => Key::PagePomodoro,
+        Page::Record => Key::PageRecord,
         Page::Reminders => Key::PageReminders,
         Page::Notes => Key::PageNotes,
         Page::Media => Key::PageMedia,
@@ -5854,7 +5855,7 @@ mod tests {
 
     #[test]
     fn a_tall_window_needs_no_viewport() {
-        for (section, lang, l) in layouts_in((720.0, 3000.0)) {
+        for (section, lang, l) in layouts_in((720.0, 3100.0)) {
             assert_eq!(
                 (l.scroll_max, l.scroll, l.viewport),
                 (0.0, 0.0, None),

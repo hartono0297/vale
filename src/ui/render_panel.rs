@@ -73,7 +73,7 @@ use crate::ui::panel_layout::{
     cli_layout, cli_suggestions, clipboard_layout, device_shapes, devices_layout,
     media_hits_for, media_panel_layout, media_progress_layout, mixer_layout, mole_layout, mole_log_rows,
     mole_log_skip, notes_layout, notif_layout, page_dots, pomodoro_compact_layout,
-    pomodoro_compact_layout_robot, pomodoro_layout, record_compact_layout, rec_meter_heights, regions, REC_BAR_GAP, REC_BAR_W, reminders_layout, search_layout,
+    pomodoro_compact_layout_robot, pomodoro_layout, record_compact_layout, rec_meter_heights, record_layout, RecordHead, RecordLayout, regions, REC_BAR_GAP, REC_BAR_W, reminders_layout, search_layout,
     settings_button, shelf_card_layout, shelf_layout, shelf_phone_tag, shortcuts_layout,
     system_layout, tile_parts, update_strip_parts, volume_hud_layout, waiting_strip,
 };
@@ -788,6 +788,16 @@ impl Renderer {
                 };
                 PageLayout::Arrange(arrange_layout(s, strip, &head, shape, a.scroll))
             }
+            Page::Record => {
+                let head = self.record_head();
+                PageLayout::Record(record_layout(
+                    s,
+                    strip,
+                    &head,
+                    frame.rec.is_some(),
+                    frame.record.recent.len(),
+                ))
+            }
             Page::Mixer => PageLayout::Mixer(mixer_layout(
                 s,
                 strip,
@@ -877,6 +887,173 @@ impl Renderer {
                 self.paint_arrange(l, &frame.arrange);
                 Ok(())
             }
+            PageLayout::Record(l) => {
+                self.paint_record(l, frame);
+                Ok(())
+            }
+        }
+    }
+
+    /// The Rekam header's widths: the title and the "Buka folder" link (its
+    /// icon, a gap, the label).
+    fn record_head(&self) -> RecordHead {
+        let lang = i18n::lang();
+        let title_w = self
+            .text_width(text(lang, Key::PageRecord), &self.fonts.heading)
+            .ceil()
+            + 1.0;
+        let label = self
+            .text_width(text(lang, Key::RecOpenFolder), &self.fonts.button)
+            .ceil();
+        RecordHead {
+            title_w,
+            folder_w: REC_LINK_ICON + REC_LINK_GAP + label + 2.0,
+        }
+    }
+
+    /// The Rekam page after docs/design/rekaman.html section 2: the card with
+    /// the big round button (a red dot to start, a red square to stop) and
+    /// pause beside it, the source control, the recorded time, and the last
+    /// recordings with a "Buka" pill.
+    fn paint_record(&self, l: &RecordLayout, frame: &Frame) {
+        let lang = i18n::lang();
+        let p = self.palette;
+        let rec = frame.rec;
+        self.heading(text(lang, Key::PageRecord), l.header);
+        // "Buka folder": a folder glyph and the label, as a link.
+        let icon = Rect {
+            w: REC_LINK_ICON,
+            ..l.folder
+        };
+        self.icon_colored(Icon::Folder, icon, REC_LINK_ICON, p.secondary, 1.0, None);
+        let label = Rect {
+            x: icon.right() + REC_LINK_GAP,
+            w: l.folder.w - REC_LINK_ICON - REC_LINK_GAP,
+            ..l.folder
+        };
+        self.text_colored(
+            text(lang, Key::RecOpenFolder),
+            &self.fonts.button,
+            label,
+            p.secondary,
+            1.0,
+        );
+
+        // The card, the round button in a ring, and what it says.
+        self.set_color(p.raised, 1.0);
+        self.fill_round(l.card, radius::CARD);
+        self.stroke_round_width(
+            l.button,
+            l.button.h / 2.0,
+            mix(p.raised, p.secondary, 0.45),
+            3.0,
+        );
+        let c = (l.button.x + l.button.w / 2.0, l.button.y + l.button.h / 2.0);
+        self.set_color(theme::SOFT_RED, 1.0);
+        if rec.is_some() {
+            let side = REC_STOP_SIDE;
+            self.fill_round(
+                Rect {
+                    x: c.0 - side / 2.0,
+                    y: c.1 - side / 2.0,
+                    w: side,
+                    h: side,
+                },
+                4.0,
+            );
+        } else {
+            let r = REC_DOT_BIG;
+            self.fill_round(
+                Rect {
+                    x: c.0 - r,
+                    y: c.1 - r,
+                    w: r * 2.0,
+                    h: r * 2.0,
+                },
+                r,
+            );
+        }
+        if let Some(pause) = l.pause {
+            self.set_color(p.raised_hi, 1.0);
+            self.fill_round(pause, pause.h / 2.0);
+            let glyph = if rec.is_some_and(|r| r.paused) {
+                Icon::Play
+            } else {
+                Icon::Pause
+            };
+            self.icon_colored(glyph, pause, 16.0, p.text, 1.0, None);
+        }
+        let name = text(lang, if rec.is_some() { Key::RecStop } else { Key::Start });
+        self.text_colored(name, &self.fonts.small_center, l.button_label, p.secondary, 1.0);
+
+        // The source control: the chosen segment lit, all dim while locked.
+        let on = rec.map_or(frame.record.sources, |r| r.sources);
+        let alpha = if l.sources_enabled { 1.0 } else { REC_LOCKED };
+        self.set_color(p.raised, alpha);
+        self.fill_round(l.seg_track, radius::CONTROL);
+        for (sources, r) in l.segs {
+            let lit = sources == on;
+            if lit {
+                self.set_color(p.raised_hi, alpha);
+                self.fill_round(r, radius::SEGMENT);
+            }
+            let key = match (sources.mic, sources.system) {
+                (true, false) => Key::RecSourceMic,
+                (false, true) => Key::RecSourceSystem,
+                _ => Key::RecSourceBoth,
+            };
+            let ink = if lit { p.text } else { p.secondary };
+            self.text_colored(text(lang, key), &self.fonts.small_center, r, ink, alpha);
+        }
+
+        // The recorded time and its state, while recording.
+        if let Some(r) = rec {
+            let clock = Rect {
+                h: 22.0,
+                ..l.elapsed
+            };
+            let tint = if r.paused { p.ochre } else { p.text };
+            self.text_colored(&rec_clock(r.elapsed), &self.fonts.clock, clock, tint, 1.0);
+            let state = Rect {
+                y: clock.bottom(),
+                h: (l.elapsed.bottom() - clock.bottom()).max(0.0),
+                ..l.elapsed
+            };
+            let key = if r.paused { Key::Paused } else { Key::RecRecording };
+            let ink = if r.paused { p.ochre } else { theme::SOFT_RED };
+            self.text_colored(text(lang, key), &self.fonts.micro_center, state, ink, 1.0);
+        }
+
+        // The recent recordings.
+        if let Some(empty) = l.empty {
+            let (icon_area, text_area) = (
+                Rect {
+                    y: empty.y + empty.h / 2.0 - 24.0,
+                    h: 24.0,
+                    ..empty
+                },
+                Rect {
+                    y: empty.y + empty.h / 2.0 + 2.0,
+                    h: 18.0,
+                    ..empty
+                },
+            );
+            self.icon_colored(Icon::Mic, icon_area, 22.0, p.secondary, 0.8, None);
+            let hint = text(lang, Key::RecEmpty);
+            self.text_colored(hint, &self.fonts.eleven_center, text_area, p.secondary, 1.0);
+        }
+        for (row, entry) in l.rows.iter().zip(frame.record.recent) {
+            self.set_color(p.track, 1.0);
+            self.fill_round(row.well, radius::SEGMENT);
+            self.icon_colored(Icon::Mic, row.well, 14.0, p.secondary, 1.0, None);
+            self.text_colored(&entry.title, &self.fonts.row_name, row.title, p.text, 1.0);
+            let length = i18n::rec_duration(lang, entry.duration);
+            let sub = format!("{} \u{b7} {}", entry.started, length);
+            self.text_colored(&sub, &self.fonts.small, row.sub, p.secondary, 1.0);
+            self.set_color(p.raised_hi, 1.0);
+            self.fill_round(row.pill, row.pill.h / 2.0);
+            let open = text(lang, Key::Open);
+            self.text_colored(open, &self.fonts.small_center, row.pill, p.text, 1.0);
         }
     }
 
@@ -5003,6 +5180,14 @@ fn pomodoro_compact_boxes(text: Rect, time_w: f32) -> (Rect, Rect) {
     };
     (time, label)
 }
+
+/// The Rekam page's link icon and its gap to the label, the stop square's
+/// side, the start dot's radius and how dim the locked source control is.
+const REC_LINK_ICON: f32 = 14.0;
+const REC_LINK_GAP: f32 = 4.0;
+const REC_STOP_SIDE: f32 = 18.0;
+const REC_DOT_BIG: f32 = 11.0;
+const REC_LOCKED: f32 = 0.5;
 
 /// The mic meter's cream tint (`.lv.mic` in docs/design/rekaman.html).
 const REC_MIC_TINT: u32 = 0xEBCFB8;

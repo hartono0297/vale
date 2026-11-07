@@ -4535,7 +4535,7 @@ mod tests {
         let off = page_action(&pages, Hit::PageOn(Page::Notes)).expect("toggled");
         assert!(!off.is_on(Page::Notes));
         let later = page_action(&pages, Hit::PageMove(Page::Notes, 1)).expect("moved");
-        assert_eq!(later.position(Page::Notes), 4);
+        assert_eq!(later.position(Page::Notes), 5);
         // Nothing changes: no action.
         assert_eq!(page_action(&pages, Hit::PageMove(Page::Calendar, -1)), None);
         let mut one = PanelPages::default();
@@ -4550,11 +4550,11 @@ mod tests {
     fn page_clicks_move_among_the_pages_shown_and_restore_the_defaults() {
         let mut pages = PanelPages::default();
         pages.toggle(Page::Reminders);
-        // Pomodoro down: past the hidden Reminders, after Notes.
+        // Pomodoro down: past Rekam, which sits before the hidden Reminders.
         let moved = page_action(&pages, Hit::PageMove(Page::Pomodoro, 1)).expect("moved");
         assert_eq!(
             moved.visible()[..4],
-            [Page::Calendar, Page::Notes, Page::Pomodoro, Page::Media]
+            [Page::Calendar, Page::Record, Page::Pomodoro, Page::Notes]
         );
         assert_eq!(page_action(&pages, Hit::PageMove(Page::Calendar, -1)), None);
         // "Tampilkan" on a hidden page, "Kembalikan bawaan" on the changed one.
@@ -4573,15 +4573,15 @@ mod tests {
     fn a_drop_puts_the_page_at_the_place_it_was_dropped_on() {
         let mut pages = PanelPages::default();
         pages.toggle(Page::Reminders);
-        // Shown: Calendar, Pomodoro, Notes, Media, ... Dropping Calendar on
-        // the third place (Notes) puts it after Notes.
+        // Shown: Calendar, Pomodoro, Rekam, Notes, Media, ... Dropping
+        // Calendar on the third place (Rekam) puts it after Rekam.
         let next = page_drop(&pages, 0, 2).expect("moved");
         assert_eq!(
             next.visible()[..4],
-            [Page::Pomodoro, Page::Notes, Page::Calendar, Page::Media]
+            [Page::Pomodoro, Page::Record, Page::Calendar, Page::Notes]
         );
         // Up: Media dropped on the first place goes before Calendar.
-        let next = page_drop(&pages, 3, 0).expect("moved");
+        let next = page_drop(&pages, 4, 0).expect("moved");
         assert_eq!(next.visible()[0], Page::Media);
         assert_eq!(page_drop(&pages, 2, 2), None, "same place");
         assert_eq!(page_drop(&pages, 0, 40), None, "no such place");

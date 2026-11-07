@@ -91,6 +91,7 @@ pub fn label(s: Shortcut) -> Key {
         Shortcut::Go(page) => match page {
             Page::Calendar => Key::PageCalendar,
             Page::Pomodoro => Key::PagePomodoro,
+            Page::Record => Key::PageRecord,
             Page::Reminders => Key::PageReminders,
             Page::Notes => Key::PageNotes,
             Page::Media => Key::PageMedia,
@@ -114,6 +115,7 @@ pub(crate) fn page_icon(page: Page) -> Icon {
     match page {
         Page::Calendar => Icon::Calendar,
         Page::Pomodoro => Icon::Timer,
+        Page::Record => Icon::Mic,
         Page::Reminders => Icon::Bell,
         Page::Notes => Icon::Note,
         Page::Media => Icon::Music,
@@ -318,6 +320,7 @@ mod tests {
                 (Shortcut::Go(Page::Devices), None),
                 (Shortcut::Go(Page::Cli), None),
                 (Shortcut::Go(Page::Arrange), None),
+                (Shortcut::Go(Page::Record), None),
             ]
         );
     }

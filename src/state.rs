@@ -10,7 +10,7 @@ use crate::i18n::{self, Key, text};
 use crate::lyrics;
 use crate::model::{
     ArrangeSave, CalView, ClipAction, Effect, Event, Hit, MediaCommand, MediaInfo, Notice,
-    NoticeKind, NotifAction, OpenTarget, Page, PhoneStage, RecStatus, Shortcut,
+    NoticeKind, NotifAction, OpenTarget, Page, PhoneStage, RecEntry, RecStatus, Shortcut,
     ShotAction, Timeline, View,
 };
 use crate::mole::MoleOpts;
@@ -424,6 +424,8 @@ pub struct IslandState {
     toast_dot: bool,
     /// The audio recording in progress, as `App` last reported it.
     rec: Option<RecStatus>,
+    /// The newest finished recordings, for the Rekam page.
+    rec_recent: Vec<RecEntry>,
 }
 
 /// How a real Windows toast shows now: the whole notice (`Full`), a strip
@@ -448,6 +450,7 @@ impl IslandState {
             media: None,
             timeline: None,
             rec: None,
+            rec_recent: Vec::new(),
             lyrics_on: false,
             lyrics_ready: false,
             queue: VecDeque::new(),
@@ -549,6 +552,7 @@ impl IslandState {
             Event::LyricsReady(ready) => self.lyrics_ready = ready,
             Event::LyricsSetting(on) => self.lyrics_on = on,
             Event::RecStatus(status) => self.rec = status,
+            Event::RecRecent(list) => self.rec_recent = list,
             Event::Notice(notice) => match &notice.kind {
                 NoticeKind::ClaudeWaiting { .. }
                 | NoticeKind::Reminder { .. }
@@ -1862,6 +1866,10 @@ impl IslandState {
                     ) || (!self.notice_covers()
                         && matches!(self.view(), View::Notice(_)))) =>
             {
+                // The REC view leads to the Rekam page.
+                if self.view() == View::RecordCompact {
+                    self.page = Page::Record;
+                }
                 self.open_by_click(now)
             }
             // The due reminder's "Selesai" chip on the closed notch: done at
@@ -1911,6 +1919,9 @@ impl IslandState {
                 View::PomodoroCompact if self.pomodoro.status() == PomoStatus::Ready => {
                     self.pomodoro.start_pause(now)
                 }
+                // Not in Click mode (the arm above): the next visit opens on
+                // the Rekam page.
+                View::RecordCompact => self.page = Page::Record,
                 _ => {}
             },
             Hit::Prev => effects.push(Effect::Media(MediaCommand::Prev)),
@@ -2053,6 +2064,36 @@ impl IslandState {
             Hit::DeviceDetail(i) => {
                 if self.view() == View::Panel(Page::Devices) {
                     effects.push(Effect::DeviceDetail(i));
+                }
+            }
+            // The Rekam page's buttons count only while it shows. The source
+            // choice is locked while a recording runs, pause needs one.
+            Hit::RecToggle => {
+                if self.view() == View::Panel(Page::Record) {
+                    effects.push(Effect::RecToggle);
+                }
+            }
+            Hit::RecPause => {
+                if self.view() == View::Panel(Page::Record) && self.rec.is_some() {
+                    effects.push(Effect::RecPause);
+                }
+            }
+            Hit::RecSources(sources) => {
+                if self.view() == View::Panel(Page::Record) && self.rec.is_none() {
+                    effects.push(Effect::RecSources(sources));
+                }
+            }
+            Hit::RecOpen(i) => {
+                if self.view() == View::Panel(Page::Record)
+                    && let Some(entry) = self.rec_recent.get(i)
+                {
+                    let path = entry.path.clone();
+                    self.collapse_for(Effect::RecReveal(path), effects);
+                }
+            }
+            Hit::RecFolder => {
+                if self.view() == View::Panel(Page::Record) {
+                    self.collapse_for(Effect::RecOpenFolder, effects);
                 }
             }
             Hit::DevicesEjectAll => {
@@ -2996,6 +3037,11 @@ impl IslandState {
         self.rec.as_ref()
     }
 
+    /// The Rekam page's list: the newest recordings, newest first.
+    pub fn rec_recent(&self) -> &[RecEntry] {
+        &self.rec_recent
+    }
+
     /// The local date as of the last `Event::Today`.
     pub fn today(&self) -> NaiveDate {
         self.today
@@ -3337,7 +3383,7 @@ mod tests {
         assert_eq!(s.view(), View::MediaCompact);
         s.apply(Event::Hover(true), t0);
         assert_eq!(s.view(), View::Panel(Page::Calendar));
-        s.apply(Event::Wheel(-480), t0);
+        s.apply(Event::Wheel(-600), t0);
         assert_eq!(s.view(), View::Panel(Page::Media));
         leave(&mut s, t0);
         assert_eq!(s.view(), View::MediaCompact);
@@ -4295,7 +4341,7 @@ mod tests {
         s.apply(Event::Wheel(-119), t0);
         assert_eq!(s.view(), View::Panel(Page::Pomodoro));
         s.apply(Event::Wheel(-1), t0);
-        assert_eq!(s.view(), View::Panel(Page::Reminders));
+        assert_eq!(s.view(), View::Panel(Page::Record));
     }
 
     #[test]
@@ -4332,7 +4378,7 @@ mod tests {
         s.apply(Event::PageFlick { next: true }, t0);
         assert_eq!(s.view(), View::Panel(Page::Pomodoro));
         s.apply(Event::PageFlick { next: true }, t0);
-        assert_eq!(s.view(), View::Panel(Page::Reminders));
+        assert_eq!(s.view(), View::Panel(Page::Record));
         s.apply(Event::PageFlick { next: false }, t0);
         assert_eq!(s.view(), View::Panel(Page::Pomodoro));
     }
@@ -4343,6 +4389,7 @@ mod tests {
         let mut s = st();
         let mut pages = PanelPages::default();
         pages.toggle(Page::Pomodoro);
+        pages.toggle(Page::Record);
         pages.toggle(Page::Reminders);
         s.apply(Event::PanelPages(pages), t0);
         s.apply(Event::Hover(true), t0);
@@ -4490,6 +4537,7 @@ mod tests {
         let mut s = st();
         let mut pages = PanelPages::default();
         pages.toggle(Page::Pomodoro);
+        pages.toggle(Page::Record);
         pages.toggle(Page::Reminders);
         s.apply(Event::PanelPages(pages), t0);
         s.apply(Event::Hover(true), t0);
@@ -4536,6 +4584,7 @@ mod tests {
             [
                 Page::Calendar,
                 Page::Pomodoro,
+                Page::Record,
                 Page::Reminders,
                 Page::Notes,
                 Page::Media,
@@ -7703,7 +7752,98 @@ mod tests {
         s.apply(Event::OpenMode(OpenMode::Click), t0);
         s.apply(Event::RecStatus(Some(rec_status(t0))), t0);
         s.apply(Event::Click(Hit::Body), t0);
-        assert!(matches!(s.view(), View::Panel(_)));
+        assert_eq!(s.view(), View::Panel(Page::Record), "on the Rekam page");
+    }
+
+    #[test]
+    fn a_click_on_the_rec_view_without_click_mode_aims_the_next_visit_at_rekam() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::RecStatus(Some(rec_status(t0))), t0);
+        s.apply(Event::Click(Hit::Body), t0);
+        assert_eq!(s.view(), View::RecordCompact, "a click alone opens nothing");
+        s.apply(Event::Hover(true), t0);
+        assert_eq!(s.view(), View::Panel(Page::Record));
+    }
+
+    fn rec_entry(name: &str) -> RecEntry {
+        RecEntry {
+            path: std::path::PathBuf::from(name),
+            title: name.into(),
+            started: "Hari ini 10:02".into(),
+            duration: Duration::from_secs(42 * 60),
+        }
+    }
+
+    #[test]
+    fn the_rekam_buttons_send_their_effects_only_on_that_page() {
+        let t0 = Instant::now();
+        let mut s = st();
+        // Not on the page: nothing.
+        for hit in [Hit::RecToggle, Hit::RecFolder] {
+            assert_eq!(s.apply(Event::Click(hit), t0), vec![]);
+        }
+        open_on(&mut s, Page::Record, t0);
+        assert_eq!(
+            s.apply(Event::Click(Hit::RecToggle), t0),
+            vec![Effect::RecToggle]
+        );
+        let both = crate::model::RecSources {
+            mic: true,
+            system: true,
+        };
+        assert_eq!(
+            s.apply(Event::Click(Hit::RecSources(both)), t0),
+            vec![Effect::RecSources(both)]
+        );
+        // Pause needs a recording.
+        assert_eq!(s.apply(Event::Click(Hit::RecPause), t0), vec![]);
+        s.apply(Event::RecStatus(Some(rec_status(t0))), t0);
+        assert_eq!(s.view(), View::Panel(Page::Record), "the panel stays");
+        assert_eq!(
+            s.apply(Event::Click(Hit::RecPause), t0),
+            vec![Effect::RecPause]
+        );
+        // The sources are locked while recording.
+        assert_eq!(s.apply(Event::Click(Hit::RecSources(both)), t0), vec![]);
+        // Stop is still the toggle.
+        assert_eq!(
+            s.apply(Event::Click(Hit::RecToggle), t0),
+            vec![Effect::RecToggle]
+        );
+    }
+
+    #[test]
+    fn a_recent_recording_reveals_its_file_and_the_folder_opens_with_the_panel_out_of_the_way() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(
+            Event::RecRecent(vec![rec_entry("a.m4a"), rec_entry("b.m4a")]),
+            t0,
+        );
+        assert_eq!(s.rec_recent().len(), 2);
+        open_on(&mut s, Page::Record, t0);
+        // No such row: nothing.
+        assert_eq!(s.apply(Event::Click(Hit::RecOpen(5)), t0), vec![]);
+        assert_eq!(
+            s.apply(Event::Click(Hit::RecOpen(1)), t0),
+            vec![Effect::RecReveal("b.m4a".into())]
+        );
+        assert!(!matches!(s.view(), View::Panel(_)), "the panel collapsed");
+        let mut s = st();
+        open_on(&mut s, Page::Record, t0);
+        assert_eq!(
+            s.apply(Event::Click(Hit::RecFolder), t0),
+            vec![Effect::RecOpenFolder]
+        );
+        assert!(!matches!(s.view(), View::Panel(_)), "the panel collapsed");
+        s.apply(Event::RecRecent(vec![]), t0);
+        assert!(s.rec_recent().is_empty());
+    }
+
+    #[test]
+    fn the_rekam_tile_is_off_by_default() {
+        assert!(!Shortcut::Go(Page::Record).default_on());
     }
 
     // ---- v2: pomodoro ----
@@ -8384,10 +8524,12 @@ mod tests {
     }
 
     #[test]
-    fn reminder_page_sits_between_pomodoro_and_notes() {
+    fn reminder_page_sits_between_rekam_and_notes() {
         let t0 = Instant::now();
         let mut s = st();
         open_on(&mut s, Page::Pomodoro, t0);
+        s.apply(Event::Wheel(-120), t0);
+        assert_eq!(s.view(), View::Panel(Page::Record), "Rekam follows Pomodoro");
         s.apply(Event::Wheel(-120), t0);
         assert_eq!(s.view(), View::Panel(Page::Reminders));
         s.apply(Event::Wheel(-120), t0);
