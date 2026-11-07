@@ -45,7 +45,8 @@ not in Alt+Tab). Desktop layer: `HWND_BOTTOM` with the shell window (Progman)
 as owner, the way Rainmeter keeps skins on the desktop; `WM_WINDOWPOSCHANGING`
 forces `HWND_BOTTOM` again (mode in `GWLP_USERDATA`, so the procedure needs no
 borrow), so a click that activates a note never raises it. Pinned notes and the
-"Di atas jendela" layer are topmost. `TaskbarCreated` re-applies owner and
+"Di atas jendela" layer are topmost. A new note is "lifted" over other windows
+until another window is activated ([[sticky-note-on-top]]). `TaskbarCreated` re-applies owner and
 order. **Win+D is not verified**: the owner trick is the documented Rainmeter
 approach; if Windows hides the notes anyway on this build, that is accepted.
 Susun never sees a note (`is_alt_tab_style` is false for a tool window, and it
@@ -162,11 +163,14 @@ the lyrics card's, merged on main; `WM_APP + 70` is the card's, 71 is ours). Idl
 
 Settings -> Widget gallery (+), tray "Catatan tempel baru" (greyed at 20 with
 the reason in the label), the seventh hotkey row (no default; a short island
-notice at 20), the pin on a Notes card (`Hit::NoteSticky`, 22 dip, top-right:
-accent when on the desktop), and the (+) in a note's header. Each makes an
+notice at 20), the sticky-paper icon on a Notes card (`Hit::NoteSticky`,
+`Icon::StickyNote` since 2026-11-07, 22 dip, top-right: accent when on the
+desktop; a right-click on the card opens a one-item menu with the same toggle),
+and the (+) in a note's header. Each makes an
 empty Krem note (a right click on the header (+) or the gallery's (+) picks a
-template, run A below), gives it the keyboard (except the pin, the note has
-text) and turns `show` back on. Settings -> Widget: [[settings-structure]]. The hotkey:
+template, run A below), gives it the keyboard (except the card icon, the note has
+text), opens it on top of other windows ([[sticky-note-on-top]]) and turns
+`show` back on. Settings -> Widget: [[settings-structure]]. The hotkey:
 [[hotkeys]].
 
 The sticky note list (a header button, a tray item and an eighth hotkey row open

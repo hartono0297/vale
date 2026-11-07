@@ -126,9 +126,9 @@ sheet; nothing for what is already so) through `apply::apply`, arms the save,
 
 `bring_front` is `focus(id)` plus `Win::lifted`: a flag that makes
 `above_windows` true, so `apply_z` puts a note of the desktop layer over other
-windows (topmost, no shell owner). `end_editing` (the note loses the keyboard)
-clears it and runs `apply_z` again, so the note goes back to its layer. The flag
-is set only if the note did get the EDIT, so nothing can leave it stuck.
+windows. Since 2026-11-07 the lift no longer ends with the keyboard: it ends
+when another window is activated. Every new note uses the same lift; see
+[[sticky-note-on-top]] for the rules.
 
 ## Undo snapshot rules
 

@@ -1,7 +1,7 @@
 ---
 tags: [spec, sticky-note, draft]
 date: 2026-11-07
-status: approved, brainstorming done (2026-11-07)
+status: implemented and merged into main (2026-11-07), see [[sticky-note-on-top]]
 ---
 
 # Sticky note: new notes on top, desktop icon on the Notes card
