@@ -53,6 +53,7 @@ mod state;
 mod system;
 mod theme;
 mod tiles;
+mod transcribe;
 mod ui;
 mod update;
 mod widgets;
