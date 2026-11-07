@@ -172,6 +172,7 @@ impl ZoomCamera {
     }
 
     /// The level on screen now (between 1 and `level` during a transition).
+    #[cfg(test)]
     pub fn shown_level(&self) -> f64 {
         self.shown
     }
@@ -240,16 +241,26 @@ impl ZoomCamera {
     }
 }
 
+// The auto-zoom below is phase 4's design hook: tested, not wired yet.
+
 /// What the later auto-zoom reacts to. Positions in source pixels.
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum InputEvent {
-    Click { at: (f64, f64) },
+    Click {
+        at: (f64, f64),
+    },
     /// A key that types (letters, digits, Enter, Backspace), at the cursor
     /// (the caret is not known to the recorder).
-    Typing { at: (f64, f64) },
-    Move { at: (f64, f64) },
+    Typing {
+        at: (f64, f64),
+    },
+    Move {
+        at: (f64, f64),
+    },
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AutoAction {
     ZoomIn { at: (f64, f64) },
@@ -258,6 +269,7 @@ pub enum AutoAction {
 
 /// The auto-zoom rules (phase 4, not wired yet): a click or typing zooms in;
 /// a quiet spell or a long move away zooms back out.
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Debug)]
 pub struct AutoZoom {
     /// Out after this long without a click or a key.
@@ -273,6 +285,7 @@ pub struct AutoZoom {
     out_at_ms: f64,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 impl AutoZoom {
     pub fn new(source_w: f64, source_h: f64) -> AutoZoom {
         AutoZoom {
@@ -306,7 +319,8 @@ impl AutoZoom {
             }
             InputEvent::Move { at } => {
                 let anchor = self.zoomed?;
-                let far = (at.0 - anchor.0).hypot(at.1 - anchor.1) > self.leave_share * self.diagonal;
+                let far =
+                    (at.0 - anchor.0).hypot(at.1 - anchor.1) > self.leave_share * self.diagonal;
                 far.then(|| self.out(now_ms))
             }
         }
@@ -534,15 +548,26 @@ mod tests {
         let mut auto = AutoZoom::new(1920.0, 1080.0);
         auto.feed(InputEvent::Click { at: (100.0, 100.0) }, 0.0);
         // A short move stays.
-        assert_eq!(auto.feed(InputEvent::Move { at: (300.0, 200.0) }, 100.0), None);
         assert_eq!(
-            auto.feed(InputEvent::Move { at: (1500.0, 900.0) }, 200.0),
+            auto.feed(InputEvent::Move { at: (300.0, 200.0) }, 100.0),
+            None
+        );
+        assert_eq!(
+            auto.feed(
+                InputEvent::Move {
+                    at: (1500.0, 900.0)
+                },
+                200.0
+            ),
             Some(AutoAction::ZoomOut)
         );
         // Moves while out do nothing.
         assert_eq!(auto.feed(InputEvent::Move { at: (0.0, 0.0) }, 250.0), None);
         // Too soon after the zoom-out.
-        assert_eq!(auto.feed(InputEvent::Click { at: (10.0, 10.0) }, 400.0), None);
+        assert_eq!(
+            auto.feed(InputEvent::Click { at: (10.0, 10.0) }, 400.0),
+            None
+        );
         assert_eq!(
             auto.feed(InputEvent::Click { at: (10.0, 10.0) }, 900.0),
             Some(AutoAction::ZoomIn { at: (10.0, 10.0) })

@@ -54,11 +54,28 @@ impl Button {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Entry {
-    Move { t: u64, x: i32, y: i32 },
-    Down { t: u64, x: i32, y: i32, button: Button },
-    Up { t: u64, x: i32, y: i32, button: Button },
+    Move {
+        t: u64,
+        x: i32,
+        y: i32,
+    },
+    Down {
+        t: u64,
+        x: i32,
+        y: i32,
+        button: Button,
+    },
+    Up {
+        t: u64,
+        x: i32,
+        y: i32,
+        button: Button,
+    },
     /// `level` 0 means the zoom went off.
-    Zoom { t: u64, level: f64 },
+    Zoom {
+        t: u64,
+        level: f64,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -224,7 +241,10 @@ mod tests {
         }
         assert_eq!(encode_entry(&all[1]), r#"[33,10,20,"ld"]"#);
         assert_eq!(encode_entry(&all[4]), r#"[500,"z",2.5]"#);
-        assert_eq!(encode_entry(&Entry::Zoom { t: 1, level: 2.0 }), r#"[1,"z",2]"#);
+        assert_eq!(
+            encode_entry(&Entry::Zoom { t: 1, level: 2.0 }),
+            r#"[1,"z",2]"#
+        );
     }
 
     #[test]

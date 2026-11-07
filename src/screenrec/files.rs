@@ -135,7 +135,9 @@ mod tests {
             dir.join("2026-11-07 1430.mp4"),
             dir.join("2026-11-07 1430 (2).mp4"),
         ];
-        let p = unique_path(dir, "2026-11-07 1430", "mp4", |p| taken.iter().any(|t| t == p));
+        let p = unique_path(dir, "2026-11-07 1430", "mp4", |p| {
+            taken.iter().any(|t| t == p)
+        });
         assert_eq!(p, dir.join("2026-11-07 1430 (3).mp4"));
         let p = unique_path(dir, "x", "mp4", |_| false);
         assert_eq!(p, dir.join("x.mp4"));
@@ -144,7 +146,10 @@ mod tests {
     #[test]
     fn the_side_files_share_the_name() {
         let v = Path::new(r"C:\v\2026-11-07 1430 Zoom.mp4");
-        assert_eq!(sidecar_path(v), Path::new(r"C:\v\2026-11-07 1430 Zoom.vale.json"));
+        assert_eq!(
+            sidecar_path(v),
+            Path::new(r"C:\v\2026-11-07 1430 Zoom.vale.json")
+        );
         assert_eq!(
             cursor_log_path(v),
             Path::new(r"C:\v\2026-11-07 1430 Zoom.cursor.jsonl")

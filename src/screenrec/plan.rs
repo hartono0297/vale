@@ -7,14 +7,25 @@ use super::zoom::RectF;
 pub const MAX_W: u32 = 4096;
 pub const MAX_H: u32 = 2304;
 
+/// Encoders refuse smaller frames (the Windows one wants about 64 px).
+pub const MIN_SIDE: u32 = 64;
+
 /// The encoded size for a source of `w` x `h`: the source's own size, scaled
-/// down (aspect kept) to fit the encoder and `max_h` when set, both sides
-/// even (NV12 and H.264 need it), at least 2.
+/// down (aspect kept) to fit the encoder and `max_h` when set, scaled up
+/// when a side is under [`MIN_SIDE`], both sides even (NV12 and H.264 need
+/// it) and at least [`MIN_SIDE`] (a very thin source gets bars).
 pub fn output_size(w: u32, h: u32, max_h: Option<u32>) -> (u32, u32) {
     let (w, h) = (w.max(2) as f64, h.max(2) as f64);
-    let cap_h = max_h.map_or(MAX_H, |m| m.clamp(2, MAX_H)) as f64;
-    let scale = (MAX_W as f64 / w).min(cap_h / h).min(1.0);
-    let even = |v: f64| ((v.floor() as u32) & !1).max(2);
+    let cap_h = max_h.map_or(MAX_H, |m| m.clamp(MIN_SIDE, MAX_H)) as f64;
+    let mut scale = (MAX_W as f64 / w).min(cap_h / h).min(1.0);
+    let min = MIN_SIDE as f64;
+    if w * scale < min || h * scale < min {
+        scale = (min / w)
+            .max(min / h)
+            .min(MAX_W as f64 / w)
+            .min(MAX_H as f64 / h);
+    }
+    let even = |v: f64| ((v.floor() as u32) & !1).max(MIN_SIDE);
     (even(w * scale), even(h * scale))
 }
 
@@ -127,13 +138,6 @@ impl Timeline {
         let t = qpc - self.start - self.paused_total;
         (t >= 0).then(|| ticks_to_hns(t, self.freq))
     }
-
-    /// The video time so far in milliseconds (the pause, if any, frozen).
-    pub fn elapsed_ms(&self, qpc: i64) -> u64 {
-        let end = self.paused_since.unwrap_or(qpc);
-        let t = (end - self.start - self.paused_total).max(0);
-        (ticks_to_hns(t, self.freq) / 10_000) as u64
-    }
 }
 
 #[cfg(test)]
@@ -149,8 +153,19 @@ mod tests {
     #[test]
     fn odd_sizes_become_even() {
         assert_eq!(output_size(1281, 721, None), (1280, 720));
-        assert_eq!(output_size(1, 1, None), (2, 2));
-        assert_eq!(output_size(0, 0, None), (2, 2));
+        assert_eq!(output_size(1001, 601, None), (1000, 600));
+    }
+
+    #[test]
+    fn tiny_sources_are_scaled_up_to_what_encoders_take() {
+        assert_eq!(output_size(1, 1, None), (64, 64));
+        assert_eq!(output_size(0, 0, None), (64, 64));
+        assert_eq!(output_size(32, 32, None), (64, 64));
+        assert_eq!(output_size(200, 40, None), (320, 64));
+        // A sliver: the long side hits the limit, the short one gets bars.
+        let (w, h) = output_size(8000, 10, None);
+        assert_eq!(w, 4096);
+        assert_eq!(h, 64);
     }
 
     #[test]
@@ -207,8 +222,14 @@ mod tests {
         let b = RectF::new(0.0, 0.0, 1920.0, 1080.0);
         let v = RectF::new(480.0, 270.0, 960.0, 540.0);
         let (src, dst) = map_view(v, b, 1920, 1080).unwrap();
-        assert_eq!((src.left, src.top, src.right, src.bottom), (480, 270, 1440, 810));
-        assert_eq!((dst.left, dst.top, dst.right, dst.bottom), (0, 0, 1920, 1080));
+        assert_eq!(
+            (src.left, src.top, src.right, src.bottom),
+            (480, 270, 1440, 810)
+        );
+        assert_eq!(
+            (dst.left, dst.top, dst.right, dst.bottom),
+            (0, 0, 1920, 1080)
+        );
     }
 
     #[test]
@@ -218,14 +239,20 @@ mod tests {
         let v = RectF::new(-400.0, 0.0, 1600.0, 900.0);
         let (src, dst) = map_view(v, b, 1600, 900).unwrap();
         assert_eq!((src.left, src.right), (0, 800));
-        assert_eq!((dst.left, dst.right, dst.top, dst.bottom), (400, 1200, 0, 900));
+        assert_eq!(
+            (dst.left, dst.right, dst.top, dst.bottom),
+            (400, 1200, 0, 900)
+        );
     }
 
     #[test]
     fn a_region_maps_from_its_offset() {
         let b = RectF::new(100.0, 50.0, 640.0, 360.0);
         let (src, dst) = map_view(b, b, 640, 360).unwrap();
-        assert_eq!((src.left, src.top, src.right, src.bottom), (100, 50, 740, 410));
+        assert_eq!(
+            (src.left, src.top, src.right, src.bottom),
+            (100, 50, 740, 410)
+        );
         assert_eq!((dst.left, dst.top, dst.right, dst.bottom), (0, 0, 640, 360));
     }
 
@@ -253,11 +280,9 @@ mod tests {
         t.pause(7000);
         assert!(t.is_paused());
         assert_eq!(t.media_time(8000), None);
-        assert_eq!(t.elapsed_ms(9000), 2000);
         t.resume(10_000);
         // 3 s paused: 11 s on the clock is 3 s of video.
         assert_eq!(t.media_time(11_000), Some(30_000_000));
-        assert_eq!(t.elapsed_ms(11_000), 3000);
         // A second pause call keeps the first start; resume twice is harmless.
         t.pause(12_000);
         t.pause(13_000);
