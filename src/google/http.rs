@@ -213,6 +213,102 @@ impl Http {
         Ok(status)
     }
 
+    /// `download_to` that resumes and can be cancelled. With `from > 0` it
+    /// asks for `Range: bytes=<from>-`: a 206 answer is appended to the file
+    /// at `path` (which must hold exactly `from` bytes), a 200 answer
+    /// replaces it from the start. `max_bytes` caps the whole file, and
+    /// `progress(done, total)` counts the whole file too. Any other status
+    /// leaves the file alone and is returned as is. `cancel` is read before
+    /// each piece; once set the call fails with `E_ABORT` and the file keeps
+    /// what arrived, ready to resume.
+    pub fn download_resume(
+        &self,
+        url: &str,
+        extra: &[(&str, &str)],
+        path: &std::path::Path,
+        from: u64,
+        max_bytes: u64,
+        cancel: &std::sync::atomic::AtomicBool,
+        mut progress: impl FnMut(u64, Option<u64>),
+    ) -> Result<u16> {
+        use std::io::Write;
+        use std::sync::atomic::Ordering;
+        use windows::Win32::Foundation::E_ABORT;
+        let aborted = || Error::new(E_ABORT, "download cancelled");
+        let request = self.request(&HttpMethod::Get()?, url, None)?;
+        let headers = request.Headers()?;
+        for (name, value) in extra {
+            headers.TryAppendWithoutValidation(&HSTRING::from(*name), &HSTRING::from(*value))?;
+        }
+        if from > 0 {
+            headers.TryAppendWithoutValidation(
+                &HSTRING::from("Range"),
+                &HSTRING::from(format!("bytes={from}-")),
+            )?;
+        }
+        let stall = |timeout: Option<Duration>| timeout.map(|t| Instant::now() + t);
+        let deadline = stall(self.timeout);
+        let response = join_by!(
+            self.client
+                .SendRequestWithOptionAsync(&request, HttpCompletionOption::ResponseHeadersRead)?,
+            deadline
+        )?;
+        let status = response.StatusCode()?.0 as u16;
+        let append = match status {
+            206 if from > 0 => true,
+            200 => false,
+            _ => return Ok(status),
+        };
+        let content = response.Content()?;
+        let start = if append { from } else { 0 };
+        let total = content
+            .Headers()
+            .and_then(|h| h.ContentLength())
+            .and_then(|n| n.Value())
+            .ok()
+            .map(|n| start + n);
+        if total.is_some_and(|n| n > max_bytes) {
+            return Err(Error::new(E_FAIL, "response too large"));
+        }
+        if cancel.load(Ordering::Relaxed) {
+            return Err(aborted());
+        }
+        let stream = join_by!(content.ReadAsInputStreamAsync()?, deadline)?;
+        let mut file = if append {
+            std::fs::OpenOptions::new().append(true).open(path)?
+        } else {
+            std::fs::File::create(path)?
+        };
+        const CHUNK: u32 = 64 * 1024;
+        let mut done = start;
+        let mut piece = Vec::new();
+        loop {
+            if cancel.load(Ordering::Relaxed) {
+                file.flush()?;
+                return Err(aborted());
+            }
+            let deadline = stall(self.timeout);
+            let buffer = join_by!(
+                stream.ReadAsync(&Buffer::Create(CHUNK)?, CHUNK, InputStreamOptions::Partial)?,
+                deadline
+            )?;
+            let len = buffer.Length()? as usize;
+            if len == 0 {
+                break;
+            }
+            if done + len as u64 > max_bytes {
+                return Err(Error::new(E_FAIL, "response too large"));
+            }
+            piece.resize(len, 0);
+            DataReader::FromBuffer(&buffer)?.ReadBytes(&mut piece)?;
+            file.write_all(&piece)?;
+            done += len as u64;
+            progress(done, total);
+        }
+        file.flush()?;
+        Ok(status)
+    }
+
     /// `method` is "POST" or "PATCH"; `body` is sent as UTF-8 JSON.
     pub fn send_json(
         &self,
@@ -394,6 +490,80 @@ mod timeout_tests {
             .unwrap();
         assert_eq!(status, 404);
         assert!(!path.exists(), "an error answer must not create the file");
+    }
+
+    /// `serve_once` that also hands back the request it read.
+    fn serve_once_seen(reply: &'static str) -> (String, mpsc::Receiver<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/x", listener.local_addr().unwrap());
+        let (seen, request) = mpsc::channel();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let _ = seen.send(String::from_utf8_lossy(&buf[..n]).into_owned());
+                let _ = stream.write_all(reply.as_bytes());
+            }
+        });
+        (url, request)
+    }
+
+    #[test]
+    fn a_resumed_download_asks_for_the_rest_and_appends_it() {
+        use std::sync::atomic::AtomicBool;
+        let http = Http::new().unwrap().with_timeout(Duration::from_secs(10));
+        let path = temp_file("resume");
+        std::fs::write(&path, b"hello").unwrap();
+        let (url, request) = serve_once_seen(
+            "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 5-10/11\r\nContent-Length: 6\r\nConnection: close\r\n\r\n world",
+        );
+        let mut seen = Vec::new();
+        let cancel = AtomicBool::new(false);
+        let status = http
+            .download_resume(&url, &[], &path, 5, 1024, &cancel, |d, t| seen.push((d, t)))
+            .unwrap();
+        assert_eq!(status, 206);
+        let request = request.recv().unwrap().to_ascii_lowercase();
+        assert!(request.contains("range: bytes=5-"), "{request}");
+        assert_eq!(std::fs::read(&path).unwrap(), b"hello world");
+        assert_eq!(seen.last(), Some(&(11, Some(11))));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_full_answer_to_a_resume_starts_the_file_over() {
+        use std::sync::atomic::AtomicBool;
+        let http = Http::new().unwrap().with_timeout(Duration::from_secs(10));
+        let path = temp_file("restart");
+        std::fs::write(&path, b"stale").unwrap();
+        let (url, _request) = serve_once_seen(
+            "HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\nhello world",
+        );
+        let cancel = AtomicBool::new(false);
+        let status = http
+            .download_resume(&url, &[], &path, 5, 1024, &cancel, |_, _| {})
+            .unwrap();
+        assert_eq!(status, 200);
+        assert_eq!(std::fs::read(&path).unwrap(), b"hello world");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_cancelled_download_fails_and_keeps_the_part() {
+        use std::sync::atomic::AtomicBool;
+        let http = Http::new().unwrap().with_timeout(Duration::from_secs(10));
+        let path = temp_file("cancel");
+        std::fs::write(&path, b"hello").unwrap();
+        let (url, _request) = serve_once_seen(
+            "HTTP/1.1 206 Partial Content\r\nContent-Length: 6\r\nConnection: close\r\n\r\n world",
+        );
+        let cancel = AtomicBool::new(true);
+        let error = http
+            .download_resume(&url, &[], &path, 5, 1024, &cancel, |_, _| {})
+            .unwrap_err();
+        assert_eq!(error.code(), windows::Win32::Foundation::E_ABORT);
+        assert_eq!(std::fs::read(&path).unwrap(), b"hello");
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

@@ -15,6 +15,8 @@ windows-numerics = "0.3"
 windows-core = "0.62"
 # The QR code of the phone link (Nayuki, no dependencies).
 qrcodegen = "=1.8.0"
+# Inflates the transcript engine's .tar.gz (pure Rust, one small dependency).
+miniz_oxide = "0.8"
 
 [dependencies.windows]
 version = "0.62"
