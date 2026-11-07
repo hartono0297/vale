@@ -63,6 +63,9 @@ pub(super) struct RecState {
     /// recording uses, or the chosen ones (the Windows default when none)
     /// while idle. Read when the page opens and when a choice changes.
     devices: [String; 2],
+    /// The devices the starting recording was told to use, `[mic, system]`:
+    /// a pick made while it was starting is applied once it runs.
+    started_with: [Option<String>; 2],
 }
 
 enum Busy {
@@ -101,6 +104,20 @@ impl RecState {
 enum Toggle {
     Start,
     Stop,
+}
+
+/// The sources whose choice in `now` is not the one a recording started with:
+/// they are handed to the running recorder (a pick made while it was
+/// starting).
+fn changed_picks(
+    started: &[Option<String>; 2],
+    now: &[Option<String>; 2],
+) -> Vec<(Source, Option<String>)> {
+    [Source::Mic, Source::System]
+        .into_iter()
+        .filter(|s| started[s.index()] != now[s.index()])
+        .map(|s| (s, now[s.index()].clone()))
+        .collect()
 }
 
 /// Whether `source` is one of the sources chosen for the recording.
@@ -310,21 +327,49 @@ pub(crate) fn source_lost_notice(lang: Lang, source: Source) -> Notice {
 
 /// A source moved to another device by itself: the Windows default changed,
 /// or the device the user chose was not there (`fell_back`) and the default
-/// took over. `name` is the device in use now.
+/// took over. `name` is the device in use now; `chosen` the name of the
+/// device the user chose, when it can still be looked up, so the notice says
+/// which one is missing.
 pub(crate) fn device_switched_notice(
     lang: Lang,
     source: Source,
     name: &str,
     fell_back: bool,
+    chosen: Option<&str>,
 ) -> Notice {
     let using = format!("{} {name}", text(lang, Key::RecUsing));
     let (title, body) = match (fell_back, source) {
-        (false, Source::Mic) => (Key::RecMicSwitched, name.to_owned()),
-        (false, Source::System) => (Key::RecSystemSwitched, name.to_owned()),
-        (true, Source::Mic) => (Key::RecMicMissing, using),
-        (true, Source::System) => (Key::RecSystemMissing, using),
+        (false, Source::Mic) => (text(lang, Key::RecMicSwitched).to_owned(), name.to_owned()),
+        (false, Source::System) => (text(lang, Key::RecSystemSwitched).to_owned(), name.to_owned()),
+        (true, source) => (missing_title(lang, source, chosen), using),
     };
-    notice("rec-device", lang, text(lang, title).into(), body, NoticeKind::RecInfo)
+    notice("rec-device", lang, title, body, NoticeKind::RecInfo)
+}
+
+/// "Mic <chosen> tidak ada" / "<chosen> not found", or the plain "chosen
+/// device not found" when the name is not known.
+fn missing_title(lang: Lang, source: Source, chosen: Option<&str>) -> String {
+    let Some(chosen) = chosen else {
+        return text(
+            lang,
+            match source {
+                Source::Mic => Key::RecMicMissing,
+                Source::System => Key::RecSystemMissing,
+            },
+        )
+        .to_owned();
+    };
+    let not_found = text(lang, Key::RecNotFound);
+    match lang {
+        Lang::Id => {
+            let word = match source {
+                Source::Mic => Key::RecMicWord,
+                Source::System => Key::RecSystemWord,
+            };
+            format!("{} {chosen} {not_found}", text(lang, word))
+        }
+        Lang::En => format!("{chosen} {not_found}"),
+    }
 }
 
 /// What the Rekam page shows for a source while idle: the chosen device's
@@ -569,6 +614,7 @@ impl App {
             ],
             echo_cancel: self.config.recording.echo_cancel,
         };
+        self.rec.started_with = opts.devices.clone();
         let say = self.rec_poster(session);
         let events: Box<dyn Fn(RecEvent) + Send> = Box::new({
             let say = self.rec_poster(session);
@@ -623,6 +669,15 @@ impl App {
                 let status = status_of(&recorder, self.rec_sources);
                 let used = recorder.path().parent().map(Path::to_path_buf);
                 self.rec.recorder = Some(recorder);
+                // A device picked while the recording was starting is saved
+                // but the capture was opened with the old one.
+                let now = [Source::Mic, Source::System]
+                    .map(|s| self.config.recording.device(s).map(str::to_owned));
+                if let Some(recorder) = self.rec.recorder.as_ref() {
+                    for (source, id) in changed_picks(&self.rec.started_with, &now) {
+                        recorder.set_device(source, id);
+                    }
+                }
                 self.rec_read_devices();
                 tray::set_recording(self.hwnd, true);
                 tray::set_mic_muted(false);
@@ -907,9 +962,17 @@ impl App {
                 source,
                 name,
                 fell_back,
+                manual,
             } => {
+                // The capture thread has switched now: the names are read
+                // after it, not when the pick was made.
                 self.rec_read_devices();
-                let n = device_switched_notice(lang, source, &name, fell_back);
+                if manual {
+                    self.refresh(Instant::now());
+                    return;
+                }
+                let chosen = self.config.recording.device(source).and_then(devices::name_of);
+                let n = device_switched_notice(lang, source, &name, fell_back, chosen.as_deref());
                 self.apply_now(Event::Notice(n));
             }
             // The writer finishes by itself; the threads are let go of.
@@ -1134,23 +1197,56 @@ mod tests {
 
     #[test]
     fn a_device_switch_notice_says_which_source_moved_where() {
-        let n = device_switched_notice(Lang::Id, Source::Mic, "Headset", false);
+        let n = device_switched_notice(Lang::Id, Source::Mic, "Headset", false, None);
         assert_eq!((n.title.as_str(), n.body.as_str()), ("Mic pindah", "Headset"));
         assert_eq!(n.kind, NoticeKind::RecInfo);
-        let n = device_switched_notice(Lang::En, Source::System, "Speakers", false);
+        let n = device_switched_notice(Lang::En, Source::System, "Speakers", false, None);
         assert_eq!((n.title.as_str(), n.body.as_str()), ("PC audio switched", "Speakers"));
-        let n = device_switched_notice(Lang::Id, Source::Mic, "Realtek", true);
+        let n = device_switched_notice(Lang::Id, Source::Mic, "Realtek", true, None);
         assert_eq!(
             (n.title.as_str(), n.body.as_str()),
             ("Mic pilihan tidak ada", "Pakai Realtek")
         );
-        let n = device_switched_notice(Lang::En, Source::System, "Speakers", true);
+        let n = device_switched_notice(Lang::En, Source::System, "Speakers", true, None);
         assert_eq!(
             (n.title.as_str(), n.body.as_str()),
             ("Chosen PC audio not found", "Using Speakers")
         );
-        let n = device_switched_notice(Lang::Id, Source::System, "Speakers", true);
+        let n = device_switched_notice(Lang::Id, Source::System, "Speakers", true, None);
         assert_eq!(n.title, "Suara PC pilihan tidak ada");
+    }
+
+    #[test]
+    fn the_fall_back_notice_names_the_chosen_device_when_it_is_known() {
+        let n = device_switched_notice(Lang::Id, Source::Mic, "Realtek", true, Some("Headset"));
+        assert_eq!(
+            (n.title.as_str(), n.body.as_str()),
+            ("Mic Headset tidak ada", "Pakai Realtek")
+        );
+        let n = device_switched_notice(Lang::Id, Source::System, "Speakers", true, Some("TV"));
+        assert_eq!(n.title, "Suara PC TV tidak ada");
+        let n = device_switched_notice(Lang::En, Source::Mic, "Realtek", true, Some("Headset"));
+        assert_eq!(
+            (n.title.as_str(), n.body.as_str()),
+            ("Headset not found", "Using Realtek")
+        );
+        let n = device_switched_notice(Lang::En, Source::System, "Speakers", true, Some("TV"));
+        assert_eq!(n.title, "TV not found");
+    }
+
+    #[test]
+    fn a_pick_made_while_starting_is_handed_to_the_recorder() {
+        let (a, b) = (Some("a".to_owned()), Some("b".to_owned()));
+        assert!(changed_picks(&[a.clone(), None], &[a.clone(), None]).is_empty());
+        assert_eq!(
+            changed_picks(&[a.clone(), None], &[a.clone(), b.clone()]),
+            [(Source::System, b.clone())]
+        );
+        // Back to following Windows is a change too.
+        assert_eq!(
+            changed_picks(&[a.clone(), b.clone()], &[None, b]),
+            [(Source::Mic, None)]
+        );
     }
 
     #[test]

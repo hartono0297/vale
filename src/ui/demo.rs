@@ -637,7 +637,6 @@ const fn clipboard(name: &'static str, which: ClipDemo) -> Scene {
     }
 }
 
-/// The Rekam page's made-up list: the three rows of the design's mockup.
 /// The device names the Rekam page's scenes show, `[mic, system]`.
 fn demo_rec_devices() -> [String; 2] {
     [
@@ -646,6 +645,7 @@ fn demo_rec_devices() -> [String; 2] {
     ]
 }
 
+/// The Rekam page's made-up list: the three rows of the design's mockup.
 fn demo_rec_recent() -> Vec<RecEntry> {
     let entry = |title: &str, started: &str, mins: u64| RecEntry {
         path: std::path::PathBuf::from(format!("{title}.m4a")),

@@ -127,11 +127,13 @@ pub enum RecEvent {
     /// `source` moved to another device on its own: `name` is the one it
     /// records from now. `fell_back` says the device the user chose was
     /// missing and the Windows default took over; otherwise the default
-    /// itself changed. A switch the user asked for is not reported.
+    /// itself changed. `manual` is a switch the user asked for: no notice,
+    /// but the names shown are read again.
     DeviceSwitched {
         source: Source,
         name: String,
         fell_back: bool,
+        manual: bool,
     },
 }
 
@@ -547,8 +549,9 @@ enum Msg {
     /// From the capture thread: a source stopped (`true`: the mic was refused).
     Lost(Source, bool),
     /// From the capture thread: a source moved to the device named, because
-    /// of a fall back (`true`) or a new Windows default.
-    Switched(Source, String, bool),
+    /// of a fall back (`true`), a new Windows default or the user's pick
+    /// (`manual`).
+    Switched(Source, String, bool, bool),
 }
 
 /// Which sources are muted, shared between the island (which flips them) and
@@ -607,8 +610,10 @@ impl AudioSink for Sink {
         let _ = self.tx.send(Msg::Lost(source, denied));
     }
 
-    fn switched(&mut self, source: Source, name: &str, fell_back: bool) {
-        let _ = self.tx.send(Msg::Switched(source, name.to_owned(), fell_back));
+    fn switched(&mut self, source: Source, name: &str, fell_back: bool, manual: bool) {
+        let _ = self
+            .tx
+            .send(Msg::Switched(source, name.to_owned(), fell_back, manual));
     }
 }
 
@@ -645,7 +650,7 @@ impl Recorder {
         opts: RecOptions,
         events: Box<dyn Fn(RecEvent) + Send>,
     ) -> Result<Recorder, RecError> {
-        let choices = Arc::new(Mutex::new(opts.devices.clone()));
+        let choices = Arc::new(Mutex::new(capture::ChoiceSet::new(opts.devices.clone())));
         let echo_cancel = opts.echo_cancel;
         Self::start_with(opts, events, |sources, sink| {
             Capture::start(sources, choices, echo_cancel, sink).map(|c| Box::new(c) as Box<dyn Feed>)
@@ -971,8 +976,8 @@ impl Writing<'_> {
             match rx.recv() {
                 Ok(Msg::Go) => break,
                 Ok(Msg::Lost(source, denied)) => early.push((source, denied)),
-                Ok(Msg::Switched(source, name, fell_back)) => {
-                    switched.push((source, name, fell_back));
+                Ok(Msg::Switched(source, name, fell_back, manual)) => {
+                    switched.push((source, name, fell_back, manual));
                 }
                 Ok(Msg::Abort | Msg::Stop(_)) | Err(_) => {
                     self.discard();
@@ -984,11 +989,12 @@ impl Writing<'_> {
         for (source, denied) in early {
             no_input |= self.lose(source, denied, events);
         }
-        for (source, name, fell_back) in switched {
+        for (source, name, fell_back, manual) in switched {
             events(RecEvent::DeviceSwitched {
                 source,
                 name,
                 fell_back,
+                manual,
             });
         }
         let mut next = Instant::now() + TICK;
@@ -1000,11 +1006,12 @@ impl Writing<'_> {
             }
             match rx.recv_timeout(next.saturating_duration_since(Instant::now())) {
                 Ok(Msg::Lost(source, denied)) => no_input = self.lose(source, denied, events),
-                Ok(Msg::Switched(source, name, fell_back)) => {
+                Ok(Msg::Switched(source, name, fell_back, manual)) => {
                     events(RecEvent::DeviceSwitched {
                         source,
                         name,
                         fell_back,
+                        manual,
                     });
                 }
                 Ok(Msg::Stop(frame)) => break frame,
@@ -1224,7 +1231,8 @@ pub fn record_test(args: &[String]) -> i32 {
             source,
             name,
             fell_back,
-        } => println!("switched: {source} to {name} (fell back: {fell_back})"),
+            manual,
+        } => println!("switched: {source} to {name} (fell back: {fell_back}, by hand: {manual})"),
         RecEvent::Saved { .. } => {}
     };
     let end = Instant::now() + Duration::from_secs_f64(secs);
@@ -2265,10 +2273,13 @@ pub(super) mod tests {
         assert!(matches!(r, Err(RecError::NoSources)));
     }
 
+    /// The devices a [`Spy`] was asked for, in order.
+    type Picked = Arc<Mutex<Vec<(Source, Option<String>)>>>;
+
     /// A capture that notes the devices asked for.
     struct Spy {
         inner: Box<dyn Feed>,
-        picked: Arc<Mutex<Vec<(Source, Option<String>)>>>,
+        picked: Picked,
     }
 
     impl Feed for Spy {
@@ -2295,7 +2306,7 @@ pub(super) mod tests {
         let spy = Arc::clone(&picked);
         let rec = Recorder::start_with(opts(&dir, Sources::BOTH), events, move |s, mut sink| {
             // As `Capture` does when the chosen mic is missing at the start.
-            sink.switched(Source::Mic, "Speakers mic", true);
+            sink.switched(Source::Mic, "Speakers mic", true, false);
             let inner = fake_open(s, sink, Lose::Nothing)?;
             Ok(Box::new(Spy { inner, picked: spy }) as Box<dyn Feed>)
         })
@@ -2317,6 +2328,7 @@ pub(super) mod tests {
                 source: Source::Mic,
                 name: "Speakers mic".into(),
                 fell_back: true,
+                manual: false,
             })
         );
         assert!(matches!(events.last(), Some(RecEvent::Saved { .. })));

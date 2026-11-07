@@ -632,7 +632,7 @@ keys! {
     RecSettingsPickTitle => "Pilih folder rekaman", "Choose the recordings folder";
     RecDeviceFrom => "Suara PC dari", "PC audio from";
     RecEchoCancel => "Peredam gema mic", "Mic echo cancellation";
-    RecEchoCancelDesc => "Buang suara speaker yang tertangkap mic", "Removes speaker sound picked up by the mic";
+    RecEchoCancelDesc => "Buang suara speaker \u{b7} Berlaku mulai rekaman berikutnya", "Removes speaker sound \u{b7} Applies from the next recording";
     RecFollowWindows => "Ikuti Windows", "Follow Windows";
     RecDeviceGone => "Perangkat tidak ada", "Device not found";
     RecMicSwitched => "Mic pindah", "Mic switched";
@@ -640,6 +640,9 @@ keys! {
     RecMicMissing => "Mic pilihan tidak ada", "Chosen mic not found";
     RecSystemMissing => "Suara PC pilihan tidak ada", "Chosen PC audio not found";
     RecUsing => "Pakai", "Using";
+    RecMicWord => "Mic", "Mic";
+    RecSystemWord => "Suara PC", "PC audio";
+    RecNotFound => "tidak ada", "not found";
     RecEmpty => "Belum ada rekaman", "No recordings yet";
     ArrangeSkip => "Lewati ubin", "Skip tile";
     ArrangeSaved => "Tersimpan", "Saved";

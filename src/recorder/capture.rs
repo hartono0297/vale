@@ -28,7 +28,7 @@
 //!   recording, falls back to the default for the rest of the recording,
 //!   reported with `fell_back: true`; the choice itself is left alone.
 //!   [`Capture::set_device`] changes a choice and the switch happens at once,
-//!   without a report. A source that fails (the device is unplugged,
+//!   reported with `manual: true`. A source that fails (the device is unplugged,
 //!   `AUDCLNT_E_DEVICE_INVALIDATED`, or the audio service restarts) is
 //!   reopened for up to [`RETRY_FOR`]; when that does
 //!   not work, [`AudioSink::lost`] is called once and that source stays off.
@@ -103,7 +103,33 @@ pub enum Source {
 /// Which endpoint each source uses, `[mic, system]`: an endpoint id, or
 /// `None` to follow the Windows default. Shared between the caller (through
 /// [`Capture::set_device`]) and the capture thread.
-pub type Choices = Arc<Mutex<[Option<String>; 2]>>;
+pub type Choices = Arc<Mutex<ChoiceSet>>;
+
+/// The choices, with a generation per source that [`ChoiceSet::set`] raises, so
+/// that choosing the same device again still counts as a new choice (it ends a
+/// fall back to the default).
+#[derive(Default)]
+pub struct ChoiceSet {
+    ids: [Option<String>; 2],
+    generation: [u64; 2],
+}
+
+impl ChoiceSet {
+    /// The choices `ids`, `[mic, system]`.
+    pub fn new(ids: [Option<String>; 2]) -> ChoiceSet {
+        ChoiceSet {
+            ids,
+            generation: [0; 2],
+        }
+    }
+
+    /// A new choice for `source`, even when it equals the old one.
+    pub fn set(&mut self, source: Source, id: Option<String>) {
+        let i = source.index();
+        self.ids[i] = id;
+        self.generation[i] += 1;
+    }
+}
 
 /// The names of the devices the sources stream from now, `[mic, system]`
 /// (empty for a source that is not open).
@@ -219,8 +245,11 @@ pub trait AudioSink: Send {
     /// changed (`fell_back` is false), or the device the user chose was
     /// missing or went away and the default took over (`fell_back` is true).
     /// `name` is the friendly name of the device now in use. A switch the
-    /// caller asked for with [`Capture::set_device`] is not reported.
-    fn switched(&mut self, _source: Source, _name: &str, _fell_back: bool) {}
+    /// caller asked for with [`Capture::set_device`] is reported too, with
+    /// `manual` true (and `fell_back` false), so the caller can re-read the
+    /// names without a notice; a chosen device that was missing is still a
+    /// fall back.
+    fn switched(&mut self, _source: Source, _name: &str, _fell_back: bool, _manual: bool) {}
 }
 
 /// The performance counter now, in the 100 ns units `AudioSink::audio` uses.
@@ -294,6 +323,7 @@ impl Capture {
             Arc::clone(&names),
             Arc::clone(&wake),
             echo_cancel,
+            sources.system,
         );
         let worker_stop = Arc::clone(&stop);
         let thread = std::thread::Builder::new()
@@ -328,7 +358,10 @@ impl Capture {
     /// (`None`), and wakes the capture thread so it switches at once. Never
     /// waits. A source that is not captured only remembers the choice.
     pub fn set_device(&self, source: Source, id: Option<String>) {
-        self.choices.lock().unwrap_or_else(|e| e.into_inner())[source.index()] = id;
+        self.choices
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set(source, id);
         self.wake.set();
     }
 
@@ -402,6 +435,9 @@ struct Devices {
     wake: Arc<Event>,
     /// The choices as the thread last read them, to see a change.
     applied: [Option<String>; 2],
+    /// The generations of `applied`: a raised one is a new choice even when
+    /// the id is the same.
+    applied_generation: [u64; 2],
     /// A chosen device was missing or went away: the Windows default serves
     /// that source for the rest of the recording, until it is given a new
     /// choice.
@@ -411,49 +447,97 @@ struct Devices {
     last: [Option<String>; 2],
     /// Mic echo cancellation is wanted for this recording.
     echo_cancel: bool,
+    /// The PC audio is recorded.
+    system_on: bool,
     /// The echo cancellation outcome was logged (once per recording).
     echo_logged: Cell<bool>,
+    /// Raised whenever what the echo reference should be may have changed
+    /// (the PC audio stream opened, a fall back, a new choice).
+    epoch: u32,
+    /// The `epoch` the mic stream was last pointed for.
+    echo_epoch: u32,
+}
+
+/// The render endpoint the mic's echo canceller works against: the id of the
+/// PC-audio stream that is open when the PC audio is recorded from a chosen
+/// device (before it opens, the choice), otherwise `None`, which is Windows'
+/// default render device.
+fn echo_render(system_on: bool, chosen: Option<&str>, open: Option<&str>) -> Option<String> {
+    if !system_on {
+        return None;
+    }
+    let chosen = chosen?;
+    Some(open.unwrap_or(chosen).to_owned())
 }
 
 impl Devices {
-    fn new(choices: Choices, names: Names, wake: Arc<Event>, echo_cancel: bool) -> Devices {
-        let applied = choices.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    fn new(
+        choices: Choices,
+        names: Names,
+        wake: Arc<Event>,
+        echo_cancel: bool,
+        system_on: bool,
+    ) -> Devices {
+        let (applied, applied_generation) = {
+            let set = choices.lock().unwrap_or_else(|e| e.into_inner());
+            (set.ids.clone(), set.generation)
+        };
         Devices {
             choices,
             names,
             wake,
             applied,
+            applied_generation,
             fallen: [false; 2],
             last: [None, None],
             echo_cancel,
+            system_on,
             echo_logged: Cell::new(false),
+            epoch: 0,
+            echo_epoch: 0,
         }
     }
 
-    /// How to open `source` now: the echo cancellation settings for the mic,
-    /// pointed at the render endpoint the PC audio records (the open stream's,
-    /// else the choice).
-    fn aec(&self, source: Source) -> Aec<'_> {
+    /// The echo reference now, see [`echo_render`].
+    fn render_now(&self) -> Option<String> {
         let system = Source::System.index();
+        echo_render(
+            self.system_on,
+            self.wanted(Source::System).as_deref(),
+            self.last[system].as_deref(),
+        )
+    }
+
+    /// How to open `source` now: the echo cancellation settings for the mic,
+    /// pointed at the render endpoint the PC audio records.
+    fn aec(&self, source: Source) -> Aec<'_> {
         Aec {
             on: self.echo_cancel && source == Source::Mic,
-            render: self.last[system].clone().or_else(|| self.wanted(Source::System)),
+            render: self.render_now(),
             logged: &self.echo_logged,
         }
     }
 
     /// Reads the shared choices: which sources were given a new one since
-    /// the last call. A new choice ends a fall back.
+    /// the last call (a new generation counts even for the same id). A new
+    /// choice ends a fall back.
     fn refresh(&mut self) -> [bool; 2] {
-        let now = self.choices.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let (now, generation) = {
+            let set = self.choices.lock().unwrap_or_else(|e| e.into_inner());
+            (set.ids.clone(), set.generation)
+        };
         let mut changed = [false; 2];
         for i in 0..2 {
-            if now[i] != self.applied[i] {
+            if now[i] != self.applied[i] || generation[i] != self.applied_generation[i] {
                 changed[i] = true;
                 self.fallen[i] = false;
             }
         }
+        if changed[Source::System.index()] {
+            self.epoch += 1;
+        }
         self.applied = now;
+        self.applied_generation = generation;
         changed
     }
 
@@ -468,23 +552,38 @@ impl Devices {
     }
 
     /// Notes that `stream` was opened: its name goes where the caller reads
-    /// it. Returns what to report to the sink, `Some(fell_back)`: a fall back
-    /// always, a move to another device only when `manual` is false (the
-    /// caller did not ask for it).
-    fn opened(&mut self, stream: &Stream, fell_back: bool, manual: bool) -> Option<bool> {
+    /// it. Returns what to report to the sink: a fall back always, any move
+    /// to another device (flagged `manual` when the caller asked for it).
+    fn opened(&mut self, stream: &Stream, fell_back: bool, manual: bool) -> Option<Switch> {
         let i = stream.source.index();
         self.names.lock().unwrap_or_else(|e| e.into_inner())[i] = stream.name.clone();
         let moved = self.last[i].as_deref().is_some_and(|l| l != stream.id);
         self.last[i] = Some(stream.id.clone());
+        if i == Source::System.index() {
+            self.epoch += 1;
+        }
         if fell_back {
             self.fallen[i] = true;
-            Some(true)
-        } else if moved && !manual {
-            Some(false)
+            Some(Switch {
+                fell_back: true,
+                manual: false,
+            })
+        } else if moved {
+            Some(Switch {
+                fell_back: false,
+                manual,
+            })
         } else {
             None
         }
     }
+}
+
+/// What [`AudioSink::switched`] is told about a move to another device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Switch {
+    fell_back: bool,
+    manual: bool,
 }
 
 /// The capture thread.
@@ -530,7 +629,7 @@ fn open_and_serve(
     for source in sources.list() {
         match open_wanted(&enumerator, source, devs.wanted(source).as_deref(), &devs.aec(source)) {
             Ok((s, fell)) => {
-                if devs.opened(&s, fell, true).is_some() {
+                if devs.opened(&s, fell, true).is_some_and(|w| w.fell_back) {
                     fell_back.push((source, s.name.clone()));
                 }
                 slots[source.index()] = Slot::Live(s);
@@ -547,7 +646,7 @@ fn open_and_serve(
         sink.lost(source, err);
     }
     for (source, name) in fell_back {
-        sink.switched(source, &name, true);
+        sink.switched(source, &name, true, false);
     }
     serve(&enumerator, &mut slots, sink.as_mut(), stop, &mut devs);
     // The streams go first, then the sink, then the enumerator.
@@ -691,16 +790,16 @@ fn serve(
                                 let report = devs.opened(&new, fell, changed[i]);
                                 let name = new.name.clone();
                                 *slot = Slot::Live(new);
-                                if let Some(fell_back) = report {
-                                    sink.switched(source, &name, fell_back);
+                                if let Some(w) = report {
+                                    sink.switched(source, &name, w.fell_back, w.manual);
                                 }
                             }
                         } else if pick.fell_back
-                            && let Some(fell_back) = devs.opened(stream, true, changed[i])
+                            && let Some(w) = devs.opened(stream, true, changed[i])
                         {
                             // The chosen device is gone and the default is
                             // already the one in use.
-                            sink.switched(source, &stream.name, fell_back);
+                            sink.switched(source, &stream.name, w.fell_back, w.manual);
                         }
                     }
                 }
@@ -712,8 +811,8 @@ fn serve(
                             let report = devs.opened(&new, fell, changed[i]);
                             let name = new.name.clone();
                             *slot = Slot::Live(new);
-                            if let Some(fell_back) = report {
-                                sink.switched(source, &name, fell_back);
+                            if let Some(w) = report {
+                                sink.switched(source, &name, w.fell_back, w.manual);
                             }
                         }
                         Err(CaptureError::MicDenied) => {
@@ -735,9 +834,23 @@ fn serve(
                 _ => {}
             }
         }
+        follow_echo(slots, devs);
         if all_off(slots) {
             return;
         }
+    }
+}
+
+/// Points the mic's echo canceller at the render endpoint it should work
+/// against now, after the PC audio stream or its choice changed.
+fn follow_echo(slots: &mut [Slot; 2], devs: &mut Devices) {
+    if devs.epoch == devs.echo_epoch {
+        return;
+    }
+    devs.echo_epoch = devs.epoch;
+    let render = devs.render_now();
+    if let Slot::Live(mic) = &mut slots[Source::Mic.index()] {
+        mic.point_echo(render.as_deref(), &devs.echo_logged);
     }
 }
 
@@ -860,18 +973,22 @@ fn set_communications(client: &IAudioClient) -> Step {
 }
 
 /// Points the echo canceller at the render endpoint `render` (the PC audio
-/// being recorded; `None`: the default one). Only Windows 11 22H2 and later
-/// has the interface; on older builds it is skipped.
-fn point_echo_at(client: &IAudioClient, render: Option<&str>) -> Step {
+/// being recorded; `None`: the default one).
+fn point_control(control: &IAcousticEchoCancellationControl, render: Option<&str>) -> Step {
     unsafe {
-        let Ok(control) = client.GetService::<IAcousticEchoCancellationControl>() else {
-            return Step::Skipped;
-        };
         Step::of(match render {
             Some(id) => control.SetEchoCancellationRenderEndpoint(&HSTRING::from(id)),
             None => control.SetEchoCancellationRenderEndpoint(PCWSTR::null()),
         })
     }
+}
+
+/// The echo cancellation control of an initialized mic stream and the render
+/// endpoint it is pointed at. Only Windows 11 22H2 and later has the
+/// interface; on older builds there is none.
+struct EchoControl {
+    control: IAcousticEchoCancellationControl,
+    render: Option<String>,
 }
 
 /// One open shared-mode stream, event driven.
@@ -882,6 +999,8 @@ struct Stream {
     name: String,
     client: IAudioClient,
     capture: IAudioCaptureClient,
+    /// Kept to point the mic's echo canceller again when the PC audio moves.
+    echo: Option<EchoControl>,
     fmt: SampleFormat,
     rate: u32,
     mono: Vec<f32>,
@@ -893,12 +1012,42 @@ struct Stream {
 }
 
 impl Stream {
-    /// Opens the endpoint `id` of `source`'s kind.
+    /// Opens the endpoint `id` of `source`'s kind. A driver that rejects the
+    /// communications category (`Initialize` fails after it was set) gets a
+    /// plain stream instead of losing the source.
     fn open(
         enumerator: &IMMDeviceEnumerator,
         source: Source,
         id: &str,
         aec: &Aec,
+    ) -> Result<Stream, CaptureError> {
+        let mut rejected = false;
+        match Self::open_with(enumerator, source, id, aec, &mut rejected) {
+            Err(e) if rejected => {
+                if !aec.logged.replace(true) {
+                    eprintln!(
+                        "vale: mic echo cancellation: the driver rejected the communications                          category ({e}), falling back to a plain stream"
+                    );
+                }
+                let plain = Aec {
+                    on: false,
+                    render: None,
+                    logged: aec.logged,
+                };
+                Self::open_with(enumerator, source, id, &plain, &mut false)
+            }
+            other => other,
+        }
+    }
+
+    /// One try of [`Stream::open`]; `rejected` is set when `Initialize` failed
+    /// after the communications category was set.
+    fn open_with(
+        enumerator: &IMMDeviceEnumerator,
+        source: Source,
+        id: &str,
+        aec: &Aec,
+        rejected: &mut bool,
     ) -> Result<Stream, CaptureError> {
         let err = |e| classify(source, e);
         unsafe {
@@ -923,9 +1072,22 @@ impl Stream {
             let Some((fmt, rate)) = parsed else {
                 return Err(CaptureError::Com(AUDCLNT_E_UNSUPPORTED_FORMAT.into()));
             };
-            init.expect("parsed is Some").map_err(err)?;
+            if let Err(e) = init.expect("parsed is Some") {
+                *rejected = matches!(&echo, Some(Echo { category: Step::Done, .. }));
+                return Err(err(e));
+            }
+            let mut control = None;
             if let Some(echo) = echo.as_mut() {
-                echo.endpoint = point_echo_at(&client, aec.render.as_deref());
+                match client.GetService::<IAcousticEchoCancellationControl>() {
+                    Ok(c) => {
+                        echo.endpoint = point_control(&c, aec.render.as_deref());
+                        control = Some(EchoControl {
+                            control: c,
+                            render: aec.render.clone(),
+                        });
+                    }
+                    Err(_) => echo.endpoint = Step::Skipped,
+                }
                 aec.log_once(echo);
             }
             let event = Event::new(false).map_err(CaptureError::Com)?;
@@ -938,12 +1100,32 @@ impl Stream {
                 name,
                 client,
                 capture,
+                echo: control,
                 fmt,
                 rate,
                 mono: Vec::new(),
                 next_qpc: None,
                 event,
             })
+        }
+    }
+
+    /// Points this mic stream's echo canceller at `render` (`None`: the
+    /// default render device) when it is not there already. A stream with no
+    /// echo control does nothing.
+    fn point_echo(&mut self, render: Option<&str>, logged: &Cell<bool>) {
+        let Some(echo) = self.echo.as_mut() else {
+            return;
+        };
+        if echo.render.as_deref() == render {
+            return;
+        }
+        let step = point_control(&echo.control, render);
+        echo.render = render.map(str::to_owned);
+        if let Step::Failed(code) = step
+            && !logged.replace(true)
+        {
+            eprintln!("vale: mic echo cancellation: render endpoint failed ({:#010x})", code.0);
         }
     }
 
@@ -1053,30 +1235,50 @@ mod tests {
     }
 
     #[test]
+    fn the_echo_reference_is_the_open_pc_audio_stream_only_for_a_chosen_device() {
+        // PC audio not recorded, or on the Windows default: Windows' default.
+        assert_eq!(echo_render(false, Some("c"), Some("o")), None);
+        assert_eq!(echo_render(true, None, Some("o")), None);
+        assert_eq!(echo_render(true, None, None), None);
+        // A chosen device: the open stream's id, before it opens the choice.
+        assert_eq!(echo_render(true, Some("c"), Some("o")).as_deref(), Some("o"));
+        assert_eq!(echo_render(true, Some("c"), None).as_deref(), Some("c"));
+    }
+
+    #[test]
     fn only_the_mic_gets_echo_cancellation_and_it_follows_the_pc_audio_endpoint() {
         let choices = follow();
         let wake = Arc::new(Event::new(false).expect("event"));
-        let mut devs = Devices::new(Arc::clone(&choices), Names::default(), wake, true);
+        let mut devs = Devices::new(Arc::clone(&choices), Names::default(), wake, true, true);
         assert!(devs.aec(Source::Mic).on);
         assert!(!devs.aec(Source::System).on, "the loopback stream is never changed");
-        // No PC audio stream and no choice: the default render endpoint (None).
+        // No choice: the default render endpoint (None), open stream or not.
+        assert_eq!(devs.aec(Source::Mic).render, None);
+        devs.last[1] = Some("open".into());
         assert_eq!(devs.aec(Source::Mic).render, None);
         // A choice is the endpoint; the open stream's id wins over it.
         devs.applied[1] = Some("chosen".into());
-        assert_eq!(devs.aec(Source::Mic).render.as_deref(), Some("chosen"));
-        devs.last[1] = Some("open".into());
         assert_eq!(devs.aec(Source::Mic).render.as_deref(), Some("open"));
+        devs.last[1] = None;
+        assert_eq!(devs.aec(Source::Mic).render.as_deref(), Some("chosen"));
+        // After a fall back the default serves the PC audio.
+        devs.fallen[1] = true;
+        assert_eq!(devs.aec(Source::Mic).render, None);
+        devs.fallen[1] = false;
         devs.echo_cancel = false;
         assert!(!devs.aec(Source::Mic).on);
+        // Without the PC audio there is no endpoint to name.
+        devs.system_on = false;
+        assert_eq!(devs.render_now(), None);
     }
 
     #[test]
     fn a_choice_is_set_from_another_thread_and_read_by_the_capture_thread() {
         let choices = follow();
         let wake = Arc::new(Event::new(false).expect("event"));
-        let mut devs = Devices::new(Arc::clone(&choices), Names::default(), wake, true);
+        let mut devs = Devices::new(Arc::clone(&choices), Names::default(), wake, true, true);
         assert_eq!(devs.refresh(), [false, false]);
-        choices.lock().unwrap()[1] = Some("x".into());
+        choices.lock().unwrap().set(Source::System, Some("x".into()));
         assert_eq!(devs.refresh(), [false, true]);
         assert_eq!(devs.wanted(Source::System).as_deref(), Some("x"));
         assert_eq!(devs.wanted(Source::Mic), None);
@@ -1085,9 +1287,28 @@ mod tests {
         // A fall back sets the choice aside until a new one comes.
         devs.fallen[1] = true;
         assert_eq!(devs.wanted(Source::System), None);
-        choices.lock().unwrap()[1] = Some("y".into());
+        choices.lock().unwrap().set(Source::System, Some("y".into()));
         assert_eq!(devs.refresh(), [false, true]);
         assert_eq!(devs.wanted(Source::System).as_deref(), Some("y"));
+    }
+
+    #[test]
+    fn choosing_the_same_device_again_ends_a_fall_back() {
+        let choices = follow();
+        let wake = Arc::new(Event::new(false).expect("event"));
+        choices.lock().unwrap().set(Source::System, Some("x".into()));
+        let mut devs = Devices::new(Arc::clone(&choices), Names::default(), wake, true, true);
+        // The chosen device went away: the default serves, `x` is set aside.
+        devs.fallen[1] = true;
+        assert_eq!(devs.wanted(Source::System), None);
+        assert_eq!(devs.refresh(), [false, false]);
+        assert!(devs.fallen[1], "nothing was chosen yet");
+        // The user picks `x` again.
+        choices.lock().unwrap().set(Source::System, Some("x".into()));
+        assert_eq!(devs.refresh(), [false, true], "the same id is a new choice");
+        assert!(!devs.fallen[1]);
+        assert_eq!(devs.wanted(Source::System).as_deref(), Some("x"));
+        assert_eq!(devs.refresh(), [false, false]);
     }
 
     #[test]
@@ -1235,13 +1456,13 @@ mod tests {
     }
 
     /// Reports what the capture says about devices, for the tests.
-    struct Reports(std::sync::mpsc::Sender<(Source, String, bool)>);
+    struct Reports(std::sync::mpsc::Sender<(Source, String, bool, bool)>);
 
     impl AudioSink for Reports {
         fn audio(&mut self, _: Source, _: u64, _: u32, _: &[f32]) {}
         fn lost(&mut self, _: Source, _: CaptureError) {}
-        fn switched(&mut self, source: Source, name: &str, fell_back: bool) {
-            let _ = self.0.send((source, name.to_owned(), fell_back));
+        fn switched(&mut self, source: Source, name: &str, fell_back: bool, manual: bool) {
+            let _ = self.0.send((source, name.to_owned(), fell_back, manual));
         }
     }
 
@@ -1260,17 +1481,20 @@ mod tests {
             system: true,
         };
         let choices = follow();
-        choices.lock().unwrap()[1] = Some("{0.0.0.00000000}.{no-such-device}".into());
+        choices
+            .lock()
+            .unwrap()
+            .set(Source::System, Some("{0.0.0.00000000}.{no-such-device}".into()));
         let Ok(c) = Capture::start(system, Arc::clone(&choices), true, Box::new(Reports(tx))) else {
             return;
         };
         // At the start: the default stands in, and the choice is left alone.
         let got = rx.recv_timeout(Duration::from_secs(2)).expect("a report");
-        assert_eq!(got, (Source::System, default.name.clone(), true));
+        assert_eq!(got, (Source::System, default.name.clone(), true, false));
         assert_eq!(c.device_names()[1], default.name);
         assert_eq!(c.device_names()[0], "", "the mic is not captured");
         assert_eq!(
-            choices.lock().unwrap()[1].as_deref(),
+            choices.lock().unwrap().ids[1].as_deref(),
             Some("{0.0.0.00000000}.{no-such-device}")
         );
         // Picking the default by hand switches nothing and says nothing.
@@ -1280,7 +1504,7 @@ mod tests {
         // Picking a device that is not there while on the default says so.
         c.set_device(Source::System, Some("{0.0.0.00000000}.{another-missing}".into()));
         let got = rx.recv_timeout(Duration::from_secs(2)).expect("a second report");
-        assert_eq!(got, (Source::System, default.name.clone(), true));
+        assert_eq!(got, (Source::System, default.name.clone(), true, false));
         // Back to following Windows: silent again.
         c.set_device(Source::System, None);
         std::thread::sleep(Duration::from_millis(400));
@@ -1327,7 +1551,8 @@ mod tests {
                     std::thread::sleep(Duration::from_millis(20));
                 }
                 assert_eq!(c.device_names()[1], default.name);
-                assert!(rx.try_recv().is_err(), "hand picks are not reported");
+                // The hand picks are reported as such, never as a fall back.
+                assert!(rx.try_iter().all(|r| r.3 && !r.2), "hand picks are manual");
                 break;
             }
             // A fall back was reported for the one that would not open.
