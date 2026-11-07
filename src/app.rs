@@ -3660,7 +3660,7 @@ impl App {
 
     /// Retargets the animation at the state's view and re-arms the notice deadline.
     fn refresh(&mut self, now: Instant) {
-        self.rec_follow_page(&self.state.view());
+        self.rec_follow_page(self.state.panel_page_under());
         self.draw_gen = self.draw_gen.wrapping_add(1);
         // The sleep clock follows mouse and keyboard input anywhere on the PC.
         self.fold_pc_input(now);
@@ -5717,7 +5717,6 @@ impl App {
         // The pointer left the busy toast's spot with the island, whether or
         // not the hover dwell had passed.
         self.set_toast_pointer(false);
-        self.set_rec_mute_hot(None);
         self.track_close_hot(None);
         self.click.clear();
         self.dock_leave();
@@ -5732,6 +5731,12 @@ impl App {
             None if self.state.shelf_drop_here() => self.apply_now(Event::ShelfDropLeft),
             None => self.refresh(Instant::now()),
         }
+        // A lit level group of the REC view lets go only after the hover
+        // ended (`Hover(false)` already let it go in the reducer): before
+        // it, the hover alone would hold the panel open for that one apply,
+        // and Hover & stay would latch it. What is left is a leave before
+        // the dwell, with no hover to hold anything.
+        self.set_rec_mute_hot(None);
     }
 
     /// The pointer at `lparam` is on the busy toast's own spot: its strip in
@@ -9029,8 +9034,9 @@ unsafe extern "system" fn wnd_proc(
         WM_LBUTTONDOWN => {
             // The island never takes the activation, so the open dropdown
             // does not lose it to a press here: the press only closes it, as
-            // a native menu's would.
-            if crate::ui::menu_pop::is_open_for(hwnd) {
+            // a native menu's would. Also one Settings opened: it keeps the
+            // activation while the island is pressed.
+            if crate::ui::menu_pop::is_open() {
                 crate::ui::menu_pop::close();
                 return LRESULT(0);
             }

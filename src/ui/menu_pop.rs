@@ -47,8 +47,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, IDC_ARROW, LoadCursorW, PostMessageW,
-    RegisterClassExW, SW_SHOW, ShowWindow, WA_INACTIVE, WM_ACTIVATE, WM_APP, WM_DESTROY,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GetForegroundWindow, IDC_ARROW, IsWindow,
+    LoadCursorW, PostMessageW, RegisterClassExW, SetForegroundWindow, SW_SHOW, ShowWindow, WA_INACTIVE, WM_ACTIVATE, WM_APP, WM_DESTROY,
     WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
     WNDCLASSEXW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
@@ -391,6 +391,8 @@ fn label_weight(checked: bool) -> u16 {
 struct Pop {
     hwnd: HWND,
     owner: HWND,
+    /// The window that had the activation before the dropdown took it.
+    prev: HWND,
     /// The window's top-left, px (the plate sits `SHADOW` dip inside it).
     origin: (i32, i32),
     scale: f32,
@@ -425,11 +427,66 @@ fn with<R>(f: impl FnOnce(&mut Pop) -> R) -> Option<R> {
 
 /// Whether the open dropdown belongs to `owner`.
 pub fn is_open_for(owner: HWND) -> bool {
+    reap();
     POP.with(|cell| {
         cell.try_borrow()
             .map(|p| p.as_ref().is_some_and(|p| p.owner == owner))
             .unwrap_or(false)
     })
+}
+
+/// Whether a dropdown is open, whoever owns it.
+pub fn is_open() -> bool {
+    reap();
+    POP.with(|cell| cell.try_borrow().map(|p| p.is_some()).unwrap_or(false))
+}
+
+/// An entry whose window is gone without its `WM_DESTROY` taking it (the
+/// entry was borrowed then) is dropped here and its owner told, so no
+/// dropdown stays "open" for good.
+fn reap() {
+    let dead = POP.with(|cell| {
+        let mut guard = cell.try_borrow_mut().ok()?;
+        let alive = guard
+            .as_ref()
+            .is_some_and(|p| unsafe { IsWindow(Some(p.hwnd)) }.as_bool());
+        if alive { None } else { guard.take() }
+    });
+    if let Some(p) = dead {
+        tell_owner(p);
+    }
+}
+
+/// Posts the gone dropdown's `Done` to its owner, once. An owner that is no
+/// longer a window never reads it: it is dropped here instead of leaking.
+fn tell_owner(mut p: Pop) {
+    let done = Box::new(Done {
+        pick: p.pick,
+        context: p.context.take().unwrap_or_else(|| Box::new(())),
+    });
+    if !unsafe { IsWindow(Some(p.owner)) }.as_bool() {
+        return;
+    }
+    let ptr = Box::into_raw(done);
+    let posted = unsafe {
+        PostMessageW(
+            Some(p.owner),
+            WM_APP_MENU_DONE,
+            WPARAM(0),
+            LPARAM(ptr as isize),
+        )
+    };
+    if posted.is_err() {
+        drop(unsafe { Box::from_raw(ptr) });
+    }
+}
+
+/// The activation goes back to the window that had it before the dropdown
+/// opened only when the dropdown still has it (a pick, Esc, a press on the
+/// island) and that window is still there; when another window took it
+/// (which closed the dropdown) it stays there.
+fn gives_back(dropdown_has_it: bool, prev_alive: bool) -> bool {
+    dropdown_has_it && prev_alive
 }
 
 fn register() -> bool {
@@ -529,6 +586,7 @@ pub fn open(
         )
     };
     let Ok(hwnd) = hwnd else { return false };
+    let prev = unsafe { GetForegroundWindow() };
     let canvas = Canvas::with_gfx(gfx.clone(), size).ok();
     let view_h = plate.h as f32 / scale;
     // Opened on the current choice: it is in sight even in a cut list.
@@ -546,6 +604,7 @@ pub fn open(
         *cell.borrow_mut() = Some(Pop {
             hwnd,
             owner,
+            prev,
             origin,
             scale,
             rows,
@@ -573,15 +632,21 @@ pub fn open(
 }
 
 /// Closes the open dropdown, if any; its owner gets `Done` with no pick.
+/// The activation goes back where it was (`gives_back`).
 pub fn close() {
-    let hwnd = POP.with(|cell| {
+    reap();
+    let open = POP.with(|cell| {
         cell.try_borrow()
             .ok()
-            .and_then(|p| p.as_ref().map(|p| p.hwnd))
+            .and_then(|p| p.as_ref().map(|p| (p.hwnd, p.prev)))
     });
-    if let Some(h) = hwnd {
+    if let Some((h, prev)) = open {
         unsafe {
+            let has_it = GetForegroundWindow() == h;
             let _ = DestroyWindow(h);
+            if gives_back(has_it, IsWindow(Some(prev)).as_bool()) {
+                let _ = SetForegroundWindow(prev);
+            }
         }
     }
 }
@@ -893,24 +958,13 @@ unsafe extern "system" fn pop_proc(
             return LRESULT(0);
         }
         WM_DESTROY => {
-            let gone = POP.with(|cell| cell.try_borrow_mut().ok().and_then(|mut p| p.take()));
-            if let Some(mut p) = gone {
-                let done = Box::new(Done {
-                    pick: p.pick,
-                    context: p.context.take().unwrap_or_else(|| Box::new(())),
-                });
-                let ptr = Box::into_raw(done);
-                let posted = unsafe {
-                    PostMessageW(
-                        Some(p.owner),
-                        WM_APP_MENU_DONE,
-                        WPARAM(0),
-                        LPARAM(ptr as isize),
-                    )
-                };
-                if posted.is_err() {
-                    drop(unsafe { Box::from_raw(ptr) });
-                }
+            // Borrowed now (`reap` takes it later), or already reaped.
+            let gone = POP.with(|cell| {
+                let mut guard = cell.try_borrow_mut().ok()?;
+                guard.take_if(|p| p.hwnd == hwnd)
+            });
+            if let Some(p) = gone {
+                tell_owner(p);
             }
             return LRESULT(0);
         }
@@ -1137,5 +1191,38 @@ mod tests {
         let short = vec![item(1, "Mic B", true)];
         assert_eq!(layout(&short, text.widest(&short)).w, MIN_W);
         assert!(text.widest(&short) < text_room(MIN_W));
+    }
+
+    #[test]
+    fn the_activation_goes_back_only_from_a_dropdown_that_still_has_it() {
+        // Picked, Esc, a press on the island: back to the window before.
+        assert!(gives_back(true, true));
+        // Another window took the activation (that closed it): it stays there.
+        assert!(!gives_back(false, true));
+        // The window before is gone.
+        assert!(!gives_back(true, false));
+    }
+
+    #[test]
+    fn an_entry_whose_window_died_unseen_is_dropped_and_its_done_not_leaked() {
+        // No owner window: the `Done` has nowhere to go and is dropped.
+        let owner = HWND::default();
+        let anchor = Rect::new(100, 100, 120, 24);
+        assert!(open(owner, anchor, Align::Start, rows(), UiFont::Sans, Box::new(7u8)));
+        assert!(is_open());
+        let hwnd = POP.with(|c| c.borrow().as_ref().map(|p| p.hwnd)).expect("open");
+        // Destroyed while the entry is borrowed: its WM_DESTROY cannot take it.
+        POP.with(|c| {
+            let _held = c.borrow_mut();
+            unsafe {
+                let _ = DestroyWindow(hwnd);
+            }
+        });
+        assert!(POP.with(|c| c.borrow().is_some()), "the dead entry stayed");
+        assert!(!is_open_for(owner), "a dead window is not an open dropdown");
+        assert!(POP.with(|c| c.borrow().is_none()), "and the entry is gone");
+        assert!(!is_open());
+        // `close` on nothing is fine.
+        close();
     }
 }

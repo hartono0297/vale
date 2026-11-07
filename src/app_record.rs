@@ -26,7 +26,7 @@ use chrono::{Local, NaiveDate, NaiveDateTime};
 use super::{App, WM_APP_EVENT, WM_APP_REC_DEVICE, notif_open, poster};
 use crate::i18n::{self, Key, Lang, text};
 use crate::model::{
-    Event, Hit, Notice, NoticeKind, Page, RecEntry, RecNote, RecSources, RecStatus, View,
+    Event, Hit, Notice, NoticeKind, Page, RecEntry, RecNote, RecSources, RecStatus,
 };
 use crate::recorder::devices;
 use crate::recorder::sidecar::Sidecar;
@@ -1028,8 +1028,10 @@ impl App {
 
     /// Called from `refresh`: a new showing of the Rekam page re-reads the
     /// folder (once per showing, not per frame).
-    pub(super) fn rec_follow_page(&mut self, view: &View) {
-        let shown = matches!(view, View::Panel(Page::Record));
+    /// `under`: the open panel's page, also while a notice covers it (a
+    /// "Mic pindah" over the page must not close its dropdown).
+    pub(super) fn rec_follow_page(&mut self, under: Option<Page>) {
+        let shown = under == Some(Page::Record);
         if shown && !self.rec.page_shown {
             self.rec.page_shown = true;
             self.rec_rescan();

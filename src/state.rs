@@ -1168,9 +1168,17 @@ impl IslandState {
             let (from, to) = self.cal_range();
             effects.push(Effect::RefreshCalendar { from, to });
         }
-        // The level groups are the REC view's: gone with it.
-        if self.rec_mute_hot.is_some() && !self.rec_mute_groups_shown() {
+        // The level groups go with the running recording (stopped, paused)
+        // and behind a fullscreen app. A notice or a sticky one over the REC
+        // view only covers them: the pointer is still where it was, so its
+        // group stays hot and the panel stays shut until it moves. Gone under
+        // a pointer that stays, they leave the panel shut for the rest of the
+        // visit: the pointer came to mute, not to open it.
+        if self.rec_mute_hot.is_some() && !self.rec_mute_groups_live() {
             self.rec_mute_hot = None;
+            if self.hover {
+                self.hover_blocked = true;
+            }
         }
         // Last, once the linger, the latch and the inputs have settled what
         // shows: the toast is judged on the view this `apply` leaves.
@@ -2953,7 +2961,23 @@ impl IslandState {
 
     /// The closed notch shows the REC view's level groups, which take clicks.
     fn rec_mute_groups_shown(&self) -> bool {
-        self.rec.is_some() && self.view() == View::RecordCompact
+        self.rec_mute_groups_live() && self.view() == View::RecordCompact
+    }
+
+    /// A recording runs (not paused, whose view draws no groups) on a screen
+    /// with no fullscreen app: the REC view has its level groups, shown or
+    /// covered.
+    fn rec_mute_groups_live(&self) -> bool {
+        self.rec.as_ref().is_some_and(|r| !r.paused()) && !self.fullscreen
+    }
+
+    /// The page of the open panel, also while a notice covers it; `None`
+    /// while the panel is shut (or hidden by a fullscreen app).
+    pub fn panel_page_under(&self) -> Option<Page> {
+        match self.base_view() {
+            View::Panel(page) => Some(page),
+            _ => None,
+        }
     }
 
     /// The pointer is on the toast's spot, as the reducer last heard.
@@ -7967,7 +7991,7 @@ mod tests {
     }
 
     #[test]
-    fn the_hot_group_is_forgotten_when_the_pointer_leaves_or_the_view_changes() {
+    fn the_hot_group_is_forgotten_when_the_pointer_leaves_or_the_recording_ends() {
         let t0 = Instant::now();
         let mut s = rec_closed(OpenMode::Hover, t0);
         s.apply(Event::RecMuteHot(Some(Source::Mic)), t0);
@@ -7979,6 +8003,134 @@ mod tests {
         // A hot report off the REC view is ignored.
         s.apply(Event::RecMuteHot(Some(Source::Mic)), t0);
         assert_eq!(s.rec_mute_hot(), None);
+    }
+
+    /// The pointer rests on the mic group of the REC view, the dwell passed.
+    fn resting_on_mic(mode: OpenMode, t0: Instant) -> IslandState {
+        let mut s = rec_closed(mode, t0);
+        s.apply(Event::RecMuteHot(Some(Source::Mic)), t0);
+        s.apply(Event::Hover(true), t0 + Duration::from_millis(120));
+        assert_eq!(s.view(), View::RecordCompact);
+        s
+    }
+
+    #[test]
+    fn leaving_from_a_mute_group_never_opens_or_latches_the_panel() {
+        for mode in [OpenMode::Hover, OpenMode::HoverStay] {
+            let t0 = Instant::now();
+            let mut s = resting_on_mic(mode, t0);
+            // `App` tells the hover's end first; the group lets go with it.
+            s.apply(Event::Hover(false), t0 + Duration::from_millis(500));
+            assert_eq!(s.rec_mute_hot(), None, "{mode:?}");
+            assert_eq!(s.view(), View::RecordCompact, "{mode:?}");
+            // A late "off the group" changes nothing once the pointer is out.
+            s.apply(Event::RecMuteHot(None), t0 + Duration::from_millis(500));
+            assert_eq!(s.view(), View::RecordCompact, "{mode:?}");
+            assert!(!s.panel_is_open(), "{mode:?}: nothing latched");
+        }
+    }
+
+    #[test]
+    fn a_notice_over_the_rec_view_keeps_the_pointer_on_its_group() {
+        for mode in [OpenMode::Hover, OpenMode::HoverStay] {
+            let t0 = Instant::now();
+            let mut s = resting_on_mic(mode, t0);
+            let t1 = t0 + Duration::from_millis(300);
+            s.apply(Event::Notice(done("s1")), t1);
+            assert!(matches!(s.view(), View::Notice(_)), "{mode:?}");
+            assert!(!s.panel_is_open(), "{mode:?}: nothing opens under the notice");
+            assert_eq!(s.rec_mute_hot(), Some(Source::Mic), "{mode:?}");
+            // The notice runs its time; the pointer never moved.
+            s.apply(Event::Tick, t1 + NOTICE_DURATION + Duration::from_millis(10));
+            assert_eq!(s.view(), View::RecordCompact, "{mode:?}: no panel after it");
+            assert_eq!(s.rec_mute_hot(), Some(Source::Mic), "{mode:?}: the pill is back");
+            // Nothing was latched behind the notice either.
+            s.apply(Event::Hover(false), t1 + Duration::from_secs(7));
+            assert_eq!(s.view(), View::RecordCompact, "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn a_waiting_claude_over_the_rec_view_opens_no_panel_under_the_group() {
+        let t0 = Instant::now();
+        let mut s = resting_on_mic(OpenMode::Hover, t0);
+        // A sticky notice outranks the REC view on the closed notch.
+        s.apply(Event::Notice(waiting("s1")), t0 + Duration::from_millis(300));
+        assert!(matches!(s.view(), View::Notice(_)));
+        assert!(!s.panel_is_open());
+        s.apply(
+            Event::ClaudeActivity {
+                session_id: "s1".into(),
+            },
+            t0 + Duration::from_millis(600),
+        );
+        assert_eq!(s.view(), View::RecordCompact);
+        assert_eq!(s.rec_mute_hot(), Some(Source::Mic));
+    }
+
+    #[test]
+    fn groups_that_go_under_the_pointer_leave_the_panel_shut_for_the_visit() {
+        let paused = |t0: Instant| RecStatus {
+            paused_since: Some(t0),
+            ..rec_status(t0)
+        };
+        for mode in [OpenMode::Hover, OpenMode::HoverStay] {
+            let t0 = Instant::now();
+            // Paused (the paused view draws no groups).
+            let mut s = resting_on_mic(mode, t0);
+            s.apply(Event::RecStatus(Some(paused(t0))), t0);
+            assert_eq!(s.rec_mute_hot(), None, "{mode:?}");
+            assert_eq!(s.view(), View::RecordCompact, "{mode:?}: paused");
+            s.apply(Event::RecStatus(Some(rec_status(t0))), t0);
+            assert_eq!(s.view(), View::RecordCompact, "{mode:?}: resumed");
+            // Stopped.
+            let mut s = resting_on_mic(mode, t0);
+            s.apply(Event::RecStatus(None), t0);
+            assert_eq!(s.view(), View::Idle, "{mode:?}: stopped");
+            // A fullscreen app came and went.
+            let mut s = resting_on_mic(mode, t0);
+            s.apply(Event::Fullscreen(true), t0);
+            s.apply(Event::Fullscreen(false), t0);
+            assert_eq!(s.view(), View::RecordCompact, "{mode:?}: after fullscreen");
+            // The next visit opens it as usual.
+            s.apply(Event::Hover(false), t0);
+            s.apply(Event::Hover(true), t0);
+            assert!(matches!(s.view(), View::Panel(_)), "{mode:?}: a new visit");
+        }
+    }
+
+    #[test]
+    fn a_paused_recording_has_no_mute_groups() {
+        let t0 = Instant::now();
+        let mut s = rec_closed(OpenMode::Hover, t0);
+        s.apply(
+            Event::RecStatus(Some(RecStatus {
+                paused_since: Some(t0),
+                ..rec_status(t0)
+            })),
+            t0,
+        );
+        s.apply(Event::RecMuteHot(Some(Source::Mic)), t0);
+        assert_eq!(s.rec_mute_hot(), None);
+        assert_eq!(
+            s.apply(Event::Click(Hit::RecMuteCompact(Source::Mic)), t0),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn the_page_under_a_notice_is_still_the_open_panels() {
+        let t0 = Instant::now();
+        let mut s = st();
+        assert_eq!(s.panel_page_under(), None);
+        s.apply(Event::RecStatus(Some(rec_status(t0))), t0);
+        open_on(&mut s, Page::Record, t0);
+        assert_eq!(s.panel_page_under(), Some(Page::Record));
+        s.apply(Event::Notice(plugged('E')), t0);
+        assert!(matches!(s.view(), View::Notice(_)));
+        assert_eq!(s.panel_page_under(), Some(Page::Record), "covered, still open");
+        leave(&mut s, t0);
+        assert_eq!(s.panel_page_under(), None);
     }
 
     fn rec_entry(name: &str) -> RecEntry {
