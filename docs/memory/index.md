@@ -22,6 +22,7 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[studio-reminder-editor]]
 - [[bata-robot-expressions]]
 - [[bata-idle-power-budget]]: no continuous timer or thread at idle (one-shots, frame clock only while something moves); since 2026-11-06 the closed island redraws and presents only a dirty rect (`ui/dirty.rs`, `UpdateLayeredWindowIndirect`, aliased pixel-aligned clip, Full on morphs/panel/any signature change), drawn on a persistent software WIC bitmap target the size of the surface (rebuilt with it) and copied row by row into the DIB, no `BindDC` and a `TIMER_EQ` tick that would repeat the last frame is skipped (`EqKey`, `draw_gen`), `DI_DIRTY_CHECK=1` self-check
+- [[notch-part-redraw-not-merged]]: round 3 (several small dirty rects in the music views, text layout cache) is on branch `task/notch-parts`, not merged: no clear CPU gain in the lyric view (2026-11-07); measure the compact view before reviving it
 - [[bata-morning-greeting]]
 - [[greeting-periods]]: the cat greets once per period (5) per day by local time, not just mornings
 - [[lyric-notch-width]]
