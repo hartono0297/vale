@@ -388,7 +388,7 @@ impl App {
         self.transcribe_try_next();
     }
 
-    /// A recording holds the queue: the running job
+    /// A recording (or a screen recording) holds the queue: the running job
     /// goes back to the head and its thread stops; when none runs any more
     /// the next job may start.
     pub(super) fn transcribe_sync_hold(&mut self) {

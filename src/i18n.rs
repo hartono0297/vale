@@ -1303,8 +1303,6 @@ keys! {
     TrStatusHeld => "Dijeda selama merekam", "Paused while recording";
     TrEmpty => "Tidak ada ucapan yang terbaca", "No speech could be made out";
     TrPlayerError => "Audio tidak bisa diputar", "The audio cannot be played";
-    TrPlay => "Putar", "Play";
-    TrPause => "Jeda", "Pause";
 }
 
 /// `key` in `lang`.

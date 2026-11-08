@@ -66,7 +66,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     PostMessageW, RegisterClassExW, SW_RESTORE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SetCursor,
     SetTimer, SetWindowPos, SetWindowTextW, ShowWindow, WINDOW_EX_STYLE, WM_CAPTURECHANGED,
     WM_CLOSE, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_GETMINMAXINFO,
-    WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_SETCURSOR,
+    WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_SETCURSOR,
     WM_SIZE, WM_TIMER, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
 };
 use windows::core::{HSTRING, PCWSTR, Result, w};
@@ -290,8 +290,12 @@ struct Win {
     player: Box<dyn Playback>,
     /// The playing line is not followed before this (the list was moved).
     hold_until: Option<Instant>,
-    /// The audio could not be played: the status says so.
+    /// The audio could not be played: the status line says so until the next
+    /// play that works or the next status from the island.
     failed: bool,
+    /// Left/Right on the bar while playing: the position moves per key
+    /// repeat, the player restarts there once, when the key is let go.
+    key_seek: bool,
     seeking: bool,
     tracking: bool,
     /// The title bar's colours last applied (light, bg, text).
@@ -530,6 +534,7 @@ fn new_win(hwnd: HWND, view: View) -> Option<Win> {
         player: new_player(&view.doc.audio),
         hold_until: None,
         failed: false,
+        key_seek: false,
         seeking: false,
         tracking: false,
         styled: None,
@@ -572,6 +577,9 @@ pub fn update(audio: &Path, view: View) {
         // What the pointer was pressed on, so a press survives an update
         // only while the same control or line sits under it.
         let pressed = w.pressed.map(|hot| target_of(w, hot));
+        if view.status != w.view.status {
+            w.failed = false;
+        }
         w.view = view;
         relayout(w);
         if at_end {
@@ -622,12 +630,12 @@ fn relayout(w: &mut Win) {
     let (wd, hd) = size_dip(w);
     let has_lines = !w.view.doc.segments.is_empty();
     let lang = w.view.lang;
-    let status = status(w).clone();
-    w.buttons = layout::buttons_for(&status, has_lines, w.view.can_redo)
+    w.buttons = layout::buttons_for(&w.view.status, has_lines, w.view.can_redo)
         .into_iter()
         .map(|b| (b, w.text.button_w(b, lang)))
         .collect();
-    w.frame = layout::frame(wd, hd, &w.buttons, has_status_line(&status));
+    let status_line = has_status_line(status(w));
+    w.frame = layout::frame(wd, hd, &w.buttons, status_line);
     let tw = (wd - PAD - text_x(w.view.doc.two_channel)).max(40.0);
     if (tw - w.heights_w).abs() > 0.01 {
         w.heights.clear();
@@ -858,11 +866,11 @@ fn status_words(status: &Status, lang: Lang) -> Option<(String, bool)> {
 }
 
 /// What the empty list says, if anything.
-fn empty_words(view: &View, status: &Status) -> Option<&'static str> {
+fn empty_words(view: &View) -> Option<&'static str> {
     if !view.doc.segments.is_empty() {
         return None;
     }
-    match status {
+    match view.status {
         Status::Off => Some(text(view.lang, Key::TrOffTitle)),
         Status::None | Status::PlayerError if view.doc.has_transcript => {
             Some(text(view.lang, Key::TrEmpty))
@@ -1004,7 +1012,7 @@ fn paint(w: &mut Win) {
     // The lines.
     let list = f.list;
     unsafe { rt.PushAxisAlignedClip(&rect_f(list), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE) };
-    if let Some(words) = empty_words(&w.view, status(w)) {
+    if let Some(words) = empty_words(&w.view) {
         let r = Rect {
             x: PAD,
             y: list.y + EMPTY_TOP,
@@ -1181,13 +1189,9 @@ fn set_failed(w: &mut Win, failed: bool) {
     }
 }
 
-/// The status shown: the player's error over a window with no job.
+/// What the status line says: the player's error over the job's status.
 fn status(w: &Win) -> &Status {
-    if w.failed && w.view.status == Status::None {
-        &Status::PlayerError
-    } else {
-        &w.view.status
-    }
+    if w.failed { &Status::PlayerError } else { &w.view.status }
 }
 
 /// Plays from `ms`; the play timer runs while it plays.
@@ -1232,14 +1236,15 @@ fn tick(w: &mut Win, now: Instant) {
     unsafe {
         let _ = KillTimer(Some(w.hwnd), TIMER_PLAY);
     }
+    let picking = w.seeking || w.key_seek;
     if !w.player.playing() {
-        if !w.seeking {
+        if !picking {
             w.position = Some(w.player.position_ms());
         }
         disarm(w);
         return;
     }
-    if !w.seeking {
+    if !picking {
         w.position = Some(w.player.position_ms());
     }
     follow(w, now);
@@ -1267,6 +1272,18 @@ fn on_player(w: &mut Win, code: usize) {
     } else {
         w.position = Some(w.player.position_ms());
         set_failed(w, true);
+    }
+}
+
+/// Left/Right on the bar was let go (or the window lost the keyboard):
+/// playing, it plays from there.
+fn end_key_seek(w: &mut Win) {
+    if !w.key_seek {
+        return;
+    }
+    w.key_seek = false;
+    if w.player.playing() {
+        start(w, w.position.unwrap_or(0));
     }
 }
 
@@ -1395,6 +1412,9 @@ fn key_down(hwnd: HWND, vk: u16) -> bool {
         let page = (list_h(w) * 0.9).max(WHEEL_STEP);
         let in_list = w.focus == Focus::List;
         let scroll = w.scroll;
+        // Only these move the list by hand; a play's own follow does not hold.
+        let moves_list = [VK_PRIOR, VK_NEXT, VK_HOME, VK_END].iter().any(|k| k.0 == vk)
+            || (in_list && (vk == VK_UP.0 || vk == VK_DOWN.0));
         match vk {
             v if v == VK_TAB.0 => move_focus(w, down(VK_SHIFT.0)),
             0x43 if down(VK_CONTROL.0) => {
@@ -1430,11 +1450,8 @@ fn key_down(hwnd: HWND, vk: u16) -> bool {
                 } else {
                     (at + SEEK_STEP_MS).min(duration)
                 };
-                if w.player.playing() {
-                    start(w, to);
-                } else {
-                    w.position = Some(to);
-                }
+                w.position = Some(to);
+                w.key_seek = w.player.playing();
             }
             v if v == VK_PRIOR.0 => scroll_by(w, -page),
             v if v == VK_NEXT.0 => scroll_by(w, page),
@@ -1452,7 +1469,7 @@ fn key_down(hwnd: HWND, vk: u16) -> bool {
             }
             _ => return false,
         }
-        if w.scroll != scroll {
+        if moves_list && w.scroll != scroll {
             hold_follow(w, Instant::now());
         }
         rehover(w);
@@ -1695,6 +1712,15 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             let _ = with_win(hwnd, |w| on_player(w, wparam.0));
             invalidate(hwnd);
             LRESULT(0)
+        }
+        WM_KEYUP if wparam.0 as u16 == VK_LEFT.0 || wparam.0 as u16 == VK_RIGHT.0 => {
+            let _ = with_win(hwnd, end_key_seek);
+            invalidate(hwnd);
+            LRESULT(0)
+        }
+        WM_KILLFOCUS => {
+            let _ = with_win(hwnd, end_key_seek);
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
         WM_KEYDOWN => {
             if key_down(hwnd, wparam.0 as u16) {
@@ -1995,6 +2021,110 @@ mod tests {
         }
         assert_eq!(with_win(hwnd, |w| status(w).clone()).unwrap(), Status::PlayerError);
         assert!(!timer_set(hwnd, TIMER_PLAY), "failed: none");
+        finish();
+    }
+
+    #[test]
+    fn keyboard_plays_keep_following() {
+        let a = r"C:\rec\keyfollow.m4a";
+        assert!(open(HWND::default(), view(a, 80, Status::None), None));
+        let hwnd = hwnd_of(Path::new(a)).unwrap();
+        // Enter on line 50, far below the list's end: it plays and the list
+        // follows it, without a hold.
+        with_win(hwnd, |w| {
+            w.focus = Focus::List;
+            w.focus_line = 50;
+        });
+        assert!(key_down(hwnd, VK_RETURN.0));
+        let start = with_win(hwnd, |w| w.view.doc.segments[50].start_ms).unwrap();
+        assert_eq!(fake(|f| f.calls.clone()), [start]);
+        let (scroll, hold) = with_win(hwnd, |w| (w.scroll, w.hold_until)).unwrap();
+        assert!(scroll > 0.0, "followed to line 50");
+        assert_eq!(hold, None, "a play is not a manual scroll");
+        // The player moves on to line 60: the next tick follows it.
+        let later = with_win(hwnd, |w| w.view.doc.segments[60].start_ms).unwrap();
+        fake(|f| f.position = later + 100);
+        with_win(hwnd, |w| tick(w, Instant::now()));
+        let (scroll, want) = with_win(hwnd, |w| {
+            (w.scroll, layout::follow_scroll(&w.tops, &w.heights, 60, scroll, list_h(w)))
+        })
+        .unwrap();
+        assert_eq!(scroll, want);
+        // Space pauses and plays again: still no hold.
+        assert!(key_down(hwnd, VK_SPACE.0));
+        assert!(key_down(hwnd, VK_SPACE.0));
+        assert_eq!(with_win(hwnd, |w| w.hold_until).unwrap(), None);
+        finish();
+    }
+
+    #[test]
+    fn a_player_error_shows_over_a_job_until_the_next_status() {
+        let a = r"C:\rec\jobfail.m4a";
+        let queued = view(a, 6, Status::Queued);
+        assert!(open(HWND::default(), queued.clone(), None));
+        let hwnd = hwnd_of(Path::new(a)).unwrap();
+        fake(|f| f.fail = true);
+        let (x, y) = line_point(hwnd, 1);
+        click(hwnd, x, y);
+        // The status line says it; the buttons stay the job's.
+        let (shown, buttons, line) = with_win(hwnd, |w| {
+            (status(w).clone(), w.buttons.iter().map(|(b, _)| *b).collect::<Vec<_>>(), w.frame.status)
+        })
+        .unwrap();
+        assert_eq!(shown, Status::PlayerError);
+        assert_eq!(buttons, layout::buttons_for(&Status::Queued, true, true));
+        assert!(line.is_some());
+        // The same status again keeps it.
+        update(Path::new(a), queued.clone());
+        assert_eq!(with_win(hwnd, |w| status(w).clone()).unwrap(), Status::PlayerError);
+        // The job moves on: its status replaces the error, which never
+        // comes back on its own.
+        let running = view(a, 6, Status::Running { pct: 10, eta: None });
+        update(Path::new(a), running);
+        assert_eq!(with_win(hwnd, |w| status(w).clone()).unwrap(), Status::Running { pct: 10, eta: None });
+        update(Path::new(a), view(a, 6, Status::None));
+        assert_eq!(with_win(hwnd, |w| status(w).clone()).unwrap(), Status::None);
+        assert!(with_win(hwnd, |w| w.frame.status).unwrap().is_none());
+        // With no job, the error shows until a play works.
+        click(hwnd, x, y);
+        assert_eq!(with_win(hwnd, |w| status(w).clone()).unwrap(), Status::PlayerError);
+        fake(|f| f.fail = false);
+        click(hwnd, x, y);
+        assert_eq!(with_win(hwnd, |w| status(w).clone()).unwrap(), Status::None);
+        finish();
+    }
+
+    #[test]
+    fn left_right_on_the_bar_restart_the_player_once_on_key_up() {
+        let a = r"C:\rec\keyseek.m4a";
+        assert!(open(HWND::default(), view(a, 12, Status::None), None));
+        let hwnd = hwnd_of(Path::new(a)).unwrap();
+        let (x, y) = line_point(hwnd, 0);
+        click(hwnd, x, y);
+        assert_eq!(fake(|f| f.calls.clone()), [0]);
+        with_win(hwnd, |w| w.focus = Focus::Bar);
+        // A held Right: three repeats move the position, nothing restarts,
+        // and the tick leaves the picked position alone.
+        for _ in 0..3 {
+            assert!(key_down(hwnd, VK_RIGHT.0));
+        }
+        assert_eq!(fake(|f| f.calls.len()), 1);
+        fake(|f| f.position = 400);
+        with_win(hwnd, |w| tick(w, Instant::now()));
+        assert_eq!(with_win(hwnd, |w| w.position).unwrap(), Some(3 * SEEK_STEP_MS));
+        // Let go: one restart there.
+        unsafe {
+            SendMessageW(hwnd, WM_KEYUP, Some(WPARAM(VK_RIGHT.0 as usize)), Some(LPARAM(0)));
+        }
+        assert_eq!(fake(|f| f.calls.clone()), [0, 3 * SEEK_STEP_MS]);
+        // Paused: Left only moves the position, key-up plays nothing.
+        assert!(key_down(hwnd, VK_SPACE.0));
+        assert!(key_down(hwnd, VK_LEFT.0));
+        unsafe {
+            SendMessageW(hwnd, WM_KEYUP, Some(WPARAM(VK_LEFT.0 as usize)), Some(LPARAM(0)));
+        }
+        assert_eq!(fake(|f| f.calls.len()), 2);
+        assert_eq!(with_win(hwnd, |w| w.position).unwrap(), Some(2 * SEEK_STEP_MS));
         finish();
     }
 

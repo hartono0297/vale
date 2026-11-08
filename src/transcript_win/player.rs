@@ -25,8 +25,8 @@ use windows::Win32::Media::MediaFoundation::{
     IMFMediaType, IMFSourceReader, MF_MT_AUDIO_NUM_CHANNELS, MF_MT_AUDIO_SAMPLES_PER_SECOND,
     MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_PD_DURATION, MF_SOURCE_READER_ALL_STREAMS,
     MF_SOURCE_READER_FIRST_AUDIO_STREAM, MF_SOURCE_READER_MEDIASOURCE,
-    MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED, MF_SOURCE_READERF_ENDOFSTREAM, MFAudioFormat_Float,
-    MFMediaType_Audio,
+    MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED, MF_SOURCE_READERF_ENDOFSTREAM,
+    MF_SOURCE_READERF_ERROR, MFAudioFormat_Float, MFMediaType_Audio,
 };
 use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
 use windows::Win32::System::Com::{CLSCTX_ALL, CoCreateInstance};
@@ -265,6 +265,9 @@ impl Job {
             let padding = unsafe { out.client.GetCurrentPadding() }.map_err(dev)?;
             let room = out.frames.saturating_sub(padding) as usize;
             while !source.ended && pending.len() / 2 < room {
+                if self.stop.load(Ordering::Relaxed) {
+                    return Ok(false);
+                }
                 source.read(&mut pending)?;
             }
             let n = room.min(pending.len() / 2);
@@ -396,6 +399,9 @@ impl Source {
                     Some(&raw mut sample),
                 )
                 .map_err(read)?;
+        }
+        if flags & MF_SOURCE_READERF_ERROR.0 as u32 != 0 {
+            return Err(PlayerError::Open("the source reader failed".into()));
         }
         if flags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED.0 as u32 != 0 {
             self.read_format()?;

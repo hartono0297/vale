@@ -2,8 +2,8 @@
 //!
 //! Pure state, no I/O: the caller starts and cancels the threads, reads and
 //! writes the JSON text (`to_json` / `from_json`) and decides what "ready"
-//! means (the model is installed). A hold (Vale starting up, a recording)
-//! keeps the queue from starting anything; turning one on
+//! means (the model is installed). A hold (Vale starting up, a recording, a
+//! screen recording) keeps the queue from starting anything; turning one on
 //! while a job runs sends that job back to the head so the caller can stop it.
 
 use std::collections::VecDeque;
@@ -16,6 +16,9 @@ use serde_json::{Value, json};
 pub enum Hold {
     Startup,
     Recording,
+    /// Track C's screen recorder sets it while it records.
+    #[allow(dead_code, reason = "track C's screen recorder holds the queue with it")]
+    ScreenRecording,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -295,11 +298,11 @@ mod tests {
         let mut q = Queue::new(&[]);
         q.push(job("a.m4a", "s"));
         q.set_hold(Hold::Recording, true);
-        q.set_hold(Hold::Startup, true);
+        q.set_hold(Hold::ScreenRecording, true);
         q.set_hold(Hold::Recording, false);
         assert!(q.held());
         assert_eq!(q.start_next(ready), None);
-        q.set_hold(Hold::Startup, false);
+        q.set_hold(Hold::ScreenRecording, false);
         assert!(!q.held());
         assert!(q.start_next(ready).is_some());
     }
