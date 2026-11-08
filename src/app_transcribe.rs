@@ -217,6 +217,21 @@ pub(super) fn download_reason(lang: Lang, e: &DownloadError) -> String {
     }
 }
 
+/// `scan` with the mark `mark` gives each row. The scan is only read (its
+/// `Done` or `None` is what the disk said), so marking it again after the
+/// queue changed starts from the same facts.
+fn with_marks(
+    scan: Vec<RecEntry>,
+    mark: impl Fn(&RecEntry) -> RowTranscript,
+) -> Vec<RecEntry> {
+    scan.into_iter()
+        .map(|mut e| {
+            e.transcript = mark(&e);
+            e
+        })
+        .collect()
+}
+
 /// Whether a file picked with "Transkrip file lain..." gets a job: it has no
 /// transcript yet and Transkrip is on.
 fn wants_job(has_transcript: bool, enabled: bool) -> bool {
@@ -871,8 +886,10 @@ impl App {
 
     /// The last scan with the queue's marks over it, shown now.
     fn rec_remark(&mut self) {
+        // Straight to the page: the arm of `RecRecent` would keep the marked
+        // rows as the scan, and a `Done` that is queued again would be lost.
         let rows = self.transcribe_marks(self.rec.recent.clone());
-        self.apply_now(Event::RecRecent(rows));
+        self.apply_now(Event::RecMarks(rows));
     }
 
     /// `entries` with the transcript marks the island knows over what the
@@ -880,9 +897,7 @@ impl App {
     pub(super) fn transcribe_marks(&self, entries: Vec<RecEntry>) -> Vec<RecEntry> {
         let enabled = self.config.transcript.enabled;
         let tr = &self.tr;
-        entries
-            .into_iter()
-            .map(|mut e| {
+        with_marks(entries, |e| {
                 let state = tr.queue.state(&e.path);
                 let waiting = tr.queue.held()
                     || tr
@@ -903,10 +918,8 @@ impl App {
                 } else {
                     RowTranscript::None
                 };
-                e.transcript = mark_of(scanned, enabled, state, waiting, pct, failed);
-                e
-            })
-            .collect()
+                mark_of(scanned, enabled, state, waiting, pct, failed)
+        })
     }
 
     /// Quitting: the worker is stopped and joined (the queue file keeps its
@@ -997,6 +1010,29 @@ mod tests {
             model: "whisper-small".into(),
             tries,
         }
+    }
+
+    #[test]
+    fn marking_again_from_the_scan_brings_a_done_row_back() {
+        let scan = vec![RecEntry {
+            path: PathBuf::from("a.m4a"),
+            title: "a".into(),
+            started: String::new(),
+            duration: Duration::ZERO,
+            unfinished: false,
+            transcript: RowTranscript::Done,
+        }];
+        let mark = |queue: Option<JobState>| {
+            move |e: &RecEntry| mark_of(e.transcript, true, queue, false, None, false)
+        };
+        // Transcribed again: queued while it waits.
+        let shown = with_marks(scan.clone(), mark(Some(JobState::Queued)));
+        assert_eq!(shown[0].transcript, RowTranscript::Queued);
+        // Cancelled: marked again from the same scan, "Lihat" is back at
+        // once, without a rescan.
+        let shown = with_marks(scan.clone(), mark(None));
+        assert_eq!(shown[0].transcript, RowTranscript::Done);
+        assert_eq!(scan[0].transcript, RowTranscript::Done, "the scan stays as it was");
     }
 
     #[test]

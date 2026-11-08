@@ -363,6 +363,9 @@ pub enum Event {
     RecStatus(Option<RecStatus>),
     /// The newest recordings found in the folder (the page shows five).
     RecRecent(Vec<RecEntry>),
+    /// The same list with the queue's transcript marks over it, put on show
+    /// again after a mark changed (`App` keeps the unmarked scan apart).
+    RecMarks(Vec<RecEntry>),
     /// What a recording's threads reported, with the session number they
     /// belong to (`App` handles it; the reducer ignores it).
     Rec(u64, RecNote),

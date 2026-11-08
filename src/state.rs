@@ -569,7 +569,7 @@ impl IslandState {
             Event::LyricsReady(ready) => self.lyrics_ready = ready,
             Event::LyricsSetting(on) => self.lyrics_on = on,
             Event::RecStatus(status) => self.rec = status,
-            Event::RecRecent(list) => self.rec_recent = list,
+            Event::RecRecent(list) | Event::RecMarks(list) => self.rec_recent = list,
             Event::Notice(notice) => match &notice.kind {
                 NoticeKind::ClaudeWaiting { .. }
                 | NoticeKind::Reminder { .. }
@@ -8201,6 +8201,17 @@ mod tests {
             unfinished: false,
             transcript: RowTranscript::None,
         }
+    }
+
+    #[test]
+    fn marks_put_on_show_again_replace_the_list() {
+        let mut s = st();
+        let t0 = Instant::now();
+        s.apply(Event::RecRecent(vec![rec_entry("a.m4a")]), t0);
+        let mut marked = rec_entry("a.m4a");
+        marked.transcript = RowTranscript::Queued;
+        s.apply(Event::RecMarks(vec![marked]), t0);
+        assert_eq!(s.rec_recent()[0].transcript, RowTranscript::Queued);
     }
 
     #[test]
