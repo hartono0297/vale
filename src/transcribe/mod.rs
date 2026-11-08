@@ -31,5 +31,6 @@ pub mod gpu;
 pub mod runner;
 pub mod queue;
 pub mod doc;
+pub mod prefs;
 #[cfg(debug_assertions)]
 pub mod debug;

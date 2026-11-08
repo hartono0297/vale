@@ -203,6 +203,9 @@ pub struct Config {
     /// "Rekaman" (Settings -> Fitur): the sources, the folder and the one-time
     /// consent notice. Owned by the island; read leniently, field by field.
     pub recording: crate::recorder::prefs::RecordingPrefs,
+    /// "Transkrip" (Settings): the transcripts of recordings, their model,
+    /// language and window. Owned by the island; read leniently.
+    pub transcript: crate::transcribe::prefs::TranscriptPrefs,
 }
 
 /// The lyrics card's rectangle in screen coordinates, physical pixels.
@@ -775,6 +778,7 @@ impl Default for Config {
             lyrics_card: None,
             widgets: crate::widgets::prefs::WidgetPrefs::default(),
             recording: crate::recorder::prefs::RecordingPrefs::default(),
+            transcript: crate::transcribe::prefs::TranscriptPrefs::default(),
         }
     }
 }
@@ -922,6 +926,7 @@ pub fn merge_owned(disk: Config, mem: &Config) -> Config {
         lyrics_card: mem.lyrics_card,
         widgets: mem.widgets,
         recording: mem.recording.clone(),
+        transcript: mem.transcript.clone(),
         ..disk
     }
 }
@@ -1357,6 +1362,19 @@ mod tests {
                 system_device: None,
                 echo_cancel: false,
             },
+            transcript: crate::transcribe::prefs::TranscriptPrefs {
+                enabled: true,
+                model: Some("whisper-small".into()),
+                language: crate::transcribe::prefs::TrLang::En,
+                auto: false,
+                setup_offered: true,
+                window: Some(CardPlace {
+                    left: 5,
+                    top: 6,
+                    right: 300,
+                    bottom: 400,
+                }),
+            },
         };
         assert_eq!(parse(&serde_json::to_string(&c).unwrap()), c);
     }
@@ -1382,6 +1400,42 @@ mod tests {
         };
         let merged = merge_owned(Config::default(), &mem);
         assert!(merged.recording.consent_shown);
+    }
+
+    #[test]
+    fn an_old_config_without_transcript_loads() {
+        use crate::transcribe::prefs::{TrLang, TranscriptPrefs};
+        let c = parse(r#"{"style":"Notch","recording":{"consent_shown":true}}"#);
+        assert_eq!(c.style, Style::Notch);
+        assert!(c.recording.consent_shown);
+        assert_eq!(c.transcript, TranscriptPrefs::default());
+        assert_eq!(c.transcript.language, TrLang::Id);
+        // A bad section keeps the rest of the file.
+        let c = parse(r#"{"style":"Notch","transcript":"x"}"#);
+        assert_eq!(c.style, Style::Notch);
+        assert_eq!(c.transcript, TranscriptPrefs::default());
+    }
+
+    #[test]
+    fn merge_owned_keeps_the_transcript_settings() {
+        use crate::transcribe::prefs::{TrLang, TranscriptPrefs};
+        let mem = Config {
+            transcript: TranscriptPrefs {
+                enabled: true,
+                model: Some("whisper-small".into()),
+                language: TrLang::Auto,
+                auto: false,
+                setup_offered: true,
+                window: None,
+            },
+            ..Config::default()
+        };
+        let disk = Config {
+            transcript: TranscriptPrefs::default(),
+            ..Config::default()
+        };
+        let merged = merge_owned(disk, &mem);
+        assert_eq!(merged.transcript, mem.transcript);
     }
 
     #[test]
