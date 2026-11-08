@@ -300,3 +300,18 @@ built in the main checkout, `cargo build --release --locked`, 0 warnings:
 | 53652f6 (notch mute, `menu_pop`) | 4,034,560 (+17,920, +0.4 %) |
 
 No new crate and no new `windows` feature.
+
+## Transcript, phase 2 (2026-11-09)
+
+[[transcript]]: the transcript branch (head 3bf0853) against `main` at 53652f6,
+`cargo build --release --locked`, 0 warnings:
+
+| Build | Bytes |
+|---|---|
+| 53652f6 (notch mute, `menu_pop`) | 4,034,560 |
+| 3bf0853 (transcript), worktree path | 4,297,728 (+263,168, +257 KiB, +6.5 %) |
+| 3bf0853 (transcript), main checkout | 4,297,216 (+262,656, +256.5 KiB, +6.5 %) |
+
+The spec's "a few tens of KB" was not reachable: the transcript core, window,
+player and Settings card are all new code. The worktree path was longer than
+main's, which moves the size by at most 512 bytes. Nothing trimmed yet.

@@ -12,6 +12,7 @@ plan: `docs/superpowers/plans/2026-11-07-recording-phase1.md`, mockups:
 build on it. Related: [[controlled-folder-access]], [[media-foundation-dynamic-load]],
 [[wasapi-capture-timestamps]], [[bata-idle-power-budget]], [[hotkeys]], [[exe-size]].
 Mute, device choice and echo cancellation: [[recording-controls]].
+Transcript of a recording (phase 2): [[transcript]].
 
 ## Where it lives
 

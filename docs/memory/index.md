@@ -14,7 +14,7 @@ One note per decision, gotcha or convention. Link each new note here.
 
 - [[studio-palette-accent-aliases]]
 - [[studio-font-sources]]
-- [[exe-size]]: size measured per change (the dirty-rect present, 2026-11-06, is the last entry); icon small sizes as PNG (-38 KB), opt-level z option (-326 KB) left to the owner
+- [[exe-size]]: size measured per change (the transcript, 2026-11-09, +257 KiB, is the last entry); icon small sizes as PNG (-38 KB), opt-level z option (-326 KB) left to the owner
 - [[studio-icons]]
 - [[studio-calendar-day-view]]
 - [[studio-media-progress-timer]]
@@ -92,7 +92,8 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[recording-audio]]: audio recording, phase 1 (2026-11-07): mic, PC audio or both to `.m4a` + sidecar on a QPC timeline, AAC 96 kbps fragmented MP4, threads only while recording, TIMER_REC 60 / TIMER_REC_LEVEL 61, hotkey 9 `Ctrl+Alt+R`, Rekam page, tray dot, silent recordings not kept
 - [[recording-controls]]: mute per source (zeros before the timeline), mute hotkey id 12 `Ctrl+Alt+M` registered only while recording, mic/PC-audio device choice with live switch and fall-back, echo cancellation through the speech category (not communications: ducking)
 - [[notch-rec-mute]]: the closed REC notch's level groups are mute buttons; hover never opens the panel (`rec_mute_hot`), cleared only on leave / stop / pause / fullscreen, never on a view change
-- [[recording-hand-checks]]: phase 1 is done; the checks still to do by hand on the real app (dropdown with a mouse, light theme, focus, real voice with echo cancellation, headset mid-recording, sleep)
+- [[recording-hand-checks]]: phase 1 is done, and the phase 2 transcript checks (playback heard, summary prompt pasted, .md opened, echo on a real call) plus its known small issues are listed; the checks still to do by hand on the real app (dropdown with a mouse, light theme, focus, real voice with echo cancellation, headset mid-recording, sleep)
+- [[transcript]]: recording phase 2 (2026-11-09): offline Whisper (turbo with a GPU, small without), auto after each recording or by hand, one-job queue with holds and `queue.json`, downloads only on a click, echo filter, file naming, the transcript window and player
 - [[menu-pop]]: Vale's own themed dropdown (`ui/menu_pop.rs`), first for the recording devices; `WM_APP + 81` Done, `menu_open` holds the panel
 - [[lyrics-lookup]]: LRCLIB 503 + Retry-After retry (30 s budget), step order (field search, get, free-text search), None vs transient, the Artist - Title split, tight-window consensus pick of the best-synced version, intro shift for a longer video, `.lrc2` / `.none4`
 
@@ -112,7 +113,9 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[d2d-dc-target-full-copy]]: a Direct2D DC render target copies the whole bound DC rect at BeginDraw and EndDraw whatever the clip; the island draws on a WIC bitmap target and copies only the dirty rows
 - [[test-spawns-no-window]]: tests spawn console children with CREATE_NO_WINDOW and never show windows (editor `ON_SCREEN`), or Windows Terminal windows pop up
 - [[controlled-folder-access]]: Windows' ransomware protection refuses unsigned Vale in Documents/Videos with "not found"; recordings fall back to `%USERPROFILE%\Vale\Rekaman` and the default moves there
-- [[media-foundation-dynamic-load]]: Media Foundation is loaded with LoadLibraryExW, never imported, or vale.exe will not start on Windows N
+- [[transcript-defender-toast]]: the first GPU transcript can raise a Windows Security "Unauthorised changes blocked" toast (AMD Vulkan driver under Controlled folder access); it still completes, allow `vale.exe`
+- [[light-accent-contrast]]: `#FFFBF5` on the plain light accent is 4.26:1; use `primary_fill` / `segment_fill` for any accent fill with text
+- [[media-foundation-dynamic-load]]: Media Foundation is loaded with LoadLibraryExW, never imported, or vale.exe will not start on Windows N; one loader now, `src/mf.rs` (`MfSession`: COM MTA + MFStartup)
 - [[wasapi-capture-timestamps]]: GetBuffer's QPC position is in 100 ns units; loopback sends no packets in silence
 - [[tray-dark-menu]]: the tray menu follows the Windows app mode via uxtheme ordinals 135/136/104 (AllowDark), not Vale's window theme
 
