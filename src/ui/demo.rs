@@ -324,6 +324,9 @@ struct Scene {
     arrange: ArrangeDemo,
     /// The recording the REC view and the Rekam page show; `None` is idle.
     rec: Option<DemoRec>,
+    /// The Rekam list's transcript marks: 0 none yet, 1 and 2 two sets that
+    /// between them show every mark (and a recording still unfinished).
+    marks: u8,
     /// The page dots as the dock, the pointer over this icon (0-based).
     dock: Option<usize>,
     /// The compact view or notice has the see-through background
@@ -624,6 +627,7 @@ const BASE: Scene = Scene {
     devices: DevicesDemo::Design,
     arrange: ArrangeDemo::No,
     rec: None,
+    marks: 0,
     dock: None,
     transparent: false,
     look: 0.0,
@@ -656,21 +660,49 @@ fn demo_rec_devices() -> [String; 2] {
     ]
 }
 
-/// The Rekam page's made-up list: the three rows of the design's mockup.
-fn demo_rec_recent() -> Vec<RecEntry> {
-    let entry = |title: &str, started: &str, mins: u64| RecEntry {
+/// The Rekam page's made-up list: the three rows of the design's mockup. With
+/// `marks` 1 or 2 it is five rows that show every transcript mark between
+/// them (`--demo-record`, `rec-page-marks` and `rec-page-marks-more`).
+fn demo_rec_recent(marks: u8) -> Vec<RecEntry> {
+    let entry = |title: &str, started: &str, mins: u64, transcript| RecEntry {
         path: std::path::PathBuf::from(format!("{title}.m4a")),
         title: title.to_owned(),
         started: started.to_owned(),
         duration: Duration::from_secs(mins * 60),
         unfinished: false,
-        transcript: RowTranscript::None,
+        transcript,
     };
-    vec![
-        entry("Sync mingguan", "Hari ini 10:02", 42),
-        entry("Review desain klien", "Kemarin 14:30", 65),
-        entry("Rekaman 5 Nov 09:15", "5 Nov", 18),
-    ]
+    let none = RowTranscript::None;
+    match marks {
+        1 => vec![
+            entry("Sync mingguan", "Hari ini 10:02", 42, RowTranscript::Done),
+            entry("Review desain klien", "Kemarin 14:30", 65, RowTranscript::Running(42)),
+            entry("Rekaman 5 Nov 09:15", "5 Nov", 18, RowTranscript::Queued),
+            entry("Standup tim", "4 Nov", 15, RowTranscript::Waiting),
+            entry("Wawancara kandidat", "3 Nov", 55, RowTranscript::Failed),
+        ],
+        2 => {
+            let mut part = entry("2026-11-07 0900", "7 Nov", 0, none);
+            part.unfinished = true;
+            vec![
+                entry("Sync mingguan", "Hari ini 10:02", 42, none),
+                entry("Review desain klien", "Kemarin 14:30", 65, RowTranscript::Off),
+                part,
+                entry(
+                    "Diskusi roadmap produk kuartal pertama dengan seluruh tim",
+                    "5 Nov",
+                    73,
+                    RowTranscript::Done,
+                ),
+                entry("Rekaman 5 Nov 09:15", "5 Nov", 18, RowTranscript::Running(7)),
+            ]
+        }
+        _ => vec![
+            entry("Sync mingguan", "Hari ini 10:02", 42, none),
+            entry("Review desain klien", "Kemarin 14:30", 65, none),
+            entry("Rekaman 5 Nov 09:15", "5 Nov", 18, none),
+        ],
+    }
 }
 
 /// The REC view with Bata and made-up levels.
@@ -910,7 +942,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 185] = [
+const SCENES: [Scene; 187] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -971,6 +1003,21 @@ const SCENES: [Scene; 185] = [
     Scene {
         name: "rec-page-idle",
         view: View0::Panel(Page::Record),
+        ..BASE
+    },
+    // The same list with a transcript mark on each row: done, running,
+    // queued, waiting for a model, failed; then none yet, off, a recording
+    // still unfinished (no pill), a long title and another percent.
+    Scene {
+        name: "rec-page-marks",
+        view: View0::Panel(Page::Record),
+        marks: 1,
+        ..BASE
+    },
+    Scene {
+        name: "rec-page-marks-more",
+        view: View0::Panel(Page::Record),
+        marks: 2,
         ..BASE
     },
     Scene {
@@ -2212,7 +2259,7 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
             // The fill follows the morph as the island does (`App::fill_at`).
             let fill_alpha =
                 notch_fill::morph_fill(scene_fill(&prev), scene_fill(&scene), ease_out_back(t));
-            let rec_recent = demo_rec_recent();
+            let rec_recent = demo_rec_recent(scene.marks);
             let rec_devices = demo_rec_devices();
             let pomodoro = demo_pomodoro(scene.pomo, now);
             let view = live_view.unwrap_or_else(|| match scene.view {

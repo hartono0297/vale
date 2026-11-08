@@ -4026,11 +4026,16 @@ pub fn rec_mute_regions(s: ShapeRect, l: &RecLayout, sources: RecSources) -> Vec
     regions
 }
 
-/// The Rekam page's header as measured: the title and the "Buka folder" link.
+/// The Rekam page's header as measured: the title, the "Buka folder" link
+/// and the "Transkrip file lain..." link in its long and short form.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct RecordHead {
     pub title_w: f32,
     pub folder_w: f32,
+    /// "Transkrip file lain..." (the long form).
+    pub pick_w: f32,
+    /// "File lain..." (used when the long form does not fit beside the title).
+    pub pick_short_w: f32,
 }
 
 /// The Rekam page (docs/design/rekaman.html, section 2): the title and the
@@ -4043,6 +4048,10 @@ pub struct RecordLayout {
     pub header: Rect,
     /// "Buka folder", at the right of the header row.
     pub folder: Rect,
+    /// "Transkrip file lain...", `REC_HEAD_LINKS_GAP` left of "Buka folder".
+    pub pick: Rect,
+    /// `pick` holds the short form.
+    pub pick_short: bool,
     /// The card holding the buttons (the design's `.big`).
     pub card: Rect,
     /// The round start / stop button.
@@ -4086,7 +4095,8 @@ pub struct RecordLive {
 }
 
 /// One recent recording: the icon well, the title and "date · duration"
-/// lines, and the "Buka" pill. The whole row is the click.
+/// lines, and the transcript pill at the right (zero wide when the row has
+/// none). The whole row is the click.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RecordRowLayout {
     pub row: Rect,
@@ -4111,8 +4121,18 @@ const REC_SEG_H: f32 = 30.0;
 const REC_ROW_H: f32 = 26.0;
 const REC_ROW_GAP: f32 = 2.0;
 const REC_WELL: f32 = 24.0;
-const REC_PILL_W: f32 = 44.0;
+/// A row's transcript pill: the label's width plus `REC_PILL_PAD`, kept
+/// within `REC_PILL_MIN..=REC_PILL_MAX`; the title and date lines end
+/// `REC_PILL_GAP` before it.
+const REC_PILL_MIN: f32 = 44.0;
+const REC_PILL_MAX: f32 = 112.0;
+const REC_PILL_PAD: f32 = 16.0;
+const REC_PILL_GAP: f32 = 8.0;
 const REC_PILL_H: f32 = 20.0;
+/// Between the header's two links.
+const REC_HEAD_LINKS_GAP: f32 = 12.0;
+/// Between the title and the first link at the least.
+const REC_TITLE_GAP: f32 = 8.0;
 /// The mute button's diameter and the gap between it and its meter.
 const REC_MUTE: f32 = 26.0;
 const REC_MUTE_GAP: f32 = 8.0;
@@ -4131,6 +4151,9 @@ const REC_LIVE_EXTRA: f32 = 14.0;
 /// name per source where the control is. `chosen` is the source control's
 /// choice: while idle a device line per chosen source goes under it. `rows`
 /// is how many recent recordings there are (at most `REC_ROWS` of them show).
+/// `pills[i]` is the measured width of row `i`'s pill label; the pill is that
+/// plus padding within its limits, and a width of zero (or none given) is a
+/// row without a pill.
 pub fn record_layout(
     s: ShapeRect,
     strip: bool,
@@ -4138,6 +4161,7 @@ pub fn record_layout(
     live: Option<RecSources>,
     chosen: RecSources,
     rows: usize,
+    pills: &[f32],
 ) -> RecordLayout {
     let recording = live.is_some();
     let top = content_top(s, strip);
@@ -4149,6 +4173,10 @@ pub fn record_layout(
         head.folder_w,
         HEADER_H,
     );
+    let long_fits = head.title_w + REC_TITLE_GAP + head.pick_w + REC_HEAD_LINKS_GAP + head.folder_w
+        <= header_right(s) - l;
+    let pick_w = if long_fits { head.pick_w } else { head.pick_short_w };
+    let pick = rect(folder.x - REC_HEAD_LINKS_GAP - pick_w, top, pick_w, HEADER_H);
     let block_y = top + HEADER_H + REC_HEAD_GAP;
     let extra = if recording { REC_LIVE_EXTRA } else { 0.0 };
     let card = rect(l, block_y, REC_CARD_W, REC_BLOCK_H + extra);
@@ -4257,14 +4285,21 @@ pub fn record_layout(
         .map(|i| {
             let row = rect(l, list.y + i as f32 * pitch, r - l, REC_ROW_H);
             let well = rect(row.x, row.y + (REC_ROW_H - REC_WELL) / 2.0, REC_WELL, REC_WELL);
+            let label_w = pills.get(i).copied().unwrap_or(0.0);
+            let pill_w = if label_w > 0.0 {
+                (label_w + REC_PILL_PAD).clamp(REC_PILL_MIN, REC_PILL_MAX)
+            } else {
+                0.0
+            };
             let pill = rect(
-                row.right() - REC_PILL_W,
+                row.right() - pill_w,
                 row.y + (REC_ROW_H - REC_PILL_H) / 2.0,
-                REC_PILL_W,
+                pill_w,
                 REC_PILL_H,
             );
             let text_x = well.right() + 8.0;
-            let text_w = pill.x - 8.0 - text_x;
+            let text_end = if pill_w > 0.0 { pill.x - REC_PILL_GAP } else { row.right() };
+            let text_w = text_end - text_x;
             RecordRowLayout {
                 row,
                 well,
@@ -4278,6 +4313,8 @@ pub fn record_layout(
     RecordLayout {
         header,
         folder,
+        pick,
+        pick_short: !long_fits,
         card,
         button,
         button_label,
@@ -4533,8 +4570,13 @@ pub fn regions(s: ShapeRect, layout: &PageLayout, strip: impl Into<StripKind>) -
                     add(r, Hit::RecSources(sources));
                 }
             }
+            add(l.pick, Hit::RecPickFile);
             add(l.folder, Hit::RecFolder);
+            // The pill sits inside its row: it comes first.
             for (i, row) in l.rows.iter().enumerate() {
+                if row.pill.w > 0.0 {
+                    add(row.pill, Hit::RecTranscript(i));
+                }
                 add(row.row, Hit::RecOpen(i));
             }
         }
@@ -4941,7 +4983,7 @@ mod tests {
             out.push((format!("arrange {name}"), PageLayout::Arrange(l)));
         }
         for (recording, n) in [(false, 0), (false, 3), (true, 3), (false, 5), (true, 9)] {
-            let l = record_layout(s, strip, &REC_HEAD, recording.then_some(BOTH), BOTH, n);
+            let l = record_layout(s, strip, &REC_HEAD, recording.then_some(BOTH), BOTH, n, &PILLS);
             out.push((
                 format!("record rec={recording} n={n}"),
                 PageLayout::Record(l),
@@ -4980,7 +5022,12 @@ mod tests {
     const REC_HEAD: RecordHead = RecordHead {
         title_w: 60.0,
         folder_w: 76.0,
+        pick_w: 110.0,
+        pick_short_w: 56.0,
     };
+
+    /// A label width per row: nothing is longer than "Transkrip".
+    const PILLS: [f32; 9] = [44.0; 9];
 
     /// A header as the renderer would measure it.
     const DEV_HEAD: DevicesHead = DevicesHead {
@@ -5057,7 +5104,7 @@ mod tests {
         for style in [Style::Pill, Style::Notch] {
             let s = panel(style);
             let (dots, _) = page_dots(s, &Page::ALL, Page::Record);
-            let l = record_layout(s, false, &REC_HEAD, None, BOTH, 9);
+            let l = record_layout(s, false, &REC_HEAD, None, BOTH, 9, &PILLS);
             assert_eq!(l.rows.len(), REC_ROWS, "{style:?}: five at most");
             assert!(l.empty.is_none());
             for (i, r) in l.rows.iter().enumerate() {
@@ -5073,12 +5120,12 @@ mod tests {
             // The list starts under the card, and the card under the title.
             assert!(l.card.y >= l.header.bottom() && l.list.y >= l.card.bottom());
             // Fewer recordings show fewer rows; none show the empty state.
-            assert_eq!(record_layout(s, false, &REC_HEAD, None, BOTH, 2).rows.len(), 2);
-            let none = record_layout(s, false, &REC_HEAD, None, BOTH, 0);
+            assert_eq!(record_layout(s, false, &REC_HEAD, None, BOTH, 2, &PILLS).rows.len(), 2);
+            let none = record_layout(s, false, &REC_HEAD, None, BOTH, 0, &PILLS);
             assert!(none.rows.is_empty());
             assert!(none.empty.is_some_and(|e| rect_inside(style, s, e)));
             // Under the waiting strip one row less fits, never past the dots.
-            let strip = record_layout(s, true, &REC_HEAD, None, BOTH, 9);
+            let strip = record_layout(s, true, &REC_HEAD, None, BOTH, 9, &PILLS);
             assert_eq!(strip.rows.len(), REC_ROWS - 1, "{style:?}");
             for r in &strip.rows {
                 assert!(r.row.bottom() <= content_bottom(s) + 0.01);
@@ -5087,16 +5134,93 @@ mod tests {
     }
 
     #[test]
+    fn the_transcript_pill_sits_right_and_wins_over_the_row() {
+        for style in [Style::Pill, Style::Notch] {
+            let s = panel(style);
+            let l = record_layout(s, false, &REC_HEAD, None, BOTH, 3, &PILLS);
+            let hit_of = |r: Rect| {
+                let (x, y) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
+                regions(s, &PageLayout::Record(l.clone()), false)
+                    .into_iter()
+                    .find(|g| {
+                        x >= g.rect.x && x < g.rect.right() && y >= g.rect.y && y < g.rect.bottom()
+                    })
+                    .map(|g| g.hit)
+            };
+            for (i, row) in l.rows.iter().enumerate() {
+                // Right-aligned in its row, centred on the row's height.
+                assert_eq!(row.pill.right(), row.row.right(), "{style:?} {i}");
+                assert!(row.pill.w >= REC_PILL_MIN && row.pill.w <= REC_PILL_MAX);
+                assert_eq!(hit_of(row.pill), Some(Hit::RecTranscript(i)), "{style:?} {i}");
+                assert_eq!(hit_of(row.title), Some(Hit::RecOpen(i)), "{style:?} {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_title_ends_before_a_wide_pill() {
+        let s = panel(Style::Pill);
+        // "Menunggu model" is far wider than "Transkrip".
+        let wide = record_layout(s, false, &REC_HEAD, None, BOTH, 2, &[80.0, 44.0]);
+        let narrow = &wide.rows[1];
+        let long = &wide.rows[0];
+        assert_eq!(long.pill.w, 96.0, "the label plus 16");
+        assert_eq!(long.title.right(), long.pill.x - 8.0);
+        assert_eq!(long.sub.right(), long.pill.x - 8.0);
+        assert_eq!(narrow.pill.w, 60.0);
+        assert!(narrow.title.w > long.title.w);
+        // Clamped at both ends.
+        let l = record_layout(s, false, &REC_HEAD, None, BOTH, 2, &[10.0, 400.0]);
+        assert_eq!(l.rows[0].pill.w, REC_PILL_MIN);
+        assert_eq!(l.rows[1].pill.w, REC_PILL_MAX);
+    }
+
+    #[test]
+    fn an_unfinished_row_has_no_pill() {
+        let s = panel(Style::Pill);
+        // Row 1 is a `.m4a.part`: its pill width is zero.
+        let l = record_layout(s, false, &REC_HEAD, None, BOTH, 3, &[44.0, 0.0, 44.0]);
+        assert_eq!(l.rows[1].pill.w, 0.0);
+        assert_eq!(l.rows[1].title.right(), l.rows[1].row.right(), "the title uses the room");
+        let hits: Vec<Hit> = regions(s, &PageLayout::Record(l.clone()), false)
+            .into_iter()
+            .map(|g| g.hit)
+            .collect();
+        assert!(hits.contains(&Hit::RecTranscript(0)) && hits.contains(&Hit::RecTranscript(2)));
+        assert!(!hits.contains(&Hit::RecTranscript(1)));
+        assert!(hits.contains(&Hit::RecOpen(1)), "the row still opens");
+    }
+
+    #[test]
+    fn the_header_uses_the_short_link_when_both_do_not_fit() {
+        let s = panel(Style::Pill);
+        let room = header_right(s) - left(s);
+        // Plenty of room: the long form, twelve left of "Buka folder".
+        let roomy = record_layout(s, false, &REC_HEAD, None, BOTH, 0, &[]);
+        assert!(!roomy.pick_short);
+        assert_eq!(roomy.pick.w, REC_HEAD.pick_w);
+        assert_eq!(roomy.pick.right(), roomy.folder.x - 12.0);
+        assert_eq!(roomy.folder.right(), header_right(s));
+        // A title so wide that the long form would touch it: the short one.
+        let wide_title = RecordHead { title_w: room - 160.0, ..REC_HEAD };
+        let l = record_layout(s, false, &wide_title, None, BOTH, 0, &[]);
+        assert!(l.pick_short);
+        assert_eq!(l.pick.w, REC_HEAD.pick_short_w);
+        assert!(l.pick.x >= l.header.right() + REC_TITLE_GAP);
+        assert!(disjoint(l.pick, l.folder) && disjoint(l.pick, l.header));
+    }
+
+    #[test]
     fn the_rekam_card_swaps_start_for_stop_and_pause_and_locks_the_sources() {
         let s = panel(Style::Pill);
-        let idle = record_layout(s, false, &REC_HEAD, None, BOTH, 0);
+        let idle = record_layout(s, false, &REC_HEAD, None, BOTH, 0, &PILLS);
         assert!(idle.pause.is_none() && idle.sources_enabled);
         // The lone button is centred in its card.
         assert!(
             ((idle.button.x + idle.button.w / 2.0) - (idle.card.x + idle.card.w / 2.0)).abs()
                 < 0.01
         );
-        let rec = record_layout(s, false, &REC_HEAD, Some(BOTH), BOTH, 0);
+        let rec = record_layout(s, false, &REC_HEAD, Some(BOTH), BOTH, 0, &PILLS);
         let pause = rec.pause.expect("pause while recording");
         assert!(!rec.sources_enabled);
         assert!(disjoint(rec.button, pause));
@@ -5139,7 +5263,7 @@ mod tests {
             (mic, vec![Source::Mic]),
             (system, vec![Source::System]),
         ] {
-            let l = record_layout(s, false, &REC_HEAD, Some(live), BOTH, 3);
+            let l = record_layout(s, false, &REC_HEAD, Some(live), BOTH, 3, &PILLS);
             assert_eq!(l.live.iter().map(|c| c.source).collect::<Vec<_>>(), want);
             for c in &l.live {
                 // The button and its meter sit side by side inside the
@@ -5164,7 +5288,7 @@ mod tests {
             }
             assert!(l.idle_devices.is_empty());
         }
-        assert!(record_layout(s, false, &REC_HEAD, None, BOTH, 3).live.is_empty());
+        assert!(record_layout(s, false, &REC_HEAD, None, BOTH, 3, &PILLS).live.is_empty());
     }
 
     #[test]
@@ -5178,7 +5302,7 @@ mod tests {
                 (mic, vec![Source::Mic]),
                 (system, vec![Source::System]),
             ] {
-                let l = record_layout(s, false, &REC_HEAD, None, chosen, 3);
+                let l = record_layout(s, false, &REC_HEAD, None, chosen, 3, &PILLS);
                 assert_eq!(
                     l.idle_devices.iter().map(|d| d.0).collect::<Vec<_>>(),
                     want,
@@ -5195,8 +5319,8 @@ mod tests {
                 assert!(l.live.is_empty());
             }
             // The extra height is for the recording only: idle keeps five rows.
-            let idle = record_layout(s, false, &REC_HEAD, None, BOTH, 9);
-            let rec = record_layout(s, false, &REC_HEAD, Some(BOTH), BOTH, 9);
+            let idle = record_layout(s, false, &REC_HEAD, None, BOTH, 9, &PILLS);
+            let rec = record_layout(s, false, &REC_HEAD, Some(BOTH), BOTH, 9, &PILLS);
             assert_eq!(idle.rows.len(), REC_ROWS, "{style:?}");
             assert!(rec.card.h > idle.card.h && !rec.rows.is_empty(), "{style:?}");
             for r in &rec.rows {
@@ -5215,17 +5339,17 @@ mod tests {
                 .find(|g| x >= g.rect.x && x < g.rect.right() && y >= g.rect.y && y < g.rect.bottom())
                 .map(|g| g.hit)
         };
-        let idle = record_layout(s, false, &REC_HEAD, None, BOTH, 3);
+        let idle = record_layout(s, false, &REC_HEAD, None, BOTH, 3, &PILLS);
         assert_eq!(hit_of(&idle, idle.button), Some(Hit::RecToggle));
         assert_eq!(hit_of(&idle, idle.folder), Some(Hit::RecFolder));
         for (sources, r) in idle.segs {
             assert_eq!(hit_of(&idle, r), Some(Hit::RecSources(sources)));
         }
         for (i, row) in idle.rows.iter().enumerate() {
-            assert_eq!(hit_of(&idle, row.pill), Some(Hit::RecOpen(i)));
             assert_eq!(hit_of(&idle, row.title), Some(Hit::RecOpen(i)));
         }
-        let rec = record_layout(s, false, &REC_HEAD, Some(BOTH), BOTH, 3);
+        assert_eq!(hit_of(&idle, idle.pick), Some(Hit::RecPickFile));
+        let rec = record_layout(s, false, &REC_HEAD, Some(BOTH), BOTH, 3, &PILLS);
         assert_eq!(hit_of(&rec, rec.button), Some(Hit::RecToggle));
         assert_eq!(hit_of(&rec, rec.pause.unwrap()), Some(Hit::RecPause));
         // While recording the source control takes no click.
@@ -7404,9 +7528,13 @@ mod tests {
                     for (i, a) in r.iter().enumerate() {
                         for b in &r[i + 1..] {
                             // A note card's pin sits on its card, in front of it.
+                            // A Rekam row's transcript pill sits on its row too.
                             let on_card = matches!(
                                 (&a.hit, &b.hit),
                                 (Hit::NoteSticky(x), Hit::NoteOpen(y)) if x == y
+                            ) || matches!(
+                                (&a.hit, &b.hit),
+                                (Hit::RecTranscript(x), Hit::RecOpen(y)) if x == y
                             );
                             if on_card {
                                 assert!(
@@ -7414,7 +7542,7 @@ mod tests {
                                         && a.rect.y >= b.rect.y
                                         && a.rect.right() <= b.rect.right()
                                         && a.rect.bottom() <= b.rect.bottom(),
-                                    "the pin is inside its card"
+                                    "the pin or pill is inside its card or row"
                                 );
                                 continue;
                             }

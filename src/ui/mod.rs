@@ -33,5 +33,6 @@ pub mod settings_layout;
 pub mod settings_window;
 pub mod shelf_motion;
 pub mod tray;
+pub mod transcript_menu;
 pub mod tray_dot;
 pub mod window;

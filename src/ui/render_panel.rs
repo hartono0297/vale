@@ -39,7 +39,7 @@ use crate::clipboard::{Clip, ClipData, ClipKind};
 use crate::config::Style;
 use crate::devices::{self, DeviceKind};
 use crate::i18n::{self, Key, Lang, text};
-use crate::model::{CalView, Hit, MediaInfo, Notice, NoticeKind, Page};
+use crate::model::{CalView, Hit, MediaInfo, Notice, NoticeKind, Page, RecEntry, RowTranscript};
 use crate::recorder::Source;
 use crate::mole::{MoleGroup, MoleOpt};
 use crate::notes::{Note, note_time_label};
@@ -85,6 +85,47 @@ use crate::ui::shelf_motion::Drawn;
 // Susun's page and notice are drawn in a child file.
 #[path = "render_arrange.rs"]
 pub(super) mod arrange_paint;
+
+/// A Rekam row's transcript pill: the fill, the label's colour and the alpha
+/// both are drawn at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PillLook {
+    fill: u32,
+    ink: u32,
+    /// Percent: 100 for every live state, `PILL_OFF_PCT` for the off pill.
+    pct: u8,
+}
+
+impl PillLook {
+    fn alpha(self) -> f32 {
+        f32::from(self.pct) / 100.0
+    }
+}
+
+/// The off pill is a disabled control: the Transcribe look at this alpha.
+const PILL_OFF_PCT: u8 = 45;
+/// How far the Done and Failed fills lean towards their colour.
+const PILL_TINT: f32 = 0.10;
+
+/// What each mark's pill looks like. "Transkrip" is the plain raised pill (it
+/// is the action to take); in the queue it is quieter (secondary label on the
+/// raised step, the percent in full text colour); done is sage and failed is
+/// the soft red, both a faint tint of their colour under it. Every live state
+/// holds 4.5:1 for its label on all six surfaces (a test checks it).
+fn rec_pill_look(p: &Palette, mark: RowTranscript) -> PillLook {
+    let live = |fill, ink| PillLook { fill, ink, pct: 100 };
+    match mark {
+        RowTranscript::None => live(p.raised_hi, p.text),
+        RowTranscript::Off => PillLook {
+            pct: PILL_OFF_PCT,
+            ..live(p.raised_hi, p.text)
+        },
+        RowTranscript::Queued | RowTranscript::Waiting => live(p.raised, p.secondary),
+        RowTranscript::Running(_) => live(p.raised, p.text),
+        RowTranscript::Done => live(mix(p.raised, p.sage, PILL_TINT), p.sage),
+        RowTranscript::Failed => live(mix(p.raised, theme::SOFT_RED, PILL_TINT), theme::SOFT_RED),
+    }
+}
 
 /// A heading's line (DM Sans 600 20, 26 px) is taller than the 22 px header
 /// row: its box grows by this much above and below so the line, descenders
@@ -791,6 +832,7 @@ impl Renderer {
             }
             Page::Record => {
                 let head = self.record_head();
+                let pills = self.rec_pill_widths(frame.record.recent);
                 PageLayout::Record(record_layout(
                     s,
                     strip,
@@ -798,6 +840,7 @@ impl Renderer {
                     frame.rec.map(|r| r.sources),
                     frame.record.sources,
                     frame.record.recent.len(),
+                    &pills,
                 ))
             }
             Page::Mixer => PageLayout::Mixer(mixer_layout(
@@ -896,8 +939,24 @@ impl Renderer {
         }
     }
 
-    /// The Rekam header's widths: the title and the "Buka folder" link (its
-    /// icon, a gap, the label).
+    /// The measured width of each recent recording's pill label, zero for a
+    /// recording still being written (it has no pill).
+    fn rec_pill_widths(&self, recent: &[RecEntry]) -> Vec<f32> {
+        let lang = i18n::lang();
+        recent
+            .iter()
+            .map(|e| {
+                if e.unfinished {
+                    return 0.0;
+                }
+                let label = i18n::tr_pill(lang, e.transcript);
+                self.text_width(&label, &self.fonts.small_center).ceil()
+            })
+            .collect()
+    }
+
+    /// The Rekam header's widths: the title, the "Buka folder" link (its
+    /// icon, a gap, the label) and "Transkrip file lain..." in both forms.
     fn record_head(&self) -> RecordHead {
         let lang = i18n::lang();
         let title_w = self
@@ -910,6 +969,14 @@ impl Renderer {
         RecordHead {
             title_w,
             folder_w: REC_LINK_ICON + REC_LINK_GAP + label + 2.0,
+            pick_w: self
+                .text_width(text(lang, Key::TrPickFile), &self.fonts.button)
+                .ceil()
+                + 2.0,
+            pick_short_w: self
+                .text_width(text(lang, Key::TrPickFileShort), &self.fonts.button)
+                .ceil()
+                + 2.0,
         }
     }
 
@@ -940,6 +1007,9 @@ impl Renderer {
             p.secondary,
             1.0,
         );
+        // "Transkrip file lain...", as a text link left of it.
+        let pick = text(lang, if l.pick_short { Key::TrPickFileShort } else { Key::TrPickFile });
+        self.text_colored(pick, &self.fonts.button, l.pick, p.secondary, 1.0);
 
         // The card, the round button in a ring, and what it says.
         self.set_color(p.raised, 1.0);
@@ -1091,10 +1161,19 @@ impl Renderer {
             self.text_colored(&entry.title, &self.fonts.row_name, row.title, p.text, 1.0);
             let sub = i18n::rec_entry_sub(lang, &entry.started, entry.duration, entry.unfinished);
             self.text_colored(&sub, &self.fonts.small, row.sub, p.secondary, 1.0);
-            self.set_color(p.raised_hi, 1.0);
-            self.fill_round(row.pill, row.pill.h / 2.0);
-            let open = text(lang, Key::Open);
-            self.text_colored(open, &self.fonts.small_center, row.pill, p.text, 1.0);
+            if row.pill.w > 0.0 {
+                let look = rec_pill_look(&p, entry.transcript);
+                self.set_color(look.fill, look.alpha());
+                self.fill_round(row.pill, row.pill.h / 2.0);
+                let label = i18n::tr_pill(lang, entry.transcript);
+                self.text_colored(
+                    &label,
+                    &self.fonts.small_center,
+                    row.pill,
+                    look.ink,
+                    look.alpha(),
+                );
+            }
         }
     }
 
@@ -7140,5 +7219,98 @@ mod tests {
             UiFont::Mono => 145.0,
         };
         assert_eq!(r.calendar_title_w("Oktober 2026"), want);
+    }
+
+    /// The WCAG ratio of two colours.
+    fn contrast(a: u32, b: u32) -> f64 {
+        fn lin(v: u32) -> f64 {
+            let c = f64::from(v) / 255.0;
+            if c <= 0.03928 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+        }
+        fn lum(h: u32) -> f64 {
+            0.2126 * lin((h >> 16) & 255) + 0.7152 * lin((h >> 8) & 255) + 0.0722 * lin(h & 255)
+        }
+        let (hi, lo) = (lum(a).max(lum(b)), lum(a).min(lum(b)));
+        (hi + 0.05) / (lo + 0.05)
+    }
+
+    /// Every live state's label holds 4.5:1 on its pill, on all six surfaces;
+    /// the off pill (the Transcribe look at 45 %, a disabled control) holds
+    /// 3:1 over the surface.
+    #[test]
+    fn transcript_pills_hold_their_contrast_on_every_surface() {
+        use RowTranscript::{Done, Failed, None as Nothing, Off, Queued, Running, Waiting};
+        let blend = |fg: u32, bg: u32, a: f32| mix(bg, fg, a);
+        for surface in [
+            Surface::Espresso,
+            Surface::Graphite,
+            Surface::Sea,
+            Surface::Night,
+            Surface::Plum,
+            Surface::Terminal,
+        ] {
+            let p = island(Accent::Terracotta, surface);
+            for mark in [Nothing, Queued, Waiting, Running(42), Done, Failed] {
+                let look = rec_pill_look(&p, mark);
+                assert_eq!(look.pct, 100);
+                let c = contrast(look.ink, look.fill);
+                assert!(c >= 4.5, "{surface:?} {mark:?}: {c:.2}");
+            }
+            let look = rec_pill_look(&p, Off);
+            assert_eq!(look.pct, PILL_OFF_PCT);
+            let (fill, ink) = (blend(look.fill, p.surface, look.alpha()), blend(look.ink, p.surface, look.alpha()));
+            let c = contrast(ink, fill);
+            assert!(c >= 3.0, "{surface:?} off: {c:.2}");
+        }
+    }
+
+    /// Every pill label fits its pill whole in DM Sans (no ellipsis), and both header
+    /// links fit beside the title at the default panel size, in both
+    /// languages and both fonts; the short form is only for a narrower panel.
+    #[test]
+    fn rekam_pills_and_header_links_hold_their_words() {
+        use crate::config::Style;
+        use crate::model::RecSources;
+        use crate::ui::fonts;
+        use crate::ui::panel_layout::record_layout;
+        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+
+        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let mut r = Renderer::new().expect("renderer");
+        if !fonts::embedded(&r.dwrite).loaded.jetbrains_mono {
+            eprintln!("skipped: the embedded fonts are not in this binary");
+            return;
+        }
+        let both = RecSources { mic: true, system: true };
+        for ui in [UiFont::Sans, UiFont::Mono] {
+            r.set_ui_font(ui).expect("font");
+            for lang in [Lang::Id, Lang::En] {
+                i18n::set_lang(lang);
+                for mark in [
+                    RowTranscript::None,
+                    RowTranscript::Queued,
+                    RowTranscript::Waiting,
+                    RowTranscript::Running(100),
+                    RowTranscript::Done,
+                    RowTranscript::Failed,
+                ] {
+                    let label = i18n::tr_pill(lang, mark);
+                    let w = r.text_width(&label, &r.fonts.small_center).ceil() + 16.0;
+                    // JetBrains Mono is wider: "Waiting for model" is trimmed
+                    // with an ellipsis at the pill's limit there, as any label.
+                    if ui == UiFont::Sans {
+                        assert!(w <= 112.0, "{ui:?} {lang:?} {label}: pill of {w}");
+                    }
+                }
+                let head = r.record_head();
+                for style in [Style::Pill, Style::Notch] {
+                    let s = shape_for(style, ShapeKind::Panel);
+                    let l = record_layout(s, false, &head, None, both, 0, &[]);
+                    assert!(!l.pick_short, "{ui:?} {lang:?} {style:?}: the long form fits");
+                    assert!(l.pick.x >= l.header.right() + 8.0, "{ui:?} {lang:?} {style:?}");
+                }
+            }
+        }
+        i18n::set_lang(Lang::Id);
     }
 }

@@ -1535,7 +1535,10 @@ impl App {
                     continue;
                 }
                 // The scan knows only what is on disk; the queue's marks go over it.
-                Event::RecRecent(list) => Event::RecRecent(self.transcribe_marks(list)),
+                Event::RecRecent(list) => {
+                    self.rec.recent = list.clone();
+                    Event::RecRecent(self.transcribe_marks(list))
+                }
                 Event::SearchIndex(apps) => {
                     self.on_search_index(apps);
                     continue;
@@ -1829,8 +1832,8 @@ impl App {
     }
 
     /// A right-click on a favourite in the open menu unstars it, one on a
-    /// Notes card asks for the card menu, anywhere else the tray menu opens
-    /// as always.
+    /// Notes card asks for the card menu, one on a Rekam row asks for its
+    /// transcript menu, anywhere else the tray menu opens as always.
     fn on_right_click(&mut self, lparam: LPARAM) -> RightClick {
         // The faint drag margin is not the island: no menu from it.
         let hit = match self.under_at(lparam) {
@@ -1842,6 +1845,9 @@ impl App {
         }
         if let Some(id) = note_card_menu_target(self.state.view(), hit.as_ref()) {
             return RightClick::NoteMenu(id);
+        }
+        if let Some(i) = rec_row_menu_target(self.state.view(), hit.as_ref()) {
+            return RightClick::RecRowMenu(i);
         }
         if !self.state.cli_menu() || self.state.view() != View::Panel(Page::Cli) {
             return RightClick::Tray;
@@ -6451,6 +6457,7 @@ impl App {
             SettingsAction::RecSources(v) => self.rec_set_sources(v),
             SettingsAction::RecDevice(source, id) => self.rec_set_device(source, id),
             SettingsAction::RecFolder(dir) => self.rec_set_folder(dir),
+            SettingsAction::TranscribeFile(path) => self.transcribe_file(path),
             SettingsAction::RecEchoCancel(on) => {
                 self.config.recording.echo_cancel = on;
                 self.save_config();
@@ -7797,6 +7804,8 @@ enum RightClick {
     Tray,
     /// The card menu opens for this note.
     NoteMenu(String),
+    /// The transcript menu opens for this Rekam row.
+    RecRowMenu(usize),
 }
 
 /// The note whose card a right-click at `hit` is on, on the Notes page.
@@ -7804,6 +7813,17 @@ fn note_card_menu_target(view: View, hit: Option<&Hit>) -> Option<String> {
     match hit {
         Some(Hit::NoteOpen(id) | Hit::NoteSticky(id)) if view == View::Panel(Page::Notes) => {
             Some(id.clone())
+        }
+        _ => None,
+    }
+}
+
+/// The Rekam row whose menu a right-click at `hit` asks for: the row or its
+/// pill, on the Rekam page only.
+fn rec_row_menu_target(view: View, hit: Option<&Hit>) -> Option<usize> {
+    match hit {
+        Some(Hit::RecOpen(i) | Hit::RecTranscript(i)) if view == View::Panel(Page::Record) => {
+            Some(*i)
         }
         _ => None,
     }
@@ -8351,6 +8371,37 @@ fn open_rec_device_menu(hwnd: HWND, source: crate::recorder::Source) {
         source,
         current.as_deref(),
         lang,
+        font,
+    );
+    if opened {
+        with_app(|app| app.apply_now(Event::MenuOpen(true)));
+    }
+}
+
+/// The transcript menu of Rekam row `i`, under the row. A row with transcripts
+/// off has no menu, and no tray menu either: the right-click is swallowed.
+/// It holds the panel while it is open; its pick comes back as
+/// `WM_APP_MENU_DONE`. Opened outside the app borrow, like the device menu.
+fn open_rec_row_menu(hwnd: HWND, i: usize) {
+    if MENU_OPEN.get() {
+        return;
+    }
+    let Some(Some((audio, rows, font, anchor))) = with_app(|app| {
+        let anchor = app.rec_row_anchor(i)?;
+        let (audio, rows) = app.rec_row_menu(i)?;
+        Some((audio, rows, app.config.font, anchor))
+    }) else {
+        return;
+    };
+    if rows.is_empty() {
+        return;
+    }
+    let opened = crate::ui::transcript_menu::open(
+        hwnd,
+        anchor,
+        crate::ui::menu_pop::Align::End,
+        audio,
+        rows,
         font,
     );
     if opened {
@@ -9125,6 +9176,7 @@ unsafe extern "system" fn wnd_proc(
             match with_app(|app| app.on_right_click(lparam)) {
                 Some(RightClick::Tray) | None => open_menu(hwnd),
                 Some(RightClick::NoteMenu(id)) => open_note_card_menu(hwnd, &id),
+                Some(RightClick::RecRowMenu(i)) => open_rec_row_menu(hwnd, i),
                 Some(RightClick::Done) => {}
             }
             LRESULT(0)
@@ -9143,7 +9195,13 @@ unsafe extern "system" fn wnd_proc(
         crate::ui::menu_pop::WM_APP_MENU_DONE => {
             if let Some(done) = unsafe { crate::ui::menu_pop::take_done(lparam) } {
                 let pick = crate::ui::device_menu::picked(&done);
-                with_app(|app| app.rec_menu_done(pick));
+                let choice = crate::ui::transcript_menu::picked(&done);
+                with_app(|app| {
+                    app.rec_menu_done(pick);
+                    if let Some(choice) = choice {
+                        app.transcript_menu_choice(choice);
+                    }
+                });
             }
             LRESULT(0)
         }
@@ -11173,6 +11231,21 @@ mod tests {
         // A COM call that never comes back (a hung Explorer) is given up on;
         // a late answer is told apart by its request id.
         assert!(!reads.busy(t0 + EXPLORER_READ_TIMEOUT));
+    }
+
+    #[test]
+    fn right_clicks_on_a_rec_row_open_its_menu() {
+        let rec = View::Panel(Page::Record);
+        assert_eq!(rec_row_menu_target(rec.clone(), Some(&Hit::RecOpen(2))), Some(2));
+        assert_eq!(rec_row_menu_target(rec.clone(), Some(&Hit::RecTranscript(4))), Some(4));
+        // Anything else on the page, or no hit: the tray menu, as before.
+        assert_eq!(rec_row_menu_target(rec.clone(), Some(&Hit::RecFolder)), None);
+        assert_eq!(rec_row_menu_target(rec.clone(), Some(&Hit::RecPickFile)), None);
+        assert_eq!(rec_row_menu_target(rec, None), None);
+        // Other pages never.
+        let notes = View::Panel(Page::Notes);
+        assert_eq!(rec_row_menu_target(notes, Some(&Hit::RecOpen(2))), None);
+        assert_eq!(rec_row_menu_target(View::Panel(Page::Media), Some(&Hit::RecTranscript(0))), None);
     }
 
     #[test]

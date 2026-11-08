@@ -754,12 +754,8 @@ pub enum Hit {
     /// The chip "Pengaturan" of the same notice.
     RecTranscriptSetup,
     /// The transcript pill of a row in the Rekam list.
-    // Built from Task 9 on; drop the allow then.
-    #[allow(dead_code)]
     RecTranscript(usize),
-    /// "Pilih file" on the Rekam page.
-    // Built from Task 9 on; drop the allow then.
-    #[allow(dead_code)]
+    /// "Transkrip file lain..." on the Rekam page.
     RecPickFile,
     /// Susun, template step: a monitor chip, a template card (built-ins
     /// first, then the user's) and a saved arrangement's play button, by

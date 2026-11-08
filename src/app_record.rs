@@ -33,6 +33,7 @@ use crate::recorder::devices;
 use crate::recorder::sidecar::Sidecar;
 use crate::recorder::{Failure, RecError, RecEvent, RecOptions, Recorder, Source, Sources};
 use crate::shortcuts;
+use crate::transcribe::output;
 use crate::ui::{settings, tray};
 
 /// How many recordings the Rekam page lists.
@@ -60,6 +61,9 @@ pub(super) struct RecState {
     /// The Rekam page was on screen at the last refresh (a new showing
     /// re-reads the folder).
     page_shown: bool,
+    /// The last scan of the recordings folder as it came (the marks of the
+    /// queue go over a copy of it, whenever they change).
+    pub(super) recent: Vec<RecEntry>,
     /// The device names the Rekam page shows, `[mic, system]`: the ones the
     /// recording uses, or the chosen ones (the Windows default when none)
     /// while idle. Read when the page opens and when a choice changes.
@@ -575,7 +579,12 @@ fn entry_of(
     today: NaiveDate,
 ) -> RecEntry {
     let stem = stem_of(path);
-    let side = sidecar_of(path, &stem);
+    let value = sidecar_value(path, &stem);
+    let side = value.as_ref().map(Sidecar::from_value);
+    // A recording still being written has no transcript worth a pill.
+    let done = !unfinished
+        && (output::paths(path).srt.is_file()
+            || value.as_ref().is_some_and(|v| v.get("transcript").is_some()));
     let (title, started) = title_of(side.as_ref(), stem, modified, lang);
     RecEntry {
         path: path.to_path_buf(),
@@ -583,18 +592,22 @@ fn entry_of(
         started: i18n::rec_started(lang, started, today),
         duration: side.map_or(Duration::ZERO, |s| Duration::from_millis(s.duration_ms)),
         unfinished,
-        // The scan reads what is on disk; `transcribe_marks` puts the queue's
-        // state over it.
-        transcript: RowTranscript::None,
+        // The scan reads what is on disk (`Done` or nothing);
+        // `transcribe_marks` puts the queue's state over it.
+        transcript: if done { RowTranscript::Done } else { RowTranscript::None },
     }
 }
 
-/// `<stem>.vale.json` beside the recording, read leniently; `None` when it is
+/// `<stem>.vale.json` beside the recording as JSON; `None` when it is
 /// missing or not JSON.
-fn sidecar_of(audio: &Path, stem: &str) -> Option<Sidecar> {
+fn sidecar_value(audio: &Path, stem: &str) -> Option<serde_json::Value> {
     let file = audio.with_file_name(format!("{stem}.vale.json"));
-    let value: serde_json::Value = serde_json::from_slice(&std::fs::read(file).ok()?).ok()?;
-    Some(Sidecar::from_value(&value))
+    serde_json::from_slice(&std::fs::read(file).ok()?).ok()
+}
+
+/// The recorder's fields of the sidecar beside the recording, read leniently.
+fn sidecar_of(audio: &Path, stem: &str) -> Option<Sidecar> {
+    Some(Sidecar::from_value(&sidecar_value(audio, stem)?))
 }
 
 // ---- the App side --------------------------------------------------------------
@@ -932,7 +945,18 @@ impl App {
     /// The device name of `source` on the Rekam page as last drawn, screen
     /// px: where its dropdown opens. `None` when the page does not show it.
     pub(super) fn rec_device_anchor(&self, source: Source) -> Option<crate::capture::Rect> {
-        let r = self.renderer.region_of(&Hit::RecDevice(source))?;
+        self.rec_anchor_of(&Hit::RecDevice(source))
+    }
+
+    /// Row `i` of the Rekam list as last drawn, screen px: where its
+    /// transcript menu opens.
+    pub(super) fn rec_row_anchor(&self, i: usize) -> Option<crate::capture::Rect> {
+        self.rec_anchor_of(&Hit::RecOpen(i))
+    }
+
+    /// The region of `hit` as last drawn, in screen px.
+    fn rec_anchor_of(&self, hit: &Hit) -> Option<crate::capture::Rect> {
+        let r = self.renderer.region_of(hit)?;
         let (origin, k) = self.win.as_ref().map(|w| (w.screen_origin(), w.scale()))?;
         let px = |v: f32| (v * k).round() as i32;
         Some(crate::capture::Rect::new(
@@ -1468,6 +1492,44 @@ mod tests {
         assert_eq!(plain.duration, Duration::from_secs(65));
         let old = all.iter().find(|e| e.path.ends_with("old.m4a")).unwrap();
         assert_eq!(old.title, "old", "no sidecar: the file name");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scan_marks_a_recording_with_an_srt_or_a_sidecar_transcript_done() {
+        let dir = scratch("done");
+        let write = |name: &str, ext: &str, body: &str| {
+            fs::write(dir.join(format!("{name}.{ext}")), body).unwrap();
+        };
+        for name in ["srt", "sidecar", "plain", "sidecar-only-title", "part-srt"] {
+            if name == "part-srt" {
+                fs::write(dir.join("part-srt.m4a.part"), b"x").unwrap();
+            } else {
+                write(name, "m4a", "x");
+            }
+        }
+        write("srt", "srt", "1
+00:00:00,000 --> 00:00:01,000
+halo
+");
+        write("part-srt", "srt", "1
+00:00:00,000 --> 00:00:01,000
+halo
+");
+        write("sidecar", "vale.json", r#"{"v":1,"transcript":{"model":"whisper-small"}}"#);
+        write("sidecar-only-title", "vale.json", r#"{"v":1,"title":"Rapat"}"#);
+        let all = scan_recent(&dir, Lang::Id, today(), 20, None);
+        let mark = |stem: &str| {
+            all.iter()
+                .find(|e| stem_of(&e.path) == stem)
+                .unwrap_or_else(|| panic!("{stem} listed"))
+                .transcript
+        };
+        assert_eq!(mark("srt"), RowTranscript::Done, "an .srt beside it");
+        assert_eq!(mark("sidecar"), RowTranscript::Done, "the sidecar's transcript key");
+        assert_eq!(mark("plain"), RowTranscript::None);
+        assert_eq!(mark("sidecar-only-title"), RowTranscript::None, "a sidecar without one");
+        assert_eq!(mark("part-srt"), RowTranscript::None, "a recording still unfinished");
         let _ = fs::remove_dir_all(&dir);
     }
 

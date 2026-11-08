@@ -32,7 +32,10 @@ use crate::transcribe::queue::{Hold, JobState, Queue, QueuedJob, percent, same_a
 use crate::transcribe::runner::{self, RunError};
 use crate::transcribe::store::Store;
 use crate::transcribe::{doc, gpu};
+use crate::ui::menu_pop::Row;
+use crate::ui::settings;
 use crate::ui::settings_layout::{CardId, TranscriptView};
+use crate::ui::transcript_menu::{self, MenuChoice};
 
 /// A job that started this many times and never ended (a crash each time)
 /// is failed, not run again.
@@ -214,6 +217,12 @@ pub(super) fn download_reason(lang: Lang, e: &DownloadError) -> String {
     }
 }
 
+/// Whether a file picked with "Transkrip file lain..." gets a job: it has no
+/// transcript yet and Transkrip is on.
+fn wants_job(has_transcript: bool, enabled: bool) -> bool {
+    enabled && !has_transcript
+}
+
 /// The mark of a row: what the scan found (`None` or `Done`, from the
 /// sidecar) under what the island knows now. `waiting_model` is a queued
 /// job that cannot start (its model is not there, or a recording holds the
@@ -350,8 +359,6 @@ impl App {
     }
 
     /// Takes `audio` out of the queue; a running job is stopped.
-    // Settings' and the window's cancel come in Tasks 9 and 11.
-    #[allow(dead_code)]
     pub(super) fn transcribe_cancel(&mut self, audio: &Path) {
         let Some(state) = self.tr.queue.cancel(audio) else {
             return;
@@ -839,9 +846,12 @@ impl App {
         self.sync_settings();
     }
 
-    /// A row's state changed: the Rekam page, when it shows, reads again.
+    /// A row's state changed: the Rekam page, when it shows, puts the new
+    /// marks on the rows it has at once and reads the folder again (a finished
+    /// job left an `.srt`).
     fn transcribe_marks_changed(&mut self) {
         if self.rec.page_shown() {
+            self.rec_remark();
             self.rec_rescan();
         }
     }
@@ -854,11 +864,14 @@ impl App {
         let Some(audio) = self.tr.worker.as_ref().map(|w| w.audio.clone()) else {
             return;
         };
-        let rows = self.state.rec_recent();
-        if !rows.iter().any(|r| same_audio(&r.path, &audio)) {
-            return;
+        if self.rec.recent.iter().any(|r| same_audio(&r.path, &audio)) {
+            self.rec_remark();
         }
-        let rows = rows.to_vec();
+    }
+
+    /// The last scan with the queue's marks over it, shown now.
+    fn rec_remark(&mut self) {
+        let rows = self.transcribe_marks(self.rec.recent.clone());
         self.apply_now(Event::RecRecent(rows));
     }
 
@@ -919,8 +932,45 @@ impl App {
         DEFERRED_OPEN_CARD.set(Some(CardId::Transcript));
     }
 
-    /// Shows the file picker for a transcript of any audio file.
-    pub(super) fn rec_pick_file(&mut self) {}
+    /// Shows the file picker for a transcript of any audio file, opening in
+    /// the recordings folder. The choice comes back as `transcribe_file`.
+    pub(super) fn rec_pick_file(&mut self) {
+        notif_open::allow_foreground();
+        settings::pick_rec_audio(self.hwnd, self.config.recording.dir());
+    }
+
+    /// An audio file picked with "Transkrip file lain...": a job is queued
+    /// when it has no transcript and Transkrip is on, then its window opens.
+    pub(super) fn transcribe_file(&mut self, audio: PathBuf) {
+        let has = doc::load(&audio, "").has_transcript;
+        if wants_job(has, self.config.transcript.enabled) {
+            self.transcribe_queue(audio.clone(), None);
+        }
+        self.open_transcript(audio);
+    }
+
+    /// The recording of Rekam row `i` and its menu rows, for its mark now.
+    pub(super) fn rec_row_menu(&self, i: usize) -> Option<(PathBuf, Vec<Row>)> {
+        let entry = self.state.rec_recent().get(i)?;
+        let installed: Vec<&'static Model> = catalog::MODELS
+            .iter()
+            .filter(|m| self.tr.store.model_installed(m))
+            .collect();
+        let active = self.config.transcript.model_for(gpu::has_hardware_gpu());
+        let rows =
+            transcript_menu::rows(self.config.language, entry.transcript, &installed, active);
+        Some((entry.path.clone(), rows))
+    }
+
+    /// A row of the transcript menu was picked.
+    pub(super) fn transcript_menu_choice(&mut self, choice: MenuChoice) {
+        match choice {
+            MenuChoice::View(audio) => self.open_transcript(audio),
+            MenuChoice::Transcribe(audio) => self.transcribe_queue(audio, None),
+            MenuChoice::Redo(audio, model) => self.transcribe_queue(audio, Some(model)),
+            MenuChoice::Cancel(audio) => self.transcribe_cancel(&audio),
+        }
+    }
 
     /// Says that transcripts are off and where to turn them on.
     pub(super) fn transcript_off_note(&mut self) {
@@ -947,6 +997,13 @@ mod tests {
             model: "whisper-small".into(),
             tries,
         }
+    }
+
+    #[test]
+    fn a_picked_file_is_queued_only_without_a_transcript_and_with_transcripts_on() {
+        assert!(wants_job(false, true));
+        assert!(!wants_job(true, true), "it has one: just open it");
+        assert!(!wants_job(false, false), "transcripts are off");
     }
 
     #[test]

@@ -621,6 +621,18 @@ keys! {
     TrWhyWrite => "Transkrip tidak bisa disimpan di folder ini",
         "The transcript cannot be saved in this folder";
     TrWhyOther => "Mesin transkrip gagal. Coba lagi", "The transcript engine failed. Try again";
+    TrPillTranscribe => "Transkrip", "Transcribe";
+    TrPillQueued => "Antre", "Queued";
+    TrPillWaiting => "Menunggu model", "Waiting for model";
+    TrPillDone => "Lihat", "View";
+    TrPillFailed => "Gagal", "Failed";
+    TrMenuView => "Lihat transkrip", "View transcript";
+    TrMenuMake => "Bikin transkrip", "Make a transcript";
+    TrMenuRedo => "Transkrip ulang", "Transcribe again";
+    TrMenuCancel => "Batalkan transkrip", "Cancel the transcript";
+    TrPickFile => "Transkrip file lain\u{2026}", "Transcribe a file\u{2026}";
+    TrPickFileShort => "File lain\u{2026}", "Other file\u{2026}";
+    TrFilter => "Rekaman (*.m4a, *.wav)", "Recordings (*.m4a, *.wav)";
     RecFailedTitle => "Rekaman gagal", "Recording failed";
     RecMicDeniedTitle => "Mic diblokir Windows", "Windows blocked the mic";
     RecMicDeniedBody => "Klik untuk buka pengaturan mic", "Click to open the mic settings";
@@ -1702,6 +1714,21 @@ pub fn rec_entry_sub(lang: Lang, started: &str, d: std::time::Duration, unfinish
         rec_duration(lang, d)
     };
     format!("{started} \u{b7} {length}")
+}
+
+/// The label of a Rekam row's transcript pill: "Transkrip", "Antre",
+/// "Menunggu model", "42%", "Lihat" or "Gagal". The off state shows the
+/// "Transkrip" label too (the pill is drawn dimmed).
+pub fn tr_pill(lang: Lang, mark: crate::model::RowTranscript) -> String {
+    use crate::model::RowTranscript as M;
+    match mark {
+        M::Off | M::None => text(lang, Key::TrPillTranscribe).to_owned(),
+        M::Queued => text(lang, Key::TrPillQueued).to_owned(),
+        M::Waiting => text(lang, Key::TrPillWaiting).to_owned(),
+        M::Running(n) => format!("{n}%"),
+        M::Done => text(lang, Key::TrPillDone).to_owned(),
+        M::Failed => text(lang, Key::TrPillFailed).to_owned(),
+    }
 }
 
 /// "Server menolak unduhan (404)": the server's answer to a model download.
@@ -3790,6 +3817,24 @@ mod tests {
         assert_eq!(leaked("don't Settings' isn't", ENGLISH), ["settings"]);
         assert!(leaked("reminders.json tidak terbaca.", ENGLISH).is_empty());
         assert!(leaked("<title>x</title>", ENGLISH).is_empty());
+    }
+
+    #[test]
+    fn a_transcript_pill_reads_in_both_languages() {
+        use crate::model::RowTranscript as M;
+        let all = [
+            (M::Off, "Transkrip", "Transcribe"),
+            (M::None, "Transkrip", "Transcribe"),
+            (M::Queued, "Antre", "Queued"),
+            (M::Waiting, "Menunggu model", "Waiting for model"),
+            (M::Running(42), "42%", "42%"),
+            (M::Done, "Lihat", "View"),
+            (M::Failed, "Gagal", "Failed"),
+        ];
+        for (mark, id, en) in all {
+            assert_eq!(tr_pill(Lang::Id, mark), id, "{mark:?}");
+            assert_eq!(tr_pill(Lang::En, mark), en, "{mark:?}");
+        }
     }
 
     #[test]

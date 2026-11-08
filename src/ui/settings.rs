@@ -197,6 +197,8 @@ pub enum Action {
     RecDevice(Source, Option<String>),
     /// The mic echo cancellation switch.
     RecEchoCancel(bool),
+    /// The Rekam page's "Transkrip file lain...": the audio file picked.
+    TranscribeFile(std::path::PathBuf),
     /// Settings -> Fitur -> Transkrip: the switch, the active model, a
     /// model's download, cancelling it, deleting a model (by its catalog
     /// key), the language, the auto switch and the store's folder.
@@ -3397,6 +3399,65 @@ pub fn pick_rec_folder(owner: HWND) {
         });
 }
 
+/// "Transkrip file lain...": the audio file picker for the island, on a
+/// short-lived thread of its own (as `pick_rec_folder`), opening in `start`.
+/// The choice comes back to `owner` as `Action::TranscribeFile`.
+pub fn pick_rec_audio(owner: HWND, start: std::path::PathBuf) {
+    use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
+    let raw = owner.0 as isize;
+    let _ = std::thread::Builder::new()
+        .name("rec-pick-audio".into())
+        .spawn(move || {
+            let owner = HWND(raw as *mut c_void);
+            // The dialog wants a single-threaded apartment.
+            if unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_err() {
+                return;
+            }
+            if let Some(file) = pick_audio(owner, &start) {
+                post_action(owner, Action::TranscribeFile(file));
+            }
+            unsafe { CoUninitialize() };
+        });
+}
+
+/// The `.m4a` or `.wav` the owner picks, the dialog opening in `start`.
+/// `None` when it is cancelled or cannot open.
+fn pick_audio(owner: HWND, start: &std::path::Path) -> Option<std::path::PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
+    use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
+    use windows::Win32::UI::Shell::{
+        FOS_FORCEFILESYSTEM, FileOpenDialog, IFileOpenDialog, IShellItem,
+        SHCreateItemFromParsingName, SIGDN_FILESYSPATH,
+    };
+    let lang = crate::i18n::lang();
+    unsafe {
+        let dialog: IFileOpenDialog =
+            CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        let options = dialog.GetOptions().ok()? | FOS_FORCEFILESYSTEM;
+        dialog.SetOptions(options).ok()?;
+        let name = HSTRING::from(text(lang, Key::TrFilter));
+        let filters = [COMDLG_FILTERSPEC {
+            pszName: PCWSTR(name.as_ptr()),
+            pszSpec: w!("*.m4a;*.wav"),
+        }];
+        let _ = dialog.SetFileTypes(&filters);
+        // A folder that is gone just leaves the dialog where Windows puts it.
+        if let Ok(folder) =
+            SHCreateItemFromParsingName::<_, _, IShellItem>(&HSTRING::from(start.as_os_str()), None)
+        {
+            let _ = dialog.SetFolder(&folder);
+        }
+        // Cancelled: an error code.
+        dialog.Show(Some(owner)).ok()?;
+        let item = dialog.GetResult().ok()?;
+        let name = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+        let path = std::path::PathBuf::from(std::ffi::OsString::from_wide(name.as_wide()));
+        CoTaskMemFree(Some(name.0 as *const c_void));
+        Some(path)
+    }
+}
+
 /// The path the owner picks in the system dialog: an exe or any file for an
 /// app, a folder for a folder. `None` when it is cancelled or cannot open.
 fn pick_path(owner: HWND, kind: CustomKind) -> Option<std::path::PathBuf> {
@@ -4398,6 +4459,8 @@ pub fn run_demo(args: &[String]) {
             Action::RecFolder(v) => m.recording.folder = v,
             Action::RecDevice(source, id) => m.recording.set_device(source, id),
             Action::RecEchoCancel(v) => m.recording.echo_cancel = v,
+            // The picked file belongs to the island: nothing in the window.
+            Action::TranscribeFile(_) => {}
             // Nothing downloads in the demo: a download stays at its start
             // until Batal.
             Action::TranscriptEnabled(v) => m.transcript.prefs.enabled = v,
