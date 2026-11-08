@@ -56,6 +56,7 @@ mod system;
 mod theme;
 mod tiles;
 mod transcribe;
+mod transcript_win;
 mod ui;
 mod update;
 mod widgets;
@@ -101,6 +102,7 @@ fn opens_windows(arg: Option<&str>) -> bool {
             | "--demo-snap"
             | "--demo-shot-editor"
             | "--demo-lyrics-card"
+            | "--demo-transcript"
             | "--settings",
         ) => true,
         Some(_) => false,
@@ -259,6 +261,14 @@ fn main() {
             demo_lang_from_env();
             let scene = std::env::args().nth(2);
             lyrics_card::demo::run(scene.as_deref());
+        }
+        // The transcript window on made-up files: `--demo-transcript [scene]`.
+        #[cfg(debug_assertions)]
+        Some("--demo-transcript") => {
+            attach_parent_console();
+            demo_lang_from_env();
+            let scene = std::env::args().nth(2);
+            transcript_win::demo::run(scene.as_deref());
         }
         // The phone link on 127.0.0.1 into target/phone-debug/, each phone
         // that joined printed to the console. No LAN, no Downloads.

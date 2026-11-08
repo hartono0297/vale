@@ -168,6 +168,9 @@ use record::RecState;
 mod transcribe_page;
 use transcribe_page::{TIMER_TRANSCRIBE, TranscribeState};
 
+#[path = "app_transcript_win.rs"]
+mod transcript_page;
+
 #[path = "app_lyrics_card.rs"]
 mod card;
 use card::LyricsCardState;
@@ -385,6 +388,11 @@ thread_local! {
     /// The same for Settings at a card (a notice's "Pengaturan" chip opens
     /// it at Transkrip).
     static DEFERRED_OPEN_CARD: Cell<Option<CardId>> = const { Cell::new(None) };
+    /// A transcript window's "Transkrip ulang" asked for its menu (the
+    /// recording, the rows, under this button): it opens once the handler
+    /// returns, since the dropdown takes the foreground.
+    static DEFERRED_TRANSCRIPT_MENU: RefCell<Option<(PathBuf, Vec<crate::ui::menu_pop::Row>, crate::capture::Rect)>> =
+        const { RefCell::new(None) };
     /// An update was swapped in and started: the island closes once the
     /// handler returns (`shutdown` destroys the window, which needs the app
     /// unborrowed to run its cleanup).
@@ -810,6 +818,7 @@ fn release_graphics() {
     identify_overlay::release();
     crate::lyrics_card::release();
     crate::shot_edit::window::release();
+    crate::transcript_win::release();
 }
 
 /// Stops the Claude hook pipe, so the new island can own the name.
@@ -6178,6 +6187,8 @@ impl App {
         self.apply_ui_font();
         // The desktop widgets: their settings, notes, colours and font.
         self.widgets_follow_config();
+        // An open transcript window: its language and font.
+        self.transcript_refresh_all();
         // Stay-behind, the cat and its motion decide the pointer poll.
         self.follow_pointer_settings(Instant::now());
         // A hand edit of the language (or the font) reaches an open lyrics
@@ -6215,6 +6226,7 @@ impl App {
             editor::restyle_open_editor();
             crate::shot_edit::window::restyle_open();
             settings::restyle();
+            crate::transcript_win::restyle();
             self.draw(Instant::now());
         }
     }
@@ -6253,7 +6265,7 @@ impl App {
             calendar: self.calendar.status,
             hotkey_failed: self.hotkeys.failed_flags(),
             update_row: self.update.row(),
-            transcript: self.transcript_view(),
+            transcript: self.transcript_card_view(),
             monitors: self
                 .displays
                 .iter()
@@ -8409,6 +8421,26 @@ fn open_rec_row_menu(hwnd: HWND, i: usize) {
     }
 }
 
+/// The redo menu of a transcript window, under its "Transkrip ulang" button.
+/// The pick comes back as `WM_APP_MENU_DONE` like the Rekam row's menu (the
+/// island owns it); the activation goes back to the window when it closes.
+fn open_transcript_redo_menu(audio: PathBuf, rows: Vec<crate::ui::menu_pop::Row>, anchor: crate::capture::Rect) {
+    if MENU_OPEN.get() {
+        return;
+    }
+    let Some((hwnd, font)) = with_app(|app| (app.hwnd, app.config.font)) else {
+        return;
+    };
+    crate::ui::transcript_menu::open(
+        hwnd,
+        anchor,
+        crate::ui::menu_pop::Align::Start,
+        audio,
+        rows,
+        font,
+    );
+}
+
 /// Shows the tray menu and runs the choice. The menu's modal loop dispatches
 /// timer and mouse messages to `wnd_proc`, so no `APP` borrow is held across it.
 fn open_menu(hwnd: HWND) {
@@ -8542,6 +8574,7 @@ fn deliver_settings_action(action: SettingsAction) {
 fn shutdown(hwnd: HWND) {
     shelf_ole::revoke(hwnd);
     settings::close();
+    crate::transcript_win::close_all();
     flush_editor();
     // A command still running ends with the island's process, which closes
     // its job.
@@ -8737,6 +8770,9 @@ fn run_deferred() {
     {
         open_settings_card(hwnd, card);
     }
+    if let Some((audio, rows, anchor)) = DEFERRED_TRANSCRIPT_MENU.take() {
+        open_transcript_redo_menu(audio, rows, anchor);
+    }
     if DEFERRED_SHUTDOWN.take()
         && let Some(hwnd) = with_app(|app| app.hwnd)
     {
@@ -8921,6 +8957,7 @@ fn on_system_theme_changed() {
         editor::restyle_open_editor();
         crate::shot_edit::window::restyle_open();
         settings::restyle();
+        crate::transcript_win::restyle();
     }
 }
 
@@ -8950,6 +8987,21 @@ unsafe extern "system" fn wnd_proc(
         }
         WM_TIMER if wparam.0 == TIMER_DISPLAYS => {
             on_displays_timer(hwnd);
+            LRESULT(0)
+        }
+        // What the user asked a transcript window for.
+        crate::transcript_win::WM_APP_TRANSCRIPT => {
+            if with_app(App::on_transcript_requests).is_none() {
+                // A handler holds the app: the requests are still queued; ask again.
+                unsafe {
+                    let _ = PostMessageW(
+                        Some(hwnd),
+                        crate::transcript_win::WM_APP_TRANSCRIPT,
+                        WPARAM(0),
+                        LPARAM(0),
+                    );
+                }
+            }
             LRESULT(0)
         }
         // What the user did to a note on the desktop (`widgets::host`).

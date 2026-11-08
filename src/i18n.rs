@@ -1292,6 +1292,19 @@ keys! {
     TrWhereGpu => "Pakai GPU", "Uses the GPU";
     TrWhereCpu => "Pakai CPU", "Uses the CPU";
     TrUsed => "Terpakai {mb} MB", "{mb} MB used";
+    TrBtnCopy => "Salin", "Copy";
+    TrBtnOpenMd => "Buka .md", "Open .md";
+    TrBtnNote => "Jadikan catatan", "Make a note";
+    TrBtnPrompt => "Salin + prompt ringkasan", "Copy + summary prompt";
+    TrBtnRetry => "Coba lagi", "Try again";
+    TrBtnSettings => "Buka Pengaturan", "Open Settings";
+    TrStatusQueued => "Antre, mulai setelah transkrip lain selesai", "Queued, starts after the others finish";
+    TrStatusWaiting => "Menunggu model selesai diunduh", "Waiting for the model to download";
+    TrStatusHeld => "Dijeda selama merekam", "Paused while recording";
+    TrEmpty => "Tidak ada ucapan yang terbaca", "No speech could be made out";
+    TrPlayerError => "Audio tidak bisa diputar", "The audio cannot be played";
+    TrPlay => "Putar", "Play";
+    TrPause => "Jeda", "Pause";
 }
 
 /// `key` in `lang`.
@@ -1753,6 +1766,19 @@ pub fn tr_used(lang: Lang, mb: u64) -> String {
 /// "220 / 555 MB": a model download's progress (the same in both languages).
 pub fn tr_progress(done_mb: u64, total_mb: u64) -> String {
     format!("{done_mb} / {total_mb} MB")
+}
+
+/// A running transcript's progress in its window: "42% · sekitar 6 mnt lagi"
+/// ("42% · about 6 min left"), or "42%" before there is an estimate.
+pub fn tr_running(lang: Lang, pct: u8, eta: Option<std::time::Duration>) -> String {
+    let Some(eta) = eta else {
+        return format!("{pct}%");
+    };
+    let left = rec_duration(lang, eta);
+    match lang {
+        Lang::Id => format!("{pct}% \u{b7} sekitar {left} lagi"),
+        Lang::En => format!("{pct}% \u{b7} about {left} left"),
+    }
 }
 
 /// A recording's length on the Rekam page: "45 dtk", "42 mnt", "1 j 05 mnt"
@@ -3820,6 +3846,16 @@ mod tests {
     }
 
     #[test]
+    fn tr_running_reads_in_both_languages() {
+        use std::time::Duration;
+        let six = Some(Duration::from_secs(6 * 60 + 20));
+        assert_eq!(tr_running(Lang::Id, 42, six), "42% \u{b7} sekitar 6 mnt lagi");
+        assert_eq!(tr_running(Lang::En, 42, six), "42% \u{b7} about 6 min left");
+        assert_eq!(tr_running(Lang::Id, 3, None), "3%");
+        assert_eq!(tr_running(Lang::En, 0, Some(Duration::from_secs(45))), "0% \u{b7} about 45 s left");
+    }
+
+    #[test]
     fn a_transcript_pill_reads_in_both_languages() {
         use crate::model::RowTranscript as M;
         let all = [
@@ -3889,6 +3925,8 @@ mod tests {
                 tr_offer(lang, "Whisper large-v3-turbo", 555, 19),
                 tr_used(lang, 610),
                 tr_progress(220, 555),
+                tr_running(lang, 42, Some(Duration::from_secs(6 * 60))),
+                tr_running(lang, 7, None),
                 phase_minutes(lang, text(lang, Key::Focus), 25),
                 more_count(lang, 3),
                 battery_body(lang, 18),

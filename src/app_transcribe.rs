@@ -1,9 +1,8 @@
 //! The island's side of transcripts: the queue and its worker thread, the
 //! recording hold, the startup settle, model downloads, the notices with
 //! their reasons in plain words, the marks on the Rekam rows and what
-//! Settings' Transkrip card shows. The transcript window and the file picker
-//! come in later tasks (their methods are stubs here). A child of `app`, so
-//! it works on `App` directly.
+//! Settings' Transkrip card shows. The transcript window's side is in
+//! `app_transcript_win.rs`. A child of `app`, so it works on `App` directly.
 //!
 //! Power: no thread and no timer outside work. The worker (`transcribe`) lives
 //! for one job and a download thread for one download; the only timer is the
@@ -49,24 +48,21 @@ pub(super) const SETTLE_MS: u32 = 30_000;
 const PROGRESS_EVERY: Duration = Duration::from_millis(250);
 
 /// The job on its worker thread.
-// The window of Task 11 reads the live fields.
-#[allow(dead_code)]
 pub(super) struct Worker {
     id: u64,
-    audio: PathBuf,
+    pub(super) audio: PathBuf,
     model: &'static Model,
     running: runner::Running,
     /// Set when the thread sent `Finished`: a thread that ended without it
     /// died (a panic).
     finish_sent: Arc<AtomicBool>,
-    started: Instant,
+    pub(super) started: Instant,
     /// Audio read so far, out of the whole.
-    progress: Option<(u64, Option<u64>)>,
-    segments: Vec<Segment>,
-    title: String,
+    pub(super) progress: Option<(u64, Option<u64>)>,
+    pub(super) segments: Vec<Segment>,
     /// The island asked it to stop (a hold, a cancel): its `Cancelled` is
     /// not a failure.
-    stopping: bool,
+    pub(super) stopping: bool,
 }
 
 /// The model download in flight.
@@ -82,13 +78,13 @@ pub(super) struct DownloadRun {
 }
 
 pub(super) struct TranscribeState {
-    queue: Queue,
+    pub(super) queue: Queue,
     next_job: u64,
     next_download: u64,
-    worker: Option<Worker>,
+    pub(super) worker: Option<Worker>,
     download: Option<DownloadRun>,
     /// Why a recording's transcript failed, this run only.
-    failed: HashMap<PathBuf, String>,
+    pub(super) failed: HashMap<PathBuf, String>,
     /// The engine cannot load for want of the Visual C++ runtime: the words
     /// that say so, until a download or a job shows it fine.
     problem: Option<String>,
@@ -105,7 +101,7 @@ pub(super) struct TranscribeState {
     crashed: Vec<PathBuf>,
     /// Audio whose "Bikin transkrip" notice was shown this run.
     told: Vec<PathBuf>,
-    store: Store,
+    pub(super) store: Store,
 }
 
 impl TranscribeState {
@@ -261,7 +257,7 @@ pub(super) fn mark_of(
     }
 }
 
-fn tr_notice(lang: Lang, key: &str, title: String, body: String, kind: NoticeKind) -> Notice {
+pub(super) fn tr_notice(lang: Lang, key: &str, title: String, body: String, kind: NoticeKind) -> Notice {
     Notice {
         key: key.into(),
         source: text(lang, Key::TrNoticeSource).into(),
@@ -499,7 +495,7 @@ impl App {
                 lang,
                 "tr-job",
                 text(lang, Key::TrStarting).into(),
-                title.clone(),
+                title,
                 NoticeKind::TranscriptInfo,
             );
             self.apply_now(Event::Notice(n));
@@ -513,7 +509,6 @@ impl App {
             started: Instant::now(),
             progress: None,
             segments: Vec::new(),
-            title,
             stopping: false,
         });
         // The start is counted and written before the engine can crash.
@@ -532,11 +527,17 @@ impl App {
             runner::Event::Progress { done_ms, total_ms } => {
                 let before = w.progress.and_then(|(d, t)| percent(d, t));
                 w.progress = Some((done_ms, total_ms));
+                let audio = w.audio.clone();
                 if before != percent(done_ms, total_ms) {
                     self.transcribe_percent_changed();
                 }
+                self.transcript_refresh(&audio);
             }
-            runner::Event::Segment(segment) => w.segments.push(segment),
+            runner::Event::Segment(segment) => {
+                w.segments.push(segment);
+                let audio = w.audio.clone();
+                self.transcript_refresh(&audio);
+            }
             runner::Event::Finished(result) => self.transcribe_finished(result),
         }
     }
@@ -749,7 +750,7 @@ impl App {
 
     /// What Settings' Transkrip card shows. Read when Settings opens or
     /// follows a change: a few file checks and the size of the store.
-    pub(super) fn transcript_view(&self) -> TranscriptView {
+    pub(super) fn transcript_card_view(&self) -> TranscriptView {
         let store = &self.tr.store;
         let index = |m: &Model| catalog::MODELS.iter().position(|x| x.key == m.key);
         let download = self.tr.download.as_ref().and_then(|d| {
@@ -841,6 +842,8 @@ impl App {
         }
         self.transcribe_try_next();
         self.sync_settings();
+        // A job waiting on this model is now only queued.
+        self.transcript_refresh_all();
     }
 
     /// The queue changed: the file follows, the Rekam rows re-read and an
@@ -863,12 +866,14 @@ impl App {
 
     /// A row's state changed: the Rekam page, when it shows, puts the new
     /// marks on the rows it has at once and reads the folder again (a finished
-    /// job left an `.srt`).
+    /// job left an `.srt`), and the open transcript windows follow.
     fn transcribe_marks_changed(&mut self) {
         if self.rec.page_shown() {
             self.rec_remark();
             self.rec_rescan();
         }
+        // An open transcript window says the new state too.
+        self.transcript_refresh_all();
     }
 
     /// The running job's percent moved: only its row needs the new number.
@@ -932,11 +937,6 @@ impl App {
         if let Some(d) = self.tr.download.take() {
             d.download.cancel();
         }
-    }
-
-    /// Opens the transcript window of `audio`.
-    pub(super) fn open_transcript(&mut self, audio: PathBuf) {
-        let _ = audio;
     }
 
     /// Opens Settings at the Transkrip card, once the handler holding the
