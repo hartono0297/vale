@@ -997,7 +997,7 @@ impl Painter<'_> {
     }
 
     /// The track (window background, hairline, radius 10) with the selected
-    /// segment (accent, radius 8) sliding inside it.
+    /// segment (`segment_fill`, radius 8) sliding inside it.
     fn segmented(&self, track: Rect, items: &[Segment], pos: f32, s: &Scene) {
         draw_segment_track(self.rt, self.brush, &self.p, track, self.alpha);
         let rects: Vec<Rect> = items.iter().map(|i| i.rect).collect();
@@ -1009,7 +1009,7 @@ impl Painter<'_> {
             }
         }
         let sel = rect_at(&rects, pos);
-        self.fill_round(sel, SEGMENT_RADIUS, self.p.accent, 1.0);
+        self.fill_round(sel, SEGMENT_RADIUS, segment_fill(&self.p), 1.0);
         let style = self.style(Font::Control, Align::Center);
         for item in items {
             // Text turns to ink as the selection slides under it.
@@ -1900,6 +1900,12 @@ pub fn primary_fill(p: &WindowPalette) -> u32 {
     }
 }
 
+/// The selected segment of a segmented control: the primary buttons' fill,
+/// so its label reads the same (4.26:1 on the plain light accent).
+pub fn segment_fill(p: &WindowPalette) -> u32 {
+    primary_fill(p)
+}
+
 /// A tag's ink, and how much of the accent washes its pill: the accent
 /// pulled toward the text so the small word reads on the wash.
 pub fn tag_colors(p: &WindowPalette) -> (u32, f32) {
@@ -2188,8 +2194,9 @@ mod tests {
     }
 
     /// The Transkrip card's pairs read in the light, warm dark and Terminal
-    /// windows with every accent: the primary label (Unduh) and the tag at
-    /// 4.5:1 on what they sit on, the done part of a bar at 3:1 on its track.
+    /// windows with every accent: the primary label (Unduh), the selected
+    /// segment's label (Bahasa) and the tag at 4.5:1 on what they sit on,
+    /// the done part of a bar at 3:1 on its track.
     #[test]
     fn primary_labels_tags_and_bars_read_in_every_window() {
         use crate::theme::{WindowTheme, window_for};
@@ -2204,6 +2211,8 @@ mod tests {
                 let p = window_for(*accent, surface, mode, false);
                 let label = contrast(p.on_accent, primary_fill(&p));
                 assert!(label >= 4.5, "{accent:?} {surface:?} {mode:?}: Unduh {label:.2}");
+                let segment = contrast(p.on_accent, segment_fill(&p));
+                assert!(segment >= 4.5, "{accent:?} {surface:?} {mode:?}: segment {segment:.2}");
                 let (ink, wash) = tag_colors(&p);
                 let tag = contrast(ink, over(p.card, p.accent, wash));
                 assert!(tag >= 4.5, "{accent:?} {surface:?} {mode:?}: tag {tag:.2}");

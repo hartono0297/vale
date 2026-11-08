@@ -4671,17 +4671,21 @@ fn tr_cols(b: &Builder, card: Rect) -> TrCols {
     }
 }
 
+/// A model's one-line note in the list, by its key.
+fn tr_note_key(model: &Model) -> Key {
+    match model.key {
+        "whisper-small" => Key::TrNoteSmall,
+        _ => Key::TrNoteTurbo,
+    }
+}
+
 /// What a model row shows under its name: its note, or why its last
 /// download failed (in the error colour).
 fn tr_note(b: &Builder, v: &TranscriptView, i: usize, w: f32) -> (Vec<String>, Tone) {
     match &v.download_error {
         Some((e, why)) if *e == i => (b.wrap(why, Font::Desc, w), Tone::Bad),
         _ => {
-            let key = if i == 0 {
-                Key::TrNoteTurbo
-            } else {
-                Key::TrNoteSmall
-            };
+            let key = tr_note_key(&MODELS[i]);
             (b.wrap(&b.t(key), Font::Desc, w), Tone::Secondary)
         }
     }
@@ -4713,13 +4717,20 @@ fn transcript_card(b: &mut Builder, s: &State) {
         && !v.installed.contains(&true)
         && v.download.is_none()
         && !s.transcript_choose;
-    let suggested = catalog::default_model(v.gpu);
-    let offer_lines = if offer {
-        let (total, engine) = offer_mb(suggested);
-        let question = tr_offer(b.lang, suggested.name, total, engine);
-        b.wrap(&question, Font::Label, inner_w)
+    // The model chosen before, else the one for this PC.
+    let offered = v.prefs.model_for(v.gpu);
+    let (offer_lines, offer_error) = if offer {
+        let (total, engine) = offer_mb(offered);
+        let question = tr_offer(b.lang, offered.name, total, engine);
+        // A first download that failed sends the card back here: say why.
+        let error = v
+            .download_error
+            .as_ref()
+            .map(|(_, why)| b.wrap(why, Font::Desc, inner_w))
+            .unwrap_or_default();
+        (b.wrap(&question, Font::Label, inner_w), error)
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
     let cols = tr_cols(b, probe);
     let notes: Vec<(Vec<String>, Tone)> = (0..MODELS.len())
@@ -4731,7 +4742,12 @@ fn transcript_card(b: &mut Builder, s: &State) {
         .as_deref()
         .map(|p| b.wrap(p, Font::Desc, inner_w))
         .unwrap_or_default();
-    let offer_h = 14.0 + offer_lines.len() as f32 * TR_LINE_H + 10.0 + BUTTON_H + 14.0;
+    let offer_h = 14.0
+        + offer_lines.len() as f32 * TR_LINE_H
+        + tr_offer_error_h(offer_error.len())
+        + 10.0
+        + BUTTON_H
+        + 14.0;
     let rows_h: f32 = (0..MODELS.len())
         .map(|i| tr_model_row_h(notes[i].0.len(), downloading(i).is_some()))
         .sum();
@@ -4758,7 +4774,7 @@ fn transcript_card(b: &mut Builder, s: &State) {
     let mut y = card.y + enable_h;
     b.divider(card, y);
     if offer {
-        tr_offer_block(b, card, y, offer_lines);
+        tr_offer_block(b, card, y, offer_lines, offer_error);
         y += offer_h;
     } else {
         for (i, (lines, tone)) in notes.into_iter().enumerate() {
@@ -4834,23 +4850,46 @@ fn transcript_card(b: &mut Builder, s: &State) {
     b.text(rect, line, Font::Desc, Tone::Secondary, Align::Left);
 }
 
-/// The first-run offer: the question across the card, then "Unduh" and
+/// The room the reason of a failed first download takes under the offer's
+/// question: `lines` lines of description and a little space above them.
+fn tr_offer_error_h(lines: usize) -> f32 {
+    if lines == 0 {
+        0.0
+    } else {
+        4.0 + lines as f32 * DESC_LINE_H + 2.0
+    }
+}
+
+/// The first-run offer: the question across the card, the reason its last
+/// download failed (in the error colour) when it did, then "Unduh" and
 /// "Pilih model lain" under it at the right.
-fn tr_offer_block(b: &mut Builder, card: Rect, y: f32, lines: Vec<String>) {
+fn tr_offer_block(b: &mut Builder, card: Rect, y: f32, lines: Vec<String>, error: Vec<String>) {
+    let w = b.g.right - (card.x + INSET);
     let n = lines.len();
     for (i, line) in lines.into_iter().enumerate() {
         let rect = Rect {
             x: card.x + INSET,
             y: y + 14.0 + i as f32 * TR_LINE_H,
-            w: b.g.right - (card.x + INSET),
+            w,
             h: TR_LINE_H,
         };
         b.text(rect, line, Font::Label, Tone::Primary, Align::Left);
     }
+    let error_y = y + 14.0 + n as f32 * TR_LINE_H + 4.0;
+    let error_h = tr_offer_error_h(error.len());
+    for (i, line) in error.into_iter().enumerate() {
+        let rect = Rect {
+            x: card.x + INSET,
+            y: error_y + i as f32 * DESC_LINE_H,
+            w,
+            h: 16.0,
+        };
+        b.text(rect, line, Font::Desc, Tone::Bad, Align::Left);
+    }
     let (get, other) = (b.t(Key::TrDownload), b.t(Key::TrOther));
     let get_w = b.button_w(&[&get], ButtonKind::Primary);
     let other_w = b.button_w(&[&other], ButtonKind::Secondary);
-    let cy = y + 14.0 + n as f32 * TR_LINE_H + 10.0 + BUTTON_H / 2.0;
+    let cy = y + 14.0 + n as f32 * TR_LINE_H + error_h + 10.0 + BUTTON_H / 2.0;
     b.buttons(
         b.g.right,
         cy,
@@ -6096,6 +6135,14 @@ mod tests {
         vec![
             (TranscriptView::default(), false),
             (base.clone(), false),
+            // The first download failed: the offer says why.
+            (
+                TranscriptView {
+                    download_error: Some((0, text(Lang::Id, Key::TrWhyChecksum).to_owned())),
+                    ..base.clone()
+                },
+                false,
+            ),
             (
                 TranscriptView {
                     gpu: false,
@@ -9187,6 +9234,31 @@ mod tests {
             assert_eq!(other.label, text(lang, Key::TrOther));
             assert!(l.texts.iter().any(|t| t.text == text(lang, Key::TrAuto)));
             assert!(l.texts.iter().any(|t| t.text == text(lang, Key::TrLanguage)));
+            assert!(!l.texts.iter().any(|t| t.tone == Tone::Bad), "{lang:?}: no error yet");
+
+            // The first download failed: the offer stays (Unduh tries again)
+            // and says why under its question, in the error colour.
+            let failed = TranscriptView {
+                download_error: Some((0, text(lang, Key::TrWhyNoNetwork).to_owned())),
+                ..tr_on()
+            };
+            let l = tr_layout(lang, failed, false);
+            let mut want = vec![TranscriptEnabled, TranscriptOfferDownload, TranscriptOfferOther];
+            want.extend(TR_LANGS);
+            want.push(TranscriptFolder);
+            assert_eq!(tr_hits(&l), want, "{lang:?} failed offer");
+            let why = text(lang, Key::TrWhyNoNetwork);
+            let why = l.texts.iter().find(|t| t.text == why).expect("the reason");
+            assert_eq!(why.tone, Tone::Bad);
+            let offer = tr_offer(lang, MODELS[0].name, 555, 19);
+            let question = l
+                .texts
+                .iter()
+                .filter(|t| t.font == Font::Label && offer.contains(t.text.as_str()))
+                .map(|t| t.rect.bottom())
+                .fold(0.0, f32::max);
+            let get = tr_button(&l, TranscriptOfferDownload).unwrap();
+            assert!(question > 0.0 && why.rect.y >= question && why.rect.bottom() <= get.rect.y);
 
             // "Pilih model lain", or the engine already there: the list, a
             // row per model with Unduh.
@@ -9319,6 +9391,26 @@ mod tests {
         );
         assert_eq!(offer_mb(&MODELS[0]), (555, 19));
         assert_eq!(offer_mb(&MODELS[1]), (191, 19));
+        // A model chosen earlier is the one offered, whatever the GPU.
+        let saved = TranscriptView {
+            prefs: TranscriptPrefs {
+                model: Some("whisper-small".into()),
+                ..tr_on().prefs
+            },
+            ..tr_on()
+        };
+        let l = tr_layout(Lang::Id, saved, false);
+        let offer = tr_offer(Lang::Id, "Whisper small", 191, 19);
+        let shown: Vec<&str> = l
+            .texts
+            .iter()
+            .filter(|t| t.font == Font::Label && offer.contains(t.text.as_str()))
+            .map(|t| t.text.as_str())
+            .collect();
+        assert_eq!(shown.join(" "), offer);
+        // Each model's note goes by its key.
+        assert_eq!(tr_note_key(&MODELS[0]), Key::TrNoteTurbo);
+        assert_eq!(tr_note_key(&MODELS[1]), Key::TrNoteSmall);
         // The card offers the model for this PC, with its real sum.
         for (gpu, model, total) in [(true, &MODELS[0], 555), (false, &MODELS[1], 191)] {
             let view = TranscriptView { gpu, ..tr_on() };

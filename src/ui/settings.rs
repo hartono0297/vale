@@ -363,14 +363,15 @@ enum TrClick {
 /// The Transkrip card's answer to `hit` with the island's `view`, or `None`
 /// for a click that changes nothing (or is not on the card).
 fn transcript_click(view: &TranscriptView, hit: Hit) -> Option<TrClick> {
-    use crate::transcribe::catalog::{MODELS, default_model};
+    use crate::transcribe::catalog::MODELS;
     let prefs = &view.prefs;
     let key = |i: usize| MODELS.get(i).map(|m| m.key);
     let post = |a: Action| Some(TrClick::Post(a));
     match hit {
         Hit::TranscriptEnabled => post(Action::TranscriptEnabled(!prefs.enabled)),
+        // The model the offer names: the one chosen before, else this PC's.
         Hit::TranscriptOfferDownload => {
-            post(Action::TranscriptDownload(default_model(view.gpu).key))
+            post(Action::TranscriptDownload(prefs.model_for(view.gpu).key))
         }
         Hit::TranscriptOfferOther => Some(TrClick::Choose),
         Hit::TranscriptModel(i) => {
@@ -4189,7 +4190,8 @@ unsafe extern "system" fn edit_proc(
 /// (`available`, `checking`, `downloading`: Tentang's Pembaruan row, with a
 /// made-up 9.9.9), `DI_MONITORS` (`1`, `3`, `3-missing`: made-up screens for the
 /// Notch card's Monitor row; unset lists the real ones) and `DI_TRANSCRIPT`
-/// (`off`, `offer`, `list`, `downloading`, `installed`, `problem`: Fitur's
+/// (`off`, `offer`, `offer-failed`, `list`, `downloading`, `installed`,
+/// `problem`: Fitur's
 /// Transkrip card, made up) set the start. `DI_SETTINGS_CARD=transcript`
 /// opens Fitur scrolled to that card.
 ///
@@ -4278,7 +4280,8 @@ pub fn run_demo(args: &[String]) {
     }
 
     /// `DI_TRANSCRIPT`: the Transkrip card made up, nothing on disk read.
-    /// `off`, `offer` (on, nothing installed), `list` (the engine there, no
+    /// `off`, `offer` (on, nothing installed), `offer-failed` (the same
+    /// after the first download failed), `list` (the engine there, no
     /// model), `downloading` (turbo at 220 of 555 MB), `installed` (turbo
     /// on disk), `problem` (turbo on disk and in use, small's download
     /// failed, the runtime missing). Anything else: off.
@@ -4300,6 +4303,10 @@ pub fn run_demo(args: &[String]) {
         };
         match kind.trim().to_ascii_lowercase().as_str() {
             "offer" => on,
+            "offer-failed" => TranscriptView {
+                download_error: Some((0, text(lang, Key::TrWhyNoNetwork).to_owned())),
+                ..on
+            },
             "list" => TranscriptView {
                 engine_installed: true,
                 used_bytes: 21_000_000,
@@ -4788,6 +4795,11 @@ mod tests {
             post(Action::TranscriptDownload("whisper-small"))
         );
         assert_eq!(transcript_click(&on, Hit::TranscriptOfferOther), Some(TrClick::Choose));
+        // The offer fetches a model chosen earlier, not the GPU's default.
+        assert_eq!(
+            transcript_click(&small, Hit::TranscriptOfferDownload),
+            post(Action::TranscriptDownload("whisper-small"))
+        );
         // A row's buttons, by the row's model.
         assert_eq!(
             transcript_click(&on, Hit::TranscriptDownload(1)),
