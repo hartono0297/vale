@@ -1255,6 +1255,31 @@ keys! {
     TrLangId => "Indonesia", "Indonesian";
     TrLangEn => "Inggris", "English";
     TrLangAuto => "Otomatis", "Auto";
+    TrCardTitle => "Transkrip", "Transcripts";
+    TrEnable => "Transkrip", "Transcripts";
+    TrEnableDesc => "Ubah rekaman jadi teks di PC ini. Tidak ada audio yang dikirim.",
+        "Turns recordings into text on this PC. No audio leaves it.";
+    TrOffer => "Unduh {name} ({total} MB, termasuk mesin {engine} MB)?",
+        "Download {name} ({total} MB, including the {engine} MB engine)?";
+    TrDownload => "Unduh", "Download";
+    TrOther => "Pilih model lain", "Choose another model";
+    TrCancel => "Batal", "Cancel";
+    TrInstalled => "Terpasang", "Installed";
+    TrDelete => "Hapus", "Delete";
+    TrInUse => "Sedang dipakai", "In use";
+    TrSuggested => "disarankan", "suggested";
+    TrNoteTurbo => "Paling akurat \u{b7} cepat dengan GPU, lambat tanpa GPU",
+        "Most accurate \u{b7} fast with a GPU, slow without one";
+    TrNoteSmall => "Ringan \u{b7} lebih cepat tanpa GPU, kadang ada kata yang hilang",
+        "Light \u{b7} quicker without a GPU, sometimes drops words";
+    TrLanguage => "Bahasa", "Language";
+    TrAuto => "Bikin transkrip otomatis setelah rekam", "Transcribe automatically after recording";
+    TrAutoDesc => "Mulai sendiri begitu rekaman berhenti", "Starts on its own when a recording stops";
+    TrAutoNeedsOn => "Nyalakan Transkrip dulu", "Turn on Transcripts first";
+    TrAutoNeedsModel => "Perlu model terpasang", "Needs an installed model";
+    TrWhereGpu => "Pakai GPU", "Uses the GPU";
+    TrWhereCpu => "Pakai CPU", "Uses the CPU";
+    TrUsed => "Terpakai {mb} MB", "{mb} MB used";
 }
 
 /// `key` in `lang`.
@@ -1682,6 +1707,25 @@ pub fn rec_entry_sub(lang: Lang, started: &str, d: std::time::Duration, unfinish
 /// "Server menolak unduhan (404)": the server's answer to a model download.
 pub fn tr_why_refused(lang: Lang, code: u16) -> String {
     text(lang, Key::TrWhyRefused).replace("{code}", &code.to_string())
+}
+
+/// The Transkrip card's first-run offer: "Unduh Whisper small (191 MB,
+/// termasuk mesin 19 MB)?".
+pub fn tr_offer(lang: Lang, name: &str, total_mb: u64, engine_mb: u64) -> String {
+    text(lang, Key::TrOffer)
+        .replace("{name}", name)
+        .replace("{total}", &total_mb.to_string())
+        .replace("{engine}", &engine_mb.to_string())
+}
+
+/// "Terpakai 610 MB": the space the engine and the models take.
+pub fn tr_used(lang: Lang, mb: u64) -> String {
+    text(lang, Key::TrUsed).replace("{mb}", &mb.to_string())
+}
+
+/// "220 / 555 MB": a model download's progress (the same in both languages).
+pub fn tr_progress(done_mb: u64, total_mb: u64) -> String {
+    format!("{done_mb} / {total_mb} MB")
 }
 
 /// A recording's length on the Rekam page: "45 dtk", "42 mnt", "1 j 05 mnt"
@@ -3797,6 +3841,9 @@ mod tests {
                 pomo_durations(lang, 25, 5, 15),
                 phase_minutes(lang, text(lang, Key::Break), 5),
                 tr_why_refused(lang, 404),
+                tr_offer(lang, "Whisper large-v3-turbo", 555, 19),
+                tr_used(lang, 610),
+                tr_progress(220, 555),
                 phase_minutes(lang, text(lang, Key::Focus), 25),
                 more_count(lang, 3),
                 battery_body(lang, 18),

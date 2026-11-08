@@ -48,7 +48,7 @@ use super::settings_layout::{
     Align, Button, ButtonKind, CARD_RADIUS, CAT_TILE, CONTROL_RADIUS, CatFace, Chip, Control,
     EXTERNAL_GLYPH, FULL_RADIUS, Field, Font, Group, HOTKEY_CAP_H, HOTKEY_CAP_PAD,
     HOTKEY_FIELD_PAD, HOTKEY_PLUS_W, Hit, LINK_GLYPH_W, Layout, MapItem, Measure, MonitorPick,
-    Rect, SEGMENT_RADIUS, SLIDER_THUMB, SWATCH_RING_GAP, SWATCH_RING_W, Section, Segment, Text, Tone, WidgetTile, accent_key,
+    Bar, Rect, SEGMENT_RADIUS, SLIDER_THUMB, SWATCH_RING_GAP, SWATCH_RING_W, Section, Segment, Text, Tone, WidgetTile, accent_key,
     hotkey_caps_w, slider_x,
 };
 use crate::config::{Style, UiFont};
@@ -707,6 +707,12 @@ impl Painter<'_> {
         for chip in &l.chips {
             self.chip(chip);
         }
+        for tag in &l.tags {
+            self.tag(tag);
+        }
+        for bar in &l.bars {
+            self.bar(*bar);
+        }
         for (field, r) in &l.fields {
             self.field(*r, s.focused == Some(*field));
         }
@@ -902,6 +908,25 @@ impl Painter<'_> {
     }
 
     /// A fully rounded status chip on a faint wash of its tone.
+    /// A small label on a wash of the accent ("disarankan").
+    fn tag(&self, t: &Text) {
+        let (ink, wash) = tag_colors(&self.p);
+        self.fill_round(t.rect, FULL_RADIUS, self.p.accent, wash);
+        self.draw_str(&t.text, self.style(t.font, t.align), t.rect, ink, 1.0);
+    }
+
+    /// A download's progress: a faint track, the part done in the accent.
+    fn bar(&self, bar: Bar) {
+        self.fill_round(bar.rect, FULL_RADIUS, self.p.secondary, BAR_TRACK);
+        let done = Rect {
+            w: bar.rect.w * bar.fill.clamp(0.0, 1.0),
+            ..bar.rect
+        };
+        if done.w > 0.0 {
+            self.fill_round(done, FULL_RADIUS, self.p.accent, 1.0);
+        }
+    }
+
     fn chip(&self, chip: &Chip) {
         let rgb = self.tone(chip.label.tone);
         let wash = if self.p.light { 0.12 } else { 0.16 };
@@ -1078,7 +1103,8 @@ impl Painter<'_> {
             let a = if s.pressed == s.hover { 0.10 } else { 0.06 };
             self.fill_round(r, CONTROL_RADIUS, self.p.text, a);
         }
-        let (cx, cy) = (r.x + 16.0, r.y + r.h / 2.0);
+        // On a tall row the dot stays by its first line.
+        let (cx, cy) = (r.x + 16.0, r.y + (r.h / 2.0).min(16.0));
         if selected {
             self.ring(cx, cy, 6.75, 1.5, self.p.accent, 1.0);
             self.circle(cx, cy, 3.5, self.p.accent, 1.0);
@@ -1438,7 +1464,7 @@ impl Painter<'_> {
         };
         match b.kind {
             ButtonKind::Primary => {
-                let base = self.p.accent;
+                let base = primary_fill(&self.p);
                 let fill = if pressed {
                     self.tint(base, 0.2)
                 } else if hovered {
@@ -1861,6 +1887,25 @@ pub fn ease(t: f32) -> f32 {
     1.0 - (1.0 - t).powi(3)
 }
 
+/// The share of the secondary ink a progress bar's track takes.
+const BAR_TRACK: f32 = 0.15;
+
+/// A primary button's fill. A light window darkens the accent a step: its
+/// light label on the light accent itself is only 4.26:1 (Terracotta).
+pub fn primary_fill(p: &WindowPalette) -> u32 {
+    if p.light {
+        mix(p.accent, p.text, 0.15)
+    } else {
+        p.accent
+    }
+}
+
+/// A tag's ink, and how much of the accent washes its pill: the accent
+/// pulled toward the text so the small word reads on the wash.
+pub fn tag_colors(p: &WindowPalette) -> (u32, f32) {
+    (mix(p.accent, p.text, 0.25), 0.12)
+}
+
 /// `a` blended toward `b` by `t` (0xRRGGBB).
 pub fn mix(a: u32, b: u32, t: f32) -> u32 {
     let t = t.clamp(0.0, 1.0);
@@ -2140,6 +2185,33 @@ mod tests {
         assert_eq!(digit_runs(&w("20%")), [(0, 2)]);
         assert_eq!(digit_runs(&w("a1b23")), [(1, 1), (3, 2)]);
         assert!(digit_runs(&w("mnt")).is_empty());
+    }
+
+    /// The Transkrip card's pairs read in the light, warm dark and Terminal
+    /// windows with every accent: the primary label (Unduh) and the tag at
+    /// 4.5:1 on what they sit on, the done part of a bar at 3:1 on its track.
+    #[test]
+    fn primary_labels_tags_and_bars_read_in_every_window() {
+        use crate::theme::{WindowTheme, window_for};
+        use crate::widgets::sticky::contrast;
+        let over = |base: u32, top: u32, a: f32| mix(base, top, a);
+        for accent in Accent::ALL {
+            for (surface, mode) in [
+                (Surface::Espresso, WindowTheme::Light),
+                (Surface::Espresso, WindowTheme::Dark),
+                (Surface::Terminal, WindowTheme::Dark),
+            ] {
+                let p = window_for(*accent, surface, mode, false);
+                let label = contrast(p.on_accent, primary_fill(&p));
+                assert!(label >= 4.5, "{accent:?} {surface:?} {mode:?}: Unduh {label:.2}");
+                let (ink, wash) = tag_colors(&p);
+                let tag = contrast(ink, over(p.card, p.accent, wash));
+                assert!(tag >= 4.5, "{accent:?} {surface:?} {mode:?}: tag {tag:.2}");
+                let track = over(p.card, p.secondary, BAR_TRACK);
+                let bar = contrast(p.accent, track);
+                assert!(bar >= 3.0, "{accent:?} {surface:?} {mode:?}: bar {bar:.2}");
+            }
+        }
     }
 
     #[test]

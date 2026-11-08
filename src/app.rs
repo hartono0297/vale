@@ -126,7 +126,7 @@ use crate::ui::render::{
     CleanerView, CliView, DevicesView, FolderMenuView, Frame, MoleView, NoticeCloseView, Progress,
     RecFrame, RecordView, Renderer, RobotFrame, SearchView, SystemView,
 };
-use crate::ui::settings_layout::MonitorRow;
+use crate::ui::settings_layout::{CardId, MonitorRow};
 use crate::ui::robot::{
     self, Brain, Expr, EyesBlink, EyesPose, GreetSettings, Motion, Rng, Spot, TypingPaws,
     choose_expr, plan_timers, should_greet,
@@ -382,6 +382,9 @@ thread_local! {
     /// opens once the handler returns (creating a window while the app is
     /// borrowed would find the app gone).
     static DEFERRED_OPEN_SETTINGS: Cell<bool> = const { Cell::new(false) };
+    /// The same for Settings at a card (a notice's "Pengaturan" chip opens
+    /// it at Transkrip).
+    static DEFERRED_OPEN_CARD: Cell<Option<CardId>> = const { Cell::new(None) };
     /// An update was swapped in and started: the island closes once the
     /// handler returns (`shutdown` destroys the window, which needs the app
     /// unborrowed to run its cleanup).
@@ -6244,6 +6247,7 @@ impl App {
             calendar: self.calendar.status,
             hotkey_failed: self.hotkeys.failed_flags(),
             update_row: self.update.row(),
+            transcript: self.transcript_view(),
             monitors: self
                 .displays
                 .iter()
@@ -6451,6 +6455,24 @@ impl App {
                 self.config.recording.echo_cancel = on;
                 self.save_config();
             }
+            SettingsAction::TranscriptEnabled(on) => self.transcribe_set_enabled(on),
+            SettingsAction::TranscriptModel(key) => self.transcribe_pick(key),
+            SettingsAction::TranscriptDownload(key) => self.transcribe_download_key(key),
+            SettingsAction::TranscriptCancelDownload => self.transcribe_cancel_download(),
+            SettingsAction::TranscriptDelete(key) => {
+                if let Some(model) = crate::transcribe::catalog::model(key) {
+                    self.transcribe_delete(model);
+                }
+            }
+            SettingsAction::TranscriptLang(language) => {
+                self.config.transcript.language = language;
+                self.save_config();
+            }
+            SettingsAction::TranscriptAuto(on) => {
+                self.config.transcript.auto = on;
+                self.save_config();
+            }
+            SettingsAction::TranscriptFolder => self.transcribe_open_folder(),
             // The thumb moves live; only the release is saved.
             SettingsAction::ArrangeGap { gap, commit } => {
                 self.config.arrange.gap = gap;
@@ -8432,6 +8454,19 @@ fn open_settings(hwnd: HWND) {
     }
 }
 
+/// `open_settings`, on Fitur scrolled to `card`.
+fn open_settings_card(hwnd: HWND, card: CardId) {
+    let Some(model) = with_app(|app| {
+        app.retry_hotkeys();
+        app.settings_model()
+    }) else {
+        return;
+    };
+    if let Err(error) = settings::open_card(hwnd, model, card) {
+        eprintln!("vale: cannot open settings: {error}");
+    }
+}
+
 /// Runs a settings action now, or once the handler holding the app returns.
 /// The Do Not Disturb help opens the Settings app, which may pump messages,
 /// so it never runs inside `with_app`.
@@ -8645,6 +8680,11 @@ fn run_deferred() {
         && let Some(hwnd) = with_app(|app| app.hwnd)
     {
         open_settings(hwnd);
+    }
+    if let Some(card) = DEFERRED_OPEN_CARD.take()
+        && let Some(hwnd) = with_app(|app| app.hwnd)
+    {
+        open_settings_card(hwnd, card);
     }
     if DEFERRED_SHUTDOWN.take()
         && let Some(hwnd) = with_app(|app| app.hwnd)

@@ -1,9 +1,9 @@
 //! The island's side of transcripts: the queue and its worker thread, the
 //! recording hold, the startup settle, model downloads, the notices with
-//! their reasons in plain words and the marks on the Rekam rows. The
-//! transcript window, the file picker and Settings' Transkrip card come in
-//! later tasks (their methods are stubs here). A child of `app`, so it works
-//! on `App` directly.
+//! their reasons in plain words, the marks on the Rekam rows and what
+//! Settings' Transkrip card shows. The transcript window and the file picker
+//! come in later tasks (their methods are stubs here). A child of `app`, so
+//! it works on `App` directly.
 //!
 //! Power: no thread and no timer outside work. The worker (`transcribe`) lives
 //! for one job and a download thread for one download; the only timer is the
@@ -21,7 +21,7 @@ use chrono::Local;
 use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
 
 use super::record::display_title;
-use super::{App, WM_APP_EVENT, poster};
+use super::{App, DEFERRED_OPEN_CARD, WM_APP_EVENT, notif_open, poster};
 use crate::i18n::{self, Key, Lang, text};
 use crate::model::{Event, Notice, NoticeKind, RecEntry, RowTranscript, TranscriptOffer};
 use crate::transcribe::catalog::{self, ENGINE, Model};
@@ -32,6 +32,7 @@ use crate::transcribe::queue::{Hold, JobState, Queue, QueuedJob, percent, same_a
 use crate::transcribe::runner::{self, RunError};
 use crate::transcribe::store::Store;
 use crate::transcribe::{doc, gpu};
+use crate::ui::settings_layout::{CardId, TranscriptView};
 
 /// A job that started this many times and never ended (a crash each time)
 /// is failed, not run again.
@@ -66,8 +67,6 @@ pub(super) struct Worker {
 }
 
 /// The model download in flight.
-// Settings' card of Task 9 reads the progress.
-#[allow(dead_code)]
 pub(super) struct DownloadRun {
     id: u64,
     item: Item,
@@ -90,6 +89,9 @@ pub(super) struct TranscribeState {
     /// The engine cannot load for want of the Visual C++ runtime: the words
     /// that say so, until a download or a job shows it fine.
     problem: Option<String>,
+    /// The last download failed: for which model (`None`: the engine alone)
+    /// and why, until the next download starts.
+    download_error: Option<(Option<&'static Model>, String)>,
     /// The startup hold is released (the 30 s passed, or transcripts were
     /// turned on after the start).
     settled: bool,
@@ -113,6 +115,7 @@ impl TranscribeState {
             download: None,
             failed: HashMap::new(),
             problem: None,
+            download_error: None,
             settled: false,
             loaded: false,
             crashed: Vec::new(),
@@ -608,8 +611,6 @@ impl App {
     /// Settings' switch. Off stops the job, empties the queue and cancels a
     /// download (its partial files go; models and transcripts stay). On
     /// after the start releases the startup hold at once.
-    // Settings' switch comes in Task 9.
-    #[allow(dead_code)]
     pub(super) fn transcribe_set_enabled(&mut self, on: bool) {
         if self.config.transcript.enabled != on {
             self.config.transcript.enabled = on;
@@ -637,8 +638,6 @@ impl App {
 
     /// Downloads what `model` needs (the engine and the voice model when
     /// missing). One download at a time.
-    // Settings' download button comes in Task 9.
-    #[allow(dead_code)]
     pub(super) fn transcribe_download(&mut self, model: &'static Model) {
         self.transcribe_download_item(Item::Setup(model));
     }
@@ -656,6 +655,7 @@ impl App {
         });
         match started {
             Ok(download) => {
+                self.tr.download_error = None;
                 let model = match item {
                     Item::Model(m) | Item::Setup(m) => Some(m),
                     Item::Engine => None,
@@ -674,8 +674,6 @@ impl App {
     }
 
     /// Stops the download; its partial files are discarded when it ends.
-    // Settings' cancel button comes in Task 9.
-    #[allow(dead_code)]
     pub(super) fn transcribe_cancel_download(&mut self) {
         if let Some(d) = self.tr.download.as_mut() {
             d.by_user_cancel = true;
@@ -683,9 +681,8 @@ impl App {
         }
     }
 
-    /// Deletes an installed model. Refused for the model of the running job.
-    // Settings' delete button comes in Task 9.
-    #[allow(dead_code)]
+    /// Deletes an installed model. Refused for the model of the running job
+    /// (Settings shows that one as in use, its Hapus off).
     pub(super) fn transcribe_delete(&mut self, model: &'static Model) {
         if self.tr.worker.as_ref().is_some_and(|w| w.model.key == model.key) {
             return;
@@ -695,7 +692,73 @@ impl App {
         }
     }
 
+    /// Settings' radio: the model new transcripts use.
+    pub(super) fn transcribe_pick(&mut self, key: &str) {
+        let Some(model) = catalog::model(key) else {
+            return;
+        };
+        self.config.transcript.model = Some(model.key.to_owned());
+        self.save_config();
+    }
+
+    /// Settings' "Unduh" (of the offer or a model row). While the active
+    /// model is not installed, the one fetched becomes the active one, so
+    /// the next recording does not wait on a model nobody downloads.
+    pub(super) fn transcribe_download_key(&mut self, key: &str) {
+        let Some(model) = catalog::model(key) else {
+            return;
+        };
+        let active = self.config.transcript.model_for(gpu::has_hardware_gpu());
+        if active.key != model.key && !self.tr.store.model_installed(active) {
+            self.config.transcript.model = Some(model.key.to_owned());
+            self.save_config();
+        }
+        self.transcribe_download(model);
+    }
+
+    /// Settings' "Buka folder": Explorer on the engine and models' folder
+    /// (made first when missing).
+    pub(super) fn transcribe_open_folder(&mut self) {
+        let dir = self.tr.store.root().to_path_buf();
+        let _ = std::fs::create_dir_all(&dir);
+        notif_open::allow_foreground();
+        let _ = std::process::Command::new("explorer.exe").arg(dir).spawn();
+    }
+
+    /// What Settings' Transkrip card shows. Read when Settings opens or
+    /// follows a change: a few file checks and the size of the store.
+    pub(super) fn transcript_view(&self) -> TranscriptView {
+        let store = &self.tr.store;
+        let index = |m: &Model| catalog::MODELS.iter().position(|x| x.key == m.key);
+        let download = self.tr.download.as_ref().and_then(|d| {
+            let i = index(d.model?)?;
+            // Before the thread's first word: nothing done of the whole.
+            let progress = d.progress.unwrap_or_else(|| Progress {
+                done: 0,
+                total: download::missing(store, d.item).iter().map(|a| a.size).sum(),
+            });
+            Some((i, progress))
+        });
+        let (download_error, engine_error) = match &self.tr.download_error {
+            Some((Some(m), why)) => (index(m).map(|i| (i, why.clone())), None),
+            Some((None, why)) => (None, Some(why.clone())),
+            None => (None, None),
+        };
+        TranscriptView {
+            prefs: self.config.transcript.clone(),
+            gpu: gpu::has_hardware_gpu(),
+            installed: catalog::MODELS.map(|m| store.model_installed(&m)),
+            engine_installed: store.engine_installed(),
+            download,
+            download_error,
+            in_use: self.tr.worker.as_ref().and_then(|w| index(w.model)),
+            used_bytes: store.used_bytes(),
+            problem: self.tr.problem.clone().or(engine_error),
+        }
+    }
+
     /// A word of the download thread. One of an older download is ignored.
+    /// An open Settings follows each one (the progress, the end).
     pub(super) fn on_transcribe_download(&mut self, id: u64, event: download::Event) {
         let Some(run) = self.tr.download.as_mut().filter(|d| d.id == id) else {
             return;
@@ -703,6 +766,7 @@ impl App {
         let download::Event::Finished(result) = event else {
             if let download::Event::Progress(p) = event {
                 run.progress = Some(p);
+                self.sync_settings();
             }
             return;
         };
@@ -734,7 +798,11 @@ impl App {
                 }
                 None
             }
-            Err(e) => Some((Key::TrDownloadFailed, download_reason(lang, &e))),
+            Err(e) => {
+                let why = download_reason(lang, &e);
+                self.tr.download_error = Some((model, why.clone()));
+                Some((Key::TrDownloadFailed, why))
+            }
         };
         // Settings shows its own result while it is open.
         if let Some((title, body)) = notice
@@ -750,9 +818,11 @@ impl App {
             self.apply_now(Event::Notice(n));
         }
         self.transcribe_try_next();
+        self.sync_settings();
     }
 
-    /// The queue changed: the file follows, and the Rekam rows re-read.
+    /// The queue changed: the file follows, the Rekam rows re-read and an
+    /// open Settings follows (the model in use).
     fn transcribe_changed(&mut self) {
         let path = self.tr.store.queue_path();
         if self.tr.queue.is_empty() {
@@ -766,6 +836,7 @@ impl App {
             }
         }
         self.transcribe_marks_changed();
+        self.sync_settings();
     }
 
     /// A row's state changed: the Rekam page, when it shows, reads again.
@@ -842,8 +913,11 @@ impl App {
         let _ = audio;
     }
 
-    /// Opens Settings at the Transkrip card.
-    pub(super) fn open_transcript_settings(&mut self) {}
+    /// Opens Settings at the Transkrip card, once the handler holding the
+    /// app returns (opening a window sends messages).
+    pub(super) fn open_transcript_settings(&mut self) {
+        DEFERRED_OPEN_CARD.set(Some(CardId::Transcript));
+    }
 
     /// Shows the file picker for a transcript of any audio file.
     pub(super) fn rec_pick_file(&mut self) {}
