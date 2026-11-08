@@ -166,6 +166,7 @@ use record::RecState;
 
 #[path = "app_transcribe.rs"]
 mod transcribe_page;
+use transcribe_page::{TIMER_TRANSCRIBE, TranscribeState};
 
 #[path = "app_lyrics_card.rs"]
 mod card;
@@ -598,6 +599,7 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
             rec_timer: false,
             rec_level_timer: false,
             rec: RecState::default(),
+            tr: TranscribeState::new(),
             rec_sources,
             clock_timer: false,
             progress_timer: false,
@@ -685,6 +687,7 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
         app.sticky_remind_fire();
         // The updated notice, the update timer and the leftover cleanup.
         app.update_start(updated_from);
+        app.transcribe_init();
         unsafe {
             SetTimer(Some(hwnd), TIMER_SYSTEM, SYSTEM_MS, None);
             SetTimer(Some(hwnd), TIMER_BATTERY, BATTERY_MS, None);
@@ -1125,6 +1128,8 @@ struct App {
     rec_level_timer: bool,
     /// The audio recorder's session (`app_record`).
     rec: RecState,
+    /// Transcript jobs, holds and downloads (`app_transcribe`).
+    tr: TranscribeState,
     /// The sources the Rekam page's control chose for the next recording
     /// (kept in `config.recording.sources`).
     rec_sources: RecSources,
@@ -1516,9 +1521,18 @@ impl App {
                     self.on_rec_note(session, note);
                     continue;
                 }
-                // A transcript job's and a model download's threads: Task 8
-                // gives `App` its handling; nothing draws from them here.
-                Event::Transcribe(..) | Event::TranscribeDownload(..) => continue,
+                // A transcript job's and a model download's threads: `App`
+                // decides what shows.
+                Event::Transcribe(id, event) => {
+                    self.on_transcribe(id, event);
+                    continue;
+                }
+                Event::TranscribeDownload(id, event) => {
+                    self.on_transcribe_download(id, event);
+                    continue;
+                }
+                // The scan knows only what is on disk; the queue's marks go over it.
+                Event::RecRecent(list) => Event::RecRecent(self.transcribe_marks(list)),
                 Event::SearchIndex(apps) => {
                     self.on_search_index(apps);
                     continue;
@@ -5412,6 +5426,7 @@ impl App {
             }
             TIMER_SYSTEM_WARN => self.on_system_warn_timer(),
             TIMER_UPDATE => self.on_update_timer(),
+            TIMER_TRANSCRIBE => self.transcribe_settle(),
             TIMER_MIXER => {
                 if self.state.view() == View::Panel(Page::Mixer) {
                     self.mixer_scan();
@@ -9129,6 +9144,7 @@ unsafe extern "system" fn wnd_proc(
                 with_app(App::widgets_flush);
                 with_app(App::hotkeys_shutdown);
                 with_app(App::rec_shutdown);
+                with_app(App::transcribe_shutdown);
             }
             LRESULT(0)
         }
@@ -9159,6 +9175,7 @@ unsafe extern "system" fn wnd_proc(
             with_app(App::arrange_shutdown);
             with_app(App::hotkeys_shutdown);
             with_app(App::rec_shutdown);
+            with_app(App::transcribe_shutdown);
             unsafe {
                 let _ = WTSUnRegisterSessionNotification(hwnd);
                 let note = DISPLAY_NOTIFY.replace(0);
@@ -10383,6 +10400,7 @@ mod tests {
             TIMER_DAY,
             TIMER_REC,
             TIMER_REC_LEVEL,
+            TIMER_TRANSCRIBE,
             TIMER_CLOCK,
             TIMER_REMINDER,
             TIMER_LYRIC,

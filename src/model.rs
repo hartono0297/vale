@@ -213,13 +213,9 @@ pub enum NoticeKind {
     },
     /// A short word about transcripts (the model is ready, a download
     /// failed, saved as a note, "belum nyala"). A click dismisses.
-    // Built from Task 8 on; drop the allow then.
-    #[allow(dead_code)]
     TranscriptInfo,
     /// The same kind of word, but a click opens Settings at the Transkrip
     /// card (`Effect::OpenTranscriptSettings`).
-    // Built from Task 8 on; drop the allow then.
-    #[allow(dead_code)]
     TranscriptSettings,
 }
 
@@ -235,8 +231,6 @@ pub enum TranscriptOffer {
 }
 
 /// The transcript mark of a row in the Rekam page's list.
-// Task 10 builds the marks; drop the allow then.
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RowTranscript {
     /// Transcripts are off: the pill says so and a click explains.
@@ -374,12 +368,8 @@ pub enum Event {
     Rec(u64, RecNote),
     /// What a transcript job's thread reported, with the job id (`App`
     /// handles it; the reducer ignores it).
-    // Built from Task 8 on; drop the allow then.
-    #[allow(dead_code)]
     Transcribe(u64, crate::transcribe::runner::Event),
     /// What a model download reported, with the download id (the same).
-    // Built from Task 8 on; drop the allow then.
-    #[allow(dead_code)]
     TranscribeDownload(u64, crate::transcribe::download::Event),
     /// `None` means no media session is active.
     Media(Option<MediaInfo>),

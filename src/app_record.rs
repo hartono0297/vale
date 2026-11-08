@@ -84,6 +84,11 @@ impl RecState {
         self.recorder.is_some() || self.busy.is_some()
     }
 
+    /// The Rekam page is on screen (the rows' marks re-read while it is).
+    pub fn page_shown(&self) -> bool {
+        self.page_shown
+    }
+
     /// What a toggle does now: nothing while a start or a stop runs.
     fn toggle(&self) -> Option<Toggle> {
         toggle_of(self.busy.is_some(), self.recorder.is_some())
@@ -524,22 +529,32 @@ fn stem_of(path: &Path) -> String {
     name
 }
 
-fn entry_of(
-    path: &Path,
-    modified: std::time::SystemTime,
-    unfinished: bool,
-    lang: Lang,
-    today: NaiveDate,
-) -> RecEntry {
+/// The Rekam page's title of a recording: the sidecar's, else "Rekaman
+/// <date> <time>" for one with a sidecar but no title, else the file name.
+/// Reads the sidecar beside `path`.
+pub(crate) fn display_title(path: &Path, lang: Lang, _today: NaiveDate) -> String {
+    let modified = std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .unwrap_or(std::time::UNIX_EPOCH);
     let stem = stem_of(path);
     let side = sidecar_of(path, &stem);
+    title_of(side.as_ref(), stem, modified, lang).0
+}
+
+/// The title and the start of a recording from its sidecar (when it has
+/// one) and its file time.
+fn title_of(
+    side: Option<&Sidecar>,
+    stem: String,
+    modified: std::time::SystemTime,
+    lang: Lang,
+) -> (String, NaiveDateTime) {
     let file_time: NaiveDateTime = chrono::DateTime::<Local>::from(modified).naive_local();
     // A sidecar with no start (epoch) says nothing about when.
     let started = side
-        .as_ref()
         .filter(|s| s.started.timestamp() > 0)
         .map_or(file_time, |s| s.started.with_timezone(&Local).naive_local());
-    let title = match &side {
+    let title = match side {
         Some(s) if !s.title.trim().is_empty() => s.title.trim().to_owned(),
         Some(_) => format!(
             "{} {} {}",
@@ -549,13 +564,27 @@ fn entry_of(
         ),
         None => stem,
     };
+    (title, started)
+}
+
+fn entry_of(
+    path: &Path,
+    modified: std::time::SystemTime,
+    unfinished: bool,
+    lang: Lang,
+    today: NaiveDate,
+) -> RecEntry {
+    let stem = stem_of(path);
+    let side = sidecar_of(path, &stem);
+    let (title, started) = title_of(side.as_ref(), stem, modified, lang);
     RecEntry {
         path: path.to_path_buf(),
         title,
         started: i18n::rec_started(lang, started, today),
         duration: side.map_or(Duration::ZERO, |s| Duration::from_millis(s.duration_ms)),
         unfinished,
-        // Task 10 reads the transcript's state from the queue and the sidecar.
+        // The scan reads what is on disk; `transcribe_marks` puts the queue's
+        // state over it.
         transcript: RowTranscript::None,
     }
 }
@@ -666,6 +695,8 @@ impl App {
                 self.apply_now(Event::Notice(n));
             }
         }
+        // A recording is starting: the transcript queue holds.
+        self.transcribe_sync_hold();
     }
 
     /// The start thread is done: the recorder runs, or the notice says why not.
@@ -715,6 +746,8 @@ impl App {
                 self.apply_now(Event::Notice(failure_notice(lang, &e.failure(), &dir)));
             }
         }
+        // Whichever way the start went, the queue's hold follows the recorder.
+        self.transcribe_sync_hold();
     }
 
     /// The recording went to `used`, not to the configured folder (Windows
@@ -792,6 +825,8 @@ impl App {
             self.apply_now(Event::Notice(no_input_notice(lang)));
         }
         self.rec_rescan();
+        // The recording is over: a job held back may start.
+        self.transcribe_sync_hold();
     }
 
     /// The status the island shows, from the running recorder.
@@ -985,7 +1020,8 @@ impl App {
         match event {
             RecEvent::Saved { path, duration } => {
                 self.rec.told = true;
-                let n = saved_notice(lang, path, duration, self.rec.no_input, TranscriptOffer::None);
+                let offer = self.transcribe_saved(&path);
+                let n = saved_notice(lang, path, duration, self.rec.no_input, offer);
                 self.apply_now(Event::Notice(n));
             }
             RecEvent::Failed(failure) => {

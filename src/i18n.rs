@@ -603,6 +603,24 @@ keys! {
     TrModelReady => "Model transkrip siap", "Transcript model ready";
     TrDownloadFailed => "Unduhan model gagal", "Model download failed";
     TrMadeNote => "Dijadikan catatan", "Saved as a note";
+    TrWhyNoNetwork => "Tidak ada jaringan", "No network";
+    TrWhyRefused => "Server menolak unduhan ({code})", "The server refused the download ({code})";
+    TrWhyChecksum => "File unduhan rusak, coba lagi", "The download came out damaged, try again";
+    TrWhyDiskFull => "Disk penuh", "The disk is full";
+    TrWhyDisk => "File tidak bisa ditulis", "The file cannot be written";
+    TrWhyArchive => "Paket mesin tidak cocok", "The engine package does not match";
+    TrWhyRuntime => "Butuh Microsoft Visual C++ Redistributable (x64). Pasang dari situs Microsoft, lalu coba lagi.",
+        "Needs the Microsoft Visual C++ Redistributable (x64). Install it from Microsoft's site, then try again.";
+    TrWhyAudio => "File audio tidak bisa dibaca", "The audio file cannot be read";
+    TrWhyEngine => "Mesin transkrip rusak. Hapus modelnya lalu unduh lagi di Pengaturan",
+        "The transcript engine is damaged. Delete the model and download it again in Settings";
+    TrWhyNoDevice => "Mesin transkrip tidak bisa jalan di PC ini",
+        "The transcript engine cannot run on this PC";
+    TrWhyTooLong => "Rekaman terlalu panjang untuk model ini",
+        "The recording is too long for this model";
+    TrWhyWrite => "Transkrip tidak bisa disimpan di folder ini",
+        "The transcript cannot be saved in this folder";
+    TrWhyOther => "Mesin transkrip gagal. Coba lagi", "The transcript engine failed. Try again";
     RecFailedTitle => "Rekaman gagal", "Recording failed";
     RecMicDeniedTitle => "Mic diblokir Windows", "Windows blocked the mic";
     RecMicDeniedBody => "Klik untuk buka pengaturan mic", "Click to open the mic settings";
@@ -1659,6 +1677,11 @@ pub fn rec_entry_sub(lang: Lang, started: &str, d: std::time::Duration, unfinish
         rec_duration(lang, d)
     };
     format!("{started} \u{b7} {length}")
+}
+
+/// "Server menolak unduhan (404)": the server's answer to a model download.
+pub fn tr_why_refused(lang: Lang, code: u16) -> String {
+    text(lang, Key::TrWhyRefused).replace("{code}", &code.to_string())
 }
 
 /// A recording's length on the Rekam page: "45 dtk", "42 mnt", "1 j 05 mnt"
@@ -3773,6 +3796,7 @@ mod tests {
                 session_of(lang, 1, 4),
                 pomo_durations(lang, 25, 5, 15),
                 phase_minutes(lang, text(lang, Key::Break), 5),
+                tr_why_refused(lang, 404),
                 phase_minutes(lang, text(lang, Key::Focus), 25),
                 more_count(lang, 3),
                 battery_body(lang, 18),
