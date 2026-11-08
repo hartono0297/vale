@@ -14,11 +14,6 @@
 //! meeting is dropped (`echo`) and the rest is written as `.md`
 //! and `.srt` next to the audio (`output`).
 
-// Until the Settings card and the transcript window are built (after track A
-// is merged), parts of this module are reached only by the tests and the
-// debug `--transcribe` flag.
-#![allow(dead_code)]
-
 pub mod catalog;
 pub mod store;
 pub mod download;

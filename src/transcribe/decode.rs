@@ -130,11 +130,6 @@ impl Decoder {
         self.channels
     }
 
-    /// The source's own rate (48000 for a Vale recording).
-    pub fn source_rate(&self) -> u32 {
-        self.rate
-    }
-
     /// From the container, when it says.
     pub fn duration_ms(&self) -> Option<u64> {
         self.duration_ms

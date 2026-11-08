@@ -117,17 +117,6 @@ impl Store {
         Ok(())
     }
 
-    /// Removes the engine, the VAD model and their partial downloads. Fails
-    /// while the engine is loaded in this process (Windows keeps a loaded
-    /// DLL's file).
-    pub fn delete_engine(&self) -> io::Result<()> {
-        remove_file_if_there(&self.part_path(&ENGINE.asset))?;
-        remove_file_if_there(&self.part_path(&catalog::VAD))?;
-        remove_file_if_there(&self.vad_path())?;
-        remove_dir_if_there(&self.engine_staging_dir())?;
-        remove_dir_if_there(&self.engine_dir())
-    }
-
     /// Removes what no current catalog entry owns: engines of other
     /// versions, a leftover staging folder, partial downloads and `.gguf`
     /// models of files no longer offered. Installed models of the catalog stay.
@@ -321,9 +310,6 @@ pub(crate) mod tests {
 
         sized_file(&store.vad_path(), catalog::VAD.size);
         assert!(store.vad_installed());
-        store.delete_engine().unwrap();
-        assert!(!dir.exists());
-        assert!(!store.vad_installed());
     }
 
     #[test]

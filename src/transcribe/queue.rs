@@ -2,8 +2,8 @@
 //!
 //! Pure state, no I/O: the caller starts and cancels the threads, reads and
 //! writes the JSON text (`to_json` / `from_json`) and decides what "ready"
-//! means (the model is installed). A hold (Vale starting up, a recording, a
-//! screen recording) keeps the queue from starting anything; turning one on
+//! means (the model is installed). A hold (Vale starting up, a recording)
+//! keeps the queue from starting anything; turning one on
 //! while a job runs sends that job back to the head so the caller can stop it.
 
 use std::collections::VecDeque;
@@ -16,7 +16,6 @@ use serde_json::{Value, json};
 pub enum Hold {
     Startup,
     Recording,
-    ScreenRecording,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -110,15 +109,6 @@ impl Queue {
         let job = self.waiting.pop_front()?;
         self.running = Some(job.clone());
         Some(job)
-    }
-
-    /// True when that audio was the running job.
-    pub fn finish(&mut self, audio: &Path) -> bool {
-        if self.is_running(audio) {
-            self.running = None;
-            return true;
-        }
-        false
     }
 
     /// What the job was doing, or `None` when it was not in the queue.
@@ -278,10 +268,10 @@ mod tests {
         assert!(q.push(job("b.m4a", "s")));
         assert_eq!(q.start_next(ready), Some(job("a.m4a", "s")));
         assert_eq!(q.start_next(ready), None);
-        assert!(q.finish(&p("a.m4a")));
-        assert!(!q.finish(&p("a.m4a")));
+        assert_eq!(q.cancel(&p("a.m4a")), Some(JobState::Running));
+        assert_eq!(q.cancel(&p("a.m4a")), None);
         assert_eq!(q.start_next(ready), Some(job("b.m4a", "s")));
-        assert!(q.finish(&p("b.m4a")));
+        assert_eq!(q.cancel(&p("b.m4a")), Some(JobState::Running));
         assert!(q.is_empty());
         assert_eq!(q.start_next(ready), None);
     }
@@ -305,11 +295,11 @@ mod tests {
         let mut q = Queue::new(&[]);
         q.push(job("a.m4a", "s"));
         q.set_hold(Hold::Recording, true);
-        q.set_hold(Hold::ScreenRecording, true);
+        q.set_hold(Hold::Startup, true);
         q.set_hold(Hold::Recording, false);
         assert!(q.held());
         assert_eq!(q.start_next(ready), None);
-        q.set_hold(Hold::ScreenRecording, false);
+        q.set_hold(Hold::Startup, false);
         assert!(!q.held());
         assert!(q.start_next(ready).is_some());
     }

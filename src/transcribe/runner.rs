@@ -22,7 +22,7 @@ use super::catalog::{ENGINE, Model as CatalogModel};
 use super::chunk::{Chunk, ChunkParams, Chunker, EnergyVad, FRAME, Framer};
 use super::decode::{DecodeError, Decoder, RATE};
 use super::echo;
-use super::engine::{self, Engine, EngineError, Model, RunOutput, Session, VadSession};
+use super::engine::{Engine, EngineError, Model, RunOutput, Session, VadSession};
 use super::output::{self, Header, Labels, Segment, Speaker, TranscriptInfo};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -495,9 +495,10 @@ fn sidecar_started(sidecar: &str) -> Option<String> {
     Some(time.format("%Y-%m-%d %H:%M").to_string())
 }
 
-/// For the debug CLI and the logs: what the engine said last.
+/// For the debug CLI: what the engine said last.
+#[cfg(debug_assertions)]
 pub fn engine_log() -> Vec<String> {
-    engine::take_log()
+    super::engine::take_log()
 }
 
 #[cfg(test)]

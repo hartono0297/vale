@@ -50,14 +50,13 @@ pub const ENGINE: Engine = Engine {
 };
 
 /// The model family: decides whether the model gives its own timestamps.
+/// (A family without them, such as Qwen3-ASR, would rely on the chunks'
+/// times: the runner keeps that path.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Family {
     /// Whisper: segment timestamps of its own, no length limit (it windows
     /// long audio itself).
     Whisper,
-    /// Qwen3-ASR: text only, no timestamps, a hard input cap; Vale's own
-    /// chunks carry the times.
-    Qwen3Asr,
 }
 
 /// A speech-to-text model.

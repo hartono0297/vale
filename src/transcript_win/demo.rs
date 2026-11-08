@@ -6,7 +6,10 @@
 //! audio) under `temp_dir()\vale-transcript-demo\<scene>\`. `DI_WINDOW`,
 //! `DI_SURFACE` and `DI_ACCENT` pick the theme, `DI_LANG=en` English, and
 //! `DI_TRANSCRIPT_POS=<ms>` puts the player at that time (the playing line).
-//! What the window asks for is printed, never run; the place is not saved.
+//! `DI_TRANSCRIPT_AUDIO=<file>` copies a real recording in as the scene's
+//! audio (the original is only read), so the player plays it; its length
+//! becomes the recording's. What the window asks for is printed, never run;
+//! the place is not saved.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -57,9 +60,25 @@ fn fixture(scene: &str, segments: &[Segment], transcript: bool, lang: Lang) -> P
     let dir = std::env::temp_dir().join("vale-transcript-demo").join(scene);
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::create_dir_all(&dir);
-    let audio = dir.join("2026-11-07 1002 Teams.m4a");
+    let real = std::env::var_os("DI_TRANSCRIPT_AUDIO").map(PathBuf::from);
+    let ext = real
+        .as_deref()
+        .and_then(Path::extension)
+        .map_or("m4a".into(), |e| e.to_string_lossy().into_owned());
+    let audio = dir.join(format!("2026-11-07 1002 Teams.{ext}"));
+    let copied = real.is_some_and(|from| match std::fs::copy(&from, &audio) {
+        Ok(_) => true,
+        Err(e) => {
+            eprintln!("vale: cannot copy {}: {e}", from.display());
+            false
+        }
+    });
     let files = output::paths(&audio);
-    let duration = segments.last().map_or(42 * 60_000 + 7_000, |s| s.end_ms + 3_000);
+    let length = copied
+        .then(|| crate::transcribe::decode::Decoder::open(&audio).ok()?.duration_ms())
+        .flatten();
+    let duration = length
+        .unwrap_or_else(|| segments.last().map_or(42 * 60_000 + 7_000, |s| s.end_ms + 3_000));
     let mut sidecar = serde_json::json!({
         "v": 1,
         "title": "Sync mingguan",

@@ -96,7 +96,6 @@ const MASK_ALL: u32 = 0xFFFF_FFFF;
 const TIMESTAMPS_AUTO: i32 = 1;
 // `transcribe_role`.
 const ROLE_ASR: u32 = 1;
-const ROLE_VAD: u32 = 1 << 3;
 
 #[repr(C)]
 struct RawModel(c_void);
@@ -278,10 +277,7 @@ api! {
     vad_session_init = "transcribe_vad_session_init":
         fn(*mut RawModel, *const VadSessionParams, *mut *mut RawVadSession) -> i32;
     vad_session_free = "transcribe_vad_session_free": fn(*mut RawVadSession);
-    vad_set_abort_callback = "transcribe_vad_set_abort_callback":
-        fn(*mut RawVadSession, Option<AbortCallback>, *mut c_void);
     vad_stream_feed = "transcribe_vad_stream_feed": fn(*mut RawVadSession, *const f32, i32) -> i32;
-    vad_stream_flush = "transcribe_vad_stream_flush": fn(*mut RawVadSession) -> i32;
     vad_get_result = "transcribe_vad_get_result": fn(*const RawVadSession, *mut VadResult) -> i32;
     vad_probs = "transcribe_vad_probs": fn(*const RawVadSession) -> *const f32;
 }
@@ -498,10 +494,6 @@ impl Model {
         unsafe { (self.engine.api.model_roles)(self.raw) & ROLE_ASR != 0 }
     }
 
-    pub fn is_vad(&self) -> bool {
-        unsafe { (self.engine.api.model_roles)(self.raw) & ROLE_VAD != 0 }
-    }
-
     /// "cpu", "vulkan", ...: where the weights ended up.
     pub fn backend(&self) -> String {
         text(unsafe { (self.engine.api.model_backend)(self.raw) })
@@ -511,12 +503,6 @@ impl Model {
     pub fn max_audio_ms(&self) -> Option<u64> {
         let caps = self.capabilities()?;
         (caps.max_audio_ms > 0).then_some(caps.max_audio_ms as u64)
-    }
-
-    /// Whether the model gives timestamps of its own.
-    pub fn has_timestamps(&self) -> bool {
-        self.capabilities()
-            .is_some_and(|caps| caps.max_timestamp_kind > TIMESTAMPS_AUTO)
     }
 
     fn capabilities(&self) -> Option<Capabilities> {
@@ -709,12 +695,6 @@ impl<'m> VadSession<'m> {
     pub fn feed(&mut self, pcm: &[f32]) -> Result<Vec<f32>, EngineError> {
         let n = i32::try_from(pcm.len()).map_err(|_| EngineError::TooLong)?;
         let status = unsafe { (self.model.engine.api.vad_stream_feed)(self.raw, pcm.as_ptr(), n) };
-        self.probs(status)
-    }
-
-    /// The last, zero-padded frame.
-    pub fn flush(&mut self) -> Result<Vec<f32>, EngineError> {
-        let status = unsafe { (self.model.engine.api.vad_stream_flush)(self.raw) };
         self.probs(status)
     }
 

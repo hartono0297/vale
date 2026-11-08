@@ -10,10 +10,17 @@
 //! The list measures each line's wrapped height once per text width (a new
 //! line of a running job is measured when it arrives) and lays out only the
 //! rows on screen when it draws.
+//!
+//! Each window owns its player (`Playback`; a fake in the tests). While it
+//! plays, timer 1 (a 200 ms one-shot, re-armed) moves the position, marks the
+//! line and keeps it in view; the wheel or a key that moves the list holds
+//! that for 3 s (timer 2, re-armed per notch). `WM_APP_PLAYER` says the end
+//! (back to 0) or a failure (`Status::PlayerError`).
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{
     ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
@@ -55,12 +62,12 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect,
-    GetWindowRect, IDC_ARROW, IDC_HAND, IsIconic, IsZoomed, LoadCursorW, MINMAXINFO, PostMessageW,
-    RegisterClassExW, SW_RESTORE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SetCursor, SetWindowPos,
-    SetWindowTextW, ShowWindow, WINDOW_EX_STYLE, WM_CAPTURECHANGED, WM_CLOSE, WM_DESTROY,
-    WM_DPICHANGED, WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_SETCURSOR, WM_SIZE, WNDCLASSEXW,
-    WS_OVERLAPPEDWINDOW,
+    GetWindowRect, IDC_ARROW, IDC_HAND, IsIconic, IsZoomed, KillTimer, LoadCursorW, MINMAXINFO,
+    PostMessageW, RegisterClassExW, SW_RESTORE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SetCursor,
+    SetTimer, SetWindowPos, SetWindowTextW, ShowWindow, WINDOW_EX_STYLE, WM_CAPTURECHANGED,
+    WM_CLOSE, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_GETMINMAXINFO,
+    WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_SETCURSOR,
+    WM_SIZE, WM_TIMER, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
 };
 use windows::core::{HSTRING, PCWSTR, Result, w};
 use windows_numerics::Vector2;
@@ -69,6 +76,7 @@ use super::layout::{
     self, BAR_HIT_H, BTN_PAD_X, Btn, CHIP_COL, Frame, LINE_PAD_Y, LIST_TOP, META_H, PAD, PLAY,
     ROW_BLEED, TEXT_MIN_H, THUMB, TIME_W, TITLE_H, TRACK_H, WHEEL_STEP,
 };
+use super::player::{Playback, WM_APP_PLAYER};
 use super::{Request, Status, View, WM_APP_TRANSCRIPT};
 use crate::arrange_overlay::take_foreground;
 use crate::config::{CardPlace, UiFont};
@@ -112,6 +120,15 @@ const ICON: f32 = 16.0;
 const SEEK_STEP_MS: u64 = 5_000;
 /// How far the empty state's text sits below the list's top.
 const EMPTY_TOP: f32 = 28.0;
+
+/// While playing: a one-shot every `PLAY_TICK_MS` moves the position and the
+/// marked line.
+const TIMER_PLAY: usize = 1;
+const PLAY_TICK_MS: u32 = 200;
+/// While playing, after the wheel or a key moved the list: a one-shot that
+/// ends the pause in following the line, re-armed per notch.
+const TIMER_HOLD: usize = 2;
+const HOLD: Duration = Duration::from_secs(3);
 
 const HTCLIENT: u16 = 1;
 const WM_MOUSELEAVE: u32 = 0x02A3;
@@ -270,6 +287,11 @@ struct Win {
     focus_line: usize,
     /// Where the player is; `None` until a place was picked.
     position: Option<u64>,
+    player: Box<dyn Playback>,
+    /// The playing line is not followed before this (the list was moved).
+    hold_until: Option<Instant>,
+    /// The audio could not be played: the status says so.
+    failed: bool,
     seeking: bool,
     tracking: bool,
     /// The title bar's colours last applied (light, bg, text).
@@ -505,11 +527,24 @@ fn new_win(hwnd: HWND, view: View) -> Option<Win> {
         ring: false,
         focus_line: 0,
         position: None,
+        player: new_player(&view.doc.audio),
+        hold_until: None,
+        failed: false,
         seeking: false,
         tracking: false,
         styled: None,
         view,
     })
+}
+
+#[cfg(not(test))]
+fn new_player(audio: &Path) -> Box<dyn Playback> {
+    Box::new(super::player::Player::new(audio.to_path_buf()))
+}
+
+#[cfg(test)]
+fn new_player(_audio: &Path) -> Box<dyn Playback> {
+    Box::new(tests::FakePlayer)
 }
 
 // ------------------------------------------------------------------ update
@@ -587,11 +622,12 @@ fn relayout(w: &mut Win) {
     let (wd, hd) = size_dip(w);
     let has_lines = !w.view.doc.segments.is_empty();
     let lang = w.view.lang;
-    w.buttons = layout::buttons_for(&w.view.status, has_lines, w.view.can_redo)
+    let status = status(w).clone();
+    w.buttons = layout::buttons_for(&status, has_lines, w.view.can_redo)
         .into_iter()
         .map(|b| (b, w.text.button_w(b, lang)))
         .collect();
-    w.frame = layout::frame(wd, hd, &w.buttons, has_status_line(&w.view.status));
+    w.frame = layout::frame(wd, hd, &w.buttons, has_status_line(&status));
     let tw = (wd - PAD - text_x(w.view.doc.two_channel)).max(40.0);
     if (tw - w.heights_w).abs() > 0.01 {
         w.heights.clear();
@@ -822,11 +858,11 @@ fn status_words(status: &Status, lang: Lang) -> Option<(String, bool)> {
 }
 
 /// What the empty list says, if anything.
-fn empty_words(view: &View) -> Option<&'static str> {
+fn empty_words(view: &View, status: &Status) -> Option<&'static str> {
     if !view.doc.segments.is_empty() {
         return None;
     }
-    match view.status {
+    match status {
         Status::Off => Some(text(view.lang, Key::TrOffTitle)),
         Status::None | Status::PlayerError if view.doc.has_transcript => {
             Some(text(view.lang, Key::TrEmpty))
@@ -916,12 +952,14 @@ fn paint(w: &mut Win) {
     let (cx, cy) = (f.play.x + PLAY / 2.0, f.play.y + PLAY / 2.0);
     let play_fill = if w.hover == Some(Hot::Play) { p.button_hover } else { p.button };
     pen.circle(cx, cy, PLAY / 2.0, play_fill);
-    let _ = w.icons.draw(rt, &target.brush, Icon::Play, f.play, ICON, p.text, 1.0, None);
+    let icon = if w.player.playing() { Icon::Pause } else { Icon::Play };
+    let _ = w.icons.draw(rt, &target.brush, icon, f.play, ICON, p.text, 1.0, None);
     if ring(Focus::Play) {
         pen.ring(inflate(f.play, 2.0), PLAY / 2.0 + 2.0, p.accent);
     }
-    let duration = w.view.doc.duration_ms.unwrap_or(0);
-    let pos = w.position.unwrap_or(0).min(duration);
+    let length = duration(w);
+    let total = length.unwrap_or(0);
+    let pos = w.position.unwrap_or(0).min(total);
     pen.str(
         &output::short_time(pos),
         f.position,
@@ -931,7 +969,7 @@ fn paint(w: &mut Win) {
         DWRITE_TEXT_ALIGNMENT_LEADING,
         false,
     );
-    if let Some(ms) = w.view.doc.duration_ms {
+    if let Some(ms) = length {
         pen.str(
             &output::short_time(ms),
             f.length,
@@ -950,7 +988,7 @@ fn paint(w: &mut Win) {
         h: TRACK_H,
     };
     pen.fill(track, TRACK_H / 2.0, track_colour(&p), 1.0);
-    let frac = if duration > 0 { pos as f32 / duration as f32 } else { 0.0 };
+    let frac = if total > 0 { pos as f32 / total as f32 } else { 0.0 };
     pen.fill(Rect { w: bar.w * frac, ..track }, TRACK_H / 2.0, p.accent, 1.0);
     let grow = if w.hover == Some(Hot::Bar) || w.seeking { 1.0 } else { 0.0 };
     pen.circle(bar.x + bar.w * frac, bar.y + BAR_HIT_H / 2.0, THUMB / 2.0 + grow, p.accent);
@@ -958,7 +996,7 @@ fn paint(w: &mut Win) {
         pen.ring(inflate(bar, 4.0), BAR_HIT_H / 2.0 + 4.0, p.accent);
     }
     // The status line.
-    if let (Some(r), Some((words, error))) = (f.status, status_words(&w.view.status, lang)) {
+    if let (Some(r), Some((words, error))) = (f.status, status_words(status(w), lang)) {
         let ink = if error { p.error } else { p.secondary };
         pen.str(&words, r, STATUS_PT, NORMAL, ink, DWRITE_TEXT_ALIGNMENT_LEADING, false);
         pen.hline(0.0, wd, r.bottom() - 1.0, p.border);
@@ -966,7 +1004,7 @@ fn paint(w: &mut Win) {
     // The lines.
     let list = f.list;
     unsafe { rt.PushAxisAlignedClip(&rect_f(list), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE) };
-    if let Some(words) = empty_words(&w.view) {
+    if let Some(words) = empty_words(&w.view, status(w)) {
         let r = Rect {
             x: PAD,
             y: list.y + EMPTY_TOP,
@@ -1097,20 +1135,155 @@ fn to_dip(w: &Win, l: LPARAM) -> (f32, f32) {
     (lo(l) as f32 / k, hi(l) as f32 / k)
 }
 
-/// The play button. The player of Task 12 starts and pauses here.
-fn play_pause(_w: &mut Win) {}
+/// The play button and Space: pauses, or plays from the position (from the
+/// start once the end was reached).
+fn play_pause(w: &mut Win) {
+    if w.player.playing() {
+        pause(w);
+        return;
+    }
+    let at = w.position.unwrap_or(0);
+    let at = if duration(w).is_some_and(|d| at >= d) { 0 } else { at };
+    start(w, at);
+}
 
-/// Plays from line `i`: the position moves to its start (the player of Task
-/// 12 starts there).
+/// Plays from line `i`'s start.
 fn play_from(w: &mut Win, i: usize) {
     if let Some(s) = w.view.doc.segments.get(i) {
-        w.position = Some(s.start_ms);
         w.focus_line = i;
+        let at = s.start_ms;
+        start(w, at);
     }
 }
 
+fn arm(w: &Win, id: usize, ms: u32) {
+    unsafe {
+        SetTimer(Some(w.hwnd), id, ms, None);
+    }
+}
+
+fn disarm(w: &Win) {
+    unsafe {
+        let _ = KillTimer(Some(w.hwnd), TIMER_PLAY);
+        let _ = KillTimer(Some(w.hwnd), TIMER_HOLD);
+    }
+}
+
+/// The recording's length: the sidecar's, else what the player found.
+fn duration(w: &Win) -> Option<u64> {
+    w.view.doc.duration_ms.or_else(|| w.player.duration_ms())
+}
+
+fn set_failed(w: &mut Win, failed: bool) {
+    if w.failed != failed {
+        w.failed = failed;
+        relayout(w);
+    }
+}
+
+/// The status shown: the player's error over a window with no job.
+fn status(w: &Win) -> &Status {
+    if w.failed && w.view.status == Status::None {
+        &Status::PlayerError
+    } else {
+        &w.view.status
+    }
+}
+
+/// Plays from `ms`; the play timer runs while it plays.
+fn start(w: &mut Win, ms: u64) {
+    w.position = Some(ms);
+    match w.player.play_from(ms, w.hwnd) {
+        Ok(()) => {
+            set_failed(w, false);
+            arm(w, TIMER_PLAY, PLAY_TICK_MS);
+            follow(w, Instant::now());
+        }
+        Err(e) => {
+            eprintln!("vale: transcript player: {e:?}");
+            disarm(w);
+            set_failed(w, true);
+        }
+    }
+}
+
+/// Pauses where the player is.
+fn pause(w: &mut Win) {
+    w.player.pause();
+    w.position = Some(w.player.position_ms());
+    disarm(w);
+}
+
+/// Keeps the playing line in view, unless the list was moved by hand less
+/// than `HOLD` ago.
+fn follow(w: &mut Win, now: Instant) {
+    if w.hold_until.is_some_and(|until| now < until) {
+        return;
+    }
+    if let Some(i) = current_line(w) {
+        w.scroll = layout::follow_scroll(&w.tops, &w.heights, i, w.scroll, list_h(w));
+        rehover(w);
+    }
+}
+
+/// The play timer: the position and the marked line move on. A player that
+/// stopped (the end, or another window's player started) stops the timer.
+fn tick(w: &mut Win, now: Instant) {
+    unsafe {
+        let _ = KillTimer(Some(w.hwnd), TIMER_PLAY);
+    }
+    if !w.player.playing() {
+        if !w.seeking {
+            w.position = Some(w.player.position_ms());
+        }
+        disarm(w);
+        return;
+    }
+    if !w.seeking {
+        w.position = Some(w.player.position_ms());
+    }
+    follow(w, now);
+    arm(w, TIMER_PLAY, PLAY_TICK_MS);
+}
+
+/// The wheel or a key moved the list: the line is not followed for `HOLD`.
+fn hold_follow(w: &mut Win, now: Instant) {
+    w.hold_until = Some(now + HOLD);
+    if w.player.playing() {
+        arm(w, TIMER_HOLD, HOLD.as_millis() as u32);
+    }
+}
+
+/// `WM_APP_PLAYER`: the end (`code` 0) puts the position back to the start,
+/// a failure (1) says the audio cannot be played. A message from a run that
+/// another play has replaced is ignored.
+fn on_player(w: &mut Win, code: usize) {
+    if w.player.playing() {
+        return;
+    }
+    disarm(w);
+    if code == 0 {
+        w.position = Some(0);
+    } else {
+        w.position = Some(w.player.position_ms());
+        set_failed(w, true);
+    }
+}
+
+/// A press on the bar was let go (or lost): playing, it plays from there.
+fn end_seek(w: &mut Win) {
+    if !w.seeking {
+        return;
+    }
+    w.seeking = false;
+    if w.player.playing() {
+        start(w, w.position.unwrap_or(0));
+    }
+}
+
+/// The bar under `x` moves the position (the player follows on release).
 fn seek_to(w: &mut Win, x: f32) {
-    let Some(duration) = w.view.doc.duration_ms.filter(|&d| d > 0) else {
+    let Some(duration) = duration(w).filter(|&d| d > 0) else {
         return;
     };
     w.position = Some(layout::seek_ms(w.frame.bar, x, duration));
@@ -1221,6 +1394,7 @@ fn key_down(hwnd: HWND, vk: u16) -> bool {
     with_win(hwnd, |w| {
         let page = (list_h(w) * 0.9).max(WHEEL_STEP);
         let in_list = w.focus == Focus::List;
+        let scroll = w.scroll;
         match vk {
             v if v == VK_TAB.0 => move_focus(w, down(VK_SHIFT.0)),
             0x43 if down(VK_CONTROL.0) => {
@@ -1249,13 +1423,18 @@ fn key_down(hwnd: HWND, vk: u16) -> bool {
             v if v == VK_UP.0 && in_list => focus_line_to(w, w.focus_line.saturating_sub(1)),
             v if v == VK_DOWN.0 && in_list => focus_line_to(w, w.focus_line + 1),
             v if (v == VK_LEFT.0 || v == VK_RIGHT.0) && w.focus == Focus::Bar => {
-                let duration = w.view.doc.duration_ms.unwrap_or(0);
+                let duration = duration(w).unwrap_or(0);
                 let at = w.position.unwrap_or(0);
-                w.position = Some(if v == VK_LEFT.0 {
+                let to = if v == VK_LEFT.0 {
                     at.saturating_sub(SEEK_STEP_MS)
                 } else {
                     (at + SEEK_STEP_MS).min(duration)
-                });
+                };
+                if w.player.playing() {
+                    start(w, to);
+                } else {
+                    w.position = Some(to);
+                }
             }
             v if v == VK_PRIOR.0 => scroll_by(w, -page),
             v if v == VK_NEXT.0 => scroll_by(w, page),
@@ -1272,6 +1451,9 @@ fn key_down(hwnd: HWND, vk: u16) -> bool {
                 }
             }
             _ => return false,
+        }
+        if w.scroll != scroll {
+            hold_follow(w, Instant::now());
         }
         rehover(w);
         w.ring = true;
@@ -1462,7 +1644,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 let (x, y) = to_dip(w, lparam);
                 let pressed = w.pressed.take();
                 if w.seeking {
-                    w.seeking = false;
+                    end_seek(w);
                     return true;
                 }
                 if let Some(hot) = pressed
@@ -1479,15 +1661,38 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             LRESULT(0)
         }
         WM_CAPTURECHANGED => {
-            let _ = with_win(hwnd, |w| w.seeking = false);
+            let _ = with_win(hwnd, end_seek);
+            invalidate(hwnd);
             LRESULT(0)
         }
         WM_MOUSEWHEEL => {
             let delta = ((wparam.0 >> 16) & 0xFFFF) as i16 as f32;
             let _ = with_win(hwnd, |w| {
                 scroll_by(w, -delta / 120.0 * WHEEL_STEP);
+                hold_follow(w, Instant::now());
                 rehover(w);
             });
+            invalidate(hwnd);
+            LRESULT(0)
+        }
+        WM_TIMER => {
+            let now = Instant::now();
+            let _ = with_win(hwnd, |w| match wparam.0 {
+                TIMER_PLAY => tick(w, now),
+                TIMER_HOLD => {
+                    unsafe {
+                        let _ = KillTimer(Some(hwnd), TIMER_HOLD);
+                    }
+                    w.hold_until = None;
+                    tick(w, now);
+                }
+                _ => {}
+            });
+            invalidate(hwnd);
+            LRESULT(0)
+        }
+        WM_APP_PLAYER => {
+            let _ = with_win(hwnd, |w| on_player(w, wparam.0));
             invalidate(hwnd);
             LRESULT(0)
         }
@@ -1535,6 +1740,7 @@ pub fn demo_position(audio: &Path, ms: u64) {
 
 #[cfg(test)]
 mod tests {
+    use super::super::player::PlayerError;
     use super::*;
     use crate::transcribe::doc::Doc;
     use crate::transcribe::output::Segment;
@@ -1571,6 +1777,225 @@ mod tests {
             lang: Lang::Id,
             font: UiFont::Sans,
         }
+    }
+
+    /// What the fake player was asked and where it is, per test thread.
+    #[derive(Default)]
+    pub(super) struct Fake {
+        pub calls: Vec<u64>,
+        pub playing: bool,
+        pub position: u64,
+        pub fail: bool,
+    }
+
+    thread_local! {
+        pub(super) static FAKE: RefCell<Fake> = RefCell::new(Fake::default());
+    }
+
+    /// Stands in for the real player: records the requests, plays nothing.
+    pub(super) struct FakePlayer;
+
+    impl Playback for FakePlayer {
+        fn play_from(&mut self, ms: u64, _notify: HWND) -> std::result::Result<(), PlayerError> {
+            FAKE.with(|f| {
+                let mut f = f.borrow_mut();
+                f.calls.push(ms);
+                if f.fail {
+                    f.playing = false;
+                    return Err(PlayerError::Device("fake".into()));
+                }
+                f.playing = true;
+                f.position = ms;
+                Ok(())
+            })
+        }
+        fn pause(&mut self) {
+            FAKE.with(|f| f.borrow_mut().playing = false);
+        }
+        fn playing(&self) -> bool {
+            FAKE.with(|f| f.borrow().playing)
+        }
+        fn position_ms(&self) -> u64 {
+            FAKE.with(|f| f.borrow().position)
+        }
+        fn duration_ms(&self) -> Option<u64> {
+            None
+        }
+    }
+
+    fn fake<R>(f: impl FnOnce(&mut Fake) -> R) -> R {
+        FAKE.with(|cell| f(&mut cell.borrow_mut()))
+    }
+
+    /// A timer that exists can be killed (Ok); one that does not, cannot.
+    fn timer_set(h: HWND, id: usize) -> bool {
+        unsafe { KillTimer(Some(h), id) }.is_ok()
+    }
+
+    fn point(hwnd: HWND, x: f32, y: f32) -> LPARAM {
+        let k = with_win(hwnd, |w| scale(w)).unwrap();
+        LPARAM(((((y * k) as isize) & 0xFFFF) << 16) | (((x * k) as isize) & 0xFFFF))
+    }
+
+    /// A press and release at the client point (dip) `(x, y)`.
+    fn click(hwnd: HWND, x: f32, y: f32) {
+        let at = point(hwnd, x, y);
+        unsafe {
+            SendMessageW(hwnd, WM_LBUTTONDOWN, Some(WPARAM(0)), Some(at));
+            SendMessageW(hwnd, WM_LBUTTONUP, Some(WPARAM(0)), Some(at));
+        }
+    }
+
+    /// The middle of line `i`'s text.
+    fn line_point(hwnd: HWND, i: usize) -> (f32, f32) {
+        with_win(hwnd, |w| {
+            let y = w.frame.list.y + LIST_TOP + w.tops[i] - w.scroll + w.heights[i] / 2.0;
+            (text_x(w.view.doc.two_channel) + 10.0, y)
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn a_click_on_a_line_plays_from_its_start() {
+        let a = r"C:\rec\click.m4a";
+        assert!(open(HWND::default(), view(a, 6, Status::None), None));
+        let hwnd = hwnd_of(Path::new(a)).unwrap();
+        let (x, y) = line_point(hwnd, 2);
+        click(hwnd, x, y);
+        let start = with_win(hwnd, |w| w.view.doc.segments[2].start_ms).unwrap();
+        assert_eq!(fake(|f| f.calls.clone()), [start]);
+        assert_eq!(with_win(hwnd, |w| w.position).unwrap(), Some(start));
+        assert!(fake(|f| f.playing));
+        // A press on one line released on another (a drag) plays nothing.
+        let (_, y3) = line_point(hwnd, 3);
+        unsafe {
+            SendMessageW(hwnd, WM_LBUTTONDOWN, Some(WPARAM(0)), Some(point(hwnd, x, y3)));
+            SendMessageW(hwnd, WM_LBUTTONUP, Some(WPARAM(0)), Some(point(hwnd, x, y)));
+        }
+        assert_eq!(fake(|f| f.calls.len()), 1);
+        // A player that cannot play: the status says so, and a later play
+        // that works takes it back.
+        fake(|f| f.fail = true);
+        click(hwnd, x, y);
+        assert_eq!(with_win(hwnd, |w| status(w).clone()).unwrap(), Status::PlayerError);
+        fake(|f| f.fail = false);
+        click(hwnd, x, y);
+        assert_eq!(with_win(hwnd, |w| status(w).clone()).unwrap(), Status::None);
+        finish();
+    }
+
+    #[test]
+    fn a_click_or_drag_on_the_bar_seeks() {
+        let a = r"C:\rec\seek.m4a";
+        assert!(open(HWND::default(), view(a, 12, Status::None), None));
+        let hwnd = hwnd_of(Path::new(a)).unwrap();
+        let (bar, duration) = with_win(hwnd, |w| (w.frame.bar, w.view.doc.duration_ms.unwrap())).unwrap();
+        let mid = bar.y + bar.h / 2.0;
+        // Where a point lands after the trip through whole pixels.
+        let k = with_win(hwnd, |w| scale(w)).unwrap();
+        let ms_at = |x: f32| layout::seek_ms(bar, ((x * k) as isize) as f32 / k, duration);
+        // Paused: a click only moves the position.
+        click(hwnd, bar.x + bar.w / 2.0, mid);
+        assert_eq!(with_win(hwnd, |w| w.position).unwrap(), Some(ms_at(bar.x + bar.w / 2.0)));
+        assert!(fake(|f| f.calls.is_empty()));
+        // Playing: a drag plays from where it is let go.
+        let (x, y) = line_point(hwnd, 0);
+        click(hwnd, x, y);
+        unsafe {
+            SendMessageW(hwnd, WM_LBUTTONDOWN, Some(WPARAM(0)), Some(point(hwnd, bar.x + bar.w / 4.0, mid)));
+            SendMessageW(hwnd, WM_MOUSEMOVE, Some(WPARAM(0)), Some(point(hwnd, bar.x + bar.w * 0.75, mid)));
+            SendMessageW(hwnd, WM_LBUTTONUP, Some(WPARAM(0)), Some(point(hwnd, bar.x + bar.w * 0.75, mid)));
+        }
+        let want = ms_at(bar.x + bar.w * 0.75);
+        assert_eq!(fake(|f| f.calls.clone()), [0, want]);
+        assert_eq!(with_win(hwnd, |w| w.position).unwrap(), Some(want));
+        finish();
+    }
+
+    #[test]
+    fn a_manual_scroll_holds_following_for_three_seconds() {
+        let a = r"C:\rec\follow.m4a";
+        assert!(open(HWND::default(), view(a, 80, Status::None), None));
+        let hwnd = hwnd_of(Path::new(a)).unwrap();
+        let (x, y) = line_point(hwnd, 0);
+        click(hwnd, x, y);
+        assert!(fake(|f| f.playing));
+        // The player reaches line 50, far below the list's end.
+        let target = with_win(hwnd, |w| w.view.doc.segments[50].start_ms).unwrap();
+        fake(|f| f.position = target + 100);
+        // One wheel notch, then a tick right after and 2.9 s later: held.
+        let notch = WPARAM(((-120i16) as u16 as usize) << 16);
+        unsafe {
+            SendMessageW(hwnd, WM_MOUSEWHEEL, Some(notch), Some(LPARAM(0)));
+        }
+        assert!(timer_set(hwnd, TIMER_HOLD), "the hold's one-shot is armed");
+        let held = with_win(hwnd, |w| w.scroll).unwrap();
+        let now = Instant::now();
+        with_win(hwnd, |w| tick(w, now));
+        assert_eq!(with_win(hwnd, |w| w.scroll).unwrap(), held);
+        with_win(hwnd, |w| tick(w, now + Duration::from_millis(2_900)));
+        assert_eq!(with_win(hwnd, |w| w.scroll).unwrap(), held);
+        // Three seconds on: the line is followed into view.
+        with_win(hwnd, |w| tick(w, now + HOLD + Duration::from_millis(1)));
+        let (scroll, want) = with_win(hwnd, |w| {
+            (w.scroll, layout::follow_scroll(&w.tops, &w.heights, 50, held, list_h(w)))
+        })
+        .unwrap();
+        assert_ne!(scroll, held);
+        assert_eq!(scroll, want);
+        // A key that moves the list holds it too.
+        with_win(hwnd, |w| w.focus = Focus::List);
+        assert!(key_down(hwnd, VK_HOME.0));
+        with_win(hwnd, |w| tick(w, Instant::now()));
+        assert_eq!(with_win(hwnd, |w| w.scroll).unwrap(), 0.0);
+        finish();
+    }
+
+    #[test]
+    fn the_play_timer_runs_only_while_playing() {
+        let a = r"C:\rec\timer.m4a";
+        assert!(open(HWND::default(), view(a, 6, Status::None), None));
+        let hwnd = hwnd_of(Path::new(a)).unwrap();
+        assert!(!timer_set(hwnd, TIMER_PLAY), "opened: none");
+        let (x, y) = line_point(hwnd, 1);
+        click(hwnd, x, y);
+        assert!(timer_set(hwnd, TIMER_PLAY), "playing: armed");
+        // Each tick re-arms it while playing.
+        with_win(hwnd, |w| tick(w, Instant::now()));
+        assert!(timer_set(hwnd, TIMER_PLAY), "re-armed by the tick");
+        // Space in the list pauses: none; again plays from where it was.
+        with_win(hwnd, |w| tick(w, Instant::now()));
+        fake(|f| f.position = 6_000);
+        with_win(hwnd, |w| w.focus = Focus::List);
+        assert!(key_down(hwnd, VK_SPACE.0));
+        assert!(!fake(|f| f.playing));
+        assert!(!timer_set(hwnd, TIMER_PLAY), "paused: none");
+        assert_eq!(with_win(hwnd, |w| w.position).unwrap(), Some(6_000));
+        assert!(key_down(hwnd, VK_SPACE.0));
+        assert_eq!(fake(|f| *f.calls.last().unwrap()), 6_000);
+        assert!(timer_set(hwnd, TIMER_PLAY), "playing again: armed");
+        // The end: back to 0, play shows, no timer.
+        with_win(hwnd, |w| tick(w, Instant::now()));
+        fake(|f| f.playing = false);
+        unsafe {
+            SendMessageW(hwnd, WM_APP_PLAYER, Some(WPARAM(0)), Some(LPARAM(0)));
+        }
+        assert_eq!(with_win(hwnd, |w| w.position).unwrap(), Some(0));
+        assert!(!timer_set(hwnd, TIMER_PLAY), "ended: none");
+        // Stopped by another window's player: the next tick stops the timer.
+        assert!(key_down(hwnd, VK_SPACE.0));
+        fake(|f| f.playing = false);
+        with_win(hwnd, |w| tick(w, Instant::now()));
+        assert!(!timer_set(hwnd, TIMER_PLAY), "stopped elsewhere: none");
+        // A failure mid-play shows the player's error.
+        assert!(key_down(hwnd, VK_SPACE.0));
+        fake(|f| f.playing = false);
+        unsafe {
+            SendMessageW(hwnd, WM_APP_PLAYER, Some(WPARAM(1)), Some(LPARAM(0)));
+        }
+        assert_eq!(with_win(hwnd, |w| status(w).clone()).unwrap(), Status::PlayerError);
+        assert!(!timer_set(hwnd, TIMER_PLAY), "failed: none");
+        finish();
     }
 
     fn count_windows() -> usize {

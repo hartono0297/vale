@@ -38,7 +38,6 @@ const ENGINE_UNPACKED_CAP: usize = 256 * 1024 * 1024;
 pub enum Item {
     /// The native package and the VAD model.
     Engine,
-    Model(&'static Model),
     /// The engine and the VAD when missing, then the model: one run, one
     /// `Progress`.
     Setup(&'static Model),
@@ -120,10 +119,6 @@ impl Download {
         self.cancel.store(true, Ordering::Relaxed);
     }
 
-    pub fn is_finished(&self) -> bool {
-        self.thread.is_finished()
-    }
-
     pub fn join(self) {
         let _ = self.thread.join();
     }
@@ -155,7 +150,6 @@ pub fn start(
 pub fn assets_of(item: Item) -> Vec<Asset> {
     match item {
         Item::Engine => vec![ENGINE.asset, catalog::VAD],
-        Item::Model(model) => vec![model.asset],
         Item::Setup(model) => vec![ENGINE.asset, catalog::VAD, model.asset],
     }
 }
@@ -754,11 +748,12 @@ mod tests {
         let store = temp_store("missing");
         assert_eq!(missing(&store, Item::Engine), vec![ENGINE.asset, catalog::VAD]);
         let small = catalog::model("whisper-small").unwrap();
-        assert_eq!(missing(&store, Item::Model(small)), vec![small.asset]);
+        let setup = Item::Setup(small);
+        assert_eq!(missing(&store, setup), vec![ENGINE.asset, catalog::VAD, small.asset]);
         fs::create_dir_all(store.models_dir()).unwrap();
         let file = fs::File::create(store.model_path(small)).unwrap();
         file.set_len(small.asset.size).unwrap();
-        assert!(missing(&store, Item::Model(small)).is_empty());
+        assert_eq!(missing(&store, setup), vec![ENGINE.asset, catalog::VAD]);
     }
 
     #[test]

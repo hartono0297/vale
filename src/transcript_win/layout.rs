@@ -55,11 +55,8 @@ pub const ROW_BLEED: f32 = 8.0;
 /// One wheel notch.
 pub const WHEEL_STEP: f32 = 48.0;
 /// The follow band: the playing line is kept between these shares of the
-/// list's height. Until the player (Task 12) follows the line, only the
-/// debug demo uses it.
-#[cfg_attr(not(debug_assertions), allow(dead_code))]
+/// list's height.
 pub const BAND_TOP: f32 = 0.25;
-#[cfg_attr(not(debug_assertions), allow(dead_code))]
 pub const BAND_BOTTOM: f32 = 0.60;
 /// A second window opens this far (px) down and right of the newest one.
 pub const CASCADE_PX: i32 = 24;
@@ -282,7 +279,6 @@ pub fn line_at(tops: &[f32], heights: &[f32], scroll: f32, y: f32) -> Option<usi
 /// The scroll that keeps row `current` between `BAND_TOP` and `BAND_BOTTOM` of
 /// the list (its top at `BAND_TOP` when it is taller than the band), moving as
 /// little as it can, inside the scroll range.
-#[cfg_attr(not(debug_assertions), allow(dead_code))]
 pub fn follow_scroll(tops: &[f32], heights: &[f32], current: usize, scroll: f32, list_h: f32) -> f32 {
     let (Some(&top), Some(&h)) = (tops.get(current), heights.get(current)) else {
         return scroll;

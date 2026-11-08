@@ -16,7 +16,8 @@
 //! routes.
 //!
 //! Power: nothing runs while no window is open. An open window reacts to
-//! messages only: no timer and no poll.
+//! messages only; while it plays (`player.rs`), the `transcript-player`
+//! thread and a 200 ms one-shot timer run, and both stop with playback.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -29,6 +30,7 @@ use crate::i18n::Lang;
 use crate::transcribe::doc::Doc;
 
 pub mod layout;
+mod player;
 mod window;
 #[cfg(debug_assertions)]
 pub mod demo;
@@ -55,8 +57,7 @@ pub enum Status {
     Failed(String),
     /// Transcripts are off and this recording has none.
     Off,
-    /// The audio cannot be played (the player of Task 12 sets it).
-    #[allow(dead_code)]
+    /// The audio cannot be played (the window's player sets it).
     PlayerError,
 }
 
