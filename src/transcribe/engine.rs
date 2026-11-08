@@ -345,6 +345,12 @@ pub fn missing_runtime(present: impl Fn(&str) -> bool) -> Vec<&'static str> {
         .collect()
 }
 
+/// The runtime DLLs of `missing_runtime` that neither System32 nor `dir`
+/// (an app-local copy) has.
+pub fn runtime_missing(dir: &Path) -> Vec<&'static str> {
+    missing_runtime(|name| runtime_present(name, dir))
+}
+
 /// Whether `dll` loads from System32 or from `dir` (an app-local copy).
 fn runtime_present(dll: &str, dir: &Path) -> bool {
     unsafe {
@@ -383,7 +389,7 @@ impl Engine {
         let module = match unsafe { LoadLibraryExW(&HSTRING::from(dll.as_os_str()), None, flags) } {
             Ok(module) => module,
             Err(error) => {
-                let missing = missing_runtime(|name| runtime_present(name, dir));
+                let missing = runtime_missing(dir);
                 return Err(if missing.is_empty() {
                     EngineError::BadLibrary(error.message())
                 } else {

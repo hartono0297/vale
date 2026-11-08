@@ -39,6 +39,9 @@ pub enum Item {
     /// The native package and the VAD model.
     Engine,
     Model(&'static Model),
+    /// The engine and the VAD when missing, then the model: one run, one
+    /// `Progress`.
+    Setup(&'static Model),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,7 +53,9 @@ pub enum DownloadError {
     Cancelled,
     /// The finished file does not match the catalog (it was deleted).
     Checksum(&'static str),
-    /// The file could not be written or moved (disk full, no access).
+    /// The disk has no room for the file (ERROR_DISK_FULL, ERROR_HANDLE_DISK_FULL).
+    DiskFull,
+    /// The file could not be written or moved (no access, a write fault).
     Disk(String),
     /// The engine package is not what the catalog describes.
     Archive(String),
@@ -63,6 +68,7 @@ impl std::fmt::Display for DownloadError {
             DownloadError::Status(code) => write!(f, "server answered {code}"),
             DownloadError::Cancelled => write!(f, "cancelled"),
             DownloadError::Checksum(file) => write!(f, "{file}: SHA-256 does not match"),
+            DownloadError::DiskFull => write!(f, "disk full"),
             DownloadError::Disk(why) => write!(f, "disk: {why}"),
             DownloadError::Archive(why) => write!(f, "engine package: {why}"),
         }
@@ -71,7 +77,10 @@ impl std::fmt::Display for DownloadError {
 
 impl From<io::Error> for DownloadError {
     fn from(error: io::Error) -> Self {
-        DownloadError::Disk(error.to_string())
+        match error.raw_os_error() {
+            Some(112 | 39) => DownloadError::DiskFull,
+            _ => DownloadError::Disk(error.to_string()),
+        }
     }
 }
 
@@ -142,22 +151,31 @@ pub fn start(
     Ok(Download { cancel, thread })
 }
 
+/// Every asset `item` names, installed or not, in download order.
+pub fn assets_of(item: Item) -> Vec<Asset> {
+    match item {
+        Item::Engine => vec![ENGINE.asset, catalog::VAD],
+        Item::Model(model) => vec![model.asset],
+        Item::Setup(model) => vec![ENGINE.asset, catalog::VAD, model.asset],
+    }
+}
+
 /// What `item` still needs, in download order.
 pub fn missing(store: &Store, item: Item) -> Vec<Asset> {
-    match item {
-        Item::Engine => {
-            let mut assets = Vec::new();
-            if !store.engine_installed() {
-                assets.push(ENGINE.asset);
+    assets_of(item)
+        .into_iter()
+        .filter(|asset| {
+            if *asset == ENGINE.asset {
+                !store.engine_installed()
+            } else if *asset == catalog::VAD {
+                !store.vad_installed()
+            } else {
+                !catalog::MODELS
+                    .iter()
+                    .any(|m| m.asset == *asset && store.model_installed(m))
             }
-            if !store.vad_installed() {
-                assets.push(catalog::VAD);
-            }
-            assets
-        }
-        Item::Model(model) if store.model_installed(model) => Vec::new(),
-        Item::Model(model) => vec![model.asset],
-    }
+        })
+        .collect()
 }
 
 /// Downloads, checks and installs `item` on the calling thread.
@@ -278,15 +296,16 @@ fn fetch(
 
 /// A failed transfer's HRESULT: cancelled, a disk problem, or the network.
 fn classify(code: windows::core::HRESULT) -> DownloadError {
-    const DISK: [u32; 5] = [
-        0x8007_0070, // ERROR_DISK_FULL
+    const DISK: [u32; 3] = [
         0x8007_0005, // ERROR_ACCESS_DENIED
         0x8007_001D, // ERROR_WRITE_FAULT
         0x8007_0020, // ERROR_SHARING_VIOLATION
-        0x8007_0027, // ERROR_HANDLE_DISK_FULL
     ];
     if code == E_ABORT {
         DownloadError::Cancelled
+    } else if [0x8007_0070_u32, 0x8007_0027].contains(&(code.0 as u32)) {
+        // ERROR_DISK_FULL, ERROR_HANDLE_DISK_FULL
+        DownloadError::DiskFull
     } else if DISK.contains(&(code.0 as u32)) {
         DownloadError::Disk(format!("0x{:08X}", code.0 as u32))
     } else {
@@ -746,7 +765,47 @@ mod tests {
     fn errors_are_sorted_by_cause() {
         use windows::core::HRESULT;
         assert_eq!(classify(E_ABORT), DownloadError::Cancelled);
-        assert!(matches!(classify(HRESULT(0x8007_0070_u32 as i32)), DownloadError::Disk(_)));
+        assert!(matches!(classify(HRESULT(0x8007_0005_u32 as i32)), DownloadError::Disk(_)));
         assert_eq!(classify(HRESULT(0x8007_2EE2_u32 as i32)), DownloadError::NoNetwork);
+    }
+
+    #[test]
+    fn setup_needs_the_engine_and_the_model() {
+        let store = temp_store("setup");
+        let turbo = catalog::default_model(true);
+        assert_eq!(
+            missing(&store, Item::Setup(turbo)),
+            vec![ENGINE.asset, catalog::VAD, turbo.asset]
+        );
+        assert_eq!(
+            assets_of(Item::Setup(turbo)),
+            vec![ENGINE.asset, catalog::VAD, turbo.asset]
+        );
+        let dir = store.engine_dir();
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("contract.json"), CONTRACT).unwrap();
+        fs::write(dir.join(ENGINE.dll), b"MZ").unwrap();
+        fs::create_dir_all(store.models_dir()).unwrap();
+        fs::File::create(store.vad_path()).unwrap().set_len(catalog::VAD.size).unwrap();
+        assert_eq!(missing(&store, Item::Setup(turbo)), vec![turbo.asset]);
+    }
+
+    #[test]
+    fn disk_full_is_its_own_error() {
+        use windows::core::HRESULT;
+        assert_eq!(classify(HRESULT(0x8007_0070_u32 as i32)), DownloadError::DiskFull);
+        assert_eq!(classify(HRESULT(0x8007_0027_u32 as i32)), DownloadError::DiskFull);
+        assert_eq!(
+            DownloadError::from(io::Error::from_raw_os_error(112)),
+            DownloadError::DiskFull
+        );
+        assert_eq!(
+            DownloadError::from(io::Error::from_raw_os_error(39)),
+            DownloadError::DiskFull
+        );
+        assert!(matches!(
+            DownloadError::from(io::Error::from_raw_os_error(5)),
+            DownloadError::Disk(_)
+        ));
     }
 }

@@ -25,6 +25,7 @@ pub mod decode;
 pub mod chunk;
 pub mod output;
 pub mod engine;
+pub mod gpu;
 pub mod runner;
 #[cfg(debug_assertions)]
 pub mod debug;

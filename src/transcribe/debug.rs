@@ -10,6 +10,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use super::catalog;
+use super::gpu;
 use super::output::{self, LABELS_ID};
 use super::runner::{self, Event, Job};
 use super::store::Store;
@@ -68,7 +69,7 @@ pub fn job(args: &Args, store: &Store) -> Result<Job, String> {
             (path, known)
         }
         None => {
-            let m = catalog::default_model();
+            let m = catalog::default_model(gpu::has_hardware_gpu());
             (store.model_path(m), Some(m))
         }
     };
@@ -225,7 +226,7 @@ mod tests {
         let args = parse(&strings(&["meet.m4a"])).unwrap();
         assert!(job(&args, &store).unwrap_err().contains("no model"));
 
-        let qwen = catalog::default_model();
+        let qwen = catalog::default_model(gpu::has_hardware_gpu());
         std::fs::create_dir_all(store.models_dir()).unwrap();
         std::fs::write(store.model_path(qwen), b"gguf").unwrap();
         let default = job(&args, &store).unwrap();

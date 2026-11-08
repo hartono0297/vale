@@ -69,6 +69,11 @@ impl Store {
         self.models_dir().join(catalog::VAD.file)
     }
 
+    /// The queue of recordings waiting for a transcript.
+    pub fn queue_path(&self) -> PathBuf {
+        self.root.join("queue.json")
+    }
+
     /// The partial download of `asset`, kept between runs to resume.
     pub fn part_path(&self, asset: &Asset) -> PathBuf {
         self.downloads_dir().join(format!("{}.part", asset.file))
@@ -103,6 +108,15 @@ impl Store {
         remove_file_if_there(&self.model_path(model))
     }
 
+    /// Removes the partial downloads of `assets` (after a failed checksum or
+    /// a cancelled setup the user will not resume).
+    pub fn discard_parts(&self, assets: &[Asset]) -> io::Result<()> {
+        for asset in assets {
+            remove_file_if_there(&self.part_path(asset))?;
+        }
+        Ok(())
+    }
+
     /// Removes the engine, the VAD model and their partial downloads. Fails
     /// while the engine is loaded in this process (Windows keeps a loaded
     /// DLL's file).
@@ -115,13 +129,26 @@ impl Store {
     }
 
     /// Removes what no current catalog entry owns: engines of other
-    /// versions, a leftover staging folder and partial downloads of files
-    /// no longer offered. Installed models of the catalog stay.
+    /// versions, a leftover staging folder, partial downloads and `.gguf`
+    /// models of files no longer offered. Installed models of the catalog stay.
     pub fn sweep(&self) -> io::Result<()> {
         let keep_engine = self.engine_dir();
         if let Ok(entries) = fs::read_dir(self.root.join("engine")) {
             for entry in entries.flatten() {
                 if entry.path() != keep_engine {
+                    remove_any(&entry.path())?;
+                }
+            }
+        }
+        if let Ok(entries) = fs::read_dir(self.models_dir()) {
+            let owned: Vec<&str> = catalog::MODELS
+                .iter()
+                .map(|m| m.asset.file)
+                .chain([catalog::VAD.file])
+                .collect();
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.ends_with(".gguf") && !owned.contains(&name.as_str()) {
                     remove_any(&entry.path())?;
                 }
             }
@@ -247,14 +274,16 @@ pub(crate) mod tests {
             store.engine_dir(),
             PathBuf::from(r"C:\data\Vale\transcribe\engine\0.4.1")
         );
-        let qwen = catalog::default_model();
+        let turbo = catalog::default_model(true);
         assert_eq!(
-            store.model_path(qwen),
-            PathBuf::from(r"C:\data\Vale\transcribe\models\Qwen3-ASR-0.6B-Q4_K_M.gguf")
+            store.model_path(turbo),
+            PathBuf::from(r"C:\data\Vale\transcribe\models\whisper-large-v3-turbo-Q4_K_M.gguf")
         );
         assert_eq!(
-            store.part_path(&qwen.asset),
-            PathBuf::from(r"C:\data\Vale\transcribe\downloads\Qwen3-ASR-0.6B-Q4_K_M.gguf.part")
+            store.part_path(&turbo.asset),
+            PathBuf::from(
+                r"C:\data\Vale\transcribe\downloads\whisper-large-v3-turbo-Q4_K_M.gguf.part"
+            )
         );
     }
 
@@ -312,7 +341,7 @@ pub(crate) mod tests {
         fs::create_dir_all(store.engine_dir()).unwrap();
         fs::create_dir_all(store.root().join("engine").join("0.3.1")).unwrap();
         fs::create_dir_all(store.engine_staging_dir()).unwrap();
-        let qwen = catalog::default_model();
+        let qwen = catalog::default_model(true);
         sized_file(&store.part_path(&qwen.asset), 5);
         sized_file(&store.downloads_dir().join("old-model.gguf.part"), 5);
         sized_file(&store.model_path(qwen), qwen.asset.size);
@@ -324,5 +353,42 @@ pub(crate) mod tests {
         assert!(store.part_path(&qwen.asset).exists());
         assert!(!store.downloads_dir().join("old-model.gguf.part").exists());
         assert!(store.model_installed(qwen));
+    }
+
+    #[test]
+    fn sweep_removes_models_no_longer_offered() {
+        let store = temp_store("sweep-models");
+        let turbo = catalog::default_model(true);
+        let old = store.models_dir().join("Qwen3-ASR-0.6B-Q4_K_M.gguf");
+        sized_file(&old, 7);
+        sized_file(&store.model_path(turbo), turbo.asset.size);
+        sized_file(&store.vad_path(), catalog::VAD.size);
+
+        store.sweep().unwrap();
+        assert!(!old.exists());
+        assert!(store.model_installed(turbo));
+        assert!(store.vad_installed());
+    }
+
+    #[test]
+    fn discard_parts_removes_only_those_parts() {
+        let store = temp_store("discard");
+        let turbo = catalog::default_model(true).asset;
+        let small = catalog::default_model(false).asset;
+        sized_file(&store.part_path(&turbo), 5);
+        sized_file(&store.part_path(&catalog::VAD), 5);
+        sized_file(&store.part_path(&small), 5);
+
+        store.discard_parts(&[turbo, catalog::VAD]).unwrap();
+        assert!(!store.part_path(&turbo).exists());
+        assert!(!store.part_path(&catalog::VAD).exists());
+        assert!(store.part_path(&small).exists());
+        store.discard_parts(&[turbo]).expect("a missing part is fine");
+    }
+
+    #[test]
+    fn queue_path_is_beside_the_models() {
+        let store = Store::new(r"C:\data\Vale\transcribe");
+        assert_eq!(store.queue_path(), PathBuf::from(r"C:\data\Vale\transcribe\queue.json"));
     }
 }
