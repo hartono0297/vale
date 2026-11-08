@@ -21,6 +21,7 @@ use windows::Win32::System::Threading::{
 use super::catalog::{ENGINE, Model as CatalogModel};
 use super::chunk::{Chunk, ChunkParams, Chunker, EnergyVad, FRAME, Framer};
 use super::decode::{DecodeError, Decoder, RATE};
+use super::echo;
 use super::engine::{self, Engine, EngineError, Model, RunOutput, Session, VadSession};
 use super::output::{self, Header, Labels, Segment, Speaker, TranscriptInfo};
 
@@ -128,7 +129,7 @@ pub enum Event {
 /// What a finished transcription produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Transcript {
-    /// Both channels, in time order.
+    /// Both channels, in time order, without the mic's echo of the meeting.
     pub segments: Vec<Segment>,
     /// The language most chunks were detected as.
     pub language: Option<String>,
@@ -137,7 +138,7 @@ pub struct Transcript {
     pub partial_chunks: usize,
 }
 
-/// The pipeline: decode, chunk, recognize, merge. `scorers` and `speakers`
+/// The pipeline: decode, chunk, recognize, merge, drop the mic's echo. `scorers` and `speakers`
 /// have one entry per channel.
 pub fn transcribe(
     source: &mut dyn AudioSource,
@@ -208,7 +209,7 @@ pub fn transcribe(
         });
     }
     Ok(Transcript {
-        segments: output::merge(segments),
+        segments: echo::drop_echo(output::merge(segments)),
         language: most_common(&languages),
         duration_ms: total_ms.unwrap_or(decoded * 1000 / RATE as u64),
         partial_chunks,
@@ -411,7 +412,8 @@ fn attempt(
     Ok((transcript, backend))
 }
 
-/// Writes `.md`, `.srt` and, when the recording has one, the sidecar.
+/// Writes `.md`, `.srt` (neither when there are no segments) and, when the
+/// recording has one, the sidecar.
 fn write_files(
     job: &Job,
     transcript: &Transcript,
@@ -442,9 +444,20 @@ fn write_files(
         duration_ms: Some(transcript.duration_ms),
         model: model_name,
     };
-    output::write_atomic(&paths.md, &output::markdown(&header, &transcript.segments, job.labels))
-        .map_err(io)?;
-    output::write_atomic(&paths.srt, &output::srt(&transcript.segments, job.labels)).map_err(io)?;
+    if transcript.segments.is_empty() {
+        // Nothing was said: no files, and no stale ones from an earlier run.
+        for old in [&paths.md, &paths.srt] {
+            match std::fs::remove_file(old) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(io(e)),
+                _ => {}
+            }
+        }
+    } else {
+        output::write_atomic(&paths.md, &output::markdown(&header, &transcript.segments, job.labels))
+            .map_err(io)?;
+        output::write_atomic(&paths.srt, &output::srt(&transcript.segments, job.labels))
+            .map_err(io)?;
+    }
     let mut updated = None;
     if let Some(text) = sidecar {
         let name = |p: &Path| p.file_name().unwrap_or_default().to_string_lossy().into_owned();
@@ -585,8 +598,8 @@ mod tests {
     fn two_channels_become_one_timeline_with_speakers() {
         let mut source = Memory {
             channels: vec![
-                channel(10.0, &[(1.0, 3.0), (7.0, 8.0)]),
-                channel(10.0, &[(4.0, 6.0)]),
+                channel(10.0, &[(1.0, 3.0), (8.3, 9.3)]),
+                channel(10.0, &[(5.0, 6.5)]),
             ],
             at: 0,
         };
@@ -602,8 +615,8 @@ mod tests {
             who,
             vec![
                 (Some(Speaker::Me), 0),
-                (Some(Speaker::Others), 3),
-                (Some(Speaker::Me), 6),
+                (Some(Speaker::Others), 4),
+                (Some(Speaker::Me), 8),
             ],
             "{:?}",
             transcript.segments
@@ -684,6 +697,59 @@ mod tests {
         }];
         let clamped = chunk_segments(&chunk, &out("x", late), None);
         assert_eq!((clamped[0].start_ms, clamped[0].end_ms), (62_500, 63_000));
+    }
+
+    #[test]
+    fn the_pipeline_drops_echoed_me_segments() {
+        let talk = channel(8.0, &[(1.0, 3.0)]);
+        let mut source = Memory {
+            channels: vec![talk.clone(), talk],
+            at: 0,
+        };
+        let mut fake = Fake { timed: false, calls: 0 };
+        let transcript =
+            run(&mut source, &mut fake, &AtomicBool::new(false), &mut Vec::new()).unwrap();
+        assert_eq!(fake.calls, 2);
+        assert_eq!(transcript.segments.len(), 1, "{:?}", transcript.segments);
+        assert_eq!(transcript.segments[0].speaker, Some(Speaker::Others));
+    }
+
+    #[test]
+    fn an_empty_result_leaves_no_transcript_files() {
+        let dir = std::env::temp_dir().join(format!("vale-empty-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let audio = dir.join("meeting.m4a");
+        let paths = output::paths(&audio);
+        std::fs::write(&paths.md, "old").unwrap();
+        std::fs::write(&paths.srt, "old").unwrap();
+        std::fs::write(&paths.sidecar, r#"{"title": "Weekly", "channels": ["mic", "system"]}"#)
+            .unwrap();
+        let job = Job {
+            audio,
+            model_path: PathBuf::from("model.gguf"),
+            model: None,
+            engine_dir: PathBuf::new(),
+            vad_path: None,
+            language: None,
+            gpu: false,
+            threads: 1,
+            labels: output::LABELS_ID,
+        };
+        let transcript = Transcript {
+            segments: Vec::new(),
+            language: None,
+            duration_ms: 5_000,
+            partial_chunks: 0,
+        };
+        let report = write_files(&job, &transcript, "cpu".into(), 10).unwrap();
+        assert_eq!(report.segments, 0);
+        assert!(!paths.md.exists() && !paths.srt.exists());
+        let sidecar: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&paths.sidecar).unwrap()).unwrap();
+        assert_eq!(sidecar["transcript"]["segments"], 0);
+        assert_eq!(sidecar["title"], "Weekly");
+        assert_eq!(sidecar["channels"][1], "system");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

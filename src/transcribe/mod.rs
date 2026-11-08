@@ -10,7 +10,8 @@
 //! The pipeline (`runner`): the `.m4a` (or `.wav`) is decoded per channel to
 //! 16 kHz mono (`decode`), each channel is cut into speech chunks with their
 //! start times (`chunk`), every chunk goes through the model, and the
-//! segments of both channels are merged in time order and written as `.md`
+//! segments of both channels are merged in time order, the mic's echo of the
+//! meeting is dropped (`echo`) and the rest is written as `.md`
 //! and `.srt` next to the audio (`output`).
 
 // Until the Settings card and the transcript window are built (after track A
@@ -24,6 +25,7 @@ pub mod download;
 pub mod decode;
 pub mod chunk;
 pub mod output;
+pub mod echo;
 pub mod engine;
 pub mod gpu;
 pub mod runner;

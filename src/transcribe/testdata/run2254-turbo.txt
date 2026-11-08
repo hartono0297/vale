@@ -1,0 +1,19 @@
+[00:01 - 00:04] Saya    Coba adres pertanyaan-pertanyaan yang akhir-akhir ini
+[00:04 - 00:06] Saya    Beruntun datang gue ya pertanyaan
+[00:06 - 00:09] Saya    Kapan harga HP dan laptop turun?
+[00:09 - 00:12] Saya    Katanya AI bubble itu udah pecah ya Bang
+[00:12 - 00:14] Saya    Kan saham-saham di Amerika turun
+[00:14 - 00:16] Saya    Lalu ada yang bilang, boy pot aja
+[00:16 - 00:17] Saya    Gak bisa beli HP lagi
+[00:17 - 00:19] Saya    Rame-rame gak beli HP itu
+[00:19 - 00:21] Saya    Produsnya juga nurunin harga
+[00:01 - 00:06] Peserta Coba address pertanyaan-pertanyaan yang akhir-akhir ini beruntun datang ke gue ya, pertanyaan
+[00:06 - 00:09] Peserta Kapan harga HP dan laptop turun?
+[00:09 - 00:14] Peserta Katanya AI bubble itu udah pecah ya bang, kan saham-saham di Amerika turun
+[00:14 - 00:17] Peserta Lalu ada yang bilang, boycott aja, gak usah beli HP lagi
+[00:17 - 00:21] Peserta Rame-rame gak beli HP, nanti produsenya juga nurunin harga
+[00:21 - 00:23] Peserta Ini bener atau hoax?
+[00:23 - 00:27] Peserta Lalu solusinya apa kalau harga gak turun-turun? Itu yang mau gue bahas kali ini ya
+[00:21 - 00:23] Saya    ini bener atau hoax?
+[00:23 - 00:26] Saya    lalu solusinya apa kalau harga gak turun-turun?
+[00:26 - 00:27] Saya    itu yang gue bahas kali ini ya
