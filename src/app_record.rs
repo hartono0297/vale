@@ -26,7 +26,8 @@ use chrono::{Local, NaiveDate, NaiveDateTime};
 use super::{App, WM_APP_EVENT, WM_APP_REC_DEVICE, notif_open, poster};
 use crate::i18n::{self, Key, Lang, text};
 use crate::model::{
-    Event, Hit, Notice, NoticeKind, Page, RecEntry, RecNote, RecSources, RecStatus,
+    Event, Hit, Notice, NoticeKind, Page, RecEntry, RecNote, RecSources, RecStatus, RowTranscript,
+    TranscriptOffer,
 };
 use crate::recorder::devices;
 use crate::recorder::sidecar::Sidecar;
@@ -181,8 +182,16 @@ fn notice(key: &str, lang: Lang, title: String, body: String, kind: NoticeKind) 
 
 /// "Rekaman tersimpan" over "42 mnt · klik untuk buka"; "Rekaman dihentikan:
 /// tidak ada suara masuk" when every source was lost (`no_input`). A click
-/// shows the file in Explorer.
-pub(crate) fn saved_notice(lang: Lang, path: PathBuf, duration: Duration, no_input: bool) -> Notice {
+/// shows the file in Explorer. `offer` adds a chip about a transcript; with
+/// `Setup` the body asks "Bikin transkrip?" in place of "klik untuk buka"
+/// (the chip is how to go on, the body click still shows the file).
+pub(crate) fn saved_notice(
+    lang: Lang,
+    path: PathBuf,
+    duration: Duration,
+    no_input: bool,
+    offer: TranscriptOffer,
+) -> Notice {
     let title = if no_input {
         Key::RecStoppedNoInput
     } else {
@@ -195,9 +204,16 @@ pub(crate) fn saved_notice(lang: Lang, path: PathBuf, duration: Duration, no_inp
         format!(
             "{} \u{b7} {}",
             i18n::rec_duration(lang, duration),
-            text(lang, Key::RecClickToOpen)
+            text(
+                lang,
+                if offer == TranscriptOffer::Setup {
+                    Key::TrWantOne
+                } else {
+                    Key::RecClickToOpen
+                }
+            )
         ),
-        NoticeKind::RecSaved { path },
+        NoticeKind::RecSaved { path, offer },
     )
 }
 
@@ -539,6 +555,8 @@ fn entry_of(
         started: i18n::rec_started(lang, started, today),
         duration: side.map_or(Duration::ZERO, |s| Duration::from_millis(s.duration_ms)),
         unfinished,
+        // Task 10 reads the transcript's state from the queue and the sidecar.
+        transcript: RowTranscript::None,
     }
 }
 
@@ -967,7 +985,7 @@ impl App {
         match event {
             RecEvent::Saved { path, duration } => {
                 self.rec.told = true;
-                let n = saved_notice(lang, path, duration, self.rec.no_input);
+                let n = saved_notice(lang, path, duration, self.rec.no_input, TranscriptOffer::None);
                 self.apply_now(Event::Notice(n));
             }
             RecEvent::Failed(failure) => {
@@ -1107,17 +1125,47 @@ mod tests {
 
     #[test]
     fn the_saved_notice_names_the_length_and_a_click_reveals_the_file() {
-        let n = saved_notice(Lang::Id, PathBuf::from(r"C:\r\a.m4a"), Duration::from_secs(42 * 60), false);
+        let n = saved_notice(Lang::Id, PathBuf::from(r"C:\r\a.m4a"), Duration::from_secs(42 * 60), false, TranscriptOffer::None);
         assert_eq!(n.title, "Rekaman tersimpan");
         assert_eq!(n.body, "42 mnt \u{b7} klik untuk buka");
-        assert_eq!(n.kind, NoticeKind::RecSaved { path: PathBuf::from(r"C:\r\a.m4a") });
-        let en = saved_notice(Lang::En, PathBuf::new(), Duration::from_secs(5), false);
+        assert_eq!(
+            n.kind,
+            NoticeKind::RecSaved {
+                path: PathBuf::from(r"C:\r\a.m4a"),
+                offer: TranscriptOffer::None
+            }
+        );
+        let en = saved_notice(Lang::En, PathBuf::new(), Duration::from_secs(5), false, TranscriptOffer::None);
         assert_eq!((en.title.as_str(), en.body.as_str()), ("Recording saved", "5 s \u{b7} click to open"));
     }
 
     #[test]
+    fn saved_notice_bodies_per_offer() {
+        let at = |lang, offer| {
+            saved_notice(lang, PathBuf::from(r"C:\r\a.m4a"), Duration::from_secs(42 * 60), false, offer)
+        };
+        for offer in [TranscriptOffer::None, TranscriptOffer::Transcribe] {
+            assert_eq!(at(Lang::Id, offer).body, "42 mnt \u{b7} klik untuk buka", "{offer:?}");
+            assert_eq!(at(Lang::En, offer).body, "42 min \u{b7} click to open", "{offer:?}");
+        }
+        let id = at(Lang::Id, TranscriptOffer::Setup);
+        assert_eq!(id.body, "42 mnt \u{b7} Bikin transkrip?");
+        assert_eq!(id.title, "Rekaman tersimpan");
+        let en = at(Lang::En, TranscriptOffer::Setup);
+        assert_eq!(en.body, "42 min \u{b7} Want a transcript?");
+        // The offer rides on the kind, with the file.
+        assert_eq!(
+            at(Lang::Id, TranscriptOffer::Transcribe).kind,
+            NoticeKind::RecSaved {
+                path: PathBuf::from(r"C:\r\a.m4a"),
+                offer: TranscriptOffer::Transcribe
+            }
+        );
+    }
+
+    #[test]
     fn a_recording_that_ran_out_of_input_says_so() {
-        let n = saved_notice(Lang::Id, PathBuf::from(r"C:\r\a.m4a"), Duration::from_secs(90), true);
+        let n = saved_notice(Lang::Id, PathBuf::from(r"C:\r\a.m4a"), Duration::from_secs(90), true, TranscriptOffer::None);
         assert_eq!(n.title, "Rekaman dihentikan: tidak ada suara masuk");
         assert!(matches!(n.kind, NoticeKind::RecSaved { .. }));
         let en = no_input_notice(Lang::En);

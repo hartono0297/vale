@@ -60,7 +60,7 @@ use super::geometry::{
     notice_action_w, notice_actions_layout, notice_actions_layout_with, notice_chip_widths,
     notice_close_rect, notice_close_regions, notice_layout_with, reminder_done_regions, shot_fit,
     shot_layout, shot_regions, shoulder_depth, toast_dot, toast_eyebrow, toast_notice_layout_with,
-    sticky_reminder_regions, toast_slot_parts, update_offer_regions,
+    rec_saved_regions, sticky_reminder_regions, toast_slot_parts, update_offer_regions,
 };
 use super::icons::{Icon, IconSet};
 use super::motion::{StripFrame, Transit};
@@ -2646,6 +2646,10 @@ impl Renderer {
             // painted, so drawing and hit-testing cannot drift.
             if matches!(notice.kind, NoticeKind::Reminder { .. }) {
                 self.regions.regions = reminder_done_regions(chip);
+            }
+            // So are the saved recording's chips.
+            if let NoticeKind::RecSaved { offer, .. } = notice.kind {
+                self.regions.regions = rec_saved_regions(chip, offer);
             }
         }
         if closable && let Some(close) = close.filter(|c| c.alpha > 0.0) {

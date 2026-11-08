@@ -164,6 +164,9 @@ use update_page::{TIMER_UPDATE, UpdateState};
 pub(crate) mod record;
 use record::RecState;
 
+#[path = "app_transcribe.rs"]
+mod transcribe_page;
+
 #[path = "app_lyrics_card.rs"]
 mod card;
 use card::LyricsCardState;
@@ -1396,6 +1399,8 @@ impl App {
                     | Event::ClipPacked { .. }
                     | Event::Update(_)
                     | Event::Rec(..)
+                    | Event::Transcribe(..)
+                    | Event::TranscribeDownload(..)
                     // A progress tick draws the receiving view itself, at
                     // most six a second; nothing else changed.
                     | Event::Phone(_, crate::phone::PhoneEvent::UploadProgress { .. })
@@ -1511,6 +1516,9 @@ impl App {
                     self.on_rec_note(session, note);
                     continue;
                 }
+                // A transcript job's and a model download's threads: Task 8
+                // gives `App` its handling; nothing draws from them here.
+                Event::Transcribe(..) | Event::TranscribeDownload(..) => continue,
                 Event::SearchIndex(apps) => {
                     self.on_search_index(apps);
                     continue;
@@ -2293,6 +2301,11 @@ impl App {
             Effect::RecOpenFolder => self.rec_open_folder(),
             Effect::RecMicSettings => self.rec_mic_settings(),
             Effect::RecPickFolder => self.rec_pick_folder(),
+            Effect::TranscribeQueue(audio) => self.transcribe_queue(audio, None),
+            Effect::OpenTranscript(audio) => self.open_transcript(audio),
+            Effect::OpenTranscriptSettings => self.open_transcript_settings(),
+            Effect::RecPickFile => self.rec_pick_file(),
+            Effect::TranscriptOff => self.transcript_off_note(),
             Effect::DeviceEject(i) => self.devices_eject(i),
             Effect::DeviceOpen(i) => self.devices_open(i),
             Effect::DeviceDetail(i) => self.devices_toggle_detail(i),

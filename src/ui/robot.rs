@@ -1410,6 +1410,11 @@ impl NoticeSort {
             | NoticeKind::RecMicDenied
             | NoticeKind::RecFolderBlocked { .. } => NoticeSort::RecFailed,
             NoticeKind::RecInfo => NoticeSort::RecInfo,
+            // A transcript notice looks like its recording sibling: ready
+            // happy, failed sad, a word at rest.
+            NoticeKind::TranscriptReady { .. } => NoticeSort::RecSaved,
+            NoticeKind::TranscriptFailed { .. } => NoticeSort::RecFailed,
+            NoticeKind::TranscriptInfo | NoticeKind::TranscriptSettings => NoticeSort::RecInfo,
             NoticeKind::ShotDeleted => NoticeSort::ShotDeleted,
             NoticeKind::DevicePlugged { .. } => NoticeSort::DevicePlugged,
             NoticeKind::DeviceSafe => NoticeSort::DeviceSafe,

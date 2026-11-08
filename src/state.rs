@@ -10,8 +10,8 @@ use crate::i18n::{self, Key, text};
 use crate::lyrics;
 use crate::model::{
     ArrangeSave, CalView, ClipAction, Effect, Event, Hit, MediaCommand, MediaInfo, Notice,
-    NoticeKind, NotifAction, OpenTarget, Page, PhoneStage, RecEntry, RecStatus, Shortcut,
-    ShotAction, Timeline, View,
+    NoticeKind, NotifAction, OpenTarget, Page, PhoneStage, RecEntry, RecStatus, RowTranscript,
+    Shortcut, ShotAction, Timeline, TranscriptOffer, View,
 };
 use crate::mole::MoleOpts;
 use crate::pages::PanelPages;
@@ -124,6 +124,9 @@ fn notice_has_action(notice: &Notice) -> bool {
             | NoticeKind::RecMicDenied
             | NoticeKind::RecFolderBlocked { .. }
             | NoticeKind::RecFailed { reveal: Some(_) }
+            | NoticeKind::TranscriptReady { .. }
+            | NoticeKind::TranscriptFailed { .. }
+            | NoticeKind::TranscriptSettings
             | NoticeKind::App {
                 app_id: Some(_),
                 ..
@@ -631,6 +634,10 @@ impl IslandState {
                 | NoticeKind::RecMicDenied
                 | NoticeKind::RecFolderBlocked { .. }
                 | NoticeKind::RecInfo
+                | NoticeKind::TranscriptReady { .. }
+                | NoticeKind::TranscriptFailed { .. }
+                | NoticeKind::TranscriptInfo
+                | NoticeKind::TranscriptSettings
                 | NoticeKind::ShotDeleted
                 | NoticeKind::DevicePlugged { .. }
                 | NoticeKind::DeviceSafe
@@ -919,6 +926,8 @@ impl IslandState {
             | Event::Toast(_)
             | Event::Update(_)
             | Event::Rec(..)
+            | Event::Transcribe(..)
+            | Event::TranscribeDownload(..)
             | Event::Lyrics(_)
             | Event::Cli(_)
             | Event::ExplorerFolders { .. }
@@ -1675,8 +1684,11 @@ impl IslandState {
             Event::Click(Hit::StickySnooze | Hit::StickyOpen) => LingerTrigger::No,
             // The ✕ closes a notice on the closed notch: no panel behind it.
             Event::Click(Hit::NoticeClose) => LingerTrigger::No,
-            // So does a level group's mute on the REC view.
-            Event::Click(Hit::RecMuteCompact(_)) => LingerTrigger::No,
+            // So does a level group's mute on the REC view, and the chips of
+            // the saved recording's notice.
+            Event::Click(
+                Hit::RecMuteCompact(_) | Hit::RecTranscribeChip | Hit::RecTranscriptSetup,
+            ) => LingerTrigger::No,
             Event::Click(hit) if !(is_media_hit(hit) && self.media_guarded(now)) => {
                 LingerTrigger::Panel
             }
@@ -2160,6 +2172,47 @@ impl IslandState {
             Hit::RecFolder => {
                 if self.view() == View::Panel(Page::Record) {
                     self.collapse_for(Effect::RecOpenFolder, effects);
+                }
+            }
+            // The chips of "Rekaman tersimpan", on the closed notch: the
+            // notice goes without showing the file, and the chip's work
+            // starts. Each counts only on the offer it belongs to.
+            Hit::RecTranscribeChip | Hit::RecTranscriptSetup => {
+                let chip_offer = if hit == Hit::RecTranscribeChip {
+                    TranscriptOffer::Transcribe
+                } else {
+                    TranscriptOffer::Setup
+                };
+                if let View::Notice(n) = self.view()
+                    && let NoticeKind::RecSaved { path, offer } = n.kind
+                    && offer == chip_offer
+                {
+                    // The reveal the body would ask for is not wanted here.
+                    let _ = self.dismiss_visible_notice(now);
+                    effects.push(match offer {
+                        TranscriptOffer::Transcribe => Effect::TranscribeQueue(path),
+                        _ => Effect::OpenTranscriptSettings,
+                    });
+                }
+            }
+            // A row's transcript pill on the Rekam page: by its mark, "belum
+            // nyala" explains, none yet queues one (the panel stays, the row
+            // turns "Antre"), any other opens the transcript window.
+            Hit::RecTranscript(i) => {
+                if self.view() == View::Panel(Page::Record)
+                    && let Some(entry) = self.rec_recent.get(i)
+                {
+                    let path = entry.path.clone();
+                    match entry.transcript {
+                        RowTranscript::Off => effects.push(Effect::TranscriptOff),
+                        RowTranscript::None => effects.push(Effect::TranscribeQueue(path)),
+                        _ => self.collapse_for(Effect::OpenTranscript(path), effects),
+                    }
+                }
+            }
+            Hit::RecPickFile => {
+                if self.view() == View::Panel(Page::Record) {
+                    self.collapse_for(Effect::RecPickFile, effects);
                 }
             }
             Hit::DevicesEjectAll => {
@@ -2826,12 +2879,18 @@ impl IslandState {
             // A saved screenshot: the body click shows the file in Explorer.
             // A failed rename shows the `.part` that holds the audio.
             NoticeKind::ShotSaved { path: Some(path) }
-            | NoticeKind::RecSaved { path }
+            | NoticeKind::RecSaved { path, .. }
             | NoticeKind::RecFailed { reveal: Some(path) } => Some(Effect::RevealFile(path)),
             // The mic was refused: the click opens Windows' mic privacy page.
             NoticeKind::RecMicDenied => Some(Effect::RecMicSettings),
             // The folder was refused: the click picks another one.
             NoticeKind::RecFolderBlocked { .. } => Some(Effect::RecPickFolder),
+            // A transcript is ready or failed: the window that holds it (it
+            // says the reason). A word about settings opens its card.
+            NoticeKind::TranscriptReady { audio } | NoticeKind::TranscriptFailed { audio } => {
+                Some(Effect::OpenTranscript(audio))
+            }
+            NoticeKind::TranscriptSettings => Some(Effect::OpenTranscriptSettings),
             NoticeKind::ClaudeWaiting { .. }
             | NoticeKind::Reminder { .. }
             | NoticeKind::StickyReminder { .. }
@@ -8140,6 +8199,7 @@ mod tests {
             started: "Hari ini 10:02".into(),
             duration: Duration::from_secs(42 * 60),
             unfinished: false,
+            transcript: RowTranscript::None,
         }
     }
 
@@ -10081,6 +10141,7 @@ mod tests {
         let t0 = Instant::now();
         let saved = rec_notice(NoticeKind::RecSaved {
             path: r"C:\r\a.m4a".into(),
+            offer: TranscriptOffer::None,
         });
         assert!(notice_has_action(&saved));
         assert!(notice_closable(&saved));
@@ -10127,6 +10188,180 @@ mod tests {
             assert_eq!(s.apply(Event::Click(Hit::Body), t0 + secs(1)), vec![]);
             assert_eq!(s.view(), View::Idle);
         }
+    }
+
+    const REC_FILE: &str = r"C:\r\a.m4a";
+
+    fn rec_saved(offer: TranscriptOffer) -> Notice {
+        rec_notice(NoticeKind::RecSaved {
+            path: REC_FILE.into(),
+            offer,
+        })
+    }
+
+    #[test]
+    fn the_transcribe_chip_queues_the_job_and_closes_the_notice() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Notice(rec_saved(TranscriptOffer::Transcribe)), t0);
+        let fx = s.apply(Event::Click(Hit::RecTranscribeChip), t0 + secs(1));
+        assert_eq!(fx, vec![Effect::TranscribeQueue(REC_FILE.into())]);
+        assert!(!fx.iter().any(|e| matches!(e, Effect::RevealFile(_))));
+        assert_eq!(s.view(), View::Idle, "the notice is gone");
+    }
+
+    #[test]
+    fn the_setup_chip_opens_the_transcript_settings() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Notice(rec_saved(TranscriptOffer::Setup)), t0);
+        let fx = s.apply(Event::Click(Hit::RecTranscriptSetup), t0 + secs(1));
+        assert_eq!(fx, vec![Effect::OpenTranscriptSettings]);
+        assert_eq!(s.view(), View::Idle, "the notice is gone");
+    }
+
+    #[test]
+    fn the_saved_notice_body_still_shows_the_file() {
+        let t0 = Instant::now();
+        for offer in [
+            TranscriptOffer::None,
+            TranscriptOffer::Transcribe,
+            TranscriptOffer::Setup,
+        ] {
+            let mut s = st();
+            s.apply(Event::Notice(rec_saved(offer)), t0);
+            let fx = s.apply(Event::Click(Hit::Body), t0 + secs(1));
+            assert_eq!(fx, vec![Effect::RevealFile(REC_FILE.into())], "{offer:?}");
+            assert_eq!(s.view(), View::Idle, "{offer:?}");
+        }
+    }
+
+    #[test]
+    fn offer_chips_do_nothing_on_other_notices() {
+        let t0 = Instant::now();
+        let chips = [Hit::RecTranscribeChip, Hit::RecTranscriptSetup];
+        // Nothing showing.
+        for hit in &chips {
+            assert_eq!(st().apply(Event::Click(hit.clone()), t0), vec![], "{hit:?} idle");
+        }
+        // Another notice, and a saved one that offers no chip.
+        let others = [
+            rec_notice(NoticeKind::RecInfo),
+            rec_notice(NoticeKind::TranscriptInfo),
+            rec_saved(TranscriptOffer::None),
+        ];
+        for n in others {
+            for hit in &chips {
+                let mut s = st();
+                s.apply(Event::Notice(n.clone()), t0);
+                assert_eq!(s.apply(Event::Click(hit.clone()), t0), vec![], "{hit:?}");
+                assert_eq!(s.view(), View::Notice(n.clone()), "{hit:?} leaves it up");
+            }
+        }
+        // Each chip belongs to its own offer.
+        for (offer, wrong) in [
+            (TranscriptOffer::Transcribe, Hit::RecTranscriptSetup),
+            (TranscriptOffer::Setup, Hit::RecTranscribeChip),
+        ] {
+            let mut s = st();
+            s.apply(Event::Notice(rec_saved(offer)), t0);
+            assert_eq!(s.apply(Event::Click(wrong.clone()), t0), vec![], "{wrong:?} on {offer:?}");
+            assert_eq!(s.view(), View::Notice(rec_saved(offer)));
+        }
+    }
+
+    #[test]
+    fn the_ready_and_failed_notices_open_the_transcript() {
+        let t0 = Instant::now();
+        for kind in [
+            NoticeKind::TranscriptReady {
+                audio: REC_FILE.into(),
+            },
+            NoticeKind::TranscriptFailed {
+                audio: REC_FILE.into(),
+            },
+        ] {
+            let n = rec_notice(kind);
+            assert!(notice_has_action(&n));
+            assert!(notice_closable(&n), "a timed notice with a close button");
+            let mut s = st();
+            s.apply(Event::Notice(n.clone()), t0);
+            assert_eq!(s.next_deadline(), Some(t0 + NOTICE_DURATION));
+            let fx = s.apply(Event::Click(Hit::Body), t0 + secs(1));
+            assert_eq!(fx, vec![Effect::OpenTranscript(REC_FILE.into())], "{n:?}");
+            assert_eq!(s.view(), View::Idle);
+            // The close button opens nothing.
+            let mut s = st();
+            s.apply(Event::Notice(n), t0);
+            assert_eq!(s.apply(Event::Click(Hit::NoticeClose), t0 + secs(1)), vec![]);
+        }
+        // A plain word only dismisses.
+        let info = rec_notice(NoticeKind::TranscriptInfo);
+        assert!(!notice_has_action(&info));
+        let mut s = st();
+        s.apply(Event::Notice(info), t0);
+        assert_eq!(s.apply(Event::Click(Hit::Body), t0 + secs(1)), vec![]);
+        assert_eq!(s.view(), View::Idle);
+    }
+
+    #[test]
+    fn the_settings_notice_opens_the_card() {
+        let t0 = Instant::now();
+        let n = rec_notice(NoticeKind::TranscriptSettings);
+        assert!(notice_has_action(&n));
+        let mut s = st();
+        s.apply(Event::Notice(n), t0);
+        let fx = s.apply(Event::Click(Hit::Body), t0 + secs(1));
+        assert_eq!(fx, vec![Effect::OpenTranscriptSettings]);
+        assert_eq!(s.view(), View::Idle);
+    }
+
+    #[test]
+    fn the_row_pill_acts_by_its_mark() {
+        let t0 = Instant::now();
+        let row = |mark: RowTranscript| RecEntry {
+            transcript: mark,
+            ..rec_entry("a.m4a")
+        };
+        // (mark, effect, the panel stays open)
+        let table = [
+            (RowTranscript::Off, Effect::TranscriptOff, true),
+            (RowTranscript::None, Effect::TranscribeQueue("a.m4a".into()), true),
+            (RowTranscript::Queued, Effect::OpenTranscript("a.m4a".into()), false),
+            (RowTranscript::Waiting, Effect::OpenTranscript("a.m4a".into()), false),
+            (RowTranscript::Running(40), Effect::OpenTranscript("a.m4a".into()), false),
+            (RowTranscript::Done, Effect::OpenTranscript("a.m4a".into()), false),
+            (RowTranscript::Failed, Effect::OpenTranscript("a.m4a".into()), false),
+        ];
+        for (mark, want, stays) in table {
+            let mut s = st();
+            s.apply(Event::RecRecent(vec![row(mark)]), t0);
+            // Not on the page: nothing.
+            assert_eq!(s.apply(Event::Click(Hit::RecTranscript(0)), t0), vec![], "{mark:?} off page");
+            open_on(&mut s, Page::Record, t0);
+            // No such row: nothing.
+            assert_eq!(s.apply(Event::Click(Hit::RecTranscript(3)), t0), vec![], "{mark:?} no row");
+            assert_eq!(s.apply(Event::Click(Hit::RecTranscript(0)), t0), vec![want], "{mark:?}");
+            assert_eq!(
+                matches!(s.view(), View::Panel(_)),
+                stays,
+                "{mark:?}: the panel {}",
+                if stays { "stays" } else { "collapses" }
+            );
+        }
+    }
+
+    #[test]
+    fn the_pick_file_link_collapses_for_the_picker() {
+        let t0 = Instant::now();
+        let mut s = st();
+        assert_eq!(s.apply(Event::Click(Hit::RecPickFile), t0), vec![], "not on the page");
+        open_on(&mut s, Page::Record, t0);
+        assert_eq!(
+            s.apply(Event::Click(Hit::RecPickFile), t0),
+            vec![Effect::RecPickFile]
+        );
+        assert!(!matches!(s.view(), View::Panel(_)), "the panel collapsed");
     }
 
     #[test]

@@ -209,8 +209,8 @@ use crate::devices::{self, Bus, Device, DeviceKind, Partition, Veto, VetoKind};
 use crate::i18n::{Key, tr};
 use crate::lyrics::{self, FADE, LyricsFound, LyricsState, Query};
 use crate::model::{
-    CalView, Event, Hit, MediaInfo, Notice, NoticeKind, Page, RecEntry, RecSources, ToastOrigin,
-    View,
+    CalView, Event, Hit, MediaInfo, Notice, NoticeKind, Page, RecEntry, RecSources,
+    RowTranscript, ToastOrigin, TranscriptOffer, View,
 };
 use crate::mole::{CleanRun, GroupSize, MoleOpts, MoleReport, PreviewSummary};
 use crate::notes::Note;
@@ -523,6 +523,14 @@ enum DemoNotice {
     ShotDeleted,
     /// "Rekaman tersimpan" after a recording (a made-up file).
     RecSaved,
+    /// The same with the chip "Transkrip".
+    RecSavedTranscribe,
+    /// The same with the chip "Pengaturan" and "Bikin transkrip?".
+    RecSavedSetup,
+    /// "Transkrip siap" (a made-up recording).
+    TranscriptReady,
+    /// "Transkrip gagal".
+    TranscriptFailed,
     /// Windows refused the mic.
     RecMicDenied,
     /// A drive plugged in: SanDisk Ultra, E:, 38,9 GB free (rencana-v3.5 p3).
@@ -656,6 +664,7 @@ fn demo_rec_recent() -> Vec<RecEntry> {
         started: started.to_owned(),
         duration: Duration::from_secs(mins * 60),
         unfinished: false,
+        transcript: RowTranscript::None,
     };
     vec![
         entry("Sync mingguan", "Hari ini 10:02", 42),
@@ -901,7 +910,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 181] = [
+const SCENES: [Scene; 185] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -1359,6 +1368,30 @@ const SCENES: [Scene; 181] = [
         ShapeKind::Notice,
         View0::Notice(DemoNotice::RecSaved),
         Expr::Happy,
+    ),
+    bata(
+        "rec-saved-transcribe",
+        ShapeKind::Notice,
+        View0::Notice(DemoNotice::RecSavedTranscribe),
+        Expr::Happy,
+    ),
+    bata(
+        "rec-saved-setup",
+        ShapeKind::Notice,
+        View0::Notice(DemoNotice::RecSavedSetup),
+        Expr::Happy,
+    ),
+    bata(
+        "transcript-ready",
+        ShapeKind::Notice,
+        View0::Notice(DemoNotice::TranscriptReady),
+        Expr::Happy,
+    ),
+    bata(
+        "transcript-failed",
+        ShapeKind::Notice,
+        View0::Notice(DemoNotice::TranscriptFailed),
+        Expr::Sad,
     ),
     bata(
         "rec-mic-denied",
@@ -3119,11 +3152,35 @@ fn demo_notice(which: DemoNotice, renderer: &Renderer) -> Notice {
             let fits = |s: &str| renderer.notice_text_fits(&kind, false, s);
             crate::app::shot::kept_notice(Some(file.into()), true, &fits)
         }
-        DemoNotice::RecSaved => crate::app::record::saved_notice(
-            crate::i18n::lang(),
-            r"C:\Users\vale\Documents\Vale\Rekaman\2026-11-07 1002.m4a".into(),
-            Duration::from_secs(42 * 60),
-            false,
+        DemoNotice::RecSaved | DemoNotice::RecSavedTranscribe | DemoNotice::RecSavedSetup => {
+            let offer = match which {
+                DemoNotice::RecSavedTranscribe => TranscriptOffer::Transcribe,
+                DemoNotice::RecSavedSetup => TranscriptOffer::Setup,
+                _ => TranscriptOffer::None,
+            };
+            crate::app::record::saved_notice(
+                crate::i18n::lang(),
+                r"C:\Users\vale\Documents\Vale\Rekaman\2026-11-07 1002.m4a".into(),
+                Duration::from_secs(42 * 60),
+                false,
+                offer,
+            )
+        }
+        DemoNotice::TranscriptReady => notice(
+            tr(Key::TrNoticeSource),
+            tr(Key::TrReady),
+            format!("Sync mingguan \u{b7} {}", tr(Key::RecClickToOpen)),
+            NoticeKind::TranscriptReady {
+                audio: r"C:\Users\vale\Documents\Vale\Rekaman\2026-11-07 1002.m4a".into(),
+            },
+        ),
+        DemoNotice::TranscriptFailed => notice(
+            tr(Key::TrNoticeSource),
+            tr(Key::TrFailedTitle),
+            tr(Key::RecClickToOpen).to_owned(),
+            NoticeKind::TranscriptFailed {
+                audio: r"C:\Users\vale\Documents\Vale\Rekaman\2026-11-07 1002.m4a".into(),
+            },
         ),
         DemoNotice::RecMicDenied => crate::app::record::mic_denied_notice(crate::i18n::lang()),
         DemoNotice::ShotDeleted => {

@@ -6616,6 +6616,59 @@ mod tests {
         }
     }
 
+    /// The saved recording's chips ("Transkrip" / "Transcribe", "Pengaturan" /
+    /// "Settings") hold their words in both languages, in DM Sans and in
+    /// JetBrains Mono, text and ink inside.
+    #[test]
+    fn rec_saved_chips_hold_their_words_in_both_fonts() {
+        use crate::ui::fonts;
+        use crate::ui::geometry::{SETUP_CHIP_W, TRANSCRIBE_CHIP_W};
+        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+
+        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let mut r = Renderer::new().expect("renderer");
+        if !fonts::embedded(&r.dwrite).loaded.jetbrains_mono {
+            eprintln!("skipped: the embedded fonts are not in this binary");
+            return;
+        }
+        for ui in [UiFont::Sans, UiFont::Mono] {
+            r.set_ui_font(ui).expect("font");
+            for lang in [Lang::Id, Lang::En] {
+                for (key, w) in [
+                    (Key::TrChipTranscribe, TRANSCRIBE_CHIP_W),
+                    (Key::TrChipSettings, SETUP_CHIP_W),
+                ] {
+                    let chip = Rect { x: 0.0, y: 0.0, w, h: 24.0 };
+                    ink_fits(&r, text(lang, key), &r.fonts.button_center, chip);
+                }
+            }
+        }
+    }
+
+    /// The saved recording's title and body stay on one line beside either
+    /// chip in DM Sans, in both languages ("42 mnt · Bikin transkrip?").
+    #[test]
+    fn rec_saved_text_fits_beside_its_chip_in_dm_sans() {
+        use crate::model::TranscriptOffer;
+        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let mut r = Renderer::new().expect("renderer");
+        r.set_ui_font(UiFont::Sans).expect("font");
+        for offer in [TranscriptOffer::Transcribe, TranscriptOffer::Setup] {
+            for lang in [Lang::Id, Lang::En] {
+                let n = crate::app::record::saved_notice(
+                    lang,
+                    "a.m4a".into(),
+                    std::time::Duration::from_secs(120 * 60),
+                    false,
+                    offer,
+                );
+                assert!(r.notice_text_fits(&n.kind, true, &n.title), "{offer:?} {lang:?} {}", n.title);
+                assert!(r.notice_text_fits(&n.kind, false, &n.body), "{offer:?} {lang:?} {}", n.body);
+            }
+        }
+    }
+
     /// The offer's title and body stay on one line beside the two chips in
     /// DM Sans, in both languages, even for a long version ("10.11.12").
     /// (JetBrains Mono is wider and trims with "...", as every notice does.)

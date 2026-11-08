@@ -175,9 +175,13 @@ pub enum NoticeKind {
         id: String,
     },
     /// "Rekaman tersimpan · 42 mnt · klik untuk buka" (Bata happy). A click
-    /// on the body shows `path` in Explorer (`Effect::RevealFile`).
+    /// on the body shows `path` in Explorer (`Effect::RevealFile`). `offer`
+    /// adds one chip: "Transkrip" queues a transcript, "Pengaturan" opens the
+    /// Transkrip card of Settings (`Hit::RecTranscribeChip`,
+    /// `Hit::RecTranscriptSetup`); neither reveals the file.
     RecSaved {
         path: PathBuf,
+        offer: TranscriptOffer,
     },
     /// "Rekaman gagal" with the reason (Bata sad). A click dismisses, or,
     /// with `reveal` (the audio kept in a `.m4a.part`), shows that file in
@@ -197,6 +201,58 @@ pub enum NoticeKind {
     /// A short word about a recording: the one-time "ask everyone first" and
     /// a source that dropped out. A click dismisses.
     RecInfo,
+    /// "Transkrip siap" (Bata happy). A click opens the transcript window of
+    /// `audio` (`Effect::OpenTranscript`).
+    TranscriptReady {
+        audio: PathBuf,
+    },
+    /// "Transkrip gagal" with the reason (Bata sad). A click opens the
+    /// transcript window of `audio`, which says it again.
+    TranscriptFailed {
+        audio: PathBuf,
+    },
+    /// A short word about transcripts (the model is ready, a download
+    /// failed, saved as a note, "belum nyala"). A click dismisses.
+    // Built from Task 8 on; drop the allow then.
+    #[allow(dead_code)]
+    TranscriptInfo,
+    /// The same kind of word, but a click opens Settings at the Transkrip
+    /// card (`Effect::OpenTranscriptSettings`).
+    // Built from Task 8 on; drop the allow then.
+    #[allow(dead_code)]
+    TranscriptSettings,
+}
+
+/// What the "Rekaman tersimpan" notice offers about a transcript.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TranscriptOffer {
+    /// Nothing: transcripts are off, or the recording is not worth one.
+    None,
+    /// The chip "Transkrip" queues one.
+    Transcribe,
+    /// The chip "Pengaturan": the transcript still needs setting up.
+    Setup,
+}
+
+/// The transcript mark of a row in the Rekam page's list.
+// Task 10 builds the marks; drop the allow then.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowTranscript {
+    /// Transcripts are off: the pill says so and a click explains.
+    Off,
+    /// None yet: the pill "Transkrip" queues one.
+    None,
+    /// In the queue ("Antre").
+    Queued,
+    /// Held while a recording runs ("Menunggu").
+    Waiting,
+    /// Running, 0 to 100 percent.
+    Running(u8),
+    /// Done: the pill opens the transcript.
+    Done,
+    /// Failed: the pill opens the transcript window, which says why.
+    Failed,
 }
 
 /// What the Arranged notice offers beside "Batalkan".
@@ -261,6 +317,8 @@ pub struct RecEntry {
     /// A `.m4a.part` a crash left: the page says "belum selesai" instead of
     /// a length (it still plays, and a click still shows it).
     pub unfinished: bool,
+    /// The row's transcript pill.
+    pub transcript: RowTranscript,
 }
 
 /// What reaches `App` about a recording, tagged in `Event::Rec` with the
@@ -314,6 +372,15 @@ pub enum Event {
     /// What a recording's threads reported, with the session number they
     /// belong to (`App` handles it; the reducer ignores it).
     Rec(u64, RecNote),
+    /// What a transcript job's thread reported, with the job id (`App`
+    /// handles it; the reducer ignores it).
+    // Built from Task 8 on; drop the allow then.
+    #[allow(dead_code)]
+    Transcribe(u64, crate::transcribe::runner::Event),
+    /// What a model download reported, with the download id (the same).
+    // Built from Task 8 on; drop the allow then.
+    #[allow(dead_code)]
+    TranscribeDownload(u64, crate::transcribe::download::Event),
     /// `None` means no media session is active.
     Media(Option<MediaInfo>),
     /// The session's timeline (seek, track change, play/pause); `None` when
@@ -692,6 +759,18 @@ pub enum Hit {
     RecSources(RecSources),
     RecOpen(usize),
     RecFolder,
+    /// The chip "Transkrip" of the "Rekaman tersimpan" notice.
+    RecTranscribeChip,
+    /// The chip "Pengaturan" of the same notice.
+    RecTranscriptSetup,
+    /// The transcript pill of a row in the Rekam list.
+    // Built from Task 9 on; drop the allow then.
+    #[allow(dead_code)]
+    RecTranscript(usize),
+    /// "Pilih file" on the Rekam page.
+    // Built from Task 9 on; drop the allow then.
+    #[allow(dead_code)]
+    RecPickFile,
     /// Susun, template step: a monitor chip, a template card (built-ins
     /// first, then the user's) and a saved arrangement's play button, by
     /// place. Pick step: a window row by place in the list, and "Lewati
@@ -894,6 +973,16 @@ pub enum Effect {
     RecSources(RecSources),
     RecReveal(PathBuf),
     RecOpenFolder,
+    /// Queue a transcript of this recording.
+    TranscribeQueue(PathBuf),
+    /// Open the transcript window of this recording.
+    OpenTranscript(PathBuf),
+    /// Settings, at the Transkrip card.
+    OpenTranscriptSettings,
+    /// The file picker for a transcript of any audio file.
+    RecPickFile,
+    /// The row pill's explanation that transcripts are off.
+    TranscriptOff,
     /// The mic notice's click: Windows' microphone privacy page.
     RecMicSettings,
     /// The blocked-folder notice's click: the recordings folder picker.
