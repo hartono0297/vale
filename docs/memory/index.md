@@ -92,6 +92,7 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[recording-audio]]: audio recording, phase 1 (2026-11-07): mic, PC audio or both to `.m4a` + sidecar on a QPC timeline, AAC 96 kbps fragmented MP4, threads only while recording, TIMER_REC 60 / TIMER_REC_LEVEL 61, hotkey 9 `Ctrl+Alt+R`, Rekam page, tray dot, silent recordings not kept
 - [[recording-controls]]: mute per source (zeros before the timeline), mute hotkey id 12 `Ctrl+Alt+M` registered only while recording, mic/PC-audio device choice with live switch and fall-back, echo cancellation through the speech category (not communications: ducking)
 - [[notch-rec-mute]]: the closed REC notch's level groups are mute buttons; hover never opens the panel (`rec_mute_hot`), cleared only on leave / stop / pause / fullscreen, never on a view change
+- [[recording-hand-checks]]: phase 1 is done; the checks still to do by hand on the real app (dropdown with a mouse, light theme, focus, real voice with echo cancellation, headset mid-recording, sleep)
 - [[menu-pop]]: Vale's own themed dropdown (`ui/menu_pop.rs`), first for the recording devices; `WM_APP + 81` Done, `menu_open` holds the panel
 - [[lyrics-lookup]]: LRCLIB 503 + Retry-After retry (30 s budget), step order (field search, get, free-text search), None vs transient, the Artist - Title split, tight-window consensus pick of the best-synced version, intro shift for a longer video, `.lrc2` / `.none4`
 
