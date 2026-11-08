@@ -23,27 +23,22 @@
 //!   [`EncodeError::Empty`] and removes the file it created. A writer dropped
 //!   without `finish` is not finalized; its file is left for the caller.
 
-use std::ffi::c_void;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::mem::transmute;
 use std::ptr::null_mut;
-use std::sync::OnceLock;
 use std::time::Duration;
 
-use windows::Win32::Foundation::HMODULE;
 use windows::Win32::Media::MediaFoundation::{
     IMFAttributes, IMFMediaBuffer, IMFMediaType, IMFSample, IMFSinkWriter, MF_MT_AAC_PAYLOAD_TYPE,
     MF_MT_ALL_SAMPLES_INDEPENDENT, MF_MT_AUDIO_AVG_BYTES_PER_SECOND, MF_MT_AUDIO_BITS_PER_SAMPLE,
     MF_MT_AUDIO_BLOCK_ALIGNMENT, MF_MT_AUDIO_NUM_CHANNELS, MF_MT_AUDIO_SAMPLES_PER_SECOND,
-    MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_TRANSCODE_CONTAINERTYPE, MF_VERSION, MFAudioFormat_AAC,
-    MFAudioFormat_Float, MFAudioFormat_PCM, MFMediaType_Audio, MFSTARTUP_LITE,
+    MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_TRANSCODE_CONTAINERTYPE, MFAudioFormat_AAC,
+    MFAudioFormat_Float, MFAudioFormat_PCM, MFMediaType_Audio,
     MFTranscodeContainerType_FMPEG4, MFTranscodeContainerType_MPEG4,
 };
-use windows::Win32::System::LibraryLoader::{
-    GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
-};
-use windows::core::{GUID, HRESULT, HSTRING, Interface, PCWSTR, s, w};
+use windows::core::{GUID, HSTRING, Interface, PCWSTR};
+
+use crate::mf::{Mf, MfSession, created};
 
 /// The only sample rate the spec allows.
 pub const RATE: u32 = 48_000;
@@ -120,100 +115,6 @@ impl Input {
     }
 }
 
-/// What `GetProcAddress` returns (`FARPROC`).
-type Proc = unsafe extern "system" fn() -> isize;
-type StartupFn = unsafe extern "system" fn(u32, u32) -> HRESULT;
-type ShutdownFn = unsafe extern "system" fn() -> HRESULT;
-type CreateAttributesFn = unsafe extern "system" fn(*mut *mut c_void, u32) -> HRESULT;
-type CreateObjectFn = unsafe extern "system" fn(*mut *mut c_void) -> HRESULT;
-type CreateMemoryBufferFn = unsafe extern "system" fn(u32, *mut *mut c_void) -> HRESULT;
-type CreateSinkWriterFn =
-    unsafe extern "system" fn(PCWSTR, *mut c_void, *mut c_void, *mut *mut c_void) -> HRESULT;
-
-/// The Media Foundation entry points, resolved at run time.
-struct Mf {
-    startup: StartupFn,
-    shutdown: ShutdownFn,
-    create_attributes: CreateAttributesFn,
-    create_media_type: CreateObjectFn,
-    create_sample: CreateObjectFn,
-    create_memory_buffer: CreateMemoryBufferFn,
-    create_sink_writer: CreateSinkWriterFn,
-}
-
-/// Loads the two DLLs once; `None` when either or an export is missing.
-fn mf() -> Option<&'static Mf> {
-    static MF: OnceLock<Option<Mf>> = OnceLock::new();
-    MF.get_or_init(|| unsafe {
-        let plat: HMODULE =
-            LoadLibraryExW(w!("mfplat.dll"), None, LOAD_LIBRARY_SEARCH_SYSTEM32).ok()?;
-        let rw: HMODULE =
-            LoadLibraryExW(w!("mfreadwrite.dll"), None, LOAD_LIBRARY_SEARCH_SYSTEM32).ok()?;
-        // SAFETY: each target type is the documented signature of that export.
-        Some(Mf {
-            startup: transmute::<Proc, StartupFn>(GetProcAddress(plat, s!("MFStartup"))?),
-            shutdown: transmute::<Proc, ShutdownFn>(GetProcAddress(plat, s!("MFShutdown"))?),
-            create_attributes: transmute::<Proc, CreateAttributesFn>(GetProcAddress(
-                plat,
-                s!("MFCreateAttributes"),
-            )?),
-            create_media_type: transmute::<Proc, CreateObjectFn>(GetProcAddress(
-                plat,
-                s!("MFCreateMediaType"),
-            )?),
-            create_sample: transmute::<Proc, CreateObjectFn>(GetProcAddress(
-                plat,
-                s!("MFCreateSample"),
-            )?),
-            create_memory_buffer: transmute::<Proc, CreateMemoryBufferFn>(GetProcAddress(
-                plat,
-                s!("MFCreateMemoryBuffer"),
-            )?),
-            create_sink_writer: transmute::<Proc, CreateSinkWriterFn>(GetProcAddress(
-                rw,
-                s!("MFCreateSinkWriterFromURL"),
-            )?),
-        })
-    })
-    .as_ref()
-}
-
-/// Calls a creator that returns an interface through an out pointer.
-fn created<T: Interface>(
-    call: impl FnOnce(*mut *mut c_void) -> HRESULT,
-) -> windows::core::Result<T> {
-    let mut raw = null_mut();
-    call(&mut raw).ok()?;
-    if raw.is_null() {
-        return Err(windows::core::Error::from_hresult(
-            windows::Win32::Foundation::E_POINTER,
-        ));
-    }
-    // SAFETY: on success the creator stored an owned reference of type T.
-    Ok(unsafe { T::from_raw(raw) })
-}
-
-/// One `MFStartup`, undone by `MFShutdown` on drop.
-struct MfSession(&'static Mf);
-
-impl MfSession {
-    fn start() -> Result<Self, EncodeError> {
-        let mf = mf().ok_or(EncodeError::NoMediaFoundation)?;
-        unsafe { (mf.startup)(MF_VERSION, MFSTARTUP_LITE) }
-            .ok()
-            .map_err(|_| EncodeError::NoMediaFoundation)?;
-        Ok(Self(mf))
-    }
-}
-
-impl Drop for MfSession {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = (self.0.shutdown)();
-        }
-    }
-}
-
 /// Writes interleaved f32 audio to an AAC `.m4a`.
 pub struct M4aWriter {
     writer: IMFSinkWriter,
@@ -248,11 +149,11 @@ impl M4aWriter {
         if !(channels == 1 || channels == 2) || rate != RATE {
             return Err(EncodeError::BadFormat);
         }
-        let mf = MfSession::start()?;
+        let mf = MfSession::start().ok_or(EncodeError::NoMediaFoundation)?;
         let url = HSTRING::from(path);
         let mut last = None;
         for container in [Container::Fragmented, Container::Mpeg4] {
-            match open(mf.0, &url, container, channels, rate, prefer) {
+            match open(mf.api(), &url, container, channels, rate, prefer) {
                 Ok((writer, stream, input)) => {
                     return Ok(Self {
                         writer,
@@ -293,7 +194,7 @@ impl M4aWriter {
     fn write_chunk(&mut self, chunk: &[f32]) -> Result<(), EncodeError> {
         let frames = (chunk.len() / usize::from(self.channels)) as u64;
         let len = chunk.len() as u32 * self.input.bytes();
-        let mf = self.mf.0;
+        let mf = self.mf.api();
         unsafe {
             let buffer: IMFMediaBuffer = created(|p| (mf.create_memory_buffer)(len, p))?;
             let mut data = null_mut();
@@ -433,7 +334,7 @@ pub(crate) mod tests {
     use windows::Win32::Media::MediaFoundation::{
         MF_PD_DURATION, MF_SOURCE_READER_FIRST_AUDIO_STREAM, MF_SOURCE_READER_MEDIASOURCE,
         MF_SOURCE_READERF_ENDOFSTREAM, MFCreateMediaType, MFCreateSourceReaderFromURL, MFShutdown,
-        MFStartup,
+        MF_VERSION, MFSTARTUP_LITE, MFStartup,
     };
     use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
 

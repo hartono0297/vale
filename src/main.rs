@@ -30,6 +30,7 @@ mod identify_overlay;
 mod lyrics;
 mod lyrics_card;
 mod media_log;
+mod mf;
 mod model;
 mod mole;
 mod notes;
