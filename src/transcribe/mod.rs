@@ -29,5 +29,6 @@ pub mod echo;
 pub mod engine;
 pub mod gpu;
 pub mod runner;
+pub mod queue;
 #[cfg(debug_assertions)]
 pub mod debug;
