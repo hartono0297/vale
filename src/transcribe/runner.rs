@@ -716,7 +716,11 @@ mod tests {
 
     #[test]
     fn an_empty_result_leaves_no_transcript_files() {
-        let dir = std::env::temp_dir().join(format!("vale-empty-{}", std::process::id()));
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("test-tmp")
+            .join(format!("transcribe-empty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let audio = dir.join("meeting.m4a");
         let paths = output::paths(&audio);
@@ -749,7 +753,6 @@ mod tests {
         assert_eq!(sidecar["transcript"]["segments"], 0);
         assert_eq!(sidecar["title"], "Weekly");
         assert_eq!(sidecar["channels"][1], "system");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
