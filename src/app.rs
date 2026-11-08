@@ -1431,6 +1431,8 @@ impl App {
         }
         // Once per burst of command output, not per chunk.
         self.note_cli_output(now);
+        // An open transcript window follows its live job once per burst too.
+        self.transcript_flush_live();
         // Only system readings: they drew what they changed (the open
         // System page); a background check must not redraw the island,
         // unless it raised a notice.

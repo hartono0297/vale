@@ -262,6 +262,8 @@ struct Win {
     scroll: f32,
     hover: Option<Hot>,
     pressed: Option<Hot>,
+    /// The pointer over the client area (dip), for hover after a scroll.
+    cursor: Option<(f32, f32)>,
     focus: Focus,
     /// The focus ring shows (the keyboard was used since the last click).
     ring: bool,
@@ -498,6 +500,7 @@ fn new_win(hwnd: HWND, view: View) -> Option<Win> {
         scroll: 0.0,
         hover: None,
         pressed: None,
+        cursor: None,
         focus: Focus::List,
         ring: false,
         focus_line: 0,
@@ -531,11 +534,16 @@ pub fn update(audio: &Path, view: View) {
             w.heights.clear();
         }
         let retitle = (view.doc.title != w.view.doc.title).then(|| view.doc.title.clone());
+        // What the pointer was pressed on, so a press survives an update
+        // only while the same control or line sits under it.
+        let pressed = w.pressed.map(|hot| target_of(w, hot));
         w.view = view;
         relayout(w);
         if at_end {
             w.scroll = layout::max_scroll(&w.tops, &w.heights, list_h(w));
         }
+        w.pressed = w.pressed.filter(|&hot| pressed == Some(target_of(w, hot)));
+        rehover(w);
         retitle
     });
     if let Some(Some(title)) = retitle {
@@ -1163,6 +1171,31 @@ fn move_focus(w: &mut Win, back: bool) {
     w.focus = order[if back { (at + n - 1) % n } else { (at + 1) % n }];
 }
 
+/// What a hot spot stands for: a button by its kind, a line by its place in
+/// time and text, so an index that moved to something else is told apart.
+#[derive(Clone, Debug, PartialEq)]
+enum Pressed {
+    Btn(Option<Btn>),
+    Play,
+    Bar,
+    Line(Option<(u64, String)>),
+}
+
+fn target_of(w: &Win, hot: Hot) -> Pressed {
+    match hot {
+        Hot::Btn(i) => Pressed::Btn(w.frame.buttons.get(i).map(|(b, _)| *b)),
+        Hot::Play => Pressed::Play,
+        Hot::Bar => Pressed::Bar,
+        Hot::Line(i) => Pressed::Line(w.view.doc.segments.get(i).map(|s| (s.start_ms, s.text.clone()))),
+    }
+}
+
+/// The hover follows what is under the resting pointer now (after a
+/// scroll or an update moved the rows).
+fn rehover(w: &mut Win) {
+    w.hover = w.cursor.and_then(|(x, y)| hit(w, x, y));
+}
+
 fn scroll_by(w: &mut Win, dy: f32) {
     let max = layout::max_scroll(&w.tops, &w.heights, list_h(w));
     w.scroll = (w.scroll + dy).clamp(0.0, max);
@@ -1240,6 +1273,7 @@ fn key_down(hwnd: HWND, vk: u16) -> bool {
             }
             _ => return false,
         }
+        rehover(w);
         w.ring = true;
         true
     })
@@ -1373,6 +1407,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             let changed = with_win(hwnd, |w| {
                 track_leave(w);
                 let (x, y) = to_dip(w, lparam);
+                w.cursor = Some((x, y));
                 if w.seeking {
                     seek_to(w, x);
                     return true;
@@ -1389,6 +1424,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             let _ = with_win(hwnd, |w| {
                 w.tracking = false;
                 w.hover = None;
+                w.cursor = None;
             });
             invalidate(hwnd);
             LRESULT(0)
@@ -1448,7 +1484,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         }
         WM_MOUSEWHEEL => {
             let delta = ((wparam.0 >> 16) & 0xFFFF) as i16 as f32;
-            let _ = with_win(hwnd, |w| scroll_by(w, -delta / 120.0 * WHEEL_STEP));
+            let _ = with_win(hwnd, |w| {
+                scroll_by(w, -delta / 120.0 * WHEEL_STEP);
+                rehover(w);
+            });
             invalidate(hwnd);
             LRESULT(0)
         }
@@ -1589,6 +1628,45 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_press_survives_an_update_only_on_the_same_control() {
+        let a = r"C:\rec\press.m4a";
+        assert!(open(HWND::default(), view(a, 3, Status::None), None));
+        let hwnd = hwnd_of(Path::new(a)).unwrap();
+        // Pressed on Salin (button 0), then an update that keeps the buttons.
+        with_win(hwnd, |w| w.pressed = Some(Hot::Btn(0)));
+        update(Path::new(a), view(a, 3, Status::None));
+        assert_eq!(with_win(hwnd, |w| w.pressed).unwrap(), Some(Hot::Btn(0)));
+        // A job starts: button 0 is now Batal, so the press is dropped.
+        update(Path::new(a), view(a, 3, Status::Queued));
+        assert_eq!(with_win(hwnd, |w| w.pressed).unwrap(), None);
+        // A line pressed, then the lines change under it: dropped too.
+        with_win(hwnd, |w| w.pressed = Some(Hot::Line(1)));
+        let mut other = view(a, 3, Status::Queued);
+        other.doc.segments[1].text = "lain".into();
+        update(Path::new(a), other);
+        assert_eq!(with_win(hwnd, |w| w.pressed).unwrap(), None);
+        // The hover follows the resting pointer after a scroll.
+        update(Path::new(a), view(a, 60, Status::None));
+        let (y, row) = with_win(hwnd, |w| {
+            let y = w.frame.list.y + LIST_TOP + w.tops[2] + 2.0;
+            w.cursor = Some((PAD + 4.0, y));
+            rehover(w);
+            (y, w.hover)
+        })
+        .unwrap();
+        assert_eq!(row, Some(Hot::Line(2)));
+        let after = with_win(hwnd, |w| {
+            scroll_by(w, w.heights[0] + w.heights[1]);
+            rehover(w);
+            (w.hover, layout::line_at(&w.tops, &w.heights, w.scroll, y - w.frame.list.y))
+        })
+        .unwrap();
+        assert_eq!(after.0, after.1.map(Hot::Line));
+        assert_ne!(after.0, Some(Hot::Line(2)));
+        finish();
     }
 
     fn finish() {

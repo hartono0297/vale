@@ -101,6 +101,9 @@ pub(super) struct TranscribeState {
     crashed: Vec<PathBuf>,
     /// Audio whose "Bikin transkrip" notice was shown this run.
     told: Vec<PathBuf>,
+    /// Open transcript windows whose live job sent words since the last
+    /// drain: refreshed once per batch (`transcript_flush_live`).
+    pub(super) live_dirty: Vec<PathBuf>,
     pub(super) store: Store,
 }
 
@@ -119,6 +122,7 @@ impl TranscribeState {
             loaded: false,
             crashed: Vec::new(),
             told: Vec::new(),
+            live_dirty: Vec::new(),
             store: Store::default_location(),
         }
     }
@@ -531,12 +535,12 @@ impl App {
                 if before != percent(done_ms, total_ms) {
                     self.transcribe_percent_changed();
                 }
-                self.transcript_refresh(&audio);
+                self.transcript_mark_live(&audio);
             }
             runner::Event::Segment(segment) => {
                 w.segments.push(segment);
                 let audio = w.audio.clone();
-                self.transcript_refresh(&audio);
+                self.transcript_mark_live(&audio);
             }
             runner::Event::Finished(result) => self.transcribe_finished(result),
         }

@@ -8,7 +8,7 @@ use std::ops::Range;
 use super::Status;
 use crate::config::CardPlace;
 use crate::i18n::Key;
-use crate::lyrics_card::layout::Mon;
+use crate::lyrics_card::layout::{Mon, home_monitor, px};
 use crate::ui::geometry::Rect;
 use crate::ui::settings_window::Rc;
 
@@ -327,16 +327,6 @@ pub fn seek_ms(bar: Rect, x: f32, duration_ms: u64) -> u64 {
 
 // ------------------------------------------------------------------ placement
 
-fn px(dip: f32, dpi: u32) -> i32 {
-    (dip * dpi.max(96) as f32 / 96.0).round() as i32
-}
-
-fn overlap(a: Rc, b: Rc) -> i64 {
-    let w = (a.right.min(b.right) - a.left.max(b.left)).max(0);
-    let h = (a.bottom.min(b.bottom) - a.top.max(b.top)).max(0);
-    i64::from(w) * i64::from(h)
-}
-
 /// Where the window goes (screen px). The saved rect is used when at least
 /// half of it lies on one monitor, its top left kept and its size within the
 /// minimum and that monitor's work area; otherwise (first open, the monitor is
@@ -349,12 +339,7 @@ pub fn place(saved: Option<CardPlace>, monitors: &[Mon], fallback: Mon) -> Rc {
             right: p.right,
             bottom: p.bottom,
         };
-        let area = i64::from(r.width().max(0)) * i64::from(r.height().max(0));
-        let best = monitors
-            .iter()
-            .max_by_key(|m| overlap(r, m.rect))
-            .filter(|m| area > 0 && overlap(r, m.rect) * 2 >= area);
-        if let Some(m) = best {
+        if let Some(m) = home_monitor(r, monitors) {
             let w = r.width().max(px(MIN_W, m.dpi)).min(m.work.width().max(1));
             let h = r.height().max(px(MIN_H, m.dpi)).min(m.work.height().max(1));
             return Rc {

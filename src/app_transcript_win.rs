@@ -9,7 +9,7 @@
 //! `transcript_refresh`; nothing runs while no window is open.
 
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::Duration;
 
 use chrono::Local;
 
@@ -32,6 +32,49 @@ use crate::ui::transcript_menu;
 /// order, the mic's echo of the meeting dropped.
 pub(super) fn live_lines(segments: &[Segment]) -> Vec<Segment> {
     echo::drop_echo(output::merge(segments.iter().cloned()))
+}
+
+/// Where a recording's job stands, as the island knows it.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum Job {
+    /// Its worker runs (and was not asked to stop).
+    Running {
+        progress: Option<(u64, Option<u64>)>,
+        elapsed: Duration,
+    },
+    /// In the queue; a recording holds it, or its model (or the engine) is
+    /// not installed.
+    Queued { recording: bool, model_missing: bool },
+    Failed(String),
+    /// Nothing queued, running or failed.
+    Idle,
+}
+
+/// What the window says about `job`. A recording without a transcript while
+/// transcripts are off is `Off`.
+pub(super) fn status_of(job: Job, enabled: bool, has_transcript: bool) -> Status {
+    match job {
+        Job::Running { progress, elapsed } => {
+            let (done, total) = progress.unwrap_or((0, None));
+            Status::Running {
+                pct: percent(done, total).unwrap_or(0),
+                eta: eta(elapsed, done, total),
+            }
+        }
+        Job::Queued { recording: true, .. } => Status::Held,
+        Job::Queued { model_missing: true, .. } => Status::Waiting,
+        Job::Queued { .. } => Status::Queued,
+        Job::Failed(why) => Status::Failed(why),
+        Job::Idle if !enabled && !has_transcript => Status::Off,
+        Job::Idle => Status::None,
+    }
+}
+
+/// Adds `audio` to the windows to refresh after this batch, once.
+pub(super) fn mark_dirty(dirty: &mut Vec<PathBuf>, audio: &Path) {
+    if !dirty.iter().any(|p| same_audio(p, audio)) {
+        dirty.push(audio.to_path_buf());
+    }
 }
 
 /// The text a request puts on the clipboard or in a note, from `doc`.
@@ -63,7 +106,6 @@ impl App {
     pub(super) fn transcript_view(&self, audio: &Path) -> View {
         let lang = self.config.language;
         let fallback = display_title(audio, lang, Local::now().date_naive());
-        let mut doc = doc::load(audio, &fallback);
         let tr = &self.tr;
         let store = &tr.store;
         let enabled = self.config.transcript.enabled;
@@ -71,12 +113,21 @@ impl App {
             .worker
             .as_ref()
             .filter(|w| same_audio(&w.audio, audio) && !w.stopping);
-        let status = if let Some(w) = worker {
-            doc.segments = live_lines(&w.segments);
-            let (done, total) = w.progress.unwrap_or((0, None));
-            Status::Running {
-                pct: percent(done, total).unwrap_or(0),
-                eta: eta(w.started.elapsed(), done, total),
+        // A running job's lines are the worker's: its `.srt` (an older run's,
+        // if any) is not read.
+        let doc = match worker {
+            Some(w) => {
+                let mut d = doc::load_meta(audio, &fallback);
+                d.segments = live_lines(&w.segments);
+                d.two_channel |= d.segments.iter().any(|s| s.speaker.is_some());
+                d
+            }
+            None => doc::load(audio, &fallback),
+        };
+        let job = if let Some(w) = worker {
+            Job::Running {
+                progress: w.progress,
+                elapsed: w.started.elapsed(),
             }
         } else if tr.queue.state(audio).is_some() {
             let model = tr
@@ -84,13 +135,10 @@ impl App {
                 .jobs()
                 .find(|j| same_audio(&j.audio, audio))
                 .and_then(|j| catalog::model(&j.model));
-            let missing = !store.engine_installed() || model.is_none_or(|m| !store.model_installed(m));
-            if self.rec.engaged() {
-                Status::Held
-            } else if missing {
-                Status::Waiting
-            } else {
-                Status::Queued
+            Job::Queued {
+                recording: self.rec.engaged(),
+                model_missing: !store.engine_installed()
+                    || model.is_none_or(|m| !store.model_installed(m)),
             }
         } else if let Some(why) = tr
             .failed
@@ -98,12 +146,11 @@ impl App {
             .find(|(p, _)| same_audio(p, audio))
             .map(|(_, why)| why.clone())
         {
-            Status::Failed(why)
-        } else if !enabled && !doc.has_transcript {
-            Status::Off
+            Job::Failed(why)
         } else {
-            Status::None
+            Job::Idle
         };
+        let status = status_of(job, enabled, doc.has_transcript);
         View {
             doc,
             status,
@@ -117,6 +164,22 @@ impl App {
     pub(super) fn transcript_refresh(&mut self, audio: &Path) {
         if transcript_win::is_open(audio) {
             transcript_win::update(audio, self.transcript_view(audio));
+        }
+    }
+
+    /// The live job of `audio` sent a word: its open window follows once the
+    /// event batch is read (`transcript_flush_live`).
+    pub(super) fn transcript_mark_live(&mut self, audio: &Path) {
+        if transcript_win::is_open(audio) {
+            mark_dirty(&mut self.tr.live_dirty, audio);
+        }
+    }
+
+    /// After an event batch: each window whose live job sent words follows
+    /// once.
+    pub(super) fn transcript_flush_live(&mut self) {
+        for audio in std::mem::take(&mut self.tr.live_dirty) {
+            self.transcript_refresh(&audio);
         }
     }
 
@@ -186,7 +249,7 @@ impl App {
                 kind: NoticeKind::Copied,
             }
         };
-        self.apply(Event::Notice(notice), Instant::now());
+        self.apply_now(Event::Notice(notice));
     }
 
     /// Transkrip ulang: the models' rows under the button, opened once the
@@ -247,6 +310,43 @@ mod tests {
             ]
         );
         assert!(live_lines(&[]).is_empty());
+    }
+
+    #[test]
+    fn a_burst_of_live_words_refreshes_each_window_once() {
+        let mut dirty = Vec::new();
+        // A batch of segments and progress words for two recordings.
+        for audio in [r"C:\r\a.m4a", r"C:\r\a.m4a", r"c:\R\A.M4A", r"C:\r\b.m4a", r"C:\r\a.m4a"] {
+            mark_dirty(&mut dirty, Path::new(audio));
+        }
+        assert_eq!(dirty, [PathBuf::from(r"C:\r\a.m4a"), PathBuf::from(r"C:\r\b.m4a")]);
+    }
+
+    #[test]
+    fn the_status_follows_the_job() {
+        use std::time::Duration;
+        let running = |progress| Job::Running { progress, elapsed: Duration::from_secs(60) };
+        let queued = |recording, model_missing| Job::Queued { recording, model_missing };
+        let failed = Job::Failed("Disk penuh".into());
+        let table = [
+            // (job, transcripts on, has a transcript) -> status
+            (running(Some((30_000, Some(120_000)))), true, false,
+                Status::Running { pct: 25, eta: Some(Duration::from_secs(180)) }),
+            (running(None), true, true, Status::Running { pct: 0, eta: None }),
+            (queued(true, true), true, false, Status::Held),
+            (queued(true, false), true, true, Status::Held),
+            (queued(false, true), true, false, Status::Waiting),
+            (queued(false, false), true, false, Status::Queued),
+            (failed.clone(), true, false, Status::Failed("Disk penuh".into())),
+            (failed, false, true, Status::Failed("Disk penuh".into())),
+            (Job::Idle, false, false, Status::Off),
+            (Job::Idle, false, true, Status::None),
+            (Job::Idle, true, false, Status::None),
+            (Job::Idle, true, true, Status::None),
+        ];
+        for (job, enabled, has, want) in table {
+            assert_eq!(status_of(job.clone(), enabled, has), want, "{job:?} {enabled} {has}");
+        }
     }
 
     #[test]

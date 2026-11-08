@@ -39,13 +39,25 @@ pub const NOTE_LINES: usize = 20;
 /// Never fails: what is missing or unreadable stays at its default, and the
 /// title falls back to `fallback_title`.
 pub fn load(audio: &Path, fallback_title: &str) -> Doc {
+    read(audio, fallback_title, true)
+}
+
+/// `load` without reading the `.srt`: what the sidecar says about the
+/// recording and its transcript, and no lines. For a running job, whose lines
+/// come from the worker; a one-sidecar-less file reads as one channel.
+pub fn load_meta(audio: &Path, fallback_title: &str) -> Doc {
+    read(audio, fallback_title, false)
+}
+
+fn read(audio: &Path, fallback_title: &str, with_srt: bool) -> Doc {
     let files = output::paths(audio);
     let sidecar = std::fs::read_to_string(&files.sidecar).ok();
     let value: Option<serde_json::Value> = sidecar
         .as_deref()
         .and_then(|s| serde_json::from_str(s).ok());
-    let srt = std::fs::read(&files.srt)
-        .ok()
+    let srt = with_srt
+        .then(|| std::fs::read(&files.srt).ok())
+        .flatten()
         .map(|b| String::from_utf8_lossy(&b).into_owned());
 
     let str_at = |v: &serde_json::Value, key: &str| {
@@ -430,6 +442,21 @@ mod tests {
                 seg(3_000, 4_000, Some(Others), "pagi"),
             ]
         );
+    }
+
+    #[test]
+    fn load_meta_reads_the_sidecar_and_leaves_the_srt() {
+        let dir = temp_dir("meta");
+        std::fs::write(
+            dir.join("a.vale.json"),
+            r#"{"v":1,"title":"Sync mingguan","duration_ms":60000,"channels":["mic","system"],"transcript":{"model":"whisper-small","segments":1}}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.join("a.srt"), "1\n00:00:01,000 --> 00:00:02,000\nSaya: halo\n\n").unwrap();
+        let audio = dir.join("a.m4a");
+        let meta = load_meta(&audio, "Rekaman");
+        assert!(meta.segments.is_empty());
+        assert_eq!(meta, Doc { segments: Vec::new(), ..load(&audio, "Rekaman") });
     }
 
     #[test]
