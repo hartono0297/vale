@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use chrono::NaiveDate;
 
@@ -174,6 +174,29 @@ pub enum NoticeKind {
     StickyReminder {
         id: String,
     },
+    /// "Rekaman tersimpan · 42 mnt · klik untuk buka" (Bata happy). A click
+    /// on the body shows `path` in Explorer (`Effect::RevealFile`).
+    RecSaved {
+        path: PathBuf,
+    },
+    /// "Rekaman gagal" with the reason (Bata sad). A click dismisses, or,
+    /// with `reveal` (the audio kept in a `.m4a.part`), shows that file in
+    /// Explorer (`Effect::RevealFile`).
+    RecFailed {
+        reveal: Option<PathBuf>,
+    },
+    /// Windows refused the mic. A click opens its privacy page
+    /// (`Effect::RecMicSettings`).
+    RecMicDenied,
+    /// Windows refused to write in the recordings folder `dir` (Controlled
+    /// folder access). A click opens the folder picker
+    /// (`Effect::RecPickFolder`).
+    RecFolderBlocked {
+        dir: PathBuf,
+    },
+    /// A short word about a recording: the one-time "ask everyone first" and
+    /// a source that dropped out. A click dismisses.
+    RecInfo,
 }
 
 /// What the Arranged notice offers beside "Batalkan".
@@ -219,8 +242,78 @@ pub struct Timeline {
     pub rate: f32,
 }
 
+/// Which sources an audio recording takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecSources {
+    pub mic: bool,
+    pub system: bool,
+}
+
+/// One finished recording in the Rekam page's list.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecEntry {
+    pub path: PathBuf,
+    /// The sidecar's title, or the time the recording started when it has none.
+    pub title: String,
+    /// "Hari ini 10:02", as the page shows it.
+    pub started: String,
+    pub duration: Duration,
+    /// A `.m4a.part` a crash left: the page says "belum selesai" instead of
+    /// a length (it still plays, and a click still shows it).
+    pub unfinished: bool,
+}
+
+/// What reaches `App` about a recording, tagged in `Event::Rec` with the
+/// session it belongs to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RecNote {
+    /// The writer thread's word.
+    Recorder(crate::recorder::RecEvent),
+    /// The start thread is done; `App` joins it for the recorder.
+    Started,
+    /// The stop thread is done (the writer's word came before).
+    Stopped,
+}
+
+/// A recording in progress, as the notch and the Rekam page show it. The
+/// levels are not here: they change many times a second and ride the frame.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecStatus {
+    pub started: Instant,
+    /// The paused spans already over.
+    pub paused_total: Duration,
+    /// When the pause now running began.
+    pub paused_since: Option<Instant>,
+    pub sources: RecSources,
+    /// Which sources are muted, `[mic, system]`.
+    pub muted: [bool; 2],
+}
+
+impl RecStatus {
+    /// The recorded time at `now`: the time since the start without the
+    /// paused spans, and frozen while paused.
+    pub fn elapsed(&self, now: Instant) -> Duration {
+        let until = self.paused_since.unwrap_or(now).max(self.started);
+        until
+            .saturating_duration_since(self.started)
+            .saturating_sub(self.paused_total)
+    }
+
+    pub fn paused(&self) -> bool {
+        self.paused_since.is_some()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
+    /// The recording started, paused, resumed or ended (`None`); the notch
+    /// shows `View::RecordCompact` while one runs.
+    RecStatus(Option<RecStatus>),
+    /// The newest recordings found in the folder (the page shows five).
+    RecRecent(Vec<RecEntry>),
+    /// What a recording's threads reported, with the session number they
+    /// belong to (`App` handles it; the reducer ignores it).
+    Rec(u64, RecNote),
     /// `None` means no media session is active.
     Media(Option<MediaInfo>),
     /// The session's timeline (seek, track change, play/pause); `None` when
@@ -261,6 +354,9 @@ pub enum Event {
     },
     /// A note, event or reminder editor window opened (true) or closed (false).
     EditorOpen(bool),
+    /// One of Vale's own dropdowns (`menu_pop`) opened from the panel (true)
+    /// or went (false). It holds the panel open like an editor.
+    MenuOpen(bool),
     /// The local date rolled over.
     Today(NaiveDate),
     /// The reminder was edited, deleted or dismissed elsewhere: its sticky
@@ -377,6 +473,10 @@ pub enum Event {
     /// or the peeked full toast), or left it. Drives the peek and the strip's
     /// hold.
     ToastPointer(bool),
+    /// The pointer is on a source's level group of the REC view on the closed
+    /// notch (`Hit::RecMuteCompact`), or left it. While it is there the hover
+    /// opens no panel; moving onto the rest of the notch does.
+    RecMuteHot(Option<crate::recorder::Source>),
     /// A mouse button went down outside the island while the panel was kept
     /// open: it closes.
     Dismiss,
@@ -541,6 +641,9 @@ pub enum Hit {
     ToastSlot,
     /// The ✕ at the right end of a timed full notice: closes it, opens nothing.
     NoticeClose,
+    /// A recorded source's level group on the REC view of the closed notch:
+    /// a click mutes or unmutes it and opens nothing.
+    RecMuteCompact(crate::recorder::Source),
     /// A result row of the quick search (its place in the list).
     SearchResult(usize),
     /// The back button left of the quick search's field: closes it, as Esc.
@@ -577,6 +680,18 @@ pub enum Hit {
     DeviceDetail(usize),
     DeviceRetry(usize),
     DevicesEjectAll,
+    /// The Rekam page: the big button (start or stop), pause or resume, the
+    /// source control, a recent recording (by its place in the list) and
+    /// "Buka folder".
+    RecToggle,
+    RecPause,
+    /// A source's mute button, only while recording.
+    RecMute(crate::recorder::Source),
+    /// A source's device name: opens the device menu (idle or recording).
+    RecDevice(crate::recorder::Source),
+    RecSources(RecSources),
+    RecOpen(usize),
+    RecFolder,
     /// Susun, template step: a monitor chip, a template card (built-ins
     /// first, then the user's) and a saved arrangement's play button, by
     /// place. Pick step: a window row by place in the list, and "Lewati
@@ -766,6 +881,23 @@ pub enum Effect {
     DeviceOpen(usize),
     DeviceDetail(usize),
     DevicesEjectAll,
+    /// The Rekam page's buttons, for `App`: start or stop the recording,
+    /// pause or resume it, choose the sources (never sent while recording),
+    /// show a finished recording in Explorer, open the recordings folder
+    /// (the panel has collapsed).
+    RecToggle,
+    RecPause,
+    /// Mute or unmute one source of the running recording.
+    RecMute(crate::recorder::Source),
+    /// Open the device menu of a source.
+    RecDevice(crate::recorder::Source),
+    RecSources(RecSources),
+    RecReveal(PathBuf),
+    RecOpenFolder,
+    /// The mic notice's click: Windows' microphone privacy page.
+    RecMicSettings,
+    /// The blocked-folder notice's click: the recordings folder picker.
+    RecPickFolder,
     /// Susun, as the hits of the same names.
     ArrangeMonitor(usize),
     ArrangeCard(usize),
@@ -907,11 +1039,13 @@ pub enum PhoneStage {
 }
 
 /// Panel pages, in scroll order: Kalender, Pomodoro, Pengingat, Catatan,
-/// Musik, Mixer, Clipboard, Rak, Sistem, Perangkat, then CLI and Pintasan.
+/// Rekam, Musik, Mixer, Clipboard, Rak, Sistem, Perangkat, then CLI and Pintasan.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page {
     Calendar,
     Pomodoro,
+    /// Rekam: start and stop an audio recording, and the last recordings.
+    Record,
     Reminders,
     Notes,
     Media,
@@ -939,9 +1073,10 @@ pub enum Page {
 }
 
 impl Page {
-    pub const ALL: [Page; 14] = [
+    pub const ALL: [Page; 15] = [
         Page::Calendar,
         Page::Pomodoro,
+        Page::Record,
         Page::Reminders,
         Page::Notes,
         Page::Media,
@@ -974,7 +1109,7 @@ pub enum Shortcut {
 }
 
 impl Shortcut {
-    pub const ALL: [Shortcut; 21] = [
+    pub const ALL: [Shortcut; 22] = [
         Shortcut::Screenshot,
         Shortcut::Clipboard,
         Shortcut::Search,
@@ -996,6 +1131,8 @@ impl Shortcut {
         Shortcut::Go(Page::Devices),
         Shortcut::Go(Page::Cli),
         Shortcut::Go(Page::Arrange),
+        // New tiles join at the end (off by default).
+        Shortcut::Go(Page::Record),
     ];
 
     /// Whether a fresh install shows this tile: the original nine, the
@@ -1023,6 +1160,62 @@ pub enum View {
     /// The compact media view showing the current synced lyric line.
     MediaLyric,
     PomodoroCompact,
+    /// A recording runs: the red dot, the clock and the level bars.
+    RecordCompact,
     Panel(Page),
     Notice(Notice),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn status(started: Instant) -> RecStatus {
+        RecStatus {
+            started,
+            paused_total: Duration::ZERO,
+            paused_since: None,
+            sources: RecSources {
+                mic: true,
+                system: true,
+            },
+            muted: [false; 2],
+        }
+    }
+
+    #[test]
+    fn elapsed_counts_from_the_start() {
+        let t0 = Instant::now();
+        let s = status(t0);
+        assert_eq!(s.elapsed(t0), Duration::ZERO);
+        assert_eq!(s.elapsed(t0 + Duration::from_secs(75)), Duration::from_secs(75));
+    }
+
+    #[test]
+    fn elapsed_leaves_out_paused_spans() {
+        let t0 = Instant::now();
+        let mut s = status(t0);
+        s.paused_total = Duration::from_secs(20);
+        assert_eq!(s.elapsed(t0 + Duration::from_secs(100)), Duration::from_secs(80));
+    }
+
+    #[test]
+    fn elapsed_freezes_while_paused() {
+        let t0 = Instant::now();
+        let mut s = status(t0);
+        s.paused_total = Duration::from_secs(5);
+        s.paused_since = Some(t0 + Duration::from_secs(60));
+        assert!(s.paused());
+        assert_eq!(s.elapsed(t0 + Duration::from_secs(60)), Duration::from_secs(55));
+        assert_eq!(s.elapsed(t0 + Duration::from_secs(600)), Duration::from_secs(55));
+    }
+
+    #[test]
+    fn elapsed_never_goes_negative() {
+        let t0 = Instant::now();
+        let mut s = status(t0 + Duration::from_secs(10));
+        assert_eq!(s.elapsed(t0), Duration::ZERO);
+        s.paused_total = Duration::from_secs(99);
+        assert_eq!(s.elapsed(t0 + Duration::from_secs(20)), Duration::ZERO);
+    }
 }

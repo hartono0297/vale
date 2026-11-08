@@ -77,7 +77,7 @@ use crate::i18n::{self, Key, tr};
 use crate::identify_overlay;
 use crate::lyrics::{self, DiskCache, LyricsState, LyricsWorker, Query};
 use crate::media_log;
-use crate::model::{Effect, Event, Hit, Notice, NoticeKind, Page, View};
+use crate::model::{Effect, Event, Hit, Notice, NoticeKind, Page, RecSources, View};
 use crate::mole::{self, Confirmed, MoleEvent, MoleOpts, MoleWorker};
 use crate::notch_monitor::{self, Display};
 use crate::notes::NotesStore;
@@ -124,7 +124,7 @@ use crate::ui::notch_fill;
 use crate::ui::panel_layout::{CliHead, STRIP_H, cli_layout};
 use crate::ui::render::{
     CleanerView, CliView, DevicesView, FolderMenuView, Frame, MoleView, NoticeCloseView, Progress,
-    Renderer, RobotFrame, SearchView, SystemView,
+    RecFrame, RecordView, Renderer, RobotFrame, SearchView, SystemView,
 };
 use crate::ui::settings_layout::MonitorRow;
 use crate::ui::robot::{
@@ -159,6 +159,10 @@ use notif_page::{NotifSetting, NotifState, TIMER_NOTIF_SAVE};
 #[path = "app_update.rs"]
 mod update_page;
 use update_page::{TIMER_UPDATE, UpdateState};
+
+#[path = "app_record.rs"]
+pub(crate) mod record;
+use record::RecState;
 
 #[path = "app_lyrics_card.rs"]
 mod card;
@@ -199,6 +203,9 @@ use shot::{ShotSetting, Shots};
 const WM_APP_EVENT: u32 = WM_APP + 1;
 /// Posted once the user has answered the notification-access prompt.
 const WM_APP_ACCESS: u32 = WM_APP + 3;
+/// Opens a source's device menu from the main loop, outside the `APP` borrow
+/// (`wparam`: 0 mic, 1 PC audio).
+const WM_APP_REC_DEVICE: u32 = WM_APP + 80;
 /// These live in the Controls feature of `windows`; the values are fixed by Win32.
 const WM_MOUSEHOVER: u32 = 0x02A1;
 const WM_MOUSELEAVE: u32 = 0x02A3;
@@ -229,6 +236,16 @@ const TIMER_EQ: usize = 5;
 const TIMER_POMO: usize = 6;
 /// Date rollover check.
 const TIMER_DAY: usize = 7;
+/// One-shot to the next whole second of the REC clock, re-armed after each
+/// redraw, only while the REC view (or the Rekam page) shows a recording that
+/// is not paused (`rec_clock_timer_wanted`).
+const TIMER_REC: usize = 60;
+/// One-shot, `REC_LEVEL_MS` apart (coalescable, re-armed after each redraw):
+/// the REC view's level meters redraw, only while that view is on screen at a
+/// screen somebody can see, the recording runs and Motion is not Off
+/// (`rec_level_timer_wanted`).
+const TIMER_REC_LEVEL: usize = 61;
+const REC_LEVEL_MS: u32 = 120;
 /// Reminders: one-shot at the earliest due time (at most `REMINDER_MAX_MS` away).
 const TIMER_REMINDER: usize = 9;
 /// Idle clock redraws at each minute boundary, only while it shows.
@@ -470,6 +487,7 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
             }
         });
     }
+    let rec_sources = config.recording.sources;
     APP.with(|cell| {
         *cell.borrow_mut() = Some(App {
             hwnd,
@@ -494,6 +512,7 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
             reveal: None,
             strip_motion: None,
             toast_over: false,
+            rec_hot_over: None,
             close_fade: CloseFade::settled(0.0, Instant::now()),
             close_hot: false,
             close_ptr: None,
@@ -573,6 +592,10 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
             hotkeys: HotkeyState::default(),
             widgets: WidgetsState::default(),
             pomo_timer: false,
+            rec_timer: false,
+            rec_level_timer: false,
+            rec: RecState::default(),
+            rec_sources,
             clock_timer: false,
             progress_timer: false,
             lyrics: LyricsState::default(),
@@ -906,6 +929,9 @@ struct App {
     /// The pointer is on the busy toast's own spot, as the reducer last
     /// heard (`Event::ToastPointer`); synced from the state at each refresh.
     toast_over: bool,
+    /// The level group of the REC view the pointer is on, as the reducer last
+    /// heard (`Event::RecMuteHot`); synced from the state at each refresh.
+    rec_hot_over: Option<crate::recorder::Source>,
     /// The notice's ✕ fading in or out (`ui::motion::CloseFade`); its target
     /// is 1 while the pointer is on the island and a closable notice shows
     /// in its full form.
@@ -1090,6 +1116,15 @@ struct App {
     /// The desktop widgets (sticky notes): the host and the pending save.
     widgets: WidgetsState,
     pomo_timer: bool,
+    /// `TIMER_REC` is set.
+    rec_timer: bool,
+    /// `TIMER_REC_LEVEL` is set.
+    rec_level_timer: bool,
+    /// The audio recorder's session (`app_record`).
+    rec: RecState,
+    /// The sources the Rekam page's control chose for the next recording
+    /// (kept in `config.recording.sources`).
+    rec_sources: RecSources,
     /// `TIMER_CLOCK` is set.
     clock_timer: bool,
     /// `TIMER_PROGRESS` is set.
@@ -1360,6 +1395,7 @@ impl App {
                     | Event::Toast(_)
                     | Event::ClipPacked { .. }
                     | Event::Update(_)
+                    | Event::Rec(..)
                     // A progress tick draws the receiving view itself, at
                     // most six a second; nothing else changed.
                     | Event::Phone(_, crate::phone::PhoneEvent::UploadProgress { .. })
@@ -1468,6 +1504,11 @@ impl App {
                 // The self-update's workers: `App` decides what shows.
                 Event::Update(event) => {
                     self.on_update_event(event);
+                    continue;
+                }
+                // The recorder's thread: `App` makes the notice.
+                Event::Rec(session, note) => {
+                    self.on_rec_note(session, note);
                     continue;
                 }
                 Event::SearchIndex(apps) => {
@@ -2243,6 +2284,15 @@ impl App {
             Effect::PhoneCancel => self.phone_cancel(),
             Effect::PhoneStop => self.phone_stop(crate::phone::EndReason::Done),
             Effect::PhoneBack => self.phone_back(),
+            Effect::RecToggle => self.rec_toggle(),
+            Effect::RecPause => self.rec_pause(),
+            Effect::RecMute(source) => self.rec_toggle_mute(source),
+            Effect::RecDevice(source) => self.rec_open_device_menu(source),
+            Effect::RecSources(sources) => self.rec_set_sources(sources),
+            Effect::RecReveal(path) => self.rec_reveal(path),
+            Effect::RecOpenFolder => self.rec_open_folder(),
+            Effect::RecMicSettings => self.rec_mic_settings(),
+            Effect::RecPickFolder => self.rec_pick_folder(),
             Effect::DeviceEject(i) => self.devices_eject(i),
             Effect::DeviceOpen(i) => self.devices_open(i),
             Effect::DeviceDetail(i) => self.devices_toggle_detail(i),
@@ -3610,6 +3660,7 @@ impl App {
 
     /// Retargets the animation at the state's view and re-arms the notice deadline.
     fn refresh(&mut self, now: Instant) {
+        self.rec_follow_page(self.state.panel_page_under());
         self.draw_gen = self.draw_gen.wrapping_add(1);
         // The sleep clock follows mouse and keyboard input anywhere on the PC.
         self.fold_pc_input(now);
@@ -3626,6 +3677,7 @@ impl App {
         // (it lets go when a toast ends or the pointer leaves); the next
         // mouse move compares against that.
         self.toast_over = self.state.toast_pointer();
+        self.rec_hot_over = self.state.rec_mute_hot();
         if let Some(n) = self.state.toast_slot() {
             self.slot_keep = Some(n.clone());
         }
@@ -3670,6 +3722,7 @@ impl App {
             View::MediaCompact => Some(ShapeKind::MediaCompact),
             View::MediaLyric => Some(ShapeKind::MediaLyric),
             View::PomodoroCompact => Some(ShapeKind::PomodoroCompact),
+            View::RecordCompact => Some(ShapeKind::RecordCompact),
             View::Panel(_) => Some(self.panel_kind()),
             View::Notice(n) if matches!(n.kind, NoticeKind::Screenshot { .. }) => {
                 Some(ShapeKind::NoticeShot)
@@ -3686,7 +3739,7 @@ impl App {
             // The idle island grows to the left for the typing cat's laptop.
             ShapeKind::Idle => self.idle_shape(now),
             // The compact views widen to hold the busy toast's logo.
-            ShapeKind::MediaCompact | ShapeKind::PomodoroCompact
+            ShapeKind::MediaCompact | ShapeKind::PomodoroCompact | ShapeKind::RecordCompact
                 if self.state.toast_slot().is_some() =>
             {
                 with_toast_slot(shape_with_robot_sized(style, notch, kind, robot))
@@ -4222,6 +4275,7 @@ impl App {
                 }
             }
         }
+        self.sync_rec_timers(now);
         self.sync_progress_timer(now);
         self.sync_robot_timers(now);
         self.sync_system_page();
@@ -4371,6 +4425,8 @@ impl App {
         self.sync_eq();
         // A lock or a display change stops the paws and starts them again.
         self.sync_typing_timer(Instant::now());
+        // The REC clock and meters stop too, and come back on unlock.
+        self.sync_rec_timers(Instant::now());
         self.follow_pointer_settings(Instant::now());
         // The sleeping cat's wake poll stops while nobody is at the screen.
         // Back again, input made meanwhile wakes the cat at once.
@@ -5102,6 +5158,71 @@ impl App {
         self.progress_timer = wait.is_some();
     }
 
+    /// `TIMER_REC` and `TIMER_REC_LEVEL` run only while a recording shows and
+    /// moves; they are killed the moment the view leaves the screen.
+    fn sync_rec_timers(&mut self, now: Instant) {
+        let view = self.state.view();
+        let paused = self.state.rec().is_some_and(|r| r.paused());
+        let recording = self.state.rec().is_some();
+        let away = self.screen_away();
+        let clock = rec_clock_timer_wanted(
+            recording && matches!(view, View::RecordCompact | View::Panel(Page::Record)),
+            paused,
+            away,
+        );
+        if clock != self.rec_timer {
+            self.rec_timer = clock;
+            if clock {
+                self.arm_rec(now);
+            } else {
+                unsafe {
+                    let _ = KillTimer(Some(self.hwnd), TIMER_REC);
+                }
+            }
+        }
+        let level = rec_level_timer_wanted(
+            recording && view == View::RecordCompact,
+            paused,
+            self.motion().timed(),
+            away,
+        );
+        if level != self.rec_level_timer {
+            self.rec_level_timer = level;
+            if level {
+                self.arm_rec_level();
+            } else {
+                unsafe {
+                    let _ = KillTimer(Some(self.hwnd), TIMER_REC_LEVEL);
+                }
+            }
+        }
+    }
+
+    /// One-shot `REC_LEVEL_MS` from now; Windows may fold it into another
+    /// wake within the usual slack.
+    fn arm_rec_level(&self) {
+        unsafe {
+            SetCoalescableTimer(
+                Some(self.hwnd),
+                TIMER_REC_LEVEL,
+                REC_LEVEL_MS,
+                None,
+                timer_slack(REC_LEVEL_MS),
+            );
+        }
+    }
+
+    /// One-shot to the next whole second of the recorded time.
+    fn arm_rec(&self, now: Instant) {
+        let elapsed = self
+            .state
+            .rec()
+            .map_or(Duration::ZERO, |r| r.elapsed(now));
+        unsafe {
+            SetTimer(Some(self.hwnd), TIMER_REC, ms_to_next_whole_second(elapsed), None);
+        }
+    }
+
     /// One-shot, re-armed after each redraw, so the shown second ticks over on time.
     fn arm_pomo(&self, now: Instant) {
         let wait = ms_to_next_second(self.state.pomodoro().remaining(now));
@@ -5198,6 +5319,27 @@ impl App {
                 }
                 if self.pomo_timer {
                     self.arm_pomo(now);
+                }
+            }
+            TIMER_REC => {
+                let now = Instant::now();
+                if !self.animating() {
+                    self.draw(now);
+                }
+                if self.rec_timer {
+                    self.arm_rec(now);
+                }
+            }
+            TIMER_REC_LEVEL => {
+                // A one-shot: gone unless re-armed.
+                unsafe {
+                    let _ = KillTimer(Some(self.hwnd), TIMER_REC_LEVEL);
+                }
+                if !self.animating() {
+                    self.draw(Instant::now());
+                }
+                if self.rec_level_timer {
+                    self.arm_rec_level();
                 }
             }
             TIMER_DAY => self.check_date(),
@@ -5492,6 +5634,11 @@ impl App {
         }
         self.dock_follow(lparam);
         self.track_close_hot(Some(lparam));
+        let group = match self.hit_at(lparam) {
+            Some(Hit::RecMuteCompact(source)) => Some(source),
+            _ => None,
+        };
+        self.set_rec_mute_hot(group);
         if self.state.view() == View::Panel(Page::Arrange) {
             let hit = self.hit_at(lparam);
             self.arrange_hover(hit.as_ref());
@@ -5584,6 +5731,12 @@ impl App {
             None if self.state.shelf_drop_here() => self.apply_now(Event::ShelfDropLeft),
             None => self.refresh(Instant::now()),
         }
+        // A lit level group of the REC view lets go only after the hover
+        // ended (`Hover(false)` already let it go in the reducer): before
+        // it, the hover alone would hold the panel open for that one apply,
+        // and Hover & stay would latch it. What is left is a leave before
+        // the dwell, with no hover to hold anything.
+        self.set_rec_mute_hot(None);
     }
 
     /// The pointer at `lparam` is on the busy toast's own spot: its strip in
@@ -5606,6 +5759,16 @@ impl App {
         let (x, y) = client_xy(lparam);
         let (x, y) = self.renderer.to_dip(x as f32, y as f32);
         toast_peek_reaches(self.config.style, self.notch_size(), x, y)
+    }
+
+    /// Tells the reducer the pointer reached or left a level group of the REC
+    /// view. Only a change is sent, and its redraw lights or clears the pill:
+    /// no timer.
+    fn set_rec_mute_hot(&mut self, group: Option<crate::recorder::Source>) {
+        if self.rec_hot_over != group {
+            self.rec_hot_over = group;
+            self.apply_now(Event::RecMuteHot(group));
+        }
     }
 
     /// Tells the reducer the pointer reached or left the busy toast's spot.
@@ -5964,6 +6127,11 @@ impl App {
         // The hotkeys follow a changed value (once started; not while
         // Settings records).
         self.hotkeys_follow_config();
+        // A hand edit of the recorder's sources reaches the Rekam page (not
+        // while a recording runs: it keeps what it started with).
+        if !self.rec.active() {
+            self.rec_sources = self.config.recording.sources;
+        }
         if changed && let Some(sync) = &self.sync {
             sync.send(SyncRequest::Config(self.config.clone()));
             // The next calendar view asks again, now with the new client.
@@ -6248,6 +6416,13 @@ impl App {
                 self.config.device_notices = on;
                 self.save_config();
             }
+            SettingsAction::RecSources(v) => self.rec_set_sources(v),
+            SettingsAction::RecDevice(source, id) => self.rec_set_device(source, id),
+            SettingsAction::RecFolder(dir) => self.rec_set_folder(dir),
+            SettingsAction::RecEchoCancel(on) => {
+                self.config.recording.echo_cancel = on;
+                self.save_config();
+            }
             // The thumb moves live; only the release is saved.
             SettingsAction::ArrangeGap { gap, commit } => {
                 self.config.arrange.gap = gap;
@@ -6409,7 +6584,13 @@ impl App {
     /// no slot, or on any other view).
     fn slot_drawn(&self, now: Instant) -> f32 {
         match (&self.drawn, self.slot_keep.is_some()) {
-            (View::MediaCompact | View::MediaLyric | View::PomodoroCompact, true) => {
+            (
+                View::MediaCompact
+                | View::MediaLyric
+                | View::PomodoroCompact
+                | View::RecordCompact,
+                true,
+            ) => {
                 self.slot_share.at(&self.anim, now)
             }
             _ => 0.0,
@@ -6550,10 +6731,20 @@ impl App {
             || transit.content_alpha < 1.0
             || self.strip_motion.is_some()
             || self.eyes_morph;
+        let rec_levels = self.rec_levels();
         let frame = Frame {
             view: &self.drawn,
             media: state.media(),
             pomodoro: state.pomodoro(),
+            rec: state.rec().map(|r| RecFrame {
+                elapsed: r.elapsed(now),
+                paused: r.paused(),
+                sources: r.sources,
+                mic: rec_levels.0,
+                system: rec_levels.1,
+                muted: r.muted,
+                hot: state.rec_mute_hot(),
+            }),
             now,
             today: state.today(),
             page: leaving.map_or(state.page(), |shown| shown.page),
@@ -6569,6 +6760,11 @@ impl App {
             phone: phone_view.as_ref(),
             phone_on: self.phone.running(),
             arrange: App::arrange_view(&self.arrange, &self.config, self.search_input.as_ref()),
+            record: RecordView {
+                sources: self.rec_sources,
+                recent: state.rec_recent(),
+                devices: self.rec.devices(),
+            },
             devices: DevicesView {
                 list: &self.devices.list,
                 ejecting: &self.devices.ejecting,
@@ -7330,6 +7526,30 @@ fn needs_fetch(
     }
 }
 
+/// Milliseconds until a clock that counts up changes its shown second
+/// (`elapsed` rounded down), plus 1 ms so the redraw lands after the change.
+fn ms_to_next_whole_second(elapsed: Duration) -> u32 {
+    1000 - (elapsed.as_millis() % 1000) as u32 + 1
+}
+
+/// `TIMER_REC` runs only while the REC view shows a recording that is not
+/// paused (a paused clock does not move) on a screen somebody can see.
+/// Fullscreen is already out: `base_view` hides the view there.
+fn rec_clock_timer_wanted(view_shown: bool, paused: bool, screen_away: bool) -> bool {
+    view_shown && !paused && !screen_away
+}
+
+/// `TIMER_REC_LEVEL` adds Motion not Off to the same conditions: with it off
+/// the meters stay at rest.
+fn rec_level_timer_wanted(
+    view_shown: bool,
+    paused: bool,
+    motion_on: bool,
+    screen_away: bool,
+) -> bool {
+    rec_clock_timer_wanted(view_shown, paused, screen_away) && motion_on
+}
+
 /// Milliseconds until the countdown's shown second changes (it rounds up, so
 /// at a whole second), plus 1 ms so the redraw lands after the change.
 fn ms_to_next_second(remaining: Duration) -> u32 {
@@ -8054,6 +8274,40 @@ fn open_note_card_menu(hwnd: HWND, id: &str) {
     }
 }
 
+/// The device dropdown of `source` (from the Rekam page), under the device
+/// name that was clicked: the endpoints are listed as it opens. It holds the
+/// panel while it is open; its pick comes back as `WM_APP_MENU_DONE`
+/// (`App::rec_menu_done`). Opened outside the app borrow: it takes the
+/// foreground, which sends messages back here.
+fn open_rec_device_menu(hwnd: HWND, source: crate::recorder::Source) {
+    if MENU_OPEN.get() {
+        return;
+    }
+    let Some(Some((current, lang, font, anchor))) = with_app(|app| {
+        let anchor = app.rec_device_anchor(source)?;
+        Some((
+            app.config.recording.device(source).map(str::to_owned),
+            app.config.language,
+            app.config.font,
+            anchor,
+        ))
+    }) else {
+        return;
+    };
+    let opened = crate::ui::device_menu::open(
+        hwnd,
+        anchor,
+        crate::ui::menu_pop::Align::Start,
+        source,
+        current.as_deref(),
+        lang,
+        font,
+    );
+    if opened {
+        with_app(|app| app.apply_now(Event::MenuOpen(true)));
+    }
+}
+
 /// Shows the tray menu and runs the choice. The menu's modal loop dispatches
 /// timer and mouse messages to `wnd_proc`, so no `APP` borrow is held across it.
 fn open_menu(hwnd: HWND) {
@@ -8108,6 +8362,12 @@ fn open_menu(hwnd: HWND) {
         }
         Some(MenuCmd::StickyList) => {
             with_app(|app| app.open_note_list(None));
+        }
+        Some(MenuCmd::Record) => {
+            with_app(|app| app.rec_toggle());
+        }
+        Some(MenuCmd::RecordMute) => {
+            with_app(|app| app.rec_toggle_mute(crate::recorder::Source::Mic));
         }
         Some(MenuCmd::StylePill) => {
             with_app(|app| app.set_style(Style::Pill));
@@ -8604,15 +8864,19 @@ unsafe extern "system" fn wnd_proc(
                             by_user: wparam.0 == PBT_APMRESUMESUSPEND,
                         };
                         with_app(|app| {
+                            // A recording the sleep paused goes on.
+                            app.rec_on_resume();
                             // A phone session left over from before the
                             // sleep is ended: its connections are gone.
                             app.phone_on_resume(Instant::now());
                             app.maybe_greet(trigger)
                         });
                     }
-                    // Going to sleep: the phone link ends with it.
+                    // Going to sleep: the phone link ends with it, and a
+                    // recording pauses (QPC runs on through the sleep).
                     PBT_APMSUSPEND => {
                         with_app(|app| {
+                            app.rec_on_suspend();
                             app.phone_on_away(crate::phone::EndReason::Suspend, Instant::now())
                         });
                     }
@@ -8768,6 +9032,14 @@ unsafe extern "system" fn wnd_proc(
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
         WM_LBUTTONDOWN => {
+            // The island never takes the activation, so the open dropdown
+            // does not lose it to a press here: the press only closes it, as
+            // a native menu's would. Also one Settings opened: it keeps the
+            // activation while the island is pressed.
+            if crate::ui::menu_pop::is_open() {
+                crate::ui::menu_pop::close();
+                return LRESULT(0);
+            }
             with_app(|app| app.on_press(lparam));
             LRESULT(0)
         }
@@ -8799,6 +9071,23 @@ unsafe extern "system" fn wnd_proc(
             on_access_answered();
             LRESULT(0)
         }
+        // The device dropdown went (picked or not).
+        crate::ui::menu_pop::WM_APP_MENU_DONE => {
+            if let Some(done) = unsafe { crate::ui::menu_pop::take_done(lparam) } {
+                let pick = crate::ui::device_menu::picked(&done);
+                with_app(|app| app.rec_menu_done(pick));
+            }
+            LRESULT(0)
+        }
+        WM_APP_REC_DEVICE => {
+            let source = if wparam.0 == 0 {
+                crate::recorder::Source::Mic
+            } else {
+                crate::recorder::Source::System
+            };
+            open_rec_device_menu(hwnd, source);
+            LRESULT(0)
+        }
         WM_APP_SETTINGS_ACTION => {
             // Each action is taken exactly once, here.
             if let Some(action) = unsafe { settings::take_action(lparam) } {
@@ -8826,6 +9115,7 @@ unsafe extern "system" fn wnd_proc(
                 with_app(App::notif_shutdown);
                 with_app(App::widgets_flush);
                 with_app(App::hotkeys_shutdown);
+                with_app(App::rec_shutdown);
             }
             LRESULT(0)
         }
@@ -8855,6 +9145,7 @@ unsafe extern "system" fn wnd_proc(
             with_app(App::devices_shutdown);
             with_app(App::arrange_shutdown);
             with_app(App::hotkeys_shutdown);
+            with_app(App::rec_shutdown);
             unsafe {
                 let _ = WTSUnRegisterSessionNotification(hwnd);
                 let note = DISPLAY_NOTIFY.replace(0);
@@ -10015,6 +10306,58 @@ mod tests {
     }
 
     #[test]
+    fn the_rec_ticks_land_just_after_the_second_changes() {
+        let ms = Duration::from_millis;
+        assert_eq!(ms_to_next_whole_second(ms(0)), 1001);
+        assert_eq!(ms_to_next_whole_second(ms(250)), 751);
+        assert_eq!(ms_to_next_whole_second(ms(999)), 2);
+        assert_eq!(ms_to_next_whole_second(ms(61_400)), 601);
+    }
+
+    #[test]
+    fn the_rec_timers_run_only_while_the_view_shows_and_moves() {
+        // (shown, paused, motion_on, away) -> (clock, level)
+        let case = |shown, paused, motion, away| {
+            (
+                rec_clock_timer_wanted(shown, paused, away),
+                rec_level_timer_wanted(shown, paused, motion, away),
+            )
+        };
+        assert_eq!(case(true, false, true, false), (true, true));
+        // Motion Off keeps the clock, not the meters.
+        assert_eq!(case(true, false, false, false), (true, false));
+        // Paused: nothing moves.
+        assert_eq!(case(true, true, true, false), (false, false));
+        // Another view (or fullscreen's Hidden), locked, display off.
+        assert_eq!(case(false, false, true, false), (false, false));
+        assert_eq!(case(true, false, true, true), (false, false));
+    }
+
+    /// The body of `fn <name>` in this file, up to the next `fn` at the
+    /// same depth.
+    fn body_of(name: &str) -> &'static str {
+        let src = include_str!("app.rs");
+        let start = src.find(&format!("    fn {name}(")).expect(name);
+        let rest = &src[start + 4..];
+        let end = rest.find("\n    fn ").or_else(|| rest.find("\r\n    fn ")).unwrap_or(rest.len());
+        &rest[..end]
+    }
+
+    /// Locking or the display going off re-plans the REC timers like the
+    /// other polls (they then stop), and unlocking starts them again; the
+    /// meters' timer is a coalescable one-shot re-armed after each redraw.
+    #[test]
+    fn the_rec_timers_follow_the_lock_and_the_meter_timer_is_a_one_shot() {
+        assert!(body_of("sync_pointer_polls").contains("self.sync_rec_timers("));
+        let arm = body_of("arm_rec_level");
+        assert!(arm.contains("SetCoalescableTimer") && arm.contains("TIMER_REC_LEVEL"));
+        let tick = body_of("on_timer");
+        let at = tick.find("TIMER_REC_LEVEL =>").expect("the meter tick");
+        let arm = &tick[at..at + tick[at..].find("TIMER_DAY").unwrap()];
+        assert!(arm.contains("KillTimer") && arm.contains("self.arm_rec_level()"), "{arm}");
+    }
+
+    #[test]
     fn timer_ids_never_collide() {
         // The System page's and the clipboard's timers came in separate runs;
         // one id for two timers would kill or fire the other's.
@@ -10025,6 +10368,8 @@ mod tests {
             TIMER_EQ,
             TIMER_POMO,
             TIMER_DAY,
+            TIMER_REC,
+            TIMER_REC_LEVEL,
             TIMER_CLOCK,
             TIMER_REMINDER,
             TIMER_LYRIC,

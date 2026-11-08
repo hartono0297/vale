@@ -575,6 +575,75 @@ keys! {
     PageSystem => "Sistem", "System";
     PageDevices => "Perangkat", "Devices";
     PageArrange => "Susun", "Arrange";
+    PageRecord => "Rekam", "Record";
+    RecStop => "Berhenti", "Stop";
+    RecPause => "Jeda", "Pause";
+    RecResume => "Lanjut", "Resume";
+    RecRecording => "Merekam", "Recording";
+    RecSourceMic => "Mic", "Mic";
+    RecSourceSystem => "Suara PC", "PC audio";
+    RecSourceBoth => "Dua-duanya", "Both";
+    RecOpenFolder => "Buka folder", "Open folder";
+    HotkeyRowRecord => "Rekam audio", "Record audio";
+    HotkeyRowRecordDesc => "Mulai atau hentikan rekaman", "Start or stop a recording";
+    HotkeyRowRecordMute => "Bisukan mic rekaman", "Mute recording mic";
+    HotkeyRowRecordMuteDesc => "Hanya aktif saat merekam", "Active only while recording";
+    RecNoticeSource => "Rekaman", "Recording";
+    RecSavedTitle => "Rekaman tersimpan", "Recording saved";
+    RecClickToOpen => "klik untuk buka", "click to open";
+    RecFailedTitle => "Rekaman gagal", "Recording failed";
+    RecMicDeniedTitle => "Mic diblokir Windows", "Windows blocked the mic";
+    RecMicDeniedBody => "Klik untuk buka pengaturan mic", "Click to open the mic settings";
+    RecMicLost => "Mic terputus", "Mic disconnected";
+    RecSystemLost => "Suara PC terputus", "PC audio disconnected";
+    RecKeepsGoing => "Rekaman tetap berjalan", "Recording continues";
+    RecFolderBlockedTitle => "Folder rekaman diblokir Windows",
+        "Windows blocked the recordings folder";
+    RecFolderBlockedBody => "Klik untuk pilih folder lain", "Click to choose another folder";
+    RecStoppedNoInput => "Rekaman dihentikan: tidak ada suara masuk",
+        "Recording stopped: no audio input";
+    RecUnfinished => "belum selesai", "unfinished";
+    RecWhyNoMf => "Media Foundation tidak ada di Windows ini",
+        "Media Foundation is missing on this Windows";
+    RecWhyNoDevice => "Mic atau speaker tidak ditemukan", "No microphone or speaker found";
+    RecWhyDiskFull => "Disk penuh", "The disk is full";
+    RecWhyFolderGone => "Folder rekaman tidak ditemukan", "The recordings folder is gone";
+    RecWhyNoAudio => "Tidak ada suara masuk", "No audio came in";
+    RecNotSavedTitle => "Rekaman tidak disimpan", "Recording not saved";
+    RecFallbackTitle => "Windows melindungi folder rekaman",
+        "Windows protects the recordings folder";
+    RecSavingTo => "Disimpan ke", "Saving to";
+    RecChangeInSettings => "ganti di Pengaturan", "change it in Settings";
+    RecWhyUnfinished => "File belum diberi nama \u{b7} klik untuk lihat",
+        "The file kept its temporary name \u{b7} click to show";
+    RecWhyOther => "Ada yang tidak beres saat merekam", "Something went wrong while recording";
+    RecConsent => "Ingat: minta izin peserta sebelum merekam",
+        "Remember to ask everyone before recording";
+    TrayRecStart => "Mulai rekam", "Start recording";
+    TrayRecStop => "Hentikan rekam", "Stop recording";
+    TrayMicMute => "Bisukan mic", "Mute mic";
+    TrayMicUnmute => "Nyalakan mic", "Unmute mic";
+    RecSettingsTitle => "Rekaman", "Recording";
+    RecSettingsSources => "Sumber suara", "Sound sources";
+    RecSettingsSourcesDesc => "Yang ikut direkam", "What gets recorded";
+    RecSettingsFolder => "Folder rekaman", "Recordings folder";
+    RecSettingsOpen => "Buka", "Open";
+    RecSettingsChange => "Ganti", "Change";
+    RecSettingsPickTitle => "Pilih folder rekaman", "Choose the recordings folder";
+    RecDeviceFrom => "Suara PC dari", "PC audio from";
+    RecEchoCancel => "Peredam gema mic", "Mic echo cancellation";
+    RecEchoCancelDesc => "Buang suara speaker \u{b7} Berlaku mulai rekaman berikutnya", "Removes speaker sound \u{b7} Applies from the next recording";
+    RecFollowWindows => "Ikuti Windows", "Follow Windows";
+    RecDeviceGone => "Perangkat tidak ada", "Device not found";
+    RecMicSwitched => "Mic pindah", "Mic switched";
+    RecSystemSwitched => "Suara PC pindah", "PC audio switched";
+    RecMicMissing => "Mic pilihan tidak ada", "Chosen mic not found";
+    RecSystemMissing => "Suara PC pilihan tidak ada", "Chosen PC audio not found";
+    RecUsing => "Pakai", "Using";
+    RecMicWord => "Mic", "Mic";
+    RecSystemWord => "Suara PC", "PC audio";
+    RecNotFound => "tidak ada", "not found";
+    RecEmpty => "Belum ada rekaman", "No recordings yet";
     ArrangeSkip => "Lewati ubin", "Skip tile";
     ArrangeSaved => "Tersimpan", "Saved";
     ArrangeHint => "Backspace kembali \u{b7} Esc batal", "Backspace back \u{b7} Esc cancel";
@@ -1547,6 +1616,48 @@ pub fn devices_connected(lang: Lang, n: usize) -> String {
     match lang {
         Lang::Id => format!("{n} tersambung"),
         Lang::En => format!("{n} connected"),
+    }
+}
+
+/// When a recording started, for the Rekam page: "Hari ini 10:02", "Kemarin
+/// 14:30", else the date ("5 Nov").
+pub fn rec_started(lang: Lang, at: chrono::NaiveDateTime, today: NaiveDate) -> String {
+    let d = at.date();
+    match near(d, today) {
+        Some(Near::Today) => format!("{} {}", near_word(lang, Near::Today, true), at.format("%H:%M")),
+        Some(Near::Yesterday) => {
+            format!("{} {}", near_word(lang, Near::Yesterday, true), at.format("%H:%M"))
+        }
+        _ => short_date(lang, d),
+    }
+}
+
+/// The line under a recording on the Rekam page: "Hari ini 10:02 · 42 mnt",
+/// or "· belum selesai" for a `.part` a crash left.
+pub fn rec_entry_sub(lang: Lang, started: &str, d: std::time::Duration, unfinished: bool) -> String {
+    let length = if unfinished {
+        text(lang, Key::RecUnfinished).to_string()
+    } else {
+        rec_duration(lang, d)
+    };
+    format!("{started} \u{b7} {length}")
+}
+
+/// A recording's length on the Rekam page: "45 dtk", "42 mnt", "1 j 05 mnt"
+/// ("45 s", "42 min", "1 h 05 min"). Minutes round down.
+pub fn rec_duration(lang: Lang, d: std::time::Duration) -> String {
+    let secs = d.as_secs();
+    let (h, m) = (secs / 3600, secs / 60 % 60);
+    let (hour, min, sec) = match lang {
+        Lang::Id => ("j", "mnt", "dtk"),
+        Lang::En => ("h", "min", "s"),
+    };
+    if h > 0 {
+        format!("{h} {hour} {m:02} {min}")
+    } else if m > 0 {
+        format!("{m} {min}")
+    } else {
+        format!("{secs} {sec}")
     }
 }
 
@@ -3323,6 +3434,23 @@ mod tests {
     }
 
     #[test]
+    fn a_recording_start_reads_today_yesterday_or_the_date() {
+        let at = |m, d, h, min| {
+            NaiveDate::from_ymd_opt(2026, m, d)
+                .unwrap()
+                .and_hms_opt(h, min, 0)
+                .unwrap()
+        };
+        let today = NaiveDate::from_ymd_opt(2026, 11, 7).unwrap();
+        assert_eq!(rec_started(Lang::Id, at(11, 7, 10, 2), today), "Hari ini 10:02");
+        assert_eq!(rec_started(Lang::Id, at(11, 6, 14, 30), today), "Kemarin 14:30");
+        assert_eq!(rec_started(Lang::Id, at(11, 5, 9, 15), today), "5 Nov");
+        assert_eq!(rec_started(Lang::En, at(11, 7, 9, 5), today), "Today 09:05");
+        assert_eq!(rec_started(Lang::En, at(11, 6, 23, 59), today), "Yesterday 23:59");
+        assert_eq!(rec_started(Lang::En, at(10, 25, 8, 0), today), "25 Oct");
+    }
+
+    #[test]
     fn every_key_has_text_in_both_languages() {
         assert!(Key::ALL.len() > 50);
         for &key in Key::ALL {
@@ -3577,6 +3705,24 @@ mod tests {
         assert_eq!(leaked("don't Settings' isn't", ENGLISH), ["settings"]);
         assert!(leaked("reminders.json tidak terbaca.", ENGLISH).is_empty());
         assert!(leaked("<title>x</title>", ENGLISH).is_empty());
+    }
+
+    #[test]
+    fn a_recording_length_reads_in_both_languages() {
+        use std::time::Duration;
+        let secs = Duration::from_secs;
+        assert_eq!(rec_duration(Lang::Id, secs(0)), "0 dtk");
+        assert_eq!(rec_duration(Lang::Id, secs(45)), "45 dtk");
+        assert_eq!(rec_duration(Lang::Id, secs(42 * 60 + 59)), "42 mnt");
+        assert_eq!(rec_duration(Lang::Id, secs(3600 + 5 * 60)), "1 j 05 mnt");
+        assert_eq!(rec_duration(Lang::En, secs(45)), "45 s");
+        assert_eq!(rec_duration(Lang::En, secs(18 * 60)), "18 min");
+        assert_eq!(rec_duration(Lang::En, secs(2 * 3600 + 30 * 60)), "2 h 30 min");
+        for lang in [Lang::Id, Lang::En] {
+            for d in [secs(5), secs(600), secs(7200)] {
+                assert_no_leak(lang, "rec_duration", &rec_duration(lang, d));
+            }
+        }
     }
 
     #[test]

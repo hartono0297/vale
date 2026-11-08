@@ -512,8 +512,8 @@ mod tests {
         on.push(Tile::Builtin(Shortcut::Go(Page::Devices)));
         assert_eq!(t.visible(), on);
         assert_eq!(t.shown(), 11);
-        assert_eq!(Shortcut::ALL.len(), 21);
-        assert_eq!(listed.len(), 21);
+        assert_eq!(Shortcut::ALL.len(), 22);
+        assert_eq!(listed.len(), 22);
         assert_eq!(ShortcutTiles::from_saved(&[]), t);
     }
 
@@ -747,11 +747,11 @@ mod tests {
     }
 
     #[test]
-    fn the_default_tiles_show_eleven_of_twenty_one_built_ins() {
+    fn the_default_tiles_show_eleven_of_twenty_two_built_ins() {
         let t = ShortcutTiles::default();
         assert_eq!(t.shown(), 11);
-        assert_eq!(t.entries().len(), 21);
-        assert_eq!(Shortcut::ALL.len(), 21);
+        assert_eq!(t.entries().len(), 22);
+        assert_eq!(Shortcut::ALL.len(), 22);
     }
 
     #[test]
@@ -856,6 +856,7 @@ mod tests {
                 "GoDevices",
                 "(GoCli)",
                 "(GoArrange)",
+                "(GoRecord)",
                 "(Emoji)",
                 "Explorer",
                 "Calculator",
@@ -1099,7 +1100,7 @@ mod tests {
 
     #[test]
     fn the_susun_jump_tile_is_off_by_default_and_an_old_config_joins_it_off() {
-        assert_eq!(Shortcut::ALL.len(), 21);
+        assert_eq!(Shortcut::ALL.len(), 22);
         assert!(!Shortcut::Go(Page::Arrange).default_on());
         // A fresh install: the tile exists but is off; the page keeps its eleven.
         let t = ShortcutTiles::default();
@@ -1109,14 +1110,14 @@ mod tests {
                 .any(|(s, on)| *s == Tile::Builtin(Shortcut::Go(Page::Arrange)) && !on)
         );
         assert_eq!(t.shown(), 11);
-        // An old config that never heard of it (the 20 built-ins as saved,
+        // An old config that never heard of it (the 21 built-ins as saved,
         // 11 of them on) gets it back off, right after Cli, and still shows 11.
         let old: Vec<TileEntry> = ShortcutTiles::default()
             .to_saved()
             .into_iter()
             .filter(|e| e.tile != "GoArrange")
             .collect();
-        assert_eq!(old.len(), 20);
+        assert_eq!(old.len(), 21);
         let t = ShortcutTiles::from_saved(&old);
         assert_eq!(t.shown(), 11);
         let names = names(&t);
@@ -1169,19 +1170,19 @@ mod tests {
     #[test]
     fn tiles_on_past_the_twelfth_are_marked() {
         // Hand-added: 12 + 3 on, all three past the limit (the own tiles sit
-        // after the 21 built-ins, at 21, 22 and 23).
+        // after the 22 built-ins, at 22, 23 and 24).
         let t = with_own(3);
         assert_eq!(t.shown(), 15);
         let beyond: Vec<usize> = (0..t.entries().len())
             .filter(|i| t.beyond_limit(*i))
             .collect();
-        assert_eq!(beyond, [21, 22, 23]);
+        assert_eq!(beyond, [22, 23, 24]);
         assert_eq!(t.visible().len(), MAX_SHOWN);
         // An entry that is off is never "beyond"; neither is one that shows.
         let mut t = with_own(3);
-        assert!(t.toggle(21));
-        assert!(!t.beyond_limit(21));
-        assert!(t.beyond_limit(22));
+        assert!(t.toggle(22));
+        assert!(!t.beyond_limit(22));
+        assert!(t.beyond_limit(23));
         assert!(!t.beyond_limit(0));
         assert!(!t.beyond_limit(99));
     }

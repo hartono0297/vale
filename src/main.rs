@@ -39,6 +39,7 @@ mod pages;
 mod phone;
 mod pointer_watch;
 mod pomodoro;
+mod recorder;
 mod reminders;
 mod screenshot;
 mod search;
@@ -91,6 +92,7 @@ fn opens_windows(arg: Option<&str>) -> bool {
             | "--demo-cli"
             | "--demo-robot"
             | "--demo-devices"
+            | "--demo-record"
             | "--demo-arrange"
             | "--demo-notice-close"
             | "--demo-widgets"
@@ -189,6 +191,13 @@ fn main() {
             demo_lang_from_env();
             ui::demo::run_devices();
         }
+        // Only the recording scenes: made-up times and levels, no microphone.
+        #[cfg(debug_assertions)]
+        Some("--demo-record") => {
+            attach_parent_console();
+            demo_lang_from_env();
+            ui::demo::run_record();
+        }
         // Only the Susun page's scenes: made-up windows and monitors, click-through
         // overlays; it never calls the mover and never lists a real window.
         #[cfg(debug_assertions)]
@@ -266,6 +275,14 @@ fn main() {
             attach_parent_console();
             let args: Vec<String> = std::env::args().skip(2).collect();
             std::process::exit(transcribe::debug::run(&args));
+        }
+        // `--record-test <seconds> [mic|system|both]`: a real recording into
+        // DI_REC_DIR or target/rec-test/, with the levels seen. No window.
+        #[cfg(debug_assertions)]
+        Some("--record-test") => {
+            attach_parent_console();
+            let args: Vec<String> = std::env::args().skip(2).collect();
+            std::process::exit(recorder::record_test(&args));
         }
         #[cfg(debug_assertions)]
         Some("--settings") => {

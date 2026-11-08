@@ -40,6 +40,7 @@ use crate::config::Style;
 use crate::devices::{self, DeviceKind};
 use crate::i18n::{self, Key, Lang, text};
 use crate::model::{CalView, Hit, MediaInfo, Notice, NoticeKind, Page};
+use crate::recorder::Source;
 use crate::mole::{MoleGroup, MoleOpt};
 use crate::notes::{Note, note_time_label};
 use crate::notif::NotifEntry;
@@ -73,7 +74,7 @@ use crate::ui::panel_layout::{
     cli_layout, cli_suggestions, clipboard_layout, device_shapes, devices_layout,
     media_hits_for, media_panel_layout, media_progress_layout, mixer_layout, mole_layout, mole_log_rows,
     mole_log_skip, notes_layout, notif_layout, page_dots, pomodoro_compact_layout,
-    pomodoro_compact_layout_robot, pomodoro_layout, regions, reminders_layout, search_layout,
+    pomodoro_compact_layout_robot, pomodoro_layout, record_compact_layout, rec_meter_heights, rec_mute_regions, record_layout, RecordHead, RecordLayout, regions, REC_BAR_GAP, REC_BAR_W, reminders_layout, search_layout,
     settings_button, shelf_card_layout, shelf_layout, shelf_phone_tag, shortcuts_layout,
     system_layout, tile_parts, update_strip_parts, volume_hud_layout, waiting_strip,
 };
@@ -788,6 +789,17 @@ impl Renderer {
                 };
                 PageLayout::Arrange(arrange_layout(s, strip, &head, shape, a.scroll))
             }
+            Page::Record => {
+                let head = self.record_head();
+                PageLayout::Record(record_layout(
+                    s,
+                    strip,
+                    &head,
+                    frame.rec.map(|r| r.sources),
+                    frame.record.sources,
+                    frame.record.recent.len(),
+                ))
+            }
             Page::Mixer => PageLayout::Mixer(mixer_layout(
                 s,
                 strip,
@@ -877,7 +889,266 @@ impl Renderer {
                 self.paint_arrange(l, &frame.arrange);
                 Ok(())
             }
+            PageLayout::Record(l) => {
+                self.paint_record(l, frame);
+                Ok(())
+            }
         }
+    }
+
+    /// The Rekam header's widths: the title and the "Buka folder" link (its
+    /// icon, a gap, the label).
+    fn record_head(&self) -> RecordHead {
+        let lang = i18n::lang();
+        let title_w = self
+            .text_width(text(lang, Key::PageRecord), &self.fonts.heading)
+            .ceil()
+            + 1.0;
+        let label = self
+            .text_width(text(lang, Key::RecOpenFolder), &self.fonts.button)
+            .ceil();
+        RecordHead {
+            title_w,
+            folder_w: REC_LINK_ICON + REC_LINK_GAP + label + 2.0,
+        }
+    }
+
+    /// The Rekam page after docs/design/rekaman.html section 2: the card with
+    /// the big round button (a red dot to start, a red square to stop) and
+    /// pause beside it, the source control, the recorded time, and the last
+    /// recordings with a "Buka" pill.
+    fn paint_record(&self, l: &RecordLayout, frame: &Frame) {
+        let lang = i18n::lang();
+        let p = self.palette;
+        let rec = frame.rec;
+        self.heading(text(lang, Key::PageRecord), l.header);
+        // "Buka folder": a folder glyph and the label, as a link.
+        let icon = Rect {
+            w: REC_LINK_ICON,
+            ..l.folder
+        };
+        self.icon_colored(Icon::Folder, icon, REC_LINK_ICON, p.secondary, 1.0, None);
+        let label = Rect {
+            x: icon.right() + REC_LINK_GAP,
+            w: l.folder.w - REC_LINK_ICON - REC_LINK_GAP,
+            ..l.folder
+        };
+        self.text_colored(
+            text(lang, Key::RecOpenFolder),
+            &self.fonts.button,
+            label,
+            p.secondary,
+            1.0,
+        );
+
+        // The card, the round button in a ring, and what it says.
+        self.set_color(p.raised, 1.0);
+        self.fill_round(l.card, radius::CARD);
+        self.stroke_round_width(
+            l.button,
+            l.button.h / 2.0,
+            mix(p.raised, p.secondary, 0.45),
+            3.0,
+        );
+        let c = (l.button.x + l.button.w / 2.0, l.button.y + l.button.h / 2.0);
+        self.set_color(theme::REC_RED, 1.0);
+        if rec.is_some() {
+            let side = REC_STOP_SIDE;
+            self.fill_round(
+                Rect {
+                    x: c.0 - side / 2.0,
+                    y: c.1 - side / 2.0,
+                    w: side,
+                    h: side,
+                },
+                4.0,
+            );
+        } else {
+            let r = REC_DOT_BIG;
+            self.fill_round(
+                Rect {
+                    x: c.0 - r,
+                    y: c.1 - r,
+                    w: r * 2.0,
+                    h: r * 2.0,
+                },
+                r,
+            );
+        }
+        if let Some(pause) = l.pause {
+            self.set_color(p.raised_hi, 1.0);
+            self.fill_round(pause, pause.h / 2.0);
+            let glyph = if rec.is_some_and(|r| r.paused) {
+                Icon::Play
+            } else {
+                Icon::Pause
+            };
+            self.icon_colored(glyph, pause, 16.0, p.text, 1.0, None);
+        }
+        let name = text(lang, if rec.is_some() { Key::RecStop } else { Key::Start });
+        self.text_colored(name, &self.fonts.small_center, l.button_label, p.secondary, 1.0);
+
+        // The source control while idle; while recording, each recorded
+        // source's mute button and meter take its place.
+        if let Some(r) = rec {
+            for cell in &l.live {
+                let (open, crossed, level, tint, muted) = match cell.source {
+                    Source::Mic => (Icon::Mic, Icon::MicOff, r.mic, REC_MIC_TINT, r.muted[0]),
+                    Source::System => {
+                        (Icon::Volume, Icon::VolumeMute, r.system, p.sage, r.muted[1])
+                    }
+                };
+                let (icon, ink) = if muted {
+                    (crossed, theme::REC_RED)
+                } else {
+                    (open, p.text)
+                };
+                let fill = if muted {
+                    mix(p.raised, theme::REC_RED, 0.25)
+                } else {
+                    p.raised_hi
+                };
+                self.set_color(fill, 1.0);
+                self.fill_round(cell.button, cell.button.h / 2.0);
+                self.icon_colored(icon, cell.button, REC_MUTE_GLYPH, ink, 1.0, None);
+                if muted {
+                    self.rec_meter(cell.meter, 0.0, mix(p.raised, p.secondary, 0.5));
+                } else {
+                    self.rec_meter(cell.meter, level, tint);
+                }
+                let name = &frame.record.devices[cell.source.index()];
+                self.rec_device_name(name, cell.device, None);
+            }
+        } else {
+            let on = frame.record.sources;
+            self.set_color(p.raised, 1.0);
+            self.fill_round(l.seg_track, radius::CONTROL);
+            for (sources, r) in l.segs {
+                let lit = sources == on;
+                if lit {
+                    self.set_color(p.raised_hi, 1.0);
+                    self.fill_round(r, radius::SEGMENT);
+                }
+                let key = match (sources.mic, sources.system) {
+                    (true, false) => Key::RecSourceMic,
+                    (false, true) => Key::RecSourceSystem,
+                    _ => Key::RecSourceBoth,
+                };
+                let ink = if lit { p.text } else { p.secondary };
+                self.text_colored(text(lang, key), &self.fonts.small_center, r, ink, 1.0);
+            }
+            // Under it, the device of each chosen source.
+            for &(source, line) in &l.idle_devices {
+                let name = &frame.record.devices[source.index()];
+                let glyph = match source {
+                    Source::Mic => Icon::Mic,
+                    Source::System => Icon::Volume,
+                };
+                self.rec_device_name(name, line, Some(glyph));
+            }
+        }
+
+        // The recorded time and its state, while recording.
+        if let Some(r) = rec {
+            let clock = Rect {
+                h: 22.0,
+                ..l.elapsed
+            };
+            let tint = if r.paused { p.ochre } else { p.text };
+            self.text_colored(&rec_clock(r.elapsed), &self.fonts.clock, clock, tint, 1.0);
+            let state = Rect {
+                y: clock.bottom(),
+                h: (l.elapsed.bottom() - clock.bottom()).max(0.0),
+                ..l.elapsed
+            };
+            let key = if r.paused { Key::Paused } else { Key::RecRecording };
+            let ink = if r.paused { p.ochre } else { theme::REC_RED };
+            self.text_colored(text(lang, key), &self.fonts.micro_center, state, ink, 1.0);
+        }
+
+        // The recent recordings.
+        if let Some(empty) = l.empty {
+            let (icon_area, text_area) = (
+                Rect {
+                    y: empty.y + empty.h / 2.0 - 24.0,
+                    h: 24.0,
+                    ..empty
+                },
+                Rect {
+                    y: empty.y + empty.h / 2.0 + 2.0,
+                    h: 18.0,
+                    ..empty
+                },
+            );
+            self.icon_colored(Icon::Mic, icon_area, 22.0, p.secondary, 0.8, None);
+            let hint = text(lang, Key::RecEmpty);
+            self.text_colored(hint, &self.fonts.eleven_center, text_area, p.secondary, 1.0);
+        }
+        for (row, entry) in l.rows.iter().zip(frame.record.recent) {
+            self.set_color(p.track, 1.0);
+            self.fill_round(row.well, radius::SEGMENT);
+            self.icon_colored(Icon::Mic, row.well, 14.0, p.secondary, 1.0, None);
+            self.text_colored(&entry.title, &self.fonts.row_name, row.title, p.text, 1.0);
+            let sub = i18n::rec_entry_sub(lang, &entry.started, entry.duration, entry.unfinished);
+            self.text_colored(&sub, &self.fonts.small, row.sub, p.secondary, 1.0);
+            self.set_color(p.raised_hi, 1.0);
+            self.fill_round(row.pill, row.pill.h / 2.0);
+            let open = text(lang, Key::Open);
+            self.text_colored(open, &self.fonts.small_center, row.pill, p.text, 1.0);
+        }
+    }
+
+    /// A source's device name in `area`, trimmed with an ellipsis to leave
+    /// room for the down chevron that follows it (it says "click to change");
+    /// `glyph` goes first when given. Nothing when the name is not known.
+    fn rec_device_name(&self, name: &str, area: Rect, glyph: Option<Icon>) {
+        let p = self.palette;
+        let mut x = area.x;
+        if let Some(glyph) = glyph {
+            let icon = Rect {
+                x,
+                w: REC_DEVICE_GLYPH,
+                ..area
+            };
+            self.icon_colored(glyph, icon, REC_DEVICE_GLYPH, p.secondary, 1.0, None);
+            x += REC_DEVICE_GLYPH + REC_LINK_GAP;
+        }
+        if name.is_empty() {
+            return;
+        }
+        let room = (area.right() - x - REC_CHEVRON - REC_LINK_GAP).max(0.0);
+        let font = &self.fonts.small;
+        let shown = self.fit_text(name, font, room);
+        let w = self.text_width(&shown, font).ceil() + 1.0;
+        let label = Rect { x, w, ..area };
+        self.text_colored(&shown, font, label, p.secondary, 1.0);
+        let chevron = Rect {
+            x: x + w + REC_LINK_GAP,
+            w: REC_CHEVRON,
+            ..area
+        };
+        self.icon_colored(Icon::ChevD, chevron, REC_CHEVRON, p.secondary, 0.8, None);
+    }
+
+    /// `text` as it is when it fits `width` in `font`, else cut with an
+    /// ellipsis at the last character that does.
+    fn fit_text(&self, text: &str, font: &IDWriteTextFormat, width: f32) -> String {
+        if self.text_width(text, font) <= width {
+            return text.to_owned();
+        }
+        let chars: Vec<char> = text.chars().collect();
+        let (mut lo, mut hi) = (0, chars.len());
+        while lo < hi {
+            let mid = (lo + hi).div_ceil(2);
+            let cut: String = chars[..mid].iter().collect::<String>() + "\u{2026}";
+            if self.text_width(&cut, font) <= width {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        let head: String = chars[..lo].iter().collect();
+        format!("{}\u{2026}", head.trim_end())
     }
 
     /// The Devices page's header widths: the title, the count chip and
@@ -4580,6 +4851,136 @@ impl Renderer {
         Ok(())
     }
 
+    /// The REC view: a red dot with a soft halo (ochre while paused), the
+    /// clock, and one level meter per source; paused, "dijeda" takes the
+    /// meters' place. Bata at the left as for the pomodoro.
+    pub(super) fn paint_record_compact(&mut self, shape: ShapeRect, frame: &Frame) -> Result<()> {
+        let Some(rec) = frame.rec else {
+            return Ok(());
+        };
+        let l = record_compact_layout(shape, frame.robot.is_some());
+        if let (Some(slot), Some(robot)) = (l.robot, frame.robot) {
+            self.paint_robot(slot, robot);
+        }
+        let tint = if rec.paused {
+            self.palette.ochre
+        } else {
+            theme::REC_RED
+        };
+        let ((cx, cy), r) = l.dot;
+        let halo = r + 3.0;
+        self.set_color(tint, 0.25);
+        self.fill_round(
+            Rect {
+                x: cx - halo,
+                y: cy - halo,
+                w: halo * 2.0,
+                h: halo * 2.0,
+            },
+            halo,
+        );
+        self.set_color(tint, 1.0);
+        self.fill_round(
+            Rect {
+                x: cx - r,
+                y: cy - r,
+                w: r * 2.0,
+                h: r * 2.0,
+            },
+            r,
+        );
+        let clock = rec_clock(rec.elapsed);
+        if rec.paused {
+            self.text_colored(&clock, &self.fonts.title, l.time, self.palette.ochre, 1.0);
+            // "dijeda" sits 6 dip after the clock's real width, not its box.
+            let gap = self.text_width(&clock, &self.fonts.title).ceil() + 6.0;
+            let x = (l.time.x + gap).min(l.label.right());
+            let label = Rect {
+                x,
+                w: (l.label.right() - x).max(0.0),
+                ..l.label
+            };
+            self.text2(text(i18n::lang(), Key::Paused), &self.fonts.eleven, label);
+            return Ok(());
+        }
+        self.text(&clock, &self.fonts.title, l.time, 1.0);
+        // One source shows only its meter, at the far right.
+        let (mic_at, system_at) = (
+            if rec.sources.system { l.mic } else { l.system },
+            l.system,
+        );
+        let hot = |source| rec.hot == Some(source);
+        if rec.sources.mic {
+            if hot(Source::Mic) {
+                self.rec_mute_pill(mic_at, Icon::Mic, Icon::MicOff, REC_MIC_TINT, rec.muted[0]);
+            } else if rec.muted[0] {
+                self.rec_muted_glyph(mic_at, Icon::MicOff);
+            } else {
+                self.rec_meter(mic_at, rec.mic, REC_MIC_TINT);
+            }
+        }
+        if rec.sources.system {
+            if hot(Source::System) {
+                let sage = self.palette.sage;
+                self.rec_mute_pill(system_at, Icon::Volume, Icon::VolumeMute, sage, rec.muted[1]);
+            } else if rec.muted[1] {
+                self.rec_muted_glyph(system_at, Icon::VolumeMute);
+            } else {
+                self.rec_meter(system_at, rec.system, self.palette.sage);
+            }
+        }
+        // The groups take the click, and the pointer resting on one opens no
+        // panel: registered here, only because they are drawn.
+        self.regions
+            .regions
+            .extend(rec_mute_regions(shape, &l, rec.sources));
+        Ok(())
+    }
+
+    /// A hot level group: a soft pill with the source's icon in the place of
+    /// its bars (`tint` on `raised_hi`); muted, the crossed icon in
+    /// `REC_RED` on a dark red pill.
+    fn rec_mute_pill(&self, area: Rect, open: Icon, crossed: Icon, tint: u32, muted: bool) {
+        let p = self.palette;
+        let (icon, ink, fill) = if muted {
+            (crossed, theme::REC_RED, mix(p.raised, theme::REC_RED, 0.25))
+        } else {
+            (open, tint, p.raised_hi)
+        };
+        let h = REC_MUTE_PILL_H.min(area.h + 6.0);
+        let pill = Rect {
+            x: area.x + (area.w - REC_MUTE_PILL_W) / 2.0,
+            y: area.y + (area.h - h) / 2.0,
+            w: REC_MUTE_PILL_W,
+            h,
+        };
+        self.set_color(fill, 1.0);
+        self.fill_round(pill, REC_MUTE_PILL_R);
+        self.icon_colored(icon, pill, REC_MUTED_GLYPH, ink, 1.0, None);
+    }
+
+    /// A muted source's crossed glyph in the place of its meter.
+    fn rec_muted_glyph(&self, area: Rect, icon: Icon) {
+        self.icon_colored(icon, area, REC_MUTED_GLYPH, self.palette.secondary, 1.0, None);
+    }
+
+    /// Four bars from the bottom of `area`, their heights from `level`.
+    fn rec_meter(&self, area: Rect, level: f32, rgb: u32) {
+        self.set_color(rgb, 1.0);
+        let cy = area.y + area.h / 2.0;
+        for (i, h) in rec_meter_heights(level).into_iter().enumerate() {
+            self.fill_round(
+                Rect {
+                    x: area.x + i as f32 * (REC_BAR_W + REC_BAR_GAP),
+                    y: cy - h / 2.0,
+                    w: REC_BAR_W,
+                    h,
+                },
+                REC_BAR_W / 2.0,
+            );
+        }
+    }
+
     /// The compact pomodoro's countdown box: `POMO_COMPACT_TIME_W`, or the
     /// longest countdown it writes (`POMO_COMPACT_LONGEST`) in `title` when
     /// that is wider (JetBrains Mono), so "120:00" is never cut. Measured
@@ -4926,6 +5327,39 @@ fn pomodoro_compact_boxes(text: Rect, time_w: f32) -> (Rect, Rect) {
         ..text
     };
     (time, label)
+}
+
+/// The Rekam page's link icon and its gap to the label, the stop square's
+/// side and the start dot's radius.
+const REC_LINK_ICON: f32 = 14.0;
+const REC_LINK_GAP: f32 = 4.0;
+const REC_STOP_SIDE: f32 = 18.0;
+const REC_DOT_BIG: f32 = 11.0;
+
+/// The mic meter's cream tint (`.lv.mic` in docs/design/rekaman.html).
+const REC_MIC_TINT: u32 = 0xEBCFB8;
+/// The crossed glyph that stands in for a muted source's meter in the REC
+/// view, and the icon in the Rekam page's mute button.
+const REC_MUTED_GLYPH: f32 = 14.0;
+/// The hot level group's pill on the closed REC view: its size and corner.
+const REC_MUTE_PILL_W: f32 = 24.0;
+const REC_MUTE_PILL_H: f32 = 22.0;
+const REC_MUTE_PILL_R: f32 = 8.0;
+const REC_MUTE_GLYPH: f32 = 16.0;
+/// A device line on the Rekam page: its source glyph and its chevron.
+const REC_DEVICE_GLYPH: f32 = 12.0;
+const REC_CHEVRON: f32 = 10.0;
+
+/// The recorded time as the REC view writes it: "mm:ss", and "h:mm:ss" from
+/// the first hour. Whole seconds, rounded down.
+pub(crate) fn rec_clock(d: Duration) -> String {
+    let secs = d.as_secs();
+    let (h, m, s) = (secs / 3600, secs / 60 % 60, secs % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m:02}:{s:02}")
+    }
 }
 
 /// Whole seconds rounded up, so a fresh 25-minute phase shows "25:00".
@@ -5676,6 +6110,18 @@ mod tests {
     }
 
     #[test]
+    fn rec_clock_is_mm_ss_then_h_mm_ss_rounded_down() {
+        let secs = Duration::from_secs;
+        assert_eq!(rec_clock(Duration::ZERO), "00:00");
+        assert_eq!(rec_clock(Duration::from_millis(999)), "00:00");
+        assert_eq!(rec_clock(secs(12 * 60 + 48)), "12:48");
+        assert_eq!(rec_clock(secs(59 * 60 + 59)), "59:59");
+        assert_eq!(rec_clock(secs(3600)), "1:00:00");
+        assert_eq!(rec_clock(secs(3600 + 2 * 60 + 5)), "1:02:05");
+        assert_eq!(rec_clock(secs(10 * 3600 + 9 * 60 + 9)), "10:09:09");
+    }
+
+    #[test]
     fn mmss_rounds_up_and_allows_long_phases() {
         assert_eq!(mmss(Duration::from_secs(25 * 60)), "25:00");
         assert_eq!(mmss(Duration::from_millis(1_121_400)), "18:42");
@@ -6304,6 +6750,74 @@ mod tests {
                             ..time
                         };
                         assert!(ink_check(&r, "100:00", &r.fonts.title, box42).is_err());
+                    }
+                }
+            }
+        }
+    }
+
+    /// The REC clock's box holds the longest time it writes ("10:59:59",
+    /// 8 cells) in both fonts, at the narrowest island and beside Bata.
+    #[test]
+    fn rec_clock_fits_its_box_in_both_fonts() {
+        use crate::ui::fonts;
+        use crate::ui::geometry::{NOTCH_H_MIN, NOTCH_W_MIN, NotchSize, shape_with_robot_sized};
+        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+
+        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let mut r = Renderer::new().expect("renderer");
+        if !fonts::embedded(&r.dwrite).loaded.jetbrains_mono {
+            eprintln!("skipped: the embedded fonts are not in this binary");
+            return;
+        }
+        let size = NotchSize::from_px(NOTCH_W_MIN, NOTCH_H_MIN);
+        for ui in [UiFont::Sans, UiFont::Mono] {
+            r.set_ui_font(ui).expect("font");
+            for style in [Style::Pill, Style::Notch] {
+                for robot in [false, true] {
+                    let s = shape_with_robot_sized(style, size, ShapeKind::RecordCompact, robot);
+                    let l = record_compact_layout(s, robot);
+                    for secs in [0, 59 * 60 + 59, 3600 + 125, 10 * 3600 + 59 * 60 + 59] {
+                        ink_fits(&r, &rec_clock(Duration::from_secs(secs)), &r.fonts.title, l.time);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Paused, "Dijeda" / "Paused" fits beside a long clock ("10:09:09") in
+    /// both fonts, at the narrowest island and beside Bata, placed as
+    /// `paint_record_compact` places it.
+    #[test]
+    fn the_paused_word_fits_beside_a_long_rec_clock_in_both_fonts() {
+        use crate::ui::fonts;
+        use crate::ui::geometry::{NOTCH_H_MIN, NOTCH_W_MIN, NotchSize, shape_with_robot_sized};
+        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+
+        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let mut r = Renderer::new().expect("renderer");
+        if !fonts::embedded(&r.dwrite).loaded.jetbrains_mono {
+            eprintln!("skipped: the embedded fonts are not in this binary");
+            return;
+        }
+        let size = NotchSize::from_px(NOTCH_W_MIN, NOTCH_H_MIN);
+        let clock = rec_clock(Duration::from_secs(10 * 3600 + 9 * 60 + 9));
+        assert_eq!(clock, "10:09:09");
+        for ui in [UiFont::Sans, UiFont::Mono] {
+            r.set_ui_font(ui).expect("font");
+            for style in [Style::Pill, Style::Notch] {
+                for robot in [false, true] {
+                    let s = shape_with_robot_sized(style, size, ShapeKind::RecordCompact, robot);
+                    let l = record_compact_layout(s, robot);
+                    let gap = r.text_width(&clock, &r.fonts.title).ceil() + 6.0;
+                    let x = (l.time.x + gap).min(l.label.right());
+                    let label = Rect {
+                        x,
+                        w: (l.label.right() - x).max(0.0),
+                        ..l.label
+                    };
+                    for lang in [Lang::Id, Lang::En] {
+                        ink_fits(&r, text(lang, Key::Paused), &r.fonts.eleven, label);
                     }
                 }
             }

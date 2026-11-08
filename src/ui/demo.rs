@@ -189,7 +189,7 @@ use super::motion::{
 };
 use super::notch_fill::{self, fill_alpha};
 use super::render::{
-    CleanerView, CliView, ClipNoticeView, ClipView, DevicesView, FolderMenuView, Frame, MoleView,
+    CleanerView, CliView, ClipNoticeView, ClipView, DevicesView, FolderMenuView, Frame, MoleView, RecFrame, RecordView,
     NoticeCloseView, NotifView, Progress, Renderer, RobotFrame, SearchView, SheetKind, ShotView,
     SystemView, ToastBadgeView, ToastLogoView,
 };
@@ -208,9 +208,13 @@ use crate::config::{NotchFill, Style, UiFont};
 use crate::devices::{self, Bus, Device, DeviceKind, Partition, Veto, VetoKind};
 use crate::i18n::{Key, tr};
 use crate::lyrics::{self, FADE, LyricsFound, LyricsState, Query};
-use crate::model::{CalView, Event, Hit, MediaInfo, Notice, NoticeKind, Page, ToastOrigin, View};
+use crate::model::{
+    CalView, Event, Hit, MediaInfo, Notice, NoticeKind, Page, RecEntry, RecSources, ToastOrigin,
+    View,
+};
 use crate::mole::{CleanRun, GroupSize, MoleOpts, MoleReport, PreviewSummary};
 use crate::notes::Note;
+use crate::recorder::Source;
 use crate::notif::{NotifEntry, logo_key};
 use crate::pomodoro::{PomoSettings, Pomodoro};
 use crate::reminders::{Reminder, Repeat};
@@ -318,6 +322,8 @@ struct Scene {
     devices: DevicesDemo,
     /// What the Susun page shows (and which overlay is on the screen).
     arrange: ArrangeDemo,
+    /// The recording the REC view and the Rekam page show; `None` is idle.
+    rec: Option<DemoRec>,
     /// The page dots as the dock, the pointer over this icon (0-based).
     dock: Option<usize>,
     /// The compact view or notice has the see-through background
@@ -440,9 +446,27 @@ enum View0 {
     Idle,
     MediaCompact,
     PomodoroCompact,
+    /// The REC view; the scene's `rec` says what it shows.
+    RecordCompact,
     Panel(Page),
     Notice(DemoNotice),
     MediaLyric,
+}
+
+/// What a recording scene shows: the clock, pause, the sources and made-up
+/// levels. Never a real recording.
+#[derive(Clone, Copy, PartialEq)]
+struct DemoRec {
+    secs: u64,
+    paused: bool,
+    mic: bool,
+    system: bool,
+    mic_level: f32,
+    system_level: f32,
+    /// Which sources are muted, `[mic, system]`.
+    muted: [bool; 2],
+    /// The source whose level group the pointer is on.
+    hot: Option<Source>,
 }
 
 /// One notice of each badge style.
@@ -497,6 +521,10 @@ enum DemoNotice {
     ShotSavedLong,
     /// "Dihapus · clipboard dikosongkan" after Hapus.
     ShotDeleted,
+    /// "Rekaman tersimpan" after a recording (a made-up file).
+    RecSaved,
+    /// Windows refused the mic.
+    RecMicDenied,
     /// A drive plugged in: SanDisk Ultra, E:, 38,9 GB free (rencana-v3.5 p3).
     DevicePlugged,
     /// "Aman dicabut" after Eject: SanDisk Ultra.
@@ -587,6 +615,7 @@ const BASE: Scene = Scene {
     fade_from: None,
     devices: DevicesDemo::Design,
     arrange: ArrangeDemo::No,
+    rec: None,
     dock: None,
     transparent: false,
     look: 0.0,
@@ -608,6 +637,75 @@ const fn clipboard(name: &'static str, which: ClipDemo) -> Scene {
         view: View0::Panel(Page::Clipboard),
         clip: which,
         ..BASE
+    }
+}
+
+/// The device names the Rekam page's scenes show, `[mic, system]`.
+fn demo_rec_devices() -> [String; 2] {
+    [
+        "Microphone (Realtek Audio)".to_owned(),
+        "Speakers (Realtek Audio)".to_owned(),
+    ]
+}
+
+/// The Rekam page's made-up list: the three rows of the design's mockup.
+fn demo_rec_recent() -> Vec<RecEntry> {
+    let entry = |title: &str, started: &str, mins: u64| RecEntry {
+        path: std::path::PathBuf::from(format!("{title}.m4a")),
+        title: title.to_owned(),
+        started: started.to_owned(),
+        duration: Duration::from_secs(mins * 60),
+        unfinished: false,
+    };
+    vec![
+        entry("Sync mingguan", "Hari ini 10:02", 42),
+        entry("Review desain klien", "Kemarin 14:30", 65),
+        entry("Rekaman 5 Nov 09:15", "5 Nov", 18),
+    ]
+}
+
+/// The REC view with Bata and made-up levels.
+const fn rec_scene(
+    name: &'static str,
+    secs: u64,
+    paused: bool,
+    mic: bool,
+    system: bool,
+    muted: [bool; 2],
+) -> Scene {
+    Scene {
+        name,
+        kind: ShapeKind::RecordCompact,
+        view: View0::RecordCompact,
+        robot: Some(Expr::Focus),
+        rec: Some(DemoRec {
+            secs,
+            paused,
+            mic,
+            system,
+            mic_level: 0.55,
+            system_level: 0.8,
+            muted,
+            hot: None,
+        }),
+        ..BASE
+    }
+}
+
+/// The REC view with the pointer on `hot`'s level group: its pill shows.
+const fn rec_hot_scene(name: &'static str, muted: [bool; 2], hot: Source) -> Scene {
+    Scene {
+        rec: Some(DemoRec {
+            secs: 12 * 60 + 48,
+            paused: false,
+            mic: true,
+            system: true,
+            mic_level: 0.55,
+            system_level: 0.8,
+            muted,
+            hot: Some(hot),
+        }),
+        ..rec_scene(name, 0, false, true, true, muted)
     }
 }
 
@@ -803,7 +901,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 169] = [
+const SCENES: [Scene; 181] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -814,6 +912,56 @@ const SCENES: [Scene; 169] = [
         name: "idle-transparent",
         kind: ShapeKind::Idle,
         transparent: true,
+        ..BASE
+    },
+    // The REC view (docs/design/rekaman.html, section 1): both sources, the
+    // mic alone, paused, and past the first hour.
+    rec_scene("rec-both", 12 * 60 + 48, false, true, true, [false; 2]),
+    rec_scene("rec-mic", 3 * 60 + 5, false, true, false, [false; 2]),
+    rec_scene("rec-paused", 12 * 60 + 48, true, true, true, [false; 2]),
+    rec_scene("rec-long", 3600 + 2 * 60 + 7, false, true, true, [false; 2]),
+    // The mic muted: its meter gives way to a crossed mic.
+    rec_scene("rec-muted", 12 * 60 + 48, false, true, true, [true, false]),
+    // The pointer on a level group of the closed notch: the source's icon on
+    // a soft pill in the place of the bars (muted: crossed, on dark red).
+    rec_hot_scene("rec-hover-mic", [false; 2], Source::Mic),
+    rec_hot_scene("rec-hover-mic-muted", [true, false], Source::Mic),
+    // The Rekam page (section 2): recording both sources, and idle with the
+    // last three recordings.
+    Scene {
+        name: "rec-page",
+        view: View0::Panel(Page::Record),
+        rec: Some(DemoRec {
+            secs: 12 * 60 + 48,
+            paused: false,
+            mic: true,
+            system: true,
+            mic_level: 0.0,
+            system_level: 0.0,
+            muted: [false; 2],
+            hot: None,
+        }),
+        ..BASE
+    },
+    // The same page with the mic muted and the other source live.
+    Scene {
+        name: "rec-page-muted",
+        view: View0::Panel(Page::Record),
+        rec: Some(DemoRec {
+            secs: 12 * 60 + 48,
+            paused: false,
+            mic: true,
+            system: true,
+            mic_level: 0.0,
+            system_level: 0.7,
+            muted: [true, false],
+            hot: None,
+        }),
+        ..BASE
+    },
+    Scene {
+        name: "rec-page-idle",
+        view: View0::Panel(Page::Record),
         ..BASE
     },
     Scene {
@@ -1205,6 +1353,18 @@ const SCENES: [Scene; 169] = [
         ShapeKind::Notice,
         View0::Notice(DemoNotice::ShotSavedLong),
         Expr::Happy,
+    ),
+    bata(
+        "rec-saved",
+        ShapeKind::Notice,
+        View0::Notice(DemoNotice::RecSaved),
+        Expr::Happy,
+    ),
+    bata(
+        "rec-mic-denied",
+        ShapeKind::Notice,
+        View0::Notice(DemoNotice::RecMicDenied),
+        Expr::Sad,
     ),
     bata(
         "screenshot-deleted",
@@ -1750,6 +1910,19 @@ fn demo_arrange_overlays(
     }
 }
 
+/// `--demo-record`: only the recording scenes (`rec-both`, `rec-mic`,
+/// `rec-paused`, `rec-long`, `rec-muted`, `rec-hover-mic`), Pill then Notch; `DI_DEMO_STEP` picks one by
+/// number or name as in `--demo`. Made-up times and levels: no microphone is
+/// opened and nothing is recorded.
+pub fn run_record() {
+    let scenes: Vec<Scene> = SCENES
+        .iter()
+        .copied()
+        .filter(|s| s.name.starts_with("rec-"))
+        .collect();
+    run_scenes(&scenes);
+}
+
 /// `--demo-arrange`: only the Susun page's scenes, Pill then Notch;
 /// `DI_DEMO_STEP` picks one by number or name as in `--demo`. The demo
 /// never calls the mover and never lists or moves a real window.
@@ -1904,6 +2077,18 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
     println!("demo: 2 s per view, Pill then Notch ({steps} steps); kill the process to stop");
     let start = Instant::now();
     let mut settled = usize::MAX;
+    // `DI_REC_MENU=mic` (or `system`): once the Rekam page is drawn, that
+    // device's dropdown opens under its name, as a click does in the app.
+    let mut rec_menu = match name("DI_REC_MENU").as_str() {
+        "mic" => Some(crate::recorder::Source::Mic),
+        "system" => Some(crate::recorder::Source::System),
+        _ => None,
+    };
+    // Its colours follow `DI_WINDOW` (and `DI_SURFACE`, `DI_ACCENT`).
+    if rec_menu.is_some() {
+        theme::set_system_light(theme::read_system_light());
+        theme::set_current(theme::theme_from_env());
+    }
     loop {
         if !pump_messages() {
             return;
@@ -1994,11 +2179,14 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
             // The fill follows the morph as the island does (`App::fill_at`).
             let fill_alpha =
                 notch_fill::morph_fill(scene_fill(&prev), scene_fill(&scene), ease_out_back(t));
+            let rec_recent = demo_rec_recent();
+            let rec_devices = demo_rec_devices();
             let pomodoro = demo_pomodoro(scene.pomo, now);
             let view = live_view.unwrap_or_else(|| match scene.view {
                 View0::Idle => View::Idle,
                 View0::MediaCompact => View::MediaCompact,
                 View0::PomodoroCompact => View::PomodoroCompact,
+                View0::RecordCompact => View::RecordCompact,
                 View0::Panel(page) => View::Panel(page),
                 View0::Notice(which) => View::Notice(demo_notice(which, &renderer)),
                 View0::MediaLyric => View::MediaLyric,
@@ -2146,6 +2334,18 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                     &media
                 }),
                 pomodoro: &pomodoro,
+                rec: scene.rec.map(|r| RecFrame {
+                    elapsed: Duration::from_secs(r.secs),
+                    paused: r.paused,
+                    sources: RecSources {
+                        mic: r.mic,
+                        system: r.system,
+                    },
+                    mic: r.mic_level,
+                    system: r.system_level,
+                    muted: r.muted,
+                    hot: r.hot,
+                }),
                 now,
                 today,
                 page,
@@ -2166,6 +2366,14 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                 shelf_motion: &shelf_motion,
                 phone: phone_view.as_ref(),
                 phone_on: scene.phone != PhoneDemo::No,
+                record: RecordView {
+                    sources: RecSources {
+                        mic: true,
+                        system: true,
+                    },
+                    recent: &rec_recent,
+                    devices: &rec_devices,
+                },
                 devices: DevicesView {
                     list: &dev_list,
                     ejecting: &dev_ejecting,
@@ -2356,6 +2564,23 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
             };
             if let Err(error) = renderer.draw(&win, style, shape, &frame, opacity) {
                 eprintln!("demo: draw failed: {error}");
+            }
+            if let Some(source) = rec_menu
+                && let Some(r) = renderer.region_of(&Hit::RecDevice(source))
+            {
+                rec_menu = None;
+                let ((x, y), k) = (win.screen_origin(), win.scale());
+                let px = |v: f32| (v * k).round() as i32;
+                let anchor = crate::capture::Rect::new(x + px(r.x), y + px(r.y), px(r.w), px(r.h));
+                crate::ui::device_menu::open(
+                    win.hwnd(),
+                    anchor,
+                    crate::ui::menu_pop::Align::Start,
+                    source,
+                    None,
+                    crate::i18n::lang(),
+                    ui_font,
+                );
             }
         }
         std::thread::sleep(Duration::from_millis(if animated { 33 } else { 16 }));
@@ -2894,6 +3119,13 @@ fn demo_notice(which: DemoNotice, renderer: &Renderer) -> Notice {
             let fits = |s: &str| renderer.notice_text_fits(&kind, false, s);
             crate::app::shot::kept_notice(Some(file.into()), true, &fits)
         }
+        DemoNotice::RecSaved => crate::app::record::saved_notice(
+            crate::i18n::lang(),
+            r"C:\Users\vale\Documents\Vale\Rekaman\2026-11-07 1002.m4a".into(),
+            Duration::from_secs(42 * 60),
+            false,
+        ),
+        DemoNotice::RecMicDenied => crate::app::record::mic_denied_notice(crate::i18n::lang()),
         DemoNotice::ShotDeleted => {
             let lang = crate::i18n::lang();
             let (title, body) =
@@ -3870,6 +4102,13 @@ unsafe extern "system" fn wnd_proc(
         WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
         WM_DESTROY => {
             unsafe { PostQuitMessage(0) };
+            LRESULT(0)
+        }
+        // `DI_REC_MENU`'s dropdown went: say what was picked.
+        crate::ui::menu_pop::WM_APP_MENU_DONE => {
+            if let Some(done) = unsafe { crate::ui::menu_pop::take_done(lparam) } {
+                println!("demo: device pick {:?}", crate::ui::device_menu::picked(&done));
+            }
             LRESULT(0)
         }
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },

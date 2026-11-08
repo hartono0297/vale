@@ -33,6 +33,8 @@ pub enum ShapeKind {
     /// The compact media view showing a lyric line: wider, same height.
     MediaLyric,
     PomodoroCompact,
+    /// A recording runs: the red dot, the clock and the level bars.
+    RecordCompact,
     /// The closed island shrunk to the cat's two eyes while the pointer is
     /// near it over a window (`pointer_watch::Peek`): `EYES_W` x `EYES_H`,
     /// centred, at the compact shapes' top.
@@ -77,6 +79,9 @@ pub const MEDIA_COMPACT_EXTRA: f32 = 12.0;
 /// The same for PomodoroCompact: the ring's inset grew from 14 to 16 (the
 /// ring's left edge, +2) on top of the 20 it was already wider.
 pub const POMODORO_COMPACT_EXTRA: f32 = 22.0;
+/// RecordCompact is this much wider than the user's width: room for the dot,
+/// "h:mm:ss" and the two level meters with air between them.
+pub const RECORD_COMPACT_EXTRA: f32 = 24.0;
 
 /// The closed island's width range (Settings -> Tampilan -> Notch), logical
 /// px. 160 keeps the idle robot and clock, and the compact media title, inside
@@ -135,6 +140,7 @@ pub fn shape_sized(style: Style, size: NotchSize, kind: ShapeKind) -> ShapeRect 
         ShapeKind::Idle => (size.w, size.h),
         ShapeKind::MediaCompact => (size.w + MEDIA_COMPACT_EXTRA, size.h),
         ShapeKind::PomodoroCompact => (size.w + POMODORO_COMPACT_EXTRA, size.h),
+        ShapeKind::RecordCompact => (size.w + RECORD_COMPACT_EXTRA, size.h),
         ShapeKind::Eyes => (EYES_W, EYES_H),
         // Sized by its line (`lyric_shape_sized`); without one, the narrowest.
         ShapeKind::MediaLyric => (LYRIC_MIN_W.max(size.w), size.h),
@@ -191,6 +197,8 @@ pub fn robot_extra(kind: ShapeKind) -> f32 {
         // `lyric_width_min` already counts the robot in its lead.
         // The ring's centre was 24 px in; now after the robot, 58 px in.
         ShapeKind::PomodoroCompact => 34.0,
+        // The robot (26 px) and its 8 px gap, as for the pomodoro.
+        ShapeKind::RecordCompact => 34.0,
         _ => 0.0,
     }
 }
@@ -1292,6 +1300,12 @@ pub fn badge_style(notice: &Notice, p: &Palette, pomo_next: Phase) -> BadgeStyle
         // With the robot off: the Camera, as on the Pintasan tile.
         NoticeKind::Screenshot { .. } => tint(p.accent, Icon::Camera),
         NoticeKind::ShotSaved { .. } => tint(p.sage, Icon::Download),
+        NoticeKind::RecSaved { .. } => tint(p.sage, Icon::Mic),
+        NoticeKind::RecFailed { .. } | NoticeKind::RecMicDenied => {
+            tint(crate::theme::REC_RED, Icon::Mic)
+        }
+        NoticeKind::RecFolderBlocked { .. } => tint(crate::theme::REC_RED, Icon::Folder),
+        NoticeKind::RecInfo => tint(p.accent, Icon::Mic),
         NoticeKind::ShotDeleted => tint(crate::theme::SOFT_RED, Icon::Trash),
         NoticeKind::Pomodoro => tint(p.phase(pomo_next), Icon::Timer),
         NoticeKind::Reminder { .. } | NoticeKind::StickyReminder { .. } => BadgeStyle {
@@ -3175,11 +3189,12 @@ mod tests {
         assert_eq!(lyric_scroll_end_ms(box_w, box_w), None);
     }
 
-    const ALL_KINDS: [ShapeKind; 9] = [
+    const ALL_KINDS: [ShapeKind; 10] = [
         ShapeKind::Idle,
         ShapeKind::MediaCompact,
         ShapeKind::MediaLyric,
         ShapeKind::PomodoroCompact,
+        ShapeKind::RecordCompact,
         ShapeKind::Notice,
         ShapeKind::NoticeShot,
         ShapeKind::Panel,
@@ -3222,6 +3237,7 @@ mod tests {
         let idle = shape_for(Style::Pill, ShapeKind::Idle);
         assert_eq!((idle.w, idle.h), (190.0, 34.0));
         assert_eq!(shape_for(Style::Pill, ShapeKind::PomodoroCompact).w, 212.0);
+        assert_eq!(shape_for(Style::Pill, ShapeKind::RecordCompact).w, 214.0);
         assert_eq!(shape_for(Style::Pill, ShapeKind::MediaCompact).w, 202.0);
         assert_eq!(shape_for(Style::Pill, ShapeKind::MediaLyric).w, LYRIC_MIN_W);
     }
@@ -3242,6 +3258,9 @@ mod tests {
                         }
                         ShapeKind::PomodoroCompact => {
                             assert_eq!((s.w, s.h), (size.w + 22.0, size.h));
+                        }
+                        ShapeKind::RecordCompact => {
+                            assert_eq!((s.w, s.h), (size.w + 24.0, size.h));
                         }
                         ShapeKind::MediaLyric => {
                             assert_eq!((s.w, s.h), (LYRIC_MIN_W.max(size.w), size.h));
@@ -3388,6 +3407,7 @@ mod tests {
         assert_eq!(COMPACT_INSET, NOTCH_COMPACT_RADIUS);
         assert_eq!(robot_extra(ShapeKind::MediaCompact), 2.0);
         assert_eq!(robot_extra(ShapeKind::PomodoroCompact), 34.0);
+        assert_eq!(robot_extra(ShapeKind::RecordCompact), 34.0);
     }
 
     #[test]
@@ -3558,6 +3578,11 @@ mod tests {
             (ShapeKind::MediaCompact, true) => compact_layout_robot(content).bars.right(),
             (ShapeKind::PomodoroCompact, false) => pomodoro_compact_layout(content).2.right(),
             (ShapeKind::PomodoroCompact, true) => pomodoro_compact_layout_robot(content).3.right(),
+            (ShapeKind::RecordCompact, robot) => {
+                super::super::panel_layout::record_compact_layout(content, robot)
+                    .system
+                    .right()
+            }
             (ShapeKind::MediaLyric, false) => lyric_layout(content).right(),
             (ShapeKind::MediaLyric, true) => lyric_layout_robot(content).1.right(),
             _ => unreachable!(),
@@ -3591,7 +3616,11 @@ mod tests {
     #[test]
     fn the_slot_widens_a_compact_shape_and_keeps_it_centred() {
         for (style, size, robot) in slot_cases() {
-            for kind in [ShapeKind::MediaCompact, ShapeKind::PomodoroCompact] {
+            for kind in [
+                ShapeKind::MediaCompact,
+                ShapeKind::PomodoroCompact,
+                ShapeKind::RecordCompact,
+            ] {
                 let base = shape_with_robot_sized(style, size, kind, robot);
                 let wide = with_toast_slot(base);
                 assert_eq!(wide.w, base.w + TOAST_SLOT_EXTRA);
@@ -3608,6 +3637,7 @@ mod tests {
             for kind in [
                 ShapeKind::MediaCompact,
                 ShapeKind::PomodoroCompact,
+                ShapeKind::RecordCompact,
                 ShapeKind::MediaLyric,
             ] {
                 for text in [1.0, 150.0, 5000.0] {
@@ -3639,6 +3669,7 @@ mod tests {
             for kind in [
                 ShapeKind::MediaCompact,
                 ShapeKind::PomodoroCompact,
+                ShapeKind::RecordCompact,
                 ShapeKind::MediaLyric,
             ] {
                 let (base, shape, base_w) = slot_pair(style, size, kind, robot, 150.0);
@@ -3934,6 +3965,35 @@ mod tests {
                 let (tx, ty) = (l.title.x + 10.0, l.title.y + l.title.h / 2.0);
                 assert_eq!(regions.hit(tx, ty), Some(Hit::Body), "{tag}");
                 assert_eq!(regions.hit(close.x - 3.0, cy), Some(Hit::Body), "{tag}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_rec_level_groups_hit_test_apart_from_the_clock_and_the_dot() {
+        use super::super::panel_layout::{record_compact_layout, rec_mute_regions};
+        use crate::model::RecSources;
+        use crate::recorder::Source;
+        for style in [Style::Pill, Style::Notch] {
+            for robot in [false, true] {
+                let s = shape_with_robot_sized(style, NotchSize::DEFAULT, ShapeKind::RecordCompact, robot);
+                let l = record_compact_layout(s, robot);
+                let both = RecSources { mic: true, system: true };
+                let regions = HitRegions {
+                    shape: Some((style, s)),
+                    regions: rec_mute_regions(s, &l, both),
+                    ..HitRegions::default()
+                };
+                let tag = format!("{style:?} robot={robot}");
+                let cy = s.y + s.h / 2.0;
+                let mic = regions.hit(l.mic.x + l.mic.w / 2.0, cy);
+                let system = regions.hit(l.system.x + l.system.w / 2.0, cy);
+                assert_eq!(mic, Some(Hit::RecMuteCompact(Source::Mic)), "{tag}");
+                assert_eq!(system, Some(Hit::RecMuteCompact(Source::System)), "{tag}");
+                // The clock and the dot are the body.
+                let clock = regions.hit(l.time.x + 4.0, cy);
+                assert_eq!(clock, Some(Hit::Body), "{tag}");
+                assert_eq!(regions.hit(l.dot.0.0, cy), Some(Hit::Body), "{tag}");
             }
         }
     }

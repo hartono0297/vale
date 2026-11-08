@@ -389,6 +389,9 @@ pub const TERMINAL_GHOST: u32 = 0x5E5248;
 pub const TERMINAL_HINT: u32 = 0x6E6155;
 /// Error lines and a failed command's chip on the island: soft red.
 pub const SOFT_RED: u32 = 0xFF8A73;
+/// The recording red: the REC dot, the Rekam page's start button and the
+/// tray's dot. A true red, so it reads as "recording" and not as an error.
+pub const REC_RED: u32 = 0xE5484D;
 
 /// Colours of ordinary windows (editors, settings, the screenshot editor).
 ///
@@ -749,6 +752,14 @@ mod tests {
                     assert!(c >= 4.5, "{surface:?} {status:06X} raised: {c:.2}");
                 }
             }
+            // The recording red is a graphic (a dot, a button), 3:1 on the
+            // surface and its raised step; its label text keeps 4.5:1.
+            for under in [p.surface, p.raised] {
+                let c = contrast(REC_RED, under);
+                assert!(c >= 3.0, "{surface:?} REC_RED on {under:06X}: {c:.2}");
+            }
+            let c = contrast(REC_RED, p.surface);
+            println!("{surface:?} REC_RED on surface {c:.2}");
             // Raised steps stay a visible step above the surface.
             for step in [p.raised, p.raised_hi, p.track, p.dot_off] {
                 assert!(luminance(step) > luminance(p.surface), "{surface:?}");

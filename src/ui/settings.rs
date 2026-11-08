@@ -85,6 +85,9 @@ use crate::calendar::CalStatus;
 use crate::claude::install::{self, InstallOutcome, UninstallOutcome};
 use crate::cli::Shell;
 use crate::cli_folders::CliStart;
+use crate::model::RecSources;
+use crate::recorder::Source;
+use crate::recorder::prefs::RecordingPrefs;
 use crate::config::{
     AfterCapture, ClipboardSettings, Config, NotchFill, NotchMonitor, NotifSettings, OpenMode,
     ScreenshotSettings, ShotIgnore, ShotTool, Style, ToastStyle, UiFont, WindowPlace,
@@ -184,6 +187,14 @@ pub enum Action {
     ClipClearOnLock(bool),
     /// Settings → Fitur → Perangkat: the plug-in and safe-to-remove notices.
     DeviceNotices(bool),
+    /// Settings -> Fitur -> Rekaman: the sources, and the folder (`None`:
+    /// back to the default).
+    RecSources(RecSources),
+    RecFolder(Option<std::path::PathBuf>),
+    /// The device of a source: an endpoint id, `None` to follow Windows.
+    RecDevice(Source, Option<String>),
+    /// The mic echo cancellation switch.
+    RecEchoCancel(bool),
     /// Settings → Tombol pintas: a row's new combo (`None`: off), every row
     /// back to its default, and the recorder starting (`true`: the island
     /// lets go of its hotkeys) or ending (`false`: it takes them again). A
@@ -364,6 +375,7 @@ pub struct Model {
     pub cli_start: CliStart,
     pub open_mode: OpenMode,
     pub device_notices: bool,
+    pub recording: RecordingPrefs,
     /// The six hotkeys, and by `HotkeyId::index` whether the one set could
     /// not be registered (another app has it, or the PrtSc hook failed).
     pub hotkeys: Hotkeys,
@@ -434,6 +446,7 @@ impl Model {
             cli_start: cfg.cli_start,
             open_mode: cfg.open_mode,
             device_notices: cfg.device_notices,
+            recording: cfg.recording.clone(),
             hotkeys: cfg.hotkeys,
             hotkey_failed: [false; HotkeyId::ALL.len()],
             widgets: cfg.widgets,
@@ -721,6 +734,9 @@ struct Settings {
     drag: Option<Drag>,
     /// The template editor (or the rename field) while it is open.
     arrange_edit: Option<ArrangeEdit>,
+    /// What the Rekaman card's device rows show (`rec_device_labels`), read
+    /// when the window opens and when a choice or the language changes.
+    rec_devices: [String; 2],
     /// The hotkey row being recorded, and why the last combo was refused
     /// (shown under that row until the next recording or a section change).
     recording: Option<HotkeyId>,
@@ -769,6 +785,24 @@ fn window_text(hwnd: HWND) -> String {
 /// `0xRRGGBB` as GDI's `0x00BBGGRR`.
 const fn colorref(rgb: u32) -> COLORREF {
     COLORREF((rgb >> 16) & 0xFF | (rgb & 0xFF00) | (rgb & 0xFF) << 16)
+}
+
+/// What the Rekaman card's device rows show for the choices in `prefs`:
+/// each name is read from Windows now (a few calls, when the window opens or
+/// a choice changes).
+fn rec_device_labels(prefs: &RecordingPrefs, lang: Lang) -> [String; 2] {
+    use crate::recorder::devices;
+    [Source::Mic, Source::System].map(|source| {
+        let chosen = prefs.device(source);
+        let name = chosen.and_then(devices::name_of);
+        let default = devices::default_endpoint(source).map(|d| d.name);
+        crate::ui::settings_layout::rec_device_label(
+            lang,
+            chosen.is_some(),
+            name.as_deref(),
+            default.as_deref(),
+        )
+    })
 }
 
 fn post_action(owner: HWND, action: Action) {
@@ -1142,6 +1176,7 @@ pub fn open(owner: HWND, model: Model, section: Option<Section>) -> Result<HWND>
     ];
     // Someone with their own Client ID sees it straight away.
     let google_advanced = !field_text[0].trim().is_empty();
+    let rec_devices = rec_device_labels(&model.recording, model.lang);
     let state = Settings {
         hwnd,
         owner,
@@ -1176,6 +1211,7 @@ pub fn open(owner: HWND, model: Model, section: Option<Section>) -> Result<HWND>
         tile_note: None,
         drag: None,
         arrange_edit: None,
+        rec_devices,
         recording: None,
         hotkey_error: None,
         rec_hook: None,
@@ -1531,6 +1567,8 @@ impl Settings {
             cli_start: m.cli_start,
             open_mode: m.open_mode,
             device_notices: m.device_notices,
+            recording: m.recording.clone(),
+            rec_devices: self.rec_devices.clone(),
             hotkeys: m.hotkeys,
             hotkey_failed: m.hotkey_failed,
             widgets: m.widgets,
@@ -1680,6 +1718,12 @@ impl Settings {
         let now = Instant::now();
         let old = std::mem::replace(&mut self.model, model);
         let new = &self.model;
+        if old.recording.mic_device != new.recording.mic_device
+            || old.recording.system_device != new.recording.system_device
+            || old.lang != new.lang
+        {
+            self.rec_devices = rec_device_labels(&new.recording, new.lang);
+        }
         let index = |group: Group, m: &Model| -> f32 {
             match group {
                 Group::Style => usize::from(m.style == Style::Notch) as f32,
@@ -1713,6 +1757,10 @@ impl Settings {
                 Group::NotchFill => usize::from(m.notch_fill == NotchFill::Transparent) as f32,
                 Group::Font => UiFont::ALL.iter().position(|v| *v == m.font).unwrap_or(0) as f32,
                 Group::WidgetLayer => usize::from(m.widgets.layer == WidgetLayer::Top) as f32,
+                Group::RecSources => crate::ui::settings_layout::REC_CHOICES
+                    .iter()
+                    .position(|c| *c == m.recording.sources)
+                    .unwrap_or(2) as f32,
                 Group::WidgetFullscreen => {
                     usize::from(m.widgets.fullscreen == FullscreenRule::Keep) as f32
                 }
@@ -1734,6 +1782,7 @@ impl Settings {
             Group::NotifToastStyle,
             Group::WidgetLayer,
             Group::WidgetFullscreen,
+            Group::RecSources,
         ] {
             let (from, to) = (index(group, &old), index(group, new));
             if from != to {
@@ -2239,6 +2288,41 @@ impl Settings {
         vec![After::TemplateMenu(at.x, at.y, self.model.lang)]
     }
 
+    /// A device row's "Ganti": the device dropdown opens under the button
+    /// once the state is released. No button in the layout (it scrolled
+    /// away) is no dropdown.
+    fn device_menu_after(&self, source: Source) -> Vec<After> {
+        let Some((_, rect)) = self
+            .layout
+            .hits()
+            .into_iter()
+            .find(|(h, _)| *h == Hit::RecDevice(source))
+        else {
+            return Vec::new();
+        };
+        let k = self.scale();
+        let mut at = windows::Win32::Foundation::POINT {
+            x: (rect.x * k).round() as i32,
+            y: (rect.y * k).round() as i32,
+        };
+        unsafe {
+            let _ = windows::Win32::Graphics::Gdi::ClientToScreen(self.hwnd, &mut at);
+        }
+        let anchor = crate::capture::Rect::new(
+            at.x,
+            at.y,
+            (rect.w * k).round() as i32,
+            (rect.h * k).round() as i32,
+        );
+        vec![After::PickRecDevice {
+            source,
+            current: self.model.recording.device(source).map(str::to_owned),
+            lang: self.model.lang,
+            font: self.model.font,
+            anchor,
+        }]
+    }
+
     /// A click on `hit`. Returns what must happen once the state is released.
     fn on_click(&mut self, hit: Hit) -> Vec<After> {
         if hit != Hit::GoogleDisconnect && self.confirm {
@@ -2326,6 +2410,12 @@ impl Settings {
             Hit::ClipPersist => post(Action::ClipPersist(!m.clip.persist)),
             Hit::ClipClearOnLock => post(Action::ClipClearOnLock(!m.clip.clear_on_lock)),
             Hit::DeviceNotices => post(Action::DeviceNotices(!m.device_notices)),
+            Hit::RecSources(v) if v != m.recording.sources => post(Action::RecSources(v)),
+            Hit::RecSources(_) => Vec::new(),
+            Hit::RecEchoCancel => post(Action::RecEchoCancel(!m.recording.echo_cancel)),
+            Hit::RecFolderOpen => vec![After::OpenFolder(m.recording.dir())],
+            Hit::RecFolderChange => vec![After::PickRecFolder],
+            Hit::RecDevice(source) => self.device_menu_after(source),
             // A field: the first click records, the next on the same field
             // cancels.
             Hit::HotkeyField(id) => {
@@ -2984,6 +3074,20 @@ enum After {
     Section(Section),
     Open(String),
     OpenDataFolder,
+    /// Explorer on this folder (made first when missing): Rekaman's "Buka".
+    OpenFolder(std::path::PathBuf),
+    /// Rekaman's "Ganti": the folder dialog, then the choice is posted.
+    PickRecFolder,
+    /// A device row's "Ganti": Vale's device dropdown of that source under
+    /// the button (`anchor`, screen px; `current`: the endpoint id chosen).
+    /// The pick comes back as `menu_pop::WM_APP_MENU_DONE` and is posted.
+    PickRecDevice {
+        source: Source,
+        current: Option<String>,
+        lang: Lang,
+        font: UiFont,
+        anchor: crate::capture::Rect,
+    },
     /// The own-shortcut form's fields go back to empty.
     ResetForm,
     /// The Target field's hint follows the kind chosen.
@@ -3016,6 +3120,27 @@ fn run_after(hwnd: HWND, owner: HWND, after: Vec<After>) {
                 if let Some(t) = crate::widgets::host::template_menu(hwnd, at, lang) {
                     post_action(owner, Action::WidgetAdd(t));
                 }
+            }
+            After::OpenFolder(dir) => {
+                let _ = std::fs::create_dir_all(&dir);
+                shell_open(&dir.display().to_string());
+            }
+            After::PickRecFolder => {
+                if let Some(dir) = pick_path(hwnd, CustomKind::Folder) {
+                    post_action(owner, Action::RecFolder(Some(dir)));
+                }
+            }
+            After::PickRecDevice { source, current, lang, font, anchor } => {
+                // "Ganti" sits at the row's right end: the list grows leftwards.
+                crate::ui::device_menu::open(
+                    hwnd,
+                    anchor,
+                    crate::ui::menu_pop::Align::End,
+                    source,
+                    current.as_deref(),
+                    lang,
+                    font,
+                );
             }
             After::OpenDataFolder => {
                 let dir = crate::config::path()
@@ -3134,6 +3259,28 @@ fn browse(hwnd: HWND) {
             let _ = SetWindowTextW(target, &HSTRING::from(path.as_os_str()));
         }
     }
+}
+
+/// The recordings folder picker for the island itself (the blocked-folder
+/// notice's click), on a short-lived thread of its own so the island keeps
+/// running while the dialog is up. The choice comes back to `owner` as
+/// `Action::RecFolder`, the same way Settings' "Ganti" sends it.
+pub fn pick_rec_folder(owner: HWND) {
+    use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
+    let raw = owner.0 as isize;
+    let _ = std::thread::Builder::new()
+        .name("rec-pick-folder".into())
+        .spawn(move || {
+            let owner = HWND(raw as *mut c_void);
+            // The dialog wants a single-threaded apartment.
+            if unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_err() {
+                return;
+            }
+            if let Some(dir) = pick_path(owner, CustomKind::Folder) {
+                post_action(owner, Action::RecFolder(Some(dir)));
+            }
+            unsafe { CoUninitialize() };
+        });
 }
 
 /// The path the owner picks in the system dialog: an exe or any file for an
@@ -3640,6 +3787,16 @@ unsafe extern "system" fn wnd_proc(
             relayout_and_place();
             LRESULT(0)
         }
+        // The device dropdown went: its pick goes to the island.
+        crate::ui::menu_pop::WM_APP_MENU_DONE => {
+            if let Some(done) = unsafe { crate::ui::menu_pop::take_done(lparam) }
+                && let Some((source, choice)) = crate::ui::device_menu::picked(&done)
+                && let Some(owner) = with(|st| st.owner)
+            {
+                post_action(owner, Action::RecDevice(source, choice));
+            }
+            LRESULT(0)
+        }
         WM_APP_SUBMIT => {
             let save = with(|st| {
                 let dirty = st.state().google.dirty;
@@ -4062,6 +4219,10 @@ pub fn run_demo(args: &[String]) {
             Action::ClipPersist(v) => m.clip.persist = v,
             Action::ClipClearOnLock(v) => m.clip.clear_on_lock = v,
             Action::DeviceNotices(v) => m.device_notices = v,
+            Action::RecSources(v) => m.recording.sources = v,
+            Action::RecFolder(v) => m.recording.folder = v,
+            Action::RecDevice(source, id) => m.recording.set_device(source, id),
+            Action::RecEchoCancel(v) => m.recording.echo_cancel = v,
             Action::Hotkey(id, value) => {
                 // What the island does: checked again, then set.
                 let fine = value.is_none_or(|hk| {
@@ -4349,6 +4510,19 @@ pub fn run_demo(args: &[String]) {
                     st.relayout();
                 });
                 relayout_and_place();
+                // `DI_REC_MENU=mic` (or `system`) opens that row's device
+                // dropdown; `DI_SETTINGS_SCROLL` brings the row into view.
+                let source = match std::env::var("DI_REC_MENU").unwrap_or_default().as_str() {
+                    "mic" => Some(Source::Mic),
+                    "system" => Some(Source::System),
+                    _ => None,
+                };
+                if let Some(source) = source
+                    && let Some((owner, after)) =
+                        with(|st| (st.owner, st.on_click(Hit::RecDevice(source))))
+                {
+                    run_after(hwnd, owner, after);
+                }
             }
             Err(error) => {
                 eprintln!("settings-demo: open failed: {error}");
@@ -4535,7 +4709,7 @@ mod tests {
         let off = page_action(&pages, Hit::PageOn(Page::Notes)).expect("toggled");
         assert!(!off.is_on(Page::Notes));
         let later = page_action(&pages, Hit::PageMove(Page::Notes, 1)).expect("moved");
-        assert_eq!(later.position(Page::Notes), 4);
+        assert_eq!(later.position(Page::Notes), 5);
         // Nothing changes: no action.
         assert_eq!(page_action(&pages, Hit::PageMove(Page::Calendar, -1)), None);
         let mut one = PanelPages::default();
@@ -4550,11 +4724,11 @@ mod tests {
     fn page_clicks_move_among_the_pages_shown_and_restore_the_defaults() {
         let mut pages = PanelPages::default();
         pages.toggle(Page::Reminders);
-        // Pomodoro down: past the hidden Reminders, after Notes.
+        // Pomodoro down: past Rekam, which sits before the hidden Reminders.
         let moved = page_action(&pages, Hit::PageMove(Page::Pomodoro, 1)).expect("moved");
         assert_eq!(
             moved.visible()[..4],
-            [Page::Calendar, Page::Notes, Page::Pomodoro, Page::Media]
+            [Page::Calendar, Page::Record, Page::Pomodoro, Page::Notes]
         );
         assert_eq!(page_action(&pages, Hit::PageMove(Page::Calendar, -1)), None);
         // "Tampilkan" on a hidden page, "Kembalikan bawaan" on the changed one.
@@ -4573,15 +4747,15 @@ mod tests {
     fn a_drop_puts_the_page_at_the_place_it_was_dropped_on() {
         let mut pages = PanelPages::default();
         pages.toggle(Page::Reminders);
-        // Shown: Calendar, Pomodoro, Notes, Media, ... Dropping Calendar on
-        // the third place (Notes) puts it after Notes.
+        // Shown: Calendar, Pomodoro, Rekam, Notes, Media, ... Dropping
+        // Calendar on the third place (Rekam) puts it after Rekam.
         let next = page_drop(&pages, 0, 2).expect("moved");
         assert_eq!(
             next.visible()[..4],
-            [Page::Pomodoro, Page::Notes, Page::Calendar, Page::Media]
+            [Page::Pomodoro, Page::Record, Page::Calendar, Page::Notes]
         );
         // Up: Media dropped on the first place goes before Calendar.
-        let next = page_drop(&pages, 3, 0).expect("moved");
+        let next = page_drop(&pages, 4, 0).expect("moved");
         assert_eq!(next.visible()[0], Page::Media);
         assert_eq!(page_drop(&pages, 2, 2), None, "same place");
         assert_eq!(page_drop(&pages, 0, 40), None, "no such place");
