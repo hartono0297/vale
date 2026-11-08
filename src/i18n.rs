@@ -1219,6 +1219,12 @@ keys! {
     TplAgenda => "Agenda", "Agenda";
     TplDecisions => "Keputusan", "Decisions";
     TplFollowUp => "Tindak lanjut", "Follow-up";
+    TrPrompt => "Ringkas transkrip meeting di bawah ini. Tulis: keputusan yang diambil, action item beserta siapa yang mengerjakan dan tenggatnya kalau disebut, dan pertanyaan yang belum terjawab. \"Saya\" adalah orang yang merekam, \"Peserta\" adalah orang lain di meeting.",
+        "Summarize the meeting transcript below. Write: the decisions made, the action items with who does each and its deadline if one is mentioned, and the questions still open. \"Me\" is the person who recorded, \"Others\" are the other people in the meeting.";
+    TrFullTranscript => "Transkrip lengkap", "Full transcript";
+    TrLangId => "Indonesia", "Indonesian";
+    TrLangEn => "Inggris", "English";
+    TrLangAuto => "Otomatis", "Auto";
 }
 
 /// `key` in `lang`.
@@ -3785,6 +3791,35 @@ mod tests {
                 day_date_short(lang, today),
                 time_label(lang, hm(9, 30)),
             ];
+            {
+                use crate::transcribe::doc::{self, Doc};
+                use crate::transcribe::output::{Segment, Speaker};
+                let segments = (0..25)
+                    .map(|i| Segment {
+                        start_ms: i * 1000,
+                        end_ms: i * 1000 + 900,
+                        speaker: [Some(Speaker::Me), Some(Speaker::Others), None][i as usize % 3],
+                        text: format!("ok {i}"),
+                    })
+                    .collect();
+                let started = today.and_hms_opt(9, 30, 0).unwrap();
+                let doc = Doc {
+                    audio: r"D:\rec\a.m4a".into(),
+                    md: r"D:\rec\a.md".into(),
+                    title: "Sync".into(),
+                    app: None,
+                    started: Some(started),
+                    duration_ms: Some(2_520_000),
+                    model: Some("whisper-large-v3-turbo".into()),
+                    language: Some("en".into()),
+                    two_channel: true,
+                    has_transcript: true,
+                    segments,
+                };
+                all.push(doc::meta_line(&doc, lang));
+                all.push(doc::plain_text(&doc, lang));
+                all.push(doc::note_text(&doc, lang));
+            }
             all.push(greeting_periods_line(lang));
             for period in ALL_PERIODS {
                 all.push(greeting_title(lang, period).into());
