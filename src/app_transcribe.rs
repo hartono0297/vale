@@ -13,6 +13,8 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use chrono::Local;
@@ -31,6 +33,10 @@ use crate::transcribe::runner::{self, RunError};
 use crate::transcribe::store::Store;
 use crate::transcribe::{doc, gpu};
 
+/// A job that started this many times and never ended (a crash each time)
+/// is failed, not run again.
+pub(super) const MAX_TRIES: u8 = 2;
+
 /// One-shot, 30 s after the start: the queue of the last run resumes.
 pub(super) const TIMER_TRANSCRIBE: usize = 65;
 pub(super) const SETTLE_MS: u32 = 30_000;
@@ -46,6 +52,9 @@ pub(super) struct Worker {
     audio: PathBuf,
     model: &'static Model,
     running: runner::Running,
+    /// Set when the thread sent `Finished`: a thread that ended without it
+    /// died (a panic).
+    finish_sent: Arc<AtomicBool>,
     started: Instant,
     /// Audio read so far, out of the whole.
     progress: Option<(u64, Option<u64>)>,
@@ -61,7 +70,9 @@ pub(super) struct Worker {
 #[allow(dead_code)]
 pub(super) struct DownloadRun {
     id: u64,
-    model: &'static Model,
+    item: Item,
+    /// The model the download is for (`None`: the engine alone).
+    model: Option<&'static Model>,
     download: download::Download,
     progress: Option<Progress>,
     /// Stopped by the user: its partial files are thrown away.
@@ -82,6 +93,11 @@ pub(super) struct TranscribeState {
     /// The startup hold is released (the 30 s passed, or transcripts were
     /// turned on after the start).
     settled: bool,
+    /// The queue file of the last run is read into the queue.
+    loaded: bool,
+    /// Jobs the file brought back that already started `MAX_TRIES` times
+    /// without ending: they fail at settle instead of running.
+    crashed: Vec<PathBuf>,
     /// Audio whose "Bikin transkrip" notice was shown this run.
     told: Vec<PathBuf>,
     store: Store,
@@ -98,6 +114,8 @@ impl TranscribeState {
             failed: HashMap::new(),
             problem: None,
             settled: false,
+            loaded: false,
+            crashed: Vec::new(),
             told: Vec::new(),
             store: Store::default_location(),
         }
@@ -129,6 +147,29 @@ pub(super) fn offer_for(
         return (false, TranscriptOffer::Setup, true);
     }
     (false, TranscriptOffer::None, false)
+}
+
+/// The jobs of the last run's file that may run again, and the audio of
+/// those that already started `MAX_TRIES` times.
+pub(super) fn split_crashed(jobs: Vec<QueuedJob>) -> (Vec<QueuedJob>, Vec<PathBuf>) {
+    let (keep, crashed): (Vec<_>, Vec<_>) = jobs.into_iter().partition(|j| j.tries < MAX_TRIES);
+    (keep, crashed.into_iter().map(|j| j.audio).collect())
+}
+
+/// A worker thread ended without sending `Finished`.
+pub(super) fn worker_died(thread_ended: bool, finish_sent: bool) -> bool {
+    thread_ended && !finish_sent
+}
+
+/// What a cut download resumes: the model whose own part is on disk (with
+/// what it needs), else the engine and the voice model when only their
+/// parts are, else nothing. Never a model nobody started.
+pub(super) fn resume_of(model_with_part: Option<&'static Model>, base_part: bool) -> Option<Item> {
+    match model_with_part {
+        Some(model) => Some(Item::Setup(model)),
+        None if base_part => Some(Item::Engine),
+        None => None,
+    }
 }
 
 /// Why a transcript job failed, for the notice.
@@ -206,21 +247,42 @@ fn tr_notice(lang: Lang, key: &str, title: String, body: String, kind: NoticeKin
 // ---- the App side ------------------------------------------------------------
 
 impl App {
-    /// After the island is up: with transcripts on, the queue of the last
-    /// run settles 30 s from now (`transcribe_settle`). Off: nothing runs.
+    /// After the island is up: with transcripts on, the queue file of the
+    /// last run is read now (so a job queued before the settle joins it, not
+    /// replaces it) and the rest settles 30 s from now (`transcribe_settle`).
+    /// Off: nothing runs.
     pub(super) fn transcribe_init(&mut self) {
         if !self.config.transcript.enabled {
             return;
         }
+        self.transcribe_load();
         unsafe {
             SetTimer(Some(self.hwnd), TIMER_TRANSCRIBE, SETTLE_MS, None);
         }
     }
 
-    /// `TIMER_TRANSCRIBE`: the startup hold ends. The store is swept on its
-    /// own thread, the queue file of the last run comes back (what it names
-    /// and still exists), a download that was cut resumes, and the first
-    /// job starts when the model is there.
+    /// Reads the last run's queue file into the queue, ahead of anything
+    /// queued since. Once.
+    fn transcribe_load(&mut self) {
+        if std::mem::replace(&mut self.tr.loaded, true) {
+            return;
+        }
+        let text = std::fs::read_to_string(self.tr.store.queue_path()).unwrap_or_default();
+        let jobs = Queue::from_json(&text, |p| p.is_file())
+            .into_iter()
+            .filter(|j| catalog::model(&j.model).is_some())
+            .collect();
+        let (keep, crashed) = split_crashed(jobs);
+        // A job that comes back is not announced again.
+        self.tr.told.extend(keep.iter().map(|j| j.audio.clone()));
+        self.tr.queue.restore(keep);
+        self.tr.crashed.extend(crashed);
+    }
+
+    /// `TIMER_TRANSCRIBE`, or Transkrip turned on before it fired: the
+    /// startup hold ends. The store is swept on its own thread, a download
+    /// that was cut resumes (after the sweep), the jobs that crashed Vale
+    /// fail, and the first job starts when the model is there.
     pub(super) fn transcribe_settle(&mut self) {
         unsafe {
             let _ = KillTimer(Some(self.hwnd), TIMER_TRANSCRIBE);
@@ -229,41 +291,37 @@ impl App {
             return;
         }
         self.tr.settled = true;
+        self.transcribe_load();
         let store = self.tr.store.clone();
-        let _ = std::thread::Builder::new()
+        let sweep = std::thread::Builder::new()
             .name("transcribe-sweep".into())
             .spawn(move || {
                 let _ = store.sweep();
             });
-        let text = std::fs::read_to_string(self.tr.store.queue_path()).unwrap_or_default();
-        for job in Queue::from_json(&text, |p| p.is_file()) {
-            if catalog::model(&job.model).is_none() {
-                continue;
+        if let Some(item) = self.cut_download() {
+            // The sweep clears the engine's staging folder: it ends first.
+            if let Ok(sweep) = sweep {
+                let _ = sweep.join();
             }
-            // A job that comes back is not announced again.
-            self.tr.told.push(job.audio.clone());
-            self.tr.queue.push(job);
+            self.transcribe_download_item(item);
         }
-        if let Some(model) = self.cut_download() {
-            self.transcribe_download(model);
+        for audio in std::mem::take(&mut self.tr.crashed) {
+            let why = text(self.config.language, Key::TrWhyOther).to_owned();
+            self.transcribe_failed(audio, why);
         }
         self.tr.queue.set_hold(Hold::Startup, false);
         self.transcribe_sync_hold();
         self.transcribe_try_next();
     }
 
-    /// The model whose download was cut (a `.part` of it, or of the
-    /// engine's, is on disk): the first one, else the chosen one.
-    fn cut_download(&self) -> Option<&'static Model> {
+    /// What the last run's cut download resumes (`resume_of`).
+    fn cut_download(&self) -> Option<Item> {
         let store = &self.tr.store;
         let part = |asset| store.part_path(asset).exists();
-        catalog::MODELS
-            .iter()
-            .find(|m| part(&m.asset))
-            .or_else(|| {
-                part(&ENGINE.asset)
-                    .then(|| self.config.transcript.model_for(gpu::has_hardware_gpu()))
-            })
+        resume_of(
+            catalog::MODELS.iter().find(|m| part(&m.asset)),
+            part(&ENGINE.asset) || part(&catalog::VAD),
+        )
     }
 
     /// Queues a transcript of `audio` with `model` (`None`: the chosen one).
@@ -280,6 +338,7 @@ impl App {
         let job = QueuedJob {
             audio,
             model: model.key.to_owned(),
+            tries: 0,
         };
         if self.tr.queue.push(job) {
             self.transcribe_changed();
@@ -324,12 +383,29 @@ impl App {
     /// Starts the head of the queue when nothing runs, nothing holds it and
     /// its model (and the engine) is installed and not being downloaded.
     pub(super) fn transcribe_try_next(&mut self) {
-        if self.tr.worker.is_some() || !self.config.transcript.enabled {
+        if let Some(w) = self.tr.worker.as_ref() {
+            // A thread that ended without a word died: its job fails.
+            if worker_died(w.running.is_finished(), w.finish_sent.load(Ordering::Relaxed))
+                && let Some(w) = self.tr.worker.take()
+            {
+                w.running.join();
+                eprintln!("vale: the transcript thread ended without finishing");
+                let why = text(self.config.language, Key::TrWhyOther).to_owned();
+                self.transcribe_failed(w.audio, why);
+            }
+            return;
+        }
+        if !self.config.transcript.enabled {
             return;
         }
         let store = &self.tr.store;
         let engine_ok = store.engine_installed();
-        let downloading = self.tr.download.as_ref().map(|d| d.model.key);
+        let downloading = self
+            .tr
+            .download
+            .as_ref()
+            .and_then(|d| d.model)
+            .map(|m| m.key);
         let ready = |j: &QueuedJob| match catalog::model(&j.model) {
             // An unknown model is let through to fail with its reason.
             None => true,
@@ -365,6 +441,8 @@ impl App {
         let id = self.tr.next_job;
         let (tx, wake) = (self.tx.clone(), poster(self.hwnd, WM_APP_EVENT));
         let mut last: Option<(Option<u8>, Instant)> = None;
+        let finish_sent = Arc::new(AtomicBool::new(false));
+        let sent = finish_sent.clone();
         let spawned = runner::spawn(spec, move |ev| {
             if let runner::Event::Progress { done_ms, total_ms } = &ev {
                 let pct = percent(*done_ms, *total_ms);
@@ -372,6 +450,9 @@ impl App {
                     return;
                 }
                 last = Some((pct, Instant::now()));
+            }
+            if matches!(ev, runner::Event::Finished(_)) {
+                sent.store(true, Ordering::Relaxed);
             }
             let _ = tx.send(Event::Transcribe(id, ev));
             wake();
@@ -384,6 +465,7 @@ impl App {
                 return;
             }
         };
+        let audio = job.audio.clone();
         let today = Local::now().date_naive();
         let title = display_title(&job.audio, lang, today);
         if !self.tr.told.iter().any(|p| same_audio(p, &job.audio)) {
@@ -402,13 +484,16 @@ impl App {
             audio: job.audio,
             model,
             running,
+            finish_sent,
             started: Instant::now(),
             progress: None,
             segments: Vec::new(),
             title,
             stopping: false,
         });
-        self.transcribe_marks_changed();
+        // The start is counted and written before the engine can crash.
+        self.tr.queue.bump_tries(&audio);
+        self.transcribe_changed();
     }
 
     /// A word of the worker thread, from the event queue. One of an older
@@ -459,7 +544,7 @@ impl App {
                 );
                 self.apply_now(Event::Notice(n));
             }
-            Err(RunError::Cancelled) => {}
+            Err(RunError::Cancelled) => self.tr.queue.clear_tries(&audio),
             Err(e) => {
                 if matches!(e, RunError::Engine(EngineError::RuntimeMissing(_))) {
                     self.tr.problem = Some(text(lang, Key::TrWhyRuntime).to_owned());
@@ -506,7 +591,7 @@ impl App {
             self.tr
                 .download
                 .as_ref()
-                .is_some_and(|d| d.model.key == model.key),
+                .is_some_and(|d| d.model.is_some_and(|m| m.key == model.key)),
             engine && !store.installed_models().is_empty(),
             prefs.setup_offered,
         );
@@ -531,11 +616,12 @@ impl App {
             self.save_config();
         }
         if on {
-            if !self.tr.settled {
-                self.tr.settled = true;
-                self.tr.queue.set_hold(Hold::Startup, false);
+            // Before the settle ran, it runs now (load, sweep, resume).
+            if self.tr.settled {
+                self.transcribe_try_next();
+            } else {
+                self.transcribe_settle();
             }
-            self.transcribe_try_next();
             return;
         }
         if self.tr.queue.clear().is_some()
@@ -551,21 +637,32 @@ impl App {
 
     /// Downloads what `model` needs (the engine and the voice model when
     /// missing). One download at a time.
+    // Settings' download button comes in Task 9.
+    #[allow(dead_code)]
     pub(super) fn transcribe_download(&mut self, model: &'static Model) {
+        self.transcribe_download_item(Item::Setup(model));
+    }
+
+    fn transcribe_download_item(&mut self, item: Item) {
         if self.tr.download.is_some() {
             return;
         }
         self.tr.next_download += 1;
         let id = self.tr.next_download;
         let (tx, wake) = (self.tx.clone(), poster(self.hwnd, WM_APP_EVENT));
-        let started = download::start(self.tr.store.clone(), Item::Setup(model), move |ev| {
+        let started = download::start(self.tr.store.clone(), item, move |ev| {
             let _ = tx.send(Event::TranscribeDownload(id, ev));
             wake();
         });
         match started {
             Ok(download) => {
+                let model = match item {
+                    Item::Model(m) | Item::Setup(m) => Some(m),
+                    Item::Engine => None,
+                };
                 self.tr.download = Some(DownloadRun {
                     id,
+                    item,
                     model,
                     download,
                     progress: None,
@@ -613,18 +710,19 @@ impl App {
             return;
         };
         run.download.join();
-        let (model, by_user) = (run.model, run.by_user_cancel);
+        let (item, model, by_user) = (run.item, run.model, run.by_user_cancel);
         let lang = self.config.language;
         let notice = match result {
             Ok(()) => {
                 let missing = engine::runtime_missing(&self.tr.store.engine_dir());
                 if missing.is_empty() {
                     self.tr.problem = None;
-                    Some((Key::TrModelReady, model.name.to_owned()))
+                    model.map(|m| (Key::TrModelReady, m.name.to_owned()))
                 } else {
+                    // The download worked; what is missing is Windows'.
                     let why = text(lang, Key::TrWhyRuntime).to_owned();
                     self.tr.problem = Some(why.clone());
-                    Some((Key::TrDownloadFailed, why))
+                    Some((Key::TrNoticeSource, why))
                 }
             }
             Err(DownloadError::Cancelled) => {
@@ -632,7 +730,7 @@ impl App {
                     let _ = self
                         .tr
                         .store
-                        .discard_parts(&download::assets_of(Item::Setup(model)));
+                        .discard_parts(&download::assets_of(item));
                 }
                 None
             }
@@ -679,6 +777,9 @@ impl App {
 
     /// The running job's percent moved: only its row needs the new number.
     fn transcribe_percent_changed(&mut self) {
+        if !self.rec.page_shown() {
+            return;
+        }
         let Some(audio) = self.tr.worker.as_ref().map(|w| w.audio.clone()) else {
             return;
         };
@@ -765,6 +866,51 @@ impl App {
 mod tests {
     use super::*;
     use crate::transcribe::decode::DecodeError;
+
+    fn qj(audio: &str, tries: u8) -> QueuedJob {
+        QueuedJob {
+            audio: PathBuf::from(audio),
+            model: "whisper-small".into(),
+            tries,
+        }
+    }
+
+    #[test]
+    fn a_job_that_crashed_twice_is_failed_not_run() {
+        let (keep, crashed) = split_crashed(vec![qj("a", 0), qj("b", 1), qj("c", 2), qj("d", 3)]);
+        assert_eq!(keep, [qj("a", 0), qj("b", 1)]);
+        assert_eq!(crashed, [PathBuf::from("c"), PathBuf::from("d")]);
+    }
+
+    #[test]
+    fn a_job_queued_before_the_settle_joins_the_last_runs_jobs() {
+        // The file is read at init; a pill clicked in the first 30 s pushes
+        // after it was read. Reading late must still put the old jobs first.
+        let mut queue = Queue::new(&[Hold::Startup]);
+        queue.push(qj("new", 0));
+        let (keep, _) = split_crashed(vec![qj("old1", 1), qj("old2", 0)]);
+        queue.restore(keep);
+        let order: Vec<_> = queue.jobs().map(|j| j.audio.to_string_lossy().into_owned()).collect();
+        assert_eq!(order, ["old1", "old2", "new"]);
+        assert_eq!(queue.jobs().next().map(|j| j.tries), Some(1));
+    }
+
+    #[test]
+    fn only_a_thread_that_ended_without_finished_died() {
+        assert!(worker_died(true, false));
+        assert!(!worker_died(true, true), "Finished is on its way");
+        assert!(!worker_died(false, false));
+        assert!(!worker_died(false, true));
+    }
+
+    #[test]
+    fn a_cut_download_resumes_only_what_has_parts() {
+        let small = &catalog::MODELS[1];
+        assert_eq!(resume_of(Some(small), false), Some(Item::Setup(small)));
+        assert_eq!(resume_of(Some(small), true), Some(Item::Setup(small)));
+        assert_eq!(resume_of(None, true), Some(Item::Engine));
+        assert_eq!(resume_of(None, false), None);
+    }
 
     #[test]
     fn offer_for_each_case() {

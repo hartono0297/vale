@@ -811,6 +811,9 @@ impl App {
         {
             self.rec.busy = Some(Busy::Stopping(handle));
         }
+        // No `Stopped` comes when the thread did not start: the hold follows
+        // the recorder now, not only when that word arrives.
+        self.transcribe_sync_hold();
     }
 
     /// The stop thread is done.

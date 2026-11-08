@@ -24,6 +24,9 @@ pub struct QueuedJob {
     pub audio: PathBuf,
     /// Catalog key of the model.
     pub model: String,
+    /// How many times a run of this job started and did not end by itself
+    /// (a crash leaves the count in the file).
+    pub tries: u8,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -135,6 +138,33 @@ impl Queue {
         self.running.take()
     }
 
+    /// Puts `jobs` (the last run's) ahead of what is waiting, in their order;
+    /// one whose audio is already queued or running is skipped.
+    pub fn restore(&mut self, jobs: Vec<QueuedJob>) {
+        for job in jobs.into_iter().rev() {
+            if self.state(&job.audio).is_none() {
+                self.waiting.push_front(job);
+            }
+        }
+    }
+
+    /// Counts a start of the running job; returns the new count.
+    pub fn bump_tries(&mut self, audio: &Path) -> Option<u8> {
+        let job = self.running.as_mut().filter(|r| same_audio(&r.audio, audio))?;
+        job.tries = job.tries.saturating_add(1);
+        Some(job.tries)
+    }
+
+    /// Forgets the tries of `audio` (a stop the island asked for is not a
+    /// crash).
+    pub fn clear_tries(&mut self, audio: &Path) {
+        for job in self.running.iter_mut().chain(self.waiting.iter_mut()) {
+            if same_audio(&job.audio, audio) {
+                job.tries = 0;
+            }
+        }
+    }
+
     pub fn state(&self, audio: &Path) -> Option<JobState> {
         if self.is_running(audio) {
             Some(JobState::Running)
@@ -157,7 +187,9 @@ impl Queue {
     pub fn to_json(&self) -> String {
         let jobs: Vec<Value> = self
             .jobs()
-            .map(|j| json!({ "audio": j.audio.to_string_lossy(), "model": j.model }))
+            .map(|j| {
+                json!({ "audio": j.audio.to_string_lossy(), "model": j.model, "tries": j.tries })
+            })
             .collect();
         json!({ "v": 1, "jobs": jobs }).to_string()
     }
@@ -186,9 +218,14 @@ impl Queue {
             if out.iter().any(|j| same_audio(&j.audio, &audio)) || !exists(&audio) {
                 continue;
             }
+            let tries = e
+                .get("tries")
+                .and_then(Value::as_u64)
+                .map_or(0, |t| t.min(u64::from(u8::MAX)) as u8);
             out.push(QueuedJob {
                 audio,
                 model: model.to_string(),
+                tries,
             });
         }
         out
@@ -224,6 +261,7 @@ mod tests {
         QueuedJob {
             audio: PathBuf::from(a),
             model: m.into(),
+            tries: 0,
         }
     }
     fn ready(_: &QueuedJob) -> bool {
@@ -347,6 +385,42 @@ mod tests {
     }
 
     #[test]
+    fn restored_jobs_go_ahead_of_the_waiting_ones() {
+        let mut q = Queue::new(&[Hold::Startup]);
+        q.push(job("new.m4a", "large"));
+        q.restore(vec![job("a.m4a", "s"), job("b.m4a", "s"), job("NEW.m4a", "s")]);
+        let order: Vec<_> = q.jobs().map(|j| j.audio.to_string_lossy().into_owned()).collect();
+        assert_eq!(order, ["a.m4a", "b.m4a", "new.m4a"]);
+        // The job already there keeps its model.
+        assert_eq!(q.jobs().last().map(|j| j.model.as_str()), Some("large"));
+    }
+
+    #[test]
+    fn tries_count_starts_and_a_stop_clears_them() {
+        let mut q = Queue::new(&[]);
+        q.push(job("a.m4a", "s"));
+        assert_eq!(q.bump_tries(&p("a.m4a")), None, "only the running job is counted");
+        q.start_next(ready);
+        assert_eq!(q.bump_tries(&p("a.m4a")), Some(1));
+        assert_eq!(q.jobs().next().map(|j| j.tries), Some(1));
+        q.set_hold(Hold::Recording, true);
+        q.clear_tries(&p("A.m4a"));
+        assert_eq!(q.jobs().next().map(|j| j.tries), Some(0));
+    }
+
+    #[test]
+    fn tries_round_trip_and_old_files_load_as_zero() {
+        let mut q = Queue::new(&[]);
+        q.push(job("a.m4a", "s"));
+        q.start_next(ready);
+        q.bump_tries(&p("a.m4a"));
+        let back = Queue::from_json(&q.to_json(), |_| true);
+        assert_eq!(back[0].tries, 1);
+        let old = r#"{"v":1,"jobs":[{"audio":"a.m4a","model":"s"}]}"#;
+        assert_eq!(Queue::from_json(old, |_| true)[0].tries, 0);
+    }
+
+    #[test]
     fn the_queue_file_round_trips_with_the_running_job_first() {
         let mut q = Queue::new(&[]);
         q.push(job(r"C:\Rec\a.m4a", "whisper-small"));
@@ -355,7 +429,7 @@ mod tests {
         let text = q.to_json();
         assert_eq!(
             text,
-            r#"{"v":1,"jobs":[{"audio":"C:\\Rec\\a.m4a","model":"whisper-small"},{"audio":"C:\\Rec\\b.m4a","model":"whisper-large"}]}"#
+            r#"{"v":1,"jobs":[{"audio":"C:\\Rec\\a.m4a","model":"whisper-small","tries":0},{"audio":"C:\\Rec\\b.m4a","model":"whisper-large","tries":0}]}"#
         );
         let back = Queue::from_json(&text, |_| true);
         assert_eq!(back, q.jobs().cloned().collect::<Vec<_>>());
