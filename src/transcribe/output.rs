@@ -1,8 +1,10 @@
-//! The transcript's files: `<name>.md` and `<name>.srt` next to the audio,
-//! and the `"transcript"` object in `<name>.vale.json` (the recorder's
-//! sidecar; its other keys are kept as they are).
+//! The transcript's files: `<name>.md` and `<name>.srt` next to the audio
+//! (`<name>.transcript.md` / `.srt` when those are someone else's), and the
+//! `"transcript"` object in `<name>.vale.json` (the recorder's sidecar; its
+//! other keys are kept as they are).
 //!
-//! Everything here is pure text work, so it is tested without the engine.
+//! Pure text work besides a look at which files exist, so it is tested
+//! without the engine.
 
 use std::path::{Path, PathBuf};
 
@@ -199,6 +201,109 @@ pub fn paths(audio: &Path) -> Paths {
         srt: dir.join(format!("{stem}.srt")),
         sidecar: dir.join(format!("{stem}.vale.json")),
     }
+}
+
+/// The `.md` and `.srt` a transcript of one recording lives in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Files {
+    pub md: PathBuf,
+    pub srt: PathBuf,
+}
+
+/// `<stem>.transcript.md` and `.srt`: where Vale writes when `<stem>.md` or
+/// `<stem>.srt` is someone else's.
+fn own_files(audio: &Path) -> Files {
+    let stem = audio.file_stem().unwrap_or_default().to_string_lossy();
+    let dir = audio.parent().unwrap_or(Path::new(""));
+    Files {
+        md: dir.join(format!("{stem}.transcript.md")),
+        srt: dir.join(format!("{stem}.transcript.srt")),
+    }
+}
+
+/// The files the sidecar's `"transcript"` names (Vale wrote them), when both
+/// are plain `.md` / `.srt` file names next to the audio.
+pub fn named_files(audio: &Path, sidecar: &serde_json::Value) -> Option<Files> {
+    let transcript = sidecar.get("transcript")?;
+    let name = |key: &str, ext: &str| {
+        let name = transcript.get(key)?.as_str()?;
+        let plain = Path::new(name).file_name() == Some(std::ffi::OsStr::new(name));
+        let fits = name.len() > ext.len() && name.to_ascii_lowercase().ends_with(ext);
+        (plain && fits).then(|| audio.with_file_name(name))
+    };
+    Some(Files {
+        md: name("md", ".md")?,
+        srt: name("srt", ".srt")?,
+    })
+}
+
+/// Where the transcript of `audio` is read: the files the sidecar names,
+/// else `<stem>.transcript.*` when Vale wrote there, else `<stem>.md` and
+/// `<stem>.srt`.
+pub fn transcript_files(audio: &Path, sidecar: Option<&serde_json::Value>) -> Files {
+    if let Some(files) = sidecar.and_then(|v| named_files(audio, v)) {
+        return files;
+    }
+    let own = own_files(audio);
+    if own.srt.is_file() || own.md.is_file() {
+        return own;
+    }
+    let plain = paths(audio);
+    Files {
+        md: plain.md,
+        srt: plain.srt,
+    }
+}
+
+/// Where a new transcript of `audio` is written: the files the sidecar
+/// names, or `<stem>.transcript.*` once Vale wrote there; else `<stem>.md`
+/// and `<stem>.srt` when they are free or Vale's (the `.md` starts with
+/// Vale's header), and `<stem>.transcript.*` when either is someone else's.
+pub fn target_files(audio: &Path, sidecar: Option<&serde_json::Value>) -> Files {
+    if let Some(files) = sidecar.and_then(|v| named_files(audio, v)) {
+        return files;
+    }
+    let own = own_files(audio);
+    if own.srt.exists() || own.md.exists() {
+        return own;
+    }
+    let plain = paths(audio);
+    let ours = match std::fs::read(&plain.md) {
+        Ok(bytes) => is_vale_markdown(&String::from_utf8_lossy(&bytes)),
+        // No `.md`: an `.srt` alone is not Vale's.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => !plain.srt.exists(),
+        Err(_) => false,
+    };
+    if ours {
+        Files {
+            md: plain.md,
+            srt: plain.srt,
+        }
+    } else {
+        own
+    }
+}
+
+/// The model's name in the Markdown header: `"Whisper small Q5_1"`.
+pub fn model_label(model: &super::catalog::Model) -> String {
+    format!("{} {}", model.name, model.quant)
+}
+
+/// Whether `text` starts with the header `markdown` writes: the title, a
+/// blank line, and the facts line in italics ending with a catalog model's
+/// label (or a model file's name, from the debug CLI).
+pub fn is_vale_markdown(text: &str) -> bool {
+    let mut lines = text.trim_start_matches('\u{feff}').lines();
+    let (Some(title), Some(blank), Some(facts)) = (lines.next(), lines.next(), lines.next()) else {
+        return false;
+    };
+    let Some(facts) = facts.strip_prefix('*').and_then(|f| f.strip_suffix('*')) else {
+        return false;
+    };
+    let model = facts.rsplit(" · ").next().unwrap_or_default();
+    let known = super::catalog::MODELS.iter().any(|m| model == model_label(m))
+        || model.to_ascii_lowercase().ends_with(".gguf");
+    title.starts_with("# ") && blank.is_empty() && known
 }
 
 /// What the sidecar records about a finished transcript.
@@ -460,6 +565,93 @@ mod tests {
         assert_eq!(sidecar_title(SIDECAR).as_deref(), Some("Sync mingguan"));
         assert_eq!(sidecar_title(r#"{"title": " "}"#), None);
         assert_eq!(sidecar_channels("{}"), None);
+    }
+
+    #[test]
+    fn vales_header_is_told_from_someone_elses_markdown() {
+        let header = |model: String| Header {
+            title: "Rapat".into(),
+            started: Some("2026-11-07 10:02".into()),
+            duration_ms: Some(60_000),
+            model,
+        };
+        let segs = [seg(0, 1_000, Some(Me), "halo")];
+        for m in &crate::transcribe::catalog::MODELS {
+            assert!(is_vale_markdown(&markdown(&header(model_label(m)), &segs, LABELS_ID)));
+        }
+        assert!(is_vale_markdown(&markdown(&header("model.gguf".into()), &[], LABELS_EN)));
+        assert!(!is_vale_markdown("# Rapat\n\nCatatan saya sendiri.\n"));
+        assert!(!is_vale_markdown("# Rapat\n\n*penting*\n"));
+        assert!(!is_vale_markdown("Catatan\n"));
+        assert!(!is_vale_markdown(""));
+    }
+
+    #[test]
+    fn the_sidecar_names_only_plain_md_and_srt_files() {
+        let audio = Path::new(r"C:\r\a.m4a");
+        let named = |md: &str, srt: &str| {
+            let v = serde_json::json!({ "transcript": { "md": md, "srt": srt } });
+            named_files(audio, &v)
+        };
+        assert_eq!(
+            named("a.md", "a.srt"),
+            Some(Files {
+                md: PathBuf::from(r"C:\r\a.md"),
+                srt: PathBuf::from(r"C:\r\a.srt"),
+            })
+        );
+        assert_eq!(named("a.transcript.md", "a.transcript.srt").unwrap().md, PathBuf::from(r"C:\r\a.transcript.md"));
+        assert_eq!(named(r"..\b.md", "a.srt"), None, "not beside the audio");
+        assert_eq!(named("a.m4a", "a.srt"), None, "not a transcript file");
+        assert_eq!(named("a.md", ".srt"), None);
+        assert_eq!(named_files(audio, &serde_json::json!({ "title": "x" })), None);
+    }
+
+    fn files_dir(name: &str) -> PathBuf {
+        let store = crate::transcribe::store::tests::temp_store(name);
+        store.root().to_path_buf()
+    }
+
+    #[test]
+    fn a_new_transcript_never_lands_on_someone_elses_md_or_srt() {
+        let dir = files_dir("output-target");
+        let audio = dir.join("meeting.wav");
+        let plain = Files {
+            md: dir.join("meeting.md"),
+            srt: dir.join("meeting.srt"),
+        };
+        let own = Files {
+            md: dir.join("meeting.transcript.md"),
+            srt: dir.join("meeting.transcript.srt"),
+        };
+        // Nothing beside it: the plain names, read and written.
+        assert_eq!(target_files(&audio, None), plain);
+        assert_eq!(transcript_files(&audio, None), plain);
+        // The user's own notes: Vale writes beside them.
+        std::fs::write(&plain.md, "# Meeting\n\nmy notes\n").unwrap();
+        assert_eq!(target_files(&audio, None), own);
+        // An .srt alone is not Vale's either.
+        std::fs::remove_file(&plain.md).unwrap();
+        std::fs::write(&plain.srt, "1\n00:00:00,000 --> 00:00:01,000\nhi\n\n").unwrap();
+        assert_eq!(target_files(&audio, None), own);
+        // Vale's own .md (its header) with its .srt: written again in place.
+        let header = Header {
+            title: "Meeting".into(),
+            started: None,
+            duration_ms: None,
+            model: model_label(&crate::transcribe::catalog::MODELS[1]),
+        };
+        std::fs::write(&plain.md, markdown(&header, &[], LABELS_ID)).unwrap();
+        assert_eq!(target_files(&audio, None), plain);
+        // Once Vale wrote the .transcript files, they are read and written.
+        std::fs::write(&plain.md, "# Meeting\n\nmy notes\n").unwrap();
+        std::fs::write(&own.srt, "").unwrap();
+        assert_eq!(target_files(&audio, None), own);
+        assert_eq!(transcript_files(&audio, None), own);
+        // The sidecar's names win.
+        let side = serde_json::json!({ "transcript": { "md": "meeting.md", "srt": "meeting.srt" } });
+        assert_eq!(target_files(&audio, Some(&side)), plain);
+        assert_eq!(transcript_files(&audio, Some(&side)), plain);
     }
 
     #[test]

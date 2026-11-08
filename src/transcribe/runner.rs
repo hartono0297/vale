@@ -413,7 +413,8 @@ fn attempt(
 }
 
 /// Writes `.md`, `.srt` (neither when there are no segments) and, when the
-/// recording has one, the sidecar.
+/// recording has one, the sidecar. A user's own `<stem>.md` or `.srt` is
+/// never replaced or removed (`output::target_files`).
 fn write_files(
     job: &Job,
     transcript: &Transcript,
@@ -423,6 +424,9 @@ fn write_files(
     let io = |e: std::io::Error| RunError::Io(e.to_string());
     let paths = output::paths(&job.audio);
     let sidecar = std::fs::read_to_string(&paths.sidecar).ok();
+    let value: Option<serde_json::Value> =
+        sidecar.as_deref().and_then(|s| serde_json::from_str(s).ok());
+    let files = output::target_files(&job.audio, value.as_ref());
     let stem = job
         .audio
         .file_stem()
@@ -430,7 +434,7 @@ fn write_files(
         .to_string_lossy()
         .into_owned();
     let model_name = match job.model {
-        Some(m) => format!("{} {}", m.name, m.quant),
+        Some(m) => output::model_label(m),
         None => job
             .model_path
             .file_name()
@@ -445,17 +449,19 @@ fn write_files(
         model: model_name,
     };
     if transcript.segments.is_empty() {
-        // Nothing was said: no files, and no stale ones from an earlier run.
-        for old in [&paths.md, &paths.srt] {
+        // Nothing was said: no files, and no stale ones from an earlier run,
+        // but only those the sidecar says Vale wrote.
+        let old = value.as_ref().and_then(|v| output::named_files(&job.audio, v));
+        for old in old.iter().flat_map(|f| [&f.md, &f.srt]) {
             match std::fs::remove_file(old) {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(io(e)),
                 _ => {}
             }
         }
     } else {
-        output::write_atomic(&paths.md, &output::markdown(&header, &transcript.segments, job.labels))
+        output::write_atomic(&files.md, &output::markdown(&header, &transcript.segments, job.labels))
             .map_err(io)?;
-        output::write_atomic(&paths.srt, &output::srt(&transcript.segments, job.labels))
+        output::write_atomic(&files.srt, &output::srt(&transcript.segments, job.labels))
             .map_err(io)?;
     }
     let mut updated = None;
@@ -466,8 +472,8 @@ fn write_files(
             engine: ENGINE.version.to_string(),
             language: job.language.clone().or_else(|| transcript.language.clone()),
             created: chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false),
-            md: name(&paths.md),
-            srt: name(&paths.srt),
+            md: name(&files.md),
+            srt: name(&files.srt),
             segments: transcript.segments.len(),
             elapsed_ms,
         };
@@ -476,8 +482,8 @@ fn write_files(
         updated = Some(paths.sidecar.clone());
     }
     Ok(Report {
-        md: paths.md,
-        srt: paths.srt,
+        md: files.md,
+        srt: files.srt,
         sidecar: updated,
         segments: transcript.segments.len(),
         language: job.language.clone().or_else(|| transcript.language.clone()),
@@ -715,21 +721,18 @@ mod tests {
         assert_eq!(transcript.segments[0].speaker, Some(Speaker::Others));
     }
 
-    #[test]
-    fn an_empty_result_leaves_no_transcript_files() {
+    fn files_dir(name: &str) -> PathBuf {
         let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("target")
             .join("test-tmp")
-            .join(format!("transcribe-empty-{}", std::process::id()));
+            .join(format!("transcribe-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let audio = dir.join("meeting.m4a");
-        let paths = output::paths(&audio);
-        std::fs::write(&paths.md, "old").unwrap();
-        std::fs::write(&paths.srt, "old").unwrap();
-        std::fs::write(&paths.sidecar, r#"{"title": "Weekly", "channels": ["mic", "system"]}"#)
-            .unwrap();
-        let job = Job {
+        dir
+    }
+
+    fn files_job(audio: PathBuf) -> Job {
+        Job {
             audio,
             model_path: PathBuf::from("model.gguf"),
             model: None,
@@ -739,21 +742,71 @@ mod tests {
             gpu: false,
             threads: 1,
             labels: output::LABELS_ID,
-        };
-        let transcript = Transcript {
-            segments: Vec::new(),
+        }
+    }
+
+    fn result_of(segments: Vec<Segment>) -> Transcript {
+        Transcript {
+            segments,
             language: None,
             duration_ms: 5_000,
             partial_chunks: 0,
-        };
-        let report = write_files(&job, &transcript, "cpu".into(), 10).unwrap();
+        }
+    }
+
+    #[test]
+    fn an_empty_result_leaves_no_transcript_files() {
+        let dir = files_dir("empty");
+        let audio = dir.join("meeting.m4a");
+        let paths = output::paths(&audio);
+        std::fs::write(&paths.md, "old").unwrap();
+        std::fs::write(&paths.srt, "old").unwrap();
+        std::fs::write(
+            &paths.sidecar,
+            r#"{"title": "Weekly", "channels": ["mic", "system"], "transcript": {"md": "meeting.md", "srt": "meeting.srt"}}"#,
+        )
+        .unwrap();
+        let report = write_files(&files_job(audio), &result_of(Vec::new()), "cpu".into(), 10).unwrap();
         assert_eq!(report.segments, 0);
-        assert!(!paths.md.exists() && !paths.srt.exists());
+        assert!(!paths.md.exists() && !paths.srt.exists(), "the sidecar says they are Vale's");
         let sidecar: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&paths.sidecar).unwrap()).unwrap();
         assert_eq!(sidecar["transcript"]["segments"], 0);
         assert_eq!(sidecar["title"], "Weekly");
         assert_eq!(sidecar["channels"][1], "system");
+    }
+
+    #[test]
+    fn a_users_own_md_beside_a_picked_file_is_never_touched() {
+        let dir = files_dir("foreign");
+        let audio = dir.join("meeting.wav");
+        let paths = output::paths(&audio);
+        let mine = "# Meeting\n\nmy own notes\n";
+        std::fs::write(&paths.md, mine).unwrap();
+        // Nothing said: the user's notes stay.
+        let empty = write_files(&files_job(audio.clone()), &result_of(Vec::new()), "cpu".into(), 10)
+            .unwrap();
+        assert_eq!(empty.segments, 0);
+        assert_eq!(std::fs::read_to_string(&paths.md).unwrap(), mine);
+        assert!(!paths.sidecar.exists());
+        // Words: written beside them, and found there again.
+        let said = vec![Segment {
+            start_ms: 0,
+            end_ms: 1_000,
+            speaker: None,
+            text: "halo".into(),
+        }];
+        let report = write_files(&files_job(audio.clone()), &result_of(said), "cpu".into(), 10)
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&paths.md).unwrap(), mine);
+        assert!(!paths.srt.exists());
+        assert_eq!(report.md, dir.join("meeting.transcript.md"));
+        assert_eq!(report.srt, dir.join("meeting.transcript.srt"));
+        assert!(report.md.is_file() && report.srt.is_file());
+        let doc = crate::transcribe::doc::load(&audio, "x");
+        assert!(doc.has_transcript);
+        assert_eq!(doc.md, report.md);
+        assert_eq!(doc.segments.len(), 1);
     }
 
     #[test]

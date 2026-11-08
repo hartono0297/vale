@@ -1158,6 +1158,7 @@ pub struct TranscriptView {
     pub prefs: TranscriptPrefs,
     /// A hardware GPU: the suggested model and "Pakai GPU".
     pub gpu: bool,
+    /// Each model's file is on disk (`tr_installed` also needs the engine).
     pub installed: [bool; 2],
     pub engine_installed: bool,
     /// The model being downloaded and how far it is.
@@ -4583,12 +4584,19 @@ pub fn offer_mb(model: &Model) -> (u64, u64) {
     (mb(model.asset.size + engine), mb(engine))
 }
 
+/// Model `i` counts as installed: its file and the engine are on disk. A
+/// model without the engine (a new engine version, a cleaned folder) shows
+/// Unduh, which fetches only the engine.
+pub fn tr_installed(v: &TranscriptView, i: usize) -> bool {
+    v.engine_installed && v.installed[i]
+}
+
 /// Whether "Bikin transkrip otomatis" takes clicks, and its description:
 /// it waits for the switch, then for a model on disk.
 pub fn auto_row(v: &TranscriptView) -> (bool, Key) {
     if !v.prefs.enabled {
         (false, Key::TrAutoNeedsOn)
-    } else if !v.installed.contains(&true) {
+    } else if !(0..MODELS.len()).any(|i| tr_installed(v, i)) {
         (false, Key::TrAutoNeedsModel)
     } else {
         (true, Key::TrAutoDesc)
@@ -4928,7 +4936,7 @@ fn tr_model_row(
             None,
             (Hit::TranscriptCancel, Key::TrCancel, ButtonKind::Secondary, true),
         ),
-        None if v.installed[i] => {
+        None if tr_installed(v, i) => {
             let in_use = v.in_use == Some(i);
             let note = if in_use { Key::TrInUse } else { Key::TrInstalled };
             (
@@ -9447,6 +9455,33 @@ mod tests {
     }
 
     #[test]
+    fn a_model_without_the_engine_offers_unduh_not_hapus() {
+        let view = TranscriptView {
+            installed: [false, true],
+            engine_installed: false,
+            ..tr_on()
+        };
+        assert!(!tr_installed(&view, 1));
+        for lang in [Lang::Id, Lang::En] {
+            let l = tr_layout(lang, view.clone(), false);
+            let hits = tr_hits(&l);
+            // The rows show (not the first-time offer), the model's row with Unduh.
+            assert!(hits.contains(&Hit::TranscriptModel(1)));
+            assert!(tr_button(&l, Hit::TranscriptDownload(1)).unwrap().enabled);
+            assert!(tr_button(&l, Hit::TranscriptDelete(1)).is_none());
+            assert!(!l.texts.iter().any(|t| t.text == text(lang, Key::TrInstalled)));
+        }
+        // With the engine back, it is installed again.
+        let back = TranscriptView {
+            engine_installed: true,
+            ..view
+        };
+        assert!(tr_installed(&back, 1));
+        let l = tr_layout(Lang::Id, back, false);
+        assert!(tr_button(&l, Hit::TranscriptDelete(1)).is_some());
+    }
+
+    #[test]
     fn other_downloads_wait_for_the_running_one() {
         let view = TranscriptView {
             download: Some((1, Progress { done: 10_000_000, total: 191_000_000 })),
@@ -9474,9 +9509,15 @@ mod tests {
         assert_eq!(auto_row(&tr_on()), (false, Key::TrAutoNeedsModel));
         let ready = TranscriptView {
             installed: [false, true],
+            engine_installed: true,
             ..tr_on()
         };
         assert_eq!(auto_row(&ready), (true, Key::TrAutoDesc));
+        let no_engine = TranscriptView {
+            engine_installed: false,
+            ..ready.clone()
+        };
+        assert_eq!(auto_row(&no_engine), (false, Key::TrAutoNeedsModel));
         // In the card: faded with its note, or on with its description.
         for (view, enabled, key) in [
             (tr_on(), false, Key::TrAutoNeedsModel),

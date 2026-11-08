@@ -554,6 +554,12 @@ fn new_player(_audio: &Path) -> Box<dyn Playback> {
 
 // ------------------------------------------------------------------ update
 
+/// The island's status moved to another kind (a new percent of the running
+/// job is not one): a player error shown until then gives way.
+fn status_kind_changed(old: &Status, new: &Status) -> bool {
+    std::mem::discriminant(old) != std::mem::discriminant(new)
+}
+
 /// How many leading segments two lists share.
 fn common_prefix(a: &[output::Segment], b: &[output::Segment]) -> usize {
     a.iter().zip(b).take_while(|(x, y)| x == y).count()
@@ -577,7 +583,7 @@ pub fn update(audio: &Path, view: View) {
         // What the pointer was pressed on, so a press survives an update
         // only while the same control or line sits under it.
         let pressed = w.pressed.map(|hot| target_of(w, hot));
-        if view.status != w.view.status {
+        if status_kind_changed(&w.view.status, &view.status) {
             w.failed = false;
         }
         w.view = view;
@@ -1094,7 +1100,10 @@ fn paint(w: &mut Win) {
     unsafe { rt.PopAxisAlignedClip() };
     let ended = unsafe { rt.EndDraw(None, None) };
     if ended.is_err() {
+        // D2DERR_RECREATE_TARGET and the like: a new target, and a frame
+        // drawn on it, so the window is not left blank.
         w.target = None;
+        invalidate(w.hwnd);
     }
 }
 
@@ -2091,6 +2100,28 @@ mod tests {
         fake(|f| f.fail = false);
         click(hwnd, x, y);
         assert_eq!(with_win(hwnd, |w| status(w).clone()).unwrap(), Status::None);
+        finish();
+    }
+
+    #[test]
+    fn a_player_error_outlasts_the_running_jobs_progress_ticks() {
+        let a = r"C:\rec\jobtick.m4a";
+        assert!(open(HWND::default(), view(a, 6, Status::Running { pct: 10, eta: None }), None));
+        let hwnd = hwnd_of(Path::new(a)).unwrap();
+        fake(|f| f.fail = true);
+        let (x, y) = line_point(hwnd, 1);
+        click(hwnd, x, y);
+        assert_eq!(with_win(hwnd, |w| status(w).clone()).unwrap(), Status::PlayerError);
+        // Only the percent and the time left moved: the error stays.
+        let tick = Status::Running {
+            pct: 11,
+            eta: Some(Duration::from_secs(40)),
+        };
+        update(Path::new(a), view(a, 6, tick));
+        assert_eq!(with_win(hwnd, |w| status(w).clone()).unwrap(), Status::PlayerError);
+        assert!(!status_kind_changed(&Status::Failed("a".into()), &Status::Failed("b".into())));
+        assert!(status_kind_changed(&Status::Queued, &Status::Held));
+        fake(|f| f.fail = false);
         finish();
     }
 

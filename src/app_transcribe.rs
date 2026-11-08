@@ -75,6 +75,9 @@ pub(super) struct DownloadRun {
     progress: Option<Progress>,
     /// Stopped by the user: its partial files are thrown away.
     by_user_cancel: bool,
+    /// The model whose Unduh was clicked while the engine alone came (a
+    /// resume): its download starts when this one ends well.
+    then: Option<&'static Model>,
 }
 
 pub(super) struct TranscribeState {
@@ -167,6 +170,82 @@ pub(super) fn worker_died(thread_ended: bool, finish_sent: bool) -> bool {
     thread_ended && !finish_sent
 }
 
+/// Writes the queue file: the jobs, or no file for an empty queue.
+fn write_queue(queue: &Queue, path: &Path) {
+    if queue.is_empty() {
+        let _ = std::fs::remove_file(path);
+        return;
+    }
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Err(e) = output::write_atomic(path, &queue.to_json()) {
+        eprintln!("vale: cannot write the transcript queue: {e}");
+    }
+}
+
+/// Quitting stopped the job of `audio`: an orderly stop is not a crash, so
+/// its start is not counted, and the file says so for the next run.
+pub(super) fn save_queue_at_quit(queue: &mut Queue, audio: &Path, path: &Path) {
+    queue.clear_tries(audio);
+    write_queue(queue, path);
+}
+
+/// A queued job of `audio` that cannot start for want of the engine or its
+/// model (`installed`). A hold (a recording, the startup) is not a wait for
+/// the model: the row says "Antre" then, like the window.
+pub(super) fn waits_for_model(
+    queue: &Queue,
+    audio: &Path,
+    engine: bool,
+    installed: impl Fn(&Model) -> bool,
+) -> bool {
+    !engine
+        || queue
+            .jobs()
+            .find(|j| same_audio(&j.audio, audio))
+            .and_then(|j| catalog::model(&j.model))
+            .is_none_or(|m| !installed(m))
+}
+
+/// Marks a click on Unduh for `model`: its empty `.part`, so a download cut
+/// while the engine still comes resumes `Item::Setup(model)` at the next
+/// start, not the engine alone. Nothing for a model already there.
+pub(super) fn mark_setup(store: &Store, model: &Model) {
+    if store.model_installed(model) {
+        return;
+    }
+    let part = store.part_path(&model.asset);
+    let _ = std::fs::create_dir_all(store.downloads_dir());
+    // Append: a part already there keeps its bytes.
+    let _ = std::fs::OpenOptions::new().create(true).append(true).open(part);
+}
+
+/// An Unduh for `clicked` while `running` downloads: the model fetched next.
+/// Only behind the engine's own resume (any other download turns Unduh off).
+pub(super) fn after_running(running: Item, clicked: Item) -> Option<&'static Model> {
+    match (running, clicked) {
+        (Item::Engine, Item::Setup(model)) => Some(model),
+        _ => None,
+    }
+}
+
+/// What the last run's cut download resumes in `store` (`resume_of`).
+pub(super) fn cut_download_in(store: &Store) -> Option<Item> {
+    let part = |asset| store.part_path(asset).exists();
+    resume_of(
+        catalog::MODELS.iter().find(|m| part(&m.asset)),
+        part(&ENGINE.asset) || part(&catalog::VAD),
+    )
+}
+
+/// A GPU that failed mid-run makes the job start over on the CPU: the first
+/// attempt's lines and progress go.
+fn restart_live(segments: &mut Vec<Segment>, progress: &mut Option<(u64, Option<u64>)>) {
+    segments.clear();
+    *progress = None;
+}
+
 /// What a cut download resumes: the model whose own part is on disk (with
 /// what it needs), else the engine and the voice model when only their
 /// parts are, else nothing. Never a model nobody started.
@@ -240,8 +319,8 @@ fn wants_job(has_transcript: bool, enabled: bool) -> bool {
 
 /// The mark of a row: what the scan found (`None` or `Done`, from the
 /// sidecar) under what the island knows now. `waiting_model` is a queued
-/// job that cannot start (its model is not there, or a recording holds the
-/// queue).
+/// job that cannot start for want of the engine or its model
+/// (`waits_for_model`); a hold leaves it `Queued`.
 pub(super) fn mark_of(
     scanned: RowTranscript,
     enabled: bool,
@@ -343,12 +422,7 @@ impl App {
 
     /// What the last run's cut download resumes (`resume_of`).
     fn cut_download(&self) -> Option<Item> {
-        let store = &self.tr.store;
-        let part = |asset| store.part_path(asset).exists();
-        resume_of(
-            catalog::MODELS.iter().find(|m| part(&m.asset)),
-            part(&ENGINE.asset) || part(&catalog::VAD),
-        )
+        cut_download_in(&self.tr.store)
     }
 
     /// Queues a transcript of `audio` with `model` (`None`: the chosen one).
@@ -527,7 +601,16 @@ impl App {
             return;
         };
         match event {
-            runner::Event::Started { .. } => {}
+            runner::Event::Started { .. } => {
+                // A second start is the CPU after a failed GPU: from scratch.
+                let had = !w.segments.is_empty() || w.progress.is_some();
+                restart_live(&mut w.segments, &mut w.progress);
+                if had {
+                    let audio = w.audio.clone();
+                    self.transcribe_percent_changed();
+                    self.transcript_mark_live(&audio);
+                }
+            }
             runner::Event::Progress { done_ms, total_ms } => {
                 let before = w.progress.and_then(|(d, t)| percent(d, t));
                 w.progress = Some((done_ms, total_ms));
@@ -621,7 +704,7 @@ impl App {
             self.tr
                 .download
                 .as_ref()
-                .is_some_and(|d| d.model.is_some_and(|m| m.key == model.key)),
+                .is_some_and(|d| d.model.or(d.then).is_some_and(|m| m.key == model.key)),
             engine && !store.installed_models().is_empty(),
             prefs.setup_offered,
         );
@@ -670,8 +753,18 @@ impl App {
     }
 
     fn transcribe_download_item(&mut self, item: Item) {
-        if self.tr.download.is_some() {
+        if let Some(run) = self.tr.download.as_mut() {
+            // Behind the engine's own resume the click is kept, not dropped:
+            // the card shows that model downloading from now on.
+            if let Some(model) = after_running(run.item, item) {
+                run.then = Some(model);
+                mark_setup(&self.tr.store, model);
+                self.sync_settings();
+            }
             return;
+        }
+        if let Item::Setup(model) = item {
+            mark_setup(&self.tr.store, model);
         }
         self.tr.next_download += 1;
         let id = self.tr.next_download;
@@ -694,6 +787,7 @@ impl App {
                     download,
                     progress: None,
                     by_user_cancel: false,
+                    then: None,
                 });
             }
             Err(e) => eprintln!("vale: download thread did not start: {e}"),
@@ -758,7 +852,8 @@ impl App {
         let store = &self.tr.store;
         let index = |m: &Model| catalog::MODELS.iter().position(|x| x.key == m.key);
         let download = self.tr.download.as_ref().and_then(|d| {
-            let i = index(d.model?)?;
+            // The engine's own resume shows on the model clicked behind it.
+            let i = index(d.model.or(d.then)?)?;
             // Before the thread's first word: nothing done of the whole.
             let progress = d.progress.unwrap_or_else(|| Progress {
                 done: 0,
@@ -801,8 +896,9 @@ impl App {
             return;
         };
         run.download.join();
-        let (item, model, by_user) = (run.item, run.model, run.by_user_cancel);
+        let (item, model, by_user, then) = (run.item, run.model, run.by_user_cancel, run.then);
         let lang = self.config.language;
+        let ok = result.is_ok();
         let notice = match result {
             Ok(()) => {
                 let missing = engine::runtime_missing(&self.tr.store.engine_dir());
@@ -818,16 +914,16 @@ impl App {
             }
             Err(DownloadError::Cancelled) => {
                 if by_user {
-                    let _ = self
-                        .tr
-                        .store
-                        .discard_parts(&download::assets_of(item));
+                    let mut parts = download::assets_of(item);
+                    parts.extend(then.map(|m| m.asset));
+                    let _ = self.tr.store.discard_parts(&parts);
                 }
                 None
             }
             Err(e) => {
                 let why = download_reason(lang, &e);
-                self.tr.download_error = Some((model, why.clone()));
+                // The model clicked behind the engine shows the reason too.
+                self.tr.download_error = Some((model.or(then), why.clone()));
                 Some((Key::TrDownloadFailed, why))
             }
         };
@@ -844,6 +940,10 @@ impl App {
             );
             self.apply_now(Event::Notice(n));
         }
+        // The engine is in: the model clicked meanwhile comes now.
+        if let (Some(model), true) = (then, ok) {
+            self.transcribe_download_item(Item::Setup(model));
+        }
         self.transcribe_try_next();
         self.sync_settings();
         // A job waiting on this model is now only queued.
@@ -853,17 +953,7 @@ impl App {
     /// The queue changed: the file follows, the Rekam rows re-read and an
     /// open Settings follows (the model in use).
     fn transcribe_changed(&mut self) {
-        let path = self.tr.store.queue_path();
-        if self.tr.queue.is_empty() {
-            let _ = std::fs::remove_file(&path);
-        } else {
-            if let Some(dir) = path.parent() {
-                let _ = std::fs::create_dir_all(dir);
-            }
-            if let Err(e) = output::write_atomic(&path, &self.tr.queue.to_json()) {
-                eprintln!("vale: cannot write the transcript queue: {e}");
-            }
-        }
+        write_queue(&self.tr.queue, &self.tr.store.queue_path());
         self.transcribe_marks_changed();
         self.sync_settings();
     }
@@ -906,37 +996,36 @@ impl App {
     pub(super) fn transcribe_marks(&self, entries: Vec<RecEntry>) -> Vec<RecEntry> {
         let enabled = self.config.transcript.enabled;
         let tr = &self.tr;
+        let engine = tr.store.engine_installed();
         with_marks(entries, |e| {
-                let state = tr.queue.state(&e.path);
-                let waiting = tr.queue.held()
-                    || tr
-                        .queue
-                        .jobs()
-                        .find(|j| same_audio(&j.audio, &e.path))
-                        .and_then(|j| catalog::model(&j.model))
-                        .is_none_or(|m| !tr.store.model_installed(m));
-                let pct = tr
-                    .worker
-                    .as_ref()
-                    .filter(|w| same_audio(&w.audio, &e.path))
-                    .and_then(|w| w.progress)
-                    .and_then(|(d, t)| percent(d, t));
-                let failed = tr.failed.keys().any(|p| same_audio(p, &e.path));
-                let scanned = if e.transcript == RowTranscript::Done {
-                    RowTranscript::Done
-                } else {
-                    RowTranscript::None
-                };
-                mark_of(scanned, enabled, state, waiting, pct, failed)
+            let state = tr.queue.state(&e.path);
+            let waiting =
+                waits_for_model(&tr.queue, &e.path, engine, |m| tr.store.model_installed(m));
+            let pct = tr
+                .worker
+                .as_ref()
+                .filter(|w| same_audio(&w.audio, &e.path))
+                .and_then(|w| w.progress)
+                .and_then(|(d, t)| percent(d, t));
+            let failed = tr.failed.keys().any(|p| same_audio(p, &e.path));
+            let scanned = if e.transcript == RowTranscript::Done {
+                RowTranscript::Done
+            } else {
+                RowTranscript::None
+            };
+            mark_of(scanned, enabled, state, waiting, pct, failed)
         })
     }
 
     /// Quitting: the worker is stopped and joined (the queue file keeps its
-    /// job for the next run) and the download stops keeping its partial files.
+    /// job for the next run, its start not counted as a crash) and the
+    /// download stops keeping its partial files.
     pub(super) fn transcribe_shutdown(&mut self) {
         if let Some(w) = self.tr.worker.take() {
             w.running.cancel();
             w.running.join();
+            // Written here, without the UI work of `transcribe_changed`.
+            save_queue_at_quit(&mut self.tr.queue, &w.audio, &self.tr.store.queue_path());
         }
         if let Some(d) = self.tr.download.take() {
             d.download.cancel();
@@ -1188,5 +1277,94 @@ mod tests {
         assert_eq!(mark_of(none, true, None, false, None, true), Failed);
         // Queued again after a failure shows the queue, not the failure.
         assert_eq!(mark_of(none, true, q, false, None, true), Queued);
+        // A held queue (a recording, the startup) with the engine and the
+        // model there is only queued, as the window says.
+        for hold in [Hold::Recording, Hold::Startup] {
+            let mut queue = Queue::new(&[hold]);
+            queue.push(qj("a", 0));
+            let waiting = waits_for_model(&queue, Path::new("a"), true, |_| true);
+            assert_eq!(mark_of(none, true, queue.state(Path::new("a")), waiting, None, false), Queued);
+        }
+    }
+
+    #[test]
+    fn a_job_waits_for_the_model_only_without_the_engine_or_its_file() {
+        let mut queue = Queue::new(&[]);
+        queue.push(qj("a", 0));
+        let a = Path::new("A");
+        assert!(!waits_for_model(&queue, a, true, |_| true));
+        assert!(waits_for_model(&queue, a, true, |_| false), "the model is missing");
+        assert!(waits_for_model(&queue, a, false, |_| true), "the engine is missing");
+        assert!(waits_for_model(&queue, Path::new("b"), true, |_| true), "not queued");
+    }
+
+    #[test]
+    fn a_clean_quit_mid_job_is_not_counted_as_a_crash() {
+        let store = crate::transcribe::store::tests::temp_store("quit");
+        let path = store.queue_path();
+        let mut queue = Queue::new(&[]);
+        queue.push(qj("a", 0));
+        queue.push(qj("b", 1));
+        let job = queue.start_next(|_| true).unwrap();
+        assert_eq!(queue.bump_tries(&job.audio), Some(1));
+        // Two orderly quits in a row: the job still runs at the next start.
+        for _ in 0..2 {
+            save_queue_at_quit(&mut queue, &job.audio, &path);
+            let text = std::fs::read_to_string(&path).unwrap();
+            let jobs = Queue::from_json(&text, |_| true);
+            assert_eq!(jobs, [qj("a", 0), qj("b", 1)], "only the stopped job's tries go");
+            let (keep, crashed) = split_crashed(jobs);
+            assert_eq!(keep.len(), 2);
+            assert!(crashed.is_empty());
+            queue.bump_tries(&job.audio);
+        }
+    }
+
+    #[test]
+    fn the_cpu_rerun_after_a_gpu_failure_starts_its_lines_over() {
+        let mut segments = vec![Segment {
+            start_ms: 0,
+            end_ms: 1_000,
+            speaker: None,
+            text: "halo".into(),
+        }];
+        let mut progress = Some((1_000, Some(5_000)));
+        restart_live(&mut segments, &mut progress);
+        assert!(segments.is_empty());
+        assert_eq!(progress, None);
+    }
+
+    #[test]
+    fn a_cut_download_resumes_the_clicked_model_from_its_empty_marker() {
+        let store = crate::transcribe::store::tests::temp_store("marker");
+        let small = &catalog::MODELS[1];
+        mark_setup(&store, small);
+        let marker = store.part_path(&small.asset);
+        assert_eq!(std::fs::metadata(&marker).unwrap().len(), 0);
+        // Cut in the engine's first megabytes: the engine's part and the marker.
+        std::fs::write(store.part_path(&ENGINE.asset), b"engine bytes").unwrap();
+        assert_eq!(cut_download_in(&store), Some(Item::Setup(small)));
+        // A second click keeps the bytes a part already has.
+        std::fs::write(&marker, b"model bytes").unwrap();
+        mark_setup(&store, small);
+        assert_eq!(std::fs::read(&marker).unwrap(), b"model bytes");
+        // The engine's part alone resumes the engine alone.
+        std::fs::remove_file(&marker).unwrap();
+        assert_eq!(cut_download_in(&store), Some(Item::Engine));
+        // A model on disk gets no marker (nothing to resume for it).
+        std::fs::create_dir_all(store.models_dir()).unwrap();
+        let file = std::fs::File::create(store.model_path(small)).unwrap();
+        file.set_len(small.asset.size).unwrap();
+        mark_setup(&store, small);
+        assert!(!marker.exists());
+    }
+
+    #[test]
+    fn unduh_behind_the_engines_own_resume_comes_next() {
+        let small = &catalog::MODELS[1];
+        let turbo = &catalog::MODELS[0];
+        assert_eq!(after_running(Item::Engine, Item::Setup(small)), Some(small));
+        assert_eq!(after_running(Item::Setup(turbo), Item::Setup(small)), None);
+        assert_eq!(after_running(Item::Engine, Item::Engine), None);
     }
 }

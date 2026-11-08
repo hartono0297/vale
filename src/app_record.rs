@@ -583,7 +583,7 @@ fn entry_of(
     let side = value.as_ref().map(Sidecar::from_value);
     // A recording still being written has no transcript worth a pill.
     let done = !unfinished
-        && (output::paths(path).srt.is_file()
+        && (output::transcript_files(path, value.as_ref()).srt.is_file()
             || value.as_ref().is_some_and(|v| v.get("transcript").is_some()));
     let (title, started) = title_of(side.as_ref(), stem, modified, lang);
     RecEntry {
@@ -1501,7 +1501,7 @@ mod tests {
         let write = |name: &str, ext: &str, body: &str| {
             fs::write(dir.join(format!("{name}.{ext}")), body).unwrap();
         };
-        for name in ["srt", "sidecar", "plain", "sidecar-only-title", "part-srt"] {
+        for name in ["srt", "sidecar", "plain", "sidecar-only-title", "part-srt", "own"] {
             if name == "part-srt" {
                 fs::write(dir.join("part-srt.m4a.part"), b"x").unwrap();
             } else {
@@ -1516,6 +1516,10 @@ halo
 00:00:00,000 --> 00:00:01,000
 halo
 ");
+        write("own", "transcript.srt", "1
+00:00:00,000 --> 00:00:01,000
+halo
+");
         write("sidecar", "vale.json", r#"{"v":1,"transcript":{"model":"whisper-small"}}"#);
         write("sidecar-only-title", "vale.json", r#"{"v":1,"title":"Rapat"}"#);
         let all = scan_recent(&dir, Lang::Id, today(), 20, None);
@@ -1527,6 +1531,7 @@ halo
         };
         assert_eq!(mark("srt"), RowTranscript::Done, "an .srt beside it");
         assert_eq!(mark("sidecar"), RowTranscript::Done, "the sidecar's transcript key");
+        assert_eq!(mark("own"), RowTranscript::Done, "Vale's .transcript.srt beside someone else's");
         assert_eq!(mark("plain"), RowTranscript::None);
         assert_eq!(mark("sidecar-only-title"), RowTranscript::None, "a sidecar without one");
         assert_eq!(mark("part-srt"), RowTranscript::None, "a recording still unfinished");

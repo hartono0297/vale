@@ -198,7 +198,8 @@ impl App {
                     self.transcript_text_request(&audio, &req);
                 }
                 Request::OpenMd => {
-                    let md = output::paths(&audio).md;
+                    // `<stem>.md`, or Vale's `.transcript.md` beside the user's own.
+                    let md = doc::load_meta(&audio, "").md;
                     self.queue_shortcut(shortcuts::Action::OpenPath(md));
                 }
                 Request::OpenFolder => self.rec_reveal(audio),

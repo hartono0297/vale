@@ -15,7 +15,7 @@ use crate::i18n::{self, Key, Lang};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Doc {
     pub audio: PathBuf,
-    /// The `.md` next to the audio (it may not exist).
+    /// The transcript's `.md` (`output::transcript_files`; it may not exist).
     pub md: PathBuf,
     pub title: String,
     pub app: Option<String>,
@@ -26,8 +26,8 @@ pub struct Doc {
     pub model: Option<String>,
     pub language: Option<String>,
     pub two_channel: bool,
-    /// The `.srt` exists or the sidecar has a `"transcript"`. A finished run
-    /// with no speech has the second and no segments.
+    /// The transcript's `.srt` exists or the sidecar has a `"transcript"`. A
+    /// finished run with no speech has the second and no segments.
     pub has_transcript: bool,
     pub segments: Vec<Segment>,
 }
@@ -35,7 +35,8 @@ pub struct Doc {
 /// Lines of a transcript that "Jadikan catatan" keeps.
 pub const NOTE_LINES: usize = 20;
 
-/// Loads the transcript of `audio`: the sidecar and the `.srt` next to it.
+/// Loads the transcript of `audio`: the sidecar and the `.srt` next to it
+/// (`<stem>.srt`, or `<stem>.transcript.srt` beside someone else's files).
 /// Never fails: what is missing or unreadable stays at its default, and the
 /// title falls back to `fallback_title`.
 pub fn load(audio: &Path, fallback_title: &str) -> Doc {
@@ -50,11 +51,11 @@ pub fn load_meta(audio: &Path, fallback_title: &str) -> Doc {
 }
 
 fn read(audio: &Path, fallback_title: &str, with_srt: bool) -> Doc {
-    let files = output::paths(audio);
-    let sidecar = std::fs::read_to_string(&files.sidecar).ok();
+    let sidecar = std::fs::read_to_string(output::paths(audio).sidecar).ok();
     let value: Option<serde_json::Value> = sidecar
         .as_deref()
         .and_then(|s| serde_json::from_str(s).ok());
+    let files = output::transcript_files(audio, value.as_ref());
     let srt = with_srt
         .then(|| std::fs::read(&files.srt).ok())
         .flatten()
@@ -116,7 +117,13 @@ fn parse_srt_time(text: &str) -> Option<u64> {
     let num = |t: &str| t.parse::<u64>().ok();
     // "5" after the comma is 500 ms.
     let ms = num(frac)? * 10u64.pow(3 - frac.len() as u32);
-    Some((num(h)? * 3600 + num(m)? * 60 + num(s)?) * 1000 + ms)
+    // A hand-edited hour field can be huge: such a cue is skipped.
+    num(h)?
+        .checked_mul(3600)?
+        .checked_add(num(m)?.checked_mul(60)?)?
+        .checked_add(num(s)?)?
+        .checked_mul(1000)?
+        .checked_add(ms)
 }
 
 /// The cues of a SubRip file, found by their `-->` lines. A speaker label
@@ -167,6 +174,9 @@ pub fn parse_srt(text: &str, two_channel: bool) -> Vec<Segment> {
             text: text.to_string(),
         });
     }
+    // A hand-edited file may list cues out of order; the playing line
+    // (`current_line`) needs them by start.
+    out.sort_by_key(|s| s.start_ms);
     out
 }
 
@@ -387,6 +397,69 @@ mod tests {
     fn parse_srt_skips_a_bad_time_line() {
         let text = "1\n00:00:xx,000 --> 00:00:02,000\nrusak\n\n2\n00:00:03,000 --> 00:00:04,000\nutuh\n\n";
         assert_eq!(parse_srt(text, false), vec![seg(3_000, 4_000, None, "utuh")]);
+    }
+
+    #[test]
+    fn parse_srt_skips_a_cue_whose_time_overflows() {
+        let text = "1
+99999999999999999:00:00,000 --> 99999999999999999:00:01,000
+terlalu jauh
+
+                    2
+5124095576030431:00:00,000 --> 00:00:01,000
+kali seribu
+
+                    3
+00:00:03,000 --> 00:00:04,000
+utuh
+
+";
+        assert_eq!(parse_srt(text, false), vec![seg(3_000, 4_000, None, "utuh")]);
+    }
+
+    #[test]
+    fn parse_srt_puts_cues_out_of_order_by_their_start() {
+        let text = "1
+00:00:05,000 --> 00:00:06,000
+ketiga
+
+                    2
+00:00:01,000 --> 00:00:02,000
+pertama
+
+                    3
+00:00:03,000 --> 00:00:04,000
+kedua
+
+";
+        let segs = parse_srt(text, false);
+        assert_eq!(
+            segs,
+            vec![
+                seg(1_000, 2_000, None, "pertama"),
+                seg(3_000, 4_000, None, "kedua"),
+                seg(5_000, 6_000, None, "ketiga"),
+            ]
+        );
+        assert_eq!(current_line(&segs, 3_500), Some(1));
+    }
+
+    #[test]
+    fn load_finds_a_transcript_vale_wrote_beside_someone_elses_files() {
+        let dir = temp_dir("own");
+        std::fs::write(dir.join("a.md"), "# a
+
+my notes
+").unwrap();
+        std::fs::write(dir.join("a.transcript.srt"), "1
+00:00:01,000 --> 00:00:02,000
+halo
+
+").unwrap();
+        let d = load(&dir.join("a.m4a"), "Rekaman");
+        assert!(d.has_transcript);
+        assert_eq!(d.md, dir.join("a.transcript.md"));
+        assert_eq!(d.segments, vec![seg(1_000, 2_000, None, "halo")]);
     }
 
     #[test]
