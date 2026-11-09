@@ -60,6 +60,8 @@ pub(super) struct Worker {
     /// Audio read so far, out of the whole.
     pub(super) progress: Option<(u64, Option<u64>)>,
     pub(super) segments: Vec<Segment>,
+    /// How far the "Peserta" channel is read: a "Saya" line waits for it.
+    pub(super) others_settled_ms: u64,
     /// The island asked it to stop (a hold, a cancel): its `Cancelled` is
     /// not a failure.
     pub(super) stopping: bool,
@@ -241,9 +243,14 @@ pub(super) fn cut_download_in(store: &Store) -> Option<Item> {
 
 /// A GPU that failed mid-run makes the job start over on the CPU: the first
 /// attempt's lines and progress go.
-fn restart_live(segments: &mut Vec<Segment>, progress: &mut Option<(u64, Option<u64>)>) {
+fn restart_live(
+    segments: &mut Vec<Segment>,
+    progress: &mut Option<(u64, Option<u64>)>,
+    others_settled_ms: &mut u64,
+) {
     segments.clear();
     *progress = None;
+    *others_settled_ms = 0;
 }
 
 /// What a cut download resumes: the model whose own part is on disk (with
@@ -543,7 +550,7 @@ impl App {
         let finish_sent = Arc::new(AtomicBool::new(false));
         let sent = finish_sent.clone();
         let spawned = runner::spawn(spec, move |ev| {
-            if let runner::Event::Progress { done_ms, total_ms } = &ev {
+            if let runner::Event::Progress { done_ms, total_ms, .. } = &ev {
                 let pct = percent(*done_ms, *total_ms);
                 if last.is_some_and(|(p, at)| p == pct && at.elapsed() < PROGRESS_EVERY) {
                     return;
@@ -589,6 +596,7 @@ impl App {
             started: Instant::now(),
             progress: None,
             segments: Vec::new(),
+            others_settled_ms: 0,
             stopping: false,
         });
         // The start is counted and written before the engine can crash.
@@ -606,14 +614,15 @@ impl App {
             runner::Event::Started { .. } => {
                 // A second start is the CPU after a failed GPU: from scratch.
                 let had = !w.segments.is_empty() || w.progress.is_some();
-                restart_live(&mut w.segments, &mut w.progress);
+                restart_live(&mut w.segments, &mut w.progress, &mut w.others_settled_ms);
                 if had {
                     let audio = w.audio.clone();
                     self.transcribe_percent_changed();
                     self.transcript_mark_live(&audio);
                 }
             }
-            runner::Event::Progress { done_ms, total_ms } => {
+            runner::Event::Progress { done_ms, total_ms, others_settled_ms } => {
+                w.others_settled_ms = others_settled_ms;
                 let before = w.progress.and_then(|(d, t)| percent(d, t));
                 w.progress = Some((done_ms, total_ms));
                 let audio = w.audio.clone();
@@ -1166,6 +1175,15 @@ mod tests {
     }
 
     #[test]
+    fn a_restart_holds_me_lines_again() {
+        let mut segments = vec![Segment { start_ms: 0, end_ms: 1, speaker: None, text: "x".into() }];
+        let (mut progress, mut settled) = (Some((5_000, Some(9_000))), 6_000);
+        restart_live(&mut segments, &mut progress, &mut settled);
+        assert!(segments.is_empty());
+        assert_eq!((progress, settled), (None, 0));
+    }
+
+    #[test]
     fn a_cut_download_resumes_only_what_has_parts() {
         let small = &catalog::MODELS[1];
         assert_eq!(resume_of(Some(small), false), Some(Item::Setup(small)));
@@ -1331,7 +1349,8 @@ mod tests {
             text: "halo".into(),
         }];
         let mut progress = Some((1_000, Some(5_000)));
-        restart_live(&mut segments, &mut progress);
+        let mut settled = 0;
+        restart_live(&mut segments, &mut progress, &mut settled);
         assert!(segments.is_empty());
         assert_eq!(progress, None);
     }

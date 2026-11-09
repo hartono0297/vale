@@ -21,7 +21,7 @@ use crate::i18n::{Key, Lang, text};
 use crate::model::{Event, Notice, NoticeKind, RowTranscript};
 use crate::shortcuts;
 use crate::transcribe::doc::{self, Doc};
-use crate::transcribe::output::{self, Segment};
+use crate::transcribe::output::{self, Segment, Speaker};
 use crate::transcribe::queue::{eta, percent, same_audio};
 use crate::transcribe::{catalog, echo, gpu};
 use crate::transcript_win::{self, Request, Status, View};
@@ -29,9 +29,13 @@ use crate::ui::menu_pop::Row;
 use crate::ui::transcript_menu;
 
 /// The lines a running job sent so far, as the window shows them: in time
-/// order, the mic's echo of the meeting dropped.
-pub(super) fn live_lines(segments: &[Segment]) -> Vec<Segment> {
-    echo::drop_echo(output::merge(segments.iter().cloned()))
+/// order, the mic's echo of the meeting dropped. A "Me" line waits until
+/// "Others" is read past it (`others_settled_ms`), so none shows and then
+/// goes as an echo.
+pub(super) fn live_lines(segments: &[Segment], others_settled_ms: u64) -> Vec<Segment> {
+    let mut lines = echo::drop_echo(output::merge(segments.iter().cloned()));
+    lines.retain(|s| s.speaker != Some(Speaker::Me) || echo::settled(s, others_settled_ms));
+    lines
 }
 
 /// Where a recording's job stands, as the island knows it.
@@ -129,7 +133,7 @@ impl App {
         let doc = match worker {
             Some(w) => {
                 let mut d = doc::load_meta(audio, &fallback);
-                d.segments = live_lines(&w.segments);
+                d.segments = live_lines(&w.segments, w.others_settled_ms);
                 d.two_channel |= d.segments.iter().any(|s| s.speaker.is_some());
                 d
             }
@@ -336,7 +340,7 @@ mod tests {
             seg(5_100, 9_100, Me, "can we push the release to next week QA masih nemu dua bug"),
             seg(9_500, 11_000, Me, "Boleh, jadi deadline-nya Jumat ya."),
         ];
-        let lines = live_lines(&sent);
+        let lines = live_lines(&sent, u64::MAX);
         let texts: Vec<(&str, u64)> = lines.iter().map(|s| (s.text.as_str(), s.start_ms)).collect();
         assert_eq!(
             texts,
@@ -346,7 +350,25 @@ mod tests {
                 ("Boleh, jadi deadline-nya Jumat ya.", 9_500),
             ]
         );
-        assert!(live_lines(&[]).is_empty());
+        assert!(live_lines(&[], 0).is_empty());
+    }
+
+    #[test]
+    fn a_me_line_waits_until_others_is_read_at_that_time() {
+        let me = seg(1_000, 3_000, Me, "oke kita mulai agenda hari ini");
+        let meeting = seg(900, 3_100, Others, "Oke, kita mulai. Agenda hari ini.");
+        // Others is read only to 3.5 s: the line waits.
+        assert!(live_lines(&[me.clone()], 3_500).is_empty());
+        // Others is read past it and it is the echo: it never shows.
+        assert_eq!(live_lines(&[me.clone(), meeting.clone()], 4_001), [meeting.clone()]);
+        // A real reply shows once its time is read.
+        let reply = seg(5_000, 6_000, Me, "Boleh, deadline Jumat ya");
+        assert!(live_lines(&[reply.clone()], 7_000).is_empty());
+        assert_eq!(live_lines(&[reply.clone()], 7_001), [reply]);
+        // Others and unlabelled lines are never held.
+        let plain = Segment { speaker: None, ..meeting.clone() };
+        assert_eq!(live_lines(&[meeting.clone()], 0), [meeting]);
+        assert_eq!(live_lines(&[plain.clone()], 0), [plain]);
     }
 
     #[test]

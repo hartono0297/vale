@@ -138,7 +138,7 @@ pub fn run(args: &[String]) -> i32 {
                 started.elapsed().as_secs_f32()
             );
         }
-        Event::Progress { done_ms, total_ms } => {
+        Event::Progress { done_ms, total_ms, .. } => {
             audio_ms = Some(total_ms.unwrap_or(done_ms));
             if let Some(total) = total_ms.filter(|&t| t > 0) {
                 let tenth = done_ms * 10 / total;

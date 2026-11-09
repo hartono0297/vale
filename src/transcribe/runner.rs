@@ -120,7 +120,7 @@ pub enum Event {
     /// The model is loaded: where it runs, and which voice detector cuts.
     Started { backend: String, vad: &'static str },
     /// Audio read so far, out of the whole (when the file says).
-    Progress { done_ms: u64, total_ms: Option<u64> },
+    Progress { done_ms: u64, total_ms: Option<u64>, others_settled_ms: u64 },
     /// A segment, as soon as its chunk is done (not yet in time order).
     Segment(Segment),
     Finished(Result<Report, RunError>),
@@ -159,6 +159,7 @@ pub fn transcribe(
     let mut partial_chunks = 0;
     let mut decoded: u64 = 0;
     let mut finished = false;
+    let others = speakers.iter().position(|s| *s == Some(Speaker::Others));
     while !finished {
         if cancel.load(Ordering::Relaxed) {
             return Err(RunError::Cancelled);
@@ -206,6 +207,10 @@ pub fn transcribe(
         on_event(Event::Progress {
             done_ms: decoded * 1000 / RATE as u64,
             total_ms,
+            others_settled_ms: match others {
+                Some(c) if !finished => chunkers[c].settled_ms(),
+                _ => u64::MAX,
+            },
         });
     }
     Ok(Transcript {
@@ -820,5 +825,47 @@ mod tests {
             Some("2026-11-07 10:02")
         );
         assert_eq!(sidecar_started("{}"), None);
+    }
+
+    #[test]
+    fn progress_says_how_far_others_is_read() {
+        // Me talks 1-3 s; Others talks over it, 1.5-6.5 s, and its chunk closes later.
+        let mut source = Memory {
+            channels: vec![channel(10.0, &[(1.0, 3.0)]), channel(10.0, &[(1.5, 6.5)])],
+            at: 0,
+        };
+        let mut events = Vec::new();
+        run(&mut source, &mut Fake { timed: false, calls: 0 }, &AtomicBool::new(false), &mut events).unwrap();
+        let mut settled = 0;
+        let mut marks = Vec::new();
+        for e in &events {
+            match e {
+                Event::Progress { others_settled_ms, .. } => {
+                    marks.push(*others_settled_ms);
+                    settled = *others_settled_ms;
+                }
+                Event::Segment(s) if s.speaker == Some(Speaker::Others) => {
+                    assert!(s.start_ms >= settled, "{s:?} came after the mark {settled}");
+                }
+                _ => {}
+            }
+        }
+        assert!(marks.windows(2).all(|w| w[0] <= w[1]));
+        assert_eq!(marks.last(), Some(&u64::MAX));
+        // The Me line was sent before Others was read past it.
+        let me_at = events.iter().position(|e| matches!(e, Event::Segment(s) if s.speaker == Some(Speaker::Me))).unwrap();
+        let first_mark_after = events[me_at..].iter().find_map(|e| match e {
+            Event::Progress { others_settled_ms, .. } => Some(*others_settled_ms),
+            _ => None,
+        });
+        assert!(first_mark_after.unwrap() < 4_000, "it is held at first");
+    }
+
+    #[test]
+    fn one_channel_never_holds() {
+        let mut source = Memory { channels: vec![channel(5.0, &[(1.0, 2.0)])], at: 0 };
+        let mut events = Vec::new();
+        run(&mut source, &mut Fake { timed: false, calls: 0 }, &AtomicBool::new(false), &mut events).unwrap();
+        assert!(events.iter().all(|e| !matches!(e, Event::Progress { others_settled_ms, .. } if *others_settled_ms != u64::MAX)));
     }
 }

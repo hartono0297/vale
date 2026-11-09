@@ -179,6 +179,17 @@ impl Chunker {
         None
     }
 
+    /// No chunk this chunker emits later starts before this: the open chunk's
+    /// first frame, else the frame the leading pad reaches back to (the pad
+    /// can still join a chunk that opens now).
+    pub fn settled_ms(&self) -> u64 {
+        let frame = match &self.active {
+            Some(active) => active.first,
+            None => self.seen - self.before.len() as u64,
+        };
+        frame * FRAME_MS
+    }
+
     /// The chunk still open at the end of the channel.
     pub fn finish(&mut self) -> Option<Chunk> {
         self.active.as_ref()?;
@@ -442,5 +453,32 @@ mod tests {
         let probs: Vec<f32> = (0..3750).map(|_| vad.prob(&frame)).collect();
         assert!(probs.iter().all(|&p| p > 0.5), "{:?}", probs.last());
         assert!(vad.prob(&quiet) < 0.1);
+    }
+
+    #[test]
+    fn settled_is_the_open_chunks_start_or_the_pad_before_now() {
+        let mut c = Chunker::new(0, ChunkParams::default());
+        let (quiet, loud) = (vec![0.0; FRAME], vec![0.5; FRAME]);
+        let mut marks = Vec::new();
+        let mut chunks = Vec::new();
+        for i in 0..400u64 {
+            let speech = (50..120).contains(&i) || (200..260).contains(&i);
+            let f = if speech { &loud } else { &quiet };
+            chunks.extend(c.push(f, if speech { 1.0 } else { 0.0 }).map(|ch| (i, ch)));
+            marks.push((i, c.settled_ms()));
+            if i == 49 {
+                assert_eq!(c.settled_ms(), (50 - 6) * FRAME_MS, "the 192 ms pad may still join");
+            }
+        }
+        assert!(marks.windows(2).all(|w| w[0].1 <= w[1].1), "never goes back");
+        // No chunk emitted at frame i starts before a mark read before i.
+        for (at, ch) in &chunks {
+            for (i, m) in &marks {
+                if i < at {
+                    assert!(ch.start_ms >= *m, "chunk at {} ms emitted at frame {at}, mark {m} at {i}", ch.start_ms);
+                }
+            }
+        }
+        assert_eq!(chunks.len(), 2);
     }
 }

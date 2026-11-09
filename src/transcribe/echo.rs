@@ -17,6 +17,12 @@ const STOP: &[&str] = &[
     "bisa", "mau", "nya", "the", "and", "that", "this", "is", "to", "of", "yes", "okay", "oke",
 ];
 
+/// Whether no "Others" segment sent later can overlap this one (`others_settled_ms`: the
+/// Others channel is read up to there), so `drop_echo`'s verdict on it is final.
+pub fn settled(me: &Segment, others_settled_ms: u64) -> bool {
+    me.end_ms.saturating_add(SLACK_MS) < others_settled_ms
+}
+
 /// Drops the "Me" segments that echo "Others"; the order is kept.
 pub fn drop_echo(segments: Vec<Segment>) -> Vec<Segment> {
     let words: Vec<Vec<String>> = segments.iter().map(|s| words(&s.text)).collect();
@@ -192,5 +198,14 @@ mod tests {
         assert!(close("dimilai", "dinilai"));
         assert!(!close("gw", "gue"));
         assert!(!close("jumat", "jual"));
+    }
+
+    #[test]
+    fn a_me_segment_is_settled_a_slack_after_its_end() {
+        let me = Segment { start_ms: 1_000, end_ms: 3_000, speaker: Some(Speaker::Me), text: "halo".into() };
+        assert!(!settled(&me, 4_000));
+        assert!(settled(&me, 4_001));
+        assert!(settled(&me, u64::MAX));
+        assert!(!settled(&Segment { end_ms: u64::MAX - 10, ..me.clone() }, u64::MAX));
     }
 }
