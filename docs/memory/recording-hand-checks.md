@@ -36,11 +36,18 @@ Merged on `main` (3bf0853); the live check passed 11 of 12 lines, see
 - [ ] Decide whether to allow `vale.exe` in Controlled folder access
       ([[transcript-defender-toast]]).
 
-Known small issues from the live check, not fixed:
+The four small issues that live check found (late "Bikin transkrip" notice, Hapus
+without confirmation, "0 s" for a file without a sidecar, live "Saya" lines that
+later vanish) were fixed on 2026-11-09 (4a6294d, see [[transcript]]); a live
+check passed all four. Still open from that check:
 
-- The "Bikin transkrip" notice can arrive after a short job is already done
-  (notices queue behind "Rekaman disimpan").
-- Hapus on a model row has no confirmation (one click removes 172 or 536 MB).
-- A picked file with no sidecar shows "0 s" on the Rekam row and no meta line in
-  the window header.
-- The live view can show "Saya" lines that the final result drops as echo.
+- [ ] Look at the red "Yakin?" while hovering and pressing it: the unit test says
+      4.5:1 or more, the screenshot sampling read about 3.8-4.1 (anti-aliased
+      text), so judge it by eye.
+- [ ] The Indonesian "Yakin?" label (only the English "Sure?" was seen).
+- [ ] A long (about 5 minute) recording still shows "Bikin transkrip" before
+      "Transkrip siap".
+- [ ] A live two-source transcript where a "Saya" line really is held back (the
+      check never caught a "Saya" candidate on screen).
+- [ ] "Transkrip file lain…" with a sidecar-less file (the length was checked
+      from the recordings folder instead).

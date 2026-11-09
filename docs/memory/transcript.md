@@ -66,3 +66,30 @@ Turns a recording into text on this PC, nothing uploaded. Spec:
   DLLs stay loaded, plus one thread started by the GPU driver.
 - **Measured** (5 min of audio): turbo on the GPU 35 s, small on the CPU 99 s;
   a 20 s recording was transcribed 8.5 s after Stop.
+
+## Polish (2026-11-09, plan `docs/superpowers/plans/2026-11-09-transcript-polish.md`)
+
+- The start notice is its own kind, `NoticeKind::TranscriptStarting { audio }`:
+  a `TranscriptReady` / `TranscriptFailed` drops a still-queued start notice of
+  the same audio (`same_audio`), never one on screen and never another
+  recording's. A short recording now reads "Rekaman tersimpan" then "Transkrip
+  siap".
+- Hapus on a model row takes two clicks: the first shows `Key::ConfirmShort`
+  ("Yakin?") in `ButtonKind::Confirm` for `CONFIRM_MS` (Settings' own
+  `TIMER_CONFIRM`, only while armed); a click on another control disarms; an
+  in-use model is never armed (`transcript_click`, the layout, `armed_after`).
+- A recording with no sidecar length gets it from the audio:
+  `decode::probe_duration_ms` reads `MF_PD_DURATION` only, on the `rec-scan`
+  thread, skipped for unfinished rows and for cloud-only files (offline /
+  recall attributes from the directory listing, so OneDrive is never asked to
+  download). The window takes sidecar, then the running job's total, then the
+  scan.
+- Live "Saya" lines are held until "Peserta" is settled at that time:
+  `Event::Progress` carries `others_settled_ms` (`Chunker::settled_ms`; no
+  "Peserta" segment can still start before it; `u64::MAX` when fully read or
+  no "Peserta" channel), and `live_lines` shows a "Saya" line only when
+  `end_ms + SLACK_MS < others_settled_ms`. Once shown, `drop_echo` can no longer
+  remove it, so the finished file agrees with what was on screen. A CPU restart
+  resets the mark to 0.
+- Left for later: `Event::RecRecent` has no scan sequence, so a slow older scan
+  can overwrite a newer one (the probe makes scans a little longer).

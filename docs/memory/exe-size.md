@@ -311,6 +311,7 @@ No new crate and no new `windows` feature.
 | 53652f6 (notch mute, `menu_pop`) | 4,034,560 |
 | 3bf0853 (transcript), worktree path | 4,297,728 (+263,168, +257 KiB, +6.5 %) |
 | 3bf0853 (transcript), main checkout | 4,297,216 (+262,656, +256.5 KiB, +6.5 %) |
+| 4a6294d (transcript polish), main checkout | 4,299,776 (+2,560 on 3bf0853) |
 
 The spec's "a few tens of KB" was not reachable: the transcript core, window,
 player and Settings card are all new code. The worktree path was longer than
