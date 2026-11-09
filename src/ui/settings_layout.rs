@@ -1452,6 +1452,8 @@ pub struct State<'a> {
     /// (window state: the model list shows instead of the offer).
     pub transcript: TranscriptView,
     pub transcript_choose: bool,
+    /// The model row whose "Hapus" waits for its second click.
+    pub transcript_confirm: Option<usize>,
 }
 
 pub fn accent_key(a: Accent) -> Key {
@@ -4652,7 +4654,7 @@ struct TrCols {
 }
 
 fn tr_cols(b: &Builder, card: Rect) -> TrCols {
-    let button_w = [Key::TrDownload, Key::TrCancel, Key::TrDelete]
+    let button_w = [Key::TrDownload, Key::TrCancel, Key::TrDelete, Key::ConfirmShort]
         .map(|k| b.compact_w(&b.t(k)))
         .into_iter()
         .fold(0.0, f32::max);
@@ -4790,7 +4792,7 @@ fn transcript_card(b: &mut Builder, s: &State) {
             if i > 0 {
                 b.divider(card, y);
             }
-            tr_model_row(b, card, &cols, y, h, v, i, (lines, tone));
+            tr_model_row(b, card, &cols, y, h, v, i, s.transcript_confirm, (lines, tone));
             y += h;
         }
     }
@@ -4922,6 +4924,7 @@ fn tr_model_row(
     h: f32,
     v: &TranscriptView,
     i: usize,
+    armed: Option<usize>,
     (lines, tone): (Vec<String>, Tone),
 ) {
     let model = &MODELS[i];
@@ -4939,11 +4942,14 @@ fn tr_model_row(
         None if tr_installed(v, i) => {
             let in_use = v.in_use == Some(i);
             let note = if in_use { Key::TrInUse } else { Key::TrInstalled };
-            (
-                size,
-                Some(note),
-                (Hit::TranscriptDelete(i), Key::TrDelete, ButtonKind::Secondary, !in_use),
-            )
+            // "Hapus" waits for its second click: "Yakin?" in the confirm red.
+            let sure = armed == Some(i) && !in_use;
+            let delete = if sure {
+                (Hit::TranscriptDelete(i), Key::ConfirmShort, ButtonKind::Confirm, true)
+            } else {
+                (Hit::TranscriptDelete(i), Key::TrDelete, ButtonKind::Secondary, !in_use)
+            };
+            (size, Some(note), delete)
         }
         // The active model without its file: the one Unduh in the accent.
         None => {
@@ -6012,6 +6018,7 @@ mod tests {
                         data_dir: r"%APPDATA%\Vale",
                         transcript: TranscriptView::default(),
                         transcript_choose: false,
+                        transcript_confirm: None,
                     });
                 }
             }
@@ -9193,6 +9200,32 @@ mod tests {
             Control::Button(b) if b.hit == hit => Some(b),
             _ => None,
         })
+    }
+
+    #[test]
+    fn the_armed_delete_says_sure_in_red() {
+        use Hit::TranscriptDelete;
+        for lang in [Lang::Id, Lang::En] {
+            let both = TranscriptView { installed: [true, true], engine_installed: true, ..tr_on() };
+            let at = |view: TranscriptView, armed: Option<usize>| {
+                let s = State { lang, transcript: view, transcript_confirm: armed, ..states()[0].clone() };
+                layout(Section::Features, &s, &Estimate)
+            };
+            let calm = at(both.clone(), None);
+            let armed = at(both.clone(), Some(0));
+            let sure = tr_button(&armed, TranscriptDelete(0)).unwrap();
+            assert_eq!(sure.label, text(lang, Key::ConfirmShort)); // "Yakin?" / "Sure?"
+            assert_eq!(sure.kind, ButtonKind::Confirm);
+            assert!(sure.enabled);
+            // Same place and width as "Hapus": nothing moves.
+            assert_eq!(sure.rect, tr_button(&calm, TranscriptDelete(0)).unwrap().rect);
+            let other = tr_button(&armed, TranscriptDelete(1)).unwrap();
+            assert_eq!((other.label.as_str(), other.kind), (text(lang, Key::TrDelete), ButtonKind::Secondary));
+            // A model in use is never armed.
+            let busy = at(TranscriptView { in_use: Some(0), ..both }, Some(0));
+            let off = tr_button(&busy, TranscriptDelete(0)).unwrap();
+            assert_eq!((off.label.as_str(), off.kind, off.enabled), (text(lang, Key::TrDelete), ButtonKind::Secondary, false));
+        }
     }
 
     fn tr_on() -> TranscriptView {

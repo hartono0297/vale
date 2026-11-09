@@ -360,11 +360,13 @@ enum TrClick {
     /// "Pilih model lain": the model list shows instead of the offer
     /// (window state, nothing is saved).
     Choose,
+    /// "Hapus" of this model row (an index into `MODELS`) was clicked once.
+    ArmDelete(usize),
 }
 
 /// The Transkrip card's answer to `hit` with the island's `view`, or `None`
 /// for a click that changes nothing (or is not on the card).
-fn transcript_click(view: &TranscriptView, hit: Hit) -> Option<TrClick> {
+fn transcript_click(view: &TranscriptView, hit: Hit, armed: Option<usize>) -> Option<TrClick> {
     use crate::transcribe::catalog::MODELS;
     let prefs = &view.prefs;
     let key = |i: usize| MODELS.get(i).map(|m| m.key);
@@ -383,7 +385,15 @@ fn transcript_click(view: &TranscriptView, hit: Hit) -> Option<TrClick> {
         }
         Hit::TranscriptDownload(i) => post(Action::TranscriptDownload(key(i)?)),
         Hit::TranscriptCancel => post(Action::TranscriptCancelDownload),
-        Hit::TranscriptDelete(i) => post(Action::TranscriptDelete(key(i)?)),
+        // The first click arms the row, the second deletes it.
+        Hit::TranscriptDelete(i) => {
+            let k = key(i)?;
+            if armed == Some(i) {
+                post(Action::TranscriptDelete(k))
+            } else {
+                Some(TrClick::ArmDelete(i))
+            }
+        }
         Hit::TranscriptLang(l) if l != prefs.language => post(Action::TranscriptLang(l)),
         Hit::TranscriptAuto => post(Action::TranscriptAuto(!prefs.auto)),
         Hit::TranscriptFolder => post(Action::TranscriptFolder),
@@ -800,6 +810,8 @@ struct Settings {
     /// "Pilih model lain" was clicked: the Transkrip card lists the models
     /// instead of offering the suggested one.
     transcript_choose: bool,
+    /// The model row whose "Hapus" waits for its second click.
+    transcript_confirm: Option<usize>,
     /// The hotkey row being recorded, and why the last combo was refused
     /// (shown under that row until the next recording or a section change).
     recording: Option<HotkeyId>,
@@ -1276,6 +1288,7 @@ pub fn open(owner: HWND, model: Model, section: Option<Section>) -> Result<HWND>
         arrange_edit: None,
         rec_devices,
         transcript_choose: false,
+        transcript_confirm: None,
         recording: None,
         hotkey_error: None,
         rec_hook: None,
@@ -1708,6 +1721,7 @@ impl Settings {
             data_dir: &self.data_label,
             transcript: m.transcript.clone(),
             transcript_choose: self.transcript_choose,
+            transcript_confirm: self.transcript_confirm,
         }
     }
 
@@ -2430,6 +2444,12 @@ impl Settings {
                 let _ = KillTimer(Some(self.hwnd), TIMER_CONFIRM);
             }
         }
+        if !matches!(hit, Hit::TranscriptDelete(_)) && self.transcript_confirm.is_some() {
+            self.transcript_confirm = None;
+            unsafe {
+                let _ = KillTimer(Some(self.hwnd), TIMER_CONFIRM);
+            }
+        }
         if hit != Hit::NotifClear && self.notif_confirm {
             self.notif_confirm = false;
             unsafe {
@@ -2518,8 +2538,14 @@ impl Settings {
             | Hit::TranscriptDelete(_)
             | Hit::TranscriptLang(_)
             | Hit::TranscriptAuto
-            | Hit::TranscriptFolder => match transcript_click(&m.transcript, hit) {
+            | Hit::TranscriptFolder => match transcript_click(&m.transcript, hit, self.transcript_confirm) {
                 Some(TrClick::Post(action)) => {
+                    if matches!(action, Action::TranscriptDelete(_)) {
+                        self.transcript_confirm = None;
+                        unsafe {
+                            let _ = KillTimer(Some(self.hwnd), TIMER_CONFIRM);
+                        }
+                    }
                     // Turning it off forgets the choice: on again, the offer.
                     if action == Action::TranscriptEnabled(false) {
                         self.transcript_choose = false;
@@ -2528,6 +2554,13 @@ impl Settings {
                 }
                 Some(TrClick::Choose) => {
                     self.transcript_choose = true;
+                    Vec::new()
+                }
+                Some(TrClick::ArmDelete(i)) => {
+                    self.transcript_confirm = Some(i);
+                    unsafe {
+                        SetTimer(Some(self.hwnd), TIMER_CONFIRM, CONFIRM_MS, None);
+                    }
                     Vec::new()
                 }
                 None => Vec::new(),
@@ -3859,6 +3892,7 @@ fn on_timer(id: usize) {
                 st.confirm = false;
                 st.clip_confirm = false;
                 st.notif_confirm = false;
+                st.transcript_confirm = None;
             }
             TIMER_GOOGLE_NOTE => st.google_note = None,
             TIMER_HOOK_NOTE => st.hook_note = None,
@@ -4824,14 +4858,14 @@ mod tests {
             ..TranscriptView::default()
         };
         // The switch flips.
-        assert_eq!(transcript_click(&off, Hit::TranscriptEnabled), post(Action::TranscriptEnabled(true)));
-        assert_eq!(transcript_click(&on, Hit::TranscriptEnabled), post(Action::TranscriptEnabled(false)));
+        assert_eq!(transcript_click(&off, Hit::TranscriptEnabled, None), post(Action::TranscriptEnabled(true)));
+        assert_eq!(transcript_click(&on, Hit::TranscriptEnabled, None), post(Action::TranscriptEnabled(false)));
         // A radio picks a model by its key; the active one again does nothing.
         assert_eq!(
-            transcript_click(&on, Hit::TranscriptModel(1)),
+            transcript_click(&on, Hit::TranscriptModel(1), None),
             post(Action::TranscriptModel("whisper-small"))
         );
-        assert_eq!(transcript_click(&on, Hit::TranscriptModel(0)), None);
+        assert_eq!(transcript_click(&on, Hit::TranscriptModel(0), None), None);
         let small = TranscriptView {
             prefs: TranscriptPrefs {
                 model: Some("whisper-small".into()),
@@ -4840,13 +4874,13 @@ mod tests {
             ..on.clone()
         };
         assert_eq!(
-            transcript_click(&small, Hit::TranscriptModel(0)),
+            transcript_click(&small, Hit::TranscriptModel(0), None),
             post(Action::TranscriptModel(MODELS[0].key))
         );
         // The offer: Unduh fetches the model for this PC, the other choice
         // only opens the list.
         assert_eq!(
-            transcript_click(&on, Hit::TranscriptOfferDownload),
+            transcript_click(&on, Hit::TranscriptOfferDownload, None),
             post(Action::TranscriptDownload("whisper-large-v3-turbo"))
         );
         let cpu = TranscriptView {
@@ -4854,37 +4888,42 @@ mod tests {
             ..on.clone()
         };
         assert_eq!(
-            transcript_click(&cpu, Hit::TranscriptOfferDownload),
+            transcript_click(&cpu, Hit::TranscriptOfferDownload, None),
             post(Action::TranscriptDownload("whisper-small"))
         );
-        assert_eq!(transcript_click(&on, Hit::TranscriptOfferOther), Some(TrClick::Choose));
+        assert_eq!(transcript_click(&on, Hit::TranscriptOfferOther, None), Some(TrClick::Choose));
         // The offer fetches a model chosen earlier, not the GPU's default.
         assert_eq!(
-            transcript_click(&small, Hit::TranscriptOfferDownload),
+            transcript_click(&small, Hit::TranscriptOfferDownload, None),
             post(Action::TranscriptDownload("whisper-small"))
         );
         // A row's buttons, by the row's model.
         assert_eq!(
-            transcript_click(&on, Hit::TranscriptDownload(1)),
+            transcript_click(&on, Hit::TranscriptDownload(1), None),
             post(Action::TranscriptDownload("whisper-small"))
         );
-        assert_eq!(transcript_click(&on, Hit::TranscriptCancel), post(Action::TranscriptCancelDownload));
+        assert_eq!(transcript_click(&on, Hit::TranscriptCancel, None), post(Action::TranscriptCancelDownload));
+        // Hapus: the first click arms the row, the second deletes it.
+        assert_eq!(transcript_click(&on, Hit::TranscriptDelete(0), None), Some(TrClick::ArmDelete(0)));
         assert_eq!(
-            transcript_click(&on, Hit::TranscriptDelete(0)),
+            transcript_click(&on, Hit::TranscriptDelete(0), Some(0)),
             post(Action::TranscriptDelete("whisper-large-v3-turbo"))
         );
-        assert_eq!(transcript_click(&on, Hit::TranscriptDownload(7)), None);
+        // Armed on another row: this one is armed instead, nothing is deleted.
+        assert_eq!(transcript_click(&on, Hit::TranscriptDelete(1), Some(0)), Some(TrClick::ArmDelete(1)));
+        assert_eq!(transcript_click(&on, Hit::TranscriptDelete(7), None), None);
+        assert_eq!(transcript_click(&on, Hit::TranscriptDownload(7), None), None);
         // The language segment: another one posts, the same does nothing.
         assert_eq!(
-            transcript_click(&on, Hit::TranscriptLang(TrLang::En)),
+            transcript_click(&on, Hit::TranscriptLang(TrLang::En), None),
             post(Action::TranscriptLang(TrLang::En))
         );
-        assert_eq!(transcript_click(&on, Hit::TranscriptLang(TrLang::Id)), None);
+        assert_eq!(transcript_click(&on, Hit::TranscriptLang(TrLang::Id), None), None);
         // Auto flips; Buka folder asks the island (it knows the store).
-        assert_eq!(transcript_click(&on, Hit::TranscriptAuto), post(Action::TranscriptAuto(false)));
-        assert_eq!(transcript_click(&on, Hit::TranscriptFolder), post(Action::TranscriptFolder));
+        assert_eq!(transcript_click(&on, Hit::TranscriptAuto, None), post(Action::TranscriptAuto(false)));
+        assert_eq!(transcript_click(&on, Hit::TranscriptFolder, None), post(Action::TranscriptFolder));
         // Not the card's.
-        assert_eq!(transcript_click(&on, Hit::Lyrics), None);
+        assert_eq!(transcript_click(&on, Hit::Lyrics, None), None);
     }
 
     fn hk(text: &str) -> Hotkey {
