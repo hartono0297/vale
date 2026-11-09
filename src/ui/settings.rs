@@ -388,6 +388,10 @@ fn transcript_click(view: &TranscriptView, hit: Hit, armed: Option<usize>) -> Op
         // The first click arms the row, the second deletes it.
         Hit::TranscriptDelete(i) => {
             let k = key(i)?;
+            // A model in use is never armed or deleted from here.
+            if view.in_use == Some(i) {
+                return None;
+            }
             if armed == Some(i) {
                 post(Action::TranscriptDelete(k))
             } else {
@@ -399,6 +403,13 @@ fn transcript_click(view: &TranscriptView, hit: Hit, armed: Option<usize>) -> Op
         Hit::TranscriptFolder => post(Action::TranscriptFolder),
         _ => None,
     }
+}
+
+/// The armed "Hapus" row after the island's latest view: a model that is
+/// in use is no longer armed, so it cannot come back armed when it is free
+/// again.
+fn armed_after(armed: Option<usize>, in_use: Option<usize>) -> Option<usize> {
+    armed.filter(|i| in_use != Some(*i))
 }
 
 /// Takes ownership of a `WM_APP_SETTINGS_ACTION`'s `lparam`.
@@ -1819,6 +1830,13 @@ impl Settings {
     fn on_model(&mut self, model: Model) -> ModelChanges {
         let now = Instant::now();
         let old = std::mem::replace(&mut self.model, model);
+        let armed = armed_after(self.transcript_confirm, self.model.transcript.in_use);
+        if armed != self.transcript_confirm {
+            self.transcript_confirm = armed;
+            unsafe {
+                let _ = KillTimer(Some(self.hwnd), TIMER_CONFIRM);
+            }
+        }
         let new = &self.model;
         if old.recording.mic_device != new.recording.mic_device
             || old.recording.system_device != new.recording.system_device
@@ -4912,6 +4930,15 @@ mod tests {
         // Armed on another row: this one is armed instead, nothing is deleted.
         assert_eq!(transcript_click(&on, Hit::TranscriptDelete(1), Some(0)), Some(TrClick::ArmDelete(1)));
         assert_eq!(transcript_click(&on, Hit::TranscriptDelete(7), None), None);
+        // A model in use is neither armed nor deleted.
+        let busy = TranscriptView { in_use: Some(0), ..on.clone() };
+        assert_eq!(transcript_click(&busy, Hit::TranscriptDelete(0), None), None);
+        assert_eq!(transcript_click(&busy, Hit::TranscriptDelete(0), Some(0)), None);
+        // An armed row that turns busy is disarmed for good.
+        assert_eq!(armed_after(Some(0), Some(0)), None);
+        assert_eq!(armed_after(Some(0), Some(1)), Some(0));
+        assert_eq!(armed_after(Some(0), None), Some(0));
+        assert_eq!(armed_after(None, Some(0)), None);
         assert_eq!(transcript_click(&on, Hit::TranscriptDownload(7), None), None);
         // The language segment: another one posts, the same does nothing.
         assert_eq!(

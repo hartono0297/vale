@@ -1482,7 +1482,12 @@ impl Painter<'_> {
                 } else {
                     self.p.text
                 };
-                self.fill_round(b.rect, FULL_RADIUS, quiet, a);
+                let fill = if b.kind == ButtonKind::Confirm {
+                    confirm_fill(&self.p, hovered, pressed)
+                } else {
+                    quiet
+                };
+                self.fill_round(b.rect, FULL_RADIUS, fill, a);
                 self.draw_str(&b.label, style, b.rect, ink, a);
             }
             ButtonKind::Link | ButtonKind::Disclosure(_) => {
@@ -1890,6 +1895,20 @@ pub fn ease(t: f32) -> f32 {
 /// The share of the secondary ink a progress bar's track takes.
 const BAR_TRACK: f32 = 0.15;
 
+/// The confirming "Yakin?" button's fill. Hover and press move it toward the
+/// card (lighter in a light window, darker in a dark one), the way the error
+/// label gains contrast; the usual step toward the text would drop it below
+/// 4.5:1 (light 4.31, Terminal dark 4.37).
+pub fn confirm_fill(p: &WindowPalette, hovered: bool, pressed: bool) -> u32 {
+    if pressed {
+        p.card
+    } else if hovered {
+        mix(p.button, p.card, 0.5)
+    } else {
+        p.button
+    }
+}
+
 /// A primary button's fill. A light window darkens the accent a step: its
 /// light label on the light accent itself is only 4.26:1 (Terracotta).
 pub fn primary_fill(p: &WindowPalette) -> u32 {
@@ -2219,6 +2238,30 @@ mod tests {
                 let track = over(p.card, p.secondary, BAR_TRACK);
                 let bar = contrast(p.accent, track);
                 assert!(bar >= 3.0, "{accent:?} {surface:?} {mode:?}: bar {bar:.2}");
+            }
+        }
+    }
+
+    /// The "Yakin?" label (error red) reads at 4.5:1 on its rest, hover and
+    /// pressed fills in light, warm dark and Terminal dark, for every accent.
+    #[test]
+    fn the_confirm_label_reads_on_rest_hover_and_pressed() {
+        use crate::theme::{WindowTheme, window_for};
+        use crate::widgets::sticky::contrast;
+        for accent in Accent::ALL {
+            for (surface, mode) in [
+                (Surface::Espresso, WindowTheme::Light),
+                (Surface::Espresso, WindowTheme::Dark),
+                (Surface::Terminal, WindowTheme::Dark),
+            ] {
+                let p = window_for(*accent, surface, mode, false);
+                for (hovered, pressed) in [(false, false), (true, false), (true, true)] {
+                    let r = contrast(p.error, confirm_fill(&p, hovered, pressed));
+                    assert!(
+                        r >= 4.5,
+                        "{accent:?} {surface:?} {mode:?} hover {hovered} press {pressed}: {r:.2}"
+                    );
+                }
             }
         }
     }
