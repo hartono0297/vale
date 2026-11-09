@@ -1896,12 +1896,12 @@ pub fn ease(t: f32) -> f32 {
 const BAR_TRACK: f32 = 0.15;
 
 /// The confirming "Yakin?" button's fill. Hover and press move it toward the
-/// card (lighter in a light window, darker in a dark one), the way the error
+/// card (a press stops short of it, so the pill stays visible) (lighter in a light window, darker in a dark one), the way the error
 /// label gains contrast; the usual step toward the text would drop it below
 /// 4.5:1 (light 4.31, Terminal dark 4.37).
 pub fn confirm_fill(p: &WindowPalette, hovered: bool, pressed: bool) -> u32 {
     if pressed {
-        p.card
+        mix(p.button, p.card, 0.75)
     } else if hovered {
         mix(p.button, p.card, 0.5)
     } else {
@@ -2262,6 +2262,7 @@ mod tests {
                         "{accent:?} {surface:?} {mode:?} hover {hovered} press {pressed}: {r:.2}"
                     );
                 }
+                assert_ne!(confirm_fill(&p, true, true), p.card, "{accent:?} {surface:?} {mode:?}: the pressed pill vanishes");
             }
         }
     }

@@ -120,6 +120,8 @@ pub enum Event {
     /// The model is loaded: where it runs, and which voice detector cuts.
     Started { backend: String, vad: &'static str },
     /// Audio read so far, out of the whole (when the file says).
+    /// `others_settled_ms`: no "Peserta" segment can still start before it;
+    /// `u64::MAX` means fully read or no "Peserta" channel.
     Progress { done_ms: u64, total_ms: Option<u64>, others_settled_ms: u64 },
     /// A segment, as soon as its chunk is done (not yet in time order).
     Segment(Segment),
