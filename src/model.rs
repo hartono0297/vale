@@ -214,6 +214,12 @@ pub enum NoticeKind {
     /// A short word about transcripts (the model is ready, a download
     /// failed, saved as a note, "belum nyala"). A click dismisses.
     TranscriptInfo,
+    /// The "Bikin transkrip" word of `audio`. Like `TranscriptInfo` (a click
+    /// dismisses, no action), but it carries the audio so the queue can drop
+    /// it when that transcript ends before the word ever showed.
+    TranscriptStarting {
+        audio: PathBuf,
+    },
     /// The same kind of word, but a click opens Settings at the Transkrip
     /// card (`Effect::OpenTranscriptSettings`).
     TranscriptSettings,

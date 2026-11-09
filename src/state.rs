@@ -623,6 +623,17 @@ impl IslandState {
                         self.queue.push_back(notice);
                     }
                 }
+                // A transcript ends: its "Bikin transkrip" still waiting in
+                // the queue (a short recording) has no point any more. One
+                // already on screen stays.
+                NoticeKind::TranscriptReady { audio: ended }
+                | NoticeKind::TranscriptFailed { audio: ended } => {
+                    self.queue.retain(|n| {
+                        !matches!(&n.kind, NoticeKind::TranscriptStarting { audio }
+                            if crate::transcribe::queue::same_audio(audio, ended))
+                    });
+                    self.queue.push_back(notice);
+                }
                 NoticeKind::App { .. }
                 | NoticeKind::BatteryLow
                 | NoticeKind::SystemLow
@@ -634,9 +645,8 @@ impl IslandState {
                 | NoticeKind::RecMicDenied
                 | NoticeKind::RecFolderBlocked { .. }
                 | NoticeKind::RecInfo
-                | NoticeKind::TranscriptReady { .. }
-                | NoticeKind::TranscriptFailed { .. }
                 | NoticeKind::TranscriptInfo
+                | NoticeKind::TranscriptStarting { .. }
                 | NoticeKind::TranscriptSettings
                 | NoticeKind::ShotDeleted
                 | NoticeKind::DevicePlugged { .. }
@@ -3395,6 +3405,7 @@ mod tests {
     use crate::mole::MoleOpt;
     use crate::pomodoro::{Phase, PomoSettings, PomoStatus};
     use crate::recorder::Source;
+    use std::path::{Path, PathBuf};
     use chrono::NaiveDate;
     use std::time::{Duration, Instant};
 
@@ -10313,6 +10324,44 @@ mod tests {
         s.apply(Event::Notice(info), t0);
         assert_eq!(s.apply(Event::Click(Hit::Body), t0 + secs(1)), vec![]);
         assert_eq!(s.view(), View::Idle);
+    }
+
+    #[test]
+    fn a_waiting_start_notice_goes_when_its_transcript_ends() {
+        let t0 = Instant::now();
+        let a = PathBuf::from(REC_FILE);
+        let b = PathBuf::from(r"C:\r\b.m4a");
+        let start = |p: &Path| rec_notice(NoticeKind::TranscriptStarting { audio: p.into() });
+        let ready = |p: &Path| rec_notice(NoticeKind::TranscriptReady { audio: p.into() });
+        let failed = |p: &Path| rec_notice(NoticeKind::TranscriptFailed { audio: p.into() });
+        let later = t0 + NOTICE_DURATION + secs(1);
+        // A short recording: "Rekaman tersimpan" shows, the start waits, the
+        // transcript is ready first: the start never shows.
+        for end in [ready(&a), failed(&a), ready(Path::new(r"c:\R\A.M4A"))] {
+            let mut s = st();
+            s.apply(Event::Notice(rec_saved(TranscriptOffer::None)), t0);
+            s.apply(Event::Notice(start(&a)), t0 + secs(1));
+            s.apply(Event::Notice(end.clone()), t0 + secs(2));
+            s.apply(Event::Tick, later);
+            assert_eq!(s.view(), View::Notice(end), "the start is gone");
+        }
+        // A long recording: the start already shows; it stays, the end waits.
+        let mut s = st();
+        s.apply(Event::Notice(start(&a)), t0);
+        s.apply(Event::Notice(ready(&a)), t0 + secs(1));
+        assert_eq!(s.view(), View::Notice(start(&a)));
+        s.apply(Event::Tick, later);
+        assert_eq!(s.view(), View::Notice(ready(&a)));
+        // Another recording's start stays in the queue.
+        let mut s = st();
+        s.apply(Event::Notice(rec_saved(TranscriptOffer::None)), t0);
+        s.apply(Event::Notice(start(&b)), t0 + secs(1));
+        s.apply(Event::Notice(ready(&a)), t0 + secs(2));
+        s.apply(Event::Tick, later);
+        assert_eq!(s.view(), View::Notice(start(&b)));
+        // It behaves as a plain word: closable, no action, a click dismisses.
+        assert!(notice_closable(&start(&a)));
+        assert!(!notice_has_action(&start(&a)));
     }
 
     #[test]

@@ -574,7 +574,9 @@ impl App {
                 "tr-job",
                 text(lang, Key::TrStarting).into(),
                 title,
-                NoticeKind::TranscriptInfo,
+                NoticeKind::TranscriptStarting {
+                    audio: job.audio.clone(),
+                },
             );
             self.apply_now(Event::Notice(n));
         }

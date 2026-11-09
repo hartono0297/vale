@@ -1414,7 +1414,9 @@ impl NoticeSort {
             // happy, failed sad, a word at rest.
             NoticeKind::TranscriptReady { .. } => NoticeSort::RecSaved,
             NoticeKind::TranscriptFailed { .. } => NoticeSort::RecFailed,
-            NoticeKind::TranscriptInfo | NoticeKind::TranscriptSettings => NoticeSort::RecInfo,
+            NoticeKind::TranscriptInfo
+            | NoticeKind::TranscriptStarting { .. }
+            | NoticeKind::TranscriptSettings => NoticeSort::RecInfo,
             NoticeKind::ShotDeleted => NoticeSort::ShotDeleted,
             NoticeKind::DevicePlugged { .. } => NoticeSort::DevicePlugged,
             NoticeKind::DeviceSafe => NoticeSort::DeviceSafe,

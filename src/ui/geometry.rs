@@ -1331,7 +1331,9 @@ pub fn badge_style(notice: &Notice, p: &Palette, pomo_next: Phase) -> BadgeStyle
         // ready, the recording-failed red when not, the accent for a word.
         NoticeKind::TranscriptReady { .. } => tint(p.sage, Icon::Note),
         NoticeKind::TranscriptFailed { .. } => tint(crate::theme::REC_RED, Icon::Note),
-        NoticeKind::TranscriptInfo | NoticeKind::TranscriptSettings => {
+        NoticeKind::TranscriptInfo
+        | NoticeKind::TranscriptStarting { .. }
+        | NoticeKind::TranscriptSettings => {
             tint(p.accent, Icon::Note)
         }
         NoticeKind::ShotDeleted => tint(crate::theme::SOFT_RED, Icon::Trash),
@@ -2928,6 +2930,9 @@ mod tests {
                 audio: "a.m4a".into(),
             },
             NoticeKind::TranscriptInfo,
+            NoticeKind::TranscriptStarting {
+                audio: r"C:\r\a.m4a".into(),
+            },
             NoticeKind::TranscriptSettings,
         ] {
             assert!(notice_chip_widths(&kind, idle).is_empty(), "{kind:?}");
@@ -3001,7 +3006,13 @@ mod tests {
             (failed.fill, failed.icon),
             (crate::theme::REC_RED, Some(Icon::Note))
         );
-        for kind in [NoticeKind::TranscriptInfo, NoticeKind::TranscriptSettings] {
+        for kind in [
+            NoticeKind::TranscriptInfo,
+            NoticeKind::TranscriptStarting {
+                audio: r"C:\r\a.m4a".into(),
+            },
+            NoticeKind::TranscriptSettings,
+        ] {
             let b = badge(kind);
             assert_eq!((b.fill, b.icon), (p.accent, Some(Icon::Note)));
         }
