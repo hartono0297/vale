@@ -82,13 +82,7 @@ impl Decoder {
                 .SetCurrentMediaType(audio, None, &wanted)
                 .map_err(|e| DecodeError::Format(e.message()))?;
         }
-        let duration_ms = unsafe {
-            reader
-                .GetPresentationAttribute(MF_SOURCE_READER_MEDIASOURCE.0 as u32, &MF_PD_DURATION)
-                .ok()
-                .and_then(|value| u64::try_from(&value).ok())
-                .map(|hns| hns / 10_000)
-        };
+        let duration_ms = duration_of(&reader);
         let mut decoder = Decoder {
             reader,
             channels: 0,
@@ -190,6 +184,30 @@ impl Decoder {
             return Ok(None);
         }
         Ok(Some(out))
+    }
+}
+
+/// The length of the audio file, read from the container only (no media
+/// type is set and nothing is decoded). `None` when it cannot be opened or
+/// says nothing.
+pub fn probe_duration_ms(path: &Path) -> Option<u64> {
+    let mf = MfSession::start()?;
+    let url = HSTRING::from(path.as_os_str());
+    let reader: IMFSourceReader = created(|out| unsafe {
+        (mf.api().create_source_reader)(PCWSTR(url.as_ptr()), std::ptr::null_mut(), out)
+    })
+    .ok()?;
+    duration_of(&reader)
+}
+
+/// `MF_PD_DURATION` of the reader's source, in milliseconds.
+fn duration_of(reader: &IMFSourceReader) -> Option<u64> {
+    unsafe {
+        reader
+            .GetPresentationAttribute(MF_SOURCE_READER_MEDIASOURCE.0 as u32, &MF_PD_DURATION)
+            .ok()
+            .and_then(|value| u64::try_from(&value).ok())
+            .map(|hns| hns / 10_000)
     }
 }
 
@@ -341,6 +359,24 @@ fn gcd(a: u64, b: u64) -> u64 {
 pub(crate) mod tests {
     use super::*;
     use crate::transcribe::store::tests::temp_store;
+
+    #[test]
+    fn probe_reads_the_length_of_a_recording() {
+        let store = temp_store("decode-probe");
+        let path = store.root().join("2026-11-09 0900 Probe.m4a");
+        write_m4a(&path, &[sine(440.0, 48_000, 2.0, 0.4)]);
+        let ms = probe_duration_ms(&path).unwrap();
+        assert!((1990..=2100).contains(&ms), "{ms}");
+    }
+
+    #[test]
+    fn probe_of_a_missing_file_is_none() {
+        let store = temp_store("decode-probe-missing");
+        assert_eq!(probe_duration_ms(&store.root().join("nope.m4a")), None);
+        let junk = store.root().join("junk.m4a");
+        std::fs::write(&junk, b"x").unwrap();
+        assert_eq!(probe_duration_ms(&junk), None);
+    }
 
     fn sine(freq: f64, rate: u32, seconds: f64, amp: f32) -> Vec<f32> {
         let n = (rate as f64 * seconds) as usize;

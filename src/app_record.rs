@@ -21,6 +21,8 @@ use std::path::{Component, Path, PathBuf};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use std::os::windows::fs::MetadataExt;
+
 use chrono::{Local, NaiveDate, NaiveDateTime};
 
 use super::{App, WM_APP_EVENT, WM_APP_REC_DEVICE, notif_open, poster};
@@ -33,7 +35,7 @@ use crate::recorder::devices;
 use crate::recorder::sidecar::Sidecar;
 use crate::recorder::{Failure, RecError, RecEvent, RecOptions, Recorder, Source, Sources};
 use crate::shortcuts;
-use crate::transcribe::output;
+use crate::transcribe::{decode, output};
 use crate::ui::{settings, tray};
 
 /// How many recordings the Rekam page lists.
@@ -491,13 +493,14 @@ pub(super) fn scan_recent(
     today: NaiveDate,
     limit: usize,
     skip: Option<&Path>,
+    probe: &dyn Fn(&Path) -> Option<u64>,
 ) -> Vec<RecEntry> {
     let Ok(read) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
     // `DirEntry::metadata` is free on Windows (the listing carries it), so
     // the cost is the sort; only the newest few files are opened further.
-    let mut files: Vec<(std::time::SystemTime, PathBuf, bool)> = read
+    let mut files: Vec<(std::time::SystemTime, PathBuf, bool, u32)> = read
         .filter_map(Result::ok)
         .filter_map(|e| {
             let path = e.path();
@@ -506,16 +509,28 @@ pub(super) fn scan_recent(
                 return None;
             }
             let meta = e.metadata().ok()?;
-            meta.is_file()
-                .then(|| (meta.modified().unwrap_or(std::time::UNIX_EPOCH), path, unfinished))
+            meta.is_file().then(|| {
+                let modified = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+                (modified, path, unfinished, meta.file_attributes())
+            })
         })
         .collect();
     files.sort_by_key(|f| std::cmp::Reverse(f.0));
     files.truncate(limit);
     files
         .into_iter()
-        .map(|(modified, path, unfinished)| entry_of(&path, modified, unfinished, lang, today))
+        .map(|(modified, path, unfinished, attributes)| {
+            entry_of(&path, modified, unfinished, attributes, lang, today, probe)
+        })
         .collect()
+}
+
+/// False for a OneDrive cloud-only file: reading its length would download it.
+pub(crate) fn may_probe(attributes: u32) -> bool {
+    const OFFLINE: u32 = 0x1000;
+    const RECALL_ON_OPEN: u32 = 0x4_0000;
+    const RECALL_ON_DATA_ACCESS: u32 = 0x40_0000;
+    attributes & (OFFLINE | RECALL_ON_OPEN | RECALL_ON_DATA_ACCESS) == 0
 }
 
 /// The recording's name without `.m4a` or `.m4a.part`.
@@ -575,8 +590,10 @@ fn entry_of(
     path: &Path,
     modified: std::time::SystemTime,
     unfinished: bool,
+    attributes: u32,
     lang: Lang,
     today: NaiveDate,
+    probe: &dyn Fn(&Path) -> Option<u64>,
 ) -> RecEntry {
     let stem = stem_of(path);
     let value = sidecar_value(path, &stem);
@@ -586,11 +603,19 @@ fn entry_of(
         && (output::transcript_files(path, value.as_ref()).srt.is_file()
             || value.as_ref().is_some_and(|v| v.get("transcript").is_some()));
     let (title, started) = title_of(side.as_ref(), stem, modified, lang);
+    let sidecar_ms = side.as_ref().map_or(0, |s| s.duration_ms);
+    // No length in a sidecar: ask the audio, unless it is unfinished or a
+    // cloud-only file (reading its length would download it).
+    let duration_ms = if sidecar_ms == 0 && !unfinished && may_probe(attributes) {
+        probe(path).unwrap_or(0)
+    } else {
+        sidecar_ms
+    };
     RecEntry {
         path: path.to_path_buf(),
         title,
         started: i18n::rec_started(lang, started, today),
-        duration: side.map_or(Duration::ZERO, |s| Duration::from_millis(s.duration_ms)),
+        duration: Duration::from_millis(duration_ms),
         unfinished,
         // The scan reads what is on disk (`Done` or nothing);
         // `transcribe_marks` puts the queue's state over it.
@@ -1101,7 +1126,7 @@ impl App {
             .name("rec-scan".into())
             .spawn(move || {
                 let today = Local::now().date_naive();
-                let list = scan_recent(&dir, lang, today, RECENT_LIMIT, skip.as_deref());
+                let list = scan_recent(&dir, lang, today, RECENT_LIMIT, skip.as_deref(), &decode::probe_duration_ms);
                 let _ = tx.send(Event::RecRecent(list));
                 wake();
             });
@@ -1173,6 +1198,43 @@ mod tests {
 
     fn today() -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 11, 7).unwrap()
+    }
+
+    #[test]
+    fn the_scan_probes_only_rows_without_a_length() {
+        let dir = scratch("probe-rows");
+        for name in ["bare", "titled-only", "timed"] {
+            fs::write(dir.join(format!("{name}.m4a")), b"x").unwrap();
+        }
+        fs::write(dir.join("cut.m4a.part"), b"x").unwrap();
+        fs::write(dir.join("titled-only.vale.json"), r#"{"v":1,"title":"Rapat"}"#).unwrap();
+        fs::write(dir.join("timed.vale.json"), r#"{"v":1,"duration_ms":65000}"#).unwrap();
+        let asked = std::cell::RefCell::new(Vec::new());
+        let probe = |p: &Path| {
+            asked.borrow_mut().push(p.file_name().unwrap().to_string_lossy().into_owned());
+            Some(42_000)
+        };
+        let list = scan_recent(&dir, Lang::Id, today(), 20, None, &probe);
+        let len = |n: &str| list.iter().find(|e| e.path.file_name().unwrap().to_string_lossy() == n).unwrap().duration;
+        assert_eq!(len("bare.m4a"), Duration::from_secs(42), "no sidecar: from the audio");
+        assert_eq!(len("titled-only.m4a"), Duration::from_secs(42), "a sidecar without a length");
+        assert_eq!(len("timed.m4a"), Duration::from_secs(65), "the sidecar's length wins");
+        let mut asked = asked.into_inner();
+        asked.sort();
+        assert_eq!(asked, ["bare.m4a", "titled-only.m4a"], "never the sidecar's or the unfinished one");
+        // A failed probe keeps the length unknown.
+        let none = scan_recent(&dir, Lang::Id, today(), 20, None, &|_| None);
+        assert!(none.iter().find(|e| e.path.ends_with("bare.m4a")).unwrap().duration.is_zero());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_cloud_only_file_is_not_probed() {
+        assert!(may_probe(0x20)); // FILE_ATTRIBUTE_ARCHIVE
+        assert!(may_probe(0x20 | 0x80000)); // pinned (always on this device)
+        for cloud in [0x1000, 0x40000, 0x400000] {
+            assert!(!may_probe(0x20 | cloud), "{cloud:#x}");
+        }
     }
 
     /// A fresh folder under `target/test-tmp/`.
@@ -1476,13 +1538,13 @@ mod tests {
             write(&format!("filler{i}"), None);
         }
         fs::write(dir.join("notes.txt"), b"x").unwrap();
-        let list = scan_recent(&dir, Lang::Id, today(), RECENT_LIMIT, None);
+        let list = scan_recent(&dir, Lang::Id, today(), RECENT_LIMIT, None, &|_| None);
         assert_eq!(list.len(), 5, "five at most: {list:?}");
         assert_eq!(list[0].title, "filler3", "newest first, no .txt");
         assert_eq!(list[0].duration, Duration::ZERO, "no sidecar: the length is unknown");
         assert!(!list[0].started.is_empty());
         assert!(!list[0].unfinished);
-        let all = scan_recent(&dir, Lang::Id, today(), 20, None);
+        let all = scan_recent(&dir, Lang::Id, today(), 20, None, &|_| None);
         assert_eq!(all.len(), 7);
         let titled = all.iter().find(|e| e.path.ends_with("titled.m4a")).unwrap();
         assert_eq!(titled.title, "Sync mingguan");
@@ -1522,7 +1584,7 @@ halo
 ");
         write("sidecar", "vale.json", r#"{"v":1,"transcript":{"model":"whisper-small"}}"#);
         write("sidecar-only-title", "vale.json", r#"{"v":1,"title":"Rapat"}"#);
-        let all = scan_recent(&dir, Lang::Id, today(), 20, None);
+        let all = scan_recent(&dir, Lang::Id, today(), 20, None, &|_| None);
         let mark = |stem: &str| {
             all.iter()
                 .find(|e| stem_of(&e.path) == stem)
@@ -1545,7 +1607,7 @@ halo
         std::thread::sleep(Duration::from_millis(20));
         let running = dir.join("2026-11-07 1000.m4a.part");
         fs::write(&running, b"x").unwrap();
-        let list = scan_recent(&dir, Lang::Id, today(), RECENT_LIMIT, Some(&running));
+        let list = scan_recent(&dir, Lang::Id, today(), RECENT_LIMIT, Some(&running), &|_| None);
         assert_eq!(list.len(), 1, "{list:?}");
         assert_eq!(list[0].title, "2026-11-07 0900");
         assert!(list[0].unfinished);
@@ -1563,11 +1625,11 @@ halo
 
     #[test]
     fn a_missing_folder_or_a_broken_sidecar_is_not_an_error() {
-        assert!(scan_recent(Path::new(r"Z:\no\such\folder"), Lang::Id, today(), 5, None).is_empty());
+        assert!(scan_recent(Path::new(r"Z:\no\such\folder"), Lang::Id, today(), 5, None, &|_| None).is_empty());
         let dir = scratch("broken");
         fs::write(dir.join("a.m4a"), b"x").unwrap();
         fs::write(dir.join("a.vale.json"), b"{not json").unwrap();
-        let list = scan_recent(&dir, Lang::En, today(), 5, None);
+        let list = scan_recent(&dir, Lang::En, today(), 5, None, &|_| None);
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].title, "a");
         let _ = fs::remove_dir_all(&dir);
@@ -1580,7 +1642,7 @@ halo
             fs::write(dir.join(format!("2026-11-07 {i:04}.m4a")), b"x").unwrap();
         }
         let t0 = Instant::now();
-        let list = scan_recent(&dir, Lang::Id, today(), RECENT_LIMIT, None);
+        let list = scan_recent(&dir, Lang::Id, today(), RECENT_LIMIT, None, &|_| None);
         let took = t0.elapsed();
         println!("scan of 200 files: {took:?}");
         assert_eq!(list.len(), 5);

@@ -70,6 +70,17 @@ pub(super) fn status_of(job: Job, enabled: bool, has_transcript: bool) -> Status
     }
 }
 
+/// The length a window shows: the first non-zero of the sidecar's, the
+/// running job's and the scan's.
+pub(super) fn known_length(
+    sidecar_ms: Option<u64>,
+    job_total_ms: Option<u64>,
+    scanned: Option<Duration>,
+) -> Option<u64> {
+    let scanned = scanned.map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+    [sidecar_ms, job_total_ms, scanned].into_iter().flatten().find(|&ms| ms > 0)
+}
+
 /// Adds `audio` to the windows to refresh after this batch, once.
 pub(super) fn mark_dirty(dirty: &mut Vec<PathBuf>, audio: &Path) {
     if !dirty.iter().any(|p| same_audio(p, audio)) {
@@ -124,6 +135,20 @@ impl App {
             }
             None => doc::load(audio, &fallback),
         };
+        // A recording without a sidecar length: the last scan's (read off the
+        // UI thread) or the running job's.
+        let mut doc = doc;
+        let scanned = self
+            .rec
+            .recent
+            .iter()
+            .find(|e| same_audio(&e.path, audio))
+            .map(|e| e.duration);
+        doc.duration_ms = known_length(
+            doc.duration_ms,
+            worker.and_then(|w| w.progress).and_then(|(_, total)| total),
+            scanned,
+        );
         let job = if let Some(w) = worker {
             Job::Running {
                 progress: w.progress,
@@ -279,6 +304,17 @@ mod tests {
     use super::*;
     use crate::transcribe::output::Speaker::{Me, Others};
     use std::path::PathBuf;
+
+    #[test]
+    fn the_window_takes_the_length_the_scan_or_the_job_found() {
+        use std::time::Duration;
+        let s = |n| Some(Duration::from_millis(n));
+        assert_eq!(known_length(Some(5_000), Some(9_000), s(7_000)), Some(5_000), "the sidecar first");
+        assert_eq!(known_length(None, Some(9_000), s(7_000)), Some(9_000), "then the running job");
+        assert_eq!(known_length(Some(0), None, s(7_000)), Some(7_000), "a zero is unknown");
+        assert_eq!(known_length(None, None, s(0)), None);
+        assert_eq!(known_length(None, None, None), None);
+    }
 
     fn seg(start: u64, end: u64, who: crate::transcribe::output::Speaker, text: &str) -> Segment {
         Segment {
