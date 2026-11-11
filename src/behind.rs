@@ -55,6 +55,7 @@ pub fn view_needs_front(view: &View) -> bool {
             | View::MediaLyric
             | View::PomodoroCompact
             | View::RecordCompact
+            | View::CaptionCompact
     )
 }
 

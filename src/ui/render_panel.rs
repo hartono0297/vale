@@ -74,7 +74,7 @@ use crate::ui::panel_layout::{
     cli_layout, cli_suggestions, clipboard_layout, device_shapes, devices_layout,
     media_hits_for, media_panel_layout, media_progress_layout, mixer_layout, mole_layout, mole_log_rows,
     mole_log_skip, notes_layout, notif_layout, page_dots, pomodoro_compact_layout,
-    pomodoro_compact_layout_robot, pomodoro_layout, record_compact_layout, rec_meter_heights, rec_mute_regions, rec_word_slot, record_layout, screen_compact_sources, screen_label_slot, RecordHead, RecordLayout, regions, REC_BAR_GAP, REC_BAR_W, reminders_layout, search_layout,
+    pomodoro_compact_layout_robot, pomodoro_layout, caption_compact_layout, record_compact_layout, tail_fit, rec_meter_heights, rec_mute_regions, rec_word_slot, record_layout, screen_compact_sources, screen_label_slot, RecordHead, RecordLayout, regions, REC_BAR_GAP, REC_BAR_W, reminders_layout, search_layout,
     settings_button, shelf_card_layout, shelf_layout, shelf_phone_tag, shortcuts_layout,
     system_layout, tile_parts, update_strip_parts, volume_hud_layout, waiting_strip,
 };
@@ -4994,7 +4994,10 @@ impl Renderer {
         let Some(rec) = frame.rec else {
             return Ok(());
         };
-        let l = record_compact_layout(shape, frame.robot.is_some());
+        // The newest caption line shares the clock's row while the recording
+        // runs; paused, the REC view says "dijeda" alone.
+        let caption = frame.caption.filter(|_| !rec.paused);
+        let l = record_compact_layout(shape, frame.robot.is_some(), caption.is_some());
         if let (Some(slot), Some(robot)) = (l.robot, frame.robot) {
             self.paint_robot(slot, robot);
         }
@@ -5037,16 +5040,24 @@ impl Renderer {
             let shown = screen_compact_sources(rec.sources);
             let clock_w = self.text_width(&clock, &self.fonts.title);
             let label = screen_label_slot(&l, clock_w, shown.mic);
-            // A zoomed video shows its level where "Layar" would be.
+            // A zoomed video shows its level where "Layar" would be; the
+            // caption line takes that room when there is one.
             let word = match rec.zoom {
                 Some(level) => i18n::zoom_label(i18n::lang(), level),
                 None => text(i18n::lang(), Key::ScreenLabel).to_owned(),
             };
-            self.text2(&word, &self.fonts.eleven, label);
+            if caption.is_none() {
+                self.text2(&word, &self.fonts.eleven, label);
+            }
             shown
         } else {
             rec.sources
         };
+        if let Some(line) = caption {
+            let clock_w = self.text_width(&clock, &self.fonts.title);
+            let slot = rec_word_slot(&l, clock_w);
+            self.paint_caption_line(slot, line);
+        }
         // One source shows only its meter, at the far right.
         let (mic_at, system_at) = (
             if sources.system { l.mic } else { l.system },
@@ -5080,12 +5091,78 @@ impl Renderer {
         Ok(())
     }
 
+    /// The caption view: Bata, a small "CC" mark and the newest line, cut
+    /// from the left so the end shows. Nothing in it takes a click of its own
+    /// (the body opens the Rekam page).
+    pub(super) fn paint_caption_compact(&mut self, shape: ShapeRect, frame: &Frame) -> Result<()> {
+        let Some(line) = frame.caption else {
+            return Ok(());
+        };
+        let l = caption_compact_layout(shape, frame.robot.is_some());
+        if let (Some(slot), Some(robot)) = (l.robot, frame.robot) {
+            self.paint_robot(slot, robot);
+        }
+        let ink = self.palette.secondary;
+        self.stroke_round(inset(l.mark, 0.5, 0.5), 3.0, ink);
+        self.text_colored(
+            "CC",
+            &self.fonts.micro_center,
+            l.mark,
+            ink,
+            1.0,
+        );
+        self.draw_caption_text(l.line, line);
+        Ok(())
+    }
+
+    /// A thin divider, then the caption line in `slot` (the box after the
+    /// REC clock).
+    fn paint_caption_line(&self, slot: Rect, line: &str) {
+        let divider = Rect {
+            x: slot.x,
+            y: slot.y + 2.0,
+            w: 1.0,
+            h: slot.h - 4.0,
+        };
+        self.set_color(self.palette.track, 1.0);
+        self.fill_round(divider, 0.5);
+        let area = Rect {
+            x: slot.x + 7.0,
+            w: (slot.w - 7.0).max(0.0),
+            ..slot
+        };
+        self.draw_caption_text(area, line);
+    }
+
+    /// `line` in `area`, in the island's secondary ink: all of it when it
+    /// fits, else its newest words behind a leading ellipsis.
+    fn draw_caption_text(&self, area: Rect, line: &str) {
+        let format = &self.fonts.eleven;
+        let line = line.trim();
+        let fitted = if self.text_width(line, format) <= area.w {
+            line.to_owned()
+        } else {
+            // The longest tail that fits (the width grows with the count).
+            let (mut lo, mut hi) = (1, line.chars().count());
+            while lo < hi {
+                let mid = (lo + hi).div_ceil(2);
+                if self.text_width(&tail_fit(line, mid), format) <= area.w {
+                    lo = mid;
+                } else {
+                    hi = mid - 1;
+                }
+            }
+            tail_fit(line, lo)
+        };
+        self.text_colored(&fitted, format, area, self.palette.secondary, 1.0);
+    }
+
     /// The 3-2-1 before a screen recording, in the REC view's layout: a
     /// hollow red ring where the dot will be (the halo round it kept), the
     /// number in the clock's place and "Esc untuk batal" after it. Nothing
     /// in it takes a click.
     pub(super) fn paint_screen_countdown(&mut self, shape: ShapeRect, frame: &Frame, n: u8) {
-        let l = record_compact_layout(shape, frame.robot.is_some());
+        let l = record_compact_layout(shape, frame.robot.is_some(), false);
         if let (Some(slot), Some(robot)) = (l.robot, frame.robot) {
             self.paint_robot(slot, robot);
         }
@@ -7018,7 +7095,7 @@ mod tests {
             for style in [Style::Pill, Style::Notch] {
                 for robot in [false, true] {
                     let s = shape_with_robot_sized(style, size, ShapeKind::RecordCompact, robot);
-                    let l = record_compact_layout(s, robot);
+                    let l = record_compact_layout(s, robot, false);
                     for secs in [0, 59 * 60 + 59, 3600 + 125, 10 * 3600 + 59 * 60 + 59] {
                         ink_fits(&r, &rec_clock(Duration::from_secs(secs)), &r.fonts.title, l.time);
                     }
@@ -7050,7 +7127,7 @@ mod tests {
             for style in [Style::Pill, Style::Notch] {
                 for robot in [false, true] {
                     let s = shape_with_robot_sized(style, size, ShapeKind::RecordCompact, robot);
-                    let l = record_compact_layout(s, robot);
+                    let l = record_compact_layout(s, robot, false);
                     let gap = r.text_width(&clock, &r.fonts.title).ceil() + 6.0;
                     let x = (l.time.x + gap).min(l.label.right());
                     let label = Rect {
@@ -7097,7 +7174,7 @@ mod tests {
                             ShapeKind::RecordCompact,
                             robot,
                         );
-                        let l = record_compact_layout(s, robot);
+                        let l = record_compact_layout(s, robot, false);
                         let clock_w = r.text_width(&clock, &r.fonts.title);
                         for mic in [true, false] {
                             let slot = screen_label_slot(&l, clock_w, mic);
@@ -7169,7 +7246,7 @@ mod tests {
                             } else {
                                 whole
                             };
-                            let l = record_compact_layout(s, robot);
+                            let l = record_compact_layout(s, robot, false);
                             let hint = rec_word_slot(&l, widths[0]);
                             assert!(hint.x >= l.time.x + widths[0], "{tag}");
                             assert!(hint.right() <= s.x + s.w - COMPACT_INSET + 1e-3, "{tag}");

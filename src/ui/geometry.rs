@@ -82,6 +82,10 @@ pub const POMODORO_COMPACT_EXTRA: f32 = 22.0;
 /// RecordCompact is this much wider than the user's width: room for the dot,
 /// "h:mm:ss" and the two level meters with air between them.
 pub const RECORD_COMPACT_EXTRA: f32 = 24.0;
+/// The REC view, and the caption view that takes its place when no
+/// recording runs, is this much wider while a caption line shows: room for
+/// about twenty characters in 11 pt after the clock.
+pub const REC_CAPTION_EXTRA: f32 = 120.0;
 
 /// The closed island's width range (Settings -> Tampilan -> Notch), logical
 /// px. 160 keeps the idle robot and clock, and the compact media title, inside
@@ -693,6 +697,16 @@ pub const TOAST_SLOT_GAP: f32 = 8.0;
 pub const TOAST_SLOT_EXTRA: f32 = TOAST_SLOT + TOAST_SLOT_GAP;
 /// The unread dot's diameter.
 pub const TOAST_DOT: f32 = 6.0;
+
+/// `s` widened by `REC_CAPTION_EXTRA`, still centred: the REC shape with room
+/// for the caption line.
+pub fn with_rec_caption(s: ShapeRect) -> ShapeRect {
+    ShapeRect {
+        x: s.x - REC_CAPTION_EXTRA / 2.0,
+        w: s.w + REC_CAPTION_EXTRA,
+        ..s
+    }
+}
 
 /// `s` widened by `TOAST_SLOT_EXTRA`, still centred: the compact shape with
 /// room for the logo at its right.
@@ -3746,7 +3760,7 @@ mod tests {
             (ShapeKind::PomodoroCompact, false) => pomodoro_compact_layout(content).2.right(),
             (ShapeKind::PomodoroCompact, true) => pomodoro_compact_layout_robot(content).3.right(),
             (ShapeKind::RecordCompact, robot) => {
-                super::super::panel_layout::record_compact_layout(content, robot)
+                super::super::panel_layout::record_compact_layout(content, robot, false)
                     .system
                     .right()
             }
@@ -4144,7 +4158,7 @@ mod tests {
         for style in [Style::Pill, Style::Notch] {
             for robot in [false, true] {
                 let s = shape_with_robot_sized(style, NotchSize::DEFAULT, ShapeKind::RecordCompact, robot);
-                let l = record_compact_layout(s, robot);
+                let l = record_compact_layout(s, robot, false);
                 let both = RecSources { mic: true, system: true };
                 let regions = HitRegions {
                     shape: Some((style, s)),

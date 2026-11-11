@@ -139,6 +139,9 @@ pub struct Frame<'a> {
     pub pomodoro: &'a Pomodoro,
     /// The recording, while the view is `RecordCompact`.
     pub rec: Option<RecFrame>,
+    /// The newest caption text: the REC view's line while a recording runs,
+    /// the whole `CaptionCompact` view otherwise. `None` when none shows.
+    pub caption: Option<&'a str>,
     /// Drives the pomodoro countdown and the equalizer animation.
     pub now: Instant,
     /// The local date the island's state is on (today markers, note times).
@@ -2187,6 +2190,7 @@ impl Renderer {
             }
             View::PomodoroCompact => self.paint_pomodoro_compact(body, frame),
             View::RecordCompact => self.paint_record_compact(body, frame),
+            View::CaptionCompact => self.paint_caption_compact(body, frame),
             View::ScreenCountdown(n) => {
                 self.paint_screen_countdown(body, frame, *n);
                 Ok(())

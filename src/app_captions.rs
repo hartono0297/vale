@@ -20,8 +20,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
+use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
+
 use super::record::notice;
-use super::{App, WM_APP_EVENT, poster};
+use super::{App, CAPTION_LINE_MS, TIMER_CAPTION_LINE, WM_APP_EVENT, poster};
 use crate::caption_card::{self as card, CardContent, Change, Msg, OpenArgs};
 use crate::captions::control::{self, CardStatus, Ctl};
 use crate::captions::lines::Lines;
@@ -89,6 +91,9 @@ pub(super) struct CaptionState {
     /// The sources the running worker lost, `[mic, system]`.
     lost: [bool; 2],
     sent: Option<Sent>,
+    /// The text last sent to the notch, so a line the timer took away is not
+    /// shown again until the text changes.
+    notch_last: Option<String>,
     /// The worker said something since the card was last looked at
     /// (`captions_flush`, once per burst of events).
     dirty: bool,
@@ -110,6 +115,7 @@ impl Default for CaptionState {
             base_ms: 0,
             lost: [false; 2],
             sent: None,
+            notch_last: None,
             dirty: false,
         }
     }
@@ -134,6 +140,30 @@ enum Action {
     TurnOnTranskrip,
     Download,
     KeepGoing,
+}
+
+/// What the notch line needs after the lines changed.
+#[derive(Debug, PartialEq)]
+enum NotchStep {
+    /// Nothing to change.
+    Keep,
+    /// Show this text and give it its eight seconds.
+    Show(String),
+    /// Take the line away.
+    Clear,
+}
+
+/// `line` is the newest caption text (`None` with captions off), `last` the
+/// text the notch was last given and `shown` whether it holds a line now.
+/// The same text as last time shows nothing new: after the silence timer
+/// took it away, only different words bring the line back.
+fn notch_step(notch_on: bool, line: Option<&str>, last: Option<&str>, shown: bool) -> NotchStep {
+    match line.filter(|t| notch_on && !t.is_empty()) {
+        None if shown => NotchStep::Clear,
+        None => NotchStep::Keep,
+        Some(text) if last == Some(text) => NotchStep::Keep,
+        Some(text) => NotchStep::Show(text.to_owned()),
+    }
 }
 
 /// A word of worker `id` is taken only while that worker is the session's:
@@ -274,8 +304,6 @@ impl App {
     }
 
     /// The newest caption text (grey, else final) while captions are on.
-    // Until the notch shows it.
-    #[allow(dead_code)]
     pub(super) fn caption_line(&self) -> Option<&str> {
         if !self.cap.ctl.on {
             return None;
@@ -291,6 +319,7 @@ impl App {
             return;
         }
         self.captions_switch(on);
+        self.captions_notch_sync();
         tray::set_captions(self.cap.ctl.on);
         // The Rekam page's switch and an open Settings follow.
         self.refresh(Instant::now());
@@ -504,6 +533,62 @@ impl App {
     pub(super) fn captions_flush(&mut self) {
         if std::mem::take(&mut self.cap.dirty) {
             self.captions_card_sync();
+            // Caption events do not redraw by themselves (the burst's
+            // refresh skips them): the notch line asks for its own.
+            if self.captions_notch_sync() {
+                self.refresh(Instant::now());
+            }
+        }
+    }
+
+    /// Brings the notch's caption line in line with the newest text and the
+    /// "Caption di notch" setting: a new text shows (and re-arms the one-shot
+    /// that takes it away after `CAPTION_LINE_MS` of silence), captions or
+    /// the setting off clear it and kill the timer. True when the state
+    /// changed (the caller redraws). The text is never logged.
+    pub(super) fn captions_notch_sync(&mut self) -> bool {
+        let line = self.caption_line().map(str::to_owned);
+        let step = notch_step(
+            self.config.captions.notch,
+            line.as_deref(),
+            self.cap.notch_last.as_deref(),
+            self.state.caption_line().is_some(),
+        );
+        match step {
+            NotchStep::Keep => {
+                if line.is_none() || !self.config.captions.notch {
+                    self.cap.notch_last = None;
+                }
+                false
+            }
+            NotchStep::Clear => {
+                self.cap.notch_last = None;
+                self.captions_kill_line_timer();
+                self.apply(Event::CaptionLine(None), Instant::now());
+                true
+            }
+            NotchStep::Show(text) => {
+                self.cap.notch_last = Some(text.clone());
+                self.apply(Event::CaptionLine(Some(text)), Instant::now());
+                unsafe {
+                    SetTimer(Some(self.hwnd), TIMER_CAPTION_LINE, CAPTION_LINE_MS, None);
+                }
+                true
+            }
+        }
+    }
+
+    fn captions_kill_line_timer(&self) {
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), TIMER_CAPTION_LINE);
+        }
+    }
+
+    /// `TIMER_CAPTION_LINE`: eight seconds without new text, the line goes.
+    pub(super) fn on_caption_line_timer(&mut self) {
+        self.captions_kill_line_timer();
+        if self.state.caption_line().is_some() {
+            self.apply_now(Event::CaptionLine(None));
         }
     }
 
@@ -681,6 +766,31 @@ mod tests {
         // Nothing runs (paused, off, failed): every word is an old one.
         assert!(!accepts(None, 3));
         assert!(!accepts(None, 0));
+    }
+
+    #[test]
+    fn the_notch_line_follows_the_newest_text_and_the_setting() {
+        use NotchStep::*;
+        // A new text shows; the same one again does not restart anything.
+        assert_eq!(notch_step(true, Some("halo"), None, false), Show("halo".into()));
+        assert_eq!(notch_step(true, Some("halo"), Some("halo"), true), Keep);
+        assert_eq!(
+            notch_step(true, Some("halo dunia"), Some("halo"), true),
+            Show("halo dunia".into())
+        );
+        // The silence timer took the line away: the same text stays away,
+        // other words bring it back.
+        assert_eq!(notch_step(true, Some("halo"), Some("halo"), false), Keep);
+        assert_eq!(
+            notch_step(true, Some("lagi"), Some("halo"), false),
+            Show("lagi".into())
+        );
+        // The setting off, or captions off (no line), clears what shows.
+        assert_eq!(notch_step(false, Some("halo"), Some("halo"), true), Clear);
+        assert_eq!(notch_step(true, None, Some("halo"), true), Clear);
+        assert_eq!(notch_step(false, Some("halo"), None, false), Keep);
+        assert_eq!(notch_step(true, None, None, false), Keep);
+        assert_eq!(notch_step(true, Some(""), None, false), Keep);
     }
 
     #[test]

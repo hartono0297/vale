@@ -1450,8 +1450,12 @@ impl Spot {
             View::Panel(_) => Spot::Panel,
             View::Idle => Spot::Idle,
             // The REC view wears the pomodoro's focused face, and so does
-            // the countdown that leads to it.
-            View::PomodoroCompact | View::RecordCompact | View::ScreenCountdown(_) => {
+            // the countdown that leads to it and the caption line (it is
+            // listening).
+            View::PomodoroCompact
+            | View::RecordCompact
+            | View::CaptionCompact
+            | View::ScreenCountdown(_) => {
                 Spot::Pomodoro
             }
             View::MediaCompact => Spot::Media,

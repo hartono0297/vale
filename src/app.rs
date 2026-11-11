@@ -112,7 +112,7 @@ use crate::ui::geometry::{
     island_contains, lerp_shape, lyric_box_w, lyric_cap, lyric_max_w, lyric_scroll_end_ms,
     lyric_scroll_offset, lyric_shape_sized, lyric_slot_width, lyric_target_w, lyric_width_min,
     panel_kind, shape_for, shape_sized, shape_with_robot_sized, toast_peek_reaches, typing_lead,
-    with_toast_slot,
+    with_rec_caption, with_toast_slot,
 };
 use crate::ui::motion::{
     CloseFade, FadeStart, MorphCurve, PAGE_FADE_MS, Reveal, SlideStrip, Snap, StripDir,
@@ -254,6 +254,12 @@ const TIMER_DAY: usize = 7;
 /// redraw, only while the REC view (or the Rekam page) shows a recording that
 /// is not paused (`rec_clock_timer_wanted`).
 const TIMER_REC: usize = 60;
+/// One-shot, `CAPTION_LINE_MS` after the newest caption text reached the
+/// notch, re-armed by each new text: the line goes away after that much
+/// silence (`Event::CaptionLine(None)`). Killed with captions or the
+/// notch line off. Never repeats.
+const TIMER_CAPTION_LINE: usize = 66;
+const CAPTION_LINE_MS: u32 = 8_000;
 /// One-shot, `REC_LEVEL_MS` apart (coalescable, re-armed after each redraw):
 /// the REC view's level meters redraw, only while that view is on screen at a
 /// screen somebody can see, the recording runs and Motion is not Off
@@ -3825,6 +3831,8 @@ impl App {
             // The countdown takes the REC view's shape: the recording it
             // leads to shows in the same place.
             View::RecordCompact | View::ScreenCountdown(_) => Some(ShapeKind::RecordCompact),
+            // The caption line is the REC view's shape, widened below.
+            View::CaptionCompact => Some(ShapeKind::RecordCompact),
             View::Panel(_) => Some(self.panel_kind()),
             View::Notice(n) if matches!(n.kind, NoticeKind::Screenshot { .. }) => {
                 Some(ShapeKind::NoticeShot)
@@ -3834,6 +3842,11 @@ impl App {
         // Compact shapes widen to hold the robot at their left; the lyric
         // notch is as wide as its line (robot included).
         let (style, robot) = (self.config.style, self.config.robot);
+        let caption_wide = match &view {
+            View::CaptionCompact => true,
+            View::RecordCompact => self.state.rec_caption().is_some(),
+            _ => false,
+        };
         let target = kind.map(|kind| match kind {
             // Shrunk to the eyes (only ever on a compact view).
             _ if self.eyes => shape_sized(style, notch, ShapeKind::Eyes),
@@ -3844,7 +3857,17 @@ impl App {
             ShapeKind::MediaCompact | ShapeKind::PomodoroCompact | ShapeKind::RecordCompact
                 if self.state.toast_slot().is_some() =>
             {
-                with_toast_slot(shape_with_robot_sized(style, notch, kind, robot))
+                let shape = shape_with_robot_sized(style, notch, kind, robot);
+                with_toast_slot(if caption_wide {
+                    with_rec_caption(shape)
+                } else {
+                    shape
+                })
+            }
+            // The REC view with a caption line, and the caption view: room
+            // for the line.
+            ShapeKind::RecordCompact if caption_wide => {
+                with_rec_caption(shape_with_robot_sized(style, notch, kind, robot))
             }
             _ => shape_with_robot_sized(style, notch, kind, robot),
         });
@@ -5506,6 +5529,7 @@ impl App {
             TIMER_SYSTEM_WARN => self.on_system_warn_timer(),
             TIMER_UPDATE => self.on_update_timer(),
             TIMER_TRANSCRIBE => self.transcribe_settle(),
+            TIMER_CAPTION_LINE => self.on_caption_line_timer(),
             TIMER_MIXER => {
                 if self.state.view() == View::Panel(Page::Mixer) {
                     self.mixer_scan();
@@ -6578,6 +6602,10 @@ impl App {
                 self.config.captions.notch = on;
                 self.save_config();
                 self.captions_sync();
+                // On or off, the line follows at once.
+                if self.captions_notch_sync() {
+                    self.refresh(Instant::now());
+                }
             }
             SettingsAction::CaptionBattery(on) => {
                 self.config.captions.on_battery = on;
@@ -6898,6 +6926,11 @@ impl App {
             view: &self.drawn,
             media: state.media(),
             pomodoro: state.pomodoro(),
+            caption: match &self.drawn {
+                View::CaptionCompact => state.caption_line(),
+                View::RecordCompact => state.rec_caption(),
+                _ => None,
+            },
             rec: state.rec().map(|r| RecFrame {
                 elapsed: r.elapsed(now),
                 paused: r.paused(),
@@ -10722,6 +10755,7 @@ mod tests {
             TIMER_REC_LEVEL,
             TIMER_SCREEN_COUNTDOWN,
             TIMER_TRANSCRIBE,
+            TIMER_CAPTION_LINE,
             TIMER_CLOCK,
             TIMER_REMINDER,
             TIMER_LYRIC,

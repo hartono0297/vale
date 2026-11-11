@@ -441,6 +441,9 @@ pub enum Event {
     /// What a caption worker's thread reported, with the worker id (the
     /// same).
     Captions(u64, crate::captions::worker::Event),
+    /// The newest caption text for the notch; `None` clears it (captions
+    /// off, "Caption di notch" off, or eight seconds of silence).
+    CaptionLine(Option<String>),
     /// `None` means no media session is active.
     Media(Option<MediaInfo>),
     /// The session's timeline (seek, track change, play/pause); `None` when
@@ -1329,6 +1332,8 @@ pub enum View {
     PomodoroCompact,
     /// A recording runs: the red dot, the clock and the level bars.
     RecordCompact,
+    /// Live captions: the newest line in the closed notch.
+    CaptionCompact,
     /// The 3-2-1 before a screen recording, with the number to show. It
     /// outranks the panel and opens nothing.
     ScreenCountdown(u8),

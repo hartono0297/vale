@@ -3962,8 +3962,10 @@ const REC_BAR_SHAPE: [f32; REC_BARS] = [0.55, 0.85, 1.0, 0.7];
 
 /// The REC view on `s` (`shape_with_robot_sized`): the dot `COMPACT_INSET`
 /// in (after the robot's square with `robot`), the clock after it, the meters
-/// ending `COMPACT_INSET` from the right.
-pub fn record_compact_layout(s: ShapeRect, robot: bool) -> RecLayout {
+/// ending `COMPACT_INSET` from the right. With `caption`, the label slot
+/// holds the caption line and ends a meter gap before the meters (both,
+/// whatever is recorded), else it runs to the right inset.
+pub fn record_compact_layout(s: ShapeRect, robot: bool, caption: bool) -> RecLayout {
     let inset = crate::ui::geometry::COMPACT_INSET;
     let cy = s.y + s.h / 2.0;
     let robot_slot = robot.then(|| crate::ui::geometry::robot_slot(s));
@@ -3982,10 +3984,15 @@ pub fn record_compact_layout(s: ShapeRect, robot: bool) -> RecLayout {
         REC_METER_W,
         REC_METER_H,
     );
+    let label_right = if caption {
+        mic.x - REC_METER_GAP
+    } else {
+        right
+    };
     let label = rect(
         time.right() + 4.0,
         text_y,
-        (right - time.right() - 4.0).max(0.0),
+        (label_right - time.right() - 4.0).max(0.0),
         REC_TEXT_H,
     );
     RecLayout {
@@ -4033,6 +4040,57 @@ pub fn screen_compact_sources(s: RecSources) -> RecSources {
         mic: s.mic,
         system: false,
     }
+}
+
+/// The caption view's parts: Bata, the small "CC" mark and the line.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CaptionLayout {
+    pub robot: Option<Rect>,
+    pub mark: Rect,
+    /// The line's box, left-aligned, to the right inset.
+    pub line: Rect,
+}
+
+/// The "CC" mark's box.
+pub const CAPTION_MARK_W: f32 = 18.0;
+pub const CAPTION_MARK_H: f32 = 13.0;
+
+/// The caption view on `s` (`shape_with_robot_sized` widened by
+/// `with_rec_caption`, as the REC view with a caption): the mark where the
+/// REC dot is, the line after it. There are no meters.
+pub fn caption_compact_layout(s: ShapeRect, robot: bool) -> CaptionLayout {
+    let inset = crate::ui::geometry::COMPACT_INSET;
+    let cy = s.y + s.h / 2.0;
+    let robot_slot = robot.then(|| crate::ui::geometry::robot_slot(s));
+    let x0 = robot_slot.map_or(s.x + inset, |r| r.right() + 8.0);
+    let mark = rect(x0, cy - CAPTION_MARK_H / 2.0, CAPTION_MARK_W, CAPTION_MARK_H);
+    let right = s.x + s.w - inset;
+    let line = rect(
+        mark.right() + 7.0,
+        cy - REC_TEXT_H / 2.0,
+        (right - mark.right() - 7.0).max(0.0),
+        REC_TEXT_H,
+    );
+    CaptionLayout {
+        robot: robot_slot,
+        mark,
+        line,
+    }
+}
+
+/// `text` cut from the left to at most `max_chars` characters, with a
+/// leading ellipsis: the newest words stay. A text that fits is returned as
+/// it is.
+pub fn tail_fit(text: &str, max_chars: usize) -> String {
+    let count = text.chars().count();
+    if count <= max_chars {
+        return text.to_owned();
+    }
+    if max_chars <= 1 {
+        return "…".to_owned();
+    }
+    let tail: String = text.chars().skip(count - (max_chars - 1)).collect();
+    format!("…{}", tail.trim_start())
 }
 
 /// Air between the REC view's clock and the word after it.
@@ -8254,6 +8312,88 @@ mod tests {
     }
 
     #[test]
+    fn the_rec_caption_slot_is_between_time_and_meters() {
+        use crate::ui::geometry::{
+            REC_CAPTION_EXTRA, shape_with_robot_sized, with_rec_caption,
+        };
+        for style in [Style::Pill, Style::Notch] {
+            for size in spread() {
+                for robot in [false, true] {
+                    let tag = format!("{style:?} {size:?} robot {robot}");
+                    let plain = shape_with_robot_sized(style, size, ShapeKind::RecordCompact, robot);
+                    let s = with_rec_caption(plain);
+                    assert!((s.w - plain.w - REC_CAPTION_EXTRA).abs() < 1e-3, "{tag}");
+                    assert!(
+                        ((s.x + s.w / 2.0) - (plain.x + plain.w / 2.0)).abs() < 1e-3,
+                        "{tag}: still centred"
+                    );
+                    let l = record_compact_layout(s, robot, true);
+                    // After the clock, a meter gap before the first meter.
+                    assert!((l.label.x - (l.time.right() + 4.0)).abs() < 1e-3, "{tag}");
+                    assert!(
+                        (l.label.right() - (l.mic.x - REC_METER_GAP)).abs() < 1e-3,
+                        "{tag}"
+                    );
+                    // The room is what the extra bought: more than the
+                    // paused label of the plain shape.
+                    let narrow = record_compact_layout(plain, robot, false).label.w;
+                    assert!(l.label.w >= narrow + REC_CAPTION_EXTRA - REC_METER_W * 2.0 - 20.0, "{tag}");
+                    assert!(rect_inside(style, s, l.label), "{tag}");
+                    // Without a caption nothing moves.
+                    let free = record_compact_layout(s, robot, false);
+                    assert_eq!(free.mic, l.mic, "{tag}");
+                    assert!(free.label.right() > l.label.right(), "{tag}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_caption_view_has_its_mark_then_the_line_to_the_inset() {
+        use crate::ui::geometry::{COMPACT_INSET, shape_with_robot_sized, with_rec_caption};
+        for style in [Style::Pill, Style::Notch] {
+            for size in spread() {
+                for robot in [false, true] {
+                    let tag = format!("{style:?} {size:?} robot {robot}");
+                    let s = with_rec_caption(shape_with_robot_sized(
+                        style,
+                        size,
+                        ShapeKind::RecordCompact,
+                        robot,
+                    ));
+                    let l = caption_compact_layout(s, robot);
+                    assert_eq!(l.robot.is_some(), robot, "{tag}");
+                    if let Some(r) = l.robot {
+                        assert!(r.right() + 8.0 <= l.mark.x + 1e-3, "{tag}");
+                    } else {
+                        assert!((l.mark.x - (s.x + COMPACT_INSET)).abs() < 1e-3, "{tag}");
+                    }
+                    assert!(l.mark.right() < l.line.x, "{tag}");
+                    assert!((l.line.right() - (s.x + s.w - COMPACT_INSET)).abs() < 1e-3, "{tag}");
+                    assert!(l.line.w > 100.0, "{tag}: room for a line: {l:?}");
+                    for r in [l.mark, l.line] {
+                        assert!(rect_inside(style, s, r), "{tag} {r:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_caption_text_is_cut_from_the_left() {
+        assert_eq!(tail_fit("halo", 10), "halo");
+        assert_eq!(tail_fit("halo", 4), "halo");
+        assert_eq!(tail_fit("jadi deadline-nya Jumat ya", 12), "…ya Jumat ya");
+        assert_eq!(tail_fit("jadi deadline-nya Jumat ya", 6), "…at ya");
+        assert_eq!(tail_fit("abc def", 1), "…");
+        assert_eq!(tail_fit("abc def", 0), "…");
+        // A cut that lands on the space does not start the line with it.
+        assert_eq!(tail_fit("abc def", 5), "…def");
+        // Characters, not bytes.
+        assert_eq!(tail_fit("rapat öğle yemeği", 7), "…yemeği");
+    }
+
+    #[test]
     fn record_compact_fits_its_shape_in_order_without_overlap() {
         use crate::ui::geometry::{COMPACT_INSET, shape_with_robot_sized};
         for style in [Style::Pill, Style::Notch] {
@@ -8261,7 +8401,7 @@ mod tests {
                 for robot in [false, true] {
                     let tag = format!("{style:?} {size:?} robot {robot}");
                     let s = shape_with_robot_sized(style, size, ShapeKind::RecordCompact, robot);
-                    let l = record_compact_layout(s, robot);
+                    let l = record_compact_layout(s, robot, false);
                     let ((dx, dy), dr) = l.dot;
                     assert_eq!(dy, s.y + s.h / 2.0, "{tag}");
                     let left = match l.robot {
@@ -8317,7 +8457,7 @@ mod tests {
                 for robot in [false, true] {
                     let tag = format!("{style:?} {size:?} robot {robot}");
                     let s = shape_with_robot_sized(style, size, ShapeKind::RecordCompact, robot);
-                    let l = record_compact_layout(s, robot);
+                    let l = record_compact_layout(s, robot, false);
                     let regions = rec_mute_regions(s, &l, screen_compact_sources(both));
                     assert_eq!(regions.len(), 1, "{tag}");
                     assert_eq!(regions[0].hit, Hit::RecMuteCompact(Source::Mic), "{tag}");
@@ -8370,7 +8510,7 @@ mod tests {
                 for robot in [false, true] {
                     let tag = format!("{style:?} {size:?} robot {robot}");
                     let s = shape_with_robot_sized(style, size, ShapeKind::RecordCompact, robot);
-                    let l = record_compact_layout(s, robot);
+                    let l = record_compact_layout(s, robot, false);
                     let regions = rec_mute_regions(s, &l, both);
                     let hits: Vec<_> = regions.iter().map(|r| r.hit.clone()).collect();
                     assert_eq!(
