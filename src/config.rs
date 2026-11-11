@@ -206,6 +206,9 @@ pub struct Config {
     /// "Transkrip" (Settings): the transcripts of recordings, their model,
     /// language and window. Owned by the island; read leniently.
     pub transcript: crate::transcribe::prefs::TranscriptPrefs,
+    /// "Caption langsung" (Settings): the live captions' sources, language,
+    /// size and window. Owned by the island; read leniently.
+    pub captions: crate::captions::prefs::CaptionPrefs,
 }
 
 /// The lyrics card's rectangle in screen coordinates, physical pixels.
@@ -779,6 +782,7 @@ impl Default for Config {
             widgets: crate::widgets::prefs::WidgetPrefs::default(),
             recording: crate::recorder::prefs::RecordingPrefs::default(),
             transcript: crate::transcribe::prefs::TranscriptPrefs::default(),
+            captions: crate::captions::prefs::CaptionPrefs::default(),
         }
     }
 }
@@ -927,6 +931,7 @@ pub fn merge_owned(disk: Config, mem: &Config) -> Config {
         widgets: mem.widgets,
         recording: mem.recording.clone(),
         transcript: mem.transcript.clone(),
+        captions: mem.captions.clone(),
         ..disk
     }
 }
@@ -1381,6 +1386,14 @@ mod tests {
                     bottom: 400,
                 }),
             },
+            captions: crate::captions::prefs::CaptionPrefs {
+                mic: true,
+                notch: true,
+                on_battery: true,
+                language: Some(crate::transcribe::prefs::TrLang::Auto),
+                size: crate::captions::prefs::TextSize::Large,
+                place: None,
+            },
         };
         assert_eq!(parse(&serde_json::to_string(&c).unwrap()), c);
     }
@@ -1442,6 +1455,31 @@ mod tests {
         };
         let merged = merge_owned(disk, &mem);
         assert_eq!(merged.transcript, mem.transcript);
+    }
+
+    #[test]
+    fn an_old_config_without_captions_loads() {
+        use crate::captions::prefs::CaptionPrefs;
+        let c = parse(r#"{"style":"Notch"}"#);
+        assert_eq!(c.style, Style::Notch);
+        assert_eq!(c.captions, CaptionPrefs::default());
+        let c = parse(r#"{"style":"Notch","captions":"x"}"#);
+        assert_eq!(c.style, Style::Notch);
+        assert_eq!(c.captions, CaptionPrefs::default());
+    }
+
+    #[test]
+    fn captions_are_owned_by_the_island() {
+        use crate::captions::prefs::CaptionPrefs;
+        let mem = Config {
+            captions: CaptionPrefs {
+                mic: true,
+                ..CaptionPrefs::default()
+            },
+            ..Config::default()
+        };
+        let merged = merge_owned(Config::default(), &mem);
+        assert_eq!(merged.captions, mem.captions);
     }
 
     #[test]

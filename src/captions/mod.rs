@@ -11,3 +11,7 @@ pub mod lines;
 // Until the caption worker drives it.
 #[cfg_attr(not(test), allow(dead_code))]
 pub mod control;
+
+// Until the caption worker drives it.
+#[cfg_attr(not(test), allow(dead_code))]
+pub mod prefs;
