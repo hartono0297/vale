@@ -1287,12 +1287,13 @@ impl IslandState {
         if self.rec.is_some() {
             return View::RecordCompact;
         }
-        // Live captions in the notch outrank the pomodoro and the music.
-        if self.caption_line.is_some() {
-            return View::CaptionCompact;
-        }
         if self.pomodoro.is_active() {
             return View::PomodoroCompact;
+        }
+        // A caption line in the notch takes the place of the music or the
+        // idle view only: a recording and the pomodoro stay.
+        if self.caption_line.is_some() {
+            return View::CaptionCompact;
         }
         if let Some(media) = &self.media {
             if self.lyrics_on && self.lyrics_ready && media.playing {
@@ -8100,15 +8101,25 @@ mod tests {
         s.apply(Event::CaptionLine(Some("jadi deadline-nya Jumat ya".into())), t0);
         assert_eq!(s.view(), View::CaptionCompact);
         assert_eq!(s.caption_line(), Some("jadi deadline-nya Jumat ya"));
-        // It outranks the pomodoro too.
         s.apply(Event::CaptionLine(None), t0);
         assert_eq!(s.view(), View::MediaCompact);
-        s.apply(Event::Click(Hit::PomoStartPause), t0);
-        s.apply(Event::CaptionLine(Some("halo".into())), t0);
-        assert_eq!(s.view(), View::CaptionCompact);
         // An empty line shows nothing.
         s.apply(Event::CaptionLine(Some(String::new())), t0);
+        assert_eq!(s.view(), View::MediaCompact);
+        assert_eq!(s.caption_line(), None);
+    }
+
+    #[test]
+    fn a_fresh_caption_line_leaves_a_running_pomodoro_in_view() {
+        // The line takes the place of the idle or music view only.
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Media(Some(media(true))), t0);
+        s.apply(Event::Click(Hit::PomoStartPause), t0);
         assert_eq!(s.view(), View::PomodoroCompact);
+        s.apply(Event::CaptionLine(Some("halo".into())), t0);
+        assert_eq!(s.view(), View::PomodoroCompact);
+        assert_eq!(s.caption_line(), Some("halo"), "kept for when it ends");
     }
 
     #[test]

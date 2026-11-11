@@ -11,8 +11,10 @@
 //!
 //! Power: nothing here runs while captions are off. Paused, on battery or
 //! waiting for a model there is no worker, no capture and no loaded model;
-//! only the card stays. Nothing polls: the battery comes with
-//! `check_battery`'s power message, the model with the download's own words.
+//! only the card stays. Captions have no timer of their own: the battery
+//! comes with `check_battery` (a power message and the island's 30 s battery
+//! tick, which runs `captions_sync` while captions are on), the model with
+//! the download's own words.
 //!
 //! Caption text is held in memory only and is never logged.
 
@@ -164,6 +166,13 @@ fn notch_step(notch_on: bool, line: Option<&str>, last: Option<&str>, shown: boo
         Some(text) if last == Some(text) => NotchStep::Keep,
         Some(text) => NotchStep::Show(text.to_owned()),
     }
+}
+
+/// The notch line changed (`changed`): whether the island is drawn again for
+/// it. Behind a fullscreen app the island is hidden; the state holds the line
+/// and the redraw when fullscreen ends shows it.
+fn redraws(changed: bool, fullscreen: bool) -> bool {
+    changed && !fullscreen
 }
 
 /// A word of worker `id` is taken only while that worker is the session's:
@@ -535,7 +544,8 @@ impl App {
             self.captions_card_sync();
             // Caption events do not redraw by themselves (the burst's
             // refresh skips them): the notch line asks for its own.
-            if self.captions_notch_sync() {
+            let changed = self.captions_notch_sync();
+            if redraws(changed, self.fullscreen) {
                 self.refresh(Instant::now());
             }
         }
@@ -588,7 +598,11 @@ impl App {
     pub(super) fn on_caption_line_timer(&mut self) {
         self.captions_kill_line_timer();
         if self.state.caption_line().is_some() {
-            self.apply_now(Event::CaptionLine(None));
+            let now = Instant::now();
+            self.apply(Event::CaptionLine(None), now);
+            if redraws(true, self.fullscreen) {
+                self.refresh(now);
+            }
         }
     }
 
@@ -791,6 +805,15 @@ mod tests {
         assert_eq!(notch_step(false, Some("halo"), None, false), Keep);
         assert_eq!(notch_step(true, None, None, false), Keep);
         assert_eq!(notch_step(true, Some(""), None, false), Keep);
+    }
+
+    #[test]
+    fn the_notch_line_is_not_redrawn_behind_a_fullscreen_app() {
+        assert!(redraws(true, false));
+        // Hidden: the state has the line for when fullscreen ends.
+        assert!(!redraws(true, true));
+        assert!(!redraws(false, false));
+        assert!(!redraws(false, true));
     }
 
     #[test]

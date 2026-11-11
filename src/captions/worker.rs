@@ -12,7 +12,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -86,7 +86,8 @@ pub enum Event {
         backend: String,
     },
     Out(Out),
-    /// A source stopped for good; the session goes on with the other.
+    /// A source stopped for good; the session goes on with the other, or
+    /// fails ("capture") when that was the last one.
     SourceLost(Source),
     /// The session cannot run or go on: the kind of failure ("engine",
     /// "model", "vad", "capture", "mic-denied"), never any caption text.
@@ -308,6 +309,71 @@ fn capture_kind(error: &CaptureError) -> &'static str {
     }
 }
 
+/// One load at a time in the whole app. A cancelled worker is not waited
+/// for and a load cannot be interrupted, so captions switched off and on
+/// quickly would otherwise load the model once per switch, all at once.
+static LOAD_GATE: Mutex<()> = Mutex::new(());
+
+/// The load gate, held: the engine, the models and the sessions are loaded
+/// through `step` while it lives. What was loaded is declared after it, so a
+/// worker that gives up frees it before the next one starts to load.
+struct Loading<'a> {
+    _held: MutexGuard<'a, ()>,
+    cancel: &'a AtomicBool,
+}
+
+impl<'a> Loading<'a> {
+    /// Waits for the gate. A worker cancelled while it waited loads nothing.
+    fn enter(gate: &'a Mutex<()>, cancel: &'a AtomicBool) -> Result<Loading<'a>, End> {
+        // The gate guards no data: a worker that panicked left nothing broken.
+        let held = gate.lock().unwrap_or_else(PoisonError::into_inner);
+        let loading = Loading {
+            _held: held,
+            cancel,
+        };
+        loading.live()?;
+        Ok(loading)
+    }
+
+    fn live(&self) -> Result<(), End> {
+        if self.cancel.load(Ordering::Relaxed) {
+            Err(End::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// One load, unless the session was cancelled before it.
+    fn step<T>(&self, load: impl FnOnce() -> Result<T, End>) -> Result<T, End> {
+        self.live()?;
+        load()
+    }
+}
+
+/// `attempt(cpu)` on the GPU when `gpu`, and once more on the CPU when the
+/// GPU backend failed there. A cancelled session is not started again.
+fn with_cpu_retry(
+    gpu: bool,
+    cancel: &AtomicBool,
+    mut attempt: impl FnMut(bool) -> Result<(), End>,
+) -> Result<(), End> {
+    match attempt(!gpu) {
+        Err(End::Backend) if gpu => {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(End::Cancelled);
+            }
+            attempt(true)
+        }
+        other => other,
+    }
+}
+
+/// Every source the session captions (`layout`) has stopped for good:
+/// `lost` is `[mic, system]`. Nothing is left to hear.
+fn all_lost(mic: bool, lost: [bool; 2]) -> bool {
+    layout(mic).0.into_iter().all(|s| lost[s.index()])
+}
+
 /// The session on the calling thread. A GPU that fails, at the load or
 /// mid-run, is dropped and the session starts over on the CPU
 /// (as `runner::run_job`).
@@ -318,15 +384,15 @@ fn run(
     cancel: &AtomicBool,
     on_event: &mut dyn FnMut(Event),
 ) -> Result<(), End> {
-    let engine = Engine::load(&spec.engine_dir, spec.gpu).map_err(|e| end(e, "engine"))?;
-    match attempt(spec, engine, !spec.gpu, tx, rx, cancel, on_event) {
-        Err(End::Backend) if spec.gpu => {
+    let engine = Loading::enter(&LOAD_GATE, cancel)?
+        .step(|| Engine::load(&spec.engine_dir, spec.gpu).map_err(|e| end(e, "engine")))?;
+    with_cpu_retry(spec.gpu, cancel, |cpu| {
+        if cpu && spec.gpu {
             // Packets of the capture that just closed are on another clock.
             while rx.try_recv().is_ok() {}
-            attempt(spec, engine, true, tx, rx, cancel, on_event)
         }
-        other => other,
-    }
+        attempt(spec, engine, cpu, tx, rx, cancel, &mut *on_event)
+    })
 }
 
 fn attempt(
@@ -338,12 +404,18 @@ fn attempt(
     cancel: &AtomicBool,
     on_event: &mut dyn FnMut(Event),
 ) -> Result<(), End> {
-    let model = Model::load(engine, &spec.model_path, cpu).map_err(|e| end(e, "model"))?;
+    // Before what it guards: a session that ends here frees its models
+    // while it still holds the gate.
+    let loading = Loading::enter(&LOAD_GATE, cancel)?;
+    let model =
+        loading.step(|| Model::load(engine, &spec.model_path, cpu).map_err(|e| end(e, "model")))?;
     if !model.is_asr() {
         return Err(End::Failed("model"));
     }
     let vad_model = match &spec.vad_path {
-        Some(path) => Some(Model::load(engine, path, true).map_err(|e| end(e, "vad"))?),
+        Some(path) => {
+            Some(loading.step(|| Model::load(engine, path, true).map_err(|e| end(e, "vad")))?)
+        }
         None => None,
     };
     let (_, speakers) = layout(spec.mic);
@@ -351,7 +423,7 @@ fn attempt(
     for _ in &speakers {
         match &vad_model {
             Some(vad) => {
-                let session = VadSession::new(vad).map_err(|e| end(e, "vad"))?;
+                let session = loading.step(|| VadSession::new(vad).map_err(|e| end(e, "vad")))?;
                 if session.frame_samples() != FRAME {
                     return Err(End::Failed("vad"));
                 }
@@ -360,10 +432,11 @@ fn attempt(
             None => scorers.push(Box::new(EnergyVad::default())),
         }
     }
-    let mut session = Session::new(&model, spec.threads).map_err(|e| end(e, "engine"))?;
-    if cancel.load(Ordering::Relaxed) {
-        return Err(End::Cancelled);
-    }
+    let mut session =
+        loading.step(|| Session::new(&model, spec.threads).map_err(|e| end(e, "engine")))?;
+    loading.live()?;
+    // Loaded: the next worker may load, this one starts to listen.
+    drop(loading);
 
     let origin = qpc_now();
     let feed = Feed::new(spec.mic, origin, tx.clone());
@@ -384,6 +457,8 @@ fn attempt(
     let mut idle = true;
     // How long the engine ran since the last round, in frames of awake time.
     let mut ran = 0;
+    // The sources that stopped for good, `[mic, system]`.
+    let mut gone = [false; 2];
     let result = loop {
         let mut msgs = Vec::new();
         if idle {
@@ -408,8 +483,14 @@ fn attempt(
         if let Err(e) = caught {
             break Err(end(e, "vad"));
         }
-        lost.into_iter()
-            .for_each(|s| on_event(Event::SourceLost(s)));
+        for source in lost {
+            gone[source.index()] = true;
+            on_event(Event::SourceLost(source));
+        }
+        if all_lost(spec.mic, gone) {
+            // Nothing left to hear: the model is not kept loaded for it.
+            break Err(End::Failed("capture"));
+        }
         let work = live.next_work(now_ms);
         emit(live.take_out(), on_event);
         idle = work.is_none();
@@ -899,5 +980,127 @@ mod tests {
         let msgs = vec![Msg::Wake, Msg::Lost(Source::System)];
         catch_up(&mut live, &mut scorers(), 0, 0, msgs, &mut |s| lost.push(s)).unwrap();
         assert_eq!(lost, vec![Source::System]);
+    }
+
+    #[test]
+    fn a_second_worker_waits_for_the_load_gate_and_a_cancelled_one_loads_no_more() {
+        use std::sync::atomic::AtomicUsize;
+        static GATE: Mutex<()> = Mutex::new(());
+        let (in_load_tx, in_load) = mpsc::channel();
+        let (release, blocked) = mpsc::channel::<()>();
+        let cancel_a = Arc::new(AtomicBool::new(false));
+        let loads_a = Arc::new(AtomicUsize::new(0));
+        let (cancel, loads) = (cancel_a.clone(), loads_a.clone());
+        // The first worker: stuck in its model load, a second load after it.
+        let first = std::thread::spawn(move || -> Result<(), End> {
+            let loading = Loading::enter(&GATE, &cancel)?;
+            loading.step(|| {
+                loads.fetch_add(1, Ordering::Relaxed);
+                in_load_tx.send(()).unwrap();
+                let _ = blocked.recv();
+                Ok(())
+            })?;
+            loading.step(|| {
+                loads.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            })
+        });
+        in_load.recv_timeout(Duration::from_secs(5)).unwrap();
+        // Turned off and on again: the first is cancelled, a second starts.
+        cancel_a.store(true, Ordering::Relaxed);
+        let loads_b = Arc::new(AtomicUsize::new(0));
+        let loads = loads_b.clone();
+        let second = std::thread::spawn(move || -> Result<(), End> {
+            let cancel = AtomicBool::new(false);
+            let loading = Loading::enter(&GATE, &cancel)?;
+            loading.step(|| {
+                loads.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            })
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(
+            loads_b.load(Ordering::Relaxed),
+            0,
+            "one load at a time: the second waits for the first"
+        );
+        release.send(()).unwrap();
+        assert_eq!(first.join().unwrap(), Err(End::Cancelled));
+        assert_eq!(
+            loads_a.load(Ordering::Relaxed),
+            1,
+            "nothing more is loaded after the cancel"
+        );
+        assert_eq!(second.join().unwrap(), Ok(()));
+        assert_eq!(loads_b.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn a_worker_cancelled_while_it_waited_for_the_gate_loads_nothing() {
+        let gate = Mutex::new(());
+        let cancel = AtomicBool::new(true);
+        assert!(matches!(
+            Loading::enter(&gate, &cancel),
+            Err(End::Cancelled)
+        ));
+        // The gate is free again for the next worker.
+        let cancel = AtomicBool::new(false);
+        let loading = Loading::enter(&gate, &cancel).unwrap();
+        assert_eq!(loading.step(|| Ok(7)), Ok(7));
+        assert_eq!(
+            loading.step(|| Err::<(), _>(End::Failed("model"))),
+            Err(End::Failed("model"))
+        );
+    }
+
+    #[test]
+    fn a_failed_gpu_is_tried_again_on_the_cpu_unless_cancelled() {
+        // The GPU fails: once more, on the CPU.
+        let cancel = AtomicBool::new(false);
+        let mut calls = Vec::new();
+        let result = with_cpu_retry(true, &cancel, |cpu| {
+            calls.push(cpu);
+            if cpu { Ok(()) } else { Err(End::Backend) }
+        });
+        assert_eq!((result, calls), (Ok(()), vec![false, true]));
+
+        // Cancelled meanwhile: the model is not loaded again.
+        let mut calls = Vec::new();
+        let result = with_cpu_retry(true, &cancel, |cpu| {
+            calls.push(cpu);
+            cancel.store(true, Ordering::Relaxed);
+            Err(End::Backend)
+        });
+        assert_eq!((result, calls), (Err(End::Cancelled), vec![false]));
+
+        // Already on the CPU: nothing to fall back to.
+        let cancel = AtomicBool::new(false);
+        let mut calls = Vec::new();
+        let result = with_cpu_retry(false, &cancel, |cpu| {
+            calls.push(cpu);
+            Err(End::Backend)
+        });
+        assert_eq!((result, calls), (Err(End::Backend), vec![true]));
+
+        // Any other end is final.
+        let mut calls = 0;
+        let result = with_cpu_retry(true, &cancel, |_| {
+            calls += 1;
+            Err(End::Failed("model"))
+        });
+        assert_eq!((result, calls), (Err(End::Failed("model")), 1));
+    }
+
+    #[test]
+    fn a_session_ends_when_every_captioned_source_is_lost() {
+        // The PC audio alone.
+        assert!(!all_lost(false, [false, false]));
+        assert!(all_lost(false, [false, true]));
+        // With the mic: one of two lost keeps the other going.
+        assert!(!all_lost(true, [true, false]));
+        assert!(!all_lost(true, [false, true]));
+        assert!(all_lost(true, [true, true]));
+        // A mic that is not captioned does not count.
+        assert!(!all_lost(false, [true, false]));
     }
 }
