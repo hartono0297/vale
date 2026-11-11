@@ -77,3 +77,30 @@ during one. For the owner by hand (test videos kept in `%USERPROFILE%\Vale\Video
       privacy: "Video jalan tanpa suara" or the mic notice every time.
 - [ ] The transcript window on a video (no Saya/Peserta, plays its audio) and the
       "Antre" row while a recording runs.
+
+## Screen recording, phase 4: zoom and cursor effects (2026-11-11)
+
+Merged on `main` (79c6f68); the agent's live check passed (see
+[[screen-recording]]). Test videos from that check: `%USERPROFILE%\Vale\Video\2026-11-11 1818.mp4`
+(zoom in, wheel to 3×, back, out) and `2026-11-11 1828.mp4` (both switches off).
+For the owner by hand:
+
+- [ ] Play `2026-11-11 1818.mp4`: the zoom in and out feel smooth (about a third
+      of a second), the camera follows the cursor without seasickness, and the
+      zoom-out happens right away (frame grabs suggested a 2 s delay, believed
+      to be the key-frame seek, not the video).
+- [ ] A click ripple is visible in the video (no grabbed frame caught one).
+- [ ] The yellow disc at 3-4× (it grows with the zoom, about 80 px at 4×): fine,
+      or too big?
+- [ ] By eye during a recording: the notch says `2×`, then `2,5×` / `3×` after
+      `Ctrl+Alt` + scroll, and "Layar" again after zooming out; "dijeda" while
+      paused.
+- [ ] `Ctrl+Alt` + scroll while zoomed does not also zoom the app under the
+      cursor (a browser, Figma); `Ctrl+Alt+Shift` + scroll still reaches it.
+- [ ] `Ctrl+Alt+Z` while paused, then resume: the video and the notch agree.
+- [ ] Zoom over an app run as administrator: whether the wheel still changes
+      the level there (Windows may keep a low-level hook out of elevated windows).
+- [ ] Settings → Tombol pintas: turn "Zoom video rekaman" off while zoomed; the
+      video zooms out.
+- [ ] The two new switches in Settings → Fitur → Rekam layar with the Terminal
+      style.

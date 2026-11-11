@@ -232,3 +232,15 @@ the 3 s countdown, unregistered with every other hotkey on a Settings pause and
 registered again on resume if the countdown still runs. Id 11 stays reserved
 for phase 4's zoom. The mute hotkey (id 12) is registered during a screen
 recording too. See [[screen-recording]].
+
+## Row 11: Zoom video rekaman (2026-11-11)
+
+`HotkeyId::RecordZoom` is appended after RecordScreen (index 11, config key
+`record_zoom`, default `Ctrl+Alt+Z`, `RegisterHotKey` id 11). Like the mic
+mute row it is registered only while it makes sense: `wanted(config,
+recording, screen)` drops it unless a screen recording is in
+`ScreenPhase::Recording`, so `Ctrl+Alt+Z` belongs to other apps at idle and
+during an audio-only recording. Turning the row off in Settings while the video
+is zoomed zooms it out (`zoom_out_needed` in `sync_hotkeys`). English
+description "Only while recording the screen" (the longer copy did not fit the
+210 px row). See [[screen-recording]].

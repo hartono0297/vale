@@ -330,3 +330,16 @@ the path):
 
 Graphics Capture, the D3D11 compositor, the H.264 encoder, the picker and the
 controller are all new code; no new crate. Nothing trimmed. See [[screen-recording]].
+
+## Screen recording, phase 4: zoom and cursor effects (2026-11-11)
+
+`cargo build --release --locked` in the `phase4-zoom` worktree:
+
+| Build | Bytes |
+|---|---|
+| ce67e90 (screen recording, phase 3), worktree path | 4,461,056 |
+| 79c6f68 (zoom, wheel hook, cursor highlight), worktree path | 4,469,760 (+8,704, +8.5 KiB) |
+
+The zoom camera and ripples were already in phase 3; phase 4 added the wheel
+hook thread, the highlight brush, two settings and a hotkey row. See
+[[screen-recording]].
