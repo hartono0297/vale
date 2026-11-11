@@ -1184,8 +1184,6 @@ impl App {
 
     /// Settings' frames per second: 60, anything else is 30. Refused while a
     /// screen recording is busy.
-    // Settings asks from the "Rekam layar" card on (Task 14).
-    #[allow(dead_code)]
     pub(super) fn screen_set_fps(&mut self, fps: u32) {
         let fps = if fps == 60 { 60 } else { 30 };
         if !self.screen.busy() && self.config.recording.video_fps != fps {

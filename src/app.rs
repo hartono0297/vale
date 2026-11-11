@@ -6507,6 +6507,7 @@ impl App {
             SettingsAction::RecDevice(source, id) => self.rec_set_device(source, id),
             SettingsAction::RecFolder(dir) => self.rec_set_folder(dir),
             SettingsAction::VideoFolder(dir) => self.screen_set_folder(dir),
+            SettingsAction::VideoFps(fps) => self.screen_set_fps(fps),
             SettingsAction::TranscribeFile(path) => self.transcribe_file(path),
             SettingsAction::RecEchoCancel(on) => {
                 self.config.recording.echo_cancel = on;

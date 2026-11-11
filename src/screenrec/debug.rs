@@ -34,7 +34,8 @@ use windows::core::{HSTRING, Interface, PCWSTR, w};
 
 use super::cursor_log::{self, Entry};
 use super::files;
-use super::{Options, ScreenRecorder, Target, exclude_from_capture};
+use super::capture::exclude_from_capture;
+use super::{Options, ScreenRecorder, Target};
 use crate::mf::created;
 
 /// The marker's place on screen: top centre of the primary monitor.
@@ -59,6 +60,14 @@ struct Args {
     pause: bool,
 }
 
+/// The primary monitor: what a run records unless told otherwise.
+fn primary_monitor() -> Target {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTOPRIMARY, MonitorFromPoint};
+    let m = unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) };
+    Target::Monitor(m.0 as isize)
+}
+
 fn parse(args: &[String]) -> Result<Args, String> {
     let seconds: f64 = args
         .first()
@@ -68,7 +77,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
     let mut a = Args {
         seconds,
         zoom: false,
-        target: Target::primary_monitor(),
+        target: primary_monitor(),
         fps: 30,
         software: false,
         audio: true,

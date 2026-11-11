@@ -683,6 +683,11 @@ keys! {
     RecSettingsOpen => "Buka", "Open";
     RecSettingsChange => "Ganti", "Change";
     RecSettingsPickTitle => "Pilih folder rekaman", "Choose the recordings folder";
+    ScreenSettingsTitle => "Rekam layar", "Screen recording";
+    ScreenSettingsFps => "Gambar per detik", "Frames per second";
+    ScreenSettingsFpsDesc => "60 lebih halus, filenya lebih besar", "60 is smoother, the files are bigger";
+    ScreenSettingsFolder => "Folder video", "Video folder";
+    ScreenSettingsPickTitle => "Pilih folder video", "Choose the video folder";
     RecDeviceFrom => "Suara PC dari", "PC audio from";
     RecEchoCancel => "Peredam gema mic", "Mic echo cancellation";
     RecEchoCancelDesc => "Buang suara speaker \u{b7} Berlaku mulai rekaman berikutnya", "Removes speaker sound \u{b7} Applies from the next recording";

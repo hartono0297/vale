@@ -42,6 +42,7 @@ impl Button {
         }
     }
 
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     fn from_letter(c: char) -> Option<Button> {
         match c {
             'l' => Some(Button::Left),
@@ -92,6 +93,9 @@ pub fn encode_header(h: &Header) -> String {
     )
 }
 
+// The log's reader: phase 4 reads a recording's log back; until then the
+// debug CLI and the tests do.
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
 pub fn parse_header(line: &str) -> Option<Header> {
     let v: Value = serde_json::from_str(line).ok()?;
     if v.get("kind")?.as_str()? != KIND || v.get("v")?.as_u64()? != 1 {
@@ -127,6 +131,7 @@ pub fn encode_entry(e: &Entry) -> String {
     }
 }
 
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
 pub fn parse_line(line: &str) -> Option<Entry> {
     let v: Value = serde_json::from_str(line).ok()?;
     let a = v.as_array()?;

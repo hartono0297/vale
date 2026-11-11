@@ -449,6 +449,11 @@ pub enum Hit {
     RecSources(RecSources),
     RecFolderOpen,
     RecFolderChange,
+    /// Fitur -> Rekam layar: a frame rate (30 or 60), "Buka" (the video
+    /// folder in Explorer) and "Ganti" (the folder picker).
+    VideoFps(u32),
+    VideoFolderOpen,
+    VideoFolderChange,
     /// Fitur -> Rekaman: "Ganti" on the mic row or the PC audio row, which
     /// opens the device menu.
     RecDevice(Source),
@@ -724,6 +729,8 @@ pub enum Group {
     WidgetFullscreen,
     /// Fitur -> Rekaman -> Sumber suara.
     RecSources,
+    /// Fitur -> Rekam layar -> Gambar per detik.
+    VideoFps,
     /// Fitur -> Transkrip -> Bahasa.
     TranscriptLang,
 }
@@ -3977,6 +3984,7 @@ fn features_page(b: &mut Builder, s: &State) {
 
     devices_card(b, s);
     recording_card(b, s);
+    screen_card(b, s);
     transcript_card(b, s);
 
     titled(b, Key::GroupCleaner);
@@ -4487,6 +4495,12 @@ pub const REC_CHOICES: [RecSources; 3] = [
 /// How the folder shows when none is chosen.
 pub const REC_DEFAULT_FOLDER: &str = r"Documents\Vale\Rekaman";
 
+/// How the video folder shows when none is chosen.
+pub const VIDEO_DEFAULT_FOLDER: &str = r"Videos\Vale";
+
+/// The frame rates of "Gambar per detik", in the control's order.
+pub const VIDEO_FPS_CHOICES: [u32; 2] = [30, 60];
+
 /// What a device row shows: the chosen device's name (`name`, `None` when
 /// Windows no longer knows it), or "Ikuti Windows" with the default's name
 /// when no device is chosen.
@@ -4574,6 +4588,44 @@ fn recording_card(b: &mut Builder, s: &State) {
         .map_or_else(|| REC_DEFAULT_FOLDER.to_owned(), rec_folder_label);
     let desc = Some((folder, Tone::Secondary));
     b.row_text(card, rows[4], b.t(Key::RecSettingsFolder), desc, false, x);
+}
+
+/// "Rekam layar" (Fitur): the frame rate of a screen recording and the
+/// folder the videos go to. (The hotkey is in the Tombol pintas section.)
+fn screen_card(b: &mut Builder, s: &State) {
+    titled(b, Key::ScreenSettingsTitle);
+    let card = b.card(2.0 * ROW_H);
+    let rows = [card.y, card.y + ROW_H];
+    let cy = |y: f32| y + ROW_H / 2.0;
+    let items = VIDEO_FPS_CHOICES
+        .map(|fps| (Hit::VideoFps(fps), fps.to_string()))
+        .to_vec();
+    let selected = index_of(&VIDEO_FPS_CHOICES, &s.recording.video_fps);
+    let x = b.segmented(Group::VideoFps, b.g.right, cy(rows[0]), items, selected);
+    let desc = Some((b.t(Key::ScreenSettingsFpsDesc), Tone::Secondary));
+    b.row_text(card, rows[0], b.t(Key::ScreenSettingsFps), desc, false, x);
+    b.divider(card, rows[1]);
+
+    let (open, change) = (b.t(Key::RecSettingsOpen), b.t(Key::RecSettingsChange));
+    let (open_w, change_w) = (
+        b.button_w(&[&open], ButtonKind::Secondary),
+        b.button_w(&[&change], ButtonKind::Secondary),
+    );
+    let x = b.buttons(
+        b.g.right,
+        cy(rows[1]),
+        vec![
+            (Hit::VideoFolderOpen, open, ButtonKind::Secondary, true, open_w),
+            (Hit::VideoFolderChange, change, ButtonKind::Secondary, true, change_w),
+        ],
+    );
+    let folder = s
+        .recording
+        .video_folder
+        .as_deref()
+        .map_or_else(|| VIDEO_DEFAULT_FOLDER.to_owned(), rec_folder_label);
+    let desc = Some((folder, Tone::Secondary));
+    b.row_text(card, rows[1], b.t(Key::ScreenSettingsFolder), desc, false, x);
 }
 
 /// The languages of Transkrip's Bahasa, in the control's order.
@@ -9105,6 +9157,12 @@ mod tests {
                     scroll: 1e6,
                     ..states()[0].clone()
                 };
+                // Scrolled so the whole card shows: the cards under it are
+                // taller than the viewport's rest.
+                let end = layout(Section::Features, &s, &Estimate);
+                let top = end.cards[end.cards.len() - 4].y - EYEBROW_H - EYEBROW_GAP;
+                let view = end.viewport.expect("Fitur scrolls");
+                let s = State { scroll: end.scroll - (view.y - top), ..s };
                 let l = layout(Section::Features, &s, &Estimate);
                 let (_, items, selected) = l.segmented(Group::RecSources).expect("Sumber suara");
                 assert_eq!(selected, i);
@@ -9120,9 +9178,9 @@ mod tests {
                         text(lang, Key::RecSourceBoth)
                     ]
                 );
-                // Its own five-row card under its label, before "Transkrip"
-                // and "Pembersih".
-                let card = l.cards[l.cards.len() - 3];
+                // Its own five-row card under its label, before "Rekam
+                // layar", "Transkrip" and "Pembersih".
+                let card = l.cards[l.cards.len() - 4];
                 assert_eq!(card.h, 5.0 * ROW_H);
                 assert!(l.texts.iter().any(|t| t.text == text(lang, Key::RecSettingsTitle).to_uppercase()));
                 // The folder shows like the screenshot one: parent and name.
@@ -9162,6 +9220,67 @@ mod tests {
         let s = State { scroll: 1e6, ..states()[0].clone() };
         let l = layout(Section::Features, &s, &Estimate);
         assert!(l.texts.iter().any(|t| t.text == REC_DEFAULT_FOLDER));
+    }
+
+    #[test]
+    fn the_screen_card_has_fps_and_folder() {
+        for lang in [Lang::Id, Lang::En] {
+            for (i, fps) in VIDEO_FPS_CHOICES.into_iter().enumerate() {
+                let s = State {
+                    lang,
+                    recording: RecordingPrefs {
+                        video_fps: fps,
+                        video_folder: Some(std::path::PathBuf::from(r"D:\Video\Kerja")),
+                        ..RecordingPrefs::default()
+                    },
+                    scroll: 1e6,
+                    ..states()[0].clone()
+                };
+                let l = layout(Section::Features, &s, &Estimate);
+                let (_, items, selected) = l.segmented(Group::VideoFps).expect("Gambar per detik");
+                assert_eq!(selected, i, "{lang:?} {fps}");
+                assert_eq!(
+                    items.iter().map(|s| s.hit).collect::<Vec<_>>(),
+                    [Hit::VideoFps(30), Hit::VideoFps(60)]
+                );
+                assert_eq!(
+                    items.iter().map(|s| s.label.as_str()).collect::<Vec<_>>(),
+                    ["30", "60"]
+                );
+                // Its own two-row card under its label, right after
+                // "Rekaman", before "Transkrip" and "Pembersih".
+                let card = l.cards[l.cards.len() - 3];
+                assert_eq!(card.h, 2.0 * ROW_H);
+                for key in [
+                    Key::ScreenSettingsFps,
+                    Key::ScreenSettingsFpsDesc,
+                    Key::ScreenSettingsFolder,
+                ] {
+                    assert!(l.texts.iter().any(|t| t.text == text(lang, key)), "{lang:?} {key:?}");
+                }
+                let title = text(lang, Key::ScreenSettingsTitle).to_uppercase();
+                assert!(l.texts.iter().any(|t| t.text == title), "{lang:?}");
+                for seg in items {
+                    assert!(seg.rect.y >= card.y && seg.rect.bottom() <= card.y + ROW_H);
+                }
+                // The folder shows like the recordings one: parent and name.
+                assert!(l.texts.iter().any(|t| t.text == r"Video\Kerja"), "{lang:?}");
+                let hits = l.hits();
+                let (open, change) = (
+                    hits.iter().find(|(h, _)| *h == Hit::VideoFolderOpen).expect("Buka").1,
+                    hits.iter().find(|(h, _)| *h == Hit::VideoFolderChange).expect("Ganti").1,
+                );
+                assert!(open.right() <= change.x, "Buka left of Ganti");
+                assert!(open.y >= card.y + ROW_H && change.bottom() <= card.bottom());
+                assert!(change.right() <= card.right());
+            }
+        }
+        // No folder chosen: the default's label, and 30 selected.
+        let s = State { scroll: 1e6, ..states()[0].clone() };
+        let l = layout(Section::Features, &s, &Estimate);
+        assert!(l.texts.iter().any(|t| t.text == VIDEO_DEFAULT_FOLDER));
+        assert_eq!(VIDEO_DEFAULT_FOLDER, r"Videos\Vale");
+        assert_eq!(l.segmented(Group::VideoFps).expect("Gambar per detik").2, 0);
     }
 
     /// Fitur laid out with the Transkrip card in `view`.
@@ -9661,11 +9780,11 @@ mod tests {
                 // Scrolled so the card shows (the cards after it are taller
                 // than the window).
                 let top = layout(Section::Features, &s, &Estimate);
-                s.scroll = top.cards[top.cards.len() - 4].y - FIRST_CARD_Y;
+                s.scroll = top.cards[top.cards.len() - 5].y - FIRST_CARD_Y;
                 let l = layout(Section::Features, &s, &Estimate);
                 // Its own card under its label, before "Rekaman",
-                // "Transkrip" and "Pembersih": one row.
-                let card = l.cards[l.cards.len() - 4];
+                // "Rekam layar", "Transkrip" and "Pembersih": one row.
+                let card = l.cards[l.cards.len() - 5];
                 assert_eq!(card.h, ROW_H);
                 assert!(
                     l.texts

@@ -195,6 +195,8 @@ pub enum Action {
     RecFolder(Option<std::path::PathBuf>),
     /// The screen recordings' folder (`None`: back to the default).
     VideoFolder(Option<std::path::PathBuf>),
+    /// The screen recordings' frame rate: 30 or 60.
+    VideoFps(u32),
     /// The device of a source: an endpoint id, `None` to follow Windows.
     RecDevice(Source, Option<String>),
     /// The mic echo cancellation switch.
@@ -364,6 +366,18 @@ enum TrClick {
     Choose,
     /// "Hapus" of this model row (an index into `MODELS`) was clicked once.
     ArmDelete(usize),
+}
+
+/// What a click on the "Rekam layar" card does, or `None` for a hit that is
+/// not on the card. A frame rate already chosen does nothing.
+fn screen_click(prefs: &RecordingPrefs, hit: Hit) -> Option<Vec<After>> {
+    Some(match hit {
+        Hit::VideoFps(fps) if fps != prefs.video_fps => vec![After::Post(Action::VideoFps(fps))],
+        Hit::VideoFps(_) => Vec::new(),
+        Hit::VideoFolderOpen => vec![After::OpenFolder(prefs.video_dir())],
+        Hit::VideoFolderChange => vec![After::PickVideoFolder],
+        _ => return None,
+    })
 }
 
 /// The Transkrip card's answer to `hit` with the island's `view`, or `None`
@@ -1883,6 +1897,7 @@ impl Settings {
                     .iter()
                     .position(|c| *c == m.recording.sources)
                     .unwrap_or(2) as f32,
+                Group::VideoFps => usize::from(m.recording.video_fps == 60) as f32,
                 Group::WidgetFullscreen => {
                     usize::from(m.widgets.fullscreen == FullscreenRule::Keep) as f32
                 }
@@ -1909,6 +1924,7 @@ impl Settings {
             Group::WidgetLayer,
             Group::WidgetFullscreen,
             Group::RecSources,
+            Group::VideoFps,
             Group::TranscriptLang,
         ] {
             let (from, to) = (index(group, &old), index(group, new));
@@ -2549,6 +2565,9 @@ impl Settings {
             Hit::RecFolderOpen => vec![After::OpenFolder(m.recording.dir())],
             Hit::RecFolderChange => vec![After::PickRecFolder],
             Hit::RecDevice(source) => self.device_menu_after(source),
+            Hit::VideoFps(_) | Hit::VideoFolderOpen | Hit::VideoFolderChange => {
+                screen_click(&m.recording, hit).unwrap_or_default()
+            }
             Hit::TranscriptEnabled
             | Hit::TranscriptOfferDownload
             | Hit::TranscriptOfferOther
@@ -3238,6 +3257,7 @@ fn rec_outcome(keys: &Hotkeys, id: HotkeyId, step: Step) -> RecOutcome {
 
 /// Side effects of a click, run after the state is released (they may send
 /// messages back to this window or pump the queue).
+#[derive(Debug, PartialEq)]
 enum After {
     Post(Action),
     Section(Section),
@@ -3247,6 +3267,8 @@ enum After {
     OpenFolder(std::path::PathBuf),
     /// Rekaman's "Ganti": the folder dialog, then the choice is posted.
     PickRecFolder,
+    /// Rekam layar's "Ganti": the same for the video folder.
+    PickVideoFolder,
     /// A device row's "Ganti": Vale's device dropdown of that source under
     /// the button (`anchor`, screen px; `current`: the endpoint id chosen).
     /// The pick comes back as `menu_pop::WM_APP_MENU_DONE` and is posted.
@@ -3295,8 +3317,15 @@ fn run_after(hwnd: HWND, owner: HWND, after: Vec<After>) {
                 shell_open(&dir.display().to_string());
             }
             After::PickRecFolder => {
-                if let Some(dir) = pick_path(hwnd, CustomKind::Folder) {
+                let title = Some(Key::RecSettingsPickTitle);
+                if let Some(dir) = pick_path(hwnd, CustomKind::Folder, title) {
                     post_action(owner, Action::RecFolder(Some(dir)));
+                }
+            }
+            After::PickVideoFolder => {
+                let title = Some(Key::ScreenSettingsPickTitle);
+                if let Some(dir) = pick_path(hwnd, CustomKind::Folder, title) {
+                    post_action(owner, Action::VideoFolder(Some(dir)));
                 }
             }
             After::PickRecDevice { source, current, lang, font, anchor } => {
@@ -3420,7 +3449,7 @@ fn browse(hwnd: HWND) {
     let Some(kind) = with(|st| st.tile_form.map(|f| f.kind)).flatten() else {
         return;
     };
-    let Some(path) = pick_path(hwnd, kind) else {
+    let Some(path) = pick_path(hwnd, kind, None) else {
         return;
     };
     if let Some((_, target)) = tile_edits() {
@@ -3435,12 +3464,13 @@ fn browse(hwnd: HWND) {
 /// running while the dialog is up. The choice comes back to `owner` as
 /// `Action::RecFolder`, the same way Settings' "Ganti" sends it.
 pub fn pick_rec_folder(owner: HWND) {
-    pick_folder_for(owner, |dir| Action::RecFolder(Some(dir)));
+    pick_folder_for(owner, Key::RecSettingsPickTitle, |dir| Action::RecFolder(Some(dir)));
 }
 
-/// The system folder dialog on the short-lived `pick-folder` thread; the
-/// folder chosen goes to `owner` as the action `to_action` makes of it.
-fn pick_folder_for(owner: HWND, to_action: fn(std::path::PathBuf) -> Action) {
+/// The system folder dialog, titled `title`, on the short-lived
+/// `pick-folder` thread; the folder chosen goes to `owner` as the action
+/// `to_action` makes of it.
+fn pick_folder_for(owner: HWND, title: Key, to_action: fn(std::path::PathBuf) -> Action) {
     use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
     let raw = owner.0 as isize;
     let _ = std::thread::Builder::new()
@@ -3451,7 +3481,7 @@ fn pick_folder_for(owner: HWND, to_action: fn(std::path::PathBuf) -> Action) {
             if unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_err() {
                 return;
             }
-            if let Some(dir) = pick_path(owner, CustomKind::Folder) {
+            if let Some(dir) = pick_path(owner, CustomKind::Folder, Some(title)) {
                 post_action(owner, to_action(dir));
             }
             unsafe { CoUninitialize() };
@@ -3462,7 +3492,9 @@ fn pick_folder_for(owner: HWND, to_action: fn(std::path::PathBuf) -> Action) {
 /// screen recording), like `pick_rec_folder`. The choice comes back to
 /// `owner` as `Action::VideoFolder`.
 pub fn pick_video_folder(owner: HWND) {
-    pick_folder_for(owner, |dir| Action::VideoFolder(Some(dir)));
+    pick_folder_for(owner, Key::ScreenSettingsPickTitle, |dir| {
+        Action::VideoFolder(Some(dir))
+    });
 }
 
 /// "Transkrip file lain...": the audio file picker for the island, on a
@@ -3530,7 +3562,7 @@ fn pick_audio(owner: HWND, start: &std::path::Path) -> Option<std::path::PathBuf
 
 /// The path the owner picks in the system dialog: an exe or any file for an
 /// app, a folder for a folder. `None` when it is cancelled or cannot open.
-fn pick_path(owner: HWND, kind: CustomKind) -> Option<std::path::PathBuf> {
+fn pick_path(owner: HWND, kind: CustomKind, title: Option<Key>) -> Option<std::path::PathBuf> {
     use std::os::windows::ffi::OsStringExt;
     use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
     use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
@@ -3561,6 +3593,10 @@ fn pick_path(owner: HWND, kind: CustomKind) -> Option<std::path::PathBuf> {
             let _ = dialog.SetFileTypes(&filters);
         }
         dialog.SetOptions(options).ok()?;
+        // Without one Windows names the dialog itself ("Select Folder").
+        if let Some(title) = title {
+            let _ = dialog.SetTitle(&HSTRING::from(text(lang, title)));
+        }
         // Cancelled: an error code.
         dialog.Show(Some(owner)).ok()?;
         let item = dialog.GetResult().ok()?;
@@ -4529,6 +4565,7 @@ pub fn run_demo(args: &[String]) {
             Action::RecSources(v) => m.recording.sources = v,
             Action::RecFolder(v) => m.recording.folder = v,
             Action::VideoFolder(v) => m.recording.video_folder = v,
+            Action::VideoFps(v) => m.recording.video_fps = v,
             Action::RecDevice(source, id) => m.recording.set_device(source, id),
             Action::RecEchoCancel(v) => m.recording.echo_cancel = v,
             // The picked file belongs to the island: nothing in the window.
@@ -4884,6 +4921,50 @@ mod tests {
     #[test]
     fn the_file_filter_takes_videos() {
         assert_eq!(RECORDING_FILTER, "*.m4a;*.wav;*.mp4");
+    }
+
+    #[test]
+    fn fps_clicks_change_only_a_new_value() {
+        let at = |video_fps: u32| RecordingPrefs { video_fps, ..RecordingPrefs::default() };
+        assert_eq!(
+            screen_click(&at(30), Hit::VideoFps(60)),
+            Some(vec![After::Post(Action::VideoFps(60))])
+        );
+        assert_eq!(
+            screen_click(&at(60), Hit::VideoFps(30)),
+            Some(vec![After::Post(Action::VideoFps(30))])
+        );
+        // The rate already chosen: nothing is posted, nothing is saved.
+        assert_eq!(screen_click(&at(60), Hit::VideoFps(60)), Some(Vec::new()));
+        assert_eq!(screen_click(&at(30), Hit::VideoFps(30)), Some(Vec::new()));
+        // Not this card's: left to the rest of `on_click`.
+        assert_eq!(screen_click(&at(30), Hit::RecFolderOpen), None);
+    }
+
+    #[test]
+    fn the_folder_buttons_open_and_pick() {
+        // No folder chosen: "Buka" opens the default one.
+        let unset = RecordingPrefs::default();
+        assert_eq!(
+            screen_click(&unset, Hit::VideoFolderOpen),
+            Some(vec![After::OpenFolder(unset.video_dir())])
+        );
+        let chosen = RecordingPrefs {
+            folder: Some(std::path::PathBuf::from(r"D:\Audio")),
+            video_folder: Some(std::path::PathBuf::from(r"D:\Video\Kerja")),
+            ..RecordingPrefs::default()
+        };
+        // The video folder, never the audio recordings' one.
+        assert_eq!(
+            screen_click(&chosen, Hit::VideoFolderOpen),
+            Some(vec![After::OpenFolder(std::path::PathBuf::from(r"D:\Video\Kerja"))])
+        );
+        for prefs in [&unset, &chosen] {
+            assert_eq!(
+                screen_click(prefs, Hit::VideoFolderChange),
+                Some(vec![After::PickVideoFolder])
+            );
+        }
     }
 
     #[test]

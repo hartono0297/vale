@@ -3,10 +3,6 @@
 //! writer to MP4. Nothing here runs, and no thread, capture or timer exists,
 //! until [`ScreenRecorder::start`]; everything ends with the recording.
 
-// Not wired into the app until track A lands; the debug CLI
-// (`--screenrec-test`) is the only caller in a debug build.
-#![cfg_attr(not(debug_assertions), allow(dead_code, unused_imports))]
-
 pub mod audio;
 pub mod capture;
 pub mod compose;
@@ -38,7 +34,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 
 pub use crate::recorder::Container;
 pub use audio::AudioInput;
-pub use capture::{Target, exclude_from_capture};
+pub use capture::Target;
 pub use encode::EncoderInfo;
 
 use audio::{AudioClock, AudioFeed};
@@ -181,6 +177,8 @@ pub struct Summary {
     pub audio_rejected: u64,
 }
 
+// The debug CLI's report line.
+#[cfg(debug_assertions)]
 impl Summary {
     pub fn fps_achieved(&self) -> f64 {
         if self.duration_ms == 0 {
@@ -208,7 +206,11 @@ pub struct Status {
 enum Cmd {
     Pause,
     Resume,
+    // The zoom is phase 4's (hotkey 11): until it is wired only the debug
+    // CLI sends these two.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     ToggleZoom,
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     ZoomStep(i32),
     Stop,
 }
@@ -218,6 +220,8 @@ pub struct ScreenRecorder {
     tx: Sender<Cmd>,
     thread: Option<JoinHandle<Result<Summary, Error>>>,
     feed: Option<Arc<AudioFeed>>,
+    // Read through `status()` only.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     status: Arc<Mutex<Status>>,
 }
 
@@ -302,16 +306,22 @@ impl ScreenRecorder {
         let _ = self.tx.send(Cmd::Resume);
     }
 
-    /// Zoom in to the cursor, or back out (in the video only).
+    /// Zoom in to the cursor, or back out (in the video only). Phase 4's
+    /// hotkey calls it; until then the debug CLI does.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     pub fn toggle_zoom(&self) {
         let _ = self.tx.send(Cmd::ToggleZoom);
     }
 
     /// One zoom level up (`dir > 0`) or down, 1x to 4x in 0.5 steps.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     pub fn zoom_step(&self, dir: i32) {
         let _ = self.tx.send(Cmd::ZoomStep(dir));
     }
 
+    /// How far the recording is and whether it is zoomed. The island keeps
+    /// its own clock, so only the debug CLI asks until the zoom is wired.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     pub fn status(&self) -> Status {
         self.status.lock().map(|s| *s).unwrap_or_default()
     }
