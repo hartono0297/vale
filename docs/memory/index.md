@@ -14,7 +14,7 @@ One note per decision, gotcha or convention. Link each new note here.
 
 - [[studio-palette-accent-aliases]]
 - [[studio-font-sources]]
-- [[exe-size]]: size measured per change (the transcript, 2026-11-09, +257 KiB, is the last entry); icon small sizes as PNG (-38 KB), opt-level z option (-326 KB) left to the owner
+- [[exe-size]]: size measured per change (the screen recording, 2026-11-11, +157.5 KiB to 4,461,056 bytes, is the last entry); icon small sizes as PNG (-38 KB), opt-level z option (-326 KB) left to the owner
 - [[studio-icons]]
 - [[studio-calendar-day-view]]
 - [[studio-media-progress-timer]]
@@ -94,6 +94,7 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[notch-rec-mute]]: the closed REC notch's level groups are mute buttons; hover never opens the panel (`rec_mute_hot`), cleared only on leave / stop / pause / fullscreen, never on a view change
 - [[recording-hand-checks]]: phase 1 is done, and the phase 2 transcript checks (playback heard, summary prompt pasted, .md opened, echo on a real call) plus what the 2026-11-09 polish live check left to judge by eye; the checks still to do by hand on the real app (dropdown with a mouse, light theme, focus, real voice with echo cancellation, headset mid-recording, sleep)
 - [[transcript]]: recording phase 2 (2026-11-09): offline Whisper (turbo with a GPU, small without), auto after each recording or by hand, one-job queue with holds and `queue.json`, downloads only on a click, echo filter, file naming, the transcript window and player; polish 2026-11-09: stale start notice dropped, two-click Hapus, length probed from the audio, live "Saya" held until "Peserta" settles
+- [[screen-recording]]: recording phase 3 (2026-11-11): a monitor, a window or an area to `.mp4` through the screenshot picker and a 3-2-1 notch countdown, mic and PC audio mixed to mono (sum + soft limiter, `Recorder::start_mix`), `.mp4.part` fragmented, pause spans in the clock, Vale's windows out of the video only while recording, hotkey row 10 `Ctrl+Alt+Shift+R`, Esc id 13, timer 70, `WM_APP + 90/91`, the Layar tab, Settings 30/60 fps and video folder, transcripts of videos, the live check
 - [[menu-pop]]: Vale's own themed dropdown (`ui/menu_pop.rs`), first for the recording devices; `WM_APP + 81` Done, `menu_open` holds the panel
 - [[lyrics-lookup]]: LRCLIB 503 + Retry-After retry (30 s budget), step order (field search, get, free-text search), None vs transient, the Artist - Title split, tight-window consensus pick of the best-synced version, intro shift for a longer video, `.lrc2` / `.none4`
 
@@ -117,6 +118,8 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[light-accent-contrast]]: `#FFFBF5` on the plain light accent is 4.26:1; use `primary_fill` / `segment_fill` for any accent fill with text; the Confirm ("Yakin?") hover/pressed fill is `confirm_fill`
 - [[media-foundation-dynamic-load]]: Media Foundation is loaded with LoadLibraryExW, never imported, or vale.exe will not start on Windows N; one loader now, `src/mf.rs` (`MfSession`: COM MTA + MFStartup)
 - [[wasapi-capture-timestamps]]: GetBuffer's QPC position is in 100 ns units; loopback sends no packets in silence
+- [[exclude-from-capture-in-context]]: an out-of-context WinEvent hook lets a new window show for a frame before `WDA_EXCLUDEFROMCAPTURE`; an in-context hook on the own process (exe module) sets it inside `CreateWindowEx` / `ShowWindow`
+- [[mp4-silent-audio-track]]: an `.mp4` whose audio track never got a sample cannot be read back (0xC00D36C4); fill silence until the first sample
 - [[tray-dark-menu]]: the tray menu follows the Windows app mode via uxtheme ordinals 135/136/104 (AllowDark), not Vale's window theme
 
 ## Conventions

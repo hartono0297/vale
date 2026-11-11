@@ -316,3 +316,17 @@ No new crate and no new `windows` feature.
 The spec's "a few tens of KB" was not reachable: the transcript core, window,
 player and Settings card are all new code. The worktree path was longer than
 main's, which moves the size by at most 512 bytes. Nothing trimmed yet.
+
+## Screen recording, phase 3 (2026-11-11)
+
+`cargo build --release --locked`, 0 warnings, built in the `screen-rec`
+worktree (a longer path than main's, so up to 512 bytes of the difference are
+the path):
+
+| Build | Bytes |
+|---|---|
+| 4a6294d (transcript polish), main checkout | 4,299,776 |
+| ce67e90 (screen recording), worktree path | 4,461,056 (+161,280, +157.5 KiB, +3.75 %) |
+
+Graphics Capture, the D3D11 compositor, the H.264 encoder, the picker and the
+controller are all new code; no new crate. Nothing trimmed. See [[screen-recording]].

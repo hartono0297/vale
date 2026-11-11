@@ -93,3 +93,13 @@ Turns a recording into text on this PC, nothing uploaded. Spec:
   resets the mark to 0.
 - Left for later: `Event::RecRecent` has no scan sequence, so a slow older scan
   can overwrite a newer one (the probe makes scans a little longer).
+
+## Videos (2026-11-11, screen recording phase 3)
+
+`output::channel_plan`: an `.mp4` whose sidecar names no channels (none, no key,
+or an empty list) with 2+ channels is downmixed (`Decoder::downmix`, the mean)
+to one unlabelled channel; Vale's own videos carry `"channels": ["mix"]`, which
+`speakers` already leaves unlabelled. The file dialog takes `*.m4a;*.wav;*.mp4`.
+A video recorded without sound gets no auto job and no Transkrip pill. The
+queue's `Hold::ScreenRecording` is set while a screen recording counts down,
+starts, runs or stops. See [[screen-recording]].

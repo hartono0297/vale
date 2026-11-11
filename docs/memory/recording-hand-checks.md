@@ -51,3 +51,29 @@ check passed all four. Still open from that check:
       check never caught a "Saya" candidate on screen).
 - [ ] "Transkrip file lain…" with a sidecar-less file (the length was checked
       from the recordings folder instead).
+
+## Screen recording, phase 3 (2026-11-11)
+
+Merged on `main` (ce67e90); the agent's live check passed the automatable lines
+(see [[screen-recording]]). Vale's windows are left out of every capture while a
+recording runs, so the agent could not see the notch, the panel or the notices
+during one. For the owner by hand (test videos kept in `%USERPROFILE%\Vale\Video`:
+`2026-11-11 1446`, `2026-11-11 1439 ValeTestWin`, `2026-11-11 1441`):
+
+- [ ] Play them in Film & TV and VLC: narration and PC audio in both ears at
+      their level, the cursor visible; the `.srt` shows as subtitles.
+- [ ] A real voice; the first words right after the countdown's 1.
+- [ ] By eye during a recording: "dijeda" in the notch (page pause and a
+      minimised window), "Yakin buang?", "Rekaman lain sedang jalan" for the
+      audio hotkey, "Jendela ditutup, video tersimpan" when the window closes.
+- [ ] Whether Windows draws a yellow border around the captured area (Vale is a
+      packaged app; a border would need the borderless capture capability).
+- [ ] Sleep and lock pause the recording; wake or unlock resumes it.
+- [ ] Controlled folder access refusing `Videos\Vale`: the fallback notice.
+- [ ] A fullscreen video while recording: the notch hides, the tray dot stays.
+- [ ] The picker by keyboard only (Tab, Space, Enter, Esc) and in the light
+      theme and Terminal style; the Settings card in light and Terminal.
+- [ ] Unplug the only mic mid-recording, and the mic refused in Windows
+      privacy: "Video jalan tanpa suara" or the mic notice every time.
+- [ ] The transcript window on a video (no Saya/Peserta, plays its audio) and the
+      "Antre" row while a recording runs.

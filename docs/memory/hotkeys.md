@@ -220,3 +220,15 @@ reserved, lack a modifier or repeat another row are read leniently as above.
 main now). The per-row arrays follow `HotkeyId::ALL.len()` / `prtsc::ROWS`.
 A press makes one empty sticky note with the keyboard, or at 20 notes shows a
 short island notice ([[widgets]]).
+
+## Row 10: Rekam layar, and the countdown's Esc (2026-11-11)
+
+`HotkeyId::RecordScreen` is appended last (index 10, config key `record_screen`,
+default `Ctrl+Alt+Shift+R`, `RegisterHotKey` id 10 set explicitly in `wm_id`,
+since RecordMute (index 9) uses id 12). The Settings description is "Pilih
+layar, jendela atau area" (the longer copy did not fit the 210 px row). The
+countdown's Esc is not a row: raw `RegisterHotKey` id 13, registered only for
+the 3 s countdown, unregistered with every other hotkey on a Settings pause and
+registered again on resume if the countdown still runs. Id 11 stays reserved
+for phase 4's zoom. The mute hotkey (id 12) is registered during a screen
+recording too. See [[screen-recording]].

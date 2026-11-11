@@ -12,7 +12,9 @@ plan: `docs/superpowers/plans/2026-11-07-recording-phase1.md`, mockups:
 build on it. Related: [[controlled-folder-access]], [[media-foundation-dynamic-load]],
 [[wasapi-capture-timestamps]], [[bata-idle-power-budget]], [[hotkeys]], [[exe-size]].
 Mute, device choice and echo cancellation: [[recording-controls]].
-Transcript of a recording (phase 2): [[transcript]].
+Transcript of a recording (phase 2): [[transcript]]. Screen recording (phase 3)
+uses the recorder's mono mix mode (`Recorder::start_mix`, thread `rec-mix`; the
+file writer and the mix share one paced `pump`): [[screen-recording]].
 
 ## Where it lives
 
