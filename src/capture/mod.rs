@@ -12,6 +12,7 @@
 pub mod demo;
 pub mod inline;
 pub mod overlay;
+pub mod rec_pick;
 pub mod uia;
 pub mod win;
 

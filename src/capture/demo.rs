@@ -168,10 +168,13 @@ pub fn scene() -> (Frozen, Vec<Candidate>) {
 /// `--demo-snap`: the overlay on `scene()`. A click opens the editor on the
 /// crop; the process ends when either closes.
 ///
-/// `inline` is `--demo-snap inline`: the picked region stays up to draw on
-/// (Copy is inert, Save writes under `target/demo-shots/`, Buka di editor
-/// opens the editor demo).
-pub fn run_snap(inline: bool) {
+/// `--demo-snap inline`: the picked region stays up to draw on (Copy is
+/// inert, Save writes under `target/demo-shots/`, Buka di editor opens the
+/// editor demo).
+///
+/// `--demo-snap rec`: the screen recording's picker on the same scene. The
+/// pick is printed to stderr; nothing records.
+pub fn run_snap(mode: Option<&str>) {
     use windows::Win32::UI::WindowsAndMessaging::{
         DispatchMessageW, GetMessageW, MSG, TranslateMessage,
     };
@@ -180,7 +183,11 @@ pub fn run_snap(inline: bool) {
     // The editor it opens follows `DI_WINDOW`, `DI_SURFACE` and `DI_ACCENT`.
     crate::theme::set_current(crate::theme::theme_from_env());
     let (frame, cands) = scene();
-    if !super::overlay::start_demo(frame, cands, inline) {
+    let up = match mode {
+        Some("rec") => super::overlay::start_rec_demo(frame, cands),
+        _ => super::overlay::start_demo(frame, cands, mode == Some("inline")),
+    };
+    if !up {
         eprintln!("vale: the demo overlay could not start");
         return;
     }

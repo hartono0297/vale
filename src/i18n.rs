@@ -590,6 +590,13 @@ keys! {
     HotkeyRowRecordMuteDesc => "Hanya aktif saat merekam", "Active only while recording";
     HotkeyRowRecordScreen => "Rekam layar", "Record the screen";
     HotkeyRowRecordScreenDesc => "Pilih layar, jendela atau area", "Pick a screen, window or area";
+    ScreenPickScreen => "Layar", "Screen";
+    ScreenPickWindow => "Jendela", "Window";
+    ScreenPickArea => "Area", "Area";
+    ScreenPickRecord => "Rekam", "Record";
+    ScreenPickHintScreen => "Klik layar yang mau direkam", "Click the screen to record";
+    ScreenPickHintWindow => "Klik jendela yang mau direkam", "Click the window to record";
+    ScreenPickHintArea => "Tarik kotak, atau klik jendela atau bagiannya", "Drag a box, or click a window or a part of it";
     RecNoticeSource => "Rekaman", "Recording";
     RecSavedTitle => "Rekaman tersimpan", "Recording saved";
     RecClickToOpen => "klik untuk buka", "click to open";

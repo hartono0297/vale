@@ -14,18 +14,18 @@ use windows::Win32::Graphics::Dwm::{
 };
 use windows::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CAPTUREBLT, CreateCompatibleBitmap,
-    CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, GetMonitorInfoW,
-    HGDIOBJ, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, ReleaseDC, SRCCOPY,
-    SelectObject,
+    CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC, DeleteObject, EnumDisplayMonitors, GetDC,
+    GetDIBits, GetMonitorInfoW, HDC, HGDIOBJ, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO,
+    MonitorFromPoint, ReleaseDC, SRCCOPY, SelectObject,
 };
 use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GWL_EXSTYLE, GetClassNameW, GetSystemMetrics, GetWindowDisplayAffinity,
-    GetWindowLongW, GetWindowThreadProcessId, IsIconic, IsWindowVisible, SM_CXVIRTUALSCREEN,
-    SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_HIDE, SW_SHOWNOACTIVATE,
-    SetWindowDisplayAffinity, ShowWindow, WDA_EXCLUDEFROMCAPTURE, WINDOW_DISPLAY_AFFINITY,
-    WS_EX_TRANSPARENT,
+    GetWindowLongW, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
+    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_HIDE,
+    SW_SHOWNOACTIVATE, SetWindowDisplayAffinity, ShowWindow, WDA_EXCLUDEFROMCAPTURE,
+    WINDOW_DISPLAY_AFFINITY, WS_EX_TRANSPARENT,
 };
 use windows::core::BOOL;
 
@@ -107,6 +107,33 @@ pub fn monitor_at(pt: (i32, i32)) -> (Rect, u32) {
         }
         (rect, dx.max(96))
     }
+}
+
+/// Every monitor: its `HMONITOR` (as a number) and its rectangle in physical
+/// pixels, virtual-screen coordinates.
+pub fn monitors() -> Vec<(isize, Rect)> {
+    unsafe extern "system" fn each(m: HMONITOR, _: HDC, rect: *mut RECT, lparam: LPARAM) -> BOOL {
+        let list = unsafe { &mut *(lparam.0 as *mut Vec<(isize, Rect)>) };
+        if let Some(r) = unsafe { rect.as_ref() } {
+            list.push((
+                m.0 as isize,
+                Rect::new(r.left, r.top, r.right - r.left, r.bottom - r.top),
+            ));
+        }
+        true.into()
+    }
+    let mut list: Vec<(isize, Rect)> = Vec::new();
+    unsafe {
+        let _ = EnumDisplayMonitors(None, None, Some(each), LPARAM((&raw mut list) as isize));
+    }
+    list
+}
+
+/// The text of a window's title bar (empty when it has none or is gone).
+pub fn window_title(hwnd: isize) -> String {
+    let mut text = [0u16; 256];
+    let n = unsafe { GetWindowTextW(HWND(hwnd as *mut c_void), &mut text) }.max(0) as usize;
+    String::from_utf16_lossy(&text[..n.min(text.len())])
 }
 
 /// The window classes kept out of the frozen frame: the island
@@ -342,6 +369,16 @@ pub fn top_windows(bounds: Rect) -> Vec<TopWindow> {
     walk.out
 }
 
+/// True when `hwnd` belongs to the process `pid`. Vale's own windows are
+/// never snap targets, and never recording targets either: while a screen
+/// recording runs they are excluded from capture, so a recording of one
+/// would be empty.
+fn owned_by(hwnd: HWND, pid: u32) -> bool {
+    let mut owner = 0u32;
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut owner)) };
+    owner == pid
+}
+
 /// The window's frame inside `bounds`, or `None` when it is not something
 /// to snap to.
 unsafe fn snappable(hwnd: HWND, own_pid: u32, bounds: Rect) -> Option<Rect> {
@@ -349,9 +386,7 @@ unsafe fn snappable(hwnd: HWND, own_pid: u32, bounds: Rect) -> Option<Rect> {
         if !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
             return None;
         }
-        let mut pid = 0u32;
-        GetWindowThreadProcessId(hwnd, Some(&mut pid));
-        if pid == own_pid {
+        if owned_by(hwnd, own_pid) {
             return None;
         }
         let mut cloaked = 0u32;
@@ -405,6 +440,72 @@ mod tests {
         assert!(is_desktop_class("WorkerW"));
         assert!(!is_desktop_class("Shell_TrayWnd"));
         assert!(!is_desktop_class("CabinetWClass"));
+    }
+
+    /// A message-only window: never on screen.
+    fn message_window() -> HWND {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, HWND_MESSAGE, WINDOW_EX_STYLE, WINDOW_STYLE,
+        };
+        use windows::core::w;
+        unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                w!("STATIC"),
+                w!("Catatan rapat"),
+                WINDOW_STYLE(0),
+                0,
+                0,
+                0,
+                0,
+                Some(HWND_MESSAGE),
+                None,
+                None,
+                None,
+            )
+        }
+        .expect("a message-only window")
+    }
+
+    #[test]
+    fn a_window_of_this_process_is_never_a_target() {
+        use windows::Win32::UI::WindowsAndMessaging::DestroyWindow;
+        let hwnd = message_window();
+        let own = unsafe { GetCurrentProcessId() };
+        assert!(owned_by(hwnd, own));
+        assert!(!owned_by(hwnd, own.wrapping_add(4)));
+        // So the window list (what Jendela picks from) never holds it,
+        // whatever else is true of the window.
+        let bounds = Rect::new(-10_000, -10_000, 20_000, 20_000);
+        assert_eq!(unsafe { snappable(hwnd, own, bounds) }, None);
+        let listed = top_windows(bounds);
+        assert!(listed.iter().all(|w| {
+            !owned_by(HWND(w.hwnd as *mut c_void), own) && w.hwnd != hwnd.0 as isize
+        }));
+        unsafe {
+            let _ = DestroyWindow(hwnd);
+        }
+    }
+
+    #[test]
+    fn a_window_title_is_read_as_text() {
+        use windows::Win32::UI::WindowsAndMessaging::DestroyWindow;
+        let hwnd = message_window();
+        assert_eq!(window_title(hwnd.0 as isize), "Catatan rapat");
+        unsafe {
+            let _ = DestroyWindow(hwnd);
+        }
+        assert_eq!(window_title(hwnd.0 as isize), "", "a window that is gone");
+    }
+
+    #[test]
+    fn every_monitor_is_listed_inside_the_virtual_screen() {
+        let screen = virtual_screen();
+        for (handle, rect) in monitors() {
+            assert_ne!(handle, 0);
+            assert!(!rect.is_empty());
+            assert_eq!(rect.intersect(&screen), rect, "{rect:?} in {screen:?}");
+        }
     }
 
     #[test]

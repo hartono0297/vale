@@ -14,6 +14,7 @@
 //! rules of that phase are in `inline`.
 
 mod edit;
+mod rec;
 
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
@@ -33,7 +34,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, CS_DBLCLKS, CreateWindowExW, DefWindowProcW, DestroyWindow, GetCursorPos,
     GetForegroundWindow, GetWindowThreadProcessId, HWND_TOPMOST, IDC_CROSS, IsWindow, LoadCursorW,
-    MSG, PM_REMOVE, PeekMessageW, PostMessageW, PostQuitMessage, RegisterClassExW, SW_SHOWNA,
+    MSG, PM_REMOVE, PeekMessageW, PostQuitMessage, RegisterClassExW, SW_SHOWNA,
     SWP_SHOWWINDOW, SetCursor, SetForegroundWindow, SetWindowPos, ShowWindow, WM_ACTIVATE,
     WM_ACTIVATEAPP, WM_CAPTURECHANGED, WM_CLOSE, WM_COMMAND, WM_CTLCOLOREDIT, WM_DESTROY,
     WM_DISPLAYCHANGE, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP,
@@ -43,6 +44,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{Error, w};
 
 use super::inline::FinishKind;
+use super::rec_pick::PickReport;
 use super::uia::{WM_APP_UIA, take_result};
 use super::win::{self, Frozen, TopWindow};
 use super::{Candidate, Rect, crop, drag_rect, is_click, pick, size_label};
@@ -66,6 +68,9 @@ enum Phase {
     Pick,
     /// The region is chosen and stays on screen to draw on (inline mode).
     Edit(Box<edit::Edit>),
+    /// The screen recording's picker: a screen, a window or an area, with
+    /// its bar. It never becomes one of the other two.
+    Rec(Box<rec::Rec>),
 }
 
 struct State {
@@ -183,14 +188,63 @@ fn with<R>(f: impl FnOnce(&mut State) -> R) -> Option<R> {
 
 /// The screen recording's picker: the frozen screen with a screen, a window
 /// or an area to choose, and the Mic and PC audio toggles starting at `mic`
-/// and `system`. The answer goes to `owner` as `WM_APP_SCREEN_PICK`.
-// Until the picker is built (Task 11) it answers at once that nothing was
-// picked.
-pub fn start_rec_pick(owner: isize, _mic: bool, _system: bool) {
-    let owner = HWND(owner as *mut core::ffi::c_void);
-    unsafe {
-        let _ = PostMessageW(Some(owner), super::WM_APP_SCREEN_PICK, WPARAM(0), LPARAM(0));
+/// and `system`. The answer goes to `owner` as `WM_APP_SCREEN_PICK`, once,
+/// however this ends: `rec_pick::take_picked` then holds the pick, or
+/// nothing (cancelled, another overlay already up, the start failed).
+pub fn start_rec_pick(owner: isize, mic: bool, system: bool) {
+    // Dropped unsent on every way out below: the owner hears "nothing".
+    let report = PickReport::new(owner);
+    if active() {
+        return;
     }
+    let starting = Starting::begin();
+    let up = (move || {
+        let bounds = win::virtual_screen();
+        // Without this process's own windows: Vale is never a target.
+        let windows = win::top_windows(bounds);
+        let frame = win::grab_virtual_screen()?;
+        let cands: Vec<Candidate> = windows.iter().map(TopWindow::candidate).collect();
+        let seed = rec::Seed {
+            report,
+            sources: crate::model::RecSources { mic, system },
+            windows,
+            monitors: win::monitors(),
+        };
+        // The boxes inside the windows are asked for when Area is chosen.
+        create(frame, cands, None, false, false, Some(seed))
+    })();
+    drop(starting);
+    if up.is_none() {
+        eprintln!("vale: the recording picker could not start");
+    }
+}
+
+/// The picker over a made-up frame (`--demo-snap rec`): its windows are the
+/// scene's, nobody is told the pick (it is printed) and nothing records.
+#[cfg(debug_assertions)]
+pub fn start_rec_demo(frame: Frozen, cands: Vec<Candidate>) -> bool {
+    if active() {
+        return false;
+    }
+    let windows = cands
+        .iter()
+        .filter(|c| c.depth == 0)
+        .map(|c| TopWindow {
+            hwnd: 1000 + c.z as isize,
+            rect: c.rect,
+            z: c.z,
+        })
+        .collect();
+    let seed = rec::Seed {
+        report: PickReport::new(0),
+        sources: crate::model::RecSources {
+            mic: true,
+            system: true,
+        },
+        windows,
+        monitors: win::monitors(),
+    };
+    create(frame, cands, None, true, false, Some(seed)).is_some()
 }
 
 /// Freezes the real screen and puts the overlay up. Ignored while one is
@@ -208,7 +262,7 @@ pub fn start() {
         let windows = win::top_windows(bounds);
         let frame = win::grab_virtual_screen()?;
         let cands: Vec<Candidate> = windows.iter().map(TopWindow::candidate).collect();
-        create(frame, cands, Some(windows), false, inline)
+        create(frame, cands, Some(windows), false, inline, None)
     })();
     drop(starting);
     if up.is_none() {
@@ -224,7 +278,7 @@ pub fn start_demo(frame: Frozen, cands: Vec<Candidate>, inline: bool) -> bool {
     if active() {
         return false;
     }
-    create(frame, cands, None, true, inline).is_some()
+    create(frame, cands, None, true, inline, None).is_some()
 }
 
 /// Waits for the demo's Save to land (`run_snap`, after the message loop).
@@ -264,6 +318,9 @@ fn create(
     for_uia: Option<Vec<TopWindow>>,
     demo: bool,
     inline: bool,
+    // The screen recording's picker instead of the screenshot pick. Dropped
+    // on a failed start, which tells its owner that nothing was picked.
+    rec: Option<rec::Seed>,
 ) -> Option<()> {
     let area = frame.rect();
     let gfx = Gfx::new().ok()?;
@@ -297,6 +354,10 @@ fn create(
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     let stop = Arc::new(AtomicBool::new(false));
     let hover = pick(&cands, cursor);
+    let phase = match rec {
+        Some(seed) => Phase::Rec(Box::new(rec::Rec::new(seed, &gfx, cursor, &cands, demo)?)),
+        None => Phase::Pick,
+    };
     let state = State {
         hwnd,
         frame,
@@ -317,7 +378,7 @@ fn create(
         inline,
         // A demo never touches the clipboard.
         auto_copy: crate::shot_edit::auto_copy_setting() && !demo,
-        phase: Phase::Pick,
+        phase,
     };
     let stored = OVERLAY.with(|c| match c.try_borrow_mut() {
         Ok(mut slot) if slot.is_none() => {
@@ -582,6 +643,11 @@ fn in_edit() -> bool {
     with(|s| matches!(s.phase, Phase::Edit(_))) == Some(true)
 }
 
+/// True while the overlay is the screen recording's picker.
+fn in_rec() -> bool {
+    with(|s| matches!(s.phase, Phase::Rec(_))) == Some(true)
+}
+
 /// The pointer of a mouse message in virtual-screen pixels.
 fn pointer(s: &State, lparam: LPARAM) -> (i32, i32) {
     let origin = s.frame.origin;
@@ -611,6 +677,8 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         WM_SETCURSOR => {
             if in_edit() {
                 edit::set_cursor();
+            } else if in_rec() {
+                rec::set_cursor();
             } else {
                 unsafe {
                     if let Ok(cross) = LoadCursorW(None, IDC_CROSS) {
@@ -623,6 +691,10 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         WM_MOUSEMOVE => {
             if in_edit() {
                 edit::on_move(hwnd, wparam, lparam);
+                return LRESULT(0);
+            }
+            if in_rec() {
+                rec::on_move(hwnd, wparam, lparam);
                 return LRESULT(0);
             }
             const MK_LBUTTON: usize = 0x0001;
@@ -645,6 +717,10 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 edit::on_down(hwnd, lparam, msg == WM_LBUTTONDBLCLK);
                 return LRESULT(0);
             }
+            if in_rec() {
+                rec::on_down(hwnd, lparam);
+                return LRESULT(0);
+            }
             let set = with(|s| {
                 let p = pointer(s, lparam);
                 s.cursor = p;
@@ -660,6 +736,10 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         WM_LBUTTONUP => {
             if in_edit() {
                 edit::on_up(hwnd, lparam);
+                return LRESULT(0);
+            }
+            if in_rec() {
+                rec::on_up(hwnd, lparam);
                 return LRESULT(0);
             }
             let choice = with(|s| {
@@ -701,6 +781,10 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                     edit::on_capture_lost(hwnd);
                     return LRESULT(0);
                 }
+                if in_rec() {
+                    rec::on_capture_lost(hwnd);
+                    return LRESULT(0);
+                }
                 let changed = with(|s| {
                     let pressed = s.down.take().is_some() || s.drag.is_some();
                     s.drag = None;
@@ -727,6 +811,10 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 // lparam bit 30: the key was already down (auto-repeat).
                 let repeat = (lparam.0 >> 30) & 1 == 1;
                 edit::on_key(hwnd, (wparam.0 & 0xFFFF) as u16, repeat);
+                return LRESULT(0);
+            }
+            if in_rec() {
+                rec::on_key(hwnd, (wparam.0 & 0xFFFF) as u16);
                 return LRESULT(0);
             }
             match wparam.0 as u16 {
@@ -765,6 +853,9 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                     return false;
                 }
                 s.cands.extend(found);
+                if matches!(s.phase, Phase::Rec(_)) {
+                    return rec::boxes_arrived(s);
+                }
                 let was = s.hover;
                 if s.down.is_none() {
                     s.hover = pick(&s.cands, s.cursor);
@@ -870,8 +961,10 @@ fn black(a: f32) -> D2D1_COLOR_F {
 }
 
 fn draw(s: &mut State) -> windows::core::Result<()> {
-    if matches!(s.phase, Phase::Edit(_)) {
-        return edit::draw(s);
+    match s.phase {
+        Phase::Edit(_) => return edit::draw(s),
+        Phase::Rec(_) => return rec::draw(s),
+        Phase::Pick => {}
     }
     let (w, h) = (s.frame.w(), s.frame.h());
     if s.target.is_none() {
