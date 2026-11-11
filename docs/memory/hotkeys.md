@@ -244,3 +244,12 @@ during an audio-only recording. Turning the row off in Settings while the video
 is zoomed zooms it out (`zoom_out_needed` in `sync_hotkeys`). English
 description "Only while recording the screen" (the longer copy did not fit the
 210 px row). See [[screen-recording]].
+
+## Row 14: Caption langsung (2026-11-11)
+
+`HotkeyId::Captions` is appended after RecordZoom (index 12, config key
+`captions`, default `Ctrl+Alt+C`, `RegisterHotKey` id 14; 13 stays the
+countdown's Esc). It is always registered (captions work without a
+recording) and toggles live captions. An old config that already gave
+`Ctrl+Alt+C` to another row keeps it there; the new row then shows the
+"Sudah dipakai" conflict. See [[live-captions]].

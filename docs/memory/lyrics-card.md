@@ -331,3 +331,12 @@ names of the same length (the embedded PDB path moves an exe by up to 512
 bytes). The added code is the card (window, layout, colour, WIC decode), the
 sixth hotkey row, the Musik button and the seek command; no new crate and no new
 `windows` feature.
+
+## Shared surface (2026-11-11)
+
+`Surface` (DIB, Direct2D target, text and shape helpers), `rounded` and
+`Tween` moved to `src/ui/card_surface.rs`, shared with the caption card; the
+thumbnail bitmap moved from the surface to the lyrics `Card`. `layout::place`
+is a thin wrapper over `place_with(saved, monitors, notch, default_rect,
+limits)`, which the caption card uses with its own default. Behaviour
+unchanged. See [[live-captions]].

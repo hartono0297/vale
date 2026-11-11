@@ -103,3 +103,11 @@ to one unlabelled channel; Vale's own videos carry `"channels": ["mix"]`, which
 A video recorded without sound gets no auto job and no Transkrip pill. The
 queue's `Hold::ScreenRecording` is set while a screen recording counts down,
 starts, runs or stops. See [[screen-recording]].
+
+## Live captions (2026-11-11, recording phase 5)
+
+Captions reuse the engine and the active model (`model_for(gpu)`) through
+their own worker. The queue got a soft `Hold::Captions` (`Hold::preempts` is
+false): queued jobs wait while captions are on, a running job is never
+cancelled. `transcribe_pick` restarts a running caption worker when the
+effective model changed. See [[live-captions]].
