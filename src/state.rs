@@ -597,9 +597,16 @@ impl IslandState {
             Event::VideoRecent(list) | Event::VideoMarks(list) => self.rec_videos = list,
             Event::ScreenCountdown(n) => {
                 let begins = self.screen_countdown.is_none() && n.is_some();
+                let ends = self.screen_countdown.is_some() && n.is_none();
                 self.screen_countdown = n;
                 if begins {
                     self.yield_to_countdown();
+                }
+                // It ends under a pointer that stays (the recording starts,
+                // or Esc): the pointer came to watch the numbers, so the
+                // panel stays shut for the rest of the visit.
+                if ends && self.hover {
+                    self.hover_blocked = true;
                 }
             }
             Event::Notice(notice) => match &notice.kind {
@@ -3338,7 +3345,7 @@ impl IslandState {
     }
 
     /// The number the 3-2-1 before a screen recording shows.
-    // Read by `App` from Task 12 on.
+    // Only the tests read it: `App` keeps the number in its own phase.
     #[allow(dead_code)]
     pub fn screen_countdown(&self) -> Option<u8> {
         self.screen_countdown
@@ -10633,8 +10640,13 @@ mod tests {
         s.apply(Event::ScreenCountdown(Some(3)), t0 + mins(1));
         assert_eq!(s.view(), View::ScreenCountdown(3));
         assert_eq!(s.panel_page_under(), None, "no panel under it");
+        // The pointer never left, and the recording starts with the panel
+        // shut: it opens again on the next visit.
         s.apply(Event::ScreenCountdown(None), t0 + mins(1));
-        assert_eq!(s.view(), View::Panel(Page::Record), "the pointer never left");
+        assert!(!s.panel_is_open(), "shut for the rest of the visit");
+        leave(&mut s, t0 + mins(2));
+        s.apply(Event::Hover(true), t0 + mins(3));
+        assert_eq!(s.view(), View::Panel(Page::Record));
         // A fullscreen app hides it like everything else.
         let mut s = st();
         s.apply(Event::ScreenCountdown(Some(3)), t0);
@@ -10661,6 +10673,33 @@ mod tests {
             s.apply(Event::Hover(false), t0 + secs(1));
             s.apply(Event::ScreenCountdown(None), t0 + secs(3));
             assert_eq!(s.view(), View::Idle, "{mode:?}: nothing was latched");
+        }
+    }
+
+    /// The pointer rests on the 3-2-1 when it ends: the recording starts
+    /// with the panel shut, in the modes a hover opens it in, and the panel
+    /// opens on the next visit.
+    #[test]
+    fn the_countdown_ending_under_a_resting_pointer_opens_nothing() {
+        for mode in [OpenMode::Hover, OpenMode::HoverStay] {
+            let t0 = Instant::now();
+            let mut s = st();
+            s.apply(Event::OpenMode(mode), t0);
+            s.apply(Event::ScreenCountdown(Some(3)), t0);
+            s.apply(Event::Hover(true), t0);
+            let start = t0 + secs(3);
+            s.apply(Event::ScreenCountdown(None), start);
+            assert!(!s.panel_is_open(), "{mode:?}: the countdown ended");
+            s.apply(Event::RecStatus(Some(rec_status(start))), start);
+            assert_eq!(s.view(), View::RecordCompact, "{mode:?}: the recording started");
+            // Esc under the same pointer: nothing opens either.
+            s.apply(Event::RecStatus(None), start);
+            s.apply(Event::ScreenCountdown(Some(3)), start);
+            s.apply(Event::ScreenCountdown(None), start + secs(1));
+            assert!(!s.panel_is_open(), "{mode:?}: cancelled");
+            leave(&mut s, start + secs(2));
+            s.apply(Event::Hover(true), start + secs(3));
+            assert!(s.panel_is_open(), "{mode:?}: the next visit");
         }
     }
 

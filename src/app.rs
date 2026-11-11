@@ -163,9 +163,9 @@ use update_page::{TIMER_UPDATE, UpdateState};
 #[path = "app_record.rs"]
 pub(crate) mod record;
 #[path = "app_screenrec.rs"]
-mod screen_page;
+pub(crate) mod screen_page;
 use record::RecState;
-use screen_page::ScreenState;
+use screen_page::{ScreenState, TIMER_SCREEN_COUNTDOWN, WM_APP_SCREEN_WATCH};
 
 #[path = "app_transcribe.rs"]
 mod transcribe_page;
@@ -403,6 +403,12 @@ thread_local! {
     static DEFERRED_FRAME: Cell<bool> = const { Cell::new(false) };
     static DEFERRED_RESULTS: RefCell<Vec<EditorResult>> = const { RefCell::new(Vec::new()) };
     static DEFERRED_SETTINGS: RefCell<Vec<SettingsAction>> = const { RefCell::new(Vec::new()) };
+    /// The screen picker answered while the app was borrowed: its pick is
+    /// taken once the handler returns.
+    static DEFERRED_SCREEN_PICK: Cell<bool> = const { Cell::new(false) };
+    /// The recorded window was minimised (`true`) or restored while the app
+    /// was borrowed; the newest word counts.
+    static DEFERRED_SCREEN_WATCH: Cell<Option<bool>> = const { Cell::new(None) };
     static DEFERRED_CLI: RefCell<Vec<InputKey>> = const { RefCell::new(Vec::new()) };
     static DEFERRED_CLI_REDRAW: Cell<bool> = const { Cell::new(false) };
     static DEFERRED_CLIP: RefCell<Vec<InputKey>> = const { RefCell::new(Vec::new()) };
@@ -1145,8 +1151,6 @@ struct App {
     /// The audio recorder's session (`app_record`).
     rec: RecState,
     /// The screen recorder's session (`app_screenrec`).
-    // Read from Task 12 on.
-    #[allow(dead_code)]
     screen: ScreenState,
     /// Transcript jobs, holds and downloads (`app_transcribe`).
     tr: TranscribeState,
@@ -1544,9 +1548,11 @@ impl App {
                     self.on_rec_note(session, note);
                     continue;
                 }
-                // The screen recorder's threads, the same way. Nothing
-                // sends it yet.
-                Event::Screen(..) => continue,
+                // The screen recorder's threads, the same way.
+                Event::Screen(session, note) => {
+                    self.on_screen_note(session, note);
+                    continue;
+                }
                 // A transcript job's and a model download's threads: `App`
                 // decides what shows.
                 Event::Transcribe(id, event) => {
@@ -1561,6 +1567,10 @@ impl App {
                 Event::RecRecent(list) => {
                     self.rec.recent = list.clone();
                     Event::RecRecent(self.transcribe_marks(list))
+                }
+                Event::VideoRecent(list) => {
+                    self.screen.videos = list.clone();
+                    Event::VideoRecent(self.transcribe_marks(list))
                 }
                 Event::SearchIndex(apps) => {
                     self.on_search_index(apps);
@@ -3191,6 +3201,11 @@ impl App {
     /// Runs `action` on `TIMER_SHORTCUT`, once the panel has collapsed;
     /// replaces a pending one, so only the last click runs.
     fn queue_shortcut(&mut self, action: shortcuts::Action) {
+        // A screen picker still waiting for the timer is replaced and will
+        // never answer: the screen recording goes back to idle.
+        if matches!(self.shortcut, Some(shortcuts::Action::ScreenPick { .. })) {
+            self.screen_pick_done(None);
+        }
         // The Screenshot tile: Vale's own capture unless Settings chose
         // Snipping Tool ("Alat screenshot").
         let action = match action {
@@ -3724,6 +3739,7 @@ impl App {
     /// Retargets the animation at the state's view and re-arms the notice deadline.
     fn refresh(&mut self, now: Instant) {
         self.rec_follow_page(self.state.panel_page_under());
+        self.screen_follow_page(self.state.panel_page_under());
         self.draw_gen = self.draw_gen.wrapping_add(1);
         // The sleep clock follows mouse and keyboard input anywhere on the PC.
         self.fold_pc_input(now);
@@ -5386,6 +5402,7 @@ impl App {
                     self.arm_pomo(now);
                 }
             }
+            TIMER_SCREEN_COUNTDOWN => self.screen_countdown_tick(),
             TIMER_REC => {
                 let now = Instant::now();
                 if !self.animating() {
@@ -6489,6 +6506,7 @@ impl App {
             SettingsAction::RecSources(v) => self.rec_set_sources(v),
             SettingsAction::RecDevice(source, id) => self.rec_set_device(source, id),
             SettingsAction::RecFolder(dir) => self.rec_set_folder(dir),
+            SettingsAction::VideoFolder(dir) => self.screen_set_folder(dir),
             SettingsAction::TranscribeFile(path) => self.transcribe_file(path),
             SettingsAction::RecEchoCancel(on) => {
                 self.config.recording.echo_cancel = on;
@@ -8595,6 +8613,18 @@ fn deliver_settings_action(action: SettingsAction) {
     }
 }
 
+/// `WM_APP_SCREEN_PICK`: hands the picker's answer to the screen recording
+/// now, or once the handler holding the app returns. The pick stays where
+/// the picker left it (this thread) until the app can take it.
+fn deliver_screen_pick() {
+    let taken = with_app(|app| {
+        app.screen_pick_done(crate::capture::rec_pick::take_picked());
+    });
+    if taken.is_none() {
+        DEFERRED_SCREEN_PICK.set(true);
+    }
+}
+
 /// Closes the island. An open editor is closed first and its last result
 /// (an edited note) handled here: once the island is gone, nobody reads it.
 fn shutdown(hwnd: HWND) {
@@ -8756,6 +8786,12 @@ fn run_deferred() {
     }
     for result in DEFERRED_RESULTS.take() {
         deliver_result(result);
+    }
+    if DEFERRED_SCREEN_PICK.take() {
+        deliver_screen_pick();
+    }
+    if let Some(minimised) = DEFERRED_SCREEN_WATCH.take() {
+        with_app(|app| app.screen_on_window(minimised));
     }
     for action in DEFERRED_SETTINGS.take() {
         deliver_settings_action(action);
@@ -9061,8 +9097,10 @@ unsafe extern "system" fn wnd_proc(
                             by_user: wparam.0 == PBT_APMRESUMESUSPEND,
                         };
                         with_app(|app| {
-                            // A recording the sleep paused goes on.
+                            // A recording the sleep paused goes on; a
+                            // screen recording waits for the unlock.
                             app.rec_on_resume();
+                            app.screen_on_away(app.session_locked());
                             // A phone session left over from before the
                             // sleep is ended: its connections are gone.
                             app.phone_on_resume(Instant::now());
@@ -9074,6 +9112,7 @@ unsafe extern "system" fn wnd_proc(
                     PBT_APMSUSPEND => {
                         with_app(|app| {
                             app.rec_on_suspend();
+                            app.screen_on_away(true);
                             app.phone_on_away(crate::phone::EndReason::Suspend, Instant::now())
                         });
                     }
@@ -9100,6 +9139,8 @@ unsafe extern "system" fn wnd_proc(
                 WTS_SESSION_LOCK => {
                     with_app(|app| {
                         app.session_locked = true;
+                        // The lock screen is not recorded.
+                        app.screen_on_away(true);
                         app.clip_on_lock();
                         app.phone_on_away(crate::phone::EndReason::Lock, Instant::now());
                         app.sync_pointer_polls();
@@ -9108,6 +9149,7 @@ unsafe extern "system" fn wnd_proc(
                 WTS_SESSION_UNLOCK => {
                     with_app(|app| {
                         app.session_locked = false;
+                        app.screen_on_away(false);
                         app.sync_pointer_polls();
                         app.maybe_greet(GreetTrigger::Unlock);
                     });
@@ -9286,6 +9328,17 @@ unsafe extern "system" fn wnd_proc(
             }
             LRESULT(0)
         }
+        crate::capture::WM_APP_SCREEN_PICK => {
+            deliver_screen_pick();
+            LRESULT(0)
+        }
+        WM_APP_SCREEN_WATCH => {
+            let minimised = wparam.0 != 0;
+            if with_app(|app| app.screen_on_window(minimised)).is_none() {
+                DEFERRED_SCREEN_WATCH.set(Some(minimised));
+            }
+            LRESULT(0)
+        }
         WM_APP_REC_DEVICE => {
             let source = if wparam.0 == 0 {
                 crate::recorder::Source::Mic
@@ -9322,6 +9375,7 @@ unsafe extern "system" fn wnd_proc(
                 with_app(App::notif_shutdown);
                 with_app(App::widgets_flush);
                 with_app(App::hotkeys_shutdown);
+                with_app(App::screen_shutdown);
                 with_app(App::rec_shutdown);
                 with_app(App::transcribe_shutdown);
             }
@@ -9353,6 +9407,7 @@ unsafe extern "system" fn wnd_proc(
             with_app(App::devices_shutdown);
             with_app(App::arrange_shutdown);
             with_app(App::hotkeys_shutdown);
+            with_app(App::screen_shutdown);
             with_app(App::rec_shutdown);
             with_app(App::transcribe_shutdown);
             unsafe {
@@ -10579,6 +10634,7 @@ mod tests {
             TIMER_DAY,
             TIMER_REC,
             TIMER_REC_LEVEL,
+            TIMER_SCREEN_COUNTDOWN,
             TIMER_TRANSCRIBE,
             TIMER_CLOCK,
             TIMER_REMINDER,

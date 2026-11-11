@@ -402,9 +402,6 @@ thread_local! {
 
 /// The pick a `WM_APP_SCREEN_PICK` announced; `None` when it was cancelled
 /// (or already taken).
-// Read by the island's arm for the message, which comes with the recording
-// itself.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn take_picked() -> Option<Picked> {
     PICKED.with(|p| p.borrow_mut().take())
 }

@@ -339,8 +339,6 @@ pub enum RecKind {
 
 /// What reaches `App` about a screen recording, tagged in `Event::Screen`
 /// with the session it belongs to.
-// Sent by the screen recording's threads from Task 12 on.
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ScreenNote {
     /// The start thread is done; `App` joins it for the recorder.
@@ -410,19 +408,13 @@ pub enum Event {
     /// belong to (`App` handles it; the reducer ignores it).
     Rec(u64, RecNote),
     /// The same for a screen recording's threads.
-    // Sent from Task 12 on.
-    #[allow(dead_code)]
     Screen(u64, ScreenNote),
     /// The 3-2-1 before a screen recording: the number to show, `None` when
     /// it ends (the recording starts, or Esc cancelled it). The notch shows
     /// `View::ScreenCountdown` meanwhile.
-    // Sent from Task 12 on.
-    #[allow(dead_code)]
     ScreenCountdown(Option<u8>),
     /// The newest screen recordings found in the video folder, for the
     /// Rekam page's Layar tab.
-    // Sent from Task 13 on.
-    #[allow(dead_code)]
     VideoRecent(Vec<RecEntry>),
     /// The same list with the queue's transcript marks over it.
     // Sent from Task 13 on.

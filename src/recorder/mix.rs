@@ -1,9 +1,6 @@
 //! The recorder's mix mode: the sources summed into one mono stream that
 //! feeds the screen recorder (`screenrec::audio::Forward`) instead of a file.
 
-// Wired into the screen recorder by the next task.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use super::{RATE, Sources};
 
 /// Where the soft limiter starts to bend.

@@ -784,8 +784,6 @@ impl Recorder {
         })
     }
 
-    // Wired into the screen recorder by the next task.
-    #[allow(dead_code)]
     /// Like [`Recorder::start`], but nothing is written: the sources are
     /// mixed into mono and pushed to `sink`. See [`mix`].
     pub fn start_mix(
@@ -800,7 +798,6 @@ impl Recorder {
         })
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
     fn start_mix_with(
         opts: mix::MixOptions,
         sink: Box<dyn mix::MixSink>,

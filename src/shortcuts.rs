@@ -47,8 +47,6 @@ pub enum Action {
     /// The screen recording's picker (a screen, a window or an area), which
     /// answers `owner` with `WM_APP_SCREEN_PICK`. `mic` and `system` are
     /// where its two sound toggles start.
-    // Queued from Task 12 on.
-    #[allow(dead_code)]
     ScreenPick {
         owner: isize,
         mic: bool,

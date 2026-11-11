@@ -157,8 +157,6 @@ pub fn frames_hns(frames: u64) -> i64 {
     (frames as i128 * 10_000_000 / SAMPLE_RATE as i128) as i64
 }
 
-// Wired into the screen recorder by the next task.
-#[cfg_attr(not(test), allow(dead_code))]
 /// Feeds the recorder's mono mix ([`crate::recorder::Recorder::start_mix`])
 /// into a screen recording.
 pub struct Forward(pub std::sync::Arc<dyn AudioInput>);

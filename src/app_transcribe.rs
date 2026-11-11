@@ -475,8 +475,14 @@ impl App {
     /// goes back to the head and its thread stops; when none runs any more
     /// the next job may start.
     pub(super) fn transcribe_sync_hold(&mut self) {
-        let on = self.rec.engaged();
-        if self.tr.queue.set_hold(Hold::Recording, on).is_some()
+        let (audio, screen) = (self.rec.engaged(), self.screen.engaged());
+        let on = audio || screen;
+        // Both holds are set before either answer is looked at.
+        let returned = [
+            self.tr.queue.set_hold(Hold::Recording, audio),
+            self.tr.queue.set_hold(Hold::ScreenRecording, screen),
+        ];
+        if returned.iter().any(Option::is_some)
             && let Some(w) = self.tr.worker.as_mut()
         {
             w.stopping = true;

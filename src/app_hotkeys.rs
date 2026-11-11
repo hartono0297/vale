@@ -287,9 +287,10 @@ impl App {
         self.sync_hotkeys();
     }
 
-    /// Unregisters every row's id, empties the hook's table and stops the hook;
-    /// every row reads as not in effect.
+    /// Unregisters every row's id and the countdown's Esc, empties the hook's
+    /// table and stops the hook; every row reads as not in effect.
     fn unregister_all_hotkeys(&mut self) {
+        self.unregister_countdown_esc();
         for id in HotkeyId::ALL {
             unsafe {
                 let _ = UnregisterHotKey(Some(self.hwnd), wm_id(id));
@@ -359,8 +360,6 @@ impl App {
     /// The 3-2-1 begins: Esc belongs to Vale until `unregister_countdown_esc`,
     /// whichever app has the keyboard. False when another app holds a bare
     /// Esc hotkey (the screen hotkey still cancels).
-    // Called from Task 12 on.
-    #[allow(dead_code)]
     pub(super) fn register_countdown_esc(&mut self) -> bool {
         unsafe {
             RegisterHotKey(
@@ -374,8 +373,6 @@ impl App {
     }
 
     /// The 3-2-1 is over or cancelled: Esc goes back to the other apps.
-    // Called from Task 12 on.
-    #[allow(dead_code)]
     pub(super) fn unregister_countdown_esc(&mut self) {
         unsafe {
             let _ = UnregisterHotKey(Some(self.hwnd), HOTKEY_COUNTDOWN_ESC);

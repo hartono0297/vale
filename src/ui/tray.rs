@@ -384,8 +384,6 @@ pub fn set_recording(hwnd: HWND, on: bool) {
 }
 
 /// The same for a screen recording.
-// Called from Task 12 on.
-#[allow(dead_code)]
 pub fn set_screen_recording(hwnd: HWND, on: bool) {
     set_kind_recording(hwnd, &SCREEN_RECORDING, on);
 }

@@ -3,9 +3,6 @@
 //! lives, windows made or shown later included. Nothing here exists, and
 //! no hook runs, outside a recording.
 
-// Wired into the app with the screen recording's start (track A).
-#![cfg_attr(not(test), allow(dead_code))]
-
 use std::ffi::c_void;
 use std::marker::PhantomData;
 use std::sync::{Mutex, MutexGuard};

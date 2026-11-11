@@ -4104,6 +4104,26 @@ mod tests {
                 all.push(doc::plain_text(&doc, lang));
                 all.push(doc::note_text(&doc, lang));
             }
+            {
+                // The saved-video notice of a screen recording, for each way
+                // it can end and both bodies.
+                use crate::app::screen_page::{Ended, video_saved_notice};
+                use crate::model::TranscriptOffer;
+                for ended in [Ended::Stopped, Ended::WindowClosed, Ended::DisplayGone] {
+                    for offer in [TranscriptOffer::None, TranscriptOffer::Setup] {
+                        let n = video_saved_notice(
+                            lang,
+                            std::path::PathBuf::new(),
+                            Duration::from_secs(197),
+                            ended,
+                            offer,
+                            None,
+                        );
+                        all.push(n.title);
+                        all.push(n.body);
+                    }
+                }
+            }
             all.push(greeting_periods_line(lang));
             for period in ALL_PERIODS {
                 all.push(greeting_title(lang, period).into());

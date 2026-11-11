@@ -114,7 +114,6 @@ impl RecordingPrefs {
     }
 
     /// The folder screen recordings go to now.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn video_dir(&self) -> PathBuf {
         self.video_folder.clone().unwrap_or_else(default_video_folder)
     }
@@ -156,7 +155,6 @@ pub fn fallback_folder() -> Option<PathBuf> {
 
 /// `Videos\Vale`; next to the exe's current directory when Windows cannot say
 /// where Videos is.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn default_video_folder() -> PathBuf {
     use windows::Win32::UI::Shell::FOLDERID_Videos;
     let base = known_folder(&FOLDERID_Videos).unwrap_or_else(|| PathBuf::from("."));
@@ -165,7 +163,6 @@ pub fn default_video_folder() -> PathBuf {
 
 /// `%USERPROFILE%\Vale\Video`: where a screen recording goes when Windows
 /// will not let Vale write in the chosen folder (see [`fallback_folder`]).
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn video_fallback_folder() -> Option<PathBuf> {
     use windows::Win32::UI::Shell::FOLDERID_Profile;
     known_folder(&FOLDERID_Profile).map(|p| p.join("Vale").join("Video"))

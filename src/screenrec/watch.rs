@@ -3,9 +3,6 @@
 //! exists only while a [`WindowWatch`] lives, which is while a window is
 //! being recorded.
 
-// Wired into the app with the screen recording's start (track A).
-#![cfg_attr(not(test), allow(dead_code))]
-
 use std::cell::RefCell;
 use std::ffi::c_void;
 use std::marker::PhantomData;

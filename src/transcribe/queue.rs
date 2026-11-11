@@ -16,8 +16,7 @@ use serde_json::{Value, json};
 pub enum Hold {
     Startup,
     Recording,
-    /// Track C's screen recorder sets it while it records.
-    #[allow(dead_code, reason = "track C's screen recorder holds the queue with it")]
+    /// A screen recording is counting down, starting, running or stopping.
     ScreenRecording,
 }
 

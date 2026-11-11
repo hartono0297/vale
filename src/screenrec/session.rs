@@ -2,9 +2,6 @@
 //! threads: the recorder's options from the settings, what pauses it, and the
 //! clock the island shows.
 
-// Not used by the app until the island drives a screen recording.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use std::time::{Duration, Instant};
 
 use super::Options;

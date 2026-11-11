@@ -193,6 +193,8 @@ pub enum Action {
     /// back to the default).
     RecSources(RecSources),
     RecFolder(Option<std::path::PathBuf>),
+    /// The screen recordings' folder (`None`: back to the default).
+    VideoFolder(Option<std::path::PathBuf>),
     /// The device of a source: an endpoint id, `None` to follow Windows.
     RecDevice(Source, Option<String>),
     /// The mic echo cancellation switch.
@@ -3450,6 +3452,27 @@ pub fn pick_rec_folder(owner: HWND) {
         });
 }
 
+/// The video folder picker for the island (the blocked-folder notice of a
+/// screen recording), like `pick_rec_folder`. The choice comes back to
+/// `owner` as `Action::VideoFolder`.
+pub fn pick_video_folder(owner: HWND) {
+    use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
+    let raw = owner.0 as isize;
+    let _ = std::thread::Builder::new()
+        .name("rec-pick-folder".into())
+        .spawn(move || {
+            let owner = HWND(raw as *mut c_void);
+            // The dialog wants a single-threaded apartment.
+            if unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_err() {
+                return;
+            }
+            if let Some(dir) = pick_path(owner, CustomKind::Folder) {
+                post_action(owner, Action::VideoFolder(Some(dir)));
+            }
+            unsafe { CoUninitialize() };
+        });
+}
+
 /// "Transkrip file lain...": the audio file picker for the island, on a
 /// short-lived thread of its own (as `pick_rec_folder`), opening in `start`.
 /// The choice comes back to `owner` as `Action::TranscribeFile`.
@@ -4513,6 +4536,7 @@ pub fn run_demo(args: &[String]) {
             Action::DeviceNotices(v) => m.device_notices = v,
             Action::RecSources(v) => m.recording.sources = v,
             Action::RecFolder(v) => m.recording.folder = v,
+            Action::VideoFolder(v) => m.recording.video_folder = v,
             Action::RecDevice(source, id) => m.recording.set_device(source, id),
             Action::RecEchoCancel(v) => m.recording.echo_cancel = v,
             // The picked file belongs to the island: nothing in the window.

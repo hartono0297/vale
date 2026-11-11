@@ -25,6 +25,7 @@ use std::os::windows::fs::MetadataExt;
 
 use chrono::{Local, NaiveDate, NaiveDateTime};
 
+use super::screen_page::{busy_notice, busy_with_other};
 use super::{App, WM_APP_EVENT, WM_APP_REC_DEVICE, notif_open, poster};
 use crate::i18n::{self, Key, Lang, text};
 use crate::model::{
@@ -133,7 +134,7 @@ fn changed_picks(
 }
 
 /// Whether `source` is one of the sources chosen for the recording.
-fn is_recorded(sources: RecSources, source: Source) -> bool {
+pub(super) fn is_recorded(sources: RecSources, source: Source) -> bool {
     match source {
         Source::Mic => sources.mic,
         Source::System => sources.system,
@@ -181,7 +182,13 @@ impl SleepPause {
 
 // ---- notices (pure) ----------------------------------------------------------
 
-fn notice(key: &str, lang: Lang, title: String, body: String, kind: NoticeKind) -> Notice {
+pub(super) fn notice(
+    key: &str,
+    lang: Lang,
+    title: String,
+    body: String,
+    kind: NoticeKind,
+) -> Notice {
     Notice {
         key: key.into(),
         source: text(lang, Key::RecNoticeSource).into(),
@@ -476,26 +483,32 @@ fn part_of(audio: &Path) -> PathBuf {
 
 // ---- the recent list ---------------------------------------------------------
 
-/// What a recordings folder file is to the list: a finished `.m4a`, an
-/// unfinished `.m4a.part` (a crash left it), or nothing.
-fn listed(path: &Path) -> Option<bool> {
+/// What a file of the folder is to the list of `kind`: a finished recording
+/// (`.m4a`, a video `.mp4`), an unfinished one (`.m4a.part`, `.mp4.part`: a
+/// crash left it), or nothing.
+fn listed(path: &Path, kind: RecKind) -> Option<bool> {
     let name = path.file_name()?.to_string_lossy().to_ascii_lowercase();
-    if name.ends_with(".m4a.part") {
+    let (done, part) = match kind {
+        RecKind::Audio => (".m4a", ".m4a.part"),
+        RecKind::Screen => (".mp4", ".mp4.part"),
+    };
+    if name.ends_with(part) {
         Some(true)
-    } else if name.ends_with(".m4a") {
+    } else if name.ends_with(done) {
         Some(false)
     } else {
         None
     }
 }
 
-/// The `limit` newest recordings of `dir` as the page lists them, `skip`
-/// (the running recording's `.part`) left out. The title and the start come
-/// from the sidecar; a file with none shows its name and its file time, and
-/// an unknown length is zero. A `.m4a.part` is listed as unfinished. Never
+/// The `limit` newest recordings of `kind` in `dir` as the page lists them,
+/// `skip` (the running recording's `.part`) left out. The title and the start
+/// come from the sidecar; a file with none shows its name and its file time,
+/// and an unknown length is zero. A `.part` is listed as unfinished. Never
 /// fails: an unreadable folder is an empty list.
 pub(super) fn scan_recent(
     dir: &Path,
+    kind: RecKind,
     lang: Lang,
     today: NaiveDate,
     limit: usize,
@@ -511,7 +524,7 @@ pub(super) fn scan_recent(
         .filter_map(Result::ok)
         .filter_map(|e| {
             let path = e.path();
-            let unfinished = listed(&path)?;
+            let unfinished = listed(&path, kind)?;
             if skip.is_some_and(|s| s == path) {
                 return None;
             }
@@ -540,14 +553,14 @@ pub(crate) fn may_probe(attributes: u32) -> bool {
     attributes & (OFFLINE | RECALL_ON_OPEN | RECALL_ON_DATA_ACCESS) == 0
 }
 
-/// The recording's name without `.m4a` or `.m4a.part`.
+/// The recording's name without `.m4a`, `.mp4` or their `.part`.
 fn stem_of(path: &Path) -> String {
     let name = path
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
     let lower = name.to_ascii_lowercase();
-    for ext in [".m4a.part", ".m4a"] {
+    for ext in [".m4a.part", ".mp4.part", ".m4a", ".mp4"] {
         if lower.ends_with(ext) {
             return name[..name.len() - ext.len()].to_string();
         }
@@ -646,8 +659,14 @@ fn sidecar_of(audio: &Path, stem: &str) -> Option<Sidecar> {
 
 impl App {
     /// The Rekam page's start button, the hotkey and the tray entry. Ignored
-    /// while a start or a stop is still running.
+    /// while a start or a stop is still running. While a screen recording is
+    /// anywhere between its picker and its saved file, only a notice says so.
     pub(super) fn rec_toggle(&mut self) {
+        if busy_with_other(RecKind::Audio, self.rec.engaged(), self.screen.busy()) {
+            let lang = self.config.language;
+            self.apply_now(Event::Notice(busy_notice(lang)));
+            return;
+        }
         match self.rec.toggle() {
             Some(Toggle::Stop) => self.rec_stop(),
             Some(Toggle::Start) => self.rec_start(),
@@ -656,9 +675,13 @@ impl App {
     }
 
     /// The Rekam page's button, the hotkey and the tray entry: mutes or
-    /// unmutes `source` of the running recording. Ignored when none runs or
-    /// the source is not one of the recorded.
+    /// unmutes `source` of the running recording, audio or screen. Ignored
+    /// when none runs or the source is not one of the recorded.
     pub(super) fn rec_toggle_mute(&mut self, source: Source) {
+        if self.screen.recording() {
+            self.screen_toggle_mute(source);
+            return;
+        }
         let Some(recorder) = self.rec.recorder.as_ref() else {
             return;
         };
@@ -887,8 +910,13 @@ impl App {
         self.apply_now(Event::RecStatus(Some(status)));
     }
 
-    /// Pause when recording, resume when paused.
+    /// Pause when recording, resume when paused; the screen recording's
+    /// when that is the one running.
     pub(super) fn rec_pause(&mut self) {
+        if self.screen.recording() {
+            self.screen_pause();
+            return;
+        }
         let Some(recorder) = self.rec.recorder.as_mut() else {
             return;
         };
@@ -1056,8 +1084,12 @@ impl App {
         settings::pick_rec_folder(self.hwnd);
     }
 
-    /// The levels `(mic, system)` for the frame; zero when not recording.
+    /// The levels `(mic, system)` for the frame, of the audio or the screen
+    /// recording; zero when not recording.
     pub(super) fn rec_levels(&self) -> (f32, f32) {
+        if self.screen.recording() {
+            return self.screen_levels();
+        }
         self.rec.recorder.as_ref().map_or((0.0, 0.0), Recorder::levels)
     }
 
@@ -1133,7 +1165,15 @@ impl App {
             .name("rec-scan".into())
             .spawn(move || {
                 let today = Local::now().date_naive();
-                let list = scan_recent(&dir, lang, today, RECENT_LIMIT, skip.as_deref(), &decode::probe_duration_ms);
+                let list = scan_recent(
+                    &dir,
+                    RecKind::Audio,
+                    lang,
+                    today,
+                    RECENT_LIMIT,
+                    skip.as_deref(),
+                    &decode::probe_duration_ms,
+                );
                 let _ = tx.send(Event::RecRecent(list));
                 wake();
             });
@@ -1221,7 +1261,7 @@ mod tests {
             asked.borrow_mut().push(p.file_name().unwrap().to_string_lossy().into_owned());
             Some(42_000)
         };
-        let list = scan_recent(&dir, Lang::Id, today(), 20, None, &probe);
+        let list = scan_recent(&dir, RecKind::Audio, Lang::Id, today(), 20, None, &probe);
         let len = |n: &str| list.iter().find(|e| e.path.file_name().unwrap().to_string_lossy() == n).unwrap().duration;
         assert_eq!(len("bare.m4a"), Duration::from_secs(42), "no sidecar: from the audio");
         assert_eq!(len("titled-only.m4a"), Duration::from_secs(42), "a sidecar without a length");
@@ -1230,7 +1270,7 @@ mod tests {
         asked.sort();
         assert_eq!(asked, ["bare.m4a", "titled-only.m4a"], "never the sidecar's or the unfinished one");
         // A failed probe keeps the length unknown.
-        let none = scan_recent(&dir, Lang::Id, today(), 20, None, &|_| None);
+        let none = scan_recent(&dir, RecKind::Audio, Lang::Id, today(), 20, None, &|_| None);
         assert!(none.iter().find(|e| e.path.ends_with("bare.m4a")).unwrap().duration.is_zero());
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1553,13 +1593,13 @@ mod tests {
             write(&format!("filler{i}"), None);
         }
         fs::write(dir.join("notes.txt"), b"x").unwrap();
-        let list = scan_recent(&dir, Lang::Id, today(), RECENT_LIMIT, None, &|_| None);
+        let list = scan_recent(&dir, RecKind::Audio, Lang::Id, today(), RECENT_LIMIT, None, &|_| None);
         assert_eq!(list.len(), 5, "five at most: {list:?}");
         assert_eq!(list[0].title, "filler3", "newest first, no .txt");
         assert_eq!(list[0].duration, Duration::ZERO, "no sidecar: the length is unknown");
         assert!(!list[0].started.is_empty());
         assert!(!list[0].unfinished);
-        let all = scan_recent(&dir, Lang::Id, today(), 20, None, &|_| None);
+        let all = scan_recent(&dir, RecKind::Audio, Lang::Id, today(), 20, None, &|_| None);
         assert_eq!(all.len(), 7);
         let titled = all.iter().find(|e| e.path.ends_with("titled.m4a")).unwrap();
         assert_eq!(titled.title, "Sync mingguan");
@@ -1599,7 +1639,7 @@ halo
 ");
         write("sidecar", "vale.json", r#"{"v":1,"transcript":{"model":"whisper-small"}}"#);
         write("sidecar-only-title", "vale.json", r#"{"v":1,"title":"Rapat"}"#);
-        let all = scan_recent(&dir, Lang::Id, today(), 20, None, &|_| None);
+        let all = scan_recent(&dir, RecKind::Audio, Lang::Id, today(), 20, None, &|_| None);
         let mark = |stem: &str| {
             all.iter()
                 .find(|e| stem_of(&e.path) == stem)
@@ -1622,7 +1662,7 @@ halo
         std::thread::sleep(Duration::from_millis(20));
         let running = dir.join("2026-11-07 1000.m4a.part");
         fs::write(&running, b"x").unwrap();
-        let list = scan_recent(&dir, Lang::Id, today(), RECENT_LIMIT, Some(&running), &|_| None);
+        let list = scan_recent(&dir, RecKind::Audio, Lang::Id, today(), RECENT_LIMIT, Some(&running), &|_| None);
         assert_eq!(list.len(), 1, "{list:?}");
         assert_eq!(list[0].title, "2026-11-07 0900");
         assert!(list[0].unfinished);
@@ -1640,11 +1680,11 @@ halo
 
     #[test]
     fn a_missing_folder_or_a_broken_sidecar_is_not_an_error() {
-        assert!(scan_recent(Path::new(r"Z:\no\such\folder"), Lang::Id, today(), 5, None, &|_| None).is_empty());
+        assert!(scan_recent(Path::new(r"Z:\no\such\folder"), RecKind::Audio, Lang::Id, today(), 5, None, &|_| None).is_empty());
         let dir = scratch("broken");
         fs::write(dir.join("a.m4a"), b"x").unwrap();
         fs::write(dir.join("a.vale.json"), b"{not json").unwrap();
-        let list = scan_recent(&dir, Lang::En, today(), 5, None, &|_| None);
+        let list = scan_recent(&dir, RecKind::Audio, Lang::En, today(), 5, None, &|_| None);
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].title, "a");
         let _ = fs::remove_dir_all(&dir);
@@ -1657,13 +1697,81 @@ halo
             fs::write(dir.join(format!("2026-11-07 {i:04}.m4a")), b"x").unwrap();
         }
         let t0 = Instant::now();
-        let list = scan_recent(&dir, Lang::Id, today(), RECENT_LIMIT, None, &|_| None);
+        let list = scan_recent(&dir, RecKind::Audio, Lang::Id, today(), RECENT_LIMIT, None, &|_| None);
         let took = t0.elapsed();
         println!("scan of 200 files: {took:?}");
         assert_eq!(list.len(), 5);
         // It runs on its own thread now; the bound only catches a blow-up
         // and leaves room for a busy machine.
         assert!(took < Duration::from_millis(500), "{took:?}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_video_list_is_the_newest_five_mp4s() {
+        let dir = scratch("videos");
+        for i in 0..6 {
+            fs::write(dir.join(format!("video{i}.mp4")), b"x").unwrap();
+            std::thread::sleep(Duration::from_millis(15));
+        }
+        fs::write(dir.join("sound.m4a"), b"x").unwrap();
+        fs::write(dir.join("notes.txt"), b"x").unwrap();
+        let list = scan_recent(&dir, RecKind::Screen, Lang::Id, today(), RECENT_LIMIT, None, &|_| None);
+        let titles: Vec<_> = list.iter().map(|e| e.title.as_str()).collect();
+        assert_eq!(titles, ["video5", "video4", "video3", "video2", "video1"], "newest first");
+        assert!(list.iter().all(|e| !e.unfinished));
+        // The audio list of the same folder holds only the `.m4a`.
+        let audio = scan_recent(&dir, RecKind::Audio, Lang::Id, today(), RECENT_LIMIT, None, &|_| None);
+        assert_eq!(audio.len(), 1, "{audio:?}");
+        assert_eq!(audio[0].title, "sound");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_video_part_left_by_a_crash_is_listed_unfinished() {
+        let dir = scratch("video-parts");
+        fs::write(dir.join("2026-11-11 0900.mp4.part"), b"x").unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        let running = dir.join("2026-11-11 1000.mp4.part");
+        fs::write(&running, b"x").unwrap();
+        // An audio `.part` is not the Layar tab's.
+        fs::write(dir.join("2026-11-11 0800.m4a.part"), b"x").unwrap();
+        let list = scan_recent(&dir, RecKind::Screen, Lang::Id, today(), RECENT_LIMIT, Some(&running), &|_| None);
+        assert_eq!(list.len(), 1, "{list:?}");
+        assert_eq!(list[0].title, "2026-11-11 0900");
+        assert!(list[0].unfinished);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stem_of_handles_videos() {
+        assert_eq!(stem_of(Path::new(r"C:\v\a b.mp4.part")), "a b");
+        assert_eq!(stem_of(Path::new(r"C:\v\a b.MP4")), "a b");
+        assert_eq!(stem_of(Path::new(r"C:\v\a b.m4a.part")), "a b");
+        assert_eq!(stem_of(Path::new(r"C:\v\a b.M4A")), "a b");
+        assert_eq!(stem_of(Path::new(r"C:\v\a b.txt")), "a b.txt");
+    }
+
+    #[test]
+    fn a_video_s_sidecar_gives_its_title_and_length() {
+        let dir = scratch("video-sidecar");
+        fs::write(dir.join("2026-11-11 1002 Figma.mp4"), b"x").unwrap();
+        fs::write(
+            dir.join("2026-11-11 1002 Figma.vale.json"),
+            r#"{"v":1,"kind":"screen","title":"Figma","started":"2026-11-11T10:02:00+07:00","duration_ms":197000,"channels":["mix"]}"#,
+        )
+        .unwrap();
+        let asked = std::cell::Cell::new(false);
+        let probe = |_: &Path| {
+            asked.set(true);
+            Some(1)
+        };
+        let list = scan_recent(&dir, RecKind::Screen, Lang::Id, today(), RECENT_LIMIT, None, &probe);
+        assert_eq!(list.len(), 1, "{list:?}");
+        assert_eq!(list[0].title, "Figma");
+        assert_eq!(list[0].duration, Duration::from_secs(197));
+        assert!(!asked.get(), "the sidecar's length wins");
+        assert_eq!(display_title(&list[0].path, Lang::Id, today()), "Figma");
         let _ = fs::remove_dir_all(&dir);
     }
 }
