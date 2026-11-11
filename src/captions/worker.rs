@@ -95,7 +95,8 @@ pub enum Event {
     Ended,
 }
 
-/// A caption session on its worker thread. Dropping it stops it.
+/// A caption session on its worker thread. Dropping it stops it like
+/// [`Running::cancel`]: without waiting.
 pub struct Running {
     cancel: Arc<AtomicBool>,
     wake: mpsc::Sender<Msg>,
@@ -103,11 +104,28 @@ pub struct Running {
 }
 
 impl Running {
-    /// Stops the session and waits for its thread: a running engine call is
-    /// cancelled, open chunks and held lines are dropped, and `Ended` was
-    /// sent when this returns.
-    pub fn stop(self) {
+    /// Stops the session without waiting for it, for a caller that must not
+    /// block (the UI thread): a model that is loading cannot be interrupted
+    /// and takes seconds. The thread ends on its own when it notices, closes
+    /// its capture and frees the model there; events it still sends up to
+    /// `Ended` are an old session's. Open chunks and held lines are dropped.
+    pub fn cancel(self) {
         drop(self);
+    }
+
+    /// `cancel`, then waits for the thread: `Ended` was sent when this
+    /// returns. Blocks as long as a model load or the engine call in
+    /// progress takes to return.
+    pub fn stop(mut self) {
+        self.signal();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+
+    fn signal(&self) {
+        self.cancel.store(true, Ordering::Relaxed);
+        let _ = self.wake.send(Msg::Wake);
     }
 
     /// The thread has ended (after `Ended`).
@@ -118,11 +136,8 @@ impl Running {
 
 impl Drop for Running {
     fn drop(&mut self) {
-        self.cancel.store(true, Ordering::Relaxed);
-        let _ = self.wake.send(Msg::Wake);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
+        // Not joined: the thread is left to end on its own.
+        self.signal();
     }
 }
 
@@ -361,6 +376,8 @@ fn attempt(
     let mut live = Live::new(speakers.clone());
     // After engine work the next round does not wait: more may be due.
     let mut idle = true;
+    // How long the engine ran since the last round, in frames of awake time.
+    let mut ran = 0;
     let result = loop {
         let mut msgs = Vec::new();
         if idle {
@@ -378,9 +395,11 @@ fn attempt(
         let now_frame = qpc_to_frame(qpc_now(), QPC_UNITS_PER_SEC, origin, RATE).max(0);
         let now_ms = now_frame as u64 * 1000 / RATE as u64;
         let mut lost = Vec::new();
-        if let Err(e) = catch_up(&mut live, &mut scorers, now_frame, msgs, &mut |s| {
+        let caught = catch_up(&mut live, &mut scorers, now_frame, ran, msgs, &mut |s| {
             lost.push(s)
-        }) {
+        });
+        ran = 0;
+        if let Err(e) = caught {
             break Err(end(e, "vad"));
         }
         lost.into_iter()
@@ -394,10 +413,12 @@ fn attempt(
             None => continue,
         };
         let language = lang_from_u8(spec.language.load(Ordering::Relaxed)).code();
+        let before = awake_now();
         let heard = match session.run(&chunk.samples, language, cancel) {
             Ok(heard) => heard,
             Err(e) => break Err(end(e, "engine")),
         };
+        ran = awake_frames(before, awake_now());
         let segments = chunk_segments(chunk, &heard, speakers[chunk.channel]);
         if last {
             emit(live.final_done(chunk, segments), on_event);
@@ -410,6 +431,28 @@ fn attempt(
     result
 }
 
+/// The time this PC was awake, in 100 ns units: unlike the performance
+/// counter it stands still through a sleep, so an engine run that a sleep
+/// interrupted does not look long.
+fn awake_now() -> u64 {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn QueryUnbiasedInterruptTime(time: *mut u64) -> i32;
+    }
+    let mut time = 0u64;
+    // SAFETY: writes one u64 through a valid pointer.
+    unsafe {
+        QueryUnbiasedInterruptTime(&mut time);
+    }
+    time
+}
+
+/// The 16 kHz frames between two `awake_now` readings.
+fn awake_frames(before: u64, after: u64) -> i64 {
+    (u128::from(after.saturating_sub(before)) * u128::from(RATE) / u128::from(QPC_UNITS_PER_SEC))
+        as i64
+}
+
 fn emit(out: Vec<Out>, on_event: &mut dyn FnMut(Event)) {
     out.into_iter().for_each(|o| on_event(Event::Out(o)));
 }
@@ -419,20 +462,25 @@ fn emit(out: Vec<Out>, on_event: &mut dyn FnMut(Event)) {
 ///
 /// A clock more than `MAX_BACKLOG_MS` ahead of what was read (the PC slept,
 /// the engine took that long) skips ahead: the audio of that time is not
-/// worth showing late. Otherwise each packet is read as far as its own end
-/// before the next is placed, as if it had just arrived: the timeline holds
-/// only 10 s ahead of its read point, and an engine run can take longer.
+/// worth showing late. `ran` is how long the engine ran since the last round
+/// (frames of awake time): when that is most of the way behind, the model is
+/// too heavy and the skip carries the slow hint; a sleep does not. Otherwise
+/// the audio is read up to each packet's start before the packet is placed,
+/// as if it had just arrived: the timeline holds only 10 s ahead of its read
+/// point, and an engine run or a silent stretch can be longer.
 fn catch_up(
     live: &mut Live,
     scorers: &mut [Box<dyn FrameScorer + '_>],
     now_frame: i64,
+    ran: i64,
     msgs: Vec<Msg>,
     lost: &mut dyn FnMut(Source),
 ) -> Result<(), EngineError> {
     let lag = (LAG_MS * RATE as u64 / 1000) as i64;
     let max_behind = (MAX_BACKLOG_MS * RATE as u64 / 1000) as i64;
-    if now_frame - live.taken_frames() > max_behind {
-        live.skip_to(now_frame - lag);
+    let behind = now_frame - live.taken_frames();
+    if behind > max_behind {
+        live.skip_to(now_frame - lag, 2 * ran >= behind);
     }
     for msg in msgs {
         match msg {
@@ -441,9 +489,8 @@ fn catch_up(
                 start,
                 samples,
             } => {
+                while live.advance(start.min(now_frame), scorers)? {}
                 live.put(channel, start, &samples);
-                let arrived = (start + samples.len() as i64).min(now_frame);
-                while live.advance(arrived, scorers)? {}
             }
             Msg::Lost(source) => lost(source),
             Msg::Wake => {}
@@ -634,7 +681,7 @@ mod tests {
         // The engine ran for 12 s: more waits than the timeline holds ahead.
         let mut live = Live::new(vec![None]);
         let now = frames(12_000);
-        catch_up(&mut live, &mut scorers(), now, talk(12_000), &mut |_| {}).unwrap();
+        catch_up(&mut live, &mut scorers(), now, 0, talk(12_000), &mut |_| {}).unwrap();
         assert_eq!(live.taken_frames(), now - frames(LAG_MS));
         let Some(Work::Final(first)) = live.next_work(12_000) else {
             panic!("no final")
@@ -660,13 +707,14 @@ mod tests {
             &mut live,
             &mut scorers,
             frames(2_000),
+            0,
             talk(2_000),
             &mut |_| {},
         )
         .unwrap();
         // The PC slept for a minute.
         let now = frames(62_000);
-        catch_up(&mut live, &mut scorers, now, Vec::new(), &mut |_| {}).unwrap();
+        catch_up(&mut live, &mut scorers, now, 0, Vec::new(), &mut |_| {}).unwrap();
         assert!(now - live.taken_frames() <= frames(LAG_MS) + 512);
         assert_eq!(live.next_work(62_000), None);
         assert_eq!(
@@ -676,11 +724,174 @@ mod tests {
     }
 
     #[test]
+    fn a_skip_after_a_long_engine_run_says_the_model_is_slow_once() {
+        let mut live = Live::new(vec![None]);
+        let mut scorers = scorers();
+        // The engine ran for 20 s and the clock moved by as much.
+        let now = frames(20_500);
+        catch_up(
+            &mut live,
+            &mut scorers,
+            now,
+            frames(20_000),
+            talk(2_000),
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(
+            live.next_work(20_500),
+            None,
+            "the old audio is not replayed"
+        );
+        assert_eq!(live.take_out(), vec![Out::Gap, Out::Slow]);
+        let now = frames(41_000);
+        catch_up(
+            &mut live,
+            &mut scorers,
+            now,
+            frames(20_000),
+            Vec::new(),
+            &mut |_| {},
+        )
+        .unwrap();
+        live.next_work(41_000);
+        assert_eq!(live.take_out(), vec![Out::Gap], "once in a session");
+    }
+
+    #[test]
+    fn a_sleep_during_a_short_engine_run_is_not_the_models_fault() {
+        let mut live = Live::new(vec![None]);
+        // The run took a second of awake time; the clock ran on for a minute.
+        catch_up(
+            &mut live,
+            &mut scorers(),
+            frames(60_000),
+            frames(1_000),
+            Vec::new(),
+            &mut |_| {},
+        )
+        .unwrap();
+        live.next_work(60_000);
+        assert_eq!(live.take_out(), vec![Out::Gap]);
+    }
+
+    #[test]
+    fn a_packet_far_ahead_of_what_was_read_is_still_heard() {
+        // 12 s of silence went by unread (under the skip), then one packet.
+        let mut live = Live::new(vec![None]);
+        let packet = Msg::Audio {
+            channel: 0,
+            start: frames(12_000),
+            samples: tone(RATE, 1_500),
+        };
+        catch_up(
+            &mut live,
+            &mut scorers(),
+            frames(14_000),
+            0,
+            vec![packet],
+            &mut |_| {},
+        )
+        .unwrap();
+        let Some(Work::Interim(open)) = live.next_work(14_000) else {
+            panic!("the packet was dropped")
+        };
+        assert!(
+            (11_700..=12_100).contains(&open.start_ms),
+            "{}",
+            open.start_ms
+        );
+        assert!(
+            open.samples.len() as i64 >= frames(1_400),
+            "{}",
+            open.samples.len()
+        );
+    }
+
+    #[test]
+    fn the_awake_clock_counts_in_100_ns() {
+        let before = awake_now();
+        std::thread::sleep(Duration::from_millis(30));
+        let passed = awake_now() - before;
+        assert!((200_000..20_000_000).contains(&passed), "{passed}");
+        assert_eq!(awake_frames(10_000_000, 30_000_000), 32_000);
+        assert_eq!(awake_frames(30_000_000, 10_000_000), 0);
+    }
+
+    #[test]
+    fn cancel_does_not_wait_for_a_worker_that_is_busy() {
+        // A worker stuck in a model load: it ends only when the test lets it.
+        let (release, blocked) = mpsc::channel::<()>();
+        let (done_tx, done) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (wake, woken) = mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            let _ = blocked.recv();
+            let _ = done_tx.send(());
+        });
+        let running = Running {
+            cancel: cancel.clone(),
+            wake,
+            thread: Some(thread),
+        };
+        assert!(!running.is_finished());
+        running.cancel();
+        assert!(cancel.load(Ordering::Relaxed));
+        assert!(matches!(woken.try_recv(), Ok(Msg::Wake)));
+        assert!(
+            done.try_recv().is_err(),
+            "the worker is still busy: nobody waited for it"
+        );
+        release.send(()).unwrap();
+        done.recv_timeout(Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn dropping_does_not_wait_and_stop_does() {
+        let (release, blocked) = mpsc::channel::<()>();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (wake, _woken) = mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            let _ = blocked.recv();
+        });
+        drop(Running {
+            cancel: cancel.clone(),
+            wake,
+            thread: Some(thread),
+        });
+        assert!(
+            cancel.load(Ordering::Relaxed),
+            "a drop still stops the session"
+        );
+        drop(release);
+
+        // `stop` returns only after the thread ended.
+        let ended = Arc::new(AtomicBool::new(false));
+        let flag = ended.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let seen = cancel.clone();
+        let (wake, woken) = mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            let _ = woken.recv();
+            assert!(seen.load(Ordering::Relaxed));
+            std::thread::sleep(Duration::from_millis(50));
+            flag.store(true, Ordering::Relaxed);
+        });
+        Running {
+            cancel,
+            wake,
+            thread: Some(thread),
+        }
+        .stop();
+        assert!(ended.load(Ordering::Relaxed));
+    }
+
+    #[test]
     fn a_lost_marker_reaches_the_caller_in_order() {
         let mut live = Live::new(vec![None]);
         let mut lost = Vec::new();
         let msgs = vec![Msg::Wake, Msg::Lost(Source::System)];
-        catch_up(&mut live, &mut scorers(), 0, msgs, &mut |s| lost.push(s)).unwrap();
+        catch_up(&mut live, &mut scorers(), 0, 0, msgs, &mut |s| lost.push(s)).unwrap();
         assert_eq!(lost, vec![Source::System]);
     }
 }

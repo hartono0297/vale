@@ -153,8 +153,11 @@ impl Live {
     /// or the stale audio helps nobody. The buffered audio, the open chunks
     /// and their grey lines are dropped, chunks that were already whole
     /// stay, and `take_out` gets one `Gap`. What is heard after it keeps its
-    /// time in the session. Nothing happens when `advance` is already there.
-    pub fn skip_to(&mut self, frame: i64) {
+    /// time in the session. With `slow` the caller fell behind because the
+    /// engine took that long, not because the clock jumped: the slow hint
+    /// follows the gap, once in a session (shared with `next_work`'s).
+    /// Nothing happens when `advance` is already there.
+    pub fn skip_to(&mut self, frame: i64, slow: bool) {
         let to = frame - frame.rem_euclid(FRAME as i64);
         if to <= self.taken {
             return;
@@ -169,6 +172,17 @@ impl Live {
             self.framers[c] = Framer::default();
         }
         self.out.push(Out::Gap);
+        if slow {
+            self.tell_slow();
+        }
+    }
+
+    /// Queues the slow hint, the first time in a session.
+    fn tell_slow(&mut self) {
+        if !self.slow_told {
+            self.slow_told = true;
+            self.out.push(Out::Slow);
+        }
     }
 
     /// What the engine should run on now: the oldest final, else an interim
@@ -183,10 +197,7 @@ impl Live {
                 self.finals.pop_front();
             }
             self.out.push(Out::Gap);
-            if !self.slow_told {
-                self.slow_told = true;
-                self.out.push(Out::Slow);
-            }
+            self.tell_slow();
         }
         let released = self.release();
         self.out.extend(released.into_iter().map(Out::Final));
@@ -575,7 +586,7 @@ mod tests {
         assert!(matches!(rig.live.next_work(rig.now_ms()), Some(Work::Interim(_))), "a sentence is open");
         // The PC slept for a minute: the clock ran on, no packet came.
         rig.now += frames(60_000) as i64;
-        rig.live.skip_to(rig.now - frames(LAG_MS) as i64);
+        rig.live.skip_to(rig.now - frames(LAG_MS) as i64, false);
         assert_eq!(rig.live.advance(rig.now, &mut rig.scorers), Ok(false), "nothing to replay");
         assert_eq!(rig.live.next_work(rig.now_ms()), None, "the open sentence went with the skip");
         assert_eq!(rig.live.take_out(), vec![Out::ClearInterim { channel: 0 }, Out::Gap]);
@@ -593,7 +604,7 @@ mod tests {
     fn a_skip_that_is_not_ahead_does_nothing() {
         let mut rig = Rig::new(vec![None]);
         rig.play(0, &tone(2_000));
-        rig.live.skip_to(frames(1_000) as i64);
+        rig.live.skip_to(frames(1_000) as i64, true);
         assert_eq!(rig.live.take_out(), vec![]);
         rig.wait(1_300);
         let finals = rig.finals();
@@ -607,9 +618,35 @@ mod tests {
         rig.play(0, &tone(2_000));
         rig.wait(1_300);
         rig.now += frames(60_000) as i64;
-        rig.live.skip_to(rig.now);
+        rig.live.skip_to(rig.now, false);
         assert_eq!(rig.finals().len(), 1, "it was whole before the jump");
         assert_eq!(rig.live.take_out(), vec![Out::Gap], "no grey line was open");
+    }
+
+    #[test]
+    fn a_skip_the_engine_caused_tells_slow_once() {
+        let mut rig = Rig::new(vec![None]);
+        rig.play(0, &tone(2_000));
+        rig.now += frames(20_000) as i64;
+        rig.live.skip_to(rig.now, true);
+        assert_eq!(rig.live.take_out(), vec![Out::ClearInterim { channel: 0 }, Out::Gap, Out::Slow]);
+        rig.now += frames(20_000) as i64;
+        rig.live.skip_to(rig.now, true);
+        assert_eq!(rig.live.take_out(), vec![Out::Gap], "the hint comes once in a session");
+    }
+
+    #[test]
+    fn the_slow_hint_is_shared_with_the_backlog_cap() {
+        let mut rig = Rig::new(vec![None]);
+        rig.now += frames(20_000) as i64;
+        rig.live.skip_to(rig.now, true);
+        assert_eq!(rig.live.take_out(), vec![Out::Gap, Out::Slow]);
+        let sentence = [tone(2_000), silence(1_000)].concat();
+        for _ in 0..10 {
+            rig.play(0, &sentence);
+        }
+        assert!(matches!(rig.live.next_work(rig.now_ms()), Some(Work::Final(_))));
+        assert_eq!(rig.live.take_out(), vec![Out::Gap], "already told");
     }
 
     const ECHOED: &str = "jadi deadline-nya jumat ya";
