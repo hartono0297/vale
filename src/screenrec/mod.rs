@@ -14,9 +14,11 @@ pub mod cursor_log;
 #[cfg(debug_assertions)]
 pub mod debug;
 pub mod encode;
+pub mod exclude;
 pub mod files;
 pub mod plan;
 pub mod session;
+pub mod watch;
 pub mod zoom;
 
 use std::fs::File;
