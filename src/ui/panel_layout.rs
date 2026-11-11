@@ -5299,9 +5299,14 @@ mod tests {
         for style in [Style::Pill, Style::Notch] {
             let s = panel(style);
             for tab in [AUDIO, SCREEN] {
-                for live in [None, Some(BOTH)] {
-                    let tag = format!("{style:?} {tab:?} live={}", live.is_some());
-                    let l = record_layout(s, false, &REC_HEAD, live, BOTH, 3, &PILLS, tab);
+                // The tallest page, a recording under the waiting strip,
+                // still has room for the row.
+                for (live, strip) in [(None, false), (Some(BOTH), false), (Some(BOTH), true)] {
+                    let tag = format!(
+                        "{style:?} {tab:?} live={} strip={strip}",
+                        live.is_some()
+                    );
+                    let l = record_layout(s, strip, &REC_HEAD, live, BOTH, 3, &PILLS, tab);
                     let (label, switch) = l.caption_switch.expect(&tag);
                     // Under the card, over the list, inside the page.
                     assert!(label.y >= l.card.bottom() && switch.y >= l.card.bottom(), "{tag}");
@@ -5310,7 +5315,7 @@ mod tests {
                     assert_eq!((switch.w, switch.h), (NOTIF_SWITCH_W, NOTIF_SWITCH_H), "{tag}");
                     assert!(label.right() < switch.x && disjoint(label, switch), "{tag}");
                     // The row is one click, wherever on it.
-                    let regions = regions(s, &PageLayout::Record(l.clone()), false);
+                    let regions = regions(s, &PageLayout::Record(l.clone()), strip);
                     for (x, y) in [
                         (label.x + 1.0, label.y + label.h / 2.0),
                         (switch.x + switch.w / 2.0, switch.y + switch.h / 2.0),

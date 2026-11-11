@@ -866,10 +866,17 @@ impl App {
         let Some(model) = catalog::model(key) else {
             return;
         };
+        let gpu = gpu::has_hardware_gpu();
+        let before = self.config.transcript.model_for(gpu).key;
         self.config.transcript.model = Some(model.key.to_owned());
         self.save_config();
-        // Running captions read the model from the config.
-        self.captions_sync();
+        // A running caption worker keeps the model it loaded, so another
+        // model restarts it; otherwise the sync only re-reads what is there.
+        if self.config.transcript.model_for(gpu).key == before {
+            self.captions_sync();
+        } else {
+            self.captions_restart();
+        }
     }
 
     /// Settings' "Unduh" (of the offer or a model row). While the active
