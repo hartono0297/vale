@@ -575,6 +575,117 @@ keys! {
     PageSystem => "Sistem", "System";
     PageDevices => "Perangkat", "Devices";
     PageArrange => "Susun", "Arrange";
+    PageRecord => "Rekam", "Record";
+    RecStop => "Berhenti", "Stop";
+    RecPause => "Jeda", "Pause";
+    RecResume => "Lanjut", "Resume";
+    RecRecording => "Merekam", "Recording";
+    RecSourceMic => "Mic", "Mic";
+    RecSourceSystem => "Suara PC", "PC audio";
+    RecSourceBoth => "Dua-duanya", "Both";
+    RecOpenFolder => "Buka folder", "Open folder";
+    HotkeyRowRecord => "Rekam audio", "Record audio";
+    HotkeyRowRecordDesc => "Mulai atau hentikan rekaman", "Start or stop a recording";
+    HotkeyRowRecordMute => "Bisukan mic rekaman", "Mute recording mic";
+    HotkeyRowRecordMuteDesc => "Hanya aktif saat merekam", "Active only while recording";
+    RecNoticeSource => "Rekaman", "Recording";
+    RecSavedTitle => "Rekaman tersimpan", "Recording saved";
+    RecClickToOpen => "klik untuk buka", "click to open";
+    TrNoticeSource => "Transkrip", "Transcript";
+    TrStarting => "Bikin transkrip", "Making a transcript";
+    TrReady => "Transkrip siap", "Transcript ready";
+    TrFailedTitle => "Transkrip gagal", "Transcript failed";
+    TrChipTranscribe => "Transkrip", "Transcribe";
+    TrChipSettings => "Pengaturan", "Settings";
+    TrWantOne => "Bikin transkrip?", "Want a transcript?";
+    TrOffTitle => "Transkrip belum nyala", "Transcripts are off";
+    TrOffBody => "Nyalakan di Pengaturan", "Turn them on in Settings";
+    TrModelReady => "Model transkrip siap", "Transcript model ready";
+    TrDownloadFailed => "Unduhan model gagal", "Model download failed";
+    TrMadeNote => "Dijadikan catatan", "Saved as a note";
+    TrWhyNoNetwork => "Tidak ada jaringan", "No network";
+    TrWhyRefused => "Server menolak unduhan ({code})", "The server refused the download ({code})";
+    TrWhyChecksum => "File unduhan rusak, coba lagi", "The download came out damaged, try again";
+    TrWhyDiskFull => "Disk penuh", "The disk is full";
+    TrWhyDisk => "File tidak bisa ditulis", "The file cannot be written";
+    TrWhyArchive => "Paket mesin tidak cocok", "The engine package does not match";
+    TrWhyRuntime => "Butuh Microsoft Visual C++ Redistributable (x64). Pasang dari situs Microsoft, lalu coba lagi.",
+        "Needs the Microsoft Visual C++ Redistributable (x64). Install it from Microsoft's site, then try again.";
+    TrWhyAudio => "File audio tidak bisa dibaca", "The audio file cannot be read";
+    TrWhyEngine => "Mesin transkrip rusak. Hapus modelnya lalu unduh lagi di Pengaturan",
+        "The transcript engine is damaged. Delete the model and download it again in Settings";
+    TrWhyNoDevice => "Mesin transkrip tidak bisa jalan di PC ini",
+        "The transcript engine cannot run on this PC";
+    TrWhyTooLong => "Rekaman terlalu panjang untuk model ini",
+        "The recording is too long for this model";
+    TrWhyWrite => "Transkrip tidak bisa disimpan di folder ini",
+        "The transcript cannot be saved in this folder";
+    TrWhyOther => "Mesin transkrip gagal. Coba lagi", "The transcript engine failed. Try again";
+    TrPillTranscribe => "Transkrip", "Transcribe";
+    TrPillQueued => "Antre", "Queued";
+    TrPillWaiting => "Menunggu model", "Waiting for model";
+    TrPillDone => "Lihat", "View";
+    TrPillFailed => "Gagal", "Failed";
+    TrMenuView => "Lihat transkrip", "View transcript";
+    TrMenuMake => "Bikin transkrip", "Make a transcript";
+    TrMenuRedo => "Transkrip ulang", "Transcribe again";
+    TrMenuCancel => "Batalkan transkrip", "Cancel the transcript";
+    TrPickFile => "Transkrip file lain\u{2026}", "Transcribe a file\u{2026}";
+    TrPickFileShort => "File lain\u{2026}", "Other file\u{2026}";
+    TrFilter => "Rekaman (*.m4a, *.wav)", "Recordings (*.m4a, *.wav)";
+    RecFailedTitle => "Rekaman gagal", "Recording failed";
+    RecMicDeniedTitle => "Mic diblokir Windows", "Windows blocked the mic";
+    RecMicDeniedBody => "Klik untuk buka pengaturan mic", "Click to open the mic settings";
+    RecMicLost => "Mic terputus", "Mic disconnected";
+    RecSystemLost => "Suara PC terputus", "PC audio disconnected";
+    RecKeepsGoing => "Rekaman tetap berjalan", "Recording continues";
+    RecFolderBlockedTitle => "Folder rekaman diblokir Windows",
+        "Windows blocked the recordings folder";
+    RecFolderBlockedBody => "Klik untuk pilih folder lain", "Click to choose another folder";
+    RecStoppedNoInput => "Rekaman dihentikan: tidak ada suara masuk",
+        "Recording stopped: no audio input";
+    RecUnfinished => "belum selesai", "unfinished";
+    RecWhyNoMf => "Media Foundation tidak ada di Windows ini",
+        "Media Foundation is missing on this Windows";
+    RecWhyNoDevice => "Mic atau speaker tidak ditemukan", "No microphone or speaker found";
+    RecWhyDiskFull => "Disk penuh", "The disk is full";
+    RecWhyFolderGone => "Folder rekaman tidak ditemukan", "The recordings folder is gone";
+    RecWhyNoAudio => "Tidak ada suara masuk", "No audio came in";
+    RecNotSavedTitle => "Rekaman tidak disimpan", "Recording not saved";
+    RecFallbackTitle => "Windows melindungi folder rekaman",
+        "Windows protects the recordings folder";
+    RecSavingTo => "Disimpan ke", "Saving to";
+    RecChangeInSettings => "ganti di Pengaturan", "change it in Settings";
+    RecWhyUnfinished => "File belum diberi nama \u{b7} klik untuk lihat",
+        "The file kept its temporary name \u{b7} click to show";
+    RecWhyOther => "Ada yang tidak beres saat merekam", "Something went wrong while recording";
+    RecConsent => "Ingat: minta izin peserta sebelum merekam",
+        "Remember to ask everyone before recording";
+    TrayRecStart => "Mulai rekam", "Start recording";
+    TrayRecStop => "Hentikan rekam", "Stop recording";
+    TrayMicMute => "Bisukan mic", "Mute mic";
+    TrayMicUnmute => "Nyalakan mic", "Unmute mic";
+    RecSettingsTitle => "Rekaman", "Recording";
+    RecSettingsSources => "Sumber suara", "Sound sources";
+    RecSettingsSourcesDesc => "Yang ikut direkam", "What gets recorded";
+    RecSettingsFolder => "Folder rekaman", "Recordings folder";
+    RecSettingsOpen => "Buka", "Open";
+    RecSettingsChange => "Ganti", "Change";
+    RecSettingsPickTitle => "Pilih folder rekaman", "Choose the recordings folder";
+    RecDeviceFrom => "Suara PC dari", "PC audio from";
+    RecEchoCancel => "Peredam gema mic", "Mic echo cancellation";
+    RecEchoCancelDesc => "Buang suara speaker \u{b7} Berlaku mulai rekaman berikutnya", "Removes speaker sound \u{b7} Applies from the next recording";
+    RecFollowWindows => "Ikuti Windows", "Follow Windows";
+    RecDeviceGone => "Perangkat tidak ada", "Device not found";
+    RecMicSwitched => "Mic pindah", "Mic switched";
+    RecSystemSwitched => "Suara PC pindah", "PC audio switched";
+    RecMicMissing => "Mic pilihan tidak ada", "Chosen mic not found";
+    RecSystemMissing => "Suara PC pilihan tidak ada", "Chosen PC audio not found";
+    RecUsing => "Pakai", "Using";
+    RecMicWord => "Mic", "Mic";
+    RecSystemWord => "Suara PC", "PC audio";
+    RecNotFound => "tidak ada", "not found";
+    RecEmpty => "Belum ada rekaman", "No recordings yet";
     ArrangeSkip => "Lewati ubin", "Skip tile";
     ArrangeSaved => "Tersimpan", "Saved";
     ArrangeHint => "Backspace kembali \u{b7} Esc batal", "Backspace back \u{b7} Esc cancel";
@@ -1150,6 +1261,48 @@ keys! {
     TplAgenda => "Agenda", "Agenda";
     TplDecisions => "Keputusan", "Decisions";
     TplFollowUp => "Tindak lanjut", "Follow-up";
+    TrPrompt => "Ringkas transkrip meeting di bawah ini. Tulis: keputusan yang diambil, action item beserta siapa yang mengerjakan dan tenggatnya kalau disebut, dan pertanyaan yang belum terjawab. \"Saya\" adalah orang yang merekam, \"Peserta\" adalah orang lain di meeting.",
+        "Summarize the meeting transcript below. Write: the decisions made, the action items with who does each and its deadline if one is mentioned, and the questions still open. \"Me\" is the person who recorded, \"Others\" are the other people in the meeting.";
+    TrFullTranscript => "Transkrip lengkap", "Full transcript";
+    TrLangId => "Indonesia", "Indonesian";
+    TrLangEn => "Inggris", "English";
+    TrLangAuto => "Otomatis", "Auto";
+    TrCardTitle => "Transkrip", "Transcripts";
+    TrEnable => "Transkrip", "Transcripts";
+    TrEnableDesc => "Ubah rekaman jadi teks di PC ini. Tidak ada audio yang dikirim.",
+        "Turns recordings into text on this PC. No audio leaves it.";
+    TrOffer => "Unduh {name} ({total} MB, termasuk mesin {engine} MB)?",
+        "Download {name} ({total} MB, including the {engine} MB engine)?";
+    TrDownload => "Unduh", "Download";
+    TrOther => "Pilih model lain", "Choose another model";
+    TrCancel => "Batal", "Cancel";
+    TrInstalled => "Terpasang", "Installed";
+    TrDelete => "Hapus", "Delete";
+    TrInUse => "Sedang dipakai", "In use";
+    TrSuggested => "disarankan", "suggested";
+    TrNoteTurbo => "Paling akurat \u{b7} cepat dengan GPU, lambat tanpa GPU",
+        "Most accurate \u{b7} fast with a GPU, slow without one";
+    TrNoteSmall => "Ringan \u{b7} lebih cepat tanpa GPU, kadang ada kata yang hilang",
+        "Light \u{b7} quicker without a GPU, sometimes drops words";
+    TrLanguage => "Bahasa", "Language";
+    TrAuto => "Bikin transkrip otomatis setelah rekam", "Transcribe automatically after recording";
+    TrAutoDesc => "Mulai sendiri begitu rekaman berhenti", "Starts on its own when a recording stops";
+    TrAutoNeedsOn => "Nyalakan Transkrip dulu", "Turn on Transcripts first";
+    TrAutoNeedsModel => "Perlu model terpasang", "Needs an installed model";
+    TrWhereGpu => "Pakai GPU", "Uses the GPU";
+    TrWhereCpu => "Pakai CPU", "Uses the CPU";
+    TrUsed => "Terpakai {mb} MB", "{mb} MB used";
+    TrBtnCopy => "Salin", "Copy";
+    TrBtnOpenMd => "Buka .md", "Open .md";
+    TrBtnNote => "Jadikan catatan", "Make a note";
+    TrBtnPrompt => "Salin + prompt ringkasan", "Copy + summary prompt";
+    TrBtnRetry => "Coba lagi", "Try again";
+    TrBtnSettings => "Buka Pengaturan", "Open Settings";
+    TrStatusQueued => "Antre, mulai setelah transkrip lain selesai", "Queued, starts after the others finish";
+    TrStatusWaiting => "Menunggu model selesai diunduh", "Waiting for the model to download";
+    TrStatusHeld => "Dijeda selama merekam", "Paused while recording";
+    TrEmpty => "Tidak ada ucapan yang terbaca", "No speech could be made out";
+    TrPlayerError => "Audio tidak bisa diputar", "The audio cannot be played";
 }
 
 /// `key` in `lang`.
@@ -1547,6 +1700,100 @@ pub fn devices_connected(lang: Lang, n: usize) -> String {
     match lang {
         Lang::Id => format!("{n} tersambung"),
         Lang::En => format!("{n} connected"),
+    }
+}
+
+/// When a recording started, for the Rekam page: "Hari ini 10:02", "Kemarin
+/// 14:30", else the date ("5 Nov").
+pub fn rec_started(lang: Lang, at: chrono::NaiveDateTime, today: NaiveDate) -> String {
+    let d = at.date();
+    match near(d, today) {
+        Some(Near::Today) => format!("{} {}", near_word(lang, Near::Today, true), at.format("%H:%M")),
+        Some(Near::Yesterday) => {
+            format!("{} {}", near_word(lang, Near::Yesterday, true), at.format("%H:%M"))
+        }
+        _ => short_date(lang, d),
+    }
+}
+
+/// The line under a recording on the Rekam page: "Hari ini 10:02 · 42 mnt",
+/// or "· belum selesai" for a `.part` a crash left.
+pub fn rec_entry_sub(lang: Lang, started: &str, d: std::time::Duration, unfinished: bool) -> String {
+    let length = if unfinished {
+        text(lang, Key::RecUnfinished).to_string()
+    } else {
+        rec_duration(lang, d)
+    };
+    format!("{started} \u{b7} {length}")
+}
+
+/// The label of a Rekam row's transcript pill: "Transkrip", "Antre",
+/// "Menunggu model", "42%", "Lihat" or "Gagal". The off state shows the
+/// "Transkrip" label too (the pill is drawn dimmed).
+pub fn tr_pill(lang: Lang, mark: crate::model::RowTranscript) -> String {
+    use crate::model::RowTranscript as M;
+    match mark {
+        M::Off | M::None => text(lang, Key::TrPillTranscribe).to_owned(),
+        M::Queued => text(lang, Key::TrPillQueued).to_owned(),
+        M::Waiting => text(lang, Key::TrPillWaiting).to_owned(),
+        M::Running(n) => format!("{n}%"),
+        M::Done => text(lang, Key::TrPillDone).to_owned(),
+        M::Failed => text(lang, Key::TrPillFailed).to_owned(),
+    }
+}
+
+/// "Server menolak unduhan (404)": the server's answer to a model download.
+pub fn tr_why_refused(lang: Lang, code: u16) -> String {
+    text(lang, Key::TrWhyRefused).replace("{code}", &code.to_string())
+}
+
+/// The Transkrip card's first-run offer: "Unduh Whisper small (191 MB,
+/// termasuk mesin 19 MB)?".
+pub fn tr_offer(lang: Lang, name: &str, total_mb: u64, engine_mb: u64) -> String {
+    text(lang, Key::TrOffer)
+        .replace("{name}", name)
+        .replace("{total}", &total_mb.to_string())
+        .replace("{engine}", &engine_mb.to_string())
+}
+
+/// "Terpakai 610 MB": the space the engine and the models take.
+pub fn tr_used(lang: Lang, mb: u64) -> String {
+    text(lang, Key::TrUsed).replace("{mb}", &mb.to_string())
+}
+
+/// "220 / 555 MB": a model download's progress (the same in both languages).
+pub fn tr_progress(done_mb: u64, total_mb: u64) -> String {
+    format!("{done_mb} / {total_mb} MB")
+}
+
+/// A running transcript's progress in its window: "42% · sekitar 6 mnt lagi"
+/// ("42% · about 6 min left"), or "42%" before there is an estimate.
+pub fn tr_running(lang: Lang, pct: u8, eta: Option<std::time::Duration>) -> String {
+    let Some(eta) = eta else {
+        return format!("{pct}%");
+    };
+    let left = rec_duration(lang, eta);
+    match lang {
+        Lang::Id => format!("{pct}% \u{b7} sekitar {left} lagi"),
+        Lang::En => format!("{pct}% \u{b7} about {left} left"),
+    }
+}
+
+/// A recording's length on the Rekam page: "45 dtk", "42 mnt", "1 j 05 mnt"
+/// ("45 s", "42 min", "1 h 05 min"). Minutes round down.
+pub fn rec_duration(lang: Lang, d: std::time::Duration) -> String {
+    let secs = d.as_secs();
+    let (h, m) = (secs / 3600, secs / 60 % 60);
+    let (hour, min, sec) = match lang {
+        Lang::Id => ("j", "mnt", "dtk"),
+        Lang::En => ("h", "min", "s"),
+    };
+    if h > 0 {
+        format!("{h} {hour} {m:02} {min}")
+    } else if m > 0 {
+        format!("{m} {min}")
+    } else {
+        format!("{secs} {sec}")
     }
 }
 
@@ -3323,6 +3570,23 @@ mod tests {
     }
 
     #[test]
+    fn a_recording_start_reads_today_yesterday_or_the_date() {
+        let at = |m, d, h, min| {
+            NaiveDate::from_ymd_opt(2026, m, d)
+                .unwrap()
+                .and_hms_opt(h, min, 0)
+                .unwrap()
+        };
+        let today = NaiveDate::from_ymd_opt(2026, 11, 7).unwrap();
+        assert_eq!(rec_started(Lang::Id, at(11, 7, 10, 2), today), "Hari ini 10:02");
+        assert_eq!(rec_started(Lang::Id, at(11, 6, 14, 30), today), "Kemarin 14:30");
+        assert_eq!(rec_started(Lang::Id, at(11, 5, 9, 15), today), "5 Nov");
+        assert_eq!(rec_started(Lang::En, at(11, 7, 9, 5), today), "Today 09:05");
+        assert_eq!(rec_started(Lang::En, at(11, 6, 23, 59), today), "Yesterday 23:59");
+        assert_eq!(rec_started(Lang::En, at(10, 25, 8, 0), today), "25 Oct");
+    }
+
+    #[test]
     fn every_key_has_text_in_both_languages() {
         assert!(Key::ALL.len() > 50);
         for &key in Key::ALL {
@@ -3580,6 +3844,52 @@ mod tests {
     }
 
     #[test]
+    fn tr_running_reads_in_both_languages() {
+        use std::time::Duration;
+        let six = Some(Duration::from_secs(6 * 60 + 20));
+        assert_eq!(tr_running(Lang::Id, 42, six), "42% \u{b7} sekitar 6 mnt lagi");
+        assert_eq!(tr_running(Lang::En, 42, six), "42% \u{b7} about 6 min left");
+        assert_eq!(tr_running(Lang::Id, 3, None), "3%");
+        assert_eq!(tr_running(Lang::En, 0, Some(Duration::from_secs(45))), "0% \u{b7} about 45 s left");
+    }
+
+    #[test]
+    fn a_transcript_pill_reads_in_both_languages() {
+        use crate::model::RowTranscript as M;
+        let all = [
+            (M::Off, "Transkrip", "Transcribe"),
+            (M::None, "Transkrip", "Transcribe"),
+            (M::Queued, "Antre", "Queued"),
+            (M::Waiting, "Menunggu model", "Waiting for model"),
+            (M::Running(42), "42%", "42%"),
+            (M::Done, "Lihat", "View"),
+            (M::Failed, "Gagal", "Failed"),
+        ];
+        for (mark, id, en) in all {
+            assert_eq!(tr_pill(Lang::Id, mark), id, "{mark:?}");
+            assert_eq!(tr_pill(Lang::En, mark), en, "{mark:?}");
+        }
+    }
+
+    #[test]
+    fn a_recording_length_reads_in_both_languages() {
+        use std::time::Duration;
+        let secs = Duration::from_secs;
+        assert_eq!(rec_duration(Lang::Id, secs(0)), "0 dtk");
+        assert_eq!(rec_duration(Lang::Id, secs(45)), "45 dtk");
+        assert_eq!(rec_duration(Lang::Id, secs(42 * 60 + 59)), "42 mnt");
+        assert_eq!(rec_duration(Lang::Id, secs(3600 + 5 * 60)), "1 j 05 mnt");
+        assert_eq!(rec_duration(Lang::En, secs(45)), "45 s");
+        assert_eq!(rec_duration(Lang::En, secs(18 * 60)), "18 min");
+        assert_eq!(rec_duration(Lang::En, secs(2 * 3600 + 30 * 60)), "2 h 30 min");
+        for lang in [Lang::Id, Lang::En] {
+            for d in [secs(5), secs(600), secs(7200)] {
+                assert_no_leak(lang, "rec_duration", &rec_duration(lang, d));
+            }
+        }
+    }
+
+    #[test]
     fn no_key_leaks_the_other_language() {
         for &key in Key::ALL {
             for lang in [Lang::Id, Lang::En] {
@@ -3609,6 +3919,12 @@ mod tests {
                 session_of(lang, 1, 4),
                 pomo_durations(lang, 25, 5, 15),
                 phase_minutes(lang, text(lang, Key::Break), 5),
+                tr_why_refused(lang, 404),
+                tr_offer(lang, "Whisper large-v3-turbo", 555, 19),
+                tr_used(lang, 610),
+                tr_progress(220, 555),
+                tr_running(lang, 42, Some(Duration::from_secs(6 * 60))),
+                tr_running(lang, 7, None),
                 phase_minutes(lang, text(lang, Key::Focus), 25),
                 more_count(lang, 3),
                 battery_body(lang, 18),
@@ -3639,6 +3955,35 @@ mod tests {
                 day_date_short(lang, today),
                 time_label(lang, hm(9, 30)),
             ];
+            {
+                use crate::transcribe::doc::{self, Doc};
+                use crate::transcribe::output::{Segment, Speaker};
+                let segments = (0..25)
+                    .map(|i| Segment {
+                        start_ms: i * 1000,
+                        end_ms: i * 1000 + 900,
+                        speaker: [Some(Speaker::Me), Some(Speaker::Others), None][i as usize % 3],
+                        text: format!("ok {i}"),
+                    })
+                    .collect();
+                let started = today.and_hms_opt(9, 30, 0).unwrap();
+                let doc = Doc {
+                    audio: r"D:\rec\a.m4a".into(),
+                    md: r"D:\rec\a.md".into(),
+                    title: "Sync".into(),
+                    app: None,
+                    started: Some(started),
+                    duration_ms: Some(2_520_000),
+                    model: Some("whisper-large-v3-turbo".into()),
+                    language: Some("en".into()),
+                    two_channel: true,
+                    has_transcript: true,
+                    segments,
+                };
+                all.push(doc::meta_line(&doc, lang));
+                all.push(doc::plain_text(&doc, lang));
+                all.push(doc::note_text(&doc, lang));
+            }
             all.push(greeting_periods_line(lang));
             for period in ALL_PERIODS {
                 all.push(greeting_title(lang, period).into());

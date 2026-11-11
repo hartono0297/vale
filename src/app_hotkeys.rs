@@ -22,6 +22,7 @@ use super::App;
 use super::prtsc::{self, HookThread};
 use crate::hotkey::{self, Hotkey, HotkeyId, Hotkeys};
 use crate::model::Event;
+use crate::recorder::Source;
 
 /// `RegisterHotKey` ids, one per row.
 pub(super) const HOTKEY_CLIP: i32 = 1;
@@ -37,6 +38,10 @@ pub(super) const ROWS: usize = HotkeyId::ALL.len();
 pub(super) const HOTKEY_STICKY: i32 = 7;
 /// The sticky note list takes 8.
 pub(super) const HOTKEY_STICKY_LIST: i32 = 8;
+/// The audio recorder takes 9.
+pub(super) const HOTKEY_RECORD: i32 = 9;
+/// Mute the recording's mic takes 12 (10 and 11 are the screen recorder's).
+pub(super) const HOTKEY_RECORD_MUTE: i32 = 12;
 
 /// The `RegisterHotKey` id of a row.
 pub(super) fn wm_id(id: HotkeyId) -> i32 {
@@ -49,6 +54,8 @@ pub(super) fn wm_id(id: HotkeyId) -> i32 {
         HotkeyId::LyricsCard => HOTKEY_LYRICS_CARD,
         HotkeyId::StickyNote => HOTKEY_STICKY,
         HotkeyId::StickyList => HOTKEY_STICKY_LIST,
+        HotkeyId::Record => HOTKEY_RECORD,
+        HotkeyId::RecordMute => HOTKEY_RECORD_MUTE,
     }
 }
 
@@ -81,6 +88,17 @@ pub(super) fn plan_row(want: Option<Hotkey>, applied: Option<Hotkey>, failed: bo
         Some(hk) if hotkey::uses_hook(hk) => RowPlan::Hook(hk),
         Some(hk) => RowPlan::Register(hk),
     }
+}
+
+/// The combos the rows want now: the config's, except that a row that only
+/// makes sense while a recording runs (the mic mute) is off otherwise, so its
+/// combo is not taken from other apps at idle. Pure.
+pub(super) fn wanted(config: &Hotkeys, recording: bool) -> Hotkeys {
+    let mut want = *config;
+    if !recording {
+        want.set(HotkeyId::RecordMute, None);
+    }
+    want
 }
 
 /// What the island keeps about the hotkeys.
@@ -200,7 +218,7 @@ impl App {
         if self.hotkeys.paused {
             return;
         }
-        let want = self.config.hotkeys;
+        let want = wanted(&self.config.hotkeys, self.rec.active());
         self.hotkeys.apply(&want, &mut WinOps(self.hwnd));
         self.sync_hotkey_hook();
     }
@@ -314,6 +332,8 @@ impl App {
             HotkeyId::LyricsCard => self.on_lyrics_card_hotkey(),
             HotkeyId::StickyNote => self.on_sticky_hotkey(),
             HotkeyId::StickyList => self.open_note_list(None),
+            HotkeyId::Record => self.rec_toggle(),
+            HotkeyId::RecordMute => self.rec_toggle_mute(Source::Mic),
         }
     }
 
@@ -353,19 +373,22 @@ mod tests {
         assert_eq!(HOTKEY_ARRANGE, 4);
         assert_eq!(HOTKEY_SCREENSHOT, 5);
         assert_eq!(HOTKEY_LYRICS_CARD, 6);
-        assert_eq!(ROWS, 8);
+        assert_eq!(ROWS, 10);
         assert_eq!(HOTKEY_STICKY, 7, "6 is reserved for the lyrics card");
         assert_eq!(HOTKEY_STICKY_LIST, 8);
+        assert_eq!(HOTKEY_RECORD, 9);
+        assert_eq!(HOTKEY_RECORD_MUTE, 12, "10 and 11 are the screen recorder's");
         for id in HotkeyId::ALL {
             assert_eq!(row_of_wm_id(wm_id(id)), Some(id));
         }
         assert_eq!(row_of_wm_id(0), None);
-        assert_eq!(row_of_wm_id(9), None);
-        // The hook's `wparam` is the row index, and the eight ids are distinct.
+        assert_eq!(row_of_wm_id(10), None);
+        assert_eq!(row_of_wm_id(11), None);
+        // The hook's `wparam` is the row index, and the ten ids are distinct.
         let mut ids: Vec<i32> = HotkeyId::ALL.iter().map(|i| wm_id(*i)).collect();
         ids.sort_unstable();
         ids.dedup();
-        assert_eq!(ids.len(), 8);
+        assert_eq!(ids.len(), 10);
     }
 
     #[test]
@@ -410,7 +433,7 @@ mod tests {
         assert!(s.any_failed());
         assert_eq!(
             s.failed_flags(),
-            [false, false, true, false, false, false, false, false]
+            [false, false, true, false, false, false, false, false, false, false]
         );
     }
 
@@ -558,6 +581,53 @@ mod tests {
         s.apply(&rows(&[(HotkeyId::Search, "Ctrl+Alt+Space")]), &mut ops);
         assert!(!s.any_failed());
         assert_eq!(ops.registered.get(&HotkeyId::LyricsCard), None);
+    }
+
+    #[test]
+    fn the_mute_row_is_wanted_only_while_a_recording_runs() {
+        let cfg = Hotkeys::default();
+        assert_eq!(cfg.get(HotkeyId::RecordMute), Some(hk("Ctrl+Alt+M")));
+        let idle = wanted(&cfg, false);
+        assert_eq!(idle.get(HotkeyId::RecordMute), None);
+        // Nothing else changes.
+        for id in HotkeyId::ALL {
+            if id != HotkeyId::RecordMute {
+                assert_eq!(idle.get(id), cfg.get(id), "{id:?}");
+            }
+        }
+        assert_eq!(wanted(&cfg, true), cfg);
+        // A mute row the user turned off stays off while recording.
+        let mut off = cfg;
+        off.set(HotkeyId::RecordMute, None);
+        assert_eq!(wanted(&off, true).get(HotkeyId::RecordMute), None);
+    }
+
+    #[test]
+    fn the_mute_combo_is_registered_with_a_recording_and_let_go_of_after_it() {
+        let cfg = Hotkeys::default();
+        let mut s = HotkeyState::default();
+        let mut ops = FakeOps::default();
+        let m = hk("Ctrl+Alt+M");
+        s.apply(&wanted(&cfg, false), &mut ops);
+        assert_eq!(ops.registered.get(&HotkeyId::RecordMute), None, "free at idle");
+        assert_eq!(s.applied[HotkeyId::RecordMute.index()], None);
+        s.apply(&wanted(&cfg, true), &mut ops);
+        assert_eq!(ops.registered.get(&HotkeyId::RecordMute), Some(&m));
+        assert!(!s.any_failed());
+        s.apply(&wanted(&cfg, false), &mut ops);
+        assert_eq!(ops.registered.get(&HotkeyId::RecordMute), None, "free again after the stop");
+        // Another app holds the combo: only this row fails, and only while recording.
+        let mut s = HotkeyState::default();
+        let mut ops = FakeOps {
+            taken_elsewhere: vec![m],
+            ..FakeOps::default()
+        };
+        s.apply(&wanted(&cfg, false), &mut ops);
+        assert!(!s.any_failed());
+        s.apply(&wanted(&cfg, true), &mut ops);
+        assert!(s.failed_flags()[HotkeyId::RecordMute.index()]);
+        s.apply(&wanted(&cfg, false), &mut ops);
+        assert!(!s.any_failed(), "a row that is off is not failed");
     }
 
     #[test]

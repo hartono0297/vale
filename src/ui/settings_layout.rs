@@ -20,7 +20,8 @@ use crate::config::{
 };
 use crate::hotkey::{Hotkey, HotkeyId, Hotkeys};
 use crate::i18n::{
-    Key, Lang, text, update_available, update_downloading, update_installed, version_label,
+    Key, Lang, text, tr_offer, tr_progress, tr_used, update_available, update_downloading,
+    update_installed, version_label,
 };
 use crate::model::{Page, PomoField};
 use crate::notif::store::{CAP_STEP, MAX_CAP as NOTIF_MAX, MIN_CAP as NOTIF_MIN};
@@ -33,6 +34,12 @@ use crate::ui::geometry::{
 };
 use crate::ui::icons::Icon;
 use crate::ui::robot::{Motion, SLEEP_MAX, SLEEP_MIN};
+use crate::model::RecSources;
+use crate::recorder::Source;
+use crate::recorder::prefs::{RecordingPrefs, folder_label as rec_folder_label};
+use crate::transcribe::catalog::{self, ENGINE, MODELS, Model, VAD, mb};
+use crate::transcribe::download::Progress;
+use crate::transcribe::prefs::{TrLang, TranscriptPrefs};
 use crate::widgets::prefs::{FullscreenRule, WidgetLayer, WidgetPrefs};
 use crate::widgets::sticky::can_add;
 
@@ -437,6 +444,30 @@ pub enum Hit {
     HotkeysResetAll,
     /// "Notifikasi perangkat": the plug-in and safe-to-remove notices.
     DeviceNotices,
+    /// Fitur -> Rekaman: the sources choice, "Buka" (the folder in Explorer)
+    /// and "Ganti" (the folder picker).
+    RecSources(RecSources),
+    RecFolderOpen,
+    RecFolderChange,
+    /// Fitur -> Rekaman: "Ganti" on the mic row or the PC audio row, which
+    /// opens the device menu.
+    RecDevice(Source),
+    /// Fitur -> Rekaman: the mic echo cancellation switch.
+    RecEchoCancel,
+    /// Fitur -> Transkrip: the switch, the first-run offer's "Unduh" and
+    /// "Pilih model lain", a model row's radio, "Unduh" and "Hapus" (by its
+    /// place in `catalog::MODELS`), "Batal" of the running download, the
+    /// language, the auto switch and "Buka folder".
+    TranscriptEnabled,
+    TranscriptOfferDownload,
+    TranscriptOfferOther,
+    TranscriptModel(usize),
+    TranscriptDownload(usize),
+    TranscriptCancel,
+    TranscriptDelete(usize),
+    TranscriptLang(TrLang),
+    TranscriptAuto,
+    TranscriptFolder,
     /// Settings -> Fitur -> Susun: "+ Template baru", a
     /// template's "Ubah" and "Hapus", a saved arrangement's "Ganti nama"
     /// and "Hapus" (by place in their lists), and the editor's "Belah"
@@ -691,6 +722,10 @@ pub enum Group {
     /// Widget -> Lapisan and Saat layar penuh.
     WidgetLayer,
     WidgetFullscreen,
+    /// Fitur -> Rekaman -> Sumber suara.
+    RecSources,
+    /// Fitur -> Transkrip -> Bahasa.
+    TranscriptLang,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1094,6 +1129,48 @@ pub struct Layout {
     pub lifted: Option<Rect>,
     /// The widget gallery's cards (Widget).
     pub tiles: Vec<WidgetTile>,
+    /// Where a card that can be opened directly starts: the top of its
+    /// eyebrow, scrolled like the rest (`card_scroll`).
+    pub card_tops: Vec<(CardId, f32)>,
+    /// Small labels on an accent wash ("disarankan"): the rect is the pill.
+    pub tags: Vec<Text>,
+    /// Progress bars (a model download): the track and how much is filled.
+    pub bars: Vec<Bar>,
+}
+
+/// A card Settings can be opened at (`settings::open_card`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CardId {
+    Transcript,
+}
+
+/// A thin progress bar: `rect` is the whole track, `fill` 0 to 1.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Bar {
+    pub rect: Rect,
+    pub fill: f32,
+}
+
+/// What Fitur -> Transkrip shows, as the island has it. Indices are places
+/// in `catalog::MODELS`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TranscriptView {
+    pub prefs: TranscriptPrefs,
+    /// A hardware GPU: the suggested model and "Pakai GPU".
+    pub gpu: bool,
+    /// Each model's file is on disk (`tr_installed` also needs the engine).
+    pub installed: [bool; 2],
+    pub engine_installed: bool,
+    /// The model being downloaded and how far it is.
+    pub download: Option<(usize, Progress)>,
+    /// The model whose last download failed, and why in plain words.
+    pub download_error: Option<(usize, String)>,
+    /// The model of the transcript being made now (it cannot be deleted).
+    pub in_use: Option<usize>,
+    /// Bytes the engine and the models take on disk.
+    pub used_bytes: u64,
+    /// Why transcripts cannot run (the Visual C++ runtime is missing).
+    pub problem: Option<String>,
 }
 
 /// One card of the widget gallery: its plate, the still picture in it, and
@@ -1307,6 +1384,10 @@ pub struct State<'a> {
     pub open_mode: OpenMode,
     /// The plug-in and safe-to-remove notices.
     pub device_notices: bool,
+    /// Fitur -> Rekaman: the sources, the devices and the folder.
+    pub recording: RecordingPrefs,
+    /// What the mic row and the PC audio row show (`rec_device_label`).
+    pub rec_devices: [String; 2],
     /// The hotkeys, and by `HotkeyId::index` whether a set one could not
     /// be registered (taken by another app, or the PrtSc hook failed).
     pub hotkeys: Hotkeys,
@@ -1367,6 +1448,12 @@ pub struct State<'a> {
     pub update_row: UpdateRow,
     /// The data folder in use, as `data_dir::label` names it.
     pub data_dir: &'a str,
+    /// Fitur -> Transkrip, and whether "Pilih model lain" was clicked
+    /// (window state: the model list shows instead of the offer).
+    pub transcript: TranscriptView,
+    pub transcript_choose: bool,
+    /// The model row whose "Hapus" waits for its second click.
+    pub transcript_confirm: Option<usize>,
 }
 
 pub fn accent_key(a: Accent) -> Key {
@@ -2209,6 +2296,15 @@ fn scroll(l: &mut Layout, scroll: f32, g: Geom) {
         down(&mut t.rect);
         down(&mut t.preview);
     }
+    for t in &mut l.tags {
+        down(&mut t.rect);
+    }
+    for bar in &mut l.bars {
+        down(&mut bar.rect);
+    }
+    for (_, top) in &mut l.card_tops {
+        *top += dy;
+    }
     for r in [
         &mut l.preview,
         &mut l.cat_preview,
@@ -2779,6 +2875,7 @@ fn page_key(p: Page) -> Key {
     match p {
         Page::Calendar => Key::PageCalendar,
         Page::Pomodoro => Key::PagePomodoro,
+        Page::Record => Key::PageRecord,
         Page::Reminders => Key::PageReminders,
         Page::Notes => Key::PageNotes,
         Page::Media => Key::PageMedia,
@@ -3879,6 +3976,8 @@ fn features_page(b: &mut Builder, s: &State) {
     b.divider(card, rows[1]);
 
     devices_card(b, s);
+    recording_card(b, s);
+    transcript_card(b, s);
 
     titled(b, Key::GroupCleaner);
     let card = b.card(ROW_H);
@@ -4369,6 +4468,582 @@ fn devices_card(b: &mut Builder, s: &State) {
     b.row_text(card, card.y, b.t(Key::DeviceNotices), desc, false, x);
 }
 
+/// The sources a Rekaman segment stands for, in the control's order.
+pub const REC_CHOICES: [RecSources; 3] = [
+    RecSources {
+        mic: true,
+        system: false,
+    },
+    RecSources {
+        mic: false,
+        system: true,
+    },
+    RecSources {
+        mic: true,
+        system: true,
+    },
+];
+
+/// How the folder shows when none is chosen.
+pub const REC_DEFAULT_FOLDER: &str = r"Documents\Vale\Rekaman";
+
+/// What a device row shows: the chosen device's name (`name`, `None` when
+/// Windows no longer knows it), or "Ikuti Windows" with the default's name
+/// when no device is chosen.
+pub fn rec_device_label(
+    lang: Lang,
+    chosen: bool,
+    name: Option<&str>,
+    default: Option<&str>,
+) -> String {
+    match (chosen, name, default) {
+        (true, Some(name), _) => name.to_owned(),
+        (true, None, _) => text(lang, Key::RecDeviceGone).to_owned(),
+        (false, _, Some(d)) => format!("{} ({d})", text(lang, Key::RecFollowWindows)),
+        (false, _, None) => text(lang, Key::RecFollowWindows).to_owned(),
+    }
+}
+
+/// "Rekaman" (Fitur): which sound is recorded, the mic and the PC audio
+/// device, and the folder it goes to. (The hotkey is in the Tombol pintas
+/// section.)
+fn recording_card(b: &mut Builder, s: &State) {
+    titled(b, Key::RecSettingsTitle);
+    let card = b.card(5.0 * ROW_H);
+    let rows: [f32; 5] = std::array::from_fn(|i| card.y + i as f32 * ROW_H);
+    let cy = |y: f32| y + ROW_H / 2.0;
+    let items = vec![
+        (Hit::RecSources(REC_CHOICES[0]), b.t(Key::RecSourceMic)),
+        (Hit::RecSources(REC_CHOICES[1]), b.t(Key::RecSourceSystem)),
+        (Hit::RecSources(REC_CHOICES[2]), b.t(Key::RecSourceBoth)),
+    ];
+    let selected = index_of(&REC_CHOICES, &s.recording.sources);
+    let x = b.segmented(Group::RecSources, b.g.right, cy(rows[0]), items, selected);
+    let desc = Some((b.t(Key::RecSettingsSourcesDesc), Tone::Secondary));
+    b.row_text(card, rows[0], b.t(Key::RecSettingsSources), desc, false, x);
+    b.divider(card, rows[1]);
+
+    let change = b.t(Key::RecSettingsChange);
+    let change_w = b.button_w(&[&change], ButtonKind::Secondary);
+    for (i, (source, title)) in [
+        (Source::Mic, Key::RecSourceMic),
+        (Source::System, Key::RecDeviceFrom),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let row = rows[1 + i];
+        let x = b.buttons(
+            b.g.right,
+            cy(row),
+            vec![(
+                Hit::RecDevice(source),
+                change.clone(),
+                ButtonKind::Secondary,
+                true,
+                change_w,
+            )],
+        );
+        let desc = Some((s.rec_devices[source.index()].clone(), Tone::Secondary));
+        b.row_text(card, row, b.t(title), desc, false, x);
+        b.divider(card, rows[2 + i]);
+    }
+
+    let x = b.toggle(Hit::RecEchoCancel, b.g.right, cy(rows[3]), s.recording.echo_cancel);
+    let desc = Some((b.t(Key::RecEchoCancelDesc), Tone::Secondary));
+    b.row_text(card, rows[3], b.t(Key::RecEchoCancel), desc, false, x);
+    b.divider(card, rows[4]);
+
+    let (open, change) = (b.t(Key::RecSettingsOpen), b.t(Key::RecSettingsChange));
+    let (open_w, change_w) = (
+        b.button_w(&[&open], ButtonKind::Secondary),
+        b.button_w(&[&change], ButtonKind::Secondary),
+    );
+    let x = b.buttons(
+        b.g.right,
+        cy(rows[4]),
+        vec![
+            (Hit::RecFolderOpen, open, ButtonKind::Secondary, true, open_w),
+            (Hit::RecFolderChange, change, ButtonKind::Secondary, true, change_w),
+        ],
+    );
+    let folder = s
+        .recording
+        .folder
+        .as_deref()
+        .map_or_else(|| REC_DEFAULT_FOLDER.to_owned(), rec_folder_label);
+    let desc = Some((folder, Tone::Secondary));
+    b.row_text(card, rows[4], b.t(Key::RecSettingsFolder), desc, false, x);
+}
+
+/// The languages of Transkrip's Bahasa, in the control's order.
+pub const TR_LANG_CHOICES: [TrLang; 3] = [TrLang::Id, TrLang::En, TrLang::Auto];
+
+/// The first-run offer's sizes: the model with the engine and the voice
+/// model, and those two alone, in whole MB.
+pub fn offer_mb(model: &Model) -> (u64, u64) {
+    let engine = ENGINE.asset.size + VAD.size;
+    (mb(model.asset.size + engine), mb(engine))
+}
+
+/// Model `i` counts as installed: its file and the engine are on disk. A
+/// model without the engine (a new engine version, a cleaned folder) shows
+/// Unduh, which fetches only the engine.
+pub fn tr_installed(v: &TranscriptView, i: usize) -> bool {
+    v.engine_installed && v.installed[i]
+}
+
+/// Whether "Bikin transkrip otomatis" takes clicks, and its description:
+/// it waits for the switch, then for a model on disk.
+pub fn auto_row(v: &TranscriptView) -> (bool, Key) {
+    if !v.prefs.enabled {
+        (false, Key::TrAutoNeedsOn)
+    } else if !(0..MODELS.len()).any(|i| tr_installed(v, i)) {
+        (false, Key::TrAutoNeedsModel)
+    } else {
+        (true, Key::TrAutoDesc)
+    }
+}
+
+/// The scroll that puts `card`'s eyebrow where the first card of a section
+/// starts, kept in range (the end of the section stops it). 0 when the
+/// layout has no such card.
+pub fn card_scroll(l: &Layout, card: CardId) -> f32 {
+    l.card_tops
+        .iter()
+        .find(|(c, _)| *c == card)
+        .map_or(0.0, |(_, top)| {
+            (top + l.scroll - FIRST_CARD_Y).clamp(0.0, l.scroll_max)
+        })
+}
+
+/// A model row: the space above the name, the name's line, a note line,
+/// the bar under the notes while it downloads, and the space under it all.
+const TR_PAD: f32 = 10.0;
+const TR_NAME_H: f32 = 20.0;
+const TR_BAR_H: f32 = 3.0;
+const TR_BAR_GAP: f32 = 4.0;
+/// A line of the offer's question (Label).
+const TR_LINE_H: f32 = 18.0;
+/// The "disarankan" tag: its height and the room each side of its word.
+const TAG_H: f32 = 18.0;
+const TAG_PAD: f32 = 6.0;
+/// Where the radio dot's column starts inside the card.
+const TR_RADIO_X: f32 = 8.0;
+
+/// The bottom of `lines` description lines that start under a model's name.
+fn tr_notes_bottom(y: f32, lines: usize) -> f32 {
+    y + TR_PAD + TR_NAME_H + (lines.max(1) - 1) as f32 * DESC_LINE_H + 16.0
+}
+
+/// A model row's height for `lines` lines of note, with the download bar.
+fn tr_model_row_h(lines: usize, bar: bool) -> f32 {
+    let notes = tr_notes_bottom(0.0, lines);
+    let bar = if bar { TR_BAR_GAP + TR_BAR_H } else { 0.0 };
+    notes + bar + TR_PAD
+}
+
+/// The columns of the model rows, the same in every row: the text (name,
+/// tag, note, bar) after the radio, the size or progress right-aligned to
+/// `status_right`, and the buttons.
+struct TrCols {
+    text_x: f32,
+    text_w: f32,
+    status_right: f32,
+    button_w: f32,
+}
+
+fn tr_cols(b: &Builder, card: Rect) -> TrCols {
+    let button_w = [Key::TrDownload, Key::TrCancel, Key::TrDelete, Key::ConfirmShort]
+        .map(|k| b.compact_w(&b.t(k)))
+        .into_iter()
+        .fold(0.0, f32::max);
+    // Wide enough for whatever the column may say, so it does not move
+    // when a download starts or a model lands.
+    let mut says: Vec<String> = vec![b.t(Key::TrInstalled), b.t(Key::TrInUse)];
+    for m in &MODELS {
+        let total = offer_mb(m).0;
+        says.push(format!("{} MB", mb(m.asset.size)));
+        says.push(tr_progress(total, total));
+    }
+    let status_w = says
+        .iter()
+        .map(|s| b.w(s, Font::Desc))
+        .fold(0.0, f32::max);
+    let button_x = b.g.right - button_w;
+    let status_right = button_x - GAP;
+    let text_x = card.x + TR_RADIO_X + RADIO_DOT_W;
+    TrCols {
+        text_x,
+        text_w: (status_right - status_w - GAP - text_x).max(0.0),
+        status_right,
+        button_w,
+    }
+}
+
+/// A model's one-line note in the list, by its key.
+fn tr_note_key(model: &Model) -> Key {
+    match model.key {
+        "whisper-small" => Key::TrNoteSmall,
+        _ => Key::TrNoteTurbo,
+    }
+}
+
+/// What a model row shows under its name: its note, or why its last
+/// download failed (in the error colour).
+fn tr_note(b: &Builder, v: &TranscriptView, i: usize, w: f32) -> (Vec<String>, Tone) {
+    match &v.download_error {
+        Some((e, why)) if *e == i => (b.wrap(why, Font::Desc, w), Tone::Bad),
+        _ => {
+            let key = tr_note_key(&MODELS[i]);
+            (b.wrap(&b.t(key), Font::Desc, w), Tone::Secondary)
+        }
+    }
+}
+
+/// "Transkrip" (Fitur): the switch; while it is on, either the offer of
+/// the model for this PC (nothing on disk yet) or a row per model, then
+/// Bahasa, the auto switch, a problem if there is one, and where it runs
+/// with the space used and "Buka folder".
+fn transcript_card(b: &mut Builder, s: &State) {
+    let v = &s.transcript;
+    b.l.card_tops.push((CardId::Transcript, b.y));
+    titled(b, Key::TrCardTitle);
+    let probe = Rect {
+        x: b.g.content_x,
+        y: 0.0,
+        w: b.g.content_w,
+        h: 0.0,
+    };
+    let toggle_x = b.g.right - TOGGLE_W;
+    let enable_lines = b.wrap(&b.t(Key::TrEnableDesc), Font::Desc, row_text_w(probe, toggle_x));
+    let enable_h = wrapped_row_h(enable_lines.len());
+    let inner_w = b.g.right - (probe.x + INSET);
+
+    // Everything below the switch, measured first: the card takes its height.
+    let on = v.prefs.enabled;
+    let offer = on
+        && !v.engine_installed
+        && !v.installed.contains(&true)
+        && v.download.is_none()
+        && !s.transcript_choose;
+    // The model chosen before, else the one for this PC.
+    let offered = v.prefs.model_for(v.gpu);
+    let (offer_lines, offer_error) = if offer {
+        let (total, engine) = offer_mb(offered);
+        let question = tr_offer(b.lang, offered.name, total, engine);
+        // A first download that failed sends the card back here: say why.
+        let error = v
+            .download_error
+            .as_ref()
+            .map(|(_, why)| b.wrap(why, Font::Desc, inner_w))
+            .unwrap_or_default();
+        (b.wrap(&question, Font::Label, inner_w), error)
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    let cols = tr_cols(b, probe);
+    let notes: Vec<(Vec<String>, Tone)> = (0..MODELS.len())
+        .map(|i| tr_note(b, v, i, cols.text_w))
+        .collect();
+    let downloading = |i: usize| v.download.filter(|(d, _)| *d == i).map(|(_, p)| p);
+    let problem_lines = v
+        .problem
+        .as_deref()
+        .map(|p| b.wrap(p, Font::Desc, inner_w))
+        .unwrap_or_default();
+    let offer_h = 14.0
+        + offer_lines.len() as f32 * TR_LINE_H
+        + tr_offer_error_h(offer_error.len())
+        + 10.0
+        + BUTTON_H
+        + 14.0;
+    let rows_h: f32 = (0..MODELS.len())
+        .map(|i| tr_model_row_h(notes[i].0.len(), downloading(i).is_some()))
+        .sum();
+    let problem_h = if problem_lines.is_empty() {
+        0.0
+    } else {
+        26.0 + problem_lines.len() as f32 * DESC_LINE_H
+    };
+    let body_h = if !on {
+        0.0
+    } else if offer {
+        offer_h + 3.0 * ROW_H + problem_h
+    } else {
+        rows_h + 3.0 * ROW_H + problem_h
+    };
+    let card = b.card(enable_h + body_h);
+
+    let x = b.toggle(Hit::TranscriptEnabled, b.g.right, card.y + enable_h / 2.0, on);
+    let label = b.t(Key::TrEnable);
+    b.row_text_lines(card, card.y, label, enable_lines, Tone::Secondary, x);
+    if !on {
+        return;
+    }
+    let mut y = card.y + enable_h;
+    b.divider(card, y);
+    if offer {
+        tr_offer_block(b, card, y, offer_lines, offer_error);
+        y += offer_h;
+    } else {
+        for (i, (lines, tone)) in notes.into_iter().enumerate() {
+            let h = tr_model_row_h(lines.len(), downloading(i).is_some());
+            if i > 0 {
+                b.divider(card, y);
+            }
+            tr_model_row(b, card, &cols, y, h, v, i, s.transcript_confirm, (lines, tone));
+            y += h;
+        }
+    }
+
+    // Bahasa.
+    b.divider(card, y);
+    let items = TR_LANG_CHOICES
+        .iter()
+        .zip([Key::TrLangId, Key::TrLangEn, Key::TrLangAuto])
+        .map(|(l, k)| (Hit::TranscriptLang(*l), b.t(k)))
+        .collect();
+    let selected = index_of(&TR_LANG_CHOICES, &v.prefs.language);
+    let cy = y + ROW_H / 2.0;
+    let x = b.segmented(Group::TranscriptLang, b.g.right, cy, items, selected);
+    b.row_text(card, y, b.t(Key::TrLanguage), None, false, x);
+    y += ROW_H;
+
+    // Bikin transkrip otomatis: greyed with the reason until it can work.
+    b.divider(card, y);
+    let (enabled, desc) = auto_row(v);
+    let x = b.toggle_if(
+        Hit::TranscriptAuto,
+        b.g.right,
+        y + ROW_H / 2.0,
+        v.prefs.auto,
+        enabled,
+    );
+    let desc = Some((b.t(desc), Tone::Secondary));
+    b.row_text(card, y, b.t(Key::TrAuto), desc, false, x);
+    y += ROW_H;
+
+    if !problem_lines.is_empty() {
+        b.divider(card, y);
+        for (i, line) in problem_lines.into_iter().enumerate() {
+            let rect = Rect {
+                x: card.x + INSET,
+                y: y + 12.0 + i as f32 * DESC_LINE_H,
+                w: inner_w,
+                h: 16.0,
+            };
+            b.text(rect, line, Font::Desc, Tone::Bad, Align::Left);
+        }
+        y += problem_h;
+    }
+
+    // Where it runs and the space used, with Buka folder.
+    b.divider(card, y);
+    let open = b.t(Key::RecOpenFolder);
+    let w = b.button_w(&[&open], ButtonKind::Secondary);
+    let cy = y + ROW_H / 2.0;
+    let item = (Hit::TranscriptFolder, open, ButtonKind::Secondary, true, w);
+    let x = b.buttons(b.g.right, cy, vec![item]);
+    let place = if v.gpu {
+        Key::TrWhereGpu
+    } else {
+        Key::TrWhereCpu
+    };
+    let line = format!("{} \u{b7} {}", b.t(place), tr_used(b.lang, mb(v.used_bytes)));
+    let rect = Rect {
+        x: card.x + INSET,
+        y: cy - 8.0,
+        w: row_text_w(card, x),
+        h: 16.0,
+    };
+    b.text(rect, line, Font::Desc, Tone::Secondary, Align::Left);
+}
+
+/// The room the reason of a failed first download takes under the offer's
+/// question: `lines` lines of description and a little space above them.
+fn tr_offer_error_h(lines: usize) -> f32 {
+    if lines == 0 {
+        0.0
+    } else {
+        4.0 + lines as f32 * DESC_LINE_H + 2.0
+    }
+}
+
+/// The first-run offer: the question across the card, the reason its last
+/// download failed (in the error colour) when it did, then "Unduh" and
+/// "Pilih model lain" under it at the right.
+fn tr_offer_block(b: &mut Builder, card: Rect, y: f32, lines: Vec<String>, error: Vec<String>) {
+    let w = b.g.right - (card.x + INSET);
+    let n = lines.len();
+    for (i, line) in lines.into_iter().enumerate() {
+        let rect = Rect {
+            x: card.x + INSET,
+            y: y + 14.0 + i as f32 * TR_LINE_H,
+            w,
+            h: TR_LINE_H,
+        };
+        b.text(rect, line, Font::Label, Tone::Primary, Align::Left);
+    }
+    let error_y = y + 14.0 + n as f32 * TR_LINE_H + 4.0;
+    let error_h = tr_offer_error_h(error.len());
+    for (i, line) in error.into_iter().enumerate() {
+        let rect = Rect {
+            x: card.x + INSET,
+            y: error_y + i as f32 * DESC_LINE_H,
+            w,
+            h: 16.0,
+        };
+        b.text(rect, line, Font::Desc, Tone::Bad, Align::Left);
+    }
+    let (get, other) = (b.t(Key::TrDownload), b.t(Key::TrOther));
+    let get_w = b.button_w(&[&get], ButtonKind::Primary);
+    let other_w = b.button_w(&[&other], ButtonKind::Secondary);
+    let cy = y + 14.0 + n as f32 * TR_LINE_H + error_h + 10.0 + BUTTON_H / 2.0;
+    b.buttons(
+        b.g.right,
+        cy,
+        vec![
+            (Hit::TranscriptOfferDownload, get, ButtonKind::Primary, true, get_w),
+            (Hit::TranscriptOfferOther, other, ButtonKind::Secondary, true, other_w),
+        ],
+    );
+}
+
+/// One model of the list: the radio (the row up to the size column takes
+/// the click), the name with "disarankan" on the model for this PC, its
+/// note (or why its download failed), and at the right the size over
+/// "Terpasang" / "Sedang dipakai" with Hapus, the size with Unduh, or the
+/// progress with Batal and a bar under the note.
+#[allow(clippy::too_many_arguments)]
+fn tr_model_row(
+    b: &mut Builder,
+    card: Rect,
+    c: &TrCols,
+    y: f32,
+    h: f32,
+    v: &TranscriptView,
+    i: usize,
+    armed: Option<usize>,
+    (lines, tone): (Vec<String>, Tone),
+) {
+    let model = &MODELS[i];
+    let active = v.prefs.model_for(v.gpu).key == model.key;
+    let progress = v.download.filter(|(d, _)| *d == i).map(|(_, p)| p);
+    let cy = y + h / 2.0;
+    let size = format!("{} MB", mb(model.asset.size));
+    // The right side first: the radio's click stops before it.
+    let (top, under, button) = match progress {
+        Some(p) => (
+            tr_progress(mb(p.done), mb(p.total)),
+            None,
+            (Hit::TranscriptCancel, Key::TrCancel, ButtonKind::Secondary, true),
+        ),
+        None if tr_installed(v, i) => {
+            let in_use = v.in_use == Some(i);
+            let note = if in_use { Key::TrInUse } else { Key::TrInstalled };
+            // "Hapus" waits for its second click: "Yakin?" in the confirm red.
+            let sure = armed == Some(i) && !in_use;
+            let delete = if sure {
+                (Hit::TranscriptDelete(i), Key::ConfirmShort, ButtonKind::Confirm, true)
+            } else {
+                (Hit::TranscriptDelete(i), Key::TrDelete, ButtonKind::Secondary, !in_use)
+            };
+            (size, Some(note), delete)
+        }
+        // The active model without its file: the one Unduh in the accent.
+        None => {
+            let kind = if active {
+                ButtonKind::Primary
+            } else {
+                ButtonKind::Secondary
+            };
+            let free = v.download.is_none();
+            (size, None, (Hit::TranscriptDownload(i), Key::TrDownload, kind, free))
+        }
+    };
+    let (hit, key, kind, enabled) = button;
+    b.buttons(b.g.right, cy, vec![(hit, b.t(key), kind, enabled, c.button_w)]);
+    let status = |b: &mut Builder, s: String, y: f32, h: f32| {
+        let w = b.w(&s, Font::Desc);
+        let rect = Rect {
+            x: c.status_right - w,
+            y,
+            w,
+            h,
+        };
+        b.text(rect, s, Font::Desc, Tone::Secondary, Align::Left);
+    };
+    status(b, top, y + TR_PAD, TR_NAME_H);
+    if let Some(key) = under {
+        let s = b.t(key);
+        status(b, s, y + TR_PAD + TR_NAME_H, 16.0);
+    }
+
+    let radio_x = card.x + TR_RADIO_X;
+    b.l.controls.push(Control::Radio {
+        hit: Some(Hit::TranscriptModel(i)),
+        rect: Rect {
+            x: radio_x,
+            y: y + 4.0,
+            w: c.text_x + c.text_w - radio_x,
+            h: h - 8.0,
+        },
+        selected: active,
+    });
+    let name_w = b.w(model.name, Font::Label);
+    let name = Rect {
+        x: c.text_x,
+        y: y + TR_PAD,
+        w: name_w.min(c.text_w),
+        h: TR_NAME_H,
+    };
+    b.text(name, model.name.to_owned(), Font::Label, Tone::Primary, Align::Left);
+    if catalog::default_model(v.gpu).key == model.key {
+        let word = b.t(Key::TrSuggested);
+        let w = b.w(&word, Font::Desc) + 2.0 * TAG_PAD;
+        let rect = Rect {
+            x: name.right() + TAG_PAD,
+            y: name.y + (TR_NAME_H - TAG_H) / 2.0,
+            w,
+            h: TAG_H,
+        };
+        b.l.tags.push(Text {
+            rect,
+            text: word,
+            font: Font::Desc,
+            tone: Tone::Primary,
+            align: Align::Center,
+        });
+    }
+    let n = lines.len();
+    for (k, line) in lines.into_iter().enumerate() {
+        let rect = Rect {
+            x: c.text_x,
+            y: y + TR_PAD + TR_NAME_H + k as f32 * DESC_LINE_H,
+            w: c.text_w,
+            h: 16.0,
+        };
+        b.text(rect, line, Font::Desc, tone, Align::Left);
+    }
+    if let Some(p) = progress {
+        let fill = if p.total == 0 {
+            0.0
+        } else {
+            (p.done.min(p.total) as f64 / p.total as f64) as f32
+        };
+        b.l.bars.push(Bar {
+            rect: Rect {
+                x: c.text_x,
+                y: tr_notes_bottom(y, n) + TR_BAR_GAP,
+                w: c.text_w,
+                h: TR_BAR_H,
+            },
+            fill,
+        });
+    }
+}
+
 /// "Jumlah item" one step (10) up or down, kept in 10–200; a hand-edited
 /// value off the grid snaps onto it.
 pub fn clip_items_step(n: u32, dir: i32) -> u32 {
@@ -4505,6 +5180,8 @@ pub fn hotkey_row_key(id: HotkeyId) -> Key {
         HotkeyId::LyricsCard => Key::HotkeyRowLyricsCard,
         HotkeyId::StickyNote => Key::StickyNew,
         HotkeyId::StickyList => Key::StickyList,
+        HotkeyId::Record => Key::HotkeyRowRecord,
+        HotkeyId::RecordMute => Key::HotkeyRowRecordMute,
     }
 }
 
@@ -4518,6 +5195,8 @@ fn hotkey_row_desc_key(id: HotkeyId) -> Key {
         HotkeyId::LyricsCard => Key::HotkeyRowLyricsCardDesc,
         HotkeyId::StickyNote => Key::StickyNewDesc,
         HotkeyId::StickyList => Key::StickyListDesc,
+        HotkeyId::Record => Key::HotkeyRowRecordDesc,
+        HotkeyId::RecordMute => Key::HotkeyRowRecordMuteDesc,
     }
 }
 
@@ -5065,6 +5744,8 @@ mod tests {
             lyrics_card: hk("Win+Ctrl+Alt+Shift+PageUp"),
             sticky_note: hk("Win+Ctrl+Alt+Shift+End"),
             sticky_list: hk("Win+Ctrl+Alt+Shift+Home"),
+            record: hk("Win+Ctrl+Alt+Shift+Insert"),
+            record_mute: hk("Win+Ctrl+Alt+Shift+Delete"),
         }
     }
 
@@ -5191,6 +5872,8 @@ mod tests {
                             OpenMode::Hover
                         },
                         device_notices: !locked,
+                        recording: RecordingPrefs::default(),
+                        rec_devices: [String::new(), String::new()],
                         // Locked: every row set, the longest combos, taken,
                         // one being recorded and one refused. Otherwise the
                         // defaults.
@@ -5333,6 +6016,9 @@ mod tests {
                         update_auto: true,
                         update_row: UpdateRow::Idle,
                         data_dir: r"%APPDATA%\Vale",
+                        transcript: TranscriptView::default(),
+                        transcript_choose: false,
+                        transcript_confirm: None,
                     });
                 }
             }
@@ -5427,7 +6113,91 @@ mod tests {
                 }
             }
         }
+        // Every state of the Transkrip card, in both languages.
+        let base = out[0].clone();
+        for lang in [Lang::Id, Lang::En] {
+            for (view, choose) in tr_views() {
+                out.push(State {
+                    lang,
+                    transcript: view,
+                    transcript_choose: choose,
+                    ..base.clone()
+                });
+            }
+        }
         out
+    }
+
+    /// The Transkrip card in each of its states (`DI_TRANSCRIPT`'s, plus a
+    /// failed download, a model in use, nothing on a PC without a GPU, and
+    /// the engine there without a model).
+    fn tr_views() -> Vec<(TranscriptView, bool)> {
+        let on = TranscriptPrefs {
+            enabled: true,
+            ..TranscriptPrefs::default()
+        };
+        let base = TranscriptView {
+            prefs: on.clone(),
+            gpu: true,
+            ..TranscriptView::default()
+        };
+        let installed = TranscriptView {
+            installed: [true, false],
+            engine_installed: true,
+            used_bytes: 610_000_000,
+            ..base.clone()
+        };
+        vec![
+            (TranscriptView::default(), false),
+            (base.clone(), false),
+            // The first download failed: the offer says why.
+            (
+                TranscriptView {
+                    download_error: Some((0, text(Lang::Id, Key::TrWhyChecksum).to_owned())),
+                    ..base.clone()
+                },
+                false,
+            ),
+            (
+                TranscriptView {
+                    gpu: false,
+                    ..base.clone()
+                },
+                false,
+            ),
+            (base.clone(), true),
+            (
+                TranscriptView {
+                    engine_installed: true,
+                    ..base.clone()
+                },
+                false,
+            ),
+            (
+                TranscriptView {
+                    download: Some((0, Progress { done: 220_000_000, total: 555_360_000 })),
+                    ..base.clone()
+                },
+                false,
+            ),
+            (installed.clone(), false),
+            (
+                TranscriptView {
+                    installed: [true, true],
+                    in_use: Some(0),
+                    ..installed.clone()
+                },
+                false,
+            ),
+            (
+                TranscriptView {
+                    download_error: Some((1, text(Lang::Id, Key::TrWhyChecksum).to_owned())),
+                    problem: Some(text(Lang::Id, Key::TrWhyRuntime).to_owned()),
+                    ..installed.clone()
+                },
+                false,
+            ),
+        ]
     }
 
     /// A drag of the row at place `from` of `list`, with the pointer a little
@@ -5553,6 +6323,13 @@ mod tests {
                     "{section:?} {lang:?}: {g:?} outside every card"
                 );
             }
+            let marks = l.tags.iter().map(|t| t.rect).chain(l.bars.iter().map(|b| b.rect));
+            for r in marks {
+                assert!(
+                    l.cards.iter().any(|card| inside(r, *card)),
+                    "{section:?} {lang:?}: {r:?} outside every card"
+                );
+            }
             for card in &l.cards {
                 assert!(inside(*card, canvas(&l)), "{section:?}: card {card:?}");
                 assert!(card.x >= SIDEBAR_W + PAD - 0.01);
@@ -5576,6 +6353,8 @@ mod tests {
             boxes.extend(l.fields.iter().map(|(f, r)| (format!("{f:?}"), *r)));
             boxes.extend(l.chips.iter().map(|c| (format!("{c:?}"), c.rect)));
             boxes.extend(l.glyphs.iter().map(|g| (format!("{g:?}"), g.rect)));
+            boxes.extend(l.tags.iter().map(|t| (format!("{t:?}"), t.rect)));
+            boxes.extend(l.bars.iter().map(|b| (format!("{b:?}"), b.rect)));
             for (i, (na, a)) in boxes.iter().enumerate() {
                 for (nb, b) in &boxes[i + 1..] {
                     assert!(!overlaps(*a, *b), "{section:?} {lang:?}: {na} / {nb}");
@@ -5601,6 +6380,7 @@ mod tests {
             texts.extend(l.brand.iter());
             texts.extend(l.nav.iter().map(|n| &n.label));
             texts.extend(l.chips.iter().map(|c| &c.label));
+            texts.extend(l.tags.iter());
             for c in &l.controls {
                 if let Control::Stepper { value, .. } = c {
                     texts.push(value);
@@ -5854,7 +6634,7 @@ mod tests {
 
     #[test]
     fn a_tall_window_needs_no_viewport() {
-        for (section, lang, l) in layouts_in((720.0, 3000.0)) {
+        for (section, lang, l) in layouts_in((720.0, 3100.0)) {
             assert_eq!(
                 (l.scroll_max, l.scroll, l.viewport),
                 (0.0, 0.0, None),
@@ -6519,7 +7299,7 @@ mod tests {
             // One card of the header and eight rows, under its eyebrow.
             assert_eq!(l.cards.len(), 1);
             let card = l.cards[0];
-            assert_eq!(card.h, HEADER_H + 8.0 * ROW_H);
+            assert_eq!(card.h, HEADER_H + 10.0 * ROW_H);
             assert!(
                 l.texts
                     .iter()
@@ -6629,9 +7409,10 @@ mod tests {
             assert!(enabled(&l, HotkeyId::Clipboard));
             assert!(!enabled(&l, HotkeyId::Search));
             assert!(l.hits().iter().any(|(h, _)| *h == Hit::HotkeysResetAll));
-            // Every field takes a click.
+            // Every field takes a click (in a window tall enough for all ten rows).
+            let tall = layout_in(Section::Hotkeys, &s, &Estimate, (CLIENT_W, 800.0));
             for id in HotkeyId::ALL {
-                assert!(l.hits().iter().any(|(h, _)| *h == Hit::HotkeyField(id)));
+                assert!(tall.hits().iter().any(|(h, _)| *h == Hit::HotkeyField(id)));
             }
             // Recording: the flag on that field only.
             let rec = State {
@@ -6641,7 +7422,7 @@ mod tests {
             let f = hotkey_fields(&layout(Section::Hotkeys, &rec, &Estimate));
             assert_eq!(
                 f.iter().map(|x| x.3).collect::<Vec<_>>(),
-                [false, false, true, false, false, false, false, false]
+                [false, false, true, false, false, false, false, false, false, false]
             );
             // The description: red for a refusal on that row, red for a taken
             // one that is set, otherwise secondary.
@@ -6679,8 +7460,8 @@ mod tests {
             let reds: Vec<&Text> = l.texts.iter().filter(|t| t.tone == Tone::Bad).collect();
             assert_eq!(
                 reds.len(),
-                4,
-                "search, clipboard, screenshot and the lyrics card are set"
+                6,
+                "search, clipboard, screenshot, the lyrics card, the recorder and its mute are set"
             );
             assert!(reds.iter().all(|t| t.text == text(lang, Key::HotkeyTaken)));
         }
@@ -8199,14 +8980,17 @@ mod tests {
                 (CliStart::Explorer, Shell::PowerShell),
                 (CliStart::Last, Shell::Cmd),
             ] {
-                let s = State {
+                let mut s = State {
                     lang,
                     cli_start: start,
                     shell,
-                    // Notifikasi sits above it now: scrolled to the end.
-                    scroll: f32::MAX,
                     ..states()[0].clone()
                 };
+                // The cards under it (Perangkat, Rekaman, Pembersih) are tall
+                // now: scrolled so that the CLI card is the one in view.
+                let at_top = layout(Section::Features, &s, &Estimate);
+                let (top, _, _) = at_top.segmented(Group::CliStart).expect("Folder awal CLI");
+                s.scroll = top.y - 160.0;
                 let l = layout(Section::Features, &s, &Estimate);
                 let (track, items, selected) =
                     l.segmented(Group::CliStart).expect("Folder awal CLI");
@@ -8302,18 +9086,582 @@ mod tests {
     }
 
     #[test]
-    fn the_devices_card_is_one_row_with_the_notice_toggle_and_no_divider() {
+    fn the_recording_card_has_the_sources_choice_and_a_folder_row_with_two_buttons() {
         for lang in [Lang::Id, Lang::En] {
-            for on in [true, false] {
+            for (i, want) in REC_CHOICES.iter().enumerate() {
                 let s = State {
                     lang,
-                    device_notices: on,
+                    recording: RecordingPrefs {
+                        sources: *want,
+                        folder: Some(std::path::PathBuf::from(r"D:\Audio\Rapat")),
+                        consent_shown: true,
+                        ..RecordingPrefs::default()
+                    },
+                    rec_devices: ["Mikrofon A".to_owned(), "Speaker B".to_owned()],
                     scroll: 1e6,
                     ..states()[0].clone()
                 };
                 let l = layout(Section::Features, &s, &Estimate);
-                // Its own card under its label, before "Pembersih": one row.
-                let card = l.cards[l.cards.len() - 2];
+                let (_, items, selected) = l.segmented(Group::RecSources).expect("Sumber suara");
+                assert_eq!(selected, i);
+                assert_eq!(
+                    items.iter().map(|s| s.hit).collect::<Vec<_>>(),
+                    REC_CHOICES.map(Hit::RecSources)
+                );
+                assert_eq!(
+                    items.iter().map(|s| s.label.as_str()).collect::<Vec<_>>(),
+                    [
+                        text(lang, Key::RecSourceMic),
+                        text(lang, Key::RecSourceSystem),
+                        text(lang, Key::RecSourceBoth)
+                    ]
+                );
+                // Its own five-row card under its label, before "Transkrip"
+                // and "Pembersih".
+                let card = l.cards[l.cards.len() - 3];
+                assert_eq!(card.h, 5.0 * ROW_H);
+                assert!(l.texts.iter().any(|t| t.text == text(lang, Key::RecSettingsTitle).to_uppercase()));
+                // The folder shows like the screenshot one: parent and name.
+                assert!(l.texts.iter().any(|t| t.text == r"Audio\Rapat"), "{lang:?}");
+                let hits = l.hits();
+                let (open, change) = (
+                    hits.iter().find(|(h, _)| *h == Hit::RecFolderOpen).expect("Buka").1,
+                    hits.iter().find(|(h, _)| *h == Hit::RecFolderChange).expect("Ganti").1,
+                );
+                assert!(open.right() <= change.x, "Buka left of Ganti");
+                assert!(open.y >= card.y + 4.0 * ROW_H && change.bottom() <= card.bottom());
+                // The two device rows: a "Ganti" each, named after the
+                // source, showing what the state says, between the sources
+                // row and the folder row.
+                for (i, (source, title, shown)) in [
+                    (Source::Mic, Key::RecSourceMic, "Mikrofon A"),
+                    (Source::System, Key::RecDeviceFrom, "Speaker B"),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    assert!(l.texts.iter().any(|t| t.text == text(lang, title)), "{lang:?} {i}");
+                    assert!(l.texts.iter().any(|t| t.text == shown), "{lang:?} {shown}");
+                    let r = hits
+                        .iter()
+                        .find(|(h, _)| *h == Hit::RecDevice(source))
+                        .expect("a Ganti per device row")
+                        .1;
+                    let top = card.y + (1 + i) as f32 * ROW_H;
+                    let bottom = top + ROW_H;
+                    assert!(r.y >= top && r.bottom() <= bottom, "{lang:?} {i}");
+                    assert!(r.right() <= card.right());
+                }
+            }
+        }
+        // No folder chosen: the default's label.
+        let s = State { scroll: 1e6, ..states()[0].clone() };
+        let l = layout(Section::Features, &s, &Estimate);
+        assert!(l.texts.iter().any(|t| t.text == REC_DEFAULT_FOLDER));
+    }
+
+    /// Fitur laid out with the Transkrip card in `view`.
+    fn tr_layout(lang: Lang, view: TranscriptView, choose: bool) -> Layout {
+        let s = State {
+            lang,
+            transcript: view,
+            transcript_choose: choose,
+            ..states()[0].clone()
+        };
+        layout(Section::Features, &s, &Estimate)
+    }
+
+    /// The card's clickable hits, scrolled or not (the viewport is ignored).
+    fn tr_hits(l: &Layout) -> Vec<Hit> {
+        l.controls
+            .iter()
+            .flat_map(Control::hits)
+            .map(|(h, _)| h)
+            .filter(|h| {
+                matches!(
+                    h,
+                    Hit::TranscriptEnabled
+                        | Hit::TranscriptOfferDownload
+                        | Hit::TranscriptOfferOther
+                        | Hit::TranscriptModel(_)
+                        | Hit::TranscriptDownload(_)
+                        | Hit::TranscriptCancel
+                        | Hit::TranscriptDelete(_)
+                        | Hit::TranscriptLang(_)
+                        | Hit::TranscriptAuto
+                        | Hit::TranscriptFolder
+                )
+            })
+            .collect()
+    }
+
+    fn tr_button(l: &Layout, hit: Hit) -> Option<&Button> {
+        l.controls.iter().find_map(|c| match c {
+            Control::Button(b) if b.hit == hit => Some(b),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn the_armed_delete_says_sure_in_red() {
+        use Hit::TranscriptDelete;
+        for lang in [Lang::Id, Lang::En] {
+            let both = TranscriptView { installed: [true, true], engine_installed: true, ..tr_on() };
+            let at = |view: TranscriptView, armed: Option<usize>| {
+                let s = State { lang, transcript: view, transcript_confirm: armed, ..states()[0].clone() };
+                layout(Section::Features, &s, &Estimate)
+            };
+            let calm = at(both.clone(), None);
+            let armed = at(both.clone(), Some(0));
+            let sure = tr_button(&armed, TranscriptDelete(0)).unwrap();
+            assert_eq!(sure.label, text(lang, Key::ConfirmShort)); // "Yakin?" / "Sure?"
+            assert_eq!(sure.kind, ButtonKind::Confirm);
+            assert!(sure.enabled);
+            // Same place and width as "Hapus": nothing moves.
+            assert_eq!(sure.rect, tr_button(&calm, TranscriptDelete(0)).unwrap().rect);
+            let other = tr_button(&armed, TranscriptDelete(1)).unwrap();
+            assert_eq!((other.label.as_str(), other.kind), (text(lang, Key::TrDelete), ButtonKind::Secondary));
+            // A model in use is never armed.
+            let busy = at(TranscriptView { in_use: Some(0), ..both }, Some(0));
+            let off = tr_button(&busy, TranscriptDelete(0)).unwrap();
+            assert_eq!((off.label.as_str(), off.kind, off.enabled), (text(lang, Key::TrDelete), ButtonKind::Secondary, false));
+        }
+    }
+
+    fn tr_on() -> TranscriptView {
+        TranscriptView {
+            prefs: TranscriptPrefs {
+                enabled: true,
+                ..TranscriptPrefs::default()
+            },
+            gpu: true,
+            ..TranscriptView::default()
+        }
+    }
+
+    const TR_LANGS: [Hit; 3] = [
+        Hit::TranscriptLang(TrLang::Id),
+        Hit::TranscriptLang(TrLang::En),
+        Hit::TranscriptLang(TrLang::Auto),
+    ];
+
+    #[test]
+    fn the_transcript_card_rows_follow_its_state() {
+        use Hit::{
+            TranscriptAuto, TranscriptCancel, TranscriptDelete, TranscriptDownload, TranscriptEnabled,
+            TranscriptFolder, TranscriptModel, TranscriptOfferDownload, TranscriptOfferOther,
+        };
+        for lang in [Lang::Id, Lang::En] {
+            // Off: the switch only, in its own titled card before Pembersih.
+            let l = tr_layout(lang, TranscriptView::default(), false);
+            assert_eq!(tr_hits(&l), [TranscriptEnabled], "{lang:?}");
+            let title = text(lang, Key::TrCardTitle).to_uppercase();
+            assert!(l.texts.iter().any(|t| t.text == title));
+            assert!(l.texts.iter().any(|t| t.text == text(lang, Key::TrEnable)));
+            assert!(l.cards[l.cards.len() - 2].h < ROW_H + 2.0 * DESC_LINE_H);
+
+            // On, nothing installed: the offer, Bahasa, auto greyed, footer.
+            let l = tr_layout(lang, tr_on(), false);
+            let mut want = vec![TranscriptEnabled, TranscriptOfferDownload, TranscriptOfferOther];
+            want.extend(TR_LANGS);
+            want.push(TranscriptFolder);
+            assert_eq!(tr_hits(&l), want, "{lang:?} offer");
+            let (get, other) = (
+                tr_button(&l, TranscriptOfferDownload).unwrap(),
+                tr_button(&l, TranscriptOfferOther).unwrap(),
+            );
+            assert_eq!((get.kind, other.kind), (ButtonKind::Primary, ButtonKind::Secondary));
+            assert_eq!(get.label, text(lang, Key::TrDownload));
+            assert_eq!(other.label, text(lang, Key::TrOther));
+            assert!(l.texts.iter().any(|t| t.text == text(lang, Key::TrAuto)));
+            assert!(l.texts.iter().any(|t| t.text == text(lang, Key::TrLanguage)));
+            assert!(!l.texts.iter().any(|t| t.tone == Tone::Bad), "{lang:?}: no error yet");
+
+            // The first download failed: the offer stays (Unduh tries again)
+            // and says why under its question, in the error colour.
+            let failed = TranscriptView {
+                download_error: Some((0, text(lang, Key::TrWhyNoNetwork).to_owned())),
+                ..tr_on()
+            };
+            let l = tr_layout(lang, failed, false);
+            let mut want = vec![TranscriptEnabled, TranscriptOfferDownload, TranscriptOfferOther];
+            want.extend(TR_LANGS);
+            want.push(TranscriptFolder);
+            assert_eq!(tr_hits(&l), want, "{lang:?} failed offer");
+            let why = text(lang, Key::TrWhyNoNetwork);
+            let why = l.texts.iter().find(|t| t.text == why).expect("the reason");
+            assert_eq!(why.tone, Tone::Bad);
+            let offer = tr_offer(lang, MODELS[0].name, 555, 19);
+            let question = l
+                .texts
+                .iter()
+                .filter(|t| t.font == Font::Label && offer.contains(t.text.as_str()))
+                .map(|t| t.rect.bottom())
+                .fold(0.0, f32::max);
+            let get = tr_button(&l, TranscriptOfferDownload).unwrap();
+            assert!(question > 0.0 && why.rect.y >= question && why.rect.bottom() <= get.rect.y);
+
+            // "Pilih model lain", or the engine already there: the list, a
+            // row per model with Unduh.
+            let engine = TranscriptView {
+                engine_installed: true,
+                ..tr_on()
+            };
+            for (view, choose) in [(tr_on(), true), (engine, false)] {
+                let l = tr_layout(lang, view, choose);
+                let mut want = vec![
+                    TranscriptEnabled,
+                    TranscriptDownload(0),
+                    TranscriptModel(0),
+                    TranscriptDownload(1),
+                    TranscriptModel(1),
+                ];
+                want.extend(TR_LANGS);
+                want.push(TranscriptFolder);
+                assert_eq!(tr_hits(&l), want, "{lang:?} list");
+                for m in MODELS {
+                    assert!(l.texts.iter().any(|t| t.text == m.name), "{}", m.name);
+                }
+                // The suggested model (turbo with a GPU) carries the tag, on
+                // its name's line.
+                assert_eq!(l.tags.len(), 1);
+                assert_eq!(l.tags[0].text, text(lang, Key::TrSuggested));
+                let turbo = l.texts.iter().find(|t| t.text == MODELS[0].name).unwrap();
+                let mid = |r: Rect| r.y + r.h / 2.0;
+                assert!((mid(l.tags[0].rect) - mid(turbo.rect)).abs() < 1.0);
+                for size in ["536 MB", "172 MB"] {
+                    assert!(l.texts.iter().any(|t| t.text == size), "{size}");
+                }
+                for key in [Key::TrNoteTurbo, Key::TrNoteSmall] {
+                    let first = text(lang, key).split_whitespace().next().unwrap();
+                    assert!(l.texts.iter().any(|t| t.text.starts_with(first)), "{key:?}");
+                }
+            }
+            // A download running shows the list too, with Batal.
+            let downloading = TranscriptView {
+                download: Some((1, Progress { done: 0, total: 191_000_000 })),
+                ..tr_on()
+            };
+            let l = tr_layout(lang, downloading, false);
+            assert!(tr_hits(&l).contains(&TranscriptCancel), "{lang:?}");
+
+            // Installed: Terpasang with Hapus; the other one can be fetched;
+            // auto takes clicks.
+            let installed = TranscriptView {
+                installed: [true, false],
+                engine_installed: true,
+                ..tr_on()
+            };
+            let l = tr_layout(lang, installed, false);
+            let mut want = vec![
+                TranscriptEnabled,
+                TranscriptDelete(0),
+                TranscriptModel(0),
+                TranscriptDownload(1),
+                TranscriptModel(1),
+            ];
+            want.extend(TR_LANGS);
+            want.extend([TranscriptAuto, TranscriptFolder]);
+            assert_eq!(tr_hits(&l), want, "{lang:?} installed");
+            assert!(l.texts.iter().any(|t| t.text == text(lang, Key::TrInstalled)));
+            let delete = tr_button(&l, TranscriptDelete(0)).unwrap();
+            assert_eq!(delete.label, text(lang, Key::TrDelete));
+            // The radio of the active model (turbo, the default here) is on.
+            let on: Vec<bool> = l
+                .controls
+                .iter()
+                .filter_map(|c| match c {
+                    Control::Radio {
+                        hit: Some(Hit::TranscriptModel(_)),
+                        selected,
+                        ..
+                    } => Some(*selected),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(on, [true, false]);
+
+            // The footer: where it runs and the space used, and Buka folder.
+            let gpu = TranscriptView {
+                used_bytes: 610_000_000,
+                ..tr_on()
+            };
+            let cpu = TranscriptView {
+                gpu: false,
+                ..gpu.clone()
+            };
+            for (view, key) in [(gpu, Key::TrWhereGpu), (cpu, Key::TrWhereCpu)] {
+                let l = tr_layout(lang, view, false);
+                let line = format!("{} \u{b7} {}", text(lang, key), tr_used(lang, 610));
+                assert!(l.texts.iter().any(|t| t.text == line), "{line}");
+                let open = tr_button(&l, TranscriptFolder).unwrap();
+                assert_eq!(open.label, text(lang, Key::RecOpenFolder));
+            }
+
+            // A failed download says why under the name, and a problem shows
+            // in the error colour above the footer.
+            let failed = TranscriptView {
+                engine_installed: true,
+                download_error: Some((1, text(lang, Key::TrWhyNoNetwork).to_owned())),
+                problem: Some(text(lang, Key::TrWhyDiskFull).to_owned()),
+                ..tr_on()
+            };
+            let l = tr_layout(lang, failed, false);
+            let why = text(lang, Key::TrWhyNoNetwork);
+            let why = l.texts.iter().find(|t| t.text == why).unwrap();
+            assert_eq!(why.tone, Tone::Bad);
+            let small = l.texts.iter().find(|t| t.text == MODELS[1].name).unwrap();
+            assert!(why.rect.y > small.rect.y && why.rect.y < small.rect.bottom() + 20.0);
+            let problem = text(lang, Key::TrWhyDiskFull);
+            let problem = l.texts.iter().find(|t| t.text == problem).unwrap();
+            assert_eq!(problem.tone, Tone::Bad);
+            let folder = tr_button(&l, TranscriptFolder).unwrap();
+            assert!(problem.rect.bottom() <= folder.rect.y);
+        }
+    }
+
+    #[test]
+    fn the_offer_names_the_real_sizes() {
+        assert_eq!(
+            tr_offer(Lang::Id, "Whisper large-v3-turbo", 555, 19),
+            "Unduh Whisper large-v3-turbo (555 MB, termasuk mesin 19 MB)?"
+        );
+        assert_eq!(
+            tr_offer(Lang::En, "Whisper small", 191, 19),
+            "Download Whisper small (191 MB, including the 19 MB engine)?"
+        );
+        assert_eq!(offer_mb(&MODELS[0]), (555, 19));
+        assert_eq!(offer_mb(&MODELS[1]), (191, 19));
+        // A model chosen earlier is the one offered, whatever the GPU.
+        let saved = TranscriptView {
+            prefs: TranscriptPrefs {
+                model: Some("whisper-small".into()),
+                ..tr_on().prefs
+            },
+            ..tr_on()
+        };
+        let l = tr_layout(Lang::Id, saved, false);
+        let offer = tr_offer(Lang::Id, "Whisper small", 191, 19);
+        let shown: Vec<&str> = l
+            .texts
+            .iter()
+            .filter(|t| t.font == Font::Label && offer.contains(t.text.as_str()))
+            .map(|t| t.text.as_str())
+            .collect();
+        assert_eq!(shown.join(" "), offer);
+        // Each model's note goes by its key.
+        assert_eq!(tr_note_key(&MODELS[0]), Key::TrNoteTurbo);
+        assert_eq!(tr_note_key(&MODELS[1]), Key::TrNoteSmall);
+        // The card offers the model for this PC, with its real sum.
+        for (gpu, model, total) in [(true, &MODELS[0], 555), (false, &MODELS[1], 191)] {
+            let view = TranscriptView { gpu, ..tr_on() };
+            let l = tr_layout(Lang::Id, view, false);
+            let offer = tr_offer(Lang::Id, model.name, total, 19);
+            let shown: Vec<&str> = l
+                .texts
+                .iter()
+                .filter(|t| t.font == Font::Label && offer.contains(t.text.as_str()))
+                .map(|t| t.text.as_str())
+                .collect();
+            assert_eq!(shown.join(" "), offer, "{gpu}");
+        }
+    }
+
+    #[test]
+    fn delete_is_off_for_the_model_in_use() {
+        let view = TranscriptView {
+            installed: [true, true],
+            engine_installed: true,
+            in_use: Some(0),
+            ..tr_on()
+        };
+        for lang in [Lang::Id, Lang::En] {
+            let l = tr_layout(lang, view.clone(), false);
+            let hits = tr_hits(&l);
+            assert!(!hits.contains(&Hit::TranscriptDelete(0)));
+            assert!(hits.contains(&Hit::TranscriptDelete(1)));
+            assert!(!tr_button(&l, Hit::TranscriptDelete(0)).unwrap().enabled);
+            assert!(l.texts.iter().any(|t| t.text == text(lang, Key::TrInUse)));
+            let installed = text(lang, Key::TrInstalled);
+            assert_eq!(l.texts.iter().filter(|t| t.text == installed).count(), 1);
+        }
+    }
+
+    #[test]
+    fn a_model_without_the_engine_offers_unduh_not_hapus() {
+        let view = TranscriptView {
+            installed: [false, true],
+            engine_installed: false,
+            ..tr_on()
+        };
+        assert!(!tr_installed(&view, 1));
+        for lang in [Lang::Id, Lang::En] {
+            let l = tr_layout(lang, view.clone(), false);
+            let hits = tr_hits(&l);
+            // The rows show (not the first-time offer), the model's row with Unduh.
+            assert!(hits.contains(&Hit::TranscriptModel(1)));
+            assert!(tr_button(&l, Hit::TranscriptDownload(1)).unwrap().enabled);
+            assert!(tr_button(&l, Hit::TranscriptDelete(1)).is_none());
+            assert!(!l.texts.iter().any(|t| t.text == text(lang, Key::TrInstalled)));
+        }
+        // With the engine back, it is installed again.
+        let back = TranscriptView {
+            engine_installed: true,
+            ..view
+        };
+        assert!(tr_installed(&back, 1));
+        let l = tr_layout(Lang::Id, back, false);
+        assert!(tr_button(&l, Hit::TranscriptDelete(1)).is_some());
+    }
+
+    #[test]
+    fn other_downloads_wait_for_the_running_one() {
+        let view = TranscriptView {
+            download: Some((1, Progress { done: 10_000_000, total: 191_000_000 })),
+            ..tr_on()
+        };
+        let l = tr_layout(Lang::Id, view, false);
+        let hits = tr_hits(&l);
+        assert!(!hits.contains(&Hit::TranscriptDownload(0)));
+        assert!(!tr_button(&l, Hit::TranscriptDownload(0)).unwrap().enabled);
+        assert!(tr_button(&l, Hit::TranscriptDownload(1)).is_none());
+        assert!(hits.contains(&Hit::TranscriptCancel));
+        // Picking a model still works while one downloads.
+        assert!(hits.contains(&Hit::TranscriptModel(0)) && hits.contains(&Hit::TranscriptModel(1)));
+    }
+
+    #[test]
+    fn auto_is_greyed_when_off_or_without_a_model() {
+        let off = TranscriptView::default();
+        assert_eq!(auto_row(&off), (false, Key::TrAutoNeedsOn));
+        let installed_off = TranscriptView {
+            installed: [false, true],
+            ..TranscriptView::default()
+        };
+        assert_eq!(auto_row(&installed_off), (false, Key::TrAutoNeedsOn));
+        assert_eq!(auto_row(&tr_on()), (false, Key::TrAutoNeedsModel));
+        let ready = TranscriptView {
+            installed: [false, true],
+            engine_installed: true,
+            ..tr_on()
+        };
+        assert_eq!(auto_row(&ready), (true, Key::TrAutoDesc));
+        let no_engine = TranscriptView {
+            engine_installed: false,
+            ..ready.clone()
+        };
+        assert_eq!(auto_row(&no_engine), (false, Key::TrAutoNeedsModel));
+        // In the card: faded with its note, or on with its description.
+        for (view, enabled, key) in [
+            (tr_on(), false, Key::TrAutoNeedsModel),
+            (ready, true, Key::TrAutoDesc),
+        ] {
+            let l = tr_layout(Lang::Id, view, false);
+            let toggle = l.controls.iter().find_map(|c| match c {
+                Control::Toggle {
+                    hit: Hit::TranscriptAuto,
+                    enabled,
+                    on,
+                    ..
+                } => Some((*enabled, *on)),
+                _ => None,
+            });
+            assert_eq!(toggle, Some((enabled, true)));
+            assert!(l.texts.iter().any(|t| t.text == text(Lang::Id, key)), "{key:?}");
+        }
+    }
+
+    #[test]
+    fn a_download_shows_its_progress_and_cancel() {
+        let view = TranscriptView {
+            download: Some((0, Progress { done: 220_000_000, total: 555_360_000 })),
+            ..tr_on()
+        };
+        assert_eq!(tr_progress(220, 555), "220 / 555 MB");
+        for lang in [Lang::Id, Lang::En] {
+            let l = tr_layout(lang, view.clone(), false);
+            assert!(l.texts.iter().any(|t| t.text == "220 / 555 MB"), "{lang:?}");
+            let cancel = tr_button(&l, Hit::TranscriptCancel).unwrap();
+            assert_eq!(cancel.label, text(lang, Key::TrCancel));
+            assert!(cancel.enabled);
+            assert_eq!(l.bars.len(), 1);
+            let bar = l.bars[0];
+            assert_eq!(bar.rect.h, 3.0);
+            assert!((bar.fill - 220.0 / 555.36).abs() < 0.001, "{}", bar.fill);
+            // Under turbo's name, not in the other row, left of the buttons.
+            let turbo = l.texts.iter().find(|t| t.text == MODELS[0].name).unwrap();
+            let small = l.texts.iter().find(|t| t.text == MODELS[1].name).unwrap();
+            assert!(bar.rect.y > turbo.rect.bottom() && bar.rect.bottom() < small.rect.y);
+            assert!(bar.rect.right() < cancel.rect.x);
+        }
+    }
+
+    #[test]
+    fn the_transcript_card_can_be_scrolled_to() {
+        let eyebrow_y = |l: &Layout| {
+            let title = text(Lang::Id, Key::TrCardTitle).to_uppercase();
+            l.texts.iter().find(|t| t.text == title).unwrap().rect.y
+        };
+        let installed = TranscriptView {
+            installed: [true, true],
+            engine_installed: true,
+            ..tr_on()
+        };
+        let top = tr_layout(Lang::Id, installed.clone(), false);
+        let scroll = card_scroll(&top, CardId::Transcript);
+        assert!(scroll > 0.0 && scroll < top.scroll_max, "{scroll} of {}", top.scroll_max);
+        let s = State {
+            transcript: installed,
+            scroll,
+            ..states()[0].clone()
+        };
+        let l = layout(Section::Features, &s, &Estimate);
+        assert!((eyebrow_y(&l) - FIRST_CARD_Y).abs() < 0.01, "{}", eyebrow_y(&l));
+        assert_eq!(card_scroll(&l, CardId::Transcript), scroll, "the same from any scroll");
+        assert_eq!(l.card_tops.len(), 1);
+        assert!((l.card_tops[0].1 - FIRST_CARD_Y).abs() < 0.01);
+        // Off, the card is short: the end of the section stops the scroll.
+        let off = tr_layout(Lang::Id, TranscriptView::default(), false);
+        assert_eq!(card_scroll(&off, CardId::Transcript), off.scroll_max);
+        // Not on this page: nothing to scroll to.
+        let general = layout(Section::General, &states()[0], &Estimate);
+        assert_eq!(card_scroll(&general, CardId::Transcript), 0.0);
+    }
+
+    #[test]
+    fn a_device_row_names_the_choice_or_follows_windows_with_the_default() {
+        assert_eq!(
+            rec_device_label(Lang::Id, false, None, Some("Speakers")),
+            "Ikuti Windows (Speakers)"
+        );
+        assert_eq!(
+            rec_device_label(Lang::En, false, None, Some("Speakers")),
+            "Follow Windows (Speakers)"
+        );
+        assert_eq!(rec_device_label(Lang::En, false, None, None), "Follow Windows");
+        assert_eq!(rec_device_label(Lang::Id, true, Some("Headset"), Some("Speakers")), "Headset");
+        // A chosen device Windows no longer knows says so, not "Ikuti Windows".
+        assert_eq!(rec_device_label(Lang::Id, true, None, Some("Speakers")), "Perangkat tidak ada");
+        assert_eq!(rec_device_label(Lang::En, true, None, None), "Device not found");
+    }
+
+    #[test]
+    fn the_devices_card_is_one_row_with_the_notice_toggle_and_no_divider() {
+        for lang in [Lang::Id, Lang::En] {
+            for on in [true, false] {
+                let mut s = State {
+                    lang,
+                    device_notices: on,
+                    ..states()[0].clone()
+                };
+                // Scrolled so the card shows (the cards after it are taller
+                // than the window).
+                let top = layout(Section::Features, &s, &Estimate);
+                s.scroll = top.cards[top.cards.len() - 4].y - FIRST_CARD_Y;
+                let l = layout(Section::Features, &s, &Estimate);
+                // Its own card under its label, before "Rekaman",
+                // "Transkrip" and "Pembersih": one row.
+                let card = l.cards[l.cards.len() - 4];
                 assert_eq!(card.h, ROW_H);
                 assert!(
                     l.texts

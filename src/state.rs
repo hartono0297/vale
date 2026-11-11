@@ -10,10 +10,12 @@ use crate::i18n::{self, Key, text};
 use crate::lyrics;
 use crate::model::{
     ArrangeSave, CalView, ClipAction, Effect, Event, Hit, MediaCommand, MediaInfo, Notice,
-    NoticeKind, NotifAction, OpenTarget, Page, PhoneStage, Shortcut, ShotAction, Timeline, View,
+    NoticeKind, NotifAction, OpenTarget, Page, PhoneStage, RecEntry, RecStatus, RowTranscript,
+    Shortcut, ShotAction, Timeline, TranscriptOffer, View,
 };
 use crate::mole::MoleOpts;
 use crate::pages::PanelPages;
+use crate::recorder::Source;
 use crate::pomodoro::{Phase, PhaseDone, PomoSettings, PomoStatus, Pomodoro};
 use crate::tiles::{ShortcutTiles, Tile};
 use crate::ui::geometry::ANIM_MS;
@@ -118,6 +120,13 @@ fn notice_has_action(notice: &Notice) -> bool {
             | NoticeKind::Arranged { .. }
             | NoticeKind::UpdateFailed
             | NoticeKind::ShotSaved { path: Some(_) }
+            | NoticeKind::RecSaved { .. }
+            | NoticeKind::RecMicDenied
+            | NoticeKind::RecFolderBlocked { .. }
+            | NoticeKind::RecFailed { reveal: Some(_) }
+            | NoticeKind::TranscriptReady { .. }
+            | NoticeKind::TranscriptFailed { .. }
+            | NoticeKind::TranscriptSettings
             | NoticeKind::App {
                 app_id: Some(_),
                 ..
@@ -304,6 +313,10 @@ pub struct IslandState {
     hover_opened: Option<Instant>,
     /// An editor window is open; it keeps the panel open like hover.
     editor_open: bool,
+    /// A dropdown opened from the panel is open (the Rekam page's device
+    /// list); it keeps the panel open like an editor, and a press on it is
+    /// not a click outside.
+    menu_open: bool,
     /// The CLI page's input has the keyboard; it keeps the panel open like
     /// an editor.
     cli_focused: bool,
@@ -415,12 +428,19 @@ pub struct IslandState {
     /// The pointer is on the busy toast's own spot (its strip, its slot, or
     /// the peeked full toast).
     toast_pointer: bool,
+    /// The pointer is on a recorded source's level group of the REC view on
+    /// the closed notch: it keeps the hover from opening the panel.
+    rec_mute_hot: Option<Source>,
     /// The current toast's full content was on screen (full, peeked or
     /// clicked).
     toast_seen: bool,
     /// A busy toast came and went unseen: a small dot on the compact notch
     /// says so until a peek or the Notifikasi page clears it. Not persisted.
     toast_dot: bool,
+    /// The audio recording in progress, as `App` last reported it.
+    rec: Option<RecStatus>,
+    /// The newest finished recordings, for the Rekam page.
+    rec_recent: Vec<RecEntry>,
 }
 
 /// How a real Windows toast shows now: the whole notice (`Full`), a strip
@@ -444,6 +464,8 @@ impl IslandState {
         Self {
             media: None,
             timeline: None,
+            rec: None,
+            rec_recent: Vec::new(),
             lyrics_on: false,
             lyrics_ready: false,
             queue: VecDeque::new(),
@@ -460,6 +482,7 @@ impl IslandState {
             latched: false,
             hover_opened: None,
             editor_open: false,
+            menu_open: false,
             cli_focused: false,
             cli_tall: false,
             cli_scroll: 0,
@@ -502,6 +525,7 @@ impl IslandState {
             toast_style: ToastStyle::Compact,
             toast_full: false,
             toast_pointer: false,
+            rec_mute_hot: None,
             toast_seen: false,
             toast_dot: false,
         }
@@ -544,6 +568,8 @@ impl IslandState {
             Event::MediaTimeline(timeline) => self.timeline = timeline,
             Event::LyricsReady(ready) => self.lyrics_ready = ready,
             Event::LyricsSetting(on) => self.lyrics_on = on,
+            Event::RecStatus(status) => self.rec = status,
+            Event::RecRecent(list) | Event::RecMarks(list) => self.rec_recent = list,
             Event::Notice(notice) => match &notice.kind {
                 NoticeKind::ClaudeWaiting { .. }
                 | NoticeKind::Reminder { .. }
@@ -597,12 +623,31 @@ impl IslandState {
                         self.queue.push_back(notice);
                     }
                 }
+                // A transcript ends: its "Bikin transkrip" still waiting in
+                // the queue (a short recording) has no point any more. One
+                // already on screen stays.
+                NoticeKind::TranscriptReady { audio: ended }
+                | NoticeKind::TranscriptFailed { audio: ended } => {
+                    self.queue.retain(|n| {
+                        !matches!(&n.kind, NoticeKind::TranscriptStarting { audio }
+                            if crate::transcribe::queue::same_audio(audio, ended))
+                    });
+                    self.queue.push_back(notice);
+                }
                 NoticeKind::App { .. }
                 | NoticeKind::BatteryLow
                 | NoticeKind::SystemLow
                 | NoticeKind::CleanDone
                 | NoticeKind::MoleDone
                 | NoticeKind::ShotSaved { .. }
+                | NoticeKind::RecSaved { .. }
+                | NoticeKind::RecFailed { .. }
+                | NoticeKind::RecMicDenied
+                | NoticeKind::RecFolderBlocked { .. }
+                | NoticeKind::RecInfo
+                | NoticeKind::TranscriptInfo
+                | NoticeKind::TranscriptStarting { .. }
+                | NoticeKind::TranscriptSettings
                 | NoticeKind::ShotDeleted
                 | NoticeKind::DevicePlugged { .. }
                 | NoticeKind::DeviceSafe
@@ -732,6 +777,7 @@ impl IslandState {
                     // The pointer left the island, and the busy toast's spot
                     // with it.
                     self.toast_pointer = false;
+                    self.rec_mute_hot = None;
                 }
                 self.hover = on;
                 // The drop's own visit ends when the pointer leaves it; a
@@ -769,6 +815,9 @@ impl IslandState {
                     self.toast_dot = false;
                 }
             }
+            Event::RecMuteHot(source) => {
+                self.rec_mute_hot = source.filter(|_| self.rec_mute_groups_shown());
+            }
             Event::ToastPointer(on) => {
                 // The pointer left what held the toast: at least the grace
                 // more, so a click is never beaten by the timeout.
@@ -798,6 +847,8 @@ impl IslandState {
                 }
             }
             Event::EditorOpen(on) => self.editor_open = on,
+            // Only a panel that shows may be held: a dropdown never opens one.
+            Event::MenuOpen(on) => self.menu_open = on && self.panel_open(),
             Event::CliFocus(on) => self.cli_focused = on,
             Event::ClipFocus(on) => self.clip_focused = on,
             Event::NotifFocus(on) => self.notif_focused = on,
@@ -884,6 +935,9 @@ impl IslandState {
             Event::Calendar(_)
             | Event::Toast(_)
             | Event::Update(_)
+            | Event::Rec(..)
+            | Event::Transcribe(..)
+            | Event::TranscribeDownload(..)
             | Event::Lyrics(_)
             | Event::Cli(_)
             | Event::ExplorerFolders { .. }
@@ -1133,6 +1187,18 @@ impl IslandState {
             let (from, to) = self.cal_range();
             effects.push(Effect::RefreshCalendar { from, to });
         }
+        // The level groups go with the running recording (stopped, paused)
+        // and behind a fullscreen app. A notice or a sticky one over the REC
+        // view only covers them: the pointer is still where it was, so its
+        // group stays hot and the panel stays shut until it moves. Gone under
+        // a pointer that stays, they leave the panel shut for the rest of the
+        // visit: the pointer came to mute, not to open it.
+        if self.rec_mute_hot.is_some() && !self.rec_mute_groups_live() {
+            self.rec_mute_hot = None;
+            if self.hover {
+                self.hover_blocked = true;
+            }
+        }
         // Last, once the linger, the latch and the inputs have settled what
         // shows: the toast is judged on the view this `apply` leaves.
         self.settle_toast(toast_held, now);
@@ -1160,6 +1226,10 @@ impl IslandState {
         }
         if let Some(notice) = self.sticky.last() {
             return View::Notice(notice.clone());
+        }
+        // A recording outranks the pomodoro and the music: it must show.
+        if self.rec.is_some() {
+            return View::RecordCompact;
         }
         if self.pomodoro.is_active() {
             return View::PomodoroCompact;
@@ -1282,6 +1352,7 @@ impl IslandState {
         self.open_mode == OpenMode::HoverStay
             && self.hover
             && !self.hover_blocked
+            && self.rec_mute_hot.is_none()
             && !self.notice_covers()
             && self.collapsed == Collapse::No
             && !self.fullscreen
@@ -1588,11 +1659,15 @@ impl IslandState {
 
     /// The panel is open for something other than the linger.
     fn panel_held(&self) -> bool {
-        let pointer = self.hover && !self.hover_blocked && self.open_mode != OpenMode::Click;
+        let pointer = self.hover
+            && !self.hover_blocked
+            && self.rec_mute_hot.is_none()
+            && self.open_mode != OpenMode::Click;
         self.collapsed == Collapse::No
             && (pointer
                 || self.latched
                 || self.editor_open
+                || self.menu_open
                 || self.cli_focused
                 || self.clip_focused
                 || self.notif_focused
@@ -1608,6 +1683,8 @@ impl IslandState {
             // An editor closed, saved, deleted or cancelled: the panel it
             // held would snap shut with the pointer away.
             Event::EditorOpen(false) => LingerTrigger::Always,
+            // The same for a dropdown: the pointer is on it, off the island.
+            Event::MenuOpen(false) => LingerTrigger::Always,
             // A click on the panel's content. A media button the hover guard
             // drops did nothing.
             Event::Click(Hit::PanelPage(_)) => LingerTrigger::PageTurn,
@@ -1617,6 +1694,11 @@ impl IslandState {
             Event::Click(Hit::StickySnooze | Hit::StickyOpen) => LingerTrigger::No,
             // The ✕ closes a notice on the closed notch: no panel behind it.
             Event::Click(Hit::NoticeClose) => LingerTrigger::No,
+            // So does a level group's mute on the REC view, and the chips of
+            // the saved recording's notice.
+            Event::Click(
+                Hit::RecMuteCompact(_) | Hit::RecTranscribeChip | Hit::RecTranscriptSetup,
+            ) => LingerTrigger::No,
             Event::Click(hit) if !(is_media_hit(hit) && self.media_guarded(now)) => {
                 LingerTrigger::Panel
             }
@@ -1742,9 +1824,11 @@ impl IslandState {
     }
 
     /// The panel stays open until a click outside the island: `App` watches
-    /// the mouse buttons only then, and sends `Event::Dismiss`.
+    /// the mouse buttons only then, and sends `Event::Dismiss`. Not while a
+    /// dropdown of the panel is open: a press on it is not outside, and one
+    /// anywhere else only closes the dropdown, as with a native menu.
     pub fn outside_click_wanted(&self) -> bool {
-        (self.latched || self.lingering) && self.panel_open() && !self.fullscreen
+        (self.latched || self.lingering) && self.panel_open() && !self.fullscreen && !self.menu_open
     }
 
     /// "Mode buka": a click on the compact island opens the panel and keeps it.
@@ -1845,10 +1929,18 @@ impl IslandState {
                 if self.open_mode == OpenMode::Click
                     && (matches!(
                         self.view(),
-                        View::Idle | View::MediaCompact | View::MediaLyric | View::PomodoroCompact
+                        View::Idle
+                            | View::MediaCompact
+                            | View::MediaLyric
+                            | View::PomodoroCompact
+                            | View::RecordCompact
                     ) || (!self.notice_covers()
                         && matches!(self.view(), View::Notice(_)))) =>
             {
+                // The REC view leads to the Rekam page.
+                if self.view() == View::RecordCompact {
+                    self.page = Page::Record;
+                }
                 self.open_by_click(now)
             }
             // The due reminder's "Selesai" chip on the closed notch: done at
@@ -1898,6 +1990,9 @@ impl IslandState {
                 View::PomodoroCompact if self.pomodoro.status() == PomoStatus::Ready => {
                     self.pomodoro.start_pause(now)
                 }
+                // Not in Click mode (the arm above): the next visit opens on
+                // the Rekam page.
+                View::RecordCompact => self.page = Page::Record,
                 _ => {}
             },
             Hit::Prev => effects.push(Effect::Media(MediaCommand::Prev)),
@@ -2040,6 +2135,94 @@ impl IslandState {
             Hit::DeviceDetail(i) => {
                 if self.view() == View::Panel(Page::Devices) {
                     effects.push(Effect::DeviceDetail(i));
+                }
+            }
+            // The Rekam page's buttons count only while it shows. The source
+            // choice is locked while a recording runs, pause needs one.
+            Hit::RecToggle => {
+                if self.view() == View::Panel(Page::Record) {
+                    effects.push(Effect::RecToggle);
+                }
+            }
+            Hit::RecPause => {
+                if self.view() == View::Panel(Page::Record) && self.rec.is_some() {
+                    effects.push(Effect::RecPause);
+                }
+            }
+            Hit::RecMute(source) => {
+                if self.view() == View::Panel(Page::Record) && self.rec.is_some() {
+                    effects.push(Effect::RecMute(source));
+                }
+            }
+            // A level group of the REC view on the closed notch: the mute
+            // toggles in every mode and nothing opens.
+            Hit::RecMuteCompact(source) => {
+                if self.rec_mute_groups_shown() {
+                    effects.push(Effect::RecMute(source));
+                }
+            }
+            Hit::RecDevice(source) => {
+                if self.view() == View::Panel(Page::Record) {
+                    effects.push(Effect::RecDevice(source));
+                }
+            }
+            Hit::RecSources(sources) => {
+                if self.view() == View::Panel(Page::Record) && self.rec.is_none() {
+                    effects.push(Effect::RecSources(sources));
+                }
+            }
+            Hit::RecOpen(i) => {
+                if self.view() == View::Panel(Page::Record)
+                    && let Some(entry) = self.rec_recent.get(i)
+                {
+                    let path = entry.path.clone();
+                    self.collapse_for(Effect::RecReveal(path), effects);
+                }
+            }
+            Hit::RecFolder => {
+                if self.view() == View::Panel(Page::Record) {
+                    self.collapse_for(Effect::RecOpenFolder, effects);
+                }
+            }
+            // The chips of "Rekaman tersimpan", on the closed notch: the
+            // notice goes without showing the file, and the chip's work
+            // starts. Each counts only on the offer it belongs to.
+            Hit::RecTranscribeChip | Hit::RecTranscriptSetup => {
+                let chip_offer = if hit == Hit::RecTranscribeChip {
+                    TranscriptOffer::Transcribe
+                } else {
+                    TranscriptOffer::Setup
+                };
+                if let View::Notice(n) = self.view()
+                    && let NoticeKind::RecSaved { path, offer } = n.kind
+                    && offer == chip_offer
+                {
+                    // The reveal the body would ask for is not wanted here.
+                    let _ = self.dismiss_visible_notice(now);
+                    effects.push(match offer {
+                        TranscriptOffer::Transcribe => Effect::TranscribeQueue(path),
+                        _ => Effect::OpenTranscriptSettings,
+                    });
+                }
+            }
+            // A row's transcript pill on the Rekam page: by its mark, "belum
+            // nyala" explains, none yet queues one (the panel stays, the row
+            // turns "Antre"), any other opens the transcript window.
+            Hit::RecTranscript(i) => {
+                if self.view() == View::Panel(Page::Record)
+                    && let Some(entry) = self.rec_recent.get(i)
+                {
+                    let path = entry.path.clone();
+                    match entry.transcript {
+                        RowTranscript::Off => effects.push(Effect::TranscriptOff),
+                        RowTranscript::None => effects.push(Effect::TranscribeQueue(path)),
+                        _ => self.collapse_for(Effect::OpenTranscript(path), effects),
+                    }
+                }
+            }
+            Hit::RecPickFile => {
+                if self.view() == View::Panel(Page::Record) {
+                    self.collapse_for(Effect::RecPickFile, effects);
                 }
             }
             Hit::DevicesEjectAll => {
@@ -2704,7 +2887,20 @@ impl IslandState {
             }
             NoticeKind::ClaudeDone { session_id } => Some(Effect::OpenClaudeSession { session_id }),
             // A saved screenshot: the body click shows the file in Explorer.
-            NoticeKind::ShotSaved { path: Some(path) } => Some(Effect::RevealFile(path)),
+            // A failed rename shows the `.part` that holds the audio.
+            NoticeKind::ShotSaved { path: Some(path) }
+            | NoticeKind::RecSaved { path, .. }
+            | NoticeKind::RecFailed { reveal: Some(path) } => Some(Effect::RevealFile(path)),
+            // The mic was refused: the click opens Windows' mic privacy page.
+            NoticeKind::RecMicDenied => Some(Effect::RecMicSettings),
+            // The folder was refused: the click picks another one.
+            NoticeKind::RecFolderBlocked { .. } => Some(Effect::RecPickFolder),
+            // A transcript is ready or failed: the window that holds it (it
+            // says the reason). A word about settings opens its card.
+            NoticeKind::TranscriptReady { audio } | NoticeKind::TranscriptFailed { audio } => {
+                Some(Effect::OpenTranscript(audio))
+            }
+            NoticeKind::TranscriptSettings => Some(Effect::OpenTranscriptSettings),
             NoticeKind::ClaudeWaiting { .. }
             | NoticeKind::Reminder { .. }
             | NoticeKind::StickyReminder { .. }
@@ -2751,7 +2947,11 @@ impl IslandState {
                 .is_some_and(|(n, _)| is_real_toast(n))
             && matches!(
                 self.base_view(),
-                View::Panel(_) | View::MediaLyric | View::MediaCompact | View::PomodoroCompact
+                View::Panel(_)
+                    | View::MediaLyric
+                    | View::MediaCompact
+                    | View::PomodoroCompact
+                    | View::RecordCompact
             )
     }
 
@@ -2815,8 +3015,38 @@ impl IslandState {
             && self.toast_slot().is_none()
             && matches!(
                 self.view(),
-                View::Idle | View::MediaCompact | View::MediaLyric | View::PomodoroCompact
+                View::Idle
+                    | View::MediaCompact
+                    | View::MediaLyric
+                    | View::PomodoroCompact
+                    | View::RecordCompact
             )
+    }
+
+    /// The source whose level group on the closed REC view the pointer is on.
+    pub fn rec_mute_hot(&self) -> Option<Source> {
+        self.rec_mute_hot
+    }
+
+    /// The closed notch shows the REC view's level groups, which take clicks.
+    fn rec_mute_groups_shown(&self) -> bool {
+        self.rec_mute_groups_live() && self.view() == View::RecordCompact
+    }
+
+    /// A recording runs (not paused, whose view draws no groups) on a screen
+    /// with no fullscreen app: the REC view has its level groups, shown or
+    /// covered.
+    fn rec_mute_groups_live(&self) -> bool {
+        self.rec.as_ref().is_some_and(|r| !r.paused()) && !self.fullscreen
+    }
+
+    /// The page of the open panel, also while a notice covers it; `None`
+    /// while the panel is shut (or hidden by a fullscreen app).
+    pub fn panel_page_under(&self) -> Option<Page> {
+        match self.base_view() {
+            View::Panel(page) => Some(page),
+            _ => None,
+        }
     }
 
     /// The pointer is on the toast's spot, as the reducer last heard.
@@ -2968,6 +3198,16 @@ impl IslandState {
 
     pub fn pomodoro(&self) -> &Pomodoro {
         &self.pomodoro
+    }
+
+    /// The recording in progress, if any.
+    pub fn rec(&self) -> Option<&RecStatus> {
+        self.rec.as_ref()
+    }
+
+    /// The Rekam page's list: the newest recordings, newest first.
+    pub fn rec_recent(&self) -> &[RecEntry] {
+        &self.rec_recent
     }
 
     /// The local date as of the last `Event::Today`.
@@ -3164,6 +3404,8 @@ mod tests {
     use crate::model::*;
     use crate::mole::MoleOpt;
     use crate::pomodoro::{Phase, PomoSettings, PomoStatus};
+    use crate::recorder::Source;
+    use std::path::{Path, PathBuf};
     use chrono::NaiveDate;
     use std::time::{Duration, Instant};
 
@@ -3311,7 +3553,7 @@ mod tests {
         assert_eq!(s.view(), View::MediaCompact);
         s.apply(Event::Hover(true), t0);
         assert_eq!(s.view(), View::Panel(Page::Calendar));
-        s.apply(Event::Wheel(-480), t0);
+        s.apply(Event::Wheel(-600), t0);
         assert_eq!(s.view(), View::Panel(Page::Media));
         leave(&mut s, t0);
         assert_eq!(s.view(), View::MediaCompact);
@@ -4058,6 +4300,44 @@ mod tests {
     }
 
     #[test]
+    fn a_dropdown_of_the_panel_holds_it_and_pauses_the_click_outside_watch() {
+        let t0 = Instant::now();
+        for m in [OpenMode::Hover, OpenMode::HoverStay] {
+            let mut s = mode(m, t0);
+            open_on(&mut s, Page::Record, t0);
+            // The device name was clicked: the panel lingers, then the
+            // dropdown opens.
+            s.apply(Event::Click(Hit::RecDevice(Source::Mic)), t0);
+            assert!(s.outside_click_wanted(), "{m:?}");
+            s.apply(Event::MenuOpen(true), t0);
+            assert!(!s.outside_click_wanted(), "{m:?}: a press on it is not outside");
+            // The pointer goes down to the dropdown, off the island, for long.
+            s.apply(Event::Hover(false), t0);
+            s.apply(Event::Tick, t0 + secs(30));
+            assert_eq!(s.view(), View::Panel(Page::Record), "{m:?}");
+            // It went: the panel lingers a moment, watching for a click outside.
+            s.apply(Event::MenuOpen(false), t0 + secs(30));
+            assert_eq!(s.view(), View::Panel(Page::Record), "{m:?}");
+            assert!(s.outside_click_wanted(), "{m:?}");
+            s.apply(Event::Tick, t0 + secs(30) + ACTIVITY_LINGER);
+            if m == OpenMode::HoverStay {
+                // Latched: it waits for that click outside.
+                assert_eq!(s.view(), View::Panel(Page::Record));
+                s.apply(Event::Dismiss, t0 + secs(31) + ACTIVITY_LINGER);
+            }
+            assert_eq!(s.view(), View::Idle, "{m:?}");
+        }
+        // A dropdown never opens a closed panel.
+        let mut s = st();
+        s.apply(Event::MenuOpen(true), t0);
+        assert_eq!(s.view(), View::Idle);
+        s.apply(Event::Hover(true), t0);
+        s.apply(Event::Hover(false), t0);
+        s.apply(Event::Dismiss, t0);
+        assert_eq!(s.view(), View::Idle, "no hold was left behind");
+    }
+
+    #[test]
     fn what_else_holds_the_panel_survives_a_click_outside() {
         let t0 = Instant::now();
         let mut s = mode(OpenMode::HoverStay, t0);
@@ -4269,7 +4549,7 @@ mod tests {
         s.apply(Event::Wheel(-119), t0);
         assert_eq!(s.view(), View::Panel(Page::Pomodoro));
         s.apply(Event::Wheel(-1), t0);
-        assert_eq!(s.view(), View::Panel(Page::Reminders));
+        assert_eq!(s.view(), View::Panel(Page::Record));
     }
 
     #[test]
@@ -4306,7 +4586,7 @@ mod tests {
         s.apply(Event::PageFlick { next: true }, t0);
         assert_eq!(s.view(), View::Panel(Page::Pomodoro));
         s.apply(Event::PageFlick { next: true }, t0);
-        assert_eq!(s.view(), View::Panel(Page::Reminders));
+        assert_eq!(s.view(), View::Panel(Page::Record));
         s.apply(Event::PageFlick { next: false }, t0);
         assert_eq!(s.view(), View::Panel(Page::Pomodoro));
     }
@@ -4317,6 +4597,7 @@ mod tests {
         let mut s = st();
         let mut pages = PanelPages::default();
         pages.toggle(Page::Pomodoro);
+        pages.toggle(Page::Record);
         pages.toggle(Page::Reminders);
         s.apply(Event::PanelPages(pages), t0);
         s.apply(Event::Hover(true), t0);
@@ -4464,6 +4745,7 @@ mod tests {
         let mut s = st();
         let mut pages = PanelPages::default();
         pages.toggle(Page::Pomodoro);
+        pages.toggle(Page::Record);
         pages.toggle(Page::Reminders);
         s.apply(Event::PanelPages(pages), t0);
         s.apply(Event::Hover(true), t0);
@@ -4510,6 +4792,7 @@ mod tests {
             [
                 Page::Calendar,
                 Page::Pomodoro,
+                Page::Record,
                 Page::Reminders,
                 Page::Notes,
                 Page::Media,
@@ -7615,6 +7898,432 @@ mod tests {
         assert_eq!(s.next_deadline(), None);
     }
 
+    // ---- recording ----
+
+    fn rec_status(t0: Instant) -> RecStatus {
+        RecStatus {
+            started: t0,
+            paused_total: Duration::ZERO,
+            paused_since: None,
+            sources: crate::model::RecSources {
+                mic: true,
+                system: true,
+            },
+            muted: [false; 2],
+        }
+    }
+
+    #[test]
+    fn a_recording_shows_the_rec_view_over_pomodoro_and_music() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Media(Some(media(true))), t0);
+        s.apply(Event::Click(Hit::PomoStartPause), t0);
+        assert_eq!(s.view(), View::PomodoroCompact);
+        s.apply(Event::RecStatus(Some(rec_status(t0))), t0);
+        assert_eq!(s.view(), View::RecordCompact);
+        assert!(s.rec().is_some());
+        // Paused still shows it.
+        let mut paused = rec_status(t0);
+        paused.paused_since = Some(t0 + secs(5));
+        s.apply(Event::RecStatus(Some(paused)), t0 + secs(5));
+        assert_eq!(s.view(), View::RecordCompact);
+        // Ending it gives the pomodoro back.
+        s.apply(Event::RecStatus(None), t0 + secs(9));
+        assert_eq!(s.view(), View::PomodoroCompact);
+        assert!(s.rec().is_none());
+    }
+
+    #[test]
+    fn a_sticky_notice_outranks_the_rec_view() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::RecStatus(Some(rec_status(t0))), t0);
+        s.apply(Event::Notice(waiting("a")), t0);
+        assert!(matches!(s.view(), View::Notice(_)));
+    }
+
+    #[test]
+    fn fullscreen_hides_the_rec_view() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::RecStatus(Some(rec_status(t0))), t0);
+        s.apply(Event::Fullscreen(true), t0);
+        assert_eq!(s.view(), View::Hidden);
+        s.apply(Event::Fullscreen(false), t0);
+        assert_eq!(s.view(), View::RecordCompact);
+    }
+
+    #[test]
+    fn click_mode_opens_the_panel_from_the_rec_view() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::OpenMode(OpenMode::Click), t0);
+        s.apply(Event::RecStatus(Some(rec_status(t0))), t0);
+        s.apply(Event::Click(Hit::Body), t0);
+        assert_eq!(s.view(), View::Panel(Page::Record), "on the Rekam page");
+    }
+
+    #[test]
+    fn a_click_on_the_rec_view_without_click_mode_aims_the_next_visit_at_rekam() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::RecStatus(Some(rec_status(t0))), t0);
+        s.apply(Event::Click(Hit::Body), t0);
+        assert_eq!(s.view(), View::RecordCompact, "a click alone opens nothing");
+        s.apply(Event::Hover(true), t0);
+        assert_eq!(s.view(), View::Panel(Page::Record));
+    }
+
+    /// The REC view recording both sources, in `mode`, the pointer not yet on it.
+    fn rec_closed(mode: OpenMode, t0: Instant) -> IslandState {
+        let mut s = st();
+        s.apply(Event::OpenMode(mode), t0);
+        s.apply(Event::RecStatus(Some(rec_status(t0))), t0);
+        assert_eq!(s.view(), View::RecordCompact);
+        s
+    }
+
+    #[test]
+    fn a_click_on_a_mute_group_toggles_that_source_in_every_open_mode() {
+        for mode in [OpenMode::Hover, OpenMode::HoverStay, OpenMode::Click] {
+            let t0 = Instant::now();
+            let mut s = rec_closed(mode, t0);
+            for source in [Source::Mic, Source::System] {
+                s.apply(Event::RecMuteHot(Some(source)), t0);
+                assert_eq!(
+                    s.apply(Event::Click(Hit::RecMuteCompact(source)), t0),
+                    vec![Effect::RecMute(source)],
+                    "{mode:?} {source:?}"
+                );
+                assert_eq!(s.view(), View::RecordCompact, "{mode:?}: no panel opens");
+                assert!(!s.panel_open(), "{mode:?}: no linger either");
+            }
+            // The reducer does not keep a linger after the click ends.
+            s.apply(Event::RecMuteHot(None), t0);
+            s.apply(Event::Hover(false), t0);
+            assert_eq!(s.view(), View::RecordCompact, "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn a_mute_click_needs_a_recording_on_the_closed_notch() {
+        let t0 = Instant::now();
+        let mut s = st();
+        assert_eq!(
+            s.apply(Event::Click(Hit::RecMuteCompact(Source::Mic)), t0),
+            vec![]
+        );
+        open_on(&mut s, Page::Record, t0);
+        assert_eq!(
+            s.apply(Event::Click(Hit::RecMuteCompact(Source::Mic)), t0),
+            vec![],
+            "only the REC view's own groups"
+        );
+    }
+
+    #[test]
+    fn resting_on_a_mute_group_opens_no_panel_in_the_hover_modes() {
+        for mode in [OpenMode::Hover, OpenMode::HoverStay] {
+            let t0 = Instant::now();
+            let mut s = rec_closed(mode, t0);
+            s.apply(Event::RecMuteHot(Some(Source::Mic)), t0);
+            assert_eq!(s.rec_mute_hot(), Some(Source::Mic));
+            s.apply(Event::Hover(true), t0 + Duration::from_millis(120));
+            assert_eq!(s.view(), View::RecordCompact, "{mode:?}: the dwell opens nothing");
+            // Onto the other group, still nothing.
+            s.apply(Event::RecMuteHot(Some(Source::System)), t0);
+            assert_eq!(s.view(), View::RecordCompact, "{mode:?}");
+            // Onto the rest of the notch: it opens as usual.
+            s.apply(Event::RecMuteHot(None), t0);
+            assert!(matches!(s.view(), View::Panel(_)), "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn hover_and_stay_latches_only_after_leaving_the_mute_group() {
+        let t0 = Instant::now();
+        let mut s = rec_closed(OpenMode::HoverStay, t0);
+        s.apply(Event::RecMuteHot(Some(Source::Mic)), t0);
+        s.apply(Event::Hover(true), t0);
+        s.apply(Event::Hover(false), t0);
+        assert_eq!(s.view(), View::RecordCompact, "nothing was latched on the group");
+    }
+
+    #[test]
+    fn hovering_the_rest_of_the_rec_notch_opens_the_panel_as_before() {
+        for mode in [OpenMode::Hover, OpenMode::HoverStay] {
+            let t0 = Instant::now();
+            let mut s = rec_closed(mode, t0);
+            s.apply(Event::Hover(true), t0);
+            assert!(matches!(s.view(), View::Panel(_)), "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn the_hot_group_is_forgotten_when_the_pointer_leaves_or_the_recording_ends() {
+        let t0 = Instant::now();
+        let mut s = rec_closed(OpenMode::Hover, t0);
+        s.apply(Event::RecMuteHot(Some(Source::Mic)), t0);
+        s.apply(Event::Hover(false), t0);
+        assert_eq!(s.rec_mute_hot(), None, "the pointer left");
+        s.apply(Event::RecMuteHot(Some(Source::Mic)), t0);
+        s.apply(Event::RecStatus(None), t0);
+        assert_eq!(s.rec_mute_hot(), None, "no recording, no groups");
+        // A hot report off the REC view is ignored.
+        s.apply(Event::RecMuteHot(Some(Source::Mic)), t0);
+        assert_eq!(s.rec_mute_hot(), None);
+    }
+
+    /// The pointer rests on the mic group of the REC view, the dwell passed.
+    fn resting_on_mic(mode: OpenMode, t0: Instant) -> IslandState {
+        let mut s = rec_closed(mode, t0);
+        s.apply(Event::RecMuteHot(Some(Source::Mic)), t0);
+        s.apply(Event::Hover(true), t0 + Duration::from_millis(120));
+        assert_eq!(s.view(), View::RecordCompact);
+        s
+    }
+
+    #[test]
+    fn leaving_from_a_mute_group_never_opens_or_latches_the_panel() {
+        for mode in [OpenMode::Hover, OpenMode::HoverStay] {
+            let t0 = Instant::now();
+            let mut s = resting_on_mic(mode, t0);
+            // `App` tells the hover's end first; the group lets go with it.
+            s.apply(Event::Hover(false), t0 + Duration::from_millis(500));
+            assert_eq!(s.rec_mute_hot(), None, "{mode:?}");
+            assert_eq!(s.view(), View::RecordCompact, "{mode:?}");
+            // A late "off the group" changes nothing once the pointer is out.
+            s.apply(Event::RecMuteHot(None), t0 + Duration::from_millis(500));
+            assert_eq!(s.view(), View::RecordCompact, "{mode:?}");
+            assert!(!s.panel_is_open(), "{mode:?}: nothing latched");
+        }
+    }
+
+    #[test]
+    fn a_notice_over_the_rec_view_keeps_the_pointer_on_its_group() {
+        for mode in [OpenMode::Hover, OpenMode::HoverStay] {
+            let t0 = Instant::now();
+            let mut s = resting_on_mic(mode, t0);
+            let t1 = t0 + Duration::from_millis(300);
+            s.apply(Event::Notice(done("s1")), t1);
+            assert!(matches!(s.view(), View::Notice(_)), "{mode:?}");
+            assert!(!s.panel_is_open(), "{mode:?}: nothing opens under the notice");
+            assert_eq!(s.rec_mute_hot(), Some(Source::Mic), "{mode:?}");
+            // The notice runs its time; the pointer never moved.
+            s.apply(Event::Tick, t1 + NOTICE_DURATION + Duration::from_millis(10));
+            assert_eq!(s.view(), View::RecordCompact, "{mode:?}: no panel after it");
+            assert_eq!(s.rec_mute_hot(), Some(Source::Mic), "{mode:?}: the pill is back");
+            // Nothing was latched behind the notice either.
+            s.apply(Event::Hover(false), t1 + Duration::from_secs(7));
+            assert_eq!(s.view(), View::RecordCompact, "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn a_waiting_claude_over_the_rec_view_opens_no_panel_under_the_group() {
+        let t0 = Instant::now();
+        let mut s = resting_on_mic(OpenMode::Hover, t0);
+        // A sticky notice outranks the REC view on the closed notch.
+        s.apply(Event::Notice(waiting("s1")), t0 + Duration::from_millis(300));
+        assert!(matches!(s.view(), View::Notice(_)));
+        assert!(!s.panel_is_open());
+        s.apply(
+            Event::ClaudeActivity {
+                session_id: "s1".into(),
+            },
+            t0 + Duration::from_millis(600),
+        );
+        assert_eq!(s.view(), View::RecordCompact);
+        assert_eq!(s.rec_mute_hot(), Some(Source::Mic));
+    }
+
+    #[test]
+    fn groups_that_go_under_the_pointer_leave_the_panel_shut_for_the_visit() {
+        let paused = |t0: Instant| RecStatus {
+            paused_since: Some(t0),
+            ..rec_status(t0)
+        };
+        for mode in [OpenMode::Hover, OpenMode::HoverStay] {
+            let t0 = Instant::now();
+            // Paused (the paused view draws no groups).
+            let mut s = resting_on_mic(mode, t0);
+            s.apply(Event::RecStatus(Some(paused(t0))), t0);
+            assert_eq!(s.rec_mute_hot(), None, "{mode:?}");
+            assert_eq!(s.view(), View::RecordCompact, "{mode:?}: paused");
+            s.apply(Event::RecStatus(Some(rec_status(t0))), t0);
+            assert_eq!(s.view(), View::RecordCompact, "{mode:?}: resumed");
+            // Stopped.
+            let mut s = resting_on_mic(mode, t0);
+            s.apply(Event::RecStatus(None), t0);
+            assert_eq!(s.view(), View::Idle, "{mode:?}: stopped");
+            // A fullscreen app came and went.
+            let mut s = resting_on_mic(mode, t0);
+            s.apply(Event::Fullscreen(true), t0);
+            s.apply(Event::Fullscreen(false), t0);
+            assert_eq!(s.view(), View::RecordCompact, "{mode:?}: after fullscreen");
+            // The next visit opens it as usual.
+            s.apply(Event::Hover(false), t0);
+            s.apply(Event::Hover(true), t0);
+            assert!(matches!(s.view(), View::Panel(_)), "{mode:?}: a new visit");
+        }
+    }
+
+    #[test]
+    fn a_paused_recording_has_no_mute_groups() {
+        let t0 = Instant::now();
+        let mut s = rec_closed(OpenMode::Hover, t0);
+        s.apply(
+            Event::RecStatus(Some(RecStatus {
+                paused_since: Some(t0),
+                ..rec_status(t0)
+            })),
+            t0,
+        );
+        s.apply(Event::RecMuteHot(Some(Source::Mic)), t0);
+        assert_eq!(s.rec_mute_hot(), None);
+        assert_eq!(
+            s.apply(Event::Click(Hit::RecMuteCompact(Source::Mic)), t0),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn the_page_under_a_notice_is_still_the_open_panels() {
+        let t0 = Instant::now();
+        let mut s = st();
+        assert_eq!(s.panel_page_under(), None);
+        s.apply(Event::RecStatus(Some(rec_status(t0))), t0);
+        open_on(&mut s, Page::Record, t0);
+        assert_eq!(s.panel_page_under(), Some(Page::Record));
+        s.apply(Event::Notice(plugged('E')), t0);
+        assert!(matches!(s.view(), View::Notice(_)));
+        assert_eq!(s.panel_page_under(), Some(Page::Record), "covered, still open");
+        leave(&mut s, t0);
+        assert_eq!(s.panel_page_under(), None);
+    }
+
+    fn rec_entry(name: &str) -> RecEntry {
+        RecEntry {
+            path: std::path::PathBuf::from(name),
+            title: name.into(),
+            started: "Hari ini 10:02".into(),
+            duration: Duration::from_secs(42 * 60),
+            unfinished: false,
+            transcript: RowTranscript::None,
+        }
+    }
+
+    #[test]
+    fn marks_put_on_show_again_replace_the_list() {
+        let mut s = st();
+        let t0 = Instant::now();
+        s.apply(Event::RecRecent(vec![rec_entry("a.m4a")]), t0);
+        let mut marked = rec_entry("a.m4a");
+        marked.transcript = RowTranscript::Queued;
+        s.apply(Event::RecMarks(vec![marked]), t0);
+        assert_eq!(s.rec_recent()[0].transcript, RowTranscript::Queued);
+    }
+
+    #[test]
+    fn the_rekam_buttons_send_their_effects_only_on_that_page() {
+        let t0 = Instant::now();
+        let mut s = st();
+        // Not on the page: nothing.
+        for hit in [Hit::RecToggle, Hit::RecFolder] {
+            assert_eq!(s.apply(Event::Click(hit), t0), vec![]);
+        }
+        open_on(&mut s, Page::Record, t0);
+        assert_eq!(
+            s.apply(Event::Click(Hit::RecToggle), t0),
+            vec![Effect::RecToggle]
+        );
+        let both = crate::model::RecSources {
+            mic: true,
+            system: true,
+        };
+        assert_eq!(
+            s.apply(Event::Click(Hit::RecSources(both)), t0),
+            vec![Effect::RecSources(both)]
+        );
+        // Pause and mute need a recording.
+        assert_eq!(s.apply(Event::Click(Hit::RecPause), t0), vec![]);
+        assert_eq!(s.apply(Event::Click(Hit::RecMute(Source::Mic)), t0), vec![]);
+        s.apply(Event::RecStatus(Some(rec_status(t0))), t0);
+        assert_eq!(s.view(), View::Panel(Page::Record), "the panel stays");
+        assert_eq!(
+            s.apply(Event::Click(Hit::RecPause), t0),
+            vec![Effect::RecPause]
+        );
+        // The sources are locked while recording.
+        assert_eq!(s.apply(Event::Click(Hit::RecSources(both)), t0), vec![]);
+        // The mute buttons need a recording and give the source.
+        assert_eq!(
+            s.apply(Event::Click(Hit::RecMute(Source::Mic)), t0),
+            vec![Effect::RecMute(Source::Mic)]
+        );
+        assert_eq!(
+            s.apply(Event::Click(Hit::RecMute(Source::System)), t0),
+            vec![Effect::RecMute(Source::System)]
+        );
+        // Stop is still the toggle.
+        assert_eq!(
+            s.apply(Event::Click(Hit::RecToggle), t0),
+            vec![Effect::RecToggle]
+        );
+    }
+
+    #[test]
+    fn a_device_name_opens_its_menu_on_the_rekam_page_idle_or_recording() {
+        let t0 = Instant::now();
+        let mut s = st();
+        assert_eq!(s.apply(Event::Click(Hit::RecDevice(Source::Mic)), t0), vec![]);
+        open_on(&mut s, Page::Record, t0);
+        assert_eq!(
+            s.apply(Event::Click(Hit::RecDevice(Source::Mic)), t0),
+            vec![Effect::RecDevice(Source::Mic)]
+        );
+        s.apply(Event::RecStatus(Some(rec_status(t0))), t0);
+        assert_eq!(s.view(), View::Panel(Page::Record), "the panel stays");
+        assert_eq!(
+            s.apply(Event::Click(Hit::RecDevice(Source::System)), t0),
+            vec![Effect::RecDevice(Source::System)]
+        );
+    }
+
+    #[test]
+    fn a_recent_recording_reveals_its_file_and_the_folder_opens_with_the_panel_out_of_the_way() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(
+            Event::RecRecent(vec![rec_entry("a.m4a"), rec_entry("b.m4a")]),
+            t0,
+        );
+        assert_eq!(s.rec_recent().len(), 2);
+        open_on(&mut s, Page::Record, t0);
+        // No such row: nothing.
+        assert_eq!(s.apply(Event::Click(Hit::RecOpen(5)), t0), vec![]);
+        assert_eq!(
+            s.apply(Event::Click(Hit::RecOpen(1)), t0),
+            vec![Effect::RecReveal("b.m4a".into())]
+        );
+        assert!(!matches!(s.view(), View::Panel(_)), "the panel collapsed");
+        let mut s = st();
+        open_on(&mut s, Page::Record, t0);
+        assert_eq!(
+            s.apply(Event::Click(Hit::RecFolder), t0),
+            vec![Effect::RecOpenFolder]
+        );
+        assert!(!matches!(s.view(), View::Panel(_)), "the panel collapsed");
+        s.apply(Event::RecRecent(vec![]), t0);
+        assert!(s.rec_recent().is_empty());
+    }
+
+    #[test]
+    fn the_rekam_tile_is_off_by_default() {
+        assert!(!Shortcut::Go(Page::Record).default_on());
+    }
+
     // ---- v2: pomodoro ----
 
     #[test]
@@ -8293,10 +9002,12 @@ mod tests {
     }
 
     #[test]
-    fn reminder_page_sits_between_pomodoro_and_notes() {
+    fn reminder_page_sits_between_rekam_and_notes() {
         let t0 = Instant::now();
         let mut s = st();
         open_on(&mut s, Page::Pomodoro, t0);
+        s.apply(Event::Wheel(-120), t0);
+        assert_eq!(s.view(), View::Panel(Page::Record), "Rekam follows Pomodoro");
         s.apply(Event::Wheel(-120), t0);
         assert_eq!(s.view(), View::Panel(Page::Reminders));
         s.apply(Event::Wheel(-120), t0);
@@ -9441,6 +10152,276 @@ mod tests {
         let fx = s.apply(Event::Click(Hit::Body), t0 + secs(1));
         assert_eq!(fx, vec![Effect::RevealFile(SAVED_FILE.into())]);
         assert_eq!(s.view(), View::Idle);
+    }
+
+    fn rec_notice(kind: NoticeKind) -> Notice {
+        Notice { kind, ..copied("x") }
+    }
+
+    #[test]
+    fn a_click_on_a_recording_saved_notice_reveals_the_file_and_the_mic_notice_opens_settings() {
+        let t0 = Instant::now();
+        let saved = rec_notice(NoticeKind::RecSaved {
+            path: r"C:\r\a.m4a".into(),
+            offer: TranscriptOffer::None,
+        });
+        assert!(notice_has_action(&saved));
+        assert!(notice_closable(&saved));
+        let mut s = st();
+        s.apply(Event::Notice(saved), t0);
+        let fx = s.apply(Event::Click(Hit::Body), t0 + secs(1));
+        assert_eq!(fx, vec![Effect::RevealFile(r"C:\r\a.m4a".into())]);
+        assert_eq!(s.view(), View::Idle);
+
+        let denied = rec_notice(NoticeKind::RecMicDenied);
+        assert!(notice_has_action(&denied));
+        let mut s = st();
+        s.apply(Event::Notice(denied), t0);
+        let fx = s.apply(Event::Click(Hit::Body), t0 + secs(1));
+        assert_eq!(fx, vec![Effect::RecMicSettings]);
+
+        // A blocked folder: the click picks another.
+        let blocked = rec_notice(NoticeKind::RecFolderBlocked {
+            dir: r"C:\Users\a\Documents\Vale\Rekaman".into(),
+        });
+        assert!(notice_has_action(&blocked));
+        let mut s = st();
+        s.apply(Event::Notice(blocked), t0);
+        let fx = s.apply(Event::Click(Hit::Body), t0 + secs(1));
+        assert_eq!(fx, vec![Effect::RecPickFolder]);
+
+        // A file left unfinished: the click shows the `.part`.
+        let part = rec_notice(NoticeKind::RecFailed {
+            reveal: Some(r"C:\r\a.m4a.part".into()),
+        });
+        assert!(notice_has_action(&part));
+        let mut s = st();
+        s.apply(Event::Notice(part), t0);
+        let fx = s.apply(Event::Click(Hit::Body), t0 + secs(1));
+        assert_eq!(fx, vec![Effect::RevealFile(r"C:\r\a.m4a.part".into())]);
+
+        // A failure and a plain word only dismiss, and last the usual time.
+        for kind in [NoticeKind::RecFailed { reveal: None }, NoticeKind::RecInfo] {
+            let n = rec_notice(kind);
+            assert!(!notice_has_action(&n));
+            let mut s = st();
+            s.apply(Event::Notice(n), t0);
+            assert_eq!(s.next_deadline(), Some(t0 + NOTICE_DURATION));
+            assert_eq!(s.apply(Event::Click(Hit::Body), t0 + secs(1)), vec![]);
+            assert_eq!(s.view(), View::Idle);
+        }
+    }
+
+    const REC_FILE: &str = r"C:\r\a.m4a";
+
+    fn rec_saved(offer: TranscriptOffer) -> Notice {
+        rec_notice(NoticeKind::RecSaved {
+            path: REC_FILE.into(),
+            offer,
+        })
+    }
+
+    #[test]
+    fn the_transcribe_chip_queues_the_job_and_closes_the_notice() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Notice(rec_saved(TranscriptOffer::Transcribe)), t0);
+        let fx = s.apply(Event::Click(Hit::RecTranscribeChip), t0 + secs(1));
+        assert_eq!(fx, vec![Effect::TranscribeQueue(REC_FILE.into())]);
+        assert!(!fx.iter().any(|e| matches!(e, Effect::RevealFile(_))));
+        assert_eq!(s.view(), View::Idle, "the notice is gone");
+    }
+
+    #[test]
+    fn the_setup_chip_opens_the_transcript_settings() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Notice(rec_saved(TranscriptOffer::Setup)), t0);
+        let fx = s.apply(Event::Click(Hit::RecTranscriptSetup), t0 + secs(1));
+        assert_eq!(fx, vec![Effect::OpenTranscriptSettings]);
+        assert_eq!(s.view(), View::Idle, "the notice is gone");
+    }
+
+    #[test]
+    fn the_saved_notice_body_still_shows_the_file() {
+        let t0 = Instant::now();
+        for offer in [
+            TranscriptOffer::None,
+            TranscriptOffer::Transcribe,
+            TranscriptOffer::Setup,
+        ] {
+            let mut s = st();
+            s.apply(Event::Notice(rec_saved(offer)), t0);
+            let fx = s.apply(Event::Click(Hit::Body), t0 + secs(1));
+            assert_eq!(fx, vec![Effect::RevealFile(REC_FILE.into())], "{offer:?}");
+            assert_eq!(s.view(), View::Idle, "{offer:?}");
+        }
+    }
+
+    #[test]
+    fn offer_chips_do_nothing_on_other_notices() {
+        let t0 = Instant::now();
+        let chips = [Hit::RecTranscribeChip, Hit::RecTranscriptSetup];
+        // Nothing showing.
+        for hit in &chips {
+            assert_eq!(st().apply(Event::Click(hit.clone()), t0), vec![], "{hit:?} idle");
+        }
+        // Another notice, and a saved one that offers no chip.
+        let others = [
+            rec_notice(NoticeKind::RecInfo),
+            rec_notice(NoticeKind::TranscriptInfo),
+            rec_saved(TranscriptOffer::None),
+        ];
+        for n in others {
+            for hit in &chips {
+                let mut s = st();
+                s.apply(Event::Notice(n.clone()), t0);
+                assert_eq!(s.apply(Event::Click(hit.clone()), t0), vec![], "{hit:?}");
+                assert_eq!(s.view(), View::Notice(n.clone()), "{hit:?} leaves it up");
+            }
+        }
+        // Each chip belongs to its own offer.
+        for (offer, wrong) in [
+            (TranscriptOffer::Transcribe, Hit::RecTranscriptSetup),
+            (TranscriptOffer::Setup, Hit::RecTranscribeChip),
+        ] {
+            let mut s = st();
+            s.apply(Event::Notice(rec_saved(offer)), t0);
+            assert_eq!(s.apply(Event::Click(wrong.clone()), t0), vec![], "{wrong:?} on {offer:?}");
+            assert_eq!(s.view(), View::Notice(rec_saved(offer)));
+        }
+    }
+
+    #[test]
+    fn the_ready_and_failed_notices_open_the_transcript() {
+        let t0 = Instant::now();
+        for kind in [
+            NoticeKind::TranscriptReady {
+                audio: REC_FILE.into(),
+            },
+            NoticeKind::TranscriptFailed {
+                audio: REC_FILE.into(),
+            },
+        ] {
+            let n = rec_notice(kind);
+            assert!(notice_has_action(&n));
+            assert!(notice_closable(&n), "a timed notice with a close button");
+            let mut s = st();
+            s.apply(Event::Notice(n.clone()), t0);
+            assert_eq!(s.next_deadline(), Some(t0 + NOTICE_DURATION));
+            let fx = s.apply(Event::Click(Hit::Body), t0 + secs(1));
+            assert_eq!(fx, vec![Effect::OpenTranscript(REC_FILE.into())], "{n:?}");
+            assert_eq!(s.view(), View::Idle);
+            // The close button opens nothing.
+            let mut s = st();
+            s.apply(Event::Notice(n), t0);
+            assert_eq!(s.apply(Event::Click(Hit::NoticeClose), t0 + secs(1)), vec![]);
+        }
+        // A plain word only dismisses.
+        let info = rec_notice(NoticeKind::TranscriptInfo);
+        assert!(!notice_has_action(&info));
+        let mut s = st();
+        s.apply(Event::Notice(info), t0);
+        assert_eq!(s.apply(Event::Click(Hit::Body), t0 + secs(1)), vec![]);
+        assert_eq!(s.view(), View::Idle);
+    }
+
+    #[test]
+    fn a_waiting_start_notice_goes_when_its_transcript_ends() {
+        let t0 = Instant::now();
+        let a = PathBuf::from(REC_FILE);
+        let b = PathBuf::from(r"C:\r\b.m4a");
+        let start = |p: &Path| rec_notice(NoticeKind::TranscriptStarting { audio: p.into() });
+        let ready = |p: &Path| rec_notice(NoticeKind::TranscriptReady { audio: p.into() });
+        let failed = |p: &Path| rec_notice(NoticeKind::TranscriptFailed { audio: p.into() });
+        let later = t0 + NOTICE_DURATION + secs(1);
+        // A short recording: "Rekaman tersimpan" shows, the start waits, the
+        // transcript is ready first: the start never shows.
+        for end in [ready(&a), failed(&a), ready(Path::new(r"c:\R\A.M4A"))] {
+            let mut s = st();
+            s.apply(Event::Notice(rec_saved(TranscriptOffer::None)), t0);
+            s.apply(Event::Notice(start(&a)), t0 + secs(1));
+            s.apply(Event::Notice(end.clone()), t0 + secs(2));
+            s.apply(Event::Tick, later);
+            assert_eq!(s.view(), View::Notice(end), "the start is gone");
+        }
+        // A long recording: the start already shows; it stays, the end waits.
+        let mut s = st();
+        s.apply(Event::Notice(start(&a)), t0);
+        s.apply(Event::Notice(ready(&a)), t0 + secs(1));
+        assert_eq!(s.view(), View::Notice(start(&a)));
+        s.apply(Event::Tick, later);
+        assert_eq!(s.view(), View::Notice(ready(&a)));
+        // Another recording's start stays in the queue.
+        let mut s = st();
+        s.apply(Event::Notice(rec_saved(TranscriptOffer::None)), t0);
+        s.apply(Event::Notice(start(&b)), t0 + secs(1));
+        s.apply(Event::Notice(ready(&a)), t0 + secs(2));
+        s.apply(Event::Tick, later);
+        assert_eq!(s.view(), View::Notice(start(&b)));
+        // It behaves as a plain word: closable, no action, a click dismisses.
+        assert!(notice_closable(&start(&a)));
+        assert!(!notice_has_action(&start(&a)));
+    }
+
+    #[test]
+    fn the_settings_notice_opens_the_card() {
+        let t0 = Instant::now();
+        let n = rec_notice(NoticeKind::TranscriptSettings);
+        assert!(notice_has_action(&n));
+        let mut s = st();
+        s.apply(Event::Notice(n), t0);
+        let fx = s.apply(Event::Click(Hit::Body), t0 + secs(1));
+        assert_eq!(fx, vec![Effect::OpenTranscriptSettings]);
+        assert_eq!(s.view(), View::Idle);
+    }
+
+    #[test]
+    fn the_row_pill_acts_by_its_mark() {
+        let t0 = Instant::now();
+        let row = |mark: RowTranscript| RecEntry {
+            transcript: mark,
+            ..rec_entry("a.m4a")
+        };
+        // (mark, effect, the panel stays open)
+        let table = [
+            (RowTranscript::Off, Effect::TranscriptOff, true),
+            (RowTranscript::None, Effect::TranscribeQueue("a.m4a".into()), true),
+            (RowTranscript::Queued, Effect::OpenTranscript("a.m4a".into()), false),
+            (RowTranscript::Waiting, Effect::OpenTranscript("a.m4a".into()), false),
+            (RowTranscript::Running(40), Effect::OpenTranscript("a.m4a".into()), false),
+            (RowTranscript::Done, Effect::OpenTranscript("a.m4a".into()), false),
+            (RowTranscript::Failed, Effect::OpenTranscript("a.m4a".into()), false),
+        ];
+        for (mark, want, stays) in table {
+            let mut s = st();
+            s.apply(Event::RecRecent(vec![row(mark)]), t0);
+            // Not on the page: nothing.
+            assert_eq!(s.apply(Event::Click(Hit::RecTranscript(0)), t0), vec![], "{mark:?} off page");
+            open_on(&mut s, Page::Record, t0);
+            // No such row: nothing.
+            assert_eq!(s.apply(Event::Click(Hit::RecTranscript(3)), t0), vec![], "{mark:?} no row");
+            assert_eq!(s.apply(Event::Click(Hit::RecTranscript(0)), t0), vec![want], "{mark:?}");
+            assert_eq!(
+                matches!(s.view(), View::Panel(_)),
+                stays,
+                "{mark:?}: the panel {}",
+                if stays { "stays" } else { "collapses" }
+            );
+        }
+    }
+
+    #[test]
+    fn the_pick_file_link_collapses_for_the_picker() {
+        let t0 = Instant::now();
+        let mut s = st();
+        assert_eq!(s.apply(Event::Click(Hit::RecPickFile), t0), vec![], "not on the page");
+        open_on(&mut s, Page::Record, t0);
+        assert_eq!(
+            s.apply(Event::Click(Hit::RecPickFile), t0),
+            vec![Effect::RecPickFile]
+        );
+        assert!(!matches!(s.view(), View::Panel(_)), "the panel collapsed");
     }
 
     #[test]

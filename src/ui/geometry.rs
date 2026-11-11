@@ -6,7 +6,7 @@ use super::icons::Icon;
 use super::panel_layout::Region;
 use crate::config::Style;
 use crate::i18n::Key;
-use crate::model::{Hit, Notice, NoticeKind};
+use crate::model::{Hit, Notice, NoticeKind, TranscriptOffer};
 use crate::pomodoro::{Phase, PomoStatus};
 use crate::theme::{Palette, radius};
 
@@ -33,6 +33,8 @@ pub enum ShapeKind {
     /// The compact media view showing a lyric line: wider, same height.
     MediaLyric,
     PomodoroCompact,
+    /// A recording runs: the red dot, the clock and the level bars.
+    RecordCompact,
     /// The closed island shrunk to the cat's two eyes while the pointer is
     /// near it over a window (`pointer_watch::Peek`): `EYES_W` x `EYES_H`,
     /// centred, at the compact shapes' top.
@@ -77,6 +79,9 @@ pub const MEDIA_COMPACT_EXTRA: f32 = 12.0;
 /// The same for PomodoroCompact: the ring's inset grew from 14 to 16 (the
 /// ring's left edge, +2) on top of the 20 it was already wider.
 pub const POMODORO_COMPACT_EXTRA: f32 = 22.0;
+/// RecordCompact is this much wider than the user's width: room for the dot,
+/// "h:mm:ss" and the two level meters with air between them.
+pub const RECORD_COMPACT_EXTRA: f32 = 24.0;
 
 /// The closed island's width range (Settings -> Tampilan -> Notch), logical
 /// px. 160 keeps the idle robot and clock, and the compact media title, inside
@@ -135,6 +140,7 @@ pub fn shape_sized(style: Style, size: NotchSize, kind: ShapeKind) -> ShapeRect 
         ShapeKind::Idle => (size.w, size.h),
         ShapeKind::MediaCompact => (size.w + MEDIA_COMPACT_EXTRA, size.h),
         ShapeKind::PomodoroCompact => (size.w + POMODORO_COMPACT_EXTRA, size.h),
+        ShapeKind::RecordCompact => (size.w + RECORD_COMPACT_EXTRA, size.h),
         ShapeKind::Eyes => (EYES_W, EYES_H),
         // Sized by its line (`lyric_shape_sized`); without one, the narrowest.
         ShapeKind::MediaLyric => (LYRIC_MIN_W.max(size.w), size.h),
@@ -191,6 +197,8 @@ pub fn robot_extra(kind: ShapeKind) -> f32 {
         // `lyric_width_min` already counts the robot in its lead.
         // The ring's centre was 24 px in; now after the robot, 58 px in.
         ShapeKind::PomodoroCompact => 34.0,
+        // The robot (26 px) and its 8 px gap, as for the pomodoro.
+        ShapeKind::RecordCompact => 34.0,
         _ => 0.0,
     }
 }
@@ -843,6 +851,11 @@ pub fn notice_action_w(kind: &NoticeKind) -> f32 {
     match kind {
         NoticeKind::MoleDone | NoticeKind::MoleFailed => LOG_ACTION_W,
         NoticeKind::UpdateFailed => RELEASES_ACTION_W,
+        NoticeKind::RecSaved {
+            offer: TranscriptOffer::Setup,
+            ..
+        } => SETUP_CHIP_W,
+        NoticeKind::RecSaved { .. } => TRANSCRIBE_CHIP_W,
         _ => ACTION_W,
     }
 }
@@ -854,6 +867,11 @@ pub const LATER_CHIP_W: f32 = 48.0;
 /// A sticky note reminder's "Tunda 10 mnt" chip, left of its "Buka" one (which
 /// is as wide as the update offer's primary chip).
 pub const SNOOZE_CHIP_W: f32 = 88.0;
+/// The "Rekaman tersimpan" notice's "Transkrip" / "Transcribe" chip.
+pub const TRANSCRIBE_CHIP_W: f32 = 76.0;
+/// The same notice's "Pengaturan" / "Settings" chip, when the transcript
+/// still needs setting up.
+pub const SETUP_CHIP_W: f32 = 84.0;
 /// Space between a notice's chips.
 pub const NOTICE_CHIP_GAP: f32 = 6.0;
 
@@ -901,6 +919,17 @@ pub fn notice_actions_layout_with(
         })
         .collect();
     (layout, chips)
+}
+
+/// The "Rekaman tersimpan" notice's one chip as a click target: "Transkrip"
+/// (`offer` `Transcribe`) or "Pengaturan" (`Setup`). Nothing for `None`.
+pub fn rec_saved_regions(chip: Rect, offer: TranscriptOffer) -> Vec<Region> {
+    let hit = match offer {
+        TranscriptOffer::None => return Vec::new(),
+        TranscriptOffer::Transcribe => Hit::RecTranscribeChip,
+        TranscriptOffer::Setup => Hit::RecTranscriptSetup,
+    };
+    vec![Region { rect: chip, hit }]
 }
 
 /// The update offer's click targets: "Nanti" and "Update". Anywhere else on
@@ -1292,6 +1321,21 @@ pub fn badge_style(notice: &Notice, p: &Palette, pomo_next: Phase) -> BadgeStyle
         // With the robot off: the Camera, as on the Pintasan tile.
         NoticeKind::Screenshot { .. } => tint(p.accent, Icon::Camera),
         NoticeKind::ShotSaved { .. } => tint(p.sage, Icon::Download),
+        NoticeKind::RecSaved { .. } => tint(p.sage, Icon::Mic),
+        NoticeKind::RecFailed { .. } | NoticeKind::RecMicDenied => {
+            tint(crate::theme::REC_RED, Icon::Mic)
+        }
+        NoticeKind::RecFolderBlocked { .. } => tint(crate::theme::REC_RED, Icon::Folder),
+        NoticeKind::RecInfo => tint(p.accent, Icon::Mic),
+        // The Notes page's icon (a transcript is a text document): sage when
+        // ready, the recording-failed red when not, the accent for a word.
+        NoticeKind::TranscriptReady { .. } => tint(p.sage, Icon::Note),
+        NoticeKind::TranscriptFailed { .. } => tint(crate::theme::REC_RED, Icon::Note),
+        NoticeKind::TranscriptInfo
+        | NoticeKind::TranscriptStarting { .. }
+        | NoticeKind::TranscriptSettings => {
+            tint(p.accent, Icon::Note)
+        }
         NoticeKind::ShotDeleted => tint(crate::theme::SOFT_RED, Icon::Trash),
         NoticeKind::Pomodoro => tint(p.phase(pomo_next), Icon::Timer),
         NoticeKind::Reminder { .. } | NoticeKind::StickyReminder { .. } => BadgeStyle {
@@ -1332,6 +1376,16 @@ pub fn notice_action(kind: &NoticeKind, pomo: PomoStatus) -> Option<Key> {
         // The click opens the releases page. (The update offer has two chips
         // of its own, `notice_chip_widths`; its body does nothing.)
         NoticeKind::UpdateFailed => Some(Key::SeeReleases),
+        // "Transkrip" queues one, "Pengaturan" opens the card (the body
+        // still shows the file).
+        NoticeKind::RecSaved {
+            offer: TranscriptOffer::Transcribe,
+            ..
+        } => Some(Key::TrChipTranscribe),
+        NoticeKind::RecSaved {
+            offer: TranscriptOffer::Setup,
+            ..
+        } => Some(Key::TrChipSettings),
         _ => None,
     }
 }
@@ -2838,6 +2892,132 @@ mod tests {
         assert_eq!((badge.fill, badge.alpha, badge.icon), (p.accent, 1.0, Some(Icon::Bell)));
     }
 
+    fn rec_saved(offer: TranscriptOffer) -> NoticeKind {
+        NoticeKind::RecSaved {
+            path: "a.m4a".into(),
+            offer,
+        }
+    }
+
+    #[test]
+    fn rec_saved_chip_widths_follow_the_offer() {
+        assert_eq!((TRANSCRIBE_CHIP_W, SETUP_CHIP_W), (76.0, 84.0));
+        let idle = PomoStatus::Idle;
+        assert_eq!(
+            notice_chip_widths(&rec_saved(TranscriptOffer::Transcribe), idle),
+            vec![TRANSCRIBE_CHIP_W]
+        );
+        assert_eq!(
+            notice_chip_widths(&rec_saved(TranscriptOffer::Setup), idle),
+            vec![SETUP_CHIP_W]
+        );
+        assert!(notice_chip_widths(&rec_saved(TranscriptOffer::None), idle).is_empty());
+        assert_eq!(
+            notice_action(&rec_saved(TranscriptOffer::Transcribe), idle),
+            Some(Key::TrChipTranscribe)
+        );
+        assert_eq!(
+            notice_action(&rec_saved(TranscriptOffer::Setup), idle),
+            Some(Key::TrChipSettings)
+        );
+        assert_eq!(notice_action(&rec_saved(TranscriptOffer::None), idle), None);
+        // The transcript notices have no chip: their body is the click.
+        for kind in [
+            NoticeKind::TranscriptReady {
+                audio: "a.m4a".into(),
+            },
+            NoticeKind::TranscriptFailed {
+                audio: "a.m4a".into(),
+            },
+            NoticeKind::TranscriptInfo,
+            NoticeKind::TranscriptStarting {
+                audio: r"C:\r\a.m4a".into(),
+            },
+            NoticeKind::TranscriptSettings,
+        ] {
+            assert!(notice_chip_widths(&kind, idle).is_empty(), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn rec_saved_regions_hit_their_chip() {
+        for (offer, hit) in [
+            (TranscriptOffer::Transcribe, Hit::RecTranscribeChip),
+            (TranscriptOffer::Setup, Hit::RecTranscriptSetup),
+        ] {
+            let kind = rec_saved(offer);
+            let widths = notice_chip_widths(&kind, PomoStatus::Idle);
+            for style in [Style::Pill, Style::Notch] {
+                for robot in [false, true] {
+                    let n =
+                        shape_with_robot_sized(style, NotchSize::DEFAULT, ShapeKind::Notice, robot);
+                    // A saved notice is closable: the layout keeps the ✕'s room.
+                    let l = notice_layout_with(n, Some(widths[0]), true);
+                    let chip = l.action.expect("a chip");
+                    let tag = format!("{offer:?} {style:?} robot {robot}");
+                    assert_eq!(chip.w, widths[0], "{tag}");
+                    assert!(inside(n, chip), "{tag} {chip:?}");
+                    for text in [l.title, l.body, l.badge] {
+                        assert!(!intersects(chip, text), "{tag} {chip:?} {text:?}");
+                    }
+                    let regions = HitRegions {
+                        shape: Some((style, n)),
+                        regions: rec_saved_regions(chip, offer),
+                        ..HitRegions::default()
+                    };
+                    let (x, y) = (chip.x + chip.w / 2.0, chip.y + chip.h / 2.0);
+                    assert_eq!(regions.hit(x, y), Some(hit.clone()), "{tag}");
+                    assert_eq!(regions.hit(n.x + 30.0, n.y + n.h / 2.0), Some(Hit::Body), "{tag}");
+                }
+            }
+        }
+        // No offer, no chip, nothing to hit.
+        let chip = Rect {
+            x: 10.0,
+            y: 10.0,
+            w: TRANSCRIBE_CHIP_W,
+            h: 24.0,
+        };
+        assert!(rec_saved_regions(chip, TranscriptOffer::None).is_empty());
+    }
+
+    #[test]
+    fn the_transcript_notices_wear_the_notes_icon_in_their_own_tint() {
+        use crate::theme::{Accent, Surface, island};
+        let p = island(Accent::Plum, Surface::Espresso);
+        let badge = |kind: NoticeKind| {
+            let n = Notice {
+                key: "k".into(),
+                source: "Transkrip".into(),
+                title: "t".into(),
+                body: "b".into(),
+                kind,
+            };
+            badge_style(&n, &p, Phase::Focus)
+        };
+        let ready = badge(NoticeKind::TranscriptReady {
+            audio: "a.m4a".into(),
+        });
+        assert_eq!((ready.fill, ready.icon), (p.sage, Some(Icon::Note)));
+        let failed = badge(NoticeKind::TranscriptFailed {
+            audio: "a.m4a".into(),
+        });
+        assert_eq!(
+            (failed.fill, failed.icon),
+            (crate::theme::REC_RED, Some(Icon::Note))
+        );
+        for kind in [
+            NoticeKind::TranscriptInfo,
+            NoticeKind::TranscriptStarting {
+                audio: r"C:\r\a.m4a".into(),
+            },
+            NoticeKind::TranscriptSettings,
+        ] {
+            let b = badge(kind);
+            assert_eq!((b.fill, b.icon), (p.accent, Some(Icon::Note)));
+        }
+    }
+
     #[test]
     fn the_update_notices_have_chips_and_badges() {
         use crate::theme::{Accent, Surface, island};
@@ -3175,11 +3355,12 @@ mod tests {
         assert_eq!(lyric_scroll_end_ms(box_w, box_w), None);
     }
 
-    const ALL_KINDS: [ShapeKind; 9] = [
+    const ALL_KINDS: [ShapeKind; 10] = [
         ShapeKind::Idle,
         ShapeKind::MediaCompact,
         ShapeKind::MediaLyric,
         ShapeKind::PomodoroCompact,
+        ShapeKind::RecordCompact,
         ShapeKind::Notice,
         ShapeKind::NoticeShot,
         ShapeKind::Panel,
@@ -3222,6 +3403,7 @@ mod tests {
         let idle = shape_for(Style::Pill, ShapeKind::Idle);
         assert_eq!((idle.w, idle.h), (190.0, 34.0));
         assert_eq!(shape_for(Style::Pill, ShapeKind::PomodoroCompact).w, 212.0);
+        assert_eq!(shape_for(Style::Pill, ShapeKind::RecordCompact).w, 214.0);
         assert_eq!(shape_for(Style::Pill, ShapeKind::MediaCompact).w, 202.0);
         assert_eq!(shape_for(Style::Pill, ShapeKind::MediaLyric).w, LYRIC_MIN_W);
     }
@@ -3242,6 +3424,9 @@ mod tests {
                         }
                         ShapeKind::PomodoroCompact => {
                             assert_eq!((s.w, s.h), (size.w + 22.0, size.h));
+                        }
+                        ShapeKind::RecordCompact => {
+                            assert_eq!((s.w, s.h), (size.w + 24.0, size.h));
                         }
                         ShapeKind::MediaLyric => {
                             assert_eq!((s.w, s.h), (LYRIC_MIN_W.max(size.w), size.h));
@@ -3388,6 +3573,7 @@ mod tests {
         assert_eq!(COMPACT_INSET, NOTCH_COMPACT_RADIUS);
         assert_eq!(robot_extra(ShapeKind::MediaCompact), 2.0);
         assert_eq!(robot_extra(ShapeKind::PomodoroCompact), 34.0);
+        assert_eq!(robot_extra(ShapeKind::RecordCompact), 34.0);
     }
 
     #[test]
@@ -3558,6 +3744,11 @@ mod tests {
             (ShapeKind::MediaCompact, true) => compact_layout_robot(content).bars.right(),
             (ShapeKind::PomodoroCompact, false) => pomodoro_compact_layout(content).2.right(),
             (ShapeKind::PomodoroCompact, true) => pomodoro_compact_layout_robot(content).3.right(),
+            (ShapeKind::RecordCompact, robot) => {
+                super::super::panel_layout::record_compact_layout(content, robot)
+                    .system
+                    .right()
+            }
             (ShapeKind::MediaLyric, false) => lyric_layout(content).right(),
             (ShapeKind::MediaLyric, true) => lyric_layout_robot(content).1.right(),
             _ => unreachable!(),
@@ -3591,7 +3782,11 @@ mod tests {
     #[test]
     fn the_slot_widens_a_compact_shape_and_keeps_it_centred() {
         for (style, size, robot) in slot_cases() {
-            for kind in [ShapeKind::MediaCompact, ShapeKind::PomodoroCompact] {
+            for kind in [
+                ShapeKind::MediaCompact,
+                ShapeKind::PomodoroCompact,
+                ShapeKind::RecordCompact,
+            ] {
                 let base = shape_with_robot_sized(style, size, kind, robot);
                 let wide = with_toast_slot(base);
                 assert_eq!(wide.w, base.w + TOAST_SLOT_EXTRA);
@@ -3608,6 +3803,7 @@ mod tests {
             for kind in [
                 ShapeKind::MediaCompact,
                 ShapeKind::PomodoroCompact,
+                ShapeKind::RecordCompact,
                 ShapeKind::MediaLyric,
             ] {
                 for text in [1.0, 150.0, 5000.0] {
@@ -3639,6 +3835,7 @@ mod tests {
             for kind in [
                 ShapeKind::MediaCompact,
                 ShapeKind::PomodoroCompact,
+                ShapeKind::RecordCompact,
                 ShapeKind::MediaLyric,
             ] {
                 let (base, shape, base_w) = slot_pair(style, size, kind, robot, 150.0);
@@ -3934,6 +4131,35 @@ mod tests {
                 let (tx, ty) = (l.title.x + 10.0, l.title.y + l.title.h / 2.0);
                 assert_eq!(regions.hit(tx, ty), Some(Hit::Body), "{tag}");
                 assert_eq!(regions.hit(close.x - 3.0, cy), Some(Hit::Body), "{tag}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_rec_level_groups_hit_test_apart_from_the_clock_and_the_dot() {
+        use super::super::panel_layout::{record_compact_layout, rec_mute_regions};
+        use crate::model::RecSources;
+        use crate::recorder::Source;
+        for style in [Style::Pill, Style::Notch] {
+            for robot in [false, true] {
+                let s = shape_with_robot_sized(style, NotchSize::DEFAULT, ShapeKind::RecordCompact, robot);
+                let l = record_compact_layout(s, robot);
+                let both = RecSources { mic: true, system: true };
+                let regions = HitRegions {
+                    shape: Some((style, s)),
+                    regions: rec_mute_regions(s, &l, both),
+                    ..HitRegions::default()
+                };
+                let tag = format!("{style:?} robot={robot}");
+                let cy = s.y + s.h / 2.0;
+                let mic = regions.hit(l.mic.x + l.mic.w / 2.0, cy);
+                let system = regions.hit(l.system.x + l.system.w / 2.0, cy);
+                assert_eq!(mic, Some(Hit::RecMuteCompact(Source::Mic)), "{tag}");
+                assert_eq!(system, Some(Hit::RecMuteCompact(Source::System)), "{tag}");
+                // The clock and the dot are the body.
+                let clock = regions.hit(l.time.x + 4.0, cy);
+                assert_eq!(clock, Some(Hit::Body), "{tag}");
+                assert_eq!(regions.hit(l.dot.0.0, cy), Some(Hit::Body), "{tag}");
             }
         }
     }

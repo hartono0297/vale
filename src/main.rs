@@ -30,6 +30,7 @@ mod identify_overlay;
 mod lyrics;
 mod lyrics_card;
 mod media_log;
+mod mf;
 mod model;
 mod mole;
 mod notes;
@@ -39,6 +40,7 @@ mod pages;
 mod phone;
 mod pointer_watch;
 mod pomodoro;
+mod recorder;
 mod reminders;
 mod screenrec;
 mod screenshot;
@@ -54,6 +56,8 @@ mod state;
 mod system;
 mod theme;
 mod tiles;
+mod transcribe;
+mod transcript_win;
 mod ui;
 mod update;
 mod widgets;
@@ -91,6 +95,7 @@ fn opens_windows(arg: Option<&str>) -> bool {
             | "--demo-cli"
             | "--demo-robot"
             | "--demo-devices"
+            | "--demo-record"
             | "--demo-arrange"
             | "--demo-notice-close"
             | "--demo-widgets"
@@ -98,6 +103,7 @@ fn opens_windows(arg: Option<&str>) -> bool {
             | "--demo-snap"
             | "--demo-shot-editor"
             | "--demo-lyrics-card"
+            | "--demo-transcript"
             | "--settings",
         ) => true,
         Some(_) => false,
@@ -189,6 +195,13 @@ fn main() {
             demo_lang_from_env();
             ui::demo::run_devices();
         }
+        // Only the recording scenes: made-up times and levels, no microphone.
+        #[cfg(debug_assertions)]
+        Some("--demo-record") => {
+            attach_parent_console();
+            demo_lang_from_env();
+            ui::demo::run_record();
+        }
         // Only the Susun page's scenes: made-up windows and monitors, click-through
         // overlays; it never calls the mover and never lists a real window.
         #[cfg(debug_assertions)]
@@ -250,6 +263,14 @@ fn main() {
             let scene = std::env::args().nth(2);
             lyrics_card::demo::run(scene.as_deref());
         }
+        // The transcript window on made-up files: `--demo-transcript [scene]`.
+        #[cfg(debug_assertions)]
+        Some("--demo-transcript") => {
+            attach_parent_console();
+            demo_lang_from_env();
+            let scene = std::env::args().nth(2);
+            transcript_win::demo::run(scene.as_deref());
+        }
         // The phone link on 127.0.0.1 into target/phone-debug/, each phone
         // that joined printed to the console. No LAN, no Downloads.
         #[cfg(debug_assertions)]
@@ -267,6 +288,23 @@ fn main() {
             attach_parent_console();
             let args: Vec<String> = std::env::args().skip(2).collect();
             screenrec::debug::run(&args);
+        }
+        // `--transcribe <file> [--model <gguf|key>] [--engine <dir>] [--vad
+        // <gguf>|energy] [--lang id|en] [--cpu]`: one transcript, printed and
+        // written next to the file (`transcribe/debug.rs`). No window.
+        #[cfg(debug_assertions)]
+        Some("--transcribe") => {
+            attach_parent_console();
+            let args: Vec<String> = std::env::args().skip(2).collect();
+            std::process::exit(transcribe::debug::run(&args));
+        }
+        // `--record-test <seconds> [mic|system|both]`: a real recording into
+        // DI_REC_DIR or target/rec-test/, with the levels seen. No window.
+        #[cfg(debug_assertions)]
+        Some("--record-test") => {
+            attach_parent_console();
+            let args: Vec<String> = std::env::args().skip(2).collect();
+            std::process::exit(recorder::record_test(&args));
         }
         #[cfg(debug_assertions)]
         Some("--settings") => {

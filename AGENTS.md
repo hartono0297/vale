@@ -2,7 +2,7 @@
 
 ## Every code change goes through Superpowers
 
-Superpowers (`superpowers@superpowers-marketplace`) is on for this project
+Superpowers (`superpowers@claude-plugins-official`) is on for this project
 (`.claude/settings.json`). Whenever I ask for a code change (new feature, bug
 fix, refactor), follow its flow:
 

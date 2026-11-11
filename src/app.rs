@@ -77,7 +77,7 @@ use crate::i18n::{self, Key, tr};
 use crate::identify_overlay;
 use crate::lyrics::{self, DiskCache, LyricsState, LyricsWorker, Query};
 use crate::media_log;
-use crate::model::{Effect, Event, Hit, Notice, NoticeKind, Page, View};
+use crate::model::{Effect, Event, Hit, Notice, NoticeKind, Page, RecSources, View};
 use crate::mole::{self, Confirmed, MoleEvent, MoleOpts, MoleWorker};
 use crate::notch_monitor::{self, Display};
 use crate::notes::NotesStore;
@@ -124,9 +124,9 @@ use crate::ui::notch_fill;
 use crate::ui::panel_layout::{CliHead, STRIP_H, cli_layout};
 use crate::ui::render::{
     CleanerView, CliView, DevicesView, FolderMenuView, Frame, MoleView, NoticeCloseView, Progress,
-    Renderer, RobotFrame, SearchView, SystemView,
+    RecFrame, RecordView, Renderer, RobotFrame, SearchView, SystemView,
 };
-use crate::ui::settings_layout::MonitorRow;
+use crate::ui::settings_layout::{CardId, MonitorRow};
 use crate::ui::robot::{
     self, Brain, Expr, EyesBlink, EyesPose, GreetSettings, Motion, Rng, Spot, TypingPaws,
     choose_expr, plan_timers, should_greet,
@@ -159,6 +159,17 @@ use notif_page::{NotifSetting, NotifState, TIMER_NOTIF_SAVE};
 #[path = "app_update.rs"]
 mod update_page;
 use update_page::{TIMER_UPDATE, UpdateState};
+
+#[path = "app_record.rs"]
+pub(crate) mod record;
+use record::RecState;
+
+#[path = "app_transcribe.rs"]
+mod transcribe_page;
+use transcribe_page::{TIMER_TRANSCRIBE, TranscribeState};
+
+#[path = "app_transcript_win.rs"]
+mod transcript_page;
 
 #[path = "app_lyrics_card.rs"]
 mod card;
@@ -199,6 +210,9 @@ use shot::{ShotSetting, Shots};
 const WM_APP_EVENT: u32 = WM_APP + 1;
 /// Posted once the user has answered the notification-access prompt.
 const WM_APP_ACCESS: u32 = WM_APP + 3;
+/// Opens a source's device menu from the main loop, outside the `APP` borrow
+/// (`wparam`: 0 mic, 1 PC audio).
+const WM_APP_REC_DEVICE: u32 = WM_APP + 80;
 /// These live in the Controls feature of `windows`; the values are fixed by Win32.
 const WM_MOUSEHOVER: u32 = 0x02A1;
 const WM_MOUSELEAVE: u32 = 0x02A3;
@@ -229,6 +243,16 @@ const TIMER_EQ: usize = 5;
 const TIMER_POMO: usize = 6;
 /// Date rollover check.
 const TIMER_DAY: usize = 7;
+/// One-shot to the next whole second of the REC clock, re-armed after each
+/// redraw, only while the REC view (or the Rekam page) shows a recording that
+/// is not paused (`rec_clock_timer_wanted`).
+const TIMER_REC: usize = 60;
+/// One-shot, `REC_LEVEL_MS` apart (coalescable, re-armed after each redraw):
+/// the REC view's level meters redraw, only while that view is on screen at a
+/// screen somebody can see, the recording runs and Motion is not Off
+/// (`rec_level_timer_wanted`).
+const TIMER_REC_LEVEL: usize = 61;
+const REC_LEVEL_MS: u32 = 120;
 /// Reminders: one-shot at the earliest due time (at most `REMINDER_MAX_MS` away).
 const TIMER_REMINDER: usize = 9;
 /// Idle clock redraws at each minute boundary, only while it shows.
@@ -361,6 +385,14 @@ thread_local! {
     /// opens once the handler returns (creating a window while the app is
     /// borrowed would find the app gone).
     static DEFERRED_OPEN_SETTINGS: Cell<bool> = const { Cell::new(false) };
+    /// The same for Settings at a card (a notice's "Pengaturan" chip opens
+    /// it at Transkrip).
+    static DEFERRED_OPEN_CARD: Cell<Option<CardId>> = const { Cell::new(None) };
+    /// A transcript window's "Transkrip ulang" asked for its menu (the
+    /// recording, the rows, under this button): it opens once the handler
+    /// returns, since the dropdown takes the foreground.
+    static DEFERRED_TRANSCRIPT_MENU: RefCell<Option<(PathBuf, Vec<crate::ui::menu_pop::Row>, crate::capture::Rect)>> =
+        const { RefCell::new(None) };
     /// An update was swapped in and started: the island closes once the
     /// handler returns (`shutdown` destroys the window, which needs the app
     /// unborrowed to run its cleanup).
@@ -470,6 +502,7 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
             }
         });
     }
+    let rec_sources = config.recording.sources;
     APP.with(|cell| {
         *cell.borrow_mut() = Some(App {
             hwnd,
@@ -494,6 +527,7 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
             reveal: None,
             strip_motion: None,
             toast_over: false,
+            rec_hot_over: None,
             close_fade: CloseFade::settled(0.0, Instant::now()),
             close_hot: false,
             close_ptr: None,
@@ -573,6 +607,11 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
             hotkeys: HotkeyState::default(),
             widgets: WidgetsState::default(),
             pomo_timer: false,
+            rec_timer: false,
+            rec_level_timer: false,
+            rec: RecState::default(),
+            tr: TranscribeState::new(),
+            rec_sources,
             clock_timer: false,
             progress_timer: false,
             lyrics: LyricsState::default(),
@@ -659,6 +698,7 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
         app.sticky_remind_fire();
         // The updated notice, the update timer and the leftover cleanup.
         app.update_start(updated_from);
+        app.transcribe_init();
         unsafe {
             SetTimer(Some(hwnd), TIMER_SYSTEM, SYSTEM_MS, None);
             SetTimer(Some(hwnd), TIMER_BATTERY, BATTERY_MS, None);
@@ -778,6 +818,7 @@ fn release_graphics() {
     identify_overlay::release();
     crate::lyrics_card::release();
     crate::shot_edit::window::release();
+    crate::transcript_win::release();
 }
 
 /// Stops the Claude hook pipe, so the new island can own the name.
@@ -906,6 +947,9 @@ struct App {
     /// The pointer is on the busy toast's own spot, as the reducer last
     /// heard (`Event::ToastPointer`); synced from the state at each refresh.
     toast_over: bool,
+    /// The level group of the REC view the pointer is on, as the reducer last
+    /// heard (`Event::RecMuteHot`); synced from the state at each refresh.
+    rec_hot_over: Option<crate::recorder::Source>,
     /// The notice's ✕ fading in or out (`ui::motion::CloseFade`); its target
     /// is 1 while the pointer is on the island and a closable notice shows
     /// in its full form.
@@ -1090,6 +1134,17 @@ struct App {
     /// The desktop widgets (sticky notes): the host and the pending save.
     widgets: WidgetsState,
     pomo_timer: bool,
+    /// `TIMER_REC` is set.
+    rec_timer: bool,
+    /// `TIMER_REC_LEVEL` is set.
+    rec_level_timer: bool,
+    /// The audio recorder's session (`app_record`).
+    rec: RecState,
+    /// Transcript jobs, holds and downloads (`app_transcribe`).
+    tr: TranscribeState,
+    /// The sources the Rekam page's control chose for the next recording
+    /// (kept in `config.recording.sources`).
+    rec_sources: RecSources,
     /// `TIMER_CLOCK` is set.
     clock_timer: bool,
     /// `TIMER_PROGRESS` is set.
@@ -1360,6 +1415,9 @@ impl App {
                     | Event::Toast(_)
                     | Event::ClipPacked { .. }
                     | Event::Update(_)
+                    | Event::Rec(..)
+                    | Event::Transcribe(..)
+                    | Event::TranscribeDownload(..)
                     // A progress tick draws the receiving view itself, at
                     // most six a second; nothing else changed.
                     | Event::Phone(_, crate::phone::PhoneEvent::UploadProgress { .. })
@@ -1373,6 +1431,8 @@ impl App {
         }
         // Once per burst of command output, not per chunk.
         self.note_cli_output(now);
+        // An open transcript window follows its live job once per burst too.
+        self.transcript_flush_live();
         // Only system readings: they drew what they changed (the open
         // System page); a background check must not redraw the island,
         // unless it raised a notice.
@@ -1469,6 +1529,26 @@ impl App {
                 Event::Update(event) => {
                     self.on_update_event(event);
                     continue;
+                }
+                // The recorder's thread: `App` makes the notice.
+                Event::Rec(session, note) => {
+                    self.on_rec_note(session, note);
+                    continue;
+                }
+                // A transcript job's and a model download's threads: `App`
+                // decides what shows.
+                Event::Transcribe(id, event) => {
+                    self.on_transcribe(id, event);
+                    continue;
+                }
+                Event::TranscribeDownload(id, event) => {
+                    self.on_transcribe_download(id, event);
+                    continue;
+                }
+                // The scan knows only what is on disk; the queue's marks go over it.
+                Event::RecRecent(list) => {
+                    self.rec.recent = list.clone();
+                    Event::RecRecent(self.transcribe_marks(list))
                 }
                 Event::SearchIndex(apps) => {
                     self.on_search_index(apps);
@@ -1763,8 +1843,8 @@ impl App {
     }
 
     /// A right-click on a favourite in the open menu unstars it, one on a
-    /// Notes card asks for the card menu, anywhere else the tray menu opens
-    /// as always.
+    /// Notes card asks for the card menu, one on a Rekam row asks for its
+    /// transcript menu, anywhere else the tray menu opens as always.
     fn on_right_click(&mut self, lparam: LPARAM) -> RightClick {
         // The faint drag margin is not the island: no menu from it.
         let hit = match self.under_at(lparam) {
@@ -1776,6 +1856,9 @@ impl App {
         }
         if let Some(id) = note_card_menu_target(self.state.view(), hit.as_ref()) {
             return RightClick::NoteMenu(id);
+        }
+        if let Some(i) = rec_row_menu_target(self.state.view(), hit.as_ref()) {
+            return RightClick::RecRowMenu(i);
         }
         if !self.state.cli_menu() || self.state.view() != View::Panel(Page::Cli) {
             return RightClick::Tray;
@@ -2243,6 +2326,20 @@ impl App {
             Effect::PhoneCancel => self.phone_cancel(),
             Effect::PhoneStop => self.phone_stop(crate::phone::EndReason::Done),
             Effect::PhoneBack => self.phone_back(),
+            Effect::RecToggle => self.rec_toggle(),
+            Effect::RecPause => self.rec_pause(),
+            Effect::RecMute(source) => self.rec_toggle_mute(source),
+            Effect::RecDevice(source) => self.rec_open_device_menu(source),
+            Effect::RecSources(sources) => self.rec_set_sources(sources),
+            Effect::RecReveal(path) => self.rec_reveal(path),
+            Effect::RecOpenFolder => self.rec_open_folder(),
+            Effect::RecMicSettings => self.rec_mic_settings(),
+            Effect::RecPickFolder => self.rec_pick_folder(),
+            Effect::TranscribeQueue(audio) => self.transcribe_queue(audio, None),
+            Effect::OpenTranscript(audio) => self.open_transcript(audio),
+            Effect::OpenTranscriptSettings => self.open_transcript_settings(),
+            Effect::RecPickFile => self.rec_pick_file(),
+            Effect::TranscriptOff => self.transcript_off_note(),
             Effect::DeviceEject(i) => self.devices_eject(i),
             Effect::DeviceOpen(i) => self.devices_open(i),
             Effect::DeviceDetail(i) => self.devices_toggle_detail(i),
@@ -3610,6 +3707,7 @@ impl App {
 
     /// Retargets the animation at the state's view and re-arms the notice deadline.
     fn refresh(&mut self, now: Instant) {
+        self.rec_follow_page(self.state.panel_page_under());
         self.draw_gen = self.draw_gen.wrapping_add(1);
         // The sleep clock follows mouse and keyboard input anywhere on the PC.
         self.fold_pc_input(now);
@@ -3626,6 +3724,7 @@ impl App {
         // (it lets go when a toast ends or the pointer leaves); the next
         // mouse move compares against that.
         self.toast_over = self.state.toast_pointer();
+        self.rec_hot_over = self.state.rec_mute_hot();
         if let Some(n) = self.state.toast_slot() {
             self.slot_keep = Some(n.clone());
         }
@@ -3670,6 +3769,7 @@ impl App {
             View::MediaCompact => Some(ShapeKind::MediaCompact),
             View::MediaLyric => Some(ShapeKind::MediaLyric),
             View::PomodoroCompact => Some(ShapeKind::PomodoroCompact),
+            View::RecordCompact => Some(ShapeKind::RecordCompact),
             View::Panel(_) => Some(self.panel_kind()),
             View::Notice(n) if matches!(n.kind, NoticeKind::Screenshot { .. }) => {
                 Some(ShapeKind::NoticeShot)
@@ -3686,7 +3786,7 @@ impl App {
             // The idle island grows to the left for the typing cat's laptop.
             ShapeKind::Idle => self.idle_shape(now),
             // The compact views widen to hold the busy toast's logo.
-            ShapeKind::MediaCompact | ShapeKind::PomodoroCompact
+            ShapeKind::MediaCompact | ShapeKind::PomodoroCompact | ShapeKind::RecordCompact
                 if self.state.toast_slot().is_some() =>
             {
                 with_toast_slot(shape_with_robot_sized(style, notch, kind, robot))
@@ -4222,6 +4322,7 @@ impl App {
                 }
             }
         }
+        self.sync_rec_timers(now);
         self.sync_progress_timer(now);
         self.sync_robot_timers(now);
         self.sync_system_page();
@@ -4371,6 +4472,8 @@ impl App {
         self.sync_eq();
         // A lock or a display change stops the paws and starts them again.
         self.sync_typing_timer(Instant::now());
+        // The REC clock and meters stop too, and come back on unlock.
+        self.sync_rec_timers(Instant::now());
         self.follow_pointer_settings(Instant::now());
         // The sleeping cat's wake poll stops while nobody is at the screen.
         // Back again, input made meanwhile wakes the cat at once.
@@ -5102,6 +5205,71 @@ impl App {
         self.progress_timer = wait.is_some();
     }
 
+    /// `TIMER_REC` and `TIMER_REC_LEVEL` run only while a recording shows and
+    /// moves; they are killed the moment the view leaves the screen.
+    fn sync_rec_timers(&mut self, now: Instant) {
+        let view = self.state.view();
+        let paused = self.state.rec().is_some_and(|r| r.paused());
+        let recording = self.state.rec().is_some();
+        let away = self.screen_away();
+        let clock = rec_clock_timer_wanted(
+            recording && matches!(view, View::RecordCompact | View::Panel(Page::Record)),
+            paused,
+            away,
+        );
+        if clock != self.rec_timer {
+            self.rec_timer = clock;
+            if clock {
+                self.arm_rec(now);
+            } else {
+                unsafe {
+                    let _ = KillTimer(Some(self.hwnd), TIMER_REC);
+                }
+            }
+        }
+        let level = rec_level_timer_wanted(
+            recording && view == View::RecordCompact,
+            paused,
+            self.motion().timed(),
+            away,
+        );
+        if level != self.rec_level_timer {
+            self.rec_level_timer = level;
+            if level {
+                self.arm_rec_level();
+            } else {
+                unsafe {
+                    let _ = KillTimer(Some(self.hwnd), TIMER_REC_LEVEL);
+                }
+            }
+        }
+    }
+
+    /// One-shot `REC_LEVEL_MS` from now; Windows may fold it into another
+    /// wake within the usual slack.
+    fn arm_rec_level(&self) {
+        unsafe {
+            SetCoalescableTimer(
+                Some(self.hwnd),
+                TIMER_REC_LEVEL,
+                REC_LEVEL_MS,
+                None,
+                timer_slack(REC_LEVEL_MS),
+            );
+        }
+    }
+
+    /// One-shot to the next whole second of the recorded time.
+    fn arm_rec(&self, now: Instant) {
+        let elapsed = self
+            .state
+            .rec()
+            .map_or(Duration::ZERO, |r| r.elapsed(now));
+        unsafe {
+            SetTimer(Some(self.hwnd), TIMER_REC, ms_to_next_whole_second(elapsed), None);
+        }
+    }
+
     /// One-shot, re-armed after each redraw, so the shown second ticks over on time.
     fn arm_pomo(&self, now: Instant) {
         let wait = ms_to_next_second(self.state.pomodoro().remaining(now));
@@ -5200,6 +5368,27 @@ impl App {
                     self.arm_pomo(now);
                 }
             }
+            TIMER_REC => {
+                let now = Instant::now();
+                if !self.animating() {
+                    self.draw(now);
+                }
+                if self.rec_timer {
+                    self.arm_rec(now);
+                }
+            }
+            TIMER_REC_LEVEL => {
+                // A one-shot: gone unless re-armed.
+                unsafe {
+                    let _ = KillTimer(Some(self.hwnd), TIMER_REC_LEVEL);
+                }
+                if !self.animating() {
+                    self.draw(Instant::now());
+                }
+                if self.rec_level_timer {
+                    self.arm_rec_level();
+                }
+            }
             TIMER_DAY => self.check_date(),
             TIMER_REMINDER => {
                 unsafe {
@@ -5257,6 +5446,7 @@ impl App {
             }
             TIMER_SYSTEM_WARN => self.on_system_warn_timer(),
             TIMER_UPDATE => self.on_update_timer(),
+            TIMER_TRANSCRIBE => self.transcribe_settle(),
             TIMER_MIXER => {
                 if self.state.view() == View::Panel(Page::Mixer) {
                     self.mixer_scan();
@@ -5492,6 +5682,11 @@ impl App {
         }
         self.dock_follow(lparam);
         self.track_close_hot(Some(lparam));
+        let group = match self.hit_at(lparam) {
+            Some(Hit::RecMuteCompact(source)) => Some(source),
+            _ => None,
+        };
+        self.set_rec_mute_hot(group);
         if self.state.view() == View::Panel(Page::Arrange) {
             let hit = self.hit_at(lparam);
             self.arrange_hover(hit.as_ref());
@@ -5584,6 +5779,12 @@ impl App {
             None if self.state.shelf_drop_here() => self.apply_now(Event::ShelfDropLeft),
             None => self.refresh(Instant::now()),
         }
+        // A lit level group of the REC view lets go only after the hover
+        // ended (`Hover(false)` already let it go in the reducer): before
+        // it, the hover alone would hold the panel open for that one apply,
+        // and Hover & stay would latch it. What is left is a leave before
+        // the dwell, with no hover to hold anything.
+        self.set_rec_mute_hot(None);
     }
 
     /// The pointer at `lparam` is on the busy toast's own spot: its strip in
@@ -5606,6 +5807,16 @@ impl App {
         let (x, y) = client_xy(lparam);
         let (x, y) = self.renderer.to_dip(x as f32, y as f32);
         toast_peek_reaches(self.config.style, self.notch_size(), x, y)
+    }
+
+    /// Tells the reducer the pointer reached or left a level group of the REC
+    /// view. Only a change is sent, and its redraw lights or clears the pill:
+    /// no timer.
+    fn set_rec_mute_hot(&mut self, group: Option<crate::recorder::Source>) {
+        if self.rec_hot_over != group {
+            self.rec_hot_over = group;
+            self.apply_now(Event::RecMuteHot(group));
+        }
     }
 
     /// Tells the reducer the pointer reached or left the busy toast's spot.
@@ -5964,6 +6175,11 @@ impl App {
         // The hotkeys follow a changed value (once started; not while
         // Settings records).
         self.hotkeys_follow_config();
+        // A hand edit of the recorder's sources reaches the Rekam page (not
+        // while a recording runs: it keeps what it started with).
+        if !self.rec.active() {
+            self.rec_sources = self.config.recording.sources;
+        }
         if changed && let Some(sync) = &self.sync {
             sync.send(SyncRequest::Config(self.config.clone()));
             // The next calendar view asks again, now with the new client.
@@ -5973,6 +6189,8 @@ impl App {
         self.apply_ui_font();
         // The desktop widgets: their settings, notes, colours and font.
         self.widgets_follow_config();
+        // An open transcript window: its language and font.
+        self.transcript_refresh_all();
         // Stay-behind, the cat and its motion decide the pointer poll.
         self.follow_pointer_settings(Instant::now());
         // A hand edit of the language (or the font) reaches an open lyrics
@@ -6010,6 +6228,7 @@ impl App {
             editor::restyle_open_editor();
             crate::shot_edit::window::restyle_open();
             settings::restyle();
+            crate::transcript_win::restyle();
             self.draw(Instant::now());
         }
     }
@@ -6048,6 +6267,7 @@ impl App {
             calendar: self.calendar.status,
             hotkey_failed: self.hotkeys.failed_flags(),
             update_row: self.update.row(),
+            transcript: self.transcript_card_view(),
             monitors: self
                 .displays
                 .iter()
@@ -6248,6 +6468,32 @@ impl App {
                 self.config.device_notices = on;
                 self.save_config();
             }
+            SettingsAction::RecSources(v) => self.rec_set_sources(v),
+            SettingsAction::RecDevice(source, id) => self.rec_set_device(source, id),
+            SettingsAction::RecFolder(dir) => self.rec_set_folder(dir),
+            SettingsAction::TranscribeFile(path) => self.transcribe_file(path),
+            SettingsAction::RecEchoCancel(on) => {
+                self.config.recording.echo_cancel = on;
+                self.save_config();
+            }
+            SettingsAction::TranscriptEnabled(on) => self.transcribe_set_enabled(on),
+            SettingsAction::TranscriptModel(key) => self.transcribe_pick(key),
+            SettingsAction::TranscriptDownload(key) => self.transcribe_download_key(key),
+            SettingsAction::TranscriptCancelDownload => self.transcribe_cancel_download(),
+            SettingsAction::TranscriptDelete(key) => {
+                if let Some(model) = crate::transcribe::catalog::model(key) {
+                    self.transcribe_delete(model);
+                }
+            }
+            SettingsAction::TranscriptLang(language) => {
+                self.config.transcript.language = language;
+                self.save_config();
+            }
+            SettingsAction::TranscriptAuto(on) => {
+                self.config.transcript.auto = on;
+                self.save_config();
+            }
+            SettingsAction::TranscriptFolder => self.transcribe_open_folder(),
             // The thumb moves live; only the release is saved.
             SettingsAction::ArrangeGap { gap, commit } => {
                 self.config.arrange.gap = gap;
@@ -6409,7 +6655,13 @@ impl App {
     /// no slot, or on any other view).
     fn slot_drawn(&self, now: Instant) -> f32 {
         match (&self.drawn, self.slot_keep.is_some()) {
-            (View::MediaCompact | View::MediaLyric | View::PomodoroCompact, true) => {
+            (
+                View::MediaCompact
+                | View::MediaLyric
+                | View::PomodoroCompact
+                | View::RecordCompact,
+                true,
+            ) => {
                 self.slot_share.at(&self.anim, now)
             }
             _ => 0.0,
@@ -6550,10 +6802,20 @@ impl App {
             || transit.content_alpha < 1.0
             || self.strip_motion.is_some()
             || self.eyes_morph;
+        let rec_levels = self.rec_levels();
         let frame = Frame {
             view: &self.drawn,
             media: state.media(),
             pomodoro: state.pomodoro(),
+            rec: state.rec().map(|r| RecFrame {
+                elapsed: r.elapsed(now),
+                paused: r.paused(),
+                sources: r.sources,
+                mic: rec_levels.0,
+                system: rec_levels.1,
+                muted: r.muted,
+                hot: state.rec_mute_hot(),
+            }),
             now,
             today: state.today(),
             page: leaving.map_or(state.page(), |shown| shown.page),
@@ -6569,6 +6831,11 @@ impl App {
             phone: phone_view.as_ref(),
             phone_on: self.phone.running(),
             arrange: App::arrange_view(&self.arrange, &self.config, self.search_input.as_ref()),
+            record: RecordView {
+                sources: self.rec_sources,
+                recent: state.rec_recent(),
+                devices: self.rec.devices(),
+            },
             devices: DevicesView {
                 list: &self.devices.list,
                 ejecting: &self.devices.ejecting,
@@ -7330,6 +7597,30 @@ fn needs_fetch(
     }
 }
 
+/// Milliseconds until a clock that counts up changes its shown second
+/// (`elapsed` rounded down), plus 1 ms so the redraw lands after the change.
+fn ms_to_next_whole_second(elapsed: Duration) -> u32 {
+    1000 - (elapsed.as_millis() % 1000) as u32 + 1
+}
+
+/// `TIMER_REC` runs only while the REC view shows a recording that is not
+/// paused (a paused clock does not move) on a screen somebody can see.
+/// Fullscreen is already out: `base_view` hides the view there.
+fn rec_clock_timer_wanted(view_shown: bool, paused: bool, screen_away: bool) -> bool {
+    view_shown && !paused && !screen_away
+}
+
+/// `TIMER_REC_LEVEL` adds Motion not Off to the same conditions: with it off
+/// the meters stay at rest.
+fn rec_level_timer_wanted(
+    view_shown: bool,
+    paused: bool,
+    motion_on: bool,
+    screen_away: bool,
+) -> bool {
+    rec_clock_timer_wanted(view_shown, paused, screen_away) && motion_on
+}
+
 /// Milliseconds until the countdown's shown second changes (it rounds up, so
 /// at a whole second), plus 1 ms so the redraw lands after the change.
 fn ms_to_next_second(remaining: Duration) -> u32 {
@@ -7527,6 +7818,8 @@ enum RightClick {
     Tray,
     /// The card menu opens for this note.
     NoteMenu(String),
+    /// The transcript menu opens for this Rekam row.
+    RecRowMenu(usize),
 }
 
 /// The note whose card a right-click at `hit` is on, on the Notes page.
@@ -7534,6 +7827,17 @@ fn note_card_menu_target(view: View, hit: Option<&Hit>) -> Option<String> {
     match hit {
         Some(Hit::NoteOpen(id) | Hit::NoteSticky(id)) if view == View::Panel(Page::Notes) => {
             Some(id.clone())
+        }
+        _ => None,
+    }
+}
+
+/// The Rekam row whose menu a right-click at `hit` asks for: the row or its
+/// pill, on the Rekam page only.
+fn rec_row_menu_target(view: View, hit: Option<&Hit>) -> Option<usize> {
+    match hit {
+        Some(Hit::RecOpen(i) | Hit::RecTranscript(i)) if view == View::Panel(Page::Record) => {
+            Some(*i)
         }
         _ => None,
     }
@@ -8054,6 +8358,91 @@ fn open_note_card_menu(hwnd: HWND, id: &str) {
     }
 }
 
+/// The device dropdown of `source` (from the Rekam page), under the device
+/// name that was clicked: the endpoints are listed as it opens. It holds the
+/// panel while it is open; its pick comes back as `WM_APP_MENU_DONE`
+/// (`App::rec_menu_done`). Opened outside the app borrow: it takes the
+/// foreground, which sends messages back here.
+fn open_rec_device_menu(hwnd: HWND, source: crate::recorder::Source) {
+    if MENU_OPEN.get() {
+        return;
+    }
+    let Some(Some((current, lang, font, anchor))) = with_app(|app| {
+        let anchor = app.rec_device_anchor(source)?;
+        Some((
+            app.config.recording.device(source).map(str::to_owned),
+            app.config.language,
+            app.config.font,
+            anchor,
+        ))
+    }) else {
+        return;
+    };
+    let opened = crate::ui::device_menu::open(
+        hwnd,
+        anchor,
+        crate::ui::menu_pop::Align::Start,
+        source,
+        current.as_deref(),
+        lang,
+        font,
+    );
+    if opened {
+        with_app(|app| app.apply_now(Event::MenuOpen(true)));
+    }
+}
+
+/// The transcript menu of Rekam row `i`, under the row. A row with transcripts
+/// off has no menu, and no tray menu either: the right-click is swallowed.
+/// It holds the panel while it is open; its pick comes back as
+/// `WM_APP_MENU_DONE`. Opened outside the app borrow, like the device menu.
+fn open_rec_row_menu(hwnd: HWND, i: usize) {
+    if MENU_OPEN.get() {
+        return;
+    }
+    let Some(Some((audio, rows, font, anchor))) = with_app(|app| {
+        let anchor = app.rec_row_anchor(i)?;
+        let (audio, rows) = app.rec_row_menu(i)?;
+        Some((audio, rows, app.config.font, anchor))
+    }) else {
+        return;
+    };
+    if rows.is_empty() {
+        return;
+    }
+    let opened = crate::ui::transcript_menu::open(
+        hwnd,
+        anchor,
+        crate::ui::menu_pop::Align::End,
+        audio,
+        rows,
+        font,
+    );
+    if opened {
+        with_app(|app| app.apply_now(Event::MenuOpen(true)));
+    }
+}
+
+/// The redo menu of a transcript window, under its "Transkrip ulang" button.
+/// The pick comes back as `WM_APP_MENU_DONE` like the Rekam row's menu (the
+/// island owns it); the activation goes back to the window when it closes.
+fn open_transcript_redo_menu(audio: PathBuf, rows: Vec<crate::ui::menu_pop::Row>, anchor: crate::capture::Rect) {
+    if MENU_OPEN.get() {
+        return;
+    }
+    let Some((hwnd, font)) = with_app(|app| (app.hwnd, app.config.font)) else {
+        return;
+    };
+    crate::ui::transcript_menu::open(
+        hwnd,
+        anchor,
+        crate::ui::menu_pop::Align::Start,
+        audio,
+        rows,
+        font,
+    );
+}
+
 /// Shows the tray menu and runs the choice. The menu's modal loop dispatches
 /// timer and mouse messages to `wnd_proc`, so no `APP` borrow is held across it.
 fn open_menu(hwnd: HWND) {
@@ -8109,6 +8498,12 @@ fn open_menu(hwnd: HWND) {
         Some(MenuCmd::StickyList) => {
             with_app(|app| app.open_note_list(None));
         }
+        Some(MenuCmd::Record) => {
+            with_app(|app| app.rec_toggle());
+        }
+        Some(MenuCmd::RecordMute) => {
+            with_app(|app| app.rec_toggle_mute(crate::recorder::Source::Mic));
+        }
         Some(MenuCmd::StylePill) => {
             with_app(|app| app.set_style(Style::Pill));
         }
@@ -8144,6 +8539,19 @@ fn open_settings(hwnd: HWND) {
     }
 }
 
+/// `open_settings`, on Fitur scrolled to `card`.
+fn open_settings_card(hwnd: HWND, card: CardId) {
+    let Some(model) = with_app(|app| {
+        app.retry_hotkeys();
+        app.settings_model()
+    }) else {
+        return;
+    };
+    if let Err(error) = settings::open_card(hwnd, model, card) {
+        eprintln!("vale: cannot open settings: {error}");
+    }
+}
+
 /// Runs a settings action now, or once the handler holding the app returns.
 /// The Do Not Disturb help opens the Settings app, which may pump messages,
 /// so it never runs inside `with_app`.
@@ -8168,6 +8576,7 @@ fn deliver_settings_action(action: SettingsAction) {
 fn shutdown(hwnd: HWND) {
     shelf_ole::revoke(hwnd);
     settings::close();
+    crate::transcript_win::close_all();
     flush_editor();
     // A command still running ends with the island's process, which closes
     // its job.
@@ -8358,6 +8767,14 @@ fn run_deferred() {
     {
         open_settings(hwnd);
     }
+    if let Some(card) = DEFERRED_OPEN_CARD.take()
+        && let Some(hwnd) = with_app(|app| app.hwnd)
+    {
+        open_settings_card(hwnd, card);
+    }
+    if let Some((audio, rows, anchor)) = DEFERRED_TRANSCRIPT_MENU.take() {
+        open_transcript_redo_menu(audio, rows, anchor);
+    }
     if DEFERRED_SHUTDOWN.take()
         && let Some(hwnd) = with_app(|app| app.hwnd)
     {
@@ -8542,6 +8959,7 @@ fn on_system_theme_changed() {
         editor::restyle_open_editor();
         crate::shot_edit::window::restyle_open();
         settings::restyle();
+        crate::transcript_win::restyle();
     }
 }
 
@@ -8571,6 +8989,21 @@ unsafe extern "system" fn wnd_proc(
         }
         WM_TIMER if wparam.0 == TIMER_DISPLAYS => {
             on_displays_timer(hwnd);
+            LRESULT(0)
+        }
+        // What the user asked a transcript window for.
+        crate::transcript_win::WM_APP_TRANSCRIPT => {
+            if with_app(App::on_transcript_requests).is_none() {
+                // A handler holds the app: the requests are still queued; ask again.
+                unsafe {
+                    let _ = PostMessageW(
+                        Some(hwnd),
+                        crate::transcript_win::WM_APP_TRANSCRIPT,
+                        WPARAM(0),
+                        LPARAM(0),
+                    );
+                }
+            }
             LRESULT(0)
         }
         // What the user did to a note on the desktop (`widgets::host`).
@@ -8604,15 +9037,19 @@ unsafe extern "system" fn wnd_proc(
                             by_user: wparam.0 == PBT_APMRESUMESUSPEND,
                         };
                         with_app(|app| {
+                            // A recording the sleep paused goes on.
+                            app.rec_on_resume();
                             // A phone session left over from before the
                             // sleep is ended: its connections are gone.
                             app.phone_on_resume(Instant::now());
                             app.maybe_greet(trigger)
                         });
                     }
-                    // Going to sleep: the phone link ends with it.
+                    // Going to sleep: the phone link ends with it, and a
+                    // recording pauses (QPC runs on through the sleep).
                     PBT_APMSUSPEND => {
                         with_app(|app| {
+                            app.rec_on_suspend();
                             app.phone_on_away(crate::phone::EndReason::Suspend, Instant::now())
                         });
                     }
@@ -8768,6 +9205,14 @@ unsafe extern "system" fn wnd_proc(
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
         WM_LBUTTONDOWN => {
+            // The island never takes the activation, so the open dropdown
+            // does not lose it to a press here: the press only closes it, as
+            // a native menu's would. Also one Settings opened: it keeps the
+            // activation while the island is pressed.
+            if crate::ui::menu_pop::is_open() {
+                crate::ui::menu_pop::close();
+                return LRESULT(0);
+            }
             with_app(|app| app.on_press(lparam));
             LRESULT(0)
         }
@@ -8785,6 +9230,7 @@ unsafe extern "system" fn wnd_proc(
             match with_app(|app| app.on_right_click(lparam)) {
                 Some(RightClick::Tray) | None => open_menu(hwnd),
                 Some(RightClick::NoteMenu(id)) => open_note_card_menu(hwnd, &id),
+                Some(RightClick::RecRowMenu(i)) => open_rec_row_menu(hwnd, i),
                 Some(RightClick::Done) => {}
             }
             LRESULT(0)
@@ -8797,6 +9243,29 @@ unsafe extern "system" fn wnd_proc(
         }
         WM_APP_ACCESS => {
             on_access_answered();
+            LRESULT(0)
+        }
+        // The device dropdown went (picked or not).
+        crate::ui::menu_pop::WM_APP_MENU_DONE => {
+            if let Some(done) = unsafe { crate::ui::menu_pop::take_done(lparam) } {
+                let pick = crate::ui::device_menu::picked(&done);
+                let choice = crate::ui::transcript_menu::picked(&done);
+                with_app(|app| {
+                    app.rec_menu_done(pick);
+                    if let Some(choice) = choice {
+                        app.transcript_menu_choice(choice);
+                    }
+                });
+            }
+            LRESULT(0)
+        }
+        WM_APP_REC_DEVICE => {
+            let source = if wparam.0 == 0 {
+                crate::recorder::Source::Mic
+            } else {
+                crate::recorder::Source::System
+            };
+            open_rec_device_menu(hwnd, source);
             LRESULT(0)
         }
         WM_APP_SETTINGS_ACTION => {
@@ -8826,6 +9295,8 @@ unsafe extern "system" fn wnd_proc(
                 with_app(App::notif_shutdown);
                 with_app(App::widgets_flush);
                 with_app(App::hotkeys_shutdown);
+                with_app(App::rec_shutdown);
+                with_app(App::transcribe_shutdown);
             }
             LRESULT(0)
         }
@@ -8855,6 +9326,8 @@ unsafe extern "system" fn wnd_proc(
             with_app(App::devices_shutdown);
             with_app(App::arrange_shutdown);
             with_app(App::hotkeys_shutdown);
+            with_app(App::rec_shutdown);
+            with_app(App::transcribe_shutdown);
             unsafe {
                 let _ = WTSUnRegisterSessionNotification(hwnd);
                 let note = DISPLAY_NOTIFY.replace(0);
@@ -10015,6 +10488,58 @@ mod tests {
     }
 
     #[test]
+    fn the_rec_ticks_land_just_after_the_second_changes() {
+        let ms = Duration::from_millis;
+        assert_eq!(ms_to_next_whole_second(ms(0)), 1001);
+        assert_eq!(ms_to_next_whole_second(ms(250)), 751);
+        assert_eq!(ms_to_next_whole_second(ms(999)), 2);
+        assert_eq!(ms_to_next_whole_second(ms(61_400)), 601);
+    }
+
+    #[test]
+    fn the_rec_timers_run_only_while_the_view_shows_and_moves() {
+        // (shown, paused, motion_on, away) -> (clock, level)
+        let case = |shown, paused, motion, away| {
+            (
+                rec_clock_timer_wanted(shown, paused, away),
+                rec_level_timer_wanted(shown, paused, motion, away),
+            )
+        };
+        assert_eq!(case(true, false, true, false), (true, true));
+        // Motion Off keeps the clock, not the meters.
+        assert_eq!(case(true, false, false, false), (true, false));
+        // Paused: nothing moves.
+        assert_eq!(case(true, true, true, false), (false, false));
+        // Another view (or fullscreen's Hidden), locked, display off.
+        assert_eq!(case(false, false, true, false), (false, false));
+        assert_eq!(case(true, false, true, true), (false, false));
+    }
+
+    /// The body of `fn <name>` in this file, up to the next `fn` at the
+    /// same depth.
+    fn body_of(name: &str) -> &'static str {
+        let src = include_str!("app.rs");
+        let start = src.find(&format!("    fn {name}(")).expect(name);
+        let rest = &src[start + 4..];
+        let end = rest.find("\n    fn ").or_else(|| rest.find("\r\n    fn ")).unwrap_or(rest.len());
+        &rest[..end]
+    }
+
+    /// Locking or the display going off re-plans the REC timers like the
+    /// other polls (they then stop), and unlocking starts them again; the
+    /// meters' timer is a coalescable one-shot re-armed after each redraw.
+    #[test]
+    fn the_rec_timers_follow_the_lock_and_the_meter_timer_is_a_one_shot() {
+        assert!(body_of("sync_pointer_polls").contains("self.sync_rec_timers("));
+        let arm = body_of("arm_rec_level");
+        assert!(arm.contains("SetCoalescableTimer") && arm.contains("TIMER_REC_LEVEL"));
+        let tick = body_of("on_timer");
+        let at = tick.find("TIMER_REC_LEVEL =>").expect("the meter tick");
+        let arm = &tick[at..at + tick[at..].find("TIMER_DAY").unwrap()];
+        assert!(arm.contains("KillTimer") && arm.contains("self.arm_rec_level()"), "{arm}");
+    }
+
+    #[test]
     fn timer_ids_never_collide() {
         // The System page's and the clipboard's timers came in separate runs;
         // one id for two timers would kill or fire the other's.
@@ -10025,6 +10550,9 @@ mod tests {
             TIMER_EQ,
             TIMER_POMO,
             TIMER_DAY,
+            TIMER_REC,
+            TIMER_REC_LEVEL,
+            TIMER_TRANSCRIBE,
             TIMER_CLOCK,
             TIMER_REMINDER,
             TIMER_LYRIC,
@@ -10757,6 +11285,21 @@ mod tests {
         // A COM call that never comes back (a hung Explorer) is given up on;
         // a late answer is told apart by its request id.
         assert!(!reads.busy(t0 + EXPLORER_READ_TIMEOUT));
+    }
+
+    #[test]
+    fn right_clicks_on_a_rec_row_open_its_menu() {
+        let rec = View::Panel(Page::Record);
+        assert_eq!(rec_row_menu_target(rec.clone(), Some(&Hit::RecOpen(2))), Some(2));
+        assert_eq!(rec_row_menu_target(rec.clone(), Some(&Hit::RecTranscript(4))), Some(4));
+        // Anything else on the page, or no hit: the tray menu, as before.
+        assert_eq!(rec_row_menu_target(rec.clone(), Some(&Hit::RecFolder)), None);
+        assert_eq!(rec_row_menu_target(rec.clone(), Some(&Hit::RecPickFile)), None);
+        assert_eq!(rec_row_menu_target(rec, None), None);
+        // Other pages never.
+        let notes = View::Panel(Page::Notes);
+        assert_eq!(rec_row_menu_target(notes, Some(&Hit::RecOpen(2))), None);
+        assert_eq!(rec_row_menu_target(View::Panel(Page::Media), Some(&Hit::RecTranscript(0))), None);
     }
 
     #[test]

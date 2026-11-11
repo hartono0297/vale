@@ -1362,6 +1362,12 @@ pub enum NoticeSort {
     Screenshot,
     /// "Disimpan" after its Simpan.
     ShotSaved,
+    /// "Rekaman tersimpan".
+    RecSaved,
+    /// A recording failed or the mic was refused.
+    RecFailed,
+    /// A word about a recording (consent, a lost source).
+    RecInfo,
     /// "Dihapus" after its Hapus.
     ShotDeleted,
     /// A drive was plugged in.
@@ -1399,6 +1405,18 @@ impl NoticeSort {
             NoticeKind::ClipPreview { .. } => NoticeSort::ClipPreview,
             NoticeKind::Screenshot { .. } => NoticeSort::Screenshot,
             NoticeKind::ShotSaved { .. } => NoticeSort::ShotSaved,
+            NoticeKind::RecSaved { .. } => NoticeSort::RecSaved,
+            NoticeKind::RecFailed { .. }
+            | NoticeKind::RecMicDenied
+            | NoticeKind::RecFolderBlocked { .. } => NoticeSort::RecFailed,
+            NoticeKind::RecInfo => NoticeSort::RecInfo,
+            // A transcript notice looks like its recording sibling: ready
+            // happy, failed sad, a word at rest.
+            NoticeKind::TranscriptReady { .. } => NoticeSort::RecSaved,
+            NoticeKind::TranscriptFailed { .. } => NoticeSort::RecFailed,
+            NoticeKind::TranscriptInfo
+            | NoticeKind::TranscriptStarting { .. }
+            | NoticeKind::TranscriptSettings => NoticeSort::RecInfo,
             NoticeKind::ShotDeleted => NoticeSort::ShotDeleted,
             NoticeKind::DevicePlugged { .. } => NoticeSort::DevicePlugged,
             NoticeKind::DeviceSafe => NoticeSort::DeviceSafe,
@@ -1431,7 +1449,8 @@ impl Spot {
             View::Hidden => Spot::Hidden,
             View::Panel(_) => Spot::Panel,
             View::Idle => Spot::Idle,
-            View::PomodoroCompact => Spot::Pomodoro,
+            // The REC view wears the pomodoro's focused face.
+            View::PomodoroCompact | View::RecordCompact => Spot::Pomodoro,
             View::MediaCompact => Spot::Media,
             View::MediaLyric => Spot::Lyric,
             // A copied image shows its own thumbnail where Bata would be.
@@ -1515,6 +1534,7 @@ pub fn choose_expr(i: &RobotInputs) -> Option<Expr> {
                 | NoticeSort::DeviceSafe
                 | NoticeSort::Arranged
                 | NoticeSort::UpdateInfo
+                | NoticeSort::RecSaved
                 | NoticeSort::ShotSaved => Some(Expr::Happy),
                 // keputusan-v3.1 p6: "Dihapus" with Bata at rest; a drive
                 // plugged in is news, not an event: Bata at rest as well.
@@ -1522,10 +1542,12 @@ pub fn choose_expr(i: &RobotInputs) -> Option<Expr> {
                 NoticeSort::ShotDeleted
                 | NoticeSort::DevicePlugged
                 | NoticeSort::UpdateAvailable
+                | NoticeSort::RecInfo
                 | NoticeSort::UpdateProgress => Some(Expr::Idle),
                 NoticeSort::BatteryLow
                 | NoticeSort::SystemLow
                 | NoticeSort::MoleFailed
+                | NoticeSort::RecFailed
                 | NoticeSort::UpdateFailed => Some(Expr::Sad),
                 NoticeSort::Greeting(period) => Some(greeting::face(period)),
             };
@@ -2611,6 +2633,9 @@ mod tests {
             (NoticeSort::ClipPreview, Expr::Happy),
             (NoticeSort::Screenshot, Expr::Happy),
             (NoticeSort::ShotSaved, Expr::Happy),
+            (NoticeSort::RecSaved, Expr::Happy),
+            (NoticeSort::RecFailed, Expr::Sad),
+            (NoticeSort::RecInfo, Expr::Idle),
             (NoticeSort::ShotDeleted, Expr::Idle),
             (NoticeSort::DevicePlugged, Expr::Idle),
             (NoticeSort::DeviceSafe, Expr::Happy),

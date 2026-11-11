@@ -260,3 +260,59 @@ bytes), `main` at fcf5dd7 against this branch:
 | this branch (WIC target) | 3,852,800 (+1,536, +0.04 %) |
 
 No new crate and no new `windows` feature (WIC and Direct2D were on already).
+
+## Audio recording, phase 1 (2026-11-07)
+
+[[recording-audio]]: `main` at f0df4bd, `cargo build --release --locked`, 0
+warnings, against the installed 5.1.0 release exe (built by CI in another path,
+so up to 512 bytes of noise):
+
+| Build | Bytes |
+|---|---|
+| 5.1.0 release | 3,856,384 |
+| `main` with recording | 3,979,264 (+122,880, +3.2 %) |
+
+No new crate. New `windows` features for WASAPI capture and Media Foundation;
+Media Foundation is loaded at run time ([[media-foundation-dynamic-load]]), so
+it adds no import.
+
+## Recording controls (2026-11-08)
+
+[[recording-controls]]: `main` at 10e45b5 against `main` at 09a0ee5 (phase 1),
+both built in the main checkout, `cargo build --release --locked`, 0 warnings:
+
+| Build | Bytes |
+|---|---|
+| 09a0ee5 (phase 1) | 3,979,264 |
+| 10e45b5 (mute, devices, echo) | 4,016,640 (+37,376, +0.9 %) |
+
+One new `windows` feature (`Win32_Devices_FunctionDiscovery`, for the device
+friendly name key); no new crate.
+
+## Notch mute and the themed dropdown (2026-11-08)
+
+[[notch-rec-mute]], [[menu-pop]]: `main` at 53652f6 against b19d860, both
+built in the main checkout, `cargo build --release --locked`, 0 warnings:
+
+| Build | Bytes |
+|---|---|
+| b19d860 (recording controls) | 4,016,640 |
+| 53652f6 (notch mute, `menu_pop`) | 4,034,560 (+17,920, +0.4 %) |
+
+No new crate and no new `windows` feature.
+
+## Transcript, phase 2 (2026-11-09)
+
+[[transcript]]: the transcript branch (head 3bf0853) against `main` at 53652f6,
+`cargo build --release --locked`, 0 warnings:
+
+| Build | Bytes |
+|---|---|
+| 53652f6 (notch mute, `menu_pop`) | 4,034,560 |
+| 3bf0853 (transcript), worktree path | 4,297,728 (+263,168, +257 KiB, +6.5 %) |
+| 3bf0853 (transcript), main checkout | 4,297,216 (+262,656, +256.5 KiB, +6.5 %) |
+| 4a6294d (transcript polish), main checkout | 4,299,776 (+2,560 on 3bf0853) |
+
+The spec's "a few tens of KB" was not reachable: the transcript core, window,
+player and Settings card are all new code. The worktree path was longer than
+main's, which moves the size by at most 512 bytes. Nothing trimmed yet.

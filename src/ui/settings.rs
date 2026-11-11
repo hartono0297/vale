@@ -73,9 +73,10 @@ use super::hotkey_rec::{RecHook, WM_APP_HOTKEY_REC, WM_APP_HOTKEY_REC_DONE};
 use super::robot::{Motion, sleep_step};
 use super::settings_controls::{Gfx, Scene, ease};
 use super::settings_layout::{
-    CLIENT_H, CLIENT_W, CanvasPress, CatFace, Control, DragView, EditView, Field, GUIDE_URL,
-    GoogleState, Group, Hit, Layout, List, MonitorRow, REPO_URL, ROW_H, RejectMsg, ReorderRow,
-    Section, SliderId, State, TileForm, Tone, UpdateRow, battery_step, canvas_drag, canvas_press,
+    CLIENT_H, CLIENT_W, CanvasPress, CardId, CatFace, Control, DragView, EditView, Field,
+    GUIDE_URL, GoogleState, Group, Hit, Layout, List, MonitorRow, REPO_URL, ROW_H, RejectMsg,
+    ReorderRow, Section, SliderId, State, TileForm, Tone, TranscriptView, UpdateRow,
+    battery_step, canvas_drag, canvas_press, card_scroll,
     clip_items_step, disk_warn_step, drag_scroll_speed, drop_index, layout_in, monitor_choice,
     notif_items_step, ram_warn_step, scroll_by, shot_secs_step, slider_value,
 };
@@ -85,6 +86,9 @@ use crate::calendar::CalStatus;
 use crate::claude::install::{self, InstallOutcome, UninstallOutcome};
 use crate::cli::Shell;
 use crate::cli_folders::CliStart;
+use crate::model::RecSources;
+use crate::recorder::Source;
+use crate::recorder::prefs::RecordingPrefs;
 use crate::config::{
     AfterCapture, ClipboardSettings, Config, NotchFill, NotchMonitor, NotifSettings, OpenMode,
     ScreenshotSettings, ShotIgnore, ShotTool, Style, ToastStyle, UiFont, WindowPlace,
@@ -98,6 +102,7 @@ use crate::pomodoro::PomoSettings;
 use crate::sources::battery::battery_present;
 use crate::theme::{self, Accent, CatAccessory, CatColor, Surface, WindowPalette, WindowTheme};
 use crate::tiles::{CustomKind, CustomProblem, CustomTile, LABEL_MAX, ShortcutTiles, TARGET_MAX};
+use crate::transcribe::prefs::TrLang;
 use crate::widgets::prefs::{FullscreenRule, WidgetLayer, WidgetPrefs};
 use crate::widgets::templates::Template;
 
@@ -184,6 +189,27 @@ pub enum Action {
     ClipClearOnLock(bool),
     /// Settings → Fitur → Perangkat: the plug-in and safe-to-remove notices.
     DeviceNotices(bool),
+    /// Settings -> Fitur -> Rekaman: the sources, and the folder (`None`:
+    /// back to the default).
+    RecSources(RecSources),
+    RecFolder(Option<std::path::PathBuf>),
+    /// The device of a source: an endpoint id, `None` to follow Windows.
+    RecDevice(Source, Option<String>),
+    /// The mic echo cancellation switch.
+    RecEchoCancel(bool),
+    /// The Rekam page's "Transkrip file lain...": the audio file picked.
+    TranscribeFile(std::path::PathBuf),
+    /// Settings -> Fitur -> Transkrip: the switch, the active model, a
+    /// model's download, cancelling it, deleting a model (by its catalog
+    /// key), the language, the auto switch and the store's folder.
+    TranscriptEnabled(bool),
+    TranscriptModel(&'static str),
+    TranscriptDownload(&'static str),
+    TranscriptCancelDownload,
+    TranscriptDelete(&'static str),
+    TranscriptLang(TrLang),
+    TranscriptAuto(bool),
+    TranscriptFolder,
     /// Settings → Tombol pintas: a row's new combo (`None`: off), every row
     /// back to its default, and the recorder starting (`true`: the island
     /// lets go of its hotkeys) or ending (`false`: it takes them again). A
@@ -327,6 +353,65 @@ fn tile_drop(tiles: &ShortcutTiles, from: usize, to: usize) -> Option<ShortcutTi
     next.move_to(*on.get(from)?, *on.get(to)?).then_some(next)
 }
 
+/// What a click on the Transkrip card does.
+#[derive(Clone, Debug, PartialEq)]
+enum TrClick {
+    Post(Action),
+    /// "Pilih model lain": the model list shows instead of the offer
+    /// (window state, nothing is saved).
+    Choose,
+    /// "Hapus" of this model row (an index into `MODELS`) was clicked once.
+    ArmDelete(usize),
+}
+
+/// The Transkrip card's answer to `hit` with the island's `view`, or `None`
+/// for a click that changes nothing (or is not on the card).
+fn transcript_click(view: &TranscriptView, hit: Hit, armed: Option<usize>) -> Option<TrClick> {
+    use crate::transcribe::catalog::MODELS;
+    let prefs = &view.prefs;
+    let key = |i: usize| MODELS.get(i).map(|m| m.key);
+    let post = |a: Action| Some(TrClick::Post(a));
+    match hit {
+        Hit::TranscriptEnabled => post(Action::TranscriptEnabled(!prefs.enabled)),
+        // The model the offer names: the one chosen before, else this PC's.
+        Hit::TranscriptOfferDownload => {
+            post(Action::TranscriptDownload(prefs.model_for(view.gpu).key))
+        }
+        Hit::TranscriptOfferOther => Some(TrClick::Choose),
+        Hit::TranscriptModel(i) => {
+            let k = key(i)?;
+            (k != prefs.model_for(view.gpu).key)
+                .then_some(TrClick::Post(Action::TranscriptModel(k)))
+        }
+        Hit::TranscriptDownload(i) => post(Action::TranscriptDownload(key(i)?)),
+        Hit::TranscriptCancel => post(Action::TranscriptCancelDownload),
+        // The first click arms the row, the second deletes it.
+        Hit::TranscriptDelete(i) => {
+            let k = key(i)?;
+            // A model in use is never armed or deleted from here.
+            if view.in_use == Some(i) {
+                return None;
+            }
+            if armed == Some(i) {
+                post(Action::TranscriptDelete(k))
+            } else {
+                Some(TrClick::ArmDelete(i))
+            }
+        }
+        Hit::TranscriptLang(l) if l != prefs.language => post(Action::TranscriptLang(l)),
+        Hit::TranscriptAuto => post(Action::TranscriptAuto(!prefs.auto)),
+        Hit::TranscriptFolder => post(Action::TranscriptFolder),
+        _ => None,
+    }
+}
+
+/// The armed "Hapus" row after the island's latest view: a model that is
+/// in use is no longer armed, so it cannot come back armed when it is free
+/// again.
+fn armed_after(armed: Option<usize>, in_use: Option<usize>) -> Option<usize> {
+    armed.filter(|i| in_use != Some(*i))
+}
+
 /// Takes ownership of a `WM_APP_SETTINGS_ACTION`'s `lparam`.
 ///
 /// # Safety
@@ -364,6 +449,7 @@ pub struct Model {
     pub cli_start: CliStart,
     pub open_mode: OpenMode,
     pub device_notices: bool,
+    pub recording: RecordingPrefs,
     /// The six hotkeys, and by `HotkeyId::index` whether the one set could
     /// not be registered (another app has it, or the PrtSc hook failed).
     pub hotkeys: Hotkeys,
@@ -408,6 +494,9 @@ pub struct Model {
     /// a check running, an update known, a download).
     pub update_auto: bool,
     pub update_row: UpdateRow,
+    /// Fitur -> Transkrip (the island fills what is on disk and running;
+    /// `from_config` only the settings).
+    pub transcript: TranscriptView,
 }
 
 impl Model {
@@ -434,6 +523,7 @@ impl Model {
             cli_start: cfg.cli_start,
             open_mode: cfg.open_mode,
             device_notices: cfg.device_notices,
+            recording: cfg.recording.clone(),
             hotkeys: cfg.hotkeys,
             hotkey_failed: [false; HotkeyId::ALL.len()],
             widgets: cfg.widgets,
@@ -466,6 +556,10 @@ impl Model {
             window_place: cfg.settings_window,
             update_auto: cfg.update_check,
             update_row: UpdateRow::Idle,
+            transcript: TranscriptView {
+                prefs: cfg.transcript.clone(),
+                ..TranscriptView::default()
+            },
         }
     }
 }
@@ -721,6 +815,14 @@ struct Settings {
     drag: Option<Drag>,
     /// The template editor (or the rename field) while it is open.
     arrange_edit: Option<ArrangeEdit>,
+    /// What the Rekaman card's device rows show (`rec_device_labels`), read
+    /// when the window opens and when a choice or the language changes.
+    rec_devices: [String; 2],
+    /// "Pilih model lain" was clicked: the Transkrip card lists the models
+    /// instead of offering the suggested one.
+    transcript_choose: bool,
+    /// The model row whose "Hapus" waits for its second click.
+    transcript_confirm: Option<usize>,
     /// The hotkey row being recorded, and why the last combo was refused
     /// (shown under that row until the next recording or a section change).
     recording: Option<HotkeyId>,
@@ -769,6 +871,24 @@ fn window_text(hwnd: HWND) -> String {
 /// `0xRRGGBB` as GDI's `0x00BBGGRR`.
 const fn colorref(rgb: u32) -> COLORREF {
     COLORREF((rgb >> 16) & 0xFF | (rgb & 0xFF00) | (rgb & 0xFF) << 16)
+}
+
+/// What the Rekaman card's device rows show for the choices in `prefs`:
+/// each name is read from Windows now (a few calls, when the window opens or
+/// a choice changes).
+fn rec_device_labels(prefs: &RecordingPrefs, lang: Lang) -> [String; 2] {
+    use crate::recorder::devices;
+    [Source::Mic, Source::System].map(|source| {
+        let chosen = prefs.device(source);
+        let name = chosen.and_then(devices::name_of);
+        let default = devices::default_endpoint(source).map(|d| d.name);
+        crate::ui::settings_layout::rec_device_label(
+            lang,
+            chosen.is_some(),
+            name.as_deref(),
+            default.as_deref(),
+        )
+    })
 }
 
 fn post_action(owner: HWND, action: Action) {
@@ -1142,6 +1262,7 @@ pub fn open(owner: HWND, model: Model, section: Option<Section>) -> Result<HWND>
     ];
     // Someone with their own Client ID sees it straight away.
     let google_advanced = !field_text[0].trim().is_empty();
+    let rec_devices = rec_device_labels(&model.recording, model.lang);
     let state = Settings {
         hwnd,
         owner,
@@ -1176,6 +1297,9 @@ pub fn open(owner: HWND, model: Model, section: Option<Section>) -> Result<HWND>
         tile_note: None,
         drag: None,
         arrange_edit: None,
+        rec_devices,
+        transcript_choose: false,
+        transcript_confirm: None,
         recording: None,
         hotkey_error: None,
         rec_hook: None,
@@ -1204,6 +1328,28 @@ pub fn open(owner: HWND, model: Model, section: Option<Section>) -> Result<HWND>
     unsafe {
         let _ = ShowWindow(hwnd, if maximize { SW_SHOWMAXIMIZED } else { SW_SHOW });
         let _ = SetForegroundWindow(hwnd);
+    }
+    Ok(hwnd)
+}
+
+/// Opens the window on Fitur scrolled to `card` (its eyebrow where a
+/// section's first card starts, as far as the section's end allows), or
+/// brings the open one there.
+pub fn open_card(owner: HWND, model: Model, card: CardId) -> Result<HWND> {
+    let hwnd = open(owner, model, Some(Section::Features))?;
+    let moved = with(|st| {
+        st.relayout();
+        let scroll = card_scroll(&st.layout, card);
+        let moved = scroll != st.scroll;
+        if moved {
+            st.scroll = scroll;
+            st.hover = None;
+            st.relayout();
+        }
+        moved
+    });
+    if moved == Some(true) {
+        relayout_and_place();
     }
     Ok(hwnd)
 }
@@ -1531,6 +1677,8 @@ impl Settings {
             cli_start: m.cli_start,
             open_mode: m.open_mode,
             device_notices: m.device_notices,
+            recording: m.recording.clone(),
+            rec_devices: self.rec_devices.clone(),
             hotkeys: m.hotkeys,
             hotkey_failed: m.hotkey_failed,
             widgets: m.widgets,
@@ -1582,6 +1730,9 @@ impl Settings {
             update_auto: m.update_auto,
             update_row: m.update_row.clone(),
             data_dir: &self.data_label,
+            transcript: m.transcript.clone(),
+            transcript_choose: self.transcript_choose,
+            transcript_confirm: self.transcript_confirm,
         }
     }
 
@@ -1679,7 +1830,20 @@ impl Settings {
     fn on_model(&mut self, model: Model) -> ModelChanges {
         let now = Instant::now();
         let old = std::mem::replace(&mut self.model, model);
+        let armed = armed_after(self.transcript_confirm, self.model.transcript.in_use);
+        if armed != self.transcript_confirm {
+            self.transcript_confirm = armed;
+            unsafe {
+                let _ = KillTimer(Some(self.hwnd), TIMER_CONFIRM);
+            }
+        }
         let new = &self.model;
+        if old.recording.mic_device != new.recording.mic_device
+            || old.recording.system_device != new.recording.system_device
+            || old.lang != new.lang
+        {
+            self.rec_devices = rec_device_labels(&new.recording, new.lang);
+        }
         let index = |group: Group, m: &Model| -> f32 {
             match group {
                 Group::Style => usize::from(m.style == Style::Notch) as f32,
@@ -1713,9 +1877,17 @@ impl Settings {
                 Group::NotchFill => usize::from(m.notch_fill == NotchFill::Transparent) as f32,
                 Group::Font => UiFont::ALL.iter().position(|v| *v == m.font).unwrap_or(0) as f32,
                 Group::WidgetLayer => usize::from(m.widgets.layer == WidgetLayer::Top) as f32,
+                Group::RecSources => crate::ui::settings_layout::REC_CHOICES
+                    .iter()
+                    .position(|c| *c == m.recording.sources)
+                    .unwrap_or(2) as f32,
                 Group::WidgetFullscreen => {
                     usize::from(m.widgets.fullscreen == FullscreenRule::Keep) as f32
                 }
+                Group::TranscriptLang => crate::ui::settings_layout::TR_LANG_CHOICES
+                    .iter()
+                    .position(|v| *v == m.transcript.prefs.language)
+                    .unwrap_or(0) as f32,
             }
         };
         for group in [
@@ -1734,6 +1906,8 @@ impl Settings {
             Group::NotifToastStyle,
             Group::WidgetLayer,
             Group::WidgetFullscreen,
+            Group::RecSources,
+            Group::TranscriptLang,
         ] {
             let (from, to) = (index(group, &old), index(group, new));
             if from != to {
@@ -2239,6 +2413,41 @@ impl Settings {
         vec![After::TemplateMenu(at.x, at.y, self.model.lang)]
     }
 
+    /// A device row's "Ganti": the device dropdown opens under the button
+    /// once the state is released. No button in the layout (it scrolled
+    /// away) is no dropdown.
+    fn device_menu_after(&self, source: Source) -> Vec<After> {
+        let Some((_, rect)) = self
+            .layout
+            .hits()
+            .into_iter()
+            .find(|(h, _)| *h == Hit::RecDevice(source))
+        else {
+            return Vec::new();
+        };
+        let k = self.scale();
+        let mut at = windows::Win32::Foundation::POINT {
+            x: (rect.x * k).round() as i32,
+            y: (rect.y * k).round() as i32,
+        };
+        unsafe {
+            let _ = windows::Win32::Graphics::Gdi::ClientToScreen(self.hwnd, &mut at);
+        }
+        let anchor = crate::capture::Rect::new(
+            at.x,
+            at.y,
+            (rect.w * k).round() as i32,
+            (rect.h * k).round() as i32,
+        );
+        vec![After::PickRecDevice {
+            source,
+            current: self.model.recording.device(source).map(str::to_owned),
+            lang: self.model.lang,
+            font: self.model.font,
+            anchor,
+        }]
+    }
+
     /// A click on `hit`. Returns what must happen once the state is released.
     fn on_click(&mut self, hit: Hit) -> Vec<After> {
         if hit != Hit::GoogleDisconnect && self.confirm {
@@ -2249,6 +2458,12 @@ impl Settings {
         }
         if hit != Hit::ClipClear && self.clip_confirm {
             self.clip_confirm = false;
+            unsafe {
+                let _ = KillTimer(Some(self.hwnd), TIMER_CONFIRM);
+            }
+        }
+        if !matches!(hit, Hit::TranscriptDelete(_)) && self.transcript_confirm.is_some() {
+            self.transcript_confirm = None;
             unsafe {
                 let _ = KillTimer(Some(self.hwnd), TIMER_CONFIRM);
             }
@@ -2326,6 +2541,48 @@ impl Settings {
             Hit::ClipPersist => post(Action::ClipPersist(!m.clip.persist)),
             Hit::ClipClearOnLock => post(Action::ClipClearOnLock(!m.clip.clear_on_lock)),
             Hit::DeviceNotices => post(Action::DeviceNotices(!m.device_notices)),
+            Hit::RecSources(v) if v != m.recording.sources => post(Action::RecSources(v)),
+            Hit::RecSources(_) => Vec::new(),
+            Hit::RecEchoCancel => post(Action::RecEchoCancel(!m.recording.echo_cancel)),
+            Hit::RecFolderOpen => vec![After::OpenFolder(m.recording.dir())],
+            Hit::RecFolderChange => vec![After::PickRecFolder],
+            Hit::RecDevice(source) => self.device_menu_after(source),
+            Hit::TranscriptEnabled
+            | Hit::TranscriptOfferDownload
+            | Hit::TranscriptOfferOther
+            | Hit::TranscriptModel(_)
+            | Hit::TranscriptDownload(_)
+            | Hit::TranscriptCancel
+            | Hit::TranscriptDelete(_)
+            | Hit::TranscriptLang(_)
+            | Hit::TranscriptAuto
+            | Hit::TranscriptFolder => match transcript_click(&m.transcript, hit, self.transcript_confirm) {
+                Some(TrClick::Post(action)) => {
+                    if matches!(action, Action::TranscriptDelete(_)) {
+                        self.transcript_confirm = None;
+                        unsafe {
+                            let _ = KillTimer(Some(self.hwnd), TIMER_CONFIRM);
+                        }
+                    }
+                    // Turning it off forgets the choice: on again, the offer.
+                    if action == Action::TranscriptEnabled(false) {
+                        self.transcript_choose = false;
+                    }
+                    post(action)
+                }
+                Some(TrClick::Choose) => {
+                    self.transcript_choose = true;
+                    Vec::new()
+                }
+                Some(TrClick::ArmDelete(i)) => {
+                    self.transcript_confirm = Some(i);
+                    unsafe {
+                        SetTimer(Some(self.hwnd), TIMER_CONFIRM, CONFIRM_MS, None);
+                    }
+                    Vec::new()
+                }
+                None => Vec::new(),
+            },
             // A field: the first click records, the next on the same field
             // cancels.
             Hit::HotkeyField(id) => {
@@ -2984,6 +3241,20 @@ enum After {
     Section(Section),
     Open(String),
     OpenDataFolder,
+    /// Explorer on this folder (made first when missing): Rekaman's "Buka".
+    OpenFolder(std::path::PathBuf),
+    /// Rekaman's "Ganti": the folder dialog, then the choice is posted.
+    PickRecFolder,
+    /// A device row's "Ganti": Vale's device dropdown of that source under
+    /// the button (`anchor`, screen px; `current`: the endpoint id chosen).
+    /// The pick comes back as `menu_pop::WM_APP_MENU_DONE` and is posted.
+    PickRecDevice {
+        source: Source,
+        current: Option<String>,
+        lang: Lang,
+        font: UiFont,
+        anchor: crate::capture::Rect,
+    },
     /// The own-shortcut form's fields go back to empty.
     ResetForm,
     /// The Target field's hint follows the kind chosen.
@@ -3016,6 +3287,27 @@ fn run_after(hwnd: HWND, owner: HWND, after: Vec<After>) {
                 if let Some(t) = crate::widgets::host::template_menu(hwnd, at, lang) {
                     post_action(owner, Action::WidgetAdd(t));
                 }
+            }
+            After::OpenFolder(dir) => {
+                let _ = std::fs::create_dir_all(&dir);
+                shell_open(&dir.display().to_string());
+            }
+            After::PickRecFolder => {
+                if let Some(dir) = pick_path(hwnd, CustomKind::Folder) {
+                    post_action(owner, Action::RecFolder(Some(dir)));
+                }
+            }
+            After::PickRecDevice { source, current, lang, font, anchor } => {
+                // "Ganti" sits at the row's right end: the list grows leftwards.
+                crate::ui::device_menu::open(
+                    hwnd,
+                    anchor,
+                    crate::ui::menu_pop::Align::End,
+                    source,
+                    current.as_deref(),
+                    lang,
+                    font,
+                );
             }
             After::OpenDataFolder => {
                 let dir = crate::config::path()
@@ -3133,6 +3425,87 @@ fn browse(hwnd: HWND) {
         unsafe {
             let _ = SetWindowTextW(target, &HSTRING::from(path.as_os_str()));
         }
+    }
+}
+
+/// The recordings folder picker for the island itself (the blocked-folder
+/// notice's click), on a short-lived thread of its own so the island keeps
+/// running while the dialog is up. The choice comes back to `owner` as
+/// `Action::RecFolder`, the same way Settings' "Ganti" sends it.
+pub fn pick_rec_folder(owner: HWND) {
+    use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
+    let raw = owner.0 as isize;
+    let _ = std::thread::Builder::new()
+        .name("rec-pick-folder".into())
+        .spawn(move || {
+            let owner = HWND(raw as *mut c_void);
+            // The dialog wants a single-threaded apartment.
+            if unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_err() {
+                return;
+            }
+            if let Some(dir) = pick_path(owner, CustomKind::Folder) {
+                post_action(owner, Action::RecFolder(Some(dir)));
+            }
+            unsafe { CoUninitialize() };
+        });
+}
+
+/// "Transkrip file lain...": the audio file picker for the island, on a
+/// short-lived thread of its own (as `pick_rec_folder`), opening in `start`.
+/// The choice comes back to `owner` as `Action::TranscribeFile`.
+pub fn pick_rec_audio(owner: HWND, start: std::path::PathBuf) {
+    use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
+    let raw = owner.0 as isize;
+    let _ = std::thread::Builder::new()
+        .name("rec-pick-audio".into())
+        .spawn(move || {
+            let owner = HWND(raw as *mut c_void);
+            // The dialog wants a single-threaded apartment.
+            if unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_err() {
+                return;
+            }
+            if let Some(file) = pick_audio(owner, &start) {
+                post_action(owner, Action::TranscribeFile(file));
+            }
+            unsafe { CoUninitialize() };
+        });
+}
+
+/// The `.m4a` or `.wav` the owner picks, the dialog opening in `start`.
+/// `None` when it is cancelled or cannot open.
+fn pick_audio(owner: HWND, start: &std::path::Path) -> Option<std::path::PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
+    use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
+    use windows::Win32::UI::Shell::{
+        FOS_FORCEFILESYSTEM, FileOpenDialog, IFileOpenDialog, IShellItem,
+        SHCreateItemFromParsingName, SIGDN_FILESYSPATH,
+    };
+    let lang = crate::i18n::lang();
+    unsafe {
+        let dialog: IFileOpenDialog =
+            CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        let options = dialog.GetOptions().ok()? | FOS_FORCEFILESYSTEM;
+        dialog.SetOptions(options).ok()?;
+        let name = HSTRING::from(text(lang, Key::TrFilter));
+        let filters = [COMDLG_FILTERSPEC {
+            pszName: PCWSTR(name.as_ptr()),
+            pszSpec: w!("*.m4a;*.wav"),
+        }];
+        let _ = dialog.SetFileTypes(&filters);
+        // A folder that is gone just leaves the dialog where Windows puts it.
+        if let Ok(folder) =
+            SHCreateItemFromParsingName::<_, _, IShellItem>(&HSTRING::from(start.as_os_str()), None)
+        {
+            let _ = dialog.SetFolder(&folder);
+        }
+        // Cancelled: an error code.
+        dialog.Show(Some(owner)).ok()?;
+        let item = dialog.GetResult().ok()?;
+        let name = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+        let path = std::path::PathBuf::from(std::ffi::OsString::from_wide(name.as_wide()));
+        CoTaskMemFree(Some(name.0 as *const c_void));
+        Some(path)
     }
 }
 
@@ -3537,6 +3910,7 @@ fn on_timer(id: usize) {
                 st.confirm = false;
                 st.clip_confirm = false;
                 st.notif_confirm = false;
+                st.transcript_confirm = None;
             }
             TIMER_GOOGLE_NOTE => st.google_note = None,
             TIMER_HOOK_NOTE => st.hook_note = None,
@@ -3638,6 +4012,16 @@ unsafe extern "system" fn wnd_proc(
         }
         WM_APP_PLACE => {
             relayout_and_place();
+            LRESULT(0)
+        }
+        // The device dropdown went: its pick goes to the island.
+        crate::ui::menu_pop::WM_APP_MENU_DONE => {
+            if let Some(done) = unsafe { crate::ui::menu_pop::take_done(lparam) }
+                && let Some((source, choice)) = crate::ui::device_menu::picked(&done)
+                && let Some(owner) = with(|st| st.owner)
+            {
+                post_action(owner, Action::RecDevice(source, choice));
+            }
             LRESULT(0)
         }
         WM_APP_SUBMIT => {
@@ -3917,8 +4301,12 @@ unsafe extern "system" fn edit_proc(
 /// `reconnect`, `offline`, `none`), `DI_POMO_LOCKED=1`, `DI_HOTKEYS` (`failed`:
 /// every hotkey that is set shows as taken by another app) and `DI_UPDATE`
 /// (`available`, `checking`, `downloading`: Tentang's Pembaruan row, with a
-/// made-up 9.9.9) and `DI_MONITORS` (`1`, `3`, `3-missing`: made-up screens for the
-/// Notch card's Monitor row; unset lists the real ones) set the start.
+/// made-up 9.9.9), `DI_MONITORS` (`1`, `3`, `3-missing`: made-up screens for the
+/// Notch card's Monitor row; unset lists the real ones) and `DI_TRANSCRIPT`
+/// (`off`, `offer`, `offer-failed`, `list`, `downloading`, `installed`,
+/// `problem`: Fitur's
+/// Transkrip card, made up) set the start. `DI_SETTINGS_CARD=transcript`
+/// opens Fitur scrolled to that card.
 ///
 /// The window's place is kept in `vale-settings-demo-window.json` in the temp
 /// folder (the real config is never touched): read at the start (a missing
@@ -3929,6 +4317,8 @@ unsafe extern "system" fn edit_proc(
 #[cfg(debug_assertions)]
 pub fn run_demo(args: &[String]) {
     use crate::i18n;
+    use crate::transcribe::catalog;
+    use crate::transcribe::download::Progress;
     use windows::Win32::UI::WindowsAndMessaging::{
         DispatchMessageW, GetMessageW, MSG, PostQuitMessage, TranslateMessage, WS_EX_TOOLWINDOW,
         WS_POPUP,
@@ -4002,6 +4392,61 @@ pub fn run_demo(args: &[String]) {
         }
     }
 
+    /// `DI_TRANSCRIPT`: the Transkrip card made up, nothing on disk read.
+    /// `off`, `offer` (on, nothing installed), `offer-failed` (the same
+    /// after the first download failed), `list` (the engine there, no
+    /// model), `downloading` (turbo at 220 of 555 MB), `installed` (turbo
+    /// on disk), `problem` (turbo on disk and in use, small's download
+    /// failed, the runtime missing). Anything else: off.
+    fn demo_transcript(kind: &str, lang: Lang) -> TranscriptView {
+        use crate::transcribe::prefs::TranscriptPrefs;
+        let on = TranscriptView {
+            prefs: TranscriptPrefs {
+                enabled: true,
+                ..TranscriptPrefs::default()
+            },
+            gpu: true,
+            ..TranscriptView::default()
+        };
+        let installed = TranscriptView {
+            installed: [true, false],
+            engine_installed: true,
+            used_bytes: 557_000_000,
+            ..on.clone()
+        };
+        match kind.trim().to_ascii_lowercase().as_str() {
+            "offer" => on,
+            "offer-failed" => TranscriptView {
+                download_error: Some((0, text(lang, Key::TrWhyNoNetwork).to_owned())),
+                ..on
+            },
+            "list" => TranscriptView {
+                engine_installed: true,
+                used_bytes: 21_000_000,
+                ..on
+            },
+            "downloading" => TranscriptView {
+                download: Some((
+                    0,
+                    Progress {
+                        done: 220_000_000,
+                        total: 555_360_000,
+                    },
+                )),
+                used_bytes: 220_000_000,
+                ..on
+            },
+            "installed" => installed,
+            "problem" => TranscriptView {
+                in_use: Some(0),
+                download_error: Some((1, text(lang, Key::TrWhyNoNetwork).to_owned())),
+                problem: Some(text(lang, Key::TrWhyRuntime).to_owned()),
+                ..installed
+            },
+            _ => TranscriptView::default(),
+        }
+    }
+
     fn apply(m: &mut Model, action: Action) {
         match action {
             Action::NotchMonitor(v) => m.notch_monitor = v,
@@ -4062,6 +4507,32 @@ pub fn run_demo(args: &[String]) {
             Action::ClipPersist(v) => m.clip.persist = v,
             Action::ClipClearOnLock(v) => m.clip.clear_on_lock = v,
             Action::DeviceNotices(v) => m.device_notices = v,
+            Action::RecSources(v) => m.recording.sources = v,
+            Action::RecFolder(v) => m.recording.folder = v,
+            Action::RecDevice(source, id) => m.recording.set_device(source, id),
+            Action::RecEchoCancel(v) => m.recording.echo_cancel = v,
+            // The picked file belongs to the island: nothing in the window.
+            Action::TranscribeFile(_) => {}
+            // Nothing downloads in the demo: a download stays at its start
+            // until Batal.
+            Action::TranscriptEnabled(v) => m.transcript.prefs.enabled = v,
+            Action::TranscriptModel(key) => m.transcript.prefs.model = Some(key.to_owned()),
+            Action::TranscriptDownload(key) => {
+                let model = catalog::MODELS.iter().position(|x| x.key == key);
+                if let (Some(i), None) = (model, &m.transcript.download) {
+                    let total = catalog::MODELS[i].asset.size;
+                    m.transcript.download = Some((i, Progress { done: 0, total }));
+                }
+            }
+            Action::TranscriptCancelDownload => m.transcript.download = None,
+            Action::TranscriptDelete(key) => {
+                if let Some(i) = catalog::MODELS.iter().position(|x| x.key == key) {
+                    m.transcript.installed[i] = false;
+                }
+            }
+            Action::TranscriptLang(v) => m.transcript.prefs.language = v,
+            Action::TranscriptAuto(v) => m.transcript.prefs.auto = v,
+            Action::TranscriptFolder => {}
             Action::Hotkey(id, value) => {
                 // What the island does: checked again, then set.
                 let fine = value.is_none_or(|hk| {
@@ -4252,7 +4723,9 @@ pub fn run_demo(args: &[String]) {
     // `DI_FONT=mono`: the UI typeface (unset or unknown reads Sans).
     let font = UiFont::from_name(&env("DI_FONT")).unwrap_or_default();
     let (monitors, notch_monitor) = demo_monitors(&env("DI_MONITORS"));
+    let transcript = demo_transcript(&env("DI_TRANSCRIPT"), lang);
     let model = Model {
+        transcript,
         font,
         monitors,
         notch_monitor,
@@ -4323,16 +4796,20 @@ pub fn run_demo(args: &[String]) {
             eprintln!("settings-demo: cannot create the owner window");
             return;
         };
-        match open(owner, model, section) {
+        let opened = if env("DI_SETTINGS_CARD") == "transcript" {
+            open_card(owner, model, CardId::Transcript)
+        } else {
+            open(owner, model, section)
+        };
+        match opened {
             Ok(hwnd) => {
                 println!("settings-demo: hwnd {:#x}", hwnd.0 as usize);
                 // `DI_ARRANGE_EDIT=new` opens Susun's template editor,
                 // `DI_SETTINGS_SCROLL=<px>` scrolls the section.
                 let editor = std::env::var("DI_ARRANGE_EDIT").unwrap_or_default();
-                let scroll: f32 = std::env::var("DI_SETTINGS_SCROLL")
+                let scroll: Option<f32> = std::env::var("DI_SETTINGS_SCROLL")
                     .ok()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(0.0);
+                    .and_then(|v| v.parse().ok());
                 with(|st| {
                     if editor == "new" {
                         let mut root = Node::Leaf;
@@ -4345,10 +4822,25 @@ pub fn run_demo(args: &[String]) {
                             drag: None,
                         });
                     }
-                    st.scroll = scroll;
+                    if let Some(scroll) = scroll {
+                        st.scroll = scroll;
+                    }
                     st.relayout();
                 });
                 relayout_and_place();
+                // `DI_REC_MENU=mic` (or `system`) opens that row's device
+                // dropdown; `DI_SETTINGS_SCROLL` brings the row into view.
+                let source = match std::env::var("DI_REC_MENU").unwrap_or_default().as_str() {
+                    "mic" => Some(Source::Mic),
+                    "system" => Some(Source::System),
+                    _ => None,
+                };
+                if let Some(source) = source
+                    && let Some((owner, after)) =
+                        with(|st| (st.owner, st.on_click(Hit::RecDevice(source))))
+                {
+                    run_after(hwnd, owner, after);
+                }
             }
             Err(error) => {
                 eprintln!("settings-demo: open failed: {error}");
@@ -4368,6 +4860,98 @@ pub fn run_demo(args: &[String]) {
 mod tests {
     use super::*;
     use crate::model::Page;
+
+    #[test]
+    fn transcript_clicks_map_to_actions() {
+        use crate::transcribe::catalog::MODELS;
+        use crate::transcribe::prefs::TranscriptPrefs;
+        let post = |a: Action| Some(TrClick::Post(a));
+        let off = TranscriptView::default();
+        let on = TranscriptView {
+            prefs: TranscriptPrefs {
+                enabled: true,
+                ..TranscriptPrefs::default()
+            },
+            gpu: true,
+            ..TranscriptView::default()
+        };
+        // The switch flips.
+        assert_eq!(transcript_click(&off, Hit::TranscriptEnabled, None), post(Action::TranscriptEnabled(true)));
+        assert_eq!(transcript_click(&on, Hit::TranscriptEnabled, None), post(Action::TranscriptEnabled(false)));
+        // A radio picks a model by its key; the active one again does nothing.
+        assert_eq!(
+            transcript_click(&on, Hit::TranscriptModel(1), None),
+            post(Action::TranscriptModel("whisper-small"))
+        );
+        assert_eq!(transcript_click(&on, Hit::TranscriptModel(0), None), None);
+        let small = TranscriptView {
+            prefs: TranscriptPrefs {
+                model: Some("whisper-small".into()),
+                ..on.prefs.clone()
+            },
+            ..on.clone()
+        };
+        assert_eq!(
+            transcript_click(&small, Hit::TranscriptModel(0), None),
+            post(Action::TranscriptModel(MODELS[0].key))
+        );
+        // The offer: Unduh fetches the model for this PC, the other choice
+        // only opens the list.
+        assert_eq!(
+            transcript_click(&on, Hit::TranscriptOfferDownload, None),
+            post(Action::TranscriptDownload("whisper-large-v3-turbo"))
+        );
+        let cpu = TranscriptView {
+            gpu: false,
+            ..on.clone()
+        };
+        assert_eq!(
+            transcript_click(&cpu, Hit::TranscriptOfferDownload, None),
+            post(Action::TranscriptDownload("whisper-small"))
+        );
+        assert_eq!(transcript_click(&on, Hit::TranscriptOfferOther, None), Some(TrClick::Choose));
+        // The offer fetches a model chosen earlier, not the GPU's default.
+        assert_eq!(
+            transcript_click(&small, Hit::TranscriptOfferDownload, None),
+            post(Action::TranscriptDownload("whisper-small"))
+        );
+        // A row's buttons, by the row's model.
+        assert_eq!(
+            transcript_click(&on, Hit::TranscriptDownload(1), None),
+            post(Action::TranscriptDownload("whisper-small"))
+        );
+        assert_eq!(transcript_click(&on, Hit::TranscriptCancel, None), post(Action::TranscriptCancelDownload));
+        // Hapus: the first click arms the row, the second deletes it.
+        assert_eq!(transcript_click(&on, Hit::TranscriptDelete(0), None), Some(TrClick::ArmDelete(0)));
+        assert_eq!(
+            transcript_click(&on, Hit::TranscriptDelete(0), Some(0)),
+            post(Action::TranscriptDelete("whisper-large-v3-turbo"))
+        );
+        // Armed on another row: this one is armed instead, nothing is deleted.
+        assert_eq!(transcript_click(&on, Hit::TranscriptDelete(1), Some(0)), Some(TrClick::ArmDelete(1)));
+        assert_eq!(transcript_click(&on, Hit::TranscriptDelete(7), None), None);
+        // A model in use is neither armed nor deleted.
+        let busy = TranscriptView { in_use: Some(0), ..on.clone() };
+        assert_eq!(transcript_click(&busy, Hit::TranscriptDelete(0), None), None);
+        assert_eq!(transcript_click(&busy, Hit::TranscriptDelete(0), Some(0)), None);
+        // An armed row that turns busy is disarmed for good.
+        assert_eq!(armed_after(Some(0), Some(0)), None);
+        assert_eq!(armed_after(Some(0), Some(1)), Some(0));
+        assert_eq!(armed_after(Some(0), None), Some(0));
+        assert_eq!(armed_after(None, Some(0)), None);
+        assert_eq!(transcript_click(&on, Hit::TranscriptDownload(7), None), None);
+        // The language segment: another one posts, the same does nothing.
+        assert_eq!(
+            transcript_click(&on, Hit::TranscriptLang(TrLang::En), None),
+            post(Action::TranscriptLang(TrLang::En))
+        );
+        assert_eq!(transcript_click(&on, Hit::TranscriptLang(TrLang::Id), None), None);
+        // Auto flips; Buka folder asks the island (it knows the store).
+        assert_eq!(transcript_click(&on, Hit::TranscriptAuto, None), post(Action::TranscriptAuto(false)));
+        assert_eq!(transcript_click(&on, Hit::TranscriptFolder, None), post(Action::TranscriptFolder));
+        // Not the card's.
+        assert_eq!(transcript_click(&on, Hit::Lyrics, None), None);
+    }
 
     fn hk(text: &str) -> Hotkey {
         crate::hotkey::parse(text).unwrap().unwrap()
@@ -4535,7 +5119,7 @@ mod tests {
         let off = page_action(&pages, Hit::PageOn(Page::Notes)).expect("toggled");
         assert!(!off.is_on(Page::Notes));
         let later = page_action(&pages, Hit::PageMove(Page::Notes, 1)).expect("moved");
-        assert_eq!(later.position(Page::Notes), 4);
+        assert_eq!(later.position(Page::Notes), 5);
         // Nothing changes: no action.
         assert_eq!(page_action(&pages, Hit::PageMove(Page::Calendar, -1)), None);
         let mut one = PanelPages::default();
@@ -4550,11 +5134,11 @@ mod tests {
     fn page_clicks_move_among_the_pages_shown_and_restore_the_defaults() {
         let mut pages = PanelPages::default();
         pages.toggle(Page::Reminders);
-        // Pomodoro down: past the hidden Reminders, after Notes.
+        // Pomodoro down: past Rekam, which sits before the hidden Reminders.
         let moved = page_action(&pages, Hit::PageMove(Page::Pomodoro, 1)).expect("moved");
         assert_eq!(
             moved.visible()[..4],
-            [Page::Calendar, Page::Notes, Page::Pomodoro, Page::Media]
+            [Page::Calendar, Page::Record, Page::Pomodoro, Page::Notes]
         );
         assert_eq!(page_action(&pages, Hit::PageMove(Page::Calendar, -1)), None);
         // "Tampilkan" on a hidden page, "Kembalikan bawaan" on the changed one.
@@ -4573,15 +5157,15 @@ mod tests {
     fn a_drop_puts_the_page_at_the_place_it_was_dropped_on() {
         let mut pages = PanelPages::default();
         pages.toggle(Page::Reminders);
-        // Shown: Calendar, Pomodoro, Notes, Media, ... Dropping Calendar on
-        // the third place (Notes) puts it after Notes.
+        // Shown: Calendar, Pomodoro, Rekam, Notes, Media, ... Dropping
+        // Calendar on the third place (Rekam) puts it after Rekam.
         let next = page_drop(&pages, 0, 2).expect("moved");
         assert_eq!(
             next.visible()[..4],
-            [Page::Pomodoro, Page::Notes, Page::Calendar, Page::Media]
+            [Page::Pomodoro, Page::Record, Page::Calendar, Page::Notes]
         );
         // Up: Media dropped on the first place goes before Calendar.
-        let next = page_drop(&pages, 3, 0).expect("moved");
+        let next = page_drop(&pages, 4, 0).expect("moved");
         assert_eq!(next.visible()[0], Page::Media);
         assert_eq!(page_drop(&pages, 2, 2), None, "same place");
         assert_eq!(page_drop(&pages, 0, 40), None, "no such place");

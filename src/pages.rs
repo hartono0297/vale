@@ -161,6 +161,7 @@ pub fn page_name(page: Page) -> &'static str {
     match page {
         Page::Calendar => "Calendar",
         Page::Pomodoro => "Pomodoro",
+        Page::Record => "Record",
         Page::Reminders => "Reminders",
         Page::Notes => "Notes",
         Page::Media => "Media",
@@ -198,7 +199,7 @@ mod tests {
     }
 
     #[test]
-    fn default_shows_all_fourteen_pages_in_the_design_order() {
+    fn default_shows_all_fifteen_pages_in_the_design_order() {
         let p = PanelPages::default();
         assert_eq!(p.visible(), Page::ALL.to_vec());
         assert_eq!(
@@ -206,6 +207,7 @@ mod tests {
             [
                 Page::Calendar,
                 Page::Pomodoro,
+                Page::Record,
                 Page::Reminders,
                 Page::Notes,
                 Page::Media,
@@ -220,8 +222,8 @@ mod tests {
                 Page::Shortcuts,
             ]
         );
-        assert_eq!(Page::ALL.len(), 14);
-        assert_eq!(p.visible().len(), 14, "every page shows by default");
+        assert_eq!(Page::ALL.len(), 15);
+        assert_eq!(p.visible().len(), 15, "every page shows by default");
         assert_eq!(page_name(Page::Arrange), "Arrange");
         assert_eq!(page_from_name(" arrange "), Some(Page::Arrange));
         assert_eq!(page_name(Page::Devices), "Devices");
@@ -308,13 +310,13 @@ mod tests {
             .filter(|p| **p != Page::Arrange)
             .map(|p| entry(page_name(*p), true))
             .collect();
-        assert_eq!(saved.len(), 13);
+        assert_eq!(saved.len(), 14);
         let cli = saved.iter().position(|e| e.page == "Cli").unwrap();
         let moved = saved.remove(cli);
         saved.insert(0, moved);
         saved[1].on = false; // Calendar off
         let p = PanelPages::from_saved(&saved);
-        assert_eq!(p.entries().len(), 14);
+        assert_eq!(p.entries().len(), 15);
         assert_eq!(
             p.position(Page::Arrange),
             p.position(Page::Cli) + 1,
@@ -331,6 +333,41 @@ mod tests {
             .map(|p| entry(page_name(*p), true))
             .collect();
         assert_eq!(PanelPages::from_saved(&plain).visible(), Page::ALL.to_vec());
+    }
+
+    #[test]
+    fn a_saved_order_without_rekam_gets_it_back_after_pomodoro() {
+        // A config written before the Rekam page: the other pages in the
+        // owner's order (Pomodoro moved to the end) and one of them off.
+        let mut saved: Vec<PageEntry> = Page::ALL
+            .iter()
+            .filter(|p| **p != Page::Record)
+            .map(|p| entry(page_name(*p), true))
+            .collect();
+        assert_eq!(saved.len(), 14);
+        let pomo = saved.iter().position(|e| e.page == "Pomodoro").unwrap();
+        let moved = saved.remove(pomo);
+        saved.push(moved);
+        saved[0].on = false; // Calendar off
+        let p = PanelPages::from_saved(&saved);
+        assert_eq!(p.entries().len(), 15);
+        assert_eq!(
+            p.position(Page::Record),
+            p.position(Page::Pomodoro) + 1,
+            "right after Pomodoro wherever it went"
+        );
+        assert_eq!(p.entries().last().unwrap().0, Page::Record);
+        assert!(p.is_on(Page::Record), "and shown");
+        assert!(!p.is_on(Page::Calendar), "the rest is untouched");
+        // In the default order it sits between Pomodoro and Pengingat.
+        let plain: Vec<PageEntry> = Page::ALL
+            .iter()
+            .filter(|p| **p != Page::Record)
+            .map(|p| entry(page_name(*p), true))
+            .collect();
+        assert_eq!(PanelPages::from_saved(&plain).visible(), Page::ALL.to_vec());
+        assert_eq!(page_name(Page::Record), "Record");
+        assert_eq!(page_from_name(" record "), Some(Page::Record));
     }
 
     #[test]
@@ -420,8 +457,8 @@ mod tests {
     fn moving_a_page_swaps_it_with_its_neighbour_and_stops_at_the_ends() {
         let mut p = PanelPages::default();
         assert!(p.move_shown(Page::Media, -1));
-        assert_eq!(p.position(Page::Media), 3);
-        assert_eq!(p.position(Page::Notes), 4);
+        assert_eq!(p.position(Page::Media), 4);
+        assert_eq!(p.position(Page::Notes), 5);
         assert!(!p.move_shown(Page::Calendar, -1), "already first");
         assert!(!p.move_shown(Page::Shortcuts, 1), "already last");
         assert!(p.move_shown(Page::Calendar, 1));
@@ -434,10 +471,10 @@ mod tests {
         assert!(p.move_to(Page::Calendar, 3));
         assert_eq!(p.position(Page::Calendar), 3);
         assert_eq!(p.entries()[0].0, Page::Pomodoro);
-        assert_eq!(p.entries()[2].0, Page::Notes);
+        assert_eq!(p.entries()[2].0, Page::Reminders);
         assert!(p.move_to(Page::Calendar, 0), "and back");
         assert_eq!(p.visible(), Page::ALL.to_vec());
-        assert!(!p.move_to(Page::Notes, 3), "already there");
+        assert!(!p.move_to(Page::Notes, 4), "already there");
         assert!(!p.move_to(Page::Notes, 99), "out of range");
         assert!(p.move_to(Page::Calendar, Page::ALL.len() - 1));
         assert_eq!(p.entries().last().unwrap().0, Page::Calendar);
@@ -452,6 +489,7 @@ mod tests {
     #[test]
     fn move_shown_steps_over_hidden_pages() {
         let mut p = PanelPages::default();
+        p.toggle(Page::Record);
         p.toggle(Page::Reminders);
         // Notes goes up one shown page, past the hidden Reminders.
         assert!(p.move_shown(Page::Notes, -1));
@@ -461,6 +499,7 @@ mod tests {
             [Page::Calendar, Page::Notes, Page::Pomodoro, Page::Media]
         );
         let mut p = PanelPages::default();
+        p.toggle(Page::Record);
         p.toggle(Page::Reminders);
         // Pomodoro down: past the hidden Reminders to Notes' place.
         assert!(p.move_shown(Page::Pomodoro, 1));
@@ -480,6 +519,7 @@ mod tests {
     fn the_wheel_skips_pages_that_are_off_and_stops_at_the_ends() {
         let mut p = PanelPages::default();
         p.toggle(Page::Pomodoro);
+        p.toggle(Page::Record);
         p.toggle(Page::Reminders);
         assert_eq!(p.step(Page::Calendar, 1), Page::Notes);
         assert_eq!(p.step(Page::Notes, -1), Page::Calendar);

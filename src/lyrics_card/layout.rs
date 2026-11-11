@@ -404,7 +404,8 @@ pub struct Mon {
     pub dpi: u32,
 }
 
-fn px(dip: f32, dpi: u32) -> i32 {
+/// `dip` in physical px at `dpi`.
+pub fn px(dip: f32, dpi: u32) -> i32 {
     (dip * dpi.max(96) as f32 / 96.0).round() as i32
 }
 
@@ -412,6 +413,18 @@ fn overlap(a: Rc, b: Rc) -> i64 {
     let w = (a.right.min(b.right) - a.left.max(b.left)).max(0);
     let h = (a.bottom.min(b.bottom) - a.top.max(b.top)).max(0);
     i64::from(w) * i64::from(h)
+}
+
+/// The monitor a saved rect still belongs to: the one with most of it, when
+/// that is at least half of its area. `None` for an empty rect or one that is
+/// (mostly) off every screen. The lyrics card and the transcript window share
+/// this rule.
+pub fn home_monitor(r: Rc, monitors: &[Mon]) -> Option<&Mon> {
+    let area = i64::from(r.width().max(0)) * i64::from(r.height().max(0));
+    monitors
+        .iter()
+        .max_by_key(|m| overlap(r, m.rect))
+        .filter(|m| area > 0 && overlap(r, m.rect) * 2 >= area)
 }
 
 /// Where the card goes. The saved rect is used when at least half of it lies
@@ -427,12 +440,7 @@ pub fn place(saved: Option<CardPlace>, monitors: &[Mon], notch: Option<Mon>) -> 
             right: p.right,
             bottom: p.bottom,
         };
-        let area = i64::from(r.width().max(0)) * i64::from(r.height().max(0));
-        let best = monitors
-            .iter()
-            .max_by_key(|m| overlap(r, m.rect))
-            .filter(|m| area > 0 && overlap(r, m.rect) * 2 >= area);
-        if let Some(m) = best {
+        if let Some(m) = home_monitor(r, monitors) {
             let k = m.dpi.max(96) as f32 / 96.0;
             let (w, h) = clamp_size(r.width() as f32 / k, r.height() as f32 / k);
             return Some(Rc {

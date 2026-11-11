@@ -60,7 +60,7 @@ use super::geometry::{
     notice_action_w, notice_actions_layout, notice_actions_layout_with, notice_chip_widths,
     notice_close_rect, notice_close_regions, notice_layout_with, reminder_done_regions, shot_fit,
     shot_layout, shot_regions, shoulder_depth, toast_dot, toast_eyebrow, toast_notice_layout_with,
-    sticky_reminder_regions, toast_slot_parts, update_offer_regions,
+    rec_saved_regions, sticky_reminder_regions, toast_slot_parts, update_offer_regions,
 };
 use super::icons::{Icon, IconSet};
 use super::motion::{StripFrame, Transit};
@@ -111,11 +111,29 @@ const LYRIC_RISE: f32 = 5.0;
 /// Layout width for measuring one line: wider than any line drawn.
 const MEASURE_W: f32 = 4096.0;
 
+/// The REC view's data for one frame: built at draw time (the levels change
+/// many times a second and live outside the state).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RecFrame {
+    pub elapsed: std::time::Duration,
+    pub paused: bool,
+    pub sources: crate::model::RecSources,
+    /// Peak levels, 0 to 1.
+    pub mic: f32,
+    pub system: f32,
+    /// Which sources are muted, `[mic, system]`.
+    pub muted: [bool; 2],
+    /// The source whose level group the pointer is on (its pill shows).
+    pub hot: Option<crate::recorder::Source>,
+}
+
 /// Everything a frame draws besides the shape: the view and the data behind it.
 pub struct Frame<'a> {
     pub view: &'a View,
     pub media: Option<&'a MediaInfo>,
     pub pomodoro: &'a Pomodoro,
+    /// The recording, while the view is `RecordCompact`.
+    pub rec: Option<RecFrame>,
     /// Drives the pomodoro countdown and the equalizer animation.
     pub now: Instant,
     /// The local date the island's state is on (today markers, note times).
@@ -144,6 +162,8 @@ pub struct Frame<'a> {
     pub phone_on: bool,
     /// The Devices page.
     pub devices: DevicesView<'a>,
+    /// The Rekam page.
+    pub record: RecordView<'a>,
     pub notes: &'a [Note],
     pub notes_page: usize,
     /// Upcoming (not done) reminders, earliest first.
@@ -590,6 +610,15 @@ pub struct DevicesView<'a> {
     /// The key of the device whose details show.
     pub expanded: Option<&'a str>,
     pub scroll: f32,
+}
+
+/// What the Rekam page shows besides the recording itself (`Frame::rec`):
+/// the sources chosen while none runs, and the newest recordings.
+pub struct RecordView<'a> {
+    pub sources: crate::model::RecSources,
+    pub recent: &'a [crate::model::RecEntry],
+    /// The names of the devices the sources use, `[mic, system]`.
+    pub devices: &'a [String; 2],
 }
 
 /// What the quick search shows.
@@ -1544,6 +1573,12 @@ impl Renderer {
         self.regions.hit(x / self.scale, y / self.scale)
     }
 
+    /// Where the last frame put the panel region of `hit`, dip from the
+    /// window's top-left; `None` when it drew none.
+    pub fn region_of(&self, hit: &Hit) -> Option<Rect> {
+        self.regions.regions.iter().find(|r| r.hit == *hit).map(|r| r.rect)
+    }
+
     /// What a client point in physical pixels is over: a drawn island pixel
     /// (shoulders and anti-aliased edge included), only the drag margin, or
     /// nothing.
@@ -2057,7 +2092,10 @@ impl Renderer {
         // A busy toast's logo beside a compact view: the view is laid out on
         // what the slot leaves of the shape, so nothing under it moves.
         let slot = match view {
-            View::MediaCompact | View::MediaLyric | View::PomodoroCompact
+            View::MediaCompact
+            | View::MediaLyric
+            | View::PomodoroCompact
+            | View::RecordCompact
                 if frame.toast_slot_w > 0.0 =>
             {
                 Some(toast_slot_parts(shape, shape.w - frame.toast_slot_w))
@@ -2076,6 +2114,7 @@ impl Renderer {
                 Ok(())
             }
             View::PomodoroCompact => self.paint_pomodoro_compact(body, frame),
+            View::RecordCompact => self.paint_record_compact(body, frame),
             // A pomodoro notice shows while the next phase waits (Ready).
             View::Notice(notice) => match (&notice.kind, frame.shot) {
                 (NoticeKind::Screenshot { shot, .. }, Some(view)) if view.id == *shot => {
@@ -2160,7 +2199,11 @@ impl Renderer {
             && !slot_drawn
             && matches!(
                 view,
-                View::Idle | View::MediaCompact | View::MediaLyric | View::PomodoroCompact
+                View::Idle
+                    | View::MediaCompact
+                    | View::MediaLyric
+                    | View::PomodoroCompact
+                    | View::RecordCompact
             )
         {
             let ((cx, cy), r) = toast_dot(shape);
@@ -2603,6 +2646,10 @@ impl Renderer {
             // painted, so drawing and hit-testing cannot drift.
             if matches!(notice.kind, NoticeKind::Reminder { .. }) {
                 self.regions.regions = reminder_done_regions(chip);
+            }
+            // So are the saved recording's chips.
+            if let NoticeKind::RecSaved { offer, .. } = notice.kind {
+                self.regions.regions = rec_saved_regions(chip, offer);
             }
         }
         if closable && let Some(close) = close.filter(|c| c.alpha > 0.0) {
