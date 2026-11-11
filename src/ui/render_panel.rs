@@ -953,13 +953,13 @@ impl Renderer {
     }
 
     /// The measured width of each recent recording's pill label, zero for a
-    /// recording still being written (it has no pill).
+    /// row without a pill (`RecEntry::has_pill`).
     fn rec_pill_widths(&self, recent: &[RecEntry]) -> Vec<f32> {
         let lang = i18n::lang();
         recent
             .iter()
             .map(|e| {
-                if e.unfinished {
+                if !e.has_pill() {
                     return 0.0;
                 }
                 let label = i18n::tr_pill(lang, e.transcript);

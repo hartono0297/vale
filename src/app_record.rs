@@ -412,6 +412,26 @@ fn missing_title(lang: Lang, source: Source, chosen: Option<&str>) -> String {
     }
 }
 
+/// The device names of the recording that runs, `[mic, system]`: an audio
+/// recording's, else the sound of a screen recording. `None` while idle.
+fn running_device_names(
+    audio: Option<[String; 2]>,
+    screen: Option<[String; 2]>,
+) -> Option<[String; 2]> {
+    audio.or(screen)
+}
+
+/// Whether the sidecar is a screen recording's that says it has no sound
+/// (`"channels": []`: both sources were off).
+fn recorded_silent(sidecar: Option<&serde_json::Value>) -> bool {
+    sidecar.is_some_and(|v| {
+        v.get("kind").and_then(|k| k.as_str()) == Some("screen")
+            && v.get("channels")
+                .and_then(|c| c.as_array())
+                .is_some_and(Vec::is_empty)
+    })
+}
+
 /// What the Rekam page shows for a source while idle: the chosen device's
 /// name, else the Windows default's (which is what a "follow" choice uses).
 fn idle_device_name(chosen: Option<String>, default: Option<String>) -> String {
@@ -637,6 +657,7 @@ fn entry_of(
         started: i18n::rec_started(lang, started, today),
         duration: Duration::from_millis(duration_ms),
         unfinished,
+        silent: recorded_silent(value.as_ref()),
         // The scan reads what is on disk (`Done` or nothing);
         // `transcribe_marks` puts the queue's state over it.
         transcript: if done { RowTranscript::Done } else { RowTranscript::None },
@@ -968,12 +989,17 @@ impl App {
     }
 
     /// Reads the device names the Rekam page shows: from the running
-    /// recorder, or from the choices (and the Windows default) while idle.
-    /// Called when the page opens, a recording starts or ends, and a choice
-    /// or a device changes: never on a timer.
-    fn rec_read_devices(&mut self) {
-        let names = match self.rec.recorder.as_ref() {
-            Some(recorder) => recorder.device_names(),
+    /// recorder (an audio recording's, or the sound of a screen recording),
+    /// or from the choices (and the Windows default) while idle. Called when
+    /// the page opens, a recording starts or ends, and a choice or a device
+    /// changes: never on a timer.
+    pub(super) fn rec_read_devices(&mut self) {
+        let running = running_device_names(
+            self.rec.recorder.as_ref().map(Recorder::device_names),
+            self.screen.device_names(),
+        );
+        let names = match running {
+            Some(names) => names,
             None => [Source::Mic, Source::System].map(|source| {
                 let chosen = self
                     .config
@@ -1753,6 +1779,80 @@ halo
         assert_eq!(stem_of(Path::new(r"C:\v\a b.m4a.part")), "a b");
         assert_eq!(stem_of(Path::new(r"C:\v\a b.M4A")), "a b");
         assert_eq!(stem_of(Path::new(r"C:\v\a b.txt")), "a b.txt");
+    }
+
+    #[test]
+    fn a_video_without_sound_offers_no_transcript() {
+        use serde_json::json;
+        let screen = |channels: serde_json::Value| json!({"v": 1, "kind": "screen", "channels": channels});
+        assert!(recorded_silent(Some(&screen(json!([])))));
+        assert!(!recorded_silent(Some(&screen(json!(["mix"])))));
+        // No sidecar, or one that does not say: the file may well have sound.
+        assert!(!recorded_silent(None));
+        assert!(!recorded_silent(Some(&json!({"v": 1, "kind": "screen"}))));
+        assert!(!recorded_silent(Some(&json!({"v": 1, "kind": "screen", "channels": "none"}))));
+        // An audio recording always has a channel; a broken list hides nothing.
+        assert!(!recorded_silent(Some(&json!({"v": 1, "channels": []}))));
+
+        let dir = scratch("video-silent");
+        for (stem, channels) in [("silent", "[]"), ("spoken", r#"["mix"]"#)] {
+            fs::write(dir.join(format!("{stem}.mp4")), b"x").unwrap();
+            fs::write(
+                dir.join(format!("{stem}.vale.json")),
+                format!(r#"{{"v":1,"kind":"screen","title":"{stem}","duration_ms":5000,"channels":{channels}}}"#),
+            )
+            .unwrap();
+        }
+        fs::write(dir.join("bare.mp4"), b"x").unwrap();
+        let list = scan_recent(&dir, RecKind::Screen, Lang::Id, today(), RECENT_LIMIT, None, &|_| None);
+        let row = |stem: &str| {
+            list.iter()
+                .find(|e| stem_of(&e.path) == stem)
+                .unwrap_or_else(|| panic!("{stem} listed"))
+        };
+        assert!(row("silent").silent);
+        assert!(!row("silent").has_pill(), "no \"Transkrip\" on a silent video");
+        assert!(!row("spoken").silent);
+        assert!(row("spoken").has_pill());
+        assert!(row("bare").has_pill(), "a video from elsewhere may have sound");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_pill_shows_by_the_row() {
+        let row = |unfinished, silent, transcript| RecEntry {
+            path: PathBuf::from("a.mp4"),
+            title: String::new(),
+            started: String::new(),
+            duration: Duration::ZERO,
+            unfinished,
+            silent,
+            transcript,
+        };
+        use RowTranscript::*;
+        for mark in [Off, None, Queued, Waiting, Running(3), Done, Failed] {
+            assert!(row(false, false, mark).has_pill(), "{mark:?}");
+            assert!(!row(true, false, mark).has_pill(), "unfinished, {mark:?}");
+            assert!(!row(true, true, mark).has_pill(), "unfinished and silent, {mark:?}");
+        }
+        // A silent video: nothing to offer, on or off.
+        assert!(!row(false, true, None).has_pill());
+        assert!(!row(false, true, Off).has_pill());
+        // One asked for anyway ("Transkrip file lain...") is followed.
+        for mark in [Queued, Waiting, Running(3), Done, Failed] {
+            assert!(row(false, true, mark).has_pill(), "{mark:?}");
+        }
+    }
+
+    #[test]
+    fn the_names_shown_are_the_running_recording_s() {
+        let names = |a: &str, b: &str| Some([a.to_string(), b.to_string()]);
+        // A screen recording's sound: its devices, not the idle choices.
+        assert_eq!(running_device_names(Option::None, names("Headset", "Speaker")), names("Headset", "Speaker"));
+        assert_eq!(running_device_names(names("Mic", "TV"), Option::None), names("Mic", "TV"));
+        // Only one runs at a time; the audio recording is asked first.
+        assert_eq!(running_device_names(names("Mic", "TV"), names("Headset", "Speaker")), names("Mic", "TV"));
+        assert_eq!(running_device_names(Option::None, Option::None), Option::None);
     }
 
     #[test]

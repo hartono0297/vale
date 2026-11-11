@@ -323,8 +323,20 @@ pub struct RecEntry {
     /// A `.m4a.part` a crash left: the page says "belum selesai" instead of
     /// a length (it still plays, and a click still shows it).
     pub unfinished: bool,
+    /// A video recorded without sound: nothing in it to transcribe.
+    pub silent: bool,
     /// The row's transcript pill.
     pub transcript: RowTranscript,
+}
+
+impl RecEntry {
+    /// Whether the row shows its transcript pill: not a recording still
+    /// being written, and not a silent video (unless a transcript of it was
+    /// asked for anyway, which the pill then follows).
+    pub fn has_pill(&self) -> bool {
+        let nothing_asked = matches!(self.transcript, RowTranscript::None | RowTranscript::Off);
+        !self.unfinished && !(self.silent && nothing_asked)
+    }
 }
 
 /// The two kinds of recording. Only one runs at a time.

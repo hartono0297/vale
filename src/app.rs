@@ -409,6 +409,9 @@ thread_local! {
     /// The recorded window was minimised (`true`) or restored while the app
     /// was borrowed; the newest word counts.
     static DEFERRED_SCREEN_WATCH: Cell<Option<bool>> = const { Cell::new(None) };
+    /// Esc was pressed during the 3-2-1 while the app was borrowed: the
+    /// countdown is cancelled once the handler returns.
+    static DEFERRED_SCREEN_ESC: Cell<bool> = const { Cell::new(false) };
     static DEFERRED_CLI: RefCell<Vec<InputKey>> = const { RefCell::new(Vec::new()) };
     static DEFERRED_CLI_REDRAW: Cell<bool> = const { Cell::new(false) };
     static DEFERRED_CLIP: RefCell<Vec<InputKey>> = const { RefCell::new(Vec::new()) };
@@ -8796,6 +8799,9 @@ fn run_deferred() {
     if let Some(minimised) = DEFERRED_SCREEN_WATCH.take() {
         with_app(|app| app.screen_on_window(minimised));
     }
+    if DEFERRED_SCREEN_ESC.take() {
+        with_app(App::screen_cancel_countdown);
+    }
     for action in DEFERRED_SETTINGS.take() {
         deliver_settings_action(action);
     }
@@ -9229,7 +9235,11 @@ unsafe extern "system" fn wnd_proc(
         WM_HOTKEY => {
             let wm = wparam.0 as i32;
             if is_countdown_esc(wm) {
-                with_app(App::screen_cancel_countdown);
+                // A press while the app is borrowed still cancels (the
+                // recording must not start against the user's Esc).
+                if with_app(App::screen_cancel_countdown).is_none() {
+                    DEFERRED_SCREEN_ESC.set(true);
+                }
             } else if let Some(id) = row_of_wm_id(wm) {
                 with_app(|app| app.on_hotkey(id));
             }
@@ -11397,6 +11407,7 @@ mod tests {
             started: String::new(),
             duration: Duration::from_secs(60),
             unfinished: false,
+            silent: false,
             transcript: RowTranscript::None,
         };
         let t0 = Instant::now();

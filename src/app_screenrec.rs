@@ -119,8 +119,15 @@ pub(super) struct ScreenState {
     /// What the picker chose, from the countdown until the recording is over.
     picked: Option<Picked>,
     /// The sources that are recorded (the picker's toggles; none when the
-    /// sound could not start).
+    /// sound could not start, and once every one of them is lost).
     sources: RecSources,
+    /// The video has sound in it (the mix started), whatever was lost since.
+    sound: bool,
+    /// The mix recorder's words that came before the start thread reported
+    /// (`AudioWord::Keep`), oldest first.
+    early_audio: Vec<RecEvent>,
+    /// The sources whose loss a notice named, `[mic, system]`.
+    told_lost: [bool; 2],
     /// The video being written (`<name>.mp4`), from the start to the stop.
     path: Option<PathBuf>,
     clock: ScreenClock,
@@ -159,6 +166,9 @@ impl Default for ScreenState {
                 mic: false,
                 system: false,
             },
+            sound: false,
+            early_audio: Vec::new(),
+            told_lost: [false; 2],
             path: None,
             clock: ScreenClock::new(Instant::now()),
             pause: ScreenPause::default(),
@@ -199,6 +209,12 @@ impl ScreenState {
     /// that was taken away meanwhile (Settings recorded a combo) comes back.
     pub(super) fn wants_esc(&self) -> bool {
         self.esc && matches!(self.phase, ScreenPhase::Countdown(_))
+    }
+
+    /// The devices the sound of the screen recording is taken from, `[mic,
+    /// system]`; `None` when no sound is recorded.
+    pub(super) fn device_names(&self) -> Option<[String; 2]> {
+        self.audio.as_ref().map(Recorder::device_names)
     }
 
     /// The recorded target is one window (it can be minimised or closed).
@@ -361,6 +377,40 @@ pub(crate) fn no_sound_notice(lang: Lang, failure: &Failure) -> Notice {
         text(lang, why).into(),
         NoticeKind::RecInfo,
     )
+}
+
+/// What becomes of a word of the mix recorder that arrives in a phase.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum AudioWord {
+    /// The recording runs: the word is acted on now.
+    Tell,
+    /// The start thread has not reported yet (the mix speaks as soon as its
+    /// sources are open): kept until it has, dropped if the start fails.
+    Keep,
+    Drop,
+}
+
+pub(super) fn audio_word_in(phase: ScreenPhase) -> AudioWord {
+    match phase {
+        ScreenPhase::Recording => AudioWord::Tell,
+        ScreenPhase::Starting => AudioWord::Keep,
+        ScreenPhase::Idle
+        | ScreenPhase::Picking
+        | ScreenPhase::Countdown(_)
+        | ScreenPhase::Stopping => AudioWord::Drop,
+    }
+}
+
+/// Every recorded source is lost (`RecEvent::NoInput`): the notice for it.
+/// The last loss comes without a `SourceLost` of its own, so this is its
+/// only word. `told`: the sources whose loss a notice already named, as
+/// `[mic, system]`; `None` when that covers every recorded one (the last
+/// loss was the mic Windows refused, which has its own notice).
+pub(crate) fn no_input_notice(lang: Lang, recorded: RecSources, told: [bool; 2]) -> Option<Notice> {
+    let untold = [Source::Mic, Source::System]
+        .into_iter()
+        .any(|s| is_recorded(recorded, s) && !told[s.index()]);
+    untold.then(|| no_sound_notice(lang, &Failure::NoDevice))
 }
 
 /// "Video dibuang": the files went to the Recycle Bin.
@@ -593,6 +643,8 @@ impl App {
         self.screen.excluder = None;
         self.screen.picked = None;
         self.screen.path = None;
+        // What the sound said before a start that failed is dropped here.
+        self.screen.early_audio.clear();
         self.screen_set_phase(ScreenPhase::Idle);
     }
 
@@ -690,6 +742,9 @@ impl App {
         self.screen.session += 1;
         let session = self.screen.session;
         self.screen.ended = false;
+        self.screen.sound = false;
+        self.screen.early_audio.clear();
+        self.screen.told_lost = [false; 2];
         self.screen.pause = ScreenPause::default();
         // On this thread, before the capture exists. A hook Windows refused
         // leaves windows opened later in the video; the recording goes on.
@@ -779,6 +834,7 @@ impl App {
         let sound_failed = match started.audio {
             Some(Ok(audio)) => {
                 self.screen.audio = Some(audio);
+                self.screen.sound = true;
                 None
             }
             Some(Err(e)) => {
@@ -812,6 +868,8 @@ impl App {
         tray::set_screen_recording(self.hwnd, true);
         tray::set_mic_muted(false);
         self.screen_show_status();
+        // The Rekam page names the devices the sound is taken from.
+        self.rec_read_devices();
         // The mute hotkey is registered while a recording runs.
         self.sync_hotkeys();
         let target = self.screen.picked.as_ref().map(|p| p.target.clone());
@@ -829,6 +887,11 @@ impl App {
         }
         if let Some(used) = used {
             self.screen_fell_back(&used);
+        }
+        // What the sound said while the start was still running (a mic
+        // Windows refused, a device that fell back): told now, once.
+        for event in std::mem::take(&mut self.screen.early_audio) {
+            self.on_screen_audio(event);
         }
     }
 
@@ -902,9 +965,11 @@ impl App {
         };
         let stopped = handle.join().ok();
         let window = self.screen.records_window();
-        let had_sound = self.screen.sources.mic || self.screen.sources.system;
+        let had_sound = self.screen.sound;
         let path = self.screen.path.clone();
         self.screen_idle();
+        // Back to the idle choices on the Rekam page.
+        self.rec_read_devices();
         let lang = self.config.language;
         let unfinished = || {
             let part = path.as_deref().map(part_of)?;
@@ -1030,7 +1095,11 @@ impl App {
                 ScreenPhase::Starting => self.screen.ended = true,
                 _ => {}
             },
-            ScreenNote::Audio(event) => self.on_screen_audio(event),
+            ScreenNote::Audio(event) => match audio_word_in(self.screen.phase) {
+                AudioWord::Tell => self.on_screen_audio(event),
+                AudioWord::Keep => self.screen.early_audio.push(event),
+                AudioWord::Drop => {}
+            },
         }
     }
 
@@ -1042,15 +1111,25 @@ impl App {
         }
         let lang = self.config.language;
         let notice = match event {
-            RecEvent::SourceLost(source) => source_lost_notice(lang, source),
-            RecEvent::MicDenied => mic_denied_notice(lang),
-            RecEvent::DeviceSwitched { manual: true, .. } => return,
+            RecEvent::SourceLost(source) => {
+                self.screen.told_lost[source.index()] = true;
+                source_lost_notice(lang, source)
+            }
+            RecEvent::MicDenied => {
+                self.screen.told_lost[Source::Mic.index()] = true;
+                mic_denied_notice(lang)
+            }
             RecEvent::DeviceSwitched {
                 source,
                 name,
                 fell_back,
-                ..
+                manual,
             } => {
+                // The Rekam page names the device in use now.
+                self.rec_read_devices();
+                if manual {
+                    return;
+                }
                 let chosen = self
                     .config
                     .recording
@@ -1062,8 +1141,24 @@ impl App {
                 eprintln!("vale: screen recording lost its sound: {failure:?}");
                 no_sound_notice(lang, &failure)
             }
-            // The lost sources were told one by one; a mix writes no file.
-            RecEvent::NoInput | RecEvent::Saved { .. } => return,
+            // Every recorded source is lost. The last one comes without a
+            // `SourceLost` of its own: this is its only word. No meters
+            // from here, as when the sound could not start.
+            RecEvent::NoInput => {
+                let recorded = self.screen.sources;
+                self.screen.sources = RecSources {
+                    mic: false,
+                    system: false,
+                };
+                tray::set_mic_muted(false);
+                self.screen_show_status();
+                match no_input_notice(lang, recorded, self.screen.told_lost) {
+                    Some(notice) => notice,
+                    None => return,
+                }
+            }
+            // A mix writes no file.
+            RecEvent::Saved { .. } => return,
         };
         self.apply_now(Event::Notice(notice));
     }
@@ -1420,6 +1515,41 @@ mod tests {
             assert_eq!(n.title, "Recording video without sound", "{failure:?}");
             assert_eq!(n.body, en, "{failure:?}");
         }
+    }
+
+    #[test]
+    fn a_word_of_the_sound_waits_for_the_start_to_report() {
+        use ScreenPhase::*;
+        // The mix speaks right after its sources open, often before the
+        // start thread's `Started` is read: nothing it says may be lost.
+        assert_eq!(audio_word_in(Starting), AudioWord::Keep);
+        assert_eq!(audio_word_in(Recording), AudioWord::Tell);
+        for phase in [Idle, Picking, Countdown(2), Stopping] {
+            assert_eq!(audio_word_in(phase), AudioWord::Drop, "{phase:?}");
+        }
+    }
+
+    #[test]
+    fn the_last_source_lost_says_the_video_goes_on_without_sound() {
+        let sources = |mic, system| RecSources { mic, system };
+        // Only the mic, unplugged: `NoInput` is the only word that comes.
+        let n = no_input_notice(Lang::Id, sources(true, false), [false, false]).expect("a notice");
+        assert_eq!(n.title, "Video jalan tanpa suara");
+        assert_eq!(n.body, "Mic atau speaker tidak ditemukan");
+        assert_eq!(n.kind, NoticeKind::RecInfo);
+        assert_eq!(n, no_sound_notice(Lang::Id, &Failure::NoDevice));
+        let n = no_input_notice(Lang::En, sources(false, true), [false, false]).expect("a notice");
+        assert_eq!(n.title, "Recording video without sound");
+        assert_eq!(n.body, "No microphone or speaker found");
+        // Both recorded, the mic was told lost, now PC audio goes too.
+        assert!(no_input_notice(Lang::Id, sources(true, true), [true, false]).is_some());
+        assert!(no_input_notice(Lang::Id, sources(true, true), [false, true]).is_some());
+        // The last loss was the mic Windows refused: its own notice (a click
+        // opens the privacy page) stays, nothing is said over it.
+        assert_eq!(no_input_notice(Lang::Id, sources(true, false), [true, false]), None);
+        assert_eq!(no_input_notice(Lang::Id, sources(true, true), [true, true]), None);
+        // A source that was not recorded counts for nothing.
+        assert!(no_input_notice(Lang::Id, sources(true, false), [false, true]).is_some());
     }
 
     #[test]

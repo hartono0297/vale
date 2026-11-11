@@ -1164,6 +1164,7 @@ mod tests {
             started: String::new(),
             duration: Duration::ZERO,
             unfinished: false,
+            silent: false,
             transcript: RowTranscript::Done,
         }];
         let mark = |queue: Option<JobState>| {

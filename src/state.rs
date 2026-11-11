@@ -8359,6 +8359,7 @@ mod tests {
             started: "Hari ini 10:02".into(),
             duration: Duration::from_secs(42 * 60),
             unfinished: false,
+            silent: false,
             transcript: RowTranscript::None,
         }
     }

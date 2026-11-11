@@ -93,6 +93,10 @@ pub fn ticks_to_hns(ticks: i64, freq: i64) -> i64 {
     (ticks as i128 * 10_000_000 / freq.max(1) as i128) as i64
 }
 
+/// Two passes of the recording loop further apart than this many seconds:
+/// the PC slept in between ([`Timeline::bridge`]).
+pub const SLEEP_GAP_S: i64 = 2;
+
 /// The recording's clock: QPC readings to video time, with every paused
 /// spell cut out (a pause leaves no gap in the video). The spans are kept,
 /// so a reading from before a pause (audio arrives late) still maps.
@@ -129,6 +133,24 @@ impl Timeline {
         if let Some(since) = self.paused_since.take() {
             self.spans.push((since, qpc.max(since)));
         }
+    }
+
+    /// The recording loop passed at `last` and again at `now`: more than
+    /// [`SLEEP_GAP_S`] between them means the PC slept without the pause
+    /// being asked in time (QPC counts on through sleep), and that span is
+    /// cut out like a pause, unless a pause is open anyway. Says whether it
+    /// cut.
+    pub fn bridge(&mut self, last: i64, now: i64) -> bool {
+        if self.paused_since.is_some() {
+            return false;
+        }
+        // A pause that ended since `last` is cut already.
+        let from = self.spans.last().map_or(last, |&(_, to)| last.max(to));
+        if now - from <= SLEEP_GAP_S * self.freq {
+            return false;
+        }
+        self.spans.push((from, now));
+        true
     }
 
     /// The video time of `qpc` in 100 ns units; `None` before the start, at
@@ -364,6 +386,50 @@ mod tests {
         t.pause(10 * S);
         assert_eq!(t.media_time(99 * S / 10), Some(99_000_000));
         assert_eq!(t.media_time(10 * S), None);
+    }
+
+    #[test]
+    fn a_sleep_nobody_paused_is_cut_like_a_pause() {
+        let mut t = Timeline::new(0, F);
+        // Two passes 20 ms apart, and exactly the limit: nothing is cut.
+        assert!(!t.bridge(10 * S, 10 * S + S / 50));
+        assert!(!t.bridge(10 * S, 12 * S));
+        assert_eq!(t.media_time(13 * S), Some(130_000_000));
+        // An hour asleep between two passes: the video goes on where it was.
+        assert!(t.bridge(13 * S, 3613 * S));
+        assert_eq!(t.media_time(100 * S), None, "sound from inside the sleep is dropped");
+        assert_eq!(t.media_time(3613 * S), Some(130_000_000));
+        assert_eq!(t.media_time(3614 * S), Some(140_000_000));
+        assert!(!t.is_paused());
+        // A pause is open: the sleep is inside it already.
+        t.pause(3620 * S);
+        assert!(!t.bridge(3620 * S, 7000 * S));
+        t.resume(7000 * S);
+        assert_eq!(t.media_time(7001 * S), Some(210_000_000));
+    }
+
+    #[test]
+    fn the_sleep_gap_is_two_seconds_of_the_clock_s_own_ticks() {
+        assert_eq!(SLEEP_GAP_S, 2);
+        let mut t = Timeline::new(0, 1000);
+        assert!(!t.bridge(0, 2000));
+        assert!(t.bridge(2000, 4001));
+        assert_eq!(t.media_time(5000), Some(29_990_000));
+    }
+
+    #[test]
+    fn a_pause_that_ended_between_two_passes_is_not_cut_twice() {
+        let mut t = Timeline::new(0, F);
+        t.pause(10 * S);
+        t.resume(15 * S);
+        // The passes are 7 s apart, 5 s of them the pause: 1 s since.
+        assert!(!t.bridge(9 * S, 16 * S));
+        assert_eq!(t.media_time(16 * S), Some(110_000_000));
+        // Slept on after the resume: only what follows the pause is cut.
+        assert!(t.bridge(9 * S, 20 * S));
+        assert_eq!(t.media_time(12 * S), None);
+        assert_eq!(t.media_time(21 * S), Some(110_000_000));
+        assert_eq!(t.media_time(8 * S), Some(80_000_000));
     }
 
     #[test]

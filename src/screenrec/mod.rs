@@ -615,8 +615,17 @@ impl Recording {
         let mut ripples: Vec<((f32, f32), f64)> = Vec::new();
         let mut cursor = self.camera.bounds().center();
         let mut zoom_logged = 0.0f64;
+        let mut last_pass = qpc_hns();
 
         'run: loop {
+            // A sleep the pause did not arrive in time for (it is read only
+            // after the wake) must not land in the video as one long jump.
+            // Before the commands, so a pause they open starts after it.
+            let pass = qpc_hns();
+            if timeline.bridge(last_pass, pass) {
+                audio.clock.reset();
+            }
+            last_pass = pass;
             loop {
                 match rx.try_recv() {
                     Ok(Cmd::Pause) => timeline.pause(qpc_hns()),

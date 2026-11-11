@@ -682,6 +682,7 @@ fn demo_rec_recent(marks: u8) -> Vec<RecEntry> {
         started: started.to_owned(),
         duration: Duration::from_secs(mins * 60),
         unfinished: false,
+        silent: false,
         transcript,
     };
     let none = RowTranscript::None;
@@ -726,6 +727,7 @@ fn demo_rec_videos() -> Vec<RecEntry> {
         started: started.to_owned(),
         duration: Duration::from_secs(secs),
         unfinished: false,
+        silent: false,
         transcript,
     };
     let mut part = entry("2026-11-10 1612", "Kemarin 16:12", 0, RowTranscript::None);
