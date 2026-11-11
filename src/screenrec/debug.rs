@@ -17,10 +17,11 @@ use windows::Win32::Graphics::Gdi::{
     CreateSolidBrush, GetMonitorInfoW, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint,
 };
 use windows::Win32::Media::MediaFoundation::{
-    IMF2DBuffer, IMFSourceReader, MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_SIZE, MF_MT_MAJOR_TYPE,
-    MF_MT_SUBTYPE, MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING,
-    MF_SOURCE_READER_FIRST_AUDIO_STREAM, MF_SOURCE_READER_FIRST_VIDEO_STREAM,
-    MF_SOURCE_READERF_ENDOFSTREAM, MFMediaType_Video, MFVideoFormat_RGB32,
+    IMF2DBuffer, IMFAttributes, IMFMediaType, IMFSourceReader, MF_MT_DEFAULT_STRIDE,
+    MF_MT_FRAME_SIZE, MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE,
+    MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, MF_SOURCE_READER_FIRST_AUDIO_STREAM,
+    MF_SOURCE_READER_FIRST_VIDEO_STREAM, MF_SOURCE_READERF_ENDOFSTREAM, MFMediaType_Video,
+    MFVideoFormat_RGB32,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -33,7 +34,8 @@ use windows::core::{HSTRING, Interface, PCWSTR, w};
 
 use super::cursor_log::{self, Entry};
 use super::files;
-use super::{Options, ScreenRecorder, Target, exclude_from_capture, mf, qpc_hns};
+use super::{Options, ScreenRecorder, Target, exclude_from_capture};
+use crate::mf::created;
 
 /// The marker's place on screen: top centre of the primary monitor.
 const MARKER_W: i32 = 240;
@@ -246,11 +248,11 @@ pub fn run(args: &[String]) {
         let on = feeding.clone();
         std::thread::spawn(move || {
             let chunk = vec![0.0f32; 480 * 2];
-            let mut at = qpc_hns();
+            let mut at = crate::recorder::capture::qpc_hns();
             while on.load(Ordering::Relaxed) {
                 input.push_audio(&chunk, 2, 48_000, at);
                 at += 100_000;
-                let wait = at - qpc_hns();
+                let wait = at - crate::recorder::capture::qpc_hns();
                 if wait > 0 {
                     std::thread::sleep(Duration::from_micros((wait / 10) as u64));
                 }
@@ -424,18 +426,27 @@ fn count(reader: &IMFSourceReader, stream: u32) -> (u64, i64) {
     (n, end)
 }
 
+fn source_reader(
+    mf: &crate::mf::Mf,
+    url: &HSTRING,
+    attributes: Option<&IMFAttributes>,
+) -> windows::core::Result<IMFSourceReader> {
+    let attrs = attributes.map_or(std::ptr::null_mut(), |a| a.as_raw());
+    created(|p| unsafe { (mf.create_source_reader)(PCWSTR(url.as_ptr()), attrs, p) })
+}
+
 /// Counts the MP4's samples per stream and checks the marker's place in
 /// its first frame.
 fn verify(
     path: &std::path::Path,
     marker: Option<(f64, f64, f64, f64)>,
 ) -> windows::core::Result<()> {
-    let mf = mf::get().map_err(|_| windows::core::Error::empty())?;
-    let _session = mf.start().map_err(|_| windows::core::Error::empty())?;
+    let session = crate::mf::MfSession::start().ok_or_else(windows::core::Error::empty)?;
+    let mf = session.api();
     let url = HSTRING::from(path);
-    let reader = mf.source_reader(PCWSTR(url.as_ptr()), None)?;
+    let reader = source_reader(mf, &url, None)?;
     let (video, v_end) = count(&reader, MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32);
-    let reader = mf.source_reader(PCWSTR(url.as_ptr()), None)?;
+    let reader = source_reader(mf, &url, None)?;
     let (audio, a_end) = count(&reader, MF_SOURCE_READER_FIRST_AUDIO_STREAM.0 as u32);
     println!(
         "read back: {video} video frames ending at {:.2} s, {audio} audio packets ending at {:.2} s",
@@ -445,11 +456,11 @@ fn verify(
 
     // Decode a frame every second (from 0.5 s), save them next to the
     // video as PNG, and look for the marker in the first.
-    let attrs = mf.attributes(1)?;
+    let attrs: IMFAttributes = created(|p| unsafe { (mf.create_attributes)(p, 1) })?;
     unsafe { attrs.SetUINT32(&MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, 1)? };
-    let reader = mf.source_reader(PCWSTR(url.as_ptr()), Some(&attrs))?;
+    let reader = source_reader(mf, &url, Some(&attrs))?;
     let stream = MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32;
-    let rgb = mf.media_type()?;
+    let rgb: IMFMediaType = created(|p| unsafe { (mf.create_media_type)(p) })?;
     unsafe {
         rgb.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
         rgb.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_RGB32)?;

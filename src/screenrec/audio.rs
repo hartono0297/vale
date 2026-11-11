@@ -17,7 +17,7 @@ pub trait AudioInput: Send + Sync {
     /// `sample_rate` (must be 48 000; other rates are counted as rejected
     /// and dropped). `qpc_hns`: the QPC clock at the first frame in 100 ns
     /// units, the unit WASAPI's `GetBuffer` reports (`u64QPCPosition`);
-    /// [`super::qpc_hns`] reads the same clock. Audio pushed while the
+    /// [`crate::recorder::capture::qpc_hns`] reads the same clock. Audio pushed while the
     /// recording is paused is dropped (the contract: a pause leaves no
     /// silence).
     fn push_audio(&self, frames: &[f32], channels: u16, sample_rate: u32, qpc_hns: i64);

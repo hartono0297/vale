@@ -15,7 +15,6 @@ pub mod cursor_log;
 pub mod debug;
 pub mod encode;
 pub mod files;
-mod mf;
 pub mod plan;
 pub mod zoom;
 
@@ -27,8 +26,8 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use windows::Win32::Media::MediaFoundation::IMFDXGIDeviceManager;
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
-use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON,
 };
@@ -44,6 +43,9 @@ use cursor_log::{Button, CursorLog, Entry, Header};
 use encode::{Encoder, VideoSpec};
 use plan::Timeline;
 use zoom::ZoomCamera;
+
+use crate::mf::{MfSession, created};
+use crate::recorder::capture::qpc_hns;
 
 /// Why a recording could not start or went wrong.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -202,16 +204,6 @@ enum Cmd {
     ToggleZoom,
     ZoomStep(i32),
     Stop,
-}
-
-/// The QPC clock in 100 ns units (the unit WASAPI reports positions in).
-pub fn qpc_hns() -> i64 {
-    let (mut t, mut f) = (0i64, 0i64);
-    unsafe {
-        let _ = QueryPerformanceCounter(&mut t);
-        let _ = QueryPerformanceFrequency(&mut f);
-    }
-    plan::ticks_to_hns(t, f)
 }
 
 /// A screen recording in progress, on its own thread.
@@ -380,9 +372,9 @@ struct Recording {
     compositor: Compositor,
     capture: Capture,
     source: Source,
-    _manager: windows::Win32::Media::MediaFoundation::IMFDXGIDeviceManager,
+    _manager: IMFDXGIDeviceManager,
     _gpu: Gpu,
-    _mf: mf::Session,
+    _mf: MfSession,
 }
 
 impl Recording {
@@ -392,8 +384,8 @@ impl Recording {
         options: &Options,
         feed: Option<Arc<AudioFeed>>,
     ) -> Result<Recording, Error> {
-        let mf = mf::get()?;
-        let session = mf.start()?;
+        let session = MfSession::start().ok_or(Error::NoMediaFoundation)?;
+        let mf = session.api();
         let source = Source::resolve(target)?;
         let gpu = Gpu::new()?;
         let fps = if options.fps >= 60 { 60 } else { 30 };
@@ -421,9 +413,10 @@ impl Recording {
         }
         drop(first);
 
-        let (manager, token) = mf
-            .dxgi_device_manager()
-            .map_err(|e| Error::win("MFCreateDXGIDeviceManager", &e))?;
+        let mut token = 0u32;
+        let manager: IMFDXGIDeviceManager =
+            created(|p| unsafe { (mf.create_dxgi_device_manager)(&mut token, p) })
+                .map_err(|e| Error::win("MFCreateDXGIDeviceManager", &e))?;
         unsafe { manager.ResetDevice(&gpu.device, token) }
             .map_err(|e| Error::win("ResetDevice", &e))?;
         let spec = VideoSpec {

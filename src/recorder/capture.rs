@@ -263,8 +263,6 @@ pub fn qpc_now() -> u64 {
 /// The performance counter now in 100 ns units, as an `i64`: the unit of the
 /// packet times (`AudioSink::audio`'s `qpc`), for callers that keep times
 /// signed (the screen recorder's audio input).
-// Track C's screen recorder is the first caller outside this module.
-#[allow(dead_code)]
 pub fn qpc_hns() -> i64 {
     #[link(name = "kernel32")]
     unsafe extern "system" {

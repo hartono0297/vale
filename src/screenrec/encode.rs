@@ -4,20 +4,21 @@
 //! stream fed 16-bit PCM.
 
 use std::path::Path;
+use std::ptr::null_mut;
 
 use windows::Win32::Graphics::Direct3D11::{D3D11_BIND_RENDER_TARGET, ID3D11Texture2D};
 use windows::Win32::Media::MediaFoundation::{
     CODECAPI_AVEncCommonRateControlMode, CODECAPI_AVEncMPVGOPSize, IMF2DBuffer, IMFAttributes,
-    IMFDXGIBuffer, IMFDXGIDeviceManager, IMFMediaType, IMFSample, IMFSinkWriter, IMFSinkWriterEx,
-    IMFTransform, IMFVideoSampleAllocatorEx, MF_E_SAMPLEALLOCATOR_EMPTY, MF_MT_AAC_PAYLOAD_TYPE,
-    MF_MT_ALL_SAMPLES_INDEPENDENT, MF_MT_AUDIO_AVG_BYTES_PER_SECOND, MF_MT_AUDIO_BITS_PER_SAMPLE,
-    MF_MT_AUDIO_BLOCK_ALIGNMENT, MF_MT_AUDIO_NUM_CHANNELS, MF_MT_AUDIO_SAMPLES_PER_SECOND,
-    MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE,
-    MF_MT_MPEG2_PROFILE, MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SUBTYPE, MF_MT_TRANSFER_FUNCTION,
-    MF_MT_VIDEO_NOMINAL_RANGE, MF_MT_VIDEO_PRIMARIES, MF_MT_YUV_MATRIX,
-    MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, MF_SA_D3D11_BINDFLAGS, MF_SINK_WRITER_D3D_MANAGER,
-    MF_TRANSCODE_CONTAINERTYPE, MFAudioFormat_AAC, MFAudioFormat_PCM, MFMediaType_Audio,
-    MFMediaType_Video, MFNominalRange_16_235, MFT_CATEGORY_VIDEO_ENCODER,
+    IMFDXGIBuffer, IMFDXGIDeviceManager, IMFMediaBuffer, IMFMediaType, IMFSample, IMFSinkWriter,
+    IMFSinkWriterEx, IMFTransform, IMFVideoSampleAllocatorEx, MF_E_SAMPLEALLOCATOR_EMPTY,
+    MF_MT_AAC_PAYLOAD_TYPE, MF_MT_ALL_SAMPLES_INDEPENDENT, MF_MT_AUDIO_AVG_BYTES_PER_SECOND,
+    MF_MT_AUDIO_BITS_PER_SAMPLE, MF_MT_AUDIO_BLOCK_ALIGNMENT, MF_MT_AUDIO_NUM_CHANNELS,
+    MF_MT_AUDIO_SAMPLES_PER_SECOND, MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE,
+    MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_MPEG2_PROFILE, MF_MT_PIXEL_ASPECT_RATIO,
+    MF_MT_SUBTYPE, MF_MT_TRANSFER_FUNCTION, MF_MT_VIDEO_NOMINAL_RANGE, MF_MT_VIDEO_PRIMARIES,
+    MF_MT_YUV_MATRIX, MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, MF_SA_D3D11_BINDFLAGS,
+    MF_SINK_WRITER_D3D_MANAGER, MF_TRANSCODE_CONTAINERTYPE, MFAudioFormat_AAC, MFAudioFormat_PCM,
+    MFMediaType_Audio, MFMediaType_Video, MFNominalRange_16_235, MFT_CATEGORY_VIDEO_ENCODER,
     MFT_ENUM_HARDWARE_URL_Attribute, MFT_FRIENDLY_NAME_Attribute, MFTranscodeContainerType_MPEG4,
     MFVideoFormat_H264, MFVideoFormat_NV12, MFVideoInterlace_Progressive, MFVideoPrimaries_BT709,
     MFVideoTransFunc_709, MFVideoTransferMatrix_BT709,
@@ -27,7 +28,7 @@ use windows::core::{GUID, HSTRING, Interface, PCWSTR, PWSTR};
 
 use super::Error;
 use super::audio::{SAMPLE_RATE, frames_hns};
-use super::mf::Mf;
+use crate::mf::{Mf, created};
 
 /// The video stream's settings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,8 +70,12 @@ fn set_guid(a: &IMFAttributes, key: GUID, v: GUID) -> windows::core::Result<()> 
     unsafe { a.SetGUID(&key, &v) }
 }
 
+fn new_attributes(mf: &Mf, size: u32) -> windows::core::Result<IMFAttributes> {
+    created(|p| unsafe { (mf.create_attributes)(p, size) })
+}
+
 fn video_type(mf: &Mf, spec: &VideoSpec, subtype: GUID) -> windows::core::Result<IMFMediaType> {
-    let t = mf.media_type()?;
+    let t: IMFMediaType = created(|p| unsafe { (mf.create_media_type)(p) })?;
     set_guid(&t, MF_MT_MAJOR_TYPE, MFMediaType_Video)?;
     set_guid(&t, MF_MT_SUBTYPE, subtype)?;
     set32(
@@ -93,7 +98,7 @@ fn video_type(mf: &Mf, spec: &VideoSpec, subtype: GUID) -> windows::core::Result
 }
 
 fn audio_type(mf: &Mf, channels: u16, aac: bool) -> windows::core::Result<IMFMediaType> {
-    let t = mf.media_type()?;
+    let t: IMFMediaType = created(|p| unsafe { (mf.create_media_type)(p) })?;
     let ch = channels as u32;
     set_guid(&t, MF_MT_MAJOR_TYPE, MFMediaType_Audio)?;
     set32(&t, MF_MT_AUDIO_BITS_PER_SAMPLE, 16)?;
@@ -215,7 +220,7 @@ impl Encoder {
                 spec.width, spec.height, spec.fps
             ))
         };
-        let attrs = mf.attributes(4).map_err(fail("MFCreateAttributes"))?;
+        let attrs = new_attributes(mf, 4).map_err(fail("MFCreateAttributes"))?;
         set32(
             &attrs,
             MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS,
@@ -231,9 +236,10 @@ impl Encoder {
         unsafe { attrs.SetUnknown(&MF_SINK_WRITER_D3D_MANAGER, manager) }
             .map_err(fail("attributes"))?;
         let url = HSTRING::from(path.as_os_str());
-        let writer = mf
-            .sink_writer(PCWSTR(url.as_ptr()), &attrs)
-            .map_err(fail("MFCreateSinkWriterFromURL"))?;
+        let writer: IMFSinkWriter = created(|p| unsafe {
+            (mf.create_sink_writer)(PCWSTR(url.as_ptr()), null_mut(), attrs.as_raw(), p)
+        })
+        .map_err(fail("MFCreateSinkWriterFromURL"))?;
 
         // Video: H.264 out, NV12 in.
         let out = video_type(mf, spec, MFVideoFormat_H264).map_err(fail("video type"))?;
@@ -242,7 +248,7 @@ impl Encoder {
             .map_err(fail("video type"))?;
         let video = unsafe { writer.AddStream(&out) }.map_err(no_encoder)?;
         let input = video_type(mf, spec, MFVideoFormat_NV12).map_err(fail("video type"))?;
-        let params = mf.attributes(2).map_err(fail("MFCreateAttributes"))?;
+        let params = new_attributes(mf, 2).map_err(fail("MFCreateAttributes"))?;
         set32(
             &params,
             CODECAPI_AVEncCommonRateControlMode,
@@ -269,10 +275,11 @@ impl Encoder {
 
         // NV12 textures the video processor can write and the encoder reads,
         // recycled when the encoder lets go of a sample.
-        let allocator: IMFVideoSampleAllocatorEx = mf
-            .video_sample_allocator()
-            .map_err(fail("MFCreateVideoSampleAllocatorEx"))?;
-        let alloc_attrs = mf.attributes(1).map_err(fail("MFCreateAttributes"))?;
+        let allocator: IMFVideoSampleAllocatorEx = created(|p| unsafe {
+            (mf.create_video_sample_allocator_ex)(&IMFVideoSampleAllocatorEx::IID, p)
+        })
+        .map_err(fail("MFCreateVideoSampleAllocatorEx"))?;
+        let alloc_attrs = new_attributes(mf, 1).map_err(fail("MFCreateAttributes"))?;
         set32(
             &alloc_attrs,
             MF_SA_D3D11_BINDFLAGS,
@@ -365,14 +372,15 @@ impl Encoder {
         let bytes = pcm.len() * 2;
         let frames = (pcm.len() / ch as usize) as u64;
         let write = || -> windows::core::Result<()> {
-            let buffer = self.mf.memory_buffer(bytes as u32)?;
+            let buffer: IMFMediaBuffer =
+                created(|p| unsafe { (self.mf.create_memory_buffer)(bytes as u32, p) })?;
             unsafe {
                 let mut data = std::ptr::null_mut();
                 buffer.Lock(&mut data, None, None)?;
                 std::ptr::copy_nonoverlapping(pcm.as_ptr().cast::<u8>(), data, bytes);
                 buffer.Unlock()?;
                 buffer.SetCurrentLength(bytes as u32)?;
-                let sample = self.mf.sample()?;
+                let sample: IMFSample = created(|p| (self.mf.create_sample)(p))?;
                 sample.AddBuffer(&buffer)?;
                 sample.SetSampleTime(time)?;
                 sample.SetSampleDuration(frames_hns(frames))?;

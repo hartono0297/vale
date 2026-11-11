@@ -16,7 +16,7 @@ use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninit
 use windows::Win32::System::LibraryLoader::{
     GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
 };
-use windows::core::{HRESULT, Interface, PCWSTR, s, w};
+use windows::core::{GUID, HRESULT, Interface, PCWSTR, s, w};
 
 /// What `GetProcAddress` returns (`FARPROC`).
 type Proc = unsafe extern "system" fn() -> isize;
@@ -25,6 +25,9 @@ type ShutdownFn = unsafe extern "system" fn() -> HRESULT;
 type CreateAttributesFn = unsafe extern "system" fn(*mut *mut c_void, u32) -> HRESULT;
 type CreateObjectFn = unsafe extern "system" fn(*mut *mut c_void) -> HRESULT;
 type CreateMemoryBufferFn = unsafe extern "system" fn(u32, *mut *mut c_void) -> HRESULT;
+type CreateDxgiDeviceManagerFn = unsafe extern "system" fn(*mut u32, *mut *mut c_void) -> HRESULT;
+type CreateVideoSampleAllocatorExFn =
+    unsafe extern "system" fn(*const GUID, *mut *mut c_void) -> HRESULT;
 type CreateSinkWriterFn =
     unsafe extern "system" fn(PCWSTR, *mut c_void, *mut c_void, *mut *mut c_void) -> HRESULT;
 type CreateSourceReaderFn =
@@ -39,6 +42,8 @@ pub struct Mf {
     pub create_media_type: CreateObjectFn,
     pub create_sample: CreateObjectFn,
     pub create_memory_buffer: CreateMemoryBufferFn,
+    pub create_dxgi_device_manager: CreateDxgiDeviceManagerFn,
+    pub create_video_sample_allocator_ex: CreateVideoSampleAllocatorExFn,
     pub create_sink_writer: CreateSinkWriterFn,
     pub create_source_reader: CreateSourceReaderFn,
 }
@@ -73,6 +78,16 @@ pub fn mf() -> Option<&'static Mf> {
             create_memory_buffer: std::mem::transmute::<Proc, CreateMemoryBufferFn>(
                 GetProcAddress(plat, s!("MFCreateMemoryBuffer"))?,
             ),
+            create_dxgi_device_manager: std::mem::transmute::<Proc, CreateDxgiDeviceManagerFn>(
+                GetProcAddress(plat, s!("MFCreateDXGIDeviceManager"))?,
+            ),
+            create_video_sample_allocator_ex: std::mem::transmute::<
+                Proc,
+                CreateVideoSampleAllocatorExFn,
+            >(GetProcAddress(
+                plat,
+                s!("MFCreateVideoSampleAllocatorEx"),
+            )?),
             create_sink_writer: std::mem::transmute::<Proc, CreateSinkWriterFn>(GetProcAddress(
                 rw,
                 s!("MFCreateSinkWriterFromURL"),
@@ -146,6 +161,15 @@ mod tests {
     fn media_foundation_loads_once() {
         assert!(mf().is_some());
         assert!(std::ptr::eq(mf().unwrap(), mf().unwrap()));
+    }
+
+    #[test]
+    fn the_video_entry_points_load() {
+        let m = mf().expect("Media Foundation loads");
+        let _ = (
+            m.create_dxgi_device_manager,
+            m.create_video_sample_allocator_ex,
+        );
     }
 
     #[test]
