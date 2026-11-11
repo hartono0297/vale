@@ -7,6 +7,7 @@ mod arrange_win;
 mod audio;
 mod behind;
 mod calendar;
+mod caption_card;
 mod captions;
 mod capture;
 mod claude;

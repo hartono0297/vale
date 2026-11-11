@@ -427,12 +427,20 @@ pub fn home_monitor(r: Rc, monitors: &[Mon]) -> Option<&Mon> {
         .filter(|m| area > 0 && overlap(r, m.rect) * 2 >= area)
 }
 
-/// Where the card goes. The saved rect is used when at least half of it lies
-/// on one monitor (then kept inside the size limits at that monitor's DPI,
-/// its top left staying); otherwise (first open, or the monitor is gone) the
-/// default on `notch`: the right edge 24 dip in from the work area's right,
-/// the top 72 dip below its top, the default size. `None` for no monitors.
-pub fn place(saved: Option<CardPlace>, monitors: &[Mon], notch: Option<Mon>) -> Option<Rc> {
+/// The size limits (min, max) of a card, in dip.
+pub type Limits = ((f32, f32), (f32, f32));
+
+/// Where a card goes. The saved rect is used when at least half of it lies on
+/// one monitor (then kept inside `limits` at that monitor's DPI, its top left
+/// staying); otherwise (first open, or the monitor is gone) `default_rect` of
+/// `notch` (the first monitor when there is none). `None` for no monitors.
+pub fn place_with(
+    saved: Option<CardPlace>,
+    monitors: &[Mon],
+    notch: Option<Mon>,
+    default_rect: impl Fn(&Mon) -> Rc,
+    limits: Limits,
+) -> Option<Rc> {
     if let Some(p) = saved {
         let r = Rc {
             left: p.left,
@@ -442,7 +450,9 @@ pub fn place(saved: Option<CardPlace>, monitors: &[Mon], notch: Option<Mon>) -> 
         };
         if let Some(m) = home_monitor(r, monitors) {
             let k = m.dpi.max(96) as f32 / 96.0;
-            let (w, h) = clamp_size(r.width() as f32 / k, r.height() as f32 / k);
+            let (min, max) = limits;
+            let w = (r.width() as f32 / k).clamp(min.0, max.0);
+            let h = (r.height() as f32 / k).clamp(min.1, max.1);
             return Some(Rc {
                 left: r.left,
                 top: r.top,
@@ -452,20 +462,35 @@ pub fn place(saved: Option<CardPlace>, monitors: &[Mon], notch: Option<Mon>) -> 
         }
     }
     let m = notch.or_else(|| monitors.first().copied())?;
-    let (mut w, mut h) = (px(DEFAULT_W, m.dpi), px(DEFAULT_H, m.dpi));
-    // A small screen: never taller or wider than its work area.
-    w = w.min(m.work.width().max(1));
-    h = h.min(m.work.height().max(1));
-    let right = m.work.right - px(24.0, m.dpi);
-    let top = m.work.top + px(72.0, m.dpi);
-    let left = (right - w).max(m.work.left);
-    let top = top.min((m.work.bottom - h).max(m.work.top));
-    Some(Rc {
-        left,
-        top,
-        right: left + w,
-        bottom: top + h,
-    })
+    Some(default_rect(&m))
+}
+
+/// The lyrics card's place: the saved one, else the default on `notch`: the
+/// right edge 24 dip in from the work area's right, the top 72 dip below its
+/// top, the default size.
+pub fn place(saved: Option<CardPlace>, monitors: &[Mon], notch: Option<Mon>) -> Option<Rc> {
+    place_with(
+        saved,
+        monitors,
+        notch,
+        |m| {
+            let (mut w, mut h) = (px(DEFAULT_W, m.dpi), px(DEFAULT_H, m.dpi));
+            // A small screen: never taller or wider than its work area.
+            w = w.min(m.work.width().max(1));
+            h = h.min(m.work.height().max(1));
+            let right = m.work.right - px(24.0, m.dpi);
+            let top = m.work.top + px(72.0, m.dpi);
+            let left = (right - w).max(m.work.left);
+            let top = top.min((m.work.bottom - h).max(m.work.top));
+            Rc {
+                left,
+                top,
+                right: left + w,
+                bottom: top + h,
+            }
+        },
+        ((MIN_W, MIN_H), (MAX_W, MAX_H)),
+    )
 }
 
 #[cfg(test)]
