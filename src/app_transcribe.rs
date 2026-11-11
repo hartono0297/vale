@@ -267,6 +267,20 @@ pub(super) fn resume_of(model_with_part: Option<&'static Model>, base_part: bool
     }
 }
 
+/// The percent of a download of `target` (`None`: the engine alone) for
+/// someone waiting for `model`: `None` when it brings another model, 0
+/// before its first word.
+pub(super) fn download_percent_for(
+    target: Option<&Model>,
+    progress: Option<Progress>,
+    model: &Model,
+) -> Option<u8> {
+    if target.is_some_and(|m| m.key != model.key) {
+        return None;
+    }
+    Some(progress.map_or(0, |p| (p.permille() / 10).min(100) as u8))
+}
+
 /// Why a transcript job failed, for the notice.
 pub(super) fn job_reason(lang: Lang, e: &RunError) -> String {
     let key = match e {
@@ -498,9 +512,9 @@ impl App {
         }
     }
 
-    /// Whether live captions hold the queue. Stub until captions are wired in.
+    /// Whether live captions hold the queue: while they are on, paused too.
     fn captions_hold(&self) -> bool {
-        false
+        crate::captions::control::holds_queue(&self.cap.ctl)
     }
 
     /// Starts the head of the queue when nothing runs, nothing holds it and
@@ -761,6 +775,8 @@ impl App {
             } else {
                 self.transcribe_settle();
             }
+            // Captions that waited for Transkrip may run.
+            self.captions_sync();
             return;
         }
         if self.tr.queue.clear().is_some()
@@ -772,6 +788,8 @@ impl App {
         self.transcribe_cancel_download();
         self.tr.failed.clear();
         self.transcribe_changed();
+        // Captions use Transkrip's engine and model: they stop and say why.
+        self.captions_sync();
     }
 
     /// Downloads what `model` needs (the engine and the voice model when
@@ -839,6 +857,8 @@ impl App {
         if let Err(e) = self.tr.store.delete_model(model) {
             eprintln!("vale: cannot delete {}: {e}", model.key);
         }
+        // Captions that ran on this model stop and say it is missing.
+        self.captions_sync();
     }
 
     /// Settings' radio: the model new transcripts use.
@@ -907,6 +927,14 @@ impl App {
         }
     }
 
+    /// How far the download in flight is, in percent, when it brings
+    /// `model` or the engine alone; `None` without one (or for another
+    /// model). For the caption card.
+    pub(super) fn transcribe_download_percent(&self, model: &Model) -> Option<u8> {
+        let run = self.tr.download.as_ref()?;
+        download_percent_for(run.model.or(run.then), run.progress, model)
+    }
+
     /// A word of the download thread. One of an older download is ignored.
     /// An open Settings follows each one (the progress, the end).
     pub(super) fn on_transcribe_download(&mut self, id: u64, event: download::Event) {
@@ -917,6 +945,8 @@ impl App {
             if let download::Event::Progress(p) = event {
                 run.progress = Some(p);
                 self.sync_settings();
+                // The caption card's percent.
+                self.captions_sync();
             }
             return;
         };
@@ -976,6 +1006,9 @@ impl App {
         self.sync_settings();
         // A job waiting on this model is now only queued.
         self.transcript_refresh_all();
+        // Captions that waited for the model start; a failed download
+        // puts the button back.
+        self.captions_sync();
     }
 
     /// The queue changed: the file follows, the Rekam rows re-read and an
@@ -1213,6 +1246,21 @@ mod tests {
         let order: Vec<_> = queue.jobs().map(|j| j.audio.to_string_lossy().into_owned()).collect();
         assert_eq!(order, ["old1", "old2", "new"]);
         assert_eq!(queue.jobs().next().map(|j| j.tries), Some(1));
+    }
+
+    #[test]
+    fn the_download_percent_is_only_for_the_model_it_brings() {
+        let [a, b] = [&catalog::MODELS[0], &catalog::MODELS[1]];
+        let half = Some(Progress { done: 50, total: 100 });
+        assert_eq!(download_percent_for(Some(a), half, a), Some(50));
+        // Another model coming in is not what `b` waits for.
+        assert_eq!(download_percent_for(Some(a), half, b), None);
+        // The engine alone is needed whatever the model.
+        assert_eq!(download_percent_for(None, half, b), Some(50));
+        // Before the thread's first word, and at the end.
+        assert_eq!(download_percent_for(Some(a), None, a), Some(0));
+        let all = Some(Progress { done: 100, total: 100 });
+        assert_eq!(download_percent_for(Some(a), all, a), Some(100));
     }
 
     #[test]

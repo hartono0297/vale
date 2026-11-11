@@ -438,6 +438,9 @@ pub enum Event {
     Transcribe(u64, crate::transcribe::runner::Event),
     /// What a model download reported, with the download id (the same).
     TranscribeDownload(u64, crate::transcribe::download::Event),
+    /// What a caption worker's thread reported, with the worker id (the
+    /// same).
+    Captions(u64, crate::captions::worker::Event),
     /// `None` means no media session is active.
     Media(Option<MediaInfo>),
     /// The session's timeline (seek, track change, play/pause); `None` when

@@ -13,11 +13,7 @@
 
 #[cfg(debug_assertions)]
 pub mod demo;
-// Until the island opens the card (the demo does, in debug builds).
-#[cfg_attr(not(debug_assertions), allow(dead_code))]
 pub mod layout;
-// Until the island opens the card (the demo does, in debug builds).
-#[cfg_attr(not(debug_assertions), allow(dead_code))]
 mod window;
 
 use std::sync::Arc;
@@ -63,8 +59,6 @@ impl Msg {
         self as usize
     }
 
-    // Until the island reads the card's messages.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn from_code(code: usize) -> Option<Msg> {
         Some(match code {
             1 => Msg::Close,
@@ -82,8 +76,6 @@ impl Msg {
 
 /// One snapshot of what the card shows. The final lines are `Set` only when
 /// they changed; the grey lines come with every snapshot.
-// Until the island opens the card (the demo does, in debug builds).
-#[cfg_attr(not(debug_assertions), allow(dead_code))]
 #[derive(Clone)]
 pub struct CardContent {
     pub status: CardStatus,
@@ -138,8 +130,6 @@ impl std::fmt::Debug for CardContent {
 }
 
 /// Where the card opens.
-// Until the island opens the card (the demo does, in debug builds).
-#[cfg_attr(not(debug_assertions), allow(dead_code))]
 pub struct OpenArgs {
     /// The island's window, which gets `WM_APP_CAPTION_CARD`.
     pub island: HWND,
@@ -152,22 +142,16 @@ pub struct OpenArgs {
 
 /// Opens the card with `content`. False when it could not (already open, or
 /// no window or target). Shown without activating.
-// Until the island opens the card (the demo does, in debug builds).
-#[cfg_attr(not(debug_assertions), allow(dead_code))]
 pub fn open(args: OpenArgs, content: CardContent) -> bool {
     window::open(args, content)
 }
 
 /// A new snapshot. Does nothing when the card is not open.
-// Until the island opens the card (the demo does, in debug builds).
-#[cfg_attr(not(debug_assertions), allow(dead_code))]
 pub fn update(content: CardContent) {
     window::update(content);
 }
 
 /// Closes the card and frees its window and Direct2D objects.
-// Until the island closes the card.
-#[allow(dead_code)]
 pub fn close() {
     window::close();
 }
@@ -186,8 +170,6 @@ pub fn hwnd() -> Option<HWND> {
 }
 
 /// The rect to save after `Msg::Placed`.
-// Until the island opens the card (the demo does, in debug builds).
-#[cfg_attr(not(debug_assertions), allow(dead_code))]
 pub fn take_placed() -> Option<CardPlace> {
     window::take_placed()
 }

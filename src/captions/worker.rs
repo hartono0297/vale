@@ -100,6 +100,8 @@ pub enum Event {
 pub struct Running {
     cancel: Arc<AtomicBool>,
     wake: mpsc::Sender<Msg>,
+    // Only `stop` waits for it; the island never does.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     thread: Option<JoinHandle<()>>,
 }
 
@@ -116,6 +118,8 @@ impl Running {
     /// `cancel`, then waits for the thread: `Ended` was sent when this
     /// returns. Blocks as long as a model load or the engine call in
     /// progress takes to return.
+    // For the debug CLI and the tests: the island must not block.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     pub fn stop(mut self) {
         self.signal();
         if let Some(thread) = self.thread.take() {
@@ -129,6 +133,8 @@ impl Running {
     }
 
     /// The thread has ended (after `Ended`).
+    // The tests ask.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn is_finished(&self) -> bool {
         self.thread.as_ref().is_none_or(JoinHandle::is_finished)
     }

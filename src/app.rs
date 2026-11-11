@@ -178,6 +178,10 @@ mod transcript_page;
 mod card;
 use card::LyricsCardState;
 
+#[path = "app_captions.rs"]
+mod captions_page;
+use captions_page::CaptionState;
+
 #[path = "app_prtsc.rs"]
 mod prtsc;
 use prtsc::WM_APP_PRTSC;
@@ -614,6 +618,7 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
             phone: PhoneState::default(),
             dock: DockState::default(),
             lyrics_card: LyricsCardState::default(),
+            cap: CaptionState::default(),
             devices: DevicesState::default(),
             arrange: ArrangeState::default(),
             hotkeys: HotkeyState::default(),
@@ -1137,6 +1142,8 @@ struct App {
     dock: DockState,
     /// The floating lyrics card: open for this run only.
     lyrics_card: LyricsCardState,
+    /// Live captions: the session, its worker and its lines (`app_captions`).
+    cap: CaptionState,
     /// The Devices page: the drives, their worker and the page's state
     /// (`app_devices`).
     devices: DevicesState,
@@ -1435,6 +1442,8 @@ impl App {
                     | Event::Screen(..)
                     | Event::Transcribe(..)
                     | Event::TranscribeDownload(..)
+                    // The caption card follows by itself (`captions_flush`).
+                    | Event::Captions(..)
                     // A progress tick draws the receiving view itself, at
                     // most six a second; nothing else changed.
                     | Event::Phone(_, crate::phone::PhoneEvent::UploadProgress { .. })
@@ -1450,6 +1459,8 @@ impl App {
         self.note_cli_output(now);
         // An open transcript window follows its live job once per burst too.
         self.transcript_flush_live();
+        // The caption card follows its worker once per burst as well.
+        self.captions_flush();
         // Only system readings: they drew what they changed (the open
         // System page); a background check must not redraw the island,
         // unless it raised a notice.
@@ -1565,6 +1576,11 @@ impl App {
                 }
                 Event::TranscribeDownload(id, event) => {
                     self.on_transcribe_download(id, event);
+                    continue;
+                }
+                // A caption worker's thread, the same way.
+                Event::Captions(id, event) => {
+                    self.on_captions(id, event);
                     continue;
                 }
                 // The scan knows only what is on disk; the queue's marks go over it.
@@ -3995,6 +4011,9 @@ impl App {
         self.arm_deadline(now);
         self.sync_timers(now);
         self.sync_lyrics_card(now);
+        // The caption card's colours, font and language; nothing while
+        // captions are off, and nothing sent when nothing changed.
+        self.captions_card_sync();
         self.sync_settings();
     }
 
@@ -5653,6 +5672,8 @@ impl App {
             self.bata.energy_saver = saver;
             self.refresh(Instant::now());
         }
+        // Captions stop on battery and go on again on the charger.
+        self.captions_power();
     }
 
     /// Arms hover and leave tracking when the pointer enters; the island
@@ -6235,6 +6256,8 @@ impl App {
         // A hand edit of the language (or the font) reaches an open lyrics
         // card here; nothing is sent when nothing it shows changed.
         self.sync_lyrics_card(Instant::now());
+        // The same for an open caption card.
+        self.captions_card_sync();
     }
 
     /// Puts a changed UI font (from Settings) into effect now: the
@@ -9269,6 +9292,12 @@ unsafe extern "system" fn wnd_proc(
             with_app(|app| app.on_lyrics_card_msg(code, value));
             LRESULT(0)
         }
+        // The caption card, the same way.
+        crate::caption_card::WM_APP_CAPTION_CARD => {
+            let (code, value) = (wparam.0, lparam.0);
+            with_app(|app| app.on_caption_card_msg(code, value));
+            LRESULT(0)
+        }
         // A drive came or went: only an arrival or a removal of a volume or
         // disk starts the pause before a scan. TRUE grants the request.
         WM_DEVICECHANGE => {
@@ -9411,6 +9440,7 @@ unsafe extern "system" fn wnd_proc(
                 with_app(App::screen_shutdown);
                 with_app(App::rec_shutdown);
                 with_app(App::transcribe_shutdown);
+                with_app(App::captions_shutdown);
             }
             LRESULT(0)
         }
@@ -9443,6 +9473,7 @@ unsafe extern "system" fn wnd_proc(
             with_app(App::screen_shutdown);
             with_app(App::rec_shutdown);
             with_app(App::transcribe_shutdown);
+            with_app(App::captions_shutdown);
             unsafe {
                 let _ = WTSUnRegisterSessionNotification(hwnd);
                 let note = DISPLAY_NOTIFY.replace(0);

@@ -979,6 +979,7 @@ impl IslandState {
             | Event::Screen(..)
             | Event::Transcribe(..)
             | Event::TranscribeDownload(..)
+            | Event::Captions(..)
             | Event::Lyrics(_)
             | Event::Cli(_)
             | Event::ExplorerFolders { .. }
