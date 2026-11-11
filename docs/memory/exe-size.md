@@ -343,3 +343,20 @@ controller are all new code; no new crate. Nothing trimmed. See [[screen-recordi
 The zoom camera and ripples were already in phase 3; phase 4 added the wheel
 hook thread, the highlight brush, two settings and a hotkey row. See
 [[screen-recording]].
+
+## Live captions, phase 5 (2026-11-11)
+
+`cargo build --release --locked`, 0 warnings, `main` at 9ea1132 (`git archive`
+into a scratch folder, its own `CARGO_TARGET_DIR`, build 4m37s) against the
+`captions` worktree at 54377fa (3m10s):
+
+| Build | Bytes |
+|---|---|
+| 9ea1132 (main, screen recording phase 4), scratch path | 4,469,760 |
+| 54377fa (live captions), worktree path | 4,557,824 (+88,064, +86 KiB, +1.97 %) |
+
+The embedded PDB path differs (the scratch `target\release\deps` is 129
+characters, the worktree's 71), so up to 512 bytes of the difference are the
+path. The card window, the worker and its engine driver, the notch line, the
+Rekam switch, the Settings card and the strings are all new code, no new
+crate and no new asset. Nothing trimmed. See [[transcript]].
