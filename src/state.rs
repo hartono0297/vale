@@ -595,7 +595,13 @@ impl IslandState {
             }
             Event::RecRecent(list) | Event::RecMarks(list) => self.rec_recent = list,
             Event::VideoRecent(list) | Event::VideoMarks(list) => self.rec_videos = list,
-            Event::ScreenCountdown(n) => self.screen_countdown = n,
+            Event::ScreenCountdown(n) => {
+                let begins = self.screen_countdown.is_none() && n.is_some();
+                self.screen_countdown = n;
+                if begins {
+                    self.yield_to_countdown();
+                }
+            }
             Event::Notice(notice) => match &notice.kind {
                 NoticeKind::ClaudeWaiting { .. }
                 | NoticeKind::Reminder { .. }
@@ -2841,6 +2847,7 @@ impl IslandState {
             }
         }
         if self.current.is_none()
+            && self.queue.front().is_some_and(|n| self.countdown_admits(n))
             && let Some(next) = self.queue.pop_front()
         {
             let expires = now + duration_of(&next);
@@ -2853,6 +2860,31 @@ impl IslandState {
             self.toast_seen = false;
             self.toast_pointer = false;
             self.current = Some((next, expires));
+        }
+    }
+
+    /// The next notice in line may show now: always, except during the
+    /// 3-2-1 before a screen recording, which stays in view for its three
+    /// seconds. Then only a real toast that tucks into the slot beside it
+    /// goes ahead; the rest waits in the queue, in order, until it ends.
+    fn countdown_admits(&self, next: &Notice) -> bool {
+        self.screen_countdown.is_none()
+            || (is_real_toast(next) && self.toast_style == ToastStyle::Compact)
+    }
+
+    /// The 3-2-1 begins over a notice: a real toast tucks into the slot
+    /// beside it with the time it has left (shown whole before or not), and
+    /// any other notice goes back to the head of the queue, to show whole
+    /// once the countdown ends.
+    fn yield_to_countdown(&mut self) {
+        let Some((notice, _)) = &self.current else {
+            return;
+        };
+        if self.countdown_admits(notice) {
+            self.toast_full = false;
+            self.toast_pointer = false;
+        } else if let Some((notice, _)) = self.current.take() {
+            self.queue.push_front(notice);
         }
     }
 
@@ -3030,15 +3062,20 @@ impl IslandState {
                     | View::MediaCompact
                     | View::PomodoroCompact
                     | View::RecordCompact
+                    | View::ScreenCountdown(_)
             )
     }
 
     /// The pointer is on the slot's logo (or still on the island since): the
-    /// full toast shows for as long as it stays. Not latched.
+    /// full toast shows for as long as it stays. Not latched. Never over the
+    /// countdown before a screen recording: its number stays in view.
     fn toast_peeking(&self) -> bool {
         self.toast_pointer
             && self.toast_candidate()
-            && !matches!(self.base_view(), View::Panel(_))
+            && !matches!(
+                self.base_view(),
+                View::Panel(_) | View::ScreenCountdown(_)
+            )
     }
 
     /// The current real toast is tucked (a strip or a slot), the view being
@@ -3098,6 +3135,7 @@ impl IslandState {
                     | View::MediaLyric
                     | View::PomodoroCompact
                     | View::RecordCompact
+                    | View::ScreenCountdown(_)
             )
     }
 
@@ -10624,6 +10662,98 @@ mod tests {
             s.apply(Event::ScreenCountdown(None), t0 + secs(3));
             assert_eq!(s.view(), View::Idle, "{mode:?}: nothing was latched");
         }
+    }
+
+    /// A real Windows toast that arrives during the 3-2-1 takes the small
+    /// slot beside it, as beside the REC view: the countdown stays in view.
+    #[test]
+    fn a_toast_during_the_countdown_takes_the_slot() {
+        let t0 = Instant::now();
+        let toast = toast_notice("t1", "Ibu");
+        let mut s = st();
+        s.apply(Event::ScreenCountdown(Some(3)), t0);
+        s.apply(Event::Notice(toast.clone()), t0);
+        assert_eq!(s.view(), View::ScreenCountdown(3));
+        assert_eq!(s.toast_form(), Some(ToastForm::Slot));
+        assert_eq!(s.toast_slot(), Some(&toast));
+        // The pointer on the logo does not peek: the toast never covers the
+        // number.
+        s.apply(Event::ToastPointer(true), t0);
+        assert_eq!(s.view(), View::ScreenCountdown(3));
+        assert_eq!(s.toast_slot(), Some(&toast));
+        // The next number keeps the slot; the toast runs its own time.
+        s.apply(Event::ToastPointer(false), t0);
+        s.apply(Event::ScreenCountdown(Some(2)), t0 + secs(1));
+        assert_eq!(s.view(), View::ScreenCountdown(2));
+        assert_eq!(s.toast_slot(), Some(&toast));
+
+        // A toast that already showed whole when the countdown began tucks
+        // into the slot and keeps the time it had.
+        let mut s = st();
+        s.apply(Event::Notice(toast.clone()), t0);
+        assert_eq!(s.view(), View::Notice(toast.clone()));
+        s.apply(Event::ScreenCountdown(Some(3)), t0 + secs(1));
+        assert_eq!(s.view(), View::ScreenCountdown(3));
+        assert_eq!(s.toast_slot(), Some(&toast));
+        assert_eq!(s.next_deadline(), Some(t0 + NOTICE_DURATION));
+    }
+
+    /// Island notices (and a toast that would show whole) wait while the
+    /// 3-2-1 runs and show once it ends, with their full time; none is lost.
+    #[test]
+    fn notices_wait_for_the_countdown_to_end() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::ScreenCountdown(Some(3)), t0);
+        s.apply(Event::Notice(greeting()), t0);
+        s.apply(Event::Notice(plain_notice("b")), t0);
+        assert_eq!(s.view(), View::ScreenCountdown(3));
+        // No deadline spins while they wait.
+        assert_eq!(s.next_deadline(), None);
+        for (n, at) in [(2, 1), (1, 2)] {
+            s.apply(Event::ScreenCountdown(Some(n)), t0 + secs(at));
+            assert_eq!(s.view(), View::ScreenCountdown(n));
+        }
+        // It ends: the first shows, timed from now, then the second.
+        let end = t0 + secs(3);
+        s.apply(Event::ScreenCountdown(None), end);
+        assert_eq!(s.view(), View::Notice(greeting()));
+        s.apply(Event::Tick, end + GREETING_DURATION);
+        assert_eq!(s.view(), View::Notice(plain_notice("b")));
+
+        // A notice on screen when the countdown begins gives way and comes
+        // back after it, whole.
+        let mut s = st();
+        s.apply(Event::Notice(plain_notice("a")), t0);
+        assert_eq!(s.view(), View::Notice(plain_notice("a")));
+        s.apply(Event::ScreenCountdown(Some(3)), t0 + secs(1));
+        assert_eq!(s.view(), View::ScreenCountdown(3));
+        s.apply(Event::Tick, t0 + NOTICE_DURATION + secs(1));
+        assert_eq!(s.view(), View::ScreenCountdown(3));
+        let end = t0 + NOTICE_DURATION + secs(2);
+        s.apply(Event::ScreenCountdown(None), end);
+        assert_eq!(s.view(), View::Notice(plain_notice("a")));
+        assert_eq!(s.next_deadline(), Some(end + NOTICE_DURATION));
+
+        // A toast behind a waiting notice keeps its place in the line, and
+        // the Full style's toast waits like an island notice.
+        let toast = toast_notice("t1", "Ibu");
+        let mut s = st();
+        s.apply(Event::ScreenCountdown(Some(3)), t0);
+        s.apply(Event::Notice(plain_notice("a")), t0);
+        s.apply(Event::Notice(toast.clone()), t0);
+        assert_eq!(s.view(), View::ScreenCountdown(3));
+        assert!(s.toast_slot().is_none(), "the older notice goes first");
+        s.apply(Event::ScreenCountdown(None), t0 + secs(3));
+        assert_eq!(s.view(), View::Notice(plain_notice("a")));
+        let mut s = st();
+        s.apply(Event::ToastStyle(ToastStyle::Full), t0);
+        s.apply(Event::ScreenCountdown(Some(3)), t0);
+        s.apply(Event::Notice(toast.clone()), t0);
+        assert_eq!(s.view(), View::ScreenCountdown(3));
+        assert!(s.toast_slot().is_none());
+        s.apply(Event::ScreenCountdown(None), t0 + secs(3));
+        assert_eq!(s.view(), View::Notice(toast));
     }
 
     #[test]

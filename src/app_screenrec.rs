@@ -8,6 +8,7 @@
 
 use super::App;
 use crate::clipboard::image::Thumb;
+use crate::ui::render::VideoThumbView;
 
 /// Where a screen recording stands.
 // The phases past `Idle` are entered from Task 12 on.
@@ -56,12 +57,18 @@ pub(super) struct ScreenState {
     phase: ScreenPhase,
     /// The newest saved video's thumbnail and the id its notice names
     /// (`NoticeKind::RecSaved::thumb`).
-    // Filled from Task 12 on, drawn from Task 10 on.
-    #[allow(dead_code)]
+    // Filled from Task 12 on.
     thumb: Option<(u64, Thumb)>,
 }
 
 impl ScreenState {
+    /// The newest saved video's thumbnail, for the notice that names it.
+    pub(super) fn video_notice(&self) -> Option<VideoThumbView<'_>> {
+        self.thumb
+            .as_ref()
+            .map(|(id, thumb)| VideoThumbView { id: *id, thumb })
+    }
+
     // Asked from Task 12 on.
     #[allow(dead_code)]
     pub(super) fn busy(&self) -> bool {

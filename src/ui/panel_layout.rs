@@ -4026,6 +4026,47 @@ pub fn rec_mute_regions(s: ShapeRect, l: &RecLayout, sources: RecSources) -> Vec
     regions
 }
 
+/// The sources whose level group the closed REC view of a screen recording
+/// shows: the mic only (PC audio is muted from the Rekam page).
+pub fn screen_compact_sources(s: RecSources) -> RecSources {
+    RecSources {
+        mic: s.mic,
+        system: false,
+    }
+}
+
+/// Air between the REC view's clock and the word after it.
+pub const REC_WORD_GAP: f32 = 6.0;
+
+/// The box of a word that follows the REC view's clock ("dijeda", the
+/// countdown's hint): `REC_WORD_GAP` after the clock's real width `lead_w`,
+/// not its box, up to the right inset.
+pub fn rec_word_slot(l: &RecLayout, lead_w: f32) -> Rect {
+    word_slot(l, lead_w, l.label.right())
+}
+
+/// `rec_word_slot` ending at `right`; empty when the clock leaves no room.
+fn word_slot(l: &RecLayout, lead_w: f32, right: f32) -> Rect {
+    let x = (l.time.x + lead_w.ceil() + REC_WORD_GAP).min(right);
+    Rect {
+        x,
+        w: right - x,
+        ..l.label
+    }
+}
+
+/// The box of "Layar" on a screen recording's REC view: after the clock as
+/// `rec_word_slot`, ending a meter gap before the mic's meter when the mic
+/// records (`mic`), else at the right inset.
+pub fn screen_label_slot(l: &RecLayout, clock_w: f32, mic: bool) -> Rect {
+    let right = if mic {
+        l.system.x - REC_METER_GAP
+    } else {
+        l.label.right()
+    };
+    word_slot(l, clock_w, right)
+}
+
 /// The Rekam page's header as measured: the title, the "Buka folder" link
 /// and the "Transkrip file lain..." link in its long and short form.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -7893,6 +7934,66 @@ mod tests {
                     // Four bars fit their meter.
                     let bars = REC_BARS as f32 * REC_BAR_W + (REC_BARS - 1) as f32 * REC_BAR_GAP;
                     assert!(bars <= REC_METER_W + 1e-3);
+                }
+            }
+        }
+    }
+
+    /// A screen recording's notch shows the mic group alone, at the far
+    /// right, and "Layar" keeps clear of it.
+    #[test]
+    fn the_screen_view_keeps_only_the_mic_group() {
+        use crate::ui::geometry::shape_with_robot_sized;
+        let both = RecSources { mic: true, system: true };
+        let mic_only = RecSources { mic: true, system: false };
+        let system_only = RecSources { mic: false, system: true };
+        let none = RecSources { mic: false, system: false };
+        assert_eq!(screen_compact_sources(both), mic_only);
+        assert_eq!(screen_compact_sources(mic_only), mic_only);
+        assert_eq!(screen_compact_sources(system_only), none);
+        assert_eq!(screen_compact_sources(none), none);
+        for style in [Style::Pill, Style::Notch] {
+            for size in spread() {
+                for robot in [false, true] {
+                    let tag = format!("{style:?} {size:?} robot {robot}");
+                    let s = shape_with_robot_sized(style, size, ShapeKind::RecordCompact, robot);
+                    let l = record_compact_layout(s, robot);
+                    let regions = rec_mute_regions(s, &l, screen_compact_sources(both));
+                    assert_eq!(regions.len(), 1, "{tag}");
+                    assert_eq!(regions[0].hit, Hit::RecMuteCompact(Source::Mic), "{tag}");
+                    assert!(
+                        regions[0]
+                            .rect
+                            .contains(l.system.x + l.system.w / 2.0, s.y + s.h / 2.0),
+                        "{tag}: over the far-right meter"
+                    );
+                    // No mic recorded: nothing to click.
+                    assert!(
+                        rec_mute_regions(s, &l, screen_compact_sources(system_only)).is_empty(),
+                        "{tag}"
+                    );
+                    // "Layar" starts 6 dip after the clock's real width and
+                    // ends a meter gap before the mic's meter, or at the
+                    // right inset without one.
+                    let with_mic = screen_label_slot(&l, 30.2, true);
+                    assert_eq!(with_mic.x, l.time.x + 31.0 + 6.0, "{tag}");
+                    assert!(
+                        (with_mic.right() - (l.system.x - REC_METER_GAP)).abs() < 1e-3,
+                        "{tag}"
+                    );
+                    assert!(with_mic.right() <= regions[0].rect.x + 1e-3, "{tag}");
+                    let alone = screen_label_slot(&l, 30.2, false);
+                    assert_eq!(alone.x, with_mic.x, "{tag}");
+                    assert!((alone.right() - l.label.right()).abs() < 1e-3, "{tag}");
+                    assert_eq!((alone.y, alone.h), (l.label.y, l.label.h), "{tag}");
+                    // The word after the clock (paused, the countdown's
+                    // hint): the same start, to the right inset.
+                    assert_eq!(rec_word_slot(&l, 30.2), alone, "{tag}");
+                    // A clock wider than the room leaves an empty box, never
+                    // a negative one.
+                    let full = screen_label_slot(&l, 4096.0, true);
+                    assert_eq!(full.w, 0.0, "{tag}");
+                    assert!(full.x <= l.label.right(), "{tag}");
                 }
             }
         }

@@ -77,7 +77,7 @@ use crate::i18n::{self, Key, tr};
 use crate::identify_overlay;
 use crate::lyrics::{self, DiskCache, LyricsState, LyricsWorker, Query};
 use crate::media_log;
-use crate::model::{Effect, Event, Hit, Notice, NoticeKind, Page, RecSources, View};
+use crate::model::{Effect, Event, Hit, Notice, NoticeKind, Page, RecKind, RecSources, View};
 use crate::mole::{self, Confirmed, MoleEvent, MoleOpts, MoleWorker};
 use crate::notch_monitor::{self, Display};
 use crate::notes::NotesStore;
@@ -6677,7 +6677,8 @@ impl App {
                 View::MediaCompact
                 | View::MediaLyric
                 | View::PomodoroCompact
-                | View::RecordCompact,
+                | View::RecordCompact
+                | View::ScreenCountdown(_),
                 true,
             ) => {
                 self.slot_share.at(&self.anim, now)
@@ -6833,6 +6834,7 @@ impl App {
                 system: rec_levels.1,
                 muted: r.muted,
                 hot: state.rec_mute_hot(),
+                screen: r.kind == RecKind::Screen,
             }),
             now,
             today: state.today(),
@@ -6945,6 +6947,7 @@ impl App {
             cleaner: cleaner.as_ref(),
             shot: shot::shot_view(&self.shots, &self.drawn),
             clip_notice: clip::clip_notice_view(&self.clip.history, &self.drawn),
+            video_notice: self.screen.video_notice(),
             toast_logo: notif_page::toast_logo_view(&self.notif.logos, &self.drawn),
             toast_slot_w,
             toast_slot: self

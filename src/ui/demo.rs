@@ -189,7 +189,7 @@ use super::motion::{
 };
 use super::notch_fill::{self, fill_alpha};
 use super::render::{
-    CleanerView, CliView, ClipNoticeView, ClipView, DevicesView, FolderMenuView, Frame, MoleView, RecFrame, RecordView,
+    CleanerView, CliView, ClipNoticeView, ClipView, DevicesView, FolderMenuView, Frame, MoleView, RecFrame, RecordView, VideoThumbView,
     NoticeCloseView, NotifView, Progress, Renderer, RobotFrame, SearchView, SheetKind, ShotView,
     SystemView, ToastBadgeView, ToastLogoView,
 };
@@ -473,8 +473,6 @@ struct DemoRec {
     /// The source whose level group the pointer is on.
     hot: Option<Source>,
     /// A screen recording, not an audio one.
-    // The notch says so from Task 10 on (`RecFrame.screen`).
-    #[allow(dead_code)]
     screen: bool,
 }
 
@@ -761,6 +759,17 @@ const fn screen_rec_scene(name: &'static str, paused: bool) -> Scene {
     }
 }
 
+/// The 3-2-1 before a screen recording, on 3, with Bata.
+const fn countdown_scene(name: &'static str) -> Scene {
+    Scene {
+        name,
+        kind: ShapeKind::RecordCompact,
+        view: View0::ScreenCountdown(3),
+        robot: Some(Expr::Focus),
+        ..BASE
+    }
+}
+
 /// The REC view with the pointer on `hot`'s level group: its pill shows.
 const fn rec_hot_scene(name: &'static str, muted: [bool; 2], hot: Source) -> Scene {
     Scene {
@@ -971,7 +980,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 191] = [
+const SCENES: [Scene; 196] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -997,15 +1006,27 @@ const SCENES: [Scene; 191] = [
     rec_hot_scene("rec-hover-mic", [false; 2], Source::Mic),
     rec_hot_scene("rec-hover-mic-muted", [true, false], Source::Mic),
     // A screen recording in the notch, running and paused, and the 3-2-1
-    // that leads to it (it takes the REC view's shape).
+    // that leads to it (it takes the REC view's shape); each also without
+    // Bata. `screen-countdown-toast` has a toast's logo in the slot beside
+    // the countdown.
     screen_rec_scene("screen-rec", false),
+    Scene {
+        robot: None,
+        ..screen_rec_scene("screen-rec-plain", false)
+    },
     screen_rec_scene("screen-rec-paused", true),
     Scene {
-        name: "screen-countdown",
-        kind: ShapeKind::RecordCompact,
-        view: View0::ScreenCountdown(3),
-        robot: Some(Expr::Focus),
-        ..BASE
+        robot: None,
+        ..screen_rec_scene("screen-rec-paused-plain", true)
+    },
+    countdown_scene("screen-countdown"),
+    Scene {
+        robot: None,
+        ..countdown_scene("screen-countdown-plain")
+    },
+    Scene {
+        slot: true,
+        ..countdown_scene("screen-countdown-toast")
     },
     // The Rekam page (section 2): recording both sources, and idle with the
     // last three recordings.
@@ -1470,12 +1491,15 @@ const SCENES: [Scene; 191] = [
         View0::Notice(DemoNotice::RecSavedSetup),
         Expr::Happy,
     ),
+    // The saved video: its thumbnail takes the badge spot, with Bata on or
+    // off.
     bata(
         "video-saved",
         ShapeKind::Notice,
         View0::Notice(DemoNotice::VideoSaved),
         Expr::Happy,
     ),
+    notice("video-saved-plain", DemoNotice::VideoSaved),
     bata(
         "transcript-ready",
         ShapeKind::Notice,
@@ -2119,6 +2143,8 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
     let shot_thumb = demo_shot_thumb();
     // The copied picture of `clipboard-notice-image`: the clipboard demo's.
     let clip_thumb = demo_thumb();
+    // The saved video of `video-saved`.
+    let video_thumb = demo_video_thumb();
     let today = Local::now().date_naive();
     let name = |var| std::env::var(var).unwrap_or_default();
     // `DI_CAT_COLOR`, `DI_CAT_ACCESSORY` and `DI_SURFACE` apply to every
@@ -2474,6 +2500,7 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                     system: r.system_level,
                     muted: r.muted,
                     hot: r.hot,
+                    screen: r.screen,
                 }),
                 now,
                 today,
@@ -2626,6 +2653,12 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                     ClipNoticeView {
                         id: DEMO_CLIP_PREVIEW,
                         thumb: &clip_thumb,
+                    },
+                ),
+                video_notice: (scene.view == View0::Notice(DemoNotice::VideoSaved)).then_some(
+                    VideoThumbView {
+                        id: DEMO_VIDEO,
+                        thumb: &video_thumb,
                     },
                 ),
                 toast_logo,
@@ -2983,8 +3016,6 @@ const DEMO_VIDEO: u64 = 1;
 
 /// Its picture: a diagonal gradient #2F4858 → #C9542B at 120 × 68, a 16:9
 /// video fitted to the thumbnail box. Never a real frame.
-// Drawn from Task 10 on (`Frame.video_notice`).
-#[allow(dead_code)]
 fn demo_video_thumb() -> Thumb {
     let (w, h) = (120u32, 68u32);
     let mut bgra = Vec::with_capacity((w * h * 4) as usize);

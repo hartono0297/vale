@@ -74,7 +74,7 @@ use crate::ui::panel_layout::{
     cli_layout, cli_suggestions, clipboard_layout, device_shapes, devices_layout,
     media_hits_for, media_panel_layout, media_progress_layout, mixer_layout, mole_layout, mole_log_rows,
     mole_log_skip, notes_layout, notif_layout, page_dots, pomodoro_compact_layout,
-    pomodoro_compact_layout_robot, pomodoro_layout, record_compact_layout, rec_meter_heights, rec_mute_regions, record_layout, RecordHead, RecordLayout, regions, REC_BAR_GAP, REC_BAR_W, reminders_layout, search_layout,
+    pomodoro_compact_layout_robot, pomodoro_layout, record_compact_layout, rec_meter_heights, rec_mute_regions, rec_word_slot, record_layout, screen_compact_sources, screen_label_slot, RecordHead, RecordLayout, regions, REC_BAR_GAP, REC_BAR_W, reminders_layout, search_layout,
     settings_button, shelf_card_layout, shelf_layout, shelf_phone_tag, shortcuts_layout,
     system_layout, tile_parts, update_strip_parts, volume_hud_layout, waiting_strip,
 };
@@ -4932,7 +4932,8 @@ impl Renderer {
 
     /// The REC view: a red dot with a soft halo (ochre while paused), the
     /// clock, and one level meter per source; paused, "dijeda" takes the
-    /// meters' place. Bata at the left as for the pomodoro.
+    /// meters' place. Bata at the left as for the pomodoro. A screen
+    /// recording says "Layar" after the clock and keeps the mic's meter only.
     pub(super) fn paint_record_compact(&mut self, shape: ShapeRect, frame: &Frame) -> Result<()> {
         let Some(rec) = frame.rec else {
             return Ok(());
@@ -4971,25 +4972,27 @@ impl Renderer {
         let clock = rec_clock(rec.elapsed);
         if rec.paused {
             self.text_colored(&clock, &self.fonts.title, l.time, self.palette.ochre, 1.0);
-            // "dijeda" sits 6 dip after the clock's real width, not its box.
-            let gap = self.text_width(&clock, &self.fonts.title).ceil() + 6.0;
-            let x = (l.time.x + gap).min(l.label.right());
-            let label = Rect {
-                x,
-                w: (l.label.right() - x).max(0.0),
-                ..l.label
-            };
+            let label = rec_word_slot(&l, self.text_width(&clock, &self.fonts.title));
             self.text2(text(i18n::lang(), Key::Paused), &self.fonts.eleven, label);
             return Ok(());
         }
         self.text(&clock, &self.fonts.title, l.time, 1.0);
+        let sources = if rec.screen {
+            let shown = screen_compact_sources(rec.sources);
+            let clock_w = self.text_width(&clock, &self.fonts.title);
+            let label = screen_label_slot(&l, clock_w, shown.mic);
+            self.text2(text(i18n::lang(), Key::ScreenLabel), &self.fonts.eleven, label);
+            shown
+        } else {
+            rec.sources
+        };
         // One source shows only its meter, at the far right.
         let (mic_at, system_at) = (
-            if rec.sources.system { l.mic } else { l.system },
+            if sources.system { l.mic } else { l.system },
             l.system,
         );
         let hot = |source| rec.hot == Some(source);
-        if rec.sources.mic {
+        if sources.mic {
             if hot(Source::Mic) {
                 self.rec_mute_pill(mic_at, Icon::Mic, Icon::MicOff, REC_MIC_TINT, rec.muted[0]);
             } else if rec.muted[0] {
@@ -4998,7 +5001,7 @@ impl Renderer {
                 self.rec_meter(mic_at, rec.mic, REC_MIC_TINT);
             }
         }
-        if rec.sources.system {
+        if sources.system {
             if hot(Source::System) {
                 let sage = self.palette.sage;
                 self.rec_mute_pill(system_at, Icon::Volume, Icon::VolumeMute, sage, rec.muted[1]);
@@ -5012,8 +5015,48 @@ impl Renderer {
         // panel: registered here, only because they are drawn.
         self.regions
             .regions
-            .extend(rec_mute_regions(shape, &l, rec.sources));
+            .extend(rec_mute_regions(shape, &l, sources));
         Ok(())
+    }
+
+    /// The 3-2-1 before a screen recording, in the REC view's layout: a
+    /// hollow red ring where the dot will be (the halo round it kept), the
+    /// number in the clock's place and "Esc untuk batal" after it. Nothing
+    /// in it takes a click.
+    pub(super) fn paint_screen_countdown(&mut self, shape: ShapeRect, frame: &Frame, n: u8) {
+        let l = record_compact_layout(shape, frame.robot.is_some());
+        if let (Some(slot), Some(robot)) = (l.robot, frame.robot) {
+            self.paint_robot(slot, robot);
+        }
+        let (centre, r) = l.dot;
+        // Both are strokes, so the middle stays the island's own fill: the
+        // halo from the dot's edge out, the ring from the edge in.
+        let halo = COUNTDOWN_HALO;
+        self.stroke_circle(centre, r + halo / 2.0, halo, theme::REC_RED, 0.25);
+        let ring = COUNTDOWN_RING;
+        self.stroke_circle(centre, r - ring / 2.0, ring, theme::REC_RED, 1.0);
+        let numeral = n.to_string();
+        self.text(&numeral, &self.fonts.title, l.time, 1.0);
+        let hint = rec_word_slot(&l, self.text_width(&numeral, &self.fonts.title));
+        self.text2(
+            text(i18n::lang(), Key::ScreenCountdownEsc),
+            &self.fonts.eleven,
+            hint,
+        );
+    }
+
+    /// A circle's outline, `stroke` wide, centred on radius `r`.
+    fn stroke_circle(&self, (cx, cy): (f32, f32), r: f32, stroke: f32, rgb: u32, alpha: f32) {
+        let target = self.target.as_ref().expect("target ensured by paint");
+        let ellipse = D2D1_ELLIPSE {
+            point: Vector2::new(cx, cy),
+            radiusX: r,
+            radiusY: r,
+        };
+        unsafe {
+            target.brush.SetColor(&color(rgb, alpha));
+            target.rt.DrawEllipse(&ellipse, &target.brush, stroke, None);
+        }
     }
 
     /// A hot level group: a soft pill with the source's icon in the place of
@@ -5425,6 +5468,10 @@ const REC_MUTE_PILL_W: f32 = 24.0;
 const REC_MUTE_PILL_H: f32 = 22.0;
 const REC_MUTE_PILL_R: f32 = 8.0;
 const REC_MUTE_GLYPH: f32 = 16.0;
+/// The countdown's ring: its stroke, drawn inward from the REC dot's edge,
+/// and the halo's, drawn outward from it (as far as the dot's halo reaches).
+const COUNTDOWN_RING: f32 = 2.0;
+const COUNTDOWN_HALO: f32 = 3.0;
 /// A device line on the Rekam page: its source glyph and its chevron.
 const REC_DEVICE_GLYPH: f32 = 12.0;
 const REC_CHEVRON: f32 = 10.0;
@@ -6950,6 +6997,121 @@ mod tests {
                     };
                     for lang in [Lang::Id, Lang::En] {
                         ink_fits(&r, text(lang, Key::Paused), &r.fonts.eleven, label);
+                    }
+                }
+            }
+        }
+    }
+
+    /// A screen recording's "Layar" / "Screen" fits whole between the clock
+    /// and the mic's meter for the first hour ("59:59") at the default notch
+    /// size, in both fonts, with and without Bata, placed as
+    /// `paint_record_compact` places it.
+    #[test]
+    fn the_screen_label_fits_beside_the_clock_in_both_fonts() {
+        use crate::ui::fonts;
+        use crate::ui::geometry::{NotchSize, shape_with_robot_sized};
+        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+
+        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let mut r = Renderer::new().expect("renderer");
+        if !fonts::embedded(&r.dwrite).loaded.jetbrains_mono {
+            eprintln!("skipped: the embedded fonts are not in this binary");
+            return;
+        }
+        let clock = rec_clock(Duration::from_secs(59 * 60 + 59));
+        assert_eq!(clock, "59:59");
+        for ui in [UiFont::Sans, UiFont::Mono] {
+            r.set_ui_font(ui).expect("font");
+            for style in [Style::Pill, Style::Notch] {
+                for robot in [false, true] {
+                    let s = shape_with_robot_sized(
+                        style,
+                        NotchSize::DEFAULT,
+                        ShapeKind::RecordCompact,
+                        robot,
+                    );
+                    let l = record_compact_layout(s, robot);
+                    let clock_w = r.text_width(&clock, &r.fonts.title);
+                    for mic in [true, false] {
+                        let slot = screen_label_slot(&l, clock_w, mic);
+                        for lang in [Lang::Id, Lang::En] {
+                            ink_fits(&r, text(lang, Key::ScreenLabel), &r.fonts.eleven, slot);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The countdown's "Esc untuk batal" / "Esc to cancel" fits whole after
+    /// the numeral at the default notch size in both fonts; where the room
+    /// is shorter (the narrowest notch with a toast's slot beside it) its box
+    /// stays inside the shape and the format cuts it with an ellipsis.
+    #[test]
+    fn the_countdown_hint_fits_or_ellipsizes() {
+        use crate::ui::fonts;
+        use crate::ui::geometry::{
+            COMPACT_INSET, NOTCH_H_MIN, NOTCH_W_MIN, NotchSize, TOAST_SLOT_EXTRA,
+            shape_with_robot_sized, toast_slot_parts, with_toast_slot,
+        };
+        use windows::Win32::Graphics::DirectWrite::{
+            DWRITE_TRIMMING, DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+        };
+        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+
+        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let mut r = Renderer::new().expect("renderer");
+        if !fonts::embedded(&r.dwrite).loaded.jetbrains_mono {
+            eprintln!("skipped: the embedded fonts are not in this binary");
+            return;
+        }
+        let smallest = NotchSize::from_px(NOTCH_W_MIN, NOTCH_H_MIN);
+        for ui in [UiFont::Sans, UiFont::Mono] {
+            r.set_ui_font(ui).expect("font");
+            // What does not fit is cut with "…", never clipped mid-letter.
+            let mut trimming = DWRITE_TRIMMING::default();
+            let mut sign = None;
+            unsafe { r.fonts.eleven.GetTrimming(&mut trimming, &mut sign) }.expect("trimming");
+            assert_eq!(trimming.granularity, DWRITE_TRIMMING_GRANULARITY_CHARACTER);
+            assert!(sign.is_some(), "an ellipsis sign");
+            // Tabular figures: the hint does not move as 3 turns to 2 and 1.
+            let widths = ["3", "2", "1"].map(|n| r.text_width(n, &r.fonts.title));
+            assert!(widths.iter().all(|w| *w == widths[0]), "{widths:?}");
+            for style in [Style::Pill, Style::Notch] {
+                for robot in [false, true] {
+                    for size in [NotchSize::DEFAULT, smallest] {
+                        for slot in [false, true] {
+                            let tag =
+                                format!("{ui:?} {style:?} robot {robot} {size:?} slot {slot}");
+                            let whole = shape_with_robot_sized(
+                                style,
+                                size,
+                                ShapeKind::RecordCompact,
+                                robot,
+                            );
+                            // Beside a toast's logo the view is laid out on
+                            // what the slot leaves, as in `paint`.
+                            let s = if slot {
+                                let wide = with_toast_slot(whole);
+                                toast_slot_parts(wide, wide.w - TOAST_SLOT_EXTRA).0
+                            } else {
+                                whole
+                            };
+                            let l = record_compact_layout(s, robot);
+                            let hint = rec_word_slot(&l, widths[0]);
+                            assert!(hint.x >= l.time.x + widths[0], "{tag}");
+                            assert!(hint.right() <= s.x + s.w - COMPACT_INSET + 1e-3, "{tag}");
+                            for lang in [Lang::Id, Lang::En] {
+                                let words = text(lang, Key::ScreenCountdownEsc);
+                                if size == NotchSize::DEFAULT {
+                                    ink_fits(&r, words, &r.fonts.eleven, hint);
+                                } else if r.text_width(words, &r.fonts.eleven) > hint.w {
+                                    // Cut, but with room for a word of it.
+                                    assert!(hint.w >= 60.0, "{tag}: {}", hint.w);
+                                }
+                            }
+                        }
                     }
                 }
             }

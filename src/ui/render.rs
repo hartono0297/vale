@@ -125,6 +125,8 @@ pub struct RecFrame {
     pub muted: [bool; 2],
     /// The source whose level group the pointer is on (its pill shows).
     pub hot: Option<crate::recorder::Source>,
+    /// A screen recording: "Layar" after the clock, the mic's group only.
+    pub screen: bool,
 }
 
 /// Everything a frame draws besides the shape: the view and the data behind it.
@@ -256,6 +258,10 @@ pub struct Frame<'a> {
     /// The copied image's thumbnail for a `ClipPreview` notice; `None` for
     /// text and files, or when the entry is gone (then the Clipboard badge).
     pub clip_notice: Option<ClipNoticeView<'a>>,
+    /// The saved video's thumbnail for a `RecSaved` notice that names it;
+    /// `None` for an audio recording, or when no frame could be read (then
+    /// Bata or the badge).
+    pub video_notice: Option<VideoThumbView<'a>>,
     /// The app's logo for a notice made from a real Windows toast; `None` for
     /// every other notice, or when no logo is known (then the letter badge).
     pub toast_logo: Option<ToastLogoView<'a>>,
@@ -299,6 +305,56 @@ pub struct ClipNoticeView<'a> {
     /// The history entry's id (the notice's `id`, and the bitmap cache's key).
     pub id: u64,
     pub thumb: &'a Thumb,
+}
+
+/// What a saved video's notice draws in its badge spot
+/// (`NoticeKind::RecSaved` with a `thumb`): the video's thumbnail,
+/// cover-cropped to the badge.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VideoThumbView<'a> {
+    /// The thumbnail's id (the notice's `thumb`, and the bitmap cache's key).
+    pub id: u64,
+    pub thumb: &'a Thumb,
+}
+
+/// The thumbnail a notice of `kind` draws: `view` when it is the saved
+/// video the notice names, else none (an audio recording, another video,
+/// any other notice).
+pub fn video_thumb_for<'a>(
+    kind: &NoticeKind,
+    view: Option<VideoThumbView<'a>>,
+) -> Option<VideoThumbView<'a>> {
+    match kind {
+        NoticeKind::RecSaved {
+            thumb: Some(id), ..
+        } => view.filter(|v| v.id == *id),
+        _ => None,
+    }
+}
+
+/// The picture in a notice's badge spot, when the notice names one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum NoticeThumb<'a> {
+    /// A copied image (`NoticeKind::ClipPreview`).
+    Clip(ClipNoticeView<'a>),
+    /// A saved video (`NoticeKind::RecSaved`).
+    Video(VideoThumbView<'a>),
+}
+
+impl<'a> NoticeThumb<'a> {
+    /// The picture the notice of `kind` names among the frame's two.
+    fn of(
+        kind: &NoticeKind,
+        clip: Option<ClipNoticeView<'a>>,
+        video: Option<VideoThumbView<'a>>,
+    ) -> Option<Self> {
+        match (kind, clip) {
+            (NoticeKind::ClipPreview { id }, Some(view)) if view.id == *id => {
+                Some(Self::Clip(view))
+            }
+            _ => video_thumb_for(kind, video).map(Self::Video),
+        }
+    }
 }
 
 /// A busy toast's small badge (the slot beside a compact view, the panel's
@@ -760,6 +816,9 @@ pub struct Renderer {
     arrange_icons: std::cell::RefCell<Vec<(String, ID2D1Bitmap)>>,
     /// The screenshot preview's thumbnail as a bitmap, by screenshot id.
     shot_thumb: std::cell::RefCell<Option<(u64, ID2D1Bitmap)>>,
+    /// The saved video's thumbnail as a bitmap of the current target, by
+    /// its id: one entry, replaced by the next video's.
+    video_thumb: std::cell::RefCell<Option<(u64, ID2D1Bitmap)>>,
     /// While a compact view's content fades in with its morph, Bata is not
     /// part of the fade: `paint_robot` keeps where it goes here, and
     /// `paint_island` draws it at full alpha once the faded layer is popped.
@@ -1025,6 +1084,7 @@ impl Renderer {
                 search_icons: std::cell::RefCell::new(Vec::new()),
                 arrange_icons: std::cell::RefCell::new(Vec::new()),
                 shot_thumb: std::cell::RefCell::new(None),
+                video_thumb: std::cell::RefCell::new(None),
                 robot_later: std::cell::Cell::new(None),
                 legible: std::cell::Cell::new(0.0),
                 cat: std::cell::Cell::new(CatLook::default()),
@@ -1129,6 +1189,7 @@ impl Renderer {
         self.search_icons.borrow_mut().clear();
         self.arrange_icons.borrow_mut().clear();
         self.shot_thumb.borrow_mut().take();
+        self.video_thumb.borrow_mut().take();
         self.regions = HitRegions::default();
     }
 
@@ -2096,6 +2157,7 @@ impl Renderer {
             | View::MediaLyric
             | View::PomodoroCompact
             | View::RecordCompact
+            | View::ScreenCountdown(_)
                 if frame.toast_slot_w > 0.0 =>
             {
                 Some(toast_slot_parts(shape, shape.w - frame.toast_slot_w))
@@ -2115,6 +2177,10 @@ impl Renderer {
             }
             View::PomodoroCompact => self.paint_pomodoro_compact(body, frame),
             View::RecordCompact => self.paint_record_compact(body, frame),
+            View::ScreenCountdown(n) => {
+                self.paint_screen_countdown(body, frame, *n);
+                Ok(())
+            }
             // A pomodoro notice shows while the next phase waits (Ready).
             View::Notice(notice) => match (&notice.kind, frame.shot) {
                 (NoticeKind::Screenshot { shot, .. }, Some(view)) if view.id == *shot => {
@@ -2131,7 +2197,7 @@ impl Renderer {
                     notice,
                     frame.pomodoro,
                     robot,
-                    frame.clip_notice,
+                    NoticeThumb::of(&notice.kind, frame.clip_notice, frame.video_notice),
                     frame.toast_logo,
                     frame.notice_close,
                 ),
@@ -2159,9 +2225,8 @@ impl Renderer {
                 }
                 Ok(())
             }
-            // The panel returned above. The countdown has the REC view's
-            // shape and nothing in it yet.
-            View::Panel(_) | View::Hidden | View::ScreenCountdown(_) => Ok(()),
+            // The panel returned above.
+            View::Panel(_) | View::Hidden => Ok(()),
         };
         if faded {
             let target = self.target.as_ref().expect("target ensured by paint");
@@ -2205,6 +2270,7 @@ impl Renderer {
                     | View::MediaLyric
                     | View::PomodoroCompact
                     | View::RecordCompact
+                    | View::ScreenCountdown(_)
             )
         {
             let ((cx, cy), r) = toast_dot(shape);
@@ -2551,7 +2617,7 @@ impl Renderer {
         notice: &Notice,
         pomo: &Pomodoro,
         robot: Option<RobotFrame>,
-        clip: Option<ClipNoticeView>,
+        thumb: Option<NoticeThumb>,
         toast_logo: Option<ToastLogoView>,
         close: Option<NoticeCloseView>,
     ) -> Result<()> {
@@ -2592,13 +2658,11 @@ impl Renderer {
             None => (notice_layout_with(shape, action_w, closable), None),
         };
         let badge = badge_style(notice, &p, next);
-        // A copied image: its thumbnail takes the badge spot, never Bata.
-        let thumb = match (&notice.kind, clip) {
-            (NoticeKind::ClipPreview { id }, Some(view)) if view.id == *id => Some(view),
-            _ => None,
-        };
+        // A copied image or a saved video: its thumbnail takes the badge
+        // spot, never Bata.
         let thumb_drawn = match thumb {
-            Some(view) => self.paint_clip_notice_thumb(layout.badge, view)?,
+            Some(NoticeThumb::Clip(view)) => self.paint_clip_notice_thumb(layout.badge, view)?,
+            Some(NoticeThumb::Video(view)) => self.paint_video_notice_thumb(layout.badge, view)?,
             None => false,
         };
         match robot {
@@ -2876,6 +2940,40 @@ impl Renderer {
                 cache.remove(0);
             }
         }
+        self.fill_badge_cover(area, &bitmap)?;
+        Ok(true)
+    }
+
+    /// A saved video's thumbnail in the notice's badge spot, cover-cropped
+    /// like a copied image's. Its bitmap is made once per video and kept
+    /// until the next one's (`video_thumb`).
+    /// False when the pixels are unreadable: the caller draws Bata or the
+    /// badge.
+    fn paint_video_notice_thumb(&self, area: Rect, view: VideoThumbView) -> Result<bool> {
+        let cached = self
+            .video_thumb
+            .borrow()
+            .as_ref()
+            .filter(|(id, _)| *id == view.id)
+            .map(|(_, b)| b.clone());
+        let bitmap = match cached {
+            Some(bitmap) => bitmap,
+            None => {
+                let Some(bitmap) = self.thumb_bitmap(view.thumb)? else {
+                    return Ok(false);
+                };
+                *self.video_thumb.borrow_mut() = Some((view.id, bitmap.clone()));
+                bitmap
+            }
+        };
+        self.fill_badge_cover(area, &bitmap)?;
+        Ok(true)
+    }
+
+    /// `bitmap` cover-cropped into the badge spot `area` (the short side
+    /// fills the square, the long one is centred) with the badge's rounded
+    /// corners.
+    fn fill_badge_cover(&self, area: Rect, bitmap: &ID2D1Bitmap) -> Result<()> {
         let target = self.target.as_ref().expect("target ensured by paint");
         unsafe {
             let D2D_SIZE_F { width, height } = bitmap.GetSize();
@@ -2888,7 +2986,7 @@ impl Renderer {
                 M31: area.x + (area.w - width * k) / 2.0,
                 M32: area.y + (area.h - height * k) / 2.0,
             };
-            let brush = target.rt.CreateBitmapBrush(&bitmap, None, None)?;
+            let brush = target.rt.CreateBitmapBrush(bitmap, None, None)?;
             brush.SetTransform(&transform);
             let brush: ID2D1Brush = brush.cast()?;
             target.rt.FillRoundedRectangle(
@@ -2900,7 +2998,7 @@ impl Renderer {
                 &brush,
             );
         }
-        Ok(true)
+        Ok(())
     }
 
     /// The screenshot preview (keputusan-v3.1 p6): the thumbnail at the
@@ -3767,6 +3865,30 @@ fn color(rgb: u32, alpha: f32) -> D2D1_COLOR_F {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn video_thumb_view_matches_only_its_notice() {
+        use crate::model::TranscriptOffer;
+        let thumb = Thumb {
+            w: 2,
+            h: 1,
+            bgra: vec![0; 8],
+        };
+        let view = Some(VideoThumbView {
+            id: 7,
+            thumb: &thumb,
+        });
+        let saved = |thumb| NoticeKind::RecSaved {
+            path: r"C:\v\a.mp4".into(),
+            offer: TranscriptOffer::None,
+            thumb,
+        };
+        assert_eq!(video_thumb_for(&saved(Some(7)), view), view);
+        assert_eq!(video_thumb_for(&saved(Some(8)), view), None, "another video");
+        assert_eq!(video_thumb_for(&saved(None), view), None, "an audio recording");
+        assert_eq!(video_thumb_for(&NoticeKind::ClipPreview { id: 7 }, view), None);
+        assert_eq!(video_thumb_for(&saved(Some(7)), None), None, "the thumbnail is gone");
+    }
 
     #[test]
     fn mix_blends_each_channel() {
