@@ -76,8 +76,8 @@ gimana"); those are marked **(builder's call, made here)**.
   area at its pixel size (track C's minimum video size rule stays); H.264 with
   the hardware encoder when present, software fallback; bitrate from track
   C's `plan::bitrate`.
-- **Audio in the video:** one AAC stereo track, mic and PC audio **mixed** into
-  both ears (unlike the meeting `.m4a`, which keeps them on separate
+- **Audio in the video:** one AAC track, mic and PC audio **mixed** into
+  both ears (mono, see below) (unlike the meeting `.m4a`, which keeps them on separate
   channels). Mute, the device choice and echo cancellation from phase 1 apply
   unchanged, through the recorder's capture API that track C consumes.
 - **Transcript of a video:** the existing queue takes `.mp4` jobs (decode the
