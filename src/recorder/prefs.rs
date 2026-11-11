@@ -1,8 +1,8 @@
 //! The recorder's settings, kept in config.json under `recording`. Read
 //! leniently like `widgets`: a missing key or a wrong type gives that
 //! field's default, a non-object gives all of them, and the rest of the file
-//! always loads. The screen recording's two settings (`video_folder`,
-//! `video_fps`) live in the same section.
+//! always loads. The screen recording's settings (`video_folder`,
+//! `video_fps`, `cursor_highlight`, `click_ripples`) live in the same section.
 
 use std::path::{Path, PathBuf};
 
@@ -32,6 +32,10 @@ pub struct RecordingPrefs {
     pub video_folder: Option<PathBuf>,
     /// The screen recording's frame rate: 30 or 60.
     pub video_fps: u32,
+    /// A soft yellow circle around the cursor in a screen recording.
+    pub cursor_highlight: bool,
+    /// A ring that spreads from every click in a screen recording.
+    pub click_ripples: bool,
 }
 
 impl Default for RecordingPrefs {
@@ -48,6 +52,8 @@ impl Default for RecordingPrefs {
             echo_cancel: true,
             video_folder: None,
             video_fps: 30,
+            cursor_highlight: true,
+            click_ripples: true,
         }
     }
 }
@@ -89,6 +95,14 @@ impl RecordingPrefs {
                 Some(60) => 60,
                 _ => d.video_fps,
             },
+            cursor_highlight: map
+                .get("cursor_highlight")
+                .and_then(Value::as_bool)
+                .unwrap_or(d.cursor_highlight),
+            click_ripples: map
+                .get("click_ripples")
+                .and_then(Value::as_bool)
+                .unwrap_or(d.click_ripples),
         }
     }
 
@@ -187,7 +201,7 @@ pub fn folder_label(dir: &Path) -> String {
 impl Serialize for RecordingPrefs {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
-        let mut map = s.serialize_map(Some(8))?;
+        let mut map = s.serialize_map(Some(10))?;
         map.serialize_entry(
             "sources",
             &serde_json::json!({"mic": self.sources.mic, "system": self.sources.system}),
@@ -202,6 +216,8 @@ impl Serialize for RecordingPrefs {
             &self.video_folder.as_ref().map(|p| p.to_string_lossy()),
         )?;
         map.serialize_entry("video_fps", &self.video_fps)?;
+        map.serialize_entry("cursor_highlight", &self.cursor_highlight)?;
+        map.serialize_entry("click_ripples", &self.click_ripples)?;
         map.end()
     }
 }
@@ -317,6 +333,26 @@ mod tests {
         assert!(!p.echo_cancel && p.consent_shown);
         let v = serde_json::to_value(RecordingPrefs::default()).unwrap();
         assert_eq!(v["echo_cancel"], json!(true));
+    }
+
+    #[test]
+    fn the_cursor_effects_are_on_by_default_and_read_alone() {
+        let d = RecordingPrefs::default();
+        assert!(d.cursor_highlight && d.click_ripples);
+        let p = RecordingPrefs::from_json(&json!({"cursor_highlight": false, "click_ripples": false}));
+        assert!(!p.cursor_highlight && !p.click_ripples);
+        let p = RecordingPrefs::from_json(&json!({"cursor_highlight": "no", "click_ripples": 1}));
+        assert!(p.cursor_highlight && p.click_ripples, "a wrong type reads as the default");
+        let p = RecordingPrefs::from_json(&json!({"click_ripples": false}));
+        assert!(p.cursor_highlight && !p.click_ripples);
+        let off = RecordingPrefs {
+            cursor_highlight: false,
+            click_ripples: false,
+            ..RecordingPrefs::default()
+        };
+        let v = serde_json::to_value(&off).unwrap();
+        assert_eq!(v["cursor_highlight"], json!(false));
+        assert_eq!(RecordingPrefs::from_json(&v), off);
     }
 
     #[test]

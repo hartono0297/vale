@@ -1364,6 +1364,8 @@ mod tests {
                 echo_cancel: false,
                 video_folder: Some(std::path::PathBuf::from(r"E:\Vid")),
                 video_fps: 60,
+                cursor_highlight: false,
+                click_ripples: false,
             },
             transcript: crate::transcribe::prefs::TranscriptPrefs {
                 enabled: true,

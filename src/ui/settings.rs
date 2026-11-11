@@ -197,6 +197,9 @@ pub enum Action {
     VideoFolder(Option<std::path::PathBuf>),
     /// The screen recordings' frame rate: 30 or 60.
     VideoFps(u32),
+    /// The cursor highlight and click ripple switches of a screen recording.
+    CursorHighlight(bool),
+    ClickRipples(bool),
     /// The device of a source: an endpoint id, `None` to follow Windows.
     RecDevice(Source, Option<String>),
     /// The mic echo cancellation switch.
@@ -374,6 +377,8 @@ fn screen_click(prefs: &RecordingPrefs, hit: Hit) -> Option<Vec<After>> {
     Some(match hit {
         Hit::VideoFps(fps) if fps != prefs.video_fps => vec![After::Post(Action::VideoFps(fps))],
         Hit::VideoFps(_) => Vec::new(),
+        Hit::CursorHighlight => vec![After::Post(Action::CursorHighlight(!prefs.cursor_highlight))],
+        Hit::ClickRipples => vec![After::Post(Action::ClickRipples(!prefs.click_ripples))],
         Hit::VideoFolderOpen => vec![After::OpenFolder(prefs.video_dir())],
         Hit::VideoFolderChange => vec![After::PickVideoFolder],
         _ => return None,
@@ -2565,7 +2570,11 @@ impl Settings {
             Hit::RecFolderOpen => vec![After::OpenFolder(m.recording.dir())],
             Hit::RecFolderChange => vec![After::PickRecFolder],
             Hit::RecDevice(source) => self.device_menu_after(source),
-            Hit::VideoFps(_) | Hit::VideoFolderOpen | Hit::VideoFolderChange => {
+            Hit::VideoFps(_)
+            | Hit::CursorHighlight
+            | Hit::ClickRipples
+            | Hit::VideoFolderOpen
+            | Hit::VideoFolderChange => {
                 screen_click(&m.recording, hit).unwrap_or_default()
             }
             Hit::TranscriptEnabled
@@ -4566,6 +4575,8 @@ pub fn run_demo(args: &[String]) {
             Action::RecFolder(v) => m.recording.folder = v,
             Action::VideoFolder(v) => m.recording.video_folder = v,
             Action::VideoFps(v) => m.recording.video_fps = v,
+            Action::CursorHighlight(v) => m.recording.cursor_highlight = v,
+            Action::ClickRipples(v) => m.recording.click_ripples = v,
             Action::RecDevice(source, id) => m.recording.set_device(source, id),
             Action::RecEchoCancel(v) => m.recording.echo_cancel = v,
             // The picked file belongs to the island: nothing in the window.
@@ -4939,6 +4950,32 @@ mod tests {
         assert_eq!(screen_click(&at(30), Hit::VideoFps(30)), Some(Vec::new()));
         // Not this card's: left to the rest of `on_click`.
         assert_eq!(screen_click(&at(30), Hit::RecFolderOpen), None);
+    }
+
+    #[test]
+    fn the_cursor_effect_switches_post_the_opposite_of_their_pref() {
+        let on = RecordingPrefs::default();
+        let off = RecordingPrefs {
+            cursor_highlight: false,
+            click_ripples: false,
+            ..RecordingPrefs::default()
+        };
+        assert_eq!(
+            screen_click(&on, Hit::CursorHighlight),
+            Some(vec![After::Post(Action::CursorHighlight(false))])
+        );
+        assert_eq!(
+            screen_click(&on, Hit::ClickRipples),
+            Some(vec![After::Post(Action::ClickRipples(false))])
+        );
+        assert_eq!(
+            screen_click(&off, Hit::CursorHighlight),
+            Some(vec![After::Post(Action::CursorHighlight(true))])
+        );
+        assert_eq!(
+            screen_click(&off, Hit::ClickRipples),
+            Some(vec![After::Post(Action::ClickRipples(true))])
+        );
     }
 
     #[test]

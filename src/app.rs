@@ -6511,6 +6511,14 @@ impl App {
             SettingsAction::RecFolder(dir) => self.rec_set_folder(dir),
             SettingsAction::VideoFolder(dir) => self.screen_set_folder(dir),
             SettingsAction::VideoFps(fps) => self.screen_set_fps(fps),
+            SettingsAction::CursorHighlight(on) => {
+                self.config.recording.cursor_highlight = on;
+                self.save_config();
+            }
+            SettingsAction::ClickRipples(on) => {
+                self.config.recording.click_ripples = on;
+                self.save_config();
+            }
             SettingsAction::TranscribeFile(path) => self.transcribe_file(path),
             SettingsAction::RecEchoCancel(on) => {
                 self.config.recording.echo_cancel = on;

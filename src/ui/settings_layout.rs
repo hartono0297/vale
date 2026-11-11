@@ -454,6 +454,9 @@ pub enum Hit {
     VideoFps(u32),
     VideoFolderOpen,
     VideoFolderChange,
+    /// Fitur -> Rekam layar: the cursor highlight and click ripples switches.
+    CursorHighlight,
+    ClickRipples,
     /// Fitur -> Rekaman: "Ganti" on the mic row or the PC audio row, which
     /// opens the device menu.
     RecDevice(Source),
@@ -4590,12 +4593,12 @@ fn recording_card(b: &mut Builder, s: &State) {
     b.row_text(card, rows[4], b.t(Key::RecSettingsFolder), desc, false, x);
 }
 
-/// "Rekam layar" (Fitur): the frame rate of a screen recording and the
-/// folder the videos go to. (The hotkey is in the Tombol pintas section.)
+/// "Rekam layar" (Fitur): the frame rate of a screen recording, the cursor
+/// highlight and click ripples switches, and the folder the videos go to. (The hotkey is in the Tombol pintas section.)
 fn screen_card(b: &mut Builder, s: &State) {
     titled(b, Key::ScreenSettingsTitle);
-    let card = b.card(2.0 * ROW_H);
-    let rows = [card.y, card.y + ROW_H];
+    let card = b.card(4.0 * ROW_H);
+    let rows = [0.0, 1.0, 2.0, 3.0].map(|i| card.y + i * ROW_H);
     let cy = |y: f32| y + ROW_H / 2.0;
     let items = VIDEO_FPS_CHOICES
         .map(|fps| (Hit::VideoFps(fps), fps.to_string()))
@@ -4606,6 +4609,28 @@ fn screen_card(b: &mut Builder, s: &State) {
     b.row_text(card, rows[0], b.t(Key::ScreenSettingsFps), desc, false, x);
     b.divider(card, rows[1]);
 
+    let switches = [
+        (
+            Hit::CursorHighlight,
+            s.recording.cursor_highlight,
+            Key::ScreenSettingsHighlight,
+            Key::ScreenSettingsHighlightDesc,
+        ),
+        (
+            Hit::ClickRipples,
+            s.recording.click_ripples,
+            Key::ScreenSettingsRipples,
+            Key::ScreenSettingsRipplesDesc,
+        ),
+    ];
+    for (i, (hit, on, title, desc)) in switches.into_iter().enumerate() {
+        let row = rows[1 + i];
+        let x = b.toggle(hit, b.g.right, cy(row), on);
+        let desc = Some((b.t(desc), Tone::Secondary));
+        b.row_text(card, row, b.t(title), desc, false, x);
+        b.divider(card, rows[2 + i]);
+    }
+
     let (open, change) = (b.t(Key::RecSettingsOpen), b.t(Key::RecSettingsChange));
     let (open_w, change_w) = (
         b.button_w(&[&open], ButtonKind::Secondary),
@@ -4613,7 +4638,7 @@ fn screen_card(b: &mut Builder, s: &State) {
     );
     let x = b.buttons(
         b.g.right,
-        cy(rows[1]),
+        cy(rows[3]),
         vec![
             (Hit::VideoFolderOpen, open, ButtonKind::Secondary, true, open_w),
             (Hit::VideoFolderChange, change, ButtonKind::Secondary, true, change_w),
@@ -4625,7 +4650,7 @@ fn screen_card(b: &mut Builder, s: &State) {
         .as_deref()
         .map_or_else(|| VIDEO_DEFAULT_FOLDER.to_owned(), rec_folder_label);
     let desc = Some((folder, Tone::Secondary));
-    b.row_text(card, rows[1], b.t(Key::ScreenSettingsFolder), desc, false, x);
+    b.row_text(card, rows[3], b.t(Key::ScreenSettingsFolder), desc, false, x);
 }
 
 /// The languages of Transkrip's Bahasa, in the control's order.
@@ -9223,7 +9248,7 @@ mod tests {
     }
 
     #[test]
-    fn the_screen_card_has_fps_and_folder() {
+    fn the_screen_card_has_fps_the_two_switches_and_the_folder() {
         for lang in [Lang::Id, Lang::En] {
             for (i, fps) in VIDEO_FPS_CHOICES.into_iter().enumerate() {
                 let s = State {
@@ -9250,7 +9275,7 @@ mod tests {
                 // Its own two-row card under its label, right after
                 // "Rekaman", before "Transkrip" and "Pembersih".
                 let card = l.cards[l.cards.len() - 3];
-                assert_eq!(card.h, 2.0 * ROW_H);
+                assert_eq!(card.h, 4.0 * ROW_H);
                 for key in [
                     Key::ScreenSettingsFps,
                     Key::ScreenSettingsFpsDesc,
@@ -9271,8 +9296,26 @@ mod tests {
                     hits.iter().find(|(h, _)| *h == Hit::VideoFolderChange).expect("Ganti").1,
                 );
                 assert!(open.right() <= change.x, "Buka left of Ganti");
-                assert!(open.y >= card.y + ROW_H && change.bottom() <= card.bottom());
+                assert!(open.y >= card.y + 3.0 * ROW_H && change.bottom() <= card.bottom());
                 assert!(change.right() <= card.right());
+                // The two switches sit in rows 2 and 3, between the frame rate
+                // and the folder.
+                let toggle = |hit: Hit| {
+                    hits.iter().find(|(h, _)| *h == hit).expect("a switch").1
+                };
+                let (hl, rp) = (toggle(Hit::CursorHighlight), toggle(Hit::ClickRipples));
+                assert!(hl.y >= card.y + ROW_H && hl.bottom() <= card.y + 2.0 * ROW_H);
+                assert!(rp.y >= card.y + 2.0 * ROW_H && rp.bottom() <= card.y + 3.0 * ROW_H);
+                assert!(open.y >= card.y + 3.0 * ROW_H);
+                assert!(hl.right() <= card.right() && rp.right() <= card.right());
+                for key in [
+                    Key::ScreenSettingsHighlight,
+                    Key::ScreenSettingsHighlightDesc,
+                    Key::ScreenSettingsRipples,
+                    Key::ScreenSettingsRipplesDesc,
+                ] {
+                    assert!(l.texts.iter().any(|t| t.text == text(lang, key)), "{lang:?} {key:?}");
+                }
             }
         }
         // No folder chosen: the default's label, and 30 selected.

@@ -464,6 +464,8 @@ struct StartJob {
     /// The endpoint each source starts on, `[mic, system]`.
     devices: [Option<String>; 2],
     echo_cancel: bool,
+    /// The cursor effects, as set when the recording started.
+    effects: CursorEffects,
 }
 
 /// What the `screen-start` thread hands back.
@@ -507,10 +509,7 @@ fn start_recording(
         job.fps,
         job.sources,
         &job.title,
-        CursorEffects {
-            highlight: true,
-            ripples: true,
-        },
+        job.effects,
     );
     let recorder = match ScreenRecorder::start(job.target, &path, options, Some(on_end)) {
         Ok(recorder) => recorder,
@@ -773,6 +772,10 @@ impl App {
                 recording.system_device.clone(),
             ],
             echo_cancel: recording.echo_cancel,
+            effects: CursorEffects {
+                highlight: recording.cursor_highlight,
+                ripples: recording.click_ripples,
+            },
         };
         let say = self.screen_poster(session);
         let on_end: Box<dyn Fn() + Send> = Box::new({

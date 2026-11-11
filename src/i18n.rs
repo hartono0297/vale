@@ -687,6 +687,10 @@ keys! {
     ScreenSettingsFps => "Gambar per detik", "Frames per second";
     ScreenSettingsFpsDesc => "60 lebih halus, filenya lebih besar", "60 is smoother, the files are bigger";
     ScreenSettingsFolder => "Folder video", "Video folder";
+    ScreenSettingsHighlight => "Sorot kursor", "Highlight the cursor";
+    ScreenSettingsHighlightDesc => "Lingkaran kuning lembut di kursor dalam video", "A soft yellow circle around the cursor in the video";
+    ScreenSettingsRipples => "Riak klik", "Click ripples";
+    ScreenSettingsRipplesDesc => "Lingkaran yang melebar di video tiap kamu klik", "A ring spreads in the video on every click";
     ScreenSettingsPickTitle => "Pilih folder video", "Choose the video folder";
     RecDeviceFrom => "Suara PC dari", "PC audio from";
     RecEchoCancel => "Peredam gema mic", "Mic echo cancellation";
@@ -4008,6 +4012,18 @@ mod tests {
             (Key::ScreenDiscard, "Buang", "Discard"),
             (Key::ScreenDiscardSure, "Yakin buang?", "Discard it?"),
             (Key::ScreenNoVideos, "Belum ada video", "No videos yet"),
+            (Key::ScreenSettingsHighlight, "Sorot kursor", "Highlight the cursor"),
+            (
+                Key::ScreenSettingsHighlightDesc,
+                "Lingkaran kuning lembut di kursor dalam video",
+                "A soft yellow circle around the cursor in the video",
+            ),
+            (Key::ScreenSettingsRipples, "Riak klik", "Click ripples"),
+            (
+                Key::ScreenSettingsRipplesDesc,
+                "Lingkaran yang melebar di video tiap kamu klik",
+                "A ring spreads in the video on every click",
+            ),
         ];
         for (key, id, en) in table {
             assert_eq!(text(Lang::Id, key), id, "{key:?}");
