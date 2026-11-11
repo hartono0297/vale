@@ -157,6 +157,18 @@ pub fn frames_hns(frames: u64) -> i64 {
     (frames as i128 * 10_000_000 / SAMPLE_RATE as i128) as i64
 }
 
+// Wired into the screen recorder by the next task.
+#[cfg_attr(not(test), allow(dead_code))]
+/// Feeds the recorder's mono mix ([`crate::recorder::Recorder::start_mix`])
+/// into a screen recording.
+pub struct Forward(pub std::sync::Arc<dyn AudioInput>);
+
+impl crate::recorder::mix::MixSink for Forward {
+    fn mix(&mut self, mono: &[f32], qpc_hns: i64) {
+        self.0.push_audio(mono, 1, SAMPLE_RATE, qpc_hns);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,5 +220,22 @@ mod tests {
         c.reset();
         assert_eq!(c.place(50_000_000, 480), 50_000_000);
         assert_eq!(frames_hns(48_000), 10_000_000);
+    }
+
+    #[test]
+    fn forward_pushes_mono_at_48k() {
+        use crate::recorder::mix::MixSink;
+        use std::sync::Arc;
+        #[derive(Default)]
+        struct Spy(Mutex<Vec<(usize, u16, u32, i64)>>);
+        impl AudioInput for Spy {
+            fn push_audio(&self, frames: &[f32], channels: u16, rate: u32, qpc_hns: i64) {
+                self.0.lock().unwrap().push((frames.len(), channels, rate, qpc_hns));
+            }
+        }
+        let spy = Arc::new(Spy::default());
+        let mut f = Forward(spy.clone());
+        f.mix(&[0.0; 480], 7);
+        assert_eq!(*spy.0.lock().unwrap(), [(480, 1, 48_000, 7)]);
     }
 }

@@ -17,6 +17,11 @@
 //!   more than 2 s passed since the last one (the PC slept; QPC runs on
 //!   through sleep) cuts that time out like a pause.
 //!
+//! [`Recorder::start_mix`] is the same capture, lanes, placer, mute and
+//! meters with a `rec-mix` thread instead of `rec-writer`: it pushes the
+//! mono [`mix`] to a [`mix::MixSink`] and writes no file (the screen
+//! recorder's audio).
+//!
 //! Neither exists before [`Recorder::start`] or after [`Recorder::stop`]
 //! returns, and no timer is created: the writer paces itself with a channel
 //! receive timeout. When every recorded source is lost the capture thread
@@ -26,6 +31,7 @@ pub mod capture;
 pub mod devices;
 pub mod encode;
 pub mod level;
+pub mod mix;
 pub mod naming;
 pub mod prefs;
 pub mod resample;
@@ -490,11 +496,14 @@ impl Placer {
     /// The writer ticked at raw frame `last` and again at `now`: more than
     /// 2 s between them means the PC slept (QPC counts on through sleep),
     /// and that span is cut out like a pause, unless a pause is open anyway.
-    pub fn bridge(&mut self, last: i64, now: i64) {
+    /// Says whether it cut.
+    pub fn bridge(&mut self, last: i64, now: i64) -> bool {
         if now - last > SLEEP_GAP_FRAMES && !self.timeline.paused() {
             self.timeline.pause_at(last);
             self.timeline.resume_at(now);
+            return true;
         }
+        false
     }
 
     /// Frames taken so far that held a sample of some source.
@@ -635,6 +644,8 @@ pub struct Recorder {
     paused_total: Duration,
     feed: Option<Box<dyn Feed>>,
     writer: Option<(Sender<Msg>, Writer)>,
+    /// A mix recording: no file, and pauses mean nothing.
+    mix: bool,
 }
 
 /// The writer thread, which returns the outcome.
@@ -764,12 +775,89 @@ impl Recorder {
             paused_total: Duration::ZERO,
             feed: Some(feed),
             writer: Some((tx, writer)),
+            mix: false,
         })
     }
 
-    /// Pauses: the audio from now until `resume` is left out of the file.
+    // Wired into the screen recorder by the next task.
+    #[allow(dead_code)]
+    /// Like [`Recorder::start`], but nothing is written: the sources are
+    /// mixed into mono and pushed to `sink`. See [`mix`].
+    pub fn start_mix(
+        opts: mix::MixOptions,
+        sink: Box<dyn mix::MixSink>,
+        events: Box<dyn Fn(RecEvent) + Send>,
+    ) -> Result<Recorder, RecError> {
+        let choices = Arc::new(Mutex::new(capture::ChoiceSet::new(opts.devices.clone())));
+        let echo_cancel = opts.echo_cancel;
+        Self::start_mix_with(opts, sink, events, |sources, audio| {
+            Capture::start(sources, choices, echo_cancel, audio).map(|c| Box::new(c) as Box<dyn Feed>)
+        })
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn start_mix_with(
+        opts: mix::MixOptions,
+        sink: Box<dyn mix::MixSink>,
+        events: Box<dyn Fn(RecEvent) + Send>,
+        open: impl FnOnce(Sources, Box<dyn AudioSink>) -> Result<Box<dyn Feed>, CaptureError>,
+    ) -> Result<Recorder, RecError> {
+        if !opts.sources.any() {
+            return Err(RecError::NoSources);
+        }
+        let origin = qpc_now();
+        let placer = Arc::new(Mutex::new(Placer::new(opts.sources, origin)));
+        let levels = Arc::new(SharedLevels::new());
+        let muted = Arc::new(Muted::default());
+        let (tx, rx) = mpsc::channel();
+        let writer = {
+            let placer = Arc::clone(&placer);
+            let levels = Arc::clone(&levels);
+            let sources = opts.sources;
+            std::thread::Builder::new()
+                .name("rec-mix".into())
+                .spawn(move || {
+                    mix_main(sources, origin as i64, sink, &placer, &levels, &rx, events)
+                })
+                .map_err(|e| RecError::Thread(format!("no mix thread: {e}")))?
+        };
+        let started = Instant::now();
+        let audio = Box::new(Sink {
+            lanes: Lanes::new(opts.sources, origin),
+            placer: Arc::clone(&placer),
+            levels: Arc::clone(&levels),
+            muted: Arc::clone(&muted),
+            tx: tx.clone(),
+        });
+        let feed = match open(opts.sources, audio) {
+            Ok(feed) => feed,
+            Err(e) => {
+                let _ = tx.send(Msg::Abort);
+                let _ = writer.join();
+                return Err(RecError::Capture(e));
+            }
+        };
+        let _ = tx.send(Msg::Go);
+        Ok(Recorder {
+            path: PathBuf::new(),
+            #[cfg(any(test, debug_assertions))]
+            container: Container::Fragmented,
+            placer,
+            levels,
+            muted,
+            started,
+            paused_since: None,
+            paused_total: Duration::ZERO,
+            feed: Some(feed),
+            writer: Some((tx, writer)),
+            mix: true,
+        })
+    }
+
+    /// Pauses: the audio from now until `resume` is left out of the file. A
+    /// mix recording ignores it (the screen recorder drops paused audio).
     pub fn pause(&mut self) {
-        if self.paused_since.is_some() {
+        if self.mix || self.paused_since.is_some() {
             return;
         }
         let p = &mut *lock(&self.placer);
@@ -779,6 +867,9 @@ impl Recorder {
     }
 
     pub fn resume(&mut self) {
+        if self.mix {
+            return;
+        }
         let Some(since) = self.paused_since.take() else {
             return;
         };
@@ -922,8 +1013,7 @@ fn write_main(
                 channels: u64::from(channels),
                 written: 0,
                 last_tick: None,
-                recorded: sources.list(),
-                gone: [false; 2],
+                losses: Losses::new(sources),
             };
             let outcome = w.run(&meta, placer, levels, rx, &*events);
             match &outcome {
@@ -945,6 +1035,49 @@ fn write_main(
     result
 }
 
+/// The sources a recording takes, and which of them are lost.
+struct Losses {
+    recorded: Vec<Source>,
+    gone: [bool; 2],
+}
+
+impl Losses {
+    fn new(sources: Sources) -> Self {
+        Self {
+            recorded: sources.list(),
+            gone: [false; 2],
+        }
+    }
+
+    /// `source` is lost: tells it, and says whether every recorded source
+    /// is lost now (then the last loss is `NoInput`, not "keeps going").
+    fn lose(&mut self, source: Source, denied: bool, events: &dyn Fn(RecEvent)) -> bool {
+        self.gone[source_index(source)] = true;
+        let all = self.recorded.iter().all(|s| self.gone[source_index(*s)]);
+        if denied {
+            events(RecEvent::MicDenied);
+        } else if !all {
+            events(RecEvent::SourceLost(source));
+        }
+        all
+    }
+}
+
+/// A tick at raw frame `now`, after the one at `last_tick`: a sleep in
+/// between is cut out ([`Placer::bridge`]). Returns the frames it cut.
+fn tick(placer: &Mutex<Placer>, last_tick: &mut Option<i64>, now: i64) -> Option<i64> {
+    let cut = last_tick.filter(|&last| lock(placer).bridge(last, now));
+    let gap = cut.map(|last| now - last);
+    *last_tick = Some(now);
+    gap
+}
+
+/// At most a second of what lies `lag` frames or more before raw frame
+/// `now` and was not taken yet; empty when there is nothing more.
+fn next_block(placer: &Mutex<Placer>, now: i64, lag: i64) -> Vec<f32> {
+    lock(placer).take(now - lag)
+}
+
 struct Writing<'a> {
     files: &'a Files,
     writer: Option<M4aWriter>,
@@ -953,9 +1086,7 @@ struct Writing<'a> {
     written: u64,
     /// The raw frame of the previous tick, to notice a sleep.
     last_tick: Option<i64>,
-    /// The sources recorded, and which of them are lost.
-    recorded: Vec<Source>,
-    gone: [bool; 2],
+    losses: Losses,
 }
 
 impl Writing<'_> {
@@ -987,7 +1118,7 @@ impl Writing<'_> {
         }
         let mut no_input = false;
         for (source, denied) in early {
-            no_input |= self.lose(source, denied, events);
+            no_input |= self.losses.lose(source, denied, events);
         }
         for (source, name, fell_back, manual) in switched {
             events(RecEvent::DeviceSwitched {
@@ -1005,7 +1136,7 @@ impl Writing<'_> {
                 break lock(placer).frame_at(qpc_now());
             }
             match rx.recv_timeout(next.saturating_duration_since(Instant::now())) {
-                Ok(Msg::Lost(source, denied)) => no_input = self.lose(source, denied, events),
+                Ok(Msg::Lost(source, denied)) => no_input = self.losses.lose(source, denied, events),
                 Ok(Msg::Switched(source, name, fell_back, manual)) => {
                     events(RecEvent::DeviceSwitched {
                         source,
@@ -1051,29 +1182,13 @@ impl Writing<'_> {
         })
     }
 
-    /// `source` is lost: tells it, and says whether every recorded source
-    /// is lost now (then the last loss is `NoInput`, not "keeps going").
-    fn lose(&mut self, source: Source, denied: bool, events: &dyn Fn(RecEvent)) -> bool {
-        self.gone[source_index(source)] = true;
-        let all = self.recorded.iter().all(|s| self.gone[source_index(*s)]);
-        if denied {
-            events(RecEvent::MicDenied);
-        } else if !all {
-            events(RecEvent::SourceLost(source));
-        }
-        all
-    }
-
     /// A tick at raw frame `now`: a sleep since the last one is cut out
     /// ([`Placer::bridge`]), then everything up to `lag` frames before
     /// `now` is encoded, a second at a time.
     fn drain(&mut self, placer: &Mutex<Placer>, now: i64, lag: i64) -> Result<(), RecError> {
-        if let Some(last) = self.last_tick {
-            lock(placer).bridge(last, now);
-        }
-        self.last_tick = Some(now);
+        tick(placer, &mut self.last_tick, now);
         loop {
-            let block = lock(placer).take(now - lag);
+            let block = next_block(placer, now, lag);
             if block.is_empty() {
                 return Ok(());
             }
@@ -1143,6 +1258,109 @@ impl Writing<'_> {
         self.writer = None;
         let _ = std::fs::remove_file(&self.files.part);
     }
+}
+
+/// The writer thread of a mix recording: every 50 ms the timeline up to
+/// 200 ms before now goes through [`mix::mix_mono`] to `sink`, stamped from
+/// `origin_hns`; the rest goes at stop. Nothing is written to disk.
+fn mix_main(
+    sources: Sources,
+    origin_hns: i64,
+    mut sink: Box<dyn mix::MixSink>,
+    placer: &Mutex<Placer>,
+    levels: &SharedLevels,
+    rx: &Receiver<Msg>,
+    events: Box<dyn Fn(RecEvent) + Send>,
+) -> Result<RecResult, RecError> {
+    let channels = lock(placer).channels();
+    let mut losses = Losses::new(sources);
+    let mut clock = mix::MixClock::new(origin_hns);
+    let mut last_tick = None;
+    let mut pushed = 0u64;
+    // Everything on the timeline before `now` minus `lag` goes out as mono.
+    let mut push = |now: i64, lag: i64, clock: &mut mix::MixClock| loop {
+        let block = next_block(placer, now, lag);
+        if block.is_empty() {
+            return;
+        }
+        let mono = mix::mix_mono(&block, channels);
+        sink.mix(&mono, clock.stamp());
+        clock.advance(mono.len() as u64);
+        pushed += mono.len() as u64;
+    };
+    let mut early = Vec::new();
+    let mut switched = Vec::new();
+    loop {
+        match rx.recv() {
+            Ok(Msg::Go) => break,
+            Ok(Msg::Lost(source, denied)) => early.push((source, denied)),
+            Ok(Msg::Switched(source, name, fell_back, manual)) => {
+                switched.push((source, name, fell_back, manual));
+            }
+            Ok(Msg::Abort | Msg::Stop(_)) | Err(_) => {
+                return Err(RecError::Thread("the recording did not start".into()));
+            }
+        }
+    }
+    let mut no_input = false;
+    for (source, denied) in early {
+        no_input |= losses.lose(source, denied, &*events);
+    }
+    for (source, name, fell_back, manual) in switched {
+        events(RecEvent::DeviceSwitched {
+            source,
+            name,
+            fell_back,
+            manual,
+        });
+    }
+    let mut next = Instant::now() + TICK;
+    let stop_frame = loop {
+        if no_input {
+            events(RecEvent::NoInput);
+            break lock(placer).frame_at(qpc_now());
+        }
+        match rx.recv_timeout(next.saturating_duration_since(Instant::now())) {
+            Ok(Msg::Lost(source, denied)) => no_input = losses.lose(source, denied, &*events),
+            Ok(Msg::Switched(source, name, fell_back, manual)) => {
+                events(RecEvent::DeviceSwitched {
+                    source,
+                    name,
+                    fell_back,
+                    manual,
+                });
+            }
+            Ok(Msg::Stop(frame)) => break frame,
+            Ok(Msg::Go | Msg::Abort) => {}
+            Err(RecvTimeoutError::Timeout) => {
+                next += TICK;
+                let now = Instant::now();
+                if next < now {
+                    next = now + TICK;
+                }
+                let frame = {
+                    let p = &mut *lock(placer);
+                    p.publish(levels, now);
+                    p.frame_at(qpc_now())
+                };
+                if let Some(gap) = tick(placer, &mut last_tick, frame) {
+                    clock.skip(gap as u64);
+                }
+                push(frame, LAG_FRAMES, &mut clock);
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                break lock(placer).frame_at(qpc_now());
+            }
+        }
+    };
+    if let Some(gap) = tick(placer, &mut last_tick, stop_frame) {
+        clock.skip(gap as u64);
+    }
+    push(stop_frame, 0, &mut clock);
+    Ok(RecResult {
+        path: PathBuf::new(),
+        duration: Duration::from_micros(pushed * 1_000_000 / u64::from(RATE)),
+    })
 }
 
 /// Writes the sidecar, keeping keys another track added to an existing one.
@@ -2384,5 +2602,172 @@ pub(super) mod tests {
             "{result:?}"
         );
         assert!(result.duration >= Duration::from_secs(3), "{result:?}");
+    }
+
+    // ---- the mix mode ------------------------------------------------------
+
+    /// What a [`Collect`] sink got: `(stamp, samples)` per call.
+    type Mixed = Arc<Mutex<Vec<(i64, Vec<f32>)>>>;
+
+    struct Collect(Mixed);
+
+    impl mix::MixSink for Collect {
+        fn mix(&mut self, mono: &[f32], qpc_hns: i64) {
+            self.0.lock().unwrap().push((qpc_hns, mono.to_vec()));
+        }
+    }
+
+    /// A capture made up in code: constant `[mic, system]` levels at 48 kHz
+    /// in 10 ms packets stamped with the real clock.
+    fn level_open(
+        levels: [f32; 2],
+        mut sink: Box<dyn AudioSink>,
+    ) -> Result<Box<dyn Feed>, CaptureError> {
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&stop);
+        let thread = std::thread::Builder::new()
+            .name("rec-capture".into())
+            .spawn(move || {
+                let start = qpc_now();
+                let mut sent = 0u64;
+                while !flag.load(Ordering::SeqCst) {
+                    let now = qpc_now();
+                    while start + (sent + 1) * 10 * MS <= now {
+                        for (source, level) in [Source::Mic, Source::System].into_iter().zip(levels)
+                        {
+                            sink.audio(source, start + sent * 10 * MS, 48_000, &[level; 480]);
+                        }
+                        sent += 1;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            })
+            .expect("fake capture thread");
+        Ok(Box::new(FakeFeed {
+            stop,
+            thread: Some(thread),
+        }))
+    }
+
+    fn mix_opts() -> mix::MixOptions {
+        mix::MixOptions {
+            sources: Sources::BOTH,
+            devices: [None, None],
+            echo_cancel: true,
+        }
+    }
+
+    fn start_level_mix(levels: [f32; 2]) -> (Recorder, Mixed, Receiver<RecEvent>) {
+        let got = Mixed::default();
+        let (events, rx) = collect();
+        let rec = Recorder::start_mix_with(
+            mix_opts(),
+            Box::new(Collect(Arc::clone(&got))),
+            events,
+            |_, sink| level_open(levels, sink),
+        )
+        .expect("start");
+        (rec, got, rx)
+    }
+
+    /// Every sample pushed, in order.
+    fn flat(got: &Mixed) -> Vec<f32> {
+        got.lock().unwrap().iter().flat_map(|(_, m)| m.clone()).collect()
+    }
+
+    /// All of `xs[from..to)` within `tol` of `want`.
+    fn steady(xs: &[f32], from: usize, to: usize, want: f32, what: &str) {
+        for (i, x) in xs[from..to].iter().enumerate() {
+            assert!((x - want).abs() < 0.01, "{what}: {x} at {}", from + i);
+        }
+    }
+
+    #[test]
+    fn a_mix_recording_pushes_mono_stamped_from_its_origin() {
+        let _one = session();
+        let before = capture::qpc_hns();
+        let (rec, got, _rx) = start_level_mix([0.5, 0.0]);
+        let after = capture::qpc_hns();
+        std::thread::sleep(Duration::from_millis(700));
+        rec.stop().expect("stop");
+        assert_eq!(rec_threads(), 0);
+        let chunks = got.lock().unwrap().clone();
+        assert!(chunks.len() >= 2, "{} chunks", chunks.len());
+        assert!(
+            (before..=after).contains(&chunks[0].0),
+            "first stamp {} outside {before}..{after}",
+            chunks[0].0
+        );
+        for pair in chunks.windows(2) {
+            let want = pair[0].0 + pair[0].1.len() as i64 * 10_000_000 / 48_000;
+            assert!((pair[1].0 - want).abs() <= 1, "{} vs {want}", pair[1].0);
+        }
+        let all = flat(&got);
+        steady(&all, 480, all.len() - 1440, 0.5, "mix");
+    }
+
+    #[test]
+    fn a_muted_source_is_left_out_of_the_mix() {
+        let _one = session();
+        let (rec, got, _rx) = start_level_mix([0.5, 0.25]);
+        rec.set_muted(Source::Mic, true);
+        std::thread::sleep(Duration::from_millis(700));
+        rec.stop().expect("stop");
+        let all = flat(&got);
+        assert!(all.len() > 9600, "{} samples", all.len());
+        steady(&all, 4800, all.len() - 1440, 0.25, "muted mic");
+    }
+
+    #[test]
+    fn a_mix_recording_writes_no_file() {
+        let _one = session();
+        let dir = temp_dir("rec-mix-nofile");
+        let (rec, _got, rx) = start_level_mix([0.5, 0.0]);
+        std::thread::sleep(Duration::from_millis(600));
+        assert!(rec.path().as_os_str().is_empty());
+        let result = rec.stop().expect("stop");
+        assert!(result.path.as_os_str().is_empty());
+        assert!(result.duration > Duration::from_millis(300), "{result:?}");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        assert!(
+            !rx.try_iter()
+                .any(|e| matches!(e, RecEvent::Saved { .. } | RecEvent::Failed(_))),
+            "a mix recording saves nothing"
+        );
+    }
+
+    #[test]
+    fn a_mix_recorder_ignores_pause() {
+        let _one = session();
+        let (mut rec, got, _rx) = start_level_mix([0.5, 0.0]);
+        std::thread::sleep(Duration::from_millis(300));
+        rec.pause();
+        assert!(!rec.paused());
+        std::thread::sleep(Duration::from_millis(300));
+        rec.resume();
+        std::thread::sleep(Duration::from_millis(300));
+        let elapsed = rec.started.elapsed();
+        rec.stop().expect("stop");
+        let all = flat(&got);
+        // Nothing cut out: the whole span arrives, without a hole.
+        let want = elapsed.as_millis() as usize * 48;
+        assert!(all.len() + 48 * 40 >= want, "{} of {want} samples", all.len());
+        steady(&all, 480, all.len() - 1440, 0.5, "across the pause");
+    }
+
+    #[test]
+    fn stop_pushes_the_rest_of_the_timeline() {
+        let _one = session();
+        let (rec, got, _rx) = start_level_mix([0.5, 0.0]);
+        std::thread::sleep(Duration::from_millis(500));
+        // Stopped between two ticks: the last 200 ms are still on the
+        // timeline, and must be pushed before `stop` returns.
+        let elapsed = rec.started.elapsed();
+        rec.stop().expect("stop");
+        let all = flat(&got);
+        let want = elapsed.as_millis() as usize * 48;
+        assert!(all.len() + 48 * 40 >= want, "{} of {want} samples", all.len());
+        let end = all.len();
+        steady(&all, end - 48 * 150, end - 48 * 30, 0.5, "the tail");
     }
 }
