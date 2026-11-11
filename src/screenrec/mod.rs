@@ -18,6 +18,9 @@ pub mod exclude;
 pub mod files;
 pub mod plan;
 pub mod session;
+// Nothing calls it until the stop thread does.
+#[cfg_attr(not(test), allow(dead_code))]
+pub mod thumb;
 pub mod watch;
 pub mod zoom;
 
