@@ -67,7 +67,9 @@
 //!   `rec-page-marks`, ...) on the Layar tab with made-up videos
 //!   (`screen-empty`: with none yet); `DI_REC_LIVE=screen` makes the
 //!   recording of `rec-page` and `rec-page-muted` a screen recording, with
-//!   "Buang" beside pause (`screen-sure`: asked once, "Yakin buang?").
+//!   "Buang" beside pause (`screen-sure`: asked once, "Yakin buang?");
+//!   `screen-zoom` is a screen recording zoomed at 2.5x, the notch showing
+//!   "2,5×" instead of "Layar".
 //!
 //! - `DI_NOTCH=WxH` sizes the closed island in every scene (`160x28` to
 //!   `300x44`, clamped; 190x34 without it): the idle, music, timer and
@@ -763,6 +765,12 @@ fn rec_page_demo(recording: bool, tab: &str, live: &str) -> RecPageDemo {
         discard_armed,
         no_videos,
     }
+}
+
+/// The level a zoomed screen recording shows in the demo: `DI_REC_LIVE` is
+/// "screen-zoom".
+fn demo_zoom(live: &str) -> Option<f64> {
+    (live == "screen-zoom").then_some(2.5)
 }
 
 /// The REC view with Bata and made-up levels.
@@ -2565,6 +2573,7 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                     muted: r.muted,
                     hot: r.hot,
                     screen: r.screen || rec_page.tab == RecKind::Screen,
+                    zoom: demo_zoom(&name("DI_REC_LIVE")).filter(|_| r.screen),
                 }),
                 now,
                 today,

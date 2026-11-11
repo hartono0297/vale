@@ -5033,7 +5033,12 @@ impl Renderer {
             let shown = screen_compact_sources(rec.sources);
             let clock_w = self.text_width(&clock, &self.fonts.title);
             let label = screen_label_slot(&l, clock_w, shown.mic);
-            self.text2(text(i18n::lang(), Key::ScreenLabel), &self.fonts.eleven, label);
+            // A zoomed video shows its level where "Layar" would be.
+            let word = match rec.zoom {
+                Some(level) => i18n::zoom_label(i18n::lang(), level),
+                None => text(i18n::lang(), Key::ScreenLabel).to_owned(),
+            };
+            self.text2(&word, &self.fonts.eleven, label);
             shown
         } else {
             rec.sources
@@ -7057,14 +7062,15 @@ mod tests {
         }
     }
 
-    /// A screen recording's "Layar" / "Screen" fits whole between the clock
-    /// and the mic's meter for the first hour ("59:59") at the default notch
-    /// size, in both fonts, with and without Bata, placed as
+    /// A screen recording's "Layar" / "Screen", and the zoom level that takes
+    /// its place ("1,5×" to "4×"), fit whole between the clock and the mic's
+    /// meter for the first hour ("59:59") at the default and at the smallest
+    /// notch size, in both fonts, with and without Bata, placed as
     /// `paint_record_compact` places it.
     #[test]
     fn the_screen_label_fits_beside_the_clock_in_both_fonts() {
         use crate::ui::fonts;
-        use crate::ui::geometry::{NotchSize, shape_with_robot_sized};
+        use crate::ui::geometry::{NOTCH_H_MIN, NOTCH_W_MIN, NotchSize, shape_with_robot_sized};
         use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
 
         let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
@@ -7075,22 +7081,29 @@ mod tests {
         }
         let clock = rec_clock(Duration::from_secs(59 * 60 + 59));
         assert_eq!(clock, "59:59");
+        let smallest = NotchSize::from_px(NOTCH_W_MIN, NOTCH_H_MIN);
         for ui in [UiFont::Sans, UiFont::Mono] {
             r.set_ui_font(ui).expect("font");
             for style in [Style::Pill, Style::Notch] {
-                for robot in [false, true] {
-                    let s = shape_with_robot_sized(
-                        style,
-                        NotchSize::DEFAULT,
-                        ShapeKind::RecordCompact,
-                        robot,
-                    );
-                    let l = record_compact_layout(s, robot);
-                    let clock_w = r.text_width(&clock, &r.fonts.title);
-                    for mic in [true, false] {
-                        let slot = screen_label_slot(&l, clock_w, mic);
-                        for lang in [Lang::Id, Lang::En] {
-                            ink_fits(&r, text(lang, Key::ScreenLabel), &r.fonts.eleven, slot);
+                for size in [NotchSize::DEFAULT, smallest] {
+                    for robot in [false, true] {
+                        let s = shape_with_robot_sized(
+                            style,
+                            size,
+                            ShapeKind::RecordCompact,
+                            robot,
+                        );
+                        let l = record_compact_layout(s, robot);
+                        let clock_w = r.text_width(&clock, &r.fonts.title);
+                        for mic in [true, false] {
+                            let slot = screen_label_slot(&l, clock_w, mic);
+                            for lang in [Lang::Id, Lang::En] {
+                                ink_fits(&r, text(lang, Key::ScreenLabel), &r.fonts.eleven, slot);
+                                for level in [1.5, 2.0, 2.5, 3.0, 3.5, 4.0] {
+                                    let word = i18n::zoom_label(lang, level);
+                                    ink_fits(&r, &word, &r.fonts.eleven, slot);
+                                }
+                            }
                         }
                     }
                 }

@@ -388,6 +388,9 @@ pub struct RecStatus {
     pub sources: RecSources,
     /// Which sources are muted, `[mic, system]`.
     pub muted: [bool; 2],
+    /// A screen recording whose video is zoomed in: the level (the notch
+    /// shows it). `None` for audio, and for a video at 1x.
+    pub zoom: Option<f64>,
 }
 
 impl RecStatus {
@@ -1340,6 +1343,7 @@ mod tests {
                 system: true,
             },
             muted: [false; 2],
+            zoom: None,
         }
     }
 

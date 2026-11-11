@@ -209,11 +209,7 @@ pub struct Status {
 enum Cmd {
     Pause,
     Resume,
-    // The zoom is phase 4's (hotkey 11): until it is wired only the debug
-    // CLI sends these two.
-    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     ToggleZoom,
-    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     ZoomStep(i32),
     Stop,
 }
@@ -309,15 +305,12 @@ impl ScreenRecorder {
         let _ = self.tx.send(Cmd::Resume);
     }
 
-    /// Zoom in to the cursor, or back out (in the video only). Phase 4's
-    /// hotkey calls it; until then the debug CLI does.
-    #[cfg_attr(not(debug_assertions), allow(dead_code))]
+    /// Zoom in to the cursor, or back out (in the video only).
     pub fn toggle_zoom(&self) {
         let _ = self.tx.send(Cmd::ToggleZoom);
     }
 
     /// One zoom level up (`dir > 0`) or down, 1x to 4x in 0.5 steps.
-    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     pub fn zoom_step(&self, dir: i32) {
         let _ = self.tx.send(Cmd::ZoomStep(dir));
     }

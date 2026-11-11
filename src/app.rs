@@ -6865,6 +6865,7 @@ impl App {
                 muted: r.muted,
                 hot: state.rec_mute_hot(),
                 screen: r.kind == RecKind::Screen,
+                zoom: r.zoom,
             }),
             now,
             today: state.today(),

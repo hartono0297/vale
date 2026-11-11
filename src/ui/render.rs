@@ -127,6 +127,9 @@ pub struct RecFrame {
     pub hot: Option<crate::recorder::Source>,
     /// A screen recording: "Layar" after the clock, the mic's group only.
     pub screen: bool,
+    /// A screen recording whose video is zoomed: the level, shown after the
+    /// clock instead of "Layar".
+    pub zoom: Option<f64>,
 }
 
 /// Everything a frame draws besides the shape: the view and the data behind it.

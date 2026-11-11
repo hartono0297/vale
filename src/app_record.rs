@@ -460,6 +460,7 @@ fn status_of(recorder: &Recorder, sources: RecSources) -> RecStatus {
         paused_since,
         sources,
         muted: recorder.muted(),
+        zoom: None,
     }
 }
 

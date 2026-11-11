@@ -590,6 +590,8 @@ keys! {
     HotkeyRowRecordMuteDesc => "Hanya aktif saat merekam", "Active only while recording";
     HotkeyRowRecordScreen => "Rekam layar", "Record the screen";
     HotkeyRowRecordScreenDesc => "Pilih layar, jendela atau area", "Pick a screen, window or area";
+    HotkeyRowRecordZoom => "Zoom video rekaman", "Zoom the recording video";
+    HotkeyRowRecordZoomDesc => "Hanya aktif saat merekam layar", "Only while recording the screen";
     ScreenPickScreen => "Layar", "Screen";
     ScreenPickWindow => "Jendela", "Window";
     ScreenPickArea => "Area", "Area";
@@ -1827,6 +1829,22 @@ pub fn tr_running(lang: Lang, pct: u8, eta: Option<std::time::Duration>) -> Stri
         Lang::Id => format!("{pct}% \u{b7} sekitar {left} lagi"),
         Lang::En => format!("{pct}% \u{b7} about {left} left"),
     }
+}
+
+/// The zoom level the REC notch shows: whole levels bare ("2×"), halves with
+/// the language's decimal separator ("2,5×" in Indonesian, "2.5×" in English).
+/// `×` is U+00D7.
+pub fn zoom_label(lang: Lang, level: f64) -> String {
+    let halves = (level * 2.0).round() as i64;
+    let whole = halves / 2;
+    if halves % 2 == 0 {
+        return format!("{whole}\u{D7}");
+    }
+    let point = match lang {
+        Lang::Id => ',',
+        Lang::En => '.',
+    };
+    format!("{whole}{point}5\u{D7}")
 }
 
 /// A recording's length on the Rekam page: "45 dtk", "42 mnt", "1 j 05 mnt"
@@ -3940,6 +3958,15 @@ mod tests {
     }
 
     #[test]
+    fn the_zoom_label_is_a_level_with_the_languages_separator() {
+        assert_eq!(zoom_label(Lang::Id, 2.0), "2\u{D7}");
+        assert_eq!(zoom_label(Lang::Id, 2.5), "2,5\u{D7}");
+        assert_eq!(zoom_label(Lang::En, 2.5), "2.5\u{D7}");
+        assert_eq!(zoom_label(Lang::En, 4.0), "4\u{D7}");
+        assert_eq!(zoom_label(Lang::Id, 1.5), "1,5\u{D7}");
+    }
+
+    #[test]
     fn screen_recording_texts() {
         let table = [
             (Key::RecBusyTitle, "Rekaman lain sedang jalan", "Another recording is running"),
@@ -3949,6 +3976,12 @@ mod tests {
                 Key::HotkeyRowRecordScreenDesc,
                 "Pilih layar, jendela atau area",
                 "Pick a screen, window or area",
+            ),
+            (Key::HotkeyRowRecordZoom, "Zoom video rekaman", "Zoom the recording video"),
+            (
+                Key::HotkeyRowRecordZoomDesc,
+                "Hanya aktif saat merekam layar",
+                "Only while recording the screen",
             ),
             (Key::TrayScreenStart, "Rekam layar", "Record the screen"),
             (Key::TrayScreenStop, "Hentikan rekam layar", "Stop screen recording"),

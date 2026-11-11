@@ -42,8 +42,10 @@ pub(super) const HOTKEY_STICKY_LIST: i32 = 8;
 pub(super) const HOTKEY_RECORD: i32 = 9;
 /// Mute the recording's mic takes 12 (10 and 11 are the screen recorder's).
 pub(super) const HOTKEY_RECORD_MUTE: i32 = 12;
-/// The screen recorder takes 10 (11 stays reserved for its zoom).
+/// The screen recorder takes 10.
 pub(super) const HOTKEY_RECORD_SCREEN: i32 = 10;
+/// The screen recorder's video zoom takes 11.
+pub(super) const HOTKEY_RECORD_ZOOM: i32 = 11;
 /// Esc during the 3-2-1 before a screen recording. Not a row: a raw
 /// registration that exists only while the countdown runs.
 pub(super) const HOTKEY_COUNTDOWN_ESC: i32 = 13;
@@ -62,6 +64,7 @@ pub(super) fn wm_id(id: HotkeyId) -> i32 {
         HotkeyId::Record => HOTKEY_RECORD,
         HotkeyId::RecordMute => HOTKEY_RECORD_MUTE,
         HotkeyId::RecordScreen => HOTKEY_RECORD_SCREEN,
+        HotkeyId::RecordZoom => HOTKEY_RECORD_ZOOM,
     }
 }
 
@@ -108,12 +111,16 @@ pub(super) fn plan_row(want: Option<Hotkey>, applied: Option<Hotkey>, failed: bo
 }
 
 /// The combos the rows want now: the config's, except that a row that only
-/// makes sense while a recording runs (the mic mute) is off otherwise, so its
-/// combo is not taken from other apps at idle. Pure.
-pub(super) fn wanted(config: &Hotkeys, recording: bool) -> Hotkeys {
+/// makes sense while a recording runs (the mic mute) or while a screen
+/// recording runs (the video zoom) is off otherwise, so its combo is not
+/// taken from other apps at idle. Pure.
+pub(super) fn wanted(config: &Hotkeys, recording: bool, screen: bool) -> Hotkeys {
     let mut want = *config;
     if !recording {
         want.set(HotkeyId::RecordMute, None);
+    }
+    if !screen {
+        want.set(HotkeyId::RecordZoom, None);
     }
     want
 }
@@ -236,7 +243,7 @@ impl App {
             return;
         }
         let recording = any_recording(self.rec.active(), self.screen.recording());
-        let want = wanted(&self.config.hotkeys, recording);
+        let want = wanted(&self.config.hotkeys, recording, self.screen.recording());
         self.hotkeys.apply(&want, &mut WinOps(self.hwnd));
         self.sync_hotkey_hook();
     }
@@ -358,6 +365,7 @@ impl App {
             HotkeyId::Record => self.rec_toggle(),
             HotkeyId::RecordMute => self.rec_toggle_mute(Source::Mic),
             HotkeyId::RecordScreen => self.screen_toggle(),
+            HotkeyId::RecordZoom => self.screen_toggle_zoom(),
         }
     }
 
@@ -419,7 +427,7 @@ mod tests {
         assert_eq!(HOTKEY_ARRANGE, 4);
         assert_eq!(HOTKEY_SCREENSHOT, 5);
         assert_eq!(HOTKEY_LYRICS_CARD, 6);
-        assert_eq!(ROWS, 11);
+        assert_eq!(ROWS, 12);
         assert_eq!(HOTKEY_STICKY, 7, "6 is reserved for the lyrics card");
         assert_eq!(HOTKEY_STICKY_LIST, 8);
         assert_eq!(HOTKEY_RECORD, 9);
@@ -431,12 +439,14 @@ mod tests {
         }
         assert_eq!(row_of_wm_id(0), None);
         assert_eq!(row_of_wm_id(10), Some(HotkeyId::RecordScreen));
-        assert_eq!(row_of_wm_id(11), None, "reserved for the zoom");
-        // The hook's `wparam` is the row index, and the eleven ids are distinct.
+        assert_eq!(HOTKEY_RECORD_ZOOM, 11);
+        assert_eq!(wm_id(HotkeyId::RecordZoom), 11);
+        assert_eq!(row_of_wm_id(11), Some(HotkeyId::RecordZoom));
+        // The hook's `wparam` is the row index, and the twelve ids are distinct.
         let mut ids: Vec<i32> = HotkeyId::ALL.iter().map(|i| wm_id(*i)).collect();
         ids.sort_unstable();
         ids.dedup();
-        assert_eq!(ids.len(), 11);
+        assert_eq!(ids.len(), 12);
     }
 
     #[test]
@@ -447,11 +457,10 @@ mod tests {
         for id in HotkeyId::ALL {
             let wm = wm_id(id);
             assert!(!is_countdown_esc(wm), "{id:?}");
-            assert_ne!(wm, 11, "{id:?}: 11 is reserved for the zoom");
             assert_ne!(wm, 13, "{id:?}");
         }
         assert!(!is_countdown_esc(0));
-        assert!(!is_countdown_esc(11));
+        assert!(!is_countdown_esc(11), "11 is the zoom row's");
     }
 
     #[test]
@@ -459,21 +468,25 @@ mod tests {
         let cfg = Hotkeys::default();
         let r = hk("Ctrl+Alt+Shift+R");
         // The screen row starts a recording, so it is wanted at idle too.
-        assert_eq!(wanted(&cfg, false).get(HotkeyId::RecordScreen), Some(r));
-        assert_eq!(wanted(&cfg, true).get(HotkeyId::RecordScreen), Some(r));
-        // What `sync_hotkeys` passes: an audio or a screen recording runs.
-        for (audio, screen, mute) in [
-            (false, false, None),
-            (true, false, Some(hk("Ctrl+Alt+M"))),
-            (false, true, Some(hk("Ctrl+Alt+M"))),
-            (true, true, Some(hk("Ctrl+Alt+M"))),
+        assert_eq!(wanted(&cfg, false, false).get(HotkeyId::RecordScreen), Some(r));
+        assert_eq!(wanted(&cfg, true, true).get(HotkeyId::RecordScreen), Some(r));
+        // What `sync_hotkeys` passes: an audio or a screen recording runs. The
+        // zoom row is wanted with a screen recording only.
+        let m = Some(hk("Ctrl+Alt+M"));
+        let z = Some(hk("Ctrl+Alt+Z"));
+        for (audio, screen, mute, zoom) in [
+            (false, false, None, None),
+            (true, false, m, None),
+            (false, true, m, z),
+            (true, true, m, z),
         ] {
-            let want = wanted(&cfg, any_recording(audio, screen));
+            let want = wanted(&cfg, any_recording(audio, screen), screen);
             assert_eq!(want.get(HotkeyId::RecordMute), mute, "{audio} {screen}");
+            assert_eq!(want.get(HotkeyId::RecordZoom), zoom, "{audio} {screen}");
         }
         let mut s = HotkeyState::default();
         let mut ops = FakeOps::default();
-        s.apply(&wanted(&cfg, false), &mut ops);
+        s.apply(&wanted(&cfg, false, false), &mut ops);
         assert_eq!(ops.registered.get(&HotkeyId::RecordScreen), Some(&r));
         assert!(!s.any_failed());
     }
@@ -520,7 +533,7 @@ mod tests {
         assert!(s.any_failed());
         assert_eq!(
             s.failed_flags(),
-            [false, false, true, false, false, false, false, false, false, false, false]
+            [false, false, true, false, false, false, false, false, false, false, false, false]
         );
     }
 
@@ -674,19 +687,24 @@ mod tests {
     fn the_mute_row_is_wanted_only_while_a_recording_runs() {
         let cfg = Hotkeys::default();
         assert_eq!(cfg.get(HotkeyId::RecordMute), Some(hk("Ctrl+Alt+M")));
-        let idle = wanted(&cfg, false);
+        let idle = wanted(&cfg, false, false);
         assert_eq!(idle.get(HotkeyId::RecordMute), None);
-        // Nothing else changes.
+        // Nothing else changes (but the zoom row, which is off without a
+        // screen recording).
         for id in HotkeyId::ALL {
-            if id != HotkeyId::RecordMute {
+            if id != HotkeyId::RecordMute && id != HotkeyId::RecordZoom {
                 assert_eq!(idle.get(id), cfg.get(id), "{id:?}");
             }
         }
-        assert_eq!(wanted(&cfg, true), cfg);
+        assert_eq!(wanted(&cfg, true, true), cfg);
+        // An audio recording keeps the zoom row off.
+        let audio = wanted(&cfg, true, false);
+        assert_eq!(audio.get(HotkeyId::RecordZoom), None);
+        assert_eq!(audio.get(HotkeyId::RecordMute), cfg.get(HotkeyId::RecordMute));
         // A mute row the user turned off stays off while recording.
         let mut off = cfg;
         off.set(HotkeyId::RecordMute, None);
-        assert_eq!(wanted(&off, true).get(HotkeyId::RecordMute), None);
+        assert_eq!(wanted(&off, true, true).get(HotkeyId::RecordMute), None);
     }
 
     #[test]
@@ -695,13 +713,13 @@ mod tests {
         let mut s = HotkeyState::default();
         let mut ops = FakeOps::default();
         let m = hk("Ctrl+Alt+M");
-        s.apply(&wanted(&cfg, false), &mut ops);
+        s.apply(&wanted(&cfg, false, false), &mut ops);
         assert_eq!(ops.registered.get(&HotkeyId::RecordMute), None, "free at idle");
         assert_eq!(s.applied[HotkeyId::RecordMute.index()], None);
-        s.apply(&wanted(&cfg, true), &mut ops);
+        s.apply(&wanted(&cfg, true, false), &mut ops);
         assert_eq!(ops.registered.get(&HotkeyId::RecordMute), Some(&m));
         assert!(!s.any_failed());
-        s.apply(&wanted(&cfg, false), &mut ops);
+        s.apply(&wanted(&cfg, false, false), &mut ops);
         assert_eq!(ops.registered.get(&HotkeyId::RecordMute), None, "free again after the stop");
         // Another app holds the combo: only this row fails, and only while recording.
         let mut s = HotkeyState::default();
@@ -709,11 +727,42 @@ mod tests {
             taken_elsewhere: vec![m],
             ..FakeOps::default()
         };
-        s.apply(&wanted(&cfg, false), &mut ops);
+        s.apply(&wanted(&cfg, false, false), &mut ops);
         assert!(!s.any_failed());
-        s.apply(&wanted(&cfg, true), &mut ops);
+        s.apply(&wanted(&cfg, true, false), &mut ops);
         assert!(s.failed_flags()[HotkeyId::RecordMute.index()]);
-        s.apply(&wanted(&cfg, false), &mut ops);
+        s.apply(&wanted(&cfg, false, false), &mut ops);
+        assert!(!s.any_failed(), "a row that is off is not failed");
+    }
+
+    #[test]
+    fn the_zoom_combo_is_registered_with_a_screen_recording_and_let_go_of_after_it() {
+        let cfg = Hotkeys::default();
+        let mut s = HotkeyState::default();
+        let mut ops = FakeOps::default();
+        let z = hk("Ctrl+Alt+Z");
+        s.apply(&wanted(&cfg, false, false), &mut ops);
+        assert_eq!(ops.registered.get(&HotkeyId::RecordZoom), None, "free at idle");
+        // An audio recording leaves it free too.
+        s.apply(&wanted(&cfg, true, false), &mut ops);
+        assert_eq!(ops.registered.get(&HotkeyId::RecordZoom), None);
+        s.apply(&wanted(&cfg, true, true), &mut ops);
+        assert_eq!(ops.registered.get(&HotkeyId::RecordZoom), Some(&z));
+        assert!(!s.any_failed());
+        s.apply(&wanted(&cfg, false, false), &mut ops);
+        assert_eq!(ops.registered.get(&HotkeyId::RecordZoom), None, "free again after the stop");
+        // Another app holds the combo: only this row fails, and only while
+        // a screen recording runs.
+        let mut s = HotkeyState::default();
+        let mut ops = FakeOps {
+            taken_elsewhere: vec![z],
+            ..FakeOps::default()
+        };
+        s.apply(&wanted(&cfg, false, false), &mut ops);
+        assert!(!s.any_failed());
+        s.apply(&wanted(&cfg, true, true), &mut ops);
+        assert!(s.failed_flags()[HotkeyId::RecordZoom.index()]);
+        s.apply(&wanted(&cfg, false, false), &mut ops);
         assert!(!s.any_failed(), "a row that is off is not failed");
     }
 

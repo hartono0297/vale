@@ -8059,6 +8059,7 @@ mod tests {
                 system: true,
             },
             muted: [false; 2],
+            zoom: None,
         }
     }
 

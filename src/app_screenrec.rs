@@ -53,6 +53,7 @@ use crate::screenrec::files::{existing_files, files_of, part_of, unique_stem};
 use crate::screenrec::session::{CursorEffects, PauseWhy, ScreenClock, ScreenPause, options_for};
 use crate::screenrec::thumb::{grab, thumb_at};
 use crate::screenrec::watch::WindowWatch;
+use crate::screenrec::zoom::ZoomState;
 use crate::screenrec::{EndReason, Error, ScreenRecorder, Summary, Target};
 use crate::shortcuts;
 use crate::transcribe::decode;
@@ -143,6 +144,9 @@ pub(super) struct ScreenState {
     ended: bool,
     /// The last thumbnail id given out; every saved video gets a new one.
     next_thumb: u64,
+    /// The island's mirror of the video's zoom: on or off, and the level.
+    /// A new recording starts unzoomed at 2x.
+    zoom: ZoomState,
     /// The last scan of the video folder as it came (the marks of the queue
     /// go over a copy of it).
     pub(super) videos: Vec<RecEntry>,
@@ -177,6 +181,7 @@ impl Default for ScreenState {
             esc: false,
             ended: false,
             next_thumb: 0,
+            zoom: ZoomState::default(),
             videos: Vec::new(),
             page_shown: false,
             starting: None,
@@ -439,7 +444,12 @@ pub(super) fn target_of(t: &PickTarget) -> Target {
 }
 
 /// The island's REC clock of a screen recording.
-fn status_of(clock: &ScreenClock, sources: RecSources, muted: [bool; 2]) -> RecStatus {
+fn status_of(
+    clock: &ScreenClock,
+    sources: RecSources,
+    muted: [bool; 2],
+    zoom: Option<f64>,
+) -> RecStatus {
     RecStatus {
         kind: RecKind::Screen,
         started: clock.started,
@@ -447,6 +457,7 @@ fn status_of(clock: &ScreenClock, sources: RecSources, muted: [bool; 2]) -> RecS
         paused_since: clock.paused_since,
         sources,
         muted,
+        zoom,
     }
 }
 
@@ -650,6 +661,7 @@ impl App {
         self.screen.excluder = None;
         self.screen.picked = None;
         self.screen.path = None;
+        self.screen.zoom = ZoomState::default();
         // What the sound said before a start that failed is dropped here.
         self.screen.early_audio.clear();
         self.screen_set_phase(ScreenPhase::Idle);
@@ -866,6 +878,7 @@ impl App {
         self.screen.recorder = Some(recorder);
         self.screen.path = Some(started.path);
         self.screen.clock = ScreenClock::new(Instant::now());
+        self.screen.zoom = ZoomState::default();
         self.screen_set_phase(ScreenPhase::Recording);
         if let Some(n) = sound_failed {
             self.apply_now(Event::Notice(n));
@@ -1041,8 +1054,43 @@ impl App {
             .audio
             .as_ref()
             .map_or([false; 2], Recorder::muted);
-        let status = status_of(&self.screen.clock, self.screen.sources, muted);
+        let status = status_of(
+            &self.screen.clock,
+            self.screen.sources,
+            muted,
+            self.screen.zoom.shown(),
+        );
         self.apply_now(Event::RecStatus(Some(status)));
+    }
+
+    /// The zoom hotkey while a screen recording runs: the video zooms in to
+    /// the cursor, or back out.
+    pub(super) fn screen_toggle_zoom(&mut self) {
+        if !self.screen.recording() {
+            return;
+        }
+        let Some(recorder) = self.screen.recorder.as_ref() else {
+            return;
+        };
+        recorder.toggle_zoom();
+        self.screen.zoom.toggle();
+        self.screen_show_status();
+    }
+
+    /// One level up (`dir > 0`) or down, only while the video is zoomed.
+    // The mouse wheel hook of the next task calls it.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(super) fn screen_zoom_step(&mut self, dir: i32) {
+        if !self.screen.recording() || !self.screen.zoom.on {
+            return;
+        }
+        let Some(recorder) = self.screen.recorder.as_ref() else {
+            return;
+        };
+        if self.screen.zoom.step(dir) {
+            recorder.zoom_step(dir);
+            self.screen_show_status();
+        }
     }
 
     /// The recording pauses or goes on, and the clock with it.
@@ -1691,20 +1739,23 @@ mod tests {
             system: false,
         };
         let mut clock = ScreenClock::new(t0);
-        let running = status_of(&clock, sources, [true, false]);
+        let running = status_of(&clock, sources, [true, false], None);
         assert_eq!(running.kind, RecKind::Screen);
         assert_eq!(running.started, t0);
         assert!(!running.paused());
         assert_eq!((running.sources, running.muted), (sources, [true, false]));
+        assert_eq!(running.zoom, None);
+        let zoomed = status_of(&clock, sources, [false, false], Some(2.0));
+        assert_eq!(zoomed.zoom, Some(2.0));
         clock.pause(t0 + Duration::from_secs(10));
-        let paused = status_of(&clock, sources, [false, false]);
+        let paused = status_of(&clock, sources, [false, false], None);
         assert_eq!(paused.paused_since, Some(t0 + Duration::from_secs(10)));
         assert_eq!(
             paused.elapsed(t0 + Duration::from_secs(60)),
             Duration::from_secs(10)
         );
         clock.resume(t0 + Duration::from_secs(30));
-        let resumed = status_of(&clock, sources, [false, false]);
+        let resumed = status_of(&clock, sources, [false, false], None);
         assert_eq!(
             resumed.elapsed(t0 + Duration::from_secs(60)),
             Duration::from_secs(40)

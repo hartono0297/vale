@@ -115,8 +115,6 @@ pub fn next_level(level: f64, dir: i32) -> f64 {
 /// The island's mirror of the camera's switch and level, so it can show
 /// the zoom at once while the recorder thread applies the same commands in
 /// order.
-// Wired to the island's hotkeys in the next task.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ZoomState {
     pub on: bool,
@@ -132,7 +130,6 @@ impl Default for ZoomState {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 impl ZoomState {
     pub fn toggle(&mut self) {
         self.on = !self.on;
