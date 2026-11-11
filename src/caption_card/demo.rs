@@ -6,7 +6,9 @@
 //! `listening`, `needs-transkrip`, `needs-model`, `downloading`, `paused`,
 //! `battery`, `gap` (a skipped stretch and the slow hint), `failed`, `cjk`.
 //! `DI_LANG=en` picks English, `DI_CAP_SIZE=s|m|l` the text size,
-//! `DI_CAP_STILL=1` turns the easing off.
+//! `DI_CAP_STILL=1` turns the easing off. `DI_CAP_LINES=1` gives any scene the
+//! meeting's lines (a status that arrives mid-session keeps them and shows its
+//! button under them), `DI_CAP_LINES=0` takes them away.
 //!
 //! Nothing real is touched: no audio, no model, no clipboard, no config. The
 //! buttons act on the demo only (pause and resume flip the status, the chip
@@ -178,7 +180,11 @@ fn scene_of(name: &str) -> Scene {
         "needs-transkrip" => bare(CardStatus::NeedsTranskrip),
         "needs-model" => bare(CardStatus::NeedsModel),
         "downloading" => bare(CardStatus::Downloading(42)),
-        "battery" => bare(CardStatus::Battery),
+        // Mid-session: the lines stay, the reason and its button go under.
+        "battery" => Scene {
+            status: CardStatus::Battery,
+            ..running(meeting(), true, Vec::new())
+        },
         "paused" => Scene {
             status: CardStatus::Paused,
             ..running(meeting(), true, Vec::new())
@@ -257,7 +263,18 @@ pub fn run(scene: Option<&str>) {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
     }
     let name = scene.unwrap_or("two");
-    let sc = scene_of(name);
+    let mut sc = scene_of(name);
+    match std::env::var("DI_CAP_LINES").ok().as_deref().map(str::trim) {
+        Some("1") if sc.lines.is_empty() => {
+            sc.lines = lines_of(&meeting());
+            sc.labelled = true;
+        }
+        Some("0") => {
+            sc.lines.clear();
+            sc.interim.clear();
+        }
+        _ => {}
+    }
     let size = match std::env::var("DI_CAP_SIZE").ok().as_deref().map(str::trim) {
         Some("s") => TextSize::Small,
         Some("l") => TextSize::Large,

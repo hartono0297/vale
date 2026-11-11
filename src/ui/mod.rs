@@ -1,4 +1,5 @@
 pub mod app_icon;
+pub mod card_surface;
 pub mod cat_style;
 pub mod cli_input;
 pub mod device_menu;

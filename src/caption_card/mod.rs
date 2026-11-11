@@ -84,7 +84,7 @@ impl Msg {
 /// they changed; the grey lines come with every snapshot.
 // Until the island opens the card (the demo does, in debug builds).
 #[cfg_attr(not(debug_assertions), allow(dead_code))]
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct CardContent {
     pub status: CardStatus,
     pub lines: Change<Arc<Vec<Line>>>,
@@ -104,6 +104,37 @@ pub struct CardContent {
     pub font: UiFont,
     /// Windows animations are on (off: values jump).
     pub animations: bool,
+}
+
+/// Counts and states only: caption text must never reach a log or a panic
+/// message through `{:?}`.
+impl std::fmt::Debug for CardContent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let status = match &self.status {
+            CardStatus::Listening => "Listening",
+            CardStatus::Running => "Running",
+            CardStatus::Paused => "Paused",
+            CardStatus::Battery => "Battery",
+            CardStatus::NeedsTranskrip => "NeedsTranskrip",
+            CardStatus::NeedsModel => "NeedsModel",
+            CardStatus::Downloading(_) => "Downloading",
+            CardStatus::Failed(_) => "Failed",
+        };
+        let lines = match &self.lines {
+            Change::Keep => None,
+            Change::Set(l) => Some(l.len()),
+        };
+        f.debug_struct("CardContent")
+            .field("status", &status)
+            .field("lines", &lines)
+            .field("interim", &self.interim.len())
+            .field("labelled", &self.labelled)
+            .field("running", &self.running_since.is_some())
+            .field("lang", &self.lang)
+            .field("size", &self.size)
+            .field("slow_hint", &self.slow_hint)
+            .finish()
+    }
 }
 
 /// Where the card opens.
@@ -174,6 +205,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn debug_never_prints_caption_text() {
+        use crate::captions::lines::Line;
+        let c = CardContent {
+            status: CardStatus::Failed("SECRET-REASON".into()),
+            lines: Change::Set(Arc::new(vec![Line {
+                speaker: Some(Speaker::Me),
+                text: "SECRET-FINAL".into(),
+                start_ms: 0,
+                gap: false,
+            }])),
+            interim: vec![(None, "SECRET-INTERIM".into())],
+            labelled: true,
+            running_since: None,
+            lang: TrLang::Id,
+            size: TextSize::Medium,
+            slow_hint: false,
+            palette: [0, 0, 0],
+            font: UiFont::Sans,
+            animations: true,
+        };
+        let shown = format!("{c:?}");
+        assert!(!shown.contains("SECRET"), "{shown}");
+        assert!(
+            shown.contains("lines: Some(1)") && shown.contains("interim: 1"),
+            "{shown}"
+        );
+    }
+
+    #[test]
     fn msg_codes_round_trip() {
         let all = [
             Msg::Close,
@@ -193,10 +253,5 @@ mod tests {
         assert_eq!(Msg::from_code(9), None);
         assert_eq!(WM_APP_CAPTION_CARD, WM_APP + 87);
         assert_ne!(WM_APP_CAPTION_CARD, crate::lyrics_card::WM_APP_LYRICS_CARD);
-    }
-
-    #[test]
-    fn the_window_class_is_the_documented_one() {
-        assert_eq!(window::CLASS_NAME, "ValeCaptionCard");
     }
 }

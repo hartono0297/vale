@@ -23,38 +23,15 @@
 //! Caption text is drawn and nothing else: it is never logged or printed.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
-use std::ffi::c_void;
-use std::mem::ManuallyDrop;
 use std::sync::Arc;
 use std::time::Instant;
 
 use windows::Win32::Foundation::{
     COLORREF, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
 };
-use windows::Win32::Graphics::Direct2D::Common::{
-    D2D_RECT_F, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_GRADIENT_STOP, D2D1_PIXEL_FORMAT,
-};
-use windows::Win32::Graphics::Direct2D::{
-    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_ELLIPSE,
-    D2D1_EXTEND_MODE_CLAMP, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_GAMMA_2_2,
-    D2D1_LAYER_OPTIONS_NONE, D2D1_LAYER_PARAMETERS, D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES,
-    D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_SOFTWARE, D2D1_ROUNDED_RECT,
-    D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE, D2D1CreateFactory, ID2D1Brush, ID2D1DCRenderTarget,
-    ID2D1Factory, ID2D1Layer, ID2D1SolidColorBrush,
-};
-use windows::Win32::Graphics::DirectWrite::{
-    DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_WEIGHT, DWRITE_LINE_METRICS,
-    DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_METRICS, DWRITE_TRIMMING,
-    DWRITE_TRIMMING_GRANULARITY_CHARACTER, DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory,
-    IDWriteFactory, IDWriteTextFormat, IDWriteTextLayout,
-};
-use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
-use windows::Win32::Graphics::Gdi::{
-    AC_SRC_ALPHA, AC_SRC_OVER, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION,
-    CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, DeleteDC, DeleteObject, HBITMAP, HDC,
-    HGDIOBJ, SelectObject,
-};
+use windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE;
+use windows::Win32::Graphics::DirectWrite::{DWRITE_TEXT_ALIGNMENT_CENTER, IDWriteTextLayout};
+use windows::Win32::Graphics::Gdi::{AC_SRC_ALPHA, AC_SRC_OVER, BLENDFUNCTION};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
@@ -70,8 +47,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_MOUSEWHEEL, WM_SETCURSOR, WM_TIMER, WM_WINDOWPOSCHANGED, WNDCLASSEXW, WS_EX_LAYERED,
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
-use windows::core::{Error, Interface, PCWSTR, Result, w};
-use windows_numerics::{Matrix3x2, Vector2};
+use windows::core::{Error, PCWSTR, w};
+use windows_numerics::Vector2;
 
 use super::layout::{self, Palette, RectF, Rects, Zone};
 use super::{CardContent, Change, Msg, OpenArgs, WM_APP_CAPTION_CARD};
@@ -80,20 +57,16 @@ use crate::captions::lines::Line;
 use crate::captions::prefs::TextSize;
 use crate::config::{CardPlace, UiFont};
 use crate::i18n::{Key, tr};
-use crate::lyrics_card::layout::{ManualScroll, ease_out_cubic, is_drag, point_in, px};
-use crate::shot_edit::gfx::{color, rect_f};
+use crate::lyrics_card::layout::{ManualScroll, is_drag, point_in, px};
+use crate::shot_edit::gfx::color;
 use crate::transcribe::output::Speaker;
 use crate::transcribe::prefs::TrLang;
-use crate::ui::fonts::{Face, Role};
+use crate::ui::card_surface::{Surface, Tween};
 use crate::ui::frame_clock::{FrameClock, WM_APP_FRAME};
-use crate::ui::geometry::Rect as GRect;
-use crate::ui::icons::{Icon, IconSet};
+use crate::ui::icons::Icon;
 
 /// The window class.
 const CLASS: PCWSTR = w!("ValeCaptionCard");
-/// The class name, for the test that pins it.
-#[cfg(test)]
-pub const CLASS_NAME: &str = "ValeCaptionCard";
 /// The card's own timer ids (the card has its own id space).
 const TIMER_CLOCK: usize = 1;
 const TIMER_MANUAL: usize = 2;
@@ -103,6 +76,10 @@ const MK_CONTROL: usize = 0x0008;
 const HEADER_PX: f32 = 12.0;
 const CHIP_PX: f32 = 11.0;
 const MESSAGE_PX: f32 = 14.0;
+/// The status strip's sentence and a button's label.
+const STRIP_PX: f32 = 13.0;
+/// The space left and right of a button's label, together.
+const BUTTON_PAD: f32 = 28.0;
 const SMALL_MIN_PX: f32 = 12.0;
 /// A speaker label and a hint, as a part of the caption text's height.
 const SMALL_SCALE: f32 = 0.72;
@@ -118,378 +95,7 @@ const _: () = assert!(
         && layout::MANUAL_HOLD_MS == crate::lyrics_card::layout::MANUAL_HOLD_MS
 );
 
-// ------------------------------------------------------------------ surface
-
-/// The factories, the software target bound to a DIB the size of the window,
-/// and what is cached per target (the lyrics card's surface, without art).
-struct Surface {
-    // Declared first: released before the factories.
-    icons: IconSet,
-    layer: ID2D1Layer,
-    brush: ID2D1SolidColorBrush,
-    rt: ID2D1DCRenderTarget,
-    face: Face,
-    formats: HashMap<(u32, i32), IDWriteTextFormat>,
-    dwrite: IDWriteFactory,
-    /// Kept alive for the target and the icon geometries made from it.
-    _d2d: ID2D1Factory,
-    dc: HDC,
-    dib: HBITMAP,
-    previous: HGDIOBJ,
-    size: (i32, i32),
-}
-
-fn make_dib(dc: HDC, size: (i32, i32)) -> Result<HBITMAP> {
-    let info = BITMAPINFO {
-        bmiHeader: BITMAPINFOHEADER {
-            biSize: size_of::<BITMAPINFOHEADER>() as u32,
-            biWidth: size.0,
-            biHeight: -size.1,
-            biPlanes: 1,
-            biBitCount: 32,
-            biCompression: BI_RGB.0,
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-    let mut bits: *mut c_void = std::ptr::null_mut();
-    unsafe { CreateDIBSection(Some(dc), &info, DIB_RGB_COLORS, &mut bits, None, 0) }
-}
-
-impl Surface {
-    fn new(size: (i32, i32), font: UiFont) -> Result<Surface> {
-        unsafe {
-            let d2d: ID2D1Factory = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
-            let dwrite: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
-            let face = Face::for_role_in(&dwrite, Role::Text, font);
-            let dc = CreateCompatibleDC(None);
-            let dib = match make_dib(dc, size) {
-                Ok(b) => b,
-                Err(e) => {
-                    let _ = DeleteDC(dc);
-                    return Err(e);
-                }
-            };
-            let previous = SelectObject(dc, dib.into());
-            let props = D2D1_RENDER_TARGET_PROPERTIES {
-                r#type: D2D1_RENDER_TARGET_TYPE_SOFTWARE,
-                pixelFormat: D2D1_PIXEL_FORMAT {
-                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                    alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-                },
-                dpiX: 96.0,
-                dpiY: 96.0,
-                ..Default::default()
-            };
-            let made = (|| {
-                let rt = d2d.CreateDCRenderTarget(&props)?;
-                rt.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
-                let brush = rt.CreateSolidColorBrush(&color(0, 1.0), None)?;
-                let layer = rt.CreateLayer(None)?;
-                let icons = IconSet::new(&d2d)?;
-                Ok::<_, Error>((rt, brush, layer, icons))
-            })();
-            match made {
-                Ok((rt, brush, layer, icons)) => Ok(Surface {
-                    icons,
-                    layer,
-                    brush,
-                    rt,
-                    face,
-                    formats: HashMap::new(),
-                    dwrite,
-                    _d2d: d2d,
-                    dc,
-                    dib,
-                    previous,
-                    size,
-                }),
-                Err(e) => {
-                    SelectObject(dc, previous);
-                    let _ = DeleteObject(dib.into());
-                    let _ = DeleteDC(dc);
-                    Err(e)
-                }
-            }
-        }
-    }
-
-    /// A DIB of the new size (the target and the brushes stay).
-    fn resize(&mut self, size: (i32, i32)) -> Result<()> {
-        if size == self.size {
-            return Ok(());
-        }
-        unsafe {
-            let fresh = make_dib(self.dc, size)?;
-            SelectObject(self.dc, fresh.into());
-            let _ = DeleteObject(self.dib.into());
-            self.dib = fresh;
-        }
-        self.size = size;
-        Ok(())
-    }
-
-    fn set_font(&mut self, font: UiFont) {
-        self.face = Face::for_role_in(&self.dwrite, Role::Text, font);
-        self.formats.clear();
-    }
-
-    fn format(&mut self, size: f32, weight: i32) -> Option<IDWriteTextFormat> {
-        let key = (size.to_bits(), weight);
-        if let Some(f) = self.formats.get(&key) {
-            return Some(f.clone());
-        }
-        let f = self
-            .face
-            .format(&self.dwrite, DWRITE_FONT_WEIGHT(weight), size)
-            .ok()?;
-        self.formats.insert(key, f.clone());
-        Some(f)
-    }
-
-    /// `text` laid out `width` wide (wrapping), at `size` dip.
-    fn layout(
-        &mut self,
-        text: &str,
-        size: f32,
-        weight: i32,
-        width: f32,
-    ) -> Option<IDWriteTextLayout> {
-        let format = self.format(size, weight)?;
-        let wide: Vec<u16> = text.encode_utf16().collect();
-        unsafe {
-            self.dwrite
-                .CreateTextLayout(&wide, &format, width.max(1.0), 8192.0)
-                .ok()
-        }
-    }
-
-    /// One line cut with an ellipsis at `width`.
-    fn one_line(
-        &mut self,
-        text: &str,
-        size: f32,
-        weight: i32,
-        width: f32,
-    ) -> Option<IDWriteTextLayout> {
-        let format = self.format(size, weight)?;
-        let layout = self.layout(text, size, weight, width)?;
-        unsafe {
-            layout.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP).ok()?;
-            let ellipsis = self.dwrite.CreateEllipsisTrimmingSign(&format).ok()?;
-            let trimming = DWRITE_TRIMMING {
-                granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
-                delimiter: 0,
-                delimiterCount: 0,
-            };
-            layout.SetTrimming(&trimming, &ellipsis).ok()?;
-        }
-        Some(layout)
-    }
-
-    fn metrics(layout: &IDWriteTextLayout) -> DWRITE_TEXT_METRICS {
-        let mut m = DWRITE_TEXT_METRICS::default();
-        let _ = unsafe { layout.GetMetrics(&mut m) };
-        m
-    }
-
-    fn height_of(layout: &IDWriteTextLayout) -> f32 {
-        Surface::metrics(layout).height
-    }
-
-    /// How far the first line's baseline is below the layout's top.
-    fn first_baseline(layout: &IDWriteTextLayout) -> f32 {
-        let count = Surface::metrics(layout).lineCount.max(1) as usize;
-        let mut lines = vec![DWRITE_LINE_METRICS::default(); count];
-        let mut got = 0u32;
-        match unsafe { layout.GetLineMetrics(Some(&mut lines), &mut got) } {
-            Ok(()) if got > 0 => lines[0].baseline,
-            _ => 0.0,
-        }
-    }
-
-    fn draw_text(&self, origin: (f32, f32), layout: &IDWriteTextLayout, rgb: u32, alpha: f32) {
-        unsafe {
-            self.brush.SetColor(&color(rgb, alpha));
-            self.rt.DrawTextLayout(
-                Vector2::new(origin.0, origin.1),
-                layout,
-                &self.brush,
-                D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
-            );
-        }
-    }
-
-    /// `layout` centred in `area`, both ways.
-    fn draw_centred(&self, area: RectF, layout: &IDWriteTextLayout, rgb: u32, alpha: f32) {
-        let m = Surface::metrics(layout);
-        let x = area.x + (area.w - m.widthIncludingTrailingWhitespace) / 2.0;
-        let y = area.y + (area.h - m.height) / 2.0;
-        self.draw_text((x - m.left, y), layout, rgb, alpha);
-    }
-
-    fn fill_round(&self, r: RectF, radius: f32, rgb: u32, alpha: f32) {
-        unsafe {
-            self.brush.SetColor(&color(rgb, alpha));
-            self.rt
-                .FillRoundedRectangle(&rounded(r, radius), &self.brush);
-        }
-    }
-
-    fn stroke_round(&self, r: RectF, radius: f32, rgb: u32, alpha: f32, width: f32) {
-        unsafe {
-            self.brush.SetColor(&color(rgb, alpha));
-            self.rt
-                .DrawRoundedRectangle(&rounded(r, radius), &self.brush, width, None);
-        }
-    }
-
-    fn icon(&self, icon: Icon, area: RectF, size: f32, rgb: u32, alpha: f32) {
-        let _ = self.icons.draw(
-            &self.rt,
-            &self.brush,
-            icon,
-            GRect {
-                x: area.x,
-                y: area.y,
-                w: area.w,
-                h: area.h,
-            },
-            size,
-            rgb,
-            alpha,
-            None,
-        );
-    }
-
-    /// A vertical opacity gradient over `[y0, y1]`.
-    fn vertical_gradient(&self, y0: f32, y1: f32, stops: &[(f32, f32)]) -> Option<ID2D1Brush> {
-        let stops: Vec<D2D1_GRADIENT_STOP> = stops
-            .iter()
-            .map(|&(position, alpha)| D2D1_GRADIENT_STOP {
-                position,
-                color: color(0, alpha),
-            })
-            .collect();
-        unsafe {
-            let collection = self
-                .rt
-                .CreateGradientStopCollection(&stops, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP)
-                .ok()?;
-            let brush = self
-                .rt
-                .CreateLinearGradientBrush(
-                    &D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES {
-                        startPoint: Vector2::new(0.0, y0),
-                        endPoint: Vector2::new(0.0, y1),
-                    },
-                    None,
-                    &collection,
-                )
-                .ok()?;
-            brush.cast().ok()
-        }
-    }
-
-    /// Pushes a layer over `bounds` that fades by `opacity`'s alpha. Give the
-    /// returned brush back to `pop_layer` (it keeps the reference the layer
-    /// was given until the layer is popped).
-    fn push_layer(&self, bounds: RectF, opacity: Option<ID2D1Brush>) -> Option<ID2D1Brush> {
-        let params = D2D1_LAYER_PARAMETERS {
-            contentBounds: D2D_RECT_F {
-                left: bounds.x,
-                top: bounds.y,
-                right: bounds.right(),
-                bottom: bounds.bottom(),
-            },
-            geometricMask: ManuallyDrop::new(None),
-            maskAntialiasMode: D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
-            maskTransform: Matrix3x2::identity(),
-            opacity: 1.0,
-            opacityBrush: ManuallyDrop::new(opacity.clone()),
-            layerOptions: D2D1_LAYER_OPTIONS_NONE,
-        };
-        unsafe { self.rt.PushLayer(&params, &self.layer) };
-        drop(ManuallyDrop::into_inner(params.opacityBrush));
-        opacity
-    }
-
-    fn pop_layer(&self, keep: Option<ID2D1Brush>) {
-        unsafe { self.rt.PopLayer() };
-        drop(keep);
-    }
-}
-
-impl Drop for Surface {
-    fn drop(&mut self) {
-        unsafe {
-            SelectObject(self.dc, self.previous);
-            let _ = DeleteObject(self.dib.into());
-            let _ = DeleteDC(self.dc);
-        }
-    }
-}
-
-fn rounded(r: RectF, radius: f32) -> D2D1_ROUNDED_RECT {
-    D2D1_ROUNDED_RECT {
-        rect: rect_f(r.x, r.y, r.w, r.h),
-        radiusX: radius,
-        radiusY: radius,
-    }
-}
-
 // ------------------------------------------------------------------- state
-
-/// An eased value.
-#[derive(Clone, Copy, Debug)]
-struct Tween {
-    from: f32,
-    to: f32,
-    start: Instant,
-    ms: u32,
-}
-
-impl Tween {
-    fn at_rest(v: f32, now: Instant) -> Tween {
-        Tween {
-            from: v,
-            to: v,
-            start: now,
-            ms: 0,
-        }
-    }
-
-    fn t(&self, now: Instant) -> f32 {
-        if self.ms == 0 {
-            return 1.0;
-        }
-        (now.saturating_duration_since(self.start).as_secs_f32() * 1000.0 / self.ms as f32)
-            .clamp(0.0, 1.0)
-    }
-
-    fn at(&self, now: Instant) -> f32 {
-        self.from + (self.to - self.from) * ease_out_cubic(self.t(now))
-    }
-
-    fn moving(&self, now: Instant) -> bool {
-        self.ms > 0 && self.t(now) < 1.0
-    }
-
-    /// Heads for `to` from where it is now; at once when `animate` is false.
-    fn go(&mut self, to: f32, ms: u32, animate: bool, now: Instant) {
-        let here = self.at(now);
-        *self = if animate && ms > 0 {
-            Tween {
-                from: here,
-                to,
-                start: now,
-                ms,
-            }
-        } else {
-            Tween::at_rest(to, now)
-        };
-    }
-}
 
 /// What the island last said the card shows.
 struct Content {
@@ -507,10 +113,28 @@ struct Row {
     /// Whose label stands left of it (only while labelled).
     who: Option<Speaker>,
     text: IDWriteTextLayout,
-    rgb: u32,
+    ink: Ink,
     h: f32,
     /// The first line's baseline, for the label to sit on.
     baseline: f32,
+}
+
+/// Which of the palette's colours a row is drawn in (read when painting, so
+/// a palette change recolours the rows there are).
+#[derive(Clone, Copy)]
+enum Ink {
+    /// A final line.
+    Text,
+    /// Still being heard, a gap, the status line, the hint.
+    Grey,
+}
+
+/// Why no new captions come, shown under the lines with its button or bar.
+struct StripView {
+    text: String,
+    button: Option<&'static str>,
+    percent: Option<u8>,
+    at: layout::Strip,
 }
 
 /// The two speaker labels at the current text size.
@@ -528,9 +152,9 @@ enum View {
     Rows,
     /// One centred sentence (listening, paused, stopped).
     Message(String),
-    /// A sentence and the status button under it.
+    /// No lines yet: a sentence and the status button under it.
     Prompt(&'static str, &'static str),
-    /// The model download, in percent.
+    /// No lines yet: the model download, in percent.
     Progress(u8),
 }
 
@@ -575,6 +199,10 @@ pub(super) struct Card {
     finals: Vec<Row>,
     tail: Vec<Row>,
     heights: Vec<f32>,
+    /// Under the lines, while the status has something to say or to click.
+    strip: Option<StripView>,
+    /// The UI language the labels were laid out in.
+    ui_lang: crate::i18n::Lang,
     started: Instant,
     // view
     /// How far the list is scrolled back from the newest line.
@@ -742,6 +370,8 @@ pub(super) fn open(args: OpenArgs, content: CardContent) -> bool {
         finals: Vec::new(),
         tail: Vec::new(),
         heights: Vec::new(),
+        strip: None,
+        ui_lang: crate::i18n::lang(),
         started: now,
         back: Tween::at_rest(0.0, now),
         manual: ManualScroll::default(),
@@ -845,8 +475,27 @@ impl Card {
         (px(self.size_dip.0, self.dpi), px(self.size_dip.1, self.dpi))
     }
 
+    /// The card's parts; under lines the status button is the strip's.
     fn rects(&self) -> Rects {
-        layout::card_rects(self.size_dip.0, self.size_dip.1)
+        let mut r = layout::card_rects(self.size_dip.0, self.size_dip.1);
+        if let Some(s) = self.strip.as_ref().filter(|s| s.button.is_some()) {
+            r.action = s.at.action;
+        }
+        r
+    }
+
+    /// Where the lines stack: the body, less the status strip.
+    fn rows_body(&self) -> RectF {
+        let body = layout::card_rects(self.size_dip.0, self.size_dip.1).body;
+        match &self.strip {
+            Some(s) => RectF::new(
+                body.x,
+                body.y,
+                body.w,
+                (s.at.area.y - layout::LINE_GAP - body.y).max(0.0),
+            ),
+            None => body,
+        }
     }
 
     fn elapsed_ms(&self, now: Instant) -> u64 {
@@ -862,33 +511,49 @@ impl Card {
         matches!(self.c.status, CardStatus::Running | CardStatus::Listening)
     }
 
-    /// Pause and resume mean something: a session runs or is held.
+    /// Pause and resume mean something: a session runs or the user holds it
+    /// (on battery the way on is "Tetap jalan", not this button).
     fn can_pause(&self) -> bool {
         matches!(
             self.c.status,
-            CardStatus::Running | CardStatus::Listening | CardStatus::Paused | CardStatus::Battery
+            CardStatus::Running | CardStatus::Listening | CardStatus::Paused
         )
     }
 
-    /// The body's button is there to click.
+    /// The status button is there to click: under the lines, or alone.
     fn action_shown(&self) -> bool {
-        matches!(self.view(), View::Prompt(..))
+        match &self.strip {
+            Some(s) => s.button.is_some(),
+            None => matches!(self.view(), View::Prompt(..)),
+        }
     }
 
-    fn view(&self) -> View {
-        match &self.c.status {
-            CardStatus::Battery => View::Prompt(tr(Key::CapBattery), tr(Key::CapKeepGoing)),
+    /// The sentence and the button of a status that has one.
+    fn prompt(&self) -> Option<(&'static str, &'static str)> {
+        match self.c.status {
+            CardStatus::Battery => Some((tr(Key::CapBattery), tr(Key::CapKeepGoing))),
             CardStatus::NeedsTranskrip => {
-                View::Prompt(tr(Key::CapNeedsTranskrip), tr(Key::CapTurnOnTranskrip))
+                Some((tr(Key::CapNeedsTranskrip), tr(Key::CapTurnOnTranskrip)))
             }
-            CardStatus::NeedsModel => View::Prompt(tr(Key::CapNeedsModel), tr(Key::CapDownload)),
+            CardStatus::NeedsModel => Some((tr(Key::CapNeedsModel), tr(Key::CapDownload))),
+            _ => None,
+        }
+    }
+
+    /// The session's lines stay whatever the status is; a status only takes
+    /// the whole body while there is no line to keep.
+    fn view(&self) -> View {
+        if !self.heights.is_empty() {
+            return View::Rows;
+        }
+        if let Some((text, button)) = self.prompt() {
+            return View::Prompt(text, button);
+        }
+        match &self.c.status {
             CardStatus::Downloading(p) => View::Progress((*p).min(100)),
-            _ if !self.heights.is_empty() => View::Rows,
             CardStatus::Paused => View::Message(tr(Key::CapPaused).to_owned()),
             CardStatus::Failed(why) => View::Message(failed_text(why)),
-            CardStatus::Listening | CardStatus::Running => {
-                View::Message(tr(Key::CapListening).to_owned())
-            }
+            _ => View::Message(tr(Key::CapListening).to_owned()),
         }
     }
 
@@ -929,6 +594,12 @@ impl Card {
         if content.font != self.font {
             self.font = content.font;
             self.surf.set_font(content.font);
+            all = true;
+        }
+        // The labels are words of the UI language.
+        let ui_lang = crate::i18n::lang();
+        if ui_lang != self.ui_lang {
+            self.ui_lang = ui_lang;
             all = true;
         }
         self.animations = content.animations;
@@ -977,7 +648,7 @@ impl Card {
         &mut self,
         who: Option<Speaker>,
         text: &str,
-        rgb: u32,
+        ink: Ink,
         size: f32,
         weight: i32,
     ) -> Option<Row> {
@@ -988,7 +659,7 @@ impl Card {
             h: Surface::height_of(&text),
             baseline: Surface::first_baseline(&text),
             text,
-            rgb,
+            ink,
         })
     }
 
@@ -996,14 +667,13 @@ impl Card {
     fn build_finals(&mut self) {
         let lines = self.c.lines.clone();
         let size = self.body_px();
-        let (white, grey) = (self.pal.text, self.pal.grey);
         self.finals = lines
             .iter()
             .filter_map(|l| {
                 if l.gap {
-                    self.row(None, &l.text, grey, size, 400)
+                    self.row(None, &l.text, Ink::Grey, size, 400)
                 } else {
-                    self.row(l.speaker, &l.text, white, size, 400)
+                    self.row(l.speaker, &l.text, Ink::Text, size, 400)
                 }
             })
             .collect();
@@ -1012,25 +682,25 @@ impl Card {
     /// What follows the final lines: each channel's grey line, then (only
     /// under lines) why nothing new comes and the slow hint.
     fn build_tail(&mut self) {
-        let grey = self.pal.grey;
         let (size, small) = (self.body_px(), self.small_px());
         let interim = std::mem::take(&mut self.c.interim);
         let mut tail: Vec<Row> = interim
             .iter()
             .filter(|(_, t)| !t.is_empty())
-            .filter_map(|(who, t)| self.row(*who, t, grey, size, 400))
+            .filter_map(|(who, t)| self.row(*who, t, Ink::Grey, size, 400))
             .collect();
         self.c.interim = interim;
         if !self.finals.is_empty() || !tail.is_empty() {
             if let Some(why) = self.status_line() {
-                tail.extend(self.row(None, &why, grey, small, 600));
+                tail.extend(self.row(None, &why, Ink::Grey, small, 600));
             }
             if self.slow {
-                tail.extend(self.row(None, tr(Key::CapSlow), grey, small, 400));
+                tail.extend(self.row(None, tr(Key::CapSlow), Ink::Grey, small, 400));
             }
         }
         self.tail = tail;
         self.heights = self.finals.iter().chain(&self.tail).map(|r| r.h).collect();
+        self.build_strip();
         let max = self.back_max();
         self.manual.clamp((0.0, max));
         if self.back.to > max {
@@ -1038,8 +708,40 @@ impl Card {
         }
     }
 
+    /// The strip under the lines: the status's sentence with its button, or
+    /// the download with its bar. None without lines (the status then takes
+    /// the body) or without anything to say.
+    fn build_strip(&mut self) {
+        self.strip = None;
+        if self.heights.is_empty() {
+            return;
+        }
+        let (text, button, percent) = match (self.prompt(), &self.c.status) {
+            (Some((text, button)), _) => (text.to_owned(), Some(button), None),
+            (None, CardStatus::Downloading(p)) => {
+                let p = (*p).min(100);
+                (format!("{} {p}%", tr(Key::CapDownloading)), None, Some(p))
+            }
+            _ => return,
+        };
+        let width = |surf: &mut Surface, s: &str, weight: i32| {
+            surf.layout(s, STRIP_PX, weight, 4096.0).map_or(0.0, |l| {
+                Surface::metrics(&l).widthIncludingTrailingWhitespace.ceil()
+            })
+        };
+        let text_w = width(&mut self.surf, &text, 400);
+        let button_w = button.map(|b| width(&mut self.surf, b, 600) + BUTTON_PAD);
+        let body = layout::card_rects(self.size_dip.0, self.size_dip.1).body;
+        self.strip = Some(StripView {
+            text,
+            button,
+            percent,
+            at: layout::strip_rects(body, text_w, button_w),
+        });
+    }
+
     fn back_max(&self) -> f32 {
-        layout::scroll_back_max(&self.heights, layout::LINE_GAP, self.rects().body.h)
+        layout::scroll_back_max(&self.heights, layout::LINE_GAP, self.rows_body().h)
     }
 
     fn moving(&self, now: Instant) -> bool {
@@ -1263,7 +965,10 @@ impl Card {
 
     fn paint_body(&mut self, r: &Rects, now: Instant) {
         match self.view() {
-            View::Rows => self.paint_rows(r.body, now),
+            View::Rows => {
+                self.paint_rows(self.rows_body(), now);
+                self.paint_strip(r);
+            }
             View::Message(text) => self.paint_message(r.body, &text),
             View::Prompt(text, button) => self.paint_prompt(r, text, button),
             View::Progress(percent) => self.paint_progress(r.body, percent),
@@ -1282,10 +987,10 @@ impl Card {
             body.y,
             body.bottom(),
             &[
-                (0.0, if top_fade > 0.0 { 0.0 } else { 1.0 }),
-                (top_fade.min(0.5), 1.0),
-                (1.0 - bottom_fade.min(0.5), 1.0),
-                (1.0, if bottom_fade > 0.0 { 0.0 } else { 1.0 }),
+                (0.0, 0, if top_fade > 0.0 { 0.0 } else { 1.0 }),
+                (top_fade.min(0.5), 0, 1.0),
+                (1.0 - bottom_fade.min(0.5), 0, 1.0),
+                (1.0, 0, if bottom_fade > 0.0 { 0.0 } else { 1.0 }),
             ],
         );
         let keep = self.surf.push_layer(body, opacity);
@@ -1305,7 +1010,11 @@ impl Card {
                 let dy = row.baseline - labels.baseline;
                 self.surf.draw_text((layout::PAD, y + dy), label, rgb, 1.0);
             }
-            self.surf.draw_text((text_x, y), &row.text, row.rgb, 1.0);
+            let rgb = match row.ink {
+                Ink::Text => pal.text,
+                Ink::Grey => pal.grey,
+            };
+            self.surf.draw_text((text_x, y), &row.text, rgb, 1.0);
         }
         self.surf.pop_layer(keep);
     }
@@ -1337,16 +1046,71 @@ impl Card {
             let y = (r.action.y - 10.0 - Surface::height_of(&l)).max(r.body.y);
             self.surf.draw_text((layout::PAD, y), &l, pal.text, 1.0);
         }
-        // The card's one filled shape: white with the card's own colour on it.
+        self.paint_button(r.action, button);
+    }
+
+    /// The status button, the card's one filled shape: white with the card's
+    /// own colour on it.
+    fn paint_button(&mut self, at: RectF, label: &str) {
+        let pal = self.pal;
         let lit = self.hover_zone == Some(Zone::Action);
         self.surf
-            .fill_round(r.action, 8.0, pal.text, if lit { 0.88 } else { 1.0 });
-        if let Some(l) = self.surf.one_line(button, 13.0, 600, r.action.w - 16.0) {
+            .fill_round(at, 8.0, pal.text, if lit { 0.88 } else { 1.0 });
+        if let Some(l) = self.surf.one_line(label, STRIP_PX, 600, at.w - 16.0) {
             unsafe {
                 let _ = l.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
             }
-            let y = r.action.y + (r.action.h - Surface::height_of(&l)) / 2.0;
-            self.surf.draw_text((r.action.x + 8.0, y), &l, pal.bg, 1.0);
+            let y = at.y + (at.h - Surface::height_of(&l)) / 2.0;
+            self.surf.draw_text((at.x + 8.0, y), &l, pal.bg, 1.0);
+        }
+    }
+
+    /// The download bar: a track and how far it has come.
+    fn paint_bar(&self, track: RectF, percent: u8) {
+        let pal = self.pal;
+        self.surf.fill_round(track, track.h / 2.0, pal.text, 0.20);
+        if percent > 0 {
+            let fill = (track.w * f32::from(percent) / 100.0).max(track.h);
+            self.surf.fill_round(
+                RectF::new(track.x, track.y, fill, track.h),
+                track.h / 2.0,
+                pal.text,
+                1.0,
+            );
+        }
+    }
+
+    /// Under the lines: why no new captions come, with the button that gets
+    /// them going (or the download's bar), set off by a hairline.
+    fn paint_strip(&mut self, r: &Rects) {
+        let Some((text, button, percent, at)) = self
+            .strip
+            .as_ref()
+            .map(|s| (s.text.clone(), s.button, s.percent, s.at))
+        else {
+            return;
+        };
+        let pal = self.pal;
+        let rule = at.area.y - layout::LINE_GAP / 2.0;
+        self.surf.fill_round(
+            RectF::new(
+                layout::PAD,
+                rule,
+                (r.body.w - 2.0 * layout::PAD).max(0.0),
+                1.0,
+            ),
+            0.0,
+            pal.text,
+            0.12,
+        );
+        if let Some(l) = self.surf.one_line(&text, STRIP_PX, 400, at.text.w) {
+            let y = at.text.y + (at.text.h - Surface::height_of(&l)) / 2.0;
+            self.surf.draw_text((at.text.x, y), &l, pal.text, 1.0);
+        }
+        if let Some(label) = button {
+            self.paint_button(at.action, label);
+        } else if let Some(p) = percent {
+            self.paint_bar(at.action, p);
         }
     }
 
@@ -1367,16 +1131,7 @@ impl Card {
         let y = body.y + ((body.h - text_h - gap - bar_h) / 2.0).max(0.0);
         self.surf.draw_text((layout::PAD, y), &l, pal.text, 1.0);
         let track = RectF::new((body.w - bar_w) / 2.0, y + text_h + gap, bar_w, bar_h);
-        self.surf.fill_round(track, bar_h / 2.0, pal.text, 0.20);
-        if percent > 0 {
-            let fill = (bar_w * f32::from(percent) / 100.0).max(bar_h);
-            self.surf.fill_round(
-                RectF::new(track.x, track.y, fill, bar_h),
-                bar_h / 2.0,
-                pal.text,
-                1.0,
-            );
-        }
+        self.paint_bar(track, percent);
     }
 
     /// Pushes the drawn DIB to the window.
@@ -2214,14 +1969,119 @@ mod tests {
             clicks(CardStatus::NeedsTranskrip),
             [Msg::Close, Msg::Copy, Msg::Lang, Msg::Action]
         );
+        // On battery the way on is the body's button; pause is disabled.
         assert_eq!(
             clicks(CardStatus::Battery),
-            [Msg::Close, Msg::Copy, Msg::Pause, Msg::Lang, Msg::Action]
+            [Msg::Close, Msg::Copy, Msg::Lang, Msg::Action]
         );
         assert_eq!(
             clicks(CardStatus::Downloading(3)),
             [Msg::Close, Msg::Copy, Msg::Lang]
         );
+        close();
+    }
+
+    #[test]
+    fn a_status_with_lines_keeps_them_and_offers_its_button() {
+        assert!(open(args(), content(CardStatus::Running, true)));
+        for status in [
+            CardStatus::Battery,
+            CardStatus::NeedsTranskrip,
+            CardStatus::NeedsModel,
+            CardStatus::Downloading(40),
+        ] {
+            let button = !matches!(status, CardStatus::Downloading(_));
+            update(content(status.clone(), false));
+            let seen = with(|c, _| {
+                (
+                    matches!(c.view(), View::Rows),
+                    c.finals.len(),
+                    c.action_shown(),
+                )
+            });
+            assert_eq!(seen, Some((true, 3, button)), "{status:?}");
+        }
+        close();
+    }
+
+    #[test]
+    fn a_status_without_lines_takes_the_body() {
+        let mut bare = content(CardStatus::Battery, false);
+        bare.lines = Change::Set(Arc::new(Vec::new()));
+        bare.interim.clear();
+        assert!(open(args(), bare));
+        let seen = with(|c, _| {
+            let centre = layout::card_rects(c.size_dip.0, c.size_dip.1).action;
+            (
+                matches!(c.view(), View::Prompt(..)),
+                c.strip.is_none(),
+                c.action_shown(),
+                c.rects().action == centre,
+            )
+        });
+        assert_eq!(seen, Some((true, true, true, true)));
+        close();
+    }
+
+    #[test]
+    fn the_strip_s_button_is_where_the_click_lands_and_the_lines_still_scroll() {
+        let island = fake_island();
+        let mut c = content(CardStatus::Battery, false);
+        let many: Vec<Line> = (0..60)
+            .map(|i| line(None, "a line of speech", i * 1_000))
+            .collect();
+        c.lines = Change::Set(Arc::new(many));
+        let h = open_for(island, c);
+        let seen = with(|c, _| {
+            let r = c.rects();
+            let strip = c.strip.as_ref().map(|s| s.at);
+            let body = layout::card_rects(c.size_dip.0, c.size_dip.1).body;
+            let b = r.action;
+            (
+                strip.map(|s| s.action) == Some(b),
+                b.bottom() <= body.bottom() && c.rows_body().bottom() <= b.y,
+                c.zone(b.x + b.w / 2.0, b.y + b.h / 2.0),
+                // The body's middle is lines again, not a button.
+                c.zone(body.x + body.w / 2.0, body.y + 10.0),
+            )
+        });
+        assert_eq!(
+            seen,
+            Some((true, true, Some(Zone::Action), Some(Zone::Body)))
+        );
+        unsafe { SendMessageW(h, WM_MOUSEWHEEL, Some(wheel_wparam(120, false)), None) };
+        assert_eq!(
+            with(|c, _| c.manual.offset()),
+            Some(Some(layout::WHEEL_STEP))
+        );
+        assert!(posted(island).is_empty());
+        close();
+        unsafe {
+            let _ = DestroyWindow(island);
+        }
+    }
+
+    #[test]
+    fn a_palette_change_recolours_the_rows_there_are() {
+        assert!(open(args(), content(CardStatus::Running, true)));
+        let mut c = content(CardStatus::Running, true);
+        c.lines = Change::Keep;
+        c.palette = [0x101214, 0x0A0B0C, 0x6FA8DC];
+        update(c);
+        // Rows hold which ink they use, not a colour: the next paint reads
+        // the new palette.
+        let seen = with(|c, _| (c.pal.bg, c.accent, c.finals.len()));
+        assert_eq!(seen, Some((0x101214, 0x6FA8DC, 3)));
+        close();
+    }
+
+    #[test]
+    fn the_window_class_is_the_documented_one() {
+        use windows::Win32::UI::WindowsAndMessaging::GetClassNameW;
+        assert!(open(args(), content(CardStatus::Running, true)));
+        let mut name = [0u16; 64];
+        let n = unsafe { GetClassNameW(hwnd().unwrap(), &mut name) } as usize;
+        assert_eq!(String::from_utf16_lossy(&name[..n]), "ValeCaptionCard");
         close();
     }
 

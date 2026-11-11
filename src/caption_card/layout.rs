@@ -108,6 +108,72 @@ pub fn clamp_size(w: f32, h: f32) -> (f32, f32) {
     (w.clamp(MIN_W, MAX_W), h.clamp(MIN_H, MAX_H))
 }
 
+// ------------------------------------------------------------ status strip
+
+/// Space between the strip's sentence and its button or bar.
+const STRIP_GAP: f32 = 10.0;
+/// The strip's sentence, one line.
+const STRIP_TEXT_H: f32 = 20.0;
+const BAR_H: f32 = 4.0;
+const BAR_MIN_W: f32 = 40.0;
+const BAR_MAX_W: f32 = 120.0;
+
+/// The strip at the body's bottom that says why no new captions come while
+/// the session's lines stay above it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Strip {
+    /// All of it; the lines end `LINE_GAP` above.
+    pub area: RectF,
+    /// The sentence (one line, cut with an ellipsis).
+    pub text: RectF,
+    /// The button, or the download bar.
+    pub action: RectF,
+}
+
+/// The strip in `body` for a sentence `text_w` wide. With a button
+/// (`button_w`) both share one row when they fit, else the button goes under
+/// the sentence; without one the rest of the row is the download bar.
+pub fn strip_rects(body: RectF, text_w: f32, button_w: Option<f32>) -> Strip {
+    let inner = (body.w - 2.0 * PAD).max(0.0);
+    let at = |h: f32| RectF::new(body.x, body.bottom() - h, body.w, h);
+    match button_w {
+        Some(bw) => {
+            let bw = bw.min(inner);
+            let bh = ACTION_H.min(body.h);
+            if text_w + STRIP_GAP + bw <= inner {
+                let area = at(bh);
+                Strip {
+                    area,
+                    text: RectF::new(PAD, area.y, inner - bw - STRIP_GAP, bh),
+                    action: RectF::new(PAD + inner - bw, area.y, bw, bh),
+                }
+            } else {
+                let area = at((STRIP_TEXT_H + PART_GAP + ACTION_H).min(body.h));
+                Strip {
+                    area,
+                    text: RectF::new(PAD, area.y, inner, STRIP_TEXT_H.min(area.h)),
+                    action: RectF::new(PAD, area.bottom() - bh, bw, bh),
+                }
+            }
+        }
+        None => {
+            let area = at(STRIP_TEXT_H.min(body.h));
+            let bar =
+                (inner - text_w - STRIP_GAP).clamp(BAR_MIN_W.min(inner), BAR_MAX_W.min(inner));
+            Strip {
+                area,
+                text: RectF::new(PAD, area.y, (inner - bar - STRIP_GAP).max(0.0), area.h),
+                action: RectF::new(
+                    PAD + inner - bar,
+                    area.y + (area.h - BAR_H).max(0.0) / 2.0,
+                    bar,
+                    BAR_H.min(area.h),
+                ),
+            }
+        }
+    }
+}
+
 // ------------------------------------------------------------------- zones
 
 /// What a point in the card is over.
@@ -285,6 +351,50 @@ mod tests {
         // Everything fits: nothing to scroll back to.
         assert_eq!(scroll_back_max(&[20.0, 20.0], 8.0, 200.0), 0.0);
         assert_eq!(scroll_back_max(&[], 8.0, 200.0), 0.0);
+    }
+
+    #[test]
+    fn the_status_strip_sits_at_the_bottom_and_stays_inside() {
+        for (w, h) in [(DEFAULT_W, DEFAULT_H), (MIN_W, MIN_H), (MAX_W, MAX_H)] {
+            let body = card_rects(w, h).body;
+            for (text_w, button_w) in [
+                (120.0, Some(100.0)),
+                (200.0, Some(150.0)),
+                (900.0, Some(900.0)),
+                (140.0, None),
+                (900.0, None),
+            ] {
+                let s = strip_rects(body, text_w, button_w);
+                let what = format!("{w}x{h} {text_w} {button_w:?}");
+                assert_eq!(s.area.bottom(), body.bottom(), "{what}");
+                assert!(s.area.y >= body.y, "{what}");
+                for part in [s.text, s.action] {
+                    assert!(
+                        part.x >= PAD - 0.01 && part.right() <= w - PAD + 0.01,
+                        "{what}"
+                    );
+                    assert!(
+                        part.y >= s.area.y - 0.01 && part.bottom() <= s.area.bottom() + 0.01,
+                        "{what}"
+                    );
+                }
+                assert!(s.action.w > 0.0 && s.action.h > 0.0, "{what}");
+            }
+        }
+        let body = card_rects(DEFAULT_W, DEFAULT_H).body;
+        // It fits: one row, the sentence left of the button.
+        let s = strip_rects(body, 120.0, Some(100.0));
+        assert_eq!(s.area.h, ACTION_H);
+        assert!(s.text.right() <= s.action.x);
+        assert_eq!(s.action.right(), DEFAULT_W - PAD);
+        // It does not: the button goes under the sentence.
+        let s = strip_rects(card_rects(MIN_W, DEFAULT_H).body, 200.0, Some(150.0));
+        assert!(s.area.h > ACTION_H);
+        assert!(s.text.bottom() <= s.action.y);
+        // Downloading: the bar takes what the sentence leaves, within limits.
+        let s = strip_rects(body, 140.0, None);
+        assert!(s.text.right() <= s.action.x);
+        assert!(s.action.w >= 40.0 && s.action.w <= 120.0);
     }
 
     fn centre(r: RectF) -> (f32, f32) {
