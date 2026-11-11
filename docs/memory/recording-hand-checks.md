@@ -110,8 +110,8 @@ For the owner by hand:
 Branch `feat/captions` (54377fa), release build on the owner's PC, one agent
 instance at a time. Spec: `docs/superpowers/specs/2026-11-11-live-captions-phase5-design.md`.
 
-Verified by the agent on the real app (no caption text was kept; screenshots in
-the task folder show the card only):
+Verified by the agent on the real app (the speech was synthetic test speech,
+Windows SAPI, not a person):
 
 - `Ctrl+Alt+C` opened the card (380x220, topmost, no-activate, tool window) and
   the foreground window did not change, on and after speech; off removed it.
@@ -127,10 +127,11 @@ the task folder show the card only):
 - Transkrip off (`transcript.enabled` false, restored after): the card says
   "Captions need Transcripts" with a "Turn on Transcripts" button.
 - Threads at idle: 23, listening 26 to 27, after speech 32, off +6 s 31, off
-  +66 s 26 (Windows thread-pool workers and the GPU driver thread decay slowly;
-  the driver thread is documented in [[transcript]]).
-- A real screen recording of the monitor with the card open (13.5 s, 2560x1440,
-  6.2 MB, deleted): while it ran the card had `WDA_EXCLUDEFROMCAPTURE` (0x11),
+  +66 s 26 (likely Windows thread-pool workers decaying plus one AMD driver
+  thread: the attribution measured in the thread-count fix round, see
+  [[transcript]]; Vale's own threads went 6, 8, 6).
+- A real screen recording of the monitor with the card open (13.5 s, a 2560x1440
+  file, 6.2 MB, deleted): while it ran the card had `WDA_EXCLUDEFROMCAPTURE` (0x11),
   a screen grab of the card's rectangle showed what lies behind it, and the
   affinity went back to 0 after the stop.
 - Not decoded: the `.mp4` frames themselves (no frame grabber on this PC), so
@@ -146,13 +147,22 @@ For the owner by hand:
       wheel over the lines (the card was never activated: check the cursor
       shapes, the grip on hover and that no click steals focus from the app
       underneath).
-- [ ] The header buttons by a real click (pause / resume, `Copy`, the `ID`
-      language chip, X): pause and resume work, `Copy` puts the lines on the
-      clipboard, X closes the card and turns captions off.
-- [ ] Unplug the charger while captions run: the card says "Pakai baterai", the
-      notice appears once, captions resume on replug, "Tetap jalan" keeps this
-      session going on battery, and turning captions on while on battery opens
-      the card in that state.
+- [ ] The header buttons by a real click: pause / resume pauses and resumes the
+      lines, `Copy` puts the lines on the clipboard, the `ID` chip shows the
+      language, X closes the card and turns captions off.
+- [ ] The status strip under the lines, by a real click: with lines on the card
+      and no model, "Unduh model" starts the download; with Transkrip off,
+      "Nyalakan Transkrip" turns it on and captions continue; on battery,
+      "Tetap jalan" runs this session (the card was never activated: the click
+      must not take focus from the app underneath).
+- [ ] Unplug the charger while captions run: the card shows "Pakai baterai"
+      and recognition stops.
+- [ ] The same unplug: the notice appears once, not on every 30 s check.
+- [ ] Replug the charger: captions resume on their own.
+- [ ] On battery, click "Tetap jalan": this session runs on battery; the next
+      session on battery stops again.
+- [ ] Turn captions on while on battery: the card opens already in "Pakai
+      baterai".
 - [ ] "Mic juga" in a real call or a voice note: the labels "Saya" and "Peserta"
       are right, and Peserta lines that are only your own voice coming back
       through the speakers are dropped (echo).
@@ -164,20 +174,33 @@ For the owner by hand:
       lines, no frozen card, captions continue or say why they stopped.
 - [ ] A laptop without a GPU (or a forced CPU run): captions still run, with the
       "Slow" hint if the engine falls behind; the turbo model on the CPU took
-      about 6 s per grey line in phase 5's debug run, so try `whisper-small`.
-- [ ] `Ctrl+Alt+C` against other apps: apps that use the same chord (an IDE, a
-      remote-desktop client) and the hotkey change in Settings to another
-      chord; a fullscreen game.
+      about 6 s per grey line in the CLI debug run of the worker task, so try `whisper-small`.
+- [ ] Another app already holds `Ctrl+Alt+C` (an IDE or remote-desktop client):
+      Settings, Tombol pintas shows the Captions row red ("Sudah dipakai"), the
+      chord does nothing for Vale, and the tray entry and Rekam switch still
+      turn captions on.
+- [ ] Change the chord in Settings to another one: the new chord toggles
+      captions and the old one no longer does.
+- [ ] A fullscreen game: the chord still toggles captions (expected, as for the
+      other hotkeys); note whether the card shows over the game.
 - [ ] Reduced motion in Windows (Settings, Accessibility, Visual effects,
       Animation effects off): the card appears, scrolls and fades without
       animation.
-- [ ] The notch line ("Caption di notch"): the last words sit in the notch for
-      8 s, a long line is cut from the left with an ellipsis, a recording keeps
-      its REC view and shows the line, and the Settings switch turns it off.
-- [ ] The Rekam page switch and the tray entry for captions, in light and
-      Terminal styles; the Settings card "Caption langsung" with the Terminal
-      style; the off-state switch track is faint on the dark island surface
-      (shared with "Notifikasi Jeda", a known follow-up).
+- [ ] Notch line: new words appear in the closed notch and vanish 8 s after the
+      last one.
+- [ ] Notch line: a long line is cut from the left with a leading ellipsis.
+- [ ] Notch line during a recording: the REC view stays and carries the line;
+      paused shows "dijeda" with no line.
+- [ ] Settings, "Caption di notch" off: no line in the notch, the card still
+      works.
+- [ ] The Rekam page captions switch: flips captions on and off and agrees with
+      the card.
+- [ ] The tray menu entry for captions: toggles captions, shows its state.
+- [ ] The Settings card "Caption langsung" with the Terminal style: readable,
+      switches work.
+- [ ] The off-state switch track on the dark island surface is faint (about
+      1.3:1, shared with "Notifikasi Jeda", a known follow-up): decide whether
+      it is acceptable.
 - [ ] Turn captions on and off ten times in a row, then watch the Task Manager
       thread count of Vale for two minutes: it settles near the idle number.
 

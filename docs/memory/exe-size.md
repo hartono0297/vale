@@ -352,11 +352,11 @@ into a scratch folder, its own `CARGO_TARGET_DIR`, build 4m37s) against the
 
 | Build | Bytes |
 |---|---|
-| 9ea1132 (main, screen recording phase 4), scratch path | 4,469,760 |
+| 9ea1132 (main), scratch path | 4,469,760 |
 | 54377fa (live captions), worktree path | 4,557,824 (+88,064, +86 KiB, +1.97 %) |
 
 The embedded PDB path differs (the scratch `target\release\deps` is 129
 characters, the worktree's 71), so up to 512 bytes of the difference are the
-path. The card window, the worker and its engine driver, the notch line, the
-Rekam switch, the Settings card and the strings are all new code, no new
-crate and no new asset. Nothing trimmed. See [[transcript]].
+path. New code: `caption_card/`, `captions/`, `app_captions.rs`, `ui/card_surface.rs`, plus
+edits for the notch line, the Rekam switch, the Settings card and strings. No
+change to `Cargo.toml`, `Cargo.lock` or `assets` (checked with git diff). Nothing trimmed. See [[transcript]].
