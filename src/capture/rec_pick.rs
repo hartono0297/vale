@@ -129,7 +129,8 @@ impl RecPick {
     /// What a click at `pt` would select. Screen: the monitor under `pt`.
     /// Window: the frontmost top-level window of `windows` under `pt`, never
     /// a box inside it (`windows` holds no window of Vale's own, so those are
-    /// never picked). Area: what the screenshot tool snaps to.
+    /// never picked). Area: what the screenshot tool snaps to, the part of it
+    /// on the monitor under `pt`.
     pub fn hover(
         &self,
         pt: (i32, i32),
@@ -147,7 +148,12 @@ impl RecPick {
                 .filter(|w| w.rect.contains(pt))
                 .min_by_key(|w| w.z)
                 .map(|w| (w.rect, PickTarget::Window(w.hwnd))),
-            PickMode::Area => pick(cands, pt).map(|r| (r, PickTarget::Area(r))),
+            // A snapped box is cut to the monitor under the pointer, like a
+            // dragged one: the recording takes one monitor.
+            PickMode::Area => pick(cands, pt)
+                .map(|r| monitor_of(pt, monitors).map_or(r, |m| r.intersect(&m)))
+                .filter(|r| !r.is_empty())
+                .map(|r| (r, PickTarget::Area(r))),
         }
     }
 
@@ -224,19 +230,30 @@ impl RecPick {
     }
 }
 
+/// The monitor holding `pt`, or the nearest one.
+pub fn monitor_of(pt: (i32, i32), monitors: &[(isize, Rect)]) -> Option<Rect> {
+    let off = |r: &Rect| {
+        let dx = (r.x - pt.0).max(pt.0 - (r.right() - 1)).max(0);
+        let dy = (r.y - pt.1).max(pt.1 - (r.bottom() - 1)).max(0);
+        i64::from(dx) * i64::from(dx) + i64::from(dy) * i64::from(dy)
+    };
+    monitors.iter().map(|(_, r)| *r).min_by_key(off)
+}
+
+/// True when holding `vk` down may act again (auto-repeat). Not Enter or
+/// Space: the first Enter can take the highlight, and its repeat half a
+/// second later would start the recording.
+pub fn repeats(vk: u16) -> bool {
+    !matches!(vk, VK_RETURN | VK_SPACE | VK_ESCAPE)
+}
+
 /// The rectangle of a drag from `a` to `b`, kept on the monitor where it
 /// began: an area never spans two monitors, so the recording holds exactly
 /// what the overlay showed.
 pub fn area_on_monitor(a: (i32, i32), b: (i32, i32), monitors: &[(isize, Rect)]) -> Rect {
-    // The monitor holding the press; a press in no monitor (a gap in the
-    // layout) takes the nearest one.
-    let off = |r: &Rect| {
-        let dx = (r.x - a.0).max(a.0 - (r.right() - 1)).max(0);
-        let dy = (r.y - a.1).max(a.1 - (r.bottom() - 1)).max(0);
-        i64::from(dx) * i64::from(dx) + i64::from(dy) * i64::from(dy)
-    };
-    match monitors.iter().map(|(_, r)| r).min_by_key(|r| off(r)) {
-        Some(monitor) => drag_rect(a, b, *monitor),
+    // A press in no monitor (a gap in the layout) takes the nearest one.
+    match monitor_of(a, monitors) {
+        Some(monitor) => drag_rect(a, b, monitor),
         None => Rect::default(),
     }
 }
@@ -557,6 +574,7 @@ mod tests {
             inner(120, 140, 200, 100, 0),
             inner(130, 150, 50, 40, 0),
         ];
+        // Inside one monitor it is the screenshot tool's snap, untouched.
         for pt in [(135, 155), (200, 200), (600, 450), (5, 5)] {
             let want = pick(&cands, pt).map(|r| (r, PickTarget::Area(r)));
             assert_eq!(p.hover(pt, &cands, &windows, &MONITORS), want, "{pt:?}");
@@ -568,6 +586,47 @@ mod tests {
                 PickTarget::Area(Rect::new(130, 150, 50, 40))
             ))
         );
+    }
+
+    /// A window across two monitors (or any window before its inner boxes
+    /// are known) snaps to the part on the monitor under the pointer: the
+    /// recording takes one monitor.
+    #[test]
+    fn a_snapped_area_is_kept_on_the_monitor_under_the_pointer() {
+        let p = in_mode(PickMode::Area);
+        let windows = [window(11, 1800, 100, 400, 300, 0)];
+        let cands = [windows[0].candidate()];
+        let left = Rect::new(1800, 100, 120, 300);
+        assert_eq!(
+            p.hover((1850, 200), &cands, &windows, &MONITORS),
+            Some((left, PickTarget::Area(left)))
+        );
+        let right = Rect::new(1920, 100, 280, 300);
+        assert_eq!(
+            p.hover((2000, 200), &cands, &windows, &MONITORS),
+            Some((right, PickTarget::Area(right)))
+        );
+        // Jendela still takes the whole window: it is followed, not cropped.
+        assert_eq!(
+            in_mode(PickMode::Window).hover((1850, 200), &cands, &windows, &MONITORS),
+            Some((Rect::new(1800, 100, 400, 300), PickTarget::Window(11)))
+        );
+        assert_eq!(monitor_of((1850, 200), &MONITORS), Some(MONITORS[0].1));
+        assert_eq!(monitor_of((2000, 200), &MONITORS), Some(MONITORS[1].1));
+        // Below the shorter monitor: the nearest one.
+        assert_eq!(monitor_of((100, 1200), &MONITORS), Some(MONITORS[0].1));
+        assert_eq!(monitor_of((5, 5), &[]), None);
+    }
+
+    #[test]
+    fn a_held_enter_or_space_does_not_repeat() {
+        // The first Enter takes the highlight; its auto-repeat must not
+        // start the recording.
+        assert!(!repeats(VK_RETURN));
+        assert!(!repeats(VK_SPACE));
+        assert!(!repeats(VK_ESCAPE));
+        // A held Tab keeps walking the bar.
+        assert!(repeats(VK_TAB));
     }
 
     #[test]

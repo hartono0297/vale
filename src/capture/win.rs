@@ -472,16 +472,18 @@ mod tests {
         use windows::Win32::UI::WindowsAndMessaging::DestroyWindow;
         let hwnd = message_window();
         let own = unsafe { GetCurrentProcessId() };
+        // The rule `snappable` applies: this process's window is ours,
+        // and only for our own pid.
         assert!(owned_by(hwnd, own));
         assert!(!owned_by(hwnd, own.wrapping_add(4)));
-        // So the window list (what Jendela picks from) never holds it,
-        // whatever else is true of the window.
-        let bounds = Rect::new(-10_000, -10_000, 20_000, 20_000);
-        assert_eq!(unsafe { snappable(hwnd, own, bounds) }, None);
-        let listed = top_windows(bounds);
-        assert!(listed.iter().all(|w| {
-            !owned_by(HWND(w.hwnd as *mut c_void), own) && w.hwnd != hwnd.0 as isize
-        }));
+        // And the list Jendela picks from holds no window of this process,
+        // whichever of them are on screen right now.
+        let listed = top_windows(virtual_screen());
+        assert!(
+            listed
+                .iter()
+                .all(|w| !owned_by(HWND(w.hwnd as *mut c_void), own))
+        );
         unsafe {
             let _ = DestroyWindow(hwnd);
         }

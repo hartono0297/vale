@@ -355,7 +355,16 @@ fn create(
     let stop = Arc::new(AtomicBool::new(false));
     let hover = pick(&cands, cursor);
     let phase = match rec {
-        Some(seed) => Phase::Rec(Box::new(rec::Rec::new(seed, &gfx, cursor, &cands, demo)?)),
+        Some(seed) => match rec::Rec::new(seed, &gfx, cursor, &cands, demo) {
+            Some(r) => Phase::Rec(Box::new(r)),
+            None => {
+                // The window made above goes with the failed start.
+                unsafe {
+                    let _ = DestroyWindow(hwnd);
+                }
+                return None;
+            }
+        },
         None => Phase::Pick,
     };
     let state = State {
@@ -814,7 +823,9 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 return LRESULT(0);
             }
             if in_rec() {
-                rec::on_key(hwnd, (wparam.0 & 0xFFFF) as u16);
+                // lparam bit 30: the key was already down (auto-repeat).
+                let repeat = (lparam.0 >> 30) & 1 == 1;
+                rec::on_key(hwnd, (wparam.0 & 0xFFFF) as u16, repeat);
                 return LRESULT(0);
             }
             match wparam.0 as u16 {

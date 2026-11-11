@@ -349,17 +349,20 @@ pub(super) fn on_up(hwnd: HWND, lparam: LPARAM) {
 /// come, so the press and its drag go.
 pub(super) fn on_capture_lost(hwnd: HWND) {
     let changed = rec(|r, env| {
-        let pressed = r.down.take().is_some() || r.pressed.take().is_some() || r.drag.is_some();
-        r.drag = None;
+        let (down, pressed, drag) = (r.down.take(), r.pressed.take(), r.drag.take());
         r.rehover(*env.cursor, env.cands);
-        pressed
+        down.is_some() || pressed.is_some() || drag.is_some()
     });
     if changed == Some(true) {
         invalidate(hwnd);
     }
 }
 
-pub(super) fn on_key(hwnd: HWND, vk: u16) {
+pub(super) fn on_key(hwnd: HWND, vk: u16, repeat: bool) {
+    // A held Enter or Space acts once (see `rec_pick::repeats`).
+    if repeat && !rec_pick::repeats(vk) {
+        return;
+    }
     let shift = unsafe { GetKeyState(i32::from(VK_SHIFT.0)) } < 0;
     let after = rec(|r, env| {
         // A press or a drag in progress takes no key but Esc.
