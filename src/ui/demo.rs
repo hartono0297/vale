@@ -63,6 +63,12 @@
 //!   after it showed (held for the first `LYRIC_HOLD_MS`, then scrolling);
 //!   without it the line scrolls live from the step's start.
 //!
+//! - `DI_REC_TAB=screen` shows the Rekam page's idle scenes (`rec-page-idle`,
+//!   `rec-page-marks`, ...) on the Layar tab with made-up videos
+//!   (`screen-empty`: with none yet); `DI_REC_LIVE=screen` makes the
+//!   recording of `rec-page` and `rec-page-muted` a screen recording, with
+//!   "Buang" beside pause (`screen-sure`: asked once, "Yakin buang?").
+//!
 //! - `DI_NOTCH=WxH` sizes the closed island in every scene (`160x28` to
 //!   `300x44`, clamped; 190x34 without it): the idle, music, timer and
 //!   lyric views follow it, notices and the panel do not.
@@ -209,7 +215,7 @@ use crate::devices::{self, Bus, Device, DeviceKind, Partition, Veto, VetoKind};
 use crate::i18n::{Key, tr};
 use crate::lyrics::{self, FADE, LyricsFound, LyricsState, Query};
 use crate::model::{
-    CalView, Event, Hit, MediaInfo, Notice, NoticeKind, Page, RecEntry, RecSources,
+    CalView, Event, Hit, MediaInfo, Notice, NoticeKind, Page, RecEntry, RecKind, RecSources,
     RowTranscript, ToastOrigin, TranscriptOffer, View,
 };
 use crate::mole::{CleanRun, GroupSize, MoleOpts, MoleReport, PreviewSummary};
@@ -708,6 +714,52 @@ fn demo_rec_recent(marks: u8) -> Vec<RecEntry> {
             entry("Review desain klien", "Kemarin 14:30", 65, none),
             entry("Rekaman 5 Nov 09:15", "5 Nov", 18, none),
         ],
+    }
+}
+
+/// The Layar tab's made-up list: videos named after the window they
+/// recorded, a transcript mark on some, one left unfinished by a crash.
+fn demo_rec_videos() -> Vec<RecEntry> {
+    let entry = |title: &str, started: &str, secs: u64, transcript| RecEntry {
+        path: std::path::PathBuf::from(format!("{title}.mp4")),
+        title: title.to_owned(),
+        started: started.to_owned(),
+        duration: Duration::from_secs(secs),
+        unfinished: false,
+        transcript,
+    };
+    let mut part = entry("2026-11-10 1612", "Kemarin 16:12", 0, RowTranscript::None);
+    part.unfinished = true;
+    vec![
+        entry("Tutorial ekspor laporan", "Hari ini 09:41", 3 * 60 + 17, RowTranscript::Done),
+        entry("vale - Visual Studio Code", "Hari ini 08:05", 12 * 60 + 4, RowTranscript::None),
+        part,
+        entry("Rekaman 9 Nov 14:30", "9 Nov", 48, RowTranscript::Queued),
+    ]
+}
+
+/// What `DI_REC_TAB` and `DI_REC_LIVE` make of a Rekam page scene: its tab,
+/// whether "Buang" was asked once, and whether the Layar list is empty.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RecPageDemo {
+    tab: RecKind,
+    discard_armed: bool,
+    no_videos: bool,
+}
+
+/// `recording`: the scene has a recording running. A running one follows
+/// `live` ("screen", "screen-sure"), an idle page `tab` ("screen",
+/// "screen-empty"); anything else is the Audio tab as before.
+fn rec_page_demo(recording: bool, tab: &str, live: &str) -> RecPageDemo {
+    let (screen, discard_armed, no_videos) = if recording {
+        (live.starts_with("screen"), live == "screen-sure", false)
+    } else {
+        (tab.starts_with("screen"), false, tab == "screen-empty")
+    };
+    RecPageDemo {
+        tab: if screen { RecKind::Screen } else { RecKind::Audio },
+        discard_armed,
+        no_videos,
     }
 }
 
@@ -2333,7 +2385,17 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
             // The fill follows the morph as the island does (`App::fill_at`).
             let fill_alpha =
                 notch_fill::morph_fill(scene_fill(&prev), scene_fill(&scene), ease_out_back(t));
-            let rec_recent = demo_rec_recent(scene.marks);
+            // The Rekam page's tab: `DI_REC_TAB` and `DI_REC_LIVE`.
+            let rec_page = if scene.view == View0::Panel(Page::Record) {
+                rec_page_demo(scene.rec.is_some(), &name("DI_REC_TAB"), &name("DI_REC_LIVE"))
+            } else {
+                rec_page_demo(false, "", "")
+            };
+            let rec_recent = match rec_page.tab {
+                RecKind::Audio => demo_rec_recent(scene.marks),
+                RecKind::Screen if rec_page.no_videos => Vec::new(),
+                RecKind::Screen => demo_rec_videos(),
+            };
             let rec_devices = demo_rec_devices();
             let pomodoro = demo_pomodoro(scene.pomo, now);
             let view = live_view.unwrap_or_else(|| match scene.view {
@@ -2500,7 +2562,7 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                     system: r.system_level,
                     muted: r.muted,
                     hot: r.hot,
-                    screen: r.screen,
+                    screen: r.screen || rec_page.tab == RecKind::Screen,
                 }),
                 now,
                 today,
@@ -2529,6 +2591,8 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                     },
                     recent: &rec_recent,
                     devices: &rec_devices,
+                    tab: rec_page.tab,
+                    discard_armed: rec_page.discard_armed,
                 },
                 devices: DevicesView {
                     list: &dev_list,

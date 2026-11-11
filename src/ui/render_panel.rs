@@ -39,7 +39,7 @@ use crate::clipboard::{Clip, ClipData, ClipKind};
 use crate::config::Style;
 use crate::devices::{self, DeviceKind};
 use crate::i18n::{self, Key, Lang, text};
-use crate::model::{CalView, Hit, MediaInfo, Notice, NoticeKind, Page, RecEntry, RowTranscript};
+use crate::model::{CalView, Hit, MediaInfo, Notice, NoticeKind, Page, RecEntry, RecKind, RowTranscript};
 use crate::recorder::Source;
 use crate::mole::{MoleGroup, MoleOpt};
 use crate::notes::{Note, note_time_label};
@@ -124,6 +124,18 @@ fn rec_pill_look(p: &Palette, mark: RowTranscript) -> PillLook {
         RowTranscript::Running(_) => live(p.raised, p.text),
         RowTranscript::Done => live(mix(p.raised, p.sage, PILL_TINT), p.sage),
         RowTranscript::Failed => live(mix(p.raised, theme::SOFT_RED, PILL_TINT), theme::SOFT_RED),
+    }
+}
+
+/// "Buang" beside a running screen recording, as (fill, label): the raised
+/// pill of pause; asked once ("Yakin buang?") the soft red on a faint tint
+/// of it, the failed pill's look. A stronger wash drops the red label under
+/// 4.5:1 on Graphite, Sea, Night, Plum and Terminal (0.22: 3.80 on Plum).
+fn rec_discard_look(p: &Palette, armed: bool) -> (u32, u32) {
+    if armed {
+        (mix(p.raised, theme::SOFT_RED, PILL_TINT), theme::SOFT_RED)
+    } else {
+        (p.raised_hi, p.text)
     }
 }
 
@@ -841,6 +853,7 @@ impl Renderer {
                     frame.record.sources,
                     frame.record.recent.len(),
                     &pills,
+                    frame.record.tab,
                 ))
             }
             Page::Mixer => PageLayout::Mixer(mixer_layout(
@@ -955,19 +968,17 @@ impl Renderer {
             .collect()
     }
 
-    /// The Rekam header's widths: the title, the "Buka folder" link (its
-    /// icon, a gap, the label) and "Transkrip file lain..." in both forms.
+    /// The Rekam header's widths: the two tab labels, the "Buka folder" link
+    /// (its icon, a gap, the label) and "Transkrip file lain..." in both
+    /// forms; and the wider of the discard button's two labels.
     fn record_head(&self) -> RecordHead {
         let lang = i18n::lang();
-        let title_w = self
-            .text_width(text(lang, Key::PageRecord), &self.fonts.heading)
-            .ceil()
-            + 1.0;
-        let label = self
-            .text_width(text(lang, Key::RecOpenFolder), &self.fonts.button)
-            .ceil();
+        let tab = |key| self.text_width(text(lang, key), &self.fonts.small_center).ceil();
+        let button = |key| self.text_width(text(lang, key), &self.fonts.button).ceil();
+        let label = button(Key::RecOpenFolder);
         RecordHead {
-            title_w,
+            tabs_w: [tab(Key::RecTabAudio), tab(Key::RecTabScreen)],
+            discard_w: button(Key::ScreenDiscard).max(button(Key::ScreenDiscardSure)),
             folder_w: REC_LINK_ICON + REC_LINK_GAP + label + 2.0,
             pick_w: self
                 .text_width(text(lang, Key::TrPickFile), &self.fonts.button)
@@ -980,15 +991,37 @@ impl Renderer {
         }
     }
 
-    /// The Rekam page after docs/design/rekaman.html section 2: the card with
-    /// the big round button (a red dot to start, a red square to stop) and
-    /// pause beside it, the source control, the recorded time, and the last
-    /// recordings with a "Buka" pill.
+    /// The Rekam page after docs/design/rekaman.html section 2: the "Audio"
+    /// / "Layar" switch, the card with the big round button (a red dot to
+    /// start, a red square to stop) and pause beside it (and "Buang" for a
+    /// screen recording), the source control or the Layar tab's hint, the
+    /// recorded time, and the tab's last recordings with their pill.
     fn paint_record(&self, l: &RecordLayout, frame: &Frame) {
         let lang = i18n::lang();
         let p = self.palette;
         let rec = frame.rec;
-        self.heading(text(lang, Key::PageRecord), l.header);
+        let screen = frame.record.tab == RecKind::Screen;
+        // The switch, as the calendar's view selector: one raised track, the
+        // tab on show lit. Locked (a recording runs), the other tab dims.
+        self.set_color(p.raised, 1.0);
+        self.fill_round(l.header, radius::CONTROL);
+        for (kind, r) in l.tabs {
+            let on = kind == frame.record.tab;
+            if on {
+                self.set_color(p.raised_hi, 1.0);
+                self.fill_round(r, radius::SEGMENT);
+            }
+            let key = match kind {
+                RecKind::Audio => Key::RecTabAudio,
+                RecKind::Screen => Key::RecTabScreen,
+            };
+            let (ink, alpha) = match (on, l.tabs_enabled) {
+                (true, _) => (p.text, 1.0),
+                (false, true) => (p.secondary, 1.0),
+                (false, false) => (p.secondary, REC_TAB_LOCKED),
+            };
+            self.text_colored(text(lang, key), &self.fonts.small_center, r, ink, alpha);
+        }
         // "Buka folder": a folder glyph and the label, as a link.
         let icon = Rect {
             w: REC_LINK_ICON,
@@ -1055,6 +1088,16 @@ impl Renderer {
             };
             self.icon_colored(glyph, pause, 16.0, p.text, 1.0, None);
         }
+        // "Buang": a quiet pill like pause; asked once, it reads "Yakin
+        // buang?" in red.
+        if let Some(discard) = l.discard {
+            let armed = frame.record.discard_armed;
+            let (fill, ink) = rec_discard_look(&p, armed);
+            let key = if armed { Key::ScreenDiscardSure } else { Key::ScreenDiscard };
+            self.set_color(fill, 1.0);
+            self.fill_round(discard, discard.h / 2.0);
+            self.text_colored(text(lang, key), &self.fonts.button_center, discard, ink, 1.0);
+        }
         let name = text(lang, if rec.is_some() { Key::RecStop } else { Key::Start });
         self.text_colored(name, &self.fonts.small_center, l.button_label, p.secondary, 1.0);
 
@@ -1089,6 +1132,10 @@ impl Renderer {
                 let name = &frame.record.devices[cell.source.index()];
                 self.rec_device_name(name, cell.device, None);
             }
+        } else if let Some(hint) = l.hint {
+            // The Layar tab: what the big button leads to.
+            let hint_text = text(lang, Key::ScreenIdleHint);
+            self.text_colored(hint_text, &self.fonts.small, hint, p.secondary, 1.0);
         } else {
             let on = frame.record.sources;
             self.set_color(p.raised, 1.0);
@@ -1136,7 +1183,12 @@ impl Renderer {
             self.text_colored(text(lang, key), &self.fonts.micro_center, state, ink, 1.0);
         }
 
-        // The recent recordings.
+        // The tab's recent recordings: a mic marks audio, a camera video.
+        let (row_icon, empty_key) = if screen {
+            (Icon::Video, Key::ScreenNoVideos)
+        } else {
+            (Icon::Mic, Key::RecEmpty)
+        };
         if let Some(empty) = l.empty {
             let (icon_area, text_area) = (
                 Rect {
@@ -1150,14 +1202,14 @@ impl Renderer {
                     ..empty
                 },
             );
-            self.icon_colored(Icon::Mic, icon_area, 22.0, p.secondary, 0.8, None);
-            let hint = text(lang, Key::RecEmpty);
+            self.icon_colored(row_icon, icon_area, 22.0, p.secondary, 0.8, None);
+            let hint = text(lang, empty_key);
             self.text_colored(hint, &self.fonts.eleven_center, text_area, p.secondary, 1.0);
         }
         for (row, entry) in l.rows.iter().zip(frame.record.recent) {
             self.set_color(p.track, 1.0);
             self.fill_round(row.well, radius::SEGMENT);
-            self.icon_colored(Icon::Mic, row.well, 14.0, p.secondary, 1.0, None);
+            self.icon_colored(row_icon, row.well, 14.0, p.secondary, 1.0, None);
             self.text_colored(&entry.title, &self.fonts.row_name, row.title, p.text, 1.0);
             let sub = i18n::rec_entry_sub(lang, &entry.started, entry.duration, entry.unfinished);
             self.text_colored(&sub, &self.fonts.small, row.sub, p.secondary, 1.0);
@@ -5457,6 +5509,8 @@ const REC_LINK_ICON: f32 = 14.0;
 const REC_LINK_GAP: f32 = 4.0;
 const REC_STOP_SIDE: f32 = 18.0;
 const REC_DOT_BIG: f32 = 11.0;
+/// How much of its ink the tab not on show keeps while the switch is locked.
+const REC_TAB_LOCKED: f32 = 0.5;
 
 /// The mic meter's cream tint (`.lv.mic` in docs/design/rekaman.html).
 const REC_MIC_TINT: u32 = 0xEBCFB8;
@@ -7426,6 +7480,35 @@ mod tests {
         }
     }
 
+    /// The Layar tab's pairs on all six surfaces: the switch's two labels,
+    /// the hint, "Buang" and the armed "Yakin buang?" hold 4.5:1.
+    #[test]
+    fn the_layar_tab_holds_its_contrast_on_every_surface() {
+        for surface in [
+            Surface::Espresso,
+            Surface::Graphite,
+            Surface::Sea,
+            Surface::Night,
+            Surface::Plum,
+            Surface::Terminal,
+        ] {
+            let p = island(Accent::Terracotta, surface);
+            let (rest_fill, rest_ink) = rec_discard_look(&p, false);
+            let (sure_fill, sure_ink) = rec_discard_look(&p, true);
+            assert_ne!(sure_fill, p.raised, "{surface:?}: the armed pill shows on its card");
+            for (what, ink, fill) in [
+                ("the tab on show", p.text, p.raised_hi),
+                ("the other tab", p.secondary, p.raised),
+                ("the hint", p.secondary, p.surface),
+                ("Buang", rest_ink, rest_fill),
+                ("Yakin buang?", sure_ink, sure_fill),
+            ] {
+                let c = contrast(ink, fill);
+                assert!(c >= 4.5, "{surface:?} {what}: {c:.2}");
+            }
+        }
+    }
+
     /// Every pill label fits its pill whole in DM Sans (no ellipsis), and both header
     /// links fit beside the title at the default panel size, in both
     /// languages and both fonts; the short form is only for a narrower panel.
@@ -7465,11 +7548,25 @@ mod tests {
                     }
                 }
                 let head = r.record_head();
+                let hint = r.text_width(text(lang, Key::ScreenIdleHint), &r.fonts.small);
                 for style in [Style::Pill, Style::Notch] {
                     let s = shape_for(style, ShapeKind::Panel);
-                    let l = record_layout(s, false, &head, None, both, 0, &[]);
-                    assert!(!l.pick_short, "{ui:?} {lang:?} {style:?}: the long form fits");
-                    assert!(l.pick.x >= l.header.right() + 8.0, "{ui:?} {lang:?} {style:?}");
+                    let tag = format!("{ui:?} {lang:?} {style:?}");
+                    for tab in [RecKind::Audio, RecKind::Screen] {
+                        let l = record_layout(s, false, &head, None, both, 0, &[], tab);
+                        assert!(!l.pick_short, "{tag} {tab:?}: the long form fits");
+                        assert!(l.pick.x >= l.header.right() + 8.0, "{tag} {tab:?}");
+                    }
+                    // The Layar tab's hint fits its line, and a running
+                    // screen recording's card leaves each device its name.
+                    let idle = record_layout(s, false, &head, None, both, 0, &[], RecKind::Screen);
+                    assert!(hint <= idle.hint.expect("hint").w, "{tag}: the hint fits");
+                    let live =
+                        record_layout(s, false, &head, Some(both), both, 0, &[], RecKind::Screen);
+                    let discard = live.discard.expect("discard");
+                    assert!(discard.w >= head.discard_w + 16.0, "{tag}");
+                    assert!(discard.right() <= live.card.right() - 8.0, "{tag}");
+                    assert!(live.live.iter().all(|c| c.device.w >= 100.0), "{tag}");
                 }
             }
         }

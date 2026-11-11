@@ -448,8 +448,9 @@ pub struct IslandState {
     rec_videos: Vec<RecEntry>,
     /// The 3-2-1 before a screen recording, while it runs.
     screen_countdown: Option<u8>,
-    /// "Buang" was clicked once and waits for its second click.
-    screen_discard_armed: bool,
+    /// "Buang" was clicked once and waits for its second click until then
+    /// (`CLEAN_CONFIRM` after the first).
+    screen_discard_armed: Option<Instant>,
 }
 
 /// How a real Windows toast shows now: the whole notice (`Full`), a strip
@@ -478,7 +479,7 @@ impl IslandState {
             rec_tab: RecKind::Audio,
             rec_videos: Vec::new(),
             screen_countdown: None,
-            screen_discard_armed: false,
+            screen_discard_armed: None,
             lyrics_on: false,
             lyrics_ready: false,
             queue: VecDeque::new(),
@@ -589,7 +590,7 @@ impl IslandState {
                 }
                 // "Yakin buang?" was asked of the recording as it stood.
                 if self.rec != status {
-                    self.screen_discard_armed = false;
+                    self.screen_discard_armed = None;
                 }
                 self.rec = status;
             }
@@ -1241,8 +1242,8 @@ impl IslandState {
         }
         // "Yakin buang?" lives on the Rekam page: gone with it (another
         // page, the panel shut, the countdown or a fullscreen app over it).
-        if self.screen_discard_armed && self.panel_page_under() != Some(Page::Record) {
-            self.screen_discard_armed = false;
+        if self.screen_discard_armed.is_some() && self.panel_page_under() != Some(Page::Record) {
+            self.screen_discard_armed = None;
         }
         // Last, once the linger, the latch and the inputs have settled what
         // shows: the toast is judged on the view this `apply` leaves.
@@ -1377,6 +1378,7 @@ impl IslandState {
             self.pomodoro.next_deadline(),
             armed,
             self.notif_armed,
+            self.screen_discard_armed,
             self.linger_until,
         ]
         .into_iter()
@@ -1409,11 +1411,15 @@ impl IslandState {
             && !self.fullscreen
     }
 
-    /// The armed cleaner button (and "Hapus semua" of the Notifikasi page)
-    /// turns back once `CLEAN_CONFIRM` has passed.
+    /// The armed cleaner button (and "Hapus semua" of the Notifikasi page,
+    /// and "Buang" of a screen recording) turns back once `CLEAN_CONFIRM`
+    /// has passed.
     fn expire_confirm(&mut self, now: Instant) {
         if self.notif_armed.is_some_and(|until| until <= now) {
             self.notif_armed = None;
+        }
+        if self.screen_discard_armed.is_some_and(|until| until <= now) {
+            self.screen_discard_armed = None;
         }
         if let Some(c) = &mut self.cleaner
             && c.armed_until.is_some_and(|until| until <= now)
@@ -1967,7 +1973,7 @@ impl IslandState {
         }
         // And "Buang" of a screen recording.
         if !matches!(hit, Hit::ScreenDiscard) {
-            self.screen_discard_armed = false;
+            self.screen_discard_armed = None;
         }
         match hit {
             // A click on a sticky note reminder's body is its "Buka", in every
@@ -2218,15 +2224,14 @@ impl IslandState {
                 }
             }
             // "Buang" beside a running screen recording: the first click
-            // asks ("Yakin buang?"), the second discards.
+            // asks ("Yakin buang?"), a second within `CLEAN_CONFIRM` discards.
             Hit::ScreenDiscard => {
                 let shown = self.view() == View::Panel(Page::Record)
                     && self.rec.as_ref().is_some_and(|r| r.kind == RecKind::Screen);
-                if shown && self.screen_discard_armed {
-                    self.screen_discard_armed = false;
+                if shown && self.screen_discard_armed.take().is_some() {
                     effects.push(Effect::ScreenDiscard);
                 } else {
-                    self.screen_discard_armed = shown;
+                    self.screen_discard_armed = shown.then_some(now + CLEAN_CONFIRM);
                 }
             }
             Hit::RecPause => {
@@ -3329,8 +3334,6 @@ impl IslandState {
     }
 
     /// The Rekam page's tab.
-    // Drawn from Task 13 on.
-    #[allow(dead_code)]
     pub fn rec_tab(&self) -> RecKind {
         self.rec_tab
     }
@@ -3351,10 +3354,8 @@ impl IslandState {
     }
 
     /// "Buang" waits for its second click ("Yakin buang?").
-    // Drawn from Task 13 on.
-    #[allow(dead_code)]
     pub fn screen_discard_armed(&self) -> bool {
-        self.screen_discard_armed
+        self.screen_discard_armed.is_some()
     }
 
     /// The local date as of the last `Event::Today`.
@@ -10955,6 +10956,37 @@ mod tests {
             vec![Effect::RecMute(Source::Mic)]
         );
         assert!(!s.screen_discard_armed(), "another button");
+    }
+
+    #[test]
+    fn yakin_buang_turns_back_after_the_confirm_time() {
+        let t0 = Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        let mut s = on_screen_tab(t0);
+        s.apply(Event::RecStatus(Some(screen_status(t0))), t0);
+        // The first click arms: no effect, a deadline on the one timer.
+        assert_eq!(s.apply(Event::Click(Hit::ScreenDiscard), ms(100)), vec![]);
+        assert!(s.screen_discard_armed());
+        assert_eq!(s.next_deadline(), Some(ms(100) + CLEAN_CONFIRM));
+        // Still armed a moment before the time is up, "Buang" again once it is.
+        s.apply(Event::Tick, ms(99) + CLEAN_CONFIRM);
+        assert!(s.screen_discard_armed());
+        s.apply(Event::Tick, ms(100) + CLEAN_CONFIRM);
+        assert!(!s.screen_discard_armed(), "expired");
+        // Nothing else took the question back: the page still shows the
+        // recording, which goes on.
+        assert_eq!(s.view(), View::Panel(Page::Record));
+        assert!(s.rec().is_some());
+        // A click after it expired asks again instead of discarding.
+        let late = ms(200) + CLEAN_CONFIRM;
+        assert_eq!(s.apply(Event::Click(Hit::ScreenDiscard), late), vec![]);
+        assert!(s.screen_discard_armed());
+        // And a second click inside the time discards.
+        assert_eq!(
+            s.apply(Event::Click(Hit::ScreenDiscard), late + secs(3)),
+            vec![Effect::ScreenDiscard]
+        );
+        assert!(!s.screen_discard_armed());
     }
 
     #[test]

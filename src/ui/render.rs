@@ -669,12 +669,17 @@ pub struct DevicesView<'a> {
 }
 
 /// What the Rekam page shows besides the recording itself (`Frame::rec`):
-/// the sources chosen while none runs, and the newest recordings.
+/// its tab, the sources chosen while none runs, and the tab's newest
+/// recordings.
 pub struct RecordView<'a> {
     pub sources: crate::model::RecSources,
     pub recent: &'a [crate::model::RecEntry],
     /// The names of the devices the sources use, `[mic, system]`.
     pub devices: &'a [String; 2],
+    /// "Audio" or "Layar": what `recent` lists and the big button starts.
+    pub tab: crate::model::RecKind,
+    /// "Buang" was clicked once: it reads "Yakin buang?".
+    pub discard_armed: bool,
 }
 
 /// What the quick search shows.

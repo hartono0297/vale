@@ -6873,6 +6873,8 @@ impl App {
                 sources: self.rec_sources,
                 recent: state.rec_list(),
                 devices: self.rec.devices(),
+                tab: state.rec_tab(),
+                discard_armed: state.screen_discard_armed(),
             },
             devices: DevicesView {
                 list: &self.devices.list,
@@ -11383,6 +11385,41 @@ mod tests {
         let notes = View::Panel(Page::Notes);
         assert_eq!(rec_row_menu_target(notes, Some(&Hit::RecOpen(2))), None);
         assert_eq!(rec_row_menu_target(View::Panel(Page::Media), Some(&Hit::RecTranscript(0))), None);
+    }
+
+    #[test]
+    fn right_clicks_on_a_video_row_open_its_menu() {
+        use crate::model::{RecEntry, RowTranscript};
+        let entry = |name: &str| RecEntry {
+            path: PathBuf::from(name),
+            title: name.into(),
+            started: String::new(),
+            duration: Duration::from_secs(60),
+            unfinished: false,
+            transcript: RowTranscript::None,
+        };
+        let t0 = Instant::now();
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 11).unwrap();
+        let mut s = IslandState::new(today, Default::default());
+        s.apply(Event::RecRecent(vec![entry("a.m4a"), entry("b.m4a")]), t0);
+        s.apply(Event::VideoRecent(vec![entry("a.mp4"), entry("b.mp4")]), t0);
+        s.apply(Event::Hover(true), t0);
+        let at = |p: Page| Page::ALL.iter().position(|q| *q == p).unwrap() as i32;
+        s.apply(Event::Wheel(-120 * (at(Page::Record) - at(s.page()))), t0);
+        assert_eq!(s.view(), View::Panel(Page::Record));
+        // The menu's row is the row of the tab's list: an audio recording
+        // on Audio, the video in the same place on Layar.
+        let row = |s: &IslandState, hit: Hit| {
+            rec_row_menu_target(s.view(), Some(&hit)).map(|i| s.rec_list()[i].path.clone())
+        };
+        assert_eq!(row(&s, Hit::RecOpen(1)), Some(PathBuf::from("b.m4a")));
+        s.apply(Event::Click(Hit::RecTab(RecKind::Screen)), t0);
+        assert_eq!(s.rec_tab(), RecKind::Screen);
+        assert_eq!(row(&s, Hit::RecOpen(1)), Some(PathBuf::from("b.mp4")));
+        assert_eq!(row(&s, Hit::RecTranscript(0)), Some(PathBuf::from("a.mp4")));
+        // The switch and "Buang" have no row menu.
+        assert_eq!(row(&s, Hit::RecTab(RecKind::Audio)), None);
+        assert_eq!(row(&s, Hit::ScreenDiscard), None);
     }
 
     #[test]

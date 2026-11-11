@@ -25,6 +25,7 @@ use crate::i18n::{self, Key, Lang, text};
 use crate::model::{
     Event, Notice, NoticeKind, RecEntry, RecKind, RowTranscript, TranscriptOffer,
 };
+use crate::recorder::prefs::RecordingPrefs;
 use crate::transcribe::catalog::{self, ENGINE, Model};
 use crate::transcribe::download::{self, DownloadError, Item, Progress};
 use crate::transcribe::engine::{self, EngineError};
@@ -984,6 +985,7 @@ impl App {
         if self.rec.page_shown() {
             self.rec_remark();
             self.rec_rescan();
+            self.screen_rescan();
         }
         // An open transcript window says the new state too.
         self.transcript_refresh_all();
@@ -997,17 +999,21 @@ impl App {
         let Some(audio) = self.tr.worker.as_ref().map(|w| w.audio.clone()) else {
             return;
         };
-        if self.rec.recent.iter().any(|r| same_audio(&r.path, &audio)) {
+        let listed = self.rec.recent.iter().chain(&self.screen.videos);
+        if listed.into_iter().any(|r| same_audio(&r.path, &audio)) {
             self.rec_remark();
         }
     }
 
-    /// The last scan with the queue's marks over it, shown now.
+    /// The last scans of both tabs with the queue's marks over them, shown
+    /// now.
     fn rec_remark(&mut self) {
         // Straight to the page: the arm of `RecRecent` would keep the marked
         // rows as the scan, and a `Done` that is queued again would be lost.
         let rows = self.transcribe_marks(self.rec.recent.clone());
         self.apply_now(Event::RecMarks(rows));
+        let videos = self.transcribe_marks(self.screen.videos.clone());
+        self.apply_now(Event::VideoMarks(videos));
     }
 
     /// `entries` with the transcript marks the island knows over what the
@@ -1057,13 +1063,12 @@ impl App {
         DEFERRED_OPEN_CARD.set(Some(CardId::Transcript));
     }
 
-    /// Shows the file picker for a transcript of any audio file, opening in
-    /// the recordings folder. The choice comes back as `transcribe_file`.
-    /// `_kind` is the Rekam tab that asked: both open the audio folder
-    /// until the Layar tab lists its videos.
-    pub(super) fn rec_pick_file(&mut self, _kind: RecKind) {
+    /// Shows the file picker for a transcript of any recording or video,
+    /// opening in the folder of the Rekam tab that asked (`kind`). The
+    /// choice comes back as `transcribe_file`.
+    pub(super) fn rec_pick_file(&mut self, kind: RecKind) {
         notif_open::allow_foreground();
-        settings::pick_rec_audio(self.hwnd, self.config.recording.dir());
+        settings::pick_rec_audio(self.hwnd, pick_start(kind, &self.config.recording));
     }
 
     /// An audio file picked with "Transkrip file lain...": a job is queued
@@ -1113,9 +1118,34 @@ impl App {
     }
 }
 
+/// Where "Transkrip file lain..." opens: the folder the tab's recordings go
+/// to.
+fn pick_start(kind: RecKind, prefs: &RecordingPrefs) -> PathBuf {
+    match kind {
+        RecKind::Audio => prefs.dir(),
+        RecKind::Screen => prefs.video_dir(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_file_picker_starts_in_the_tab_s_folder() {
+        let prefs = RecordingPrefs {
+            folder: Some(PathBuf::from(r"D:\Rekaman")),
+            video_folder: Some(PathBuf::from(r"D:\Video")),
+            ..RecordingPrefs::default()
+        };
+        assert_eq!(pick_start(RecKind::Audio, &prefs), PathBuf::from(r"D:\Rekaman"));
+        assert_eq!(pick_start(RecKind::Screen, &prefs), PathBuf::from(r"D:\Video"));
+        // Unset, each is its own default folder.
+        let unset = RecordingPrefs::default();
+        assert_eq!(pick_start(RecKind::Audio, &unset), unset.dir());
+        assert_eq!(pick_start(RecKind::Screen, &unset), unset.video_dir());
+        assert_ne!(unset.dir(), unset.video_dir());
+    }
     use crate::transcribe::decode::DecodeError;
 
     fn qj(audio: &str, tries: u8) -> QueuedJob {

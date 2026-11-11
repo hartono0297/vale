@@ -417,8 +417,6 @@ pub enum Event {
     /// Rekam page's Layar tab.
     VideoRecent(Vec<RecEntry>),
     /// The same list with the queue's transcript marks over it.
-    // Sent from Task 13 on.
-    #[allow(dead_code)]
     VideoMarks(Vec<RecEntry>),
     /// What a transcript job's thread reported, with the job id (`App`
     /// handles it; the reducer ignores it).
@@ -814,13 +812,9 @@ pub enum Hit {
     RecPickFile,
     /// The "Audio" / "Layar" switch of the Rekam page, only while nothing
     /// records.
-    // Drawn from Task 9 on.
-    #[allow(dead_code)]
     RecTab(RecKind),
     /// "Buang" beside a running screen recording: the first click arms it
     /// ("Yakin buang?"), the second discards the recording.
-    // Drawn from Task 9 on.
-    #[allow(dead_code)]
     ScreenDiscard,
     /// Susun, template step: a monitor chip, a template card (built-ins
     /// first, then the user's) and a saved arrangement's play button, by
