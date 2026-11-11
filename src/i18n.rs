@@ -632,7 +632,7 @@ keys! {
     TrMenuCancel => "Batalkan transkrip", "Cancel the transcript";
     TrPickFile => "Transkrip file lain\u{2026}", "Transcribe a file\u{2026}";
     TrPickFileShort => "File lain\u{2026}", "Other file\u{2026}";
-    TrFilter => "Rekaman (*.m4a, *.wav)", "Recordings (*.m4a, *.wav)";
+    TrFilter => "Rekaman (*.m4a, *.wav, *.mp4)", "Recordings (*.m4a, *.wav, *.mp4)";
     RecFailedTitle => "Rekaman gagal", "Recording failed";
     RecMicDeniedTitle => "Mic diblokir Windows", "Windows blocked the mic";
     RecMicDeniedBody => "Klik untuk buka pengaturan mic", "Click to open the mic settings";

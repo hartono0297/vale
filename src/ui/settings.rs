@@ -3471,7 +3471,10 @@ pub fn pick_rec_audio(owner: HWND, start: std::path::PathBuf) {
         });
 }
 
-/// The `.m4a` or `.wav` the owner picks, the dialog opening in `start`.
+/// What the "Transkrip file lain…" dialog lists: recordings and videos.
+pub const RECORDING_FILTER: &str = "*.m4a;*.wav;*.mp4";
+
+/// The recording or video the owner picks, the dialog opening in `start`.
 /// `None` when it is cancelled or cannot open.
 fn pick_audio(owner: HWND, start: &std::path::Path) -> Option<std::path::PathBuf> {
     use std::os::windows::ffi::OsStringExt;
@@ -3488,9 +3491,10 @@ fn pick_audio(owner: HWND, start: &std::path::Path) -> Option<std::path::PathBuf
         let options = dialog.GetOptions().ok()? | FOS_FORCEFILESYSTEM;
         dialog.SetOptions(options).ok()?;
         let name = HSTRING::from(text(lang, Key::TrFilter));
+        let spec = HSTRING::from(RECORDING_FILTER);
         let filters = [COMDLG_FILTERSPEC {
             pszName: PCWSTR(name.as_ptr()),
-            pszSpec: w!("*.m4a;*.wav"),
+            pszSpec: PCWSTR(spec.as_ptr()),
         }];
         let _ = dialog.SetFileTypes(&filters);
         // A folder that is gone just leaves the dialog where Windows puts it.
@@ -4860,6 +4864,11 @@ pub fn run_demo(args: &[String]) {
 mod tests {
     use super::*;
     use crate::model::Page;
+
+    #[test]
+    fn the_file_filter_takes_videos() {
+        assert_eq!(RECORDING_FILTER, "*.m4a;*.wav;*.mp4");
+    }
 
     #[test]
     fn transcript_clicks_map_to_actions() {

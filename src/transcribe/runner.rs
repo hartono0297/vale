@@ -376,10 +376,14 @@ fn attempt(
         None => None,
     };
     let mut decoder = Decoder::open(&job.audio)?;
-    let channels = decoder.channels();
     let sidecar = std::fs::read_to_string(output::paths(&job.audio).sidecar).ok();
     let names = sidecar.as_deref().and_then(output::sidecar_channels);
-    let speakers = output::speakers(channels, names.as_deref());
+    let (downmix, speakers) =
+        output::channel_plan(&job.audio, decoder.channels(), names.as_deref());
+    if downmix {
+        decoder.downmix();
+    }
+    let channels = decoder.channels();
 
     let mut scorers: Vec<Box<dyn FrameScorer + '_>> = Vec::new();
     for _ in 0..channels {

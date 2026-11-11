@@ -70,6 +70,26 @@ pub fn speakers(channels: usize, sidecar: Option<&[String]>) -> Vec<Option<Speak
     }
 }
 
+/// How a file's channels are read: whether to mix them into one first, and
+/// the speaker of each channel read. A video with two or more channels and
+/// no channel names in a sidecar did not come from Vale's recorder, so its
+/// channels are not "mic" and "system": it is mixed into one unlabelled
+/// channel. Everything else keeps its channels (`speakers`).
+pub fn channel_plan(
+    audio: &Path,
+    channels: usize,
+    names: Option<&[String]>,
+) -> (bool, Vec<Option<Speaker>>) {
+    let video = audio
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("mp4"));
+    if video && channels >= 2 && names.is_none_or(<[String]>::is_empty) {
+        (true, vec![None])
+    } else {
+        (false, speakers(channels, names))
+    }
+}
+
 /// Both channels' segments in time order (the mic first at the same start),
 /// empty texts dropped.
 pub fn merge(segments: impl IntoIterator<Item = Segment>) -> Vec<Segment> {
@@ -485,6 +505,28 @@ mod tests {
         let md = markdown(&header, &segments, LABELS_ID);
         assert_eq!(md.matches("Saya:**").count(), 2, "{md}");
         assert!(md.contains("**01:00 · Saya:**"));
+    }
+
+    #[test]
+    fn a_video_without_a_sidecar_is_downmixed_unlabelled() {
+        assert_eq!(channel_plan(Path::new("a.mp4"), 2, None), (true, vec![None]));
+        assert_eq!(channel_plan(Path::new("A.MP4"), 2, None), (true, vec![None]));
+        assert_eq!(channel_plan(Path::new("a.mp4"), 6, Some(&[])), (true, vec![None]));
+    }
+
+    #[test]
+    fn a_vale_video_reads_its_mix_channel() {
+        let mix = ["mix".to_string()];
+        assert_eq!(channel_plan(Path::new("a.mp4"), 1, Some(&mix)), (false, vec![None]));
+        assert_eq!(channel_plan(Path::new("a.mp4"), 1, None), (false, vec![None]));
+    }
+
+    #[test]
+    fn an_m4a_keeps_its_two_labels() {
+        assert_eq!(
+            channel_plan(Path::new("a.m4a"), 2, None),
+            (false, vec![Some(Me), Some(Others)])
+        );
     }
 
     #[test]

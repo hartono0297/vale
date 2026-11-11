@@ -1,4 +1,4 @@
-//! `vale --transcribe <file.m4a|file.wav> [--model <gguf path or catalog
+//! `vale --transcribe <file.m4a|file.wav|file.mp4> [--model <gguf path or catalog
 //! key>] [--engine <dir>] [--vad <gguf path>|energy] [--lang id|en] [--cpu]`
 //! (debug builds): transcribes one file on this thread, prints each segment
 //! as it comes and the timing, and writes `.md` / `.srt` next to the input
@@ -101,7 +101,7 @@ pub fn run(args: &[String]) -> i32 {
         Err(why) => {
             eprintln!("vale --transcribe: {why}");
             eprintln!(
-                "usage: vale --transcribe <file.m4a|file.wav> [--model <gguf|key>] [--engine <dir>] [--vad <gguf>|energy] [--lang id|en] [--cpu]"
+                "usage: vale --transcribe <file.m4a|file.wav|file.mp4> [--model <gguf|key>] [--engine <dir>] [--vad <gguf>|energy] [--lang id|en] [--cpu]"
             );
             return 2;
         }

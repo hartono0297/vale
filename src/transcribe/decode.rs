@@ -1,6 +1,8 @@
-//! Audio in: a recording (`.m4a`, AAC-LC in MP4, or a `.wav`) decoded by the
-//! Media Foundation Source Reader to float samples, each channel resampled
-//! on its own to 16 kHz mono f32, the only input the engine accepts.
+//! Audio in: a recording (`.m4a`, AAC-LC in MP4, a `.wav`, or the audio
+//! track of an `.mp4` video) decoded by the Media Foundation Source Reader
+//! to float samples, each channel resampled on its own to 16 kHz mono f32,
+//! the only input the engine accepts. A video from elsewhere is mixed into
+//! one channel after that (`Decoder::downmix`).
 //!
 //! The decoder streams: `Decoder::next_block` hands out about a second at a
 //! time, so an hour of stereo never sits in memory at 48 kHz. Track A's
@@ -55,6 +57,8 @@ pub struct Decoder {
     rate: u32,
     duration_ms: Option<u64>,
     resamplers: Vec<Resampler>,
+    /// Blocks come out as one channel, the mean of the file's own.
+    downmix: bool,
     ended: bool,
     _mf: MfSession,
 }
@@ -89,6 +93,7 @@ impl Decoder {
             rate: 0,
             duration_ms,
             resamplers: Vec::new(),
+            downmix: false,
             ended: false,
             _mf: mf,
         };
@@ -120,8 +125,15 @@ impl Decoder {
         Ok(())
     }
 
+    /// The channels `next_block` gives: the file's own, or one after
+    /// `downmix`.
     pub fn channels(&self) -> usize {
-        self.channels
+        if self.downmix { 1 } else { self.channels }
+    }
+
+    /// From here on the file reads as one channel, the mean of its own.
+    pub fn downmix(&mut self) {
+        self.downmix = true;
     }
 
     /// From the container, when it says.
@@ -183,8 +195,20 @@ impl Decoder {
         if out[0].is_empty() && self.ended {
             return Ok(None);
         }
-        Ok(Some(out))
+        Ok(Some(if self.downmix { vec![mix_planes(&out)] } else { out }))
     }
+}
+
+/// The channels mixed into one: the mean of each sample.
+pub fn mix_planes(planes: &[Vec<f32>]) -> Vec<f32> {
+    let Some(first) = planes.first() else {
+        return Vec::new();
+    };
+    let scale = 1.0 / planes.len() as f32;
+    (0..first.len())
+        .map(|i| planes.iter().map(|plane| plane.get(i).copied().unwrap_or(0.0)).sum::<f32>())
+        .map(|sum| sum * scale)
+        .collect()
 }
 
 /// The length of the audio file, read from the container only (no media
@@ -394,6 +418,13 @@ pub(crate) mod tests {
         &x[x.len() / 10..x.len() * 9 / 10]
     }
 
+    #[test]
+    fn downmix_averages_the_channels() {
+        assert_eq!(mix_planes(&[vec![1.0, 0.0], vec![0.0, 1.0]]), vec![0.5, 0.5]);
+        assert_eq!(mix_planes(&[vec![0.25, -0.5]]), vec![0.25, -0.5]);
+        assert_eq!(mix_planes(&[]), Vec::<f32>::new());
+    }
+
     fn resample_all(from: u32, to: u32, input: &[f32]) -> Vec<f32> {
         let mut r = Resampler::new(from, to);
         let mut out = Vec::new();
@@ -514,6 +545,27 @@ pub(crate) mod tests {
         assert!((planes[0].len() as i64 - 32_000).abs() <= 1, "{}", planes[0].len());
         assert!((rms(middle(&planes[0])) - 0.5 / 2f32.sqrt()).abs() < 0.01);
         assert!(rms(&planes[1]) < 1e-4, "the silent channel stays silent");
+    }
+
+    #[test]
+    fn a_downmixed_decoder_reads_one_channel_of_the_mean() {
+        let store = temp_store("decode-downmix");
+        let path = store.root().join("both.wav");
+        let left = sine(500.0, 48_000, 2.0, 0.5);
+        let right = vec![0.0; left.len()];
+        write_wav(&path, 48_000, &[left, right]);
+        let mut decoder = Decoder::open(&path).unwrap();
+        assert_eq!(decoder.channels(), 2);
+        decoder.downmix();
+        assert_eq!(decoder.channels(), 1);
+        let mut mono = Vec::new();
+        while let Some(block) = decoder.next_block().unwrap() {
+            assert_eq!(block.len(), 1);
+            mono.extend_from_slice(&block[0]);
+        }
+        assert!((mono.len() as i64 - 32_000).abs() <= 1, "{}", mono.len());
+        // Half of the one channel that sounds.
+        assert!((rms(middle(&mono)) - 0.25 / 2f32.sqrt()).abs() < 0.01);
     }
 
     #[test]
