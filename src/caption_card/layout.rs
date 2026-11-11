@@ -25,7 +25,7 @@ pub const GRIP: f32 = 16.0;
 /// Space between two caption lines.
 pub const LINE_GAP: f32 = 8.0;
 /// Space between a speaker label and its text.
-pub const LABEL_GAP: f32 = 6.0;
+pub const LABEL_GAP: f32 = 10.0;
 /// The body fades out this far in at its top and bottom edge.
 pub const EDGE_FADE: f32 = 24.0;
 /// One wheel notch scrolls back this far.

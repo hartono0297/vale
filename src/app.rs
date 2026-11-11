@@ -830,6 +830,7 @@ fn release_graphics() {
     crate::shot_edit::clear_saved_sink();
     identify_overlay::release();
     crate::lyrics_card::release();
+    crate::caption_card::release();
     crate::shot_edit::window::release();
     crate::transcript_win::release();
 }
