@@ -63,8 +63,8 @@ impl WindowWatch {
         if pid == 0 {
             return None;
         }
-        // Only the target's process is hooked. No WINEVENT_SKIPOWNPROCESS:
-        // the recorded window may be one of Vale's own.
+        // Only the target's process is hooked. It is never Vale's own: the
+        // picker leaves Vale's windows out.
         let hook = unsafe {
             SetWinEventHook(
                 EVENT_SYSTEM_MINIMIZESTART,
