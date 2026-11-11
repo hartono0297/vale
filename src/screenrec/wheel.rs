@@ -128,7 +128,7 @@ impl WheelHook {
         started
     }
 
-    /// `WM_QUIT` to the thread, which unhooks and ends; waits for it.
+    /// Drops the hook (Drop sends `WM_QUIT` and joins the thread).
     pub fn stop(self) {}
 }
 

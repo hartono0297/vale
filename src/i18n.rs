@@ -690,9 +690,9 @@ keys! {
     ScreenSettingsFpsDesc => "60 lebih halus, filenya lebih besar", "60 is smoother, the files are bigger";
     ScreenSettingsFolder => "Folder video", "Video folder";
     ScreenSettingsHighlight => "Sorot kursor", "Highlight the cursor";
-    ScreenSettingsHighlightDesc => "Lingkaran kuning lembut di kursor dalam video", "A soft yellow circle around the cursor in the video";
+    ScreenSettingsHighlightDesc => "Lingkaran kuning di kursor \u{b7} Berlaku mulai rekaman berikutnya", "A yellow disc on the cursor \u{b7} Applies from the next recording";
     ScreenSettingsRipples => "Riak klik", "Click ripples";
-    ScreenSettingsRipplesDesc => "Lingkaran yang melebar di video tiap kamu klik", "A ring spreads in the video on every click";
+    ScreenSettingsRipplesDesc => "Riak melebar tiap klik \u{b7} Berlaku mulai rekaman berikutnya", "A ripple on every click \u{b7} Applies from the next recording";
     ScreenSettingsPickTitle => "Pilih folder video", "Choose the video folder";
     RecDeviceFrom => "Suara PC dari", "PC audio from";
     RecEchoCancel => "Peredam gema mic", "Mic echo cancellation";
@@ -4048,14 +4048,14 @@ mod tests {
             (Key::ScreenSettingsHighlight, "Sorot kursor", "Highlight the cursor"),
             (
                 Key::ScreenSettingsHighlightDesc,
-                "Lingkaran kuning lembut di kursor dalam video",
-                "A soft yellow circle around the cursor in the video",
+                "Lingkaran kuning di kursor \u{b7} Berlaku mulai rekaman berikutnya",
+                "A yellow disc on the cursor \u{b7} Applies from the next recording",
             ),
             (Key::ScreenSettingsRipples, "Riak klik", "Click ripples"),
             (
                 Key::ScreenSettingsRipplesDesc,
-                "Lingkaran yang melebar di video tiap kamu klik",
-                "A ring spreads in the video on every click",
+                "Riak melebar tiap klik \u{b7} Berlaku mulai rekaman berikutnya",
+                "A ripple on every click \u{b7} Applies from the next recording",
             ),
         ];
         for (key, id, en) in table {

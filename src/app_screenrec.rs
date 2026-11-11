@@ -1089,6 +1089,11 @@ impl App {
         self.screen_show_status();
     }
 
+    /// A screen recording runs and its video is zoomed.
+    pub(super) fn screen_zoomed(&self) -> bool {
+        self.screen.recording() && self.screen.zoom.on
+    }
+
     /// One level up (`dir > 0`) or down, only while the video is zoomed.
     pub(super) fn screen_zoom_step(&mut self, dir: i32) {
         if !self.screen.recording() || !self.screen.zoom.on {

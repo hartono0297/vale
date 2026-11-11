@@ -287,7 +287,7 @@ impl ZoomCamera {
     }
 }
 
-// The auto-zoom below is phase 4's design hook: tested, not wired yet.
+// The auto-zoom below is a later phase's design hook: tested, not wired yet.
 
 /// What the later auto-zoom reacts to. Positions in source pixels.
 #[cfg_attr(not(test), allow(dead_code))]
@@ -313,7 +313,7 @@ pub enum AutoAction {
     ZoomOut,
 }
 
-/// The auto-zoom rules (phase 4, not wired yet): a click or typing zooms in;
+/// The auto-zoom rules (a later phase, not wired yet): a click or typing zooms in;
 /// a quiet spell or a long move away zooms back out.
 #[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Debug)]
@@ -393,6 +393,53 @@ mod tests {
 
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-6
+    }
+
+    /// Island presses in order; the camera gets them the way the recorder
+    /// loop does after a pause: every toggle first, then the summed steps.
+    fn mirror_and_camera(presses: &[Option<i32>]) -> (ZoomState, ZoomCamera) {
+        let mut state = ZoomState::default();
+        let mut toggles = 0;
+        let mut steps = 0i32;
+        for press in presses {
+            match press {
+                None => {
+                    state.toggle();
+                    toggles += 1;
+                }
+                Some(dir) => {
+                    // The island only steps while zoomed.
+                    if state.on && state.step(*dir) {
+                        steps += dir.signum();
+                    }
+                }
+            }
+        }
+        let mut cam = ZoomCamera::new(HD, 1920, 1080);
+        for _ in 0..toggles {
+            cam.toggle(0.0, (960.0, 540.0));
+        }
+        for _ in 0..steps.unsigned_abs() {
+            cam.step(steps.signum(), 0.0);
+        }
+        (state, cam)
+    }
+
+    #[test]
+    fn island_mirror_and_camera_agree_after_a_queued_sequence() {
+        let sequences: [&[Option<i32>]; 3] = [
+            // toggle on, up, up, toggle off, toggle on, down
+            &[None, Some(1), Some(1), None, None, Some(-1)],
+            // up before any toggle is ignored, then on, up, down, down
+            &[Some(1), None, Some(1), Some(-1), Some(-1)],
+            // on, up to the top and past it, off
+            &[None, Some(1), Some(1), Some(1), Some(1), Some(1), Some(1), None],
+        ];
+        for seq in sequences {
+            let (state, cam) = mirror_and_camera(seq);
+            assert_eq!(state.on, cam.is_on(), "{seq:?}");
+            assert!(close(state.level, cam.level()), "{seq:?}: {} vs {}", state.level, cam.level());
+        }
     }
 
     fn rect_close(a: RectF, b: RectF) -> bool {

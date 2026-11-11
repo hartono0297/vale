@@ -125,6 +125,12 @@ pub(super) fn wanted(config: &Hotkeys, recording: bool, screen: bool) -> Hotkeys
     want
 }
 
+/// The video is zoomed but the zoom row has no combo any more (switched off
+/// in Settings): the zoom has to go out, or nothing could undo it. Pure.
+pub(super) fn zoom_out_needed(row: Option<Hotkey>, zoomed: bool) -> bool {
+    zoomed && row.is_none()
+}
+
 /// What the island keeps about the hotkeys.
 #[derive(Default)]
 pub(super) struct HotkeyState {
@@ -246,6 +252,9 @@ impl App {
         let want = wanted(&self.config.hotkeys, recording, self.screen.recording());
         self.hotkeys.apply(&want, &mut WinOps(self.hwnd));
         self.sync_hotkey_hook();
+        if zoom_out_needed(self.config.hotkeys.get(HotkeyId::RecordZoom), self.screen_zoomed()) {
+            self.screen_toggle_zoom();
+        }
     }
 
     /// Starts the PrtSc hook thread when a row needs it and none runs, stops
@@ -417,6 +426,15 @@ mod tests {
 
     fn hk(text: &str) -> Hotkey {
         hotkey::parse(text).unwrap().unwrap()
+    }
+
+    #[test]
+    fn zoom_out_needed_only_when_zoomed_without_a_combo() {
+        let combo = Some(hk("Ctrl+Alt+Z"));
+        assert!(zoom_out_needed(None, true));
+        assert!(!zoom_out_needed(None, false));
+        assert!(!zoom_out_needed(combo, true));
+        assert!(!zoom_out_needed(combo, false));
     }
 
     #[test]

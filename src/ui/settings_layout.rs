@@ -4594,7 +4594,8 @@ fn recording_card(b: &mut Builder, s: &State) {
 }
 
 /// "Rekam layar" (Fitur): the frame rate of a screen recording, the cursor
-/// highlight and click ripples switches, and the folder the videos go to. (The hotkey is in the Tombol pintas section.)
+/// highlight and click ripples switches, and the folder the videos go to.
+/// (The hotkey is in the Tombol pintas section.)
 fn screen_card(b: &mut Builder, s: &State) {
     titled(b, Key::ScreenSettingsTitle);
     let card = b.card(4.0 * ROW_H);

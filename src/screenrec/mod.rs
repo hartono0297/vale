@@ -317,7 +317,7 @@ impl ScreenRecorder {
     }
 
     /// How far the recording is and whether it is zoomed. The island keeps
-    /// its own clock, so only the debug CLI asks until the zoom is wired.
+    /// its own clock and its own zoom mirror, so only the debug CLI asks.
     #[cfg_attr(not(debug_assertions), allow(dead_code))]
     pub fn status(&self) -> Status {
         self.status.lock().map(|s| *s).unwrap_or_default()
