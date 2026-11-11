@@ -91,7 +91,7 @@ pub enum Container {
 }
 
 impl Container {
-    fn guid(self) -> GUID {
+    pub(crate) fn guid(self) -> GUID {
         match self {
             Self::Fragmented => MFTranscodeContainerType_FMPEG4,
             Self::Mpeg4 => MFTranscodeContainerType_MPEG4,

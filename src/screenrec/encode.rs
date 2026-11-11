@@ -19,7 +19,7 @@ use windows::Win32::Media::MediaFoundation::{
     MF_MT_YUV_MATRIX, MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, MF_SA_D3D11_BINDFLAGS,
     MF_SINK_WRITER_D3D_MANAGER, MF_TRANSCODE_CONTAINERTYPE, MFAudioFormat_AAC, MFAudioFormat_PCM,
     MFMediaType_Audio, MFMediaType_Video, MFNominalRange_16_235, MFT_CATEGORY_VIDEO_ENCODER,
-    MFT_ENUM_HARDWARE_URL_Attribute, MFT_FRIENDLY_NAME_Attribute, MFTranscodeContainerType_MPEG4,
+    MFT_ENUM_HARDWARE_URL_Attribute, MFT_FRIENDLY_NAME_Attribute,
     MFVideoFormat_H264, MFVideoFormat_NV12, MFVideoInterlace_Progressive, MFVideoPrimaries_BT709,
     MFVideoTransFunc_709, MFVideoTransferMatrix_BT709,
     eAVEncCommonRateControlMode_UnconstrainedVBR, eAVEncH264VProfile_High,
@@ -29,6 +29,7 @@ use windows::core::{GUID, HSTRING, Interface, PCWSTR, PWSTR};
 use super::Error;
 use super::audio::{SAMPLE_RATE, frames_hns};
 use crate::mf::{Mf, created};
+use crate::recorder::Container;
 
 /// The video stream's settings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -174,11 +175,13 @@ pub struct Encoder {
     allocator: IMFVideoSampleAllocatorEx,
     frame_hns: i64,
     info: EncoderInfo,
+    container: Container,
 }
 
 impl Encoder {
-    /// Opens `path` for writing. Tries a hardware encoder first when
-    /// `prefer_hardware`, then the software one.
+    /// Opens `path` for writing as `container` (the container is set by
+    /// attribute, so the extension does not matter). Tries a hardware
+    /// encoder first when `prefer_hardware`, then the software one.
     pub fn create(
         mf: &'static Mf,
         path: &Path,
@@ -186,6 +189,7 @@ impl Encoder {
         spec: &VideoSpec,
         audio_channels: Option<u16>,
         prefer_hardware: bool,
+        container: Container,
     ) -> Result<Encoder, Error> {
         let tries: &[bool] = if prefer_hardware {
             &[true, false]
@@ -194,7 +198,7 @@ impl Encoder {
         };
         let mut last = Error::NoEncoder(String::new());
         for &hardware in tries {
-            match Self::open(mf, path, manager, spec, audio_channels, hardware) {
+            match Self::open(mf, path, manager, spec, audio_channels, hardware, container) {
                 Ok(e) => return Ok(e),
                 Err(e) => {
                     let _ = std::fs::remove_file(path);
@@ -212,6 +216,7 @@ impl Encoder {
         spec: &VideoSpec,
         audio_channels: Option<u16>,
         hardware: bool,
+        container: Container,
     ) -> Result<Encoder, Error> {
         let fail = |step: &'static str| move |e: windows::core::Error| Error::win(step, &e);
         let no_encoder = |e: windows::core::Error| {
@@ -227,12 +232,7 @@ impl Encoder {
             hardware as u32,
         )
         .map_err(fail("attributes"))?;
-        set_guid(
-            &attrs,
-            MF_TRANSCODE_CONTAINERTYPE,
-            MFTranscodeContainerType_MPEG4,
-        )
-        .map_err(fail("attributes"))?;
+        set_guid(&attrs, MF_TRANSCODE_CONTAINERTYPE, container.guid()).map_err(fail("attributes"))?;
         unsafe { attrs.SetUnknown(&MF_SINK_WRITER_D3D_MANAGER, manager) }
             .map_err(fail("attributes"))?;
         let url = HSTRING::from(path.as_os_str());
@@ -305,6 +305,7 @@ impl Encoder {
             allocator,
             frame_hns: 10_000_000 / spec.fps.max(1) as i64,
             info,
+            container,
         })
     }
 
@@ -313,6 +314,11 @@ impl Encoder {
         if self.info.hardware && self.info.name == GENERIC_HARDWARE && !adapter.is_empty() {
             self.info.name = format!("{GENERIC_HARDWARE} on {adapter}");
         }
+    }
+
+    /// The container this file is written as.
+    pub fn container(&self) -> Container {
+        self.container
     }
 
     pub fn info(&self) -> &EncoderInfo {

@@ -1,44 +1,55 @@
-//! The files of a screen recording: the video's name (the contract in the
-//! recording spec: `YYYY-MM-DD HHmm <title>.mp4`, ` (2)` on a clash) and the
-//! `.vale.json` sidecar with its `"cursor_log"` file name.
+//! The files of a screen recording: the video (`<stem>.mp4`, written as
+//! `<stem>.mp4.part` until it is finished), the `.vale.json` sidecar with its
+//! `"cursor_log"` file name and the cursor log. The stem is
+//! [`crate::recorder::naming::file_stem`]; a clash adds ` (2)`.
 
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
-/// `YYYY-MM-DD HHmm` plus ` <title>` when there is one. Characters Windows
-/// refuses in a file name become spaces; the title is cut at 60 characters.
-pub fn file_stem(local: chrono::NaiveDateTime, title: &str) -> String {
-    let date = local.format("%Y-%m-%d %H%M").to_string();
-    let clean: String = title
-        .chars()
-        .map(|c| match c {
-            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => ' ',
-            c if c.is_control() => ' ',
-            c => c,
-        })
-        .take(60)
-        .collect();
-    let clean = clean.split_whitespace().collect::<Vec<_>>().join(" ");
-    let clean = clean.trim_end_matches('.');
-    if clean.is_empty() {
-        date
-    } else {
-        format!("{date} {clean}")
-    }
+/// The four files one recording named `stem` uses in `dir`: the video, the
+/// video while it is written, the sidecar and the cursor log.
+pub fn files_of(dir: &Path, stem: &str) -> [PathBuf; 4] {
+    [
+        dir.join(format!("{stem}.mp4")),
+        dir.join(format!("{stem}.mp4.part")),
+        dir.join(format!("{stem}.vale.json")),
+        dir.join(format!("{stem}.{}", super::cursor_log::EXTENSION)),
+    ]
 }
 
-/// `dir\<stem>.<ext>`, or `dir\<stem> (2).<ext>` and up while `taken` says
-/// the name is in use.
-pub fn unique_path(dir: &Path, stem: &str, ext: &str, taken: impl Fn(&Path) -> bool) -> PathBuf {
-    let first = dir.join(format!("{stem}.{ext}"));
-    if !taken(&first) {
-        return first;
+/// `stem`, or `stem (2)`, `(3)`, ... for the first stem none of whose files
+/// ([`files_of`]) `exists` reports as taken: a sidecar or an unfinished
+/// `.part` left by another recording claims its name too.
+pub fn unique_stem(dir: &Path, stem: &str, exists: impl Fn(&Path) -> bool) -> String {
+    let free = |s: &str| !files_of(dir, s).iter().any(|p| exists(p));
+    if free(stem) {
+        return stem.to_string();
     }
-    (2..)
-        .map(|n| dir.join(format!("{stem} ({n}).{ext}")))
-        .find(|p| !taken(p))
-        .unwrap_or(first)
+    (2u32..)
+        .map(|n| format!("{stem} ({n})"))
+        .find(|s| free(s))
+        .unwrap_or_else(|| stem.to_string())
+}
+
+/// The file the video is written to until it is finished: `<video>.part`.
+pub fn part_of(video: &Path) -> PathBuf {
+    let mut name = video.as_os_str().to_owned();
+    name.push(".part");
+    PathBuf::from(name)
+}
+
+/// Those of the four files of `video` that exist, the `.part` included.
+pub fn existing_files(video: &Path) -> Vec<PathBuf> {
+    let dir = video.parent().unwrap_or(Path::new(""));
+    let stem = video
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    files_of(dir, &stem)
+        .into_iter()
+        .filter(|p| p.exists())
+        .collect()
 }
 
 /// The sidecar next to `video`: same name, `.vale.json`.
@@ -110,37 +121,50 @@ pub fn write_sidecar(video: &Path, info: &SidecarInfo) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
-    fn at(h: u32, m: u32) -> chrono::NaiveDateTime {
-        chrono::NaiveDate::from_ymd_opt(2026, 11, 7)
-            .unwrap()
-            .and_hms_opt(h, m, 5)
-            .unwrap()
-    }
-
     #[test]
-    fn the_stem_is_the_date_and_the_title() {
-        assert_eq!(file_stem(at(14, 30), ""), "2026-11-07 1430");
-        assert_eq!(file_stem(at(9, 5), "Zoom"), "2026-11-07 0905 Zoom");
+    fn the_files_of_a_video_are_four() {
+        let f = files_of(Path::new(r"C:\v"), "2026-11-11 1430");
         assert_eq!(
-            file_stem(at(9, 5), "a/b: c?  d."),
-            "2026-11-07 0905 a b c d"
+            f,
+            [
+                PathBuf::from(r"C:\v\2026-11-11 1430.mp4"),
+                PathBuf::from(r"C:\v\2026-11-11 1430.mp4.part"),
+                PathBuf::from(r"C:\v\2026-11-11 1430.vale.json"),
+                PathBuf::from(r"C:\v\2026-11-11 1430.cursor.jsonl"),
+            ]
         );
-        assert_eq!(file_stem(at(9, 5), "  :: "), "2026-11-07 0905");
     }
 
     #[test]
-    fn a_clash_adds_a_number() {
+    fn a_clash_with_any_file_takes_the_next_number() {
         let dir = Path::new(r"C:\v");
-        let taken = [
-            dir.join("2026-11-07 1430.mp4"),
-            dir.join("2026-11-07 1430 (2).mp4"),
-        ];
-        let p = unique_path(dir, "2026-11-07 1430", "mp4", |p| {
-            taken.iter().any(|t| t == p)
-        });
-        assert_eq!(p, dir.join("2026-11-07 1430 (3).mp4"));
-        let p = unique_path(dir, "x", "mp4", |_| false);
-        assert_eq!(p, dir.join("x.mp4"));
+        let only = |name: &'static str| move |p: &Path| p == dir.join(name);
+        assert_eq!(unique_stem(dir, "x", |_| false), "x");
+        assert_eq!(unique_stem(dir, "x", only("x.mp4.part")), "x (2)");
+        assert_eq!(unique_stem(dir, "x", only("x.cursor.jsonl")), "x (2)");
+        let taken = ["x.mp4", "x (2).vale.json"];
+        let both = |p: &Path| taken.iter().any(|t| p == dir.join(t));
+        assert_eq!(unique_stem(dir, "x", both), "x (3)");
+    }
+
+    #[test]
+    fn existing_files_lists_only_what_is_there() {
+        let dir = std::env::temp_dir()
+            .join("vale-test-files")
+            .join(format!("{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let video = dir.join("x.mp4");
+        std::fs::write(&video, b"v").unwrap();
+        std::fs::write(dir.join("x.vale.json"), b"{}").unwrap();
+        std::fs::write(dir.join("x.txt"), b"t").unwrap();
+        assert_eq!(
+            existing_files(&video),
+            vec![video.clone(), dir.join("x.vale.json")]
+        );
+        std::fs::write(dir.join("x.mp4.part"), b"p").unwrap();
+        assert_eq!(existing_files(&video).len(), 3);
+        assert_eq!(part_of(&video), dir.join("x.mp4.part"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -176,6 +200,19 @@ mod tests {
         assert_eq!(v["channels"][1], "system");
         assert_eq!(v["app"], Value::Null);
         assert_eq!(v["cursor_log"], "2026-11-07 1430.cursor.jsonl");
+    }
+
+    #[test]
+    fn the_sidecar_names_the_mix_channel() {
+        let mut i = info();
+        i.channels = vec!["mix".into()];
+        i.cursor_log = Some("a.cursor.jsonl".into());
+        let old = r#"{"transcript":{"model":"x"}}"#;
+        let v: Value = serde_json::from_str(&sidecar_json(Some(old), &i)).unwrap();
+        assert_eq!(v["kind"], "screen");
+        assert_eq!(v["channels"], serde_json::json!(["mix"]));
+        assert_eq!(v["cursor_log"], "a.cursor.jsonl");
+        assert_eq!(v["transcript"]["model"], "x");
     }
 
     #[test]

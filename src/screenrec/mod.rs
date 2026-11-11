@@ -35,6 +35,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 pub use audio::AudioInput;
 pub use capture::{Target, exclude_from_capture};
 pub use encode::EncoderInfo;
+pub use crate::recorder::Container;
 
 use audio::{AudioClock, AudioFeed};
 use capture::{Capture, Source};
@@ -167,6 +168,8 @@ pub struct Summary {
     /// Frame slots skipped (the machine fell behind or the encoder was full).
     pub dropped: u64,
     pub encoder: EncoderInfo,
+    /// The MP4 flavour written (fragmented unless the sink writer refused it).
+    pub container: Container,
     pub ended: EndReason,
     /// Audio frames dropped (queue overflow, pushed while paused).
     pub audio_dropped: u64,
@@ -215,8 +218,9 @@ pub struct ScreenRecorder {
 }
 
 impl ScreenRecorder {
-    /// Starts recording `target` into `path` (an `.mp4`; its folder is
-    /// made). Returns once the capture and the encoder run, or with the
+    /// Starts recording `target` into `path` (the final `.mp4`; its folder is
+    /// made). The video is written to `path.part` and renamed to `path` when
+    /// the recording ends. Returns once the capture and the encoder run, or with the
     /// reason they could not. `on_end` is called on the recording thread
     /// when the recording ends by itself (the target closed, an error);
     /// call [`stop`](Self::stop) then to collect the result.
@@ -361,6 +365,7 @@ const BUTTONS: [(
 /// Everything one recording holds, on its thread. Field order is drop
 /// order: the encoder before Media Foundation shuts down.
 struct Recording {
+    /// The finished video; the encoder writes `files::part_of(path)`.
     path: PathBuf,
     options: Options,
     started: String,
@@ -426,9 +431,29 @@ impl Recording {
             bitrate: plan::bitrate(out.0, out.1, fps),
         };
         let channels = feed.as_ref().map(|f| f.channels());
-        let encoder =
-            Encoder::create(mf, path, &manager, &spec, channels, options.prefer_hardware)?;
-        let mut encoder = encoder;
+        // Fragmented MP4 first (a crash leaves a playable file), plain MP4
+        // when the sink writer refuses it.
+        let part = files::part_of(path);
+        let mut encoder = None;
+        let mut last = Error::NoEncoder(String::new());
+        for container in [Container::Fragmented, Container::Mpeg4] {
+            match Encoder::create(
+                mf,
+                &part,
+                &manager,
+                &spec,
+                channels,
+                options.prefer_hardware,
+                container,
+            ) {
+                Ok(e) => {
+                    encoder = Some(e);
+                    break;
+                }
+                Err(e) => last = e,
+            }
+        }
+        let mut encoder = encoder.ok_or(last)?;
         encoder.name_adapter(&gpu.adapter);
 
         let log = if options.side_files {
@@ -510,7 +535,6 @@ impl Recording {
         let mut ripples: Vec<((f32, f32), f64)> = Vec::new();
         let mut cursor = self.camera.bounds().center();
         let mut audio_clock = AudioClock::default();
-        let mut resumed_at = i64::MIN;
         let mut audio_end: i64 = 0;
         let mut zoom_logged = 0.0f64;
 
@@ -520,9 +544,7 @@ impl Recording {
                     Ok(Cmd::Pause) => timeline.pause(qpc_hns()),
                     Ok(Cmd::Resume) => {
                         if timeline.is_paused() {
-                            let now = qpc_hns();
-                            timeline.resume(now);
-                            resumed_at = now;
+                            timeline.resume(qpc_hns());
                             audio_clock.reset();
                         }
                     }
@@ -540,14 +562,13 @@ impl Recording {
                 break;
             }
 
-            // Audio: pushed while paused (or before the resume) is dropped.
+            // Audio, also while paused: the last moment before a pause
+            // arrives late and still lands; what was captured inside a
+            // pause is dropped.
             if let Some(feed) = &self.feed {
                 for chunk in feed.drain() {
                     let n = (chunk.pcm.len() / feed.channels() as usize) as u64;
-                    let measured = (chunk.qpc >= resumed_at)
-                        .then(|| timeline.media_time(chunk.qpc))
-                        .flatten();
-                    let Some(measured) = measured else {
+                    let Some(measured) = timeline.media_time(chunk.qpc) else {
                         audio_dropped += n;
                         continue;
                     };
@@ -716,6 +737,7 @@ impl Recording {
             .take()
             .and_then(|(p, log)| log.finish().ok().map(|_| p));
         let info = self.encoder.info().clone();
+        let container = self.encoder.container();
         let Recording {
             path,
             options,
@@ -723,8 +745,15 @@ impl Recording {
             encoder,
             ..
         } = self;
-        let finished = encoder.finish();
-        if options.side_files {
+        let part = files::part_of(&path);
+        let mut finished = encoder.finish();
+        if finished.is_ok()
+            && let Err(e) = std::fs::rename(&part, &path)
+        {
+            // The finished video stays as `.part`; nothing else is written.
+            finished = Err(Error::Io(format!("{}: {e}", part.display())));
+        }
+        if finished.is_ok() && options.side_files {
             let sidecar = files::SidecarInfo {
                 title: options.title.clone(),
                 started,
@@ -755,6 +784,7 @@ impl Recording {
             frames,
             dropped,
             encoder: info,
+            container,
             ended,
             audio_dropped,
             audio_rejected: self.feed.as_ref().map_or(0, |f| f.rejected_chunks()),

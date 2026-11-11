@@ -211,8 +211,9 @@ pub fn run(args: &[String]) {
         }
     };
     let dir = std::env::temp_dir().join("vale-screenrec");
-    let stem = files::file_stem(chrono::Local::now().naive_local(), "screenrec-test");
-    let path = files::unique_path(&dir, &stem, "mp4", |p| p.exists());
+    let stem = crate::recorder::naming::file_stem(chrono::Local::now().naive_local(), "screenrec-test");
+    let stem = files::unique_stem(&dir, &stem, |p| p.exists());
+    let path = files::files_of(&dir, &stem)[0].clone();
     match a.target {
         Target::Window(h) => println!("target: window 0x{h:X} \"{}\"", window_title(h)),
         t => println!("target: {t:?}"),
@@ -351,6 +352,7 @@ pub fn run(args: &[String]) {
         },
         summary.encoder.name
     );
+    println!("container: {:?}", summary.container);
     println!(
         "ended: {:?}, audio frames dropped: {}, audio chunks refused: {}",
         summary.ended, summary.audio_dropped, summary.audio_rejected
@@ -374,6 +376,9 @@ pub fn run(args: &[String]) {
             log.display(),
             if header.is_some() { "ok" } else { "MISSING" }
         );
+    }
+    for f in files::existing_files(&summary.path) {
+        println!("file: {}", f.display());
     }
     if let Ok(meta) = std::fs::metadata(&summary.path) {
         println!("size: {} bytes", meta.len());

@@ -93,14 +93,16 @@ pub fn ticks_to_hns(ticks: i64, freq: i64) -> i64 {
     (ticks as i128 * 10_000_000 / freq.max(1) as i128) as i64
 }
 
-/// The recording's clock: QPC readings to video time, with paused spells
-/// cut out (a pause leaves no gap in the video).
-#[derive(Clone, Copy, Debug)]
+/// The recording's clock: QPC readings to video time, with every paused
+/// spell cut out (a pause leaves no gap in the video). The spans are kept,
+/// so a reading from before a pause (audio arrives late) still maps.
+#[derive(Clone, Debug)]
 pub struct Timeline {
     start: i64,
     freq: i64,
+    /// Ended pauses, oldest first: `[from, to)`.
+    spans: Vec<(i64, i64)>,
     paused_since: Option<i64>,
-    paused_total: i64,
 }
 
 impl Timeline {
@@ -108,8 +110,8 @@ impl Timeline {
         Timeline {
             start: start_qpc,
             freq,
+            spans: Vec::new(),
             paused_since: None,
-            paused_total: 0,
         }
     }
 
@@ -125,18 +127,27 @@ impl Timeline {
 
     pub fn resume(&mut self, qpc: i64) {
         if let Some(since) = self.paused_since.take() {
-            self.paused_total += (qpc - since).max(0);
+            self.spans.push((since, qpc.max(since)));
         }
     }
 
-    /// The video time of `qpc` in 100 ns units; `None` while paused or
-    /// before the start.
+    /// The video time of `qpc` in 100 ns units; `None` before the start, at
+    /// or after the start of an open pause and inside an ended one.
     pub fn media_time(&self, qpc: i64) -> Option<i64> {
-        if self.paused_since.is_some() {
+        if qpc < self.start || self.paused_since.is_some_and(|since| qpc >= since) {
             return None;
         }
-        let t = qpc - self.start - self.paused_total;
-        (t >= 0).then(|| ticks_to_hns(t, self.freq))
+        let mut cut = 0;
+        for &(from, to) in &self.spans {
+            if qpc < from {
+                break;
+            }
+            if qpc < to {
+                return None;
+            }
+            cut += to - from;
+        }
+        Some(ticks_to_hns(qpc - self.start - cut, self.freq))
     }
 }
 
@@ -289,5 +300,37 @@ mod tests {
         t.resume(14_000);
         t.resume(15_000);
         assert_eq!(t.media_time(15_000), Some(50_000_000));
+    }
+
+    const F: i64 = 10_000_000;
+    const S: i64 = 10_000_000;
+
+    #[test]
+    fn the_timeline_cuts_each_pause_once() {
+        let mut t = Timeline::new(0, F);
+        t.pause(10 * S);
+        t.resume(15 * S);
+        assert_eq!(t.media_time(12 * S), None);
+        assert_eq!(t.media_time(20 * S), Some(150_000_000));
+        assert_eq!(t.media_time(8 * S), Some(80_000_000));
+    }
+
+    #[test]
+    fn a_qpc_from_before_an_open_pause_still_maps() {
+        let mut t = Timeline::new(0, F);
+        t.pause(10 * S);
+        assert_eq!(t.media_time(99 * S / 10), Some(99_000_000));
+        assert_eq!(t.media_time(10 * S), None);
+    }
+
+    #[test]
+    fn two_pauses_add_up() {
+        let mut t = Timeline::new(0, F);
+        t.pause(10 * S);
+        t.resume(15 * S);
+        t.pause(20 * S);
+        t.resume(22 * S);
+        assert_eq!(t.media_time(30 * S), Some(230_000_000));
+        assert_eq!(t.media_time(18 * S), Some(130_000_000));
     }
 }
