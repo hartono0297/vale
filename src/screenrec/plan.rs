@@ -149,6 +149,26 @@ impl Timeline {
         }
         Some(ticks_to_hns(qpc - self.start - cut, self.freq))
     }
+
+    /// How many of `frames` frames (at `rate` Hz) of a chunk starting at
+    /// `qpc` lie before the next pause starts; all of them when no pause
+    /// follows. A chunk that straddles a pause is kept only up to it, so
+    /// what comes after the resume never starts before it ends.
+    pub fn frames_before_pause(&self, qpc: i64, frames: u64, rate: u32) -> u64 {
+        let next = self
+            .spans
+            .iter()
+            .map(|&(from, _)| from)
+            .chain(self.paused_since)
+            .find(|&from| from > qpc);
+        match next {
+            Some(from) => {
+                let fit = ((from - qpc) as i128 * rate as i128 / self.freq.max(1) as i128) as u64;
+                fit.min(frames)
+            }
+            None => frames,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -313,6 +333,29 @@ mod tests {
         assert_eq!(t.media_time(12 * S), None);
         assert_eq!(t.media_time(20 * S), Some(150_000_000));
         assert_eq!(t.media_time(8 * S), Some(80_000_000));
+        // The resume instant itself is video time again.
+        assert_eq!(t.media_time(15 * S), Some(100_000_000));
+        // Before the start there is no time.
+        assert_eq!(Timeline::new(5 * S, F).media_time(4 * S), None);
+    }
+
+    #[test]
+    fn a_chunk_over_a_pause_keeps_only_its_head() {
+        // 48 kHz at 10 MHz ticks: 480 frames are 100_000 ticks (10 ms).
+        let mut t = Timeline::new(0, F);
+        // Wholly before any pause: untouched.
+        assert_eq!(t.frames_before_pause(0, 480, 48_000), 480);
+        t.pause(10 * S);
+        assert_eq!(t.frames_before_pause(10 * S - 100_000, 480, 48_000), 480);
+        // Straddles the open pause: 5 ms of 10 ms stays.
+        assert_eq!(t.frames_before_pause(10 * S - 50_000, 480, 48_000), 240);
+        t.resume(15 * S);
+        // Straddles the ended span: the same.
+        assert_eq!(t.frames_before_pause(10 * S - 50_000, 480, 48_000), 240);
+        // After the resume nothing cuts it, even with a later pause far off.
+        t.pause(20 * S);
+        assert_eq!(t.frames_before_pause(15 * S, 480, 48_000), 480);
+        assert_eq!(t.frames_before_pause(20 * S - 25_000, 480, 48_000), 120);
     }
 
     #[test]

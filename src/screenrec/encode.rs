@@ -19,10 +19,10 @@ use windows::Win32::Media::MediaFoundation::{
     MF_MT_YUV_MATRIX, MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, MF_SA_D3D11_BINDFLAGS,
     MF_SINK_WRITER_D3D_MANAGER, MF_TRANSCODE_CONTAINERTYPE, MFAudioFormat_AAC, MFAudioFormat_PCM,
     MFMediaType_Audio, MFMediaType_Video, MFNominalRange_16_235, MFT_CATEGORY_VIDEO_ENCODER,
-    MFT_ENUM_HARDWARE_URL_Attribute, MFT_FRIENDLY_NAME_Attribute,
-    MFVideoFormat_H264, MFVideoFormat_NV12, MFVideoInterlace_Progressive, MFVideoPrimaries_BT709,
-    MFVideoTransFunc_709, MFVideoTransferMatrix_BT709,
-    eAVEncCommonRateControlMode_UnconstrainedVBR, eAVEncH264VProfile_High,
+    MFT_ENUM_HARDWARE_URL_Attribute, MFT_FRIENDLY_NAME_Attribute, MFVideoFormat_H264,
+    MFVideoFormat_NV12, MFVideoInterlace_Progressive, MFVideoPrimaries_BT709, MFVideoTransFunc_709,
+    MFVideoTransferMatrix_BT709, eAVEncCommonRateControlMode_UnconstrainedVBR,
+    eAVEncH264VProfile_High,
 };
 use windows::core::{GUID, HSTRING, Interface, PCWSTR, PWSTR};
 
@@ -232,7 +232,8 @@ impl Encoder {
             hardware as u32,
         )
         .map_err(fail("attributes"))?;
-        set_guid(&attrs, MF_TRANSCODE_CONTAINERTYPE, container.guid()).map_err(fail("attributes"))?;
+        set_guid(&attrs, MF_TRANSCODE_CONTAINERTYPE, container.guid())
+            .map_err(fail("attributes"))?;
         unsafe { attrs.SetUnknown(&MF_SINK_WRITER_D3D_MANAGER, manager) }
             .map_err(fail("attributes"))?;
         let url = HSTRING::from(path.as_os_str());

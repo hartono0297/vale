@@ -149,9 +149,11 @@ mod tests {
 
     #[test]
     fn existing_files_lists_only_what_is_there() {
-        let dir = std::env::temp_dir()
-            .join("vale-test-files")
-            .join(format!("{}", std::process::id()));
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("test-tmp")
+            .join(format!("screenrec-files-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let video = dir.join("x.mp4");
         std::fs::write(&video, b"v").unwrap();

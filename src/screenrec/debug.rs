@@ -211,7 +211,8 @@ pub fn run(args: &[String]) {
         }
     };
     let dir = std::env::temp_dir().join("vale-screenrec");
-    let stem = crate::recorder::naming::file_stem(chrono::Local::now().naive_local(), "screenrec-test");
+    let stem =
+        crate::recorder::naming::file_stem(chrono::Local::now().naive_local(), "screenrec-test");
     let stem = files::unique_stem(&dir, &stem, |p| p.exists());
     let path = files::files_of(&dir, &stem)[0].clone();
     match a.target {

@@ -32,10 +32,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON,
 };
 
+pub use crate::recorder::Container;
 pub use audio::AudioInput;
 pub use capture::{Target, exclude_from_capture};
 pub use encode::EncoderInfo;
-pub use crate::recorder::Container;
 
 use audio::{AudioClock, AudioFeed};
 use capture::{Capture, Source};
@@ -171,7 +171,7 @@ pub struct Summary {
     /// The MP4 flavour written (fragmented unless the sink writer refused it).
     pub container: Container,
     pub ended: EndReason,
-    /// Audio frames dropped (queue overflow, pushed while paused).
+    /// Audio frames dropped (queue overflow, captured inside a pause).
     pub audio_dropped: u64,
     /// Audio chunks refused (not 48 kHz).
     pub audio_rejected: u64,
@@ -362,6 +362,16 @@ const BUTTONS: [(
     (Button::Middle, VK_MBUTTON),
 ];
 
+/// The audio side of the recording loop.
+#[derive(Default)]
+struct AudioState {
+    clock: AudioClock,
+    /// Where the last written audio ends (100 ns).
+    end: i64,
+    /// Frames dropped by the timeline (inside or cut at a pause).
+    dropped: u64,
+}
+
 /// Everything one recording holds, on its thread. Field order is drop
 /// order: the encoder before Media Foundation shuts down.
 struct Recording {
@@ -513,6 +523,34 @@ impl Recording {
         Ok(())
     }
 
+    /// Drains the audio feed and writes what the timeline keeps: a chunk
+    /// whose start is inside a pause is dropped, one that runs into the next
+    /// pause is cut at it. Runs also while paused: the last moment before a
+    /// pause arrives late and still lands.
+    fn write_audio(&mut self, timeline: &Timeline, st: &mut AudioState) -> Result<(), Error> {
+        let Some(feed) = self.feed.clone() else {
+            return Ok(());
+        };
+        let channels = feed.channels() as usize;
+        for mut chunk in feed.drain() {
+            let n = (chunk.pcm.len() / channels) as u64;
+            let Some(measured) = timeline.media_time(chunk.qpc) else {
+                st.dropped += n;
+                continue;
+            };
+            let keep = timeline.frames_before_pause(chunk.qpc, n, audio::SAMPLE_RATE);
+            st.dropped += n - keep;
+            if keep == 0 {
+                continue;
+            }
+            chunk.pcm.truncate(keep as usize * channels);
+            let at = st.clock.place(measured, keep);
+            self.encoder.write_audio(&chunk.pcm, at)?;
+            st.end = st.end.max(at + audio::frames_hns(keep));
+        }
+        Ok(())
+    }
+
     fn run(
         mut self,
         rx: Receiver<Cmd>,
@@ -525,7 +563,7 @@ impl Recording {
         let mut next: i64 = 0;
         let mut frames: u64 = 0;
         let mut dropped: u64 = 0;
-        let mut audio_dropped: u64 = 0;
+        let mut audio = AudioState::default();
         let mut ended = EndReason::Stopped;
         let mut failure: Option<Error> = None;
         let mut by_command = false;
@@ -534,8 +572,6 @@ impl Recording {
         let mut held = [false; 3];
         let mut ripples: Vec<((f32, f32), f64)> = Vec::new();
         let mut cursor = self.camera.bounds().center();
-        let mut audio_clock = AudioClock::default();
-        let mut audio_end: i64 = 0;
         let mut zoom_logged = 0.0f64;
 
         'run: loop {
@@ -545,7 +581,7 @@ impl Recording {
                     Ok(Cmd::Resume) => {
                         if timeline.is_paused() {
                             timeline.resume(qpc_hns());
-                            audio_clock.reset();
+                            audio.clock.reset();
                         }
                     }
                     Ok(Cmd::ToggleZoom) => toggles += 1,
@@ -565,20 +601,9 @@ impl Recording {
             // Audio, also while paused: the last moment before a pause
             // arrives late and still lands; what was captured inside a
             // pause is dropped.
-            if let Some(feed) = &self.feed {
-                for chunk in feed.drain() {
-                    let n = (chunk.pcm.len() / feed.channels() as usize) as u64;
-                    let Some(measured) = timeline.media_time(chunk.qpc) else {
-                        audio_dropped += n;
-                        continue;
-                    };
-                    let at = audio_clock.place(measured, n);
-                    if let Err(e) = self.encoder.write_audio(&chunk.pcm, at) {
-                        failure = Some(e);
-                        break 'run;
-                    }
-                    audio_end = audio_end.max(at + audio::frames_hns(n));
-                }
+            if let Err(e) = self.write_audio(&timeline, &mut audio) {
+                failure = Some(e);
+                break;
             }
 
             if timeline.is_paused() {
@@ -712,9 +737,9 @@ impl Recording {
             next = due + 1;
 
             // No audio for a while: let the muxer go on without it.
-            if self.encoder.has_audio() && time - audio_end > 10_000_000 {
+            if self.encoder.has_audio() && time - audio.end > 10_000_000 {
                 self.encoder.audio_gap(time);
-                audio_end = time;
+                audio.end = time;
             }
 
             if let Ok(mut s) = status.lock() {
@@ -727,11 +752,17 @@ impl Recording {
             }
         }
 
+        // What the mix writer flushed just before the end still lands.
+        if failure.is_none()
+            && let Err(e) = self.write_audio(&timeline, &mut audio)
+        {
+            failure = Some(e);
+        }
         if !by_command && let Some(cb) = &on_end {
             cb();
         }
         let duration_ms = (next * frame_hns / 10_000) as u64;
-        let audio_dropped = audio_dropped + self.feed.as_ref().map_or(0, |f| f.dropped_frames());
+        let audio_dropped = audio.dropped + self.feed.as_ref().map_or(0, |f| f.dropped_frames());
         let cursor_log = self
             .log
             .take()
