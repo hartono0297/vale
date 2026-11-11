@@ -40,6 +40,9 @@ impl RectF {
 pub const MIN_LEVEL: f64 = 1.0;
 pub const MAX_LEVEL: f64 = 4.0;
 pub const DEFAULT_LEVEL: f64 = 2.0;
+/// The lowest level a `zoom_step` reaches: stepping out stops here, the
+/// whole view is the toggle's job.
+pub const MIN_STEP_LEVEL: f64 = 1.5;
 /// One `zoom_step`.
 pub const LEVEL_STEP: f64 = 0.5;
 /// Zooming in or out takes this long.
@@ -100,6 +103,52 @@ pub fn follow_alpha(dt_ms: f64) -> f64 {
         0.0
     } else {
         1.0 - (-dt_ms / FOLLOW_TAU_MS).exp()
+    }
+}
+
+/// The level after one step up (`dir > 0`) or down: half a level, kept in
+/// `[MIN_STEP_LEVEL, MAX_LEVEL]`. `dir` 0 keeps the level.
+pub fn next_level(level: f64, dir: i32) -> f64 {
+    (level + LEVEL_STEP * dir.signum() as f64).clamp(MIN_STEP_LEVEL, MAX_LEVEL)
+}
+
+/// The island's mirror of the camera's switch and level, so it can show
+/// the zoom at once while the recorder thread applies the same commands in
+/// order.
+// Wired to the island's hotkeys in the next task.
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ZoomState {
+    pub on: bool,
+    pub level: f64,
+}
+
+impl Default for ZoomState {
+    fn default() -> ZoomState {
+        ZoomState {
+            on: false,
+            level: DEFAULT_LEVEL,
+        }
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl ZoomState {
+    pub fn toggle(&mut self) {
+        self.on = !self.on;
+    }
+
+    /// One step; true when the level changed (on or off, like the camera).
+    pub fn step(&mut self, dir: i32) -> bool {
+        let next = next_level(self.level, dir);
+        let changed = next != self.level;
+        self.level = next;
+        changed
+    }
+
+    /// The level while on.
+    pub fn shown(&self) -> Option<f64> {
+        self.on.then_some(self.level)
     }
 }
 
@@ -215,7 +264,7 @@ impl ZoomCamera {
     /// One step up (`dir > 0`) or down. While on, the view eases to the new
     /// level. Returns the new level.
     pub fn step(&mut self, dir: i32, now_ms: f64) -> f64 {
-        let next = (self.level + LEVEL_STEP * dir.signum() as f64).clamp(MIN_LEVEL, MAX_LEVEL);
+        let next = next_level(self.level, dir);
         if next != self.level {
             self.level = next;
             if self.on {
@@ -498,6 +547,57 @@ mod tests {
     }
 
     #[test]
+    fn next_level_clamps() {
+        assert!(close(next_level(2.0, 1), 2.5));
+        assert!(close(next_level(2.0, -1), 1.5));
+        assert!(close(next_level(1.5, -1), 1.5));
+        assert!(close(next_level(4.0, 1), 4.0));
+        assert!(close(next_level(2.0, 0), 2.0));
+        assert!(close(next_level(2.0, 7), 2.5), "one step whatever the size");
+    }
+
+    #[test]
+    fn a_step_at_the_edge_changes_nothing() {
+        let mut z = ZoomState { on: true, level: MAX_LEVEL };
+        assert!(!z.step(1));
+        assert_eq!(z.shown(), Some(MAX_LEVEL));
+        let mut z = ZoomState { on: true, level: MIN_STEP_LEVEL };
+        assert!(!z.step(-1));
+        assert!(z.step(1));
+        assert_eq!(z.shown(), Some(2.0));
+    }
+
+    #[test]
+    fn the_mirror_starts_off_at_two_and_toggles() {
+        let mut z = ZoomState::default();
+        assert_eq!(z.shown(), None);
+        z.toggle();
+        assert_eq!(z.shown(), Some(DEFAULT_LEVEL));
+        z.toggle();
+        assert_eq!(z.shown(), None);
+    }
+
+    #[test]
+    fn the_mirror_agrees_with_the_camera() {
+        // The island applies each press to its ZoomState at once; the recorder
+        // thread applies the same commands later, in order (also after a pause).
+        let mut cam = ZoomCamera::new(HD, 1920, 1080);
+        let mut z = ZoomState::default();
+        let presses = [0, 1, 1, 1, 1, 1, 0, -1, 0, -1, -1, -1, -1, 0, 1];
+        for (i, &p) in presses.iter().enumerate() {
+            let t = i as f64 * 1000.0;
+            if p == 0 {
+                z.toggle();
+                cam.toggle(t, (100.0, 100.0));
+            } else if z.step(p) {
+                cam.step(p, t);
+            }
+            assert_eq!(cam.is_on(), z.on, "press {i}");
+            assert!(close(cam.level(), z.level), "press {i}");
+        }
+    }
+
+    #[test]
     fn steps_change_the_level_within_bounds() {
         let mut cam = ZoomCamera::new(HD, 1920, 1080);
         assert!(close(cam.level(), DEFAULT_LEVEL));
@@ -508,7 +608,7 @@ mod tests {
         for _ in 0..10 {
             cam.step(-1, 0.0);
         }
-        assert!(close(cam.level(), MIN_LEVEL));
+        assert!(close(cam.level(), MIN_STEP_LEVEL));
         // Off: the step changes the level but not the view.
         cam.step(1, 0.0);
         let v = cam.update(1000.0, (0.0, 0.0));

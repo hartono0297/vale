@@ -10,9 +10,16 @@ use crate::model::RecSources;
 /// The sidecar's name for the one audio channel: mic and PC audio summed.
 pub const MIX_CHANNEL: &str = "mix";
 
+/// The cursor effects drawn into the video, from the settings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CursorEffects {
+    pub highlight: bool,
+    pub ripples: bool,
+}
+
 /// The recorder's options for a recording at `fps` (60, anything else is 30)
 /// of the window called `title`, with one mono track when a source is on.
-pub fn options_for(fps: u32, sources: RecSources, title: &str) -> Options {
+pub fn options_for(fps: u32, sources: RecSources, title: &str, effects: CursorEffects) -> Options {
     let audio = sources.mic || sources.system;
     Options {
         fps: if fps == 60 { 60 } else { 30 },
@@ -24,7 +31,8 @@ pub fn options_for(fps: u32, sources: RecSources, title: &str) -> Options {
             Vec::new()
         },
         draw_cursor: true,
-        click_ripples: false,
+        cursor_highlight: effects.highlight,
+        click_ripples: effects.ripples,
         prefer_hardware: true,
         side_files: true,
         title: title.to_owned(),
@@ -119,26 +127,40 @@ mod tests {
         RecSources { mic, system }
     }
 
+    const ALL: CursorEffects = CursorEffects {
+        highlight: true,
+        ripples: true,
+    };
+
+    #[test]
+    fn the_cursor_effects_come_from_the_settings() {
+        let off = CursorEffects { highlight: false, ripples: false };
+        let o = options_for(30, sources(true, true), "", off);
+        assert!(!o.cursor_highlight && !o.click_ripples && o.draw_cursor);
+        let on = CursorEffects { highlight: true, ripples: true };
+        let o = options_for(30, sources(true, true), "", on);
+        assert!(o.cursor_highlight && o.click_ripples);
+    }
+
     #[test]
     fn options_follow_the_prefs() {
-        let o = options_for(60, sources(true, false), "Figma");
+        let o = options_for(60, sources(true, false), "Figma", ALL);
         assert_eq!(o.fps, 60);
         assert_eq!(o.audio_channels, Some(1));
         assert_eq!(o.channel_names, ["mix"]);
-        assert!(!o.click_ripples);
         assert!(o.draw_cursor && o.prefer_hardware && o.side_files);
         assert_eq!(o.max_height, None);
         assert_eq!(o.app, None);
         assert_eq!(o.title, "Figma");
 
-        let o = options_for(45, sources(false, false), "");
+        let o = options_for(45, sources(false, false), "", ALL);
         assert_eq!(o.fps, 30);
         assert_eq!(o.audio_channels, None);
         assert!(o.channel_names.is_empty());
         assert_eq!(o.title, "");
 
         // PC audio alone is a track too.
-        assert_eq!(options_for(30, sources(false, true), "").audio_channels, Some(1));
+        assert_eq!(options_for(30, sources(false, true), "", ALL).audio_channels, Some(1));
     }
 
     #[test]

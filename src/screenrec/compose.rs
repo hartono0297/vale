@@ -134,6 +134,12 @@ pub fn ripple_at(age_ms: f64, scale: f64) -> Option<(f32, f32)> {
     Some((radius as f32, alpha as f32))
 }
 
+/// The radius of the highlight disc under the cursor; `scale` as for
+/// [`ripple_at`].
+pub fn highlight_radius(scale: f64) -> f32 {
+    (20.0 * scale) as f32
+}
+
 /// A cursor image with straight-from-the-system pixels: premultiplied BGRA
 /// from two draws of the cursor, one on black and one on white. A pixel that
 /// is the same on both is opaque; the difference gives the coverage. A pixel
@@ -256,6 +262,8 @@ pub struct Overlay<'a> {
     pub cursor: Option<((f32, f32), isize)>,
     /// Ripples: position and age in ms.
     pub ripples: &'a [((f32, f32), f64)],
+    /// A soft disc under the cursor.
+    pub highlight: bool,
 }
 
 struct Processor {
@@ -273,6 +281,7 @@ pub struct Compositor {
     d2d: ID2D1DeviceContext,
     fill: ID2D1SolidColorBrush,
     ring: ID2D1SolidColorBrush,
+    glow: ID2D1SolidColorBrush,
     fps: u32,
     out: (u32, u32),
     src: (u32, u32),
@@ -346,6 +355,7 @@ impl Compositor {
         };
         let fill = brush(1.0, 1.0, 1.0)?;
         let ring = brush(0.13, 0.13, 0.15)?;
+        let glow = brush(1.0, 0.835, 0.29)?;
         let latest = texture(&gpu.device, src.0, src.1)?;
         let canvas = texture(&gpu.device, src.0, src.1)?;
         let canvas_target = Self::target_for(&d2d, &canvas)?;
@@ -358,6 +368,7 @@ impl Compositor {
             d2d,
             fill,
             ring,
+            glow,
             fps,
             out,
             src,
@@ -595,6 +606,18 @@ impl Compositor {
         unsafe {
             d2d.SetTarget(&self.canvas_target);
             d2d.BeginDraw();
+            if let (true, Some(((x, y), _))) = (overlay.highlight, overlay.cursor)
+                && cursor.is_some()
+            {
+                let radius = highlight_radius(scale);
+                let disc = D2D1_ELLIPSE {
+                    point: windows_numerics::Vector2 { X: x, Y: y },
+                    radiusX: radius,
+                    radiusY: radius,
+                };
+                self.glow.SetOpacity(0.35);
+                d2d.FillEllipse(&disc, &self.glow);
+            }
             for &((x, y), age) in overlay.ripples {
                 let Some((radius, alpha)) = ripple_at(age, scale) else {
                     continue;
@@ -732,6 +755,14 @@ impl Compositor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_highlight_follows_the_cursor_size() {
+        assert_eq!(highlight_radius(1.0), 20.0);
+        assert_eq!(highlight_radius(2.0), 40.0);
+        // Wider than a fresh ripple, so the ripple starts inside it.
+        assert!(highlight_radius(1.0) > ripple_at(0.0, 1.0).unwrap().0);
+    }
 
     #[test]
     fn a_ripple_grows_and_fades() {

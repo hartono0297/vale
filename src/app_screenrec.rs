@@ -50,7 +50,7 @@ use crate::recorder::{Failure, RecError, RecEvent, Recorder, Source, Sources, de
 use crate::screenrec::audio::Forward;
 use crate::screenrec::exclude::Excluder;
 use crate::screenrec::files::{existing_files, files_of, part_of, unique_stem};
-use crate::screenrec::session::{PauseWhy, ScreenClock, ScreenPause, options_for};
+use crate::screenrec::session::{CursorEffects, PauseWhy, ScreenClock, ScreenPause, options_for};
 use crate::screenrec::thumb::{grab, thumb_at};
 use crate::screenrec::watch::WindowWatch;
 use crate::screenrec::{EndReason, Error, ScreenRecorder, Summary, Target};
@@ -503,7 +503,15 @@ fn start_recording(
     let stem = file_stem(Local::now().naive_local(), &job.title);
     let stem = unique_stem(&dir, &stem, |p| p.exists());
     let [path, ..] = files_of(&dir, &stem);
-    let options = options_for(job.fps, job.sources, &job.title);
+    let options = options_for(
+        job.fps,
+        job.sources,
+        &job.title,
+        CursorEffects {
+            highlight: true,
+            ripples: true,
+        },
+    );
     let recorder = match ScreenRecorder::start(job.target, &path, options, Some(on_end)) {
         Ok(recorder) => recorder,
         Err(e) => {

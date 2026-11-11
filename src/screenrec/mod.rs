@@ -121,6 +121,8 @@ pub struct Options {
     /// The sidecar's `"channels"` (index = channel), e.g. `["mic", "system"]`.
     pub channel_names: Vec<String>,
     pub draw_cursor: bool,
+    /// A soft yellow disc under the cursor.
+    pub cursor_highlight: bool,
     pub click_ripples: bool,
     /// Try a hardware encoder first (the software one is the fallback).
     pub prefer_hardware: bool,
@@ -138,6 +140,7 @@ impl Default for Options {
             audio_channels: None,
             channel_names: Vec::new(),
             draw_cursor: true,
+            cursor_highlight: true,
             click_ripples: true,
             prefer_hardware: true,
             side_files: true,
@@ -766,6 +769,7 @@ impl Recording {
                     None
                 },
                 ripples: &aged,
+                highlight: self.options.cursor_highlight,
             };
             let step = (|| -> Result<bool, Error> {
                 let Some((sample, texture, sub)) = self.encoder.next_frame()? else {
