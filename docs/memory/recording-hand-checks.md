@@ -164,8 +164,8 @@ For the owner by hand:
 - [ ] Turn captions on while on battery: the card opens already in "Pakai
       baterai".
 - [ ] "Mic juga" in a real call or a voice note: the labels "Saya" and "Peserta"
-      are right, and Peserta lines that are only your own voice coming back
-      through the speakers are dropped (echo).
+      are right, and "Saya" lines that only repeat what the speakers just
+      played (the mic picking up the PC audio) are dropped (echo).
 - [ ] A real Zoom or Teams meeting for 10 minutes: the lines keep up, nothing
       grows slow, and the recording (if one runs) has no dropouts.
 - [ ] A headset rate change mid-session (plug or unplug a headset, or switch
@@ -203,4 +203,8 @@ For the owner by hand:
       it is acceptable.
 - [ ] Turn captions on and off ten times in a row, then watch the Task Manager
       thread count of Vale for two minutes: it settles near the idle number.
+- [ ] Start captions while a transcript job is running: the job finishes,
+      captions run and nothing crashes; a queued job waits until captions are off.
+- [ ] A 30+ minute session reaching the 500-line cap: the card stays smooth
+      when new lines arrive and while resizing, and the oldest lines drop.
 
