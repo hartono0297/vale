@@ -162,7 +162,10 @@ use update_page::{TIMER_UPDATE, UpdateState};
 
 #[path = "app_record.rs"]
 pub(crate) mod record;
+#[path = "app_screenrec.rs"]
+mod screen_page;
 use record::RecState;
+use screen_page::ScreenState;
 
 #[path = "app_transcribe.rs"]
 mod transcribe_page;
@@ -610,6 +613,7 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
             rec_timer: false,
             rec_level_timer: false,
             rec: RecState::default(),
+            screen: ScreenState::default(),
             tr: TranscribeState::new(),
             rec_sources,
             clock_timer: false,
@@ -1140,6 +1144,10 @@ struct App {
     rec_level_timer: bool,
     /// The audio recorder's session (`app_record`).
     rec: RecState,
+    /// The screen recorder's session (`app_screenrec`).
+    // Read from Task 12 on.
+    #[allow(dead_code)]
+    screen: ScreenState,
     /// Transcript jobs, holds and downloads (`app_transcribe`).
     tr: TranscribeState,
     /// The sources the Rekam page's control chose for the next recording
@@ -1416,6 +1424,7 @@ impl App {
                     | Event::ClipPacked { .. }
                     | Event::Update(_)
                     | Event::Rec(..)
+                    | Event::Screen(..)
                     | Event::Transcribe(..)
                     | Event::TranscribeDownload(..)
                     // A progress tick draws the receiving view itself, at
@@ -1535,6 +1544,9 @@ impl App {
                     self.on_rec_note(session, note);
                     continue;
                 }
+                // The screen recorder's threads, the same way. Nothing
+                // sends it yet.
+                Event::Screen(..) => continue,
                 // A transcript job's and a model download's threads: `App`
                 // decides what shows.
                 Event::Transcribe(id, event) => {
@@ -2338,7 +2350,11 @@ impl App {
             Effect::TranscribeQueue(audio) => self.transcribe_queue(audio, None),
             Effect::OpenTranscript(audio) => self.open_transcript(audio),
             Effect::OpenTranscriptSettings => self.open_transcript_settings(),
-            Effect::RecPickFile => self.rec_pick_file(),
+            Effect::RecPickFile(kind) => self.rec_pick_file(kind),
+            Effect::ScreenToggle => self.screen_toggle(),
+            Effect::ScreenDiscard => self.screen_discard(),
+            Effect::VideoOpenFolder => self.screen_open_folder(),
+            Effect::VideoPickFolder => self.screen_pick_folder(),
             Effect::TranscriptOff => self.transcript_off_note(),
             Effect::DeviceEject(i) => self.devices_eject(i),
             Effect::DeviceOpen(i) => self.devices_open(i),
@@ -3769,7 +3785,9 @@ impl App {
             View::MediaCompact => Some(ShapeKind::MediaCompact),
             View::MediaLyric => Some(ShapeKind::MediaLyric),
             View::PomodoroCompact => Some(ShapeKind::PomodoroCompact),
-            View::RecordCompact => Some(ShapeKind::RecordCompact),
+            // The countdown takes the REC view's shape: the recording it
+            // leads to shows in the same place.
+            View::RecordCompact | View::ScreenCountdown(_) => Some(ShapeKind::RecordCompact),
             View::Panel(_) => Some(self.panel_kind()),
             View::Notice(n) if matches!(n.kind, NoticeKind::Screenshot { .. }) => {
                 Some(ShapeKind::NoticeShot)
@@ -6833,7 +6851,7 @@ impl App {
             arrange: App::arrange_view(&self.arrange, &self.config, self.search_input.as_ref()),
             record: RecordView {
                 sources: self.rec_sources,
-                recent: state.rec_recent(),
+                recent: state.rec_list(),
                 devices: self.rec.devices(),
             },
             devices: DevicesView {

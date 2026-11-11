@@ -28,8 +28,8 @@ use chrono::{Local, NaiveDate, NaiveDateTime};
 use super::{App, WM_APP_EVENT, WM_APP_REC_DEVICE, notif_open, poster};
 use crate::i18n::{self, Key, Lang, text};
 use crate::model::{
-    Event, Hit, Notice, NoticeKind, Page, RecEntry, RecNote, RecSources, RecStatus, RowTranscript,
-    TranscriptOffer,
+    Event, Hit, Notice, NoticeKind, Page, RecEntry, RecKind, RecNote, RecSources, RecStatus,
+    RowTranscript, TranscriptOffer,
 };
 use crate::recorder::devices;
 use crate::recorder::sidecar::Sidecar;
@@ -224,7 +224,11 @@ pub(crate) fn saved_notice(
                 }
             )
         ),
-        NoticeKind::RecSaved { path, offer },
+        NoticeKind::RecSaved {
+            path,
+            offer,
+            thumb: None,
+        },
     )
 }
 
@@ -244,7 +248,7 @@ pub(crate) fn no_input_notice(lang: Lang) -> Notice {
 /// an unfinished file one whose click shows the `.part`.
 pub(crate) fn failure_notice(lang: Lang, failure: &Failure, dir: &Path) -> Notice {
     let why = match failure {
-        Failure::FolderBlocked => return folder_blocked_notice(lang, dir.to_path_buf()),
+        Failure::FolderBlocked => return folder_blocked_notice(lang, dir.to_path_buf(), false),
         Failure::Unfinished { part } => {
             return notice(
                 "rec-failed",
@@ -284,14 +288,16 @@ pub(crate) fn failure_notice(lang: Lang, failure: &Failure, dir: &Path) -> Notic
     )
 }
 
-/// Windows refused to write in `dir`: a click picks another folder.
-pub(crate) fn folder_blocked_notice(lang: Lang, dir: PathBuf) -> Notice {
+/// Windows refused to write in `dir`: a click picks another folder, the
+/// video folder's picker with `video` (a screen recording), else the audio
+/// folder's.
+pub(crate) fn folder_blocked_notice(lang: Lang, dir: PathBuf, video: bool) -> Notice {
     notice(
         "rec-folder",
         lang,
         text(lang, Key::RecFolderBlockedTitle).into(),
         text(lang, Key::RecFolderBlockedBody).into(),
-        NoticeKind::RecFolderBlocked { dir },
+        NoticeKind::RecFolderBlocked { dir, video },
     )
 }
 
@@ -421,6 +427,7 @@ pub(crate) fn consent_notice(lang: Lang) -> Notice {
 fn status_of(recorder: &Recorder, sources: RecSources) -> RecStatus {
     let (started, paused_total, paused_since) = recorder.clock();
     RecStatus {
+        kind: RecKind::Audio,
         started,
         paused_total,
         paused_since,
@@ -1030,7 +1037,7 @@ impl App {
         {
             eprintln!("vale: recordings folder {} refused: {e}", d.display());
             let lang = self.config.language;
-            self.apply_now(Event::Notice(folder_blocked_notice(lang, d.clone())));
+            self.apply_now(Event::Notice(folder_blocked_notice(lang, d.clone(), false)));
             self.sync_settings();
             return;
         }
@@ -1257,7 +1264,8 @@ mod tests {
             n.kind,
             NoticeKind::RecSaved {
                 path: PathBuf::from(r"C:\r\a.m4a"),
-                offer: TranscriptOffer::None
+                offer: TranscriptOffer::None,
+                thumb: None,
             }
         );
         let en = saved_notice(Lang::En, PathBuf::new(), Duration::from_secs(5), false, TranscriptOffer::None);
@@ -1283,7 +1291,8 @@ mod tests {
             at(Lang::Id, TranscriptOffer::Transcribe).kind,
             NoticeKind::RecSaved {
                 path: PathBuf::from(r"C:\r\a.m4a"),
-                offer: TranscriptOffer::Transcribe
+                offer: TranscriptOffer::Transcribe,
+                thumb: None,
             }
         );
     }
@@ -1368,8 +1377,14 @@ mod tests {
         let n = failure_notice(Lang::Id, &Failure::FolderBlocked, dir);
         assert_eq!(n.title, "Folder rekaman diblokir Windows");
         assert_eq!(n.body, "Klik untuk pilih folder lain");
-        assert_eq!(n.kind, NoticeKind::RecFolderBlocked { dir: dir.to_path_buf() });
-        let en = folder_blocked_notice(Lang::En, dir.to_path_buf());
+        assert_eq!(
+            n.kind,
+            NoticeKind::RecFolderBlocked {
+                dir: dir.to_path_buf(),
+                video: false
+            }
+        );
+        let en = folder_blocked_notice(Lang::En, dir.to_path_buf(), false);
         assert_eq!(
             (en.title.as_str(), en.body.as_str()),
             ("Windows blocked the recordings folder", "Click to choose another folder")

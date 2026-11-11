@@ -686,6 +686,35 @@ keys! {
     RecSystemWord => "Suara PC", "PC audio";
     RecNotFound => "tidak ada", "not found";
     RecEmpty => "Belum ada rekaman", "No recordings yet";
+    RecBusyTitle => "Rekaman lain sedang jalan", "Another recording is running";
+    RecBusyBody => "Hentikan dulu, lalu mulai lagi", "Stop it first, then start again";
+    ScreenSavedTitle => "Video tersimpan", "Video saved";
+    ScreenWindowClosedTitle => "Jendela ditutup, video tersimpan", "Window closed, video saved";
+    ScreenDisplayGoneTitle => "Layar terputus, video tersimpan",
+        "Display disconnected, video saved";
+    ScreenDiscardedTitle => "Video dibuang", "Video discarded";
+    ScreenFailedTitle => "Rekam layar gagal", "Screen recording failed";
+    ScreenWhyUnsupported => "Windows ini tidak bisa merekam layar",
+        "This Windows cannot record the screen";
+    ScreenWhyGone => "Jendela atau layarnya sudah tidak ada", "The window or screen is gone";
+    ScreenWhyMinimized => "Jendelanya sedang diminimalkan. Buka dulu, lalu coba lagi",
+        "The window is minimised. Restore it, then try again";
+    ScreenWhyEncoder => "Pengode video tidak tersedia di PC ini",
+        "No video encoder is available on this PC";
+    ScreenWhyGpu => "Kartu grafis tidak bisa dipakai untuk merekam",
+        "The graphics card cannot be used to record";
+    ScreenWhyWrite => "File video tidak bisa ditulis", "The video file cannot be written";
+    ScreenWhyOther => "Ada yang tidak beres saat merekam layar",
+        "Something went wrong while recording the screen";
+    ScreenLabel => "Layar", "Screen";
+    ScreenCountdownEsc => "Esc untuk batal", "Esc to cancel";
+    RecTabAudio => "Audio", "Audio";
+    RecTabScreen => "Layar", "Screen";
+    ScreenIdleHint => "Pilih layar, jendela atau area sesudah ini",
+        "You pick a screen, window or area next";
+    ScreenDiscard => "Buang", "Discard";
+    ScreenDiscardSure => "Yakin buang?", "Discard it?";
+    ScreenNoVideos => "Belum ada video", "No videos yet";
     ArrangeSkip => "Lewati ubin", "Skip tile";
     ArrangeSaved => "Tersimpan", "Saved";
     ArrangeHint => "Backspace kembali \u{b7} Esc batal", "Backspace back \u{b7} Esc cancel";
@@ -3886,6 +3915,78 @@ mod tests {
             for d in [secs(5), secs(600), secs(7200)] {
                 assert_no_leak(lang, "rec_duration", &rec_duration(lang, d));
             }
+        }
+    }
+
+    #[test]
+    fn screen_recording_texts() {
+        let table = [
+            (Key::RecBusyTitle, "Rekaman lain sedang jalan", "Another recording is running"),
+            (Key::RecBusyBody, "Hentikan dulu, lalu mulai lagi", "Stop it first, then start again"),
+            (Key::ScreenSavedTitle, "Video tersimpan", "Video saved"),
+            (
+                Key::ScreenWindowClosedTitle,
+                "Jendela ditutup, video tersimpan",
+                "Window closed, video saved",
+            ),
+            (
+                Key::ScreenDisplayGoneTitle,
+                "Layar terputus, video tersimpan",
+                "Display disconnected, video saved",
+            ),
+            (Key::ScreenDiscardedTitle, "Video dibuang", "Video discarded"),
+            (Key::ScreenFailedTitle, "Rekam layar gagal", "Screen recording failed"),
+            (
+                Key::ScreenWhyUnsupported,
+                "Windows ini tidak bisa merekam layar",
+                "This Windows cannot record the screen",
+            ),
+            (
+                Key::ScreenWhyGone,
+                "Jendela atau layarnya sudah tidak ada",
+                "The window or screen is gone",
+            ),
+            (
+                Key::ScreenWhyMinimized,
+                "Jendelanya sedang diminimalkan. Buka dulu, lalu coba lagi",
+                "The window is minimised. Restore it, then try again",
+            ),
+            (
+                Key::ScreenWhyEncoder,
+                "Pengode video tidak tersedia di PC ini",
+                "No video encoder is available on this PC",
+            ),
+            (
+                Key::ScreenWhyGpu,
+                "Kartu grafis tidak bisa dipakai untuk merekam",
+                "The graphics card cannot be used to record",
+            ),
+            (
+                Key::ScreenWhyWrite,
+                "File video tidak bisa ditulis",
+                "The video file cannot be written",
+            ),
+            (
+                Key::ScreenWhyOther,
+                "Ada yang tidak beres saat merekam layar",
+                "Something went wrong while recording the screen",
+            ),
+            (Key::ScreenLabel, "Layar", "Screen"),
+            (Key::ScreenCountdownEsc, "Esc untuk batal", "Esc to cancel"),
+            (Key::RecTabAudio, "Audio", "Audio"),
+            (Key::RecTabScreen, "Layar", "Screen"),
+            (
+                Key::ScreenIdleHint,
+                "Pilih layar, jendela atau area sesudah ini",
+                "You pick a screen, window or area next",
+            ),
+            (Key::ScreenDiscard, "Buang", "Discard"),
+            (Key::ScreenDiscardSure, "Yakin buang?", "Discard it?"),
+            (Key::ScreenNoVideos, "Belum ada video", "No videos yet"),
+        ];
+        for (key, id, en) in table {
+            assert_eq!(text(Lang::Id, key), id, "{key:?}");
+            assert_eq!(text(Lang::En, key), en, "{key:?}");
         }
     }
 

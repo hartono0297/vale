@@ -10,8 +10,8 @@ use crate::i18n::{self, Key, text};
 use crate::lyrics;
 use crate::model::{
     ArrangeSave, CalView, ClipAction, Effect, Event, Hit, MediaCommand, MediaInfo, Notice,
-    NoticeKind, NotifAction, OpenTarget, Page, PhoneStage, RecEntry, RecStatus, RowTranscript,
-    Shortcut, ShotAction, Timeline, TranscriptOffer, View,
+    NoticeKind, NotifAction, OpenTarget, Page, PhoneStage, RecEntry, RecKind, RecStatus,
+    RowTranscript, Shortcut, ShotAction, Timeline, TranscriptOffer, View,
 };
 use crate::mole::MoleOpts;
 use crate::pages::PanelPages;
@@ -437,10 +437,19 @@ pub struct IslandState {
     /// A busy toast came and went unseen: a small dot on the compact notch
     /// says so until a peek or the Notifikasi page clears it. Not persisted.
     toast_dot: bool,
-    /// The audio recording in progress, as `App` last reported it.
+    /// The recording in progress (audio or screen), as `App` last reported it.
     rec: Option<RecStatus>,
-    /// The newest finished recordings, for the Rekam page.
+    /// The newest finished audio recordings, for the Rekam page.
     rec_recent: Vec<RecEntry>,
+    /// The Rekam page's tab: the kind it lists and its big button starts.
+    /// It follows the running recording and is locked meanwhile.
+    rec_tab: RecKind,
+    /// The newest finished screen recordings, for the Layar tab.
+    rec_videos: Vec<RecEntry>,
+    /// The 3-2-1 before a screen recording, while it runs.
+    screen_countdown: Option<u8>,
+    /// "Buang" was clicked once and waits for its second click.
+    screen_discard_armed: bool,
 }
 
 /// How a real Windows toast shows now: the whole notice (`Full`), a strip
@@ -466,6 +475,10 @@ impl IslandState {
             timeline: None,
             rec: None,
             rec_recent: Vec::new(),
+            rec_tab: RecKind::Audio,
+            rec_videos: Vec::new(),
+            screen_countdown: None,
+            screen_discard_armed: false,
             lyrics_on: false,
             lyrics_ready: false,
             queue: VecDeque::new(),
@@ -568,8 +581,21 @@ impl IslandState {
             Event::MediaTimeline(timeline) => self.timeline = timeline,
             Event::LyricsReady(ready) => self.lyrics_ready = ready,
             Event::LyricsSetting(on) => self.lyrics_on = on,
-            Event::RecStatus(status) => self.rec = status,
+            Event::RecStatus(status) => {
+                // The Rekam page follows the recording that runs, and stays
+                // on its tab once it ends.
+                if let Some(s) = &status {
+                    self.rec_tab = s.kind;
+                }
+                // "Yakin buang?" was asked of the recording as it stood.
+                if self.rec != status {
+                    self.screen_discard_armed = false;
+                }
+                self.rec = status;
+            }
             Event::RecRecent(list) | Event::RecMarks(list) => self.rec_recent = list,
+            Event::VideoRecent(list) | Event::VideoMarks(list) => self.rec_videos = list,
+            Event::ScreenCountdown(n) => self.screen_countdown = n,
             Event::Notice(notice) => match &notice.kind {
                 NoticeKind::ClaudeWaiting { .. }
                 | NoticeKind::Reminder { .. }
@@ -936,6 +962,7 @@ impl IslandState {
             | Event::Toast(_)
             | Event::Update(_)
             | Event::Rec(..)
+            | Event::Screen(..)
             | Event::Transcribe(..)
             | Event::TranscribeDownload(..)
             | Event::Lyrics(_)
@@ -1199,6 +1226,11 @@ impl IslandState {
                 self.hover_blocked = true;
             }
         }
+        // "Yakin buang?" lives on the Rekam page: gone with it (another
+        // page, the panel shut, the countdown or a fullscreen app over it).
+        if self.screen_discard_armed && self.panel_page_under() != Some(Page::Record) {
+            self.screen_discard_armed = false;
+        }
         // Last, once the linger, the latch and the inputs have settled what
         // shows: the toast is judged on the view this `apply` leaves.
         self.settle_toast(toast_held, now);
@@ -1219,6 +1251,11 @@ impl IslandState {
     fn base_view(&self) -> View {
         if self.fullscreen {
             return View::Hidden;
+        }
+        // The 3-2-1 before a screen recording outranks the panel for its
+        // three seconds: what is about to be recorded must be in view.
+        if let Some(n) = self.screen_countdown {
+            return View::ScreenCountdown(n);
         }
         // Sticky notices do not block the panel; they show as a strip inside it.
         if self.panel_open() {
@@ -1353,6 +1390,7 @@ impl IslandState {
             && self.hover
             && !self.hover_blocked
             && self.rec_mute_hot.is_none()
+            && self.screen_countdown.is_none()
             && !self.notice_covers()
             && self.collapsed == Collapse::No
             && !self.fullscreen
@@ -1657,13 +1695,16 @@ impl IslandState {
         self.panel_held() || (self.collapsed == Collapse::No && self.lingering)
     }
 
-    /// The panel is open for something other than the linger.
+    /// The panel is open for something other than the linger. Never during
+    /// the countdown before a screen recording: it shows in the panel's
+    /// place, so nothing may be open, or opened, under it.
     fn panel_held(&self) -> bool {
         let pointer = self.hover
             && !self.hover_blocked
             && self.rec_mute_hot.is_none()
             && self.open_mode != OpenMode::Click;
         self.collapsed == Collapse::No
+            && self.screen_countdown.is_none()
             && (pointer
                 || self.latched
                 || self.editor_open
@@ -1911,6 +1952,10 @@ impl IslandState {
         if !matches!(hit, Hit::NotifClear) {
             self.notif_armed = None;
         }
+        // And "Buang" of a screen recording.
+        if !matches!(hit, Hit::ScreenDiscard) {
+            self.screen_discard_armed = false;
+        }
         match hit {
             // A click on a sticky note reminder's body is its "Buka", in every
             // mode (Click mode too, before and after its notice time): it
@@ -2138,10 +2183,37 @@ impl IslandState {
                 }
             }
             // The Rekam page's buttons count only while it shows. The source
-            // choice is locked while a recording runs, pause needs one.
+            // choice is locked while a recording runs, pause needs one. The
+            // big button, the folder link and the file link act on the tab's
+            // kind of recording.
             Hit::RecToggle => {
                 if self.view() == View::Panel(Page::Record) {
-                    effects.push(Effect::RecToggle);
+                    match (self.rec_tab, &self.rec) {
+                        (RecKind::Audio, _) => effects.push(Effect::RecToggle),
+                        // A stop: the page stays to show what was saved.
+                        (RecKind::Screen, Some(_)) => effects.push(Effect::ScreenToggle),
+                        // A start: the picker needs the panel out of the way.
+                        (RecKind::Screen, None) => self.collapse_for(Effect::ScreenToggle, effects),
+                    }
+                }
+            }
+            // The "Audio" / "Layar" switch, locked while a recording runs
+            // (the page shows that one).
+            Hit::RecTab(kind) => {
+                if self.view() == View::Panel(Page::Record) && self.rec.is_none() {
+                    self.rec_tab = kind;
+                }
+            }
+            // "Buang" beside a running screen recording: the first click
+            // asks ("Yakin buang?"), the second discards.
+            Hit::ScreenDiscard => {
+                let shown = self.view() == View::Panel(Page::Record)
+                    && self.rec.as_ref().is_some_and(|r| r.kind == RecKind::Screen);
+                if shown && self.screen_discard_armed {
+                    self.screen_discard_armed = false;
+                    effects.push(Effect::ScreenDiscard);
+                } else {
+                    self.screen_discard_armed = shown;
                 }
             }
             Hit::RecPause => {
@@ -2173,7 +2245,7 @@ impl IslandState {
             }
             Hit::RecOpen(i) => {
                 if self.view() == View::Panel(Page::Record)
-                    && let Some(entry) = self.rec_recent.get(i)
+                    && let Some(entry) = self.rec_list().get(i)
                 {
                     let path = entry.path.clone();
                     self.collapse_for(Effect::RecReveal(path), effects);
@@ -2181,7 +2253,11 @@ impl IslandState {
             }
             Hit::RecFolder => {
                 if self.view() == View::Panel(Page::Record) {
-                    self.collapse_for(Effect::RecOpenFolder, effects);
+                    let open = match self.rec_tab {
+                        RecKind::Audio => Effect::RecOpenFolder,
+                        RecKind::Screen => Effect::VideoOpenFolder,
+                    };
+                    self.collapse_for(open, effects);
                 }
             }
             // The chips of "Rekaman tersimpan", on the closed notch: the
@@ -2194,7 +2270,7 @@ impl IslandState {
                     TranscriptOffer::Setup
                 };
                 if let View::Notice(n) = self.view()
-                    && let NoticeKind::RecSaved { path, offer } = n.kind
+                    && let NoticeKind::RecSaved { path, offer, .. } = n.kind
                     && offer == chip_offer
                 {
                     // The reveal the body would ask for is not wanted here.
@@ -2210,7 +2286,7 @@ impl IslandState {
             // turns "Antre"), any other opens the transcript window.
             Hit::RecTranscript(i) => {
                 if self.view() == View::Panel(Page::Record)
-                    && let Some(entry) = self.rec_recent.get(i)
+                    && let Some(entry) = self.rec_list().get(i)
                 {
                     let path = entry.path.clone();
                     match entry.transcript {
@@ -2222,7 +2298,7 @@ impl IslandState {
             }
             Hit::RecPickFile => {
                 if self.view() == View::Panel(Page::Record) {
-                    self.collapse_for(Effect::RecPickFile, effects);
+                    self.collapse_for(Effect::RecPickFile(self.rec_tab), effects);
                 }
             }
             Hit::DevicesEjectAll => {
@@ -2893,8 +2969,10 @@ impl IslandState {
             | NoticeKind::RecFailed { reveal: Some(path) } => Some(Effect::RevealFile(path)),
             // The mic was refused: the click opens Windows' mic privacy page.
             NoticeKind::RecMicDenied => Some(Effect::RecMicSettings),
-            // The folder was refused: the click picks another one.
-            NoticeKind::RecFolderBlocked { .. } => Some(Effect::RecPickFolder),
+            // The folder was refused: the click picks another one, for the
+            // kind of recording that was refused.
+            NoticeKind::RecFolderBlocked { video: false, .. } => Some(Effect::RecPickFolder),
+            NoticeKind::RecFolderBlocked { video: true, .. } => Some(Effect::VideoPickFolder),
             // A transcript is ready or failed: the window that holds it (it
             // says the reason). A word about settings opens its card.
             NoticeKind::TranscriptReady { audio } | NoticeKind::TranscriptFailed { audio } => {
@@ -3205,9 +3283,34 @@ impl IslandState {
         self.rec.as_ref()
     }
 
-    /// The Rekam page's list: the newest recordings, newest first.
-    pub fn rec_recent(&self) -> &[RecEntry] {
-        &self.rec_recent
+    /// The Rekam page's tab.
+    // Drawn from Task 13 on.
+    #[allow(dead_code)]
+    pub fn rec_tab(&self) -> RecKind {
+        self.rec_tab
+    }
+
+    /// The Rekam page's list: the newest recordings of the tab's kind,
+    /// newest first.
+    pub fn rec_list(&self) -> &[RecEntry] {
+        match self.rec_tab {
+            RecKind::Audio => &self.rec_recent,
+            RecKind::Screen => &self.rec_videos,
+        }
+    }
+
+    /// The number the 3-2-1 before a screen recording shows.
+    // Read by `App` from Task 12 on.
+    #[allow(dead_code)]
+    pub fn screen_countdown(&self) -> Option<u8> {
+        self.screen_countdown
+    }
+
+    /// "Buang" waits for its second click ("Yakin buang?").
+    // Drawn from Task 13 on.
+    #[allow(dead_code)]
+    pub fn screen_discard_armed(&self) -> bool {
+        self.screen_discard_armed
     }
 
     /// The local date as of the last `Event::Today`.
@@ -7902,6 +8005,7 @@ mod tests {
 
     fn rec_status(t0: Instant) -> RecStatus {
         RecStatus {
+            kind: RecKind::Audio,
             started: t0,
             paused_total: Duration::ZERO,
             paused_since: None,
@@ -8222,7 +8326,7 @@ mod tests {
         let mut marked = rec_entry("a.m4a");
         marked.transcript = RowTranscript::Queued;
         s.apply(Event::RecMarks(vec![marked]), t0);
-        assert_eq!(s.rec_recent()[0].transcript, RowTranscript::Queued);
+        assert_eq!(s.rec_list()[0].transcript, RowTranscript::Queued);
     }
 
     #[test]
@@ -8299,7 +8403,7 @@ mod tests {
             Event::RecRecent(vec![rec_entry("a.m4a"), rec_entry("b.m4a")]),
             t0,
         );
-        assert_eq!(s.rec_recent().len(), 2);
+        assert_eq!(s.rec_list().len(), 2);
         open_on(&mut s, Page::Record, t0);
         // No such row: nothing.
         assert_eq!(s.apply(Event::Click(Hit::RecOpen(5)), t0), vec![]);
@@ -8316,7 +8420,7 @@ mod tests {
         );
         assert!(!matches!(s.view(), View::Panel(_)), "the panel collapsed");
         s.apply(Event::RecRecent(vec![]), t0);
-        assert!(s.rec_recent().is_empty());
+        assert!(s.rec_list().is_empty());
     }
 
     #[test]
@@ -10164,6 +10268,7 @@ mod tests {
         let saved = rec_notice(NoticeKind::RecSaved {
             path: r"C:\r\a.m4a".into(),
             offer: TranscriptOffer::None,
+            thumb: None,
         });
         assert!(notice_has_action(&saved));
         assert!(notice_closable(&saved));
@@ -10183,6 +10288,7 @@ mod tests {
         // A blocked folder: the click picks another.
         let blocked = rec_notice(NoticeKind::RecFolderBlocked {
             dir: r"C:\Users\a\Documents\Vale\Rekaman".into(),
+            video: false,
         });
         assert!(notice_has_action(&blocked));
         let mut s = st();
@@ -10218,6 +10324,7 @@ mod tests {
         rec_notice(NoticeKind::RecSaved {
             path: REC_FILE.into(),
             offer,
+            thumb: None,
         })
     }
 
@@ -10419,9 +10526,337 @@ mod tests {
         open_on(&mut s, Page::Record, t0);
         assert_eq!(
             s.apply(Event::Click(Hit::RecPickFile), t0),
-            vec![Effect::RecPickFile]
+            vec![Effect::RecPickFile(RecKind::Audio)]
         );
         assert!(!matches!(s.view(), View::Panel(_)), "the panel collapsed");
+    }
+
+    // ---- screen recording ----
+
+    fn screen_status(t0: Instant) -> RecStatus {
+        RecStatus {
+            kind: RecKind::Screen,
+            ..rec_status(t0)
+        }
+    }
+
+    const VIDEO_FILE: &str = r"C:\v\a.mp4";
+
+    /// The Rekam page open on the Layar tab, nothing recording.
+    fn on_screen_tab(t0: Instant) -> IslandState {
+        let mut s = st();
+        open_on(&mut s, Page::Record, t0);
+        s.apply(Event::Click(Hit::RecTab(RecKind::Screen)), t0);
+        assert_eq!(s.rec_tab(), RecKind::Screen);
+        s
+    }
+
+    #[test]
+    fn a_screen_recording_shows_the_rec_view_with_its_kind() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Media(Some(media(true))), t0);
+        s.apply(Event::RecStatus(Some(screen_status(t0))), t0);
+        assert_eq!(s.view(), View::RecordCompact);
+        assert_eq!(s.rec().map(|r| r.kind), Some(RecKind::Screen));
+        // The Rekam page behind it is on the Layar tab.
+        assert_eq!(s.rec_tab(), RecKind::Screen);
+        s.apply(Event::RecStatus(None), t0 + secs(9));
+        assert_eq!(s.view(), View::MediaCompact);
+    }
+
+    #[test]
+    fn the_countdown_shows_over_the_rec_view_and_the_panel() {
+        let t0 = Instant::now();
+        // Over a compact view, number by number.
+        let mut s = st();
+        s.apply(Event::Media(Some(media(true))), t0);
+        s.apply(Event::ScreenCountdown(Some(3)), t0);
+        assert_eq!(s.view(), View::ScreenCountdown(3));
+        assert_eq!(s.screen_countdown(), Some(3));
+        s.apply(Event::ScreenCountdown(Some(2)), t0 + secs(1));
+        assert_eq!(s.view(), View::ScreenCountdown(2));
+        s.apply(Event::ScreenCountdown(None), t0 + secs(2));
+        assert_eq!(s.view(), View::MediaCompact, "the view before");
+        assert_eq!(s.screen_countdown(), None);
+        // Over the REC view.
+        let mut s = st();
+        s.apply(Event::RecStatus(Some(rec_status(t0))), t0);
+        s.apply(Event::ScreenCountdown(Some(3)), t0);
+        assert_eq!(s.view(), View::ScreenCountdown(3));
+        s.apply(Event::ScreenCountdown(None), t0);
+        assert_eq!(s.view(), View::RecordCompact);
+        // Over the open panel, and a sticky notice with it.
+        let mut s = st();
+        open_on(&mut s, Page::Record, t0);
+        s.apply(Event::Notice(waiting("a")), t0);
+        s.apply(Event::Tick, t0 + NOTICE_DURATION + secs(1));
+        assert_eq!(s.view(), View::Panel(Page::Record));
+        s.apply(Event::ScreenCountdown(Some(3)), t0 + mins(1));
+        assert_eq!(s.view(), View::ScreenCountdown(3));
+        assert_eq!(s.panel_page_under(), None, "no panel under it");
+        s.apply(Event::ScreenCountdown(None), t0 + mins(1));
+        assert_eq!(s.view(), View::Panel(Page::Record), "the pointer never left");
+        // A fullscreen app hides it like everything else.
+        let mut s = st();
+        s.apply(Event::ScreenCountdown(Some(3)), t0);
+        s.apply(Event::Fullscreen(true), t0);
+        assert_eq!(s.view(), View::Hidden);
+    }
+
+    #[test]
+    fn hover_and_clicks_on_the_countdown_open_nothing() {
+        for mode in [OpenMode::Hover, OpenMode::HoverStay, OpenMode::Click] {
+            let t0 = Instant::now();
+            let mut s = st();
+            s.apply(Event::OpenMode(mode), t0);
+            s.apply(Event::ScreenCountdown(Some(3)), t0);
+            s.apply(Event::Hover(true), t0);
+            assert_eq!(s.view(), View::ScreenCountdown(3), "{mode:?}: hover");
+            assert!(!s.panel_is_open(), "{mode:?}: hover");
+            assert_eq!(s.apply(Event::Click(Hit::Body), t0), vec![], "{mode:?}");
+            assert_eq!(s.view(), View::ScreenCountdown(3), "{mode:?}: click");
+            assert!(!s.panel_is_open(), "{mode:?}: click");
+            assert!(!s.outside_click_wanted(), "{mode:?}: nothing latched");
+            // The pointer goes before the 1: what the countdown ends on is
+            // the closed notch, in every mode.
+            s.apply(Event::Hover(false), t0 + secs(1));
+            s.apply(Event::ScreenCountdown(None), t0 + secs(3));
+            assert_eq!(s.view(), View::Idle, "{mode:?}: nothing was latched");
+        }
+    }
+
+    #[test]
+    fn the_tab_follows_the_running_recording_and_is_locked_meanwhile() {
+        let t0 = Instant::now();
+        let mut s = st();
+        assert_eq!(s.rec_tab(), RecKind::Audio, "the page opens on Audio");
+        // Not on the page: the switch is not there to click.
+        assert_eq!(s.apply(Event::Click(Hit::RecTab(RecKind::Screen)), t0), vec![]);
+        assert_eq!(s.rec_tab(), RecKind::Audio);
+        open_on(&mut s, Page::Record, t0);
+        assert_eq!(s.apply(Event::Click(Hit::RecTab(RecKind::Screen)), t0), vec![]);
+        assert_eq!(s.rec_tab(), RecKind::Screen);
+        assert_eq!(s.view(), View::Panel(Page::Record), "the panel stays");
+        // An audio recording starts (its hotkey): the page follows it, and
+        // the switch is locked while it runs.
+        s.apply(Event::RecStatus(Some(rec_status(t0))), t0);
+        assert_eq!(s.rec_tab(), RecKind::Audio);
+        assert_eq!(s.apply(Event::Click(Hit::RecTab(RecKind::Screen)), t0), vec![]);
+        assert_eq!(s.rec_tab(), RecKind::Audio, "locked");
+        // It ends: the tab stays where the recording was, free again.
+        s.apply(Event::RecStatus(None), t0);
+        assert_eq!(s.rec_tab(), RecKind::Audio);
+        s.apply(Event::RecStatus(Some(screen_status(t0))), t0);
+        assert_eq!(s.rec_tab(), RecKind::Screen);
+        assert_eq!(s.apply(Event::Click(Hit::RecTab(RecKind::Audio)), t0), vec![]);
+        assert_eq!(s.rec_tab(), RecKind::Screen, "locked");
+        s.apply(Event::RecStatus(None), t0);
+        assert_eq!(s.rec_tab(), RecKind::Screen);
+        s.apply(Event::Click(Hit::RecTab(RecKind::Audio)), t0);
+        assert_eq!(s.rec_tab(), RecKind::Audio);
+    }
+
+    #[test]
+    fn the_page_buttons_act_by_tab() {
+        use RecKind::{Audio, Screen};
+        let t0 = Instant::now();
+        // (tab, recording, hit, effect, the panel stays open)
+        let table = [
+            (Audio, false, Hit::RecToggle, Effect::RecToggle, true),
+            (Audio, true, Hit::RecToggle, Effect::RecToggle, true),
+            // The picker needs the panel out of the way; a stop does not.
+            (Screen, false, Hit::RecToggle, Effect::ScreenToggle, false),
+            (Screen, true, Hit::RecToggle, Effect::ScreenToggle, true),
+            (Audio, false, Hit::RecFolder, Effect::RecOpenFolder, false),
+            (Screen, false, Hit::RecFolder, Effect::VideoOpenFolder, false),
+            (Audio, false, Hit::RecPickFile, Effect::RecPickFile(Audio), false),
+            (Screen, false, Hit::RecPickFile, Effect::RecPickFile(Screen), false),
+        ];
+        for (tab, recording, hit, want, stays) in table {
+            let what = format!("{tab:?}, recording {recording}, {hit:?}");
+            let mut s = st();
+            open_on(&mut s, Page::Record, t0);
+            s.apply(Event::Click(Hit::RecTab(tab)), t0);
+            if recording {
+                let status = RecStatus {
+                    kind: tab,
+                    ..rec_status(t0)
+                };
+                s.apply(Event::RecStatus(Some(status)), t0);
+            }
+            assert_eq!(s.rec_tab(), tab, "{what}");
+            assert_eq!(s.apply(Event::Click(hit), t0), vec![want], "{what}");
+            assert_eq!(matches!(s.view(), View::Panel(_)), stays, "{what}: the panel");
+        }
+        // Off the page nothing counts, whatever the tab.
+        let mut s = on_screen_tab(t0);
+        leave(&mut s, t0);
+        for hit in [Hit::RecToggle, Hit::RecFolder, Hit::RecPickFile] {
+            assert_eq!(s.apply(Event::Click(hit.clone()), t0), vec![], "{hit:?} off page");
+        }
+    }
+
+    #[test]
+    fn rows_act_on_the_shown_list() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::RecRecent(vec![rec_entry("a.m4a")]), t0);
+        s.apply(Event::VideoRecent(vec![rec_entry(VIDEO_FILE)]), t0);
+        assert_eq!(s.rec_list(), [rec_entry("a.m4a")], "the Audio tab's list");
+        open_on(&mut s, Page::Record, t0);
+        s.apply(Event::Click(Hit::RecTab(RecKind::Screen)), t0);
+        assert_eq!(s.rec_list(), [rec_entry(VIDEO_FILE)], "the Layar tab's list");
+        // The pill of a row with no transcript queues one; the panel stays.
+        assert_eq!(
+            s.apply(Event::Click(Hit::RecTranscript(0)), t0),
+            vec![Effect::TranscribeQueue(VIDEO_FILE.into())]
+        );
+        // The marks come back over the same list.
+        let marked = RecEntry {
+            transcript: RowTranscript::Queued,
+            ..rec_entry(VIDEO_FILE)
+        };
+        s.apply(Event::VideoMarks(vec![marked.clone()]), t0);
+        assert_eq!(s.rec_list(), [marked]);
+        // The row shows its file in Explorer.
+        assert_eq!(s.apply(Event::Click(Hit::RecOpen(1)), t0), vec![], "no such row");
+        assert_eq!(
+            s.apply(Event::Click(Hit::RecOpen(0)), t0),
+            vec![Effect::RecReveal(VIDEO_FILE.into())]
+        );
+        // The audio list was not touched.
+        let mut s = st();
+        s.apply(Event::RecRecent(vec![rec_entry("a.m4a")]), t0);
+        s.apply(Event::VideoRecent(vec![rec_entry(VIDEO_FILE)]), t0);
+        open_on(&mut s, Page::Record, t0);
+        assert_eq!(
+            s.apply(Event::Click(Hit::RecOpen(0)), t0),
+            vec![Effect::RecReveal("a.m4a".into())]
+        );
+    }
+
+    #[test]
+    fn discard_takes_two_clicks() {
+        let t0 = Instant::now();
+        // Nothing to discard: not on the page, nothing recording, or an
+        // audio recording (it has no Buang).
+        let mut s = st();
+        s.apply(Event::RecStatus(Some(screen_status(t0))), t0);
+        assert_eq!(s.apply(Event::Click(Hit::ScreenDiscard), t0), vec![], "off page");
+        assert!(!s.screen_discard_armed());
+        let mut s = on_screen_tab(t0);
+        assert_eq!(s.apply(Event::Click(Hit::ScreenDiscard), t0), vec![], "idle");
+        assert!(!s.screen_discard_armed());
+        let mut s = st();
+        open_on(&mut s, Page::Record, t0);
+        s.apply(Event::RecStatus(Some(rec_status(t0))), t0);
+        assert_eq!(s.apply(Event::Click(Hit::ScreenDiscard), t0), vec![], "audio");
+        assert!(!s.screen_discard_armed());
+        // A screen recording: the first click asks, the second discards.
+        let mut s = on_screen_tab(t0);
+        s.apply(Event::RecStatus(Some(screen_status(t0))), t0);
+        assert_eq!(s.apply(Event::Click(Hit::ScreenDiscard), t0), vec![]);
+        assert!(s.screen_discard_armed(), "Yakin buang?");
+        assert_eq!(
+            s.apply(Event::Click(Hit::ScreenDiscard), t0 + secs(1)),
+            vec![Effect::ScreenDiscard]
+        );
+        assert!(!s.screen_discard_armed());
+        assert_eq!(s.view(), View::Panel(Page::Record), "the panel stays");
+        // Any change of the recording takes the question back: a pause...
+        s.apply(Event::Click(Hit::ScreenDiscard), t0);
+        assert!(s.screen_discard_armed());
+        let paused = RecStatus {
+            paused_since: Some(t0 + secs(2)),
+            ..screen_status(t0)
+        };
+        s.apply(Event::RecStatus(Some(paused)), t0 + secs(2));
+        assert!(!s.screen_discard_armed(), "paused");
+        // ...and its end.
+        s.apply(Event::Click(Hit::ScreenDiscard), t0 + secs(3));
+        assert!(s.screen_discard_armed());
+        s.apply(Event::RecStatus(None), t0 + secs(4));
+        assert!(!s.screen_discard_armed(), "ended");
+        // So does a click on anything else of the page.
+        let mut s = on_screen_tab(t0);
+        s.apply(Event::RecStatus(Some(screen_status(t0))), t0);
+        s.apply(Event::Click(Hit::ScreenDiscard), t0);
+        assert_eq!(
+            s.apply(Event::Click(Hit::RecMute(Source::Mic)), t0),
+            vec![Effect::RecMute(Source::Mic)]
+        );
+        assert!(!s.screen_discard_armed(), "another button");
+    }
+
+    #[test]
+    fn leaving_the_page_disarms_discard() {
+        let t0 = Instant::now();
+        let armed = || {
+            let mut s = on_screen_tab(t0);
+            s.apply(Event::RecStatus(Some(screen_status(t0))), t0);
+            s.apply(Event::Click(Hit::ScreenDiscard), t0);
+            assert!(s.screen_discard_armed());
+            s
+        };
+        // The panel closes.
+        let mut s = armed();
+        leave(&mut s, t0 + secs(1));
+        assert_eq!(s.view(), View::RecordCompact);
+        assert!(!s.screen_discard_armed(), "the panel closed");
+        // Back on the page, the first click asks again.
+        s.apply(Event::Hover(true), t0 + secs(2));
+        assert_eq!(s.view(), View::Panel(Page::Record));
+        assert_eq!(s.apply(Event::Click(Hit::ScreenDiscard), t0 + secs(2)), vec![]);
+        assert!(s.screen_discard_armed());
+        // Another page.
+        let mut s = armed();
+        s.apply(Event::Wheel(120), t0 + secs(1));
+        assert_ne!(s.view(), View::Panel(Page::Record));
+        assert!(!s.screen_discard_armed(), "another page");
+    }
+
+    #[test]
+    fn the_saved_video_notice_reveals_and_offers_like_audio() {
+        let t0 = Instant::now();
+        let saved = rec_notice(NoticeKind::RecSaved {
+            path: VIDEO_FILE.into(),
+            offer: TranscriptOffer::Transcribe,
+            thumb: Some(7),
+        });
+        assert!(notice_has_action(&saved));
+        assert!(notice_closable(&saved));
+        let mut s = st();
+        s.apply(Event::Notice(saved.clone()), t0);
+        assert_eq!(s.next_deadline(), Some(t0 + NOTICE_DURATION));
+        let fx = s.apply(Event::Click(Hit::Body), t0 + secs(1));
+        assert_eq!(fx, vec![Effect::RevealFile(VIDEO_FILE.into())]);
+        assert_eq!(s.view(), View::Idle);
+        let mut s = st();
+        s.apply(Event::Notice(saved), t0);
+        let fx = s.apply(Event::Click(Hit::RecTranscribeChip), t0 + secs(1));
+        assert_eq!(fx, vec![Effect::TranscribeQueue(VIDEO_FILE.into())]);
+        assert_eq!(s.view(), View::Idle, "the notice is gone");
+    }
+
+    #[test]
+    fn a_blocked_video_folder_opens_the_video_picker() {
+        let t0 = Instant::now();
+        for (video, want) in [
+            (true, Effect::VideoPickFolder),
+            (false, Effect::RecPickFolder),
+        ] {
+            let blocked = rec_notice(NoticeKind::RecFolderBlocked {
+                dir: r"C:\Users\a\Videos\Vale".into(),
+                video,
+            });
+            assert!(notice_has_action(&blocked));
+            let mut s = st();
+            s.apply(Event::Notice(blocked), t0);
+            let fx = s.apply(Event::Click(Hit::Body), t0 + secs(1));
+            assert_eq!(fx, vec![want], "video {video}");
+            assert_eq!(s.view(), View::Idle);
+        }
     }
 
     #[test]

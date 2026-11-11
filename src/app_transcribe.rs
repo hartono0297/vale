@@ -22,7 +22,9 @@ use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
 use super::record::display_title;
 use super::{App, DEFERRED_OPEN_CARD, WM_APP_EVENT, notif_open, poster};
 use crate::i18n::{self, Key, Lang, text};
-use crate::model::{Event, Notice, NoticeKind, RecEntry, RowTranscript, TranscriptOffer};
+use crate::model::{
+    Event, Notice, NoticeKind, RecEntry, RecKind, RowTranscript, TranscriptOffer,
+};
 use crate::transcribe::catalog::{self, ENGINE, Model};
 use crate::transcribe::download::{self, DownloadError, Item, Progress};
 use crate::transcribe::engine::{self, EngineError};
@@ -1051,7 +1053,9 @@ impl App {
 
     /// Shows the file picker for a transcript of any audio file, opening in
     /// the recordings folder. The choice comes back as `transcribe_file`.
-    pub(super) fn rec_pick_file(&mut self) {
+    /// `_kind` is the Rekam tab that asked: both open the audio folder
+    /// until the Layar tab lists its videos.
+    pub(super) fn rec_pick_file(&mut self, _kind: RecKind) {
         notif_open::allow_foreground();
         settings::pick_rec_audio(self.hwnd, self.config.recording.dir());
     }
@@ -1068,7 +1072,7 @@ impl App {
 
     /// The recording of Rekam row `i` and its menu rows, for its mark now.
     pub(super) fn rec_row_menu(&self, i: usize) -> Option<(PathBuf, Vec<Row>)> {
-        let entry = self.state.rec_recent().get(i)?;
+        let entry = self.state.rec_list().get(i)?;
         let installed: Vec<&'static Model> = catalog::MODELS
             .iter()
             .filter(|m| self.tr.store.model_installed(m))

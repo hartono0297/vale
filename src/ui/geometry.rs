@@ -2896,6 +2896,7 @@ mod tests {
         NoticeKind::RecSaved {
             path: "a.m4a".into(),
             offer,
+            thumb: None,
         }
     }
 

@@ -451,6 +451,8 @@ enum View0 {
     PomodoroCompact,
     /// The REC view; the scene's `rec` says what it shows.
     RecordCompact,
+    /// The 3-2-1 before a screen recording, on this number.
+    ScreenCountdown(u8),
     Panel(Page),
     Notice(DemoNotice),
     MediaLyric,
@@ -470,6 +472,10 @@ struct DemoRec {
     muted: [bool; 2],
     /// The source whose level group the pointer is on.
     hot: Option<Source>,
+    /// A screen recording, not an audio one.
+    // The notch says so from Task 10 on (`RecFrame.screen`).
+    #[allow(dead_code)]
+    screen: bool,
 }
 
 /// One notice of each badge style.
@@ -530,6 +536,8 @@ enum DemoNotice {
     RecSavedTranscribe,
     /// The same with the chip "Pengaturan" and "Bikin transkrip?".
     RecSavedSetup,
+    /// "Video tersimpan" after a screen recording (a made-up file).
+    VideoSaved,
     /// "Transkrip siap" (a made-up recording).
     TranscriptReady,
     /// "Transkrip gagal".
@@ -728,8 +736,28 @@ const fn rec_scene(
             system_level: 0.8,
             muted,
             hot: None,
+            screen: false,
         }),
         ..BASE
+    }
+}
+
+/// The REC view of a screen recording, 3:17 in, with the mic and the PC
+/// audio in its track.
+const fn screen_rec_scene(name: &'static str, paused: bool) -> Scene {
+    Scene {
+        rec: Some(DemoRec {
+            secs: 3 * 60 + 17,
+            paused,
+            mic: true,
+            system: true,
+            mic_level: 0.55,
+            system_level: 0.8,
+            muted: [false; 2],
+            hot: None,
+            screen: true,
+        }),
+        ..rec_scene(name, 0, paused, true, true, [false; 2])
     }
 }
 
@@ -745,6 +773,7 @@ const fn rec_hot_scene(name: &'static str, muted: [bool; 2], hot: Source) -> Sce
             system_level: 0.8,
             muted,
             hot: Some(hot),
+            screen: false,
         }),
         ..rec_scene(name, 0, false, true, true, muted)
     }
@@ -942,7 +971,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 187] = [
+const SCENES: [Scene; 191] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -967,6 +996,17 @@ const SCENES: [Scene; 187] = [
     // a soft pill in the place of the bars (muted: crossed, on dark red).
     rec_hot_scene("rec-hover-mic", [false; 2], Source::Mic),
     rec_hot_scene("rec-hover-mic-muted", [true, false], Source::Mic),
+    // A screen recording in the notch, running and paused, and the 3-2-1
+    // that leads to it (it takes the REC view's shape).
+    screen_rec_scene("screen-rec", false),
+    screen_rec_scene("screen-rec-paused", true),
+    Scene {
+        name: "screen-countdown",
+        kind: ShapeKind::RecordCompact,
+        view: View0::ScreenCountdown(3),
+        robot: Some(Expr::Focus),
+        ..BASE
+    },
     // The Rekam page (section 2): recording both sources, and idle with the
     // last three recordings.
     Scene {
@@ -981,6 +1021,7 @@ const SCENES: [Scene; 187] = [
             system_level: 0.0,
             muted: [false; 2],
             hot: None,
+            screen: false,
         }),
         ..BASE
     },
@@ -997,6 +1038,7 @@ const SCENES: [Scene; 187] = [
             system_level: 0.7,
             muted: [true, false],
             hot: None,
+            screen: false,
         }),
         ..BASE
     },
@@ -1426,6 +1468,12 @@ const SCENES: [Scene; 187] = [
         "rec-saved-setup",
         ShapeKind::Notice,
         View0::Notice(DemoNotice::RecSavedSetup),
+        Expr::Happy,
+    ),
+    bata(
+        "video-saved",
+        ShapeKind::Notice,
+        View0::Notice(DemoNotice::VideoSaved),
         Expr::Happy,
     ),
     bata(
@@ -2267,6 +2315,7 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                 View0::MediaCompact => View::MediaCompact,
                 View0::PomodoroCompact => View::PomodoroCompact,
                 View0::RecordCompact => View::RecordCompact,
+                View0::ScreenCountdown(n) => View::ScreenCountdown(n),
                 View0::Panel(page) => View::Panel(page),
                 View0::Notice(which) => View::Notice(demo_notice(which, &renderer)),
                 View0::MediaLyric => View::MediaLyric,
@@ -2929,6 +2978,27 @@ fn notif_view<'a>(
     }
 }
 
+/// The saved video's thumbnail id in the demo (`DemoNotice::VideoSaved`).
+const DEMO_VIDEO: u64 = 1;
+
+/// Its picture: a diagonal gradient #2F4858 → #C9542B at 120 × 68, a 16:9
+/// video fitted to the thumbnail box. Never a real frame.
+// Drawn from Task 10 on (`Frame.video_notice`).
+#[allow(dead_code)]
+fn demo_video_thumb() -> Thumb {
+    let (w, h) = (120u32, 68u32);
+    let mut bgra = Vec::with_capacity((w * h * 4) as usize);
+    let (a, b) = ([0x2Fu8, 0x48, 0x58], [0xC9u8, 0x54, 0x2B]);
+    for y in 0..h {
+        for x in 0..w {
+            let t = (x + y) as f32 / (w + h - 2) as f32;
+            let mix = |c: usize| (a[c] as f32 + (b[c] as f32 - a[c] as f32) * t) as u8;
+            bgra.extend([mix(2), mix(1), mix(0), 255]);
+        }
+    }
+    Thumb { w, h, bgra }
+}
+
 /// `.clip.img .th`: a 160° gradient #E2683C → #5A2A1C, a pale inner frame.
 fn demo_thumb() -> Thumb {
     let (w, h) = (184u32, 104u32);
@@ -3212,6 +3282,28 @@ fn demo_notice(which: DemoNotice, renderer: &Renderer) -> Notice {
                 false,
                 offer,
             )
+        }
+        DemoNotice::VideoSaved => {
+            // A made-up file: the audio notice's body under the video's
+            // title, naming the demo's thumbnail.
+            let path: std::path::PathBuf =
+                r"C:\Users\vale\Videos\Vale\2026-11-11 1002 Denah lantai 2.mp4".into();
+            let like_audio = crate::app::record::saved_notice(
+                crate::i18n::lang(),
+                path.clone(),
+                Duration::from_secs(3 * 60 + 17),
+                false,
+                TranscriptOffer::None,
+            );
+            Notice {
+                title: tr(Key::ScreenSavedTitle).to_owned(),
+                kind: NoticeKind::RecSaved {
+                    path,
+                    offer: TranscriptOffer::None,
+                    thumb: Some(DEMO_VIDEO),
+                },
+                ..like_audio
+            }
         }
         DemoNotice::TranscriptReady => notice(
             tr(Key::TrNoticeSource),

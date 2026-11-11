@@ -1449,8 +1449,11 @@ impl Spot {
             View::Hidden => Spot::Hidden,
             View::Panel(_) => Spot::Panel,
             View::Idle => Spot::Idle,
-            // The REC view wears the pomodoro's focused face.
-            View::PomodoroCompact | View::RecordCompact => Spot::Pomodoro,
+            // The REC view wears the pomodoro's focused face, and so does
+            // the countdown that leads to it.
+            View::PomodoroCompact | View::RecordCompact | View::ScreenCountdown(_) => {
+                Spot::Pomodoro
+            }
             View::MediaCompact => Spot::Media,
             View::MediaLyric => Spot::Lyric,
             // A copied image shows its own thumbnail where Bata would be.

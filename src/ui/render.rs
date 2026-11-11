@@ -2159,8 +2159,9 @@ impl Renderer {
                 }
                 Ok(())
             }
-            // The panel returned above.
-            View::Panel(_) | View::Hidden => Ok(()),
+            // The panel returned above. The countdown has the REC view's
+            // shape and nothing in it yet.
+            View::Panel(_) | View::Hidden | View::ScreenCountdown(_) => Ok(()),
         };
         if faded {
             let target = self.target.as_ref().expect("target ensured by paint");

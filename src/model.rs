@@ -174,14 +174,18 @@ pub enum NoticeKind {
     StickyReminder {
         id: String,
     },
-    /// "Rekaman tersimpan · 42 mnt · klik untuk buka" (Bata happy). A click
-    /// on the body shows `path` in Explorer (`Effect::RevealFile`). `offer`
-    /// adds one chip: "Transkrip" queues a transcript, "Pengaturan" opens the
-    /// Transkrip card of Settings (`Hit::RecTranscribeChip`,
-    /// `Hit::RecTranscriptSetup`); neither reveals the file.
+    /// "Rekaman tersimpan · 42 mnt · klik untuk buka" (Bata happy), and
+    /// "Video tersimpan" for a screen recording. A click on the body shows
+    /// `path` in Explorer (`Effect::RevealFile`). `offer` adds one chip:
+    /// "Transkrip" queues a transcript, "Pengaturan" opens the Transkrip
+    /// card of Settings (`Hit::RecTranscribeChip`,
+    /// `Hit::RecTranscriptSetup`); neither reveals the file. `thumb` names
+    /// the saved video's thumbnail in `App`'s screen recording state; an
+    /// audio recording has none.
     RecSaved {
         path: PathBuf,
         offer: TranscriptOffer,
+        thumb: Option<u64>,
     },
     /// "Rekaman gagal" with the reason (Bata sad). A click dismisses, or,
     /// with `reveal` (the audio kept in a `.m4a.part`), shows that file in
@@ -193,10 +197,12 @@ pub enum NoticeKind {
     /// (`Effect::RecMicSettings`).
     RecMicDenied,
     /// Windows refused to write in the recordings folder `dir` (Controlled
-    /// folder access). A click opens the folder picker
+    /// folder access). A click opens the folder picker: the video folder's
+    /// with `video` (`Effect::VideoPickFolder`), else the audio folder's
     /// (`Effect::RecPickFolder`).
     RecFolderBlocked {
         dir: PathBuf,
+        video: bool,
     },
     /// A short word about a recording: the one-time "ask everyone first" and
     /// a source that dropped out. A click dismisses.
@@ -321,6 +327,32 @@ pub struct RecEntry {
     pub transcript: RowTranscript,
 }
 
+/// The two kinds of recording. Only one runs at a time.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RecKind {
+    /// Sound only, to an `.m4a`.
+    #[default]
+    Audio,
+    /// The screen, to an `.mp4`.
+    Screen,
+}
+
+/// What reaches `App` about a screen recording, tagged in `Event::Screen`
+/// with the session it belongs to.
+// Sent by the screen recording's threads from Task 12 on.
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ScreenNote {
+    /// The start thread is done; `App` joins it for the recorder.
+    Started,
+    /// The capture ended by itself (the window closed, the display went).
+    Ended,
+    /// The stop thread is done.
+    Stopped,
+    /// The word of the audio recorder feeding the video's track.
+    Audio(crate::recorder::RecEvent),
+}
+
 /// What reaches `App` about a recording, tagged in `Event::Rec` with the
 /// session it belongs to.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -337,6 +369,7 @@ pub enum RecNote {
 /// levels are not here: they change many times a second and ride the frame.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RecStatus {
+    pub kind: RecKind,
     pub started: Instant,
     /// The paused spans already over.
     pub paused_total: Duration,
@@ -364,8 +397,9 @@ impl RecStatus {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
-    /// The recording started, paused, resumed or ended (`None`); the notch
-    /// shows `View::RecordCompact` while one runs.
+    /// The recording (audio or screen, `RecStatus::kind`) started, paused,
+    /// resumed or ended (`None`); the notch shows `View::RecordCompact`
+    /// while one runs.
     RecStatus(Option<RecStatus>),
     /// The newest recordings found in the folder (the page shows five).
     RecRecent(Vec<RecEntry>),
@@ -375,6 +409,25 @@ pub enum Event {
     /// What a recording's threads reported, with the session number they
     /// belong to (`App` handles it; the reducer ignores it).
     Rec(u64, RecNote),
+    /// The same for a screen recording's threads.
+    // Sent from Task 12 on.
+    #[allow(dead_code)]
+    Screen(u64, ScreenNote),
+    /// The 3-2-1 before a screen recording: the number to show, `None` when
+    /// it ends (the recording starts, or Esc cancelled it). The notch shows
+    /// `View::ScreenCountdown` meanwhile.
+    // Sent from Task 12 on.
+    #[allow(dead_code)]
+    ScreenCountdown(Option<u8>),
+    /// The newest screen recordings found in the video folder, for the
+    /// Rekam page's Layar tab.
+    // Sent from Task 13 on.
+    #[allow(dead_code)]
+    VideoRecent(Vec<RecEntry>),
+    /// The same list with the queue's transcript marks over it.
+    // Sent from Task 13 on.
+    #[allow(dead_code)]
+    VideoMarks(Vec<RecEntry>),
     /// What a transcript job's thread reported, with the job id (`App`
     /// handles it; the reducer ignores it).
     Transcribe(u64, crate::transcribe::runner::Event),
@@ -748,7 +801,8 @@ pub enum Hit {
     DevicesEjectAll,
     /// The Rekam page: the big button (start or stop), pause or resume, the
     /// source control, a recent recording (by its place in the list) and
-    /// "Buka folder".
+    /// "Buka folder". The button, the list and the folder are those of the
+    /// page's tab (`Hit::RecTab`): audio or screen recordings.
     RecToggle,
     RecPause,
     /// A source's mute button, only while recording.
@@ -766,6 +820,16 @@ pub enum Hit {
     RecTranscript(usize),
     /// "Transkrip file lain..." on the Rekam page.
     RecPickFile,
+    /// The "Audio" / "Layar" switch of the Rekam page, only while nothing
+    /// records.
+    // Drawn from Task 9 on.
+    #[allow(dead_code)]
+    RecTab(RecKind),
+    /// "Buang" beside a running screen recording: the first click arms it
+    /// ("Yakin buang?"), the second discards the recording.
+    // Drawn from Task 9 on.
+    #[allow(dead_code)]
+    ScreenDiscard,
     /// Susun, template step: a monitor chip, a template card (built-ins
     /// first, then the user's) and a saved arrangement's play button, by
     /// place. Pick step: a window row by place in the list, and "Lewati
@@ -974,14 +1038,24 @@ pub enum Effect {
     OpenTranscript(PathBuf),
     /// Settings, at the Transkrip card.
     OpenTranscriptSettings,
-    /// The file picker for a transcript of any audio file.
-    RecPickFile,
+    /// The file picker for a transcript of any audio or video file, opening
+    /// in the folder of that kind of recording.
+    RecPickFile(RecKind),
     /// The row pill's explanation that transcripts are off.
     TranscriptOff,
     /// The mic notice's click: Windows' microphone privacy page.
     RecMicSettings,
     /// The blocked-folder notice's click: the recordings folder picker.
     RecPickFolder,
+    /// The Layar tab's big button, the screen hotkey and the tray: pick
+    /// what to record, cancel the countdown or stop, by where it stands.
+    ScreenToggle,
+    /// Stop the screen recording and throw its files away.
+    ScreenDiscard,
+    /// Open the video folder (the panel has collapsed).
+    VideoOpenFolder,
+    /// The blocked video folder's click: the video folder picker.
+    VideoPickFolder,
     /// Susun, as the hits of the same names.
     ArrangeMonitor(usize),
     ArrangeCard(usize),
@@ -1246,6 +1320,9 @@ pub enum View {
     PomodoroCompact,
     /// A recording runs: the red dot, the clock and the level bars.
     RecordCompact,
+    /// The 3-2-1 before a screen recording, with the number to show. It
+    /// outranks the panel and opens nothing.
+    ScreenCountdown(u8),
     Panel(Page),
     Notice(Notice),
 }
@@ -1256,6 +1333,7 @@ mod tests {
 
     fn status(started: Instant) -> RecStatus {
         RecStatus {
+            kind: RecKind::Audio,
             started,
             paused_total: Duration::ZERO,
             paused_since: None,
