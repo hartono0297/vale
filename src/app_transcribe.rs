@@ -476,12 +476,15 @@ impl App {
     /// goes back to the head and its thread stops; when none runs any more
     /// the next job may start.
     pub(super) fn transcribe_sync_hold(&mut self) {
-        let (audio, screen) = (self.rec.engaged(), self.screen.engaged());
-        let on = audio || screen;
-        // Both holds are set before either answer is looked at.
+        let (audio, screen, captions) =
+            (self.rec.engaged(), self.screen.engaged(), self.captions_hold());
+        let on = audio || screen || captions;
+        // All holds are set before any answer is looked at. Captions never
+        // returns a job: it only keeps the next one from starting.
         let returned = [
             self.tr.queue.set_hold(Hold::Recording, audio),
             self.tr.queue.set_hold(Hold::ScreenRecording, screen),
+            self.tr.queue.set_hold(Hold::Captions, captions),
         ];
         if returned.iter().any(Option::is_some)
             && let Some(w) = self.tr.worker.as_mut()
@@ -493,6 +496,11 @@ impl App {
         if !on {
             self.transcribe_try_next();
         }
+    }
+
+    /// Whether live captions hold the queue. Stub until captions are wired in.
+    fn captions_hold(&self) -> bool {
+        false
     }
 
     /// Starts the head of the queue when nothing runs, nothing holds it and

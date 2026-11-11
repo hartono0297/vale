@@ -18,6 +18,16 @@ pub enum Hold {
     Recording,
     /// A screen recording is counting down, starting, running or stopping.
     ScreenRecording,
+    /// Live captions are on: starts wait, a running job finishes.
+    Captions,
+}
+
+impl Hold {
+    /// Whether turning this hold on stops the running job. Only `Captions`
+    /// does not: it just keeps the next job from starting.
+    pub fn preempts(self) -> bool {
+        !matches!(self, Hold::Captions)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -83,8 +93,9 @@ impl Queue {
         true
     }
 
-    /// Turning a hold on while a job runs moves it back to the head and
-    /// returns it, so the caller cancels its thread. Idempotent.
+    /// Turning a preempting hold on while a job runs moves it back to the head
+    /// and returns it, so the caller cancels its thread. A hold that does not
+    /// preempt only blocks starts. Idempotent.
     pub fn set_hold(&mut self, hold: Hold, on: bool) -> Option<QueuedJob> {
         if !on {
             self.holds.retain(|&h| h != hold);
@@ -92,6 +103,9 @@ impl Queue {
         }
         if !self.holds.contains(&hold) {
             self.holds.push(hold);
+        }
+        if !hold.preempts() {
+            return None;
         }
         let job = self.running.take()?;
         self.waiting.push_front(job.clone());
@@ -448,6 +462,30 @@ mod tests {
         let text = r#"{"v":1,"jobs":[{"audio":"gone","model":"m"},{"audio":"here","model":"m"}]}"#;
         let got = Queue::from_json(text, |a| a == Path::new("here"));
         assert_eq!(got, vec![job("here", "m")]);
+    }
+
+    #[test]
+    fn the_captions_hold_never_cancels_a_running_job() {
+        let mut q = Queue::new(&[]);
+        q.push(job("a.m4a", "s"));
+        assert!(q.start_next(ready).is_some());
+        assert_eq!(q.set_hold(Hold::Captions, true), None, "running job keeps running");
+        assert_eq!(q.state(&p("a.m4a")), Some(JobState::Running));
+        q.push(job("b.m4a", "s"));
+        q.cancel(&p("a.m4a"));
+        assert_eq!(q.start_next(ready), None, "held: the next one waits");
+    }
+
+    #[test]
+    fn captions_and_recording_holds_release_in_any_order() {
+        let mut q = Queue::new(&[]);
+        q.push(job("a.m4a", "s"));
+        q.set_hold(Hold::Captions, true);
+        q.set_hold(Hold::Recording, true);
+        q.set_hold(Hold::Recording, false);
+        assert_eq!(q.start_next(ready), None);
+        q.set_hold(Hold::Captions, false);
+        assert!(q.start_next(ready).is_some());
     }
 
     #[test]
