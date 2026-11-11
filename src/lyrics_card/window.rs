@@ -1,7 +1,8 @@
 //! The lyrics card's window: a layered popup drawn into a premultiplied DIB
 //! by a software Direct2D target and pushed with `UpdateLayeredWindow`
-//! (the pattern of `arrange_overlay::Canvas`), DirectWrite text, WIC art
-//! and the pointer, wheel and key handling.
+//! (the pattern of `arrange_overlay::Canvas`; the surface is
+//! `ui::card_surface`, shared with the caption card), DirectWrite text, WIC
+//! art and the pointer, wheel and key handling.
 //!
 //! State lives in this module's `thread_local!` (`CARD`). The window procedure
 //! never calls `app::with_app`: it tells the island what the user did with
@@ -17,39 +18,15 @@
 //! no timer at all.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
-use std::ffi::c_void;
-use std::mem::ManuallyDrop;
 use std::sync::Arc;
 use std::time::Instant;
 
 use windows::Win32::Foundation::{
     COLORREF, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
 };
-use windows::Win32::Graphics::Direct2D::Common::{
-    D2D_RECT_F, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_GRADIENT_STOP, D2D1_PIXEL_FORMAT,
-};
-use windows::Win32::Graphics::Direct2D::{
-    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
-    D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_EXTEND_MODE_CLAMP, D2D1_FACTORY_TYPE_SINGLE_THREADED,
-    D2D1_GAMMA_2_2, D2D1_LAYER_OPTIONS_NONE, D2D1_LAYER_PARAMETERS,
-    D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES, D2D1_RENDER_TARGET_PROPERTIES,
-    D2D1_RENDER_TARGET_TYPE_SOFTWARE, D2D1_ROUNDED_RECT, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
-    D2D1CreateFactory, ID2D1Bitmap, ID2D1Brush, ID2D1DCRenderTarget, ID2D1Factory, ID2D1Layer,
-    ID2D1SolidColorBrush,
-};
-use windows::Win32::Graphics::DirectWrite::{
-    DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_WEIGHT, DWRITE_TEXT_ALIGNMENT_CENTER,
-    DWRITE_TEXT_METRICS, DWRITE_TRIMMING, DWRITE_TRIMMING_GRANULARITY_CHARACTER,
-    DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat,
-    IDWriteTextLayout,
-};
-use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
-use windows::Win32::Graphics::Gdi::{
-    AC_SRC_ALPHA, AC_SRC_OVER, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION,
-    CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, DeleteDC, DeleteObject, HBITMAP, HDC,
-    HGDIOBJ, SelectObject,
-};
+use windows::Win32::Graphics::Direct2D::{D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, ID2D1Bitmap};
+use windows::Win32::Graphics::DirectWrite::{DWRITE_TEXT_ALIGNMENT_CENTER, IDWriteTextLayout};
+use windows::Win32::Graphics::Gdi::{AC_SRC_ALPHA, AC_SRC_OVER, BLENDFUNCTION};
 use windows::Win32::Graphics::Imaging::{
     CLSID_WICImagingFactory, GUID_WICPixelFormat32bppBGRA, GUID_WICPixelFormat32bppPBGRA,
     IWICBitmapSource, IWICImagingFactory, WICBitmapDitherTypeNone,
@@ -71,7 +48,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_SETCURSOR,
     WM_TIMER, WM_WINDOWPOSCHANGED, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
-use windows::core::{Error, Interface, PCWSTR, Result, w};
+use windows::core::{Error, Interface, PCWSTR, w};
 use windows_numerics::{Matrix3x2, Vector2};
 
 use super::colour;
@@ -80,12 +57,11 @@ use super::{CardContent, Change, Msg, OpenArgs, Status, WM_APP_LYRICS_CARD};
 use crate::config::CardPlace;
 use crate::lyrics::{self, LrcLine};
 use crate::model::Timeline;
-use crate::shot_edit::gfx::{bitmap, color, rect_f};
+use crate::shot_edit::gfx::{bitmap, color};
+use crate::ui::card_surface::{Surface, Tween, rounded};
 use crate::ui::frame_clock::{FrameClock, WM_APP_FRAME};
 use crate::config::UiFont;
-use crate::ui::fonts::{Face, Role};
-use crate::ui::geometry::Rect as GRect;
-use crate::ui::icons::{Icon, IconSet};
+use crate::ui::icons::Icon;
 
 /// The window class.
 const CLASS: PCWSTR = w!("ValeLyricsCard");
@@ -97,287 +73,6 @@ const TIMER_LINE: usize = 1;
 const TIMER_MANUAL: usize = 2;
 /// The rest glyph of an instrumental gap and the loading mark (U+266A).
 const NOTE: &str = "\u{266A}";
-
-// ------------------------------------------------------------------ surface
-
-/// The factories, the software target bound to a DIB the size of the window,
-/// and what is cached per target.
-struct Surface {
-    // Declared first: released before the factories.
-    thumb: Option<ID2D1Bitmap>,
-    icons: IconSet,
-    layer: ID2D1Layer,
-    brush: ID2D1SolidColorBrush,
-    rt: ID2D1DCRenderTarget,
-    face: Face,
-    formats: HashMap<(u32, i32), IDWriteTextFormat>,
-    dwrite: IDWriteFactory,
-    /// Kept alive for the target and the icon geometries made from it.
-    _d2d: ID2D1Factory,
-    dc: HDC,
-    dib: HBITMAP,
-    previous: HGDIOBJ,
-    size: (i32, i32),
-}
-
-fn make_dib(dc: HDC, size: (i32, i32)) -> Result<HBITMAP> {
-    let info = BITMAPINFO {
-        bmiHeader: BITMAPINFOHEADER {
-            biSize: size_of::<BITMAPINFOHEADER>() as u32,
-            biWidth: size.0,
-            biHeight: -size.1,
-            biPlanes: 1,
-            biBitCount: 32,
-            biCompression: BI_RGB.0,
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-    let mut bits: *mut c_void = std::ptr::null_mut();
-    unsafe { CreateDIBSection(Some(dc), &info, DIB_RGB_COLORS, &mut bits, None, 0) }
-}
-
-impl Surface {
-    fn new(size: (i32, i32), font: UiFont) -> Result<Surface> {
-        unsafe {
-            let d2d: ID2D1Factory = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
-            let dwrite: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
-            let face = Face::for_role_in(&dwrite, Role::Text, font);
-            let dc = CreateCompatibleDC(None);
-            let dib = match make_dib(dc, size) {
-                Ok(b) => b,
-                Err(e) => {
-                    let _ = DeleteDC(dc);
-                    return Err(e);
-                }
-            };
-            let previous = SelectObject(dc, dib.into());
-            let props = D2D1_RENDER_TARGET_PROPERTIES {
-                r#type: D2D1_RENDER_TARGET_TYPE_SOFTWARE,
-                pixelFormat: D2D1_PIXEL_FORMAT {
-                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                    alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-                },
-                dpiX: 96.0,
-                dpiY: 96.0,
-                ..Default::default()
-            };
-            let made = (|| {
-                let rt = d2d.CreateDCRenderTarget(&props)?;
-                rt.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
-                let brush = rt.CreateSolidColorBrush(&color(0, 1.0), None)?;
-                let layer = rt.CreateLayer(None)?;
-                let icons = IconSet::new(&d2d)?;
-                Ok::<_, Error>((rt, brush, layer, icons))
-            })();
-            match made {
-                Ok((rt, brush, layer, icons)) => Ok(Surface {
-                    thumb: None,
-                    icons,
-                    layer,
-                    brush,
-                    rt,
-                    face,
-                    formats: HashMap::new(),
-                    dwrite,
-                    _d2d: d2d,
-                    dc,
-                    dib,
-                    previous,
-                    size,
-                }),
-                Err(e) => {
-                    SelectObject(dc, previous);
-                    let _ = DeleteObject(dib.into());
-                    let _ = DeleteDC(dc);
-                    Err(e)
-                }
-            }
-        }
-    }
-
-    /// A DIB of the new size (the target and the brushes stay).
-    fn resize(&mut self, size: (i32, i32)) -> Result<()> {
-        if size == self.size {
-            return Ok(());
-        }
-        unsafe {
-            let fresh = make_dib(self.dc, size)?;
-            SelectObject(self.dc, fresh.into());
-            let _ = DeleteObject(self.dib.into());
-            self.dib = fresh;
-        }
-        self.size = size;
-        Ok(())
-    }
-
-    fn set_font(&mut self, font: UiFont) {
-        self.face = Face::for_role_in(&self.dwrite, Role::Text, font);
-        self.formats.clear();
-    }
-
-    fn format(&mut self, size: f32, weight: i32) -> Option<IDWriteTextFormat> {
-        let key = (size.to_bits(), weight);
-        if let Some(f) = self.formats.get(&key) {
-            return Some(f.clone());
-        }
-        let f = self
-            .face
-            .format(&self.dwrite, DWRITE_FONT_WEIGHT(weight), size)
-            .ok()?;
-        self.formats.insert(key, f.clone());
-        Some(f)
-    }
-
-    /// `text` laid out `width` wide (wrapping), at `size` dip.
-    fn layout(&mut self, text: &str, size: f32, weight: i32, width: f32) -> Option<IDWriteTextLayout> {
-        let format = self.format(size, weight)?;
-        let wide: Vec<u16> = text.encode_utf16().collect();
-        unsafe {
-            self.dwrite
-                .CreateTextLayout(&wide, &format, width.max(1.0), 8192.0)
-                .ok()
-        }
-    }
-
-    /// One line cut with an ellipsis at `width`.
-    fn one_line(&mut self, text: &str, size: f32, weight: i32, width: f32) -> Option<IDWriteTextLayout> {
-        let format = self.format(size, weight)?;
-        let layout = self.layout(text, size, weight, width)?;
-        unsafe {
-            layout.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP).ok()?;
-            let ellipsis = self.dwrite.CreateEllipsisTrimmingSign(&format).ok()?;
-            let trimming = DWRITE_TRIMMING {
-                granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
-                delimiter: 0,
-                delimiterCount: 0,
-            };
-            layout.SetTrimming(&trimming, &ellipsis).ok()?;
-        }
-        Some(layout)
-    }
-
-    fn height_of(layout: &IDWriteTextLayout) -> f32 {
-        let mut m = DWRITE_TEXT_METRICS::default();
-        if unsafe { layout.GetMetrics(&mut m) }.is_ok() {
-            m.height
-        } else {
-            0.0
-        }
-    }
-
-    fn draw_text(&self, origin: (f32, f32), layout: &IDWriteTextLayout, rgb: u32, alpha: f32) {
-        unsafe {
-            self.brush.SetColor(&color(rgb, alpha));
-            self.rt.DrawTextLayout(
-                Vector2::new(origin.0, origin.1),
-                layout,
-                &self.brush,
-                D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
-            );
-        }
-    }
-
-    fn fill_round(&self, r: layout::RectF, radius: f32, rgb: u32, alpha: f32) {
-        unsafe {
-            self.brush.SetColor(&color(rgb, alpha));
-            self.rt.FillRoundedRectangle(&rounded(r, radius), &self.brush);
-        }
-    }
-
-    fn icon(&self, icon: Icon, area: layout::RectF, size: f32, rgb: u32, alpha: f32) {
-        let _ = self.icons.draw(
-            &self.rt,
-            &self.brush,
-            icon,
-            GRect {
-                x: area.x,
-                y: area.y,
-                w: area.w,
-                h: area.h,
-            },
-            size,
-            rgb,
-            alpha,
-            None,
-        );
-    }
-
-    /// A vertical gradient brush over `[y0, y1]` from `top` to `bottom`.
-    fn vertical_gradient(&self, y0: f32, y1: f32, stops: &[(f32, u32, f32)]) -> Option<ID2D1Brush> {
-        let stops: Vec<D2D1_GRADIENT_STOP> = stops
-            .iter()
-            .map(|&(position, rgb, alpha)| D2D1_GRADIENT_STOP {
-                position,
-                color: color(rgb, alpha),
-            })
-            .collect();
-        unsafe {
-            let collection = self
-                .rt
-                .CreateGradientStopCollection(&stops, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP)
-                .ok()?;
-            let brush = self
-                .rt
-                .CreateLinearGradientBrush(
-                    &D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES {
-                        startPoint: Vector2::new(0.0, y0),
-                        endPoint: Vector2::new(0.0, y1),
-                    },
-                    None,
-                    &collection,
-                )
-                .ok()?;
-            brush.cast().ok()
-        }
-    }
-
-    /// Pushes a layer over `bounds` that fades by `opacity`'s alpha. Give the
-    /// returned brush back to `pop_layer` (it keeps the reference the layer
-    /// was given until the layer is popped).
-    fn push_layer(&self, bounds: layout::RectF, opacity: Option<ID2D1Brush>) -> Option<ID2D1Brush> {
-        let params = D2D1_LAYER_PARAMETERS {
-            contentBounds: D2D_RECT_F {
-                left: bounds.x,
-                top: bounds.y,
-                right: bounds.right(),
-                bottom: bounds.bottom(),
-            },
-            geometricMask: ManuallyDrop::new(None),
-            maskAntialiasMode: D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
-            maskTransform: Matrix3x2::identity(),
-            opacity: 1.0,
-            opacityBrush: ManuallyDrop::new(opacity.clone()),
-            layerOptions: D2D1_LAYER_OPTIONS_NONE,
-        };
-        unsafe { self.rt.PushLayer(&params, &self.layer) };
-        drop(ManuallyDrop::into_inner(params.opacityBrush));
-        opacity
-    }
-
-    fn pop_layer(&self, keep: Option<ID2D1Brush>) {
-        unsafe { self.rt.PopLayer() };
-        drop(keep);
-    }
-}
-
-impl Drop for Surface {
-    fn drop(&mut self) {
-        unsafe {
-            SelectObject(self.dc, self.previous);
-            let _ = DeleteObject(self.dib.into());
-            let _ = DeleteDC(self.dc);
-        }
-    }
-}
-
-fn rounded(r: layout::RectF, radius: f32) -> D2D1_ROUNDED_RECT {
-    D2D1_ROUNDED_RECT {
-        rect: rect_f(r.x, r.y, r.w, r.h),
-        radiusX: radius,
-        radiusY: radius,
-    }
-}
 
 // --------------------------------------------------------------------- art
 
@@ -442,56 +137,6 @@ fn decode_art(bytes: &[u8]) -> Option<Art> {
 
 // ------------------------------------------------------------------- state
 
-/// An eased value.
-#[derive(Clone, Copy, Debug)]
-struct Tween {
-    from: f32,
-    to: f32,
-    start: Instant,
-    ms: u32,
-}
-
-impl Tween {
-    fn at_rest(v: f32, now: Instant) -> Tween {
-        Tween {
-            from: v,
-            to: v,
-            start: now,
-            ms: 0,
-        }
-    }
-
-    fn t(&self, now: Instant) -> f32 {
-        if self.ms == 0 {
-            return 1.0;
-        }
-        (now.saturating_duration_since(self.start).as_secs_f32() * 1000.0 / self.ms as f32).clamp(0.0, 1.0)
-    }
-
-    fn at(&self, now: Instant) -> f32 {
-        self.from + (self.to - self.from) * layout::ease_out_cubic(self.t(now))
-    }
-
-    fn moving(&self, now: Instant) -> bool {
-        self.ms > 0 && self.t(now) < 1.0
-    }
-
-    /// Heads for `to` from where it is now; at once when `animate` is false.
-    fn go(&mut self, to: f32, ms: u32, animate: bool, now: Instant) {
-        let here = self.at(now);
-        *self = if animate && ms > 0 {
-            Tween {
-                from: here,
-                to,
-                start: now,
-                ms,
-            }
-        } else {
-            Tween::at_rest(to, now)
-        };
-    }
-}
-
 type Stops = (u32, u32, u32);
 
 /// Everything the card knows about what it shows.
@@ -541,6 +186,8 @@ enum Fx {
 pub(super) struct Card {
     hwnd: HWND,
     island: HWND,
+    // Declared before the surface: released before its factories.
+    thumb: Option<ID2D1Bitmap>,
     surf: Surface,
     dpi: u32,
     origin: (i32, i32),
@@ -717,6 +364,7 @@ pub(super) fn open(args: OpenArgs, content: CardContent) -> bool {
     let mut card = Card {
         hwnd,
         island: args.island,
+        thumb: None,
         surf,
         dpi,
         origin,
@@ -953,7 +601,7 @@ impl Card {
             .art
             .as_ref()
             .and_then(|a| colour::dominant_rgb(&a.small, a.small_side, a.small_side));
-        self.surf.thumb = self.art.as_ref().and_then(|a| {
+        self.thumb = self.art.as_ref().and_then(|a| {
             bitmap(&self.surf.rt, a.thumb_side, a.thumb_side, &a.thumb).ok()
         });
     }
@@ -1182,7 +830,7 @@ impl Card {
 
     fn paint_header(&mut self, r: &Rects, hover: f32) {
         // The thumbnail, rounded; a plain plate without art.
-        if let Some(bmp) = self.surf.thumb.clone() {
+        if let Some(bmp) = self.thumb.clone() {
             unsafe {
                 if let Ok(brush) = self.surf.rt.CreateBitmapBrush(&bmp, None, None) {
                     brush.SetInterpolationMode(D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);

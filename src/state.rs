@@ -280,6 +280,8 @@ pub struct IslandState {
     lyrics_on: bool,
     /// `App` has synced lyrics for the current track.
     lyrics_ready: bool,
+    /// The newest live caption text the notch shows (`Event::CaptionLine`).
+    caption_line: Option<String>,
     queue: VecDeque<Notice>,
     current: Option<(Notice, Instant)>,
     /// Sticky notices, oldest first; the newest is shown. At most one
@@ -482,6 +484,7 @@ impl IslandState {
             screen_discard_armed: None,
             lyrics_on: false,
             lyrics_ready: false,
+            caption_line: None,
             queue: VecDeque::new(),
             current: None,
             sticky: Vec::new(),
@@ -582,6 +585,7 @@ impl IslandState {
             Event::MediaTimeline(timeline) => self.timeline = timeline,
             Event::LyricsReady(ready) => self.lyrics_ready = ready,
             Event::LyricsSetting(on) => self.lyrics_on = on,
+            Event::CaptionLine(line) => self.caption_line = line.filter(|t| !t.is_empty()),
             Event::RecStatus(status) => {
                 // The Rekam page follows the recording that runs, and stays
                 // on its tab once it ends.
@@ -979,6 +983,7 @@ impl IslandState {
             | Event::Screen(..)
             | Event::Transcribe(..)
             | Event::TranscribeDownload(..)
+            | Event::Captions(..)
             | Event::Lyrics(_)
             | Event::Cli(_)
             | Event::ExplorerFolders { .. }
@@ -1285,6 +1290,11 @@ impl IslandState {
         if self.pomodoro.is_active() {
             return View::PomodoroCompact;
         }
+        // A caption line in the notch takes the place of the music or the
+        // idle view only: a recording and the pomodoro stay.
+        if self.caption_line.is_some() {
+            return View::CaptionCompact;
+        }
         if let Some(media) = &self.media {
             if self.lyrics_on && self.lyrics_ready && media.playing {
                 return View::MediaLyric;
@@ -1305,6 +1315,18 @@ impl IslandState {
 
     pub fn timeline(&self) -> Option<&Timeline> {
         self.timeline.as_ref()
+    }
+
+    /// The caption text the notch shows, if any.
+    pub fn caption_line(&self) -> Option<&str> {
+        self.caption_line.as_deref()
+    }
+
+    /// The caption line the REC view shows beside the clock: only while the
+    /// recording runs (paused, the view says "dijeda" alone).
+    pub fn rec_caption(&self) -> Option<&str> {
+        self.rec.as_ref().filter(|r| !r.paused())?;
+        self.caption_line.as_deref()
     }
 
     pub fn lyrics_on(&self) -> bool {
@@ -1998,11 +2020,12 @@ impl IslandState {
                             | View::MediaLyric
                             | View::PomodoroCompact
                             | View::RecordCompact
+                            | View::CaptionCompact
                     ) || (!self.notice_covers()
                         && matches!(self.view(), View::Notice(_)))) =>
             {
-                // The REC view leads to the Rekam page.
-                if self.view() == View::RecordCompact {
+                // The REC view and the caption line lead to the Rekam page.
+                if matches!(self.view(), View::RecordCompact | View::CaptionCompact) {
                     self.page = Page::Record;
                 }
                 self.open_by_click(now)
@@ -2056,7 +2079,7 @@ impl IslandState {
                 }
                 // Not in Click mode (the arm above): the next visit opens on
                 // the Rekam page.
-                View::RecordCompact => self.page = Page::Record,
+                View::RecordCompact | View::CaptionCompact => self.page = Page::Record,
                 _ => {}
             },
             Hit::Prev => effects.push(Effect::Media(MediaCommand::Prev)),
@@ -2267,6 +2290,12 @@ impl IslandState {
                 {
                     let path = entry.path.clone();
                     self.collapse_for(Effect::RecReveal(path), effects);
+                }
+            }
+            // The panel stays: the switch shows the change.
+            Hit::RecCaptions => {
+                if self.view() == View::Panel(Page::Record) {
+                    effects.push(Effect::CaptionToggle);
                 }
             }
             Hit::RecFolder => {
@@ -8064,6 +8093,79 @@ mod tests {
     }
 
     #[test]
+    fn a_fresh_caption_line_takes_the_compact_view() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Media(Some(media(true))), t0);
+        assert_eq!(s.view(), View::MediaCompact);
+        s.apply(Event::CaptionLine(Some("jadi deadline-nya Jumat ya".into())), t0);
+        assert_eq!(s.view(), View::CaptionCompact);
+        assert_eq!(s.caption_line(), Some("jadi deadline-nya Jumat ya"));
+        s.apply(Event::CaptionLine(None), t0);
+        assert_eq!(s.view(), View::MediaCompact);
+        // An empty line shows nothing.
+        s.apply(Event::CaptionLine(Some(String::new())), t0);
+        assert_eq!(s.view(), View::MediaCompact);
+        assert_eq!(s.caption_line(), None);
+    }
+
+    #[test]
+    fn a_fresh_caption_line_leaves_a_running_pomodoro_in_view() {
+        // The line takes the place of the idle or music view only.
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Media(Some(media(true))), t0);
+        s.apply(Event::Click(Hit::PomoStartPause), t0);
+        assert_eq!(s.view(), View::PomodoroCompact);
+        s.apply(Event::CaptionLine(Some("halo".into())), t0);
+        assert_eq!(s.view(), View::PomodoroCompact);
+        assert_eq!(s.caption_line(), Some("halo"), "kept for when it ends");
+    }
+
+    #[test]
+    fn a_fresh_caption_line_recording_keeps_the_rec_view() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::CaptionLine(Some("halo".into())), t0);
+        s.apply(Event::RecStatus(Some(rec_status(t0))), t0);
+        assert_eq!(s.view(), View::RecordCompact);
+        s.apply(Event::RecStatus(None), t0 + secs(2));
+        assert_eq!(s.view(), View::CaptionCompact);
+    }
+
+    #[test]
+    fn a_fresh_caption_line_fullscreen_hides_it() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::CaptionLine(Some("halo".into())), t0);
+        s.apply(Event::Fullscreen(true), t0);
+        assert_eq!(s.view(), View::Hidden);
+        s.apply(Event::Fullscreen(false), t0);
+        assert_eq!(s.view(), View::CaptionCompact);
+    }
+
+    #[test]
+    fn a_click_on_the_caption_line_opens_the_rekam_page() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::OpenMode(OpenMode::Click), t0);
+        s.apply(Event::CaptionLine(Some("halo".into())), t0);
+        s.apply(Event::Click(Hit::Body), t0 + secs(1));
+        assert_eq!(s.view(), View::Panel(Page::Record));
+    }
+
+    #[test]
+    fn a_click_on_the_caption_line_without_click_mode_aims_the_next_visit_at_rekam() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::CaptionLine(Some("halo".into())), t0);
+        s.apply(Event::Click(Hit::Body), t0 + secs(1));
+        assert_eq!(s.view(), View::CaptionCompact, "a click alone opens nothing");
+        s.apply(Event::Hover(true), t0 + secs(2));
+        assert_eq!(s.view(), View::Panel(Page::Record));
+    }
+
+    #[test]
     fn a_recording_shows_the_rec_view_over_pomodoro_and_music() {
         let t0 = Instant::now();
         let mut s = st();
@@ -8374,6 +8476,20 @@ mod tests {
         marked.transcript = RowTranscript::Queued;
         s.apply(Event::RecMarks(vec![marked]), t0);
         assert_eq!(s.rec_list()[0].transcript, RowTranscript::Queued);
+    }
+
+    #[test]
+    fn the_rekam_caption_switch_toggles_captions_only_on_that_page() {
+        let t0 = Instant::now();
+        let mut s = st();
+        assert_eq!(s.apply(Event::Click(Hit::RecCaptions), t0), vec![]);
+        open_on(&mut s, Page::Record, t0);
+        assert_eq!(
+            s.apply(Event::Click(Hit::RecCaptions), t0),
+            vec![Effect::CaptionToggle]
+        );
+        // The panel stays open: the switch shows the change.
+        assert_eq!(s.view(), View::Panel(Page::Record));
     }
 
     #[test]

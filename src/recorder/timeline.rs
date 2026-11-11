@@ -187,6 +187,24 @@ impl Timeline {
         out
     }
 
+    /// Moves the read point to raw frame `frame` without reading: what was
+    /// buffered before it is dropped, and later writes there are too. For a
+    /// reader that fell far behind the clock (live captions after a sleep).
+    /// Ignored when the read point is already there or past it.
+    pub fn skip_to(&mut self, frame: i64) {
+        let target = self.map(frame);
+        if target <= self.read {
+            return;
+        }
+        let n = (target - self.read) as u64;
+        for lane in &mut self.lanes {
+            let have = (lane.samples.len() as u64).min(n) as usize;
+            lane.samples.drain(..have);
+            lane.set.drain(..have);
+        }
+        self.read = target;
+    }
+
     /// A pause is open (between `pause_at` and `resume_at`).
     pub fn paused(&self) -> bool {
         self.spans.last().is_some_and(|s| s.1 == OPEN)
@@ -368,6 +386,22 @@ mod tests {
         assert_eq!(lane0(&t.take_max(10, 4)), ramp(5, 4));
         assert_eq!(lane0(&t.take_max(10, 4)), ramp(9, 2));
         assert!(t.take_max(10, 4).is_empty());
+    }
+
+    #[test]
+    fn a_skip_drops_what_is_buffered_and_moves_the_read_point() {
+        let mut t = one();
+        t.put(0, 0, &ramp(1, 10));
+        t.skip_to(6);
+        assert_eq!(t.take(8), vec![7.0, 8.0]);
+        t.skip_to(1_000_000);
+        assert_eq!(t.buffered_frames(), 0);
+        t.put(0, 999_990, &[9.0; 12]); // only the part after the skip is kept
+        assert_eq!(t.take(1_000_002), vec![9.0, 9.0]);
+        t.skip_to(5); // behind the read point: ignored
+        t.put(0, 1_000_002, &[3.0]);
+        assert_eq!(t.take(1_000_003), vec![3.0]);
+        assert_eq!(t.heard(), 5, "skipped frames were never heard");
     }
 
     fn lane0(x: &[f32]) -> Vec<f32> {

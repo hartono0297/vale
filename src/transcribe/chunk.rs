@@ -190,6 +190,25 @@ impl Chunker {
         frame * FRAME_MS
     }
 
+    /// A copy of the open chunk so far, with the start it will keep when it
+    /// closes (live captions show its text before the sentence ends).
+    pub fn open_chunk(&self) -> Option<Chunk> {
+        self.active.as_ref().map(|active| Chunk {
+            channel: self.channel,
+            start_ms: active.first * FRAME_MS,
+            samples: active.samples.clone(),
+        })
+    }
+
+    /// Continues at frame `index` of the channel, without the open chunk and
+    /// the leading pad: the audio in between was skipped (live captions that
+    /// fell behind), and a chunk that opens next starts no earlier.
+    pub fn jump_to(&mut self, index: u64) {
+        self.active = None;
+        self.before.clear();
+        self.seen = index;
+    }
+
     /// The chunk still open at the end of the channel.
     pub fn finish(&mut self) -> Option<Chunk> {
         self.active.as_ref()?;
@@ -330,6 +349,20 @@ mod tests {
 
     fn pattern(parts: &[(usize, f32)]) -> Vec<f32> {
         parts.iter().flat_map(|&(n, p)| std::iter::repeat_n(p, n)).collect()
+    }
+
+    #[test]
+    fn a_jump_drops_the_open_chunk_and_keeps_the_time() {
+        let mut chunker = Chunker::new(0, ChunkParams::default());
+        for _ in 0..20 {
+            assert_eq!(chunker.push(&[0.0; FRAME], SPEECH), None);
+        }
+        assert!(chunker.open_chunk().is_some());
+        chunker.jump_to(1_000);
+        assert_eq!(chunker.open_chunk(), None);
+        assert_eq!(chunker.settled_ms(), 1_000 * FRAME_MS, "no pad from before the jump");
+        chunker.push(&[0.0; FRAME], SPEECH);
+        assert_eq!(chunker.open_chunk().unwrap().start_ms, 1_000 * FRAME_MS);
     }
 
     #[test]
@@ -480,5 +513,28 @@ mod tests {
             }
         }
         assert_eq!(chunks.len(), 2);
+    }
+
+    #[test]
+    fn open_chunk_copies_the_open_speech() {
+        let mut c = Chunker::new(1, ChunkParams::default());
+        let (quiet, loud) = (vec![0.0; FRAME], vec![0.5; FRAME]);
+        let pad = ChunkParams::frames(ChunkParams::default().pad_ms);
+        for _ in 0..20 {
+            assert_eq!(c.push(&quiet, 0.0), None);
+        }
+        assert_eq!(c.open_chunk(), None, "nothing is open before speech");
+        for _ in 0..10 {
+            assert_eq!(c.push(&loud, 1.0), None);
+        }
+        let open = c.open_chunk().expect("speech is open");
+        assert_eq!(open.channel, 1);
+        assert_eq!(open.samples.len(), (10 + pad) * FRAME);
+        assert_eq!(open.start_ms, (20 - pad as u64) * FRAME_MS);
+        assert_eq!(c.open_chunk(), Some(open.clone()), "a copy: the chunk stays open");
+        let closed = (0..100).find_map(|_| c.push(&quiet, 0.0)).expect("the pause closes it");
+        assert_eq!(closed.start_ms, open.start_ms);
+        assert_eq!(closed.samples[..open.samples.len()], open.samples[..]);
+        assert_eq!(c.open_chunk(), None);
     }
 }

@@ -372,11 +372,14 @@ pub enum HotkeyId {
     /// "Zoom video rekaman": zooms the video of the running screen recording
     /// in or out. Registered only while a screen recording runs.
     RecordZoom,
+    /// "Caption langsung": turns the live captions on or off. Always
+    /// registered, with or without a recording.
+    Captions,
 }
 
 impl HotkeyId {
     /// Every row, in Settings order.
-    pub const ALL: [HotkeyId; 12] = [
+    pub const ALL: [HotkeyId; 13] = [
         HotkeyId::Search,
         HotkeyId::Clipboard,
         HotkeyId::Devices,
@@ -389,6 +392,7 @@ impl HotkeyId {
         HotkeyId::RecordMute,
         HotkeyId::RecordScreen,
         HotkeyId::RecordZoom,
+        HotkeyId::Captions,
     ];
 
     /// The row's key in config.json.
@@ -406,6 +410,7 @@ impl HotkeyId {
             HotkeyId::RecordMute => "record_mute",
             HotkeyId::RecordScreen => "record_screen",
             HotkeyId::RecordZoom => "record_zoom",
+            HotkeyId::Captions => "captions",
         }
     }
 
@@ -463,11 +468,19 @@ impl HotkeyId {
                 },
                 u16::from(b'Z'),
             ),
+            HotkeyId::Captions => hk(
+                Mods {
+                    ctrl: true,
+                    alt: true,
+                    ..Mods::default()
+                },
+                u16::from(b'C'),
+            ),
             _ => None,
         }
     }
 
-    /// The position in `ALL` (0..12).
+    /// The position in `ALL` (0..13).
     pub fn index(self) -> usize {
         self as usize
     }
@@ -493,6 +506,7 @@ pub struct Hotkeys {
     pub record_mute: Option<Hotkey>,
     pub record_screen: Option<Hotkey>,
     pub record_zoom: Option<Hotkey>,
+    pub captions: Option<Hotkey>,
 }
 
 impl Default for Hotkeys {
@@ -510,6 +524,7 @@ impl Default for Hotkeys {
             record_mute: HotkeyId::RecordMute.default(),
             record_screen: HotkeyId::RecordScreen.default(),
             record_zoom: HotkeyId::RecordZoom.default(),
+            captions: HotkeyId::Captions.default(),
         }
     }
 }
@@ -530,6 +545,7 @@ impl Hotkeys {
             record_mute: None,
             record_screen: None,
             record_zoom: None,
+            captions: None,
         }
     }
 
@@ -547,6 +563,7 @@ impl Hotkeys {
             HotkeyId::RecordMute => self.record_mute,
             HotkeyId::RecordScreen => self.record_screen,
             HotkeyId::RecordZoom => self.record_zoom,
+            HotkeyId::Captions => self.captions,
         }
     }
 
@@ -564,6 +581,7 @@ impl Hotkeys {
             HotkeyId::RecordMute => self.record_mute = value,
             HotkeyId::RecordScreen => self.record_screen = value,
             HotkeyId::RecordZoom => self.record_zoom = value,
+            HotkeyId::Captions => self.captions = value,
         }
     }
 
@@ -746,6 +764,7 @@ pub fn from_legacy(root: &serde_json::Value) -> Hotkeys {
         record_mute: HotkeyId::RecordMute.default(),
         record_screen: HotkeyId::RecordScreen.default(),
         record_zoom: HotkeyId::RecordZoom.default(),
+        captions: HotkeyId::Captions.default(),
     }
 }
 
@@ -992,14 +1011,15 @@ mod tests {
                 "record",
                 "record_mute",
                 "record_screen",
-                "record_zoom"
+                "record_zoom",
+                "captions"
             ]
         );
         for (i, id) in HotkeyId::ALL.iter().enumerate() {
             assert_eq!(id.index(), i);
             assert_eq!(HotkeyId::from_index(i), Some(*id));
         }
-        assert_eq!(HotkeyId::from_index(12), None);
+        assert_eq!(HotkeyId::from_index(13), None);
         assert_eq!(HotkeyId::LyricsCard.index(), 5, "appended last");
         assert_eq!(HotkeyId::StickyNote.index(), 6, "appended after the lyrics card");
         assert_eq!(HotkeyId::StickyList.index(), 7, "appended after the sticky note");
@@ -1046,10 +1066,35 @@ mod tests {
     }
 
     #[test]
+    fn the_captions_row_comes_last_with_its_default() {
+        let id = HotkeyId::Captions;
+        assert_eq!(id.index(), HotkeyId::RecordZoom.index() + 1);
+        assert_eq!(HotkeyId::ALL.last(), Some(&id));
+        assert_eq!(id.config_key(), "captions");
+        assert_eq!(id.default(), Some(hk("Ctrl+Alt+C")));
+        let d = Hotkeys::default();
+        assert_eq!(d.captions, Some(hk("Ctrl+Alt+C")));
+        assert_eq!(d.get(id), d.captions);
+        assert_eq!(check(hk("Ctrl+Alt+C")), Ok(()));
+        assert_eq!(used_by(&d, id, hk("Ctrl+Alt+C")), None);
+        // A config from before the row reads the default; off stays off.
+        let old = Hotkeys::from_json(&json!({"record_zoom":"Ctrl+Alt+Z"}));
+        assert_eq!(old.captions, Some(hk("Ctrl+Alt+C")));
+        assert_eq!(from_legacy(&json!({})).captions, Some(hk("Ctrl+Alt+C")));
+        let off = Hotkeys::from_json(&json!({"captions":"None"}));
+        assert_eq!(off.captions, None);
+        let mut keys = d;
+        keys.set(id, None);
+        assert!(!keys.is_default(id));
+        keys.reset(id);
+        assert_eq!(keys, d);
+    }
+
+    #[test]
     fn the_record_zoom_row_follows_the_screen_row_with_its_default() {
         let id = HotkeyId::RecordZoom;
         assert_eq!(id.index(), HotkeyId::RecordScreen.index() + 1);
-        assert_eq!(HotkeyId::ALL.last(), Some(&id));
+        assert_eq!(HotkeyId::ALL[id.index() + 1], HotkeyId::Captions);
         assert_eq!(id.config_key(), "record_zoom");
         assert_eq!(id.default().map(|k| k.to_string()).as_deref(), Some("Ctrl+Alt+Z"));
         let d = Hotkeys::default();
@@ -1124,7 +1169,8 @@ mod tests {
             json!({"search":"Ctrl+Alt+Space","clipboard":"Win+Alt+V","devices":"None",
                    "arrange":"None","screenshot":"None","lyrics_card":"Ctrl+Alt+L",
                    "sticky_note":"Ctrl+Alt+N","sticky_list":"Ctrl+Alt+J","record":"Ctrl+Alt+R","record_mute":"Ctrl+Alt+M",
-                   "record_screen":"Ctrl+Alt+Shift+R","record_zoom":"Ctrl+Alt+Z"})
+                   "record_screen":"Ctrl+Alt+Shift+R","record_zoom":"Ctrl+Alt+Z",
+                   "captions":"Ctrl+Alt+C"})
         );
         // A config from before the row has no key: off, the rest as written.
         let old = Hotkeys::from_json(&json!({"search":"Ctrl+Alt+Space","clipboard":"Win+Alt+V",

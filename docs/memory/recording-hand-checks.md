@@ -104,3 +104,107 @@ For the owner by hand:
       video zooms out.
 - [ ] The two new switches in Settings → Fitur → Rekam layar with the Terminal
       style.
+
+## Phase 5 live captions (2026-11-11)
+
+Branch `feat/captions` (54377fa), release build on the owner's PC, one agent
+instance at a time. Spec: `docs/superpowers/specs/2026-11-11-live-captions-phase5-design.md`.
+
+Verified by the agent on the real app (the speech was synthetic test speech,
+Windows SAPI, not a person):
+
+- `Ctrl+Alt+C` opened the card (380x220, topmost, no-activate, tool window) and
+  the foreground window did not change, on and after speech; off removed it.
+- Speech played through the speakers (Windows SAPI, English, turbo model on the
+  GPU, saved language `id`) became lines: "Listening..." first, then grey and
+  final lines. First change in the card 2.7 s after the speech started (about
+  0.4 s of that is the speech engine starting), then a change every 1 to 2 s up to
+  the last line at 17.5 s. GPU latency is fine.
+- A fullscreen browser window (F11, 2560x1440, an animated page): the card is
+  the window at its own centre (on top), the hotkey did not move the foreground,
+  a click on the card left the browser foreground and fullscreen, the card
+  stayed and kept its lines.
+- Transkrip off (`transcript.enabled` false, restored after): the card says
+  "Captions need Transcripts" with a "Turn on Transcripts" button.
+- Threads at idle: 23, listening 26 to 27, after speech 32, off +6 s 31, off
+  +66 s 26 (likely Windows thread-pool workers decaying plus one AMD driver
+  thread: the attribution measured in the thread-count fix round, see
+  [[transcript]]; Vale's own threads went 6, 8, 6).
+- A real screen recording of the monitor with the card open (13.5 s, a 2560x1440
+  file, 6.2 MB, deleted): while it ran the card had `WDA_EXCLUDEFROMCAPTURE` (0x11),
+  a screen grab of the card's rectangle showed what lies behind it, and the
+  affinity went back to 0 after the stop.
+- Not decoded: the `.mp4` frames themselves (no frame grabber on this PC), so
+  "the card is not in the video" rests on the display affinity and the grab.
+
+For the owner by hand:
+
+- [ ] Play a screen recording made with the card open (Film & TV or VLC): the
+      card is nowhere in the video, and the video keeps its normal pictures.
+- [ ] A real fullscreen YouTube video (not F11): the card stays over it, a click
+      on the card keeps the video fullscreen, the video keeps playing.
+- [ ] Drag the card by its header, resize it by the corner grip, scroll the
+      wheel over the lines (the card was never activated: check the cursor
+      shapes, the grip on hover and that no click steals focus from the app
+      underneath).
+- [ ] The header buttons by a real click: pause / resume pauses and resumes the
+      lines, `Copy` puts the lines on the clipboard, the `ID` chip shows the
+      language, X closes the card and turns captions off.
+- [ ] The status strip under the lines, by a real click: with lines on the card
+      and no model, "Unduh model" starts the download; with Transkrip off,
+      "Nyalakan Transkrip" turns it on and captions continue; on battery,
+      "Tetap jalan" runs this session (the card was never activated: the click
+      must not take focus from the app underneath).
+- [ ] Unplug the charger while captions run: the card shows "Pakai baterai"
+      and recognition stops.
+- [ ] The same unplug: the notice appears once, not on every 30 s check.
+- [ ] Replug the charger: captions resume on their own.
+- [ ] On battery, click "Tetap jalan": this session runs on battery; the next
+      session on battery stops again.
+- [ ] Turn captions on while on battery: the card opens already in "Pakai
+      baterai".
+- [ ] "Mic juga" in a real call or a voice note: the labels "Saya" and "Peserta"
+      are right, and "Saya" lines that only repeat what the speakers just
+      played (the mic picking up the PC audio) are dropped (echo).
+- [ ] A real Zoom or Teams meeting for 10 minutes: the lines keep up, nothing
+      grows slow, and the recording (if one runs) has no dropouts.
+- [ ] A headset rate change mid-session (plug or unplug a headset, or switch
+      the output device): captions keep going or recover within a few seconds.
+- [ ] Sleep and resume, and lock and unlock, while captions run: no burst of old
+      lines, no frozen card, captions continue or say why they stopped.
+- [ ] A laptop without a GPU (or a forced CPU run): captions still run, with the
+      "Slow" hint if the engine falls behind; the turbo model on the CPU took
+      about 6 s per grey line in the CLI debug run of the worker task, so try `whisper-small`.
+- [ ] Another app already holds `Ctrl+Alt+C` (an IDE or remote-desktop client):
+      Settings, Tombol pintas shows the Captions row red ("Sudah dipakai"), the
+      chord does nothing for Vale, and the tray entry and Rekam switch still
+      turn captions on.
+- [ ] Change the chord in Settings to another one: the new chord toggles
+      captions and the old one no longer does.
+- [ ] A fullscreen game: the chord still toggles captions (expected, as for the
+      other hotkeys); note whether the card shows over the game.
+- [ ] Reduced motion in Windows (Settings, Accessibility, Visual effects,
+      Animation effects off): the card appears, scrolls and fades without
+      animation.
+- [ ] Notch line: new words appear in the closed notch and vanish 8 s after the
+      last one.
+- [ ] Notch line: a long line is cut from the left with a leading ellipsis.
+- [ ] Notch line during a recording: the REC view stays and carries the line;
+      paused shows "dijeda" with no line.
+- [ ] Settings, "Caption di notch" off: no line in the notch, the card still
+      works.
+- [ ] The Rekam page captions switch: flips captions on and off and agrees with
+      the card.
+- [ ] The tray menu entry for captions: toggles captions, shows its state.
+- [ ] The Settings card "Caption langsung" with the Terminal style: readable,
+      switches work.
+- [ ] The off-state switch track on the dark island surface is faint (about
+      1.3:1, shared with "Notifikasi Jeda", a known follow-up): decide whether
+      it is acceptable.
+- [ ] Turn captions on and off ten times in a row, then watch the Task Manager
+      thread count of Vale for two minutes: it settles near the idle number.
+- [ ] Start captions while a transcript job is running: the job finishes,
+      captions run and nothing crashes; a queued job waits until captions are off.
+- [ ] A 30+ minute session reaching the 500-line cap: the card stays smooth
+      when new lines arrive and while resizing, and the oldest lines drop.
+

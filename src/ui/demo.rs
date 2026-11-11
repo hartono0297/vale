@@ -70,6 +70,8 @@
 //!   "Buang" beside pause (`screen-sure`: asked once, "Yakin buang?");
 //!   `screen-zoom` is a screen recording zoomed at 2.5x, the notch showing
 //!   "2,5×" instead of "Layar".
+//! - `DI_REC_CAPTIONS=on` shows the "Caption langsung" switch of the Rekam
+//!   page on.
 //!
 //! - `DI_NOTCH=WxH` sizes the closed island in every scene (`160x28` to
 //!   `300x44`, clamped; 190x34 without it): the idle, music, timer and
@@ -189,7 +191,7 @@ use super::geometry::{
     ANIM_MS, NOTCH_OPACITY_DEFAULT, NotchSize, ShapeKind, ShapeRect, TOAST_SLOT_EXTRA, Under,
     ease_out_back, idle_shape_typing, lerp_shape, lyric_box_w, lyric_max_w, lyric_scroll_offset,
     lyric_shape_sized, lyric_slot_width, lyric_width_min, shape_with_robot_sized, typing_lead,
-    with_toast_slot,
+    with_rec_caption, with_toast_slot,
 };
 use super::motion::{
     CloseFade, PAGE_FADE_MS, REVEAL_MS, RevealDir, Transit, close_fade_ms, content_alpha,
@@ -332,6 +334,9 @@ struct Scene {
     arrange: ArrangeDemo,
     /// The recording the REC view and the Rekam page show; `None` is idle.
     rec: Option<DemoRec>,
+    /// The caption line in the notch (beside the REC clock, or alone in the
+    /// caption view); `None` shows none.
+    caption: Option<&'static str>,
     /// The Rekam list's transcript marks: 0 none yet, 1 and 2 two sets that
     /// between them show every mark (and a recording still unfinished).
     marks: u8,
@@ -461,6 +466,8 @@ enum View0 {
     RecordCompact,
     /// The 3-2-1 before a screen recording, on this number.
     ScreenCountdown(u8),
+    /// Live captions: the scene's `caption` line alone in the notch.
+    CaptionCompact,
     Panel(Page),
     Notice(DemoNotice),
     MediaLyric,
@@ -641,6 +648,7 @@ const BASE: Scene = Scene {
     devices: DevicesDemo::Design,
     arrange: ArrangeDemo::No,
     rec: None,
+    caption: None,
     marks: 0,
     dock: None,
     transparent: false,
@@ -818,6 +826,31 @@ const fn screen_rec_scene(name: &'static str, paused: bool) -> Scene {
             screen: true,
         }),
         ..rec_scene(name, 0, paused, true, true, [false; 2])
+    }
+}
+
+/// The caption line the demo shows, and a line too long for its room.
+const DEMO_CAPTION: &str = "jadi deadline-nya Jumat ya";
+const DEMO_CAPTION_LONG: &str =
+    "oke jadi kita sepakat rilisnya diundur ke minggu depan dan deadline-nya Jumat ya";
+
+/// The REC view of an audio recording with a caption line, with Bata.
+const fn caption_rec(name: &'static str, line: &'static str) -> Scene {
+    Scene {
+        caption: Some(line),
+        ..rec_scene(name, 12 * 60 + 48, false, true, true, [false; 2])
+    }
+}
+
+/// The caption view (live captions on, nothing recording), with Bata.
+const fn caption_scene(name: &'static str, line: &'static str) -> Scene {
+    Scene {
+        name,
+        kind: ShapeKind::RecordCompact,
+        view: View0::CaptionCompact,
+        robot: Some(Expr::Focus),
+        caption: Some(line),
+        ..BASE
     }
 }
 
@@ -1042,7 +1075,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 196] = [
+const SCENES: [Scene; 204] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -1063,6 +1096,32 @@ const SCENES: [Scene; 196] = [
     rec_scene("rec-long", 3600 + 2 * 60 + 7, false, true, true, [false; 2]),
     // The mic muted: its meter gives way to a crossed mic.
     rec_scene("rec-muted", 12 * 60 + 48, false, true, true, [true, false]),
+    // The newest caption line next to the REC clock (docs/design/rekaman.html,
+    // section 1, the option), and alone in the notch when nothing records.
+    // A long line shows its end behind an ellipsis.
+    Scene {
+        caption: Some(DEMO_CAPTION),
+        ..rec_scene("rec-caption", 12 * 60 + 48, false, true, true, [false; 2])
+    },
+    Scene {
+        robot: None,
+        ..caption_rec("rec-caption-plain", DEMO_CAPTION)
+    },
+    caption_rec("rec-caption-long", DEMO_CAPTION_LONG),
+    Scene {
+        caption: Some(DEMO_CAPTION),
+        ..screen_rec_scene("screen-rec-caption", false)
+    },
+    Scene {
+        caption: Some(DEMO_CAPTION),
+        ..rec_scene("rec-caption-paused", 12 * 60 + 48, true, true, true, [false; 2])
+    },
+    caption_scene("caption-notch", DEMO_CAPTION),
+    Scene {
+        robot: None,
+        ..caption_scene("caption-notch-plain", DEMO_CAPTION)
+    },
+    caption_scene("caption-notch-long", DEMO_CAPTION_LONG),
     // The pointer on a level group of the closed notch: the source's icon on
     // a soft pill in the place of the bars (muted: crossed, on dark red).
     rec_hot_scene("rec-hover-mic", [false; 2], Source::Mic),
@@ -2414,6 +2473,7 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                 View0::PomodoroCompact => View::PomodoroCompact,
                 View0::RecordCompact => View::RecordCompact,
                 View0::ScreenCountdown(n) => View::ScreenCountdown(n),
+                View0::CaptionCompact => View::CaptionCompact,
                 View0::Panel(page) => View::Panel(page),
                 View0::Notice(which) => View::Notice(demo_notice(which, &renderer)),
                 View0::MediaLyric => View::MediaLyric,
@@ -2555,6 +2615,11 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
             };
             let frame = Frame {
                 view: &view,
+                caption: scene.caption.filter(|_| match scene.view {
+                    View0::CaptionCompact => true,
+                    View0::RecordCompact => scene.rec.is_some_and(|r| !r.paused),
+                    _ => false,
+                }),
                 media: Some(if scene.long_media {
                     &long_media
                 } else {
@@ -2604,6 +2669,7 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                     devices: &rec_devices,
                     tab: rec_page.tab,
                     discard_armed: rec_page.discard_armed,
+                    captions_on: name("DI_REC_CAPTIONS") == "on",
                 },
                 devices: DevicesView {
                     list: &dev_list,
@@ -3760,7 +3826,18 @@ fn scene_shape(
         return idle_shape_typing(style, notch, robot);
     }
     if scene.kind != ShapeKind::MediaLyric {
-        let shape = shape_with_robot_sized(style, notch, scene.kind, robot);
+        let mut shape = shape_with_robot_sized(style, notch, scene.kind, robot);
+        // A caption line widens the REC view (running) and is the caption
+        // view's shape.
+        let caption_wide = scene.caption.is_some()
+            && match scene.view {
+                View0::CaptionCompact => true,
+                View0::RecordCompact => scene.rec.is_some_and(|r| !r.paused),
+                _ => false,
+            };
+        if caption_wide {
+            shape = with_rec_caption(shape);
+        }
         // A busy toast's logo beside a compact view widens it.
         return if scene.slot {
             with_toast_slot(shape)

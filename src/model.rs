@@ -438,6 +438,12 @@ pub enum Event {
     Transcribe(u64, crate::transcribe::runner::Event),
     /// What a model download reported, with the download id (the same).
     TranscribeDownload(u64, crate::transcribe::download::Event),
+    /// What a caption worker's thread reported, with the worker id (the
+    /// same).
+    Captions(u64, crate::captions::worker::Event),
+    /// The newest caption text for the notch; `None` clears it (captions
+    /// off, "Caption di notch" off, or eight seconds of silence).
+    CaptionLine(Option<String>),
     /// `None` means no media session is active.
     Media(Option<MediaInfo>),
     /// The session's timeline (seek, track change, play/pause); `None` when
@@ -817,6 +823,9 @@ pub enum Hit {
     RecSources(RecSources),
     RecOpen(usize),
     RecFolder,
+    /// The "Caption langsung" switch under the card of the Rekam page, on
+    /// both tabs.
+    RecCaptions,
     /// The chip "Transkrip" of the "Rekaman tersimpan" notice.
     RecTranscribeChip,
     /// The chip "Pengaturan" of the same notice.
@@ -1033,6 +1042,8 @@ pub enum Effect {
     RecSources(RecSources),
     RecReveal(PathBuf),
     RecOpenFolder,
+    /// Turn live captions on or off (the Rekam page's switch).
+    CaptionToggle,
     /// Queue a transcript of this recording.
     TranscribeQueue(PathBuf),
     /// Open the transcript window of this recording.
@@ -1321,6 +1332,8 @@ pub enum View {
     PomodoroCompact,
     /// A recording runs: the red dot, the clock and the level bars.
     RecordCompact,
+    /// Live captions: the newest line in the closed notch.
+    CaptionCompact,
     /// The 3-2-1 before a screen recording, with the number to show. It
     /// outranks the panel and opens nothing.
     ScreenCountdown(u8),

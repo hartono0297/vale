@@ -1320,6 +1320,39 @@ keys! {
     TrLangEn => "Inggris", "English";
     TrLangAuto => "Otomatis", "Auto";
     TrCardTitle => "Transkrip", "Transcripts";
+
+    // Live captions.
+    CapTitle => "Caption langsung", "Live captions";
+    CapMe => "Saya", "Me";
+    CapOthers => "Peserta", "Others";
+    CapListening => "Mendengarkan…", "Listening…";
+    CapPaused => "Dijeda", "Paused";
+    CapBattery => "Pakai baterai, caption dijeda", "On battery, captions paused";
+    CapKeepGoing => "Tetap jalan", "Keep going";
+    CapNeedsTranskrip => "Caption butuh Transkrip", "Captions need Transcripts";
+    CapTurnOnTranskrip => "Nyalakan Transkrip", "Turn on Transcripts";
+    CapNeedsModel => "Model transkrip belum ada", "No transcript model yet";
+    CapDownload => "Unduh model", "Download model";
+    CapDownloading => "Mengunduh model", "Downloading model";
+    CapSlow => "Model ini berat buat caption di PC ini. Coba Whisper small.",
+        "This model is heavy for captions on this PC. Try Whisper small.";
+    CapFailed => "Caption berhenti", "Captions stopped";
+    CapCopy => "Salin", "Copy";
+    CapSourceLost => "Suara PC terputus", "PC audio lost";
+    CapMicLost => "Mic terputus", "Mic lost";
+    CapBatteryNotice => "Caption dijeda: pakai baterai", "Captions paused: on battery";
+    CapCardTitle => "Caption langsung", "Live captions";
+    CapMicRow => "Mic juga", "Mic too";
+    CapMicRowDesc => "Omonganmu ikut muncul sebagai \"Saya\"", "Your own speech shows as \"Me\"";
+    CapNotchRow => "Caption di notch", "Captions in the notch";
+    CapNotchRowDesc => "Kalimat terakhir di notch", "The last sentence in the notch";
+    CapBatteryRow => "Tetap jalan pakai baterai", "Keep running on battery";
+    CapModelNote => "Pakai model Transkrip yang aktif", "Uses the active Transcripts model";
+    TrayCapOn => "Nyalakan caption", "Turn on captions";
+    TrayCapOff => "Matikan caption", "Turn off captions";
+    HotkeyRowCaptions => "Caption langsung", "Live captions";
+    HotkeyRowCaptionsDesc => "Nyala/mati caption langsung", "Live captions on/off";
+    RecCaptionSwitch => "Caption langsung", "Live captions";
     TrEnable => "Transkrip", "Transcripts";
     TrEnableDesc => "Ubah rekaman jadi teks di PC ini. Tidak ada audio yang dikirim.",
         "Turns recordings into text on this PC. No audio leaves it.";

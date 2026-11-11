@@ -46,6 +46,8 @@ pub(super) const HOTKEY_RECORD_MUTE: i32 = 12;
 pub(super) const HOTKEY_RECORD_SCREEN: i32 = 10;
 /// The screen recorder's video zoom takes 11.
 pub(super) const HOTKEY_RECORD_ZOOM: i32 = 11;
+/// Live captions take 14 (13 is the countdown's Esc, which is no row).
+pub(super) const HOTKEY_CAPTIONS: i32 = 14;
 /// Esc during the 3-2-1 before a screen recording. Not a row: a raw
 /// registration that exists only while the countdown runs.
 pub(super) const HOTKEY_COUNTDOWN_ESC: i32 = 13;
@@ -65,6 +67,7 @@ pub(super) fn wm_id(id: HotkeyId) -> i32 {
         HotkeyId::RecordMute => HOTKEY_RECORD_MUTE,
         HotkeyId::RecordScreen => HOTKEY_RECORD_SCREEN,
         HotkeyId::RecordZoom => HOTKEY_RECORD_ZOOM,
+        HotkeyId::Captions => HOTKEY_CAPTIONS,
     }
 }
 
@@ -375,6 +378,7 @@ impl App {
             HotkeyId::RecordMute => self.rec_toggle_mute(Source::Mic),
             HotkeyId::RecordScreen => self.screen_toggle(),
             HotkeyId::RecordZoom => self.screen_toggle_zoom(),
+            HotkeyId::Captions => self.captions_toggle(),
         }
     }
 
@@ -445,7 +449,7 @@ mod tests {
         assert_eq!(HOTKEY_ARRANGE, 4);
         assert_eq!(HOTKEY_SCREENSHOT, 5);
         assert_eq!(HOTKEY_LYRICS_CARD, 6);
-        assert_eq!(ROWS, 12);
+        assert_eq!(ROWS, 13);
         assert_eq!(HOTKEY_STICKY, 7, "6 is reserved for the lyrics card");
         assert_eq!(HOTKEY_STICKY_LIST, 8);
         assert_eq!(HOTKEY_RECORD, 9);
@@ -460,11 +464,25 @@ mod tests {
         assert_eq!(HOTKEY_RECORD_ZOOM, 11);
         assert_eq!(wm_id(HotkeyId::RecordZoom), 11);
         assert_eq!(row_of_wm_id(11), Some(HotkeyId::RecordZoom));
-        // The hook's `wparam` is the row index, and the twelve ids are distinct.
+        // The hook's `wparam` is the row index, and the thirteen ids are distinct.
         let mut ids: Vec<i32> = HotkeyId::ALL.iter().map(|i| wm_id(*i)).collect();
         ids.sort_unstable();
         ids.dedup();
-        assert_eq!(ids.len(), 12);
+        assert_eq!(ids.len(), 13);
+    }
+
+    #[test]
+    fn the_captions_row_is_last_and_registered_always() {
+        assert_eq!(HOTKEY_CAPTIONS, 14);
+        assert_eq!(wm_id(HotkeyId::Captions), 14);
+        assert_eq!(row_of_wm_id(14), Some(HotkeyId::Captions));
+        assert_eq!(HotkeyId::ALL.last(), Some(&HotkeyId::Captions));
+        let c = Some(hk("Ctrl+Alt+C"));
+        let cfg = Hotkeys::default();
+        for (audio, screen) in [(false, false), (true, false), (false, true), (true, true)] {
+            let rec = any_recording(audio, screen);
+            assert_eq!(wanted(&cfg, rec, screen).get(HotkeyId::Captions), c);
+        }
     }
 
     #[test]
@@ -551,7 +569,7 @@ mod tests {
         assert!(s.any_failed());
         assert_eq!(
             s.failed_flags(),
-            [false, false, true, false, false, false, false, false, false, false, false, false]
+            [false, false, true, false, false, false, false, false, false, false, false, false, false]
         );
     }
 

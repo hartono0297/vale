@@ -37,6 +37,7 @@ use crate::ui::robot::{Motion, SLEEP_MAX, SLEEP_MIN};
 use crate::model::RecSources;
 use crate::recorder::Source;
 use crate::recorder::prefs::{RecordingPrefs, folder_label as rec_folder_label};
+use crate::captions::prefs::CaptionPrefs;
 use crate::transcribe::catalog::{self, ENGINE, MODELS, Model, VAD, mb};
 use crate::transcribe::download::Progress;
 use crate::transcribe::prefs::{TrLang, TranscriptPrefs};
@@ -476,6 +477,11 @@ pub enum Hit {
     TranscriptLang(TrLang),
     TranscriptAuto,
     TranscriptFolder,
+    /// Fitur -> Caption langsung: the "Mic juga", "Caption di notch" and
+    /// "Tetap jalan pakai baterai" switches.
+    CaptionMic,
+    CaptionNotch,
+    CaptionBattery,
     /// Settings -> Fitur -> Susun: "+ Template baru", a
     /// template's "Ubah" and "Hapus", a saved arrangement's "Ganti nama"
     /// and "Hapus" (by place in their lists), and the editor's "Belah"
@@ -1464,6 +1470,8 @@ pub struct State<'a> {
     pub transcript_choose: bool,
     /// The model row whose "Hapus" waits for its second click.
     pub transcript_confirm: Option<usize>,
+    /// Fitur -> Caption langsung.
+    pub captions: CaptionPrefs,
 }
 
 pub fn accent_key(a: Accent) -> Key {
@@ -3989,6 +3997,7 @@ fn features_page(b: &mut Builder, s: &State) {
     recording_card(b, s);
     screen_card(b, s);
     transcript_card(b, s);
+    captions_card(b, s);
 
     titled(b, Key::GroupCleaner);
     let card = b.card(ROW_H);
@@ -4654,6 +4663,35 @@ fn screen_card(b: &mut Builder, s: &State) {
     b.row_text(card, rows[3], b.t(Key::ScreenSettingsFolder), desc, false, x);
 }
 
+/// "Caption langsung" (Fitur, after Transkrip): three switches, then a line
+/// saying whose model it uses. The captions themselves start from the hotkey,
+/// the tray or the Rekam page, never from here.
+fn captions_card(b: &mut Builder, s: &State) {
+    titled(b, Key::CapCardTitle);
+    let note_h = DESC_LINE_H + 24.0;
+    let card = b.card(3.0 * ROW_H + note_h);
+    let p = &s.captions;
+    let switches = [
+        (Hit::CaptionMic, p.mic, Key::CapMicRow, Some(Key::CapMicRowDesc)),
+        (Hit::CaptionNotch, p.notch, Key::CapNotchRow, Some(Key::CapNotchRowDesc)),
+        (Hit::CaptionBattery, p.on_battery, Key::CapBatteryRow, None),
+    ];
+    for (i, (hit, on, title, desc)) in switches.into_iter().enumerate() {
+        let row = card.y + i as f32 * ROW_H;
+        let x = b.toggle(hit, b.g.right, row + ROW_H / 2.0, on);
+        let desc = desc.map(|d| (b.t(d), Tone::Secondary));
+        b.row_text(card, row, b.t(title), desc, false, x);
+        b.divider(card, row + ROW_H);
+    }
+    let rect = Rect {
+        x: card.x + INSET,
+        y: card.y + 3.0 * ROW_H + 12.0,
+        w: card.w - 2.0 * INSET,
+        h: DESC_LINE_H + 2.0,
+    };
+    b.text(rect, b.t(Key::CapModelNote), Font::Desc, Tone::Secondary, Align::Left);
+}
+
 /// The languages of Transkrip's Bahasa, in the control's order.
 pub const TR_LANG_CHOICES: [TrLang; 3] = [TrLang::Id, TrLang::En, TrLang::Auto];
 
@@ -5262,6 +5300,7 @@ pub fn hotkey_row_key(id: HotkeyId) -> Key {
         HotkeyId::RecordMute => Key::HotkeyRowRecordMute,
         HotkeyId::RecordScreen => Key::HotkeyRowRecordScreen,
         HotkeyId::RecordZoom => Key::HotkeyRowRecordZoom,
+        HotkeyId::Captions => Key::HotkeyRowCaptions,
     }
 }
 
@@ -5279,6 +5318,7 @@ fn hotkey_row_desc_key(id: HotkeyId) -> Key {
         HotkeyId::RecordMute => Key::HotkeyRowRecordMuteDesc,
         HotkeyId::RecordScreen => Key::HotkeyRowRecordScreenDesc,
         HotkeyId::RecordZoom => Key::HotkeyRowRecordZoomDesc,
+        HotkeyId::Captions => Key::HotkeyRowCaptionsDesc,
     }
 }
 
@@ -5830,6 +5870,7 @@ mod tests {
             record_mute: hk("Win+Ctrl+Alt+Shift+Delete"),
             record_screen: hk("Win+Ctrl+Alt+Shift+NumSubtract"),
             record_zoom: hk("Win+Ctrl+Alt+Shift+NumAdd"),
+            captions: hk("Win+Ctrl+Alt+Shift+NumDivide"),
         }
     }
 
@@ -6103,6 +6144,7 @@ mod tests {
                         transcript: TranscriptView::default(),
                         transcript_choose: false,
                         transcript_confirm: None,
+                        captions: CaptionPrefs::default(),
                     });
                 }
             }
@@ -7375,15 +7417,15 @@ mod tests {
         for lang in [Lang::Id, Lang::En] {
             let s = hotkey_base(lang);
             let l = layout(Section::Hotkeys, &s, &Estimate);
-            // Twelve rows overflow the minimum size, so the section
+            // Thirteen rows overflow the minimum size, so the section
             // scrolls (and fits in a taller window).
             assert!(l.viewport.is_some() && l.scroll_max > 0.0, "{lang:?}");
-            let tall = layout_in(Section::Hotkeys, &s, &Estimate, (CLIENT_W, 820.0));
+            let tall = layout_in(Section::Hotkeys, &s, &Estimate, (CLIENT_W, 880.0));
             assert!(tall.viewport.is_none() && tall.scroll_max == 0.0, "{lang:?}");
             // One card of the header and a row per hotkey, under its eyebrow.
             assert_eq!(l.cards.len(), 1);
             let card = l.cards[0];
-            assert_eq!(card.h, HEADER_H + 12.0 * ROW_H);
+            assert_eq!(card.h, HEADER_H + 13.0 * ROW_H);
             assert!(
                 l.texts
                     .iter()
@@ -7506,7 +7548,7 @@ mod tests {
             let f = hotkey_fields(&layout(Section::Hotkeys, &rec, &Estimate));
             assert_eq!(
                 f.iter().map(|x| x.3).collect::<Vec<_>>(),
-                [false, false, true, false, false, false, false, false, false, false, false, false]
+                [false, false, true, false, false, false, false, false, false, false, false, false, false]
             );
             // The description: red for a refusal on that row, red for a taken
             // one that is set, otherwise secondary.
@@ -7544,9 +7586,9 @@ mod tests {
             let reds: Vec<&Text> = l.texts.iter().filter(|t| t.tone == Tone::Bad).collect();
             assert_eq!(
                 reds.len(),
-                8,
+                9,
                 "search, clipboard, screenshot, the lyrics card, the recorder, its mute, the \
-                 screen recorder and its zoom are set"
+                 screen recorder, its zoom and the captions are set"
             );
             assert!(reds.iter().all(|t| t.text == text(lang, Key::HotkeyTaken)));
         }
@@ -9189,7 +9231,7 @@ mod tests {
                 // Scrolled so the whole card shows: the cards under it are
                 // taller than the viewport's rest.
                 let end = layout(Section::Features, &s, &Estimate);
-                let top = end.cards[end.cards.len() - 4].y - EYEBROW_H - EYEBROW_GAP;
+                let top = end.cards[end.cards.len() - 5].y - EYEBROW_H - EYEBROW_GAP;
                 let view = end.viewport.expect("Fitur scrolls");
                 let s = State { scroll: end.scroll - (view.y - top), ..s };
                 let l = layout(Section::Features, &s, &Estimate);
@@ -9209,7 +9251,7 @@ mod tests {
                 );
                 // Its own five-row card under its label, before "Rekam
                 // layar", "Transkrip" and "Pembersih".
-                let card = l.cards[l.cards.len() - 4];
+                let card = l.cards[l.cards.len() - 5];
                 assert_eq!(card.h, 5.0 * ROW_H);
                 assert!(l.texts.iter().any(|t| t.text == text(lang, Key::RecSettingsTitle).to_uppercase()));
                 // The folder shows like the screenshot one: parent and name.
@@ -9252,19 +9294,95 @@ mod tests {
     }
 
     #[test]
+    fn the_captions_card_lists_its_three_switches() {
+        for lang in [Lang::Id, Lang::En] {
+            for (mic, notch, battery) in [(false, false, false), (true, true, true)] {
+                let mut s = State {
+                    lang,
+                    captions: CaptionPrefs {
+                        mic,
+                        notch,
+                        on_battery: battery,
+                        ..CaptionPrefs::default()
+                    },
+                    ..states()[0].clone()
+                };
+                let top = layout(Section::Features, &s, &Estimate);
+                // Right after "Transkrip", before "Pembersih".
+                s.scroll = top.cards[top.cards.len() - 2].y - FIRST_CARD_Y;
+                let l = layout(Section::Features, &s, &Estimate);
+                let card = l.cards[l.cards.len() - 2];
+                let hits: Vec<(Hit, Rect)> = l
+                    .hits()
+                    .into_iter()
+                    .filter(|(h, _)| {
+                        matches!(h, Hit::CaptionMic | Hit::CaptionNotch | Hit::CaptionBattery)
+                    })
+                    .collect();
+                assert_eq!(
+                    hits.iter().map(|(h, _)| *h).collect::<Vec<_>>(),
+                    [Hit::CaptionMic, Hit::CaptionNotch, Hit::CaptionBattery],
+                    "{lang:?}"
+                );
+                // One switch per row, inside the card, in order.
+                for (i, (_, r)) in hits.iter().enumerate() {
+                    let row = card.y + i as f32 * ROW_H;
+                    assert!(r.y >= row && r.bottom() <= row + ROW_H, "{lang:?} {i}");
+                    assert!(r.right() <= card.right(), "{lang:?} {i}");
+                }
+                // The three rows, then the line about the model.
+                assert!(card.h > 3.0 * ROW_H && card.h < 4.0 * ROW_H, "{lang:?}");
+                for key in [
+                    Key::CapCardTitle,
+                    Key::CapMicRow,
+                    Key::CapMicRowDesc,
+                    Key::CapNotchRow,
+                    Key::CapNotchRowDesc,
+                    Key::CapBatteryRow,
+                    Key::CapModelNote,
+                ] {
+                    let want = text(lang, key);
+                    assert!(
+                        l.texts
+                            .iter()
+                            .any(|t| t.text == want || t.text == want.to_uppercase()),
+                        "{lang:?} {key:?}"
+                    );
+                }
+                let on: Vec<bool> = l
+                    .controls
+                    .iter()
+                    .filter_map(|c| match c {
+                        Control::Toggle {
+                            hit: Hit::CaptionMic | Hit::CaptionNotch | Hit::CaptionBattery,
+                            on,
+                            ..
+                        } => Some(*on),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(on, [mic, notch, battery], "{lang:?}");
+            }
+        }
+    }
+
+    #[test]
     fn the_screen_card_has_fps_the_two_switches_and_the_folder() {
         for lang in [Lang::Id, Lang::En] {
             for (i, fps) in VIDEO_FPS_CHOICES.into_iter().enumerate() {
-                let s = State {
+                let mut s = State {
                     lang,
                     recording: RecordingPrefs {
                         video_fps: fps,
                         video_folder: Some(std::path::PathBuf::from(r"D:\Video\Kerja")),
                         ..RecordingPrefs::default()
                     },
-                    scroll: 1e6,
+                    scroll: 0.0,
                     ..states()[0].clone()
                 };
+                // Scrolled to the card: the cards after it hold the page's end.
+                let top = layout(Section::Features, &s, &Estimate);
+                s.scroll = top.cards[top.cards.len() - 4].y - FIRST_CARD_Y;
                 let l = layout(Section::Features, &s, &Estimate);
                 let (_, items, selected) = l.segmented(Group::VideoFps).expect("Gambar per detik");
                 assert_eq!(selected, i, "{lang:?} {fps}");
@@ -9278,7 +9396,7 @@ mod tests {
                 );
                 // Its own two-row card under its label, right after
                 // "Rekaman", before "Transkrip" and "Pembersih".
-                let card = l.cards[l.cards.len() - 3];
+                let card = l.cards[l.cards.len() - 4];
                 assert_eq!(card.h, 4.0 * ROW_H);
                 for key in [
                     Key::ScreenSettingsFps,
@@ -9428,7 +9546,7 @@ mod tests {
             let title = text(lang, Key::TrCardTitle).to_uppercase();
             assert!(l.texts.iter().any(|t| t.text == title));
             assert!(l.texts.iter().any(|t| t.text == text(lang, Key::TrEnable)));
-            assert!(l.cards[l.cards.len() - 2].h < ROW_H + 2.0 * DESC_LINE_H);
+            assert!(l.cards[l.cards.len() - 3].h < ROW_H + 2.0 * DESC_LINE_H);
 
             // On, nothing installed: the offer, Bahasa, auto greyed, footer.
             let l = tr_layout(lang, tr_on(), false);
@@ -9827,11 +9945,11 @@ mod tests {
                 // Scrolled so the card shows (the cards after it are taller
                 // than the window).
                 let top = layout(Section::Features, &s, &Estimate);
-                s.scroll = top.cards[top.cards.len() - 5].y - FIRST_CARD_Y;
+                s.scroll = top.cards[top.cards.len() - 6].y - FIRST_CARD_Y;
                 let l = layout(Section::Features, &s, &Estimate);
                 // Its own card under its label, before "Rekaman",
                 // "Rekam layar", "Transkrip" and "Pembersih": one row.
-                let card = l.cards[l.cards.len() - 5];
+                let card = l.cards[l.cards.len() - 6];
                 assert_eq!(card.h, ROW_H);
                 assert!(
                     l.texts

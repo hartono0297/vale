@@ -102,6 +102,7 @@ use crate::pomodoro::PomoSettings;
 use crate::sources::battery::battery_present;
 use crate::theme::{self, Accent, CatAccessory, CatColor, Surface, WindowPalette, WindowTheme};
 use crate::tiles::{CustomKind, CustomProblem, CustomTile, LABEL_MAX, ShortcutTiles, TARGET_MAX};
+use crate::captions::prefs::CaptionPrefs;
 use crate::transcribe::prefs::TrLang;
 use crate::widgets::prefs::{FullscreenRule, WidgetLayer, WidgetPrefs};
 use crate::widgets::templates::Template;
@@ -217,6 +218,11 @@ pub enum Action {
     TranscriptLang(TrLang),
     TranscriptAuto(bool),
     TranscriptFolder,
+    /// Settings -> Fitur -> Caption langsung: "Mic juga", "Caption di
+    /// notch" and "Tetap jalan pakai baterai".
+    CaptionMic(bool),
+    CaptionNotch(bool),
+    CaptionBattery(bool),
     /// Settings → Tombol pintas: a row's new combo (`None`: off), every row
     /// back to its default, and the recorder starting (`true`: the island
     /// lets go of its hotkeys) or ending (`false`: it takes them again). A
@@ -518,6 +524,8 @@ pub struct Model {
     /// Fitur -> Transkrip (the island fills what is on disk and running;
     /// `from_config` only the settings).
     pub transcript: TranscriptView,
+    /// Fitur -> Caption langsung.
+    pub captions: CaptionPrefs,
 }
 
 impl Model {
@@ -581,6 +589,7 @@ impl Model {
                 prefs: cfg.transcript.clone(),
                 ..TranscriptView::default()
             },
+            captions: cfg.captions.clone(),
         }
     }
 }
@@ -1754,6 +1763,7 @@ impl Settings {
             transcript: m.transcript.clone(),
             transcript_choose: self.transcript_choose,
             transcript_confirm: self.transcript_confirm,
+            captions: m.captions.clone(),
         }
     }
 
@@ -2561,6 +2571,9 @@ impl Settings {
                     post(Action::ClipItems(n))
                 }
             }
+            Hit::CaptionMic => post(Action::CaptionMic(!m.captions.mic)),
+            Hit::CaptionNotch => post(Action::CaptionNotch(!m.captions.notch)),
+            Hit::CaptionBattery => post(Action::CaptionBattery(!m.captions.on_battery)),
             Hit::ClipPersist => post(Action::ClipPersist(!m.clip.persist)),
             Hit::ClipClearOnLock => post(Action::ClipClearOnLock(!m.clip.clear_on_lock)),
             Hit::DeviceNotices => post(Action::DeviceNotices(!m.device_notices)),
@@ -4601,6 +4614,9 @@ pub fn run_demo(args: &[String]) {
             Action::TranscriptLang(v) => m.transcript.prefs.language = v,
             Action::TranscriptAuto(v) => m.transcript.prefs.auto = v,
             Action::TranscriptFolder => {}
+            Action::CaptionMic(v) => m.captions.mic = v,
+            Action::CaptionNotch(v) => m.captions.notch = v,
+            Action::CaptionBattery(v) => m.captions.on_battery = v,
             Action::Hotkey(id, value) => {
                 // What the island does: checked again, then set.
                 let fine = value.is_none_or(|hk| {

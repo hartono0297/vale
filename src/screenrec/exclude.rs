@@ -340,6 +340,49 @@ mod tests {
         }
     }
 
+    /// The lyrics and caption cards are layered, always-on-top windows that
+    /// never take the focus (`caption_card::window::create_window`): one
+    /// open before the recording and one opened during it are both taken
+    /// out. Never shown.
+    #[test]
+    fn a_layered_card_window_is_excluded_before_and_after_the_start() {
+        use windows::Win32::UI::WindowsAndMessaging::{WS_EX_LAYERED, WS_EX_TOPMOST};
+        let card = || {
+            unsafe {
+                CreateWindowExW(
+                    WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+                    w!("STATIC"),
+                    w!(""),
+                    WS_POPUP,
+                    -32000,
+                    -32000,
+                    8,
+                    8,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+            }
+            .expect("a hidden layered test window")
+        };
+        let _alone = alone();
+        let before = card();
+        assert_eq!(affinity(before), 0);
+        let excluder = Excluder::start();
+        assert_eq!(affinity(before), EXCLUDED, "open before the recording");
+        let during = card();
+        assert_eq!(affinity(during), EXCLUDED, "opened during the recording");
+        drop(excluder);
+        for hwnd in [before, during] {
+            assert_eq!(affinity(hwnd), 0, "restored when the excluder drops");
+            assert!(!unsafe { IsWindowVisible(hwnd) }.as_bool());
+            unsafe {
+                let _ = DestroyWindow(hwnd);
+            }
+        }
+    }
+
     /// The "shown" event, raised by hand for a window that stays hidden,
     /// is handled before `NotifyWinEvent` returns.
     #[test]

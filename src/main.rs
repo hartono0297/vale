@@ -7,6 +7,8 @@ mod arrange_win;
 mod audio;
 mod behind;
 mod calendar;
+mod caption_card;
+mod captions;
 mod capture;
 mod claude;
 mod clean;
@@ -103,6 +105,7 @@ fn opens_windows(arg: Option<&str>) -> bool {
             | "--demo-snap"
             | "--demo-shot-editor"
             | "--demo-lyrics-card"
+            | "--demo-captions"
             | "--demo-transcript"
             | "--settings",
         ) => true,
@@ -263,6 +266,14 @@ fn main() {
             let scene = std::env::args().nth(2);
             lyrics_card::demo::run(scene.as_deref());
         }
+        // The caption card on made-up lines: `--demo-captions [scene]`.
+        #[cfg(debug_assertions)]
+        Some("--demo-captions") => {
+            attach_parent_console();
+            demo_lang_from_env();
+            let scene = std::env::args().nth(2);
+            caption_card::demo::run(scene.as_deref());
+        }
         // The transcript window on made-up files: `--demo-transcript [scene]`.
         #[cfg(debug_assertions)]
         Some("--demo-transcript") => {
@@ -297,6 +308,14 @@ fn main() {
             attach_parent_console();
             let args: Vec<String> = std::env::args().skip(2).collect();
             std::process::exit(transcribe::debug::run(&args));
+        }
+        // `--captions-test <seconds> [--mic] [--cpu]`: live captions of what
+        // plays now, printed to this console (`captions/debug.rs`). No window.
+        #[cfg(debug_assertions)]
+        Some("--captions-test") => {
+            attach_parent_console();
+            let args: Vec<String> = std::env::args().skip(2).collect();
+            std::process::exit(captions::debug::run(&args));
         }
         // `--record-test <seconds> [mic|system|both]`: a real recording into
         // DI_REC_DIR or target/rec-test/, with the levels seen. No window.
