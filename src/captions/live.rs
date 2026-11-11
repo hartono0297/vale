@@ -2,7 +2,7 @@
 //!
 //! The caption worker `put`s what the capture threads hear on a shared
 //! timeline (a source that sends no packets in silence still reads as
-//! silence), `advance`s it to the clock, asks `next_work` what to run the
+//! silence), `advance`s it to the clock (or `skip_to`s it after a clock jump), asks `next_work` what to run the
 //! engine on and hands the result back with `final_done` or `interim_done`.
 //! Those return what the card shows; `take_out` has what came up in between.
 //! Nothing here touches a device, a thread or the engine, so the tests drive
@@ -11,7 +11,7 @@
 use std::collections::VecDeque;
 
 use crate::recorder::timeline::Timeline;
-use crate::transcribe::chunk::{Chunk, ChunkParams, Chunker, Framer};
+use crate::transcribe::chunk::{Chunk, ChunkParams, Chunker, FRAME, Framer};
 use crate::transcribe::decode::RATE;
 use crate::transcribe::echo;
 use crate::transcribe::engine::EngineError;
@@ -72,6 +72,8 @@ pub struct Live {
     /// The "Peserta" channel, when there is one.
     others: Option<usize>,
     timeline: Timeline,
+    /// Frames of the session read from the timeline so far.
+    taken: i64,
     framers: Vec<Framer>,
     chunkers: Vec<Chunker>,
     /// Closed chunks waiting for the engine, oldest first.
@@ -94,6 +96,7 @@ impl Live {
         Live {
             others: speakers.iter().position(|s| *s == Some(Speaker::Others)),
             timeline: Timeline::new(RATE, channels),
+            taken: 0,
             framers: (0..channels).map(|_| Framer::default()).collect(),
             chunkers: (0..channels).map(|c| Chunker::new(c, live_params())).collect(),
             finals: VecDeque::new(),
@@ -113,17 +116,20 @@ impl Live {
     }
 
     /// Reads the audio up to `LAG_MS` before `now_frame` (the session clock,
-    /// in 16 kHz frames), at most `MAX_TAKE_MS` of it: the caller calls again
-    /// until it has caught up. Chunks that close wait for `next_work`.
+    /// in 16 kHz frames), at most `MAX_TAKE_MS` of it. `true` when more is
+    /// left up to there: the caller calls again until it has caught up.
+    /// Chunks that close wait for `next_work`. After an `Err` (a scorer
+    /// failed) part of the audio was never scored: the session is over.
     pub fn advance(
         &mut self,
         now_frame: i64,
         scorers: &mut [Box<dyn FrameScorer + '_>],
-    ) -> Result<(), EngineError> {
+    ) -> Result<bool, EngineError> {
         let channels = self.speakers.len();
         assert_eq!(scorers.len(), channels, "one scorer per channel");
         let up_to = now_frame - ms_to_frames(LAG_MS) as i64;
         let block = self.timeline.take_max(up_to, ms_to_frames(MAX_TAKE_MS));
+        self.taken += (block.len() / channels) as i64;
         let mut failure = None;
         for c in 0..channels {
             let samples: Vec<f32> = block.iter().skip(c).step_by(channels).copied().collect();
@@ -133,7 +139,36 @@ impl Live {
                 Err(e) => failure = Some(e),
             });
         }
-        failure.map_or(Ok(()), Err)
+        failure.map_or(Ok(self.taken < up_to), Err)
+    }
+
+    /// The frame of the session `advance` has read up to.
+    pub fn taken_frames(&self) -> i64 {
+        self.taken
+    }
+
+    /// Moves on to `frame` (rounded down to a whole VAD frame) without
+    /// reading what lies before it: for a clock that ran far ahead of the
+    /// audio (the PC slept, the worker stalled), where replaying the silence
+    /// or the stale audio helps nobody. The buffered audio, the open chunks
+    /// and their grey lines are dropped, chunks that were already whole
+    /// stay, and `take_out` gets one `Gap`. What is heard after it keeps its
+    /// time in the session. Nothing happens when `advance` is already there.
+    pub fn skip_to(&mut self, frame: i64) {
+        let to = frame - frame.rem_euclid(FRAME as i64);
+        if to <= self.taken {
+            return;
+        }
+        self.timeline.skip_to(to);
+        self.taken = to;
+        for (c, chunker) in self.chunkers.iter_mut().enumerate() {
+            if chunker.open_chunk().is_some() {
+                self.out.push(Out::ClearInterim { channel: c });
+            }
+            chunker.jump_to((to / FRAME as i64) as u64);
+            self.framers[c] = Framer::default();
+        }
+        self.out.push(Out::Gap);
     }
 
     /// What the engine should run on now: the oldest final, else an interim
@@ -417,13 +452,14 @@ mod tests {
         let mut scorers: Vec<Box<dyn FrameScorer>> = vec![Box::new(Loud)];
         live.put(0, 0, &tone(4_000));
         let now = frames(4_000 + LAG_MS) as i64;
-        live.advance(now, &mut scorers).unwrap();
-        live.advance(now, &mut scorers).unwrap();
+        assert_eq!(live.advance(now, &mut scorers), Ok(true), "more is left");
+        assert_eq!(live.advance(now, &mut scorers), Ok(true));
         let Some(Work::Interim(open)) = live.next_work(60_000) else { panic!() };
         assert!((1_900..=2 * MAX_TAKE_MS).contains(&len_ms(&open)), "{}", len_ms(&open));
-        live.advance(now, &mut scorers).unwrap();
-        live.advance(now, &mut scorers).unwrap();
-        live.advance(now, &mut scorers).unwrap();
+        assert_eq!(live.advance(now, &mut scorers), Ok(true));
+        assert_eq!(live.advance(now, &mut scorers), Ok(false), "caught up");
+        assert_eq!(live.advance(now, &mut scorers), Ok(false));
+        assert_eq!(live.taken_frames(), frames(4_000) as i64);
         let Some(Work::Interim(open)) = live.next_work(120_000) else { panic!() };
         assert!((3_900..=4_000).contains(&len_ms(&open)), "caught up: {}", len_ms(&open));
     }
@@ -506,7 +542,7 @@ mod tests {
     }
 
     #[test]
-    fn a_clock_jump_is_cut_to_the_backlog_cap() {
+    fn the_backlog_is_cut_to_15_s() {
         let mut rig = Rig::new(vec![None]);
         let sentence = [tone(2_000), silence(1_000)].concat();
         for _ in 0..20 {
@@ -530,6 +566,50 @@ mod tests {
         assert!(matches!(rig.live.next_work(rig.now_ms()), Some(Work::Final(_))));
         assert!(rig.live.backlog_ms() <= MAX_BACKLOG_MS);
         assert_eq!(rig.live.take_out(), vec![Out::Gap]);
+    }
+
+    #[test]
+    fn a_clock_jump_skips_ahead_with_one_gap() {
+        let mut rig = Rig::new(vec![None]);
+        rig.play(0, &tone(2_000));
+        assert!(matches!(rig.live.next_work(rig.now_ms()), Some(Work::Interim(_))), "a sentence is open");
+        // The PC slept for a minute: the clock ran on, no packet came.
+        rig.now += frames(60_000) as i64;
+        rig.live.skip_to(rig.now - frames(LAG_MS) as i64);
+        assert_eq!(rig.live.advance(rig.now, &mut rig.scorers), Ok(false), "nothing to replay");
+        assert_eq!(rig.live.next_work(rig.now_ms()), None, "the open sentence went with the skip");
+        assert_eq!(rig.live.take_out(), vec![Out::ClearInterim { channel: 0 }, Out::Gap]);
+        // What is said after the jump has its own time.
+        rig.play(0, &tone(2_000));
+        rig.wait(1_300);
+        let finals = rig.finals();
+        assert_eq!(finals.len(), 1);
+        assert!((61_700..=62_100).contains(&finals[0].start_ms), "{}", finals[0].start_ms);
+        assert!((2_000..=2_800).contains(&len_ms(&finals[0])), "{}", len_ms(&finals[0]));
+        assert_eq!(rig.live.take_out(), vec![], "one gap for the jump");
+    }
+
+    #[test]
+    fn a_skip_that_is_not_ahead_does_nothing() {
+        let mut rig = Rig::new(vec![None]);
+        rig.play(0, &tone(2_000));
+        rig.live.skip_to(frames(1_000) as i64);
+        assert_eq!(rig.live.take_out(), vec![]);
+        rig.wait(1_300);
+        let finals = rig.finals();
+        assert_eq!(finals.len(), 1);
+        assert!(finals[0].start_ms <= 200, "{}", finals[0].start_ms);
+    }
+
+    #[test]
+    fn closed_chunks_survive_a_skip() {
+        let mut rig = Rig::new(vec![None]);
+        rig.play(0, &tone(2_000));
+        rig.wait(1_300);
+        rig.now += frames(60_000) as i64;
+        rig.live.skip_to(rig.now);
+        assert_eq!(rig.finals().len(), 1, "it was whole before the jump");
+        assert_eq!(rig.live.take_out(), vec![Out::Gap], "no grey line was open");
     }
 
     const ECHOED: &str = "jadi deadline-nya jumat ya";

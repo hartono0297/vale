@@ -200,6 +200,15 @@ impl Chunker {
         })
     }
 
+    /// Continues at frame `index` of the channel, without the open chunk and
+    /// the leading pad: the audio in between was skipped (live captions that
+    /// fell behind), and a chunk that opens next starts no earlier.
+    pub fn jump_to(&mut self, index: u64) {
+        self.active = None;
+        self.before.clear();
+        self.seen = index;
+    }
+
     /// The chunk still open at the end of the channel.
     pub fn finish(&mut self) -> Option<Chunk> {
         self.active.as_ref()?;
@@ -340,6 +349,20 @@ mod tests {
 
     fn pattern(parts: &[(usize, f32)]) -> Vec<f32> {
         parts.iter().flat_map(|&(n, p)| std::iter::repeat_n(p, n)).collect()
+    }
+
+    #[test]
+    fn a_jump_drops_the_open_chunk_and_keeps_the_time() {
+        let mut chunker = Chunker::new(0, ChunkParams::default());
+        for _ in 0..20 {
+            assert_eq!(chunker.push(&[0.0; FRAME], SPEECH), None);
+        }
+        assert!(chunker.open_chunk().is_some());
+        chunker.jump_to(1_000);
+        assert_eq!(chunker.open_chunk(), None);
+        assert_eq!(chunker.settled_ms(), 1_000 * FRAME_MS, "no pad from before the jump");
+        chunker.push(&[0.0; FRAME], SPEECH);
+        assert_eq!(chunker.open_chunk().unwrap().start_ms, 1_000 * FRAME_MS);
     }
 
     #[test]

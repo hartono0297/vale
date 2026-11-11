@@ -299,6 +299,14 @@ fn main() {
             let args: Vec<String> = std::env::args().skip(2).collect();
             std::process::exit(transcribe::debug::run(&args));
         }
+        // `--captions-test <seconds> [--mic] [--cpu]`: live captions of what
+        // plays now, printed to this console (`captions/debug.rs`). No window.
+        #[cfg(debug_assertions)]
+        Some("--captions-test") => {
+            attach_parent_console();
+            let args: Vec<String> = std::env::args().skip(2).collect();
+            std::process::exit(captions::debug::run(&args));
+        }
         // `--record-test <seconds> [mic|system|both]`: a real recording into
         // DI_REC_DIR or target/rec-test/, with the levels seen. No window.
         #[cfg(debug_assertions)]
