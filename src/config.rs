@@ -1361,6 +1361,8 @@ mod tests {
                 mic_device: Some("{0.0.1.00000000}.{abc}".into()),
                 system_device: None,
                 echo_cancel: false,
+                video_folder: Some(std::path::PathBuf::from(r"E:\Vid")),
+                video_fps: 60,
             },
             transcript: crate::transcribe::prefs::TranscriptPrefs {
                 enabled: true,

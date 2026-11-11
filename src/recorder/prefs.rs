@@ -1,7 +1,8 @@
 //! The recorder's settings, kept in config.json under `recording`. Read
 //! leniently like `widgets`: a missing key or a wrong type gives that
 //! field's default, a non-object gives all of them, and the rest of the file
-//! always loads.
+//! always loads. The screen recording's two settings (`video_folder`,
+//! `video_fps`) live in the same section.
 
 use std::path::{Path, PathBuf};
 
@@ -27,6 +28,10 @@ pub struct RecordingPrefs {
     /// The mic stream asks Windows for echo cancellation (the speech
     /// category), so speaker sound the mic picks up is removed. On by default.
     pub echo_cancel: bool,
+    /// Where screen recordings go; `None` is `Videos\Vale`.
+    pub video_folder: Option<PathBuf>,
+    /// The screen recording's frame rate: 30 or 60.
+    pub video_fps: u32,
 }
 
 impl Default for RecordingPrefs {
@@ -41,6 +46,8 @@ impl Default for RecordingPrefs {
             mic_device: None,
             system_device: None,
             echo_cancel: true,
+            video_folder: None,
+            video_fps: 30,
         }
     }
 }
@@ -66,13 +73,7 @@ impl RecordingPrefs {
         };
         RecordingPrefs {
             sources,
-            folder: map
-                .get("folder")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(PathBuf::from)
-                .filter(|p| p.is_absolute()),
+            folder: folder(map.get("folder")),
             consent_shown: map
                 .get("consent_shown")
                 .and_then(Value::as_bool)
@@ -83,6 +84,11 @@ impl RecordingPrefs {
                 .get("echo_cancel")
                 .and_then(Value::as_bool)
                 .unwrap_or(d.echo_cancel),
+            video_folder: folder(map.get("video_folder")),
+            video_fps: match map.get("video_fps").and_then(Value::as_u64) {
+                Some(60) => 60,
+                _ => d.video_fps,
+            },
         }
     }
 
@@ -106,6 +112,21 @@ impl RecordingPrefs {
     pub fn dir(&self) -> PathBuf {
         self.folder.clone().unwrap_or_else(default_folder)
     }
+
+    /// The folder screen recordings go to now.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn video_dir(&self) -> PathBuf {
+        self.video_folder.clone().unwrap_or_else(default_video_folder)
+    }
+}
+
+/// A folder from JSON: an absolute path, anything else is the default one.
+fn folder(v: Option<&Value>) -> Option<PathBuf> {
+    v.and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
 }
 
 /// A device id from JSON: a non-empty string, anything else is no choice.
@@ -133,6 +154,23 @@ pub fn fallback_folder() -> Option<PathBuf> {
     known_folder(&FOLDERID_Profile).map(|p| p.join("Vale").join("Rekaman"))
 }
 
+/// `Videos\Vale`; next to the exe's current directory when Windows cannot say
+/// where Videos is.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn default_video_folder() -> PathBuf {
+    use windows::Win32::UI::Shell::FOLDERID_Videos;
+    let base = known_folder(&FOLDERID_Videos).unwrap_or_else(|| PathBuf::from("."));
+    base.join("Vale")
+}
+
+/// `%USERPROFILE%\Vale\Video`: where a screen recording goes when Windows
+/// will not let Vale write in the chosen folder (see [`fallback_folder`]).
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn video_fallback_folder() -> Option<PathBuf> {
+    use windows::Win32::UI::Shell::FOLDERID_Profile;
+    known_folder(&FOLDERID_Profile).map(|p| p.join("Vale").join("Video"))
+}
+
 fn known_folder(id: &windows::core::GUID) -> Option<PathBuf> {
     use windows::Win32::System::Com::CoTaskMemFree;
     use windows::Win32::UI::Shell::{KF_FLAG_DEFAULT, SHGetKnownFolderPath};
@@ -152,7 +190,7 @@ pub fn folder_label(dir: &Path) -> String {
 impl Serialize for RecordingPrefs {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
-        let mut map = s.serialize_map(Some(6))?;
+        let mut map = s.serialize_map(Some(8))?;
         map.serialize_entry(
             "sources",
             &serde_json::json!({"mic": self.sources.mic, "system": self.sources.system}),
@@ -162,6 +200,11 @@ impl Serialize for RecordingPrefs {
         map.serialize_entry("mic_device", &self.mic_device)?;
         map.serialize_entry("system_device", &self.system_device)?;
         map.serialize_entry("echo_cancel", &self.echo_cancel)?;
+        map.serialize_entry(
+            "video_folder",
+            &self.video_folder.as_ref().map(|p| p.to_string_lossy()),
+        )?;
+        map.serialize_entry("video_fps", &self.video_fps)?;
         map.end()
     }
 }
@@ -234,6 +277,7 @@ mod tests {
             mic_device: Some("{0.0.1.00000000}.{abc}".into()),
             system_device: Some("{0.0.0.00000000}.{def}".into()),
             echo_cancel: false,
+            ..RecordingPrefs::default()
         };
         let v = serde_json::to_value(&p).unwrap();
         assert_eq!(RecordingPrefs::from_json(&v), p);
@@ -276,5 +320,68 @@ mod tests {
         assert!(!p.echo_cancel && p.consent_shown);
         let v = serde_json::to_value(RecordingPrefs::default()).unwrap();
         assert_eq!(v["echo_cancel"], json!(true));
+    }
+
+    #[test]
+    fn video_defaults() {
+        let d = RecordingPrefs::default();
+        assert_eq!(d.video_folder, None);
+        assert_eq!(d.video_fps, 30);
+        assert_eq!(d.video_dir(), default_video_folder());
+    }
+
+    #[test]
+    fn a_bad_video_setting_reads_as_its_default() {
+        for bad in [json!({"video_fps": 45}), json!({"video_fps": "60"})] {
+            assert_eq!(RecordingPrefs::from_json(&bad).video_fps, 30, "{bad}");
+        }
+        let p = RecordingPrefs::from_json(&json!({"video_folder": "rel\\x"}));
+        assert_eq!(p.video_folder, None);
+        let p = RecordingPrefs::from_json(&json!({"video_folder": 7, "video_fps": 60}));
+        assert_eq!(p.video_folder, None, "a wrong-typed folder reads as the default");
+        assert_eq!(p.video_fps, 60, "and the other key is read alone");
+    }
+
+    #[test]
+    fn video_prefs_round_trip() {
+        let p = RecordingPrefs {
+            video_folder: Some(PathBuf::from(r"C:\v")),
+            video_fps: 60,
+            ..RecordingPrefs::default()
+        };
+        let v = serde_json::to_value(&p).unwrap();
+        assert_eq!(v["video_fps"], json!(60));
+        assert_eq!(v["video_folder"], json!(r"C:\v"));
+        assert_eq!(RecordingPrefs::from_json(&v), p);
+        assert_eq!(p.video_dir(), PathBuf::from(r"C:\v"));
+        let none = serde_json::to_value(RecordingPrefs::default()).unwrap();
+        assert_eq!(none["video_folder"], json!(null));
+        assert_eq!(none["video_fps"], json!(30));
+    }
+
+    #[test]
+    fn an_old_recording_section_loads_with_video_defaults() {
+        let p = RecordingPrefs::from_json(&json!({
+            "sources": {"mic": true, "system": false},
+            "folder": r"D:\Audio",
+            "consent_shown": true,
+            "mic_device": "{id}",
+            "system_device": null,
+            "echo_cancel": false
+        }));
+        assert_eq!(p.folder, Some(PathBuf::from(r"D:\Audio")));
+        assert!(p.consent_shown && !p.echo_cancel);
+        assert_eq!(p.video_folder, None);
+        assert_eq!(p.video_fps, 30);
+    }
+
+    #[test]
+    fn the_video_fallback_sits_in_the_profile() {
+        let f = video_fallback_folder().unwrap();
+        assert!(f.ends_with(r"Vale\Video"), "{}", f.display());
+        assert!(f.is_absolute());
+        let videos = default_video_folder();
+        assert!(videos.ends_with("Vale"), "{}", videos.display());
+        assert!(!f.starts_with(videos.parent().unwrap()), "not under Videos: {}", f.display());
     }
 }

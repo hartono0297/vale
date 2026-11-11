@@ -16,6 +16,7 @@ pub mod debug;
 pub mod encode;
 pub mod files;
 pub mod plan;
+pub mod session;
 pub mod zoom;
 
 use std::fs::File;
