@@ -1098,6 +1098,14 @@ impl Renderer {
             self.fill_round(discard, discard.h / 2.0);
             self.text_colored(text(lang, key), &self.fonts.button_center, discard, ink, 1.0);
         }
+        // "Caption langsung": the label and a switch, as the Notifikasi
+        // page's "Jeda".
+        if let Some((label, switch)) = l.caption_switch {
+            let on = frame.record.captions_on;
+            let ink = if on { p.text } else { p.secondary };
+            self.text_colored(text(lang, Key::RecCaptionSwitch), &self.fonts.small, label, ink, 1.0);
+            self.paint_switch(switch, on);
+        }
         let name = text(lang, if rec.is_some() { Key::RecStop } else { Key::Start });
         self.text_colored(name, &self.fonts.small_center, l.button_label, p.secondary, 1.0);
 
@@ -1602,6 +1610,23 @@ impl Renderer {
         Ok(())
     }
 
+    /// A small on / off switch: an accent track and a knob at the right when
+    /// on, a plain track and a knob at the left when off.
+    fn paint_switch(&self, switch: Rect, on: bool) {
+        let p = self.palette;
+        self.set_color(if on { p.accent } else { p.track }, 1.0);
+        self.fill_round(switch, switch.h / 2.0);
+        let d = switch.h - 4.0;
+        let knob = Rect {
+            x: if on { switch.right() - 2.0 - d } else { switch.x + 2.0 },
+            y: switch.y + 2.0,
+            w: d,
+            h: d,
+        };
+        self.set_color(if on { p.on_accent } else { p.secondary }, 1.0);
+        self.fill_round(knob, d / 2.0);
+    }
+
     /// The Notifikasi page: the header (title, "n / max", the "Jeda" switch,
     /// "Hapus semua"), the note while saving is off, then a row per toast
     /// (logo, app, time, unread dot; "title — body" under it), the selected
@@ -1625,28 +1650,7 @@ impl Renderer {
                 ink,
                 1.0,
             );
-            self.set_color(if view.paused { p.accent } else { p.track }, 1.0);
-            self.fill_round(switch, switch.h / 2.0);
-            let d = switch.h - 4.0;
-            let knob = Rect {
-                x: if view.paused {
-                    switch.right() - 2.0 - d
-                } else {
-                    switch.x + 2.0
-                },
-                y: switch.y + 2.0,
-                w: d,
-                h: d,
-            };
-            self.set_color(
-                if view.paused {
-                    p.on_accent
-                } else {
-                    p.secondary
-                },
-                1.0,
-            );
-            self.fill_round(knob, d / 2.0);
+            self.paint_switch(switch, view.paused);
         }
         if let Some(r) = l.clear {
             if view.armed {

@@ -868,6 +868,8 @@ impl App {
         };
         self.config.transcript.model = Some(model.key.to_owned());
         self.save_config();
+        // Running captions read the model from the config.
+        self.captions_sync();
     }
 
     /// Settings' "Unduh" (of the offer or a model row). While the active

@@ -56,6 +56,9 @@ static SCREEN_RECORDING: AtomicBool = AtomicBool::new(false);
 /// it.
 static MIC_MUTED: AtomicBool = AtomicBool::new(false);
 
+/// Live captions are on: the menu entry then turns them off.
+static CAPTIONS: AtomicBool = AtomicBool::new(false);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuCmd {
     Settings,
@@ -71,6 +74,9 @@ pub enum MenuCmd {
     /// "Rekam layar" / "Hentikan rekam layar": the screen recorder, like its
     /// hotkey.
     RecordScreen,
+    /// "Nyalakan caption" / "Matikan caption": live captions, like their
+    /// hotkey.
+    Captions,
     StylePill,
     StyleNotch,
     /// "Jalan saat Windows mulai": a check item that flips `start_with_windows`.
@@ -83,7 +89,7 @@ pub enum MenuCmd {
     Exit,
 }
 
-const COMMANDS: [MenuCmd; 13] = [
+const COMMANDS: [MenuCmd; 14] = [
     MenuCmd::Settings,
     MenuCmd::Search,
     MenuCmd::StickyNote,
@@ -91,6 +97,7 @@ const COMMANDS: [MenuCmd; 13] = [
     MenuCmd::Record,
     MenuCmd::RecordMute,
     MenuCmd::RecordScreen,
+    MenuCmd::Captions,
     MenuCmd::StylePill,
     MenuCmd::StyleNotch,
     MenuCmd::Autostart,
@@ -118,7 +125,7 @@ pub enum MenuChoice {
     Monitor(NotchMonitor),
 }
 
-/// The Monitor submenu's ids start here, clear of `MenuCmd::id` (1..=13):
+/// The Monitor submenu's ids start here, clear of `MenuCmd::id` (1..=14):
 /// 100 is "Monitor utama", 101 + i the display at place i of the list the menu
 /// was built from.
 const MONITOR_ID_PRIMARY: usize = 100;
@@ -217,6 +224,7 @@ fn menu_items(cfg: &Config, update: Option<&str>, displays: &[Display]) -> Vec<M
         RECORDING.load(Ordering::Relaxed),
         MIC_MUTED.load(Ordering::Relaxed),
         SCREEN_RECORDING.load(Ordering::Relaxed),
+        CAPTIONS.load(Ordering::Relaxed),
     )
 }
 
@@ -224,7 +232,8 @@ fn menu_items(cfg: &Config, update: Option<&str>, displays: &[Display]) -> Vec<M
 /// entry is greyed, with the reason, at the cap), whether an audio recording
 /// runs (the record entry then stops it), whether the running recording's mic
 /// is muted, and whether a screen recording runs (the screen entry then stops
-/// it). A mic entry sits between the two while either kind records.
+/// it), and whether live captions run (their entry then turns them off). A
+/// mic entry sits between the two while either kind records.
 fn menu_items_with(
     cfg: &Config,
     update: Option<&str>,
@@ -233,6 +242,7 @@ fn menu_items_with(
     recording: bool,
     mic_muted: bool,
     screen: bool,
+    captions: bool,
 ) -> Vec<MenuItem> {
     let sticky = if crate::widgets::sticky::can_add(stickies) {
         MenuItem::Entry {
@@ -281,6 +291,11 @@ fn menu_items_with(
         entry(
             MenuCmd::RecordScreen,
             if screen { Key::TrayScreenStop } else { Key::TrayScreenStart },
+            false,
+        ),
+        entry(
+            MenuCmd::Captions,
+            if captions { Key::TrayCapOff } else { Key::TrayCapOn },
             false,
         ),
         MenuItem::Separator,
@@ -375,6 +390,11 @@ fn tray_icon() -> Option<HICON> {
 /// Whether the running recording's mic is muted, for the menu's entry.
 pub fn set_mic_muted(on: bool) {
     MIC_MUTED.store(on, Ordering::Relaxed);
+}
+
+/// Whether live captions are on, for the menu's entry.
+pub fn set_captions(on: bool) {
+    CAPTIONS.store(on, Ordering::Relaxed);
 }
 
 /// Starts or ends the audio recording state of the tray: flips the menu's
@@ -794,6 +814,7 @@ mod tests {
                 "Daftar catatan tempel",
                 "Mulai rekam",
                 "Rekam layar",
+                "Nyalakan caption",
                 "-",
                 "Gaya: Pill",
                 "Gaya: Notch",
@@ -810,12 +831,12 @@ mod tests {
     #[test]
     fn the_new_note_entry_is_greyed_with_the_reason_at_the_cap() {
         let cfg = Config::default();
-        let few = menu_items_with(&cfg, None, &[], 19, false, false, false);
+        let few = menu_items_with(&cfg, None, &[], 19, false, false, false, false);
         assert!(matches!(
             &few[2],
             MenuItem::Entry { cmd: MenuCmd::StickyNote, label, .. } if label == "Catatan tempel baru"
         ));
-        let full = menu_items_with(&cfg, None, &[], 20, false, false, false);
+        let full = menu_items_with(&cfg, None, &[], 20, false, false, false, false);
         assert!(matches!(
             &full[2],
             MenuItem::Disabled { cmd: MenuCmd::StickyNote, label }
@@ -826,7 +847,7 @@ mod tests {
             ..Config::default()
         };
         assert_eq!(
-            labels(&menu_items_with(&en, None, &[], 20, false, false, false))[2],
+            labels(&menu_items_with(&en, None, &[], 20, false, false, false, false))[2],
             "New sticky note (at most 20)"
         );
     }
@@ -843,7 +864,7 @@ mod tests {
             };
             // Enabled with few notes, with none and at the cap.
             for n in [0, 5, 19, 20] {
-                let items = menu_items_with(&cfg, None, &[], n, false, false, false);
+                let items = menu_items_with(&cfg, None, &[], n, false, false, false, false);
                 assert!(
                     matches!(&items[3], MenuItem::Entry { cmd: MenuCmd::StickyList, label, checked: false } if label == want),
                     "{lang:?} with {n}: {:?}",
@@ -863,7 +884,7 @@ mod tests {
         ] {
             let cfg = Config { language: lang, ..Config::default() };
             for (recording, want) in [(false, start), (true, stop)] {
-                let items = menu_items_with(&cfg, None, &[], 0, recording, false, false);
+                let items = menu_items_with(&cfg, None, &[], 0, recording, false, false, false);
                 assert!(
                     matches!(&items[4], MenuItem::Entry { cmd: MenuCmd::Record, label, checked: false } if label == want),
                     "{lang:?} {recording}: {:?}",
@@ -872,7 +893,7 @@ mod tests {
             }
         }
         let cfg = Config::default();
-        let idle = menu_items_with(&cfg, None, &[], 0, false, false, false);
+        let idle = menu_items_with(&cfg, None, &[], 0, false, false, false, false);
         assert!(!commands(&idle).contains(&MenuCmd::RecordMute), "no mic entry at idle");
         // The ids stay unique and clear of the Monitor submenu's.
         let mut ids: Vec<usize> = COMMANDS.iter().map(|c| c.id()).collect();
@@ -892,7 +913,7 @@ mod tests {
         ] {
             let cfg = Config { language: lang, ..Config::default() };
             for (muted, want) in [(false, mute), (true, unmute)] {
-                let items = menu_items_with(&cfg, None, &[], 0, true, muted, false);
+                let items = menu_items_with(&cfg, None, &[], 0, true, muted, false, false);
                 assert!(
                     matches!(&items[4], MenuItem::Entry { cmd: MenuCmd::Record, .. }),
                     "{:?}",
@@ -908,7 +929,12 @@ mod tests {
                     "{:?}",
                     items[6]
                 );
-                assert!(matches!(items[7], MenuItem::Separator), "{:?}", items[7]);
+                assert!(
+                    matches!(&items[7], MenuItem::Entry { cmd: MenuCmd::Captions, .. }),
+                    "{:?}",
+                    items[7]
+                );
+                assert!(matches!(items[8], MenuItem::Separator), "{:?}", items[8]);
             }
         }
     }
@@ -937,25 +963,48 @@ mod tests {
         ] {
             let cfg = Config { language: lang, ..Config::default() };
             // Idle: right after the audio entry, no mic entry.
-            let idle = menu_items_with(&cfg, None, &[], 0, false, false, false);
-            assert_eq!(labels(&idle)[4..7], [audio, start, "-"], "{lang:?}");
+            let idle = menu_items_with(&cfg, None, &[], 0, false, false, false, false);
+            assert_eq!(labels(&idle)[4..6], [audio, start], "{lang:?}");
+            assert_eq!(labels(&idle)[7], "-", "{lang:?}");
             assert_eq!(commands(&idle)[4..6], [MenuCmd::Record, MenuCmd::RecordScreen]);
             // A screen recording: its entry stops it, the mic entry shows and
             // the audio entry still offers to start.
-            let on = menu_items_with(&cfg, None, &[], 0, false, false, true);
-            assert_eq!(labels(&on)[4..8], [audio, mute, stop, "-"], "{lang:?}");
+            let on = menu_items_with(&cfg, None, &[], 0, false, false, true, false);
+            assert_eq!(labels(&on)[4..7], [audio, mute, stop], "{lang:?}");
+            assert_eq!(labels(&on)[8], "-", "{lang:?}");
             assert_eq!(
                 commands(&on)[4..7],
                 [MenuCmd::Record, MenuCmd::RecordMute, MenuCmd::RecordScreen]
             );
             // An audio recording: the screen entry still offers to start,
             // after the mic entry.
-            let audio_on = menu_items_with(&cfg, None, &[], 0, true, false, false);
-            assert_eq!(labels(&audio_on)[4..8], [audio_stop, mute, start, "-"], "{lang:?}");
+            let audio_on = menu_items_with(&cfg, None, &[], 0, true, false, false, false);
+            assert_eq!(labels(&audio_on)[4..7], [audio_stop, mute, start], "{lang:?}");
+            assert_eq!(labels(&audio_on)[8], "-", "{lang:?}");
         }
         // The mic entry says "unmute" for a muted screen recording too.
-        let muted = menu_items_with(&Config::default(), None, &[], 0, false, true, true);
+        let muted = menu_items_with(&Config::default(), None, &[], 0, false, true, true, false);
         assert_eq!(labels(&muted)[5], "Nyalakan mic");
+    }
+
+    #[test]
+    fn the_tray_says_turn_off_while_on() {
+        let pos = COMMANDS.iter().position(|c| *c == MenuCmd::RecordScreen).unwrap();
+        assert_eq!(COMMANDS[pos + 1], MenuCmd::Captions, "right after the screen entry");
+        for (lang, on_label, off_label) in [
+            (Lang::Id, "Nyalakan caption", "Matikan caption"),
+            (Lang::En, "Turn on captions", "Turn off captions"),
+        ] {
+            let cfg = Config { language: lang, ..Config::default() };
+            for (captions, want) in [(false, on_label), (true, off_label)] {
+                let items = menu_items_with(&cfg, None, &[], 0, false, false, false, captions);
+                assert!(
+                    matches!(&items[6], MenuItem::Entry { cmd: MenuCmd::Captions, label, checked: false } if label == want),
+                    "{lang:?} captions={captions}: {:?}",
+                    items[6]
+                );
+            }
+        }
     }
 
     #[test]
@@ -971,7 +1020,7 @@ mod tests {
         let id = labels(&menu_items(&Config::default(), Some("3.11.0"), &[])).join("|");
         assert_eq!(
             id,
-            "Pengaturan…|Cari…|Catatan tempel baru|Daftar catatan tempel|Mulai rekam|Rekam layar|-|Gaya: Pill|Gaya: Notch|Monitor|-|Jalan saat Windows mulai|-|Update ke 3.11.0|Keluar"
+            "Pengaturan…|Cari…|Catatan tempel baru|Daftar catatan tempel|Mulai rekam|Rekam layar|Nyalakan caption|-|Gaya: Pill|Gaya: Notch|Monitor|-|Jalan saat Windows mulai|-|Update ke 3.11.0|Keluar"
         );
         let en = Config {
             language: Lang::En,
@@ -980,7 +1029,7 @@ mod tests {
         let en = labels(&menu_items(&en, Some("3.11.0"), &[])).join("|");
         assert_eq!(
             en,
-            "Settings…|Search…|New sticky note|Sticky note list|Start recording|Record the screen|-|Style: Pill|Style: Notch|Monitor|-|Start with Windows|-|Update to 3.11.0|Quit"
+            "Settings…|Search…|New sticky note|Sticky note list|Start recording|Record the screen|Turn on captions|-|Style: Pill|Style: Notch|Monitor|-|Start with Windows|-|Update to 3.11.0|Quit"
         );
         let with = commands(&menu_items(&Config::default(), Some("3.11.0"), &[]));
         assert!(with.contains(&MenuCmd::InstallUpdate));
@@ -1005,6 +1054,7 @@ mod tests {
                 "Sticky note list",
                 "Start recording",
                 "Record the screen",
+                "Turn on captions",
                 "-",
                 "Style: Pill",
                 "Style: Notch",
@@ -1095,7 +1145,7 @@ mod tests {
         // The install item only shows once an update is known.
         let mut reachable = commands(&menu_items(&Config::default(), None, &[]));
         // The mic entry shows only while a recording runs.
-        reachable.extend(commands(&menu_items_with(&Config::default(), None, &[], 0, true, false, false)));
+        reachable.extend(commands(&menu_items_with(&Config::default(), None, &[], 0, true, false, false, false)));
         reachable.extend(commands(&menu_items(&Config::default(), Some("3.11.0"), &[])));
         for cmd in COMMANDS {
             assert!(reachable.contains(&cmd), "{cmd:?}");

@@ -70,6 +70,8 @@
 //!   "Buang" beside pause (`screen-sure`: asked once, "Yakin buang?");
 //!   `screen-zoom` is a screen recording zoomed at 2.5x, the notch showing
 //!   "2,5×" instead of "Layar".
+//! - `DI_REC_CAPTIONS=on` shows the "Caption langsung" switch of the Rekam
+//!   page on.
 //!
 //! - `DI_NOTCH=WxH` sizes the closed island in every scene (`160x28` to
 //!   `300x44`, clamped; 190x34 without it): the idle, music, timer and
@@ -2604,6 +2606,7 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                     devices: &rec_devices,
                     tab: rec_page.tab,
                     discard_armed: rec_page.discard_armed,
+                    captions_on: name("DI_REC_CAPTIONS") == "on",
                 },
                 devices: DevicesView {
                     list: &dev_list,

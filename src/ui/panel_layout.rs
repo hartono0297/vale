@@ -4104,6 +4104,10 @@ pub struct RecordLayout {
     pub pick_short: bool,
     /// The card holding the buttons (the design's `.big`).
     pub card: Rect,
+    /// The "Caption langsung" switch under the card, on both tabs: the
+    /// label at the left and the switch at the right edge. `None` when the
+    /// page is too short to hold the row.
+    pub caption_switch: Option<(Rect, Rect)>,
     /// The round start / stop button.
     pub button: Rect,
     /// "Mulai" / "Berhenti" under it.
@@ -4170,6 +4174,13 @@ const REC_BLOCK_GAP: f32 = 12.0;
 /// Between the header row and the card, and the card and the list.
 const REC_HEAD_GAP: f32 = 8.0;
 const REC_LIST_GAP: f32 = 10.0;
+/// The "Caption langsung" row under the card: the gap above it, its height
+/// and the gap under it, where the list starts (in place of `REC_LIST_GAP`).
+const REC_CAPTION_GAP: f32 = 6.0;
+const REC_CAPTION_H: f32 = 20.0;
+const REC_CAPTION_LIST_GAP: f32 = 6.0;
+/// Between the row's label and its switch at the least.
+const REC_CAPTION_LABEL_GAP: f32 = 8.0;
 pub const REC_BUTTON: f32 = 48.0;
 pub const REC_PAUSE: f32 = 32.0;
 const REC_BUTTON_GAP: f32 = 10.0;
@@ -4380,12 +4391,22 @@ pub fn record_layout(
     };
     let elapsed_y = seg_track.bottom() + extra + 8.0;
     let elapsed = rect(opts_x, elapsed_y, r - opts_x, card.bottom() - elapsed_y);
-    let list = rect(
-        l,
-        card.bottom() + REC_LIST_GAP,
-        r - l,
-        (content_bottom(s) - card.bottom() - REC_LIST_GAP).max(0.0),
-    );
+    let caption_room = REC_CAPTION_GAP + REC_CAPTION_H + REC_CAPTION_LIST_GAP;
+    let caption_switch = (content_bottom(s) - card.bottom() >= caption_room).then(|| {
+        let y = card.bottom() + REC_CAPTION_GAP;
+        let switch = rect(
+            r - NOTIF_SWITCH_W,
+            y + (REC_CAPTION_H - NOTIF_SWITCH_H) / 2.0,
+            NOTIF_SWITCH_W,
+            NOTIF_SWITCH_H,
+        );
+        let label = rect(l, y, switch.x - REC_CAPTION_LABEL_GAP - l, REC_CAPTION_H);
+        (label, switch)
+    });
+    let list_y = caption_switch.map_or(card.bottom() + REC_LIST_GAP, |(label, _)| {
+        label.bottom() + REC_CAPTION_LIST_GAP
+    });
+    let list = rect(l, list_y, r - l, (content_bottom(s) - list_y).max(0.0));
     let pitch = REC_ROW_H + REC_ROW_GAP;
     let fit = ((list.h + REC_ROW_GAP) / pitch).floor().max(0.0) as usize;
     let shown = rows.min(REC_ROWS).min(fit);
@@ -4426,6 +4447,7 @@ pub fn record_layout(
         pick,
         pick_short: !long_fits,
         card,
+        caption_switch,
         button,
         button_label,
         pause,
@@ -4677,6 +4699,16 @@ pub fn regions(s: ShapeRect, layout: &PageLayout, strip: impl Into<StripKind>) -
                 add(r, Hit::ScreenDiscard);
             }
             add(l.button, Hit::RecToggle);
+            if let Some((label, switch)) = l.caption_switch {
+                // The whole row is the click: the label counts as the switch.
+                add(
+                    Rect {
+                        w: switch.right() - label.x,
+                        ..label
+                    },
+                    Hit::RecCaptions,
+                );
+            }
             for cell in &l.live {
                 add(cell.button, Hit::RecMute(cell.source));
                 add(cell.device, Hit::RecDevice(cell.source));
@@ -5228,12 +5260,13 @@ mod tests {
     }
 
     #[test]
-    fn the_rekam_page_lists_five_recordings_inside_the_panel() {
+    fn the_rekam_page_lists_four_recordings_inside_the_panel() {
         for style in [Style::Pill, Style::Notch] {
             let s = panel(style);
             let (dots, _) = page_dots(s, &Page::ALL, Page::Record);
             let l = record_layout(s, false, &REC_HEAD, None, BOTH, 9, &PILLS, AUDIO);
-            assert_eq!(l.rows.len(), REC_ROWS, "{style:?}: five at most");
+            // The caption switch under the card takes the fifth row's room.
+            assert_eq!(l.rows.len(), REC_ROWS - 1, "{style:?}: four fit");
             assert!(l.empty.is_none());
             for (i, r) in l.rows.iter().enumerate() {
                 assert!(r.row.bottom() <= content_bottom(s) + 0.01, "{style:?} {i}");
@@ -5254,9 +5287,48 @@ mod tests {
             assert!(none.empty.is_some_and(|e| rect_inside(style, s, e)));
             // Under the waiting strip one row less fits, never past the dots.
             let strip = record_layout(s, true, &REC_HEAD, None, BOTH, 9, &PILLS, AUDIO);
-            assert_eq!(strip.rows.len(), REC_ROWS - 1, "{style:?}");
+            assert_eq!(strip.rows.len(), REC_ROWS - 2, "{style:?}");
             for r in &strip.rows {
                 assert!(r.row.bottom() <= content_bottom(s) + 0.01);
+            }
+        }
+    }
+
+    #[test]
+    fn the_rekam_switch_sits_between_card_and_list_on_both_tabs() {
+        for style in [Style::Pill, Style::Notch] {
+            let s = panel(style);
+            for tab in [AUDIO, SCREEN] {
+                for live in [None, Some(BOTH)] {
+                    let tag = format!("{style:?} {tab:?} live={}", live.is_some());
+                    let l = record_layout(s, false, &REC_HEAD, live, BOTH, 3, &PILLS, tab);
+                    let (label, switch) = l.caption_switch.expect(&tag);
+                    // Under the card, over the list, inside the page.
+                    assert!(label.y >= l.card.bottom() && switch.y >= l.card.bottom(), "{tag}");
+                    assert!(label.bottom() <= l.list.y && switch.bottom() <= l.list.y, "{tag}");
+                    assert!(label.x == left(s) && switch.right() == right(s), "{tag}");
+                    assert_eq!((switch.w, switch.h), (NOTIF_SWITCH_W, NOTIF_SWITCH_H), "{tag}");
+                    assert!(label.right() < switch.x && disjoint(label, switch), "{tag}");
+                    // The row is one click, wherever on it.
+                    let regions = regions(s, &PageLayout::Record(l.clone()), false);
+                    for (x, y) in [
+                        (label.x + 1.0, label.y + label.h / 2.0),
+                        (switch.x + switch.w / 2.0, switch.y + switch.h / 2.0),
+                    ] {
+                        let hit = regions
+                            .iter()
+                            .find(|g| {
+                                x >= g.rect.x && x < g.rect.right() && y >= g.rect.y && y < g.rect.bottom()
+                            })
+                            .map(|g| g.hit.clone());
+                        assert_eq!(hit, Some(Hit::RecCaptions), "{tag}");
+                    }
+                    // The rows of the list keep clear of it and of the dots.
+                    for r in &l.rows {
+                        assert!(r.row.y >= switch.bottom(), "{tag}");
+                        assert!(r.row.bottom() <= content_bottom(s) + 0.01, "{tag}");
+                    }
+                }
             }
         }
     }
@@ -5448,10 +5520,10 @@ mod tests {
                 }
                 assert!(l.live.is_empty());
             }
-            // The extra height is for the recording only: idle keeps five rows.
+            // The extra height is for the recording only: idle keeps four rows.
             let idle = record_layout(s, false, &REC_HEAD, None, BOTH, 9, &PILLS, AUDIO);
             let rec = record_layout(s, false, &REC_HEAD, Some(BOTH), BOTH, 9, &PILLS, AUDIO);
-            assert_eq!(idle.rows.len(), REC_ROWS, "{style:?}");
+            assert_eq!(idle.rows.len(), REC_ROWS - 1, "{style:?}");
             assert!(rec.card.h > idle.card.h && !rec.rows.is_empty(), "{style:?}");
             for r in &rec.rows {
                 assert!(r.row.bottom() <= content_bottom(s) + 0.01, "{style:?}");

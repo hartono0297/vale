@@ -35,6 +35,7 @@ use crate::model::{Event, Notice, NoticeKind};
 use crate::notch_monitor;
 use crate::recorder::capture::Source;
 use crate::sources::battery::read_battery;
+use crate::ui::tray;
 use crate::transcribe::output::Speaker;
 use crate::transcribe::prefs::TrLang;
 use crate::transcribe::{gpu, runner};
@@ -263,14 +264,11 @@ fn content_of(sent: &Sent, lines: &Lines, finals: bool) -> CardContent {
 
 impl App {
     /// The hotkey, the tray item and the Rekam switch.
-    // Until the hotkey, the tray and the Rekam switch call it.
-    #[allow(dead_code)]
     pub(super) fn captions_toggle(&mut self) {
         self.captions_set(!self.cap.ctl.on);
     }
 
-    // Until the tray and the Rekam switch show it.
-    #[allow(dead_code)]
+    /// The tray's entry and the Rekam switch read it.
     pub(super) fn captions_on(&self) -> bool {
         self.cap.ctl.on
     }
@@ -292,6 +290,14 @@ impl App {
         if self.cap.ctl.on == on {
             return;
         }
+        self.captions_switch(on);
+        tray::set_captions(self.cap.ctl.on);
+        // The Rekam page's switch and an open Settings follow.
+        self.refresh(Instant::now());
+    }
+
+    /// `captions_set`'s change itself.
+    fn captions_switch(&mut self, on: bool) {
         if on {
             let lang = self
                 .config
@@ -323,6 +329,14 @@ impl App {
             // A queued transcript job may start now.
             self.transcribe_sync_hold();
         }
+    }
+
+    /// "Mic juga" changed: a running worker has the old channels, so it stops
+    /// (without waiting) and the sync starts a fresh one. Nothing while
+    /// captions are off.
+    pub(super) fn captions_restart(&mut self) {
+        self.captions_halt();
+        self.captions_sync();
     }
 
     /// The card's pause button. Paused, nothing runs; the lines stay and

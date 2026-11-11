@@ -820,6 +820,9 @@ pub enum Hit {
     RecSources(RecSources),
     RecOpen(usize),
     RecFolder,
+    /// The "Caption langsung" switch under the card of the Rekam page, on
+    /// both tabs.
+    RecCaptions,
     /// The chip "Transkrip" of the "Rekaman tersimpan" notice.
     RecTranscribeChip,
     /// The chip "Pengaturan" of the same notice.
@@ -1036,6 +1039,8 @@ pub enum Effect {
     RecSources(RecSources),
     RecReveal(PathBuf),
     RecOpenFolder,
+    /// Turn live captions on or off (the Rekam page's switch).
+    CaptionToggle,
     /// Queue a transcript of this recording.
     TranscribeQueue(PathBuf),
     /// Open the transcript window of this recording.

@@ -683,6 +683,8 @@ pub struct RecordView<'a> {
     pub tab: crate::model::RecKind,
     /// "Buang" was clicked once: it reads "Yakin buang?".
     pub discard_armed: bool,
+    /// Live captions are on: the "Caption langsung" switch shows it.
+    pub captions_on: bool,
 }
 
 /// What the quick search shows.

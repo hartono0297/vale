@@ -1330,6 +1330,7 @@ mod tests {
                 record_mute: crate::hotkey::parse("Ctrl+Alt+U").unwrap(),
                 record_screen: crate::hotkey::parse("Ctrl+Alt+Shift+Y").unwrap(),
                 record_zoom: crate::hotkey::parse("Ctrl+Alt+Z").unwrap(),
+                captions: crate::hotkey::parse("Ctrl+Alt+K").unwrap(),
             },
             settings_window: Some(WindowPlace {
                 left: 20,

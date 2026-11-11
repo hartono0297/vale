@@ -2369,6 +2369,7 @@ impl App {
             Effect::PhoneStop => self.phone_stop(crate::phone::EndReason::Done),
             Effect::PhoneBack => self.phone_back(),
             Effect::RecToggle => self.rec_toggle(),
+            Effect::CaptionToggle => self.captions_toggle(),
             Effect::RecPause => self.rec_pause(),
             Effect::RecMute(source) => self.rec_toggle_mute(source),
             Effect::RecDevice(source) => self.rec_open_device_menu(source),
@@ -6566,6 +6567,23 @@ impl App {
                 self.save_config();
             }
             SettingsAction::TranscriptFolder => self.transcribe_open_folder(),
+            // A changed "Mic juga" restarts a running worker (its channels
+            // and labels change); the others are read by `captions_sync`.
+            SettingsAction::CaptionMic(on) => {
+                self.config.captions.mic = on;
+                self.save_config();
+                self.captions_restart();
+            }
+            SettingsAction::CaptionNotch(on) => {
+                self.config.captions.notch = on;
+                self.save_config();
+                self.captions_sync();
+            }
+            SettingsAction::CaptionBattery(on) => {
+                self.config.captions.on_battery = on;
+                self.save_config();
+                self.captions_sync();
+            }
             // The thumb moves live; only the release is saved.
             SettingsAction::ArrangeGap { gap, commit } => {
                 self.config.arrange.gap = gap;
@@ -6912,6 +6930,7 @@ impl App {
                 devices: self.rec.devices(),
                 tab: state.rec_tab(),
                 discard_armed: state.screen_discard_armed(),
+                captions_on: self.captions_on(),
             },
             devices: DevicesView {
                 list: &self.devices.list,
@@ -8584,6 +8603,9 @@ fn open_menu(hwnd: HWND) {
         }
         Some(MenuCmd::RecordScreen) => {
             with_app(|app| app.screen_toggle());
+        }
+        Some(MenuCmd::Captions) => {
+            with_app(|app| app.captions_toggle());
         }
         Some(MenuCmd::StylePill) => {
             with_app(|app| app.set_style(Style::Pill));

@@ -2270,6 +2270,12 @@ impl IslandState {
                     self.collapse_for(Effect::RecReveal(path), effects);
                 }
             }
+            // The panel stays: the switch shows the change.
+            Hit::RecCaptions => {
+                if self.view() == View::Panel(Page::Record) {
+                    effects.push(Effect::CaptionToggle);
+                }
+            }
             Hit::RecFolder => {
                 if self.view() == View::Panel(Page::Record) {
                     let open = match self.rec_tab {
@@ -8375,6 +8381,20 @@ mod tests {
         marked.transcript = RowTranscript::Queued;
         s.apply(Event::RecMarks(vec![marked]), t0);
         assert_eq!(s.rec_list()[0].transcript, RowTranscript::Queued);
+    }
+
+    #[test]
+    fn the_rekam_caption_switch_toggles_captions_only_on_that_page() {
+        let t0 = Instant::now();
+        let mut s = st();
+        assert_eq!(s.apply(Event::Click(Hit::RecCaptions), t0), vec![]);
+        open_on(&mut s, Page::Record, t0);
+        assert_eq!(
+            s.apply(Event::Click(Hit::RecCaptions), t0),
+            vec![Effect::CaptionToggle]
+        );
+        // The panel stays open: the switch shows the change.
+        assert_eq!(s.view(), View::Panel(Page::Record));
     }
 
     #[test]
