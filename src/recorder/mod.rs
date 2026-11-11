@@ -493,12 +493,17 @@ impl Placer {
         self.timeline.resume_at(frame);
     }
 
+    /// Whether [`Placer::bridge`] would cut between these ticks.
+    pub fn cuts(&self, last: i64, now: i64) -> bool {
+        now - last > SLEEP_GAP_FRAMES && !self.timeline.paused()
+    }
+
     /// The writer ticked at raw frame `last` and again at `now`: more than
     /// 2 s between them means the PC slept (QPC counts on through sleep),
     /// and that span is cut out like a pause, unless a pause is open anyway.
     /// Says whether it cut.
     pub fn bridge(&mut self, last: i64, now: i64) -> bool {
-        if now - last > SLEEP_GAP_FRAMES && !self.timeline.paused() {
+        if self.cuts(last, now) {
             self.timeline.pause_at(last);
             self.timeline.resume_at(now);
             return true;
@@ -841,6 +846,7 @@ impl Recorder {
         Ok(Recorder {
             path: PathBuf::new(),
             #[cfg(any(test, debug_assertions))]
+            // Only the debug CLI and the tests read it; a mix recording has no file.
             container: Container::Fragmented,
             placer,
             levels,
@@ -945,7 +951,8 @@ impl Recorder {
     }
 
     /// Stops and finalizes; blocks until the file and the sidecar are written
-    /// and both threads have ended. The outcome is also sent to `events`.
+    /// (a mix recording: until the rest of the mix is pushed to its sink) and
+    /// the threads have ended. The outcome is also sent to `events`.
     pub fn stop(mut self) -> Result<RecResult, RecError> {
         self.finish()
     }
@@ -1013,9 +1020,9 @@ fn write_main(
                 channels: u64::from(channels),
                 written: 0,
                 last_tick: None,
-                losses: Losses::new(sources),
             };
-            let outcome = w.run(&meta, placer, levels, rx, &*events);
+            let mut losses = Losses::new(sources);
+            let outcome = w.run(&meta, placer, levels, rx, &*events, &mut losses);
             match &outcome {
                 Ok(r) => events(RecEvent::Saved {
                     path: r.path.clone(),
@@ -1066,8 +1073,12 @@ impl Losses {
 /// A tick at raw frame `now`, after the one at `last_tick`: a sleep in
 /// between is cut out ([`Placer::bridge`]). Returns the frames it cut.
 fn tick(placer: &Mutex<Placer>, last_tick: &mut Option<i64>, now: i64) -> Option<i64> {
-    let cut = last_tick.filter(|&last| lock(placer).bridge(last, now));
-    let gap = cut.map(|last| now - last);
+    let mut gap = None;
+    if let Some(last) = *last_tick
+        && lock(placer).bridge(last, now)
+    {
+        gap = Some(now - last);
+    }
     *last_tick = Some(now);
     gap
 }
@@ -1078,6 +1089,89 @@ fn next_block(placer: &Mutex<Placer>, now: i64, lag: i64) -> Vec<f32> {
     lock(placer).take(now - lag)
 }
 
+/// Why [`pump`] ended without a stop frame.
+enum Pumped {
+    /// The capture never started: nothing to report.
+    Aborted,
+    /// A tick failed.
+    Failed(RecError),
+}
+
+/// The writer's paced loop, shared by the file and the mix writer: waits
+/// for the capture to start (what it lost or switched while opening is
+/// told once it runs), then reports losses and switches, calls `on_tick`
+/// with the raw frame every 50 ms (publishing the meters first) and returns
+/// the raw frame to finish at: a stop, every source lost, or the session
+/// dropped.
+fn pump(
+    placer: &Mutex<Placer>,
+    levels: &SharedLevels,
+    rx: &Receiver<Msg>,
+    events: &dyn Fn(RecEvent),
+    losses: &mut Losses,
+    mut on_tick: impl FnMut(i64) -> Result<(), RecError>,
+) -> Result<i64, Pumped> {
+    let mut early = Vec::new();
+    let mut switched = Vec::new();
+    loop {
+        match rx.recv() {
+            Ok(Msg::Go) => break,
+            Ok(Msg::Lost(source, denied)) => early.push((source, denied)),
+            Ok(Msg::Switched(source, name, fell_back, manual)) => {
+                switched.push((source, name, fell_back, manual));
+            }
+            Ok(Msg::Abort | Msg::Stop(_)) | Err(_) => return Err(Pumped::Aborted),
+        }
+    }
+    let mut no_input = false;
+    for (source, denied) in early {
+        no_input |= losses.lose(source, denied, events);
+    }
+    for (source, name, fell_back, manual) in switched {
+        events(RecEvent::DeviceSwitched {
+            source,
+            name,
+            fell_back,
+            manual,
+        });
+    }
+    let mut next = Instant::now() + TICK;
+    loop {
+        if no_input {
+            // Nothing comes in any more: finish now.
+            events(RecEvent::NoInput);
+            return Ok(lock(placer).frame_at(qpc_now()));
+        }
+        match rx.recv_timeout(next.saturating_duration_since(Instant::now())) {
+            Ok(Msg::Lost(source, denied)) => no_input = losses.lose(source, denied, events),
+            Ok(Msg::Switched(source, name, fell_back, manual)) => {
+                events(RecEvent::DeviceSwitched {
+                    source,
+                    name,
+                    fell_back,
+                    manual,
+                });
+            }
+            Ok(Msg::Stop(frame)) => return Ok(frame),
+            Ok(Msg::Go | Msg::Abort) => {}
+            Err(RecvTimeoutError::Timeout) => {
+                next += TICK;
+                let now = Instant::now();
+                if next < now {
+                    next = now + TICK;
+                }
+                let frame = {
+                    let p = &mut *lock(placer);
+                    p.publish(levels, now);
+                    p.frame_at(qpc_now())
+                };
+                on_tick(frame).map_err(Pumped::Failed)?;
+            }
+            Err(RecvTimeoutError::Disconnected) => return Ok(lock(placer).frame_at(qpc_now())),
+        }
+    }
+}
+
 struct Writing<'a> {
     files: &'a Files,
     writer: Option<M4aWriter>,
@@ -1086,7 +1180,6 @@ struct Writing<'a> {
     written: u64,
     /// The raw frame of the previous tick, to notice a sleep.
     last_tick: Option<i64>,
-    losses: Losses,
 }
 
 impl Writing<'_> {
@@ -1098,72 +1191,17 @@ impl Writing<'_> {
         levels: &SharedLevels,
         rx: &Receiver<Msg>,
         events: &dyn Fn(RecEvent),
+        losses: &mut Losses,
     ) -> Result<RecResult, Option<RecError>> {
-        // Wait for the capture to start (or not). A source the capture lost
-        // while it opened is told once the recording runs.
-        let mut early = Vec::new();
-        let mut switched = Vec::new();
-        loop {
-            match rx.recv() {
-                Ok(Msg::Go) => break,
-                Ok(Msg::Lost(source, denied)) => early.push((source, denied)),
-                Ok(Msg::Switched(source, name, fell_back, manual)) => {
-                    switched.push((source, name, fell_back, manual));
-                }
-                Ok(Msg::Abort | Msg::Stop(_)) | Err(_) => {
-                    self.discard();
-                    return Err(None);
-                }
+        let stop_frame = match pump(placer, levels, rx, events, losses, |frame| {
+            self.drain(placer, frame, LAG_FRAMES)
+        }) {
+            Ok(frame) => frame,
+            Err(Pumped::Aborted) => {
+                self.discard();
+                return Err(None);
             }
-        }
-        let mut no_input = false;
-        for (source, denied) in early {
-            no_input |= self.losses.lose(source, denied, events);
-        }
-        for (source, name, fell_back, manual) in switched {
-            events(RecEvent::DeviceSwitched {
-                source,
-                name,
-                fell_back,
-                manual,
-            });
-        }
-        let mut next = Instant::now() + TICK;
-        let stop_frame = loop {
-            if no_input {
-                // Nothing comes in any more: finish now.
-                events(RecEvent::NoInput);
-                break lock(placer).frame_at(qpc_now());
-            }
-            match rx.recv_timeout(next.saturating_duration_since(Instant::now())) {
-                Ok(Msg::Lost(source, denied)) => no_input = self.losses.lose(source, denied, events),
-                Ok(Msg::Switched(source, name, fell_back, manual)) => {
-                    events(RecEvent::DeviceSwitched {
-                        source,
-                        name,
-                        fell_back,
-                        manual,
-                    });
-                }
-                Ok(Msg::Stop(frame)) => break frame,
-                Ok(Msg::Go | Msg::Abort) => {}
-                Err(RecvTimeoutError::Timeout) => {
-                    next += TICK;
-                    let now = Instant::now();
-                    if next < now {
-                        next = now + TICK;
-                    }
-                    let frame = {
-                        let p = &mut *lock(placer);
-                        p.publish(levels, now);
-                        p.frame_at(qpc_now())
-                    };
-                    self.drain(placer, frame, LAG_FRAMES).map_err(Some)?;
-                }
-                Err(RecvTimeoutError::Disconnected) => {
-                    break lock(placer).frame_at(qpc_now());
-                }
-            }
+            Err(Pumped::Failed(e)) => return Err(Some(e)),
         };
         self.drain(placer, stop_frame, 0).map_err(Some)?;
         let heard = lock(placer).heard();
@@ -1260,6 +1298,53 @@ impl Writing<'_> {
     }
 }
 
+/// What `mix_main` keeps between ticks: the stamps, the previous tick and
+/// the frames pushed.
+struct MixOut {
+    clock: mix::MixClock,
+    channels: usize,
+    last_tick: Option<i64>,
+    pushed: u64,
+}
+
+impl MixOut {
+    /// Pushes what lies `lag` frames or more before raw frame `frame`.
+    fn push_up_to(&mut self, placer: &Mutex<Placer>, frame: i64, lag: i64, sink: &mut dyn mix::MixSink) {
+        loop {
+            let block = next_block(placer, frame, lag);
+            if block.is_empty() {
+                return;
+            }
+            let mono = mix::mix_mono(&block, self.channels);
+            sink.mix(&mono, self.clock.stamp());
+            self.clock.advance(mono.len() as u64);
+            self.pushed += mono.len() as u64;
+        }
+    }
+}
+
+/// A tick of a mix recording at raw frame `frame`: everything up to `lag`
+/// frames before it goes out as mono, stamped by the clock. A sleep since
+/// the last tick is cut out like in [`tick`], but first the audio before it
+/// is pushed in full, so it keeps its own time and not the sleep's end.
+fn drain_mix(
+    placer: &Mutex<Placer>,
+    out: &mut MixOut,
+    frame: i64,
+    lag: i64,
+    sink: &mut dyn mix::MixSink,
+) {
+    if let Some(last) = out.last_tick
+        && lock(placer).cuts(last, frame)
+    {
+        out.push_up_to(placer, last, 0, sink);
+    }
+    if let Some(gap) = tick(placer, &mut out.last_tick, frame) {
+        out.clock.skip(gap as u64);
+    }
+    out.push_up_to(placer, frame, lag, sink);
+}
+
 /// The writer thread of a mix recording: every 50 ms the timeline up to
 /// 200 ms before now goes through [`mix::mix_mono`] to `sink`, stamped from
 /// `origin_hns`; the rest goes at stop. Nothing is written to disk.
@@ -1272,94 +1357,26 @@ fn mix_main(
     rx: &Receiver<Msg>,
     events: Box<dyn Fn(RecEvent) + Send>,
 ) -> Result<RecResult, RecError> {
-    let channels = lock(placer).channels();
+    let mut out = MixOut {
+        clock: mix::MixClock::new(origin_hns),
+        channels: lock(placer).channels(),
+        last_tick: None,
+        pushed: 0,
+    };
     let mut losses = Losses::new(sources);
-    let mut clock = mix::MixClock::new(origin_hns);
-    let mut last_tick = None;
-    let mut pushed = 0u64;
-    // Everything on the timeline before `now` minus `lag` goes out as mono.
-    let mut push = |now: i64, lag: i64, clock: &mut mix::MixClock| loop {
-        let block = next_block(placer, now, lag);
-        if block.is_empty() {
-            return;
-        }
-        let mono = mix::mix_mono(&block, channels);
-        sink.mix(&mono, clock.stamp());
-        clock.advance(mono.len() as u64);
-        pushed += mono.len() as u64;
+    let stop_frame = pump(placer, levels, rx, &*events, &mut losses, |frame| {
+        drain_mix(placer, &mut out, frame, LAG_FRAMES, &mut *sink);
+        Ok(())
+    });
+    let stop_frame = match stop_frame {
+        Ok(frame) => frame,
+        Err(_) => return Err(RecError::Thread("the recording did not start".into())),
     };
-    let mut early = Vec::new();
-    let mut switched = Vec::new();
-    loop {
-        match rx.recv() {
-            Ok(Msg::Go) => break,
-            Ok(Msg::Lost(source, denied)) => early.push((source, denied)),
-            Ok(Msg::Switched(source, name, fell_back, manual)) => {
-                switched.push((source, name, fell_back, manual));
-            }
-            Ok(Msg::Abort | Msg::Stop(_)) | Err(_) => {
-                return Err(RecError::Thread("the recording did not start".into()));
-            }
-        }
-    }
-    let mut no_input = false;
-    for (source, denied) in early {
-        no_input |= losses.lose(source, denied, &*events);
-    }
-    for (source, name, fell_back, manual) in switched {
-        events(RecEvent::DeviceSwitched {
-            source,
-            name,
-            fell_back,
-            manual,
-        });
-    }
-    let mut next = Instant::now() + TICK;
-    let stop_frame = loop {
-        if no_input {
-            events(RecEvent::NoInput);
-            break lock(placer).frame_at(qpc_now());
-        }
-        match rx.recv_timeout(next.saturating_duration_since(Instant::now())) {
-            Ok(Msg::Lost(source, denied)) => no_input = losses.lose(source, denied, &*events),
-            Ok(Msg::Switched(source, name, fell_back, manual)) => {
-                events(RecEvent::DeviceSwitched {
-                    source,
-                    name,
-                    fell_back,
-                    manual,
-                });
-            }
-            Ok(Msg::Stop(frame)) => break frame,
-            Ok(Msg::Go | Msg::Abort) => {}
-            Err(RecvTimeoutError::Timeout) => {
-                next += TICK;
-                let now = Instant::now();
-                if next < now {
-                    next = now + TICK;
-                }
-                let frame = {
-                    let p = &mut *lock(placer);
-                    p.publish(levels, now);
-                    p.frame_at(qpc_now())
-                };
-                if let Some(gap) = tick(placer, &mut last_tick, frame) {
-                    clock.skip(gap as u64);
-                }
-                push(frame, LAG_FRAMES, &mut clock);
-            }
-            Err(RecvTimeoutError::Disconnected) => {
-                break lock(placer).frame_at(qpc_now());
-            }
-        }
-    };
-    if let Some(gap) = tick(placer, &mut last_tick, stop_frame) {
-        clock.skip(gap as u64);
-    }
-    push(stop_frame, 0, &mut clock);
+    // The rest of the timeline goes before `stop` returns.
+    drain_mix(placer, &mut out, stop_frame, 0, &mut *sink);
     Ok(RecResult {
         path: PathBuf::new(),
-        duration: Duration::from_micros(pushed * 1_000_000 / u64::from(RATE)),
+        duration: Duration::from_micros(out.pushed * 1_000_000 / u64::from(RATE)),
     })
 }
 
@@ -2675,6 +2692,11 @@ pub(super) mod tests {
         got.lock().unwrap().iter().flat_map(|(_, m)| m.clone()).collect()
     }
 
+    /// The last 30 ms of what a mix holds are not checked: the stop frame is
+    /// taken before the capture is stopped, so the last, incomplete packet
+    /// reads as silence (phase 1 ends the same way).
+    const TAIL: usize = 1440;
+
     /// All of `xs[from..to)` within `tol` of `want`.
     fn steady(xs: &[f32], from: usize, to: usize, want: f32, what: &str) {
         for (i, x) in xs[from..to].iter().enumerate() {
@@ -2682,6 +2704,59 @@ pub(super) mod tests {
         }
     }
 
+
+    /// The Placer and the mix state of a system-only recording, by hand.
+    fn mix_rig() -> (Mutex<Placer>, MixOut) {
+        let sources = Sources {
+            mic: false,
+            system: true,
+        };
+        let out = MixOut {
+            clock: mix::MixClock::new(0),
+            channels: 1,
+            last_tick: None,
+            pushed: 0,
+        };
+        (Mutex::new(Placer::new(sources, ORIGIN)), out)
+    }
+
+    fn put_level(placer: &Mutex<Placer>, from_ms: i64, to_ms: i64, level: f32) {
+        let samples = vec![level; (frames_ms(to_ms) - frames_ms(from_ms)) as usize];
+        lock(placer).put(&Placed {
+            channel: 0,
+            at: frames_ms(from_ms),
+            samples,
+        });
+    }
+
+    #[test]
+    fn audio_before_a_sleep_keeps_its_time_and_the_wake_is_stamped_at_the_wake() {
+        let (placer, mut out) = mix_rig();
+        let got = Mixed::default();
+        let mut sink = Collect(Arc::clone(&got));
+        let hns = |ms: i64| ms * 10_000;
+        put_level(&placer, 0, 1000, 0.5);
+        drain_mix(&placer, &mut out, frames_ms(1000), LAG_FRAMES, &mut sink);
+        let n = flat(&got).len();
+        assert_eq!(n as i64, frames_ms(800), "the first tick leaves 200 ms back");
+        // The PC sleeps for an hour; the next tick finds the gap. The 200 ms
+        // held back before the sleep go out with their own stamps, nothing
+        // is pushed for the sleep itself.
+        let wake = 1000 + 3_600_000;
+        drain_mix(&placer, &mut out, frames_ms(wake), LAG_FRAMES, &mut sink);
+        let chunks = got.lock().unwrap().clone();
+        let before: Vec<_> = chunks.iter().skip(1).collect();
+        assert_eq!(before.iter().map(|c| c.1.len()).sum::<usize>() as i64, frames_ms(200));
+        assert_eq!(before[0].0, hns(800), "starts where the first tick stopped");
+        // Audio after the wake lands at the wake's time.
+        put_level(&placer, wake, wake + 500, 0.25);
+        drain_mix(&placer, &mut out, frames_ms(wake + 500), LAG_FRAMES, &mut sink);
+        let chunks = got.lock().unwrap().clone();
+        let after = chunks.last().expect("a chunk after the wake");
+        assert_eq!(after.0, hns(wake), "first sample after the wake");
+        assert_eq!(after.1.len() as i64, frames_ms(300));
+        assert!(after.1.iter().all(|&x| (x - 0.25).abs() < 1e-6));
+    }
     #[test]
     fn a_mix_recording_pushes_mono_stamped_from_its_origin() {
         let _one = session();
@@ -2703,7 +2778,7 @@ pub(super) mod tests {
             assert!((pair[1].0 - want).abs() <= 1, "{} vs {want}", pair[1].0);
         }
         let all = flat(&got);
-        steady(&all, 480, all.len() - 1440, 0.5, "mix");
+        steady(&all, 480, all.len() - TAIL, 0.5, "mix");
     }
 
     #[test]
@@ -2715,24 +2790,22 @@ pub(super) mod tests {
         rec.stop().expect("stop");
         let all = flat(&got);
         assert!(all.len() > 9600, "{} samples", all.len());
-        steady(&all, 4800, all.len() - 1440, 0.25, "muted mic");
+        steady(&all, 4800, all.len() - TAIL, 0.25, "muted mic");
     }
 
     #[test]
     fn a_mix_recording_writes_no_file() {
         let _one = session();
-        let dir = temp_dir("rec-mix-nofile");
         let (rec, _got, rx) = start_level_mix([0.5, 0.0]);
         std::thread::sleep(Duration::from_millis(600));
         assert!(rec.path().as_os_str().is_empty());
         let result = rec.stop().expect("stop");
         assert!(result.path.as_os_str().is_empty());
         assert!(result.duration > Duration::from_millis(300), "{result:?}");
-        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
         assert!(
             !rx.try_iter()
                 .any(|e| matches!(e, RecEvent::Saved { .. } | RecEvent::Failed(_))),
-            "a mix recording saves nothing"
+            "a mix recording saves nothing and does not say it heard nothing"
         );
     }
 
@@ -2752,7 +2825,7 @@ pub(super) mod tests {
         // Nothing cut out: the whole span arrives, without a hole.
         let want = elapsed.as_millis() as usize * 48;
         assert!(all.len() + 48 * 40 >= want, "{} of {want} samples", all.len());
-        steady(&all, 480, all.len() - 1440, 0.5, "across the pause");
+        steady(&all, 480, all.len() - TAIL, 0.5, "across the pause");
     }
 
     #[test]
