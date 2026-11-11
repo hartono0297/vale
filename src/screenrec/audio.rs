@@ -157,6 +157,12 @@ pub fn frames_hns(frames: u64) -> i64 {
     (frames as i128 * 10_000_000 / SAMPLE_RATE as i128) as i64
 }
 
+/// How many frames of silence fill `from..to` (100 ns) at 48 kHz; none when
+/// the span is empty or backwards.
+pub fn silence_frames(from: i64, to: i64) -> u64 {
+    ((to - from).max(0) as i128 * SAMPLE_RATE as i128 / 10_000_000) as u64
+}
+
 /// Feeds the recorder's mono mix ([`crate::recorder::Recorder::start_mix`])
 /// into a screen recording.
 pub struct Forward(pub std::sync::Arc<dyn AudioInput>);
@@ -170,6 +176,18 @@ impl crate::recorder::mix::MixSink for Forward {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn silence_fills_a_span_frame_for_frame() {
+        assert_eq!(silence_frames(0, 10_000_000), 48_000);
+        assert_eq!(silence_frames(5_000_000, 10_000_000), 24_000);
+        assert_eq!(silence_frames(0, 100_000), 480);
+        assert_eq!(silence_frames(7, 7), 0);
+        assert_eq!(silence_frames(10_000_000, 0), 0, "never backwards");
+        // What it fills is as long as the span (within a frame).
+        let frames = silence_frames(0, 12_345_678);
+        assert!((frames_hns(frames) - 12_345_678).abs() < frames_hns(1) + 1);
+    }
 
     #[test]
     fn stereo_passes_through_as_pcm() {

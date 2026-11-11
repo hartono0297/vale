@@ -1037,7 +1037,7 @@ impl App {
     }
 
     /// A device picked in the dropdown or in Settings: saved, and while a
-    /// recording runs the source switches to it at once. A pick the user
+    /// recording (audio or screen) runs the source switches to it at once. A pick the user
     /// made by hand gives no notice. `None` follows the Windows default.
     pub(super) fn rec_set_device(&mut self, source: Source, id: Option<String>) {
         if self.config.recording.device(source) != id.as_deref() {
@@ -1046,6 +1046,9 @@ impl App {
         }
         if let Some(recorder) = self.rec.recorder.as_ref() {
             recorder.set_device(source, id);
+        } else {
+            // A screen recording's sound switches the same way.
+            self.screen_set_device(source, id);
         }
         self.rec_read_devices();
         self.sync_settings();

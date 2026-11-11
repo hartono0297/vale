@@ -3345,8 +3345,7 @@ impl IslandState {
     }
 
     /// The number the 3-2-1 before a screen recording shows.
-    // Only the tests read it: `App` keeps the number in its own phase.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn screen_countdown(&self) -> Option<u8> {
         self.screen_countdown
     }

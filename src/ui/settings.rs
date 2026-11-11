@@ -3435,10 +3435,16 @@ fn browse(hwnd: HWND) {
 /// running while the dialog is up. The choice comes back to `owner` as
 /// `Action::RecFolder`, the same way Settings' "Ganti" sends it.
 pub fn pick_rec_folder(owner: HWND) {
+    pick_folder_for(owner, |dir| Action::RecFolder(Some(dir)));
+}
+
+/// The system folder dialog on the short-lived `pick-folder` thread; the
+/// folder chosen goes to `owner` as the action `to_action` makes of it.
+fn pick_folder_for(owner: HWND, to_action: fn(std::path::PathBuf) -> Action) {
     use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
     let raw = owner.0 as isize;
     let _ = std::thread::Builder::new()
-        .name("rec-pick-folder".into())
+        .name("pick-folder".into())
         .spawn(move || {
             let owner = HWND(raw as *mut c_void);
             // The dialog wants a single-threaded apartment.
@@ -3446,7 +3452,7 @@ pub fn pick_rec_folder(owner: HWND) {
                 return;
             }
             if let Some(dir) = pick_path(owner, CustomKind::Folder) {
-                post_action(owner, Action::RecFolder(Some(dir)));
+                post_action(owner, to_action(dir));
             }
             unsafe { CoUninitialize() };
         });
@@ -3456,21 +3462,7 @@ pub fn pick_rec_folder(owner: HWND) {
 /// screen recording), like `pick_rec_folder`. The choice comes back to
 /// `owner` as `Action::VideoFolder`.
 pub fn pick_video_folder(owner: HWND) {
-    use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
-    let raw = owner.0 as isize;
-    let _ = std::thread::Builder::new()
-        .name("rec-pick-folder".into())
-        .spawn(move || {
-            let owner = HWND(raw as *mut c_void);
-            // The dialog wants a single-threaded apartment.
-            if unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_err() {
-                return;
-            }
-            if let Some(dir) = pick_path(owner, CustomKind::Folder) {
-                post_action(owner, Action::VideoFolder(Some(dir)));
-            }
-            unsafe { CoUninitialize() };
-        });
+    pick_folder_for(owner, |dir| Action::VideoFolder(Some(dir)));
 }
 
 /// "Transkrip file lain...": the audio file picker for the island, on a

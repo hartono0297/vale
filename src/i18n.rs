@@ -705,6 +705,7 @@ keys! {
         "Display disconnected, video saved";
     ScreenDiscardedTitle => "Video dibuang", "Video discarded";
     ScreenFailedTitle => "Rekam layar gagal", "Screen recording failed";
+    ScreenNoSoundTitle => "Video jalan tanpa suara", "Recording video without sound";
     ScreenWhyUnsupported => "Windows ini tidak bisa merekam layar",
         "This Windows cannot record the screen";
     ScreenWhyGone => "Jendela atau layarnya sudah tidak ada", "The window or screen is gone";
@@ -4107,7 +4108,18 @@ mod tests {
             {
                 // The saved-video notice of a screen recording, for each way
                 // it can end and both bodies.
-                use crate::app::screen_page::{Ended, video_saved_notice};
+                use crate::app::screen_page::{Ended, no_sound_notice, video_saved_notice};
+                use crate::recorder::Failure;
+                for failure in [
+                    Failure::NoDevice,
+                    Failure::NoMediaFoundation,
+                    Failure::NoAudio,
+                    Failure::Other("x".into()),
+                ] {
+                    let n = no_sound_notice(lang, &failure);
+                    all.push(n.title);
+                    all.push(n.body);
+                }
                 use crate::model::TranscriptOffer;
                 for ended in [Ended::Stopped, Ended::WindowClosed, Ended::DisplayGone] {
                     for offer in [TranscriptOffer::None, TranscriptOffer::Setup] {

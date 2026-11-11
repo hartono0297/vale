@@ -46,7 +46,7 @@ use crate::model::{
 use crate::recorder::mix::MixOptions;
 use crate::recorder::naming::file_stem;
 use crate::recorder::prefs::video_fallback_folder;
-use crate::recorder::{RecError, RecEvent, Recorder, Source, Sources, devices};
+use crate::recorder::{Failure, RecError, RecEvent, Recorder, Source, Sources, devices};
 use crate::screenrec::audio::Forward;
 use crate::screenrec::exclude::Excluder;
 use crate::screenrec::files::{existing_files, files_of, part_of, unique_stem};
@@ -195,6 +195,12 @@ impl ScreenState {
         self.phase.recording()
     }
 
+    /// The countdown runs and Esc was registered for it: a registration
+    /// that was taken away meanwhile (Settings recorded a combo) comes back.
+    pub(super) fn wants_esc(&self) -> bool {
+        self.esc && matches!(self.phase, ScreenPhase::Countdown(_))
+    }
+
     /// The recorded target is one window (it can be minimised or closed).
     fn records_window(&self) -> bool {
         matches!(
@@ -334,6 +340,29 @@ pub(crate) fn screen_failure_notice(lang: Lang, e: &Error, part: Option<PathBuf>
     )
 }
 
+/// "Video jalan tanpa suara" over the reason: the sound could not start or
+/// broke off, and the video records on, silent.
+pub(crate) fn no_sound_notice(lang: Lang, failure: &Failure) -> Notice {
+    let why = match failure {
+        Failure::NoDevice => Key::RecWhyNoDevice,
+        Failure::NoMediaFoundation => Key::RecWhyNoMf,
+        Failure::NoAudio => Key::RecWhyNoAudio,
+        // A mix writes no file: the folder and disk reasons cannot come.
+        Failure::FolderBlocked
+        | Failure::FolderGone
+        | Failure::DiskFull
+        | Failure::Unfinished { .. }
+        | Failure::Other(_) => Key::RecWhyOther,
+    };
+    record::notice(
+        "rec-no-sound",
+        lang,
+        text(lang, Key::ScreenNoSoundTitle).into(),
+        text(lang, why).into(),
+        NoticeKind::RecInfo,
+    )
+}
+
 /// "Video dibuang": the files went to the Recycle Bin.
 pub(crate) fn discarded_notice(lang: Lang) -> Notice {
     record::notice(
@@ -453,6 +482,16 @@ fn start_recording(
         path,
         screen: Ok(recorder),
         audio,
+    }
+}
+
+/// Says `note` when it drops: the word of a start or stop thread reaches the
+/// island also when the thread panics, so the phase never stays stuck.
+struct SayAtEnd<F: Fn(ScreenNote)>(F, ScreenNote);
+
+impl<F: Fn(ScreenNote)> Drop for SayAtEnd<F> {
+    fn drop(&mut self) {
+        (self.0)(self.1.clone());
     }
 }
 
@@ -685,12 +724,12 @@ impl App {
         let spawned = std::thread::Builder::new()
             .name("screen-start".into())
             .spawn(move || {
+                let _told = SayAtEnd(say, ScreenNote::Started);
                 let t0 = Instant::now();
                 let started = start_recording(job, on_end, events);
                 if timing {
                     eprintln!("vale: screen recorder start took {:?}", t0.elapsed());
                 }
-                say(ScreenNote::Started);
                 started
             });
         match spawned {
@@ -751,7 +790,7 @@ impl App {
                 Some(if e.is_mic_denied() {
                     mic_denied_notice(lang)
                 } else {
-                    record::failure_notice(lang, &e.failure(), &self.config.recording.video_dir())
+                    no_sound_notice(lang, &e.failure())
                 })
             }
             None => None,
@@ -836,12 +875,12 @@ impl App {
         let spawned = std::thread::Builder::new()
             .name("screen-stop".into())
             .spawn(move || {
+                let _told = SayAtEnd(say, ScreenNote::Stopped);
                 let t0 = Instant::now();
                 let stopped = stop_recording(recorder, audio, &path, discard);
                 if timing {
                     eprintln!("vale: screen recorder stop took {:?}", t0.elapsed());
                 }
-                say(ScreenNote::Stopped);
                 stopped
             });
         match spawned {
@@ -1020,7 +1059,8 @@ impl App {
                 device_switched_notice(lang, source, &name, fell_back, chosen.as_deref())
             }
             RecEvent::Failed(failure) => {
-                record::failure_notice(lang, &failure, &self.config.recording.video_dir())
+                eprintln!("vale: screen recording lost its sound: {failure:?}");
+                no_sound_notice(lang, &failure)
             }
             // The lost sources were told one by one; a mix writes no file.
             RecEvent::NoInput | RecEvent::Saved { .. } => return,
@@ -1041,6 +1081,14 @@ impl App {
         audio.set_muted(source, now);
         tray::set_mic_muted(audio.muted()[0]);
         self.screen_show_status();
+    }
+
+    /// A device picked on the page or in Settings while a screen recording
+    /// runs: its sound switches to it at once, as an audio recording does.
+    pub(super) fn screen_set_device(&self, source: Source, id: Option<String>) {
+        if let Some(audio) = self.screen.audio.as_ref() {
+            audio.set_device(source, id);
+        }
     }
 
     /// The levels `(mic, system)` of the screen recording's sound.
@@ -1332,6 +1380,99 @@ mod tests {
         assert_eq!(discarded_notice(Lang::Id).title, "Video dibuang");
         assert_eq!(discarded_notice(Lang::En).title, "Video discarded");
         assert_eq!(discarded_notice(Lang::Id).kind, NoticeKind::RecInfo);
+    }
+
+    #[test]
+    fn a_video_without_sound_says_so_and_why() {
+        let cases = [
+            (
+                Failure::NoDevice,
+                "Mic atau speaker tidak ditemukan",
+                "No microphone or speaker found",
+            ),
+            (
+                Failure::NoMediaFoundation,
+                "Media Foundation tidak ada di Windows ini",
+                "Media Foundation is missing on this Windows",
+            ),
+            (
+                Failure::NoAudio,
+                "Tidak ada suara masuk",
+                "No audio came in",
+            ),
+            (
+                Failure::Other("mix thread".into()),
+                "Ada yang tidak beres saat merekam",
+                "Something went wrong while recording",
+            ),
+            // Never a folder notice: a mix writes no file.
+            (
+                Failure::FolderBlocked,
+                "Ada yang tidak beres saat merekam",
+                "Something went wrong while recording",
+            ),
+        ];
+        for (failure, id, en) in cases {
+            let n = no_sound_notice(Lang::Id, &failure);
+            assert_eq!(n.title, "Video jalan tanpa suara", "{failure:?}");
+            assert_eq!(n.body, id, "{failure:?}");
+            // The video is still recording: a word, not a failure.
+            assert_eq!(n.kind, NoticeKind::RecInfo, "{failure:?}");
+            let n = no_sound_notice(Lang::En, &failure);
+            assert_eq!(n.title, "Recording video without sound", "{failure:?}");
+            assert_eq!(n.body, en, "{failure:?}");
+        }
+    }
+
+    #[test]
+    fn esc_comes_back_only_during_a_countdown_that_had_it() {
+        use ScreenPhase::*;
+        let state = |phase, esc| ScreenState {
+            phase,
+            esc,
+            ..ScreenState::default()
+        };
+        assert!(state(Countdown(3), true).wants_esc());
+        assert!(state(Countdown(1), true).wants_esc());
+        // Another app held Esc when the countdown began: it stays theirs.
+        assert!(!state(Countdown(3), false).wants_esc());
+        for phase in [Idle, Picking, Starting, Recording, Stopping] {
+            assert!(!state(phase, true).wants_esc(), "{phase:?}");
+        }
+    }
+
+    #[test]
+    fn the_word_of_a_thread_is_said_even_when_it_panics() {
+        use std::sync::{Arc, Mutex};
+        let said = Arc::new(Mutex::new(Vec::new()));
+        let say = {
+            let said = Arc::clone(&said);
+            move |note| said.lock().unwrap().push(note)
+        };
+        // Quiet: the panic below is the test's own.
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let joined = std::thread::spawn(move || {
+            let _told = SayAtEnd(say, ScreenNote::Stopped);
+            if std::hint::black_box(true) {
+                panic!("the stop thread died");
+            }
+        })
+        .join();
+        std::panic::set_hook(hook);
+        assert!(joined.is_err());
+        assert_eq!(*said.lock().unwrap(), [ScreenNote::Stopped]);
+        // And once, at the end, when nothing goes wrong.
+        let said = Arc::new(Mutex::new(Vec::new()));
+        {
+            let sink = Arc::clone(&said);
+            let _told = SayAtEnd(
+                move |note| sink.lock().unwrap().push(note),
+                ScreenNote::Started,
+            );
+            assert!(said.lock().unwrap().is_empty());
+        }
+        assert_eq!(*said.lock().unwrap(), [ScreenNote::Started]);
     }
 
     #[test]

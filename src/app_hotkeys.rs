@@ -285,6 +285,10 @@ impl App {
         }
         self.hotkeys.paused = false;
         self.sync_hotkeys();
+        // The pause took the countdown's Esc too: back while it still counts.
+        if self.screen.wants_esc() {
+            self.register_countdown_esc();
+        }
     }
 
     /// Unregisters every row's id and the countdown's Esc, empties the hook's

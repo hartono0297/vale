@@ -372,6 +372,9 @@ struct AudioState {
     clock: AudioClock,
     /// Where the last written audio ends (100 ns).
     end: i64,
+    /// A real sample was written. Until then a gap is filled with silence
+    /// (see `fill_audio_gap`).
+    heard: bool,
     /// Frames dropped by the timeline (inside or cut at a pause).
     dropped: u64,
 }
@@ -549,9 +552,34 @@ impl Recording {
             }
             chunk.pcm.truncate(keep as usize * channels);
             let at = st.clock.place(measured, keep);
+            // The first sound comes after silence was written over its
+            // place (the sources opened very late): it is left out, the
+            // track's times never run backwards.
+            if !st.heard && at < st.end {
+                st.dropped += keep;
+                st.clock.reset();
+                continue;
+            }
             self.encoder.write_audio(&chunk.pcm, at)?;
+            st.heard = true;
             st.end = st.end.max(at + audio::frames_hns(keep));
         }
+        Ok(())
+    }
+
+    /// No audio came for a while: lets the muxer go on to `time` without it.
+    /// A track that has had sound gets a stream tick. One that never had any
+    /// (the sound could not start) gets silence instead: an MP4 whose audio
+    /// track holds no sample at all cannot be opened by Media Foundation.
+    fn fill_audio_gap(&self, time: i64, st: &mut AudioState) -> Result<(), Error> {
+        if st.heard {
+            self.encoder.audio_gap(time);
+        } else if let Some(feed) = &self.feed {
+            let frames = audio::silence_frames(st.end, time);
+            let silence = vec![0i16; frames as usize * feed.channels() as usize];
+            self.encoder.write_audio(&silence, st.end)?;
+        }
+        st.end = time;
         Ok(())
     }
 
@@ -741,9 +769,12 @@ impl Recording {
             next = due + 1;
 
             // No audio for a while: let the muxer go on without it.
-            if self.encoder.has_audio() && time - audio.end > 10_000_000 {
-                self.encoder.audio_gap(time);
-                audio.end = time;
+            if self.encoder.has_audio()
+                && time - audio.end > 10_000_000
+                && let Err(e) = self.fill_audio_gap(time, &mut audio)
+            {
+                failure = Some(e);
+                break;
             }
 
             if let Ok(mut s) = status.lock() {
@@ -759,6 +790,15 @@ impl Recording {
         // What the mix writer flushed just before the end still lands.
         if failure.is_none()
             && let Err(e) = self.write_audio(&timeline, &mut audio)
+        {
+            failure = Some(e);
+        }
+        // No sound in the whole recording: the track is silence to the end,
+        // never empty.
+        if failure.is_none()
+            && self.encoder.has_audio()
+            && !audio.heard
+            && let Err(e) = self.fill_audio_gap(next * frame_hns, &mut audio)
         {
             failure = Some(e);
         }

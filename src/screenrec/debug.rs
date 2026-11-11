@@ -1,5 +1,5 @@
 //! `vale --screenrec-test <seconds> [--zoom] [--window [hwnd]] [--region x,y,w,h]
-//! [--fps 60] [--software] [--no-audio]` (debug builds only).
+//! [--fps 60] [--software] [--no-audio] [--no-audio-push]` (debug builds only).
 //!
 //! Records the primary monitor (or a window, or a region) into
 //! `%TEMP%\vale-screenrec\`, feeding silence into the audio track. A red
@@ -48,6 +48,9 @@ struct Args {
     fps: u32,
     software: bool,
     audio: bool,
+    /// The audio track is made but nothing is ever pushed into it (the
+    /// sound that could not start): the video must still finish and play.
+    audio_push: bool,
     /// Control run: the marker is not excluded, so the check must see it.
     leak_marker: bool,
     /// Moves the real cursor in a circle (put back afterwards).
@@ -69,6 +72,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
         fps: 30,
         software: false,
         audio: true,
+        audio_push: true,
         leak_marker: false,
         wiggle: false,
         pause: false,
@@ -79,6 +83,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--zoom" => a.zoom = true,
             "--software" => a.software = true,
             "--no-audio" => a.audio = false,
+            "--no-audio-push" => a.audio_push = false,
             "--leak-marker" => a.leak_marker = true,
             "--wiggle" => a.wiggle = true,
             "--pause" => a.pause = true,
@@ -246,7 +251,7 @@ pub fn run(args: &[String]) {
 
     // Track A's stand-in: 10 ms of silence every 10 ms, stamped by QPC.
     let feeding = Arc::new(AtomicBool::new(true));
-    let feeder = rec.audio_input().map(|input| {
+    let feeder = rec.audio_input().filter(|_| a.audio_push).map(|input| {
         let on = feeding.clone();
         std::thread::spawn(move || {
             let chunk = vec![0.0f32; 480 * 2];
