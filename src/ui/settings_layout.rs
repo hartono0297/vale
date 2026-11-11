@@ -5182,6 +5182,7 @@ pub fn hotkey_row_key(id: HotkeyId) -> Key {
         HotkeyId::StickyList => Key::StickyList,
         HotkeyId::Record => Key::HotkeyRowRecord,
         HotkeyId::RecordMute => Key::HotkeyRowRecordMute,
+        HotkeyId::RecordScreen => Key::HotkeyRowRecordScreen,
     }
 }
 
@@ -5197,6 +5198,7 @@ fn hotkey_row_desc_key(id: HotkeyId) -> Key {
         HotkeyId::StickyList => Key::StickyListDesc,
         HotkeyId::Record => Key::HotkeyRowRecordDesc,
         HotkeyId::RecordMute => Key::HotkeyRowRecordMuteDesc,
+        HotkeyId::RecordScreen => Key::HotkeyRowRecordScreenDesc,
     }
 }
 
@@ -5746,6 +5748,7 @@ mod tests {
             sticky_list: hk("Win+Ctrl+Alt+Shift+Home"),
             record: hk("Win+Ctrl+Alt+Shift+Insert"),
             record_mute: hk("Win+Ctrl+Alt+Shift+Delete"),
+            record_screen: hk("Win+Ctrl+Alt+Shift+NumSubtract"),
         }
     }
 
@@ -7291,15 +7294,15 @@ mod tests {
         for lang in [Lang::Id, Lang::En] {
             let s = hotkey_base(lang);
             let l = layout(Section::Hotkeys, &s, &Estimate);
-            // Eight rows overflow the minimum size, so the section
-            // scrolls (and fits with room to spare in a taller window).
+            // Eleven rows overflow the minimum size, so the section
+            // scrolls (and fits in a taller window).
             assert!(l.viewport.is_some() && l.scroll_max > 0.0, "{lang:?}");
-            let tall = layout_in(Section::Hotkeys, &s, &Estimate, (CLIENT_W, 700.0));
+            let tall = layout_in(Section::Hotkeys, &s, &Estimate, (CLIENT_W, 760.0));
             assert!(tall.viewport.is_none() && tall.scroll_max == 0.0, "{lang:?}");
-            // One card of the header and eight rows, under its eyebrow.
+            // One card of the header and a row per hotkey, under its eyebrow.
             assert_eq!(l.cards.len(), 1);
             let card = l.cards[0];
-            assert_eq!(card.h, HEADER_H + 10.0 * ROW_H);
+            assert_eq!(card.h, HEADER_H + 11.0 * ROW_H);
             assert!(
                 l.texts
                     .iter()
@@ -7422,7 +7425,7 @@ mod tests {
             let f = hotkey_fields(&layout(Section::Hotkeys, &rec, &Estimate));
             assert_eq!(
                 f.iter().map(|x| x.3).collect::<Vec<_>>(),
-                [false, false, true, false, false, false, false, false, false, false]
+                [false, false, true, false, false, false, false, false, false, false, false]
             );
             // The description: red for a refusal on that row, red for a taken
             // one that is set, otherwise secondary.
@@ -7460,8 +7463,9 @@ mod tests {
             let reds: Vec<&Text> = l.texts.iter().filter(|t| t.tone == Tone::Bad).collect();
             assert_eq!(
                 reds.len(),
-                6,
-                "search, clipboard, screenshot, the lyrics card, the recorder and its mute are set"
+                7,
+                "search, clipboard, screenshot, the lyrics card, the recorder, its mute and the \
+                 screen recorder are set"
             );
             assert!(reds.iter().all(|t| t.text == text(lang, Key::HotkeyTaken)));
         }

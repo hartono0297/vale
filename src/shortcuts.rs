@@ -44,6 +44,16 @@ pub enum Action {
     /// Vale's own region capture (Settings → Clipboard → "Alat screenshot"):
     /// the Screenshot tile with the Vale tool.
     Capture,
+    /// The screen recording's picker (a screen, a window or an area), which
+    /// answers `owner` with `WM_APP_SCREEN_PICK`. `mic` and `system` are
+    /// where its two sound toggles start.
+    // Queued from Task 12 on.
+    #[allow(dead_code)]
+    ScreenPick {
+        owner: isize,
+        mic: bool,
+        system: bool,
+    },
 }
 
 /// A drive's root as Explorer takes it: "C:\".
@@ -149,11 +159,14 @@ pub fn icon(s: Shortcut) -> Icon {
 }
 
 /// Milliseconds between the click and the action: long enough for the
-/// foreground window to have the keyboard again; a screen clip waits for
-/// the panel's collapse to finish so it is not in the picture.
+/// foreground window to have the keyboard again; a screen clip and the
+/// screen recording's picker wait for the panel's collapse to finish so it
+/// is not in the picture.
 pub fn delay_ms(action: &Action) -> u32 {
     match action {
-        Action::Open("ms-screenclip:") | Action::Capture => ANIM_MS as u32 + 60,
+        Action::Open("ms-screenclip:") | Action::Capture | Action::ScreenPick { .. } => {
+            ANIM_MS as u32 + 60
+        }
         _ => 120,
     }
 }
@@ -271,6 +284,9 @@ pub fn run(action: Action) {
             let _ = windows::Win32::System::Shutdown::LockWorkStation();
         },
         Action::Capture => crate::capture::overlay::start(),
+        Action::ScreenPick { owner, mic, system } => {
+            crate::capture::overlay::start_rec_pick(owner, mic, system);
+        }
     }
 }
 
@@ -370,6 +386,17 @@ mod tests {
             u64::from(delay_ms(&Action::Capture)) > ANIM_MS,
             "after the morph"
         );
+    }
+
+    #[test]
+    fn the_screen_pick_waits_like_the_capture() {
+        let pick = Action::ScreenPick {
+            owner: 0,
+            mic: true,
+            system: false,
+        };
+        assert_eq!(delay_ms(&pick), delay_ms(&Action::Capture));
+        assert!(u64::from(delay_ms(&pick)) > ANIM_MS, "after the morph");
     }
 
     #[test]

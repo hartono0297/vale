@@ -28,18 +28,19 @@ pub(super) enum ScreenPhase {
     Stopping,
 }
 
-// Asked from Task 12 on (the toggle, the other kind's start, the transcript
-// hold).
-#[allow(dead_code)]
 impl ScreenPhase {
     /// A screen recording is somewhere between the picker and the saved
     /// file: an audio recording must not start.
+    // Asked from Task 12 on (the toggle, the other kind's start).
+    #[allow(dead_code)]
     pub(super) fn busy(self) -> bool {
         self != ScreenPhase::Idle
     }
 
     /// It is about to record, records or finalizes: transcript jobs hold
     /// (the picker alone holds nothing, it may still be cancelled).
+    // Asked from Task 12 on (the transcript hold).
+    #[allow(dead_code)]
     pub(super) fn engaged(self) -> bool {
         !matches!(self, ScreenPhase::Idle | ScreenPhase::Picking)
     }
@@ -60,13 +61,15 @@ pub(super) struct ScreenState {
     thumb: Option<(u64, Thumb)>,
 }
 
-// Asked from Task 12 on.
-#[allow(dead_code)]
 impl ScreenState {
+    // Asked from Task 12 on.
+    #[allow(dead_code)]
     pub(super) fn busy(&self) -> bool {
         self.phase.busy()
     }
 
+    // Asked from Task 12 on.
+    #[allow(dead_code)]
     pub(super) fn engaged(&self) -> bool {
         self.phase.engaged()
     }
@@ -77,11 +80,15 @@ impl ScreenState {
 }
 
 impl App {
-    // The four below do nothing until the recorder is wired in (Tasks 9 and
-    // 12); the Layar tab that asks for them is not drawn before that.
+    // The five below do nothing until the recorder is wired in (Task 12).
+    // The screen hotkey and the tray entry already ask for the toggle; the
+    // Layar tab that asks for the rest is not drawn before that.
 
     /// Opens the picker, cancels the countdown or stops the recording.
     pub(super) fn screen_toggle(&mut self) {}
+
+    /// Esc during the 3-2-1: nothing is recorded.
+    pub(super) fn screen_cancel_countdown(&mut self) {}
 
     /// Stops the screen recording and sends its files to the Recycle Bin.
     pub(super) fn screen_discard(&mut self) {}

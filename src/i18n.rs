@@ -588,6 +588,8 @@ keys! {
     HotkeyRowRecordDesc => "Mulai atau hentikan rekaman", "Start or stop a recording";
     HotkeyRowRecordMute => "Bisukan mic rekaman", "Mute recording mic";
     HotkeyRowRecordMuteDesc => "Hanya aktif saat merekam", "Active only while recording";
+    HotkeyRowRecordScreen => "Rekam layar", "Record the screen";
+    HotkeyRowRecordScreenDesc => "Pilih layar, jendela atau area", "Pick a screen, window or area";
     RecNoticeSource => "Rekaman", "Recording";
     RecSavedTitle => "Rekaman tersimpan", "Recording saved";
     RecClickToOpen => "klik untuk buka", "click to open";
@@ -665,6 +667,8 @@ keys! {
     TrayRecStop => "Hentikan rekam", "Stop recording";
     TrayMicMute => "Bisukan mic", "Mute mic";
     TrayMicUnmute => "Nyalakan mic", "Unmute mic";
+    TrayScreenStart => "Rekam layar", "Record the screen";
+    TrayScreenStop => "Hentikan rekam layar", "Stop screen recording";
     RecSettingsTitle => "Rekaman", "Recording";
     RecSettingsSources => "Sumber suara", "Sound sources";
     RecSettingsSourcesDesc => "Yang ikut direkam", "What gets recorded";
@@ -698,7 +702,7 @@ keys! {
         "This Windows cannot record the screen";
     ScreenWhyGone => "Jendela atau layarnya sudah tidak ada", "The window or screen is gone";
     ScreenWhyMinimized => "Jendelanya sedang diminimalkan. Buka dulu, lalu coba lagi",
-        "The window is minimised. Restore it, then try again";
+        "The window is minimized. Restore it, then try again";
     ScreenWhyEncoder => "Pengode video tidak tersedia di PC ini",
         "No video encoder is available on this PC";
     ScreenWhyGpu => "Kartu grafis tidak bisa dipakai untuk merekam",
@@ -3923,6 +3927,14 @@ mod tests {
         let table = [
             (Key::RecBusyTitle, "Rekaman lain sedang jalan", "Another recording is running"),
             (Key::RecBusyBody, "Hentikan dulu, lalu mulai lagi", "Stop it first, then start again"),
+            (Key::HotkeyRowRecordScreen, "Rekam layar", "Record the screen"),
+            (
+                Key::HotkeyRowRecordScreenDesc,
+                "Pilih layar, jendela atau area",
+                "Pick a screen, window or area",
+            ),
+            (Key::TrayScreenStart, "Rekam layar", "Record the screen"),
+            (Key::TrayScreenStop, "Hentikan rekam layar", "Stop screen recording"),
             (Key::ScreenSavedTitle, "Video tersimpan", "Video saved"),
             (
                 Key::ScreenWindowClosedTitle,
@@ -3949,7 +3961,7 @@ mod tests {
             (
                 Key::ScreenWhyMinimized,
                 "Jendelanya sedang diminimalkan. Buka dulu, lalu coba lagi",
-                "The window is minimised. Restore it, then try again",
+                "The window is minimized. Restore it, then try again",
             ),
             (
                 Key::ScreenWhyEncoder,

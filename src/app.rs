@@ -184,7 +184,7 @@ use prtsc::WM_APP_PRTSC;
 
 #[path = "app_hotkeys.rs"]
 mod hotkeys;
-use hotkeys::{HotkeyState, row_of_wm_id};
+use hotkeys::{HotkeyState, is_countdown_esc, row_of_wm_id};
 
 #[path = "app_search.rs"]
 mod quick;
@@ -8522,6 +8522,9 @@ fn open_menu(hwnd: HWND) {
         Some(MenuCmd::RecordMute) => {
             with_app(|app| app.rec_toggle_mute(crate::recorder::Source::Mic));
         }
+        Some(MenuCmd::RecordScreen) => {
+            with_app(|app| app.screen_toggle());
+        }
         Some(MenuCmd::StylePill) => {
             with_app(|app| app.set_style(Style::Pill));
         }
@@ -9176,7 +9179,10 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
         WM_HOTKEY => {
-            if let Some(id) = row_of_wm_id(wparam.0 as i32) {
+            let wm = wparam.0 as i32;
+            if is_countdown_esc(wm) {
+                with_app(App::screen_cancel_countdown);
+            } else if let Some(id) = row_of_wm_id(wm) {
                 with_app(|app| app.on_hotkey(id));
             }
             LRESULT(0)

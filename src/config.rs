@@ -1323,6 +1323,7 @@ mod tests {
                 sticky_list: crate::hotkey::parse("Ctrl+Alt+J").unwrap(),
                 record: crate::hotkey::parse("Ctrl+Alt+Y").unwrap(),
                 record_mute: crate::hotkey::parse("Ctrl+Alt+U").unwrap(),
+                record_screen: crate::hotkey::parse("Ctrl+Alt+Shift+Y").unwrap(),
             },
             settings_window: Some(WindowPlace {
                 left: 20,

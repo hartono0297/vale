@@ -15,7 +15,7 @@
 
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    HOT_KEY_MODIFIERS, RegisterHotKey, UnregisterHotKey,
+    HOT_KEY_MODIFIERS, MOD_NOREPEAT, RegisterHotKey, UnregisterHotKey, VK_ESCAPE,
 };
 
 use super::App;
@@ -42,6 +42,11 @@ pub(super) const HOTKEY_STICKY_LIST: i32 = 8;
 pub(super) const HOTKEY_RECORD: i32 = 9;
 /// Mute the recording's mic takes 12 (10 and 11 are the screen recorder's).
 pub(super) const HOTKEY_RECORD_MUTE: i32 = 12;
+/// The screen recorder takes 10 (11 stays reserved for its zoom).
+pub(super) const HOTKEY_RECORD_SCREEN: i32 = 10;
+/// Esc during the 3-2-1 before a screen recording. Not a row: a raw
+/// registration that exists only while the countdown runs.
+pub(super) const HOTKEY_COUNTDOWN_ESC: i32 = 13;
 
 /// The `RegisterHotKey` id of a row.
 pub(super) fn wm_id(id: HotkeyId) -> i32 {
@@ -56,7 +61,19 @@ pub(super) fn wm_id(id: HotkeyId) -> i32 {
         HotkeyId::StickyList => HOTKEY_STICKY_LIST,
         HotkeyId::Record => HOTKEY_RECORD,
         HotkeyId::RecordMute => HOTKEY_RECORD_MUTE,
+        HotkeyId::RecordScreen => HOTKEY_RECORD_SCREEN,
     }
+}
+
+/// Whether a `WM_HOTKEY` id is the countdown's Esc.
+pub(super) fn is_countdown_esc(wm: i32) -> bool {
+    wm == HOTKEY_COUNTDOWN_ESC
+}
+
+/// Whether a recording runs, for `wanted`: the mic mute works on a screen
+/// recording as on an audio one.
+pub(super) fn any_recording(audio: bool, screen: bool) -> bool {
+    audio || screen
 }
 
 /// The row a `WM_HOTKEY` id belongs to.
@@ -218,7 +235,8 @@ impl App {
         if self.hotkeys.paused {
             return;
         }
-        let want = wanted(&self.config.hotkeys, self.rec.active());
+        let recording = any_recording(self.rec.active(), self.screen.recording());
+        let want = wanted(&self.config.hotkeys, recording);
         self.hotkeys.apply(&want, &mut WinOps(self.hwnd));
         self.sync_hotkey_hook();
     }
@@ -334,6 +352,33 @@ impl App {
             HotkeyId::StickyList => self.open_note_list(None),
             HotkeyId::Record => self.rec_toggle(),
             HotkeyId::RecordMute => self.rec_toggle_mute(Source::Mic),
+            HotkeyId::RecordScreen => self.screen_toggle(),
+        }
+    }
+
+    /// The 3-2-1 begins: Esc belongs to Vale until `unregister_countdown_esc`,
+    /// whichever app has the keyboard. False when another app holds a bare
+    /// Esc hotkey (the screen hotkey still cancels).
+    // Called from Task 12 on.
+    #[allow(dead_code)]
+    pub(super) fn register_countdown_esc(&mut self) -> bool {
+        unsafe {
+            RegisterHotKey(
+                Some(self.hwnd),
+                HOTKEY_COUNTDOWN_ESC,
+                MOD_NOREPEAT,
+                u32::from(VK_ESCAPE.0),
+            )
+        }
+        .is_ok()
+    }
+
+    /// The 3-2-1 is over or cancelled: Esc goes back to the other apps.
+    // Called from Task 12 on.
+    #[allow(dead_code)]
+    pub(super) fn unregister_countdown_esc(&mut self) {
+        unsafe {
+            let _ = UnregisterHotKey(Some(self.hwnd), HOTKEY_COUNTDOWN_ESC);
         }
     }
 
@@ -373,22 +418,63 @@ mod tests {
         assert_eq!(HOTKEY_ARRANGE, 4);
         assert_eq!(HOTKEY_SCREENSHOT, 5);
         assert_eq!(HOTKEY_LYRICS_CARD, 6);
-        assert_eq!(ROWS, 10);
+        assert_eq!(ROWS, 11);
         assert_eq!(HOTKEY_STICKY, 7, "6 is reserved for the lyrics card");
         assert_eq!(HOTKEY_STICKY_LIST, 8);
         assert_eq!(HOTKEY_RECORD, 9);
         assert_eq!(HOTKEY_RECORD_MUTE, 12, "10 and 11 are the screen recorder's");
+        assert_eq!(HOTKEY_RECORD_SCREEN, 10);
+        assert_eq!(wm_id(HotkeyId::RecordScreen), 10);
         for id in HotkeyId::ALL {
             assert_eq!(row_of_wm_id(wm_id(id)), Some(id));
         }
         assert_eq!(row_of_wm_id(0), None);
-        assert_eq!(row_of_wm_id(10), None);
-        assert_eq!(row_of_wm_id(11), None);
-        // The hook's `wparam` is the row index, and the ten ids are distinct.
+        assert_eq!(row_of_wm_id(10), Some(HotkeyId::RecordScreen));
+        assert_eq!(row_of_wm_id(11), None, "reserved for the zoom");
+        // The hook's `wparam` is the row index, and the eleven ids are distinct.
         let mut ids: Vec<i32> = HotkeyId::ALL.iter().map(|i| wm_id(*i)).collect();
         ids.sort_unstable();
         ids.dedup();
-        assert_eq!(ids.len(), 10);
+        assert_eq!(ids.len(), 11);
+    }
+
+    #[test]
+    fn the_countdown_esc_is_no_row() {
+        assert_eq!(HOTKEY_COUNTDOWN_ESC, 13);
+        assert_eq!(row_of_wm_id(HOTKEY_COUNTDOWN_ESC), None);
+        assert!(is_countdown_esc(13));
+        for id in HotkeyId::ALL {
+            let wm = wm_id(id);
+            assert!(!is_countdown_esc(wm), "{id:?}");
+            assert_ne!(wm, 11, "{id:?}: 11 is reserved for the zoom");
+            assert_ne!(wm, 13, "{id:?}");
+        }
+        assert!(!is_countdown_esc(0));
+        assert!(!is_countdown_esc(11));
+    }
+
+    #[test]
+    fn the_screen_row_is_registered_at_idle_and_the_mute_row_with_either_recording() {
+        let cfg = Hotkeys::default();
+        let r = hk("Ctrl+Alt+Shift+R");
+        // The screen row starts a recording, so it is wanted at idle too.
+        assert_eq!(wanted(&cfg, false).get(HotkeyId::RecordScreen), Some(r));
+        assert_eq!(wanted(&cfg, true).get(HotkeyId::RecordScreen), Some(r));
+        // What `sync_hotkeys` passes: an audio or a screen recording runs.
+        for (audio, screen, mute) in [
+            (false, false, None),
+            (true, false, Some(hk("Ctrl+Alt+M"))),
+            (false, true, Some(hk("Ctrl+Alt+M"))),
+            (true, true, Some(hk("Ctrl+Alt+M"))),
+        ] {
+            let want = wanted(&cfg, any_recording(audio, screen));
+            assert_eq!(want.get(HotkeyId::RecordMute), mute, "{audio} {screen}");
+        }
+        let mut s = HotkeyState::default();
+        let mut ops = FakeOps::default();
+        s.apply(&wanted(&cfg, false), &mut ops);
+        assert_eq!(ops.registered.get(&HotkeyId::RecordScreen), Some(&r));
+        assert!(!s.any_failed());
     }
 
     #[test]
@@ -433,7 +519,7 @@ mod tests {
         assert!(s.any_failed());
         assert_eq!(
             s.failed_flags(),
-            [false, false, true, false, false, false, false, false, false, false]
+            [false, false, true, false, false, false, false, false, false, false, false]
         );
     }
 

@@ -366,11 +366,14 @@ pub enum HotkeyId {
     /// "Bisukan mic rekaman": mutes or unmutes the mic of the running
     /// recording. Registered only while a recording runs.
     RecordMute,
+    /// "Rekam layar": opens the picker, cancels the countdown or stops the
+    /// screen recording.
+    RecordScreen,
 }
 
 impl HotkeyId {
     /// Every row, in Settings order.
-    pub const ALL: [HotkeyId; 10] = [
+    pub const ALL: [HotkeyId; 11] = [
         HotkeyId::Search,
         HotkeyId::Clipboard,
         HotkeyId::Devices,
@@ -381,6 +384,7 @@ impl HotkeyId {
         HotkeyId::StickyList,
         HotkeyId::Record,
         HotkeyId::RecordMute,
+        HotkeyId::RecordScreen,
     ];
 
     /// The row's key in config.json.
@@ -396,6 +400,7 @@ impl HotkeyId {
             HotkeyId::StickyList => "sticky_list",
             HotkeyId::Record => "record",
             HotkeyId::RecordMute => "record_mute",
+            HotkeyId::RecordScreen => "record_screen",
         }
     }
 
@@ -436,11 +441,20 @@ impl HotkeyId {
                 },
                 u16::from(b'M'),
             ),
+            HotkeyId::RecordScreen => hk(
+                Mods {
+                    ctrl: true,
+                    alt: true,
+                    shift: true,
+                    ..Mods::default()
+                },
+                u16::from(b'R'),
+            ),
             _ => None,
         }
     }
 
-    /// The position in `ALL` (0..10).
+    /// The position in `ALL` (0..11).
     pub fn index(self) -> usize {
         self as usize
     }
@@ -464,6 +478,7 @@ pub struct Hotkeys {
     pub sticky_list: Option<Hotkey>,
     pub record: Option<Hotkey>,
     pub record_mute: Option<Hotkey>,
+    pub record_screen: Option<Hotkey>,
 }
 
 impl Default for Hotkeys {
@@ -479,6 +494,7 @@ impl Default for Hotkeys {
             sticky_list: HotkeyId::StickyList.default(),
             record: HotkeyId::Record.default(),
             record_mute: HotkeyId::RecordMute.default(),
+            record_screen: HotkeyId::RecordScreen.default(),
         }
     }
 }
@@ -497,6 +513,7 @@ impl Hotkeys {
             sticky_list: None,
             record: None,
             record_mute: None,
+            record_screen: None,
         }
     }
 
@@ -512,6 +529,7 @@ impl Hotkeys {
             HotkeyId::StickyList => self.sticky_list,
             HotkeyId::Record => self.record,
             HotkeyId::RecordMute => self.record_mute,
+            HotkeyId::RecordScreen => self.record_screen,
         }
     }
 
@@ -527,6 +545,7 @@ impl Hotkeys {
             HotkeyId::StickyList => self.sticky_list = value,
             HotkeyId::Record => self.record = value,
             HotkeyId::RecordMute => self.record_mute = value,
+            HotkeyId::RecordScreen => self.record_screen = value,
         }
     }
 
@@ -707,6 +726,7 @@ pub fn from_legacy(root: &serde_json::Value) -> Hotkeys {
         sticky_list: None,
         record: HotkeyId::Record.default(),
         record_mute: HotkeyId::RecordMute.default(),
+        record_screen: HotkeyId::RecordScreen.default(),
     }
 }
 
@@ -951,14 +971,15 @@ mod tests {
                 "sticky_note",
                 "sticky_list",
                 "record",
-                "record_mute"
+                "record_mute",
+                "record_screen"
             ]
         );
         for (i, id) in HotkeyId::ALL.iter().enumerate() {
             assert_eq!(id.index(), i);
             assert_eq!(HotkeyId::from_index(i), Some(*id));
         }
-        assert_eq!(HotkeyId::from_index(10), None);
+        assert_eq!(HotkeyId::from_index(11), None);
         assert_eq!(HotkeyId::LyricsCard.index(), 5, "appended last");
         assert_eq!(HotkeyId::StickyNote.index(), 6, "appended after the lyrics card");
         assert_eq!(HotkeyId::StickyList.index(), 7, "appended after the sticky note");
@@ -980,6 +1001,49 @@ mod tests {
         assert_eq!((d.clipboard, d.devices, d.arrange), (None, None, None));
         assert_eq!(d.lyrics_card, Some(hk("Ctrl+Alt+L")));
         assert!(d.all_default());
+    }
+
+    #[test]
+    fn the_record_screen_row_is_appended_with_its_default() {
+        let id = HotkeyId::RecordScreen;
+        assert_eq!(id.index(), 10, "appended after the mic mute row");
+        assert_eq!(HotkeyId::ALL.last(), Some(&id));
+        assert_eq!(id.config_key(), "record_screen");
+        assert_eq!(id.default(), Some(hk("Ctrl+Alt+Shift+R")));
+        let d = Hotkeys::default();
+        assert_eq!(d.record_screen, Some(hk("Ctrl+Alt+Shift+R")));
+        assert_eq!(d.get(id), d.record_screen);
+        // Its own combo: not the audio row's, and one Windows lets through.
+        assert_ne!(d.record_screen, d.record);
+        assert_eq!(check(hk("Ctrl+Alt+Shift+R")), Ok(()));
+        assert_eq!(used_by(&d, id, hk("Ctrl+Alt+Shift+R")), None);
+        let mut keys = d;
+        keys.set(id, None);
+        assert_eq!(keys.record_screen, None);
+        assert!(!keys.is_default(id));
+        keys.reset(id);
+        assert_eq!(keys, d);
+    }
+
+    #[test]
+    fn an_old_config_gets_the_record_screen_default() {
+        // Written before the row: no `record_screen` key.
+        let old = Hotkeys::from_json(&json!({"search":"Ctrl+Alt+Space","clipboard":"Win+Alt+V",
+            "devices":"None","arrange":"None","screenshot":"None","lyrics_card":"Ctrl+Alt+L",
+            "sticky_note":"None","sticky_list":"None","record":"Ctrl+Alt+R",
+            "record_mute":"Ctrl+Alt+M"}));
+        assert_eq!(old.record_screen, Some(hk("Ctrl+Alt+Shift+R")));
+        assert_eq!(old.record, Some(hk("Ctrl+Alt+R")), "the audio row stays as written");
+        // A config from before `hotkeys` existed at all gets it too.
+        let legacy = from_legacy(&json!({}));
+        assert_eq!(legacy.record_screen, Some(hk("Ctrl+Alt+Shift+R")));
+        // Turned off by the user: stays off.
+        let off = Hotkeys::from_json(&json!({"record_screen":"None"}));
+        assert_eq!(off.record_screen, None);
+        // An earlier row that already holds the combo keeps it.
+        let clash = Hotkeys::from_json(&json!({"record":"Ctrl+Alt+Shift+R"}));
+        assert_eq!(clash.record, Some(hk("Ctrl+Alt+Shift+R")));
+        assert_eq!(clash.record_screen, None);
     }
 
     #[test]
@@ -1011,7 +1075,8 @@ mod tests {
             v,
             json!({"search":"Ctrl+Alt+Space","clipboard":"Win+Alt+V","devices":"None",
                    "arrange":"None","screenshot":"None","lyrics_card":"Ctrl+Alt+L",
-                   "sticky_note":"Ctrl+Alt+N","sticky_list":"Ctrl+Alt+J","record":"Ctrl+Alt+R","record_mute":"Ctrl+Alt+M"})
+                   "sticky_note":"Ctrl+Alt+N","sticky_list":"Ctrl+Alt+J","record":"Ctrl+Alt+R","record_mute":"Ctrl+Alt+M",
+                   "record_screen":"Ctrl+Alt+Shift+R"})
         );
         // A config from before the row has no key: off, the rest as written.
         let old = Hotkeys::from_json(&json!({"search":"Ctrl+Alt+Space","clipboard":"Win+Alt+V",

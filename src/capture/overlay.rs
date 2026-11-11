@@ -33,12 +33,12 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, CS_DBLCLKS, CreateWindowExW, DefWindowProcW, DestroyWindow, GetCursorPos,
     GetForegroundWindow, GetWindowThreadProcessId, HWND_TOPMOST, IDC_CROSS, IsWindow, LoadCursorW,
-    MSG, PM_REMOVE, PeekMessageW, PostQuitMessage, RegisterClassExW, SW_SHOWNA, SWP_SHOWWINDOW,
-    SetCursor, SetForegroundWindow, SetWindowPos, ShowWindow, WM_ACTIVATE, WM_ACTIVATEAPP,
-    WM_CAPTURECHANGED, WM_CLOSE, WM_COMMAND, WM_CTLCOLOREDIT, WM_DESTROY, WM_DISPLAYCHANGE,
-    WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
-    WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR, WNDCLASSEXW, WS_CLIPCHILDREN, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_POPUP,
+    MSG, PM_REMOVE, PeekMessageW, PostMessageW, PostQuitMessage, RegisterClassExW, SW_SHOWNA,
+    SWP_SHOWWINDOW, SetCursor, SetForegroundWindow, SetWindowPos, ShowWindow, WM_ACTIVATE,
+    WM_ACTIVATEAPP, WM_CAPTURECHANGED, WM_CLOSE, WM_COMMAND, WM_CTLCOLOREDIT, WM_DESTROY,
+    WM_DISPLAYCHANGE, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    WM_MOUSEMOVE, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR, WNDCLASSEXW, WS_CLIPCHILDREN,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 use windows::core::{Error, w};
 
@@ -179,6 +179,18 @@ pub fn active() -> bool {
 
 fn with<R>(f: impl FnOnce(&mut State) -> R) -> Option<R> {
     OVERLAY.with(|c| c.try_borrow_mut().ok().and_then(|mut s| s.as_mut().map(f)))
+}
+
+/// The screen recording's picker: the frozen screen with a screen, a window
+/// or an area to choose, and the Mic and PC audio toggles starting at `mic`
+/// and `system`. The answer goes to `owner` as `WM_APP_SCREEN_PICK`.
+// Until the picker is built (Task 11) it answers at once that nothing was
+// picked.
+pub fn start_rec_pick(owner: isize, _mic: bool, _system: bool) {
+    let owner = HWND(owner as *mut core::ffi::c_void);
+    unsafe {
+        let _ = PostMessageW(Some(owner), super::WM_APP_SCREEN_PICK, WPARAM(0), LPARAM(0));
+    }
 }
 
 /// Freezes the real screen and puts the overlay up. Ignored while one is

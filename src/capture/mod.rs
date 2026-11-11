@@ -17,6 +17,13 @@ pub mod win;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use windows::Win32::UI::WindowsAndMessaging::WM_APP;
+
+/// The screen recording's picker answers the island: what was picked, or
+/// nothing when it was cancelled. Here so the overlay and the island share
+/// it.
+pub const WM_APP_SCREEN_PICK: u32 = WM_APP + 90;
+
 /// "Setelah capture" = inline, as `App` last saw it in the config (the
 /// editor window by default). The overlay latches it when a capture starts.
 static AFTER_CAPTURE_INLINE: AtomicBool = AtomicBool::new(false);
