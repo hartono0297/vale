@@ -9361,6 +9361,16 @@ unsafe extern "system" fn wnd_proc(
             }
             LRESULT(0)
         }
+        crate::screenrec::wheel::WM_APP_ZOOM_WHEEL => {
+            let steps = wparam.0 as isize;
+            let dir = steps.signum() as i32;
+            with_app(|app| {
+                for _ in 0..steps.unsigned_abs() {
+                    app.screen_zoom_step(dir);
+                }
+            });
+            LRESULT(0)
+        }
         WM_APP_REC_DEVICE => {
             let source = if wparam.0 == 0 {
                 crate::recorder::Source::Mic

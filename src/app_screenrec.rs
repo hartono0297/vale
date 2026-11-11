@@ -53,6 +53,7 @@ use crate::screenrec::files::{existing_files, files_of, part_of, unique_stem};
 use crate::screenrec::session::{CursorEffects, PauseWhy, ScreenClock, ScreenPause, options_for};
 use crate::screenrec::thumb::{grab, thumb_at};
 use crate::screenrec::watch::WindowWatch;
+use crate::screenrec::wheel::WheelHook;
 use crate::screenrec::zoom::ZoomState;
 use crate::screenrec::{EndReason, Error, ScreenRecorder, Summary, Target};
 use crate::shortcuts;
@@ -147,6 +148,8 @@ pub(super) struct ScreenState {
     /// The island's mirror of the video's zoom: on or off, and the level.
     /// A new recording starts unzoomed at 2x.
     zoom: ZoomState,
+    /// Ctrl+Alt+wheel changes the level; exists only while the video is zoomed.
+    wheel: Option<WheelHook>,
     /// The last scan of the video folder as it came (the marks of the queue
     /// go over a copy of it).
     pub(super) videos: Vec<RecEntry>,
@@ -182,6 +185,7 @@ impl Default for ScreenState {
             ended: false,
             next_thumb: 0,
             zoom: ZoomState::default(),
+            wheel: None,
             videos: Vec::new(),
             page_shown: false,
             starting: None,
@@ -658,6 +662,7 @@ impl App {
         self.screen.recorder = None;
         self.screen.audio = None;
         self.screen.watch = None;
+        self.screen.wheel = None;
         self.screen.excluder = None;
         self.screen.picked = None;
         self.screen.path = None;
@@ -948,8 +953,9 @@ impl App {
             return;
         };
         let audio = self.screen.audio.take();
-        // Nothing is left to pause.
+        // Nothing is left to pause or to zoom.
         self.screen.watch = None;
+        self.screen.wheel = None;
         tray::set_screen_recording(self.hwnd, false);
         tray::set_mic_muted(false);
         self.apply_now(Event::RecStatus(None));
@@ -1074,12 +1080,16 @@ impl App {
         };
         recorder.toggle_zoom();
         self.screen.zoom.toggle();
+        if self.screen.zoom.on {
+            // A `None` only loses the wheel; the zoom still works.
+            self.screen.wheel = WheelHook::start(self.hwnd);
+        } else if let Some(wheel) = self.screen.wheel.take() {
+            wheel.stop();
+        }
         self.screen_show_status();
     }
 
     /// One level up (`dir > 0`) or down, only while the video is zoomed.
-    // The mouse wheel hook of the next task calls it.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn screen_zoom_step(&mut self, dir: i32) {
         if !self.screen.recording() || !self.screen.zoom.on {
             return;
@@ -1381,6 +1391,7 @@ impl App {
         }
         // The recording thread has ended: Vale's windows are capturable again.
         self.screen.watch = None;
+        self.screen.wheel = None;
         self.screen.excluder = None;
         self.screen.picked = None;
         self.screen.path = None;

@@ -16,6 +16,7 @@ pub mod plan;
 pub mod session;
 pub mod thumb;
 pub mod watch;
+pub mod wheel;
 pub mod zoom;
 
 use std::fs::File;
