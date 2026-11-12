@@ -4085,6 +4085,7 @@ fn notifications_card(b: &mut Builder, s: &State) {
     let delete = b.t(Key::Delete);
     let delete_w = b.button_w(&[&delete], ButtonKind::Secondary);
     if s.muted.is_empty() {
+        b.divider(card, row(4));
         let rect = Rect {
             x: card.x + INSET,
             y: row(4) + 16.0,
@@ -4101,6 +4102,7 @@ fn notifications_card(b: &mut Builder, s: &State) {
     }
     for (i, name) in s.muted.iter().enumerate() {
         let y = row(4 + i);
+        b.divider(card, y);
         let item = (
             Hit::NotifMutedRemove(i),
             delete.clone(),
@@ -4280,6 +4282,7 @@ fn arrange_card(b: &mut Builder, s: &State) {
     let (edit, delete) = (b.t(Key::ArrangeEdit), b.t(Key::ArrangeDelete));
     let (edit_w, delete_w) = (b.button_w(&[&edit], ButtonKind::Secondary), b.button_w(&[&delete], ButtonKind::Secondary));
     if a.templates.is_empty() {
+        b.divider(card, row(2));
         let rect = Rect {
             x: card.x + INSET,
             y: row(2) + 16.0,
@@ -4296,6 +4299,7 @@ fn arrange_card(b: &mut Builder, s: &State) {
     }
     for (i, t) in a.templates.iter().enumerate() {
         let y = row(2 + i);
+        b.divider(card, y);
         let items = vec![
             (
                 Hit::ArrangeTemplateEdit(i),
@@ -4331,6 +4335,7 @@ fn arrange_card(b: &mut Builder, s: &State) {
     let rename = b.t(Key::ArrangeRename);
     let rename_w = b.button_w(&[&rename], ButtonKind::Secondary);
     if a.saved.is_empty() {
+        b.divider(card, head + ROW_H);
         let rect = Rect {
             x: card.x + INSET,
             y: head + ROW_H + 16.0,
@@ -4347,6 +4352,7 @@ fn arrange_card(b: &mut Builder, s: &State) {
     }
     for (i, saved) in a.saved.iter().enumerate() {
         let y = head + (i + 1) as f32 * ROW_H;
+        b.divider(card, y);
         let items = vec![
             (
                 Hit::ArrangeSavedRename(i),
@@ -12018,5 +12024,45 @@ mod tests {
                 assert_eq!(r.h, BUTTON_H, "{section:?} {:?} {field:?}", s.lang);
             }
         });
+    }
+
+    #[test]
+    fn card_lists_have_a_divider_per_row() {
+        for lang in [Lang::Id, Lang::En] {
+            for n in [0usize, 2] {
+                let mut s = susun_state(n, n);
+                s.lang = lang;
+                s.muted = (0..n).map(|i| format!("App {i}")).collect();
+                let l = layout(Section::Features, &s, &Estimate);
+                let mut rows: Vec<String> = Vec::new();
+                if n == 0 {
+                    for k in [Key::ArrangeNoTemplates, Key::ArrangeNoSaved, Key::NotifMutedNone] {
+                        rows.push(text(lang, k).to_owned());
+                    }
+                } else {
+                    rows.extend((0..n).map(|i| format!("T{i}")));
+                    rows.extend((0..n).map(|i| format!("S{i}")));
+                    rows.extend(s.muted.iter().cloned());
+                }
+                for row in rows {
+                    let t = l
+                        .texts
+                        .iter()
+                        .find(|t| t.text == row)
+                        .unwrap_or_else(|| panic!("{lang:?}: no {row:?}"));
+                    // A label-only row puts its text 16 below the row's top.
+                    let top = t.rect.y - 16.0;
+                    assert!(
+                        l.dividers.iter().any(|d| (d.y + 0.5 - top).abs() < 1.0),
+                        "{lang:?} {n}: no divider above {row:?}"
+                    );
+                }
+                // The cards keep their height in rows.
+                let susun = (1 + 1 + n.max(1) + 1 + n.max(1)) as f32 * ROW_H;
+                let notif = (7 + n.max(1)) as f32 * ROW_H;
+                assert!(l.cards.iter().any(|c| (c.h - susun).abs() < 0.01), "{lang:?} {n}");
+                assert!(l.cards.iter().any(|c| (c.h - notif).abs() < 0.01), "{lang:?} {n}");
+            }
+        }
     }
 }
