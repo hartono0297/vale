@@ -40,7 +40,7 @@ use crate::transcribe::{decode, output};
 use crate::ui::{settings, tray};
 
 /// How many recordings the Rekam page lists.
-pub(super) const RECENT_LIMIT: usize = 5;
+pub(super) const RECENT_LIMIT: usize = 8;
 /// Windows' microphone privacy page, which the mic notice's click opens.
 const MIC_SETTINGS: &str = "ms-settings:privacy-microphone";
 
@@ -67,6 +67,8 @@ pub(super) struct RecState {
     /// The last scan of the recordings folder as it came (the marks of the
     /// queue go over a copy of it, whenever they change).
     pub(super) recent: Vec<RecEntry>,
+    /// Every recording in the folder, not just the listed ones.
+    pub(super) total: usize,
     /// The device names the Rekam page shows, `[mic, system]`: the ones the
     /// recording uses, or the chosen ones (the Windows default when none)
     /// while idle. Read when the page opens and when a choice changes.
@@ -535,9 +537,9 @@ pub(super) fn scan_recent(
     limit: usize,
     skip: Option<&Path>,
     probe: &dyn Fn(&Path) -> Option<u64>,
-) -> Vec<RecEntry> {
+) -> RecScan {
     let Ok(read) = std::fs::read_dir(dir) else {
-        return Vec::new();
+        return RecScan { entries: Vec::new(), total: 0 };
     };
     // `DirEntry::metadata` is free on Windows (the listing carries it), so
     // the cost is the sort; only the newest few files are opened further.
@@ -557,13 +559,22 @@ pub(super) fn scan_recent(
         })
         .collect();
     files.sort_by_key(|f| std::cmp::Reverse(f.0));
+    let total = files.len();
     files.truncate(limit);
-    files
+    let entries = files
         .into_iter()
         .map(|(modified, path, unfinished, attributes)| {
             entry_of(&path, modified, unfinished, attributes, lang, today, probe)
         })
-        .collect()
+        .collect();
+    RecScan { entries, total }
+}
+
+/// What `scan_recent` found: the newest entries and how many files of that
+/// kind the folder holds in all (`.part` included, the skipped one not).
+pub(super) struct RecScan {
+    pub entries: Vec<RecEntry>,
+    pub total: usize,
 }
 
 /// False for a OneDrive cloud-only file: reading its length would download it.
@@ -656,6 +667,7 @@ fn entry_of(
         path: path.to_path_buf(),
         title,
         started: i18n::rec_started(lang, started, today),
+        started_at: started,
         duration: Duration::from_millis(duration_ms),
         unfinished,
         silent: recorded_silent(value.as_ref()),
@@ -1204,7 +1216,7 @@ impl App {
                     skip.as_deref(),
                     &decode::probe_duration_ms,
                 );
-                let _ = tx.send(Event::RecRecent(list));
+                let _ = tx.send(Event::RecRecent(list.entries, list.total));
                 wake();
             });
     }
@@ -1291,7 +1303,7 @@ mod tests {
             asked.borrow_mut().push(p.file_name().unwrap().to_string_lossy().into_owned());
             Some(42_000)
         };
-        let list = scan_recent(&dir, RecKind::Audio, Lang::Id, today(), 20, None, &probe);
+        let list = scan_recent(&dir, RecKind::Audio, Lang::Id, today(), 20, None, &probe).entries;
         let len = |n: &str| list.iter().find(|e| e.path.file_name().unwrap().to_string_lossy() == n).unwrap().duration;
         assert_eq!(len("bare.m4a"), Duration::from_secs(42), "no sidecar: from the audio");
         assert_eq!(len("titled-only.m4a"), Duration::from_secs(42), "a sidecar without a length");
@@ -1300,7 +1312,7 @@ mod tests {
         asked.sort();
         assert_eq!(asked, ["bare.m4a", "titled-only.m4a"], "never the sidecar's or the unfinished one");
         // A failed probe keeps the length unknown.
-        let none = scan_recent(&dir, RecKind::Audio, Lang::Id, today(), 20, None, &|_| None);
+        let none = scan_recent(&dir, RecKind::Audio, Lang::Id, today(), 20, None, &|_| None).entries;
         assert!(none.iter().find(|e| e.path.ends_with("bare.m4a")).unwrap().duration.is_zero());
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1623,13 +1635,13 @@ mod tests {
             write(&format!("filler{i}"), None);
         }
         fs::write(dir.join("notes.txt"), b"x").unwrap();
-        let list = scan_recent(&dir, RecKind::Audio, Lang::Id, today(), RECENT_LIMIT, None, &|_| None);
+        let list = scan_recent(&dir, RecKind::Audio, Lang::Id, today(), 5, None, &|_| None).entries;
         assert_eq!(list.len(), 5, "five at most: {list:?}");
         assert_eq!(list[0].title, "filler3", "newest first, no .txt");
         assert_eq!(list[0].duration, Duration::ZERO, "no sidecar: the length is unknown");
         assert!(!list[0].started.is_empty());
         assert!(!list[0].unfinished);
-        let all = scan_recent(&dir, RecKind::Audio, Lang::Id, today(), 20, None, &|_| None);
+        let all = scan_recent(&dir, RecKind::Audio, Lang::Id, today(), 20, None, &|_| None).entries;
         assert_eq!(all.len(), 7);
         let titled = all.iter().find(|e| e.path.ends_with("titled.m4a")).unwrap();
         assert_eq!(titled.title, "Sync mingguan");
@@ -1669,7 +1681,7 @@ halo
 ");
         write("sidecar", "vale.json", r#"{"v":1,"transcript":{"model":"whisper-small"}}"#);
         write("sidecar-only-title", "vale.json", r#"{"v":1,"title":"Rapat"}"#);
-        let all = scan_recent(&dir, RecKind::Audio, Lang::Id, today(), 20, None, &|_| None);
+        let all = scan_recent(&dir, RecKind::Audio, Lang::Id, today(), 20, None, &|_| None).entries;
         let mark = |stem: &str| {
             all.iter()
                 .find(|e| stem_of(&e.path) == stem)
@@ -1692,7 +1704,7 @@ halo
         std::thread::sleep(Duration::from_millis(20));
         let running = dir.join("2026-11-07 1000.m4a.part");
         fs::write(&running, b"x").unwrap();
-        let list = scan_recent(&dir, RecKind::Audio, Lang::Id, today(), RECENT_LIMIT, Some(&running), &|_| None);
+        let list = scan_recent(&dir, RecKind::Audio, Lang::Id, today(), 5, Some(&running), &|_| None).entries;
         assert_eq!(list.len(), 1, "{list:?}");
         assert_eq!(list[0].title, "2026-11-07 0900");
         assert!(list[0].unfinished);
@@ -1709,12 +1721,46 @@ halo
     }
 
     #[test]
+    fn scan_reports_the_total_beyond_the_limit() {
+        let dir = scratch("total");
+        let mut made = Vec::new();
+        for i in 0..10 {
+            let p = dir.join(format!("r{i}.m4a"));
+            fs::write(&p, b"x").unwrap();
+            made.push(p);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let scan = scan_recent(&dir, RecKind::Audio, Lang::Id, today(), 3, None, &|_| None);
+        assert_eq!(scan.entries.len(), 3);
+        assert_eq!(scan.total, 10);
+        let scan = scan_recent(&dir, RecKind::Audio, Lang::Id, today(), 3, Some(&made[4]), &|_| None);
+        assert_eq!(scan.total, 9, "the skipped file is not counted");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_entry_carries_its_start() {
+        let dir = scratch("start");
+        let want = NaiveDate::from_ymd_opt(2026, 11, 8).unwrap().and_hms_opt(1, 8, 0).unwrap();
+        let local = want.and_local_timezone(Local).unwrap();
+        fs::write(dir.join("a.m4a"), b"x").unwrap();
+        fs::write(
+            dir.join("a.vale.json"),
+            format!(r#"{{"v":1,"title":"A","started":"{}","duration_ms":1000}}"#, local.to_rfc3339()),
+        )
+        .unwrap();
+        let scan = scan_recent(&dir, RecKind::Audio, Lang::Id, today(), 5, None, &|_| None);
+        assert_eq!(scan.entries[0].started_at, want);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_missing_folder_or_a_broken_sidecar_is_not_an_error() {
-        assert!(scan_recent(Path::new(r"Z:\no\such\folder"), RecKind::Audio, Lang::Id, today(), 5, None, &|_| None).is_empty());
+        assert!(scan_recent(Path::new(r"Z:\no\such\folder"), RecKind::Audio, Lang::Id, today(), 5, None, &|_| None).entries.is_empty());
         let dir = scratch("broken");
         fs::write(dir.join("a.m4a"), b"x").unwrap();
         fs::write(dir.join("a.vale.json"), b"{not json").unwrap();
-        let list = scan_recent(&dir, RecKind::Audio, Lang::En, today(), 5, None, &|_| None);
+        let list = scan_recent(&dir, RecKind::Audio, Lang::En, today(), 5, None, &|_| None).entries;
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].title, "a");
         let _ = fs::remove_dir_all(&dir);
@@ -1727,7 +1773,7 @@ halo
             fs::write(dir.join(format!("2026-11-07 {i:04}.m4a")), b"x").unwrap();
         }
         let t0 = Instant::now();
-        let list = scan_recent(&dir, RecKind::Audio, Lang::Id, today(), RECENT_LIMIT, None, &|_| None);
+        let list = scan_recent(&dir, RecKind::Audio, Lang::Id, today(), 5, None, &|_| None).entries;
         let took = t0.elapsed();
         println!("scan of 200 files: {took:?}");
         assert_eq!(list.len(), 5);
@@ -1746,12 +1792,12 @@ halo
         }
         fs::write(dir.join("sound.m4a"), b"x").unwrap();
         fs::write(dir.join("notes.txt"), b"x").unwrap();
-        let list = scan_recent(&dir, RecKind::Screen, Lang::Id, today(), RECENT_LIMIT, None, &|_| None);
+        let list = scan_recent(&dir, RecKind::Screen, Lang::Id, today(), 5, None, &|_| None).entries;
         let titles: Vec<_> = list.iter().map(|e| e.title.as_str()).collect();
         assert_eq!(titles, ["video5", "video4", "video3", "video2", "video1"], "newest first");
         assert!(list.iter().all(|e| !e.unfinished));
         // The audio list of the same folder holds only the `.m4a`.
-        let audio = scan_recent(&dir, RecKind::Audio, Lang::Id, today(), RECENT_LIMIT, None, &|_| None);
+        let audio = scan_recent(&dir, RecKind::Audio, Lang::Id, today(), 5, None, &|_| None).entries;
         assert_eq!(audio.len(), 1, "{audio:?}");
         assert_eq!(audio[0].title, "sound");
         let _ = fs::remove_dir_all(&dir);
@@ -1766,7 +1812,7 @@ halo
         fs::write(&running, b"x").unwrap();
         // An audio `.part` is not the Layar tab's.
         fs::write(dir.join("2026-11-11 0800.m4a.part"), b"x").unwrap();
-        let list = scan_recent(&dir, RecKind::Screen, Lang::Id, today(), RECENT_LIMIT, Some(&running), &|_| None);
+        let list = scan_recent(&dir, RecKind::Screen, Lang::Id, today(), 5, Some(&running), &|_| None).entries;
         assert_eq!(list.len(), 1, "{list:?}");
         assert_eq!(list[0].title, "2026-11-11 0900");
         assert!(list[0].unfinished);
@@ -1805,7 +1851,7 @@ halo
             .unwrap();
         }
         fs::write(dir.join("bare.mp4"), b"x").unwrap();
-        let list = scan_recent(&dir, RecKind::Screen, Lang::Id, today(), RECENT_LIMIT, None, &|_| None);
+        let list = scan_recent(&dir, RecKind::Screen, Lang::Id, today(), 5, None, &|_| None).entries;
         let row = |stem: &str| {
             list.iter()
                 .find(|e| stem_of(&e.path) == stem)
@@ -1825,6 +1871,7 @@ halo
             path: PathBuf::from("a.mp4"),
             title: String::new(),
             started: String::new(),
+            started_at: chrono::NaiveDateTime::default(),
             duration: Duration::ZERO,
             unfinished,
             silent,
@@ -1870,7 +1917,7 @@ halo
             asked.set(true);
             Some(1)
         };
-        let list = scan_recent(&dir, RecKind::Screen, Lang::Id, today(), RECENT_LIMIT, None, &probe);
+        let list = scan_recent(&dir, RecKind::Screen, Lang::Id, today(), 5, None, &probe).entries;
         assert_eq!(list.len(), 1, "{list:?}");
         assert_eq!(list[0].title, "Figma");
         assert_eq!(list[0].duration, Duration::from_secs(197));

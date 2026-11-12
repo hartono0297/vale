@@ -319,6 +319,8 @@ pub struct RecEntry {
     pub title: String,
     /// "Hari ini 10:02", as the page shows it.
     pub started: String,
+    /// When it started, local time (the page groups the list by its day).
+    pub started_at: chrono::NaiveDateTime,
     pub duration: Duration,
     /// A `.m4a.part` a crash left: the page says "belum selesai" instead of
     /// a length (it still plays, and a click still shows it).
@@ -415,7 +417,7 @@ pub enum Event {
     /// while one runs.
     RecStatus(Option<RecStatus>),
     /// The newest recordings found in the folder (the page shows five).
-    RecRecent(Vec<RecEntry>),
+    RecRecent(Vec<RecEntry>, usize),
     /// The same list with the queue's transcript marks over it, put on show
     /// again after a mark changed (`App` keeps the unmarked scan apart).
     RecMarks(Vec<RecEntry>),

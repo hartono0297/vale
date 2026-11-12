@@ -1298,7 +1298,7 @@ impl App {
                     skip.as_deref(),
                     &decode::probe_duration_ms,
                 );
-                let _ = tx.send(Event::VideoRecent(list));
+                let _ = tx.send(Event::VideoRecent(list.entries));
                 wake();
             });
     }

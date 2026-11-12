@@ -598,7 +598,7 @@ impl IslandState {
                 }
                 self.rec = status;
             }
-            Event::RecRecent(list) | Event::RecMarks(list) => self.rec_recent = list,
+            Event::RecRecent(list, _) | Event::RecMarks(list) => self.rec_recent = list,
             Event::VideoRecent(list) | Event::VideoMarks(list) => self.rec_videos = list,
             Event::ScreenCountdown(n) => {
                 let begins = self.screen_countdown.is_none() && n.is_some();
@@ -8460,6 +8460,7 @@ mod tests {
             path: std::path::PathBuf::from(name),
             title: name.into(),
             started: "Hari ini 10:02".into(),
+            started_at: chrono::NaiveDateTime::default(),
             duration: Duration::from_secs(42 * 60),
             unfinished: false,
             silent: false,
@@ -8471,7 +8472,7 @@ mod tests {
     fn marks_put_on_show_again_replace_the_list() {
         let mut s = st();
         let t0 = Instant::now();
-        s.apply(Event::RecRecent(vec![rec_entry("a.m4a")]), t0);
+        s.apply(Event::RecRecent(vec![rec_entry("a.m4a")], 0), t0);
         let mut marked = rec_entry("a.m4a");
         marked.transcript = RowTranscript::Queued;
         s.apply(Event::RecMarks(vec![marked]), t0);
@@ -8563,7 +8564,7 @@ mod tests {
         let t0 = Instant::now();
         let mut s = st();
         s.apply(
-            Event::RecRecent(vec![rec_entry("a.m4a"), rec_entry("b.m4a")]),
+            Event::RecRecent(vec![rec_entry("a.m4a"), rec_entry("b.m4a")], 0),
             t0,
         );
         assert_eq!(s.rec_list().len(), 2);
@@ -8582,7 +8583,7 @@ mod tests {
             vec![Effect::RecOpenFolder]
         );
         assert!(!matches!(s.view(), View::Panel(_)), "the panel collapsed");
-        s.apply(Event::RecRecent(vec![]), t0);
+        s.apply(Event::RecRecent(vec![], 0), t0);
         assert!(s.rec_list().is_empty());
     }
 
@@ -10665,7 +10666,7 @@ mod tests {
         ];
         for (mark, want, stays) in table {
             let mut s = st();
-            s.apply(Event::RecRecent(vec![row(mark)]), t0);
+            s.apply(Event::RecRecent(vec![row(mark)], 0), t0);
             // Not on the page: nothing.
             assert_eq!(s.apply(Event::Click(Hit::RecTranscript(0)), t0), vec![], "{mark:?} off page");
             open_on(&mut s, Page::Record, t0);
@@ -10988,7 +10989,7 @@ mod tests {
     fn rows_act_on_the_shown_list() {
         let t0 = Instant::now();
         let mut s = st();
-        s.apply(Event::RecRecent(vec![rec_entry("a.m4a")]), t0);
+        s.apply(Event::RecRecent(vec![rec_entry("a.m4a")], 0), t0);
         s.apply(Event::VideoRecent(vec![rec_entry(VIDEO_FILE)]), t0);
         assert_eq!(s.rec_list(), [rec_entry("a.m4a")], "the Audio tab's list");
         open_on(&mut s, Page::Record, t0);
@@ -11014,7 +11015,7 @@ mod tests {
         );
         // The audio list was not touched.
         let mut s = st();
-        s.apply(Event::RecRecent(vec![rec_entry("a.m4a")]), t0);
+        s.apply(Event::RecRecent(vec![rec_entry("a.m4a")], 0), t0);
         s.apply(Event::VideoRecent(vec![rec_entry(VIDEO_FILE)]), t0);
         open_on(&mut s, Page::Record, t0);
         assert_eq!(

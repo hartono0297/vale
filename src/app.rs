@@ -1590,9 +1590,10 @@ impl App {
                     continue;
                 }
                 // The scan knows only what is on disk; the queue's marks go over it.
-                Event::RecRecent(list) => {
+                Event::RecRecent(list, total) => {
                     self.rec.recent = list.clone();
-                    Event::RecRecent(self.transcribe_marks(list))
+                    self.rec.total = total;
+                    Event::RecRecent(self.transcribe_marks(list), total)
                 }
                 Event::VideoRecent(list) => {
                     self.screen.videos = list.clone();
@@ -11524,6 +11525,7 @@ mod tests {
             path: PathBuf::from(name),
             title: name.into(),
             started: String::new(),
+            started_at: chrono::NaiveDateTime::default(),
             duration: Duration::from_secs(60),
             unfinished: false,
             silent: false,
@@ -11532,7 +11534,7 @@ mod tests {
         let t0 = Instant::now();
         let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 11).unwrap();
         let mut s = IslandState::new(today, Default::default());
-        s.apply(Event::RecRecent(vec![entry("a.m4a"), entry("b.m4a")]), t0);
+        s.apply(Event::RecRecent(vec![entry("a.m4a"), entry("b.m4a")], 2), t0);
         s.apply(Event::VideoRecent(vec![entry("a.mp4"), entry("b.mp4")]), t0);
         s.apply(Event::Hover(true), t0);
         let at = |p: Page| Page::ALL.iter().position(|q| *q == p).unwrap() as i32;

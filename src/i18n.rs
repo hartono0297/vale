@@ -1812,6 +1812,14 @@ pub fn rec_started(lang: Lang, at: chrono::NaiveDateTime, today: NaiveDate) -> S
     }
 }
 
+/// A day heading in the Rekam list: "Hari ini", "Kemarin", else "8 Nov".
+pub fn rec_day_label(lang: Lang, day: NaiveDate, today: NaiveDate) -> String {
+    match near(day, today) {
+        Some(n @ (Near::Today | Near::Yesterday)) => near_word(lang, n, true).to_string(),
+        _ => short_date(lang, day),
+    }
+}
+
 /// The line under a recording on the Rekam page: "Hari ini 10:02 · 42 mnt",
 /// or "· belum selesai" for a `.part` a crash left.
 pub fn rec_entry_sub(lang: Lang, started: &str, d: std::time::Duration, unfinished: bool) -> String {
@@ -3679,6 +3687,26 @@ mod tests {
         assert_eq!(search_folder_items(Lang::En, 999), "999 items");
         assert_eq!(search_folder_items(Lang::En, 1000), "999+ items");
         assert_eq!(search_folder_items(Lang::Id, 5000), "999+ item");
+    }
+
+    #[test]
+    fn a_day_label_reads_today_yesterday_or_the_date() {
+        let d = |m, d| NaiveDate::from_ymd_opt(2026, m, d).unwrap();
+        let today = d(11, 8);
+        for (lang, want) in [
+            (Lang::Id, ["Hari ini", "Kemarin", "7 Nov"]),
+            (Lang::En, ["Today", "Yesterday", "7 Nov"]),
+        ] {
+            let got = [
+                rec_day_label(lang, d(11, 8), today),
+                rec_day_label(lang, d(11, 7), today),
+                rec_day_label(lang, d(11, 7), d(11, 9)),
+            ];
+            assert_eq!(got, want.map(String::from), "{lang:?}");
+            for g in &got {
+                assert_no_leak(lang, "rec_day_label", g);
+            }
+        }
     }
 
     #[test]
