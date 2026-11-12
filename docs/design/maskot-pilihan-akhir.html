@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Maskot: sisa pilihan</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&display=swap" rel="stylesheet">
+<style>
+  /* Cream paper like Vale's design sheets; the mascots sit on the notch's surfaces. */
+  :root {
+    --paper: #F4EDE4; --card: #FFFBF5; --ink: #231C18; --ink-2: #5E5045;
+    --line: #D9CBBB; --edge: #8C7B6C; --pick: #A8451F; --notch: #17120F; --notch-text: #F4EDE4;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--paper); color: var(--ink); font: 16px/1.5 "DM Sans", system-ui, sans-serif; }
+  main { max-width: 1160px; margin: 0 auto; padding: 32px 16px 80px; }
+  h1 { font-size: 34px; line-height: 1.15; margin: 0 0 8px; letter-spacing: -0.01em; }
+  h2 { font-size: 22px; margin: 48px 0 4px; }
+  p { margin: 0 0 12px; max-width: 72ch; }
+  .lead { color: var(--ink-2); font-size: 17px; }
+  .muted { color: var(--ink-2); }
+  small { font-size: 14px; }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  button:focus-visible { outline: 3px solid var(--ink); outline-offset: 3px; }
+
+  .pick { text-align: left; border: 2px solid var(--edge); border-radius: 14px; background: var(--card); padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .pick[aria-pressed="true"] { border-color: var(--pick); box-shadow: inset 0 0 0 1px var(--pick); }
+  .pickmark { font-size: 14px; font-weight: 500; color: var(--pick); }
+  .pick[aria-pressed="false"] .pickmark::after { content: "Klik untuk pilih"; color: var(--ink-2); }
+  .pick[aria-pressed="true"] .pickmark::after { content: "Dipilih"; }
+  .name { font-weight: 700; font-size: 17px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin-top: 16px; }
+  .tiles { display: flex; gap: 8px; flex-wrap: wrap; }
+  .tile { background: var(--notch); border-radius: 10px; width: 96px; height: 96px; display: inline-grid; place-items: center; }
+  .tile svg { width: 80px; height: 80px; overflow: visible; }
+  .tile-cap { font-size: 13px; color: var(--ink-2); text-align: center; margin-top: 2px; }
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .stage { background: var(--notch); border-radius: 10px; display: grid; place-items: center; padding: 4px 0; }
+  .stage svg { width: 100%; max-width: 180px; height: auto; display: block; overflow: visible; }
+  .cap { font-size: 13px; font-weight: 500; text-align: center; margin-top: 4px; }
+  .coats { display: flex; flex-wrap: wrap; gap: 12px; }
+  .coat { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  .coat .tile { width: 104px; height: 104px; }
+  .coat .tile svg { width: 86px; height: 86px; }
+  .coat .n { font-size: 14px; font-weight: 500; }
+  .coat .s { font-size: 12px; color: var(--ink-2); }
+  .notch { color: var(--notch-text); width: 180px; height: 30px; border-radius: 0 0 13px 13px;
+    display: flex; align-items: center; justify-content: center; gap: 9px; font-size: 13px; font-weight: 500; font-variant-numeric: tabular-nums; }
+  .notch svg { width: 26px; height: 26px; overflow: visible; }
+
+  /* the Settings sketch */
+  .win { background: #1B1613; color: #F4EDE4; border-radius: 12px; padding: 14px; font-size: 14px; }
+  .win .t { font-weight: 700; font-size: 15px; margin-bottom: 10px; }
+  .win .lbl { color: #A89A8B; margin: 10px 0 6px; font-size: 13px; }
+  .seg { display: flex; gap: 6px; flex-wrap: wrap; }
+  .seg span { display: inline-flex; align-items: center; gap: 6px; border: 1px solid #5A4D43; border-radius: 8px; padding: 4px 10px 4px 6px; }
+  .seg span.on { border-color: #E2683C; background: #2A211C; }
+  .seg svg { width: 22px; height: 22px; overflow: visible; }
+  .chip { width: 18px; height: 18px; border-radius: 50%; display: inline-block; border: 1px solid #5A4D43; }
+  .hero { background: linear-gradient(180deg, #1E2440 0%, #3A2E4A 55%, #6B4A4A 100%); border-radius: 12px; padding: 18px; color: #F4EDE4; min-height: 200px; display: grid; grid-template-columns: 1fr 120px; align-items: center; gap: 8px; }
+  .hero .h { font-size: 22px; font-weight: 700; line-height: 1.15; }
+  .hero .sub { font-size: 13px; color: #E2D8CC; margin-top: 6px; }
+  .hero svg { width: 120px; height: 120px; overflow: visible; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Sisa pilihan, dalam gambar</h1>
+  <p class="lead">Falk sekarang pakai pilihan 1 (cuma kepala, tanpa sayap, tanpa ekor). Gurita duduk tetap. Klik yang lo mau di tiap bagian, atau jawab di chat.</p>
+
+  <h2>1. Aksesoris baru</h2>
+  <p class="muted">Dipakai semua maskot, kucing juga. Boleh pilih lebih dari satu, atau tidak sama sekali.</p>
+  <div class="grid" id="acc"></div>
+
+  <h2>2. Ide gerak tambahan</h2>
+  <p class="muted">Kiri yang biasa, kanan dengan idenya. Semuanya numpang di gerak yang sudah ada, tidak ada timer baru. Halaman ini mengulang gerakannya biar kelihatan; di app jalan sekali per kejadian.</p>
+  <div class="grid" id="ideas"></div>
+
+  <h2>3. Warna bulu</h2>
+  <p class="muted">Tiap warna duduk di permukaan notch yang otomatis ngikutin (kayak kucing: Terracotta di Espresso, Calico di Sea, dan seterusnya).</p>
+  <h3 style="margin:16px 0 8px">Falk (tiga warna falk asli)</h3>
+  <div class="coats" id="falkCoats"></div>
+  <h3 style="margin:24px 0 8px">Gurita</h3>
+  <div class="grid" id="octCoats"></div>
+
+  <h2>4. Muncul di mana</h2>
+  <div class="grid" id="where"></div>
+</main>
+
+<script>
+(() => {
+  const D = '#17120F', CR = '#F4EDE4';
+  const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let uid = 0;
+  const pill = (x, y, w, h, c = D) => `<rect x="${x - w / 2}" y="${y - h / 2}" width="${w}" height="${h}" rx="${Math.min(w, h) / 2}" fill="${c}"/>`;
+  const dot = (x, y, r, c) => `<circle cx="${x}" cy="${y}" r="${r}" fill="${c}"/>`;
+  const st = (d, w = 2.4, c = D, o = 1) => `<path d="${d}" fill="none" stroke="${c}" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round" opacity="${o}"/>`;
+  const mix = (a, b, t) => {
+    const p = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+    const A = p(a), B = p(b);
+    return '#' + A.map((v, i) => Math.round(v + (B[i] - v) * t).toString(16).padStart(2, '0')).join('');
+  };
+  const svg = (vb, inner, label) => `<svg viewBox="${vb}" role="img" aria-label="${label}">${inner}</svg>`;
+
+  // surfaces (the island fills from the app)
+  const SURF = { Espresso: '#17120F', Graphite: '#221B17', Sea: '#132321', Night: '#151C2E', Plum: '#2A2140' };
+
+  const FALK_COATS = {
+    lutino: { label: 'Lutino', surf: 'Espresso', body: '#F1E4A2', face: '#F6D04A', crest: '#F6D04A', cheek: '#EC6B3A' },
+    grey:   { label: 'Abu-abu', surf: 'Night', body: '#9A959C', face: '#F2D35A', crest: '#E9CF62', cheek: '#EC6B3A' },
+    white:  { label: 'Muka putih', surf: 'Plum', body: '#9A959C', face: '#F4EFE6', crest: '#E4DED6', cheek: null },
+  };
+  const OCT_COATS = {
+    coral:  { label: 'Koral', surf: 'Espresso', col: '#E87C8E' },
+    red:    { label: 'Merah', surf: 'Graphite', col: '#D9505F' },
+    purple: { label: 'Ungu', surf: 'Night', col: '#A98BD6' },
+    blue:   { label: 'Biru laut', surf: 'Sea', col: '#5FA8C9' },
+  };
+
+  // ---------- shared face ----------
+  function eyes(state, blink) {
+    const L = 24, R = 40, Y = 40;
+    if (blink) return st(`M${L - 3.4} ${Y + 0.8}h6.8M${R - 3.4} ${Y + 0.8}h6.8`);
+    switch (state) {
+      case 'happy': return st(`M${L - 3.8} ${Y + 1.8}q3.8 -5.4 7.6 0M${R - 3.8} ${Y + 1.8}q3.8 -5.4 7.6 0`);
+      case 'alert': return dot(L, Y, 4.6, D) + dot(R, Y, 4.6, D);
+      case 'sleep': return st(`M${L - 3.6} ${Y}q3.6 3.4 7.2 0M${R - 3.6} ${Y}q3.6 3.4 7.2 0`, 2.2);
+      default: return pill(L, Y, 5.6, 10) + pill(R, Y, 5.6, 10);
+    }
+  }
+  const zz = () => st('M55 3h5l-5 5.5h5M62 -4h3.6l-3.6 4h3.6', 1.5, CR, 0.85);
+
+  // ---------- cat ----------
+  const HEAD = 'M7 50V41Q7 24 32 24Q57 24 57 41V50Q57 54 53 54H11Q7 54 7 50Z';
+  function cat() {
+    const ear = s => {
+      const pts = s < 0 ? [[9, 37], [12, 10], [27, 26]] : [[55, 37], [52, 10], [37, 26]];
+      return `<path d="M${pts[0]}L${pts[1]}L${pts[2]}Z" fill="#E2683C" stroke="#E2683C" stroke-width="5" stroke-linejoin="round"/>`;
+    };
+    return { body: ear(-1) + ear(1) + `<path d="${HEAD}" fill="#E2683C"/>`, clip: `<path d="${HEAD}"/>`, beak: '', eyeDy: 0 };
+  }
+
+  // ---------- falk (option 1: head only) ----------
+  const FALK = 'M9 43Q9 22 32 22Q55 22 55 43Q55 57 32 57Q9 57 9 43Z';
+  function feather(bx, by, tx, ty, w, bend, c) {
+    const dx = tx - bx, dy = ty - by, l = Math.hypot(dx, dy), nx = -dy / l, ny = dx / l;
+    const mx = (bx + tx) / 2 + nx * bend, my = (by + ty) / 2 + ny * bend;
+    return `<path d="M${bx} ${by}Q${mx + nx * w} ${my + ny * w} ${tx} ${ty}Q${mx - nx * w} ${my - ny * w} ${bx} ${by}Z" fill="${c}"/>`;
+  }
+  const CREST = [[28, 27, 27, 11, 2.8, -3.5], [30.5, 26, 35, 3, 3.2, -5], [33, 26, 42, 6, 3.2, -5], [35.5, 27, 46, 14, 2.6, -3.5]];
+  function falk(coat, id, crestRot = 10) {
+    const k = FALK_COATS[coat];
+    const crest = `<g transform="rotate(${crestRot} 32 27)"><ellipse cx="32" cy="26" rx="5.5" ry="4" fill="${k.crest}"/>${CREST.map(f => feather(...f, k.crest)).join('')}</g>`;
+    const face = `<ellipse cx="32" cy="33" rx="22" ry="17" fill="${k.face}" clip-path="url(#${id})"/>`;
+    const cheeks = k.cheek ? dot(15.5, 44.5, 4.4, k.cheek) + dot(48.5, 44.5, 4.4, k.cheek) : '';
+    return { body: crest + `<path d="${FALK}" fill="${k.body}"/>` + face + cheeks, clip: `<path d="${FALK}"/>`, eyeDy: 0,
+             beak: `<path d="M29.4 44.2Q32 42.4 34.6 44.2Q34.4 48.4 32 49.8Q29.6 48.4 29.4 44.2Z" fill="#D9978F"/>` };
+  }
+
+  // ---------- octopus ----------
+  const MANTLE = 'M32 9C50 9 55 25 50 37Q47 45 40 46H24Q17 45 14 37C9 25 14 9 32 9Z';
+  function octo(col, o = {}) {
+    const shade = mix(col, '#000000', 0.18), sucker = mix(col, '#FFFFFF', 0.55);
+    const arm = (sx, sy, cx, cy, ex, ey, dir, curl) => {
+      const k = curl;
+      let s = `<path d="M${sx} ${sy}Q${cx} ${cy} ${ex} ${ey}q${dir * 3.4 * k} 0.2 ${dir * 3.2 * k} ${-3.2 * k}q-0.2 ${-2.4 * k} ${-dir * 2.4 * k} ${-2.2 * k}" fill="none" stroke="${col}" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>`;
+      for (const u of [0.55, 0.8]) {
+        const x = (1 - u) ** 2 * sx + 2 * (1 - u) * u * cx + u * u * ex, y = (1 - u) ** 2 * sy + 2 * (1 - u) * u * cy + u * u * ey;
+        s += dot(x, y + 1.6, 0.85, sucker);
+      }
+      return s;
+    };
+    const L = [[19, 42, 8, 51, 3, 54], [24, 45, 15, 57, 9.5, 57.5], [29, 46, 27, 58, 21, 58.5]];
+    let arms = '';
+    [-1, 1].forEach(side => L.forEach(([sx, sy, cx, cy, ex, ey], i) => {
+      const X = v => side < 0 ? v : 64 - v;
+      let dir = side < 0 ? -1 : 1; if (i === 2) dir = -dir;
+      let _ex = X(ex), _ey = ey, curl = 1;
+      if (o.splay) { _ex += side * 2.5; _ey -= 2.5; curl = 1.3; }
+      if (o.limp) { curl = 0.4; _ey += 1; }
+      if (o.coil) { curl = 1.8; _ex = X(ex + 4); _ey = ey - 1; }
+      arms += arm(X(sx), sy, X(cx), cy, _ex, _ey, dir, curl);
+    }));
+    const spots = dot(22, 20, 2.2, shade) + dot(40, 15, 1.6, shade) + dot(45, 24, 1.3, shade);
+    return { body: arms + `<path d="${MANTLE}" fill="${col}"/>` + spots, clip: `<path d="${MANTLE}"/>`, beak: '', eyeDy: -3 };
+  }
+
+  // ---------- accessories ----------
+  const ANCH = {
+    cat:  { top: [32, 24], tie: [32, 51.5], hp: [7, 57, 41, 16] },
+    falk: { top: [32, 26], tie: [32, 52.5], hp: [9, 55, 40, 17] },
+    oct:  { top: [32, 9], tie: [32, 45.5], hp: [11, 53, 33, 3] },
+  };
+  function accessory(name, m) {
+    const a = ANCH[m], [tx, ty] = a.top;
+    if (name === 'headphone') {
+      const [x0, x1, y, top] = a.hp;
+      return st(`M${x0 + 1} ${y - 3}C${x0} ${top} ${x1} ${top} ${x1 - 1} ${y - 3}`, 2.6, CR) +
+        `<rect x="${x0 - 3}" y="${y - 6}" width="7" height="12" rx="3" fill="${CR}"/><rect x="${x0 - 1.4}" y="${y - 3.5}" width="3.8" height="7" rx="1.6" fill="#2F4A7A"/>` +
+        `<rect x="${x1 - 4}" y="${y - 6}" width="7" height="12" rx="3" fill="${CR}"/><rect x="${x1 - 2.4}" y="${y - 3.5}" width="3.8" height="7" rx="1.6" fill="#2F4A7A"/>`;
+    }
+    if (name === 'sailor') {
+      return `<path d="M${tx - 11} ${ty + 1.5}Q${tx - 12} ${ty - 8} ${tx} ${ty - 9}Q${tx + 12} ${ty - 8} ${tx + 11} ${ty + 1.5}Z" fill="#F6F1EA"/>` +
+        `<rect x="${tx - 11.2}" y="${ty - 2.4}" width="22.4" height="3.6" fill="#2F4A7A"/><rect x="${tx - 13}" y="${ty + 0.6}" width="26" height="2.4" rx="1.2" fill="#2F4A7A"/>`;
+    }
+    if (name === 'bowtie') {
+      const [x, y] = a.tie;
+      return `<path d="M${x} ${y}l-6 -3.6v7.2zM${x} ${y}l6 -3.6v7.2z" fill="#2F4A7A" stroke="#2F4A7A" stroke-width="1.2" stroke-linejoin="round"/>${dot(x, y, 1.6, '#5878AE')}`;
+    }
+    return '';
+  }
+
+  // one mascot: m = cat | falk | oct, with options
+  function draw(m, o = {}) {
+    const id = 'c' + (++uid);
+    const parts = m === 'cat' ? cat() : m === 'falk' ? falk(o.coat || 'lutino', id, o.crestRot) : octo(o.col || '#E87C8E', o);
+    const lift = o.lift || 0;
+    return `<defs><clipPath id="${id}">${parts.clip}</clipPath></defs><g transform="translate(0 ${lift})">` +
+      parts.body + `<g transform="translate(0 ${parts.eyeDy})">${eyes(o.state || 'idle', o.blink)}${parts.beak}</g>` +
+      accessory(o.acc, m) + (o.state === 'sleep' ? zz() : '') + `</g>`;
+  }
+
+  function choose(b) {
+    const on = b.getAttribute('aria-pressed') !== 'true';
+    b.setAttribute('aria-pressed', String(on));
+    if (window.brainstorm) window.brainstorm.choice(b.dataset.choice, { selected: on });
+  }
+  function single(group, b) {
+    group.querySelectorAll('.pick').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    if (window.brainstorm) window.brainstorm.choice(b.dataset.choice, { selected: true });
+  }
+
+  // ---------- 1. accessories ----------
+  const accHost = document.getElementById('acc');
+  [['headphone', 'Headphone', 'Bando krem, earcup biru tua di samping kepala.'],
+   ['sailor', 'Topi pelaut', 'Topi putih dengan pita dan pinggiran biru tua. Jambul falk nongol di atasnya.'],
+   ['bowtie', 'Dasi kupu-kupu', 'Dasi biru tua kecil di bawah, di tengah dagu.']].forEach(([k, label, desc]) => {
+    const b = document.createElement('button');
+    b.className = 'pick'; b.dataset.choice = 'aksesoris-' + k; b.setAttribute('aria-pressed', 'false');
+    b.innerHTML = `<span class="name">${label}</span><div class="tiles">` +
+      ['cat', 'falk', 'oct'].map(m => `<div><span class="tile">${svg('-4 -6 72 72', draw(m, { acc: k }), m + ' ' + label)}</span><div class="tile-cap">${m === 'cat' ? 'Kucing' : m === 'falk' ? 'Falk' : 'Gurita'}</div></div>`).join('') +
+      `</div><small class="muted">${desc}</small><span class="pickmark"></span>`;
+    b.addEventListener('click', () => choose(b));
+    accHost.appendChild(b);
+  });
+  const noneAcc = document.createElement('button');
+  noneAcc.className = 'pick'; noneAcc.dataset.choice = 'aksesoris-tidak-ada'; noneAcc.setAttribute('aria-pressed', 'false');
+  noneAcc.innerHTML = `<span class="name">Tidak ada</span><small class="muted">Cukup enam aksesoris yang sudah ada: kacamata, pita, topi tidur, syal, bunga, mahkota.</small><span class="pickmark"></span>`;
+  noneAcc.addEventListener('click', () => choose(noneAcc));
+  accHost.appendChild(noneAcc);
+
+  // ---------- 2. motion ideas (live pairs) ----------
+  const IDEAS = [
+    ['flush', 'Gurita memerah saat kaget', 'Pengingat atau Claude butuh respon: badannya memerah sebentar sambil lompat, lalu balik ke warna semula.'],
+    ['hop', 'Falk lompat kecil saat selesai', 'Claude selesai atau Disalin: falk senyum dan lompat kecil sekitar 400 ms.'],
+    ['coil', 'Kaki gurita melingkar saat tidur', 'Waktu tidur, kakinya melingkar rapi, bukan lurus lemas.'],
+  ];
+  const ideaHost = document.getElementById('ideas');
+  const live = [];
+  IDEAS.forEach(([k, label, desc]) => {
+    const b = document.createElement('button');
+    b.className = 'pick'; b.dataset.choice = 'ide-' + k; b.setAttribute('aria-pressed', 'false');
+    b.innerHTML = `<span class="name">${label}</span><div class="pair">` +
+      `<div><div class="stage" data-idea="${k}" data-on="0"></div><div class="cap">Biasa</div></div>` +
+      `<div><div class="stage" data-idea="${k}" data-on="1"></div><div class="cap">Dengan ide</div></div>` +
+      `</div><small class="muted">${desc}</small><span class="pickmark"></span>`;
+    b.addEventListener('click', () => choose(b));
+    ideaHost.appendChild(b);
+    b.querySelectorAll('.stage').forEach(s => live.push(s));
+  });
+  const noneIdea = document.createElement('button');
+  noneIdea.className = 'pick'; noneIdea.dataset.choice = 'ide-tidak-ada'; noneIdea.setAttribute('aria-pressed', 'false');
+  noneIdea.innerHTML = `<span class="name">Tidak ada</span><small class="muted">Cukup gerak dasar yang sama dengan kucing.</small><span class="pickmark"></span>`;
+  noneIdea.addEventListener('click', () => choose(noneIdea));
+  ideaHost.appendChild(noneIdea);
+
+  function frameIdea(s, t) {
+    const k = s.dataset.idea, on = s.dataset.on === '1', c = t % 2200;
+    let inner;
+    if (k === 'flush') {
+      const bounce = c < 520 ? -Math.abs(Math.sin(Math.PI * c / 260)) * 4 : 0;
+      const f = on && c < 700 ? Math.sin(Math.PI * c / 700) : 0;
+      inner = draw('oct', { state: 'alert', col: mix('#E87C8E', '#D63A55', f), splay: true, lift: bounce });
+    } else if (k === 'hop') {
+      const hop = on && c < 400 ? -Math.sin(Math.PI * c / 400) * 4 : 0;
+      inner = draw('falk', { state: 'happy', lift: hop, crestRot: 2 });
+    } else {
+      inner = draw('oct', { state: 'sleep', limp: !on, coil: on, lift: 1.5 });
+    }
+    s.innerHTML = svg('-6 -8 76 72', inner, 'Contoh gerak');
+  }
+
+  // ---------- 3. coats ----------
+  const falkCoats = document.getElementById('falkCoats');
+  Object.entries(FALK_COATS).forEach(([k, c]) => {
+    falkCoats.insertAdjacentHTML('beforeend', `<div class="coat"><span class="tile" style="background:${SURF[c.surf]}">${svg('-4 -6 72 72', draw('falk', { coat: k }), 'Falk ' + c.label)}</span>` +
+      `<span class="n">${c.label}</span><span class="s">di ${c.surf}</span>` +
+      `<div class="notch" style="background:${SURF[c.surf]}">${svg('0 0 64 64', draw('falk', { coat: k }), 'ukuran asli')}<span>09.41</span></div></div>`);
+  });
+  const octCoats = document.getElementById('octCoats');
+  const four = document.createElement('button');
+  four.className = 'pick'; four.dataset.choice = 'warna-gurita-empat'; four.setAttribute('aria-pressed', 'false');
+  four.innerHTML = `<span class="name">Empat warna</span><div class="coats">` + Object.entries(OCT_COATS).map(([k, c]) =>
+    `<div class="coat"><span class="tile" style="background:${SURF[c.surf]}">${svg('-4 -6 72 72', draw('oct', { col: c.col }), 'Gurita ' + c.label)}</span><span class="n">${c.label}</span><span class="s">di ${c.surf}</span>` +
+    `<div class="notch" style="background:${SURF[c.surf]};width:104px">${svg('0 0 64 64', draw('oct', { col: c.col }), 'ukuran asli')}<span>09.41</span></div></div>`).join('') +
+    `</div><small class="muted">Jumlahnya sama dengan warna kucing. Merah sengaja lebih ke merah jambu tua biar tidak kembar dengan kucing Terracotta.</small><span class="pickmark"></span>`;
+  const one = document.createElement('button');
+  one.className = 'pick'; one.dataset.choice = 'warna-gurita-koral'; one.setAttribute('aria-pressed', 'false');
+  one.innerHTML = `<span class="name">Koral saja</span><div class="coats"><div class="coat"><span class="tile">${svg('-4 -6 72 72', draw('oct', {}), 'Gurita koral')}</span><span class="n">Koral</span><span class="s">di Espresso</span></div></div>` +
+    `<small class="muted">Satu warna, tanpa pilihan warna di Settings buat gurita.</small><span class="pickmark"></span>`;
+  [four, one].forEach(b => { b.addEventListener('click', () => single(octCoats, b)); octCoats.appendChild(b); });
+
+  // ---------- 4. where ----------
+  const where = document.getElementById('where');
+  const chipRow = `<div class="seg">` + [['cat', 'Kucing', 0], ['falk', 'Falk', 1], ['oct', 'Gurita', 0]].map(([m, l, on]) =>
+    `<span class="${on ? 'on' : ''}">${svg('-4 -6 72 72', draw(m), l)}${l}</span>`).join('') + `</div>`;
+  const coatRow = `<div class="seg">` + Object.values(FALK_COATS).map((c, i) =>
+    `<span class="${i === 0 ? 'on' : ''}"><i class="chip" style="background:${c.face}"></i>${c.label}</span>`).join('') + `</div>`;
+  const app = document.createElement('button');
+  app.className = 'pick'; app.dataset.choice = 'tempat-app'; app.setAttribute('aria-pressed', 'false');
+  app.innerHTML = `<span class="name">App saja</span>` +
+    `<div class="win"><div class="t">Settings, Maskot</div><div class="lbl">Maskot di notch</div>${chipRow}<div class="lbl">Warna bulu</div>${coatRow}</div>` +
+    `<small class="muted">Halaman Settings "Kucing" jadi "Maskot": pilih kucing, falk atau gurita, lalu warna dan aksesorisnya. Logo, ikon tray dan landing page tetap kucing.</small><span class="pickmark"></span>`;
+  const site = document.createElement('button');
+  site.className = 'pick'; site.dataset.choice = 'tempat-app-dan-web'; site.setAttribute('aria-pressed', 'false');
+  site.innerHTML = `<span class="name">App dan landing page</span>` +
+    `<div class="hero"><div><div class="h">[Judul hero yang sekarang]</div><div class="sub">Sketsa hero dengan falk. Pengunjung bisa ganti maskot.</div></div>${svg('-4 -6 72 72', draw('falk'), 'Falk di hero')}</div>` +
+    `<small class="muted">Kucing di hero website (yang bisa dicolek, didrag ke notch, punya animasi sendiri) juga dibuatkan versi falk dan gurita. Ini kerjaan besar terpisah, jauh lebih banyak dari versi app saja.</small><span class="pickmark"></span>`;
+  [app, site].forEach(b => { b.addEventListener('click', () => single(where, b)); where.appendChild(b); });
+
+  // ---------- loop (only the idea pairs move) ----------
+  const t0 = performance.now();
+  function tick() {
+    const t = reduce ? 300 : performance.now() - t0;
+    live.forEach(s => frameIdea(s, t));
+    if (!reduce) requestAnimationFrame(tick);
+  }
+  tick();
+})();
+</script>
+</body>
+</html>

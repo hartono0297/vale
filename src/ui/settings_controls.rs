@@ -652,6 +652,10 @@ impl Painter<'_> {
         self.cards_and_controls(s);
         if l.viewport.is_some() {
             unsafe { self.rt.PopAxisAlignedClip() };
+            // Scrolled content fades out under the title, not cut.
+            if let Some(r) = l.top_fade() {
+                self.fade_out_down(r, self.p.bg);
+            }
             if let Some(bar) = l.scrollbar() {
                 self.fill_round(bar, FULL_RADIUS, self.p.secondary, 0.35);
             }
@@ -1535,6 +1539,43 @@ impl Painter<'_> {
                 };
                 self.icon(Icon::Ext, b.rect, EXTERNAL_GLYPH, ink, a, false);
             }
+        }
+    }
+
+    /// `r` filled with `rgb` at its top fading to nothing at its bottom.
+    /// Nothing is drawn if the brush cannot be made.
+    fn fade_out_down(&self, r: Rect, rgb: u32) {
+        let stops = [
+            // Opaque whatever the content's fade: it covers content with
+            // the background the window is cleared to.
+            D2D1_GRADIENT_STOP {
+                position: 0.0,
+                color: color(rgb, 1.0),
+            },
+            D2D1_GRADIENT_STOP {
+                position: 1.0,
+                color: color(rgb, 0.0),
+            },
+        ];
+        unsafe {
+            let Ok(stops) = self.rt.CreateGradientStopCollection(
+                &stops,
+                D2D1_GAMMA_2_2,
+                D2D1_EXTEND_MODE_CLAMP,
+            ) else {
+                return;
+            };
+            let Ok(brush) = self.rt.CreateLinearGradientBrush(
+                &D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES {
+                    startPoint: Vector2::new(r.x, r.y),
+                    endPoint: Vector2::new(r.x, r.bottom()),
+                },
+                None,
+                &stops,
+            ) else {
+                return;
+            };
+            self.rt.FillRectangle(&d2d_rect(r), &brush);
         }
     }
 

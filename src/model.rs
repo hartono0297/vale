@@ -197,12 +197,10 @@ pub enum NoticeKind {
     /// (`Effect::RecMicSettings`).
     RecMicDenied,
     /// Windows refused to write in the recordings folder `dir` (Controlled
-    /// folder access). A click opens the folder picker: the video folder's
-    /// with `video` (`Effect::VideoPickFolder`), else the audio folder's
+    /// folder access). A click opens the recordings folder picker
     /// (`Effect::RecPickFolder`).
     RecFolderBlocked {
         dir: PathBuf,
-        video: bool,
     },
     /// A short word about a recording: the one-time "ask everyone first" and
     /// a source that dropped out. A click dismisses.
@@ -1074,8 +1072,6 @@ pub enum Effect {
     ScreenDiscard,
     /// Open the video folder (the panel has collapsed).
     VideoOpenFolder,
-    /// The blocked video folder's click: the video folder picker.
-    VideoPickFolder,
     /// Susun, as the hits of the same names.
     ArrangeMonitor(usize),
     ArrangeCard(usize),

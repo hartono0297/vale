@@ -1188,8 +1188,8 @@ mod tests {
             video_folder: Some(PathBuf::from(r"D:\Video")),
             ..RecordingPrefs::default()
         };
-        assert_eq!(pick_start(RecKind::Audio, &prefs), PathBuf::from(r"D:\Rekaman"));
-        assert_eq!(pick_start(RecKind::Screen, &prefs), PathBuf::from(r"D:\Video"));
+        assert_eq!(pick_start(RecKind::Audio, &prefs), PathBuf::from(r"D:\Rekaman\Audio"));
+        assert_eq!(pick_start(RecKind::Screen, &prefs), PathBuf::from(r"D:\Rekaman\Video"));
         // Unset, each is its own default folder.
         let unset = RecordingPrefs::default();
         assert_eq!(pick_start(RecKind::Audio, &unset), unset.dir());

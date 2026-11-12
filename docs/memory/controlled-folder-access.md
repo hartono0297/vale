@@ -17,14 +17,14 @@ the allow list (admin only, a security setting).
   `recorder::refused` reads not-found on an existing drive as blocked.
 - **What recording does** ([[recording-audio]]): the `rec-start` thread
   probes the folder (create it, create and delete a probe file). When refused
-  it records into `%USERPROFILE%\Vale\Rekaman` (`prefs::fallback_folder`; the
-  profile folder itself is never guarded by default). The default folder then
-  moves there for good (config `recording.folder`), a folder the user picked
-  stays theirs, and a notice says "Windows melindungi folder rekaman · Disimpan
-  ke <user>\Vale\Rekaman · ganti di Pengaturan". Only when the fallback is
-  refused too does the start fail with the blocked-folder notice (click opens
-  the folder picker).
-- **Screen recording (track C) must do the same** for `Videos\Vale`.
+  it records into `%USERPROFILE%\Vale\Rekaman\Audio` (the fallback root is
+  `prefs::fallback_folder`; the profile folder itself is never guarded by
+  default). The default root then moves there for good (config
+  `recording.folder`), a folder the user picked stays theirs, and a notice says
+  where the recording went. Only when the fallback is refused too does the
+  start fail with the blocked-folder notice (click opens the folder picker).
+- **Screen recording does the same** into `...\Vale\Rekaman\Video`; since
+  2026-11-13 both kinds share one root ([[recording-folders]]).
 - Owner fix on one PC: Windows Security → Ransomware protection → Allow an app
   through Controlled folder access → add `vale.exe` (by path; a dev build in
   `target\release` needs its own entry).

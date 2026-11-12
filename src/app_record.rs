@@ -33,6 +33,10 @@ use crate::model::{
     RowTranscript, TranscriptOffer,
 };
 use crate::recorder::devices;
+use crate::recorder::prefs::{
+    Known, RecordingPrefs, fallback_audio_dir, fallback_folder, split_plan,
+};
+use crate::recorder::split;
 use crate::recorder::sidecar::Sidecar;
 use crate::recorder::{Failure, RecError, RecEvent, RecOptions, Recorder, Source, Sources};
 use crate::shortcuts;
@@ -264,7 +268,7 @@ pub(crate) fn no_input_notice(lang: Lang) -> Notice {
 /// an unfinished file one whose click shows the `.part`.
 pub(crate) fn failure_notice(lang: Lang, failure: &Failure, dir: &Path) -> Notice {
     let why = match failure {
-        Failure::FolderBlocked => return folder_blocked_notice(lang, dir.to_path_buf(), false),
+        Failure::FolderBlocked => return folder_blocked_notice(lang, dir.to_path_buf()),
         Failure::Unfinished { part } => {
             return notice(
                 "rec-failed",
@@ -304,21 +308,56 @@ pub(crate) fn failure_notice(lang: Lang, failure: &Failure, dir: &Path) -> Notic
     )
 }
 
-/// Windows refused to write in `dir`: a click picks another folder, the
-/// video folder's picker with `video` (a screen recording), else the audio
-/// folder's.
-pub(crate) fn folder_blocked_notice(lang: Lang, dir: PathBuf, video: bool) -> Notice {
+/// The one-time folder split on `prefs`; false when it already ran.
+pub(crate) fn split_once(prefs: &mut RecordingPrefs, known: &Known, queue: &Path) -> bool {
+    if prefs.folders_split {
+        return false;
+    }
+    let plan = split_plan(prefs.folder.as_deref(), prefs.video_folder.as_deref(), known);
+    let moved = split::apply(&plan);
+    if !moved.is_empty()
+        && let Ok(text) = std::fs::read_to_string(queue)
+        && let Some(new) = split::rewrite_queue(&text, &moved)
+        && let Err(e) = std::fs::write(queue, new)
+    {
+        eprintln!("vale: could not update the transcript queue: {e}");
+    }
+    prefs.folder = plan.root;
+    prefs.video_folder = None;
+    prefs.folders_split = true;
+    true
+}
+
+/// A recording went to `used`, not to `configured`: with no folder chosen the
+/// fallback root becomes the folder for good. True when it fell back.
+pub(crate) fn fell_back_root(
+    prefs: &mut RecordingPrefs,
+    used: &Path,
+    configured: &Path,
+    fallback_root: Option<&Path>,
+) -> bool {
+    if used == configured {
+        return false;
+    }
+    if prefs.folder.is_none() {
+        prefs.folder = fallback_root.map(Path::to_path_buf);
+    }
+    true
+}
+
+/// Windows refused to write in `dir`: a click picks another recordings folder.
+pub(crate) fn folder_blocked_notice(lang: Lang, dir: PathBuf) -> Notice {
     notice(
         "rec-folder",
         lang,
         text(lang, Key::RecFolderBlockedTitle).into(),
         text(lang, Key::RecFolderBlockedBody).into(),
-        NoticeKind::RecFolderBlocked { dir, video },
+        NoticeKind::RecFolderBlocked { dir },
     )
 }
 
 /// Windows refused the chosen folder and the recording went to `dir` (the
-/// profile folder's `Vale\Rekaman`) instead.
+/// profile folder's `Vale\Rekaman\Audio`) instead.
 pub(crate) fn fallback_notice(lang: Lang, dir: &Path) -> Notice {
     notice(
         "rec-folder",
@@ -791,8 +830,8 @@ impl App {
                 let t0 = Instant::now();
                 let mut opts = opts;
                 // Controlled folder access may guard the folder: then the
-                // profile folder's `Vale\Rekaman` takes the recording.
-                let fallback = crate::recorder::prefs::fallback_folder();
+                // profile folder's `Vale\Rekaman\Audio` takes the recording.
+                let fallback = fallback_audio_dir();
                 let writable = |d: &Path| probe_writable(d).is_ok();
                 if let Some(dir) = choose_dir(&opts.dir, fallback.as_deref(), writable) {
                     opts.dir = dir;
@@ -868,15 +907,19 @@ impl App {
     }
 
     /// The recording went to `used`, not to the configured folder (Windows
-    /// refused that one). The default folder moves there for good, so
-    /// Settings and the Rekam page show it; a folder the user picked stays
-    /// theirs. Either way a notice says where the recording goes.
+    /// refused that one). The default root moves to the fallback root for
+    /// good (audio and video both follow it), so Settings and the Rekam page
+    /// show it; a folder the user picked stays theirs. Either way a notice
+    /// says where the recording goes.
     fn rec_fell_back(&mut self, used: &Path) {
-        if used == self.config.recording.dir() {
+        let was_unset = self.config.recording.folder.is_none();
+        let configured = self.config.recording.dir();
+        let fallback_root = fallback_folder();
+        let rec = &mut self.config.recording;
+        if !fell_back_root(rec, used, &configured, fallback_root.as_deref()) {
             return;
         }
-        if self.config.recording.folder.is_none() {
-            self.config.recording.folder = Some(used.to_path_buf());
+        if was_unset && self.config.recording.folder.is_some() {
             self.save_config();
             self.sync_settings();
         }
@@ -1141,11 +1184,12 @@ impl App {
         self.refresh(Instant::now());
     }
 
-    /// Settings' (or the picker's) folder choice. Refused while a recording
-    /// runs (Settings snaps back); a folder Windows will not let Vale write
-    /// in is not saved, and the blocked notice shows again.
+    /// Settings' (or the picker's) recordings root, for both audio and screen
+    /// recordings. Refused while an audio or screen recording runs (Settings
+    /// snaps back); a folder Windows will not let Vale write in is not saved,
+    /// and the blocked notice shows again.
     pub(super) fn rec_set_folder(&mut self, dir: Option<PathBuf>) {
-        if self.rec.engaged() {
+        if self.rec.engaged() || self.screen.busy() {
             self.sync_settings();
             return;
         }
@@ -1154,7 +1198,7 @@ impl App {
         {
             eprintln!("vale: recordings folder {} refused: {e}", d.display());
             let lang = self.config.language;
-            self.apply_now(Event::Notice(folder_blocked_notice(lang, d.clone(), false)));
+            self.apply_now(Event::Notice(folder_blocked_notice(lang, d.clone())));
             self.sync_settings();
             return;
         }
@@ -1163,6 +1207,18 @@ impl App {
         self.sync_settings();
         if self.rec.page_shown {
             self.rec_rescan();
+        }
+        if self.screen.page_shown {
+            self.screen_rescan();
+        }
+    }
+
+    /// Once, before the transcript queue loads: the old recordings move into
+    /// the `Audio` and `Video` subfolders of the one recordings folder.
+    pub(super) fn rec_split_folders(&mut self) {
+        let queue = self.tr.store.queue_path();
+        if split_once(&mut self.config.recording, &Known::system(), &queue) {
+            self.save_config();
         }
     }
 
@@ -1480,10 +1536,89 @@ mod tests {
         assert_eq!((en.title.as_str(), en.body.as_str()), ("Recording not saved", "No audio came in"));
     }
 
+    fn known_in(base: &Path) -> Known {
+        Known {
+            default_root: base.join("Docs"),
+            fallback_root: Some(base.join("Home")),
+            video_default: base.join("Videos"),
+            video_fallback: Some(base.join("HomeVideo")),
+        }
+    }
+
+    #[test]
+    fn split_runs_once() {
+        let base = scratch("split-once");
+        let known = known_in(&base);
+        let queue = base.join("queue.json");
+        fs::create_dir_all(&known.default_root).unwrap();
+        fs::write(known.default_root.join("a.m4a"), b"a").unwrap();
+        fs::create_dir_all(&known.video_default).unwrap();
+        fs::write(known.video_default.join("v.mp4"), b"v").unwrap();
+        let job = format!(r#"{{"jobs":[{{"audio":{:?}}}]}}"#, known.default_root.join("a.m4a"));
+        fs::write(&queue, job).unwrap();
+
+        // A config already split moves nothing.
+        let mut done = RecordingPrefs { folders_split: true, ..RecordingPrefs::default() };
+        assert!(!split_once(&mut done, &known, &queue));
+        assert!(known.default_root.join("a.m4a").is_file());
+
+        let mut prefs = RecordingPrefs::default();
+        assert!(split_once(&mut prefs, &known, &queue));
+        assert!(prefs.folders_split && prefs.folder.is_none() && prefs.video_folder.is_none());
+        assert!(known.default_root.join("Audio").join("a.m4a").is_file());
+        assert!(known.default_root.join("Video").join("v.mp4").is_file());
+        assert!(fs::read_to_string(&queue).unwrap().contains("Audio"), "the queue follows");
+
+        // A file dropped in the root later stays put on the next start.
+        fs::write(known.default_root.join("b.m4a"), b"b").unwrap();
+        assert!(!split_once(&mut prefs, &known, &queue));
+        assert!(known.default_root.join("b.m4a").is_file());
+    }
+
+    #[test]
+    fn a_picked_root_is_kept_and_stored() {
+        let base = scratch("split-root");
+        let known = known_in(&base);
+        let root = base.join("Picked");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("2026-11-12 0930.m4a"), b"a").unwrap();
+        // Not made by Vale: stays in a folder the user picked.
+        fs::write(root.join("Song.m4a"), b"s").unwrap();
+        let mut prefs = RecordingPrefs { folder: Some(root.clone()), ..RecordingPrefs::default() };
+        assert!(split_once(&mut prefs, &known, &base.join("queue.json")));
+        assert_eq!(prefs.folder, Some(root.clone()));
+        assert!(root.join("Audio").join("2026-11-12 0930.m4a").is_file());
+        assert!(root.join("Song.m4a").is_file());
+    }
+
+    #[test]
+    fn a_fallback_with_no_folder_chosen_sets_the_root() {
+        let root = PathBuf::from(r"C:\Users\a\Vale\Rekaman");
+        let mut prefs = RecordingPrefs::default();
+        let (audio, video) = (prefs.dir(), prefs.video_dir());
+        assert!(fell_back_root(&mut prefs, &root.join("Audio"), &audio, Some(&root)), "audio");
+        assert_eq!(prefs.folder, Some(root.clone()));
+        let mut prefs = RecordingPrefs::default();
+        assert!(fell_back_root(&mut prefs, &root.join("Video"), &video, Some(&root)), "video");
+        assert_eq!(prefs.folder, Some(root.clone()));
+        // The configured dir was used: nothing changes.
+        let mut prefs = RecordingPrefs::default();
+        assert!(!fell_back_root(&mut prefs, &audio, &audio, Some(&root)));
+        assert_eq!(prefs.folder, None);
+        // A folder the user picked stays theirs.
+        let mut prefs = RecordingPrefs {
+            folder: Some(PathBuf::from(r"D:\Rec")),
+            ..RecordingPrefs::default()
+        };
+        let own = prefs.dir();
+        assert!(fell_back_root(&mut prefs, &root.join("Audio"), &own, Some(&root)));
+        assert_eq!(prefs.folder, Some(PathBuf::from(r"D:\Rec")));
+    }
+
     #[test]
     fn a_blocked_folder_falls_back_to_the_profile_folder() {
-        let docs = Path::new(r"C:\Users\a\Documents\Vale\Rekaman");
-        let home = Path::new(r"C:\Users\a\Vale\Rekaman");
+        let docs = Path::new(r"C:\Users\a\Documents\Vale\Rekaman\Audio");
+        let home = Path::new(r"C:\Users\a\Vale\Rekaman\Audio");
         let all = |_: &Path| true;
         let none = |_: &Path| false;
         let only_home = |d: &Path| d == home;
@@ -1496,14 +1631,14 @@ mod tests {
 
     #[test]
     fn the_fallback_notice_names_the_folder_in_both_languages() {
-        let home = Path::new(r"C:\Users\a\Vale\Rekaman");
+        let home = Path::new(r"C:\Users\a\Vale\Rekaman\Audio");
         let n = fallback_notice(Lang::Id, home);
         assert_eq!(n.title, "Windows melindungi folder rekaman");
-        assert_eq!(n.body, "Disimpan ke a\\Vale\\Rekaman \u{b7} ganti di Pengaturan");
+        assert_eq!(n.body, "Disimpan ke Vale\\Rekaman\\Audio \u{b7} ganti di Pengaturan");
         assert_eq!(n.kind, NoticeKind::RecInfo);
         let en = fallback_notice(Lang::En, home);
         assert_eq!(en.title, "Windows protects the recordings folder");
-        assert_eq!(en.body, "Saving to a\\Vale\\Rekaman \u{b7} change it in Settings");
+        assert_eq!(en.body, "Saving to Vale\\Rekaman\\Audio \u{b7} change it in Settings");
         assert_eq!(short_dir(Path::new(r"D:\Rec")), r"D:\Rec");
     }
 
@@ -1516,11 +1651,10 @@ mod tests {
         assert_eq!(
             n.kind,
             NoticeKind::RecFolderBlocked {
-                dir: dir.to_path_buf(),
-                video: false
+                dir: dir.to_path_buf()
             }
         );
-        let en = folder_blocked_notice(Lang::En, dir.to_path_buf(), false);
+        let en = folder_blocked_notice(Lang::En, dir.to_path_buf());
         assert_eq!(
             (en.title.as_str(), en.body.as_str()),
             ("Windows blocked the recordings folder", "Click to choose another folder")

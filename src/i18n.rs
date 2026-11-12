@@ -681,6 +681,7 @@ keys! {
     RecSettingsSources => "Sumber suara", "Sound sources";
     RecSettingsSourcesDesc => "Yang ikut direkam", "What gets recorded";
     RecSettingsFolder => "Folder rekaman", "Recordings folder";
+    RecSettingsFolderSubs => "Audio & Video", "Audio & Video";
     RecSettingsOpen => "Buka", "Open";
     RecSettingsChange => "Ganti", "Change";
     RecSettingsPickTitle => "Pilih folder rekaman", "Choose the recordings folder";
@@ -689,12 +690,10 @@ keys! {
     ScreenSettingsQualityOriginal => "Asli", "Original";
     ScreenSettingsFps => "Gambar per detik", "Frames per second";
     ScreenSettingsFpsDesc => "60 lebih halus, filenya lebih besar", "60 is smoother, the files are bigger";
-    ScreenSettingsFolder => "Folder video", "Video folder";
     ScreenSettingsHighlight => "Sorot kursor", "Highlight the cursor";
     ScreenSettingsHighlightDesc => "Lingkaran kuning di kursor \u{b7} Berlaku mulai rekaman berikutnya", "A yellow disc on the cursor \u{b7} Applies from the next recording";
     ScreenSettingsRipples => "Riak klik", "Click ripples";
     ScreenSettingsRipplesDesc => "Riak melebar tiap klik \u{b7} Berlaku mulai rekaman berikutnya", "A ripple on every click \u{b7} Applies from the next recording";
-    ScreenSettingsPickTitle => "Pilih folder video", "Choose the video folder";
     RecDeviceFrom => "Suara PC dari", "PC audio from";
     RecEchoCancel => "Peredam gema mic", "Mic echo cancellation";
     RecEchoCancelDesc => "Buang suara speaker \u{b7} Berlaku mulai rekaman berikutnya", "Removes speaker sound \u{b7} Applies from the next recording";
