@@ -133,6 +133,16 @@ const EYEBROW_GAP: f32 = 8.0;
 /// title: twice the gap between two cards, so a title reads with the card
 /// under it.
 const GROUP_GAP: f32 = 24.0;
+/// Above and below a card's footnote (a static line under a divider).
+const NOTE_PAD: f32 = 12.0;
+/// Under a block that hangs below a row's text (the accessory tiles, the
+/// monitor map and its list).
+const BLOCK_PAD: f32 = 16.0;
+
+/// A footnote of `lines` description lines: `NOTE_PAD`, the lines, `NOTE_PAD`.
+fn note_h(lines: usize) -> f32 {
+    2.0 * NOTE_PAD + 16.0 + lines.saturating_sub(1) as f32 * DESC_LINE_H
+}
 /// A status chip: dot, gap, text, with this padding on each side.
 pub const CHIP_H: f32 = 20.0;
 const CHIP_PAD: f32 = 8.0;
@@ -2566,7 +2576,9 @@ pub const RADIO_H: f32 = 32.0;
 const RADIO_NOTE_H: f32 = 24.0;
 /// The radio dot's column at the left of an entry, and the padding under the list.
 const RADIO_DOT_W: f32 = 30.0;
-const MONITOR_BLOCK_PAD: f32 = 8.0;
+/// The last radio's label line (20 high, centred in `RADIO_H`) ends
+/// `BLOCK_PAD` above the block's bottom.
+const MONITOR_BLOCK_PAD: f32 = BLOCK_PAD - (RADIO_H - 20.0) / 2.0;
 
 /// The choice a click on `pick` makes, or `None` when it changes nothing: the
 /// monitor is not there, has no device path, or is the choice already.
@@ -3411,7 +3423,7 @@ pub const CAT_PREVIEW_H: f32 = 158.0;
 pub const CAT_TILE: f32 = 96.0;
 /// The tiles of the "Aksesori" row, and the gap between them.
 const ACC_TILE: f32 = 54.0;
-const ACC_ROW_H: f32 = ROW_H + ACC_TILE + 12.0;
+const ACC_ROW_H: f32 = ROW_H + ACC_TILE + BLOCK_PAD;
 
 /// Kucing: the preview, then the cards "Kucing", "Gerak" and "Sapaan". While
 /// the cat is off the rows that need it fade and take no clicks;
@@ -3531,7 +3543,7 @@ fn cat_page(b: &mut Builder, s: &State) {
     titled(b, Key::GroupGreeting);
     let line = crate::i18n::greeting_periods_line(b.lang);
     let periods = b.wrap(&line, Font::Desc, b.g.content_w - 2.0 * INSET);
-    let card = b.card(ROW_H + periods.len() as f32 * DESC_LINE_H + 14.0);
+    let card = b.card(ROW_H + note_h(periods.len()));
     let x = b.toggle_if(Hit::Greeting, b.g.right, cy(card.y), s.greeting, on);
     let desc = Some((b.t(Key::MorningGreetingDesc), Tone::Secondary));
     b.row_text(card, card.y, b.t(Key::CatGreeting), desc, false, x);
@@ -3539,7 +3551,7 @@ fn cat_page(b: &mut Builder, s: &State) {
     for (i, line) in periods.into_iter().enumerate() {
         let rect = Rect {
             x: card.x + INSET,
-            y: card.y + ROW_H + 8.0 + i as f32 * DESC_LINE_H,
+            y: card.y + ROW_H + NOTE_PAD + i as f32 * DESC_LINE_H,
             w: b.g.content_w - 2.0 * INSET,
             h: 16.0,
         };
@@ -4749,8 +4761,7 @@ fn screen_card(b: &mut Builder, s: &State) {
 /// the tray or the Rekam page, never from here.
 fn captions_card(b: &mut Builder, s: &State) {
     titled(b, Key::CapCardTitle);
-    let note_h = DESC_LINE_H + 24.0;
-    let card = b.card(3.0 * ROW_H + note_h);
+    let card = b.card(3.0 * ROW_H + note_h(1));
     let p = &s.captions;
     let switches = [
         (Hit::CaptionMic, p.mic, Key::CapMicRow, Some(Key::CapMicRowDesc)),
@@ -4766,9 +4777,9 @@ fn captions_card(b: &mut Builder, s: &State) {
     }
     let rect = Rect {
         x: card.x + INSET,
-        y: card.y + 3.0 * ROW_H + 12.0,
+        y: card.y + 3.0 * ROW_H + NOTE_PAD,
         w: card.w - 2.0 * INSET,
-        h: DESC_LINE_H + 2.0,
+        h: 16.0,
     };
     b.text(rect, b.t(Key::CapModelNote), Font::Desc, Tone::Secondary, Align::Left);
 }
@@ -12155,6 +12166,65 @@ mod tests {
                     assert!((guide.y + guide.h / 2.0 - (e.rect.y + e.rect.h / 2.0)).abs() < 0.01);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn footnotes_and_blocks_share_padding() {
+        let divider_at = |l: &Layout, y: f32| l.dividers.iter().any(|d| (d.y + 0.5 - y).abs() < 0.01);
+        for lang in [Lang::Id, Lang::En] {
+            let s = State {
+                lang,
+                robot: true,
+                scroll: 0.0,
+                monitors: three(),
+                ..states()[0].clone()
+            };
+            // Kucing: the Sapaan periods line, then the accessory tiles.
+            let l = layout(Section::Cat, &s, &Estimate);
+            let card = *l.cards.last().unwrap();
+            let lines: Vec<&Text> = l
+                .texts
+                .iter()
+                .filter(|t| inside(t.rect, card) && t.rect.y >= card.y + ROW_H)
+                .collect();
+            assert!(divider_at(&l, card.y + ROW_H), "{lang:?}");
+            assert_eq!(lines[0].rect.y, card.y + ROW_H + NOTE_PAD, "{lang:?}");
+            let last = lines.last().unwrap().rect;
+            assert_eq!(card.bottom(), last.bottom() + NOTE_PAD, "{lang:?}");
+            let tiles = l
+                .controls
+                .iter()
+                .find_map(|c| match c {
+                    Control::AccessoryTiles { items, .. } => Some(items[0].1),
+                    _ => None,
+                })
+                .expect("tiles");
+            let card = l.cards.iter().find(|c| inside(tiles, **c)).expect("its card");
+            assert_eq!(card.bottom(), tiles.bottom() + BLOCK_PAD, "{lang:?}");
+
+            // Fitur: the Live captions model note.
+            let l = layout(Section::Features, &s, &Estimate);
+            let note = text(lang, Key::CapModelNote);
+            let t = l.texts.iter().find(|t| t.text == note).expect("note").rect;
+            let card = l.cards.iter().find(|c| inside(t, **c)).expect("its card");
+            assert!(divider_at(&l, t.y - NOTE_PAD), "{lang:?}");
+            assert_eq!(card.bottom(), t.bottom() + NOTE_PAD, "{lang:?}");
+
+            // Tampilan: the monitor list ends BLOCK_PAD under the last
+            // radio's label line (20 high, centred in its row).
+            let l = layout(Section::Appearance, &s, &Estimate);
+            let last = l
+                .controls
+                .iter()
+                .filter_map(|c| match c {
+                    Control::Radio { rect, .. } => Some(*rect),
+                    _ => None,
+                })
+                .last()
+                .expect("radios");
+            let line_bottom = last.y + (RADIO_H + 20.0) / 2.0;
+            assert!(divider_at(&l, line_bottom + BLOCK_PAD), "{lang:?}");
         }
     }
 }
