@@ -37,7 +37,8 @@ Records a monitor, a window (followed when moved) or a dragged area to an
   and `WM_APP + 92` (the wheel); 71-74, 93 and 94 stay free.
 - Settings → Fitur → Rekam layar: Kualitas video (since 2026-11-12,
   `recording.video_quality`, [[recording-quality]]), 30 / 60 fps
-  (`recording.video_fps`), video folder (`recording.video_folder`). Debug:
+  (`recording.video_fps`); the folder row moved to the Rekaman card as the
+  one shared root on 2026-11-13 ([[recording-folders]]). Debug:
   `--screenrec-test <s>` with `--pause`, `--no-audio-push`, `--quality`; `--demo-snap rec`; `--demo-record` with
   `DI_REC_TAB=screen|screen-empty`, `DI_REC_LIVE=screen|screen-sure`.
 
@@ -72,9 +73,11 @@ Records a monitor, a window (followed when moved) or a dragged area to an
   on and the notice is "Video jalan tanpa suara"; a silent video gets no
   transcript job and no Transkrip pill. Sound errors that race ahead of the
   start are buffered and shown once it succeeded.
-- **Files:** `Videos\Vale\YYYY-MM-DD HHmm <window title>.mp4`, fallback
-  `%USERPROFILE%\Vale\Video` when Controlled folder access refuses it (the
-  owner's PC uses the fallback). A clash with any of the four files adds ` (2)`.
+- **Files:** `<root>\Video\YYYY-MM-DD HHmm <window title>.mp4` (root
+  `Documents\Vale\Rekaman` by default; until 2026-11-13 it was `Videos\Vale`,
+  see [[recording-folders]]), fallback `%USERPROFILE%\Vale\Rekaman\Video` when
+  Controlled folder access refuses it (the owner's PC uses the fallback). A
+  clash with any of the four files adds ` (2)`.
 - **The Rekam page** (island Palette, all surfaces dark) uses the raised track
   with a `raised_hi` segment for the Audio / Layar switch and the failed pill's
   10 % red tint for "Yakin buang?" (the 22 % wash fell to 3.80:1 on Plum);
