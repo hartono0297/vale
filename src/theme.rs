@@ -145,10 +145,29 @@ pub enum Coat {
 impl Coat {
     /// The chosen mascot's own coat.
     pub fn of(cfg: &Config) -> Coat {
-        match cfg.mascot {
-            Mascot::Cat => Coat::Cat(cfg.cat_color),
-            Mascot::Falk => Coat::Falk(cfg.falk_color),
-            Mascot::Octopus => Coat::Octopus(cfg.octopus_color),
+        Coat::from_parts(cfg.mascot, cfg.cat_color, cfg.falk_color, cfg.octopus_color)
+    }
+
+    /// `mascot`'s coat out of the three kept side by side.
+    pub fn from_parts(
+        mascot: Mascot,
+        cat: CatColor,
+        falk: FalkColor,
+        octopus: OctopusColor,
+    ) -> Coat {
+        match mascot {
+            Mascot::Cat => Coat::Cat(cat),
+            Mascot::Falk => Coat::Falk(falk),
+            Mascot::Octopus => Coat::Octopus(octopus),
+        }
+    }
+
+    /// Every coat `mascot` can have, in the order Settings shows them.
+    pub fn all_of(mascot: Mascot) -> Vec<Coat> {
+        match mascot {
+            Mascot::Cat => CatColor::ALL.iter().map(|c| Coat::Cat(*c)).collect(),
+            Mascot::Falk => FalkColor::ALL.iter().map(|c| Coat::Falk(*c)).collect(),
+            Mascot::Octopus => OctopusColor::ALL.iter().map(|c| Coat::Octopus(*c)).collect(),
         }
     }
 }
@@ -826,6 +845,26 @@ mod tests {
         let auto = island(Accent::default(), Surface::Auto);
         assert!(contrast(auto.text, auto.raised) >= 4.5);
         assert!(contrast(auto.text, auto.raised_hi) >= 4.5);
+    }
+
+    #[test]
+    fn each_mascot_has_its_own_coat() {
+        use Coat::*;
+        let (cat, falk, oct) = (CatColor::Black, FalkColor::Grey, OctopusColor::Blue);
+        assert_eq!(Coat::from_parts(Mascot::Cat, cat, falk, oct), Cat(cat));
+        assert_eq!(Coat::from_parts(Mascot::Falk, cat, falk, oct), Falk(falk));
+        assert_eq!(Coat::from_parts(Mascot::Octopus, cat, falk, oct), Octopus(oct));
+        let counts = Mascot::ALL.iter().map(|m| Coat::all_of(*m).len());
+        assert_eq!(counts.collect::<Vec<_>>(), [4, 3, 4]);
+        for m in Mascot::ALL {
+            for c in Coat::all_of(*m) {
+                let own = matches!(
+                    (m, c),
+                    (Mascot::Cat, Cat(_)) | (Mascot::Falk, Falk(_)) | (Mascot::Octopus, Octopus(_))
+                );
+                assert!(own, "{m:?} {c:?}");
+            }
+        }
     }
 
     #[test]

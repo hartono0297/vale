@@ -49,12 +49,12 @@ use super::settings_layout::{
     EXTERNAL_GLYPH, FULL_RADIUS, Field, Font, Group, HOTKEY_CAP_H, HOTKEY_CAP_PAD,
     HOTKEY_FIELD_PAD, HOTKEY_PLUS_W, Hit, LINK_GLYPH_W, Layout, MapItem, Measure, MonitorPick,
     Bar, Rect, SEGMENT_RADIUS, SLIDER_THUMB, SWATCH_RING_GAP, SWATCH_RING_W, Section, Segment, Text, Tone, WidgetTile, accent_key,
-    hotkey_caps_w, slider_x,
+    coat_hit, hotkey_caps_w, slider_x,
 };
 use crate::config::{Style, UiFont};
 use crate::i18n::{Key, Lang, text};
 use crate::theme;
-use crate::theme::{Accent, CatAccessory, CatColor, Palette, Surface, WindowPalette};
+use crate::theme::{Accent, CatAccessory, CatColor, Coat, Mascot, Palette, Surface, WindowPalette};
 
 /// The Vale logo's fixed brand colours, whatever the accent: the terracotta
 /// cat head and its ears, the espresso pill eyes.
@@ -781,15 +781,26 @@ impl Painter<'_> {
                         p.surface_swatch(*r, *surface, *surface == *selected, hover, s);
                     }
                 }
-                Control::CatSwatches {
+                Control::MascotTiles {
                     items,
                     selected,
                     enabled,
                 } => {
                     let p = self.dimmed(*enabled);
-                    for (color, r) in items {
-                        let hover = *enabled && s.hover == Some(Hit::CatColor(*color));
-                        p.cat_swatch(*r, *color, *color == *selected, hover);
+                    for (mascot, r) in items {
+                        let hover = *enabled && s.hover == Some(Hit::Mascot(*mascot));
+                        p.mascot_tile(*r, *mascot, *mascot == *selected, hover, s);
+                    }
+                }
+                Control::CoatSwatches {
+                    items,
+                    selected,
+                    enabled,
+                } => {
+                    let p = self.dimmed(*enabled);
+                    for (coat, r) in items {
+                        let hover = *enabled && s.hover == Some(coat_hit(*coat));
+                        p.coat_swatch(*r, *coat, *coat == *selected, hover);
                     }
                 }
                 Control::AccessoryTiles {
@@ -1276,7 +1287,7 @@ impl Painter<'_> {
     }
 
     /// A base-color dot: the surface itself, with a hairline so a dark fill
-    /// stands off the card. "Ikuti kucing" is the color it gives now, with a
+    /// stands off the card. "Ikuti maskot" is the color it gives now, with a
     /// small cat outline.
     fn surface_swatch(&self, r: Rect, surface: Surface, selected: bool, hover: bool, s: &Scene) {
         let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
@@ -1289,6 +1300,60 @@ impl Painter<'_> {
             let ink = theme::island(Accent::default(), shown).secondary;
             self.icon(Icon::Cat, r, 14.0, ink, 1.0, false);
         }
+    }
+
+    /// A coat dot of any mascot: the cat's as `cat_swatch`, the falk's its
+    /// face colour, the octopus's its coat.
+    fn coat_swatch(&self, r: Rect, coat: Coat, selected: bool, hover: bool) {
+        let rgb = match coat {
+            Coat::Cat(color) => return self.cat_swatch(r, color, selected, hover),
+            Coat::Falk(c) => super::mascot::falk_ink(c).face,
+            Coat::Octopus(c) => super::mascot::octopus_rgb(c),
+        };
+        let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
+        let ring = r.w / 2.0 + SWATCH_RING_GAP + SWATCH_RING_W / 2.0;
+        self.choice_ring(cx, cy, ring, selected, hover);
+        self.circle(cx, cy, r.w / 2.0, rgb, 1.0);
+        self.coat_edge(cx, cy, r.w / 2.0);
+    }
+
+    /// A coat dot's hairline. On the light card the pale coats (cream, the
+    /// falk's yellow and white faces) and the octopus's mid tones sit under
+    /// 3:1 against it, so the line is full `secondary` there (5:1).
+    fn coat_edge(&self, cx: f32, cy: f32, radius: f32) {
+        let alpha = if self.p.light { 1.0 } else { 0.35 };
+        self.ring(cx, cy, radius - 0.5, 1.0, self.p.secondary, alpha);
+    }
+
+    /// A mascot's tile: its idle face, still, in its own coat (the default
+    /// until one is picked) on the surface Auto gives that coat; the chosen
+    /// one is outlined like an accessory tile.
+    fn mascot_tile(&self, r: Rect, mascot: Mascot, selected: bool, hover: bool, s: &Scene) {
+        let coat = Coat::from_parts(mascot, s.cat.color, s.cat.falk, s.cat.octopus);
+        let fill = Surface::Auto.resolve(coat, true).rgb();
+        self.fill_round(r, CONTROL_RADIUS, fill, 1.0);
+        if selected {
+            self.set(self.p.accent, 1.0);
+            self.outline(r, CONTROL_RADIUS, 2.0);
+        } else if hover {
+            self.set(self.p.secondary, 0.7);
+            self.outline(r, CONTROL_RADIUS, 1.5);
+        } else {
+            self.stroke_round(r, CONTROL_RADIUS, self.p.border);
+        }
+        let size = 40.0;
+        let area = Rect {
+            x: r.x + (r.w - size) / 2.0,
+            y: r.y + (r.h - size) / 2.0,
+            w: size,
+            h: size,
+        };
+        let look = CatLook {
+            mascot,
+            accessory: CatAccessory::None,
+            ..s.cat
+        };
+        self.cat(area, Expr::Idle, Pose::default(), look);
     }
 
     /// A coat dot: the cat's head colour (Calico a conic of cream, orange and
@@ -1317,10 +1382,10 @@ impl Painter<'_> {
                 self.pie(cx, cy, radius, from, 360.0, rgb);
             }
         }
-        self.ring(cx, cy, radius - 0.5, 1.0, self.p.secondary, 0.35);
+        self.coat_edge(cx, cy, radius);
     }
 
-    /// An accessory's tile: the cat in the current coat wearing it, on the
+    /// An accessory's tile: the chosen mascot in its coat wearing it, on the
     /// island's own surface; the chosen one is outlined.
     fn accessory_tile(
         &self,

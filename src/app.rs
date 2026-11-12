@@ -6535,10 +6535,27 @@ impl App {
                 self.save_config();
                 self.refresh(now);
             }
+            SettingsAction::Mascot(mascot) => {
+                // Only the choice: each mascot keeps its own coat.
+                self.config.mascot = mascot;
+                self.save_config();
+                // Another mascot, and (on Auto) the island's surface.
+                self.refresh(now);
+            }
             SettingsAction::CatColor(color) => {
                 self.config.cat_color = color;
                 self.save_config();
                 // The cat and (on Auto) the island's surface change now.
+                self.draw(now);
+            }
+            SettingsAction::FalkColor(color) => {
+                self.config.falk_color = color;
+                self.save_config();
+                self.draw(now);
+            }
+            SettingsAction::OctopusColor(color) => {
+                self.config.octopus_color = color;
+                self.save_config();
                 self.draw(now);
             }
             SettingsAction::CatAccessory(accessory) => {

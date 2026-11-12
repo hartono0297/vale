@@ -178,9 +178,12 @@ pub enum Action {
     RobotMotion(Motion),
     RobotSleep(u32),
     Greeting(bool),
-    /// Settings → Kucing: the coat, the accessory, "Ikuti kursor" and
-    /// "Mengecil jadi mata".
+    /// Settings → Maskot: the mascot, each mascot's own coat, the accessory
+    /// (shared by all three), "Ikuti kursor" and "Mengecil jadi mata".
+    Mascot(Mascot),
     CatColor(CatColor),
+    FalkColor(FalkColor),
+    OctopusColor(OctopusColor),
     CatAccessory(CatAccessory),
     CatFollow(bool),
     NotchPeek(bool),
@@ -544,11 +547,23 @@ pub struct Model {
 impl Model {
     /// The chosen mascot's own coat.
     pub fn coat(&self) -> Coat {
-        match self.mascot {
-            Mascot::Cat => Coat::Cat(self.cat_color),
-            Mascot::Falk => Coat::Falk(self.falk_color),
-            Mascot::Octopus => Coat::Octopus(self.octopus_color),
+        Coat::from_parts(self.mascot, self.cat_color, self.falk_color, self.octopus_color)
+    }
+
+    /// A Maskot choice, as the owner saves it to the config: each action
+    /// sets its one field, so picking another mascot keeps every coat. False
+    /// for the other actions (the demo applies those itself).
+    #[cfg(any(test, debug_assertions))]
+    pub fn apply(&mut self, action: Action) -> bool {
+        match action {
+            Action::Mascot(v) => self.mascot = v,
+            Action::CatColor(v) => self.cat_color = v,
+            Action::FalkColor(v) => self.falk_color = v,
+            Action::OctopusColor(v) => self.octopus_color = v,
+            Action::CatAccessory(v) => self.cat_accessory = v,
+            _ => return false,
         }
+        true
     }
     pub fn from_config(cfg: &Config) -> Self {
         Model {
@@ -2586,7 +2601,10 @@ impl Settings {
                 }
             }
             Hit::Greeting => post(Action::Greeting(!m.greeting)),
+            Hit::Mascot(v) if v != m.mascot => post(Action::Mascot(v)),
             Hit::CatColor(v) if v != m.cat_color => post(Action::CatColor(v)),
+            Hit::FalkColor(v) if v != m.falk_color => post(Action::FalkColor(v)),
+            Hit::OctopusColor(v) if v != m.octopus_color => post(Action::OctopusColor(v)),
             Hit::CatAccessory(v) if v != m.cat_accessory => post(Action::CatAccessory(v)),
             Hit::CatFollow => post(Action::CatFollow(!m.cat_follow)),
             Hit::NotchPeek => post(Action::NotchPeek(!m.notch_peek)),
@@ -2977,7 +2995,10 @@ impl Settings {
             Hit::Style(_)
             | Hit::Accent(_)
             | Hit::Surface(_)
+            | Hit::Mascot(_)
             | Hit::CatColor(_)
+            | Hit::FalkColor(_)
+            | Hit::OctopusColor(_)
             | Hit::CatAccessory(_)
             | Hit::NotchFill(_)
             | Hit::UiFont(_)
@@ -4611,8 +4632,13 @@ pub fn run_demo(args: &[String]) {
             Action::RobotMotion(v) => m.robot_motion = v,
             Action::RobotSleep(v) => m.robot_sleep = v,
             Action::Greeting(v) => m.greeting = v,
-            Action::CatColor(v) => m.cat_color = v,
-            Action::CatAccessory(v) => m.cat_accessory = v,
+            Action::Mascot(_)
+            | Action::CatColor(_)
+            | Action::FalkColor(_)
+            | Action::OctopusColor(_)
+            | Action::CatAccessory(_) => {
+                m.apply(action);
+            }
             Action::CatFollow(v) => m.cat_follow = v,
             Action::NotchPeek(v) => m.notch_peek = v,
             Action::CatDance(v) => m.cat_dance = v,
@@ -4982,6 +5008,23 @@ pub fn run_demo(args: &[String]) {
 mod tests {
     use super::*;
     use crate::model::Page;
+
+    #[test]
+    fn picking_a_mascot_keeps_each_coat() {
+        let mut m = Model::from_config(&crate::config::Config::default());
+        m.apply(Action::Mascot(Mascot::Falk));
+        m.apply(Action::FalkColor(FalkColor::Grey));
+        m.apply(Action::Mascot(Mascot::Cat));
+        assert_eq!(
+            (m.cat_color, m.falk_color, m.mascot),
+            (CatColor::Terracotta, FalkColor::Grey, Mascot::Cat)
+        );
+        m.apply(Action::OctopusColor(OctopusColor::Red));
+        m.apply(Action::Mascot(Mascot::Octopus));
+        assert_eq!(m.coat(), Coat::Octopus(OctopusColor::Red));
+        m.apply(Action::Mascot(Mascot::Falk));
+        assert_eq!(m.coat(), Coat::Falk(FalkColor::Grey));
+    }
 
     #[test]
     fn the_file_filter_takes_videos() {
