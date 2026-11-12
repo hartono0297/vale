@@ -7,17 +7,22 @@
 //! redraws nothing (unless a notice shows); saves are one one-shot after a
 //! change; a busy clipboard is retried with a short one-shot.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use chrono::Local;
+use chrono::{DateTime, Local};
+use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
+use windows::Win32::System::Ole::{DROPEFFECT, DROPEFFECT_NONE};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, KillTimer, SetForegroundWindow, SetTimer,
 };
 
+use super::shelf_page::{DRAG_START_DIP, past_threshold, primary_down};
 use super::shot::ShotArrival;
-use super::{App, WM_APP_EVENT, poster};
+use super::{App, WM_APP_EVENT, client_xy, poster};
+use crate::clipboard::drag::{self, DragFiles};
 use crate::clipboard::notice::{
     NoticeCtx, NoticeGate, PREVIEW_CHARS, clip_notice_lines, clip_notice_wanted,
 };
@@ -45,6 +50,9 @@ pub(super) const TIMER_CLIP_SAVE: usize = 21;
 /// One-shot: the hotkey's panel (the Clipboard's or the Devices') was not
 /// visited; it closes.
 pub(super) const TIMER_CLIP_HOLD: usize = 22;
+/// One-shot, set only while a dragged-out temp file exists: the nearest
+/// one's time has come (`drag::KEEP` after its last drag).
+pub(super) const TIMER_CLIP_DRAG: usize = 55;
 const RETRY_MS: u32 = 60;
 const RETRIES: u8 = 4;
 const SAVE_MS: u32 = 1500;
@@ -81,6 +89,40 @@ pub(super) struct ClipState {
     pub gate: NoticeGate,
     /// The card each screenshot editor's auto-copy made (one per capture).
     pub captures: store::CaptureCards,
+    /// A left press on image card `id` at this client point: it may become
+    /// a drag out.
+    pub press: Option<(u64, i32, i32)>,
+    /// The temporary PNGs handed to drags, and when each may go.
+    pub drag_files: DragFiles,
+}
+
+/// An image card pulled off the page: the file the drag carries, and whether
+/// it is only the small preview (the original is not kept).
+pub(super) struct ClipDragOut {
+    pub path: PathBuf,
+    pub small: bool,
+    pub screenshot: bool,
+}
+
+/// The card a left press on `hit` may drag out: only an image card itself,
+/// never its buttons nor another kind of card.
+fn drag_press_target(hit: Option<&Hit>, history: &History) -> Option<u64> {
+    let Some(Hit::ClipCard(id)) = hit else {
+        return None;
+    };
+    history.get(*id)?.image().map(|_| *id)
+}
+
+/// After a drop of a card whose original is no longer kept: the same body as
+/// the copy's "Disalin", under "Ditarik".
+fn dragged_notice(screenshot: bool) -> Notice {
+    Notice {
+        key: "clip-dragged".into(),
+        source: tr(Key::ClipboardTitle).into(),
+        title: tr(Key::ClipDragged).into(),
+        body: i18n::clip_image_small(i18n::lang(), screenshot),
+        kind: NoticeKind::Copied,
+    }
 }
 
 /// What the island does with a clipboard change that an editor of ours wrote
@@ -283,6 +325,8 @@ pub(super) fn clip_notice_view<'a>(
 impl App {
     /// At startup: the saved history (when kept) and the listener.
     pub(super) fn clip_start(&mut self) {
+        // Files a crash left behind from earlier drags.
+        drag::sweep(&drag::root());
         let cfg = self.config.clipboard;
         let items = persist::start_items(&persist::path(), cfg.persist);
         self.clip.history = History::from_items(cfg.max_items, items);
@@ -322,8 +366,10 @@ impl App {
         }
     }
 
-    /// `WM_DESTROY`: the listener goes; a pending save is written now.
+    /// `WM_DESTROY`: the listener goes; a pending save is written now; the
+    /// dragged-out temp files go.
     pub(super) fn clip_shutdown(&mut self) {
+        self.clip_drag_clear_all();
         if self.clip.listening {
             win::remove_listener(self.hwnd);
             self.clip.listening = false;
@@ -510,6 +556,7 @@ impl App {
                 }
             }
             TIMER_CLIP_HOLD if self.state.hotkey_held() => self.apply_now(Event::ClipHoldEnd),
+            TIMER_CLIP_DRAG => self.clip_drag_expire(),
             _ => {}
         }
     }
@@ -532,9 +579,14 @@ impl App {
     }
 
     /// The screen locked: with "Hapus saat layar dikunci", unpinned entries
-    /// go from memory and the file. Pins stay.
+    /// go from memory and the file. Pins stay. Every dragged-out temp file
+    /// goes too.
     pub(super) fn clip_on_lock(&mut self) {
-        if self.config.clipboard.clear_on_lock && self.clip.history.clear_unpinned() {
+        if !self.config.clipboard.clear_on_lock {
+            return;
+        }
+        self.clip_drag_clear_all();
+        if self.clip.history.clear_unpinned() {
             self.clip_schedule_packing();
             self.clip.selected = None;
             self.clip.scroll = 0;
@@ -583,6 +635,7 @@ impl App {
                     self.clip_schedule_packing();
                     self.clamp_clip_scroll();
                     self.schedule_clip_save();
+                    self.clip_drag_forget_missing();
                 }
             }
         }
@@ -618,6 +671,145 @@ impl App {
         self.clip.scroll = 0;
         self.schedule_clip_save();
         Some(Event::Notice(notice))
+    }
+
+    /// A left press: on an image card it may become a drag out.
+    pub(super) fn clip_press(&mut self, hit: Option<&Hit>, lparam: LPARAM) {
+        self.clip.press = drag_press_target(hit, &self.clip.history).map(|id| {
+            let (x, y) = client_xy(lparam);
+            (id, x, y)
+        });
+    }
+
+    pub(super) fn clip_release(&mut self) {
+        self.clip.press = None;
+    }
+
+    /// The pointer moved with an image card pressed: past `DRAG_START_DIP`
+    /// with the primary button still down and the Clipboard page open, it is
+    /// a drag out, and the temporary PNG to carry comes back (the caller
+    /// starts `DoDragDrop` outside the app borrow). The click that would have
+    /// copied the card is dropped. The history does not change: no bump, no
+    /// original kept from the unpack, nothing saved.
+    pub(super) fn clip_drag_start(
+        &mut self,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> Option<ClipDragOut> {
+        let (id, x0, y0) = self.clip.press?;
+        if !primary_down(wparam) || self.state.view() != View::Panel(Page::Clipboard) {
+            self.clip.press = None;
+            return None;
+        }
+        let min = DRAG_START_DIP * self.gesture_scale();
+        if !past_threshold((x0, y0), client_xy(lparam), min) {
+            return None;
+        }
+        self.clip.press = None;
+        self.click.clear();
+        let clip = self.clip.history.get(id)?;
+        let img = clip.image()?;
+        let (small, screenshot) = (!img.has_original(), img.screenshot);
+        let kept = self.clip.drag_files.path(id).map(PathBuf::from);
+        let path = match kept {
+            // Dragged again within `KEEP`: the same file, no new encode.
+            Some(p) if p.exists() => p,
+            other => {
+                // A kept entry whose file went is written again in its place.
+                let path = other.unwrap_or_else(|| {
+                    let lang = i18n::lang();
+                    let what = if screenshot {
+                        "Screenshot"
+                    } else {
+                        i18n::text(lang, Key::ClipKindImage)
+                    };
+                    let at = DateTime::from_timestamp(clip.at, 0)
+                        .map(|t| t.with_timezone(&Local).naive_local())
+                        .unwrap_or_else(|| Local::now().naive_local());
+                    drag::card_path(&drag::root(), id, &drag::file_name(what, at))
+                });
+                // The picture as a paste would give it: the original (packed
+                // ones decoded here, on the UI thread), else the thumbnail.
+                let (_, dib) = win::formats_for(clip, false).pop()?;
+                if !drag::write_png(&dib, &path) {
+                    return None;
+                }
+                path
+            }
+        };
+        let now = Instant::now();
+        self.clip.drag_files.touch(id, path.clone(), now);
+        self.arm_clip_drag_timer(now);
+        Some(ClipDragOut {
+            path,
+            small,
+            screenshot,
+        })
+    }
+
+    /// `DoDragDrop` returned (`effect` is what it reported, `None` when the
+    /// drag never started): the shelf's after-drag rules, and a small
+    /// preview that was dropped somewhere says so, as its copy would.
+    pub(super) fn clip_after_drag_out(&mut self, out: &ClipDragOut, effect: Option<DROPEFFECT>) {
+        self.clip.press = None;
+        self.drag_out_ended();
+        if out.small && effect.is_some_and(|e| e != DROPEFFECT_NONE) {
+            self.apply_now(Event::Notice(dragged_notice(out.screenshot)));
+        }
+    }
+
+    /// `TIMER_CLIP_DRAG`: the files whose time has come go.
+    pub(super) fn clip_drag_expire(&mut self) {
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), TIMER_CLIP_DRAG);
+        }
+        let now = Instant::now();
+        let due = self.clip.drag_files.expire(now);
+        self.clip_drag_remove(due, now);
+    }
+
+    /// Cards that left the history (a delete, "Hapus riwayat") take their
+    /// temp files with them.
+    pub(super) fn clip_drag_forget_missing(&mut self) {
+        if self.clip.drag_files.is_empty() {
+            return;
+        }
+        let live: Vec<u64> = self.clip.history.items().iter().map(|c| c.id).collect();
+        let gone = self.clip.drag_files.retain_ids(&live);
+        self.clip_drag_remove(gone, Instant::now());
+    }
+
+    /// Every temp file goes (exit, the lock with "Hapus saat layar dikunci").
+    pub(super) fn clip_drag_clear_all(&mut self) {
+        let all = self.clip.drag_files.take_all();
+        self.clip_drag_remove(all, Instant::now());
+    }
+
+    /// Removes `files`; one still in use is tried again after `drag::RETRY`.
+    /// The timer then follows what is left.
+    fn clip_drag_remove(&mut self, files: Vec<(u64, PathBuf)>, now: Instant) {
+        for (id, path) in files {
+            if !drag::remove(&path) {
+                self.clip.drag_files.retry(id, path, now);
+            }
+        }
+        self.arm_clip_drag_timer(now);
+    }
+
+    /// One one-shot for the nearest deadline while any file is kept; none
+    /// once there is nothing left.
+    fn arm_clip_drag_timer(&mut self, now: Instant) {
+        unsafe {
+            match self.clip.drag_files.next_due(now) {
+                Some(wait) => {
+                    let ms = u32::try_from(wait.as_millis()).unwrap_or(u32::MAX);
+                    SetTimer(Some(self.hwnd), TIMER_CLIP_DRAG, ms, None);
+                }
+                None => {
+                    let _ = KillTimer(Some(self.hwnd), TIMER_CLIP_DRAG);
+                }
+            }
+        }
     }
 
     /// Hands the originals that are not the newest image's to one short-lived
@@ -893,6 +1085,7 @@ impl App {
                     self.clip.selected = None;
                     self.clip.scroll = 0;
                     self.write_clip_file_now();
+                    self.clip_drag_forget_missing();
                 }
                 self.redraw_clip();
                 return;
@@ -1164,6 +1357,50 @@ mod tests {
         // The same text copied normally is announced, then its repeat is held.
         let outcome = ingest(&mut h, text("hunter2"), 1);
         assert!(clip_notice_wanted(&NoticeCtx { outcome, ..ctx }));
+    }
+
+    #[test]
+    fn only_an_image_card_starts_a_drag() {
+        let mut h = History::new(50);
+        let Ingested::Added { id: t, .. } = ingest(&mut h, text("teks"), 0) else {
+            panic!("the text was not added");
+        };
+        let Ingested::Added { id: i, .. } = ingest(&mut h, image(64, 48), 1) else {
+            panic!("the image was not added");
+        };
+        assert_eq!((t, i), (1, 2));
+        assert_eq!(drag_press_target(Some(&Hit::ClipCard(2)), &h), Some(2));
+        assert_eq!(drag_press_target(Some(&Hit::ClipCard(1)), &h), None);
+        // Its buttons never start one.
+        assert_eq!(drag_press_target(Some(&Hit::ClipPin(2)), &h), None);
+        assert_eq!(drag_press_target(Some(&Hit::ClipDelete(2)), &h), None);
+        assert_eq!(drag_press_target(Some(&Hit::ClipCard(99)), &h), None);
+        assert_eq!(drag_press_target(None, &h), None);
+    }
+
+    #[test]
+    fn six_dip_starts_a_drag() {
+        use super::super::shelf_page::past_threshold;
+        assert!(!past_threshold((0, 0), (4, 4), 6.0));
+        assert!(past_threshold((0, 0), (5, 4), 6.0));
+        assert!(past_threshold((10, 10), (10, 16), 6.0));
+    }
+
+    #[test]
+    fn a_small_drag_says_so_like_the_copy() {
+        let n = dragged_notice(true);
+        assert_eq!(n.key, "clip-dragged");
+        assert_eq!(n.title, "Ditarik");
+        assert_eq!(n.source, "Clipboard");
+        assert_eq!(n.kind, NoticeKind::Copied);
+        assert_eq!(
+            n.body,
+            "Screenshot · pratinjau kecil, aslinya tidak tersimpan"
+        );
+        assert_eq!(
+            dragged_notice(false).body,
+            "Gambar · pratinjau kecil, aslinya tidak tersimpan"
+        );
     }
 
     #[test]

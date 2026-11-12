@@ -919,6 +919,8 @@ keys! {
     ClipOff => "Riwayat clipboard mati", "Clipboard history is off";
     ClipOffHint => "Nyalakan di Pengaturan → Clipboard", "Turn it on in Settings → Clipboard";
     ClipCopied => "Disalin", "Copied";
+    // An image card dragged out (only said when the small preview went).
+    ClipDragged => "Ditarik", "Dragged";
     // The copy preview (`NoticeKind::ClipPreview`): an image, files, the chip.
     ClipPreviewImage => "Gambar disalin", "Image copied";
     ClipPreviewFiles => "Berkas disalin", "Files copied";

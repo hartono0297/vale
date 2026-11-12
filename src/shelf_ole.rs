@@ -4,9 +4,10 @@
 //! reducer opens the shelf, `App` keeps the paths), and a drag out is one
 //! blocking `DoDragDrop` that `App` starts outside its borrow.
 //!
-//! Files are never moved or deleted: only copy and link are offered, and a
-//! drop answers with link (the shelf refers to the file, it does not copy
-//! it) or copy when link is not on offer.
+//! Files are never moved or deleted: only copy and link are offered (copy
+//! alone for a Clipboard card's temporary PNG), and a drop answers with link
+//! (the shelf refers to the file, it does not copy it) or copy when link is
+//! not on offer.
 
 use std::cell::Cell;
 use std::ffi::OsString;
@@ -267,28 +268,35 @@ impl IDropSource_Impl for DragSource_Impl {
     }
 }
 
+/// What a shelf card offers: copy or link (the file stays where it is).
+pub const SHELF_DRAG_EFFECTS: DROPEFFECT = DROPEFFECT(DROPEFFECT_COPY.0 | DROPEFFECT_LINK.0);
+/// What a Clipboard card's temporary PNG offers: copy only, so a folder drop
+/// makes a real file, not a shortcut to one that goes away.
+pub const CLIP_DRAG_EFFECTS: DROPEFFECT = DROPEFFECT_COPY;
+
 /// Drags `path` out of the island: the file list the shell gives for it,
-/// offered for copy or link, never move. Blocks until the button is let go
-/// (it pumps this thread's messages meanwhile), so the caller must not hold
-/// the app state. False when the drag could not start.
-pub fn drag_out(path: &Path) -> bool {
+/// offered with the `allowed` effects (never move). Blocks until the button
+/// is let go (it pumps this thread's messages meanwhile), so the caller must
+/// not hold the app state. `None` when the drag could not start, else the
+/// effect of the drop (`DROPEFFECT_NONE` when it was cancelled or refused).
+pub fn drag_out(path: &Path, allowed: DROPEFFECT) -> Option<DROPEFFECT> {
     unsafe {
         let wide = HSTRING::from(path.as_os_str());
-        let Ok(item) = SHCreateItemFromParsingName::<_, _, IShellItem>(&wide, None::<&IBindCtx>)
-        else {
-            return false;
-        };
-        let Ok(data) = item.BindToHandler::<_, IDataObject>(None::<&IBindCtx>, &BHID_DataObject)
-        else {
-            return false;
-        };
+        let item =
+            SHCreateItemFromParsingName::<_, _, IShellItem>(&wide, None::<&IBindCtx>).ok()?;
+        let data = item
+            .BindToHandler::<_, IDataObject>(None::<&IBindCtx>, &BHID_DataObject)
+            .ok()?;
         let source: IDropSource = DragSource.into();
         let mut effect = DROPEFFECT_NONE;
-        let allowed = DROPEFFECT(DROPEFFECT_COPY.0 | DROPEFFECT_LINK.0);
         let _own = OwnDrag::start();
-        let _ = DoDragDrop(&data, &source, allowed, &mut effect);
+        let done = DoDragDrop(&data, &source, allowed, &mut effect);
+        Some(if done == DRAGDROP_S_DROP {
+            effect
+        } else {
+            DROPEFFECT_NONE
+        })
     }
-    true
 }
 
 #[cfg(test)]
@@ -307,6 +315,16 @@ mod tests {
         assert_eq!(choose_effect(0), DROPEFFECT_NONE.0);
         // The scroll flag in the high bit is not an effect.
         assert_eq!(choose_effect(0x8000_0000 | mv), DROPEFFECT_NONE.0);
+    }
+
+    #[test]
+    fn the_clipboard_drag_only_copies() {
+        use windows::Win32::System::Ole::DROPEFFECT_MOVE;
+        assert_ne!(CLIP_DRAG_EFFECTS.0 & DROPEFFECT_COPY.0, 0);
+        assert_eq!(CLIP_DRAG_EFFECTS.0 & DROPEFFECT_LINK.0, 0, "no shortcut");
+        assert_eq!(CLIP_DRAG_EFFECTS.0 & DROPEFFECT_MOVE.0, 0, "no move");
+        // The shelf's own drag keeps copy or link.
+        assert_eq!(SHELF_DRAG_EFFECTS.0, DROPEFFECT_COPY.0 | DROPEFFECT_LINK.0);
     }
 
     #[test]
