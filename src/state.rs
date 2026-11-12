@@ -3042,8 +3042,8 @@ impl IslandState {
             | NoticeKind::RecFailed { reveal: Some(path) } => Some(Effect::RevealFile(path)),
             // The mic was refused: the click opens Windows' mic privacy page.
             NoticeKind::RecMicDenied => Some(Effect::RecMicSettings),
-            // The folder was refused: the click picks another one, for the
-            // kind of recording that was refused.
+            // The folder was refused: the click opens the same picker for the
+            // one recordings root, whichever kind of recording was refused.
             NoticeKind::RecFolderBlocked { .. } => Some(Effect::RecPickFolder),
             // A transcript is ready or failed: the window that holds it (it
             // says the reason). A word about settings opens its card.

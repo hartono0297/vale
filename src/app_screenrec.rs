@@ -32,8 +32,9 @@ use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUn
 use windows::Win32::UI::WindowsAndMessaging::{IsIconic, KillTimer, SetTimer, WM_APP};
 
 use super::record::{
-    self, RECENT_LIMIT, choose_dir, device_switched_notice, fallback_notice, fell_back_root, folder_blocked_notice,
-    is_recorded, mic_denied_notice, probe_writable, scan_recent, source_lost_notice,
+    self, RECENT_LIMIT, choose_dir, device_switched_notice, fallback_notice, fell_back_root,
+    folder_blocked_notice, is_recorded, mic_denied_notice, probe_writable, scan_recent,
+    source_lost_notice,
 };
 use super::{App, WM_APP_EVENT, notif_open, poster};
 use crate::capture::rec_pick::{PickTarget, Picked};
@@ -508,8 +509,8 @@ fn start_recording(
     on_end: Box<dyn Fn() + Send>,
     events: Box<dyn Fn(RecEvent) + Send>,
 ) -> Started {
-    // Controlled folder access may guard `Videos`: then the profile folder's
-    // `Vale\Video` takes the recording.
+    // Controlled folder access may guard the `Video` subfolder of the root:
+    // then the `Video` subfolder of the fallback root takes the recording.
     let fallback = fallback_video_dir();
     let writable = |d: &Path| probe_writable(d).is_ok();
     let Some(dir) = choose_dir(&job.dir, fallback.as_deref(), writable) else {
@@ -934,7 +935,9 @@ impl App {
     fn screen_fell_back(&mut self, used: &Path) {
         let was_unset = self.config.recording.folder.is_none();
         let configured = self.config.recording.video_dir();
-        if !fell_back_root(&mut self.config.recording, used, &configured, fallback_folder().as_deref()) {
+        let fallback_root = fallback_folder();
+        let rec = &mut self.config.recording;
+        if !fell_back_root(rec, used, &configured, fallback_root.as_deref()) {
             return;
         }
         if was_unset && self.config.recording.folder.is_some() {

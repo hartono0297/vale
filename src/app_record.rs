@@ -33,7 +33,9 @@ use crate::model::{
     RowTranscript, TranscriptOffer,
 };
 use crate::recorder::devices;
-use crate::recorder::prefs::{Known, RecordingPrefs, fallback_audio_dir, fallback_folder, split_plan};
+use crate::recorder::prefs::{
+    Known, RecordingPrefs, fallback_audio_dir, fallback_folder, split_plan,
+};
 use crate::recorder::split;
 use crate::recorder::sidecar::Sidecar;
 use crate::recorder::{Failure, RecError, RecEvent, RecOptions, Recorder, Source, Sources};
@@ -346,7 +348,7 @@ pub(crate) fn folder_blocked_notice(lang: Lang, dir: PathBuf) -> Notice {
 }
 
 /// Windows refused the chosen folder and the recording went to `dir` (the
-/// profile folder's `Vale\Rekaman`) instead.
+/// profile folder's `Vale\Rekaman\Audio`) instead.
 pub(crate) fn fallback_notice(lang: Lang, dir: &Path) -> Notice {
     notice(
         "rec-folder",
@@ -801,7 +803,7 @@ impl App {
                 let t0 = Instant::now();
                 let mut opts = opts;
                 // Controlled folder access may guard the folder: then the
-                // profile folder's `Vale\Rekaman` takes the recording.
+                // profile folder's `Vale\Rekaman\Audio` takes the recording.
                 let fallback = fallback_audio_dir();
                 let writable = |d: &Path| probe_writable(d).is_ok();
                 if let Some(dir) = choose_dir(&opts.dir, fallback.as_deref(), writable) {
@@ -885,7 +887,9 @@ impl App {
     fn rec_fell_back(&mut self, used: &Path) {
         let was_unset = self.config.recording.folder.is_none();
         let configured = self.config.recording.dir();
-        if !fell_back_root(&mut self.config.recording, used, &configured, fallback_folder().as_deref()) {
+        let fallback_root = fallback_folder();
+        let rec = &mut self.config.recording;
+        if !fell_back_root(rec, used, &configured, fallback_root.as_deref()) {
             return;
         }
         if was_unset && self.config.recording.folder.is_some() {
@@ -1121,9 +1125,10 @@ impl App {
         self.refresh(Instant::now());
     }
 
-    /// Settings' (or the picker's) recordings folder. Refused while an audio
-    /// or screen recording runs (Settings snaps back); a folder Windows will not let Vale write
-    /// in is not saved, and the blocked notice shows again.
+    /// Settings' (or the picker's) recordings root, for both audio and screen
+    /// recordings. Refused while an audio or screen recording runs (Settings
+    /// snaps back); a folder Windows will not let Vale write in is not saved,
+    /// and the blocked notice shows again.
     pub(super) fn rec_set_folder(&mut self, dir: Option<PathBuf>) {
         if self.rec.engaged() || self.screen.busy() {
             self.sync_settings();
@@ -1483,7 +1488,8 @@ mod tests {
         fs::write(known.default_root.join("a.m4a"), b"a").unwrap();
         fs::create_dir_all(&known.video_default).unwrap();
         fs::write(known.video_default.join("v.mp4"), b"v").unwrap();
-        fs::write(&queue, format!(r#"{{"jobs":[{{"audio":{:?}}}]}}"#, known.default_root.join("a.m4a"))).unwrap();
+        let job = format!(r#"{{"jobs":[{{"audio":{:?}}}]}}"#, known.default_root.join("a.m4a"));
+        fs::write(&queue, job).unwrap();
 
         // A config already split moves nothing.
         let mut done = RecordingPrefs { folders_split: true, ..RecordingPrefs::default() };
@@ -1509,11 +1515,14 @@ mod tests {
         let known = known_in(&base);
         let root = base.join("Picked");
         fs::create_dir_all(&root).unwrap();
-        fs::write(root.join("a.m4a"), b"a").unwrap();
+        fs::write(root.join("2026-11-12 0930.m4a"), b"a").unwrap();
+        // Not made by Vale: stays in a folder the user picked.
+        fs::write(root.join("Song.m4a"), b"s").unwrap();
         let mut prefs = RecordingPrefs { folder: Some(root.clone()), ..RecordingPrefs::default() };
         assert!(split_once(&mut prefs, &known, &base.join("queue.json")));
         assert_eq!(prefs.folder, Some(root.clone()));
-        assert!(root.join("Audio").join("a.m4a").is_file());
+        assert!(root.join("Audio").join("2026-11-12 0930.m4a").is_file());
+        assert!(root.join("Song.m4a").is_file());
     }
 
     #[test]
@@ -1531,7 +1540,10 @@ mod tests {
         assert!(!fell_back_root(&mut prefs, &audio, &audio, Some(&root)));
         assert_eq!(prefs.folder, None);
         // A folder the user picked stays theirs.
-        let mut prefs = RecordingPrefs { folder: Some(PathBuf::from(r"D:\Rec")), ..RecordingPrefs::default() };
+        let mut prefs = RecordingPrefs {
+            folder: Some(PathBuf::from(r"D:\Rec")),
+            ..RecordingPrefs::default()
+        };
         let own = prefs.dir();
         assert!(fell_back_root(&mut prefs, &root.join("Audio"), &own, Some(&root)));
         assert_eq!(prefs.folder, Some(PathBuf::from(r"D:\Rec")));

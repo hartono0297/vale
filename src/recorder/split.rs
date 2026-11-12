@@ -7,31 +7,72 @@ use std::path::{Path, PathBuf};
 use super::prefs::{Move, SplitPlan};
 
 /// Moves every recording `<stem>.<ext>` directly in `m.from` into `m.to`, with
-/// the files that share its stem (sidecar, transcript, cursor log). Returns the
-/// `(old, new)` paths of the recordings moved. A name already taken in `m.to`
-/// or a failed rename leaves that file where it is.
+/// the files that share its stem (sidecar, transcript, cursor log). An
+/// unfinished `<stem>.<ext>.part` counts as a recording too. Returns the
+/// `(old, new)` paths of the finished recordings moved (the queue never holds
+/// a `.part`). A name already taken in `m.to` or a failed rename leaves that
+/// file where it is. In a folder the user picked (`m.vale_only`) only a
+/// recording with a Vale stamp or sidecar is touched.
 pub fn move_recordings(m: &Move) -> Vec<(PathBuf, PathBuf)> {
     let Ok(entries) = std::fs::read_dir(&m.from) else {
         return Vec::new();
     };
     let suffix = format!(".{}", m.ext).to_ascii_lowercase();
+    let part_suffix = format!("{suffix}.part");
     let files: Vec<(String, PathBuf)> = entries
         .flatten()
         .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
         .filter_map(|e| Some((e.file_name().to_str()?.to_owned(), e.path())))
         .collect();
     let is_main = |name: &str| name.to_ascii_lowercase().ends_with(&suffix);
+    let part_stem = |name: &str| {
+        let lower = name.to_ascii_lowercase();
+        lower
+            .ends_with(&part_suffix)
+            .then(|| name[..name.len() - part_suffix.len()].to_owned())
+    };
+    let mut stems: Vec<String> = Vec::new();
+    for (name, _) in &files {
+        let stem = if is_main(name) {
+            name[..name.len() - suffix.len()].to_owned()
+        } else if let Some(stem) = part_stem(name) {
+            stem
+        } else {
+            continue;
+        };
+        if !stem.is_empty() && !stems.iter().any(|t| t.eq_ignore_ascii_case(&stem)) {
+            stems.push(stem);
+        }
+    }
     let mut moved = Vec::new();
-    for (name, path) in files.iter().filter(|(n, _)| is_main(n)) {
-        let stem = &name[..name.len() - suffix.len()];
-        let to = m.to.join(name);
-        if !rename_new(path, &to, &m.to) {
+    for stem in &stems {
+        let prefix = format!("{stem}.").to_ascii_lowercase();
+        let finished = format!("{stem}{suffix}").to_ascii_lowercase();
+        let main = files.iter().find(|(n, _)| n.to_ascii_lowercase() == finished);
+        let own_part = |n: &str| part_stem(n).is_some_and(|t| t.eq_ignore_ascii_case(stem));
+        let part = files.iter().find(|(n, _)| own_part(n));
+        if m.vale_only {
+            let sidecar = format!("{prefix}vale.json");
+            let has_sidecar = files.iter().any(|(n, _)| n.to_ascii_lowercase() == sidecar);
+            if !has_sidecar && !has_vale_stamp(stem) {
+                continue;
+            }
+        }
+        let Some((name, path)) = main.or(part) else {
+            continue;
+        };
+        if !rename_new(path, &m.to.join(name), &m.to) {
             continue;
         }
-        moved.push((path.clone(), to));
-        let prefix = format!("{stem}.").to_ascii_lowercase();
+        if main.is_some() {
+            moved.push((path.clone(), m.to.join(name)));
+        }
         for (cname, cpath) in &files {
-            if is_main(cname) || !cname.to_ascii_lowercase().starts_with(&prefix) {
+            // Another recording whose stem starts with this one (`a.b.m4a`
+            // next to `a.m4a`) is not a companion.
+            let other = is_main(cname) || (part_stem(cname).is_some() && !own_part(cname));
+            let shares_stem = cname.to_ascii_lowercase().starts_with(&prefix);
+            if cname == name || other || !shares_stem {
                 continue;
             }
             rename_new(cpath, &m.to.join(cname), &m.to);
@@ -40,28 +81,52 @@ pub fn move_recordings(m: &Move) -> Vec<(PathBuf, PathBuf)> {
     moved
 }
 
+/// The stem starts like `naming::file_stem`: `YYYY-MM-DD HHmm`.
+fn has_vale_stamp(stem: &str) -> bool {
+    let b = stem.as_bytes();
+    b.len() >= 15
+        && b[..15].iter().enumerate().all(|(i, c)| match i {
+            4 | 7 => *c == b'-',
+            10 => *c == b' ',
+            _ => c.is_ascii_digit(),
+        })
+        && (b.len() == 15 || b[15] == b' ')
+}
+
 /// Renames `from` to `to` inside `dir`, creating `dir` first. False when the
-/// target is taken or anything fails; the error is printed.
+/// target is taken or anything fails; the error is printed. The OS refuses to
+/// replace an existing file, so a name taken at any moment is never lost.
 fn rename_new(from: &Path, to: &Path, dir: &Path) -> bool {
-    if to.exists() {
-        eprintln!("vale: {} is taken, left in place", to.display());
-        return false;
-    }
-    let result = std::fs::create_dir_all(dir).and_then(|()| std::fs::rename(from, to));
+    let result = std::fs::create_dir_all(dir).and_then(|()| move_no_replace(from, to));
     if let Err(e) = &result {
         eprintln!("vale: could not move {}: {e}", from.display());
     }
     result.is_ok()
 }
 
+/// `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING`: it fails when `to`
+/// exists, where `std::fs::rename` would replace it.
+fn move_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::Storage::FileSystem::{MOVEFILE_WRITE_THROUGH, MoveFileExW};
+    use windows::core::PCWSTR;
+    let wide = |p: &Path| p.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<u16>>();
+    let (f, t) = (wide(from), wide(to));
+    unsafe { MoveFileExW(PCWSTR(f.as_ptr()), PCWSTR(t.as_ptr()), MOVEFILE_WRITE_THROUGH) }
+        .map_err(std::io::Error::from)
+}
+
 /// Runs every move, then removes the old video folder when it is empty.
 pub fn apply(plan: &SplitPlan) -> Vec<(PathBuf, PathBuf)> {
+    use crate::transcribe::queue::same_audio;
     let mut moved = Vec::new();
     for m in &plan.moves {
         moved.extend(move_recordings(m));
-        // Only a video folder that is not the root; `remove_dir` fails on a
-        // folder that still holds anything.
-        if m.ext == "mp4" && Some(m.from.as_path()) != m.to.parent() {
+        // Never the root (the audio folder, or the one folder picked for both
+        // kinds); `remove_dir` fails on a folder that still holds anything.
+        let is_root = m.to.parent().is_some_and(|r| same_audio(&m.from, r))
+            || plan.root.as_deref().is_some_and(|r| same_audio(&m.from, r));
+        if m.ext == "mp4" && !is_root {
             let _ = std::fs::remove_dir(&m.from);
         }
     }
@@ -113,13 +178,18 @@ mod tests {
     }
 
     fn mv(from: &Path, to: &Path, ext: &'static str) -> Move {
-        Move { from: from.to_path_buf(), to: to.to_path_buf(), ext }
+        Move { from: from.to_path_buf(), to: to.to_path_buf(), ext, vale_only: false }
+    }
+
+    fn picked(from: &Path, to: &Path, ext: &'static str) -> Move {
+        Move { vale_only: true, ..mv(from, to, ext) }
     }
 
     #[test]
     fn moves_a_recording_with_its_companions() {
         let d = Dir::new("companions");
-        for n in ["a.m4a", "a.vale.json", "a.md", "a.srt", "a.transcript.md", "notes.txt", "b.m4a.part"] {
+        let names = ["a.m4a", "a.vale.json", "a.md", "a.srt", "a.transcript.md", "notes.txt"];
+        for n in names.into_iter().chain(["b.m4a.part"]) {
             d.put(n, n);
         }
         let to = d.0.join("Audio");
@@ -129,7 +199,97 @@ mod tests {
             assert!(to.join(n).is_file(), "{n} moved");
             assert!(!d.0.join(n).exists(), "{n} left the root");
         }
-        assert!(d.0.join("notes.txt").is_file() && d.0.join("b.m4a.part").is_file());
+        assert!(d.0.join("notes.txt").is_file());
+        // A lone unfinished recording moves too, but is not a returned pair.
+        assert!(to.join("b.m4a.part").is_file() && !d.0.join("b.m4a.part").exists());
+    }
+
+    #[test]
+    fn an_unfinished_recording_moves_with_its_companions_once() {
+        let d = Dir::new("part");
+        for n in ["u.m4a.part", "u.vale.json", "w.m4a", "w.m4a.part", "w.md", "w.x.m4a.part"] {
+            d.put(n, n);
+        }
+        let to = d.0.join("Audio");
+        let moved = move_recordings(&mv(&d.0, &to, "m4a"));
+        assert_eq!(moved, vec![(d.0.join("w.m4a"), to.join("w.m4a"))]);
+        for n in ["u.m4a.part", "u.vale.json", "w.m4a", "w.m4a.part", "w.md", "w.x.m4a.part"] {
+            assert!(to.join(n).is_file(), "{n} moved");
+        }
+        assert!(!d.0.join("u.m4a.part").exists());
+    }
+
+    #[test]
+    fn a_picked_folder_moves_only_what_vale_made() {
+        let d = Dir::new("picked");
+        for n in [
+            "Song.m4a",
+            "Song.jpg",
+            "2026-11-12 0930.m4a",
+            "2026-11-12 0930.md",
+            "Rapat.m4a",
+            "Rapat.vale.json",
+            "Lone.m4a.part",
+            ".m4a",
+            "Draft.m4a.part",
+            "Draft.vale.json",
+        ] {
+            d.put(n, n);
+        }
+        let to = d.0.join("Audio");
+        let mut moved = move_recordings(&picked(&d.0, &to, "m4a"));
+        moved.sort();
+        assert_eq!(
+            moved,
+            vec![
+                (d.0.join("2026-11-12 0930.m4a"), to.join("2026-11-12 0930.m4a")),
+                (d.0.join("Rapat.m4a"), to.join("Rapat.m4a")),
+            ]
+        );
+        for n in ["Song.m4a", "Song.jpg", "Lone.m4a.part", ".m4a"] {
+            assert!(d.0.join(n).is_file(), "{n} stays");
+        }
+        for n in ["2026-11-12 0930.md", "Rapat.vale.json", "Draft.m4a.part", "Draft.vale.json"] {
+            assert!(to.join(n).is_file(), "{n} moved");
+        }
+    }
+
+    #[test]
+    fn vale_own_folder_moves_any_name_but_an_empty_stem_stays() {
+        let d = Dir::new("own");
+        d.put("Song.m4a", "s");
+        d.put(".m4a", "x");
+        let to = d.0.join("Audio");
+        let moved = move_recordings(&mv(&d.0, &to, "m4a"));
+        assert_eq!(moved, vec![(d.0.join("Song.m4a"), to.join("Song.m4a"))]);
+        assert!(d.0.join(".m4a").is_file());
+    }
+
+    #[test]
+    fn one_picked_folder_for_both_kinds_splits_into_two_subfolders() {
+        let d = Dir::new("shared");
+        let root = d.0.join("R");
+        d.put("R/a.m4a", "a");
+        d.put("R/v.mp4", "v");
+        let plan = SplitPlan {
+            root: Some(root.clone()),
+            moves: vec![
+                mv(&root, &root.join("Audio"), "m4a"),
+                mv(&root, &root.join("Video"), "mp4"),
+            ],
+        };
+        let moved = apply(&plan);
+        assert_eq!(moved.len(), 2);
+        assert!(root.join("Audio").join("a.m4a").is_file());
+        assert!(root.join("Video").join("v.mp4").is_file());
+        assert!(root.is_dir());
+        let upper = PathBuf::from(root.to_string_lossy().to_uppercase());
+        let plan = SplitPlan {
+            root: Some(root.clone()),
+            moves: vec![mv(&upper, &root.join("Video"), "mp4")],
+        };
+        apply(&plan);
+        assert!(root.is_dir(), "a case-different root is still never removed");
     }
 
     #[test]
@@ -209,7 +369,10 @@ mod tests {
 
     #[test]
     fn queue_paths_follow_the_move() {
-        let text = r#"{"v":1,"jobs":[{"audio":"C:\\Rec\\A.m4a","model":"small","tries":2},{"audio":"C:\\Rec\\b.m4a","model":"base","tries":0}]}"#;
+        let text = concat!(
+            r#"{"v":1,"jobs":[{"audio":"C:\\Rec\\A.m4a","model":"small","tries":2},"#,
+            r#"{"audio":"C:\\Rec\\b.m4a","model":"base","tries":0}]}"#
+        );
         let moved = vec![(PathBuf::from(r"c:\rec\a.m4a"), PathBuf::from(r"C:\Rec\Audio\a.m4a"))];
         let out = rewrite_queue(text, &moved).expect("one job matched");
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();

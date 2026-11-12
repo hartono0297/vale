@@ -291,6 +291,17 @@ pub struct Known {
 }
 
 impl Known {
+    /// Vale's own folders, where every file is Vale's. Any other folder was
+    /// picked by the user and may hold files Vale did not make.
+    fn is_vale_folder(&self, dir: &Path) -> bool {
+        use crate::transcribe::queue::same_audio;
+        let own = |p: &Path| same_audio(dir, p);
+        own(&self.default_root)
+            || own(&self.video_default)
+            || self.fallback_root.as_deref().is_some_and(own)
+            || self.video_fallback.as_deref().is_some_and(own)
+    }
+
     /// The real folders of this PC.
     pub fn system() -> Known {
         Known {
@@ -309,6 +320,9 @@ pub struct Move {
     pub to: PathBuf,
     /// The extension of the recordings in `from` (`m4a` or `mp4`).
     pub ext: &'static str,
+    /// `from` is a folder the user picked, where files Vale did not make may
+    /// sit: only a file with a Vale stamp or sidecar counts as a recording.
+    pub vale_only: bool,
 }
 
 /// What the one-time migration does: the root to store (`None` keeps the
@@ -323,8 +337,10 @@ pub struct SplitPlan {
 /// is the old folder; else the fallback root when the old video folder was the
 /// video fallback (Windows is known to block the default); else the default.
 /// Audio in the root moves to `Audio`. Screen recordings move to `Video` only
-/// from the old video folder when it was unset, the old default or the old
-/// fallback; a folder the user picked stays where it is.
+/// from the old video folder when it was unset, the old default, the old
+/// fallback or the same folder as the root; any other folder the user picked
+/// stays where it is. A move out of a folder that is not one of Vale's own
+/// takes only files Vale made (`vale_only`).
 pub fn split_plan(
     folder: Option<&Path>,
     video_folder: Option<&Path>,
@@ -342,19 +358,26 @@ pub fn split_plan(
     };
     let eff = root.clone().unwrap_or_else(|| known.default_root.clone());
     let mut moves = vec![Move {
+        vale_only: !known.is_vale_folder(&eff),
         from: eff.clone(),
         to: eff.join(AUDIO_SUB),
         ext: "m4a",
     }];
+    // One folder picked for both kinds holds the videos too.
     let video_from = match video_folder {
         None => Some(known.video_default.clone()),
-        Some(v) if video_was_fallback || same_audio(v, &known.video_default) => {
+        Some(v)
+            if video_was_fallback
+                || same_audio(v, &known.video_default)
+                || same_audio(v, &eff) =>
+        {
             Some(v.to_path_buf())
         }
         Some(_) => None,
     };
     if let Some(from) = video_from {
         moves.push(Move {
+            vale_only: !known.is_vale_folder(&from),
             from,
             to: eff.join(VIDEO_SUB),
             ext: "mp4",
@@ -624,8 +647,8 @@ mod tests {
         }
     }
 
-    fn mv(from: &str, to: &str, ext: &'static str) -> Move {
-        Move { from: PathBuf::from(from), to: PathBuf::from(to), ext }
+    fn mv(from: &str, to: &str, ext: &'static str, vale_only: bool) -> Move {
+        Move { from: PathBuf::from(from), to: PathBuf::from(to), ext, vale_only }
     }
 
     #[test]
@@ -645,8 +668,13 @@ mod tests {
         assert_eq!(
             plan.moves,
             vec![
-                mv(r"C:\U\Documents\Vale\Rekaman", r"C:\U\Documents\Vale\Rekaman\Audio", "m4a"),
-                mv(r"C:\U\Videos\Vale", r"C:\U\Documents\Vale\Rekaman\Video", "mp4"),
+                mv(
+                    r"C:\U\Documents\Vale\Rekaman",
+                    r"C:\U\Documents\Vale\Rekaman\Audio",
+                    "m4a",
+                    false,
+                ),
+                mv(r"C:\U\Videos\Vale", r"C:\U\Documents\Vale\Rekaman\Video", "mp4", false),
             ]
         );
     }
@@ -662,8 +690,8 @@ mod tests {
         assert_eq!(
             plan.moves,
             vec![
-                mv(r"C:\U\Vale\Rekaman", r"C:\U\Vale\Rekaman\Audio", "m4a"),
-                mv(r"C:\U\Vale\Video", r"C:\U\Vale\Rekaman\Video", "mp4"),
+                mv(r"C:\U\Vale\Rekaman", r"C:\U\Vale\Rekaman\Audio", "m4a", false),
+                mv(r"C:\U\Vale\Video", r"C:\U\Vale\Rekaman\Video", "mp4", false),
             ]
         );
     }
@@ -672,14 +700,33 @@ mod tests {
     fn blocked_video_only_moves_the_root_to_the_fallback() {
         let plan = split_plan(None, Some(Path::new(r"C:\U\Vale\Video")), &known());
         assert_eq!(plan.root, Some(PathBuf::from(r"C:\U\Vale\Rekaman")));
-        assert!(plan.moves.contains(&mv(r"C:\U\Vale\Video", r"C:\U\Vale\Rekaman\Video", "mp4")));
+        assert_eq!(
+            plan.moves,
+            vec![
+                mv(r"C:\U\Vale\Rekaman", r"C:\U\Vale\Rekaman\Audio", "m4a", false),
+                mv(r"C:\U\Vale\Video", r"C:\U\Vale\Rekaman\Video", "mp4", false),
+            ]
+        );
+    }
+
+    #[test]
+    fn one_picked_folder_for_both_kinds_moves_the_videos_too() {
+        let plan = split_plan(Some(Path::new(r"D:\Rec")), Some(Path::new(r"d:\rec")), &known());
+        assert_eq!(plan.root, Some(PathBuf::from(r"D:\Rec")));
+        assert_eq!(
+            plan.moves,
+            vec![
+                mv(r"D:\Rec", r"D:\Rec\Audio", "m4a", true),
+                mv(r"d:\rec", r"D:\Rec\Video", "mp4", true),
+            ]
+        );
     }
 
     #[test]
     fn a_picked_video_folder_is_left_alone() {
         let plan = split_plan(Some(Path::new(r"D:\R")), Some(Path::new(r"E:\Vid")), &known());
         assert_eq!(plan.root, Some(PathBuf::from(r"D:\R")));
-        assert_eq!(plan.moves, vec![mv(r"D:\R", r"D:\R\Audio", "m4a")]);
+        assert_eq!(plan.moves, vec![mv(r"D:\R", r"D:\R\Audio", "m4a", true)]);
     }
 
     #[test]
