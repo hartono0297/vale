@@ -2672,6 +2672,7 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                     tab: rec_page.tab,
                     discard_armed: rec_page.discard_armed,
                     captions_on: name("DI_REC_CAPTIONS") == "on",
+                    total: rec_recent.len(),
                 },
                 devices: DevicesView {
                     list: &dev_list,

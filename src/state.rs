@@ -2257,6 +2257,9 @@ impl IslandState {
                     self.screen_discard_armed = shown.then_some(now + CLEAN_CONFIRM);
                 }
             }
+            // The redesigned page's "Simpan" and "Kualitas": the redesign's
+            // behaviour task gives them their effect.
+            Hit::ScreenDiscardKeep | Hit::RecQuality => {}
             Hit::RecPause => {
                 if self.view() == View::Panel(Page::Record) && self.rec.is_some() {
                     effects.push(Effect::RecPause);

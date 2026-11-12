@@ -6971,6 +6971,10 @@ impl App {
                 tab: state.rec_tab(),
                 discard_armed: state.screen_discard_armed(),
                 captions_on: self.captions_on(),
+                total: match state.rec_tab() {
+                    RecKind::Audio => self.rec.total,
+                    RecKind::Screen => self.screen.total,
+                },
             },
             devices: DevicesView {
                 list: &self.devices.list,

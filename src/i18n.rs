@@ -1827,8 +1827,10 @@ pub fn rec_day_label(lang: Lang, day: NaiveDate, today: NaiveDate) -> String {
     }
 }
 
-/// The line under a recording on the Rekam page: "Hari ini 10:02 · 42 mnt",
-/// or "· belum selesai" for a `.part` a crash left.
+/// The line under a recording on the old Rekam page: "Hari ini 10:02 · 42
+/// mnt", or "· belum selesai" for a `.part` a crash left. The redesigned
+/// rows show the length alone; only the scan's tests still read it.
+#[cfg(test)]
 pub fn rec_entry_sub(lang: Lang, started: &str, d: std::time::Duration, unfinished: bool) -> String {
     let length = if unfinished {
         text(lang, Key::RecUnfinished).to_string()

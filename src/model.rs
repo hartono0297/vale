@@ -823,6 +823,7 @@ pub enum Hit {
     RecMute(crate::recorder::Source),
     /// A source's device name: opens the device menu (idle or recording).
     RecDevice(crate::recorder::Source),
+    /// A source's switch while idle: the sources with that one flipped.
     RecSources(RecSources),
     RecOpen(usize),
     RecFolder,
@@ -840,9 +841,13 @@ pub enum Hit {
     /// The "Audio" / "Layar" switch of the Rekam page, only while nothing
     /// records.
     RecTab(RecKind),
-    /// "Buang" beside a running screen recording: the first click arms it
-    /// ("Yakin buang?"), the second discards the recording.
+    /// The trash button beside a running screen recording: the first click
+    /// arms it ("Buang video ini?"); "Buang" under the question discards it.
     ScreenDiscard,
+    /// "Simpan" under the armed discard's question: the recording goes on.
+    ScreenDiscardKeep,
+    /// The idle Layar tab's "Kualitas" row: opens the video quality menu.
+    RecQuality,
     /// Susun, template step: a monitor chip, a template card (built-ins
     /// first, then the user's) and a saved arrangement's play button, by
     /// place. Pick step: a window row by place in the list, and "Lewati

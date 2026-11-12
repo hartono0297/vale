@@ -13,7 +13,7 @@ use crate::calendar::{CalEvent, CalStatus, EventTime, events_on, range_for};
 use crate::clean::{CleanCat, CleanMode};
 use crate::cli_folders::{MenuItem, Section};
 use crate::devices::{Device, Veto};
-use crate::model::{CalView, Hit, Page, RecKind, RecSources, Shortcut};
+use crate::model::{CalView, Hit, Page, RecEntry, RecKind, RecSources, Shortcut};
 use crate::mole::{MoleGroup, MoleOpt};
 use crate::notes::Note;
 use crate::recorder::Source;
@@ -4125,26 +4125,48 @@ pub fn screen_label_slot(l: &RecLayout, clock_w: f32, mic: bool) -> Rect {
     word_slot(l, clock_w, right)
 }
 
-/// The Rekam page's header as measured: the two tab labels ("Audio",
-/// "Layar"), the "Buka folder" link and the "Transkrip file lain..." link in
-/// its long and short form; and the wider of "Buang" and "Yakin buang?".
+/// The Rekam page's header and card as measured: the two tab labels
+/// ("Audio", "Layar") and the armed discard's two button labels ("Buang",
+/// "Simpan").
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct RecordHead {
     pub tabs_w: [f32; 2],
-    pub folder_w: f32,
-    /// "Transkrip file lain..." (the long form).
-    pub pick_w: f32,
-    /// "File lain..." (used when the long form does not fit beside the tabs).
-    pub pick_short_w: f32,
-    /// The label of the discard button, whichever of its two is wider.
-    pub discard_w: f32,
+    /// "Buang" then "Simpan", under "Buang video ini?".
+    pub confirm_w: [f32; 2],
 }
 
-/// The Rekam page (docs/design/rekaman.html, section 2): the "Audio" /
-/// "Layar" switch and the "Buka folder" link, the big round button in its
-/// card with pause beside it while recording (and "Buang" for a screen
-/// recording), the three-way source control or the Layar tab's hint, the
-/// elapsed time, and the tab's last recordings.
+/// The Rekam list as the page shows it, for `record_layout`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RecListInput<'a> {
+    /// Row i starts a new day (true for row 0).
+    pub new_day: &'a [bool],
+    /// Measured pill label width per row; 0 = no pill (silent video).
+    pub pills: &'a [f32],
+    /// Every listed recording in the folder (`RecScan::total`).
+    pub total: usize,
+}
+
+/// Which rows of the Rekam list start a day, for `RecListInput::new_day`:
+/// row 0, and each row on another day than the one above it. While
+/// recording, row 0 shares the now row's "today" label when it is from
+/// today.
+pub fn rec_new_days(rows: &[RecEntry], recording: bool, today: NaiveDate) -> Vec<bool> {
+    rows.iter()
+        .enumerate()
+        .map(|(i, e)| {
+            let day = e.started_at.date();
+            match i {
+                0 => !(recording && day == today),
+                _ => rows[i - 1].started_at.date() != day,
+            }
+        })
+        .collect()
+}
+
+/// The Rekam page, direction B (docs/design/rekam-b.html): the "Audio" /
+/// "Layar" switch and two icon buttons in the header; the card at the left
+/// (the round button or the live controls, the sources, the caption row);
+/// the tab's recordings at the right, grouped by day.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RecordLayout {
     /// The track of the "Audio" / "Layar" switch, where a page's title is
@@ -4154,154 +4176,200 @@ pub struct RecordLayout {
     pub tabs: [(RecKind, Rect); 2],
     /// They take clicks: not while a recording runs (the page shows it).
     pub tabs_enabled: bool,
-    /// "Buka folder", at the right of the header row.
-    pub folder: Rect,
-    /// "Transkrip file lain...", `REC_HEAD_LINKS_GAP` left of "Buka folder".
+    /// "Transkrip file lain..." as a 22 dip icon button, left of `folder`.
     pub pick: Rect,
-    /// `pick` holds the short form.
-    pub pick_short: bool,
-    /// The card holding the buttons (the design's `.big`).
+    /// "Buka folder" as a 22 dip icon button, left of the Settings button.
+    pub folder: Rect,
+    /// The card at the left, the body's full height.
     pub card: Rect,
-    /// The "Caption langsung" switch under the card, on both tabs: the
-    /// label at the left and the switch at the right edge. `None` when the
-    /// page is too short to hold the row.
-    pub caption_switch: Option<(Rect, Rect)>,
-    /// The round start / stop button.
+    /// The round record button, or stop while recording. Zero-sized (and no
+    /// click) while the discard asks: the question takes the block.
     pub button: Rect,
-    /// "Mulai" / "Berhenti" under it.
-    pub button_label: Rect,
-    /// Pause or resume, beside the button; only while recording.
+    /// "Rekam" under the idle button; none under the waiting strip.
+    pub button_label: Option<Rect>,
+    /// Pause or resume, left of stop; only while recording.
     pub pause: Option<Rect>,
-    /// "Buang" beside pause, only while a screen recording runs.
+    /// The trash button right of stop, only while a screen recording runs.
     pub discard: Option<Rect>,
-    /// On the idle Layar tab, what the big button does next, in the source
-    /// control's place (the sources are chosen in the picker).
+    /// "Buang video ini?" and its two buttons, after a first discard click.
+    pub confirm: Option<RecConfirm>,
+    /// The live dot and the elapsed time under the live controls.
+    pub clock: Option<Rect>,
+    /// The idle Layar tab: what Record leads to, under the top block.
     pub hint: Option<Rect>,
-    /// The source control's track and its three segments.
-    pub seg_track: Rect,
-    pub segs: [(RecSources, Rect); 3],
-    /// The segments show and take clicks: not while recording, and not on
-    /// the Layar tab.
-    pub sources_enabled: bool,
-    /// While recording, one cell per recorded source (mic first) in the
-    /// source control's place: its mute button, its level meter and the
-    /// name of its device.
-    pub live: Vec<RecordLive>,
-    /// While idle, the device of each chosen source (mic first), one line
-    /// under the source control; each line is a click that opens the
-    /// device menu.
-    pub idle_devices: Vec<(Source, Rect)>,
-    /// The recorded time (and under it, the state): drawn while recording.
-    pub elapsed: Rect,
-    /// Where the list is, and the rows shown (at most `REC_ROWS`, fewer
-    /// when the strip leaves less room).
+    /// The idle Layar tab: the "Kualitas" row under the hint.
+    pub quality: Option<Rect>,
+    /// One row per source (mic first): both while idle on Audio, the
+    /// recorded ones while recording, none on the idle Layar tab.
+    pub sources: Vec<RecSourceRow>,
+    /// The "Caption langsung" row at the bottom of the card, and its switch.
+    pub caption: Rect,
+    pub caption_switch: Rect,
+    /// The list at the right, the body's full height.
     pub list: Rect,
+    /// Each day label and the row it heads. While recording the first is
+    /// the "today" label over `now`, keyed to row 0 (which then has its own
+    /// label only when it starts another day).
+    pub groups: Vec<(usize, Rect)>,
+    /// The "Sekarang" row while recording (no click).
+    pub now: Option<Rect>,
     pub rows: Vec<RecordRowLayout>,
-    /// "Belum ada rekaman", when the list is empty.
+    /// "N lagi di folder" under the rows when not every recording shows.
+    pub more: Option<(usize, Rect)>,
+    /// The empty state's block (a 32 well and two lines), with nothing listed.
     pub empty: Option<Rect>,
 }
 
-/// One recorded source on the Rekam page while recording: the round mute
-/// button, the meter beside it and, under them, the name of the device (a
-/// click opens the device menu).
+/// The armed discard: the question and its two buttons under it.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct RecordLive {
-    pub source: Source,
-    pub button: Rect,
-    pub meter: Rect,
-    pub device: Rect,
+pub struct RecConfirm {
+    pub question: Rect,
+    pub discard: Rect,
+    pub keep: Rect,
 }
 
-/// One recent recording: the icon well, the title and "date · duration"
-/// lines, and the transcript pill at the right (zero wide when the row has
-/// none). The whole row is the click.
+/// A source row of the card: the glyph (an icon while idle, the mute button
+/// while recording), the name over the device line, and at the right the
+/// switch (idle) or the meter (recording).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RecSourceRow {
+    pub source: Source,
+    pub row: Rect,
+    /// Icon idle, mute button live.
+    pub glyph: Rect,
+    pub name: Rect,
+    pub device: Rect,
+    /// Idle.
+    pub switch: Option<Rect>,
+    /// The sources a click on the switch sets; `None` = locked (the last
+    /// source on).
+    pub switch_to: Option<RecSources>,
+    /// Live.
+    pub meter: Option<Rect>,
+}
+
+/// One recording of the list: the icon well, the start time, the title (a
+/// video's), the length, and the transcript button at the right (zero wide
+/// when the row has none). The whole row is the click.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RecordRowLayout {
     pub row: Rect,
     pub well: Rect,
-    pub title: Rect,
-    pub sub: Rect,
+    pub time: Rect,
+    pub title: Option<Rect>,
+    pub length: Rect,
     pub pill: Rect,
 }
 
-/// The most recordings the page lists.
-pub const REC_ROWS: usize = 5;
-const REC_BLOCK_H: f32 = 76.0;
-const REC_CARD_W: f32 = 112.0;
-const REC_BLOCK_GAP: f32 = 12.0;
-/// Between the header row and the card, and the card and the list.
+/// Between the header row and the body.
 const REC_HEAD_GAP: f32 = 8.0;
-const REC_LIST_GAP: f32 = 10.0;
-/// The "Caption langsung" row under the card: the gap above it, its height
-/// and the gap under it, where the list starts (in place of `REC_LIST_GAP`).
-const REC_CAPTION_GAP: f32 = 6.0;
-const REC_CAPTION_H: f32 = 20.0;
-const REC_CAPTION_LIST_GAP: f32 = 6.0;
-/// Between the row's label and its switch at the least.
-const REC_CAPTION_LABEL_GAP: f32 = 8.0;
-pub const REC_BUTTON: f32 = 48.0;
-pub const REC_PAUSE: f32 = 32.0;
-const REC_BUTTON_GAP: f32 = 10.0;
-const REC_SEG_H: f32 = 30.0;
-const REC_ROW_H: f32 = 26.0;
-const REC_ROW_GAP: f32 = 2.0;
-const REC_WELL: f32 = 24.0;
-/// A row's transcript pill: the label's width plus `REC_PILL_PAD`, kept
-/// within `REC_PILL_MIN..=REC_PILL_MAX`; the title and date lines end
-/// `REC_PILL_GAP` before it.
-const REC_PILL_MIN: f32 = 44.0;
-const REC_PILL_MAX: f32 = 112.0;
-const REC_PILL_PAD: f32 = 16.0;
-const REC_PILL_GAP: f32 = 8.0;
-const REC_PILL_H: f32 = 20.0;
-/// Between the header's two links.
-const REC_HEAD_LINKS_GAP: f32 = 12.0;
-/// Between the tab switch and the first link at the least.
-const REC_TITLE_GAP: f32 = 8.0;
 /// A tab's label has this much room on each side inside its segment.
 const REC_TAB_PAD_X: f32 = 12.0;
-/// "Buang" beside pause: its height, and the room on each side of its label.
-const REC_DISCARD_H: f32 = 28.0;
-const REC_DISCARD_PAD_X: f32 = 12.0;
-/// The Layar tab's hint line, level with the big button's middle.
-const REC_HINT_H: f32 = 18.0;
-/// The mute button's diameter and the gap between it and its meter.
-const REC_MUTE: f32 = 26.0;
-const REC_MUTE_GAP: f32 = 8.0;
-/// The device lines under the source control while idle: their height, the
-/// gap between two, and the gap under the control.
-pub const REC_DEVICE_H: f32 = 16.0;
-const REC_DEVICE_GAP: f32 = 3.0;
-const REC_DEVICE_TOP: f32 = 6.0;
-/// While recording the block is this much taller, so each device name has a
-/// line under its button and meter.
-const REC_LIVE_EXTRA: f32 = 14.0;
+/// The header's icon buttons and the gap between them.
+pub const REC_ICON_BTN: f32 = 22.0;
+const REC_ICON_GAP: f32 = 4.0;
+/// The card: its width, its padding, and the gap to the list.
+pub const REC_CARD_W: f32 = 196.0;
+const REC_CARD_PAD_X: f32 = 12.0;
+const REC_CARD_PAD_Y: f32 = 10.0;
+const REC_LIST_GAP: f32 = 12.0;
+/// The card's top block: 92 high, 68 under the waiting strip.
+const REC_TOP_H: f32 = 92.0;
+const REC_TOP_H_STRIP: f32 = 68.0;
+/// The idle record button and the "Rekam" label under it.
+pub const REC_BUTTON: f32 = 56.0;
+const REC_LABEL_GAP: f32 = 3.0;
+const REC_LABEL_H: f32 = 16.0;
+/// The live controls: stop, pause and discard, in a row; the clock under.
+pub const REC_STOP: f32 = 52.0;
+pub const REC_PAUSE: f32 = 32.0;
+const REC_PAIR_GAP: f32 = 12.0;
+const REC_CLOCK_GAP: f32 = 6.0;
+const REC_CLOCK_H: f32 = 20.0;
+/// The armed discard: the question, its buttons and their padding.
+const REC_ASK_H: f32 = 18.0;
+const REC_ASK_GAP: f32 = 8.0;
+const REC_ASK_BTN_H: f32 = 26.0;
+const REC_ASK_BTN_GAP: f32 = 6.0;
+const REC_ASK_BTN_MIN: f32 = 64.0;
+const REC_ASK_BTN_PAD: f32 = 10.0;
+/// A source, quality or caption row of the card.
+const REC_SRC_H: f32 = 34.0;
+/// The idle source icon and the live mute button.
+pub const REC_GLYPH: f32 = 16.0;
+pub const REC_MUTE: f32 = 24.0;
+const REC_SRC_GAP: f32 = 8.0;
+/// A row's switch.
+pub const REC_SWITCH_W: f32 = 28.0;
+pub const REC_SWITCH_H: f32 = 16.0;
+/// A live row's meter: five bars of `REC_BAR_W`, `REC_BAR_GAP` apart.
+pub const REC_SRC_BARS: usize = 5;
+pub const REC_SRC_METER_W: f32 =
+    REC_SRC_BARS as f32 * REC_BAR_W + (REC_SRC_BARS - 1) as f32 * REC_BAR_GAP;
+pub const REC_SRC_METER_H: f32 = 14.0;
+/// The name line and the device line under it, from the row's top.
+const REC_NAME_TOP: f32 = 4.0;
+const REC_NAME_H: f32 = 14.0;
+pub const REC_DEVICE_H: f32 = 12.0;
+/// The idle Layar tab's hint (two lines).
+const REC_HINT_H: f32 = 30.0;
+/// The list: a day label, a row, its well, the gap between a row's parts,
+/// the time and (on Layar) the length column.
+const REC_GROUP_H: f32 = 16.0;
+const REC_ROW_H: f32 = 28.0;
+pub const REC_WELL: f32 = 22.0;
+const REC_ROW_GAP_X: f32 = 8.0;
+const REC_ROW_TIME_W: f32 = 42.0;
+const REC_ROW_LENGTH_W: f32 = 64.0;
+/// A row's transcript button: the label's width plus `REC_PILL_PAD`, kept
+/// within `REC_PILL_MIN..=REC_PILL_MAX`.
+const REC_PILL_MIN: f32 = 76.0;
+const REC_PILL_MAX: f32 = 112.0;
+const REC_PILL_PAD: f32 = 16.0;
+const REC_PILL_H: f32 = 22.0;
+/// "N lagi di folder".
+const REC_MORE_H: f32 = 18.0;
+/// The empty state: its distance from the list's top, and its height.
+const REC_EMPTY_TOP: f32 = 40.0;
+const REC_EMPTY_H: f32 = 32.0;
 
-/// The Rekam page. `live` is the sources of the running recording, `None`
-/// when idle: it swaps the card's contents (stop and pause instead of start),
-/// locks the tab switch and the source control and puts a mute button, a
-/// meter and the device name per source where the control is. `chosen` is the
-/// source control's choice: while idle a device line per chosen source goes
-/// under it. `rows` is how many recent recordings there are (at most
-/// `REC_ROWS` of them show). `pills[i]` is the measured width of row `i`'s
-/// pill label; the pill is that plus padding within its limits, and a width
-/// of zero (or none given) is a row without a pill. `tab` is the page's tab:
-/// on Layar the idle page has a hint where the source control is (the picker
-/// asks for the sources), and a running recording has "Buang" beside pause in
-/// a card as wide as the three need.
+/// What the card's top block holds, as `record_layout` builds it.
+#[derive(Default)]
+struct TopParts {
+    button: Rect,
+    button_label: Option<Rect>,
+    pause: Option<Rect>,
+    discard: Option<Rect>,
+    confirm: Option<RecConfirm>,
+    clock: Option<Rect>,
+}
+
+/// The Rekam page. `strip`: the waiting strip shows (the top block shrinks,
+/// "Rekam" goes). `live` is the sources of the running recording, `None`
+/// when idle: it swaps the button for pause, stop (and discard on Layar)
+/// and a clock, locks the tabs, gives each recorded source a mute button
+/// and a meter, and puts the "now" row first in the list. `chosen` is what
+/// the idle switches show; the last source on is locked. `list` is the
+/// tab's recordings, fitted by height with their day labels; the "more"
+/// line takes the last room when not all of `list.total` show. `tab` picks
+/// the idle Layar card (hint and quality, no sources) and the discard.
+/// `discard_armed` (a screen recording only) asks before throwing it away.
+#[allow(clippy::too_many_arguments)]
 pub fn record_layout(
     s: ShapeRect,
     strip: bool,
     head: &RecordHead,
     live: Option<RecSources>,
     chosen: RecSources,
-    rows: usize,
-    pills: &[f32],
+    list: &RecListInput,
     tab: RecKind,
+    discard_armed: bool,
 ) -> RecordLayout {
     let recording = live.is_some();
     let screen = tab == RecKind::Screen;
+    let armed = recording && screen && discard_armed;
     let top = content_top(s, strip);
+    let bottom = content_bottom(s);
     let (l, r) = (left(s), right(s));
     // Two equal segments, each as wide as the wider label needs.
     let tab_w = head.tabs_w[0].max(head.tabs_w[1]) + 2.0 * REC_TAB_PAD_X;
@@ -4315,210 +4383,248 @@ pub fn record_layout(
         )
     };
     let tabs = [(RecKind::Audio, tab_seg(0)), (RecKind::Screen, tab_seg(1))];
-    let folder = rect(
-        header_right(s) - head.folder_w,
-        top,
-        head.folder_w,
-        HEADER_H,
+    let icon_y = top + (HEADER_H - REC_ICON_BTN) / 2.0;
+    let folder = rect(header_right(s) - REC_ICON_BTN, icon_y, REC_ICON_BTN, REC_ICON_BTN);
+    let pick = rect(
+        folder.x - REC_ICON_GAP - REC_ICON_BTN,
+        icon_y,
+        REC_ICON_BTN,
+        REC_ICON_BTN,
     );
-    let long_fits = header.w + REC_TITLE_GAP + head.pick_w + REC_HEAD_LINKS_GAP + head.folder_w
-        <= header_right(s) - l;
-    let pick_w = if long_fits { head.pick_w } else { head.pick_short_w };
-    let pick = rect(folder.x - REC_HEAD_LINKS_GAP - pick_w, top, pick_w, HEADER_H);
-    let block_y = top + HEADER_H + REC_HEAD_GAP;
-    let extra = if recording { REC_LIVE_EXTRA } else { 0.0 };
-    // Stop and pause sit as a pair in the middle of the card; a screen
-    // recording's card grows by "Buang" and its gap, the margins kept.
-    let pair = REC_BUTTON + REC_BUTTON_GAP + REC_PAUSE;
-    let discard_w = if recording && screen {
-        head.discard_w + 2.0 * REC_DISCARD_PAD_X
+
+    // The card, the body's full height.
+    let body_y = top + HEADER_H + REC_HEAD_GAP;
+    let card = rect(l, body_y, REC_CARD_W, bottom - body_y);
+    let (ix, iw) = (card.x + REC_CARD_PAD_X, card.w - 2.0 * REC_CARD_PAD_X);
+    let centred = |w: f32| ix + (iw - w) / 2.0;
+    // The top block. Under the strip it loses the label and some air; the
+    // live clock stays, so its gap goes and the block is as tall as it needs.
+    let clock_gap = if strip { 0.0 } else { REC_CLOCK_GAP };
+    let content_h = if armed {
+        REC_ASK_H + REC_ASK_GAP + REC_ASK_BTN_H
+    } else if recording {
+        REC_STOP + clock_gap + REC_CLOCK_H
+    } else if strip {
+        REC_BUTTON
     } else {
-        0.0
+        REC_BUTTON + REC_LABEL_GAP + REC_LABEL_H
     };
-    let card_w = if discard_w > 0.0 {
-        REC_CARD_W + REC_BUTTON_GAP + discard_w
+    let top_h = if strip {
+        REC_TOP_H_STRIP.max(content_h)
     } else {
-        REC_CARD_W
+        REC_TOP_H
     };
-    let card = rect(l, block_y, card_w, REC_BLOCK_H + extra);
-    let button_y = card.y + 8.0 + extra / 2.0;
-    let (button, pause, discard) = if recording {
-        let x = card.x + (REC_CARD_W - pair) / 2.0;
-        let button = rect(x, button_y, REC_BUTTON, REC_BUTTON);
-        let pause = rect(
-            button.right() + REC_BUTTON_GAP,
-            button_y + (REC_BUTTON - REC_PAUSE) / 2.0,
-            REC_PAUSE,
-            REC_PAUSE,
-        );
-        let discard = (discard_w > 0.0).then(|| {
-            rect(
-                pause.right() + REC_BUTTON_GAP,
-                button_y + (REC_BUTTON - REC_DISCARD_H) / 2.0,
-                discard_w,
-                REC_DISCARD_H,
-            )
+    let block_y = card.y + REC_CARD_PAD_Y;
+    let y0 = block_y + (top_h - content_h) / 2.0;
+    let mut top_parts = TopParts {
+        button: rect(ix + iw / 2.0, block_y + top_h / 2.0, 0.0, 0.0),
+        ..TopParts::default()
+    };
+    if armed {
+        let question = rect(ix, y0, iw, REC_ASK_H);
+        let half = (iw - REC_ASK_BTN_GAP) / 2.0;
+        let w = head
+            .confirm_w
+            .map(|label| (label + 2.0 * REC_ASK_BTN_PAD).max(REC_ASK_BTN_MIN).min(half));
+        let by = question.bottom() + REC_ASK_GAP;
+        let x = centred(w[0] + REC_ASK_BTN_GAP + w[1]);
+        let yes = rect(x, by, w[0], REC_ASK_BTN_H);
+        let keep = rect(yes.right() + REC_ASK_BTN_GAP, by, w[1], REC_ASK_BTN_H);
+        // No stop under the question: the button stays zero-sized.
+        top_parts.confirm = Some(RecConfirm {
+            question,
+            discard: yes,
+            keep,
         });
-        (button, Some(pause), discard)
+    } else if recording {
+        let trash = if screen { REC_PAIR_GAP + REC_PAUSE } else { 0.0 };
+        let x = centred(REC_PAUSE + REC_PAIR_GAP + REC_STOP + trash);
+        let small_y = y0 + (REC_STOP - REC_PAUSE) / 2.0;
+        let pause = rect(x, small_y, REC_PAUSE, REC_PAUSE);
+        let stop = rect(pause.right() + REC_PAIR_GAP, y0, REC_STOP, REC_STOP);
+        top_parts = TopParts {
+            button: stop,
+            pause: Some(pause),
+            discard: screen
+                .then(|| rect(stop.right() + REC_PAIR_GAP, small_y, REC_PAUSE, REC_PAUSE)),
+            clock: Some(rect(ix, stop.bottom() + clock_gap, iw, REC_CLOCK_H)),
+            ..TopParts::default()
+        };
     } else {
-        let x = card.x + (card.w - REC_BUTTON) / 2.0;
-        (rect(x, button_y, REC_BUTTON, REC_BUTTON), None, None)
-    };
-    let button_label = rect(
-        button.x - 8.0,
-        button.bottom() + 2.0,
-        button.w + 16.0,
-        card.bottom() - button.bottom() - 4.0,
-    );
-    let opts_x = card.right() + REC_BLOCK_GAP;
-    let seg_track = rect(opts_x, block_y, r - opts_x, REC_SEG_H);
-    let seg_w = (seg_track.w - 2.0 * SEG_PAD) / 3.0;
-    let seg = |i: usize, sources| {
-        (
-            sources,
-            rect(
-                seg_track.x + SEG_PAD + i as f32 * seg_w,
-                seg_track.y + SEG_PAD,
-                // A hair narrower, so neighbouring regions never overlap.
-                seg_w - 0.01,
-                seg_track.h - 2.0 * SEG_PAD,
-            ),
-        )
-    };
-    let segs = [
-        seg(0, RecSources { mic: true, system: false }),
-        seg(1, RecSources { mic: false, system: true }),
-        seg(2, RecSources { mic: true, system: true }),
-    ];
-    let recorded: Vec<Source> = live.map_or_else(Vec::new, |sources| {
-        [(sources.mic, Source::Mic), (sources.system, Source::System)]
-            .into_iter()
-            .filter_map(|(on, source)| on.then_some(source))
-            .collect()
-    });
-    let cell_w = (seg_track.w - REC_MUTE_GAP) / 2.0;
-    let live = recorded
-        .into_iter()
-        .enumerate()
-        .map(|(i, source)| {
-            let x = seg_track.x + i as f32 * (cell_w + REC_MUTE_GAP);
-            let button = rect(
-                x,
-                seg_track.y + (seg_track.h - REC_MUTE) / 2.0,
-                REC_MUTE,
-                REC_MUTE,
-            );
-            let meter = rect(
-                button.right() + REC_MUTE_GAP,
-                seg_track.y + (seg_track.h - REC_METER_H) / 2.0,
-                REC_METER_W,
-                REC_METER_H,
-            );
-            let device = rect(x, seg_track.bottom() + 2.0, cell_w, REC_DEVICE_H);
-            RecordLive {
-                source,
-                button,
-                meter,
-                device,
-            }
-        })
-        .collect();
-    // The idle Layar tab has no source control: the picker asks.
-    let hint = (screen && !recording).then(|| {
-        rect(
-            opts_x,
-            button.y + (button.h - REC_HINT_H) / 2.0,
-            r - opts_x,
-            REC_HINT_H,
-        )
-    });
-    let idle_devices = if recording || screen {
-        Vec::new()
-    } else {
-        [(chosen.mic, Source::Mic), (chosen.system, Source::System)]
-            .into_iter()
-            .filter_map(|(on, source)| on.then_some(source))
-            .enumerate()
-            .map(|(i, source)| {
-                let y = seg_track.bottom()
-                    + REC_DEVICE_TOP
-                    + i as f32 * (REC_DEVICE_H + REC_DEVICE_GAP);
-                (source, rect(opts_x, y, seg_track.w, REC_DEVICE_H))
-            })
-            .collect()
-    };
-    let elapsed_y = seg_track.bottom() + extra + 8.0;
-    let elapsed = rect(opts_x, elapsed_y, r - opts_x, card.bottom() - elapsed_y);
-    let caption_room = REC_CAPTION_GAP + REC_CAPTION_H + REC_CAPTION_LIST_GAP;
-    let caption_switch = (content_bottom(s) - card.bottom() >= caption_room).then(|| {
-        let y = card.bottom() + REC_CAPTION_GAP;
-        let switch = rect(
-            r - NOTIF_SWITCH_W,
-            y + (REC_CAPTION_H - NOTIF_SWITCH_H) / 2.0,
-            NOTIF_SWITCH_W,
-            NOTIF_SWITCH_H,
-        );
-        let label = rect(l, y, switch.x - REC_CAPTION_LABEL_GAP - l, REC_CAPTION_H);
-        (label, switch)
-    });
-    let list_y = caption_switch.map_or(card.bottom() + REC_LIST_GAP, |(label, _)| {
-        label.bottom() + REC_CAPTION_LIST_GAP
-    });
-    let list = rect(l, list_y, r - l, (content_bottom(s) - list_y).max(0.0));
-    let pitch = REC_ROW_H + REC_ROW_GAP;
-    let fit = ((list.h + REC_ROW_GAP) / pitch).floor().max(0.0) as usize;
-    let shown = rows.min(REC_ROWS).min(fit);
-    let rows = (0..shown)
-        .map(|i| {
-            let row = rect(l, list.y + i as f32 * pitch, r - l, REC_ROW_H);
-            let well = rect(row.x, row.y + (REC_ROW_H - REC_WELL) / 2.0, REC_WELL, REC_WELL);
-            let label_w = pills.get(i).copied().unwrap_or(0.0);
-            let pill_w = if label_w > 0.0 {
-                (label_w + REC_PILL_PAD).clamp(REC_PILL_MIN, REC_PILL_MAX)
-            } else {
-                0.0
-            };
-            let pill = rect(
-                row.right() - pill_w,
-                row.y + (REC_ROW_H - REC_PILL_H) / 2.0,
-                pill_w,
-                REC_PILL_H,
-            );
-            let text_x = well.right() + 8.0;
-            let text_end = if pill_w > 0.0 { pill.x - REC_PILL_GAP } else { row.right() };
-            let text_w = text_end - text_x;
-            RecordRowLayout {
-                row,
-                well,
-                title: rect(text_x, row.y, text_w, 14.0),
-                sub: rect(text_x, row.y + 13.0, text_w, 12.0),
-                pill,
-            }
-        })
-        .collect::<Vec<_>>();
-    let empty = rows.is_empty().then(|| rect(l, list.y, list.w, list.h.min(60.0)));
-    RecordLayout {
-        header,
-        tabs,
-        tabs_enabled: !recording,
-        folder,
-        pick,
-        pick_short: !long_fits,
-        card,
-        caption_switch,
+        let button = rect(centred(REC_BUTTON), y0, REC_BUTTON, REC_BUTTON);
+        top_parts = TopParts {
+            button,
+            button_label: (!strip)
+                .then(|| rect(ix, button.bottom() + REC_LABEL_GAP, iw, REC_LABEL_H)),
+            ..TopParts::default()
+        };
+    }
+    let TopParts {
         button,
         button_label,
         pause,
         discard,
+        confirm,
+        clock,
+    } = top_parts;
+    let mut y = block_y + top_h;
+    // The idle Layar tab: the hint and the quality row, no sources.
+    let (mut hint, mut quality) = (None, None);
+    if screen && !recording {
+        let h = rect(ix, y, iw, REC_HINT_H);
+        let q = rect(ix, h.bottom(), iw, REC_SRC_H);
+        y = q.bottom();
+        (hint, quality) = (Some(h), Some(q));
+    }
+    let shown: Vec<Source> = match live {
+        Some(on) => [(on.mic, Source::Mic), (on.system, Source::System)]
+            .into_iter()
+            .filter_map(|(on, source)| on.then_some(source))
+            .collect(),
+        None if screen => Vec::new(),
+        None => vec![Source::Mic, Source::System],
+    };
+    let ir = ix + iw;
+    let mut sources = Vec::new();
+    for source in shown {
+        let row = rect(ix, y, iw, REC_SRC_H);
+        y = row.bottom();
+        let side = if recording { REC_MUTE } else { REC_GLYPH };
+        let glyph = rect(ix, row.y + (REC_SRC_H - side) / 2.0, side, side);
+        let (switch, switch_to, meter) = if recording {
+            let meter = rect(
+                ir - REC_SRC_METER_W,
+                row.y + (REC_SRC_H - REC_SRC_METER_H) / 2.0,
+                REC_SRC_METER_W,
+                REC_SRC_METER_H,
+            );
+            (None, None, Some(meter))
+        } else {
+            let switch = rect(
+                ir - REC_SWITCH_W,
+                row.y + (REC_SRC_H - REC_SWITCH_H) / 2.0,
+                REC_SWITCH_W,
+                REC_SWITCH_H,
+            );
+            let flipped = match source {
+                Source::Mic => RecSources { mic: !chosen.mic, ..chosen },
+                Source::System => RecSources { system: !chosen.system, ..chosen },
+            };
+            let to = (flipped.mic || flipped.system).then_some(flipped);
+            (Some(switch), to, None)
+        };
+        let end = switch.or(meter).map_or(ir, |r| r.x) - REC_SRC_GAP;
+        let tx = glyph.right() + REC_SRC_GAP;
+        sources.push(RecSourceRow {
+            source,
+            row,
+            glyph,
+            name: rect(tx, row.y + REC_NAME_TOP, end - tx, REC_NAME_H),
+            device: rect(tx, row.y + REC_NAME_TOP + REC_NAME_H, end - tx, REC_DEVICE_H),
+            switch,
+            switch_to,
+            meter,
+        });
+    }
+    let caption = rect(ix, y, iw, REC_SRC_H);
+    let caption_switch = rect(
+        ir - REC_SWITCH_W,
+        caption.y + (REC_SRC_H - REC_SWITCH_H) / 2.0,
+        REC_SWITCH_W,
+        REC_SWITCH_H,
+    );
+
+    // The list, fitted by height: the now row first while recording, a day
+    // label over each row that starts a day, and the more line when not
+    // every recording shows.
+    let lx = card.right() + REC_LIST_GAP;
+    let list_rect = rect(lx, body_y, r - lx, bottom - body_y);
+    let (lw, lb) = (list_rect.w, list_rect.bottom());
+    let mut groups = Vec::new();
+    let mut y = list_rect.y;
+    let now = recording.then(|| {
+        groups.push((0, rect(lx, y, lw, REC_GROUP_H)));
+        let now = rect(lx, y + REC_GROUP_H, lw, REC_ROW_H);
+        y = now.bottom();
+        now
+    });
+    let n = list.new_day.len();
+    let height = |i: usize| REC_ROW_H + if list.new_day[i] { REC_GROUP_H } else { 0.0 };
+    let all_h: f32 = (0..n).map(height).sum();
+    let reserve = all_h > lb - y || list.total > n;
+    let budget = lb - y - if reserve { REC_MORE_H } else { 0.0 };
+    let mut used = 0.0;
+    let fit = (0..n)
+        .take_while(|&i| {
+            used += height(i);
+            used <= budget + 0.01
+        })
+        .count();
+    let mut rows = Vec::with_capacity(fit);
+    for i in 0..fit {
+        if list.new_day[i] {
+            groups.push((i, rect(lx, y, lw, REC_GROUP_H)));
+            y += REC_GROUP_H;
+        }
+        let row = rect(lx, y, lw, REC_ROW_H);
+        y = row.bottom();
+        let mid = |h: f32| row.y + (REC_ROW_H - h) / 2.0;
+        let well = rect(lx, mid(REC_WELL), REC_WELL, REC_WELL);
+        let label_w = list.pills.get(i).copied().unwrap_or(0.0);
+        let pill_w = if label_w > 0.0 {
+            (label_w + REC_PILL_PAD).clamp(REC_PILL_MIN, REC_PILL_MAX)
+        } else {
+            0.0
+        };
+        let pill = rect(row.right() - pill_w, mid(REC_PILL_H), pill_w, REC_PILL_H);
+        let end = if pill_w > 0.0 { pill.x - REC_ROW_GAP_X } else { row.right() };
+        let time = rect(well.right() + REC_ROW_GAP_X, row.y, REC_ROW_TIME_W, REC_ROW_H);
+        let after_time = time.right() + REC_ROW_GAP_X;
+        // A video's title takes the room between the time and its length.
+        let (title, length) = if screen {
+            let length = rect(end - REC_ROW_LENGTH_W, row.y, REC_ROW_LENGTH_W, REC_ROW_H);
+            let title = rect(after_time, row.y, length.x - REC_ROW_GAP_X - after_time, REC_ROW_H);
+            (Some(title), length)
+        } else {
+            (None, rect(after_time, row.y, end - after_time, REC_ROW_H))
+        };
+        rows.push(RecordRowLayout {
+            row,
+            well,
+            time,
+            title,
+            length,
+            pill,
+        });
+    }
+    let more = (fit < list.total).then(|| (list.total - fit, rect(lx, y, lw, REC_MORE_H)));
+    let empty = (n == 0 && !recording).then(|| {
+        let ey = (list_rect.y + REC_EMPTY_TOP).min(lb - REC_EMPTY_H);
+        rect(lx, ey, lw, REC_EMPTY_H)
+    });
+    RecordLayout {
+        header,
+        tabs,
+        tabs_enabled: !recording,
+        pick,
+        folder,
+        card,
+        button,
+        button_label,
+        pause,
+        discard,
+        confirm,
+        clock,
         hint,
-        seg_track,
-        segs,
-        sources_enabled: !recording && !screen,
-        live,
-        idle_devices,
-        elapsed,
-        list,
+        quality,
+        sources,
+        caption,
+        caption_switch,
+        list: list_rect,
+        groups,
+        now,
         rows,
+        more,
         empty,
     }
 }
@@ -4756,33 +4862,34 @@ pub fn regions(s: ShapeRect, layout: &PageLayout, strip: impl Into<StripKind>) -
             if let Some(r) = l.discard {
                 add(r, Hit::ScreenDiscard);
             }
-            add(l.button, Hit::RecToggle);
-            if let Some((label, switch)) = l.caption_switch {
-                // The whole row is the click: the label counts as the switch.
-                add(
-                    Rect {
-                        w: switch.right() - label.x,
-                        ..label
-                    },
-                    Hit::RecCaptions,
-                );
+            if let Some(c) = l.confirm {
+                add(c.discard, Hit::ScreenDiscard);
+                add(c.keep, Hit::ScreenDiscardKeep);
             }
-            for cell in &l.live {
-                add(cell.button, Hit::RecMute(cell.source));
-                add(cell.device, Hit::RecDevice(cell.source));
+            // Zero-sized while the discard asks: no stop under the question.
+            if l.button.w > 0.0 {
+                add(l.button, Hit::RecToggle);
             }
-            for &(source, r) in &l.idle_devices {
-                add(r, Hit::RecDevice(source));
-            }
-            // The source control is locked while a recording runs, and the
-            // Layar tab has none.
-            if l.sources_enabled {
-                for (sources, r) in l.segs {
-                    add(r, Hit::RecSources(sources));
+            for src in &l.sources {
+                if src.meter.is_some() {
+                    add(src.glyph, Hit::RecMute(src.source));
+                }
+                add(src.device, Hit::RecDevice(src.source));
+                // The last source on is locked: its switch takes no click.
+                if let (Some(r), Some(to)) = (src.switch, src.switch_to) {
+                    add(r, Hit::RecSources(to));
                 }
             }
+            if let Some(r) = l.quality {
+                add(r, Hit::RecQuality);
+            }
+            // The whole row is the click: the label counts as the switch.
+            add(l.caption, Hit::RecCaptions);
             add(l.pick, Hit::RecPickFile);
             add(l.folder, Hit::RecFolder);
+            if let Some((_, r)) = l.more {
+                add(r, Hit::RecFolder);
+            }
             // The pill sits inside its row: it comes first.
             for (i, row) in l.rows.iter().enumerate() {
                 if row.pill.w > 0.0 {
@@ -5194,11 +5301,20 @@ mod tests {
             out.push((format!("arrange {name}"), PageLayout::Arrange(l)));
         }
         for tab in [AUDIO, SCREEN] {
-            for (recording, n) in [(false, 0), (false, 3), (true, 3), (false, 5), (true, 9)] {
+            for (recording, armed, n, total) in [
+                (false, false, 0, 0),
+                (false, false, 3, 3),
+                (true, false, 3, 3),
+                (true, true, 3, 3),
+                (false, false, 8, 30),
+                (true, false, 8, 30),
+            ] {
                 let live = recording.then_some(BOTH);
-                let l = record_layout(s, strip, &REC_HEAD, live, BOTH, n, &PILLS, tab);
+                let (new_day, pills) = rec_list(n);
+                let list = RecListInput { new_day: &new_day, pills: &pills, total };
+                let l = record_layout(s, strip, &REC_HEAD, live, BOTH, &list, tab, armed);
                 out.push((
-                    format!("record {tab:?} rec={recording} n={n}"),
+                    format!("record {tab:?} rec={recording} armed={armed} n={n}"),
                     PageLayout::Record(l),
                 ));
             }
@@ -5235,17 +5351,11 @@ mod tests {
     /// The Rekam header as the renderer would measure it.
     const REC_HEAD: RecordHead = RecordHead {
         tabs_w: [30.0, 29.0],
-        folder_w: 76.0,
-        pick_w: 110.0,
-        pick_short_w: 56.0,
-        discard_w: 72.0,
+        confirm_w: [34.0, 38.0],
     };
 
     const AUDIO: RecKind = RecKind::Audio;
     const SCREEN: RecKind = RecKind::Screen;
-
-    /// A label width per row: nothing is longer than "Transkrip".
-    const PILLS: [f32; 9] = [44.0; 9];
 
     /// A header as the renderer would measure it.
     const DEV_HEAD: DevicesHead = DevicesHead {
@@ -5317,79 +5427,100 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_rekam_page_lists_four_recordings_inside_the_panel() {
-        for style in [Style::Pill, Style::Notch] {
-            let s = panel(style);
-            let (dots, _) = page_dots(s, &Page::ALL, Page::Record);
-            let l = record_layout(s, false, &REC_HEAD, None, BOTH, 9, &PILLS, AUDIO);
-            // The caption switch under the card takes the fifth row's room.
-            assert_eq!(l.rows.len(), REC_ROWS - 1, "{style:?}: four fit");
-            assert!(l.empty.is_none());
-            for (i, r) in l.rows.iter().enumerate() {
-                assert!(r.row.bottom() <= content_bottom(s) + 0.01, "{style:?} {i}");
-                assert!(r.row.bottom() <= dots[0].y - 6.0 + 0.01, "{style:?} {i}");
-                assert!(r.pill.right() <= r.row.right() && r.title.right() < r.pill.x);
-                assert!(r.sub.bottom() <= r.row.bottom() + 0.01);
-                assert!(r.well.right() < r.title.x);
-                if i > 0 {
-                    assert!(disjoint(l.rows[i - 1].row, r.row), "{style:?} {i}");
-                }
-            }
-            // The list starts under the card, and the card under the title.
-            assert!(l.card.y >= l.header.bottom() && l.list.y >= l.card.bottom());
-            // Fewer recordings show fewer rows; none show the empty state.
-            assert_eq!(record_layout(s, false, &REC_HEAD, None, BOTH, 2, &PILLS, AUDIO).rows.len(), 2);
-            let none = record_layout(s, false, &REC_HEAD, None, BOTH, 0, &PILLS, AUDIO);
-            assert!(none.rows.is_empty());
-            assert!(none.empty.is_some_and(|e| rect_inside(style, s, e)));
-            // Under the waiting strip one row less fits, never past the dots.
-            let strip = record_layout(s, true, &REC_HEAD, None, BOTH, 9, &PILLS, AUDIO);
-            assert_eq!(strip.rows.len(), REC_ROWS - 2, "{style:?}");
-            for r in &strip.rows {
-                assert!(r.row.bottom() <= content_bottom(s) + 0.01);
+    /// A list of `n` recordings, a day per two rows, each with a pill of
+    /// "Transkrip"'s width, for `rec`.
+    fn rec_list(n: usize) -> (Vec<bool>, Vec<f32>) {
+        ((0..n).map(|i| i % 2 == 0).collect(), vec![44.0; n])
+    }
+
+    /// The Rekam page with `n` recordings listed out of `total`, chosen
+    /// sources `BOTH`, not armed.
+    fn rec(
+        s: ShapeRect,
+        strip: bool,
+        live: Option<RecSources>,
+        n: usize,
+        total: usize,
+        tab: RecKind,
+    ) -> RecordLayout {
+        let (new_day, pills) = rec_list(n);
+        let list = RecListInput {
+            new_day: &new_day,
+            pills: &pills,
+            total,
+        };
+        record_layout(s, strip, &REC_HEAD, live, BOTH, &list, tab, false)
+    }
+
+    /// The hit at the middle of `r`, as the island finds it.
+    fn rec_hit_at(s: ShapeRect, l: &RecordLayout, r: Rect, strip: bool) -> Option<Hit> {
+        let (x, y) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
+        regions(s, &PageLayout::Record(l.clone()), strip)
+            .into_iter()
+            .find(|g| x >= g.rect.x && x < g.rect.right() && y >= g.rect.y && y < g.rect.bottom())
+            .map(|g| g.hit)
+    }
+
+    /// Every rect the Rekam layout holds that has a size.
+    fn rec_rects(l: &RecordLayout) -> Vec<Rect> {
+        let mut out = vec![l.header, l.pick, l.folder, l.card, l.button, l.caption, l.caption_switch, l.list];
+        out.extend(l.tabs.map(|(_, r)| r));
+        out.extend([l.button_label, l.pause, l.discard, l.clock, l.hint, l.quality, l.now, l.empty].into_iter().flatten());
+        if let Some(c) = l.confirm {
+            out.extend([c.question, c.discard, c.keep]);
+        }
+        for src in &l.sources {
+            out.extend([src.row, src.glyph, src.name, src.device]);
+            out.extend([src.switch, src.meter].into_iter().flatten());
+        }
+        out.extend(l.groups.iter().map(|(_, r)| *r));
+        for row in &l.rows {
+            out.extend([row.row, row.well, row.time, row.length]);
+            out.extend(row.title);
+            if row.pill.w > 0.0 {
+                out.push(row.pill);
             }
         }
+        out.extend(l.more.map(|(_, r)| r));
+        out.retain(|r| r.w > 0.0 && r.h > 0.0);
+        out
     }
 
     #[test]
-    fn the_rekam_switch_sits_between_card_and_list_on_both_tabs() {
+    fn the_rekam_card_and_list_sit_inside_the_content_box() {
+        const E: f32 = 0.01;
         for style in [Style::Pill, Style::Notch] {
             let s = panel(style);
             for tab in [AUDIO, SCREEN] {
-                // The tallest page, a recording under the waiting strip,
-                // still has room for the row.
-                for (live, strip) in [(None, false), (Some(BOTH), false), (Some(BOTH), true)] {
-                    let tag = format!(
-                        "{style:?} {tab:?} live={} strip={strip}",
-                        live.is_some()
-                    );
-                    let l = record_layout(s, strip, &REC_HEAD, live, BOTH, 3, &PILLS, tab);
-                    let (label, switch) = l.caption_switch.expect(&tag);
-                    // Under the card, over the list, inside the page.
-                    assert!(label.y >= l.card.bottom() && switch.y >= l.card.bottom(), "{tag}");
-                    assert!(label.bottom() <= l.list.y && switch.bottom() <= l.list.y, "{tag}");
-                    assert!(label.x == left(s) && switch.right() == right(s), "{tag}");
-                    assert_eq!((switch.w, switch.h), (NOTIF_SWITCH_W, NOTIF_SWITCH_H), "{tag}");
-                    assert!(label.right() < switch.x && disjoint(label, switch), "{tag}");
-                    // The row is one click, wherever on it.
-                    let regions = regions(s, &PageLayout::Record(l.clone()), strip);
-                    for (x, y) in [
-                        (label.x + 1.0, label.y + label.h / 2.0),
-                        (switch.x + switch.w / 2.0, switch.y + switch.h / 2.0),
-                    ] {
-                        let hit = regions
-                            .iter()
-                            .find(|g| {
-                                x >= g.rect.x && x < g.rect.right() && y >= g.rect.y && y < g.rect.bottom()
-                            })
-                            .map(|g| g.hit.clone());
-                        assert_eq!(hit, Some(Hit::RecCaptions), "{tag}");
-                    }
-                    // The rows of the list keep clear of it and of the dots.
-                    for r in &l.rows {
-                        assert!(r.row.y >= switch.bottom(), "{tag}");
-                        assert!(r.row.bottom() <= content_bottom(s) + 0.01, "{tag}");
+                for live in [None, Some(BOTH)] {
+                    for strip in [false, true] {
+                        for armed in [false, true] {
+                            if armed && (tab != SCREEN || live.is_none()) {
+                                continue;
+                            }
+                            let tag = format!("{style:?} {tab:?} live={live:?} strip={strip} armed={armed}");
+                            let (new_day, pills) = rec_list(8);
+                            let list = RecListInput { new_day: &new_day, pills: &pills, total: 30 };
+                            let l = record_layout(s, strip, &REC_HEAD, live, BOTH, &list, tab, armed);
+                            for r in rec_rects(&l) {
+                                assert!(r.x >= left(s) - E && r.right() <= right(s) + E, "{tag}: {r:?}");
+                                assert!(
+                                    r.y >= content_top(s, strip) - E && r.bottom() <= content_bottom(s) + E,
+                                    "{tag}: {r:?}"
+                                );
+                            }
+                            assert_eq!(l.card.w, 196.0, "{tag}");
+                            assert_eq!(l.list.x, l.card.right() + 12.0, "{tag}");
+                            // The card's parts sit in the card, the list's in the list.
+                            for src in &l.sources {
+                                assert!(src.row.x >= l.card.x && src.row.right() <= l.card.right(), "{tag}");
+                                assert!(src.row.bottom() <= l.card.bottom() + E, "{tag}");
+                            }
+                            assert!(l.caption.bottom() <= l.card.bottom() + E, "{tag}");
+                            for row in &l.rows {
+                                assert!(row.row.x >= l.list.x && row.row.bottom() <= l.list.bottom() + E, "{tag}");
+                            }
+                        }
                     }
                 }
             }
@@ -5397,453 +5528,226 @@ mod tests {
     }
 
     #[test]
-    fn the_transcript_pill_sits_right_and_wins_over_the_row() {
-        for style in [Style::Pill, Style::Notch] {
-            let s = panel(style);
-            let l = record_layout(s, false, &REC_HEAD, None, BOTH, 3, &PILLS, AUDIO);
-            let hit_of = |r: Rect| {
-                let (x, y) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
-                regions(s, &PageLayout::Record(l.clone()), false)
-                    .into_iter()
-                    .find(|g| {
-                        x >= g.rect.x && x < g.rect.right() && y >= g.rect.y && y < g.rect.bottom()
-                    })
-                    .map(|g| g.hit)
-            };
-            for (i, row) in l.rows.iter().enumerate() {
-                // Right-aligned in its row, centred on the row's height.
-                assert_eq!(row.pill.right(), row.row.right(), "{style:?} {i}");
-                assert!(row.pill.w >= REC_PILL_MIN && row.pill.w <= REC_PILL_MAX);
-                assert_eq!(hit_of(row.pill), Some(Hit::RecTranscript(i)), "{style:?} {i}");
-                assert_eq!(hit_of(row.title), Some(Hit::RecOpen(i)), "{style:?} {i}");
+    fn the_last_source_on_has_no_switch_click() {
+        let mic = RecSources { mic: true, system: false };
+        let system = RecSources { mic: false, system: true };
+        let s = panel(Style::Pill);
+        let (new_day, pills) = rec_list(3);
+        let list = RecListInput { new_day: &new_day, pills: &pills, total: 3 };
+        let only_mic = record_layout(s, false, &REC_HEAD, None, mic, &list, AUDIO, false);
+        let [m, sys] = &only_mic.sources[..] else {
+            panic!("two rows: {:?}", only_mic.sources);
+        };
+        assert_eq!((m.source, sys.source), (Source::Mic, Source::System));
+        assert_eq!(m.switch_to, None, "the mic is the last one on");
+        assert_eq!(sys.switch_to, Some(BOTH));
+        assert!(m.switch.is_some() && sys.switch.is_some(), "both switches drawn");
+        let both = record_layout(s, false, &REC_HEAD, None, BOTH, &list, AUDIO, false);
+        assert_eq!(both.sources[0].switch_to, Some(system));
+        assert_eq!(both.sources[1].switch_to, Some(mic));
+        let hits: Vec<Hit> = regions(s, &PageLayout::Record(only_mic.clone()), false)
+            .into_iter()
+            .map(|g| g.hit)
+            .collect();
+        assert_eq!(
+            hits.iter().filter(|h| matches!(h, Hit::RecSources(_))).collect::<Vec<_>>(),
+            [&Hit::RecSources(BOTH)],
+            "no click on the locked switch"
+        );
+        assert_eq!(rec_hit_at(s, &only_mic, sys.switch.unwrap(), false), Some(Hit::RecSources(BOTH)));
+        assert_eq!(rec_hit_at(s, &both, both.sources[0].device, false), Some(Hit::RecDevice(Source::Mic)));
+    }
+
+    #[test]
+    fn the_more_line_counts_what_did_not_fit() {
+        let s = panel(Style::Pill);
+        let new_day = [true, false, true, false, true, false, false, false];
+        let pills = [44.0; 8];
+        let list = RecListInput { new_day: &new_day, pills: &pills, total: 30 };
+        let l = record_layout(s, false, &REC_HEAD, None, BOTH, &list, AUDIO, false);
+        assert!(!l.rows.is_empty() && l.rows.len() < 8);
+        let used = l.rows.len() as f32 * l.rows[0].row.h + l.groups.len() as f32 * l.groups[0].1.h;
+        let (n, more) = l.more.expect("a more line");
+        assert!(used + more.h <= l.list.h + 0.01, "{used} + {} in {}", more.h, l.list.h);
+        assert_eq!(n, 30 - l.rows.len());
+        assert!(more.y >= l.rows.last().unwrap().row.bottom() && more.bottom() <= l.list.bottom());
+        // A group label only heads a row that shows.
+        for (i, g) in &l.groups {
+            assert!(*i < l.rows.len() && new_day[*i]);
+            assert!(g.bottom() <= l.rows[*i].row.y + 0.01);
+        }
+        assert_eq!(rec_hit_at(s, &l, more, false), Some(Hit::RecFolder));
+        // All of them listed and shown: no line.
+        let few = RecListInput { new_day: &new_day[..3], pills: &pills[..3], total: 3 };
+        let l = record_layout(s, false, &REC_HEAD, None, BOTH, &few, AUDIO, false);
+        assert_eq!(l.rows.len(), 3);
+        assert_eq!(l.more, None);
+    }
+
+    #[test]
+    fn a_pill_is_at_least_76_and_grows_to_its_label() {
+        let s = panel(Style::Pill);
+        let new_day = [true, false, false, false];
+        let pills = [20.0, 70.0, 120.0, 0.0];
+        let list = RecListInput { new_day: &new_day, pills: &pills, total: 4 };
+        let l = record_layout(s, false, &REC_HEAD, None, BOTH, &list, AUDIO, false);
+        assert_eq!(l.rows.iter().map(|r| r.pill.w).collect::<Vec<_>>(), [76.0, 86.0, 112.0, 0.0]);
+        for row in &l.rows {
+            assert!(row.well.right() < row.time.x && row.time.right() <= row.length.x);
+            if row.pill.w > 0.0 {
+                assert_eq!(row.pill.right(), row.row.right());
+                assert!(row.length.right() < row.pill.x);
+                assert_eq!(row.pill.h, 22.0);
             }
         }
-    }
-
-    #[test]
-    fn the_title_ends_before_a_wide_pill() {
-        let s = panel(Style::Pill);
-        // "Menunggu model" is far wider than "Transkrip".
-        let wide = record_layout(s, false, &REC_HEAD, None, BOTH, 2, &[80.0, 44.0], AUDIO);
-        let narrow = &wide.rows[1];
-        let long = &wide.rows[0];
-        assert_eq!(long.pill.w, 96.0, "the label plus 16");
-        assert_eq!(long.title.right(), long.pill.x - 8.0);
-        assert_eq!(long.sub.right(), long.pill.x - 8.0);
-        assert_eq!(narrow.pill.w, 60.0);
-        assert!(narrow.title.w > long.title.w);
-        // Clamped at both ends.
-        let l = record_layout(s, false, &REC_HEAD, None, BOTH, 2, &[10.0, 400.0], AUDIO);
-        assert_eq!(l.rows[0].pill.w, REC_PILL_MIN);
-        assert_eq!(l.rows[1].pill.w, REC_PILL_MAX);
-    }
-
-    #[test]
-    fn an_unfinished_row_has_no_pill() {
-        let s = panel(Style::Pill);
-        // Row 1 is a `.m4a.part`: its pill width is zero.
-        let l = record_layout(s, false, &REC_HEAD, None, BOTH, 3, &[44.0, 0.0, 44.0], AUDIO);
-        assert_eq!(l.rows[1].pill.w, 0.0);
-        assert_eq!(l.rows[1].title.right(), l.rows[1].row.right(), "the title uses the room");
+        // No pill: no transcript click, the row still opens.
         let hits: Vec<Hit> = regions(s, &PageLayout::Record(l.clone()), false)
             .into_iter()
             .map(|g| g.hit)
             .collect();
-        assert!(hits.contains(&Hit::RecTranscript(0)) && hits.contains(&Hit::RecTranscript(2)));
-        assert!(!hits.contains(&Hit::RecTranscript(1)));
-        assert!(hits.contains(&Hit::RecOpen(1)), "the row still opens");
+        assert!(hits.contains(&Hit::RecTranscript(0)) && !hits.contains(&Hit::RecTranscript(3)));
+        assert!(hits.contains(&Hit::RecOpen(3)));
+        // The pill wins over its row.
+        assert_eq!(rec_hit_at(s, &l, l.rows[1].pill, false), Some(Hit::RecTranscript(1)));
+        assert_eq!(rec_hit_at(s, &l, l.rows[1].time, false), Some(Hit::RecOpen(1)));
     }
 
     #[test]
-    fn the_header_uses_the_short_link_when_both_do_not_fit() {
-        let s = panel(Style::Pill);
-        let room = header_right(s) - left(s);
-        // Plenty of room: the long form, twelve left of "Buka folder".
-        let roomy = record_layout(s, false, &REC_HEAD, None, BOTH, 0, &[], AUDIO);
-        assert!(!roomy.pick_short);
-        assert_eq!(roomy.pick.w, REC_HEAD.pick_w);
-        assert_eq!(roomy.pick.right(), roomy.folder.x - 12.0);
-        assert_eq!(roomy.folder.right(), header_right(s));
-        // Tabs so wide that the long form would touch them: the short one.
-        let tab_w = (room - 160.0) / 2.0 - SEG_PAD - 2.0 * REC_TAB_PAD_X;
-        let wide_tabs = RecordHead { tabs_w: [tab_w; 2], ..REC_HEAD };
-        let l = record_layout(s, false, &wide_tabs, None, BOTH, 0, &[], AUDIO);
-        assert_eq!(l.header.w, room - 160.0);
-        assert!(l.pick_short);
-        assert_eq!(l.pick.w, REC_HEAD.pick_short_w);
-        assert!(l.pick.x >= l.header.right() + REC_TITLE_GAP);
-        assert!(disjoint(l.pick, l.folder) && disjoint(l.pick, l.header));
-    }
-
-    #[test]
-    fn the_rekam_card_swaps_start_for_stop_and_pause_and_locks_the_sources() {
-        let s = panel(Style::Pill);
-        let idle = record_layout(s, false, &REC_HEAD, None, BOTH, 0, &PILLS, AUDIO);
-        assert!(idle.pause.is_none() && idle.sources_enabled);
-        // The lone button is centred in its card.
-        assert!(
-            ((idle.button.x + idle.button.w / 2.0) - (idle.card.x + idle.card.w / 2.0)).abs()
-                < 0.01
-        );
-        let rec = record_layout(s, false, &REC_HEAD, Some(BOTH), BOTH, 0, &PILLS, AUDIO);
-        let pause = rec.pause.expect("pause while recording");
-        assert!(!rec.sources_enabled);
-        assert!(disjoint(rec.button, pause));
-        assert!(pause.x >= rec.card.x && pause.right() <= rec.card.right());
-        assert!(rec.button.x >= rec.card.x);
-        // The pair is centred in the card.
-        assert!(
-            ((rec.button.x + pause.right()) / 2.0 - (rec.card.x + rec.card.w / 2.0)).abs() < 0.01
-        );
-        for l in [&idle, &rec] {
-            assert!(l.button_label.y >= l.button.bottom());
-            assert!(l.button_label.bottom() <= l.card.bottom());
-            // The source control sits right of the card and holds three
-            // equal segments in its track.
-            assert!(l.seg_track.x >= l.card.right());
-            assert!(l.seg_track.right() <= right(s) + 0.01);
-            let w = l.segs[0].1.w;
-            for (_, r) in l.segs {
-                assert!((r.w - w).abs() < 0.01);
-                assert!(r.x >= l.seg_track.x && r.right() <= l.seg_track.right());
-            }
-            assert!(l.segs[0].1.right() <= l.segs[1].1.x + 0.01);
-            assert!(l.segs[1].1.right() <= l.segs[2].1.x + 0.01);
-            assert!(l.elapsed.y >= l.seg_track.bottom());
-            assert!(l.elapsed.bottom() <= l.card.bottom() + 0.01);
-        }
-        assert_eq!(
-            idle.segs.map(|(src, _)| (src.mic, src.system)),
-            [(true, false), (false, true), (true, true)]
-        );
-    }
-
-    #[test]
-    fn a_recording_shows_a_mute_button_and_a_meter_for_each_recorded_source() {
-        let s = panel(Style::Pill);
-        let mic = RecSources { mic: true, system: false };
-        let system = RecSources { mic: false, system: true };
-        for (live, want) in [
-            (BOTH, vec![Source::Mic, Source::System]),
-            (mic, vec![Source::Mic]),
-            (system, vec![Source::System]),
-        ] {
-            let l = record_layout(s, false, &REC_HEAD, Some(live), BOTH, 3, &PILLS, AUDIO);
-            assert_eq!(l.live.iter().map(|c| c.source).collect::<Vec<_>>(), want);
-            for c in &l.live {
-                // The button and its meter sit side by side inside the
-                // control's place, clear of the card and the clock.
-                assert!(c.button.x >= l.seg_track.x && c.meter.right() <= l.seg_track.right() + 0.01);
-                assert!(c.button.y >= l.seg_track.y && c.button.bottom() <= l.seg_track.bottom());
-                assert!(c.button.right() <= c.meter.x);
-                assert!(c.meter.y >= l.seg_track.y && c.meter.bottom() <= l.seg_track.bottom());
-                assert!(c.button.x >= l.card.right());
-            }
-            if let [a, b] = l.live[..] {
-                assert!(a.meter.right() <= b.button.x, "the cells do not overlap");
-                assert!(a.device.right() <= b.device.x, "nor do the device names");
-            }
-            // The device name sits under its button and meter, in the
-            // card's height and over the clock.
-            for c in &l.live {
-                assert!(c.device.y >= c.button.bottom() && c.device.y >= c.meter.bottom());
-                assert!(c.device.x == c.button.x && c.device.bottom() <= l.elapsed.y);
-                assert!(c.device.bottom() <= l.card.bottom());
-                assert!(c.device.right() <= l.seg_track.right() + 0.01);
-            }
-            assert!(l.idle_devices.is_empty());
-        }
-        assert!(record_layout(s, false, &REC_HEAD, None, BOTH, 3, &PILLS, AUDIO).live.is_empty());
-    }
-
-    #[test]
-    fn while_idle_each_chosen_source_has_a_device_line_under_the_control() {
-        let mic = RecSources { mic: true, system: false };
-        let system = RecSources { mic: false, system: true };
+    fn the_strip_shrinks_the_top_block_and_nothing_passes_the_dots() {
         for style in [Style::Pill, Style::Notch] {
             let s = panel(style);
-            for (chosen, want) in [
-                (BOTH, vec![Source::Mic, Source::System]),
-                (mic, vec![Source::Mic]),
-                (system, vec![Source::System]),
-            ] {
-                let l = record_layout(s, false, &REC_HEAD, None, chosen, 3, &PILLS, AUDIO);
-                assert_eq!(
-                    l.idle_devices.iter().map(|d| d.0).collect::<Vec<_>>(),
-                    want,
-                    "{style:?}"
-                );
-                let mut above = l.seg_track.bottom();
-                for &(_, r) in &l.idle_devices {
-                    // Clear of the control and of each other, inside the
-                    // card's height, left of nothing but the page's edge.
-                    assert!(r.y >= above && r.bottom() <= l.card.bottom(), "{style:?}");
-                    assert!(r.x >= l.card.right() && r.right() <= right(s) + 0.01);
-                    above = r.bottom();
-                }
-                assert!(l.live.is_empty());
+            let (dots, _) = page_dots(s, &Page::ALL, Page::Record);
+            let plain = rec(s, false, None, 8, 30, AUDIO);
+            let l = rec(s, true, None, 8, 30, AUDIO);
+            assert!(plain.button_label.is_some(), "{style:?}");
+            assert_eq!(l.button_label, None, "{style:?}");
+            assert!(l.card.bottom() <= content_bottom(s), "{style:?}");
+            assert!(l.caption.bottom() <= l.card.bottom(), "{style:?}");
+            for row in &l.rows {
+                assert!(row.row.bottom() <= l.list.bottom() + 0.01, "{style:?}");
+                assert!(row.row.bottom() <= dots[0].y - 6.0 + 0.01, "{style:?}");
             }
-            // The extra height is for the recording only: idle keeps four rows.
-            let idle = record_layout(s, false, &REC_HEAD, None, BOTH, 9, &PILLS, AUDIO);
-            let rec = record_layout(s, false, &REC_HEAD, Some(BOTH), BOTH, 9, &PILLS, AUDIO);
-            assert_eq!(idle.rows.len(), REC_ROWS - 1, "{style:?}");
-            assert!(rec.card.h > idle.card.h && !rec.rows.is_empty(), "{style:?}");
-            for r in &rec.rows {
-                assert!(r.row.bottom() <= content_bottom(s) + 0.01, "{style:?}");
-            }
-        }
-    }
-
-    /// The header as the renderer measures it per language, in JetBrains
-    /// Mono (the wider of the two fonts); the real widths are held to the
-    /// same rule by `rekam_pills_and_header_links_hold_their_words`.
-    const REC_HEAD_ID: RecordHead = RecordHead {
-        tabs_w: [32.0, 32.0],
-        folder_w: 93.0,
-        pick_w: 134.0,
-        pick_short_w: 68.0,
-        discard_w: 80.0,
-    };
-    const REC_HEAD_EN: RecordHead = RecordHead {
-        tabs_w: [32.0, 38.0],
-        folder_w: 93.0,
-        pick_w: 121.0,
-        pick_short_w: 75.0,
-        discard_w: 73.0,
-    };
-
-    #[test]
-    fn the_tab_switch_takes_the_title_place_and_both_links_still_fit() {
-        for style in [Style::Pill, Style::Notch] {
-            let s = panel(style);
-            for (lang, head) in [("id", REC_HEAD_ID), ("en", REC_HEAD_EN)] {
-                for tab in [AUDIO, SCREEN] {
-                    let tag = format!("{style:?} {lang} {tab:?}");
-                    let l = record_layout(s, false, &head, None, BOTH, 3, &PILLS, tab);
-                    // The switch starts where a title does, in the header row.
-                    assert_eq!((l.header.x, l.header.y), (left(s), content_top(s, false)), "{tag}");
-                    assert_eq!(l.header.h, HEADER_H, "{tag}");
-                    let [(a, audio), (b, screen)] = l.tabs;
-                    assert_eq!((a, b), (AUDIO, SCREEN), "{tag}: Audio first");
-                    // Two equal segments side by side inside the track, each
-                    // with room for the wider label.
-                    assert!((audio.w - screen.w).abs() < 0.01, "{tag}");
-                    assert!(audio.w >= head.tabs_w[0].max(head.tabs_w[1]) + 16.0, "{tag}");
-                    assert!(audio.x >= l.header.x && screen.right() <= l.header.right(), "{tag}");
-                    assert!(audio.y >= l.header.y && audio.bottom() <= l.header.bottom(), "{tag}");
-                    assert!(audio.right() <= screen.x && disjoint(audio, screen), "{tag}");
-                    // Both links keep their long form, clear of the switch.
-                    assert!(!l.pick_short, "{tag}: the long form fits");
-                    assert_eq!(l.pick.w, head.pick_w, "{tag}");
-                    assert!(l.pick.x >= l.header.right() + REC_TITLE_GAP, "{tag}");
-                    assert_eq!(l.folder.right(), header_right(s), "{tag}");
-                    assert!(disjoint(l.pick, l.folder) && disjoint(l.header, l.pick), "{tag}");
-                    assert!(rect_inside(style, s, l.header), "{tag}");
-                }
-            }
+            assert!(l.rows.len() <= plain.rows.len(), "{style:?}");
+            // The source rows keep their 34.
+            assert_eq!(l.sources[0].row.h, 34.0);
+            assert!(l.sources[0].row.y - l.card.y < plain.sources[0].row.y - plain.card.y);
         }
     }
 
     #[test]
-    fn the_screen_live_block_has_pause_stop_and_discard() {
-        let mic = RecSources { mic: true, system: false };
-        let none = RecSources { mic: false, system: false };
-        for style in [Style::Pill, Style::Notch] {
-            let s = panel(style);
-            for head in [REC_HEAD, REC_HEAD_ID, REC_HEAD_EN] {
-                for live in [BOTH, mic, none] {
-                    let tag = format!("{style:?} {head:?} {live:?}");
-                    let l = record_layout(s, false, &head, Some(live), BOTH, 3, &PILLS, SCREEN);
-                    let pause = l.pause.expect("pause");
-                    let discard = l.discard.expect("discard");
-                    // All three inside the card, in that order, none touching.
-                    for r in [l.button, pause, discard] {
-                        assert!(r.x >= l.card.x && r.right() <= l.card.right(), "{tag}");
-                        assert!(r.y >= l.card.y && r.bottom() <= l.card.bottom(), "{tag}");
-                    }
-                    assert!(l.button.right() < pause.x && pause.right() < discard.x, "{tag}");
-                    assert!(disjoint(l.button, pause) && disjoint(pause, discard), "{tag}");
-                    assert!(disjoint(l.button_label, discard), "{tag}");
-                    // The label has room in the pill, and a pointer has a
-                    // target as tall as a mute button at the least.
-                    assert!(discard.w >= head.discard_w + 16.0, "{tag}");
-                    assert!(discard.h >= REC_MUTE, "{tag}");
-                    // The sources and the clock start right of the wider card
-                    // and stay on the page.
-                    assert!(l.seg_track.x >= l.card.right() + REC_BLOCK_GAP - 0.01, "{tag}");
-                    assert!(l.elapsed.x >= l.card.right() && l.elapsed.right() <= right(s) + 0.01);
-                    for c in &l.live {
-                        assert!(c.button.x >= l.card.right(), "{tag}");
-                        assert!(c.meter.right() <= right(s) + 0.01, "{tag}");
-                        assert!(c.device.right() <= right(s) + 0.01 && c.device.w > 60.0, "{tag}");
-                    }
-                    // Its click is its own.
-                    let hits = regions(s, &PageLayout::Record(l.clone()), false);
-                    let at = |r: Rect| {
-                        let (x, y) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
-                        hits.iter()
-                            .find(|g| {
-                                x >= g.rect.x
-                                    && x < g.rect.right()
-                                    && y >= g.rect.y
-                                    && y < g.rect.bottom()
-                            })
-                            .map(|g| g.hit.clone())
-                    };
-                    assert_eq!(at(discard), Some(Hit::ScreenDiscard), "{tag}");
-                    assert_eq!(at(pause), Some(Hit::RecPause), "{tag}");
-                    assert_eq!(at(l.button), Some(Hit::RecToggle), "{tag}");
-                    assert!(l.hint.is_none(), "{tag}: the hint is for the idle tab");
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn the_audio_live_block_has_no_discard() {
+    fn recording_puts_now_first_and_mutes_on_the_glyph() {
         let s = panel(Style::Pill);
-        let rec = record_layout(s, false, &REC_HEAD, Some(BOTH), BOTH, 3, &PILLS, AUDIO);
-        assert!(rec.discard.is_none());
-        assert_eq!(rec.card.w, REC_CARD_W, "the card keeps its width");
-        // Nor has either tab while nothing records.
-        for tab in [AUDIO, SCREEN] {
-            let idle = record_layout(s, false, &REC_HEAD, None, BOTH, 3, &PILLS, tab);
-            assert!(idle.discard.is_none(), "{tab:?}");
-            assert_eq!(idle.card.w, REC_CARD_W, "{tab:?}");
+        let l = rec(s, false, Some(BOTH), 8, 30, AUDIO);
+        let now = l.now.expect("the now row");
+        assert!(now.y < l.rows[0].row.y);
+        assert!(l.groups[0].1.bottom() <= now.y + 0.01, "under a today label");
+        for src in &l.sources {
+            assert_eq!(src.switch, None);
+            assert!(src.meter.is_some());
+            assert_eq!(src.glyph.w, 24.0);
         }
-        for l in [
-            record_layout(s, false, &REC_HEAD, Some(BOTH), BOTH, 3, &PILLS, AUDIO),
-            record_layout(s, false, &REC_HEAD, None, BOTH, 3, &PILLS, SCREEN),
-        ] {
-            assert!(
-                !regions(s, &PageLayout::Record(l), false)
-                    .iter()
-                    .any(|g| g.hit == Hit::ScreenDiscard)
-            );
-        }
-        // The screen block is the one with it.
-        let screen = record_layout(s, false, &REC_HEAD, Some(BOTH), BOTH, 3, &PILLS, SCREEN);
-        assert!(screen.discard.is_some());
+        assert!(l.pause.is_some() && l.clock.is_some() && l.button_label.is_none());
+        assert!(!l.tabs_enabled);
+        assert_eq!(rec_hit_at(s, &l, l.sources[0].glyph, false), Some(Hit::RecMute(Source::Mic)));
+        assert_eq!(rec_hit_at(s, &l, l.sources[0].device, false), Some(Hit::RecDevice(Source::Mic)));
+        assert_eq!(rec_hit_at(s, &l, l.sources[1].glyph, false), Some(Hit::RecMute(Source::System)));
+        assert_eq!(rec_hit_at(s, &l, now, false), None, "the now row takes no click");
+        assert_eq!(rec_hit_at(s, &l, l.pause.unwrap(), false), Some(Hit::RecPause));
+        assert_eq!(rec_hit_at(s, &l, l.button, false), Some(Hit::RecToggle));
+        // The tabs are locked while recording.
+        let hits = regions(s, &PageLayout::Record(l.clone()), false);
+        assert!(!hits.iter().any(|g| matches!(g.hit, Hit::RecTab(_) | Hit::RecSources(_))));
+        // Idle: no now row, a switch per source and no mute click.
+        let idle = rec(s, false, None, 8, 30, AUDIO);
+        assert!(idle.now.is_none() && idle.tabs_enabled);
+        assert!(idle.sources.iter().all(|src| src.switch.is_some() && src.meter.is_none()));
+        let hits = regions(s, &PageLayout::Record(idle.clone()), false);
+        assert!(!hits.iter().any(|g| matches!(g.hit, Hit::RecMute(_) | Hit::RecPause)));
+        assert_eq!(hits.iter().filter(|g| matches!(g.hit, Hit::RecTab(_))).count(), 2);
     }
 
     #[test]
-    fn the_idle_screen_tab_shows_the_hint_not_the_source_control() {
-        for style in [Style::Pill, Style::Notch] {
-            let s = panel(style);
-            let l = record_layout(s, false, &REC_HEAD, None, BOTH, 3, &PILLS, SCREEN);
-            let hint = l.hint.expect("the hint");
-            // Right of the card, within its height, on the page.
-            assert!(hint.x >= l.card.right() + REC_BLOCK_GAP - 0.01, "{style:?}");
-            assert!(hint.y >= l.card.y && hint.bottom() <= l.card.bottom(), "{style:?}");
-            assert!(hint.right() <= right(s) + 0.01 && hint.w > 200.0, "{style:?}");
-            // No source control and no device lines: the picker asks.
-            assert!(!l.sources_enabled && l.idle_devices.is_empty() && l.live.is_empty());
-            let hits = regions(s, &PageLayout::Record(l.clone()), false);
-            assert!(
-                !hits
-                    .iter()
-                    .any(|g| matches!(g.hit, Hit::RecSources(_) | Hit::RecDevice(_))),
-                "{style:?}"
-            );
-            // The big button still starts, and the list is where it was.
-            assert!(hits.iter().any(|g| g.hit == Hit::RecToggle && g.rect == l.button));
-            let audio = record_layout(s, false, &REC_HEAD, None, BOTH, 3, &PILLS, AUDIO);
-            assert!(audio.hint.is_none(), "{style:?}: Audio keeps its control");
-            assert!(audio.sources_enabled && audio.idle_devices.len() == 2);
-            assert_eq!((l.card, l.button, l.list), (audio.card, audio.button, audio.list));
-            assert_eq!(l.rows, audio.rows, "{style:?}");
-            // A running screen recording shows its sources, not the hint.
-            let rec = record_layout(s, false, &REC_HEAD, Some(BOTH), BOTH, 3, &PILLS, SCREEN);
-            assert!(rec.hint.is_none() && rec.live.len() == 2, "{style:?}");
-        }
-    }
-
-    #[test]
-    fn tabs_take_clicks_only_while_idle() {
+    fn an_armed_discard_asks_with_two_buttons() {
         let s = panel(Style::Pill);
-        let tab_hits = |l: &RecordLayout| -> Vec<(Hit, Rect)> {
-            regions(s, &PageLayout::Record(l.clone()), false)
-                .into_iter()
-                .filter(|g| matches!(g.hit, Hit::RecTab(_)))
-                .map(|g| (g.hit, g.rect))
-                .collect()
+        let (new_day, pills) = rec_list(3);
+        let list = RecListInput { new_day: &new_day, pills: &pills, total: 3 };
+        let l = record_layout(s, false, &REC_HEAD, Some(BOTH), BOTH, &list, SCREEN, true);
+        let c = l.confirm.expect("the question");
+        assert_eq!((l.pause, l.discard), (None, None));
+        assert!(c.question.bottom() <= c.discard.y && c.discard.right() < c.keep.x);
+        assert_eq!((c.discard.h, c.keep.h), (26.0, 26.0));
+        assert!(c.discard.w >= REC_HEAD.confirm_w[0] && c.keep.w >= REC_HEAD.confirm_w[1]);
+        assert_eq!(rec_hit_at(s, &l, c.discard, false), Some(Hit::ScreenDiscard));
+        assert_eq!(rec_hit_at(s, &l, c.keep, false), Some(Hit::ScreenDiscardKeep));
+        assert_eq!(rec_hit_at(s, &l, c.question, false), None, "no stop under the question");
+        // Not armed: the trash button beside stop.
+        let plain = record_layout(s, false, &REC_HEAD, Some(BOTH), BOTH, &list, SCREEN, false);
+        let discard = plain.discard.expect("discard");
+        assert!(plain.confirm.is_none());
+        assert_eq!(rec_hit_at(s, &plain, discard, false), Some(Hit::ScreenDiscard));
+        assert!(plain.button.right() < discard.x && plain.pause.unwrap().right() < plain.button.x);
+        // Audio has none.
+        let audio = record_layout(s, false, &REC_HEAD, Some(BOTH), BOTH, &list, AUDIO, false);
+        assert!(audio.discard.is_none());
+    }
+
+    #[test]
+    fn the_idle_screen_tab_has_the_hint_and_quality_not_sources() {
+        let s = panel(Style::Pill);
+        let l = rec(s, false, None, 3, 3, SCREEN);
+        assert!(l.sources.is_empty());
+        let (hint, quality) = (l.hint.expect("hint"), l.quality.expect("quality"));
+        assert!(hint.bottom() <= quality.y && quality.bottom() <= l.caption.y);
+        assert_eq!(rec_hit_at(s, &l, quality, false), Some(Hit::RecQuality));
+        assert_eq!(rec_hit_at(s, &l, l.caption, false), Some(Hit::RecCaptions));
+        assert!(l.rows.iter().all(|r| r.title.is_some()), "videos have a title");
+        let audio = rec(s, false, None, 3, 3, AUDIO);
+        assert!(audio.hint.is_none() && audio.quality.is_none());
+        assert!(audio.rows.iter().all(|r| r.title.is_none()));
+        assert_eq!((l.card, l.list), (audio.card, audio.list));
+    }
+
+    #[test]
+    fn a_day_label_heads_each_new_day() {
+        let at = |d: u32, h: u32| RecEntry {
+            path: Default::default(),
+            title: String::new(),
+            started: String::new(),
+            started_at: date(2026, 11, d).and_hms_opt(h, 0, 0).unwrap(),
+            duration: Default::default(),
+            unfinished: false,
+            silent: false,
+            transcript: crate::model::RowTranscript::None,
         };
-        for tab in [AUDIO, SCREEN] {
-            let idle = record_layout(s, false, &REC_HEAD, None, BOTH, 3, &PILLS, tab);
-            assert!(idle.tabs_enabled, "{tab:?}");
-            assert_eq!(
-                tab_hits(&idle),
-                idle.tabs.map(|(k, r)| (Hit::RecTab(k), r)).to_vec(),
-                "{tab:?}: a region per segment"
-            );
-            // Locked while a recording runs: the segments are drawn where
-            // they were and take no click.
-            let rec = record_layout(s, false, &REC_HEAD, Some(BOTH), BOTH, 3, &PILLS, tab);
-            assert!(!rec.tabs_enabled, "{tab:?}");
-            assert_eq!(rec.tabs, idle.tabs, "{tab:?}");
-            assert_eq!(tab_hits(&rec), vec![], "{tab:?}");
-        }
+        let today = date(2026, 11, 12);
+        let rows = [at(12, 20), at(12, 9), at(8, 1), at(8, 0), at(7, 22)];
+        assert_eq!(rec_new_days(&rows, false, today), [true, false, true, false, true]);
+        // Recording: today's first row sits under the now row's label.
+        assert_eq!(rec_new_days(&rows, true, today), [false, false, true, false, true]);
+        assert_eq!(rec_new_days(&rows[2..], true, today), [true, false, true]);
+        assert!(rec_new_days(&[], true, today).is_empty());
     }
 
     #[test]
-    fn the_rekam_hits_follow_the_layout() {
-        let s = panel(Style::Pill);
-        let hit_of = |l: &RecordLayout, r: Rect| {
-            let (x, y) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
-            regions(s, &PageLayout::Record(l.clone()), false)
-                .into_iter()
-                .find(|g| x >= g.rect.x && x < g.rect.right() && y >= g.rect.y && y < g.rect.bottom())
-                .map(|g| g.hit)
-        };
-        let idle = record_layout(s, false, &REC_HEAD, None, BOTH, 3, &PILLS, AUDIO);
-        assert_eq!(hit_of(&idle, idle.button), Some(Hit::RecToggle));
-        assert_eq!(hit_of(&idle, idle.folder), Some(Hit::RecFolder));
-        for (sources, r) in idle.segs {
-            assert_eq!(hit_of(&idle, r), Some(Hit::RecSources(sources)));
+    fn the_header_has_two_icon_buttons_left_of_settings() {
+        for style in [Style::Pill, Style::Notch] {
+            let s = panel(style);
+            for strip in [false, true] {
+                let l = rec(s, strip, None, 0, 0, AUDIO);
+                assert_eq!((l.header.x, l.header.y), (left(s), content_top(s, strip)));
+                assert_eq!((l.pick.w, l.pick.h, l.folder.w, l.folder.h), (22.0, 22.0, 22.0, 22.0));
+                assert_eq!(l.folder.right(), header_right(s));
+                assert_eq!(l.pick.right(), l.folder.x - 4.0);
+                assert!(l.pick.x > l.header.right());
+                assert_eq!(rec_hit_at(s, &l, l.pick, strip), Some(Hit::RecPickFile));
+                assert_eq!(rec_hit_at(s, &l, l.folder, strip), Some(Hit::RecFolder));
+                assert!(l.card.y >= l.header.bottom() + 8.0 - 0.01);
+                // Nothing listed: the empty block and no rows.
+                assert!(l.rows.is_empty() && l.more.is_none());
+                let empty = l.empty.expect("empty");
+                assert!(empty.x >= l.list.x && empty.bottom() <= l.list.bottom());
+            }
         }
-        for (i, row) in idle.rows.iter().enumerate() {
-            assert_eq!(hit_of(&idle, row.title), Some(Hit::RecOpen(i)));
-        }
-        assert_eq!(hit_of(&idle, idle.pick), Some(Hit::RecPickFile));
-        let rec = record_layout(s, false, &REC_HEAD, Some(BOTH), BOTH, 3, &PILLS, AUDIO);
-        assert_eq!(hit_of(&rec, rec.button), Some(Hit::RecToggle));
-        assert_eq!(hit_of(&rec, rec.pause.unwrap()), Some(Hit::RecPause));
-        // While recording the source control takes no click.
-        for (_, r) in rec.segs {
-            assert!(!matches!(hit_of(&rec, r), Some(Hit::RecSources(_))));
-        }
-        let [mic, system] = rec.live[..] else {
-            panic!("a cell per source: {:?}", rec.live);
-        };
-        assert_eq!(hit_of(&rec, mic.button), Some(Hit::RecMute(Source::Mic)));
-        assert_eq!(hit_of(&rec, system.button), Some(Hit::RecMute(Source::System)));
-        // A device name opens that source's menu, idle or recording.
-        assert_eq!(hit_of(&rec, mic.device), Some(Hit::RecDevice(Source::Mic)));
-        assert_eq!(hit_of(&rec, system.device), Some(Hit::RecDevice(Source::System)));
-        let sources: Vec<_> = idle
-            .idle_devices
-            .iter()
-            .map(|&(s, r)| (s, hit_of(&idle, r)))
-            .collect();
-        assert_eq!(
-            sources,
-            [
-                (Source::Mic, Some(Hit::RecDevice(Source::Mic))),
-                (Source::System, Some(Hit::RecDevice(Source::System)))
-            ]
-        );
-        assert!(idle.live.is_empty());
-        assert!(
-            !regions(s, &PageLayout::Record(idle.clone()), false)
-                .iter()
-                .any(|g| matches!(g.hit, Hit::RecMute(_)))
-        );
-        // Idle has no pause region.
-        assert!(
-            !regions(s, &PageLayout::Record(idle), false)
-                .iter()
-                .any(|g| g.hit == Hit::RecPause)
-        );
     }
 
     #[test]
@@ -8157,18 +8061,7 @@ mod tests {
                 drawn.extend(l.chip);
                 drawn.extend(l.eject_all);
             }
-            PageLayout::Record(l) => {
-                drawn.extend([l.header, l.folder, l.card, l.button, l.button_label]);
-                drawn.extend(l.pause);
-                drawn.extend(l.discard);
-                drawn.extend(l.hint);
-                drawn.extend(l.tabs.map(|(_, r)| r));
-                drawn.extend([l.seg_track, l.elapsed, l.list]);
-                for r in &l.rows {
-                    drawn.extend([r.row, r.well, r.title, r.sub, r.pill]);
-                }
-                drawn.extend(l.empty);
-            }
+            PageLayout::Record(l) => drawn.extend(rec_rects(l)),
             // The same for Susun: the header and the chips are fixed, the
             // content is clipped to `list`.
             PageLayout::Arrange(l) => {

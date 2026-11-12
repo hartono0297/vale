@@ -688,6 +688,9 @@ pub struct RecordView<'a> {
     pub discard_armed: bool,
     /// Live captions are on: the "Caption langsung" switch shows it.
     pub captions_on: bool,
+    /// How many recordings the tab's folder lists in all (`RecScan::total`):
+    /// the page's "N lagi di folder" counts the ones not shown.
+    pub total: usize,
 }
 
 /// What the quick search shows.

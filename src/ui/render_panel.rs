@@ -74,7 +74,7 @@ use crate::ui::panel_layout::{
     cli_layout, cli_suggestions, clipboard_layout, device_shapes, devices_layout,
     media_hits_for, media_panel_layout, media_progress_layout, mixer_layout, mole_layout, mole_log_rows,
     mole_log_skip, notes_layout, notif_layout, page_dots, pomodoro_compact_layout,
-    pomodoro_compact_layout_robot, pomodoro_layout, caption_compact_layout, record_compact_layout, tail_fit, rec_meter_heights, rec_mute_regions, rec_word_slot, record_layout, screen_compact_sources, screen_label_slot, RecordHead, RecordLayout, regions, REC_BAR_GAP, REC_BAR_W, reminders_layout, search_layout,
+    pomodoro_compact_layout_robot, pomodoro_layout, caption_compact_layout, record_compact_layout, tail_fit, rec_meter_heights, rec_mute_regions, rec_word_slot, record_layout, rec_new_days, screen_compact_sources, screen_label_slot, RecListInput, RecordHead, RecordLayout, regions, REC_BAR_GAP, REC_BAR_W, reminders_layout, search_layout,
     settings_button, shelf_card_layout, shelf_layout, shelf_phone_tag, shortcuts_layout,
     system_layout, tile_parts, update_strip_parts, volume_hud_layout, waiting_strip,
 };
@@ -844,16 +844,24 @@ impl Renderer {
             }
             Page::Record => {
                 let head = self.record_head();
-                let pills = self.rec_pill_widths(frame.record.recent);
+                let recent = frame.record.recent;
+                let pills = self.rec_pill_widths(recent);
+                let live = frame.rec.map(|r| r.sources);
+                let new_day = rec_new_days(recent, live.is_some(), frame.today);
+                let list = RecListInput {
+                    new_day: &new_day,
+                    pills: &pills,
+                    total: frame.record.total,
+                };
                 PageLayout::Record(record_layout(
                     s,
                     strip,
                     &head,
-                    frame.rec.map(|r| r.sources),
+                    live,
                     frame.record.sources,
-                    frame.record.recent.len(),
-                    &pills,
+                    &list,
                     frame.record.tab,
+                    frame.record.discard_armed,
                 ))
             }
             Page::Mixer => PageLayout::Mixer(mixer_layout(
@@ -968,34 +976,23 @@ impl Renderer {
             .collect()
     }
 
-    /// The Rekam header's widths: the two tab labels, the "Buka folder" link
-    /// (its icon, a gap, the label) and "Transkrip file lain..." in both
-    /// forms; and the wider of the discard button's two labels.
+    /// The Rekam page's measured widths: the two tab labels, and the armed
+    /// discard's "Buang" and "Simpan".
     fn record_head(&self) -> RecordHead {
         let lang = i18n::lang();
         let tab = |key| self.text_width(text(lang, key), &self.fonts.small_center).ceil();
         let button = |key| self.text_width(text(lang, key), &self.fonts.button).ceil();
-        let label = button(Key::RecOpenFolder);
         RecordHead {
             tabs_w: [tab(Key::RecTabAudio), tab(Key::RecTabScreen)],
-            discard_w: button(Key::ScreenDiscard).max(button(Key::ScreenDiscardSure)),
-            folder_w: REC_LINK_ICON + REC_LINK_GAP + label + 2.0,
-            pick_w: self
-                .text_width(text(lang, Key::TrPickFile), &self.fonts.button)
-                .ceil()
-                + 2.0,
-            pick_short_w: self
-                .text_width(text(lang, Key::TrPickFileShort), &self.fonts.button)
-                .ceil()
-                + 2.0,
+            confirm_w: [button(Key::ScreenDiscard), button(Key::ScreenDiscardKeep)],
         }
     }
 
-    /// The Rekam page after docs/design/rekaman.html section 2: the "Audio"
-    /// / "Layar" switch, the card with the big round button (a red dot to
-    /// start, a red square to stop) and pause beside it (and "Buang" for a
-    /// screen recording), the source control or the Layar tab's hint, the
-    /// recorded time, and the tab's last recordings with their pill.
+    /// The Rekam page on direction B's layout (docs/design/rekam-b.html):
+    /// the tab switch and the two header icons, the card (the round button
+    /// or the live controls, the sources, the caption row) and the day-grouped
+    /// list. A plain pass over the layout; the redesign's painting task draws
+    /// it as the mockup does.
     fn paint_record(&self, l: &RecordLayout, frame: &Frame) {
         let lang = i18n::lang();
         let p = self.palette;
@@ -1022,64 +1019,36 @@ impl Renderer {
             };
             self.text_colored(text(lang, key), &self.fonts.small_center, r, ink, alpha);
         }
-        // "Buka folder": a folder glyph and the label, as a link.
-        let icon = Rect {
-            w: REC_LINK_ICON,
-            ..l.folder
-        };
-        self.icon_colored(Icon::Folder, icon, REC_LINK_ICON, p.secondary, 1.0, None);
-        let label = Rect {
-            x: icon.right() + REC_LINK_GAP,
-            w: l.folder.w - REC_LINK_ICON - REC_LINK_GAP,
-            ..l.folder
-        };
-        self.text_colored(
-            text(lang, Key::RecOpenFolder),
-            &self.fonts.button,
-            label,
-            p.secondary,
-            1.0,
-        );
-        // "Transkrip file lain...", as a text link left of it.
-        let pick = text(lang, if l.pick_short { Key::TrPickFileShort } else { Key::TrPickFile });
-        self.text_colored(pick, &self.fonts.button, l.pick, p.secondary, 1.0);
+        // "Transkrip file lain..." and "Buka folder" as icons.
+        self.icon_colored(Icon::TempFile, l.pick, REC_HEAD_ICON, p.secondary, 1.0, None);
+        self.icon_colored(Icon::Folder, l.folder, REC_HEAD_ICON, p.secondary, 1.0, None);
 
-        // The card, the round button in a ring, and what it says.
+        // The card, and the round button in a ring.
         self.set_color(p.raised, 1.0);
         self.fill_round(l.card, radius::CARD);
-        self.stroke_round_width(
-            l.button,
-            l.button.h / 2.0,
-            mix(p.raised, p.secondary, 0.45),
-            3.0,
-        );
-        let c = (l.button.x + l.button.w / 2.0, l.button.y + l.button.h / 2.0);
-        self.set_color(theme::REC_RED, 1.0);
-        if rec.is_some() {
-            let side = REC_STOP_SIDE;
-            self.fill_round(
-                Rect {
-                    x: c.0 - side / 2.0,
-                    y: c.1 - side / 2.0,
-                    w: side,
-                    h: side,
-                },
-                4.0,
-            );
-        } else {
-            let r = REC_DOT_BIG;
-            self.fill_round(
-                Rect {
-                    x: c.0 - r,
-                    y: c.1 - r,
-                    w: r * 2.0,
-                    h: r * 2.0,
-                },
-                r,
-            );
+        if l.button.w > 0.0 {
+            self.stroke_round_width(l.button, l.button.h / 2.0, p.track, 3.0);
+            let c = (l.button.x + l.button.w / 2.0, l.button.y + l.button.h / 2.0);
+            self.set_color(theme::REC_RED, 1.0);
+            let (side, corner) = if rec.is_some() {
+                (REC_STOP_SIDE, 4.0)
+            } else {
+                (REC_DOT_BIG * 2.0, REC_DOT_BIG)
+            };
+            let mark = Rect {
+                x: c.0 - side / 2.0,
+                y: c.1 - side / 2.0,
+                w: side,
+                h: side,
+            };
+            self.fill_round(mark, corner);
+        }
+        if let Some(label) = l.button_label {
+            let name = text(lang, Key::RecRecordLabel);
+            self.text_colored(name, &self.fonts.small_center, label, p.text, 1.0);
         }
         if let Some(pause) = l.pause {
-            self.set_color(p.raised_hi, 1.0);
+            self.set_color(p.track, 1.0);
             self.fill_round(pause, pause.h / 2.0);
             let glyph = if rec.is_some_and(|r| r.paused) {
                 Icon::Play
@@ -1088,143 +1057,148 @@ impl Renderer {
             };
             self.icon_colored(glyph, pause, 16.0, p.text, 1.0, None);
         }
-        // "Buang": a quiet pill like pause; asked once, it reads "Yakin
-        // buang?" in red.
         if let Some(discard) = l.discard {
-            let armed = frame.record.discard_armed;
-            let (fill, ink) = rec_discard_look(&p, armed);
-            let key = if armed { Key::ScreenDiscardSure } else { Key::ScreenDiscard };
-            self.set_color(fill, 1.0);
+            self.set_color(p.track, 1.0);
             self.fill_round(discard, discard.h / 2.0);
-            self.text_colored(text(lang, key), &self.fonts.button_center, discard, ink, 1.0);
+            self.icon_colored(Icon::Trash, discard, 16.0, p.text, 1.0, None);
         }
-        // "Caption langsung": the label and a switch, as the Notifikasi
-        // page's "Jeda".
-        if let Some((label, switch)) = l.caption_switch {
-            let on = frame.record.captions_on;
-            let ink = if on { p.text } else { p.secondary };
-            self.text_colored(text(lang, Key::RecCaptionSwitch), &self.fonts.small, label, ink, 1.0);
-            self.paint_switch(switch, on);
+        if let Some(c) = l.confirm {
+            let ask = text(lang, Key::ScreenDiscardAsk);
+            self.text_colored(ask, &self.fonts.small_center, c.question, p.text, 1.0);
+            let yes = text(lang, Key::ScreenDiscard);
+            self.paint_labelled_button(c.discard, None, yes, rec_discard_look(&p, true), 1.0);
+            let keep = text(lang, Key::ScreenDiscardKeep);
+            self.paint_labelled_button(c.keep, None, keep, (p.track, p.text), 1.0);
         }
-        let name = text(lang, if rec.is_some() { Key::RecStop } else { Key::Start });
-        self.text_colored(name, &self.fonts.small_center, l.button_label, p.secondary, 1.0);
-
-        // The source control while idle; while recording, each recorded
-        // source's mute button and meter take its place.
-        if let Some(r) = rec {
-            for cell in &l.live {
-                let (open, crossed, level, tint, muted) = match cell.source {
-                    Source::Mic => (Icon::Mic, Icon::MicOff, r.mic, REC_MIC_TINT, r.muted[0]),
-                    Source::System => {
-                        (Icon::Volume, Icon::VolumeMute, r.system, p.sage, r.muted[1])
-                    }
-                };
-                let (icon, ink) = if muted {
-                    (crossed, theme::REC_RED)
-                } else {
-                    (open, p.text)
-                };
-                let fill = if muted {
-                    mix(p.raised, theme::REC_RED, 0.25)
-                } else {
-                    p.raised_hi
-                };
-                self.set_color(fill, 1.0);
-                self.fill_round(cell.button, cell.button.h / 2.0);
-                self.icon_colored(icon, cell.button, REC_MUTE_GLYPH, ink, 1.0, None);
-                if muted {
-                    self.rec_meter(cell.meter, 0.0, mix(p.raised, p.secondary, 0.5));
-                } else {
-                    self.rec_meter(cell.meter, level, tint);
-                }
-                let name = &frame.record.devices[cell.source.index()];
-                self.rec_device_name(name, cell.device, None);
-            }
-        } else if let Some(hint) = l.hint {
-            // The Layar tab: what the big button leads to.
-            let hint_text = text(lang, Key::ScreenIdleHint);
-            self.text_colored(hint_text, &self.fonts.small, hint, p.secondary, 1.0);
-        } else {
-            let on = frame.record.sources;
-            self.set_color(p.raised, 1.0);
-            self.fill_round(l.seg_track, radius::CONTROL);
-            for (sources, r) in l.segs {
-                let lit = sources == on;
-                if lit {
-                    self.set_color(p.raised_hi, 1.0);
-                    self.fill_round(r, radius::SEGMENT);
-                }
-                let key = match (sources.mic, sources.system) {
-                    (true, false) => Key::RecSourceMic,
-                    (false, true) => Key::RecSourceSystem,
-                    _ => Key::RecSourceBoth,
-                };
-                let ink = if lit { p.text } else { p.secondary };
-                self.text_colored(text(lang, key), &self.fonts.small_center, r, ink, 1.0);
-            }
-            // Under it, the device of each chosen source.
-            for &(source, line) in &l.idle_devices {
-                let name = &frame.record.devices[source.index()];
-                let glyph = match source {
-                    Source::Mic => Icon::Mic,
-                    Source::System => Icon::Volume,
-                };
-                self.rec_device_name(name, line, Some(glyph));
-            }
-        }
-
-        // The recorded time and its state, while recording.
-        if let Some(r) = rec {
-            let clock = Rect {
-                h: 22.0,
-                ..l.elapsed
-            };
+        if let (Some(r), Some(clock)) = (rec, l.clock) {
             let tint = if r.paused { p.ochre } else { p.text };
             self.text_colored(&rec_clock(r.elapsed), &self.fonts.clock, clock, tint, 1.0);
-            let state = Rect {
-                y: clock.bottom(),
-                h: (l.elapsed.bottom() - clock.bottom()).max(0.0),
-                ..l.elapsed
-            };
-            let key = if r.paused { Key::Paused } else { Key::RecRecording };
-            let ink = if r.paused { p.ochre } else { theme::REC_RED };
-            self.text_colored(text(lang, key), &self.fonts.micro_center, state, ink, 1.0);
+        }
+        if let Some(hint) = l.hint {
+            let hint_text = text(lang, Key::ScreenIdleHint);
+            self.text_colored(hint_text, &self.fonts.micro_center, hint, p.secondary, 1.0);
+        }
+        if let Some(q) = l.quality {
+            self.text_colored(text(lang, Key::RecQuality), &self.fonts.small, q, p.text, 1.0);
         }
 
-        // The tab's recent recordings: a mic marks audio, a camera video.
+        // The sources: an icon and a switch while idle, a mute button and a
+        // meter while recording; the name over the device line.
+        for src in &l.sources {
+            let i = src.source.index();
+            let (open, crossed, name_key) = match src.source {
+                Source::Mic => (Icon::Mic, Icon::MicOff, Key::RecSourceMic),
+                Source::System => (Icon::Volume, Icon::VolumeMute, Key::RecSourceSystem),
+            };
+            match rec {
+                Some(r) => {
+                    let muted = r.muted[i];
+                    self.set_color(if muted { p.raised } else { p.track }, 1.0);
+                    self.fill_round(src.glyph, radius::SEGMENT);
+                    let icon = if muted { crossed } else { open };
+                    self.icon_colored(icon, src.glyph, REC_MUTE_GLYPH, p.text, 1.0, None);
+                    if let Some(meter) = src.meter {
+                        let level = if muted || r.paused {
+                            0.0
+                        } else if src.source == Source::Mic {
+                            r.mic
+                        } else {
+                            r.system
+                        };
+                        self.rec_meter(meter, level, p.accent);
+                    }
+                }
+                None => {
+                    let on = match src.source {
+                        Source::Mic => frame.record.sources.mic,
+                        Source::System => frame.record.sources.system,
+                    };
+                    let (icon, ink) = if on { (open, p.accent) } else { (crossed, p.secondary) };
+                    self.icon_colored(icon, src.glyph, src.glyph.w, ink, 1.0, None);
+                    if let Some(switch) = src.switch {
+                        self.paint_switch(switch, on);
+                    }
+                }
+            }
+            self.text_colored(text(lang, name_key), &self.fonts.small, src.name, p.text, 1.0);
+            self.rec_device_name(&frame.record.devices[i], src.device, None);
+        }
+        // "Caption langsung" and its switch.
+        let on = frame.record.captions_on;
+        let label = Rect {
+            w: (l.caption_switch.x - l.caption.x - 8.0).max(0.0),
+            ..l.caption
+        };
+        let ink = if on { p.text } else { p.secondary };
+        self.text_colored(text(lang, Key::RecCaptionSwitch), &self.fonts.small, label, ink, 1.0);
+        self.paint_switch(l.caption_switch, on);
+
+        // The list: day labels, the now row while recording, the rows, the
+        // more line, or the empty state.
+        let recent = frame.record.recent;
         let (row_icon, empty_key) = if screen {
             (Icon::Video, Key::ScreenNoVideos)
         } else {
             (Icon::Mic, Key::RecEmpty)
         };
-        if let Some(empty) = l.empty {
-            let (icon_area, text_area) = (
-                Rect {
-                    y: empty.y + empty.h / 2.0 - 24.0,
-                    h: 24.0,
-                    ..empty
-                },
-                Rect {
-                    y: empty.y + empty.h / 2.0 + 2.0,
-                    h: 18.0,
-                    ..empty
-                },
-            );
-            self.icon_colored(row_icon, icon_area, 22.0, p.secondary, 0.8, None);
-            let hint = text(lang, empty_key);
-            self.text_colored(hint, &self.fonts.eleven_center, text_area, p.secondary, 1.0);
+        for (n, &(i, g)) in l.groups.iter().enumerate() {
+            let day = if rec.is_some() && n == 0 {
+                frame.today
+            } else {
+                recent.get(i).map_or(frame.today, |e| e.started_at.date())
+            };
+            let label = i18n::rec_day_label(lang, day, frame.today);
+            self.text_colored(&label, &self.fonts.micro, g, p.secondary, 1.0);
         }
-        for (row, entry) in l.rows.iter().zip(frame.record.recent) {
-            self.set_color(p.track, 1.0);
+        if let (Some(now), Some(r)) = (l.now, rec) {
+            let dot = Rect {
+                x: now.x + 7.0,
+                y: now.y + now.h / 2.0 - 4.0,
+                w: 8.0,
+                h: 8.0,
+            };
+            self.set_color(if r.paused { p.ochre } else { theme::REC_RED }, 1.0);
+            self.fill_round(dot, 4.0);
+            let words = Rect {
+                x: now.x + 30.0,
+                w: (now.w - 30.0).max(0.0),
+                ..now
+            };
+            let state = text(lang, if r.paused { Key::Paused } else { Key::RecRecording });
+            let line = format!("{}  {state}", text(lang, Key::RecNow));
+            self.text_colored(&line, &self.fonts.row_name, words, p.text, 1.0);
+        }
+        if let Some(empty) = l.empty {
+            let well = Rect { w: empty.h, ..empty };
+            self.set_color(p.raised, 1.0);
+            self.fill_round(well, 10.0);
+            self.icon_colored(row_icon, well, 16.0, p.secondary, 1.0, None);
+            let words = Rect {
+                x: well.right() + 10.0,
+                w: (empty.w - well.w - 10.0).max(0.0),
+                ..empty
+            };
+            self.text_colored(text(lang, empty_key), &self.fonts.small, words, p.text, 1.0);
+        }
+        for (row, entry) in l.rows.iter().zip(recent) {
+            self.set_color(p.raised, 1.0);
             self.fill_round(row.well, radius::SEGMENT);
-            self.icon_colored(row_icon, row.well, 14.0, p.secondary, 1.0, None);
-            self.text_colored(&entry.title, &self.fonts.row_name, row.title, p.text, 1.0);
-            let sub = i18n::rec_entry_sub(lang, &entry.started, entry.duration, entry.unfinished);
-            self.text_colored(&sub, &self.fonts.small, row.sub, p.secondary, 1.0);
+            self.icon_colored(row_icon, row.well, 13.0, p.secondary, 1.0, None);
+            let time = entry.started_at.format("%H:%M").to_string();
+            self.text_colored(&time, &self.fonts.row_name, row.time, p.text, 1.0);
+            if let Some(title) = row.title {
+                self.text_colored(&entry.title, &self.fonts.small, title, p.text, 1.0);
+            }
+            let length = if entry.unfinished {
+                text(lang, Key::RecUnfinished).to_string()
+            } else {
+                i18n::rec_duration(lang, entry.duration)
+            };
+            self.text_colored(&length, &self.fonts.small, row.length, p.secondary, 1.0);
             if row.pill.w > 0.0 {
                 let look = rec_pill_look(&p, entry.transcript);
                 self.set_color(look.fill, look.alpha());
-                self.fill_round(row.pill, row.pill.h / 2.0);
+                self.fill_round(row.pill, 8.0);
                 let label = i18n::tr_pill(lang, entry.transcript);
                 self.text_colored(
                     &label,
@@ -1234,6 +1208,10 @@ impl Renderer {
                     look.alpha(),
                 );
             }
+        }
+        if let Some((n, more)) = l.more {
+            let line = i18n::rec_more(lang, n);
+            self.text_colored(&line, &self.fonts.small, more, p.secondary, 1.0);
         }
     }
 
@@ -5589,9 +5567,9 @@ fn pomodoro_compact_boxes(text: Rect, time_w: f32) -> (Rect, Rect) {
     (time, label)
 }
 
-/// The Rekam page's link icon and its gap to the label, the stop square's
-/// side and the start dot's radius.
-const REC_LINK_ICON: f32 = 14.0;
+/// The Rekam page's header icons, the gap between a device name and its
+/// chevron, the stop square's side and the start dot's radius.
+const REC_HEAD_ICON: f32 = 16.0;
 const REC_LINK_GAP: f32 = 4.0;
 const REC_STOP_SIDE: f32 = 18.0;
 const REC_DOT_BIG: f32 = 11.0;
@@ -7603,15 +7581,15 @@ mod tests {
         }
     }
 
-    /// Every pill label fits its pill whole in DM Sans (no ellipsis), and both header
-    /// links fit beside the title at the default panel size, in both
-    /// languages and both fonts; the short form is only for a narrower panel.
+    /// Every pill label fits its pill whole in DM Sans (no ellipsis), and the
+    /// armed discard's two buttons hold their labels inside the card, in
+    /// both languages and both fonts.
     #[test]
-    fn rekam_pills_and_header_links_hold_their_words() {
+    fn rekam_pills_and_discard_buttons_hold_their_words() {
         use crate::config::Style;
         use crate::model::RecSources;
         use crate::ui::fonts;
-        use crate::ui::panel_layout::record_layout;
+        use crate::ui::panel_layout::{RecListInput, record_layout};
         use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
 
         let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
@@ -7621,6 +7599,7 @@ mod tests {
             return;
         }
         let both = RecSources { mic: true, system: true };
+        let list = RecListInput { new_day: &[], pills: &[], total: 0 };
         for ui in [UiFont::Sans, UiFont::Mono] {
             r.set_ui_font(ui).expect("font");
             for lang in [Lang::Id, Lang::En] {
@@ -7642,25 +7621,14 @@ mod tests {
                     }
                 }
                 let head = r.record_head();
-                let hint = r.text_width(text(lang, Key::ScreenIdleHint), &r.fonts.small);
                 for style in [Style::Pill, Style::Notch] {
                     let s = shape_for(style, ShapeKind::Panel);
                     let tag = format!("{ui:?} {lang:?} {style:?}");
-                    for tab in [RecKind::Audio, RecKind::Screen] {
-                        let l = record_layout(s, false, &head, None, both, 0, &[], tab);
-                        assert!(!l.pick_short, "{tag} {tab:?}: the long form fits");
-                        assert!(l.pick.x >= l.header.right() + 8.0, "{tag} {tab:?}");
-                    }
-                    // The Layar tab's hint fits its line, and a running
-                    // screen recording's card leaves each device its name.
-                    let idle = record_layout(s, false, &head, None, both, 0, &[], RecKind::Screen);
-                    assert!(hint <= idle.hint.expect("hint").w, "{tag}: the hint fits");
-                    let live =
-                        record_layout(s, false, &head, Some(both), both, 0, &[], RecKind::Screen);
-                    let discard = live.discard.expect("discard");
-                    assert!(discard.w >= head.discard_w + 16.0, "{tag}");
-                    assert!(discard.right() <= live.card.right() - 8.0, "{tag}");
-                    assert!(live.live.iter().all(|c| c.device.w >= 100.0), "{tag}");
+                    let l = record_layout(s, false, &head, Some(both), both, &list, RecKind::Screen, true);
+                    let c = l.confirm.expect("the question");
+                    assert!(c.discard.w >= head.confirm_w[0] + 20.0, "{tag}");
+                    assert!(c.keep.w >= head.confirm_w[1] + 20.0, "{tag}");
+                    assert!(c.discard.x >= l.card.x && c.keep.right() <= l.card.right(), "{tag}");
                 }
             }
         }
