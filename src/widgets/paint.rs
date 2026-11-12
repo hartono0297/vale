@@ -2459,6 +2459,7 @@ pub fn peek_look(coat: CatColor) -> CatLook {
     CatLook {
         color: coat,
         accessory: CatAccessory::None,
+        ..CatLook::default()
     }
 }
 

@@ -1841,7 +1841,7 @@ mod tests {
 
     #[test]
     fn the_dancing_cat_stays_in_every_compact_shape() {
-        use crate::theme::CatAccessory;
+        use crate::theme::{CatAccessory, Mascot};
         use crate::ui::cat_style::{RIM_WIDTH, accessory_corners};
         use crate::ui::robot::{
             EAR_STROKE, Expr, HEAD, NOTE_MARGIN_DIP, Part, Pose, Side, ear_drawn, face,
@@ -1952,7 +1952,7 @@ mod tests {
                                 }
                                 // Every accessory's boxes.
                                 for acc in CatAccessory::ALL {
-                                    for &(p, eyes) in &accessory_corners(*acc, f.ears) {
+                                    for &(p, eyes) in &accessory_corners(Mascot::Cat, *acc, f.ears) {
                                         let (x, y) = drawn(area, &f, pose, p, eyes);
                                         assert!(
                                             shape_contains(style, s, x, y),
@@ -1982,7 +1982,7 @@ mod tests {
 
     #[test]
     fn the_looking_cat_stays_in_the_idle_island() {
-        use crate::theme::CatAccessory;
+        use crate::theme::{CatAccessory, Mascot};
         use crate::ui::cat_style::accessory_corners;
         use crate::ui::robot::{EAR_STROKE, Expr, GRID, Pose, Side, ear_drawn, face, mark_bounds};
         // Every face the idle view shows (`choose_expr`), open-eyed and
@@ -2065,7 +2065,7 @@ mod tests {
                             // turned and lifted with their ear, the glasses on the eyes)
                             // under the same pose: inside the island, left of the clock.
                             for acc in CatAccessory::ALL {
-                                let corners = accessory_corners(*acc, f.ears);
+                                let corners = accessory_corners(Mascot::Cat, *acc, f.ears);
                                 for v in [-1.0, -0.5, 0.0, 0.5, 1.0] {
                                     let pose = Pose::default().looking_as(expr, v);
                                     for &(p, eyes) in &corners {
@@ -2253,7 +2253,7 @@ mod tests {
 
     #[test]
     fn the_typing_cat_stays_in_the_idle_island() {
-        use crate::theme::CatAccessory;
+        use crate::theme::{CatAccessory, Mascot};
         use crate::ui::cat_style::{RIM_WIDTH, accessory_corners};
         use crate::ui::robot::{
             EAR_STROKE, Expr, HEAD, PAW_LIFT, Pose, Side, ear_drawn, face, mark_bounds,
@@ -2342,7 +2342,7 @@ mod tests {
                             // Every accessory, the glasses on the shifted and
                             // glancing eyes.
                             for acc in CatAccessory::ALL {
-                                for &(p, eyes) in &accessory_corners(*acc, f.ears) {
+                                for &(p, eyes) in &accessory_corners(Mascot::Cat, *acc, f.ears) {
                                     check("accessory", drawn(area, &f, pose, p, eyes));
                                     checked += 1;
                                 }

@@ -1379,6 +1379,7 @@ impl Renderer {
             let look = CatLook {
                 color,
                 accessory: self.cat.get().accessory,
+                ..self.cat.get()
             };
             let cell = Rect {
                 x: card.x + 20.0 + c as f32 * col + 4.0,

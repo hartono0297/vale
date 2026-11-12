@@ -2273,6 +2273,7 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
     let cat = CatLook {
         color: CatColor::from_name(&name("DI_CAT_COLOR")).unwrap_or_default(),
         accessory: CatAccessory::from_name(&name("DI_CAT_ACCESSORY")).unwrap_or_default(),
+        ..CatLook::default()
     };
     let chosen_surface = Surface::from_name(&name("DI_SURFACE")).unwrap_or_default();
     let palette = theme::island(

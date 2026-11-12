@@ -1300,6 +1300,7 @@ impl Painter<'_> {
         let look = CatLook {
             color,
             accessory: CatAccessory::None,
+            ..CatLook::default()
         };
         let radius = r.w / 2.0;
         if let Some(rim) = look.rim() {
@@ -1352,8 +1353,8 @@ impl Painter<'_> {
             Expr::Idle,
             Pose::default(),
             CatLook {
-                color: s.cat.color,
                 accessory,
+                ..s.cat
             },
         );
     }
@@ -2170,7 +2171,11 @@ mod tests {
         let channel = |rgb: u32, s: u32| ((rgb >> s) & 0xFF) as f32;
         for &color in CatColor::ALL.iter() {
             for &accessory in CatAccessory::ALL.iter() {
-                let look = CatLook { color, accessory };
+                let look = CatLook {
+                    color,
+                    accessory,
+                    ..CatLook::default()
+                };
                 let opaque = render_cat(1.0, look, bg);
                 let faded = render_cat(alpha, look, bg);
                 let mut worst = 0.0f32;

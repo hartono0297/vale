@@ -2149,7 +2149,10 @@ impl Settings {
             ),
             robot: self.model.robot,
             cat: super::cat_style::CatLook {
+                mascot: self.model.mascot,
                 color: self.model.cat_color,
+                falk: self.model.falk_color,
+                octopus: self.model.octopus_color,
                 accessory: self.model.cat_accessory,
             },
             coat: self.model.coat(),

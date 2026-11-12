@@ -33,15 +33,19 @@ use windows::Win32::Graphics::Direct2D::{
 use windows::core::{Interface, Result as WinResult};
 use windows_numerics::{Matrix3x2, Vector2};
 
+use super::mascot;
 use super::robot::{CREAM, EAR_STROKE, Ears, Ink, RobotPainter, Seg, Shape, Side, path};
 use crate::config::Config;
-use crate::theme::{CatAccessory, CatColor};
+use crate::theme::{CatAccessory, CatColor, FalkColor, Mascot, OctopusColor};
 
 /// The cat's colour and accessory, as the config holds them. Every caller of
 /// `RobotPainter::paint` passes the config's values.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CatLook {
+    pub mascot: Mascot,
     pub color: CatColor,
+    pub falk: FalkColor,
+    pub octopus: OctopusColor,
     pub accessory: CatAccessory,
 }
 
@@ -75,7 +79,10 @@ pub fn calico_swatch_slices() -> [(f32, f32, u32); 3] {
 impl CatLook {
     pub fn of(cfg: &Config) -> Self {
         CatLook {
+            mascot: cfg.mascot,
             color: cfg.cat_color,
+            falk: cfg.falk_color,
+            octopus: cfg.octopus_color,
             accessory: cfg.cat_accessory,
         }
     }
@@ -182,16 +189,378 @@ const MUSTARD_DARK: u32 = 0xC48A18;
 const PINK: u32 = 0xF29BB5;
 const GOLD: u32 = 0xF2B33D;
 const GOLD_DARK: u32 = 0xC8861C;
+/// The falk crown's rim, and the new pieces' colours.
+const CROWN_RIM: u32 = 0x7A5210;
+const CREAM_PIECE: u32 = 0xF4EDE4;
+const SAILOR_WHITE: u32 = 0xF6F1EA;
+const TIE_KNOT: u32 = 0x5878AE;
+/// The falk scarf's tail: the navy band, 22 % darker.
+const NAVY_DARK: u32 = 0x253A5F;
 
 fn fixed(rgb: u32) -> Tone {
     Tone::Fixed(rgb)
 }
 
-/// The pieces of `accessory`, each with what it moves with, in paint order.
-pub fn pieces(accessory: CatAccessory) -> Vec<(Anchor, Piece)> {
+/// Where a mascot wears things, in grid units.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Anchors {
+    /// Crown and caps.
+    pub top: (f32, f32),
+    /// The flower.
+    pub left: (f32, f32),
+    /// The bow.
+    pub right: (f32, f32),
+    /// The scarf's band: y0 and y1.
+    pub band: (f32, f32),
+    /// The bow tie's centre.
+    pub tie: (f32, f32),
+    /// The headphone: x0, x1, cup y and the band's top.
+    pub hp: (f32, f32, f32, f32),
+    /// How far the eyes sit above the cat's (negative is up).
+    pub eye_lift: f32,
+}
+
+pub fn anchors(m: Mascot) -> Anchors {
+    match m {
+        Mascot::Cat => Anchors {
+            top: (32.0, 24.0),
+            left: (16.0, 23.0),
+            right: (45.0, 23.0),
+            band: (47.0, 55.0),
+            tie: (32.0, 51.5),
+            // The spec says 16; the band's box (control points, stroke) would
+            // then touch the Music note's dot at (55.4, 13).
+            hp: (7.0, 57.0, 41.0, 16.4),
+            eye_lift: 0.0,
+        },
+        Mascot::Falk => Anchors {
+            top: (32.0, 26.0),
+            left: (20.0, 29.0),
+            right: (44.0, 29.0),
+            band: (48.5, 53.5),
+            tie: (32.0, 52.5),
+            hp: (9.0, 55.0, 40.0, 17.0),
+            eye_lift: 0.0,
+        },
+        Mascot::Octopus => Anchors {
+            top: (32.0, 9.0),
+            left: (19.0, 17.0),
+            right: (45.0, 17.0),
+            band: (43.5, 47.5),
+            tie: (32.0, 45.5),
+            hp: (11.0, 53.0, 33.0, 3.0),
+            eye_lift: mascot::OCT_EYE_LIFT,
+        },
+    }
+}
+
+/// A rounded rectangle as a closed path.
+fn rrect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Vec<Seg> {
+    use Seg::{Close, Line as To, Move, Quad};
+    let (x1, y1) = (x + w, y + h);
+    vec![
+        Move(x + r, y),
+        To(x1 - r, y),
+        Quad(x1, y, x1, y + r),
+        To(x1, y1 - r),
+        Quad(x1, y1, x1 - r, y1),
+        To(x + r, y1),
+        Quad(x, y1, x, y1 - r),
+        To(x, y + r),
+        Quad(x, y, x + r, y),
+        Close,
+    ]
+}
+
+/// The falk's body between y0 and y1, edge to edge: the egg's own curve on
+/// both sides (`mascot::FALK_BODY`), so the band needs no clip.
+fn falk_band(y0: f32, y1: f32) -> Vec<Seg> {
+    use Seg::{Close, Line as To, Move, Quad};
+    // The right flank is the quad (55, 43), (55, 57), (32, 57).
+    let (p0, p1, p2) = (
+        (55.0_f32, 43.0_f32),
+        (55.0_f32, 57.0_f32),
+        (32.0_f32, 57.0_f32),
+    );
+    let at = |t: f32| {
+        let u = 1.0 - t;
+        (
+            u * u * p0.0 + 2.0 * u * t * p1.0 + t * t * p2.0,
+            u * u * p0.1 + 2.0 * u * t * p1.1 + t * t * p2.1,
+        )
+    };
+    // y(t) = 43 + 28 t - 14 t^2: the smaller root for a given y.
+    let t_of = |y: f32| (28.0 - (784.0 - 56.0 * (y - 43.0)).sqrt()) / 28.0;
+    let (a, b) = (t_of(y0), t_of(y1));
+    let (s, e) = (at(a), at(b));
+    // The sub-curve's control point.
+    let c = (
+        (1.0 - a) * (1.0 - b) * p0.0 + ((1.0 - a) * b + a * (1.0 - b)) * p1.0 + a * b * p2.0,
+        (1.0 - a) * (1.0 - b) * p0.1 + ((1.0 - a) * b + a * (1.0 - b)) * p1.1 + a * b * p2.1,
+    );
+    let m = |x: f32| 64.0 - x;
+    vec![
+        Move(m(s.0), s.1),
+        To(s.0, s.1),
+        Quad(c.0, c.1, e.0, e.1),
+        To(m(e.0), e.1),
+        Quad(m(c.0), c.1, m(s.0), s.1),
+        Close,
+    ]
+}
+
+/// The pieces of `accessory` on mascot `m`, each with what it moves with, in
+/// paint order. The cat's seven keep their own geometry; the falk and the
+/// octopus wear the same things placed on their anchors (the mockup's
+/// `accessory()`), and all three wear the headphone, the sailor cap and the
+/// bow tie.
+pub fn pieces(m: Mascot, accessory: CatAccessory) -> Vec<(Anchor, Piece)> {
+    match accessory {
+        CatAccessory::None => vec![],
+        CatAccessory::Headphone | CatAccessory::Sailor | CatAccessory::Bowtie => {
+            new_pieces(m, accessory)
+        }
+        _ if m == Mascot::Cat => cat_pieces(accessory),
+        _ => mascot_pieces(m, accessory),
+    }
+}
+
+/// Headphone, sailor cap and bow tie, from `anchors(m)`.
+fn new_pieces(m: Mascot, accessory: CatAccessory) -> Vec<(Anchor, Piece)> {
+    use Seg::{Close, Cubic, Line as To, Move, Quad};
+    let a = anchors(m);
+    let (tx, ty) = a.top;
+    let head = |p: Piece| (Anchor::Head, p);
+    match accessory {
+        CatAccessory::Headphone => {
+            let (x0, x1, y, top) = a.hp;
+            // The octopus's band would otherwise reach the Music note's dot at
+            // (55.4, 13) by its box; its curve is pulled in 0.9 to stay clear.
+            let pull = if m == Mascot::Octopus { 0.9 } else { 0.0 };
+            let cup = |x: f32, inner: f32| {
+                [
+                    head(Piece::Shape {
+                        segs: rrect(x, y - 6.0, 7.0, 12.0, 3.0),
+                        fill: fixed(CREAM_PIECE),
+                        edge: None,
+                    }),
+                    head(Piece::Shape {
+                        segs: rrect(inner, y - 3.5, 3.8, 7.0, 1.6),
+                        fill: fixed(NAVY),
+                        edge: None,
+                    }),
+                ]
+            };
+            let mut v = vec![head(Piece::Stroke {
+                segs: vec![
+                    Move(x0 + 1.0, y - 3.0),
+                    Cubic(x0 + pull, top, x1 - pull, top, x1 - 1.0, y - 3.0),
+                ],
+                tone: fixed(CREAM_PIECE),
+                width: 2.6,
+            })];
+            v.extend(cup(x0 - 3.0, x0 - 1.4));
+            v.extend(cup(x1 - 4.0, x1 - 2.4));
+            v
+        }
+        CatAccessory::Sailor => vec![
+            head(Piece::Shape {
+                segs: vec![
+                    Move(tx - 11.0, ty + 1.5),
+                    Quad(tx - 12.0, ty - 8.0, tx, ty - 9.0),
+                    Quad(tx + 12.0, ty - 8.0, tx + 11.0, ty + 1.5),
+                    Close,
+                ],
+                fill: fixed(SAILOR_WHITE),
+                edge: None,
+            }),
+            head(Piece::Shape {
+                segs: vec![
+                    Move(tx - 11.2, ty - 2.4),
+                    To(tx + 11.2, ty - 2.4),
+                    To(tx + 11.2, ty + 1.2),
+                    To(tx - 11.2, ty + 1.2),
+                    Close,
+                ],
+                fill: fixed(NAVY),
+                edge: None,
+            }),
+            head(Piece::Shape {
+                segs: rrect(tx - 13.0, ty + 0.6, 26.0, 2.4, 1.2),
+                fill: fixed(NAVY),
+                edge: None,
+            }),
+        ],
+        CatAccessory::Bowtie => {
+            let (x, y) = a.tie;
+            let wing = |s: f32| {
+                head(Piece::Shape {
+                    segs: vec![
+                        Move(x, y),
+                        To(x + s * 6.0, y - 3.6),
+                        To(x + s * 6.0, y + 3.6),
+                        Close,
+                    ],
+                    fill: fixed(NAVY),
+                    edge: Some(1.2),
+                })
+            };
+            vec![
+                wing(-1.0),
+                wing(1.0),
+                head(Piece::Dot {
+                    cx: x,
+                    cy: y,
+                    r: 1.6,
+                    tone: fixed(TIE_KNOT),
+                }),
+            ]
+        }
+        _ => vec![],
+    }
+}
+
+/// The cat's seven accessories, re-placed on the falk or the octopus. Every
+/// piece rides the head (`Anchor::Head`), the glasses the eyes.
+fn mascot_pieces(m: Mascot, accessory: CatAccessory) -> Vec<(Anchor, Piece)> {
+    use Seg::{Close, Line as To, Move, Quad};
+    let a = anchors(m);
+    let (tx, ty) = a.top;
+    let head = |p: Piece| (Anchor::Head, p);
+    match accessory {
+        CatAccessory::Glasses => pieces(Mascot::Cat, CatAccessory::Glasses),
+        CatAccessory::Bow => {
+            let (x, y) = a.right;
+            let wing = |s: f32| {
+                head(Piece::Shape {
+                    segs: vec![
+                        Move(x, y),
+                        To(x + s * 6.0, y - 4.0),
+                        To(x + s * 6.0, y + 4.0),
+                        Close,
+                    ],
+                    fill: fixed(RASPBERRY),
+                    edge: Some(1.4),
+                })
+            };
+            vec![
+                wing(-1.0),
+                wing(1.0),
+                head(Piece::Dot {
+                    cx: x,
+                    cy: y,
+                    r: 1.9,
+                    tone: fixed(BOW_KNOT),
+                }),
+            ]
+        }
+        CatAccessory::Flower => {
+            let (cx, cy) = a.left;
+            let mut v: Vec<(Anchor, Piece)> = (0..5)
+                .map(|i| {
+                    let g = (-90.0 + 72.0 * i as f32).to_radians();
+                    head(Piece::Dot {
+                        cx: cx + 3.0 * g.cos(),
+                        cy: cy + 3.0 * g.sin(),
+                        r: 2.5,
+                        tone: fixed(PINK),
+                    })
+                })
+                .collect();
+            v.push(head(Piece::Dot {
+                cx,
+                cy,
+                r: 1.8,
+                tone: fixed(GOLD),
+            }));
+            v
+        }
+        CatAccessory::Crown => {
+            let segs = vec![
+                Move(tx - 7.0, ty + 1.0),
+                To(tx - 7.0, ty - 6.0),
+                To(tx - 3.5, ty - 2.5),
+                To(tx, ty - 8.0),
+                To(tx + 3.5, ty - 2.5),
+                To(tx + 7.0, ty - 6.0),
+                To(tx + 7.0, ty + 1.0),
+                Close,
+            ];
+            let mut v = vec![head(Piece::Shape {
+                segs: segs.clone(),
+                fill: fixed(GOLD),
+                edge: None,
+            })];
+            if m == Mascot::Falk {
+                // Gold on a yellow head needs a rim.
+                v.push(head(Piece::Stroke {
+                    segs,
+                    tone: fixed(CROWN_RIM),
+                    width: 0.9,
+                }));
+            }
+            v
+        }
+        CatAccessory::Nightcap => vec![
+            head(Piece::Shape {
+                segs: vec![
+                    Move(tx - 15.0, ty + 3.0),
+                    To(tx + 14.0, ty + 2.0),
+                    To(tx - 13.0, ty - 14.0),
+                    Close,
+                ],
+                fill: fixed(NAVY),
+                edge: Some(2.0),
+            }),
+            head(Piece::Stroke {
+                segs: vec![
+                    Move(tx - 16.0, ty + 3.2),
+                    Quad(tx, ty - 1.5, tx + 15.0, ty + 2.4),
+                ],
+                tone: fixed(CREAM),
+                width: 3.0,
+            }),
+            head(Piece::Dot {
+                cx: tx - 13.0,
+                cy: ty - 14.0,
+                r: 2.5,
+                tone: fixed(CREAM),
+            }),
+        ],
+        CatAccessory::Scarf => {
+            let (y0, y1) = a.band;
+            let (band, tail_x, colour, tail) = if m == Mascot::Falk {
+                (falk_band(y0, y1), 13.0, NAVY, NAVY_DARK)
+            } else {
+                (
+                    rrect(14.0, y0, 36.0, y1 - y0, 2.0),
+                    17.0,
+                    MUSTARD,
+                    MUSTARD_DARK,
+                )
+            };
+            vec![
+                head(Piece::Shape {
+                    segs: band,
+                    fill: fixed(colour),
+                    edge: None,
+                }),
+                head(Piece::Shape {
+                    segs: rrect(tail_x, y0 + 1.0, 4.5, y1 - y0 + 4.0, 1.4),
+                    fill: fixed(tail),
+                    edge: None,
+                }),
+            ]
+        }
+        _ => vec![],
+    }
+}
+
+/// The cat's seven, with the geometry they have always had.
+fn cat_pieces(accessory: CatAccessory) -> Vec<(Anchor, Piece)> {
     use Seg::{Close, Line as To, Move, Quad};
     match accessory {
-        // Drawn by the mascot painters; the cat has no pieces for these.
+        // Not the cat's seven.
         CatAccessory::None
         | CatAccessory::Headphone
         | CatAccessory::Sailor
@@ -378,8 +747,12 @@ pub fn pieces(accessory: CatAccessory) -> Vec<(Anchor, Piece)> {
 /// flagged when it also takes the eyes' extra slide. For the clamp test in
 /// `geometry.rs`.
 #[cfg(test)]
-pub fn accessory_corners(accessory: CatAccessory, ears: Ears) -> Vec<((f32, f32), bool)> {
-    accessory_piece_corners(accessory, ears)
+pub fn accessory_corners(
+    mascot: Mascot,
+    accessory: CatAccessory,
+    ears: Ears,
+) -> Vec<((f32, f32), bool)> {
+    accessory_piece_corners(mascot, accessory, ears)
         .into_iter()
         .flatten()
         .collect()
@@ -387,9 +760,13 @@ pub fn accessory_corners(accessory: CatAccessory, ears: Ears) -> Vec<((f32, f32)
 
 /// `accessory_corners`, kept apart per piece (each piece's four corners).
 #[cfg(test)]
-fn accessory_piece_corners(accessory: CatAccessory, ears: Ears) -> Vec<Vec<((f32, f32), bool)>> {
+fn accessory_piece_corners(
+    mascot: Mascot,
+    accessory: CatAccessory,
+    ears: Ears,
+) -> Vec<Vec<((f32, f32), bool)>> {
     let mut out = Vec::new();
-    for (anchor, piece) in pieces(accessory) {
+    for (anchor, piece) in pieces(mascot, accessory) {
         let (l, t, r, b) = piece_bounds(&piece);
         let mut corners = Vec::with_capacity(4);
         for (x, y) in [(l, t), (r, t), (r, b), (l, b)] {
@@ -566,11 +943,16 @@ impl RobotPainter {
     }
 
     /// The accessory's pieces with their paths, built the first time.
-    fn extras(&self, accessory: CatAccessory) -> Rc<Vec<Placed>> {
-        if let Some((_, v)) = self.extras.borrow().iter().find(|(a, _)| *a == accessory) {
+    fn extras(&self, mascot: Mascot, accessory: CatAccessory) -> Rc<Vec<Placed>> {
+        if let Some((_, v)) = self
+            .extras
+            .borrow()
+            .iter()
+            .find(|(k, _)| *k == (mascot, accessory))
+        {
             return v.clone();
         }
-        let built: Vec<Placed> = pieces(accessory)
+        let built: Vec<Placed> = pieces(mascot, accessory)
             .into_iter()
             .map(|(anchor, piece)| {
                 let geom = match &piece {
@@ -587,7 +969,9 @@ impl RobotPainter {
             })
             .collect();
         let built = Rc::new(built);
-        self.extras.borrow_mut().push((accessory, built.clone()));
+        self.extras
+            .borrow_mut()
+            .push(((mascot, accessory), built.clone()));
         built
     }
 
@@ -630,7 +1014,7 @@ impl RobotPainter {
             Tone::Fixed(rgb) => rgb,
             Tone::Frame => look.frame_rgb(),
         };
-        let extras = self.extras(look.accessory);
+        let extras = self.extras(look.mascot, look.accessory);
         unsafe {
             for placed in extras.iter() {
                 let m = match placed.anchor {
@@ -723,6 +1107,7 @@ mod tests {
         let look = |color| CatLook {
             color,
             accessory: CatAccessory::None,
+            ..CatLook::default()
         };
         let c = |color| {
             (
@@ -743,6 +1128,7 @@ mod tests {
         let black = CatLook {
             color: CatColor::Black,
             accessory: CatAccessory::None,
+            ..CatLook::default()
         };
         let terracotta = CatLook::default();
         for expr in Expr::ALL {
@@ -771,15 +1157,17 @@ mod tests {
 
     #[test]
     fn every_accessory_has_pieces_on_the_right_anchor() {
-        assert!(pieces(CatAccessory::None).is_empty());
-        // The cat's own seven; the other three belong to the falk and octopus.
+        assert!(pieces(Mascot::Cat, CatAccessory::None).is_empty());
         assert_eq!(CatAccessory::ALL.len(), 10);
-        for &a in &CatAccessory::ALL[1..7] {
-            assert!(!pieces(a).is_empty(), "{a:?}");
-            assert!(!accessory_corners(a, Ears::default()).is_empty(), "{a:?}");
+        for &a in &CatAccessory::ALL[1..] {
+            assert!(!pieces(Mascot::Cat, a).is_empty(), "{a:?}");
+            assert!(
+                !accessory_corners(Mascot::Cat, a, Ears::default()).is_empty(),
+                "{a:?}"
+            );
         }
         let anchors = |a| {
-            pieces(a)
+            pieces(Mascot::Cat, a)
                 .into_iter()
                 .map(|(anchor, _)| anchor)
                 .collect::<Vec<_>>()
@@ -807,7 +1195,7 @@ mod tests {
             assert!(anchors(a).iter().all(|x| *x == Anchor::Head), "{a:?}");
         }
         // The glasses are two rings of 6.6 round the eyes at (24, 40) and (40, 40).
-        let rings: Vec<_> = pieces(CatAccessory::Glasses)
+        let rings: Vec<_> = pieces(Mascot::Cat, CatAccessory::Glasses)
             .into_iter()
             .filter_map(|(_, p)| match p {
                 Piece::Ring { cx, cy, r, .. } => Some((cx, cy, r)),
@@ -820,7 +1208,7 @@ mod tests {
     #[test]
     fn ear_accessories_follow_their_ears_turn_and_lift() {
         let at = |ears| {
-            let c = accessory_corners(CatAccessory::Bow, ears);
+            let c = accessory_corners(Mascot::Cat, CatAccessory::Bow, ears);
             (c[0].0.0, c[0].0.1)
         };
         let rest = at(Ears::default());
@@ -838,7 +1226,7 @@ mod tests {
             "the droop turns it with the ear"
         );
         // The glasses ignore the ears.
-        let g = |ears| accessory_corners(CatAccessory::Glasses, ears);
+        let g = |ears| accessory_corners(Mascot::Cat, CatAccessory::Glasses, ears);
         assert_eq!(
             g(Ears::default()),
             g(Ears {
@@ -876,18 +1264,20 @@ mod tests {
                 // The marks slide with the eyes and the head's pieces do not;
                 // a face with extras never looks, so both share one transform.
                 assert!(!expr.looks(), "{expr:?}");
-                for accessory in CatAccessory::ALL {
-                    for corners in accessory_piece_corners(*accessory, f.ears) {
-                        let piece = corners.iter().fold(
-                            (f32::MAX, f32::MAX, f32::MIN, f32::MIN),
-                            |b, &((x, y), _)| (b.0.min(x), b.1.min(y), b.2.max(x), b.3.max(y)),
-                        );
-                        for part in &cream {
-                            let mark = mark_bounds(part);
-                            assert!(
-                                !overlap(piece, mark),
-                                "{accessory:?} piece {piece:?} covers {expr:?}'s {part:?} at {mark:?}"
+                for m in Mascot::ALL {
+                    for accessory in CatAccessory::ALL {
+                        for corners in accessory_piece_corners(*m, *accessory, f.ears) {
+                            let piece = corners.iter().fold(
+                                (f32::MAX, f32::MAX, f32::MIN, f32::MIN),
+                                |b, &((x, y), _)| (b.0.min(x), b.1.min(y), b.2.max(x), b.3.max(y)),
                             );
+                            for part in &cream {
+                                let mark = mark_bounds(part);
+                                assert!(
+                                    !overlap(piece, mark),
+                                    "{m:?} {accessory:?} piece {piece:?} covers {expr:?}'s {part:?} at {mark:?}"
+                                );
+                            }
                         }
                     }
                 }
@@ -911,16 +1301,18 @@ mod tests {
             for part in notes {
                 let m = mark_bounds(part);
                 let swept = (m.0, m.1 - up, m.2, m.3);
-                for accessory in CatAccessory::ALL {
-                    for corners in accessory_piece_corners(*accessory, f.ears) {
-                        let piece = corners.iter().fold(
-                            (f32::MAX, f32::MAX, f32::MIN, f32::MIN),
-                            |b, &((x, y), _)| (b.0.min(x), b.1.min(y), b.2.max(x), b.3.max(y)),
-                        );
-                        assert!(
-                            !overlap(piece, swept),
-                            "{accessory:?} piece {piece:?} is in the way of {expr:?}'s risen {part:?} ({swept:?})"
-                        );
+                for m in Mascot::ALL {
+                    for accessory in CatAccessory::ALL {
+                        for corners in accessory_piece_corners(*m, *accessory, f.ears) {
+                            let piece = corners.iter().fold(
+                                (f32::MAX, f32::MAX, f32::MIN, f32::MIN),
+                                |b, &((x, y), _)| (b.0.min(x), b.1.min(y), b.2.max(x), b.3.max(y)),
+                            );
+                            assert!(
+                                !overlap(piece, swept),
+                                "{m:?} {accessory:?} piece {piece:?} is in the way of {expr:?}'s risen {part:?} ({swept:?})"
+                            );
+                        }
                     }
                 }
             }
@@ -1000,6 +1392,7 @@ mod tests {
         let calico = CatLook {
             color: CatColor::Calico,
             accessory: CatAccessory::None,
+            ..CatLook::default()
         };
         assert_eq!(slices[0].2, calico.head_rgb());
         assert_eq!(
@@ -1011,11 +1404,266 @@ mod tests {
     #[test]
     fn accessory_paths_are_built_once() {
         let p = painter();
-        for &a in &CatAccessory::ALL[1..7] {
-            let built = p.extras(a);
-            assert_eq!(built.len(), pieces(a).len());
-            assert!(Rc::ptr_eq(&built, &p.extras(a)), "{a:?} is kept");
+        for &m in Mascot::ALL {
+            for &a in &CatAccessory::ALL[1..] {
+                let built = p.extras(m, a);
+                assert_eq!(built.len(), pieces(m, a).len());
+                assert!(Rc::ptr_eq(&built, &p.extras(m, a)), "{m:?} {a:?} is kept");
+            }
         }
-        assert_eq!(p.extras.borrow().len(), 6);
+        assert_eq!(p.extras.borrow().len(), 27);
+    }
+
+    /// A literal copy of the cat's pieces before the mascots arrived.
+    fn old_pieces(accessory: CatAccessory) -> Vec<(Anchor, Piece)> {
+        use Seg::{Close, Line as To, Move, Quad};
+        match accessory {
+            // Drawn by the mascot painters; the cat has no pieces for these.
+            CatAccessory::None
+            | CatAccessory::Headphone
+            | CatAccessory::Sailor
+            | CatAccessory::Bowtie => vec![],
+            CatAccessory::Glasses => vec![
+                (
+                    Anchor::Eyes,
+                    Piece::Ring {
+                        cx: 24.0,
+                        cy: 40.0,
+                        r: 6.6,
+                        tone: Tone::Frame,
+                        width: 1.9,
+                    },
+                ),
+                (
+                    Anchor::Eyes,
+                    Piece::Ring {
+                        cx: 40.0,
+                        cy: 40.0,
+                        r: 6.6,
+                        tone: Tone::Frame,
+                        width: 1.9,
+                    },
+                ),
+                (
+                    Anchor::Eyes,
+                    Piece::Stroke {
+                        segs: vec![Move(30.6, 40.0), To(33.4, 40.0)],
+                        tone: Tone::Frame,
+                        width: 1.9,
+                    },
+                ),
+            ],
+            CatAccessory::Bow => {
+                let wing = |x: f32| Piece::Shape {
+                    segs: vec![Move(45.0, 23.0), To(x, 18.5), To(x, 27.5), Close],
+                    fill: fixed(RASPBERRY),
+                    edge: Some(1.6),
+                };
+                vec![
+                    (Anchor::Ear(Side::Right), wing(37.0)),
+                    (Anchor::Ear(Side::Right), wing(53.0)),
+                    (
+                        Anchor::Ear(Side::Right),
+                        Piece::Dot {
+                            cx: 45.0,
+                            cy: 23.0,
+                            r: 2.4,
+                            tone: fixed(BOW_KNOT),
+                        },
+                    ),
+                ]
+            }
+            CatAccessory::Nightcap => vec![
+                // The cone over the dome, its tip to the upper left.
+                (
+                    Anchor::Head,
+                    Piece::Shape {
+                        segs: vec![
+                            Move(19.0, 25.8),
+                            Quad(32.0, 21.5, 45.0, 25.8),
+                            Quad(40.0, 6.0, 14.5, 7.0),
+                            Quad(10.5, 17.0, 19.0, 25.8),
+                            Close,
+                        ],
+                        fill: fixed(NAVY),
+                        edge: Some(1.2),
+                    },
+                ),
+                (
+                    Anchor::Head,
+                    Piece::Stroke {
+                        segs: vec![Move(19.0, 25.8), Quad(32.0, 21.5, 45.0, 25.8)],
+                        tone: fixed(CREAM),
+                        width: 4.4,
+                    },
+                ),
+                (
+                    Anchor::Head,
+                    Piece::Dot {
+                        cx: 14.5,
+                        cy: 7.0,
+                        r: 3.0,
+                        tone: fixed(CREAM),
+                    },
+                ),
+            ],
+            CatAccessory::Scarf => vec![
+                // The tail first: it comes out from under the band.
+                (
+                    Anchor::Head,
+                    Piece::Shape {
+                        segs: vec![
+                            Move(13.0, 52.0),
+                            To(22.0, 52.0),
+                            To(23.0, 60.5),
+                            To(15.0, 61.5),
+                            Close,
+                        ],
+                        fill: fixed(MUSTARD_DARK),
+                        edge: Some(1.6),
+                    },
+                ),
+                (
+                    Anchor::Head,
+                    Piece::Shape {
+                        segs: vec![
+                            Move(9.5, 47.0),
+                            To(54.5, 47.0),
+                            Quad(58.0, 47.0, 58.0, 50.5),
+                            To(58.0, 51.0),
+                            Quad(58.0, 55.0, 54.0, 55.0),
+                            To(10.0, 55.0),
+                            Quad(6.0, 55.0, 6.0, 51.0),
+                            To(6.0, 50.5),
+                            Quad(6.0, 47.0, 9.5, 47.0),
+                            Close,
+                        ],
+                        fill: fixed(MUSTARD),
+                        edge: None,
+                    },
+                ),
+            ],
+            CatAccessory::Flower => {
+                let (cx, cy) = (16.0_f32, 23.0_f32);
+                let mut v: Vec<(Anchor, Piece)> = (0..5)
+                    .map(|i| {
+                        let a = (-90.0 + 72.0 * i as f32).to_radians();
+                        (
+                            Anchor::Ear(Side::Left),
+                            Piece::Dot {
+                                cx: cx + 3.6 * a.cos(),
+                                cy: cy + 3.6 * a.sin(),
+                                r: 2.6,
+                                tone: fixed(PINK),
+                            },
+                        )
+                    })
+                    .collect();
+                v.push((
+                    Anchor::Ear(Side::Left),
+                    Piece::Dot {
+                        cx,
+                        cy,
+                        r: 2.0,
+                        tone: fixed(GOLD),
+                    },
+                ));
+                v
+            }
+            CatAccessory::Crown => vec![
+                (
+                    Anchor::Head,
+                    Piece::Shape {
+                        segs: vec![
+                            Move(23.5, 27.5),
+                            To(23.5, 19.0),
+                            To(28.0, 23.5),
+                            To(32.0, 16.0),
+                            To(36.0, 23.5),
+                            To(40.5, 19.0),
+                            To(40.5, 27.5),
+                            Close,
+                        ],
+                        fill: fixed(GOLD),
+                        edge: Some(1.4),
+                    },
+                ),
+                (
+                    Anchor::Head,
+                    Piece::Stroke {
+                        segs: vec![Move(25.0, 25.8), To(39.0, 25.8)],
+                        tone: fixed(GOLD_DARK),
+                        width: 1.8,
+                    },
+                ),
+            ],
+        }
+    }
+
+    fn bounds_of(p: &[(Anchor, Piece)]) -> (f32, f32, f32, f32) {
+        p.iter()
+            .fold((f32::MAX, f32::MAX, f32::MIN, f32::MIN), |b, (_, piece)| {
+                let (l, t, r, bt) = piece_bounds(piece);
+                (b.0.min(l), b.1.min(t), b.2.max(r), b.3.max(bt))
+            })
+    }
+
+    #[test]
+    fn the_cats_accessories_are_unchanged() {
+        for acc in &CatAccessory::ALL[..7] {
+            assert_eq!(pieces(Mascot::Cat, *acc), old_pieces(*acc), "{acc:?}");
+        }
+    }
+
+    #[test]
+    fn every_mascot_wears_every_accessory() {
+        for m in Mascot::ALL {
+            for acc in CatAccessory::ALL {
+                let p = pieces(*m, *acc);
+                assert_eq!(p.is_empty(), *acc == CatAccessory::None, "{m:?} {acc:?}");
+                if *m != Mascot::Cat {
+                    assert!(
+                        p.iter().all(|(a, _)| !matches!(a, Anchor::Ear(_))),
+                        "{m:?} {acc:?} rides no ear"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn caps_sit_on_each_mascots_top() {
+        for m in Mascot::ALL {
+            let (_, t, _, b) = bounds_of(&pieces(*m, CatAccessory::Sailor));
+            let top = anchors(*m).top.1;
+            assert!(
+                t >= top - 9.5 && b <= top + 3.5,
+                "{m:?}: {t}..{b} around {top}"
+            );
+        }
+        assert_eq!(anchors(Mascot::Octopus).top, (32.0, 9.0));
+    }
+
+    #[test]
+    fn the_falk_crown_is_outlined_and_its_scarf_navy() {
+        let crown = pieces(Mascot::Falk, CatAccessory::Crown);
+        assert!(crown.iter().any(|(_, p)| matches!(
+            p,
+            Piece::Stroke {
+                tone: Tone::Fixed(0x7A5210),
+                ..
+            } | Piece::Shape {
+                fill: Tone::Fixed(0x7A5210),
+                ..
+            }
+        )));
+        let scarf = pieces(Mascot::Falk, CatAccessory::Scarf);
+        assert!(scarf.iter().any(|(_, p)| matches!(
+            p,
+            Piece::Shape {
+                fill: Tone::Fixed(NAVY),
+                ..
+            }
+        )));
     }
 }

@@ -42,7 +42,7 @@ use crate::config::Style;
 use crate::greeting::{self, DayPeriod, GreetMark};
 use crate::i18n::Key;
 use crate::model::{NoticeKind, View};
-use crate::theme::{CatAccessory, CatColor};
+use crate::theme::{CatAccessory, CatColor, Mascot};
 
 /// The brand colour: the logo, and the Terracotta coat (`cat_style::CatLook`).
 pub const TERRACOTTA: u32 = 0xE2683C;
@@ -959,7 +959,7 @@ pub struct RobotPainter {
     /// and the head (`cat_style`).
     pub(super) calico: RefCell<Vec<((u32, u32), [ID2D1PathGeometry; 2])>>,
     /// Each accessory's pieces and their paths (`cat_style`).
-    pub(super) extras: RefCell<Vec<(CatAccessory, Rc<Vec<Placed>>)>>,
+    pub(super) extras: RefCell<Vec<((Mascot, CatAccessory), Rc<Vec<Placed>>)>>,
     pub(super) round: ID2D1StrokeStyle,
 }
 
