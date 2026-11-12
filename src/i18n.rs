@@ -1427,6 +1427,14 @@ keys! {
     TipRemindMinPrev => "Menit sebelumnya", "Earlier minute";
     TipRemindMinNext => "Menit berikutnya", "Later minute";
     TipRemindWheelAbout => "Roda mouse di kolom ini juga bisa.", "The wheel over this column works too.";
+
+    // Tooltips: the sticky note list window.
+    TipListNewAbout => "Catatan tempel baru di desktop.", "A new sticky note on the desktop.";
+    TipListPinned => "Disematkan di atas", "Kept on top";
+    TipListRolled => "Digulung", "Rolled up";
+    TipListTucked => "Diselipkan ke tepi", "Tucked to the edge";
+    TipListReminder => "Ada pengingat", "Has a reminder";
+    TipListReminderPast => "Pengingat sudah berbunyi", "Reminder went off";
 }
 
 /// `key` in `lang`.
@@ -2684,6 +2692,31 @@ pub fn count_label(lang: Lang, n: usize) -> String {
 /// list (`pos` is 1-based).
 pub fn stack_badge(lang: Lang, pos: usize, len: usize) -> String {
     format!("{} {pos}/{len}", text(lang, Key::StickyListStack))
+}
+
+/// "Tumpukan, 3 lembar" / "Stack, 3 sheets": the stack mark's tip in the
+/// sticky note list.
+pub fn tip_list_stack(lang: Lang, n: usize) -> String {
+    match lang {
+        Lang::Id => format!("Tumpukan, {n} lembar"),
+        Lang::En => format!("Stack, {n} {}", if n == 1 { "sheet" } else { "sheets" }),
+    }
+}
+
+/// "1 dari 4 dicentang" / "1 of 4 checked": the checklist mark's tip.
+pub fn tip_list_checked(lang: Lang, done: usize, total: usize) -> String {
+    match lang {
+        Lang::Id => format!("{done} dari {total} dicentang"),
+        Lang::En => format!("{done} of {total} checked"),
+    }
+}
+
+/// "2 gambar" / "2 images": the images mark's tip.
+pub fn tip_list_images(lang: Lang, n: usize) -> String {
+    match lang {
+        Lang::Id => format!("{n} gambar"),
+        Lang::En => format!("{n} {}", if n == 1 { "image" } else { "images" }),
+    }
 }
 
 /// A running command's time on the clock: "0:42", "12:05", "1:02:03".

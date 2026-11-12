@@ -4,8 +4,9 @@
 //! each target is on screen) is `host`, `pop` and `remind_pop`.
 
 use crate::hotkey::HotkeyId;
-use crate::i18n::Key;
+use crate::i18n::{self, Key, Lang};
 use crate::ui::tooltip::{KeyHint, Tip};
+use crate::widgets::list::{Hit, Mark};
 use crate::widgets::paint::Btn;
 use crate::widgets::remind_pop;
 use crate::widgets::sticky::Paper;
@@ -77,6 +78,41 @@ pub fn remind_tip(item: remind_pop::Item) -> Option<Tip> {
         Item::Save | Item::Cancel => return None,
     };
     Some(Tip::named(name).about(Key::TipRemindWheelAbout))
+}
+
+/// The tip of a control of the sticky note list window; `None` for the rest
+/// (the rows, the search box, the header's drag area, the undo button).
+pub fn list_tip(hit: Hit) -> Option<Tip> {
+    match hit {
+        Hit::Plus => Some(
+            Tip::named(Key::TipStickyNewNote)
+                .about(Key::TipListNewAbout)
+                .key(KeyHint::Hotkey(HotkeyId::StickyNote)),
+        ),
+        Hit::Close => Some(Tip::named(Key::Close).key(KeyHint::Raw("Esc"))),
+        _ => None,
+    }
+}
+
+/// The tip of one of a list row's small marks: only a name.
+pub fn mark_tip(m: Mark) -> Tip {
+    mark_tip_in(i18n::lang(), m)
+}
+
+fn mark_tip_in(lang: Lang, m: Mark) -> Tip {
+    let name = match m {
+        Mark::Pinned => Key::TipListPinned,
+        Mark::Rolled => Key::TipListRolled,
+        Mark::Tucked => Key::TipListTucked,
+        Mark::Reminder => Key::TipListReminder,
+        Mark::ReminderPast => Key::TipListReminderPast,
+        Mark::Stack(n) => return Tip::name_str(i18n::tip_list_stack(lang, n)),
+        Mark::Checked(done, total) => {
+            return Tip::name_str(i18n::tip_list_checked(lang, done, total));
+        }
+        Mark::Images(n) => return Tip::name_str(i18n::tip_list_images(lang, n)),
+    };
+    Tip::name_str(i18n::text(lang, name).to_string())
 }
 
 #[cfg(test)]
@@ -200,5 +236,55 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_list_buttons_carry_their_keys_and_nothing_else_has_a_tip() {
+        let plus = list_tip(Hit::Plus).unwrap();
+        assert_eq!(plus.keys, [KeyHint::Hotkey(HotkeyId::StickyNote)]);
+        assert!(plus.about.is_some());
+        assert_eq!(list_tip(Hit::Close).unwrap().keys, [KeyHint::Raw("Esc")]);
+        for h in [Hit::Search, Hit::Row(0), Hit::Undo, Hit::Header, Hit::None] {
+            assert!(list_tip(h).is_none());
+        }
+    }
+
+    fn every_mark() -> [Mark; 8] {
+        [
+            Mark::Pinned,
+            Mark::Rolled,
+            Mark::Tucked,
+            Mark::Reminder,
+            Mark::ReminderPast,
+            Mark::Stack(3),
+            Mark::Checked(1, 4),
+            Mark::Images(2),
+        ]
+    }
+
+    #[test]
+    fn the_counts_show_in_the_mark_names_in_both_languages() {
+        for lang in LANGS {
+            let stack = mark_tip_in(lang, Mark::Stack(3)).name.unwrap();
+            assert!(stack.contains('3'), "{lang:?}: {stack}");
+            let checked = mark_tip_in(lang, Mark::Checked(1, 4)).name.unwrap();
+            assert!(checked.contains('1') && checked.contains('4'), "{lang:?}: {checked}");
+            let images = mark_tip_in(lang, Mark::Images(2)).name.unwrap();
+            assert!(images.contains('2'), "{lang:?}: {images}");
+        }
+    }
+
+    #[test]
+    fn the_mark_names_are_plain_and_distinct() {
+        for lang in LANGS {
+            let names: Vec<String> =
+                every_mark().into_iter().map(|m| mark_tip_in(lang, m).name.unwrap()).collect();
+            for (i, n) in names.iter().enumerate() {
+                assert!(!n.is_empty() && !n.contains('\u{2014}'), "{lang:?}: {n}");
+                assert!(!names[i + 1..].contains(n), "{lang:?}: {n} twice");
+            }
+        }
+        assert_eq!(mark_tip_in(Lang::En, Mark::Stack(1)).name.as_deref(), Some("Stack, 1 sheet"));
+        assert_eq!(mark_tip_in(Lang::En, Mark::Images(1)).name.as_deref(), Some("1 image"));
     }
 }

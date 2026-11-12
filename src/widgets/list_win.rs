@@ -66,15 +66,16 @@ use crate::i18n::{self, Key, Lang, text};
 use crate::notes::{self, Note};
 use crate::shot_edit::gfx::color;
 use crate::theme;
+use crate::ui::tooltip;
 use crate::ui::geometry::Rect;
 use crate::ui::icons::Icon;
 use crate::widgets::edit;
 use crate::widgets::host::WM_APP_WIDGET;
 use crate::widgets::list::{
-    self, Hit, Layout, Mark, ROW_H, Row, WIN_W, filter, has_meta, layout, marks, row_geo, rows,
+    self, Hit, Layout, Mark, ROW_H, Row, WIN_W, filter, has_meta, layout, row_geo, rows,
 };
 use crate::widgets::paint::{Res, hit_index, settle_index};
-use crate::widgets::{remind, sticky};
+use crate::widgets::{remind, sticky, tips};
 
 /// The one timer of this window: the undo strip's 5 s, alive only while the
 /// strip shows.
@@ -662,6 +663,7 @@ pub(crate) enum EditKey {
 
 /// Handles `key`; true when the list consumed it (the EDIT must not see it).
 pub(crate) fn edit_key(key: EditKey) -> bool {
+    hide_tip();
     match key {
         EditKey::Escape => {
             post_close();
@@ -742,6 +744,7 @@ fn delete_row(l: &mut List, id: &str, picked: Option<usize>) {
 }
 
 fn wheel_by(delta: i32) {
+    hide_tip();
     let changed = with(|l| {
         let lay = layout_of(l);
         let to = list::wheel(l.scroll, delta, &lay, l.shown.len());
@@ -1104,70 +1107,38 @@ fn paint(l: &mut List) {
                 // The time, and the status icons under it.
                 let when = notes::note_time_label(lang, remind::from_unix(row.updated), today);
                 text(&when, shifted(g.time, top), 11.0, 400, pal.secondary, 1.0, Align::Right);
-                let ms = marks(row);
-                let icons = shifted(g.icons, top);
-                for (j, m) in ms.iter().enumerate() {
-                    let r = list::mark_rect(icons, j, ms.len());
-                    let (ic, ink) = match m {
-                        Mark::Pinned => (Icon::Pin, pal.secondary),
-                        Mark::Rolled => (Icon::ChevU, pal.secondary),
-                        Mark::Tucked => (Icon::Ext, pal.secondary),
-                        Mark::Reminder(true) => (Icon::Bell, pal.accent),
-                        Mark::Reminder(false) => (Icon::Clock, pal.secondary),
+                // The status icons under the time and the third line's
+                // counts: `list::mark_rects` places them, as the hover does.
+                let badge = row.stack.map(|(pos, len)| i18n::stack_badge(lang, pos, len));
+                let badge_w = badge.as_deref().map_or(0.0, |b| text_w(res, b, 10.5, 500).ceil() + 2.0);
+                let row_r = Rect { x: 0.0, y: top, w: WIN_W, h: ROW_H };
+                for (m, r) in list::mark_rects(row_r, &list::row_marks(row), badge_w) {
+                    let meta_icon = |ic: Icon, ink| {
+                        icon(ic, Rect { w: list::META_ICON, ..r }, list::META_ICON, ink, 1.0);
                     };
-                    icon(ic, r, list::ICON, ink, 1.0);
-                }
-                // The third line: the stack's place and the checklist's count.
-                if let Some(meta) = g.meta {
-                    let meta = shifted(meta, top);
-                    let mut x = meta.x;
-                    if let Some((pos, len)) = row.stack {
-                        let badge = i18n::stack_badge(lang, pos, len);
-                        icon(
-                            Icon::Copy,
-                            Rect { x, y: meta.y, w: 12.0, h: meta.h },
-                            12.0,
-                            pal.secondary,
-                            1.0,
-                        );
-                        let bw = text_w(res, &badge, 10.5, 500).ceil() + 2.0;
-                        text(
-                            &badge,
-                            Rect { x: x + 16.0, y: meta.y, w: bw, h: meta.h },
-                            10.5,
-                            500,
-                            pal.secondary,
-                            1.0,
-                            Align::Left,
-                        );
-                        x += 16.0 + bw + 10.0;
-                    }
-                    if let Some((done, total)) = row.progress {
-                        let ink = if done == total { pal.accent } else { pal.secondary };
-                        icon(Icon::Check, Rect { x, y: meta.y, w: 12.0, h: meta.h }, 12.0, ink, 1.0);
-                        text(
-                            &format!("{done}/{total}"),
-                            Rect { x: x + 16.0, y: meta.y, w: 48.0, h: meta.h },
-                            10.5,
-                            500,
-                            ink,
-                            1.0,
-                            Align::Left,
-                        );
-                        x += 16.0 + 40.0 + 10.0;
-                    }
-                    // The images: the image icon and how many.
-                    if row.images > 0 {
-                        icon(Icon::Image, Rect { x, y: meta.y, w: 12.0, h: meta.h }, 12.0, pal.secondary, 1.0);
-                        text(
-                            &row.images.to_string(),
-                            Rect { x: x + 16.0, y: meta.y, w: 24.0, h: meta.h },
-                            10.5,
-                            500,
-                            pal.secondary,
-                            1.0,
-                            Align::Left,
-                        );
+                    let meta_text = |s: &str, w: f32, ink| {
+                        let at = Rect { x: r.x + list::META_TEXT_X, w, ..r };
+                        text(s, at, 10.5, 500, ink, 1.0, Align::Left);
+                    };
+                    match m {
+                        Mark::Pinned => icon(Icon::Pin, r, list::ICON, pal.secondary, 1.0),
+                        Mark::Rolled => icon(Icon::ChevU, r, list::ICON, pal.secondary, 1.0),
+                        Mark::Tucked => icon(Icon::Ext, r, list::ICON, pal.secondary, 1.0),
+                        Mark::ReminderPast => icon(Icon::Bell, r, list::ICON, pal.accent, 1.0),
+                        Mark::Reminder => icon(Icon::Clock, r, list::ICON, pal.secondary, 1.0),
+                        Mark::Stack(_) => {
+                            meta_icon(Icon::Copy, pal.secondary);
+                            meta_text(badge.as_deref().unwrap_or(""), badge_w, pal.secondary);
+                        }
+                        Mark::Checked(done, total) => {
+                            let ink = if done == total { pal.accent } else { pal.secondary };
+                            meta_icon(Icon::Check, ink);
+                            meta_text(&format!("{done}/{total}"), 48.0, ink);
+                        }
+                        Mark::Images(n) => {
+                            meta_icon(Icon::Image, pal.secondary);
+                            meta_text(&n.to_string(), list::IMAGES_W, pal.secondary);
+                        }
                     }
                 }
             }
@@ -1249,6 +1220,49 @@ fn to_dip(l: &List, x: i32, y: i32) -> (f32, f32) {
     (x as f32 / l.scale, y as f32 / l.scale)
 }
 
+/// The tooltip goes: the pointer left, a key, the wheel or a click moved
+/// things, or the rows changed under it.
+fn hide_tip() {
+    if let Some(h) = with(|l| l.hwnd) {
+        tooltip::hide(h);
+    }
+}
+
+/// The tooltip target at window point (`dx`, `dy`) dip: the (+) and the close
+/// button, or one of a row's marks. `None` over anything else (the
+/// empty-state button says what it does itself).
+fn tip_at(l: &List, lay: &Layout, dx: f32, dy: f32) -> Option<tooltip::Target> {
+    let on_screen = |r: Rect| tooltip::to_screen(l.hwnd, r, l.scale);
+    let (id, rect, tip) = match list::hit(lay, dx, dy, l.scroll, l.shown.len()) {
+        h @ Hit::Plus => {
+            let tip = tips::list_tip(h)?;
+            // At the cap the (+) does nothing, and says why.
+            let tip = if l.data.can_add { tip } else { tip.about(Key::StickyMax) };
+            (tooltip::id_of(&(1u8, 0usize)), lay.plus, tip)
+        }
+        h @ Hit::Close => (tooltip::id_of(&(2u8, 0usize)), lay.close, tips::list_tip(h)?),
+        Hit::Row(i) => {
+            let row = l.shown.get(i)?;
+            let top = lay.rows_view.y + i as f32 * ROW_H - l.scroll;
+            let marks = list::row_marks(row);
+            let badge_w = row
+                .stack
+                .map_or(0.0, |(pos, len)| {
+                    text_w(&l.res, &i18n::stack_badge(l.data.lang, pos, len), 10.5, 500).ceil() + 2.0
+                });
+            let row_r = Rect { x: 0.0, y: top, w: WIN_W, h: ROW_H };
+            let (m, r) = list::mark_rects(row_r, &marks, badge_w)
+                .into_iter()
+                .find(|(_, r)| r.contains(dx, dy))?;
+            // The mark's place on its row, not the row's index: a scroll or
+            // a re-sort under a still pointer is a different target.
+            (tooltip::id_of(&(3u8, row.id.clone(), m)), r, tips::mark_tip(m))
+        }
+        _ => return None,
+    };
+    Some(tooltip::Target { id, anchor: on_screen(rect), side: tooltip::Side::Auto, tip })
+}
+
 /// What a point (dip) is on, the empty-state button included (it acts like
 /// (+) and is reported as `Plus`).
 fn hit_with_empty(l: &List, lay: &Layout, x: f32, y: f32) -> Hit {
@@ -1269,6 +1283,7 @@ enum Act {
 }
 
 fn left_down(hwnd: HWND, x: i32, y: i32) {
+    tooltip::pressed(hwnd);
     let act = with(|l| {
         let (dx, dy) = to_dip(l, x, y);
         let lay = layout_of(l);
@@ -1316,7 +1331,9 @@ fn left_down(hwnd: HWND, x: i32, y: i32) {
 /// What a mouse move asks for.
 enum Move {
     Nothing,
-    Redraw,
+    /// Only the tooltip target changed (or stays).
+    Tip(Option<tooltip::Target>),
+    Redraw(Option<tooltip::Target>),
     /// The drag in the search box now ends at this index (EDIT, from, to).
     Select(HWND, usize, usize),
 }
@@ -1342,16 +1359,21 @@ fn mouse_move(hwnd: HWND, x: i32, y: i32) {
             }
         }
         let now = hit_with_empty(l, &lay, dx, dy);
+        let tip = tip_at(l, &lay, dx, dy);
         if now == l.hover {
-            return Move::Nothing;
+            return Move::Tip(tip);
         }
         l.hover = now;
-        Move::Redraw
+        Move::Redraw(tip)
     })
     .unwrap_or(Move::Nothing);
     match act {
         Move::Nothing => {}
-        Move::Redraw => redraw(),
+        Move::Tip(tip) => tooltip::hover(hwnd, tip),
+        Move::Redraw(tip) => {
+            redraw();
+            tooltip::hover(hwnd, tip);
+        }
         Move::Select(edit_hwnd, from, to) => {
             unsafe {
                 SendMessageW(edit_hwnd, EM_SETSEL, Some(WPARAM(from)), Some(LPARAM(to as isize)));
@@ -1370,6 +1392,7 @@ fn leaves_after_menu(chosen: usize, list_is_foreground: bool) -> bool {
 }
 
 fn right_up(hwnd: HWND, x: i32, y: i32) {
+    tooltip::hide(hwnd);
     let row = with(|l| {
         let (dx, dy) = to_dip(l, x, y);
         let lay = layout_of(l);
@@ -1465,6 +1488,7 @@ unsafe extern "system" fn list_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
             return LRESULT(0);
         }
         WM_MOUSELEAVE => {
+            tooltip::hide(hwnd);
             let changed = with(|l| {
                 l.tracking = false;
                 let changed = l.hover != Hit::None;
@@ -1517,6 +1541,7 @@ unsafe extern "system" fn list_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
             return LRESULT(0);
         }
         WM_KEYDOWN => {
+            tooltip::hide(hwnd);
             if (wparam.0 & 0xFFFF) as u16 == VK_ESCAPE.0 {
                 post_close();
             }
@@ -1525,6 +1550,7 @@ unsafe extern "system" fn list_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
         // The search box's text changed.
         WM_COMMAND => {
             if ((wparam.0 >> 16) & 0xFFFF) as u32 == EN_CHANGE {
+                tooltip::hide(hwnd);
                 let _ = with(|l| {
                     sync_from_edit(l);
                 });
@@ -1558,6 +1584,7 @@ unsafe extern "system" fn list_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
             return LRESULT(0);
         }
         WM_CLOSE => {
+            tooltip::hide(hwnd);
             close();
             return LRESULT(0);
         }
@@ -1594,6 +1621,7 @@ unsafe extern "system" fn list_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
             return LRESULT(0);
         }
         WM_DESTROY => {
+            tooltip::hide(hwnd);
             unsafe {
                 let _ = KillTimer(Some(hwnd), TIMER_LIST_UNDO);
             }
