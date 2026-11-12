@@ -1508,6 +1508,27 @@ keys! {
     TipCliStar => "Jadikan favorit", "Star";
     TipCliUnstar => "Hapus dari favorit", "Unstar";
     TipCleanBack => "Kembali ke Sistem", "Back to System";
+
+    // Tooltips: the transcript window, the live caption card and the lyrics card.
+    TipGrip => "Ubah ukuran", "Resize";
+    TipTrPlayAbout => "Dari posisi di bar.", "From the position on the bar.";
+    TipTrSeek => "Posisi", "Position";
+    TipTrSeekAbout => "Klik atau geser untuk lompat.", "Click or drag to jump.";
+    TipTrCopyAbout => "Salin judul dan semua baris transkrip sebagai teks.", "Copies the title and every line of the transcript as text.";
+    TipTrPromptAbout => "Salin transkrip dengan perintah ringkasan, siap ditempel ke AI.", "Copies the transcript with a summary prompt, ready to paste into an AI chat.";
+    TipTrNoteAbout => "Simpan transkrip ini ke halaman Catatan.", "Saves this transcript to the Notes page.";
+    TipTrOpenMdAbout => "Buka file transkrip di aplikasi bawaan Windows.", "Opens the transcript file in the Windows default app.";
+    TipTrRedoAbout => "Transkrip ulang, bisa dengan model lain.", "Transcribes again, with another model if you like.";
+    TipTrSettingsAbout => "Pengaturan transkrip: nyala, model, bahasa, otomatis.", "Transcript settings: on or off, model, language, auto.";
+    TipCapClose => "Tutup caption", "Close captions";
+    TipCapCloseAbout => "Caption langsung dimatikan.", "Turns live captions off.";
+    TipCapPause => "Jeda caption", "Pause captions";
+    TipCapResume => "Lanjutkan caption", "Resume captions";
+    TipCapPauseAbout => "Teks yang sudah ada tetap.", "The text so far stays.";
+    TipCapCopyAbout => "Salin semua teks sesi ini, bukan cuma yang terlihat.", "Copies the whole session, not just what shows.";
+    TipCapLang => "Bahasa caption", "Caption language";
+    TipCapLangAbout => "Klik untuk ganti: ID, EN, Auto.", "Click to switch: ID, EN, Auto.";
+    TipCapGripAbout => "Ctrl + roda mouse mengubah ukuran teks.", "Ctrl + wheel changes the text size.";
 }
 
 /// `key` in `lang`.

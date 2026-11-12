@@ -62,6 +62,7 @@ use crate::ui::card_surface::{Surface, Tween, rounded};
 use crate::ui::frame_clock::{FrameClock, WM_APP_FRAME};
 use crate::config::UiFont;
 use crate::ui::icons::Icon;
+use crate::ui::tooltip::{self, Side};
 
 /// The window class.
 const CLASS: PCWSTR = w!("ValeLyricsCard");
@@ -451,6 +452,7 @@ pub(super) fn close() {
     card.kill_timers();
     card.clock = None;
     let hwnd = card.hwnd;
+    tooltip::hide(hwnd);
     unsafe {
         let _ = DestroyWindow(hwnd);
     }
@@ -471,6 +473,7 @@ pub(super) fn set_hidden(hidden: bool) -> bool {
         fx.push(Fx::Show(!hidden));
         let now = Instant::now();
         if hidden {
+            tooltip::hide(c.hwnd);
             c.kill_timers();
             c.clock = None;
         } else {
@@ -583,6 +586,10 @@ impl Card {
         self.c.timeline = content.timeline;
         self.c.playing = content.playing;
         self.c.can_seek = content.can_seek;
+        // The transport buttons go with the session: their tip too.
+        if !self.has_media() {
+            tooltip::hide(self.hwnd);
+        }
         self.c.session_key = content.session_key;
         self.c.palette = palette;
         if !same_track {
@@ -1047,6 +1054,34 @@ impl Card {
     }
 
     /// A session to send prev, play/pause and next to.
+    /// The tip of the control under the pointer, anchored on screen (the card
+    /// is exactly its window, so the origin plus the dip rect is enough).
+    fn tip_target(&self, zone: Zone) -> Option<tooltip::Target> {
+        let r = self.rects();
+        let rect = match zone {
+            Zone::Close => r.close,
+            Zone::Prev => r.controls[0],
+            Zone::PlayPause => r.controls[1],
+            Zone::Next => r.controls[2],
+            Zone::Grip => r.grip,
+            _ => return None,
+        };
+        let playing = self.c.playing;
+        let tip = layout::zone_tip(zone, playing)?;
+        let k = self.scale();
+        Some(tooltip::Target {
+            id: tooltip::id_of(&(format!("{zone:?}"), playing && zone == Zone::PlayPause)),
+            anchor: crate::capture::Rect::new(
+                self.origin.0 + (rect.x * k).round() as i32,
+                self.origin.1 + (rect.y * k).round() as i32,
+                (rect.w * k).round() as i32,
+                (rect.h * k).round() as i32,
+            ),
+            side: Side::Auto,
+            tip,
+        })
+    }
+
     fn has_media(&self) -> bool {
         self.c.status != Status::NoMedia
     }
@@ -1118,6 +1153,9 @@ impl Card {
             let (zone, origin, size_dip) = (press.zone, press.origin, press.size_dip);
             if started && matches!(zone, Zone::Header | Zone::Body | Zone::Grip) {
                 if let Some(p) = &mut self.press {
+                    if !p.dragging {
+                        tooltip::hide(self.hwnd);
+                    }
                     p.dragging = true;
                 }
                 if zone == Zone::Grip {
@@ -1146,6 +1184,7 @@ impl Card {
             _ => "arrow",
         };
         fx.push(Fx::Cursor(cursor));
+        tooltip::hover(self.hwnd, self.tip_target(zone));
         let _ = post;
         if changed || self.moving(now) {
             self.sync_clock(now);
@@ -1175,6 +1214,7 @@ impl Card {
         if self.press.is_some() {
             return;
         }
+        tooltip::hide(self.hwnd);
         let now = Instant::now();
         self.last_pt = None;
         self.set_hover(false, now);
@@ -1185,6 +1225,7 @@ impl Card {
     }
 
     fn button_down(&mut self, x: i32, y: i32, fx: &mut Vec<Fx>) {
+        tooltip::pressed(self.hwnd);
         let now = Instant::now();
         let (dx, dy) = self.to_dip(x, y);
         // The controls and the grip only exist while the pointer is in.
@@ -1317,6 +1358,7 @@ impl Card {
 
     /// The window is gone: stop the timers and the frame clock for good.
     fn destroyed(&mut self) {
+        tooltip::hide(self.hwnd);
         self.gone = true;
         self.press = None;
         self.last_pt = None;
@@ -1335,6 +1377,7 @@ impl Card {
     }
 
     fn wheel(&mut self, delta: i16, now: Instant) {
+        tooltip::hide(self.hwnd);
         if self.c.status != Status::Synced || self.layouts.is_none() {
             return;
         }
@@ -1496,6 +1539,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             return LRESULT(0);
         }
         WM_KEYDOWN => {
+            tooltip::hide(hwnd);
             if wparam.0 as u16 == VK_ESCAPE.0 {
                 if let Some((island, demo)) = with(|c, _| (c.island, c.demo)) {
                     emit(island, demo, Msg::Close, 0);

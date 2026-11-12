@@ -65,7 +65,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowRect, IDC_ARROW, IDC_HAND, IsIconic, IsZoomed, KillTimer, LoadCursorW, MINMAXINFO,
     PostMessageW, RegisterClassExW, SW_RESTORE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SetCursor,
     SetTimer, SetWindowPos, SetWindowTextW, ShowWindow, WINDOW_EX_STYLE, WM_CAPTURECHANGED,
-    WM_CLOSE, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_GETMINMAXINFO,
+    WM_CLOSE, WM_DESTROY, WM_DPICHANGED, WM_ENTERSIZEMOVE, WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_GETMINMAXINFO,
     WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_SETCURSOR,
     WM_SIZE, WM_TIMER, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
 };
@@ -73,7 +73,7 @@ use windows::core::{HSTRING, PCWSTR, Result, w};
 use windows_numerics::Vector2;
 
 use super::layout::{
-    self, BAR_HIT_H, BTN_PAD_X, Btn, CHIP_COL, Frame, LINE_PAD_Y, LIST_TOP, META_H, PAD, PLAY,
+    self, BAR_HIT_H, BTN_PAD_X, Btn, CHIP_COL, Frame, Hot, LINE_PAD_Y, LIST_TOP, META_H, PAD, PLAY,
     ROW_BLEED, TEXT_MIN_H, THUMB, TIME_W, TITLE_H, TRACK_H, WHEEL_STEP,
 };
 use super::player::{Playback, WM_APP_PLAYER};
@@ -92,6 +92,7 @@ use crate::ui::geometry::Rect;
 use crate::ui::icons::{Icon, IconSet};
 use crate::ui::settings_controls::{mix, primary_fill};
 use crate::ui::settings_window::Rc;
+use crate::ui::tooltip::{self, Side};
 
 const CLASS: PCWSTR = w!("ValeTranscript");
 /// A window is on screen only outside the tests.
@@ -238,14 +239,6 @@ pub(super) fn measured_buttons(ui: UiFont, lang: Lang, btns: &[Btn]) -> Vec<(Btn
 
 // ------------------------------------------------------------------ state
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Hot {
-    Btn(usize),
-    Play,
-    Bar,
-    Line(usize),
-}
-
 /// What has the keyboard, in Tab order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Focus {
@@ -298,6 +291,9 @@ struct Win {
     key_seek: bool,
     seeking: bool,
     tracking: bool,
+    /// Where on the seek bar (dip) the pointer was when its tip was first
+    /// reported: the tip stays there while the pointer stays on the bar.
+    tip_bar_x: Option<f32>,
     /// The title bar's colours last applied (light, bg, text).
     styled: Option<(bool, u32, u32)>,
 }
@@ -537,6 +533,7 @@ fn new_win(hwnd: HWND, view: View) -> Option<Win> {
         key_seek: false,
         seeking: false,
         tracking: false,
+        tip_bar_x: None,
         styled: None,
         view,
     })
@@ -1325,6 +1322,39 @@ fn screen_rect(w: &Win, r: Rect) -> crate::capture::Rect {
     crate::capture::Rect::new(pt.x, pt.y, (r.w * k).round() as i32, (r.h * k).round() as i32)
 }
 
+/// The tip target of `hot`: where it sits on screen and what it says. The
+/// bar's anchor is a small box at the pointer's x, fixed when the bar is
+/// first reported and kept while the pointer stays on it.
+fn tip_target(w: &mut Win, hot: Option<Hot>) -> Option<tooltip::Target> {
+    let Some(hot) = hot else {
+        w.tip_bar_x = None;
+        return None;
+    };
+    if hot != Hot::Bar {
+        w.tip_bar_x = None;
+    }
+    let playing = w.player.playing();
+    let (id, rect, btn) = match hot {
+        Hot::Btn(i) => {
+            let &(btn, r) = w.frame.buttons.get(i)?;
+            (tooltip::id_of(&(1u8, format!("{btn:?}"))), r, Some(btn))
+        }
+        Hot::Play => (tooltip::id_of(&(2u8, playing)), w.frame.play, None),
+        Hot::Bar => {
+            let bar = w.frame.bar;
+            let at = *w.tip_bar_x.get_or_insert_with(|| {
+                w.cursor.map_or(bar.x + bar.w / 2.0, |(x, _)| x).clamp(bar.x, bar.right())
+            });
+            let side = 2.0 * bar.h;
+            let r = Rect { x: at - side / 2.0, y: bar.y, w: side, h: bar.h };
+            (tooltip::id_of(&3u8), r, None)
+        }
+        Hot::Line(_) => return None,
+    };
+    let tip = layout::tip_of(hot, playing, btn)?;
+    Some(tooltip::Target { id, anchor: screen_rect(w, rect), side: Side::Auto, tip })
+}
+
 fn request_of(btn: Btn, anchor: crate::capture::Rect) -> Request {
     match btn {
         Btn::Copy => Request::Copy,
@@ -1410,6 +1440,19 @@ fn focus_line_to(w: &mut Win, i: usize) {
 }
 
 fn key_down(hwnd: HWND, vk: u16) -> bool {
+    // Any key ends the tip; Tab onto the play button shows its tip anew.
+    tooltip::hide(hwnd);
+    let handled = key_down_in(hwnd, vk);
+    if vk == VK_TAB.0 {
+        let target = with_win(hwnd, |w| (w.focus == Focus::Play).then(|| tip_target(w, Some(Hot::Play)))).flatten().flatten();
+        if target.is_some() {
+            tooltip::hover(hwnd, target);
+        }
+    }
+    handled
+}
+
+fn key_down_in(hwnd: HWND, vk: u16) -> bool {
     let down = |k: u16| unsafe { GetKeyState(i32::from(k)) } < 0;
     if vk == VK_ESCAPE.0 {
         unsafe {
@@ -1552,7 +1595,12 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             }
             LRESULT(0)
         }
+        WM_ENTERSIZEMOVE => {
+            tooltip::hide(hwnd);
+            LRESULT(0)
+        }
         WM_SIZE => {
+            tooltip::hide(hwnd);
             let size = ((lparam.0 & 0xFFFF) as u32, ((lparam.0 >> 16) & 0xFFFF) as u32);
             let _ = with_win(hwnd, |w| {
                 // Minimized has no client area: keep the last size.
@@ -1612,19 +1660,25 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             LRESULT(1)
         }
         WM_MOUSEMOVE => {
-            let changed = with_win(hwnd, |w| {
+            let moved = with_win(hwnd, |w| {
                 track_leave(w);
                 let (x, y) = to_dip(w, lparam);
                 w.cursor = Some((x, y));
                 if w.seeking {
                     seek_to(w, x);
-                    return true;
+                    return (true, None);
                 }
                 let hot = hit(w, x, y);
-                std::mem::replace(&mut w.hover, hot) != hot
+                let changed = std::mem::replace(&mut w.hover, hot) != hot;
+                (changed, Some(tip_target(w, hot)))
             });
-            if changed == Some(true) {
-                invalidate(hwnd);
+            if let Some((changed, tip)) = moved {
+                if let Some(tip) = tip {
+                    tooltip::hover(hwnd, tip);
+                }
+                if changed {
+                    invalidate(hwnd);
+                }
             }
             LRESULT(0)
         }
@@ -1633,11 +1687,14 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 w.tracking = false;
                 w.hover = None;
                 w.cursor = None;
+                w.tip_bar_x = None;
             });
+            tooltip::hide(hwnd);
             invalidate(hwnd);
             LRESULT(0)
         }
         WM_LBUTTONDOWN => {
+            tooltip::pressed(hwnd);
             let bar = with_win(hwnd, |w| {
                 let (x, y) = to_dip(w, lparam);
                 let hot = hit(w, x, y);
@@ -1692,6 +1749,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             LRESULT(0)
         }
         WM_MOUSEWHEEL => {
+            tooltip::hide(hwnd);
             let delta = ((wparam.0 >> 16) & 0xFFFF) as i16 as f32;
             let _ = with_win(hwnd, |w| {
                 scroll_by(w, -delta / 120.0 * WHEEL_STEP);
@@ -1739,6 +1797,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
         WM_DESTROY => {
+            tooltip::hide(hwnd);
             let gone = WINS.with(|cell| {
                 let mut wins = cell.try_borrow_mut().ok()?;
                 let i = wins.iter().position(|w| w.hwnd == hwnd)?;

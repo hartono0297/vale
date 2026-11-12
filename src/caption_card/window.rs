@@ -64,6 +64,7 @@ use crate::transcribe::prefs::TrLang;
 use crate::ui::card_surface::{Surface, Tween};
 use crate::ui::frame_clock::{FrameClock, WM_APP_FRAME};
 use crate::ui::icons::Icon;
+use crate::ui::tooltip::{self, Side};
 
 /// The window class.
 const CLASS: PCWSTR = w!("ValeCaptionCard");
@@ -424,6 +425,7 @@ pub(super) fn close() {
     card.kill_timers();
     card.clock = None;
     let hwnd = card.hwnd;
+    tooltip::hide(hwnd);
     unsafe {
         let _ = DestroyWindow(hwnd);
     }
@@ -1175,6 +1177,35 @@ impl Card {
         layout::zone_at(&self.rects(), (x, y), self.action_shown())
     }
 
+    /// The tip of the control under the pointer, anchored on screen (the card
+    /// is exactly its window, so the origin plus the dip rect is enough).
+    fn tip_target(&self, zone: Option<Zone>) -> Option<tooltip::Target> {
+        let zone = zone?;
+        let r = self.rects();
+        let rect = match zone {
+            Zone::Close => r.close,
+            Zone::Pause if self.can_pause() => r.pause,
+            Zone::Copy => r.copy,
+            Zone::LangChip => r.lang_chip,
+            Zone::Grip => r.grip,
+            _ => return None,
+        };
+        let running = self.c.status != CardStatus::Paused;
+        let tip = layout::zone_tip(zone, running)?;
+        let k = self.scale();
+        Some(tooltip::Target {
+            id: tooltip::id_of(&(format!("{zone:?}"), running)),
+            anchor: crate::capture::Rect::new(
+                self.origin.0 + (rect.x * k).round() as i32,
+                self.origin.1 + (rect.y * k).round() as i32,
+                (rect.w * k).round() as i32,
+                (rect.h * k).round() as i32,
+            ),
+            side: Side::Auto,
+            tip,
+        })
+    }
+
     fn pointer_for(&self, zone: Option<Zone>) -> Pointer {
         match zone {
             Some(Zone::Grip) => Pointer::Grip,
@@ -1224,6 +1255,9 @@ impl Card {
             let (zone, origin, size_dip) = (press.zone, press.origin, press.size_dip);
             if started && matches!(zone, Some(Zone::Header | Zone::Body | Zone::Grip)) {
                 if let Some(p) = &mut self.press {
+                    if !p.dragging {
+                        tooltip::hide(self.hwnd);
+                    }
                     p.dragging = true;
                 }
                 if zone == Some(Zone::Grip) {
@@ -1245,6 +1279,7 @@ impl Card {
         let changed = zone != self.hover_zone;
         self.hover_zone = zone;
         fx.push(Fx::Cursor(self.pointer_for(zone)));
+        tooltip::hover(self.hwnd, self.tip_target(zone));
         self.sync_clock(now);
         if changed || was_moving || self.hover.moving(now) {
             self.render(now);
@@ -1268,6 +1303,7 @@ impl Card {
         if self.press.is_some() {
             return;
         }
+        tooltip::hide(self.hwnd);
         let now = Instant::now();
         self.set_hover(false, now);
         self.hover_zone = None;
@@ -1276,6 +1312,7 @@ impl Card {
     }
 
     fn button_down(&mut self, x: i32, y: i32, fx: &mut Vec<Fx>) {
+        tooltip::pressed(self.hwnd);
         let (dx, dy) = self.to_dip(x, y);
         let mut cursor = POINT::default();
         if unsafe { GetCursorPos(&mut cursor) }.is_err() {
@@ -1391,6 +1428,7 @@ impl Card {
 
     /// The window is gone: stop the timers and the frame clock for good.
     fn destroyed(&mut self) {
+        tooltip::hide(self.hwnd);
         self.gone = true;
         self.press = None;
         self.kill_timers();
@@ -1409,6 +1447,7 @@ impl Card {
     /// Ctrl + wheel asks for the next text size; a plain wheel scrolls back
     /// through the session and holds there for a while.
     fn wheel(&mut self, delta: i16, ctrl: bool, now: Instant, post: &mut Vec<(Msg, isize)>) {
+        tooltip::hide(self.hwnd);
         if ctrl {
             if delta != 0 {
                 post.push((Msg::Size, isize::from(delta > 0)));
