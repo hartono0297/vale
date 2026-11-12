@@ -206,6 +206,17 @@ pub struct Pose {
     /// How high the typing cat's left (0) and right (1) paw are raised, in
     /// grid units.
     pub paw_lift: [f32; 2],
+    /// The dance's phase in radians (`pi * elapsed / BEAT_MS`); the falk's
+    /// crest sways with its sine.
+    pub beat: f32,
+    /// The falk's hop on a "done" notice, in px.
+    pub hop_px: f32,
+    /// The greeting's swing, -1 to 1 (0 at rest).
+    pub wave: f32,
+    /// The greeting is running (`wave` is then read).
+    pub waving: bool,
+    /// The octopus's flush, 0 to 1.
+    pub flush: f32,
 }
 
 impl Pose {

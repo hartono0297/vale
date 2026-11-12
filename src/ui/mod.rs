@@ -20,6 +20,7 @@ pub mod hotkey_rec;
 #[cfg(test)]
 mod icon_frames;
 pub mod icons;
+pub mod mascot;
 pub mod menu_pop;
 pub mod month_grid;
 pub mod motion;
