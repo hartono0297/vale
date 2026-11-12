@@ -1635,6 +1635,15 @@ pub const LIFT_MS: u64 = 140;
 pub const BOUNCE_PX: f32 = 3.0;
 pub const BOUNCE_MS: u64 = 260;
 pub const BOUNCES: u64 = 2;
+/// The falk's hop on a "done" notice: one half-sine this high, `HOP_MS` long.
+pub const HOP_PX: f32 = 1.25;
+pub const HOP_MS: u64 = 400;
+/// The greeting's wave: `WAVE_SWINGS` swings over `WAVE_MS`, then the raised
+/// arm holds.
+pub const WAVE_MS: u64 = 900;
+pub const WAVE_SWINGS: u32 = 3;
+/// The octopus's flush on an alert: one half-sine, `FLUSH_MS` long.
+pub const FLUSH_MS: u64 = 700;
 /// A Claude session counts as working this long after its last activity.
 pub const CLAUDE_WORKING_FOR: Duration = Duration::from_secs(120);
 /// A finished CLI command shows Happy or Sad this long.
@@ -1706,6 +1715,36 @@ pub fn bounce_offset(elapsed: Duration) -> f32 {
     }
     let t = (ms % BOUNCE_MS) as f32 / BOUNCE_MS as f32;
     BOUNCE_PX * (std::f32::consts::PI * t).sin()
+}
+
+/// The falk's hop `elapsed` after a "done" notice appeared: one half-sine of
+/// `HOP_PX`, then 0.
+pub fn hop_offset(elapsed: Duration) -> f32 {
+    let ms = elapsed.as_millis() as u64;
+    if ms >= HOP_MS {
+        return 0.0;
+    }
+    HOP_PX * (std::f32::consts::PI * ms as f32 / HOP_MS as f32).sin()
+}
+
+/// The greeting's swing, -1 to 1, `elapsed` after it began; `None` once the
+/// swings are done (the arm then holds still).
+pub fn wave_swing(elapsed: Duration) -> Option<f32> {
+    let ms = elapsed.as_millis() as u64;
+    if ms >= WAVE_MS {
+        return None;
+    }
+    let t = ms as f32 / WAVE_MS as f32;
+    Some((2.0 * std::f32::consts::PI * WAVE_SWINGS as f32 * t).sin())
+}
+
+/// The octopus's flush, 0 to 1, `elapsed` after the alert appeared.
+pub fn flush_amount(elapsed: Duration) -> f32 {
+    let ms = elapsed.as_millis() as u64;
+    if ms >= FLUSH_MS {
+        return 0.0;
+    }
+    (std::f32::consts::PI * ms as f32 / FLUSH_MS as f32).sin()
 }
 
 /// The hover lift `elapsed` after the pointer arrived: eases up to `LIFT_PX`.
@@ -2044,6 +2083,14 @@ pub struct Brain {
     hover: Option<Instant>,
     /// An alert bounce began.
     bounce: Option<Instant>,
+    /// The octopus's flush began (with the bounce).
+    flush: Option<Instant>,
+    /// The falk's hop began.
+    hop: Option<Instant>,
+    /// The greeting's wave began; kept while the Wave face shows.
+    wave: Option<Instant>,
+    /// The notice token last observed (see `observe`).
+    notice: Option<u64>,
     /// The face last drawn.
     shown: Option<Expr>,
 }
@@ -2059,6 +2106,10 @@ impl Brain {
             battery_low: false,
             hover: None,
             bounce: None,
+            flush: None,
+            hop: None,
+            wave: None,
+            notice: None,
             shown: None,
         }
     }
@@ -2158,15 +2209,40 @@ impl Brain {
     }
 
     /// Records the face drawn; an alert that just appeared starts a bounce
-    /// when motion is allowed. True when a bounce started.
-    pub fn observe(&mut self, expr: Option<Expr>, now: Instant, moves: bool) -> bool {
+    /// (and the octopus's flush) when motion is allowed. True when a bounce
+    /// started. `notice` is a token that changes with every notice shown
+    /// (`None` for any other view): a new token with a Happy face starts the
+    /// falk's hop, with the Wave face the greeting's wave. Hover never has one.
+    pub fn observe(
+        &mut self,
+        expr: Option<Expr>,
+        notice: Option<u64>,
+        now: Instant,
+        moves: bool,
+    ) -> bool {
         let was = std::mem::replace(&mut self.shown, expr);
+        let fresh = notice.is_some() && notice != std::mem::replace(&mut self.notice, notice);
         let started = moves && expr == Some(Expr::Alert) && was != Some(Expr::Alert);
         if started {
             self.bounce = Some(now);
+            self.flush = Some(now);
+        }
+        if moves && fresh {
+            match expr {
+                Some(Expr::Happy) => self.hop = Some(now),
+                Some(Expr::Wave) => self.wave = Some(now),
+                _ => {}
+            }
         }
         if expr != Some(Expr::Alert) {
             self.bounce = None;
+            self.flush = None;
+        }
+        if notice.is_none() {
+            self.hop = None;
+        }
+        if expr != Some(Expr::Wave) {
+            self.wave = None;
         }
         started
     }
@@ -2177,34 +2253,59 @@ impl Brain {
         self.hover.filter(|_| spot.compact())
     }
 
-    /// Lift and bounce at `spot` and `now` (none without motion), and the
-    /// blink.
-    pub fn pose(&self, spot: Spot, now: Instant, moves: bool, blink: bool) -> Pose {
+    /// Lift and bounce at `spot` and `now` (none without motion), the
+    /// mascot's own one-shots (falk hop, falk and octopus wave, octopus
+    /// flush), and the blink.
+    pub fn pose(
+        &self,
+        spot: Spot,
+        now: Instant,
+        moves: bool,
+        blink: bool,
+        mascot: Mascot,
+    ) -> Pose {
         if !moves {
             return Pose {
                 blink: false,
                 ..Pose::default()
             };
         }
+        let since = |at: Instant| now.saturating_duration_since(at);
+        let waves = mascot != Mascot::Cat;
         Pose {
             blink,
-            lift_px: self
-                .lift_since(spot)
-                .map_or(0.0, |at| lift_offset(now.saturating_duration_since(at))),
-            bounce_px: self
-                .bounce
-                .map_or(0.0, |at| bounce_offset(now.saturating_duration_since(at))),
+            lift_px: self.lift_since(spot).map_or(0.0, |at| lift_offset(since(at))),
+            bounce_px: self.bounce.map_or(0.0, |at| bounce_offset(since(at))),
+            hop_px: self
+                .hop
+                .filter(|_| mascot == Mascot::Falk)
+                .map_or(0.0, |at| hop_offset(since(at))),
+            waving: waves && self.wave.is_some(),
+            wave: self
+                .wave
+                .filter(|_| waves)
+                .and_then(|at| wave_swing(since(at)))
+                .unwrap_or(0.0),
+            flush: self
+                .flush
+                .filter(|_| mascot == Mascot::Octopus)
+                .map_or(0.0, |at| flush_amount(since(at))),
             ..Pose::default()
         }
     }
 
-    /// A lift or bounce at `spot` is still moving: the frame clock must run.
-    pub fn moving(&self, spot: Spot, now: Instant, moves: bool) -> bool {
+    /// A lift, bounce or the mascot's one-shot at `spot` is still moving: the
+    /// frame clock must run.
+    pub fn moving(&self, spot: Spot, now: Instant, moves: bool, mascot: Mascot) -> bool {
         let within = |at: Option<Instant>, ms: u64| {
             at.is_some_and(|at| now.saturating_duration_since(at) < Duration::from_millis(ms))
         };
         moves
-            && (within(self.lift_since(spot), LIFT_MS) || within(self.bounce, BOUNCE_MS * BOUNCES))
+            && (within(self.lift_since(spot), LIFT_MS)
+                || within(self.bounce, BOUNCE_MS * BOUNCES)
+                || (mascot == Mascot::Falk && within(self.hop, HOP_MS))
+                || (mascot != Mascot::Cat && within(self.wave, WAVE_MS))
+                || (mascot == Mascot::Octopus && within(self.flush, FLUSH_MS)))
     }
 
     /// The next moment the face may change by itself (falling asleep, a
@@ -3105,14 +3206,106 @@ mod tests {
         // The brain starts it only when an alert appears, and with motion.
         let t0 = Instant::now();
         let mut b = Brain::new(t0);
-        assert!(b.observe(Some(Expr::Alert), t0, true));
-        assert!(!b.observe(Some(Expr::Alert), t0, true), "already showing");
+        assert!(b.observe(Some(Expr::Alert), None, t0, true));
+        assert!(!b.observe(Some(Expr::Alert), None, t0, true), "already showing");
         let alert = Spot::Notice(NoticeSort::Reminder);
-        assert!(b.moving(alert, t0 + ms(100), true));
-        assert!(!b.moving(alert, t0 + ms(2 * BOUNCE_MS), true));
-        b.observe(Some(Expr::Idle), t0, true);
-        assert!(!b.observe(Some(Expr::Alert), t0, false), "Hemat: no bounce");
-        assert!(!b.moving(alert, t0, true));
+        assert!(b.moving(alert, t0 + ms(100), true, Mascot::Cat));
+        assert!(!b.moving(alert, t0 + ms(2 * BOUNCE_MS), true, Mascot::Cat));
+        b.observe(Some(Expr::Idle), None, t0, true);
+        assert!(!b.observe(Some(Expr::Alert), None, t0, false), "Hemat: no bounce");
+        assert!(!b.moving(alert, t0, true, Mascot::Cat));
+    }
+
+    #[test]
+    fn the_falk_hops_once_per_happy_notice() {
+        let t0 = Instant::now();
+        let mut b = Brain::new(t0);
+        let n = Spot::Notice(NoticeSort::ClaudeDone);
+        b.observe(Some(Expr::Happy), Some(1), t0, true);
+        let at = |ms| {
+            b.pose(n, t0 + Duration::from_millis(ms), true, false, Mascot::Falk)
+                .hop_px
+        };
+        assert!((at(200) - HOP_PX).abs() < 1e-3);
+        assert_eq!(at(400), 0.0);
+        assert!(b.moving(n, t0 + Duration::from_millis(399), true, Mascot::Falk));
+        assert!(!b.moving(n, t0 + Duration::from_millis(400), true, Mascot::Falk));
+        assert_eq!(
+            b.pose(n, t0 + Duration::from_millis(200), true, false, Mascot::Cat)
+                .hop_px,
+            0.0
+        );
+        assert!(!b.moving(n, t0 + Duration::from_millis(200), true, Mascot::Cat));
+        // a second Happy notice restarts it
+        let t1 = t0 + Duration::from_secs(2);
+        b.observe(Some(Expr::Happy), Some(2), t1, true);
+        assert!(
+            b.pose(n, t1 + Duration::from_millis(200), true, false, Mascot::Falk)
+                .hop_px
+                > 1.0
+        );
+        // the same notice again does not
+        b.observe(Some(Expr::Happy), Some(2), t1 + Duration::from_secs(1), true);
+        assert_eq!(
+            b.pose(n, t1 + Duration::from_millis(1200), true, false, Mascot::Falk)
+                .hop_px,
+            0.0
+        );
+    }
+
+    #[test]
+    fn hover_and_saver_never_hop_wave_or_flush() {
+        let t0 = Instant::now();
+        let mut b = Brain::new(t0);
+        b.hover(true, t0);
+        b.observe(Some(Expr::Happy), None, t0, true);
+        assert_eq!(
+            b.pose(Spot::Idle, t0 + Duration::from_millis(200), true, false, Mascot::Falk)
+                .hop_px,
+            0.0
+        );
+        let mut s = Brain::new(t0);
+        s.observe(Some(Expr::Alert), Some(5), t0, false);
+        let p = s.pose(
+            Spot::Notice(NoticeSort::Reminder),
+            t0 + Duration::from_millis(300),
+            false,
+            false,
+            Mascot::Octopus,
+        );
+        assert_eq!((p.flush, p.hop_px, p.waving), (0.0, 0.0, false));
+        assert!(!s.moving(Spot::Notice(NoticeSort::Reminder), t0, false, Mascot::Octopus));
+    }
+
+    #[test]
+    fn the_octopus_flushes_for_700_ms_on_alert_and_the_bounce_keeps_its_numbers() {
+        let t0 = Instant::now();
+        let mut b = Brain::new(t0);
+        let r = Spot::Notice(NoticeSort::Reminder);
+        assert!(b.observe(Some(Expr::Alert), Some(9), t0, true));
+        let at = |ms, m| b.pose(r, t0 + Duration::from_millis(ms), true, false, m);
+        assert!((at(350, Mascot::Octopus).flush - 1.0).abs() < 1e-3);
+        assert_eq!(at(350, Mascot::Cat).flush, 0.0);
+        assert!(b.moving(r, t0 + Duration::from_millis(650), true, Mascot::Octopus));
+        assert!(!b.moving(r, t0 + Duration::from_millis(650), true, Mascot::Cat)); // the cat's 520 ms
+        assert_eq!(at(130, Mascot::Octopus).bounce_px, at(130, Mascot::Cat).bounce_px);
+    }
+
+    #[test]
+    fn the_greeting_waves_three_times_then_holds() {
+        let t0 = Instant::now();
+        let mut b = Brain::new(t0);
+        let g = Spot::Notice(NoticeSort::Greeting(DayPeriod::Morning));
+        b.observe(Some(Expr::Wave), Some(3), t0, true);
+        let p = b.pose(g, t0 + Duration::from_millis(75), true, false, Mascot::Octopus);
+        assert!(p.waving && (p.wave - 1.0).abs() < 1e-3);
+        let held = b.pose(g, t0 + Duration::from_millis(950), true, false, Mascot::Octopus);
+        assert!(held.waving && held.wave == 0.0);
+        assert!(!b.moving(g, t0 + Duration::from_millis(950), true, Mascot::Falk));
+        assert!(
+            !b.pose(g, t0 + Duration::from_millis(75), true, false, Mascot::Cat)
+                .waving
+        );
     }
 
     #[test]
@@ -3121,21 +3314,21 @@ mod tests {
         let idle = Spot::Idle;
         let mut b = Brain::new(t0);
         b.hover(true, t0);
-        assert_eq!(b.pose(idle, t0, true, false).lift_px, 0.0);
-        let up = b.pose(idle, t0 + Duration::from_millis(LIFT_MS), true, false);
+        assert_eq!(b.pose(idle, t0, true, false, Mascot::Cat).lift_px, 0.0);
+        let up = b.pose(idle, t0 + Duration::from_millis(LIFT_MS), true, false, Mascot::Cat);
         assert_eq!(up.lift_px, LIFT_PX);
         assert!(
-            b.moving(idle, t0, true) && !b.moving(idle, t0 + Duration::from_millis(LIFT_MS), true)
+            b.moving(idle, t0, true, Mascot::Cat) && !b.moving(idle, t0 + Duration::from_millis(LIFT_MS), true, Mascot::Cat)
         );
         // No motion: no lift, no blink.
         assert_eq!(
-            b.pose(idle, t0 + Duration::from_secs(1), false, true),
+            b.pose(idle, t0 + Duration::from_secs(1), false, true, Mascot::Cat),
             Pose::default()
         );
         // A second move while hovering keeps the first arrival.
         b.hover(true, t0 + Duration::from_secs(1));
         assert_eq!(
-            b.pose(idle, t0 + Duration::from_secs(1), true, true)
+            b.pose(idle, t0 + Duration::from_secs(1), true, true, Mascot::Cat)
                 .lift_px,
             LIFT_PX
         );
@@ -3149,11 +3342,11 @@ mod tests {
         let later = t0 + Duration::from_millis(LIFT_MS);
         for spot in [Spot::Idle, Spot::Pomodoro, Spot::Media, Spot::Lyric] {
             assert_eq!(
-                b.pose(spot, later, true, false).lift_px,
+                b.pose(spot, later, true, false, Mascot::Cat).lift_px,
                 LIFT_PX,
                 "{spot:?}"
             );
-            assert!(b.moving(spot, t0, true), "{spot:?}");
+            assert!(b.moving(spot, t0, true, Mascot::Cat), "{spot:?}");
         }
         // A notice keeps its own face, still; the panel draws no robot, so
         // re-entering the island there starts no frame clock.
@@ -3165,8 +3358,8 @@ mod tests {
             Spot::Panel,
             Spot::Hidden,
         ] {
-            assert_eq!(b.pose(spot, later, true, false).lift_px, 0.0, "{spot:?}");
-            assert!(!b.moving(spot, t0, true), "{spot:?}");
+            assert_eq!(b.pose(spot, later, true, false, Mascot::Cat).lift_px, 0.0, "{spot:?}");
+            assert!(!b.moving(spot, t0, true, Mascot::Cat), "{spot:?}");
         }
     }
 
@@ -4121,9 +4314,9 @@ mod tests {
         let now = Instant::now();
         let mut brain = Brain::new(now);
         assert_eq!(brain.shown(), None);
-        brain.observe(Some(Expr::Sleep), now, true);
+        brain.observe(Some(Expr::Sleep), None, now, true);
         assert_eq!(brain.shown(), Some(Expr::Sleep));
-        brain.observe(None, now, true);
+        brain.observe(None, None, now, true);
         assert_eq!(brain.shown(), None);
     }
 
