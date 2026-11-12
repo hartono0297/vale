@@ -106,7 +106,7 @@ pub const SWATCH_RING_W: f32 = 1.5;
 pub const STEP_BUTTON: f32 = 28.0;
 const STEP_VALUE_W: f32 = 64.0;
 const BUTTON_PAD: f32 = 16.0;
-const BUTTON_MIN_W: f32 = 80.0;
+const BUTTON_MIN_W: f32 = 64.0;
 /// An icon-only button (the About links).
 const ICON_BUTTON: f32 = 32.0;
 pub const EXTERNAL_GLYPH: f32 = 16.0;
@@ -124,7 +124,8 @@ const NAV_H: f32 = 36.0;
 const NAV_GAP: f32 = 2.0;
 const PREVIEW_H: f32 = 112.0;
 const FIELD_ROW_H: f32 = 44.0;
-const FIELD_H: f32 = 32.0;
+/// A text field is as tall as the buttons beside it.
+const FIELD_H: f32 = BUTTON_H;
 /// The uppercase label above a card (Integrations).
 const EYEBROW_H: f32 = 18.0;
 const EYEBROW_GAP: f32 = 8.0;
@@ -2107,12 +2108,6 @@ impl Builder<'_> {
         );
     }
 
-    /// A button for a list row: the label with a little padding, narrower
-    /// than a button of the cards' rows (which keep `BUTTON_MIN_W`).
-    fn compact_w(&self, label: &str) -> f32 {
-        (self.w(label, Font::Control) + 24.0).max(56.0)
-    }
-
     fn button_w(&self, labels: &[&str], kind: ButtonKind) -> f32 {
         let widest = labels
             .iter()
@@ -3141,7 +3136,7 @@ fn tiles_card(b: &mut Builder, s: &State) {
         let (label, desc) = match &entries[i].0 {
             Tile::Builtin(sc) => (b.t(crate::shortcuts::label(*sc)), note),
             Tile::Custom(c) => {
-                let w = b.compact_w(&delete);
+                let w = b.button_w(&[&delete], ButtonKind::Secondary);
                 let item = (
                     Hit::TileRemove(i),
                     delete.clone(),
@@ -3224,7 +3219,7 @@ fn available_card(b: &mut Builder, s: &State) {
     let card = b.card(list_h + tail_h);
     let (add, delete) = (b.t(Key::TileAdd), b.t(Key::Delete));
     let add_w = b.button_w(&[&add], ButtonKind::Secondary);
-    let delete_w = b.compact_w(&delete);
+    let delete_w = b.button_w(&[&delete], ButtonKind::Secondary);
     let mut y = card.y;
     for (g, items) in groups {
         let key = match g {
@@ -4088,7 +4083,7 @@ fn notifications_card(b: &mut Builder, s: &State) {
     b.row_text(card, row(3), b.t(Key::NotifMuted), desc, false, b.g.right);
     b.divider(card, row(3));
     let delete = b.t(Key::Delete);
-    let delete_w = b.compact_w(&delete);
+    let delete_w = b.button_w(&[&delete], ButtonKind::Secondary);
     if s.muted.is_empty() {
         let rect = Rect {
             x: card.x + INSET,
@@ -4283,7 +4278,7 @@ fn arrange_card(b: &mut Builder, s: &State) {
     b.row_text(card, row(1), b.t(Key::ArrangeMyTemplates), desc, false, x);
     b.divider(card, row(1));
     let (edit, delete) = (b.t(Key::ArrangeEdit), b.t(Key::ArrangeDelete));
-    let (edit_w, delete_w) = (b.compact_w(&edit), b.compact_w(&delete));
+    let (edit_w, delete_w) = (b.button_w(&[&edit], ButtonKind::Secondary), b.button_w(&[&delete], ButtonKind::Secondary));
     if a.templates.is_empty() {
         let rect = Rect {
             x: card.x + INSET,
@@ -4334,7 +4329,7 @@ fn arrange_card(b: &mut Builder, s: &State) {
         b.g.right,
     );
     let rename = b.t(Key::ArrangeRename);
-    let rename_w = b.compact_w(&rename);
+    let rename_w = b.button_w(&[&rename], ButtonKind::Secondary);
     if a.saved.is_empty() {
         let rect = Rect {
             x: card.x + INSET,
@@ -4841,7 +4836,7 @@ struct TrCols {
 
 fn tr_cols(b: &Builder, card: Rect) -> TrCols {
     let button_w = [Key::TrDownload, Key::TrCancel, Key::TrDelete, Key::ConfirmShort]
-        .map(|k| b.compact_w(&b.t(k)))
+        .map(|k| b.button_w(&[&b.t(k)], ButtonKind::Secondary))
         .into_iter()
         .fold(0.0, f32::max);
     // Wide enough for whatever the column may say, so it does not move
@@ -11931,5 +11926,97 @@ mod tests {
                 assert!(w + 48.0 <= screen_w, "{style:?} {kind:?} {w} in {screen_w}");
             }
         }
+    }
+
+    // ---- One spacing rule and one button size (2026-11-12) ----
+
+    /// The usual states, plus two templates, two saved arrangements and two
+    /// muted apps, the own-shortcut form open, and the template editor: every
+    /// list and field Settings can show.
+    fn full_states() -> Vec<State<'static>> {
+        let mut out = states();
+        for lang in [Lang::Id, Lang::En] {
+            let mut s = susun_state(2, 2);
+            s.lang = lang;
+            s.muted = vec!["Claude".into(), "Orca".into()];
+            out.push(s.clone());
+            out.push(State {
+                tile_form: Some(TileForm {
+                    kind: CustomKind::Url,
+                    error: None,
+                }),
+                ..s.clone()
+            });
+            let mut e = editor_state(crate::arrange::Node::Leaf, 0, true, false);
+            e.lang = lang;
+            out.push(e);
+        }
+        out
+    }
+
+    /// `f` for every section of every `full_states` state, at the minimum
+    /// size and at a wide one.
+    fn every_layout(f: impl Fn(Section, &State, &Layout)) {
+        for s in full_states() {
+            for section in Section::ALL {
+                for client in [(CLIENT_W, CLIENT_H), (1200.0, 900.0)] {
+                    let l = layout_in(section, &s, &Estimate, client);
+                    f(section, &s, &l);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_text_button_has_one_size() {
+        every_layout(|section, s, l| {
+            let mut widths: Vec<(String, f32)> = Vec::new();
+            for c in &l.controls {
+                let Control::Button(b) = c else { continue };
+                if !matches!(
+                    b.kind,
+                    ButtonKind::Primary | ButtonKind::Secondary | ButtonKind::Confirm
+                ) {
+                    continue;
+                }
+                let ctx = format!("{section:?} {:?} {:?} {}", s.lang, b.label, b.rect.w);
+                assert_eq!(b.rect.h, BUTTON_H, "{ctx}");
+                assert!(b.rect.w >= BUTTON_MIN_W - 0.01, "{ctx}");
+                let own = (Estimate.width(&b.label, Font::Control) + 2.0 * BUTTON_PAD)
+                    .max(BUTTON_MIN_W);
+                // A button that swaps its label (two clicks) or stands in a
+                // column or group takes the widest label's width; every
+                // other one is its own label's.
+                let shared = matches!(
+                    b.hit,
+                    Hit::NotifClear
+                        | Hit::ClipClear
+                        | Hit::GoogleDisconnect
+                        | Hit::ArrangeSplit(_)
+                        | Hit::ArrangeMerge
+                        | Hit::TranscriptDownload(_)
+                        | Hit::TranscriptCancel
+                        | Hit::TranscriptDelete(_)
+                );
+                if shared {
+                    assert!(b.rect.w + 0.01 >= own, "{ctx}");
+                    continue;
+                }
+                assert!((b.rect.w - own).abs() < 0.01, "{ctx}");
+                match widths.iter().find(|(l, _)| *l == b.label) {
+                    Some((_, w)) => assert_eq!(*w, b.rect.w, "{ctx}"),
+                    None => widths.push((b.label.clone(), b.rect.w)),
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn fields_are_as_tall_as_buttons() {
+        every_layout(|section, s, l| {
+            for (field, r) in &l.fields {
+                assert_eq!(r.h, BUTTON_H, "{section:?} {:?} {field:?}", s.lang);
+            }
+        });
     }
 }
