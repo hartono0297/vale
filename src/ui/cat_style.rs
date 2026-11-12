@@ -425,6 +425,8 @@ fn new_pieces(m: Mascot, accessory: CatAccessory) -> Vec<(Anchor, Piece)> {
     }
 }
 
+const NIGHTCAP_TIP_OCTOPUS: f32 = 6.5;
+
 /// The cat's seven accessories, re-placed on the falk or the octopus. Every
 /// piece rides the head (`Anchor::Head`), the glasses the eyes.
 fn mascot_pieces(m: Mascot, accessory: CatAccessory) -> Vec<(Anchor, Piece)> {
@@ -506,32 +508,42 @@ fn mascot_pieces(m: Mascot, accessory: CatAccessory) -> Vec<(Anchor, Piece)> {
             }
             v
         }
-        CatAccessory::Nightcap => vec![
-            head(Piece::Shape {
-                segs: vec![
-                    Move(tx - 15.0, ty + 3.0),
-                    To(tx + 14.0, ty + 2.0),
-                    To(tx - 13.0, ty - 14.0),
-                    Close,
-                ],
-                fill: fixed(NAVY),
-                edge: Some(2.0),
-            }),
-            head(Piece::Stroke {
-                segs: vec![
-                    Move(tx - 16.0, ty + 3.2),
-                    Quad(tx, ty - 1.5, tx + 15.0, ty + 2.4),
-                ],
-                tone: fixed(CREAM),
-                width: 3.0,
-            }),
-            head(Piece::Dot {
-                cx: tx - 13.0,
-                cy: ty - 14.0,
-                r: 2.5,
-                tone: fixed(CREAM),
-            }),
-        ],
+        CatAccessory::Nightcap => {
+            // The octopus's mantle already stands 15 grid units above the
+            // cat's head, so its cone is shorter: the pom's top stays inside
+            // the island at every notch size.
+            let tip = if m == Mascot::Octopus {
+                NIGHTCAP_TIP_OCTOPUS
+            } else {
+                14.0
+            };
+            vec![
+                head(Piece::Shape {
+                    segs: vec![
+                        Move(tx - 15.0, ty + 3.0),
+                        To(tx + 14.0, ty + 2.0),
+                        To(tx - 13.0, ty - tip),
+                        Close,
+                    ],
+                    fill: fixed(NAVY),
+                    edge: Some(2.0),
+                }),
+                head(Piece::Stroke {
+                    segs: vec![
+                        Move(tx - 16.0, ty + 3.2),
+                        Quad(tx, ty - 1.5, tx + 15.0, ty + 2.4),
+                    ],
+                    tone: fixed(CREAM),
+                    width: 3.0,
+                }),
+                head(Piece::Dot {
+                    cx: tx - 13.0,
+                    cy: ty - tip,
+                    r: 2.5,
+                    tone: fixed(CREAM),
+                }),
+            ]
+        }
         CatAccessory::Scarf => {
             let (y0, y1) = a.band;
             let (band, tail_x, colour, tail) = if m == Mascot::Falk {

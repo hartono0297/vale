@@ -1681,6 +1681,89 @@ mod tests {
         out
     }
 
+    use crate::theme::Mascot;
+
+    /// Whether a face mark is cream (the music note, the z's, the heart):
+    /// these stay at the cat's places; only the espresso eyes ride the
+    /// mascot's eye lift.
+    fn is_cream(part: &crate::ui::robot::Part) -> bool {
+        use crate::ui::robot::{Ink, Part};
+        match part {
+            Part::Dot { ink, .. } => *ink == Ink::Cream,
+            Part::Stroke(line) => line.ink() == Ink::Cream,
+            Part::Heart { .. } => true,
+            Part::Pill { .. } => false,
+        }
+    }
+
+    /// A grid point as the mascot's eyes carry it: lifted by the mascot's eye
+    /// lift when `eyes` (an espresso mark or a piece that rides the eyes).
+    fn lifted(m: Mascot, (x, y): (f32, f32), eyes: bool) -> (f32, f32) {
+        let lift = if eyes {
+            crate::ui::cat_style::anchors(m).eye_lift
+        } else {
+            0.0
+        };
+        (x, y + lift)
+    }
+
+    /// The grid points of mascot `m`'s body for `expr` and `pose`: the cat's
+    /// head and its ears' round strokes (both grown by `grow`, the Black
+    /// coat's rim), the falk's egg and crest, the octopus's mantle and arms.
+    fn body_outline(
+        m: Mascot,
+        f: &crate::ui::robot::Face,
+        expr: crate::ui::robot::Expr,
+        pose: &crate::ui::robot::Pose,
+        grow: f32,
+    ) -> Vec<(f32, f32)> {
+        use crate::ui::mascot::{falk_outline, octopus_outline};
+        use crate::ui::robot::{EAR_STROKE, HEAD, Side, ear_drawn};
+        match m {
+            Mascot::Falk => falk_outline(expr, pose),
+            Mascot::Octopus => octopus_outline(expr, pose),
+            Mascot::Cat => {
+                let (x, y, w, h, r) = HEAD;
+                let mut cat = Vec::new();
+                for (cx, cy, a0) in [
+                    (x + r, y + r, 180.0f32),
+                    (x + w - r, y + r, 270.0),
+                    (x + w - r, y + h - r, 0.0),
+                    (x + r, y + h - r, 90.0),
+                ] {
+                    for i in 0..=8 {
+                        let a = (a0 + i as f32 * 90.0 / 8.0).to_radians();
+                        cat.push((cx + (r + grow) * a.cos(), cy + (r + grow) * a.sin()));
+                    }
+                }
+                for side in [Side::Left, Side::Right] {
+                    for (x, y) in ear_drawn(side, f.ears) {
+                        cat.extend((0..16).map(|i| {
+                            let a = (i as f32 * 22.5).to_radians();
+                            let r = EAR_STROKE / 2.0 + grow;
+                            (x + r * a.cos(), y + r * a.sin())
+                        }));
+                    }
+                }
+                cat
+            }
+        }
+    }
+
+    /// `body_outline` at rest, as the idle face draws it in `area`, in px.
+    fn rest_outline(m: Mascot, area: Rect) -> Vec<(f32, f32)> {
+        use crate::ui::robot::{Expr, GRID, Pose, face};
+        if m == Mascot::Cat {
+            return head_outline(area);
+        }
+        let k = area.w / GRID;
+        let f = face(Expr::Idle, false);
+        body_outline(m, &f, Expr::Idle, &Pose::default(), 0.0)
+            .into_iter()
+            .map(|(x, y)| (area.x + x * k, area.y + y * k))
+            .collect()
+    }
+
     fn intersects(a: Rect, b: Rect) -> bool {
         a.x < b.right() && b.x < a.right() && a.y < b.bottom() && b.y < a.bottom()
     }
@@ -1689,11 +1772,13 @@ mod tests {
     fn robot_and_content_share_every_compact_shape() {
         for style in [Style::Pill, Style::Notch] {
             let head_inside = |s: ShapeRect, robot: Rect| {
-                for (x, y) in head_outline(robot) {
-                    assert!(
-                        shape_contains(style, s, x, y),
-                        "{style:?} {robot:?} ({x}, {y})"
-                    );
+                for &m in Mascot::ALL {
+                    for (x, y) in rest_outline(m, robot) {
+                        assert!(
+                            shape_contains(style, s, x, y),
+                            "{m:?} {style:?} {robot:?} ({x}, {y})"
+                        );
+                    }
                 }
             };
             for (robot, clock) in [(true, true), (true, false), (false, true)] {
@@ -1778,6 +1863,67 @@ mod tests {
         }
     }
 
+    #[test]
+    fn every_mascot_stays_in_the_notice_badge() {
+        use crate::theme::CatAccessory;
+        use crate::ui::cat_style::accessory_corners;
+        use crate::ui::robot::{Expr, HOP_PX, Pose, face, mark_bounds};
+        let mut checked = 0u32;
+        for style in [Style::Pill, Style::Notch] {
+            for size in sizes() {
+                let n = shape_with_robot_sized(style, size, ShapeKind::Notice, true);
+                let badge = notice_layout(n, Some(ACTION_W)).badge;
+                assert_eq!((badge.w, badge.h), (ROBOT_NOTICE, ROBOT_NOTICE));
+                for &m in Mascot::ALL {
+                    // The faces notices show: the greeting's Wave swings the
+                    // octopus's arm and the falk's crest, the falk hops on a
+                    // done notice.
+                    for expr in [Expr::Alert, Expr::Wave, Expr::Happy, Expr::Sad, Expr::Sleep, Expr::Idle] {
+                        let f = face(expr, false);
+                        let waves: &[f32] = if expr == Expr::Wave { &[-1.0, 0.0, 1.0] } else { &[0.0] };
+                        let hops: &[f32] = if m == Mascot::Falk { &[0.0, HOP_PX] } else { &[0.0] };
+                        for &wave in waves {
+                            for &hop in hops {
+                                let pose = Pose {
+                                    waving: expr == Expr::Wave,
+                                    wave,
+                                    hop_px: hop,
+                                    ..Pose::default()
+                                };
+                                let check = |what: &str, p: (f32, f32), mark: bool| {
+                                    let (x, y) = drawn(badge, &f, pose, p, mark);
+                                    let y = y - hop;
+                                    assert!(
+                                        shape_contains(style, n, x, y),
+                                        "{m:?} {style:?} {size:?} {expr:?} wave {wave} hop {hop} {what}: ({x}, {y}) leaves the notice {n:?}"
+                                    );
+                                };
+                                for p in body_outline(m, &f, expr, &pose, 0.0) {
+                                    check("body", p, false);
+                                    checked += 1;
+                                }
+                                for part in &f.parts {
+                                    let (l, t, r, b) = mark_bounds(part);
+                                    for p in [(l, t), (r, t), (r, b), (l, b)] {
+                                        check("mark", lifted(m, p, !is_cream(part)), true);
+                                        checked += 1;
+                                    }
+                                }
+                                for acc in CatAccessory::ALL {
+                                    for &(p, eyes) in &accessory_corners(m, *acc, f.ears) {
+                                        check("accessory", lifted(m, p, eyes), eyes);
+                                        checked += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 100_000, "{checked} points checked");
+    }
+
     /// A grid point of the cat as `RobotPainter::paint` draws it in `area`
     /// for `face` and `pose`, in px: a face mark (`mark`) first slides by the
     /// eye offset; then the dance's squash round the head's base, the face's
@@ -1841,11 +1987,10 @@ mod tests {
 
     #[test]
     fn the_dancing_cat_stays_in_every_compact_shape() {
-        use crate::theme::{CatAccessory, Mascot};
+        use crate::theme::CatAccessory;
         use crate::ui::cat_style::{RIM_WIDTH, accessory_corners};
         use crate::ui::robot::{
-            EAR_STROKE, Expr, HEAD, NOTE_MARGIN_DIP, Part, Pose, Side, ear_drawn, face,
-            mark_bounds, with_note_lift,
+            Expr, NOTE_MARGIN_DIP, Part, Pose, face, mark_bounds, with_note_lift,
         };
         let steps = |min: u32, max: u32, step: usize, default: u32| {
             let mut v: Vec<u32> = (min..=max).step_by(step).chain([default, max]).collect();
@@ -1856,34 +2001,6 @@ mod tests {
         let widths = steps(NOTCH_W_MIN, NOTCH_W_MAX, 10, NOTCH_W_DEFAULT);
         let heights = steps(NOTCH_H_MIN, NOTCH_H_MAX, 2, NOTCH_H_DEFAULT);
         assert_eq!((widths.len(), heights.len()), (15, 9));
-        // The head's outline in grid units, grown by `grow` (the Black coat's
-        // rim), and the ears' round strokes (their stroke plus `grow`) round
-        // their turned corners.
-        let outline = |f: &crate::ui::robot::Face, grow: f32| {
-            let (x, y, w, h, r) = HEAD;
-            let mut cat = Vec::new();
-            for (cx, cy, a0) in [
-                (x + r, y + r, 180.0f32),
-                (x + w - r, y + r, 270.0),
-                (x + w - r, y + h - r, 0.0),
-                (x + r, y + h - r, 90.0),
-            ] {
-                for i in 0..=8 {
-                    let a = (a0 + i as f32 * 90.0 / 8.0).to_radians();
-                    cat.push((cx + (r + grow) * a.cos(), cy + (r + grow) * a.sin()));
-                }
-            }
-            for side in [Side::Left, Side::Right] {
-                for (x, y) in ear_drawn(side, f.ears) {
-                    cat.extend((0..16).map(|i| {
-                        let a = (i as f32 * 22.5).to_radians();
-                        let r = EAR_STROKE / 2.0 + grow;
-                        (x + r * a.cos(), y + r * a.sin())
-                    }));
-                }
-            }
-            cat
-        };
         let is_note = |part: &&Part| match part {
             Part::Dot { ink, .. } => *ink == crate::ui::robot::Ink::Cream,
             Part::Stroke(line) => line.ink() == crate::ui::robot::Ink::Cream,
@@ -1920,47 +2037,65 @@ mod tests {
                             .collect();
                         for amount in [0.0, 1.0] {
                             for rise in [0.0, 0.5, 1.0] {
-                                let pose = with_note_lift(
-                                    Pose::default().dance(amount, rise, 0.0),
-                                    expr,
-                                    area,
-                                    s.y,
-                                );
-                                let what = format!(
-                                    "{style:?} {size:?} {expr:?} {lyric_w:?} amount {amount} rise {rise}"
-                                );
-                                // The head and ears, bare and with the Black rim.
-                                for grow in [0.0, RIM_WIDTH] {
-                                    for p in outline(&f, grow) {
-                                        let (x, y) = drawn(area, &f, pose, p, false);
-                                        assert!(
-                                            shape_contains(style, s, x, y),
-                                            "{what} rim {grow}: ({x}, {y}) leaves the shape"
-                                        );
-                                    }
-                                }
-                                // Every note mark's box is inside the shape.
-                                for &p in &notes {
-                                    let (x, y) = drawn_note(area, &f, pose, p);
-                                    assert!(
-                                        y >= s.y + NOTE_MARGIN_DIP - 1e-3
-                                            && y <= s.y + s.h
-                                            && x >= s.x
-                                            && x <= s.x + s.w,
-                                        "{what}: note corner ({x}, {y}) leaves {s:?}"
+                                // The falk's crest sways and the octopus's arms
+                                // wobble with the beat: sample it every pi/8 once
+                                // per amount (the rise only moves the note).
+                                let beats: Vec<f32> = if rise == 0.0 {
+                                    (0..16).map(|i| i as f32 * std::f32::consts::PI / 8.0).collect()
+                                } else {
+                                    vec![0.0]
+                                };
+                                for beat in beats {
+                                    let pose = Pose {
+                                        beat,
+                                        ..with_note_lift(
+                                            Pose::default().dance(amount, rise, 0.0),
+                                            expr,
+                                            area,
+                                            s.y,
+                                        )
+                                    };
+                                    let what = format!(
+                                        "{style:?} {size:?} {expr:?} {lyric_w:?} amount {amount} rise {rise} beat {beat}"
                                     );
-                                }
-                                // Every accessory's boxes.
-                                for acc in CatAccessory::ALL {
-                                    for &(p, eyes) in &accessory_corners(Mascot::Cat, *acc, f.ears) {
-                                        let (x, y) = drawn(area, &f, pose, p, eyes);
+                                    // Every note mark's box is inside the shape.
+                                    for &p in &notes {
+                                        let (x, y) = drawn_note(area, &f, pose, p);
                                         assert!(
-                                            shape_contains(style, s, x, y),
-                                            "{what} {acc:?}: ({x}, {y}) leaves the shape"
+                                            y >= s.y + NOTE_MARGIN_DIP - 1e-3
+                                                && y <= s.y + s.h
+                                                && x >= s.x
+                                                && x <= s.x + s.w,
+                                            "{what}: note corner ({x}, {y}) leaves {s:?}"
                                         );
                                     }
+                                    for &m in Mascot::ALL {
+                                        // The body, bare and (the cat) with the Black rim.
+                                        let rims: &[f32] =
+                                            if m == Mascot::Cat { &[0.0, RIM_WIDTH] } else { &[0.0] };
+                                        for &grow in rims {
+                                            for p in body_outline(m, &f, expr, &pose, grow) {
+                                                let (x, y) = drawn(area, &f, pose, p, false);
+                                                assert!(
+                                                    shape_contains(style, s, x, y),
+                                                    "{m:?} {what} rim {grow}: ({x}, {y}) leaves the shape"
+                                                );
+                                            }
+                                        }
+                                        // Every accessory's boxes.
+                                        for acc in CatAccessory::ALL {
+                                            for &(p, eyes) in &accessory_corners(m, *acc, f.ears) {
+                                                let (x, y) =
+                                                    drawn(area, &f, pose, lifted(m, p, eyes), eyes);
+                                                assert!(
+                                                    shape_contains(style, s, x, y),
+                                                    "{m:?} {what} {acc:?}: ({x}, {y}) leaves the shape"
+                                                );
+                                            }
+                                        }
+                                        checked += 1;
+                                    }
                                 }
-                                checked += 1;
                             }
                         }
                         // The rise only ever lifts the note: higher at 1 than at 0,
@@ -1977,14 +2112,14 @@ mod tests {
                 }
             }
         }
-        assert_eq!(checked, 2 * 15 * 9 * 5 * 6);
+        assert_eq!(checked, 2 * 15 * 9 * 5 * 2 * (16 + 1 + 1) * 3);
     }
 
     #[test]
     fn the_looking_cat_stays_in_the_idle_island() {
-        use crate::theme::{CatAccessory, Mascot};
+        use crate::theme::CatAccessory;
         use crate::ui::cat_style::accessory_corners;
-        use crate::ui::robot::{EAR_STROKE, Expr, GRID, Pose, Side, ear_drawn, face, mark_bounds};
+        use crate::ui::robot::{Expr, GRID, Pose, face, mark_bounds};
         // Every face the idle view shows (`choose_expr`), open-eyed and
         // blinking. Think is not one of them any more (work running gives
         // Typing, checked by `the_typing_cat_stays_in_the_idle_island`).
@@ -2009,32 +2144,21 @@ mod tests {
                         let l = idle_layout(s, true, clock);
                         let area = l.robot.expect("the cat is drawn");
                         let k = area.w / GRID;
-                        // The head's outline, in grid units.
-                        let head: Vec<(f32, f32)> = head_outline(area)
-                            .into_iter()
-                            .take(36)
-                            .map(|(x, y)| ((x - area.x) / k, (y - area.y) / k))
-                            .collect();
+                        for &m in Mascot::ALL {
                         for (expr, blink) in faces.iter().flat_map(|&e| [(e, false), (e, true)]) {
                             let f = face(expr, blink);
-                            // The ears' round strokes around their turned corners.
-                            let mut cat = head.clone();
-                            for side in [Side::Left, Side::Right] {
-                                for (x, y) in ear_drawn(side, f.ears) {
-                                    cat.extend((0..16).map(|i| {
-                                        let a = (i as f32 * 22.5).to_radians();
-                                        let r = EAR_STROKE / 2.0;
-                                        (x + r * a.cos(), y + r * a.sin())
-                                    }));
-                                }
-                            }
-                            // Every mark's box corners: the eyes and what floats beside the head.
+                            // The body: the cat's head and ears' round strokes, the
+                            // falk's egg and crest, the octopus's mantle and arms.
+                            let cat = body_outline(m, &f, expr, &Pose::default(), 0.0);
+                            // Every mark's box corners: the eyes (lifted by the
+                            // mascot's eye lift) and what floats beside the head.
                             let marks: Vec<(f32, f32)> = f
                                 .parts
                                 .iter()
                                 .flat_map(|part| {
                                     let (l, t, r, b) = mark_bounds(part);
                                     [(l, t), (r, t), (r, b), (l, b)]
+                                        .map(|p| lifted(m, p, !is_cream(part)))
                                 })
                                 .collect();
                             for v in [-1.0, -0.5, 0.0, 0.5, 1.0] {
@@ -2044,7 +2168,7 @@ mod tests {
                                     let (x, y) = at(p, false);
                                     assert!(
                                         shape_contains(style, s, x, y),
-                                        "{style:?} {size:?} {expr:?} v {v}: ({x}, {y}) leaves the island"
+                                        "{m:?} {style:?} {size:?} {expr:?} v {v}: ({x}, {y}) leaves the island"
                                     );
                                 }
                                 let drawn_points = cat
@@ -2055,7 +2179,7 @@ mod tests {
                                     for (x, y) in drawn_points {
                                         assert!(
                                             x < c.x,
-                                            "{style:?} {size:?} {expr:?} blink {blink} v {v}: ({x}, {y}) reaches the clock at {}",
+                                            "{m:?} {style:?} {size:?} {expr:?} blink {blink} v {v}: ({x}, {y}) reaches the clock at {}",
                                             c.x
                                         );
                                     }
@@ -2065,25 +2189,26 @@ mod tests {
                             // turned and lifted with their ear, the glasses on the eyes)
                             // under the same pose: inside the island, left of the clock.
                             for acc in CatAccessory::ALL {
-                                let corners = accessory_corners(Mascot::Cat, *acc, f.ears);
+                                let corners = accessory_corners(m, *acc, f.ears);
                                 for v in [-1.0, -0.5, 0.0, 0.5, 1.0] {
                                     let pose = Pose::default().looking_as(expr, v);
                                     for &(p, eyes) in &corners {
-                                        let (x, y) = drawn(area, &f, pose, p, eyes);
+                                        let (x, y) = drawn(area, &f, pose, lifted(m, p, eyes), eyes);
                                         assert!(
                                             shape_contains(style, s, x, y),
-                                            "{style:?} {size:?} {acc:?} {expr:?} v {v}: ({x}, {y}) leaves the island"
+                                            "{m:?} {style:?} {size:?} {acc:?} {expr:?} v {v}: ({x}, {y}) leaves the island"
                                         );
                                         if let Some(c) = l.clock {
                                             assert!(
                                                 x < c.x,
-                                                "{style:?} {size:?} {acc:?} {expr:?} v {v}: ({x}, {y}) reaches the clock at {}",
+                                                "{m:?} {style:?} {size:?} {acc:?} {expr:?} v {v}: ({x}, {y}) reaches the clock at {}",
                                                 c.x
                                             );
                                         }
                                     }
                                 }
                             }
+                        }
                         }
                         // The open eyes slide on inside the head, with room to spare.
                         let pose = Pose::default().looking(1.0);
@@ -2253,40 +2378,9 @@ mod tests {
 
     #[test]
     fn the_typing_cat_stays_in_the_idle_island() {
-        use crate::theme::{CatAccessory, Mascot};
+        use crate::theme::CatAccessory;
         use crate::ui::cat_style::{RIM_WIDTH, accessory_corners};
-        use crate::ui::robot::{
-            EAR_STROKE, Expr, HEAD, PAW_LIFT, Pose, Side, ear_drawn, face, mark_bounds,
-            typing_points,
-        };
-        // The head's outline in grid units, grown by `grow` (the Black coat's
-        // rim), and the ears' round strokes (their stroke plus `grow`) round
-        // their turned corners.
-        let outline = |f: &crate::ui::robot::Face, grow: f32| {
-            let (x, y, w, h, r) = HEAD;
-            let mut cat = Vec::new();
-            for (cx, cy, a0) in [
-                (x + r, y + r, 180.0f32),
-                (x + w - r, y + r, 270.0),
-                (x + w - r, y + h - r, 0.0),
-                (x + r, y + h - r, 90.0),
-            ] {
-                for i in 0..=8 {
-                    let a = (a0 + i as f32 * 90.0 / 8.0).to_radians();
-                    cat.push((cx + (r + grow) * a.cos(), cy + (r + grow) * a.sin()));
-                }
-            }
-            for side in [Side::Left, Side::Right] {
-                for (x, y) in ear_drawn(side, f.ears) {
-                    cat.extend((0..16).map(|i| {
-                        let a = (i as f32 * 22.5).to_radians();
-                        let r = EAR_STROKE / 2.0 + grow;
-                        (x + r * a.cos(), y + r * a.sin())
-                    }));
-                }
-            }
-            cat
-        };
+        use crate::ui::robot::{Expr, PAW_LIFT, PAWS, Pose, face, mark_bounds, typing_points};
         let glances = [
             (-1.0, -1.0),
             (-1.0, 1.0),
@@ -2294,7 +2388,7 @@ mod tests {
             (1.0, 1.0),
             (0.0, 0.0),
         ];
-        let paws = [[0.0, 0.0], [PAW_LIFT, 0.0], [0.0, PAW_LIFT]];
+        let paws = [[0.0, 0.0], [PAW_LIFT, 0.0], [0.0, PAW_LIFT], [PAW_LIFT, PAW_LIFT]];
         let mut checked = 0u32;
         for style in [Style::Pill, Style::Notch] {
             for size in notch_sizes() {
@@ -2322,36 +2416,64 @@ mod tests {
                                 );
                             }
                         };
-                        for (vx, vy) in glances {
-                            let pose = Pose::default().glancing(vx, vy);
-                            // The head and ears, bare and with the Black rim.
-                            for grow in [0.0, RIM_WIDTH] {
-                                for p in outline(&f, grow) {
-                                    check("cat", drawn(area, &f, pose, p, false));
-                                    checked += 1;
-                                }
-                            }
-                            // Every eye's box: the pills, or the blink lines.
-                            for part in &f.parts {
-                                let (l, t, r, b) = mark_bounds(part);
-                                for p in [(l, t), (r, t), (r, b), (l, b)] {
-                                    check("eye", drawn(area, &f, pose, p, true));
-                                    checked += 1;
-                                }
-                            }
-                            // Every accessory, the glasses on the shifted and
-                            // glancing eyes.
-                            for acc in CatAccessory::ALL {
-                                for &(p, eyes) in &accessory_corners(Mascot::Cat, *acc, f.ears) {
-                                    check("accessory", drawn(area, &f, pose, p, eyes));
-                                    checked += 1;
-                                }
-                            }
-                            // The laptop and the paws are not turned by the tilt.
-                            for lift in paws {
-                                for p in typing_points(lift) {
-                                    check("laptop", drawn_flat(area, pose, p));
-                                    checked += 1;
+                        for &m in Mascot::ALL {
+                            for (vx, vy) in glances {
+                                for lift in paws {
+                                    // The octopus's typing arms follow the paw lift.
+                                    let pose = Pose {
+                                        paw_lift: lift,
+                                        ..Pose::default().glancing(vx, vy)
+                                    };
+                                    let check = |what: &str, (x, y): (f32, f32)| {
+                                        check(&format!("{m:?} {what}"), (x, y))
+                                    };
+                                    // The body, bare and (the cat) with the Black rim.
+                                    let rims: &[f32] =
+                                        if m == Mascot::Cat { &[0.0, RIM_WIDTH] } else { &[0.0] };
+                                    for &grow in rims {
+                                        for p in body_outline(m, &f, Expr::Typing, &pose, grow) {
+                                            check("body", drawn(area, &f, pose, p, false));
+                                            checked += 1;
+                                        }
+                                    }
+                                    // Every eye's box: the pills, or the blink lines.
+                                    for part in &f.parts {
+                                        let (l, t, r, b) = mark_bounds(part);
+                                        for p in [(l, t), (r, t), (r, b), (l, b)] {
+                                            let p = lifted(m, p, !is_cream(part));
+                                            check("eye", drawn(area, &f, pose, p, true));
+                                            checked += 1;
+                                        }
+                                    }
+                                    // Every accessory, the glasses on the shifted and
+                                    // glancing eyes.
+                                    for acc in CatAccessory::ALL {
+                                        for &(p, eyes) in &accessory_corners(m, *acc, f.ears) {
+                                            let p = lifted(m, p, eyes);
+                                            check("accessory", drawn(area, &f, pose, p, eyes));
+                                            checked += 1;
+                                        }
+                                    }
+                                    // The laptop and the paws are not turned by the tilt;
+                                    // the falk's feather tips stand on the paws' places.
+                                    for p in typing_points(lift) {
+                                        check("laptop", drawn_flat(area, pose, p));
+                                        checked += 1;
+                                    }
+                                    if m == Mascot::Falk {
+                                        for (i, &(x, y)) in PAWS.iter().enumerate() {
+                                            let y = y - lift[i];
+                                            for p in [
+                                                (x - 4.0, y - 2.6),
+                                                (x + 4.4, y - 2.6),
+                                                (x + 4.4, y + 2.4),
+                                                (x - 4.0, y + 2.4),
+                                            ] {
+                                                check("tip", drawn_flat(area, pose, p));
+                                                checked += 1;
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }

@@ -263,6 +263,11 @@ pub fn arms(expr: Expr, pose: &Pose) -> [Arm; 6] {
                 Expr::Happy => {
                     end.1 -= 3.0;
                     curl = 1.25;
+                    // The outer arm's curl would reach the clock beside the
+                    // robot when it looks right; pull its end in a little.
+                    if i == 0 {
+                        end.0 -= side * 0.4;
+                    }
                 }
                 Expr::Alert => {
                     end.0 += side * 2.5;
@@ -806,6 +811,10 @@ mod tests {
         let img = render(octopus(OctopusColor::Coral), Expr::Idle, Pose::default());
         assert_near(px(&img, 32, 20), 0xE87C8E);
         assert_near(px(&img, 24, 37), 0x17120F); // eyes lifted by 3
+        // Only the lifted pill (y 32..42) covers (24, 33); the cat's (35..45)
+        // would cover (24, 44) and not this one.
+        assert_near(px(&img, 24, 33), 0x17120F);
+        assert_near(px(&img, 24, 44), 0xE87C8E);
         // (4, 52), not (5, 53): the arm's t 0.8 sucker at (5.2, 54.2) covers (5, 53).
         assert_near(px(&img, 4, 52), 0xE87C8E); // an outer arm on the floor
         let red = render(
