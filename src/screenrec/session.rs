@@ -23,7 +23,7 @@ pub fn options_for(fps: u32, sources: RecSources, title: &str, effects: CursorEf
     let audio = sources.mic || sources.system;
     Options {
         fps: if fps == 60 { 60 } else { 30 },
-        max_height: None,
+        max_short: None,
         audio_channels: audio.then_some(1),
         channel_names: if audio {
             vec![MIX_CHANNEL.to_owned()]
@@ -149,7 +149,7 @@ mod tests {
         assert_eq!(o.audio_channels, Some(1));
         assert_eq!(o.channel_names, ["mix"]);
         assert!(o.draw_cursor && o.prefer_hardware && o.side_files);
-        assert_eq!(o.max_height, None);
+        assert_eq!(o.max_short, None);
         assert_eq!(o.app, None);
         assert_eq!(o.title, "Figma");
 

@@ -113,9 +113,9 @@ impl std::fmt::Display for Error {
 pub struct Options {
     /// 30 (default) or 60.
     pub fps: u32,
-    /// Scale the video down to this height (aspect kept); `None` = the
+    /// Scale the video down so its shorter side is at most this; `None` = the
     /// source's own size (capped at 4096 x 2304).
-    pub max_height: Option<u32>,
+    pub max_short: Option<u32>,
     /// Add an AAC track with 1 or 2 channels, fed through
     /// [`ScreenRecorder::audio_input`].
     pub audio_channels: Option<u16>,
@@ -137,7 +137,7 @@ impl Default for Options {
     fn default() -> Options {
         Options {
             fps: 30,
-            max_height: None,
+            max_short: None,
             audio_channels: None,
             channel_names: Vec::new(),
             draw_cursor: true,
@@ -435,7 +435,7 @@ impl Recording {
             .map_or_else(|| source.item_size(), |f| f.content);
         let src = (src.0.max(2), src.1.max(2));
         let bounds = source.bounds(src.0, src.1);
-        let out = plan::output_size(bounds.w as u32, bounds.h as u32, options.max_height);
+        let out = plan::output_size(bounds.w as u32, bounds.h as u32, options.max_short);
         let compositor = Compositor::new(&gpu, src, out, fps)?;
         if let Some(f) = &first {
             compositor.take_frame(&f.texture);
