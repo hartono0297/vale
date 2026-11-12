@@ -100,7 +100,10 @@ use crate::model::PomoField;
 use crate::pages::PanelPages;
 use crate::pomodoro::PomoSettings;
 use crate::sources::battery::battery_present;
-use crate::theme::{self, Accent, CatAccessory, CatColor, Surface, WindowPalette, WindowTheme};
+use crate::theme::{
+    self, Accent, CatAccessory, CatColor, Coat, FalkColor, Mascot, OctopusColor, Surface,
+    WindowPalette, WindowTheme,
+};
 use crate::tiles::{CustomKind, CustomProblem, CustomTile, LABEL_MAX, ShortcutTiles, TARGET_MAX};
 use crate::captions::prefs::CaptionPrefs;
 use crate::transcribe::prefs::TrLang;
@@ -497,6 +500,10 @@ pub struct Model {
     pub robot_sleep: u32,
     pub greeting: bool,
     pub cat_color: CatColor,
+    /// Which mascot, and the falk's and octopus's coats.
+    pub mascot: Mascot,
+    pub falk_color: FalkColor,
+    pub octopus_color: OctopusColor,
     pub cat_accessory: CatAccessory,
     pub cat_follow: bool,
     pub notch_peek: bool,
@@ -535,6 +542,14 @@ pub struct Model {
 }
 
 impl Model {
+    /// The chosen mascot's own coat.
+    pub fn coat(&self) -> Coat {
+        match self.mascot {
+            Mascot::Cat => Coat::Cat(self.cat_color),
+            Mascot::Falk => Coat::Falk(self.falk_color),
+            Mascot::Octopus => Coat::Octopus(self.octopus_color),
+        }
+    }
     pub fn from_config(cfg: &Config) -> Self {
         Model {
             style: cfg.style,
@@ -569,6 +584,9 @@ impl Model {
             robot_sleep: cfg.robot_sleep_minutes,
             greeting: cfg.morning_greeting,
             cat_color: cfg.cat_color,
+            mascot: cfg.mascot,
+            falk_color: cfg.falk_color,
+            octopus_color: cfg.octopus_color,
             cat_accessory: cfg.cat_accessory,
             cat_follow: cfg.cat_follow_pointer,
             notch_peek: cfg.notch_peek,
@@ -1702,6 +1720,9 @@ impl Settings {
             robot_sleep: m.robot_sleep,
             greeting: m.greeting,
             cat_color: m.cat_color,
+            mascot: m.mascot,
+            falk_color: m.falk_color,
+            octopus_color: m.octopus_color,
             cat_accessory: m.cat_accessory,
             cat_follow: m.cat_follow,
             notch_peek: m.notch_peek,
@@ -2115,7 +2136,7 @@ impl Settings {
                 self.model.accent,
                 self.model
                     .surface
-                    .resolve(self.model.cat_color, self.model.robot),
+                    .resolve(self.model.coat(), self.model.robot),
             ),
             style: self.model.style,
             notch: super::geometry::NotchSize::from_px(
@@ -2131,6 +2152,7 @@ impl Settings {
                 color: self.model.cat_color,
                 accessory: self.model.cat_accessory,
             },
+            coat: self.model.coat(),
             cat_face: self.cat_face,
             lang: self.model.lang,
             hover: self.hover,
@@ -4711,7 +4733,7 @@ pub fn run_demo(args: &[String]) {
         }
         theme::set_current(theme::Theme {
             accent: m.accent,
-            surface: m.surface.resolve(m.cat_color, m.robot),
+            surface: m.surface.resolve(m.coat(), m.robot),
             window: m.window,
         });
     }
@@ -4859,7 +4881,7 @@ pub fn run_demo(args: &[String]) {
     theme::set_system_light(theme::read_system_light());
     theme::set_current(theme::Theme {
         accent,
-        surface: model.surface.resolve(model.cat_color, model.robot),
+        surface: model.surface.resolve(model.coat(), model.robot),
         window,
     });
     DEMO.with_borrow_mut(|m| *m = Some(model.clone()));

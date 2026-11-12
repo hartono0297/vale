@@ -80,6 +80,8 @@ pub struct Scene<'a> {
     pub robot: bool,
     /// The cat's colour and accessory in the preview.
     pub cat: CatLook,
+    /// The chosen mascot's coat, for the Auto surface swatch.
+    pub coat: crate::theme::Coat,
     /// The face the Kucing preview shows.
     pub cat_face: CatFace,
     pub lang: Lang,
@@ -1280,7 +1282,7 @@ impl Painter<'_> {
         let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
         let ring = r.w / 2.0 + SWATCH_RING_GAP + SWATCH_RING_W / 2.0;
         self.choice_ring(cx, cy, ring, selected, hover);
-        let shown = surface.resolve(s.cat.color, s.robot);
+        let shown = surface.resolve(s.coat, s.robot);
         self.circle(cx, cy, r.w / 2.0, shown.rgb(), 1.0);
         self.ring(cx, cy, r.w / 2.0 - 0.5, 1.0, self.p.secondary, 0.5);
         if surface == Surface::Auto {

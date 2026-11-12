@@ -191,7 +191,11 @@ fn fixed(rgb: u32) -> Tone {
 pub fn pieces(accessory: CatAccessory) -> Vec<(Anchor, Piece)> {
     use Seg::{Close, Line as To, Move, Quad};
     match accessory {
-        CatAccessory::None => vec![],
+        // Drawn by the mascot painters; the cat has no pieces for these.
+        CatAccessory::None
+        | CatAccessory::Headphone
+        | CatAccessory::Sailor
+        | CatAccessory::Bowtie => vec![],
         CatAccessory::Glasses => vec![
             (
                 Anchor::Eyes,
@@ -768,8 +772,9 @@ mod tests {
     #[test]
     fn every_accessory_has_pieces_on_the_right_anchor() {
         assert!(pieces(CatAccessory::None).is_empty());
-        assert_eq!(CatAccessory::ALL.len(), 7);
-        for &a in &CatAccessory::ALL[1..] {
+        // The cat's own seven; the other three belong to the falk and octopus.
+        assert_eq!(CatAccessory::ALL.len(), 10);
+        for &a in &CatAccessory::ALL[1..7] {
             assert!(!pieces(a).is_empty(), "{a:?}");
             assert!(!accessory_corners(a, Ears::default()).is_empty(), "{a:?}");
         }
@@ -1006,7 +1011,7 @@ mod tests {
     #[test]
     fn accessory_paths_are_built_once() {
         let p = painter();
-        for &a in &CatAccessory::ALL[1..] {
+        for &a in &CatAccessory::ALL[1..7] {
             let built = p.extras(a);
             assert_eq!(built.len(), pieces(a).len());
             assert!(Rc::ptr_eq(&built, &p.extras(a)), "{a:?} is kept");

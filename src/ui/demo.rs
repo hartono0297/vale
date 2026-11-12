@@ -2277,7 +2277,7 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
     let chosen_surface = Surface::from_name(&name("DI_SURFACE")).unwrap_or_default();
     let palette = theme::island(
         Accent::from_name(&name("DI_ACCENT")).unwrap_or_default(),
-        chosen_surface.resolve(cat.color, true),
+        chosen_surface.resolve(theme::Coat::Cat(cat.color), true),
     );
     let calendar = demo_calendar(today, &palette);
     let notes = demo_notes(today);

@@ -116,7 +116,41 @@ named_enum! {
 
 named_enum! {
     /// What the notch cat wears.
-    CatAccessory { None, Glasses, Bow, Nightcap, Scarf, Flower, Crown }
+    CatAccessory { None, Glasses, Bow, Nightcap, Scarf, Flower, Crown, Headphone, Sailor, Bowtie }
+}
+
+named_enum! {
+    /// Which mascot lives in the notch.
+    Mascot { Cat, Falk, Octopus }
+}
+
+named_enum! {
+    /// The falk's coat.
+    FalkColor { Lutino, Grey, WhiteFace }
+}
+
+named_enum! {
+    /// The octopus's coat.
+    OctopusColor { Coral, Red, Purple, Blue }
+}
+
+/// A mascot together with its own coat.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Coat {
+    Cat(CatColor),
+    Falk(FalkColor),
+    Octopus(OctopusColor),
+}
+
+impl Coat {
+    /// The chosen mascot's own coat.
+    pub fn of(cfg: &Config) -> Coat {
+        match cfg.mascot {
+            Mascot::Cat => Coat::Cat(cfg.cat_color),
+            Mascot::Falk => Coat::Falk(cfg.falk_color),
+            Mascot::Octopus => Coat::Octopus(cfg.octopus_color),
+        }
+    }
 }
 
 named_enum! {
@@ -176,17 +210,26 @@ impl Surface {
         }
     }
 
-    /// The concrete surface: `Auto` follows the cat (Terracotta -> Espresso,
-    /// Calico -> Sea, White -> Night, Black -> Plum; the cat off -> Espresso),
-    /// every other value is itself.
-    pub fn resolve(self, cat: CatColor, robot_on: bool) -> Surface {
+    /// The concrete surface: `Auto` follows the mascot's coat (cat: Terracotta
+    /// -> Espresso, Calico -> Sea, White -> Night, Black -> Plum; falk: Lutino
+    /// -> Espresso, Grey -> Night, WhiteFace -> Plum; octopus: Coral ->
+    /// Espresso, Red -> Graphite, Purple -> Night, Blue -> Sea; the mascot off
+    /// -> Espresso), every other value is itself.
+    pub fn resolve(self, coat: Coat, robot_on: bool) -> Surface {
         match self {
             Surface::Auto if !robot_on => Surface::Espresso,
-            Surface::Auto => match cat {
-                CatColor::Terracotta => Surface::Espresso,
-                CatColor::Calico => Surface::Sea,
-                CatColor::White => Surface::Night,
-                CatColor::Black => Surface::Plum,
+            Surface::Auto => match coat {
+                Coat::Cat(CatColor::Terracotta) => Surface::Espresso,
+                Coat::Cat(CatColor::Calico) => Surface::Sea,
+                Coat::Cat(CatColor::White) => Surface::Night,
+                Coat::Cat(CatColor::Black) => Surface::Plum,
+                Coat::Falk(FalkColor::Lutino) => Surface::Espresso,
+                Coat::Falk(FalkColor::Grey) => Surface::Night,
+                Coat::Falk(FalkColor::WhiteFace) => Surface::Plum,
+                Coat::Octopus(OctopusColor::Coral) => Surface::Espresso,
+                Coat::Octopus(OctopusColor::Red) => Surface::Graphite,
+                Coat::Octopus(OctopusColor::Purple) => Surface::Night,
+                Coat::Octopus(OctopusColor::Blue) => Surface::Sea,
             },
             other => other,
         }
@@ -219,7 +262,7 @@ impl Default for Theme {
     fn default() -> Self {
         Theme {
             accent: Accent::default(),
-            surface: Surface::default().resolve(CatColor::default(), true),
+            surface: Surface::default().resolve(Coat::Cat(CatColor::default()), true),
             window: WindowTheme::default(),
         }
     }
@@ -229,7 +272,7 @@ impl Theme {
     pub fn of(cfg: &Config) -> Self {
         Theme {
             accent: cfg.accent,
-            surface: cfg.surface.resolve(cfg.cat_color, cfg.robot),
+            surface: cfg.surface.resolve(Coat::of(cfg), cfg.robot),
             window: cfg.window_theme,
         }
     }
@@ -374,7 +417,7 @@ pub fn island(accent: Accent, surface: Surface) -> Palette {
 
 /// The island's palette for the config: `Auto` is resolved against the cat.
 pub fn island_palette(cfg: &Config) -> Palette {
-    island(cfg.accent, cfg.surface.resolve(cfg.cat_color, cfg.robot))
+    island(cfg.accent, cfg.surface.resolve(Coat::of(cfg), cfg.robot))
 }
 
 /// The CLI page's terminal (`.term` in docs/design/pengingat-cli.html),
@@ -570,7 +613,7 @@ pub fn theme_from_env() -> Theme {
         accent: Accent::from_name(&var("DI_ACCENT")).unwrap_or_default(),
         surface: Surface::from_name(&var("DI_SURFACE"))
             .unwrap_or_default()
-            .resolve(CatColor::default(), true),
+            .resolve(Coat::Cat(CatColor::default()), true),
         window: WindowTheme::from_name(&var("DI_WINDOW")).unwrap_or_default(),
     }
 }
@@ -786,6 +829,39 @@ mod tests {
     }
 
     #[test]
+    fn auto_follows_every_mascots_coat() {
+        use Coat::*;
+        let cases = [
+            (Cat(CatColor::Terracotta), Surface::Espresso),
+            (Cat(CatColor::Calico), Surface::Sea),
+            (Cat(CatColor::White), Surface::Night),
+            (Cat(CatColor::Black), Surface::Plum),
+            (Falk(FalkColor::Lutino), Surface::Espresso),
+            (Falk(FalkColor::Grey), Surface::Night),
+            (Falk(FalkColor::WhiteFace), Surface::Plum),
+            (Octopus(OctopusColor::Coral), Surface::Espresso),
+            (Octopus(OctopusColor::Red), Surface::Graphite),
+            (Octopus(OctopusColor::Purple), Surface::Night),
+            (Octopus(OctopusColor::Blue), Surface::Sea),
+        ];
+        for (coat, want) in cases {
+            assert_eq!(Surface::Auto.resolve(coat, true), want, "{coat:?}");
+            assert_eq!(Surface::Auto.resolve(coat, false), Surface::Espresso);
+            assert_ne!(Surface::Auto.resolve(coat, true), Surface::Terminal);
+            assert_eq!(Surface::Sea.resolve(coat, true), Surface::Sea);
+        }
+    }
+
+    #[test]
+    fn accessories_keep_their_order_and_names() {
+        let names: Vec<_> = CatAccessory::ALL.iter().map(|a| a.name()).collect();
+        assert_eq!(
+            names,
+            ["None", "Glasses", "Bow", "Nightcap", "Scarf", "Flower", "Crown", "Headphone", "Sailor", "Bowtie"]
+        );
+    }
+
+    #[test]
     fn auto_follows_the_cat_and_never_reaches_the_palette() {
         for (cat, want) in [
             (CatColor::Terracotta, Surface::Espresso),
@@ -793,16 +869,16 @@ mod tests {
             (CatColor::White, Surface::Night),
             (CatColor::Black, Surface::Plum),
         ] {
-            assert_eq!(Surface::Auto.resolve(cat, true), want);
+            assert_eq!(Surface::Auto.resolve(Coat::Cat(cat), true), want);
             // Auto never gives Terminal, whatever the cat or the robot.
-            assert_ne!(Surface::Auto.resolve(cat, true), Surface::Terminal);
-            assert_ne!(Surface::Auto.resolve(cat, false), Surface::Terminal);
+            assert_ne!(Surface::Auto.resolve(Coat::Cat(cat), true), Surface::Terminal);
+            assert_ne!(Surface::Auto.resolve(Coat::Cat(cat), false), Surface::Terminal);
             // The cat off: always Espresso.
-            assert_eq!(Surface::Auto.resolve(cat, false), Surface::Espresso);
+            assert_eq!(Surface::Auto.resolve(Coat::Cat(cat), false), Surface::Espresso);
             // A chosen surface is itself, whatever the cat.
             for &s in Surface::ALL.iter().filter(|s| **s != Surface::Auto) {
-                assert_eq!(s.resolve(cat, true), s);
-                assert_eq!(s.resolve(cat, false), s);
+                assert_eq!(s.resolve(Coat::Cat(cat), true), s);
+                assert_eq!(s.resolve(Coat::Cat(cat), false), s);
             }
         }
         let cfg = Config {
@@ -830,7 +906,7 @@ mod tests {
         assert_eq!(Surface::from_name("Black"), Some(Surface::Espresso));
         assert_eq!(CatColor::default(), CatColor::Terracotta);
         assert_eq!(CatAccessory::default(), CatAccessory::None);
-        assert_eq!(CatAccessory::ALL.len(), 7);
+        assert_eq!(CatAccessory::ALL.len(), 10);
     }
 
     #[test]

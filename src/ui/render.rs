@@ -1374,7 +1374,7 @@ impl Renderer {
         let col = (card.w - 40.0) / 4.0;
         let faces = [Expr::Idle, Expr::Happy, Expr::Sleep, Expr::Alert];
         for (c, color) in CatColor::ALL.iter().copied().enumerate() {
-            let surface = chosen.resolve(color, true);
+            let surface = chosen.resolve(crate::theme::Coat::Cat(color), true);
             let pal = theme::island(Accent::default(), surface);
             let look = CatLook {
                 color,

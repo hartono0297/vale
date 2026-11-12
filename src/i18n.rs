@@ -1156,6 +1156,9 @@ keys! {
     AccScarf => "Syal", "Scarf";
     AccFlower => "Bunga", "Flower";
     AccCrown => "Mahkota", "Crown";
+    AccHeadphone => "Headphone", "Headphones";
+    AccSailor => "Pelaut", "Sailor";
+    AccBowtie => "Dasi kupu-kupu", "Bowtie";
     CatFollow => "Ikuti kursor", "Follow the pointer";
     CatFollowDesc => "Kepala dan mata menoleh ke kursor", "Head and eyes turn toward the pointer";
     CatPeek => "Mengecil jadi mata", "Shrink to eyes";
