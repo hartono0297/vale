@@ -45,7 +45,7 @@ use crate::model::{
 };
 use crate::recorder::mix::MixOptions;
 use crate::recorder::naming::file_stem;
-use crate::recorder::prefs::{VideoQuality, video_fallback_folder};
+use crate::recorder::prefs::{VideoQuality, fallback_video_dir};
 use crate::recorder::{Failure, RecError, RecEvent, Recorder, Source, Sources, devices};
 use crate::screenrec::audio::Forward;
 use crate::screenrec::exclude::Excluder;
@@ -510,7 +510,7 @@ fn start_recording(
 ) -> Started {
     // Controlled folder access may guard `Videos`: then the profile folder's
     // `Vale\Video` takes the recording.
-    let fallback = video_fallback_folder();
+    let fallback = fallback_video_dir();
     let writable = |d: &Path| probe_writable(d).is_ok();
     let Some(dir) = choose_dir(&job.dir, fallback.as_deref(), writable) else {
         return Started {

@@ -1,8 +1,10 @@
 //! The recorder's settings, kept in config.json under `recording`. Read
 //! leniently like `widgets`: a missing key or a wrong type gives that
 //! field's default, a non-object gives all of them, and the rest of the file
-//! always loads. The screen recording's settings (`video_folder`,
-//! `video_fps`, `video_quality`, `cursor_highlight`, `click_ripples`) live in the same section.
+//! always loads. The screen recording's settings (`video_fps`,
+//! `video_quality`, `cursor_highlight`, `click_ripples`) live in the same
+//! section. `folder` is the one recordings root: audio goes to its `Audio`
+//! subfolder and screen recordings to its `Video` subfolder.
 
 use std::path::{Path, PathBuf};
 
@@ -10,6 +12,11 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
 use crate::model::RecSources;
+
+/// The subfolder of the root that audio recordings go to.
+pub const AUDIO_SUB: &str = "Audio";
+/// The subfolder of the root that screen recordings go to.
+pub const VIDEO_SUB: &str = "Video";
 
 /// How large a screen recording is: the shorter side of the picture is capped
 /// at this many pixels, a smaller screen is never scaled up.
@@ -60,7 +67,8 @@ impl VideoQuality {
 pub struct RecordingPrefs {
     /// What the next recording takes (the Rekam page and Settings).
     pub sources: RecSources,
-    /// Where recordings go; `None` is `Documents\Vale\Rekaman`.
+    /// The recordings root, with an `Audio` and a `Video` subfolder; `None` is
+    /// `Documents\Vale\Rekaman`.
     pub folder: Option<PathBuf>,
     /// The "ask everyone first" notice was shown once.
     pub consent_shown: bool,
@@ -73,7 +81,8 @@ pub struct RecordingPrefs {
     /// The mic stream asks Windows for echo cancellation (the speech
     /// category), so speaker sound the mic picks up is removed. On by default.
     pub echo_cancel: bool,
-    /// Where screen recordings go; `None` is `Videos\Vale`.
+    /// Legacy: where screen recordings used to go. Only the one-time migration
+    /// reads it; it is `None` after that.
     pub video_folder: Option<PathBuf>,
     /// The screen recording's frame rate: 30 or 60.
     pub video_fps: u32,
@@ -83,6 +92,8 @@ pub struct RecordingPrefs {
     pub cursor_highlight: bool,
     /// A ring that spreads from every click in a screen recording.
     pub click_ripples: bool,
+    /// The one-time move into the `Audio` and `Video` subfolders has run.
+    pub folders_split: bool,
 }
 
 impl Default for RecordingPrefs {
@@ -102,6 +113,7 @@ impl Default for RecordingPrefs {
             video_quality: VideoQuality::Original,
             cursor_highlight: true,
             click_ripples: true,
+            folders_split: false,
         }
     }
 }
@@ -156,6 +168,10 @@ impl RecordingPrefs {
                 .get("click_ripples")
                 .and_then(Value::as_bool)
                 .unwrap_or(d.click_ripples),
+            folders_split: map
+                .get("folders_split")
+                .and_then(Value::as_bool)
+                .unwrap_or(d.folders_split),
         }
     }
 
@@ -175,14 +191,19 @@ impl RecordingPrefs {
         }
     }
 
-    /// The folder recordings go to now.
-    pub fn dir(&self) -> PathBuf {
+    /// The recordings root.
+    pub fn root(&self) -> PathBuf {
         self.folder.clone().unwrap_or_else(default_folder)
+    }
+
+    /// The folder audio recordings go to now.
+    pub fn dir(&self) -> PathBuf {
+        self.root().join(AUDIO_SUB)
     }
 
     /// The folder screen recordings go to now.
     pub fn video_dir(&self) -> PathBuf {
-        self.video_folder.clone().unwrap_or_else(default_video_folder)
+        self.root().join(VIDEO_SUB)
     }
 }
 
@@ -220,17 +241,27 @@ pub fn fallback_folder() -> Option<PathBuf> {
     known_folder(&FOLDERID_Profile).map(|p| p.join("Vale").join("Rekaman"))
 }
 
-/// `Videos\Vale`; next to the exe's current directory when Windows cannot say
-/// where Videos is.
-pub fn default_video_folder() -> PathBuf {
+/// `<fallback root>\Audio`.
+pub fn fallback_audio_dir() -> Option<PathBuf> {
+    fallback_folder().map(|p| p.join(AUDIO_SUB))
+}
+
+/// `<fallback root>\Video`.
+pub fn fallback_video_dir() -> Option<PathBuf> {
+    fallback_folder().map(|p| p.join(VIDEO_SUB))
+}
+
+/// `Videos\Vale`: where screen recordings went before the one root; next to
+/// the exe's current directory when Windows cannot say where Videos is.
+pub fn legacy_video_default() -> PathBuf {
     use windows::Win32::UI::Shell::FOLDERID_Videos;
     let base = known_folder(&FOLDERID_Videos).unwrap_or_else(|| PathBuf::from("."));
     base.join("Vale")
 }
 
-/// `%USERPROFILE%\Vale\Video`: where a screen recording goes when Windows
-/// will not let Vale write in the chosen folder (see [`fallback_folder`]).
-pub fn video_fallback_folder() -> Option<PathBuf> {
+/// `%USERPROFILE%\Vale\Video`: where a screen recording went before the one
+/// root when Windows would not let Vale write in `Videos`.
+pub fn legacy_video_fallback() -> Option<PathBuf> {
     use windows::Win32::UI::Shell::FOLDERID_Profile;
     known_folder(&FOLDERID_Profile).map(|p| p.join("Vale").join("Video"))
 }
@@ -246,6 +277,92 @@ fn known_folder(id: &windows::core::GUID) -> Option<PathBuf> {
     }
 }
 
+/// The folders the migration compares the old settings against.
+#[derive(Clone, Debug)]
+pub struct Known {
+    /// The default root, `Documents\Vale\Rekaman`.
+    pub default_root: PathBuf,
+    /// The fallback root, `%USERPROFILE%\Vale\Rekaman`.
+    pub fallback_root: Option<PathBuf>,
+    /// The old screen recording default, `Videos\Vale`.
+    pub video_default: PathBuf,
+    /// The old screen recording fallback, `%USERPROFILE%\Vale\Video`.
+    pub video_fallback: Option<PathBuf>,
+}
+
+impl Known {
+    /// The real folders of this PC.
+    pub fn system() -> Known {
+        Known {
+            default_root: default_folder(),
+            fallback_root: fallback_folder(),
+            video_default: legacy_video_default(),
+            video_fallback: legacy_video_fallback(),
+        }
+    }
+}
+
+/// One folder of recordings to rename into a subfolder.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Move {
+    pub from: PathBuf,
+    pub to: PathBuf,
+    /// The extension of the recordings in `from` (`m4a` or `mp4`).
+    pub ext: &'static str,
+}
+
+/// What the one-time migration does: the root to store (`None` keeps the
+/// default) and the folders to move.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SplitPlan {
+    pub root: Option<PathBuf>,
+    pub moves: Vec<Move>,
+}
+
+/// Works out the migration from the old `folder` and `video_folder`. The root
+/// is the old folder; else the fallback root when the old video folder was the
+/// video fallback (Windows is known to block the default); else the default.
+/// Audio in the root moves to `Audio`. Screen recordings move to `Video` only
+/// from the old video folder when it was unset, the old default or the old
+/// fallback; a folder the user picked stays where it is.
+pub fn split_plan(
+    folder: Option<&Path>,
+    video_folder: Option<&Path>,
+    known: &Known,
+) -> SplitPlan {
+    use crate::transcribe::queue::same_audio;
+    let video_was_fallback = match (video_folder, known.video_fallback.as_deref()) {
+        (Some(v), Some(f)) => same_audio(v, f),
+        _ => false,
+    };
+    let root = match folder {
+        Some(f) => Some(f.to_path_buf()),
+        None if video_was_fallback => known.fallback_root.clone(),
+        None => None,
+    };
+    let eff = root.clone().unwrap_or_else(|| known.default_root.clone());
+    let mut moves = vec![Move {
+        from: eff.clone(),
+        to: eff.join(AUDIO_SUB),
+        ext: "m4a",
+    }];
+    let video_from = match video_folder {
+        None => Some(known.video_default.clone()),
+        Some(v) if video_was_fallback || same_audio(v, &known.video_default) => {
+            Some(v.to_path_buf())
+        }
+        Some(_) => None,
+    };
+    if let Some(from) = video_from {
+        moves.push(Move {
+            from,
+            to: eff.join(VIDEO_SUB),
+            ext: "mp4",
+        });
+    }
+    SplitPlan { root, moves }
+}
+
 /// How a folder is named in Settings: its parent and itself.
 pub fn folder_label(dir: &Path) -> String {
     crate::screenshot::folder_label(dir)
@@ -254,7 +371,7 @@ pub fn folder_label(dir: &Path) -> String {
 impl Serialize for RecordingPrefs {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
-        let mut map = s.serialize_map(Some(11))?;
+        let mut map = s.serialize_map(Some(12))?;
         map.serialize_entry(
             "sources",
             &serde_json::json!({"mic": self.sources.mic, "system": self.sources.system}),
@@ -272,6 +389,7 @@ impl Serialize for RecordingPrefs {
         map.serialize_entry("video_quality", self.video_quality.key())?;
         map.serialize_entry("cursor_highlight", &self.cursor_highlight)?;
         map.serialize_entry("click_ripples", &self.click_ripples)?;
+        map.serialize_entry("folders_split", &self.folders_split)?;
         map.end()
     }
 }
@@ -294,7 +412,8 @@ mod tests {
         assert!(d.sources.mic && d.sources.system);
         assert_eq!(d.folder, None);
         assert!(!d.consent_shown);
-        assert!(d.dir().ends_with(r"Vale\Rekaman"));
+        assert!(d.root().ends_with(r"Vale\Rekaman"));
+        assert!(d.dir().ends_with(r"Vale\Rekaman\Audio"));
     }
 
     #[test]
@@ -329,7 +448,7 @@ mod tests {
         assert_eq!(p.folder, None);
         let p = RecordingPrefs::from_json(&json!({"folder": r"D:\Audio"}));
         assert_eq!(p.folder, Some(PathBuf::from(r"D:\Audio")));
-        assert_eq!(p.dir(), PathBuf::from(r"D:\Audio"));
+        assert_eq!(p.dir(), PathBuf::from(r"D:\Audio\Audio"));
     }
 
     #[test]
@@ -414,7 +533,7 @@ mod tests {
         let d = RecordingPrefs::default();
         assert_eq!(d.video_folder, None);
         assert_eq!(d.video_fps, 30);
-        assert_eq!(d.video_dir(), default_video_folder());
+        assert!(d.video_dir().ends_with(r"Vale\Rekaman\Video"));
     }
 
     #[test]
@@ -464,7 +583,6 @@ mod tests {
         assert_eq!(v["video_fps"], json!(60));
         assert_eq!(v["video_folder"], json!(r"C:\v"));
         assert_eq!(RecordingPrefs::from_json(&v), p);
-        assert_eq!(p.video_dir(), PathBuf::from(r"C:\v"));
         let none = serde_json::to_value(RecordingPrefs::default()).unwrap();
         assert_eq!(none["video_folder"], json!(null));
         assert_eq!(none["video_fps"], json!(30));
@@ -487,12 +605,101 @@ mod tests {
     }
 
     #[test]
-    fn the_video_fallback_sits_in_the_profile() {
-        let f = video_fallback_folder().unwrap();
+    fn the_legacy_video_folders_and_the_fallback_dirs() {
+        let f = legacy_video_fallback().unwrap();
         assert!(f.ends_with(r"Vale\Video"), "{}", f.display());
-        assert!(f.is_absolute());
-        let videos = default_video_folder();
+        let videos = legacy_video_default();
         assert!(videos.ends_with("Vale"), "{}", videos.display());
         assert!(!f.starts_with(videos.parent().unwrap()), "not under Videos: {}", f.display());
+        assert!(fallback_audio_dir().unwrap().ends_with(r"Vale\Rekaman\Audio"));
+        assert!(fallback_video_dir().unwrap().ends_with(r"Vale\Rekaman\Video"));
+    }
+
+    fn known() -> Known {
+        Known {
+            default_root: PathBuf::from(r"C:\U\Documents\Vale\Rekaman"),
+            fallback_root: Some(PathBuf::from(r"C:\U\Vale\Rekaman")),
+            video_default: PathBuf::from(r"C:\U\Videos\Vale"),
+            video_fallback: Some(PathBuf::from(r"C:\U\Vale\Video")),
+        }
+    }
+
+    fn mv(from: &str, to: &str, ext: &'static str) -> Move {
+        Move { from: PathBuf::from(from), to: PathBuf::from(to), ext }
+    }
+
+    #[test]
+    fn dirs_are_subfolders_of_one_root() {
+        let d = RecordingPrefs::default();
+        assert!(d.dir().ends_with(r"Vale\Rekaman\Audio"));
+        assert!(d.video_dir().ends_with(r"Vale\Rekaman\Video"));
+        let p = RecordingPrefs { folder: Some(PathBuf::from(r"D:\R")), ..d };
+        assert_eq!(p.dir(), PathBuf::from(r"D:\R\Audio"));
+        assert_eq!(p.video_dir(), PathBuf::from(r"D:\R\Video"));
+    }
+
+    #[test]
+    fn fresh_install_plans_default_root() {
+        let plan = split_plan(None, None, &known());
+        assert_eq!(plan.root, None);
+        assert_eq!(
+            plan.moves,
+            vec![
+                mv(r"C:\U\Documents\Vale\Rekaman", r"C:\U\Documents\Vale\Rekaman\Audio", "m4a"),
+                mv(r"C:\U\Videos\Vale", r"C:\U\Documents\Vale\Rekaman\Video", "mp4"),
+            ]
+        );
+    }
+
+    #[test]
+    fn fallback_paths_keep_the_fallback_root() {
+        let plan = split_plan(
+            Some(Path::new(r"C:\U\Vale\Rekaman")),
+            Some(Path::new(r"C:\U\Vale\Video")),
+            &known(),
+        );
+        assert_eq!(plan.root, Some(PathBuf::from(r"C:\U\Vale\Rekaman")));
+        assert_eq!(
+            plan.moves,
+            vec![
+                mv(r"C:\U\Vale\Rekaman", r"C:\U\Vale\Rekaman\Audio", "m4a"),
+                mv(r"C:\U\Vale\Video", r"C:\U\Vale\Rekaman\Video", "mp4"),
+            ]
+        );
+    }
+
+    #[test]
+    fn blocked_video_only_moves_the_root_to_the_fallback() {
+        let plan = split_plan(None, Some(Path::new(r"C:\U\Vale\Video")), &known());
+        assert_eq!(plan.root, Some(PathBuf::from(r"C:\U\Vale\Rekaman")));
+        assert!(plan.moves.contains(&mv(r"C:\U\Vale\Video", r"C:\U\Vale\Rekaman\Video", "mp4")));
+    }
+
+    #[test]
+    fn a_picked_video_folder_is_left_alone() {
+        let plan = split_plan(Some(Path::new(r"D:\R")), Some(Path::new(r"E:\Vid")), &known());
+        assert_eq!(plan.root, Some(PathBuf::from(r"D:\R")));
+        assert_eq!(plan.moves, vec![mv(r"D:\R", r"D:\R\Audio", "m4a")]);
+    }
+
+    #[test]
+    fn case_differences_still_match_the_legacy_paths() {
+        let plan = split_plan(None, Some(Path::new(r"c:\u\VALE\video")), &known());
+        assert_eq!(plan.root, Some(PathBuf::from(r"C:\U\Vale\Rekaman")));
+        let plan = split_plan(None, Some(Path::new(r"c:\u\videos\vale")), &known());
+        assert_eq!(plan.root, None);
+        assert_eq!(plan.moves.len(), 2);
+    }
+
+    #[test]
+    fn folders_split_reads_leniently() {
+        let get = |v: Value| RecordingPrefs::from_json(&v).folders_split;
+        assert!(!get(json!({})));
+        assert!(!get(json!({"folders_split": 7})));
+        assert!(get(json!({"folders_split": true})));
+        let p = RecordingPrefs { folders_split: true, ..RecordingPrefs::default() };
+        let v = serde_json::to_value(&p).unwrap();
+        assert_eq!(v["folders_split"], json!(true));
+        assert_eq!(RecordingPrefs::from_json(&v), p);
     }
 }

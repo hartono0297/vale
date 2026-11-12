@@ -5035,7 +5035,7 @@ mod tests {
         // The video folder, never the audio recordings' one.
         assert_eq!(
             screen_click(&chosen, Hit::VideoFolderOpen),
-            Some(vec![After::OpenFolder(std::path::PathBuf::from(r"D:\Video\Kerja"))])
+            Some(vec![After::OpenFolder(chosen.video_dir())])
         );
         for prefs in [&unset, &chosen] {
             assert_eq!(
