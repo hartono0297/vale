@@ -1,6 +1,7 @@
 //! Dragging an image card out of the island: the file name, the pixels a PNG
-//! is written from, and the bookkeeping of the temporary files. Pure, tested
-//! without the clipboard or the disk; the PNG writing lives elsewhere.
+//! is written from, writing and removing the temporary PNGs under
+//! `%TEMP%\Vale\drag`, and the bookkeeping of which card's file may go when.
+//! Never touches the clipboard; the tests write only under `target/test-tmp`.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -74,6 +75,12 @@ pub fn card_path(root: &Path, id: u64, name: &str) -> PathBuf {
     root.join(id.to_string()).join(name)
 }
 
+/// Whether the packed DIB `dib` is `w` x `h`: the card's full picture, not
+/// the thumbnail a paste falls back to when an original will not unpack.
+pub fn full_size(dib: &[u8], w: u32, h: u32) -> bool {
+    dib_info(dib).is_some_and(|i| (i.w, i.h) == (w, h))
+}
+
 /// Write the packed DIB `dib` as a PNG at `path`, creating its folder. False
 /// on any failure, with no file left at `path`. Needs COM on this thread.
 pub fn write_png(dib: &[u8], path: &Path) -> bool {
@@ -119,7 +126,9 @@ pub fn sweep(root: &Path) {
     let _ = std::fs::remove_dir_all(root);
 }
 
-type Entry = (u64, PathBuf, Instant);
+/// A card's id, its file, the moment it may go, and whether the file holds
+/// only the small preview (`None`: not known, after a failed removal).
+type Entry = (u64, PathBuf, Instant, Option<bool>);
 
 /// The temp files made for dragged cards, each with the moment it may go.
 #[derive(Default)]
@@ -128,15 +137,20 @@ pub struct DragFiles {
 }
 
 impl DragFiles {
-    /// Note a drag of card `id` whose file is at `path`, and restart its
-    /// clock. True when the card already had a file (reuse that one).
-    pub fn touch(&mut self, id: u64, path: PathBuf, now: Instant) -> bool {
+    /// Note a drag of card `id` whose file is at `path` and holds only the
+    /// small preview when `small`, and restart its clock. True when the card
+    /// already had a file of the same kind (reuse that one). A card whose
+    /// original came back or went keeps its entry and path, now of the new
+    /// kind, and its file is to be written again.
+    pub fn touch(&mut self, id: u64, path: PathBuf, small: bool, now: Instant) -> bool {
         let due = now + KEEP;
         if let Some(f) = self.files.iter_mut().find(|f| f.0 == id) {
             f.2 = due;
-            true
+            let same = f.3 == Some(small);
+            f.3 = Some(small);
+            same
         } else {
-            self.files.push((id, path, due));
+            self.files.push((id, path, due, Some(small)));
             false
         }
     }
@@ -168,8 +182,9 @@ impl DragFiles {
     }
 
     /// Keep a file that could not be removed, to try again after `RETRY`.
+    /// A later drag of that card writes it again (what it holds is unknown).
     pub fn retry(&mut self, id: u64, path: PathBuf, now: Instant) {
-        self.files.push((id, path, now + RETRY));
+        self.files.push((id, path, now + RETRY, None));
     }
 
     pub fn is_empty(&self) -> bool {
@@ -430,11 +445,40 @@ mod tests {
         let t0 = Instant::now();
         let p = PathBuf::from("a.png");
         let mut d = DragFiles::default();
-        assert!(!d.touch(7, p.clone(), t0));
-        assert!(d.touch(7, p.clone(), t0 + 5 * MIN));
+        assert!(!d.touch(7, p.clone(), false, t0));
+        assert!(d.touch(7, p.clone(), false, t0 + 5 * MIN));
         assert!(d.expire(t0 + 11 * MIN).is_empty());
         assert_eq!(d.expire(t0 + 16 * MIN), vec![(7, p)]);
         assert!(d.is_empty());
+    }
+
+    #[test]
+    fn a_card_whose_original_came_or_went_is_written_again() {
+        let t0 = Instant::now();
+        let p = PathBuf::from("a.png");
+        let mut d = DragFiles::default();
+        // First a thumbnail-only card: a small file.
+        assert!(!d.touch(7, p.clone(), true, t0));
+        assert!(d.touch(7, p.clone(), true, t0 + MIN));
+        // The same image copied again brought the original back: the small
+        // file is not reused, and the entry now says full size.
+        assert!(!d.touch(7, p.clone(), false, t0 + 2 * MIN));
+        assert!(d.touch(7, p.clone(), false, t0 + 3 * MIN));
+        // The budget dropped the original: not reused either.
+        assert!(!d.touch(7, p.clone(), true, t0 + 4 * MIN));
+        // One entry, one path, the clock restarted by the last drag.
+        assert_eq!(d.path(7), Some(p.as_path()));
+        assert_eq!(d.next_due(t0 + 4 * MIN), Some(KEEP));
+        assert_eq!(d.take_all().len(), 1);
+    }
+
+    #[test]
+    fn only_a_dib_of_the_cards_own_size_is_full_size() {
+        let full = dib(32, 2, 2, 0, false, &px32());
+        assert!(full_size(&full, 2, 2));
+        // The thumbnail a failed unpack fell back to.
+        assert!(!full_size(&full, 1280, 720));
+        assert!(!full_size(&[1, 2, 3], 2, 2));
     }
 
     #[test]
@@ -442,8 +486,8 @@ mod tests {
         let t0 = Instant::now();
         let mut d = DragFiles::default();
         assert_eq!(d.next_due(t0), None);
-        d.touch(1, "a.png".into(), t0);
-        d.touch(2, "b.png".into(), t0 + 2 * MIN);
+        d.touch(1, "a.png".into(), false, t0);
+        d.touch(2, "b.png".into(), false, t0 + 2 * MIN);
         assert_eq!(d.next_due(t0 + MIN), Some(9 * MIN));
     }
 
@@ -452,7 +496,7 @@ mod tests {
         let t0 = Instant::now();
         let mut d = DragFiles::default();
         for id in 1..=3 {
-            d.touch(id, format!("{id}.png").into(), t0);
+            d.touch(id, format!("{id}.png").into(), false, t0);
         }
         let gone = d.retain_ids(&[2]);
         assert_eq!(gone.iter().map(|g| g.0).collect::<Vec<_>>(), vec![1, 3]);
@@ -465,10 +509,12 @@ mod tests {
     fn a_failed_removal_is_retried() {
         let t0 = Instant::now();
         let mut d = DragFiles::default();
-        d.touch(5, "5.png".into(), t0);
+        d.touch(5, "5.png".into(), false, t0);
         let later = t0 + 11 * MIN;
         let (id, p) = d.expire(later).pop().unwrap();
         d.retry(id, p, later);
         assert_eq!(d.next_due(later), Some(RETRY));
+        // What the file left behind holds is not known: a drag writes it again.
+        assert!(!d.touch(5, "5.png".into(), false, later));
     }
 }

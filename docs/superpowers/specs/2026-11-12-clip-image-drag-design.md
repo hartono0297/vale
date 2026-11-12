@@ -44,9 +44,11 @@ only way is click (copy) and paste, and many upload boxes take no paste.
   that last used it, or when Vale exits, whichever comes first. At startup the
   whole `%TEMP%\Vale\drag` folder is removed (a crash may have left files).
   When "Hapus saat layar dikunci" is on, the lock removes them too. Deleting a
-  card removes its file, and "Hapus riwayat" removes all of them. Dragging the
+  card removes its file, and "Hapus riwayat" removes the files of the cards it
+  clears; a pinned card keeps its file until its 10 minutes run out. Dragging the
   same card again within the 10 minutes reuses its file (no new encode) and
-  restarts its 10 minutes.
+  restarts its 10 minutes; if its original came back or was dropped since, the
+  file is written again in the same place.
 - **Idle power.** One one-shot timer (`TIMER_CLIP_DRAG`, id 55), set only while
   a temp file exists, for the nearest expiry. No repeating timer.
 - **Panel.** It stays open during the drag; after it, the shelf's

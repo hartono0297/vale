@@ -32,7 +32,7 @@ use crate::clipboard::store::{self, ClipSnapshot, Ingested, Packed, ingest};
 use crate::clipboard::win::{self, Read};
 use crate::clipboard::{Clip, ClipData, History};
 use crate::config::AfterCapture;
-use crate::i18n::{self, Key, tr};
+use crate::i18n::{self, Key, Lang, tr};
 use crate::model::{
     CLIP_IMAGE_KEY, CLIP_PREVIEW_KEY, ClipAction, Event, Hit, Notice, NoticeKind, Page, View,
 };
@@ -111,6 +111,21 @@ fn drag_press_target(hit: Option<&Hit>, history: &History) -> Option<u64> {
         return None;
     };
     history.get(*id)?.image().map(|_| *id)
+}
+
+/// The dragged file's name: `"Screenshot …"` or the image kind's word
+/// (`Gambar`, `Image`), then the card's copy time `at` (unix seconds) in
+/// local time; a time chrono cannot hold reads as now.
+fn drag_name(screenshot: bool, at: i64, lang: Lang) -> String {
+    let what = if screenshot {
+        "Screenshot"
+    } else {
+        i18n::text(lang, Key::ClipKindImage)
+    };
+    let at = DateTime::from_timestamp(at, 0)
+        .map(|t| t.with_timezone(&Local).naive_local())
+        .unwrap_or_else(|| Local::now().naive_local());
+    drag::file_name(what, at)
 }
 
 /// After a drop of a card whose original is no longer kept: the same body as
@@ -706,40 +721,49 @@ impl App {
             return None;
         }
         self.clip.press = None;
-        self.click.clear();
+        let now = Instant::now();
+        let out = self.clip_drag_file(id, now);
+        // `touch` may have noted a card even when its file could not be
+        // written: the timer follows whatever is kept.
+        self.arm_clip_drag_timer(now);
+        // Only a drag that really starts drops the click: when no file could
+        // be made (a full or blocked %TEMP%), the release still copies.
+        if out.is_some() {
+            self.click.clear();
+        }
+        out
+    }
+
+    /// The temporary PNG for card `id`: its file from an earlier drag when
+    /// that holds the same picture (the small preview or the original, as
+    /// the card has now), else one written now in its place.
+    fn clip_drag_file(&mut self, id: u64, now: Instant) -> Option<ClipDragOut> {
         let clip = self.clip.history.get(id)?;
         let img = clip.image()?;
-        let (small, screenshot) = (!img.has_original(), img.screenshot);
-        let kept = self.clip.drag_files.path(id).map(PathBuf::from);
-        let path = match kept {
-            // Dragged again within `KEEP`: the same file, no new encode.
-            Some(p) if p.exists() => p,
-            other => {
-                // A kept entry whose file went is written again in its place.
-                let path = other.unwrap_or_else(|| {
-                    let lang = i18n::lang();
-                    let what = if screenshot {
-                        "Screenshot"
-                    } else {
-                        i18n::text(lang, Key::ClipKindImage)
-                    };
-                    let at = DateTime::from_timestamp(clip.at, 0)
-                        .map(|t| t.with_timezone(&Local).naive_local())
-                        .unwrap_or_else(|| Local::now().naive_local());
-                    drag::card_path(&drag::root(), id, &drag::file_name(what, at))
-                });
-                // The picture as a paste would give it: the original (packed
-                // ones decoded here, on the UI thread), else the thumbnail.
-                let (_, dib) = win::formats_for(clip, false).pop()?;
-                if !drag::write_png(&dib, &path) {
-                    return None;
-                }
-                path
+        let screenshot = img.screenshot;
+        let mut small = !img.has_original();
+        let path = match self.clip.drag_files.path(id) {
+            Some(p) => p.to_path_buf(),
+            None => {
+                let name = drag_name(screenshot, clip.at, i18n::lang());
+                drag::card_path(&drag::root(), id, &name)
             }
         };
-        let now = Instant::now();
-        self.clip.drag_files.touch(id, path.clone(), now);
-        self.arm_clip_drag_timer(now);
+        // Dragged again within `KEEP` with the same picture: no new encode.
+        let reuse = self.clip.drag_files.touch(id, path.clone(), small, now) && path.exists();
+        if !reuse {
+            // The picture as a paste would give it: the original (packed
+            // ones decoded here, on the UI thread), else the thumbnail, which
+            // is also what an original that will not unpack falls back to.
+            let (_, dib) = win::formats_for(clip, false).pop()?;
+            if !small && !drag::full_size(&dib, img.width, img.height) {
+                small = true;
+                self.clip.drag_files.touch(id, path.clone(), small, now);
+            }
+            if !drag::write_png(&dib, &path) {
+                return None;
+            }
+        }
         Some(ClipDragOut {
             path,
             small,
@@ -1384,6 +1408,34 @@ mod tests {
         assert!(!past_threshold((0, 0), (4, 4), 6.0));
         assert!(past_threshold((0, 0), (5, 4), 6.0));
         assert!(past_threshold((10, 10), (10, 16), 6.0));
+    }
+
+    #[test]
+    fn the_drag_name_reads_like_the_card() {
+        use crate::i18n::Lang;
+        let at = 1_794_492_192; // 2026-11-12 14:03:12 UTC
+        let stamp = DateTime::from_timestamp(at, 0)
+            .unwrap()
+            .with_timezone(&Local)
+            .naive_local()
+            .format("%Y-%m-%d %H.%M.%S")
+            .to_string();
+        assert_eq!(
+            drag_name(true, at, Lang::Id),
+            format!("Screenshot {stamp}.png")
+        );
+        assert_eq!(
+            drag_name(true, at, Lang::En),
+            format!("Screenshot {stamp}.png")
+        );
+        assert_eq!(
+            drag_name(false, at, Lang::Id),
+            format!("Gambar {stamp}.png")
+        );
+        assert_eq!(drag_name(false, at, Lang::En), format!("Image {stamp}.png"));
+        // A time chrono cannot hold still gives a name (now's).
+        let odd = drag_name(false, i64::MAX, Lang::En);
+        assert!(odd.starts_with("Image ") && odd.ends_with(".png"));
     }
 
     #[test]
