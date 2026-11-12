@@ -85,3 +85,13 @@ passed with the shapes above; `LOOK_HEAD_DIP` stays 7
 ([[cat-looks-at-pointer]]).
 
 Related: [[bata-robot-expressions]], [[settings-structure]]
+
+## Per mascot and three more (2026-11-13)
+
+`pieces(mascot, accessory)` and `accessory_corners(mascot, ..)`: the cat's
+seven are unchanged (a literal copy pins them); the falk and the octopus put
+the same pieces at their own anchors (`cat_style::anchors`), ear pieces ride
+the head there. Three accessories were appended for every mascot: Headphone,
+Sailor (Topi pelaut), Bowtie (Dasi kupu-kupu); `CatAccessory::ALL` is ten.
+The cat's headphone band top is 16.4 (clear of the Music note). Details and
+the octopus's shorter nightcap: [[maskot-falk-gurita]].

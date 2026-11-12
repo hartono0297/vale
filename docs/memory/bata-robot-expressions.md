@@ -78,3 +78,7 @@ Related: [[bata-idle-power-budget]], [[bata-morning-greeting]],
 [[cat-types-while-working]]
 
 Part of [[v3-studio-overview]]. Listed in [[index]].
+
+**2026-11-13: three mascots.** The same faces and `choose_expr` drive the
+falk (cockatiel; its crest carries the ears' moods) and the sitting octopus
+(its arms do), chosen in Settings → Maskot: [[maskot-falk-gurita]].
