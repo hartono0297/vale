@@ -15,9 +15,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
-use windows::Win32::Foundation::{
-    ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, WPARAM,
-};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
 use windows::Win32::Graphics::Direct2D::{
     D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_DRAW_TEXT_OPTIONS_CLIP, ID2D1RenderTarget,
@@ -26,10 +24,10 @@ use windows::Win32::Graphics::DirectWrite::{DWRITE_TEXT_METRICS, IDWriteTextLayo
 use windows::Win32::Graphics::Gdi::ClientToScreen;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, HWND_TOPMOST, IDC_ARROW, IsWindow, KillTimer,
-    LoadCursorW, MA_NOACTIVATE, RegisterClassExW, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOSIZE, SetTimer, SetWindowPos, ShowWindow, WM_ERASEBKGND, WM_MOUSEACTIVATE, WNDCLASSEXW,
-    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, HWND_TOPMOST, IsWindow, KillTimer,
+    MA_NOACTIVATE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetTimer,
+    SetWindowPos, ShowWindow, WM_ERASEBKGND, WM_MOUSEACTIVATE, WM_NCDESTROY, WS_EX_LAYERED,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 use windows::core::{Interface, PCWSTR, w};
 use windows_numerics::{Matrix3x2, Vector2};
@@ -42,7 +40,7 @@ use crate::i18n::{self, Key, Lang};
 use crate::shot_edit::gfx::{Gfx, color};
 use crate::theme;
 use crate::ui::geometry::Rect as FRect;
-use crate::ui::menu_pop::{Text, monitor_at, rounded};
+use crate::ui::menu_pop::{Text, monitor_at, paint_plate, register_class, rounded};
 
 pub mod logic;
 
@@ -223,8 +221,8 @@ fn compose(text: &Text, tip: &Tip, keys: Vec<String>) -> Option<Look> {
             (k, w)
         })
         .collect();
-    let keys_w = keys.iter().map(|(_, w)| w).sum::<f32>()
-        + KEY_GAP * keys.len().saturating_sub(1) as f32;
+    let keys_w =
+        keys.iter().map(|(_, w)| w).sum::<f32>() + KEY_GAP * keys.len().saturating_sub(1) as f32;
     let key_gap = if keys.is_empty() { 0.0 } else { NAME_GAP };
     let about_full = tip
         .about
@@ -287,30 +285,8 @@ fn paint(c: &Canvas, text: &Text, look: &Look, scale: f32) {
         w: look.w,
         h: look.h,
     };
-    // A soft shadow: rings growing out from under the plate, as the dropdown's.
-    let shadow = if pal.light { 0.035 } else { 0.10 };
-    for i in 1..=4 {
-        let g = i as f32 * 2.0;
-        let r = FRect {
-            x: plate.x - g / 2.0,
-            y: plate.y - g / 2.0 + 2.0,
-            w: plate.w + g,
-            h: plate.h + g,
-        };
-        set(0x000000, shadow);
-        unsafe { rt.FillRoundedRectangle(&rounded(r, RADIUS + g / 2.0), brush) };
-    }
-    set(pal.popover, 1.0);
-    unsafe { rt.FillRoundedRectangle(&rounded(plate, RADIUS), brush) };
-    let hair = FRect {
-        x: plate.x + 0.5,
-        y: plate.y + 0.5,
-        w: plate.w - 1.0,
-        h: plate.h - 1.0,
-    };
-    set(pal.border >> 8, (pal.border & 0xFF) as f32 / 255.0 * 2.0);
+    paint_plate(&rt, brush, plate, RADIUS, &pal);
     unsafe {
-        rt.DrawRoundedRectangle(&rounded(hair, RADIUS - 0.5), brush, 1.0, None);
         rt.PushAxisAlignedClip(
             &D2D_RECT_F {
                 left: plate.x,
@@ -533,52 +509,57 @@ unsafe extern "system" fn tip_proc(
     match msg {
         WM_ERASEBKGND => LRESULT(1),
         WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
+        WM_NCDESTROY => {
+            // The owner went and took the plate with it: nothing is up now.
+            let out = with(|s| {
+                (s.window == Some(hwnd)).then(|| {
+                    s.window = None;
+                    s.pending = None;
+                    s.machine.hide()
+                })
+            })
+            .flatten();
+            if let Some(out) = out {
+                apply(out);
+            }
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+        }
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
     }
 }
 
-fn register() -> bool {
-    let Ok(module) = (unsafe { GetModuleHandleW(None) }) else {
-        return false;
-    };
-    let cursor = unsafe { LoadCursorW(None, IDC_ARROW) }.unwrap_or_default();
-    let wc = WNDCLASSEXW {
-        cbSize: size_of::<WNDCLASSEXW>() as u32,
-        lpfnWndProc: Some(tip_proc),
-        hInstance: module.into(),
-        hCursor: cursor,
-        lpszClassName: CLASS,
-        ..Default::default()
-    };
-    unsafe {
-        if RegisterClassExW(&wc) == 0 {
-            return windows::core::Error::from_thread().code()
-                == ERROR_CLASS_ALREADY_EXISTS.to_hresult();
-        }
-    }
-    true
-}
-
-/// Puts the plate for `id` on screen, in place of any that is up.
+/// Puts the plate for `id` on screen, in place of any that is up. When it
+/// cannot, the machine is reset: it must not think a tip is up.
 fn show(id: TipId) {
     destroy_window();
-    let Some(Some(target)) = with(|s| s.pending.take_if(|(p, _)| *p == id).map(|(_, t)| t)) else {
-        return;
-    };
-    if !ON_SCREEN {
+    if try_show(id).is_some() {
         return;
     }
+    let out = with(|s| {
+        s.pending = None;
+        s.machine.hide()
+    });
+    if let Some(out) = out {
+        apply(out);
+    }
+}
+
+fn try_show(id: TipId) -> Option<()> {
+    let target = with(|s| s.pending.take_if(|(p, _)| *p == id).map(|(_, t)| t))??;
+    if !ON_SCREEN {
+        return Some(());
+    }
     let owner = HWND(id.owner as *mut _);
-    if !unsafe { IsWindow(Some(owner)) }.as_bool() || !register() {
-        return;
+    if !unsafe { IsWindow(Some(owner)) }.as_bool() || !register_class(CLASS, tip_proc) {
+        return None;
     }
     let hk = HOTKEYS.with(Cell::get).unwrap_or_else(Hotkeys::none);
     let keys = resolve_keys(&target.tip.keys, &hk, i18n::lang());
-    let Ok(gfx) = Gfx::new() else { return };
+    let Ok(gfx) = Gfx::new() else { return None };
     let gfx = Rc::new(gfx);
     let text = Text::new(gfx.dwrite.clone(), FONT.with(Cell::get));
     let Some(look) = compose(&text, &target.tip, keys) else {
-        return;
+        return None;
     };
     let a = target.anchor;
     let (work, scale) = monitor_at((a.x + a.w / 2, a.y + a.h / 2));
@@ -589,15 +570,11 @@ fn show(id: TipId) {
     let origin = (plate.x - margin, plate.y - margin);
     let size = (plate.w + 2 * margin, plate.h + 2 * margin);
     let Ok(module) = (unsafe { GetModuleHandleW(None) }) else {
-        return;
+        return None;
     };
     let hwnd = unsafe {
         CreateWindowExW(
-            WS_EX_LAYERED
-                | WS_EX_TRANSPARENT
-                | WS_EX_NOACTIVATE
-                | WS_EX_TOOLWINDOW
-                | WS_EX_TOPMOST,
+            WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
             CLASS,
             w!("Vale tooltip"),
             WS_POPUP,
@@ -611,12 +588,13 @@ fn show(id: TipId) {
             None,
         )
     };
-    let Ok(hwnd) = hwnd else { return };
-    let painted = Canvas::with_gfx(gfx, size)
-        .and_then(|canvas| canvas.paint_with(hwnd, origin, 0.0, 255, |c| paint(c, &text, &look, scale)));
+    let Ok(hwnd) = hwnd else { return None };
+    let painted = Canvas::with_gfx(gfx, size).and_then(|canvas| {
+        canvas.paint_with(hwnd, origin, 0.0, 255, |c| paint(c, &text, &look, scale))
+    });
     if painted.is_err() {
         let _ = unsafe { DestroyWindow(hwnd) };
-        return;
+        return None;
     }
     unsafe {
         let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
@@ -631,6 +609,7 @@ fn show(id: TipId) {
         );
     }
     let _ = with(|s| s.window = Some(hwnd));
+    Some(())
 }
 
 #[cfg(test)]
@@ -676,5 +655,62 @@ mod tests {
     fn id_of_is_stable() {
         assert_eq!(id_of(&3u8), id_of(&3u8));
         assert_ne!(id_of(&3u8), id_of(&4u8));
+    }
+
+    fn fake(n: usize) -> HWND {
+        HWND(n as *mut _)
+    }
+
+    fn target(id: u64) -> Option<Target> {
+        Some(Target {
+            id,
+            anchor: Rect::new(10, 10, 20, 20),
+            side: Side::Auto,
+            tip: Tip::short(Key::SearchBack),
+        })
+    }
+
+    fn current() -> Option<TipId> {
+        with(|s| s.machine.current()).flatten()
+    }
+
+    #[test]
+    fn another_owner_reporting_nothing_leaves_the_tip() {
+        let (a, b) = (fake(0x1000), fake(0x2000));
+        hover(a, target(1));
+        let id = current();
+        assert_eq!(
+            id,
+            Some(TipId {
+                owner: 0x1000,
+                id: 1
+            })
+        );
+        hover(b, None);
+        assert_eq!(current(), id);
+        hover(a, None);
+        assert_eq!(current(), None);
+    }
+
+    #[test]
+    fn hide_and_pressed_act_only_for_the_tips_owner() {
+        let (a, b) = (fake(0x1000), fake(0x2000));
+        hover(a, target(1));
+        let id = current();
+        hide(b);
+        pressed(b);
+        assert_eq!(current(), id);
+        pressed(a);
+        assert_eq!(current(), id, "a press keeps the id, blocking until leave");
+        hide(a);
+        assert_eq!(current(), None);
+    }
+
+    #[test]
+    fn hide_all_clears_whatever_the_owner() {
+        hover(fake(0x1000), target(1));
+        assert!(current().is_some());
+        hide_all();
+        assert_eq!(current(), None);
     }
 }

@@ -9021,6 +9021,9 @@ fn deliver_cli_key(key: InputKey) {
 /// shell may pump messages). If the app is busy, the timer fires again.
 fn run_shortcut() {
     if let Some(action) = with_app(App::take_shortcut).flatten() {
+        // The capture overlay and the picker start here, a moment after they
+        // were queued: a tip that began waiting in between must not cover them.
+        crate::ui::tooltip::hide_all();
         shortcuts::run(action);
     }
 }
@@ -9130,6 +9133,7 @@ fn on_system_theme_changed() {
     tray::refresh_menu_theme();
     let changed = theme::set_system_light(theme::read_system_light());
     if changed && theme::current().window == theme::WindowTheme::System {
+        crate::ui::tooltip::hide_all();
         editor::restyle_open_editor();
         crate::shot_edit::window::restyle_open();
         settings::restyle();
