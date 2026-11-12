@@ -1434,6 +1434,29 @@ keys! {
     TipListTucked => "Diselipkan ke tepi", "Tucked to the edge";
     TipListReminder => "Ada pengingat", "Has a reminder";
     TipListReminderPast => "Pengingat sudah berbunyi", "Reminder went off";
+
+    // Tooltips: the closed notch and the open panel's dock and header.
+    TipNoticeClose => "Tutup", "Dismiss";
+    TipNoticeCloseAbout => "Notifikasi ini hilang tanpa membuka apa pun.", "Closes this notice without opening anything.";
+    TipPcAudioMute => "Bisukan suara PC", "Mute PC audio";
+    TipPcAudioUnmute => "Nyalakan suara PC", "Unmute PC audio";
+    TipSettings => "Pengaturan", "Settings";
+    TipSettingsAbout => "Buka jendela Pengaturan Vale.", "Opens Vale's Settings.";
+    TipPageCalendar => "Acara Google Calendar per hari, minggu, atau bulan.", "Your Google Calendar by day, week or month.";
+    TipPagePomodoro => "Timer fokus dan istirahat.", "Focus and break timer.";
+    TipPageRecord => "Rekam audio atau layar; rekaman terakhir dan transkripnya.", "Record audio or the screen; recent recordings and their transcripts.";
+    TipPageReminders => "Pengingat dengan jam.", "Reminders with a time.";
+    TipPageNotes => "Catatan, bisa ditempel ke desktop.", "Notes you can stick to the desktop.";
+    TipPageMedia => "Lagu yang diputar dan liriknya.", "What is playing, with lyrics.";
+    TipPageMixer => "Volume utama dan per aplikasi.", "Master and per-app volume.";
+    TipPageClipboard => "Riwayat yang kamu salin, bisa dicari dan disematkan.", "What you copied, with search and pins.";
+    TipPageNotifications => "Notifikasi Windows yang masuk selama Vale berjalan.", "Windows notifications that came while Vale ran.";
+    TipPageShelf => "Tempat singgah file, juga dari dan ke HP.", "A holding place for files, to and from your phone.";
+    TipPageSystem => "CPU, RAM, disk, aplikasi tersibuk, dan bersih-bersih.", "CPU, RAM, disks, the busiest apps and clean-up.";
+    TipPageDevices => "Flashdisk, disk luar, dan kartu memori, lepas dengan aman.", "Flash drives, external disks and memory cards, eject safely.";
+    TipPageCli => "Terminal kecil yang mulai di folder Explorer kamu.", "A small terminal that starts in your Explorer folder.";
+    TipPageArrange => "Atur jendela yang terbuka dengan template.", "Lay out your open windows with templates.";
+    TipPageShortcuts => "Alat Windows, lompat ke halaman, dan pintasan kamu sendiri.", "Windows tools, page jumps and your own shortcuts.";
 }
 
 /// `key` in `lang`.

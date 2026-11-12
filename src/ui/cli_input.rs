@@ -259,6 +259,10 @@ unsafe extern "system" fn input_proc(
             return LRESULT(code.0 | DLGC_WANTALLKEYS as isize);
         }
         WM_KEYDOWN => {
+            // A key press: the island's tooltip goes (the island is the parent).
+            if let Ok(island) = unsafe { GetParent(hwnd) } {
+                crate::ui::tooltip::hide(island);
+            }
             let key = (wparam.0 & 0xFFFF) as u16;
             let copy_free = key == VK_C.0 && ctrl_down() && {
                 let (a, b) = selection(hwnd);

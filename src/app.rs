@@ -122,6 +122,8 @@ use crate::ui::motion::{
 };
 use crate::ui::notch_fill;
 use crate::ui::panel_layout::{CliHead, STRIP_H, cli_layout};
+use crate::ui::panel_tips::{self, TipCtx};
+use crate::ui::tooltip;
 use crate::ui::render::{
     CleanerView, CliView, DevicesView, FolderMenuView, Frame, MoleView, NoticeCloseView, Progress,
     RecFrame, RecordView, Renderer, RobotFrame, SearchView, SystemView,
@@ -555,6 +557,7 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
             close_fade: CloseFade::settled(0.0, Instant::now()),
             close_hot: false,
             close_ptr: None,
+            tip_on: None,
             slot_keep: None,
             slot_share: SlotShare::default(),
             leaving: None,
@@ -933,6 +936,14 @@ fn release_single_instance() {
     }
 }
 
+/// The island's tooltip target as the last pointer move gave it: the hit,
+/// where it was on screen (px) and the view it was in.
+struct IslandTip {
+    hit: Hit,
+    anchor: crate::capture::Rect,
+    view: View,
+}
+
 struct App {
     hwnd: HWND,
     /// Taken out only while `reposition` runs, so no borrow is held across it.
@@ -989,6 +1000,9 @@ struct App {
     /// registers the ✕, since a pointer resting where the ✕ fades in sends no
     /// move of its own.
     close_ptr: Option<LPARAM>,
+    /// What the last move gave the tooltip (`tip_under`); `None` when it gave
+    /// nothing. The tip goes once this no longer holds (`tip_check`).
+    tip_on: Option<IslandTip>,
     /// The toast whose logo the slot shows, kept while the island shrinks
     /// back so the logo fades out instead of vanishing.
     slot_keep: Option<Notice>,
@@ -4044,6 +4058,7 @@ impl App {
         // captions are off, and nothing sent when nothing changed.
         self.captions_card_sync();
         self.sync_settings();
+        self.tip_check();
     }
 
     fn animating(&self) -> bool {
@@ -4813,8 +4828,10 @@ impl App {
     }
 
     fn set_front(&mut self, front: bool) {
-        if let Some(win) = self.win.as_mut() {
-            win.set_front(front);
+        let sank = self.win.as_mut().is_some_and(|win| win.set_front(front)) && !front;
+        // Sunk behind the windows: a tip would float over what covers it.
+        if sank {
+            self.tip_hide();
         }
     }
 
@@ -5810,6 +5827,70 @@ impl App {
         }
     }
 
+    /// The tooltip target under the pointer at `lparam` (client px): a hit
+    /// with a tip, where the last frame drew it. `WM_MOUSEMOVE` gives it to
+    /// the tooltip once the app is let go. Nothing during a slider drag, on
+    /// the eyes or the drag margin, and nothing on a panel still opening or a
+    /// page sliding: such a frame registers no click regions.
+    fn tip_under(&mut self, lparam: LPARAM) -> Option<tooltip::Target> {
+        self.tip_on = None;
+        if self.mixer_drag.is_some() || self.peek.is_shrunk() || !self.on_island(lparam) {
+            return None;
+        }
+        // The body is most of the island: no state is read for it.
+        let hit = self.hit_at(lparam).filter(|h| *h != Hit::Body)?;
+        let tip = panel_tips::tip_for(&hit, &self.tip_ctx())?;
+        let anchor = self.tip_anchor(&hit)?;
+        let target = tooltip::Target {
+            id: panel_tips::tip_id(&hit),
+            anchor,
+            side: panel_tips::side_for(&hit),
+            tip,
+        };
+        self.tip_on = Some(IslandTip {
+            hit,
+            anchor,
+            view: self.state.view(),
+        });
+        Some(target)
+    }
+
+    /// What the island's tips read of the state.
+    fn tip_ctx(&self) -> TipCtx {
+        let muted = self.state.rec().map_or([false; 2], |r| r.muted);
+        TipCtx {
+            rec_muted_mic: muted[0],
+            rec_muted_system: muted[1],
+        }
+    }
+
+    /// Where the last frame drew `hit`, on screen (px): the window's origin
+    /// plus the region at the window's scale, as the pointer was mapped.
+    fn tip_anchor(&self, hit: &Hit) -> Option<crate::capture::Rect> {
+        let win = self.win.as_ref()?;
+        let r = self.renderer.region_of(hit)?;
+        Some(panel_tips::anchor_px(win.screen_origin(), r, win.scale()))
+    }
+
+    /// The island's tip goes (the pointer left, a wheel, a sink behind the
+    /// windows).
+    fn tip_hide(&mut self) {
+        self.tip_on = None;
+        tooltip::hide(self.hwnd);
+    }
+
+    /// After a state change or a frame: the tip goes once its view changed
+    /// (the panel closed, a page turned, fullscreen), the notch shrank to
+    /// the eyes, or its target is not where it was (a sliding page or a
+    /// moving strip draws no regions, a sub-view swap draws others).
+    fn tip_check(&mut self) {
+        let Some(on) = &self.tip_on else { return };
+        if on.view != self.state.view() || self.eyes || self.tip_anchor(&on.hit) != Some(on.anchor)
+        {
+            self.tip_hide();
+        }
+    }
+
     /// The pointer's first move over the island: Bata wakes, looks happy and
     /// lifts before the dwell opens the panel; hover and leave tracking start.
     fn begin_hover(&mut self) {
@@ -5857,6 +5938,7 @@ impl App {
         // not the hover dwell had passed.
         self.set_toast_pointer(false);
         self.track_close_hot(None);
+        self.tip_hide();
         self.click.clear();
         self.dock_leave();
         self.arrange_hover(None);
@@ -6055,6 +6137,7 @@ impl App {
     /// EDIT controls with `ES_AUTOHSCROLL` are hidden and owner-drawn), so
     /// nothing else claims the flick.
     fn on_hwheel(&mut self, delta: i32, lparam: LPARAM) {
+        self.tip_hide();
         let route = gestures::hwheel_route(
             &self.state.view(),
             self.state.cli_menu(),
@@ -6099,6 +6182,7 @@ impl App {
     /// pages through the panel anywhere else. `lparam` holds the pointer in
     /// screen coordinates.
     fn on_wheel(&mut self, delta: i32, lparam: LPARAM) {
+        self.tip_hide();
         // The eyes are no notch: a wheel over them turns nothing.
         if self.peek.is_shrunk() {
             return;
@@ -7118,6 +7202,9 @@ impl App {
         {
             input.set_ime_caret(caret);
         }
+        // The regions are this frame's now: a tip whose target moved or went
+        // goes with it.
+        self.tip_check();
         // The ✕ may have just been registered under a resting pointer: light
         // its disc now instead of at the next move. Settles in one more frame
         // (the two then agree), so it cannot loop.
@@ -9277,6 +9364,11 @@ unsafe extern "system" fn wnd_proc(
         }
         WM_MOUSEMOVE => {
             with_app(|app| app.on_mouse_move(lparam));
+            // After the app is let go: the tooltip may make a window of its
+            // own. A move while the app is held tells it nothing.
+            if let Some(tip) = with_app(|app| app.tip_under(lparam)) {
+                tooltip::hover(hwnd, tip);
+            }
             // A card pulled off the shelf: the drag blocks until the button
             // is let go, so it starts outside the app borrow.
             if let Some(path) = with_app(|app| app.shelf_drag_start(wparam, lparam)).flatten() {
@@ -9299,6 +9391,7 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
         WM_MBUTTONDOWN => {
+            tooltip::pressed(hwnd);
             with_app(|app| app.on_middle_press(lparam));
             LRESULT(0)
         }
@@ -9307,6 +9400,7 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
         WM_RBUTTONDOWN => {
+            tooltip::pressed(hwnd);
             with_app(App::on_right_press);
             LRESULT(0)
         }
@@ -9346,6 +9440,8 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
         WM_HOTKEY => {
+            // A key press: the island's tip goes, whatever the key does.
+            tooltip::hide(hwnd);
             let wm = wparam.0 as i32;
             if is_countdown_esc(wm) {
                 // A press while the app is borrowed still cancels (the
@@ -9410,6 +9506,7 @@ unsafe extern "system" fn wnd_proc(
             // does not lose it to a press here: the press only closes it, as
             // a native menu's would. Also one Settings opened: it keeps the
             // activation while the island is pressed.
+            tooltip::pressed(hwnd);
             if crate::ui::menu_pop::is_open() {
                 crate::ui::menu_pop::close();
                 return LRESULT(0);
