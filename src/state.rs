@@ -599,7 +599,7 @@ impl IslandState {
                 self.rec = status;
             }
             Event::RecRecent(list, _) | Event::RecMarks(list) => self.rec_recent = list,
-            Event::VideoRecent(list) | Event::VideoMarks(list) => self.rec_videos = list,
+            Event::VideoRecent(list, _) | Event::VideoMarks(list) => self.rec_videos = list,
             Event::ScreenCountdown(n) => {
                 let begins = self.screen_countdown.is_none() && n.is_some();
                 let ends = self.screen_countdown.is_some() && n.is_none();
@@ -10990,7 +10990,7 @@ mod tests {
         let t0 = Instant::now();
         let mut s = st();
         s.apply(Event::RecRecent(vec![rec_entry("a.m4a")], 0), t0);
-        s.apply(Event::VideoRecent(vec![rec_entry(VIDEO_FILE)]), t0);
+        s.apply(Event::VideoRecent(vec![rec_entry(VIDEO_FILE)], 0), t0);
         assert_eq!(s.rec_list(), [rec_entry("a.m4a")], "the Audio tab's list");
         open_on(&mut s, Page::Record, t0);
         s.apply(Event::Click(Hit::RecTab(RecKind::Screen)), t0);
@@ -11016,7 +11016,7 @@ mod tests {
         // The audio list was not touched.
         let mut s = st();
         s.apply(Event::RecRecent(vec![rec_entry("a.m4a")], 0), t0);
-        s.apply(Event::VideoRecent(vec![rec_entry(VIDEO_FILE)]), t0);
+        s.apply(Event::VideoRecent(vec![rec_entry(VIDEO_FILE)], 0), t0);
         open_on(&mut s, Page::Record, t0);
         assert_eq!(
             s.apply(Event::Click(Hit::RecOpen(0)), t0),

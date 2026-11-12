@@ -153,6 +153,8 @@ pub(super) struct ScreenState {
     /// The last scan of the video folder as it came (the marks of the queue
     /// go over a copy of it).
     pub(super) videos: Vec<RecEntry>,
+    /// Every video in the folder, not just the listed ones.
+    pub(super) total: usize,
     /// The Rekam page was on screen at the last refresh (a new showing
     /// re-reads the folder).
     page_shown: bool,
@@ -187,6 +189,7 @@ impl Default for ScreenState {
             zoom: ZoomState::default(),
             wheel: None,
             videos: Vec::new(),
+            total: 0,
             page_shown: false,
             starting: None,
             stopping: None,
@@ -1298,7 +1301,7 @@ impl App {
                     skip.as_deref(),
                     &decode::probe_duration_ms,
                 );
-                let _ = tx.send(Event::VideoRecent(list.entries));
+                let _ = tx.send(Event::VideoRecent(list.entries, list.total));
                 wake();
             });
     }

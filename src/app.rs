@@ -1595,9 +1595,10 @@ impl App {
                     self.rec.total = total;
                     Event::RecRecent(self.transcribe_marks(list), total)
                 }
-                Event::VideoRecent(list) => {
+                Event::VideoRecent(list, total) => {
                     self.screen.videos = list.clone();
-                    Event::VideoRecent(self.transcribe_marks(list))
+                    self.screen.total = total;
+                    Event::VideoRecent(self.transcribe_marks(list), total)
                 }
                 Event::SearchIndex(apps) => {
                     self.on_search_index(apps);
@@ -11535,7 +11536,7 @@ mod tests {
         let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 11).unwrap();
         let mut s = IslandState::new(today, Default::default());
         s.apply(Event::RecRecent(vec![entry("a.m4a"), entry("b.m4a")], 2), t0);
-        s.apply(Event::VideoRecent(vec![entry("a.mp4"), entry("b.mp4")]), t0);
+        s.apply(Event::VideoRecent(vec![entry("a.mp4"), entry("b.mp4")], 2), t0);
         s.apply(Event::Hover(true), t0);
         let at = |p: Page| Page::ALL.iter().position(|q| *q == p).unwrap() as i32;
         s.apply(Event::Wheel(-120 * (at(Page::Record) - at(s.page()))), t0);

@@ -416,7 +416,8 @@ pub enum Event {
     /// resumed or ended (`None`); the notch shows `View::RecordCompact`
     /// while one runs.
     RecStatus(Option<RecStatus>),
-    /// The newest recordings found in the folder (the page shows five).
+    /// The newest recordings found in the folder (at most `RECENT_LIMIT`;
+    /// the page shows fewer) and how many the folder holds in all.
     RecRecent(Vec<RecEntry>, usize),
     /// The same list with the queue's transcript marks over it, put on show
     /// again after a mark changed (`App` keeps the unmarked scan apart).
@@ -431,8 +432,8 @@ pub enum Event {
     /// `View::ScreenCountdown` meanwhile.
     ScreenCountdown(Option<u8>),
     /// The newest screen recordings found in the video folder, for the
-    /// Rekam page's Layar tab.
-    VideoRecent(Vec<RecEntry>),
+    /// Rekam page's Layar tab, and how many the folder holds in all.
+    VideoRecent(Vec<RecEntry>, usize),
     /// The same list with the queue's transcript marks over it.
     VideoMarks(Vec<RecEntry>),
     /// What a transcript job's thread reported, with the job id (`App`
