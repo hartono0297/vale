@@ -26,7 +26,7 @@ use std::os::windows::fs::MetadataExt;
 use chrono::{Local, NaiveDate, NaiveDateTime};
 
 use super::screen_page::{busy_notice, busy_with_other};
-use super::{App, WM_APP_EVENT, WM_APP_REC_DEVICE, notif_open, poster};
+use super::{App, WM_APP_EVENT, WM_APP_REC_DEVICE, WM_APP_REC_QUALITY, notif_open, poster};
 use crate::i18n::{self, Key, Lang, text};
 use crate::model::{
     Event, Hit, Notice, NoticeKind, Page, RecEntry, RecKind, RecNote, RecSources, RecStatus,
@@ -73,6 +73,8 @@ pub(super) struct RecState {
     /// recording uses, or the chosen ones (the Windows default when none)
     /// while idle. Read when the page opens and when a choice changes.
     devices: [String; 2],
+    /// Whether the device chosen for `[mic, system]` is gone from Windows.
+    missing: [bool; 2],
     /// The devices the starting recording was told to use, `[mic, system]`:
     /// a pick made while it was starting is applied once it runs.
     started_with: [Option<String>; 2],
@@ -106,6 +108,11 @@ impl RecState {
     /// The device names for the Rekam page.
     pub fn devices(&self) -> &[String; 2] {
         &self.devices
+    }
+
+    /// Which chosen devices (`[mic, system]`) are gone.
+    pub fn missing(&self) -> [bool; 2] {
+        self.missing
     }
 
     /// A word of `session` is for the newest session (older ones are
@@ -365,6 +372,12 @@ pub(crate) fn source_lost_notice(lang: Lang, source: Source) -> Notice {
         text(lang, Key::RecKeepsGoing).into(),
         NoticeKind::RecInfo,
     )
+}
+
+/// Whether the device the user chose (`chosen`, `None` follows Windows) is
+/// gone: it is chosen but `found` says Windows no longer lists it.
+pub(crate) fn device_missing(chosen: Option<&str>, found: bool) -> bool {
+    chosen.is_some() && !found
 }
 
 /// A source moved to another device by itself: the Windows default changed,
@@ -1023,6 +1036,12 @@ impl App {
             }),
         };
         self.rec.devices = names;
+        // A chosen device that Windows no longer lists gets the page's
+        // "not found" line. A running recorder already fell back.
+        self.rec.missing = [Source::Mic, Source::System].map(|source| {
+            let chosen = self.config.recording.device(source);
+            device_missing(chosen, chosen.is_some_and(|id| devices::name_of(id).is_some()))
+        });
     }
 
     /// The Rekam page's device name was clicked: the dropdown opens from the
@@ -1039,6 +1058,31 @@ impl App {
                 LPARAM(0),
             )
         };
+    }
+
+    /// The quality row of the Layar tab was clicked: the dropdown opens from
+    /// the main loop, like the device menu.
+    pub(super) fn rec_open_quality_menu(&mut self) {
+        use windows::Win32::Foundation::{LPARAM, WPARAM};
+        use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
+        let _ = unsafe { PostMessageW(Some(self.hwnd), WM_APP_REC_QUALITY, WPARAM(0), LPARAM(0)) };
+    }
+
+    /// The quality row as last drawn, screen px: where its dropdown opens.
+    pub(super) fn rec_quality_anchor(&self) -> Option<crate::capture::Rect> {
+        self.rec_anchor_of(&Hit::RecQuality)
+    }
+
+    /// The quality dropdown went: a pick is saved like Settings' (refused
+    /// while a recording is busy).
+    pub(super) fn rec_quality_done(&mut self, pick: Option<crate::ui::quality_menu::QualityPick>) {
+        use crate::ui::quality_menu::QualityPick;
+        match pick {
+            Some(QualityPick::Quality(q)) if !self.rec.engaged() => self.screen_set_quality(q),
+            Some(QualityPick::Fps(fps)) if !self.rec.engaged() => self.screen_set_fps(fps),
+            _ => {}
+        }
+        self.refresh(Instant::now());
     }
 
     /// The device name of `source` on the Rekam page as last drawn, screen
@@ -1315,6 +1359,13 @@ mod tests {
         let none = scan_recent(&dir, RecKind::Audio, Lang::Id, today(), 20, None, &|_| None).entries;
         assert!(none.iter().find(|e| e.path.ends_with("bare.m4a")).unwrap().duration.is_zero());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_chosen_device_that_is_gone_is_flagged_missing() {
+        assert!(device_missing(Some("id"), false));
+        assert!(!device_missing(Some("id"), true));
+        assert!(!device_missing(None, false));
     }
 
     #[test]

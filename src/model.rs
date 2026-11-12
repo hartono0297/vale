@@ -1047,6 +1047,8 @@ pub enum Effect {
     RecMute(crate::recorder::Source),
     /// Open the device menu of a source.
     RecDevice(crate::recorder::Source),
+    /// Open the video quality menu of the Layar tab.
+    RecQualityMenu,
     RecSources(RecSources),
     RecReveal(PathBuf),
     RecOpenFolder,

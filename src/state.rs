@@ -2257,9 +2257,18 @@ impl IslandState {
                     self.screen_discard_armed = shown.then_some(now + CLEAN_CONFIRM);
                 }
             }
-            // The redesigned page's "Simpan" and "Kualitas": the redesign's
-            // behaviour task gives them their effect.
-            Hit::ScreenDiscardKeep | Hit::RecQuality => {}
+            // "Simpan" on the armed confirm: the click already disarmed
+            // "Buang" above, nothing else happens.
+            Hit::ScreenDiscardKeep => {}
+            // "Kualitas" of the idle Layar tab opens its menu.
+            Hit::RecQuality => {
+                if self.view() == View::Panel(Page::Record)
+                    && self.rec.is_none()
+                    && self.rec_tab == RecKind::Screen
+                {
+                    effects.push(Effect::RecQualityMenu);
+                }
+            }
             Hit::RecPause => {
                 if self.view() == View::Panel(Page::Record) && self.rec.is_some() {
                     effects.push(Effect::RecPause);
@@ -8542,6 +8551,36 @@ mod tests {
             s.apply(Event::Click(Hit::RecToggle), t0),
             vec![Effect::RecToggle]
         );
+    }
+
+    #[test]
+    fn the_quality_row_opens_its_menu() {
+        let t0 = Instant::now();
+        let mut s = st();
+        assert_eq!(s.apply(Event::Click(Hit::RecQuality), t0), vec![], "off page");
+        open_on(&mut s, Page::Record, t0);
+        assert_eq!(s.apply(Event::Click(Hit::RecQuality), t0), vec![], "Audio tab");
+        s.apply(Event::Click(Hit::RecTab(RecKind::Screen)), t0);
+        assert_eq!(
+            s.apply(Event::Click(Hit::RecQuality), t0),
+            vec![Effect::RecQualityMenu]
+        );
+    }
+
+    #[test]
+    fn keep_disarms_the_discard() {
+        let t0 = Instant::now();
+        let mut s = st();
+        open_on(&mut s, Page::Record, t0);
+        let mut status = rec_status(t0);
+        status.kind = RecKind::Screen;
+        s.apply(Event::RecStatus(Some(status)), t0);
+        assert_eq!(s.apply(Event::Click(Hit::ScreenDiscard), t0), vec![]);
+        assert!(s.screen_discard_armed());
+        assert_eq!(s.apply(Event::Click(Hit::ScreenDiscardKeep), t0), vec![]);
+        assert!(!s.screen_discard_armed());
+        // A fresh "Buang" arms again instead of discarding.
+        assert_eq!(s.apply(Event::Click(Hit::ScreenDiscard), t0), vec![]);
     }
 
     #[test]
