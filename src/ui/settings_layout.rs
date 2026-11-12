@@ -21,7 +21,7 @@ use crate::config::{
 use crate::hotkey::{Hotkey, HotkeyId, Hotkeys};
 use crate::i18n::{
     Key, Lang, text, tr_offer, tr_progress, tr_used, update_available, update_downloading,
-    update_installed, version_label,
+    update_installed, version_label, video_estimate_line,
 };
 use crate::model::{Page, PomoField};
 use crate::notif::store::{CAP_STEP, MAX_CAP as NOTIF_MAX, MIN_CAP as NOTIF_MIN};
@@ -36,7 +36,8 @@ use crate::ui::icons::Icon;
 use crate::ui::robot::{Motion, SLEEP_MAX, SLEEP_MIN};
 use crate::model::RecSources;
 use crate::recorder::Source;
-use crate::recorder::prefs::{RecordingPrefs, folder_label as rec_folder_label};
+use crate::screenrec::plan::{estimate_mib_per_minute, output_size};
+use crate::recorder::prefs::{RecordingPrefs, VideoQuality, folder_label as rec_folder_label};
 use crate::captions::prefs::CaptionPrefs;
 use crate::transcribe::catalog::{self, ENGINE, MODELS, Model, VAD, mb};
 use crate::transcribe::download::Progress;
@@ -450,6 +451,8 @@ pub enum Hit {
     RecSources(RecSources),
     RecFolderOpen,
     RecFolderChange,
+    /// Fitur -> Rekam layar: the video quality (the size cap).
+    VideoQuality(VideoQuality),
     /// Fitur -> Rekam layar: a frame rate (30 or 60), "Buka" (the video
     /// folder in Explorer) and "Ganti" (the folder picker).
     VideoFps(u32),
@@ -738,6 +741,8 @@ pub enum Group {
     WidgetFullscreen,
     /// Fitur -> Rekaman -> Sumber suara.
     RecSources,
+    /// Fitur -> Rekam layar -> Kualitas video.
+    VideoQuality,
     /// Fitur -> Rekam layar -> Gambar per detik.
     VideoFps,
     /// Fitur -> Transkrip -> Bahasa.
@@ -4510,6 +4515,9 @@ pub const REC_DEFAULT_FOLDER: &str = r"Documents\Vale\Rekaman";
 /// How the video folder shows when none is chosen.
 pub const VIDEO_DEFAULT_FOLDER: &str = r"Videos\Vale";
 
+/// The choices of "Kualitas video", in the control's order.
+pub const VIDEO_QUALITY_CHOICES: [VideoQuality; 4] = VideoQuality::ALL;
+
 /// The frame rates of "Gambar per detik", in the control's order.
 pub const VIDEO_FPS_CHOICES: [u32; 2] = [30, 60];
 
@@ -4602,22 +4610,55 @@ fn recording_card(b: &mut Builder, s: &State) {
     b.row_text(card, rows[4], b.t(Key::RecSettingsFolder), desc, false, x);
 }
 
-/// "Rekam layar" (Fitur): the frame rate of a screen recording, the cursor
-/// highlight and click ripples switches, and the folder the videos go to.
-/// (The hotkey is in the Tombol pintas section.)
+/// The size a recording takes on the screen Settings is on: the primary
+/// monitor, else the first, else a 1920x1080 stand-in (no list yet).
+fn estimate_source(monitors: &[MonitorRow]) -> (u32, u32) {
+    monitors
+        .iter()
+        .find(|m| m.primary)
+        .or(monitors.first())
+        .map_or((1920, 1080), |m| (m.w.max(1) as u32, m.h.max(1) as u32))
+}
+
+/// "Rekam layar" (Fitur): the size cap of a screen recording with what it
+/// comes to in pixels and MB a minute, its frame rate, the cursor highlight
+/// and click ripples switches, and the folder the videos go to. (The hotkey
+/// is in the Tombol pintas section.)
 fn screen_card(b: &mut Builder, s: &State) {
     titled(b, Key::ScreenSettingsTitle);
-    let card = b.card(4.0 * ROW_H);
-    let rows = [0.0, 1.0, 2.0, 3.0].map(|i| card.y + i * ROW_H);
+    let card = b.card(5.0 * ROW_H);
+    let rows = [0.0, 1.0, 2.0, 3.0, 4.0].map(|i| card.y + i * ROW_H);
     let cy = |y: f32| y + ROW_H / 2.0;
+    let quality = s.recording.video_quality;
+    let original = b.t(Key::ScreenSettingsQualityOriginal);
+    let items = VIDEO_QUALITY_CHOICES
+        .map(|q| {
+            let label = match q {
+                VideoQuality::Original => original.clone(),
+                VideoQuality::P1440 => "1440p".to_owned(),
+                VideoQuality::P1080 => "1080p".to_owned(),
+                VideoQuality::P720 => "720p".to_owned(),
+            };
+            (Hit::VideoQuality(q), label)
+        })
+        .to_vec();
+    let selected = index_of(&VIDEO_QUALITY_CHOICES, &quality);
+    let x = b.segmented(Group::VideoQuality, b.g.right, cy(rows[0]), items, selected);
+    let src = estimate_source(s.monitors);
+    let (w, h) = output_size(src.0, src.1, quality.max_short());
+    let mib = estimate_mib_per_minute(w, h, s.recording.video_fps);
+    let desc = Some((video_estimate_line(b.lang, w, h, mib), Tone::Secondary));
+    b.row_text(card, rows[0], b.t(Key::ScreenSettingsQuality), desc, false, x);
+    b.divider(card, rows[1]);
+
     let items = VIDEO_FPS_CHOICES
         .map(|fps| (Hit::VideoFps(fps), fps.to_string()))
         .to_vec();
     let selected = index_of(&VIDEO_FPS_CHOICES, &s.recording.video_fps);
-    let x = b.segmented(Group::VideoFps, b.g.right, cy(rows[0]), items, selected);
+    let x = b.segmented(Group::VideoFps, b.g.right, cy(rows[1]), items, selected);
     let desc = Some((b.t(Key::ScreenSettingsFpsDesc), Tone::Secondary));
-    b.row_text(card, rows[0], b.t(Key::ScreenSettingsFps), desc, false, x);
-    b.divider(card, rows[1]);
+    b.row_text(card, rows[1], b.t(Key::ScreenSettingsFps), desc, false, x);
+    b.divider(card, rows[2]);
 
     let switches = [
         (
@@ -4634,11 +4675,11 @@ fn screen_card(b: &mut Builder, s: &State) {
         ),
     ];
     for (i, (hit, on, title, desc)) in switches.into_iter().enumerate() {
-        let row = rows[1 + i];
+        let row = rows[2 + i];
         let x = b.toggle(hit, b.g.right, cy(row), on);
         let desc = Some((b.t(desc), Tone::Secondary));
         b.row_text(card, row, b.t(title), desc, false, x);
-        b.divider(card, rows[2 + i]);
+        b.divider(card, rows[3 + i]);
     }
 
     let (open, change) = (b.t(Key::RecSettingsOpen), b.t(Key::RecSettingsChange));
@@ -4648,7 +4689,7 @@ fn screen_card(b: &mut Builder, s: &State) {
     );
     let x = b.buttons(
         b.g.right,
-        cy(rows[3]),
+        cy(rows[4]),
         vec![
             (Hit::VideoFolderOpen, open, ButtonKind::Secondary, true, open_w),
             (Hit::VideoFolderChange, change, ButtonKind::Secondary, true, change_w),
@@ -4660,7 +4701,7 @@ fn screen_card(b: &mut Builder, s: &State) {
         .as_deref()
         .map_or_else(|| VIDEO_DEFAULT_FOLDER.to_owned(), rec_folder_label);
     let desc = Some((folder, Tone::Secondary));
-    b.row_text(card, rows[3], b.t(Key::ScreenSettingsFolder), desc, false, x);
+    b.row_text(card, rows[4], b.t(Key::ScreenSettingsFolder), desc, false, x);
 }
 
 /// "Caption langsung" (Fitur, after Transkrip): three switches, then a line
@@ -9366,11 +9407,30 @@ mod tests {
         }
     }
 
+    /// A monitor of `w`x`h`, primary or not, for the estimate.
+    fn sized(w: i32, h: i32, primary: bool) -> MonitorRow {
+        MonitorRow {
+            w,
+            h,
+            rect: crate::arrange::Rect::new(0, 0, w, h),
+            ..row(1, 0, primary, "Layar", "p")
+        }
+    }
+
+    /// Fitur scrolled to the "Rekam layar" card.
+    fn screen_layout(s: &State) -> Layout {
+        let mut s = s.clone();
+        s.scroll = 0.0;
+        let top = layout(Section::Features, &s, &Estimate);
+        s.scroll = top.cards[top.cards.len() - 4].y - FIRST_CARD_Y;
+        layout(Section::Features, &s, &Estimate)
+    }
+
     #[test]
-    fn the_screen_card_has_fps_the_two_switches_and_the_folder() {
+    fn the_screen_card_has_quality_fps_the_two_switches_and_the_folder() {
         for lang in [Lang::Id, Lang::En] {
             for (i, fps) in VIDEO_FPS_CHOICES.into_iter().enumerate() {
-                let mut s = State {
+                let s = State {
                     lang,
                     recording: RecordingPrefs {
                         video_fps: fps,
@@ -9380,10 +9440,7 @@ mod tests {
                     scroll: 0.0,
                     ..states()[0].clone()
                 };
-                // Scrolled to the card: the cards after it hold the page's end.
-                let top = layout(Section::Features, &s, &Estimate);
-                s.scroll = top.cards[top.cards.len() - 4].y - FIRST_CARD_Y;
-                let l = layout(Section::Features, &s, &Estimate);
+                let l = screen_layout(&s);
                 let (_, items, selected) = l.segmented(Group::VideoFps).expect("Gambar per detik");
                 assert_eq!(selected, i, "{lang:?} {fps}");
                 assert_eq!(
@@ -9394,11 +9451,12 @@ mod tests {
                     items.iter().map(|s| s.label.as_str()).collect::<Vec<_>>(),
                     ["30", "60"]
                 );
-                // Its own two-row card under its label, right after
+                // Its own five-row card under its label, right after
                 // "Rekaman", before "Transkrip" and "Pembersih".
                 let card = l.cards[l.cards.len() - 4];
-                assert_eq!(card.h, 4.0 * ROW_H);
+                assert_eq!(card.h, 5.0 * ROW_H);
                 for key in [
+                    Key::ScreenSettingsQuality,
                     Key::ScreenSettingsFps,
                     Key::ScreenSettingsFpsDesc,
                     Key::ScreenSettingsFolder,
@@ -9407,8 +9465,11 @@ mod tests {
                 }
                 let title = text(lang, Key::ScreenSettingsTitle).to_uppercase();
                 assert!(l.texts.iter().any(|t| t.text == title), "{lang:?}");
+                // The frame rate is in row 1, under the quality row.
                 for seg in items {
-                    assert!(seg.rect.y >= card.y && seg.rect.bottom() <= card.y + ROW_H);
+                    assert!(
+                        seg.rect.y >= card.y + ROW_H && seg.rect.bottom() <= card.y + 2.0 * ROW_H
+                    );
                 }
                 // The folder shows like the recordings one: parent and name.
                 assert!(l.texts.iter().any(|t| t.text == r"Video\Kerja"), "{lang:?}");
@@ -9418,7 +9479,7 @@ mod tests {
                     hits.iter().find(|(h, _)| *h == Hit::VideoFolderChange).expect("Ganti").1,
                 );
                 assert!(open.right() <= change.x, "Buka left of Ganti");
-                assert!(open.y >= card.y + 3.0 * ROW_H && change.bottom() <= card.bottom());
+                assert!(open.y >= card.y + 4.0 * ROW_H && change.bottom() <= card.bottom());
                 assert!(change.right() <= card.right());
                 // The two switches sit in rows 2 and 3, between the frame rate
                 // and the folder.
@@ -9426,9 +9487,9 @@ mod tests {
                     hits.iter().find(|(h, _)| *h == hit).expect("a switch").1
                 };
                 let (hl, rp) = (toggle(Hit::CursorHighlight), toggle(Hit::ClickRipples));
-                assert!(hl.y >= card.y + ROW_H && hl.bottom() <= card.y + 2.0 * ROW_H);
-                assert!(rp.y >= card.y + 2.0 * ROW_H && rp.bottom() <= card.y + 3.0 * ROW_H);
-                assert!(open.y >= card.y + 3.0 * ROW_H);
+                assert!(hl.y >= card.y + 2.0 * ROW_H && hl.bottom() <= card.y + 3.0 * ROW_H);
+                assert!(rp.y >= card.y + 3.0 * ROW_H && rp.bottom() <= card.y + 4.0 * ROW_H);
+                assert!(open.y >= card.y + 4.0 * ROW_H);
                 assert!(hl.right() <= card.right() && rp.right() <= card.right());
                 for key in [
                     Key::ScreenSettingsHighlight,
@@ -9446,6 +9507,102 @@ mod tests {
         assert!(l.texts.iter().any(|t| t.text == VIDEO_DEFAULT_FOLDER));
         assert_eq!(VIDEO_DEFAULT_FOLDER, r"Videos\Vale");
         assert_eq!(l.segmented(Group::VideoFps).expect("Gambar per detik").2, 0);
+    }
+
+    #[test]
+    fn the_quality_row_has_four_choices_and_an_estimate() {
+        use crate::recorder::prefs::VideoQuality::{Original, P720, P1080, P1440};
+        for lang in [Lang::Id, Lang::En] {
+            for q in VIDEO_QUALITY_CHOICES {
+                let s = State {
+                    lang,
+                    recording: RecordingPrefs { video_quality: q, ..RecordingPrefs::default() },
+                    ..states()[0].clone()
+                };
+                let l = screen_layout(&s);
+                let (_, items, selected) =
+                    l.segmented(Group::VideoQuality).expect("Kualitas video");
+                assert_eq!(
+                    items.iter().map(|s| s.hit).collect::<Vec<_>>(),
+                    VIDEO_QUALITY_CHOICES.map(Hit::VideoQuality)
+                );
+                let original = if lang == Lang::Id { "Asli" } else { "Original" };
+                assert_eq!(
+                    items.iter().map(|s| s.label.as_str()).collect::<Vec<_>>(),
+                    [original, "1440p", "1080p", "720p"]
+                );
+                assert_eq!(items[selected].hit, Hit::VideoQuality(q), "{lang:?} {q:?}");
+                // It is the card's first row.
+                let card = l.cards[l.cards.len() - 4];
+                for seg in items {
+                    assert!(seg.rect.y >= card.y && seg.rect.bottom() <= card.y + ROW_H);
+                }
+            }
+        }
+        // The estimate follows the primary monitor, the choice and the rate.
+        let line = |monitors: &[MonitorRow], q, fps| {
+            let s = State {
+                recording: RecordingPrefs {
+                    video_quality: q,
+                    video_fps: fps,
+                    ..RecordingPrefs::default()
+                },
+                monitors,
+                ..states()[0].clone()
+            };
+            let l = screen_layout(&s);
+            l.texts
+                .iter()
+                .find(|t| t.text.contains('×'))
+                .map(|t| t.text.clone())
+                .expect("the estimate line")
+        };
+        let monitors = [sized(1920, 1080, false), sized(2560, 1440, true)];
+        assert_eq!(line(&monitors, P1080, 30), "1920×1080 · ± 36 MB/menit");
+        assert_eq!(line(&monitors, P720, 30), "1280×720 · ± 17 MB/menit");
+        assert_eq!(line(&monitors, P1440, 30), "2560×1440 · ± 64 MB/menit");
+        assert_eq!(line(&monitors, Original, 30), "2560×1440 · ± 64 MB/menit");
+        assert_eq!(line(&monitors, Original, 60), "2560×1440 · ± 127 MB/menit");
+        // No monitor list: a 1920x1080 screen.
+        assert_eq!(line(&[], Original, 30), "1920×1080 · ± 36 MB/menit");
+        // No primary flag: the first one.
+        let none = [sized(1920, 1080, false), sized(2560, 1440, false)];
+        assert_eq!(line(&none, Original, 30), "1920×1080 · ± 36 MB/menit");
+    }
+
+    #[test]
+    fn the_quality_row_texts_fit_left_of_its_choices() {
+        let monitors = [sized(4096, 2304, true)];
+        for lang in [Lang::Id, Lang::En] {
+            let s = State {
+                lang,
+                recording: RecordingPrefs {
+                    video_quality: crate::recorder::prefs::VideoQuality::Original,
+                    video_fps: 60,
+                    ..RecordingPrefs::default()
+                },
+                monitors: &monitors,
+                ..states()[0].clone()
+            };
+            let l = screen_layout(&s);
+            let card = l.cards[l.cards.len() - 4];
+            let (_, items, _) = l.segmented(Group::VideoQuality).expect("Kualitas video");
+            let first = items[0].rect.x;
+            assert!(items.last().unwrap().rect.right() <= card.right(), "{lang:?}");
+            let want = match lang {
+                Lang::Id => "4096×2304 · ± 325 MB/menit",
+                Lang::En => "4096×2304 · ± 325 MB/min",
+            };
+            let estimate = l.texts.iter().find(|t| t.text == want).expect("the longest line");
+            let title = l
+                .texts
+                .iter()
+                .find(|t| t.text == text(lang, Key::ScreenSettingsQuality))
+                .expect("the title");
+            for t in [estimate, title] {
+                assert!(t.rect.right() <= first, "{lang:?} {}", t.text);
+            }
+        }
     }
 
     /// Fitur laid out with the Transkrip card in `view`.

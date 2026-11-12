@@ -199,7 +199,6 @@ pub enum Action {
     /// The screen recordings' frame rate: 30 or 60.
     VideoFps(u32),
     /// The screen recordings' size cap.
-    #[allow(dead_code)] // Task 3's Settings row posts it.
     VideoQuality(crate::recorder::prefs::VideoQuality),
     /// The cursor highlight and click ripple switches of a screen recording.
     CursorHighlight(bool),
@@ -384,6 +383,10 @@ enum TrClick {
 /// not on the card. A frame rate already chosen does nothing.
 fn screen_click(prefs: &RecordingPrefs, hit: Hit) -> Option<Vec<After>> {
     Some(match hit {
+        Hit::VideoQuality(q) if q != prefs.video_quality => {
+            vec![After::Post(Action::VideoQuality(q))]
+        }
+        Hit::VideoQuality(_) => Vec::new(),
         Hit::VideoFps(fps) if fps != prefs.video_fps => vec![After::Post(Action::VideoFps(fps))],
         Hit::VideoFps(_) => Vec::new(),
         Hit::CursorHighlight => vec![After::Post(Action::CursorHighlight(!prefs.cursor_highlight))],
@@ -1916,6 +1919,10 @@ impl Settings {
                     .position(|c| *c == m.recording.sources)
                     .unwrap_or(2) as f32,
                 Group::VideoFps => usize::from(m.recording.video_fps == 60) as f32,
+                Group::VideoQuality => crate::ui::settings_layout::VIDEO_QUALITY_CHOICES
+                    .iter()
+                    .position(|v| *v == m.recording.video_quality)
+                    .unwrap_or(0) as f32,
                 Group::WidgetFullscreen => {
                     usize::from(m.widgets.fullscreen == FullscreenRule::Keep) as f32
                 }
@@ -1943,6 +1950,7 @@ impl Settings {
             Group::WidgetFullscreen,
             Group::RecSources,
             Group::VideoFps,
+            Group::VideoQuality,
             Group::TranscriptLang,
         ] {
             let (from, to) = (index(group, &old), index(group, new));
@@ -2586,7 +2594,8 @@ impl Settings {
             Hit::RecFolderOpen => vec![After::OpenFolder(m.recording.dir())],
             Hit::RecFolderChange => vec![After::PickRecFolder],
             Hit::RecDevice(source) => self.device_menu_after(source),
-            Hit::VideoFps(_)
+            Hit::VideoQuality(_)
+            | Hit::VideoFps(_)
             | Hit::CursorHighlight
             | Hit::ClickRipples
             | Hit::VideoFolderOpen
@@ -4952,6 +4961,18 @@ mod tests {
     #[test]
     fn the_file_filter_takes_videos() {
         assert_eq!(RECORDING_FILTER, "*.m4a;*.wav;*.mp4");
+    }
+
+    #[test]
+    fn quality_clicks_change_only_a_new_value() {
+        use crate::recorder::prefs::VideoQuality::{Original, P720};
+        let at = |video_quality| RecordingPrefs { video_quality, ..RecordingPrefs::default() };
+        assert_eq!(
+            screen_click(&at(Original), Hit::VideoQuality(P720)),
+            Some(vec![After::Post(Action::VideoQuality(P720))])
+        );
+        // The choice already made: nothing is posted, nothing is saved.
+        assert_eq!(screen_click(&at(P720), Hit::VideoQuality(P720)), Some(Vec::new()));
     }
 
     #[test]

@@ -45,8 +45,6 @@ pub const AUDIO_BITS_PER_SECOND: u32 = 96_000;
 
 /// About how many MiB a minute of recording takes at an already planned
 /// output size: the video bitrate plus the audio track, rounded, at least 1.
-// Task 2 wires this into the quality picker; remove the allow then.
-#[allow(dead_code)]
 pub fn estimate_mib_per_minute(w: u32, h: u32, fps: u32) -> u32 {
     let bits = bitrate(w, h, fps) as u64 + AUDIO_BITS_PER_SECOND as u64;
     let bytes = bits * 60 / 8;
