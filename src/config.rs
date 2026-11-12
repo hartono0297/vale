@@ -1371,6 +1371,7 @@ mod tests {
                 echo_cancel: false,
                 video_folder: Some(std::path::PathBuf::from(r"E:\Vid")),
                 video_fps: 60,
+                video_quality: crate::recorder::prefs::VideoQuality::P1080,
                 cursor_highlight: false,
                 click_ripples: false,
             },
