@@ -5873,10 +5873,10 @@ impl App {
     /// `hit`'s tooltip target, remembered in `tip_on`; `None` when it says
     /// nothing or the last frame drew no region for it.
     fn tip_target(&mut self, hit: Hit) -> Option<tooltip::Target> {
-        let tip = panel_tips::tip_for(&hit, &self.tip_ctx())?;
+        let tip = panel_tips::tip_for(&hit, &self.tip_ctx(&hit))?;
         let anchor = self.tip_anchor(&hit)?;
         let target = tooltip::Target {
-            id: panel_tips::tip_id(&hit),
+            id: panel_tips::tip_id(&hit, &tip),
             anchor,
             side: panel_tips::side_for(&hit),
             tip,
@@ -5906,13 +5906,55 @@ impl App {
         self.tip_pressed = self.hit_at(lparam).filter(panel_tips::has_tip);
     }
 
-    /// What the island's tips read of the state.
-    fn tip_ctx(&self) -> TipCtx {
-        let muted = self.state.rec().map_or([false; 2], |r| r.muted);
-        TipCtx {
-            rec_muted_mic: muted[0],
-            rec_muted_system: muted[1],
+    /// What `hit`'s tip reads of the state: only the piece it needs (the
+    /// hovered row's data, not every row's).
+    fn tip_ctx(&self, hit: &Hit) -> TipCtx {
+        let mut ctx = TipCtx::default();
+        match hit {
+            Hit::RecMuteCompact(_) | Hit::RecMute(_) => {
+                let muted = self.state.rec().map_or([false; 2], |r| r.muted);
+                ctx.rec_muted_mic = muted[0];
+                ctx.rec_muted_system = muted[1];
+            }
+            Hit::RecPause => ctx.rec_paused = self.state.rec().is_some_and(|r| r.paused()),
+            Hit::RecToggle => ctx.screen_tab = self.state.rec_tab() == RecKind::Screen,
+            Hit::CalPrev | Hit::CalNext => ctx.cal_view = self.state.cal_view(),
+            Hit::PomoStartPause => {
+                use crate::pomodoro::PomoStatus;
+                match self.state.pomodoro().status() {
+                    PomoStatus::Running { .. } => ctx.pomo_running = true,
+                    PomoStatus::Paused { .. } => ctx.pomo_paused = true,
+                    PomoStatus::Idle | PomoStatus::Ready => {}
+                }
+            }
+            Hit::NoteSticky(id) => {
+                ctx.note_on_desktop = self.notes.get(id).is_some_and(|n| n.sticky.is_some());
+            }
+            Hit::PlayPause => ctx.playing = self.state.media().is_some_and(|m| m.playing),
+            Hit::LyricsCard => ctx.lyrics_card_open = self.lyrics_card.open,
+            Hit::MixerMute(i) => {
+                ctx.mixer = self
+                    .mixer
+                    .as_ref()
+                    .and_then(|rows| rows.get(*i))
+                    .map(|row| {
+                        // The page names the master level and the system
+                        // sounds itself; an app's row carries its name.
+                        let name = match row.target {
+                            audio::Target::Master => i18n::tr(Key::MixerMaster),
+                            audio::Target::System => i18n::tr(Key::MixerSystemSounds),
+                            audio::Target::App(_) => row.name.as_str(),
+                        };
+                        (name.to_string(), row.muted)
+                    });
+            }
+            Hit::ClipPin(id) => {
+                ctx.clip_pinned = self.clip.history.get(*id).is_some_and(|c| c.pinned);
+            }
+            Hit::CliExpand => ctx.cli_tall = self.state.cli_tall(),
+            _ => {}
         }
+        ctx
     }
 
     /// Where the last frame drew `hit`, on screen (px): the window's origin

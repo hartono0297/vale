@@ -1457,6 +1457,57 @@ keys! {
     TipPageCli => "Terminal kecil di panel, dengan folder favorit.", "A small terminal in the panel, with favorite folders.";
     TipPageArrange => "Atur jendela yang terbuka dengan template.", "Lay out your open windows with templates.";
     TipPageShortcuts => "Alat Windows, lompat ke halaman, dan pintasan kamu sendiri.", "Windows tools, page jumps and your own shortcuts.";
+
+    // Tooltips: the controls on the open panel's pages.
+    TipCalPrevMonth => "Bulan sebelumnya", "Previous month";
+    TipCalNextMonth => "Bulan berikutnya", "Next month";
+    TipCalPrevWeek => "Minggu sebelumnya", "Previous week";
+    TipCalNextWeek => "Minggu berikutnya", "Next week";
+    TipCalPrevDay => "Hari sebelumnya", "Previous day";
+    TipCalNextDay => "Hari berikutnya", "Next day";
+    TipPlay => "Putar", "Play";
+    TipPause => "Jeda", "Pause";
+    TipPomoResume => "Lanjutkan", "Resume";
+    TipPomoReset => "Ulang", "Reset";
+    TipPomoResetAbout => "Kembali ke fokus pertama, timer berhenti.", "Back to the first focus session, timer stopped.";
+    TipPomoSkip => "Lewati", "Skip";
+    TipPomoSkipAbout => "Fase ini selesai sekarang, fase berikutnya menunggu dimulai.", "This phase ends now, and the next waits for you to start it.";
+    TipNoteStickAbout => "Muncul sebagai catatan tempel di desktop.", "Shows as a sticky note on the desktop.";
+    TipNoteUnstickAbout => "Catatannya tetap di sini.", "The note stays here.";
+    TipMediaPrev => "Lagu sebelumnya", "Previous track";
+    TipMediaNext => "Lagu berikutnya", "Next track";
+    TipMediaPrevNextAbout => "Geser di notch juga bisa.", "A swipe on the notch works too.";
+    TipMediaPlayPauseAbout => "Klik tengah di notch juga bisa.", "A middle click on the notch works too.";
+    TipLyricsCard => "Kartu lirik", "Lyrics card";
+    TipLyricsCardClose => "Tutup kartu lirik", "Close lyrics card";
+    TipLyricsCardAbout => "Lirik di jendela kecil yang melayang.", "Lyrics in a small floating window.";
+    TipClipPin => "Sematkan", "Pin";
+    TipClipPinAbout => "Tetap ada saat riwayat dibersihkan atau penuh.", "Stays when the history is cleared or full.";
+    TipClipUnpin => "Lepas sematan", "Unpin";
+    TipClipUnpinAbout => "Ikut terhapus lagi saat riwayat dibersihkan.", "Goes again when the history is cleared.";
+    TipClipPlain => "Salin teks polos", "Copy as plain text";
+    TipClipPlainAbout => "Hanya teksnya, tanpa format dan warna.", "Just the text, without formatting or colour.";
+    TipClipDeleteAbout => "Dihapus dari riwayat clipboard.", "Removes it from the clipboard history.";
+    TipRemove => "Hapus", "Remove";
+    TipNotifRemoveAbout => "Hilang dari riwayat Vale. Notifikasi di Windows tidak disentuh.", "Removes it from Vale's history. Windows keeps its own list.";
+    TipShelfRemove => "Keluarkan dari rak", "Take off the shelf";
+    TipShelfRemoveAbout => "File aslinya tetap ada. Tidak dibagikan ke HP lagi.", "The file itself stays. It is no longer shared with phones.";
+    TipBack => "Kembali", "Back";
+    TipPhoneShowQr => "Tampilkan kode QR", "Show the QR code";
+    TipPhoneShowQrAbout => "Pindai dengan HP untuk tersambung.", "Scan it with a phone to connect.";
+    TipArrangePlay => "Terapkan", "Apply";
+    TipArrangePlayAbout => "Jendela yang cocok pindah ke tempat yang disimpan.", "Matching windows move to the saved places.";
+    TipRecPause => "Jeda rekaman", "Pause recording";
+    TipRecResume => "Lanjutkan rekaman", "Resume recording";
+    TipRecToggleAbout => "Mulai atau hentikan rekaman.", "Starts or stops the recording.";
+    TipDeviceOpen => "Buka di Explorer", "Open in Explorer";
+    TipDeviceDetail => "Detail", "Details";
+    TipDeviceDetailAbout => "Model, jalur, dan sistem file.", "Model, connection and file system.";
+    TipCliEnlarge => "Perbesar", "Enlarge";
+    TipCliShrink => "Perkecil", "Shrink";
+    TipCliStar => "Jadikan favorit", "Star";
+    TipCliUnstar => "Hapus dari favorit", "Unstar";
+    TipCleanBack => "Kembali ke Sistem", "Back to System";
 }
 
 /// `key` in `lang`.
@@ -1516,6 +1567,18 @@ pub fn phase_minutes(lang: Lang, phase: &str, minutes: u32) -> String {
         Lang::Id => format!("{phase} {minutes} menit"),
         Lang::En => format!("{phase} · {minutes} min"),
     }
+}
+
+/// "Bisukan Spotify", "Nyalakan Spotify": the Mixer row's speaker, by what a
+/// click does now. A long app name is kept whole (the tip cuts it).
+pub fn mute_app(lang: Lang, name: &str, muted: bool) -> String {
+    let verb = match (lang, muted) {
+        (Lang::Id, false) => "Bisukan",
+        (Lang::Id, true) => "Nyalakan",
+        (Lang::En, false) => "Mute",
+        (Lang::En, true) => "Unmute",
+    };
+    format!("{verb} {name}").trim_end().to_string()
 }
 
 /// "+3 lagi" under a list that does not fit.
