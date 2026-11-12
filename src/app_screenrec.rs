@@ -1291,12 +1291,10 @@ impl App {
         let _ = std::thread::Builder::new()
             .name("rec-scan".into())
             .spawn(move || {
-                let today = Local::now().date_naive();
                 let list = scan_recent(
                     &dir,
                     RecKind::Screen,
                     lang,
-                    today,
                     RECENT_LIMIT,
                     skip.as_deref(),
                     &decode::probe_duration_ms,

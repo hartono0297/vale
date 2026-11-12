@@ -74,7 +74,7 @@ use crate::ui::panel_layout::{
     cli_layout, cli_suggestions, clipboard_layout, device_shapes, devices_layout,
     media_hits_for, media_panel_layout, media_progress_layout, mixer_layout, mole_layout, mole_log_rows,
     mole_log_skip, notes_layout, notif_layout, page_dots, pomodoro_compact_layout,
-    pomodoro_compact_layout_robot, pomodoro_layout, caption_compact_layout, record_compact_layout, tail_fit, rec_meter_heights, rec_mute_regions, REC_BAR_REST, REC_SRC_BARS, REC_SRC_METER_H, REC_WELL, rec_word_slot, record_layout, rec_new_days, screen_compact_sources, screen_label_slot, RecListInput, RecordHead, RecordLayout, regions, REC_BAR_GAP, REC_BAR_W, reminders_layout, search_layout,
+    pomodoro_compact_layout_robot, pomodoro_layout, caption_compact_layout, record_compact_layout, tail_fit, rec_meter_heights, rec_mute_regions, REC_BAR_REST, REC_SRC_BARS, REC_SRC_METER_H, REC_WELL, rec_word_slot, record_layout, rec_new_days, rec_group_day, screen_compact_sources, screen_label_slot, RecListInput, RecordHead, RecordLayout, regions, REC_BAR_GAP, REC_BAR_W, reminders_layout, search_layout,
     settings_button, shelf_card_layout, shelf_layout, shelf_phone_tag, shortcuts_layout,
     system_layout, tile_parts, update_strip_parts, volume_hud_layout, waiting_strip,
 };
@@ -1151,17 +1151,12 @@ impl Renderer {
         for src in &l.sources {
             self.rec_hairline(src.row);
             let i = src.source.index();
-            let (open, crossed, name_key, missing_key) = match src.source {
-                Source::Mic => (Icon::Mic, Icon::MicOff, Key::RecSourceMic, Key::RecMicMissing),
-                Source::System => (
-                    Icon::Volume,
-                    Icon::VolumeMute,
-                    Key::RecSourceSystem,
-                    Key::RecSystemMissing,
-                ),
+            let (open, crossed, name_key) = match src.source {
+                Source::Mic => (Icon::Mic, Icon::MicOff, Key::RecSourceMic),
+                Source::System => (Icon::Volume, Icon::VolumeMute, Key::RecSourceSystem),
             };
             let (device, device_ink) = if view.missing[i] {
-                (text(lang, missing_key), p.ochre)
+                (text(lang, Key::RecDeviceMissing), p.ochre)
             } else {
                 (view.devices[i].as_str(), p.secondary)
             };
@@ -1262,12 +1257,7 @@ impl Renderer {
             RecKind::Audio => (Icon::Mic, Key::RecEmpty),
         };
         for (n, &(i, g)) in l.groups.iter().enumerate() {
-            // While recording the first label heads the now row: today's.
-            let day = if rec.is_some() && n == 0 {
-                view.today
-            } else {
-                recent.get(i).map_or(view.today, |e| e.started_at.date())
-            };
+            let day = rec_group_day(n, i, rec.is_some(), recent, view.today);
             let label = i18n::rec_day_label(lang, day, view.today);
             self.text_colored(&label, &self.fonts.small_medium, g, p.secondary, 1.0);
         }
@@ -1347,22 +1337,23 @@ impl Renderer {
             self.icon_colored(Icon::ChevR, chevron, REC_SMALL_ICON, p.secondary, 1.0, None);
         }
         if let Some(empty) = l.empty {
-            let well = Rect { w: empty.h, ..empty };
+            // A 32 well centred beside a title line and a hint of two lines.
+            let well = Rect {
+                y: empty.y + (empty.h - 32.0) / 2.0,
+                w: 32.0,
+                h: 32.0,
+                ..empty
+            };
             self.set_color(p.raised, 1.0);
             self.fill_round(well, REC_EMPTY_WELL_R);
             self.icon_colored(kind_icon, well, REC_HEAD_ICON, p.secondary, 1.0, None);
             let x = well.right() + REC_EMPTY_GAP;
-            let half = empty.h / 2.0;
-            let line = |y: f32| Rect {
-                x,
-                y,
-                w: (empty.right() - x).max(0.0),
-                h: half,
-            };
-            let title = text(lang, empty_key);
-            self.text_colored(title, &self.fonts.title, line(empty.y), p.text, 1.0);
+            let w = (empty.right() - x).max(0.0);
+            let title = Rect { x, y: empty.y, w, h: 16.0 };
+            let body = Rect { x, y: empty.y + 16.0, w, h: empty.h - 16.0 };
+            self.text_colored(text(lang, empty_key), &self.fonts.title, title, p.text, 1.0);
             let hint = i18n::rec_empty_hint(lang, view.start_hotkey.as_deref());
-            self.text_colored(&hint, &self.fonts.eleven, line(empty.y + half), p.secondary, 1.0);
+            self.text_colored(&hint, &self.fonts.clip_value, body, p.secondary, 1.0);
         }
     }
 

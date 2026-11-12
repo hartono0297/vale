@@ -4163,6 +4163,24 @@ pub fn rec_new_days(rows: &[RecEntry], recording: bool, today: NaiveDate) -> Vec
         .collect()
 }
 
+/// The day a day label of the Rekam list names: `n` is the label's place in
+/// `RecordLayout::groups`, `row` the row it heads. While recording the first
+/// label heads the now row, so it reads today, even when row 0 is from
+/// another day (that row then gets its own label, also keyed 0).
+pub fn rec_group_day(
+    n: usize,
+    row: usize,
+    recording: bool,
+    rows: &[RecEntry],
+    today: NaiveDate,
+) -> NaiveDate {
+    if recording && n == 0 {
+        today
+    } else {
+        rows.get(row).map_or(today, |e| e.started_at.date())
+    }
+}
+
 /// The Rekam page, direction B (docs/design/rekam-b.html): the "Audio" /
 /// "Layar" switch and two icon buttons in the header; the card at the left
 /// (the round button or the live controls, the sources, the caption row);
@@ -4266,10 +4284,10 @@ const REC_HEAD_GAP: f32 = 8.0;
 /// A tab's label has this much room on each side inside its segment.
 const REC_TAB_PAD_X: f32 = 12.0;
 /// The header's icon buttons and the gap between them.
-pub const REC_ICON_BTN: f32 = 22.0;
+const REC_ICON_BTN: f32 = 22.0;
 const REC_ICON_GAP: f32 = 4.0;
 /// The card: its width, its padding, and the gap to the list.
-pub const REC_CARD_W: f32 = 196.0;
+const REC_CARD_W: f32 = 196.0;
 const REC_CARD_PAD_X: f32 = 12.0;
 const REC_CARD_PAD_Y: f32 = 10.0;
 const REC_LIST_GAP: f32 = 12.0;
@@ -4281,7 +4299,7 @@ pub const REC_BUTTON: f32 = 56.0;
 const REC_LABEL_GAP: f32 = 3.0;
 const REC_LABEL_H: f32 = 16.0;
 /// The live controls: stop, pause and discard, in a row; the clock under.
-pub const REC_STOP: f32 = 52.0;
+const REC_STOP: f32 = 52.0;
 pub const REC_PAUSE: f32 = 32.0;
 const REC_PAIR_GAP: f32 = 12.0;
 const REC_CLOCK_GAP: f32 = 6.0;
@@ -4296,21 +4314,21 @@ const REC_ASK_BTN_PAD: f32 = 10.0;
 /// A source, quality or caption row of the card.
 const REC_SRC_H: f32 = 34.0;
 /// The idle source icon and the live mute button.
-pub const REC_GLYPH: f32 = 16.0;
-pub const REC_MUTE: f32 = 24.0;
+const REC_GLYPH: f32 = 16.0;
+const REC_MUTE: f32 = 24.0;
 const REC_SRC_GAP: f32 = 8.0;
 /// A row's switch.
-pub const REC_SWITCH_W: f32 = 28.0;
-pub const REC_SWITCH_H: f32 = 16.0;
+const REC_SWITCH_W: f32 = 28.0;
+const REC_SWITCH_H: f32 = 16.0;
 /// A live row's meter: five bars of `REC_BAR_W`, `REC_BAR_GAP` apart.
 pub const REC_SRC_BARS: usize = 5;
-pub const REC_SRC_METER_W: f32 =
+const REC_SRC_METER_W: f32 =
     REC_SRC_BARS as f32 * REC_BAR_W + (REC_SRC_BARS - 1) as f32 * REC_BAR_GAP;
 pub const REC_SRC_METER_H: f32 = 14.0;
 /// The name line and the device line under it, from the row's top.
 const REC_NAME_TOP: f32 = 4.0;
 const REC_NAME_H: f32 = 14.0;
-pub const REC_DEVICE_H: f32 = 12.0;
+const REC_DEVICE_H: f32 = 12.0;
 /// The idle Layar tab's hint (two lines).
 const REC_HINT_H: f32 = 30.0;
 /// The list: a day label, a row, its well, the gap between a row's parts,
@@ -4329,9 +4347,10 @@ const REC_PILL_PAD: f32 = 16.0;
 const REC_PILL_H: f32 = 22.0;
 /// "N lagi di folder".
 const REC_MORE_H: f32 = 18.0;
-/// The empty state: its distance from the list's top, and its height.
+/// The empty state: its distance from the list's top, and its height (a
+/// 32 well beside a title line and a hint that wraps to two lines).
 const REC_EMPTY_TOP: f32 = 40.0;
-const REC_EMPTY_H: f32 = 32.0;
+const REC_EMPTY_H: f32 = 46.0;
 
 /// What the card's top block holds, as `record_layout` builds it.
 #[derive(Default)]
@@ -5712,7 +5731,6 @@ mod tests {
         let at = |d: u32, h: u32| RecEntry {
             path: Default::default(),
             title: String::new(),
-            started: String::new(),
             started_at: date(2026, 11, d).and_hms_opt(h, 0, 0).unwrap(),
             duration: Default::default(),
             unfinished: false,
@@ -5726,6 +5744,39 @@ mod tests {
         assert_eq!(rec_new_days(&rows, true, today), [false, false, true, false, true]);
         assert_eq!(rec_new_days(&rows[2..], true, today), [true, false, true]);
         assert!(rec_new_days(&[], true, today).is_empty());
+    }
+
+    #[test]
+    fn the_now_row_label_reads_today_whatever_row_zero_is() {
+        let s = panel(Style::Pill);
+        let at = |d: u32, h: u32| RecEntry {
+            path: Default::default(),
+            title: String::new(),
+            started_at: date(2026, 11, d).and_hms_opt(h, 0, 0).unwrap(),
+            duration: Default::default(),
+            unfinished: false,
+            silent: false,
+            transcript: crate::model::RowTranscript::None,
+        };
+        let today = date(2026, 11, 12);
+        // The days the painter would label, from the real layout's groups.
+        let labels = |rows: &[RecEntry], recording: bool| {
+            let new_day = rec_new_days(rows, recording, today);
+            let pills = vec![0.0; rows.len()];
+            let list = RecListInput { new_day: &new_day, pills: &pills, total: rows.len() };
+            let live = recording.then_some(BOTH);
+            let l = record_layout(s, false, &REC_HEAD, live, BOTH, &list, AUDIO, false);
+            l.groups
+                .iter()
+                .enumerate()
+                .map(|(n, &(i, _))| rec_group_day(n, i, recording, rows, today))
+                .collect::<Vec<_>>()
+        };
+        let yesterday = date(2026, 11, 11);
+        assert_eq!(labels(&[at(11, 20), at(10, 9)], true), [today, yesterday, date(2026, 11, 10)]);
+        assert_eq!(labels(&[at(12, 9), at(11, 9)], true), [today, yesterday]);
+        assert_eq!(labels(&[at(11, 20), at(10, 9)], false), [yesterday, date(2026, 11, 10)]);
+        assert_eq!(labels(&[], true), [today]);
     }
 
     #[test]

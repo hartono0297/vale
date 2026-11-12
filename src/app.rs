@@ -11581,7 +11581,6 @@ mod tests {
         let entry = |name: &str| RecEntry {
             path: PathBuf::from(name),
             title: name.into(),
-            started: String::new(),
             started_at: chrono::NaiveDateTime::default(),
             duration: Duration::from_secs(60),
             unfinished: false,

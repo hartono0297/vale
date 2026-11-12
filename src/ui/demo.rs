@@ -70,6 +70,8 @@
 //!   the trash beside stop (`screen-sure`: asked once, "Buang video ini?");
 //!   `screen-zoom` is a screen recording zoomed at 2.5x, the notch showing
 //!   "2,5×" instead of "Layar".
+//! - `DI_REC_MENU=mic|system|quality` opens that device's dropdown (or the
+//!   Layar tab's quality dropdown) once the Rekam page is drawn.
 //! - `DI_REC_CAPTIONS=on` shows the "Caption langsung" switch of the Rekam
 //!   page on.
 //! - `DI_REC_SOURCES=mic|system` leaves only that source on in the idle
@@ -708,16 +710,10 @@ fn demo_rec_entry(
     let time = NaiveTime::parse_from_str(hm, "%H:%M").unwrap_or_default();
     let started_at = day.and_time(time);
     let date_time = started_at.format("%-d %b %H:%M").to_string();
-    let started = match back {
-        0 => format!("Hari ini {hm}"),
-        1 => format!("Kemarin {hm}"),
-        _ => date_time.clone(),
-    };
     let title = title.map_or_else(|| format!("Rekaman {date_time}"), str::to_owned);
     RecEntry {
         path: std::path::PathBuf::from(format!("{title}.{ext}")),
         title,
-        started,
         started_at,
         duration: Duration::from_secs(secs),
         unfinished: false,
@@ -2436,7 +2432,9 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
         _ => None,
     };
     // Its colours follow `DI_WINDOW` (and `DI_SURFACE`, `DI_ACCENT`).
-    if rec_menu.is_some() {
+    // `DI_REC_MENU=quality`: the same for the Layar tab's quality row.
+    let mut rec_quality_menu = name("DI_REC_MENU") == "quality";
+    if rec_menu.is_some() || rec_quality_menu {
         theme::set_system_light(theme::read_system_light());
         theme::set_current(theme::theme_from_env());
     }
@@ -2973,6 +2971,22 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                     crate::ui::menu_pop::Align::Start,
                     source,
                     None,
+                    crate::i18n::lang(),
+                    ui_font,
+                );
+            }
+            if rec_quality_menu
+                && let Some(r) = renderer.region_of(&Hit::RecQuality)
+            {
+                rec_quality_menu = false;
+                let ((x, y), k) = (win.screen_origin(), win.scale());
+                let px = |v: f32| (v * k).round() as i32;
+                let anchor = crate::capture::Rect::new(x + px(r.x), y + px(r.y), px(r.w), px(r.h));
+                crate::ui::quality_menu::open(
+                    win.hwnd(),
+                    anchor,
+                    crate::ui::menu_pop::Align::Start,
+                    (crate::recorder::prefs::VideoQuality::P1080, 30),
                     crate::i18n::lang(),
                     ui_font,
                 );

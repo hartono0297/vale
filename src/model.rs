@@ -317,8 +317,6 @@ pub struct RecEntry {
     pub path: PathBuf,
     /// The sidecar's title, or the time the recording started when it has none.
     pub title: String,
-    /// "Hari ini 10:02", as the page shows it.
-    pub started: String,
     /// When it started, local time (the page groups the list by its day).
     pub started_at: chrono::NaiveDateTime,
     pub duration: Duration,

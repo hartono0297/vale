@@ -577,7 +577,6 @@ keys! {
     PageDevices => "Perangkat", "Devices";
     PageArrange => "Susun", "Arrange";
     PageRecord => "Rekam", "Record";
-    RecStop => "Berhenti", "Stop";
     RecPause => "Jeda", "Pause";
     RecResume => "Lanjut", "Resume";
     RecRecording => "Merekam", "Recording";
@@ -705,6 +704,8 @@ keys! {
     RecSystemSwitched => "Suara PC pindah", "PC audio switched";
     RecMicMissing => "Mic pilihan tidak ada", "Chosen mic not found";
     RecSystemMissing => "Suara PC pilihan tidak ada", "Chosen PC audio not found";
+    // The Rekam page's device line: the row's own name says which source.
+    RecDeviceMissing => "Tidak ditemukan", "Not found";
     RecUsing => "Pakai", "Using";
     RecMicWord => "Mic", "Mic";
     RecSystemWord => "Suara PC", "PC audio";
@@ -1801,19 +1802,6 @@ pub fn devices_connected(lang: Lang, n: usize) -> String {
     match lang {
         Lang::Id => format!("{n} tersambung"),
         Lang::En => format!("{n} connected"),
-    }
-}
-
-/// When a recording started, for the Rekam page: "Hari ini 10:02", "Kemarin
-/// 14:30", else the date ("5 Nov").
-pub fn rec_started(lang: Lang, at: chrono::NaiveDateTime, today: NaiveDate) -> String {
-    let d = at.date();
-    match near(d, today) {
-        Some(Near::Today) => format!("{} {}", near_word(lang, Near::Today, true), at.format("%H:%M")),
-        Some(Near::Yesterday) => {
-            format!("{} {}", near_word(lang, Near::Yesterday, true), at.format("%H:%M"))
-        }
-        _ => short_date(lang, d),
     }
 }
 
@@ -3745,23 +3733,6 @@ mod tests {
     }
 
     #[test]
-    fn a_recording_start_reads_today_yesterday_or_the_date() {
-        let at = |m, d, h, min| {
-            NaiveDate::from_ymd_opt(2026, m, d)
-                .unwrap()
-                .and_hms_opt(h, min, 0)
-                .unwrap()
-        };
-        let today = NaiveDate::from_ymd_opt(2026, 11, 7).unwrap();
-        assert_eq!(rec_started(Lang::Id, at(11, 7, 10, 2), today), "Hari ini 10:02");
-        assert_eq!(rec_started(Lang::Id, at(11, 6, 14, 30), today), "Kemarin 14:30");
-        assert_eq!(rec_started(Lang::Id, at(11, 5, 9, 15), today), "5 Nov");
-        assert_eq!(rec_started(Lang::En, at(11, 7, 9, 5), today), "Today 09:05");
-        assert_eq!(rec_started(Lang::En, at(11, 6, 23, 59), today), "Yesterday 23:59");
-        assert_eq!(rec_started(Lang::En, at(10, 25, 8, 0), today), "25 Oct");
-    }
-
-    #[test]
     fn every_key_has_text_in_both_languages() {
         assert!(Key::ALL.len() > 50);
         for &key in Key::ALL {
@@ -4107,7 +4078,7 @@ mod tests {
             "Original \u{b7} 30 fps",
         );
         for lang in [Lang::Id, Lang::En] {
-            for &key in &[Key::RecRecordLabel, Key::RecNow, Key::RecMuted, Key::ScreenDiscardAsk, Key::ScreenDiscardKeep, Key::RecQuality, Key::ScreenIdleHint] {
+            for &key in &[Key::RecRecordLabel, Key::RecNow, Key::RecMuted, Key::ScreenDiscardAsk, Key::ScreenDiscardKeep, Key::RecQuality, Key::ScreenIdleHint, Key::RecDeviceMissing] {
                 assert_no_leak(lang, &format!("{key:?}"), text(lang, key));
                 assert!(!text(lang, key).contains('\u{2014}'), "{key:?} {lang:?}");
             }
