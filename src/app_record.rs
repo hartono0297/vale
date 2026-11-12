@@ -1708,14 +1708,6 @@ halo
         assert_eq!(list.len(), 1, "{list:?}");
         assert_eq!(list[0].title, "2026-11-07 0900");
         assert!(list[0].unfinished);
-        assert_eq!(
-            i18n::rec_entry_sub(Lang::Id, &list[0].started, list[0].duration, true),
-            format!("{} \u{b7} belum selesai", list[0].started)
-        );
-        assert_eq!(
-            i18n::rec_entry_sub(Lang::En, "Today 10:02", Duration::ZERO, true),
-            "Today 10:02 \u{b7} unfinished"
-        );
         assert_eq!(part_of(Path::new(r"C:\r\a.m4a")), PathBuf::from(r"C:\r\a.m4a.part"));
         let _ = fs::remove_dir_all(&dir);
     }

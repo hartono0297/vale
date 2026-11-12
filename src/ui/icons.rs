@@ -158,11 +158,17 @@ pub enum Icon {
     Record,
     /// The microphone struck through: a muted source of a recording.
     MicOff,
+    /// Live captions on the Rekam page (`cc` in rekam-b.html): a rounded
+    /// frame holding two small "c" arcs. Duotone.
+    Captions,
+    /// A screen recording's row on the Rekam page (`scr` in rekam-b.html): a
+    /// monitor on its stand. Duotone.
+    Monitor,
 }
 
 impl Icon {
     /// Every icon, in declaration order (`ALL[i] as usize == i`).
-    pub const ALL: [Icon; 82] = [
+    pub const ALL: [Icon; 84] = [
         Icon::Camera,
         Icon::Clipboard,
         Icon::Emoji,
@@ -245,6 +251,8 @@ impl Icon {
         Icon::Mic,
         Icon::Record,
         Icon::MicOff,
+        Icon::Captions,
+        Icon::Monitor,
     ];
 
     /// The icon's primitives on the 24-unit grid, in drawing order.
@@ -565,6 +573,16 @@ impl Icon {
                 Part::Path("M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M9 21h6"),
             ],
             Icon::Record => &[Part::Circle(12.0, 12.0, 9.0), Part::Circle(12.0, 12.0, 3.5)],
+            Icon::Captions => &[
+                Part::FillRect(3.0, 5.0, 18.0, 14.0, RECT_R),
+                Part::Rect(3.0, 5.0, 18.0, 14.0, RECT_R),
+                Part::Path("M10.5 9.9a2.6 2.6 0 1 0 0 4.2M17 9.9a2.6 2.6 0 1 0 0 4.2"),
+            ],
+            Icon::Monitor => &[
+                Part::FillRect(3.0, 4.0, 18.0, 13.0, RECT_R),
+                Part::Rect(3.0, 4.0, 18.0, 13.0, RECT_R),
+                Part::Path("M8.5 21h7M12 17v4"),
+            ],
             Icon::MicOff => &[
                 Part::Rect(9.0, 3.0, 6.0, 11.0, 3.0),
                 Part::Path("M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M9 21h6"),

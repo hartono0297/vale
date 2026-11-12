@@ -67,7 +67,7 @@
 //!   `rec-page-marks`, ...) on the Layar tab with made-up videos
 //!   (`screen-empty`: with none yet); `DI_REC_LIVE=screen` makes the
 //!   recording of `rec-page` and `rec-page-muted` a screen recording, with
-//!   "Buang" beside pause (`screen-sure`: asked once, "Yakin buang?");
+//!   the trash beside stop (`screen-sure`: asked once, "Buang video ini?");
 //!   `screen-zoom` is a screen recording zoomed at 2.5x, the notch showing
 //!   "2,5×" instead of "Layar".
 //! - `DI_REC_CAPTIONS=on` shows the "Caption langsung" switch of the Rekam
@@ -682,15 +682,34 @@ fn demo_rec_devices() -> [String; 2] {
     ]
 }
 
+/// When a made-up recording started, from its old "started" text: "Hari
+/// ini 10:02" is today, "Kemarin 14:30" yesterday, "5 Nov 09:15" some days
+/// before (at least two, so the list shows a date heading), relative to the
+/// demo's `today` so the day groups read as they would.
+fn demo_rec_started(today: NaiveDate, started: &str) -> NaiveDateTime {
+    let words: Vec<&str> = started.split_whitespace().collect();
+    let back = match words.first().copied() {
+        Some("Hari") => 0,
+        Some("Kemarin") => 1,
+        Some(day) => 10u64.saturating_sub(day.parse().unwrap_or(0)).max(2),
+        None => 2,
+    };
+    let time = words
+        .last()
+        .and_then(|t| NaiveTime::parse_from_str(t, "%H:%M").ok())
+        .unwrap_or_default();
+    today.checked_sub_days(Days::new(back)).unwrap_or(today).and_time(time)
+}
+
 /// The Rekam page's made-up list: the three rows of the design's mockup. With
 /// `marks` 1 or 2 it is five rows that show every transcript mark between
 /// them (`--demo-record`, `rec-page-marks` and `rec-page-marks-more`).
-fn demo_rec_recent(marks: u8) -> Vec<RecEntry> {
+fn demo_rec_recent(marks: u8, today: NaiveDate) -> Vec<RecEntry> {
     let entry = |title: &str, started: &str, mins: u64, transcript| RecEntry {
         path: std::path::PathBuf::from(format!("{title}.m4a")),
         title: title.to_owned(),
         started: started.to_owned(),
-        started_at: chrono::NaiveDateTime::default(),
+        started_at: demo_rec_started(today, started),
         duration: Duration::from_secs(mins * 60),
         unfinished: false,
         silent: false,
@@ -701,12 +720,12 @@ fn demo_rec_recent(marks: u8) -> Vec<RecEntry> {
         1 => vec![
             entry("Sync mingguan", "Hari ini 10:02", 42, RowTranscript::Done),
             entry("Review desain klien", "Kemarin 14:30", 65, RowTranscript::Running(42)),
-            entry("Rekaman 5 Nov 09:15", "5 Nov", 18, RowTranscript::Queued),
-            entry("Standup tim", "4 Nov", 15, RowTranscript::Waiting),
-            entry("Wawancara kandidat", "3 Nov", 55, RowTranscript::Failed),
+            entry("Rekaman 5 Nov 09:15", "5 Nov 09:15", 18, RowTranscript::Queued),
+            entry("Standup tim", "4 Nov 08:30", 15, RowTranscript::Waiting),
+            entry("Wawancara kandidat", "3 Nov 16:40", 55, RowTranscript::Failed),
         ],
         2 => {
-            let mut part = entry("2026-11-07 0900", "7 Nov", 0, none);
+            let mut part = entry("2026-11-07 0900", "7 Nov 09:00", 0, none);
             part.unfinished = true;
             vec![
                 entry("Sync mingguan", "Hari ini 10:02", 42, none),
@@ -714,29 +733,29 @@ fn demo_rec_recent(marks: u8) -> Vec<RecEntry> {
                 part,
                 entry(
                     "Diskusi roadmap produk kuartal pertama dengan seluruh tim",
-                    "5 Nov",
+                    "5 Nov 13:05",
                     73,
                     RowTranscript::Done,
                 ),
-                entry("Rekaman 5 Nov 09:15", "5 Nov", 18, RowTranscript::Running(7)),
+                entry("Rekaman 5 Nov 09:15", "5 Nov 09:15", 18, RowTranscript::Running(7)),
             ]
         }
         _ => vec![
             entry("Sync mingguan", "Hari ini 10:02", 42, none),
             entry("Review desain klien", "Kemarin 14:30", 65, none),
-            entry("Rekaman 5 Nov 09:15", "5 Nov", 18, none),
+            entry("Rekaman 5 Nov 09:15", "5 Nov 09:15", 18, none),
         ],
     }
 }
 
 /// The Layar tab's made-up list: videos named after the window they
 /// recorded, a transcript mark on some, one left unfinished by a crash.
-fn demo_rec_videos() -> Vec<RecEntry> {
+fn demo_rec_videos(today: NaiveDate) -> Vec<RecEntry> {
     let entry = |title: &str, started: &str, secs: u64, transcript| RecEntry {
         path: std::path::PathBuf::from(format!("{title}.mp4")),
         title: title.to_owned(),
         started: started.to_owned(),
-        started_at: chrono::NaiveDateTime::default(),
+        started_at: demo_rec_started(today, started),
         duration: Duration::from_secs(secs),
         unfinished: false,
         silent: false,
@@ -748,7 +767,7 @@ fn demo_rec_videos() -> Vec<RecEntry> {
         entry("Tutorial ekspor laporan", "Hari ini 09:41", 3 * 60 + 17, RowTranscript::Done),
         entry("vale - Visual Studio Code", "Hari ini 08:05", 12 * 60 + 4, RowTranscript::None),
         part,
-        entry("Rekaman 9 Nov 14:30", "9 Nov", 48, RowTranscript::Queued),
+        entry("Rekaman 9 Nov 14:30", "9 Nov 14:30", 48, RowTranscript::Queued),
     ]
 }
 
@@ -2463,9 +2482,9 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                 rec_page_demo(false, "", "")
             };
             let rec_recent = match rec_page.tab {
-                RecKind::Audio => demo_rec_recent(scene.marks),
+                RecKind::Audio => demo_rec_recent(scene.marks, today),
                 RecKind::Screen if rec_page.no_videos => Vec::new(),
-                RecKind::Screen => demo_rec_videos(),
+                RecKind::Screen => demo_rec_videos(today),
             };
             let rec_devices = demo_rec_devices();
             let pomodoro = demo_pomodoro(scene.pomo, now);
@@ -2673,6 +2692,21 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                     discard_armed: rec_page.discard_armed,
                     captions_on: name("DI_REC_CAPTIONS") == "on",
                     total: rec_recent.len(),
+                    missing: [false; 2],
+                    quality: crate::i18n::rec_quality_label(
+                        crate::i18n::lang(),
+                        crate::recorder::prefs::VideoQuality::P1080,
+                        30,
+                    ),
+                    mute_hotkey: crate::hotkey::Hotkeys::default()
+                        .record_mute
+                        .map(|h| h.to_string()),
+                    start_hotkey: match rec_page.tab {
+                        RecKind::Audio => crate::hotkey::Hotkeys::default().record,
+                        RecKind::Screen => crate::hotkey::Hotkeys::default().record_screen,
+                    }
+                    .map(|h| h.to_string()),
+                    today,
                 },
                 devices: DevicesView {
                     list: &dev_list,

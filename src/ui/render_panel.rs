@@ -74,7 +74,7 @@ use crate::ui::panel_layout::{
     cli_layout, cli_suggestions, clipboard_layout, device_shapes, devices_layout,
     media_hits_for, media_panel_layout, media_progress_layout, mixer_layout, mole_layout, mole_log_rows,
     mole_log_skip, notes_layout, notif_layout, page_dots, pomodoro_compact_layout,
-    pomodoro_compact_layout_robot, pomodoro_layout, caption_compact_layout, record_compact_layout, tail_fit, rec_meter_heights, rec_mute_regions, rec_word_slot, record_layout, rec_new_days, screen_compact_sources, screen_label_slot, RecListInput, RecordHead, RecordLayout, regions, REC_BAR_GAP, REC_BAR_W, reminders_layout, search_layout,
+    pomodoro_compact_layout_robot, pomodoro_layout, caption_compact_layout, record_compact_layout, tail_fit, rec_meter_heights, rec_mute_regions, REC_BAR_REST, REC_SRC_BARS, REC_SRC_METER_H, REC_WELL, rec_word_slot, record_layout, rec_new_days, screen_compact_sources, screen_label_slot, RecListInput, RecordHead, RecordLayout, regions, REC_BAR_GAP, REC_BAR_W, reminders_layout, search_layout,
     settings_button, shelf_card_layout, shelf_layout, shelf_phone_tag, shortcuts_layout,
     system_layout, tile_parts, update_strip_parts, volume_hud_layout, waiting_strip,
 };
@@ -86,57 +86,73 @@ use crate::ui::shelf_motion::Drawn;
 #[path = "render_arrange.rs"]
 pub(super) mod arrange_paint;
 
-/// A Rekam row's transcript pill: the fill, the label's colour and the alpha
-/// both are drawn at.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// A Rekam row's transcript button (`.act` in docs/design/rekam-b.html):
+/// its fill (none: the surface shows), a 1 dip inner border, the label's
+/// colour, the alpha all of it is drawn at, and for a running transcript how
+/// far the `raised_hi` progress fill reaches from the left (0 to 1).
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct PillLook {
-    fill: u32,
+    fill: Option<u32>,
+    border: Option<u32>,
     ink: u32,
-    /// Percent: 100 for every live state, `PILL_OFF_PCT` for the off pill.
-    pct: u8,
+    alpha: f32,
+    progress: Option<f32>,
 }
 
-impl PillLook {
-    fn alpha(self) -> f32 {
-        f32::from(self.pct) / 100.0
-    }
-}
+/// The off pill is a disabled control: the Transkrip look at this alpha.
+const PILL_OFF_ALPHA: f32 = 0.45;
 
-/// The off pill is a disabled control: the Transcribe look at this alpha.
-const PILL_OFF_PCT: u8 = 45;
-/// How far the Done and Failed fills lean towards their colour.
-const PILL_TINT: f32 = 0.10;
-
-/// What each mark's pill looks like. "Transkrip" is the plain raised pill (it
-/// is the action to take); in the queue it is quieter (secondary label on the
-/// raised step, the percent in full text colour); done is sage and failed is
-/// the soft red, both a faint tint of their colour under it. Every live state
-/// holds 4.5:1 for its label on all six surfaces (a test checks it).
+/// What each mark's button looks like, one shape for all of them:
+/// "Transkrip" on the track (the action to take), "Lihat" the same with an
+/// accent border, the percent a raised button filling from the left, the
+/// queue an outline with a quiet label, "Gagal" in soft red, and the off
+/// button the Transkrip look dimmed. Every label holds 4.5:1 on what is
+/// under it on every surface (`the_pill_ink_holds_contrast`).
 fn rec_pill_look(p: &Palette, mark: RowTranscript) -> PillLook {
-    let live = |fill, ink| PillLook { fill, ink, pct: 100 };
+    let plain = PillLook {
+        fill: Some(p.track),
+        border: None,
+        ink: p.text,
+        alpha: 1.0,
+        progress: None,
+    };
     match mark {
-        RowTranscript::None => live(p.raised_hi, p.text),
+        RowTranscript::None => plain,
         RowTranscript::Off => PillLook {
-            pct: PILL_OFF_PCT,
-            ..live(p.raised_hi, p.text)
+            alpha: PILL_OFF_ALPHA,
+            ..plain
         },
-        RowTranscript::Queued | RowTranscript::Waiting => live(p.raised, p.secondary),
-        RowTranscript::Running(_) => live(p.raised, p.text),
-        RowTranscript::Done => live(mix(p.raised, p.sage, PILL_TINT), p.sage),
-        RowTranscript::Failed => live(mix(p.raised, theme::SOFT_RED, PILL_TINT), theme::SOFT_RED),
+        RowTranscript::Done => PillLook {
+            border: Some(p.accent),
+            ..plain
+        },
+        RowTranscript::Running(n) => PillLook {
+            fill: Some(p.raised),
+            border: Some(p.track),
+            progress: Some(f32::from(n.min(100)) / 100.0),
+            ..plain
+        },
+        RowTranscript::Queued | RowTranscript::Waiting => PillLook {
+            fill: None,
+            border: Some(p.track),
+            ink: p.secondary,
+            ..plain
+        },
+        RowTranscript::Failed => PillLook {
+            ink: theme::SOFT_RED,
+            ..plain
+        },
     }
 }
 
-/// "Buang" beside a running screen recording, as (fill, label): the raised
-/// pill of pause; asked once ("Yakin buang?") the soft red on a faint tint
-/// of it, the failed pill's look. A stronger wash drops the red label under
-/// 4.5:1 on Graphite, Sea, Night, Plum and Terminal (0.22: 3.80 on Plum).
-fn rec_discard_look(p: &Palette, armed: bool) -> (u32, u32) {
-    if armed {
-        (mix(p.raised, theme::SOFT_RED, PILL_TINT), theme::SOFT_RED)
-    } else {
-        (p.raised_hi, p.text)
-    }
+/// How far the armed "Buang" button's fill leans from the card to the
+/// recording red (`.btn.danger`: the red at 16 %).
+const REC_DISCARD_TINT: f32 = 0.16;
+
+/// "Buang" under "Buang video ini?", as (fill, label): the soft red on a
+/// faint wash of the recording red over the card.
+fn rec_discard_look(p: &Palette) -> (u32, u32) {
+    (mix(p.raised, theme::REC_RED, REC_DISCARD_TINT), theme::SOFT_RED)
 }
 
 /// A heading's line (DM Sans 600 20, 26 px) is taller than the 22 px header
@@ -960,8 +976,8 @@ impl Renderer {
         }
     }
 
-    /// The measured width of each recent recording's pill label, zero for a
-    /// row without a pill (`RecEntry::has_pill`).
+    /// The measured width of each recent recording's button label (11 dip
+    /// 500, as drawn), zero for a row without one (`RecEntry::has_pill`).
     fn rec_pill_widths(&self, recent: &[RecEntry]) -> Vec<f32> {
         let lang = i18n::lang();
         recent
@@ -971,7 +987,7 @@ impl Renderer {
                     return 0.0;
                 }
                 let label = i18n::tr_pill(lang, e.transcript);
-                self.text_width(&label, &self.fonts.small_center).ceil()
+                self.text_width(&label, &self.fonts.button_center).ceil()
             })
             .collect()
     }
@@ -980,271 +996,469 @@ impl Renderer {
     /// discard's "Buang" and "Simpan".
     fn record_head(&self) -> RecordHead {
         let lang = i18n::lang();
-        let tab = |key| self.text_width(text(lang, key), &self.fonts.small_center).ceil();
-        let button = |key| self.text_width(text(lang, key), &self.fonts.button).ceil();
+        let tab = |key| self.text_width(text(lang, key), &self.fonts.rec_center).ceil();
+        let button = |key| self.text_width(text(lang, key), &self.fonts.button_center).ceil();
         RecordHead {
             tabs_w: [tab(Key::RecTabAudio), tab(Key::RecTabScreen)],
             confirm_w: [button(Key::ScreenDiscard), button(Key::ScreenDiscardKeep)],
         }
     }
 
-    /// The Rekam page on direction B's layout (docs/design/rekam-b.html):
-    /// the tab switch and the two header icons, the card (the round button
-    /// or the live controls, the sources, the caption row) and the day-grouped
-    /// list. A plain pass over the layout; the redesign's painting task draws
-    /// it as the mockup does.
+    /// The Rekam page after docs/design/rekam-b.html: the tab switch and the
+    /// two header icons, the card at the left (the round button or the live
+    /// controls, the sources, the caption row) and the day-grouped list.
     fn paint_record(&self, l: &RecordLayout, frame: &Frame) {
+        self.paint_record_header(l, frame.record.tab);
+        self.paint_record_card(l, frame);
+        self.paint_record_list(l, frame);
+    }
+
+    /// The "Audio" / "Layar" switch, as the calendar's view selector: one
+    /// raised track, the tab on show lit; the whole switch at half strength
+    /// while a recording locks it. Then "Transkrip file lain..." and "Buka
+    /// folder" as icons. (No hover plate: the panel tracks no hover, as for
+    /// the Settings button beside them.)
+    fn paint_record_header(&self, l: &RecordLayout, shown: RecKind) {
         let lang = i18n::lang();
         let p = self.palette;
-        let rec = frame.rec;
-        let screen = frame.record.tab == RecKind::Screen;
-        // The switch, as the calendar's view selector: one raised track, the
-        // tab on show lit. Locked (a recording runs), the other tab dims.
-        self.set_color(p.raised, 1.0);
+        let alpha = if l.tabs_enabled { 1.0 } else { REC_TAB_LOCKED };
+        self.set_color(p.raised, alpha);
         self.fill_round(l.header, radius::CONTROL);
         for (kind, r) in l.tabs {
-            let on = kind == frame.record.tab;
+            let on = kind == shown;
             if on {
-                self.set_color(p.raised_hi, 1.0);
+                self.set_color(p.raised_hi, alpha);
                 self.fill_round(r, radius::SEGMENT);
             }
             let key = match kind {
                 RecKind::Audio => Key::RecTabAudio,
                 RecKind::Screen => Key::RecTabScreen,
             };
-            let (ink, alpha) = match (on, l.tabs_enabled) {
-                (true, _) => (p.text, 1.0),
-                (false, true) => (p.secondary, 1.0),
-                (false, false) => (p.secondary, REC_TAB_LOCKED),
-            };
-            self.text_colored(text(lang, key), &self.fonts.small_center, r, ink, alpha);
+            let ink = if on { p.text } else { p.secondary };
+            self.text_colored(text(lang, key), &self.fonts.rec_center, r, ink, alpha);
         }
-        // "Transkrip file lain..." and "Buka folder" as icons.
-        self.icon_colored(Icon::TempFile, l.pick, REC_HEAD_ICON, p.secondary, 1.0, None);
+        self.icon_colored(Icon::Note, l.pick, REC_HEAD_ICON, p.secondary, 1.0, None);
         self.icon_colored(Icon::Folder, l.folder, REC_HEAD_ICON, p.secondary, 1.0, None);
+    }
 
-        // The card, and the round button in a ring.
+    /// The card: the top block (the record button and "Rekam"; pause, stop,
+    /// trash and the clock while recording; the discard's question), the
+    /// idle Layar tab's hint and quality row, the source rows and the caption
+    /// row, each row under a `track` hairline.
+    fn paint_record_card(&self, l: &RecordLayout, frame: &Frame) {
+        let lang = i18n::lang();
+        let p = self.palette;
+        let view = &frame.record;
+        let rec = frame.rec;
+        let paused = rec.is_some_and(|r| r.paused);
         self.set_color(p.raised, 1.0);
-        self.fill_round(l.card, radius::CARD);
+        self.fill_round(l.card, radius::TILE);
+
+        // The round button: a `track` ring, the red dot idle, the red square
+        // (stop) while recording.
         if l.button.w > 0.0 {
-            self.stroke_round_width(l.button, l.button.h / 2.0, p.track, 3.0);
-            let c = (l.button.x + l.button.w / 2.0, l.button.y + l.button.h / 2.0);
-            self.set_color(theme::REC_RED, 1.0);
+            let ring = inset(l.button, REC_RING_W / 2.0, REC_RING_W / 2.0);
+            self.stroke_round_width(ring, ring.h / 2.0, p.track, REC_RING_W);
             let (side, corner) = if rec.is_some() {
-                (REC_STOP_SIDE, 4.0)
+                (REC_STOP_SIDE, REC_STOP_CORNER)
             } else {
                 (REC_DOT_BIG * 2.0, REC_DOT_BIG)
             };
-            let mark = Rect {
-                x: c.0 - side / 2.0,
-                y: c.1 - side / 2.0,
-                w: side,
-                h: side,
-            };
-            self.fill_round(mark, corner);
+            self.set_color(theme::REC_RED, 1.0);
+            self.fill_round(centred_square(l.button, side), corner);
         }
         if let Some(label) = l.button_label {
             let name = text(lang, Key::RecRecordLabel);
-            self.text_colored(name, &self.fonts.small_center, label, p.text, 1.0);
+            self.text_colored(name, &self.fonts.rec_center, label, p.text, 1.0);
         }
         if let Some(pause) = l.pause {
-            self.set_color(p.track, 1.0);
-            self.fill_round(pause, pause.h / 2.0);
-            let glyph = if rec.is_some_and(|r| r.paused) {
-                Icon::Play
-            } else {
-                Icon::Pause
-            };
-            self.icon_colored(glyph, pause, 16.0, p.text, 1.0, None);
+            let glyph = if paused { Icon::Play } else { Icon::Pause };
+            self.rec_round_button(pause, glyph);
         }
         if let Some(discard) = l.discard {
-            self.set_color(p.track, 1.0);
-            self.fill_round(discard, discard.h / 2.0);
-            self.icon_colored(Icon::Trash, discard, 16.0, p.text, 1.0, None);
+            self.rec_round_button(discard, Icon::Trash);
         }
         if let Some(c) = l.confirm {
             let ask = text(lang, Key::ScreenDiscardAsk);
-            self.text_colored(ask, &self.fonts.small_center, c.question, p.text, 1.0);
-            let yes = text(lang, Key::ScreenDiscard);
-            self.paint_labelled_button(c.discard, None, yes, rec_discard_look(&p, true), 1.0);
-            let keep = text(lang, Key::ScreenDiscardKeep);
-            self.paint_labelled_button(c.keep, None, keep, (p.track, p.text), 1.0);
+            self.text_colored(ask, &self.fonts.rec_center, c.question, p.text, 1.0);
+            let (fill, ink) = rec_discard_look(&p);
+            self.rec_confirm_button(c.discard, text(lang, Key::ScreenDiscard), fill, ink);
+            self.rec_confirm_button(c.keep, text(lang, Key::ScreenDiscardKeep), p.track, p.text);
         }
         if let (Some(r), Some(clock)) = (rec, l.clock) {
-            let tint = if r.paused { p.ochre } else { p.text };
-            self.text_colored(&rec_clock(r.elapsed), &self.fonts.clock, clock, tint, 1.0);
+            // The live dot and the time, centred together; ochre paused.
+            let (dot, ink) = if r.paused {
+                (p.ochre, p.ochre)
+            } else {
+                (theme::REC_RED, p.text)
+            };
+            let time = rec_clock(r.elapsed);
+            let font = &self.fonts.day_number;
+            let w = self.text_width(&time, font).ceil() + 1.0;
+            let x = clock.x + (clock.w - REC_LIVE_DOT - REC_CLOCK_GAP - w) / 2.0;
+            let mark = Rect {
+                x,
+                y: clock.y + (clock.h - REC_LIVE_DOT) / 2.0,
+                w: REC_LIVE_DOT,
+                h: REC_LIVE_DOT,
+            };
+            self.set_color(dot, 1.0);
+            self.fill_round(mark, REC_LIVE_DOT / 2.0);
+            let area = Rect {
+                x: mark.right() + REC_CLOCK_GAP,
+                w,
+                ..clock
+            };
+            self.text_colored(&time, font, area, ink, 1.0);
         }
+
+        // The idle Layar tab: what Record leads to, and the quality row.
         if let Some(hint) = l.hint {
-            let hint_text = text(lang, Key::ScreenIdleHint);
-            self.text_colored(hint_text, &self.fonts.micro_center, hint, p.secondary, 1.0);
+            let area = Rect {
+                x: hint.x + REC_HINT_PAD,
+                w: (hint.w - 2.0 * REC_HINT_PAD).max(0.0),
+                ..hint
+            };
+            let words = text(lang, Key::ScreenIdleHint);
+            self.text_colored(words, &self.fonts.rec_hint, area, p.secondary, 1.0);
         }
         if let Some(q) = l.quality {
-            self.text_colored(text(lang, Key::RecQuality), &self.fonts.small, q, p.text, 1.0);
+            self.rec_hairline(q);
+            let chevron = Rect {
+                x: q.right() - REC_SMALL_ICON,
+                w: REC_SMALL_ICON,
+                ..q
+            };
+            self.icon_colored(Icon::ChevR, chevron, REC_SMALL_ICON, p.secondary, 1.0, None);
+            let font = &self.fonts.eleven;
+            let w = self.text_width(&view.quality, font).ceil() + 1.0;
+            let value = Rect {
+                x: chevron.x - REC_LINK_GAP - w,
+                w,
+                ..q
+            };
+            self.text_colored(&view.quality, font, value, p.secondary, 1.0);
+            let label = Rect {
+                w: (value.x - REC_ROW_GAP - q.x).max(0.0),
+                ..q
+            };
+            let name = text(lang, Key::RecQuality);
+            self.text_colored(name, &self.fonts.rec_name, label, p.text, 1.0);
         }
 
         // The sources: an icon and a switch while idle, a mute button and a
         // meter while recording; the name over the device line.
         for src in &l.sources {
+            self.rec_hairline(src.row);
             let i = src.source.index();
-            let (open, crossed, name_key) = match src.source {
-                Source::Mic => (Icon::Mic, Icon::MicOff, Key::RecSourceMic),
-                Source::System => (Icon::Volume, Icon::VolumeMute, Key::RecSourceSystem),
+            let (open, crossed, name_key, missing_key) = match src.source {
+                Source::Mic => (Icon::Mic, Icon::MicOff, Key::RecSourceMic, Key::RecMicMissing),
+                Source::System => (
+                    Icon::Volume,
+                    Icon::VolumeMute,
+                    Key::RecSourceSystem,
+                    Key::RecSystemMissing,
+                ),
             };
+            let (device, device_ink) = if view.missing[i] {
+                (text(lang, missing_key), p.ochre)
+            } else {
+                (view.devices[i].as_str(), p.secondary)
+            };
+            let name = text(lang, name_key);
             match rec {
                 Some(r) => {
                     let muted = r.muted[i];
-                    self.set_color(if muted { p.raised } else { p.track }, 1.0);
-                    self.fill_round(src.glyph, radius::SEGMENT);
-                    let icon = if muted { crossed } else { open };
-                    self.icon_colored(icon, src.glyph, REC_MUTE_GLYPH, p.text, 1.0, None);
-                    if let Some(meter) = src.meter {
-                        let level = if muted || r.paused {
-                            0.0
-                        } else if src.source == Source::Mic {
-                            r.mic
-                        } else {
-                            r.system
+                    // The mute button: a `track` key, or an outline with the
+                    // crossed icon once muted.
+                    let (icon, ink) = if muted {
+                        let edge = inset(src.glyph, 0.5, 0.5);
+                        self.stroke_round_width(edge, REC_MUTE_R - 0.5, p.track, 1.0);
+                        (crossed, p.secondary)
+                    } else {
+                        self.set_color(p.track, 1.0);
+                        self.fill_round(src.glyph, REC_MUTE_R);
+                        (open, p.text)
+                    };
+                    self.icon_colored(icon, src.glyph, REC_SMALL_ICON, ink, 1.0, None);
+                    self.text_colored(name, &self.fonts.rec_name, src.name, p.text, 1.0);
+                    if muted {
+                        let hotkey = match src.source {
+                            Source::Mic => view.mute_hotkey.as_deref(),
+                            Source::System => None,
                         };
-                        self.rec_meter(meter, level, p.accent);
+                        let line = i18n::rec_muted(lang, hotkey);
+                        self.rec_device_line(&line, src.device, p.secondary, false);
+                    } else {
+                        self.rec_device_line(device, src.device, device_ink, true);
+                    }
+                    if let Some(meter) = src.meter {
+                        let level = match src.source {
+                            Source::Mic => r.mic,
+                            Source::System => r.system,
+                        };
+                        if muted || r.paused {
+                            self.rec_meter(meter, &[REC_BAR_REST; REC_SRC_BARS], p.track);
+                        } else {
+                            self.rec_meter(meter, &rec_source_meter_heights(level), p.accent);
+                        }
                     }
                 }
                 None => {
                     let on = match src.source {
-                        Source::Mic => frame.record.sources.mic,
-                        Source::System => frame.record.sources.system,
+                        Source::Mic => view.sources.mic,
+                        Source::System => view.sources.system,
                     };
                     let (icon, ink) = if on { (open, p.accent) } else { (crossed, p.secondary) };
                     self.icon_colored(icon, src.glyph, src.glyph.w, ink, 1.0, None);
+                    let name_ink = if on { p.text } else { p.secondary };
+                    self.text_colored(name, &self.fonts.rec_name, src.name, name_ink, 1.0);
+                    self.rec_device_line(device, src.device, device_ink, true);
                     if let Some(switch) = src.switch {
-                        self.paint_switch(switch, on);
+                        // The last source on cannot be switched off.
+                        let alpha = if src.switch_to.is_some() {
+                            1.0
+                        } else {
+                            REC_LOCKED_SWITCH
+                        };
+                        self.paint_switch_at(switch, on, alpha);
                     }
                 }
             }
-            self.text_colored(text(lang, name_key), &self.fonts.small, src.name, p.text, 1.0);
-            self.rec_device_name(&frame.record.devices[i], src.device, None);
         }
-        // "Caption langsung" and its switch.
-        let on = frame.record.captions_on;
-        let label = Rect {
-            w: (l.caption_switch.x - l.caption.x - 8.0).max(0.0),
+
+        // "Caption langsung": the CC icon, the label and its switch.
+        let on = view.captions_on;
+        self.rec_hairline(l.caption);
+        let icon = Rect {
+            w: REC_HEAD_ICON,
             ..l.caption
         };
-        let ink = if on { p.text } else { p.secondary };
-        self.text_colored(text(lang, Key::RecCaptionSwitch), &self.fonts.small, label, ink, 1.0);
+        let ink = if on { p.accent } else { p.secondary };
+        self.icon_colored(Icon::Captions, icon, REC_HEAD_ICON, ink, 1.0, None);
+        let x = icon.right() + REC_ROW_GAP;
+        let label = Rect {
+            x,
+            w: (l.caption_switch.x - REC_ROW_GAP - x).max(0.0),
+            ..l.caption
+        };
+        let caption = text(lang, Key::RecCaptionSwitch);
+        self.text_colored(caption, &self.fonts.rec_name, label, p.text, 1.0);
         self.paint_switch(l.caption_switch, on);
+    }
 
-        // The list: day labels, the now row while recording, the rows, the
-        // more line, or the empty state.
-        let recent = frame.record.recent;
-        let (row_icon, empty_key) = if screen {
-            (Icon::Video, Key::ScreenNoVideos)
-        } else {
-            (Icon::Mic, Key::RecEmpty)
+    /// The list: the day labels, the "Sekarang" row while recording, a row
+    /// per recording (kind well, start time, a video's title, the length,
+    /// the transcript button), the "N lagi di folder" line, or the empty
+    /// state.
+    fn paint_record_list(&self, l: &RecordLayout, frame: &Frame) {
+        let lang = i18n::lang();
+        let p = self.palette;
+        let view = &frame.record;
+        let rec = frame.rec;
+        let recent = view.recent;
+        let (kind_icon, empty_key) = match view.tab {
+            RecKind::Screen => (Icon::Monitor, Key::ScreenNoVideos),
+            RecKind::Audio => (Icon::Mic, Key::RecEmpty),
         };
         for (n, &(i, g)) in l.groups.iter().enumerate() {
+            // While recording the first label heads the now row: today's.
             let day = if rec.is_some() && n == 0 {
-                frame.today
+                view.today
             } else {
-                recent.get(i).map_or(frame.today, |e| e.started_at.date())
+                recent.get(i).map_or(view.today, |e| e.started_at.date())
             };
-            let label = i18n::rec_day_label(lang, day, frame.today);
-            self.text_colored(&label, &self.fonts.micro, g, p.secondary, 1.0);
+            let label = i18n::rec_day_label(lang, day, view.today);
+            self.text_colored(&label, &self.fonts.small_medium, g, p.secondary, 1.0);
         }
         if let (Some(now), Some(r)) = (l.now, rec) {
-            let dot = Rect {
-                x: now.x + 7.0,
-                y: now.y + now.h / 2.0 - 4.0,
-                w: 8.0,
-                h: 8.0,
-            };
-            self.set_color(if r.paused { p.ochre } else { theme::REC_RED }, 1.0);
-            self.fill_round(dot, 4.0);
-            let words = Rect {
-                x: now.x + 30.0,
-                w: (now.w - 30.0).max(0.0),
+            let well = self.rec_well(now, None);
+            let dot = if r.paused { p.ochre } else { theme::REC_RED };
+            self.set_color(dot, 1.0);
+            self.fill_round(centred_square(well, REC_LIVE_DOT), REC_LIVE_DOT / 2.0);
+            let word = text(lang, Key::RecNow);
+            let w = self.text_width(word, &self.fonts.title).ceil() + 1.0;
+            let at = Rect {
+                x: well.right() + REC_ROW_GAP,
+                w,
                 ..now
             };
-            let state = text(lang, if r.paused { Key::Paused } else { Key::RecRecording });
-            let line = format!("{}  {state}", text(lang, Key::RecNow));
-            self.text_colored(&line, &self.fonts.row_name, words, p.text, 1.0);
-        }
-        if let Some(empty) = l.empty {
-            let well = Rect { w: empty.h, ..empty };
-            self.set_color(p.raised, 1.0);
-            self.fill_round(well, 10.0);
-            self.icon_colored(row_icon, well, 16.0, p.secondary, 1.0, None);
-            let words = Rect {
-                x: well.right() + 10.0,
-                w: (empty.w - well.w - 10.0).max(0.0),
-                ..empty
+            self.text_colored(word, &self.fonts.title, at, p.text, 1.0);
+            let x = at.right() + REC_ROW_GAP;
+            let state = Rect {
+                x,
+                w: (now.right() - x).max(0.0),
+                ..now
             };
-            self.text_colored(text(lang, empty_key), &self.fonts.small, words, p.text, 1.0);
+            let word = text(lang, if r.paused { Key::Paused } else { Key::RecRecording });
+            self.text_colored(word, &self.fonts.row_name, state, p.secondary, 1.0);
         }
         for (row, entry) in l.rows.iter().zip(recent) {
-            self.set_color(p.raised, 1.0);
-            self.fill_round(row.well, radius::SEGMENT);
-            self.icon_colored(row_icon, row.well, 13.0, p.secondary, 1.0, None);
+            self.rec_well(row.row, Some(kind_icon));
             let time = entry.started_at.format("%H:%M").to_string();
-            self.text_colored(&time, &self.fonts.row_name, row.time, p.text, 1.0);
-            if let Some(title) = row.title {
-                self.text_colored(&entry.title, &self.fonts.small, title, p.text, 1.0);
-            }
+            self.text_colored(&time, &self.fonts.title, row.time, p.text, 1.0);
             let length = if entry.unfinished {
                 text(lang, Key::RecUnfinished).to_string()
             } else {
                 i18n::rec_duration(lang, entry.duration)
             };
-            self.text_colored(&length, &self.fonts.small, row.length, p.secondary, 1.0);
+            // A video's length sits against its button and its title takes
+            // the room up to it (`.trunc` with flex 1 in the mockup): a short
+            // length leaves the title more than its column, a long one
+            // ("belum selesai" on a row with no button) takes some of the
+            // title's, down to `REC_TITLE_MIN`. An audio row's length follows
+            // the time.
+            let area = match row.title {
+                Some(title) => {
+                    let w = self.text_width(&length, &self.fonts.row_name).ceil() + 1.0;
+                    let most = row.length.right() - title.x - REC_ROW_GAP - REC_TITLE_MIN;
+                    let w = w.min(row.length.w.max(most));
+                    let area = Rect {
+                        x: row.length.right() - w,
+                        w,
+                        ..row.length
+                    };
+                    let title = Rect {
+                        w: (area.x - REC_ROW_GAP - title.x).max(0.0),
+                        ..title
+                    };
+                    self.text_colored(&entry.title, &self.fonts.row_name, title, p.text, 1.0);
+                    area
+                }
+                None => row.length,
+            };
+            self.text_colored(&length, &self.fonts.row_name, area, p.secondary, 1.0);
             if row.pill.w > 0.0 {
-                let look = rec_pill_look(&p, entry.transcript);
-                self.set_color(look.fill, look.alpha());
-                self.fill_round(row.pill, 8.0);
                 let label = i18n::tr_pill(lang, entry.transcript);
-                self.text_colored(
-                    &label,
-                    &self.fonts.small_center,
-                    row.pill,
-                    look.ink,
-                    look.alpha(),
-                );
+                self.rec_pill(row.pill, rec_pill_look(&p, entry.transcript), &label);
             }
         }
         if let Some((n, more)) = l.more {
             let line = i18n::rec_more(lang, n);
-            self.text_colored(&line, &self.fonts.small, more, p.secondary, 1.0);
+            let font = &self.fonts.eleven;
+            let w = self.text_width(&line, font).ceil() + 1.0;
+            let w = w.min((more.w - REC_LINK_GAP - REC_SMALL_ICON).max(0.0));
+            self.text_colored(&line, font, Rect { w, ..more }, p.secondary, 1.0);
+            let chevron = Rect {
+                x: more.x + w + REC_LINK_GAP,
+                w: REC_SMALL_ICON,
+                ..more
+            };
+            self.icon_colored(Icon::ChevR, chevron, REC_SMALL_ICON, p.secondary, 1.0, None);
+        }
+        if let Some(empty) = l.empty {
+            let well = Rect { w: empty.h, ..empty };
+            self.set_color(p.raised, 1.0);
+            self.fill_round(well, REC_EMPTY_WELL_R);
+            self.icon_colored(kind_icon, well, REC_HEAD_ICON, p.secondary, 1.0, None);
+            let x = well.right() + REC_EMPTY_GAP;
+            let half = empty.h / 2.0;
+            let line = |y: f32| Rect {
+                x,
+                y,
+                w: (empty.right() - x).max(0.0),
+                h: half,
+            };
+            let title = text(lang, empty_key);
+            self.text_colored(title, &self.fonts.title, line(empty.y), p.text, 1.0);
+            let hint = i18n::rec_empty_hint(lang, view.start_hotkey.as_deref());
+            self.text_colored(&hint, &self.fonts.eleven, line(empty.y + half), p.secondary, 1.0);
         }
     }
 
-    /// A source's device name in `area`, trimmed with an ellipsis to leave
-    /// room for the down chevron that follows it (it says "click to change");
-    /// `glyph` goes first when given. Nothing when the name is not known.
-    fn rec_device_name(&self, name: &str, area: Rect, glyph: Option<Icon>) {
+    /// A `track` circle with an icon in `text`: pause, resume and trash.
+    fn rec_round_button(&self, r: Rect, icon: Icon) {
         let p = self.palette;
-        let mut x = area.x;
-        if let Some(glyph) = glyph {
-            let icon = Rect {
-                x,
-                w: REC_DEVICE_GLYPH,
-                ..area
-            };
-            self.icon_colored(glyph, icon, REC_DEVICE_GLYPH, p.secondary, 1.0, None);
-            x += REC_DEVICE_GLYPH + REC_LINK_GAP;
+        self.set_color(p.track, 1.0);
+        self.fill_round(r, r.h / 2.0);
+        self.icon_colored(icon, r, REC_HEAD_ICON, p.text, 1.0, None);
+    }
+
+    /// One of the armed discard's two buttons: `fill`, radius 8, the label
+    /// (11 dip 500) centred in `ink`.
+    fn rec_confirm_button(&self, r: Rect, label: &str, fill: u32, ink: u32) {
+        self.set_color(fill, 1.0);
+        self.fill_round(r, radius::SEGMENT);
+        self.text_colored(label, &self.fonts.button_center, r, ink, 1.0);
+    }
+
+    /// A `track` hairline along the top of a card row.
+    fn rec_hairline(&self, row: Rect) {
+        self.set_color(self.palette.track, 1.0);
+        self.fill_round(Rect { h: 1.0, ..row }, 0.0);
+    }
+
+    /// A list row's 22 dip `raised` well at the left of `row`, with `icon`
+    /// (13 dip, secondary) in it; returns the well.
+    fn rec_well(&self, row: Rect, icon: Option<Icon>) -> Rect {
+        let p = self.palette;
+        let well = Rect {
+            x: row.x,
+            y: row.y + (row.h - REC_WELL) / 2.0,
+            w: REC_WELL,
+            h: REC_WELL,
+        };
+        self.set_color(p.raised, 1.0);
+        self.fill_round(well, REC_WELL_R);
+        if let Some(icon) = icon {
+            self.icon_colored(icon, well, REC_SMALL_ICON, p.secondary, 1.0, None);
         }
-        if name.is_empty() {
+        well
+    }
+
+    /// A row's transcript button as `look` says (`rec_pill_look`): the fill,
+    /// the percent's `raised_hi` fill from the left, the 1 dip inner border,
+    /// then the label (11 dip 500), trimmed with an ellipsis if too long.
+    fn rec_pill(&self, r: Rect, look: PillLook, label: &str) {
+        let p = self.palette;
+        if let Some(fill) = look.fill {
+            self.set_color(fill, look.alpha);
+            self.fill_round(r, radius::SEGMENT);
+        }
+        if let Some(done) = look.progress {
+            let target = self.target.as_ref().expect("target ensured by paint");
+            let reach = Rect { w: r.w * done, ..r };
+            unsafe {
+                target
+                    .rt
+                    .PushAxisAlignedClip(&d2d_rect(reach), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            }
+            self.set_color(p.raised_hi, look.alpha);
+            self.fill_round(r, radius::SEGMENT);
+            unsafe { target.rt.PopAxisAlignedClip() };
+        }
+        if let Some(border) = look.border {
+            self.stroke_round_width(inset(r, 0.5, 0.5), radius::SEGMENT - 0.5, border, 1.0);
+        }
+        let area = Rect {
+            x: r.x + REC_PILL_INSET,
+            w: (r.w - 2.0 * REC_PILL_INSET).max(0.0),
+            ..r
+        };
+        self.text_colored(label, &self.fonts.button_center, area, look.ink, look.alpha);
+    }
+
+    /// A source's device line (10 dip) in `area` in `ink`, trimmed with an
+    /// ellipsis; with `chevron`, a 10 dip down chevron follows it (it says
+    /// "click to change"). Nothing for an empty line.
+    fn rec_device_line(&self, line: &str, area: Rect, ink: u32, chevron: bool) {
+        if line.is_empty() {
             return;
         }
-        let room = (area.right() - x - REC_CHEVRON - REC_LINK_GAP).max(0.0);
-        let font = &self.fonts.small;
-        let shown = self.fit_text(name, font, room);
-        let w = self.text_width(&shown, font).ceil() + 1.0;
-        let label = Rect { x, w, ..area };
-        self.text_colored(&shown, font, label, p.secondary, 1.0);
-        let chevron = Rect {
-            x: x + w + REC_LINK_GAP,
-            w: REC_CHEVRON,
-            ..area
-        };
-        self.icon_colored(Icon::ChevD, chevron, REC_CHEVRON, p.secondary, 0.8, None);
+        let tail = if chevron { REC_CHEVRON + REC_LINK_GAP } else { 0.0 };
+        let room = (area.w - tail).max(0.0);
+        let font = &self.fonts.track_time;
+        let shown = self.fit_text(line, font, room);
+        let w = (self.text_width(&shown, font).ceil() + 1.0).min(room);
+        self.text_colored(&shown, font, Rect { w, ..area }, ink, 1.0);
+        if chevron {
+            let at = Rect {
+                x: area.x + w + REC_LINK_GAP,
+                w: REC_CHEVRON,
+                ..area
+            };
+            self.icon_colored(Icon::ChevD, at, REC_CHEVRON, ink, 1.0, None);
+        }
     }
 
     /// `text` as it is when it fits `width` in `font`, else cut with an
@@ -1591,8 +1805,13 @@ impl Renderer {
     /// A small on / off switch: an accent track and a knob at the right when
     /// on, a plain track and a knob at the left when off.
     fn paint_switch(&self, switch: Rect, on: bool) {
+        self.paint_switch_at(switch, on, 1.0);
+    }
+
+    /// `paint_switch` drawn at `alpha` (a switch that takes no click).
+    fn paint_switch_at(&self, switch: Rect, on: bool, alpha: f32) {
         let p = self.palette;
-        self.set_color(if on { p.accent } else { p.track }, 1.0);
+        self.set_color(if on { p.accent } else { p.track }, alpha);
         self.fill_round(switch, switch.h / 2.0);
         let d = switch.h - 4.0;
         let knob = Rect {
@@ -1601,7 +1820,7 @@ impl Renderer {
             w: d,
             h: d,
         };
-        self.set_color(if on { p.on_accent } else { p.secondary }, 1.0);
+        self.set_color(if on { p.on_accent } else { p.secondary }, alpha);
         self.fill_round(knob, d / 2.0);
     }
 
@@ -5048,7 +5267,7 @@ impl Renderer {
             } else if rec.muted[0] {
                 self.rec_muted_glyph(mic_at, Icon::MicOff);
             } else {
-                self.rec_meter(mic_at, rec.mic, REC_MIC_TINT);
+                self.rec_meter(mic_at, &rec_meter_heights(rec.mic), REC_MIC_TINT);
             }
         }
         if sources.system {
@@ -5058,7 +5277,7 @@ impl Renderer {
             } else if rec.muted[1] {
                 self.rec_muted_glyph(system_at, Icon::VolumeMute);
             } else {
-                self.rec_meter(system_at, rec.system, self.palette.sage);
+                self.rec_meter(system_at, &rec_meter_heights(rec.system), self.palette.sage);
             }
         }
         // The groups take the click, and the pointer resting on one opens no
@@ -5202,11 +5421,12 @@ impl Renderer {
         self.icon_colored(icon, area, REC_MUTED_GLYPH, self.palette.secondary, 1.0, None);
     }
 
-    /// Four bars from the bottom of `area`, their heights from `level`.
-    fn rec_meter(&self, area: Rect, level: f32, rgb: u32) {
+    /// A level meter's bars across `area`, centred on its middle, one per
+    /// height (`rec_meter_heights`, `rec_source_meter_heights`).
+    fn rec_meter(&self, area: Rect, heights: &[f32], rgb: u32) {
         self.set_color(rgb, 1.0);
         let cy = area.y + area.h / 2.0;
-        for (i, h) in rec_meter_heights(level).into_iter().enumerate() {
+        for (i, &h) in heights.iter().enumerate() {
             self.fill_round(
                 Rect {
                     x: area.x + i as f32 * (REC_BAR_W + REC_BAR_GAP),
@@ -5567,31 +5787,76 @@ fn pomodoro_compact_boxes(text: Rect, time_w: f32) -> (Rect, Rect) {
     (time, label)
 }
 
-/// The Rekam page's header icons, the gap between a device name and its
-/// chevron, the stop square's side and the start dot's radius.
+/// The Rekam page (docs/design/rekam-b.html): its 16 dip icons (header,
+/// round buttons, a source's glyph, the empty well) and 13 dip ones (a row's
+/// well, the mute button, the chevrons after the quality and "more"), the
+/// gap before a chevron and between a row's parts.
 const REC_HEAD_ICON: f32 = 16.0;
+const REC_SMALL_ICON: f32 = 13.0;
 const REC_LINK_GAP: f32 = 4.0;
+const REC_ROW_GAP: f32 = 8.0;
+/// The round button's ring, the stop square (side and corner) and the
+/// idle dot's radius.
+const REC_RING_W: f32 = 3.0;
 const REC_STOP_SIDE: f32 = 18.0;
+const REC_STOP_CORNER: f32 = 3.0;
 const REC_DOT_BIG: f32 = 11.0;
-/// How much of its ink the tab not on show keeps while the switch is locked.
+/// The live dot by the clock and in the now row's well, and its gap to the
+/// clock.
+const REC_LIVE_DOT: f32 = 8.0;
+const REC_CLOCK_GAP: f32 = 6.0;
+/// The Layar hint's side padding.
+const REC_HINT_PAD: f32 = 4.0;
+/// The mute button's corner.
+const REC_MUTE_R: f32 = 7.0;
+/// A list row's well corner, the empty state's well corner and its gap to
+/// the words.
+const REC_WELL_R: f32 = 7.0;
+const REC_EMPTY_WELL_R: f32 = 10.0;
+const REC_EMPTY_GAP: f32 = 10.0;
+/// The least a video's title keeps beside a long length.
+const REC_TITLE_MIN: f32 = 40.0;
+/// A transcript button's label keeps this much room at each side.
+const REC_PILL_INSET: f32 = 6.0;
+/// The switch's (and tab switch's) strength while locked: the last source
+/// on, a recording running.
+const REC_LOCKED_SWITCH: f32 = 0.45;
 const REC_TAB_LOCKED: f32 = 0.5;
+/// How far each bar of a source's live meter rises relative to the loudest
+/// (the meter's `.meter i` heights in rekam-b.html: 6, 11, 14, 9, 5 of 14).
+const REC_SRC_SHAPE: [f32; REC_SRC_BARS] = [0.43, 0.79, 1.0, 0.64, 0.36];
+
+/// A source meter's five bar heights on the Rekam page for a `level` of 0
+/// to 1, as `rec_meter_heights` does for the notch's four.
+fn rec_source_meter_heights(level: f32) -> [f32; REC_SRC_BARS] {
+    let level = if level.is_nan() { 0.0 } else { level.clamp(0.0, 1.0) };
+    REC_SRC_SHAPE.map(|k| REC_BAR_REST + (REC_SRC_METER_H - REC_BAR_REST) * level * k)
+}
+
+/// A `side` square centred in `r`.
+fn centred_square(r: Rect, side: f32) -> Rect {
+    Rect {
+        x: r.x + (r.w - side) / 2.0,
+        y: r.y + (r.h - side) / 2.0,
+        w: side,
+        h: side,
+    }
+}
 
 /// The mic meter's cream tint (`.lv.mic` in docs/design/rekaman.html).
 const REC_MIC_TINT: u32 = 0xEBCFB8;
 /// The crossed glyph that stands in for a muted source's meter in the REC
-/// view, and the icon in the Rekam page's mute button.
+/// view.
 const REC_MUTED_GLYPH: f32 = 14.0;
 /// The hot level group's pill on the closed REC view: its size and corner.
 const REC_MUTE_PILL_W: f32 = 24.0;
 const REC_MUTE_PILL_H: f32 = 22.0;
 const REC_MUTE_PILL_R: f32 = 8.0;
-const REC_MUTE_GLYPH: f32 = 16.0;
 /// The countdown's ring: its stroke, drawn inward from the REC dot's edge,
 /// and the halo's, drawn outward from it (as far as the dot's halo reaches).
 const COUNTDOWN_RING: f32 = 2.0;
 const COUNTDOWN_HALO: f32 = 3.0;
-/// A device line on the Rekam page: its source glyph and its chevron.
-const REC_DEVICE_GLYPH: f32 = 12.0;
+/// The chevron after a device line on the Rekam page.
 const REC_CHEVRON: f32 = 10.0;
 
 /// The recorded time as the REC view writes it: "mm:ss", and "h:mm:ss" from
@@ -7522,58 +7787,111 @@ mod tests {
         (hi + 0.05) / (lo + 0.05)
     }
 
-    /// Every live state's label holds 4.5:1 on its pill, on all six surfaces;
-    /// the off pill (the Transcribe look at 45 %, a disabled control) holds
-    /// 3:1 over the surface.
+    /// Each transcript mark's pill after `.act` in docs/design/rekam-b.html:
+    /// Transkrip on the track, Lihat with the accent border, the percent on
+    /// the raised step with its fill, the queue an outline, Gagal in soft
+    /// red, the off pill the Transkrip look dimmed.
     #[test]
-    fn transcript_pills_hold_their_contrast_on_every_surface() {
-        use RowTranscript::{Done, Failed, None as Nothing, Off, Queued, Running, Waiting};
-        let blend = |fg: u32, bg: u32, a: f32| mix(bg, fg, a);
-        for surface in [
-            Surface::Espresso,
-            Surface::Graphite,
-            Surface::Sea,
-            Surface::Night,
-            Surface::Plum,
-            Surface::Terminal,
-        ] {
-            let p = island(Accent::Terracotta, surface);
-            for mark in [Nothing, Queued, Waiting, Running(42), Done, Failed] {
-                let look = rec_pill_look(&p, mark);
-                assert_eq!(look.pct, 100);
-                let c = contrast(look.ink, look.fill);
-                assert!(c >= 4.5, "{surface:?} {mark:?}: {c:.2}");
+    fn the_pill_looks_follow_the_spec() {
+        use RowTranscript as T;
+        let p = island(Accent::Terracotta, Surface::Espresso);
+        let plain = PillLook {
+            fill: Some(p.track),
+            border: None,
+            ink: p.text,
+            alpha: 1.0,
+            progress: None,
+        };
+        assert_eq!(rec_pill_look(&p, T::None), plain);
+        assert_eq!(
+            rec_pill_look(&p, T::Done),
+            PillLook {
+                border: Some(p.accent),
+                ..plain
             }
-            let look = rec_pill_look(&p, Off);
-            assert_eq!(look.pct, PILL_OFF_PCT);
-            let (fill, ink) = (blend(look.fill, p.surface, look.alpha()), blend(look.ink, p.surface, look.alpha()));
-            let c = contrast(ink, fill);
+        );
+        assert_eq!(
+            rec_pill_look(&p, T::Running(42)),
+            PillLook {
+                fill: Some(p.raised),
+                border: Some(p.track),
+                progress: Some(0.42),
+                ..plain
+            }
+        );
+        assert_eq!(rec_pill_look(&p, T::Running(0)).progress, Some(0.0));
+        assert_eq!(rec_pill_look(&p, T::Running(100)).progress, Some(1.0));
+        let queue = PillLook {
+            fill: None,
+            border: Some(p.track),
+            ink: p.secondary,
+            ..plain
+        };
+        assert_eq!(rec_pill_look(&p, T::Queued), queue);
+        assert_eq!(rec_pill_look(&p, T::Waiting), queue);
+        assert_eq!(
+            rec_pill_look(&p, T::Failed),
+            PillLook {
+                ink: theme::SOFT_RED,
+                ..plain
+            }
+        );
+        assert_eq!(
+            rec_pill_look(&p, T::Off),
+            PillLook {
+                alpha: 0.45,
+                ..plain
+            }
+        );
+    }
+
+    /// Every pill's ink holds 4.5:1 on its fill (on the surface the list
+    /// sits on when it has none; the percent on both of its fills), on every
+    /// surface. The off pill is a disabled control (WCAG exempts it): its
+    /// dimmed label still holds 3:1 over what shows through.
+    #[test]
+    fn the_pill_ink_holds_contrast() {
+        use RowTranscript as T;
+        let blend = |fg: u32, bg: u32, a: f32| mix(bg, fg, a);
+        for &surface in Surface::ALL {
+            let p = island(Accent::Terracotta, surface);
+            for mark in [T::Off, T::None, T::Queued, T::Waiting, T::Running(42), T::Done, T::Failed] {
+                let look = rec_pill_look(&p, mark);
+                let fill = look.fill.unwrap_or(p.surface);
+                let c = contrast(look.ink, fill);
+                assert!(c >= 4.5, "{surface:?} {mark:?}: {c:.2}");
+                if look.progress.is_some() {
+                    let c = contrast(look.ink, p.raised_hi);
+                    assert!(c >= 4.5, "{surface:?} {mark:?} over its fill: {c:.2}");
+                }
+            }
+            let off = rec_pill_look(&p, T::Off);
+            let fill = blend(off.fill.unwrap_or(p.surface), p.surface, off.alpha);
+            let c = contrast(blend(off.ink, fill, off.alpha), fill);
             assert!(c >= 3.0, "{surface:?} off: {c:.2}");
         }
     }
 
-    /// The Layar tab's pairs on all six surfaces: the switch's two labels,
-    /// the hint, "Buang" and the armed "Yakin buang?" hold 4.5:1.
+    /// The page's text pairs on every surface hold 4.5:1: the switch's two
+    /// labels, and on the card the hint, the device line (ochre when its
+    /// device is gone), the paused clock, the round buttons' icons and the
+    /// armed discard's two buttons.
     #[test]
-    fn the_layar_tab_holds_its_contrast_on_every_surface() {
-        for surface in [
-            Surface::Espresso,
-            Surface::Graphite,
-            Surface::Sea,
-            Surface::Night,
-            Surface::Plum,
-            Surface::Terminal,
-        ] {
+    fn the_rekam_page_holds_its_contrast_on_every_surface() {
+        for &surface in Surface::ALL {
             let p = island(Accent::Terracotta, surface);
-            let (rest_fill, rest_ink) = rec_discard_look(&p, false);
-            let (sure_fill, sure_ink) = rec_discard_look(&p, true);
-            assert_ne!(sure_fill, p.raised, "{surface:?}: the armed pill shows on its card");
+            let (sure_fill, sure_ink) = rec_discard_look(&p);
+            assert_ne!(sure_fill, p.raised, "{surface:?}: Buang shows on its card");
             for (what, ink, fill) in [
                 ("the tab on show", p.text, p.raised_hi),
                 ("the other tab", p.secondary, p.raised),
-                ("the hint", p.secondary, p.surface),
-                ("Buang", rest_ink, rest_fill),
-                ("Yakin buang?", sure_ink, sure_fill),
+                ("the hint and the device line", p.secondary, p.raised),
+                ("a missing device", p.ochre, p.raised),
+                ("the paused clock", p.ochre, p.raised),
+                ("pause, resume, trash", p.text, p.track),
+                ("Buang", sure_ink, sure_fill),
+                ("Simpan", p.text, p.track),
+                ("a day label, a length", p.secondary, p.surface),
             ] {
                 let c = contrast(ink, fill);
                 assert!(c >= 4.5, "{surface:?} {what}: {c:.2}");
@@ -7613,7 +7931,7 @@ mod tests {
                     RowTranscript::Failed,
                 ] {
                     let label = i18n::tr_pill(lang, mark);
-                    let w = r.text_width(&label, &r.fonts.small_center).ceil() + 16.0;
+                    let w = r.text_width(&label, &r.fonts.button_center).ceil() + 16.0;
                     // JetBrains Mono is wider: "Waiting for model" is trimmed
                     // with an ellipsis at the pill's limit there, as any label.
                     if ui == UiFont::Sans {

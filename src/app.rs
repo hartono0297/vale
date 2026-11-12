@@ -6975,6 +6975,19 @@ impl App {
                     RecKind::Audio => self.rec.total,
                     RecKind::Screen => self.screen.total,
                 },
+                missing: [false; 2],
+                quality: i18n::rec_quality_label(
+                    i18n::lang(),
+                    self.config.recording.video_quality,
+                    self.config.recording.video_fps,
+                ),
+                mute_hotkey: self.config.hotkeys.record_mute.map(|h| h.to_string()),
+                start_hotkey: match state.rec_tab() {
+                    RecKind::Audio => self.config.hotkeys.record,
+                    RecKind::Screen => self.config.hotkeys.record_screen,
+                }
+                .map(|h| h.to_string()),
+                today: state.today(),
             },
             devices: DevicesView {
                 list: &self.devices.list,

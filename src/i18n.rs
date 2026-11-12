@@ -643,7 +643,6 @@ keys! {
     TrMenuRedo => "Transkrip ulang", "Transcribe again";
     TrMenuCancel => "Batalkan transkrip", "Cancel the transcript";
     TrPickFile => "Transkrip file lain\u{2026}", "Transcribe a file\u{2026}";
-    TrPickFileShort => "File lain\u{2026}", "Other file\u{2026}";
     TrFilter => "Rekaman (*.m4a, *.wav, *.mp4)", "Recordings (*.m4a, *.wav, *.mp4)";
     RecFailedTitle => "Rekaman gagal", "Recording failed";
     RecMicDeniedTitle => "Mic diblokir Windows", "Windows blocked the mic";
@@ -739,7 +738,6 @@ keys! {
     ScreenIdleHint => "Layar, jendela atau area: dipilih setelah tekan Rekam",
         "Screen, window or area: you pick it after Record";
     ScreenDiscard => "Buang", "Discard";
-    ScreenDiscardSure => "Yakin buang?", "Discard it?";
     RecRecordLabel => "Rekam", "Record";
     RecNow => "Sekarang", "Now";
     RecMuted => "Dibisukan", "Muted";
@@ -1825,19 +1823,6 @@ pub fn rec_day_label(lang: Lang, day: NaiveDate, today: NaiveDate) -> String {
         Some(n @ (Near::Today | Near::Yesterday)) => near_word(lang, n, true).to_string(),
         _ => short_date(lang, day),
     }
-}
-
-/// The line under a recording on the old Rekam page: "Hari ini 10:02 · 42
-/// mnt", or "· belum selesai" for a `.part` a crash left. The redesigned
-/// rows show the length alone; only the scan's tests still read it.
-#[cfg(test)]
-pub fn rec_entry_sub(lang: Lang, started: &str, d: std::time::Duration, unfinished: bool) -> String {
-    let length = if unfinished {
-        text(lang, Key::RecUnfinished).to_string()
-    } else {
-        rec_duration(lang, d)
-    };
-    format!("{started} \u{b7} {length}")
 }
 
 /// The label of a Rekam row's transcript pill: "Transkrip", "Antre",
@@ -4228,7 +4213,6 @@ mod tests {
                 "Screen, window or area: you pick it after Record",
             ),
             (Key::ScreenDiscard, "Buang", "Discard"),
-            (Key::ScreenDiscardSure, "Yakin buang?", "Discard it?"),
             (Key::ScreenNoVideos, "Belum ada video", "No videos yet"),
             (Key::ScreenSettingsHighlight, "Sorot kursor", "Highlight the cursor"),
             (

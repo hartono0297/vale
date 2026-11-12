@@ -684,13 +684,27 @@ pub struct RecordView<'a> {
     pub devices: &'a [String; 2],
     /// "Audio" or "Layar": what `recent` lists and the big button starts.
     pub tab: crate::model::RecKind,
-    /// "Buang" was clicked once: it reads "Yakin buang?".
+    /// The trash was clicked once: the card asks "Buang video ini?".
     pub discard_armed: bool,
     /// Live captions are on: the "Caption langsung" switch shows it.
     pub captions_on: bool,
     /// How many recordings the tab's folder lists in all (`RecScan::total`):
     /// the page's "N lagi di folder" counts the ones not shown.
     pub total: usize,
+    /// The chosen device of a source is not there, `[mic, system]`: its
+    /// device line says so in ochre.
+    pub missing: [bool; 2],
+    /// The screen recording's size and rate, "1080p · 30 fps", for the idle
+    /// Layar tab's "Kualitas" row.
+    pub quality: String,
+    /// The mic mute hotkey's text ("Ctrl+Alt+M"), shown beside "Dibisukan";
+    /// `None` when unbound.
+    pub mute_hotkey: Option<String>,
+    /// The tab's record hotkey's text (Ctrl+Alt+R on Audio, the screen one on
+    /// Layar) for the empty list's hint; `None` when unbound.
+    pub start_hotkey: Option<String>,
+    /// The local date: the list's "Hari ini" and "Kemarin".
+    pub today: chrono::NaiveDate,
 }
 
 /// What the quick search shows.
@@ -945,6 +959,12 @@ struct Fonts {
     clip_kind: IDWriteTextFormat,
     /// The search field: DM Sans 11.5.
     clip_search: IDWriteTextFormat,
+    /// The Rekam page: a tab, "Rekam" and the discard's question (DM Sans
+    /// 11.5 medium, centred), a source's name (the same, leading), and the
+    /// Layar tab's hint (DM Sans 10.5, centred, two lines).
+    rec_center: IDWriteTextFormat,
+    rec_name: IDWriteTextFormat,
+    rec_hint: IDWriteTextFormat,
 }
 
 /// Device-dependent drawing state; rebuilt if Direct2D reports the target lost
@@ -3646,6 +3666,15 @@ impl Fonts {
             Ok(format)
         };
         let clip_value = wrapped(&text, 11.0)?;
+        let rec_hint = wrapped(&text, caption)?;
+        unsafe {
+            rec_hint.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
+            rec_hint.SetLineSpacing(
+                windows::Win32::Graphics::DirectWrite::DWRITE_LINE_SPACING_METHOD_UNIFORM,
+                14.0,
+                11.0,
+            )?;
+        }
         let clip_mono = wrapped(&mono, 10.5)?;
         let chip_mono = line(&mono, normal, caption)?;
         unsafe {
@@ -3706,6 +3735,9 @@ impl Fonts {
             clip_mono,
             clip_kind: line(&text, medium, 9.0)?,
             clip_search: line(&text, normal, 11.5)?,
+            rec_center: centered(&text, medium, 11.5)?,
+            rec_name: line(&text, medium, 11.5)?,
+            rec_hint,
         })
     }
 }
