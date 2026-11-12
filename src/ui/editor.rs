@@ -79,6 +79,7 @@ use super::editor_popover::{
 };
 use super::geometry::Rect;
 use super::icons::Icon;
+use super::tooltip::{self, KeyHint, Tip};
 use crate::calendar::EventDraft;
 use crate::i18n::{self, Key, Lang, text, tr};
 use crate::reminders::{Repeat, local_unix};
@@ -783,6 +784,11 @@ fn open_hwnd() -> Option<HWND> {
 
 /// Runs `f` on the editor for `hwnd`, or returns `None` when there is none or
 /// a handler further up the stack holds it.
+/// The tip of the drawn close button; Esc closes the same way.
+fn editor_close_tip() -> Tip {
+    Tip::named(Key::Close).key(KeyHint::Raw("Esc"))
+}
+
 fn with_editor<R>(hwnd: HWND, f: impl FnOnce(&mut Editor) -> R) -> Option<R> {
     EDITOR.with(|cell| {
         let mut slot = cell.try_borrow_mut().ok()?;
@@ -2198,6 +2204,7 @@ fn tab(hwnd: HWND, back: bool) {
 
 /// Keys while the editor itself (a drawn item) has the keyboard.
 fn on_key(hwnd: HWND, key: u16) -> bool {
+    tooltip::hide(hwnd);
     let ctrl = key_down(VK_CONTROL.0);
     if key == VK_TAB.0 {
         tab(hwnd, key_down(VK_SHIFT.0));
@@ -2331,6 +2338,7 @@ fn on_status(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
 
 fn on_activate(hwnd: HWND, state: u32) {
     if state == WA_INACTIVE {
+        tooltip::hide(hwnd);
         let close = with_editor(hwnd, |ed| {
             ed.invalidate();
             ed.is_note() && ed.was_active && !ed.finished
@@ -2389,6 +2397,7 @@ fn on_dpi_changed(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
 /// The window went away without `finish` (e.g. its owner was destroyed):
 /// still post the final result once.
 fn on_destroy(hwnd: HWND) {
+    tooltip::hide(hwnd);
     with_editor(hwnd, |ed| {
         if !ed.finished {
             ed.finished = true;
@@ -2398,14 +2407,32 @@ fn on_destroy(hwnd: HWND) {
 }
 
 fn on_mouse_move(hwnd: HWND, lparam: LPARAM) {
-    let arm = with_editor(hwnd, |ed| {
+    let moved = with_editor(hwnd, |ed| {
         let hit = ed.hit_at(lparam).filter(|i| !i.is_edit());
         if hit != ed.hover {
             ed.hover = hit;
             ed.invalidate();
         }
-        !std::mem::replace(&mut ed.tracking, true)
+        // Only the drawn close button has a tip. Mapped to the screen after
+        // the borrow: `ClientToScreen` can send messages back to this window.
+        let close = hit
+            .filter(|i| *i == Item::Close)
+            .and_then(|i| ed.layout.item(i))
+            .map(|r| (r, ed.scale));
+        (close, !std::mem::replace(&mut ed.tracking, true))
     });
+    if let Some((close, _)) = moved {
+        tooltip::hover(
+            hwnd,
+            close.map(|(r, scale)| tooltip::Target {
+                id: tooltip::id_of(&1u8),
+                anchor: tooltip::to_screen(hwnd, r, scale),
+                side: tooltip::Side::Auto,
+                tip: editor_close_tip(),
+            }),
+        );
+    }
+    let arm = moved.map(|(_, arm)| arm);
     if arm == Some(true) {
         let mut track = TRACKMOUSEEVENT {
             cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
@@ -2420,6 +2447,7 @@ fn on_mouse_move(hwnd: HWND, lparam: LPARAM) {
 }
 
 fn on_button_down(hwnd: HWND, lparam: LPARAM) {
+    tooltip::pressed(hwnd);
     let hit = with_editor(hwnd, |ed| {
         let hit = ed.hit_at(lparam);
         ed.pressed = hit;
@@ -2568,6 +2596,7 @@ unsafe extern "system" fn wnd_proc(
                     ed.invalidate();
                 }
             });
+            tooltip::hide(hwnd);
             LRESULT(0)
         }
         WM_LBUTTONDOWN => {
@@ -3763,5 +3792,16 @@ mod tests {
         assert_eq!(mode.form(), Form::Reminder);
         assert_eq!(title_key(&mode), Key::EditorEditReminder);
         assert!(mode.enabled(Item::Delete));
+    }
+
+    #[test]
+    fn the_close_button_has_a_name_and_esc() {
+        use crate::ui::tooltip::KeyHint;
+        for lang in [crate::i18n::Lang::Id, crate::i18n::Lang::En] {
+            crate::i18n::set_lang(lang);
+            let tip = editor_close_tip();
+            assert_eq!(tip.name.as_deref(), Some(crate::i18n::text(lang, Key::Close)));
+            assert_eq!(tip.keys, [KeyHint::Raw("Esc")]);
+        }
     }
 }

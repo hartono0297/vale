@@ -1529,6 +1529,15 @@ keys! {
     TipCapLang => "Bahasa caption", "Caption language";
     TipCapLangAbout => "Klik untuk ganti: ID, EN, Auto.", "Click to switch: ID, EN, Auto.";
     TipCapGripAbout => "Ctrl + roda mouse mengubah ukuran teks.", "Ctrl + wheel changes the text size.";
+
+    // Tooltips: the Settings window.
+    TipMoveUp => "Naikkan", "Move up";
+    TipMoveDown => "Turunkan", "Move down";
+    TipDragReorder => "Seret untuk mengubah urutan", "Drag to reorder";
+    TipResetDefault => "Kembalikan bawaan", "Reset to default";
+    TipResetBecomes => "Jadi", "Becomes";
+    TipResetNone => "Tanpa tombol pintas.", "No hotkey.";
+    TipOpenBrowser => "Buka di browser", "Open in browser";
 }
 
 /// `key` in `lang`.
@@ -1903,6 +1912,15 @@ pub fn monitor_now(lang: Lang, n: usize) -> String {
     match lang {
         Lang::Id => format!("sekarang: {n}"),
         Lang::En => format!("now: {n}"),
+    }
+}
+
+/// What a hotkey row's reset button gives back: "Jadi Ctrl+Alt+L.", or that
+/// the row has no hotkey by default.
+pub fn reset_to(lang: Lang, combo: Option<String>) -> String {
+    match combo {
+        Some(c) => format!("{} {c}.", text(lang, Key::TipResetBecomes)),
+        None => text(lang, Key::TipResetNone).to_owned(),
     }
 }
 
