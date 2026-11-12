@@ -12,6 +12,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::clean::CleanCat;
 use crate::greeting::{DayPeriod, GreetCounts};
+use crate::recorder::prefs::VideoQuality;
 use crate::reminders::{self, Repeat};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -735,10 +736,16 @@ keys! {
     ScreenCountdownEsc => "Esc untuk batal", "Esc to cancel";
     RecTabAudio => "Audio", "Audio";
     RecTabScreen => "Layar", "Screen";
-    ScreenIdleHint => "Pilih layar, jendela atau area sesudah ini",
-        "You pick a screen, window or area next";
+    ScreenIdleHint => "Layar, jendela atau area: dipilih setelah tekan Rekam",
+        "Screen, window or area: you pick it after Record";
     ScreenDiscard => "Buang", "Discard";
     ScreenDiscardSure => "Yakin buang?", "Discard it?";
+    RecRecordLabel => "Rekam", "Record";
+    RecNow => "Sekarang", "Now";
+    RecMuted => "Dibisukan", "Muted";
+    ScreenDiscardAsk => "Buang video ini?", "Throw this video away?";
+    ScreenDiscardKeep => "Simpan", "Keep";
+    RecQuality => "Kualitas", "Quality";
     ScreenNoVideos => "Belum ada video", "No videos yet";
     ArrangeSkip => "Lewati ubin", "Skip tile";
     ArrangeSaved => "Tersimpan", "Saved";
@@ -1915,6 +1922,47 @@ pub fn rec_duration(lang: Lang, d: std::time::Duration) -> String {
     } else {
         format!("{secs} {sec}")
     }
+}
+
+/// The count of recordings left in the folder beyond the list: "9 lagi di
+/// folder" ("9 more in the folder").
+pub fn rec_more(lang: Lang, n: usize) -> String {
+    match lang {
+        Lang::Id => format!("{n} lagi di folder"),
+        Lang::En => format!("{n} more in the folder"),
+    }
+}
+
+/// The mute badge on the Rekam page: "Dibisukan · Ctrl+Alt+M", or the bare
+/// word when the mute has no hotkey.
+pub fn rec_muted(lang: Lang, hotkey: Option<&str>) -> String {
+    let word = text(lang, Key::RecMuted);
+    match hotkey {
+        Some(keys) => format!("{word} \u{b7} {keys}"),
+        None => word.to_string(),
+    }
+}
+
+/// The hint under an empty Rekam list: "Tekan Rekam, atau Ctrl+Alt+R dari
+/// mana aja" ("Press Record, or Ctrl+Alt+R from anywhere"), or "Tekan Rekam"
+/// ("Press Record") with no hotkey.
+pub fn rec_empty_hint(lang: Lang, hotkey: Option<&str>) -> String {
+    match (lang, hotkey) {
+        (Lang::Id, Some(keys)) => format!("Tekan Rekam, atau {keys} dari mana aja"),
+        (Lang::Id, None) => "Tekan Rekam".to_string(),
+        (Lang::En, Some(keys)) => format!("Press Record, or {keys} from anywhere"),
+        (Lang::En, None) => "Press Record".to_string(),
+    }
+}
+
+/// A recording's quality on the Rekam page: "1080p · 30 fps", or the
+/// Settings word for the screen's own size: "Asli · 30 fps" ("Original · 30 fps").
+pub fn rec_quality_label(lang: Lang, q: VideoQuality, fps: u32) -> String {
+    let size = match q.max_short() {
+        Some(px) => format!("{px}p"),
+        None => text(lang, Key::ScreenSettingsQualityOriginal).to_string(),
+    };
+    format!("{size} \u{b7} {fps} fps")
 }
 
 /// How long the QR code lives: "berlaku 4:52", "valid 4:52".
@@ -4030,6 +4078,69 @@ mod tests {
     }
 
     #[test]
+    fn rec_copy_reads_right_in_both_languages() {
+        let pairs = [
+            (Key::RecRecordLabel, "Rekam", "Record"),
+            (Key::RecNow, "Sekarang", "Now"),
+            (Key::RecMuted, "Dibisukan", "Muted"),
+            (Key::ScreenDiscardAsk, "Buang video ini?", "Throw this video away?"),
+            (Key::ScreenDiscardKeep, "Simpan", "Keep"),
+            (Key::RecQuality, "Kualitas", "Quality"),
+            (
+                Key::ScreenIdleHint,
+                "Layar, jendela atau area: dipilih setelah tekan Rekam",
+                "Screen, window or area: you pick it after Record",
+            ),
+        ];
+        for (key, id, en) in pairs {
+            assert_eq!(text(Lang::Id, key), id, "{key:?}");
+            assert_eq!(text(Lang::En, key), en, "{key:?}");
+        }
+        assert_eq!(rec_more(Lang::Id, 9), "9 lagi di folder");
+        assert_eq!(rec_more(Lang::En, 9), "9 more in the folder");
+        assert_eq!(rec_muted(Lang::Id, None), "Dibisukan");
+        assert_eq!(rec_muted(Lang::Id, Some("Ctrl+Alt+M")), "Dibisukan \u{b7} Ctrl+Alt+M");
+        assert_eq!(rec_muted(Lang::En, None), "Muted");
+        assert_eq!(rec_muted(Lang::En, Some("Ctrl+Alt+M")), "Muted \u{b7} Ctrl+Alt+M");
+        assert_eq!(rec_empty_hint(Lang::Id, None), "Tekan Rekam");
+        assert_eq!(
+            rec_empty_hint(Lang::Id, Some("Ctrl+Alt+R")),
+            "Tekan Rekam, atau Ctrl+Alt+R dari mana aja",
+        );
+        assert_eq!(rec_empty_hint(Lang::En, None), "Press Record");
+        assert_eq!(
+            rec_empty_hint(Lang::En, Some("Ctrl+Alt+R")),
+            "Press Record, or Ctrl+Alt+R from anywhere",
+        );
+        assert_eq!(rec_quality_label(Lang::Id, VideoQuality::P1080, 30), "1080p \u{b7} 30 fps");
+        assert_eq!(rec_quality_label(Lang::En, VideoQuality::P1080, 60), "1080p \u{b7} 60 fps");
+        assert_eq!(rec_quality_label(Lang::Id, VideoQuality::Original, 30), "Asli \u{b7} 30 fps");
+        assert_eq!(
+            rec_quality_label(Lang::En, VideoQuality::Original, 30),
+            "Original \u{b7} 30 fps",
+        );
+        for lang in [Lang::Id, Lang::En] {
+            for &key in &[Key::RecRecordLabel, Key::RecNow, Key::RecMuted, Key::ScreenDiscardAsk, Key::ScreenDiscardKeep, Key::RecQuality, Key::ScreenIdleHint] {
+                assert_no_leak(lang, &format!("{key:?}"), text(lang, key));
+                assert!(!text(lang, key).contains('\u{2014}'), "{key:?} {lang:?}");
+            }
+            let formatted = [
+                rec_more(lang, 9),
+                rec_muted(lang, None),
+                rec_muted(lang, Some("Ctrl+Alt+M")),
+                rec_empty_hint(lang, None),
+                rec_empty_hint(lang, Some("Ctrl+Alt+R")),
+                rec_quality_label(lang, VideoQuality::P1080, 30),
+                rec_quality_label(lang, VideoQuality::Original, 30),
+            ];
+            for s in &formatted {
+                assert_no_leak(lang, "formatted", s);
+                assert!(!s.contains('\u{2014}'), "{s:?} {lang:?}");
+            }
+        }
+    }
+
+    #[test]
     fn the_zoom_label_is_a_level_with_the_languages_separator() {
         assert_eq!(zoom_label(Lang::Id, 2.0), "2\u{D7}");
         assert_eq!(zoom_label(Lang::Id, 2.5), "2,5\u{D7}");
@@ -4111,8 +4222,8 @@ mod tests {
             (Key::RecTabScreen, "Layar", "Screen"),
             (
                 Key::ScreenIdleHint,
-                "Pilih layar, jendela atau area sesudah ini",
-                "You pick a screen, window or area next",
+                "Layar, jendela atau area: dipilih setelah tekan Rekam",
+                "Screen, window or area: you pick it after Record",
             ),
             (Key::ScreenDiscard, "Buang", "Discard"),
             (Key::ScreenDiscardSure, "Yakin buang?", "Discard it?"),
