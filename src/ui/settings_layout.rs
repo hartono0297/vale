@@ -129,6 +129,10 @@ const FIELD_H: f32 = BUTTON_H;
 /// The uppercase label above a card (Integrations).
 const EYEBROW_H: f32 = 18.0;
 const EYEBROW_GAP: f32 = 8.0;
+/// From what is above a section title (a card, a note, a header) to the
+/// title: twice the gap between two cards, so a title reads with the card
+/// under it.
+const GROUP_GAP: f32 = 24.0;
 /// A status chip: dot, gap, text, with this padding on each side.
 pub const CHIP_H: f32 = 20.0;
 const CHIP_PAD: f32 = 8.0;
@@ -1684,8 +1688,14 @@ impl Builder<'_> {
         });
     }
 
-    /// An uppercase label above the next card, in the space it takes.
-    fn eyebrow(&mut self, key: Key, w: f32) {
+    /// An uppercase label above the next card, in the space it takes:
+    /// `GROUP_GAP` under what is above it (the content above leaves
+    /// `CARD_GAP`), `EYEBROW_GAP` over its card. Returns its top.
+    fn eyebrow(&mut self, key: Key, w: f32) -> f32 {
+        if self.y > FIRST_CARD_Y + 0.5 {
+            self.y += GROUP_GAP - CARD_GAP;
+        }
+        let top = self.y;
         let rect = Rect {
             x: self.g.content_x + 2.0,
             y: self.y,
@@ -1695,6 +1705,7 @@ impl Builder<'_> {
         let label = text(self.lang, key).to_uppercase();
         self.text(rect, label, Font::Eyebrow, Tone::Secondary, Align::Left);
         self.y += EYEBROW_H + EYEBROW_GAP;
+        top
     }
 
     /// A status chip starting at `x`, centred on `cy`, at most `max_w` wide.
@@ -3825,8 +3836,7 @@ fn widgets_page(b: &mut Builder, s: &State) {
     b.divider(card, rows[6]);
 
     // The gallery: its eyebrow with how many are on the desktop at the right.
-    let eyebrow_y = b.y;
-    titled(b, Key::GroupWidgetsGallery);
+    let eyebrow_y = b.eyebrow(Key::GroupWidgetsGallery, b.g.content_w - 4.0);
     let count = crate::widgets::sticky::on_desktop_label(b.lang, s.sticky_count);
     let count_w = b.w(&count, Font::Desc);
     let count_rect = Rect {
@@ -3953,7 +3963,7 @@ fn features_page(b: &mut Builder, s: &State) {
         let note = b.t(Key::PomodoroLocked);
         b.text(rect, note, Font::Desc, Tone::Secondary, Align::Left);
         // The next title clears the note.
-        b.y = y + 18.0 + 10.0;
+        b.y = y + 18.0 + CARD_GAP;
     }
 
     titled(b, Key::GroupMusic);
@@ -4894,8 +4904,8 @@ fn tr_note(b: &Builder, v: &TranscriptView, i: usize, w: f32) -> (Vec<String>, T
 /// with the space used and "Buka folder".
 fn transcript_card(b: &mut Builder, s: &State) {
     let v = &s.transcript;
-    b.l.card_tops.push((CardId::Transcript, b.y));
-    titled(b, Key::TrCardTitle);
+    let top = b.eyebrow(Key::TrCardTitle, b.g.content_w - 4.0);
+    b.l.card_tops.push((CardId::Transcript, top));
     let probe = Rect {
         x: b.g.content_x,
         y: 0.0,
@@ -5758,7 +5768,7 @@ fn integrations(b: &mut Builder, s: &State) {
         let top = card.y + card.h + 4.0;
         let item = (Hit::GoogleAdvanced, advanced, kind, true, w);
         b.buttons(b.g.content_x + w, top + CONTROL_H / 2.0, vec![item]);
-        b.y = top + CONTROL_H + 4.0;
+        b.y = top + CONTROL_H + CARD_GAP;
     }
 
     // Claude Code hooks.
@@ -5836,7 +5846,7 @@ fn about(b: &mut Builder, s: &State) {
         Tone::Secondary,
         Align::Left,
     );
-    b.y = top + ABOUT_LOGO + 18.0;
+    b.y = top + ABOUT_LOGO + CARD_GAP;
     titled(b, Key::GroupLinks);
 
     let card = b.card(4.0 * ROW_H);
@@ -10182,8 +10192,14 @@ mod tests {
         assert_eq!(card_scroll(&l, CardId::Transcript), scroll, "the same from any scroll");
         assert_eq!(l.card_tops.len(), 1);
         assert!((l.card_tops[0].1 - FIRST_CARD_Y).abs() < 0.01);
-        // Off, the card is short: the end of the section stops the scroll.
-        let off = tr_layout(Lang::Id, TranscriptView::default(), false);
+        // Off, the card is short: in a window where the cards under it fit,
+        // the end of the section stops the scroll.
+        let off = State {
+            transcript: TranscriptView::default(),
+            ..states()[0].clone()
+        };
+        let off = layout_in(Section::Features, &off, &Estimate, (CLIENT_W, 600.0));
+        assert!(off.scroll_max > 0.0);
         assert_eq!(card_scroll(&off, CardId::Transcript), off.scroll_max);
         // Not on this page: nothing to scroll to.
         let general = layout(Section::General, &states()[0], &Estimate);
@@ -12062,6 +12078,82 @@ mod tests {
                 let notif = (7 + n.max(1)) as f32 * ROW_H;
                 assert!(l.cards.iter().any(|c| (c.h - susun).abs() < 0.01), "{lang:?} {n}");
                 assert!(l.cards.iter().any(|c| (c.h - notif).abs() < 0.01), "{lang:?} {n}");
+            }
+        }
+    }
+
+    #[test]
+    fn section_titles_sit_with_their_card() {
+        for s in states() {
+            let s = State { scroll: 0.0, ..s };
+            for section in Section::ALL {
+                let l = layout(section, &s, &Estimate);
+                let ctx = format!("{section:?} {:?}", s.lang);
+                let eyebrows: Vec<&Text> = l
+                    .texts
+                    .iter()
+                    .filter(|t| t.font == Font::Eyebrow && (t.rect.x - (CONTENT_X + 2.0)).abs() < 0.01)
+                    .collect();
+                for (i, e) in eyebrows.iter().enumerate() {
+                    let below = l
+                        .cards
+                        .iter()
+                        .filter(|c| c.y >= e.rect.bottom() - 0.01)
+                        .map(|c| c.y)
+                        .fold(f32::MAX, f32::min);
+                    assert!(
+                        (below - (e.rect.bottom() + EYEBROW_GAP)).abs() < 0.01,
+                        "{ctx}: {:?} is {} above its card",
+                        e.text,
+                        below - e.rect.bottom()
+                    );
+                    // What is above it: cards, texts and controls of the
+                    // column (not the page title).
+                    let mut above: Vec<f32> = l.cards.iter().map(|c| c.bottom()).collect();
+                    above.extend(
+                        l.texts
+                            .iter()
+                            .filter(|t| t.rect.x >= CONTENT_X - 0.01)
+                            .map(|t| t.rect.bottom()),
+                    );
+                    above.extend(l.controls.iter().map(|c| c.bounds().bottom()));
+                    above.extend(l.about_logo.iter().map(|r| r.bottom()));
+                    let above = above
+                        .into_iter()
+                        .filter(|b| *b <= e.rect.y + 0.01)
+                        .fold(f32::MIN, f32::max);
+                    if i == 0 && above < FIRST_CARD_Y - 0.01 {
+                        assert_eq!(e.rect.y, FIRST_CARD_Y, "{ctx}: {:?}", e.text);
+                    } else {
+                        assert!(
+                            (e.rect.y - above - GROUP_GAP).abs() < 0.01,
+                            "{ctx}: {:?} is {} below what is above it",
+                            e.text,
+                            e.rect.y - above
+                        );
+                    }
+                }
+                // What sits on an eyebrow's line follows it.
+                if section == Section::Widgets {
+                    let gallery = text(s.lang, Key::GroupWidgetsGallery).to_uppercase();
+                    let e = eyebrows.iter().find(|t| t.text == gallery).expect("gallery");
+                    let count = crate::widgets::sticky::on_desktop_label(s.lang, s.sticky_count);
+                    let c = l.texts.iter().find(|t| t.text == count).expect("count");
+                    assert_eq!(c.rect.y, e.rect.y, "{ctx}");
+                }
+                if section == Section::Integrations {
+                    let google = text(s.lang, Key::GoogleCalendar).to_uppercase();
+                    let e = eyebrows.iter().find(|t| t.text == google).expect("google");
+                    let guide = l
+                        .controls
+                        .iter()
+                        .find_map(|c| match c {
+                            Control::Button(b) if b.hit == Hit::GoogleGuide => Some(b.rect),
+                            _ => None,
+                        })
+                        .expect("guide");
+                    assert!((guide.y + guide.h / 2.0 - (e.rect.y + e.rect.h / 2.0)).abs() < 0.01);
+                }
             }
         }
     }
