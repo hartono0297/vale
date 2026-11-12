@@ -115,7 +115,7 @@ pub fn wiggle_dx(ms: f32) -> f32 {
 }
 
 /// The header's buttons, left to right.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Btn {
     /// "Daftar catatan tempel": opens the list window.
     List,
@@ -2309,21 +2309,9 @@ fn draw_tip(
 /// The tooltip's text size.
 const TIP_TEXT: f32 = 10.5;
 
-/// The tooltip of a button: its label and shortcut. The width of both.
-#[cfg_attr(not(test), allow(dead_code))]
-pub fn tip_width(res: &Res, lang: Lang, tool: Tool) -> f32 {
-    let label = text(lang, tool.label_key());
-    let hint = toolbar::shortcut(tool);
-    let mut w = text_width(res, label, TIP_TEXT, 600);
-    if !hint.is_empty() {
-        w += 8.0 + text_width(res, hint, TIP_TEXT - 0.5, 400);
-    }
-    w
-}
-
 /// The format bar: the dark strip at the bottom of the note, its buttons (the
-/// hovered one tinted, the ones "on" lit), the tooltip above the hovered
-/// button, and the footer message above the bar's left end.
+/// hovered one tinted, the ones "on" lit) and the footer message above the
+/// bar's left end. A hovered button's tooltip is the shared tooltip window.
 fn draw_bar(
     rt: &ID2D1RenderTarget,
     brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush,
@@ -2400,29 +2388,9 @@ fn draw_bar(
             }
         }
     }
-    // The tooltip over the hovered button, inside the note.
-    let tip = match bar.hot {
-        Some(BarHit::More) => layout.more.map(|r| (r, text(s.lang, Key::FmtMore).to_owned(), String::new())),
-        _ => hot_tool.and_then(|t| {
-            toolbar::rect_of(&layout, t).map(|r| {
-                (r, text(s.lang, t.label_key()).to_owned(), toolbar::shortcut(t).to_owned())
-            })
-        }),
-    };
-    if let Some((anchor, label, hint)) = tip {
-        let mut w = text_width(res, &label, TIP_TEXT, 600);
-        if !hint.is_empty() {
-            w += 8.0 + text_width(res, &hint, TIP_TEXT - 0.5, 400);
-        }
-        let r = toolbar::tooltip_rect(
-            Rect { x: anchor.x, y: anchor.y + s.h - BAR_BLOCK, w: anchor.w, h: anchor.h },
-            w,
-            s.w,
-        );
-        draw_tip(res, rt, brush, Rect { x: ox + r.x, y: oy + r.y, w: r.w, h: r.h }, &label, &hint);
-    } else if let Some(msg) = &bar.msg {
-        // A message (an image refusal, the delete's second click): the same
-        // label above the bar's left end.
+    // A message (an image refusal, the delete's second click): a small label
+    // above the bar's left end.
+    if let Some(msg) = &bar.msg {
         let w = text_width(res, msg, TIP_TEXT, 600);
         let r = Rect {
             x: 6.0,
@@ -3179,21 +3147,9 @@ mod tests {
     }
 
     #[test]
-    fn every_tooltip_fits_the_smallest_note_in_both_languages() {
+    fn every_footer_message_fits_a_default_note_in_both_languages() {
         let res = Res::new(UiFont::Sans).expect("DirectWrite works without a window");
-        let min_w = crate::widgets::sticky::MIN_W;
         for lang in [Lang::Id, Lang::En] {
-            for t in Tool::ALL {
-                let w = tip_width(&res, lang, t);
-                let r = toolbar::tooltip_rect(Rect { x: 10.0, y: 100.0, w: 24.0, h: 24.0 }, w, min_w);
-                assert!(
-                    w + 16.0 <= min_w - 8.0 + 0.01,
-                    "{lang:?} {t:?}: the text ({w:.1}) needs {:.1} of a {min_w} dip note",
-                    w + 16.0
-                );
-                assert!(r.w >= w + 16.0 - 0.01, "{lang:?} {t:?} is not cut");
-            }
-            // The footer message in the same style.
             for key in [Key::FmtImgMax, Key::FmtImgTooBig, Key::FmtImgBad, Key::StickyDeleteAgain] {
                 let w = text_width(&res, text(lang, key), TIP_TEXT, 600) + 16.0;
                 assert!(w <= 240.0 - 12.0, "{lang:?} {key:?}: {w:.1} in a default note");

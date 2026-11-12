@@ -205,7 +205,7 @@ pub fn layout(w: f32) -> BarLayout {
 }
 
 /// What a point of the bar is on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum BarHit {
     Tool(Tool),
     /// The Marker button's chevron: opens the popover.
@@ -245,21 +245,7 @@ pub fn rect_of(l: &BarLayout, t: Tool) -> Option<Rect> {
     l.items.iter().find(|(i, _)| *i == t).map(|(_, r)| *r)
 }
 
-/// The tooltip's box for a button at `anchor` (dip from the note's top-left,
-/// the bar's own place) when its text is `text_w` wide: 8 dip of padding at
-/// each side, 22 dip tall, 4 dip above the button, centred on it and kept
-/// inside the note (`note_w`, 4 dip from each edge).
-pub fn tooltip_rect(anchor: Rect, text_w: f32, note_w: f32) -> Rect {
-    let w = (text_w + 16.0).min((note_w - 8.0).max(0.0));
-    let x = (anchor.x + anchor.w / 2.0 - w / 2.0).clamp(4.0, (note_w - 4.0 - w).max(4.0));
-    Rect {
-        x,
-        y: anchor.y - 4.0 - TOOLTIP_H,
-        w,
-        h: TOOLTIP_H,
-    }
-}
-
+/// The footer message's height (dip).
 pub const TOOLTIP_H: f32 = 22.0;
 
 #[cfg(test)]
@@ -470,21 +456,5 @@ mod tests {
         assert_eq!(control_char_of(Tool::Marker), Some(0x08), "would backspace");
         assert_eq!(control_char_of(Tool::Bullet), None);
         assert_eq!(control_char_of(Tool::Check), None);
-    }
-
-    #[test]
-    fn a_tooltip_stays_inside_the_note() {
-        let anchor = Rect { x: 10.0, y: 10.0, w: 24.0, h: 24.0 };
-        let t = tooltip_rect(anchor, 60.0, 240.0);
-        assert!(t.x >= 4.0 && t.right() <= 236.0);
-        assert_eq!(t.h, TOOLTIP_H);
-        assert!(t.bottom() <= anchor.y, "above the button");
-        // Near the right edge it is pulled in.
-        let far = Rect { x: 210.0, y: 10.0, w: 24.0, h: 24.0 };
-        let t = tooltip_rect(far, 100.0, 240.0);
-        assert!(t.right() <= 236.0 + 0.001);
-        // A very long text is cut to the note.
-        let t = tooltip_rect(anchor, 500.0, 160.0);
-        assert!(t.w <= 152.0 && t.x >= 4.0 && t.right() <= 156.0 + 0.001);
     }
 }

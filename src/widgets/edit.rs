@@ -302,6 +302,10 @@ unsafe extern "system" fn edit_proc(
             let key = (wparam.0 & 0xFFFF) as u16;
             // A swallowed character belongs to the key down before it only.
             SWALLOW.with(|c| c.set(None));
+            // Typing ends a tip the pointer left standing over a button.
+            if let Ok(parent) = unsafe { GetParent(hwnd) } {
+                crate::ui::tooltip::hide(parent);
+            }
             if key == VK_ESCAPE.0 {
                 notify(hwnd, EditEvent::Escape);
                 return LRESULT(0);

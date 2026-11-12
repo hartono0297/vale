@@ -1397,6 +1397,36 @@ keys! {
     TipKeySpace => "Spasi", "Space";
     TipKeyRightClick => "Klik kanan", "Right-click";
     TipKeyWheel => "Roda mouse", "Mouse wheel";
+
+    // Tooltips: the sticky note's header, format bar and popovers.
+    TipStickyListAbout => "Semua catatan tempel dalam satu jendela, bisa dicari.", "Every sticky note in one window, with search.";
+    TipStickyPinOff => "Sematkan di atas", "Keep on top";
+    TipStickyPinOffAbout => "Catatan ini tetap di atas jendela lain.", "This note stays above other windows.";
+    TipStickyPinOn => "Lepas sematan", "Stop keeping on top";
+    TipStickyPinOnAbout => "Jendela lain bisa menutupi catatan ini lagi.", "Other windows can cover this note again.";
+    TipStickyNewNote => "Catatan baru", "New note";
+    TipStickyNewAbout => "Catatan kosong di samping catatan ini.", "A blank note next to this one.";
+    TipStickyCheckAbout => "Ubah baris yang dipilih jadi kotak centang.", "Turn the selected lines into checkboxes.";
+    TipStickyStyle => "Warna dan gaya", "Colour and style";
+    TipStickyStyleAbout => "Kertas, ukuran, huruf, garis, dan tembus pandang.", "Paper, size, font, lines and see-through.";
+    TipStickyMoreAbout => "Pengingat, cap, gulung, selip ke tepi, kirim ke HP, hapus.", "Reminder, stamp, roll up, tuck to edge, send to phone, delete.";
+    TipStickyClose => "Lepas dari desktop", "Take off the desktop";
+    TipStickyCloseAbout => "Isinya tetap ada di halaman Catatan.", "It stays on the Notes page.";
+    TipStickyPrev => "Lembar sebelumnya", "Previous sheet";
+    TipStickyNext => "Lembar berikutnya", "Next sheet";
+    TipStickyStackAbout => "Roda mouse di strip atas juga bisa.", "The wheel over the top strip works too.";
+    TipImageRemoveAbout => "Gambar dikeluarkan dari catatan ini.", "The image is taken out of this note.";
+    TipMarkerMenu => "Warna stabilo dan teks", "Highlight and text colour";
+    TipMarkerMenuAbout => "Pilih warnanya.", "Pick the colours.";
+    TipImageAbout => "Tambah gambar dari file, paling banyak 4.", "Add an image from a file, up to 4.";
+    TipBarMoreAbout => "Alat yang tidak muat di bar.", "Tools that do not fit on the bar.";
+    TipRemindDayPrev => "Hari sebelumnya", "Previous day";
+    TipRemindDayNext => "Hari berikutnya", "Next day";
+    TipRemindHourPrev => "Jam sebelumnya", "Earlier hour";
+    TipRemindHourNext => "Jam berikutnya", "Later hour";
+    TipRemindMinPrev => "Menit sebelumnya", "Earlier minute";
+    TipRemindMinNext => "Menit berikutnya", "Later minute";
+    TipRemindWheelAbout => "Roda mouse di kolom ini juga bisa.", "The wheel over this column works too.";
 }
 
 /// `key` in `lang`.
