@@ -4626,9 +4626,6 @@ fn estimate_source(monitors: &[MonitorRow]) -> (u32, u32) {
 /// is in the Tombol pintas section.)
 fn screen_card(b: &mut Builder, s: &State) {
     titled(b, Key::ScreenSettingsTitle);
-    let card = b.card(5.0 * ROW_H);
-    let rows = [0.0, 1.0, 2.0, 3.0, 4.0].map(|i| card.y + i * ROW_H);
-    let cy = |y: f32| y + ROW_H / 2.0;
     let quality = s.recording.video_quality;
     let original = b.t(Key::ScreenSettingsQualityOriginal);
     let items = VIDEO_QUALITY_CHOICES
@@ -4643,12 +4640,38 @@ fn screen_card(b: &mut Builder, s: &State) {
         })
         .to_vec();
     let selected = index_of(&VIDEO_QUALITY_CHOICES, &quality);
-    let x = b.segmented(Group::VideoQuality, b.g.right, cy(rows[0]), items, selected);
     let src = estimate_source(s.monitors);
     let (w, h) = output_size(src.0, src.1, quality.max_short());
     let mib = estimate_mib_per_minute(w, h, s.recording.video_fps);
-    let desc = Some((video_estimate_line(b.lang, w, h, mib), Tone::Secondary));
-    b.row_text(card, rows[0], b.t(Key::ScreenSettingsQuality), desc, false, x);
+    // The estimate keeps to one line when it fits beside the choices, else
+    // it wraps and the row grows (a 3-digit figure in English at the
+    // minimum window).
+    let probe = Rect {
+        x: b.g.content_x,
+        y: 0.0,
+        w: b.g.content_w,
+        h: 0.0,
+    };
+    let desc_w = row_text_w(probe, b.g.right - b.segmented_w(&items));
+    let estimate = b.wrap(&video_estimate_line(b.lang, w, h, mib), Font::Desc, desc_w);
+    let quality_h = wrapped_row_h(estimate.len());
+
+    let card = b.card(4.0 * ROW_H + quality_h);
+    let heights = [quality_h, ROW_H, ROW_H, ROW_H, ROW_H];
+    let mut rows = [card.y; 5];
+    for i in 1..5 {
+        rows[i] = rows[i - 1] + heights[i - 1];
+    }
+    let cy = |y: f32| y + ROW_H / 2.0;
+    let x = b.segmented(
+        Group::VideoQuality,
+        b.g.right,
+        rows[0] + quality_h / 2.0,
+        items,
+        selected,
+    );
+    let label = b.t(Key::ScreenSettingsQuality);
+    b.row_text_lines(card, rows[0], label, estimate, Tone::Secondary, x);
     b.divider(card, rows[1]);
 
     let items = VIDEO_FPS_CHOICES
@@ -9551,11 +9574,10 @@ mod tests {
                 ..states()[0].clone()
             };
             let l = screen_layout(&s);
-            l.texts
-                .iter()
-                .find(|t| t.text.contains('×'))
-                .map(|t| t.text.clone())
-                .expect("the estimate line")
+            let card = l.cards[l.cards.len() - 4];
+            let lines = estimate_lines(&l, card);
+            assert_eq!(lines.len(), 1, "one line at these sizes");
+            lines[0].text.clone()
         };
         let monitors = [sized(1920, 1080, false), sized(2560, 1440, true)];
         assert_eq!(line(&monitors, P1080, 30), "1920×1080 · ± 36 MB/menit");
@@ -9570,15 +9592,100 @@ mod tests {
         assert_eq!(line(&none, Original, 30), "1920×1080 · ± 36 MB/menit");
     }
 
+    /// The quality row's description lines: the `Font::Desc` texts between the
+    /// card's top and its first divider.
+    fn estimate_lines(l: &Layout, card: Rect) -> Vec<&Text> {
+        let end = l.dividers.iter().map(|d| d.y).find(|y| *y > card.y).expect("a divider");
+        l.texts
+            .iter()
+            .filter(|t| t.font == Font::Desc && t.rect.y >= card.y && t.rect.y < end)
+            .collect()
+    }
+
     #[test]
     fn the_quality_row_texts_fit_left_of_its_choices() {
-        let monitors = [sized(4096, 2304, true)];
+        // `layout` is the 720x520 minimum window.
         for lang in [Lang::Id, Lang::En] {
+            for (w, h) in [(4096, 2304), (2560, 1440), (1920, 1080)] {
+                let monitors = [sized(w, h, true)];
+                for fps in VIDEO_FPS_CHOICES {
+                    for q in VIDEO_QUALITY_CHOICES {
+                        let s = State {
+                            lang,
+                            recording: RecordingPrefs {
+                                video_quality: q,
+                                video_fps: fps,
+                                ..RecordingPrefs::default()
+                            },
+                            monitors: &monitors,
+                            ..states()[0].clone()
+                        };
+                        let l = screen_layout(&s);
+                        let card = l.cards[l.cards.len() - 4];
+                        let tag = format!("{lang:?} {w}x{h} {fps} {q:?}");
+                        let (_, items, _) = l.segmented(Group::VideoQuality).expect("Kualitas");
+                        let first = items[0].rect.x;
+                        let lines = estimate_lines(&l, card);
+                        assert!(!lines.is_empty(), "{tag}");
+                        for t in lines.iter().copied().chain(l.texts.iter().filter(|t| {
+                            t.text == text(lang, Key::ScreenSettingsQuality)
+                        })) {
+                            let need = Estimate.width(&t.text, t.font);
+                            assert!(need <= t.rect.w, "{tag}: {:?} needs {need:.0}, has {:.0}", t.text, t.rect.w);
+                            assert!(t.rect.right() <= first, "{tag}: {:?}", t.text);
+                        }
+                        // The lines read as the estimate and stay inside the row.
+                        let said = lines.iter().map(|t| t.text.as_str()).collect::<Vec<_>>().join(" ");
+                        assert!(said.contains('×') && said.contains("MB/"), "{tag}: {said}");
+                        let row_h = wrapped_row_h(lines.len());
+                        assert_eq!(card.h, 4.0 * ROW_H + row_h, "{tag}");
+                        for t in &lines {
+                            assert!(t.rect.bottom() <= card.y + row_h, "{tag}: {:?}", t.text);
+                        }
+                        // Every control stays inside the card; the quality
+                        // choices are centred on their (taller) row.
+                        for (hit, rect) in l.hits() {
+                            if matches!(
+                                hit,
+                                Hit::VideoQuality(_)
+                                    | Hit::VideoFps(_)
+                                    | Hit::CursorHighlight
+                                    | Hit::ClickRipples
+                                    | Hit::VideoFolderOpen
+                                    | Hit::VideoFolderChange
+                            ) {
+                                assert!(
+                                    rect.x >= card.x
+                                        && rect.right() <= card.right()
+                                        && rect.y >= card.y
+                                        && rect.bottom() <= card.bottom(),
+                                    "{tag}: {hit:?}"
+                                );
+                            }
+                        }
+                        let seg = items[0].rect;
+                        assert!(seg.y >= card.y && seg.bottom() <= card.y + row_h, "{tag}");
+                        // The rows after it follow it down.
+                        let hits = l.hits();
+                        let fps_seg = hits.iter().find(|(h, _)| *h == Hit::VideoFps(30)).unwrap().1;
+                        assert!(
+                            fps_seg.y >= card.y + row_h && fps_seg.bottom() <= card.y + row_h + ROW_H,
+                            "{tag}"
+                        );
+                        let open = hits.iter().find(|(h, _)| *h == Hit::VideoFolderOpen).unwrap().1;
+                        assert!(open.y >= card.y + row_h + 3.0 * ROW_H, "{tag}");
+                    }
+                }
+            }
+        }
+        // A short line stays one line; the owner's 1440p at 60 fps in English wraps.
+        let one = |lang, w, h, fps, q| {
+            let monitors = [sized(w, h, true)];
             let s = State {
                 lang,
                 recording: RecordingPrefs {
-                    video_quality: crate::recorder::prefs::VideoQuality::Original,
-                    video_fps: 60,
+                    video_quality: q,
+                    video_fps: fps,
                     ..RecordingPrefs::default()
                 },
                 monitors: &monitors,
@@ -9586,23 +9693,13 @@ mod tests {
             };
             let l = screen_layout(&s);
             let card = l.cards[l.cards.len() - 4];
-            let (_, items, _) = l.segmented(Group::VideoQuality).expect("Kualitas video");
-            let first = items[0].rect.x;
-            assert!(items.last().unwrap().rect.right() <= card.right(), "{lang:?}");
-            let want = match lang {
-                Lang::Id => "4096×2304 · ± 325 MB/menit",
-                Lang::En => "4096×2304 · ± 325 MB/min",
-            };
-            let estimate = l.texts.iter().find(|t| t.text == want).expect("the longest line");
-            let title = l
-                .texts
-                .iter()
-                .find(|t| t.text == text(lang, Key::ScreenSettingsQuality))
-                .expect("the title");
-            for t in [estimate, title] {
-                assert!(t.rect.right() <= first, "{lang:?} {}", t.text);
-            }
-        }
+            (estimate_lines(&l, card).len(), card.h)
+        };
+        use crate::recorder::prefs::VideoQuality::{Original, P1080};
+        assert_eq!(one(Lang::En, 2560, 1440, 30, P1080), (1, 5.0 * ROW_H));
+        assert_eq!(one(Lang::Id, 1920, 1080, 30, Original), (1, 5.0 * ROW_H));
+        let (lines, h) = one(Lang::En, 2560, 1440, 60, Original);
+        assert_eq!((lines, h), (2, 4.0 * ROW_H + wrapped_row_h(2)));
     }
 
     /// Fitur laid out with the Transkrip card in `view`.
