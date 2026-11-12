@@ -2375,15 +2375,21 @@ impl Renderer {
             return;
         }
         let target = self.target.as_ref().expect("target ensured by paint");
-        // On a see-through island: a soft dark halo round the head, so the
-        // face reads on a light wallpaper.
+        // On a see-through island: a soft dark halo round the mascot (the
+        // cat's head, the falk's egg and crest, the octopus's mantle and
+        // arms), so the face reads on a light wallpaper.
         let strength = self.legible.get();
         if strength > 0.0 {
             // The halo follows the dance's nod.
-            let (head, radius) = super::robot::head_rect(Rect {
-                y: area.y + robot.pose.nod_dip,
-                ..area
-            });
+            let (head, radius) = super::mascot::mascot_box(
+                self.cat.get().mascot,
+                Rect {
+                    y: area.y + robot.pose.nod_dip,
+                    ..area
+                },
+                robot.expr,
+                &robot.pose,
+            );
             // The typing cat's laptop gets the same halo.
             let laptop = (robot.expr == Expr::Typing).then(|| {
                 (

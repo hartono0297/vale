@@ -1,11 +1,25 @@
-//! The falk (cockatiel) mascot's shapes as pure data, on the 64-unit grid.
-//! Painting lives elsewhere.
+//! The falk (cockatiel) and the sitting octopus: their shapes as pure data on
+//! the 64-unit grid, and their painting (`RobotPainter::paint` calls it in
+//! place of the cat's rim, silhouette and calico patches).
+//!
+//! The falk is painted crest group (base and four feathers, turned and scaled
+//! by `crest_pose`), egg, face mask clipped to the egg, cheeks; then, after
+//! the cat's face marks, its beak. The octopus is painted six arms, mantle,
+//! spots, suckers. Every still path is built once and kept
+//! (`RobotPainter::mascot_path`); only the octopus's moving arms (dance,
+//! greeting, typing) are built per frame while they move.
 
-// Painted from Task 6 on.
-#![allow(dead_code)]
+use windows::Win32::Graphics::Direct2D::{
+    D2D1_COMBINE_MODE_INTERSECT, D2D1_ELLIPSE, ID2D1Geometry, ID2D1RenderTarget,
+    ID2D1SolidColorBrush,
+};
+use windows::core::{Interface, Result as WinResult};
+use windows_numerics::{Matrix3x2, Vector2};
 
-use crate::theme::{FalkColor, OctopusColor};
-use crate::ui::robot::{Expr, Pose, Seg};
+use crate::theme::{FalkColor, Mascot, OctopusColor};
+use crate::ui::cat_style::solid;
+use crate::ui::geometry::Rect;
+use crate::ui::robot::{Expr, GRID, HEAD, PAWS, Pose, RobotPainter, Seg, head_rect, path};
 
 /// The egg.
 pub const FALK_BODY: &[Seg] = &[
@@ -27,6 +41,8 @@ pub const CREST: [((f32, f32), (f32, f32), f32, f32); 4] = [
 
 /// The crest rotates and scales round this point.
 pub const CREST_PIVOT: (f32, f32) = (32.0, 27.0);
+/// The crest's base ellipse, under the feathers: cx, cy, rx, ry.
+pub const CREST_BASE: (f32, f32, f32, f32) = (32.0, 26.0, 5.5, 4.0);
 
 pub const FALK_CHEEKS: [(f32, f32); 2] = [(15.5, 44.5), (48.5, 44.5)];
 pub const CHEEK_R: f32 = 4.4;
@@ -340,6 +356,7 @@ pub fn sucker_rgb(rgb: u32) -> u32 {
 
 /// Grid points of the mantle, every arm (quad and curl, with round caps of
 /// `ARM_W / 2`) and the suckers; the clamp tests read it.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn octopus_outline(expr: Expr, pose: &Pose) -> Vec<(f32, f32)> {
     let mut out = Vec::new();
     sample(MANTLE, 16, &mut out);
@@ -360,6 +377,239 @@ pub fn octopus_outline(expr: Expr, pose: &Pose) -> Vec<(f32, f32)> {
         }
     }
     out
+}
+
+// ---------- the halo ----------
+
+/// The box the see-through halo covers for mascot `m` drawn in `area` (a
+/// square), in px, and its corner radius (the cat head's, scaled). The cat:
+/// its head (`head_rect`). The falk: the egg's width, from the top of its
+/// crest for `expr` and `pose` down to the egg's base. The octopus: the
+/// mantle and the arms, x 1..63, y 9..61.
+pub fn mascot_box(m: Mascot, area: Rect, expr: Expr, pose: &Pose) -> (Rect, f32) {
+    let k = area.w / GRID;
+    let (x0, y0, x1, y1) = match m {
+        Mascot::Cat => return head_rect(area),
+        Mascot::Falk => {
+            let top = falk_outline(expr, pose).iter().map(|p| p.1).fold(f32::MAX, f32::min);
+            (9.0, top, 55.0, 57.0)
+        }
+        Mascot::Octopus => (1.0, 9.0, 63.0, 61.0),
+    };
+    (
+        Rect {
+            x: area.x + x0 * k,
+            y: area.y + y0 * k,
+            w: (x1 - x0) * k,
+            h: (y1 - y0) * k,
+        },
+        HEAD.4 * k,
+    )
+}
+
+// ---------- painting ----------
+
+/// A falk or octopus path the painter builds once and keeps.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum MascotShape {
+    FalkBody,
+    /// `CREST[i]`'s feather.
+    Feather(usize),
+    /// The face mask ellipse clipped to the egg.
+    FaceOnBody,
+    /// The beak, closed or open (both halves in one path).
+    Beak(bool),
+    /// A typing feather tip at (0, 0); it is moved to each key.
+    Tip,
+    Mantle,
+    /// Arm `i` of `expr` at rest (`arms(expr, &Pose::default())`).
+    Arm(Expr, usize),
+}
+
+impl MascotShape {
+    fn segments(self) -> Vec<Seg> {
+        match self {
+            MascotShape::FalkBody | MascotShape::FaceOnBody => FALK_BODY.to_vec(),
+            MascotShape::Feather(i) => {
+                let (base, tip, w, bend) = CREST[i];
+                feather(base, tip, w, bend)
+            }
+            MascotShape::Beak(open) => falk_beak(open).concat(),
+            MascotShape::Tip => feather_tip(0.0, 0.0),
+            MascotShape::Mantle => MANTLE.to_vec(),
+            MascotShape::Arm(expr, i) => arm_segs(&arms(expr, &Pose::default())[i]),
+        }
+    }
+}
+
+fn ellipse((cx, cy, rx, ry): (f32, f32, f32, f32)) -> D2D1_ELLIPSE {
+    D2D1_ELLIPSE {
+        point: Vector2::new(cx, cy),
+        radiusX: rx,
+        radiusY: ry,
+    }
+}
+
+impl RobotPainter {
+    /// `shape`'s geometry, built the first time it is asked for.
+    fn mascot_path(&self, shape: MascotShape) -> Option<ID2D1Geometry> {
+        if let Some((_, g)) = self.mascot_paths.borrow().iter().find(|(s, _)| *s == shape) {
+            return Some(g.clone());
+        }
+        let built = (|| -> WinResult<ID2D1Geometry> {
+            let g: ID2D1Geometry = path(&self.factory, &shape.segments())?.cast()?;
+            if shape != MascotShape::FaceOnBody {
+                return Ok(g);
+            }
+            let face: ID2D1Geometry =
+                unsafe { self.factory.CreateEllipseGeometry(&ellipse(FALK_FACE))? }.cast()?;
+            self.combine(&face, &g, D2D1_COMBINE_MODE_INTERSECT)
+        })()
+        .ok()?;
+        self.mascot_paths.borrow_mut().push((shape, built.clone()));
+        Some(built)
+    }
+
+    /// The falk in `world`, under its face marks: the crest group, the egg,
+    /// the face mask on the egg, and the cheeks in `cheeks` (the head plus
+    /// half the eyes' slide).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn paint_falk_body(
+        &self,
+        rt: &ID2D1RenderTarget,
+        brush: &ID2D1SolidColorBrush,
+        coat: FalkColor,
+        expr: Expr,
+        pose: &Pose,
+        (world, cheeks): (&Matrix3x2, &Matrix3x2),
+        alpha: f32,
+    ) {
+        let ink = falk_ink(coat);
+        let cp = crest_pose(expr, pose);
+        let (px, py) = CREST_PIVOT;
+        let crest = Matrix3x2::translation(-px, -py)
+            * Matrix3x2::scale(cp.scale, cp.scale)
+            * Matrix3x2::translation(px, py)
+            * Matrix3x2::rotation_around(cp.rot_deg, Vector2::new(px, py))
+            * *world;
+        unsafe {
+            rt.SetTransform(&crest);
+            brush.SetColor(&solid(ink.crest, alpha));
+            rt.FillEllipse(&ellipse(CREST_BASE), brush);
+            for i in 0..CREST.len() {
+                if let Some(g) = self.mascot_path(MascotShape::Feather(i)) {
+                    rt.FillGeometry(&g, brush, None);
+                }
+            }
+            rt.SetTransform(world);
+            if let Some(g) = self.mascot_path(MascotShape::FalkBody) {
+                brush.SetColor(&solid(ink.body, alpha));
+                rt.FillGeometry(&g, brush, None);
+            }
+            if let Some(g) = self.mascot_path(MascotShape::FaceOnBody) {
+                brush.SetColor(&solid(ink.face, alpha));
+                rt.FillGeometry(&g, brush, None);
+            }
+            if let Some(rgb) = ink.cheek {
+                rt.SetTransform(cheeks);
+                brush.SetColor(&solid(rgb, alpha));
+                for (cx, cy) in FALK_CHEEKS {
+                    rt.FillEllipse(&ellipse((cx, cy, CHEEK_R, CHEEK_R)), brush);
+                }
+            }
+        }
+    }
+
+    /// The falk's beak, a face mark, in the eyes' transform.
+    pub(super) fn paint_falk_beak(
+        &self,
+        rt: &ID2D1RenderTarget,
+        brush: &ID2D1SolidColorBrush,
+        expr: Expr,
+        pose: &Pose,
+        eyes: &Matrix3x2,
+        alpha: f32,
+    ) {
+        if let Some(g) = self.mascot_path(MascotShape::Beak(beak_open(expr, pose))) {
+            unsafe {
+                rt.SetTransform(eyes);
+                brush.SetColor(&solid(FALK_BEAK, alpha));
+                rt.FillGeometry(&g, brush, None);
+            }
+        }
+    }
+
+    /// The typing falk's two feather tips on the keys, at the cat's paw
+    /// places lifted by `paw_lift`, in `fixed` (the grid, not tilted).
+    pub(super) fn paint_falk_tips(
+        &self,
+        rt: &ID2D1RenderTarget,
+        brush: &ID2D1SolidColorBrush,
+        coat: FalkColor,
+        paw_lift: [f32; 2],
+        fixed: &Matrix3x2,
+        alpha: f32,
+    ) {
+        let Some(g) = self.mascot_path(MascotShape::Tip) else {
+            return;
+        };
+        unsafe {
+            brush.SetColor(&solid(falk_ink(coat).body, alpha));
+            for (i, &(x, y)) in PAWS.iter().enumerate() {
+                rt.SetTransform(&(Matrix3x2::translation(x, y - paw_lift[i]) * *fixed));
+                rt.FillGeometry(&g, brush, None);
+            }
+        }
+    }
+
+    /// The octopus in `world`, under its face marks: the six arms, the
+    /// mantle, the spots and the suckers. The flush tints the mantle and the
+    /// arms; the spots and the suckers keep the coat's own tints.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn paint_octopus_body(
+        &self,
+        rt: &ID2D1RenderTarget,
+        brush: &ID2D1SolidColorBrush,
+        coat: OctopusColor,
+        expr: Expr,
+        pose: &Pose,
+        world: &Matrix3x2,
+        alpha: f32,
+    ) {
+        let base = octopus_rgb(coat);
+        let col = mix(base, FLUSH_RGB, pose.flush.clamp(0.0, 1.0));
+        let now = arms(expr, pose);
+        // At rest the arms are the face's own, kept; moving (dance, greeting,
+        // typing) they are built for this frame.
+        let still = now == arms(expr, &Pose::default());
+        unsafe {
+            rt.SetTransform(world);
+            brush.SetColor(&solid(col, alpha));
+            for (i, arm) in now.iter().enumerate() {
+                let g = if still {
+                    self.mascot_path(MascotShape::Arm(expr, i))
+                } else {
+                    path(&self.factory, &arm_segs(arm)).ok().and_then(|g| g.cast().ok())
+                };
+                if let Some(g) = g {
+                    rt.DrawGeometry(&g, brush, ARM_W, &self.round);
+                }
+            }
+            if let Some(g) = self.mascot_path(MascotShape::Mantle) {
+                rt.FillGeometry(&g, brush, None);
+            }
+            brush.SetColor(&solid(shade(base), alpha));
+            for (cx, cy, r) in OCT_SPOTS {
+                rt.FillEllipse(&ellipse((cx, cy, r, r)), brush);
+            }
+            brush.SetColor(&solid(sucker_rgb(base), alpha));
+            for arm in &now {
+                for (cx, cy) in suckers(arm) {
+                    rt.FillEllipse(&ellipse((cx, cy, SUCKER_R, SUCKER_R)), brush);
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -440,6 +690,200 @@ mod tests {
         assert_eq!(octopus_rgb(OctopusColor::Blue), 0x5FA8C9);
         assert_eq!(mix(0xE87C8E, FLUSH_RGB, 0.0), 0xE87C8E);
         assert_eq!(mix(0xE87C8E, FLUSH_RGB, 1.0), FLUSH_RGB);
+    }
+
+    use crate::theme::{CatAccessory, Mascot};
+    use crate::ui::cat_style::{CatLook, solid};
+    use crate::ui::geometry::Rect;
+    use crate::ui::robot::RobotPainter;
+
+    fn painter() -> RobotPainter {
+        use windows::Win32::Graphics::Direct2D::{
+            D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1CreateFactory, ID2D1Factory,
+        };
+        let factory: ID2D1Factory =
+            unsafe { D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None) }.expect("factory");
+        RobotPainter::new(&factory).expect("painter")
+    }
+
+    /// The mascot painted into a 64 x 64 px area (one px per grid unit) on
+    /// black, by Direct2D's software rasterizer into a WIC bitmap: no window.
+    /// Each pixel is `0xRRGGBB`.
+    fn render(look: CatLook, expr: Expr, pose: Pose) -> Vec<u32> {
+        render_on(&painter(), look, expr, pose)
+    }
+
+    /// `render` with `painter` (and its factory), so a test can read its caches.
+    fn render_on(painter: &RobotPainter, look: CatLook, expr: Expr, pose: Pose) -> Vec<u32> {
+        use windows::Win32::Graphics::Direct2D::Common::{
+            D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_PIXEL_FORMAT,
+        };
+        use windows::Win32::Graphics::Direct2D::{
+            D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_SOFTWARE,
+        };
+        use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
+        use windows::Win32::Graphics::Imaging::{
+            CLSID_WICImagingFactory, GUID_WICPixelFormat32bppPBGRA, IWICImagingFactory,
+            WICBitmapCacheOnLoad,
+        };
+        use windows::Win32::System::Com::{
+            CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
+        };
+        const SIZE: u32 = 64;
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            let wic: IWICImagingFactory =
+                CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)
+                    .expect("wic");
+            let bitmap = wic
+                .CreateBitmap(SIZE, SIZE, &GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad)
+                .expect("bitmap");
+            let props = D2D1_RENDER_TARGET_PROPERTIES {
+                r#type: D2D1_RENDER_TARGET_TYPE_SOFTWARE,
+                pixelFormat: D2D1_PIXEL_FORMAT {
+                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                    alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                },
+                dpiX: 96.0,
+                dpiY: 96.0,
+                ..Default::default()
+            };
+            let rt = painter
+                .factory
+                .CreateWicBitmapRenderTarget(&bitmap, &props)
+                .expect("target");
+            let brush = rt.CreateSolidColorBrush(&solid(0, 1.0), None).expect("brush");
+            rt.BeginDraw();
+            rt.Clear(Some(&solid(0x000000, 1.0)));
+            let area = Rect { x: 0.0, y: 0.0, w: 64.0, h: 64.0 };
+            painter.paint(&rt, &brush, area, expr, pose, 1.0, look);
+            rt.EndDraw(None, None).expect("end draw");
+            let mut out = vec![0u8; (SIZE * SIZE * 4) as usize];
+            bitmap.CopyPixels(std::ptr::null(), SIZE * 4, &mut out).expect("pixels");
+            out.chunks(4)
+                .map(|p| (p[2] as u32) << 16 | (p[1] as u32) << 8 | p[0] as u32)
+                .collect()
+        }
+    }
+
+    fn px(img: &[u32], x: u32, y: u32) -> u32 {
+        img[(y * 64 + x) as usize]
+    }
+
+    #[track_caller]
+    fn assert_near(got: u32, want: u32) {
+        let off = [16, 8, 0]
+            .iter()
+            .map(|s| (((got >> s) & 0xFF) as i32 - ((want >> s) & 0xFF) as i32).abs())
+            .max()
+            .unwrap();
+        assert!(off <= 6, "got #{got:06X}, want #{want:06X}");
+    }
+
+    fn falk(c: FalkColor) -> CatLook {
+        CatLook { mascot: Mascot::Falk, falk: c, ..CatLook::default() }
+    }
+
+    fn octopus(c: OctopusColor) -> CatLook {
+        CatLook { mascot: Mascot::Octopus, octopus: c, ..CatLook::default() }
+    }
+
+    #[test]
+    fn the_falk_paints_its_coat_and_face() {
+        let img = render(falk(FalkColor::Lutino), Expr::Idle, Pose::default());
+        // (16, 45), not (15, 44): the face ellipse's edge at y 44 is x 15.2.
+        assert_near(px(&img, 16, 45), 0xEC6B3A); // a cheek
+        assert_near(px(&img, 32, 28), 0xF6D04A); // the face mask
+        assert_near(px(&img, 32, 55), 0xF1E4A2); // the body below the mask
+        assert_near(px(&img, 24, 40), 0x17120F); // an eye
+        assert_near(px(&img, 32, 46), 0xD9978F); // the beak
+        let white = render(falk(FalkColor::WhiteFace), Expr::Idle, Pose::default());
+        assert_near(px(&white, 17, 44), 0xF4EFE6); // no cheek on Muka putih
+    }
+
+    #[test]
+    fn the_octopus_paints_low_eyes_arms_and_flush() {
+        let img = render(octopus(OctopusColor::Coral), Expr::Idle, Pose::default());
+        assert_near(px(&img, 32, 20), 0xE87C8E);
+        assert_near(px(&img, 24, 37), 0x17120F); // eyes lifted by 3
+        // (4, 52), not (5, 53): the arm's t 0.8 sucker at (5.2, 54.2) covers (5, 53).
+        assert_near(px(&img, 4, 52), 0xE87C8E); // an outer arm on the floor
+        let red = render(
+            octopus(OctopusColor::Coral),
+            Expr::Alert,
+            Pose { flush: 1.0, ..Pose::default() },
+        );
+        assert_near(px(&red, 32, 20), FLUSH_RGB);
+    }
+
+    #[test]
+    fn the_cat_ignores_the_other_mascots_pose_fields() {
+        let busy = Pose { flush: 1.0, hop_px: 0.0, waving: true, wave: 1.0, beat: 1.0, ..Pose::default() };
+        let a = render(CatLook::default(), Expr::Idle, Pose::default());
+        let b = render(CatLook::default(), Expr::Idle, busy);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn every_mascot_paints_every_face_and_accessory() {
+        for m in Mascot::ALL {
+            for e in Expr::ALL {
+                for acc in CatAccessory::ALL {
+                    let look = CatLook { mascot: *m, accessory: *acc, ..CatLook::default() };
+                    render(look, e, Pose::default()); // no panic, EndDraw Ok
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn still_paths_are_built_once_and_moving_arms_are_not_kept() {
+        let p = painter();
+        let count = || p.mascot_paths.borrow().len();
+        for look in [falk(FalkColor::Grey), octopus(OctopusColor::Blue)] {
+            render_on(&p, look, Expr::Typing, Pose::default());
+        }
+        let once = count();
+        for look in [falk(FalkColor::Lutino), octopus(OctopusColor::Coral)] {
+            render_on(&p, look, Expr::Typing, Pose { paw_lift: [1.6, 0.0], ..Pose::default() });
+        }
+        assert_eq!(count(), once, "a coat or a lifted tip builds nothing new");
+        let dancing = |beat| Pose { beat, ..Pose::default() }.dance(1.0, 0.5, 0.0);
+        let still = render_on(&p, octopus(OctopusColor::Coral), Expr::Music, Pose::default());
+        let a = render_on(&p, octopus(OctopusColor::Coral), Expr::Music, dancing(0.3));
+        let b = render_on(&p, octopus(OctopusColor::Coral), Expr::Music, dancing(1.9));
+        assert_ne!(a, b, "the dancing arms sway");
+        assert_ne!(still, a);
+        let music = count();
+        render_on(&p, octopus(OctopusColor::Coral), Expr::Music, dancing(2.7));
+        assert_eq!(count(), music, "moving arms are built for the frame, not kept");
+    }
+
+    #[test]
+    fn the_octopus_marks_are_espresso_and_nothing_wears_the_black_cats_rim() {
+        use crate::theme::CatColor;
+        for &color in CatColor::ALL {
+            for m in [Mascot::Falk, Mascot::Octopus] {
+                let look = CatLook { mascot: m, color, ..CatLook::default() };
+                assert_eq!(look.eye_rgb(), 0x17120F, "{m:?} {color:?}");
+                assert_eq!(look.rim(), None, "{m:?} {color:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_halo_box_holds_each_mascot() {
+        let area = Rect { x: 10.0, y: 0.0, w: 32.0, h: 32.0 };
+        let p = Pose::default();
+        assert_eq!(mascot_box(Mascot::Cat, area, Expr::Idle, &p), crate::ui::robot::head_rect(area));
+        let (o, r) = mascot_box(Mascot::Octopus, area, Expr::Idle, &p);
+        assert_eq!((o.x, o.y, o.w, o.h, r), (10.5, 4.5, 31.0, 26.0, 8.5));
+        let (f, _) = mascot_box(Mascot::Falk, area, Expr::Idle, &p);
+        assert_eq!((f.x, f.w), (14.5, 23.0));
+        assert!((f.y + f.h - 28.5).abs() < 1e-4);
+        assert!(f.y < 4.0, "the crest is inside: {}", f.y);
+        let (alert, _) = mascot_box(Mascot::Falk, area, Expr::Alert, &p);
+        assert!(alert.y < f.y, "the Alert crest stands taller");
     }
 
     #[test]

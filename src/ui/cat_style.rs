@@ -87,8 +87,13 @@ impl CatLook {
         }
     }
 
-    /// Head and ears.
+    /// Head and ears; the falk's egg, the octopus's coat.
     pub fn head_rgb(self) -> u32 {
+        match self.mascot {
+            Mascot::Falk => return mascot::falk_ink(self.falk).body,
+            Mascot::Octopus => return mascot::octopus_rgb(self.octopus),
+            Mascot::Cat => {}
+        }
         match self.color {
             CatColor::Terracotta => 0xE2683C,
             CatColor::Calico => CALICO_CREAM,
@@ -97,13 +102,16 @@ impl CatLook {
         }
     }
 
+    /// The Black cat's coat (its amber eyes, rim and cream frame); never the
+    /// falk's or the octopus's.
+    fn black_cat(self) -> bool {
+        self.mascot == Mascot::Cat && self.color == CatColor::Black
+    }
+
     /// The eyes, and the blink lines, happy and sleep arcs and alert dots that
     /// replace them. Extras beside the head stay cream (`Ink::Cream`).
     pub fn eye_rgb(self) -> u32 {
-        match self.color {
-            CatColor::Black => AMBER,
-            _ => EYES_DARK,
-        }
+        if self.black_cat() { AMBER } else { EYES_DARK }
     }
 
     /// The colour of a face mark's ink.
@@ -116,15 +124,12 @@ impl CatLook {
 
     /// The rim colour: the Black cat only.
     pub fn rim(self) -> Option<u32> {
-        (self.color == CatColor::Black).then_some(RIM)
+        self.black_cat().then_some(RIM)
     }
 
     /// The glasses' frame: cream on the Black cat, else espresso.
     fn frame_rgb(self) -> u32 {
-        match self.color {
-            CatColor::Black => CREAM,
-            _ => EYES_DARK,
-        }
+        if self.black_cat() { CREAM } else { EYES_DARK }
     }
 }
 
@@ -889,7 +894,7 @@ impl RobotPainter {
     }
 
     /// `a` combined with `b` by `mode`, as a new path geometry.
-    fn combine(
+    pub(super) fn combine(
         &self,
         a: &ID2D1Geometry,
         b: &ID2D1Geometry,

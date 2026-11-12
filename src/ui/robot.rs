@@ -31,12 +31,13 @@ use windows::Win32::Graphics::Direct2D::Common::{
 use windows::Win32::Graphics::Direct2D::{
     D2D1_CAP_STYLE_ROUND, D2D1_DASH_STYLE_SOLID, D2D1_ELLIPSE, D2D1_LINE_JOIN_ROUND,
     D2D1_QUADRATIC_BEZIER_SEGMENT, D2D1_ROUNDED_RECT, D2D1_STROKE_STYLE_PROPERTIES, ID2D1Factory,
-    ID2D1PathGeometry, ID2D1RenderTarget, ID2D1SolidColorBrush, ID2D1StrokeStyle,
+    ID2D1Geometry, ID2D1PathGeometry, ID2D1RenderTarget, ID2D1SolidColorBrush, ID2D1StrokeStyle,
 };
 use windows::core::Result as WinResult;
 use windows_numerics::{Matrix3x2, Vector2};
 
-use super::cat_style::{CatLook, Placed, RIM_WIDTH};
+use super::cat_style::{CatLook, Placed, RIM_WIDTH, anchors};
+use super::mascot::MascotShape;
 use super::geometry::{EYES_H, Rect, ShapeRect, shape_contains};
 use crate::config::Style;
 use crate::greeting::{self, DayPeriod, GreetMark};
@@ -857,7 +858,6 @@ pub fn ear_drawn(side: Side, ears: Ears) -> [(f32, f32); 3] {
 
 /// The head's rounded rect for a cat drawn in `area` (a square), in px:
 /// what must stay inside the island. Ears and extras may draw outside it.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn head_rect(area: Rect) -> (Rect, f32) {
     let k = area.w / GRID;
     let (x, y, w, h, r) = HEAD;
@@ -960,6 +960,8 @@ pub struct RobotPainter {
     pub(super) calico: RefCell<Vec<((u32, u32), [ID2D1PathGeometry; 2])>>,
     /// Each accessory's pieces and their paths (`cat_style`).
     pub(super) extras: RefCell<Vec<((Mascot, CatAccessory), Rc<Vec<Placed>>)>>,
+    /// The falk's and the octopus's still paths (`mascot`).
+    pub(super) mascot_paths: RefCell<Vec<(MascotShape, ID2D1Geometry)>>,
     pub(super) round: ID2D1StrokeStyle,
 }
 
@@ -984,6 +986,7 @@ impl RobotPainter {
             paths: RefCell::new(Vec::new()),
             calico: RefCell::new(Vec::new()),
             extras: RefCell::new(Vec::new()),
+            mascot_paths: RefCell::new(Vec::new()),
             round,
         })
     }
@@ -998,15 +1001,17 @@ impl RobotPainter {
         Some(g)
     }
 
-    /// Draws the cat filling the square `area` (its 64-unit grid scaled to
-    /// `area.w`), raised by the pose's lift and bounce, at `alpha`. The
+    /// Draws the mascot filling the square `area` (its 64-unit grid scaled to
+    /// `area.w`), raised by the pose's lift, bounce and hop, at `alpha`. The
     /// render target's transform is restored; the brush colour is not.
     ///
-    /// `look` is the coat and accessory. The order is one silhouette (see
-    /// `cat_style`): the Black cat's rim, the ears and head in one colour,
-    /// the calico patches, the face marks, the accessory. A caller that
-    /// fades the cat does it with a layer round this call, as the renderer
-    /// does, so the passes do not show through one another.
+    /// `look` is the mascot, its coat and accessory. The cat's order is one
+    /// silhouette (see `cat_style`): the Black cat's rim, the ears and head in
+    /// one colour, the calico patches, the face marks, the accessory. The
+    /// falk and the octopus paint their own body in place of the first three
+    /// (`mascot`). A caller that fades the mascot does it with a layer round
+    /// this call, as the renderer does, so the passes do not show through
+    /// one another.
     pub fn paint(
         &self,
         rt: &ID2D1RenderTarget,
@@ -1041,7 +1046,7 @@ impl RobotPainter {
             * Matrix3x2::scale(k, k);
         let place = Matrix3x2::translation(
             area.x + pose.head_dx_dip,
-            area.y - pose.lift_px - pose.bounce_px + pose.nod_dip,
+            area.y - pose.lift_px - pose.bounce_px - pose.hop_px + pose.nod_dip,
         );
         let local = shape * place;
         let color = |rgb: u32, a: f32| {
@@ -1080,51 +1085,82 @@ impl RobotPainter {
             if typing {
                 self.paint_laptop(rt, brush, &fixed, &color);
             }
-            // 1. The Black cat's rim, under everything: the ears stroked
-            // wider than their own stroke and the head stroked wider than
-            // its outline, so it reaches `RIM_WIDTH` past the silhouette.
-            if let Some(rim) = look.rim() {
-                brush.SetColor(&color(rim, 1.0));
-                for side in [Side::Left, Side::Right] {
-                    if let Some(g) = self.path(Shape::Ear(side, face.ears.up)) {
-                        let turn =
-                            Matrix3x2::rotation_around(side.turn(face.ears.droop), side.pivot());
-                        rt.SetTransform(&(turn * world));
-                        rt.DrawGeometry(&g, brush, EAR_STROKE + 2.0 * RIM_WIDTH, &self.round);
+            // The face's own shift (the typing cat looks down at its laptop)
+            // and the glance move the face marks in the grid, before the
+            // tilt. The eyes (and what sits on them) also rise by the
+            // mascot's eye lift; the cream extras beside the head do not.
+            let slide = pose.eye_dx_dip / k + face.eye_shift.0 + pose.glance_x;
+            let marks = Matrix3x2::translation(slide, face.eye_shift.1 + pose.glance_y) * world;
+            let eye_lift = anchors(look.mascot).eye_lift;
+            let eyes = if eye_lift == 0.0 {
+                marks
+            } else {
+                Matrix3x2::translation(slide, face.eye_shift.1 + pose.glance_y + eye_lift) * world
+            };
+            match look.mascot {
+                Mascot::Cat => {
+                    // 1. The Black cat's rim, under everything: the ears
+                    // stroked wider than their own stroke and the head
+                    // stroked wider than its outline, so it reaches
+                    // `RIM_WIDTH` past the silhouette.
+                    if let Some(rim) = look.rim() {
+                        brush.SetColor(&color(rim, 1.0));
+                        for side in [Side::Left, Side::Right] {
+                            if let Some(g) = self.path(Shape::Ear(side, face.ears.up)) {
+                                let turn = Matrix3x2::rotation_around(
+                                    side.turn(face.ears.droop),
+                                    side.pivot(),
+                                );
+                                rt.SetTransform(&(turn * world));
+                                rt.DrawGeometry(
+                                    &g,
+                                    brush,
+                                    EAR_STROKE + 2.0 * RIM_WIDTH,
+                                    &self.round,
+                                );
+                            }
+                        }
+                        rt.SetTransform(&world);
+                        if let Some(g) = self.path(Shape::Head) {
+                            rt.DrawGeometry(&g, brush, 2.0 * RIM_WIDTH, &self.round);
+                        }
+                    }
+                    // 2. The silhouette in one colour: ears behind the head,
+                    // a triangle with a fat round stroke, then the head.
+                    brush.SetColor(&color(look.head_rgb(), 1.0));
+                    for side in [Side::Left, Side::Right] {
+                        if let Some(g) = self.path(Shape::Ear(side, face.ears.up)) {
+                            let turn =
+                                Matrix3x2::rotation_around(side.turn(face.ears.droop), side.pivot());
+                            rt.SetTransform(&(turn * world));
+                            rt.FillGeometry(&g, brush, None);
+                            rt.DrawGeometry(&g, brush, EAR_STROKE, &self.round);
+                        }
+                    }
+                    rt.SetTransform(&world);
+                    if let Some(g) = self.path(Shape::Head) {
+                        rt.FillGeometry(&g, brush, None);
+                    }
+                    // 3. Calico: each patch is its ear minus the head, united
+                    // with its circle clipped to the head.
+                    if look.color == CatColor::Calico {
+                        self.paint_patches(rt, brush, &world, face.ears, alpha);
                     }
                 }
-                rt.SetTransform(&world);
-                if let Some(g) = self.path(Shape::Head) {
-                    rt.DrawGeometry(&g, brush, 2.0 * RIM_WIDTH, &self.round);
+                Mascot::Falk => {
+                    // The cheeks slide half as far as the eyes, so they stay
+                    // on the head.
+                    let cheeks = Matrix3x2::translation(
+                        (pose.eye_dx_dip / k + pose.glance_x) / 2.0,
+                        0.0,
+                    ) * world;
+                    self.paint_falk_body(rt, brush, look.falk, expr, &pose, (&world, &cheeks), alpha);
                 }
-            }
-            // 2. The silhouette in one colour: ears behind the head, a
-            // triangle with a fat round stroke, then the head.
-            brush.SetColor(&color(look.head_rgb(), 1.0));
-            for side in [Side::Left, Side::Right] {
-                if let Some(g) = self.path(Shape::Ear(side, face.ears.up)) {
-                    let turn = Matrix3x2::rotation_around(side.turn(face.ears.droop), side.pivot());
-                    rt.SetTransform(&(turn * world));
-                    rt.FillGeometry(&g, brush, None);
-                    rt.DrawGeometry(&g, brush, EAR_STROKE, &self.round);
+                Mascot::Octopus => {
+                    self.paint_octopus_body(rt, brush, look.octopus, expr, &pose, &world, alpha);
                 }
-            }
-            rt.SetTransform(&world);
-            if let Some(g) = self.path(Shape::Head) {
-                rt.FillGeometry(&g, brush, None);
-            }
-            // 3. Calico: each patch is its ear minus the head, united with its
-            // circle clipped to the head.
-            if look.color == CatColor::Calico {
-                self.paint_patches(rt, brush, &world, face.ears, alpha);
             }
             // 4. The face marks.
-            // The face's own shift (the typing cat looks down at its laptop)
-            // and the glance move the eyes in the grid, before the tilt.
-            let eyes = Matrix3x2::translation(
-                pose.eye_dx_dip / k + face.eye_shift.0 + pose.glance_x,
-                face.eye_shift.1 + pose.glance_y,
-            ) * world;
             // The dancing note's marks move on their own, in dip, and fade.
             let notes =
                 Matrix3x2::translation(pose.eye_dx_dip / k + face.eye_shift.0, face.eye_shift.1)
@@ -1135,7 +1171,13 @@ impl RobotPainter {
             let note_alpha = 1.0 - pose.note_fade.clamp(0.0, 1.0);
             for part in &face.parts {
                 let note = is_note(part);
-                rt.SetTransform(if note { &notes } else { &eyes });
+                rt.SetTransform(if note {
+                    &notes
+                } else if is_eye(part) {
+                    &eyes
+                } else {
+                    &marks
+                });
                 let fade = if note { note_alpha } else { 1.0 };
                 match *part {
                     Part::Pill { x, y, w, h, rx, ry } => {
@@ -1167,10 +1209,18 @@ impl RobotPainter {
                     }
                 }
             }
+            // The falk's beak is a face mark too.
+            if look.mascot == Mascot::Falk {
+                self.paint_falk_beak(rt, brush, expr, &pose, &eyes, alpha);
+            }
             // 5. The accessory, on top of everything.
             self.paint_accessory(rt, brush, look, face.ears, (&world, &eyes), alpha);
-            // 6. The typing cat's paws, over the laptop and the head.
-            if typing {
+            // 6. The typing cat's paws, over the laptop and the head; the
+            // falk's feather tips; the octopus types with its arms.
+            if typing && look.mascot == Mascot::Falk {
+                self.paint_falk_tips(rt, brush, look.falk, pose.paw_lift, &fixed, alpha);
+            }
+            if typing && look.mascot == Mascot::Cat {
                 rt.SetTransform(&fixed);
                 for (i, &(cx, cy)) in PAWS.iter().enumerate() {
                     let ellipse = D2D1_ELLIPSE {
@@ -1867,6 +1917,17 @@ fn is_note(part: &Part) -> bool {
     )
 }
 
+/// A mark of the eyes (espresso ink): it rises with the mascot's eye lift.
+/// The cream extras beside the head stay at their grid places.
+fn is_eye(part: &Part) -> bool {
+    match *part {
+        Part::Pill { .. } => true,
+        Part::Dot { ink, .. } => ink == Ink::Espresso,
+        Part::Stroke(line) => line.ink() == Ink::Espresso,
+        Part::Heart { .. } => false,
+    }
+}
+
 /// How much room (dip) lies between the top of `expr`'s note marks and
 /// `shape_top`, for the cat drawn in `area` with the nod and squash of
 /// `pose`: the note's grid top squashed round the head's base, scaled, and
@@ -1916,7 +1977,7 @@ const LAPTOP_LOGO: (f32, f32, f32) = (-21.6, 40.5, 1.5);
 const LAPTOP_LOGO_ALPHA: f32 = 0.85;
 /// The two paws (left, right) at rest, and their size. The Black coat's paws
 /// get a thin outline in its rim colour.
-const PAWS: [(f32, f32); 2] = [(1.0, 52.6), (9.5, 52.6)];
+pub(super) const PAWS: [(f32, f32); 2] = [(1.0, 52.6), (9.5, 52.6)];
 const PAW_RX: f32 = 3.8;
 const PAW_RY: f32 = 2.4;
 const PAW_OUTLINE: f32 = 1.0;
