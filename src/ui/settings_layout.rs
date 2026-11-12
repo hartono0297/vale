@@ -85,6 +85,9 @@ const FIRST_CARD_Y: f32 = TITLE_Y + TITLE_H + 16.0;
 pub const VIEW_TOP: f32 = TITLE_Y + TITLE_H + 8.0;
 /// One wheel notch scrolls one row.
 const WHEEL_STEP: f32 = ROW_H;
+/// The fade at the top of a scrolled section's viewport: from under the
+/// title down to where a section's first title rests.
+pub const SCROLL_FADE_H: f32 = FIRST_CARD_Y - VIEW_TOP;
 /// The scrollbar thumb at the content's right edge.
 const SCROLLBAR_W: f32 = 3.0;
 /// Segmented controls and steppers.
@@ -108,7 +111,7 @@ pub const SWATCH_RING_W: f32 = 1.5;
 pub const STEP_BUTTON: f32 = 28.0;
 const STEP_VALUE_W: f32 = 64.0;
 const BUTTON_PAD: f32 = 16.0;
-const BUTTON_MIN_W: f32 = 80.0;
+const BUTTON_MIN_W: f32 = 64.0;
 /// An icon-only button (the About links).
 const ICON_BUTTON: f32 = 32.0;
 pub const EXTERNAL_GLYPH: f32 = 16.0;
@@ -126,10 +129,25 @@ const NAV_H: f32 = 36.0;
 const NAV_GAP: f32 = 2.0;
 const PREVIEW_H: f32 = 112.0;
 const FIELD_ROW_H: f32 = 44.0;
-const FIELD_H: f32 = 32.0;
+/// A text field is as tall as the buttons beside it.
+const FIELD_H: f32 = BUTTON_H;
 /// The uppercase label above a card (Integrations).
 const EYEBROW_H: f32 = 18.0;
 const EYEBROW_GAP: f32 = 8.0;
+/// From what is above a section title (a card, a note, a header) to the
+/// title: twice the gap between two cards, so a title reads with the card
+/// under it.
+const GROUP_GAP: f32 = 24.0;
+/// Above and below a card's footnote (a static line under a divider).
+const NOTE_PAD: f32 = 12.0;
+/// Under a block that hangs below a row's text (the accessory tiles, the
+/// monitor map and its list).
+const BLOCK_PAD: f32 = 16.0;
+
+/// A footnote of `lines` description lines: `NOTE_PAD`, the lines, `NOTE_PAD`.
+fn note_h(lines: usize) -> f32 {
+    2.0 * NOTE_PAD + 16.0 + lines.saturating_sub(1) as f32 * DESC_LINE_H
+}
 /// A status chip: dot, gap, text, with this padding on each side.
 pub const CHIP_H: f32 = 20.0;
 const CHIP_PAD: f32 = 8.0;
@@ -459,11 +477,8 @@ pub enum Hit {
     RecFolderChange,
     /// Fitur -> Rekam layar: the video quality (the size cap).
     VideoQuality(VideoQuality),
-    /// Fitur -> Rekam layar: a frame rate (30 or 60), "Buka" (the video
-    /// folder in Explorer) and "Ganti" (the folder picker).
+    /// Fitur -> Rekam layar: a frame rate (30 or 60).
     VideoFps(u32),
-    VideoFolderOpen,
-    VideoFolderChange,
     /// Fitur -> Rekam layar: the cursor highlight and click ripples switches.
     CursorHighlight,
     ClickRipples,
@@ -1331,6 +1346,17 @@ impl Layout {
         nav.chain(controls).collect()
     }
 
+    /// The strip at the viewport's top where scrolled content fades out
+    /// under the title instead of being cut: only once the section has
+    /// scrolled, so nothing is dimmed at its top.
+    pub fn top_fade(&self) -> Option<Rect> {
+        let v = self.viewport.filter(|_| self.scroll > 0.0)?;
+        Some(Rect {
+            h: SCROLL_FADE_H,
+            ..v
+        })
+    }
+
     /// The scrollbar thumb of a scrolled section.
     pub fn scrollbar(&self) -> Option<Rect> {
         let v = self.viewport.filter(|_| self.scroll_max > 0.0)?;
@@ -1720,8 +1746,14 @@ impl Builder<'_> {
         });
     }
 
-    /// An uppercase label above the next card, in the space it takes.
-    fn eyebrow(&mut self, key: Key, w: f32) {
+    /// An uppercase label above the next card, in the space it takes:
+    /// `GROUP_GAP` under what is above it (the content above leaves
+    /// `CARD_GAP`), `EYEBROW_GAP` over its card. Returns its top.
+    fn eyebrow(&mut self, key: Key, w: f32) -> f32 {
+        if self.y > FIRST_CARD_Y + 0.5 {
+            self.y += GROUP_GAP - CARD_GAP;
+        }
+        let top = self.y;
         let rect = Rect {
             x: self.g.content_x + 2.0,
             y: self.y,
@@ -1731,6 +1763,7 @@ impl Builder<'_> {
         let label = text(self.lang, key).to_uppercase();
         self.text(rect, label, Font::Eyebrow, Tone::Secondary, Align::Left);
         self.y += EYEBROW_H + EYEBROW_GAP;
+        top
     }
 
     /// A status chip starting at `x`, centred on `cy`, at most `max_w` wide.
@@ -1856,6 +1889,16 @@ impl Builder<'_> {
                 h: 16.0,
             };
             self.text(rect, line, Font::Desc, tone, Align::Left);
+        }
+    }
+
+    /// A description on one line when it fits in `w`, else broken at its
+    /// " · " (the parts read as separate lines).
+    fn split_desc(&self, line: String, w: f32) -> Vec<String> {
+        if self.w(&line, Font::Desc) <= w {
+            vec![line]
+        } else {
+            line.split(" · ").map(str::to_owned).collect()
         }
     }
 
@@ -2142,12 +2185,6 @@ impl Builder<'_> {
             Tone::Secondary,
             Align::Left,
         );
-    }
-
-    /// A button for a list row: the label with a little padding, narrower
-    /// than a button of the cards' rows (which keep `BUTTON_MIN_W`).
-    fn compact_w(&self, label: &str) -> f32 {
-        (self.w(label, Font::Control) + 24.0).max(56.0)
     }
 
     fn button_w(&self, labels: &[&str], kind: ButtonKind) -> f32 {
@@ -2631,7 +2668,9 @@ pub const RADIO_H: f32 = 32.0;
 const RADIO_NOTE_H: f32 = 24.0;
 /// The radio dot's column at the left of an entry, and the padding under the list.
 const RADIO_DOT_W: f32 = 30.0;
-const MONITOR_BLOCK_PAD: f32 = 8.0;
+/// The last radio's label line (20 high, centred in `RADIO_H`) ends
+/// `BLOCK_PAD` above the block's bottom.
+const MONITOR_BLOCK_PAD: f32 = BLOCK_PAD - (RADIO_H - 20.0) / 2.0;
 
 /// The choice a click on `pick` makes, or `None` when it changes nothing: the
 /// monitor is not there, has no device path, or is the choice already.
@@ -3212,7 +3251,7 @@ fn tiles_card(b: &mut Builder, s: &State) {
         let (label, desc) = match &entries[i].0 {
             Tile::Builtin(sc) => (b.t(crate::shortcuts::label(*sc)), note),
             Tile::Custom(c) => {
-                let w = b.compact_w(&delete);
+                let w = b.button_w(&[&delete], ButtonKind::Secondary);
                 let item = (
                     Hit::TileRemove(i),
                     delete.clone(),
@@ -3295,7 +3334,7 @@ fn available_card(b: &mut Builder, s: &State) {
     let card = b.card(list_h + tail_h);
     let (add, delete) = (b.t(Key::TileAdd), b.t(Key::Delete));
     let add_w = b.button_w(&[&add], ButtonKind::Secondary);
-    let delete_w = b.compact_w(&delete);
+    let delete_w = b.button_w(&[&delete], ButtonKind::Secondary);
     let mut y = card.y;
     for (g, items) in groups {
         let key = match g {
@@ -3476,10 +3515,11 @@ pub const CAT_PREVIEW_H: f32 = 158.0;
 pub const CAT_TILE: f32 = 96.0;
 /// The tiles of the "Maskot" and "Aksesori" rows.
 const ACC_TILE: f32 = 54.0;
-/// The "Aksesori" row with one row of tiles under its label; each further
-/// row of tiles adds `ACC_TILE + ACC_ROW_GAP`.
-const ACC_ROW_H: f32 = ROW_H + ACC_TILE + ACC_ROW_GAP;
-const ACC_ROW_GAP: f32 = 12.0;
+/// The "Aksesori" row with one row of tiles under its label (the block
+/// rule: `BLOCK_PAD` under it); each further row of tiles adds
+/// `ACC_TILE + ACC_ROW_GAP`.
+const ACC_ROW_H: f32 = ROW_H + ACC_TILE + BLOCK_PAD;
+const ACC_ROW_GAP: f32 = BLOCK_PAD;
 /// The least room between two accessory tiles in one row; below it they
 /// wrap into rows of `ACC_PER_ROW`.
 const ACC_GAP_MIN: f32 = GAP;
@@ -3649,7 +3689,7 @@ fn cat_page(b: &mut Builder, s: &State) {
     titled(b, Key::GroupGreeting);
     let line = crate::i18n::greeting_periods_line(b.lang);
     let periods = b.wrap(&line, Font::Desc, b.g.content_w - 2.0 * INSET);
-    let card = b.card(ROW_H + periods.len() as f32 * DESC_LINE_H + 14.0);
+    let card = b.card(ROW_H + note_h(periods.len()));
     let x = b.toggle_if(Hit::Greeting, b.g.right, cy(card.y), s.greeting, on);
     let desc = Some((b.t(Key::MorningGreetingDesc), Tone::Secondary));
     b.row_text(card, card.y, b.t(Key::CatGreeting), desc, false, x);
@@ -3657,7 +3697,7 @@ fn cat_page(b: &mut Builder, s: &State) {
     for (i, line) in periods.into_iter().enumerate() {
         let rect = Rect {
             x: card.x + INSET,
-            y: card.y + ROW_H + 8.0 + i as f32 * DESC_LINE_H,
+            y: card.y + ROW_H + NOTE_PAD + i as f32 * DESC_LINE_H,
             w: b.g.content_w - 2.0 * INSET,
             h: 16.0,
         };
@@ -3954,8 +3994,7 @@ fn widgets_page(b: &mut Builder, s: &State) {
     b.divider(card, rows[6]);
 
     // The gallery: its eyebrow with how many are on the desktop at the right.
-    let eyebrow_y = b.y;
-    titled(b, Key::GroupWidgetsGallery);
+    let eyebrow_y = b.eyebrow(Key::GroupWidgetsGallery, b.g.content_w - 4.0);
     let count = crate::widgets::sticky::on_desktop_label(b.lang, s.sticky_count);
     let count_w = b.w(&count, Font::Desc);
     let count_rect = Rect {
@@ -4082,7 +4121,7 @@ fn features_page(b: &mut Builder, s: &State) {
         let note = b.t(Key::PomodoroLocked);
         b.text(rect, note, Font::Desc, Tone::Secondary, Align::Left);
         // The next title clears the note.
-        b.y = y + 18.0 + 10.0;
+        b.y = y + 18.0 + CARD_GAP;
     }
 
     titled(b, Key::GroupMusic);
@@ -4212,8 +4251,9 @@ fn notifications_card(b: &mut Builder, s: &State) {
     b.row_text(card, row(3), b.t(Key::NotifMuted), desc, false, b.g.right);
     b.divider(card, row(3));
     let delete = b.t(Key::Delete);
-    let delete_w = b.compact_w(&delete);
+    let delete_w = b.button_w(&[&delete], ButtonKind::Secondary);
     if s.muted.is_empty() {
+        b.divider(card, row(4));
         let rect = Rect {
             x: card.x + INSET,
             y: row(4) + 16.0,
@@ -4230,6 +4270,7 @@ fn notifications_card(b: &mut Builder, s: &State) {
     }
     for (i, name) in s.muted.iter().enumerate() {
         let y = row(4 + i);
+        b.divider(card, y);
         let item = (
             Hit::NotifMutedRemove(i),
             delete.clone(),
@@ -4407,8 +4448,9 @@ fn arrange_card(b: &mut Builder, s: &State) {
     b.row_text(card, row(1), b.t(Key::ArrangeMyTemplates), desc, false, x);
     b.divider(card, row(1));
     let (edit, delete) = (b.t(Key::ArrangeEdit), b.t(Key::ArrangeDelete));
-    let (edit_w, delete_w) = (b.compact_w(&edit), b.compact_w(&delete));
+    let (edit_w, delete_w) = (b.button_w(&[&edit], ButtonKind::Secondary), b.button_w(&[&delete], ButtonKind::Secondary));
     if a.templates.is_empty() {
+        b.divider(card, row(2));
         let rect = Rect {
             x: card.x + INSET,
             y: row(2) + 16.0,
@@ -4425,6 +4467,7 @@ fn arrange_card(b: &mut Builder, s: &State) {
     }
     for (i, t) in a.templates.iter().enumerate() {
         let y = row(2 + i);
+        b.divider(card, y);
         let items = vec![
             (
                 Hit::ArrangeTemplateEdit(i),
@@ -4458,8 +4501,9 @@ fn arrange_card(b: &mut Builder, s: &State) {
         b.g.right,
     );
     let rename = b.t(Key::ArrangeRename);
-    let rename_w = b.compact_w(&rename);
+    let rename_w = b.button_w(&[&rename], ButtonKind::Secondary);
     if a.saved.is_empty() {
+        b.divider(card, head + ROW_H);
         let rect = Rect {
             x: card.x + INSET,
             y: head + ROW_H + 16.0,
@@ -4476,6 +4520,7 @@ fn arrange_card(b: &mut Builder, s: &State) {
     }
     for (i, saved) in a.saved.iter().enumerate() {
         let y = head + (i + 1) as f32 * ROW_H;
+        b.divider(card, y);
         let items = vec![
             (
                 Hit::ArrangeSavedRename(i),
@@ -4636,9 +4681,6 @@ pub const REC_CHOICES: [RecSources; 3] = [
 /// How the folder shows when none is chosen.
 pub const REC_DEFAULT_FOLDER: &str = r"Documents\Vale\Rekaman";
 
-/// How the video folder shows when none is chosen.
-pub const VIDEO_DEFAULT_FOLDER: &str = r"Videos\Vale";
-
 /// The choices of "Kualitas video", in the control's order.
 pub const VIDEO_QUALITY_CHOICES: [VideoQuality; 4] = VideoQuality::ALL;
 
@@ -4663,11 +4705,33 @@ pub fn rec_device_label(
 }
 
 /// "Rekaman" (Fitur): which sound is recorded, the mic and the PC audio
-/// device, and the folder it goes to. (The hotkey is in the Tombol pintas
-/// section.)
+/// device, and the one folder under which Audio and Video go. (The hotkey is
+/// in the Tombol pintas section.)
 fn recording_card(b: &mut Builder, s: &State) {
     titled(b, Key::RecSettingsTitle);
-    let card = b.card(5.0 * ROW_H);
+    let (open, change) = (b.t(Key::RecSettingsOpen), b.t(Key::RecSettingsChange));
+    let (open_w, change_w) = (
+        b.button_w(&[&open], ButtonKind::Secondary),
+        b.button_w(&[&change], ButtonKind::Secondary),
+    );
+    // The folder and what it holds keep to one line when they fit beside
+    // the buttons, else they break at their " \u{b7} " and the row grows.
+    let folder = s
+        .recording
+        .folder
+        .as_deref()
+        .map_or_else(|| REC_DEFAULT_FOLDER.to_owned(), rec_folder_label);
+    let line = format!("{folder} \u{b7} {}", b.t(Key::RecSettingsFolderSubs));
+    let probe = Rect {
+        x: b.g.content_x,
+        y: 0.0,
+        w: b.g.content_w,
+        h: 0.0,
+    };
+    let control_x = b.g.right - (open_w + change_w + GAP);
+    let folder_lines = b.split_desc(line, row_text_w(probe, control_x));
+    let folder_h = wrapped_row_h(folder_lines.len());
+    let card = b.card(4.0 * ROW_H + folder_h);
     let rows: [f32; 5] = std::array::from_fn(|i| card.y + i as f32 * ROW_H);
     let cy = |y: f32| y + ROW_H / 2.0;
     let items = vec![
@@ -4712,26 +4776,15 @@ fn recording_card(b: &mut Builder, s: &State) {
     b.row_text(card, rows[3], b.t(Key::RecEchoCancel), desc, false, x);
     b.divider(card, rows[4]);
 
-    let (open, change) = (b.t(Key::RecSettingsOpen), b.t(Key::RecSettingsChange));
-    let (open_w, change_w) = (
-        b.button_w(&[&open], ButtonKind::Secondary),
-        b.button_w(&[&change], ButtonKind::Secondary),
-    );
     let x = b.buttons(
         b.g.right,
-        cy(rows[4]),
+        rows[4] + folder_h / 2.0,
         vec![
             (Hit::RecFolderOpen, open, ButtonKind::Secondary, true, open_w),
             (Hit::RecFolderChange, change, ButtonKind::Secondary, true, change_w),
         ],
     );
-    let folder = s
-        .recording
-        .folder
-        .as_deref()
-        .map_or_else(|| REC_DEFAULT_FOLDER.to_owned(), rec_folder_label);
-    let desc = Some((folder, Tone::Secondary));
-    b.row_text(card, rows[4], b.t(Key::RecSettingsFolder), desc, false, x);
+    b.row_text_lines(card, rows[4], b.t(Key::RecSettingsFolder), folder_lines, Tone::Secondary, x);
 }
 
 /// The size a recording takes on the primary monitor, else the first row of
@@ -4745,9 +4798,9 @@ fn estimate_source(monitors: &[MonitorRow]) -> (u32, u32) {
 }
 
 /// "Rekam layar" (Fitur): the size cap of a screen recording with what it
-/// comes to in pixels and MB a minute, its frame rate, the cursor highlight
-/// and click ripples switches, and the folder the videos go to. (The hotkey
-/// is in the Tombol pintas section.)
+/// comes to in pixels and MB a minute, its frame rate, and the cursor
+/// highlight and click ripples switches. (The hotkey is in the Tombol pintas
+/// section; the videos go to the Rekaman folder.)
 fn screen_card(b: &mut Builder, s: &State) {
     titled(b, Key::ScreenSettingsTitle);
     let quality = s.recording.video_quality;
@@ -4779,17 +4832,13 @@ fn screen_card(b: &mut Builder, s: &State) {
     let desc_w = row_text_w(probe, b.g.right - b.segmented_w(&items));
     let line = video_estimate_line(b.lang, w, h, mib);
     // Wrapped, it breaks at its " · ": the size, then the rate.
-    let estimate = if b.w(&line, Font::Desc) <= desc_w {
-        vec![line]
-    } else {
-        line.split(" · ").map(str::to_owned).collect()
-    };
+    let estimate = b.split_desc(line, desc_w);
     let quality_h = wrapped_row_h(estimate.len());
 
-    let card = b.card(4.0 * ROW_H + quality_h);
-    let heights = [quality_h, ROW_H, ROW_H, ROW_H, ROW_H];
-    let mut rows = [card.y; 5];
-    for i in 1..5 {
+    let card = b.card(3.0 * ROW_H + quality_h);
+    let heights = [quality_h, ROW_H, ROW_H, ROW_H];
+    let mut rows = [card.y; 4];
+    for i in 1..4 {
         rows[i] = rows[i - 1] + heights[i - 1];
     }
     let cy = |y: f32| y + ROW_H / 2.0;
@@ -4832,29 +4881,10 @@ fn screen_card(b: &mut Builder, s: &State) {
         let x = b.toggle(hit, b.g.right, cy(row), on);
         let desc = Some((b.t(desc), Tone::Secondary));
         b.row_text(card, row, b.t(title), desc, false, x);
-        b.divider(card, rows[3 + i]);
+        if i + 1 < switches.len() {
+            b.divider(card, rows[3 + i]);
+        }
     }
-
-    let (open, change) = (b.t(Key::RecSettingsOpen), b.t(Key::RecSettingsChange));
-    let (open_w, change_w) = (
-        b.button_w(&[&open], ButtonKind::Secondary),
-        b.button_w(&[&change], ButtonKind::Secondary),
-    );
-    let x = b.buttons(
-        b.g.right,
-        cy(rows[4]),
-        vec![
-            (Hit::VideoFolderOpen, open, ButtonKind::Secondary, true, open_w),
-            (Hit::VideoFolderChange, change, ButtonKind::Secondary, true, change_w),
-        ],
-    );
-    let folder = s
-        .recording
-        .video_folder
-        .as_deref()
-        .map_or_else(|| VIDEO_DEFAULT_FOLDER.to_owned(), rec_folder_label);
-    let desc = Some((folder, Tone::Secondary));
-    b.row_text(card, rows[4], b.t(Key::ScreenSettingsFolder), desc, false, x);
 }
 
 /// "Caption langsung" (Fitur, after Transkrip): three switches, then a line
@@ -4862,8 +4892,7 @@ fn screen_card(b: &mut Builder, s: &State) {
 /// the tray or the Rekam page, never from here.
 fn captions_card(b: &mut Builder, s: &State) {
     titled(b, Key::CapCardTitle);
-    let note_h = DESC_LINE_H + 24.0;
-    let card = b.card(3.0 * ROW_H + note_h);
+    let card = b.card(3.0 * ROW_H + note_h(1));
     let p = &s.captions;
     let switches = [
         (Hit::CaptionMic, p.mic, Key::CapMicRow, Some(Key::CapMicRowDesc)),
@@ -4879,9 +4908,9 @@ fn captions_card(b: &mut Builder, s: &State) {
     }
     let rect = Rect {
         x: card.x + INSET,
-        y: card.y + 3.0 * ROW_H + 12.0,
+        y: card.y + 3.0 * ROW_H + NOTE_PAD,
         w: card.w - 2.0 * INSET,
-        h: DESC_LINE_H + 2.0,
+        h: 16.0,
     };
     b.text(rect, b.t(Key::CapModelNote), Font::Desc, Tone::Secondary, Align::Left);
 }
@@ -4965,7 +4994,7 @@ struct TrCols {
 
 fn tr_cols(b: &Builder, card: Rect) -> TrCols {
     let button_w = [Key::TrDownload, Key::TrCancel, Key::TrDelete, Key::ConfirmShort]
-        .map(|k| b.compact_w(&b.t(k)))
+        .map(|k| b.button_w(&[&b.t(k)], ButtonKind::Secondary))
         .into_iter()
         .fold(0.0, f32::max);
     // Wide enough for whatever the column may say, so it does not move
@@ -5017,8 +5046,8 @@ fn tr_note(b: &Builder, v: &TranscriptView, i: usize, w: f32) -> (Vec<String>, T
 /// with the space used and "Buka folder".
 fn transcript_card(b: &mut Builder, s: &State) {
     let v = &s.transcript;
-    b.l.card_tops.push((CardId::Transcript, b.y));
-    titled(b, Key::TrCardTitle);
+    let top = b.eyebrow(Key::TrCardTitle, b.g.content_w - 4.0);
+    b.l.card_tops.push((CardId::Transcript, top));
     let probe = Rect {
         x: b.g.content_x,
         y: 0.0,
@@ -5881,7 +5910,7 @@ fn integrations(b: &mut Builder, s: &State) {
         let top = card.y + card.h + 4.0;
         let item = (Hit::GoogleAdvanced, advanced, kind, true, w);
         b.buttons(b.g.content_x + w, top + CONTROL_H / 2.0, vec![item]);
-        b.y = top + CONTROL_H + 4.0;
+        b.y = top + CONTROL_H + CARD_GAP;
     }
 
     // Claude Code hooks.
@@ -5959,7 +5988,7 @@ fn about(b: &mut Builder, s: &State) {
         Tone::Secondary,
         Align::Left,
     );
-    b.y = top + ABOUT_LOGO + 18.0;
+    b.y = top + ABOUT_LOGO + CARD_GAP;
     titled(b, Key::GroupLinks);
 
     let card = b.card(4.0 * ROW_H);
@@ -6676,6 +6705,13 @@ mod tests {
     #[test]
     fn controls_do_not_overlap_each_other_or_texts() {
         for (section, lang, l) in all_layouts() {
+            assert_no_overlaps(section, lang, &l);
+        }
+    }
+
+    /// No control, field, chip, glyph, tag or bar covers another or a text.
+    fn assert_no_overlaps(section: Section, lang: Lang, l: &Layout) {
+        {
             let mut boxes: Vec<(String, Rect)> = l
                 .controls
                 .iter()
@@ -9459,10 +9495,12 @@ mod tests {
                 // Its own five-row card under its label, before "Rekam
                 // layar", "Transkrip" and "Pembersih".
                 let card = l.cards[l.cards.len() - 5];
-                assert_eq!(card.h, 5.0 * ROW_H);
                 assert!(l.texts.iter().any(|t| t.text == text(lang, Key::RecSettingsTitle).to_uppercase()));
-                // The folder shows like the screenshot one: parent and name.
-                assert!(l.texts.iter().any(|t| t.text == r"Audio\Rapat"), "{lang:?}");
+                // The folder shows parent and name, then what it holds, on
+                // one line when it fits.
+                let said = format!("Audio\\Rapat \u{b7} {}", text(lang, Key::RecSettingsFolderSubs));
+                assert!(l.texts.iter().any(|t| t.text == said), "{lang:?} {said}");
+                assert_eq!(card.h, 5.0 * ROW_H, "{lang:?}");
                 let hits = l.hits();
                 let (open, change) = (
                     hits.iter().find(|(h, _)| *h == Hit::RecFolderOpen).expect("Buka").1,
@@ -9494,10 +9532,47 @@ mod tests {
                 }
             }
         }
-        // No folder chosen: the default's label.
+        // No folder chosen: the default's label, and the same subfolders.
         let s = State { scroll: 1e6, ..states()[0].clone() };
         let l = layout(Section::Features, &s, &Estimate);
-        assert!(l.texts.iter().any(|t| t.text == REC_DEFAULT_FOLDER));
+        let said = format!("{REC_DEFAULT_FOLDER} \u{b7} {}", text(s.lang, Key::RecSettingsFolderSubs));
+        assert!(l.texts.iter().any(|t| t.text == said), "{said}");
+    }
+
+    #[test]
+    fn the_folder_row_breaks_at_its_dot_only_when_one_line_does_not_fit() {
+        for lang in [Lang::Id, Lang::En] {
+            let sub = text(lang, Key::RecSettingsFolderSubs);
+            let short = std::path::PathBuf::from(r"D:\Video\Kerja");
+            let long = std::path::PathBuf::from(format!(r"D:\{}", "Rekaman Rapat Mingguan".repeat(8)));
+            for (folder, wraps) in [(short, false), (long, true)] {
+                let s = State {
+                    lang,
+                    recording: RecordingPrefs { folder: Some(folder.clone()), ..RecordingPrefs::default() },
+                    scroll: 1e6,
+                    ..states()[0].clone()
+                };
+                // Scrolled so the whole card shows.
+                let end = layout(Section::Features, &s, &Estimate);
+                let top = end.cards[end.cards.len() - 5].y - EYEBROW_H - EYEBROW_GAP;
+                let view = end.viewport.expect("Fitur scrolls");
+                let s = State { scroll: end.scroll - (view.y - top), ..s };
+                let l = layout(Section::Features, &s, &Estimate);
+                let card = l.cards[l.cards.len() - 5];
+                let label = rec_folder_label(&folder);
+                if wraps {
+                    assert_eq!(card.h, 4.0 * ROW_H + wrapped_row_h(2), "{lang:?}");
+                    assert!(l.texts.iter().any(|t| t.text == label), "{lang:?} first line");
+                    assert!(l.texts.iter().any(|t| t.text == sub), "{lang:?} second line");
+                } else {
+                    assert_eq!(card.h, 5.0 * ROW_H, "{lang:?}");
+                    assert!(l.texts.iter().any(|t| t.text == format!("{label} \u{b7} {sub}")), "{lang:?}");
+                }
+                // The buttons sit in the folder row, whatever its height.
+                let open = l.hits().iter().find(|(h, _)| *h == Hit::RecFolderOpen).unwrap().1;
+                assert!(open.y >= card.y + 4.0 * ROW_H && open.bottom() <= card.bottom(), "{lang:?}");
+            }
+        }
     }
 
     #[test]
@@ -9593,14 +9668,13 @@ mod tests {
     }
 
     #[test]
-    fn the_screen_card_has_quality_fps_the_two_switches_and_the_folder() {
+    fn the_screen_card_has_quality_fps_and_the_two_switches_and_no_folder_row() {
         for lang in [Lang::Id, Lang::En] {
             for (i, fps) in VIDEO_FPS_CHOICES.into_iter().enumerate() {
                 let s = State {
                     lang,
                     recording: RecordingPrefs {
                         video_fps: fps,
-                        video_folder: Some(std::path::PathBuf::from(r"D:\Video\Kerja")),
                         ..RecordingPrefs::default()
                     },
                     scroll: 0.0,
@@ -9617,15 +9691,14 @@ mod tests {
                     items.iter().map(|s| s.label.as_str()).collect::<Vec<_>>(),
                     ["30", "60"]
                 );
-                // Its own five-row card under its label, right after
+                // Its own four-row card under its label, right after
                 // "Rekaman", before "Transkrip" and "Pembersih".
                 let card = l.cards[l.cards.len() - 4];
-                assert_eq!(card.h, 5.0 * ROW_H);
+                assert_eq!(card.h, 4.0 * ROW_H);
                 for key in [
                     Key::ScreenSettingsQuality,
                     Key::ScreenSettingsFps,
                     Key::ScreenSettingsFpsDesc,
-                    Key::ScreenSettingsFolder,
                 ] {
                     assert!(l.texts.iter().any(|t| t.text == text(lang, key)), "{lang:?} {key:?}");
                 }
@@ -9637,25 +9710,26 @@ mod tests {
                         seg.rect.y >= card.y + ROW_H && seg.rect.bottom() <= card.y + 2.0 * ROW_H
                     );
                 }
-                // The folder shows like the recordings one: parent and name.
-                assert!(l.texts.iter().any(|t| t.text == r"Video\Kerja"), "{lang:?}");
+                // The videos go to the Rekaman folder: no folder row, no
+                // "Buka" or "Ganti" on this card.
                 let hits = l.hits();
-                let (open, change) = (
-                    hits.iter().find(|(h, _)| *h == Hit::VideoFolderOpen).expect("Buka").1,
-                    hits.iter().find(|(h, _)| *h == Hit::VideoFolderChange).expect("Ganti").1,
+                assert!(
+                    !hits.iter().any(|(h, r)| {
+                        matches!(h, Hit::RecFolderOpen | Hit::RecFolderChange)
+                            && r.y < card.bottom()
+                            && r.bottom() > card.y
+                    }),
+                    "{lang:?}"
                 );
-                assert!(open.right() <= change.x, "Buka left of Ganti");
-                assert!(open.y >= card.y + 4.0 * ROW_H && change.bottom() <= card.bottom());
-                assert!(change.right() <= card.right());
-                // The two switches sit in rows 2 and 3, between the frame rate
-                // and the folder.
+                // Nothing under the second switch: the card ends there.
+                assert!(card.bottom() <= card.y + 4.0 * ROW_H, "{lang:?}");
+                // The two switches sit in rows 2 and 3, under the frame rate.
                 let toggle = |hit: Hit| {
                     hits.iter().find(|(h, _)| *h == hit).expect("a switch").1
                 };
                 let (hl, rp) = (toggle(Hit::CursorHighlight), toggle(Hit::ClickRipples));
                 assert!(hl.y >= card.y + 2.0 * ROW_H && hl.bottom() <= card.y + 3.0 * ROW_H);
                 assert!(rp.y >= card.y + 3.0 * ROW_H && rp.bottom() <= card.y + 4.0 * ROW_H);
-                assert!(open.y >= card.y + 4.0 * ROW_H);
                 assert!(hl.right() <= card.right() && rp.right() <= card.right());
                 for key in [
                     Key::ScreenSettingsHighlight,
@@ -9667,11 +9741,9 @@ mod tests {
                 }
             }
         }
-        // No folder chosen: the default's label, and 30 selected.
+        // 30 selected by default.
         let s = State { scroll: 1e6, ..states()[0].clone() };
         let l = layout(Section::Features, &s, &Estimate);
-        assert!(l.texts.iter().any(|t| t.text == VIDEO_DEFAULT_FOLDER));
-        assert_eq!(VIDEO_DEFAULT_FOLDER, r"Videos\Vale");
         assert_eq!(l.segmented(Group::VideoFps).expect("Gambar per detik").2, 0);
     }
 
@@ -9794,7 +9866,7 @@ mod tests {
                             assert_eq!(texts, ["2560×1440", "± 127 MB/min"], "{tag}");
                         }
                         let row_h = wrapped_row_h(lines.len());
-                        assert_eq!(card.h, 4.0 * ROW_H + row_h, "{tag}");
+                        assert_eq!(card.h, 3.0 * ROW_H + row_h, "{tag}");
                         for t in &lines {
                             assert!(t.rect.bottom() <= card.y + row_h, "{tag}: {:?}", t.text);
                         }
@@ -9807,8 +9879,6 @@ mod tests {
                                     | Hit::VideoFps(_)
                                     | Hit::CursorHighlight
                                     | Hit::ClickRipples
-                                    | Hit::VideoFolderOpen
-                                    | Hit::VideoFolderChange
                             ) {
                                 assert!(
                                     rect.x >= card.x
@@ -9828,8 +9898,8 @@ mod tests {
                             fps_seg.y >= card.y + row_h && fps_seg.bottom() <= card.y + row_h + ROW_H,
                             "{tag}"
                         );
-                        let open = hits.iter().find(|(h, _)| *h == Hit::VideoFolderOpen).unwrap().1;
-                        assert!(open.y >= card.y + row_h + 3.0 * ROW_H, "{tag}");
+                        let ripples = hits.iter().find(|(h, _)| *h == Hit::ClickRipples).unwrap().1;
+                        assert!(ripples.y >= card.y + row_h + 2.0 * ROW_H, "{tag}");
                     }
                 }
             }
@@ -9852,10 +9922,10 @@ mod tests {
             (estimate_lines(&l, card).len(), card.h)
         };
         use crate::recorder::prefs::VideoQuality::{Original, P1080};
-        assert_eq!(one(Lang::En, 2560, 1440, 30, P1080), (1, 5.0 * ROW_H));
-        assert_eq!(one(Lang::Id, 1920, 1080, 30, Original), (1, 5.0 * ROW_H));
+        assert_eq!(one(Lang::En, 2560, 1440, 30, P1080), (1, 4.0 * ROW_H));
+        assert_eq!(one(Lang::Id, 1920, 1080, 30, Original), (1, 4.0 * ROW_H));
         let (lines, h) = one(Lang::En, 2560, 1440, 60, Original);
-        assert_eq!((lines, h), (2, 4.0 * ROW_H + wrapped_row_h(2)));
+        assert_eq!((lines, h), (2, 3.0 * ROW_H + wrapped_row_h(2)));
     }
 
     /// Fitur laid out with the Transkrip card in `view`.
@@ -10318,8 +10388,14 @@ mod tests {
         assert_eq!(card_scroll(&l, CardId::Transcript), scroll, "the same from any scroll");
         assert_eq!(l.card_tops.len(), 1);
         assert!((l.card_tops[0].1 - FIRST_CARD_Y).abs() < 0.01);
-        // Off, the card is short: the end of the section stops the scroll.
-        let off = tr_layout(Lang::Id, TranscriptView::default(), false);
+        // Off, the card is short: in a window where the cards under it fit,
+        // the end of the section stops the scroll.
+        let off = State {
+            transcript: TranscriptView::default(),
+            ..states()[0].clone()
+        };
+        let off = layout_in(Section::Features, &off, &Estimate, (CLIENT_W, 600.0));
+        assert!(off.scroll_max > 0.0);
         assert_eq!(card_scroll(&off, CardId::Transcript), off.scroll_max);
         // Not on this page: nothing to scroll to.
         let general = layout(Section::General, &states()[0], &Estimate);
@@ -12222,6 +12298,323 @@ mod tests {
                 let w = shape_with_robot_sized(style, widest, kind, true).w;
                 assert!(w + 48.0 <= screen_w, "{style:?} {kind:?} {w} in {screen_w}");
             }
+        }
+    }
+
+    // ---- One spacing rule and one button size (2026-11-12) ----
+
+    /// The usual states, plus two templates, two saved arrangements and two
+    /// muted apps, the own-shortcut form open, and the template editor: every
+    /// list and field Settings can show.
+    fn full_states() -> Vec<State<'static>> {
+        let mut out = states();
+        for lang in [Lang::Id, Lang::En] {
+            let mut s = susun_state(2, 2);
+            s.lang = lang;
+            s.muted = vec!["Claude".into(), "Orca".into()];
+            out.push(s.clone());
+            out.push(State {
+                tile_form: Some(TileForm {
+                    kind: CustomKind::Url,
+                    error: None,
+                }),
+                ..s.clone()
+            });
+            let mut e = editor_state(crate::arrange::Node::Leaf, 0, true, false);
+            e.lang = lang;
+            out.push(e);
+        }
+        out
+    }
+
+    /// `f` for every section of every `full_states` state, at the minimum
+    /// size and at a wide one.
+    fn every_layout(f: impl Fn(Section, &State, &Layout)) {
+        for s in full_states() {
+            for section in Section::ALL {
+                for client in [(CLIENT_W, CLIENT_H), (1200.0, 900.0)] {
+                    let l = layout_in(section, &s, &Estimate, client);
+                    f(section, &s, &l);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_text_button_has_one_size() {
+        every_layout(|section, s, l| {
+            let mut widths: Vec<(String, f32)> = Vec::new();
+            for c in &l.controls {
+                let Control::Button(b) = c else { continue };
+                if !matches!(
+                    b.kind,
+                    ButtonKind::Primary | ButtonKind::Secondary | ButtonKind::Confirm
+                ) {
+                    continue;
+                }
+                let ctx = format!("{section:?} {:?} {:?} {}", s.lang, b.label, b.rect.w);
+                assert_eq!(b.rect.h, BUTTON_H, "{ctx}");
+                assert!(b.rect.w >= BUTTON_MIN_W - 0.01, "{ctx}");
+                let own = (Estimate.width(&b.label, Font::Control) + 2.0 * BUTTON_PAD)
+                    .max(BUTTON_MIN_W);
+                // A button that swaps its label (two clicks) or stands in a
+                // column or group takes the widest label's width; every
+                // other one is its own label's.
+                let shared = matches!(
+                    b.hit,
+                    Hit::NotifClear
+                        | Hit::ClipClear
+                        | Hit::GoogleDisconnect
+                        | Hit::ArrangeSplit(_)
+                        | Hit::ArrangeMerge
+                        | Hit::TranscriptDownload(_)
+                        | Hit::TranscriptCancel
+                        | Hit::TranscriptDelete(_)
+                );
+                if shared {
+                    assert!(b.rect.w + 0.01 >= own, "{ctx}");
+                    continue;
+                }
+                assert!((b.rect.w - own).abs() < 0.01, "{ctx}");
+                match widths.iter().find(|(l, _)| *l == b.label) {
+                    Some((_, w)) => assert_eq!(*w, b.rect.w, "{ctx}"),
+                    None => widths.push((b.label.clone(), b.rect.w)),
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn full_states_have_no_overlaps() {
+        let long = "Aplikasi dengan nama yang panjang sekali untuk dicoba".to_owned();
+        every_layout(|section, s, l| assert_no_overlaps(section, s.lang, l));
+        for lang in [Lang::Id, Lang::En] {
+            let mut s = susun_state(2, 2);
+            s.lang = lang;
+            s.muted = vec![long.clone(), "Orca".into()];
+            for i in 0..2 {
+                s.arrange.templates[i].name = format!("{long} {i}");
+                s.arrange.saved[i].name = format!("{long} {i}");
+            }
+            for scroll in [0.0, f32::MAX] {
+                let s = State { scroll, ..s.clone() };
+                let l = layout(Section::Features, &s, &Estimate);
+                assert_no_overlaps(Section::Features, lang, &l);
+            }
+        }
+    }
+
+    #[test]
+    fn fields_are_as_tall_as_buttons() {
+        every_layout(|section, s, l| {
+            for (field, r) in &l.fields {
+                assert_eq!(r.h, BUTTON_H, "{section:?} {:?} {field:?}", s.lang);
+            }
+        });
+    }
+
+    #[test]
+    fn card_lists_have_a_divider_per_row() {
+        for lang in [Lang::Id, Lang::En] {
+            for n in [0usize, 2] {
+                let mut s = susun_state(n, n);
+                s.lang = lang;
+                s.muted = (0..n).map(|i| format!("App {i}")).collect();
+                let l = layout(Section::Features, &s, &Estimate);
+                let mut rows: Vec<String> = Vec::new();
+                if n == 0 {
+                    for k in [Key::ArrangeNoTemplates, Key::ArrangeNoSaved, Key::NotifMutedNone] {
+                        rows.push(text(lang, k).to_owned());
+                    }
+                } else {
+                    rows.extend((0..n).map(|i| format!("T{i}")));
+                    rows.extend((0..n).map(|i| format!("S{i}")));
+                    rows.extend(s.muted.iter().cloned());
+                }
+                for row in rows {
+                    let t = l
+                        .texts
+                        .iter()
+                        .find(|t| t.text == row)
+                        .unwrap_or_else(|| panic!("{lang:?}: no {row:?}"));
+                    // A label-only row puts its text 16 below the row's top.
+                    let top = t.rect.y - 16.0;
+                    assert!(
+                        l.dividers.iter().any(|d| (d.y + 0.5 - top).abs() < 1.0),
+                        "{lang:?} {n}: no divider above {row:?}"
+                    );
+                }
+                // The cards keep their height in rows.
+                let susun = (1 + 1 + n.max(1) + 1 + n.max(1)) as f32 * ROW_H;
+                let notif = (7 + n.max(1)) as f32 * ROW_H;
+                assert!(l.cards.iter().any(|c| (c.h - susun).abs() < 0.01), "{lang:?} {n}");
+                assert!(l.cards.iter().any(|c| (c.h - notif).abs() < 0.01), "{lang:?} {n}");
+            }
+        }
+    }
+
+    #[test]
+    fn section_titles_sit_with_their_card() {
+        for s in states() {
+            let s = State { scroll: 0.0, ..s };
+            for section in Section::ALL {
+                let l = layout(section, &s, &Estimate);
+                let ctx = format!("{section:?} {:?}", s.lang);
+                let eyebrows: Vec<&Text> = l
+                    .texts
+                    .iter()
+                    .filter(|t| t.font == Font::Eyebrow && (t.rect.x - (CONTENT_X + 2.0)).abs() < 0.01)
+                    .collect();
+                for (i, e) in eyebrows.iter().enumerate() {
+                    let below = l
+                        .cards
+                        .iter()
+                        .filter(|c| c.y >= e.rect.bottom() - 0.01)
+                        .map(|c| c.y)
+                        .fold(f32::MAX, f32::min);
+                    assert!(
+                        (below - (e.rect.bottom() + EYEBROW_GAP)).abs() < 0.01,
+                        "{ctx}: {:?} is {} above its card",
+                        e.text,
+                        below - e.rect.bottom()
+                    );
+                    // What is above it: cards, texts and controls of the
+                    // column (not the page title).
+                    let mut above: Vec<f32> = l.cards.iter().map(|c| c.bottom()).collect();
+                    above.extend(
+                        l.texts
+                            .iter()
+                            .filter(|t| t.rect.x >= CONTENT_X - 0.01)
+                            .map(|t| t.rect.bottom()),
+                    );
+                    above.extend(l.controls.iter().map(|c| c.bounds().bottom()));
+                    above.extend(l.about_logo.iter().map(|r| r.bottom()));
+                    let above = above
+                        .into_iter()
+                        .filter(|b| *b <= e.rect.y + 0.01)
+                        .fold(f32::MIN, f32::max);
+                    if i == 0 && above < FIRST_CARD_Y - 0.01 {
+                        assert_eq!(e.rect.y, FIRST_CARD_Y, "{ctx}: {:?}", e.text);
+                    } else {
+                        assert!(
+                            (e.rect.y - above - GROUP_GAP).abs() < 0.01,
+                            "{ctx}: {:?} is {} below what is above it",
+                            e.text,
+                            e.rect.y - above
+                        );
+                    }
+                }
+                // What sits on an eyebrow's line follows it.
+                if section == Section::Widgets {
+                    let gallery = text(s.lang, Key::GroupWidgetsGallery).to_uppercase();
+                    let e = eyebrows.iter().find(|t| t.text == gallery).expect("gallery");
+                    let count = crate::widgets::sticky::on_desktop_label(s.lang, s.sticky_count);
+                    let c = l.texts.iter().find(|t| t.text == count).expect("count");
+                    assert_eq!(c.rect.y, e.rect.y, "{ctx}");
+                }
+                if section == Section::Integrations {
+                    let google = text(s.lang, Key::GoogleCalendar).to_uppercase();
+                    let e = eyebrows.iter().find(|t| t.text == google).expect("google");
+                    let guide = l
+                        .controls
+                        .iter()
+                        .find_map(|c| match c {
+                            Control::Button(b) if b.hit == Hit::GoogleGuide => Some(b.rect),
+                            _ => None,
+                        })
+                        .expect("guide");
+                    assert!((guide.y + guide.h / 2.0 - (e.rect.y + e.rect.h / 2.0)).abs() < 0.01);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn footnotes_and_blocks_share_padding() {
+        let divider_at = |l: &Layout, y: f32| l.dividers.iter().any(|d| (d.y + 0.5 - y).abs() < 0.01);
+        for lang in [Lang::Id, Lang::En] {
+            let s = State {
+                lang,
+                robot: true,
+                scroll: 0.0,
+                monitors: three(),
+                ..states()[0].clone()
+            };
+            // Kucing: the Sapaan periods line, then the accessory tiles.
+            let l = layout(Section::Cat, &s, &Estimate);
+            let card = *l.cards.last().unwrap();
+            let lines: Vec<&Text> = l
+                .texts
+                .iter()
+                .filter(|t| inside(t.rect, card) && t.rect.y >= card.y + ROW_H)
+                .collect();
+            assert!(divider_at(&l, card.y + ROW_H), "{lang:?}");
+            assert_eq!(lines[0].rect.y, card.y + ROW_H + NOTE_PAD, "{lang:?}");
+            let last = lines.last().unwrap().rect;
+            assert_eq!(card.bottom(), last.bottom() + NOTE_PAD, "{lang:?}");
+            let tiles = l
+                .controls
+                .iter()
+                .find_map(|c| match c {
+                    // The last tile: ten tiles may wrap into two rows.
+                    Control::AccessoryTiles { items, .. } => items.last().map(|i| i.1),
+                    _ => None,
+                })
+                .expect("tiles");
+            let card = l.cards.iter().find(|c| inside(tiles, **c)).expect("its card");
+            assert_eq!(card.bottom(), tiles.bottom() + BLOCK_PAD, "{lang:?}");
+
+            // Fitur: the Live captions model note.
+            let l = layout(Section::Features, &s, &Estimate);
+            let note = text(lang, Key::CapModelNote);
+            let t = l.texts.iter().find(|t| t.text == note).expect("note").rect;
+            let card = l.cards.iter().find(|c| inside(t, **c)).expect("its card");
+            assert!(divider_at(&l, t.y - NOTE_PAD), "{lang:?}");
+            assert_eq!(card.bottom(), t.bottom() + NOTE_PAD, "{lang:?}");
+
+            // Tampilan: the monitor list ends BLOCK_PAD under the last
+            // radio's label line (20 high, centred in its row).
+            let l = layout(Section::Appearance, &s, &Estimate);
+            let last = l
+                .controls
+                .iter()
+                .filter_map(|c| match c {
+                    Control::Radio { rect, .. } => Some(*rect),
+                    _ => None,
+                })
+                .last()
+                .expect("radios");
+            let line_bottom = last.y + (RADIO_H + 20.0) / 2.0;
+            assert!(divider_at(&l, line_bottom + BLOCK_PAD), "{lang:?}");
+        }
+    }
+
+    #[test]
+    fn the_top_fades_only_while_scrolled() {
+        let at = |section: Section, scroll: f32| {
+            let s = State {
+                scroll,
+                ..states()[0].clone()
+            };
+            layout(section, &s, &Estimate)
+        };
+        assert_eq!(at(Section::Features, 0.0).top_fade(), None);
+        let l = at(Section::Features, 100.0);
+        let v = l.viewport.expect("Fitur scrolls");
+        assert_eq!(
+            l.top_fade(),
+            Some(Rect {
+                x: v.x,
+                y: VIEW_TOP,
+                w: v.w,
+                h: SCROLL_FADE_H,
+            })
+        );
+        // It ends where a section's first title rests, so a card jumped to
+        // (its title at `FIRST_CARD_Y`) is never dimmed.
+        assert_eq!(VIEW_TOP + SCROLL_FADE_H, FIRST_CARD_Y);
+        for scroll in [0.0, 100.0, 1e6] {
+            assert_eq!(at(Section::Integrations, scroll).top_fade(), None);
         }
     }
 }

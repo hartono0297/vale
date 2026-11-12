@@ -1,0 +1,536 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rekam, tiga arah</title>
+<style>
+  @font-face { font-family: 'DM Sans'; font-weight: 400; src: url('../../assets/fonts/DMSans-400.ttf'); }
+  @font-face { font-family: 'DM Sans'; font-weight: 500; src: url('../../assets/fonts/DMSans-500.ttf'); }
+  @font-face { font-family: 'DM Sans'; font-weight: 600; src: url('../../assets/fonts/DMSans-600.ttf'); }
+  @font-face { font-family: 'JetBrains Mono'; font-weight: 400; src: url('../../assets/fonts/JetBrainsMono-400.ttf'); }
+  @font-face { font-family: 'JetBrains Mono'; font-weight: 500; src: url('../../assets/fonts/JetBrainsMono-500.ttf'); }
+  @font-face { font-family: 'JetBrains Mono'; font-weight: 600; src: url('../../assets/fonts/JetBrainsMono-600.ttf'); }
+  :root {
+    --paper: #F1ECE4; --ink: #221A14; --ink2: #6A5C4E; --rule: #DDD3C6; --card: #FBF7F1;
+    --doc: 'DM Sans', 'Segoe UI', sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--paper); color: var(--ink); font-family: var(--doc); }
+  main { max-width: 1240px; margin: 0 auto; padding: 32px 16px 80px; }
+  h1 { font-weight: 600; font-size: 30px; letter-spacing: -.025em; margin-bottom: 8px; }
+  h2 { font-weight: 600; font-size: 21px; letter-spacing: -.02em; }
+  h3 { font-weight: 600; font-size: 14px; margin-bottom: 4px; }
+  p, li { font-size: 14px; line-height: 1.55; color: #3E3229; }
+  .lede { max-width: 760px; }
+  b { font-weight: 600; color: var(--ink); }
+  code { font-size: 12.5px; background: #E8E0D4; padding: 0 4px; border-radius: 4px; }
+  .now { margin-top: 18px; display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+  .now ol { padding-left: 20px; } .now li { margin-bottom: 4px; }
+  .box { background: var(--card); border: 1px solid var(--rule); border-radius: 14px; padding: 14px 16px; }
+
+  /* the control bar */
+  .ctl { position: sticky; top: 0; z-index: 5; background: rgba(241,236,228,.96); border-bottom: 1px solid var(--rule); margin: 22px -16px 0; padding: 10px 16px; display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center; }
+  .ctl .g { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--ink2); }
+  .ctl .seg { display: flex; background: #E3DACD; border-radius: 9px; padding: 2px; }
+  .ctl button { font: inherit; font-size: 12.5px; border: 0; background: transparent; color: #4A3D33; padding: 5px 10px; border-radius: 7px; cursor: pointer; min-height: 30px; }
+  .ctl button[aria-pressed="true"] { background: #FBF7F1; color: var(--ink); font-weight: 600; box-shadow: 0 1px 2px rgba(34,26,20,.12); }
+  .ctl button:focus-visible, .jump a:focus-visible { outline: 2px solid #9A3B19; outline-offset: 2px; }
+  .jump { display: flex; gap: 12px; font-size: 13px; margin-left: auto; }
+  .jump a { color: #7A2F14; }
+
+  section.dir { margin-top: 44px; scroll-margin-top: 70px; }
+  .dir .head { display: grid; gap: 8px 28px; grid-template-columns: minmax(0, 1fr); }
+  @media (min-width: 900px) { .dir .head { grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); } }
+  .dir .letter { font-size: 13px; font-weight: 600; color: #9A3B19; margin-bottom: 2px; }
+  .pc { display: grid; gap: 4px 20px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+  .pc ul { list-style: none; } .pc li { font-size: 13.5px; padding-left: 16px; position: relative; margin-bottom: 3px; }
+  .pc .plus li::before { content: "+"; position: absolute; left: 0; color: #3B5538; font-weight: 600; }
+  .pc .minus li::before { content: "\2212"; position: absolute; left: 0; color: #93262A; font-weight: 600; }
+  .states { margin-top: 16px; display: grid; gap: 22px 20px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 560px), 1fr)); }
+  figure { min-width: 0; }
+  figcaption { font-size: 12.8px; color: var(--ink2); margin-top: 8px; line-height: 1.45; }
+  figcaption b { color: var(--ink); }
+  .stage { background: #3A3029; border-radius: 12px; padding: 0 0 14px; display: flex; justify-content: center; overflow: hidden; }
+  .fit { width: 100%; display: flex; justify-content: center; }
+  .scale { transform-origin: top center; }
+
+  table { border-collapse: collapse; width: 100%; }
+  .tw { overflow-x: auto; margin-top: 12px; }
+  th { text-align: left; font-size: 12px; color: var(--ink2); font-weight: 600; padding: 8px 10px; border-bottom: 1.5px solid var(--rule); }
+  td { font-size: 13.5px; padding: 8px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; color: #3E3229; }
+  .same { margin-top: 12px; columns: 2 300px; column-gap: 28px; }
+  .same li { break-inside: avoid; margin-bottom: 6px; }
+  .ask { margin-top: 36px; background: #2A221C; color: #F4EDE4; border-radius: 14px; padding: 18px 20px; }
+  .ask p { color: #E6DCCF; } .ask b { color: #F4EDE4; }
+
+  /* ================= the island panel ================= */
+  .panel {
+    --s: #17120F; --r: #241D18; --rh: #3A2F27; --t: #332A23; --doff: #4A3E35;
+    --tx: #F4EDE4; --tx2: #A89A8B; --a: #9DB59A; --on-a: #17120F; --red: #E5484D; --ochre: #D9A441;
+    --f: 'DM Sans', 'Segoe UI', sans-serif;
+    width: 560px; height: 290px; flex: none; position: relative;
+    background: var(--s); color: var(--tx); font-family: var(--f); font-size: 12px;
+    border-radius: 0 0 30px 30px; padding: 14px 20px 0; overflow: hidden;
+    box-shadow: 0 10px 26px rgba(0,0,0,.4);
+    font-variant-numeric: tabular-nums;
+  }
+  .panel.term { --s: #1B1D1F; --r: #27292B; --rh: #3D3F41; --t: #353739; --doff: #4D4F51; --tx2: #A9ADB2; }
+  .panel.terra { --a: #E2683C; }
+  .panel.mono { --f: 'JetBrains Mono', Consolas, monospace; font-size: 11px; }
+  .panel b { color: inherit; }
+  .panel svg { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+  .panel .sm svg, .panel svg.sm { width: 13px; height: 13px; }
+
+  .hd { display: flex; align-items: center; height: 22px; gap: 4px; }
+  .tabs { display: flex; background: var(--r); border-radius: 10px; padding: 2px; height: 22px; }
+  .tabs span { padding: 0 13px; border-radius: 8px; line-height: 18px; font-size: 11.5px; color: var(--tx2); font-weight: 500; }
+  .tabs span.on { background: var(--rh); color: var(--tx); }
+  .tabs.locked { opacity: .5; }
+  .grow { flex: 1; }
+  .ib { width: 22px; height: 22px; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; color: var(--tx2); position: relative; flex: none; }
+  .ib.hover { background: var(--r); color: var(--tx); }
+  .tip { position: absolute; top: 27px; right: -6px; white-space: nowrap; background: var(--rh); color: var(--tx); font-size: 11px; padding: 4px 8px; border-radius: 7px; z-index: 2; }
+  .dots { position: absolute; left: 0; right: 0; bottom: 12px; display: flex; justify-content: center; gap: 7px; }
+  .dots i { width: 5px; height: 5px; border-radius: 50%; background: var(--doff); display: block; }
+  .dots i.on { background: var(--a); }
+  .sec { color: var(--tx2); }
+  .trunc { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+
+  /* shared bits */
+  .ring { border-radius: 50%; border: 3px solid var(--t); display: inline-flex; align-items: center; justify-content: center; flex: none; }
+  .ring i { display: block; border-radius: 50%; background: var(--red); }
+  .ring i.sq { border-radius: 3px; }
+  .ring.paused i { background: var(--red); }
+  .round { border-radius: 50%; background: var(--t); display: inline-flex; align-items: center; justify-content: center; color: var(--tx); flex: none; }
+  .meter { display: inline-flex; align-items: center; gap: 2px; height: 14px; flex: none; }
+  .meter i { width: 3px; border-radius: 2px; background: var(--a); display: block; }
+  .meter.rest i { background: var(--t); height: 3px !important; }
+  .sw { width: 28px; height: 16px; border-radius: 99px; background: var(--t); position: relative; flex: none; }
+  .sw::after { content: ""; position: absolute; left: 2px; top: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--tx2); }
+  .sw.on { background: var(--a); } .sw.on::after { left: 14px; background: var(--on-a); }
+  .act { height: 22px; min-width: 76px; padding: 0 10px; border-radius: 8px; background: var(--t); color: var(--tx); font-size: 11px; font-weight: 500; display: inline-flex; align-items: center; justify-content: center; gap: 5px; flex: none; position: relative; overflow: hidden; }
+  .act.view { box-shadow: inset 0 0 0 1px var(--a); }
+  .act.queued { background: transparent; box-shadow: inset 0 0 0 1px var(--t); color: var(--tx2); }
+  .act.run { background: var(--r); box-shadow: inset 0 0 0 1px var(--t); }
+  .act.run .fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--rh); }
+  .act.run span { position: relative; }
+  .well { width: 22px; height: 22px; border-radius: 7px; background: var(--r); display: inline-flex; align-items: center; justify-content: center; color: var(--tx2); flex: none; }
+  .grp { font-size: 10.5px; color: var(--tx2); font-weight: 500; height: 16px; line-height: 16px; }
+  .row { display: flex; align-items: center; gap: 8px; height: 28px; }
+  .row .tm { font-weight: 500; font-size: 12.5px; }
+  .row .du { color: var(--tx2); font-size: 11.5px; }
+  .live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--red); flex: none; }
+  .live-dot.paused { background: var(--ochre); }
+  .empty { display: flex; gap: 10px; align-items: center; }
+  .empty .well { width: 32px; height: 32px; border-radius: 10px; }
+  .empty b { display: block; font-size: 12.5px; font-weight: 500; color: var(--tx); }
+  .empty span { font-size: 11px; color: var(--tx2); }
+  .key { font-size: 10.5px; color: var(--tx); background: var(--t); border-radius: 5px; padding: 0 4px; }
+
+  /* A: one control bar over the list */
+  .a-bar { margin-top: 8px; height: 52px; background: var(--r); border-radius: 14px; display: flex; align-items: center; padding: 0 8px; gap: 6px; }
+  .a-rec { display: flex; align-items: center; gap: 8px; padding-right: 6px; flex: none; }
+  .a-rec b { font-weight: 600; font-size: 12.5px; color: var(--tx); }
+  .a-sep { width: 1px; height: 28px; background: var(--t); flex: none; }
+  .chip { height: 36px; border-radius: 10px; display: flex; align-items: center; gap: 7px; padding: 0 8px; flex: 1 1 0; min-width: 0; color: var(--tx2); box-shadow: inset 0 0 0 1px var(--t); }
+  .chip.on { background: var(--rh); box-shadow: none; color: var(--tx); }
+  .chip.on > svg { color: var(--a); }
+  .chip .cl { display: flex; flex-direction: column; min-width: 0; flex: 1; line-height: 1.2; }
+  .chip .cl b { font-weight: 500; font-size: 11.5px; }
+  .chip .cl small { font-size: 10px; color: var(--tx2); }
+  .chip.sq { flex: none; width: 40px; justify-content: center; padding: 0; }
+  .chip.wide { flex: 1.6 1 0; }
+  .a-time { display: flex; flex-direction: column; line-height: 1.15; flex: none; min-width: 64px; }
+  .a-time b { font-size: 17px; font-weight: 500; }
+  .a-time small { font-size: 10px; color: var(--tx2); }
+  .a-time.paused b { color: var(--ochre); }
+  .mute { width: 24px; height: 24px; border-radius: 7px; display: inline-flex; align-items: center; justify-content: center; color: var(--tx); background: var(--t); flex: none; }
+  .mute.off { color: var(--tx2); background: transparent; box-shadow: inset 0 0 0 1px var(--t); }
+  .a-list { margin-top: 8px; }
+
+  /* B: recorder card beside the library */
+  .b-body { margin-top: 8px; display: flex; gap: 12px; height: 222px; }
+  .b-card { width: 196px; flex: none; background: var(--r); border-radius: 18px; padding: 10px 12px; display: flex; flex-direction: column; }
+  .b-top { display: flex; flex-direction: column; align-items: center; gap: 3px; height: 92px; justify-content: center; }
+  .b-top .lbl { font-size: 11.5px; font-weight: 500; }
+  .b-pair { display: flex; align-items: center; gap: 12px; }
+  .b-time { font-size: 15px; font-weight: 500; display: flex; align-items: center; gap: 6px; }
+  .b-time.paused { color: var(--ochre); }
+  .b-src { display: flex; align-items: center; gap: 8px; height: 34px; border-top: 1px solid var(--t); }
+  .b-src > svg { color: var(--tx2); }
+  .b-src.on > svg { color: var(--a); }
+  .b-src .cl { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.2; }
+  .b-src .cl b { font-weight: 500; font-size: 11.5px; }
+  .b-src .cl small { font-size: 10px; color: var(--tx2); }
+  .b-hint { font-size: 10.5px; color: var(--tx2); text-align: center; line-height: 1.35; padding: 0 4px 6px; }
+  .b-list { flex: 1; min-width: 0; }
+  .b-more { font-size: 11px; color: var(--tx2); margin-top: 4px; display: flex; align-items: center; gap: 4px; }
+
+  /* C: one big recorder, the list one step away */
+  .c-hero { margin-top: 10px; display: flex; gap: 16px; align-items: center; height: 96px; }
+  .c-hero .t { font-size: 17px; font-weight: 600; letter-spacing: -.01em; }
+  .c-hero .l1 { font-size: 11.5px; margin-top: 2px; }
+  .c-hero .l2 { font-size: 10.5px; color: var(--tx2); margin-top: 1px; }
+  .c-btns { display: flex; gap: 6px; margin-top: 8px; }
+  .pill { height: 24px; border-radius: 8px; background: var(--t); color: var(--tx); font-size: 11px; font-weight: 500; display: inline-flex; align-items: center; gap: 6px; padding: 0 9px; flex: none; }
+  .pill.ghost { background: transparent; box-shadow: inset 0 0 0 1px var(--t); }
+  .pill .sw { width: 22px; height: 12px; } .pill .sw::after { width: 8px; height: 8px; } .pill .sw.on::after { left: 12px; }
+  .c-card { margin-top: 10px; background: var(--r); border-radius: 14px; padding: 6px 10px 6px; }
+  .c-card .ch { display: flex; align-items: center; height: 20px; font-size: 10.5px; color: var(--tx2); font-weight: 500; }
+  .c-card .ch .lnk { margin-left: auto; color: var(--tx); display: inline-flex; align-items: center; gap: 2px; }
+  .c-con { margin-top: 10px; display: flex; align-items: center; height: 70px; gap: 12px; }
+  .c-con .big { font-size: 34px; font-weight: 500; letter-spacing: -.02em; line-height: 1; }
+  .c-con .big.paused { color: var(--ochre); }
+  .c-con .st { font-size: 11px; color: var(--tx2); margin-top: 6px; display: flex; align-items: center; gap: 6px; }
+  .c-meters { background: var(--r); border-radius: 14px; padding: 4px 10px; }
+  .c-m { display: flex; align-items: center; gap: 8px; height: 32px; }
+  .c-m + .c-m { border-top: 1px solid var(--t); }
+  .c-m .nm { width: 64px; font-size: 11.5px; font-weight: 500; flex: none; }
+  .c-m .dv { flex: 1; font-size: 10.5px; color: var(--tx2); }
+  .c-m .meter { height: 12px; gap: 2px; }
+  .c-cap { margin-top: 8px; display: flex; gap: 8px; align-items: center; height: 30px; background: var(--r); border-radius: 10px; padding: 0 10px; font-size: 11.5px; }
+  .c-cap .who { color: var(--tx2); flex: none; }
+  .c-sub { display: flex; align-items: center; gap: 6px; height: 22px; }
+  .c-sub .t { font-size: 13px; font-weight: 600; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Halaman Rekam, tiga arah baru</h1>
+  <p class="lede">Tiga cara nyusun ulang halaman Rekam di panel. Semua digambar di ukuran asli panel (560 × 290), pakai warna dan font Vale sendiri. Tiap arah ditunjukin dalam lima keadaan: diam, lagi merekam dengan caption nyala, dijeda, tab Layar, dan belum ada rekaman. Data rekamannya diambil dari screenshot kamu; angka waktu rekaman yang sedang jalan dan nama video di tab Layar cuma contoh.</p>
+
+  <div class="now">
+    <div class="box">
+      <h3>Yang aku lihat di halaman sekarang (tebakanku, koreksi kalau salah)</h3>
+      <ol>
+        <li>Kepala halaman isinya empat hal beda bentuk: tab, dua link teks, dan ikon gear. Mata nggak tahu mana yang penting.</li>
+        <li>Setelan rekaman kepecah tiga: tombol Start di kotak sendiri, sumber dan perangkat di kanan, caption di baris lain lagi.</li>
+        <li>Judul baris ngulang tanggal: "Recording 8 Nov 01:08" lalu "8 Nov · 6 s".</li>
+        <li>Tombol View dan Transcribe beda warna dan beda lebar, padahal posisinya sama.</li>
+        <li>Cuma empat rekaman kelihatan, dan nggak ada tanda masih ada yang lain.</li>
+      </ol>
+    </div>
+    <div class="box">
+      <h3>Yang dijaga di ketiga arah</h3>
+      <ol>
+        <li>Merah cuma buat rekam dan stop. Kuning oker cuma buat "dijeda". Warna aksen cuma buat yang lagi nyala.</li>
+        <li>Semua tombol aksi di baris sama tinggi dan sama lebar (76 px), apa pun isinya.</li>
+        <li>Rekaman dikelompokkan per hari, jadi barisnya cukup jam dan durasi.</li>
+        <li>"Transcribe a file" dan "Open folder" jadi ikon dengan tooltip (sesi tooltip lagi nambahin tooltip di panel).</li>
+        <li>Tab Audio / Layar dikunci selama merekam, kayak sekarang.</li>
+      </ol>
+    </div>
+  </div>
+
+  <div class="ctl" role="group" aria-label="Tampilan mockup">
+    <div class="g">Bahasa <span class="seg" data-k="lang"><button data-v="en" aria-pressed="true">English</button><button data-v="id" aria-pressed="false">Indonesia</button></span></div>
+    <div class="g">Permukaan <span class="seg" data-k="surf"><button data-v="esp" aria-pressed="true">Espresso</button><button data-v="term" aria-pressed="false">Terminal</button></span></div>
+    <div class="g">Aksen <span class="seg" data-k="acc"><button data-v="sage" aria-pressed="true">Sage</button><button data-v="terra" aria-pressed="false">Terracotta</button></span></div>
+    <div class="g">Font <span class="seg" data-k="font"><button data-v="sans" aria-pressed="true">DM Sans</button><button data-v="mono" aria-pressed="false">JetBrains Mono</button></span></div>
+    <nav class="jump" aria-label="Lompat ke arah"><a href="#a">A</a><a href="#b">B</a><a href="#c">C</a><a href="#banding">Banding</a></nav>
+  </div>
+
+  <section class="dir" id="a">
+    <div class="head">
+      <div>
+        <div class="letter">Arah A</div>
+        <h2>Satu bar kontrol, daftar di bawahnya</h2>
+        <p>Semua yang nentuin rekaman ada di satu bar: tombol Rekam, sumber Mic dan Suara PC sebagai dua chip yang bisa dinyalain sendiri-sendiri (dua-duanya nyala = "Both"), perangkatnya ditulis kecil di dalam chip, dan chip CC buat caption. Pas merekam, bar yang sama berubah jadi jam, meter, dan tombol bisu. Sisa halaman buat daftar.</p>
+      </div>
+      <div class="pc">
+        <ul class="plus"><li>Paling banyak rekaman kelihatan (4 sampai 5).</li><li>Ganti sumber cukup sekali klik di chip; ganti perangkat lewat panah kecilnya.</li><li>Bar yang sama dipakai pas diam dan pas merekam, jadi nggak ada yang loncat.</li></ul>
+        <ul class="minus"><li>Chip CC cuma ikon, butuh tooltip biar kebaca.</li><li>Nama perangkat panjang kepotong di chip.</li><li>Tombol Rekam nggak sebesar sekarang.</li></ul>
+      </div>
+    </div>
+    <div class="states" data-dir="a"></div>
+  </section>
+
+  <section class="dir" id="b">
+    <div class="head">
+      <div>
+        <div class="letter">Arah B</div>
+        <h2>Kartu perekam di kiri, perpustakaan di kanan</h2>
+        <p>Kiri itu alatnya: tombol rekam besar, lalu sumber sebagai baris dengan saklar dan nama perangkat, lalu caption. Kanan itu hasilnya: daftar rekaman setinggi panel. Pas merekam, saklar sumber berubah jadi tombol bisu dan meter, dan rekaman yang sedang jalan muncul di paling atas daftar.</p>
+      </div>
+      <div class="pc">
+        <ul class="plus"><li>Tiap setelan punya label lengkap, nggak perlu nebak ikon.</li><li>Paling dekat sama susunan sekarang, jadi paling gampang dibiasain.</li><li>Rekaman yang sedang jalan kelihatan di daftar.</li></ul>
+        <ul class="minus"><li>Kolom daftar lebih sempit (312 px), judul video panjang kepotong.</li><li>Kartu kiri agak padat pas merekam.</li></ul>
+      </div>
+    </div>
+    <div class="states" data-dir="b"></div>
+  </section>
+
+  <section class="dir" id="c">
+    <div class="head">
+      <div>
+        <div class="letter">Arah C</div>
+        <h2>Fokus ke rekaman, daftar selangkah di belakang</h2>
+        <p>Halaman utamanya satu hal: tombol rekam besar dengan ringkasan "apa yang bakal direkam". Sumber dan perangkat diganti lewat satu menu. Di bawahnya cuma rekaman terakhir, dan "All recordings" geser ke halaman daftar. Pas merekam, seluruh halaman jadi konsol: jam besar, meter lebar per sumber, dan baris caption terakhir kalau caption nyala.</p>
+      </div>
+      <div class="pc">
+        <ul class="plus"><li>Paling jelas apa yang bakal direkam sebelum mencet.</li><li>Pas merekam, jam dan meter kebaca dari jauh.</li><li>Caption kelihatan langsung di halaman.</li></ul>
+        <ul class="minus"><li>Ganti sumber butuh dua klik (menu).</li><li>Rekaman lama butuh satu klik lagi.</li><li>Paling banyak kerjaan baru (halaman daftar, konsol).</li></ul>
+      </div>
+    </div>
+    <div class="states" data-dir="c"></div>
+  </section>
+
+  <section class="dir" id="banding">
+    <h2>Banding singkat</h2>
+    <div class="tw">
+      <table>
+        <thead><tr><th></th><th>A · Satu bar</th><th>B · Dua kolom</th><th>C · Fokus</th></tr></thead>
+        <tbody>
+          <tr><td>Mulai rekam</td><td>1 klik</td><td>1 klik</td><td>1 klik</td></tr>
+          <tr><td>Ganti sumber</td><td>1 klik (chip)</td><td>1 klik (saklar)</td><td>2 klik (menu)</td></tr>
+          <tr><td>Ganti perangkat</td><td>panah di chip</td><td>klik nama perangkat</td><td>di menu yang sama</td></tr>
+          <tr><td>Rekaman kelihatan</td><td>4 sampai 5</td><td>5</td><td>2, sisanya 1 klik</td></tr>
+          <tr><td>Caption</td><td>chip ikon CC</td><td>baris dengan saklar</td><td>tombol berlabel + baris caption pas merekam</td></tr>
+          <tr><td>Pas merekam</td><td>bar berubah, daftar tetap</td><td>kartu kiri berubah, baris "now" di daftar</td><td>seluruh halaman jadi konsol</td></tr>
+          <tr><td>Cocok kalau kamu</td><td>sering buka rekaman lama</td><td>mau label jelas dan susunan mirip sekarang</td><td>kebanyakan cuma mulai dan berhenti</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="ask">
+      <p><b>Pilih satu, atau campur.</b> Misalnya "A tapi konsol merekamnya dari C". Setelah kamu pilih, aku gambar semua keadaan sisanya (transkrip gagal, perangkat hilang, menu perangkat terbuka, tema Terminal di semua keadaan) sebelum nyentuh kode.</p>
+    </div>
+  </section>
+</main>
+
+<script>
+(() => {
+  const S = { lang: 'en', surf: 'esp', acc: 'sage', font: 'sans' };
+  const T = (en, id) => S.lang === 'id' ? id : en;
+
+  const P = {
+    mic: '<rect x="6" y="2" width="4" height="7.5" rx="2"/><path d="M3.8 7.6a4.2 4.2 0 0 0 8.4 0M8 11.8V14"/>',
+    micOff: '<rect x="6" y="2" width="4" height="7.5" rx="2"/><path d="M3.8 7.6a4.2 4.2 0 0 0 8.4 0M8 11.8V14M2.5 2.5l11 11"/>',
+    spk: '<path d="M2.5 6h2.2L8 3.4v9.2L4.7 10H2.5z"/><path d="M10.6 6.1a2.6 2.6 0 0 1 0 3.8M12.3 4.4a5 5 0 0 1 0 7.2"/>',
+    both: '<rect x="2.5" y="2.5" width="3.6" height="6.4" rx="1.8"/><path d="M1.5 7a2.8 2.8 0 0 0 5.6 0M4.3 10.4v2"/><path d="M9.8 6.5h1.4L13 5v6l-1.8-1.5H9.8z"/>',
+    scr: '<rect x="1.8" y="2.8" width="12.4" height="8.4" rx="1.5"/><path d="M5.8 14h4.4M8 11.2V14"/>',
+    folder: '<path d="M2 4.2h4.2l1.5 1.6H14v6.8a.8.8 0 0 1-.8.8H2.8a.8.8 0 0 1-.8-.8z"/>',
+    filetx: '<path d="M4 1.8h5l3 3v9.4H4z"/><path d="M9 1.8v3h3M6 8.2h4M6 10.8h3"/>',
+    gear: '<circle cx="8" cy="8" r="2.1"/><path d="M8 1.8v1.8M8 12.4v1.8M1.8 8h1.8M12.4 8h1.8M3.6 3.6l1.3 1.3M11.1 11.1l1.3 1.3M3.6 12.4l1.3-1.3M11.1 4.9l1.3-1.3"/>',
+    chev: '<path d="M5 6.5l3 3 3-3"/>',
+    chevR: '<path d="M6.5 4.5l3 3.5-3 3.5"/>',
+    back: '<path d="M9.5 4.5L6 8l3.5 3.5"/>',
+    pause: '<path d="M6 4v8M10 4v8"/>',
+    play: '<path d="M5.5 3.8l6.5 4.2-6.5 4.2z"/>',
+    cc: '<rect x="1.8" y="3.2" width="12.4" height="9.6" rx="2"/><path d="M7 6.6a1.7 1.7 0 1 0 0 2.8M11.4 6.6a1.7 1.7 0 1 0 0 2.8"/>',
+  };
+  const I = (n, cls = '') => `<svg viewBox="0 0 16 16" class="${cls}" aria-hidden="true">${P[n]}</svg>`;
+  const meter = (hs, rest) => `<span class="meter${rest ? ' rest' : ''}">${hs.map(h => `<i style="height:${h}px"></i>`).join('')}</span>`;
+  const dots = () => `<div class="dots">${Array.from({ length: 14 }, (_, i) => `<i class="${i === 9 ? 'on' : ''}"></i>`).join('')}</div>`;
+  const ring = (size, inner, sq, cls = '') => `<span class="ring ${cls}" style="width:${size}px;height:${size}px"><i class="${sq ? 'sq' : ''}" style="width:${inner}px;height:${inner}px"></i></span>`;
+  const round = (size, icon) => `<span class="round" style="width:${size}px;height:${size}px">${I(icon)}</span>`;
+
+  const MIC = 'Desktop Microphone (RØDE NT-USB Mini)';
+  const SPK = 'Speakers (Realtek(R) Audio)';
+  const W = {
+    rec: () => T('Record', 'Rekam'), stop: () => T('Stop', 'Berhenti'),
+    mic: () => 'Mic', pc: () => T('PC audio', 'Suara PC'), both: () => T('Both', 'Dua-duanya'),
+    cap: () => T('Live captions', 'Caption langsung'), recording: () => T('Recording', 'Merekam'), paused: () => T('Paused', 'Dijeda'),
+    today: () => T('Today', 'Hari ini'), view: () => T('View', 'Lihat'), tr: () => T('Transcribe', 'Transkrip'), queued: () => T('Queued', 'Antre'),
+    folder: () => T('Open folder', 'Buka folder'), pick: () => T('Transcribe a file…', 'Transkrip file lain…'),
+    empty: () => T('No recordings yet', 'Belum ada rekaman'),
+    emptyHint: (scr) => scr ? T('Press Record, or Ctrl+Alt+Shift+R from anywhere', 'Tekan Rekam, atau Ctrl+Alt+Shift+R dari mana aja')
+                            : T('Press Record, or Ctrl+Alt+R from anywhere', 'Tekan Rekam, atau Ctrl+Alt+R dari mana aja'),
+    pickNext: () => T('Screen, window or area', 'Layar, jendela atau area'),
+    pickNextSub: () => T('You pick it after Record', 'Dipilih setelah tekan Rekam'),
+    quality: () => '1080p · 30 fps',
+    s: (n) => T(`${n} s`, `${n} dtk`), min: (n) => T(`${n} min`, `${n} mnt`),
+  };
+
+  // Rows: the user's own four recordings, with demo transcript states.
+  const audioRows = () => [
+    { g: W.today(), ic: 'mic', tm: '20:09', du: W.s(20), act: 'view' },
+    { g: '8 Nov', ic: 'mic', tm: '01:08', du: W.s(6), act: 'run' },
+    { g: '8 Nov', ic: 'mic', tm: '01:08', du: W.s(8), act: 'queued' },
+    { g: '7 Nov', ic: 'mic', tm: '22:54', du: W.min(5), act: 'view' },
+  ];
+  // Example videos: titles are placeholders, not real files.
+  const screenRows = () => [
+    { g: W.today(), ic: 'scr', tm: '20:41', ttl: T('Whole screen', 'Seluruh layar'), du: W.min(3), act: 'tr' },
+    { g: W.today(), ic: 'scr', tm: '19:02', ttl: 'Vale settings', du: W.s(48), act: 'view' },
+    { g: '11 Nov', ic: 'scr', tm: '16:15', ttl: T('Area 1280×720', 'Area 1280×720'), du: W.min(12), act: 'view' },
+  ];
+  const act = (k) => k === 'view' ? `<span class="act view">${W.view()}</span>`
+    : k === 'run' ? `<span class="act run"><span class="fill" style="width:42%"></span><span>42%</span></span>`
+    : k === 'queued' ? `<span class="act queued">${W.queued()}</span>`
+    : `<span class="act">${W.tr()}</span>`;
+  const list = (rows, max) => {
+    let out = '', last = null;
+    rows.slice(0, max).forEach(r => {
+      if (r.g !== last) { out += `<div class="grp">${r.g}</div>`; last = r.g; }
+      out += `<div class="row"><span class="well">${I(r.ic, 'sm')}</span><span class="tm">${r.tm}</span>`
+        + (r.ttl ? `<span class="trunc" style="flex:1;font-size:11.5px">${r.ttl}</span>` : '')
+        + `<span class="du">${r.du}</span>${r.ttl ? '' : '<span class="grow"></span>'}${act(r.act)}</div>`;
+    });
+    return out;
+  };
+  const header = (tab, recording, tip) => `<div class="hd">
+      <span class="tabs${recording ? ' locked' : ''}"><span class="${tab === 'audio' ? 'on' : ''}">Audio</span><span class="${tab === 'screen' ? 'on' : ''}">${T('Screen', 'Layar')}</span></span>
+      <span class="grow"></span>
+      <span class="ib">${I('filetx')}</span>
+      <span class="ib${tip ? ' hover' : ''}">${I('folder')}${tip ? `<span class="tip">${W.folder()}</span>` : ''}</span>
+      <span class="ib" style="margin-left:4px">${I('gear')}</span>
+    </div>`;
+  const empty = (scr) => `<div class="empty"><span class="well">${I(scr ? 'scr' : 'mic')}</span><div><b>${W.empty()}</b><span>${W.emptyHint(scr)}</span></div></div>`;
+
+  /* ---------- A ---------- */
+  const A = {
+    chip(icon, name, dev, on) {
+      return `<span class="chip${on ? ' on' : ''}">${I(icon)}<span class="cl"><b>${name}</b><small class="trunc">${dev}</small></span>${I('chev', 'sm')}</span>`;
+    },
+    liveChip(icon, name, dev, hs, muted, rest) {
+      return `<span class="chip on"><span class="mute${muted ? ' off' : ''}">${I(muted ? 'micOff' : icon, 'sm')}</span><span class="cl"><b>${name}</b><small class="trunc">${dev}</small></span>${meter(muted ? [3,3,3,3,3] : hs, muted || rest)}</span>`;
+    },
+    cc(on) { return `<span class="chip sq${on ? ' on' : ''}" title="${W.cap()}">${I('cc')}</span>`; },
+    idle(scr, rows, tip) {
+      const mid = scr
+        ? `<span class="chip" style="box-shadow:none;flex:1.6 1 0">${I('scr')}<span class="cl"><b style="color:var(--tx)">${W.pickNext()}</b><small>${W.pickNextSub()}</small></span></span>
+           <span class="chip" style="flex:none;padding:0 10px"><span style="font-size:11px;color:var(--tx)">${W.quality()}</span>${I('chev', 'sm')}</span>`
+        : A.chip('mic', W.mic(), MIC, true) + A.chip('spk', W.pc(), SPK, true);
+      return header(scr ? 'screen' : 'audio', false, tip) + `<div class="a-bar">
+          <span class="a-rec">${ring(36, 14)}<b>${W.rec()}</b></span><span class="a-sep"></span>${mid}${A.cc(false)}
+        </div><div class="a-list">${rows ? list(rows, 4) : `<div style="margin-top:22px">${empty(scr)}</div>`}</div>`;
+    },
+    live(paused) {
+      return header('audio', true) + `<div class="a-bar">
+          ${ring(36, 12, true)}
+          <span class="a-time${paused ? ' paused' : ''}"><b>12:34</b><small>${paused ? W.paused() : W.recording()}</small></span>
+          ${round(28, paused ? 'play' : 'pause')}
+          <span class="a-sep"></span>
+          ${A.liveChip('mic', W.mic(), MIC, [6, 11, 14, 9, 5], false, paused)}
+          ${A.liveChip('spk', W.pc(), SPK, [4, 8, 12, 10, 6], false, paused)}
+          ${A.cc(true)}
+        </div><div class="a-list">${list(audioRows(), 4)}</div>`;
+    },
+  };
+
+  /* ---------- B ---------- */
+  const B = {
+    src(icon, name, dev, on) {
+      return `<div class="b-src${on ? ' on' : ''}">${I(icon)}<span class="cl"><b>${name}</b><small class="trunc">${dev}</small></span><span class="sw${on ? ' on' : ''}"></span></div>`;
+    },
+    liveSrc(icon, name, dev, hs, rest) {
+      return `<div class="b-src on"><span class="mute">${I(icon, 'sm')}</span><span class="cl"><b>${name}</b><small class="trunc">${dev}</small></span>${meter(hs, rest)}</div>`;
+    },
+    capRow(on) { return `<div class="b-src${on ? ' on' : ''}">${I('cc')}<span class="cl"><b>${W.cap()}</b></span><span class="sw${on ? ' on' : ''}"></span></div>`; },
+    more(n) { return `<div class="b-more">${T(`${n} more in the folder`, `${n} lagi di folder`)} ${I('chevR', 'sm')}</div>`; },
+    idle(scr, rows) {
+      const card = scr
+        ? `<div class="b-top">${ring(56, 22)}<span class="lbl">${W.rec()}</span></div>
+           <div class="b-hint">${W.pickNext()} · ${W.pickNextSub().toLowerCase()}</div>
+           <div class="b-src"><span class="cl"><b>${T('Quality', 'Kualitas')}</b></span><span class="sec" style="font-size:11px">${W.quality()}</span>${I('chevR', 'sm')}</div>
+           ${B.capRow(false)}`
+        : `<div class="b-top">${ring(56, 22)}<span class="lbl">${W.rec()}</span></div>
+           ${B.src('mic', W.mic(), MIC, true)}${B.src('spk', W.pc(), SPK, true)}${B.capRow(false)}`;
+      return header(scr ? 'screen' : 'audio', false) + `<div class="b-body"><div class="b-card">${card}</div>
+          <div class="b-list">${rows ? list(rows, 4) + B.more(scr ? 6 : 9) : `<div style="margin-top:40px">${empty(scr)}</div>`}</div></div>`;
+    },
+    live(paused) {
+      const card = `<div class="b-top" style="gap:6px"><span class="b-pair">${round(32, paused ? 'play' : 'pause')}${ring(52, 18, true)}</span>
+            <span class="b-time${paused ? ' paused' : ''}"><span class="live-dot${paused ? ' paused' : ''}"></span>12:34</span></div>
+          ${B.liveSrc('mic', W.mic(), MIC, [6, 11, 14, 9, 5], paused)}${B.liveSrc('spk', W.pc(), SPK, [4, 8, 12, 10, 6], paused)}${B.capRow(true)}`;
+      const now = `<div class="grp">${W.today()}</div><div class="row"><span class="well"><span class="live-dot${paused ? ' paused' : ''}"></span></span><span class="tm">${T('Now', 'Sekarang')}</span><span class="du">${paused ? W.paused() : W.recording()}</span></div>`;
+      const rest = list(audioRows(), 3).replace(`<div class="grp">${W.today()}</div>`, '');
+      return header('audio', true) + `<div class="b-body"><div class="b-card">${card}</div>
+          <div class="b-list">${now}${rest}${B.more(10)}</div></div>`;
+    },
+  };
+
+  /* ---------- C ---------- */
+  const C = {
+    hero(scr) {
+      const t = scr ? T('Record screen', 'Rekam layar') : T('Record audio', 'Rekam suara');
+      const l1 = scr ? W.pickNext() : `${W.mic()} + ${W.pc()}`;
+      const l2 = scr ? `${W.quality()} · ${T('mic and PC audio mixed', 'mic dan suara PC dicampur')}` : `RØDE NT-USB Mini · Realtek(R) Audio`;
+      const b1 = scr ? `${T('Quality', 'Kualitas')} ${I('chev', 'sm')}` : `${T('Sources', 'Sumber')} ${I('chev', 'sm')}`;
+      return `<div class="c-hero">${ring(84, 32)}<div style="min-width:0;flex:1">
+          <div class="t">${t}</div><div class="l1">${l1}</div><div class="l2 trunc">${l2}</div>
+          <div class="c-btns"><span class="pill">${b1}</span><span class="pill ghost">${I('cc', 'sm')} ${W.cap()} <span class="sw"></span></span></div>
+        </div></div>`;
+    },
+    latest(rows, n) {
+      return `<div class="c-card"><div class="ch">${T('Latest', 'Terakhir')}<span class="lnk">${T(`All recordings (${n})`, `Semua rekaman (${n})`)} ${I('chevR', 'sm')}</span></div>${list(rows, 2).replace(/<div class="grp">[^<]*<\/div>/g, '')}</div>`;
+    },
+    idle(scr, rows) {
+      return header(scr ? 'screen' : 'audio', false) + C.hero(scr)
+        + (rows ? C.latest(rows, scr ? 9 : 13) : `<div class="c-card" style="padding:12px 10px">${empty(scr)}</div>`);
+    },
+    live(paused) {
+      const m = (icon, name, dev, hs) => `<div class="c-m"><span class="mute">${I(icon, 'sm')}</span><span class="nm">${name}</span><span class="dv trunc">${dev}</span>${meter(paused ? hs.map(() => 3) : hs, paused)}</div>`;
+      return header('audio', true) + `<div class="c-con">
+          <div style="flex:1;min-width:0"><div class="big${paused ? ' paused' : ''}">12:34</div>
+            <div class="st"><span class="live-dot${paused ? ' paused' : ''}"></span>${paused ? W.paused() : W.recording()} · ${W.mic()} + ${W.pc()}</div></div>
+          ${round(40, paused ? 'play' : 'pause')}${ring(56, 20, true)}
+        </div>
+        <div class="c-meters">${m('mic', W.mic(), MIC, [4,7,10,13,14,12,9,7,5,4,3,3,3])}${m('spk', W.pc(), SPK, [5,9,12,10,8,11,13,9,6,4,3,3,3])}</div>
+        <div class="c-cap">${I('cc', 'sm')}${paused ? `<span class="sec">${T('Captions wait while paused', 'Caption ikut jeda')}</span>`
+          : `<span class="who">${T('Others', 'Peserta')}</span><span class="trunc">${T('[example caption line] …so we send the draft on Friday', '[contoh caption] …jadi drafnya kita kirim hari Jumat')}</span>`}</div>`;
+    },
+    all() {
+      return `<div class="hd"><span class="ib">${I('back')}</span><span class="c-sub"><span class="t">${T('All recordings', 'Semua rekaman')}</span></span><span class="grow"></span><span class="ib">${I('filetx')}</span><span class="ib">${I('folder')}</span><span class="ib" style="margin-left:4px">${I('gear')}</span></div>
+        <div class="a-list">${list(audioRows().concat([{ g: '7 Nov', ic: 'mic', tm: '21:30', du: W.min(18), act: 'tr' }]), 5)}</div>`;
+    },
+  };
+
+  const STATES = {
+    a: [
+      [() => A.idle(false, audioRows(), true), () => T('<b>Diam, tab Audio.</b> Kursor di atas ikon folder, jadi tooltip-nya muncul. Baris kedua lagi ditranskrip (42%), baris ketiga antre.', '<b>Diam, tab Audio.</b> Kursor di atas ikon folder, jadi tooltip-nya muncul. Baris kedua lagi ditranskrip (42%), baris ketiga antre.')],
+      [() => A.live(false), () => '<b>Merekam, caption nyala.</b> Tombol rekam jadi Stop, jam di sebelahnya, lalu jeda. Chip sumber jadi tombol bisu + meter. CC nyala pakai warna aksen.'],
+      [() => A.live(true), () => '<b>Dijeda.</b> Jam dan labelnya oker, tombol jeda jadi lanjut, meter diam.'],
+      [() => A.idle(true, screenRows()), () => '<b>Tab Layar.</b> Bar yang sama: tengahnya bilang apa yang bakal ditanya setelah Rekam, kanannya kualitas video (buka menu yang sama dengan Settings).'],
+      [() => A.idle(false, null), () => '<b>Belum ada rekaman.</b> Daftar diganti satu kalimat yang bilang cara mulai, termasuk tombol pintasnya.'],
+    ],
+    b: [
+      [() => B.idle(false, audioRows()), () => '<b>Diam, tab Audio.</b> Saklar Mic dan Suara PC; dua-duanya nyala sama dengan "Both". Klik nama perangkat buat ganti perangkat.'],
+      [() => B.live(false), () => '<b>Merekam, caption nyala.</b> Jeda dan Stop berdampingan, jam di bawahnya. Baris "Now" di atas daftar.'],
+      [() => B.live(true), () => '<b>Dijeda.</b> Titik dan jam oker, tombol jeda jadi lanjut.'],
+      [() => B.idle(true, screenRows()), () => '<b>Tab Layar.</b> Kartu kiri bilang apa yang bakal ditanya, plus baris kualitas yang buka menu.'],
+      [() => B.idle(false, null), () => '<b>Belum ada rekaman.</b> Kartu kiri tetap, kolom kanan bilang cara mulai.'],
+    ],
+    c: [
+      [() => C.idle(false, audioRows()), () => '<b>Diam, tab Audio.</b> Ringkasan sumber dan perangkat di sebelah tombol; "Sources" buka satu menu buat Mic / Suara PC / Both dan perangkatnya.'],
+      [() => C.live(false), () => '<b>Merekam, caption nyala.</b> Jam besar, meter lebar per sumber dengan tombol bisu, baris caption terakhir di bawah (teksnya contoh).'],
+      [() => C.live(true), () => '<b>Dijeda.</b> Jam oker, caption ikut berhenti.'],
+      [() => C.idle(true, screenRows()), () => '<b>Tab Layar.</b> Bentuk sama, isinya kualitas video dan cara pilih layar.'],
+      [() => C.idle(false, null), () => '<b>Belum ada rekaman.</b> Kartu "Latest" jadi petunjuk cara mulai.'],
+      [() => C.all(), () => '<b>Semua rekaman.</b> Halaman daftar yang muncul setelah klik "All recordings", dengan tombol balik.'],
+    ],
+  };
+
+  function cls() {
+    return ['panel', S.surf === 'term' ? 'term' : '', S.acc === 'terra' ? 'terra' : '', S.font === 'mono' ? 'mono' : ''].join(' ');
+  }
+  function render() {
+    document.querySelectorAll('.states').forEach(box => {
+      box.innerHTML = STATES[box.dataset.dir].map(([body, cap]) =>
+        `<figure><div class="stage"><div class="fit"><div class="scale"><div class="${cls()}" lang="${S.lang}">${body()}${dots()}</div></div></div></div><figcaption>${cap()}</figcaption></figure>`).join('');
+    });
+    fit();
+  }
+  function fit() {
+    document.querySelectorAll('.fit').forEach(f => {
+      const k = Math.min(1, f.clientWidth / 560);
+      const s = f.firstElementChild;
+      s.style.transform = `scale(${k})`;
+      s.style.height = `${290 * k}px`;
+    });
+  }
+  document.querySelectorAll('.ctl .seg').forEach(seg => {
+    seg.addEventListener('click', e => {
+      const b = e.target.closest('button'); if (!b) return;
+      S[seg.dataset.k] = b.dataset.v;
+      seg.querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+      render();
+    });
+  });
+  window.addEventListener('resize', fit);
+  render();
+})();
+</script>
+</body>
+</html>

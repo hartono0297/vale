@@ -75,13 +75,24 @@
 //!
 //! - `DI_REC_TAB=screen` shows the Rekam page's idle scenes (`rec-page-idle`,
 //!   `rec-page-marks`, ...) on the Layar tab with made-up videos
-//!   (`screen-empty`: with none yet); `DI_REC_LIVE=screen` makes the
+//!   (`screen-empty`: with none yet; `audio-empty`: the Audio tab with none); `DI_REC_LIVE=screen` makes the
 //!   recording of `rec-page` and `rec-page-muted` a screen recording, with
-//!   "Buang" beside pause (`screen-sure`: asked once, "Yakin buang?");
+//!   the trash beside stop (`screen-sure`: asked once, "Buang video ini?");
 //!   `screen-zoom` is a screen recording zoomed at 2.5x, the notch showing
 //!   "2,5×" instead of "Layar".
+//! - `DI_REC_MENU=mic|system|quality` opens that device's dropdown (or the
+//!   Layar tab's quality dropdown) once the Rekam page is drawn.
 //! - `DI_REC_CAPTIONS=on` shows the "Caption langsung" switch of the Rekam
 //!   page on.
+//! - `DI_REC_SOURCES=mic|system` leaves only that source on in the idle
+//!   Rekam page (the last one's switch is locked); `DI_REC_MISSING=mic|system`
+//!   shows that source's chosen device as not found (the ochre line);
+//!   `DI_REC_PAUSED=1` pauses the recording of `rec-page` and
+//!   `rec-page-muted`.
+//! - `DI_REC_TR=all` makes the list of `rec-page-idle` the six transcript
+//!   states of the design (done, running at 42%, queued, waiting for a model,
+//!   failed, none); `DI_REC_TR=off` is the list with transcripts off in
+//!   Settings. `rec-page-marks` and `rec-page-marks-more` show the marks too.
 //!
 //! - `DI_NOTCH=WxH` sizes the closed island in every scene (`160x28` to
 //!   `300x44`, clamped; 190x34 without it): the idle, music, timer and
@@ -700,96 +711,157 @@ fn demo_rec_devices() -> [String; 2] {
     ]
 }
 
-/// The Rekam page's made-up list: the three rows of the design's mockup. With
-/// `marks` 1 or 2 it is five rows that show every transcript mark between
-/// them (`--demo-record`, `rec-page-marks` and `rec-page-marks-more`).
-fn demo_rec_recent(marks: u8) -> Vec<RecEntry> {
-    let entry = |title: &str, started: &str, mins: u64, transcript| RecEntry {
-        path: std::path::PathBuf::from(format!("{title}.m4a")),
-        title: title.to_owned(),
-        started: started.to_owned(),
-        duration: Duration::from_secs(mins * 60),
+/// A made-up recording of the Rekam page, `back` days before `today` at
+/// `hm` ("10:02"). The page's "started" text and the default title come from
+/// that same date, so a row's day heading never disagrees with its title.
+/// `title` `None` is the sidecar-less name: "Rekaman 5 Nov 09:15".
+fn demo_rec_entry(
+    today: NaiveDate,
+    title: Option<&str>,
+    back: u64,
+    hm: &str,
+    secs: u64,
+    ext: &str,
+    transcript: RowTranscript,
+) -> RecEntry {
+    let day = today.checked_sub_days(Days::new(back)).unwrap_or(today);
+    let time = NaiveTime::parse_from_str(hm, "%H:%M").unwrap_or_default();
+    let started_at = day.and_time(time);
+    let date_time = started_at.format("%-d %b %H:%M").to_string();
+    let title = title.map_or_else(|| format!("Rekaman {date_time}"), str::to_owned);
+    RecEntry {
+        path: std::path::PathBuf::from(format!("{title}.{ext}")),
+        title,
+        started_at,
+        duration: Duration::from_secs(secs),
         unfinished: false,
         silent: false,
         transcript,
+    }
+}
+
+/// The Rekam page's made-up list (made-up recordings only). With `marks` 1
+/// or 2 it is five rows that show every transcript mark between them
+/// (`--demo-record`, `rec-page-marks` and `rec-page-marks-more`). `tr` is
+/// `DI_REC_TR`: "all" is the six states of the design's transcript scene
+/// (done, running, queued, waiting, failed, none), "off" is the default list
+/// with transcripts off in Settings.
+fn demo_rec_recent(marks: u8, tr: &str, today: NaiveDate) -> Vec<RecEntry> {
+    let entry = |title: Option<&str>, back, hm: &str, secs, transcript| {
+        demo_rec_entry(today, title, back, hm, secs, "m4a", transcript)
     };
     let none = RowTranscript::None;
-    match marks {
-        1 => vec![
-            entry("Sync mingguan", "Hari ini 10:02", 42, RowTranscript::Done),
-            entry("Review desain klien", "Kemarin 14:30", 65, RowTranscript::Running(42)),
-            entry("Rekaman 5 Nov 09:15", "5 Nov", 18, RowTranscript::Queued),
-            entry("Standup tim", "4 Nov", 15, RowTranscript::Waiting),
-            entry("Wawancara kandidat", "3 Nov", 55, RowTranscript::Failed),
+    match (marks, tr) {
+        (1, _) => vec![
+            entry(Some("Sync mingguan"), 0, "10:02", 42 * 60, RowTranscript::Done),
+            entry(Some("Review desain klien"), 1, "14:30", 65 * 60, RowTranscript::Running(42)),
+            entry(None, 3, "09:15", 18 * 60, RowTranscript::Queued),
+            entry(Some("Standup tim"), 4, "08:30", 15 * 60, RowTranscript::Waiting),
+            entry(Some("Wawancara kandidat"), 5, "16:40", 55 * 60, RowTranscript::Failed),
         ],
-        2 => {
-            let mut part = entry("2026-11-07 0900", "7 Nov", 0, none);
+        (2, _) => {
+            let mut part = entry(None, 6, "09:00", 0, none);
+            part.title = part.started_at.format("%Y-%m-%d %H%M").to_string();
             part.unfinished = true;
             vec![
-                entry("Sync mingguan", "Hari ini 10:02", 42, none),
-                entry("Review desain klien", "Kemarin 14:30", 65, RowTranscript::Off),
+                entry(Some("Sync mingguan"), 0, "10:02", 42 * 60, none),
+                entry(Some("Review desain klien"), 1, "14:30", 65 * 60, RowTranscript::Off),
                 part,
                 entry(
-                    "Diskusi roadmap produk kuartal pertama dengan seluruh tim",
-                    "5 Nov",
-                    73,
+                    Some("Diskusi roadmap produk kuartal pertama dengan seluruh tim"),
+                    3,
+                    "13:05",
+                    73 * 60,
                     RowTranscript::Done,
                 ),
-                entry("Rekaman 5 Nov 09:15", "5 Nov", 18, RowTranscript::Running(7)),
+                entry(None, 3, "09:15", 18 * 60, RowTranscript::Running(7)),
             ]
         }
-        _ => vec![
-            entry("Sync mingguan", "Hari ini 10:02", 42, none),
-            entry("Review desain klien", "Kemarin 14:30", 65, none),
-            entry("Rekaman 5 Nov 09:15", "5 Nov", 18, none),
+        (_, "all") => vec![
+            entry(None, 0, "20:09", 20, RowTranscript::Done),
+            entry(None, 0, "18:30", 46 * 60, RowTranscript::Running(42)),
+            entry(None, 0, "17:02", 12 * 60, RowTranscript::Queued),
+            entry(None, 1, "01:08", 6, RowTranscript::Waiting),
+            entry(None, 1, "01:08", 8, RowTranscript::Failed),
+            entry(None, 2, "22:54", 5 * 60, none),
         ],
+        (_, tr) => {
+            let mark = if tr == "off" { RowTranscript::Off } else { none };
+            let done = if tr == "off" { RowTranscript::Off } else { RowTranscript::Done };
+            vec![
+                entry(None, 0, "20:09", 20, done),
+                entry(None, 1, "01:08", 6, mark),
+                entry(None, 1, "01:08", 8, mark),
+                entry(None, 2, "22:54", 5 * 60, done),
+            ]
+        }
     }
 }
 
 /// The Layar tab's made-up list: videos named after the window they
 /// recorded, a transcript mark on some, one left unfinished by a crash.
-fn demo_rec_videos() -> Vec<RecEntry> {
-    let entry = |title: &str, started: &str, secs: u64, transcript| RecEntry {
-        path: std::path::PathBuf::from(format!("{title}.mp4")),
-        title: title.to_owned(),
-        started: started.to_owned(),
-        duration: Duration::from_secs(secs),
-        unfinished: false,
-        silent: false,
-        transcript,
+fn demo_rec_videos(today: NaiveDate) -> Vec<RecEntry> {
+    let entry = |title: Option<&str>, back, hm: &str, secs, transcript| {
+        demo_rec_entry(today, title, back, hm, secs, "mp4", transcript)
     };
-    let mut part = entry("2026-11-10 1612", "Kemarin 16:12", 0, RowTranscript::None);
+    let mut part = entry(None, 1, "16:12", 0, RowTranscript::None);
+    part.title = part.started_at.format("%Y-%m-%d %H%M").to_string();
     part.unfinished = true;
     vec![
-        entry("Tutorial ekspor laporan", "Hari ini 09:41", 3 * 60 + 17, RowTranscript::Done),
-        entry("vale - Visual Studio Code", "Hari ini 08:05", 12 * 60 + 4, RowTranscript::None),
+        entry(Some("Tutorial ekspor laporan"), 0, "09:41", 3 * 60 + 17, RowTranscript::Done),
+        entry(Some("vale - Visual Studio Code"), 0, "08:05", 12 * 60 + 4, RowTranscript::None),
         part,
-        entry("Rekaman 9 Nov 14:30", "9 Nov", 48, RowTranscript::Queued),
+        entry(None, 4, "14:30", 48, RowTranscript::Queued),
     ]
 }
 
+/// The idle page's source switches: `DI_REC_SOURCES` "mic" or "system"
+/// leaves only that one on, anything else both.
+fn rec_idle_sources(choice: &str) -> RecSources {
+    RecSources {
+        mic: choice != "system",
+        system: choice != "mic",
+    }
+}
+
+/// `DI_REC_MISSING` "mic" or "system": that source's chosen device is gone.
+/// Only an idle page shows it (a running recording already fell back).
+fn rec_missing(choice: &str, recording: bool) -> [bool; 2] {
+    if recording {
+        return [false; 2];
+    }
+    [choice == "mic", choice == "system"]
+}
+
+/// How many recordings the folder lists in all: the rows shown and nine more
+/// ("9 lagi di folder", as in the design); none when the list is empty, and
+/// none more in the design's six-state transcript scene (`DI_REC_TR=all`).
+fn rec_total(shown: usize, tr: &str) -> usize {
+    if shown == 0 || tr == "all" { shown } else { shown + 9 }
+}
+
 /// What `DI_REC_TAB` and `DI_REC_LIVE` make of a Rekam page scene: its tab,
-/// whether "Buang" was asked once, and whether the Layar list is empty.
+/// whether "Buang" was asked once, and whether the list is empty.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct RecPageDemo {
     tab: RecKind,
     discard_armed: bool,
-    no_videos: bool,
+    no_rows: bool,
 }
 
 /// `recording`: the scene has a recording running. A running one follows
 /// `live` ("screen", "screen-sure"), an idle page `tab` ("screen",
-/// "screen-empty"); anything else is the Audio tab as before.
+/// "screen-empty", "audio-empty"); anything else is the Audio tab as before.
 fn rec_page_demo(recording: bool, tab: &str, live: &str) -> RecPageDemo {
-    let (screen, discard_armed, no_videos) = if recording {
+    let (screen, discard_armed, no_rows) = if recording {
         (live.starts_with("screen"), live == "screen-sure", false)
     } else {
-        (tab.starts_with("screen"), false, tab == "screen-empty")
+        (tab.starts_with("screen"), false, tab.ends_with("-empty"))
     };
     RecPageDemo {
         tab: if screen { RecKind::Screen } else { RecKind::Audio },
         discard_armed,
-        no_videos,
+        no_rows,
     }
 }
 
@@ -1177,8 +1249,8 @@ const SCENES: [Scene; 208] = [
             paused: false,
             mic: true,
             system: true,
-            mic_level: 0.0,
-            system_level: 0.0,
+            mic_level: 0.5,
+            system_level: 0.4,
             muted: [false; 2],
             hot: None,
             screen: false,
@@ -2412,7 +2484,9 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
         _ => None,
     };
     // Its colours follow `DI_WINDOW` (and `DI_SURFACE`, `DI_ACCENT`).
-    if rec_menu.is_some() {
+    // `DI_REC_MENU=quality`: the same for the Layar tab's quality row.
+    let mut rec_quality_menu = name("DI_REC_MENU") == "quality";
+    if rec_menu.is_some() || rec_quality_menu {
         theme::set_system_light(theme::read_system_light());
         theme::set_current(theme::theme_from_env());
     }
@@ -2516,11 +2590,14 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                 rec_page_demo(false, "", "")
             };
             let rec_recent = match rec_page.tab {
-                RecKind::Audio => demo_rec_recent(scene.marks),
-                RecKind::Screen if rec_page.no_videos => Vec::new(),
-                RecKind::Screen => demo_rec_videos(),
+                _ if rec_page.no_rows => Vec::new(),
+                RecKind::Audio => demo_rec_recent(scene.marks, &name("DI_REC_TR"), today),
+                RecKind::Screen => demo_rec_videos(today),
             };
             let rec_devices = demo_rec_devices();
+            // `DI_REC_PAUSED=1` pauses the Rekam page's recording scenes.
+            let rec_paused = scene.view == View0::Panel(Page::Record)
+                && name("DI_REC_PAUSED") == "1";
             let pomodoro = demo_pomodoro(scene.pomo, now);
             let view = live_view.unwrap_or_else(|| match scene.view {
                 View0::Idle => View::Idle,
@@ -2683,7 +2760,7 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                 pomodoro: &pomodoro,
                 rec: scene.rec.map(|r| RecFrame {
                     elapsed: Duration::from_secs(r.secs),
-                    paused: r.paused,
+                    paused: r.paused || rec_paused,
                     sources: RecSources {
                         mic: r.mic,
                         system: r.system,
@@ -2716,15 +2793,28 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                 phone: phone_view.as_ref(),
                 phone_on: scene.phone != PhoneDemo::No,
                 record: RecordView {
-                    sources: RecSources {
-                        mic: true,
-                        system: true,
-                    },
+                    sources: rec_idle_sources(&name("DI_REC_SOURCES")),
                     recent: &rec_recent,
                     devices: &rec_devices,
                     tab: rec_page.tab,
                     discard_armed: rec_page.discard_armed,
                     captions_on: name("DI_REC_CAPTIONS") == "on",
+                    total: rec_total(rec_recent.len(), &name("DI_REC_TR")),
+                    missing: rec_missing(&name("DI_REC_MISSING"), scene.rec.is_some()),
+                    quality: crate::i18n::rec_quality_label(
+                        crate::i18n::lang(),
+                        crate::recorder::prefs::VideoQuality::P1080,
+                        30,
+                    ),
+                    mute_hotkey: crate::hotkey::Hotkeys::default()
+                        .record_mute
+                        .map(|h| h.to_string()),
+                    start_hotkey: match rec_page.tab {
+                        RecKind::Audio => crate::hotkey::Hotkeys::default().record,
+                        RecKind::Screen => crate::hotkey::Hotkeys::default().record_screen,
+                    }
+                    .map(|h| h.to_string()),
+                    today,
                 },
                 devices: DevicesView {
                     list: &dev_list,
@@ -2936,6 +3026,22 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                     crate::ui::menu_pop::Align::Start,
                     source,
                     None,
+                    crate::i18n::lang(),
+                    ui_font,
+                );
+            }
+            if rec_quality_menu
+                && let Some(r) = renderer.region_of(&Hit::RecQuality)
+            {
+                rec_quality_menu = false;
+                let ((x, y), k) = (win.screen_origin(), win.scale());
+                let px = |v: f32| (v * k).round() as i32;
+                let anchor = crate::capture::Rect::new(x + px(r.x), y + px(r.y), px(r.w), px(r.h));
+                crate::ui::quality_menu::open(
+                    win.hwnd(),
+                    anchor,
+                    crate::ui::menu_pop::Align::Start,
+                    (crate::recorder::prefs::VideoQuality::P1080, 30),
                     crate::i18n::lang(),
                     ui_font,
                 );

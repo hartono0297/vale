@@ -100,6 +100,8 @@ survive, and the island pushes the model back (`sync_settings`) so an open
 Settings window follows an exclusion made from the page's row. Fitur already
 scrolled; the extra rows only lengthen it.
 
+Spacing and button sizes on every page follow [[settings-spacing]].
+
 Related: [[cat-colours-and-surfaces]], [[bata-idle-power-budget]]
 
 ## The tenth section: Widget (2026-11-04)

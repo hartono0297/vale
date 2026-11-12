@@ -26,13 +26,17 @@ use std::os::windows::fs::MetadataExt;
 use chrono::{Local, NaiveDate, NaiveDateTime};
 
 use super::screen_page::{busy_notice, busy_with_other};
-use super::{App, WM_APP_EVENT, WM_APP_REC_DEVICE, notif_open, poster};
+use super::{App, WM_APP_EVENT, WM_APP_REC_DEVICE, WM_APP_REC_QUALITY, notif_open, poster};
 use crate::i18n::{self, Key, Lang, text};
 use crate::model::{
     Event, Hit, Notice, NoticeKind, Page, RecEntry, RecKind, RecNote, RecSources, RecStatus,
     RowTranscript, TranscriptOffer,
 };
 use crate::recorder::devices;
+use crate::recorder::prefs::{
+    Known, RecordingPrefs, fallback_audio_dir, fallback_folder, split_plan,
+};
+use crate::recorder::split;
 use crate::recorder::sidecar::Sidecar;
 use crate::recorder::{Failure, RecError, RecEvent, RecOptions, Recorder, Source, Sources};
 use crate::shortcuts;
@@ -40,7 +44,7 @@ use crate::transcribe::{decode, output};
 use crate::ui::{settings, tray};
 
 /// How many recordings the Rekam page lists.
-pub(super) const RECENT_LIMIT: usize = 5;
+pub(super) const RECENT_LIMIT: usize = 8;
 /// Windows' microphone privacy page, which the mic notice's click opens.
 const MIC_SETTINGS: &str = "ms-settings:privacy-microphone";
 
@@ -67,10 +71,14 @@ pub(super) struct RecState {
     /// The last scan of the recordings folder as it came (the marks of the
     /// queue go over a copy of it, whenever they change).
     pub(super) recent: Vec<RecEntry>,
+    /// Every recording in the folder, not just the listed ones.
+    pub(super) total: usize,
     /// The device names the Rekam page shows, `[mic, system]`: the ones the
     /// recording uses, or the chosen ones (the Windows default when none)
     /// while idle. Read when the page opens and when a choice changes.
     devices: [String; 2],
+    /// Whether the device chosen for `[mic, system]` is gone from Windows.
+    missing: [bool; 2],
     /// The devices the starting recording was told to use, `[mic, system]`:
     /// a pick made while it was starting is applied once it runs.
     started_with: [Option<String>; 2],
@@ -104,6 +112,11 @@ impl RecState {
     /// The device names for the Rekam page.
     pub fn devices(&self) -> &[String; 2] {
         &self.devices
+    }
+
+    /// Which chosen devices (`[mic, system]`) are gone.
+    pub fn missing(&self) -> [bool; 2] {
+        self.missing
     }
 
     /// A word of `session` is for the newest session (older ones are
@@ -255,7 +268,7 @@ pub(crate) fn no_input_notice(lang: Lang) -> Notice {
 /// an unfinished file one whose click shows the `.part`.
 pub(crate) fn failure_notice(lang: Lang, failure: &Failure, dir: &Path) -> Notice {
     let why = match failure {
-        Failure::FolderBlocked => return folder_blocked_notice(lang, dir.to_path_buf(), false),
+        Failure::FolderBlocked => return folder_blocked_notice(lang, dir.to_path_buf()),
         Failure::Unfinished { part } => {
             return notice(
                 "rec-failed",
@@ -295,21 +308,56 @@ pub(crate) fn failure_notice(lang: Lang, failure: &Failure, dir: &Path) -> Notic
     )
 }
 
-/// Windows refused to write in `dir`: a click picks another folder, the
-/// video folder's picker with `video` (a screen recording), else the audio
-/// folder's.
-pub(crate) fn folder_blocked_notice(lang: Lang, dir: PathBuf, video: bool) -> Notice {
+/// The one-time folder split on `prefs`; false when it already ran.
+pub(crate) fn split_once(prefs: &mut RecordingPrefs, known: &Known, queue: &Path) -> bool {
+    if prefs.folders_split {
+        return false;
+    }
+    let plan = split_plan(prefs.folder.as_deref(), prefs.video_folder.as_deref(), known);
+    let moved = split::apply(&plan);
+    if !moved.is_empty()
+        && let Ok(text) = std::fs::read_to_string(queue)
+        && let Some(new) = split::rewrite_queue(&text, &moved)
+        && let Err(e) = std::fs::write(queue, new)
+    {
+        eprintln!("vale: could not update the transcript queue: {e}");
+    }
+    prefs.folder = plan.root;
+    prefs.video_folder = None;
+    prefs.folders_split = true;
+    true
+}
+
+/// A recording went to `used`, not to `configured`: with no folder chosen the
+/// fallback root becomes the folder for good. True when it fell back.
+pub(crate) fn fell_back_root(
+    prefs: &mut RecordingPrefs,
+    used: &Path,
+    configured: &Path,
+    fallback_root: Option<&Path>,
+) -> bool {
+    if used == configured {
+        return false;
+    }
+    if prefs.folder.is_none() {
+        prefs.folder = fallback_root.map(Path::to_path_buf);
+    }
+    true
+}
+
+/// Windows refused to write in `dir`: a click picks another recordings folder.
+pub(crate) fn folder_blocked_notice(lang: Lang, dir: PathBuf) -> Notice {
     notice(
         "rec-folder",
         lang,
         text(lang, Key::RecFolderBlockedTitle).into(),
         text(lang, Key::RecFolderBlockedBody).into(),
-        NoticeKind::RecFolderBlocked { dir, video },
+        NoticeKind::RecFolderBlocked { dir },
     )
 }
 
 /// Windows refused the chosen folder and the recording went to `dir` (the
-/// profile folder's `Vale\Rekaman`) instead.
+/// profile folder's `Vale\Rekaman\Audio`) instead.
 pub(crate) fn fallback_notice(lang: Lang, dir: &Path) -> Notice {
     notice(
         "rec-folder",
@@ -363,6 +411,17 @@ pub(crate) fn source_lost_notice(lang: Lang, source: Source) -> Notice {
         text(lang, Key::RecKeepsGoing).into(),
         NoticeKind::RecInfo,
     )
+}
+
+/// Whether the device the user chose (`chosen`, `None` follows Windows) is
+/// gone: it is chosen but `found` says Windows no longer lists it.
+pub(crate) fn device_missing(chosen: Option<&str>, found: bool) -> bool {
+    chosen.is_some() && !found
+}
+
+/// The page's "device missing" flag: only while no recording runs (`idle`).
+pub(crate) fn missing_while_idle(idle: bool, chosen: Option<&str>, found: bool) -> bool {
+    idle && device_missing(chosen, found)
 }
 
 /// A source moved to another device by itself: the Windows default changed,
@@ -531,13 +590,12 @@ pub(super) fn scan_recent(
     dir: &Path,
     kind: RecKind,
     lang: Lang,
-    today: NaiveDate,
     limit: usize,
     skip: Option<&Path>,
     probe: &dyn Fn(&Path) -> Option<u64>,
-) -> Vec<RecEntry> {
+) -> RecScan {
     let Ok(read) = std::fs::read_dir(dir) else {
-        return Vec::new();
+        return RecScan { entries: Vec::new(), total: 0 };
     };
     // `DirEntry::metadata` is free on Windows (the listing carries it), so
     // the cost is the sort; only the newest few files are opened further.
@@ -557,13 +615,22 @@ pub(super) fn scan_recent(
         })
         .collect();
     files.sort_by_key(|f| std::cmp::Reverse(f.0));
+    let total = files.len();
     files.truncate(limit);
-    files
+    let entries = files
         .into_iter()
         .map(|(modified, path, unfinished, attributes)| {
-            entry_of(&path, modified, unfinished, attributes, lang, today, probe)
+            entry_of(&path, modified, unfinished, attributes, lang, probe)
         })
-        .collect()
+        .collect();
+    RecScan { entries, total }
+}
+
+/// What `scan_recent` found: the newest entries and how many files of that
+/// kind the folder holds in all (`.part` included, the skipped one not).
+pub(super) struct RecScan {
+    pub entries: Vec<RecEntry>,
+    pub total: usize,
 }
 
 /// False for a OneDrive cloud-only file: reading its length would download it.
@@ -633,7 +700,6 @@ fn entry_of(
     unfinished: bool,
     attributes: u32,
     lang: Lang,
-    today: NaiveDate,
     probe: &dyn Fn(&Path) -> Option<u64>,
 ) -> RecEntry {
     let stem = stem_of(path);
@@ -655,7 +721,7 @@ fn entry_of(
     RecEntry {
         path: path.to_path_buf(),
         title,
-        started: i18n::rec_started(lang, started, today),
+        started_at: started,
         duration: Duration::from_millis(duration_ms),
         unfinished,
         silent: recorded_silent(value.as_ref()),
@@ -764,8 +830,8 @@ impl App {
                 let t0 = Instant::now();
                 let mut opts = opts;
                 // Controlled folder access may guard the folder: then the
-                // profile folder's `Vale\Rekaman` takes the recording.
-                let fallback = crate::recorder::prefs::fallback_folder();
+                // profile folder's `Vale\Rekaman\Audio` takes the recording.
+                let fallback = fallback_audio_dir();
                 let writable = |d: &Path| probe_writable(d).is_ok();
                 if let Some(dir) = choose_dir(&opts.dir, fallback.as_deref(), writable) {
                     opts.dir = dir;
@@ -841,15 +907,19 @@ impl App {
     }
 
     /// The recording went to `used`, not to the configured folder (Windows
-    /// refused that one). The default folder moves there for good, so
-    /// Settings and the Rekam page show it; a folder the user picked stays
-    /// theirs. Either way a notice says where the recording goes.
+    /// refused that one). The default root moves to the fallback root for
+    /// good (audio and video both follow it), so Settings and the Rekam page
+    /// show it; a folder the user picked stays theirs. Either way a notice
+    /// says where the recording goes.
     fn rec_fell_back(&mut self, used: &Path) {
-        if used == self.config.recording.dir() {
+        let was_unset = self.config.recording.folder.is_none();
+        let configured = self.config.recording.dir();
+        let fallback_root = fallback_folder();
+        let rec = &mut self.config.recording;
+        if !fell_back_root(rec, used, &configured, fallback_root.as_deref()) {
             return;
         }
-        if self.config.recording.folder.is_none() {
-            self.config.recording.folder = Some(used.to_path_buf());
+        if was_unset && self.config.recording.folder.is_some() {
             self.save_config();
             self.sync_settings();
         }
@@ -999,18 +1069,25 @@ impl App {
             self.rec.recorder.as_ref().map(Recorder::device_names),
             self.screen.device_names(),
         );
-        let names = match running {
+        let idle = running.is_none();
+        // The chosen device's name is looked up once per source: the idle
+        // name and the "not found" flag both read it.
+        let chosen = [Source::Mic, Source::System].map(|source| {
+            let id = self.config.recording.device(source);
+            (id, id.and_then(devices::name_of))
+        });
+        self.rec.devices = match running {
             Some(names) => names,
             None => [Source::Mic, Source::System].map(|source| {
-                let chosen = self
-                    .config
-                    .recording
-                    .device(source)
-                    .and_then(devices::name_of);
-                idle_device_name(chosen, devices::default_endpoint(source).map(|d| d.name))
+                let name = chosen[usize::from(source == Source::System)].1.clone();
+                idle_device_name(name, devices::default_endpoint(source).map(|d| d.name))
             }),
         };
-        self.rec.devices = names;
+        // While idle, a chosen device that Windows no longer lists gets the
+        // page's "not found" line. A running recording already fell back to
+        // the device it uses, which the page shows instead, so nothing is
+        // missing then.
+        self.rec.missing = chosen.map(|(id, name)| missing_while_idle(idle, id, name.is_some()));
     }
 
     /// The Rekam page's device name was clicked: the dropdown opens from the
@@ -1027,6 +1104,31 @@ impl App {
                 LPARAM(0),
             )
         };
+    }
+
+    /// The quality row of the Layar tab was clicked: the dropdown opens from
+    /// the main loop, like the device menu.
+    pub(super) fn rec_open_quality_menu(&mut self) {
+        use windows::Win32::Foundation::{LPARAM, WPARAM};
+        use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
+        let _ = unsafe { PostMessageW(Some(self.hwnd), WM_APP_REC_QUALITY, WPARAM(0), LPARAM(0)) };
+    }
+
+    /// The quality row as last drawn, screen px: where its dropdown opens.
+    pub(super) fn rec_quality_anchor(&self) -> Option<crate::capture::Rect> {
+        self.rec_anchor_of(&Hit::RecQuality)
+    }
+
+    /// The quality dropdown went: a pick is saved like Settings' (refused
+    /// while a recording is busy).
+    pub(super) fn rec_quality_done(&mut self, pick: Option<crate::ui::quality_menu::QualityPick>) {
+        use crate::ui::quality_menu::QualityPick;
+        match pick {
+            Some(QualityPick::Quality(q)) if !self.rec.engaged() => self.screen_set_quality(q),
+            Some(QualityPick::Fps(fps)) if !self.rec.engaged() => self.screen_set_fps(fps),
+            _ => {}
+        }
+        self.refresh(Instant::now());
     }
 
     /// The device name of `source` on the Rekam page as last drawn, screen
@@ -1082,11 +1184,12 @@ impl App {
         self.refresh(Instant::now());
     }
 
-    /// Settings' (or the picker's) folder choice. Refused while a recording
-    /// runs (Settings snaps back); a folder Windows will not let Vale write
-    /// in is not saved, and the blocked notice shows again.
+    /// Settings' (or the picker's) recordings root, for both audio and screen
+    /// recordings. Refused while an audio or screen recording runs (Settings
+    /// snaps back); a folder Windows will not let Vale write in is not saved,
+    /// and the blocked notice shows again.
     pub(super) fn rec_set_folder(&mut self, dir: Option<PathBuf>) {
-        if self.rec.engaged() {
+        if self.rec.engaged() || self.screen.busy() {
             self.sync_settings();
             return;
         }
@@ -1095,7 +1198,7 @@ impl App {
         {
             eprintln!("vale: recordings folder {} refused: {e}", d.display());
             let lang = self.config.language;
-            self.apply_now(Event::Notice(folder_blocked_notice(lang, d.clone(), false)));
+            self.apply_now(Event::Notice(folder_blocked_notice(lang, d.clone())));
             self.sync_settings();
             return;
         }
@@ -1104,6 +1207,18 @@ impl App {
         self.sync_settings();
         if self.rec.page_shown {
             self.rec_rescan();
+        }
+        if self.screen.page_shown {
+            self.screen_rescan();
+        }
+    }
+
+    /// Once, before the transcript queue loads: the old recordings move into
+    /// the `Audio` and `Video` subfolders of the one recordings folder.
+    pub(super) fn rec_split_folders(&mut self) {
+        let queue = self.tr.store.queue_path();
+        if split_once(&mut self.config.recording, &Known::system(), &queue) {
+            self.save_config();
         }
     }
 
@@ -1194,17 +1309,15 @@ impl App {
         let _ = std::thread::Builder::new()
             .name("rec-scan".into())
             .spawn(move || {
-                let today = Local::now().date_naive();
                 let list = scan_recent(
                     &dir,
                     RecKind::Audio,
                     lang,
-                    today,
                     RECENT_LIMIT,
                     skip.as_deref(),
                     &decode::probe_duration_ms,
                 );
-                let _ = tx.send(Event::RecRecent(list));
+                let _ = tx.send(Event::RecRecent(list.entries, list.total));
                 wake();
             });
     }
@@ -1291,7 +1404,7 @@ mod tests {
             asked.borrow_mut().push(p.file_name().unwrap().to_string_lossy().into_owned());
             Some(42_000)
         };
-        let list = scan_recent(&dir, RecKind::Audio, Lang::Id, today(), 20, None, &probe);
+        let list = scan_recent(&dir, RecKind::Audio, Lang::Id, 20, None, &probe).entries;
         let len = |n: &str| list.iter().find(|e| e.path.file_name().unwrap().to_string_lossy() == n).unwrap().duration;
         assert_eq!(len("bare.m4a"), Duration::from_secs(42), "no sidecar: from the audio");
         assert_eq!(len("titled-only.m4a"), Duration::from_secs(42), "a sidecar without a length");
@@ -1300,9 +1413,18 @@ mod tests {
         asked.sort();
         assert_eq!(asked, ["bare.m4a", "titled-only.m4a"], "never the sidecar's or the unfinished one");
         // A failed probe keeps the length unknown.
-        let none = scan_recent(&dir, RecKind::Audio, Lang::Id, today(), 20, None, &|_| None);
+        let none = scan_recent(&dir, RecKind::Audio, Lang::Id, 20, None, &|_| None).entries;
         assert!(none.iter().find(|e| e.path.ends_with("bare.m4a")).unwrap().duration.is_zero());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_chosen_device_that_is_gone_is_flagged_missing() {
+        assert!(device_missing(Some("id"), false));
+        assert!(!device_missing(Some("id"), true));
+        assert!(!device_missing(None, false));
+        assert!(missing_while_idle(true, Some("id"), false));
+        assert!(!missing_while_idle(false, Some("id"), false));
     }
 
     #[test]
@@ -1414,10 +1536,89 @@ mod tests {
         assert_eq!((en.title.as_str(), en.body.as_str()), ("Recording not saved", "No audio came in"));
     }
 
+    fn known_in(base: &Path) -> Known {
+        Known {
+            default_root: base.join("Docs"),
+            fallback_root: Some(base.join("Home")),
+            video_default: base.join("Videos"),
+            video_fallback: Some(base.join("HomeVideo")),
+        }
+    }
+
+    #[test]
+    fn split_runs_once() {
+        let base = scratch("split-once");
+        let known = known_in(&base);
+        let queue = base.join("queue.json");
+        fs::create_dir_all(&known.default_root).unwrap();
+        fs::write(known.default_root.join("a.m4a"), b"a").unwrap();
+        fs::create_dir_all(&known.video_default).unwrap();
+        fs::write(known.video_default.join("v.mp4"), b"v").unwrap();
+        let job = format!(r#"{{"jobs":[{{"audio":{:?}}}]}}"#, known.default_root.join("a.m4a"));
+        fs::write(&queue, job).unwrap();
+
+        // A config already split moves nothing.
+        let mut done = RecordingPrefs { folders_split: true, ..RecordingPrefs::default() };
+        assert!(!split_once(&mut done, &known, &queue));
+        assert!(known.default_root.join("a.m4a").is_file());
+
+        let mut prefs = RecordingPrefs::default();
+        assert!(split_once(&mut prefs, &known, &queue));
+        assert!(prefs.folders_split && prefs.folder.is_none() && prefs.video_folder.is_none());
+        assert!(known.default_root.join("Audio").join("a.m4a").is_file());
+        assert!(known.default_root.join("Video").join("v.mp4").is_file());
+        assert!(fs::read_to_string(&queue).unwrap().contains("Audio"), "the queue follows");
+
+        // A file dropped in the root later stays put on the next start.
+        fs::write(known.default_root.join("b.m4a"), b"b").unwrap();
+        assert!(!split_once(&mut prefs, &known, &queue));
+        assert!(known.default_root.join("b.m4a").is_file());
+    }
+
+    #[test]
+    fn a_picked_root_is_kept_and_stored() {
+        let base = scratch("split-root");
+        let known = known_in(&base);
+        let root = base.join("Picked");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("2026-11-12 0930.m4a"), b"a").unwrap();
+        // Not made by Vale: stays in a folder the user picked.
+        fs::write(root.join("Song.m4a"), b"s").unwrap();
+        let mut prefs = RecordingPrefs { folder: Some(root.clone()), ..RecordingPrefs::default() };
+        assert!(split_once(&mut prefs, &known, &base.join("queue.json")));
+        assert_eq!(prefs.folder, Some(root.clone()));
+        assert!(root.join("Audio").join("2026-11-12 0930.m4a").is_file());
+        assert!(root.join("Song.m4a").is_file());
+    }
+
+    #[test]
+    fn a_fallback_with_no_folder_chosen_sets_the_root() {
+        let root = PathBuf::from(r"C:\Users\a\Vale\Rekaman");
+        let mut prefs = RecordingPrefs::default();
+        let (audio, video) = (prefs.dir(), prefs.video_dir());
+        assert!(fell_back_root(&mut prefs, &root.join("Audio"), &audio, Some(&root)), "audio");
+        assert_eq!(prefs.folder, Some(root.clone()));
+        let mut prefs = RecordingPrefs::default();
+        assert!(fell_back_root(&mut prefs, &root.join("Video"), &video, Some(&root)), "video");
+        assert_eq!(prefs.folder, Some(root.clone()));
+        // The configured dir was used: nothing changes.
+        let mut prefs = RecordingPrefs::default();
+        assert!(!fell_back_root(&mut prefs, &audio, &audio, Some(&root)));
+        assert_eq!(prefs.folder, None);
+        // A folder the user picked stays theirs.
+        let mut prefs = RecordingPrefs {
+            folder: Some(PathBuf::from(r"D:\Rec")),
+            ..RecordingPrefs::default()
+        };
+        let own = prefs.dir();
+        assert!(fell_back_root(&mut prefs, &root.join("Audio"), &own, Some(&root)));
+        assert_eq!(prefs.folder, Some(PathBuf::from(r"D:\Rec")));
+    }
+
     #[test]
     fn a_blocked_folder_falls_back_to_the_profile_folder() {
-        let docs = Path::new(r"C:\Users\a\Documents\Vale\Rekaman");
-        let home = Path::new(r"C:\Users\a\Vale\Rekaman");
+        let docs = Path::new(r"C:\Users\a\Documents\Vale\Rekaman\Audio");
+        let home = Path::new(r"C:\Users\a\Vale\Rekaman\Audio");
         let all = |_: &Path| true;
         let none = |_: &Path| false;
         let only_home = |d: &Path| d == home;
@@ -1430,14 +1631,14 @@ mod tests {
 
     #[test]
     fn the_fallback_notice_names_the_folder_in_both_languages() {
-        let home = Path::new(r"C:\Users\a\Vale\Rekaman");
+        let home = Path::new(r"C:\Users\a\Vale\Rekaman\Audio");
         let n = fallback_notice(Lang::Id, home);
         assert_eq!(n.title, "Windows melindungi folder rekaman");
-        assert_eq!(n.body, "Disimpan ke a\\Vale\\Rekaman \u{b7} ganti di Pengaturan");
+        assert_eq!(n.body, "Disimpan ke Vale\\Rekaman\\Audio \u{b7} ganti di Pengaturan");
         assert_eq!(n.kind, NoticeKind::RecInfo);
         let en = fallback_notice(Lang::En, home);
         assert_eq!(en.title, "Windows protects the recordings folder");
-        assert_eq!(en.body, "Saving to a\\Vale\\Rekaman \u{b7} change it in Settings");
+        assert_eq!(en.body, "Saving to Vale\\Rekaman\\Audio \u{b7} change it in Settings");
         assert_eq!(short_dir(Path::new(r"D:\Rec")), r"D:\Rec");
     }
 
@@ -1450,11 +1651,10 @@ mod tests {
         assert_eq!(
             n.kind,
             NoticeKind::RecFolderBlocked {
-                dir: dir.to_path_buf(),
-                video: false
+                dir: dir.to_path_buf()
             }
         );
-        let en = folder_blocked_notice(Lang::En, dir.to_path_buf(), false);
+        let en = folder_blocked_notice(Lang::En, dir.to_path_buf());
         assert_eq!(
             (en.title.as_str(), en.body.as_str()),
             ("Windows blocked the recordings folder", "Click to choose another folder")
@@ -1623,13 +1823,12 @@ mod tests {
             write(&format!("filler{i}"), None);
         }
         fs::write(dir.join("notes.txt"), b"x").unwrap();
-        let list = scan_recent(&dir, RecKind::Audio, Lang::Id, today(), RECENT_LIMIT, None, &|_| None);
+        let list = scan_recent(&dir, RecKind::Audio, Lang::Id, 5, None, &|_| None).entries;
         assert_eq!(list.len(), 5, "five at most: {list:?}");
         assert_eq!(list[0].title, "filler3", "newest first, no .txt");
         assert_eq!(list[0].duration, Duration::ZERO, "no sidecar: the length is unknown");
-        assert!(!list[0].started.is_empty());
         assert!(!list[0].unfinished);
-        let all = scan_recent(&dir, RecKind::Audio, Lang::Id, today(), 20, None, &|_| None);
+        let all = scan_recent(&dir, RecKind::Audio, Lang::Id, 20, None, &|_| None).entries;
         assert_eq!(all.len(), 7);
         let titled = all.iter().find(|e| e.path.ends_with("titled.m4a")).unwrap();
         assert_eq!(titled.title, "Sync mingguan");
@@ -1669,7 +1868,7 @@ halo
 ");
         write("sidecar", "vale.json", r#"{"v":1,"transcript":{"model":"whisper-small"}}"#);
         write("sidecar-only-title", "vale.json", r#"{"v":1,"title":"Rapat"}"#);
-        let all = scan_recent(&dir, RecKind::Audio, Lang::Id, today(), 20, None, &|_| None);
+        let all = scan_recent(&dir, RecKind::Audio, Lang::Id, 20, None, &|_| None).entries;
         let mark = |stem: &str| {
             all.iter()
                 .find(|e| stem_of(&e.path) == stem)
@@ -1692,29 +1891,55 @@ halo
         std::thread::sleep(Duration::from_millis(20));
         let running = dir.join("2026-11-07 1000.m4a.part");
         fs::write(&running, b"x").unwrap();
-        let list = scan_recent(&dir, RecKind::Audio, Lang::Id, today(), RECENT_LIMIT, Some(&running), &|_| None);
+        let list = scan_recent(&dir, RecKind::Audio, Lang::Id, 5, Some(&running), &|_| None).entries;
         assert_eq!(list.len(), 1, "{list:?}");
         assert_eq!(list[0].title, "2026-11-07 0900");
         assert!(list[0].unfinished);
-        assert_eq!(
-            i18n::rec_entry_sub(Lang::Id, &list[0].started, list[0].duration, true),
-            format!("{} \u{b7} belum selesai", list[0].started)
-        );
-        assert_eq!(
-            i18n::rec_entry_sub(Lang::En, "Today 10:02", Duration::ZERO, true),
-            "Today 10:02 \u{b7} unfinished"
-        );
         assert_eq!(part_of(Path::new(r"C:\r\a.m4a")), PathBuf::from(r"C:\r\a.m4a.part"));
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
+    fn scan_reports_the_total_beyond_the_limit() {
+        let dir = scratch("total");
+        let mut made = Vec::new();
+        for i in 0..10 {
+            let p = dir.join(format!("r{i}.m4a"));
+            fs::write(&p, b"x").unwrap();
+            made.push(p);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let scan = scan_recent(&dir, RecKind::Audio, Lang::Id, 3, None, &|_| None);
+        assert_eq!(scan.entries.len(), 3);
+        assert_eq!(scan.total, 10);
+        let scan = scan_recent(&dir, RecKind::Audio, Lang::Id, 3, Some(&made[4]), &|_| None);
+        assert_eq!(scan.total, 9, "the skipped file is not counted");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_entry_carries_its_start() {
+        let dir = scratch("start");
+        let want = NaiveDate::from_ymd_opt(2026, 11, 8).unwrap().and_hms_opt(1, 8, 0).unwrap();
+        let local = want.and_local_timezone(Local).unwrap();
+        fs::write(dir.join("a.m4a"), b"x").unwrap();
+        fs::write(
+            dir.join("a.vale.json"),
+            format!(r#"{{"v":1,"title":"A","started":"{}","duration_ms":1000}}"#, local.to_rfc3339()),
+        )
+        .unwrap();
+        let scan = scan_recent(&dir, RecKind::Audio, Lang::Id, 5, None, &|_| None);
+        assert_eq!(scan.entries[0].started_at, want);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_missing_folder_or_a_broken_sidecar_is_not_an_error() {
-        assert!(scan_recent(Path::new(r"Z:\no\such\folder"), RecKind::Audio, Lang::Id, today(), 5, None, &|_| None).is_empty());
+        assert!(scan_recent(Path::new(r"Z:\no\such\folder"), RecKind::Audio, Lang::Id, 5, None, &|_| None).entries.is_empty());
         let dir = scratch("broken");
         fs::write(dir.join("a.m4a"), b"x").unwrap();
         fs::write(dir.join("a.vale.json"), b"{not json").unwrap();
-        let list = scan_recent(&dir, RecKind::Audio, Lang::En, today(), 5, None, &|_| None);
+        let list = scan_recent(&dir, RecKind::Audio, Lang::En, 5, None, &|_| None).entries;
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].title, "a");
         let _ = fs::remove_dir_all(&dir);
@@ -1727,7 +1952,7 @@ halo
             fs::write(dir.join(format!("2026-11-07 {i:04}.m4a")), b"x").unwrap();
         }
         let t0 = Instant::now();
-        let list = scan_recent(&dir, RecKind::Audio, Lang::Id, today(), RECENT_LIMIT, None, &|_| None);
+        let list = scan_recent(&dir, RecKind::Audio, Lang::Id, 5, None, &|_| None).entries;
         let took = t0.elapsed();
         println!("scan of 200 files: {took:?}");
         assert_eq!(list.len(), 5);
@@ -1746,12 +1971,12 @@ halo
         }
         fs::write(dir.join("sound.m4a"), b"x").unwrap();
         fs::write(dir.join("notes.txt"), b"x").unwrap();
-        let list = scan_recent(&dir, RecKind::Screen, Lang::Id, today(), RECENT_LIMIT, None, &|_| None);
+        let list = scan_recent(&dir, RecKind::Screen, Lang::Id, 5, None, &|_| None).entries;
         let titles: Vec<_> = list.iter().map(|e| e.title.as_str()).collect();
         assert_eq!(titles, ["video5", "video4", "video3", "video2", "video1"], "newest first");
         assert!(list.iter().all(|e| !e.unfinished));
         // The audio list of the same folder holds only the `.m4a`.
-        let audio = scan_recent(&dir, RecKind::Audio, Lang::Id, today(), RECENT_LIMIT, None, &|_| None);
+        let audio = scan_recent(&dir, RecKind::Audio, Lang::Id, 5, None, &|_| None).entries;
         assert_eq!(audio.len(), 1, "{audio:?}");
         assert_eq!(audio[0].title, "sound");
         let _ = fs::remove_dir_all(&dir);
@@ -1766,7 +1991,7 @@ halo
         fs::write(&running, b"x").unwrap();
         // An audio `.part` is not the Layar tab's.
         fs::write(dir.join("2026-11-11 0800.m4a.part"), b"x").unwrap();
-        let list = scan_recent(&dir, RecKind::Screen, Lang::Id, today(), RECENT_LIMIT, Some(&running), &|_| None);
+        let list = scan_recent(&dir, RecKind::Screen, Lang::Id, 5, Some(&running), &|_| None).entries;
         assert_eq!(list.len(), 1, "{list:?}");
         assert_eq!(list[0].title, "2026-11-11 0900");
         assert!(list[0].unfinished);
@@ -1805,7 +2030,7 @@ halo
             .unwrap();
         }
         fs::write(dir.join("bare.mp4"), b"x").unwrap();
-        let list = scan_recent(&dir, RecKind::Screen, Lang::Id, today(), RECENT_LIMIT, None, &|_| None);
+        let list = scan_recent(&dir, RecKind::Screen, Lang::Id, 5, None, &|_| None).entries;
         let row = |stem: &str| {
             list.iter()
                 .find(|e| stem_of(&e.path) == stem)
@@ -1824,7 +2049,7 @@ halo
         let row = |unfinished, silent, transcript| RecEntry {
             path: PathBuf::from("a.mp4"),
             title: String::new(),
-            started: String::new(),
+            started_at: chrono::NaiveDateTime::default(),
             duration: Duration::ZERO,
             unfinished,
             silent,
@@ -1870,7 +2095,7 @@ halo
             asked.set(true);
             Some(1)
         };
-        let list = scan_recent(&dir, RecKind::Screen, Lang::Id, today(), RECENT_LIMIT, None, &probe);
+        let list = scan_recent(&dir, RecKind::Screen, Lang::Id, 5, None, &probe).entries;
         assert_eq!(list.len(), 1, "{list:?}");
         assert_eq!(list[0].title, "Figma");
         assert_eq!(list[0].duration, Duration::from_secs(197));

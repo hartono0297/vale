@@ -197,12 +197,10 @@ pub enum NoticeKind {
     /// (`Effect::RecMicSettings`).
     RecMicDenied,
     /// Windows refused to write in the recordings folder `dir` (Controlled
-    /// folder access). A click opens the folder picker: the video folder's
-    /// with `video` (`Effect::VideoPickFolder`), else the audio folder's
+    /// folder access). A click opens the recordings folder picker
     /// (`Effect::RecPickFolder`).
     RecFolderBlocked {
         dir: PathBuf,
-        video: bool,
     },
     /// A short word about a recording: the one-time "ask everyone first" and
     /// a source that dropped out. A click dismisses.
@@ -317,8 +315,8 @@ pub struct RecEntry {
     pub path: PathBuf,
     /// The sidecar's title, or the time the recording started when it has none.
     pub title: String,
-    /// "Hari ini 10:02", as the page shows it.
-    pub started: String,
+    /// When it started, local time (the page groups the list by its day).
+    pub started_at: chrono::NaiveDateTime,
     pub duration: Duration,
     /// A `.m4a.part` a crash left: the page says "belum selesai" instead of
     /// a length (it still plays, and a click still shows it).
@@ -414,8 +412,9 @@ pub enum Event {
     /// resumed or ended (`None`); the notch shows `View::RecordCompact`
     /// while one runs.
     RecStatus(Option<RecStatus>),
-    /// The newest recordings found in the folder (the page shows five).
-    RecRecent(Vec<RecEntry>),
+    /// The newest recordings found in the folder (at most `RECENT_LIMIT`;
+    /// the page shows fewer) and how many the folder holds in all.
+    RecRecent(Vec<RecEntry>, usize),
     /// The same list with the queue's transcript marks over it, put on show
     /// again after a mark changed (`App` keeps the unmarked scan apart).
     RecMarks(Vec<RecEntry>),
@@ -429,8 +428,8 @@ pub enum Event {
     /// `View::ScreenCountdown` meanwhile.
     ScreenCountdown(Option<u8>),
     /// The newest screen recordings found in the video folder, for the
-    /// Rekam page's Layar tab.
-    VideoRecent(Vec<RecEntry>),
+    /// Rekam page's Layar tab, and how many the folder holds in all.
+    VideoRecent(Vec<RecEntry>, usize),
     /// The same list with the queue's transcript marks over it.
     VideoMarks(Vec<RecEntry>),
     /// What a transcript job's thread reported, with the job id (`App`
@@ -820,6 +819,7 @@ pub enum Hit {
     RecMute(crate::recorder::Source),
     /// A source's device name: opens the device menu (idle or recording).
     RecDevice(crate::recorder::Source),
+    /// A source's switch while idle: the sources with that one flipped.
     RecSources(RecSources),
     RecOpen(usize),
     RecFolder,
@@ -837,9 +837,13 @@ pub enum Hit {
     /// The "Audio" / "Layar" switch of the Rekam page, only while nothing
     /// records.
     RecTab(RecKind),
-    /// "Buang" beside a running screen recording: the first click arms it
-    /// ("Yakin buang?"), the second discards the recording.
+    /// The trash button beside a running screen recording: the first click
+    /// arms it ("Buang video ini?"); "Buang" under the question discards it.
     ScreenDiscard,
+    /// "Simpan" under the armed discard's question: the recording goes on.
+    ScreenDiscardKeep,
+    /// The idle Layar tab's "Kualitas" row: opens the video quality menu.
+    RecQuality,
     /// Susun, template step: a monitor chip, a template card (built-ins
     /// first, then the user's) and a saved arrangement's play button, by
     /// place. Pick step: a window row by place in the list, and "Lewati
@@ -1039,6 +1043,8 @@ pub enum Effect {
     RecMute(crate::recorder::Source),
     /// Open the device menu of a source.
     RecDevice(crate::recorder::Source),
+    /// Open the video quality menu of the Layar tab.
+    RecQualityMenu,
     RecSources(RecSources),
     RecReveal(PathBuf),
     RecOpenFolder,
@@ -1066,8 +1072,6 @@ pub enum Effect {
     ScreenDiscard,
     /// Open the video folder (the panel has collapsed).
     VideoOpenFolder,
-    /// The blocked video folder's click: the video folder picker.
-    VideoPickFolder,
     /// Susun, as the hits of the same names.
     ArrangeMonitor(usize),
     ArrangeCard(usize),
