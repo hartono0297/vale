@@ -360,3 +360,19 @@ characters, the worktree's 71), so up to 512 bytes of the difference are the
 path. New code: `caption_card/`, `captions/`, `app_captions.rs`, `ui/card_surface.rs`, plus
 edits for the notch line, the Rekam switch, the Settings card and strings. No
 change to `Cargo.toml`, `Cargo.lock` or `assets` (checked with git diff). Nothing trimmed. See [[transcript]].
+
+## Screen recording quality choice (2026-11-12)
+
+`cargo build --release --locked`, 0 warnings, `main` at ad08324 (v5.2.0, `git
+archive` into a scratch folder with its own target) against the `rec-quality`
+worktree at 3d43146:
+
+| Build | Bytes |
+|---|---|
+| ad08324 (v5.2.0), scratch path | 4,558,848 |
+| 3d43146 (video quality), worktree path | 4,562,944 (+4,096, +4 KiB) |
+
+The PDB paths differ in length again (scratch longer), so the real growth may be
+a few hundred bytes more. New: `VideoQuality`, the shorter-side cap and the
+estimate in `screenrec/plan.rs`, one Settings row, two strings. No change to
+`Cargo.toml`, `Cargo.lock` or `assets`. See [[recording-quality]].

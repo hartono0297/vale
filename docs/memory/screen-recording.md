@@ -35,9 +35,10 @@ Records a monitor, a window (followed when moved) or a dragged area to an
   `RegisterHotKey` id 13 for the 3 s only, timer 70 `TIMER_SCREEN_COUNTDOWN`,
   `WM_APP + 90` pick, `WM_APP + 91` window watch. Phase 4 took hotkey 11 (zoom)
   and `WM_APP + 92` (the wheel); 71-74, 93 and 94 stay free.
-- Settings → Fitur → Rekam layar: 30 / 60 fps (`recording.video_fps`), video
-  folder (`recording.video_folder`). Debug: `--screenrec-test <s>` with
-  `--pause`, `--no-audio-push`; `--demo-snap rec`; `--demo-record` with
+- Settings → Fitur → Rekam layar: Kualitas video (since 2026-11-12,
+  `recording.video_quality`, [[recording-quality]]), 30 / 60 fps
+  (`recording.video_fps`), video folder (`recording.video_folder`). Debug:
+  `--screenrec-test <s>` with `--pause`, `--no-audio-push`, `--quality`; `--demo-snap rec`; `--demo-record` with
   `DI_REC_TAB=screen|screen-empty`, `DI_REC_LIVE=screen|screen-sure`.
 
 ## Decisions
