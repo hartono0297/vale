@@ -376,3 +376,18 @@ The PDB paths differ in length again (scratch longer), so the real growth may be
 a few hundred bytes more. New: `VideoQuality`, the shorter-side cap and the
 estimate in `screenrec/plan.rs`, one Settings row, two strings. No change to
 `Cargo.toml`, `Cargo.lock` or `assets`. See [[recording-quality]].
+
+## Clipboard image drag-out (2026-11-12)
+
+`cargo build --release --locked`, 0 warnings, `feat/clip-drag` worktree at
+c5cf3b0 (on v5.2.0, before main's video-quality merge) against ad08324:
+
+| Build | Bytes |
+|---|---|
+| ad08324 (v5.2.0), scratch path | 4,558,848 |
+| c5cf3b0 (clip drag-out), worktree path | 4,566,528 (+7,680, +7.5 KiB) |
+
+PDB path lengths differ (scratch longer). New: `clipboard/drag.rs`, the
+`encode_png` split in `pack.rs`, the press/drag/timer wiring in `app_clip.rs`,
+one string. No change to `Cargo.toml`, `Cargo.lock` or `assets`. See
+[[clipboard-drag-out]].

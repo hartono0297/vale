@@ -110,7 +110,7 @@ Run 7 of the v3.1 plan (Keputusan #5). Code in `src/clipboard/` (pure:
   out of the history too (`win::wants_image`).
 - "Hapus riwayat" needs two clicks, as "Putuskan".
 
-Related: [[clipboard-privacy]], [[settings-appearance-scroll]]
+Related: [[clipboard-privacy]], [[settings-appearance-scroll]], [[clipboard-drag-out]]
 
 Listed in [[index]].
 

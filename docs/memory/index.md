@@ -14,7 +14,7 @@ One note per decision, gotcha or convention. Link each new note here.
 
 - [[studio-palette-accent-aliases]]
 - [[studio-font-sources]]
-- [[exe-size]]: size measured per change (the screen recording quality choice, 2026-11-12, +4 KiB to 4,562,944 bytes, is the last entry); icon small sizes as PNG (-38 KB), opt-level z option (-326 KB) left to the owner
+- [[exe-size]]: size measured per change (the clipboard drag-out, 2026-11-12, +7.5 KiB to 4,566,528 bytes against v5.2.0, is the last entry); icon small sizes as PNG (-38 KB), opt-level z option (-326 KB) left to the owner
 - [[studio-icons]]
 - [[studio-calendar-day-view]]
 - [[studio-media-progress-timer]]
@@ -43,6 +43,7 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[notice-close]]: the ✕ on a timed full notice (not Screenshot, ClipPreview, Arranged or the sticky kinds): closes it with no effect and no unread dot, queue advances, Hidden in fullscreen, `hover_blocked` + HoverTracking quiet flag, 24 dip hit square and a permanent 18 dip text reservation, 120 ms fade on the FrameClock, contrast numbers, `--demo-notice-close`
 - [[notification-open]]: opening a caught toast: one routine for the notch click and the page's Open, browser tab via UIA or the app's own window (tray-hidden too), never a new browser window or profile picker, `--probe-open`
 - [[claude-notice-open]]: clicking a "Claude selesai" / "Claude butuh respon" notice goes to its session: `--hook` captures the host window (process chain, skip list, `cli_direct`, console title), side registry, four rules (Desktop sidebar row, VS Code link, terminal tab, window only), never launches, `--probe-claude-open`
+- [[clipboard-drag-out]]: an image card drags out as a real PNG (`%TEMP%\Vale\drag\<id>\`, named like the card, copy only, `shelf_ole::drag_out` with allowed effects), 6 dip start, thumbnail-only cards drag small with a "Ditarik" notice, removed 10 min after the last drag / exit / lock / delete, startup sweep, one-shot timer 55, history untouched; Explorer drop verified live (2026-11-12)
 - [[clipboard-notice]]: a 3 s preview in the notch on every external copy (text lines, thumbnail, files), skip rules, supersedes "Disalin untuk semua salinan", no timer
 - [[screenshot-preview]]: preview matching of the Windows file; Simpan never writes a duplicate (v3.6); the "Disimpan · folder · klik untuk buka" notice carries the file path and a click reveals it in Explorer (2026-11-04)
 - [[screenshot-snap]]: own region capture that snaps to windows and boxes, the editor after it, UIA budget, own-copy registry, auto-copy ("Salin otomatis": worker + debounce + guard + flush on close), PrtSc key opens Vale's capture (low-level keyboard hook on its own thread, now a hotkey row, nothing in the registry), and since 2026-11-02 "Setelah capture" = Langsung di layar: inline drawing on the frozen screen (Lightshot style; strip and bar placement, selection handles, frame-px annotations, managed own-copy on Copy/Save, shared text and icons modules, Line tool, `--demo-snap inline`), and since 2026-11-04 the saved notice is clickable (`Effect::RevealFile`, `sources/reveal.rs` worker, foreground rule, saved sink for the inline capture and the editor, failed inline save says "Gagal menyimpan")

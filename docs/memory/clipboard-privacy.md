@@ -31,3 +31,11 @@ Rules behind [[clipboard-history]].
   `target/test-tmp/`, never `%APPDATA%`.
 
 Listed in [[index]].
+
+## The one picture on disk unencrypted (2026-11-12)
+
+Dragging an image card out writes it as a PNG to `%TEMP%\Vale\drag\<id>\`
+(a drop needs a real file). It goes 10 minutes after its last drag, on exit,
+on lock with "Hapus saat layar dikunci", on card delete, and the startup sweep
+empties the folder. Tests never call `drag::root()` for disk work; file tests
+write under `target/test-tmp/`. Details in [[clipboard-drag-out]].

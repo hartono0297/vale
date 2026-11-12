@@ -197,3 +197,14 @@ Cards animate in, out and across: see [[shelf-motion]].
 The HP pill, a QR link and the cards tagged "dari HP": see [[shelf-phone]]. Since v3.19 the
 whole shelf (every file card, no ticking) is shared with the phones that scanned the QR, and
 a card taken off the shelf or "Kosongkan" stops being shared at once.
+
+## 2026-11-12: drag out verified live, and shared with the Clipboard page
+
+`shelf_ole::drag_out(path, allowed) -> Option<DROPEFFECT>` now takes the
+allowed effects (the shelf passes `SHELF_DRAG_EFFECTS`, copy or link, as
+before) and returns the effect (`None` = the drag could not start).
+`past_threshold` and the after-drag steps (`drag_out_ended`) are shared with
+the Clipboard page's image drag ([[clipboard-drag-out]]), which offers copy
+only. That run checked the path live for the first time: a file from
+`DoDragDrop` landed in an Explorer folder as a copy, and the Claude desktop
+app (Chromium/Electron) took it as an attachment.
