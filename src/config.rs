@@ -1374,6 +1374,7 @@ mod tests {
                 video_quality: crate::recorder::prefs::VideoQuality::P1080,
                 cursor_highlight: false,
                 click_ripples: false,
+                folders_split: true,
             },
             transcript: crate::transcribe::prefs::TranscriptPrefs {
                 enabled: true,

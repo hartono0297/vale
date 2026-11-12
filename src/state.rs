@@ -3042,10 +3042,9 @@ impl IslandState {
             | NoticeKind::RecFailed { reveal: Some(path) } => Some(Effect::RevealFile(path)),
             // The mic was refused: the click opens Windows' mic privacy page.
             NoticeKind::RecMicDenied => Some(Effect::RecMicSettings),
-            // The folder was refused: the click picks another one, for the
-            // kind of recording that was refused.
-            NoticeKind::RecFolderBlocked { video: false, .. } => Some(Effect::RecPickFolder),
-            NoticeKind::RecFolderBlocked { video: true, .. } => Some(Effect::VideoPickFolder),
+            // The folder was refused: the click opens the same picker for the
+            // one recordings root, whichever kind of recording was refused.
+            NoticeKind::RecFolderBlocked { .. } => Some(Effect::RecPickFolder),
             // A transcript is ready or failed: the window that holds it (it
             // says the reason). A word about settings opens its card.
             NoticeKind::TranscriptReady { audio } | NoticeKind::TranscriptFailed { audio } => {
@@ -10451,7 +10450,6 @@ mod tests {
         // A blocked folder: the click picks another.
         let blocked = rec_notice(NoticeKind::RecFolderBlocked {
             dir: r"C:\Users\a\Documents\Vale\Rekaman".into(),
-            video: false,
         });
         assert!(notice_has_action(&blocked));
         let mut s = st();
@@ -11158,23 +11156,19 @@ mod tests {
     }
 
     #[test]
-    fn a_blocked_video_folder_opens_the_video_picker() {
+    fn a_blocked_folder_opens_the_one_folder_picker() {
         let t0 = Instant::now();
-        for (video, want) in [
-            (true, Effect::VideoPickFolder),
-            (false, Effect::RecPickFolder),
-        ] {
-            let blocked = rec_notice(NoticeKind::RecFolderBlocked {
-                dir: r"C:\Users\a\Videos\Vale".into(),
-                video,
-            });
-            assert!(notice_has_action(&blocked));
-            let mut s = st();
-            s.apply(Event::Notice(blocked), t0);
-            let fx = s.apply(Event::Click(Hit::Body), t0 + secs(1));
-            assert_eq!(fx, vec![want], "video {video}");
-            assert_eq!(s.view(), View::Idle);
-        }
+        // The notice the screen start's blocked path makes.
+        let blocked = crate::app::record::folder_blocked_notice(
+            crate::i18n::Lang::En,
+            r"C:\Users\a\Documents\Vale\Rekaman\Video".into(),
+        );
+        assert!(notice_has_action(&blocked));
+        let mut s = st();
+        s.apply(Event::Notice(blocked), t0);
+        let fx = s.apply(Event::Click(Hit::Body), t0 + secs(1));
+        assert_eq!(fx, vec![Effect::RecPickFolder]);
+        assert_eq!(s.view(), View::Idle);
     }
 
     #[test]

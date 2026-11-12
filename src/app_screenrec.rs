@@ -32,8 +32,9 @@ use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUn
 use windows::Win32::UI::WindowsAndMessaging::{IsIconic, KillTimer, SetTimer, WM_APP};
 
 use super::record::{
-    self, RECENT_LIMIT, choose_dir, device_switched_notice, fallback_notice, folder_blocked_notice,
-    is_recorded, mic_denied_notice, probe_writable, scan_recent, source_lost_notice,
+    self, RECENT_LIMIT, choose_dir, device_switched_notice, fallback_notice, fell_back_root,
+    folder_blocked_notice, is_recorded, mic_denied_notice, probe_writable, scan_recent,
+    source_lost_notice,
 };
 use super::{App, WM_APP_EVENT, notif_open, poster};
 use crate::capture::rec_pick::{PickTarget, Picked};
@@ -45,7 +46,7 @@ use crate::model::{
 };
 use crate::recorder::mix::MixOptions;
 use crate::recorder::naming::file_stem;
-use crate::recorder::prefs::{VideoQuality, video_fallback_folder};
+use crate::recorder::prefs::{VideoQuality, fallback_folder, fallback_video_dir};
 use crate::recorder::{Failure, RecError, RecEvent, Recorder, Source, Sources, devices};
 use crate::screenrec::audio::Forward;
 use crate::screenrec::exclude::Excluder;
@@ -59,7 +60,7 @@ use crate::screenrec::{EndReason, Error, ScreenRecorder, Summary, Target};
 use crate::shortcuts;
 use crate::transcribe::decode;
 use crate::ui::render::VideoThumbView;
-use crate::ui::{settings, tray};
+use crate::ui::tray;
 
 /// The one-shot behind each number of the 3-2-1.
 pub(super) const TIMER_SCREEN_COUNTDOWN: usize = 70;
@@ -155,7 +156,7 @@ pub(super) struct ScreenState {
     pub(super) videos: Vec<RecEntry>,
     /// The Rekam page was on screen at the last refresh (a new showing
     /// re-reads the folder).
-    page_shown: bool,
+    pub(super) page_shown: bool,
     starting: Option<JoinHandle<Started>>,
     stopping: Option<JoinHandle<Stopped>>,
 }
@@ -508,9 +509,9 @@ fn start_recording(
     on_end: Box<dyn Fn() + Send>,
     events: Box<dyn Fn(RecEvent) + Send>,
 ) -> Started {
-    // Controlled folder access may guard `Videos`: then the profile folder's
-    // `Vale\Video` takes the recording.
-    let fallback = video_fallback_folder();
+    // Controlled folder access may guard the `Video` subfolder of the root:
+    // then the `Video` subfolder of the fallback root takes the recording.
+    let fallback = fallback_video_dir();
     let writable = |d: &Path| probe_writable(d).is_ok();
     let Some(dir) = choose_dir(&job.dir, fallback.as_deref(), writable) else {
         return Started {
@@ -852,7 +853,7 @@ impl App {
             Err(e) => {
                 self.screen_idle();
                 let n = match e {
-                    StartError::FolderBlocked(dir) => folder_blocked_notice(lang, dir, true),
+                    StartError::FolderBlocked(dir) => folder_blocked_notice(lang, dir),
                     StartError::Screen(e) => {
                         eprintln!("vale: screen recording did not start: {e}");
                         let part = part_of(&started.path);
@@ -929,14 +930,17 @@ impl App {
     }
 
     /// The video went to `used`, not to the configured folder (Windows
-    /// refused that one). The default folder moves there for good; a folder
-    /// the user picked stays theirs. Either way a notice says where it goes.
+    /// refused that one). The default root moves to the fallback root for
+    /// good; a folder the user picked stays theirs. Either way a notice says where it goes.
     fn screen_fell_back(&mut self, used: &Path) {
-        if used == self.config.recording.video_dir() {
+        let was_unset = self.config.recording.folder.is_none();
+        let configured = self.config.recording.video_dir();
+        let fallback_root = fallback_folder();
+        let rec = &mut self.config.recording;
+        if !fell_back_root(rec, used, &configured, fallback_root.as_deref()) {
             return;
         }
-        if self.config.recording.video_folder.is_none() {
-            self.config.recording.video_folder = Some(used.to_path_buf());
+        if was_unset && self.config.recording.folder.is_some() {
             self.save_config();
             self.sync_settings();
         }
@@ -1320,39 +1324,6 @@ impl App {
         let _ = std::fs::create_dir_all(&dir);
         notif_open::allow_foreground();
         let _ = std::process::Command::new("explorer.exe").arg(dir).spawn();
-    }
-
-    /// The blocked-folder notice's click: the folder picker, whose choice
-    /// comes back through `screen_set_folder`.
-    pub(super) fn screen_pick_folder(&mut self) {
-        notif_open::allow_foreground();
-        settings::pick_video_folder(self.hwnd);
-    }
-
-    /// The picker's (or Settings') video folder. Refused while a screen
-    /// recording is anywhere between its picker and its saved file; a folder
-    /// Windows will not let Vale write in is not saved, and the blocked
-    /// notice shows again.
-    pub(super) fn screen_set_folder(&mut self, dir: Option<PathBuf>) {
-        if self.screen.busy() {
-            self.sync_settings();
-            return;
-        }
-        if let Some(d) = &dir
-            && let Err(e) = probe_writable(d)
-        {
-            eprintln!("vale: video folder {} refused: {e}", d.display());
-            let lang = self.config.language;
-            self.apply_now(Event::Notice(folder_blocked_notice(lang, d.clone(), true)));
-            self.sync_settings();
-            return;
-        }
-        self.config.recording.video_folder = dir;
-        self.save_config();
-        self.sync_settings();
-        if self.screen.page_shown {
-            self.screen_rescan();
-        }
     }
 
     /// Settings' frames per second: 60, anything else is 30. Refused while a
