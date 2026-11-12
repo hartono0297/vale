@@ -722,6 +722,7 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
         app.sticky_remind_fire();
         // The updated notice, the update timer and the leftover cleanup.
         app.update_start(updated_from);
+        app.rec_split_folders();
         app.transcribe_init();
         unsafe {
             SetTimer(Some(hwnd), TIMER_SYSTEM, SYSTEM_MS, None);
@@ -2391,7 +2392,6 @@ impl App {
             Effect::ScreenToggle => self.screen_toggle(),
             Effect::ScreenDiscard => self.screen_discard(),
             Effect::VideoOpenFolder => self.screen_open_folder(),
-            Effect::VideoPickFolder => self.screen_pick_folder(),
             Effect::TranscriptOff => self.transcript_off_note(),
             Effect::DeviceEject(i) => self.devices_eject(i),
             Effect::DeviceOpen(i) => self.devices_open(i),

@@ -32,7 +32,7 @@ use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUn
 use windows::Win32::UI::WindowsAndMessaging::{IsIconic, KillTimer, SetTimer, WM_APP};
 
 use super::record::{
-    self, RECENT_LIMIT, choose_dir, device_switched_notice, fallback_notice, folder_blocked_notice,
+    self, RECENT_LIMIT, choose_dir, device_switched_notice, fallback_notice, fell_back_root, folder_blocked_notice,
     is_recorded, mic_denied_notice, probe_writable, scan_recent, source_lost_notice,
 };
 use super::{App, WM_APP_EVENT, notif_open, poster};
@@ -45,7 +45,7 @@ use crate::model::{
 };
 use crate::recorder::mix::MixOptions;
 use crate::recorder::naming::file_stem;
-use crate::recorder::prefs::{VideoQuality, fallback_video_dir};
+use crate::recorder::prefs::{VideoQuality, fallback_folder, fallback_video_dir};
 use crate::recorder::{Failure, RecError, RecEvent, Recorder, Source, Sources, devices};
 use crate::screenrec::audio::Forward;
 use crate::screenrec::exclude::Excluder;
@@ -59,7 +59,7 @@ use crate::screenrec::{EndReason, Error, ScreenRecorder, Summary, Target};
 use crate::shortcuts;
 use crate::transcribe::decode;
 use crate::ui::render::VideoThumbView;
-use crate::ui::{settings, tray};
+use crate::ui::tray;
 
 /// The one-shot behind each number of the 3-2-1.
 pub(super) const TIMER_SCREEN_COUNTDOWN: usize = 70;
@@ -155,7 +155,7 @@ pub(super) struct ScreenState {
     pub(super) videos: Vec<RecEntry>,
     /// The Rekam page was on screen at the last refresh (a new showing
     /// re-reads the folder).
-    page_shown: bool,
+    pub(super) page_shown: bool,
     starting: Option<JoinHandle<Started>>,
     stopping: Option<JoinHandle<Stopped>>,
 }
@@ -852,7 +852,7 @@ impl App {
             Err(e) => {
                 self.screen_idle();
                 let n = match e {
-                    StartError::FolderBlocked(dir) => folder_blocked_notice(lang, dir, true),
+                    StartError::FolderBlocked(dir) => folder_blocked_notice(lang, dir),
                     StartError::Screen(e) => {
                         eprintln!("vale: screen recording did not start: {e}");
                         let part = part_of(&started.path);
@@ -929,14 +929,15 @@ impl App {
     }
 
     /// The video went to `used`, not to the configured folder (Windows
-    /// refused that one). The default folder moves there for good; a folder
-    /// the user picked stays theirs. Either way a notice says where it goes.
+    /// refused that one). The default root moves to the fallback root for
+    /// good; a folder the user picked stays theirs. Either way a notice says where it goes.
     fn screen_fell_back(&mut self, used: &Path) {
-        if used == self.config.recording.video_dir() {
+        let was_unset = self.config.recording.folder.is_none();
+        let configured = self.config.recording.video_dir();
+        if !fell_back_root(&mut self.config.recording, used, &configured, fallback_folder().as_deref()) {
             return;
         }
-        if self.config.recording.video_folder.is_none() {
-            self.config.recording.video_folder = Some(used.to_path_buf());
+        if was_unset && self.config.recording.folder.is_some() {
             self.save_config();
             self.sync_settings();
         }
@@ -1322,13 +1323,6 @@ impl App {
         let _ = std::process::Command::new("explorer.exe").arg(dir).spawn();
     }
 
-    /// The blocked-folder notice's click: the folder picker, whose choice
-    /// comes back through `screen_set_folder`.
-    pub(super) fn screen_pick_folder(&mut self) {
-        notif_open::allow_foreground();
-        settings::pick_video_folder(self.hwnd);
-    }
-
     /// The picker's (or Settings') video folder. Refused while a screen
     /// recording is anywhere between its picker and its saved file; a folder
     /// Windows will not let Vale write in is not saved, and the blocked
@@ -1343,7 +1337,7 @@ impl App {
         {
             eprintln!("vale: video folder {} refused: {e}", d.display());
             let lang = self.config.language;
-            self.apply_now(Event::Notice(folder_blocked_notice(lang, d.clone(), true)));
+            self.apply_now(Event::Notice(folder_blocked_notice(lang, d.clone())));
             self.sync_settings();
             return;
         }
