@@ -2,7 +2,7 @@
 //! leniently like `widgets`: a missing key or a wrong type gives that
 //! field's default, a non-object gives all of them, and the rest of the file
 //! always loads. The screen recording's settings (`video_folder`,
-//! `video_fps`, `cursor_highlight`, `click_ripples`) live in the same section.
+//! `video_fps`, `video_quality`, `cursor_highlight`, `click_ripples`) live in the same section.
 
 use std::path::{Path, PathBuf};
 
@@ -10,6 +10,51 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
 use crate::model::RecSources;
+
+/// How large a screen recording is: the shorter side of the picture is capped
+/// at this many pixels, a smaller screen is never scaled up.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum VideoQuality {
+    /// The screen's own size.
+    #[default]
+    Original,
+    P1440,
+    P1080,
+    P720,
+}
+
+impl VideoQuality {
+    pub const ALL: [VideoQuality; 4] = [
+        VideoQuality::Original,
+        VideoQuality::P1440,
+        VideoQuality::P1080,
+        VideoQuality::P720,
+    ];
+
+    /// The cap on the picture's shorter side; `None` keeps the screen's size.
+    pub fn max_short(self) -> Option<u32> {
+        match self {
+            VideoQuality::Original => None,
+            VideoQuality::P1440 => Some(1440),
+            VideoQuality::P1080 => Some(1080),
+            VideoQuality::P720 => Some(720),
+        }
+    }
+
+    /// The value in config.json.
+    pub fn key(self) -> &'static str {
+        match self {
+            VideoQuality::Original => "original",
+            VideoQuality::P1440 => "1440p",
+            VideoQuality::P1080 => "1080p",
+            VideoQuality::P720 => "720p",
+        }
+    }
+
+    pub fn from_key(s: &str) -> Option<VideoQuality> {
+        VideoQuality::ALL.into_iter().find(|q| q.key() == s)
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecordingPrefs {
@@ -32,6 +77,8 @@ pub struct RecordingPrefs {
     pub video_folder: Option<PathBuf>,
     /// The screen recording's frame rate: 30 or 60.
     pub video_fps: u32,
+    /// The screen recording's size cap.
+    pub video_quality: VideoQuality,
     /// A soft yellow circle around the cursor in a screen recording.
     pub cursor_highlight: bool,
     /// A ring that spreads from every click in a screen recording.
@@ -52,6 +99,7 @@ impl Default for RecordingPrefs {
             echo_cancel: true,
             video_folder: None,
             video_fps: 30,
+            video_quality: VideoQuality::Original,
             cursor_highlight: true,
             click_ripples: true,
         }
@@ -95,6 +143,11 @@ impl RecordingPrefs {
                 Some(60) => 60,
                 _ => d.video_fps,
             },
+            video_quality: map
+                .get("video_quality")
+                .and_then(Value::as_str)
+                .and_then(VideoQuality::from_key)
+                .unwrap_or_default(),
             cursor_highlight: map
                 .get("cursor_highlight")
                 .and_then(Value::as_bool)
@@ -201,7 +254,7 @@ pub fn folder_label(dir: &Path) -> String {
 impl Serialize for RecordingPrefs {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
-        let mut map = s.serialize_map(Some(10))?;
+        let mut map = s.serialize_map(Some(11))?;
         map.serialize_entry(
             "sources",
             &serde_json::json!({"mic": self.sources.mic, "system": self.sources.system}),
@@ -216,6 +269,7 @@ impl Serialize for RecordingPrefs {
             &self.video_folder.as_ref().map(|p| p.to_string_lossy()),
         )?;
         map.serialize_entry("video_fps", &self.video_fps)?;
+        map.serialize_entry("video_quality", self.video_quality.key())?;
         map.serialize_entry("cursor_highlight", &self.cursor_highlight)?;
         map.serialize_entry("click_ripples", &self.click_ripples)?;
         map.end()
@@ -373,6 +427,30 @@ mod tests {
         let p = RecordingPrefs::from_json(&json!({"video_folder": 7, "video_fps": 60}));
         assert_eq!(p.video_folder, None, "a wrong-typed folder reads as the default");
         assert_eq!(p.video_fps, 60, "and the other key is read alone");
+    }
+
+    #[test]
+    fn video_quality_reads_leniently_and_round_trips() {
+        for (v, q) in [
+            (json!("original"), VideoQuality::Original),
+            (json!("1440p"), VideoQuality::P1440),
+            (json!("1080p"), VideoQuality::P1080),
+            (json!("720p"), VideoQuality::P720),
+            (json!("4k"), VideoQuality::Original),
+            (json!(1080), VideoQuality::Original),
+            (json!(null), VideoQuality::Original),
+        ] {
+            let p = RecordingPrefs::from_json(&json!({"video_quality": v, "video_fps": 60}));
+            assert_eq!(p.video_quality, q);
+            assert_eq!(p.video_fps, 60, "the other keys still load");
+        }
+        assert_eq!(RecordingPrefs::from_json(&json!({})).video_quality, VideoQuality::Original);
+        for q in VideoQuality::ALL {
+            let p = RecordingPrefs { video_quality: q, ..RecordingPrefs::default() };
+            let back: RecordingPrefs = serde_json::from_value(serde_json::to_value(&p).unwrap()).unwrap();
+            assert_eq!(back, p);
+        }
+        assert_eq!(VideoQuality::ALL.map(VideoQuality::max_short), [None, Some(1440), Some(1080), Some(720)]);
     }
 
     #[test]

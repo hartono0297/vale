@@ -6560,6 +6560,7 @@ impl App {
             SettingsAction::RecFolder(dir) => self.rec_set_folder(dir),
             SettingsAction::VideoFolder(dir) => self.screen_set_folder(dir),
             SettingsAction::VideoFps(fps) => self.screen_set_fps(fps),
+            SettingsAction::VideoQuality(q) => self.screen_set_quality(q),
             SettingsAction::CursorHighlight(on) => {
                 self.config.recording.cursor_highlight = on;
                 self.save_config();

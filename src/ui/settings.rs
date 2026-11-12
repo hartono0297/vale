@@ -198,6 +198,9 @@ pub enum Action {
     VideoFolder(Option<std::path::PathBuf>),
     /// The screen recordings' frame rate: 30 or 60.
     VideoFps(u32),
+    /// The screen recordings' size cap.
+    #[allow(dead_code)] // Task 3's Settings row posts it.
+    VideoQuality(crate::recorder::prefs::VideoQuality),
     /// The cursor highlight and click ripple switches of a screen recording.
     CursorHighlight(bool),
     ClickRipples(bool),
@@ -4588,6 +4591,7 @@ pub fn run_demo(args: &[String]) {
             Action::RecFolder(v) => m.recording.folder = v,
             Action::VideoFolder(v) => m.recording.video_folder = v,
             Action::VideoFps(v) => m.recording.video_fps = v,
+            Action::VideoQuality(v) => m.recording.video_quality = v,
             Action::CursorHighlight(v) => m.recording.cursor_highlight = v,
             Action::ClickRipples(v) => m.recording.click_ripples = v,
             Action::RecDevice(source, id) => m.recording.set_device(source, id),

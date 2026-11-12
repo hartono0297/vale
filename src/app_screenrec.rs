@@ -45,7 +45,7 @@ use crate::model::{
 };
 use crate::recorder::mix::MixOptions;
 use crate::recorder::naming::file_stem;
-use crate::recorder::prefs::video_fallback_folder;
+use crate::recorder::prefs::{VideoQuality, video_fallback_folder};
 use crate::recorder::{Failure, RecError, RecEvent, Recorder, Source, Sources, devices};
 use crate::screenrec::audio::Forward;
 use crate::screenrec::exclude::Excluder;
@@ -474,6 +474,8 @@ struct StartJob {
     title: String,
     sources: RecSources,
     fps: u32,
+    /// The size cap, as set when the recording started.
+    quality: VideoQuality,
     /// The configured video folder.
     dir: PathBuf,
     /// The endpoint each source starts on, `[mic, system]`.
@@ -525,6 +527,7 @@ fn start_recording(
         job.sources,
         &job.title,
         job.effects,
+        job.quality,
     );
     let recorder = match ScreenRecorder::start(job.target, &path, options, Some(on_end)) {
         Ok(recorder) => recorder,
@@ -783,6 +786,7 @@ impl App {
             title: picked.title,
             sources: self.screen.sources,
             fps: recording.video_fps,
+            quality: recording.video_quality,
             dir: recording.video_dir(),
             devices: [
                 recording.mic_device.clone(),
@@ -1357,6 +1361,16 @@ impl App {
         let fps = if fps == 60 { 60 } else { 30 };
         if !self.screen.busy() && self.config.recording.video_fps != fps {
             self.config.recording.video_fps = fps;
+            self.save_config();
+        }
+        self.sync_settings();
+    }
+
+    /// Settings' video quality. Refused while a screen recording is busy; a
+    /// recording keeps the quality it started with.
+    pub(super) fn screen_set_quality(&mut self, q: VideoQuality) {
+        if !self.screen.busy() && self.config.recording.video_quality != q {
+            self.config.recording.video_quality = q;
             self.save_config();
         }
         self.sync_settings();
