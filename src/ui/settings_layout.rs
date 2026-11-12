@@ -83,6 +83,9 @@ const FIRST_CARD_Y: f32 = TITLE_Y + TITLE_H + 16.0;
 pub const VIEW_TOP: f32 = TITLE_Y + TITLE_H + 8.0;
 /// One wheel notch scrolls one row.
 const WHEEL_STEP: f32 = ROW_H;
+/// The fade at the top of a scrolled section's viewport: from under the
+/// title down to where a section's first title rests.
+pub const SCROLL_FADE_H: f32 = FIRST_CARD_Y - VIEW_TOP;
 /// The scrollbar thumb at the content's right edge.
 const SCROLLBAR_W: f32 = 3.0;
 /// Segmented controls and steppers.
@@ -106,7 +109,7 @@ pub const SWATCH_RING_W: f32 = 1.5;
 pub const STEP_BUTTON: f32 = 28.0;
 const STEP_VALUE_W: f32 = 64.0;
 const BUTTON_PAD: f32 = 16.0;
-const BUTTON_MIN_W: f32 = 80.0;
+const BUTTON_MIN_W: f32 = 64.0;
 /// An icon-only button (the About links).
 const ICON_BUTTON: f32 = 32.0;
 pub const EXTERNAL_GLYPH: f32 = 16.0;
@@ -124,10 +127,25 @@ const NAV_H: f32 = 36.0;
 const NAV_GAP: f32 = 2.0;
 const PREVIEW_H: f32 = 112.0;
 const FIELD_ROW_H: f32 = 44.0;
-const FIELD_H: f32 = 32.0;
+/// A text field is as tall as the buttons beside it.
+const FIELD_H: f32 = BUTTON_H;
 /// The uppercase label above a card (Integrations).
 const EYEBROW_H: f32 = 18.0;
 const EYEBROW_GAP: f32 = 8.0;
+/// From what is above a section title (a card, a note, a header) to the
+/// title: twice the gap between two cards, so a title reads with the card
+/// under it.
+const GROUP_GAP: f32 = 24.0;
+/// Above and below a card's footnote (a static line under a divider).
+const NOTE_PAD: f32 = 12.0;
+/// Under a block that hangs below a row's text (the accessory tiles, the
+/// monitor map and its list).
+const BLOCK_PAD: f32 = 16.0;
+
+/// A footnote of `lines` description lines: `NOTE_PAD`, the lines, `NOTE_PAD`.
+fn note_h(lines: usize) -> f32 {
+    2.0 * NOTE_PAD + 16.0 + lines.saturating_sub(1) as f32 * DESC_LINE_H
+}
 /// A status chip: dot, gap, text, with this padding on each side.
 pub const CHIP_H: f32 = 20.0;
 const CHIP_PAD: f32 = 8.0;
@@ -1301,6 +1319,17 @@ impl Layout {
         nav.chain(controls).collect()
     }
 
+    /// The strip at the viewport's top where scrolled content fades out
+    /// under the title instead of being cut: only once the section has
+    /// scrolled, so nothing is dimmed at its top.
+    pub fn top_fade(&self) -> Option<Rect> {
+        let v = self.viewport.filter(|_| self.scroll > 0.0)?;
+        Some(Rect {
+            h: SCROLL_FADE_H,
+            ..v
+        })
+    }
+
     /// The scrollbar thumb of a scrolled section.
     pub fn scrollbar(&self) -> Option<Rect> {
         let v = self.viewport.filter(|_| self.scroll_max > 0.0)?;
@@ -1680,8 +1709,14 @@ impl Builder<'_> {
         });
     }
 
-    /// An uppercase label above the next card, in the space it takes.
-    fn eyebrow(&mut self, key: Key, w: f32) {
+    /// An uppercase label above the next card, in the space it takes:
+    /// `GROUP_GAP` under what is above it (the content above leaves
+    /// `CARD_GAP`), `EYEBROW_GAP` over its card. Returns its top.
+    fn eyebrow(&mut self, key: Key, w: f32) -> f32 {
+        if self.y > FIRST_CARD_Y + 0.5 {
+            self.y += GROUP_GAP - CARD_GAP;
+        }
+        let top = self.y;
         let rect = Rect {
             x: self.g.content_x + 2.0,
             y: self.y,
@@ -1691,6 +1726,7 @@ impl Builder<'_> {
         let label = text(self.lang, key).to_uppercase();
         self.text(rect, label, Font::Eyebrow, Tone::Secondary, Align::Left);
         self.y += EYEBROW_H + EYEBROW_GAP;
+        top
     }
 
     /// A status chip starting at `x`, centred on `cy`, at most `max_w` wide.
@@ -2112,12 +2148,6 @@ impl Builder<'_> {
             Tone::Secondary,
             Align::Left,
         );
-    }
-
-    /// A button for a list row: the label with a little padding, narrower
-    /// than a button of the cards' rows (which keep `BUTTON_MIN_W`).
-    fn compact_w(&self, label: &str) -> f32 {
-        (self.w(label, Font::Control) + 24.0).max(56.0)
     }
 
     fn button_w(&self, labels: &[&str], kind: ButtonKind) -> f32 {
@@ -2567,7 +2597,9 @@ pub const RADIO_H: f32 = 32.0;
 const RADIO_NOTE_H: f32 = 24.0;
 /// The radio dot's column at the left of an entry, and the padding under the list.
 const RADIO_DOT_W: f32 = 30.0;
-const MONITOR_BLOCK_PAD: f32 = 8.0;
+/// The last radio's label line (20 high, centred in `RADIO_H`) ends
+/// `BLOCK_PAD` above the block's bottom.
+const MONITOR_BLOCK_PAD: f32 = BLOCK_PAD - (RADIO_H - 20.0) / 2.0;
 
 /// The choice a click on `pick` makes, or `None` when it changes nothing: the
 /// monitor is not there, has no device path, or is the choice already.
@@ -3148,7 +3180,7 @@ fn tiles_card(b: &mut Builder, s: &State) {
         let (label, desc) = match &entries[i].0 {
             Tile::Builtin(sc) => (b.t(crate::shortcuts::label(*sc)), note),
             Tile::Custom(c) => {
-                let w = b.compact_w(&delete);
+                let w = b.button_w(&[&delete], ButtonKind::Secondary);
                 let item = (
                     Hit::TileRemove(i),
                     delete.clone(),
@@ -3231,7 +3263,7 @@ fn available_card(b: &mut Builder, s: &State) {
     let card = b.card(list_h + tail_h);
     let (add, delete) = (b.t(Key::TileAdd), b.t(Key::Delete));
     let add_w = b.button_w(&[&add], ButtonKind::Secondary);
-    let delete_w = b.compact_w(&delete);
+    let delete_w = b.button_w(&[&delete], ButtonKind::Secondary);
     let mut y = card.y;
     for (g, items) in groups {
         let key = match g {
@@ -3412,7 +3444,7 @@ pub const CAT_PREVIEW_H: f32 = 158.0;
 pub const CAT_TILE: f32 = 96.0;
 /// The tiles of the "Aksesori" row, and the gap between them.
 const ACC_TILE: f32 = 54.0;
-const ACC_ROW_H: f32 = ROW_H + ACC_TILE + 12.0;
+const ACC_ROW_H: f32 = ROW_H + ACC_TILE + BLOCK_PAD;
 
 /// Kucing: the preview, then the cards "Kucing", "Gerak" and "Sapaan". While
 /// the cat is off the rows that need it fade and take no clicks;
@@ -3532,7 +3564,7 @@ fn cat_page(b: &mut Builder, s: &State) {
     titled(b, Key::GroupGreeting);
     let line = crate::i18n::greeting_periods_line(b.lang);
     let periods = b.wrap(&line, Font::Desc, b.g.content_w - 2.0 * INSET);
-    let card = b.card(ROW_H + periods.len() as f32 * DESC_LINE_H + 14.0);
+    let card = b.card(ROW_H + note_h(periods.len()));
     let x = b.toggle_if(Hit::Greeting, b.g.right, cy(card.y), s.greeting, on);
     let desc = Some((b.t(Key::MorningGreetingDesc), Tone::Secondary));
     b.row_text(card, card.y, b.t(Key::CatGreeting), desc, false, x);
@@ -3540,7 +3572,7 @@ fn cat_page(b: &mut Builder, s: &State) {
     for (i, line) in periods.into_iter().enumerate() {
         let rect = Rect {
             x: card.x + INSET,
-            y: card.y + ROW_H + 8.0 + i as f32 * DESC_LINE_H,
+            y: card.y + ROW_H + NOTE_PAD + i as f32 * DESC_LINE_H,
             w: b.g.content_w - 2.0 * INSET,
             h: 16.0,
         };
@@ -3837,8 +3869,7 @@ fn widgets_page(b: &mut Builder, s: &State) {
     b.divider(card, rows[6]);
 
     // The gallery: its eyebrow with how many are on the desktop at the right.
-    let eyebrow_y = b.y;
-    titled(b, Key::GroupWidgetsGallery);
+    let eyebrow_y = b.eyebrow(Key::GroupWidgetsGallery, b.g.content_w - 4.0);
     let count = crate::widgets::sticky::on_desktop_label(b.lang, s.sticky_count);
     let count_w = b.w(&count, Font::Desc);
     let count_rect = Rect {
@@ -3965,7 +3996,7 @@ fn features_page(b: &mut Builder, s: &State) {
         let note = b.t(Key::PomodoroLocked);
         b.text(rect, note, Font::Desc, Tone::Secondary, Align::Left);
         // The next title clears the note.
-        b.y = y + 18.0 + 10.0;
+        b.y = y + 18.0 + CARD_GAP;
     }
 
     titled(b, Key::GroupMusic);
@@ -4095,8 +4126,9 @@ fn notifications_card(b: &mut Builder, s: &State) {
     b.row_text(card, row(3), b.t(Key::NotifMuted), desc, false, b.g.right);
     b.divider(card, row(3));
     let delete = b.t(Key::Delete);
-    let delete_w = b.compact_w(&delete);
+    let delete_w = b.button_w(&[&delete], ButtonKind::Secondary);
     if s.muted.is_empty() {
+        b.divider(card, row(4));
         let rect = Rect {
             x: card.x + INSET,
             y: row(4) + 16.0,
@@ -4113,6 +4145,7 @@ fn notifications_card(b: &mut Builder, s: &State) {
     }
     for (i, name) in s.muted.iter().enumerate() {
         let y = row(4 + i);
+        b.divider(card, y);
         let item = (
             Hit::NotifMutedRemove(i),
             delete.clone(),
@@ -4290,8 +4323,9 @@ fn arrange_card(b: &mut Builder, s: &State) {
     b.row_text(card, row(1), b.t(Key::ArrangeMyTemplates), desc, false, x);
     b.divider(card, row(1));
     let (edit, delete) = (b.t(Key::ArrangeEdit), b.t(Key::ArrangeDelete));
-    let (edit_w, delete_w) = (b.compact_w(&edit), b.compact_w(&delete));
+    let (edit_w, delete_w) = (b.button_w(&[&edit], ButtonKind::Secondary), b.button_w(&[&delete], ButtonKind::Secondary));
     if a.templates.is_empty() {
+        b.divider(card, row(2));
         let rect = Rect {
             x: card.x + INSET,
             y: row(2) + 16.0,
@@ -4308,6 +4342,7 @@ fn arrange_card(b: &mut Builder, s: &State) {
     }
     for (i, t) in a.templates.iter().enumerate() {
         let y = row(2 + i);
+        b.divider(card, y);
         let items = vec![
             (
                 Hit::ArrangeTemplateEdit(i),
@@ -4341,8 +4376,9 @@ fn arrange_card(b: &mut Builder, s: &State) {
         b.g.right,
     );
     let rename = b.t(Key::ArrangeRename);
-    let rename_w = b.compact_w(&rename);
+    let rename_w = b.button_w(&[&rename], ButtonKind::Secondary);
     if a.saved.is_empty() {
+        b.divider(card, head + ROW_H);
         let rect = Rect {
             x: card.x + INSET,
             y: head + ROW_H + 16.0,
@@ -4359,6 +4395,7 @@ fn arrange_card(b: &mut Builder, s: &State) {
     }
     for (i, saved) in a.saved.iter().enumerate() {
         let y = head + (i + 1) as f32 * ROW_H;
+        b.divider(card, y);
         let items = vec![
             (
                 Hit::ArrangeSavedRename(i),
@@ -4730,8 +4767,7 @@ fn screen_card(b: &mut Builder, s: &State) {
 /// the tray or the Rekam page, never from here.
 fn captions_card(b: &mut Builder, s: &State) {
     titled(b, Key::CapCardTitle);
-    let note_h = DESC_LINE_H + 24.0;
-    let card = b.card(3.0 * ROW_H + note_h);
+    let card = b.card(3.0 * ROW_H + note_h(1));
     let p = &s.captions;
     let switches = [
         (Hit::CaptionMic, p.mic, Key::CapMicRow, Some(Key::CapMicRowDesc)),
@@ -4747,9 +4783,9 @@ fn captions_card(b: &mut Builder, s: &State) {
     }
     let rect = Rect {
         x: card.x + INSET,
-        y: card.y + 3.0 * ROW_H + 12.0,
+        y: card.y + 3.0 * ROW_H + NOTE_PAD,
         w: card.w - 2.0 * INSET,
-        h: DESC_LINE_H + 2.0,
+        h: 16.0,
     };
     b.text(rect, b.t(Key::CapModelNote), Font::Desc, Tone::Secondary, Align::Left);
 }
@@ -4833,7 +4869,7 @@ struct TrCols {
 
 fn tr_cols(b: &Builder, card: Rect) -> TrCols {
     let button_w = [Key::TrDownload, Key::TrCancel, Key::TrDelete, Key::ConfirmShort]
-        .map(|k| b.compact_w(&b.t(k)))
+        .map(|k| b.button_w(&[&b.t(k)], ButtonKind::Secondary))
         .into_iter()
         .fold(0.0, f32::max);
     // Wide enough for whatever the column may say, so it does not move
@@ -4885,8 +4921,8 @@ fn tr_note(b: &Builder, v: &TranscriptView, i: usize, w: f32) -> (Vec<String>, T
 /// with the space used and "Buka folder".
 fn transcript_card(b: &mut Builder, s: &State) {
     let v = &s.transcript;
-    b.l.card_tops.push((CardId::Transcript, b.y));
-    titled(b, Key::TrCardTitle);
+    let top = b.eyebrow(Key::TrCardTitle, b.g.content_w - 4.0);
+    b.l.card_tops.push((CardId::Transcript, top));
     let probe = Rect {
         x: b.g.content_x,
         y: 0.0,
@@ -5749,7 +5785,7 @@ fn integrations(b: &mut Builder, s: &State) {
         let top = card.y + card.h + 4.0;
         let item = (Hit::GoogleAdvanced, advanced, kind, true, w);
         b.buttons(b.g.content_x + w, top + CONTROL_H / 2.0, vec![item]);
-        b.y = top + CONTROL_H + 4.0;
+        b.y = top + CONTROL_H + CARD_GAP;
     }
 
     // Claude Code hooks.
@@ -5827,7 +5863,7 @@ fn about(b: &mut Builder, s: &State) {
         Tone::Secondary,
         Align::Left,
     );
-    b.y = top + ABOUT_LOGO + 18.0;
+    b.y = top + ABOUT_LOGO + CARD_GAP;
     titled(b, Key::GroupLinks);
 
     let card = b.card(4.0 * ROW_H);
@@ -6531,6 +6567,13 @@ mod tests {
     #[test]
     fn controls_do_not_overlap_each_other_or_texts() {
         for (section, lang, l) in all_layouts() {
+            assert_no_overlaps(section, lang, &l);
+        }
+    }
+
+    /// No control, field, chip, glyph, tag or bar covers another or a text.
+    fn assert_no_overlaps(section: Section, lang: Lang, l: &Layout) {
+        {
             let mut boxes: Vec<(String, Rect)> = l
                 .controls
                 .iter()
@@ -10207,8 +10250,14 @@ mod tests {
         assert_eq!(card_scroll(&l, CardId::Transcript), scroll, "the same from any scroll");
         assert_eq!(l.card_tops.len(), 1);
         assert!((l.card_tops[0].1 - FIRST_CARD_Y).abs() < 0.01);
-        // Off, the card is short: the end of the section stops the scroll.
-        let off = tr_layout(Lang::Id, TranscriptView::default(), false);
+        // Off, the card is short: in a window where the cards under it fit,
+        // the end of the section stops the scroll.
+        let off = State {
+            transcript: TranscriptView::default(),
+            ..states()[0].clone()
+        };
+        let off = layout_in(Section::Features, &off, &Estimate, (CLIENT_W, 600.0));
+        assert!(off.scroll_max > 0.0);
         assert_eq!(card_scroll(&off, CardId::Transcript), off.scroll_max);
         // Not on this page: nothing to scroll to.
         let general = layout(Section::General, &states()[0], &Estimate);
@@ -11956,6 +12005,322 @@ mod tests {
                 let w = shape_with_robot_sized(style, widest, kind, true).w;
                 assert!(w + 48.0 <= screen_w, "{style:?} {kind:?} {w} in {screen_w}");
             }
+        }
+    }
+
+    // ---- One spacing rule and one button size (2026-11-12) ----
+
+    /// The usual states, plus two templates, two saved arrangements and two
+    /// muted apps, the own-shortcut form open, and the template editor: every
+    /// list and field Settings can show.
+    fn full_states() -> Vec<State<'static>> {
+        let mut out = states();
+        for lang in [Lang::Id, Lang::En] {
+            let mut s = susun_state(2, 2);
+            s.lang = lang;
+            s.muted = vec!["Claude".into(), "Orca".into()];
+            out.push(s.clone());
+            out.push(State {
+                tile_form: Some(TileForm {
+                    kind: CustomKind::Url,
+                    error: None,
+                }),
+                ..s.clone()
+            });
+            let mut e = editor_state(crate::arrange::Node::Leaf, 0, true, false);
+            e.lang = lang;
+            out.push(e);
+        }
+        out
+    }
+
+    /// `f` for every section of every `full_states` state, at the minimum
+    /// size and at a wide one.
+    fn every_layout(f: impl Fn(Section, &State, &Layout)) {
+        for s in full_states() {
+            for section in Section::ALL {
+                for client in [(CLIENT_W, CLIENT_H), (1200.0, 900.0)] {
+                    let l = layout_in(section, &s, &Estimate, client);
+                    f(section, &s, &l);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_text_button_has_one_size() {
+        every_layout(|section, s, l| {
+            let mut widths: Vec<(String, f32)> = Vec::new();
+            for c in &l.controls {
+                let Control::Button(b) = c else { continue };
+                if !matches!(
+                    b.kind,
+                    ButtonKind::Primary | ButtonKind::Secondary | ButtonKind::Confirm
+                ) {
+                    continue;
+                }
+                let ctx = format!("{section:?} {:?} {:?} {}", s.lang, b.label, b.rect.w);
+                assert_eq!(b.rect.h, BUTTON_H, "{ctx}");
+                assert!(b.rect.w >= BUTTON_MIN_W - 0.01, "{ctx}");
+                let own = (Estimate.width(&b.label, Font::Control) + 2.0 * BUTTON_PAD)
+                    .max(BUTTON_MIN_W);
+                // A button that swaps its label (two clicks) or stands in a
+                // column or group takes the widest label's width; every
+                // other one is its own label's.
+                let shared = matches!(
+                    b.hit,
+                    Hit::NotifClear
+                        | Hit::ClipClear
+                        | Hit::GoogleDisconnect
+                        | Hit::ArrangeSplit(_)
+                        | Hit::ArrangeMerge
+                        | Hit::TranscriptDownload(_)
+                        | Hit::TranscriptCancel
+                        | Hit::TranscriptDelete(_)
+                );
+                if shared {
+                    assert!(b.rect.w + 0.01 >= own, "{ctx}");
+                    continue;
+                }
+                assert!((b.rect.w - own).abs() < 0.01, "{ctx}");
+                match widths.iter().find(|(l, _)| *l == b.label) {
+                    Some((_, w)) => assert_eq!(*w, b.rect.w, "{ctx}"),
+                    None => widths.push((b.label.clone(), b.rect.w)),
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn full_states_have_no_overlaps() {
+        let long = "Aplikasi dengan nama yang panjang sekali untuk dicoba".to_owned();
+        every_layout(|section, s, l| assert_no_overlaps(section, s.lang, l));
+        for lang in [Lang::Id, Lang::En] {
+            let mut s = susun_state(2, 2);
+            s.lang = lang;
+            s.muted = vec![long.clone(), "Orca".into()];
+            for i in 0..2 {
+                s.arrange.templates[i].name = format!("{long} {i}");
+                s.arrange.saved[i].name = format!("{long} {i}");
+            }
+            for scroll in [0.0, f32::MAX] {
+                let s = State { scroll, ..s.clone() };
+                let l = layout(Section::Features, &s, &Estimate);
+                assert_no_overlaps(Section::Features, lang, &l);
+            }
+        }
+    }
+
+    #[test]
+    fn fields_are_as_tall_as_buttons() {
+        every_layout(|section, s, l| {
+            for (field, r) in &l.fields {
+                assert_eq!(r.h, BUTTON_H, "{section:?} {:?} {field:?}", s.lang);
+            }
+        });
+    }
+
+    #[test]
+    fn card_lists_have_a_divider_per_row() {
+        for lang in [Lang::Id, Lang::En] {
+            for n in [0usize, 2] {
+                let mut s = susun_state(n, n);
+                s.lang = lang;
+                s.muted = (0..n).map(|i| format!("App {i}")).collect();
+                let l = layout(Section::Features, &s, &Estimate);
+                let mut rows: Vec<String> = Vec::new();
+                if n == 0 {
+                    for k in [Key::ArrangeNoTemplates, Key::ArrangeNoSaved, Key::NotifMutedNone] {
+                        rows.push(text(lang, k).to_owned());
+                    }
+                } else {
+                    rows.extend((0..n).map(|i| format!("T{i}")));
+                    rows.extend((0..n).map(|i| format!("S{i}")));
+                    rows.extend(s.muted.iter().cloned());
+                }
+                for row in rows {
+                    let t = l
+                        .texts
+                        .iter()
+                        .find(|t| t.text == row)
+                        .unwrap_or_else(|| panic!("{lang:?}: no {row:?}"));
+                    // A label-only row puts its text 16 below the row's top.
+                    let top = t.rect.y - 16.0;
+                    assert!(
+                        l.dividers.iter().any(|d| (d.y + 0.5 - top).abs() < 1.0),
+                        "{lang:?} {n}: no divider above {row:?}"
+                    );
+                }
+                // The cards keep their height in rows.
+                let susun = (1 + 1 + n.max(1) + 1 + n.max(1)) as f32 * ROW_H;
+                let notif = (7 + n.max(1)) as f32 * ROW_H;
+                assert!(l.cards.iter().any(|c| (c.h - susun).abs() < 0.01), "{lang:?} {n}");
+                assert!(l.cards.iter().any(|c| (c.h - notif).abs() < 0.01), "{lang:?} {n}");
+            }
+        }
+    }
+
+    #[test]
+    fn section_titles_sit_with_their_card() {
+        for s in states() {
+            let s = State { scroll: 0.0, ..s };
+            for section in Section::ALL {
+                let l = layout(section, &s, &Estimate);
+                let ctx = format!("{section:?} {:?}", s.lang);
+                let eyebrows: Vec<&Text> = l
+                    .texts
+                    .iter()
+                    .filter(|t| t.font == Font::Eyebrow && (t.rect.x - (CONTENT_X + 2.0)).abs() < 0.01)
+                    .collect();
+                for (i, e) in eyebrows.iter().enumerate() {
+                    let below = l
+                        .cards
+                        .iter()
+                        .filter(|c| c.y >= e.rect.bottom() - 0.01)
+                        .map(|c| c.y)
+                        .fold(f32::MAX, f32::min);
+                    assert!(
+                        (below - (e.rect.bottom() + EYEBROW_GAP)).abs() < 0.01,
+                        "{ctx}: {:?} is {} above its card",
+                        e.text,
+                        below - e.rect.bottom()
+                    );
+                    // What is above it: cards, texts and controls of the
+                    // column (not the page title).
+                    let mut above: Vec<f32> = l.cards.iter().map(|c| c.bottom()).collect();
+                    above.extend(
+                        l.texts
+                            .iter()
+                            .filter(|t| t.rect.x >= CONTENT_X - 0.01)
+                            .map(|t| t.rect.bottom()),
+                    );
+                    above.extend(l.controls.iter().map(|c| c.bounds().bottom()));
+                    above.extend(l.about_logo.iter().map(|r| r.bottom()));
+                    let above = above
+                        .into_iter()
+                        .filter(|b| *b <= e.rect.y + 0.01)
+                        .fold(f32::MIN, f32::max);
+                    if i == 0 && above < FIRST_CARD_Y - 0.01 {
+                        assert_eq!(e.rect.y, FIRST_CARD_Y, "{ctx}: {:?}", e.text);
+                    } else {
+                        assert!(
+                            (e.rect.y - above - GROUP_GAP).abs() < 0.01,
+                            "{ctx}: {:?} is {} below what is above it",
+                            e.text,
+                            e.rect.y - above
+                        );
+                    }
+                }
+                // What sits on an eyebrow's line follows it.
+                if section == Section::Widgets {
+                    let gallery = text(s.lang, Key::GroupWidgetsGallery).to_uppercase();
+                    let e = eyebrows.iter().find(|t| t.text == gallery).expect("gallery");
+                    let count = crate::widgets::sticky::on_desktop_label(s.lang, s.sticky_count);
+                    let c = l.texts.iter().find(|t| t.text == count).expect("count");
+                    assert_eq!(c.rect.y, e.rect.y, "{ctx}");
+                }
+                if section == Section::Integrations {
+                    let google = text(s.lang, Key::GoogleCalendar).to_uppercase();
+                    let e = eyebrows.iter().find(|t| t.text == google).expect("google");
+                    let guide = l
+                        .controls
+                        .iter()
+                        .find_map(|c| match c {
+                            Control::Button(b) if b.hit == Hit::GoogleGuide => Some(b.rect),
+                            _ => None,
+                        })
+                        .expect("guide");
+                    assert!((guide.y + guide.h / 2.0 - (e.rect.y + e.rect.h / 2.0)).abs() < 0.01);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn footnotes_and_blocks_share_padding() {
+        let divider_at = |l: &Layout, y: f32| l.dividers.iter().any(|d| (d.y + 0.5 - y).abs() < 0.01);
+        for lang in [Lang::Id, Lang::En] {
+            let s = State {
+                lang,
+                robot: true,
+                scroll: 0.0,
+                monitors: three(),
+                ..states()[0].clone()
+            };
+            // Kucing: the Sapaan periods line, then the accessory tiles.
+            let l = layout(Section::Cat, &s, &Estimate);
+            let card = *l.cards.last().unwrap();
+            let lines: Vec<&Text> = l
+                .texts
+                .iter()
+                .filter(|t| inside(t.rect, card) && t.rect.y >= card.y + ROW_H)
+                .collect();
+            assert!(divider_at(&l, card.y + ROW_H), "{lang:?}");
+            assert_eq!(lines[0].rect.y, card.y + ROW_H + NOTE_PAD, "{lang:?}");
+            let last = lines.last().unwrap().rect;
+            assert_eq!(card.bottom(), last.bottom() + NOTE_PAD, "{lang:?}");
+            let tiles = l
+                .controls
+                .iter()
+                .find_map(|c| match c {
+                    Control::AccessoryTiles { items, .. } => Some(items[0].1),
+                    _ => None,
+                })
+                .expect("tiles");
+            let card = l.cards.iter().find(|c| inside(tiles, **c)).expect("its card");
+            assert_eq!(card.bottom(), tiles.bottom() + BLOCK_PAD, "{lang:?}");
+
+            // Fitur: the Live captions model note.
+            let l = layout(Section::Features, &s, &Estimate);
+            let note = text(lang, Key::CapModelNote);
+            let t = l.texts.iter().find(|t| t.text == note).expect("note").rect;
+            let card = l.cards.iter().find(|c| inside(t, **c)).expect("its card");
+            assert!(divider_at(&l, t.y - NOTE_PAD), "{lang:?}");
+            assert_eq!(card.bottom(), t.bottom() + NOTE_PAD, "{lang:?}");
+
+            // Tampilan: the monitor list ends BLOCK_PAD under the last
+            // radio's label line (20 high, centred in its row).
+            let l = layout(Section::Appearance, &s, &Estimate);
+            let last = l
+                .controls
+                .iter()
+                .filter_map(|c| match c {
+                    Control::Radio { rect, .. } => Some(*rect),
+                    _ => None,
+                })
+                .last()
+                .expect("radios");
+            let line_bottom = last.y + (RADIO_H + 20.0) / 2.0;
+            assert!(divider_at(&l, line_bottom + BLOCK_PAD), "{lang:?}");
+        }
+    }
+
+    #[test]
+    fn the_top_fades_only_while_scrolled() {
+        let at = |section: Section, scroll: f32| {
+            let s = State {
+                scroll,
+                ..states()[0].clone()
+            };
+            layout(section, &s, &Estimate)
+        };
+        assert_eq!(at(Section::Features, 0.0).top_fade(), None);
+        let l = at(Section::Features, 100.0);
+        let v = l.viewport.expect("Fitur scrolls");
+        assert_eq!(
+            l.top_fade(),
+            Some(Rect {
+                x: v.x,
+                y: VIEW_TOP,
+                w: v.w,
+                h: SCROLL_FADE_H,
+            })
+        );
+        // It ends where a section's first title rests, so a card jumped to
+        // (its title at `FIRST_CARD_Y`) is never dimmed.
+        assert_eq!(VIEW_TOP + SCROLL_FADE_H, FIRST_CARD_Y);
+        for scroll in [0.0, 100.0, 1e6] {
+            assert_eq!(at(Section::Integrations, scroll).top_fade(), None);
         }
     }
 }

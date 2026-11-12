@@ -129,4 +129,5 @@ One note per decision, gotcha or convention. Link each new note here.
 
 - [[studio-bata-logo-sources]]
 - [[screenshot-capture-script]]
+- [[settings-spacing]]: one spacing rule and one button size on every Settings page (2026-11-12): text buttons label + 16 each side, min 64, 30 high; fields 30; list rows divided; 24 above a section title, 8 to its card; footnotes 12/12; blocks 16 under; 8 px fade under the title while scrolled; the tests that hold it
 - [[logo]]: the cat head is the logo (icon, tray, Settings, README); Windows icon caches

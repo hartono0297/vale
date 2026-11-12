@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Falk tanpa sayap</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&display=swap" rel="stylesheet">
+<style>
+  /* Cream paper like Vale's design sheets; the mascots sit on the notch's espresso. */
+  :root {
+    --paper: #F4EDE4; --card: #FFFBF5; --ink: #231C18; --ink-2: #5E5045;
+    --line: #D9CBBB; --edge: #8C7B6C; --pick: #A8451F; --notch: #17120F; --notch-text: #F4EDE4;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--paper); color: var(--ink); font: 16px/1.5 "DM Sans", system-ui, sans-serif; }
+  main { max-width: 1160px; margin: 0 auto; padding: 32px 16px 80px; }
+  h1 { font-size: 34px; line-height: 1.15; margin: 0 0 8px; letter-spacing: -0.01em; }
+  p { margin: 0 0 12px; max-width: 72ch; }
+  .lead { color: var(--ink-2); font-size: 17px; }
+  small { font-size: 14px; }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  button:focus-visible { outline: 3px solid var(--ink); outline-offset: 3px; }
+  .opts { display: grid; gap: 20px; margin-top: 24px; }
+  .opt { text-align: left; border: 2px solid var(--edge); border-radius: 14px; background: var(--card); padding: 16px; }
+  .opt[aria-pressed="true"] { border-color: var(--pick); box-shadow: inset 0 0 0 1px var(--pick); }
+  .head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 16px; align-items: baseline; margin-bottom: 12px; }
+  .name { font-weight: 700; font-size: 19px; }
+  .pickmark { font-size: 14px; font-weight: 500; color: var(--pick); }
+  .opt[aria-pressed="false"] .pickmark::after { content: "Klik untuk pilih"; color: var(--ink-2); }
+  .opt[aria-pressed="true"] .pickmark::after { content: "Dipilih"; }
+  .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .cell { display: flex; flex-direction: column; gap: 6px; }
+  .stage { background: var(--notch); border-radius: 10px; display: grid; place-items: center; padding: 4px 0; }
+  .stage svg { width: 100%; max-width: 200px; height: auto; display: block; overflow: visible; }
+  .cell span { font-size: 14px; font-weight: 500; }
+  .notch { background: var(--notch); color: var(--notch-text); width: 200px; height: 32px; border-radius: 0 0 14px 14px;
+    display: flex; align-items: center; justify-content: center; gap: 10px; font-size: 13px; font-weight: 500; font-variant-numeric: tabular-nums; margin-top: 12px; }
+  .notch svg { width: 26px; height: 26px; overflow: visible; }
+  .desc { margin-top: 10px; color: var(--ink-2); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Falk A: tanpa sayap, atau sayap yang lebih rapi</h1>
+  <p class="lead">Ekornya gw buang di dua pilihan ini. Bandingin pas lagi diam, pakai syal, ngetik, joget dan menyapa. Klik kartu yang lo suka.</p>
+  <div class="opts" id="opts"></div>
+</main>
+<script>
+(() => {
+  const D = '#17120F', CR = '#F4EDE4';
+  const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let uid = 0;
+  const pill = (x, y, w, h, c = D) => `<rect x="${x - w / 2}" y="${y - h / 2}" width="${w}" height="${h}" rx="${Math.min(w, h) / 2}" fill="${c}"/>`;
+  const dot = (x, y, r, c) => `<circle cx="${x}" cy="${y}" r="${r}" fill="${c}"/>`;
+  const st = (d, w = 2.4, c = D, o = 1) => `<path d="${d}" fill="none" stroke="${c}" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round" opacity="${o}"/>`;
+  const K = { body: '#F1E4A2', face: '#F6D04A', crest: '#F6D04A', cheek: '#EC6B3A', wing: '#D6C27A', beak: '#D9978F' };
+  const FALK = 'M9 43Q9 22 32 22Q55 22 55 43Q55 57 32 57Q9 57 9 43Z';
+
+  function feather(bx, by, tx, ty, w, bend) {
+    const dx = tx - bx, dy = ty - by, l = Math.hypot(dx, dy), nx = -dy / l, ny = dx / l;
+    const mx = (bx + tx) / 2 + nx * bend, my = (by + ty) / 2 + ny * bend;
+    return `<path d="M${bx} ${by}Q${mx + nx * w} ${my + ny * w} ${tx} ${ty}Q${mx - nx * w} ${my - ny * w} ${bx} ${by}Z" fill="${K.crest}"/>`;
+  }
+  const CREST = [[28, 27, 27, 11, 2.8, -3.5], [30.5, 26, 35, 3, 3.2, -5], [33, 26, 42, 6, 3.2, -5], [35.5, 27, 46, 14, 2.6, -3.5]];
+
+  function pose(state, t) {
+    const p = { nod: 0, crestRot: 10, crestSway: 0, sing: false, note: null, paws: null, wave: null, tilt: 0 };
+    if (state === 'dance') {
+      p.nod = Math.sin(Math.PI * t / 600) ** 2; p.sing = true; p.crestSway = Math.sin(Math.PI * t / 600) * 9; p.crestRot = 6;
+      const q = (t % 1200) / 1200; p.note = { rise: 1 - (1 - q) ** 3, fade: q < 0.5 ? 0 : (q - 0.5) * 2 };
+    }
+    if (state === 'typing') {
+      p.tilt = -4; const s = Math.floor(t / 155);
+      p.paws = (t % 8000) > 7100 ? [0, 0] : (s % 2 ? [1.6, 0] : [0, 1.6]);
+    }
+    if (state === 'wave') p.wave = Math.sin(t / 140);
+    return p;
+  }
+
+  function eyes(state, blink) {
+    const L = 24, R = 40, Y = 40;
+    if (blink && (state === 'idle' || state === 'scarf' || state === 'typing')) return st(`M${L - 3.4} ${Y + 0.8}h6.8M${R - 3.4} ${Y + 0.8}h6.8`);
+    if (state === 'dance' || state === 'wave') return st(`M${L - 3.8} ${Y + 1.8}q3.8 -5.4 7.6 0M${R - 3.8} ${Y + 1.8}q3.8 -5.4 7.6 0`);
+    return pill(L, Y, 5.6, 10) + pill(R, Y, 5.6, 10);
+  }
+
+  // Wings folded on the body: a rounded patch low on each side, kept inside the silhouette.
+  function innerWing(side, clip, lift) {
+    const x = side < 0 ? 14.5 : 49.5, r = side < 0 ? 28 : -28;
+    if (lift !== null) {
+      // the waving wing comes out of the silhouette
+      const a = -60 + lift * 18;
+      return `<g transform="rotate(${a} 50 44)"><ellipse cx="50" cy="52" rx="4.6" ry="8" fill="${K.wing}"/></g>`;
+    }
+    const X = v => side < 0 ? v : 64 - v;
+    const d = `M${X(8)} 37Q${X(7)} 55 ${X(26)} 58Q${X(15.5)} 51 ${X(15.5)} 40Q${X(13)} 36 ${X(8)} 37Z`;
+    return `<path d="${d}" fill="${K.wing}" clip-path="url(#${clip})"/>`;
+  }
+
+  function draw(kind, state, t, blink) {
+    const p = pose(state, t), id = 'c' + (++uid);
+    const crest = `<g transform="rotate(${p.crestRot + p.crestSway} 32 27)"><ellipse cx="32" cy="26" rx="5.5" ry="4" fill="${K.crest}"/>${CREST.map(f => feather(...f)).join('')}</g>`;
+    const face = `<ellipse cx="32" cy="33" rx="22" ry="17" fill="${K.face}" clip-path="url(#${id})"/>`;
+    const wings = kind === 'inner' ? innerWing(-1, id, null) + innerWing(1, id, p.wave) : '';
+    const cheeks = dot(15.5, 44.5, 4.4, K.cheek) + dot(48.5, 44.5, 4.4, K.cheek);
+    const beak = p.sing
+      ? `<path d="M29.4 43.8Q32 42 34.6 43.8Q34.2 46.8 32 47.6Q29.8 46.8 29.4 43.8Z" fill="${K.beak}"/><path d="M30.4 49.2Q32 48.6 33.6 49.2Q33 51.2 32 51.4Q31 51.2 30.4 49.2Z" fill="${K.beak}"/>`
+      : `<path d="M29.4 44.2Q32 42.4 34.6 44.2Q34.4 48.4 32 49.8Q29.6 48.4 29.4 44.2Z" fill="${K.beak}"/>`;
+    const eyeX = state === 'typing' ? -3.5 : 0, eyeY = state === 'typing' ? 1 : 0;
+    const scarf = state === 'scarf'
+      ? `<rect x="0" y="48.5" width="64" height="5" fill="#2F4A7A" clip-path="url(#${id})"/><rect x="15" y="49.5" width="4.5" height="9" rx="1.4" fill="#24395F"/>` : '';
+    const nodDip = p.nod * 3.6, sx = 1 + 0.04 * p.nod, sy = 1 - 0.06 * p.nod;
+    let laptop = '', paws = '';
+    if (p.paws) {
+      laptop = `<rect x="-27" y="53" width="36" height="3.4" rx="1.5" fill="#8F857C"/><path d="M-23 54L-17.5 54L-20.5 27.5L-25.6 28.2Z" fill="#4A423C"/>` +
+               `<path d="M-20.5 27.5L-18.4 27.3L-15.3 53.6L-17.5 54Z" fill="#9CC8E8" opacity=".55"/>` + dot(-21.6, 40.5, 1.5, 'rgba(244,237,228,.85)');
+      // the wing tips type, drawn like the cat's paws: a feather tip on each key
+      const tip = (x, y) => `<path d="M${x - 4} ${y + 1}Q${x - 3.5} ${y - 2.6} ${x} ${y - 2.6}Q${x + 4.4} ${y - 2.4} ${x + 4} ${y + 1.2}Q${x} ${y + 2.4} ${x - 4} ${y + 1}Z" fill="${kind === 'inner' ? K.wing : K.body}"/>`;
+      paws = tip(1, 52.6 - p.paws[0]) + tip(9.5, 52.6 - p.paws[1]);
+    }
+    let extra = '';
+    if (p.note) extra = `<g transform="translate(0 ${-p.note.rise * 3})" opacity="${1 - p.note.fade}"><path d="M57 12v-8l5-1.5v8" fill="none" stroke="${CR}" stroke-width="1.6" stroke-linecap="round"/>${dot(55.4, 12, 1.9, CR)}${dot(60.4, 10.5, 1.9, CR)}</g>`;
+    if (state === 'wave') {
+      const h = (x, y) => `<path d="M${x} ${y + 3}C${x - 4} ${y - 1} ${x - 5.5} ${y + 2.5} ${x - 3} ${y + 5}L${x} ${y + 8}L${x + 3} ${y + 5}C${x + 5.5} ${y + 2.5} ${x + 4} ${y - 1} ${x} ${y + 3}Z" fill="${CR}"/>`;
+      extra = h(4, 1);
+    }
+    // with no wings, the greeting is the crest's own little wave
+    const crestWave = state === 'wave' && kind === 'none' ? `rotate(${Math.sin(t / 160) * 10} 32 27)` : '';
+    return `<defs><clipPath id="${id}"><path d="${FALK}"/></clipPath></defs>` +
+      `<g transform="translate(0 ${nodDip})">${laptop}` +
+        `<g transform="rotate(${p.tilt} 32 40) translate(32 54) scale(${sx} ${sy}) translate(-32 -54)">` +
+          `<g transform="${crestWave}">${crest}</g><path d="${FALK}" fill="${K.body}"/>${face}${wings}${scarf}${cheeks}` +
+          `<g transform="translate(${eyeX} ${eyeY})">${eyes(state, blink)}${beak}</g>` +
+        `</g>${paws}</g>${extra}`;
+  }
+
+  const OPTS = [
+    ['none', 'Pilihan 1: tanpa sayap, tanpa ekor', 'Cuma kepala, sama kayak kucing yang cuma kepala dan telinga. Siluetnya paling bersih, syal duduk rapi di bawah. Waktu ngetik, ujung sayap muncul di keyboard kayak kaki kucing (kucing juga nggak punya lengan). Waktu menyapa, jambulnya yang melambai.'],
+    ['inner', 'Pilihan 2: sayap terlipat di badan, tanpa ekor', 'Sayap jadi lengkungan yang mengikuti pinggir badan, tetap di dalam siluet, jadi tidak mencuat kayak headphone. Waktu menyapa, sayap kanan keluar dan melambai. Waktu ngetik, ujung sayapnya di keyboard.'],
+  ];
+  const STATES = [['idle', 'Diam'], ['scarf', 'Pakai syal'], ['typing', 'Mengetik'], ['dance', 'Joget'], ['wave', 'Menyapa']];
+  const stages = [];
+  const host = document.getElementById('opts');
+  OPTS.forEach(([kind, title, desc]) => {
+    const b = document.createElement('button');
+    b.className = 'opt'; b.dataset.choice = 'v4-' + kind; b.setAttribute('aria-pressed', 'false');
+    b.innerHTML = `<div class="head"><span class="name">${title}</span><span class="pickmark"></span></div><div class="row">` +
+      STATES.map(([s, l]) => `<div class="cell"><div class="stage" data-kind="${kind}" data-state="${s}"></div><span>${l}</span></div>`).join('') +
+      `</div><div class="notch"><svg viewBox="0 0 64 64" role="img" aria-label="Ukuran asli">${draw(kind, 'idle', 0, false)}</svg><span>09.41</span></div>` +
+      `<p class="desc"><small>${desc}</small></p>`;
+    b.addEventListener('click', () => {
+      const on = b.getAttribute('aria-pressed') !== 'true';
+      b.setAttribute('aria-pressed', String(on));
+      if (window.brainstorm) window.brainstorm.choice(b.dataset.choice, { selected: on });
+    });
+    host.appendChild(b);
+    b.querySelectorAll('.stage').forEach(s => stages.push(s));
+  });
+
+  let blink = false;
+  const t0 = performance.now();
+  function paint() {
+    const t = reduce ? 300 : performance.now() - t0;
+    stages.forEach(s => { s.innerHTML = `<svg viewBox="-30 -8 100 72" role="img" aria-label="Falk ${s.dataset.state}">${draw(s.dataset.kind, s.dataset.state, t, blink)}</svg>`; });
+  }
+  function frame() { paint(); if (!reduce) requestAnimationFrame(frame); }
+  function scheduleBlink() {
+    if (reduce) return;
+    setTimeout(() => { blink = true; setTimeout(() => { blink = false; scheduleBlink(); }, 120); }, 4000 + Math.random() * 3000);
+  }
+  frame(); scheduleBlink();
+})();
+</script>
+</body>
+</html>
