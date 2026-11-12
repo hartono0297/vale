@@ -31,18 +31,19 @@ use windows::Win32::Graphics::Direct2D::Common::{
 use windows::Win32::Graphics::Direct2D::{
     D2D1_CAP_STYLE_ROUND, D2D1_DASH_STYLE_SOLID, D2D1_ELLIPSE, D2D1_LINE_JOIN_ROUND,
     D2D1_QUADRATIC_BEZIER_SEGMENT, D2D1_ROUNDED_RECT, D2D1_STROKE_STYLE_PROPERTIES, ID2D1Factory,
-    ID2D1PathGeometry, ID2D1RenderTarget, ID2D1SolidColorBrush, ID2D1StrokeStyle,
+    ID2D1Geometry, ID2D1PathGeometry, ID2D1RenderTarget, ID2D1SolidColorBrush, ID2D1StrokeStyle,
 };
 use windows::core::Result as WinResult;
 use windows_numerics::{Matrix3x2, Vector2};
 
-use super::cat_style::{CatLook, Placed, RIM_WIDTH};
+use super::cat_style::{CatLook, Placed, RIM_WIDTH, anchors};
+use super::mascot::MascotShape;
 use super::geometry::{EYES_H, Rect, ShapeRect, shape_contains};
 use crate::config::Style;
 use crate::greeting::{self, DayPeriod, GreetMark};
 use crate::i18n::Key;
 use crate::model::{NoticeKind, View};
-use crate::theme::{CatAccessory, CatColor};
+use crate::theme::{CatAccessory, CatColor, Mascot};
 
 /// The brand colour: the logo, and the Terracotta coat (`cat_style::CatLook`).
 pub const TERRACOTTA: u32 = 0xE2683C;
@@ -206,6 +207,17 @@ pub struct Pose {
     /// How high the typing cat's left (0) and right (1) paw are raised, in
     /// grid units.
     pub paw_lift: [f32; 2],
+    /// The dance's phase in radians (`pi * elapsed / BEAT_MS`); the falk's
+    /// crest sways with its sine.
+    pub beat: f32,
+    /// The falk's hop on a "done" notice, in px.
+    pub hop_px: f32,
+    /// The greeting's swing, -1 to 1 (0 at rest).
+    pub wave: f32,
+    /// The greeting is running (`wave` is then read).
+    pub waving: bool,
+    /// The octopus's flush, 0 to 1.
+    pub flush: f32,
 }
 
 impl Pose {
@@ -846,7 +858,6 @@ pub fn ear_drawn(side: Side, ears: Ears) -> [(f32, f32); 3] {
 
 /// The head's rounded rect for a cat drawn in `area` (a square), in px:
 /// what must stay inside the island. Ears and extras may draw outside it.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn head_rect(area: Rect) -> (Rect, f32) {
     let k = area.w / GRID;
     let (x, y, w, h, r) = HEAD;
@@ -948,7 +959,9 @@ pub struct RobotPainter {
     /// and the head (`cat_style`).
     pub(super) calico: RefCell<Vec<((u32, u32), [ID2D1PathGeometry; 2])>>,
     /// Each accessory's pieces and their paths (`cat_style`).
-    pub(super) extras: RefCell<Vec<(CatAccessory, Rc<Vec<Placed>>)>>,
+    pub(super) extras: RefCell<Vec<((Mascot, CatAccessory), Rc<Vec<Placed>>)>>,
+    /// The falk's and the octopus's still paths (`mascot`).
+    pub(super) mascot_paths: RefCell<Vec<(MascotShape, ID2D1Geometry)>>,
     pub(super) round: ID2D1StrokeStyle,
 }
 
@@ -973,6 +986,7 @@ impl RobotPainter {
             paths: RefCell::new(Vec::new()),
             calico: RefCell::new(Vec::new()),
             extras: RefCell::new(Vec::new()),
+            mascot_paths: RefCell::new(Vec::new()),
             round,
         })
     }
@@ -987,15 +1001,17 @@ impl RobotPainter {
         Some(g)
     }
 
-    /// Draws the cat filling the square `area` (its 64-unit grid scaled to
-    /// `area.w`), raised by the pose's lift and bounce, at `alpha`. The
+    /// Draws the mascot filling the square `area` (its 64-unit grid scaled to
+    /// `area.w`), raised by the pose's lift, bounce and hop, at `alpha`. The
     /// render target's transform is restored; the brush colour is not.
     ///
-    /// `look` is the coat and accessory. The order is one silhouette (see
-    /// `cat_style`): the Black cat's rim, the ears and head in one colour,
-    /// the calico patches, the face marks, the accessory. A caller that
-    /// fades the cat does it with a layer round this call, as the renderer
-    /// does, so the passes do not show through one another.
+    /// `look` is the mascot, its coat and accessory. The cat's order is one
+    /// silhouette (see `cat_style`): the Black cat's rim, the ears and head in
+    /// one colour, the calico patches, the face marks, the accessory. The
+    /// falk and the octopus paint their own body in place of the first three
+    /// (`mascot`). A caller that fades the mascot does it with a layer round
+    /// this call, as the renderer does, so the passes do not show through
+    /// one another.
     pub fn paint(
         &self,
         rt: &ID2D1RenderTarget,
@@ -1030,7 +1046,7 @@ impl RobotPainter {
             * Matrix3x2::scale(k, k);
         let place = Matrix3x2::translation(
             area.x + pose.head_dx_dip,
-            area.y - pose.lift_px - pose.bounce_px + pose.nod_dip,
+            area.y - pose.lift_px - pose.bounce_px - pose.hop_px + pose.nod_dip,
         );
         let local = shape * place;
         let color = |rgb: u32, a: f32| {
@@ -1069,51 +1085,82 @@ impl RobotPainter {
             if typing {
                 self.paint_laptop(rt, brush, &fixed, &color);
             }
-            // 1. The Black cat's rim, under everything: the ears stroked
-            // wider than their own stroke and the head stroked wider than
-            // its outline, so it reaches `RIM_WIDTH` past the silhouette.
-            if let Some(rim) = look.rim() {
-                brush.SetColor(&color(rim, 1.0));
-                for side in [Side::Left, Side::Right] {
-                    if let Some(g) = self.path(Shape::Ear(side, face.ears.up)) {
-                        let turn =
-                            Matrix3x2::rotation_around(side.turn(face.ears.droop), side.pivot());
-                        rt.SetTransform(&(turn * world));
-                        rt.DrawGeometry(&g, brush, EAR_STROKE + 2.0 * RIM_WIDTH, &self.round);
+            // The face's own shift (the typing cat looks down at its laptop)
+            // and the glance move the face marks in the grid, before the
+            // tilt. The eyes (and what sits on them) also rise by the
+            // mascot's eye lift; the cream extras beside the head do not.
+            let slide = pose.eye_dx_dip / k + face.eye_shift.0 + pose.glance_x;
+            let marks = Matrix3x2::translation(slide, face.eye_shift.1 + pose.glance_y) * world;
+            let eye_lift = anchors(look.mascot).eye_lift;
+            let eyes = if eye_lift == 0.0 {
+                marks
+            } else {
+                Matrix3x2::translation(slide, face.eye_shift.1 + pose.glance_y + eye_lift) * world
+            };
+            match look.mascot {
+                Mascot::Cat => {
+                    // 1. The Black cat's rim, under everything: the ears
+                    // stroked wider than their own stroke and the head
+                    // stroked wider than its outline, so it reaches
+                    // `RIM_WIDTH` past the silhouette.
+                    if let Some(rim) = look.rim() {
+                        brush.SetColor(&color(rim, 1.0));
+                        for side in [Side::Left, Side::Right] {
+                            if let Some(g) = self.path(Shape::Ear(side, face.ears.up)) {
+                                let turn = Matrix3x2::rotation_around(
+                                    side.turn(face.ears.droop),
+                                    side.pivot(),
+                                );
+                                rt.SetTransform(&(turn * world));
+                                rt.DrawGeometry(
+                                    &g,
+                                    brush,
+                                    EAR_STROKE + 2.0 * RIM_WIDTH,
+                                    &self.round,
+                                );
+                            }
+                        }
+                        rt.SetTransform(&world);
+                        if let Some(g) = self.path(Shape::Head) {
+                            rt.DrawGeometry(&g, brush, 2.0 * RIM_WIDTH, &self.round);
+                        }
+                    }
+                    // 2. The silhouette in one colour: ears behind the head,
+                    // a triangle with a fat round stroke, then the head.
+                    brush.SetColor(&color(look.head_rgb(), 1.0));
+                    for side in [Side::Left, Side::Right] {
+                        if let Some(g) = self.path(Shape::Ear(side, face.ears.up)) {
+                            let turn =
+                                Matrix3x2::rotation_around(side.turn(face.ears.droop), side.pivot());
+                            rt.SetTransform(&(turn * world));
+                            rt.FillGeometry(&g, brush, None);
+                            rt.DrawGeometry(&g, brush, EAR_STROKE, &self.round);
+                        }
+                    }
+                    rt.SetTransform(&world);
+                    if let Some(g) = self.path(Shape::Head) {
+                        rt.FillGeometry(&g, brush, None);
+                    }
+                    // 3. Calico: each patch is its ear minus the head, united
+                    // with its circle clipped to the head.
+                    if look.color == CatColor::Calico {
+                        self.paint_patches(rt, brush, &world, face.ears, alpha);
                     }
                 }
-                rt.SetTransform(&world);
-                if let Some(g) = self.path(Shape::Head) {
-                    rt.DrawGeometry(&g, brush, 2.0 * RIM_WIDTH, &self.round);
+                Mascot::Falk => {
+                    // The cheeks slide half as far as the eyes, so they stay
+                    // on the head.
+                    let cheeks = Matrix3x2::translation(
+                        (pose.eye_dx_dip / k + pose.glance_x) / 2.0,
+                        0.0,
+                    ) * world;
+                    self.paint_falk_body(rt, brush, look.falk, expr, &pose, (&world, &cheeks), alpha);
                 }
-            }
-            // 2. The silhouette in one colour: ears behind the head, a
-            // triangle with a fat round stroke, then the head.
-            brush.SetColor(&color(look.head_rgb(), 1.0));
-            for side in [Side::Left, Side::Right] {
-                if let Some(g) = self.path(Shape::Ear(side, face.ears.up)) {
-                    let turn = Matrix3x2::rotation_around(side.turn(face.ears.droop), side.pivot());
-                    rt.SetTransform(&(turn * world));
-                    rt.FillGeometry(&g, brush, None);
-                    rt.DrawGeometry(&g, brush, EAR_STROKE, &self.round);
+                Mascot::Octopus => {
+                    self.paint_octopus_body(rt, brush, look.octopus, expr, &pose, &world, alpha);
                 }
-            }
-            rt.SetTransform(&world);
-            if let Some(g) = self.path(Shape::Head) {
-                rt.FillGeometry(&g, brush, None);
-            }
-            // 3. Calico: each patch is its ear minus the head, united with its
-            // circle clipped to the head.
-            if look.color == CatColor::Calico {
-                self.paint_patches(rt, brush, &world, face.ears, alpha);
             }
             // 4. The face marks.
-            // The face's own shift (the typing cat looks down at its laptop)
-            // and the glance move the eyes in the grid, before the tilt.
-            let eyes = Matrix3x2::translation(
-                pose.eye_dx_dip / k + face.eye_shift.0 + pose.glance_x,
-                face.eye_shift.1 + pose.glance_y,
-            ) * world;
             // The dancing note's marks move on their own, in dip, and fade.
             let notes =
                 Matrix3x2::translation(pose.eye_dx_dip / k + face.eye_shift.0, face.eye_shift.1)
@@ -1124,7 +1171,13 @@ impl RobotPainter {
             let note_alpha = 1.0 - pose.note_fade.clamp(0.0, 1.0);
             for part in &face.parts {
                 let note = is_note(part);
-                rt.SetTransform(if note { &notes } else { &eyes });
+                rt.SetTransform(if note {
+                    &notes
+                } else if is_eye(part) {
+                    &eyes
+                } else {
+                    &marks
+                });
                 let fade = if note { note_alpha } else { 1.0 };
                 match *part {
                     Part::Pill { x, y, w, h, rx, ry } => {
@@ -1156,10 +1209,18 @@ impl RobotPainter {
                     }
                 }
             }
+            // The falk's beak is a face mark too.
+            if look.mascot == Mascot::Falk {
+                self.paint_falk_beak(rt, brush, expr, &pose, &eyes, alpha);
+            }
             // 5. The accessory, on top of everything.
             self.paint_accessory(rt, brush, look, face.ears, (&world, &eyes), alpha);
-            // 6. The typing cat's paws, over the laptop and the head.
-            if typing {
+            // 6. The typing cat's paws, over the laptop and the head; the
+            // falk's feather tips; the octopus types with its arms.
+            if typing && look.mascot == Mascot::Falk {
+                self.paint_falk_tips(rt, brush, look.falk, pose.paw_lift, &fixed, alpha);
+            }
+            if typing && look.mascot == Mascot::Cat {
                 rt.SetTransform(&fixed);
                 for (i, &(cx, cy)) in PAWS.iter().enumerate() {
                     let ellipse = D2D1_ELLIPSE {
@@ -1624,6 +1685,16 @@ pub const LIFT_MS: u64 = 140;
 pub const BOUNCE_PX: f32 = 3.0;
 pub const BOUNCE_MS: u64 = 260;
 pub const BOUNCES: u64 = 2;
+/// The falk's hop on a "done" notice: one half-sine this high, `HOP_MS` long.
+/// 1.875 px is the spec's 3 grid units in the 40 px notice badge (the only place it hops).
+pub const HOP_PX: f32 = 1.875;
+pub const HOP_MS: u64 = 400;
+/// The greeting's wave: `WAVE_SWINGS` swings over `WAVE_MS`, then the raised
+/// arm holds.
+pub const WAVE_MS: u64 = 900;
+pub const WAVE_SWINGS: u32 = 3;
+/// The octopus's flush on an alert: one half-sine, `FLUSH_MS` long.
+pub const FLUSH_MS: u64 = 700;
 /// A Claude session counts as working this long after its last activity.
 pub const CLAUDE_WORKING_FOR: Duration = Duration::from_secs(120);
 /// A finished CLI command shows Happy or Sad this long.
@@ -1695,6 +1766,36 @@ pub fn bounce_offset(elapsed: Duration) -> f32 {
     }
     let t = (ms % BOUNCE_MS) as f32 / BOUNCE_MS as f32;
     BOUNCE_PX * (std::f32::consts::PI * t).sin()
+}
+
+/// The falk's hop `elapsed` after a "done" notice appeared: one half-sine of
+/// `HOP_PX`, then 0.
+pub fn hop_offset(elapsed: Duration) -> f32 {
+    let ms = elapsed.as_millis() as u64;
+    if ms >= HOP_MS {
+        return 0.0;
+    }
+    HOP_PX * (std::f32::consts::PI * ms as f32 / HOP_MS as f32).sin()
+}
+
+/// The greeting's swing, -1 to 1, `elapsed` after it began; `None` once the
+/// swings are done (the arm then holds still).
+pub fn wave_swing(elapsed: Duration) -> Option<f32> {
+    let ms = elapsed.as_millis() as u64;
+    if ms >= WAVE_MS {
+        return None;
+    }
+    let t = ms as f32 / WAVE_MS as f32;
+    Some((2.0 * std::f32::consts::PI * WAVE_SWINGS as f32 * t).sin())
+}
+
+/// The octopus's flush, 0 to 1, `elapsed` after the alert appeared.
+pub fn flush_amount(elapsed: Duration) -> f32 {
+    let ms = elapsed.as_millis() as u64;
+    if ms >= FLUSH_MS {
+        return 0.0;
+    }
+    (std::f32::consts::PI * ms as f32 / FLUSH_MS as f32).sin()
 }
 
 /// The hover lift `elapsed` after the pointer arrived: eases up to `LIFT_PX`.
@@ -1817,6 +1918,17 @@ fn is_note(part: &Part) -> bool {
     )
 }
 
+/// A mark of the eyes (espresso ink): it rises with the mascot's eye lift.
+/// The cream extras beside the head stay at their grid places.
+fn is_eye(part: &Part) -> bool {
+    match *part {
+        Part::Pill { .. } => true,
+        Part::Dot { ink, .. } => ink == Ink::Espresso,
+        Part::Stroke(line) => line.ink() == Ink::Espresso,
+        Part::Heart { .. } => false,
+    }
+}
+
 /// How much room (dip) lies between the top of `expr`'s note marks and
 /// `shape_top`, for the cat drawn in `area` with the nod and squash of
 /// `pose`: the note's grid top squashed round the head's base, scaled, and
@@ -1866,7 +1978,7 @@ const LAPTOP_LOGO: (f32, f32, f32) = (-21.6, 40.5, 1.5);
 const LAPTOP_LOGO_ALPHA: f32 = 0.85;
 /// The two paws (left, right) at rest, and their size. The Black coat's paws
 /// get a thin outline in its rim colour.
-const PAWS: [(f32, f32); 2] = [(1.0, 52.6), (9.5, 52.6)];
+pub(super) const PAWS: [(f32, f32); 2] = [(1.0, 52.6), (9.5, 52.6)];
 const PAW_RX: f32 = 3.8;
 const PAW_RY: f32 = 2.4;
 const PAW_OUTLINE: f32 = 1.0;
@@ -2033,6 +2145,14 @@ pub struct Brain {
     hover: Option<Instant>,
     /// An alert bounce began.
     bounce: Option<Instant>,
+    /// The octopus's flush began (with the bounce).
+    flush: Option<Instant>,
+    /// The falk's hop began.
+    hop: Option<Instant>,
+    /// The greeting's wave began; kept while the Wave face shows.
+    wave: Option<Instant>,
+    /// The notice token last observed (see `observe`).
+    notice: Option<u64>,
     /// The face last drawn.
     shown: Option<Expr>,
 }
@@ -2048,6 +2168,10 @@ impl Brain {
             battery_low: false,
             hover: None,
             bounce: None,
+            flush: None,
+            hop: None,
+            wave: None,
+            notice: None,
             shown: None,
         }
     }
@@ -2147,15 +2271,40 @@ impl Brain {
     }
 
     /// Records the face drawn; an alert that just appeared starts a bounce
-    /// when motion is allowed. True when a bounce started.
-    pub fn observe(&mut self, expr: Option<Expr>, now: Instant, moves: bool) -> bool {
+    /// (and the octopus's flush) when motion is allowed. True when a bounce
+    /// started. `notice` is a token that changes with every notice shown
+    /// (`None` for any other view): a new token with a Happy face starts the
+    /// falk's hop, with the Wave face the greeting's wave. Hover never has one.
+    pub fn observe(
+        &mut self,
+        expr: Option<Expr>,
+        notice: Option<u64>,
+        now: Instant,
+        moves: bool,
+    ) -> bool {
         let was = std::mem::replace(&mut self.shown, expr);
+        let fresh = notice.is_some() && notice != std::mem::replace(&mut self.notice, notice);
         let started = moves && expr == Some(Expr::Alert) && was != Some(Expr::Alert);
         if started {
             self.bounce = Some(now);
+            self.flush = Some(now);
+        }
+        if moves && fresh {
+            match expr {
+                Some(Expr::Happy) => self.hop = Some(now),
+                Some(Expr::Wave) => self.wave = Some(now),
+                _ => {}
+            }
         }
         if expr != Some(Expr::Alert) {
             self.bounce = None;
+            self.flush = None;
+        }
+        if notice.is_none() {
+            self.hop = None;
+        }
+        if expr != Some(Expr::Wave) {
+            self.wave = None;
         }
         started
     }
@@ -2166,34 +2315,59 @@ impl Brain {
         self.hover.filter(|_| spot.compact())
     }
 
-    /// Lift and bounce at `spot` and `now` (none without motion), and the
-    /// blink.
-    pub fn pose(&self, spot: Spot, now: Instant, moves: bool, blink: bool) -> Pose {
+    /// Lift and bounce at `spot` and `now` (none without motion), the
+    /// mascot's own one-shots (falk hop, falk and octopus wave, octopus
+    /// flush), and the blink.
+    pub fn pose(
+        &self,
+        spot: Spot,
+        now: Instant,
+        moves: bool,
+        blink: bool,
+        mascot: Mascot,
+    ) -> Pose {
         if !moves {
             return Pose {
                 blink: false,
                 ..Pose::default()
             };
         }
+        let since = |at: Instant| now.saturating_duration_since(at);
+        let waves = mascot != Mascot::Cat;
         Pose {
             blink,
-            lift_px: self
-                .lift_since(spot)
-                .map_or(0.0, |at| lift_offset(now.saturating_duration_since(at))),
-            bounce_px: self
-                .bounce
-                .map_or(0.0, |at| bounce_offset(now.saturating_duration_since(at))),
+            lift_px: self.lift_since(spot).map_or(0.0, |at| lift_offset(since(at))),
+            bounce_px: self.bounce.map_or(0.0, |at| bounce_offset(since(at))),
+            hop_px: self
+                .hop
+                .filter(|_| mascot == Mascot::Falk)
+                .map_or(0.0, |at| hop_offset(since(at))),
+            waving: waves && self.wave.is_some(),
+            wave: self
+                .wave
+                .filter(|_| waves)
+                .and_then(|at| wave_swing(since(at)))
+                .unwrap_or(0.0),
+            flush: self
+                .flush
+                .filter(|_| mascot == Mascot::Octopus)
+                .map_or(0.0, |at| flush_amount(since(at))),
             ..Pose::default()
         }
     }
 
-    /// A lift or bounce at `spot` is still moving: the frame clock must run.
-    pub fn moving(&self, spot: Spot, now: Instant, moves: bool) -> bool {
+    /// A lift, bounce or the mascot's one-shot at `spot` is still moving: the
+    /// frame clock must run.
+    pub fn moving(&self, spot: Spot, now: Instant, moves: bool, mascot: Mascot) -> bool {
         let within = |at: Option<Instant>, ms: u64| {
             at.is_some_and(|at| now.saturating_duration_since(at) < Duration::from_millis(ms))
         };
         moves
-            && (within(self.lift_since(spot), LIFT_MS) || within(self.bounce, BOUNCE_MS * BOUNCES))
+            && (within(self.lift_since(spot), LIFT_MS)
+                || within(self.bounce, BOUNCE_MS * BOUNCES)
+                || (mascot == Mascot::Falk && within(self.hop, HOP_MS))
+                || (mascot != Mascot::Cat && within(self.wave, WAVE_MS))
+                || (mascot == Mascot::Octopus && within(self.flush, FLUSH_MS)))
     }
 
     /// The next moment the face may change by itself (falling asleep, a
@@ -3094,14 +3268,106 @@ mod tests {
         // The brain starts it only when an alert appears, and with motion.
         let t0 = Instant::now();
         let mut b = Brain::new(t0);
-        assert!(b.observe(Some(Expr::Alert), t0, true));
-        assert!(!b.observe(Some(Expr::Alert), t0, true), "already showing");
+        assert!(b.observe(Some(Expr::Alert), None, t0, true));
+        assert!(!b.observe(Some(Expr::Alert), None, t0, true), "already showing");
         let alert = Spot::Notice(NoticeSort::Reminder);
-        assert!(b.moving(alert, t0 + ms(100), true));
-        assert!(!b.moving(alert, t0 + ms(2 * BOUNCE_MS), true));
-        b.observe(Some(Expr::Idle), t0, true);
-        assert!(!b.observe(Some(Expr::Alert), t0, false), "Hemat: no bounce");
-        assert!(!b.moving(alert, t0, true));
+        assert!(b.moving(alert, t0 + ms(100), true, Mascot::Cat));
+        assert!(!b.moving(alert, t0 + ms(2 * BOUNCE_MS), true, Mascot::Cat));
+        b.observe(Some(Expr::Idle), None, t0, true);
+        assert!(!b.observe(Some(Expr::Alert), None, t0, false), "Hemat: no bounce");
+        assert!(!b.moving(alert, t0, true, Mascot::Cat));
+    }
+
+    #[test]
+    fn the_falk_hops_once_per_happy_notice() {
+        let t0 = Instant::now();
+        let mut b = Brain::new(t0);
+        let n = Spot::Notice(NoticeSort::ClaudeDone);
+        b.observe(Some(Expr::Happy), Some(1), t0, true);
+        let at = |ms| {
+            b.pose(n, t0 + Duration::from_millis(ms), true, false, Mascot::Falk)
+                .hop_px
+        };
+        assert!((at(200) - HOP_PX).abs() < 1e-3);
+        assert_eq!(at(400), 0.0);
+        assert!(b.moving(n, t0 + Duration::from_millis(399), true, Mascot::Falk));
+        assert!(!b.moving(n, t0 + Duration::from_millis(400), true, Mascot::Falk));
+        assert_eq!(
+            b.pose(n, t0 + Duration::from_millis(200), true, false, Mascot::Cat)
+                .hop_px,
+            0.0
+        );
+        assert!(!b.moving(n, t0 + Duration::from_millis(200), true, Mascot::Cat));
+        // a second Happy notice restarts it
+        let t1 = t0 + Duration::from_secs(2);
+        b.observe(Some(Expr::Happy), Some(2), t1, true);
+        assert!(
+            b.pose(n, t1 + Duration::from_millis(200), true, false, Mascot::Falk)
+                .hop_px
+                > 1.0
+        );
+        // the same notice again does not
+        b.observe(Some(Expr::Happy), Some(2), t1 + Duration::from_secs(1), true);
+        assert_eq!(
+            b.pose(n, t1 + Duration::from_millis(1200), true, false, Mascot::Falk)
+                .hop_px,
+            0.0
+        );
+    }
+
+    #[test]
+    fn hover_and_saver_never_hop_wave_or_flush() {
+        let t0 = Instant::now();
+        let mut b = Brain::new(t0);
+        b.hover(true, t0);
+        b.observe(Some(Expr::Happy), None, t0, true);
+        assert_eq!(
+            b.pose(Spot::Idle, t0 + Duration::from_millis(200), true, false, Mascot::Falk)
+                .hop_px,
+            0.0
+        );
+        let mut s = Brain::new(t0);
+        s.observe(Some(Expr::Alert), Some(5), t0, false);
+        let p = s.pose(
+            Spot::Notice(NoticeSort::Reminder),
+            t0 + Duration::from_millis(300),
+            false,
+            false,
+            Mascot::Octopus,
+        );
+        assert_eq!((p.flush, p.hop_px, p.waving), (0.0, 0.0, false));
+        assert!(!s.moving(Spot::Notice(NoticeSort::Reminder), t0, false, Mascot::Octopus));
+    }
+
+    #[test]
+    fn the_octopus_flushes_for_700_ms_on_alert_and_the_bounce_keeps_its_numbers() {
+        let t0 = Instant::now();
+        let mut b = Brain::new(t0);
+        let r = Spot::Notice(NoticeSort::Reminder);
+        assert!(b.observe(Some(Expr::Alert), Some(9), t0, true));
+        let at = |ms, m| b.pose(r, t0 + Duration::from_millis(ms), true, false, m);
+        assert!((at(350, Mascot::Octopus).flush - 1.0).abs() < 1e-3);
+        assert_eq!(at(350, Mascot::Cat).flush, 0.0);
+        assert!(b.moving(r, t0 + Duration::from_millis(650), true, Mascot::Octopus));
+        assert!(!b.moving(r, t0 + Duration::from_millis(650), true, Mascot::Cat)); // the cat's 520 ms
+        assert_eq!(at(130, Mascot::Octopus).bounce_px, at(130, Mascot::Cat).bounce_px);
+    }
+
+    #[test]
+    fn the_greeting_waves_three_times_then_holds() {
+        let t0 = Instant::now();
+        let mut b = Brain::new(t0);
+        let g = Spot::Notice(NoticeSort::Greeting(DayPeriod::Morning));
+        b.observe(Some(Expr::Wave), Some(3), t0, true);
+        let p = b.pose(g, t0 + Duration::from_millis(75), true, false, Mascot::Octopus);
+        assert!(p.waving && (p.wave - 1.0).abs() < 1e-3);
+        let held = b.pose(g, t0 + Duration::from_millis(950), true, false, Mascot::Octopus);
+        assert!(held.waving && held.wave == 0.0);
+        assert!(!b.moving(g, t0 + Duration::from_millis(950), true, Mascot::Falk));
+        assert!(
+            !b.pose(g, t0 + Duration::from_millis(75), true, false, Mascot::Cat)
+                .waving
+        );
     }
 
     #[test]
@@ -3110,21 +3376,21 @@ mod tests {
         let idle = Spot::Idle;
         let mut b = Brain::new(t0);
         b.hover(true, t0);
-        assert_eq!(b.pose(idle, t0, true, false).lift_px, 0.0);
-        let up = b.pose(idle, t0 + Duration::from_millis(LIFT_MS), true, false);
+        assert_eq!(b.pose(idle, t0, true, false, Mascot::Cat).lift_px, 0.0);
+        let up = b.pose(idle, t0 + Duration::from_millis(LIFT_MS), true, false, Mascot::Cat);
         assert_eq!(up.lift_px, LIFT_PX);
         assert!(
-            b.moving(idle, t0, true) && !b.moving(idle, t0 + Duration::from_millis(LIFT_MS), true)
+            b.moving(idle, t0, true, Mascot::Cat) && !b.moving(idle, t0 + Duration::from_millis(LIFT_MS), true, Mascot::Cat)
         );
         // No motion: no lift, no blink.
         assert_eq!(
-            b.pose(idle, t0 + Duration::from_secs(1), false, true),
+            b.pose(idle, t0 + Duration::from_secs(1), false, true, Mascot::Cat),
             Pose::default()
         );
         // A second move while hovering keeps the first arrival.
         b.hover(true, t0 + Duration::from_secs(1));
         assert_eq!(
-            b.pose(idle, t0 + Duration::from_secs(1), true, true)
+            b.pose(idle, t0 + Duration::from_secs(1), true, true, Mascot::Cat)
                 .lift_px,
             LIFT_PX
         );
@@ -3138,11 +3404,11 @@ mod tests {
         let later = t0 + Duration::from_millis(LIFT_MS);
         for spot in [Spot::Idle, Spot::Pomodoro, Spot::Media, Spot::Lyric] {
             assert_eq!(
-                b.pose(spot, later, true, false).lift_px,
+                b.pose(spot, later, true, false, Mascot::Cat).lift_px,
                 LIFT_PX,
                 "{spot:?}"
             );
-            assert!(b.moving(spot, t0, true), "{spot:?}");
+            assert!(b.moving(spot, t0, true, Mascot::Cat), "{spot:?}");
         }
         // A notice keeps its own face, still; the panel draws no robot, so
         // re-entering the island there starts no frame clock.
@@ -3154,8 +3420,8 @@ mod tests {
             Spot::Panel,
             Spot::Hidden,
         ] {
-            assert_eq!(b.pose(spot, later, true, false).lift_px, 0.0, "{spot:?}");
-            assert!(!b.moving(spot, t0, true), "{spot:?}");
+            assert_eq!(b.pose(spot, later, true, false, Mascot::Cat).lift_px, 0.0, "{spot:?}");
+            assert!(!b.moving(spot, t0, true, Mascot::Cat), "{spot:?}");
         }
     }
 
@@ -4110,9 +4376,9 @@ mod tests {
         let now = Instant::now();
         let mut brain = Brain::new(now);
         assert_eq!(brain.shown(), None);
-        brain.observe(Some(Expr::Sleep), now, true);
+        brain.observe(Some(Expr::Sleep), None, now, true);
         assert_eq!(brain.shown(), Some(Expr::Sleep));
-        brain.observe(None, now, true);
+        brain.observe(None, None, now, true);
         assert_eq!(brain.shown(), None);
     }
 

@@ -881,10 +881,10 @@ keys! {
     DataFolder => "Folder data", "Data folder";
     OpenDataFolder => "Buka folder data", "Open data folder";
 
-    // Vale's cat, the notch assistant (Settings → Kucing).
-    RobotInNotch => "Kucing di notch", "Cat in the notch";
-    RobotInNotchDesc => "Tampilkan kucing Vale di samping jam dan notice",
-        "Show Vale's cat beside the clock and notices";
+    // Vale's mascot, the notch assistant (Settings → Maskot).
+    RobotInNotch => "Maskot di notch", "Mascot in the notch";
+    RobotInNotchDesc => "Tampilkan maskot Vale di samping jam dan notice",
+        "Show Vale's mascot beside the clock and notices";
     RobotMotion => "Animasi", "Animation";
     // The design's sentence; it wraps beside the three segments.
     RobotMotionDesc => "Hemat: tanpa kedip dan gerak, ekspresi tetap",
@@ -1096,8 +1096,9 @@ keys! {
     DemoClaudeAsks => "izin menjalankan perintah", "permission to run a command";
     DemoFilesChanged => "3 file diubah", "3 files changed";
 
-    // Settings, v3.8: the Kucing page, the new sections and the cards' titles.
-    SecCat => "Kucing", "Cat";
+    // Settings, v3.8: the Maskot page (Kucing before), the new sections and
+    // the cards' titles.
+    SecCat => "Maskot", "Mascot";
     SecPanel => "Panel", "Panel";
     SecFeatures => "Fitur", "Features";
     // Settings → Tombol pintas: six hotkeys recorded by pressing them.
@@ -1131,7 +1132,7 @@ keys! {
     GroupIsland => "Island", "Island";
     GroupNotch => "Notch", "Notch";
     GroupWindow => "Jendela", "Window";
-    GroupCat => "Kucing", "Cat";
+    GroupCat => "Maskot", "Mascot";
     GroupMotion => "Gerak", "Motion";
     GroupGreeting => "Sapaan", "Greeting";
     GroupBehavior => "Perilaku", "Behavior";
@@ -1141,7 +1142,7 @@ keys! {
     GroupCli => "CLI", "CLI";
     GroupCleaner => "Pembersih", "Cleaner";
     GroupLinks => "Tautan", "Links";
-    SurfaceAuto => "Ikuti kucing", "Match cat";
+    SurfaceAuto => "Ikuti maskot", "Match mascot";
     SurfaceSea => "Laut", "Sea";
     SurfaceNight => "Malam", "Night";
     SurfacePlum => "Ungu", "Plum";
@@ -1151,6 +1152,18 @@ keys! {
     CatColorWhite => "Putih", "White";
     CatColorBlack => "Hitam", "Black";
     CatColorLabel => "Warna", "Color";
+    // Settings → Maskot: the mascot row, and the falk's and octopus's coats.
+    MascotLabel => "Maskot", "Mascot";
+    MascotCat => "Kucing", "Cat";
+    MascotFalk => "Falk", "Cockatiel";
+    MascotOctopus => "Gurita", "Octopus";
+    FalkColorLutino => "Lutino", "Lutino";
+    FalkColorGrey => "Abu-abu", "Grey";
+    FalkColorWhiteFace => "Muka putih", "White face";
+    OctopusColorCoral => "Koral", "Coral";
+    OctopusColorRed => "Merah", "Red";
+    OctopusColorPurple => "Ungu", "Purple";
+    OctopusColorBlue => "Biru laut", "Sea blue";
     CatBackdrop => "Latar", "Backdrop";
     CatBackdropChange => "Ubah", "Change";
     CatAccessoryLabel => "Aksesori", "Accessory";
@@ -1161,6 +1174,9 @@ keys! {
     AccScarf => "Syal", "Scarf";
     AccFlower => "Bunga", "Flower";
     AccCrown => "Mahkota", "Crown";
+    AccHeadphone => "Headphone", "Headphones";
+    AccSailor => "Topi pelaut", "Sailor cap";
+    AccBowtie => "Dasi kupu-kupu", "Bow tie";
     CatFollow => "Ikuti kursor", "Follow the pointer";
     CatFollowDesc => "Kepala dan mata menoleh ke kursor", "Head and eyes turn toward the pointer";
     CatPeek => "Mengecil jadi mata", "Shrink to eyes";
@@ -1497,7 +1513,7 @@ pub fn greeting_period_name(lang: Lang, period: DayPeriod) -> &'static str {
     }
 }
 
-/// The five periods as one line for Settings → Kucing → Sapaan: name, first
+/// The five periods as one line for Settings → Maskot → Sapaan: name, first
 /// and last hour (two digits) and the greeting's title, joined by " · ".
 /// Built from `greeting.rs` so the hours cannot drift from `period_at`.
 pub fn greeting_periods_line(lang: Lang) -> String {
@@ -4712,10 +4728,10 @@ mod tests {
             }
         }
         // The settings rows, as in the design.
-        // The cat has no name yet (the owner picks it): it is Vale's cat.
+        // The mascot has no name yet (the owner picks it): it is Vale's mascot.
         assert_eq!(
             text(Lang::Id, Key::RobotInNotchDesc),
-            "Tampilkan kucing Vale di samping jam dan notice"
+            "Tampilkan maskot Vale di samping jam dan notice"
         );
         assert_eq!(
             [Lang::Id, Lang::En].map(|l| text(l, Key::SourceVale)),
@@ -4725,6 +4741,41 @@ mod tests {
             [Key::MotionFull, Key::MotionSaver, Key::MotionOff].map(|k| text(Lang::Id, k)),
             ["Penuh", "Hemat", "Mati"]
         );
+    }
+
+    #[test]
+    fn the_labels_say_maskot() {
+        assert_eq!(text(Lang::Id, Key::SecCat), "Maskot");
+        assert_eq!(text(Lang::Id, Key::RobotInNotch), "Maskot di notch");
+        assert_eq!(text(Lang::En, Key::MascotFalk), "Cockatiel");
+        let both = |k: Key| [Lang::Id, Lang::En].map(|l| text(l, k));
+        assert_eq!(both(Key::SecCat), ["Maskot", "Mascot"]);
+        assert_eq!(both(Key::GroupCat), ["Maskot", "Mascot"]);
+        assert_eq!(both(Key::RobotInNotch), ["Maskot di notch", "Mascot in the notch"]);
+        assert_eq!(
+            both(Key::RobotInNotchDesc),
+            [
+                "Tampilkan maskot Vale di samping jam dan notice",
+                "Show Vale's mascot beside the clock and notices"
+            ]
+        );
+        assert_eq!(both(Key::MascotLabel), ["Maskot", "Mascot"]);
+        assert_eq!(both(Key::MascotCat), ["Kucing", "Cat"]);
+        assert_eq!(both(Key::MascotFalk), ["Falk", "Cockatiel"]);
+        assert_eq!(both(Key::MascotOctopus), ["Gurita", "Octopus"]);
+        assert_eq!(both(Key::FalkColorLutino), ["Lutino", "Lutino"]);
+        assert_eq!(both(Key::FalkColorGrey), ["Abu-abu", "Grey"]);
+        assert_eq!(both(Key::FalkColorWhiteFace), ["Muka putih", "White face"]);
+        assert_eq!(both(Key::OctopusColorCoral), ["Koral", "Coral"]);
+        assert_eq!(both(Key::OctopusColorRed), ["Merah", "Red"]);
+        assert_eq!(both(Key::OctopusColorPurple), ["Ungu", "Purple"]);
+        assert_eq!(both(Key::OctopusColorBlue), ["Biru laut", "Sea blue"]);
+        assert_eq!(both(Key::AccSailor), ["Topi pelaut", "Sailor cap"]);
+        assert_eq!(both(Key::AccBowtie), ["Dasi kupu-kupu", "Bow tie"]);
+        assert_eq!(text(Lang::Id, Key::AccHeadphone), "Headphone");
+        assert_eq!(both(Key::SurfaceAuto), ["Ikuti maskot", "Match mascot"]);
+        // The sticky notes' peek stays the cat's.
+        assert_eq!(text(Lang::Id, Key::WidgetsPeek), "Kucing ngintip");
     }
 
     #[test]

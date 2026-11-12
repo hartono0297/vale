@@ -10,7 +10,9 @@ use crate::greeting::GreetMark;
 use crate::i18n::Lang;
 use crate::pages::PageEntry;
 use crate::pomodoro::PomoSettings;
-use crate::theme::{Accent, CatAccessory, CatColor, Surface, WindowTheme};
+use crate::theme::{
+    Accent, CatAccessory, CatColor, FalkColor, Mascot, OctopusColor, Surface, WindowTheme,
+};
 use crate::tiles::TileEntry;
 use crate::ui::geometry::{
     NOTCH_H_DEFAULT, NOTCH_H_MAX, NOTCH_H_MIN, NOTCH_OPACITY_DEFAULT, NOTCH_W_DEFAULT, NOTCH_W_MAX,
@@ -209,6 +211,16 @@ pub struct Config {
     /// "Caption langsung" (Settings): the live captions' sources, language,
     /// size and window. Owned by the island; read leniently.
     pub captions: crate::captions::prefs::CaptionPrefs,
+    /// "Maskot" (Settings -> Kucing): which mascot lives in the notch. A bad
+    /// value reads as the cat. Owned by the island.
+    #[serde(default, deserialize_with = "mascot")]
+    pub mascot: Mascot,
+    /// The falk's coat. A bad value reads as Lutino.
+    #[serde(default, deserialize_with = "falk_color")]
+    pub falk_color: FalkColor,
+    /// The octopus's coat. A bad value reads as Coral.
+    #[serde(default, deserialize_with = "octopus_color")]
+    pub octopus_color: OctopusColor,
 }
 
 /// The lyrics card's rectangle in screen coordinates, physical pixels.
@@ -489,6 +501,26 @@ fn cat_color<'de, D: Deserializer<'de>>(d: D) -> Result<CatColor, D::Error> {
     Ok(v.as_str().and_then(CatColor::from_name).unwrap_or_default())
 }
 
+/// A mascot name; anything else is the cat.
+fn mascot<'de, D: Deserializer<'de>>(d: D) -> Result<Mascot, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(v.as_str().and_then(Mascot::from_name).unwrap_or_default())
+}
+
+/// A falk coat name; anything else is Lutino.
+fn falk_color<'de, D: Deserializer<'de>>(d: D) -> Result<FalkColor, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(v.as_str().and_then(FalkColor::from_name).unwrap_or_default())
+}
+
+/// An octopus coat name; anything else is Coral.
+fn octopus_color<'de, D: Deserializer<'de>>(d: D) -> Result<OctopusColor, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(v.as_str()
+        .and_then(OctopusColor::from_name)
+        .unwrap_or_default())
+}
+
 /// An accessory name; anything else is None.
 fn cat_accessory<'de, D: Deserializer<'de>>(d: D) -> Result<CatAccessory, D::Error> {
     let v = serde_json::Value::deserialize(d)?;
@@ -766,6 +798,9 @@ impl Default for Config {
             shortcut_tiles: Vec::new(),
             device_notices: true,
             cat_color: CatColor::Terracotta,
+            mascot: Mascot::Cat,
+            falk_color: FalkColor::Lutino,
+            octopus_color: OctopusColor::Coral,
             cat_accessory: CatAccessory::None,
             cat_follow_pointer: true,
             cat_dance: true,
@@ -915,6 +950,9 @@ pub fn merge_owned(disk: Config, mem: &Config) -> Config {
         shortcut_tiles: mem.shortcut_tiles.clone(),
         device_notices: mem.device_notices,
         cat_color: mem.cat_color,
+        mascot: mem.mascot,
+        falk_color: mem.falk_color,
+        octopus_color: mem.octopus_color,
         cat_accessory: mem.cat_accessory,
         cat_follow_pointer: mem.cat_follow_pointer,
         cat_dance: mem.cat_dance,
@@ -1299,6 +1337,9 @@ mod tests {
             }],
             device_notices: false,
             cat_color: CatColor::Calico,
+            mascot: Mascot::Octopus,
+            falk_color: FalkColor::Grey,
+            octopus_color: OctopusColor::Blue,
             cat_accessory: CatAccessory::Bow,
             cat_follow_pointer: false,
             cat_dance: false,
@@ -1399,6 +1440,11 @@ mod tests {
             },
         };
         assert_eq!(parse(&serde_json::to_string(&c).unwrap()), c);
+        let merged = merge_owned(Config::default(), &c);
+        assert_eq!(
+            (merged.mascot, merged.falk_color, merged.octopus_color),
+            (Mascot::Octopus, FalkColor::Grey, OctopusColor::Blue)
+        );
     }
 
     #[test]
@@ -2968,6 +3014,29 @@ mod tests {
         );
         let back = parse(&serde_json::to_string_pretty(&mem).unwrap());
         assert_eq!(back, mem);
+    }
+
+    #[test]
+    fn mascot_keys_are_lenient_and_default_to_the_cat() {
+        use crate::theme::Coat;
+        let c: Config = serde_json::from_str(r#"{"cat_color":"Calico"}"#).unwrap();
+        assert_eq!(
+            (c.mascot, c.falk_color, c.octopus_color),
+            (Mascot::Cat, FalkColor::Lutino, OctopusColor::Coral)
+        );
+        assert_eq!(c.cat_color, CatColor::Calico);
+        let c: Config = serde_json::from_str(
+            r#"{"mascot":3,"falk_color":"Pink","octopus_color":null,"cat_accessory":"Sailor"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            (c.mascot, c.falk_color, c.octopus_color),
+            (Mascot::Cat, FalkColor::Lutino, OctopusColor::Coral)
+        );
+        assert_eq!(c.cat_accessory, CatAccessory::Sailor);
+        let c: Config =
+            serde_json::from_str(r#"{"mascot":"Octopus","octopus_color":"Blue"}"#).unwrap();
+        assert_eq!(Coat::of(&c), Coat::Octopus(OctopusColor::Blue));
     }
 
     #[test]

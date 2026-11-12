@@ -582,6 +582,8 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
             eq_capture: None,
             eq_capture_on: false,
             dance_anchor: Instant::now(),
+            notice_shown: None,
+            notice_serial: 0,
             outside_ms: 0,
             behind: behind::Behind::default(),
             behind_ms: 0,
@@ -1055,6 +1057,10 @@ struct App {
     /// When `TIMER_EQ` last started: the dancing cat's fallback beat and its
     /// note loop count from here, so a dance always starts at rest.
     dance_anchor: Instant,
+    /// The notice view shown at the last `observe`, and a counter bumped when
+    /// a different one appears: the mascot's hop and wave start on it.
+    notice_shown: Option<Notice>,
+    notice_serial: u64,
     /// `TIMER_OUTSIDE`'s interval now; 0 while it does not run.
     outside_ms: u32,
     /// "Di belakang jendela": the island's place in the window order, and
@@ -1980,7 +1986,13 @@ impl App {
         let mut pose = self
             .bata
             .brain
-            .pose(spot, now, motion.moves(), self.bata.blinking);
+            .pose(
+                spot,
+                now,
+                motion.moves(),
+                self.bata.blinking,
+                self.config.mascot,
+            );
         // The idle cat turns toward the pointer; nowhere else, and only with
         // a face that looks (nothing floating beside its head).
         if spot == Spot::Idle && self.look.value() != 0.0 {
@@ -2015,6 +2027,7 @@ impl App {
             );
             let (rise, fade) = robot::note_phase(since);
             pose = pose.dance(amount, rise, fade);
+            pose.beat = std::f32::consts::PI * since.as_millis() as f32 / robot::BEAT_MS as f32;
         }
         Some(RobotFrame { expr, pose })
     }
@@ -2027,7 +2040,12 @@ impl App {
             && self
                 .bata
                 .brain
-                .moving(Spot::of(&view), now, self.motion().moves())
+                .moving(
+                    Spot::of(&view),
+                    now,
+                    self.motion().moves(),
+                    self.config.mascot,
+                )
     }
 
     /// The cat's sleep clock takes the last mouse or keyboard input anywhere
@@ -3815,7 +3833,20 @@ impl App {
         // Bata: an alert that just appeared bounces; a lift or bounce needs frames.
         let face = self.robot_frame(&view, now).map(|r| r.expr);
         let moves = self.motion().moves();
-        self.bata.brain.observe(face, now, moves);
+        let token = match &view {
+            View::Notice(n) => {
+                if self.notice_shown.as_ref() != Some(n) {
+                    self.notice_serial += 1;
+                    self.notice_shown = Some(n.clone());
+                }
+                Some(self.notice_serial)
+            }
+            _ => {
+                self.notice_shown = None;
+                None
+            }
+        };
+        self.bata.brain.observe(face, token, now, moves);
         if self.robot_moving(now) {
             self.ensure_clock();
         }
@@ -6510,10 +6541,27 @@ impl App {
                 self.save_config();
                 self.refresh(now);
             }
+            SettingsAction::Mascot(mascot) => {
+                // Only the choice: each mascot keeps its own coat.
+                self.config.mascot = mascot;
+                self.save_config();
+                // Another mascot, and (on Auto) the island's surface.
+                self.refresh(now);
+            }
             SettingsAction::CatColor(color) => {
                 self.config.cat_color = color;
                 self.save_config();
                 // The cat and (on Auto) the island's surface change now.
+                self.draw(now);
+            }
+            SettingsAction::FalkColor(color) => {
+                self.config.falk_color = color;
+                self.save_config();
+                self.draw(now);
+            }
+            SettingsAction::OctopusColor(color) => {
+                self.config.octopus_color = color;
+                self.save_config();
                 self.draw(now);
             }
             SettingsAction::CatAccessory(accessory) => {

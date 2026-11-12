@@ -100,7 +100,10 @@ use crate::model::PomoField;
 use crate::pages::PanelPages;
 use crate::pomodoro::PomoSettings;
 use crate::sources::battery::battery_present;
-use crate::theme::{self, Accent, CatAccessory, CatColor, Surface, WindowPalette, WindowTheme};
+use crate::theme::{
+    self, Accent, CatAccessory, CatColor, Coat, FalkColor, Mascot, OctopusColor, Surface,
+    WindowPalette, WindowTheme,
+};
 use crate::tiles::{CustomKind, CustomProblem, CustomTile, LABEL_MAX, ShortcutTiles, TARGET_MAX};
 use crate::captions::prefs::CaptionPrefs;
 use crate::transcribe::prefs::TrLang;
@@ -175,9 +178,12 @@ pub enum Action {
     RobotMotion(Motion),
     RobotSleep(u32),
     Greeting(bool),
-    /// Settings → Kucing: the coat, the accessory, "Ikuti kursor" and
-    /// "Mengecil jadi mata".
+    /// Settings → Maskot: the mascot, each mascot's own coat, the accessory
+    /// (shared by all three), "Ikuti kursor" and "Mengecil jadi mata".
+    Mascot(Mascot),
     CatColor(CatColor),
+    FalkColor(FalkColor),
+    OctopusColor(OctopusColor),
     CatAccessory(CatAccessory),
     CatFollow(bool),
     NotchPeek(bool),
@@ -503,6 +509,10 @@ pub struct Model {
     pub robot_sleep: u32,
     pub greeting: bool,
     pub cat_color: CatColor,
+    /// Which mascot, and the falk's and octopus's coats.
+    pub mascot: Mascot,
+    pub falk_color: FalkColor,
+    pub octopus_color: OctopusColor,
     pub cat_accessory: CatAccessory,
     pub cat_follow: bool,
     pub notch_peek: bool,
@@ -541,6 +551,26 @@ pub struct Model {
 }
 
 impl Model {
+    /// The chosen mascot's own coat.
+    pub fn coat(&self) -> Coat {
+        Coat::from_parts(self.mascot, self.cat_color, self.falk_color, self.octopus_color)
+    }
+
+    /// A Maskot choice, as the owner saves it to the config: each action
+    /// sets its one field, so picking another mascot keeps every coat. False
+    /// for the other actions (the demo applies those itself).
+    #[cfg(any(test, debug_assertions))]
+    pub fn apply(&mut self, action: Action) -> bool {
+        match action {
+            Action::Mascot(v) => self.mascot = v,
+            Action::CatColor(v) => self.cat_color = v,
+            Action::FalkColor(v) => self.falk_color = v,
+            Action::OctopusColor(v) => self.octopus_color = v,
+            Action::CatAccessory(v) => self.cat_accessory = v,
+            _ => return false,
+        }
+        true
+    }
     pub fn from_config(cfg: &Config) -> Self {
         Model {
             style: cfg.style,
@@ -575,6 +605,9 @@ impl Model {
             robot_sleep: cfg.robot_sleep_minutes,
             greeting: cfg.morning_greeting,
             cat_color: cfg.cat_color,
+            mascot: cfg.mascot,
+            falk_color: cfg.falk_color,
+            octopus_color: cfg.octopus_color,
             cat_accessory: cfg.cat_accessory,
             cat_follow: cfg.cat_follow_pointer,
             notch_peek: cfg.notch_peek,
@@ -1708,6 +1741,9 @@ impl Settings {
             robot_sleep: m.robot_sleep,
             greeting: m.greeting,
             cat_color: m.cat_color,
+            mascot: m.mascot,
+            falk_color: m.falk_color,
+            octopus_color: m.octopus_color,
             cat_accessory: m.cat_accessory,
             cat_follow: m.cat_follow,
             notch_peek: m.notch_peek,
@@ -2121,7 +2157,7 @@ impl Settings {
                 self.model.accent,
                 self.model
                     .surface
-                    .resolve(self.model.cat_color, self.model.robot),
+                    .resolve(self.model.coat(), self.model.robot),
             ),
             style: self.model.style,
             notch: super::geometry::NotchSize::from_px(
@@ -2134,9 +2170,13 @@ impl Settings {
             ),
             robot: self.model.robot,
             cat: super::cat_style::CatLook {
+                mascot: self.model.mascot,
                 color: self.model.cat_color,
+                falk: self.model.falk_color,
+                octopus: self.model.octopus_color,
                 accessory: self.model.cat_accessory,
             },
+            coat: self.model.coat(),
             cat_face: self.cat_face,
             lang: self.model.lang,
             hover: self.hover,
@@ -2567,7 +2607,10 @@ impl Settings {
                 }
             }
             Hit::Greeting => post(Action::Greeting(!m.greeting)),
+            Hit::Mascot(v) if v != m.mascot => post(Action::Mascot(v)),
             Hit::CatColor(v) if v != m.cat_color => post(Action::CatColor(v)),
+            Hit::FalkColor(v) if v != m.falk_color => post(Action::FalkColor(v)),
+            Hit::OctopusColor(v) if v != m.octopus_color => post(Action::OctopusColor(v)),
             Hit::CatAccessory(v) if v != m.cat_accessory => post(Action::CatAccessory(v)),
             Hit::CatFollow => post(Action::CatFollow(!m.cat_follow)),
             Hit::NotchPeek => post(Action::NotchPeek(!m.notch_peek)),
@@ -2957,7 +3000,10 @@ impl Settings {
             Hit::Style(_)
             | Hit::Accent(_)
             | Hit::Surface(_)
+            | Hit::Mascot(_)
             | Hit::CatColor(_)
+            | Hit::FalkColor(_)
+            | Hit::OctopusColor(_)
             | Hit::CatAccessory(_)
             | Hit::NotchFill(_)
             | Hit::UiFont(_)
@@ -4574,8 +4620,13 @@ pub fn run_demo(args: &[String]) {
             Action::RobotMotion(v) => m.robot_motion = v,
             Action::RobotSleep(v) => m.robot_sleep = v,
             Action::Greeting(v) => m.greeting = v,
-            Action::CatColor(v) => m.cat_color = v,
-            Action::CatAccessory(v) => m.cat_accessory = v,
+            Action::Mascot(_)
+            | Action::CatColor(_)
+            | Action::FalkColor(_)
+            | Action::OctopusColor(_)
+            | Action::CatAccessory(_) => {
+                m.apply(action);
+            }
             Action::CatFollow(v) => m.cat_follow = v,
             Action::NotchPeek(v) => m.notch_peek = v,
             Action::CatDance(v) => m.cat_dance = v,
@@ -4698,7 +4749,7 @@ pub fn run_demo(args: &[String]) {
         }
         theme::set_current(theme::Theme {
             accent: m.accent,
-            surface: m.surface.resolve(m.cat_color, m.robot),
+            surface: m.surface.resolve(m.coat(), m.robot),
             window: m.window,
         });
     }
@@ -4846,7 +4897,7 @@ pub fn run_demo(args: &[String]) {
     theme::set_system_light(theme::read_system_light());
     theme::set_current(theme::Theme {
         accent,
-        surface: model.surface.resolve(model.cat_color, model.robot),
+        surface: model.surface.resolve(model.coat(), model.robot),
         window,
     });
     DEMO.with_borrow_mut(|m| *m = Some(model.clone()));
@@ -4944,6 +4995,23 @@ pub fn run_demo(args: &[String]) {
 mod tests {
     use super::*;
     use crate::model::Page;
+
+    #[test]
+    fn picking_a_mascot_keeps_each_coat() {
+        let mut m = Model::from_config(&crate::config::Config::default());
+        m.apply(Action::Mascot(Mascot::Falk));
+        m.apply(Action::FalkColor(FalkColor::Grey));
+        m.apply(Action::Mascot(Mascot::Cat));
+        assert_eq!(
+            (m.cat_color, m.falk_color, m.mascot),
+            (CatColor::Terracotta, FalkColor::Grey, Mascot::Cat)
+        );
+        m.apply(Action::OctopusColor(OctopusColor::Red));
+        m.apply(Action::Mascot(Mascot::Octopus));
+        assert_eq!(m.coat(), Coat::Octopus(OctopusColor::Red));
+        m.apply(Action::Mascot(Mascot::Falk));
+        assert_eq!(m.coat(), Coat::Falk(FalkColor::Grey));
+    }
 
     #[test]
     fn the_file_filter_takes_videos() {

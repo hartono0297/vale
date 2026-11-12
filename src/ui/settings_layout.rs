@@ -27,7 +27,9 @@ use crate::model::{Page, PomoField};
 use crate::notif::store::{CAP_STEP, MAX_CAP as NOTIF_MAX, MIN_CAP as NOTIF_MIN};
 use crate::pages::PanelPages;
 use crate::pomodoro::{self, PomoSettings};
-use crate::theme::{Accent, CatAccessory, CatColor, Surface, WindowTheme};
+use crate::theme::{
+    Accent, CatAccessory, CatColor, Coat, FalkColor, Mascot, OctopusColor, Surface, WindowTheme,
+};
 use crate::tiles::{CustomKind, MAX_CUSTOM, MAX_SHOWN, ShortcutTiles, Tile, TileGroup, group};
 use crate::ui::geometry::{
     NOTCH_H_DEFAULT, NOTCH_H_MAX, NOTCH_H_MIN, NOTCH_W_DEFAULT, NOTCH_W_MAX, NOTCH_W_MIN,
@@ -248,7 +250,7 @@ impl Section {
         match name.trim().to_ascii_lowercase().as_str() {
             "general" | "umum" => Some(Section::General),
             "appearance" | "tampilan" => Some(Section::Appearance),
-            "cat" | "kucing" => Some(Section::Cat),
+            "cat" | "kucing" | "mascot" | "maskot" => Some(Section::Cat),
             "panel" => Some(Section::Panel),
             "widgets" | "widget" => Some(Section::Widgets),
             "clipboard" => Some(Section::Clipboard),
@@ -409,8 +411,12 @@ pub enum Hit {
     Style(Style),
     Accent(Accent),
     Surface(Surface),
-    /// Settings → Kucing: "Warna" (a coat) and "Aksesori" (a tile).
+    /// Settings → Maskot: "Maskot" (a tile), "Warna" (the chosen mascot's
+    /// coat) and "Aksesori" (a tile).
+    Mascot(Mascot),
     CatColor(CatColor),
+    FalkColor(FalkColor),
+    OctopusColor(OctopusColor),
     CatAccessory(CatAccessory),
     /// "Ikuti kursor" and "Mengecil jadi mata".
     CatFollow,
@@ -516,7 +522,7 @@ pub enum Hit {
     /// "Folder awal CLI": Ikuti Explorer or Folder terakhir.
     CliStart(CliStart),
     Shell(Shell),
-    /// "Kucing di notch".
+    /// "Maskot di notch".
     Robot,
     /// "Animasi": Penuh, Hemat, Mati.
     Motion(Motion),
@@ -851,13 +857,20 @@ pub enum Control {
         selected: Surface,
         enabled: bool,
     },
-    /// "Warna" of the cat: its four coats.
-    CatSwatches {
-        items: Vec<(CatColor, Rect)>,
-        selected: CatColor,
+    /// "Maskot": a tile for each, the mascot on its own Auto surface.
+    MascotTiles {
+        items: Vec<(Mascot, Rect)>,
+        selected: Mascot,
         enabled: bool,
     },
-    /// "Aksesori": a tile for each, the cat wearing it.
+    /// "Warna": the chosen mascot's coats (the cat's four, the falk's three,
+    /// the octopus's four).
+    CoatSwatches {
+        items: Vec<(Coat, Rect)>,
+        selected: Coat,
+        enabled: bool,
+    },
+    /// "Aksesori": a tile for each, the chosen mascot wearing it.
     AccessoryTiles {
         items: Vec<(CatAccessory, Rect)>,
         selected: CatAccessory,
@@ -950,15 +963,19 @@ impl Control {
                 .map(|(a, r)| (Hit::Accent(*a), inflate(*r, SWATCH_SLOP)))
                 .collect(),
             Control::SurfaceSwatches { enabled: false, .. }
-            | Control::CatSwatches { enabled: false, .. }
+            | Control::MascotTiles { enabled: false, .. }
+            | Control::CoatSwatches { enabled: false, .. }
             | Control::AccessoryTiles { enabled: false, .. } => Vec::new(),
             Control::SurfaceSwatches { items, .. } => items
                 .iter()
                 .map(|(v, r)| (Hit::Surface(*v), inflate(*r, SWATCH_SLOP)))
                 .collect(),
-            Control::CatSwatches { items, .. } => items
+            Control::MascotTiles { items, .. } => {
+                items.iter().map(|(v, r)| (Hit::Mascot(*v), *r)).collect()
+            }
+            Control::CoatSwatches { items, .. } => items
                 .iter()
-                .map(|(v, r)| (Hit::CatColor(*v), inflate(*r, SWATCH_SLOP)))
+                .map(|(v, r)| (coat_hit(*v), inflate(*r, SWATCH_SLOP)))
                 .collect(),
             Control::AccessoryTiles { items, .. } => items
                 .iter()
@@ -1025,7 +1042,12 @@ impl Control {
                     down(r);
                 }
             }
-            Control::CatSwatches { items, .. } => {
+            Control::MascotTiles { items, .. } => {
+                for (_, r) in items {
+                    down(r);
+                }
+            }
+            Control::CoatSwatches { items, .. } => {
                 for (_, r) in items {
                     down(r);
                 }
@@ -1068,7 +1090,12 @@ impl Control {
                 .map(|(_, r)| inflate(*r, SWATCH_SLOP))
                 .reduce(union)
                 .unwrap_or_default(),
-            Control::CatSwatches { items, .. } => items
+            Control::MascotTiles { items, .. } => items
+                .iter()
+                .map(|(_, r)| *r)
+                .reduce(union)
+                .unwrap_or_default(),
+            Control::CoatSwatches { items, .. } => items
                 .iter()
                 .map(|(_, r)| inflate(*r, SWATCH_SLOP))
                 .reduce(union)
@@ -1383,6 +1410,13 @@ pub struct GoogleState {
     pub advanced: bool,
 }
 
+impl State<'_> {
+    /// The chosen mascot's own coat.
+    pub fn coat(&self) -> Coat {
+        Coat::from_parts(self.mascot, self.cat_color, self.falk_color, self.octopus_color)
+    }
+}
+
 /// Everything a layout depends on besides the section.
 #[derive(Clone, Debug, PartialEq)]
 pub struct State<'a> {
@@ -1413,6 +1447,9 @@ pub struct State<'a> {
     pub greeting: bool,
     /// The cat's coat and accessory, "Ikuti kursor" and "Mengecil jadi mata".
     pub cat_color: CatColor,
+    pub mascot: Mascot,
+    pub falk_color: FalkColor,
+    pub octopus_color: OctopusColor,
     pub cat_accessory: CatAccessory,
     pub cat_follow: bool,
     pub notch_peek: bool,
@@ -2463,7 +2500,7 @@ fn appearance(b: &mut Builder, s: &State) {
         selected: s.surface,
         enabled: true,
     });
-    let name = surface_label(b.lang, s.surface, s.cat_color, s.robot);
+    let name = surface_label(b.lang, s.surface, s.coat(), s.robot);
     let desc = Some((name, Tone::Secondary));
     b.row_text(
         card,
@@ -2536,10 +2573,10 @@ fn appearance(b: &mut Builder, s: &State) {
 
 /// The name of a surface choice: "Espresso", ...; Ikuti kucing says what it
 /// gives for the cat now ("Ikuti kucing · Laut").
-pub fn surface_label(lang: Lang, surface: Surface, cat: CatColor, robot: bool) -> String {
+pub fn surface_label(lang: Lang, surface: Surface, coat: Coat, robot: bool) -> String {
     let name = |v: Surface| text(lang, surface_key(v));
     match surface {
-        Surface::Auto => format!("{} · {}", name(surface), name(surface.resolve(cat, robot))),
+        Surface::Auto => format!("{} · {}", name(surface), name(surface.resolve(coat, robot))),
         v => name(v).to_owned(),
     }
 }
@@ -2565,6 +2602,37 @@ pub fn cat_color_key(v: CatColor) -> Key {
     }
 }
 
+pub fn mascot_key(v: Mascot) -> Key {
+    match v {
+        Mascot::Cat => Key::MascotCat,
+        Mascot::Falk => Key::MascotFalk,
+        Mascot::Octopus => Key::MascotOctopus,
+    }
+}
+
+/// A coat's name: the cat's, the falk's or the octopus's.
+pub fn coat_key(v: Coat) -> Key {
+    match v {
+        Coat::Cat(c) => cat_color_key(c),
+        Coat::Falk(FalkColor::Lutino) => Key::FalkColorLutino,
+        Coat::Falk(FalkColor::Grey) => Key::FalkColorGrey,
+        Coat::Falk(FalkColor::WhiteFace) => Key::FalkColorWhiteFace,
+        Coat::Octopus(OctopusColor::Coral) => Key::OctopusColorCoral,
+        Coat::Octopus(OctopusColor::Red) => Key::OctopusColorRed,
+        Coat::Octopus(OctopusColor::Purple) => Key::OctopusColorPurple,
+        Coat::Octopus(OctopusColor::Blue) => Key::OctopusColorBlue,
+    }
+}
+
+/// What a click on a coat's swatch picks.
+pub fn coat_hit(v: Coat) -> Hit {
+    match v {
+        Coat::Cat(c) => Hit::CatColor(c),
+        Coat::Falk(c) => Hit::FalkColor(c),
+        Coat::Octopus(c) => Hit::OctopusColor(c),
+    }
+}
+
 pub fn accessory_key(v: CatAccessory) -> Key {
     match v {
         CatAccessory::None => Key::AccNone,
@@ -2574,6 +2642,9 @@ pub fn accessory_key(v: CatAccessory) -> Key {
         CatAccessory::Scarf => Key::AccScarf,
         CatAccessory::Flower => Key::AccFlower,
         CatAccessory::Crown => Key::AccCrown,
+        CatAccessory::Headphone => Key::AccHeadphone,
+        CatAccessory::Sailor => Key::AccSailor,
+        CatAccessory::Bowtie => Key::AccBowtie,
     }
 }
 
@@ -3442,13 +3513,30 @@ pub fn sleep_value(lang: Lang, minutes: u32) -> String {
 pub const CAT_PREVIEW_H: f32 = 158.0;
 /// The cat's tile in the preview (the cat about 64 px on it).
 pub const CAT_TILE: f32 = 96.0;
-/// The tiles of the "Aksesori" row, and the gap between them.
+/// The tiles of the "Maskot" and "Aksesori" rows.
 const ACC_TILE: f32 = 54.0;
+/// The "Aksesori" row with one row of tiles under its label (the block
+/// rule: `BLOCK_PAD` under it); each further row of tiles adds
+/// `ACC_TILE + ACC_ROW_GAP`.
 const ACC_ROW_H: f32 = ROW_H + ACC_TILE + BLOCK_PAD;
+const ACC_ROW_GAP: f32 = BLOCK_PAD;
+/// The least room between two accessory tiles in one row; below it they
+/// wrap into rows of `ACC_PER_ROW`.
+const ACC_GAP_MIN: f32 = GAP;
+const ACC_PER_ROW: usize = 5;
+/// The "Maskot" row: its tiles with 12 px above and below.
+const MASCOT_ROW_H: f32 = ACC_TILE + 24.0;
 
-/// Kucing: the preview, then the cards "Kucing", "Gerak" and "Sapaan". While
-/// the cat is off the rows that need it fade and take no clicks;
-/// "Mengecil jadi mata" does not need it (the eyes show without the cat).
+/// How many accessory tiles share a row `width` wide: all `n` when they fit
+/// with `ACC_GAP_MIN` between them, else `ACC_PER_ROW`.
+fn accessory_per_row(width: f32, n: usize) -> usize {
+    let fits = n as f32 * ACC_TILE + n.saturating_sub(1) as f32 * ACC_GAP_MIN <= width;
+    if fits { n } else { n.min(ACC_PER_ROW) }
+}
+
+/// Maskot: the preview, then the cards "Maskot", "Gerak" and "Sapaan". While
+/// the mascot is off the rows that need it fade and take no clicks;
+/// "Mengecil jadi mata" does not need it (the eyes show without it).
 fn cat_page(b: &mut Builder, s: &State) {
     let preview = b.card(CAT_PREVIEW_H);
     b.l.cat_preview = Some(preview);
@@ -3467,85 +3555,122 @@ fn cat_page(b: &mut Builder, s: &State) {
 
     let on = s.robot;
     titled(b, Key::GroupCat);
-    let card = b.card(3.0 * ROW_H + ACC_ROW_H);
+    // The accessories wrap when the ten do not fit the card's width.
+    let tiles = CatAccessory::ALL;
+    let span = b.g.right - (b.g.content_x + INSET);
+    let per_row = accessory_per_row(span, tiles.len());
+    let acc_rows = tiles.len().div_ceil(per_row);
+    let acc_h = ACC_ROW_H + (acc_rows - 1) as f32 * (ACC_TILE + ACC_ROW_GAP);
+    let card = b.card(MASCOT_ROW_H + 3.0 * ROW_H + acc_h);
     let rows = [
         card.y,
-        card.y + ROW_H,
-        card.y + 2.0 * ROW_H,
-        card.y + 3.0 * ROW_H,
+        card.y + MASCOT_ROW_H,
+        card.y + MASCOT_ROW_H + ROW_H,
+        card.y + MASCOT_ROW_H + 2.0 * ROW_H,
+        card.y + MASCOT_ROW_H + 3.0 * ROW_H,
     ];
     let cy = |y: f32| y + ROW_H / 2.0;
 
-    let x = b.toggle(Hit::Robot, b.g.right, cy(rows[0]), on);
-    let desc = Some((b.t(Key::RobotInNotchDesc), Tone::Secondary));
-    b.row_text(card, rows[0], b.t(Key::RobotInNotch), desc, false, x);
+    // "Maskot": a tile for each, the chosen one's name as the description.
+    let n = Mascot::ALL.len() as f32;
+    let x0 = b.g.right - (n * ACC_TILE + (n - 1.0) * SWATCH_GAP);
+    let items = Mascot::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            let r = Rect {
+                x: x0 + i as f32 * (ACC_TILE + SWATCH_GAP),
+                y: rows[0] + (MASCOT_ROW_H - ACC_TILE) / 2.0,
+                w: ACC_TILE,
+                h: ACC_TILE,
+            };
+            (*v, r)
+        })
+        .collect();
+    b.l.controls.push(Control::MascotTiles {
+        items,
+        selected: s.mascot,
+        enabled: on,
+    });
+    let desc = Some((b.t(mascot_key(s.mascot)), Tone::Secondary));
+    let text_y = rows[0] + (MASCOT_ROW_H - ROW_H) / 2.0;
+    b.row_text(card, text_y, b.t(Key::MascotLabel), desc, false, x0);
 
-    // "Warna": the four coats; the chosen one's name is the description.
-    let n = CatColor::ALL.len() as f32;
+    let x = b.toggle(Hit::Robot, b.g.right, cy(rows[1]), on);
+    let desc = Some((b.t(Key::RobotInNotchDesc), Tone::Secondary));
+    b.row_text(card, rows[1], b.t(Key::RobotInNotch), desc, false, x);
+    b.divider(card, rows[1]);
+
+    // "Warna": the chosen mascot's coats; the chosen one's name is the
+    // description.
+    let coats = Coat::all_of(s.mascot);
+    let n = coats.len() as f32;
     let x0 = b.g.right - (n * SWATCH + (n - 1.0) * SWATCH_GAP);
-    let items = CatColor::ALL
+    let items = coats
         .iter()
         .enumerate()
         .map(|(i, v)| {
             let r = Rect {
                 x: x0 + i as f32 * (SWATCH + SWATCH_GAP),
-                y: cy(rows[1]) - SWATCH / 2.0,
+                y: cy(rows[2]) - SWATCH / 2.0,
                 w: SWATCH,
                 h: SWATCH,
             };
             (*v, r)
         })
         .collect();
-    b.l.controls.push(Control::CatSwatches {
+    b.l.controls.push(Control::CoatSwatches {
         items,
-        selected: s.cat_color,
+        selected: s.coat(),
         enabled: on,
     });
-    let desc = Some((b.t(cat_color_key(s.cat_color)), Tone::Secondary));
+    let desc = Some((b.t(coat_key(s.coat())), Tone::Secondary));
     b.row_text(
         card,
-        rows[1],
+        rows[2],
         b.t(Key::CatColorLabel),
         desc,
         false,
         x0 - SWATCH_SLOP,
     );
-    b.divider(card, rows[1]);
+    b.divider(card, rows[2]);
 
     // "Latar: <name>" and "Ubah": the picker lives in Tampilan.
     let change = b.t(Key::CatBackdropChange);
     let w = b.button_w(&[&change], ButtonKind::Secondary);
     let item = (Hit::CatBackdrop, change, ButtonKind::Secondary, on, w);
-    let x = b.buttons(b.g.right, cy(rows[2]), vec![item]);
-    let shown = s.surface.resolve(s.cat_color, s.robot);
+    let x = b.buttons(b.g.right, cy(rows[3]), vec![item]);
+    let shown = s.surface.resolve(s.coat(), s.robot);
     let label = format!(
         "{}: {}",
         b.t(Key::CatBackdrop),
         text(b.lang, surface_key(shown))
     );
     let desc = (s.surface == Surface::Auto).then(|| (b.t(Key::SurfaceAuto), Tone::Secondary));
-    b.row_text(card, rows[2], label, desc, false, x);
-    b.divider(card, rows[2]);
+    b.row_text(card, rows[3], label, desc, false, x);
+    b.divider(card, rows[3]);
 
-    // "Aksesori": the chosen one's name, and a tile for each below it.
+    // "Aksesori": the chosen one's name, and the tiles below it, spread over
+    // the card's width in rows of `per_row`.
     let name = b.t(accessory_key(s.cat_accessory));
     b.row_text(
         card,
-        rows[3],
+        rows[4],
         b.t(Key::CatAccessoryLabel),
         Some((name, Tone::Secondary)),
         false,
         b.g.right,
     );
-    let n = CatAccessory::ALL.len() as f32;
-    let gap = (b.g.right - (card.x + INSET) - n * ACC_TILE) / (n - 1.0);
-    let items = CatAccessory::ALL
+    let cols = per_row as f32;
+    let gap = (span - cols * ACC_TILE) / (cols - 1.0).max(1.0);
+    let items = tiles
         .iter()
         .enumerate()
         .map(|(i, v)| {
+            let (row, col) = ((i / per_row) as f32, (i % per_row) as f32);
             let r = Rect {
-                x: card.x + INSET + i as f32 * (ACC_TILE + gap),
-                y: rows[3] + ROW_H,
+                x: card.x + INSET + col * (ACC_TILE + gap),
+                y: rows[4] + ROW_H + row * (ACC_TILE + ACC_ROW_GAP),
                 w: ACC_TILE,
                 h: ACC_TILE,
             };
@@ -3557,7 +3682,7 @@ fn cat_page(b: &mut Builder, s: &State) {
         selected: s.cat_accessory,
         enabled: on,
     });
-    b.divider(card, rows[3]);
+    b.divider(card, rows[4]);
 
     cat_motion_card(b, s);
 
@@ -6026,6 +6151,8 @@ mod tests {
                     (None, true, true),
                 ] {
                     let hooks = hooks.map(|(complete, any)| HookState { complete, any });
+                    // Every mascot in turn, so each page is checked with all three.
+                    let mascot = Mascot::ALL[out.len() % Mascot::ALL.len()];
                     out.push(State {
                         lang,
                         style: Style::Notch,
@@ -6059,6 +6186,17 @@ mod tests {
                         robot_motion: if locked { Motion::Off } else { Motion::Saver },
                         robot_sleep: if locked { 60 } else { 1 },
                         greeting: locked,
+                        mascot,
+                        falk_color: if locked {
+                            FalkColor::WhiteFace
+                        } else {
+                            FalkColor::Lutino
+                        },
+                        octopus_color: if locked {
+                            OctopusColor::Purple
+                        } else {
+                            OctopusColor::Coral
+                        },
                         cat_color: if locked {
                             CatColor::Black
                         } else {
@@ -7066,7 +7204,7 @@ mod tests {
                         "{v:?}"
                     );
                 }
-                let name = surface_label(lang, surface, CatColor::Calico, true);
+                let name = surface_label(lang, surface, Coat::Cat(CatColor::Calico), true);
                 assert!(l.texts.iter().any(|t| t.text == name), "{name}");
                 // Seven swatches plus the hit slop leave "Warna dasar" and its
                 // description room to the left, at the 720x520 minimum.
@@ -7115,12 +7253,12 @@ mod tests {
         }
         // Names and the cat colours' keys differ by language.
         assert_eq!(
-            surface_label(Lang::Id, Surface::Sea, CatColor::Terracotta, true),
+            surface_label(Lang::Id, Surface::Sea, Coat::Cat(CatColor::Terracotta), true),
             "Laut"
         );
         assert_eq!(
-            surface_label(Lang::En, Surface::Auto, CatColor::Black, false),
-            "Match cat · Espresso"
+            surface_label(Lang::En, Surface::Auto, Coat::Cat(CatColor::Black), false),
+            "Match mascot · Espresso"
         );
     }
 
@@ -10813,6 +10951,8 @@ mod tests {
             ("appearance", Section::Appearance),
             ("kucing", Section::Cat),
             ("cat", Section::Cat),
+            ("maskot", Section::Cat),
+            ("mascot", Section::Cat),
             ("panel", Section::Panel),
             ("widgets", Section::Widgets),
             ("widget", Section::Widgets),
@@ -10836,7 +10976,7 @@ mod tests {
                 [
                     "Umum",
                     "Tampilan",
-                    "Kucing",
+                    "Maskot",
                     "Panel",
                     "Widget",
                     "Clipboard",
@@ -10851,7 +10991,7 @@ mod tests {
                 [
                     "General",
                     "Appearance",
-                    "Cat",
+                    "Mascot",
                     "Panel",
                     "Widgets",
                     "Clipboard",
@@ -11112,20 +11252,17 @@ mod tests {
                     .controls
                     .iter()
                     .find_map(|c| match c {
-                        Control::CatSwatches {
+                        Control::CoatSwatches {
                             items, selected, ..
                         } => Some((items.clone(), *selected)),
                         _ => None,
                     })
                     .expect("coat swatches");
-                let order: Vec<CatColor> = items.iter().map(|(v, _)| *v).collect();
-                assert_eq!(order, CatColor::ALL);
-                assert_eq!(selected, color);
+                let order: Vec<Coat> = items.iter().map(|(v, _)| *v).collect();
+                assert_eq!(order, Coat::all_of(Mascot::Cat));
+                assert_eq!(selected, Coat::Cat(color));
                 for (v, r) in &items {
-                    assert_eq!(
-                        l.hit(r.x + r.w / 2.0, r.y + r.h / 2.0),
-                        Some(Hit::CatColor(*v))
-                    );
+                    assert_eq!(l.hit(r.x + r.w / 2.0, r.y + r.h / 2.0), Some(coat_hit(*v)));
                 }
                 assert!(
                     l.texts
@@ -11134,7 +11271,7 @@ mod tests {
                 );
                 // "Latar: <name>" with "Ubah", which goes to Tampilan: there is
                 // no second surface picker on this page.
-                let shown = Surface::Auto.resolve(color, true);
+                let shown = Surface::Auto.resolve(Coat::Cat(color), true);
                 let line = format!(
                     "{}: {}",
                     text(lang, Key::CatBackdrop),
@@ -11151,8 +11288,8 @@ mod tests {
                         .any(|c| matches!(c, Control::SurfaceSwatches { .. })),
                     "the base color is picked in Tampilan only"
                 );
-                // "Aksesori": a tile for each of the seven, Tanpa first, the
-                // chosen one marked, in one row inside the card.
+                // "Aksesori": a tile for each of the ten, Tanpa first, the
+                // chosen one marked, in rows of five inside the card.
                 let (tiles, chosen) = l
                     .controls
                     .iter()
@@ -11168,17 +11305,27 @@ mod tests {
                 assert_eq!(order[0], CatAccessory::None);
                 assert_eq!(chosen, accessory);
                 let card = l.cards[1];
+                // The second row is under the fold at the minimum height; a
+                // tall window shows (and clicks) them all.
+                let tall = layout_in(Section::Cat, &s, &Estimate, TALL);
                 for (v, r) in &tiles {
                     assert!(inside(*r, card), "{v:?} {r:?}");
-                    assert_eq!(r.y, tiles[0].1.y, "one row");
                     assert_eq!(
-                        l.hit(r.x + r.w / 2.0, r.y + r.h / 2.0),
+                        tall.hit(r.x + r.w / 2.0, r.y + r.h / 2.0),
                         Some(Hit::CatAccessory(*v))
                     );
                 }
-                for pair in tiles.windows(2) {
-                    assert!(pair[0].1.right() < pair[1].1.x, "apart");
+                for (row, five) in tiles.chunks(5).enumerate() {
+                    for (_, r) in five {
+                        assert_eq!(r.y, five[0].1.y, "row {row}");
+                    }
+                    for pair in five.windows(2) {
+                        assert!(pair[0].1.right() < pair[1].1.x, "apart");
+                    }
                 }
+                assert!(tiles[5].1.y >= tiles[0].1.bottom() + 12.0, "the second row below");
+                // The columns line up.
+                assert_eq!(tiles[5].1.x, tiles[0].1.x);
                 assert!(
                     l.texts
                         .iter()
@@ -11193,6 +11340,152 @@ mod tests {
                     Hit::CatColor(_) | Hit::CatAccessory(_) | Hit::CatBackdrop
                 )));
                 assert!(hits.contains(&Hit::Robot));
+            }
+        }
+    }
+
+    fn layout_for(s: State<'static>, section: Section, w: f32, h: f32) -> Layout {
+        layout_in(section, &s, &Estimate, (w, h))
+    }
+
+    /// The "Maskot" row's tiles, and the one chosen.
+    fn mascot_tiles(l: &Layout) -> Vec<(Mascot, Rect)> {
+        l.controls
+            .iter()
+            .find_map(|c| match c {
+                Control::MascotTiles { items, .. } => Some(items.clone()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    fn coat_swatches(l: &Layout) -> Vec<(Coat, Rect)> {
+        l.controls
+            .iter()
+            .find_map(|c| match c {
+                Control::CoatSwatches { items, .. } => Some(items.clone()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    fn accessory_tiles(l: &Layout) -> Vec<(CatAccessory, Rect)> {
+        l.controls
+            .iter()
+            .find_map(|c| match c {
+                Control::AccessoryTiles { items, .. } => Some(items.clone()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    /// No two controls' areas meet.
+    fn assert_no_overlap(controls: &[Control]) {
+        for (i, a) in controls.iter().enumerate() {
+            for b in &controls[i + 1..] {
+                assert!(!overlaps(a.bounds(), b.bounds()), "{a:?} / {b:?}");
+            }
+        }
+    }
+
+    /// Every control, and every tile and swatch on its own, inside a card.
+    fn assert_inside_cards(l: &Layout) {
+        let within = |r: Rect| l.cards.iter().any(|card| inside(r, *card));
+        for c in &l.controls {
+            assert!(within(c.bounds()), "{c:?} outside every card");
+        }
+        for (_, r) in mascot_tiles(l) {
+            assert!(within(r), "{r:?}");
+        }
+        for (_, r) in accessory_tiles(l) {
+            assert!(within(r), "{r:?}");
+        }
+    }
+
+    #[test]
+    fn the_maskot_page_offers_three_mascots_and_their_coats() {
+        for lang in [Lang::Id, Lang::En] {
+            for m in Mascot::ALL {
+                for (w, h) in [(CLIENT_W, CLIENT_H), (1400.0, 900.0)] {
+                    let s = State {
+                        lang,
+                        robot: true,
+                        mascot: *m,
+                        falk_color: FalkColor::Grey,
+                        octopus_color: OctopusColor::Blue,
+                        ..states()[0].clone()
+                    };
+                    let l = layout_for(s.clone(), Section::Cat, w, h);
+                    let tiles = mascot_tiles(&l);
+                    assert_eq!(tiles.len(), 3);
+                    let order: Vec<Mascot> = tiles.iter().map(|(v, _)| *v).collect();
+                    assert_eq!(order, Mascot::ALL);
+                    let want = match m {
+                        Mascot::Cat => 4,
+                        Mascot::Falk => 3,
+                        Mascot::Octopus => 4,
+                    };
+                    let coats = coat_swatches(&l);
+                    assert_eq!(coats.len(), want, "{m:?}");
+                    // Only the chosen mascot's coats, its own chosen one marked.
+                    let shown: Vec<Coat> = coats.iter().map(|(c, _)| *c).collect();
+                    assert_eq!(shown, Coat::all_of(*m));
+                    let selected = l.controls.iter().find_map(|c| match c {
+                        Control::CoatSwatches { selected, .. } => Some(*selected),
+                        _ => None,
+                    });
+                    assert_eq!(selected, Some(s.coat()));
+                    assert_eq!(accessory_tiles(&l).len(), 10);
+                    assert_no_overlap(&l.controls);
+                    assert_inside_cards(&l);
+                    // A click on a tile picks that mascot, on a swatch that coat.
+                    for (v, r) in &tiles {
+                        assert_eq!(r.w, ACC_TILE);
+                        assert_eq!(
+                            l.hit(r.x + r.w / 2.0, r.y + r.h / 2.0),
+                            Some(Hit::Mascot(*v))
+                        );
+                    }
+                    for (c, r) in &coats {
+                        assert_eq!(l.hit(r.x + r.w / 2.0, r.y + r.h / 2.0), Some(coat_hit(*c)));
+                    }
+                    // "Maskot" names the chosen one, "Warna" its coat.
+                    let says = |t: &str| l.texts.iter().any(|x| x.text == t);
+                    assert!(says(text(lang, Key::MascotLabel)));
+                    assert!(says(text(lang, mascot_key(*m))), "{lang:?} {m:?}");
+                    assert!(says(text(lang, coat_key(s.coat()))), "{lang:?} {m:?}");
+                    // The mascot row comes first, above "Maskot di notch".
+                    let robot = l
+                        .controls
+                        .iter()
+                        .find_map(|c| match c {
+                            Control::Toggle { hit: Hit::Robot, rect, .. } => Some(*rect),
+                            _ => None,
+                        })
+                        .expect("the toggle");
+                    assert!(tiles[0].1.bottom() < robot.y);
+                    // The accessories: rows of at most five where ten do not
+                    // fit, one row where they do.
+                    let acc = accessory_tiles(&l);
+                    let mut rows: Vec<f32> = acc.iter().map(|(_, r)| r.y).collect();
+                    rows.dedup();
+                    if w == CLIENT_W {
+                        assert_eq!(rows.len(), 2);
+                    } else {
+                        assert_eq!(rows.len(), 1);
+                    }
+                    if rows.len() > 1 {
+                        for y in &rows {
+                            assert!(acc.iter().filter(|(_, r)| r.y == *y).count() <= 5);
+                        }
+                    }
+                    // Off: the tiles fade and take no clicks.
+                    let off = layout_for(State { robot: false, ..s }, Section::Cat, w, h);
+                    let picks = off.hits().into_iter().filter(|(h, _)| {
+                        matches!(h, Hit::Mascot(_) | Hit::FalkColor(_) | Hit::OctopusColor(_))
+                    });
+                    assert_eq!(picks.count(), 0);
+                }
             }
         }
     }
@@ -12263,7 +12556,8 @@ mod tests {
                 .controls
                 .iter()
                 .find_map(|c| match c {
-                    Control::AccessoryTiles { items, .. } => Some(items[0].1),
+                    // The last tile: ten tiles may wrap into two rows.
+                    Control::AccessoryTiles { items, .. } => items.last().map(|i| i.1),
                     _ => None,
                 })
                 .expect("tiles");
