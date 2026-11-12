@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Maskot falk dan gurita</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&display=swap" rel="stylesheet">
+<style>
+  /* Cream paper like Vale's design sheets; the mascots sit on the notch's espresso. */
+  :root {
+    --paper: #F4EDE4; --card: #FFFBF5; --ink: #231C18; --ink-2: #5E5045;
+    --line: #D9CBBB; --edge: #8C7B6C; --pick: #A8451F; --notch: #17120F; --notch-text: #F4EDE4;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--paper); color: var(--ink); font: 16px/1.5 "DM Sans", system-ui, sans-serif; }
+  main { max-width: 1160px; margin: 0 auto; padding: 32px 16px 80px; }
+  h1 { font-size: 34px; line-height: 1.15; margin: 0 0 8px; letter-spacing: -0.01em; }
+  h2 { font-size: 22px; margin: 48px 0 4px; }
+  h3 { margin: 28px 0 4px; }
+  p { margin: 0 0 12px; max-width: 72ch; }
+  .lead { color: var(--ink-2); font-size: 17px; }
+  .muted { color: var(--ink-2); }
+  small { font-size: 14px; }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  button:focus-visible { outline: 3px solid var(--ink); outline-offset: 3px; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; margin-top: 16px; }
+  .shape { text-align: left; border: 2px solid var(--edge); border-radius: 14px; background: var(--card); padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+  .shape[aria-pressed="true"] { border-color: var(--pick); box-shadow: inset 0 0 0 1px var(--pick); }
+  .ref { border: 1px dashed var(--edge); border-radius: 14px; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+  .stage { background: var(--notch); border-radius: 10px; display: grid; place-items: center; padding: 6px 0; }
+  .stage svg { width: 100%; max-width: 250px; height: auto; display: block; overflow: visible; }
+  .name { font-weight: 700; font-size: 17px; }
+  .pickmark { font-size: 14px; font-weight: 500; color: var(--pick); min-height: 21px; }
+  .shape[aria-pressed="false"] .pickmark::after { content: "Klik untuk pilih"; color: var(--ink-2); }
+  .shape[aria-pressed="true"] .pickmark::after { content: "Dipilih"; }
+  .notch { background: var(--notch); color: var(--notch-text); width: 200px; height: 32px; border-radius: 0 0 14px 14px;
+    display: flex; align-items: center; justify-content: center; gap: 10px; font-size: 13px; font-weight: 500; font-variant-numeric: tabular-nums; }
+  .notch svg { width: 26px; height: 26px; overflow: visible; }
+  .realsize { font-size: 13px; color: var(--ink-2); }
+
+  .coats { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 12px; }
+  .coat { text-align: center; }
+  .coat .tile { width: 110px; height: 110px; }
+  .coat .tile svg { width: 92px; height: 92px; }
+  .coat div { font-size: 14px; font-weight: 500; margin-top: 4px; }
+
+  .acc-wrap { overflow-x: auto; margin-top: 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); }
+  table { border-collapse: collapse; width: 100%; min-width: 560px; }
+  th, td { padding: 6px 8px; text-align: center; border-bottom: 1px solid var(--line); }
+  th { font-size: 14px; font-weight: 500; color: var(--ink-2); }
+  td.label { text-align: left; font-weight: 500; white-space: nowrap; }
+  tr.divider td { background: var(--paper); font-size: 14px; color: var(--ink-2); text-align: left; padding: 8px 10px; }
+  .tile { background: var(--notch); border-radius: 10px; width: 100px; height: 100px; display: inline-grid; place-items: center; }
+  .tile svg { width: 84px; height: 84px; overflow: visible; }
+  .want { border: 2px solid var(--edge); background: var(--card); border-radius: 8px; padding: 8px 12px; min-height: 44px; font-size: 14px; font-weight: 500; }
+  .want[aria-pressed="true"] { border-color: var(--pick); color: var(--pick); }
+  .want[aria-pressed="true"]::before { content: "✓ "; }
+
+  .states { display: flex; flex-wrap: wrap; gap: 8px; margin: 20px 0 16px; }
+  .state { border: 1px solid var(--edge); background: var(--card); border-radius: 999px; padding: 8px 16px; min-height: 44px; font-weight: 500; }
+  .state[aria-pressed="true"] { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+  .trio { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+  .trio figure { margin: 0; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 12px; }
+  .trio figcaption { font-weight: 700; margin-bottom: 10px; }
+  .trio .stage { cursor: crosshair; }
+  .what { margin-top: 16px; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; }
+  .what dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; }
+  .what dt { font-weight: 700; }
+  .what dd { margin: 0; }
+  .extras { display: grid; gap: 8px; margin-top: 12px; }
+  .extras .want { text-align: left; }
+  .power { margin-top: 32px; padding: 16px; border-radius: 14px; background: #E9DFD2; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Falk dan gurita duduk</h1>
+  <p class="lead">Burungnya sekarang falk (cockatiel) dari foto lo: jambul kuning tinggi, muka kuning, pipi oranye, paruh kecil merah muda, bahu abu-abu, ekor panjang. Gurita duduk tetap. Di bawah ada aksesoris dan animasi buat dua-duanya.</p>
+
+  <h2>1. Jambul falk</h2>
+  <p class="muted">Jambul ini yang gantiin telinga kucing. Kayak falk beneran: tegak waktu kaget, agak miring waktu santai, rebah ke belakang waktu tidur.</p>
+  <div class="grid" id="crests"></div>
+
+  <h3>Warna bulu (nanti)</h3>
+  <p class="muted">Falk asli punya beberapa warna, jadi bisa jadi pilihan warna kayak bulu kucing. Ini cuma gambaran, dibahas setelah bentuknya fix.</p>
+  <div class="coats" id="coats"></div>
+
+  <h2>2. Aksesoris</h2>
+  <p class="muted">Enam aksesoris kucing dipasang ke falk dan gurita duduk. Jambul falk tetap nongol di atas topi. Tiga di bawah garis itu ide baru, tandai yang mau dibuat (bisa dipakai kucing juga).</p>
+  <div class="acc-wrap"><table id="acc"></table></div>
+
+  <h2>3. Animasi</h2>
+  <p class="muted">Pilih keadaan, ketiganya ikut. Gerakkan mouse di atas kotak gelap saat Diam buat lihat mereka nengok.</p>
+  <div class="states" id="states" role="group" aria-label="Keadaan maskot"></div>
+  <div class="trio" id="trio"></div>
+  <div class="what" id="what" aria-live="polite"></div>
+
+  <h3>Ide tambahan</h3>
+  <p class="muted">Di luar gerakan kucing yang sudah ada. Tandai kalau mau.</p>
+  <div class="extras" id="extras"></div>
+
+  <p class="power"><strong>Biaya saat diam tetap nol.</strong> Tidak ada yang bergerak terus-terusan. Kedip pakai timer sekali-jalan yang sama dengan kucing, joget ikut timer equalizer yang memang jalan saat musik, ngetik ikut timer ketik, dan lompat atau senang cuma jalan selama gerakannya (0,1 sampai 0,5 detik). Jambul dan kaki gurita tidak bergoyang sendiri saat diam.</p>
+</main>
+
+<script>
+(() => {
+  const D = '#17120F', CR = '#F4EDE4';
+  const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let uid = 0;
+  const pill = (x, y, w, h, c = D) => `<rect x="${x - w / 2}" y="${y - h / 2}" width="${w}" height="${h}" rx="${Math.min(w, h) / 2}" fill="${c}"/>`;
+  const dot = (x, y, r, c) => `<circle cx="${x}" cy="${y}" r="${r}" fill="${c}"/>`;
+  const st = (d, w = 2.4, c = D, o = 1) => `<path d="${d}" fill="none" stroke="${c}" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round" opacity="${o}"/>`;
+  const mix = (a, b, t) => {
+    const p = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+    const A = p(a), B = p(b);
+    return '#' + A.map((v, i) => Math.round(v + (B[i] - v) * t).toString(16).padStart(2, '0')).join('');
+  };
+
+  const COATS = {
+    lutino: { label: 'Lutino (foto lo)', body: '#F1E4A2', face: '#F6D04A', crest: '#F6D04A', cheek: '#EC6B3A', wing: '#E2D7B4', tail: '#E2D7B4' },
+    grey:   { label: 'Abu-abu', body: '#9A959C', face: '#F2D35A', crest: '#E9CF62', cheek: '#EC6B3A', wing: '#837E87', tail: '#837E87' },
+    white:  { label: 'Muka putih', body: '#9A959C', face: '#F4EFE6', crest: '#E4DED6', cheek: null, wing: '#837E87', tail: '#837E87' },
+  };
+  const BEAK = '#D9978F';
+
+  const M = {
+    cat:    { label: 'Kucing', col: '#E2683C', top: [32, 24], L: [16, 23], R: [45, 23], neck: [49.5, 54], tie: [32, 51.5], hp: [7, 57, 41, 16], eyeDy: 0 },
+    falkA:  { label: 'Falk A: jambul tinggi', crest: 'A', top: [32, 26], L: [20, 29], R: [44, 29], neck: [48.5, 53.5], tie: [32, 52], hp: [9, 55, 40, 17], eyeDy: 0, scarf: '#2F4A7A',
+              desc: 'Kayak di foto: empat helai panjang, yang tengah paling tinggi dan ujungnya melengkung ke belakang. Paling mirip falk, paling kelihatan di notch.' },
+    falkB:  { label: 'Falk B: jambul pendek', crest: 'B', top: [32, 26], L: [20, 29], R: [44, 29], neck: [48.5, 53.5], tie: [32, 52], hp: [9, 55, 40, 17], eyeDy: 0, scarf: '#2F4A7A',
+              desc: 'Tiga helai lebih pendek dan rapi, melengkung ke belakang. Lebih imut dan lebih banyak ruang buat topi, tapi kurang "falk".' },
+    octSit: { label: 'Gurita duduk', col: '#E87C8E', shade: '#C25A6D', sucker: '#F8C9D1', top: [32, 9], L: [19, 17], R: [45, 17], neck: [43.5, 47.5], tie: [32, 45.5], hp: [11, 53, 33, 3], eyeDy: -3 },
+  };
+
+  function pose(state, t) {
+    const p = { lift: 0, bob: 0, tilt: 0, nod: 0, flap: 0, wave: null, curl: 0, splay: 0, limp: 0, earUp: 0, earDroop: 0,
+                crestRot: 10, crestScale: 1, crestSway: 0, dancing: false, sing: false, note: null, paws: null, flush: 0 };
+    switch (state) {
+      case 'happy': p.lift = -4; p.curl = 1; p.crestRot = 2; p.crestScale = 1.08; break;
+      case 'dance': {
+        const b = Math.sin(Math.PI * t / 600) ** 2;
+        p.nod = b; p.flap = b; p.dancing = true; p.sing = true; p.crestSway = Math.sin(Math.PI * t / 600) * 9; p.crestRot = 6;
+        const q = (t % 1200) / 1200; p.note = { rise: 1 - (1 - q) ** 3, fade: q < 0.5 ? 0 : (q - 0.5) * 2 };
+        break;
+      }
+      case 'alert': {
+        const c = t % 2500; // replayed for the demo; plays once in the app
+        p.lift = c < 520 ? -Math.abs(Math.sin(Math.PI * c / 260)) * 4 : 0;
+        p.bob = -1.5; p.earUp = 4; p.crestRot = -4; p.crestScale = 1.22; p.splay = 1; p.flap = 0.6;
+        p.flush = c < 700 ? Math.sin(Math.PI * c / 700) : 0;
+        break;
+      }
+      case 'sleep': p.bob = 1.5; p.earDroop = 4; p.crestRot = 62; p.crestScale = 0.8; p.limp = 1; break;
+      case 'sad': p.bob = 1.5; p.earDroop = 8; p.crestRot = 46; p.crestScale = 0.75; p.limp = 1; break;
+      case 'wave': p.wave = Math.sin(t / 140); break;
+      case 'typing': {
+        p.tilt = -4; const s = Math.floor(t / 155);
+        p.paws = (t % 8000) > 7100 ? [0, 0] : (s % 2 ? [1.6, 0] : [0, 1.6]);
+        break;
+      }
+    }
+    return p;
+  }
+
+  const BLINKS = ['idle', 'focus', 'alert', 'sad', 'typing'];
+  function eyes(state, blink) {
+    const L = 24, R = 40, Y = 40;
+    if (blink && BLINKS.includes(state)) return st(`M${L - 3.4} ${Y + 0.8}h6.8M${R - 3.4} ${Y + 0.8}h6.8`);
+    switch (state) {
+      case 'focus': return pill(L, Y + 1, 6, 4) + pill(R, Y + 1, 6, 4);
+      case 'happy': case 'dance': case 'wave': return st(`M${L - 3.8} ${Y + 1.8}q3.8 -5.4 7.6 0M${R - 3.8} ${Y + 1.8}q3.8 -5.4 7.6 0`);
+      case 'alert': return dot(L, Y, 4.6, D) + dot(R, Y, 4.6, D);
+      case 'sleep': return st(`M${L - 3.6} ${Y}q3.6 3.4 7.2 0M${R - 3.6} ${Y}q3.6 3.4 7.2 0`, 2.2);
+      case 'sad': return pill(L, Y + 2.5, 5.6, 5) + pill(R, Y + 2.5, 5.6, 5);
+      default: return pill(L, Y, 5.6, 10) + pill(R, Y, 5.6, 10);
+    }
+  }
+  const note = (x, y, o) => `<g opacity="${o}"><path d="M${x} ${y}v-8l5-1.5v8" fill="none" stroke="${CR}" stroke-width="1.6" stroke-linecap="round"/>${dot(x - 1.6, y, 1.9, CR)}${dot(x + 3.4, y - 1.5, 1.9, CR)}</g>`;
+  const zz = () => st('M55 3h5l-5 5.5h5M62 -4h3.6l-3.6 4h3.6', 1.5, CR, 0.85);
+  const heart = (x, y) => `<path d="M${x} ${y + 3}C${x - 4} ${y - 1} ${x - 5.5} ${y + 2.5} ${x - 3} ${y + 5}L${x} ${y + 8}L${x + 3} ${y + 5}C${x + 5.5} ${y + 2.5} ${x + 4} ${y - 1} ${x} ${y + 3}Z" fill="${CR}"/>`;
+
+  // ---------- cat (reference) ----------
+  const HEAD = 'M7 50V41Q7 24 32 24Q57 24 57 41V50Q57 54 53 54H11Q7 54 7 50Z';
+  function cat(p, a) {
+    const ear = (side) => {
+      const pts = side < 0 ? [[9, 37], [12, 10 - p.earUp], [27, 26]] : [[55, 37], [52, 10 - p.earUp], [37, 26]];
+      const rot = side < 0 ? -p.earDroop * 3 : p.earDroop * 3;
+      return `<g transform="rotate(${rot} ${side < 0 ? '17 30' : '47 30'})"><path d="M${pts[0]}L${pts[1]}L${pts[2]}Z" fill="${a.col}" stroke="${a.col}" stroke-width="5" stroke-linejoin="round"/></g>`;
+    };
+    return { back: '', body: ear(-1) + ear(1) + `<path d="${HEAD}" fill="${a.col}"/>`, under: '', front: '', beak: '', clip: `<path d="${HEAD}"/>` };
+  }
+
+  // ---------- falk ----------
+  const FALK = 'M9 43Q9 22 32 22Q55 22 55 43Q55 57 32 57Q9 57 9 43Z';
+  // A tapered feather from base (bx, by) to tip (tx, ty), half-width w, bent sideways by `bend`.
+  function feather(bx, by, tx, ty, w, bend, c) {
+    const dx = tx - bx, dy = ty - by, l = Math.hypot(dx, dy), nx = -dy / l, ny = dx / l;
+    const mx = (bx + tx) / 2 + nx * bend, my = (by + ty) / 2 + ny * bend;
+    return `<path d="M${bx} ${by}Q${mx + nx * w} ${my + ny * w} ${tx} ${ty}Q${mx - nx * w} ${my - ny * w} ${bx} ${by}Z" fill="${c}"/>`;
+  }
+  const CRESTS = {
+    A: [[28, 27, 27, 11, 2.8, -3.5], [30.5, 26, 35, 3, 3.2, -5], [33, 26, 42, 6, 3.2, -5], [35.5, 27, 46, 14, 2.6, -3.5]],
+    B: [[29, 27, 28, 15, 3, -2], [31.5, 26, 35, 12, 3.4, -2.8], [34.5, 27, 42, 16.5, 2.8, -2.2]],
+  };
+  function falk(p, a, t, clipId, coat) {
+    const k = COATS[coat];
+    const rot = p.crestRot + p.crestSway;
+    const crest = `<g transform="rotate(${rot} 32 27) translate(32 27) scale(${p.crestScale}) translate(-32 -27)">` +
+      `<ellipse cx="32" cy="26" rx="5.5" ry="4" fill="${k.crest}"/>` + CRESTS[a.crest].map(f => feather(...f, k.crest)).join('') + '</g>';
+    const wing = (px, py, dir, ang) => {
+      const d = `M${px} ${py}Q${px + dir * 4.5} ${py + 8} ${px + dir * 1} ${py + 16}Q${px - dir * 3.5} ${py + 8} ${px} ${py}Z`;
+      return `<path d="${d}" fill="${k.wing}" stroke="${k.wing}" stroke-width="1.6" stroke-linejoin="round" transform="rotate(${ang} ${px} ${py})"/>`;
+    };
+    let la = 6 + p.flap * 30, ra = -6 - p.flap * 30;
+    if (p.limp) { la = 0; ra = 0; }
+    if (p.wave !== null) ra = -125 + p.wave * 22;
+    if (p.paws) { la = 0; ra = -2; }
+    const tail = `<g transform="rotate(${p.nod * 7} 26 53)"><path d="M27 51L9 60.5Q9.5 64 13.5 63L30 55Z" fill="${k.tail}" stroke="${k.tail}" stroke-width="1.4" stroke-linejoin="round"/></g>`;
+    const face = `<ellipse cx="32" cy="33" rx="22" ry="17" fill="${k.face}" clip-path="url(#${clipId})"/>`;
+    const cheeks = k.cheek ? dot(15.5, 44.5, 4.4, k.cheek) + dot(48.5, 44.5, 4.4, k.cheek) : '';
+    let beak = `<path d="M29.4 44.2Q32 42.4 34.6 44.2Q34.4 48.4 32 49.8Q29.6 48.4 29.4 44.2Z" fill="${BEAK}"/>`;
+    if (p.sing) beak = `<path d="M29.4 43.8Q32 42 34.6 43.8Q34.2 46.8 32 47.6Q29.8 46.8 29.4 43.8Z" fill="${BEAK}"/><path d="M30.4 49.2Q32 48.6 33.6 49.2Q33 51.2 32 51.4Q31 51.2 30.4 49.2Z" fill="${BEAK}"/>`;
+    return { back: tail + crest, body: `<path d="${FALK}" fill="${k.body}"/>` + face, under: cheeks,
+             front: wing(12.5, 42, -1, la) + wing(51.5, 42, 1, ra), beak, clip: `<path d="${FALK}"/>`, pawColor: k.wing };
+  }
+
+  // ---------- octopus ----------
+  const MANTLE = 'M32 9C50 9 55 25 50 37Q47 45 40 46H24Q17 45 14 37C9 25 14 9 32 9Z';
+  function arm(sx, sy, cx, cy, ex, ey, o, col, sucker, curl = 1) {
+    const k = curl;
+    const d = `M${sx} ${sy}Q${cx} ${cy} ${ex} ${ey}q${o * 3.4 * k} 0.2 ${o * 3.2 * k} ${-3.2 * k}q-0.2 ${-2.4 * k} ${-o * 2.4 * k} ${-2.2 * k}`;
+    let s = `<path d="${d}" fill="none" stroke="${col}" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>`;
+    for (const u of [0.55, 0.8]) {
+      const x = (1 - u) ** 2 * sx + 2 * (1 - u) * u * cx + u * u * ex, y = (1 - u) ** 2 * sy + 2 * (1 - u) * u * cy + u * u * ey;
+      s += dot(x, y + 1.6, 0.85, sucker);
+    }
+    return s;
+  }
+  function octSit(p, a, t, col, extras) {
+    const L = [[19, 42, 8, 51, 3, 54], [24, 45, 15, 57, 9.5, 57.5], [29, 46, 27, 58, 21, 58.5]];
+    let arms = '';
+    [-1, 1].forEach(side => {
+      L.forEach(([sx, sy, cx, cy, ex, ey], i) => {
+        const X = v => side < 0 ? v : 64 - v;
+        let _cx = X(cx), _cy = cy, _ex = X(ex), _ey = ey, curl = 1, o = side < 0 ? -1 : 1;
+        if (i === 2) o = -o;
+        if (p.curl) { _ey -= 3; curl = 1.25; }
+        if (p.splay) { _ex += side * 2.5; _ey -= 2.5; curl = 1.3; }
+        if (p.limp) {
+          if (extras.curlSleep && p.earDroop === 4) { curl = 1.7; _ex = X(ex + 4); _ey = ey - 1; }
+          else { curl = 0.4; _ey += 1; }
+        }
+        if (p.dancing) { const w = Math.sin(t / 190 + i * 1.4 + (side > 0 ? 1 : 0)); _ex += w * 2; _ey -= Math.max(0, w) * 2.5; }
+        if (p.wave !== null && side > 0 && i === 0) { _cx = 58; _cy = 40; _ex = 60 + p.wave * 1.5; _ey = 28 + p.wave * 3; curl = 1.1; }
+        if (p.paws && side < 0 && i < 2) { _cx = X(sx) - 8; _cy = 50; _ex = i === 0 ? 1 : 9.5; _ey = 53 - p.paws[i]; curl = 0.3; }
+        arms += arm(X(sx), sy, _cx, _cy, _ex, _ey, o, col, a.sucker, curl);
+      });
+    });
+    const spots = dot(22, 20, 2.2, a.shade) + dot(40, 15, 1.6, a.shade) + dot(45, 24, 1.3, a.shade);
+    return { back: arms, body: `<path d="${MANTLE}" fill="${col}"/>` + spots, under: '', front: '', beak: '', clip: `<path d="${MANTLE}"/>` };
+  }
+
+  // ---------- accessories ----------
+  const NEW_ACC = ['headphone', 'sailor', 'bowtie'];
+  const ACC = [['none', 'Tanpa'], ['glasses', 'Kacamata'], ['bow', 'Pita'], ['nightcap', 'Topi tidur'], ['scarf', 'Syal'],
+               ['flower', 'Bunga'], ['crown', 'Mahkota'], ['headphone', 'Headphone'], ['sailor', 'Topi pelaut'], ['bowtie', 'Dasi kupu-kupu']];
+  const glasses = () => `<circle cx="24" cy="40" r="6.6" fill="none" stroke="#2B2420" stroke-width="1.9"/><circle cx="40" cy="40" r="6.6" fill="none" stroke="#2B2420" stroke-width="1.9"/>` + st('M30.6 40h2.8', 1.9, '#2B2420');
+  function accessory(name, m, clipId) {
+    const a = M[m], [tx, ty] = a.top;
+    switch (name) {
+      case 'bow': { const [x, y] = a.R; return `<path d="M${x} ${y}l-6 -4v8zM${x} ${y}l6 -4v8z" fill="#D23F6A" stroke="#D23F6A" stroke-width="1.4" stroke-linejoin="round"/>${dot(x, y, 1.9, '#F07A9A')}`; }
+      case 'flower': {
+        const [x, y] = a.L; let s = '';
+        for (let i = 0; i < 5; i++) { const g = (i * 72 - 90) * Math.PI / 180; s += dot(x + Math.cos(g) * 3, y + Math.sin(g) * 3, 2.5, '#F29BB5'); }
+        return s + dot(x, y, 1.8, '#F2B33D');
+      }
+      case 'crown':
+        return `<path d="M${tx - 7} ${ty + 1}V${ty - 6}L${tx - 3.5} ${ty - 2.5}L${tx} ${ty - 8}L${tx + 3.5} ${ty - 2.5}L${tx + 7} ${ty - 6}V${ty + 1}Z" fill="#F2B33D" stroke="#7A5210" stroke-width="${m.startsWith('falk') ? 0.9 : 0}" stroke-linejoin="round"/>`;
+      case 'nightcap':
+        return `<path d="M${tx - 15} ${ty + 3}L${tx + 14} ${ty + 2}L${tx - 13} ${ty - 14}Z" fill="#2F4A7A" stroke="#2F4A7A" stroke-width="2" stroke-linejoin="round"/>` +
+               st(`M${tx - 16} ${ty + 3.2}Q${tx} ${ty - 1.5} ${tx + 15} ${ty + 2.4}`, 3, CR) + dot(tx - 13, ty - 14, 2.5, CR);
+      case 'scarf': {
+        const [y0, y1] = a.neck, c = a.scarf || '#E0A526';
+        const band = m === 'octSit' ? `<rect x="14" y="${y0}" width="36" height="${y1 - y0}" rx="2" fill="${c}"/>`
+                                    : `<rect x="0" y="${y0}" width="64" height="${y1 - y0}" fill="${c}" clip-path="url(#${clipId})"/>`;
+        return band + `<rect x="${m === 'octSit' ? 17 : 13}" y="${y0 + 1}" width="4.5" height="${y1 - y0 + 4}" rx="1.4" fill="${mix(c, '#000000', 0.22)}"/>`;
+      }
+      case 'headphone': {
+        const [x0, x1, y, top] = a.hp;
+        return st(`M${x0 + 1} ${y - 3}C${x0} ${top} ${x1} ${top} ${x1 - 1} ${y - 3}`, 2.6, CR) +
+               `<rect x="${x0 - 3}" y="${y - 6}" width="7" height="12" rx="3" fill="${CR}"/><rect x="${x0 - 1.4}" y="${y - 3.5}" width="3.8" height="7" rx="1.6" fill="#2F4A7A"/>` +
+               `<rect x="${x1 - 4}" y="${y - 6}" width="7" height="12" rx="3" fill="${CR}"/><rect x="${x1 - 2.4}" y="${y - 3.5}" width="3.8" height="7" rx="1.6" fill="#2F4A7A"/>`;
+      }
+      case 'sailor':
+        return `<path d="M${tx - 11} ${ty + 1.5}Q${tx - 12} ${ty - 8} ${tx} ${ty - 9}Q${tx + 12} ${ty - 8} ${tx + 11} ${ty + 1.5}Z" fill="#F6F1EA"/>` +
+               `<rect x="${tx - 11.2}" y="${ty - 2.4}" width="22.4" height="3.6" fill="#2F4A7A"/><rect x="${tx - 13}" y="${ty + 0.6}" width="26" height="2.4" rx="1.2" fill="#2F4A7A"/>`;
+      case 'bowtie': { const [x, y] = a.tie; return `<path d="M${x} ${y}l-6 -3.6v7.2zM${x} ${y}l6 -3.6v7.2z" fill="#2F4A7A" stroke="#2F4A7A" stroke-width="1.2" stroke-linejoin="round"/>${dot(x, y, 1.6, '#5878AE')}`; }
+      default: return '';
+    }
+  }
+
+  // ---------- one drawing ----------
+  function draw(m, o = {}) {
+    const state = o.state || 'idle', t = o.t || 0, look = o.look || 0, acc = o.acc || 'none', extras = o.extras || {};
+    const a = M[m], p = pose(state, t), id = 'c' + (++uid);
+    let parts;
+    if (m === 'cat') parts = cat(p, a);
+    else if (m.startsWith('falk')) parts = falk(p, a, t, id, o.coat || 'lutino');
+    else {
+      const col = extras.flush && p.flush ? mix(a.col, '#D63A55', p.flush) : a.col;
+      parts = octSit(p, a, t, col, extras);
+    }
+    const looks = ['idle', 'happy', 'focus', 'alert', 'sad'].includes(state);
+    const slide = looks ? look * 10 : 0, tilt = (looks ? look * 6 : 0) + p.tilt;
+    const eyeX = looks ? look * 4 : (state === 'typing' ? -3.5 + look * 3 : 0);
+    const eyeY = a.eyeDy + (state === 'typing' ? 1 : 0);
+    const nodDip = p.nod * 3.6, sx = 1 + 0.04 * p.nod, sy = 1 - 0.06 * p.nod;
+    // the falk's happy hop on a finished notice (extra idea)
+    let hop = 0;
+    if (extras.hop && state === 'happy' && m.startsWith('falk')) { const c = t % 1800; hop = c < 400 ? -Math.sin(Math.PI * c / 400) * 3 : 0; }
+
+    let extra = '';
+    if (state === 'dance') extra = `<g transform="translate(0 ${-p.note.rise * 3})">${note(57, 12, 1 - p.note.fade)}</g>`;
+    if (state === 'sleep') extra = zz();
+    if (state === 'wave') extra = heart(4, 1);
+
+    let laptop = '', paws = '';
+    if (state === 'typing') {
+      laptop = `<rect x="-27" y="53" width="36" height="3.4" rx="1.5" fill="#8F857C"/><path d="M-23 54L-17.5 54L-20.5 27.5L-25.6 28.2Z" fill="#4A423C"/>` +
+               `<path d="M-20.5 27.5L-18.4 27.3L-15.3 53.6L-17.5 54Z" fill="#9CC8E8" opacity=".55"/>` + dot(-21.6, 40.5, 1.5, 'rgba(244,237,228,.85)');
+      if (m !== 'octSit') {
+        const pc = m === 'cat' ? a.col : parts.pawColor;
+        paws = `<ellipse cx="1" cy="${52.6 - p.paws[0]}" rx="3.8" ry="2.4" fill="${pc}"/><ellipse cx="9.5" cy="${52.6 - p.paws[1]}" rx="3.8" ry="2.4" fill="${pc}"/>`;
+      }
+    }
+    const face = `<g transform="translate(${eyeX} ${eyeY})">${eyes(state, o.blink)}${parts.beak}${acc === 'glasses' ? glasses() : ''}</g>`;
+    const accs = acc !== 'glasses' ? accessory(acc, m, id) : '';
+
+    return `<defs><clipPath id="${id}">${parts.clip}</clipPath></defs>` +
+      `<g transform="translate(${slide} ${p.lift + p.bob + nodDip + hop})">${laptop}` +
+        `<g transform="rotate(${tilt} 32 40) translate(32 54) scale(${sx} ${sy}) translate(-32 -54)">` +
+          `${parts.back}${parts.body}<g transform="translate(${eyeX * 0.5} ${eyeY})">${parts.under}</g>${face}${parts.front}${accs}` +
+        `</g>${paws}</g>` +
+      `<g transform="translate(${slide * 0.3} ${p.lift + p.bob})">${extra}</g>`;
+  }
+  const svg = (vb, inner, label) => `<svg viewBox="${vb}" role="img" aria-label="${label}">${inner}</svg>`;
+
+  function toggle(b) {
+    const on = b.getAttribute('aria-pressed') !== 'true';
+    b.setAttribute('aria-pressed', String(on));
+    if (window.brainstorm) window.brainstorm.choice(b.dataset.choice, { selected: on });
+    return on;
+  }
+
+  // ---------- 1. crest ----------
+  const crests = document.getElementById('crests');
+  const ref = document.createElement('div');
+  ref.className = 'ref';
+  ref.innerHTML = `<div class="name">Gurita duduk (sudah oke)</div><div class="stage">${svg('-6 -4 76 72', draw('octSit'), 'Gurita duduk')}</div>` +
+    `<div class="notch">${svg('0 0 64 64', draw('octSit'), 'Gurita duduk ukuran asli')}<span>09.41</span></div><span class="realsize">Ukuran asli di notch</span>`;
+  ['falkA', 'falkB'].forEach(m => {
+    const a = M[m], b = document.createElement('button');
+    b.className = 'shape'; b.dataset.choice = 'v3-' + m; b.setAttribute('aria-pressed', 'false');
+    b.innerHTML = `<div class="name">${a.label}</div><div class="stage">${svg('-6 -4 76 72', draw(m), a.label)}</div>` +
+      `<div class="notch">${svg('0 0 64 64', draw(m), a.label + ' ukuran asli')}<span>09.41</span></div>` +
+      `<span class="realsize">Ukuran asli di notch</span><small>${a.desc}</small><span class="pickmark"></span>`;
+    b.addEventListener('click', () => { if (toggle(b)) { falkPick = m; paint(); renderAcc(); } });
+    crests.appendChild(b);
+  });
+  crests.appendChild(ref);
+
+  const coats = document.getElementById('coats');
+  Object.entries(COATS).forEach(([k, c]) => {
+    coats.insertAdjacentHTML('beforeend', `<div class="coat"><span class="tile">${svg('-4 -4 72 72', draw('falkA', { coat: k }), 'Falk ' + c.label)}</span><div>${c.label}</div></div>`);
+  });
+
+  // ---------- 2. accessories ----------
+  let falkPick = 'falkA';
+  const wants = {};
+  function renderAcc() {
+    const COLS = ['cat', falkPick, 'octSit'];
+    let html = '<thead><tr><th scope="col" style="text-align:left">Aksesoris</th>' + COLS.map(c => `<th scope="col">${c.startsWith('falk') ? 'Falk' : M[c].label}</th>`).join('') + '<th scope="col">Mau?</th></tr></thead><tbody>';
+    ACC.forEach(([k, label]) => {
+      if (k === 'headphone') html += `<tr class="divider"><td colspan="${COLS.length + 2}">Ide baru</td></tr>`;
+      const isNew = NEW_ACC.includes(k);
+      html += `<tr><td class="label">${label}</td>` +
+        COLS.map(c => `<td><span class="tile">${svg('-4 -4 72 72', draw(c, { acc: k }), M[c].label + ' dengan ' + label)}</span></td>`).join('') +
+        `<td>${isNew ? `<button class="want" data-choice="aksesoris-${k}" aria-pressed="${!!wants[k]}">Mau ini</button>` : '<span class="muted">sudah ada</span>'}</td></tr>`;
+    });
+    const acc = document.getElementById('acc');
+    acc.innerHTML = html + '</tbody>';
+    acc.querySelectorAll('.want').forEach(b => b.addEventListener('click', () => { wants[b.dataset.choice.slice(10)] = toggle(b); }));
+  }
+  renderAcc();
+
+  // ---------- 3. motion ----------
+  const STATES = [['idle', 'Diam'], ['happy', 'Senang'], ['dance', 'Joget'], ['alert', 'Kaget'], ['sleep', 'Tidur'],
+                  ['sad', 'Lesu'], ['wave', 'Menyapa'], ['typing', 'Mengetik'], ['focus', 'Fokus']];
+  const WHAT = {
+    idle:   ['Notch kosong.', 'Kedip tiap 4 sampai 7 detik, kepala nengok ke kursor.', 'Sama, jambul agak miring ke belakang (santai).', 'Sama, kaki diam.', 'Timer kedip dan cek kursor yang sudah ada.'],
+    happy:  ['Kursor di atas notch.', 'Mata senyum, naik 2 px.', 'Mata senyum, jambul sedikit lebih tegak, naik 2 px.', 'Ujung kaki melingkar ke atas, naik 2 px.', 'Gerak 140 ms, lalu berhenti.'],
+    dance:  ['Musik diputar.', 'Mengangguk ikut bass, not melayang.', 'Mengangguk (falk beneran suka goyang kepala ikut musik), jambul ikut bergoyang, sayap mengepak, paruh terbuka, ekor goyang.', 'Mengangguk, kaki bergelombang bergantian.', 'Timer equalizer yang memang jalan saat musik.'],
+    alert:  ['Pengingat, Claude butuh respon.', 'Telinga berdiri, mata bulat, lompat 2 kali.', 'Jambul berdiri tegak dan tinggi, sayap mengembang, lompat 2 kali.', 'Kaki mekar, lompat 2 kali.', 'Gerak 520 ms, sekali (di halaman ini diulang biar kelihatan).'],
+    sleep:  ['Tidak ada input 10 menit.', 'Mata tertutup, telinga turun, z.', 'Jambul rebah ke belakang, sayap turun, z.', 'Kaki lemas.', 'Tidak ada gerak; cek bangun yang sudah ada.'],
+    sad:    ['Baterai lemah, disk atau RAM tipis.', 'Mata sayu, telinga terkulai.', 'Jambul turun ke belakang, sayap turun.', 'Kaki lemas, mata sayu.', 'Tidak ada gerak.'],
+    wave:   ['Salam pagi, siang, sore.', 'Mata senyum, hati kecil.', 'Sayap kanan melambai.', 'Kaki kanan depan melambai.', 'Kucing diam; lambaian butuh FrameClock selama sapaan tampil (sekitar 3 detik).'],
+    typing: ['Claude, CLI atau Mole sedang kerja.', 'Laptop di kiri, kaki depan ngetik, mata lirik kursor.', 'Ujung sayap yang ngetik, mata lirik kursor.', 'Dua kaki kiri yang ngetik.', 'Timer ketik yang sudah ada.'],
+    focus:  ['Pomodoro jalan.', 'Mata menyipit.', 'Mata menyipit.', 'Mata menyipit.', 'Tidak ada gerak.'],
+  };
+  const EXTRAS = [
+    ['flush', 'Gurita: badannya memerah sebentar saat kaget (ikut gerak lompat, tidak ada timer baru).'],
+    ['hop', 'Falk: lompat kecil saat notifikasi "selesai" (Claude selesai, Disalin), sekitar 400 ms. Coba di keadaan Senang.'],
+    ['curlSleep', 'Gurita: kaki melingkar rapi saat tidur, bukan lurus lemas. Coba di keadaan Tidur.'],
+  ];
+  let state = 'idle', t0 = performance.now(), blink = false;
+  const looks = { cat: 0, falk: 0, oct: 0 }, extrasOn = {};
+
+  const statesEl = document.getElementById('states');
+  STATES.forEach(([k, label]) => {
+    const b = document.createElement('button');
+    b.className = 'state'; b.textContent = label; b.dataset.state = k; b.setAttribute('aria-pressed', String(k === state));
+    b.addEventListener('click', () => {
+      state = k; t0 = performance.now();
+      statesEl.querySelectorAll('.state').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.state === k)));
+      describe(); kick();
+    });
+    statesEl.appendChild(b);
+  });
+  const trio = document.getElementById('trio');
+  [['cat', 'Kucing'], ['falk', 'Falk'], ['oct', 'Gurita duduk']].forEach(([slot, label]) => {
+    const f = document.createElement('figure');
+    f.innerHTML = `<figcaption>${label}</figcaption><div class="stage" data-slot="${slot}"></div>`;
+    trio.appendChild(f);
+    const s = f.querySelector('.stage');
+    s.addEventListener('mousemove', e => { const r = s.getBoundingClientRect(); looks[slot] = Math.max(-1, Math.min(1, ((e.clientX - r.left) / r.width - 0.5) * 2)); if (!running) paint(); });
+    s.addEventListener('mouseleave', () => { looks[slot] = 0; if (!running) paint(); });
+  });
+  function paint() {
+    const t = reduce ? 300 : performance.now() - t0;
+    trio.querySelectorAll('.stage').forEach(s => {
+      const slot = s.dataset.slot, m = slot === 'cat' ? 'cat' : slot === 'falk' ? falkPick : 'octSit';
+      s.innerHTML = svg('-30 -12 100 80', draw(m, { state, t, look: looks[slot], blink, extras: extrasOn }), M[m].label + ', ' + state);
+    });
+  }
+  const moving = () => ['dance', 'alert', 'wave', 'typing'].includes(state) || (state === 'happy' && extrasOn.hop);
+  let running = false;
+  function frame() { if (!moving() || reduce) { running = false; paint(); return; } paint(); requestAnimationFrame(frame); }
+  function kick() { if (!running && moving() && !reduce) { running = true; requestAnimationFrame(frame); } else paint(); }
+  function scheduleBlink() {
+    if (reduce) return;
+    setTimeout(() => { blink = true; if (!running) paint(); setTimeout(() => { blink = false; if (!running) paint(); scheduleBlink(); }, 120); }, 4000 + Math.random() * 3000);
+  }
+  function describe() {
+    const w = WHAT[state];
+    document.getElementById('what').innerHTML = `<dl><dt>Kapan</dt><dd>${w[0]}</dd><dt>Kucing</dt><dd>${w[1]}</dd><dt>Falk</dt><dd>${w[2]}</dd><dt>Gurita</dt><dd>${w[3]}</dd><dt>Jalan di</dt><dd>${w[4]}</dd></dl>`;
+  }
+  const ex = document.getElementById('extras');
+  EXTRAS.forEach(([k, label]) => {
+    const b = document.createElement('button');
+    b.className = 'want'; b.dataset.choice = 'ide-' + k; b.setAttribute('aria-pressed', 'false'); b.textContent = label;
+    b.addEventListener('click', () => { extrasOn[k] = toggle(b); kick(); });
+    ex.appendChild(b);
+  });
+  describe(); paint(); scheduleBlink();
+})();
+</script>
+</body>
+</html>
