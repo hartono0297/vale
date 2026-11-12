@@ -36,6 +36,7 @@ pub mod naming;
 pub mod prefs;
 pub mod resample;
 pub mod sidecar;
+pub mod split;
 pub mod timeline;
 
 use std::fmt;
