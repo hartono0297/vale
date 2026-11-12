@@ -51,6 +51,16 @@
 //!   accessories, five faces and the notch's 26 px, in the chosen coat, on
 //!   the palette `DI_SURFACE` and `DI_ACCENT` pick) show them side by side
 //!   (`--demo-robot`, or `DI_DEMO_STEP=bata-colors` in `--demo`).
+//! - `DI_MASCOT=falk` (`cat`, `falk`, `octopus`) picks the mascot, with its
+//!   coat from `DI_FALK_COLOR=grey` (`lutino`, `grey`, `whiteface`) or
+//!   `DI_OCTOPUS_COLOR=blue` (`coral`, `red`, `purple`, `blue`); `DI_CAT_COLOR`
+//!   and `DI_CAT_ACCESSORY` go on as above. Names are case-insensitive, an
+//!   unknown one is the default. `bata-sheet` draws the chosen mascot's eleven
+//!   faces and `bata-colors` its own coats, each on the surface `auto` gives
+//!   it. `--demo-robot` also runs `maskot-falk` and `maskot-gurita` (the
+//!   eleven faces of each), `maskot-warna` (every coat of the three on its
+//!   `auto` surface) and `maskot-ekstra` (the falk's hop at its top, the
+//!   octopus flushed, asleep coiled, and both waving).
 //! - `DI_FONT=mono` sets the UI typeface to JetBrains Mono in every scene
 //!   that builds a renderer (`--demo`, `--demo-cli`, `--demo-robot`,
 //!   `--demo-devices`, `--demo-arrange`) and in `--settings`; unset or an
@@ -230,7 +240,9 @@ use crate::pomodoro::{PomoSettings, Pomodoro};
 use crate::reminders::{Reminder, Repeat};
 use crate::state::{IslandState, MolePhase};
 use crate::system::{Alert, Drive, GIB, ProcUsage, SampleKind, SystemSample, alert_notice};
-use crate::theme::{self, Accent, CatAccessory, CatColor, Palette, Surface};
+use crate::theme::{
+    self, Accent, CatAccessory, CatColor, FalkColor, Mascot, OctopusColor, Palette, Surface,
+};
 use crate::tiles::{CustomKind, CustomTile, ShortcutTiles};
 
 const PHASE: Duration = Duration::from_millis(2000);
@@ -273,8 +285,14 @@ enum PhoneDemo {
 enum Sheet {
     No,
     Faces,
+    /// The eleven faces of this mascot, whatever `DI_MASCOT` says.
+    FacesOf(Mascot),
     Colors,
+    /// Every coat of the three mascots.
+    AllColors,
     Accessories,
+    /// Hop, flush, coiled sleep and the greeting wave.
+    Extras,
 }
 
 #[derive(Clone, Copy)]
@@ -1075,7 +1093,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 204] = [
+const SCENES: [Scene; 208] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -1660,6 +1678,26 @@ const SCENES: [Scene; 204] = [
         sheet: Sheet::Accessories,
         ..BASE
     },
+    Scene {
+        name: "maskot-falk",
+        sheet: Sheet::FacesOf(Mascot::Falk),
+        ..BASE
+    },
+    Scene {
+        name: "maskot-gurita",
+        sheet: Sheet::FacesOf(Mascot::Octopus),
+        ..BASE
+    },
+    Scene {
+        name: "maskot-warna",
+        sheet: Sheet::AllColors,
+        ..BASE
+    },
+    Scene {
+        name: "maskot-ekstra",
+        sheet: Sheet::Extras,
+        ..BASE
+    },
     bata("bata-kosong", ShapeKind::Idle, View0::Idle, Expr::Idle),
     Scene {
         clock: Some("23:48"),
@@ -2010,13 +2048,26 @@ pub fn run() {
 /// `cli-typing`, `cli-running`, `cli-done`, `cli-error`, `cli-tall`,
 /// `cli-from-explorer`, `cli-folder-menu`), Pill
 /// then Notch; `DI_DEMO_STEP` picks one by number or name as in `--demo`.
+/// The mascot look the demo's env vars name (`get` reads one, "" if unset):
+/// `DI_MASCOT`, `DI_CAT_COLOR`, `DI_FALK_COLOR`, `DI_OCTOPUS_COLOR`,
+/// `DI_CAT_ACCESSORY`; a missing or unknown value is the default.
+fn demo_look(get: impl Fn(&str) -> String) -> CatLook {
+    CatLook {
+        mascot: Mascot::from_name(&get("DI_MASCOT")).unwrap_or_default(),
+        color: CatColor::from_name(&get("DI_CAT_COLOR")).unwrap_or_default(),
+        falk: FalkColor::from_name(&get("DI_FALK_COLOR")).unwrap_or_default(),
+        octopus: OctopusColor::from_name(&get("DI_OCTOPUS_COLOR")).unwrap_or_default(),
+        accessory: CatAccessory::from_name(&get("DI_CAT_ACCESSORY")).unwrap_or_default(),
+    }
+}
+
 /// `--demo-robot`: only Bata's scenes, Pill then Notch; `DI_DEMO_STEP`
 /// picks one by number or name as in `--demo`.
 pub fn run_robot() {
     let scenes: Vec<Scene> = SCENES
         .iter()
         .copied()
-        .filter(|s| s.name.starts_with("bata-"))
+        .filter(|s| s.name.starts_with("bata-") || s.name.starts_with("maskot-"))
         .collect();
     run_scenes(&scenes);
 }
@@ -2267,18 +2318,18 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
     // The saved video of `video-saved`.
     let video_thumb = demo_video_thumb();
     let today = Local::now().date_naive();
-    let name = |var| std::env::var(var).unwrap_or_default();
-    // `DI_CAT_COLOR`, `DI_CAT_ACCESSORY` and `DI_SURFACE` apply to every
-    // scene; a surface left out (or `auto`) follows the cat, as in the app.
-    let cat = CatLook {
-        color: CatColor::from_name(&name("DI_CAT_COLOR")).unwrap_or_default(),
-        accessory: CatAccessory::from_name(&name("DI_CAT_ACCESSORY")).unwrap_or_default(),
-        ..CatLook::default()
-    };
+    let name = |var: &str| std::env::var(var).unwrap_or_default();
+    // `DI_MASCOT`, the three coats, `DI_CAT_ACCESSORY` and `DI_SURFACE` apply
+    // to every scene; a surface left out (or `auto`) follows the mascot's
+    // coat, as in the app.
+    let cat = demo_look(name);
     let chosen_surface = Surface::from_name(&name("DI_SURFACE")).unwrap_or_default();
     let palette = theme::island(
         Accent::from_name(&name("DI_ACCENT")).unwrap_or_default(),
-        chosen_surface.resolve(theme::Coat::Cat(cat.color), true),
+        chosen_surface.resolve(
+            theme::Coat::from_parts(cat.mascot, cat.color, cat.falk, cat.octopus),
+            true,
+        ),
     );
     let calendar = demo_calendar(today, &palette);
     let notes = demo_notes(today);
@@ -2396,12 +2447,15 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
             if step != settled {
                 println!("demo: step {step} {:?} {}", style, scene.name);
                 settled = step;
-                let kind = match scene.sheet {
-                    Sheet::Colors => SheetKind::Colors(chosen_surface),
-                    Sheet::Accessories => SheetKind::Accessories,
-                    _ => SheetKind::Faces,
+                let (kind, look) = match scene.sheet {
+                    Sheet::Colors => (SheetKind::Colors(chosen_surface), cat),
+                    Sheet::AllColors => (SheetKind::AllColors(chosen_surface), cat),
+                    Sheet::Accessories => (SheetKind::Accessories, cat),
+                    Sheet::Extras => (SheetKind::Extras, cat),
+                    Sheet::FacesOf(mascot) => (SheetKind::Faces, CatLook { mascot, ..cat }),
+                    _ => (SheetKind::Faces, cat),
                 };
-                if let Err(error) = renderer.draw_robot_sheet(&win, palette, kind, cat) {
+                if let Err(error) = renderer.draw_robot_sheet(&win, palette, kind, look) {
                     eprintln!("demo: draw failed: {error}");
                 }
             }
@@ -4911,4 +4965,53 @@ fn demo_shelf_motion(
     let mut motion = ShelfMotion::default();
     motion.on_change(&old, &old_rects, old_lines, &new, &new_rects, start, true);
     Some((new, motion))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::{FalkColor, Mascot, OctopusColor};
+
+    fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> String + 'a {
+        move |key| {
+            pairs
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| v.to_string())
+                .unwrap_or_default()
+        }
+    }
+
+    #[test]
+    fn demo_look_reads_the_mascot_env() {
+        let look = demo_look(env(&[("DI_MASCOT", "falk"), ("DI_FALK_COLOR", "grey")]));
+        assert_eq!(
+            look,
+            CatLook {
+                mascot: Mascot::Falk,
+                falk: FalkColor::Grey,
+                ..CatLook::default()
+            }
+        );
+        let look = demo_look(env(&[
+            ("DI_MASCOT", "octopus"),
+            ("DI_OCTOPUS_COLOR", "blue"),
+            ("DI_FALK_COLOR", "whiteface"),
+            ("DI_CAT_COLOR", "calico"),
+            ("DI_CAT_ACCESSORY", "crown"),
+        ]));
+        assert_eq!(look.mascot, Mascot::Octopus);
+        assert_eq!(look.octopus, OctopusColor::Blue);
+        assert_eq!(look.falk, FalkColor::WhiteFace);
+        assert_eq!(look.color, CatColor::Calico);
+        assert_eq!(look.accessory, CatAccessory::Crown);
+        // Unknown or missing values give the defaults.
+        let look = demo_look(env(&[
+            ("DI_MASCOT", "dragon"),
+            ("DI_FALK_COLOR", "plaid"),
+            ("DI_OCTOPUS_COLOR", ""),
+        ]));
+        assert_eq!(look, CatLook::default());
+        assert_eq!(demo_look(env(&[])), CatLook::default());
+    }
 }
