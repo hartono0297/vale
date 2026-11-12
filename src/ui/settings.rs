@@ -194,8 +194,6 @@ pub enum Action {
     /// back to the default).
     RecSources(RecSources),
     RecFolder(Option<std::path::PathBuf>),
-    /// The screen recordings' folder (`None`: back to the default).
-    VideoFolder(Option<std::path::PathBuf>),
     /// The screen recordings' frame rate: 30 or 60.
     VideoFps(u32),
     /// The screen recordings' size cap.
@@ -379,6 +377,16 @@ enum TrClick {
     ArmDelete(usize),
 }
 
+/// The folder row's two buttons: "Buka" opens the recordings root, which
+/// holds Audio and Video; "Ganti" asks for a new root.
+fn folder_click(prefs: &RecordingPrefs, hit: Hit) -> Option<Vec<After>> {
+    match hit {
+        Hit::RecFolderOpen => Some(vec![After::OpenFolder(prefs.root())]),
+        Hit::RecFolderChange => Some(vec![After::PickRecFolder]),
+        _ => None,
+    }
+}
+
 /// What a click on the "Rekam layar" card does, or `None` for a hit that is
 /// not on the card. A frame rate already chosen does nothing.
 fn screen_click(prefs: &RecordingPrefs, hit: Hit) -> Option<Vec<After>> {
@@ -391,8 +399,6 @@ fn screen_click(prefs: &RecordingPrefs, hit: Hit) -> Option<Vec<After>> {
         Hit::VideoFps(_) => Vec::new(),
         Hit::CursorHighlight => vec![After::Post(Action::CursorHighlight(!prefs.cursor_highlight))],
         Hit::ClickRipples => vec![After::Post(Action::ClickRipples(!prefs.click_ripples))],
-        Hit::VideoFolderOpen => vec![After::OpenFolder(prefs.video_dir())],
-        Hit::VideoFolderChange => vec![After::PickVideoFolder],
         _ => return None,
     })
 }
@@ -2591,15 +2597,14 @@ impl Settings {
             Hit::RecSources(v) if v != m.recording.sources => post(Action::RecSources(v)),
             Hit::RecSources(_) => Vec::new(),
             Hit::RecEchoCancel => post(Action::RecEchoCancel(!m.recording.echo_cancel)),
-            Hit::RecFolderOpen => vec![After::OpenFolder(m.recording.dir())],
-            Hit::RecFolderChange => vec![After::PickRecFolder],
+            Hit::RecFolderOpen | Hit::RecFolderChange => {
+                folder_click(&m.recording, hit).unwrap_or_default()
+            }
             Hit::RecDevice(source) => self.device_menu_after(source),
             Hit::VideoQuality(_)
             | Hit::VideoFps(_)
             | Hit::CursorHighlight
-            | Hit::ClickRipples
-            | Hit::VideoFolderOpen
-            | Hit::VideoFolderChange => {
+            | Hit::ClickRipples => {
                 screen_click(&m.recording, hit).unwrap_or_default()
             }
             Hit::TranscriptEnabled
@@ -3301,8 +3306,6 @@ enum After {
     OpenFolder(std::path::PathBuf),
     /// Rekaman's "Ganti": the folder dialog, then the choice is posted.
     PickRecFolder,
-    /// Rekam layar's "Ganti": the same for the video folder.
-    PickVideoFolder,
     /// A device row's "Ganti": Vale's device dropdown of that source under
     /// the button (`anchor`, screen px; `current`: the endpoint id chosen).
     /// The pick comes back as `menu_pop::WM_APP_MENU_DONE` and is posted.
@@ -3354,12 +3357,6 @@ fn run_after(hwnd: HWND, owner: HWND, after: Vec<After>) {
                 let title = Some(Key::RecSettingsPickTitle);
                 if let Some(dir) = pick_path(hwnd, CustomKind::Folder, title) {
                     post_action(owner, Action::RecFolder(Some(dir)));
-                }
-            }
-            After::PickVideoFolder => {
-                let title = Some(Key::ScreenSettingsPickTitle);
-                if let Some(dir) = pick_path(hwnd, CustomKind::Folder, title) {
-                    post_action(owner, Action::VideoFolder(Some(dir)));
                 }
             }
             After::PickRecDevice { source, current, lang, font, anchor } => {
@@ -3520,15 +3517,6 @@ fn pick_folder_for(owner: HWND, title: Key, to_action: fn(std::path::PathBuf) ->
             }
             unsafe { CoUninitialize() };
         });
-}
-
-/// The video folder picker for the island (the blocked-folder notice of a
-/// screen recording), like `pick_rec_folder`. The choice comes back to
-/// `owner` as `Action::VideoFolder`.
-pub fn pick_video_folder(owner: HWND) {
-    pick_folder_for(owner, Key::ScreenSettingsPickTitle, |dir| {
-        Action::VideoFolder(Some(dir))
-    });
 }
 
 /// "Transkrip file lain...": the audio file picker for the island, on a
@@ -4598,7 +4586,6 @@ pub fn run_demo(args: &[String]) {
             Action::DeviceNotices(v) => m.device_notices = v,
             Action::RecSources(v) => m.recording.sources = v,
             Action::RecFolder(v) => m.recording.folder = v,
-            Action::VideoFolder(v) => m.recording.video_folder = v,
             Action::VideoFps(v) => m.recording.video_fps = v,
             Action::VideoQuality(v) => m.recording.video_quality = v,
             Action::CursorHighlight(v) => m.recording.cursor_highlight = v,
@@ -5021,28 +5008,29 @@ mod tests {
 
     #[test]
     fn the_folder_buttons_open_and_pick() {
-        // No folder chosen: "Buka" opens the default one.
+        // No folder chosen: "Buka" opens the default root, not Audio or Video.
         let unset = RecordingPrefs::default();
         assert_eq!(
-            screen_click(&unset, Hit::VideoFolderOpen),
-            Some(vec![After::OpenFolder(unset.video_dir())])
+            folder_click(&unset, Hit::RecFolderOpen),
+            Some(vec![After::OpenFolder(unset.root())])
         );
         let chosen = RecordingPrefs {
             folder: Some(std::path::PathBuf::from(r"D:\Audio")),
             video_folder: Some(std::path::PathBuf::from(r"D:\Video\Kerja")),
             ..RecordingPrefs::default()
         };
-        // The video folder, never the audio recordings' one.
+        // The root itself: neither its Audio subfolder nor the legacy video folder.
         assert_eq!(
-            screen_click(&chosen, Hit::VideoFolderOpen),
-            Some(vec![After::OpenFolder(chosen.video_dir())])
+            folder_click(&chosen, Hit::RecFolderOpen),
+            Some(vec![After::OpenFolder(std::path::PathBuf::from(r"D:\Audio"))])
         );
         for prefs in [&unset, &chosen] {
             assert_eq!(
-                screen_click(prefs, Hit::VideoFolderChange),
-                Some(vec![After::PickVideoFolder])
+                folder_click(prefs, Hit::RecFolderChange),
+                Some(vec![After::PickRecFolder])
             );
         }
+        assert_eq!(folder_click(&chosen, Hit::VideoFps(30)), None);
     }
 
     #[test]

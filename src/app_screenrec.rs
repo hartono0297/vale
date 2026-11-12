@@ -1323,32 +1323,6 @@ impl App {
         let _ = std::process::Command::new("explorer.exe").arg(dir).spawn();
     }
 
-    /// The picker's (or Settings') video folder. Refused while a screen
-    /// recording is anywhere between its picker and its saved file; a folder
-    /// Windows will not let Vale write in is not saved, and the blocked
-    /// notice shows again.
-    pub(super) fn screen_set_folder(&mut self, dir: Option<PathBuf>) {
-        if self.screen.busy() {
-            self.sync_settings();
-            return;
-        }
-        if let Some(d) = &dir
-            && let Err(e) = probe_writable(d)
-        {
-            eprintln!("vale: video folder {} refused: {e}", d.display());
-            let lang = self.config.language;
-            self.apply_now(Event::Notice(folder_blocked_notice(lang, d.clone())));
-            self.sync_settings();
-            return;
-        }
-        self.config.recording.video_folder = dir;
-        self.save_config();
-        self.sync_settings();
-        if self.screen.page_shown {
-            self.screen_rescan();
-        }
-    }
-
     /// Settings' frames per second: 60, anything else is 30. Refused while a
     /// screen recording is busy.
     pub(super) fn screen_set_fps(&mut self, fps: u32) {

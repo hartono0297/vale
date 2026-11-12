@@ -6562,7 +6562,6 @@ impl App {
             SettingsAction::RecSources(v) => self.rec_set_sources(v),
             SettingsAction::RecDevice(source, id) => self.rec_set_device(source, id),
             SettingsAction::RecFolder(dir) => self.rec_set_folder(dir),
-            SettingsAction::VideoFolder(dir) => self.screen_set_folder(dir),
             SettingsAction::VideoFps(fps) => self.screen_set_fps(fps),
             SettingsAction::VideoQuality(q) => self.screen_set_quality(q),
             SettingsAction::CursorHighlight(on) => {
