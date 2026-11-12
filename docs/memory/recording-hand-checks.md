@@ -226,3 +226,6 @@ For the owner by hand:
 - [ ] A 30+ minute session reaching the 500-line cap: the card stays smooth
       when new lines arrive and while resizing, and the oldest lines drop.
 
+## Rekam page redesign (2026-11-13, [[rekam-page]])
+
+Still to check by hand in the real app: the Layar quality dropdown (rows, checks, place under the row, picks saved and shown in Settings); unplug the chosen mic or headset while the page shows (ochre "Tidak ditemukan"); a mic-only and a PC-audio-only recording; the discard confirm (Simpan keeps recording, Buang discards, a pause closes it); the "N lagi di folder" line opens the right folder; Terminal surface and JetBrains Mono on the real page.
