@@ -380,6 +380,11 @@ pub(crate) fn device_missing(chosen: Option<&str>, found: bool) -> bool {
     chosen.is_some() && !found
 }
 
+/// The page's "device missing" flag: only while no recording runs (`idle`).
+pub(crate) fn missing_while_idle(idle: bool, chosen: Option<&str>, found: bool) -> bool {
+    idle && device_missing(chosen, found)
+}
+
 /// A source moved to another device by itself: the Windows default changed,
 /// or the device the user chose was not there (`fell_back`) and the default
 /// took over. `name` is the device in use now; `chosen` the name of the
@@ -1024,24 +1029,25 @@ impl App {
             self.rec.recorder.as_ref().map(Recorder::device_names),
             self.screen.device_names(),
         );
-        let names = match running {
+        let idle = running.is_none();
+        // The chosen device's name is looked up once per source: the idle
+        // name and the "not found" flag both read it.
+        let chosen = [Source::Mic, Source::System].map(|source| {
+            let id = self.config.recording.device(source);
+            (id, id.and_then(devices::name_of))
+        });
+        self.rec.devices = match running {
             Some(names) => names,
             None => [Source::Mic, Source::System].map(|source| {
-                let chosen = self
-                    .config
-                    .recording
-                    .device(source)
-                    .and_then(devices::name_of);
-                idle_device_name(chosen, devices::default_endpoint(source).map(|d| d.name))
+                let name = chosen[usize::from(source == Source::System)].1.clone();
+                idle_device_name(name, devices::default_endpoint(source).map(|d| d.name))
             }),
         };
-        self.rec.devices = names;
-        // A chosen device that Windows no longer lists gets the page's
-        // "not found" line. A running recorder already fell back.
-        self.rec.missing = [Source::Mic, Source::System].map(|source| {
-            let chosen = self.config.recording.device(source);
-            device_missing(chosen, chosen.is_some_and(|id| devices::name_of(id).is_some()))
-        });
+        // While idle, a chosen device that Windows no longer lists gets the
+        // page's "not found" line. A running recording already fell back to
+        // the device it uses, which the page shows instead, so nothing is
+        // missing then.
+        self.rec.missing = chosen.map(|(id, name)| missing_while_idle(idle, id, name.is_some()));
     }
 
     /// The Rekam page's device name was clicked: the dropdown opens from the
@@ -1366,6 +1372,8 @@ mod tests {
         assert!(device_missing(Some("id"), false));
         assert!(!device_missing(Some("id"), true));
         assert!(!device_missing(None, false));
+        assert!(missing_while_idle(true, Some("id"), false));
+        assert!(!missing_while_idle(false, Some("id"), false));
     }
 
     #[test]
