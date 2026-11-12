@@ -4,7 +4,7 @@
 // Painted from Task 6 on.
 #![allow(dead_code)]
 
-use crate::theme::FalkColor;
+use crate::theme::{FalkColor, OctopusColor};
 use crate::ui::robot::{Expr, Pose, Seg};
 
 /// The egg.
@@ -190,6 +190,178 @@ pub fn falk_outline(expr: Expr, pose: &Pose) -> Vec<(f32, f32)> {
     out
 }
 
+// ---------- the sitting octopus ----------
+
+/// The mantle (the head), behind nothing: the arms are drawn first.
+pub const MANTLE: &[Seg] = &[
+    Seg::Move(32.0, 9.0),
+    Seg::Cubic(50.0, 9.0, 55.0, 25.0, 50.0, 37.0),
+    Seg::Quad(47.0, 45.0, 40.0, 46.0),
+    Seg::Line(24.0, 46.0),
+    Seg::Quad(17.0, 45.0, 14.0, 37.0),
+    Seg::Cubic(9.0, 25.0, 14.0, 9.0, 32.0, 9.0),
+    Seg::Close,
+];
+
+/// Shade spots on the mantle: cx, cy, r.
+pub const OCT_SPOTS: [(f32, f32, f32); 3] = [(22.0, 20.0, 2.2), (40.0, 15.0, 1.6), (45.0, 24.0, 1.3)];
+/// The face's marks sit this much higher than the cat's.
+pub const OCT_EYE_LIFT: f32 = -3.0;
+pub const ARM_W: f32 = 5.0;
+pub const SUCKER_R: f32 = 0.85;
+pub const FLUSH_RGB: u32 = 0xD63A55;
+
+/// Left arms, outer to inner: start, control, end.
+const ARM_REST: [((f32, f32), (f32, f32), (f32, f32)); 3] = [
+    ((19.0, 42.0), (8.0, 51.0), (3.0, 54.0)),
+    ((24.0, 45.0), (15.0, 57.0), (9.5, 57.5)),
+    ((29.0, 46.0), (27.0, 58.0), (21.0, 58.5)),
+];
+
+/// One arm: a quad from `start` through `ctrl` to `end`, then a curl of
+/// `curl` times its size toward `curl_side` (-1 left, 1 right).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Arm {
+    pub start: (f32, f32),
+    pub ctrl: (f32, f32),
+    pub end: (f32, f32),
+    pub curl_side: f32,
+    pub curl: f32,
+}
+
+/// The six arms: 0..2 left outer to inner, 3..5 right outer to inner.
+pub fn arms(expr: Expr, pose: &Pose) -> [Arm; 6] {
+    let mut out = [Arm { start: (0.0, 0.0), ctrl: (0.0, 0.0), end: (0.0, 0.0), curl_side: 1.0, curl: 1.0 }; 6];
+    for side_idx in 0..2 {
+        let side: f32 = if side_idx == 0 { -1.0 } else { 1.0 };
+        let mx = |v: f32| if side_idx == 0 { v } else { 64.0 - v };
+        for (i, &(s, c, e)) in ARM_REST.iter().enumerate() {
+            let mut ctrl = (mx(c.0), c.1);
+            let mut end = (mx(e.0), e.1);
+            let mut curl = 1.0;
+            let mut o = side;
+            if i == 2 {
+                o = -o;
+            }
+            match expr {
+                Expr::Happy => {
+                    end.1 -= 3.0;
+                    curl = 1.25;
+                }
+                Expr::Alert => {
+                    end.0 += side * 2.5;
+                    end.1 -= 2.5;
+                    curl = 1.3;
+                }
+                Expr::Sad => {
+                    curl = 0.4;
+                    end.1 += 1.0;
+                }
+                Expr::Sleep => {
+                    curl = 1.8;
+                    end = (mx(e.0 + 4.0), e.1 - 1.0);
+                }
+                _ => {}
+            }
+            if pose.dancing && matches!(expr, Expr::Music | Expr::Sing) {
+                let w = (pose.beat * 600.0 / 190.0 + i as f32 * 1.4 + side_idx as f32).sin();
+                end.0 += w * 2.0;
+                end.1 -= w.max(0.0) * 2.5;
+            }
+            if expr == Expr::Wave && side_idx == 1 && i == 0 {
+                let w = if pose.waving { pose.wave } else { 0.0 };
+                ctrl = (58.0, 40.0);
+                end = (60.0 + w * 1.5, 28.0 + w * 3.0);
+                curl = 1.1;
+            }
+            if expr == Expr::Typing && side_idx == 0 && i < 2 {
+                ctrl = (mx(s.0) - 8.0, 50.0);
+                end = (if i == 0 { 1.0 } else { 9.5 }, 53.0 - pose.paw_lift[i]);
+                curl = 0.3;
+            }
+            out[side_idx * 3 + i] = Arm { start: (mx(s.0), s.1), ctrl, end, curl_side: o, curl };
+        }
+    }
+    out
+}
+
+/// The arm's quad, then its two curl quads.
+pub fn arm_segs(a: &Arm) -> Vec<Seg> {
+    let (o, k) = (a.curl_side, a.curl);
+    let e = a.end;
+    let m = (e.0 + o * 3.2 * k, e.1 - 3.2 * k);
+    vec![
+        Seg::Move(a.start.0, a.start.1),
+        Seg::Quad(a.ctrl.0, a.ctrl.1, e.0, e.1),
+        Seg::Quad(e.0 + o * 3.4 * k, e.1 + 0.2, m.0, m.1),
+        Seg::Quad(m.0 - 0.2, m.1 - 2.4 * k, m.0 - o * 2.4 * k, m.1 - 2.2 * k),
+    ]
+}
+
+/// Two suckers along the arm's quad (t 0.55 and 0.8), 1.6 below it.
+pub fn suckers(a: &Arm) -> [(f32, f32); 2] {
+    let at = |t: f32| {
+        let u = 1.0 - t;
+        (
+            u * u * a.start.0 + 2.0 * u * t * a.ctrl.0 + t * t * a.end.0,
+            u * u * a.start.1 + 2.0 * u * t * a.ctrl.1 + t * t * a.end.1 + 1.6,
+        )
+    };
+    [at(0.55), at(0.8)]
+}
+
+pub fn octopus_rgb(c: OctopusColor) -> u32 {
+    match c {
+        OctopusColor::Coral => 0xE87C8E,
+        OctopusColor::Red => 0xD9505F,
+        OctopusColor::Purple => 0xA98BD6,
+        OctopusColor::Blue => 0x5FA8C9,
+    }
+}
+
+/// Channel-wise blend of `a` toward `b` by `t` (0 is `a`, 1 is `b`).
+pub fn mix(a: u32, b: u32, t: f32) -> u32 {
+    let ch = |sh: u32| {
+        let (x, y) = (((a >> sh) & 0xFF) as f32, ((b >> sh) & 0xFF) as f32);
+        ((x + (y - x) * t).round().clamp(0.0, 255.0) as u32) << sh
+    };
+    ch(16) | ch(8) | ch(0)
+}
+
+/// The coat at 0.82 of its brightness (spots).
+pub fn shade(rgb: u32) -> u32 {
+    mix(0, rgb, 0.82)
+}
+
+/// The coat 55 % toward white (suckers).
+pub fn sucker_rgb(rgb: u32) -> u32 {
+    mix(rgb, 0xFFFFFF, 0.55)
+}
+
+/// Grid points of the mantle, every arm (quad and curl, with round caps of
+/// `ARM_W / 2`) and the suckers; the clamp tests read it.
+pub fn octopus_outline(expr: Expr, pose: &Pose) -> Vec<(f32, f32)> {
+    let mut out = Vec::new();
+    sample(MANTLE, 16, &mut out);
+    let ring = |c: (f32, f32), r: f32, out: &mut Vec<(f32, f32)>| {
+        for k in 0..8 {
+            let g = k as f32 * std::f32::consts::FRAC_PI_4;
+            out.push((c.0 + r * g.cos(), c.1 + r * g.sin()));
+        }
+    };
+    for a in &arms(expr, pose) {
+        let mut pts = Vec::new();
+        sample(&arm_segs(a), 12, &mut pts);
+        for p in pts {
+            ring(p, ARM_W / 2.0, &mut out);
+        }
+        for s in suckers(a) {
+            ring(s, SUCKER_R, &mut out);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -238,5 +410,43 @@ mod tests {
         assert!(beak_open(Expr::Music, &Pose { dancing: true, ..Pose::default() }));
         assert_eq!(falk_beak(false).len(), 1);
         assert_eq!(falk_beak(true).len(), 2);
+    }
+
+    #[test]
+    fn octopus_arms_mirror_and_rest_on_the_floor() {
+        let a = arms(Expr::Idle, &Pose::default());
+        assert_eq!(a[0].start, (19.0, 42.0)); assert_eq!(a[0].end, (3.0, 54.0));
+        assert_eq!(a[2].end, (21.0, 58.5));
+        for i in 0..3 { assert_eq!(a[i + 3].start.0, 64.0 - a[i].start.0); assert_eq!(a[i + 3].end, (64.0 - a[i].end.0, a[i].end.1)); }
+        assert!(a.iter().all(|x| x.curl == 1.0));
+    }
+
+    #[test]
+    fn octopus_arms_carry_the_mood() {
+        let p = Pose::default();
+        assert!(arms(Expr::Happy, &p).iter().all(|x| x.curl == 1.25));
+        assert!(arms(Expr::Alert, &p)[0].end.0 < 3.0 && arms(Expr::Alert, &p)[0].curl == 1.3);
+        assert!(arms(Expr::Sad, &p).iter().all(|x| x.curl == 0.4));
+        assert!(arms(Expr::Sleep, &p).iter().all(|x| x.curl == 1.8)); // coiled
+        let wave = arms(Expr::Wave, &Pose { waving: true, wave: 0.0, ..p });
+        assert_eq!(wave[3].end, (60.0, 28.0));
+        let typing = arms(Expr::Typing, &Pose { paw_lift: [1.6, 0.0], ..p });
+        assert_eq!(typing[0].end, (1.0, 53.0 - 1.6)); assert_eq!(typing[1].end, (9.5, 53.0));
+    }
+
+    #[test]
+    fn octopus_coats_and_tints() {
+        assert_eq!(octopus_rgb(OctopusColor::Coral), 0xE87C8E);
+        assert_eq!(octopus_rgb(OctopusColor::Blue), 0x5FA8C9);
+        assert_eq!(mix(0xE87C8E, FLUSH_RGB, 0.0), 0xE87C8E);
+        assert_eq!(mix(0xE87C8E, FLUSH_RGB, 1.0), FLUSH_RGB);
+    }
+
+    #[test]
+    fn the_octopus_outline_holds_the_mantle_and_the_curls() {
+        let o = octopus_outline(Expr::Idle, &Pose::default());
+        let (l, r) = o.iter().fold((f32::MAX, f32::MIN), |(l, r), p| (l.min(p.0), r.max(p.0)));
+        assert!(l < 3.0 && r > 61.0, "arms reach the sides: {l}..{r}");
+        assert!(o.iter().any(|p| p.1 < 10.0)); // the mantle top
     }
 }
