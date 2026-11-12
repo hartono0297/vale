@@ -83,8 +83,9 @@ const FIRST_CARD_Y: f32 = TITLE_Y + TITLE_H + 16.0;
 pub const VIEW_TOP: f32 = TITLE_Y + TITLE_H + 8.0;
 /// One wheel notch scrolls one row.
 const WHEEL_STEP: f32 = ROW_H;
-/// The fade at the top of a scrolled section's viewport.
-pub const SCROLL_FADE_H: f32 = 16.0;
+/// The fade at the top of a scrolled section's viewport: from under the
+/// title down to where a section's first title rests.
+pub const SCROLL_FADE_H: f32 = FIRST_CARD_Y - VIEW_TOP;
 /// The scrollbar thumb at the content's right edge.
 const SCROLLBAR_W: f32 = 3.0;
 /// Segmented controls and steppers.
@@ -6574,6 +6575,13 @@ mod tests {
     #[test]
     fn controls_do_not_overlap_each_other_or_texts() {
         for (section, lang, l) in all_layouts() {
+            assert_no_overlaps(section, lang, &l);
+        }
+    }
+
+    /// No control, field, chip, glyph, tag or bar covers another or a text.
+    fn assert_no_overlaps(section: Section, lang: Lang, l: &Layout) {
+        {
             let mut boxes: Vec<(String, Rect)> = l
                 .controls
                 .iter()
@@ -12058,6 +12066,26 @@ mod tests {
     }
 
     #[test]
+    fn full_states_have_no_overlaps() {
+        let long = "Aplikasi dengan nama yang panjang sekali untuk dicoba".to_owned();
+        every_layout(|section, s, l| assert_no_overlaps(section, s.lang, l));
+        for lang in [Lang::Id, Lang::En] {
+            let mut s = susun_state(2, 2);
+            s.lang = lang;
+            s.muted = vec![long.clone(), "Orca".into()];
+            for i in 0..2 {
+                s.arrange.templates[i].name = format!("{long} {i}");
+                s.arrange.saved[i].name = format!("{long} {i}");
+            }
+            for scroll in [0.0, f32::MAX] {
+                let s = State { scroll, ..s.clone() };
+                let l = layout(Section::Features, &s, &Estimate);
+                assert_no_overlaps(Section::Features, lang, &l);
+            }
+        }
+    }
+
+    #[test]
     fn fields_are_as_tall_as_buttons() {
         every_layout(|section, s, l| {
             for (field, r) in &l.fields {
@@ -12262,7 +12290,9 @@ mod tests {
                 h: SCROLL_FADE_H,
             })
         );
-        assert_eq!(SCROLL_FADE_H, 16.0);
+        // It ends where a section's first title rests, so a card jumped to
+        // (its title at `FIRST_CARD_Y`) is never dimmed.
+        assert_eq!(VIEW_TOP + SCROLL_FADE_H, FIRST_CARD_Y);
         for scroll in [0.0, 100.0, 1e6] {
             assert_eq!(at(Section::Integrations, scroll).top_fade(), None);
         }

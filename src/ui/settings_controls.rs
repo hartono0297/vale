@@ -1546,9 +1546,11 @@ impl Painter<'_> {
     /// Nothing is drawn if the brush cannot be made.
     fn fade_out_down(&self, r: Rect, rgb: u32) {
         let stops = [
+            // Opaque whatever the content's fade: it covers content with
+            // the background the window is cleared to.
             D2D1_GRADIENT_STOP {
                 position: 0.0,
-                color: color(rgb, self.alpha),
+                color: color(rgb, 1.0),
             },
             D2D1_GRADIENT_STOP {
                 position: 1.0,
