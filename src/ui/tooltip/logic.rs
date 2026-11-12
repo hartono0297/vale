@@ -71,9 +71,23 @@ pub struct Machine {
     state: State,
 }
 
+impl Default for Machine {
+    fn default() -> Machine {
+        Machine::new()
+    }
+}
+
 impl Machine {
     pub fn new() -> Machine {
         Machine { state: State::Idle }
+    }
+
+    /// The target being waited on, shown, or clicked; `None` when idle or warm.
+    pub fn current(&self) -> Option<TipId> {
+        match self.state {
+            State::Waiting(id) | State::Shown(id) | State::Clicked(id) => Some(id),
+            State::Idle | State::Warm => None,
+        }
     }
 
     pub fn shown(&self) -> Option<TipId> {
@@ -208,6 +222,8 @@ mod tests {
         let o = m.hover(Some(B));
         assert_eq!(o.show, Some(B));
         assert_eq!(o.arm_ms, None);
+        assert!(!o.kill);
+        assert_eq!(m.shown(), Some(B));
     }
 
     #[test]
@@ -216,7 +232,10 @@ mod tests {
         let o = m.hover(None);
         assert!(o.hide);
         assert_eq!(o.arm_ms, Some(300));
-        assert_eq!(m.hover(Some(B)).show, Some(B));
+        let o = m.hover(Some(B));
+        assert_eq!(o.show, Some(B));
+        assert!(o.kill);
+        assert_eq!(m.shown(), Some(B));
     }
 
     #[test]
@@ -263,6 +282,71 @@ mod tests {
     fn same_id_hover_is_quiet() {
         let mut m = shown_a();
         assert_eq!(m.hover(Some(A)), Out::default());
+    }
+
+    #[test]
+    fn clicked_then_another_target_waits() {
+        let mut m = shown_a();
+        m.press();
+        let o = m.hover(Some(B));
+        assert_eq!(o.arm_ms, Some(500));
+        assert_eq!(o.show, None);
+    }
+
+    #[test]
+    fn clicked_then_leaving_goes_idle() {
+        let mut m = shown_a();
+        m.press();
+        assert_eq!(m.hover(None), Out::default());
+        assert_eq!(m.hover(Some(A)).arm_ms, Some(500));
+    }
+
+    #[test]
+    fn press_while_warm_goes_idle() {
+        let mut m = shown_a();
+        m.hover(None);
+        let o = m.press();
+        assert!(o.kill);
+        assert!(!o.hide);
+        assert_eq!(m.hover(Some(B)).arm_ms, Some(500));
+    }
+
+    #[test]
+    fn hide_from_clicked_clears_the_block() {
+        let mut m = shown_a();
+        m.press();
+        assert_eq!(m.hide(), Out::default());
+        assert_eq!(m.hover(Some(A)).arm_ms, Some(500));
+    }
+
+    #[test]
+    fn hide_from_warm_kills_the_timer_and_ends_the_window() {
+        let mut m = shown_a();
+        m.hover(None);
+        let o = m.hide();
+        assert!(o.kill);
+        assert!(!o.hide);
+        let o = m.hover(Some(B));
+        assert_eq!(o.show, None);
+        assert_eq!(o.arm_ms, Some(500));
+    }
+
+    #[test]
+    fn current_is_the_waiting_shown_or_clicked_target() {
+        let mut m = Machine::default();
+        assert_eq!(m.current(), None);
+        m.hover(Some(A));
+        assert_eq!(m.current(), Some(A));
+        m.timer();
+        assert_eq!(m.current(), Some(A));
+        m.press();
+        assert_eq!(m.current(), Some(A));
+        m.hover(None);
+        assert_eq!(m.current(), None);
+        m.hover(Some(A));
+        m.timer();
+        m.hover(None);
+        assert_eq!(m.current(), None);
     }
 
     const WORK: Rect = Rect::new(0, 0, 1920, 1040);

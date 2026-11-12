@@ -32,8 +32,8 @@ use windows::Win32::Graphics::Direct2D::{
     ID2D1RenderTarget, ID2D1SolidColorBrush,
 };
 use windows::Win32::Graphics::DirectWrite::{
-    DWRITE_FONT_WEIGHT, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_METRICS, DWRITE_TRIMMING,
-    DWRITE_TRIMMING_GRANULARITY_CHARACTER, DWRITE_WORD_WRAPPING_NO_WRAP, IDWriteFactory,
+    DWRITE_FONT_WEIGHT, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_TEXT_METRICS, DWRITE_TRIMMING,
+    DWRITE_TRIMMING_GRANULARITY_CHARACTER, DWRITE_WORD_WRAPPING_NO_WRAP, DWRITE_WORD_WRAPPING_WRAP, IDWriteFactory,
     IDWriteTextFormat, IDWriteTextLayout,
 };
 use windows::Win32::Graphics::Gdi::{
@@ -297,14 +297,14 @@ fn scroll_to_show(scroll: f32, r: FRect, view_h: f32) -> f32 {
 // ------------------------------------------------------------------ text
 
 /// The UI face and its formats, for measuring and drawing the rows.
-struct Text {
+pub(crate) struct Text {
     dwrite: IDWriteFactory,
     face: Face,
     formats: RefCell<HashMap<(u32, u16), IDWriteTextFormat>>,
 }
 
 impl Text {
-    fn new(dwrite: IDWriteFactory, ui: UiFont) -> Text {
+    pub(crate) fn new(dwrite: IDWriteFactory, ui: UiFont) -> Text {
         let face = Face::for_role_in(&dwrite, Role::Text, ui);
         Text {
             dwrite,
@@ -313,7 +313,7 @@ impl Text {
         }
     }
 
-    fn format(&self, size: f32, weight: u16) -> Result<IDWriteTextFormat> {
+    pub(crate) fn format(&self, size: f32, weight: u16) -> Result<IDWriteTextFormat> {
         let key = (size.to_bits(), weight);
         if let Some(f) = self.formats.borrow().get(&key) {
             return Ok(f.clone());
@@ -327,7 +327,14 @@ impl Text {
 
     /// `s` on one line in a box `w` by `h`, centred down it and cut with an
     /// ellipsis where the box ends.
-    fn line(&self, s: &str, size: f32, weight: u16, w: f32, h: f32) -> Result<IDWriteTextLayout> {
+    pub(crate) fn line(
+        &self,
+        s: &str,
+        size: f32,
+        weight: u16,
+        w: f32,
+        h: f32,
+    ) -> Result<IDWriteTextLayout> {
         let wide: Vec<u16> = s.encode_utf16().collect();
         let format = self.format(size, weight)?;
         unsafe {
@@ -347,8 +354,29 @@ impl Text {
         }
     }
 
+    /// `s` wrapped at word breaks in a box `w` wide, top aligned; its height
+    /// is in `GetMetrics`.
+    pub(crate) fn block(
+        &self,
+        s: &str,
+        size: f32,
+        weight: u16,
+        w: f32,
+    ) -> Result<IDWriteTextLayout> {
+        let wide: Vec<u16> = s.encode_utf16().collect();
+        let format = self.format(size, weight)?;
+        unsafe {
+            let l = self
+                .dwrite
+                .CreateTextLayout(&wide, &format, w.max(1.0), 10_000.0)?;
+            l.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP)?;
+            l.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?;
+            Ok(l)
+        }
+    }
+
     /// How wide `s` is, uncut.
-    fn width(&self, s: &str, size: f32, weight: u16) -> f32 {
+    pub(crate) fn width(&self, s: &str, size: f32, weight: u16) -> f32 {
         let Ok(l) = self.line(s, size, weight, 100_000.0, 100.0) else {
             return 0.0;
         };
@@ -512,7 +540,7 @@ fn register() -> bool {
 }
 
 /// The work area (px) and DPI scale of the monitor under `pt`.
-fn monitor_at(pt: (i32, i32)) -> (Rect, f32) {
+pub(crate) fn monitor_at(pt: (i32, i32)) -> (Rect, f32) {
     unsafe {
         let monitor = MonitorFromPoint(POINT { x: pt.0, y: pt.1 }, MONITOR_DEFAULTTONEAREST);
         let mut info = MONITORINFO {
@@ -733,7 +761,7 @@ fn redraw() {
     });
 }
 
-fn rounded(r: FRect, radius: f32) -> D2D1_ROUNDED_RECT {
+pub(crate) fn rounded(r: FRect, radius: f32) -> D2D1_ROUNDED_RECT {
     D2D1_ROUNDED_RECT {
         rect: D2D_RECT_F {
             left: r.x,

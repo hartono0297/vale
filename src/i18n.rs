@@ -944,6 +944,11 @@ keys! {
     SearchHint => "Cari aplikasi, berkas, hitung, atau ketik ? untuk web",
         "Search apps, files, calculate, or type ? for the web";
     SearchBack => "Kembali", "Back";
+
+    // Tooltips: the keys and gestures shown in a tip's key plate.
+    TipKeySpace => "Spasi", "Space";
+    TipKeyRightClick => "Klik kanan", "Right-click";
+    TipKeyWheel => "Roda mouse", "Mouse wheel";
     SearchEmpty => "Ketik untuk mencari", "Type to search";
     SearchEmptyHint => "Contoh: kalkulator · laporan · 2*(3+4) · ? kopi susu",
         "Try: calculator · report · 2*(3+4) · ? coffee";

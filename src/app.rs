@@ -460,6 +460,8 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
     let config = config::load();
     media_log::set_enabled(media_log::requested(media_log_flag, config.media_log));
     i18n::set_lang(config.language);
+    crate::ui::tooltip::set_hotkeys(config.hotkeys);
+    crate::ui::tooltip::set_font(config.font);
     theme::set_system_light(theme::read_system_light());
     // Before any menu can open: the tray menu follows the Windows app mode.
     tray::follow_system_menu_theme();
@@ -2362,7 +2364,10 @@ impl App {
             // The Clipboard tile has no action: the reducer opened its page.
             Effect::RunShortcut(s) => self.queue_shortcut(shortcuts::shortcut_action(s)?),
             Effect::RunCustom(tile) => self.queue_shortcut(shortcuts::Action::Custom(tile)),
-            Effect::RunCapture => self.queue_shortcut(shortcuts::Action::Capture),
+            Effect::RunCapture => {
+                crate::ui::tooltip::hide_all();
+                self.queue_shortcut(shortcuts::Action::Capture);
+            }
             Effect::OpenDrive(letter) => self.queue_shortcut(shortcuts::Action::Drive(letter)),
             Effect::MixerLevel(i, level) => self.mixer_set_level(i, level),
             Effect::MixerMute(i) => self.mixer_toggle_mute(i),
@@ -6244,11 +6249,17 @@ impl App {
         let google = |c: &Config| (c.google_client_id.clone(), c.google_client_secret.clone());
         let changed = google(&cfg) != google(&self.config);
         let toast_style_was = self.config.notifications.toast_style;
+        let lang_was = self.config.language;
         self.config = cfg;
         // Palette, surface, accent, fill, notch size, style and font may all
         // have changed: the next frame is drawn in full.
         self.renderer.invalidate();
         i18n::set_lang(self.config.language);
+        if self.config.language != lang_was {
+            crate::ui::tooltip::hide_all();
+        }
+        crate::ui::tooltip::set_hotkeys(self.config.hotkeys);
+        crate::ui::tooltip::set_font(self.config.font);
         // A hand edit of "Notifikasi saat notch dipakai" applies live.
         let toast_style = self.config.notifications.toast_style;
         if toast_style != toast_style_was {
@@ -6316,6 +6327,7 @@ impl App {
     /// rather than the old config, so a caller may set the fields first.
     fn apply_theme(&mut self) {
         if theme::set_current(Theme::of(&self.config)) {
+            crate::ui::tooltip::hide_all();
             editor::restyle_open_editor();
             crate::shot_edit::window::restyle_open();
             settings::restyle();
