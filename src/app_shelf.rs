@@ -34,8 +34,9 @@ pub(super) const TIMER_SHELF_HOLD: usize = 27;
 /// A drag that leaves the island keeps the panel this long, so one that
 /// strays off the edge and back does not flicker it away.
 const SHELF_LEAVE_MS: u32 = 600;
-/// A press on a card turns into a drag out after this many logical pixels.
-const DRAG_START_DIP: f32 = 6.0;
+/// A press on a card turns into a drag out after this many logical pixels
+/// (the Clipboard page's image cards use it too).
+pub(super) const DRAG_START_DIP: f32 = 6.0;
 /// Files dropped while the panel is shut wait this long before the cards
 /// come in, so the panel's own opening (240 ms) is not what hides them.
 const OPEN_DELAY_MS: u64 = 120;
@@ -253,10 +254,8 @@ impl App {
             self.shelf.press = None;
             return None;
         }
-        let (x, y) = client_xy(lparam);
         let min = DRAG_START_DIP * self.gesture_scale();
-        let (dx, dy) = ((x - x0) as f32, (y - y0) as f32);
-        if dx * dx + dy * dy < min * min {
+        if !past_threshold((x0, y0), client_xy(lparam), min) {
             return None;
         }
         self.shelf.press = None;
@@ -275,6 +274,13 @@ impl App {
     /// island leaves it (no `WM_MOUSELEAVE` came while OLE held the mouse).
     pub(super) fn shelf_after_drag_out(&mut self) {
         self.shelf.press = None;
+        self.drag_out_ended();
+    }
+
+    /// What every drag out of the island (a shelf card, a Clipboard image)
+    /// needs once `DoDragDrop` returned: the swallowed release's swipe and
+    /// click are dropped, and a pointer that ended off the island leaves it.
+    pub(super) fn drag_out_ended(&mut self) {
         self.swipe.cancel();
         self.click.clear();
         let mut pt = POINT::default();
@@ -288,8 +294,15 @@ impl App {
 }
 
 /// A `WM_MOUSEMOVE`'s `wparam` says the primary button is down.
-fn primary_down(wparam: WPARAM) -> bool {
+pub(super) fn primary_down(wparam: WPARAM) -> bool {
     wparam.0 as u32 & MK_LBUTTON.0 != 0
+}
+
+/// The pointer went from `from` to `to` (client pixels) at least `min`
+/// pixels: a press there turns into a drag.
+pub(super) fn past_threshold(from: (i32, i32), to: (i32, i32), min: f32) -> bool {
+    let (dx, dy) = ((to.0 - from.0) as f32, (to.1 - from.1) as f32);
+    dx * dx + dy * dy >= min * min
 }
 
 #[cfg(test)]

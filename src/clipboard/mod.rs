@@ -4,6 +4,7 @@
 //! the running island. See docs/memory/clipboard-history.md and
 //! clipboard-privacy.md.
 
+pub mod drag;
 pub mod image;
 pub mod kinds;
 pub mod notice;

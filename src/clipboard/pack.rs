@@ -87,7 +87,20 @@ pub fn unpack(packed: &Packed) -> Option<Vec<u8>> {
 
 fn encode(layout: PngLayout, pixels: &[u8]) -> Option<Vec<u8>> {
     let (w, h, format, bytes) = shape(layout);
-    if pixels.len() != (w as usize).checked_mul(h as usize)?.checked_mul(bytes)? {
+    encode_png(w, h, format, w.checked_mul(bytes as u32)?, pixels)
+}
+
+/// A PNG of `pixels` (`h` rows of `stride` bytes, `w` pixels each) in WIC
+/// pixel `format`; `None` when the size does not fit, WIC fails, or the codec
+/// would convert the format.
+pub(super) fn encode_png(
+    w: u32,
+    h: u32,
+    format: GUID,
+    stride: u32,
+    pixels: &[u8],
+) -> Option<Vec<u8>> {
+    if pixels.len() != (stride as usize).checked_mul(h as usize)? {
         return None;
     }
     unsafe {
@@ -110,7 +123,7 @@ fn encode(layout: PngLayout, pixels: &[u8]) -> Option<Vec<u8>> {
             // The codec would convert: the bytes would not come back.
             return None;
         }
-        frame.WritePixels(h, w * bytes as u32, pixels).ok()?;
+        frame.WritePixels(h, stride, pixels).ok()?;
         frame.Commit().ok()?;
         encoder.Commit().ok()?;
         let mut len = 0u64;

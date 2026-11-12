@@ -5422,9 +5422,10 @@ impl App {
             TIMER_NOTIF_SAVE => self.on_notif_timer(),
             TIMER_WIDGET_SAVE => self.on_widget_timer(),
             TIMER_STICKY_REMIND => self.sticky_remind_fire(),
-            clip::TIMER_CLIP_RETRY | clip::TIMER_CLIP_SAVE | clip::TIMER_CLIP_HOLD => {
-                self.on_clip_timer(id)
-            }
+            clip::TIMER_CLIP_RETRY
+            | clip::TIMER_CLIP_SAVE
+            | clip::TIMER_CLIP_HOLD
+            | clip::TIMER_CLIP_DRAG => self.on_clip_timer(id),
             shot::TIMER_SHOT_RETRY => self.on_shot_timer(),
             shot::TIMER_SHOT_SHOW => self.on_shot_show_timer(),
             TIMER_BATTERY => self.check_battery(),
@@ -5855,6 +5856,7 @@ impl App {
         self.dock_leave();
         self.arrange_hover(None);
         self.shelf_release();
+        self.clip_release();
         self.middle_down = false;
         self.bata.brain.hover(false, Instant::now());
         match self.hover.on_leave() {
@@ -5949,6 +5951,7 @@ impl App {
             },
             lparam,
         );
+        self.clip_press(hit.as_ref(), lparam);
         self.mixer_press(hit.as_ref(), lparam);
         if hit.is_some() && self.gestures_active() {
             let (x, y) = client_xy(lparam);
@@ -5973,6 +5976,7 @@ impl App {
             return;
         }
         self.shelf_release();
+        self.clip_release();
         if self.mixer_drag.is_some() {
             self.end_mixer_drag();
             // A drag let go off the island: the moves out there went to the
@@ -9261,8 +9265,13 @@ unsafe extern "system" fn wnd_proc(
             // A card pulled off the shelf: the drag blocks until the button
             // is let go, so it starts outside the app borrow.
             if let Some(path) = with_app(|app| app.shelf_drag_start(wparam, lparam)).flatten() {
-                shelf_ole::drag_out(&path);
+                shelf_ole::drag_out(&path, shelf_ole::SHELF_DRAG_EFFECTS);
                 with_app(App::shelf_after_drag_out);
+            }
+            // An image card pulled off the Clipboard page, as its temp PNG.
+            if let Some(out) = with_app(|app| app.clip_drag_start(wparam, lparam)).flatten() {
+                let effect = shelf_ole::drag_out(&out.path, shelf_ole::CLIP_DRAG_EFFECTS);
+                with_app(|app| app.clip_after_drag_out(&out, effect));
             }
             LRESULT(0)
         }
@@ -10790,7 +10799,9 @@ mod tests {
             crate::widgets::host::TIMER_WIDGET_CARET,
             TIMER_STICKY_REMIND,
             crate::widgets::list_win::TIMER_LIST_UNDO,
+            clip::TIMER_CLIP_DRAG,
         ];
+        assert_eq!(clip::TIMER_CLIP_DRAG, 55);
         assert_eq!(TIMER_PHONE, 48);
         assert_eq!(crate::widgets::list_win::TIMER_LIST_UNDO, 49);
         // 42-47 are taken by other runs (the lyrics card's and the widgets'

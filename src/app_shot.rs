@@ -1059,6 +1059,7 @@ impl App {
         if removed {
             self.clamp_clip_scroll();
             self.schedule_clip_save();
+            self.clip_drag_forget_missing();
             self.redraw_clip();
         }
     }
