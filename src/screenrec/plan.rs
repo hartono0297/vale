@@ -11,13 +11,17 @@ pub const MAX_H: u32 = 2304;
 pub const MIN_SIDE: u32 = 64;
 
 /// The encoded size for a source of `w` x `h`: the source's own size, scaled
-/// down (aspect kept) to fit the encoder and `max_h` when set, scaled up
+/// down (aspect kept) to fit the encoder and, when `max_short` is set, so the
+/// shorter side is at most `max_short` (never scaled up for it), scaled up
 /// when a side is under [`MIN_SIDE`], both sides even (NV12 and H.264 need
 /// it) and at least [`MIN_SIDE`] (a very thin source gets bars).
-pub fn output_size(w: u32, h: u32, max_h: Option<u32>) -> (u32, u32) {
+pub fn output_size(w: u32, h: u32, max_short: Option<u32>) -> (u32, u32) {
     let (w, h) = (w.max(2) as f64, h.max(2) as f64);
-    let cap_h = max_h.map_or(MAX_H, |m| m.clamp(MIN_SIDE, MAX_H)) as f64;
-    let mut scale = (MAX_W as f64 / w).min(cap_h / h).min(1.0);
+    let cap = max_short.map_or(MAX_H, |m| m.clamp(MIN_SIDE, MAX_H)) as f64;
+    let mut scale = (MAX_W as f64 / w)
+        .min(MAX_H as f64 / h)
+        .min(cap / w.min(h))
+        .min(1.0);
     let min = MIN_SIDE as f64;
     if w * scale < min || h * scale < min {
         scale = (min / w)
@@ -34,6 +38,17 @@ pub fn output_size(w: u32, h: u32, max_h: Option<u32>) -> (u32, u32) {
 pub fn bitrate(w: u32, h: u32, fps: u32) -> u32 {
     let bits = w as f64 * h as f64 * fps as f64 * 0.08;
     bits.clamp(1_000_000.0, 50_000_000.0) as u32
+}
+
+/// The mono AAC track's bitrate (`encode.rs` writes 12,000 bytes per second).
+pub const AUDIO_BITS_PER_SECOND: u32 = 96_000;
+
+/// About how many MiB a minute of recording takes at an already planned
+/// output size: the video bitrate plus the audio track, rounded, at least 1.
+pub fn estimate_mib_per_minute(w: u32, h: u32, fps: u32) -> u32 {
+    let bits = bitrate(w, h, fps) as u64 + AUDIO_BITS_PER_SECOND as u64;
+    let bytes = bits * 60 / 8;
+    ((bytes as f64 / 1_048_576.0).round() as u32).max(1)
 }
 
 /// An integer rect: left, top, right, bottom.
@@ -236,6 +251,31 @@ mod tests {
         assert_eq!(output_size(3840, 2160, Some(1080)), (1920, 1080));
         // A cap above the source does not scale up.
         assert_eq!(output_size(1280, 720, Some(1080)), (1280, 720));
+    }
+
+    #[test]
+    fn a_quality_caps_the_shorter_side_and_never_scales_up() {
+        assert_eq!(output_size(2560, 1440, Some(1080)), (1920, 1080));
+        assert_eq!(output_size(3440, 1440, Some(1080)), (2580, 1080));
+        assert_eq!(output_size(1440, 2560, Some(1080)), (1080, 1920));
+        assert_eq!(output_size(3840, 2160, Some(720)), (1280, 720));
+        assert_eq!(output_size(2560, 1440, Some(1440)), (2560, 1440));
+        assert_eq!(output_size(900, 600, Some(1080)), (900, 600));
+        assert_eq!(output_size(1920, 400, Some(720)), (1920, 400));
+        // The encoder's cap still wins over a looser quality.
+        let (w, h) = output_size(7680, 4320, Some(2160));
+        assert!(w <= MAX_W && h <= MAX_H);
+    }
+
+    #[test]
+    fn the_estimate_is_video_plus_audio_per_minute_in_mib() {
+        assert_eq!(estimate_mib_per_minute(1920, 1080, 30), 36);
+        assert_eq!(estimate_mib_per_minute(2560, 1440, 30), 64);
+        assert_eq!(estimate_mib_per_minute(1280, 720, 30), 17);
+        assert_eq!(estimate_mib_per_minute(1920, 1080, 60), 72);
+        assert_eq!(estimate_mib_per_minute(2560, 1440, 60), 127);
+        assert_eq!(estimate_mib_per_minute(4096, 2304, 60), 325);
+        assert!(estimate_mib_per_minute(64, 64, 30) >= 1);
     }
 
     #[test]

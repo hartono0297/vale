@@ -1,5 +1,5 @@
 //! `vale --screenrec-test <seconds> [--zoom] [--window [hwnd]] [--region x,y,w,h]
-//! [--fps 60] [--software] [--no-audio] [--no-audio-push]` (debug builds only).
+//! [--fps 60] [--quality 1080p] [--software] [--no-audio] [--no-audio-push]` (debug builds only).
 //!
 //! Records the primary monitor (or a window, or a region) into
 //! `%TEMP%\vale-screenrec\`, feeding silence into the audio track. A red
@@ -47,6 +47,8 @@ struct Args {
     zoom: bool,
     target: Target,
     fps: u32,
+    /// Shorter-side cap from `--quality`; `None` = original size.
+    max_short: Option<u32>,
     software: bool,
     audio: bool,
     /// The audio track is made but nothing is ever pushed into it (the
@@ -73,12 +75,13 @@ fn parse(args: &[String]) -> Result<Args, String> {
         .first()
         .and_then(|s| s.parse().ok())
         .filter(|s: &f64| *s > 0.0 && *s <= 3600.0)
-        .ok_or("usage: --screenrec-test <seconds> [--zoom] [--window [hwnd]] [--region x,y,w,h] [--fps 60] [--software] [--no-audio]")?;
+        .ok_or("usage: --screenrec-test <seconds> [--zoom] [--window [hwnd]] [--region x,y,w,h] [--fps 60] [--quality original|1440p|1080p|720p] [--software] [--no-audio]")?;
     let mut a = Args {
         seconds,
         zoom: false,
         target: primary_monitor(),
         fps: 30,
+        max_short: None,
         software: false,
         audio: true,
         audio_push: true,
@@ -102,6 +105,16 @@ fn parse(args: &[String]) -> Result<Args, String> {
                     .get(i)
                     .and_then(|s| s.parse().ok())
                     .ok_or("--fps needs 30 or 60")?;
+            }
+            "--quality" => {
+                i += 1;
+                a.max_short = match args.get(i).map(String::as_str) {
+                    Some("original") => None,
+                    Some("1440p") => Some(1440),
+                    Some("1080p") => Some(1080),
+                    Some("720p") => Some(720),
+                    _ => return Err("--quality needs original, 1440p, 1080p or 720p".into()),
+                };
             }
             "--window" => {
                 let given = args.get(i + 1).and_then(|s| {
@@ -243,6 +256,7 @@ pub fn run(args: &[String]) {
 
     let options = Options {
         fps: a.fps,
+        max_short: a.max_short,
         audio_channels: a.audio.then_some(2),
         channel_names: vec!["mic".into(), "system".into()],
         prefer_hardware: !a.software,

@@ -105,6 +105,24 @@ For the owner by hand:
 - [ ] The two new switches in Settings → Fitur → Rekam layar with the Terminal
       style.
 
+## Video quality (2026-11-12)
+
+The agent recorded at each quality with the debug runner and checked the
+Settings row in a demo window ([[recording-quality]]). Still by hand, in the
+real app:
+
+- [ ] Record a whole screen at Asli, 1440p, 1080p and 720p; Explorer →
+      Properties → Details shows 2560×1440, 2560×1440, 1920×1080, 1280×720.
+- [ ] Record a small window (under 720 px high) at 1080p: the video keeps the
+      window's own size.
+- [ ] Record a dragged area at 720p and at Asli.
+- [ ] Zoom (`Ctrl+Alt+Z`) at 720p: the zoomed text is readable.
+- [ ] A one-minute recording with movement (scrolling a page, a video) at
+      1080p 30 fps: the file is at most about the estimate (± 36 MB).
+- [ ] Change the quality while a recording runs: the running video keeps its
+      size, the next one takes the new choice.
+- [ ] The row with the Terminal style and in English.
+
 ## Phase 5 live captions (2026-11-11)
 
 Branch `feat/captions` (54377fa), release build on the owner's PC, one agent

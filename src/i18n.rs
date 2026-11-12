@@ -686,6 +686,8 @@ keys! {
     RecSettingsChange => "Ganti", "Change";
     RecSettingsPickTitle => "Pilih folder rekaman", "Choose the recordings folder";
     ScreenSettingsTitle => "Rekam layar", "Screen recording";
+    ScreenSettingsQuality => "Kualitas video", "Video quality";
+    ScreenSettingsQualityOriginal => "Asli", "Original";
     ScreenSettingsFps => "Gambar per detik", "Frames per second";
     ScreenSettingsFpsDesc => "60 lebih halus, filenya lebih besar", "60 is smoother, the files are bigger";
     ScreenSettingsFolder => "Folder video", "Video folder";
@@ -1434,6 +1436,13 @@ pub fn session_of(lang: Lang, k: u32, total: u32) -> String {
 pub fn pomo_durations(lang: Lang, focus: u32, short: u32, long: u32) -> String {
     let unit = pick(lang, "menit", "min");
     format!("{focus} · {short} · {long} {unit}")
+}
+
+/// "1920×1080 · ± 36 MB/menit": the size a recording will have and about how
+/// much a minute of it takes, under "Kualitas video".
+pub fn video_estimate_line(lang: Lang, w: u32, h: u32, mib: u32) -> String {
+    let unit = pick(lang, "menit", "min");
+    format!("{w}×{h} · ± {mib} MB/{unit}")
 }
 
 /// "Istirahat 5 menit", "Break · 5 min": the phase after this one.
@@ -4715,6 +4724,8 @@ mod tests {
         assert_eq!(session_of(Lang::En, 1, 4), "Session 1 of 4");
         assert_eq!(pomo_durations(Lang::Id, 25, 5, 15), "25 · 5 · 15 menit");
         assert_eq!(pomo_durations(Lang::En, 50, 10, 20), "50 · 10 · 20 min");
+        assert_eq!(video_estimate_line(Lang::Id, 1920, 1080, 36), "1920×1080 · ± 36 MB/menit");
+        assert_eq!(video_estimate_line(Lang::En, 1920, 1080, 36), "1920×1080 · ± 36 MB/min");
         assert_eq!(phase_minutes(Lang::Id, "Istirahat", 5), "Istirahat 5 menit");
         assert_eq!(phase_minutes(Lang::En, "Focus", 25), "Focus · 25 min");
         assert_eq!(more_count(Lang::Id, 3), "+3 lagi");
