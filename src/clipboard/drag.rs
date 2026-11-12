@@ -6,8 +6,12 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use chrono::NaiveDateTime;
+use windows::Win32::Graphics::Imaging::{
+    GUID_WICPixelFormat24bppBGR, GUID_WICPixelFormat32bppBGRA,
+};
 
 use super::image::dib_info;
+use super::pack;
 
 /// How long a dragged-out temp file stays after its last drag.
 pub const KEEP: Duration = Duration::from_secs(600);
@@ -58,6 +62,61 @@ pub fn png_pixels(dib: &[u8]) -> Option<PngPixels> {
         stride: row_len as u32,
         rows,
     })
+}
+
+/// Where dragged-out files live: `%TEMP%\Vale\drag`.
+pub fn root() -> PathBuf {
+    std::env::temp_dir().join("Vale").join("drag")
+}
+
+/// `root\<id>\name`: one folder per card, so the file keeps its readable name.
+pub fn card_path(root: &Path, id: u64, name: &str) -> PathBuf {
+    root.join(id.to_string()).join(name)
+}
+
+/// Write the packed DIB `dib` as a PNG at `path`, creating its folder. False
+/// on any failure, with no file left at `path`. Needs COM on this thread.
+pub fn write_png(dib: &[u8], path: &Path) -> bool {
+    let Some(p) = png_pixels(dib) else {
+        return false;
+    };
+    let format = if p.bgra {
+        GUID_WICPixelFormat32bppBGRA
+    } else {
+        GUID_WICPixelFormat24bppBGR
+    };
+    let Some(png) = pack::encode_png(p.w, p.h, format, p.stride, &p.rows) else {
+        return false;
+    };
+    if let Some(dir) = path.parent()
+        && std::fs::create_dir_all(dir).is_err()
+    {
+        return false;
+    }
+    if std::fs::write(path, png).is_ok() {
+        return true;
+    }
+    let _ = std::fs::remove_file(path);
+    false
+}
+
+/// Remove the file and, if that leaves it empty, its card folder. True when
+/// the file is gone afterwards (also when it never existed).
+pub fn remove(path: &Path) -> bool {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return false,
+    }
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::remove_dir(dir); // only succeeds when empty
+    }
+    !path.exists()
+}
+
+/// Delete everything under `root`; errors are ignored.
+pub fn sweep(root: &Path) {
+    let _ = std::fs::remove_dir_all(root);
 }
 
 type Entry = (u64, PathBuf, Instant);
@@ -235,6 +294,133 @@ mod tests {
     #[test]
     fn garbage_gives_none() {
         assert_eq!(png_pixels(&[1, 2, 3]), None);
+    }
+
+    use windows::Win32::Graphics::Imaging::{
+        CLSID_WICImagingFactory, IWICImagingFactory, WICDecodeMetadataCacheOnDemand,
+    };
+    use windows::Win32::System::Com::{
+        CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
+        CoUninitialize,
+    };
+
+    /// COM for this test thread.
+    struct Com;
+    impl Com {
+        fn new() -> Com {
+            let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+            Com
+        }
+    }
+    impl Drop for Com {
+        fn drop(&mut self) {
+            unsafe { CoUninitialize() };
+        }
+    }
+
+    /// A scratch folder under `target/test-tmp`, emptied when dropped.
+    struct Tmp(PathBuf);
+    impl Tmp {
+        fn new(test: &str) -> Tmp {
+            let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("target")
+                .join("test-tmp")
+                .join(format!("clip-drag-{test}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&p);
+            std::fs::create_dir_all(&p).unwrap();
+            Tmp(p)
+        }
+    }
+    impl Drop for Tmp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn decoded_size(path: &Path) -> (u32, u32) {
+        let bytes = std::fs::read(path).unwrap();
+        unsafe {
+            let wic: IWICImagingFactory =
+                CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).unwrap();
+            let stream = wic.CreateStream().unwrap();
+            stream.InitializeFromMemory(&bytes).unwrap();
+            let decoder = wic
+                .CreateDecoderFromStream(&stream, std::ptr::null(), WICDecodeMetadataCacheOnDemand)
+                .unwrap();
+            let frame = decoder.GetFrame(0).unwrap();
+            let (mut w, mut h) = (0, 0);
+            frame.GetSize(&mut w, &mut h).unwrap();
+            (w, h)
+        }
+    }
+
+    #[test]
+    fn a_written_png_decodes_to_the_same_size() {
+        let _com = Com::new();
+        let t = Tmp::new("size");
+        let p = t.0.join("a.png");
+        assert!(write_png(&dib(32, 3, 2, 0, false, &[7; 24]), &p));
+        assert_eq!(&std::fs::read(&p).unwrap()[..4], &[0x89, 0x50, 0x4E, 0x47]);
+        assert_eq!(decoded_size(&p), (3, 2));
+    }
+
+    #[test]
+    fn a_24_bit_dib_writes_too() {
+        let _com = Com::new();
+        let t = Tmp::new("bit24");
+        let p = t.0.join("a.png");
+        assert!(write_png(&dib(24, 3, 2, 0, false, &[5; 24]), &p));
+        assert_eq!(decoded_size(&p), (3, 2));
+    }
+
+    #[test]
+    fn a_bad_dib_writes_nothing() {
+        let _com = Com::new();
+        let t = Tmp::new("bad");
+        let p = t.0.join("a.png");
+        assert!(!write_png(&[0; 8], &p));
+        assert!(!p.exists());
+    }
+
+    #[test]
+    fn an_unwritable_place_writes_nothing() {
+        let _com = Com::new();
+        let t = Tmp::new("unwritable");
+        let file = t.0.join("plain");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(!write_png(&dib(32, 3, 2, 0, false, &[7; 24]), &file.join("a.png")));
+    }
+
+    #[test]
+    fn remove_takes_the_card_folder_with_it() {
+        let _com = Com::new();
+        let t = Tmp::new("remove");
+        let p = card_path(&t.0, 9, "a.png");
+        assert!(write_png(&dib(32, 3, 2, 0, false, &[7; 24]), &p));
+        assert!(remove(&p));
+        assert!(!t.0.join("9").exists());
+        assert!(remove(&p));
+    }
+
+    #[test]
+    fn the_root_is_vale_drag_under_temp() {
+        // Only the path is computed; nothing is created.
+        let r = root();
+        assert!(r.ends_with(Path::new("Vale").join("drag")));
+        assert!(r.starts_with(std::env::temp_dir()));
+    }
+
+    #[test]
+    fn sweep_clears_the_root() {
+        let _com = Com::new();
+        let t = Tmp::new("sweep");
+        let root = t.0.join("drag");
+        for id in [1, 2] {
+            let p = card_path(&root, id, "a.png");
+            assert!(write_png(&dib(32, 3, 2, 0, false, &[7; 24]), &p));
+        }
+        sweep(&root);
+        assert!(!root.exists());
     }
 
     const MIN: Duration = Duration::from_secs(60);
