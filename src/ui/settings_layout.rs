@@ -83,6 +83,8 @@ const FIRST_CARD_Y: f32 = TITLE_Y + TITLE_H + 16.0;
 pub const VIEW_TOP: f32 = TITLE_Y + TITLE_H + 8.0;
 /// One wheel notch scrolls one row.
 const WHEEL_STEP: f32 = ROW_H;
+/// The fade at the top of a scrolled section's viewport.
+pub const SCROLL_FADE_H: f32 = 16.0;
 /// The scrollbar thumb at the content's right edge.
 const SCROLLBAR_W: f32 = 3.0;
 /// Segmented controls and steppers.
@@ -1317,6 +1319,17 @@ impl Layout {
                 None => Some((h, r)),
             });
         nav.chain(controls).collect()
+    }
+
+    /// The strip at the viewport's top where scrolled content fades out
+    /// under the title instead of being cut: only once the section has
+    /// scrolled, so nothing is dimmed at its top.
+    pub fn top_fade(&self) -> Option<Rect> {
+        let v = self.viewport.filter(|_| self.scroll > 0.0)?;
+        Some(Rect {
+            h: SCROLL_FADE_H,
+            ..v
+        })
     }
 
     /// The scrollbar thumb of a scrolled section.
@@ -12225,6 +12238,33 @@ mod tests {
                 .expect("radios");
             let line_bottom = last.y + (RADIO_H + 20.0) / 2.0;
             assert!(divider_at(&l, line_bottom + BLOCK_PAD), "{lang:?}");
+        }
+    }
+
+    #[test]
+    fn the_top_fades_only_while_scrolled() {
+        let at = |section: Section, scroll: f32| {
+            let s = State {
+                scroll,
+                ..states()[0].clone()
+            };
+            layout(section, &s, &Estimate)
+        };
+        assert_eq!(at(Section::Features, 0.0).top_fade(), None);
+        let l = at(Section::Features, 100.0);
+        let v = l.viewport.expect("Fitur scrolls");
+        assert_eq!(
+            l.top_fade(),
+            Some(Rect {
+                x: v.x,
+                y: VIEW_TOP,
+                w: v.w,
+                h: SCROLL_FADE_H,
+            })
+        );
+        assert_eq!(SCROLL_FADE_H, 16.0);
+        for scroll in [0.0, 100.0, 1e6] {
+            assert_eq!(at(Section::Integrations, scroll).top_fade(), None);
         }
     }
 }
