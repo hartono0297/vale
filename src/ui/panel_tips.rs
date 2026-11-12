@@ -11,13 +11,52 @@ use crate::recorder::Source;
 use crate::ui::geometry::Rect as FRect;
 use crate::ui::tooltip::{KeyHint, Side, Tip};
 
-/// The app state a tip reads, built only while a hit other than the body is
-/// under the pointer.
+/// The app state a tip reads, built only while a hit with a tip is under the
+/// pointer (`has_tip`).
 #[derive(Clone, Debug, Default)]
 pub struct TipCtx {
     /// The running recording's mic, and its PC audio, are muted.
     pub rec_muted_mic: bool,
     pub rec_muted_system: bool,
+}
+
+/// Whether `hit` may have a tip: the gate before `TipCtx` is built, so a move
+/// over a hit without one reads no state. Lists every hit `tip_for` answers.
+pub fn has_tip(hit: &Hit) -> bool {
+    matches!(
+        hit,
+        Hit::NoticeClose | Hit::RecMuteCompact(_) | Hit::PanelPage(_) | Hit::OpenSettings
+    )
+}
+
+/// What a pointer move gives the tooltip.
+#[derive(Debug, PartialEq)]
+pub enum Feed {
+    /// This hit's tip (it has one, by `has_tip`).
+    Tip(Hit),
+    /// Nothing with a tip: the tip goes, its wait stops.
+    Nothing,
+    /// Not told anything: a button is held (a drag, a slider), the frame is in
+    /// motion (its regions are empty or about to move), or the pointer is
+    /// still on the target it pressed, which stays quiet until it is left.
+    LeaveAlone,
+}
+
+/// What the move over `hit` gives the tooltip. `held`: a button is down;
+/// `in_flux`: the island or the panel's page is moving; `pressed`: the hit a
+/// press was on, forgotten once a settled move finds the pointer elsewhere.
+pub fn feed(hit: Option<Hit>, held: bool, in_flux: bool, pressed: &mut Option<Hit>) -> Feed {
+    if held || in_flux {
+        return Feed::LeaveAlone;
+    }
+    if hit.is_some() && *pressed == hit {
+        return Feed::LeaveAlone;
+    }
+    *pressed = None;
+    match hit {
+        Some(hit) if has_tip(&hit) => Feed::Tip(hit),
+        _ => Feed::Nothing,
+    }
 }
 
 /// The tip of `hit`; `None` for a hit with none (the body, the busy toast's
@@ -279,5 +318,117 @@ mod tests {
             tip_id(&Hit::RecMuteCompact(Source::Mic)),
             tip_id(&Hit::RecMuteCompact(Source::System))
         );
+    }
+
+    fn sample_hits() -> Vec<Hit> {
+        Page::ALL
+            .into_iter()
+            .chain([Page::Search])
+            .map(Hit::PanelPage)
+            .chain([
+                Hit::NoticeClose,
+                Hit::OpenSettings,
+                Hit::RecMuteCompact(Source::Mic),
+                Hit::RecMuteCompact(Source::System),
+                Hit::Body,
+                Hit::ToastSlot,
+                Hit::Strip,
+                Hit::PlayPause,
+                Hit::CalPrev,
+                Hit::ClipPin(3),
+                Hit::MixerSlider(0),
+            ])
+            .collect()
+    }
+
+    #[test]
+    fn the_gate_lets_through_exactly_the_hits_with_a_tip() {
+        for muted in [false, true] {
+            for hit in sample_hits() {
+                assert_eq!(
+                    has_tip(&hit),
+                    tip_for(&hit, &ctx(muted)).is_some(),
+                    "{hit:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_settled_move_over_a_hit_with_a_tip_feeds_it() {
+        let dock = Hit::PanelPage(Page::Media);
+        let mut pressed = None;
+        assert_eq!(
+            feed(Some(dock.clone()), false, false, &mut pressed),
+            Feed::Tip(dock)
+        );
+        assert_eq!(
+            feed(Some(Hit::Body), false, false, &mut pressed),
+            Feed::Nothing
+        );
+        assert_eq!(
+            feed(Some(Hit::CalPrev), false, false, &mut pressed),
+            Feed::Nothing
+        );
+        assert_eq!(feed(None, false, false, &mut pressed), Feed::Nothing);
+    }
+
+    #[test]
+    fn a_held_button_or_a_moving_frame_leaves_the_tooltip_alone() {
+        let dock = Hit::PanelPage(Page::Media);
+        let mut pressed = None;
+        assert_eq!(
+            feed(Some(dock.clone()), true, false, &mut pressed),
+            Feed::LeaveAlone
+        );
+        assert_eq!(
+            feed(Some(dock), false, true, &mut pressed),
+            Feed::LeaveAlone
+        );
+        // A sliding page draws no regions: the body under the pointer is not
+        // a move off the target.
+        assert_eq!(
+            feed(Some(Hit::Body), false, true, &mut pressed),
+            Feed::LeaveAlone
+        );
+    }
+
+    #[test]
+    fn a_pressed_target_stays_quiet_through_its_page_turn_until_left() {
+        let dock = Hit::PanelPage(Page::Media);
+        let mut pressed = Some(dock.clone());
+        // The page slides in under the still pointer.
+        assert_eq!(
+            feed(Some(Hit::Body), false, true, &mut pressed),
+            Feed::LeaveAlone
+        );
+        assert_eq!(pressed, Some(dock.clone()));
+        // Settled again, the same icon under the pointer: still quiet.
+        assert_eq!(
+            feed(Some(dock.clone()), false, false, &mut pressed),
+            Feed::LeaveAlone
+        );
+        assert_eq!(pressed, Some(dock.clone()));
+        // Off it, then back: its tip comes again.
+        assert_eq!(
+            feed(Some(Hit::Body), false, false, &mut pressed),
+            Feed::Nothing
+        );
+        assert_eq!(pressed, None);
+        assert_eq!(
+            feed(Some(dock.clone()), false, false, &mut pressed),
+            Feed::Tip(dock)
+        );
+    }
+
+    #[test]
+    fn a_pressed_target_is_forgotten_on_another_target() {
+        let mut pressed = Some(Hit::PanelPage(Page::Media));
+        let other = Hit::PanelPage(Page::Mixer);
+        assert_eq!(
+            feed(Some(other.clone()), false, false, &mut pressed),
+            Feed::Tip(other)
+        );
+        assert_eq!(pressed, None);
     }
 }

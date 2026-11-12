@@ -30,7 +30,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowTextLengthW, GetWindowTextW, HMENU, PostMessageW, SendMessageW, SetWindowTextW,
     WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CHAR, WM_CLEAR, WM_CUT, WM_GETDLGCODE,
     WM_IME_COMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KILLFOCUS, WM_MOUSEWHEEL,
-    WM_NCDESTROY, WM_PASTE, WM_SETFOCUS, WM_UNDO, WS_CHILD, WS_VISIBLE,
+    WM_NCDESTROY, WM_PASTE, WM_SETFOCUS, WM_SYSKEYDOWN, WM_UNDO, WS_CHILD, WS_VISIBLE,
 };
 use windows::core::{HSTRING, Result, w};
 
@@ -244,6 +244,14 @@ fn ctrl_down() -> bool {
     state < 0
 }
 
+/// A key went down in the input: the island's tooltip goes (the island is
+/// the input's parent).
+fn hide_island_tip(hwnd: HWND) {
+    if let Ok(island) = unsafe { GetParent(hwnd) } {
+        crate::ui::tooltip::hide(island);
+    }
+}
+
 unsafe extern "system" fn input_proc(
     hwnd: HWND,
     msg: u32,
@@ -258,11 +266,11 @@ unsafe extern "system" fn input_proc(
             let code = unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) };
             return LRESULT(code.0 | DLGC_WANTALLKEYS as isize);
         }
+        // An Alt combination: the island's tooltip goes, as on any key; the
+        // EDIT handles the key as before.
+        WM_SYSKEYDOWN => hide_island_tip(hwnd),
         WM_KEYDOWN => {
-            // A key press: the island's tooltip goes (the island is the parent).
-            if let Ok(island) = unsafe { GetParent(hwnd) } {
-                crate::ui::tooltip::hide(island);
-            }
+            hide_island_tip(hwnd);
             let key = (wparam.0 & 0xFFFF) as u16;
             let copy_free = key == VK_C.0 && ctrl_down() && {
                 let (a, b) = selection(hwnd);

@@ -1454,7 +1454,7 @@ keys! {
     TipPageShelf => "Tempat singgah file, juga dari dan ke HP.", "A holding place for files, to and from your phone.";
     TipPageSystem => "CPU, RAM, disk, aplikasi tersibuk, dan bersih-bersih.", "CPU, RAM, disks, the busiest apps and clean-up.";
     TipPageDevices => "Flashdisk, disk luar, dan kartu memori, lepas dengan aman.", "Flash drives, external disks and memory cards, eject safely.";
-    TipPageCli => "Terminal kecil yang mulai di folder Explorer kamu.", "A small terminal that starts in your Explorer folder.";
+    TipPageCli => "Terminal kecil di panel, dengan folder favorit.", "A small terminal in the panel, with favorite folders.";
     TipPageArrange => "Atur jendela yang terbuka dengan template.", "Lay out your open windows with templates.";
     TipPageShortcuts => "Alat Windows, lompat ke halaman, dan pintasan kamu sendiri.", "Windows tools, page jumps and your own shortcuts.";
 }

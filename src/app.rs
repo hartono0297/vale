@@ -51,7 +51,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ENDSESSION, WM_HOTKEY, WM_LBUTTONDOWN, WM_LBUTTONUP,
     WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL,
     WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMER, WM_WTSSESSION_CHANGE,
-    WindowFromPoint,
+    WM_XBUTTONDOWN, WindowFromPoint,
 };
 use windows::core::{PCWSTR, PWSTR, w};
 
@@ -558,6 +558,7 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
             close_hot: false,
             close_ptr: None,
             tip_on: None,
+            tip_pressed: None,
             slot_keep: None,
             slot_share: SlotShare::default(),
             leaving: None,
@@ -936,6 +937,13 @@ fn release_single_instance() {
     }
 }
 
+/// Any button down on the island: its tip goes, and the target pressed stays
+/// without one until the pointer leaves it (also while the app is held).
+fn island_pressed(hwnd: HWND, lparam: LPARAM) {
+    tooltip::pressed(hwnd);
+    with_app(|app| app.tip_press(lparam));
+}
+
 /// The island's tooltip target as the last pointer move gave it: the hit,
 /// where it was on screen (px) and the view it was in.
 struct IslandTip {
@@ -1003,6 +1011,9 @@ struct App {
     /// What the last move gave the tooltip (`tip_under`); `None` when it gave
     /// nothing. The tip goes once this no longer holds (`tip_check`).
     tip_on: Option<IslandTip>,
+    /// The hit with a tip a button went down on; it stays quiet until the
+    /// pointer is on something else (`panel_tips::feed`).
+    tip_pressed: Option<Hit>,
     /// The toast whose logo the slot shows, kept while the island shrinks
     /// back so the logo fades out instead of vanishing.
     slot_keep: Option<Notice>,
@@ -5827,18 +5838,41 @@ impl App {
         }
     }
 
-    /// The tooltip target under the pointer at `lparam` (client px): a hit
-    /// with a tip, where the last frame drew it. `WM_MOUSEMOVE` gives it to
-    /// the tooltip once the app is let go. Nothing during a slider drag, on
-    /// the eyes or the drag margin, and nothing on a panel still opening or a
-    /// page sliding: such a frame registers no click regions.
-    fn tip_under(&mut self, lparam: LPARAM) -> Option<tooltip::Target> {
-        self.tip_on = None;
-        if self.mixer_drag.is_some() || self.peek.is_shrunk() || !self.on_island(lparam) {
-            return None;
+    /// What the move at `lparam` (client px, `wparam` its button flags) tells
+    /// the tooltip: `Some(target)` (a hit with a tip, where the last frame drew
+    /// it), `Some(None)` (nothing with a tip: the tip goes) or `None` (leave it
+    /// alone: a button is held, the island or its page is moving, or the
+    /// pointer is still on the target it pressed; `panel_tips::feed`).
+    /// `WM_MOUSEMOVE` gives it to the tooltip once the app is let go.
+    fn tip_under(&mut self, wparam: WPARAM, lparam: LPARAM) -> Option<Option<tooltip::Target>> {
+        use windows::Win32::System::SystemServices::{MK_LBUTTON, MK_MBUTTON, MK_RBUTTON};
+        let buttons = (MK_LBUTTON | MK_RBUTTON | MK_MBUTTON).0 as usize;
+        let held = self.mixer_drag.is_some() || wparam.0 & buttons != 0;
+        if !held && (self.peek.is_shrunk() || !self.on_island(lparam)) {
+            self.tip_on = None;
+            self.tip_pressed = None;
+            return Some(None);
         }
-        // The body is most of the island: no state is read for it.
-        let hit = self.hit_at(lparam).filter(|h| *h != Hit::Body)?;
+        let hit = match panel_tips::feed(
+            self.hit_at(lparam),
+            held,
+            self.tip_in_flux(),
+            &mut self.tip_pressed,
+        ) {
+            panel_tips::Feed::LeaveAlone => return None,
+            panel_tips::Feed::Nothing => {
+                self.tip_on = None;
+                return Some(None);
+            }
+            panel_tips::Feed::Tip(hit) => hit,
+        };
+        self.tip_on = None;
+        Some(self.tip_target(hit))
+    }
+
+    /// `hit`'s tooltip target, remembered in `tip_on`; `None` when it says
+    /// nothing or the last frame drew no region for it.
+    fn tip_target(&mut self, hit: Hit) -> Option<tooltip::Target> {
         let tip = panel_tips::tip_for(&hit, &self.tip_ctx())?;
         let anchor = self.tip_anchor(&hit)?;
         let target = tooltip::Target {
@@ -5853,6 +5887,23 @@ impl App {
             view: self.state.view(),
         });
         Some(target)
+    }
+
+    /// The island or the open panel's page is moving: its regions are empty
+    /// or about to move, so the hit under the pointer says nothing yet.
+    fn tip_in_flux(&self) -> bool {
+        self.anim.running
+            || self.rise.is_some()
+            || self.slide.is_some()
+            || self.page_fade.is_some()
+            || self.strip_motion.is_some()
+    }
+
+    /// A button went down on the island at `lparam`: the target it is on
+    /// stays without a tip until the pointer leaves it, through the page turn
+    /// or panel change the click may start (`panel_tips::feed`).
+    fn tip_press(&mut self, lparam: LPARAM) {
+        self.tip_pressed = self.hit_at(lparam).filter(panel_tips::has_tip);
     }
 
     /// What the island's tips read of the state.
@@ -5939,6 +5990,7 @@ impl App {
         self.set_toast_pointer(false);
         self.track_close_hot(None);
         self.tip_hide();
+        self.tip_pressed = None;
         self.click.clear();
         self.dock_leave();
         self.arrange_hover(None);
@@ -9366,7 +9418,7 @@ unsafe extern "system" fn wnd_proc(
             with_app(|app| app.on_mouse_move(lparam));
             // After the app is let go: the tooltip may make a window of its
             // own. A move while the app is held tells it nothing.
-            if let Some(tip) = with_app(|app| app.tip_under(lparam)) {
+            if let Some(Some(tip)) = with_app(|app| app.tip_under(wparam, lparam)) {
                 tooltip::hover(hwnd, tip);
             }
             // A card pulled off the shelf: the drag blocks until the button
@@ -9391,7 +9443,7 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
         WM_MBUTTONDOWN => {
-            tooltip::pressed(hwnd);
+            island_pressed(hwnd, lparam);
             with_app(|app| app.on_middle_press(lparam));
             LRESULT(0)
         }
@@ -9400,9 +9452,14 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
         WM_RBUTTONDOWN => {
-            tooltip::pressed(hwnd);
+            island_pressed(hwnd, lparam);
             with_app(App::on_right_press);
             LRESULT(0)
+        }
+        // The side buttons do nothing on the island but still count as a press.
+        WM_XBUTTONDOWN => {
+            island_pressed(hwnd, lparam);
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
         WM_MOUSEHWHEEL => {
             let delta = (wparam.0 >> 16) as u16 as i16;
@@ -9506,7 +9563,7 @@ unsafe extern "system" fn wnd_proc(
             // does not lose it to a press here: the press only closes it, as
             // a native menu's would. Also one Settings opened: it keeps the
             // activation while the island is pressed.
-            tooltip::pressed(hwnd);
+            island_pressed(hwnd, lparam);
             if crate::ui::menu_pop::is_open() {
                 crate::ui::menu_pop::close();
                 return LRESULT(0);
