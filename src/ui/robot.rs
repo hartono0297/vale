@@ -1686,7 +1686,8 @@ pub const BOUNCE_PX: f32 = 3.0;
 pub const BOUNCE_MS: u64 = 260;
 pub const BOUNCES: u64 = 2;
 /// The falk's hop on a "done" notice: one half-sine this high, `HOP_MS` long.
-pub const HOP_PX: f32 = 1.25;
+/// 1.875 px is the spec's 3 grid units in the 40 px notice badge (the only place it hops).
+pub const HOP_PX: f32 = 1.875;
 pub const HOP_MS: u64 = 400;
 /// The greeting's wave: `WAVE_SWINGS` swings over `WAVE_MS`, then the raised
 /// arm holds.

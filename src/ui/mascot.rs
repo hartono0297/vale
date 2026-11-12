@@ -285,7 +285,9 @@ pub fn arms(expr: Expr, pose: &Pose) -> [Arm; 6] {
                 _ => {}
             }
             if pose.dancing && matches!(expr, Expr::Music | Expr::Sing) {
-                let w = (pose.beat * 600.0 / 190.0 + i as f32 * 1.4 + side_idx as f32).sin();
+                // beat = pi * t / BEAT_MS, so this is t / 190 ms.
+                let t_190 = pose.beat * crate::ui::robot::BEAT_MS as f32 / (std::f32::consts::PI * 190.0);
+                let w = (t_190 + i as f32 * 1.4 + side_idx as f32).sin();
                 end.0 += w * 2.0;
                 end.1 -= w.max(0.0) * 2.5;
             }
@@ -390,7 +392,7 @@ pub fn octopus_outline(expr: Expr, pose: &Pose) -> Vec<(f32, f32)> {
 /// square), in px, and its corner radius (the cat head's, scaled). The cat:
 /// its head (`head_rect`). The falk: the egg's width, from the top of its
 /// crest for `expr` and `pose` down to the egg's base. The octopus: the
-/// mantle and the arms, x 1..63, y 9..61.
+/// mantle and the arms with their curls, x -3..67, y 9..61.
 pub fn mascot_box(m: Mascot, area: Rect, expr: Expr, pose: &Pose) -> (Rect, f32) {
     let k = area.w / GRID;
     let (x0, y0, x1, y1) = match m {
@@ -399,7 +401,7 @@ pub fn mascot_box(m: Mascot, area: Rect, expr: Expr, pose: &Pose) -> (Rect, f32)
             let top = falk_outline(expr, pose).iter().map(|p| p.1).fold(f32::MAX, f32::min);
             (9.0, top, 55.0, 57.0)
         }
-        Mascot::Octopus => (1.0, 9.0, 63.0, 61.0),
+        Mascot::Octopus => (-3.0, 9.0, 67.0, 61.0),
     };
     (
         Rect {
@@ -690,6 +692,22 @@ mod tests {
     }
 
     #[test]
+    fn the_dancing_arms_sway_with_a_190_ms_phase() {
+        // beat = pi * t / BEAT_MS, so t = 190 ms gives sin(1 + i*1.4 + side).
+        let beat = std::f32::consts::PI * 190.0 / crate::ui::robot::BEAT_MS as f32;
+        let rest = arms(Expr::Music, &Pose::default());
+        let dance = arms(Expr::Music, &Pose { dancing: true, beat, ..Pose::default() });
+        for side in 0..2 {
+            for i in 0..3 {
+                let k = side * 3 + i;
+                let want = 2.0 * (1.0 + i as f32 * 1.4 + side as f32).sin();
+                let got = dance[k].end.0 - rest[k].end.0;
+                assert!((got - want).abs() < 1e-4, "arm {k}: {got} vs {want}");
+            }
+        }
+    }
+
+    #[test]
     fn octopus_coats_and_tints() {
         assert_eq!(octopus_rgb(OctopusColor::Coral), 0xE87C8E);
         assert_eq!(octopus_rgb(OctopusColor::Blue), 0x5FA8C9);
@@ -886,7 +904,7 @@ mod tests {
         let p = Pose::default();
         assert_eq!(mascot_box(Mascot::Cat, area, Expr::Idle, &p), crate::ui::robot::head_rect(area));
         let (o, r) = mascot_box(Mascot::Octopus, area, Expr::Idle, &p);
-        assert_eq!((o.x, o.y, o.w, o.h, r), (10.5, 4.5, 31.0, 26.0, 8.5));
+        assert_eq!((o.x, o.y, o.w, o.h, r), (8.5, 4.5, 35.0, 26.0, 8.5));
         let (f, _) = mascot_box(Mascot::Falk, area, Expr::Idle, &p);
         assert_eq!((f.x, f.w), (14.5, 23.0));
         assert!((f.y + f.h - 28.5).abs() < 1e-4);

@@ -231,6 +231,8 @@ pub fn anchors(m: Mascot) -> Anchors {
             top: (32.0, 24.0),
             left: (16.0, 23.0),
             right: (45.0, 23.0),
+            // The cat's scarf keeps its own geometry: this is its actual band
+            // (47..55); its pieces are not built from this anchor.
             band: (47.0, 55.0),
             tie: (32.0, 51.5),
             // The spec says 16; the band's box (control points, stroke) would

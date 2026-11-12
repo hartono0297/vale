@@ -2041,7 +2041,24 @@ mod tests {
                                 // wobble with the beat: sample it every pi/8 once
                                 // per amount (the rise only moves the note).
                                 let beats: Vec<f32> = if rise == 0.0 {
-                                    (0..16).map(|i| i as f32 * std::f32::consts::PI / 8.0).collect()
+                                    use std::f32::consts::{FRAC_PI_2, PI, TAU};
+                                    let mut v: Vec<f32> =
+                                        (0..16).map(|i| i as f32 * PI / 8.0).collect();
+                                    // The octopus arms' phase is t/190 ms + i*1.4 + side:
+                                    // hit each arm's extremes (pi/2 and 3pi/2) exactly.
+                                    for i in 0..3 {
+                                        for side in 0..2 {
+                                            for target in [FRAC_PI_2, 3.0 * FRAC_PI_2] {
+                                                let t_190 = (target - i as f32 * 1.4 - side as f32)
+                                                    .rem_euclid(TAU);
+                                                v.push(
+                                                    t_190 * PI * 190.0
+                                                        / crate::ui::robot::BEAT_MS as f32,
+                                                );
+                                            }
+                                        }
+                                    }
+                                    v
                                 } else {
                                     vec![0.0]
                                 };
@@ -2112,7 +2129,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(checked, 2 * 15 * 9 * 5 * 2 * (16 + 1 + 1) * 3);
+        assert_eq!(checked, 2 * 15 * 9 * 5 * 2 * (16 + 12 + 1 + 1) * 3);
     }
 
     #[test]

@@ -4029,6 +4029,40 @@ fn color(rgb: u32, alpha: f32) -> D2D1_COLOR_F {
     }
 }
 
+/// `base` with the mascot and coat of `coat`.
+#[cfg(debug_assertions)]
+fn coat_look(coat: crate::theme::Coat, base: CatLook) -> CatLook {
+    use crate::theme::{Coat, Mascot};
+    match coat {
+        Coat::Cat(color) => CatLook {
+            mascot: Mascot::Cat,
+            color,
+            ..base
+        },
+        Coat::Falk(falk) => CatLook {
+            mascot: Mascot::Falk,
+            falk,
+            ..base
+        },
+        Coat::Octopus(octopus) => CatLook {
+            mascot: Mascot::Octopus,
+            octopus,
+            ..base
+        },
+    }
+}
+
+/// The coat's own name: "Terracotta", "Lutino", "Coral".
+#[cfg(debug_assertions)]
+fn coat_name(coat: crate::theme::Coat) -> &'static str {
+    use crate::theme::Coat;
+    match coat {
+        Coat::Cat(c) => c.name(),
+        Coat::Falk(f) => f.name(),
+        Coat::Octopus(o) => o.name(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4233,39 +4267,5 @@ mod tests {
         // An empty rect is not a copy.
         let none = dirty::RectI { left: 3, top: 3, right: 3, bottom: 5 };
         assert!(!copy_rect(&src, 56, &mut dst, 40, none));
-    }
-}
-
-/// `base` with the mascot and coat of `coat`.
-#[cfg(debug_assertions)]
-fn coat_look(coat: crate::theme::Coat, base: CatLook) -> CatLook {
-    use crate::theme::{Coat, Mascot};
-    match coat {
-        Coat::Cat(color) => CatLook {
-            mascot: Mascot::Cat,
-            color,
-            ..base
-        },
-        Coat::Falk(falk) => CatLook {
-            mascot: Mascot::Falk,
-            falk,
-            ..base
-        },
-        Coat::Octopus(octopus) => CatLook {
-            mascot: Mascot::Octopus,
-            octopus,
-            ..base
-        },
-    }
-}
-
-/// The coat's own name: "Terracotta", "Lutino", "Coral".
-#[cfg(debug_assertions)]
-fn coat_name(coat: crate::theme::Coat) -> &'static str {
-    use crate::theme::Coat;
-    match coat {
-        Coat::Cat(c) => c.name(),
-        Coat::Falk(f) => f.name(),
-        Coat::Octopus(o) => o.name(),
     }
 }

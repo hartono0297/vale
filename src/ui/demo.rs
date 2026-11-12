@@ -2044,10 +2044,6 @@ pub fn run() {
     run_scenes(&SCENES);
 }
 
-/// `--demo-cli`: only the CLI page's scenes (`cli-empty`, `cli-ready`,
-/// `cli-typing`, `cli-running`, `cli-done`, `cli-error`, `cli-tall`,
-/// `cli-from-explorer`, `cli-folder-menu`), Pill
-/// then Notch; `DI_DEMO_STEP` picks one by number or name as in `--demo`.
 /// The mascot look the demo's env vars name (`get` reads one, "" if unset):
 /// `DI_MASCOT`, `DI_CAT_COLOR`, `DI_FALK_COLOR`, `DI_OCTOPUS_COLOR`,
 /// `DI_CAT_ACCESSORY`; a missing or unknown value is the default.
@@ -2259,6 +2255,10 @@ pub fn run_arrange() {
     run_scenes(&scenes);
 }
 
+/// `--demo-cli`: only the CLI page's scenes (`cli-empty`, `cli-ready`,
+/// `cli-typing`, `cli-running`, `cli-done`, `cli-error`, `cli-tall`,
+/// `cli-from-explorer`, `cli-folder-menu`), Pill
+/// then Notch; `DI_DEMO_STEP` picks one by number or name as in `--demo`.
 pub fn run_cli() {
     let scenes: Vec<Scene> = SCENES
         .iter()
