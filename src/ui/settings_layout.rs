@@ -4610,8 +4610,8 @@ fn recording_card(b: &mut Builder, s: &State) {
     b.row_text(card, rows[4], b.t(Key::RecSettingsFolder), desc, false, x);
 }
 
-/// The size a recording takes on the screen Settings is on: the primary
-/// monitor, else the first, else a 1920x1080 stand-in (no list yet).
+/// The size a recording takes on the primary monitor, else the first row of
+/// the list, else a 1920x1080 stand-in (no list yet).
 fn estimate_source(monitors: &[MonitorRow]) -> (u32, u32) {
     monitors
         .iter()
@@ -4653,7 +4653,13 @@ fn screen_card(b: &mut Builder, s: &State) {
         h: 0.0,
     };
     let desc_w = row_text_w(probe, b.g.right - b.segmented_w(&items));
-    let estimate = b.wrap(&video_estimate_line(b.lang, w, h, mib), Font::Desc, desc_w);
+    let line = video_estimate_line(b.lang, w, h, mib);
+    // Wrapped, it breaks at its " · ": the size, then the rate.
+    let estimate = if b.w(&line, Font::Desc) <= desc_w {
+        vec![line]
+    } else {
+        line.split(" · ").map(str::to_owned).collect()
+    };
     let quality_h = wrapped_row_h(estimate.len());
 
     let card = b.card(4.0 * ROW_H + quality_h);
@@ -9637,6 +9643,19 @@ mod tests {
                         // The lines read as the estimate and stay inside the row.
                         let said = lines.iter().map(|t| t.text.as_str()).collect::<Vec<_>>().join(" ");
                         assert!(said.contains('×') && said.contains("MB/"), "{tag}: {said}");
+                        // Wrapped, it breaks at the separator: size, then rate.
+                        let texts: Vec<&str> = lines.iter().map(|t| t.text.as_str()).collect();
+                        match texts.as_slice() {
+                            [one] => assert!(one.contains(" · ± "), "{tag}: {one}"),
+                            [size, rate] => {
+                                assert!(size.contains('×') && !size.contains(' '), "{tag}: {size}");
+                                assert!(rate.starts_with("± ") && rate.contains(" MB/"), "{tag}: {rate}");
+                            }
+                            _ => panic!("{tag}: {texts:?}"),
+                        }
+                        if (lang, w, fps, q) == (Lang::En, 2560, 60, VideoQuality::Original) {
+                            assert_eq!(texts, ["2560×1440", "± 127 MB/min"], "{tag}");
+                        }
                         let row_h = wrapped_row_h(lines.len());
                         assert_eq!(card.h, 4.0 * ROW_H + row_h, "{tag}");
                         for t in &lines {

@@ -75,7 +75,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
         .first()
         .and_then(|s| s.parse().ok())
         .filter(|s: &f64| *s > 0.0 && *s <= 3600.0)
-        .ok_or("usage: --screenrec-test <seconds> [--zoom] [--window [hwnd]] [--region x,y,w,h] [--fps 60] [--software] [--no-audio]")?;
+        .ok_or("usage: --screenrec-test <seconds> [--zoom] [--window [hwnd]] [--region x,y,w,h] [--fps 60] [--quality original|1440p|1080p|720p] [--software] [--no-audio]")?;
     let mut a = Args {
         seconds,
         zoom: false,
