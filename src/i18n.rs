@@ -1525,7 +1525,7 @@ keys! {
     TipCapPause => "Jeda caption", "Pause captions";
     TipCapResume => "Lanjutkan caption", "Resume captions";
     TipCapPauseAbout => "Teks yang sudah ada tetap.", "The text so far stays.";
-    TipCapCopyAbout => "Salin semua teks sesi ini, bukan cuma yang terlihat.", "Copies the whole session, not just what shows.";
+    TipCapCopyAbout => "Salin teks akhir sesi ini, bukan cuma yang terlihat.", "Copies the final text of this session, not just what shows.";
     TipCapLang => "Bahasa caption", "Caption language";
     TipCapLangAbout => "Klik untuk ganti: ID, EN, Auto.", "Click to switch: ID, EN, Auto.";
     TipCapGripAbout => "Ctrl + roda mouse mengubah ukuran teks.", "Ctrl + wheel changes the text size.";

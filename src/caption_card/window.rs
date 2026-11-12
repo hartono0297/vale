@@ -175,6 +175,13 @@ enum Pointer {
     Grip,
 }
 
+/// A tooltip call, made once the borrow is released.
+enum TipOp {
+    Hover(Option<tooltip::Target>),
+    Pressed,
+    Hide,
+}
+
 /// What to do once the borrow is released.
 enum Fx {
     Capture(bool),
@@ -211,6 +218,8 @@ pub(super) struct Card {
     manual: ManualScroll,
     hover: Tween,
     hovering: bool,
+    /// Tooltip calls the card made, run by `with` after its borrow ends.
+    tips: Vec<TipOp>,
     hover_zone: Option<Zone>,
     tracking: bool,
     press: Option<Press>,
@@ -300,13 +309,21 @@ fn run_fx(fx: Vec<Fx>, hwnd: HWND) {
 /// window calls it asked for.
 fn with<R>(f: impl FnOnce(&mut Card, &mut Vec<Fx>) -> R) -> Option<R> {
     let mut fx = Vec::new();
-    let (out, hwnd) = CARD.with(|cell| {
+    let (out, hwnd, tips) = CARD.with(|cell| {
         let mut guard = cell.try_borrow_mut().ok()?;
         let card = guard.as_mut()?;
         let hwnd = card.hwnd;
-        Some((f(card, &mut fx), hwnd))
+        let out = f(card, &mut fx);
+        Some((out, hwnd, std::mem::take(&mut card.tips)))
     })?;
     run_fx(fx, hwnd);
+    for op in tips {
+        match op {
+            TipOp::Hover(t) => tooltip::hover(hwnd, t),
+            TipOp::Pressed => tooltip::pressed(hwnd),
+            TipOp::Hide => tooltip::hide(hwnd),
+        }
+    }
     Some(out)
 }
 
@@ -378,6 +395,7 @@ pub(super) fn open(args: OpenArgs, content: CardContent) -> bool {
         manual: ManualScroll::default(),
         hover: Tween::at_rest(0.0, now),
         hovering: false,
+        tips: Vec::new(),
         hover_zone: None,
         tracking: false,
         press: None,
@@ -1256,7 +1274,7 @@ impl Card {
             if started && matches!(zone, Some(Zone::Header | Zone::Body | Zone::Grip)) {
                 if let Some(p) = &mut self.press {
                     if !p.dragging {
-                        tooltip::hide(self.hwnd);
+                        self.tips.push(TipOp::Hide);
                     }
                     p.dragging = true;
                 }
@@ -1279,7 +1297,8 @@ impl Card {
         let changed = zone != self.hover_zone;
         self.hover_zone = zone;
         fx.push(Fx::Cursor(self.pointer_for(zone)));
-        tooltip::hover(self.hwnd, self.tip_target(zone));
+        let t = self.tip_target(zone);
+        self.tips.push(TipOp::Hover(t));
         self.sync_clock(now);
         if changed || was_moving || self.hover.moving(now) {
             self.render(now);
@@ -1303,7 +1322,7 @@ impl Card {
         if self.press.is_some() {
             return;
         }
-        tooltip::hide(self.hwnd);
+        self.tips.push(TipOp::Hide);
         let now = Instant::now();
         self.set_hover(false, now);
         self.hover_zone = None;
@@ -1312,7 +1331,7 @@ impl Card {
     }
 
     fn button_down(&mut self, x: i32, y: i32, fx: &mut Vec<Fx>) {
-        tooltip::pressed(self.hwnd);
+        self.tips.push(TipOp::Pressed);
         let (dx, dy) = self.to_dip(x, y);
         let mut cursor = POINT::default();
         if unsafe { GetCursorPos(&mut cursor) }.is_err() {
@@ -1428,7 +1447,7 @@ impl Card {
 
     /// The window is gone: stop the timers and the frame clock for good.
     fn destroyed(&mut self) {
-        tooltip::hide(self.hwnd);
+        self.tips.push(TipOp::Hide);
         self.gone = true;
         self.press = None;
         self.kill_timers();
@@ -1447,7 +1466,7 @@ impl Card {
     /// Ctrl + wheel asks for the next text size; a plain wheel scrolls back
     /// through the session and holds there for a while.
     fn wheel(&mut self, delta: i16, ctrl: bool, now: Instant, post: &mut Vec<(Msg, isize)>) {
-        tooltip::hide(self.hwnd);
+        self.tips.push(TipOp::Hide);
         if ctrl {
             if delta != 0 {
                 post.push((Msg::Size, isize::from(delta > 0)));

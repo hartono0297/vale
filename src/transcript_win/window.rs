@@ -65,9 +65,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowRect, IDC_ARROW, IDC_HAND, IsIconic, IsZoomed, KillTimer, LoadCursorW, MINMAXINFO,
     PostMessageW, RegisterClassExW, SW_RESTORE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SetCursor,
     SetTimer, SetWindowPos, SetWindowTextW, ShowWindow, WINDOW_EX_STYLE, WM_CAPTURECHANGED,
-    WM_CLOSE, WM_DESTROY, WM_DPICHANGED, WM_ENTERSIZEMOVE, WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_GETMINMAXINFO,
-    WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_SETCURSOR,
-    WM_SIZE, WM_TIMER, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
+    WM_CLOSE, WM_DESTROY, WM_DPICHANGED, WM_ENTERSIZEMOVE, WM_ERASEBKGND, WM_EXITSIZEMOVE,
+    WM_GETMINMAXINFO, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_SETCURSOR,
+    WM_SIZE, WM_SYSKEYDOWN, WM_TIMER, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
 };
 use windows::core::{HSTRING, PCWSTR, Result, w};
 use windows_numerics::Vector2;
@@ -1322,10 +1322,28 @@ fn screen_rect(w: &Win, r: Rect) -> crate::capture::Rect {
     crate::capture::Rect::new(pt.x, pt.y, (r.w * k).round() as i32, (r.h * k).round() as i32)
 }
 
-/// The tip target of `hot`: where it sits on screen and what it says. The
-/// bar's anchor is a small box at the pointer's x, fixed when the bar is
-/// first reported and kept while the pointer stays on it.
-fn tip_target(w: &mut Win, hot: Option<Hot>) -> Option<tooltip::Target> {
+/// A tip target before its rect is put on screen: that is done once the
+/// window's borrow has ended (`on_screen`).
+struct TipSpec {
+    id: u64,
+    rect: Rect,
+    scale: f32,
+    tip: tooltip::Tip,
+}
+
+fn on_screen(hwnd: HWND, spec: TipSpec) -> tooltip::Target {
+    tooltip::Target {
+        id: spec.id,
+        anchor: tooltip::to_screen(hwnd, spec.rect, spec.scale),
+        side: Side::Auto,
+        tip: spec.tip,
+    }
+}
+
+/// The tip of `hot` and where it sits in the client area. The bar's anchor
+/// is a small box at the pointer's x, fixed when the bar is first reported
+/// and kept while the pointer stays on it.
+fn tip_spec(w: &mut Win, hot: Option<Hot>) -> Option<TipSpec> {
     let Some(hot) = hot else {
         w.tip_bar_x = None;
         return None;
@@ -1352,7 +1370,7 @@ fn tip_target(w: &mut Win, hot: Option<Hot>) -> Option<tooltip::Target> {
         Hot::Line(_) => return None,
     };
     let tip = layout::tip_of(hot, playing, btn)?;
-    Some(tooltip::Target { id, anchor: screen_rect(w, rect), side: Side::Auto, tip })
+    Some(TipSpec { id, rect, scale: scale(w), tip })
 }
 
 fn request_of(btn: Btn, anchor: crate::capture::Rect) -> Request {
@@ -1444,9 +1462,11 @@ fn key_down(hwnd: HWND, vk: u16) -> bool {
     tooltip::hide(hwnd);
     let handled = key_down_in(hwnd, vk);
     if vk == VK_TAB.0 {
-        let target = with_win(hwnd, |w| (w.focus == Focus::Play).then(|| tip_target(w, Some(Hot::Play)))).flatten().flatten();
-        if target.is_some() {
-            tooltip::hover(hwnd, target);
+        let spec = with_win(hwnd, |w| (w.focus == Focus::Play).then(|| tip_spec(w, Some(Hot::Play))))
+            .flatten()
+            .flatten();
+        if let Some(spec) = spec {
+            tooltip::hover(hwnd, Some(on_screen(hwnd, spec)));
         }
     }
     handled
@@ -1670,11 +1690,11 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 }
                 let hot = hit(w, x, y);
                 let changed = std::mem::replace(&mut w.hover, hot) != hot;
-                (changed, Some(tip_target(w, hot)))
+                (changed, Some(tip_spec(w, hot)))
             });
             if let Some((changed, tip)) = moved {
-                if let Some(tip) = tip {
-                    tooltip::hover(hwnd, tip);
+                if let Some(spec) = tip {
+                    tooltip::hover(hwnd, spec.map(|s| on_screen(hwnd, s)));
                 }
                 if changed {
                     invalidate(hwnd);
@@ -1785,8 +1805,15 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             invalidate(hwnd);
             LRESULT(0)
         }
+        // Focus lost (Alt+Tab, a click elsewhere): a tip that Tab showed must
+        // not stay over the other app.
         WM_KILLFOCUS => {
+            tooltip::hide(hwnd);
             let _ = with_win(hwnd, end_key_seek);
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+        }
+        WM_SYSKEYDOWN => {
+            tooltip::hide(hwnd);
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
         WM_KEYDOWN => {
