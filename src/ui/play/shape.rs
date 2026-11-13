@@ -5,6 +5,8 @@ use super::rim::rim;
 use crate::config::Style;
 use crate::ui::geometry::ShapeRect;
 
+/// How many rim samples the outline takes. A swinging Notch returns more
+/// points than this, for its extension above the screen edge.
 pub const OUTLINE_PTS: usize = 90;
 
 /// A bell on the rim at `u`. `depth` and `width` are fractions of the island's
@@ -30,11 +32,12 @@ pub struct Deform {
 
 /// True when `d` leaves the island's geometry untouched; a dent with no depth
 /// or no width counts as none.
-pub fn is_rest(d: &Deform) -> bool {
+/// Shift and tilt do nothing on the Notch, as in `outline`.
+pub fn is_rest(style: Style, d: &Deform) -> bool {
+    let pill = style == Style::Pill;
     d.squeeze == 0.0
         && d.swing_deg == 0.0
-        && d.shift == (0.0, 0.0)
-        && d.tilt_deg == 0.0
+        && (!pill || (d.shift == (0.0, 0.0) && d.tilt_deg == 0.0))
         && d.dents.iter().all(|k| k.depth == 0.0 || k.width <= 0.0)
 }
 
@@ -70,7 +73,6 @@ pub fn outline(style: Style, s: ShapeRect, d: &Deform) -> Vec<(f32, f32)> {
     let lift = s.w / 2.0 * swing.to_radians().abs().tan() + 1.0;
     if extend {
         out.push(place(s.x, s.y - lift));
-        out.push(place(s.x, s.y - lift * 0.75));
     }
     for i in 0..OUTLINE_PTS {
         let p = rim(style, s, i as f32 / (OUTLINE_PTS - 1) as f32);
@@ -87,7 +89,6 @@ pub fn outline(style: Style, s: ShapeRect, d: &Deform) -> Vec<(f32, f32)> {
         out.push(place(x, y));
     }
     if extend {
-        out.push(place(s.x + s.w, s.y - lift * 0.75));
         out.push(place(s.x + s.w, s.y - lift));
     }
     out
@@ -117,13 +118,20 @@ mod tests {
         let rest = outline(Style::Notch, s, &Deform::default());
         let d = Deform { dents: vec![Dent { u: 0.5, depth: -0.3, width: 0.08 }], ..Default::default() };
         let bent = outline(Style::Notch, s, &d);
-        let far = rim(Style::Notch, s, 0.1);
-        assert!(bent.iter().any(|p| (p.1 - (s.y + s.h)).abs() > 3.0), "the lip moved");
-        assert!(
-            bent.iter().zip(&rest).filter(|(b, r)| (b.0 - r.0).abs() + (b.1 - r.1).abs() > 0.01)
-                .all(|(b, _)| (b.0 - far.x).abs() > 10.0),
-            "nothing moved far from the dent"
-        );
+        assert_eq!(bent.len(), rest.len());
+        let moved: Vec<usize> = bent.iter().zip(&rest).enumerate()
+            .filter(|(_, (b, r))| (b.0 - r.0).abs() + (b.1 - r.1).abs() > 0.01)
+            .map(|(i, _)| i)
+            .collect();
+        assert!(!moved.is_empty(), "the dent moved nothing");
+        let deepest = bent.iter().zip(&rest).map(|(b, r)| (b.1 - r.1).abs()).fold(0.0_f32, f32::max);
+        assert!(deepest > 3.0, "the dent is only {deepest} deep");
+        let centre = rim(Style::Notch, s, 0.5);
+        for i in moved {
+            let p = rim(Style::Notch, s, i as f32 / (OUTLINE_PTS - 1) as f32);
+            assert!((p.x - centre.x).hypot(p.y - centre.y) < 0.08 * s.h + 0.01,
+                "point {i} moved but lies outside the dent's width");
+        }
     }
 
     #[test]
@@ -131,9 +139,11 @@ mod tests {
         let s = shape(Style::Notch, 190.0, 34.0);
         let pts = outline(Style::Notch, s, &Deform { swing_deg: 6.0, ..Default::default() });
         assert!(pts.iter().any(|p| p.1 < s.y - 0.5), "the top is extended behind the screen edge");
+        // Interpolate where each segment actually crosses the screen edge; taking
+        // the earlier point's x instead would measure the sampling, not the shape.
         let crossings: Vec<f32> = pts.windows(2)
-            .filter(|w| (w[0].1 - s.y) * (w[1].1 - s.y) <= 0.0)
-            .map(|w| w[0].0)
+            .filter(|w| (w[0].1 - s.y) * (w[1].1 - s.y) <= 0.0 && w[0].1 != w[1].1)
+            .map(|w| w[0].0 + (s.y - w[0].1) / (w[1].1 - w[0].1) * (w[1].0 - w[0].0))
             .collect();
         assert!(crossings.iter().any(|&x| x <= s.x), "still covers the left end at the edge");
         assert!(crossings.iter().any(|&x| x >= s.x + s.w), "and the right end");
@@ -148,7 +158,10 @@ mod tests {
 
     #[test]
     fn is_rest_is_true_only_for_an_untouched_deform() {
-        assert!(is_rest(&Deform::default()));
-        assert!(!is_rest(&Deform { squeeze: 0.02, ..Default::default() }));
+        assert!(is_rest(Style::Notch, &Deform::default()));
+        assert!(!is_rest(Style::Notch, &Deform { squeeze: 0.02, ..Default::default() }));
+        // shift and tilt do nothing on the Notch, so `is_rest` must agree with `outline`.
+        assert!(is_rest(Style::Notch, &Deform { shift: (0.0, 6.0), tilt_deg: 4.0, ..Default::default() }));
+        assert!(!is_rest(Style::Pill, &Deform { tilt_deg: 4.0, ..Default::default() }));
     }
 }
