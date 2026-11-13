@@ -544,6 +544,12 @@ keys! {
     PhoneStep2Sub => "Semua berkas di rak ikut tampil", "Every shelf file shows there";
     PhoneNetPrivate => "pribadi", "private";
     PhoneNetPublic => "publik", "public";
+    PhoneNetWifi => "Wi-Fi", "Wi-Fi";
+    PhoneNetTailscale => "Tailscale", "Tailscale";
+    PhoneTailscaleHint => "HP juga harus pakai Tailscale, akun yang sama",
+        "The phone needs Tailscale too, same account";
+    PhoneTailscaleOnly => "Lewat Tailscale, terenkripsi dari HP ke PC",
+        "Through Tailscale, encrypted from phone to PC";
     PhoneConnected => "Tersambung", "Connected";
     PhonePublicHint => "Wi-Fi publik \u{2014} jangan dipakai di kafe/hotel", "Public Wi-Fi \u{2014} don't use at a caf\u{e9} or hotel";
     PhoneLocalOnly => "Langsung lewat Wi-Fi lokal, tidak lewat internet",

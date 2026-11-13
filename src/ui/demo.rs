@@ -36,7 +36,10 @@
 //!   "Tersambung: Android"), `phone-qr-expired` (dimmed, with "Buat QR
 //!   baru"), `phone-public` (the QR view on a Public network: "publik" on
 //!   the network line and the warning in the hint box), `phone-nolan` (the
-//!   warning card) and `phone-receive` (two files in, one at 62 %, one that
+//!   warning card), `phone-qr-tailscale` (the switch on Tailscale: the
+//!   network line says "Tailscale", the hint says the phone needs it too),
+//!   `phone-notailscale` (Tailscale chosen but not running: its warning
+//!   card) and `phone-receive` (two files in, one at 62 %, one that
 //!   failed). The `shelf` scene has two cards tagged "dari HP". The real
 //!   flow in a browser on this PC: `--phone-debug` (see `phone/debug.rs`).
 //! - `DI_LANG=en` draws the UI in English (also for `--demo-editor`).
@@ -284,7 +287,11 @@ enum PhoneDemo {
     QrJoined,
     /// A Public network: the code with the network warning.
     Public,
+    /// The code on the Tailscale address, the switch on Tailscale.
+    QrTailscale,
     NoLan,
+    /// Tailscale chosen but not running: the warning card.
+    NoTailscale,
     /// Two files in, one at 62 %, one that failed.
     Receive,
 }
@@ -1163,7 +1170,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 208] = [
+const SCENES: [Scene; 210] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -1521,8 +1528,16 @@ const SCENES: [Scene; 208] = [
         ..panel("phone-public", Page::Shelf)
     },
     Scene {
+        phone: PhoneDemo::QrTailscale,
+        ..panel("phone-qr-tailscale", Page::Shelf)
+    },
+    Scene {
         phone: PhoneDemo::NoLan,
         ..panel("phone-nolan", Page::Shelf)
+    },
+    Scene {
+        phone: PhoneDemo::NoTailscale,
+        ..panel("phone-notailscale", Page::Shelf)
     },
     Scene {
         phone: PhoneDemo::Receive,
@@ -4956,11 +4971,23 @@ impl DemoPhone {
             | PhoneDemo::QrJoined
             | PhoneDemo::QrExpired
             | PhoneDemo::Public
-            | PhoneDemo::NoLan => PhoneStage::Qr,
+            | PhoneDemo::QrTailscale
+            | PhoneDemo::NoLan
+            | PhoneDemo::NoTailscale => PhoneStage::Qr,
             PhoneDemo::Receive => PhoneStage::Receiving,
         };
         let qr = match self.mode {
             PhoneDemo::NoLan => QrView::Warning(Warn::NoLan),
+            PhoneDemo::NoTailscale => QrView::Warning(Warn::NoTailscale),
+            PhoneDemo::QrTailscale => QrView::Code(CodeView {
+                qr: &self.qr,
+                network: "Tailscale",
+                addr: "100.101.102.103:47390",
+                remaining: Some(292),
+                public: false,
+                joined: "",
+                tailnet: true,
+            }),
             PhoneDemo::Public => QrView::Code(CodeView {
                 qr: &self.qr,
                 network: "Kenzie_5G",
@@ -4993,7 +5020,12 @@ impl DemoPhone {
                 files: 2,
                 bytes: self.rows[0].size + self.rows[1].size,
             },
-            net: crate::config::PhoneNet::Wifi,
+            net: match self.mode {
+                PhoneDemo::QrTailscale | PhoneDemo::NoTailscale => {
+                    crate::config::PhoneNet::Tailscale
+                }
+                _ => crate::config::PhoneNet::Wifi,
+            },
             switch_live: true,
         })
     }

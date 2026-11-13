@@ -324,6 +324,11 @@ fn mole_result(lang: Lang, view: &CleanerView) -> (String, bool) {
     }
 }
 
+/// The phone views' footer line: where the transfer goes.
+fn phone_foot_key(tailnet: bool) -> Key {
+    if tailnet { Key::PhoneTailscaleOnly } else { Key::PhoneLocalOnly }
+}
+
 /// The cleaner's button label: the total, armed "Yakin? Hapus …", or the
 /// clean running.
 fn go_label(lang: Lang, view: &CleanerView) -> String {
@@ -2309,18 +2314,24 @@ impl Renderer {
         self.fill_round(back, back.w / 2.0);
         self.icon_colored(Icon::ChevL, back, BACK_ICON, p.secondary, 1.0, None);
         self.heading(text(lang, Key::SystemClean), header);
-        self.set_color(p.raised, 1.0);
-        self.fill_round(seg, SEG_RADIUS);
         let on = usize::from(mode == CleanMode::Mole);
-        self.set_color(p.raised_hi, 1.0);
+        self.paint_segment(seg, items, on, [Key::CleanModeOwn, Key::CleanModeMole], 1.0);
+    }
+
+    /// A two-item segment: the `raised` track with the lit item (`raised_hi`)
+    /// at `on`, the labels centred, the lit one in `text` ink and the other
+    /// in `secondary`. `alpha` dims it all (the cleaner's `CLEAN_INERT`).
+    fn paint_segment(&self, seg: Rect, items: [Rect; 2], on: usize, keys: [Key; 2], alpha: f32) {
+        let lang = i18n::lang();
+        let p = self.palette;
+        self.set_color(p.raised, alpha);
+        self.fill_round(seg, SEG_RADIUS);
+        self.set_color(p.raised_hi, alpha);
         self.fill_round(items[on], SEG_ITEM_RADIUS);
         let center = &self.fonts.small_center;
-        for (i, key) in [Key::CleanModeOwn, Key::CleanModeMole]
-            .into_iter()
-            .enumerate()
-        {
+        for (i, key) in keys.into_iter().enumerate() {
             let ink = if i == on { p.text } else { p.secondary };
-            self.text_colored(text(lang, key), center, items[i], ink, 1.0);
+            self.text_colored(text(lang, key), center, items[i], ink, alpha);
         }
     }
 
@@ -3844,13 +3855,35 @@ impl Renderer {
         }
     }
 
-    /// The round back button and the title every phone view starts with.
-    fn paint_phone_head(&self, back: Rect, title: Rect, label: &str) {
+    /// The round back button every phone view starts with.
+    fn paint_phone_back(&self, back: Rect) {
         let p = self.palette;
         self.set_color(p.raised, 1.0);
         self.fill_round(back, back.w / 2.0);
         self.icon_colored(Icon::ChevL, back, BACK_ICON, p.secondary, 1.0, None);
+    }
+
+    /// The back button and the title of the receiving view.
+    fn paint_phone_head(&self, back: Rect, title: Rect, label: &str) {
+        self.paint_phone_back(back);
         self.heading(label, title);
+    }
+
+    /// The QR view's and the warning card's header: the back button and the
+    /// Wi-Fi | Tailscale switch with the saved choice lit. Dimmed while a
+    /// file is coming in, when a tap does nothing.
+    fn paint_phone_net_head(
+        &self,
+        back: Rect,
+        seg: Rect,
+        items: [Rect; 2],
+        v: &PhoneView,
+    ) {
+        self.paint_phone_back(back);
+        let on = usize::from(v.net == crate::config::PhoneNet::Tailscale);
+        let alpha = if v.switch_live { 1.0 } else { CLEAN_INERT };
+        let keys = [Key::PhoneNetWifi, Key::PhoneNetTailscale];
+        self.paint_segment(seg, items, on, keys, alpha);
     }
 
     /// A pill button: the accent one (Selesai) or a quiet one.
@@ -3922,12 +3955,14 @@ impl Renderer {
         use crate::ui::phone_view::QrView;
         let lang = i18n::lang();
         let p = self.palette;
-        self.paint_phone_head(l.back, l.title, text(lang, Key::PhoneTitle));
+        self.paint_phone_net_head(l.back, l.seg, l.seg_items, v);
         let mut public = false;
+        let mut tailnet = v.net == crate::config::PhoneNet::Tailscale;
         let mut joined = "";
         match v.qr {
             QrView::Code(c) => {
                 public = c.public;
+                tailnet = c.tailnet;
                 joined = c.joined;
                 // The code always counts down; it renews itself, and only
                 // when it could not does it show as dead.
@@ -3954,7 +3989,13 @@ impl Renderer {
                 self.icon_colored(Icon::Globe, icon, 13.0, p.secondary, 1.0, None);
                 let (x, w) = (l.net.x + 32.0, l.net.w - 40.0);
                 let trust = if c.public { Trust::Public } else { Trust::Private };
-                let name = i18n::phone_network(lang, c.network, trust);
+                // On the tailnet the line says just that: the private or
+                // public word belongs to a Wi-Fi.
+                let name = if c.tailnet {
+                    text(lang, Key::PhoneNetTailscale).to_owned()
+                } else {
+                    i18n::phone_network(lang, c.network, trust)
+                };
                 let line1 = Rect {
                     x,
                     y: l.net.y + 5.0,
@@ -4006,10 +4047,14 @@ impl Renderer {
             w: l.hint.w - 20.0,
             ..l.hint
         };
-        let hint_key = if public { Key::PhonePublicHint } else { Key::PhoneFirewall };
+        let hint_key = match (v.qr, public) {
+            (QrView::Code(c), _) if c.tailnet => Key::PhoneTailscaleHint,
+            (_, true) => Key::PhonePublicHint,
+            _ => Key::PhoneFirewall,
+        };
         self.text_colored(text(lang, hint_key), &self.fonts.small, hint, p.ochre, 1.0);
         self.text_colored(
-            text(lang, Key::PhoneLocalOnly),
+            text(lang, phone_foot_key(tailnet)),
             &self.fonts.small,
             l.foot,
             p.secondary,
@@ -4032,7 +4077,7 @@ impl Renderer {
             Warn::PortsBusy => (Key::PhoneWarnBusy, Key::PhoneWarnBusyBody),
             Warn::Failed => (Key::PhoneWarnFailed, Key::PhoneWarnFailedBody),
         };
-        self.paint_phone_head(l.back, l.title, text(lang, Key::PhoneTitle));
+        self.paint_phone_net_head(l.back, l.seg, l.seg_items, v);
         self.set_color(p.raised, 1.0);
         self.fill_round(l.card, 18.0);
         self.set_color(p.ochre, 0.16);
@@ -4041,8 +4086,9 @@ impl Renderer {
         self.text_colored(text(lang, title_key), &self.fonts.title, l.heading, p.text, 1.0);
         self.text_colored(text(lang, body_key), &self.fonts.snippet, l.body, p.secondary, 1.0);
         self.paint_phone_button(l.retry, text(lang, Key::PhoneRetry), true);
+        let tailnet = v.net == crate::config::PhoneNet::Tailscale;
         self.text_colored(
-            text(lang, Key::PhoneLocalOnly),
+            text(lang, phone_foot_key(tailnet)),
             &self.fonts.small,
             l.foot,
             p.secondary,
@@ -6759,7 +6805,7 @@ mod tests {
     fn phone_titles_and_the_shelf_tag_hold_their_words_in_both_fonts() {
         use crate::config::Style;
         use crate::ui::fonts;
-        use crate::ui::panel_layout::{phone_qr_layout, phone_recv_layout, phone_warn_layout};
+        use crate::ui::panel_layout::phone_recv_layout;
         use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
 
         let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
@@ -6780,8 +6826,6 @@ mod tests {
                 let s = shape_for(style, ShapeKind::Panel);
                 for strip in [false, true] {
                     let titles = [
-                        (Key::PhoneTitle, phone_qr_layout(s, strip, false).title),
-                        (Key::PhoneTitle, phone_warn_layout(s, strip).title),
                         (Key::PhoneReceiving, phone_recv_layout(s, strip, 3).title),
                     ];
                     let shelf = shelf_layout(s, strip, 12);
@@ -6939,6 +6983,22 @@ mod tests {
                         add(text(lang, Key::PhoneFirewall), "small", inset(qr.hint, 10.0));
                         add(text(lang, Key::PhonePublicHint), "small", inset(qr.hint, 10.0));
                         add(text(lang, Key::PhoneLocalOnly), "small", qr.foot);
+                        add(text(lang, Key::PhoneTailscaleHint), "small", inset(qr.hint, 10.0));
+                        add(text(lang, Key::PhoneTailscaleOnly), "small", qr.foot);
+                        for item in qr.seg_items.iter().chain(&warn.seg_items) {
+                            add(text(lang, Key::PhoneNetWifi), "small_center", *item);
+                            add(text(lang, Key::PhoneNetTailscale), "small_center", *item);
+                        }
+                        add(
+                            text(lang, Key::PhoneNetTailscale),
+                            "eleven",
+                            Rect {
+                                x: qr.net.x + 32.0,
+                                w: qr.net.w - 40.0,
+                                h: 14.0,
+                                ..qr.net
+                            },
+                        );
                         for (name, trust) in [
                             ("Rumah-5G", Trust::Private),
                             ("Kenzie_5G", Trust::Public),
@@ -6957,6 +7017,7 @@ mod tests {
                         // The warning card.
                         for key in [
                             Key::PhoneWarnNoLan,
+                            Key::PhoneWarnNoTailscale,
                             Key::PhoneWarnBusy,
                             Key::PhoneWarnFailed,
                         ] {
@@ -6964,6 +7025,7 @@ mod tests {
                         }
                         add(text(lang, Key::PhoneRetry), "button", warn.retry);
                         add(text(lang, Key::PhoneLocalOnly), "small", warn.foot);
+                        add(text(lang, Key::PhoneTailscaleOnly), "small", warn.foot);
                         // The shelf's own header: the phone pill and Clear.
                         let pill_x = shelf.phone.x + 8.0 + 14.0 + 4.0;
                         add(
@@ -6985,6 +7047,7 @@ mod tests {
                         // The bodies wrap inside their boxes.
                         for key in [
                             Key::PhoneWarnNoLanBody,
+                            Key::PhoneWarnNoTailscaleBody,
                             Key::PhoneWarnBusyBody,
                             Key::PhoneWarnFailedBody,
                         ] {
