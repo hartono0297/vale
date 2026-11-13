@@ -1,0 +1,1372 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Maskot keluar dari pulau (notch dan pill)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&display=swap" rel="stylesheet">
+<style>
+  /* Vale design-sheet paper. The stage is a slice of a real desktop: bezel, notch, wallpaper. */
+  :root {
+    --paper: #F4EDE4; --card: #FFFBF5; --ink: #231C18; --ink-2: #5E5045;
+    --line: #D9CBBB; --edge: #8C7B6C; --pick: #A8451F; --wall: #4E5C69; --win: #ECE6DD;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--paper); color: var(--ink); font: 16px/1.5 "DM Sans", system-ui, sans-serif; }
+  header, main, footer { max-width: 1240px; margin: 0 auto; padding: 0 16px; }
+  header { padding-top: 32px; }
+  h1 { font-size: 34px; line-height: 1.15; margin: 0 0 8px; letter-spacing: -0.01em; }
+  h2 { font-size: 20px; margin: 0 0 6px; }
+  h3 { font-size: 16px; margin: 28px 0 8px; }
+  p { margin: 0 0 12px; max-width: 72ch; }
+  .lead { color: var(--ink-2); font-size: 17px; }
+  .muted { color: var(--ink-2); }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  button:focus-visible, input:focus-visible { outline: 3px solid var(--ink); outline-offset: 3px; }
+
+  .lab { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 32px; margin-top: 28px; align-items: start; }
+  nav h2 { font-size: 14px; color: var(--ink-2); font-weight: 500; margin: 18px 0 6px; }
+  nav h2:first-child { margin-top: 0; }
+  .pick { display: block; width: 100%; text-align: left; background: transparent; border: 2px solid transparent; border-radius: 10px; padding: 8px 10px; margin-bottom: 4px; }
+  .pick:hover { background: var(--card); border-color: var(--line); }
+  .pick:active { transform: translateY(1px); }
+  .pick[aria-pressed="true"] { background: var(--card); border-color: var(--pick); }
+  .pick b { display: block; font-size: 16px; }
+  .pick span { display: block; font-size: 14px; color: var(--ink-2); line-height: 1.35; }
+
+  .stage { background: var(--wall); border-radius: 12px; overflow: hidden; }
+  .stage svg { display: block; width: 100%; height: auto; }
+  .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 12px 0 0; }
+  .btn { border: 2px solid var(--edge); background: var(--card); border-radius: 8px; padding: 6px 14px; min-height: 44px; }
+  .btn:hover { border-color: var(--ink); }
+  .btn:active { transform: translateY(1px); }
+  .scrub { flex: 1 1 200px; display: flex; align-items: center; gap: 10px; min-height: 44px; }
+  .scrub input { flex: 1; accent-color: var(--pick); min-width: 0; }
+  .time { font-variant-numeric: tabular-nums; font-size: 14px; color: var(--ink-2); min-width: 7.5ch; text-align: right; }
+  .speed { display: inline-flex; border: 2px solid var(--edge); border-radius: 8px; overflow: hidden; }
+  .speed button { border: 0; background: var(--card); padding: 6px 12px; min-height: 40px; font-size: 14px; }
+  .speed button + button { border-left: 2px solid var(--edge); }
+  .speed button[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
+  .speed button:hover:not([aria-pressed="true"]) { background: var(--line); }
+  .shapebar { background: var(--card); border: 2px solid var(--line); border-radius: 10px; padding: 8px 12px; margin: 0 0 10px; }
+  .chk { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; min-height: 44px; }
+  .chk input { width: 18px; height: 18px; accent-color: var(--pick); }
+  .sizes { display: flex; flex-wrap: wrap; gap: 10px 18px; flex: 1 1 320px; }
+  .sizes .scrub { flex: 1 1 140px; }
+
+  .real { display: flex; flex-wrap: wrap; gap: 16px; }
+  .real figure { margin: 0; }
+  .real .strip { width: 300px; max-width: 100%; border-radius: 6px; overflow: hidden; }
+  .real svg { display: block; width: 300px; max-width: 100%; height: auto; }
+  figcaption { font-size: 14px; color: var(--ink-2); margin-top: 4px; }
+
+  ol.beats { list-style: none; padding: 0; margin: 0; display: grid; gap: 2px; }
+  .beats button { display: grid; grid-template-columns: 3.6ch 1fr; gap: 12px; width: 100%; text-align: left; background: transparent; border: 0; border-radius: 6px; padding: 6px 8px; }
+  .beats button:hover { background: var(--card); }
+  .beats button.now { background: var(--card); box-shadow: inset 3px 0 0 var(--pick); }
+  .beats .t { font-variant-numeric: tabular-nums; color: var(--ink-2); font-size: 14px; padding-top: 1px; }
+
+  .board { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+  .board figure { margin: 0; }
+  .board .stage { border-radius: 8px; }
+
+  .castsheet { max-width: 1240px; margin: 48px auto 0; padding: 0 16px; }
+  .poses { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; margin-top: 12px; }
+  .poses figure { margin: 0; }
+  .poses .tile { background: #17120F; border-radius: 10px; padding: 6px; }
+  .poses svg { display: block; width: 100%; height: auto; }
+  .note { border-top: 2px solid var(--line); padding-top: 12px; margin-top: 28px; }
+  footer { padding-top: 48px; padding-bottom: 80px; }
+  footer ol { padding-left: 20px; max-width: 76ch; }
+  footer li { margin-bottom: 10px; }
+
+  @media (max-width: 860px) {
+    .lab { grid-template-columns: 1fr; gap: 20px; }
+    nav { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr)); gap: 0 12px; }
+    h1 { font-size: 28px; }
+    .lab > * { min-width: 0; }
+    nav h2 { grid-column: 1 / -1; }
+    .board { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+
+  /* #sheet=<id>:t1,t2,... renders a contact sheet for review screenshots */
+  body.sheet header, body.sheet main, body.sheet footer, body.sheet .castsheet { display: none; }
+  #sheet { display: none; }
+  body.sheet #sheet { display: grid; grid-template-columns: repeat(2, 480px); gap: 10px; padding: 10px; }
+  body.sheet.one #sheet { grid-template-columns: 960px; }
+  #sheet figcaption { color: var(--ink); font-weight: 700; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Maskot keluar dari pulau</h1>
+  <p class="lead">Sepuluh cerita pendek: empat kucing, tiga gurita, tiga falk. Maskotnya tidak muncul tiba-tiba: dia keluar lewat jalan yang kelihatan (turun dari bibir, nyelam ke gelap, keluar dari balik ujung), lalu ekor, tentakel atau sayapnya melingkar di pulau, dan pulang lewat jalan yang sama. Semua cerita main di dua bentuk: <b>Notch</b> (nempel di tepi layar, ujung bawah membulat) dan <b>Pill</b> (melayang 8 dip di bawah tepi layar, dua ujungnya setengah lingkaran penuh).</p>
+  <p class="muted">Dua aturan yang dipakai di semua cerita: (1) <b>pulau kasih ruang</b> — begitu cerita mulai, maskot geser ke ujung kiri dan jam ke ujung kanan dalam 200 ms, dan di akhir keduanya ngumpul lagi jadi satu grup di tengah (maskot 26 + jarak 8 + jam 44, persis seperti di aplikasi); (2) <b>tidak ada yang disembunyikan pakai isi pulau</b> — bagian yang mestinya ketutup dipotong (clip), jadi tetap benar waktu isinya tembus pandang. Coba sendiri pakai saklar bentuk, dua slider ukuran dan centang tembus pandang di bawah.</p>
+  <p class="muted">Panggung besar diperbesar 4 sampai 6 kali dan fokus ke tempat kejadiannya. Di bawahnya ukuran asli 1:1. Pakai Lambat untuk lihat detail gerakan. Pemicunya belum diputuskan, jadi tidak digambar.</p>
+</header>
+
+<main>
+  <div class="lab">
+    <nav aria-label="Konsep" id="picker"></nav>
+    <section aria-labelledby="sceneName">
+      <h2 id="sceneName"></h2>
+      <p class="muted" id="sceneLine"></p>
+      <p class="muted" id="scenePill"></p>
+      <div class="bar shapebar">
+        <div class="speed" role="group" aria-label="Bentuk pulau">
+          <button type="button" data-shape="notch" aria-pressed="true">Notch</button>
+          <button type="button" data-shape="pill" aria-pressed="false">Pill</button>
+        </div>
+        <div class="sizes">
+          <label class="scrub"><span class="muted">Lebar</span><input id="iw" type="range" min="160" max="300" step="1" value="190" aria-label="Lebar pulau, dip"><span class="time" id="iwv">190</span></label>
+          <label class="scrub"><span class="muted">Tinggi</span><input id="ih" type="range" min="28" max="44" step="1" value="34" aria-label="Tinggi pulau, dip"><span class="time" id="ihv">34</span></label>
+        </div>
+        <label class="chk"><input id="sheer" type="checkbox"> Isi tembus pandang</label>
+      </div>
+      <div class="stage"><svg id="big" viewBox="-150 -8 300 120" role="img" aria-label="Animasi maskot di pulau, diperbesar"></svg></div>
+      <div class="bar">
+        <button class="btn" id="play" type="button">Jeda</button>
+        <button class="btn" id="again" type="button">Ulang dari awal</button>
+        <label class="scrub"><span class="muted">Waktu</span><input id="scrub" type="range" min="0" max="7" step="0.01" value="0" aria-label="Geser waktu animasi"><span class="time" id="time">0,00 s</span></label>
+        <div class="speed" role="group" aria-label="Kecepatan">
+          <button type="button" data-speed="1" aria-pressed="true">Normal</button>
+          <button type="button" data-speed="0.5" aria-pressed="false">Lambat</button>
+          <button type="button" data-speed="0.2" aria-pressed="false">Sangat lambat</button>
+        </div>
+      </div>
+
+      <h3>Ukuran asli</h3>
+      <div class="real">
+        <figure><div class="strip"><svg id="real1" viewBox="-150 -8 300 120" role="img" aria-label="Ukuran asli di atas wallpaper gelap"><rect x="-400" y="-60" width="800" height="400" fill="#4E5C69"/><use href="#scene"/></svg></div><figcaption>Di atas wallpaper</figcaption></figure>
+        <figure><div class="strip"><svg id="real2" viewBox="-150 -8 300 120" role="img" aria-label="Ukuran asli di atas jendela terang"><rect x="-400" y="-60" width="800" height="400" fill="#ECE6DD"/><rect x="-400" y="0" width="800" height="9" fill="#DDD5CA"/><use href="#scene"/></svg></div><figcaption>Di atas jendela terang</figcaption></figure>
+      </div>
+
+      <h3>Cerita</h3>
+      <p class="muted">Klik baris untuk lompat ke momen itu.</p>
+      <ol class="beats" id="beats"></ol>
+
+      <h3>Storyboard</h3>
+      <div class="board" id="board"></div>
+
+      <div class="note">
+        <h3 style="margin-top:0">Catatan buat Direct2D</h3>
+        <p id="d2d"></p>
+        <p id="d2dPill"></p>
+      </div>
+    </section>
+  </div>
+</main>
+
+<section class="castsheet" aria-labelledby="castTitle">
+  <h2 id="castTitle">Desain kucing</h2>
+  <p class="muted">Satu badan untuk semua cerita kucing: kucing duduk yang ramping dengan siluet tetesan air. Kepala tetap kepala ikon; badan lebih sempit dari kepala, dada mengecil ke arah dagu dengan bayangan dagu sebagai leher, dua kaki depan ramping dengan telapak kecil (bantalan pink kelihatan kalau diangkat), paha belakang tipis di samping, dan ekor panjang berbentuk S dengan belang dan ujung gelap. Semuanya di grid kepala dan bergerak dalam satu transform.</p>
+  <div class="poses" id="poses"></div>
+</section>
+<footer>
+  <h2>Yang menurut saya paling kuat</h2>
+  <ol id="picks"></ol>
+  <p class="muted">Semua gambar di sini cuma path dengan isi warna polos, garis, dan clip. Badan yang "masuk ke gelap" itu warnanya dicampur ke warna pulau, tidak pakai blur atau gradasi. Satu-satunya transparansi: bayangan tipis di limb dan cincin "plop".</p>
+  <h2>Apa yang berubah buat dua bentuk</h2>
+  <p class="muted">Semua jalur yang dulu ditulis dengan angka tetap sekarang dihitung dari tepi pulau: ujung kiri, ujung kanan, bibir bawah, tepi atas, titik slot maskot dan tiap angka jam. Satu fungsi (<b>rimPt</b>) memberi titik yang menempel di ujung pulau, dengan satu nilai 0 sampai 1 dari tepi atas ke bibir bawah: di Notch itu sisi lurus lalu seperempat busur, di Pill setengah lingkaran jari-jari h/2. Jadi cerita yang melingkar di ujung (Syal ekor, Peluk pulau, Penasaran jam, Petak umpet) tidak punya dua versi, cuma satu jalur yang bentuknya ikut.</p>
+  <p class="muted">Tiga lapis gambar punya aturan potong sendiri: yang di belakang dipotong dengan clip "layar dikurangi pulau" (jadi tidak ada yang mengandalkan isi pulau yang pekat), yang di dalam gelap dipotong dengan bentuk pulau, dan yang di depan tidak dipotong. Bezel di atas tepi layar digambar paling akhir, jadi dia yang menutup apa pun yang keluar layar — ini satu-satunya "penutup" yang boleh, karena memang perangkat keras.</p>
+</footer>
+
+<div id="sheet"></div>
+
+<script>
+(() => {
+'use strict';
+// ================= basics =================
+const S = 0.4;                         // 64-unit mascot grid -> dip (head about 25 dip, like the real slot)
+const NOTCH = '#17120F', CREAM = '#F4EDE4', BEZEL = '#090706';
+const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const TAU = Math.PI * 2;
+const lerp = (a, b, t) => a + (b - a) * t;
+const clamp = (v, a = 0, b = 1) => Math.max(a, Math.min(b, v));
+const rad = d => d * Math.PI / 180;
+const f = v => (Math.round(v * 100) / 100).toString();
+const P2 = p => f(p[0]) + ' ' + f(p[1]);
+const add = (a, b) => [a[0] + b[0], a[1] + b[1]];
+const rot = (p, c, deg) => { const a = rad(deg), x = p[0] - c[0], y = p[1] - c[1]; return [c[0] + x * Math.cos(a) - y * Math.sin(a), c[1] + x * Math.sin(a) + y * Math.cos(a)]; };
+const R = (deg, v) => rot(v, [0, 0], deg);
+const lerp2 = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t)];
+
+// ================= island geometry (numbers from src/ui/geometry.rs) =================
+// Notch: flush with the screen top, bottom corners radius 16, sides straight up to the edge.
+// Pill: floats PILL_TOP below the top edge, both ends a full half circle (radius h/2).
+const PILL_TOP = 8, NOTCH_R = 16, SHOULDER = 12, INSET = 16, ROBOT = 26, RGAP = 8, CLOCK_W = 44;
+const SIZE = { w: 190, h: 34, pill: false, sheer: false };     // NOTCH_W/H_DEFAULT
+// digit centres inside the 44 dip clock box, DM Sans 500 at 16
+const DIG = [-17.2, -7.6, 0, 7.6, 17.2];
+const G = {};                          // live geometry, rebuilt by setGeo() every frame
+// spread 0 = mascot and clock as one centred group (idle), 1 = pushed to the two ends (a story runs)
+function setGeo(spread) {
+  const w = SIZE.w, h = SIZE.h, top = SIZE.pill ? PILL_TOP : 0;
+  const grp = ROBOT + RGAP + CLOCK_W, g0 = -grp / 2;
+  G.pill = SIZE.pill; G.w = w; G.h = h; G.top = top; G.bot = top + h; G.mid = top + h / 2;
+  G.L = -w / 2; G.R = w / 2; G.spread = spread;
+  G.r = SIZE.pill ? h / 2 : Math.min(NOTCH_R, w / 2, h - SHOULDER);
+  G.lipL = G.L + G.r; G.lipR = G.R - G.r;      // where the bottom edge runs straight
+  G.sx = lerp(g0 + ROBOT / 2, G.L + INSET + ROBOT / 2, spread);
+  G.cx = lerp(g0 + ROBOT + RGAP + CLOCK_W / 2, G.R - INSET - CLOCK_W / 2, spread);
+  G.slot = [G.sx, G.mid];
+  G.dig = DIG.map(d => G.cx + d);
+}
+const ER = d => G.R + d, EL = d => G.L + d, BY = d => G.bot + d, TY = d => G.top + d, MY = d => G.mid + d;
+// A point hugging one end's outline, `off` outside it. u = 0 at the top edge, 1 where the
+// bottom edge starts. Notch: straight side, then the quarter corner. Pill: one half circle.
+function rimPt(side, u, off = 0) {
+  const r = G.r + off, cx = side < 0 ? G.L + G.r : G.R - G.r;
+  if (G.pill) { const a = rad(-90 + 180 * clamp(u)); return [cx + side * r * Math.cos(a), G.mid + r * Math.sin(a)]; }
+  if (u < 0.55) return [(side < 0 ? G.L : G.R) + side * off, lerp(G.top - off, G.bot - G.r, u / 0.55)];
+  const a = rad(90 * (u - 0.55) / 0.45);
+  return [cx + side * r * Math.cos(a), G.bot - G.r + r * Math.sin(a)];
+}
+
+const EZ = {
+  lin: t => t,
+  io: t => t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2,
+  o: t => 1 - Math.pow(1 - t, 3),
+  i: t => t * t * t,
+  ob: t => { const c1 = 1.9, c3 = c1 + 1; return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2); },
+  sio: t => -(Math.cos(Math.PI * t) - 1) / 2,
+  sb: t => { const c1 = 0.9, c3 = c1 + 1; return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2); },   // soft overshoot
+  qi: t => t * t,
+  qo: t => 1 - (1 - t) * (1 - t),
+};
+// keyframes: [[time, value, ease]] ; value may be number or [x,y]
+function kf(t, K) {
+  if (t <= K[0][0]) return K[0][1];
+  for (let i = 1; i < K.length; i++) {
+    const [t1, v1, e = 'io'] = K[i];
+    if (t <= t1) {
+      const [t0, v0] = K[i - 1];
+      const u = EZ[e](clamp((t - t0) / ((t1 - t0) || 1)));
+      return Array.isArray(v0) ? v0.map((a, j) => lerp(a, v1[j], u)) : lerp(v0, v1, u);
+    }
+  }
+  return K[K.length - 1][1];
+}
+const bump = (t, t0, d) => (t > t0 && t < t0 + d) ? Math.sin(Math.PI * (t - t0) / d) : 0;
+const ring = (t, t0, amp, fr = 2.5, damp = 5) => t < t0 ? 0 : amp * Math.exp(-damp * (t - t0)) * Math.sin(TAU * fr * (t - t0));
+const blinks = (t, list) => { let b = 0; for (const c of list) { const [m, d] = Array.isArray(c) ? c : [c, 0.16]; b = Math.max(b, 1 - Math.abs(t - m) / (d / 2)); } return clamp(b); };
+const win = (t, a, b) => t >= a && t < b;
+function mix(a, b, t) {
+  const p = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+  const A = p(a), B = p(b);
+  return '#' + A.map((v, i) => Math.round(v + (B[i] - v) * clamp(t)).toString(16).padStart(2, '0')).join('');
+}
+// "deeper in the notch" = color mixed toward the notch fill
+const tint = dk => dk > 0.001 ? (c => mix(c, NOTCH, clamp(dk) * 0.9)) : (c => c);
+const ID = { p: 'a', n: 0 }; const uid = () => ID.p + (++ID.n);
+
+// ================= geometry: tapered limbs =================
+function normals(P) {
+  const n = P.length;
+  return P.map((p, i) => {
+    const a = P[Math.max(0, i - 1)], b = P[Math.min(n - 1, i + 1)];
+    const dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy);
+    return l < 1e-6 ? [0, -1] : [-dy / l, dx / l];
+  });
+}
+function smooth(pts) {
+  let d = '';
+  for (let i = 1; i < pts.length - 1; i++) d += `Q${P2(pts[i])} ${f((pts[i][0] + pts[i + 1][0]) / 2)} ${f((pts[i][1] + pts[i + 1][1]) / 2)}`;
+  if (pts.length > 1) d += `L${P2(pts[pts.length - 1])}`;
+  return d;
+}
+function tubeD(P, W, N, baseCap) {
+  const n = P.length;
+  const Lf = [], Rt = [];
+  for (let i = 0; i < n; i++) { const h = W[i] / 2; Lf.push([P[i][0] + N[i][0] * h, P[i][1] + N[i][1] * h]); Rt.push([P[i][0] - N[i][0] * h, P[i][1] - N[i][1] * h]); }
+  const te = [N[n - 1][1], -N[n - 1][0]], k = W[n - 1] * 0.66;
+  let d = `M${P2(Lf[0])}` + smooth(Lf);
+  d += `C${P2([Lf[n - 1][0] + te[0] * k, Lf[n - 1][1] + te[1] * k])} ${P2([Rt[n - 1][0] + te[0] * k, Rt[n - 1][1] + te[1] * k])} ${P2(Rt[n - 1])}`;
+  d += smooth(Rt.slice().reverse());
+  if (baseCap) { const tb = [N[0][1], -N[0][0]], kb = W[0] * 0.66; d += `C${P2([Rt[0][0] - tb[0] * kb, Rt[0][1] - tb[1] * kb])} ${P2([Lf[0][0] - tb[0] * kb, Lf[0][1] - tb[1] * kb])} ${P2(Lf[0])}`; }
+  return d + 'Z';
+}
+function stripD(P, W, N, side, frac) {
+  const O = [], I = [];
+  for (let i = 0; i < P.length; i++) { const h = side * W[i] / 2, h2 = h * (1 - 2 * frac); O.push([P[i][0] + N[i][0] * h, P[i][1] + N[i][1] * h]); I.push([P[i][0] + N[i][0] * h2, P[i][1] + N[i][1] * h2]); }
+  return `M${P2(O[0])}` + smooth(O) + `L${P2(I[I.length - 1])}` + smooth(I.reverse()) + 'Z';
+}
+function measure(P) { const c = [0]; for (let i = 1; i < P.length; i++) c.push(c[i - 1] + Math.hypot(P[i][0] - P[i - 1][0], P[i][1] - P[i - 1][1])); return c; }
+function idxAt(c, v) { let i = 0; while (i < c.length - 1 && c[i + 1] < v) i++; return i; }
+function sampleAt(P, c, v) {
+  if (v <= 0) return P[0].slice();
+  const i = idxAt(c, v); if (i >= P.length - 1) return P[P.length - 1].slice();
+  const u = (v - c[i]) / ((c[i + 1] - c[i]) || 1);
+  return lerp2(P[i], P[i + 1], u);
+}
+function along(D, len, n = 26) { const c = measure(D), e = Math.min(len, c[c.length - 1]); const o = []; for (let k = 0; k <= n; k++) o.push(sampleAt(D, c, e * k / n)); return o; }
+const plen = D => { const c = measure(D); return c[c.length - 1]; };
+function cr(pts, seg = 8) {
+  const out = [];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2;
+    for (let s = 0; s < seg; s++) {
+      const t = s / seg, t2 = t * t, t3 = t2 * t;
+      out.push([0, 1].map(k => 0.5 * (2 * p1[k] + (-p0[k] + p2[k]) * t + (2 * p0[k] - 5 * p1[k] + 4 * p2[k] - p3[k]) * t2 + (-p0[k] + 3 * p1[k] - 3 * p2[k] + p3[k]) * t3)));
+    }
+  }
+  out.push(pts[pts.length - 1].slice());
+  return out;
+}
+// continue a centerline with a tightening spiral (the tip curl)
+function curl(P, ang, len, m = 12, sway = 0) {
+  if (P.length < 2 || len <= 0) return P;
+  const a0 = P[P.length - 1], b = P[P.length - 2];
+  let a = Math.atan2(a0[1] - b[1], a0[0] - b[0]) + sway, x = a0[0], y = a0[1];
+  const out = P.slice(), st = len / m;
+  for (let j = 1; j <= m; j++) { a += ang * 2 * j / (m * (m + 1)); x += Math.cos(a) * st; y += Math.sin(a) * st; out.push([x, y]); }
+  return out;
+}
+// centerline from a base point, base angle and a curvature profile k(s) (total radians over the length)
+function chain(x, y, a, len, n, k) {
+  const P = [[x, y]];
+  for (let i = 0; i < n; i++) { const s = (i + 0.5) / n; a += k(s) / n; x += Math.cos(a) * len / n; y += Math.sin(a) * len / n; P.push([x, y]); }
+  return P;
+}
+function ik(A, B, l1, l2, bend) {
+  const dx = B[0] - A[0], dy = B[1] - A[1], d = Math.min(Math.hypot(dx, dy), l1 + l2 - 0.01) || 0.01;
+  const a = Math.atan2(dy, dx), c = clamp((l1 * l1 + d * d - l2 * l2) / (2 * l1 * d), -1, 1);
+  const g = a - bend * Math.acos(c);
+  return [A[0] + Math.cos(g) * l1, A[1] + Math.sin(g) * l1];
+}
+// one limb: body fill, stripes, dark tip, suckers, then a thin shadow band for volume
+function limb(P, o) {
+  if (!P || P.length < 2) return '';
+  const c = measure(P), tot = c[c.length - 1]; if (tot < 0.6) return '';
+  const W = c.map(v => Math.max(0.3, (o.wf ? o.wf(v / tot) : lerp(o.w0, o.w1, Math.pow(v / tot, o.pow || 1))) * (o.wm == null ? 1 : o.wm) *
+    (o.fluff ? 1 + o.fluff * Math.sin((tot - v) * 1.9) * clamp((tot - v) / 6) : 1)));
+  const N = normals(P);
+  let s = `<path d="${tubeD(P, W, N, o.cap)}" fill="${o.fill}"/>`;
+  if (o.stripes) {
+    const q = o.stripes;
+    // exact band edges at arc length a and b (curved like a ring around a cylinder)
+    const edge = v => { const i = idxAt(c, v), p = sampleAt(P, c, v), w = W[i] * 0.49, n = N[i]; return { p, w, n }; };
+    for (let d = q.start; d < tot - q.w - (q.skipBase || 0); d += q.every) {
+      const A = edge(tot - d - q.w / 2), B = edge(tot - d + q.w / 2);
+      const pt = (E, s) => [E.p[0] + E.n[0] * s * E.w, E.p[1] + E.n[1] * s * E.w];
+      const cp = E => [E.p[0] + E.n[1] * E.w * 0.8, E.p[1] - E.n[0] * E.w * 0.8];
+      s += `<path d="M${P2(pt(A, 1))}L${P2(pt(B, 1))}Q${P2(cp(B))} ${P2(pt(B, -1))}L${P2(pt(A, -1))}Q${P2(cp(A))} ${P2(pt(A, 1))}Z" fill="${q.col}"/>`;
+    }
+  }
+  if (o.tip) { const i = idxAt(c, tot - o.tip.len); s += `<path d="${tubeD(P.slice(i), W.slice(i), N.slice(i), false)}" fill="${o.tip.col}"/>`; }
+  if (o.suckers) {
+    const q = o.suckers;
+    for (let d = q.start; d < tot - 1.2; d += q.every) {
+      const i = idxAt(c, tot - d), w = W[i], h = q.side * w * 0.33, r = w * 0.25;
+      if (r < 0.28) continue;
+      const x = P[i][0] + N[i][0] * h, y = P[i][1] + N[i][1] * h;
+      s += `<circle cx="${f(x)}" cy="${f(y)}" r="${f(r)}" fill="${q.col}"/><circle cx="${f(x)}" cy="${f(y)}" r="${f(r * 0.42)}" fill="${q.inner}"/>`;
+    }
+  }
+  if (o.shade !== false) s += `<path d="${stripD(P, W, N, o.side || 1, o.sfrac || 0.32)}" fill="#000" opacity="${o.sop || 0.17}"/>`;
+  return s;
+}
+const place = (x, y, r, sx, sy, inner, piv = [32, 40], sc = S) =>
+  `<g transform="translate(${f(x)} ${f(y)}) rotate(${f(r)}) scale(${f(sc * sx)} ${f(sc * sy)}) translate(${-piv[0]} ${-piv[1]})">${inner}</g>`;
+
+// ================= faces =================
+function eyes(o, C, Lx = 24, Rx = 40, Y = 40) {
+  const D = C('#17120F'), hi = C(CREAM);
+  const lx = (o.lx || 0) * 2.4, ly = (o.ly || 0) * 2.2, b = o.blink || 0, st = o.eyes || 'idle';
+  const cx = (o.cross || 0) * 3.6;   // cross-eyed: eyes slide together and tilt inward
+  const line = (x, y) => `<path d="M${f(x - 3.4)} ${f(y + 1)}h6.8" stroke="${D}" stroke-width="2.4" stroke-linecap="round"/>`;
+  const one = (x0, side) => {
+    const x = x0 + lx - side * cx, y = Y + ly;
+    if (b > 0.8 || st === 'closed') return line(x, y);
+    if (st === 'oneEye' && side < 0) return `<path d="M${f(x - 3.6)} ${f(y)}q3.6 3.4 7.2 0" fill="none" stroke="${D}" stroke-width="2.2" stroke-linecap="round"/>`;
+    if (st === 'happy') return `<path d="M${f(x - 3.8)} ${f(y + 1.8)}q3.8 -5.4 7.6 0" fill="none" stroke="${D}" stroke-width="2.4" stroke-linecap="round"/>`;
+    if (st === 'sleep') return `<path d="M${f(x - 3.6)} ${f(y)}q3.6 3.4 7.2 0" fill="none" stroke="${D}" stroke-width="2.2" stroke-linecap="round"/>`;
+    if (st === 'squint') return `<path d="M${f(x - 3.4)} ${f(y + (side < 0 ? -0.6 : 1.4))}L${f(x + 3.4)} ${f(y + (side < 0 ? 1.4 : -0.6))}" stroke="${D}" stroke-width="3" stroke-linecap="round"/>`;
+    if (st === 'alert') { const r = 4.8 * (1 - b * 0.7); return `<circle cx="${f(x)}" cy="${f(y)}" r="${f(r)}" fill="${D}"/><circle cx="${f(x - 1.5)}" cy="${f(y - 1.6)}" r="1.3" fill="${hi}"/>`; }
+    const h = 10 * (1 - b);
+    const tl = cx ? ` transform="rotate(${f(-side * 7 * cx)} ${f(x)} ${f(y)})"` : '';
+    return `<g${tl}><rect x="${f(x - 2.8)}" y="${f(y - h / 2)}" width="5.6" height="${f(h)}" rx="2.8" fill="${D}"/>` + (h > 6 ? `<circle cx="${f(x - 0.9 * (cx ? -side : 1))}" cy="${f(y - 2.3)}" r="1.1" fill="${hi}"/>` : '') + '</g>';
+  };
+  return one(Lx, -1) + one(Rx, 1);
+}
+
+// ---- cat ----
+const CAT = { fur: '#E2683C', shade: '#B4492A', inner: '#B9512B' };
+const CAT_HEAD = 'M7 50V41Q7 24 32 24Q57 24 57 41V50Q57 54 53 54H11Q7 54 7 50Z';
+function catHead(o = {}) {
+  const C = tint(o.dk || 0), fur = C(CAT.fur), inn = C(CAT.inner);
+  const ear = (s, r) => {
+    const P = s < 0 ? 'M9 37L12 10L27 26Z' : 'M55 37L52 10L37 26Z';
+    const I = s < 0 ? 'M14 30L15 17L22.5 25.5Z' : 'M50 30L49 17L41.5 25.5Z';
+    return `<g transform="rotate(${f(r)} ${s < 0 ? '17 32' : '47 32'})"><path d="${P}" fill="${fur}" stroke="${fur}" stroke-width="5" stroke-linejoin="round"/><path d="${I}" fill="${inn}"/></g>`;
+  };
+  let m = '';
+  if (o.mouth === 'o') m = `<ellipse cx="32" cy="48.5" rx="2.6" ry="2.2" fill="${C('#17120F')}"/>`;
+  if (o.mouth === 'yawn') { const y = clamp(o.yawn || 1); m = `<ellipse cx="32" cy="${f(48 + y)}" rx="${f(2 + 2.4 * y)}" ry="${f(1.5 + 3.4 * y)}" fill="${C('#3A1A14')}"/><ellipse cx="32" cy="${f(49.6 + 2.2 * y)}" rx="${f(1.2 + 1.4 * y)}" ry="${f(0.8 + 1.2 * y)}" fill="${C('#D9727A')}"/>`; }
+  if (o.mouth === 'w') m = `<path d="M28.6 47.2q1.7 2 3.4 0q1.7 2 3.4 0" fill="none" stroke="${C('#17120F')}" stroke-width="1.6" stroke-linecap="round"/>`;
+  return ear(-1, o.earL || 0) + ear(1, o.earR || 0) + `<path d="${CAT_HEAD}" fill="${fur}"/>` + eyes(o, C) + m;
+}
+const headPt = (h, gx, gy) => add(h.c, R(h.r, [(gx - 32) * S * h.sx, (gy - 40) * S * h.sy]));
+
+// ---- octopus ----
+const OCT = '#E87C8E';
+const MANTLE = 'M32 9C50 9 55 25 50 37Q47 45 40 46H24Q17 45 14 37C9 25 14 9 32 9Z';
+function octCols(o, C) {
+  const base = mix(OCT, '#D2304C', o.flush || 0);
+  return { col: C(base), shade: C(mix(base, '#000000', 0.2)), suck: C(mix(base, '#FFFFFF', 0.58)) };
+}
+function mantle(o = {}) {
+  const C = tint(o.dk || 0), k = octCols(o, C);
+  const dot = (x, y, r) => `<circle cx="${x}" cy="${y}" r="${r}" fill="${k.shade}"/>`;
+  return `<path d="${MANTLE}" fill="${k.col}"/>` + dot(22, 20, 2.2) + dot(40, 15, 1.6) + dot(45, 24, 1.3) +
+    `<path d="M15 33Q17 43 24 45.2H40Q47 43 49 33Q46 42 39 42.6H25Q18 42 15 33Z" fill="#000" opacity="0.14"/>` + eyes(o, C, 24, 40, 37);
+}
+// the slot icon: the sitting octopus from maskot-pilihan-akhir (six curled arms)
+function octIcon(o = {}) {
+  const C = tint(o.dk || 0), k = octCols(o, C);
+  const arm = (sx, sy, cx, cy, ex, ey, dir, q) => {
+    let s = `<path d="M${sx} ${sy}Q${cx} ${cy} ${ex} ${ey}q${f(dir * 3.4 * q)} 0.2 ${f(dir * 3.2 * q)} ${f(-3.2 * q)}q-0.2 ${f(-2.4 * q)} ${f(-dir * 2.4 * q)} ${f(-2.2 * q)}" fill="none" stroke="${k.col}" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>`;
+    for (const u of [0.55, 0.8]) { const x = (1 - u) ** 2 * sx + 2 * (1 - u) * u * cx + u * u * ex, y = (1 - u) ** 2 * sy + 2 * (1 - u) * u * cy + u * u * ey; s += `<circle cx="${f(x)}" cy="${f(y + 1.6)}" r="0.85" fill="${k.suck}"/>`; }
+    return s;
+  };
+  const L = [[19, 42, 8, 51, 3, 54], [24, 45, 15, 57, 9.5, 57.5], [29, 46, 27, 58, 21, 58.5]];
+  let arms = '';
+  [-1, 1].forEach(side => L.forEach(([sx, sy, cx, cy, ex, ey], i) => {
+    const X = v => side < 0 ? v : 64 - v; let dir = side < 0 ? -1 : 1; if (i === 2) dir = -dir;
+    arms += arm(X(sx), sy, X(cx), cy, X(ex), ey, dir, o.curl || 1);
+  }));
+  return arms + mantle(o);
+}
+// octopus arm roots (dip, relative to mantle pivot grid 32,30), left to right
+const OROOT = [[-5.2, 4.9], [-3.3, 6.0], [-1.2, 6.4], [1.2, 6.4], [3.3, 6.0], [5.2, 4.9]];
+const rootAt = (M, i, r = 0, sx = 1, sy = 1) => add(M, R(r, [OROOT[i][0] * sx, OROOT[i][1] * sy]));
+const octArm = (P, k, wm = 1, side = 1) => limb(P, { w0: 4.3, w1: 0.9, wm, pow: 0.75, fill: k.col, side: -side, sfrac: 0.34, suckers: { col: k.suck, inner: k.shade, side, every: 2.3, start: 1.5 } });
+
+// ---- falk (lutino cockatiel) ----
+const FK = { body: '#F1E4A2', belly: '#F8F0CE', face: '#F6D04A', crest: '#F6D04A', cheek: '#EC6B3A', beak: '#D9978F',
+  prim: '#FBF5DC', sec: '#F3E8B6', edge: '#C9B26A', cov: '#E6D184', foot: '#C99289', tail: '#EFE3AA' };
+const FALK = 'M9 43Q9 22 32 22Q55 22 55 43Q55 57 32 57Q9 57 9 43Z';
+function leaf(bx, by, tx, ty, w, bend, c) {
+  const dx = tx - bx, dy = ty - by, l = Math.hypot(dx, dy) || 1, nx = -dy / l, ny = dx / l;
+  const mx = (bx + tx) / 2 + nx * bend, my = (by + ty) / 2 + ny * bend;
+  return `<path d="M${f(bx)} ${f(by)}Q${f(mx + nx * w)} ${f(my + ny * w)} ${f(tx)} ${f(ty)}Q${f(mx - nx * w)} ${f(my - ny * w)} ${f(bx)} ${f(by)}Z" fill="${c}"/>`;
+}
+const CREST = [[28, 27, 27, 11, 2.8, -3.5], [30.5, 26, 35, 3, 3.2, -5], [33, 26, 42, 6, 3.2, -5], [35.5, 27, 46, 14, 2.6, -3.5]];
+function falkHead(o = {}) {
+  const C = tint(o.dk || 0), id = uid();
+  const up = o.crestUp == null ? 1 : o.crestUp;
+  const crest = `<g transform="translate(32 27) rotate(${f((o.crestRot == null ? 10 : o.crestRot))}) scale(1 ${f(up)}) translate(-32 -27)"><ellipse cx="32" cy="26" rx="5.5" ry="4" fill="${C(FK.crest)}"/>${CREST.map(q => leaf(...q, C(FK.crest))).join('')}</g>`;
+  const face = `<ellipse cx="32" cy="33" rx="22" ry="17" fill="${C(FK.face)}" clip-path="url(#${id})"/>`;
+  const ch = 4.4 * (o.cheek || 1), k = o.chirp || 0;
+  // a chirp opens the beak: the lower half drops a little
+  const beak = k > 0.02
+    ? `<path d="M30.2 46.9Q32 47.9 33.8 46.9Q33.4 49.6 32 ${f(50.2)}Q30.6 49.6 30.2 46.9Z" transform="translate(0 ${f(k * 2.2)})" fill="${C('#C0807A')}"/><path d="M29.4 44.2Q32 42.4 34.6 44.2Q34.2 46.8 32 48Q29.8 46.8 29.4 44.2Z" fill="${C(FK.beak)}"/>`
+    : `<path d="M29.4 44.2Q32 42.4 34.6 44.2Q34.4 48.4 32 49.8Q29.6 48.4 29.4 44.2Z" fill="${C(FK.beak)}"/>`;
+  return `<defs><clipPath id="${id}"><path d="${FALK}"/></clipPath></defs>` + crest + `<path d="${FALK}" fill="${C(FK.body)}"/>` + face +
+    `<circle cx="15.5" cy="44.5" r="${f(ch)}" fill="${C(FK.cheek)}"/><circle cx="48.5" cy="44.5" r="${f(ch)}" fill="${C(FK.cheek)}"/>` +
+    eyes(o, C) + beak;
+}
+// one soft feather: a capsule with a round tip (no points, no spikes)
+function plume(r, angDeg, len, w, col) {
+  const a = rad(angDeg), d = [Math.cos(a), Math.sin(a)], n = [-d[1], d[0]], h = w / 2;
+  const c = [r[0] + d[0] * (len - h), r[1] + d[1] * (len - h)];
+  const b1 = [r[0] + n[0] * h * 0.5, r[1] + n[1] * h * 0.5], b2 = [r[0] - n[0] * h * 0.5, r[1] - n[1] * h * 0.5];
+  const s1 = [c[0] + n[0] * h, c[1] + n[1] * h], s2 = [c[0] - n[0] * h, c[1] - n[1] * h];
+  const mid = [r[0] + d[0] * len * 0.4, r[1] + d[1] * len * 0.4];
+  const m1 = [mid[0] + n[0] * h * 1.04, mid[1] + n[1] * h * 1.04], m2 = [mid[0] - n[0] * h * 1.04, mid[1] - n[1] * h * 1.04];
+  return `<path d="M${P2(b1)}Q${P2(m1)} ${P2(s1)}A${f(h)} ${f(h)} 0 0 0 ${P2(s2)}Q${P2(m2)} ${P2(b2)}Z" fill="${col}"/>`;
+}
+const WC = { under: '#E2CE86', rim: '#DCC67F', prim: '#F8F1D2', prim2: '#F4EAC2', sec: '#F3E7B0', sec2: '#F0E2A4', cov: '#EEDC93', edge: '#F1E4A2', wash: '#F6D04A' };
+// wing rig, bird-local coords. p = {arm, hand, ext, fan, sweep} (degrees, right wing; mirrored for the left).
+// q = the same pose a moment earlier: the hand and primaries follow it, so the tip trails the arm.
+function wing(side, sh, p, C, q = p) {
+  const m = a => side > 0 ? a : 180 - a;
+  const A = rad(m(p.arm)), H = rad(m(q.arm + q.hand));
+  const wr = [sh[0] + Math.cos(A) * lerp(5, 10.5, p.ext), sh[1] + Math.sin(A) * lerp(5, 10.5, p.ext)];
+  const tip = [wr[0] + Math.cos(H) * lerp(3.5, 8.5, q.ext), wr[1] + Math.sin(H) * lerp(3.5, 8.5, q.ext)];
+  const end = (r, a, l) => [r[0] + Math.cos(rad(a)) * l, r[1] + Math.sin(rad(a)) * l];
+  const prim = [], sec = [];
+  for (let j = 0; j < 5; j++) { const u = j / 4, root = lerp2(wr, tip, u * 0.85); prim.push([root, m(q.arm + q.hand + q.sweep * (1 - u * 0.86 * q.fan)), lerp(10.5, 13.6, u) * (q.len || 1), lerp(5, 4.4, u)]); }
+  for (let i = 0; i < 4; i++) { const u = 0.18 + 0.82 * i / 3, root = lerp2(sh, wr, u); sec.push([root, m(p.arm + p.sweep + (i - 1.5) * 3 * p.fan), 9 * (p.len || 1), 5.2]); }
+  // one soft underlay hull ties every feather into a single wing shape (scalloped only at the tips)
+  const hull = [sh, wr, tip, ...prim.slice().reverse().map(([r, a, l]) => end(r, a, l - 1.5)), ...sec.slice().reverse().map(([r, a, l]) => end(r, a, l - 1.5)), sh];
+  let s = `<path d="M${P2(hull[0])}${smooth(hull)}Z" fill="${C(WC.under)}" stroke="${C(WC.under)}" stroke-width="3" stroke-linejoin="round"/>`;
+  const layer = (r, a, l, w, col) => plume(r, a, l + 0.5, w + 0.8, C(WC.rim)) + plume(r, a, l, w, C(col));
+  for (let j = 4; j >= 0; j--) s += layer(...prim[j], j % 2 ? WC.prim2 : WC.prim);   // outer first, inner ones overlap
+  for (let i = 3; i >= 0; i--) s += layer(...sec[i], i % 2 ? WC.sec2 : WC.sec);
+  for (let i = 0; i < 4; i++) {                                                         // greater coverts: one soft scalloped row
+    const root = lerp2(sh, wr, 0.15 + i * 0.3);
+    s += layer(root, m(p.arm + p.sweep * 0.9), 6.2, 5.6, WC.cov);
+  }
+  s += limb(cr([sh, wr, tip], 6), { w0: 6.8, w1: 3.6, pow: 1.1, fill: C(WC.edge), side: side > 0 ? 1 : -1, sfrac: 0.3, sop: 0.06, cap: true });
+  return s;
+}
+const WING = {
+  fold:   { arm: 96, hand: 4, ext: 0.3, fan: 0.08, sweep: 4 },
+  spread: { arm: -14, hand: 10, ext: 1, fan: 1, sweep: 92 },
+};
+const wmix = (a, b, t) => Object.fromEntries(Object.keys(a).map(k => [k, lerp(a[k], b[k] == null ? a[k] : b[k], t)]));
+// bird parts in local coords (origin between the feet, up = -y)
+function bird(o) {
+  const C = tint(o.dk || 0), Cb = tint(o.dkBody == null ? (o.dk || 0) : o.dkBody);
+  const sp = o.tailSpread || 0, rim = Cb(WC.rim);
+  const tf = (a, len) => plume([a * 0.6, -3], 90 - a * 2 - sp * Math.sign(a), len + 0.6, 4.6, rim) + plume([a * 0.6, -3], 90 - a * 2 - sp * Math.sign(a), len, 3.6, Cb(FK.tail));
+  const tail = `<g transform="rotate(${f(o.tailRot || 0)} 0 -3)">` + tf(-1.4, 18) + tf(1.4, 18) + tf(0, 19.5) + `</g>`;
+  const wl = wing(-1, [-5.6, -15.5], o.wl || WING.fold, Cb, o.wlq || o.wl || WING.fold), wr = wing(1, [5.6, -15.5], o.wr || WING.fold, Cb, o.wrq || o.wr || WING.fold);
+  const body = `<ellipse cx="0" cy="-10" rx="7.6" ry="9.6" fill="${Cb(FK.body)}"/><ellipse cx="0" cy="-6.6" rx="4.8" ry="6.2" fill="${Cb(FK.belly)}"/>`;
+  const toe = x => `<path d="M${f(x - 1.7)} -0.6q1.7 3 3.4 0" fill="none" stroke="${Cb(FK.foot)}" stroke-width="1.35" stroke-linecap="round"/>`;
+  const feet = o.tuck ? '' : toe(-2.6) + toe(2.6);
+  const head = place(0, -24, o.headRot || 0, o.hsx || 1, o.hsy || 1, falkHead(o), [32, 40]);
+  // wings sit over the body sides (front view), under the head unless they wrap in front of it
+  return { tail, wingsBack: '', body: body + (o.wlFront ? '' : wl) + (o.wrFront ? '' : wr), feet, head, wingsFront: (o.wlFront ? wl : '') + (o.wrFront ? wr : '') };
+}
+const birdG = (x, y, r, sx, sy, inner) => `<g transform="translate(${f(x)} ${f(y)}) rotate(${f(r)}) scale(${f(sx)} ${f(sy)})">${inner}</g>`;
+
+// ================= world =================
+// The island, undeformed: one path, the only difference between the two styles is where
+// the top is and how round the ends are.
+function islandD(n) {
+  if (n.rot || n.dents || n.bulgeR || n.bulgeL) return islandShape(n);
+  const sx = n.sx || 1, sy = n.sy || 1, dx = n.dx || 0, dy = n.dy || 0;
+  const w = G.w * sx, x0 = dx - w / 2, x1 = dx + w / 2;
+  if (G.pill) {
+    const h = G.h * sy, y0 = G.mid + dy - h / 2, y1 = y0 + h, r = Math.min(h / 2, w / 2);
+    return `M${f(x0 + r)} ${f(y0)}H${f(x1 - r)}A${f(r)} ${f(r)} 0 0 1 ${f(x1 - r)} ${f(y1)}H${f(x0 + r)}A${f(r)} ${f(r)} 0 0 1 ${f(x0 + r)} ${f(y0)}Z`;
+  }
+  const h = G.h * sy + dy, r = Math.min(G.r, w / 2, h);
+  return `M${f(x0)} -6V${f(h - r)}A${f(r)} ${f(r)} 0 0 0 ${f(x0 + r)} ${f(h)}H${f(x1 - r)}A${f(r)} ${f(r)} 0 0 0 ${f(x1)} ${f(h - r)}V-6Z`;
+}
+// The deformable island (a story sets rot / dents / bulge): outline sampled as points, then bent.
+// dents push the bottom edge down (negative = up), bulges push an end outward, rot swings the
+// whole shape (the notch around the screen edge it hangs from, the pill around its own centre).
+function islandShape(n) {
+  const r = G.r, L = G.L, R = G.R, T = G.top, B = G.bot, M = G.mid, P = [];
+  if (G.pill) {
+    for (let x = 0; x <= R - r; x += 2.5) P.push([x, T]);
+    for (let k = 1; k < 18; k++) { const a = rad(-90 + k * 10); P.push([R - r + r * Math.cos(a), M + r * Math.sin(a)]); }
+    for (let x = R - r; x >= L + r; x -= 2.5) P.push([x, B]);
+    for (let k = 1; k < 18; k++) { const a = rad(90 + k * 10); P.push([L + r + r * Math.cos(a), M + r * Math.sin(a)]); }
+    for (let x = L + r; x <= -2.5; x += 2.5) P.push([x, T]);
+  } else {
+    P.push([L, -24]);
+    for (let y = -18; y <= B - r - 2; y += 5) P.push([L, y]);
+    for (let k = 1; k <= 10; k++) { const a = rad(180 - k * 9); P.push([L + r + r * Math.cos(a), B - r + r * Math.sin(a)]); }
+    for (let x = L + r; x <= R - r; x += 2.5) P.push([x, B]);
+    for (let k = 1; k <= 10; k++) { const a = rad(90 - k * 9); P.push([R - r + r * Math.cos(a), B - r + r * Math.sin(a)]); }
+    for (let y = B - r - 2; y >= -18; y -= 5) P.push([R, y]);
+    P.push([R, -24]);
+  }
+  const pts = P.map(([x, y]) => {
+    const bw = clamp((y - M) / ((B - M) || 1));             // 1 on the bottom edge, 0 at mid height
+    if (n.dents) for (const d of n.dents) y += bw * d.d * Math.exp(-Math.pow((x - d.x) / d.w, 2));
+    const ew = Math.exp(-Math.pow((y - M) / (G.h * 0.6), 2));
+    if (n.bulgeR) x += n.bulgeR * ew * clamp((x - R * 0.5) / (R * 0.5));
+    if (n.bulgeL) x -= n.bulgeL * ew * clamp((x - L * 0.5) / (L * 0.5));
+    const p = [x * (n.sx || 1) + (n.dx || 0), (G.pill ? M + (y - M) * (n.sy || 1) : (y < 0 ? y : y * (n.sy || 1))) + (n.dy || 0)];
+    return n.rot ? rot(p, G.pill ? [0, M] : [0, -2], n.rot) : p;
+  });
+  return `M${P2(pts[0])}` + smooth(pts) + 'Z';
+}
+const CLOCK = ['1', '4', ':', '0', '1'];
+const CLOCK_FS = 16;
+function clockSVG(fx) {
+  return CLOCK.map((ch, i) => {
+    const e = fx[i] || {}; const X = G.dig[i] + (e.dx || 0), Y = G.mid + 5.7 + (e.dy || 0), s = e.s == null ? 1 : e.s;
+    if (s <= 0.01 || e.op === 0) return '';
+    return `<text x="${f(X)}" y="${f(Y)}" transform="rotate(${f(e.r || 0)} ${f(X)} ${f(Y - 5.7)}) translate(${f(X)} ${f(Y - 5.7)}) scale(${f(s)}) translate(${f(-X)} ${f(5.7 - Y)})" text-anchor="middle" font-family="DM Sans, system-ui, sans-serif" font-weight="500" font-size="${CLOCK_FS}" fill="${CREAM}"${e.op == null ? '' : ` opacity="${f(clamp(e.op))}"`}>${e.ch || ch}</text>`;
+  }).join('');
+}
+// two eye-glints moving through the dark inside the notch
+const glints = (x, y, b = 0, op = 1) => op <= 0 ? '' : [-2.6, 2.6].map(d => `<ellipse cx="${f(x + d)}" cy="${f(y)}" rx="1.15" ry="${f(1.7 * (1 - b * 0.85))}" fill="#E9DCC8" opacity="${f(op * 0.9)}"/>`).join('');
+const popRing = (x, y, p) => (p <= 0 || p >= 1) ? '' : `<circle cx="${f(x)}" cy="${f(y)}" r="${f(1.5 + 6 * EZ.o(p))}" fill="none" stroke="${CREAM}" stroke-width="${f(1.1 * (1 - p))}" opacity="${f(1 - p)}"/>`;
+
+// How far into a story the island has "made room": 0 = idle group centred, 1 = spread to the ends.
+const spreadAt = (t, dur) => EZ.io(clamp(t / 0.22) * clamp((dur - t) / 0.22));
+// Layers, outermost first: back (clipped to everything OUTSIDE the island, so nothing leans on an
+// opaque fill), the island itself, dark (clipped INSIDE it), the clock, inside (loose, in front),
+// wrap (a limb lying on the island's face), front, and last the bezel above the screen edge.
+function compose(sc, t, pfx) {
+  ID.p = pfx; ID.n = 0;
+  const tc = clamp(t, 0, sc.dur);
+  setGeo(spreadAt(tc, sc.dur));
+  const L = { back: '', dark: '', inside: '', front: '', wrap: '', notch: {}, clock: [], wrapRect: null };
+  sc.draw(tc, L);
+  const nd = islandD(L.notch);
+  const ci = pfx + 'ic', co = pfx + 'oc', cw = pfx + 'rc', r = L.wrapRect;
+  let defs = `<clipPath id="${ci}"><path d="${nd}"/></clipPath>` +
+    `<clipPath id="${co}"><path d="M-400 0H400V260H-400Z${nd}" clip-rule="evenodd"/></clipPath>` +
+    (r ? `<clipPath id="${cw}"><rect x="${f(r[0])}" y="${f(r[1])}" width="${f(r[2])}" height="${f(r[3])}"/></clipPath>` : '');
+  const wrap = L.wrap ? `<g clip-path="url(#${ci})">` + (r ? `<g clip-path="url(#${cw})">${L.wrap}</g>` : L.wrap) + `</g>` : '';
+  return `<defs>${defs}</defs><g clip-path="url(#${co})">${L.back}</g>` +
+    `<path d="${nd}" fill="${NOTCH}"${SIZE.sheer ? ' fill-opacity="0.42"' : ''}/>` +
+    `<g clip-path="url(#${ci})">${L.dark}</g><g>${L.inside}</g>${clockSVG(L.clock)}${wrap}<g>${L.front}</g>` +
+    `<rect x="-400" y="-40" width="800" height="40" fill="${BEZEL}"/>`;
+}
+
+// ================= scenes =================
+const SCENES = [];
+
+// ---------- the cat: slim seated cat, teardrop silhouette, narrower than its head ----------
+// drawn on the 64-unit head grid, seat at grid (32, 86); one transform for head, body, legs, paws and tail
+const CS = { fur: '#E2683C', body: '#DB633A', haunch: '#CB582F', side: '#C4532D', shade: '#B04526', bean: '#EE9C94' };
+const CAT_SC = 0.94;        // the whole seated cat is drawn a touch smaller so the ears clear the top of the screen
+const SL_BODY = 'M24.5 51C21.5 59.5 17.5 67.5 16 75.5C15 81.5 17 86 21.5 86H42.5C47 86 49 81.5 48 75.5C46.5 67.5 42.5 59.5 39.5 51Z';
+const SL_SIDE = 'M39.5 51C42.5 59.5 46.5 67.5 48 75.5C49 81.5 47 86 42.5 86H41C44.6 83 45.2 77 44 71C42.8 64.5 41.4 57.6 39.5 51Z';
+const SL_HL = 'M15.6 80.5C15 73.5 18 69.6 21.8 70.4C25.4 71.2 26.6 75.5 25.6 86H20C17 86 15.8 83.8 15.6 80.5Z';
+const SL_HR = 'M48.4 80.5C49 73.5 46 69.6 42.2 70.4C38.6 71.2 37.4 75.5 38.4 86H44C47 86 48.2 83.8 48.4 80.5Z';
+function smallPaw(x, y, C, lift = 0, sq = 0, rot = 0) {   // small neat paw; pink toe beans when lifted
+  let s = `<g transform="translate(${f(x)} ${f(y)}) rotate(${f(rot)}) scale(${f(1 + 0.2 * sq)} ${f(1 - 0.22 * sq)})"><ellipse rx="3.6" ry="2.4" fill="${C(CS.fur)}" stroke="${C(CS.shade)}" stroke-width="0.7"/>`;
+  s += lift > 0.45 ? `<ellipse cx="0" cy="0.5" rx="1.6" ry="1.2" fill="${C(CS.bean)}"/>` + [-1.9, 0, 1.9].map(d => `<circle cx="${d}" cy="-1.4" r="0.7" fill="${C(CS.bean)}"/>`).join('')
+    : `<path d="M-1.2 2.3v-1.3M1.2 2.3v-1.3" stroke="${C(CS.shade)}" stroke-width="0.7" stroke-linecap="round"/>`;
+  return s + '</g>';
+}
+const slimTail = (P, C, wm = 1) => limb(P, { wf: s => lerp(6.4, 5.2, s) + 0.9 * Math.pow(clamp((s - 0.85) / 0.15), 1.5), wm, fluff: 0.05, fill: C(CS.fur), side: 1, sfrac: 0.3,
+  stripes: { every: 7.5, w: 3.2, col: C(CS.shade), start: 8, skipBase: 5 }, tip: { len: 6, col: C(CS.shade) } });
+// o: dk (body depth), rise (0 = crouched in the slot, 1 = sitting tall), face, hx/hy/hr (head), paws [{dx,dy,lift,sq}], tail false | {wag, curl, puff}
+function catSlim(o) {
+  const Cb = tint(o.dk || 0), rise = o.rise == null ? 1 - (o.dk || 0) : o.rise;
+  let s = '';
+  const tl = o.tail === false ? null : (o.tail || {});
+  if (tl && (o.dk || 0) < 0.6) {          // the long S-shaped tail rises behind the right haunch
+    const w = tl.wag || 0;
+    const D = cr([[44, 82], [53, 85], [60.5, 80], [61, 70], [64 + w * 0.08, 61], [70 + w * 0.12, 56]], 6);
+    s += slimTail(curl(along(D, plen(D), 26), tl.curl == null ? -2.2 : tl.curl, 9, 10, rad(w * 0.6)), Cb, tl.puff || 1);
+  }
+  s += `<path d="${SL_BODY}" fill="${Cb(CS.body)}"/><path d="${SL_SIDE}" fill="${Cb(CS.side)}"/><path d="${SL_HL}" fill="${Cb(CS.haunch)}"/><path d="${SL_HR}" fill="${Cb(CS.haunch)}"/>`;
+  const paws = o.paws || [{}, {}];
+  paws.forEach((p, i) => {                 // slim front legs that always end in their paw
+    const x0 = i ? 35.4 : 28.6, px = x0 + (p.dx || 0), py = 84 + (p.dy || 0);
+    s += limb([[x0, 58], [lerp(x0, px, 0.5), lerp(58, py - 1.5, 0.5)], [px, py - 1.5]], { w0: 5.8, w1: 5.2, fill: Cb(CS.fur), shade: false, cap: true });
+  });
+  s += `<ellipse cx="32" cy="55.6" rx="8.6" ry="2.3" fill="${Cb(CS.side)}"/>`;      // the chin's shadow on the chest
+  s += `<g transform="translate(${f(o.hx || 0)} ${f((o.hy || 0) + 14 * (1 - rise))}) rotate(${f(o.hr || 0)} 32 52)">${catHead(o.face || {})}</g>`;
+  paws.forEach((p, i) => { s += smallPaw((i ? 35.4 : 28.6) + (p.dx || 0), 84 + (p.dy || 0), Cb, p.lift || 0, p.sq || 0); });
+  return s;
+}
+const catAt = (p, r, sx, sy, o) => place(p[0], p[1], r, sx * CAT_SC, sy * CAT_SC, catSlim(o), [32, 86]);
+const headAt = (p, r, sc, face) => place(p[0], p[1], r, sc * CAT_SC, sc * CAT_SC, catHead(face));
+// a cat's way out of the dark: settle, small hop forward (grows a touch: depth), soft landing; and back
+function hopIn(t, a) {
+  const k = clamp((t - a) / 0.42);
+  return { dk: 1 - EZ.sio(clamp((t - a - 0.08) / 0.3)), sc: lerp(0.9, 1, EZ.o(k)), y: -3.2 * Math.sin(Math.PI * clamp((t - a - 0.12) / 0.3)), sq: 1 - 0.08 * bump(t, a - 0.02, 0.16) + 0.06 * bump(t, a + 0.14, 0.18) + ring(t, a + 0.42, -0.09, 3, 6) };
+}
+function hopOut(t, a) {
+  const k = clamp((t - a) / 0.4);
+  return { dk: EZ.sio(clamp((t - a - 0.1) / 0.3)), sc: lerp(1, 0.9, EZ.io(k)), y: -2.4 * Math.sin(Math.PI * clamp((t - a - 0.08) / 0.28)), sq: 1 - 0.08 * bump(t, a - 0.05, 0.16) };
+}
+const mixHop = (t, aIn, aOut) => t < aOut - 0.1 ? hopIn(t, aIn) : hopOut(t, aOut);
+// the icon head in the slot: ducks into the dark, later pops back
+function slotHead(L, t, away, extra = {}) {
+  if (away < 0.97) L.dark += place(G.sx, G.mid + 4 * away, 0, 1 - 0.15 * away, 1 - 0.15 * away, catHead({ dk: away, ...extra }));
+}
+// the clock rides along when the island itself swings
+function rideClock(L, rotDeg, extra = []) {
+  const piv = G.pill ? [0, G.mid] : [0, -2];
+  CLOCK.forEach((_, i) => {
+    const x = G.dig[i], p = rot([x, G.mid], piv, rotDeg), e = extra[i] || {};
+    L.clock[i] = { ...e, dx: p[0] - x + (e.dx || 0), dy: p[1] - G.mid + (e.dy || 0), r: rotDeg + (e.r || 0) };
+  });
+}
+const zzz = (x, y, t, t0, op = 1) => [0, 1].map(i => { const d = ((t - t0 + i * 0.9) % 1.8) / 1.8, sz = 2.2 + 1.4 * d, X = x + 10 * d, Y = y - 5 * d;
+  return `<path d="M${f(X)} ${f(Y)}h${f(sz)}l${f(-sz)} ${f(sz)}h${f(sz)}" fill="none" stroke="${CREAM}" stroke-width="0.75" stroke-linejoin="round" stroke-linecap="round" opacity="${f(Math.sin(Math.PI * d) * 0.8 * op)}"/>`; }).join('');
+const noteMark = (x, y, k) => k <= 0.02 || k >= 1 ? '' : `<g opacity="${f(1 - k)}" transform="translate(${f(x)} ${f(y - 7 * k)})"><ellipse cx="0" cy="0" rx="1.4" ry="1" fill="${CREAM}" transform="rotate(-20)"/><path d="M1.2 -0.2V-5.2q1.6 0.6 2.4 2" fill="none" stroke="${CREAM}" stroke-width="0.7" stroke-linecap="round"/></g>`;
+
+// ---------- 1. Cat: hide and seek ----------
+SCENES.push({
+  id: 'c1', view: () => [G.L - 50, -8, G.w + 100], animal: 'Kucing', name: 'Petak umpet', dur: 7.8, key: 5.75,
+  line: 'Kucing sembunyi di balik pulau. Ada benjolan yang lari di bibir bawah tiap dia pindah. Ngintip dari ujung kiri, lalu ujung kanan. Waktu ngintip dari kiri lagi, ujung ekornya sendiri nongol di kanan. Dia kira itu kucing lain: goyang pantat, terkam, pulaunya oleng. Muncul di kanan sambil menggigit ekornya sendiri. Malu, lepas, kabur.',
+  pill: 'Lebih bagus: kepalanya muncul memutari setengah lingkaran penuh, bukan nyembul dari sisi lurus. Olengnya jadi oleng melayang (ikut naik turun sedikit), bukan berputar di tepi layar.',
+  beats: [[0.75, 'Kepala di slot nyelam ke gelap'], [1.95, 'Benjolan lari di bibir bawah, kepala ngintip memutari ujung kiri, kaki kecil memegang tepi'], [3.35, 'Benjolan lari ke kanan, ngintip dari ujung kanan dengan mata bulat'], [4.6, 'Ngintip dari kiri lagi; ujung ekornya sendiri nongol di kanan dan bergoyang'], [5.2, 'Goyang pantat (pulau bergetar), terkam: benjolan melesat, pulau oleng'], [5.75, 'Muncul di kanan menggigit ekornya sendiri, lalu malu, lepas, dan kembali ke slot']],
+  d2d: 'Kepala yang ngintip dipotong dengan clip "di luar pulau", bukan ketutup isi pulau, jadi tetap benar kalau isinya tembus pandang; kaki kecil yang memegang tepi digambar sesudah pulau. Benjolan yang lari: satu lekukan di sisi bawah yang posisinya digeser (path kecil yang dibangun ulang). Oleng: rotasi pulau dengan pegas. Ekor: tabung meruncing yang sama.',
+  d2dPill: 'Di Pill jalur ngintipnya pakai busur ujung (setengah lingkaran jari-jari h/2) bukan sisi lurus, dan titik putar olengnya pindah ke titik tengah pill plus sedikit geser-y pegas, karena pill melayang. Benjolan tetap di bibir lurus antara dua ujung, yang di Pill lebih pendek (w − h).',
+  draw(t, L) {
+    const C = tint(0);
+    const away = kf(t, [[0.5, 0], [0.85, 1, 'i'], [6.95, 1], [7.35, 0, 'sb']]);
+    slotHead(L, t, away, { eyes: t > 7.0 ? 'happy' : 'idle', blink: blinks(t, [7.7]), earR: 14 * bump(t, 7.4, 0.2) });
+    // a lump runs along the bottom edge while it moves behind the island
+    const lx = G.lipL + 2, rx = G.lipR - 2;
+    const runs = [[0.85, 1.55, G.sx, lx], [2.4, 3.0, lx, rx], [3.7, 4.1, rx, lx], [5.0, 5.28, lx, rx + 2]];
+    let dents = [];
+    for (const [a, b, x0, x1] of runs) if (win(t, a, b + 0.08)) { const u = clamp((t - a) / (b - a)); dents.push({ x: lerp(x0, x1, a > 4.9 ? EZ.qi(u) : EZ.sio(u)), w: 9, d: G.h * 0.07 * Math.sin(Math.PI * Math.min(1, u * 1.1)) + 0.2 }); }
+    const wig = win(t, 4.62, 5.0) ? 0.8 * Math.sin(TAU * 14 * t) : 0;
+    const tilt = t >= 5.05 ? kf(t, [[5.05, 0], [5.28, -2.4, 'o']]) * (t < 5.28 ? 1 : 0) + (t >= 5.28 ? ring(t, 5.28, 3.4, 1.4, 2) - 2.4 * Math.exp(-6 * (t - 5.28)) : 0) : 0;
+    L.notch = { dents: dents.length ? dents : [{ x: 0, w: 1, d: 0 }], dx: wig, rot: tilt };
+    // a floating pill is knocked off its height too; a notch hangs from the screen edge and cannot be
+    if (G.pill && t >= 5.28) L.notch.dy = ring(t, 5.28, 1.6, 1.4, 2.4);
+    rideClock(L, tilt, CLOCK.map(() => ({ dy: L.notch.dy || 0 })));
+    // peeks round the ends; the half hidden behind the island is clipped away, not covered
+    const peek = (t0, t1) => kf(t, [[t0, 0], [t0 + 0.32, 1, 'ob'], [t1 - 0.25, 1], [t1, 0, 'i']]);
+    const peekX = (side, k) => side * lerp(G.R - 14, G.R + 4, k);
+    const P = [[1.6, 2.45, -1], [3.0, 3.75, 1], [4.12, 5.02, -1], [5.32, 6.6, 1]];
+    P.forEach(([a, b, side], n) => {
+      const k = peek(a, b); if (k <= 0.01) return;
+      const x = peekX(side, k), y = G.mid + (n === 3 ? 2 : 0);
+      let face = { eyes: 'idle', lx: -side * 0.6, blink: blinks(t, [2.1, 5.9]), earL: 0, earR: 0 };
+      if (n === 0) face.earR = side * 14 * bump(t, 2.0, 0.2);
+      if (n === 1) face.eyes = 'alert';
+      if (n === 2) { face.lx = t > 4.45 ? 1 : 0; face.eyes = t > 4.45 ? 'alert' : 'idle'; face.earL = t > 4.45 ? 8 : 0; face.earR = t > 4.45 ? -8 : 0; }
+      if (n === 3) { face.eyes = t < 5.95 ? 'squint' : (t < 6.2 ? 'alert' : 'happy'); face.mouth = t < 6.15 ? 'w' : ''; face.earL = t > 6.2 ? -20 : 0; face.earR = t > 6.2 ? 20 : 0; }
+      const r = side * (24 * k) + (n === 2 && t > 4.6 && t < 5.0 ? 3 * Math.sin(TAU * 5 * t) : 0);
+      L.back += headAt([x, y], r, 1, face);
+      const pk = clamp((k - 0.4) / 0.6);
+      // the paw grips the outline where the head came round it
+      // the paw grips the rim just below the chin, so it never lands on the face
+      if (pk > 0.02) { const g = rimPt(side, 0.73, 0.4); L.front += place(g[0], g[1], side * 70, pk * CAT_SC, pk * CAT_SC, smallPaw(0, 0, C, 0, 0), [0, 0]); }
+    });
+    // the tail tip pokes out at the right end ("another cat!"), gets yanked in, then turns up in its mouth
+    const tx = kf(t, [[4.3, 0], [4.7, 1, 'ob'], [5.15, 1], [5.27, 0, 'i']]);
+    if (tx > 0.01) {
+      const D = cr([[ER(-10), MY(5)], [ER(0), MY(5)], [ER(6), MY(2)], [ER(8.5), MY(-4)]], 8);
+      L.back += slimTail(curl(along(D, plen(D) * tx, 20), -2.6 + 0.6 * Math.sin(TAU * 2.4 * t), 8 * tx, 10), C, 0.4);
+    }
+    const mouthT = kf(t, [[5.4, 0], [5.7, 1, 'o'], [6.12, 1], [6.25, 0, 'i']]);
+    if (mouthT > 0.01) {
+      const kk = peek(5.32, 6.6), mouth = add([peekX(1, kk), MY(2)], R(24 * kk, [0, 3.4]));
+      const b0 = [ER(-8), BY(-3)], b1 = [ER(0), BY(-2.5)], b2 = [ER(4), BY(-4)];
+      const D = cr([b0, b1, b2, lerp2(b2, mouth, 0.7), mouth], 8);
+      L.back += slimTail(curl(along(D, plen(D) * mouthT, 20), 1.5, 4, 8), C, 0.42);
+    }
+  },
+});
+
+// ---------- 2. Cat: the digit pillow ----------
+SCENES.push({
+  id: 'c2', view: () => [G.cx - 78, -8, 132], animal: 'Kucing', name: 'Bantal angka', dur: 8.6, key: 5.6,
+  line: 'Kucing muncul dari gelap di depan jam dan duduk. Menguap, lalu mulai ngantuk: kepalanya jatuh, kaget bangun, jatuh lagi. Akhirnya kepalanya bersandar di angka 1 seperti bantal, angkanya penyok sedikit. Menit berganti: bantalnya berubah jadi 2 dan meloncat, kucing kaget. Dia melotot ke angka 2, lalu senyum dan tidur lagi di atasnya.',
+  pill: 'Sama persis di dua bentuk: semuanya main di bibir bawah yang lurus. Bedanya cuma huruf zzz-nya, yang di Pill melayang keluar lewat celah 8 dip di atasnya.',
+  beats: [[1.4, 'Muncul dari gelap di depan jam, duduk tegak, bibir bawah melengkung kena berat'], [2.0, 'Menguap lebar, telinga ke belakang'], [3.05, 'Kepala jatuh pelan, kaget, tegak lagi (dua kali)'], [5.6, 'Bersandar di angka 1 seperti bantal, napas pelan, bibir bawah naik turun ikut napas'], [6.4, 'Menit berganti: bantal jadi 2 dan meloncat, kucing kaget, ekor ngembang'], [7.3, 'Melotot ke angka 2, lalu senyum dan tidur lagi di atasnya']],
+  d2d: 'Kepala bersandar = rotasi kepala di sekitar leher (titik grid). Angka bantal: skala dan rotasi per karakter, ganti 1 ke 2 dengan sedikit lewat. Napas: skala y badan kecil dan lekukan bibir bawah yang naik turun. Semua path tetap, tidak ada yang berat.',
+  d2dPill: 'Di Pill tidak ada yang berubah selain nilai: lekukannya tetap di bibir bawah (yang lurus di dua bentuk), posisi kucing tetap diikat ke angka menit. Satu bentuk kode, dua geometri.',
+  draw(t, L) {
+    const C = tint(0), X = G.dig[4] - 12.7;
+    const away = kf(t, [[0.45, 0], [0.8, 1, 'i'], [8.05, 1], [8.45, 0, 'sb']]);
+    slotHead(L, t, away);
+    const H = mixHop(t, 1.0, 7.75), w = 1 - H.dk;
+    const breath = Math.sin(TAU * 0.5 * t);
+    const asleep = win(t, 5.2, 6.35) || win(t, 7.15, 7.75);
+    const droop = kf(t, [[2.45, 0], [3.0, 17, 'sio'], [3.08, -4, 'o'], [3.5, 0, 'sio'], [3.9, 0], [4.55, 21, 'sio'], [4.63, -5, 'o'], [5.0, 0, 'sio'], [5.25, 0], [5.75, 33, 'sio'], [6.35, 33], [6.42, -8, 'o'], [6.7, -2, 'sio'], [7.05, -2], [7.4, 33, 'sio']]);
+    const yawn = kf(t, [[1.7, 0], [2.05, 1, 'sio'], [2.3, 1], [2.5, 0, 'sio']]);
+    const startle = Math.max(bump(t, 3.0, 0.3), bump(t, 4.55, 0.3), kf(t, [[6.35, 0], [6.42, 1, 'o'], [6.8, 1], [7.0, 0]]));
+    const sag = 1.8 * w + (asleep ? 0.35 * breath : 0);
+    L.notch = { dents: [{ x: X, w: 12, d: sag }] };
+    let eyes = 'idle';
+    if (droop > 6 || asleep) eyes = 'sleep';
+    if (yawn > 0.3) eyes = 'closed';
+    if (startle > 0.4) eyes = 'alert';
+    if (win(t, 6.8, 7.1)) eyes = 'squint';
+    if (win(t, 7.1, 7.3)) eyes = 'happy';
+    const face = { eyes, mouth: yawn > 0.25 ? 'yawn' : '', yawn, blink: blinks(t, [1.6]), earL: -18 * yawn + 10 * startle, earR: 18 * yawn - 10 * startle + 12 * bump(t, 5.9, 0.18) };
+    const sq = H.sq + (asleep ? 0.02 * breath : 0) + 0.06 * startle;
+    // the pillow: the minute digit, squashed under the head, pops to a "2"
+    const rest = clamp((droop - 22) / 11);
+    L.clock[4] = { op: 0 };       // the pillow digit is drawn on top of the cat instead
+    if (H.dk < 0.99) L.front += catAt([X, G.bot + sag + H.y], 3 * rest, H.sc / Math.sqrt(sq), H.sc * sq, { dk: H.dk, face, hr: droop, hy: 2 * rest + 0.5 * breath * (asleep ? 1 : 0), hx: 2 * rest,
+      tail: { wag: asleep ? 8 * Math.sin(TAU * 0.4 * t) : 18 * Math.sin(TAU * 0.8 * t), curl: -2.2, puff: 1 + 0.7 * startle * (t > 6.3 ? 1 : 0) } });
+    // the pillow: the minute digit, squashed by the cheek, pops to a "2"
+    const pxp = G.dig[4] + 1.6 * rest, pyp = G.mid + 5.7 + 0.8 * rest - 3 * bump(t, 6.36, 0.22), ps = 1 + 0.35 * bump(t, 6.36, 0.22);
+    L.front += `<text x="0" y="0" transform="translate(${f(pxp)} ${f(pyp - 5.7)}) rotate(${f(10 * rest + ring(t, 6.4, -12, 3, 4))}) scale(${f(ps * (1 - 0.18 * rest))} ${f(ps)}) translate(0 5.7)" text-anchor="middle" font-family="DM Sans, system-ui, sans-serif" font-weight="500" font-size="${CLOCK_FS}" fill="${CREAM}" stroke="#17120F" stroke-width="1.4" paint-order="stroke">${t > 6.35 ? '2' : '1'}</text>`;
+    if (asleep) L.front += zzz(X + 14, G.top + 4, t, 5.2, 1);
+  },
+});
+
+// ---------- 3. Cat: tail piano ----------
+SCENES.push({
+  id: 'c3', view: () => [G.cx - 78, -8, 132], animal: 'Kucing', name: 'Piano ekor', dur: 8.4, key: 4.85,
+  line: 'Kucing muncul dari gelap di sebelah jam. Ekornya naik melengkung di atas kepala dan mengetuk angka jam satu-satu seperti tuts piano: tiap angka turun, bibir bawah di bawahnya menyala kecil, nada melayang. Ditutup sapuan ekor dari kiri ke kanan. Nada terakhir kekerasan: angka 1 jatuh rebah. Kucing meringis, ekornya menegakkannya pelan, lalu membungkuk.',
+  pill: 'Sapuan penutupnya lebih bagus di Pill: garis cahayanya terus membelok mengitari setengah lingkaran ujung kanan, bukan berhenti di sudut.',
+  beats: [[1.4, 'Muncul dari gelap di sebelah jam, ekor naik melengkung'], [2.6, 'Ketuk angka satu-satu: angka turun, bibir di bawahnya menyala, nada melayang'], [3.9, 'Kepala ikut irama, mata merem menikmati'], [4.85, 'Sapuan ekor dari kiri ke kanan: semua angka lompat bergelombang, tepi pulau menyala sampai memutari ujung'], [5.75, 'Nada terakhir kekerasan: angka 1 rebah, kucing meringis'], [6.6, 'Ekor menegakkan angkanya pelan, kucing membungkuk, lalu kembali ke gelap']],
+  d2d: 'Ekor: satu tabung meruncing yang garis tengahnya melengkung di atas kepala ke titik di atas angka; ujungnya turun waktu mengetuk. Cahaya di bibir: elips kecil transparan di bawah angka. Nada: elips kecil dan satu garis. Angka per karakter: turun, lompat, rebah dan berdiri lagi.',
+  d2dPill: 'Garis cahaya sapuan itu satu garis lurus plus satu busur dengan jari-jari sudut pulau: jari-jarinya 16 di Notch dan h/2 di Pill, jadi cukup satu rumus. Tinggi lengkung ekor diikat ke tepi atas pulau, jadi di Pill ekornya tetap di dalam dan tidak keluar ke celah.',
+  draw(t, L) {
+    const C = tint(0), X = G.dig[0] - 16;
+    const away = kf(t, [[0.45, 0], [0.8, 1, 'i'], [7.85, 1], [8.25, 0, 'sb']]);
+    slotHead(L, t, away);
+    const H = mixHop(t, 1.0, 7.5), w = 1 - H.dk;
+    const notes = [[2.05, 0], [2.35, 1], [2.65, 3], [2.95, 4], [3.4, 3], [3.7, 1], [4.0, 0], [4.3, 1]];
+    const gl = [4.62, 5.05];
+    const last = 5.6;
+    // where the tail tip hovers (x) and how low it dips (tap)
+    const keys = [[1.6, G.dig[0]]];
+    notes.forEach(([tn, i]) => keys.push([tn - 0.1, G.dig[i], 'sio']));
+    keys.push([gl[0], G.dig[0] - 4, 'sio'], [gl[1], G.R - 9, 'lin'], [last - 0.25, G.dig[4], 'sio'], [6.25, G.dig[4]], [6.45, G.dig[4] + 3, 'sio'], [7.0, G.dig[2], 'sio']);
+    const tipX = kf(t, keys);
+    let tap = 0; notes.forEach(([tn]) => { tap = Math.max(tap, bump(t, tn - 0.08, 0.18)); });
+    tap = Math.max(tap, win(t, gl[0], gl[1]) ? 0.7 : 0, 1.4 * bump(t, last - 0.06, 0.18), 0.6 * bump(t, 6.3, 0.3));
+    const ext = kf(t, [[1.35, 0], [1.85, 1, 'sio'], [7.05, 1], [7.45, 0, 'sio']]);
+    if (ext > 0.01) {
+      const hi = G.top + 4.5, tip = [tipX, hi + 4.5 * tap];
+      const base = [X + 5, G.bot - 1.4];
+      const k1 = [X + 15, G.bot - 21], k2 = [tip[0] - 7, hi - 3];
+      const D = cr([base, [X + 11.5, G.bot - 9], k1, lerp2(k1, k2, 0.5), [tip[0] - 6, hi - 2.9], [tip[0] - 1.5, hi - 1.9], tip], 6);
+      L.front += slimTail(along(D, plen(D) * ext, 40), C, 0.42);
+    }
+    // digits: dip under each tap, wave on the sweep, the last one falls over and is set upright again
+    const fall = kf(t, [[5.6, 0], [5.95, 1, 'o'], [6.3, 1], [6.65, 0, 'sb']]);
+    const glow = [0, 0, 0, 0, 0], sw0 = G.dig[0] - 4, swD = (G.R - 9) - sw0;
+    CLOCK.forEach((_, i) => {
+      const x = G.dig[i];
+      let dy = 0;
+      notes.forEach(([tn, j]) => { if (j === i) { dy += 2.4 * bump(t, tn - 0.04, 0.22); glow[i] = Math.max(glow[i], bump(t, tn - 0.04, 0.5)); } });
+      if (win(t, gl[0], gl[1] + 0.3)) { const k = Math.exp(-Math.pow((tipX - x) / 5, 2)) * (t < gl[1] ? 1 : 0); dy -= 3 * k; glow[i] = Math.max(glow[i], bump(t, gl[0] + (x - sw0) / swD * (gl[1] - gl[0]), 0.45)); }
+      if (i === 4) { dy += 2 * bump(t, last - 0.04, 0.2) + 3.2 * fall; glow[i] = Math.max(glow[i], bump(t, last - 0.04, 0.5)); }
+      L.clock[i] = { dy, r: i === 4 ? 92 * fall : 0 };
+    });
+    L.front += CLOCK.map((_, i) => glow[i] > 0.02 ? `<ellipse cx="${f(G.dig[i])}" cy="${f(G.bot - 2.6)}" rx="4.4" ry="1.3" fill="#F6D04A" opacity="${f(0.55 * glow[i])}"/>` : '').join('');
+    notes.forEach(([tn, j]) => { L.front += noteMark(G.dig[j] + 3, G.top + 7, (t - tn) / 0.7); });
+    L.front += noteMark(G.dig[4] + 3, G.top + 7, (t - last) / 0.7);
+    const sweepGlow = bump(t, gl[1] - 0.1, 0.6);
+    // the lit edge runs along the bottom and keeps going round the end: a quarter on the notch, a half circle on the pill
+    if (sweepGlow > 0.02) L.front += `<path d="M${f(G.dig[0] - 10)} ${f(G.bot + 0.4)}H${f(G.lipR)}A${f(G.r)} ${f(G.r)} 0 0 0 ${f(G.R + 0.4)} ${f(G.bot - G.r + 0.4)}" fill="none" stroke="#F6D04A" stroke-width="1.6" stroke-linecap="round" opacity="${f(0.5 * sweepGlow)}"/>`;
+    const nb = ring(t, gl[1], 0.03, 2.4, 3.5);
+    L.notch = { dents: [{ x: X, w: 11, d: 1.8 * w }], sy: 1 + nb };
+    const playing = win(t, 1.95, 5.2);
+    const wince = kf(t, [[5.62, 0], [5.72, 1, 'o'], [6.2, 1], [6.4, 0]]);
+    const bow = kf(t, [[6.7, 0], [6.95, 1, 'sio'], [7.15, 1], [7.35, 0, 'sio']]);
+    let eyes = playing ? 'happy' : 'idle';
+    if (wince > 0.4) eyes = 'squint';
+    if (bow > 0.4) eyes = 'closed';
+    const beat = playing ? Math.max(...notes.map(([tn]) => bump(t, tn - 0.05, 0.2))) : 0;
+    const face = { eyes, lx: playing || wince ? 1 : 0, blink: blinks(t, [1.6, 7.6]), earL: -20 * wince + 8 * beat, earR: 20 * wince - 8 * beat };
+    const sq = H.sq - 0.03 * beat;
+    if (H.dk < 0.99) L.inside += catAt([X, G.bot + 1.8 * w + H.y], 4 * bow, H.sc / Math.sqrt(sq), H.sc * sq, { dk: H.dk, face, hr: 6 * Math.sin(TAU * 1.65 * t) * (playing ? 1 : 0) - 10 * wince + 14 * bow, hy: 1.2 * beat + 5 * bow, tail: false });
+  },
+});
+
+// ---------- 4. Cat: the tail scarf ----------
+// The tail leaves the cat, runs under the bottom edge and goes round the left end: a quarter
+// corner on the Notch and then straight up the side, a full half circle on the Pill, whose tip
+// then lands on the island's own face, so it reads as a scarf thrown over a shoulder.
+function scarfPath(gap) {
+  const P = [[G.L + 19, G.bot - 0.8], [G.L + 15.5, G.bot + 1]];
+  const n = G.pill ? 10 : 6;
+  for (let k = 0; k <= n; k++) P.push(rimPt(-1, G.pill ? 1 - k / n : lerp(1, 0.55, k / n), gap));
+  if (G.pill) P.push([G.L + G.r + 5, G.top - gap + 0.4], [G.L + G.r + 12, G.top - gap + 1.6]);
+  else P.push([G.L - gap - 0.6, G.top + 9], [G.L - gap + 0.4, G.top + 4.5]);
+  return cr(P, 6);
+}
+SCENES.push({
+  id: 'c4', view: () => [G.L - 30, -8, 120], animal: 'Kucing', name: 'Syal ekor', dur: 8.4, key: 4.2,
+  line: 'Kucing lompat kecil ke bibir pulau. Ekornya pelan-pelan melingkar ke ujung kiri, lalu memeluk ujung itu seperti syal; pulaunya ketekan sedikit. Ujung ekor yang berbulu melengkung balik dan menggelitik telinga si kucing sendiri. Hatchi! Bersinnya bikin pulau tersentak, ekornya kaget lepas, dan kucing pura-pura tidak terjadi apa-apa.',
+  pill: 'Cerita yang paling untung. Ekornya mengitari setengah lingkaran penuh dan ujungnya mendarat di muka pill: syal beneran, bukan ekor yang nyangkut di sudut lalu lari ke tepi layar.',
+  beats: [[0.9, 'Lompat kecil dari gelap ke bibir pulau'], [2.4, 'Ekor keluar dari balik paha, merayap di bawah bibir dan membelok di ujung kiri'], [4.2, 'Ekor memeluk ujung seperti syal: pulau ketekan, kucing merem senang'], [5.0, 'Ujung ekor melengkung balik dan menggelitik telinga kucing sendiri'], [5.55, 'Hatchi! Pulau tersentak, ekor kaget dan terlepas cepat'], [6.6, 'Ekor kembali ke belakang, kucing pura-pura cuek, lalu lompat mundur ke gelap']],
+  d2d: 'Ekor syal: satu tabung meruncing dengan belang, garis tengahnya mengikuti tepi ujung kiri (busur dengan jarak yang mengecil waktu memeluk), dipotong sepanjang "panjang ekor" yang dianimasikan, ujungnya spiral. Ujung pulau yang ketekan: titik-titiknya ditarik ke dalam (path kecil yang dihitung ulang). Bersin: geser x pulau sesaat.',
+  d2dPill: 'Garis tengah ekor itu fungsi yang sama (rimPt): di Notch sisi lurus lalu seperempat busur, di Pill setengah lingkaran jari-jari h/2. Satu nilai u 0..1 untuk dua bentuk, jadi tidak ada cabang kode di animasinya, cuma di jalur. Di Pill bagian ujung ekor jatuh di atas muka pill, jadi bagian itu dipotong dengan clip bentuk pulau biar rapi di tepinya.',
+  draw(t, L) {
+    const X = G.sx, H = mixHop(t, 0.48, 7.6), w = 1 - H.dk;
+    const ext = kf(t, [[1.35, 0], [3.4, 1, 'sio'], [5.55, 1], [5.68, 0.55, 'o'], [6.1, 0, 'sio']]);
+    const hug = kf(t, [[3.45, 0], [4.1, 1, 'sio'], [5.5, 1], [5.62, 0, 'o']]);
+    const tickle = kf(t, [[4.55, 0], [4.95, 1, 'sio'], [5.35, 1], [5.5, 0]]);
+    const sneeze = kf(t, [[5.3, 0], [5.48, 1, 'sio'], [5.55, 0, 'o']]);
+    const hatchi = bump(t, 5.53, 0.22);
+    const sx = 1 - 0.018 * hug;
+    L.notch = { sx, dents: [{ x: X, w: 12, d: 1.8 * w }, { x: G.L + 4, w: 6, d: -1.2 * hug }], bulgeL: -2.2 * hug };
+    L.notch.dx = 1.6 * hatchi * Math.sin(TAU * 9 * t);
+    if (hatchi > 0.05) L.notch.dents.push({ x: X, w: 30, d: 2.5 * hatchi });
+    if (ext > 0.01) {
+      const D = scarfPath(lerp(3.4, 2.3, hug));
+      const wave = 0.5 * Math.sin(TAU * 0.9 * t);
+      const tipC = lerp(1.6, 3.2, hug) + 1.4 * tickle + 0.4 * Math.sin(TAU * 1.3 * t) + 2 * hatchi;
+      const P = curl(along(D, plen(D) * ext, 34), tipC, 15 + 4 * tickle, 14, rad(10 * wave + 20 * tickle));
+      const tailS = limb(P, { wf: s => 3.4 - 1.0 * s + 1.2 * Math.pow(clamp((s - 0.78) / 0.22), 1.5) * (1 - clamp((s - 0.97) / 0.03)), fluff: 0.07, fill: CS.fur, side: -1, sfrac: 0.3, stripes: { every: 4.4, w: 1.8, col: CS.shade, start: 5.5, skipBase: 3 }, tip: { len: 3.6, col: CS.shade } });
+      L.inside += tailS;
+    }
+    const sq = H.sq - 0.06 * sneeze + 0.12 * hatchi;
+    let eyes = 'idle';
+    if (win(t, 3.9, 4.7)) eyes = 'happy';
+    if (tickle > 0.3 || sneeze > 0.3) eyes = 'squint';
+    if (hatchi > 0.3) eyes = 'closed';
+    if (win(t, 5.9, 6.5)) eyes = 'alert';
+    const face = { eyes, lx: win(t, 1.6, 3.4) ? -1 : 0, ly: win(t, 1.6, 2.6) ? 0.8 : 0, mouth: sneeze > 0.3 || hatchi > 0.3 ? 'o' : '', blink: blinks(t, [0.2, [6.8, 0.42]]),
+      earL: -10 * tickle * (0.5 + 0.5 * Math.sin(TAU * 7 * t)) - 18 * hatchi, earR: 18 * hatchi + 12 * bump(t, 6.9, 0.2) };
+    L.inside += catAt([X, G.bot + 1.8 * w + H.y], -8 * hatchi + 4 * tickle, H.sc / Math.sqrt(sq), H.sc * sq, {
+      dk: H.dk, face, hr: -6 * tickle + 10 * hatchi, hy: -2 * hatchi, tail: false });
+  },
+});
+
+// ---------- 4. Octopus: curious about the clock ----------
+SCENES.push({
+  id: 'o1', view: () => [G.cx - 83, -8, 145], animal: 'Gurita', name: 'Penasaran jam', dur: 7.6, key: 4.6,
+  line: 'Mata jalan di dalam gelap ke kanan. Tentakel melingkar di ujung kanan, nempel ke angka jam, ketarik, lepas, plop.',
+  pill: 'Lebih bagus sedikit: tentakelnya melilit setengah lingkaran ujung kanan, jadi lilitannya kelihatan utuh, bukan cuma menyangkut di sudut bawah.',
+  beats: [[0.7, 'Lirik ke jam'], [2.1, 'Nyelam ke gelap, cuma dua titik mata yang jalan ke kanan'], [3.1, 'Satu tentakel keluar dari balik ujung kanan dan melilit ujungnya'], [3.7, 'Kepala ngintip dari balik ujung, lihat jam'], [4.6, 'Tentakel nempel ke angka 1 dan menariknya'], [5.1, 'Plop! Lepas, angka goyang, gurita kaget memerah lalu kabur pulang']],
+  d2d: 'Angka jam perlu digambar per karakter (lima DrawText atau glyph run kecil) supaya satu angka bisa ditarik dan bergoyang. Tentakel digambar dua kali: sekali di belakang dengan clip "di luar pulau", sekali lagi dengan clip bentuk pulau untuk bagian yang naik ke mukanya. Cincin "plop" satu lingkaran garis yang membesar dan memudar.',
+  d2dPill: 'Jalur tentakelnya dibangun dari rimPt, jadi lilitannya mengikuti sisi lurus + seperempat busur di Notch dan setengah lingkaran di Pill tanpa tabel titik terpisah. Kepala yang ngintip diikat ke tepi kanan, jadi di Pill dia muncul dari balik busur, bukan dari balik garis lurus.',
+  draw(t, L) {
+    const C = tint(0);
+    const flush = kf(t, [[4.85, 0], [4.95, 1, 'o'], [5.6, 0.85], [7.2, 0]]);
+    const dep = kf(t, [[1.3, 0], [1.6, 1, 'i'], [6.45, 1], [6.8, 0, 'ob']]);
+    const sy = kf(t, [[0.95, 1], [1.25, 0.86, 'o'], [1.4, 1.1], [1.6, 1], [6.45, 1], [6.65, 1.15, 'o'], [6.82, 0.88, 'o'], [7.1, 1]]);
+    if (dep < 0.97) {
+      const sc = 1 - 0.45 * dep, p = lerp2(G.slot, [G.sx + 2, G.mid + 4], dep);
+      const lx = kf(t, [[0.55, 0], [0.75, 1], [1.3, 1], [1.5, 0]]);
+      L.dark += place(p[0], p[1], 0, sc / Math.sqrt(sy), sc * sy, octIcon({ dk: dep, lx, eyes: win(t, 6.8, 7.4) ? 'happy' : 'idle', flush, blink: blinks(t, [0.4]) }));
+    }
+    // glints travel inside the dark
+    const gA = G.sx + 4, gB = G.R - 5;
+    if (win(t, 1.55, 2.75)) { const u = kf(t, [[1.6, 0], [2.65, 1, 'sio']]); L.dark += glints(lerp(gA, gB, u), G.mid + 5 + Math.sin(TAU * 2 * t) * 0.8, blinks(t, [2.1]), clamp((t - 1.55) / 0.1) * clamp((2.75 - t) / 0.12)); }
+    if (win(t, 5.75, 6.5)) { const u = kf(t, [[5.75, 0], [6.45, 1, 'sio']]); L.dark += glints(lerp(gB, gA, u), G.mid + 5, 0, clamp((t - 5.75) / 0.1) * clamp((6.5 - t) / 0.1)); }
+    // the clock digit that gets pulled
+    const pull = kf(t, [[4.3, 0], [4.85, 1, 'sio']]) * (t < 4.85 ? 1 : 0);
+    L.clock[4] = { dy: pull * 4.5 + ring(t, 4.85, -3.2, 3.2, 4.5), r: pull * 8 + ring(t, 4.85, -10, 2.6, 4) };
+    const ext = kf(t, [[2.6, 0], [3.3, 1, 'o'], [5.05, 1], [5.7, 0, 'i']]);
+    if (ext <= 0.005) return;
+    const k = octCols({ flush }, C);
+    const reach = kf(t, [[3.75, 0], [4.3, 1, 'io'], [4.85, 1], [5.0, 0, 'o']]);
+    const d4 = G.dig[4];
+    const grip = [[d4 - 2.7, BY(1.5)], [d4 - 3.8, BY(-2.4)]], up = [[d4 - 1.7, BY(-2) + pull * 3], [d4 - 0.6, BY(-10) + pull * 4.4]];
+    // the arm comes out from behind the right end, winds round it and reaches in for the digit
+    const way = [[ER(-4), TY(7)], rimPt(1, 0.30, 4.5), rimPt(1, 0.50, 3.6), rimPt(1, 0.70, 3.0), rimPt(1, 0.92, 2.6),
+      [ER(-13), BY(3)], [ER(-18), BY(3.4)], lerp2(grip[0], up[0], reach), lerp2(grip[1], up[1], reach)];
+    const D = cr(way, 8);
+    const cA = lerp(2.6, 0.9, reach) + ring(t, 4.88, 3, 2.4, 4) + 0.5 * Math.sin(TAU * 1.2 * t);
+    const A = curl(along(D, plen(D) * ext, 30), cA, 9, 12);
+    const armA = octArm(A, k, 1, 1);
+    // mantle peeks out from behind the right end
+    const hid = [ER(-8), MY(-1)], out = [ER(13.6), MY(2)], pop = [ER(15.5), MY(0.5)];
+    const mp = kf(t, [[3.2, hid], [3.75, out, 'ob'], [4.85, out], [4.95, pop, 'o'], [5.05, pop], [5.5, hid, 'i']]);
+    const mr = kf(t, [[3.2, -5], [3.75, -18, 'ob'], [4.85, -18], [4.95, -4, 'o'], [5.4, -10]]) + 3 * Math.sin(TAU * 0.9 * t);
+    const msq = kf(t, [[4.85, 1], [4.95, 1.18, 'o'], [5.15, 0.92], [5.3, 1]]);
+    let back = '';
+    if (t > 3.2 && t < 5.55) {
+      const st = win(t, 4.85, 5.6) ? 'alert' : 'idle';
+      const lx = kf(t, [[3.75, 0], [3.95, -1], [4.85, -1], [4.95, 0]]);
+      const splay = kf(t, [[4.85, 0], [4.95, 1, 'o'], [5.3, 0.4]]);
+      for (const [i, base, len] of [[3, 100, 13], [4, 78, 14], [5, 60, 11]]) {
+        const r0 = rootAt(mp, i, mr), sw = 10 * Math.sin(TAU * 0.8 * t + i);
+        back += octArm(chain(r0[0], r0[1], rad(base + mr * 0.5 + sw - splay * 35), len, 16, s => rad(-120 * s - splay * 80 * s)), k, 0.9, 1);
+      }
+      back += place(mp[0], mp[1], mr, 1 / Math.sqrt(msq), msq, mantle({ flush, eyes: st, lx, ly: -0.3, blink: blinks(t, [4.2]) }), [32, 30]);
+    }
+    L.back += armA + back;
+    // the copy drawn on the island's face stops short of the end, so the arm's root stays behind it
+    L.wrap += armA; L.wrapRect = [G.L - 5, G.top - 5, (G.R - 12) - (G.L - 5), G.h + 20];
+    L.front += popRing(d4, G.mid + 1, (t - 4.86) / 0.4);
+  },
+});
+
+// ---------- 5. Octopus: hug the whole notch ----------
+SCENES.push({
+  id: 'o2', view: () => [G.L - 50, -8, G.w + 100], animal: 'Gurita', name: 'Peluk pulau', dur: 7.8, key: 4.15,
+  line: 'Turun dari tengah, tentakel memeluk seluruh pulau sampai dua ujungnya, pulaunya ketekan sedikit, lalu dilepas.',
+  pill: 'Paling untung sesudah Syal ekor: di Pill ujung tentakelnya naik melewati dua setengah lingkaran dan nongol di atas pill, jadi pelukannya benar-benar melingkari benda yang melayang.',
+  beats: [[1.6, 'Nyelam ke gelap, mata jalan ke tengah'], [2.45, 'Badan turun dari balik bibir bawah, gepeng dulu lalu bulat'], [3.3, 'Tentakel merambat ke dua ujung, melingkar ke depan'], [4.15, 'Peluk erat: pulau ketekan, gurita merona'], [5.2, 'Lepas: pulau membal balik, tentakel terurai dari ujungnya dulu'], [6.4, 'Naik lagi ke balik bibir, pulang ke slot']],
+  d2d: 'Pulau yang ketekan itu pulau biasa dengan skala x 0,97 dan y 1,08, lalu membal dengan pegas. Kalau pulau digambar sebagai geometri sendiri itu cuma transform. Empat tentakel panjang, masing-masing sekitar 40 titik, aman dihitung tiap frame.',
+  d2dPill: 'Bedanya cuma titik pusat skala: Notch diskalakan dari tepi layar (atasnya tetap nempel), Pill dari titik tengahnya sendiri (semua sisi ikut). Ujung tentakel memakai rimPt u = 0,25, yang di Notch jatuh di sisi lurus dan di Pill di atas tepi atas pill.',
+  draw(t, L) {
+    const C = tint(0);
+    const dep = kf(t, [[1.0, 0], [1.3, 1, 'i'], [6.95, 1], [7.3, 0, 'ob']]);
+    const sy0 = kf(t, [[0.7, 1], [1.0, 0.86, 'o'], [1.15, 1.1], [1.3, 1], [6.95, 1], [7.15, 1.15, 'o'], [7.3, 0.88, 'o'], [7.6, 1]]);
+    const hug = kf(t, [[3.75, 0], [4.15, 1, 'io'], [4.6, 1], [4.75, 0, 'o']]);
+    const flush = kf(t, [[3.8, 0], [4.2, 0.8], [5.4, 0.3], [6.5, 0]]);
+    if (dep < 0.97) {
+      const sc = 1 - 0.45 * dep, p = lerp2(G.slot, [G.sx + 2, G.mid + 4], dep);
+      L.dark += place(p[0], p[1], 0, sc / Math.sqrt(sy0), sc * sy0, octIcon({ dk: dep, flush, eyes: win(t, 7.3, 7.7) ? 'happy' : 'idle', ly: kf(t, [[0.4, 0], [0.6, 1], [1.2, 1]]) }));
+    }
+    const gA = G.sx + 4;
+    if (win(t, 1.25, 1.95)) { const u = kf(t, [[1.3, 0], [1.9, 1, 'sio']]); L.dark += glints(lerp(gA, 0, u), G.mid + 4.5, 0, clamp((t - 1.25) / 0.1) * clamp((1.95 - t) / 0.1)); }
+    if (win(t, 6.3, 7.0)) { const u = kf(t, [[6.3, 0], [6.95, 1, 'sio']]); L.dark += glints(lerp(0, gA, u), G.mid + 4.5, 0, clamp((t - 6.3) / 0.1) * clamp((7.0 - t) / 0.1)); }
+    // the island squeezed, then springing back
+    const nsq = hug * 0.03 + (t > 4.75 ? ring(t, 4.75, 0.028, 2.6, 4.5) : 0);
+    L.notch.sx = 1 - nsq; L.notch.sy = 1 + nsq * 2.4;
+    const hide = G.mid - 5;
+    const my = kf(t, [[1.9, hide], [2.45, BY(8), 'o'], [2.9, BY(16), 'o'], [5.9, BY(16)], [6.15, BY(8)], [6.4, hide, 'i']]) + ring(t, 2.9, 1.5, 2, 5);
+    if (my <= hide + 0.5) return;
+    // squeezes through the gap at its small size, then puffs up to full size (real octopus trick)
+    const K = kf(t, [[2.45, 1], [2.9, 1.75, 'ob'], [5.85, 1.75], [6.15, 1, 'i']]);
+    const M = [0, my + hug * 1];
+    const msy = kf(t, [[1.9, 1.4], [2.4, 1.3], [2.55, 0.86, 'o'], [2.9, 1.04], [3.1, 1], [3.75, 1], [4.15, 0.88], [4.6, 0.88], [4.8, 1.06, 'o'], [5.0, 1], [5.9, 1], [6.1, 0.9], [6.4, 1.35]]);
+    const k = octCols({ flush }, C);
+    const sag = lerp(3.4, 0, hug) + (t > 4.75 ? ring(t, 4.75, 2, 2, 4) : 0);
+    const e1 = kf(t, [[2.45, 0], [3.0, 1, 'o'], [5.35, 1], [5.85, 0, 'i']]);
+    const e2 = kf(t, [[2.55, 0], [3.65, 1, 'io'], [5.0, 1], [5.85, 0, 'i']]);
+    const cu = lerp(2.4, 3.6, hug) - kf(t, [[4.95, 0], [5.25, 2.2]]);
+    let arms = '', wrap = '';
+    [-1, 1].forEach(s => {
+      const X = p => [p[0] * s, p[1]];
+      const r1 = rootAt(M, s < 0 ? 1 : 4, 0, K, K * msy), r2 = rootAt(M, s < 0 ? 0 : 5, 0, K, K * msy), r3 = rootAt(M, s < 0 ? 2 : 3, 0, K, K * msy);
+      // inner arm grabs the bottom edge near the middle
+      const q = G.R;
+      const D1 = cr([r1, X([-q * 0.12, BY(20)]), X([-q * 0.19, BY(10)]), X([-q * 0.23, BY(3.4) + sag * 0.3]), X([-q * 0.27, BY(1.4)])], 8);
+      const A1 = curl(along(D1, plen(D1) * e1, 20), s * cu * 0.8, 8, 10);
+      // long arm runs under the island, round the end and curls onto its face
+      const RM = u => rimPt(s, u, 3.4);
+      const D2 = cr([r2, X([-q * 0.16, BY(20)]), X([-q * 0.3, BY(9) + sag]), X([-q * 0.55, BY(4) + sag]), X([-q * 0.78, BY(3.2) + sag * 0.5]),
+        RM(0.98), RM(0.78), RM(0.55), RM(0.36), RM(0.25)], 8);
+      const A2 = curl(along(D2, plen(D2) * e2, 50), s * cu, 10, 12, rad(-s * 6 * Math.sin(TAU * 1.1 * t)));
+      const a1 = octArm(A1, k, K * 0.95, s), a2 = octArm(A2, k, K, s);
+      // third arm dangles
+      const sw = 12 * Math.sin(TAU * 0.7 * t + s) - hug * 10 * s;
+      const a3 = octArm(chain(r3[0], r3[1], rad(90 - s * 18 + sw), 11 * K, 16, q => rad(-s * 200 * q)), k, K * 0.85, -s);
+      arms += a3 + a2 + a1; wrap += a2 + a1;
+    });
+    const st = hug > 0.5 ? 'happy' : (win(t, 4.75, 5.0) ? 'alert' : 'idle');
+    L.back += arms + place(M[0], M[1], 2 * Math.sin(TAU * 0.6 * t), K / Math.sqrt(msy) * (1 + hug * 0.08), K * msy, mantle({ flush, eyes: st, ly: -0.4, blink: blinks(t, [3.3]) }), [32, 30]);
+    L.wrap += wrap;
+  },
+});
+
+// ---------- 6. Octopus: bungee ----------
+SCENES.push({
+  id: 'o3', view: () => [G.L - 50, -8, 240], animal: 'Gurita', name: 'Bungee', dur: 7.4, key: 3.9,
+  line: 'Loncat dari slot, ditahan satu tentakel yang melar, mantul naik turun, gaya ta-da, lalu ditarik balik.',
+  pill: 'Lebih bagus di Pill: pulaunya ikut ketarik turun sedikit dan membal tiap kali talinya kencang, karena pill melayang. Notch nempel di tepi layar, jadi diam saja.',
+  beats: [[0.85, 'Geser ke bibir slot, lihat ke bawah, ngumpul'], [1.35, 'Jatuh: satu tentakel tetap nyangkut di bibir, yang lain berkibar ke atas'], [2.2, 'Mantul: badan gepeng di bawah, memanjang di atas (di Pill pulaunya ikut tersentak)'], [3.9, 'Ta-da: semua tentakel dibuka lebar'], [4.85, 'Ngumpul turun sedikit (ancang-ancang)'], [5.4, 'Ditarik cepat ke atas, masuk slot, gepeng lalu tegak']],
+  d2d: 'Tentakel penahan makin tipis saat melar (lebar dibagi akar panjangnya), jadi terasa elastis tanpa efek apa pun. Pantulan pakai pegas teredam satu rumus. Sisanya tabung yang sama dengan konsep lain.',
+  d2dPill: 'Satu nilai tambahan di Pill: geser-y pulau = tegangan tali x 1,4 dip, dipakai juga buat jam supaya angkanya ikut turun. Di Notch nilainya nol, jadi tidak ada cabang kode di gambarnya.',
+  draw(t, L) {
+    const C = tint(0);
+    const inSlot = t < 1.0 || t > 5.62;
+    const home = G.mid + 4;
+    const yAt = u => {
+      if (u < 1.0) return home;
+      if (u < 1.5) return lerp(home, BY(50), EZ.i((u - 1.0) / 0.5) * 0.85 + 0.15 * ((u - 1.0) / 0.5));
+      if (u < 4.85) return BY(38) + 12 * Math.exp(-2.2 * (u - 1.5)) * Math.cos(TAU * 1.6 * (u - 1.5));
+      if (u < 5.05) return BY(38) + kf(u, [[4.85, 0], [5.05, 4, 'io']]);
+      return kf(u, [[5.05, BY(42)], [5.6, home - 2, 'i']]);
+    };
+    if (inSlot) {
+      const shuffle = kf(t, [[0.5, 0], [0.85, 1]]);
+      const sy = kf(t, [[0.7, 1], [0.95, 0.86, 'o'], [5.62, 1.25], [5.75, 0.82, 'o'], [6.1, 1.05], [6.3, 1]]);
+      const p = [G.sx, G.mid + shuffle * 2 * (t < 1 ? 1 : 0) + ring(t, 5.62, -2.5, 2.5, 5)];
+      L.front += place(p[0], p[1], 0, 1 / Math.sqrt(sy), sy, octIcon({ eyes: win(t, 6.0, 6.8) ? 'happy' : 'idle', ly: t < 1 ? shuffle : 0, blink: blinks(t, [0.35, 7.0]) }));
+      return;
+    }
+    const y = yAt(t), v = (yAt(t) - yAt(t - 0.03)) / 0.03;
+    const x = G.sx + 3 * Math.sin(TAU * 0.5 * (t - 1.5)) * (t > 1.5 && t < 5 ? 1 : 0);
+    const M = [x, y];
+    const tau = t - 1.5, bottom = (t > 1.5 && t < 4.85) ? Math.exp(-2.2 * tau) * Math.pow(Math.max(0, Math.cos(TAU * 1.6 * tau)), 6) : 0;
+    const msy = 1 + clamp(Math.abs(v) / 260, 0, 0.28) - bottom * 0.3 + kf(t, [[3.6, 0], [3.9, 0.08, 'ob'], [4.6, 0.08], [4.85, -0.1], [5.05, 0]]);
+    const mr = 6 * Math.sin(TAU * 0.5 * (t - 1.5)) * (t > 1.5 && t < 5 ? Math.exp(-0.3 * tau) : 0);
+    const k = octCols({}, C);
+    const A = [G.sx + 2, G.bot + 0.4];
+    const r0 = rootAt(M, 0, mr, 1, msy);
+    const D = cr([r0, add(r0, [-5, -3]), [A[0] - 1.5, Math.max(A[1] + 6, lerp(A[1] + 6, y - 6, 0.5))], [A[0], A[1] + 3], A], 8);
+    const anchor = curl(D, 3.2, 7, 10);
+    const stretch = plen(D) / 22;
+    // a floating pill is dragged down by the weight on it; a notch cannot move
+    if (G.pill) { const pullDn = clamp((stretch - 1) / 2.2) * 1.4 + ring(t, 1.5, -1.6, 1.6, 2.2); L.notch.dy = pullDn; L.clock = CLOCK.map(() => ({ dy: pullDn })); }
+    const armHold = octArm(anchor, k, clamp(1 / Math.pow(Math.max(1, stretch), 0.3), 0.7, 1), 1);
+    const tada = kf(t, [[3.6, 0], [3.9, 1, 'ob'], [4.6, 1], [4.85, 0.2]]);
+    const up = clamp(v / 90, -1, 1);              // >0 falling (arms stream upward), <0 rising
+    let arms = '';
+    const O = [-1, -0.45, 0.15, 0.6, 1];
+    for (let i = 1; i < 6; i++) {
+      const rr = rootAt(M, i, mr, 1, msy), o = O[i - 1], side = o < 0 ? -1 : 1;
+      let ang = 90 - o * 38 + mr * 0.6 + 7 * Math.sin(TAU * 1.3 * t + i * 1.7);
+      ang += -side * clamp(up) * 125;               // stream upward behind a fall
+      ang += side * clamp(-up) * 12;                // tuck while rising
+      ang += -o * tada * 62;                        // ta-da: open wide
+      const bend = -side * lerp(110, 30, clamp(up)) - side * tada * 40;
+      arms += octArm(chain(rr[0], rr[1], rad(ang), lerp(13, 15.5, tada), 18, s => rad(bend * Math.pow(s, 1.5) * 2)), k, 0.95, -side);
+    }
+    const st = win(t, 1.0, 1.5) ? 'alert' : (win(t, 3.65, 4.7) ? 'happy' : 'idle');
+    L.front += arms + armHold + place(M[0], M[1], mr, 1 / Math.sqrt(msy), msy, mantle({ eyes: st, ly: win(t, 1.0, 1.5) ? -1 : 0, blink: blinks(t, [2.9]) }), [32, 30]);
+  },
+});
+
+// ---------- 7. Falk: bat ----------
+SCENES.push({
+  id: 'f1', view: () => [G.L - 45, -8, 190], animal: 'Falk', name: 'Kelelawar', dur: 7.6, key: 4.7,
+  line: 'Kepala miring sampai terbalik, turun, gelantungan pakai kaki, buka sayap, bungkus badan kayak kelelawar, ngintip, lalu naik lagi.',
+  pill: 'Lebih bagus di Pill: gelantungan di benda yang melayang itu persis dahan, dan ayunannya bikin pill ikut miring sedikit. Di Notch tidak, karena nempel di tepi layar.',
+  beats: [[0.8, 'Kepala miring pelan sampai terbalik (kebiasaan falk asli)'], [1.5, 'Turun dari slot kepala duluan, badan keluar dari balik bibir'], [2.2, 'Kaki mencengkeram bibir bawah, badan berayun (di Pill pulaunya ikut miring)'], [3.2, 'Sayap dibuka lebar, jambul berdiri'], [4.7, 'Sayap membungkus badan kayak jubah, satu mata ngintip'], [6.2, 'Kepak dua kali, naik lagi, kepala kembali tegak di slot']],
+  d2d: 'Sayap: satu bentuk dasar (lambung halus di bawah semua bulu), lalu 5 bulu primer, 4 sekunder dan satu baris penutup, semuanya kapsul berujung bulat (dua kurva kuadrat plus satu busur), ditambah tabung untuk tulang sayap. Bulu primer memakai pose sesaat sebelumnya supaya ujung sayap sedikit telat. Satu set parameter (sudut lengan, tangan, sebar) dicampur antar pose, jadi sayap terlipat, terbuka dan membungkus adalah satu rig. Badan digambar dengan clip "di luar pulau" (bukan ketutup isi pulau), kepala dan jarinya sesudah pulau biar kelihatan mencengkeram bibir.',
+  d2dPill: 'Di Pill ayunan badan dipakai lagi sebagai rotasi pulau x 0,06 derajat di titik tengahnya. Titik cengkeramnya tetap bibir bawah, yang lurus di dua bentuk, jadi tidak ada geometri baru.',
+  draw(t, L) {
+    const C = tint(0);
+    const flip = kf(t, [[0.45, 0], [0.95, 195, 'io'], [1.08, 180, 'o'], [6.6, 180], [7.05, -12, 'io'], [7.25, 0, 'o']]);
+    const out = kf(t, [[1.05, 0], [1.6, 1, 'io'], [5.95, 1], [6.55, 0, 'io']]);
+    const crestUp = kf(t, [[0.3, 1], [0.5, 1.25, 'o'], [1.0, 0.75], [2.4, 0.7], [2.7, 0.55], [2.95, 1.05, 'ob'], [3.6, 0.9], [4.2, 0.6], [4.75, 1.05, 'ob'], [5.4, 0.8], [6.6, 0.8], [7.1, 1.1, 'ob']]);
+    let st = 'idle';
+    if (win(t, 2.95, 3.65) || win(t, 6.9, 7.5)) st = 'happy';
+    const blink = blinks(t, [0.3, 2.45, [4.95, 0.22], 7.45]);
+    if (out <= 0.001) {
+      L.front += place(G.sx, G.mid, flip, 1, 1, falkHead({ eyes: st, crestUp, crestRot: 10 + ring(t, 1.0, 12, 2.2, 3), blink, lx: kf(t, [[0.2, 0], [0.5, 1], [1.0, 1]]) }));
+      return;
+    }
+    const swing = ring(t, 1.6, 11, 0.9, 1.3) + 4 * Math.sin(TAU * 0.45 * t) * clamp((t - 2) / 1) + kf(t, [[5.35, 0], [5.6, -6], [5.9, 0]]);
+    // hanging on a floating pill rocks it a little; a notch is fixed to the screen edge
+    if (G.pill) { const sw = swing * out * 0.06; L.notch.rot = sw; rideClock(L, sw); }
+    const F = lerp2([G.sx, G.mid - 24], [G.sx + 6, G.bot + 0.4], out);
+    const r = 180 + swing * out;
+    const sq = 1 + ring(t, 1.6, -0.09, 3, 6);
+    // cloak: both wings fold across the chest like crossed arms; one lowers a little to peek
+    const CROSS = { arm: 186, hand: 10, ext: 0.85, fan: 0.35, sweep: -42 }, LOW = { arm: 166, hand: 6, ext: 0.8, fan: 0.35, sweep: -30 };
+    const pose = (u, side) => {
+      const spread = kf(u, [[2.45, 0], [2.7, -0.15], [3.05, 1, 'sb'], [3.7, 1], [4.0, 0.7], [5.15, 0.7], [5.4, 1, 'o'], [5.95, 0.5], [6.3, 0]]);
+      const wrapK = kf(u, [[3.7, 0], [4.35, 1, 'io'], [5.15, 1], [5.4, 0, 'o']]);
+      const peek = side < 0 ? kf(u, [[4.55, 0], [4.75, 1, 'o'], [5.05, 1], [5.15, 0]]) : 0;
+      const flap = win(u, 5.35, 6.0) ? 28 * Math.sin(TAU * 3.2 * (u - 5.35)) : 6 * Math.sin(TAU * 1.4 * u) * clamp(spread);
+      const sp = wmix(WING.fold, WING.spread, clamp(spread, -0.2, 1.2));
+      sp.arm += flap;
+      const br = 3 * Math.sin(TAU * 0.9 * u) * side;
+      return wmix(sp, wmix({ ...CROSS, arm: CROSS.arm + br + (side < 0 ? -10 : 0) }, LOW, peek), wrapK);
+    };
+    const wrapK = kf(t, [[3.7, 0], [4.35, 1, 'io'], [5.15, 1], [5.4, 0, 'o']]);
+    const peek = kf(t, [[4.55, 0], [4.75, 1, 'o'], [5.05, 1], [5.15, 0]]);
+    const B = bird({ wl: pose(t, -1), wr: pose(t, 1), wlq: pose(t - 0.07, -1), wrq: pose(t - 0.07, 1), wlFront: wrapK > 0.3, wrFront: wrapK > 0.3, eyes: st, blink, crestUp, crestRot: 10 + swing * 0.8, tailRot: -swing * 0.5, lx: peek * -0.6 });
+    const g = inner => birdG(F[0], F[1], r, 1, sq, inner);
+    L.back += g(B.tail + B.wingsBack + B.body);
+    L.front += (F[1] > G.bot - 3 ? g(B.feet) : '') + g(B.head + B.wingsFront);
+  },
+});
+
+// ---------- 8. Falk: the digit thief ----------
+const notes = (x, y, k) => k <= 0.02 ? '' : [0, 1, 2].map(i => `<path d="M${f(x + 3 + i * 2.4)} ${f(y - 2 - i * 1.2)}a${f(3 + i * 2.2)} ${f(3 + i * 2.2)} 0 0 1 0 ${f(4 + i * 3)}" fill="none" stroke="${CREAM}" stroke-width="0.85" stroke-linecap="round" opacity="${f(clamp(k) * (1 - i * 0.25))}"/>`).join('');
+SCENES.push({
+  id: 'f2', view: () => [G.cx - 168, -8, 210], animal: 'Falk', name: 'Maling angka', dur: 7.8, key: 3.55,
+  line: 'Angka 1 di jam bergoyang seperti serangga. Falk miringin kepala, geser-geser ke sana, ketuk-ketuk pakai paruh, lalu gondol angkanya pulang. Jam langsung menumbuhkan angka 2. Jambul berdiri kaget, angka curiannya jatuh, jambul layu pelan, falk pura-pura bersiul.',
+  beats: [[0.6, 'Angka 1 bergoyang; falk miringin kepala, lihat pakai satu mata'], [1.5, 'Geser menyamping di dalam notch, kepala naik turun'], [2.5, 'Tuk, tuk: ketuk angkanya pakai paruh, angkanya goyang'], [3.55, 'Gigit, jambul berdiri senang, bawa pulang seperti ranting'], [5.0, 'Jam menumbuhkan angka 2. Jambul berdiri kaget, angka curian jatuh'], [6.3, 'Jambul layu pelan, falk lirik ke samping dan bersiul pura-pura tidak tahu']],
+  pill: 'Sama di dua bentuk, semuanya main di dalam pulau. Di Pill kepalanya dipotong busur ujung kanan waktu paling kanan, jadi malah terasa dia nyempil di ujung.',
+  d2d: 'Cuma kepala falk yang sudah ada, jambulnya diskala (bahasa jambul: naik waktu kaget, turun pelan waktu kecewa). Angka yang digigit adalah teks yang ditempel ke titik paruh dan ikut putaran kepala. Angka jam per karakter: satu bergoyang, satu hilang, satu tumbuh dengan sedikit lewat. Garis siul tiga busur kecil.',
+  d2dPill: 'Kepala falk-nya dipotong dengan clip bentuk pulau, jadi di Pill ujung jambul dan pipinya kepotong rapi oleh busur ujung kanan. Posisinya diikat ke angka menit, bukan ke koordinat tetap, jadi ikut geser kalau lebar pulau berubah.',
+  draw(t, L) {
+    // close enough to the minute digit to peck it, far enough inside that the Pill's round end does not slice the head
+    const sc = 0.86, HX = G.dig[4] + 4.5;
+    const go = kf(t, [[1.0, 0], [2.05, 1, 'sio'], [3.75, 1], [4.55, 0, 'sio']]);
+    const scoot = win(t, 1.0, 2.05) || win(t, 3.75, 4.55);
+    const env = win(t, 1.0, 2.05) ? Math.sin(Math.PI * (t - 1.0) / 1.05) : win(t, 3.75, 4.55) ? Math.sin(Math.PI * (t - 3.75) / 0.8) : 0;
+    const hop = scoot ? Math.abs(Math.sin(TAU * (t < 3 ? 3 : 4) * t)) : 0;
+    const tapK = bump(t, 2.35, 0.22) + bump(t, 2.75, 0.22) + bump(t, 3.3, 0.18);
+    const s2 = lerp(1, sc, go);
+    const x = lerp(G.sx, HX, go) - 4 * tapK, y = G.mid - 1.8 * hop * env + 1.2 * tapK;
+    const curious = kf(t, [[0.35, 0], [0.7, 1, 'sio'], [1.0, 1], [1.2, 0, 'sio']]);
+    const startle = kf(t, [[4.95, 0], [5.05, 1, 'o'], [5.5, 1], [6.7, 0, 'sio']]);
+    const r = 32 * curious + (go > 0.98 && t < 3.75 ? -18 : 0) * kf(t, [[2.05, 0], [2.2, 1, 'sio'], [3.5, 1], [3.75, 0]]) - 14 * tapK + 6 * Math.sin(TAU * 3 * t) * env + ring(t, 5.0, -10, 3, 3) + kf(t, [[6.0, 0], [6.3, -8, 'sio'], [7.3, -8], [7.6, 0, 'sio']]);
+    const crest = kf(t, [[0.3, 1], [0.6, 1.2, 'sio'], [3.5, 1], [3.6, 1.35, 'sb'], [4.6, 1.15], [4.95, 1.05], [5.03, 1.75, 'o'], [5.5, 1.7], [6.7, 0.7, 'sio'], [7.5, 0.95, 'sio']]);
+    const crestRot = 10 + ring(t, 3.6, 10, 2.4, 3) + ring(t, 5.03, 14, 2.4, 2.5) + 6 * Math.sin(TAU * 3 * t - 1) * env - 12 * clamp((t - 5.5) / 1.2) * (t < 7.0 ? 1 : 0);
+    let st = 'idle';
+    if (win(t, 3.55, 4.9)) st = 'happy';
+    if (startle > 0.5 && t < 5.6) st = 'alert';
+    const whistle = win(t, 6.35, 7.3) ? Math.max(bump(t, 6.4, 0.3), bump(t, 6.85, 0.3)) : 0;
+    const face = { crestUp: crest, crestRot, eyes: st, lx: curious > 0.3 ? 1 : (t > 6.0 && t < 7.4 ? -1 : (go > 0.5 && t < 3.75 ? -1 : 0)), ly: curious * 0.3, chirp: whistle * 0.5 + 0.4 * bump(t, 3.6, 0.2), blink: blinks(t, [1.15, 4.75, 7.6]) };
+    const ss = 1 + ring(t, 5.03, 0.08, 3, 5) - 0.05 * hop * env;
+    const h = { c: [x, y], r, sx: s2 / Math.sqrt(ss), sy: s2 * ss };
+    L.dark += place(x, y, r, h.sx, h.sy, falkHead(face));
+    L.front += notes(x + 8, y - 5, whistle);
+    // the "1": wiggles like a bug, gets tapped, bitten, carried, dropped; the clock grows a "2"
+    const beak = headPt(h, 32, 49.5);
+    const held = t >= 3.55 && t < 5.05;
+    if (t < 3.55) L.clock[4] = { dy: 0.5 * Math.sin(TAU * 7 * t) * (t < 2.0 ? 1 : 0), r: 6 * Math.sin(TAU * 5 * t) * (t < 2.0 ? 0.6 : 0) + ring(t, 2.45, 10, 4, 6) + ring(t, 2.85, -10, 4, 6) + ring(t, 3.38, 8, 4, 6) };
+    else {
+      const grow = kf(t, [[4.7, 0], [5.0, 1, 'sb']]);
+      L.clock[4] = { ch: '2', s: grow, op: grow };
+      const dropT = t - 5.05;
+      let p = beak, ang = r + 80;
+      if (dropT > 0) { p = [beak[0] + 4 * dropT, beak[1] + 0.5 * 180 * dropT * dropT]; ang = r + 80 + 420 * dropT; }
+      if (held || (dropT > 0 && dropT < 1)) L.front += `<text x="${f(p[0])}" y="${f(p[1] + 5.7)}" transform="rotate(${f(ang)} ${f(p[0])} ${f(p[1])})" text-anchor="middle" font-family="DM Sans, system-ui, sans-serif" font-weight="500" font-size="${CLOCK_FS}" fill="${CREAM}" stroke="#17120F" stroke-width="1.2" paint-order="stroke">1</text>`;
+    }
+  },
+});
+
+const chirpMarks = (x, y, k) => `<path d="M${f(x)} ${f(y)}q2.2 -1.2 2.6 -3.4M${f(x + 1.6)} ${f(y + 2.6)}q2.6 -0.4 3.8 -2.4" fill="none" stroke="${CREAM}" stroke-width="0.9" stroke-linecap="round" opacity="${f(clamp(k))}"/>`;
+// ---------- 9. Falk: a little flight ----------
+// body-centre path: drop out of the slot, loop under the notch, glide under the clock,
+// swing round behind the right end, come back low, flare and rise into the slot
+// built against the settled island, so it holds at any width, height and shape
+let F3 = null, F3KEY = '';
+function f3path() {
+  const key = `${G.w}|${G.h}|${G.pill}`;
+  if (F3KEY === key) return F3;
+  const S0 = G.L + INSET + ROBOT / 2, q = G.R;                    // mascot slot once the island made room
+  const loop = []; for (let k = 0; k <= 12; k++) { const a = rad(90 - k * 30); loop.push([S0 + 54 + Math.cos(a) * 10, BY(33) + Math.sin(a) * 10]); }
+  const P = cr([[S0, BY(4.5)], [S0 - 2.5, BY(13)], [S0 + 3, BY(27)], [S0 + 19, BY(39)], [S0 + 36, BY(42.5)], ...loop,
+    [q * 0.02, BY(42)], [q * 0.36, BY(34)], [q * 0.66, BY(28)], [q * 0.94, BY(18)],
+    [ER(15), BY(2)], [ER(9), MY(3)], [ER(-4), MY(5)], [ER(-1), BY(6)],              // round behind the right end
+    [q * 0.8, BY(24)], [q * 0.44, BY(34)], [q * 0.04, BY(37)], [-q * 0.36, BY(34)],
+    [S0 + 18, BY(28)], [S0 + 6, BY(20)], [S0 + 1, BY(11)], [S0, BY(2)]], 6);
+  const c = measure(P), tot = c[c.length - 1];
+  F3KEY = key; F3 = { P, c, tot, u0: c[5 * 6] / tot, u1: c[17 * 6] / tot };
+  return F3;
+}
+const f3u = t => kf(t, [[1.15, 0], [1.8, 0.065, 'qi'], [3.1, 0.33, 'lin'], [3.95, 0.43, 'lin'], [5.95, 0.92, 'lin'], [7.1, 1, 'qo']]);
+const f3pos = t => { const F = f3path(); return sampleAt(F.P, F.c, F.tot * f3u(t)); };
+SCENES.push({
+  id: 'f3', view: () => [G.L - 50, -8, G.w + 100], animal: 'Falk', name: 'Terbang keliling', dur: 7.9, key: 2.75,
+  line: 'Ngumpul, lompat dari slot, kepak keluar, jungkir balik di bawah pulau, melayang di bawah jam sambil berkicau, putar di balik ujung kanan, pulang rendah, rem pakai sayap, naik masuk slot.',
+  pill: 'Paling kecil bedanya. Putaran di ujung kanan di Pill harus lebih rapat, karena ujungnya membulat: celah 8 dip di atas pill terlalu sempit buat burung 26 dip, jadi dia tetap memutar di bawah dan di balik ujung.',
+  beats: [[0.65, 'Tengok kiri kanan, kicau senang'], [1.05, 'Ngumpul: kepala turun, jambul rebah'], [1.45, 'Dorong: turun dari slot, badan terbuka dari balik bibir, kepakan pertama'], [2.75, 'Jungkir balik di bawah pulau, satu bulu lepas melayang turun'], [3.55, 'Melayang di bawah jam, lirik ke atas, berkicau'], [6.65, 'Pulang rendah, rem pakai sayap terbuka ke depan, kepak kecil, naik masuk slot dan duduk']],
+  d2d: 'Jalur terbang satu kurva Catmull-Rom; kemiringan dari arah kecepatan, jungkir balik cuma rotasi 360 derajat sepanjang potongan jalur itu. Kepakan: sudut lengan naik turun, dan saat sayap naik kipasnya menguncup. Keluar dan masuk slot tanpa potong: badan "dilipat" (skala y) di bawah kepala dan dipotong clip "di luar pulau", jadi hilangnya di bawah bibir bukan karena ketutup isi pulau. Bulu yang jatuh: satu bentuk bulu, posisi dan putaran dari rumus.',
+  d2dPill: 'Jalurnya satu daftar titik yang dihitung dari tepi pulau (slot, ujung kanan, bibir bawah), jadi lebar 160 sampai 300 dan dua bentuk pakai daftar yang sama. Titik di balik ujung kanan ditaruh di dalam busur ujung supaya di Pill burungnya benar-benar hilang di situ, bukan muncul separuh.',
+  draw(t, L) {
+    const C = tint(0);
+    const crestUp = kf(t, [[0.75, 1], [0.95, 1.2, 'sio'], [1.05, 0.65, 'sio'], [1.4, 0.7], [6.6, 0.75], [7.15, 1.3, 'sb'], [7.6, 1.1]]);
+    // feathers drifting down (one from the loop, one from the landing flare)
+    const drift = (ts, p0, c) => {
+      const d = t - ts; if (d < 0 || d > 2.4) return '';
+      const x = p0[0] + 6 * Math.sin(TAU * 0.85 * d) + 4 * d, y = p0[1] + 9 * d + 3 * d * d;
+      const op = clamp((2.4 - d) / 0.6) * clamp(d / 0.1);
+      return `<g transform="translate(${f(x)} ${f(y)}) rotate(${f(70 + 40 * Math.sin(TAU * 0.85 * d + 0.8))})" opacity="${f(op)}">${plume([-3.2, 0], 0, 6.8, 3.2, WC.rim)}${plume([-3, 0], 0, 6.2, 2.4, c)}<path d="M-3 0h5" stroke="${WC.rim}" stroke-width="0.35"/></g>`;
+    };
+    L.front += drift(2.8, add(f3pos(2.8), [0, -6]), WC.prim) + drift(6.75, add(f3pos(6.75), [6, 2]), WC.sec);
+    // ---- in the slot: head only ----
+    if (t < 1.15 || t > 7.1) {
+      const pre = t < 1.15;
+      const crouch = pre ? EZ.sio(clamp((t - 0.8) / 0.35)) : 0;
+      const sy = pre ? 1 - 0.16 * crouch : 1 + ring(t, 7.1, -0.1, 2.4, 4.5);
+      const chirp = bump(t, 0.5, 0.22) + bump(t, 7.45, 0.22);
+      const lx = pre ? kf(t, [[0.1, 0], [0.25, -1], [0.45, -1], [0.6, 0.6], [0.9, 0.6]]) : 0;
+      L.front += place(G.sx, G.mid + 2.5 * crouch, pre ? 0 : ring(t, 7.1, 3, 2, 4), 1 / Math.sqrt(sy), sy,
+        falkHead({ crestUp, crestRot: 10 - 14 * crouch + ring(t, 7.1, 14, 2.2, 3), lx, chirp, eyes: (win(t, 0.45, 0.8) || t > 7.35) ? 'happy' : 'idle', blink: blinks(t, [0.15, 7.85]) }));
+      if (chirp > 0.2) L.front += chirpMarks(G.sx + 9, G.mid - 6, chirp);
+      return;
+    }
+    // ---- flying ----
+    const u = f3u(t), B = f3pos(t), Bp = f3pos(t - 0.04);
+    const vx = (B[0] - Bp[0]) / 0.04, vy = (B[1] - Bp[1]) / 0.04;
+    const g0 = G.R * 0.12, g1 = G.R * 0.88;
+    const glide = B[0] > g0 && B[0] < g1 && t < 4.5 ? clamp((B[0] - g0) / 12) * clamp((g1 - B[0]) / 12) : 0;
+    const flare = EZ.sio(clamp((t - 6.35) / 0.35)) * (1 - EZ.sio(clamp((t - 6.85) / 0.25)));
+    const fold = EZ.sio(clamp((t - 6.8) / 0.3));
+    const open = EZ.o(clamp((t - 1.25) / 0.25));
+    const power = (1 - glide) * (1 - flare) * (1 - fold);
+    const pose = tt => {
+      const th = TAU * 4.4 * tt, up = Math.max(0, -Math.cos(th)) * power;
+      const Lf = 34 * Math.sin(th + 0.35 * Math.sin(th)) * power;
+      let p = { arm: -14 + Lf - glide * 9, hand: 10 + 14 * up, ext: 1 - 0.2 * up, fan: 1 - 0.38 * up, sweep: 92 };
+      p = wmix(p, { arm: -50 + 7 * Math.sin(TAU * 9 * tt), hand: 18, ext: 1, fan: 1, sweep: 72 }, flare);
+      p = wmix(WING.fold, p, open);
+      return wmix(p, WING.fold, fold);
+    };
+    const w = pose(t), wq = pose(t - 0.06);
+    const th = TAU * 4.4 * t, bob = -1.7 * Math.sin(th - 0.8) * power;
+    const F3p = f3path(), lr = clamp((u - F3p.u0) / (F3p.u1 - F3p.u0));
+    const lean = clamp(vx * 0.11, -15, 15) * (1 - flare) * (1 - fold);
+    const r = lean - 360 * EZ.sio(lr);
+    const g = kf(t, [[1.15, 0.12], [1.45, 1, 'o'], [6.82, 1], [7.1, 0.12, 'sio']]);
+    const chirp = bump(t, 3.5, 0.22) + bump(t, 3.78, 0.2);
+    const head = { crestUp: crestUp + 0.12 * Math.sin(th - 1.6) * power, crestRot: -12 - Math.abs(vx) * 0.05 + 8 * flare, lx: clamp(vx / 70, -1, 1) * (1 - flare), ly: win(t, 3.3, 3.95) ? -1 : 0,
+      eyes: (lr > 0.05 && lr < 0.95) || chirp > 0.1 ? 'happy' : 'idle', chirp, hsy: kf(t, [[1.15, 0.84], [1.3, 1.1, 'o'], [1.6, 1]]) };
+    const Bd = bird({ wl: w, wr: w, wlq: wq, wrq: wq, tuck: fold < 0.5 && flare < 0.3, ...head, tailRot: -lean * 0.35 + 7 * Math.sin(th - 1.3) * power, tailSpread: 14 * flare });
+    const org = add(add(B, [0, bob]), R(r, [0, 10]));
+    // the body unfolds below the head on the way out and folds back under it on the way in
+    const fold2 = `<g transform="translate(0 -17) scale(${f(lerp(0.75, 1, g))} ${f(g)}) translate(0 17)">${Bd.tail + Bd.body + Bd.feet}</g>`;
+    L.back += birdG(org[0], org[1], r, 1, 1, fold2);
+    const nearSlot = t < 1.65 || t > 6.3;
+    if (nearSlot) L.front += birdG(org[0], org[1], r, 1, 1, Bd.head); else L.back += birdG(org[0], org[1], r, 1, 1, Bd.head);
+    if (chirp > 0.2) { const hp = add(org, R(r, [0, -24])); L.back += chirpMarks(hp[0] + 9, hp[1] - 6, chirp); }
+  },
+});
+
+// ================= UI =================
+const $ = id => document.getElementById(id);
+const PICKS = [
+  ['o3', 'Bungee (gurita)', 'Ceritanya paling jelas dalam satu detik: jatuh, ketahan, mantul. Melar dan gepengnya kelihatan bahkan di ukuran asli, dan jalan keluar masuknya satu garis lurus dari slot.'],
+  ['c3', 'Piano ekor (kucing)', 'Paling elegan: siluet kucing duduk yang ramping, ekor S melengkung di atas jam dan mengetuk angka seperti tuts piano. Punchline-nya kecil dan manis: angka 1 rebah, ditegakkan lagi pakai ekor, lalu membungkuk.'],
+  ['c4', 'Syal ekor (kucing)', 'Ide awal lo, sekarang dengan kucing yang kelihatan: ekor belang yang meruncing melingkar di ujung pulau seperti syal, pulaunya ketekan, lalu ujung ekornya menggelitik telinga sendiri sampai bersin. Di Pill ini yang paling untung: ekornya mengitari setengah lingkaran penuh dan ujungnya mendarat di muka pill.'],
+];
+// every story opens and closes with the island making room; written once, for all ten
+const ROOM_IN = 'Pulau kasih ruang: maskot ke ujung kiri, jam ke ujung kanan (200 ms)';
+const ROOM_OUT = 'Maskot dan jam ngumpul lagi jadi satu grup di tengah (200 ms)';
+SCENES.forEach(s => { s.beats = [[0, ROOM_IN]].concat(s.beats, [[+(s.dur - 0.16).toFixed(2), ROOM_OUT]]); });
+const byId = Object.fromEntries(SCENES.map(s => [s.id, s]));
+// every view reaches at least to -44, so the centred idle group (where each story starts and ends) is in frame
+const vb = sc => {
+  setGeo(1); const v = sc.view();
+  const x = Math.min(v[0], -44), w = v[2] + (v[0] - x);
+  return `${f(x)} ${f(v[1])} ${f(w)} ${f(w * 0.4)}`;
+};
+// review hook: #sheet=<id>:t1,t2,...[@x,y,w][;pill][;WxH]
+const sheetM = location.hash.match(/^#(sheet|frame)=([a-z0-9]+):([\d.,]+)(?:@(-?[\d.]+),(-?[\d.]+),([\d.]+))?/);
+if (sheetM) {
+  SIZE.pill = /[;&]pill/.test(location.hash);
+  const szM = location.hash.match(/[;&](\d+)x(\d+)/);
+  if (szM) { SIZE.w = +szM[1]; SIZE.h = +szM[2]; }
+  SIZE.sheer = /[;&]sheer/.test(location.hash);
+  document.body.classList.add('sheet');
+  if (sheetM[1] === 'frame') document.body.classList.add('one');
+  const sc = byId[sheetM[2]], host = $('sheet');
+  const zoom = sheetM[4] != null, ar = zoom ? 0.75 : 0.4;
+  const box = zoom ? `${sheetM[4]} ${sheetM[5]} ${sheetM[6]} ${f(+sheetM[6] * ar)}` : vb(sc);
+  sheetM[3].split(',').map(Number).forEach((tt, i) => {
+    const w = sheetM[1] === 'frame' ? 960 : 480;
+    host.insertAdjacentHTML('beforeend', `<figure style="margin:0"><div class="stage"><svg viewBox="${box}" width="${w}" height="${w * ar}">${compose(sc, tt, 's' + i + '_')}</svg></div><figcaption>${sc.id} t=${tt}</figcaption></figure>`);
+  });
+  return;
+}
+
+let cur = SCENES[0], t = 0, playing = !reduce, speed = 1, last = 0;
+const big = $('big');
+function frame() {
+  big.innerHTML = `<g id="scene">${compose(cur, Math.min(t, cur.dur), 'b')}</g>`;
+  $('scrub').value = Math.min(t, cur.dur);
+  $('time').textContent = Math.min(t, cur.dur).toFixed(2).replace('.', ',') + ' s';
+  document.querySelectorAll('#beats button').forEach((b, i, all) => {
+    const bt = cur.beats[i][0], nt = i + 1 < all.length ? cur.beats[i + 1][0] : 1e9;
+    b.classList.toggle('now', t >= bt - 0.25 && t < nt - 0.25);
+  });
+}
+function renderBoard() {
+  const box = vb(cur);
+  $('board').innerHTML = cur.beats.map(([bt, txt], i) => `<figure><div class="stage"><svg viewBox="${box}" role="img" aria-label="${txt}">${compose(cur, bt, 'k' + i + '_')}</svg></div><figcaption>${bt.toFixed(1).replace('.', ',')} s, ${txt}</figcaption></figure>`).join('');
+}
+function resize() {
+  big.setAttribute('viewBox', vb(cur));
+  renderBoard(); frame();
+}
+function choose(sc) {
+  cur = sc; t = reduce ? sc.key : 0;
+  document.querySelectorAll('.pick').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.id === sc.id)));
+  $('sceneName').textContent = `${sc.animal}: ${sc.name}`;
+  $('sceneLine').textContent = sc.line;
+  $('scenePill').innerHTML = `<b>Di Pill:</b> ${sc.pill}`;
+  $('scrub').max = sc.dur;
+  $('d2d').textContent = sc.d2d;
+  $('d2dPill').innerHTML = `<b>Dua bentuk:</b> ${sc.d2dPill}`;
+  $('beats').innerHTML = sc.beats.map(([bt, txt]) => `<li><button type="button" data-t="${bt}"><span class="t">${bt.toFixed(1).replace('.', ',')}</span><span>${txt}</span></button></li>`).join('');
+  $('beats').querySelectorAll('button').forEach(b => b.addEventListener('click', () => { t = +b.dataset.t; setPlaying(false); frame(); }));
+  resize();
+}
+function setPlaying(p) { playing = p; $('play').textContent = p ? 'Jeda' : 'Putar'; last = performance.now(); }
+
+const nav = $('picker');
+['Kucing', 'Gurita', 'Falk'].forEach(a => {
+  nav.insertAdjacentHTML('beforeend', `<h2>${a}</h2>`);
+  SCENES.filter(s => s.animal === a).forEach(s => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'pick'; b.dataset.id = s.id; b.setAttribute('aria-pressed', 'false');
+    b.innerHTML = `<b>${s.name}</b><span>${s.line}</span><span style="margin-top:4px"><b>Pill:</b> ${s.pill}</span>`;
+    b.addEventListener('click', () => { choose(s); if (!reduce) setPlaying(true); });
+    nav.appendChild(b);
+  });
+});
+$('picks').innerHTML = PICKS.map(([id, n, why]) => `<li><b>${n}.</b> ${why} <button class="btn" type="button" data-go="${id}" style="min-height:36px;padding:2px 10px;margin-left:4px">Lihat</button></li>`).join('');
+$('picks').querySelectorAll('[data-go]').forEach(b => b.addEventListener('click', () => { choose(byId[b.dataset.go]); setPlaying(!reduce); $('sceneName').scrollIntoView({ behavior: reduce ? 'auto' : 'smooth' }); }));
+// character sheet: the cat in a few poses
+[['Duduk', {}], ['Senang', { face: { eyes: 'happy' }, hr: 8, tail: { wag: 20, curl: -2.8 } }], ['Kaget', { face: { eyes: 'alert', earL: -26, earR: 26 }, tail: { puff: 1.6, curl: -1.2 } }],
+ ['Mengantuk', { face: { eyes: 'sleep' }, hr: 22, hy: 2, tail: { wag: -10, curl: -2.6 } }], ['Angkat kaki', { face: { eyes: 'idle', lx: 0.6 }, paws: [{}, { dy: -9, dx: 3, lift: 1 }], tail: { wag: 10 } }]]
+  .forEach(([name, o]) => $('poses').insertAdjacentHTML('beforeend', `<figure><div class="tile"><svg viewBox="-6 2 84 90" role="img" aria-label="Kucing: ${name}">${catSlim(o)}</svg></div><figcaption>${name}</figcaption></figure>`));
+$('play').addEventListener('click', () => { if (!playing && t >= cur.dur) t = 0; setPlaying(!playing); });
+$('again').addEventListener('click', () => { t = 0; setPlaying(true); frame(); });
+$('scrub').addEventListener('input', e => { t = +e.target.value; setPlaying(false); frame(); });
+document.querySelectorAll('[data-speed]').forEach(b => b.addEventListener('click', () => {
+  speed = +b.dataset.speed;
+  document.querySelectorAll('[data-speed]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+}));
+// shape and size: the same ten stories, in both islands, at any size the user can set
+document.querySelectorAll('[data-shape]').forEach(b => b.addEventListener('click', () => {
+  SIZE.pill = b.dataset.shape === 'pill';
+  document.querySelectorAll('[data-shape]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+  resize();
+}));
+[['iw', 'iwv', 'w'], ['ih', 'ihv', 'h']].forEach(([id, out, key]) => $(id).addEventListener('input', e => {
+  SIZE[key] = +e.target.value; $(out).textContent = e.target.value; resize();
+}));
+$('sheer').addEventListener('change', e => { SIZE.sheer = e.target.checked; resize(); });
+choose(SCENES[0]);
+setPlaying(!reduce);
+function tick(now) {
+  if (playing) {
+    t += Math.min(0.05, (now - last) / 1000) * speed;
+    if (t > cur.dur + 1.2) t = 0;           // short rest, then replay
+    frame();
+  }
+  last = now;
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>
