@@ -280,11 +280,34 @@ fn set_node(v: &mut Value, path: &[String], new: Value) {
 /// working copy of the target's value of the top-level `top`. A key the target
 /// does not have (unknown or newer) is ignored and a key the file lacks keeps
 /// the target's value. A leaf is taken only when the whole top-level value read
-/// back alone still holds it as it went in, so a malformed value (or one a
+/// back alone is unchanged except for it (a clash that switches another field
+/// off counts), so a malformed value (or one a
 /// lenient reader would turn into a default) costs only that leaf.
 fn merge_node(top: &str, cur: &mut Value, path: &mut Vec<String>, theirs: &Value) {
     let mine_is_object = node(cur, path).is_some_and(Value::is_object);
     if let (true, Value::Object(theirs)) = (mine_is_object, theirs) {
+        // All the file's keys at once first: rows that only fit together (two
+        // hotkeys swapped) would each clash with the other one by one.
+        let known: Vec<(&String, &Value)> = theirs
+            .iter()
+            .filter(|(k, _)| {
+                !(path.is_empty() && split_keys(top).is_some_and(|keys| !keys.contains(&k.as_str())))
+                    && node(cur, path).and_then(|n| n.get(k.as_str())).is_some()
+            })
+            .collect();
+        if !known.is_empty() {
+            let mut candidate = cur.clone();
+            for (k, v) in &known {
+                path.push((*k).clone());
+                set_node(&mut candidate, path, (*v).clone());
+                path.pop();
+            }
+            let all_held = read_back(top, &candidate).as_ref() == Some(&candidate);
+            if all_held {
+                *cur = candidate;
+                return;
+            }
+        }
         for (k, v) in theirs {
             if path.is_empty() && split_keys(top).is_some_and(|keys| !keys.contains(&k.as_str())) {
                 continue;
@@ -300,8 +323,7 @@ fn merge_node(top: &str, cur: &mut Value, path: &mut Vec<String>, theirs: &Value
     }
     let mut candidate = cur.clone();
     set_node(&mut candidate, path, theirs.clone());
-    let held = read_back(top, &candidate)
-        .is_some_and(|back| node(&back, path) == Some(theirs));
+    let held = read_back(top, &candidate).as_ref() == Some(&candidate);
     if held {
         set_node(cur, path, theirs.clone());
     }
@@ -1067,6 +1089,42 @@ mod tests {
             config_object(&applied)["pomodoro"]["focus_min"],
             json!(25)
         );
+    }
+
+    #[test]
+    fn swapped_hotkeys_import_together() {
+        let defaults = Value::Object(config_object(&Config::default()));
+        let mut mine = defaults.clone();
+        mine["hotkeys"]["search"] = json!("Ctrl+Alt+Space");
+        mine["hotkeys"]["clipboard"] = json!("Ctrl+Alt+A");
+        let target = config::parse(&mine.to_string());
+        let incoming = Incoming {
+            app_version: String::new(),
+            exported: None,
+            settings: obj(json!({"hotkeys": {
+                "search": "Ctrl+Alt+A",
+                "clipboard": "Ctrl+Alt+Space",
+            }})),
+        };
+        let got = config_object(&apply(&target, &incoming).unwrap());
+        assert_eq!(got["hotkeys"]["search"], json!("Ctrl+Alt+A"));
+        assert_eq!(got["hotkeys"]["clipboard"], json!("Ctrl+Alt+Space"));
+    }
+
+    #[test]
+    fn a_duplicate_hotkey_row_keeps_the_targets_and_the_rest_imports() {
+        let target = Config::default();
+        let incoming = Incoming {
+            app_version: String::new(),
+            exported: None,
+            settings: obj(json!({"hotkeys": {
+                "search": "Ctrl+Alt+R",
+                "clipboard": "Ctrl+Alt+A",
+            }})),
+        };
+        let got = config_object(&apply(&target, &incoming).unwrap());
+        assert_eq!(got["hotkeys"]["search"], json!("Ctrl+Alt+Space"));
+        assert_eq!(got["hotkeys"]["clipboard"], json!("Ctrl+Alt+A"));
     }
 
     #[test]
