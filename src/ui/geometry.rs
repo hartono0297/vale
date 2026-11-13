@@ -1325,7 +1325,7 @@ pub fn badge_style(notice: &Notice, p: &Palette, pomo_next: Phase) -> BadgeStyle
             tint(p.accent, Icon::Download)
         }
         NoticeKind::UpdateFailed => tint(p.ochre, Icon::Download),
-        NoticeKind::UpdateInfo => tint(p.sage, Icon::Check),
+        NoticeKind::UpdateInfo | NoticeKind::WhatsNew => tint(p.sage, Icon::Check),
         // Drawn by the robot; this badge only shows if it is turned off meanwhile.
         NoticeKind::Greeting { .. } => tint(p.accent, Icon::Sparkle),
         // With the robot off: the Clipboard icon, as on the Pintasan tile.

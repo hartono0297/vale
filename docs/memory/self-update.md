@@ -42,7 +42,7 @@ notices, state), `google::http::Http::download_to` (streaming download),
    `shutdown` (tray icon removed by `WM_DESTROY`, config saved before).
 7. **New process**: waits (up to 60 s) for the single-instance mutex, which the
    old island releases itself at the end of its exit (see "Exit crash and the
-   mutex hand-over"), shows "Diperbarui ke X.Y.Z", deletes `vale.exe.old` (`cleanup_leftovers`, background thread,
+   mutex hand-over"), shows "Diperbarui ke X.Y.Z" (a link to the What's new card when there is something new: [[whats-new]]), deletes `vale.exe.old` (`cleanup_leftovers`, background thread,
    retries for about 5 s). Every normal start of a release build runs the
    same cleanup.
 

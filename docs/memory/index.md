@@ -104,6 +104,7 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[tooltips]]: one themed hover tooltip for icon buttons in every Vale window (name, current hotkey, what a click does; 500 ms rest, 300 ms warm switch, quiet after a click until left), `ui/tooltip`, stateless per-control ids with in-place repaint, re-entrancy rule, per-surface text functions, island `has_tip` / `feed`, the known popover-button gap, what is not checked live (2026-11-13)
 - [[menu-pop]]: Vale's own themed dropdown (`ui/menu_pop.rs`), first for the recording devices; `WM_APP + 81` Done, `menu_open` holds the panel
 - [[settings-transfer]]: Settings → Tentang → Pindah ke PC lain (2026-11-13): export the general settings to one JSON file and import it on another PC; allowlist with a test that every config key is classified, own tiles and private / PC-only fields stay on the target, key-by-key merge, backup, refused while recording, `--imported` restart
+- [[whats-new]]: "What's new" per patch (2026-11-13): a hand-written table in `src/whats_new.rs` (ID + EN, a test fails when `Cargo.toml`'s version has no entry), `config.whats_new_seen`, the "Diperbarui" notice becomes a link (`NoticeKind::WhatsNew`) that opens the Tentang card, fresh install silent
 - [[lyrics-lookup]]: LRCLIB 503 + Retry-After retry (30 s budget), step order (field search, get, free-text search), None vs transient, the Artist - Title split, tight-window consensus pick of the best-synced version, intro shift for a longer video, `.lrc2` / `.none4`
 
 ## Gotchas

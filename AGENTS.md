@@ -138,8 +138,10 @@ When I say "push" or "push dan rilis", do these in order:
    (`git log <last tag>..HEAD`) that the Obsidian memory (`docs/memory/`, index
    included) or `README.md` does not describe yet, and update them. Commit them
    as "docs: update memory and README". If nothing is missing, say so.
-2. **Release** (only when I ask for a release): bump the version in
-   `Cargo.toml`, `Cargo.lock` (`cargo update --workspace --offline`),
+2. **Release** (only when I ask for a release): first write the What's new
+   entry for the new version in `src/whats_new.rs` (Indonesian and English,
+   2-5 plain points for users; `cargo test --locked` fails without it), then
+   bump the version in `Cargo.toml`, `Cargo.lock` (`cargo update --workspace --offline`),
    `app.manifest` and `packaging/AppxManifest.xml`; run `cargo test --locked`;
    commit "chore(release): version X.Y.Z"; push `main`; then
    `git tag -a vX.Y.Z -m "Vale X.Y.Z"` and push the tag. Wait for the release

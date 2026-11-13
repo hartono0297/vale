@@ -1475,11 +1475,11 @@ pub fn open(owner: HWND, model: Model, section: Option<Section>) -> Result<HWND>
     Ok(hwnd)
 }
 
-/// Opens the window on Fitur scrolled to `card` (its eyebrow where a
+/// Opens the window on `card`'s section scrolled to it (its eyebrow where a
 /// section's first card starts, as far as the section's end allows), or
 /// brings the open one there.
 pub fn open_card(owner: HWND, model: Model, card: CardId) -> Result<HWND> {
-    let hwnd = open(owner, model, Some(Section::Features))?;
+    let hwnd = open(owner, model, Some(card.section()))?;
     let moved = with(|st| {
         st.relayout();
         let scroll = card_scroll(&st.layout, card);

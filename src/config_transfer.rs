@@ -101,6 +101,7 @@ pub const LEFT_OUT: &[&str] = &[
     "onboarding_done",
     "last_greeting",
     "update_offered",
+    "whats_new_seen",
     "mole_defaults_added",
     "media_log",
 ];

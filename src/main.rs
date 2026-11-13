@@ -63,6 +63,7 @@ mod transcribe;
 mod transcript_win;
 mod ui;
 mod update;
+mod whats_new;
 mod widgets;
 
 use windows::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
