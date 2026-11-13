@@ -209,7 +209,7 @@ pub enum Action {
     ConfigImport,
     /// The file the open dialog returned.
     ConfigImportFrom(std::path::PathBuf),
-    /// "Impor sekarang" on a checked file.
+    /// "Impor & mulai ulang" on a checked file.
     ConfigImportConfirm,
     /// "Batal", or leaving Tentang or closing the window with a file waiting.
     ConfigImportCancel,
@@ -426,7 +426,12 @@ fn import_cancel_on_leave(
     to: Option<Section>,
     view: &TransferView,
 ) -> Option<Action> {
-    let leaves = from == Section::About && to != Some(Section::About);
+    // Closing cancels from any section: the file dialog is the island's, so
+    // the file may have been picked while another section showed.
+    let leaves = match to {
+        None => true,
+        Some(to) => from == Section::About && to != Section::About,
+    };
     (leaves && matches!(view, TransferView::Pending { .. })).then_some(Action::ConfigImportCancel)
 }
 
@@ -513,8 +518,8 @@ pub enum TransferView {
     ExportFailed,
     /// Why a file was refused, or what stops the import.
     Refused(String),
-    /// A checked file waits for "Impor sekarang".
-    /// `refusal`: why "Impor sekarang" did nothing (a recording is running).
+    /// A checked file waits for "Impor & mulai ulang".
+    /// `refusal`: why "Impor & mulai ulang" did nothing (a recording is running).
     Pending {
         app_version: String,
         date: Option<chrono::NaiveDate>,
@@ -5366,6 +5371,11 @@ mod tests {
                 None
             );
         }
+        // Closing from any other section still cancels.
+        assert_eq!(
+            import_cancel_on_leave(Section::General, None, &pending(None)),
+            cancel
+        );
         // Moving between other sections, or "to" the section it is on.
         assert_eq!(
             import_cancel_on_leave(Section::General, Some(Section::About), &pending(None)),

@@ -37,6 +37,11 @@ impl Transfer {
     }
 
     /// Nothing is waiting any more; the card shows `view`.
+    /// A checked file waits for the owner's confirm.
+    pub(super) fn has_pending(&self) -> bool {
+        self.pending.is_some()
+    }
+
     fn clear(&mut self, view: TransferView) {
         self.pending = None;
         self.view = view;
@@ -143,7 +148,7 @@ impl App {
         self.sync_settings();
     }
 
-    /// "Impor sekarang": backs up the config, saves the merged one and
+    /// "Impor & mulai ulang": backs up the config, saves the merged one and
     /// restarts Vale so everything takes effect.
     pub(super) fn config_import_confirm(&mut self) {
         let lang = self.config.language;

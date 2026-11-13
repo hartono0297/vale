@@ -9362,11 +9362,20 @@ mod tests {
                         _ => None,
                     })
                     .collect();
-                let in_card = |t: &&Text| t.rect.y >= card.y && t.rect.bottom() <= card.bottom();
-                for t in l.texts.iter().filter(in_card) {
+                // Every text from the card's top down: nothing follows the
+                // card, so one that spills past its bottom is still checked.
+                let checked: Vec<&Text> = l.texts.iter().filter(|t| t.rect.y >= card.y).collect();
+                assert!(checked.len() >= 4, "{lang:?}: {} texts", checked.len());
+                let export = button_rect(&l, Hit::ConfigExport).unwrap().0;
+                let row1_bottom = card.y + 2.0 * (export.y + export.h / 2.0 - card.y);
+                for t in checked {
                     let w = Estimate.width(&t.text, t.font);
                     assert!(w <= t.rect.w + 0.01, "{lang:?} {:?}: {w} > {}", t.text, t.rect.w);
-                    assert!(t.rect.right() <= card.right(), "{lang:?} {:?}", t.text);
+                    assert!(t.rect.x >= card.x && t.rect.right() <= card.right(), "{lang:?} {:?}", t.text);
+                    assert!(t.rect.bottom() <= card.bottom() + 0.01, "{lang:?} {:?} spills", t.text);
+                    // Inside one of the two rows, never across the hairline.
+                    let inside_one = t.rect.bottom() <= row1_bottom + 0.01 || t.rect.y >= row1_bottom - 0.01;
+                    assert!(inside_one, "{lang:?} {:?} crosses the rows", t.text);
                     // Text never runs under a button of its own row.
                     for b in buttons.iter().filter(|b| b.y < t.rect.bottom() && b.bottom() > t.rect.y) {
                         assert!(t.rect.right() <= b.x, "{lang:?} {:?}", t.text);

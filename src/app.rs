@@ -7042,7 +7042,13 @@ impl App {
             // Handled outside the app borrow (`deliver_settings_action`).
             SettingsAction::DndHelp => {}
             // A window closed in the middle of a recording: the hotkeys come back.
-            SettingsAction::Closed => self.resume_hotkeys(),
+            SettingsAction::Closed => {
+                self.resume_hotkeys();
+                // A checked import file does not outlive the window.
+                if self.transfer.has_pending() {
+                    self.config_import_cancel();
+                }
+            }
         }
         self.sync_settings();
     }
