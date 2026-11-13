@@ -17,6 +17,9 @@ mod cli_folders;
 mod cli_panel;
 mod clipboard;
 mod config;
+// Not called from the UI yet; the Settings rows and the restart use it next.
+#[allow(dead_code)]
+mod config_transfer;
 mod data_dir;
 mod devices;
 mod devices_win;
