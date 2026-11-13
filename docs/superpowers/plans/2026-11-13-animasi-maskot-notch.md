@@ -107,7 +107,10 @@ fn the_pill_ends_are_half_circles_and_the_notch_sides_are_straight() {
 }
 ```
 
-A `pub(crate) fn shape(style: Style, w: f32, h: f32) -> ShapeRect` test helper builds the resting island at that size with `corner_radius` applied and `y = 0.0` for the Notch, `y = PILL_TOP` for the Pill. Put it in `src/ui/play/mod.rs`'s `#[cfg(test)]` module: Tasks 2, 5, 10 and 13 all use it.
+Two shared test helpers live in `src/ui/play/mod.rs` in a `#[cfg(test)] pub(crate) mod testing` module, because Tasks 2, 5, 6, 10, 11 and 13 all reach for them across module boundaries:
+
+- `shape(style: Style, w: f32, h: f32) -> ShapeRect` — the resting island at that size, with `corner_radius` applied, `y = 0.0` for the Notch and `y = PILL_TOP` for the Pill. Created here, in Task 1.
+- `ok_env() -> Env` — every gate satisfied, `clock_on: true`. Created in Task 6, when `Env` exists.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -169,12 +172,14 @@ A `Dent` pushes the outline outward along its normal by `depth` (negative dents 
 
 ```rust
 #[test]
-fn a_rest_deform_gives_the_resting_outline() {
+fn a_rest_deform_is_exactly_the_rim() {
     for style in [Style::Notch, Style::Pill] {
         let s = shape(style, 190.0, 34.0);
-        for (x, y) in outline(style, s, &Deform::default()) {
-            assert!(shape_contains(style, s, x - 0.0_f32.max(0.0), y) || on_edge(style, s, x, y),
-                "{style:?} ({x},{y}) left the resting outline");
+        let pts = outline(style, s, &Deform::default());
+        assert_eq!(pts.len(), OUTLINE_PTS);
+        for (i, (x, y)) in pts.iter().enumerate() {
+            let p = rim(style, s, i as f32 / (OUTLINE_PTS - 1) as f32);
+            assert!((x - p.x).abs() < 0.01 && (y - p.y).abs() < 0.01, "{style:?} point {i}");
         }
     }
 }
@@ -195,12 +200,16 @@ fn a_dent_moves_only_the_outline_near_it() {
 }
 
 #[test]
-fn the_notch_stays_welded_to_the_screen_edge_when_it_swings() {
+fn a_swinging_notch_leaves_no_hole_at_the_screen_edge() {
     let s = shape(Style::Notch, 190.0, 34.0);
-    let d = Deform { swing_deg: 6.0, ..Default::default() };
-    let pts = outline(Style::Notch, s, &d);
-    let top = pts.iter().filter(|p| p.1 <= s.y + 0.5).count();
-    assert!(top >= 2, "both top ends still touch y = {}", s.y);
+    let pts = outline(Style::Notch, s, &Deform { swing_deg: 6.0, ..Default::default() });
+    assert!(pts.iter().any(|p| p.1 < s.y - 0.5), "the top is extended behind the screen edge");
+    let crossings: Vec<f32> = pts.windows(2)
+        .filter(|w| (w[0].1 - s.y) * (w[1].1 - s.y) <= 0.0)
+        .map(|w| w[0].0)
+        .collect();
+    assert!(crossings.iter().any(|&x| x <= s.x), "still covers the left end at the edge");
+    assert!(crossings.iter().any(|&x| x >= s.x + s.w), "and the right end");
 }
 
 #[test]
@@ -535,15 +544,22 @@ pub fn instant_stop(env: &Env) -> bool;
 - [ ] **Step 1: Write the failing tests** in `src/ui/play/gate.rs`
 
 ```rust
-fn ok_env() -> Env { /* every gate satisfied, clock_on: true */ }
-
 #[test]
 fn every_gate_can_stop_an_automatic_play() {
     let base = (ok_env(), Moment::Idle, MascotPlay::Sesekali, Duration::from_secs(60), Duration::from_secs(3600));
     assert!(may_start(&base.0, base.1, base.2, base.3, base.4));
-    for (name, env) in off_by_one_envs() {       // one field flipped per entry
+    // One entry per Env field EXCEPT clock_on, which changes which story is
+    // picked (Task 4's `pool`) and never the permission to start.
+    for (name, env) in off_by_one_envs() {
         assert!(!may_start(&env, base.1, base.2, base.3, base.4), "{name} did not stop it");
     }
+}
+
+#[test]
+fn the_clock_being_off_does_not_stop_a_play_from_starting() {
+    let mut env = ok_env();
+    env.clock_on = false;
+    assert!(may_start(&env, Moment::Idle, MascotPlay::Sesekali, Duration::from_secs(60), Duration::from_secs(3600)));
 }
 
 #[test]
@@ -917,7 +933,7 @@ fn the_story_starts_and_ends_at_rest_in_both_styles() {
         for (w, h) in [(160.0, 28.0), (190.0, 34.0), (300.0, 44.0)] {
             let s = shape(style, w, h);
             for t in [0.0, Story::MalingAngka.secs()] {
-                let shot = shot(style, s, Beat { spread: 0.0, alpha: 0.0, t });
+                let shot = shot(style, s, Beat { spread: 1.0, alpha: 1.0, t });
                 assert!(is_rest(&shot.deform), "{style:?} {w}x{h} t={t}");
                 assert!(shot.digits.iter().all(|d| *d == DigitFx::IDENTITY), "{style:?} {w}x{h} t={t}");
             }
