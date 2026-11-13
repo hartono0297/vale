@@ -548,11 +548,16 @@ pub struct Env {
 }
 
 pub fn may_start(env: &Env, moment: Moment, preset: MascotPlay, since_input: Duration, since_last: Duration) -> bool;
-pub fn must_stop(env: &Env, playing: Story, shape_changed: bool, clock_jumped: bool) -> bool;
+pub fn must_stop(env: &Env, playing: Story, moment: Moment, shape_changed: bool, clock_jumped: bool) -> bool;
 pub fn instant_stop(env: &Env) -> bool;
 ```
 
-`Moment::Manual` skips the presence rule, the cooldown and `idle_view`'s panel clause, but not `mascot_on`, `motion_full`, `fullscreen`, `screen_away` or `recording`.
+The gates split in two, and `Moment::Manual` is the reason:
+
+- **Transient** — `pointer_near`, `shrunk`, `menu_open`, plus the presence rule and the cooldown. A `Manual` play skips all of these, at start **and** while running, because they are artefacts of how the owner invoked it: reaching the island to right-click it is what turns `pointer_near` on and (through the peek) `shrunk` too. A gate that the act of asking switches on would hide the feature exactly when it is wanted.
+- **Permanent** — `mascot_on`, `motion_full`, `energy_saver`, `win_anim`, `fullscreen`, `screen_away`, `recording`, `asleep`, `idle_view` and `panel_open`. These bind every play, `Manual` included. `panel_open` stays binding because the animation's geometry assumes the **closed** island; the menu item handler closes the panel first and then plays (see Task 11), so by the time a `Manual` play starts the panel is already shut.
+
+`must_stop` therefore takes the play's `Moment` and ignores the transient gates for a `Manual` play — otherwise the first tick kills it while the pointer is still on the island. Whether the tray item is **shown** is a different question from whether a play may start, and Task 11 answers it with its own `play_item_shown`.
 
 - [ ] **Step 1: Write the failing tests** in `src/ui/play/gate.rs`
 
@@ -578,10 +583,33 @@ fn the_clock_being_off_does_not_stop_a_play_from_starting() {
 #[test]
 fn manual_ignores_presence_cooldown_and_an_open_panel() {
     let mut env = ok_env();
-    env.panel_open = true;
+    // The gates the act of right-clicking the island switches on.
+    env.pointer_near = true;
+    env.shrunk = true;
+    env.menu_open = true;
     assert!(may_start(&env, Moment::Manual, MascotPlay::Mati, Duration::ZERO, Duration::ZERO));
-    env.fullscreen = true;
-    assert!(!may_start(&env, Moment::Manual, MascotPlay::Mati, Duration::ZERO, Duration::ZERO));
+    // The permanent ones still bind, panel_open included: the handler closes
+    // the panel first, because the animation's geometry assumes a closed island.
+    for mut bad in [env.clone(), env.clone()] {
+        bad.fullscreen = true;
+        assert!(!may_start(&bad, Moment::Manual, MascotPlay::Mati, Duration::ZERO, Duration::ZERO));
+    }
+    let mut panel = env.clone();
+    panel.panel_open = true;
+    assert!(!may_start(&panel, Moment::Manual, MascotPlay::Mati, Duration::ZERO, Duration::ZERO));
+}
+
+#[test]
+fn an_env_that_may_start_a_manual_play_does_not_stop_it_on_the_first_check() {
+    let mut env = ok_env();
+    env.pointer_near = true;
+    env.shrunk = true;
+    env.menu_open = true;
+    assert!(may_start(&env, Moment::Manual, MascotPlay::Mati, Duration::ZERO, Duration::ZERO));
+    assert!(!must_stop(&env, Story::MalingAngka, Moment::Manual, false, false),
+        "may_start and must_stop disagree about the same env");
+    // The same env stops an automatic play, so the exemption is Manual's alone.
+    assert!(must_stop(&env, Story::MalingAngka, Moment::Idle, false, false));
 }
 
 #[test]
@@ -602,13 +630,13 @@ fn sapaan_allows_only_the_greeting_and_the_hour() {
 fn a_running_play_stops_on_use_a_shape_change_or_a_clock_jump() {
     let mut env = ok_env();
     env.pointer_near = true;
-    assert!(must_stop(&env, Story::MalingAngka, false, false), "the pointer entered the hover zone");
-    assert!(must_stop(&ok_env(), Story::MalingAngka, true, false), "the size or style changed");
-    assert!(must_stop(&ok_env(), Story::MalingAngka, false, true), "the clock jumped");
+    assert!(must_stop(&env, Story::MalingAngka, Moment::Idle, false, false), "the pointer entered the hover zone");
+    assert!(must_stop(&ok_env(), Story::MalingAngka, Moment::Idle, true, false), "the size or style changed");
+    assert!(must_stop(&ok_env(), Story::MalingAngka, Moment::Idle, false, true), "the clock jumped");
     let mut no_clock = ok_env();
     no_clock.clock_on = false;
-    assert!(must_stop(&no_clock, Story::MalingAngka, false, false), "a clock story with the clock off");
-    assert!(!must_stop(&no_clock, Story::Kelelawar, false, false), "a story that needs no clock carries on");
+    assert!(must_stop(&no_clock, Story::MalingAngka, Moment::Idle, false, false), "a clock story with the clock off");
+    assert!(!must_stop(&no_clock, Story::Kelelawar, Moment::Idle, false, false), "a story that needs no clock carries on");
 }
 
 #[test]
