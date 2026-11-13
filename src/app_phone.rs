@@ -216,6 +216,7 @@ fn note_must_go(shared: Option<&str>, gone: &[String], on_desktop: impl Fn(&str)
 fn warn_of(r: &Refusal) -> Warn {
     match r {
         Refusal::NoLan => Warn::NoLan,
+        Refusal::NoTailscale => Warn::NoTailscale,
         Refusal::PortsBusy => Warn::PortsBusy,
         Refusal::Failed => Warn::Failed,
     }
@@ -391,7 +392,7 @@ impl App {
             wake();
         });
         self.phone.starting = true;
-        self.phone.handle = Some(crate::phone::start_lan(i18n::lang(), sink));
+        self.phone.handle = Some(crate::phone::start_lan(i18n::lang(), self.config.phone_net, sink));
     }
 
     /// Ends the session for `reason`, forgets what it knew and clears the
@@ -987,6 +988,7 @@ mod tests {
     #[test]
     fn the_warnings_follow_the_refusal() {
         assert_eq!(warn_of(&Refusal::NoLan), Warn::NoLan);
+        assert_eq!(warn_of(&Refusal::NoTailscale), Warn::NoTailscale);
         assert_eq!(warn_of(&Refusal::PortsBusy), Warn::PortsBusy);
         assert_eq!(warn_of(&Refusal::Failed), Warn::Failed);
     }

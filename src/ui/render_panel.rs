@@ -4028,6 +4028,7 @@ impl Renderer {
         };
         let (title_key, body_key) = match warn {
             Warn::NoLan => (Key::PhoneWarnNoLan, Key::PhoneWarnNoLanBody),
+            Warn::NoTailscale => (Key::PhoneWarnNoTailscale, Key::PhoneWarnNoTailscaleBody),
             Warn::PortsBusy => (Key::PhoneWarnBusy, Key::PhoneWarnBusyBody),
             Warn::Failed => (Key::PhoneWarnFailed, Key::PhoneWarnFailedBody),
         };

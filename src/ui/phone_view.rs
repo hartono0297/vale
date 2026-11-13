@@ -11,6 +11,7 @@ use crate::shelf::ShelfKind;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Warn {
     NoLan,
+    NoTailscale,
     PortsBusy,
     Failed,
 }

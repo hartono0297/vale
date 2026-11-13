@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::{EndReason, PhoneEvent, ServerConfig, start};
+use crate::config::PhoneNet;
 use crate::i18n::Lang;
 
 struct Reply {
@@ -124,6 +125,7 @@ fn a_phone_joins_with_the_token_uploads_is_cancelled_and_the_server_stops() {
         network_name: "Test net".into(),
         public: false,
         allow_loopback: true,
+        net: PhoneNet::Wifi,
     };
     let (tx, rx) = mpsc::channel();
     let tx = Mutex::new(tx);
@@ -287,6 +289,7 @@ fn a_mid_upload_stop_removes_the_part_file() {
         network_name: "n".into(),
         public: false,
         allow_loopback: true,
+        net: PhoneNet::Wifi,
     };
     let (tx, rx) = mpsc::channel();
     let tx = Mutex::new(tx);
@@ -493,6 +496,7 @@ fn rig_with(name: &str, public: bool) -> Rig {
         network_name: "Test net".into(),
         public,
         allow_loopback: true,
+        net: PhoneNet::Wifi,
     };
     let (tx, rx) = mpsc::channel();
     let tx = Mutex::new(tx);
@@ -1066,4 +1070,36 @@ fn a_scan_lands_on_the_note_when_one_is_shared_else_on_the_shelf_page() {
     wait_for(&rx, |e| matches!(e, PhoneEvent::SessionEnded(_)));
     assert!(shared.session.lock().expect("lock").note().is_none());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn ready_says_which_network_the_session_is_on() {
+    let dest = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("test-tmp")
+        .join(format!("phone-net-{}", std::process::id()));
+    let cfg = ServerConfig {
+        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        ports: 0..=0,
+        dest_dir: dest,
+        lang: Lang::En,
+        pc_name: "TEST-PC".into(),
+        network_name: "Tailscale".into(),
+        public: false,
+        allow_loopback: true,
+        net: PhoneNet::Tailscale,
+    };
+    let (tx, rx) = mpsc::channel();
+    let tx = Mutex::new(tx);
+    let _handle = start(
+        cfg,
+        Arc::new(move |e| {
+            let _ = tx.lock().expect("lock").send(e);
+        }),
+    );
+    let ready = wait_for(&rx, |e| matches!(e, PhoneEvent::Ready { .. }));
+    assert!(matches!(
+        ready,
+        PhoneEvent::Ready { net: PhoneNet::Tailscale, public: false, .. }
+    ));
 }

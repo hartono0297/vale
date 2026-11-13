@@ -487,7 +487,7 @@ mod tests {
         // could produce (this match stops compiling if one is added).
         use crate::phone::Refusal;
         let from_the_network = |r: Refusal| match r {
-            Refusal::NoLan | Refusal::PortsBusy | Refusal::Failed => true,
+            Refusal::NoLan | Refusal::NoTailscale | Refusal::PortsBusy | Refusal::Failed => true,
         };
         assert!(from_the_network(Refusal::NoLan));
     }

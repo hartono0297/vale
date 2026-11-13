@@ -555,6 +555,9 @@ keys! {
     PhoneWarnNoLan => "Tidak ada jaringan lokal", "No local network";
     PhoneWarnNoLanBody => "Sambungkan PC ke Wi-Fi atau kabel jaringan, lalu coba lagi.",
         "Connect the PC to Wi-Fi or a network cable, then try again.";
+    PhoneWarnNoTailscale => "Tailscale belum jalan", "Tailscale isn't running";
+    PhoneWarnNoTailscaleBody => "Nyalakan Tailscale di PC ini dan login, lalu coba lagi.",
+        "Turn on Tailscale on this PC and sign in, then try again.";
     PhoneWarnBusy => "Port sedang dipakai", "Ports are in use";
     PhoneWarnBusyBody => "Port 47390 sampai 47399 dipakai program lain. Tutup programnya, lalu coba lagi.",
         "Ports 47390 to 47399 are used by other programs. Close them, then try again.";
