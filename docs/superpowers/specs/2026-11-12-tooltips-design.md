@@ -237,7 +237,11 @@ Check each line against the page; reword where the page does more or less.
 | `ArrangePlay` | Terapkan / Apply | Jendela kembali ke posisi yang disimpan. / Windows go back to the saved places. | — |
 | `RecPause` | Jeda rekaman / Pause recording; Lanjutkan rekaman / Resume recording | — | — |
 | `RecMute(src)` | as the REC notch level groups | — | H:RecordMute for the mic |
-| `RecToggle` (short form) | — | Mulai atau hentikan rekaman. / Starts or stops the recording. | H:Record (audio tab), H:RecordScreen (screen tab) |
+| `RecToggle`, idle (short form) | — | Mulai merekam audio sekarang. / Starts an audio recording now. (Layar tab: Pilih layar, jendela, atau area, lalu rekaman dimulai. / Pick a screen, window or area, then the recording starts.) | H:Record (audio tab), H:RecordScreen (screen tab) |
+| `RecToggle`, recording (the stop square) | Hentikan rekaman / Stop recording | Rekamannya disimpan. / The recording is saved. | as idle |
+| `RecPickFile` (header icon) | Transkrip file / Transcribe a file | Pilih rekaman atau video, lalu transkripnya terbuka. / Pick a recording or video, then its transcript opens. | — |
+| `RecFolder` (header icon only, not "N lagi di folder") | Buka folder / Open folder | the tab's folder, in Explorer | — |
+| `ScreenDiscard` (the trash; none once it asks) | Buang video / Discard video | Rekaman berhenti, videonya ke Recycle Bin. Ditanya dulu. / Stops and moves the video to the Recycle Bin. Asks first. | — |
 | `DeviceOpen` | Buka di Explorer / Open in Explorer | — | — |
 | `DeviceDetail` | Detail / Details | (say what the details show) | — |
 | `CliExpand` | Perbesar / Enlarge; Perkecil / Shrink | — | — |
@@ -245,9 +249,9 @@ Check each line against the page; reword where the page does more or less.
 | `SearchBack` | Kembali / Back | — | Esc |
 | `CleanBack` | Kembali ke Sistem / Back to System | — | — |
 
-The Rekam page is being redesigned in another session; tips attach to the
-`Hit` variants that exist after merging `main`, and the redesign's new icon
-buttons get tips in the same style.
+The Rekam rows follow the redesign (direction B) merged from `main`. Its
+labelled controls (tabs, source switches, device lines, quality row, caption
+row, list rows and pills, "Simpan" / "Buang" of the question) have no tip.
 
 ### Settings window
 
