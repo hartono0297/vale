@@ -65,11 +65,20 @@ pub fn latest(n: usize) -> &'static [Entry] {
 pub enum StartAction {
     /// Nothing: the version was already seen.
     None,
-    /// Remember the running version, show nothing (a fresh install or a
-    /// downgrade).
+    /// Remember the running version in memory, show nothing (a fresh install
+    /// or a downgrade). The next save writes it.
     Store,
-    /// Remember it and show the notice.
+    /// Remember it, write it now and show the notice.
     Show,
+}
+
+impl StartAction {
+    /// Whether the start writes `config.json` itself. Only a shown notice
+    /// must not repeat; a write for the others would move a hand-edited file
+    /// that failed to parse aside at launch.
+    pub fn saves_now(self) -> bool {
+        self == StartAction::Show
+    }
 }
 
 /// `fresh`: the first run, before onboarding ended. A `seen` that is not a
@@ -177,6 +186,15 @@ mod tests {
         for (seen, current, fresh, want) in cases {
             assert_eq!(start_action(seen, current, fresh), want, "{seen:?} {current:?} {fresh}");
         }
+    }
+
+    #[test]
+    fn only_show_writes_the_config_at_start() {
+        // A write at start would move a hand-edited config.json that failed
+        // to parse aside; a fresh install or a downgrade waits for the next save.
+        assert!(StartAction::Show.saves_now());
+        assert!(!StartAction::Store.saves_now());
+        assert!(!StartAction::None.saves_now());
     }
 
     #[test]

@@ -185,7 +185,7 @@ impl App {
         } else {
             update::CURRENT.into()
         };
-        if action != StartAction::None {
+        if action.saves_now() {
             self.save_config();
         }
         match start {

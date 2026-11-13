@@ -25,7 +25,7 @@ After an update the notch says what changed, and Settings → Tentang has a card
   `app_update::update_start`, release builds only): `seen` empty on a fresh
   install (`!onboarding_done`) stores the version and stays silent; `seen`
   older, or empty/garbage on an existing install (an upgrade from a release
-  without this feature), shows once and stores at once; `seen` newer (downgrade)
+  without this feature), shows once and writes at once; a fresh install or downgrade is stored in memory only (`StartAction::saves_now`), so a start never moves a hand-edited, unparsable `config.json` aside; `seen` newer (downgrade)
   stores and stays silent; equal does nothing. Skipped versions are combined
   (`whats_new::since`); an unknown `seen` lists only the current entry. A
   `--imported` restart leaves it for the next start.

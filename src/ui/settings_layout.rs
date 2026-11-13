@@ -9324,9 +9324,18 @@ mod tests {
                     t.text
                 );
             }
-            // The card's own text lines never overlap the next row.
-            let bottom = l.texts.iter().filter(|t| t.rect.y >= card.y && t.rect.y < card.bottom());
-            assert!(bottom.map(|t| t.rect.bottom()).fold(0.0, f32::max) <= card.bottom() + 0.01);
+            // A row's text ends before the next row's hairline (the card's
+            // bottom for the last one).
+            let mut edges: Vec<f32> = l.dividers.iter().map(|d| d.y).filter(|y| *y > card.y && *y < card.bottom()).collect();
+            edges.push(card.bottom());
+            edges.sort_by(f32::total_cmp);
+            for t in l.texts.iter().filter(|t| t.rect.y >= card.y && t.rect.bottom() <= card.bottom() + ROW_H) {
+                if t.rect.y >= card.bottom() {
+                    continue;
+                }
+                let edge = edges.iter().copied().find(|e| *e > t.rect.y).unwrap();
+                assert!(t.rect.bottom() <= edge + 1.0, "{lang:?} {:?} runs into the next row", t.text);
+            }
         }
     }
 
