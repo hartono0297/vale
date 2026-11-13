@@ -407,3 +407,18 @@ per-mascot accessories in `cat_style.rs`, the Settings Maskot row and coat
 swatches, hop / wave / flush in `robot.rs`, i18n strings, demo scenes (debug
 only, not in the release exe). No change to `Cargo.toml`, `Cargo.lock` or
 `assets`. See [[maskot-falk-gurita]].
+
+## Phone link over Tailscale (2026-11-13)
+
+`cargo build --release --locked`, 0 warnings, both in the
+`.claude/worktrees/phone-tailscale` worktree:
+
+| Build | Bytes |
+|---|---|
+| 7c05e68 (main before the merge, v5.3.0 code) | 4,690,944 |
+| 53c866b (feat/phone-tailscale, same tree as merge a6bed3e) | 4,695,040 (+4,096, +4 KiB, +0.09 %) |
+
+New: `pick_tailscale` / `is_tailnet` / `peer_allowed` in `phone/net.rs`,
+`detect_tailscale`, the `phone_net` config key, the header switch (`phone_seg`,
+`paint_segment` shared with the cleaner), six strings. No change to `Cargo.toml`,
+`Cargo.lock` or `assets`. See [[shelf-phone]].

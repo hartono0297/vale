@@ -1,5 +1,5 @@
 ---
-tags: [decision, shelf, phone, network, security, power, download, range, thumbnail, v3.18, simplified, v3.19]
+tags: [decision, shelf, phone, network, security, power, download, range, thumbnail, v3.18, simplified, v3.19, tailscale]
 date: 2026-11-04
 ---
 
@@ -405,3 +405,67 @@ phone"). This is the server side.
   (the stage logic is the existing `PhoneAttention` and is unit-tested; the item
   was not clicked), a real phone's rendering of the disabled boxes, Gelap on a
   device.
+
+## Tailscale mode (2026-11-13)
+
+Owner's request: "instead maksa 1 jaringan via wifi, pake semacam tailscale aja", then
+"kasih jadi option aja, bisa pilih lewat wifi atau tailscale". Spec
+`docs/superpowers/specs/2026-11-13-phone-tailscale-design.md`, plan
+`docs/superpowers/plans/2026-11-13-phone-tailscale.md`.
+
+**Decision: use the Tailscale app the owner installs, never embed it.** Vale ships no
+Tailscale code and never talks to Tailscale (no LocalAPI, no servers). Rejected:
+`tailscale-rs` (experimental, needs `TS_RS_EXPERIMENT=this_is_unstable_software`), Go
+`tsnet` (would multiply the ~4.7 MB exe, and Vale would hold a login key), a relay or
+tunnel (Cloudflare, ngrok) or WebRTC signalling (a third-party server in the path).
+
+**Rules**
+
+- Config key `phone_net` (`PhoneNet { Wifi, Tailscale }`, `named_enum!`, lenient read,
+  default and junk = Wifi, island-owned in `merge_owned`). An older Vale ignores the key
+  and drops it on save (back to Wi-Fi).
+- `net::pick_tailscale`: an adapter that is up, whose name or description contains
+  "tailscale" (case-insensitive; Windows: "Tailscale" / "Tailscale Tunnel"), with an IPv4 in
+  `100.64.0.0/10`; **no gateway required** (`pick_adapter`'s rule would refuse it). Both the
+  name and the range are needed: some mobile hotspots and ISPs hand out CGNAT 100.x
+  addresses on ordinary adapters. `pick_adapter` still skips Tailscale for Wi-Fi mode.
+- `net::peer_allowed(ip, via, allow_loopback)` is the one peer check in `server::accept`:
+  Wifi = `is_private && !is_tailnet` (fc00::/7 contains Tailscale's `fd7a:115c:a1e0::/48`,
+  so the IPv6 tailnet range had to be cut out), Tailscale = `is_tailnet` (100.64/10 or
+  fd7a:115c:a1e0::/48, a mapped IPv6 read as IPv4). Loopback only with `allow_loopback`.
+- `detect_tailscale` (no COM, no Network List Manager): binds the 100.x address only,
+  same ports, network name "Tailscale", never Public. `Refusal::NoTailscale` ->
+  `Warn::NoTailscale`, card "Tailscale belum jalan" / "Tailscale isn't running" with
+  Coba lagi. `BoundCheck` watches the 100.x address unchanged, so Tailscale going off
+  ends the session as `NetworkChanged`.
+- `PhoneEvent::Ready` and `Runtime` carry `net`; app_phone's `Ready` keeps it.
+- **The switch** `Wi-Fi | Tailscale` replaces the header title on the QR view and the
+  warning card (`phone_seg` in `panel_layout.rs`: 22 dip high, two 74 dip items, 2 dip
+  inset, from `back.right() + 8`); `Key::PhoneTitle` is gone, the receiving view keeps
+  `PhoneReceiving`. Painted by `paint_segment`, shared with the cleaner's mode segment.
+  `Hit::PhoneNet(n)` counts on the `PhoneStage::Qr` stage (QR view and warning card).
+  `switch_plan(saved, picked, uploading)`: the lit segment and any tap during an upload
+  (a row `Receiving`) do nothing; otherwise save the config, stop the old session (its
+  phones lose it, agreed with the owner, no confirm), `phone_begin`. The hits are always
+  there; while uploading the switch is drawn at `CLEAN_INERT` and the tap is dropped.
+  `PhoneState::next_session` / `is_current` hold the generation rule, so a late event
+  of the stopped session is ignored.
+- **Which mode the texts follow:** the code view (network line, hint, footer) follows
+  the running session's `CodeView::tailnet`; "Mencari jaringan…", the warning card and
+  the lit segment follow the saved `PhoneView::net` (`phone_hint_key`,
+  `phone_foot_key`). Tailscale texts: line 1 just "Tailscale", hint "HP juga harus pakai
+  Tailscale, akun yang sama", footer "Lewat Tailscale, terenkripsi dari HP ke PC".
+- Demo scenes `phone-qr-tailscale`, `phone-notailscale` (debug builds:
+  `--demo` + `DI_DEMO_STEP=<scene>`); `phone-qr` shows the switch on Wi-Fi.
+- No new crate, `windows` feature, timer or thread.
+
+**Not verified live:** a real phone on mobile data over Tailscale (send and take
+files); the switch clicked in the running app; which network category Windows gives the
+Tailscale adapter and whether the firewall lets the first connection through; Tailscale
+signed out while the adapter keeps its 100.x address (then the QR never works and the
+session ends only by the idle rule); Tailscale turned off mid-session. Run: unit tests
+(adapter rule, ranges, peer rule, config, switch plan, reducer, layout, fit test in
+both fonts), the loopback e2e `ready_says_which_network_the_session_is_on`, the demo
+scenes by eye in DM Sans and JetBrains Mono.
+
+Related: [[exe-size]], [[bata-idle-power-budget]], [[shelf]].
