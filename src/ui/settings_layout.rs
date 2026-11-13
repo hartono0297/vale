@@ -6140,8 +6140,44 @@ fn about(b: &mut Builder, s: &State) {
     b.row_text(card, y, b.t(Key::UpdateAuto), desc, false, x);
     b.divider(card, y);
 
+    whats_new_card(b);
     titled(b, Key::GroupMoveSettings);
     move_card(b, s);
+}
+
+/// "Apa yang baru": the points of the latest versions, one row per version
+/// (the version over its wrapped points). The "Diperbarui" notice opens
+/// Settings here (`CardId::WhatsNew`).
+fn whats_new_card(b: &mut Builder) {
+    let top = b.eyebrow(Key::GroupWhatsNew, b.g.content_w - 4.0);
+    b.l.card_tops.push((CardId::WhatsNew, top));
+    let probe = Rect {
+        x: b.g.content_x,
+        y: 0.0,
+        w: b.g.content_w,
+        h: 0.0,
+    };
+    let text_w = row_text_w(probe, b.g.right);
+    let rows: Vec<(String, Vec<String>)> = crate::whats_new::latest(3)
+        .iter()
+        .map(|e| {
+            let lines = crate::whats_new::points(e, b.lang)
+                .iter()
+                .flat_map(|p| b.wrap(&format!("\u{2022} {p}"), Font::Desc, text_w))
+                .collect();
+            (e.version.to_owned(), lines)
+        })
+        .collect();
+    let heights: Vec<f32> = rows.iter().map(|(_, lines)| wrapped_row_h(lines.len())).collect();
+    let card = b.card(heights.iter().sum());
+    let mut y = card.y;
+    for ((version, lines), h) in rows.into_iter().zip(heights) {
+        if y > card.y {
+            b.divider(card, y);
+        }
+        b.row_text_lines(card, y, version, lines, Tone::Secondary, b.g.right);
+        y += h;
+    }
 }
 
 /// "Pindah ke PC lain": the export row, and the import row that turns into
@@ -9248,13 +9284,67 @@ mod tests {
     }
 
     #[test]
+    fn about_has_the_whats_new_card() {
+        for lang in [Lang::Id, Lang::En] {
+            let l = about_with(lang, TransferView::Idle);
+            let title = text(lang, Key::GroupWhatsNew).to_uppercase();
+            assert!(l.texts.iter().any(|t| t.text == title), "{lang:?} title");
+            assert!(l.card_tops.iter().any(|(c, _)| *c == CardId::WhatsNew), "{lang:?} card top");
+            // Between "Tautan" and "Pindah ke PC lain", one row per entry.
+            let n = crate::whats_new::latest(3).len();
+            let (links, card, moved) = (
+                &l.cards[l.cards.len() - 3],
+                &l.cards[l.cards.len() - 2],
+                l.cards.last().unwrap(),
+            );
+            assert!(card.y > links.bottom() && card.bottom() < moved.y, "{lang:?} order");
+            let inside = |y: f32| y > card.y && y < card.bottom();
+            assert_eq!(l.dividers.iter().filter(|d| inside(d.y)).count(), n - 1, "{lang:?}");
+            for e in crate::whats_new::latest(3) {
+                assert!(l.texts.iter().any(|t| t.text == e.version), "{lang:?} {}", e.version);
+            }
+        }
+    }
+
+    #[test]
+    fn whats_new_card_text_stays_inside_the_card() {
+        for lang in [Lang::Id, Lang::En] {
+            let l = about_with(lang, TransferView::Idle);
+            let card = &l.cards[l.cards.len() - 2];
+            let in_card = l
+                .texts
+                .iter()
+                .filter(|t| t.rect.y >= card.y && t.rect.bottom() <= card.bottom())
+                .collect::<Vec<_>>();
+            assert!(!in_card.is_empty(), "{lang:?}");
+            for t in in_card {
+                assert!(
+                    t.rect.x >= card.x && t.rect.right() <= card.right(),
+                    "{lang:?} {:?} sticks out of the card",
+                    t.text
+                );
+            }
+            // The card's own text lines never overlap the next row.
+            let bottom = l.texts.iter().filter(|t| t.rect.y >= card.y && t.rect.y < card.bottom());
+            assert!(bottom.map(|t| t.rect.bottom()).fold(0.0, f32::max) <= card.bottom() + 0.01);
+        }
+    }
+
+    #[test]
+    fn whats_new_card_scrolls_into_view() {
+        let l = about_with(Lang::Id, TransferView::Idle);
+        let scroll = card_scroll(&l, CardId::WhatsNew);
+        assert!((0.0..=l.scroll_max).contains(&scroll), "{scroll}");
+    }
+
+    #[test]
     fn about_has_the_move_card_with_two_rows() {
         for lang in [Lang::Id, Lang::En] {
             let l = about_with(lang, TransferView::Idle);
             let title = text(lang, Key::GroupMoveSettings).to_uppercase();
             assert!(l.texts.iter().any(|t| t.text == title), "{lang:?} title");
-            // Under "Tautan", two rows with a hairline between.
-            let (links, card) = (&l.cards[l.cards.len() - 2], l.cards.last().unwrap());
+            // Under "Tautan" and "Apa yang baru", two rows with a hairline between.
+            let (links, card) = (&l.cards[l.cards.len() - 3], l.cards.last().unwrap());
             assert_eq!(links.h, 4.0 * ROW_H);
             assert_eq!(card.h, 2.0 * ROW_H);
             assert!(card.y > links.bottom());

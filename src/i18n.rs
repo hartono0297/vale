@@ -1164,6 +1164,7 @@ keys! {
 
     // Settings → Tentang → Pindah ke PC lain: export and import the settings.
     GroupMoveSettings => "Pindah ke PC lain", "Move to another PC";
+    GroupWhatsNew => "Apa yang baru", "What's new";
     TransferExport => "Ekspor pengaturan", "Export settings";
     TransferExportDesc => "Simpan pengaturan umum ke satu file",
         "Save the general settings to one file";
