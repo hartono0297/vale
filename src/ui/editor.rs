@@ -782,13 +782,13 @@ fn open_hwnd() -> Option<HWND> {
     })
 }
 
-/// Runs `f` on the editor for `hwnd`, or returns `None` when there is none or
-/// a handler further up the stack holds it.
 /// The tip of the drawn close button; Esc closes the same way.
 fn editor_close_tip() -> Tip {
     Tip::named(Key::Close).key(KeyHint::Raw("Esc"))
 }
 
+/// Runs `f` on the editor for `hwnd`, or returns `None` when there is none or
+/// a handler further up the stack holds it.
 fn with_editor<R>(hwnd: HWND, f: impl FnOnce(&mut Editor) -> R) -> Option<R> {
     EDITOR.with(|cell| {
         let mut slot = cell.try_borrow_mut().ok()?;
@@ -2596,7 +2596,7 @@ unsafe extern "system" fn wnd_proc(
                     ed.invalidate();
                 }
             });
-            tooltip::hide(hwnd);
+            tooltip::hover(hwnd, None);
             LRESULT(0)
         }
         WM_LBUTTONDOWN => {

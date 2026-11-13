@@ -1269,7 +1269,7 @@ unsafe extern "system" fn wnd_proc(
                 p.tracking = false;
                 p.set_hover(None);
             });
-            tooltip::hide(hwnd);
+            tooltip::hover(hwnd, None);
             LRESULT(0)
         }
         WM_LBUTTONDOWN => {

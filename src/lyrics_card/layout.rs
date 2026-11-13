@@ -8,7 +8,7 @@
 use crate::config::CardPlace;
 use crate::hotkey::HotkeyId;
 use crate::i18n::Key;
-use crate::ui::tooltip::{KeyHint, Tip};
+use crate::ui::tooltip::{self, KeyHint, Tip};
 use crate::lyrics::{LrcLine, OUTPUT_LAG_MS};
 use crate::ui::settings_window::Rc;
 
@@ -68,6 +68,16 @@ pub struct RectF {
 impl RectF {
     pub const fn new(x: f32, y: f32, w: f32, h: f32) -> Self {
         Self { x, y, w, h }
+    }
+
+    /// The same rect as the app's shared dip rect (a tooltip's anchor).
+    pub const fn shared(self) -> crate::ui::geometry::Rect {
+        crate::ui::geometry::Rect {
+            x: self.x,
+            y: self.y,
+            w: self.w,
+            h: self.h,
+        }
     }
 
     pub fn right(&self) -> f32 {
@@ -326,7 +336,7 @@ pub fn ease_out_cubic(t: f32) -> f32 {
 // ---------------------------------------------------------- what is under it
 
 /// What a point in the card is over.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Zone {
     Close,
     Prev,
@@ -373,6 +383,12 @@ pub fn zone_at(
     } else {
         Zone::Body
     }
+}
+
+/// The tooltip id of `z`: one per control, never its state, so a click that
+/// turns play into pause is on the same target.
+pub fn zone_tip_id(z: Zone) -> u64 {
+    tooltip::id_of(&z)
 }
 
 /// The tip of `zone`; `None` over the lines, the header and outside. The
@@ -993,6 +1009,20 @@ mod tests {
                 let pause = zone_tip(Zone::PlayPause, true).unwrap();
                 assert_eq!(play.name.as_deref(), Some(i18n::tr(Key::TipPlay)));
                 assert_eq!(pause.name.as_deref(), Some(i18n::tr(Key::TipPause)));
+            }
+        }
+
+        #[test]
+        fn play_and_pause_are_one_target() {
+            let play = zone_tip(Zone::PlayPause, false).unwrap();
+            let pause = zone_tip(Zone::PlayPause, true).unwrap();
+            assert_ne!(play, pause);
+            let ids = [Zone::Close, Zone::Prev, Zone::PlayPause, Zone::Next, Zone::Grip]
+                .map(zone_tip_id);
+            for (i, a) in ids.iter().enumerate() {
+                for b in &ids[i + 1..] {
+                    assert_ne!(a, b);
+                }
             }
         }
 

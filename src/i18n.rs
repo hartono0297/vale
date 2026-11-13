@@ -1417,7 +1417,6 @@ keys! {
     // Tooltips: the keys and gestures shown in a tip's key plate.
     TipKeySpace => "Spasi", "Space";
     TipKeyRightClick => "Klik kanan", "Right-click";
-    TipKeyWheel => "Roda mouse", "Mouse wheel";
 
     // Tooltips: the sticky note's header, format bar and popovers.
     TipStickyListAbout => "Semua catatan tempel dalam satu jendela, bisa dicari.", "Every sticky note in one window, with search.";
@@ -1506,7 +1505,7 @@ keys! {
     TipClipPin => "Sematkan", "Pin";
     TipClipPinAbout => "Tetap ada saat riwayat dibersihkan atau penuh.", "Stays when the history is cleared or full.";
     TipClipUnpin => "Lepas sematan", "Unpin";
-    TipClipUnpinAbout => "Ikut terhapus lagi saat riwayat dibersihkan.", "Goes again when the history is cleared.";
+    TipClipUnpinAbout => "Ikut terhapus lagi saat riwayat dibersihkan atau penuh.", "Goes again when the history is cleared or full.";
     TipClipPlain => "Salin teks polos", "Copy as plain text";
     TipClipPlainAbout => "Hanya teksnya, tanpa format dan warna.", "Just the text, without formatting or colour.";
     TipClipDeleteAbout => "Dihapus dari riwayat clipboard.", "Removes it from the clipboard history.";
@@ -1521,7 +1520,16 @@ keys! {
     TipArrangePlayAbout => "Jendela yang cocok pindah ke tempat yang disimpan.", "Matching windows move to the saved places.";
     TipRecPause => "Jeda rekaman", "Pause recording";
     TipRecResume => "Lanjutkan rekaman", "Resume recording";
-    TipRecToggleAbout => "Mulai atau hentikan rekaman.", "Starts or stops the recording.";
+    TipRecStartAudioAbout => "Mulai merekam audio sekarang.", "Starts an audio recording now.";
+    TipRecStartScreenAbout => "Pilih layar, jendela, atau area, lalu rekaman dimulai.", "Pick a screen, window or area, then the recording starts.";
+    TipRecStop => "Hentikan rekaman", "Stop recording";
+    TipRecStopAbout => "Rekamannya disimpan.", "The recording is saved.";
+    TipRecPickFile => "Transkrip file", "Transcribe a file";
+    TipRecPickFileAbout => "Pilih rekaman atau video, lalu transkripnya terbuka.", "Pick a recording or video, then its transcript opens.";
+    TipRecFolderAudioAbout => "Folder rekaman audio, di Explorer.", "The audio recordings folder, in Explorer.";
+    TipRecFolderScreenAbout => "Folder video rekaman layar, di Explorer.", "The screen recordings folder, in Explorer.";
+    TipScreenDiscard => "Buang video", "Discard video";
+    TipScreenDiscardAbout => "Rekaman berhenti, videonya ke Recycle Bin. Ditanya dulu.", "Stops and moves the video to the Recycle Bin. Asks first.";
     TipDeviceOpen => "Buka di Explorer", "Open in Explorer";
     TipDeviceDetail => "Detail", "Details";
     TipDeviceDetailAbout => "Model, jalur, dan sistem file.", "Model, connection and file system.";

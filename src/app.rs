@@ -39,6 +39,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     TME_HOVER, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent, VIRTUAL_KEY, VK_LBUTTON, VK_MBUTTON,
     VK_RBUTTON,
 };
+use windows::Win32::UI::Controls::{WM_MOUSEHOVER, WM_MOUSELEAVE};
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
     DBT_DEVNODES_CHANGED, DEVICE_NOTIFY_WINDOW_HANDLE, DefWindowProcW, DestroyWindow, DispatchMessageW, EN_CHANGE,
@@ -225,9 +226,6 @@ const WM_APP_REC_DEVICE: u32 = WM_APP + 80;
 /// Opens the Rekam page's video quality menu from the main loop, outside the
 /// `APP` borrow.
 const WM_APP_REC_QUALITY: u32 = WM_APP + 95;
-/// These live in the Controls feature of `windows`; the values are fixed by Win32.
-const WM_MOUSEHOVER: u32 = 0x02A1;
-const WM_MOUSELEAVE: u32 = 0x02A3;
 /// The system clock or time zone changed.
 const WM_TIMECHANGE: u32 = 0x001E;
 const WM_POWERBROADCAST: u32 = 0x0218;
@@ -562,6 +560,7 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
             close_ptr: None,
             tip_on: None,
             tip_pressed: None,
+            tip_built: None,
             slot_keep: None,
             slot_share: SlotShare::default(),
             leaving: None,
@@ -1019,6 +1018,9 @@ struct App {
     /// The hit with a tip a button went down on; it stays quiet until the
     /// pointer is on something else (`panel_tips::feed`).
     tip_pressed: Option<Hit>,
+    /// The last target built for a move, with the hit, state and language it
+    /// was built from: a move that finds them unchanged reuses it.
+    tip_built: Option<(Hit, TipCtx, i18n::Lang, tooltip::Target)>,
     /// The toast whose logo the slot shows, kept while the island shrinks
     /// back so the logo fades out instead of vanishing.
     slot_keep: Option<Notice>,
@@ -5904,19 +5906,39 @@ impl App {
             panel_tips::Feed::Tip(hit) => hit,
         };
         self.tip_on = None;
+        // A hit drawn twice has its tip on its first region only: "Buka
+        // folder" is the header's icon there and the labelled "N lagi di
+        // folder" link under the list.
+        let (x, y) = client_xy(lparam);
+        if !self.renderer.on_first_region(&hit, x as f32, y as f32) {
+            return Some(None);
+        }
         Some(self.tip_target(hit))
     }
 
     /// `hit`'s tooltip target, remembered in `tip_on`; `None` when it says
-    /// nothing or the last frame drew no region for it.
+    /// nothing or the last frame drew no region for it. The tip and its id
+    /// are built again only when the hit, what its tip reads or the language
+    /// changed since the last move.
     fn tip_target(&mut self, hit: Hit) -> Option<tooltip::Target> {
-        let tip = panel_tips::tip_for(&hit, &self.tip_ctx(&hit))?;
         let anchor = self.tip_anchor(&hit)?;
-        let target = tooltip::Target {
-            id: panel_tips::tip_id(&hit, &tip),
-            anchor,
-            side: panel_tips::side_for(&hit),
-            tip,
+        let ctx = self.tip_ctx(&hit);
+        let lang = i18n::lang();
+        let target = match &self.tip_built {
+            Some((h, c, l, t)) if *h == hit && *c == ctx && *l == lang => tooltip::Target {
+                anchor,
+                ..t.clone()
+            },
+            _ => {
+                let target = tooltip::Target {
+                    id: panel_tips::tip_id(&hit),
+                    anchor,
+                    side: panel_tips::side_for(&hit),
+                    tip: panel_tips::tip_for(&hit, &ctx)?,
+                };
+                self.tip_built = Some((hit.clone(), ctx, lang, target.clone()));
+                target
+            }
         };
         self.tip_on = Some(IslandTip {
             hit,
@@ -5954,7 +5976,12 @@ impl App {
                 ctx.rec_muted_system = muted[1];
             }
             Hit::RecPause => ctx.rec_paused = self.state.rec().is_some_and(|r| r.paused()),
-            Hit::RecToggle => ctx.screen_tab = self.state.rec_tab() == RecKind::Screen,
+            Hit::RecToggle => {
+                ctx.screen_tab = self.state.rec_tab() == RecKind::Screen;
+                ctx.recording = self.state.rec().is_some();
+            }
+            Hit::RecFolder => ctx.screen_tab = self.state.rec_tab() == RecKind::Screen,
+            Hit::ScreenDiscard => ctx.screen_discard_armed = self.state.screen_discard_armed(),
             Hit::CalPrev | Hit::CalNext => ctx.cal_view = self.state.cal_view(),
             Hit::PomoStartPause => {
                 use crate::pomodoro::PomoStatus;
@@ -5999,11 +6026,11 @@ impl App {
     fn tip_anchor(&self, hit: &Hit) -> Option<crate::capture::Rect> {
         let win = self.win.as_ref()?;
         let r = self.renderer.region_of(hit)?;
-        Some(panel_tips::anchor_px(win.screen_origin(), r, win.scale()))
+        Some(tooltip::anchor_px(win.screen_origin(), r, win.scale()))
     }
 
-    /// The island's tip goes (the pointer left, a wheel, a sink behind the
-    /// windows).
+    /// The island's tip goes at once, with no warm window (a wheel, a sink
+    /// behind the windows, its target gone).
     fn tip_hide(&mut self) {
         self.tip_on = None;
         tooltip::hide(self.hwnd);
@@ -6068,7 +6095,10 @@ impl App {
         // not the hover dwell had passed.
         self.set_toast_pointer(false);
         self.track_close_hot(None);
-        self.tip_hide();
+        // A leave, not a reset: a move onto another window's button within
+        // the warm window shows its tip at once.
+        self.tip_on = None;
+        tooltip::hover(self.hwnd, None);
         self.tip_pressed = None;
         self.click.clear();
         self.dock_leave();
@@ -9637,8 +9667,9 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
         WM_HOTKEY => {
-            // A key press: the island's tip goes, whatever the key does.
-            tooltip::hide(hwnd);
+            // A key press: any tip goes, whatever window it is on and
+            // whatever the key does.
+            tooltip::hide_all();
             let wm = wparam.0 as i32;
             if is_countdown_esc(wm) {
                 // A press while the app is borrowed still cancels (the
@@ -9655,6 +9686,8 @@ unsafe extern "system" fn wnd_proc(
         // row is in `wparam`.
         WM_APP_PRTSC => {
             let row = wparam.0;
+            // A key press, as `WM_HOTKEY`.
+            tooltip::hide_all();
             with_app(|app| app.on_hook_row(row));
             LRESULT(0)
         }

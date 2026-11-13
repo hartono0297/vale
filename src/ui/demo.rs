@@ -197,14 +197,12 @@ use std::time::{Duration, Instant};
 use chrono::{Days, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Timelike};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
+use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::Input::KeyboardAndMouse::{TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent};
 use windows::Win32::UI::WindowsAndMessaging::{
     DefWindowProcW, DispatchMessageW, MA_NOACTIVATE, MSG, PM_REMOVE, PeekMessageW, PostQuitMessage,
     TranslateMessage, WM_DESTROY, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_QUIT,
 };
-
-/// `WM_MOUSELEAVE` (the `windows` crate keeps it under Controls).
-const WM_MOUSELEAVE: u32 = 0x02A3;
 
 use super::cat_style::CatLook;
 use super::dock::{self, DockFrame};

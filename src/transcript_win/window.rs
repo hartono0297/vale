@@ -52,6 +52,7 @@ use windows::Win32::Graphics::Gdi::{
     MONITORINFO, MonitorFromWindow, PAINTSTRUCT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::HiDpi::{
     AdjustWindowRectExForDpi, GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI,
 };
@@ -92,7 +93,7 @@ use crate::ui::geometry::Rect;
 use crate::ui::icons::{Icon, IconSet};
 use crate::ui::settings_controls::{mix, primary_fill};
 use crate::ui::settings_window::Rc;
-use crate::ui::tooltip::{self, Side};
+use crate::ui::tooltip::{self, TipSpec, on_screen};
 
 const CLASS: PCWSTR = w!("ValeTranscript");
 /// A window is on screen only outside the tests.
@@ -132,7 +133,6 @@ const TIMER_HOLD: usize = 2;
 const HOLD: Duration = Duration::from_secs(3);
 
 const HTCLIENT: u16 = 1;
-const WM_MOUSELEAVE: u32 = 0x02A3;
 
 // ------------------------------------------------------------------ text
 
@@ -1322,24 +1322,6 @@ fn screen_rect(w: &Win, r: Rect) -> crate::capture::Rect {
     crate::capture::Rect::new(pt.x, pt.y, (r.w * k).round() as i32, (r.h * k).round() as i32)
 }
 
-/// A tip target before its rect is put on screen: that is done once the
-/// window's borrow has ended (`on_screen`).
-struct TipSpec {
-    id: u64,
-    rect: Rect,
-    scale: f32,
-    tip: tooltip::Tip,
-}
-
-fn on_screen(hwnd: HWND, spec: TipSpec) -> tooltip::Target {
-    tooltip::Target {
-        id: spec.id,
-        anchor: tooltip::to_screen(hwnd, spec.rect, spec.scale),
-        side: Side::Auto,
-        tip: spec.tip,
-    }
-}
-
 /// The tip of `hot` and where it sits in the client area. The bar's anchor
 /// is a small box at the pointer's x, fixed when the bar is first reported
 /// and kept while the pointer stays on it.
@@ -1352,25 +1334,24 @@ fn tip_spec(w: &mut Win, hot: Option<Hot>) -> Option<TipSpec> {
         w.tip_bar_x = None;
     }
     let playing = w.player.playing();
-    let (id, rect, btn) = match hot {
+    let (rect, btn) = match hot {
         Hot::Btn(i) => {
             let &(btn, r) = w.frame.buttons.get(i)?;
-            (tooltip::id_of(&(1u8, format!("{btn:?}"))), r, Some(btn))
+            (r, Some(btn))
         }
-        Hot::Play => (tooltip::id_of(&(2u8, playing)), w.frame.play, None),
+        Hot::Play => (w.frame.play, None),
         Hot::Bar => {
             let bar = w.frame.bar;
             let at = *w.tip_bar_x.get_or_insert_with(|| {
                 w.cursor.map_or(bar.x + bar.w / 2.0, |(x, _)| x).clamp(bar.x, bar.right())
             });
             let side = 2.0 * bar.h;
-            let r = Rect { x: at - side / 2.0, y: bar.y, w: side, h: bar.h };
-            (tooltip::id_of(&3u8), r, None)
+            (Rect { x: at - side / 2.0, y: bar.y, w: side, h: bar.h }, None)
         }
         Hot::Line(_) => return None,
     };
     let tip = layout::tip_of(hot, playing, btn)?;
-    Some(TipSpec { id, rect, scale: scale(w), tip })
+    Some(TipSpec { id: layout::tip_id(hot, btn), rect, scale: scale(w), tip })
 }
 
 fn request_of(btn: Btn, anchor: crate::capture::Rect) -> Request {
@@ -1709,7 +1690,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 w.cursor = None;
                 w.tip_bar_x = None;
             });
-            tooltip::hide(hwnd);
+            tooltip::hover(hwnd, None);
             invalidate(hwnd);
             LRESULT(0)
         }

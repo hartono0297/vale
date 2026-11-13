@@ -1823,6 +1823,13 @@ impl Renderer {
         self.regions.regions.iter().find(|r| r.hit == *hit).map(|r| r.rect)
     }
 
+    /// Whether a client point in physical pixels is on `hit`'s first region
+    /// (`region_of`), not on another region the same hit has.
+    pub fn on_first_region(&self, hit: &Hit, x: f32, y: f32) -> bool {
+        self.region_of(hit)
+            .is_some_and(|r| r.contains(x / self.scale, y / self.scale))
+    }
+
     /// What a client point in physical pixels is over: a drawn island pixel
     /// (shoulders and anti-aliased edge included), only the drag margin, or
     /// nothing.

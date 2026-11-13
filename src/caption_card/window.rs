@@ -1210,15 +1210,9 @@ impl Card {
         };
         let running = self.c.status != CardStatus::Paused;
         let tip = layout::zone_tip(zone, running)?;
-        let k = self.scale();
         Some(tooltip::Target {
-            id: tooltip::id_of(&(format!("{zone:?}"), running)),
-            anchor: crate::capture::Rect::new(
-                self.origin.0 + (rect.x * k).round() as i32,
-                self.origin.1 + (rect.y * k).round() as i32,
-                (rect.w * k).round() as i32,
-                (rect.h * k).round() as i32,
-            ),
+            id: layout::zone_tip_id(zone),
+            anchor: tooltip::anchor_px(self.origin, rect.shared(), self.scale()),
             side: Side::Auto,
             tip,
         })
@@ -1322,7 +1316,7 @@ impl Card {
         if self.press.is_some() {
             return;
         }
-        self.tips.push(TipOp::Hide);
+        self.tips.push(TipOp::Hover(None));
         let now = Instant::now();
         self.set_hover(false, now);
         self.hover_zone = None;

@@ -8,7 +8,7 @@ use std::ops::Range;
 use super::Status;
 use crate::config::CardPlace;
 use crate::i18n::Key;
-use crate::ui::tooltip::{KeyHint, Tip};
+use crate::ui::tooltip::{self, KeyHint, Tip};
 use crate::lyrics_card::layout::{Mon, home_monitor, px};
 use crate::ui::geometry::Rect;
 use crate::ui::settings_window::Rc;
@@ -64,7 +64,7 @@ pub const CASCADE_PX: i32 = 24;
 
 // ------------------------------------------------------------------ buttons
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Btn {
     Copy,
     OpenMd,
@@ -129,6 +129,18 @@ pub enum Hot {
     Play,
     Bar,
     Line(usize),
+}
+
+/// The tooltip id of `hot` (`btn` the button under `Hot::Btn`): one per
+/// control, never its state, so a click that turns play into pause is on the
+/// same target.
+pub fn tip_id(hot: Hot, btn: Option<Btn>) -> u64 {
+    match hot {
+        Hot::Btn(_) => tooltip::id_of(&(1u8, btn)),
+        Hot::Play => tooltip::id_of(&2u8),
+        Hot::Bar => tooltip::id_of(&3u8),
+        Hot::Line(i) => tooltip::id_of(&(4u8, i)),
+    }
 }
 
 /// The tip of `hot`. `playing` is whether the player runs (the play button
@@ -702,6 +714,27 @@ mod tests {
                 assert_ne!(play.name, pause.name, "{lang:?}");
                 assert_eq!(play.keys, [KeyHint::Fixed(Key::TipKeySpace)]);
                 assert_eq!(pause.keys, [KeyHint::Fixed(Key::TipKeySpace)]);
+            }
+        }
+
+        #[test]
+        fn play_and_pause_are_one_target() {
+            // A click flips the button: the tip must not come back as a new
+            // target under the pointer that clicked.
+            let play = tip_of(Hot::Play, false, None).unwrap();
+            let pause = tip_of(Hot::Play, true, None).unwrap();
+            assert_ne!(play, pause);
+            assert_eq!(tip_id(Hot::Play, None), tip_id(Hot::Play, None));
+            let ids = [
+                tip_id(Hot::Play, None),
+                tip_id(Hot::Bar, None),
+                tip_id(Hot::Btn(0), Some(Btn::Copy)),
+                tip_id(Hot::Btn(0), Some(Btn::Redo)),
+            ];
+            for (i, a) in ids.iter().enumerate() {
+                for b in &ids[i + 1..] {
+                    assert_ne!(a, b);
+                }
             }
         }
 

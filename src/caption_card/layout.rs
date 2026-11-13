@@ -6,7 +6,7 @@
 use crate::config::CardPlace;
 use crate::hotkey::HotkeyId;
 use crate::i18n::Key;
-use crate::ui::tooltip::{KeyHint, Tip};
+use crate::ui::tooltip::{self, KeyHint, Tip};
 use crate::lyrics_card::colour;
 pub use crate::lyrics_card::layout::RectF;
 use crate::lyrics_card::layout::{Mon, place_with, px};
@@ -180,7 +180,7 @@ pub fn strip_rects(body: RectF, text_w: f32, button_w: Option<f32>) -> Strip {
 // ------------------------------------------------------------------- zones
 
 /// What a point in the card is over.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Zone {
     /// The header outside its buttons (a press drags the card).
     Header,
@@ -221,6 +221,12 @@ pub fn zone_at(r: &Rects, pt: (f32, f32), action_shown: bool) -> Option<Zone> {
     } else {
         Zone::Body
     })
+}
+
+/// The tooltip id of `z`: one per control, never its state, so a click that
+/// turns pause into resume is on the same target.
+pub fn zone_tip_id(z: Zone) -> u64 {
+    tooltip::id_of(&z)
 }
 
 /// The tip of `zone`; `None` over the header, the body and the status button
@@ -614,6 +620,20 @@ mod tests {
                 assert_ne!(pause.name, resume.name, "{lang:?}");
                 assert_eq!(pause.name.as_deref(), Some(i18n::tr(Key::TipCapPause)));
                 assert_eq!(resume.name.as_deref(), Some(i18n::tr(Key::TipCapResume)));
+            }
+        }
+
+        #[test]
+        fn pause_and_resume_are_one_target() {
+            let pause = zone_tip(Zone::Pause, true).unwrap();
+            let resume = zone_tip(Zone::Pause, false).unwrap();
+            assert_ne!(pause, resume);
+            let ids = [Zone::Close, Zone::Pause, Zone::LangChip, Zone::Copy, Zone::Grip]
+                .map(zone_tip_id);
+            for (i, a) in ids.iter().enumerate() {
+                for b in &ids[i + 1..] {
+                    assert_ne!(a, b);
+                }
             }
         }
 

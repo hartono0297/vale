@@ -72,7 +72,7 @@ use super::frame_clock::{FrameClock, WM_APP_FRAME};
 use super::hotkey_rec::{RecHook, WM_APP_HOTKEY_REC, WM_APP_HOTKEY_REC_DONE};
 use super::robot::{Motion, sleep_step};
 use super::settings_controls::{Gfx, Scene, ease};
-use super::tooltip::{self, Tip};
+use super::tooltip::{self, Tip, TipSpec, on_screen};
 use super::settings_layout::{
     CLIENT_H, CLIENT_W, CanvasPress, CardId, CatFace, Control, DragView, EditView, Field,
     GUIDE_URL, GoogleState, Group, Hit, Layout, List, MonitorRow, REPO_URL, ROW_H, RejectMsg,
@@ -862,6 +862,9 @@ struct Settings {
     slider: Option<SliderId>,
     /// `TME_LEAVE` is armed.
     tracking: bool,
+    /// The hit the last move gave a tip, in which language, with its id and
+    /// tip: a move over the same hit reuses them (`tip_of_hit`).
+    tip_last: Option<(Hit, crate::i18n::Lang, u64, Tip)>,
     anims: Anims,
     clock: Option<FrameClock>,
     edits: Option<Edits>,
@@ -1355,6 +1358,7 @@ pub fn open(owner: HWND, model: Model, section: Option<Section>) -> Result<HWND>
         pressed: None,
         slider: None,
         tracking: false,
+        tip_last: None,
         anims: Anims::default(),
         clock: None,
         edits,
@@ -2229,9 +2233,9 @@ impl Settings {
     }
 
     /// The tip of what is under the pointer and where it sits in the client
-    /// area. Only reads: the caller maps it to the screen and shows it once
-    /// the window's borrow has ended.
-    fn tip_spec(&self, lparam: LPARAM) -> Option<TipSpec> {
+    /// area. Calls no window: the caller maps it to the screen and shows it
+    /// once the window's borrow has ended.
+    fn tip_spec(&mut self, lparam: LPARAM) -> Option<TipSpec> {
         let (x, y) = self.point(lparam);
         let (hit, rect, on_map) = self.layout.hit_area(x, y)?;
         let (id, tip) = match hit {
@@ -2239,7 +2243,7 @@ impl Settings {
                 let m = self.model.monitors.get(usize::from(i))?;
                 (tooltip::id_of(&(1u8, i)), monitor_tip(m))
             }
-            _ => (tooltip::id_of(&(2u8, format!("{hit:?}"))), hit_tip(&hit)?),
+            _ => self.tip_of_hit(hit)?,
         };
         Some(TipSpec {
             id,
@@ -2247,6 +2251,23 @@ impl Settings {
             scale: self.scale(),
             tip,
         })
+    }
+
+    /// `hit`'s tooltip id and tip, kept from the last move while the pointer
+    /// stays on it in the same language. `hit_tip` comes first: most hits
+    /// have none, and only those with one pay for the id.
+    fn tip_of_hit(&mut self, hit: Hit) -> Option<(u64, Tip)> {
+        let lang = crate::i18n::lang();
+        if let Some((last, at, id, tip)) = &self.tip_last
+            && *last == hit
+            && *at == lang
+        {
+            return Some((*id, tip.clone()));
+        }
+        let tip = hit_tip(&hit)?;
+        let id = tooltip::id_of(&(2u8, format!("{hit:?}")));
+        self.tip_last = Some((hit, lang, id, tip.clone()));
+        Some((id, tip))
     }
 
     fn hit_at(&self, lparam: LPARAM) -> Option<Hit> {
@@ -3775,23 +3796,6 @@ fn on_mouse_move(hwnd: HWND, lparam: LPARAM) {
     }
 }
 
-/// A tip as laid out, in the client area; `on_screen` maps it.
-struct TipSpec {
-    id: u64,
-    rect: super::geometry::Rect,
-    scale: f32,
-    tip: Tip,
-}
-
-fn on_screen(hwnd: HWND, spec: TipSpec) -> tooltip::Target {
-    tooltip::Target {
-        id: spec.id,
-        anchor: tooltip::to_screen(hwnd, spec.rect, spec.scale),
-        side: tooltip::Side::Auto,
-        tip: spec.tip,
-    }
-}
-
 fn on_mouse_leave(hwnd: HWND) {
     with(|st| {
         st.tracking = false;
@@ -3799,7 +3803,7 @@ fn on_mouse_leave(hwnd: HWND) {
             st.invalidate();
         }
     });
-    tooltip::hide(hwnd);
+    tooltip::hover(hwnd, None);
 }
 
 fn on_button_down(hwnd: HWND, lparam: LPARAM) {

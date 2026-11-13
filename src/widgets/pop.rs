@@ -17,6 +17,7 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_WORD_WRAPPING_NO_WRAP,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::Input::KeyboardAndMouse::{TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent, VK_ESCAPE};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, IDC_ARROW,
@@ -572,23 +573,13 @@ fn swatch_target(p: &Pop, item: Option<Item>) -> Option<tooltip::Target> {
         return None;
     };
     let i = Paper::ALL.iter().position(|q| *q == paper)?;
-    let r = swatch_rect(i);
     Some(tooltip::Target {
         id: tooltip::id_of(&i),
-        anchor: Rect::new(
-            p.origin.0 + (r.x * p.scale).round() as i32,
-            p.origin.1 + (r.y * p.scale).round() as i32,
-            (r.w * p.scale).round() as i32,
-            (r.h * p.scale).round() as i32,
-        ),
+        anchor: tooltip::anchor_px(p.origin, swatch_rect(i), p.scale),
         side: Side::Auto,
         tip: tips::swatch_tip(paper),
     })
 }
-
-/// `WM_MOUSELEAVE`: in the Controls feature of `windows`; the value is fixed
-/// by Win32.
-const WM_MOUSELEAVE: u32 = 0x02A3;
 
 fn to_dip(p: &Pop, x: i32, y: i32) -> (f32, f32) {
     (x as f32 / p.scale, y as f32 / p.scale)

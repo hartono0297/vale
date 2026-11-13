@@ -36,7 +36,7 @@ use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, ValidateRect,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::Controls::{EM_GETSEL, EM_LIMITTEXT, EM_SETSEL};
+use windows::Win32::UI::Controls::{EM_GETSEL, EM_LIMITTEXT, EM_SETSEL, WM_MOUSELEAVE};
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, ReleaseCapture, SetCapture, SetFocus, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
@@ -97,7 +97,6 @@ const ON_SCREEN: bool = !cfg!(test);
 const HTCLIENT: isize = 1;
 const HTCAPTION: isize = 2;
 const HTTRANSPARENT: isize = -1;
-const WM_MOUSELEAVE: u32 = 0x02A3;
 const WM_NCLBUTTONDBLCLK: u32 = 0x00A3;
 const WM_NCRBUTTONDOWN: u32 = 0x00A4;
 const WM_NCRBUTTONUP: u32 = 0x00A5;
@@ -1220,8 +1219,8 @@ fn to_dip(l: &List, x: i32, y: i32) -> (f32, f32) {
     (x as f32 / l.scale, y as f32 / l.scale)
 }
 
-/// The tooltip goes: the pointer left, a key, the wheel or a click moved
-/// things, or the rows changed under it.
+/// The tooltip goes at once, with no warm window: a key or the wheel moved
+/// things under it.
 fn hide_tip() {
     if let Some(h) = with(|l| l.hwnd) {
         tooltip::hide(h);
@@ -1392,7 +1391,9 @@ fn leaves_after_menu(chosen: usize, list_is_foreground: bool) -> bool {
 }
 
 fn right_up(hwnd: HWND, x: i32, y: i32) {
-    tooltip::hide(hwnd);
+    // A press: the tip stays away until the pointer leaves the mark, also
+    // once the row menu is gone.
+    tooltip::pressed(hwnd);
     let row = with(|l| {
         let (dx, dy) = to_dip(l, x, y);
         let lay = layout_of(l);
@@ -1488,7 +1489,7 @@ unsafe extern "system" fn list_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
             return LRESULT(0);
         }
         WM_MOUSELEAVE => {
-            tooltip::hide(hwnd);
+            tooltip::hover(hwnd, None);
             let changed = with(|l| {
                 l.tracking = false;
                 let changed = l.hover != Hit::None;

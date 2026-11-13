@@ -18,6 +18,7 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent, VK_ESCAPE, VK_RETURN,
 };
@@ -223,20 +224,11 @@ fn chevron_target(p: &Pop, item: Option<Item>) -> Option<tooltip::Target> {
     let r = chevron_rect(item)?;
     Some(tooltip::Target {
         id: tooltip::id_of(&item),
-        anchor: Rect::new(
-            p.origin.0 + (r.x * p.scale).round() as i32,
-            p.origin.1 + (r.y * p.scale).round() as i32,
-            (r.w * p.scale).round() as i32,
-            (r.h * p.scale).round() as i32,
-        ),
+        anchor: tooltip::anchor_px(p.origin, r, p.scale),
         side: Side::Auto,
         tip,
     })
 }
-
-/// `WM_MOUSELEAVE`: in the Controls feature of `windows`; the value is fixed
-/// by Win32.
-const WM_MOUSELEAVE: u32 = 0x02A3;
 
 /// The field under a point, for the wheel: its whole block.
 fn field_at(x: f32, y: f32) -> Option<Field> {

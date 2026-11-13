@@ -3,17 +3,15 @@
 //! button, the icon-only controls of every page). Pure; `App` feeds the hit under the pointer and where the last
 //! frame drew it (`Renderer::region_of`).
 
-use crate::capture::Rect;
 use crate::hotkey::HotkeyId;
 use crate::i18n::{self, Key};
 use crate::model::{CalView, Hit, Page};
 use crate::recorder::Source;
-use crate::ui::geometry::Rect as FRect;
 use crate::ui::tooltip::{KeyHint, Side, Tip};
 
 /// The app state a tip reads, built only while a hit with a tip is under the
 /// pointer (`has_tip`).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TipCtx {
     /// The running recording's mic, and its PC audio, are muted.
     pub rec_muted_mic: bool,
@@ -39,6 +37,11 @@ pub struct TipCtx {
     pub clip_pinned: bool,
     /// The CLI page is enlarged.
     pub cli_tall: bool,
+    /// A recording runs: the Rekam page's round button is stop.
+    pub recording: bool,
+    /// The Rekam page's trash was clicked once: "Buang video ini?" asks, and
+    /// `Hit::ScreenDiscard` is its labelled "Buang".
+    pub screen_discard_armed: bool,
 }
 
 impl Default for TipCtx {
@@ -57,6 +60,8 @@ impl Default for TipCtx {
             mixer: None,
             clip_pinned: false,
             cli_tall: false,
+            recording: false,
+            screen_discard_armed: false,
         }
     }
 }
@@ -92,6 +97,9 @@ pub fn has_tip(hit: &Hit) -> bool {
             | Hit::RecPause
             | Hit::RecMute(_)
             | Hit::RecToggle
+            | Hit::RecPickFile
+            | Hit::RecFolder
+            | Hit::ScreenDiscard
             | Hit::DeviceOpen(_)
             | Hit::DeviceDetail(_)
             | Hit::CliExpand
@@ -121,7 +129,9 @@ pub fn feed(hit: Option<Hit>, held: bool, in_flux: bool, pressed: &mut Option<Hi
     if held || in_flux {
         return Feed::LeaveAlone;
     }
-    if hit.is_some() && *pressed == hit {
+    if let (Some(hit), Some(was)) = (&hit, pressed.as_ref())
+        && same_control(hit, was)
+    {
         return Feed::LeaveAlone;
     }
     *pressed = None;
@@ -226,14 +236,35 @@ pub fn tip_for(hit: &Hit, ctx: &TipCtx) -> Option<Tip> {
         } else {
             Key::TipRecPause
         }),
-        // The big button already shows its label: only what it does.
+        // The round button acts on the tab's kind, as its hotkey does. Idle
+        // it shows "Rekam" (but under the waiting strip): only what it
+        // starts. Recording, it is the stop square, with no label.
         Hit::RecToggle => {
-            Tip::short(Key::TipRecToggleAbout).key(KeyHint::Hotkey(if ctx.screen_tab {
+            let tip = if ctx.recording {
+                Tip::named(Key::TipRecStop).about(Key::TipRecStopAbout)
+            } else if ctx.screen_tab {
+                Tip::short(Key::TipRecStartScreenAbout)
+            } else {
+                Tip::short(Key::TipRecStartAudioAbout)
+            };
+            tip.key(KeyHint::Hotkey(if ctx.screen_tab {
                 HotkeyId::RecordScreen
             } else {
                 HotkeyId::Record
             }))
         }
+        // The header's two icons. The picker lists recordings and videos on
+        // either tab (`RECORDING_FILTER`); the folder is the tab's.
+        Hit::RecPickFile => Tip::named(Key::TipRecPickFile).about(Key::TipRecPickFileAbout),
+        Hit::RecFolder => Tip::named(Key::RecOpenFolder).about(if ctx.screen_tab {
+            Key::TipRecFolderScreenAbout
+        } else {
+            Key::TipRecFolderAudioAbout
+        }),
+        // The trash beside a running screen recording asks first; once it
+        // asks, the hit is the labelled "Buang" under the question.
+        Hit::ScreenDiscard if ctx.screen_discard_armed => return None,
+        Hit::ScreenDiscard => Tip::named(Key::TipScreenDiscard).about(Key::TipScreenDiscardAbout),
 
         Hit::DeviceOpen(_) => Tip::named(Key::TipDeviceOpen),
         Hit::DeviceDetail(_) => Tip::named(Key::TipDeviceDetail).about(Key::TipDeviceDetailAbout),
@@ -301,22 +332,23 @@ pub fn side_for(hit: &Hit) -> Side {
     }
 }
 
-/// A stable id for `hit` showing `tip` (`Hit` holds strings and paths and is
-/// not `Hash`). What the tip says is part of it: a hit whose meaning flips
-/// with the state (play / pause, pin / unpin) gets a fresh tip when it does.
-pub fn tip_id(hit: &Hit, tip: &Tip) -> u64 {
-    crate::ui::tooltip::id_of(&(format!("{hit:?}"), &tip.name, &tip.about))
+/// A stable id for the control `hit` is on (`Hit` holds strings and paths and
+/// is not `Hash`). It never carries the state: a click that flips play into
+/// pause or stars a folder is on the same control, which stays quiet until
+/// the pointer leaves it; a flip while its tip is up repaints the tip.
+pub fn tip_id(hit: &Hit) -> u64 {
+    match hit {
+        Hit::CliFolderStar { path, .. } => crate::ui::tooltip::id_of(&("CliFolderStar", path)),
+        _ => crate::ui::tooltip::id_of(&format!("{hit:?}")),
+    }
 }
 
-/// `r` (dip from the island window's top-left) on screen, px, for a window
-/// at `origin` (px) and `scale`.
-pub fn anchor_px(origin: (i32, i32), r: FRect, scale: f32) -> Rect {
-    Rect::new(
-        origin.0 + (r.x * scale).round() as i32,
-        origin.1 + (r.y * scale).round() as i32,
-        (r.w * scale).round() as i32,
-        (r.h * scale).round() as i32,
-    )
+/// `a` and `b` are the same control, in whatever state (`tip_id`).
+fn same_control(a: &Hit, b: &Hit) -> bool {
+    match (a, b) {
+        (Hit::CliFolderStar { path: x, .. }, Hit::CliFolderStar { path: y, .. }) => x == y,
+        _ => a == b,
+    }
 }
 
 #[cfg(test)]
@@ -353,6 +385,8 @@ mod tests {
                     mixer: Some(("Spotify".to_string(), on)),
                     clip_pinned: on,
                     cli_tall: on,
+                    recording: on,
+                    screen_discard_armed: on,
                 });
             }
         }
@@ -388,6 +422,9 @@ mod tests {
             Hit::RecMute(Source::Mic),
             Hit::RecMute(Source::System),
             Hit::RecToggle,
+            Hit::RecPickFile,
+            Hit::RecFolder,
+            Hit::ScreenDiscard,
             Hit::DeviceOpen(0),
             Hit::DeviceDetail(0),
             Hit::CliExpand,
@@ -541,34 +578,28 @@ mod tests {
     }
 
     #[test]
-    fn the_anchor_is_the_region_on_screen() {
-        let r = FRect {
-            x: 10.0,
-            y: 4.0,
-            w: 20.0,
-            h: 8.0,
-        };
-        assert_eq!(anchor_px((100, 0), r, 1.5), Rect::new(115, 6, 30, 12));
-        assert_eq!(anchor_px((-1920, 0), r, 1.0), Rect::new(-1910, 4, 20, 8));
-    }
-
-    #[test]
     fn the_id_tells_hits_apart_and_is_stable() {
-        let c = TipCtx::default();
-        let id = |h: &Hit| tip_id(h, &tip_for(h, &c).unwrap());
         let a = Hit::PanelPage(Page::Media);
-        assert_eq!(id(&a), id(&a.clone()));
-        assert_ne!(id(&a), id(&Hit::PanelPage(Page::Mixer)));
+        assert_eq!(tip_id(&a), tip_id(&a.clone()));
+        assert_ne!(tip_id(&a), tip_id(&Hit::PanelPage(Page::Mixer)));
         assert_ne!(
-            id(&Hit::RecMuteCompact(Source::Mic)),
-            id(&Hit::RecMuteCompact(Source::System))
+            tip_id(&Hit::RecMuteCompact(Source::Mic)),
+            tip_id(&Hit::RecMuteCompact(Source::System))
         );
+        let star = |p: &str| Hit::CliFolderStar {
+            path: p.into(),
+            on: true,
+        };
+        assert_ne!(tip_id(&star("C:\\a")), tip_id(&star("C:\\b")));
+        assert_ne!(tip_id(&star("C:\\a")), tip_id(&Hit::CliExpand));
     }
 
     #[test]
-    fn a_flipped_state_gives_a_fresh_id() {
+    fn a_flipped_state_keeps_the_id_and_changes_the_tip() {
+        // A click flips these: the tip must stay away under the pointer that
+        // clicked, and a live flip repaints the tip that is up.
         let off = TipCtx::default();
-        let flips: [(Hit, TipCtx); 8] = [
+        let flips: [(Hit, TipCtx); 11] = [
             (
                 Hit::PlayPause,
                 TipCtx {
@@ -625,22 +656,64 @@ mod tests {
                     ..off.clone()
                 },
             ),
+            (
+                Hit::PomoStartPause,
+                TipCtx {
+                    pomo_running: true,
+                    ..off.clone()
+                },
+            ),
+            (
+                Hit::RecToggle,
+                TipCtx {
+                    recording: true,
+                    ..off.clone()
+                },
+            ),
+            (
+                Hit::MixerMute(1),
+                TipCtx {
+                    mixer: Some((String::new(), true)),
+                    ..off.clone()
+                },
+            ),
         ];
         for (hit, on) in flips {
-            let was = tip_id(&hit, &tip_for(&hit, &off).unwrap());
-            let now = tip_id(&hit, &tip_for(&hit, &on).unwrap());
-            assert_ne!(was, now, "{hit:?}");
+            assert_ne!(tip_for(&hit, &off), tip_for(&hit, &on), "{hit:?}");
+            assert_eq!(tip_id(&hit), tip_id(&hit.clone()), "{hit:?}");
         }
-        let hit = Hit::MixerMute(1);
-        let id = |name: &str, muted: bool| {
-            let c = TipCtx {
-                mixer: Some((name.to_string(), muted)),
-                ..off.clone()
-            };
-            tip_id(&hit, &tip_for(&hit, &c).unwrap())
+        // The CLI star carries its state in the hit itself.
+        let star = |on| Hit::CliFolderStar {
+            path: "C:\\work".into(),
+            on,
         };
-        assert_ne!(id("Spotify", false), id("Spotify", true));
-        assert_ne!(id("Spotify", false), id("Chrome", false));
+        assert_ne!(tip_for(&star(true), &off), tip_for(&star(false), &off));
+        assert_eq!(tip_id(&star(true)), tip_id(&star(false)));
+    }
+
+    #[test]
+    fn a_click_that_flips_the_cli_star_stays_quiet_until_left() {
+        let star = |on| Hit::CliFolderStar {
+            path: "C:\\work".into(),
+            on,
+        };
+        let mut pressed = Some(star(true));
+        // The click starred it: the same star, now "Unstar".
+        assert_eq!(
+            feed(Some(star(false)), false, false, &mut pressed),
+            Feed::LeaveAlone
+        );
+        assert_eq!(pressed, Some(star(true)));
+        // Another folder's star is another control.
+        let other = Hit::CliFolderStar {
+            path: "C:\\other".into(),
+            on: false,
+        };
+        assert_eq!(
+            feed(Some(other.clone()), false, false, &mut pressed),
+            Feed::Tip(other)
+        );
+        assert_eq!(pressed, None);
     }
 
     /// Every hit with a tip and every neighbour without one.
@@ -668,23 +741,120 @@ mod tests {
                 Hit::ShelfCard(1),
                 Hit::ShelfClear,
                 Hit::DeviceEject(0),
-                Hit::RecOpen(0),
-                Hit::RecTab(crate::model::RecKind::Screen),
                 Hit::CliInput,
                 Hit::CliStop,
                 Hit::CleanGo,
             ])
             .chain(page_hits())
+            .chain(rekam_hits())
             .collect()
+    }
+
+    /// Every hit of the Rekam page (and the "Rekaman tersimpan" notice's
+    /// chips), idle and recording, with a tip or not.
+    fn rekam_hits() -> Vec<Hit> {
+        use crate::model::{RecKind, RecSources};
+        let both = RecSources {
+            mic: true,
+            system: true,
+        };
+        vec![
+            Hit::RecTab(RecKind::Audio),
+            Hit::RecTab(RecKind::Screen),
+            Hit::RecPickFile,
+            Hit::RecFolder,
+            Hit::RecToggle,
+            Hit::RecPause,
+            Hit::ScreenDiscard,
+            Hit::ScreenDiscardKeep,
+            Hit::RecMute(Source::Mic),
+            Hit::RecMute(Source::System),
+            Hit::RecDevice(Source::Mic),
+            Hit::RecDevice(Source::System),
+            Hit::RecSources(both),
+            Hit::RecQuality,
+            Hit::RecCaptions,
+            Hit::RecOpen(0),
+            Hit::RecTranscript(0),
+            Hit::RecTranscribeChip,
+            Hit::RecTranscriptSetup,
+        ]
     }
 
     #[test]
     fn the_gate_lets_through_exactly_the_hits_with_a_tip() {
-        for c in ctxs().into_iter().chain([TipCtx::default()]) {
-            for hit in sample_hits() {
-                assert_eq!(has_tip(&hit), tip_for(&hit, &c).is_some(), "{hit:?}");
+        let all: Vec<TipCtx> = ctxs().into_iter().chain([TipCtx::default()]).collect();
+        for hit in sample_hits() {
+            // No tip passes the gate's back; a hit through it has one in
+            // some state (the armed discard's "Buang" shows its own label).
+            let some = all.iter().filter(|c| tip_for(&hit, c).is_some()).count();
+            assert!(some == 0 || has_tip(&hit), "{hit:?} has a tip the gate stops");
+            assert_eq!(has_tip(&hit), some > 0, "{hit:?}");
+        }
+    }
+
+    #[test]
+    fn the_rekam_icon_buttons_have_tips_and_its_labelled_controls_none() {
+        let icons = [
+            Hit::RecPickFile,
+            Hit::RecFolder,
+            Hit::RecToggle,
+            Hit::RecPause,
+            Hit::ScreenDiscard,
+            Hit::RecMute(Source::Mic),
+            Hit::RecMute(Source::System),
+        ];
+        for hit in rekam_hits() {
+            assert_eq!(has_tip(&hit), icons.contains(&hit), "{hit:?}");
+        }
+        for lang in LANGS {
+            i18n::set_lang(lang);
+            for c in ctxs() {
+                for hit in &icons {
+                    let Some(tip) = tip_for(hit, &c) else {
+                        assert!(*hit == Hit::ScreenDiscard && c.screen_discard_armed);
+                        continue;
+                    };
+                    let said: Vec<&String> = tip.name.iter().chain(tip.about.iter()).collect();
+                    assert!(!said.is_empty(), "{lang:?} {hit:?}");
+                    for s in said {
+                        assert!(!s.is_empty() && !s.contains('\u{2014}'), "{lang:?} {s}");
+                    }
+                }
             }
         }
+    }
+
+    #[test]
+    fn the_rekam_header_icons_say_what_they_open_for_the_tab() {
+        let audio = TipCtx::default();
+        let screen = TipCtx {
+            screen_tab: true,
+            ..TipCtx::default()
+        };
+        let pick = tip_for(&Hit::RecPickFile, &audio).unwrap();
+        assert_eq!(pick.name.as_deref(), Some(tr(Key::TipRecPickFile)));
+        assert_eq!(pick.about.as_deref(), Some(tr(Key::TipRecPickFileAbout)));
+        // The picker lists recordings and videos on both tabs.
+        assert_eq!(tip_for(&Hit::RecPickFile, &screen).unwrap(), pick);
+        let folder = tip_for(&Hit::RecFolder, &audio).unwrap();
+        assert_eq!(folder.name.as_deref(), Some(tr(Key::RecOpenFolder)));
+        assert_eq!(folder.about.as_deref(), Some(tr(Key::TipRecFolderAudioAbout)));
+        let videos = tip_for(&Hit::RecFolder, &screen).unwrap();
+        assert_eq!(videos.about.as_deref(), Some(tr(Key::TipRecFolderScreenAbout)));
+    }
+
+    #[test]
+    fn the_trash_asks_first_and_its_question_has_no_tip() {
+        let live = TipCtx::default();
+        let trash = tip_for(&Hit::ScreenDiscard, &live).unwrap();
+        assert_eq!(trash.name.as_deref(), Some(tr(Key::TipScreenDiscard)));
+        assert_eq!(trash.about.as_deref(), Some(tr(Key::TipScreenDiscardAbout)));
+        let armed = TipCtx {
+            screen_discard_armed: true,
+            ..TipCtx::default()
+        };
+        assert!(tip_for(&Hit::ScreenDiscard, &armed).is_none());
     }
 
     #[test]
@@ -693,6 +863,10 @@ mod tests {
             i18n::set_lang(lang);
             for c in ctxs() {
                 for hit in page_hits() {
+                    // The armed discard's "Buang" says what it does itself.
+                    if hit == Hit::ScreenDiscard && c.screen_discard_armed {
+                        continue;
+                    }
                     let tip = tip_for(&hit, &c).unwrap_or_else(|| panic!("{hit:?}: no tip"));
                     let said = tip.name.iter().chain(tip.about.iter());
                     assert!(said.clone().count() > 0, "{lang:?} {hit:?}");
@@ -892,16 +1066,32 @@ mod tests {
         let resume = tip_for(&Hit::RecPause, &paused).unwrap();
         assert_eq!(resume.name.as_deref(), Some(tr(Key::TipRecResume)));
 
+        // Idle, the round button shows "Rekam" (but under the waiting
+        // strip): the short form, what it starts on this tab.
         let audio = tip_for(&Hit::RecToggle, &c).unwrap();
         assert!(audio.name.is_none());
-        assert_eq!(audio.about.as_deref(), Some(tr(Key::TipRecToggleAbout)));
+        assert_eq!(audio.about.as_deref(), Some(tr(Key::TipRecStartAudioAbout)));
         assert_eq!(audio.keys, [KeyHint::Hotkey(HotkeyId::Record)]);
         let screen = TipCtx {
             screen_tab: true,
             ..TipCtx::default()
         };
         let screen = tip_for(&Hit::RecToggle, &screen).unwrap();
+        assert_eq!(screen.about.as_deref(), Some(tr(Key::TipRecStartScreenAbout)));
         assert_eq!(screen.keys, [KeyHint::Hotkey(HotkeyId::RecordScreen)]);
+        // Recording, it is the stop square with no label: named, with the
+        // tab's key (the tab is the running recording's).
+        for (screen_tab, key) in [(false, HotkeyId::Record), (true, HotkeyId::RecordScreen)] {
+            let live = TipCtx {
+                recording: true,
+                screen_tab,
+                ..TipCtx::default()
+            };
+            let stop = tip_for(&Hit::RecToggle, &live).unwrap();
+            assert_eq!(stop.name.as_deref(), Some(tr(Key::TipRecStop)));
+            assert_eq!(stop.about.as_deref(), Some(tr(Key::TipRecStopAbout)));
+            assert_eq!(stop.keys, [KeyHint::Hotkey(key)]);
+        }
 
         // The page's mute buttons say what the notch's level groups say.
         for (src, muted) in [

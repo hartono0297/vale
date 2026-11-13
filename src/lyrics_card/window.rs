@@ -177,7 +177,6 @@ struct Press {
     dragging: bool,
 }
 
-/// What to do once the borrow is released.
 /// A tooltip call, made once the borrow is released.
 enum TipOp {
     Hover(Option<tooltip::Target>),
@@ -185,6 +184,7 @@ enum TipOp {
     Hide,
 }
 
+/// What to do once the borrow is released.
 enum Fx {
     Show(bool),
     Capture(bool),
@@ -1083,17 +1083,10 @@ impl Card {
             Zone::Grip => r.grip,
             _ => return None,
         };
-        let playing = self.c.playing;
-        let tip = layout::zone_tip(zone, playing)?;
-        let k = self.scale();
+        let tip = layout::zone_tip(zone, self.c.playing)?;
         Some(tooltip::Target {
-            id: tooltip::id_of(&(format!("{zone:?}"), playing && zone == Zone::PlayPause)),
-            anchor: crate::capture::Rect::new(
-                self.origin.0 + (rect.x * k).round() as i32,
-                self.origin.1 + (rect.y * k).round() as i32,
-                (rect.w * k).round() as i32,
-                (rect.h * k).round() as i32,
-            ),
+            id: layout::zone_tip_id(zone),
+            anchor: tooltip::anchor_px(self.origin, rect.shared(), self.scale()),
             side: Side::Auto,
             tip,
         })
@@ -1233,7 +1226,7 @@ impl Card {
         if self.press.is_some() {
             return;
         }
-        self.tips.push(TipOp::Hide);
+        self.tips.push(TipOp::Hover(None));
         let now = Instant::now();
         self.last_pt = None;
         self.set_hover(false, now);

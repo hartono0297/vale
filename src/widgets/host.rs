@@ -31,6 +31,7 @@ use std::time::Instant;
 use chrono::{DateTime, Local, NaiveDate};
 use windows::Win32::Foundation::{ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent, VK_MENU,
     VK_SHIFT,
@@ -2082,8 +2083,6 @@ fn draw(s: &mut State, i: usize) {
 
 // ------------------------------------------------------------------ messages
 
-/// In the Controls feature of `windows`; the value is fixed by Win32.
-const WM_MOUSELEAVE: u32 = 0x02A3;
 /// `WM_SYSCOMMAND`'s menu key (Alt released alone).
 const SC_KEYMENU: u32 = 0xF100;
 
@@ -2165,6 +2164,9 @@ unsafe extern "system" fn wnd_proc(
             return LRESULT(0);
         }
         WM_RBUTTONUP => {
+            // A press: the tip stays away until the pointer leaves the
+            // button, also once the menu or popover it opens is gone.
+            tooltip::pressed(hwnd);
             let mut pt = POINT::default();
             unsafe {
                 let _ = GetCursorPos(&mut pt);
@@ -2632,16 +2634,6 @@ fn tip_at(s: &State, i: usize, pt: POINT) -> Option<tooltip::Target> {
     {
         return None;
     }
-    // A note dip rect on screen: the note's own origin and scale, which is
-    // how the pointer was mapped to the note (`target_at`).
-    let on_screen = |r: DipR| {
-        Rect::new(
-            w.note.x + (r.x * w.scale).round() as i32,
-            w.note.y + (r.y * w.scale).round() as i32,
-            (r.w * w.scale).round() as i32,
-            (r.h * w.scale).round() as i32,
-        )
-    };
     let (id, rect, tip) = match target_at_in(w, pt.x, pt.y, now) {
         Target::Button(b) => {
             let at_cap = !sticky::can_add(sheet_total(&s.wins));
@@ -2677,16 +2669,18 @@ fn tip_at(s: &State, i: usize, pt: POINT) -> Option<tooltip::Target> {
         }
         _ => return None,
     };
+    // On screen by the note's own origin and scale, which is how the pointer
+    // was mapped to the note (`target_at`).
     Some(tooltip::Target {
         id,
-        anchor: on_screen(rect),
+        anchor: tooltip::anchor_px((w.note.x, w.note.y), rect, w.scale),
         side: tooltip::Side::Auto,
         tip,
     })
 }
 
 fn mouse_leave(hwnd: HWND) {
-    tooltip::hide(hwnd);
+    tooltip::hover(hwnd, None);
     let _ = with(|s| {
         let i = idx_of(s, hwnd)?;
         let animate = s.animate;
@@ -3463,7 +3457,7 @@ fn bar_anchor(hwnd: HWND, tool: Option<Tool>) -> Option<(Rect, Rect, f32, UiFont
 /// The highlighter popover, above the Marker button (above More when the
 /// marker moved into the overflow menu). Toggles: a second press closes it.
 fn open_marker_pop(hwnd: HWND) {
-    tooltip::hide(hwnd);
+    tooltip::pressed(hwnd);
     if fmt_pop::is_open_for(hwnd) {
         fmt_pop::close();
         return;
@@ -4076,7 +4070,7 @@ fn opens_templates(target: Target, notes: usize) -> bool {
 /// A right click on a note's enabled (+) (`opens_templates`): the templates,
 /// and the new note beside it.
 fn plus_menu(hwnd: HWND, at: POINT) {
-    tooltip::hide(hwnd);
+    tooltip::pressed(hwnd);
     let info = with(|s| {
         let i = idx_of(s, hwnd)?;
         Some((s.wins[i].id.clone(), s.lang))
@@ -4362,7 +4356,7 @@ fn send_to_phone(hwnd: HWND) {
 }
 
 fn context_menu(hwnd: HWND, at: POINT) {
-    tooltip::hide(hwnd);
+    tooltip::pressed(hwnd);
     let data = with(|s| {
         let i = idx_of(s, hwnd)?;
         let w = &s.wins[i];

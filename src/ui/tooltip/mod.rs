@@ -88,7 +88,7 @@ pub enum KeyHint {
 
 /// What a tip says: a name (line 1), what a click does (the about line) and
 /// the keys that do the same.
-#[derive(Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Tip {
     pub name: Option<String>,
     pub about: Option<String>,
@@ -129,7 +129,10 @@ impl Tip {
 }
 
 /// Something with a tip: `id` tells it from the owner's other targets (see
-/// `id_of`), `anchor` is where it is on screen, px.
+/// `id_of`), `anchor` is where it is on screen, px. The id names the control,
+/// never its state: a button that turns from Play into Pause keeps its id,
+/// and `hover` repaints a shown tip whose content changed.
+#[derive(Clone)]
 pub struct Target {
     pub id: u64,
     pub anchor: Rect,
@@ -142,6 +145,38 @@ pub fn id_of<T: Hash>(t: &T) -> u64 {
     let mut h = DefaultHasher::new();
     t.hash(&mut h);
     h.finish()
+}
+
+/// `r` (dip from a window's top-left) on screen, px, for a window at `origin`
+/// (px) and `scale`: for windows that keep their own screen origin.
+pub fn anchor_px(origin: (i32, i32), r: FRect, scale: f32) -> Rect {
+    Rect::new(
+        origin.0 + (r.x * scale).round() as i32,
+        origin.1 + (r.y * scale).round() as i32,
+        (r.w * scale).round() as i32,
+        (r.h * scale).round() as i32,
+    )
+}
+
+/// A tip target before its rect is put on screen: a window builds it inside
+/// its own borrow and maps it with `on_screen` once that has ended
+/// (`ClientToScreen` can send messages back to the window).
+pub struct TipSpec {
+    pub id: u64,
+    /// Client dip.
+    pub rect: FRect,
+    pub scale: f32,
+    pub tip: Tip,
+}
+
+/// `spec` on screen, below its control (above when there is no room).
+pub fn on_screen(hwnd: HWND, spec: TipSpec) -> Target {
+    Target {
+        id: spec.id,
+        anchor: to_screen(hwnd, spec.rect, spec.scale),
+        side: Side::Auto,
+        tip: spec.tip,
+    }
 }
 
 /// `r` (client dip) on screen, px.
@@ -358,6 +393,8 @@ struct State {
     machine: Machine,
     /// The newest target seen for the id the machine waits on or shows.
     pending: Option<(TipId, Target)>,
+    /// What the plate on screen says, and for which target.
+    shown: Option<(TipId, Tip)>,
     /// The plate on screen.
     window: Option<HWND>,
     /// The thread timer's id; 0 when none runs.
@@ -368,6 +405,7 @@ thread_local! {
     static STATE: RefCell<State> = RefCell::new(State {
         machine: Machine::new(),
         pending: None,
+        shown: None,
         window: None,
         timer: 0,
     });
@@ -393,24 +431,38 @@ pub fn set_font(font: UiFont) {
 /// The pointer is over `target`, or over nothing with a tip. Call it on every
 /// pointer move over `owner`.
 pub fn hover(owner: HWND, target: Option<Target>) {
+    if let Some((out, repaint)) = feed(owner, target) {
+        apply(out);
+        if let Some(id) = repaint {
+            show_with(id, true);
+        }
+    }
+}
+
+/// What a hover asks for: the machine's answer, and the shown tip to repaint
+/// in place when its target now says something else (Play became Pause under
+/// a resting pointer). `None` when the state is borrowed.
+fn feed(owner: HWND, target: Option<Target>) -> Option<(Out, Option<TipId>)> {
     let key = owner.0 as isize;
-    let out = with(|s| {
+    with(|s| {
         let id = target.as_ref().map(|t| TipId {
             owner: key,
             id: t.id,
         });
         // Another window's tip is not this window's to hide.
         if id.is_none() && s.machine.current().is_some_and(|c| c.owner != key) {
-            return Out::default();
+            return (Out::default(), None);
         }
+        let mut repaint = None;
         if let (Some(id), Some(t)) = (id, target) {
+            let says_else = s.shown.as_ref().is_some_and(|(at, tip)| *at == id && *tip != t.tip);
+            if says_else && s.machine.shown() == Some(id) {
+                repaint = Some(id);
+            }
             s.pending = Some((id, t));
         }
-        s.machine.hover(id)
-    });
-    if let Some(out) = out {
-        apply(out);
-    }
+        (s.machine.hover(id), repaint)
+    })
 }
 
 /// A mouse button went down on `owner`: the tip goes until the pointer leaves
@@ -528,15 +580,35 @@ unsafe extern "system" fn tip_proc(
     }
 }
 
-/// Puts the plate for `id` on screen, in place of any that is up. When it
-/// cannot, the machine is reset: it must not think a tip is up.
+/// Puts the plate for `id` on screen, in place of any that is up.
 fn show(id: TipId) {
-    destroy_window();
-    if try_show(id).is_some() {
+    show_with(id, false);
+}
+
+/// Puts the plate for `id` on screen. `in_place`: the plate up is `id`'s and
+/// is painted again where it is, with no hide in between. When it cannot,
+/// the machine is reset: it must not think a tip is up.
+fn show_with(id: TipId, in_place: bool) {
+    let old = with(|s| s.window.take()).flatten();
+    let keep = if in_place {
+        old
+    } else {
+        if let Some(hwnd) = old {
+            let _ = unsafe { DestroyWindow(hwnd) };
+        }
+        None
+    };
+    if try_show(id, keep).is_some() {
         return;
+    }
+    if let Some(hwnd) = keep
+        && unsafe { IsWindow(Some(hwnd)) }.as_bool()
+    {
+        let _ = unsafe { DestroyWindow(hwnd) };
     }
     let out = with(|s| {
         s.pending = None;
+        s.shown = None;
         s.machine.hide()
     });
     if let Some(out) = out {
@@ -544,9 +616,12 @@ fn show(id: TipId) {
     }
 }
 
-fn try_show(id: TipId) -> Option<()> {
+/// Shows `id`'s newest target: painted into `keep` (the plate already up for
+/// it) when given, else into a new window.
+fn try_show(id: TipId, keep: Option<HWND>) -> Option<()> {
     let target = with(|s| s.pending.take_if(|(p, _)| *p == id).map(|(_, t)| t))??;
     if !ON_SCREEN {
+        let _ = with(|s| s.shown = Some((id, target.tip)));
         return Some(());
     }
     let owner = HWND(id.owner as *mut _);
@@ -569,26 +644,10 @@ fn try_show(id: TipId) -> Option<()> {
     let margin = (SHADOW * scale).round() as i32;
     let origin = (plate.x - margin, plate.y - margin);
     let size = (plate.w + 2 * margin, plate.h + 2 * margin);
-    let Ok(module) = (unsafe { GetModuleHandleW(None) }) else {
-        return None;
+    let hwnd = match keep {
+        Some(hwnd) if unsafe { IsWindow(Some(hwnd)) }.as_bool() => hwnd,
+        _ => create_plate(owner, origin, size)?,
     };
-    let hwnd = unsafe {
-        CreateWindowExW(
-            WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
-            CLASS,
-            w!("Vale tooltip"),
-            WS_POPUP,
-            origin.0,
-            origin.1,
-            size.0,
-            size.1,
-            Some(owner),
-            None,
-            Some(module.into()),
-            None,
-        )
-    };
-    let Ok(hwnd) = hwnd else { return None };
     let painted = Canvas::with_gfx(gfx, size).and_then(|canvas| {
         canvas.paint_with(hwnd, origin, 0.0, 255, |c| paint(c, &text, &look, scale))
     });
@@ -608,8 +667,35 @@ fn try_show(id: TipId) -> Option<()> {
             SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE,
         );
     }
-    let _ = with(|s| s.window = Some(hwnd));
+    let _ = with(|s| {
+        s.window = Some(hwnd);
+        s.shown = Some((id, target.tip));
+    });
     Some(())
+}
+
+/// A new, empty plate window for `owner` at `origin`, `size` px.
+fn create_plate(owner: HWND, origin: (i32, i32), size: (i32, i32)) -> Option<HWND> {
+    let Ok(module) = (unsafe { GetModuleHandleW(None) }) else {
+        return None;
+    };
+    let hwnd = unsafe {
+        CreateWindowExW(
+            WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
+            CLASS,
+            w!("Vale tooltip"),
+            WS_POPUP,
+            origin.0,
+            origin.1,
+            size.0,
+            size.1,
+            Some(owner),
+            None,
+            Some(module.into()),
+            None,
+        )
+    };
+    hwnd.ok()
 }
 
 #[cfg(test)]
@@ -704,6 +790,73 @@ mod tests {
         assert_eq!(current(), id, "a press keeps the id, blocking until leave");
         hide(a);
         assert_eq!(current(), None);
+    }
+
+    fn target_with(id: u64, tip: Tip) -> Option<Target> {
+        Some(Target {
+            id,
+            anchor: Rect::new(10, 10, 20, 20),
+            side: Side::Auto,
+            tip,
+        })
+    }
+
+    /// The one-shot timer runs out.
+    fn fire() {
+        unsafe { timer_proc(HWND::default(), 0, 0, 0) };
+    }
+
+    fn shown_tip() -> Option<(TipId, Tip)> {
+        with(|s| s.shown.clone()).flatten()
+    }
+
+    #[test]
+    fn new_content_on_the_shown_target_is_repainted_in_place() {
+        let a = fake(0x3000);
+        let id = TipId {
+            owner: 0x3000,
+            id: 1,
+        };
+        hover(a, target_with(1, Tip::named(Key::TipPlay)));
+        fire();
+        assert_eq!(shown_tip(), Some((id, Tip::named(Key::TipPlay))));
+        // Play turned into Pause under a resting pointer: the same target.
+        let (out, repaint) = feed(a, target_with(1, Tip::named(Key::TipPause))).unwrap();
+        assert_eq!(out, Out::default(), "no hide and no new wait");
+        assert_eq!(repaint, Some(id));
+        hover(a, target_with(1, Tip::named(Key::TipPause)));
+        assert_eq!(current(), Some(id));
+        assert_eq!(shown_tip(), Some((id, Tip::named(Key::TipPause))));
+        // The same content again: nothing to do.
+        let fed = feed(a, target_with(1, Tip::named(Key::TipPause))).unwrap();
+        assert_eq!(fed, (Out::default(), None));
+    }
+
+    #[test]
+    fn new_content_while_waiting_or_clicked_shows_nothing_early() {
+        let a = fake(0x3000);
+        hover(a, target_with(1, Tip::named(Key::TipPlay)));
+        let fed = feed(a, target_with(1, Tip::named(Key::TipPause))).unwrap();
+        assert_eq!(fed, (Out::default(), None), "still waiting");
+        fire();
+        let shown = shown_tip().map(|(_, t)| t);
+        assert_eq!(shown, Some(Tip::named(Key::TipPause)), "the newest content shows");
+        // A click flips the button; its tip stays away until the pointer leaves.
+        pressed(a);
+        let fed = feed(a, target_with(1, Tip::named(Key::TipPlay))).unwrap();
+        assert_eq!(fed, (Out::default(), None));
+    }
+
+    #[test]
+    fn anchor_px_is_the_dip_rect_on_screen() {
+        let r = FRect {
+            x: 10.0,
+            y: 4.0,
+            w: 20.0,
+            h: 8.0,
+        };
+        assert_eq!(anchor_px((100, 0), r, 1.5), Rect::new(115, 6, 30, 12));
+        assert_eq!(anchor_px((-1920, 0), r, 1.0), Rect::new(-1910, 4, 20, 8));
     }
 
     #[test]
