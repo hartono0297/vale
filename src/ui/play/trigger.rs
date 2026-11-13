@@ -161,6 +161,8 @@ mod tests {
         assert!(!presence_ok(Duration::from_secs(14)));
         assert!(presence_ok(Duration::from_secs(15)));
         assert!(presence_ok(Duration::from_secs(299)));
+        assert!(presence_ok(Duration::from_secs(300)));
+        assert!(!presence_ok(Duration::from_millis(300_001)));
         assert!(!presence_ok(Duration::from_secs(301)));
     }
 
@@ -170,7 +172,6 @@ mod tests {
             assert!(pool(m, true).len() >= 3, "{m:?}");
             assert!(pool(m, false).len() >= 2, "{m:?} without the clock");
             assert!(pool(m, false).iter().all(|s| !s.needs_clock()), "{m:?}");
-            assert!(pool(m, true).iter().all(|s| s.mascot() == m), "{m:?}");
         }
     }
 
@@ -315,5 +316,39 @@ mod tests {
     fn each_story_lasts_as_long_as_the_mockup() {
         let secs: Vec<f32> = ALL.iter().map(|s| s.secs()).collect();
         assert_eq!(secs, [7.8, 8.6, 8.4, 8.4, 7.6, 7.8, 7.4, 7.6, 7.8, 7.9]);
+    }
+
+    #[test]
+    fn each_mascot_owns_exactly_its_stories() {
+        assert_eq!(
+            pool(Mascot::Cat, true),
+            vec![
+                Story::PetakUmpet,
+                Story::BantalAngka,
+                Story::PianoEkor,
+                Story::SyalEkor
+            ]
+        );
+        assert_eq!(
+            pool(Mascot::Octopus, true),
+            vec![Story::PenasaranJam, Story::PelukPulau, Story::Bungee]
+        );
+        assert_eq!(
+            pool(Mascot::Falk, true),
+            vec![Story::Kelelawar, Story::MalingAngka, Story::TerbangKeliling]
+        );
+    }
+
+    #[test]
+    fn all_holds_every_story_once() {
+        assert_eq!(ALL.len(), 10);
+        let pools: Vec<Story> = [Mascot::Cat, Mascot::Octopus, Mascot::Falk]
+            .into_iter()
+            .flat_map(|m| pool(m, true))
+            .collect();
+        assert_eq!(pools.len(), 10);
+        for s in ALL {
+            assert_eq!(pools.iter().filter(|p| **p == s).count(), 1, "{s:?}");
+        }
     }
 }
