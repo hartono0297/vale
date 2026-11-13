@@ -14,7 +14,7 @@ One note per decision, gotcha or convention. Link each new note here.
 
 - [[studio-palette-accent-aliases]]
 - [[studio-font-sources]]
-- [[exe-size]]: size measured per change (the clipboard drag-out, 2026-11-12, +7.5 KiB to 4,566,528 bytes against v5.2.0, is the last entry); icon small sizes as PNG (-38 KB), opt-level z option (-326 KB) left to the owner
+- [[exe-size]]: size measured per change (the settings export and import, 2026-11-13, +54 KiB to 4,750,336 bytes, is the last entry); icon small sizes as PNG (-38 KB), opt-level z option (-326 KB) left to the owner
 - [[studio-icons]]
 - [[studio-calendar-day-view]]
 - [[studio-media-progress-timer]]
@@ -103,6 +103,7 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[live-captions]]: recording phase 5 (2026-11-11): offline live captions in a never-activated caption card (stays over fullscreen) and an optional notch line; own capture (PC audio, "Mic juga" adds Saya/Peserta), Transkrip engine and model, interim grey lines, 15 s backlog cap with a gap and a one-time slow hint, soft `Hold::Captions`, battery pause with "Tetap jalan", one model load at a time, hotkey 14 `Ctrl+Alt+C`, tray, Rekam switch, Settings card, timer 66, `WM_APP + 87`, `ui/card_surface.rs` shared with the lyrics card
 - [[tooltips]]: one themed hover tooltip for icon buttons in every Vale window (name, current hotkey, what a click does; 500 ms rest, 300 ms warm switch, quiet after a click until left), `ui/tooltip`, stateless per-control ids with in-place repaint, re-entrancy rule, per-surface text functions, island `has_tip` / `feed`, the known popover-button gap, what is not checked live (2026-11-13)
 - [[menu-pop]]: Vale's own themed dropdown (`ui/menu_pop.rs`), first for the recording devices; `WM_APP + 81` Done, `menu_open` holds the panel
+- [[settings-transfer]]: Settings → Tentang → Pindah ke PC lain (2026-11-13): export the general settings to one JSON file and import it on another PC; allowlist with a test that every config key is classified, own tiles and private / PC-only fields stay on the target, key-by-key merge, backup, refused while recording, `--imported` restart
 - [[lyrics-lookup]]: LRCLIB 503 + Retry-After retry (30 s budget), step order (field search, get, free-text search), None vs transient, the Artist - Title split, tight-window consensus pick of the best-synced version, intro shift for a longer video, `.lrc2` / `.none4`
 
 ## Gotchas
@@ -127,6 +128,7 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[wasapi-capture-timestamps]]: GetBuffer's QPC position is in 100 ns units; loopback sends no packets in silence
 - [[exclude-from-capture-in-context]]: an out-of-context WinEvent hook lets a new window show for a frame before `WDA_EXCLUDEFROMCAPTURE`; an in-context hook on the own process (exe module) sets it inside `CreateWindowEx` / `ShowWindow`
 - [[mp4-silent-audio-track]]: an `.mp4` whose audio track never got a sample cannot be read back (0xC00D36C4); fill silence until the first sample
+- [[config-parse-default-fallback]]: `config::parse` gives `Config::default()` when one non-lenient field is bad; build configs from outside data key by key and finish with `try_parse`
 - [[tray-dark-menu]]: the tray menu follows the Windows app mode via uxtheme ordinals 135/136/104 (AllowDark), not Vale's window theme
 
 ## Conventions

@@ -422,3 +422,18 @@ New: `pick_tailscale` / `is_tailnet` / `peer_allowed` in `phone/net.rs`,
 `detect_tailscale`, the `phone_net` config key, the header switch (`phone_seg`,
 `paint_segment` shared with the cleaner), six strings. No change to `Cargo.toml`,
 `Cargo.lock` or `assets`. See [[shelf-phone]].
+
+## Export and import settings (2026-11-13)
+
+`cargo build --release --locked`, 0 warnings, in the
+`.claude/worktrees/config-transfer` worktree:
+
+| Build | Bytes |
+|---|---|
+| 53c866b (phone link over Tailscale, same code as e648697) | 4,695,040 |
+| 4f16e2d (feat/config-transfer, same tree as merge ffc51cf) | 4,750,336 (+55,296, +54 KiB, +1.18 %) |
+
+New: `src/config_transfer.rs` (classification, format, merge, file helpers),
+`src/app_transfer.rs`, the save and open file dialogs, the Tentang card, about
+twenty strings. No change to `Cargo.toml`, `Cargo.lock` or `assets`. See
+[[settings-transfer]].

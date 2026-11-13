@@ -24,7 +24,7 @@ integrasi, about / tentang. The window opens on Umum.
 | Clipboard | **Riwayat** (7 rows: no hotkey row); **Screenshot** ([[screenshot-preview]]; 6 rows: Alat screenshot, Setelah capture, Salin otomatis, Pratinjau di notch, Jika diabaikan, Lama tampil; no PrtSc row). *Setelah capture* is a segmented control, "Jendela editor" / "Langsung di layar" (Editor window / On screen), `screenshot.after_capture`, right under the tool, never faded ([[screenshot-snap]], "Inline mode"); its description is "Untuk tile dan PrtSc" / "For tile and PrtSc" because the longer "Screenshot Vale: tile dan PrtSc" needs 202 px and the row leaves 149 beside the two wide choices |
 | Tombol pintas | **Di semua aplikasi**: one card, a header (hint and "Kembalikan semua") and six recordable rows (the sixth, "Buka lirik", is the lyrics card, [[lyrics-card]]; [[hotkeys]]) |
 | Fitur | **Pomodoro** (4 steppers and the running note), **Musik** (Lirik di notch), **Notifikasi** (Simpan notifikasi, Jumlah maksimal, Simpan setelah restart, Aplikasi dikecualikan with a remove button each and a field with *Tambah*, Hapus riwayat notifikasi with two clicks; [[notification-history]]), **CLI** (Folder awal, Shell), **Perangkat** (Notifikasi perangkat; one row), **Susun** (gap slider first, then the templates and saved lists), **Pembersih** (Lindungi cache Cargo & Autodesk di Mole) |
-| Integrasi, Tentang | the same content, each card under a title (Tentang's is "Tautan": 4 rows since [[self-update]], Kode sumber, Pembaruan with "Cek sekarang" / "Update", the toggle "Cek pembaruan otomatis", Folder data) |
+| Integrasi, Tentang | the same content, each card under a title (Tentang's is "Tautan": 4 rows since [[self-update]], Kode sumber, Pembaruan with "Cek sekarang" / "Update", the toggle "Cek pembaruan otomatis", Folder data; then **Pindah ke PC lain**: Ekspor pengaturan, Impor pengaturan, the second row turning into Batal / Impor & mulai ulang while a file waits, [[settings-transfer]]) |
 
 Every card has an eyebrow (`titled` / `Builder::eyebrow`) except the two
 previews, which are pictures; `every_card_of_every_section_has_a_title_but_the_previews`
@@ -72,8 +72,9 @@ layout tests use. A bigger window needs less scrolling and a tall enough one
 needs no viewport at all (`scroll_max` is 0 and the scrollbar goes).
 
 Only a section that overflows gets a viewport. Tampilan, Kucing, Panel,
-Clipboard, Tombol pintas and Fitur always do; Umum, Integrasi and Tentang
-never. Umum used to fit the 520 px window to the pixel and trim its gaps when
+Clipboard, Tombol pintas and Fitur always do, and Tentang too since the
+"Pindah ke PC lain" card (2026-11-13, about 50 px past the margin at 720x520);
+Umum and Integrasi never. Umum used to fit the 520 px window to the pixel and trim its gaps when
 the search-hotkey label wrapped (`UMUM_TRIM_*`, `LABEL_LINE_H`); with that row
 gone to Tombol pintas it is 2 + 4 rows and never wraps, so all that logic was
 deleted. Tombol pintas is one card of a 48 px header and seven rows (the lyrics card row and the sticky note row, 2026-11-04): 10 px past the margin at 720x520, so it scrolls there since the seventh row (and not in a taller window).
