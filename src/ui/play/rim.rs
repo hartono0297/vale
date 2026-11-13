@@ -71,33 +71,43 @@ pub fn rim(style: Style, s: ShapeRect, u: f32) -> RimPt {
     let (lo, hi) = (FRAC_PI_2, PI);
     // The Notch's sides start at the screen edge, as `notch_path` draws them
     // past the shoulder; the Pill's start at the top of its rounded corners.
-    let segs: Vec<Seg> = match style {
+    let pad = line(0.0, 0.0, 0.0, 0.0, 0.0);
+    let (all, n): ([Seg; 7], usize) = match style {
         Style::Notch => {
             let side = bottom - r - top;
-            vec![
-                line(left, top, 0.0, 1.0, side),
-                arc(left + r, bottom - r, hi, lo),
-                line(left + r, bottom, 1.0, 0.0, s.w - 2.0 * r),
-                arc(right - r, bottom - r, lo, 0.0),
-                line(right, bottom - r, 0.0, -1.0, side),
-            ]
+            (
+                [
+                    line(left, top, 0.0, 1.0, side),
+                    arc(left + r, bottom - r, hi, lo),
+                    line(left + r, bottom, 1.0, 0.0, s.w - 2.0 * r),
+                    arc(right - r, bottom - r, lo, 0.0),
+                    line(right, bottom - r, 0.0, -1.0, side),
+                    pad,
+                    pad,
+                ],
+                5,
+            )
         }
         Style::Pill => {
             let side = s.h - 2.0 * r;
-            vec![
-                arc(left + r, top + r, 3.0 * FRAC_PI_2, hi),
-                line(left, top + r, 0.0, 1.0, side),
-                arc(left + r, bottom - r, hi, lo),
-                line(left + r, bottom, 1.0, 0.0, s.w - 2.0 * r),
-                arc(right - r, bottom - r, lo, 0.0),
-                line(right, bottom - r, 0.0, -1.0, side),
-                arc(right - r, top + r, 0.0, -FRAC_PI_2),
-            ]
+            (
+                [
+                    arc(left + r, top + r, 3.0 * FRAC_PI_2, hi),
+                    line(left, top + r, 0.0, 1.0, side),
+                    arc(left + r, bottom - r, hi, lo),
+                    line(left + r, bottom, 1.0, 0.0, s.w - 2.0 * r),
+                    arc(right - r, bottom - r, lo, 0.0),
+                    line(right, bottom - r, 0.0, -1.0, side),
+                    arc(right - r, top + r, 0.0, -FRAC_PI_2),
+                ],
+                7,
+            )
         }
     };
+    let segs = &all[..n];
     let total: f32 = segs.iter().map(|g| g.len()).sum();
     let mut d = u.clamp(0.0, 1.0) * total;
-    for g in &segs {
+    for g in segs {
         if d <= g.len() {
             return g.at(d);
         }
@@ -113,28 +123,34 @@ mod tests {
     use crate::ui::geometry::shape_contains;
     use crate::ui::play::testing::shape;
 
+    const SIZES: [(f32, f32); 3] = [(160.0, 28.0), (190.0, 34.0), (300.0, 44.0)];
+
     #[test]
     fn rim_midpoint_is_the_lip_centre_in_both_styles() {
         for style in [Style::Notch, Style::Pill] {
-            let s = shape(style, 190.0, 34.0);
-            let p = rim(style, s, 0.5);
-            assert!((p.x - (s.x + s.w / 2.0)).abs() < 0.01, "{style:?}");
-            assert!((p.y - (s.y + s.h)).abs() < 0.01, "{style:?}");
-            assert!((p.ny - 1.0).abs() < 0.01, "{style:?} normal points down");
+            for (w, h) in SIZES {
+                let s = shape(style, w, h);
+                let p = rim(style, s, 0.5);
+                assert!((p.x - (s.x + s.w / 2.0)).abs() < 0.01, "{style:?} {w}x{h}");
+                assert!((p.y - (s.y + s.h)).abs() < 0.01, "{style:?} {w}x{h}");
+                assert!((p.ny - 1.0).abs() < 0.01, "{style:?} {w}x{h} normal points down");
+            }
         }
     }
 
     #[test]
     fn rim_normals_point_out_of_the_shape() {
         for style in [Style::Notch, Style::Pill] {
-            for i in 0..=100 {
-                let u = i as f32 / 100.0;
-                let s = shape(style, 190.0, 34.0);
-                let p = rim(style, s, u);
-                assert!(
-                    !shape_contains(style, s, p.x + p.nx * 2.0, p.y + p.ny * 2.0),
-                    "{style:?} u={u}"
-                );
+            for (w, h) in SIZES {
+                let s = shape(style, w, h);
+                for i in 0..=100 {
+                    let u = i as f32 / 100.0;
+                    let p = rim(style, s, u);
+                    assert!(
+                        !shape_contains(style, s, p.x + p.nx * 2.0, p.y + p.ny * 2.0),
+                        "{style:?} {w}x{h} u={u}"
+                    );
+                }
             }
         }
     }
@@ -142,13 +158,13 @@ mod tests {
     #[test]
     fn rim_is_continuous_at_every_size() {
         for style in [Style::Notch, Style::Pill] {
-            for (w, h) in [(160.0, 28.0), (190.0, 34.0), (300.0, 44.0)] {
+            for (w, h) in SIZES {
                 let s = shape(style, w, h);
                 let mut prev = rim(style, s, 0.0);
                 for i in 1..=1000 {
                     let p = rim(style, s, i as f32 / 1000.0);
                     let step = ((p.x - prev.x).powi(2) + (p.y - prev.y).powi(2)).sqrt();
-                    assert!(step < 2.0, "{style:?} {w}x{h} jumped {step} at {i}");
+                    assert!(step < 1.0, "{style:?} {w}x{h} jumped {step} at {i}");
                     prev = p;
                 }
             }
