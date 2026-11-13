@@ -32,6 +32,7 @@ pub struct Deform {
 
 /// True when `d` leaves the island's geometry untouched; a dent with no depth
 /// or no width counts as none.
+///
 /// Shift and tilt do nothing on the Notch, as in `outline`.
 pub fn is_rest(style: Style, d: &Deform) -> bool {
     let pill = style == Style::Pill;
@@ -66,29 +67,37 @@ pub fn outline(style: Style, s: ShapeRect, d: &Deform) -> Vec<(f32, f32)> {
         )
     };
 
-    let mut out = Vec::with_capacity(OUTLINE_PTS + 4);
-    let extend = notch && swing != 0.0;
-    // Rotated by `a`, the side lines cross the screen edge `w/2 * tan a`
-    // above the top corners; reaching a little past that keeps them crossing.
-    let lift = s.w / 2.0 * swing.to_radians().abs().tan() + 1.0;
-    if extend {
-        out.push(place(s.x, s.y - lift));
-    }
-    for i in 0..OUTLINE_PTS {
-        let p = rim(style, s, i as f32 / (OUTLINE_PTS - 1) as f32);
-        let (mut x, mut y) = (p.x, p.y);
-        for k in d.dents.iter().filter(|k| k.depth != 0.0 && k.width > 0.0) {
-            let c = rim(style, s, k.u);
-            let t = (x - c.x).hypot(y - c.y) / (k.width * s.h);
+    let mut out = Vec::with_capacity(OUTLINE_PTS + 2);
+    let step = 1.0 / (OUTLINE_PTS - 1) as f32;
+    out.extend((0..OUTLINE_PTS).map(|i| {
+        let p = rim(style, s, i as f32 * step);
+        (p.x, p.y)
+    }));
+    // Each dent measures from the undisplaced rim and displacements add, so
+    // overlapping dents do not depend on their order.
+    for k in d.dents.iter().filter(|k| k.depth != 0.0 && k.width > 0.0) {
+        let c = rim(style, s, k.u);
+        let reach = k.width * s.h;
+        for (i, pt) in out.iter_mut().enumerate() {
+            let p = rim(style, s, i as f32 * step);
+            let t = (p.x - c.x).hypot(p.y - c.y) / reach;
             if t < 1.0 {
                 let push = k.depth * s.h * 0.5 * (1.0 + (t * std::f32::consts::PI).cos());
-                x += p.nx * push;
-                y += p.ny * push;
+                pt.0 += p.nx * push;
+                pt.1 += p.ny * push;
             }
         }
-        out.push(place(x, y));
     }
-    if extend {
+    for pt in out.iter_mut() {
+        *pt = place(pt.0, pt.1);
+    }
+    if notch && swing != 0.0 {
+        // Rotated by `a`, the side lines cross the screen edge `w/2 * tan a`
+        // above the top corners; reaching a little past that keeps them
+        // crossing. Assumes `squeeze >= 0`: a bulge (`keep > 1`) swinging at
+        // once would need more.
+        let lift = s.w / 2.0 * swing.to_radians().abs().tan() + 1.0;
+        out.insert(0, place(s.x, s.y - lift));
         out.push(place(s.x + s.w, s.y - lift));
     }
     out
@@ -131,6 +140,74 @@ mod tests {
             let p = rim(Style::Notch, s, i as f32 / (OUTLINE_PTS - 1) as f32);
             assert!((p.x - centre.x).hypot(p.y - centre.y) < 0.08 * s.h + 0.01,
                 "point {i} moved but lies outside the dent's width");
+        }
+    }
+
+    #[test]
+    fn a_dent_pushes_the_lip_the_way_its_sign_says_at_every_size() {
+        for (w, h) in [(160.0, 28.0), (190.0, 34.0), (300.0, 44.0)] {
+            let s = shape(Style::Notch, w, h);
+            let rest = outline(Style::Notch, s, &Deform::default());
+            let mid = rim(Style::Notch, s, 0.5);
+            let nearest = (0..OUTLINE_PTS)
+                .min_by(|&a, &b| {
+                    let da = (rest[a].0 - mid.x).hypot(rest[a].1 - mid.y);
+                    let db = (rest[b].0 - mid.x).hypot(rest[b].1 - mid.y);
+                    da.total_cmp(&db)
+                })
+                .unwrap();
+            for (depth, down) in [(-0.3, false), (0.3, true)] {
+                let d = Deform { dents: vec![Dent { u: 0.5, depth, width: 0.3 }], ..Default::default() };
+                let bent = outline(Style::Notch, s, &d);
+                let (dx, dy) = (bent[nearest].0 - rest[nearest].0, bent[nearest].1 - rest[nearest].1);
+                // The lip's outward normal is straight down, so a dent moves it in y only.
+                assert!(dx.abs() < 0.05 * h, "{w}x{h}: moved sideways by {dx}");
+                assert!(dy.abs() > 0.2 * h, "{w}x{h}: depth {depth} moved only {dy}");
+                assert_eq!(dy > 0.0, down, "{w}x{h}: depth {depth} went the wrong way ({dy})");
+            }
+        }
+    }
+
+    #[test]
+    fn overlapping_dents_add_and_do_not_depend_on_their_order() {
+        let s = shape(Style::Notch, 190.0, 34.0);
+        let a = Dent { u: 0.5, depth: -0.3, width: 0.4 };
+        let b = Dent { u: 0.55, depth: 0.2, width: 0.4 };
+        let run = |dents: Vec<Dent>| outline(Style::Notch, s, &Deform { dents, ..Default::default() });
+        let (rest, only_a, only_b) = (run(vec![]), run(vec![a]), run(vec![b]));
+        let (ab, ba) = (run(vec![a, b]), run(vec![b, a]));
+        for i in 0..OUTLINE_PTS {
+            let sum_y = rest[i].1 + (only_a[i].1 - rest[i].1) + (only_b[i].1 - rest[i].1);
+            assert!((ab[i].1 - sum_y).abs() < 0.001, "point {i}: not the sum of the two dents");
+            assert!((ab[i].1 - ba[i].1).abs() < 0.001, "point {i}: depends on the order");
+        }
+        assert!((0..OUTLINE_PTS).any(|i| only_a[i].1 != rest[i].1 && only_b[i].1 != rest[i].1), "they overlap");
+    }
+
+    #[test]
+    fn each_style_swings_about_its_own_pivot() {
+        for (w, h) in [(160.0, 28.0), (300.0, 44.0)] {
+            for style in [Style::Notch, Style::Pill] {
+                let s = shape(style, w, h);
+                let rest = outline(style, s, &Deform::default());
+                let swung = outline(style, s, &Deform { swing_deg: 10.0, ..Default::default() });
+                // The Notch's extension adds one point at each end; the rest line up.
+                let off = (swung.len() - OUTLINE_PTS) / 2;
+                let (top, mid) = ((s.x + s.w / 2.0, s.y), (s.x + s.w / 2.0, s.y + s.h / 2.0));
+                // A rotation keeps every point's distance to its pivot, and changes it about any other.
+                let spread = |pv: (f32, f32)| {
+                    (0..OUTLINE_PTS)
+                        .map(|i| {
+                            let r = (rest[i].0 - pv.0).hypot(rest[i].1 - pv.1);
+                            let q = (swung[i + off].0 - pv.0).hypot(swung[i + off].1 - pv.1);
+                            (r - q).abs()
+                        })
+                        .fold(0.0_f32, f32::max)
+                };
+                let (own, other) = if style == Style::Notch { (top, mid) } else { (mid, top) };
+                assert!(spread(own) < 0.01, "{style:?} {w}x{h} does not turn about its own pivot");
+                assert!(spread(other) > 1.0, "{style:?} {w}x{h} also turns about the other pivot");
+            }
         }
     }
 
