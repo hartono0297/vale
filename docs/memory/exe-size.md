@@ -437,3 +437,16 @@ New: `src/config_transfer.rs` (classification, format, merge, file helpers),
 `src/app_transfer.rs`, the save and open file dialogs, the Tentang card, about
 twenty strings. No change to `Cargo.toml`, `Cargo.lock` or `assets`. See
 [[settings-transfer]].
+
+## Shipped release sizes
+
+The `vale.exe` asset of each GitHub release (built by the release workflow,
+checksum checked against `vale.exe.sha256` at release time):
+
+| Release | Bytes |
+|---|---|
+| v5.2.0 (ad08324) | 4,559,360 |
+| v5.3.0 (55a50a2) | 4,698,112 (+138,752 over v5.2.0: video quality, clipboard drag-out, settings spacing, one recordings folder, Rekam redesign, falk and octopus mascots, tooltips) |
+
+v5.3.1 adds the Tailscale phone link and the settings export and import (about
++58 KiB measured above); add its shipped size here after the release.

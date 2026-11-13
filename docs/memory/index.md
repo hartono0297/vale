@@ -14,7 +14,7 @@ One note per decision, gotcha or convention. Link each new note here.
 
 - [[studio-palette-accent-aliases]]
 - [[studio-font-sources]]
-- [[exe-size]]: size measured per change (the settings export and import, 2026-11-13, +54 KiB to 4,750,336 bytes, is the last entry); icon small sizes as PNG (-38 KB), opt-level z option (-326 KB) left to the owner
+- [[exe-size]]: size measured per change (the settings export and import, 2026-11-13, +54 KiB to 4,750,336 bytes, is the last entry; shipped release sizes v5.2.0 and v5.3.0 at the end); icon small sizes as PNG (-38 KB), opt-level z option (-326 KB) left to the owner
 - [[studio-icons]]
 - [[studio-calendar-day-view]]
 - [[studio-media-progress-timer]]
