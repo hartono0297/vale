@@ -7,8 +7,11 @@
 //! nobody adds a setting without deciding where it goes.
 
 use crate::config::{self, Config};
-use chrono::{DateTime, FixedOffset, NaiveDate};
+use crate::i18n::Lang;
+use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime};
 use serde_json::{Map, Value};
+use std::io;
+use std::path::{Path, PathBuf};
 
 /// The file format version this build writes and reads.
 pub const FORMAT: u64 = 1;
@@ -281,6 +284,62 @@ pub fn apply(target: &Config, incoming: &Incoming) -> Config {
         }
     }
     config::parse(&Value::Object(merged).to_string())
+}
+
+/// Writes the settings file to a sibling `.tmp`, then renames it over `path`,
+/// so a failed write never leaves a half file where the user chose to save.
+pub fn write_export(path: &Path, cfg: &Config, now: DateTime<FixedOffset>) -> io::Result<()> {
+    let json = export_json(cfg, env!("CARGO_PKG_VERSION"), now);
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    std::fs::write(&tmp, json)?;
+    std::fs::rename(&tmp, path)
+}
+
+/// Copies `config_path` to `config-before-import-YYYYMMDD-HHMMSS.json` beside
+/// it before an import changes it. A taken name gets `-2`, `-3`, and so on, so
+/// an earlier backup is never overwritten. `None` when there is no config yet.
+pub fn backup_config(config_path: &Path, now: NaiveDateTime) -> io::Result<Option<PathBuf>> {
+    if !config_path.is_file() {
+        return Ok(None);
+    }
+    let dir = config_path.parent().unwrap_or_else(|| Path::new("."));
+    let stamp = now.format("%Y%m%d-%H%M%S");
+    for n in 1u32.. {
+        let name = if n == 1 {
+            format!("config-before-import-{stamp}.json")
+        } else {
+            format!("config-before-import-{stamp}-{n}.json")
+        };
+        let dest = dir.join(name);
+        if dest.exists() {
+            continue;
+        }
+        std::fs::copy(config_path, &dest)?;
+        return Ok(Some(dest));
+    }
+    Ok(None)
+}
+
+/// Applies `incoming` on top of what is on disk and saves it. The island
+/// merges its own fields over the file on every save, so the file must already
+/// hold the imported values of the file-owned fields (such as the battery
+/// threshold) before the restart, or the next save would bring the old ones back.
+pub fn import_and_save(config_path: &Path, mem: &Config, incoming: &Incoming) -> Config {
+    let truth = config::save_merged_at(config_path, mem).config;
+    let new = apply(&truth, incoming);
+    let _ = new.save_to(config_path);
+    new
+}
+
+/// The name the save dialog offers, in the UI language.
+pub fn default_export_name(lang: Lang, today: NaiveDate) -> String {
+    let word = match lang {
+        Lang::Id => "pengaturan",
+        Lang::En => "settings",
+    };
+    format!("Vale-{word}-{}.json", today.format("%Y-%m-%d"))
 }
 
 #[cfg(test)]
@@ -638,5 +697,100 @@ mod tests {
         let custom = general_config();
         let applied = apply(&Config::default(), &file_of(&custom));
         assert_eq!(general_settings(&applied), general_settings(&custom));
+    }
+
+    /// A fresh, empty folder under `target/test-tmp/`.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("test-tmp")
+            .join(format!("config_transfer_{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn write_export_replaces_and_leaves_no_tmp() {
+        let dir = scratch("write_export");
+        let path = dir.join("out.json");
+        std::fs::write(&path, "old").unwrap();
+        let when = DateTime::parse_from_rfc3339("2026-11-13T14:05:00+07:00").unwrap();
+        write_export(&path, &general_config(), when).unwrap();
+        let back = read_incoming(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(back.settings["notch_width"], json!(250));
+        assert!(!dir.join("out.json.tmp").exists());
+    }
+
+    #[test]
+    fn backup_copies_and_never_overwrites() {
+        let dir = scratch("backup");
+        let cfg = dir.join("config.json");
+        std::fs::write(&cfg, "one").unwrap();
+        let now = NaiveDate::from_ymd_opt(2026, 11, 13)
+            .unwrap()
+            .and_hms_opt(14, 5, 9)
+            .unwrap();
+        let a = backup_config(&cfg, now).unwrap().unwrap();
+        std::fs::write(&cfg, "two").unwrap();
+        let b = backup_config(&cfg, now).unwrap().unwrap();
+        assert_eq!(
+            a.file_name().unwrap(),
+            "config-before-import-20261113-140509.json"
+        );
+        assert_eq!(
+            b.file_name().unwrap(),
+            "config-before-import-20261113-140509-2.json"
+        );
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "one");
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), "two");
+    }
+
+    #[test]
+    fn backup_without_config_is_none() {
+        let dir = scratch("backup_none");
+        let now = NaiveDate::from_ymd_opt(2026, 11, 13)
+            .unwrap()
+            .and_hms_opt(1, 2, 3)
+            .unwrap();
+        assert_eq!(backup_config(&dir.join("config.json"), now).unwrap(), None);
+    }
+
+    #[test]
+    fn import_survives_the_islands_later_saves() {
+        let dir = scratch("survives");
+        let path = dir.join("config.json");
+        let on_disk = Config {
+            battery_threshold: 20,
+            ..Config::default()
+        };
+        on_disk.save_to(&path).unwrap();
+        let mem = Config::default();
+        let incoming = Incoming {
+            app_version: "5.3.0".into(),
+            exported: None,
+            settings: obj(json!({"battery_threshold": 35, "accent": "Plum"})),
+        };
+        let new = import_and_save(&path, &mem, &incoming);
+        // The restart's save and the teardown save both merge from memory.
+        config::save_merged_at(&path, &new);
+        config::save_merged_at(&path, &new);
+        let after = config::parse(&std::fs::read_to_string(&path).unwrap());
+        assert_eq!(after.battery_threshold, 35);
+        assert_eq!(after.accent, new.accent);
+        assert_ne!(after.accent, Config::default().accent);
+    }
+
+    #[test]
+    fn default_export_names() {
+        let day = NaiveDate::from_ymd_opt(2026, 11, 13).unwrap();
+        assert_eq!(
+            default_export_name(Lang::Id, day),
+            "Vale-pengaturan-2026-11-13.json"
+        );
+        assert_eq!(
+            default_export_name(Lang::En, day),
+            "Vale-settings-2026-11-13.json"
+        );
     }
 }
