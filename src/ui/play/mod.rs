@@ -6,6 +6,8 @@ pub mod rim;
 #[cfg_attr(not(test), allow(dead_code))]
 pub mod shape;
 #[cfg_attr(not(test), allow(dead_code))]
+pub mod state;
+#[cfg_attr(not(test), allow(dead_code))]
 pub mod trigger;
 
 #[cfg(test)]
