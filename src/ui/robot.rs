@@ -1485,7 +1485,7 @@ impl NoticeSort {
             NoticeKind::UpdateAvailable { .. } => NoticeSort::UpdateAvailable,
             NoticeKind::UpdateProgress { .. } => NoticeSort::UpdateProgress,
             NoticeKind::UpdateFailed => NoticeSort::UpdateFailed,
-            NoticeKind::UpdateInfo => NoticeSort::UpdateInfo,
+            NoticeKind::UpdateInfo | NoticeKind::WhatsNew => NoticeSort::UpdateInfo,
         }
     }
 }

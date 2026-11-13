@@ -1242,6 +1242,17 @@ pub struct Layout {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CardId {
     Transcript,
+    WhatsNew,
+}
+
+impl CardId {
+    /// The section the card is in.
+    pub fn section(self) -> Section {
+        match self {
+            CardId::Transcript => Section::Features,
+            CardId::WhatsNew => Section::About,
+        }
+    }
 }
 
 /// A thin progress bar: `rect` is the whole track, `fill` 0 to 1.
@@ -9228,6 +9239,12 @@ mod tests {
             Control::Button(b) if b.hit == hit => Some((b.rect, b.kind)),
             _ => None,
         })
+    }
+
+    #[test]
+    fn card_ids_know_their_section() {
+        assert_eq!(CardId::Transcript.section(), Section::Features);
+        assert_eq!(CardId::WhatsNew.section(), Section::About);
     }
 
     #[test]

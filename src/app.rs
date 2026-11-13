@@ -2462,6 +2462,7 @@ impl App {
             Effect::TranscribeQueue(audio) => self.transcribe_queue(audio, None),
             Effect::OpenTranscript(audio) => self.open_transcript(audio),
             Effect::OpenTranscriptSettings => self.open_transcript_settings(),
+            Effect::OpenWhatsNew => DEFERRED_OPEN_CARD.set(Some(CardId::WhatsNew)),
             Effect::RecPickFile(kind) => self.rec_pick_file(kind),
             Effect::ScreenToggle => self.screen_toggle(),
             Effect::ScreenDiscard => self.screen_discard(),
