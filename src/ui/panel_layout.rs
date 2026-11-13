@@ -3160,11 +3160,12 @@ pub fn shelf_layout(s: ShapeRect, strip: bool, n: usize) -> ShelfLayout {
     }
 }
 
-/// The round back button, the title and the row they sit in, shared by the
-/// phone link's three views: `(top, back, title)`. The title is
-/// `PHONE_TITLE_W` wide; a view with nothing after it in the row widens it
-/// up to whatever comes next (`title_until`), so a longer word in English
-/// or in JetBrains Mono is not cut.
+/// The round back button, the title slot and the row they sit in, shared by
+/// the phone link's three views: `(top, back, title)`. Only the receiving
+/// view draws a title; the QR view and the warning card put the net switch
+/// there instead. The slot is `PHONE_TITLE_W` wide; a view with nothing after
+/// it in the row widens it up to whatever comes next (`title_until`), so a
+/// longer word in English or in JetBrains Mono is not cut.
 fn phone_head(s: ShapeRect, strip: bool) -> (f32, Rect, Rect) {
     let top = content_top(s, strip);
     let l = left(s);

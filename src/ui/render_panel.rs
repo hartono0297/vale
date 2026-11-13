@@ -329,6 +329,18 @@ fn phone_foot_key(tailnet: bool) -> Key {
     if tailnet { Key::PhoneTailscaleOnly } else { Key::PhoneLocalOnly }
 }
 
+/// The phone QR view's heads-up: the Tailscale one on the tailnet (also while
+/// starting with Tailscale saved), the public warning, else the firewall one.
+fn phone_hint_key(tailnet: bool, public: bool) -> Key {
+    if tailnet {
+        Key::PhoneTailscaleHint
+    } else if public {
+        Key::PhonePublicHint
+    } else {
+        Key::PhoneFirewall
+    }
+}
+
 /// The cleaner's button label: the total, armed "Yakin? Hapus …", or the
 /// clean running.
 fn go_label(lang: Lang, view: &CleanerView) -> String {
@@ -4047,11 +4059,7 @@ impl Renderer {
             w: l.hint.w - 20.0,
             ..l.hint
         };
-        let hint_key = match (v.qr, public) {
-            (QrView::Code(c), _) if c.tailnet => Key::PhoneTailscaleHint,
-            (_, true) => Key::PhonePublicHint,
-            _ => Key::PhoneFirewall,
-        };
+        let hint_key = phone_hint_key(tailnet, public);
         self.text_colored(text(lang, hint_key), &self.fonts.small, hint, p.ochre, 1.0);
         self.text_colored(
             text(lang, phone_foot_key(tailnet)),
@@ -5961,6 +5969,14 @@ mod tests {
     use std::time::Instant;
 
     const GIB: u64 = 1024 * 1024 * 1024;
+
+    #[test]
+    fn the_phone_hint_follows_the_network() {
+        // Starting with Tailscale saved: no firewall hint yet.
+        assert_eq!(phone_hint_key(true, false), Key::PhoneTailscaleHint);
+        assert_eq!(phone_hint_key(false, true), Key::PhonePublicHint);
+        assert_eq!(phone_hint_key(false, false), Key::PhoneFirewall);
+    }
 
     fn design_scan() -> ScanResult {
         let gb = |tenths: u64| CatSize {

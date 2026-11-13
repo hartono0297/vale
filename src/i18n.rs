@@ -535,7 +535,6 @@ keys! {
         "Drag files to the notch, take them out later";
     ShelfPhone => "HP", "Phone";
     ShelfFromPhone => "dari HP", "phone";
-    PhoneTitle => "Sambungkan HP", "Connect a phone";
     PhoneStarting => "Mencari jaringan\u{2026}", "Finding the network\u{2026}";
     PhoneStep1 => "Scan pakai kamera HP", "Scan with the phone's camera";
     PhoneStep1Sub => "iPhone: Kamera \u{b7} Android: Kamera / Google Lens",
@@ -5214,7 +5213,6 @@ mod copy_preview_tests {
         );
         for key in [
             Key::ShelfPhone,
-            Key::PhoneTitle,
             Key::PhoneCancelAll,
             Key::PhoneFinish,
             Key::PhoneNewQr,

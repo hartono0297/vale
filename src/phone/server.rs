@@ -51,17 +51,20 @@ pub(super) fn run(shared: &Arc<Shared>, mode: Mode) {
     let (cfg, watch) = match mode {
         #[cfg(any(test, debug_assertions))]
         Mode::Fixed(cfg) => (cfg, None),
-        Mode::Lan { lang, pc_name, net } => match match net {
-            PhoneNet::Wifi => super::detect_lan(lang, &pc_name),
-            PhoneNet::Tailscale => super::detect_tailscale(lang, &pc_name),
-        } {
-            Ok((cfg, ip)) => (cfg, Some(ip)),
-            Err(refusal) => {
-                shared.emit(PhoneEvent::Refused(refusal));
-                shared.ended.store(true, Ordering::SeqCst);
-                return;
+        Mode::Lan { lang, pc_name, net } => {
+            let found = match net {
+                PhoneNet::Wifi => super::detect_lan(lang, &pc_name),
+                PhoneNet::Tailscale => super::detect_tailscale(lang, &pc_name),
+            };
+            match found {
+                Ok((cfg, ip)) => (cfg, Some(ip)),
+                Err(refusal) => {
+                    shared.emit(PhoneEvent::Refused(refusal));
+                    shared.ended.store(true, Ordering::SeqCst);
+                    return;
+                }
             }
-        },
+        }
     };
     // Back (or a sleep) may have come while the adapters were being read, which
     // can take a while: nothing listens then, so no Firewall prompt either.

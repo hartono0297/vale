@@ -186,6 +186,11 @@ impl PhoneState {
         self.generation
     }
 
+    /// Whether an event of `session` belongs to the running session.
+    fn is_current(&self, session: u64) -> bool {
+        session == self.generation
+    }
+
     /// A file is coming in: the net switch waits, since a restart would cut it.
     fn uploading(&self) -> bool {
         self.rows
@@ -564,7 +569,7 @@ impl App {
 
     /// One thing the phone link said.
     pub(super) fn on_phone_event(&mut self, session: u64, event: PhoneEvent, now: Instant) {
-        if session != self.phone.generation {
+        if !self.phone.is_current(session) {
             return;
         }
         match event {
@@ -1065,8 +1070,9 @@ mod tests {
         assert_eq!(s.next_session(), 5);
         assert_eq!(s.generation, 5);
         assert!(s.starting, "the new session is starting");
-        // The old session's Ready (number 4) no longer matches.
-        assert_ne!(4, s.generation);
+        // The old session's late events (number 4) no longer match.
+        assert!(!s.is_current(4));
+        assert!(s.is_current(5));
     }
 
     #[test]

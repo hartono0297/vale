@@ -140,7 +140,7 @@ pub fn peer_allowed(ip: IpAddr, via: PhoneNet, allow_loopback: bool) -> bool {
         return allow_loopback;
     }
     match via {
-        PhoneNet::Wifi => is_private(ip, false),
+        PhoneNet::Wifi => is_private(ip, false) && !is_tailnet(ip),
         PhoneNet::Tailscale => is_tailnet(ip),
     }
 }
@@ -562,6 +562,7 @@ mod tests {
         assert!(!peer_allowed(ts, PhoneNet::Wifi, false));
         assert!(peer_allowed(ts, PhoneNet::Tailscale, false));
         assert!(!peer_allowed(lan, PhoneNet::Tailscale, false));
+        assert!(!peer_allowed("fd7a:115c:a1e0::1".parse().unwrap(), PhoneNet::Wifi, false));
         let lo: IpAddr = "127.0.0.1".parse().unwrap();
         for via in [PhoneNet::Wifi, PhoneNet::Tailscale] {
             assert!(!peer_allowed(lo, via, false));
