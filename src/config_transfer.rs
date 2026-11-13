@@ -252,11 +252,48 @@ pub fn read_incoming(bytes: &[u8]) -> Result<Incoming, ImportError> {
     })
 }
 
+/// `{key: value}` read alone as a config, with the key as it came back. A
+/// field with a lenient reader turns a malformed value into its default, so
+/// the value only counts when it comes back as it went in; `None` otherwise.
+fn read_back(key: &str, value: &Value) -> Option<Value> {
+    let mut one = Map::new();
+    one.insert(key.into(), value.clone());
+    let cfg = config::try_parse(&Value::Object(one).to_string())?;
+    config_object(&cfg).remove(key)
+}
+
+/// Whether a top-level `value` is a good value for `key`.
+fn reads_alone(key: &str, value: &Value) -> bool {
+    read_back(key, value).as_ref() == Some(value)
+}
+
+/// Whether a split object's `value` is a good value for `parent.sub`.
+fn sub_reads_alone(parent: &str, sub: &str, value: &Value) -> bool {
+    let mut inner = Map::new();
+    inner.insert(sub.into(), value.clone());
+    read_back(parent, &Value::Object(inner)).is_some_and(|back| back.get(sub) == Some(value))
+}
+
+/// Turns imported built-in tiles off from the end of the list until at most
+/// `MAX_SHOWN` are shown, so the target's own tiles stay visible.
+fn trim_shown_tiles(cfg: &mut Config) {
+    let mut shown = cfg.shortcut_tiles.iter().filter(|t| t.on).count();
+    for t in cfg.shortcut_tiles.iter_mut().rev() {
+        if shown <= crate::tiles::MAX_SHOWN {
+            break;
+        }
+        if t.on && crate::tiles::shortcut_from_name(&t.tile).is_some() {
+            t.on = false;
+            shown -= 1;
+        }
+    }
+}
+
 /// `target` with the general settings of `incoming` laid over it. Keys not in
-/// `EXPORTED` are ignored, a key missing from the file keeps the target's
-/// value, and the merged JSON goes through `config::parse`, so a bad value
-/// reads as that field's default like a hand edit of config.json does.
-pub fn apply(target: &Config, incoming: &Incoming) -> Config {
+/// `EXPORTED` are ignored and a key missing from the file keeps the target's
+/// value. A value that does not read back as it was written, alone in a config, is
+/// skipped too, so the target's value stays. `None` when the merged result still does not read.
+pub fn apply(target: &Config, incoming: &Incoming) -> Option<Config> {
     let mut merged = config_object(target);
     for &key in EXPORTED {
         let Some(from_file) = incoming.settings.get(key) else {
@@ -269,7 +306,9 @@ pub fn apply(target: &Config, incoming: &Incoming) -> Config {
                 (merged.get_mut(key), from_file)
             {
                 for &sub in keys {
-                    if let Some(v) = theirs.get(sub) {
+                    if let Some(v) = theirs.get(sub)
+                        && sub_reads_alone(key, sub, v)
+                    {
                         mine.insert(sub.into(), v.clone());
                     }
                 }
@@ -293,11 +332,13 @@ pub fn apply(target: &Config, incoming: &Incoming) -> Config {
             let mut tiles = builtin_tiles(from_file);
             tiles.extend(own);
             merged.insert(key.into(), Value::Array(tiles));
-        } else {
+        } else if reads_alone(key, from_file) {
             merged.insert(key.into(), from_file.clone());
         }
     }
-    config::parse(&Value::Object(merged).to_string())
+    let mut cfg = config::try_parse(&Value::Object(merged).to_string())?;
+    trim_shown_tiles(&mut cfg);
+    Some(cfg)
 }
 
 /// Writes the settings file to a sibling `.tmp`, then renames it over `path`,
@@ -340,11 +381,25 @@ pub fn backup_config(config_path: &Path, now: NaiveDateTime) -> io::Result<Optio
 /// merges its own fields over the file on every save, so the file must already
 /// hold the imported values of the file-owned fields (such as the battery
 /// threshold) before the restart, or the next save would bring the old ones back.
-pub fn import_and_save(config_path: &Path, mem: &Config, incoming: &Incoming) -> Config {
+/// Why an import stopped before it changed anything the island uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportFailure {
+    /// The merged settings do not read as a config.
+    NotVale,
+    /// The merged config could not be written.
+    Save,
+}
+
+/// On `Err` the caller adopts nothing and restarts nothing.
+pub fn import_and_save(
+    config_path: &Path,
+    mem: &Config,
+    incoming: &Incoming,
+) -> Result<Config, ImportFailure> {
     let truth = config::save_merged_at(config_path, mem).config;
-    let new = apply(&truth, incoming);
-    let _ = new.save_to(config_path);
-    new
+    let new = apply(&truth, incoming).ok_or(ImportFailure::NotVale)?;
+    new.save_to(config_path).map_err(|_| ImportFailure::Save)?;
+    Ok(new)
 }
 
 /// The name the save dialog offers, in the UI language.
@@ -520,7 +575,7 @@ mod tests {
     #[test]
     fn import_keeps_the_targets_private_and_pc_fields() {
         let target = private_config();
-        let applied = apply(&target, &file_of(&general_config()));
+        let applied = apply(&target, &file_of(&general_config())).unwrap();
         assert_eq!(applied.google_client_id, "id.apps");
         assert_eq!(applied.google_client_secret, "s3cret");
         assert_eq!(applied.muted_apps, target.muted_apps);
@@ -557,7 +612,7 @@ mod tests {
     #[test]
     fn import_takes_general_fields() {
         let g = general_config();
-        let applied = apply(&private_config(), &file_of(&g));
+        let applied = apply(&private_config(), &file_of(&g)).unwrap();
         assert_eq!(applied.accent, g.accent);
         assert_eq!(applied.notch_width, 250);
         assert_eq!(applied.hotkeys, g.hotkeys);
@@ -577,7 +632,7 @@ mod tests {
             exported: None,
             settings: obj(json!({"accent": "Sage"})),
         };
-        let applied = apply(&target, &incoming);
+        let applied = apply(&target, &incoming).unwrap();
         let mut expected = target.clone();
         expected.accent = config::parse(r#"{"accent":"Sage"}"#).accent;
         assert_eq!(applied, expected);
@@ -602,11 +657,11 @@ mod tests {
                 "arrange": {"saved": []},
             })),
         };
-        assert_eq!(apply(&target, &incoming), target);
+        assert_eq!(apply(&target, &incoming).unwrap(), target);
     }
 
     #[test]
-    fn bad_values_read_as_defaults() {
+    fn bad_values_keep_the_targets() {
         let incoming = Incoming {
             app_version: String::new(),
             exported: None,
@@ -616,25 +671,24 @@ mod tests {
             notch_width: 280,
             ..general_config()
         };
-        let applied = apply(&target, &incoming);
-        assert_eq!(applied.notch_width, Config::default().notch_width);
-        assert_eq!(applied.hotkeys, Config::default().hotkeys);
+        let applied = apply(&target, &incoming).unwrap();
+        assert_eq!(applied.notch_width, 280);
+        assert_eq!(applied.hotkeys, target.hotkeys);
         assert_eq!(applied.accent, target.accent);
     }
 
     #[test]
-    fn bad_value_in_a_split_field_reads_as_default() {
+    fn bad_values_in_split_fields_keep_the_targets() {
         let incoming = Incoming {
             app_version: String::new(),
             exported: None,
             settings: obj(json!({"recording": {"video_fps": "fast"}, "arrange": {"gap": "x"}})),
         };
-        let applied = apply(&general_config(), &incoming);
-        assert_eq!(
-            applied.recording.video_fps,
-            Config::default().recording.video_fps
-        );
-        assert_eq!(applied.arrange.gap, Config::default().arrange.gap);
+        let mut target = general_config();
+        target.recording.video_fps = 60;
+        let applied = apply(&target, &incoming).unwrap();
+        assert_eq!(applied.recording.video_fps, 60);
+        assert_eq!(applied.arrange.gap, 17);
     }
 
     #[test]
@@ -651,7 +705,7 @@ mod tests {
                 {"tile": "Lock", "on": true},
             ]})),
         };
-        let applied = apply(&target, &incoming);
+        let applied = apply(&target, &incoming).unwrap();
         let tiles: Vec<(&str, bool)> = applied
             .shortcut_tiles
             .iter()
@@ -702,14 +756,14 @@ mod tests {
             br#"{"vale_settings":1,"settings":{"future_thing":true,"accent":"Plum"}}"#,
         )
         .unwrap();
-        let applied = apply(&Config::default(), &incoming);
+        let applied = apply(&Config::default(), &incoming).unwrap();
         assert_ne!(applied.accent, Config::default().accent);
     }
 
     #[test]
     fn round_trip() {
         let custom = general_config();
-        let applied = apply(&Config::default(), &file_of(&custom));
+        let applied = apply(&Config::default(), &file_of(&custom)).unwrap();
         assert_eq!(general_settings(&applied), general_settings(&custom));
     }
 
@@ -785,7 +839,7 @@ mod tests {
             exported: None,
             settings: obj(json!({"battery_threshold": 35, "accent": "Plum"})),
         };
-        let new = import_and_save(&path, &mem, &incoming);
+        let new = import_and_save(&path, &mem, &incoming).unwrap();
         // The restart's save and the teardown save both merge from memory.
         config::save_merged_at(&path, &new);
         config::save_merged_at(&path, &new);
@@ -793,6 +847,107 @@ mod tests {
         assert_eq!(after.battery_threshold, 35);
         assert_eq!(after.accent, new.accent);
         assert_ne!(after.accent, Config::default().accent);
+    }
+
+    /// A target with private and own values, a file with `bad` settings next
+    /// to a good `notch_width`: every private value stays, the good one lands.
+    fn bad_value_keeps_target(bad: Value) {
+        let target = private_config();
+        let mut settings = obj(bad);
+        settings.insert("notch_width".into(), json!(250));
+        if !settings.contains_key("accent") {
+            settings.insert("accent".into(), json!("Plum"));
+        }
+        let incoming = Incoming {
+            app_version: String::new(),
+            exported: None,
+            settings,
+        };
+        let applied = apply(&target, &incoming).expect("a bad value must not fail the import");
+        assert_eq!(applied.google_client_secret, "s3cret");
+        assert_eq!(applied.muted_apps, target.muted_apps);
+        assert!(applied.shortcut_tiles.iter().any(|t| t.tile == "Custom"));
+        assert!(applied.onboarding_done);
+        assert_eq!(applied.notch_width, 250);
+        assert_ne!(applied.notch_width, target.notch_width);
+    }
+
+    #[test]
+    fn a_bad_style_keeps_the_targets() {
+        bad_value_keeps_target(json!({"style": "Bogus"}));
+        bad_value_keeps_target(json!({"style": null}));
+    }
+
+    #[test]
+    fn a_bad_bool_keeps_the_targets() {
+        bad_value_keeps_target(json!({"robot": "yes"}));
+    }
+
+    #[test]
+    fn a_bad_number_keeps_the_targets() {
+        bad_value_keeps_target(json!({"battery_threshold": 300}));
+    }
+
+    #[test]
+    fn a_bad_enum_keeps_the_targets() {
+        bad_value_keeps_target(json!({"accent": 5}));
+    }
+
+    #[test]
+    fn a_bad_nested_value_keeps_the_targets() {
+        bad_value_keeps_target(json!({"pomodoro": {"focus_min": "x"}}));
+    }
+
+    #[test]
+    fn a_bad_split_value_keeps_the_targets() {
+        let mut target = private_config();
+        target.recording.video_fps = 60;
+        assert_ne!(target.recording.video_fps, Config::default().recording.video_fps);
+        let incoming = Incoming {
+            app_version: String::new(),
+            exported: None,
+            settings: obj(json!({"recording": {"video_fps": "fast"}})),
+        };
+        let applied = apply(&target, &incoming).unwrap();
+        assert_eq!(applied.recording.video_fps, target.recording.video_fps);
+        assert_eq!(applied.recording.folder, target.recording.folder);
+    }
+
+    #[test]
+    fn imported_builtin_tiles_never_push_own_tiles_off_the_page() {
+        let target = private_config();
+        let names: Vec<String> = crate::model::Shortcut::ALL
+            .iter()
+            .map(|s| crate::tiles::shortcut_name(*s))
+            .collect();
+        assert!(names.len() > crate::tiles::MAX_SHOWN);
+        let all_on: Vec<Value> = names.iter().map(|n| json!({"tile": n, "on": true})).collect();
+        let incoming = Incoming {
+            app_version: String::new(),
+            exported: None,
+            settings: obj(json!({"shortcut_tiles": all_on})),
+        };
+        let applied = apply(&target, &incoming).unwrap();
+        let shown = applied.shortcut_tiles.iter().filter(|t| t.on).count();
+        assert!(shown <= crate::tiles::MAX_SHOWN);
+        assert!(applied.shortcut_tiles.iter().any(|t| t.tile == "Custom" && t.on));
+    }
+
+    #[test]
+    fn a_failed_write_is_an_error() {
+        let dir = scratch("save_fails");
+        let blocker = dir.join("blocker");
+        std::fs::write(&blocker, "a file, not a folder").unwrap();
+        let path = blocker.join("config.json");
+        let incoming = Incoming {
+            app_version: String::new(),
+            exported: None,
+            settings: obj(json!({"accent": "Plum"})),
+        };
+        assert_eq!(
+            import_and_save(&path, &Config::default(), &incoming),
+            Err(ImportFailure::Save)
+        );
     }
 
     #[test]

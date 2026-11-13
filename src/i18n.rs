@@ -465,6 +465,9 @@ keys! {
         "Settings imported. Restart Vale to apply everything.";
     BackupFailed => "Cadangan pengaturan lama gagal dibuat, jadi tidak ada yang diimpor.",
         "Could not back up the current settings, so nothing was imported.";
+    SettingsSaveFailed => "Pengaturan gagal disimpan, jadi tidak ada yang diimpor.",
+        "Could not save the settings, so nothing was imported.";
+    FileUnreadable => "File ini tidak bisa dibaca.", "Could not read this file.";
     ConfigFilterJson => "File JSON (*.json)", "JSON files (*.json)";
     UpdateErrNoNetwork => "tidak ada koneksi", "no connection";
     UpdateErrNotWritable => "folder tidak bisa ditulis", "folder is not writable";

@@ -7044,10 +7044,9 @@ impl App {
             // A window closed in the middle of a recording: the hotkeys come back.
             SettingsAction::Closed => {
                 self.resume_hotkeys();
-                // A checked import file does not outlive the window.
-                if self.transfer.has_pending() {
-                    self.config_import_cancel();
-                }
+                // A checked file, a result or a refusal does not outlive the
+                // window; the cancel path also drops the file.
+                self.config_import_cancel();
             }
         }
         self.sync_settings();

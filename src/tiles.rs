@@ -212,7 +212,7 @@ pub fn group(tile: &Tile) -> TileGroup {
 }
 
 /// The built-in's name in the file ("Lock", "GoShelf").
-fn shortcut_name(s: Shortcut) -> String {
+pub(crate) fn shortcut_name(s: Shortcut) -> String {
     match s {
         Shortcut::Screenshot => "Screenshot".into(),
         Shortcut::Clipboard => "Clipboard".into(),

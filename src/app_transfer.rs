@@ -10,7 +10,7 @@ use chrono::Local;
 
 use super::{App, DEFERRED_SHUTDOWN, update_page};
 use crate::config;
-use crate::config_transfer::{self, ImportError, Incoming, MAX_BYTES};
+use crate::config_transfer::{self, ImportError, ImportFailure, Incoming, MAX_BYTES};
 use crate::i18n::{self, Key, Lang};
 use crate::model::{Event, NoticeKind};
 use crate::ui::settings::{self, TransferView};
@@ -36,12 +36,12 @@ impl Transfer {
         self.pending = Some(incoming);
     }
 
-    /// Nothing is waiting any more; the card shows `view`.
     /// A checked file waits for the owner's confirm.
     pub(super) fn has_pending(&self) -> bool {
         self.pending.is_some()
     }
 
+    /// Nothing is waiting any more; the card shows `view`.
     fn clear(&mut self, view: TransferView) {
         self.pending = None;
         self.view = view;
@@ -66,6 +66,14 @@ impl Transfer {
 /// made, or there was no config to back up.
 pub(super) fn backup_allows_import(backup: &std::io::Result<Option<std::path::PathBuf>>) -> bool {
     backup.is_ok()
+}
+
+/// The card's state for an import that stopped before it changed anything.
+pub(super) fn view_for_failure(lang: Lang, f: ImportFailure) -> TransferView {
+    TransferView::Refused(match f {
+        ImportFailure::NotVale => i18n::text(lang, Key::NotValeFile).into(),
+        ImportFailure::Save => i18n::text(lang, Key::SettingsSaveFailed).into(),
+    })
 }
 
 /// What "Impor" may do when the owner confirms.
@@ -132,13 +140,14 @@ impl App {
         // One byte over the limit is enough to know it is too big.
         let read = std::fs::File::open(&path)
             .and_then(|f| f.take(MAX_BYTES as u64 + 1).read_to_end(&mut bytes));
-        let checked = match read {
-            Ok(_) => config_transfer::read_incoming(&bytes),
-            Err(_) => Err(ImportError::NotVale),
-        };
-        match checked {
-            Ok(incoming) => self.transfer.hold(incoming),
-            Err(error) => self.transfer.clear(view_for_error(lang, &error)),
+        match read {
+            Ok(_) => match config_transfer::read_incoming(&bytes) {
+                Ok(incoming) => self.transfer.hold(incoming),
+                Err(error) => self.transfer.clear(view_for_error(lang, &error)),
+            },
+            Err(_) => self.transfer.clear(TransferView::Refused(
+                i18n::text(lang, Key::FileUnreadable).into(),
+            )),
         }
         self.sync_settings();
     }
@@ -153,7 +162,7 @@ impl App {
     pub(super) fn config_import_confirm(&mut self) {
         let lang = self.config.language;
         match import_gate(
-            self.transfer.pending.is_some(),
+            self.transfer.has_pending(),
             self.rec.engaged(),
             self.screen.busy(),
         ) {
@@ -176,7 +185,14 @@ impl App {
             self.sync_settings();
             return;
         }
-        let merged = config_transfer::import_and_save(&path, &self.config, &incoming);
+        let merged = match config_transfer::import_and_save(&path, &self.config, &incoming) {
+            Ok(merged) => merged,
+            Err(failure) => {
+                self.transfer.clear(view_for_failure(lang, failure));
+                self.sync_settings();
+                return;
+            }
+        };
         self.adopt_config(merged);
         self.transfer.clear(TransferView::Idle);
         // The import may have switched the language.
@@ -238,6 +254,30 @@ mod tests {
             TransferView::Refused(
                 "This file comes from a newer Vale (6.0.0). Update Vale first.".into()
             )
+        );
+    }
+
+    #[test]
+    fn a_failed_import_shows_its_own_refusal() {
+        assert_eq!(
+            view_for_failure(Lang::En, ImportFailure::Save),
+            TransferView::Refused("Could not save the settings, so nothing was imported.".into())
+        );
+        assert_eq!(
+            view_for_failure(Lang::Id, ImportFailure::Save),
+            TransferView::Refused("Pengaturan gagal disimpan, jadi tidak ada yang diimpor.".into())
+        );
+        assert_eq!(
+            view_for_failure(Lang::En, ImportFailure::NotVale),
+            view_for_error(Lang::En, &ImportError::NotVale)
+        );
+        assert_eq!(
+            i18n::text(Lang::Id, Key::FileUnreadable),
+            "File ini tidak bisa dibaca."
+        );
+        assert_eq!(
+            i18n::text(Lang::En, Key::FileUnreadable),
+            "Could not read this file."
         );
     }
 
@@ -309,6 +349,8 @@ mod tests {
                 Key::SettingsImportedRestart,
                 Key::ConfigFilterJson,
                 Key::BackupFailed,
+                Key::SettingsSaveFailed,
+                Key::FileUnreadable,
             ] {
                 assert!(!i18n::text(lang, key).contains('\u{2014}'));
             }
