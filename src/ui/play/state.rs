@@ -46,10 +46,10 @@ impl Play {
     }
 
     pub fn beat(&self, now: Instant) -> Beat {
-        if self.instant {
-            return Beat { spread: 0.0, alpha: 0.0, t: 0.0 };
-        }
         let t = now.saturating_duration_since(self.started).as_secs_f32();
+        if self.instant {
+            return Beat { spread: 0.0, alpha: 0.0, t };
+        }
         let wind = self.wind_start();
         // The opening stops where the cut finds it, so the spread only falls.
         let opened = now.min(wind).saturating_duration_since(self.started);
@@ -131,6 +131,10 @@ mod tests {
         assert!(p.done(t0 + MS(1)));
         let b = p.beat(t0 + MS(1));
         assert_eq!((b.alpha, b.spread), (0.0, 0.0));
+        let mut q = Play::start(Story::Kelelawar, t0);
+        let before = q.beat(t0 + Duration::from_secs(2)).t;
+        q.finish_now();
+        assert_eq!(q.beat(t0 + Duration::from_secs(2)).t, before, "t does not jump back");
     }
 
     #[test]
@@ -176,7 +180,8 @@ mod tests {
         assert!(b3.alpha > 0.0);
         assert!(b0.spread > b1.spread && b1.spread > b2.spread && b2.spread > b3.spread);
         assert!(b0.t < b1.t && b1.t < b2.t && b2.t < b3.t, "painters never see time go back");
-        assert!(b2.alpha > 0.3 && b2.alpha < 0.7, "halfway through is about half, got {}", b2.alpha);
+        assert!((b2.alpha - 0.5).abs() < 1e-6, "halfway through is half, got {}", b2.alpha);
+        assert_eq!(b2.spread, b2.alpha, "mid-story the spread falls on alpha's curve");
     }
 
     #[test]
@@ -256,6 +261,7 @@ mod tests {
         let c = out.clock.unwrap();
         assert!(c.right() <= s.x + s.w && c.right() > s.x + 0.8 * s.w, "clock goes to the right end, got {c:?}");
         assert!(c.x > only_clock.clock.unwrap().x + 20.0);
+        assert_eq!(c.w, CLOCK_W, "the full-width box shrinks to the clock's width");
         assert_eq!(spread_offsets(only_clock, s, 0.0), only_clock);
 
         let none = idle_layout_lead(s, false, false, 0.0);
