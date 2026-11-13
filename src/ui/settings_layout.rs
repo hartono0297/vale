@@ -9513,7 +9513,7 @@ mod tests {
                 "the auto row is a toggle, not a button"
             );
             // Four rows: Kode sumber, Pembaruan, the toggle, Folder data.
-            let card = &l.cards[l.cards.len() - 2];
+            let card = &l.cards[l.cards.len() - 3];
             assert_eq!(card.h, 4.0 * ROW_H);
             let toggle = l.controls.iter().find_map(|c| match c {
                 Control::Toggle { hit, rect, on, .. } if *hit == Hit::UpdateAuto => {
