@@ -6,6 +6,8 @@
 use std::net::{IpAddr, Ipv4Addr};
 use std::time::{Duration, Instant};
 
+use crate::config::PhoneNet;
+
 /// `IF_TYPE_IEEE80211`.
 pub const IF_WIFI: u32 = 71;
 /// `IF_TYPE_ETHERNET_CSMACD`.
@@ -95,6 +97,52 @@ pub fn pick_adapter(adapters: &[AdapterInfo]) -> Option<AdapterInfo> {
         .filter(|a| a.up && a.has_gateway && a.private_ip().is_some() && !a.is_virtual())
         .min_by_key(|a| rank(a))
         .cloned()
+}
+
+/// Whether `ip` is a tailnet address: IPv4 100.64.0.0/10 or IPv6
+/// fd7a:115c:a1e0::/48. An IPv4-mapped IPv6 address is judged as its IPv4.
+pub fn is_tailnet(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(a) => is_cgnat(a),
+        IpAddr::V6(a) => match a.to_ipv4_mapped() {
+            Some(v4) => is_cgnat(v4),
+            None => a.segments()[..3] == [0xfd7a, 0x115c, 0xa1e0],
+        },
+    }
+}
+
+fn is_cgnat(a: Ipv4Addr) -> bool {
+    let o = a.octets();
+    o[0] == 100 && (o[1] & 0xc0) == 0x40
+}
+
+/// The PC's tailnet address: the first adapter that is up, says Tailscale in
+/// its name or description and holds a 100.64/10 address. No gateway is
+/// needed (a tunnel has none). Another adapter with a carrier-grade NAT
+/// address (a mobile hotspot, some ISPs) is not Tailscale and is skipped.
+pub fn pick_tailscale(adapters: &[AdapterInfo]) -> Option<Ipv4Addr> {
+    adapters
+        .iter()
+        .filter(|a| a.up)
+        .filter(|a| {
+            format!("{} {}", a.name, a.description)
+                .to_lowercase()
+                .contains("tailscale")
+        })
+        .find_map(|a| a.ipv4.iter().copied().find(|ip| is_cgnat(*ip)))
+}
+
+/// Whether a phone at `ip` may talk to a session on `via`: Wi-Fi takes only
+/// local-network peers, Tailscale only tailnet peers, so neither mode lets
+/// the other's phones in. Loopback passes only with `allow_loopback`.
+pub fn peer_allowed(ip: IpAddr, via: PhoneNet, allow_loopback: bool) -> bool {
+    if ip.is_loopback() {
+        return allow_loopback;
+    }
+    match via {
+        PhoneNet::Wifi => is_private(ip, false),
+        PhoneNet::Tailscale => is_tailnet(ip),
+    }
 }
 
 /// A network's category as Windows files it.
@@ -469,5 +517,55 @@ mod tests {
         assert!(!ask(&mut b, now, false));
         drop(ask);
         assert_eq!(reads, 2);
+    }
+
+    #[test]
+    fn the_tailscale_adapter_is_found_without_a_gateway() {
+        let mut ts = ad("Tailscale", 53, "100.101.102.5");
+        ts.description = "Tailscale Tunnel".into();
+        ts.has_gateway = false;
+        let wifi = ad("Wi-Fi", IF_WIFI, "192.168.1.20");
+        assert_eq!(pick_tailscale(&[wifi.clone(), ts.clone()]), Some("100.101.102.5".parse().unwrap()));
+        let mut down = ts.clone();
+        down.up = false;
+        assert_eq!(pick_tailscale(&[down]), None);
+        let mut no_100 = ts.clone();
+        no_100.ipv4 = vec!["169.254.9.9".parse().unwrap()];
+        assert_eq!(pick_tailscale(&[no_100]), None);
+        assert_eq!(pick_tailscale(&[wifi]), None);
+        let mut renamed = ts;
+        renamed.name = "Ethernet 7".into(); // description still says Tailscale
+        assert!(pick_tailscale(&[renamed]).is_some());
+    }
+
+    #[test]
+    fn a_cgnat_address_on_another_adapter_is_not_tailscale() {
+        let hotspot = ad("Cellular", IF_WIFI, "100.72.3.4");
+        assert_eq!(pick_tailscale(&[hotspot]), None);
+    }
+
+    #[test]
+    fn tailnet_ranges() {
+        for ip in ["100.64.0.0", "100.101.102.103", "100.127.255.255", "fd7a:115c:a1e0::1", "::ffff:100.64.0.1"] {
+            assert!(is_tailnet(ip.parse().unwrap()), "{ip}");
+        }
+        for ip in ["100.63.255.255", "100.128.0.0", "192.168.1.1", "10.0.0.1", "fd7a:115c:a1e1::1", "127.0.0.1"] {
+            assert!(!is_tailnet(ip.parse().unwrap()), "{ip}");
+        }
+    }
+
+    #[test]
+    fn each_mode_refuses_the_other_modes_peers() {
+        let lan: IpAddr = "192.168.1.30".parse().unwrap();
+        let ts: IpAddr = "100.90.1.2".parse().unwrap();
+        assert!(peer_allowed(lan, PhoneNet::Wifi, false));
+        assert!(!peer_allowed(ts, PhoneNet::Wifi, false));
+        assert!(peer_allowed(ts, PhoneNet::Tailscale, false));
+        assert!(!peer_allowed(lan, PhoneNet::Tailscale, false));
+        let lo: IpAddr = "127.0.0.1".parse().unwrap();
+        for via in [PhoneNet::Wifi, PhoneNet::Tailscale] {
+            assert!(!peer_allowed(lo, via, false));
+            assert!(peer_allowed(lo, via, true));
+        }
     }
 }

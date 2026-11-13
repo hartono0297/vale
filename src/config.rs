@@ -191,6 +191,10 @@ pub struct Config {
     /// panel and Settings. Owned by the island. A bad value reads as Sans.
     #[serde(deserialize_with = "ui_font")]
     pub font: UiFont,
+    /// "Jaringan" (file shelf, phone link): the network the phone link serves.
+    /// Owned by the island. A bad value reads as Wifi.
+    #[serde(deserialize_with = "phone_net")]
+    pub phone_net: PhoneNet,
     /// "Monitor" (Settings -> Tampilan -> Notch, tray): the screen the island
     /// shows on. Owned by the island; a bad value reads as Primary.
     pub notch_monitor: NotchMonitor,
@@ -582,6 +586,19 @@ fn ui_font<'de, D: Deserializer<'de>>(d: D) -> Result<UiFont, D::Error> {
     Ok(v.as_str().and_then(UiFont::from_name).unwrap_or_default())
 }
 
+crate::theme::named_enum! {
+    /// Which network the phone link serves: the local Wi-Fi (the default, as
+    /// always) or the tailnet, so a phone away from home can reach the PC.
+    PhoneNet { Wifi, Tailscale }
+}
+
+/// A network name; anything else (a typo, a number, null, an object) is Wifi,
+/// and the rest of the file is kept.
+fn phone_net<'de, D: Deserializer<'de>>(d: D) -> Result<PhoneNet, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(v.as_str().and_then(PhoneNet::from_name).unwrap_or_default())
+}
+
 /// "Lama tampil" in seconds: (min, max, step).
 pub const SHOT_SECS_RANGE: (u32, u32, u32) = (4, 30, 2);
 
@@ -812,6 +829,7 @@ impl Default for Config {
             hotkeys: crate::hotkey::Hotkeys::default(),
             update_offered: String::new(),
             font: UiFont::Sans,
+            phone_net: PhoneNet::Wifi,
             notch_monitor: NotchMonitor::Primary,
             lyrics_card: None,
             widgets: crate::widgets::prefs::WidgetPrefs::default(),
@@ -964,6 +982,7 @@ pub fn merge_owned(disk: Config, mem: &Config) -> Config {
         hotkeys: mem.hotkeys,
         update_offered: mem.update_offered.clone(),
         font: mem.font,
+        phone_net: mem.phone_net,
         notch_monitor: mem.notch_monitor.clone(),
         lyrics_card: mem.lyrics_card,
         widgets: mem.widgets,
@@ -1381,6 +1400,7 @@ mod tests {
                 maximized: false,
             }),
             font: UiFont::Mono,
+            phone_net: PhoneNet::Tailscale,
             notch_monitor: NotchMonitor::Chosen {
                 path: r"\\?\DISPLAY#X#1".into(),
                 name: "Dell".into(),
@@ -3183,6 +3203,21 @@ mod tests {
         };
         assert_eq!(merge_owned(Config::default(), &mono).font, UiFont::Mono);
         assert_eq!(merge_owned(mono, &Config::default()).font, UiFont::Sans);
+    }
+
+    #[test]
+    fn phone_net_defaults_to_wifi_and_reads_leniently() {
+        assert_eq!(Config::default().phone_net, PhoneNet::Wifi);
+        assert_eq!(parse(r#"{"style":"Notch"}"#).phone_net, PhoneNet::Wifi);
+        assert_eq!(parse(r#"{"phone_net":"Tailscale"}"#).phone_net, PhoneNet::Tailscale);
+        for junk in ["7", "null", r#""tail""#, "{}", "[]"] {
+            let c = parse(&format!(r#"{{"style":"Notch","accent":"Sage","phone_net":{junk}}}"#));
+            assert_eq!(c.phone_net, PhoneNet::Wifi, "{junk}");
+            assert_eq!(c.style, Style::Notch, "{junk}");
+        }
+        let ts = Config { phone_net: PhoneNet::Tailscale, ..Config::default() };
+        assert!(serde_json::to_string(&ts).unwrap().contains(r#""phone_net":"Tailscale""#));
+        assert_eq!(merge_owned(Config::default(), &ts).phone_net, PhoneNet::Tailscale);
     }
 
     #[test]
