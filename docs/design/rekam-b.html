@@ -1,0 +1,390 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rekam arah B</title>
+<style>
+  @font-face { font-family: 'DM Sans'; font-weight: 400; src: url('../../assets/fonts/DMSans-400.ttf'); }
+  @font-face { font-family: 'DM Sans'; font-weight: 500; src: url('../../assets/fonts/DMSans-500.ttf'); }
+  @font-face { font-family: 'DM Sans'; font-weight: 600; src: url('../../assets/fonts/DMSans-600.ttf'); }
+  @font-face { font-family: 'JetBrains Mono'; font-weight: 400; src: url('../../assets/fonts/JetBrainsMono-400.ttf'); }
+  @font-face { font-family: 'JetBrains Mono'; font-weight: 500; src: url('../../assets/fonts/JetBrainsMono-500.ttf'); }
+  @font-face { font-family: 'JetBrains Mono'; font-weight: 600; src: url('../../assets/fonts/JetBrainsMono-600.ttf'); }
+  :root { --paper: #F1ECE4; --ink: #221A14; --ink2: #6A5C4E; --rule: #DDD3C6; --card: #FBF7F1; --doc: 'DM Sans', 'Segoe UI', sans-serif; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--paper); color: var(--ink); font-family: var(--doc); }
+  main { max-width: 1240px; margin: 0 auto; padding: 32px 16px 80px; }
+  h1 { font-weight: 600; font-size: 30px; letter-spacing: -.025em; margin-bottom: 8px; }
+  h2 { font-weight: 600; font-size: 21px; letter-spacing: -.02em; margin-top: 40px; scroll-margin-top: 70px; }
+  h3 { font-weight: 600; font-size: 14px; margin-bottom: 4px; }
+  p, li { font-size: 14px; line-height: 1.55; color: #3E3229; }
+  .lede { max-width: 780px; }
+  b { font-weight: 600; color: var(--ink); }
+  .rules { margin-top: 18px; display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+  .box { background: var(--card); border: 1px solid var(--rule); border-radius: 14px; padding: 14px 16px; }
+  .box ul { padding-left: 18px; } .box li { margin-bottom: 4px; font-size: 13.5px; }
+  .ctl { position: sticky; top: 0; z-index: 5; background: rgba(241,236,228,.96); border-bottom: 1px solid var(--rule); margin: 22px -16px 0; padding: 10px 16px; display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center; }
+  .ctl .g { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--ink2); }
+  .ctl .seg { display: flex; background: #E3DACD; border-radius: 9px; padding: 2px; }
+  .ctl button { font: inherit; font-size: 12.5px; border: 0; background: transparent; color: #4A3D33; padding: 5px 10px; border-radius: 7px; cursor: pointer; min-height: 30px; }
+  .ctl button[aria-pressed="true"] { background: #FBF7F1; color: var(--ink); font-weight: 600; box-shadow: 0 1px 2px rgba(34,26,20,.12); }
+  .ctl button:focus-visible, .jump a:focus-visible { outline: 2px solid #9A3B19; outline-offset: 2px; }
+  .jump { display: flex; gap: 12px; font-size: 13px; margin-left: auto; }
+  .jump a { color: #7A2F14; }
+  .states { margin-top: 14px; display: grid; gap: 22px 20px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 560px), 1fr)); }
+  figure { min-width: 0; }
+  figcaption { font-size: 12.8px; color: var(--ink2); margin-top: 8px; line-height: 1.45; }
+  figcaption b { color: var(--ink); }
+  .stage { background: #3A3029; border-radius: 12px; padding: 0 0 14px; display: flex; justify-content: center; overflow: hidden; }
+  .fit { width: 100%; display: flex; justify-content: center; }
+  .scale { transform-origin: top center; }
+  .ask { margin-top: 36px; background: #2A221C; border-radius: 14px; padding: 18px 20px; }
+  .ask p { color: #E6DCCF; } .ask b { color: #F4EDE4; }
+
+  /* ================= the island panel ================= */
+  .panel {
+    --s: #17120F; --r: #241D18; --rh: #3A2F27; --t: #332A23; --doff: #4A3E35;
+    --tx: #F4EDE4; --tx2: #A89A8B; --a: #9DB59A; --on-a: #17120F; --red: #E5484D; --ochre: #D9A441; --soft-red: #FF8A73;
+    --menu: #2A221C;
+    --f: 'DM Sans', 'Segoe UI', sans-serif;
+    width: 560px; height: 290px; flex: none; position: relative;
+    background: var(--s); color: var(--tx); font-family: var(--f); font-size: 12px;
+    border-radius: 0 0 30px 30px; padding: 14px 20px 0;
+    box-shadow: 0 10px 26px rgba(0,0,0,.4);
+    font-variant-numeric: tabular-nums;
+  }
+  .panel.term { --s: #1B1D1F; --r: #27292B; --rh: #3D3F41; --t: #353739; --doff: #4D4F51; --tx2: #A9ADB2; --menu: #26282A; }
+  .panel.terra { --a: #E2683C; }
+  .panel.mono { --f: 'JetBrains Mono', Consolas, monospace; font-size: 11px; }
+  .panel b { color: inherit; }
+  .panel svg { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+  .panel svg.sm { width: 13px; height: 13px; }
+  .panel svg.xs { width: 11px; height: 11px; }
+
+  .hd { display: flex; align-items: center; height: 22px; gap: 4px; }
+  .tabs { display: flex; background: var(--r); border-radius: 10px; padding: 2px; height: 22px; }
+  .tabs span { padding: 0 13px; border-radius: 8px; line-height: 18px; font-size: 11.5px; color: var(--tx2); font-weight: 500; }
+  .tabs span.on { background: var(--rh); color: var(--tx); }
+  .tabs.locked { opacity: .5; }
+  .grow { flex: 1; }
+  .ib { width: 22px; height: 22px; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; color: var(--tx2); position: relative; flex: none; }
+  .ib.hover { background: var(--r); color: var(--tx); }
+  .tip { position: absolute; top: 27px; right: -6px; white-space: nowrap; background: var(--rh); color: var(--tx); font-size: 11px; padding: 4px 8px; border-radius: 7px; z-index: 3; }
+  .dots { position: absolute; left: 0; right: 0; bottom: 12px; display: flex; justify-content: center; gap: 7px; }
+  .dots i { width: 5px; height: 5px; border-radius: 50%; background: var(--doff); display: block; }
+  .dots i.on { background: var(--a); }
+  .sec { color: var(--tx2); }
+  .trunc { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .ring { border-radius: 50%; border: 3px solid var(--t); display: inline-flex; align-items: center; justify-content: center; flex: none; }
+  .ring i { display: block; border-radius: 50%; background: var(--red); }
+  .ring i.sq { border-radius: 3px; }
+  .focus { box-shadow: 0 0 0 2px var(--s), 0 0 0 4px var(--a); }
+  .round { border-radius: 50%; background: var(--t); display: inline-flex; align-items: center; justify-content: center; color: var(--tx); flex: none; }
+  .meter { display: inline-flex; align-items: center; gap: 2px; height: 14px; flex: none; }
+  .meter i { width: 3px; border-radius: 2px; background: var(--a); display: block; }
+  .meter.rest i { background: var(--t); height: 3px !important; }
+  .sw { width: 28px; height: 16px; border-radius: 99px; background: var(--t); position: relative; flex: none; }
+  .sw::after { content: ""; position: absolute; left: 2px; top: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--tx2); }
+  .sw.on { background: var(--a); } .sw.on::after { left: 14px; background: var(--on-a); }
+  .sw.locked { opacity: .45; }
+  .act { height: 22px; min-width: 76px; padding: 0 10px; border-radius: 8px; background: var(--t); color: var(--tx); font-size: 11px; font-weight: 500; display: inline-flex; align-items: center; justify-content: center; gap: 5px; flex: none; position: relative; overflow: hidden; white-space: nowrap; }
+  .act.view { box-shadow: inset 0 0 0 1px var(--a); }
+  .act.queued { background: transparent; box-shadow: inset 0 0 0 1px var(--t); color: var(--tx2); }
+  .act.run { background: var(--r); box-shadow: inset 0 0 0 1px var(--t); }
+  .act.run .fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--rh); }
+  .act.run span { position: relative; }
+  .act.failed { color: var(--soft-red); }
+  .act.off { opacity: .45; }
+  .act.hover { background: var(--rh); }
+  .well { width: 22px; height: 22px; border-radius: 7px; background: var(--r); display: inline-flex; align-items: center; justify-content: center; color: var(--tx2); flex: none; }
+  .grp { font-size: 10.5px; color: var(--tx2); font-weight: 500; height: 16px; line-height: 16px; }
+  .row { display: flex; align-items: center; gap: 8px; height: 28px; }
+  .row .tm { font-weight: 500; font-size: 12.5px; }
+  .row .du { color: var(--tx2); font-size: 11.5px; }
+  .live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--red); flex: none; }
+  .live-dot.paused { background: var(--ochre); }
+  .empty { display: flex; gap: 10px; align-items: center; }
+  .empty .well { width: 32px; height: 32px; border-radius: 10px; }
+  .empty b { display: block; font-size: 12.5px; font-weight: 500; }
+  .empty span { font-size: 11px; color: var(--tx2); }
+  .mute { width: 24px; height: 24px; border-radius: 7px; display: inline-flex; align-items: center; justify-content: center; color: var(--tx); background: var(--t); flex: none; }
+  .mute.off { color: var(--tx2); background: transparent; box-shadow: inset 0 0 0 1px var(--t); }
+
+  .b-body { margin-top: 8px; display: flex; gap: 12px; height: 222px; }
+  .b-card { width: 196px; flex: none; background: var(--r); border-radius: 18px; padding: 10px 12px; display: flex; flex-direction: column; position: relative; }
+  .b-top { display: flex; flex-direction: column; align-items: center; gap: 3px; height: 92px; justify-content: center; flex: none; }
+  .b-top .lbl { font-size: 11.5px; font-weight: 500; }
+  .b-pair { display: flex; align-items: center; gap: 12px; }
+  .b-time { font-size: 15px; font-weight: 500; display: flex; align-items: center; gap: 6px; }
+  .b-time.paused { color: var(--ochre); }
+  .b-src { display: flex; align-items: center; gap: 8px; height: 34px; border-top: 1px solid var(--t); flex: none; }
+  .b-src > svg { color: var(--tx2); }
+  .b-src.on > svg { color: var(--a); }
+  .b-src.dim .cl b { color: var(--tx2); }
+  .b-src .cl { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.2; }
+  .b-src .cl b { font-weight: 500; font-size: 11.5px; }
+  .b-src .cl small { font-size: 10px; color: var(--tx2); display: flex; align-items: center; gap: 2px; min-width: 0; }
+  .b-src .cl small.warn { color: var(--ochre); }
+  .b-src .cl small.hot { color: var(--tx); text-decoration: underline; text-underline-offset: 2px; }
+  .b-hint { font-size: 10.5px; color: var(--tx2); text-align: center; line-height: 1.35; padding: 0 4px 6px; }
+  .b-list { flex: 1; min-width: 0; }
+  .b-more { font-size: 11px; color: var(--tx2); margin-top: 4px; display: flex; align-items: center; gap: 4px; }
+  .confirm { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+  .confirm .q { font-size: 11.5px; font-weight: 500; }
+  .confirm .btns { display: flex; gap: 6px; }
+  .btn { height: 26px; min-width: 64px; padding: 0 10px; border-radius: 8px; background: var(--t); color: var(--tx); font-size: 11px; font-weight: 500; display: inline-flex; align-items: center; justify-content: center; }
+  .btn.danger { background: rgba(229,72,77,.16); color: var(--soft-red); }
+
+  /* Vale's own dropdown (menu_pop): its own window, drawn here over the panel */
+  .menu { position: absolute; z-index: 4; background: var(--menu); border-radius: 10px; padding: 6px; width: 284px; box-shadow: 0 8px 22px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.05); }
+  .mi { display: flex; align-items: center; height: 32px; border-radius: 6px; }
+  .mi .ck { width: 30px; display: flex; justify-content: center; color: var(--a); flex: none; }
+  .mi .tx { display: flex; flex-direction: column; line-height: 1.2; min-width: 0; padding-right: 12px; }
+  .mi .tx b { font-size: 13px; font-weight: 400; }
+  .mi.on .tx b { font-weight: 600; }
+  .mi .tx small { font-size: 11.5px; color: var(--tx2); }
+  .mi.hover { background: var(--rh); }
+  .msep { height: 9px; display: flex; align-items: center; } .msep::after { content: ""; flex: 1; height: 1px; background: var(--t); margin: 0 6px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Halaman Rekam, arah B lengkap</h1>
+  <p class="lede">Kartu perekam di kiri, daftar rekaman di kanan. Di bawah ini semua keadaan yang bakal dibangun, di ukuran asli panel. Data rekaman yang bukan dari screenshot kamu (jam rekaman berjalan, video di tab Layar, perangkat kedua di menu, beberapa baris transkrip) cuma contoh, dan ditandai di keterangannya.</p>
+
+  <div class="rules">
+    <div class="box">
+      <h3>Aturan kartu kiri</h3>
+      <ul>
+        <li>Saklar Mic dan Suara PC gantiin Mic / PC audio / Both. Sumber terakhir yang nyala nggak bisa dimatiin (saklarnya redup).</li>
+        <li>Klik nama perangkat (ada panah kecil) buka dropdown Vale yang sekarang.</li>
+        <li>Pas merekam: saklar jadi tombol bisu, panah perangkat tetap bisa diklik (ganti perangkat di tengah rekaman tetap jalan kayak sekarang).</li>
+        <li>Caption langsung tetap satu saklar di bawah, sama di tab Audio dan Layar.</li>
+      </ul>
+    </div>
+    <div class="box">
+      <h3>Aturan daftar kanan</h3>
+      <ul>
+        <li>Dikelompokkan per hari (Hari ini, Kemarin, tanggal). Baris: ikon jenis, jam, durasi, satu tombol transkrip.</li>
+        <li>Tombol transkrip selalu 76 px atau lebih, satu bentuk buat semua keadaannya.</li>
+        <li>Kalau rekaman lebih banyak dari yang muat, baris terakhir "N lagi di folder", klik buka folder.</li>
+        <li>Pas merekam, baris "Sekarang" di paling atas.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="ctl" role="group" aria-label="Tampilan mockup">
+    <div class="g">Bahasa <span class="seg" data-k="lang"><button data-v="id" aria-pressed="true">Indonesia</button><button data-v="en" aria-pressed="false">English</button></span></div>
+    <div class="g">Permukaan <span class="seg" data-k="surf"><button data-v="esp" aria-pressed="true">Espresso</button><button data-v="term" aria-pressed="false">Terminal</button></span></div>
+    <div class="g">Aksen <span class="seg" data-k="acc"><button data-v="sage" aria-pressed="true">Sage</button><button data-v="terra" aria-pressed="false">Terracotta</button></span></div>
+    <div class="g">Font <span class="seg" data-k="font"><button data-v="sans" aria-pressed="true">DM Sans</button><button data-v="mono" aria-pressed="false">JetBrains Mono</button></span></div>
+    <nav class="jump" aria-label="Lompat"><a href="#audio">Audio</a><a href="#rekam">Merekam</a><a href="#transkrip">Transkrip</a><a href="#layar">Layar</a></nav>
+  </div>
+
+  <h2 id="audio">Tab Audio, diam</h2>
+  <div class="states" data-g="audio"></div>
+  <h2 id="rekam">Merekam</h2>
+  <div class="states" data-g="rec"></div>
+  <h2 id="transkrip">Keadaan transkrip di daftar</h2>
+  <div class="states" data-g="tr"></div>
+  <h2 id="layar">Tab Layar</h2>
+  <div class="states" data-g="screen"></div>
+
+  <div class="ask">
+    <p><b>Cek bagian mana yang salah atau kurang.</b> Kalau semua oke, aku tulis dokumen desainnya (apa yang berubah, apa yang tetap, cara ngetesnya), dan setelah kamu setujui baru bikin rencana kerja dan mulai ngoding.</p>
+  </div>
+</main>
+
+<script>
+(() => {
+  const S = { lang: 'id', surf: 'esp', acc: 'sage', font: 'sans' };
+  const T = (en, id) => S.lang === 'id' ? id : en;
+  const P = {
+    mic: '<rect x="6" y="2" width="4" height="7.5" rx="2"/><path d="M3.8 7.6a4.2 4.2 0 0 0 8.4 0M8 11.8V14"/>',
+    micOff: '<rect x="6" y="2" width="4" height="7.5" rx="2"/><path d="M3.8 7.6a4.2 4.2 0 0 0 8.4 0M8 11.8V14M2.5 2.5l11 11"/>',
+    spk: '<path d="M2.5 6h2.2L8 3.4v9.2L4.7 10H2.5z"/><path d="M10.6 6.1a2.6 2.6 0 0 1 0 3.8M12.3 4.4a5 5 0 0 1 0 7.2"/>',
+    spkOff: '<path d="M2.5 6h2.2L8 3.4v9.2L4.7 10H2.5z"/><path d="M10.5 6l3.5 4M14 6l-3.5 4"/>',
+    scr: '<rect x="1.8" y="2.8" width="12.4" height="8.4" rx="1.5"/><path d="M5.8 14h4.4M8 11.2V14"/>',
+    folder: '<path d="M2 4.2h4.2l1.5 1.6H14v6.8a.8.8 0 0 1-.8.8H2.8a.8.8 0 0 1-.8-.8z"/>',
+    filetx: '<path d="M4 1.8h5l3 3v9.4H4z"/><path d="M9 1.8v3h3M6 8.2h4M6 10.8h3"/>',
+    gear: '<circle cx="8" cy="8" r="2.1"/><path d="M8 1.8v1.8M8 12.4v1.8M1.8 8h1.8M12.4 8h1.8M3.6 3.6l1.3 1.3M11.1 11.1l1.3 1.3M3.6 12.4l1.3-1.3M11.1 4.9l1.3-1.3"/>',
+    chev: '<path d="M5 6.5l3 3 3-3"/>',
+    chevR: '<path d="M6.5 4.5l3 3.5-3 3.5"/>',
+    pause: '<path d="M6 4v8M10 4v8"/>',
+    play: '<path d="M5.5 3.8l6.5 4.2-6.5 4.2z"/>',
+    trash: '<path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.7 9h5.6l.7-9"/>',
+    check: '<path d="M3.5 8.5l3 3 6-7"/>',
+    cc: '<rect x="1.8" y="3.2" width="12.4" height="9.6" rx="2"/><path d="M7 6.6a1.7 1.7 0 1 0 0 2.8M11.4 6.6a1.7 1.7 0 1 0 0 2.8"/>',
+  };
+  const I = (n, cls = '') => `<svg viewBox="0 0 16 16" class="${cls}" aria-hidden="true">${P[n]}</svg>`;
+  const meter = (hs, rest) => `<span class="meter${rest ? ' rest' : ''}">${hs.map(h => `<i style="height:${h}px"></i>`).join('')}</span>`;
+  const dots = () => `<div class="dots">${Array.from({ length: 14 }, (_, i) => `<i class="${i === 9 ? 'on' : ''}"></i>`).join('')}</div>`;
+  const ring = (size, inner, sq, cls = '') => `<span class="ring ${cls}" style="width:${size}px;height:${size}px"><i class="${sq ? 'sq' : ''}" style="width:${inner}px;height:${inner}px"></i></span>`;
+  const round = (size, icon) => `<span class="round" style="width:${size}px;height:${size}px">${I(icon)}</span>`;
+
+  const MIC = 'Desktop Microphone (RØDE NT-USB Mini)';
+  const SPK = 'Speakers (Realtek(R) Audio)';
+  const W = {
+    rec: () => T('Record', 'Rekam'), mic: () => 'Mic', pc: () => T('PC audio', 'Suara PC'),
+    cap: () => T('Live captions', 'Caption langsung'), recording: () => T('Recording', 'Merekam'), paused: () => T('Paused', 'Dijeda'),
+    today: () => T('Today', 'Hari ini'), now: () => T('Now', 'Sekarang'),
+    view: () => T('View', 'Lihat'), tr: () => T('Transcribe', 'Transkrip'), queued: () => T('Queued', 'Antre'),
+    waiting: () => T('Waiting for model', 'Menunggu model'), failed: () => T('Failed', 'Gagal'),
+    folder: () => T('Open folder', 'Buka folder'), pick: () => T('Transcribe a file…', 'Transkrip file lain…'),
+    empty: () => T('No recordings yet', 'Belum ada rekaman'),
+    hint: (scr) => scr ? T('Press Record, or Ctrl+Alt+Shift+R from anywhere', 'Tekan Rekam, atau Ctrl+Alt+Shift+R dari mana aja')
+                       : T('Press Record, or Ctrl+Alt+R from anywhere', 'Tekan Rekam, atau Ctrl+Alt+R dari mana aja'),
+    pickNext: () => T('Screen, window or area: you pick it after Record', 'Layar, jendela atau area: dipilih setelah tekan Rekam'),
+    quality: () => T('Quality', 'Kualitas'),
+    more: (n) => T(`${n} more in the folder`, `${n} lagi di folder`),
+    s: (n) => T(`${n} s`, `${n} dtk`), min: (n) => T(`${n} min`, `${n} mnt`),
+  };
+
+  const audioRows = () => [
+    { g: W.today(), ic: 'mic', tm: '20:09', du: W.s(20), act: 'view' },
+    { g: '8 Nov', ic: 'mic', tm: '01:08', du: W.s(6), act: 'tr' },
+    { g: '8 Nov', ic: 'mic', tm: '01:08', du: W.s(8), act: 'tr' },
+    { g: '7 Nov', ic: 'mic', tm: '22:54', du: W.min(5), act: 'view' },
+  ];
+  const trRows = () => [
+    { g: W.today(), ic: 'mic', tm: '20:09', du: W.s(20), act: 'view' },
+    { g: W.today(), ic: 'mic', tm: '18:30', du: W.min(46), act: 'run' },
+    { g: W.today(), ic: 'mic', tm: '17:02', du: W.min(12), act: 'queued' },
+    { g: '8 Nov', ic: 'mic', tm: '01:08', du: W.s(6), act: 'waiting' },
+    { g: '8 Nov', ic: 'mic', tm: '01:08', du: W.s(8), act: 'failed' },
+    { g: '7 Nov', ic: 'mic', tm: '22:54', du: W.min(5), act: 'tr', hover: true },
+  ];
+  const screenRows = () => [
+    { g: W.today(), ic: 'scr', tm: '20:41', ttl: T('Whole screen', 'Seluruh layar'), du: W.min(3), act: 'tr' },
+    { g: W.today(), ic: 'scr', tm: '19:02', ttl: 'Vale settings', du: W.s(48), act: 'view' },
+    { g: '11 Nov', ic: 'scr', tm: '16:15', ttl: 'Area 1280×720', du: W.min(12), act: 'view' },
+  ];
+  const act = (k, hover) => {
+    const h = hover ? ' hover' : '';
+    return k === 'view' ? `<span class="act view${h}">${W.view()}</span>`
+      : k === 'run' ? `<span class="act run"><span class="fill" style="width:42%"></span><span>42%</span></span>`
+      : k === 'queued' ? `<span class="act queued">${W.queued()}</span>`
+      : k === 'waiting' ? `<span class="act queued">${W.waiting()}</span>`
+      : k === 'failed' ? `<span class="act failed">${W.failed()}</span>`
+      : k === 'off' ? `<span class="act off">${W.tr()}</span>`
+      : `<span class="act${h}">${W.tr()}</span>`;
+  };
+  const list = (rows, max, skipFirstGroup) => {
+    let out = '', last = skipFirstGroup ? rows[0].g : null;
+    rows.slice(0, max).forEach(r => {
+      if (r.g !== last) { out += `<div class="grp">${r.g}</div>`; last = r.g; }
+      out += `<div class="row"><span class="well">${I(r.ic, 'sm')}</span><span class="tm">${r.tm}</span>`
+        + (r.ttl ? `<span class="trunc" style="flex:1;font-size:11.5px">${r.ttl}</span>` : '')
+        + `<span class="du">${r.du}</span>${r.ttl ? '' : '<span class="grow"></span>'}${act(r.act, r.hover)}</div>`;
+    });
+    return out;
+  };
+  const more = (n) => `<div class="b-more">${W.more(n)} ${I('chevR', 'sm')}</div>`;
+  const header = (tab, recording, tip) => `<div class="hd">
+      <span class="tabs${recording ? ' locked' : ''}"><span class="${tab === 'audio' ? 'on' : ''}">Audio</span><span class="${tab === 'screen' ? 'on' : ''}">${T('Screen', 'Layar')}</span></span>
+      <span class="grow"></span>
+      <span class="ib${tip === 'file' ? ' hover' : ''}">${I('filetx')}${tip === 'file' ? `<span class="tip">${W.pick()}</span>` : ''}</span>
+      <span class="ib${tip === 'folder' ? ' hover' : ''}">${I('folder')}${tip === 'folder' ? `<span class="tip">${W.folder()}</span>` : ''}</span>
+      <span class="ib" style="margin-left:4px">${I('gear')}</span>
+    </div>`;
+  const empty = (scr) => `<div class="empty"><span class="well">${I(scr ? 'scr' : 'mic')}</span><div><b>${W.empty()}</b><span>${W.hint(scr)}</span></div></div>`;
+
+  // A source row while idle. dev: device text; state: 'on' | 'off' | 'locked'; warn: chosen device missing.
+  const src = (icon, name, dev, state, o = {}) => {
+    const on = state !== 'off';
+    const devCls = o.warn ? 'warn' : o.hot ? 'hot' : '';
+    return `<div class="b-src${on ? ' on' : ' dim'}">${I(on ? icon : icon + 'Off')}<span class="cl"><b>${name}</b><small class="${devCls}"><span class="trunc">${dev}</span>${I('chev', 'xs')}</small></span><span class="sw${on ? ' on' : ''}${state === 'locked' ? ' locked' : ''}"></span></div>`;
+  };
+  const liveSrc = (icon, name, dev, hs, o = {}) => {
+    const muted = o.muted;
+    return `<div class="b-src on"><span class="mute${muted ? ' off' : ''}">${I(muted ? icon + 'Off' : icon, 'sm')}</span><span class="cl"><b>${name}</b><small><span class="trunc">${muted ? T('Muted · Ctrl+Alt+M', 'Dibisukan · Ctrl+Alt+M') : dev}</span>${muted ? '' : I('chev', 'xs')}</small></span>${meter(muted || o.rest ? [3,3,3,3,3] : hs, muted || o.rest)}</div>`;
+  };
+  const capRow = (on) => `<div class="b-src${on ? ' on' : ''}">${I('cc')}<span class="cl"><b>${W.cap()}</b></span><span class="sw${on ? ' on' : ''}"></span></div>`;
+  const recTop = (o = {}) => `<div class="b-top">${ring(56, 22, false, o.focus ? 'focus' : '')}<span class="lbl">${W.rec()}</span></div>`;
+
+  const panel = (tab, card, right, o = {}) => header(tab, o.recording, o.tip)
+    + `<div class="b-body"><div class="b-card">${card}</div><div class="b-list">${right}</div></div>`;
+
+  const idleAudio = (o = {}) => panel('audio',
+    recTop(o) + src('mic', W.mic(), o.micDev || MIC, o.micState || 'on', { warn: o.warn, hot: o.hot })
+      + src('spk', W.pc(), SPK, o.pcState || 'on') + capRow(o.cap),
+    o.empty ? `<div style="margin-top:40px">${empty(false)}</div>` : list(audioRows(), 4) + more(9), o);
+
+  const liveCard = (o = {}) => {
+    const p = o.paused;
+    const ctrls = `<span class="b-pair">${round(32, p ? 'play' : 'pause')}${ring(52, 18, true)}${o.screen ? round(32, 'trash') : ''}</span>`;
+    const top = o.confirm
+      ? `<div class="b-top"><div class="confirm"><span class="q">${T('Throw this video away?', 'Buang video ini?')}</span><span class="btns"><span class="btn danger">${T('Discard', 'Buang')}</span><span class="btn">${T('Keep', 'Simpan')}</span></span></div></div>`
+      : `<div class="b-top" style="gap:6px">${ctrls}<span class="b-time${p ? ' paused' : ''}"><span class="live-dot${p ? ' paused' : ''}"></span>12:34</span></div>`;
+    return top + liveSrc('mic', W.mic(), MIC, [6, 11, 14, 9, 5], { muted: o.muted, rest: p })
+      + liveSrc('spk', W.pc(), SPK, [4, 8, 12, 10, 6], { rest: p }) + capRow(o.cap);
+  };
+  const nowRow = (p, scr) => `<div class="grp">${W.today()}</div><div class="row"><span class="well"><span class="live-dot${p ? ' paused' : ''}"></span></span><span class="tm">${W.now()}</span><span class="du">${p ? W.paused() : W.recording()}</span></div>`;
+  const liveAudio = (o = {}) => panel('audio', liveCard(o), nowRow(o.paused) + list(audioRows(), 3, true) + more(10), { recording: true });
+
+  const screenCard = () => `${recTop()}<div class="b-hint">${W.pickNext()}</div>
+      <div class="b-src"><span class="cl"><b>${W.quality()}</b></span><span class="sec" style="font-size:11px">1080p · 30 fps</span>${I('chevR', 'sm')}</div>${capRow(false)}`;
+
+  const G = {
+    audio: [
+      [() => idleAudio(), () => '<b>Diam, Mic dan Suara PC nyala.</b> Klik lingkaran merah atau Ctrl+Alt+R buat mulai. Baris "9 lagi di folder" buka folder Audio.'],
+      [() => idleAudio({ pcState: 'off', micState: 'locked' }), () => '<b>Cuma Mic.</b> Suara PC dimatiin: ikonnya dicoret, teksnya redup. Saklar Mic redup karena sumber terakhir nggak bisa dimatiin.'],
+      [() => idleAudio({ hot: true }) + `<div class="menu" style="left:52px;top:136px">
+          <div class="mi"><span class="ck"></span><span class="tx"><b>${T('Follow Windows', 'Ikuti Windows')}</b><small class="trunc">${MIC}</small></span></div>
+          <div class="msep"></div>
+          <div class="mi on"><span class="ck">${I('check', 'sm')}</span><span class="tx"><b class="trunc">${MIC}</b></span></div>
+          <div class="mi hover"><span class="ck"></span><span class="tx"><b class="trunc">Microphone Array (Realtek(R) Audio)</b></span></div>
+        </div>`, () => '<b>Ganti perangkat.</b> Klik nama perangkat di bawah "Mic", dropdown Vale yang sekarang muncul (jendela sendiri, boleh keluar dari panel). Perangkat kedua di menu ini contoh.', { overflow: true }],
+      [() => idleAudio({ warn: true, micDev: T('Chosen mic not found', 'Mic pilihan tidak ada') }), () => '<b>Mic pilihan dicabut.</b> Baris perangkatnya oker. Rekaman tetap jalan pakai mic bawaan Windows (kayak sekarang, dengan notice di notch). Klik buat pilih yang lain.'],
+      [() => idleAudio({ cap: true, tip: 'file' }), () => '<b>Caption langsung nyala, kursor di ikon file.</b> Saklar caption aksen; kartu caption-nya tetap jendela sendiri di desktop. Tooltip ikon file: "Transkrip file lain…".'],
+      [() => idleAudio({ empty: true, tip: 'folder' }), () => '<b>Belum ada rekaman, kursor di ikon folder.</b> Kanan bilang cara mulai, termasuk tombol pintasnya.'],
+    ],
+    rec: [
+      [() => liveAudio({ cap: true }), () => '<b>Merekam, caption nyala.</b> Jeda kiri, Stop tengah (lebih besar), jam di bawah. Meter per sumber, tombol bisu di kiri tiap baris. Jam 12:34 contoh.'],
+      [() => liveAudio({ muted: true }), () => '<b>Mic dibisukan.</b> Tombol bisu jadi garis tepi dengan ikon dicoret, meter diam, baris perangkat bilang "Dibisukan" dan tombol pintasnya.'],
+      [() => liveAudio({ paused: true }), () => '<b>Dijeda.</b> Titik dan jam oker, tombol jeda jadi lanjut, meter diam. Baris "Sekarang" ikut bilang "Dijeda".'],
+    ],
+    tr: [
+      [() => panel('audio', recTop() + src('mic', W.mic(), MIC, 'on') + src('spk', W.pc(), SPK, 'on') + capRow(false), list(trRows(), 6)),
+       () => '<b>Semua keadaan tombol transkrip, satu bentuk.</b> Lihat (garis aksen), 42% (isi naik dari kiri), Antre dan Menunggu model (garis tipis), Gagal (merah lembut), Transkrip (kursor di atasnya). Baris 18:30, 17:02 dan keadaannya contoh.'],
+      [() => panel('audio', recTop() + src('mic', W.mic(), MIC, 'on') + src('spk', W.pc(), SPK, 'on') + capRow(false),
+          list(audioRows().map(r => ({ ...r, act: 'off' })), 4) + more(9)),
+       () => '<b>Transkrip dimatiin di Pengaturan.</b> Tombolnya tetap ada tapi redup, kayak sekarang; klik bilang cara nyalain.'],
+    ],
+    screen: [
+      [() => panel('screen', screenCard(), list(screenRows(), 3) + more(6)), () => '<b>Tab Layar, diam.</b> Kartu bilang apa yang ditanya setelah Rekam. Baris kualitas buka dropdown kualitas yang sama dengan Pengaturan. Video di daftar contoh.'],
+      [() => panel('screen', liveCard({ screen: true }), nowRow(false) + list(screenRows(), 2, true) + more(7), { recording: true }), () => '<b>Merekam layar.</b> Sama dengan audio, plus tombol buang (tempat sampah) di kanan Stop.'],
+      [() => panel('screen', liveCard({ screen: true, confirm: true }), nowRow(false) + list(screenRows(), 2, true) + more(7), { recording: true }), () => '<b>Habis klik tempat sampah.</b> Kartu nanya dulu; Buang pakai merah lembut, Simpan lanjut merekam.'],
+      [() => panel('screen', screenCard(), `<div style="margin-top:40px">${empty(true)}</div>`), () => '<b>Belum ada video.</b> Tombol pintasnya Ctrl+Alt+Shift+R.'],
+    ],
+  };
+
+  const cls = () => ['panel', S.surf === 'term' ? 'term' : '', S.acc === 'terra' ? 'terra' : '', S.font === 'mono' ? 'mono' : ''].join(' ');
+  function render() {
+    document.querySelectorAll('.states').forEach(box => {
+      box.innerHTML = G[box.dataset.g].map(([body, cap, o = {}]) =>
+        `<figure><div class="stage"${o.overflow ? ' style="padding-bottom:60px"' : ''}><div class="fit"><div class="scale"><div class="${cls()}" lang="${S.lang}">${body()}${dots()}</div></div></div></div><figcaption>${cap()}</figcaption></figure>`).join('');
+    });
+    fit();
+  }
+  function fit() {
+    document.querySelectorAll('.fit').forEach(f => {
+      const k = Math.min(1, f.clientWidth / 560);
+      const s = f.firstElementChild;
+      s.style.transform = `scale(${k})`;
+      s.style.height = `${290 * k}px`;
+    });
+  }
+  document.querySelectorAll('.ctl .seg').forEach(seg => seg.addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    S[seg.dataset.k] = b.dataset.v;
+    seg.querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    render();
+  }));
+  window.addEventListener('resize', fit);
+  render();
+})();
+</script>
+</body>
+</html>

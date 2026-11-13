@@ -3,6 +3,7 @@ pub mod card_surface;
 pub mod cat_style;
 pub mod cli_input;
 pub mod device_menu;
+pub mod quality_menu;
 pub mod dirty;
 #[cfg(debug_assertions)]
 pub mod demo;
@@ -20,6 +21,7 @@ pub mod hotkey_rec;
 #[cfg(test)]
 mod icon_frames;
 pub mod icons;
+pub mod mascot;
 pub mod menu_pop;
 pub mod month_grid;
 pub mod motion;

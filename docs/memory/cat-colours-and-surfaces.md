@@ -101,3 +101,11 @@ scene (an unset or `auto` surface follows the cat, as in the app); the scenes
   from `DI_CAT_COLOR`, as before.
 
 Related: [[bata-robot-expressions]], [[settings-structure]]
+
+## Other mascots (2026-11-13)
+
+`Surface::resolve` takes a `theme::Coat` now (`Coat::of(cfg)` is the chosen
+mascot's own coat). Auto for the falk: Lutino → Espresso, Grey → Night,
+WhiteFace → Plum; for the octopus: Coral → Espresso, Red → Graphite,
+Purple → Night, Blue → Sea. The cat's rows above are unchanged. See
+[[maskot-falk-gurita]].

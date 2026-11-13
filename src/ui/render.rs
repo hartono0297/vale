@@ -560,7 +560,11 @@ pub enum SheetKind {
     /// The four coats; the `Surface` is the one chosen (`DI_SURFACE`),
     /// unresolved: `Auto` gives each coat its own, any other is every coat's.
     Colors(crate::theme::Surface),
+    /// Every coat of the three mascots, the surface chosen as in `Colors`.
+    AllColors(crate::theme::Surface),
     Accessories,
+    /// The falk's hop, the octopus's flush, the coiled sleep, the greeting wave.
+    Extras,
 }
 
 /// The playback position within a track of known length.
@@ -684,10 +688,27 @@ pub struct RecordView<'a> {
     pub devices: &'a [String; 2],
     /// "Audio" or "Layar": what `recent` lists and the big button starts.
     pub tab: crate::model::RecKind,
-    /// "Buang" was clicked once: it reads "Yakin buang?".
+    /// The trash was clicked once: the card asks "Buang video ini?".
     pub discard_armed: bool,
     /// Live captions are on: the "Caption langsung" switch shows it.
     pub captions_on: bool,
+    /// How many recordings the tab's folder lists in all (`RecScan::total`):
+    /// the page's "N lagi di folder" counts the ones not shown.
+    pub total: usize,
+    /// The chosen device of a source is not there, `[mic, system]`: its
+    /// device line says so in ochre.
+    pub missing: [bool; 2],
+    /// The screen recording's size and rate, "1080p · 30 fps", for the idle
+    /// Layar tab's "Kualitas" row.
+    pub quality: String,
+    /// The mic mute hotkey's text ("Ctrl+Alt+M"), shown beside "Dibisukan";
+    /// `None` when unbound.
+    pub mute_hotkey: Option<String>,
+    /// The tab's record hotkey's text (Ctrl+Alt+R on Audio, the screen one on
+    /// Layar) for the empty list's hint; `None` when unbound.
+    pub start_hotkey: Option<String>,
+    /// The local date: the list's "Hari ini" and "Kemarin".
+    pub today: chrono::NaiveDate,
 }
 
 /// What the quick search shows.
@@ -942,6 +963,12 @@ struct Fonts {
     clip_kind: IDWriteTextFormat,
     /// The search field: DM Sans 11.5.
     clip_search: IDWriteTextFormat,
+    /// The Rekam page: a tab, "Rekam" and the discard's question (DM Sans
+    /// 11.5 medium, centred), a source's name (the same, leading), and the
+    /// Layar tab's hint (DM Sans 10.5, centred, two lines).
+    rec_center: IDWriteTextFormat,
+    rec_name: IDWriteTextFormat,
+    rec_hint: IDWriteTextFormat,
 }
 
 /// Device-dependent drawing state; rebuilt if Direct2D reports the target lost
@@ -1346,8 +1373,10 @@ impl Renderer {
         self.cat.set(look);
         match kind {
             SheetKind::Faces => self.paint_robot_sheet(),
-            SheetKind::Colors(surface) => self.paint_colors_sheet(surface),
+            SheetKind::Colors(surface) => self.paint_colors_sheet(surface, look),
+            SheetKind::AllColors(surface) => self.paint_all_colors_sheet(surface, look),
             SheetKind::Accessories => self.paint_accessories_sheet(look),
+            SheetKind::Extras => self.paint_extras_sheet(look),
         }
         let target = self.target.as_ref().expect("target ensured above");
         unsafe { target.rt.EndDraw(None, None) }?;
@@ -1355,14 +1384,12 @@ impl Renderer {
         self.present(win, 1.0, Plan::Full).map(|_| ())
     }
 
-    /// `bata-colors`: the four coats, each on the surface `chosen` gives it
-    /// (`Auto`: the one the coat asks for; any other surface: that one for
-    /// every coat), as the faces of the idle island and at the notch's 26 px.
+    /// `maskot-warna`: every coat of the cat, the falk and the octopus, six
+    /// to a row, each on the surface `chosen` gives it, with three faces.
     #[cfg(debug_assertions)]
-    fn paint_colors_sheet(&self, chosen: crate::theme::Surface) {
-        use super::geometry::ROBOT_COMPACT;
+    fn paint_all_colors_sheet(&self, chosen: crate::theme::Surface, base: CatLook) {
         use super::robot::Expr;
-        use crate::theme::CatColor;
+        use crate::theme::{Coat, Mascot};
         let card = Rect {
             x: 20.0,
             y: 8.0,
@@ -1371,15 +1398,157 @@ impl Renderer {
         };
         self.set_color(self.palette.surface, 1.0);
         self.fill_round(card, radius::PANEL);
-        let col = (card.w - 40.0) / 4.0;
-        let faces = [Expr::Idle, Expr::Happy, Expr::Sleep, Expr::Alert];
-        for (c, color) in CatColor::ALL.iter().copied().enumerate() {
-            let surface = chosen.resolve(color, true);
+        let coats: Vec<Coat> = [Mascot::Cat, Mascot::Falk, Mascot::Octopus]
+            .into_iter()
+            .flat_map(Coat::all_of)
+            .collect();
+        let per_row = 6;
+        let col = (card.w - 24.0) / per_row as f32;
+        let row_h = (card.h - 24.0) / 2.0;
+        let faces = [Expr::Idle, Expr::Happy, Expr::Sleep];
+        for (i, coat) in coats.iter().copied().enumerate() {
+            let (row, c) = (i / per_row, i % per_row);
+            let surface = chosen.resolve(coat, true);
             let pal = theme::island(Accent::default(), surface);
-            let look = CatLook {
-                color,
-                accessory: self.cat.get().accessory,
+            let cell = Rect {
+                x: card.x + 12.0 + c as f32 * col + 3.0,
+                y: card.y + 12.0 + row as f32 * row_h + 3.0,
+                w: col - 6.0,
+                h: row_h - 6.0,
             };
+            self.set_color(pal.surface, 1.0);
+            self.fill_round(cell, radius::NOTICE / 1.5);
+            self.cat.set(coat_look(coat, base));
+            for (r, expr) in faces.into_iter().enumerate() {
+                let size = 44.0;
+                let area = Rect {
+                    x: cell.x + (cell.w - size) / 2.0,
+                    y: cell.y + 8.0 + r as f32 * 52.0,
+                    w: size,
+                    h: size,
+                };
+                self.paint_robot(
+                    area,
+                    RobotFrame {
+                        expr,
+                        pose: Pose::default(),
+                    },
+                );
+            }
+            let label = Rect {
+                y: cell.bottom() - 20.0,
+                h: 16.0,
+                ..cell
+            };
+            self.text_colored(
+                coat_name(coat),
+                &self.fonts.small_center,
+                label,
+                pal.secondary,
+                1.0,
+            );
+        }
+        self.cat.set(base);
+    }
+
+    /// `maskot-ekstra`: the falk at the top of its hop, the octopus flushed,
+    /// the octopus asleep (coiled), and the falk and the octopus waving at
+    /// the top of the swing, in the chosen coats on the demo's palette.
+    #[cfg(debug_assertions)]
+    fn paint_extras_sheet(&self, base: CatLook) {
+        use super::robot::{Expr, HOP_PX};
+        use crate::theme::Mascot;
+        let card = Rect {
+            x: 20.0,
+            y: 8.0,
+            w: 580.0,
+            h: 440.0,
+        };
+        let pal = self.palette;
+        self.set_color(pal.surface, 1.0);
+        self.fill_round(card, radius::PANEL);
+        let wave = Pose {
+            waving: true,
+            wave: 1.0,
+            ..Pose::default()
+        };
+        let cells: [(Mascot, Expr, Pose, &str); 5] = [
+            (
+                Mascot::Falk,
+                Expr::Happy,
+                Pose {
+                    hop_px: HOP_PX,
+                    ..Pose::default()
+                },
+                "falk hop",
+            ),
+            (
+                Mascot::Octopus,
+                Expr::Happy,
+                Pose {
+                    flush: 1.0,
+                    ..Pose::default()
+                },
+                "octopus flush",
+            ),
+            (Mascot::Octopus, Expr::Sleep, Pose::default(), "octopus sleep"),
+            (Mascot::Falk, Expr::Wave, wave, "falk wave"),
+            (Mascot::Octopus, Expr::Wave, wave, "octopus wave"),
+        ];
+        let col = (card.w - 24.0) / 3.0;
+        let row_h = (card.h - 24.0) / 2.0;
+        for (i, (mascot, expr, pose, label)) in cells.into_iter().enumerate() {
+            let (row, c) = (i / 3, i % 3);
+            let cell = Rect {
+                x: card.x + 12.0 + c as f32 * col + 4.0,
+                y: card.y + 12.0 + row as f32 * row_h + 4.0,
+                w: col - 8.0,
+                h: row_h - 8.0,
+            };
+            self.set_color(pal.raised, 1.0);
+            self.fill_round(cell, radius::NOTICE / 1.5);
+            self.cat.set(CatLook { mascot, ..base });
+            let size = 96.0;
+            let area = Rect {
+                x: cell.x + (cell.w - size) / 2.0,
+                y: cell.y + 20.0,
+                w: size,
+                h: size,
+            };
+            self.paint_robot(area, RobotFrame { expr, pose });
+            let text = Rect {
+                y: cell.bottom() - 28.0,
+                h: 18.0,
+                ..cell
+            };
+            self.text_colored(label, &self.fonts.small_center, text, pal.secondary, 1.0);
+        }
+        self.cat.set(base);
+    }
+
+    /// `bata-colors`: the chosen mascot's own coats, each on the surface
+    /// `chosen` gives it (`Auto`: the one the coat asks for; any other
+    /// surface: that one for every coat), as the faces of the idle island and
+    /// at the notch's 26 px.
+    #[cfg(debug_assertions)]
+    fn paint_colors_sheet(&self, chosen: crate::theme::Surface, base: CatLook) {
+        use super::geometry::ROBOT_COMPACT;
+        use super::robot::Expr;
+        let card = Rect {
+            x: 20.0,
+            y: 8.0,
+            w: 580.0,
+            h: 440.0,
+        };
+        self.set_color(self.palette.surface, 1.0);
+        self.fill_round(card, radius::PANEL);
+        let coats = crate::theme::Coat::all_of(base.mascot);
+        let col = (card.w - 40.0) / coats.len() as f32;
+        let faces = [Expr::Idle, Expr::Happy, Expr::Sleep, Expr::Alert];
+        for (c, coat) in coats.iter().copied().enumerate() {
+            let surface = chosen.resolve(coat, true);
+            let pal = theme::island(Accent::default(), surface);
+            let look = coat_look(coat, base);
             let cell = Rect {
                 x: card.x + 20.0 + c as f32 * col + 4.0,
                 y: card.y + 16.0,
@@ -1430,9 +1599,10 @@ impl Renderer {
                 h: 18.0,
                 ..cell
             };
-            let name = format!("{} / {}", color.name(), surface.name());
+            let name = format!("{} / {}", coat_name(coat), surface.name());
             self.text_colored(&name, &self.fonts.small_center, label, pal.secondary, 1.0);
         }
+        self.cat.set(base);
     }
 
     /// `bata-accessories`: every accessory on the cat in the chosen colour
@@ -2374,15 +2544,21 @@ impl Renderer {
             return;
         }
         let target = self.target.as_ref().expect("target ensured by paint");
-        // On a see-through island: a soft dark halo round the head, so the
-        // face reads on a light wallpaper.
+        // On a see-through island: a soft dark halo round the mascot (the
+        // cat's head, the falk's egg and crest, the octopus's mantle and
+        // arms), so the face reads on a light wallpaper.
         let strength = self.legible.get();
         if strength > 0.0 {
             // The halo follows the dance's nod.
-            let (head, radius) = super::robot::head_rect(Rect {
-                y: area.y + robot.pose.nod_dip,
-                ..area
-            });
+            let (head, radius) = super::mascot::mascot_box(
+                self.cat.get().mascot,
+                Rect {
+                    y: area.y + robot.pose.nod_dip,
+                    ..area
+                },
+                robot.expr,
+                &robot.pose,
+            );
             // The typing cat's laptop gets the same halo.
             let laptop = (robot.expr == Expr::Typing).then(|| {
                 (
@@ -3643,6 +3819,15 @@ impl Fonts {
             Ok(format)
         };
         let clip_value = wrapped(&text, 11.0)?;
+        let rec_hint = wrapped(&text, caption)?;
+        unsafe {
+            rec_hint.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
+            rec_hint.SetLineSpacing(
+                windows::Win32::Graphics::DirectWrite::DWRITE_LINE_SPACING_METHOD_UNIFORM,
+                14.0,
+                11.0,
+            )?;
+        }
         let clip_mono = wrapped(&mono, 10.5)?;
         let chip_mono = line(&mono, normal, caption)?;
         unsafe {
@@ -3703,6 +3888,9 @@ impl Fonts {
             clip_mono,
             clip_kind: line(&text, medium, 9.0)?,
             clip_search: line(&text, normal, 11.5)?,
+            rec_center: centered(&text, medium, 11.5)?,
+            rec_name: line(&text, medium, 11.5)?,
+            rec_hint,
         })
     }
 }
@@ -3873,6 +4061,40 @@ fn color(rgb: u32, alpha: f32) -> D2D1_COLOR_F {
         g: channel(8),
         b: channel(0),
         a: alpha,
+    }
+}
+
+/// `base` with the mascot and coat of `coat`.
+#[cfg(debug_assertions)]
+fn coat_look(coat: crate::theme::Coat, base: CatLook) -> CatLook {
+    use crate::theme::{Coat, Mascot};
+    match coat {
+        Coat::Cat(color) => CatLook {
+            mascot: Mascot::Cat,
+            color,
+            ..base
+        },
+        Coat::Falk(falk) => CatLook {
+            mascot: Mascot::Falk,
+            falk,
+            ..base
+        },
+        Coat::Octopus(octopus) => CatLook {
+            mascot: Mascot::Octopus,
+            octopus,
+            ..base
+        },
+    }
+}
+
+/// The coat's own name: "Terracotta", "Lutino", "Coral".
+#[cfg(debug_assertions)]
+fn coat_name(coat: crate::theme::Coat) -> &'static str {
+    use crate::theme::Coat;
+    match coat {
+        Coat::Cat(c) => c.name(),
+        Coat::Falk(f) => f.name(),
+        Coat::Octopus(o) => o.name(),
     }
 }
 

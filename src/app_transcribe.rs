@@ -1211,7 +1211,7 @@ mod tests {
         let scan = vec![RecEntry {
             path: PathBuf::from("a.m4a"),
             title: "a".into(),
-            started: String::new(),
+            started_at: chrono::NaiveDateTime::default(),
             duration: Duration::ZERO,
             unfinished: false,
             silent: false,

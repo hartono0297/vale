@@ -456,3 +456,13 @@ copies per frame). Note: [[d2d-dc-target-full-copy]].
   `HitRegions::default()` per frame is a small struct. The remaining
   per-frame costs are the paint itself (clipped by the rect), the row copy
   (dirty rows only) and `UpdateLayeredWindowIndirect` (dirty rect only).
+
+## The falk and the octopus (2026-11-13, [[maskot-falk-gurita]])
+
+No new timer, id or thread. Frame clock only while they last: the falk's hop
+on a new Happy notice (400 ms), the greeting wave on a new Wave-face notice
+(900 ms, then held still), the octopus's flush with the alert (700 ms, so its
+alert clock runs 700 ms instead of 520). All off with Motion not Full, Energy
+Saver or Windows animations off. The crest sway and the arm sway ride the
+dance's `TIMER_EQ`; the octopus's typing arms ride `TIMER_TYPING`. Octopus
+arm paths are built per frame only while they move; still poses are cached.

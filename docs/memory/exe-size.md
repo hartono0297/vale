@@ -391,3 +391,19 @@ PDB path lengths differ (scratch longer). New: `clipboard/drag.rs`, the
 `encode_png` split in `pack.rs`, the press/drag/timer wiring in `app_clip.rs`,
 one string. No change to `Cargo.toml`, `Cargo.lock` or `assets`. See
 [[clipboard-drag-out]].
+
+## Falk and sitting-octopus mascots (2026-11-13)
+
+`cargo build --release --locked`, 0 warnings, both in worktrees with
+six-letter folder names (`.claude/worktrees/maskot`, `.claude/worktrees/mainsz`):
+
+| Build | Bytes |
+|---|---|
+| 83f1e6e (main before the merge) | 4,590,592 |
+| 2bd6866 (feat/maskot with main merged) | 4,618,752 (+28,160, +27.5 KiB, +0.61 %) |
+
+New: `src/ui/mascot.rs` (the falk and octopus geometry and painters), the
+per-mascot accessories in `cat_style.rs`, the Settings Maskot row and coat
+swatches, hop / wave / flush in `robot.rs`, i18n strings, demo scenes (debug
+only, not in the release exe). No change to `Cargo.toml`, `Cargo.lock` or
+`assets`. See [[maskot-falk-gurita]].

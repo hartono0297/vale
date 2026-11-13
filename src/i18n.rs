@@ -12,6 +12,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::clean::CleanCat;
 use crate::greeting::{DayPeriod, GreetCounts};
+use crate::recorder::prefs::VideoQuality;
 use crate::reminders::{self, Repeat};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -576,7 +577,6 @@ keys! {
     PageDevices => "Perangkat", "Devices";
     PageArrange => "Susun", "Arrange";
     PageRecord => "Rekam", "Record";
-    RecStop => "Berhenti", "Stop";
     RecPause => "Jeda", "Pause";
     RecResume => "Lanjut", "Resume";
     RecRecording => "Merekam", "Recording";
@@ -642,7 +642,6 @@ keys! {
     TrMenuRedo => "Transkrip ulang", "Transcribe again";
     TrMenuCancel => "Batalkan transkrip", "Cancel the transcript";
     TrPickFile => "Transkrip file lain\u{2026}", "Transcribe a file\u{2026}";
-    TrPickFileShort => "File lain\u{2026}", "Other file\u{2026}";
     TrFilter => "Rekaman (*.m4a, *.wav, *.mp4)", "Recordings (*.m4a, *.wav, *.mp4)";
     RecFailedTitle => "Rekaman gagal", "Recording failed";
     RecMicDeniedTitle => "Mic diblokir Windows", "Windows blocked the mic";
@@ -704,6 +703,8 @@ keys! {
     RecSystemSwitched => "Suara PC pindah", "PC audio switched";
     RecMicMissing => "Mic pilihan tidak ada", "Chosen mic not found";
     RecSystemMissing => "Suara PC pilihan tidak ada", "Chosen PC audio not found";
+    // The Rekam page's device line: the row's own name says which source.
+    RecDeviceMissing => "Tidak ditemukan", "Not found";
     RecUsing => "Pakai", "Using";
     RecMicWord => "Mic", "Mic";
     RecSystemWord => "Suara PC", "PC audio";
@@ -734,10 +735,15 @@ keys! {
     ScreenCountdownEsc => "Esc untuk batal", "Esc to cancel";
     RecTabAudio => "Audio", "Audio";
     RecTabScreen => "Layar", "Screen";
-    ScreenIdleHint => "Pilih layar, jendela atau area sesudah ini",
-        "You pick a screen, window or area next";
+    ScreenIdleHint => "Layar, jendela atau area: dipilih setelah tekan Rekam",
+        "Screen, window or area: you pick it after Record";
     ScreenDiscard => "Buang", "Discard";
-    ScreenDiscardSure => "Yakin buang?", "Discard it?";
+    RecRecordLabel => "Rekam", "Record";
+    RecNow => "Sekarang", "Now";
+    RecMuted => "Dibisukan", "Muted";
+    ScreenDiscardAsk => "Buang video ini?", "Throw this video away?";
+    ScreenDiscardKeep => "Simpan", "Keep";
+    RecQuality => "Kualitas", "Quality";
     ScreenNoVideos => "Belum ada video", "No videos yet";
     ArrangeSkip => "Lewati ubin", "Skip tile";
     ArrangeSaved => "Tersimpan", "Saved";
@@ -875,10 +881,10 @@ keys! {
     DataFolder => "Folder data", "Data folder";
     OpenDataFolder => "Buka folder data", "Open data folder";
 
-    // Vale's cat, the notch assistant (Settings → Kucing).
-    RobotInNotch => "Kucing di notch", "Cat in the notch";
-    RobotInNotchDesc => "Tampilkan kucing Vale di samping jam dan notice",
-        "Show Vale's cat beside the clock and notices";
+    // Vale's mascot, the notch assistant (Settings → Maskot).
+    RobotInNotch => "Maskot di notch", "Mascot in the notch";
+    RobotInNotchDesc => "Tampilkan maskot Vale di samping jam dan notice",
+        "Show Vale's mascot beside the clock and notices";
     RobotMotion => "Animasi", "Animation";
     // The design's sentence; it wraps beside the three segments.
     RobotMotionDesc => "Hemat: tanpa kedip dan gerak, ekspresi tetap",
@@ -1090,8 +1096,9 @@ keys! {
     DemoClaudeAsks => "izin menjalankan perintah", "permission to run a command";
     DemoFilesChanged => "3 file diubah", "3 files changed";
 
-    // Settings, v3.8: the Kucing page, the new sections and the cards' titles.
-    SecCat => "Kucing", "Cat";
+    // Settings, v3.8: the Maskot page (Kucing before), the new sections and
+    // the cards' titles.
+    SecCat => "Maskot", "Mascot";
     SecPanel => "Panel", "Panel";
     SecFeatures => "Fitur", "Features";
     // Settings → Tombol pintas: six hotkeys recorded by pressing them.
@@ -1125,7 +1132,7 @@ keys! {
     GroupIsland => "Island", "Island";
     GroupNotch => "Notch", "Notch";
     GroupWindow => "Jendela", "Window";
-    GroupCat => "Kucing", "Cat";
+    GroupCat => "Maskot", "Mascot";
     GroupMotion => "Gerak", "Motion";
     GroupGreeting => "Sapaan", "Greeting";
     GroupBehavior => "Perilaku", "Behavior";
@@ -1135,7 +1142,7 @@ keys! {
     GroupCli => "CLI", "CLI";
     GroupCleaner => "Pembersih", "Cleaner";
     GroupLinks => "Tautan", "Links";
-    SurfaceAuto => "Ikuti kucing", "Match cat";
+    SurfaceAuto => "Ikuti maskot", "Match mascot";
     SurfaceSea => "Laut", "Sea";
     SurfaceNight => "Malam", "Night";
     SurfacePlum => "Ungu", "Plum";
@@ -1145,6 +1152,18 @@ keys! {
     CatColorWhite => "Putih", "White";
     CatColorBlack => "Hitam", "Black";
     CatColorLabel => "Warna", "Color";
+    // Settings → Maskot: the mascot row, and the falk's and octopus's coats.
+    MascotLabel => "Maskot", "Mascot";
+    MascotCat => "Kucing", "Cat";
+    MascotFalk => "Falk", "Cockatiel";
+    MascotOctopus => "Gurita", "Octopus";
+    FalkColorLutino => "Lutino", "Lutino";
+    FalkColorGrey => "Abu-abu", "Grey";
+    FalkColorWhiteFace => "Muka putih", "White face";
+    OctopusColorCoral => "Koral", "Coral";
+    OctopusColorRed => "Merah", "Red";
+    OctopusColorPurple => "Ungu", "Purple";
+    OctopusColorBlue => "Biru laut", "Sea blue";
     CatBackdrop => "Latar", "Backdrop";
     CatBackdropChange => "Ubah", "Change";
     CatAccessoryLabel => "Aksesori", "Accessory";
@@ -1155,6 +1174,9 @@ keys! {
     AccScarf => "Syal", "Scarf";
     AccFlower => "Bunga", "Flower";
     AccCrown => "Mahkota", "Crown";
+    AccHeadphone => "Headphone", "Headphones";
+    AccSailor => "Topi pelaut", "Sailor cap";
+    AccBowtie => "Dasi kupu-kupu", "Bow tie";
     CatFollow => "Ikuti kursor", "Follow the pointer";
     CatFollowDesc => "Kepala dan mata menoleh ke kursor", "Head and eyes turn toward the pointer";
     CatPeek => "Mengecil jadi mata", "Shrink to eyes";
@@ -1650,7 +1672,7 @@ pub fn greeting_period_name(lang: Lang, period: DayPeriod) -> &'static str {
     }
 }
 
-/// The five periods as one line for Settings → Kucing → Sapaan: name, first
+/// The five periods as one line for Settings → Maskot → Sapaan: name, first
 /// and last hour (two digits) and the greeting's title, joined by " · ".
 /// Built from `greeting.rs` so the hours cannot drift from `period_at`.
 pub fn greeting_periods_line(lang: Lang) -> String {
@@ -1966,28 +1988,12 @@ pub fn devices_connected(lang: Lang, n: usize) -> String {
     }
 }
 
-/// When a recording started, for the Rekam page: "Hari ini 10:02", "Kemarin
-/// 14:30", else the date ("5 Nov").
-pub fn rec_started(lang: Lang, at: chrono::NaiveDateTime, today: NaiveDate) -> String {
-    let d = at.date();
-    match near(d, today) {
-        Some(Near::Today) => format!("{} {}", near_word(lang, Near::Today, true), at.format("%H:%M")),
-        Some(Near::Yesterday) => {
-            format!("{} {}", near_word(lang, Near::Yesterday, true), at.format("%H:%M"))
-        }
-        _ => short_date(lang, d),
+/// A day heading in the Rekam list: "Hari ini", "Kemarin", else "8 Nov".
+pub fn rec_day_label(lang: Lang, day: NaiveDate, today: NaiveDate) -> String {
+    match near(day, today) {
+        Some(n @ (Near::Today | Near::Yesterday)) => near_word(lang, n, true).to_string(),
+        _ => short_date(lang, day),
     }
-}
-
-/// The line under a recording on the Rekam page: "Hari ini 10:02 · 42 mnt",
-/// or "· belum selesai" for a `.part` a crash left.
-pub fn rec_entry_sub(lang: Lang, started: &str, d: std::time::Duration, unfinished: bool) -> String {
-    let length = if unfinished {
-        text(lang, Key::RecUnfinished).to_string()
-    } else {
-        rec_duration(lang, d)
-    };
-    format!("{started} \u{b7} {length}")
 }
 
 /// The label of a Rekam row's transcript pill: "Transkrip", "Antre",
@@ -2074,6 +2080,47 @@ pub fn rec_duration(lang: Lang, d: std::time::Duration) -> String {
     } else {
         format!("{secs} {sec}")
     }
+}
+
+/// The count of recordings left in the folder beyond the list: "9 lagi di
+/// folder" ("9 more in the folder").
+pub fn rec_more(lang: Lang, n: usize) -> String {
+    match lang {
+        Lang::Id => format!("{n} lagi di folder"),
+        Lang::En => format!("{n} more in the folder"),
+    }
+}
+
+/// The mute badge on the Rekam page: "Dibisukan · Ctrl+Alt+M", or the bare
+/// word when the mute has no hotkey.
+pub fn rec_muted(lang: Lang, hotkey: Option<&str>) -> String {
+    let word = text(lang, Key::RecMuted);
+    match hotkey {
+        Some(keys) => format!("{word} \u{b7} {keys}"),
+        None => word.to_string(),
+    }
+}
+
+/// The hint under an empty Rekam list: "Tekan Rekam, atau Ctrl+Alt+R dari
+/// mana aja" ("Press Record, or Ctrl+Alt+R from anywhere"), or "Tekan Rekam"
+/// ("Press Record") with no hotkey.
+pub fn rec_empty_hint(lang: Lang, hotkey: Option<&str>) -> String {
+    match (lang, hotkey) {
+        (Lang::Id, Some(keys)) => format!("Tekan Rekam, atau {keys} dari mana aja"),
+        (Lang::Id, None) => "Tekan Rekam".to_string(),
+        (Lang::En, Some(keys)) => format!("Press Record, or {keys} from anywhere"),
+        (Lang::En, None) => "Press Record".to_string(),
+    }
+}
+
+/// A recording's quality on the Rekam page: "1080p · 30 fps", or the
+/// Settings word for the screen's own size: "Asli · 30 fps" ("Original · 30 fps").
+pub fn rec_quality_label(lang: Lang, q: VideoQuality, fps: u32) -> String {
+    let size = match q.max_short() {
+        Some(px) => format!("{px}p"),
+        None => text(lang, Key::ScreenSettingsQualityOriginal).to_string(),
+    };
+    format!("{size} \u{b7} {fps} fps")
 }
 
 /// How long the QR code lives: "berlaku 4:52", "valid 4:52".
@@ -3874,20 +3921,23 @@ mod tests {
     }
 
     #[test]
-    fn a_recording_start_reads_today_yesterday_or_the_date() {
-        let at = |m, d, h, min| {
-            NaiveDate::from_ymd_opt(2026, m, d)
-                .unwrap()
-                .and_hms_opt(h, min, 0)
-                .unwrap()
-        };
-        let today = NaiveDate::from_ymd_opt(2026, 11, 7).unwrap();
-        assert_eq!(rec_started(Lang::Id, at(11, 7, 10, 2), today), "Hari ini 10:02");
-        assert_eq!(rec_started(Lang::Id, at(11, 6, 14, 30), today), "Kemarin 14:30");
-        assert_eq!(rec_started(Lang::Id, at(11, 5, 9, 15), today), "5 Nov");
-        assert_eq!(rec_started(Lang::En, at(11, 7, 9, 5), today), "Today 09:05");
-        assert_eq!(rec_started(Lang::En, at(11, 6, 23, 59), today), "Yesterday 23:59");
-        assert_eq!(rec_started(Lang::En, at(10, 25, 8, 0), today), "25 Oct");
+    fn a_day_label_reads_today_yesterday_or_the_date() {
+        let d = |m, d| NaiveDate::from_ymd_opt(2026, m, d).unwrap();
+        let today = d(11, 8);
+        for (lang, want) in [
+            (Lang::Id, ["Hari ini", "Kemarin", "7 Nov"]),
+            (Lang::En, ["Today", "Yesterday", "7 Nov"]),
+        ] {
+            let got = [
+                rec_day_label(lang, d(11, 8), today),
+                rec_day_label(lang, d(11, 7), today),
+                rec_day_label(lang, d(11, 7), d(11, 9)),
+            ];
+            assert_eq!(got, want.map(String::from), "{lang:?}");
+            for g in &got {
+                assert_no_leak(lang, "rec_day_label", g);
+            }
+        }
     }
 
     #[test]
@@ -4194,6 +4244,69 @@ mod tests {
     }
 
     #[test]
+    fn rec_copy_reads_right_in_both_languages() {
+        let pairs = [
+            (Key::RecRecordLabel, "Rekam", "Record"),
+            (Key::RecNow, "Sekarang", "Now"),
+            (Key::RecMuted, "Dibisukan", "Muted"),
+            (Key::ScreenDiscardAsk, "Buang video ini?", "Throw this video away?"),
+            (Key::ScreenDiscardKeep, "Simpan", "Keep"),
+            (Key::RecQuality, "Kualitas", "Quality"),
+            (
+                Key::ScreenIdleHint,
+                "Layar, jendela atau area: dipilih setelah tekan Rekam",
+                "Screen, window or area: you pick it after Record",
+            ),
+        ];
+        for (key, id, en) in pairs {
+            assert_eq!(text(Lang::Id, key), id, "{key:?}");
+            assert_eq!(text(Lang::En, key), en, "{key:?}");
+        }
+        assert_eq!(rec_more(Lang::Id, 9), "9 lagi di folder");
+        assert_eq!(rec_more(Lang::En, 9), "9 more in the folder");
+        assert_eq!(rec_muted(Lang::Id, None), "Dibisukan");
+        assert_eq!(rec_muted(Lang::Id, Some("Ctrl+Alt+M")), "Dibisukan \u{b7} Ctrl+Alt+M");
+        assert_eq!(rec_muted(Lang::En, None), "Muted");
+        assert_eq!(rec_muted(Lang::En, Some("Ctrl+Alt+M")), "Muted \u{b7} Ctrl+Alt+M");
+        assert_eq!(rec_empty_hint(Lang::Id, None), "Tekan Rekam");
+        assert_eq!(
+            rec_empty_hint(Lang::Id, Some("Ctrl+Alt+R")),
+            "Tekan Rekam, atau Ctrl+Alt+R dari mana aja",
+        );
+        assert_eq!(rec_empty_hint(Lang::En, None), "Press Record");
+        assert_eq!(
+            rec_empty_hint(Lang::En, Some("Ctrl+Alt+R")),
+            "Press Record, or Ctrl+Alt+R from anywhere",
+        );
+        assert_eq!(rec_quality_label(Lang::Id, VideoQuality::P1080, 30), "1080p \u{b7} 30 fps");
+        assert_eq!(rec_quality_label(Lang::En, VideoQuality::P1080, 60), "1080p \u{b7} 60 fps");
+        assert_eq!(rec_quality_label(Lang::Id, VideoQuality::Original, 30), "Asli \u{b7} 30 fps");
+        assert_eq!(
+            rec_quality_label(Lang::En, VideoQuality::Original, 30),
+            "Original \u{b7} 30 fps",
+        );
+        for lang in [Lang::Id, Lang::En] {
+            for &key in &[Key::RecRecordLabel, Key::RecNow, Key::RecMuted, Key::ScreenDiscardAsk, Key::ScreenDiscardKeep, Key::RecQuality, Key::ScreenIdleHint, Key::RecDeviceMissing] {
+                assert_no_leak(lang, &format!("{key:?}"), text(lang, key));
+                assert!(!text(lang, key).contains('\u{2014}'), "{key:?} {lang:?}");
+            }
+            let formatted = [
+                rec_more(lang, 9),
+                rec_muted(lang, None),
+                rec_muted(lang, Some("Ctrl+Alt+M")),
+                rec_empty_hint(lang, None),
+                rec_empty_hint(lang, Some("Ctrl+Alt+R")),
+                rec_quality_label(lang, VideoQuality::P1080, 30),
+                rec_quality_label(lang, VideoQuality::Original, 30),
+            ];
+            for s in &formatted {
+                assert_no_leak(lang, "formatted", s);
+                assert!(!s.contains('\u{2014}'), "{s:?} {lang:?}");
+            }
+        }
+    }
+
+    #[test]
     fn the_zoom_label_is_a_level_with_the_languages_separator() {
         assert_eq!(zoom_label(Lang::Id, 2.0), "2\u{D7}");
         assert_eq!(zoom_label(Lang::Id, 2.5), "2,5\u{D7}");
@@ -4275,11 +4388,10 @@ mod tests {
             (Key::RecTabScreen, "Layar", "Screen"),
             (
                 Key::ScreenIdleHint,
-                "Pilih layar, jendela atau area sesudah ini",
-                "You pick a screen, window or area next",
+                "Layar, jendela atau area: dipilih setelah tekan Rekam",
+                "Screen, window or area: you pick it after Record",
             ),
             (Key::ScreenDiscard, "Buang", "Discard"),
-            (Key::ScreenDiscardSure, "Yakin buang?", "Discard it?"),
             (Key::ScreenNoVideos, "Belum ada video", "No videos yet"),
             (Key::ScreenSettingsHighlight, "Sorot kursor", "Highlight the cursor"),
             (
@@ -4809,10 +4921,10 @@ mod tests {
             }
         }
         // The settings rows, as in the design.
-        // The cat has no name yet (the owner picks it): it is Vale's cat.
+        // The mascot has no name yet (the owner picks it): it is Vale's mascot.
         assert_eq!(
             text(Lang::Id, Key::RobotInNotchDesc),
-            "Tampilkan kucing Vale di samping jam dan notice"
+            "Tampilkan maskot Vale di samping jam dan notice"
         );
         assert_eq!(
             [Lang::Id, Lang::En].map(|l| text(l, Key::SourceVale)),
@@ -4822,6 +4934,41 @@ mod tests {
             [Key::MotionFull, Key::MotionSaver, Key::MotionOff].map(|k| text(Lang::Id, k)),
             ["Penuh", "Hemat", "Mati"]
         );
+    }
+
+    #[test]
+    fn the_labels_say_maskot() {
+        assert_eq!(text(Lang::Id, Key::SecCat), "Maskot");
+        assert_eq!(text(Lang::Id, Key::RobotInNotch), "Maskot di notch");
+        assert_eq!(text(Lang::En, Key::MascotFalk), "Cockatiel");
+        let both = |k: Key| [Lang::Id, Lang::En].map(|l| text(l, k));
+        assert_eq!(both(Key::SecCat), ["Maskot", "Mascot"]);
+        assert_eq!(both(Key::GroupCat), ["Maskot", "Mascot"]);
+        assert_eq!(both(Key::RobotInNotch), ["Maskot di notch", "Mascot in the notch"]);
+        assert_eq!(
+            both(Key::RobotInNotchDesc),
+            [
+                "Tampilkan maskot Vale di samping jam dan notice",
+                "Show Vale's mascot beside the clock and notices"
+            ]
+        );
+        assert_eq!(both(Key::MascotLabel), ["Maskot", "Mascot"]);
+        assert_eq!(both(Key::MascotCat), ["Kucing", "Cat"]);
+        assert_eq!(both(Key::MascotFalk), ["Falk", "Cockatiel"]);
+        assert_eq!(both(Key::MascotOctopus), ["Gurita", "Octopus"]);
+        assert_eq!(both(Key::FalkColorLutino), ["Lutino", "Lutino"]);
+        assert_eq!(both(Key::FalkColorGrey), ["Abu-abu", "Grey"]);
+        assert_eq!(both(Key::FalkColorWhiteFace), ["Muka putih", "White face"]);
+        assert_eq!(both(Key::OctopusColorCoral), ["Koral", "Coral"]);
+        assert_eq!(both(Key::OctopusColorRed), ["Merah", "Red"]);
+        assert_eq!(both(Key::OctopusColorPurple), ["Ungu", "Purple"]);
+        assert_eq!(both(Key::OctopusColorBlue), ["Biru laut", "Sea blue"]);
+        assert_eq!(both(Key::AccSailor), ["Topi pelaut", "Sailor cap"]);
+        assert_eq!(both(Key::AccBowtie), ["Dasi kupu-kupu", "Bow tie"]);
+        assert_eq!(text(Lang::Id, Key::AccHeadphone), "Headphone");
+        assert_eq!(both(Key::SurfaceAuto), ["Ikuti maskot", "Match mascot"]);
+        // The sticky notes' peek stays the cat's.
+        assert_eq!(text(Lang::Id, Key::WidgetsPeek), "Kucing ngintip");
     }
 
     #[test]

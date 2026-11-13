@@ -450,9 +450,11 @@ pub struct IslandState {
     rec_videos: Vec<RecEntry>,
     /// The 3-2-1 before a screen recording, while it runs.
     screen_countdown: Option<u8>,
-    /// "Buang" was clicked once and waits for its second click until then
-    /// (`CLEAN_CONFIRM` after the first).
-    screen_discard_armed: Option<Instant>,
+    /// "Buang" was clicked once and waits for its second click. It does not
+    /// run out: "Simpan" sits where Stop does, so a timer would turn a late
+    /// "Simpan" into a stop. Any other click, a change of the recording or
+    /// leaving the page takes it back.
+    screen_discard_armed: bool,
 }
 
 /// How a real Windows toast shows now: the whole notice (`Full`), a strip
@@ -481,7 +483,7 @@ impl IslandState {
             rec_tab: RecKind::Audio,
             rec_videos: Vec::new(),
             screen_countdown: None,
-            screen_discard_armed: None,
+            screen_discard_armed: false,
             lyrics_on: false,
             lyrics_ready: false,
             caption_line: None,
@@ -594,12 +596,12 @@ impl IslandState {
                 }
                 // "Yakin buang?" was asked of the recording as it stood.
                 if self.rec != status {
-                    self.screen_discard_armed = None;
+                    self.screen_discard_armed = false;
                 }
                 self.rec = status;
             }
-            Event::RecRecent(list) | Event::RecMarks(list) => self.rec_recent = list,
-            Event::VideoRecent(list) | Event::VideoMarks(list) => self.rec_videos = list,
+            Event::RecRecent(list, _) | Event::RecMarks(list) => self.rec_recent = list,
+            Event::VideoRecent(list, _) | Event::VideoMarks(list) => self.rec_videos = list,
             Event::ScreenCountdown(n) => {
                 let begins = self.screen_countdown.is_none() && n.is_some();
                 let ends = self.screen_countdown.is_some() && n.is_none();
@@ -1247,8 +1249,8 @@ impl IslandState {
         }
         // "Yakin buang?" lives on the Rekam page: gone with it (another
         // page, the panel shut, the countdown or a fullscreen app over it).
-        if self.screen_discard_armed.is_some() && self.panel_page_under() != Some(Page::Record) {
-            self.screen_discard_armed = None;
+        if self.screen_discard_armed && self.panel_page_under() != Some(Page::Record) {
+            self.screen_discard_armed = false;
         }
         // Last, once the linger, the latch and the inputs have settled what
         // shows: the toast is judged on the view this `apply` leaves.
@@ -1400,7 +1402,6 @@ impl IslandState {
             self.pomodoro.next_deadline(),
             armed,
             self.notif_armed,
-            self.screen_discard_armed,
             self.linger_until,
         ]
         .into_iter()
@@ -1433,15 +1434,12 @@ impl IslandState {
             && !self.fullscreen
     }
 
-    /// The armed cleaner button (and "Hapus semua" of the Notifikasi page,
-    /// and "Buang" of a screen recording) turns back once `CLEAN_CONFIRM`
+    /// The armed cleaner button (and "Hapus semua" of the Notifikasi page)
+    /// turns back once `CLEAN_CONFIRM`
     /// has passed.
     fn expire_confirm(&mut self, now: Instant) {
         if self.notif_armed.is_some_and(|until| until <= now) {
             self.notif_armed = None;
-        }
-        if self.screen_discard_armed.is_some_and(|until| until <= now) {
-            self.screen_discard_armed = None;
         }
         if let Some(c) = &mut self.cleaner
             && c.armed_until.is_some_and(|until| until <= now)
@@ -1995,7 +1993,7 @@ impl IslandState {
         }
         // And "Buang" of a screen recording.
         if !matches!(hit, Hit::ScreenDiscard) {
-            self.screen_discard_armed = None;
+            self.screen_discard_armed = false;
         }
         match hit {
             // A click on a sticky note reminder's body is its "Buka", in every
@@ -2247,14 +2245,26 @@ impl IslandState {
                 }
             }
             // "Buang" beside a running screen recording: the first click
-            // asks ("Yakin buang?"), a second within `CLEAN_CONFIRM` discards.
+            // asks ("Yakin buang?"), a second one discards.
             Hit::ScreenDiscard => {
                 let shown = self.view() == View::Panel(Page::Record)
                     && self.rec.as_ref().is_some_and(|r| r.kind == RecKind::Screen);
-                if shown && self.screen_discard_armed.take().is_some() {
+                if shown && std::mem::take(&mut self.screen_discard_armed) {
                     effects.push(Effect::ScreenDiscard);
                 } else {
-                    self.screen_discard_armed = shown.then_some(now + CLEAN_CONFIRM);
+                    self.screen_discard_armed = shown;
+                }
+            }
+            // "Simpan" on the armed confirm: the click already disarmed
+            // "Buang" above, nothing else happens.
+            Hit::ScreenDiscardKeep => {}
+            // "Kualitas" of the idle Layar tab opens its menu.
+            Hit::RecQuality => {
+                if self.view() == View::Panel(Page::Record)
+                    && self.rec.is_none()
+                    && self.rec_tab == RecKind::Screen
+                {
+                    effects.push(Effect::RecQualityMenu);
                 }
             }
             Hit::RecPause => {
@@ -3383,7 +3393,7 @@ impl IslandState {
 
     /// "Buang" waits for its second click ("Yakin buang?").
     pub fn screen_discard_armed(&self) -> bool {
-        self.screen_discard_armed.is_some()
+        self.screen_discard_armed
     }
 
     /// The local date as of the last `Event::Today`.
@@ -8458,7 +8468,7 @@ mod tests {
         RecEntry {
             path: std::path::PathBuf::from(name),
             title: name.into(),
-            started: "Hari ini 10:02".into(),
+            started_at: chrono::NaiveDateTime::default(),
             duration: Duration::from_secs(42 * 60),
             unfinished: false,
             silent: false,
@@ -8470,7 +8480,7 @@ mod tests {
     fn marks_put_on_show_again_replace_the_list() {
         let mut s = st();
         let t0 = Instant::now();
-        s.apply(Event::RecRecent(vec![rec_entry("a.m4a")]), t0);
+        s.apply(Event::RecRecent(vec![rec_entry("a.m4a")], 0), t0);
         let mut marked = rec_entry("a.m4a");
         marked.transcript = RowTranscript::Queued;
         s.apply(Event::RecMarks(vec![marked]), t0);
@@ -8540,6 +8550,36 @@ mod tests {
     }
 
     #[test]
+    fn the_quality_row_opens_its_menu() {
+        let t0 = Instant::now();
+        let mut s = st();
+        assert_eq!(s.apply(Event::Click(Hit::RecQuality), t0), vec![], "off page");
+        open_on(&mut s, Page::Record, t0);
+        assert_eq!(s.apply(Event::Click(Hit::RecQuality), t0), vec![], "Audio tab");
+        s.apply(Event::Click(Hit::RecTab(RecKind::Screen)), t0);
+        assert_eq!(
+            s.apply(Event::Click(Hit::RecQuality), t0),
+            vec![Effect::RecQualityMenu]
+        );
+    }
+
+    #[test]
+    fn keep_disarms_the_discard() {
+        let t0 = Instant::now();
+        let mut s = st();
+        open_on(&mut s, Page::Record, t0);
+        let mut status = rec_status(t0);
+        status.kind = RecKind::Screen;
+        s.apply(Event::RecStatus(Some(status)), t0);
+        assert_eq!(s.apply(Event::Click(Hit::ScreenDiscard), t0), vec![]);
+        assert!(s.screen_discard_armed());
+        assert_eq!(s.apply(Event::Click(Hit::ScreenDiscardKeep), t0), vec![]);
+        assert!(!s.screen_discard_armed());
+        // A fresh "Buang" arms again instead of discarding.
+        assert_eq!(s.apply(Event::Click(Hit::ScreenDiscard), t0), vec![]);
+    }
+
+    #[test]
     fn a_device_name_opens_its_menu_on_the_rekam_page_idle_or_recording() {
         let t0 = Instant::now();
         let mut s = st();
@@ -8562,7 +8602,7 @@ mod tests {
         let t0 = Instant::now();
         let mut s = st();
         s.apply(
-            Event::RecRecent(vec![rec_entry("a.m4a"), rec_entry("b.m4a")]),
+            Event::RecRecent(vec![rec_entry("a.m4a"), rec_entry("b.m4a")], 0),
             t0,
         );
         assert_eq!(s.rec_list().len(), 2);
@@ -8581,7 +8621,7 @@ mod tests {
             vec![Effect::RecOpenFolder]
         );
         assert!(!matches!(s.view(), View::Panel(_)), "the panel collapsed");
-        s.apply(Event::RecRecent(vec![]), t0);
+        s.apply(Event::RecRecent(vec![], 0), t0);
         assert!(s.rec_list().is_empty());
     }
 
@@ -10663,7 +10703,7 @@ mod tests {
         ];
         for (mark, want, stays) in table {
             let mut s = st();
-            s.apply(Event::RecRecent(vec![row(mark)]), t0);
+            s.apply(Event::RecRecent(vec![row(mark)], 0), t0);
             // Not on the page: nothing.
             assert_eq!(s.apply(Event::Click(Hit::RecTranscript(0)), t0), vec![], "{mark:?} off page");
             open_on(&mut s, Page::Record, t0);
@@ -10986,8 +11026,8 @@ mod tests {
     fn rows_act_on_the_shown_list() {
         let t0 = Instant::now();
         let mut s = st();
-        s.apply(Event::RecRecent(vec![rec_entry("a.m4a")]), t0);
-        s.apply(Event::VideoRecent(vec![rec_entry(VIDEO_FILE)]), t0);
+        s.apply(Event::RecRecent(vec![rec_entry("a.m4a")], 0), t0);
+        s.apply(Event::VideoRecent(vec![rec_entry(VIDEO_FILE)], 0), t0);
         assert_eq!(s.rec_list(), [rec_entry("a.m4a")], "the Audio tab's list");
         open_on(&mut s, Page::Record, t0);
         s.apply(Event::Click(Hit::RecTab(RecKind::Screen)), t0);
@@ -11012,8 +11052,8 @@ mod tests {
         );
         // The audio list was not touched.
         let mut s = st();
-        s.apply(Event::RecRecent(vec![rec_entry("a.m4a")]), t0);
-        s.apply(Event::VideoRecent(vec![rec_entry(VIDEO_FILE)]), t0);
+        s.apply(Event::RecRecent(vec![rec_entry("a.m4a")], 0), t0);
+        s.apply(Event::VideoRecent(vec![rec_entry(VIDEO_FILE)], 0), t0);
         open_on(&mut s, Page::Record, t0);
         assert_eq!(
             s.apply(Event::Click(Hit::RecOpen(0)), t0),
@@ -11075,31 +11115,28 @@ mod tests {
     }
 
     #[test]
-    fn yakin_buang_turns_back_after_the_confirm_time() {
+    fn yakin_buang_does_not_run_out_and_simpan_never_stops() {
         let t0 = Instant::now();
         let ms = |n: u64| t0 + Duration::from_millis(n);
         let mut s = on_screen_tab(t0);
         s.apply(Event::RecStatus(Some(screen_status(t0))), t0);
-        // The first click arms: no effect, a deadline on the one timer.
+        // The first click arms: no effect.
         assert_eq!(s.apply(Event::Click(Hit::ScreenDiscard), ms(100)), vec![]);
         assert!(s.screen_discard_armed());
-        assert_eq!(s.next_deadline(), Some(ms(100) + CLEAN_CONFIRM));
-        // Still armed a moment before the time is up, "Buang" again once it is.
-        s.apply(Event::Tick, ms(99) + CLEAN_CONFIRM);
-        assert!(s.screen_discard_armed());
-        s.apply(Event::Tick, ms(100) + CLEAN_CONFIRM);
-        assert!(!s.screen_discard_armed(), "expired");
-        // Nothing else took the question back: the page still shows the
-        // recording, which goes on.
+        // Well past the confirm time it still asks: Simpan sits where Stop
+        // does, so a late click on it must not stop the recording.
+        s.apply(Event::Tick, ms(100) + CLEAN_CONFIRM + secs(30));
+        assert!(s.screen_discard_armed(), "still armed");
         assert_eq!(s.view(), View::Panel(Page::Record));
         assert!(s.rec().is_some());
-        // A click after it expired asks again instead of discarding.
-        let late = ms(200) + CLEAN_CONFIRM;
-        assert_eq!(s.apply(Event::Click(Hit::ScreenDiscard), late), vec![]);
-        assert!(s.screen_discard_armed());
-        // And a second click inside the time discards.
+        let late = ms(100) + CLEAN_CONFIRM + secs(31);
+        assert_eq!(s.apply(Event::Click(Hit::ScreenDiscardKeep), late), vec![]);
+        assert!(!s.screen_discard_armed(), "Simpan closes it, no stop effect");
+        assert!(s.rec().is_some());
+        // Buang long after the first click discards.
+        s.apply(Event::Click(Hit::ScreenDiscard), late);
         assert_eq!(
-            s.apply(Event::Click(Hit::ScreenDiscard), late + secs(3)),
+            s.apply(Event::Click(Hit::ScreenDiscard), late + secs(60)),
             vec![Effect::ScreenDiscard]
         );
         assert!(!s.screen_discard_armed());

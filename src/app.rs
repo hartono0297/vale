@@ -222,6 +222,9 @@ const WM_APP_ACCESS: u32 = WM_APP + 3;
 /// Opens a source's device menu from the main loop, outside the `APP` borrow
 /// (`wparam`: 0 mic, 1 PC audio).
 const WM_APP_REC_DEVICE: u32 = WM_APP + 80;
+/// Opens the Rekam page's video quality menu from the main loop, outside the
+/// `APP` borrow.
+const WM_APP_REC_QUALITY: u32 = WM_APP + 95;
 /// These live in the Controls feature of `windows`; the values are fixed by Win32.
 const WM_MOUSEHOVER: u32 = 0x02A1;
 const WM_MOUSELEAVE: u32 = 0x02A3;
@@ -585,6 +588,8 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
             eq_capture: None,
             eq_capture_on: false,
             dance_anchor: Instant::now(),
+            notice_shown: None,
+            notice_serial: 0,
             outside_ms: 0,
             behind: behind::Behind::default(),
             behind_ms: 0,
@@ -1079,6 +1084,10 @@ struct App {
     /// When `TIMER_EQ` last started: the dancing cat's fallback beat and its
     /// note loop count from here, so a dance always starts at rest.
     dance_anchor: Instant,
+    /// The notice view shown at the last `observe`, and a counter bumped when
+    /// a different one appears: the mascot's hop and wave start on it.
+    notice_shown: Option<Notice>,
+    notice_serial: u64,
     /// `TIMER_OUTSIDE`'s interval now; 0 while it does not run.
     outside_ms: u32,
     /// "Di belakang jendela": the island's place in the window order, and
@@ -1618,13 +1627,15 @@ impl App {
                     continue;
                 }
                 // The scan knows only what is on disk; the queue's marks go over it.
-                Event::RecRecent(list) => {
+                Event::RecRecent(list, total) => {
                     self.rec.recent = list.clone();
-                    Event::RecRecent(self.transcribe_marks(list))
+                    self.rec.total = total;
+                    Event::RecRecent(self.transcribe_marks(list), total)
                 }
-                Event::VideoRecent(list) => {
+                Event::VideoRecent(list, total) => {
                     self.screen.videos = list.clone();
-                    Event::VideoRecent(self.transcribe_marks(list))
+                    self.screen.total = total;
+                    Event::VideoRecent(self.transcribe_marks(list), total)
                 }
                 Event::SearchIndex(apps) => {
                     self.on_search_index(apps);
@@ -2002,7 +2013,13 @@ impl App {
         let mut pose = self
             .bata
             .brain
-            .pose(spot, now, motion.moves(), self.bata.blinking);
+            .pose(
+                spot,
+                now,
+                motion.moves(),
+                self.bata.blinking,
+                self.config.mascot,
+            );
         // The idle cat turns toward the pointer; nowhere else, and only with
         // a face that looks (nothing floating beside its head).
         if spot == Spot::Idle && self.look.value() != 0.0 {
@@ -2037,6 +2054,7 @@ impl App {
             );
             let (rise, fade) = robot::note_phase(since);
             pose = pose.dance(amount, rise, fade);
+            pose.beat = std::f32::consts::PI * since.as_millis() as f32 / robot::BEAT_MS as f32;
         }
         Some(RobotFrame { expr, pose })
     }
@@ -2049,7 +2067,12 @@ impl App {
             && self
                 .bata
                 .brain
-                .moving(Spot::of(&view), now, self.motion().moves())
+                .moving(
+                    Spot::of(&view),
+                    now,
+                    self.motion().moves(),
+                    self.config.mascot,
+                )
     }
 
     /// The cat's sleep clock takes the last mouse or keyboard input anywhere
@@ -2410,6 +2433,7 @@ impl App {
             Effect::RecPause => self.rec_pause(),
             Effect::RecMute(source) => self.rec_toggle_mute(source),
             Effect::RecDevice(source) => self.rec_open_device_menu(source),
+            Effect::RecQualityMenu => self.rec_open_quality_menu(),
             Effect::RecSources(sources) => self.rec_set_sources(sources),
             Effect::RecReveal(path) => self.rec_reveal(path),
             Effect::RecOpenFolder => self.rec_open_folder(),
@@ -3839,7 +3863,20 @@ impl App {
         // Bata: an alert that just appeared bounces; a lift or bounce needs frames.
         let face = self.robot_frame(&view, now).map(|r| r.expr);
         let moves = self.motion().moves();
-        self.bata.brain.observe(face, now, moves);
+        let token = match &view {
+            View::Notice(n) => {
+                if self.notice_shown.as_ref() != Some(n) {
+                    self.notice_serial += 1;
+                    self.notice_shown = Some(n.clone());
+                }
+                Some(self.notice_serial)
+            }
+            _ => {
+                self.notice_shown = None;
+                None
+            }
+        };
+        self.bata.brain.observe(face, token, now, moves);
         if self.robot_moving(now) {
             self.ensure_clock();
         }
@@ -6694,10 +6731,27 @@ impl App {
                 self.save_config();
                 self.refresh(now);
             }
+            SettingsAction::Mascot(mascot) => {
+                // Only the choice: each mascot keeps its own coat.
+                self.config.mascot = mascot;
+                self.save_config();
+                // Another mascot, and (on Auto) the island's surface.
+                self.refresh(now);
+            }
             SettingsAction::CatColor(color) => {
                 self.config.cat_color = color;
                 self.save_config();
                 // The cat and (on Auto) the island's surface change now.
+                self.draw(now);
+            }
+            SettingsAction::FalkColor(color) => {
+                self.config.falk_color = color;
+                self.save_config();
+                self.draw(now);
+            }
+            SettingsAction::OctopusColor(color) => {
+                self.config.octopus_color = color;
+                self.save_config();
                 self.draw(now);
             }
             SettingsAction::CatAccessory(accessory) => {
@@ -7158,6 +7212,23 @@ impl App {
                 tab: state.rec_tab(),
                 discard_armed: state.screen_discard_armed(),
                 captions_on: self.captions_on(),
+                total: match state.rec_tab() {
+                    RecKind::Audio => self.rec.total,
+                    RecKind::Screen => self.screen.total,
+                },
+                missing: self.rec.missing(),
+                quality: i18n::rec_quality_label(
+                    i18n::lang(),
+                    self.config.recording.video_quality,
+                    self.config.recording.video_fps,
+                ),
+                mute_hotkey: self.config.hotkeys.record_mute.map(|h| h.to_string()),
+                start_hotkey: match state.rec_tab() {
+                    RecKind::Audio => self.config.hotkeys.record,
+                    RecKind::Screen => self.config.hotkeys.record_screen,
+                }
+                .map(|h| h.to_string()),
+                today: state.today(),
             },
             devices: DevicesView {
                 list: &self.devices.list,
@@ -8719,6 +8790,33 @@ fn open_rec_device_menu(hwnd: HWND, source: crate::recorder::Source) {
     }
 }
 
+/// The video quality menu of the Rekam page's Layar tab, under the quality
+/// row. Its pick comes back as `WM_APP_MENU_DONE`. Opened outside the app
+/// borrow, like the device menu.
+fn open_rec_quality_menu(hwnd: HWND) {
+    if MENU_OPEN.get() {
+        return;
+    }
+    let Some(Some((current, lang, font, anchor))) = with_app(|app| {
+        let anchor = app.rec_quality_anchor()?;
+        let r = &app.config.recording;
+        Some(((r.video_quality, r.video_fps), app.config.language, app.config.font, anchor))
+    }) else {
+        return;
+    };
+    let opened = crate::ui::quality_menu::open(
+        hwnd,
+        anchor,
+        crate::ui::menu_pop::Align::Start,
+        current,
+        lang,
+        font,
+    );
+    if opened {
+        with_app(|app| app.apply_now(Event::MenuOpen(true)));
+    }
+}
+
 /// The transcript menu of Rekam row `i`, under the row. A row with transcripts
 /// off has no menu, and no tray menu either: the right-click is swallowed.
 /// It holds the panel while it is open; its pick comes back as
@@ -9647,8 +9745,12 @@ unsafe extern "system" fn wnd_proc(
             if let Some(done) = unsafe { crate::ui::menu_pop::take_done(lparam) } {
                 let pick = crate::ui::device_menu::picked(&done);
                 let choice = crate::ui::transcript_menu::picked(&done);
+                let quality = crate::ui::quality_menu::picked(&done);
                 with_app(|app| {
                     app.rec_menu_done(pick);
+                    if quality.is_some() {
+                        app.rec_quality_done(quality);
+                    }
                     if let Some(choice) = choice {
                         app.transcript_menu_choice(choice);
                     }
@@ -9684,6 +9786,10 @@ unsafe extern "system" fn wnd_proc(
                 crate::recorder::Source::System
             };
             open_rec_device_menu(hwnd, source);
+            LRESULT(0)
+        }
+        WM_APP_REC_QUALITY => {
+            open_rec_quality_menu(hwnd);
             LRESULT(0)
         }
         WM_APP_SETTINGS_ACTION => {
@@ -11734,7 +11840,7 @@ mod tests {
         let entry = |name: &str| RecEntry {
             path: PathBuf::from(name),
             title: name.into(),
-            started: String::new(),
+            started_at: chrono::NaiveDateTime::default(),
             duration: Duration::from_secs(60),
             unfinished: false,
             silent: false,
@@ -11743,8 +11849,8 @@ mod tests {
         let t0 = Instant::now();
         let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 11).unwrap();
         let mut s = IslandState::new(today, Default::default());
-        s.apply(Event::RecRecent(vec![entry("a.m4a"), entry("b.m4a")]), t0);
-        s.apply(Event::VideoRecent(vec![entry("a.mp4"), entry("b.mp4")]), t0);
+        s.apply(Event::RecRecent(vec![entry("a.m4a"), entry("b.m4a")], 2), t0);
+        s.apply(Event::VideoRecent(vec![entry("a.mp4"), entry("b.mp4")], 2), t0);
         s.apply(Event::Hover(true), t0);
         let at = |p: Page| Page::ALL.iter().position(|q| *q == p).unwrap() as i32;
         s.apply(Event::Wheel(-120 * (at(Page::Record) - at(s.page()))), t0);
