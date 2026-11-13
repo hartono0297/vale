@@ -887,6 +887,7 @@ keys! {
     Updates => "Pembaruan", "Updates";
     SeeReleases => "Lihat rilis", "See releases";
     DataFolder => "Folder data", "Data folder";
+    SettingsImported => "Pengaturan diimpor", "Settings imported";
     OpenDataFolder => "Buka folder data", "Open data folder";
 
     // Vale's mascot, the notch assistant (Settings → Maskot).

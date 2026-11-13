@@ -13,6 +13,18 @@ use serde_json::{Map, Value};
 use std::io;
 use std::path::{Path, PathBuf};
 
+/// The flag of the restart after an import: the new Vale waits for the old
+/// island's mutex like after an update and says the settings were imported.
+pub const IMPORTED_FLAG: &str = "--imported";
+
+/// Starts `exe` as `vale --imported`.
+pub fn launch_imported(exe: &Path) -> io::Result<()> {
+    std::process::Command::new(exe)
+        .arg(IMPORTED_FLAG)
+        .spawn()
+        .map(|_| ())
+}
+
 /// The file format version this build writes and reads.
 pub const FORMAT: u64 = 1;
 /// A settings file is a few KB; anything bigger is not one.

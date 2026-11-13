@@ -93,6 +93,8 @@ fn opens_windows(arg: Option<&str>) -> bool {
         Some(media_log::FLAG) => true,
         // The updater starts the new exe with it: the island as usual.
         Some("--updated") => true,
+        // Vale restarted itself after importing settings.
+        Some(config_transfer::IMPORTED_FLAG) => true,
         #[cfg(debug_assertions)]
         Some(
             "--demo"
@@ -122,17 +124,20 @@ fn main() {
         ui::fonts::register_gdi();
     }
     match arg.as_deref() {
-        None => app::run(false, None),
+        None => app::run(false, app::Start::Normal),
         // The island as usual, with the media diagnosis log on. No console:
         // it runs like a normal start, single instance included.
-        Some(media_log::FLAG) => app::run(true, None),
+        Some(media_log::FLAG) => app::run(true, app::Start::Normal),
         // Started by the updater (`update::launch_updated`) as `--updated
         // <old version>`: the island as usual, but it waits for the old
         // one's mutex instead of quitting, and says it was updated.
         Some("--updated") => {
             let old = std::env::args().nth(2).unwrap_or_default();
-            app::run(false, Some(&old));
+            app::run(false, app::Start::Updated(old));
         }
+        // Started by `config_transfer::launch_imported` after an import: the
+        // island as usual, waiting for the old one and saying so.
+        Some(config_transfer::IMPORTED_FLAG) => app::run(false, app::Start::Imported),
         // No console attach: the hook prints nothing, and attaching can swap an
         // unset stdin for the console's, leaving the hook blocked on keyboard input.
         Some("--hook") => claude::hook::run_hook(),
@@ -359,5 +364,11 @@ mod tests {
     fn the_admin_helper_opens_no_window() {
         assert!(!opens_windows(Some(clean::ADMIN_FLAG)));
         assert!(opens_windows(None));
+    }
+
+    #[test]
+    fn imported_start_opens_windows() {
+        assert!(opens_windows(Some(config_transfer::IMPORTED_FLAG)));
+        assert_eq!(config_transfer::IMPORTED_FLAG, "--imported");
     }
 }

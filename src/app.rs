@@ -359,14 +359,23 @@ const UPDATE_CLAIM_WAIT: Duration = Duration::from_secs(60);
 /// watchdog ends the process anyway.
 const TEARDOWN_LIMIT: Duration = Duration::from_secs(5);
 
-/// How long a start waits for the single-instance mutex: `updated_from` is the
-/// updater's `--updated <old version>`, whose old island is still closing;
-/// any other start quits at once when another island runs.
-fn claim_wait(updated_from: Option<&str>) -> Duration {
-    if updated_from.is_some() {
-        UPDATE_CLAIM_WAIT
-    } else {
-        Duration::ZERO
+/// How this island was started.
+pub enum Start {
+    /// A plain start (or `--media-log`).
+    Normal,
+    /// The updater's `--updated <old version>`.
+    Updated(String),
+    /// `--imported`: Vale restarted itself after importing settings.
+    Imported,
+}
+
+/// How long a start waits for the single-instance mutex: after an update or an
+/// import the old island is still closing; any other start quits at once when
+/// another island runs.
+fn claim_wait(start: &Start) -> Duration {
+    match start {
+        Start::Updated(_) | Start::Imported => UPDATE_CLAIM_WAIT,
+        Start::Normal => Duration::ZERO,
     }
 }
 const SYSTEM_PAGE_MS: u32 = crate::system::LIVE_MS;
@@ -445,11 +454,12 @@ thread_local! {
     static PIPE_SERVER: RefCell<Option<PipeServer>> = const { RefCell::new(None) };
 }
 
-/// `media_log_flag`: started with `--media-log`. `updated_from`: started by
-/// the updater (`--updated <old version>`).
-pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
-    // After an update the old island may still be closing: wait for its mutex.
-    if !claim_single_instance(claim_wait(updated_from)) {
+/// `media_log_flag`: started with `--media-log`. `start`: how it was started
+/// (normal, by the updater, or after an import).
+pub fn run(media_log_flag: bool, start: Start) {
+    // After an update or an import the old island may still be closing: wait
+    // for its mutex.
+    if !claim_single_instance(claim_wait(&start)) {
         return;
     }
     // Before anything reads the data folder: DynamicIsland becomes Vale once.
@@ -731,7 +741,7 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
         // The sticky notes' too: the ones that came due while it was off.
         app.sticky_remind_fire();
         // The updated notice, the update timer and the leftover cleanup.
-        app.update_start(updated_from);
+        app.update_start(&start);
         app.rec_split_folders();
         app.transcribe_init();
         unsafe {
@@ -10003,12 +10013,22 @@ mod tests {
 
     #[test]
     fn only_a_start_after_an_update_waits_for_the_old_island() {
-        assert_eq!(claim_wait(None), Duration::ZERO);
-        assert_eq!(claim_wait(Some("3.15.0")), Duration::from_secs(60));
+        assert_eq!(claim_wait(&Start::Normal), Duration::ZERO);
+        assert_eq!(
+            claim_wait(&Start::Updated("3.15.0".into())),
+            Duration::from_secs(60)
+        );
         // Even an empty old version (the updater passed none) is an update.
-        assert_eq!(claim_wait(Some("")), UPDATE_CLAIM_WAIT);
+        assert_eq!(claim_wait(&Start::Updated(String::new())), UPDATE_CLAIM_WAIT);
         // Longer than Windows Error Reporting keeps a crashing process (~12 s).
         assert!(UPDATE_CLAIM_WAIT >= Duration::from_secs(60));
+    }
+
+    #[test]
+    fn claim_wait_waits_after_an_import() {
+        assert_eq!(claim_wait(&Start::Imported), UPDATE_CLAIM_WAIT);
+        assert_eq!(claim_wait(&Start::Updated("3.15.0".into())), UPDATE_CLAIM_WAIT);
+        assert_eq!(claim_wait(&Start::Normal), Duration::ZERO);
     }
 
     #[test]
