@@ -22,6 +22,47 @@ pub(super) struct Transfer {
     pending: Option<Incoming>,
 }
 
+// Invariant: `pending` is set exactly when `view` is `Pending`. Every change
+// goes through these, so the card never offers a file that is gone or hides
+// one that is kept.
+impl Transfer {
+    /// A checked file waits for the owner's confirmation.
+    fn hold(&mut self, incoming: Incoming) {
+        self.view = TransferView::Pending {
+            app_version: incoming.app_version.clone(),
+            date: incoming.exported,
+            refusal: None,
+        };
+        self.pending = Some(incoming);
+    }
+
+    /// Nothing is waiting any more; the card shows `view`.
+    fn clear(&mut self, view: TransferView) {
+        self.pending = None;
+        self.view = view;
+    }
+
+    /// A recording stops the import: the file stays, with the reason on it.
+    fn refuse_busy(&mut self, lang: Lang) {
+        if let TransferView::Pending { refusal, .. } = &mut self.view {
+            *refusal = Some(i18n::text(lang, Key::StopRecordingFirst).into());
+        }
+    }
+
+    /// An export finished. A file waiting for confirmation keeps the card.
+    fn exported(&mut self, view: TransferView) {
+        if self.pending.is_none() {
+            self.view = view;
+        }
+    }
+}
+
+/// An import may go on only when the old settings are safe: the backup was
+/// made, or there was no config to back up.
+pub(super) fn backup_allows_import(backup: &std::io::Result<Option<std::path::PathBuf>>) -> bool {
+    backup.is_ok()
+}
+
 /// What "Impor" may do when the owner confirms.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Gate {
@@ -63,14 +104,14 @@ impl App {
         self.save_config();
         let written =
             config_transfer::write_export(&path, &self.config, Local::now().fixed_offset());
-        self.transfer.view = match written {
+        self.transfer.exported(match written {
             Ok(()) => TransferView::Exported(
                 path.file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_default(),
             ),
             Err(_) => TransferView::ExportFailed,
-        };
+        });
         self.sync_settings();
     }
 
@@ -91,24 +132,14 @@ impl App {
             Err(_) => Err(ImportError::NotVale),
         };
         match checked {
-            Ok(incoming) => {
-                self.transfer.view = TransferView::Pending {
-                    app_version: incoming.app_version.clone(),
-                    date: incoming.exported,
-                };
-                self.transfer.pending = Some(incoming);
-            }
-            Err(error) => {
-                self.transfer.pending = None;
-                self.transfer.view = view_for_error(lang, &error);
-            }
+            Ok(incoming) => self.transfer.hold(incoming),
+            Err(error) => self.transfer.clear(view_for_error(lang, &error)),
         }
         self.sync_settings();
     }
 
     pub(super) fn config_import_cancel(&mut self) {
-        self.transfer.pending = None;
-        self.transfer.view = TransferView::Idle;
+        self.transfer.clear(TransferView::Idle);
         self.sync_settings();
     }
 
@@ -123,21 +154,28 @@ impl App {
         ) {
             Gate::Nothing => return,
             Gate::Busy => {
-                self.transfer.view =
-                    TransferView::Refused(i18n::text(lang, Key::StopRecordingFirst).into());
+                self.transfer.refuse_busy(lang);
                 self.sync_settings();
                 return;
             }
             Gate::Go => {}
         }
-        let Some(incoming) = self.transfer.pending.take() else {
+        let Some(incoming) = self.transfer.pending.clone() else {
             return;
         };
         let path = config::path();
-        let _ = config_transfer::backup_config(&path, Local::now().naive_local());
+        let backup = config_transfer::backup_config(&path, Local::now().naive_local());
+        if !backup_allows_import(&backup) {
+            self.transfer
+                .clear(TransferView::Refused(i18n::text(lang, Key::BackupFailed).into()));
+            self.sync_settings();
+            return;
+        }
         let merged = config_transfer::import_and_save(&path, &self.config, &incoming);
         self.adopt_config(merged);
-        self.transfer.view = TransferView::Idle;
+        self.transfer.clear(TransferView::Idle);
+        // The import may have switched the language.
+        let lang = self.config.language;
         let launched =
             std::env::current_exe().and_then(|exe| config_transfer::launch_imported(&exe));
         match launched {
@@ -198,6 +236,64 @@ mod tests {
         );
     }
 
+    fn incoming() -> Incoming {
+        Incoming {
+            app_version: "5.3.0".into(),
+            exported: None,
+            settings: Default::default(),
+        }
+    }
+
+    fn holds_invariant(t: &Transfer) -> bool {
+        t.pending.is_some() == matches!(t.view, TransferView::Pending { .. })
+    }
+
+    #[test]
+    fn a_failed_backup_stops_the_import() {
+        assert!(!backup_allows_import(&Err(std::io::Error::other("x"))));
+        assert!(backup_allows_import(&Ok(None)));
+        assert!(backup_allows_import(&Ok(Some("a.json".into()))));
+    }
+
+    #[test]
+    fn busy_keeps_the_file_with_the_refusal() {
+        let mut t = Transfer::default();
+        t.hold(incoming());
+        t.refuse_busy(Lang::En);
+        assert_eq!(
+            t.view,
+            TransferView::Pending {
+                app_version: "5.3.0".into(),
+                date: None,
+                refusal: Some("Stop the recording first".into()),
+            }
+        );
+        assert!(holds_invariant(&t));
+        // Nothing waiting: nothing to refuse.
+        let mut idle = Transfer::default();
+        idle.refuse_busy(Lang::En);
+        assert_eq!(idle.view, TransferView::Idle);
+    }
+
+    #[test]
+    fn pending_and_view_move_together() {
+        let mut t = Transfer::default();
+        assert!(holds_invariant(&t));
+        t.hold(incoming());
+        assert!(holds_invariant(&t));
+        // An export finishing keeps the waiting file on the card.
+        t.exported(TransferView::Exported("a.json".into()));
+        assert!(holds_invariant(&t));
+        assert!(t.pending.is_some());
+        t.clear(TransferView::Refused("x".into()));
+        assert!(holds_invariant(&t));
+        t.exported(TransferView::Exported("a.json".into()));
+        assert_eq!(t.view, TransferView::Exported("a.json".into()));
+        t.hold(incoming());
+        t.clear(TransferView::Idle);
+        assert!(holds_invariant(&t));
+    }
+
     #[test]
     fn newer_message_has_no_em_dash() {
         for lang in [Lang::Id, Lang::En] {
@@ -207,6 +303,7 @@ mod tests {
                 Key::StopRecordingFirst,
                 Key::SettingsImportedRestart,
                 Key::ConfigFilterJson,
+                Key::BackupFailed,
             ] {
                 assert!(!i18n::text(lang, key).contains('\u{2014}'));
             }

@@ -463,6 +463,8 @@ keys! {
     StopRecordingFirst => "Hentikan rekaman dulu", "Stop the recording first";
     SettingsImportedRestart => "Pengaturan diimpor. Mulai ulang Vale supaya semuanya berlaku.",
         "Settings imported. Restart Vale to apply everything.";
+    BackupFailed => "Cadangan pengaturan lama gagal dibuat, jadi tidak ada yang diimpor.",
+        "Could not back up the current settings, so nothing was imported.";
     ConfigFilterJson => "File JSON (*.json)", "JSON files (*.json)";
     UpdateErrNoNetwork => "tidak ada koneksi", "no connection";
     UpdateErrNotWritable => "folder tidak bisa ditulis", "folder is not writable";

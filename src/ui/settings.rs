@@ -497,9 +497,11 @@ pub enum TransferView {
     /// Why a file was refused, or what stops the import.
     Refused(String),
     /// A checked file waits for "Impor sekarang".
+    /// `refusal`: why "Impor sekarang" did nothing (a recording is running).
     Pending {
         app_version: String,
         date: Option<chrono::NaiveDate>,
+        refusal: Option<String>,
     },
 }
 
