@@ -1413,6 +1413,161 @@ keys! {
     TrStatusHeld => "Dijeda selama merekam", "Paused while recording";
     TrEmpty => "Tidak ada ucapan yang terbaca", "No speech could be made out";
     TrPlayerError => "Audio tidak bisa diputar", "The audio cannot be played";
+
+    // Tooltips: the keys and gestures shown in a tip's key plate.
+    TipKeySpace => "Spasi", "Space";
+    TipKeyRightClick => "Klik kanan", "Right-click";
+
+    // Tooltips: the sticky note's header, format bar and popovers.
+    TipStickyListAbout => "Semua catatan tempel dalam satu jendela, bisa dicari.", "Every sticky note in one window, with search.";
+    TipStickyPinOff => "Sematkan di atas", "Keep on top";
+    TipStickyPinOffAbout => "Catatan ini tetap di atas jendela lain.", "This note stays above other windows.";
+    TipStickyPinOn => "Lepas sematan", "Stop keeping on top";
+    TipStickyPinOnAbout => "Jendela lain bisa menutupi catatan ini lagi.", "Other windows can cover this note again.";
+    TipStickyNewNote => "Catatan baru", "New note";
+    TipStickyNewAbout => "Catatan kosong di samping catatan ini.", "A blank note next to this one.";
+    TipStickyCheckAbout => "Ubah baris yang dipilih jadi kotak centang.", "Turn the selected lines into checkboxes.";
+    TipStickyStyle => "Warna dan gaya", "Colour and style";
+    TipStickyStyleAbout => "Kertas, ukuran, huruf, garis, dan tembus pandang.", "Paper, size, font, lines and see-through.";
+    TipStickyMoreAbout => "Pengingat, cap, gulung, selip ke tepi, kirim ke HP, hapus.", "Reminder, stamp, roll up, tuck to edge, send to phone, delete.";
+    TipStickyClose => "Lepas dari desktop", "Take off the desktop";
+    TipStickyCloseAbout => "Isinya tetap ada di halaman Catatan.", "It stays on the Notes page.";
+    TipStickyPrev => "Lembar sebelumnya", "Previous sheet";
+    TipStickyNext => "Lembar berikutnya", "Next sheet";
+    TipStickyStackAbout => "Roda mouse di strip atas juga bisa.", "The wheel over the top strip works too.";
+    TipImageRemoveAbout => "Gambar dikeluarkan dari catatan ini.", "The image is taken out of this note.";
+    TipMarkerMenu => "Warna stabilo dan teks", "Highlight and text colour";
+    TipMarkerMenuAbout => "Pilih warnanya.", "Pick the colours.";
+    TipImageAbout => "Tambah gambar dari file, paling banyak 4.", "Add an image from a file, up to 4.";
+    TipBarMoreAbout => "Alat yang tidak muat di bar.", "Tools that do not fit on the bar.";
+    TipRemindDayPrev => "Hari sebelumnya", "Previous day";
+    TipRemindDayNext => "Hari berikutnya", "Next day";
+    TipRemindHourPrev => "Jam sebelumnya", "Earlier hour";
+    TipRemindHourNext => "Jam berikutnya", "Later hour";
+    TipRemindMinPrev => "Menit sebelumnya", "Earlier minute";
+    TipRemindMinNext => "Menit berikutnya", "Later minute";
+    TipRemindWheelAbout => "Roda mouse di kolom ini juga bisa.", "The wheel over this column works too.";
+
+    // Tooltips: the sticky note list window.
+    TipListNewAbout => "Catatan tempel baru di desktop.", "A new sticky note on the desktop.";
+    TipListPinned => "Disematkan di atas", "Kept on top";
+    TipListRolled => "Digulung", "Rolled up";
+    TipListTucked => "Diselipkan ke tepi", "Tucked to the edge";
+    TipListReminder => "Ada pengingat", "Has a reminder";
+    TipListReminderPast => "Pengingat sudah berbunyi", "Reminder went off";
+
+    // Tooltips: the closed notch and the open panel's dock and header.
+    TipNoticeClose => "Tutup", "Dismiss";
+    TipNoticeCloseAbout => "Notifikasi ini hilang tanpa membuka apa pun.", "Closes this notice without opening anything.";
+    TipPcAudioMute => "Bisukan suara PC", "Mute PC audio";
+    TipPcAudioUnmute => "Nyalakan suara PC", "Unmute PC audio";
+    TipSettings => "Pengaturan", "Settings";
+    TipSettingsAbout => "Buka jendela Pengaturan Vale.", "Opens Vale's Settings.";
+    TipPageCalendar => "Acara Google Calendar per hari, minggu, atau bulan.", "Your Google Calendar by day, week or month.";
+    TipPagePomodoro => "Timer fokus dan istirahat.", "Focus and break timer.";
+    TipPageRecord => "Rekam audio atau layar; rekaman terakhir dan transkripnya.", "Record audio or the screen; recent recordings and their transcripts.";
+    TipPageReminders => "Pengingat dengan jam.", "Reminders with a time.";
+    TipPageNotes => "Catatan, bisa ditempel ke desktop.", "Notes you can stick to the desktop.";
+    TipPageMedia => "Lagu yang diputar dan liriknya.", "What is playing, with lyrics.";
+    TipPageMixer => "Volume utama dan per aplikasi.", "Master and per-app volume.";
+    TipPageClipboard => "Riwayat yang kamu salin, bisa dicari dan disematkan.", "What you copied, with search and pins.";
+    TipPageNotifications => "Notifikasi Windows yang masuk selama Vale berjalan.", "Windows notifications that came while Vale ran.";
+    TipPageShelf => "Tempat singgah file, juga dari dan ke HP.", "A holding place for files, to and from your phone.";
+    TipPageSystem => "CPU, RAM, disk, aplikasi tersibuk, dan bersih-bersih.", "CPU, RAM, disks, the busiest apps and clean-up.";
+    TipPageDevices => "Flashdisk, disk luar, dan kartu memori, lepas dengan aman.", "Flash drives, external disks and memory cards, eject safely.";
+    TipPageCli => "Terminal kecil di panel, dengan folder favorit.", "A small terminal in the panel, with favorite folders.";
+    TipPageArrange => "Atur jendela yang terbuka dengan template.", "Lay out your open windows with templates.";
+    TipPageShortcuts => "Alat Windows, lompat ke halaman, dan pintasan kamu sendiri.", "Windows tools, page jumps and your own shortcuts.";
+
+    // Tooltips: the controls on the open panel's pages.
+    TipCalPrevMonth => "Bulan sebelumnya", "Previous month";
+    TipCalNextMonth => "Bulan berikutnya", "Next month";
+    TipCalPrevWeek => "Minggu sebelumnya", "Previous week";
+    TipCalNextWeek => "Minggu berikutnya", "Next week";
+    TipCalPrevDay => "Hari sebelumnya", "Previous day";
+    TipCalNextDay => "Hari berikutnya", "Next day";
+    TipPlay => "Putar", "Play";
+    TipPause => "Jeda", "Pause";
+    TipPomoResume => "Lanjutkan", "Resume";
+    TipPomoReset => "Ulang", "Reset";
+    TipPomoResetAbout => "Kembali ke fokus pertama, timer berhenti.", "Back to the first focus session, timer stopped.";
+    TipPomoSkip => "Lewati", "Skip";
+    TipPomoSkipAbout => "Fase ini selesai sekarang, fase berikutnya menunggu dimulai.", "This phase ends now, and the next waits for you to start it.";
+    TipNoteStickAbout => "Muncul sebagai catatan tempel di desktop.", "Shows as a sticky note on the desktop.";
+    TipNoteUnstickAbout => "Catatannya tetap di sini.", "The note stays here.";
+    TipMediaPrev => "Lagu sebelumnya", "Previous track";
+    TipMediaNext => "Lagu berikutnya", "Next track";
+    TipMediaPrevNextAbout => "Geser di notch juga bisa.", "A swipe on the notch works too.";
+    TipMediaPlayPauseAbout => "Klik tengah di notch juga bisa.", "A middle click on the notch works too.";
+    TipLyricsCard => "Kartu lirik", "Lyrics card";
+    TipLyricsCardClose => "Tutup kartu lirik", "Close lyrics card";
+    TipLyricsCardAbout => "Lirik di jendela kecil yang melayang.", "Lyrics in a small floating window.";
+    TipClipPin => "Sematkan", "Pin";
+    TipClipPinAbout => "Tetap ada saat riwayat dibersihkan atau penuh.", "Stays when the history is cleared or full.";
+    TipClipUnpin => "Lepas sematan", "Unpin";
+    TipClipUnpinAbout => "Ikut terhapus lagi saat riwayat dibersihkan atau penuh.", "Goes again when the history is cleared or full.";
+    TipClipPlain => "Salin teks polos", "Copy as plain text";
+    TipClipPlainAbout => "Hanya teksnya, tanpa format dan warna.", "Just the text, without formatting or colour.";
+    TipClipDeleteAbout => "Dihapus dari riwayat clipboard.", "Removes it from the clipboard history.";
+    TipRemove => "Hapus", "Remove";
+    TipNotifRemoveAbout => "Hilang dari riwayat Vale. Notifikasi di Windows tidak disentuh.", "Removes it from Vale's history. Windows keeps its own list.";
+    TipShelfRemove => "Keluarkan dari rak", "Take off the shelf";
+    TipShelfRemoveAbout => "File aslinya tetap ada. Tidak dibagikan ke HP lagi.", "The file itself stays. It is no longer shared with phones.";
+    TipBack => "Kembali", "Back";
+    TipPhoneShowQr => "Tampilkan kode QR", "Show the QR code";
+    TipPhoneShowQrAbout => "Pindai dengan HP untuk tersambung.", "Scan it with a phone to connect.";
+    TipArrangePlay => "Terapkan", "Apply";
+    TipArrangePlayAbout => "Jendela yang cocok pindah ke tempat yang disimpan.", "Matching windows move to the saved places.";
+    TipRecPause => "Jeda rekaman", "Pause recording";
+    TipRecResume => "Lanjutkan rekaman", "Resume recording";
+    TipRecStartAudioAbout => "Mulai merekam audio sekarang.", "Starts an audio recording now.";
+    TipRecStartScreenAbout => "Pilih layar, jendela, atau area, lalu rekaman dimulai.", "Pick a screen, window or area, then the recording starts.";
+    TipRecStop => "Hentikan rekaman", "Stop recording";
+    TipRecStopAbout => "Rekamannya disimpan.", "The recording is saved.";
+    TipRecPickFile => "Transkrip file", "Transcribe a file";
+    TipRecPickFileAbout => "Pilih rekaman atau video, lalu transkripnya terbuka.", "Pick a recording or video, then its transcript opens.";
+    TipRecFolderAudioAbout => "Folder rekaman audio, di Explorer.", "The audio recordings folder, in Explorer.";
+    TipRecFolderScreenAbout => "Folder video rekaman layar, di Explorer.", "The screen recordings folder, in Explorer.";
+    TipScreenDiscard => "Buang video", "Discard video";
+    TipScreenDiscardAbout => "Rekaman berhenti, videonya ke Recycle Bin. Ditanya dulu.", "Stops and moves the video to the Recycle Bin. Asks first.";
+    TipDeviceOpen => "Buka di Explorer", "Open in Explorer";
+    TipDeviceDetail => "Detail", "Details";
+    TipDeviceDetailAbout => "Model, jalur, dan sistem file.", "Model, connection and file system.";
+    TipCliEnlarge => "Perbesar", "Enlarge";
+    TipCliShrink => "Perkecil", "Shrink";
+    TipCliStar => "Jadikan favorit", "Star";
+    TipCliUnstar => "Hapus dari favorit", "Unstar";
+    TipCleanBack => "Kembali ke Sistem", "Back to System";
+
+    // Tooltips: the transcript window, the live caption card and the lyrics card.
+    TipGrip => "Ubah ukuran", "Resize";
+    TipTrPlayAbout => "Dari posisi di bar.", "From the position on the bar.";
+    TipTrSeek => "Posisi", "Position";
+    TipTrSeekAbout => "Klik atau geser untuk lompat.", "Click or drag to jump.";
+    TipTrCopyAbout => "Salin judul dan semua baris transkrip sebagai teks.", "Copies the title and every line of the transcript as text.";
+    TipTrPromptAbout => "Salin transkrip dengan perintah ringkasan, siap ditempel ke AI.", "Copies the transcript with a summary prompt, ready to paste into an AI chat.";
+    TipTrNoteAbout => "Simpan transkrip ini ke halaman Catatan.", "Saves this transcript to the Notes page.";
+    TipTrOpenMdAbout => "Buka file transkrip di aplikasi bawaan Windows.", "Opens the transcript file in the Windows default app.";
+    TipTrRedoAbout => "Transkrip ulang, bisa dengan model lain.", "Transcribes again, with another model if you like.";
+    TipTrSettingsAbout => "Pengaturan transkrip: nyala, model, bahasa, otomatis.", "Transcript settings: on or off, model, language, auto.";
+    TipCapClose => "Tutup caption", "Close captions";
+    TipCapCloseAbout => "Caption langsung dimatikan.", "Turns live captions off.";
+    TipCapPause => "Jeda caption", "Pause captions";
+    TipCapResume => "Lanjutkan caption", "Resume captions";
+    TipCapPauseAbout => "Teks yang sudah ada tetap.", "The text so far stays.";
+    TipCapCopyAbout => "Salin teks akhir sesi ini, bukan cuma yang terlihat.", "Copies the final text of this session, not just what shows.";
+    TipCapLang => "Bahasa caption", "Caption language";
+    TipCapLangAbout => "Klik untuk ganti: ID, EN, Auto.", "Click to switch: ID, EN, Auto.";
+    TipCapGripAbout => "Ctrl + roda mouse mengubah ukuran teks.", "Ctrl + wheel changes the text size.";
+
+    // Tooltips: the Settings window.
+    TipMoveUp => "Naikkan", "Move up";
+    TipMoveDown => "Turunkan", "Move down";
+    TipDragReorder => "Seret untuk mengubah urutan", "Drag to reorder";
+    TipResetDefault => "Kembalikan bawaan", "Reset to default";
+    TipResetBecomes => "Jadi", "Becomes";
+    TipResetNone => "Tanpa tombol pintas.", "No hotkey.";
+    TipOpenBrowser => "Buka di browser", "Open in browser";
 }
 
 /// `key` in `lang`.
@@ -1472,6 +1627,18 @@ pub fn phase_minutes(lang: Lang, phase: &str, minutes: u32) -> String {
         Lang::Id => format!("{phase} {minutes} menit"),
         Lang::En => format!("{phase} · {minutes} min"),
     }
+}
+
+/// "Bisukan Spotify", "Nyalakan Spotify": the Mixer row's speaker, by what a
+/// click does now. A long app name is kept whole (the tip cuts it).
+pub fn mute_app(lang: Lang, name: &str, muted: bool) -> String {
+    let verb = match (lang, muted) {
+        (Lang::Id, false) => "Bisukan",
+        (Lang::Id, true) => "Nyalakan",
+        (Lang::En, false) => "Mute",
+        (Lang::En, true) => "Unmute",
+    };
+    format!("{verb} {name}").trim_end().to_string()
 }
 
 /// "+3 lagi" under a list that does not fit.
@@ -1775,6 +1942,15 @@ pub fn monitor_now(lang: Lang, n: usize) -> String {
     match lang {
         Lang::Id => format!("sekarang: {n}"),
         Lang::En => format!("now: {n}"),
+    }
+}
+
+/// What a hotkey row's reset button gives back: "Jadi Ctrl+Alt+L.", or that
+/// the row has no hotkey by default.
+pub fn reset_to(lang: Lang, combo: Option<String>) -> String {
+    match combo {
+        Some(c) => format!("{} {c}.", text(lang, Key::TipResetBecomes)),
+        None => text(lang, Key::TipResetNone).to_owned(),
     }
 }
 
@@ -2695,6 +2871,31 @@ pub fn count_label(lang: Lang, n: usize) -> String {
 /// list (`pos` is 1-based).
 pub fn stack_badge(lang: Lang, pos: usize, len: usize) -> String {
     format!("{} {pos}/{len}", text(lang, Key::StickyListStack))
+}
+
+/// "Tumpukan, 3 lembar" / "Stack, 3 sheets": the stack mark's tip in the
+/// sticky note list.
+pub fn tip_list_stack(lang: Lang, n: usize) -> String {
+    match lang {
+        Lang::Id => format!("Tumpukan, {n} lembar"),
+        Lang::En => format!("Stack, {n} {}", if n == 1 { "sheet" } else { "sheets" }),
+    }
+}
+
+/// "1 dari 4 dicentang" / "1 of 4 checked": the checklist mark's tip.
+pub fn tip_list_checked(lang: Lang, done: usize, total: usize) -> String {
+    match lang {
+        Lang::Id => format!("{done} dari {total} dicentang"),
+        Lang::En => format!("{done} of {total} checked"),
+    }
+}
+
+/// "2 gambar" / "2 images": the images mark's tip.
+pub fn tip_list_images(lang: Lang, n: usize) -> String {
+    match lang {
+        Lang::Id => format!("{n} gambar"),
+        Lang::En => format!("{n} {}", if n == 1 { "image" } else { "images" }),
+    }
 }
 
 /// A running command's time on the clock: "0:42", "12:05", "1:02:03".

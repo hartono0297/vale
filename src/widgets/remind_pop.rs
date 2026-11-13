@@ -18,7 +18,10 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::Input::KeyboardAndMouse::{VK_ESCAPE, VK_RETURN};
+use windows::Win32::UI::Controls::WM_MOUSELEAVE;
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent, VK_ESCAPE, VK_RETURN,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, IDC_ARROW, LoadCursorW, RegisterClassExW,
     SW_SHOW, ShowWindow, WA_INACTIVE, WM_ACTIVATE, WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN,
@@ -34,10 +37,12 @@ use crate::config::UiFont;
 use crate::i18n::{Key, Lang, text};
 use crate::shot_edit::gfx::color;
 use crate::theme;
+use crate::ui::tooltip::{self, Side};
 use crate::ui::geometry::Rect as FRect;
 use crate::widgets::host;
 use crate::widgets::paint::Res;
 use crate::widgets::remind::{self, Entry};
+use crate::widgets::tips;
 
 const CLASS: PCWSTR = w!("ValeWidgetRemind");
 const W: f32 = 232.0;
@@ -47,8 +52,8 @@ const ROW_H: f32 = 40.0;
 const ARROW: f32 = 28.0;
 
 /// What the pointer can act on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Item {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Item {
     DayPrev,
     DayNext,
     HourPrev,
@@ -78,6 +83,8 @@ struct Pop {
     res: Res,
     canvas: Option<Canvas>,
     hover: Option<Item>,
+    /// The pointer is tracked for its leaving (the tooltip goes with it).
+    tracking: bool,
     closing: bool,
     /// The window the user left for (not the note).
     away: Option<HWND>,
@@ -196,6 +203,33 @@ fn item_at(x: f32, y: f32) -> Option<Item> {
     .map(|(_, i)| i)
 }
 
+/// The place of a chevron; `None` for Simpan and Batal.
+fn chevron_rect(item: Item) -> Option<FRect> {
+    match item {
+        Item::DayPrev => Some(day_prev()),
+        Item::DayNext => Some(day_next()),
+        Item::HourPrev => Some(hour_prev()),
+        Item::HourNext => Some(hour_next()),
+        Item::MinPrev => Some(min_prev()),
+        Item::MinNext => Some(min_next()),
+        Item::Save | Item::Cancel => None,
+    }
+}
+
+/// The tooltip target of the item under the pointer: only a chevron has one,
+/// anchored on its place on screen.
+fn chevron_target(p: &Pop, item: Option<Item>) -> Option<tooltip::Target> {
+    let item = item?;
+    let tip = tips::remind_tip(item)?;
+    let r = chevron_rect(item)?;
+    Some(tooltip::Target {
+        id: tooltip::id_of(&item),
+        anchor: tooltip::anchor_px(p.origin, r, p.scale),
+        side: Side::Auto,
+        tip,
+    })
+}
+
 /// The field under a point, for the wheel: its whole block.
 fn field_at(x: f32, y: f32) -> Option<Field> {
     if y >= row_y(0) && y < row_y(0) + ROW_H {
@@ -304,6 +338,7 @@ pub fn open(note: HWND, anchor: Rect, area: Rect, scale: f32, lang: Lang, font: 
             res,
             canvas,
             hover: None,
+            tracking: false,
             closing: false,
             away: None,
         });
@@ -458,20 +493,36 @@ unsafe extern "system" fn pop_proc(
         WM_ERASEBKGND => return LRESULT(1),
         WM_MOUSEMOVE => {
             let (x, y) = xy(lparam);
-            let changed = with(|p| {
+            let (changed, tip) = with(|p| {
+                if !p.tracking {
+                    let mut track = TRACKMOUSEEVENT {
+                        cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
+                        dwFlags: TME_LEAVE,
+                        hwndTrack: hwnd,
+                        dwHoverTime: 0,
+                    };
+                    p.tracking = unsafe { TrackMouseEvent(&mut track) }.is_ok();
+                }
                 let (dx, dy) = to_dip(p, x, y);
                 let item = item_at(dx, dy);
                 let changed = p.hover != item;
                 p.hover = item;
-                changed
+                (changed, chevron_target(p, item))
             })
-            .unwrap_or(false);
+            .unwrap_or((false, None));
             if changed {
                 redraw();
             }
+            tooltip::hover(hwnd, tip);
+            return LRESULT(0);
+        }
+        WM_MOUSELEAVE => {
+            let _ = with(|p| p.tracking = false);
+            tooltip::hover(hwnd, None);
             return LRESULT(0);
         }
         WM_LBUTTONDOWN => {
+            tooltip::pressed(hwnd);
             let (x, y) = xy(lparam);
             let item = with(|p| {
                 let (dx, dy) = to_dip(p, x, y);
@@ -490,6 +541,7 @@ unsafe extern "system" fn pop_proc(
             return LRESULT(0);
         }
         WM_MOUSEWHEEL => {
+            tooltip::hide(hwnd);
             // The wheel's point is in screen px.
             let delta = ((wparam.0 >> 16) & 0xFFFF) as i16 as i32 / 120;
             let (sx, sy) = xy(lparam);
@@ -503,6 +555,7 @@ unsafe extern "system" fn pop_proc(
             return LRESULT(0);
         }
         WM_KEYDOWN => {
+            tooltip::hide(hwnd);
             let key = (wparam.0 & 0xFFFF) as u16;
             if key == VK_ESCAPE.0 {
                 close();
@@ -524,6 +577,7 @@ unsafe extern "system" fn pop_proc(
             return LRESULT(0);
         }
         WM_DESTROY => {
+            tooltip::hide(hwnd);
             let gone = POP.with(|cell| {
                 cell.try_borrow_mut()
                     .ok()

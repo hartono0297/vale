@@ -39,6 +39,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     TME_HOVER, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent, VIRTUAL_KEY, VK_LBUTTON, VK_MBUTTON,
     VK_RBUTTON,
 };
+use windows::Win32::UI::Controls::{WM_MOUSEHOVER, WM_MOUSELEAVE};
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
     DBT_DEVNODES_CHANGED, DEVICE_NOTIFY_WINDOW_HANDLE, DefWindowProcW, DestroyWindow, DispatchMessageW, EN_CHANGE,
@@ -51,7 +52,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ENDSESSION, WM_HOTKEY, WM_LBUTTONDOWN, WM_LBUTTONUP,
     WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL,
     WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMER, WM_WTSSESSION_CHANGE,
-    WindowFromPoint,
+    WM_XBUTTONDOWN, WindowFromPoint,
 };
 use windows::core::{PCWSTR, PWSTR, w};
 
@@ -122,6 +123,8 @@ use crate::ui::motion::{
 };
 use crate::ui::notch_fill;
 use crate::ui::panel_layout::{CliHead, STRIP_H, cli_layout};
+use crate::ui::panel_tips::{self, TipCtx};
+use crate::ui::tooltip;
 use crate::ui::render::{
     CleanerView, CliView, DevicesView, FolderMenuView, Frame, MoleView, NoticeCloseView, Progress,
     RecFrame, RecordView, Renderer, RobotFrame, SearchView, SystemView,
@@ -223,9 +226,6 @@ const WM_APP_REC_DEVICE: u32 = WM_APP + 80;
 /// Opens the Rekam page's video quality menu from the main loop, outside the
 /// `APP` borrow.
 const WM_APP_REC_QUALITY: u32 = WM_APP + 95;
-/// These live in the Controls feature of `windows`; the values are fixed by Win32.
-const WM_MOUSEHOVER: u32 = 0x02A1;
-const WM_MOUSELEAVE: u32 = 0x02A3;
 /// The system clock or time zone changed.
 const WM_TIMECHANGE: u32 = 0x001E;
 const WM_POWERBROADCAST: u32 = 0x0218;
@@ -463,6 +463,8 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
     let config = config::load();
     media_log::set_enabled(media_log::requested(media_log_flag, config.media_log));
     i18n::set_lang(config.language);
+    crate::ui::tooltip::set_hotkeys(config.hotkeys);
+    crate::ui::tooltip::set_font(config.font);
     theme::set_system_light(theme::read_system_light());
     // Before any menu can open: the tray menu follows the Windows app mode.
     tray::follow_system_menu_theme();
@@ -556,6 +558,9 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
             close_fade: CloseFade::settled(0.0, Instant::now()),
             close_hot: false,
             close_ptr: None,
+            tip_on: None,
+            tip_pressed: None,
+            tip_built: None,
             slot_keep: None,
             slot_share: SlotShare::default(),
             leaving: None,
@@ -936,6 +941,21 @@ fn release_single_instance() {
     }
 }
 
+/// Any button down on the island: its tip goes, and the target pressed stays
+/// without one until the pointer leaves it (also while the app is held).
+fn island_pressed(hwnd: HWND, lparam: LPARAM) {
+    tooltip::pressed(hwnd);
+    with_app(|app| app.tip_press(lparam));
+}
+
+/// The island's tooltip target as the last pointer move gave it: the hit,
+/// where it was on screen (px) and the view it was in.
+struct IslandTip {
+    hit: Hit,
+    anchor: crate::capture::Rect,
+    view: View,
+}
+
 struct App {
     hwnd: HWND,
     /// Taken out only while `reposition` runs, so no borrow is held across it.
@@ -992,6 +1012,15 @@ struct App {
     /// registers the ✕, since a pointer resting where the ✕ fades in sends no
     /// move of its own.
     close_ptr: Option<LPARAM>,
+    /// What the last move gave the tooltip (`tip_under`); `None` when it gave
+    /// nothing. The tip goes once this no longer holds (`tip_check`).
+    tip_on: Option<IslandTip>,
+    /// The hit with a tip a button went down on; it stays quiet until the
+    /// pointer is on something else (`panel_tips::feed`).
+    tip_pressed: Option<Hit>,
+    /// The last target built for a move, with the hit, state and language it
+    /// was built from: a move that finds them unchanged reuses it.
+    tip_built: Option<(Hit, TipCtx, i18n::Lang, tooltip::Target)>,
     /// The toast whose logo the slot shows, kept while the island shrinks
     /// back so the logo fades out instead of vanishing.
     slot_keep: Option<Notice>,
@@ -2386,7 +2415,10 @@ impl App {
             // The Clipboard tile has no action: the reducer opened its page.
             Effect::RunShortcut(s) => self.queue_shortcut(shortcuts::shortcut_action(s)?),
             Effect::RunCustom(tile) => self.queue_shortcut(shortcuts::Action::Custom(tile)),
-            Effect::RunCapture => self.queue_shortcut(shortcuts::Action::Capture),
+            Effect::RunCapture => {
+                crate::ui::tooltip::hide_all();
+                self.queue_shortcut(shortcuts::Action::Capture);
+            }
             Effect::OpenDrive(letter) => self.queue_shortcut(shortcuts::Action::Drive(letter)),
             Effect::MixerLevel(i, level) => self.mixer_set_level(i, level),
             Effect::MixerMute(i) => self.mixer_toggle_mute(i),
@@ -4076,6 +4108,7 @@ impl App {
         // captions are off, and nothing sent when nothing changed.
         self.captions_card_sync();
         self.sync_settings();
+        self.tip_check();
     }
 
     fn animating(&self) -> bool {
@@ -4845,8 +4878,10 @@ impl App {
     }
 
     fn set_front(&mut self, front: bool) {
-        if let Some(win) = self.win.as_mut() {
-            win.set_front(front);
+        let sank = self.win.as_mut().is_some_and(|win| win.set_front(front)) && !front;
+        // Sunk behind the windows: a tip would float over what covers it.
+        if sank {
+            self.tip_hide();
         }
     }
 
@@ -5842,6 +5877,177 @@ impl App {
         }
     }
 
+    /// What the move at `lparam` (client px, `wparam` its button flags) tells
+    /// the tooltip: `Some(target)` (a hit with a tip, where the last frame drew
+    /// it), `Some(None)` (nothing with a tip: the tip goes) or `None` (leave it
+    /// alone: a button is held, the island or its page is moving, or the
+    /// pointer is still on the target it pressed; `panel_tips::feed`).
+    /// `WM_MOUSEMOVE` gives it to the tooltip once the app is let go.
+    fn tip_under(&mut self, wparam: WPARAM, lparam: LPARAM) -> Option<Option<tooltip::Target>> {
+        use windows::Win32::System::SystemServices::{MK_LBUTTON, MK_MBUTTON, MK_RBUTTON};
+        let buttons = (MK_LBUTTON | MK_RBUTTON | MK_MBUTTON).0 as usize;
+        let held = self.mixer_drag.is_some() || wparam.0 & buttons != 0;
+        if !held && (self.peek.is_shrunk() || !self.on_island(lparam)) {
+            self.tip_on = None;
+            self.tip_pressed = None;
+            return Some(None);
+        }
+        let hit = match panel_tips::feed(
+            self.hit_at(lparam),
+            held,
+            self.tip_in_flux(),
+            &mut self.tip_pressed,
+        ) {
+            panel_tips::Feed::LeaveAlone => return None,
+            panel_tips::Feed::Nothing => {
+                self.tip_on = None;
+                return Some(None);
+            }
+            panel_tips::Feed::Tip(hit) => hit,
+        };
+        self.tip_on = None;
+        // A hit drawn twice has its tip on its first region only: "Buka
+        // folder" is the header's icon there and the labelled "N lagi di
+        // folder" link under the list.
+        let (x, y) = client_xy(lparam);
+        if !self.renderer.on_first_region(&hit, x as f32, y as f32) {
+            return Some(None);
+        }
+        Some(self.tip_target(hit))
+    }
+
+    /// `hit`'s tooltip target, remembered in `tip_on`; `None` when it says
+    /// nothing or the last frame drew no region for it. The tip and its id
+    /// are built again only when the hit, what its tip reads or the language
+    /// changed since the last move.
+    fn tip_target(&mut self, hit: Hit) -> Option<tooltip::Target> {
+        let anchor = self.tip_anchor(&hit)?;
+        let ctx = self.tip_ctx(&hit);
+        let lang = i18n::lang();
+        let target = match &self.tip_built {
+            Some((h, c, l, t)) if *h == hit && *c == ctx && *l == lang => tooltip::Target {
+                anchor,
+                ..t.clone()
+            },
+            _ => {
+                let target = tooltip::Target {
+                    id: panel_tips::tip_id(&hit),
+                    anchor,
+                    side: panel_tips::side_for(&hit),
+                    tip: panel_tips::tip_for(&hit, &ctx)?,
+                };
+                self.tip_built = Some((hit.clone(), ctx, lang, target.clone()));
+                target
+            }
+        };
+        self.tip_on = Some(IslandTip {
+            hit,
+            anchor,
+            view: self.state.view(),
+        });
+        Some(target)
+    }
+
+    /// The island or the open panel's page is moving: its regions are empty
+    /// or about to move, so the hit under the pointer says nothing yet.
+    fn tip_in_flux(&self) -> bool {
+        self.anim.running
+            || self.rise.is_some()
+            || self.slide.is_some()
+            || self.page_fade.is_some()
+            || self.strip_motion.is_some()
+    }
+
+    /// A button went down on the island at `lparam`: the target it is on
+    /// stays without a tip until the pointer leaves it, through the page turn
+    /// or panel change the click may start (`panel_tips::feed`).
+    fn tip_press(&mut self, lparam: LPARAM) {
+        self.tip_pressed = self.hit_at(lparam).filter(panel_tips::has_tip);
+    }
+
+    /// What `hit`'s tip reads of the state: only the piece it needs (the
+    /// hovered row's data, not every row's).
+    fn tip_ctx(&self, hit: &Hit) -> TipCtx {
+        let mut ctx = TipCtx::default();
+        match hit {
+            Hit::RecMuteCompact(_) | Hit::RecMute(_) => {
+                let muted = self.state.rec().map_or([false; 2], |r| r.muted);
+                ctx.rec_muted_mic = muted[0];
+                ctx.rec_muted_system = muted[1];
+            }
+            Hit::RecPause => ctx.rec_paused = self.state.rec().is_some_and(|r| r.paused()),
+            Hit::RecToggle => {
+                ctx.screen_tab = self.state.rec_tab() == RecKind::Screen;
+                ctx.recording = self.state.rec().is_some();
+            }
+            Hit::RecFolder => ctx.screen_tab = self.state.rec_tab() == RecKind::Screen,
+            Hit::ScreenDiscard => ctx.screen_discard_armed = self.state.screen_discard_armed(),
+            Hit::CalPrev | Hit::CalNext => ctx.cal_view = self.state.cal_view(),
+            Hit::PomoStartPause => {
+                use crate::pomodoro::PomoStatus;
+                match self.state.pomodoro().status() {
+                    PomoStatus::Running { .. } => ctx.pomo_running = true,
+                    PomoStatus::Paused { .. } => ctx.pomo_paused = true,
+                    PomoStatus::Idle | PomoStatus::Ready => {}
+                }
+            }
+            Hit::NoteSticky(id) => {
+                ctx.note_on_desktop = self.notes.get(id).is_some_and(|n| n.sticky.is_some());
+            }
+            Hit::PlayPause => ctx.playing = self.state.media().is_some_and(|m| m.playing),
+            Hit::LyricsCard => ctx.lyrics_card_open = self.lyrics_card.open,
+            Hit::MixerMute(i) => {
+                ctx.mixer = self
+                    .mixer
+                    .as_ref()
+                    .and_then(|rows| rows.get(*i))
+                    .map(|row| {
+                        // The page names the master level and the system
+                        // sounds itself; an app's row carries its name.
+                        let name = match row.target {
+                            audio::Target::Master => i18n::tr(Key::MixerMaster),
+                            audio::Target::System => i18n::tr(Key::MixerSystemSounds),
+                            audio::Target::App(_) => row.name.as_str(),
+                        };
+                        (name.to_string(), row.muted)
+                    });
+            }
+            Hit::ClipPin(id) => {
+                ctx.clip_pinned = self.clip.history.get(*id).is_some_and(|c| c.pinned);
+            }
+            Hit::CliExpand => ctx.cli_tall = self.state.cli_tall(),
+            _ => {}
+        }
+        ctx
+    }
+
+    /// Where the last frame drew `hit`, on screen (px): the window's origin
+    /// plus the region at the window's scale, as the pointer was mapped.
+    fn tip_anchor(&self, hit: &Hit) -> Option<crate::capture::Rect> {
+        let win = self.win.as_ref()?;
+        let r = self.renderer.region_of(hit)?;
+        Some(tooltip::anchor_px(win.screen_origin(), r, win.scale()))
+    }
+
+    /// The island's tip goes at once, with no warm window (a wheel, a sink
+    /// behind the windows, its target gone).
+    fn tip_hide(&mut self) {
+        self.tip_on = None;
+        tooltip::hide(self.hwnd);
+    }
+
+    /// After a state change or a frame: the tip goes once its view changed
+    /// (the panel closed, a page turned, fullscreen), the notch shrank to
+    /// the eyes, or its target is not where it was (a sliding page or a
+    /// moving strip draws no regions, a sub-view swap draws others).
+    fn tip_check(&mut self) {
+        let Some(on) = &self.tip_on else { return };
+        if on.view != self.state.view() || self.eyes || self.tip_anchor(&on.hit) != Some(on.anchor)
+        {
+            self.tip_hide();
+        }
+    }
+
     /// The pointer's first move over the island: Bata wakes, looks happy and
     /// lifts before the dwell opens the panel; hover and leave tracking start.
     fn begin_hover(&mut self) {
@@ -5889,6 +6095,11 @@ impl App {
         // not the hover dwell had passed.
         self.set_toast_pointer(false);
         self.track_close_hot(None);
+        // A leave, not a reset: a move onto another window's button within
+        // the warm window shows its tip at once.
+        self.tip_on = None;
+        tooltip::hover(self.hwnd, None);
+        self.tip_pressed = None;
         self.click.clear();
         self.dock_leave();
         self.arrange_hover(None);
@@ -6087,6 +6298,7 @@ impl App {
     /// EDIT controls with `ES_AUTOHSCROLL` are hidden and owner-drawn), so
     /// nothing else claims the flick.
     fn on_hwheel(&mut self, delta: i32, lparam: LPARAM) {
+        self.tip_hide();
         let route = gestures::hwheel_route(
             &self.state.view(),
             self.state.cli_menu(),
@@ -6131,6 +6343,7 @@ impl App {
     /// pages through the panel anywhere else. `lparam` holds the pointer in
     /// screen coordinates.
     fn on_wheel(&mut self, delta: i32, lparam: LPARAM) {
+        self.tip_hide();
         // The eyes are no notch: a wheel over them turns nothing.
         if self.peek.is_shrunk() {
             return;
@@ -6281,11 +6494,17 @@ impl App {
         let google = |c: &Config| (c.google_client_id.clone(), c.google_client_secret.clone());
         let changed = google(&cfg) != google(&self.config);
         let toast_style_was = self.config.notifications.toast_style;
+        let lang_was = self.config.language;
         self.config = cfg;
         // Palette, surface, accent, fill, notch size, style and font may all
         // have changed: the next frame is drawn in full.
         self.renderer.invalidate();
         i18n::set_lang(self.config.language);
+        if self.config.language != lang_was {
+            crate::ui::tooltip::hide_all();
+        }
+        crate::ui::tooltip::set_hotkeys(self.config.hotkeys);
+        crate::ui::tooltip::set_font(self.config.font);
         // A hand edit of "Notifikasi saat notch dipakai" applies live.
         let toast_style = self.config.notifications.toast_style;
         if toast_style != toast_style_was {
@@ -6353,6 +6572,7 @@ impl App {
     /// rather than the old config, so a caller may set the fields first.
     fn apply_theme(&mut self) {
         if theme::set_current(Theme::of(&self.config)) {
+            crate::ui::tooltip::hide_all();
             editor::restyle_open_editor();
             crate::shot_edit::window::restyle_open();
             settings::restyle();
@@ -7177,6 +7397,9 @@ impl App {
         {
             input.set_ime_caret(caret);
         }
+        // The regions are this frame's now: a tip whose target moved or went
+        // goes with it.
+        self.tip_check();
         // The ✕ may have just been registered under a resting pointer: light
         // its disc now instead of at the next move. Settles in one more frame
         // (the two then agree), so it cannot loop.
@@ -9106,6 +9329,9 @@ fn deliver_cli_key(key: InputKey) {
 /// shell may pump messages). If the app is busy, the timer fires again.
 fn run_shortcut() {
     if let Some(action) = with_app(App::take_shortcut).flatten() {
+        // The capture overlay and the picker start here, a moment after they
+        // were queued: a tip that began waiting in between must not cover them.
+        crate::ui::tooltip::hide_all();
         shortcuts::run(action);
     }
 }
@@ -9215,6 +9441,7 @@ fn on_system_theme_changed() {
     tray::refresh_menu_theme();
     let changed = theme::set_system_light(theme::read_system_light());
     if changed && theme::current().window == theme::WindowTheme::System {
+        crate::ui::tooltip::hide_all();
         editor::restyle_open_editor();
         crate::shot_edit::window::restyle_open();
         settings::restyle();
@@ -9359,6 +9586,11 @@ unsafe extern "system" fn wnd_proc(
         }
         WM_MOUSEMOVE => {
             with_app(|app| app.on_mouse_move(lparam));
+            // After the app is let go: the tooltip may make a window of its
+            // own. A move while the app is held tells it nothing.
+            if let Some(Some(tip)) = with_app(|app| app.tip_under(wparam, lparam)) {
+                tooltip::hover(hwnd, tip);
+            }
             // A card pulled off the shelf: the drag blocks until the button
             // is let go, so it starts outside the app borrow.
             if let Some(path) = with_app(|app| app.shelf_drag_start(wparam, lparam)).flatten() {
@@ -9381,6 +9613,7 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
         WM_MBUTTONDOWN => {
+            island_pressed(hwnd, lparam);
             with_app(|app| app.on_middle_press(lparam));
             LRESULT(0)
         }
@@ -9389,8 +9622,14 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
         WM_RBUTTONDOWN => {
+            island_pressed(hwnd, lparam);
             with_app(App::on_right_press);
             LRESULT(0)
+        }
+        // The side buttons do nothing on the island but still count as a press.
+        WM_XBUTTONDOWN => {
+            island_pressed(hwnd, lparam);
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
         WM_MOUSEHWHEEL => {
             let delta = (wparam.0 >> 16) as u16 as i16;
@@ -9428,6 +9667,9 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
         WM_HOTKEY => {
+            // A key press: any tip goes, whatever window it is on and
+            // whatever the key does.
+            tooltip::hide_all();
             let wm = wparam.0 as i32;
             if is_countdown_esc(wm) {
                 // A press while the app is borrowed still cancels (the
@@ -9444,6 +9686,8 @@ unsafe extern "system" fn wnd_proc(
         // row is in `wparam`.
         WM_APP_PRTSC => {
             let row = wparam.0;
+            // A key press, as `WM_HOTKEY`.
+            tooltip::hide_all();
             with_app(|app| app.on_hook_row(row));
             LRESULT(0)
         }
@@ -9492,6 +9736,7 @@ unsafe extern "system" fn wnd_proc(
             // does not lose it to a press here: the press only closes it, as
             // a native menu's would. Also one Settings opened: it keeps the
             // activation while the island is pressed.
+            island_pressed(hwnd, lparam);
             if crate::ui::menu_pop::is_open() {
                 crate::ui::menu_pop::close();
                 return LRESULT(0);

@@ -17,7 +17,8 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_WORD_WRAPPING_NO_WRAP,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
+use windows::Win32::UI::Controls::WM_MOUSELEAVE;
+use windows::Win32::UI::Input::KeyboardAndMouse::{TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent, VK_ESCAPE};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, IDC_ARROW,
     LoadCursorW, RegisterClassExW, SW_SHOW, ShowWindow, WA_INACTIVE, WM_ACTIVATE, WM_DESTROY,
@@ -33,9 +34,11 @@ use crate::config::UiFont;
 use crate::i18n::{Key, Lang, text};
 use crate::shot_edit::gfx::color;
 use crate::theme;
+use crate::ui::tooltip::{self, Side};
 use crate::ui::geometry::Rect as FRect;
 use crate::widgets::host;
 use crate::widgets::paint::Res;
+use crate::widgets::tips;
 use crate::widgets::sticky::{Deco, NoteFont, OPACITIES, Paper, Pattern, TextSize};
 
 const CLASS: PCWSTR = w!("ValeWidgetPop");
@@ -97,6 +100,8 @@ struct Pop {
     res: Res,
     canvas: Option<Canvas>,
     hover: Option<Item>,
+    /// The pointer is tracked for its leaving (the tooltip goes with it).
+    tracking: bool,
     /// `close` is running (Esc, a command of the note, a new popover): the
     /// deactivation that follows is ours, not the user's going elsewhere.
     closing: bool,
@@ -373,6 +378,7 @@ pub fn open(note: HWND, anchor: Rect, area: Rect, scale: f32, state: PopState) {
             res,
             canvas,
             hover: None,
+            tracking: false,
             closing: false,
             away: None,
         });
@@ -560,6 +566,21 @@ fn redraw() {
     });
 }
 
+/// The tooltip target of the item under the pointer: only a paper swatch has
+/// one (its name), anchored on its place on screen.
+fn swatch_target(p: &Pop, item: Option<Item>) -> Option<tooltip::Target> {
+    let Some(Item::Swatch(paper)) = item else {
+        return None;
+    };
+    let i = Paper::ALL.iter().position(|q| *q == paper)?;
+    Some(tooltip::Target {
+        id: tooltip::id_of(&i),
+        anchor: tooltip::anchor_px(p.origin, swatch_rect(i), p.scale),
+        side: Side::Auto,
+        tip: tips::swatch_tip(paper),
+    })
+}
+
 fn to_dip(p: &Pop, x: i32, y: i32) -> (f32, f32) {
     (x as f32 / p.scale, y as f32 / p.scale)
 }
@@ -577,20 +598,36 @@ unsafe extern "system" fn pop_proc(
                 (lparam.0 & 0xFFFF) as i16 as i32,
                 ((lparam.0 >> 16) & 0xFFFF) as i16 as i32,
             );
-            let changed = with(|p| {
+            let (changed, tip) = with(|p| {
+                if !p.tracking {
+                    let mut track = TRACKMOUSEEVENT {
+                        cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
+                        dwFlags: TME_LEAVE,
+                        hwndTrack: hwnd,
+                        dwHoverTime: 0,
+                    };
+                    p.tracking = unsafe { TrackMouseEvent(&mut track) }.is_ok();
+                }
                 let (dx, dy) = to_dip(p, x, y);
                 let item = item_at(dx, dy);
                 let changed = p.hover != item;
                 p.hover = item;
-                changed
+                (changed, swatch_target(p, item))
             })
-            .unwrap_or(false);
+            .unwrap_or((false, None));
             if changed {
                 redraw();
             }
+            tooltip::hover(hwnd, tip);
+            return LRESULT(0);
+        }
+        WM_MOUSELEAVE => {
+            let _ = with(|p| p.tracking = false);
+            tooltip::hover(hwnd, None);
             return LRESULT(0);
         }
         WM_LBUTTONDOWN => {
+            tooltip::pressed(hwnd);
             let (x, y) = (
                 (lparam.0 & 0xFFFF) as i16 as i32,
                 ((lparam.0 >> 16) & 0xFFFF) as i16 as i32,
@@ -618,6 +655,7 @@ unsafe extern "system" fn pop_proc(
             return LRESULT(0);
         }
         WM_KEYDOWN => {
+            tooltip::hide(hwnd);
             if (wparam.0 & 0xFFFF) as u16 == VK_ESCAPE.0 {
                 close();
             }
@@ -636,6 +674,7 @@ unsafe extern "system" fn pop_proc(
             return LRESULT(0);
         }
         WM_DESTROY => {
+            tooltip::hide(hwnd);
             let gone = POP.with(|cell| {
                 cell.try_borrow_mut()
                     .ok()

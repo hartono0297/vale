@@ -6,6 +6,9 @@
 //! Units are DIPs unless a name says `px`. The window draws at `dpi / 96`.
 
 use crate::config::CardPlace;
+use crate::hotkey::HotkeyId;
+use crate::i18n::Key;
+use crate::ui::tooltip::{self, KeyHint, Tip};
 use crate::lyrics::{LrcLine, OUTPUT_LAG_MS};
 use crate::ui::settings_window::Rc;
 
@@ -65,6 +68,16 @@ pub struct RectF {
 impl RectF {
     pub const fn new(x: f32, y: f32, w: f32, h: f32) -> Self {
         Self { x, y, w, h }
+    }
+
+    /// The same rect as the app's shared dip rect (a tooltip's anchor).
+    pub const fn shared(self) -> crate::ui::geometry::Rect {
+        crate::ui::geometry::Rect {
+            x: self.x,
+            y: self.y,
+            w: self.w,
+            h: self.h,
+        }
     }
 
     pub fn right(&self) -> f32 {
@@ -323,7 +336,7 @@ pub fn ease_out_cubic(t: f32) -> f32 {
 // ---------------------------------------------------------- what is under it
 
 /// What a point in the card is over.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Zone {
     Close,
     Prev,
@@ -369,6 +382,29 @@ pub fn zone_at(
         Zone::Header
     } else {
         Zone::Body
+    }
+}
+
+/// The tooltip id of `z`: one per control, never its state, so a click that
+/// turns play into pause is on the same target.
+pub fn zone_tip_id(z: Zone) -> u64 {
+    tooltip::id_of(&z)
+}
+
+/// The tip of `zone`; `None` over the lines, the header and outside. The
+/// transport zones only exist while they are drawn (`zone_at`).
+pub fn zone_tip(z: Zone, playing: bool) -> Option<Tip> {
+    match z {
+        Zone::Close => Some(
+            Tip::named(Key::TipLyricsCardClose)
+                .key(KeyHint::Raw("Esc"))
+                .key(KeyHint::Hotkey(HotkeyId::LyricsCard)),
+        ),
+        Zone::Prev => Some(Tip::named(Key::TipMediaPrev)),
+        Zone::PlayPause => Some(Tip::named(if playing { Key::TipPause } else { Key::TipPlay })),
+        Zone::Next => Some(Tip::named(Key::TipMediaNext)),
+        Zone::Grip => Some(Tip::named(Key::TipGrip)),
+        Zone::Body | Zone::Header | Zone::Outside => None,
     }
 }
 
@@ -936,5 +972,83 @@ mod tests {
             bottom: 500,
         };
         assert_eq!(place(Some(flat), &[a], Some(a)).unwrap(), place(None, &[a], Some(a)).unwrap());
+    }
+
+    mod tips {
+        use super::*;
+        use crate::hotkey::HotkeyId;
+        use crate::i18n::{self, Key, Lang};
+        use crate::ui::tooltip::KeyHint;
+
+        const LANGS: [Lang; 2] = [Lang::Id, Lang::En];
+
+        #[test]
+        fn the_icon_only_zones_have_a_tip() {
+            for lang in LANGS {
+                i18n::set_lang(lang);
+                for z in [Zone::Close, Zone::Prev, Zone::PlayPause, Zone::Next, Zone::Grip] {
+                    for playing in [false, true] {
+                        assert!(zone_tip(z, playing).is_some(), "{lang:?} {z:?}");
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn the_body_the_header_and_outside_have_none() {
+            for z in [Zone::Body, Zone::Header, Zone::Outside] {
+                assert!(zone_tip(z, true).is_none(), "{z:?}");
+            }
+        }
+
+        #[test]
+        fn the_play_name_follows_the_player() {
+            for lang in LANGS {
+                i18n::set_lang(lang);
+                let play = zone_tip(Zone::PlayPause, false).unwrap();
+                let pause = zone_tip(Zone::PlayPause, true).unwrap();
+                assert_eq!(play.name.as_deref(), Some(i18n::tr(Key::TipPlay)));
+                assert_eq!(pause.name.as_deref(), Some(i18n::tr(Key::TipPause)));
+            }
+        }
+
+        #[test]
+        fn play_and_pause_are_one_target() {
+            let play = zone_tip(Zone::PlayPause, false).unwrap();
+            let pause = zone_tip(Zone::PlayPause, true).unwrap();
+            assert_ne!(play, pause);
+            let ids = [Zone::Close, Zone::Prev, Zone::PlayPause, Zone::Next, Zone::Grip]
+                .map(zone_tip_id);
+            for (i, a) in ids.iter().enumerate() {
+                for b in &ids[i + 1..] {
+                    assert_ne!(a, b);
+                }
+            }
+        }
+
+        #[test]
+        fn close_has_both_keys_and_the_rest_none() {
+            assert_eq!(
+                zone_tip(Zone::Close, false).unwrap().keys,
+                [KeyHint::Raw("Esc"), KeyHint::Hotkey(HotkeyId::LyricsCard)]
+            );
+            for z in [Zone::Prev, Zone::PlayPause, Zone::Next, Zone::Grip] {
+                let tip = zone_tip(z, false).unwrap();
+                assert!(tip.keys.is_empty() && tip.about.is_none(), "{z:?}");
+            }
+        }
+
+        #[test]
+        fn no_text_has_an_em_dash() {
+            for lang in LANGS {
+                i18n::set_lang(lang);
+                for z in [Zone::Close, Zone::Prev, Zone::PlayPause, Zone::Next, Zone::Grip] {
+                    let tip = zone_tip(z, true).unwrap();
+                    for s in tip.name.iter().chain(tip.about.iter()) {
+                        assert!(!s.contains('\u{2014}') && !s.is_empty(), "{lang:?}: {s}");
+                    }
+                }
+            }
+        }
     }
 }

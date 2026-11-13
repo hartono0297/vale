@@ -18,6 +18,7 @@ pub mod stack;
 pub mod sticky;
 pub mod styles;
 pub mod templates;
+pub mod tips;
 pub mod toolbar;
 pub mod tuck;
 

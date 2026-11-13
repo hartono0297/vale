@@ -44,6 +44,7 @@ use super::editor::{
 use super::editor_layout::{Item, Text};
 use super::editor_paint::{Align, Gfx, Painter, Target};
 use super::geometry::Rect;
+use super::tooltip::{self, KeyHint, Tip};
 use super::icons::Icon;
 use super::month_grid::{
     CellCanvas, CellLook, DayState, Filled, day_geometry, month_cells, paint_day,
@@ -355,6 +356,15 @@ thread_local! {
 
 fn with<R>(f: impl FnOnce(&mut Popover) -> R) -> Option<R> {
     POPOVER.with(|cell| cell.try_borrow_mut().ok()?.as_mut().map(f))
+}
+
+/// The tip of the date popover's month arrows; PgUp / PgDn step the same way.
+fn month_nav_tip(next: bool) -> Tip {
+    if next {
+        Tip::named(Key::TipCalNextMonth).key(KeyHint::Raw("PgDn"))
+    } else {
+        Tip::named(Key::TipCalPrevMonth).key(KeyHint::Raw("PgUp"))
+    }
 }
 
 /// The open popover's chip, and whether it is already closing.
@@ -1061,6 +1071,7 @@ fn finish(hwnd: HWND, pick: Option<Pick>, flags: usize) {
 
 /// Keys for the whole popover (also from the typing field). True when used.
 fn on_key(hwnd: HWND, key: u16) -> bool {
+    tooltip::hide(hwnd);
     let ctrl = key_down(VK_CONTROL.0);
     let back = CLOSED_REFOCUS | CLOSED_KEYBOARD;
     if key == VK_ESCAPE.0 || key == VK_TAB.0 {
@@ -1125,11 +1136,30 @@ fn on_key(hwnd: HWND, key: u16) -> bool {
 }
 
 fn on_mouse_move(hwnd: HWND, lparam: LPARAM) {
-    let arm = with(|p| {
+    let moved = with(|p| {
         let spot = p.spot_at(lparam);
         p.set_hover(spot);
-        !std::mem::replace(&mut p.tracking, true)
+        // The month arrows have a tip; mapped to the screen after the
+        // borrow, since `ClientToScreen` can send messages to this window.
+        let nav = match spot {
+            Some(Spot::Prev) => Some((false, cal_prev(), p.scale)),
+            Some(Spot::Next) => Some((true, cal_next(), p.scale)),
+            _ => None,
+        };
+        (nav, !std::mem::replace(&mut p.tracking, true))
     });
+    if let Some((nav, _)) = &moved {
+        tooltip::hover(
+            hwnd,
+            nav.map(|(next, r, scale)| tooltip::Target {
+                id: tooltip::id_of(&(2u8, next)),
+                anchor: tooltip::to_screen(hwnd, r, scale),
+                side: tooltip::Side::Auto,
+                tip: month_nav_tip(next),
+            }),
+        );
+    }
+    let arm = moved.map(|(_, arm)| arm);
     if arm == Some(true) {
         let mut track = TRACKMOUSEEVENT {
             cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
@@ -1239,9 +1269,11 @@ unsafe extern "system" fn wnd_proc(
                 p.tracking = false;
                 p.set_hover(None);
             });
+            tooltip::hover(hwnd, None);
             LRESULT(0)
         }
         WM_LBUTTONDOWN => {
+            tooltip::pressed(hwnd);
             with(|p| p.pressed = p.spot_at(lparam));
             LRESULT(0)
         }
@@ -1250,6 +1282,7 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
         WM_MOUSEWHEEL => {
+            tooltip::hide(hwnd);
             let delta = ((wparam.0 >> 16) & 0xFFFF) as i16;
             let notches = -(delta as isize) / 40;
             let notches = if notches == 0 {
@@ -1276,6 +1309,7 @@ unsafe extern "system" fn wnd_proc(
         WM_CTLCOLOREDIT => color_edit(wparam),
         WM_ACTIVATE => {
             if (wparam.0 & 0xFFFF) as u32 == WA_INACTIVE {
+                tooltip::hide(hwnd);
                 // A click elsewhere: close, leaving the editor as it is.
                 let first = with(|p| !std::mem::replace(&mut p.closing, true));
                 if first == Some(true) {
@@ -1293,6 +1327,7 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
         WM_DESTROY => {
+            tooltip::hide(hwnd);
             if let Some((editor, flags)) = with(|p| {
                 p.closing = true;
                 (p.editor, p.flags)
@@ -1598,5 +1633,22 @@ mod tests {
         assert_eq!(scroll_for(20, 96, Some(10)), 14);
         assert_eq!(scroll_for(5, 96, Some(10)), 5);
         assert_eq!(scroll_for(12, 96, Some(10)), 10);
+    }
+
+    #[test]
+    fn the_month_arrows_name_the_month_and_their_keys() {
+        use crate::ui::tooltip::KeyHint;
+        for lang in [Lang::Id, Lang::En] {
+            crate::i18n::set_lang(lang);
+            let prev = month_nav_tip(false);
+            let next = month_nav_tip(true);
+            assert_eq!(prev.keys, [KeyHint::Raw("PgUp")]);
+            assert_eq!(next.keys, [KeyHint::Raw("PgDn")]);
+            assert_eq!(
+                next.name.as_deref(),
+                Some(crate::i18n::text(lang, Key::TipCalNextMonth))
+            );
+            assert_ne!(prev.name, next.name);
+        }
     }
 }

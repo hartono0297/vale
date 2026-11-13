@@ -4,6 +4,9 @@
 //! drawing, so all of it is tested. Units are DIPs unless a name says `px`.
 
 use crate::config::CardPlace;
+use crate::hotkey::HotkeyId;
+use crate::i18n::Key;
+use crate::ui::tooltip::{self, KeyHint, Tip};
 use crate::lyrics_card::colour;
 pub use crate::lyrics_card::layout::RectF;
 use crate::lyrics_card::layout::{Mon, place_with, px};
@@ -177,7 +180,7 @@ pub fn strip_rects(body: RectF, text_w: f32, button_w: Option<f32>) -> Strip {
 // ------------------------------------------------------------------- zones
 
 /// What a point in the card is over.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Zone {
     /// The header outside its buttons (a press drags the card).
     Header,
@@ -218,6 +221,33 @@ pub fn zone_at(r: &Rects, pt: (f32, f32), action_shown: bool) -> Option<Zone> {
     } else {
         Zone::Body
     })
+}
+
+/// The tooltip id of `z`: one per control, never its state, so a click that
+/// turns pause into resume is on the same target.
+pub fn zone_tip_id(z: Zone) -> u64 {
+    tooltip::id_of(&z)
+}
+
+/// The tip of `zone`; `None` over the header, the body and the status button
+/// (which says what it does). `running` is whether captions run (the pause
+/// button says what a click does now).
+pub fn zone_tip(z: Zone, running: bool) -> Option<Tip> {
+    match z {
+        Zone::Close => Some(
+            Tip::named(Key::TipCapClose)
+                .about(Key::TipCapCloseAbout)
+                .key(KeyHint::Hotkey(HotkeyId::Captions)),
+        ),
+        Zone::Pause => Some(
+            Tip::named(if running { Key::TipCapPause } else { Key::TipCapResume })
+                .about(Key::TipCapPauseAbout),
+        ),
+        Zone::Copy => Some(Tip::short(Key::TipCapCopyAbout)),
+        Zone::LangChip => Some(Tip::named(Key::TipCapLang).about(Key::TipCapLangAbout)),
+        Zone::Grip => Some(Tip::named(Key::TipGrip).about(Key::TipCapGripAbout)),
+        Zone::Header | Zone::Body | Zone::Action => None,
+    }
 }
 
 // ---------------------------------------------------------------- stacking
@@ -552,5 +582,87 @@ mod tests {
         }
         assert!(seen.len() >= 4, "warm and Terminal, card and bg");
         assert_eq!(palette(0x232527).text, 0xFFFFFF);
+    }
+
+    mod tips {
+        use super::*;
+        use crate::hotkey::HotkeyId;
+        use crate::i18n::{self, Key, Lang};
+        use crate::ui::tooltip::KeyHint;
+
+        const LANGS: [Lang; 2] = [Lang::Id, Lang::En];
+
+        #[test]
+        fn the_header_buttons_and_the_grip_have_a_tip() {
+            for lang in LANGS {
+                i18n::set_lang(lang);
+                for z in [Zone::Close, Zone::Pause, Zone::LangChip, Zone::Copy, Zone::Grip] {
+                    for running in [false, true] {
+                        assert!(zone_tip(z, running).is_some(), "{lang:?} {z:?}");
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn the_body_the_header_and_the_status_button_have_none() {
+            for z in [Zone::Header, Zone::Body, Zone::Action] {
+                assert!(zone_tip(z, true).is_none(), "{z:?}");
+            }
+        }
+
+        #[test]
+        fn the_pause_name_follows_the_session() {
+            for lang in LANGS {
+                i18n::set_lang(lang);
+                let pause = zone_tip(Zone::Pause, true).unwrap();
+                let resume = zone_tip(Zone::Pause, false).unwrap();
+                assert_ne!(pause.name, resume.name, "{lang:?}");
+                assert_eq!(pause.name.as_deref(), Some(i18n::tr(Key::TipCapPause)));
+                assert_eq!(resume.name.as_deref(), Some(i18n::tr(Key::TipCapResume)));
+            }
+        }
+
+        #[test]
+        fn pause_and_resume_are_one_target() {
+            let pause = zone_tip(Zone::Pause, true).unwrap();
+            let resume = zone_tip(Zone::Pause, false).unwrap();
+            assert_ne!(pause, resume);
+            let ids = [Zone::Close, Zone::Pause, Zone::LangChip, Zone::Copy, Zone::Grip]
+                .map(zone_tip_id);
+            for (i, a) in ids.iter().enumerate() {
+                for b in &ids[i + 1..] {
+                    assert_ne!(a, b);
+                }
+            }
+        }
+
+        #[test]
+        fn only_close_carries_a_key_and_copy_is_the_short_form() {
+            assert_eq!(
+                zone_tip(Zone::Close, true).unwrap().keys,
+                [KeyHint::Hotkey(HotkeyId::Captions)]
+            );
+            for z in [Zone::Pause, Zone::LangChip, Zone::Copy, Zone::Grip] {
+                assert!(zone_tip(z, true).unwrap().keys.is_empty(), "{z:?}");
+            }
+            let copy = zone_tip(Zone::Copy, true).unwrap();
+            assert!(copy.name.is_none() && copy.about.is_some());
+        }
+
+        #[test]
+        fn no_text_has_an_em_dash() {
+            for lang in LANGS {
+                i18n::set_lang(lang);
+                for z in [Zone::Close, Zone::Pause, Zone::LangChip, Zone::Copy, Zone::Grip] {
+                    for running in [false, true] {
+                        let tip = zone_tip(z, running).unwrap();
+                        for s in tip.name.iter().chain(tip.about.iter()) {
+                            assert!(!s.contains('\u{2014}') && !s.is_empty(), "{lang:?}: {s}");
+                        }
+                    }
+                }
+            }
+        }
     }
 }

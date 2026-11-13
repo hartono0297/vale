@@ -8,6 +8,7 @@ use std::ops::Range;
 use super::Status;
 use crate::config::CardPlace;
 use crate::i18n::Key;
+use crate::ui::tooltip::{self, KeyHint, Tip};
 use crate::lyrics_card::layout::{Mon, home_monitor, px};
 use crate::ui::geometry::Rect;
 use crate::ui::settings_window::Rc;
@@ -63,7 +64,7 @@ pub const CASCADE_PX: i32 = 24;
 
 // ------------------------------------------------------------------ buttons
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Btn {
     Copy,
     OpenMd,
@@ -116,6 +117,61 @@ pub fn buttons_for(status: &Status, has_lines: bool, can_redo: bool) -> Vec<Btn>
         .collect(),
         // An empty transcript (or none yet).
         Status::None | Status::PlayerError => redo.into_iter().chain([Btn::OpenFolder]).collect(),
+    }
+}
+
+// ------------------------------------------------------------------ tips
+
+/// What the pointer is over in the window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hot {
+    Btn(usize),
+    Play,
+    Bar,
+    Line(usize),
+}
+
+/// The tooltip id of `hot` (`btn` the button under `Hot::Btn`): one per
+/// control, never its state, so a click that turns play into pause is on the
+/// same target.
+pub fn tip_id(hot: Hot, btn: Option<Btn>) -> u64 {
+    match hot {
+        Hot::Btn(_) => tooltip::id_of(&(1u8, btn)),
+        Hot::Play => tooltip::id_of(&2u8),
+        Hot::Bar => tooltip::id_of(&3u8),
+        Hot::Line(i) => tooltip::id_of(&(4u8, i)),
+    }
+}
+
+/// The tip of `hot`. `playing` is whether the player runs (the play button
+/// says what a click does now); `btn` is the button under `Hot::Btn`. The
+/// rows of the list and the buttons that say what they do have none. Ctrl+C
+/// triggers the plain Salin button, so the key is on that one.
+pub fn tip_of(hot: Hot, playing: bool, btn: Option<Btn>) -> Option<Tip> {
+    match hot {
+        Hot::Play if playing => {
+            Some(Tip::named(Key::TipPause).key(KeyHint::Fixed(Key::TipKeySpace)))
+        }
+        Hot::Play => Some(
+            Tip::named(Key::TipPlay)
+                .about(Key::TipTrPlayAbout)
+                .key(KeyHint::Fixed(Key::TipKeySpace)),
+        ),
+        Hot::Bar => Some(
+            Tip::named(Key::TipTrSeek)
+                .about(Key::TipTrSeekAbout)
+                .key(KeyHint::Raw("\u{2190} \u{2192}")),
+        ),
+        Hot::Btn(_) => match btn? {
+            Btn::Copy => Some(Tip::short(Key::TipTrCopyAbout).key(KeyHint::Raw("Ctrl+C"))),
+            Btn::CopyPrompt => Some(Tip::short(Key::TipTrPromptAbout)),
+            Btn::MakeNote => Some(Tip::short(Key::TipTrNoteAbout)),
+            Btn::OpenMd => Some(Tip::short(Key::TipTrOpenMdAbout)),
+            Btn::Redo => Some(Tip::short(Key::TipTrRedoAbout)),
+            Btn::Settings => Some(Tip::short(Key::TipTrSettingsAbout)),
+            Btn::OpenFolder | Btn::Cancel | Btn::Retry => None,
+        },
+        Hot::Line(_) => None,
     }
 }
 
@@ -607,5 +663,116 @@ mod tests {
         assert_eq!((second.width(), second.height()), (640, 720));
         let low = Rc { left: 100, top: 300, right: 740, bottom: 1030 };
         assert_eq!((cascade(low, work).left, cascade(low, work).top), (0, 0));
+    }
+
+    mod tips {
+        use super::*;
+        use crate::i18n::{self, Lang};
+        use crate::ui::tooltip::KeyHint;
+
+        const LANGS: [Lang; 2] = [Lang::Id, Lang::En];
+        const WITH_TIP: [Btn; 6] = [
+            Btn::Copy,
+            Btn::OpenMd,
+            Btn::MakeNote,
+            Btn::CopyPrompt,
+            Btn::Redo,
+            Btn::Settings,
+        ];
+
+        #[test]
+        fn every_icon_only_control_and_the_described_buttons_have_a_tip() {
+            for lang in LANGS {
+                i18n::set_lang(lang);
+                for playing in [false, true] {
+                    assert!(tip_of(Hot::Play, playing, None).is_some());
+                }
+                assert!(tip_of(Hot::Bar, false, None).is_some());
+                for b in WITH_TIP {
+                    let tip = tip_of(Hot::Btn(0), false, Some(b)).unwrap();
+                    assert!(tip.name.is_none(), "{b:?} is the short form");
+                    assert!(tip.about.is_some_and(|a| !a.is_empty()), "{lang:?} {b:?}");
+                }
+            }
+        }
+
+        #[test]
+        fn the_text_rows_and_the_self_explaining_buttons_have_none() {
+            assert!(tip_of(Hot::Line(0), false, None).is_none());
+            assert!(tip_of(Hot::Btn(0), false, None).is_none());
+            for b in [Btn::OpenFolder, Btn::Cancel, Btn::Retry] {
+                assert!(tip_of(Hot::Btn(0), false, Some(b)).is_none(), "{b:?}");
+            }
+        }
+
+        #[test]
+        fn the_play_name_follows_the_player() {
+            for lang in LANGS {
+                i18n::set_lang(lang);
+                let play = tip_of(Hot::Play, false, None).unwrap();
+                let pause = tip_of(Hot::Play, true, None).unwrap();
+                assert_ne!(play.name, pause.name, "{lang:?}");
+                assert_eq!(play.keys, [KeyHint::Fixed(Key::TipKeySpace)]);
+                assert_eq!(pause.keys, [KeyHint::Fixed(Key::TipKeySpace)]);
+            }
+        }
+
+        #[test]
+        fn play_and_pause_are_one_target() {
+            // A click flips the button: the tip must not come back as a new
+            // target under the pointer that clicked.
+            let play = tip_of(Hot::Play, false, None).unwrap();
+            let pause = tip_of(Hot::Play, true, None).unwrap();
+            assert_ne!(play, pause);
+            assert_eq!(tip_id(Hot::Play, None), tip_id(Hot::Play, None));
+            let ids = [
+                tip_id(Hot::Play, None),
+                tip_id(Hot::Bar, None),
+                tip_id(Hot::Btn(0), Some(Btn::Copy)),
+                tip_id(Hot::Btn(0), Some(Btn::Redo)),
+            ];
+            for (i, a) in ids.iter().enumerate() {
+                for b in &ids[i + 1..] {
+                    assert_ne!(a, b);
+                }
+            }
+        }
+
+        #[test]
+        fn the_bar_names_its_arrow_keys() {
+            let bar = tip_of(Hot::Bar, false, None).unwrap();
+            assert_eq!(bar.keys, [KeyHint::Raw("\u{2190} \u{2192}")]);
+            assert!(bar.name.is_some() && bar.about.is_some());
+        }
+
+        #[test]
+        fn ctrl_c_is_on_the_button_it_triggers() {
+            for b in WITH_TIP {
+                let keys = tip_of(Hot::Btn(0), false, Some(b)).unwrap().keys;
+                if b == Btn::Copy {
+                    assert_eq!(keys, [KeyHint::Raw("Ctrl+C")]);
+                } else {
+                    assert!(keys.is_empty(), "{b:?}");
+                }
+            }
+        }
+
+        #[test]
+        fn no_text_has_an_em_dash() {
+            for lang in LANGS {
+                i18n::set_lang(lang);
+                let mut all = vec![
+                    tip_of(Hot::Play, false, None),
+                    tip_of(Hot::Play, true, None),
+                    tip_of(Hot::Bar, false, None),
+                ];
+                all.extend(WITH_TIP.map(|b| tip_of(Hot::Btn(0), false, Some(b))));
+                for tip in all.into_iter().flatten() {
+                    for s in tip.name.iter().chain(tip.about.iter()) {
+                        assert!(!s.contains('\u{2014}') && !s.is_empty(), "{lang:?}: {s}");
+                    }
+                }
+            }
+        }
     }
 }

@@ -62,6 +62,7 @@ use crate::ui::card_surface::{Surface, Tween, rounded};
 use crate::ui::frame_clock::{FrameClock, WM_APP_FRAME};
 use crate::config::UiFont;
 use crate::ui::icons::Icon;
+use crate::ui::tooltip::{self, Side};
 
 /// The window class.
 const CLASS: PCWSTR = w!("ValeLyricsCard");
@@ -176,6 +177,13 @@ struct Press {
     dragging: bool,
 }
 
+/// A tooltip call, made once the borrow is released.
+enum TipOp {
+    Hover(Option<tooltip::Target>),
+    Pressed,
+    Hide,
+}
+
 /// What to do once the borrow is released.
 enum Fx {
     Show(bool),
@@ -209,6 +217,8 @@ pub(super) struct Card {
     fade: Tween,
     hover: Tween,
     hovering: bool,
+    /// Tooltip calls the card made, run by `with` after its borrow ends.
+    tips: Vec<TipOp>,
     hover_zone: Zone,
     hover_line: Option<usize>,
     /// The last pointer position inside the card (client dip), while it is in:
@@ -314,13 +324,21 @@ fn run_fx(hwnd: HWND, fx: Vec<Fx>) {
 /// window calls it asked for.
 fn with<R>(f: impl FnOnce(&mut Card, &mut Vec<Fx>) -> R) -> Option<R> {
     let mut fx = Vec::new();
-    let (out, hwnd) = CARD.with(|cell| {
+    let (out, hwnd, tips) = CARD.with(|cell| {
         let mut guard = cell.try_borrow_mut().ok()?;
         let card = guard.as_mut()?;
         let hwnd = card.hwnd;
-        Some((f(card, &mut fx), hwnd))
+        let out = f(card, &mut fx);
+        Some((out, hwnd, std::mem::take(&mut card.tips)))
     })?;
     run_fx(hwnd, fx);
+    for op in tips {
+        match op {
+            TipOp::Hover(t) => tooltip::hover(hwnd, t),
+            TipOp::Pressed => tooltip::pressed(hwnd),
+            TipOp::Hide => tooltip::hide(hwnd),
+        }
+    }
     Some(out)
 }
 
@@ -396,6 +414,7 @@ pub(super) fn open(args: OpenArgs, content: CardContent) -> bool {
         fade: Tween::at_rest(1.0, now),
         hover: Tween::at_rest(0.0, now),
         hovering: false,
+        tips: Vec::new(),
         hover_zone: Zone::Outside,
         hover_line: None,
         last_pt: None,
@@ -451,6 +470,7 @@ pub(super) fn close() {
     card.kill_timers();
     card.clock = None;
     let hwnd = card.hwnd;
+    tooltip::hide(hwnd);
     unsafe {
         let _ = DestroyWindow(hwnd);
     }
@@ -471,6 +491,7 @@ pub(super) fn set_hidden(hidden: bool) -> bool {
         fx.push(Fx::Show(!hidden));
         let now = Instant::now();
         if hidden {
+            c.tips.push(TipOp::Hide);
             c.kill_timers();
             c.clock = None;
         } else {
@@ -583,6 +604,10 @@ impl Card {
         self.c.timeline = content.timeline;
         self.c.playing = content.playing;
         self.c.can_seek = content.can_seek;
+        // The transport buttons go with the session: their tip too.
+        if !self.has_media() {
+            self.tips.push(TipOp::Hide);
+        }
         self.c.session_key = content.session_key;
         self.c.palette = palette;
         if !same_track {
@@ -1046,6 +1071,27 @@ impl Card {
         layout::zone_at(&self.rects(), w, h, x, y, self.hovering, self.has_media())
     }
 
+    /// The tip of the control under the pointer, anchored on screen (the card
+    /// is exactly its window, so the origin plus the dip rect is enough).
+    fn tip_target(&self, zone: Zone) -> Option<tooltip::Target> {
+        let r = self.rects();
+        let rect = match zone {
+            Zone::Close => r.close,
+            Zone::Prev => r.controls[0],
+            Zone::PlayPause => r.controls[1],
+            Zone::Next => r.controls[2],
+            Zone::Grip => r.grip,
+            _ => return None,
+        };
+        let tip = layout::zone_tip(zone, self.c.playing)?;
+        Some(tooltip::Target {
+            id: layout::zone_tip_id(zone),
+            anchor: tooltip::anchor_px(self.origin, rect.shared(), self.scale()),
+            side: Side::Auto,
+            tip,
+        })
+    }
+
     /// A session to send prev, play/pause and next to.
     fn has_media(&self) -> bool {
         self.c.status != Status::NoMedia
@@ -1118,6 +1164,9 @@ impl Card {
             let (zone, origin, size_dip) = (press.zone, press.origin, press.size_dip);
             if started && matches!(zone, Zone::Header | Zone::Body | Zone::Grip) {
                 if let Some(p) = &mut self.press {
+                    if !p.dragging {
+                        self.tips.push(TipOp::Hide);
+                    }
                     p.dragging = true;
                 }
                 if zone == Zone::Grip {
@@ -1146,6 +1195,8 @@ impl Card {
             _ => "arrow",
         };
         fx.push(Fx::Cursor(cursor));
+        let t = self.tip_target(zone);
+        self.tips.push(TipOp::Hover(t));
         let _ = post;
         if changed || self.moving(now) {
             self.sync_clock(now);
@@ -1175,6 +1226,7 @@ impl Card {
         if self.press.is_some() {
             return;
         }
+        self.tips.push(TipOp::Hover(None));
         let now = Instant::now();
         self.last_pt = None;
         self.set_hover(false, now);
@@ -1185,6 +1237,7 @@ impl Card {
     }
 
     fn button_down(&mut self, x: i32, y: i32, fx: &mut Vec<Fx>) {
+        self.tips.push(TipOp::Pressed);
         let now = Instant::now();
         let (dx, dy) = self.to_dip(x, y);
         // The controls and the grip only exist while the pointer is in.
@@ -1317,6 +1370,7 @@ impl Card {
 
     /// The window is gone: stop the timers and the frame clock for good.
     fn destroyed(&mut self) {
+        self.tips.push(TipOp::Hide);
         self.gone = true;
         self.press = None;
         self.last_pt = None;
@@ -1335,6 +1389,7 @@ impl Card {
     }
 
     fn wheel(&mut self, delta: i16, now: Instant) {
+        self.tips.push(TipOp::Hide);
         if self.c.status != Status::Synced || self.layouts.is_none() {
             return;
         }
@@ -1496,6 +1551,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             return LRESULT(0);
         }
         WM_KEYDOWN => {
+            tooltip::hide(hwnd);
             if wparam.0 as u16 == VK_ESCAPE.0 {
                 if let Some((island, demo)) = with(|c, _| (c.island, c.demo)) {
                     emit(island, demo, Msg::Close, 0);

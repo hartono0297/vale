@@ -35,6 +35,7 @@ use crate::ui::geometry::{
     NOTCH_H_DEFAULT, NOTCH_H_MAX, NOTCH_H_MIN, NOTCH_W_DEFAULT, NOTCH_W_MAX, NOTCH_W_MIN,
 };
 use crate::ui::icons::Icon;
+use crate::ui::tooltip::{KeyHint, Tip};
 use crate::ui::robot::{Motion, SLEEP_MAX, SLEEP_MIN};
 use crate::model::RecSources;
 use crate::recorder::Source;
@@ -402,6 +403,35 @@ impl Measure for Estimate {
         };
         text.chars().count() as f32 * font.size() * per_char
     }
+}
+
+/// The tip of a control that has one: the icon-only buttons, the drag handle
+/// and the swatches. The steppers say it with their row, the accent swatches
+/// with the row's description, so those have none. The monitor map is not
+/// here: its hit is shared with the list (see `monitor_tip`).
+pub fn hit_tip(hit: &Hit) -> Option<Tip> {
+    match hit {
+        Hit::PageMove(_, d) | Hit::TileMove(_, d) => Some(Tip::named(if *d < 0 {
+            Key::TipMoveUp
+        } else {
+            Key::TipMoveDown
+        })),
+        Hit::PageGrip(_) | Hit::TileGrip(_) => Some(Tip::named(Key::TipDragReorder)),
+        Hit::HotkeyReset(id) => Some(Tip::named(Key::TipResetDefault).about_str(
+            crate::i18n::reset_to(crate::i18n::lang(), id.default().map(|h| h.to_string())),
+        )),
+        Hit::WidgetAdd => Some(Tip::named(Key::StickyNew).key(KeyHint::Hotkey(HotkeyId::StickyNote))),
+        Hit::Repo => Some(Tip::named(Key::TipOpenBrowser)),
+        Hit::Surface(v) => Some(Tip::named(surface_key(*v))),
+        Hit::CatColor(v) => Some(Tip::named(cat_color_key(*v))),
+        Hit::CatAccessory(v) => Some(Tip::named(accessory_key(*v))),
+        _ => None,
+    }
+}
+
+/// The tip of a rectangle of the monitor map: the entry's name in the list.
+pub fn monitor_tip(m: &MonitorRow) -> Tip {
+    Tip::name_str(crate::i18n::monitor_entry(m.number, &m.name))
 }
 
 /// What a click on a control does.
@@ -1376,6 +1406,22 @@ impl Layout {
             .into_iter()
             .find(|(_, r)| r.contains(x, y))
             .map(|(h, _)| h)
+    }
+
+    /// The control's hit under a point with the area it takes (cut to the
+    /// viewport), and whether it is a rectangle of the monitor map.
+    pub fn hit_area(&self, x: f32, y: f32) -> Option<(Hit, Rect, bool)> {
+        let view = self.viewport;
+        self.controls.iter().find_map(|c| {
+            let map = matches!(c, Control::MonitorMap { .. });
+            c.hits().into_iter().find_map(|(h, r)| {
+                let r = match view {
+                    Some(v) => clip(r, v)?,
+                    None => r,
+                };
+                r.contains(x, y).then_some((h, r, map))
+            })
+        })
     }
 
     /// The segmented control of `group`, if this section has one.
@@ -12615,6 +12661,147 @@ mod tests {
         assert_eq!(VIEW_TOP + SCROLL_FADE_H, FIRST_CARD_Y);
         for scroll in [0.0, 100.0, 1e6] {
             assert_eq!(at(Section::Integrations, scroll).top_fade(), None);
+        }
+    }
+
+    mod tips {
+        use super::*;
+        use crate::ui::tooltip::KeyHint;
+
+        const LANGS: [Lang; 2] = [Lang::Id, Lang::En];
+
+        fn with_tip() -> Vec<Hit> {
+            vec![
+                Hit::PageMove(Page::Calendar, -1),
+                Hit::PageMove(Page::Calendar, 1),
+                Hit::TileMove(0, -1),
+                Hit::TileMove(0, 1),
+                Hit::PageGrip(Page::Calendar),
+                Hit::TileGrip(0),
+                Hit::HotkeyReset(HotkeyId::Search),
+                Hit::WidgetAdd,
+                Hit::Repo,
+                Hit::Surface(Surface::Plum),
+                Hit::CatColor(CatColor::Calico),
+                Hit::CatAccessory(CatAccessory::Bow),
+            ]
+        }
+
+        #[test]
+        fn the_icon_only_controls_have_a_tip_in_both_languages() {
+            for lang in LANGS {
+                crate::i18n::set_lang(lang);
+                for hit in with_tip() {
+                    let tip = hit_tip(&hit).unwrap_or_else(|| panic!("{hit:?}"));
+                    assert!(
+                        tip.name.as_deref().is_some_and(|n| !n.is_empty()),
+                        "{lang:?} {hit:?}"
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn steppers_and_accent_swatches_have_none() {
+            for hit in [
+                Hit::ClipItems(1),
+                Hit::ClipItems(-1),
+                Hit::NotifItems(1),
+                Hit::Battery(-1),
+                Hit::DiskWarn(1),
+                Hit::RobotSleep(-1),
+                Hit::Accent(Accent::Terracotta),
+                Hit::Nav(Section::Panel),
+                Hit::Autostart,
+            ] {
+                assert!(hit_tip(&hit).is_none(), "{hit:?}");
+            }
+        }
+
+        #[test]
+        fn a_hotkey_reset_says_what_it_becomes() {
+            for lang in LANGS {
+                crate::i18n::set_lang(lang);
+                let about = hit_tip(&Hit::HotkeyReset(HotkeyId::LyricsCard))
+                    .unwrap()
+                    .about
+                    .unwrap();
+                assert!(about.contains("Ctrl+Alt+L"), "{about}");
+                let none = hit_tip(&Hit::HotkeyReset(HotkeyId::Clipboard))
+                    .unwrap()
+                    .about
+                    .unwrap();
+                assert_eq!(none, text(lang, Key::TipResetNone));
+                assert!(!none.contains("Ctrl"));
+            }
+            assert_eq!(
+                crate::i18n::reset_to(Lang::En, Some("Ctrl+Alt+L".into())),
+                "Becomes Ctrl+Alt+L."
+            );
+            assert_eq!(
+                crate::i18n::reset_to(Lang::Id, Some("Ctrl+Alt+L".into())),
+                "Jadi Ctrl+Alt+L."
+            );
+        }
+
+        #[test]
+        fn the_new_note_plus_shows_its_hotkey() {
+            let tip = hit_tip(&Hit::WidgetAdd).unwrap();
+            assert_eq!(tip.keys, [KeyHint::Hotkey(HotkeyId::StickyNote)]);
+        }
+
+        #[test]
+        fn up_and_down_and_the_grip_have_their_own_names() {
+            for lang in LANGS {
+                crate::i18n::set_lang(lang);
+                let up = hit_tip(&Hit::PageMove(Page::Calendar, -1)).unwrap().name;
+                let down = hit_tip(&Hit::PageMove(Page::Calendar, 1)).unwrap().name;
+                let tile_up = hit_tip(&Hit::TileMove(2, -1)).unwrap().name;
+                let grip = hit_tip(&Hit::PageGrip(Page::Calendar)).unwrap().name;
+                assert_ne!(up, down);
+                assert_eq!(up, tile_up);
+                assert_ne!(up, grip);
+            }
+        }
+
+        #[test]
+        fn swatches_use_the_names_the_rows_already_have() {
+            for lang in LANGS {
+                crate::i18n::set_lang(lang);
+                assert_eq!(
+                    hit_tip(&Hit::Surface(Surface::Sea)).unwrap().name.as_deref(),
+                    Some(text(lang, surface_key(Surface::Sea)))
+                );
+                assert_eq!(
+                    hit_tip(&Hit::CatColor(CatColor::Black)).unwrap().name.as_deref(),
+                    Some(text(lang, cat_color_key(CatColor::Black)))
+                );
+                assert_eq!(
+                    hit_tip(&Hit::CatAccessory(CatAccessory::Crown)).unwrap().name.as_deref(),
+                    Some(text(lang, accessory_key(CatAccessory::Crown)))
+                );
+            }
+        }
+
+        #[test]
+        fn a_monitor_map_entry_is_named_like_its_list_entry() {
+            let m = row(2, 1920, false, "LG 27UL", "p2");
+            let tip = monitor_tip(&m);
+            assert_eq!(tip.name.as_deref(), Some("2 \u{b7} LG 27UL"));
+            assert!(tip.about.is_none());
+        }
+
+        #[test]
+        fn no_tip_text_has_an_em_dash() {
+            for lang in LANGS {
+                crate::i18n::set_lang(lang);
+                for hit in with_tip() {
+                    let tip = hit_tip(&hit).unwrap();
+                    for s in tip.name.iter().chain(tip.about.iter()) {
+                        assert!(!s.contains('\u{2014}'), "{lang:?} {hit:?}: {s}");
+                    }
+                }
+            }
         }
     }
 }

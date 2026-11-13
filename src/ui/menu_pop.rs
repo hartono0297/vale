@@ -32,8 +32,8 @@ use windows::Win32::Graphics::Direct2D::{
     ID2D1RenderTarget, ID2D1SolidColorBrush,
 };
 use windows::Win32::Graphics::DirectWrite::{
-    DWRITE_FONT_WEIGHT, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_METRICS, DWRITE_TRIMMING,
-    DWRITE_TRIMMING_GRANULARITY_CHARACTER, DWRITE_WORD_WRAPPING_NO_WRAP, IDWriteFactory,
+    DWRITE_FONT_WEIGHT, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_TEXT_METRICS, DWRITE_TRIMMING,
+    DWRITE_TRIMMING_GRANULARITY_CHARACTER, DWRITE_WORD_WRAPPING_NO_WRAP, DWRITE_WORD_WRAPPING_WRAP, IDWriteFactory,
     IDWriteTextFormat, IDWriteTextLayout,
 };
 use windows::Win32::Graphics::Gdi::{
@@ -297,14 +297,14 @@ fn scroll_to_show(scroll: f32, r: FRect, view_h: f32) -> f32 {
 // ------------------------------------------------------------------ text
 
 /// The UI face and its formats, for measuring and drawing the rows.
-struct Text {
+pub(crate) struct Text {
     dwrite: IDWriteFactory,
     face: Face,
     formats: RefCell<HashMap<(u32, u16), IDWriteTextFormat>>,
 }
 
 impl Text {
-    fn new(dwrite: IDWriteFactory, ui: UiFont) -> Text {
+    pub(crate) fn new(dwrite: IDWriteFactory, ui: UiFont) -> Text {
         let face = Face::for_role_in(&dwrite, Role::Text, ui);
         Text {
             dwrite,
@@ -313,7 +313,7 @@ impl Text {
         }
     }
 
-    fn format(&self, size: f32, weight: u16) -> Result<IDWriteTextFormat> {
+    pub(crate) fn format(&self, size: f32, weight: u16) -> Result<IDWriteTextFormat> {
         let key = (size.to_bits(), weight);
         if let Some(f) = self.formats.borrow().get(&key) {
             return Ok(f.clone());
@@ -327,7 +327,14 @@ impl Text {
 
     /// `s` on one line in a box `w` by `h`, centred down it and cut with an
     /// ellipsis where the box ends.
-    fn line(&self, s: &str, size: f32, weight: u16, w: f32, h: f32) -> Result<IDWriteTextLayout> {
+    pub(crate) fn line(
+        &self,
+        s: &str,
+        size: f32,
+        weight: u16,
+        w: f32,
+        h: f32,
+    ) -> Result<IDWriteTextLayout> {
         let wide: Vec<u16> = s.encode_utf16().collect();
         let format = self.format(size, weight)?;
         unsafe {
@@ -347,8 +354,29 @@ impl Text {
         }
     }
 
+    /// `s` wrapped at word breaks in a box `w` wide, top aligned; its height
+    /// is in `GetMetrics`.
+    pub(crate) fn block(
+        &self,
+        s: &str,
+        size: f32,
+        weight: u16,
+        w: f32,
+    ) -> Result<IDWriteTextLayout> {
+        let wide: Vec<u16> = s.encode_utf16().collect();
+        let format = self.format(size, weight)?;
+        unsafe {
+            let l = self
+                .dwrite
+                .CreateTextLayout(&wide, &format, w.max(1.0), 10_000.0)?;
+            l.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP)?;
+            l.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?;
+            Ok(l)
+        }
+    }
+
     /// How wide `s` is, uncut.
-    fn width(&self, s: &str, size: f32, weight: u16) -> f32 {
+    pub(crate) fn width(&self, s: &str, size: f32, weight: u16) -> f32 {
         let Ok(l) = self.line(s, size, weight, 100_000.0, 100.0) else {
             return 0.0;
         };
@@ -490,16 +518,25 @@ fn gives_back(dropdown_has_it: bool, prev_alive: bool) -> bool {
 }
 
 fn register() -> bool {
+    register_class(CLASS, pop_proc)
+}
+
+/// Registers the window class `class` with `proc` and the arrow cursor; true
+/// when it is registered, also when it already was.
+pub(crate) fn register_class(
+    class: PCWSTR,
+    proc: unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT,
+) -> bool {
     let Ok(module) = (unsafe { GetModuleHandleW(None) }) else {
         return false;
     };
     let cursor = unsafe { LoadCursorW(None, IDC_ARROW) }.unwrap_or_default();
     let wc = WNDCLASSEXW {
         cbSize: size_of::<WNDCLASSEXW>() as u32,
-        lpfnWndProc: Some(pop_proc),
+        lpfnWndProc: Some(proc),
         hInstance: module.into(),
         hCursor: cursor,
-        lpszClassName: CLASS,
+        lpszClassName: class,
         ..Default::default()
     };
     unsafe {
@@ -512,7 +549,7 @@ fn register() -> bool {
 }
 
 /// The work area (px) and DPI scale of the monitor under `pt`.
-fn monitor_at(pt: (i32, i32)) -> (Rect, f32) {
+pub(crate) fn monitor_at(pt: (i32, i32)) -> (Rect, f32) {
     unsafe {
         let monitor = MonitorFromPoint(POINT { x: pt.0, y: pt.1 }, MONITOR_DEFAULTTONEAREST);
         let mut info = MONITORINFO {
@@ -674,7 +711,6 @@ fn redraw() {
             let Ok(rt) = rt.cast::<ID2D1RenderTarget>() else {
                 return;
             };
-            let set = |rgb: u32, a: f32| unsafe { brush.SetColor(&color(rgb, a)) };
             unsafe { rt.SetTransform(&Matrix3x2::scale(k, k)) };
             let plate = FRect {
                 x: SHADOW,
@@ -682,30 +718,8 @@ fn redraw() {
                 w,
                 h: view_h,
             };
-            // A soft shadow: rings growing out from under the plate.
-            let shadow = if pal.light { 0.035 } else { 0.10 };
-            for i in 1..=4 {
-                let g = i as f32 * 2.0;
-                let r = FRect {
-                    x: plate.x - g / 2.0,
-                    y: plate.y - g / 2.0 + 2.0,
-                    w: plate.w + g,
-                    h: plate.h + g,
-                };
-                set(0x000000, shadow);
-                unsafe { rt.FillRoundedRectangle(&rounded(r, RADIUS + g / 2.0), brush) };
-            }
-            set(pal.popover, 1.0);
-            unsafe { rt.FillRoundedRectangle(&rounded(plate, RADIUS), brush) };
-            let hair = FRect {
-                x: plate.x + 0.5,
-                y: plate.y + 0.5,
-                w: plate.w - 1.0,
-                h: plate.h - 1.0,
-            };
-            set(pal.border >> 8, (pal.border & 0xFF) as f32 / 255.0 * 2.0);
+            paint_plate(&rt, brush, plate, RADIUS, &pal);
             unsafe {
-                rt.DrawRoundedRectangle(&rounded(hair, RADIUS - 0.5), brush, 1.0, None);
                 rt.PushAxisAlignedClip(
                     &D2D_RECT_F {
                         left: plate.x,
@@ -733,7 +747,41 @@ fn redraw() {
     });
 }
 
-fn rounded(r: FRect, radius: f32) -> D2D1_ROUNDED_RECT {
+/// A popup plate: a soft shadow of rings growing out from under it, the
+/// `popover` fill and a `border` hairline. Shared with the tooltip.
+pub(crate) fn paint_plate(
+    rt: &ID2D1RenderTarget,
+    brush: &ID2D1SolidColorBrush,
+    plate: FRect,
+    radius: f32,
+    pal: &theme::WindowPalette,
+) {
+    let set = |rgb: u32, a: f32| unsafe { brush.SetColor(&color(rgb, a)) };
+    let shadow = if pal.light { 0.035 } else { 0.10 };
+    for i in 1..=4 {
+        let g = i as f32 * 2.0;
+        let r = FRect {
+            x: plate.x - g / 2.0,
+            y: plate.y - g / 2.0 + 2.0,
+            w: plate.w + g,
+            h: plate.h + g,
+        };
+        set(0x000000, shadow);
+        unsafe { rt.FillRoundedRectangle(&rounded(r, radius + g / 2.0), brush) };
+    }
+    set(pal.popover, 1.0);
+    unsafe { rt.FillRoundedRectangle(&rounded(plate, radius), brush) };
+    let hair = FRect {
+        x: plate.x + 0.5,
+        y: plate.y + 0.5,
+        w: plate.w - 1.0,
+        h: plate.h - 1.0,
+    };
+    set(pal.border >> 8, (pal.border & 0xFF) as f32 / 255.0 * 2.0);
+    unsafe { rt.DrawRoundedRectangle(&rounded(hair, radius - 0.5), brush, 1.0, None) };
+}
+
+pub(crate) fn rounded(r: FRect, radius: f32) -> D2D1_ROUNDED_RECT {
     D2D1_ROUNDED_RECT {
         rect: D2D_RECT_F {
             left: r.x,

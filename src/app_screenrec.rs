@@ -643,6 +643,7 @@ impl App {
                     self.apply_now(Event::Notice(busy_notice(lang)));
                     return;
                 }
+                crate::ui::tooltip::hide_all();
                 let sources = self.config.recording.sources;
                 self.queue_shortcut(shortcuts::Action::ScreenPick {
                     owner: self.hwnd.0 as isize,

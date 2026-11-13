@@ -31,6 +31,7 @@ use std::time::Instant;
 use chrono::{DateTime, Local, NaiveDate};
 use windows::Win32::Foundation::{ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent, VK_MENU,
     VK_SHIFT,
@@ -63,7 +64,9 @@ use crate::widgets::drop;
 use crate::widgets::mood::{self, Mood};
 use crate::widgets::edit::{self, EditEvent};
 use crate::widgets::clip_io;
+use crate::ui::tooltip;
 use crate::widgets::fmt_pop;
+use crate::widgets::tips;
 use crate::widgets::richclip;
 use crate::ui::geometry::Rect as DipR;
 use crate::widgets::image_io;
@@ -1259,6 +1262,7 @@ impl WidgetHost {
         .unwrap_or_default();
         for (hwnd, away) in changes {
             if away {
+                tooltip::hide(hwnd);
                 unsafe {
                     let _ = ShowWindow(hwnd, SW_HIDE);
                 }
@@ -1703,6 +1707,7 @@ fn relayout(s: &mut State, i: usize) {
         return;
     };
     if w.note != p.rect || w.view != p.view || w.scale != p.scale || w.display != p.display {
+        tooltip::hide(w.hwnd);
         w.note = p.rect;
         w.view = p.view;
         w.scale = p.scale;
@@ -1725,6 +1730,7 @@ fn apply_visibility(i: usize) {
     })
     .flatten();
     if let Some((hwnd, show)) = todo {
+        tooltip::hide(hwnd);
         unsafe {
             let _ = ShowWindow(hwnd, if show { SW_SHOWNA } else { SW_HIDE });
         }
@@ -2077,8 +2083,6 @@ fn draw(s: &mut State, i: usize) {
 
 // ------------------------------------------------------------------ messages
 
-/// In the Controls feature of `windows`; the value is fixed by Win32.
-const WM_MOUSELEAVE: u32 = 0x02A3;
 /// `WM_SYSCOMMAND`'s menu key (Alt released alone).
 const SC_KEYMENU: u32 = 0xF100;
 
@@ -2160,6 +2164,9 @@ unsafe extern "system" fn wnd_proc(
             return LRESULT(0);
         }
         WM_RBUTTONUP => {
+            // A press: the tip stays away until the pointer leaves the
+            // button, also once the menu or popover it opens is gone.
+            tooltip::pressed(hwnd);
             let mut pt = POINT::default();
             unsafe {
                 let _ = GetCursorPos(&mut pt);
@@ -2260,6 +2267,7 @@ unsafe extern "system" fn wnd_proc(
             // Every way a note window goes passes here: its drop target is
             // revoked with it, and its popup goes.
             drop::revoke(hwnd);
+            tooltip::hide(hwnd);
             if fmt_pop::is_open_for(hwnd) {
                 fmt_pop::close();
             }
@@ -2606,9 +2614,73 @@ fn mouse_move(hwnd: HWND, x: i32, y: i32) {
         edit::set_selection(edit_hwnd, &t, anchor, idx);
         sync_from_edit(hwnd, edit_hwnd);
     }
+    // After the state is let go: the tooltip owns a window of its own.
+    let tip = with(|s| tip_at(s, idx_of(s, hwnd)?, pt)).flatten();
+    tooltip::hover(hwnd, tip);
+}
+
+/// The tooltip target under the desktop point `pt` (px) on note `i`: a header
+/// button, a stack arrow, a format bar button or an image's remove button, with
+/// its place on screen. `None` over anything else, while the note is dragged,
+/// tucked in, or has a popover of its own open (the tip would sit on it).
+fn tip_at(s: &State, i: usize, pt: POINT) -> Option<tooltip::Target> {
+    let w = &s.wins[i];
+    let now = Instant::now();
+    if w.drag.is_some()
+        || w.tab_showing(now)
+        || pop::is_open_for(w.hwnd)
+        || remind_pop::is_open_for(w.hwnd)
+        || fmt_pop::is_open_for(w.hwnd)
+    {
+        return None;
+    }
+    let (id, rect, tip) = match target_at_in(w, pt.x, pt.y, now) {
+        Target::Button(b) => {
+            let at_cap = !sticky::can_add(sheet_total(&s.wins));
+            (
+                tooltip::id_of(&(1u8, b)),
+                paint::button_rect(b, w.view.w),
+                tips::header_tip(b, w.sticky.pinned, at_cap),
+            )
+        }
+        Target::Bar(hit) => {
+            let layout = toolbar::layout(w.view.w);
+            let r = match hit {
+                BarHit::Tool(t) => toolbar::rect_of(&layout, t)?,
+                BarHit::MarkerMenu => {
+                    let r = toolbar::rect_of(&layout, Tool::Marker)?;
+                    DipR {
+                        x: r.x + toolbar::MARKER_APPLY_W,
+                        w: r.w - toolbar::MARKER_APPLY_W,
+                        ..r
+                    }
+                }
+                BarHit::More => layout.more?,
+                BarHit::Bar => return None,
+            };
+            let r = DipR { y: r.y + w.view.h - toolbar::BAR_BLOCK, ..r };
+            (tooltip::id_of(&(2u8, hit)), r, tips::bar_tip(hit)?)
+        }
+        Target::ImageRemove(n) => {
+            let area = w.body_area();
+            let img = *w.img_rects.get(n)?;
+            let shown = DipR { y: area.y + img.y - w.scroll, ..img };
+            (tooltip::id_of(&(3u8, n)), paint::image_remove_rect(shown), tips::image_remove_tip())
+        }
+        _ => return None,
+    };
+    // On screen by the note's own origin and scale, which is how the pointer
+    // was mapped to the note (`target_at`).
+    Some(tooltip::Target {
+        id,
+        anchor: tooltip::anchor_px((w.note.x, w.note.y), rect, w.scale),
+        side: tooltip::Side::Auto,
+        tip,
+    })
 }
 
 fn mouse_leave(hwnd: HWND) {
+    tooltip::hover(hwnd, None);
     let _ = with(|s| {
         let i = idx_of(s, hwnd)?;
         let animate = s.animate;
@@ -2664,6 +2736,7 @@ fn lower(hwnd: HWND) {
 fn left_down(hwnd: HWND, x: i32, y: i32) {
     // Any press on a note is "touching" it: a reminder's raise ends.
     lower(hwnd);
+    tooltip::pressed(hwnd);
     let pt = screen_point(hwnd, x, y);
     // A click on a note outside the popover closes it, also where the note
     // does not take the activation (the header, the grip, a box). The colour
@@ -2794,6 +2867,7 @@ fn left_down(hwnd: HWND, x: i32, y: i32) {
 /// A drag of note `i` that began with the pointer at `from` (desktop px).
 fn begin_drag(s: &mut State, i: usize, kind: DragKind, from: (i32, i32)) {
     let w = &mut s.wins[i];
+    tooltip::hide(w.hwnd);
     // A dragged note is out at once, however it was pressed.
     if w.tuck_edge(Instant::now()).is_some() && (w.pop.to < 1.0 || w.pop.running(Instant::now())) {
         pop_out_now(w);
@@ -3383,6 +3457,7 @@ fn bar_anchor(hwnd: HWND, tool: Option<Tool>) -> Option<(Rect, Rect, f32, UiFont
 /// The highlighter popover, above the Marker button (above More when the
 /// marker moved into the overflow menu). Toggles: a second press closes it.
 fn open_marker_pop(hwnd: HWND) {
+    tooltip::pressed(hwnd);
     if fmt_pop::is_open_for(hwnd) {
         fmt_pop::close();
         return;
@@ -3418,6 +3493,7 @@ fn open_marker_pop(hwnd: HWND) {
 
 /// The overflow menu: the tools that did not fit the bar of a narrow note.
 fn open_overflow(hwnd: HWND) {
+    tooltip::hide(hwnd);
     if fmt_pop::is_open_for(hwnd) {
         fmt_pop::close();
         return;
@@ -3847,6 +3923,7 @@ fn button(hwnd: HWND, b: Btn) {
 /// sheet per notch (down is next, up is previous, wrapping), over the text it
 /// scrolls the text.
 fn mouse_wheel(hwnd: HWND, sx: i32, sy: i32, raw: i32) {
+    tooltip::hide(hwnd);
     let flips = with(|s| {
         let i = idx_of(s, hwnd)?;
         let w = &mut s.wins[i];
@@ -3898,6 +3975,7 @@ fn flip_by(hwnd: HWND, delta: i32) {
 }
 
 fn toggle_rolled(hwnd: HWND) {
+    tooltip::hide(hwnd);
     let _ = with(|s| {
         let i = idx_of(s, hwnd)?;
         let on = !s.wins[i].sticky.rolled;
@@ -3992,6 +4070,7 @@ fn opens_templates(target: Target, notes: usize) -> bool {
 /// A right click on a note's enabled (+) (`opens_templates`): the templates,
 /// and the new note beside it.
 fn plus_menu(hwnd: HWND, at: POINT) {
+    tooltip::pressed(hwnd);
     let info = with(|s| {
         let i = idx_of(s, hwnd)?;
         Some((s.wins[i].id.clone(), s.lang))
@@ -4035,6 +4114,7 @@ pub(crate) fn remind_chosen(note: HWND, at: i64) {
 
 /// Opens the day and time entry under the colour button.
 fn open_remind_entry(hwnd: HWND) {
+    tooltip::hide(hwnd);
     let info = with(|s| {
         let i = idx_of(s, hwnd)?;
         let w = &s.wins[i];
@@ -4173,6 +4253,7 @@ fn pop_state(note: HWND) -> Option<PopState> {
 }
 
 fn open_popover(hwnd: HWND) {
+    tooltip::hide(hwnd);
     let info = with(|s| {
         let i = idx_of(s, hwnd)?;
         let w = &s.wins[i];
@@ -4275,6 +4356,7 @@ fn send_to_phone(hwnd: HWND) {
 }
 
 fn context_menu(hwnd: HWND, at: POINT) {
+    tooltip::pressed(hwnd);
     let data = with(|s| {
         let i = idx_of(s, hwnd)?;
         let w = &s.wins[i];
@@ -4523,6 +4605,7 @@ fn menu_edge_of(s: &State, i: usize) -> Option<Edge> {
 /// brought out (`None`, where it is). Tells the owner.
 fn set_tuck(s: &mut State, i: usize, edge: Option<Edge>) {
     let w = &mut s.wins[i];
+    tooltip::hide(w.hwnd);
     match edge {
         Some(e) => {
             let Some(d) = s.displays.get(w.display) else {

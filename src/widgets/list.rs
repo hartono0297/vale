@@ -376,16 +376,33 @@ pub fn has_meta(r: &Row) -> bool {
     r.stack.is_some() || r.progress.is_some() || r.images > 0
 }
 
-/// The icons a row shows right-aligned under its time, left to right.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// What a row shows besides its text, each a hover target: the icons under
+/// the time (left to right) and the third line's counts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Mark {
     Pinned,
     Rolled,
     Tucked,
-    /// A reminder; `true` is overdue (drawn in the accent).
-    Reminder(bool),
+    /// A reminder is set and has not gone off (clock icon).
+    Reminder,
+    /// The reminder went off and the note was not opened since (bell icon,
+    /// drawn in the accent).
+    ReminderPast,
+    /// The stack's size.
+    Stack(usize),
+    /// Checked items and total items.
+    Checked(usize, usize),
+    Images(usize),
 }
 
+impl Mark {
+    /// Whether it sits on the third line (`RowGeo::meta`), not under the time.
+    fn on_meta_line(self) -> bool {
+        matches!(self, Mark::Stack(_) | Mark::Checked(..) | Mark::Images(_))
+    }
+}
+
+/// The icons under the time, in their fixed order.
 pub fn marks(r: &Row) -> Vec<Mark> {
     let mut out = Vec::new();
     if r.pinned {
@@ -398,7 +415,60 @@ pub fn marks(r: &Row) -> Vec<Mark> {
         out.push(Mark::Tucked);
     }
     if let Some(overdue) = r.reminder {
-        out.push(Mark::Reminder(overdue));
+        out.push(if overdue { Mark::ReminderPast } else { Mark::Reminder });
+    }
+    out
+}
+
+/// Every mark of a row: the icons, then the third line's stack, checklist
+/// and images.
+pub fn row_marks(r: &Row) -> Vec<Mark> {
+    let mut out = marks(r);
+    if let Some((_, len)) = r.stack {
+        out.push(Mark::Stack(len));
+    }
+    if let Some((done, total)) = r.progress {
+        out.push(Mark::Checked(done, total));
+    }
+    if r.images > 0 {
+        out.push(Mark::Images(r.images));
+    }
+    out
+}
+
+/// How far a third-line mark's icon is from its text, and the room its
+/// checklist count and its image count take.
+pub const META_ICON: f32 = 12.0;
+pub const META_TEXT_X: f32 = 16.0;
+pub const META_GAP: f32 = 10.0;
+pub const CHECKED_W: f32 = 40.0;
+pub const IMAGES_W: f32 = 24.0;
+
+/// Where each mark of `marks` sits in the row `row` (window dip): the icons
+/// right-aligned under the time, the counts along the third line. `badge_w`
+/// is the stack badge's text width, which only the painter can measure. The
+/// painter and the hover use this one function, so they cannot drift.
+pub fn mark_rects(row: Rect, marks: &[Mark], badge_w: f32) -> Vec<(Mark, Rect)> {
+    let g = row_geo(row.w, marks.iter().any(|m| m.on_meta_line()));
+    let at = |r: Rect| Rect { x: row.x + r.x, y: row.y + r.y, ..r };
+    let icons: Vec<Mark> = marks.iter().copied().filter(|m| !m.on_meta_line()).collect();
+    let mut out = Vec::new();
+    for (j, m) in icons.iter().enumerate() {
+        out.push((*m, mark_rect(at(g.icons), j, icons.len())));
+    }
+    if let Some(meta) = g.meta {
+        let meta = at(meta);
+        let mut x = meta.x;
+        for m in marks.iter().copied().filter(|m| m.on_meta_line()) {
+            let w = META_TEXT_X
+                + match m {
+                    Mark::Stack(_) => badge_w,
+                    Mark::Checked(..) => CHECKED_W,
+                    _ => IMAGES_W,
+                };
+            out.push((m, Rect { x, y: meta.y, w, h: meta.h }));
+            x += w + META_GAP;
+        }
     }
     out
 }
@@ -1038,6 +1108,71 @@ mod tests {
         }
     }
 
+    fn full_row() -> Row {
+        let mut r = rows(&[note("a", "x", 1, |s| {
+            s.pinned = true;
+            s.rolled = true;
+            s.tuck = Some(Edge::Left);
+            s.remind_at = Some(5);
+            s.remind_fired = true;
+        })], 10)
+        .remove(0);
+        r.stack = Some((2, 3));
+        r.progress = Some((1, 4));
+        r.images = 2;
+        r
+    }
+
+    #[test]
+    fn mark_rects_lie_inside_the_row_and_apart() {
+        for badge_w in [30.0, 80.0] {
+            let r = full_row();
+            let ms = row_marks(&r);
+            assert_eq!(ms.len(), 7);
+            let row = Rect { x: 0.0, y: 120.0, w: WIN_W, h: ROW_H };
+            let rects = mark_rects(row, &ms, badge_w);
+            assert_eq!(rects.len(), ms.len());
+            for (i, (_, a)) in rects.iter().enumerate() {
+                assert!(
+                    a.x >= row.x && a.y >= row.y && a.right() <= row.right() && a.bottom() <= row.bottom(),
+                    "{a:?} outside {row:?}"
+                );
+                for (_, b) in &rects[i + 1..] {
+                    let apart = a.right() <= b.x || b.right() <= a.x || a.bottom() <= b.y || b.bottom() <= a.y;
+                    assert!(apart, "{a:?} overlaps {b:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mark_rects_keep_the_icons_where_mark_rect_puts_them() {
+        let mut r = full_row();
+        r.stack = None;
+        r.progress = None;
+        r.images = 0;
+        let ms = row_marks(&r);
+        let row = Rect { x: 0.0, y: 60.0, w: WIN_W, h: ROW_H };
+        let icons = row_geo(WIN_W, false).icons;
+        let icons = Rect { y: icons.y + 60.0, ..icons };
+        for (j, (_, rect)) in mark_rects(row, &ms, 0.0).iter().enumerate() {
+            assert_eq!(*rect, mark_rect(icons, j, ms.len()));
+        }
+    }
+
+    #[test]
+    fn a_point_on_a_mark_still_hits_its_row() {
+        let r = full_row();
+        let lay = layout(WIN_W, 400.0, false);
+        let scroll = 10.0;
+        let top = lay.rows_view.y + ROW_H - scroll;
+        let row = Rect { x: 0.0, y: top, w: WIN_W, h: ROW_H };
+        for (_, m) in mark_rects(row, &row_marks(&r), 40.0) {
+            let (x, y) = (m.x + m.w / 2.0, m.y + m.h / 2.0);
+            assert_eq!(hit(&lay, x, y, scroll, 5), Hit::Row(1));
+        }
+    }
+
     #[test]
     fn marks_come_in_a_fixed_order_and_sit_right_aligned() {
         let mut r = rows(&[note("a", "x", 1, |s| {
@@ -1048,10 +1183,10 @@ mod tests {
             s.remind_fired = true;
         })], 10)
         .remove(0);
-        assert_eq!(marks(&r), [Mark::Pinned, Mark::Rolled, Mark::Tucked, Mark::Reminder(true)]);
+        assert_eq!(marks(&r), [Mark::Pinned, Mark::Rolled, Mark::Tucked, Mark::ReminderPast]);
         r.pinned = false;
         r.reminder = Some(false);
-        assert_eq!(marks(&r), [Mark::Rolled, Mark::Tucked, Mark::Reminder(false)]);
+        assert_eq!(marks(&r), [Mark::Rolled, Mark::Tucked, Mark::Reminder]);
         r.rolled = false;
         r.tucked = false;
         r.reminder = None;

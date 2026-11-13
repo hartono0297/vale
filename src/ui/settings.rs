@@ -72,11 +72,12 @@ use super::frame_clock::{FrameClock, WM_APP_FRAME};
 use super::hotkey_rec::{RecHook, WM_APP_HOTKEY_REC, WM_APP_HOTKEY_REC_DONE};
 use super::robot::{Motion, sleep_step};
 use super::settings_controls::{Gfx, Scene, ease};
+use super::tooltip::{self, Tip, TipSpec, on_screen};
 use super::settings_layout::{
     CLIENT_H, CLIENT_W, CanvasPress, CardId, CatFace, Control, DragView, EditView, Field,
     GUIDE_URL, GoogleState, Group, Hit, Layout, List, MonitorRow, REPO_URL, ROW_H, RejectMsg,
     ReorderRow, Section, SliderId, State, TileForm, Tone, TranscriptView, UpdateRow,
-    battery_step, canvas_drag, canvas_press, card_scroll,
+    MonitorPick, battery_step, canvas_drag, canvas_press, card_scroll, hit_tip, monitor_tip,
     clip_items_step, disk_warn_step, drag_scroll_speed, drop_index, layout_in, monitor_choice,
     notif_items_step, ram_warn_step, scroll_by, shot_secs_step, slider_value,
 };
@@ -861,6 +862,9 @@ struct Settings {
     slider: Option<SliderId>,
     /// `TME_LEAVE` is armed.
     tracking: bool,
+    /// The hit the last move gave a tip, in which language, with its id and
+    /// tip: a move over the same hit reuses them (`tip_of_hit`).
+    tip_last: Option<(Hit, crate::i18n::Lang, u64, Tip)>,
     anims: Anims,
     clock: Option<FrameClock>,
     edits: Option<Edits>,
@@ -1354,6 +1358,7 @@ pub fn open(owner: HWND, model: Model, section: Option<Section>) -> Result<HWND>
         pressed: None,
         slider: None,
         tracking: false,
+        tip_last: None,
         anims: Anims::default(),
         clock: None,
         edits,
@@ -2225,6 +2230,44 @@ impl Settings {
         let x = (lparam.0 & 0xFFFF) as i16 as f32 / self.scale();
         let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32 / self.scale();
         (x, y)
+    }
+
+    /// The tip of what is under the pointer and where it sits in the client
+    /// area. Calls no window: the caller maps it to the screen and shows it
+    /// once the window's borrow has ended.
+    fn tip_spec(&mut self, lparam: LPARAM) -> Option<TipSpec> {
+        let (x, y) = self.point(lparam);
+        let (hit, rect, on_map) = self.layout.hit_area(x, y)?;
+        let (id, tip) = match hit {
+            Hit::NotchMonitor(MonitorPick::Entry(i)) if on_map => {
+                let m = self.model.monitors.get(usize::from(i))?;
+                (tooltip::id_of(&(1u8, i)), monitor_tip(m))
+            }
+            _ => self.tip_of_hit(hit)?,
+        };
+        Some(TipSpec {
+            id,
+            rect,
+            scale: self.scale(),
+            tip,
+        })
+    }
+
+    /// `hit`'s tooltip id and tip, kept from the last move while the pointer
+    /// stays on it in the same language. `hit_tip` comes first: most hits
+    /// have none, and only those with one pay for the id.
+    fn tip_of_hit(&mut self, hit: Hit) -> Option<(u64, Tip)> {
+        let lang = crate::i18n::lang();
+        if let Some((last, at, id, tip)) = &self.tip_last
+            && *last == hit
+            && *at == lang
+        {
+            return Some((*id, tip.clone()));
+        }
+        let tip = hit_tip(&hit)?;
+        let id = tooltip::id_of(&(2u8, format!("{hit:?}")));
+        self.tip_last = Some((hit, lang, id, tip.clone()));
+        Some((id, tip))
     }
 
     fn hit_at(&self, lparam: LPARAM) -> Option<Hit> {
@@ -3718,19 +3761,28 @@ fn on_mouse_move(hwnd: HWND, lparam: LPARAM) {
     if let Some((owner, action)) = slid {
         post_action(owner, action);
     }
-    let arm = with(|st| {
-        if st.drag.is_some() {
+    let moved = with(|st| {
+        // A row in hand keeps the tip away: `None` hides it.
+        let tip = if st.drag.is_some() {
             let (_, y) = st.point(lparam);
             st.drag_to(y);
+            None
         } else {
             let hit = st.hit_at(lparam);
             if hit != st.hover {
                 st.hover = hit;
                 st.invalidate();
             }
-        }
-        !std::mem::replace(&mut st.tracking, true)
+            Some(st.tip_spec(lparam))
+        };
+        (tip, !std::mem::replace(&mut st.tracking, true))
     });
+    // Out of the borrow: showing the tip maps a rect with `ClientToScreen`.
+    let (feed, arm) = moved.unzip();
+    match feed.flatten() {
+        Some(spec) => tooltip::hover(hwnd, spec.map(|s| on_screen(hwnd, s))),
+        None => tooltip::hide(hwnd),
+    }
     if arm == Some(true) {
         let mut track = TRACKMOUSEEVENT {
             cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
@@ -3744,16 +3796,20 @@ fn on_mouse_move(hwnd: HWND, lparam: LPARAM) {
     }
 }
 
-fn on_mouse_leave() {
+fn on_mouse_leave(hwnd: HWND) {
     with(|st| {
         st.tracking = false;
         if st.hover.take().is_some() {
             st.invalidate();
         }
     });
+    tooltip::hover(hwnd, None);
 }
 
 fn on_button_down(hwnd: HWND, lparam: LPARAM) {
+    // The press hides the tip until the pointer leaves the control; a row
+    // taken by its handle keeps it hidden through the drag (`on_mouse_move`).
+    tooltip::pressed(hwnd);
     // The template editor's canvas: a divider is taken or a tile selected.
     if with(|st| st.canvas_down(lparam)).unwrap_or(false) {
         unsafe {
@@ -3866,6 +3922,7 @@ fn recording_without_hook() -> bool {
 }
 
 fn on_key(hwnd: HWND, key: u16) -> bool {
+    tooltip::hide(hwnd);
     // Esc with a row in hand puts it back instead of closing the window.
     if key == VK_ESCAPE.0 && cancel_drag() {
         return true;
@@ -4090,6 +4147,7 @@ unsafe extern "system" fn wnd_proc(
                 ((lparam.0 >> 16) & 0xFFFF) as u32,
             );
             let kind = wparam.0 as u32;
+            tooltip::hide(hwnd);
             let sized = with(|st| {
                 st.gfx.resize(w, h);
                 // Minimized has no client area: keep the last size.
@@ -4168,12 +4226,14 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
         WM_MOUSELEAVE => {
-            on_mouse_leave();
+            on_mouse_leave(hwnd);
             LRESULT(0)
         }
         WM_MOUSEWHEEL => {
             // High word of wParam: signed delta, +120 per notch away from the user.
             let delta = i32::from((wparam.0 >> 16) as u16 as i16);
+            // The content moves under the pointer.
+            tooltip::hide(hwnd);
             with(|st| st.on_wheel(delta));
             // The form's native fields follow the content.
             relayout_and_place();
@@ -4293,6 +4353,7 @@ unsafe extern "system" fn wnd_proc(
         // Another window came up (or Win+L): a recording in progress ends.
         WM_ACTIVATE => {
             if (wparam.0 & 0xFFFF) as u32 == WA_INACTIVE {
+                tooltip::hide(hwnd);
                 with(|st| st.cancel_recording());
             }
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
@@ -4319,6 +4380,7 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
         WM_DESTROY => {
+            tooltip::hide(hwnd);
             if let Some(owner) = with(|st| {
                 st.clock = None;
                 // The recorder's hook never outlives the window; a recording
