@@ -341,14 +341,26 @@ mod tests {
 
     #[test]
     fn all_holds_every_story_once() {
-        assert_eq!(ALL.len(), 10);
-        let pools: Vec<Story> = [Mascot::Cat, Mascot::Octopus, Mascot::Falk]
-            .into_iter()
-            .flat_map(|m| pool(m, true))
-            .collect();
-        assert_eq!(pools.len(), 10);
-        for s in ALL {
-            assert_eq!(pools.iter().filter(|p| **p == s).count(), 1, "{s:?}");
+        // An exhaustive match with no wildcard: adding a variant to `Story`
+        // stops this compiling until it is added here and to `ALL` too.
+        fn index(s: Story) -> usize {
+            match s {
+                Story::PetakUmpet => 0,
+                Story::BantalAngka => 1,
+                Story::PianoEkor => 2,
+                Story::SyalEkor => 3,
+                Story::PenasaranJam => 4,
+                Story::PelukPulau => 5,
+                Story::Bungee => 6,
+                Story::Kelelawar => 7,
+                Story::MalingAngka => 8,
+                Story::TerbangKeliling => 9,
+            }
         }
+        let mut count = [0; 10];
+        for s in ALL {
+            count[index(s)] += 1;
+        }
+        assert_eq!(count, [1; 10], "each story must appear in ALL exactly once");
     }
 }
