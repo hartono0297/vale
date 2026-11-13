@@ -27,26 +27,28 @@ pub struct Env {
     pub clock_on: bool,
 }
 
-/// Whether the island is in a state where a play may be shown at all. Shared
-/// by starting and stopping. An open panel is left to the callers: it stops
-/// everything but a manual start.
-fn clear(env: &Env) -> bool {
+/// The gates that bind every play, a `Manual` one included.
+fn permanent_ok(env: &Env) -> bool {
     env.mascot_on
         && env.motion_full
         && !env.energy_saver
         && env.win_anim
         && env.idle_view
-        && !env.menu_open
+        && !env.panel_open
         && !env.fullscreen
         && !env.screen_away
-        && !env.shrunk
-        && !env.pointer_near
         && !env.asleep
         && !env.recording
 }
 
+/// The gates that asking for a play by hand switches on (reaching the island to
+/// right-click it), so a `Manual` play skips them.
+fn transient_ok(env: &Env) -> bool {
+    !env.pointer_near && !env.shrunk && !env.menu_open
+}
+
 /// Whether a play may begin. `Manual` skips the presence rule, the cooldown and
-/// the open-panel clause, nothing else.
+/// the transient gates, nothing else.
 pub fn may_start(
     env: &Env,
     moment: Moment,
@@ -54,7 +56,7 @@ pub fn may_start(
     since_input: Duration,
     since_last: Duration,
 ) -> bool {
-    if !clear(env) {
+    if !permanent_ok(env) {
         return false;
     }
     if moment == Moment::Manual {
@@ -65,13 +67,19 @@ pub fn may_start(
         MascotPlay::Sapaan => matches!(moment, Moment::Greeting | Moment::Hour),
         _ => true,
     };
-    allowed && !env.panel_open && presence_ok(since_input) && since_last >= cooldown(preset)
+    allowed && transient_ok(env) && presence_ok(since_input) && since_last >= cooldown(preset)
 }
 
 /// Whether a running play has to end. It winds down unless `instant_stop`.
-pub fn must_stop(env: &Env, playing: Story, shape_changed: bool, clock_jumped: bool) -> bool {
-    !clear(env)
-        || env.panel_open
+pub fn must_stop(
+    env: &Env,
+    playing: Story,
+    moment: Moment,
+    shape_changed: bool,
+    clock_jumped: bool,
+) -> bool {
+    !permanent_ok(env)
+        || (moment != Moment::Manual && !transient_ok(env))
         || shape_changed
         || clock_jumped
         || (playing.needs_clock() && !env.clock_on)
@@ -129,23 +137,52 @@ mod tests {
         assert!(may_start(&env, Moment::Idle, MascotPlay::Sesekali, Duration::from_secs(60), Duration::from_secs(3600)));
     }
 
+    const TRANSIENT: [&str; 3] = ["pointer_near", "shrunk", "menu_open"];
+
     #[test]
-    fn manual_ignores_presence_cooldown_and_an_open_panel() {
+    fn manual_ignores_presence_cooldown_and_the_gates_that_asking_switches_on() {
         let mut env = ok_env();
-        env.panel_open = true;
+        env.pointer_near = true;
+        env.shrunk = true;
+        env.menu_open = true;
         assert!(may_start(&env, Moment::Manual, MascotPlay::Mati, Duration::ZERO, Duration::ZERO));
         env.fullscreen = true;
         assert!(!may_start(&env, Moment::Manual, MascotPlay::Mati, Duration::ZERO, Duration::ZERO));
+        let mut panel = ok_env();
+        panel.panel_open = true;
+        assert!(!may_start(&panel, Moment::Manual, MascotPlay::Mati, Duration::ZERO, Duration::ZERO));
     }
 
     #[test]
-    fn manual_is_stopped_by_every_gate_except_the_open_panel() {
+    fn manual_is_stopped_by_every_permanent_gate_and_only_those() {
         for (name, env) in off_by_one_envs() {
             assert_eq!(
                 may_start(&env, Moment::Manual, MascotPlay::Sesekali, Duration::ZERO, Duration::ZERO),
-                name == "panel_open",
+                TRANSIENT.contains(&name),
                 "{name}"
             );
+        }
+    }
+
+    #[test]
+    fn an_env_that_may_start_a_manual_play_does_not_stop_it_on_the_first_check() {
+        let mut env = ok_env();
+        env.pointer_near = true;
+        env.shrunk = true;
+        env.menu_open = true;
+        assert!(may_start(&env, Moment::Manual, MascotPlay::Mati, Duration::ZERO, Duration::ZERO));
+        assert!(
+            !must_stop(&env, Story::MalingAngka, Moment::Manual, false, false),
+            "may_start and must_stop disagree about the same env"
+        );
+        assert!(must_stop(&env, Story::MalingAngka, Moment::Idle, false, false));
+    }
+
+    #[test]
+    fn for_a_manual_play_must_stop_agrees_with_may_start_on_every_gate() {
+        for (name, env) in off_by_one_envs() {
+            let start = may_start(&env, Moment::Manual, MascotPlay::Sesekali, Duration::ZERO, Duration::ZERO);
+            assert_eq!(must_stop(&env, Story::Kelelawar, Moment::Manual, false, false), !start, "{name}");
         }
     }
 
@@ -188,20 +225,20 @@ mod tests {
     fn a_running_play_stops_on_use_a_shape_change_or_a_clock_jump() {
         let mut env = ok_env();
         env.pointer_near = true;
-        assert!(must_stop(&env, Story::MalingAngka, false, false), "the pointer entered the hover zone");
-        assert!(must_stop(&ok_env(), Story::MalingAngka, true, false), "the size or style changed");
-        assert!(must_stop(&ok_env(), Story::MalingAngka, false, true), "the clock jumped");
+        assert!(must_stop(&env, Story::MalingAngka, Moment::Idle, false, false), "the pointer entered the hover zone");
+        assert!(must_stop(&ok_env(), Story::MalingAngka, Moment::Idle, true, false), "the size or style changed");
+        assert!(must_stop(&ok_env(), Story::MalingAngka, Moment::Idle, false, true), "the clock jumped");
         let mut no_clock = ok_env();
         no_clock.clock_on = false;
-        assert!(must_stop(&no_clock, Story::MalingAngka, false, false), "a clock story with the clock off");
-        assert!(!must_stop(&no_clock, Story::Kelelawar, false, false), "a story that needs no clock carries on");
-        assert!(!must_stop(&ok_env(), Story::MalingAngka, false, false), "nothing wrong");
+        assert!(must_stop(&no_clock, Story::MalingAngka, Moment::Idle, false, false), "a clock story with the clock off");
+        assert!(!must_stop(&no_clock, Story::Kelelawar, Moment::Idle, false, false), "a story that needs no clock carries on");
+        assert!(!must_stop(&ok_env(), Story::MalingAngka, Moment::Idle, false, false), "nothing wrong");
     }
 
     #[test]
     fn every_gate_but_the_clock_stops_a_running_play() {
         for (name, env) in off_by_one_envs() {
-            assert!(must_stop(&env, Story::Kelelawar, false, false), "{name} did not stop it");
+            assert!(must_stop(&env, Story::Kelelawar, Moment::Idle, false, false), "{name} did not stop it");
         }
     }
 
