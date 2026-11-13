@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime};
 
 use windows::Win32::UI::WindowsAndMessaging::SetTimer;
 
-use super::{App, DEFERRED_SHUTDOWN, WM_APP_EVENT, poster, shortcuts};
+use super::{App, DEFERRED_SHUTDOWN, Start, WM_APP_EVENT, poster, shortcuts};
 use crate::i18n::{self, Key, Lang};
 use crate::model::{Event, Notice, NoticeKind};
 use crate::ui::settings_layout::UpdateRow;
@@ -71,7 +71,7 @@ fn auto_check_due(enabled: bool, last: Option<SystemTime>, now: SystemTime) -> b
         })
 }
 
-fn notice(key: &str, title: String, body: String, kind: NoticeKind) -> Notice {
+pub(super) fn notice(key: &str, title: String, body: String, kind: NoticeKind) -> Notice {
     Notice {
         key: key.into(),
         source: "Vale".into(),
@@ -150,10 +150,17 @@ impl App {
     /// After the island is up: the timer of the automatic check (release
     /// builds only), the notice of an update that just restarted Vale, and
     /// the removal of what the last swap left beside the exe.
-    pub(super) fn update_start(&mut self, updated_from: Option<&str>) {
-        if let Some(old) = updated_from {
-            eprintln!("vale: updated from {old} to {}", update::CURRENT);
-            self.apply_now(Event::Notice(updated_notice(self.config.language, old)));
+    pub(super) fn update_start(&mut self, start: &Start) {
+        match start {
+            Start::Updated(old) => {
+                eprintln!("vale: updated from {old} to {}", update::CURRENT);
+                self.apply_now(Event::Notice(updated_notice(self.config.language, old)));
+            }
+            Start::Imported => {
+                let title = i18n::text(self.config.language, Key::SettingsImported).into();
+                self.apply_now(Event::Notice(info_notice(title, String::new())));
+            }
+            Start::Normal => {}
         }
         if cfg!(debug_assertions) {
             return;

@@ -20,7 +20,7 @@ use crate::config::{
 };
 use crate::hotkey::{Hotkey, HotkeyId, Hotkeys};
 use crate::i18n::{
-    Key, Lang, text, tr_offer, tr_progress, tr_used, update_available, update_downloading,
+    Key, Lang, short_date, text, tr_offer, tr_progress, tr_used, update_available, update_downloading,
     update_installed, version_label, video_estimate_line,
 };
 use crate::model::{Page, PomoField};
@@ -35,6 +35,7 @@ use crate::ui::geometry::{
     NOTCH_H_DEFAULT, NOTCH_H_MAX, NOTCH_H_MIN, NOTCH_W_DEFAULT, NOTCH_W_MAX, NOTCH_W_MIN,
 };
 use crate::ui::icons::Icon;
+use crate::ui::settings::TransferView;
 use crate::ui::tooltip::{KeyHint, Tip};
 use crate::ui::robot::{Motion, SLEEP_MAX, SLEEP_MIN};
 use crate::model::RecSources;
@@ -637,6 +638,12 @@ pub enum Hit {
     /// "Cek pembaruan otomatis".
     UpdateAuto,
     DataFolder,
+    /// Tentang → "Pindah ke PC lain": "Ekspor…", "Impor…", and on a checked
+    /// file "Batal" and "Impor & mulai ulang".
+    ConfigExport,
+    ConfigImport,
+    ConfigImportCancel,
+    ConfigImportConfirm,
 }
 
 /// What a click in the Monitor list or map picks: Monitor utama, or the
@@ -1578,6 +1585,8 @@ pub struct State<'a> {
     pub update_row: UpdateRow,
     /// The data folder in use, as `data_dir::label` names it.
     pub data_dir: &'a str,
+    /// Tentang → "Pindah ke PC lain": what the card shows.
+    pub transfer: TransferView,
     /// Fitur -> Transkrip, and whether "Pilih model lain" was clicked
     /// (window state: the model list shows instead of the offer).
     pub transcript: TranscriptView,
@@ -1965,6 +1974,30 @@ impl Builder<'_> {
             lines.push(String::new());
         }
         lines
+    }
+
+    /// `prefix` and a file `name` in one line no wider than `w`: a name too
+    /// long loses its middle to an ellipsis, and keeps its start and ending
+    /// (the extension).
+    fn fit_name(&self, prefix: &str, name: &str, w: f32) -> String {
+        let chars: Vec<char> = name.chars().collect();
+        let line = |head: usize, tail: usize| {
+            let start: String = chars[..head].iter().collect();
+            let end: String = chars[chars.len() - tail..].iter().collect();
+            format!("{prefix}{start}\u{2026}{end}")
+        };
+        let whole = format!("{prefix}{name}");
+        if self.w(&whole, Font::Desc) <= w {
+            return whole;
+        }
+        let tail = chars.len().min(8);
+        for head in (0..=chars.len() - tail).rev() {
+            let cut = line(head, tail);
+            if self.w(&cut, Font::Desc) <= w {
+                return cut;
+            }
+        }
+        line(0, tail)
     }
 
     /// The width a segmented control of `items` takes (see `segmented_if`).
@@ -6095,6 +6128,84 @@ fn about(b: &mut Builder, s: &State) {
     let desc = Some((b.t(Key::UpdateAutoDesc), Tone::Secondary));
     b.row_text(card, y, b.t(Key::UpdateAuto), desc, false, x);
     b.divider(card, y);
+
+    titled(b, Key::GroupMoveSettings);
+    move_card(b, s);
+}
+
+/// "Pindah ke PC lain": the export row, and the import row that turns into
+/// "Batal" / "Impor & mulai ulang" once a checked file waits. Each row's text
+/// wraps beside its buttons and the row grows to fit, like the other wrapping
+/// rows.
+fn move_card(b: &mut Builder, s: &State) {
+    let pending = matches!(s.transfer, TransferView::Pending { .. });
+    let button = |hit, key, kind| {
+        let label = b.t(key);
+        let w = b.button_w(&[&label], kind);
+        (hit, label, kind, true, w)
+    };
+    let export = button(Hit::ConfigExport, Key::TransferExportButton, ButtonKind::Secondary);
+    let import = if pending {
+        vec![
+            button(Hit::ConfigImportCancel, Key::Cancel, ButtonKind::Secondary),
+            button(Hit::ConfigImportConfirm, Key::TransferConfirm, ButtonKind::Primary),
+        ]
+    } else {
+        vec![button(Hit::ConfigImport, Key::TransferImportButton, ButtonKind::Secondary)]
+    };
+    let width_of = |items: &[(Hit, String, ButtonKind, bool, f32)]| {
+        items.iter().map(|i| i.4).sum::<f32>() + GAP * (items.len().max(1) - 1) as f32
+    };
+    let probe = Rect {
+        x: b.g.content_x,
+        y: 0.0,
+        w: b.g.content_w,
+        h: 0.0,
+    };
+    let text_w = |items: &[(Hit, String, ButtonKind, bool, f32)]| {
+        row_text_w(probe, b.g.right - width_of(items))
+    };
+
+    let (export_desc, export_tone) = match &s.transfer {
+        // A file waiting does not change this row: it shows what it does.
+        TransferView::Exported(name) if !pending => (
+            b.fit_name(&format!("{}: ", b.t(Key::TransferSaved)), name, text_w(&[export.clone()])),
+            Tone::Secondary,
+        ),
+        TransferView::ExportFailed => (b.t(Key::TransferExportFailed), Tone::Bad),
+        _ => (b.t(Key::TransferExportDesc), Tone::Secondary),
+    };
+    let (import_desc, import_tone) = match &s.transfer {
+        // A refusal (a recording runs) takes the place of the "from" line.
+        TransferView::Pending { refusal: Some(why), .. } => (why.clone(), Tone::Bad),
+        TransferView::Pending { app_version, date, .. } => {
+            let from = b.t(Key::TransferFromVale);
+            let head = match date {
+                Some(d) => format!("{from} {app_version}, {}", short_date(b.lang, *d)),
+                None => format!("{from} {app_version}"),
+            };
+            (format!("{head}. {}", b.t(Key::TransferPendingNote)), Tone::Secondary)
+        }
+        TransferView::Refused(why) => (why.clone(), Tone::Bad),
+        _ => (b.t(Key::TransferImportDesc), Tone::Secondary),
+    };
+    let export_lines = b.wrap(&export_desc, Font::Desc, text_w(&[export.clone()]));
+    let import_lines = b.wrap(&import_desc, Font::Desc, text_w(&import));
+    let (export_h, import_h) = (
+        wrapped_row_h(export_lines.len()),
+        wrapped_row_h(import_lines.len()),
+    );
+
+    let card = b.card(export_h + import_h);
+    let import_y = card.y + export_h;
+    b.divider(card, import_y);
+    for (y, h, items, label, lines, tone) in [
+        (card.y, export_h, vec![export], Key::TransferExport, export_lines, export_tone),
+        (import_y, import_h, import, Key::TransferImport, import_lines, import_tone),
+    ] {
+        let x = b.buttons(b.g.right, y + h / 2.0, items);
+        b.row_text_lines(card, y, b.t(label), lines, tone, x);
+    }
 }
 
 /// The Pembaruan row's description, button label and whether the button works.
@@ -6423,6 +6534,7 @@ mod tests {
                         update_auto: true,
                         update_row: UpdateRow::Idle,
                         data_dir: r"%APPDATA%\Vale",
+                        transfer: TransferView::Idle,
                         transcript: TranscriptView::default(),
                         transcript_choose: false,
                         transcript_confirm: None,
@@ -6847,10 +6959,11 @@ mod tests {
     /// state: Tampilan (three cards and the preview), Kucing, Panel (the two
     /// lists), Clipboard (history and screenshot), Tombol pintas (the header
     /// and eight rows, past the margin at the minimum size) and Fitur
-    /// (five cards).
+    /// (five cards), and Tentang (the logo, "Tautan" and "Pindah ke PC lain":
+    /// 50 px past the margin at the minimum size).
     // Widget holds the seven settings and the gallery's card: 460 px of
     // content in a 400 px high viewport at the minimum size, so it scrolls.
-    const SCROLLING: [Section; 7] = [
+    const SCROLLING: [Section; 8] = [
         Section::Appearance,
         Section::Cat,
         Section::Panel,
@@ -6858,11 +6971,12 @@ mod tests {
         Section::Clipboard,
         Section::Hotkeys,
         Section::Features,
+        Section::About,
     ];
 
     /// Every section fits the window's height. `SCROLLING` ones scroll by
     /// exactly what they lack and then the last card meets the bottom margin;
-    /// the rest (Umum, Integrasi, Tentang) never scroll.
+    /// the rest (Umum, Integrasi) never scroll.
     #[test]
     fn everything_fits_in_the_window_height() {
         for (section, lang, l) in all_layouts() {
@@ -6905,10 +7019,10 @@ mod tests {
                 .filter(|s| layout(*s, &state, &Estimate).viewport.is_some())
                 .collect();
             assert_eq!(scrolling, SCROLLING, "{lang:?}");
-            // Umum, Integrasi and Tentang never scroll, whatever the state
-            // (Google, a recording, a refused combo, taken hotkeys).
+            // Umum and Integrasi never scroll, whatever the state (Google, a
+            // recording, a refused combo, taken hotkeys).
             for s in states() {
-                for section in [Section::General, Section::Integrations, Section::About] {
+                for section in [Section::General, Section::Integrations] {
                     let l = layout(section, &s, &Estimate);
                     assert!(l.viewport.is_none(), "{section:?}");
                 }
@@ -7199,7 +7313,7 @@ mod tests {
         assert_eq!(scroll_by(90.0, -240, 100.0), 100.0);
         assert!(l.scrollbar().is_some() && top.scrollbar().is_some());
         // The sections that fit have no scrollbar.
-        for section in [Section::Integrations, Section::About] {
+        for section in [Section::Integrations] {
             assert!(layout(section, &base, &Estimate).scrollbar().is_none());
         }
     }
@@ -9091,8 +9205,191 @@ mod tests {
         );
     }
 
+    /// Tentang with `view` on the transfer card.
+    fn about_with(lang: Lang, view: TransferView) -> Layout {
+        let s = State {
+            lang,
+            transfer: view,
+            ..states()[0].clone()
+        };
+        layout(Section::About, &s, &Estimate)
+    }
+
+    fn pending(version: &str, date: Option<(i32, u32, u32)>, refusal: Option<&str>) -> TransferView {
+        TransferView::Pending {
+            app_version: version.into(),
+            date: date.map(|(y, m, d)| chrono::NaiveDate::from_ymd_opt(y, m, d).unwrap()),
+            refusal: refusal.map(Into::into),
+        }
+    }
+
+    fn button_rect(l: &Layout, hit: Hit) -> Option<(Rect, ButtonKind)> {
+        l.controls.iter().find_map(|c| match c {
+            Control::Button(b) if b.hit == hit => Some((b.rect, b.kind)),
+            _ => None,
+        })
+    }
+
     #[test]
-    fn tentang_has_four_rows_the_update_row_and_the_auto_toggle_and_never_scrolls() {
+    fn about_has_the_move_card_with_two_rows() {
+        for lang in [Lang::Id, Lang::En] {
+            let l = about_with(lang, TransferView::Idle);
+            let title = text(lang, Key::GroupMoveSettings).to_uppercase();
+            assert!(l.texts.iter().any(|t| t.text == title), "{lang:?} title");
+            // Under "Tautan", two rows with a hairline between.
+            let (links, card) = (&l.cards[l.cards.len() - 2], l.cards.last().unwrap());
+            assert_eq!(links.h, 4.0 * ROW_H);
+            assert_eq!(card.h, 2.0 * ROW_H);
+            assert!(card.y > links.bottom());
+            assert!(
+                l.dividers
+                    .iter()
+                    .any(|d| (d.y + 0.5 - (card.y + ROW_H)).abs() < 0.01),
+                "{lang:?} divider"
+            );
+            let (export, kind) = button_rect(&l, Hit::ConfigExport).expect("Ekspor");
+            let (import, _) = button_rect(&l, Hit::ConfigImport).expect("Impor");
+            assert_eq!(kind, ButtonKind::Secondary);
+            assert!(export.y < import.y);
+            assert!(export.y > card.y && export.bottom() < card.y + ROW_H);
+            assert!(import.y > card.y + ROW_H && import.bottom() < card.bottom());
+            assert!(button_rect(&l, Hit::ConfigImportConfirm).is_none());
+            assert!(button_rect(&l, Hit::ConfigImportCancel).is_none());
+            let label = |hit| {
+                buttons_of(&l)
+                    .into_iter()
+                    .find(|b| b.0 == hit)
+                    .map(|b| b.1)
+                    .unwrap()
+            };
+            assert_eq!(label(Hit::ConfigExport), text(lang, Key::TransferExportButton));
+            assert_eq!(label(Hit::ConfigImport), text(lang, Key::TransferImportButton));
+        }
+    }
+
+    #[test]
+    fn the_move_card_describes_what_happened() {
+        let texts = |l: &Layout| -> Vec<(String, Tone)> {
+            l.texts.iter().map(|t| (t.text.clone(), t.tone)).collect()
+        };
+        let has = |l: &Layout, what: &str, tone: Tone| texts(l).contains(&(what.to_owned(), tone));
+        let l = about_with(Lang::Id, TransferView::Idle);
+        assert!(has(&l, "Simpan pengaturan umum ke satu file", Tone::Secondary));
+        assert!(has(&l, "Ganti pengaturan di PC ini dengan isi file", Tone::Secondary));
+        let l = about_with(Lang::En, TransferView::Exported("vale.json".into()));
+        assert!(has(&l, "Saved: vale.json", Tone::Secondary));
+        assert!(!has(&l, "Save the general settings to one file", Tone::Secondary));
+        let l = about_with(Lang::Id, TransferView::ExportFailed);
+        assert!(has(&l, "Gagal menyimpan", Tone::Bad));
+        let l = about_with(Lang::En, TransferView::Refused("This is not a Vale settings file.".into()));
+        assert!(has(&l, "This is not a Vale settings file.", Tone::Bad));
+        assert!(!has(&l, "Replace this PC's settings with a file", Tone::Secondary));
+        // A pending file: the export row is idle again, the import row asks.
+        let l = about_with(Lang::En, pending("1.4.0", Some((2026, 10, 25)), None));
+        assert!(has(&l, "Save the general settings to one file", Tone::Secondary));
+        let all = texts(&l).into_iter().map(|t| t.0).collect::<Vec<_>>().join(" ");
+        assert!(
+            all.contains("From Vale 1.4.0, 25 Oct. The general settings are replaced"),
+            "{all}"
+        );
+        let l = about_with(Lang::Id, pending("1.4.0", None, None));
+        let all = texts(&l).into_iter().map(|t| t.0).collect::<Vec<_>>().join(" ");
+        assert!(all.contains("Dari Vale 1.4.0. Pengaturan umum diganti"), "{all}");
+    }
+
+    #[test]
+    fn pending_import_shows_confirm_and_cancel() {
+        for lang in [Lang::Id, Lang::En] {
+            let l = about_with(lang, pending("1.4.0", Some((2026, 10, 25)), None));
+            assert!(button_rect(&l, Hit::ConfigImport).is_none());
+            let (cancel, ck) = button_rect(&l, Hit::ConfigImportCancel).expect("Batal");
+            let (confirm, fk) = button_rect(&l, Hit::ConfigImportConfirm).expect("Impor & mulai ulang");
+            assert_eq!((ck, fk), (ButtonKind::Secondary, ButtonKind::Primary));
+            assert!(cancel.right() < confirm.x, "confirm is the right-most");
+            let content_right = l.cards.last().unwrap().right();
+            assert!(confirm.right() <= content_right);
+            let label = |hit| buttons_of(&l).into_iter().find(|b| b.0 == hit).unwrap().1;
+            assert_eq!(label(Hit::ConfigImportCancel), text(lang, Key::Cancel));
+            assert_eq!(label(Hit::ConfigImportConfirm), text(lang, Key::TransferConfirm));
+            // The pending row grows to fit the wrapped description.
+            let card = l.cards.last().unwrap();
+            assert!(card.h > 2.0 * ROW_H, "{lang:?} row grows: {}", card.h);
+            let (_, export) = (0, button_rect(&l, Hit::ConfigExport).unwrap().0);
+            assert!(export.bottom() < card.y + ROW_H);
+        }
+    }
+
+    #[test]
+    fn a_refusal_while_pending_replaces_the_from_sentence_and_keeps_both_buttons() {
+        for lang in [Lang::Id, Lang::En] {
+            let why = "Hentikan rekaman dulu";
+            let l = about_with(lang, pending("1.4.0", None, Some(why)));
+            let shown = l.texts.iter().find(|t| t.text == why).expect("the refusal");
+            assert_eq!(shown.tone, Tone::Bad);
+            assert!(!l.texts.iter().any(|t| t.text.contains(text(lang, Key::TransferFromVale))));
+            assert!(button_rect(&l, Hit::ConfigImportCancel).is_some());
+            assert!(button_rect(&l, Hit::ConfigImportConfirm).is_some());
+        }
+    }
+
+    #[test]
+    fn long_confirm_text_fits_in_the_row_at_720() {
+        let views = [
+            pending("10.20.30-beta.12", Some((2026, 12, 28)), None),
+            pending("1.0.0", None, Some("Hentikan rekaman dulu sebelum mengganti pengaturan")),
+            TransferView::Exported("vale-settings-2026-12-28-final-copy-2.json".into()),
+            TransferView::Refused("File ini dibuat oleh Vale yang lebih baru; perbarui Vale dulu".into()),
+        ];
+        for lang in [Lang::Id, Lang::En] {
+            for view in &views {
+                let l = about_with(lang, view.clone());
+                let card = *l.cards.last().unwrap();
+                let buttons: Vec<Rect> = l
+                    .controls
+                    .iter()
+                    .filter_map(|c| match c {
+                        Control::Button(b)
+                            if matches!(
+                                b.hit,
+                                Hit::ConfigExport
+                                    | Hit::ConfigImport
+                                    | Hit::ConfigImportCancel
+                                    | Hit::ConfigImportConfirm
+                            ) =>
+                        {
+                            Some(b.rect)
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                // Every text from the card's top down: nothing follows the
+                // card, so one that spills past its bottom is still checked.
+                let checked: Vec<&Text> = l.texts.iter().filter(|t| t.rect.y >= card.y).collect();
+                assert!(checked.len() >= 4, "{lang:?}: {} texts", checked.len());
+                let export = button_rect(&l, Hit::ConfigExport).unwrap().0;
+                let row1_bottom = card.y + 2.0 * (export.y + export.h / 2.0 - card.y);
+                for t in checked {
+                    let w = Estimate.width(&t.text, t.font);
+                    assert!(w <= t.rect.w + 0.01, "{lang:?} {:?}: {w} > {}", t.text, t.rect.w);
+                    assert!(t.rect.x >= card.x && t.rect.right() <= card.right(), "{lang:?} {:?}", t.text);
+                    assert!(t.rect.bottom() <= card.bottom() + 0.01, "{lang:?} {:?} spills", t.text);
+                    // Inside one of the two rows, never across the hairline.
+                    let inside_one = t.rect.bottom() <= row1_bottom + 0.01 || t.rect.y >= row1_bottom - 0.01;
+                    assert!(inside_one, "{lang:?} {:?} crosses the rows", t.text);
+                    // Text never runs under a button of its own row.
+                    for b in buttons.iter().filter(|b| b.y < t.rect.bottom() && b.bottom() > t.rect.y) {
+                        assert!(t.rect.right() <= b.x, "{lang:?} {:?}", t.text);
+                    }
+                }
+                for b in &buttons {
+                    assert!(b.x >= card.x && b.right() <= card.right() && b.y >= card.y && b.bottom() <= card.bottom());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tentang_has_four_rows_the_update_row_and_the_auto_toggle_and_scrolls_for_the_move_card() {
         for lang in [Lang::Id, Lang::En] {
             let base = State {
                 lang,
@@ -9109,7 +9406,7 @@ mod tests {
                 "the auto row is a toggle, not a button"
             );
             // Four rows: Kode sumber, Pembaruan, the toggle, Folder data.
-            let card = l.cards.last().expect("the Tautan card");
+            let card = &l.cards[l.cards.len() - 2];
             assert_eq!(card.h, 4.0 * ROW_H);
             let toggle = l.controls.iter().find_map(|c| match c {
                 Control::Toggle { hit, rect, on, .. } if *hit == Hit::UpdateAuto => {
@@ -9122,7 +9419,8 @@ mod tests {
             assert!(rect.y > card.y + 2.0 * ROW_H && rect.y < card.y + 3.0 * ROW_H);
             let (cx, cy) = (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
             assert_eq!(l.hit(cx, cy), Some(Hit::UpdateAuto));
-            // The window is tall enough for the whole section.
+            // The Tautan card itself fits; the move card under it is what
+            // makes Tentang scroll at the minimum size.
             assert!(card.bottom() + CARD_GAP <= CLIENT_H);
         }
     }

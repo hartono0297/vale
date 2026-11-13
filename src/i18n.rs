@@ -459,6 +459,16 @@ keys! {
     UpdateButton => "Update", "Update";
     UpdateLater => "Nanti", "Later";
     UpdateDebugOff => "Cek pembaruan mati di build debug", "Update check is off in debug builds";
+    NotValeFile => "Ini bukan file pengaturan Vale.", "This is not a Vale settings file.";
+    StopRecordingFirst => "Hentikan rekaman dulu", "Stop the recording first";
+    SettingsImportedRestart => "Pengaturan diimpor. Mulai ulang Vale supaya semuanya berlaku.",
+        "Settings imported. Restart Vale to apply everything.";
+    BackupFailed => "Cadangan pengaturan lama gagal dibuat, jadi tidak ada yang diimpor.",
+        "Could not back up the current settings, so nothing was imported.";
+    SettingsSaveFailed => "Pengaturan gagal disimpan, jadi tidak ada yang diimpor.",
+        "Could not save the settings, so nothing was imported.";
+    FileUnreadable => "File ini tidak bisa dibaca.", "Could not read this file.";
+    ConfigFilterJson => "File JSON (*.json)", "JSON files (*.json)";
     UpdateErrNoNetwork => "tidak ada koneksi", "no connection";
     UpdateErrNotWritable => "folder tidak bisa ditulis", "folder is not writable";
     UpdateErrChecksum => "checksum tidak cocok", "checksum does not match";
@@ -887,6 +897,7 @@ keys! {
     Updates => "Pembaruan", "Updates";
     SeeReleases => "Lihat rilis", "See releases";
     DataFolder => "Folder data", "Data folder";
+    SettingsImported => "Pengaturan diimpor", "Settings imported";
     OpenDataFolder => "Buka folder data", "Open data folder";
 
     // Vale's mascot, the notch assistant (Settings → Maskot).
@@ -1150,6 +1161,23 @@ keys! {
     GroupCli => "CLI", "CLI";
     GroupCleaner => "Pembersih", "Cleaner";
     GroupLinks => "Tautan", "Links";
+
+    // Settings → Tentang → Pindah ke PC lain: export and import the settings.
+    GroupMoveSettings => "Pindah ke PC lain", "Move to another PC";
+    TransferExport => "Ekspor pengaturan", "Export settings";
+    TransferExportDesc => "Simpan pengaturan umum ke satu file",
+        "Save the general settings to one file";
+    TransferExportButton => "Ekspor…", "Export…";
+    TransferSaved => "Tersimpan", "Saved";
+    TransferExportFailed => "Gagal menyimpan", "Could not save";
+    TransferImport => "Impor pengaturan", "Import settings";
+    TransferImportDesc => "Ganti pengaturan di PC ini dengan isi file",
+        "Replace this PC's settings with a file";
+    TransferImportButton => "Impor…", "Import…";
+    TransferFromVale => "Dari Vale", "From Vale";
+    TransferPendingNote => "Pengaturan umum diganti, lalu Vale mulai ulang.",
+        "The general settings are replaced, then Vale restarts.";
+    TransferConfirm => "Impor & mulai ulang", "Import & restart";
     SurfaceAuto => "Ikuti maskot", "Match mascot";
     SurfaceSea => "Laut", "Sea";
     SurfaceNight => "Malam", "Night";
@@ -1882,6 +1910,14 @@ pub fn update_failed(lang: Lang, reason: &str) -> String {
     match lang {
         Lang::Id => format!("Update gagal: {reason}"),
         Lang::En => format!("Update failed: {reason}"),
+    }
+}
+
+/// An import refused because the file comes from a newer Vale.
+pub fn settings_file_newer(lang: Lang, version: &str) -> String {
+    match lang {
+        Lang::Id => format!("File ini dari Vale yang lebih baru (versi {version}). Perbarui Vale dulu."),
+        Lang::En => format!("This file comes from a newer Vale ({version}). Update Vale first."),
     }
 }
 

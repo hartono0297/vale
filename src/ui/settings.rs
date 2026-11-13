@@ -201,6 +201,18 @@ pub enum Action {
     /// back to the default).
     RecSources(RecSources),
     RecFolder(Option<std::path::PathBuf>),
+    /// "Ekspor": open the save dialog.
+    ConfigExport,
+    /// The path the save dialog returned.
+    ConfigExportTo(std::path::PathBuf),
+    /// "Impor": open the file dialog.
+    ConfigImport,
+    /// The file the open dialog returned.
+    ConfigImportFrom(std::path::PathBuf),
+    /// "Impor & mulai ulang" on a checked file.
+    ConfigImportConfirm,
+    /// "Batal", or leaving Tentang or closing the window with a file waiting.
+    ConfigImportCancel,
     /// The screen recordings' frame rate: 30 or 60.
     VideoFps(u32),
     /// The screen recordings' size cap.
@@ -394,6 +406,35 @@ fn folder_click(prefs: &RecordingPrefs, hit: Hit) -> Option<Vec<After>> {
     }
 }
 
+/// What a click on the "Pindah ke PC lain" card does, or `None` for a hit that
+/// is not on the card. The island owns the dialogs and the pending file.
+fn transfer_click(hit: Hit) -> Option<Vec<After>> {
+    let action = match hit {
+        Hit::ConfigExport => Action::ConfigExport,
+        Hit::ConfigImport => Action::ConfigImport,
+        Hit::ConfigImportConfirm => Action::ConfigImportConfirm,
+        Hit::ConfigImportCancel => Action::ConfigImportCancel,
+        _ => return None,
+    };
+    Some(vec![After::Post(action)])
+}
+
+/// The cancel a checked import file needs when the window leaves Tentang
+/// (`to`: the section it goes to) or closes (`to` is `None`).
+fn import_cancel_on_leave(
+    from: Section,
+    to: Option<Section>,
+    view: &TransferView,
+) -> Option<Action> {
+    // Closing cancels from any section: the file dialog is the island's, so
+    // the file may have been picked while another section showed.
+    let leaves = match to {
+        None => true,
+        Some(to) => from == Section::About && to != Section::About,
+    };
+    (leaves && matches!(view, TransferView::Pending { .. })).then_some(Action::ConfigImportCancel)
+}
+
 /// What a click on the "Rekam layar" card does, or `None` for a hit that is
 /// not on the card. A frame rate already chosen does nothing.
 fn screen_click(prefs: &RecordingPrefs, hit: Hit) -> Option<Vec<After>> {
@@ -465,6 +506,25 @@ fn armed_after(armed: Option<usize>, in_use: Option<usize>) -> Option<usize> {
 pub unsafe fn take_action(lparam: LPARAM) -> Option<Action> {
     let ptr = lparam.0 as *mut Action;
     (!ptr.is_null()).then(|| *unsafe { Box::from_raw(ptr) })
+}
+
+/// The export / import card's state.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum TransferView {
+    #[default]
+    Idle,
+    /// The file name written.
+    Exported(String),
+    ExportFailed,
+    /// Why a file was refused, or what stops the import.
+    Refused(String),
+    /// A checked file waits for "Impor & mulai ulang".
+    /// `refusal`: why "Impor & mulai ulang" did nothing (a recording is running).
+    Pending {
+        app_version: String,
+        date: Option<chrono::NaiveDate>,
+        refusal: Option<String>,
+    },
 }
 
 /// What the window shows, as the owner has it.
@@ -544,6 +604,8 @@ pub struct Model {
     /// a check running, an update known, a download).
     pub update_auto: bool,
     pub update_row: UpdateRow,
+    /// Settings card "Ekspor / Impor pengaturan": the island fills it.
+    pub transfer: TransferView,
     /// Fitur -> Transkrip (the island fills what is on disk and running;
     /// `from_config` only the settings).
     pub transcript: TranscriptView,
@@ -631,6 +693,7 @@ impl Model {
             window_place: cfg.settings_window,
             update_auto: cfg.update_check,
             update_row: UpdateRow::Idle,
+            transfer: TransferView::Idle,
             transcript: TranscriptView {
                 prefs: cfg.transcript.clone(),
                 ..TranscriptView::default()
@@ -1813,6 +1876,7 @@ impl Settings {
             update_auto: m.update_auto,
             update_row: m.update_row.clone(),
             data_dir: &self.data_label,
+            transfer: m.transfer.clone(),
             transcript: m.transcript.clone(),
             transcript_choose: self.transcript_choose,
             transcript_confirm: self.transcript_confirm,
@@ -3009,6 +3073,10 @@ impl Settings {
             },
             Hit::UpdateAuto => post(Action::UpdateAuto(!m.update_auto)),
             Hit::DataFolder => vec![After::OpenDataFolder],
+            Hit::ConfigExport
+            | Hit::ConfigImport
+            | Hit::ConfigImportConfirm
+            | Hit::ConfigImportCancel => transfer_click(hit).unwrap_or_default(),
             Hit::HooksInstall => {
                 let note = match install::install_for_current_exe() {
                     InstallOutcome::Installed => (text(lang, Key::HooksOn).into(), Tone::Good),
@@ -3191,6 +3259,12 @@ impl Settings {
         // form's Nama field: leaving Fitur closes it, as Batal would.
         if self.section == Section::Features {
             self.arrange_edit = None;
+        }
+        // A checked import file does not wait on another section.
+        if let Some(cancel) =
+            import_cancel_on_leave(self.section, Some(section), &self.model.transfer)
+        {
+            post_action(self.owner, cancel);
         }
         // A recording stops, and a refusal's red text goes, with the section.
         self.cancel_recording();
@@ -3627,6 +3701,144 @@ pub fn pick_rec_audio(owner: HWND, start: std::path::PathBuf) {
             }
             unsafe { CoUninitialize() };
         });
+}
+
+/// "Ekspor": the save dialog on a short-lived thread (as `pick_rec_folder`),
+/// opening in Documents with `default_name`. The path comes back to `owner`
+/// as `Action::ConfigExportTo`.
+pub fn pick_export_path(owner: HWND, default_name: String) {
+    use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
+    let raw = owner.0 as isize;
+    let _ = std::thread::Builder::new()
+        .name("config-export".into())
+        .spawn(move || {
+            let owner = HWND(raw as *mut c_void);
+            // The dialog wants a single-threaded apartment.
+            if unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_err() {
+                return;
+            }
+            if let Some(path) = save_json_path(owner, &default_name) {
+                post_action(owner, Action::ConfigExportTo(path));
+            }
+            unsafe { CoUninitialize() };
+        });
+}
+
+/// "Impor": the open dialog on a short-lived thread. The file comes back to
+/// `owner` as `Action::ConfigImportFrom`.
+pub fn pick_import_path(owner: HWND) {
+    use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
+    let raw = owner.0 as isize;
+    let _ = std::thread::Builder::new()
+        .name("config-import".into())
+        .spawn(move || {
+            let owner = HWND(raw as *mut c_void);
+            // The dialog wants a single-threaded apartment.
+            if unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_err() {
+                return;
+            }
+            if let Some(path) = open_json_path(owner) {
+                post_action(owner, Action::ConfigImportFrom(path));
+            }
+            unsafe { CoUninitialize() };
+        });
+}
+
+/// The file types of both settings dialogs: JSON first, then everything.
+/// Owns the wide strings the dialog points at, so keep it alive while the
+/// dialog is up.
+struct JsonFilters {
+    json: HSTRING,
+    all: HSTRING,
+}
+
+impl JsonFilters {
+    fn new() -> Self {
+        let lang = crate::i18n::lang();
+        JsonFilters {
+            json: HSTRING::from(text(lang, Key::ConfigFilterJson)),
+            all: HSTRING::from(text(lang, Key::TileFilterAll)),
+        }
+    }
+
+    fn specs(&self) -> [windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC; 2] {
+        use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
+        [
+            COMDLG_FILTERSPEC {
+                pszName: PCWSTR(self.json.as_ptr()),
+                pszSpec: w!("*.json"),
+            },
+            COMDLG_FILTERSPEC {
+                pszName: PCWSTR(self.all.as_ptr()),
+                pszSpec: w!("*.*"),
+            },
+        ]
+    }
+}
+
+/// The file path the owner picks in the save dialog. `None` when it is
+/// cancelled or cannot open.
+fn save_json_path(owner: HWND, default_name: &str) -> Option<std::path::PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
+    use windows::Win32::UI::Shell::{
+        FOLDERID_Documents, FOS_FORCEFILESYSTEM, FOS_OVERWRITEPROMPT, FileSaveDialog,
+        IFileSaveDialog, IShellItem, KF_FLAG_DEFAULT, SHGetKnownFolderItem, SIGDN_FILESYSPATH,
+    };
+    let filters = JsonFilters::new();
+    unsafe {
+        let dialog: IFileSaveDialog =
+            CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        let options = dialog.GetOptions().ok()? | FOS_FORCEFILESYSTEM | FOS_OVERWRITEPROMPT;
+        dialog.SetOptions(options).ok()?;
+        let _ = dialog.SetFileTypes(&filters.specs());
+        let _ = dialog.SetDefaultExtension(w!("json"));
+        let _ = dialog.SetFileName(&HSTRING::from(default_name));
+        // Documents; if that fails Windows opens where it chooses.
+        if let Ok(folder) =
+            SHGetKnownFolderItem::<IShellItem>(&FOLDERID_Documents, KF_FLAG_DEFAULT, None)
+        {
+            let _ = dialog.SetFolder(&folder);
+        }
+        // Cancelled: an error code.
+        dialog.Show(Some(owner)).ok()?;
+        let item = dialog.GetResult().ok()?;
+        let name = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+        let path = std::path::PathBuf::from(std::ffi::OsString::from_wide(name.as_wide()));
+        CoTaskMemFree(Some(name.0 as *const c_void));
+        Some(path)
+    }
+}
+
+/// The settings file the owner picks in the open dialog. `None` when it is
+/// cancelled or cannot open.
+fn open_json_path(owner: HWND) -> Option<std::path::PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
+    use windows::Win32::UI::Shell::{
+        FOLDERID_Documents, FOS_FILEMUSTEXIST, FOS_FORCEFILESYSTEM, FileOpenDialog,
+        IFileOpenDialog, IShellItem, KF_FLAG_DEFAULT, SHGetKnownFolderItem, SIGDN_FILESYSPATH,
+    };
+    let filters = JsonFilters::new();
+    unsafe {
+        let dialog: IFileOpenDialog =
+            CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        let options = dialog.GetOptions().ok()? | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST;
+        dialog.SetOptions(options).ok()?;
+        let _ = dialog.SetFileTypes(&filters.specs());
+        if let Ok(folder) =
+            SHGetKnownFolderItem::<IShellItem>(&FOLDERID_Documents, KF_FLAG_DEFAULT, None)
+        {
+            let _ = dialog.SetFolder(&folder);
+        }
+        // Cancelled: an error code.
+        dialog.Show(Some(owner)).ok()?;
+        let item = dialog.GetResult().ok()?;
+        let name = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+        let path = std::path::PathBuf::from(std::ffi::OsString::from_wide(name.as_wide()));
+        CoTaskMemFree(Some(name.0 as *const c_void));
+        Some(path)
+    }
 }
 
 /// What the "Transkrip file lain…" dialog lists: recordings and videos.
@@ -4386,6 +4598,10 @@ unsafe extern "system" fn wnd_proc(
                 // The recorder's hook never outlives the window; a recording
                 // in progress ends (the island takes its hotkeys back).
                 st.cancel_recording();
+                if let Some(cancel) = import_cancel_on_leave(st.section, None, &st.model.transfer)
+                {
+                    post_action(st.owner, cancel);
+                }
                 st.owner
             }) {
                 post_action(owner, Action::Closed);
@@ -4632,6 +4848,30 @@ pub fn run_demo(args: &[String]) {
         }
     }
 
+    /// `DI_TRANSFER`: the "Pindah ke PC lain" card's state. `exported`,
+    /// `failed`, `refused`, `newer` (a file from a newer Vale), `pending`, or
+    /// `busy` (pending, and the confirm was refused because a recording runs).
+    /// Anything else: idle.
+    fn demo_transfer(kind: &str, lang: Lang) -> TransferView {
+        let pending = |refusal: Option<&str>| TransferView::Pending {
+            app_version: "1.4.0".into(),
+            date: chrono::NaiveDate::from_ymd_opt(2026, 10, 25),
+            refusal: refusal.map(str::to_owned),
+        };
+        let pick = |id: &'static str, en: &'static str| if lang == Lang::En { en } else { id };
+        match kind.trim().to_ascii_lowercase().as_str() {
+            "exported" => TransferView::Exported("vale-settings-2026-11-13.json".into()),
+            "failed" => TransferView::ExportFailed,
+            "refused" => TransferView::Refused(
+                pick("Ini bukan file pengaturan Vale.", "This is not a Vale settings file.").into(),
+            ),
+            "newer" => TransferView::Refused(i18n::settings_file_newer(lang, "9.9.9")),
+            "pending" => pending(None),
+            "busy" => pending(Some(pick("Hentikan rekaman dulu", "Stop the recording first"))),
+            _ => TransferView::Idle,
+        }
+    }
+
     fn apply(m: &mut Model, action: Action) {
         match action {
             Action::NotchMonitor(v) => m.notch_monitor = v,
@@ -4807,6 +5047,13 @@ pub fn run_demo(args: &[String]) {
             // No network and no install in the demo; the row state is set by
             // `DI_UPDATE`.
             Action::CheckUpdates | Action::InstallUpdate => {}
+            // No dialog, no file and no restart in the demo: the buttons walk
+            // the card through its states.
+            Action::ConfigExport => m.transfer = demo_transfer("exported", m.lang),
+            Action::ConfigImport => m.transfer = demo_transfer("pending", m.lang),
+            Action::ConfigImportConfirm => m.transfer = demo_transfer("busy", m.lang),
+            Action::ConfigImportCancel => m.transfer = TransferView::Idle,
+            Action::ConfigExportTo(_) | Action::ConfigImportFrom(_) => {}
             Action::DndHelp | Action::Closed => {}
         }
         theme::set_current(theme::Theme {
@@ -4923,6 +5170,7 @@ pub fn run_demo(args: &[String]) {
     let transcript = demo_transcript(&env("DI_TRANSCRIPT"), lang);
     let model = Model {
         transcript,
+        transfer: demo_transfer(&env("DI_TRANSFER"), lang),
         font,
         monitors,
         notch_monitor,
@@ -5073,6 +5321,70 @@ mod tests {
         assert_eq!(m.coat(), Coat::Octopus(OctopusColor::Red));
         m.apply(Action::Mascot(Mascot::Falk));
         assert_eq!(m.coat(), Coat::Falk(FalkColor::Grey));
+    }
+
+    #[test]
+    fn the_move_card_clicks_post_the_island_actions() {
+        let post = |a: Action| Some(vec![After::Post(a)]);
+        assert_eq!(transfer_click(Hit::ConfigExport), post(Action::ConfigExport));
+        assert_eq!(transfer_click(Hit::ConfigImport), post(Action::ConfigImport));
+        assert_eq!(
+            transfer_click(Hit::ConfigImportConfirm),
+            post(Action::ConfigImportConfirm)
+        );
+        assert_eq!(
+            transfer_click(Hit::ConfigImportCancel),
+            post(Action::ConfigImportCancel)
+        );
+        assert_eq!(transfer_click(Hit::Repo), None);
+    }
+
+    #[test]
+    fn leaving_tentang_or_closing_cancels_only_a_pending_import() {
+        let pending = |refusal: Option<&str>| TransferView::Pending {
+            app_version: "1.2.3".into(),
+            date: None,
+            refusal: refusal.map(Into::into),
+        };
+        let cancel = Some(Action::ConfigImportCancel);
+        // Leaving Tentang for another section, with a file waiting.
+        assert_eq!(
+            import_cancel_on_leave(Section::About, Some(Section::General), &pending(None)),
+            cancel
+        );
+        // Closing the window, also when the last confirm was refused.
+        assert_eq!(import_cancel_on_leave(Section::About, None, &pending(None)), cancel);
+        assert_eq!(
+            import_cancel_on_leave(Section::About, None, &pending(Some("Hentikan rekaman dulu"))),
+            cancel
+        );
+        // Nothing waits: nothing is posted.
+        for view in [
+            TransferView::Idle,
+            TransferView::Exported("a.json".into()),
+            TransferView::ExportFailed,
+            TransferView::Refused("x".into()),
+        ] {
+            assert_eq!(import_cancel_on_leave(Section::About, None, &view), None);
+            assert_eq!(
+                import_cancel_on_leave(Section::About, Some(Section::General), &view),
+                None
+            );
+        }
+        // Closing from any other section still cancels.
+        assert_eq!(
+            import_cancel_on_leave(Section::General, None, &pending(None)),
+            cancel
+        );
+        // Moving between other sections, or "to" the section it is on.
+        assert_eq!(
+            import_cancel_on_leave(Section::General, Some(Section::About), &pending(None)),
+            None
+        );
+        assert_eq!(
+            import_cancel_on_leave(Section::About, Some(Section::About), &pending(None)),
+            None
+        );
     }
 
     #[test]

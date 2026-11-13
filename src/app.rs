@@ -159,6 +159,10 @@ use dock_page::DockState;
 mod notif_page;
 use notif_page::{NotifSetting, NotifState, TIMER_NOTIF_SAVE};
 
+#[path = "app_transfer.rs"]
+mod transfer_page;
+use transfer_page::Transfer;
+
 #[path = "app_update.rs"]
 mod update_page;
 use update_page::{TIMER_UPDATE, UpdateState};
@@ -359,14 +363,23 @@ const UPDATE_CLAIM_WAIT: Duration = Duration::from_secs(60);
 /// watchdog ends the process anyway.
 const TEARDOWN_LIMIT: Duration = Duration::from_secs(5);
 
-/// How long a start waits for the single-instance mutex: `updated_from` is the
-/// updater's `--updated <old version>`, whose old island is still closing;
-/// any other start quits at once when another island runs.
-fn claim_wait(updated_from: Option<&str>) -> Duration {
-    if updated_from.is_some() {
-        UPDATE_CLAIM_WAIT
-    } else {
-        Duration::ZERO
+/// How this island was started.
+pub enum Start {
+    /// A plain start (or `--media-log`).
+    Normal,
+    /// The updater's `--updated <old version>`.
+    Updated(String),
+    /// `--imported`: Vale restarted itself after importing settings.
+    Imported,
+}
+
+/// How long a start waits for the single-instance mutex: after an update or an
+/// import the old island is still closing; any other start quits at once when
+/// another island runs.
+fn claim_wait(start: &Start) -> Duration {
+    match start {
+        Start::Updated(_) | Start::Imported => UPDATE_CLAIM_WAIT,
+        Start::Normal => Duration::ZERO,
     }
 }
 const SYSTEM_PAGE_MS: u32 = crate::system::LIVE_MS;
@@ -445,11 +458,12 @@ thread_local! {
     static PIPE_SERVER: RefCell<Option<PipeServer>> = const { RefCell::new(None) };
 }
 
-/// `media_log_flag`: started with `--media-log`. `updated_from`: started by
-/// the updater (`--updated <old version>`).
-pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
-    // After an update the old island may still be closing: wait for its mutex.
-    if !claim_single_instance(claim_wait(updated_from)) {
+/// `media_log_flag`: started with `--media-log`. `start`: how it was started
+/// (normal, by the updater, or after an import).
+pub fn run(media_log_flag: bool, start: Start) {
+    // After an update or an import the old island may still be closing: wait
+    // for its mutex.
+    if !claim_single_instance(claim_wait(&start)) {
         return;
     }
     // Before anything reads the data folder: DynamicIsland becomes Vale once.
@@ -693,6 +707,7 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
             greet_ready: false,
             session_locked: false,
             update: UpdateState::default(),
+            transfer: Transfer::default(),
         });
     });
     with_app(|app| {
@@ -731,7 +746,7 @@ pub fn run(media_log_flag: bool, updated_from: Option<&str>) {
         // The sticky notes' too: the ones that came due while it was off.
         app.sticky_remind_fire();
         // The updated notice, the update timer and the leftover cleanup.
-        app.update_start(updated_from);
+        app.update_start(&start);
         app.rec_split_folders();
         app.transcribe_init();
         unsafe {
@@ -1312,6 +1327,8 @@ struct App {
     session_locked: bool,
     /// The self-update: the known release, a check or a download running.
     update: UpdateState,
+    /// "Ekspor / Impor pengaturan": the card's state and the file waiting to be confirmed.
+    transfer: Transfer,
 }
 
 /// The File Explorer reader (`sources::explorer`): at most one read runs.
@@ -6616,6 +6633,7 @@ impl App {
             calendar: self.calendar.status,
             hotkey_failed: self.hotkeys.failed_flags(),
             update_row: self.update.row(),
+            transfer: self.transfer.view.clone(),
             transcript: self.transcript_card_view(),
             monitors: self
                 .displays
@@ -6837,6 +6855,12 @@ impl App {
             SettingsAction::RecSources(v) => self.rec_set_sources(v),
             SettingsAction::RecDevice(source, id) => self.rec_set_device(source, id),
             SettingsAction::RecFolder(dir) => self.rec_set_folder(dir),
+            SettingsAction::ConfigExport => self.config_export(),
+            SettingsAction::ConfigExportTo(path) => self.config_export_to(path),
+            SettingsAction::ConfigImport => self.config_import(),
+            SettingsAction::ConfigImportFrom(path) => self.config_import_from(path),
+            SettingsAction::ConfigImportConfirm => self.config_import_confirm(),
+            SettingsAction::ConfigImportCancel => self.config_import_cancel(),
             SettingsAction::VideoFps(fps) => self.screen_set_fps(fps),
             SettingsAction::VideoQuality(q) => self.screen_set_quality(q),
             SettingsAction::CursorHighlight(on) => {
@@ -7018,7 +7042,12 @@ impl App {
             // Handled outside the app borrow (`deliver_settings_action`).
             SettingsAction::DndHelp => {}
             // A window closed in the middle of a recording: the hotkeys come back.
-            SettingsAction::Closed => self.resume_hotkeys(),
+            SettingsAction::Closed => {
+                self.resume_hotkeys();
+                // A checked file, a result or a refusal does not outlive the
+                // window; the cancel path also drops the file.
+                self.config_import_cancel();
+            }
         }
         self.sync_settings();
     }
@@ -10003,12 +10032,22 @@ mod tests {
 
     #[test]
     fn only_a_start_after_an_update_waits_for_the_old_island() {
-        assert_eq!(claim_wait(None), Duration::ZERO);
-        assert_eq!(claim_wait(Some("3.15.0")), Duration::from_secs(60));
+        assert_eq!(claim_wait(&Start::Normal), Duration::ZERO);
+        assert_eq!(
+            claim_wait(&Start::Updated("3.15.0".into())),
+            Duration::from_secs(60)
+        );
         // Even an empty old version (the updater passed none) is an update.
-        assert_eq!(claim_wait(Some("")), UPDATE_CLAIM_WAIT);
+        assert_eq!(claim_wait(&Start::Updated(String::new())), UPDATE_CLAIM_WAIT);
         // Longer than Windows Error Reporting keeps a crashing process (~12 s).
         assert!(UPDATE_CLAIM_WAIT >= Duration::from_secs(60));
+    }
+
+    #[test]
+    fn claim_wait_waits_after_an_import() {
+        assert_eq!(claim_wait(&Start::Imported), UPDATE_CLAIM_WAIT);
+        assert_eq!(claim_wait(&Start::Updated("3.15.0".into())), UPDATE_CLAIM_WAIT);
+        assert_eq!(claim_wait(&Start::Normal), Duration::ZERO);
     }
 
     #[test]

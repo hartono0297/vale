@@ -212,7 +212,7 @@ pub fn group(tile: &Tile) -> TileGroup {
 }
 
 /// The built-in's name in the file ("Lock", "GoShelf").
-fn shortcut_name(s: Shortcut) -> String {
+pub(crate) fn shortcut_name(s: Shortcut) -> String {
     match s {
         Shortcut::Screenshot => "Screenshot".into(),
         Shortcut::Clipboard => "Clipboard".into(),
@@ -238,7 +238,7 @@ fn go_page(name: &str) -> Option<Page> {
 /// A built-in by its name in the file, in any case ("lock" is `Lock`,
 /// "goshelf" is `Go(Shelf)`). `Go` takes only a page that has a tile in
 /// `Shortcut::ALL`.
-fn shortcut_from_name(name: &str) -> Option<Shortcut> {
+pub fn shortcut_from_name(name: &str) -> Option<Shortcut> {
     let name = name.trim();
     if let Some(page) = go_page(name) {
         return Some(Shortcut::Go(page)).filter(|s| Shortcut::ALL.contains(s));
