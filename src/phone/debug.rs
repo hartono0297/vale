@@ -117,6 +117,7 @@ pub fn run() {
         network_name: "phone-debug (loopback)".into(),
         public: false,
         allow_loopback: true,
+        net: crate::config::PhoneNet::Wifi,
     };
     let (tx, rx) = mpsc::channel();
     let tx = Mutex::new(tx);

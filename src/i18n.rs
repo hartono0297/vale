@@ -535,7 +535,6 @@ keys! {
         "Drag files to the notch, take them out later";
     ShelfPhone => "HP", "Phone";
     ShelfFromPhone => "dari HP", "phone";
-    PhoneTitle => "Sambungkan HP", "Connect a phone";
     PhoneStarting => "Mencari jaringan\u{2026}", "Finding the network\u{2026}";
     PhoneStep1 => "Scan pakai kamera HP", "Scan with the phone's camera";
     PhoneStep1Sub => "iPhone: Kamera \u{b7} Android: Kamera / Google Lens",
@@ -544,6 +543,12 @@ keys! {
     PhoneStep2Sub => "Semua berkas di rak ikut tampil", "Every shelf file shows there";
     PhoneNetPrivate => "pribadi", "private";
     PhoneNetPublic => "publik", "public";
+    PhoneNetWifi => "Wi-Fi", "Wi-Fi";
+    PhoneNetTailscale => "Tailscale", "Tailscale";
+    PhoneTailscaleHint => "HP juga harus pakai Tailscale, akun yang sama",
+        "The phone needs Tailscale too, same account";
+    PhoneTailscaleOnly => "Lewat Tailscale, terenkripsi dari HP ke PC",
+        "Through Tailscale, encrypted from phone to PC";
     PhoneConnected => "Tersambung", "Connected";
     PhonePublicHint => "Wi-Fi publik \u{2014} jangan dipakai di kafe/hotel", "Public Wi-Fi \u{2014} don't use at a caf\u{e9} or hotel";
     PhoneLocalOnly => "Langsung lewat Wi-Fi lokal, tidak lewat internet",
@@ -555,6 +560,9 @@ keys! {
     PhoneWarnNoLan => "Tidak ada jaringan lokal", "No local network";
     PhoneWarnNoLanBody => "Sambungkan PC ke Wi-Fi atau kabel jaringan, lalu coba lagi.",
         "Connect the PC to Wi-Fi or a network cable, then try again.";
+    PhoneWarnNoTailscale => "Tailscale belum jalan", "Tailscale isn't running";
+    PhoneWarnNoTailscaleBody => "Nyalakan Tailscale di PC ini dan login, lalu coba lagi.",
+        "Turn on Tailscale on this PC and sign in, then try again.";
     PhoneWarnBusy => "Port sedang dipakai", "Ports are in use";
     PhoneWarnBusyBody => "Port 47390 sampai 47399 dipakai program lain. Tutup programnya, lalu coba lagi.",
         "Ports 47390 to 47399 are used by other programs. Close them, then try again.";
@@ -5205,7 +5213,6 @@ mod copy_preview_tests {
         );
         for key in [
             Key::ShelfPhone,
-            Key::PhoneTitle,
             Key::PhoneCancelAll,
             Key::PhoneFinish,
             Key::PhoneNewQr,

@@ -12,6 +12,7 @@ use super::phone_view::PhoneView;
 use crate::calendar::{CalEvent, CalStatus, EventTime, events_on, range_for};
 use crate::clean::{CleanCat, CleanMode};
 use crate::cli_folders::{MenuItem, Section};
+use crate::config::PhoneNet;
 use crate::devices::{Device, Veto};
 use crate::model::{CalView, Hit, Page, RecEntry, RecKind, RecSources, Shortcut};
 use crate::mole::{MoleGroup, MoleOpt};
@@ -3159,17 +3160,39 @@ pub fn shelf_layout(s: ShapeRect, strip: bool, n: usize) -> ShelfLayout {
     }
 }
 
-/// The round back button, the title and the row they sit in, shared by the
-/// phone link's three views: `(top, back, title)`. The title is
-/// `PHONE_TITLE_W` wide; a view with nothing after it in the row widens it
-/// up to whatever comes next (`title_until`), so a longer word in English
-/// or in JetBrains Mono is not cut.
+/// The round back button, the title slot and the row they sit in, shared by
+/// the phone link's three views: `(top, back, title)`. Only the receiving
+/// view draws a title; the QR view and the warning card put the net switch
+/// there instead. The slot is `PHONE_TITLE_W` wide; a view with nothing after
+/// it in the row widens it up to whatever comes next (`title_until`), so a
+/// longer word in English or in JetBrains Mono is not cut.
 fn phone_head(s: ShapeRect, strip: bool) -> (f32, Rect, Rect) {
     let top = content_top(s, strip);
     let l = left(s);
     let back = rect(l, top + (PHONE_HEAD_H - PHONE_BACK) / 2.0, PHONE_BACK, PHONE_BACK);
     let title = rect(back.right() + 8.0, top, PHONE_TITLE_W, PHONE_HEAD_H);
     (top, back, title)
+}
+
+/// The net switch after the back button: `(track, items)`, vertically
+/// centred in the header row.
+fn phone_seg(top: f32, back: Rect) -> (Rect, [Rect; 2]) {
+    let w = 2.0 * PHONE_SEG_ITEM_W + 2.0 * PHONE_SEG_PAD;
+    let seg = rect(
+        back.right() + 8.0,
+        top + (PHONE_HEAD_H - PHONE_SEG_H) / 2.0,
+        w,
+        PHONE_SEG_H,
+    );
+    let item_h = PHONE_SEG_H - 2.0 * PHONE_SEG_PAD;
+    let first = rect(
+        seg.x + PHONE_SEG_PAD,
+        seg.y + PHONE_SEG_PAD,
+        PHONE_SEG_ITEM_W,
+        item_h,
+    );
+    let second = rect(first.right(), first.y, PHONE_SEG_ITEM_W, item_h);
+    (seg, [first, second])
 }
 
 /// `title` widened up to 8 px before `end` (the chip, the Settings gap).
@@ -3188,7 +3211,10 @@ fn title_until(title: Rect, end: f32) -> Rect {
 #[derive(Clone, Debug, PartialEq)]
 pub struct PhoneQrLayout {
     pub back: Rect,
-    pub title: Rect,
+    /// The Wi-Fi | Tailscale switch's track, where the title is in the other
+    /// views, and its two items.
+    pub seg: Rect,
+    pub seg_items: [Rect; 2],
     /// "berlaku 4:52", ending at the Settings button's gap.
     pub chip: Rect,
     /// The light square the code is drawn in (its padding included).
@@ -3217,6 +3243,11 @@ const PHONE_HEAD_H: f32 = 26.0;
 /// in JetBrains Mono is 180 px.
 const PHONE_TITLE_W: f32 = 190.0;
 const PHONE_CHIP_W: f32 = 96.0;
+/// The net switch: 22 dip high like the cleaner's mode segment, two items of
+/// one width inside a 2 dip inset.
+const PHONE_SEG_H: f32 = 22.0;
+const PHONE_SEG_PAD: f32 = 2.0;
+const PHONE_SEG_ITEM_W: f32 = 74.0;
 const PHONE_CHIP_H: f32 = 22.0;
 /// The QR square, padding included.
 pub const PHONE_QR: f32 = 150.0;
@@ -3228,7 +3259,8 @@ const PHONE_ROW_GAP: f32 = 6.0;
 
 /// The QR view in `s`.
 pub fn phone_qr_layout(s: ShapeRect, strip: bool, expired: bool) -> PhoneQrLayout {
-    let (top, back, title) = phone_head(s, strip);
+    let (top, back, _) = phone_head(s, strip);
+    let (seg, seg_items) = phone_seg(top, back);
     let (l, r) = (left(s), right(s));
     let chip = rect(
         header_right(s) - PHONE_CHIP_W,
@@ -3236,7 +3268,6 @@ pub fn phone_qr_layout(s: ShapeRect, strip: bool, expired: bool) -> PhoneQrLayou
         PHONE_CHIP_W,
         PHONE_CHIP_H,
     );
-    let title = title_until(title, chip.x);
     let foot = rect(l, content_bottom(s) - 14.0, r - l, 14.0);
     let body_top = top + PHONE_HEAD_H + 8.0;
     let avail = foot.y - 6.0 - body_top;
@@ -3264,7 +3295,8 @@ pub fn phone_qr_layout(s: ShapeRect, strip: bool, expired: bool) -> PhoneQrLayou
     });
     PhoneQrLayout {
         back,
-        title,
+        seg,
+        seg_items,
         chip,
         qr,
         renew,
@@ -3281,7 +3313,9 @@ pub fn phone_qr_layout(s: ShapeRect, strip: bool, expired: bool) -> PhoneQrLayou
 #[derive(Clone, Debug, PartialEq)]
 pub struct PhoneWarnLayout {
     pub back: Rect,
-    pub title: Rect,
+    /// The Wi-Fi | Tailscale switch's track and its two items.
+    pub seg: Rect,
+    pub seg_items: [Rect; 2],
     pub card: Rect,
     pub icon: Rect,
     pub heading: Rect,
@@ -3291,8 +3325,8 @@ pub struct PhoneWarnLayout {
 }
 
 pub fn phone_warn_layout(s: ShapeRect, strip: bool) -> PhoneWarnLayout {
-    let (top, back, title) = phone_head(s, strip);
-    let title = title_until(title, header_right(s));
+    let (top, back, _) = phone_head(s, strip);
+    let (seg, seg_items) = phone_seg(top, back);
     let (l, r) = (left(s), right(s));
     let foot = rect(l, content_bottom(s) - 14.0, r - l, 14.0);
     let card = rect(l, top + PHONE_HEAD_H + 12.0, r - l, 124.0);
@@ -3308,7 +3342,8 @@ pub fn phone_warn_layout(s: ShapeRect, strip: bool) -> PhoneWarnLayout {
     );
     PhoneWarnLayout {
         back,
-        title,
+        seg,
+        seg_items,
         card,
         icon,
         heading,
@@ -4829,12 +4864,18 @@ pub fn regions(s: ShapeRect, layout: &PageLayout, strip: impl Into<StripKind>) -
         }
         PageLayout::PhoneQr(l) => {
             add(l.back, Hit::PhoneBack);
+            // Always a hit: the app ignores a tap while a file is coming in
+            // (`switch_plan`), and the painter draws the switch inert then.
+            add(l.seg_items[0], Hit::PhoneNet(PhoneNet::Wifi));
+            add(l.seg_items[1], Hit::PhoneNet(PhoneNet::Tailscale));
             if let Some(renew) = l.renew {
                 add(renew, Hit::PhoneNewQr);
             }
         }
         PageLayout::PhoneWarn(l) => {
             add(l.back, Hit::PhoneBack);
+            add(l.seg_items[0], Hit::PhoneNet(PhoneNet::Wifi));
+            add(l.seg_items[1], Hit::PhoneNet(PhoneNet::Tailscale));
             add(l.retry, Hit::PhoneNewQr);
         }
         PageLayout::PhoneRecv(l) => {
@@ -7437,13 +7478,10 @@ mod tests {
                 let q = phone_qr_layout(s, strip, false);
                 assert!(q.renew.is_none());
                 assert_eq!(q.chip.right(), header_right(s));
-                // The title ends 8 px before the chip: nothing sits between.
-                assert!(q.title.right() <= q.chip.x - 8.0 + 0.01);
                 assert_eq!(q.qr.w, PHONE_QR);
                 assert!(q.qr.y >= top + PHONE_HEAD_H && q.qr.bottom() <= q.foot.y);
                 assert!(q.hint.bottom() <= q.foot.y, "the hint clears the footer");
                 assert!(q.net.bottom() <= q.hint.y && q.steps[1].sub.bottom() <= q.net.y);
-                assert!(q.title.right() < q.chip.x);
                 let dead = phone_qr_layout(s, strip, true);
                 let renew = dead.renew.expect("the button shows on a dead code");
                 assert!(renew.x >= dead.qr.x && renew.right() <= dead.qr.right());
@@ -7487,16 +7525,46 @@ mod tests {
                 );
                 assert_eq!(
                     hits(PageLayout::PhoneQr(phone_qr_layout(s, strip, false))),
-                    [Hit::PhoneBack]
+                    [
+                        Hit::PhoneBack,
+                        Hit::PhoneNet(PhoneNet::Wifi),
+                        Hit::PhoneNet(PhoneNet::Tailscale)
+                    ]
                 );
                 assert_eq!(
                     hits(PageLayout::PhoneQr(phone_qr_layout(s, strip, true))),
-                    [Hit::PhoneBack, Hit::PhoneNewQr]
+                    [
+                        Hit::PhoneBack,
+                        Hit::PhoneNet(PhoneNet::Wifi),
+                        Hit::PhoneNet(PhoneNet::Tailscale),
+                        Hit::PhoneNewQr
+                    ]
                 );
                 assert_eq!(
                     hits(PageLayout::PhoneWarn(phone_warn_layout(s, strip))),
-                    [Hit::PhoneBack, Hit::PhoneNewQr]
+                    [
+                        Hit::PhoneBack,
+                        Hit::PhoneNet(PhoneNet::Wifi),
+                        Hit::PhoneNet(PhoneNet::Tailscale),
+                        Hit::PhoneNewQr
+                    ]
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn the_net_switch_sits_between_back_and_chip() {
+        for style in [Style::Pill, Style::Notch] {
+            let s = panel(style);
+            for strip in [false, true] {
+                let q = phone_qr_layout(s, strip, false);
+                assert!(q.seg.x >= q.back.right() + 8.0);
+                assert!(q.seg.right() <= q.chip.x - 8.0);
+                assert!(q.seg_items[0].right() <= q.seg_items[1].x);
+                let w = phone_warn_layout(s, strip);
+                assert!(w.seg.x >= w.back.right() + 8.0);
+                assert!(w.seg.right() <= header_right(s));
             }
         }
     }
@@ -8073,14 +8141,16 @@ mod tests {
                 }
             }
             PageLayout::PhoneQr(l) => {
-                drawn.extend([l.back, l.title, l.chip, l.qr, l.net, l.hint, l.foot]);
+                drawn.extend([l.back, l.seg, l.chip, l.qr, l.net, l.hint, l.foot]);
+                drawn.extend(l.seg_items);
                 drawn.extend(l.renew);
                 for st in l.steps {
                     drawn.extend([st.num, st.title, st.sub]);
                 }
             }
             PageLayout::PhoneWarn(l) => {
-                drawn.extend([l.back, l.title, l.card, l.icon, l.heading, l.body, l.retry]);
+                drawn.extend([l.back, l.seg, l.card, l.icon, l.heading, l.body, l.retry]);
+                drawn.extend(l.seg_items);
                 drawn.push(l.foot);
             }
             PageLayout::PhoneRecv(l) => {

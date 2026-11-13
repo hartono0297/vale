@@ -9,7 +9,7 @@ use crate::calendar::CalendarSnapshot;
 use crate::clean::{CleanCat, CleanEvent, CleanMode};
 use crate::cli::CliEvent;
 use crate::clipboard::image::Thumb;
-use crate::config::{OpenMode, ToastStyle};
+use crate::config::{OpenMode, PhoneNet, ToastStyle};
 use crate::devices::DevicesEvent;
 use crate::greeting::DayPeriod;
 use crate::lyrics::LyricsFound;
@@ -798,6 +798,8 @@ pub enum Hit {
     ShelfPhone,
     PhoneBack,
     PhoneNewQr,
+    /// The Wi-Fi | Tailscale switch of the QR view: the segment picked.
+    PhoneNet(PhoneNet),
     PhoneShowQr,
     PhoneCancel,
     PhoneDone,
@@ -1023,6 +1025,8 @@ pub enum Effect {
     /// view shows), `PhoneBack` stops it only if no phone ever connected.
     PhoneStart,
     PhoneNewQr,
+    /// Run the phone link on this network (saved, and the session restarts).
+    PhoneNet(PhoneNet),
     PhoneCancel,
     PhoneStop,
     PhoneBack,

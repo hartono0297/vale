@@ -23,6 +23,7 @@ use std::time::Instant;
 use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
 
 use super::{App, Event, Page, View, WM_APP_EVENT, poster};
+use crate::config::PhoneNet;
 use crate::i18n;
 use crate::model::PhoneStage;
 use crate::phone::session::TOKEN_TTL;
@@ -48,6 +49,8 @@ struct Ready {
     made: Instant,
     /// The network is Public (or unknown): the QR view warns.
     public: bool,
+    /// The network the session listens on.
+    net: PhoneNet,
 }
 
 /// A shelf card that is shared with the phones, as the session's set has it:
@@ -172,6 +175,29 @@ impl PhoneState {
         self.handle.is_some()
     }
 
+    /// Wipes what the last session knew and takes the next session number,
+    /// marking the new one as starting. A restart (the net switch) goes
+    /// through here too, so the stopped session's late `Ready` carries the
+    /// old number and is ignored.
+    fn next_session(&mut self) -> u64 {
+        self.forget_session();
+        self.generation += 1;
+        self.starting = true;
+        self.generation
+    }
+
+    /// Whether an event of `session` belongs to the running session.
+    fn is_current(&self, session: u64) -> bool {
+        session == self.generation
+    }
+
+    /// A file is coming in: the net switch waits, since a restart would cut it.
+    fn uploading(&self) -> bool {
+        self.rows
+            .iter()
+            .any(|r| matches!(r.status, RowStatus::Receiving(_)))
+    }
+
     fn forget_session(&mut self) {
         *self = PhoneState {
             timer: self.timer,
@@ -216,6 +242,7 @@ fn note_must_go(shared: Option<&str>, gone: &[String], on_desktop: impl Fn(&str)
 fn warn_of(r: &Refusal) -> Warn {
     match r {
         Refusal::NoLan => Warn::NoLan,
+        Refusal::NoTailscale => Warn::NoTailscale,
         Refusal::PortsBusy => Warn::PortsBusy,
         Refusal::Failed => Warn::Failed,
     }
@@ -240,11 +267,31 @@ fn percent(received: u64, size: u64) -> u8 {
     }
 }
 
+/// What a tap on the net switch does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Switch {
+    Nothing,
+    /// Save the pick and start a new session on it.
+    Restart,
+}
+
+/// The same segment again changes nothing, and neither does any tap while a
+/// file is coming in (the restart would cut it).
+fn switch_plan(saved: PhoneNet, picked: PhoneNet, uploading: bool) -> Switch {
+    if saved == picked || uploading {
+        Switch::Nothing
+    } else {
+        Switch::Restart
+    }
+}
+
 impl App {
-    /// What the phone views draw, while the shelf shows one.
+    /// What the phone views draw, while the shelf shows one. `net` is the
+    /// saved choice of the net switch.
     pub(super) fn phone_view<'a>(
         state: &crate::state::IslandState,
         st: &'a PhoneState,
+        net: PhoneNet,
         now: Instant,
     ) -> Option<PhoneView<'a>> {
         let stage = state.phone_stage()?;
@@ -256,6 +303,7 @@ impl App {
                 addr: &r.addr,
                 remaining: st.remaining(now),
                 public: r.public,
+                tailnet: r.net == PhoneNet::Tailscale,
                 joined: &st.connected,
             }),
             (None, None) => QrView::Starting,
@@ -269,6 +317,8 @@ impl App {
                 files: st.files,
                 bytes: st.bytes,
             },
+            net,
+            switch_live: !st.uploading(),
         })
     }
 
@@ -383,15 +433,12 @@ impl App {
     fn phone_begin(&mut self) {
         let tx = self.tx.clone();
         let wake = poster(self.hwnd, WM_APP_EVENT);
-        self.phone.forget_session();
-        self.phone.generation += 1;
-        let session = self.phone.generation;
+        let session = self.phone.next_session();
         let sink: crate::phone::Sink = Arc::new(move |event| {
             let _ = tx.send(Event::Phone(session, event));
             wake();
         });
-        self.phone.starting = true;
-        self.phone.handle = Some(crate::phone::start_lan(i18n::lang(), sink));
+        self.phone.handle = Some(crate::phone::start_lan(i18n::lang(), self.config.phone_net, sink));
     }
 
     /// Ends the session for `reason`, forgets what it knew and clears the
@@ -428,6 +475,22 @@ impl App {
             }
             self.phone.renew_failed = false;
             return;
+        }
+        self.phone_begin();
+    }
+
+    /// A tap on the Wi-Fi | Tailscale switch: the choice is saved and the
+    /// session restarts on the other address (the phones that were joined
+    /// lose it, and the QR view stays up with the new code). With a warning
+    /// card there is no session to stop: it just starts one, as "Coba lagi".
+    pub(super) fn phone_switch(&mut self, picked: PhoneNet) {
+        if switch_plan(self.config.phone_net, picked, self.phone.uploading()) == Switch::Nothing {
+            return;
+        }
+        self.config.phone_net = picked;
+        self.save_config();
+        if self.phone.handle.is_some() {
+            self.phone_stop(EndReason::Done);
         }
         self.phone_begin();
     }
@@ -506,7 +569,7 @@ impl App {
 
     /// One thing the phone link said.
     pub(super) fn on_phone_event(&mut self, session: u64, event: PhoneEvent, now: Instant) {
-        if session != self.phone.generation {
+        if !self.phone.is_current(session) {
             return;
         }
         match event {
@@ -516,6 +579,7 @@ impl App {
                 qr,
                 network_name,
                 public,
+                net,
                 token_made,
                 ..
             } => {
@@ -531,6 +595,7 @@ impl App {
                     addr: format!("{ip}:{port}"),
                     made: token_made,
                     public,
+                    net,
                 });
                 // The shelf as it is now goes to the phones.
                 self.shelf_look();
@@ -787,6 +852,7 @@ mod tests {
             addr: "10.0.0.2:47390".into(),
             made,
             public: false,
+            net: PhoneNet::Wifi,
         }
     }
 
@@ -985,8 +1051,45 @@ mod tests {
     }
 
     #[test]
+    fn switch_plan_rules() {
+        use PhoneNet::*;
+        assert_eq!(switch_plan(Wifi, Wifi, false), Switch::Nothing);
+        assert_eq!(switch_plan(Tailscale, Tailscale, false), Switch::Nothing);
+        assert_eq!(switch_plan(Wifi, Tailscale, false), Switch::Restart);
+        assert_eq!(switch_plan(Tailscale, Wifi, false), Switch::Restart);
+        assert_eq!(switch_plan(Wifi, Tailscale, true), Switch::Nothing);
+    }
+
+    #[test]
+    fn a_switch_while_starting_takes_a_new_generation() {
+        let mut s = PhoneState {
+            starting: true,
+            generation: 4,
+            ..PhoneState::default()
+        };
+        assert_eq!(s.next_session(), 5);
+        assert_eq!(s.generation, 5);
+        assert!(s.starting, "the new session is starting");
+        // The old session's late events (number 4) no longer match.
+        assert!(!s.is_current(4));
+        assert!(s.is_current(5));
+    }
+
+    #[test]
+    fn the_lit_segment_waits_for_uploads() {
+        let mut s = PhoneState::default();
+        assert!(!s.uploading());
+        s.rows.push(row_for("a.png", 1));
+        s.rows[0].status = RowStatus::Done;
+        assert!(!s.uploading(), "a finished row is not an upload");
+        s.rows[0].status = RowStatus::Receiving(10);
+        assert!(s.uploading());
+    }
+
+    #[test]
     fn the_warnings_follow_the_refusal() {
         assert_eq!(warn_of(&Refusal::NoLan), Warn::NoLan);
+        assert_eq!(warn_of(&Refusal::NoTailscale), Warn::NoTailscale);
         assert_eq!(warn_of(&Refusal::PortsBusy), Warn::PortsBusy);
         assert_eq!(warn_of(&Refusal::Failed), Warn::Failed);
     }

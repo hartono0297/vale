@@ -39,6 +39,7 @@ use std::time::Instant;
 
 use windows::Win32::Security::Cryptography::{BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom};
 
+use crate::config::PhoneNet;
 use crate::i18n::Lang;
 pub use note_page::NoteShare;
 pub use qr::QrMatrix;
@@ -69,6 +70,9 @@ pub struct ServerConfig {
     pub public: bool,
     /// Loopback peers count as private: only for the debug flag and tests.
     pub allow_loopback: bool,
+    /// Which network the session is on: decides who may connect (see
+    /// `net::peer_allowed`) and is echoed in `Ready`.
+    pub net: PhoneNet,
 }
 
 /// Why a session did not start.
@@ -76,6 +80,9 @@ pub struct ServerConfig {
 pub enum Refusal {
     /// No usable local network.
     NoLan,
+    /// Tailscale mode, and no Tailscale address on this PC (not running or
+    /// not signed in).
+    NoTailscale,
     /// Every port of the range is taken.
     PortsBusy,
     Failed,
@@ -116,6 +123,8 @@ pub enum PhoneEvent {
         network_name: String,
         /// The network is Public (or unknown).
         public: bool,
+        /// The network the session listens on.
+        net: PhoneNet,
         token_made: Instant,
     },
     Refused(Refusal),
@@ -174,6 +183,7 @@ pub(crate) struct Runtime {
     pub network_name: String,
     pub public: bool,
     pub allow_loopback: bool,
+    pub net: PhoneNet,
 }
 
 impl Runtime {
@@ -217,7 +227,11 @@ pub(crate) enum Mode {
     #[cfg(any(test, debug_assertions))]
     Fixed(ServerConfig),
     /// The PC's real local network, found on the thread.
-    Lan { lang: Lang, pc_name: String },
+    Lan {
+        lang: Lang,
+        pc_name: String,
+        net: PhoneNet,
+    },
 }
 
 /// The running link. Dropping it ends the session and its thread.
@@ -302,15 +316,17 @@ pub fn start(cfg: ServerConfig, sink: Sink) -> Handle {
     launch(Mode::Fixed(cfg), sink)
 }
 
-/// Starts a session on the PC's real local network: the adapter, its
-/// category and the Downloads folder are looked up on the server thread
-/// (never the caller's), and the sink gets `Refused` (no LAN, ports taken)
-/// or `Ready` (which says whether the network is Public).
-pub fn start_lan(lang: Lang, sink: Sink) -> Handle {
+/// Starts a session on the PC's real network, Wi-Fi or Tailscale as `net`
+/// says: the adapter, its category and the Downloads folder are looked up on
+/// the server thread (never the caller's), and the sink gets `Refused` (no
+/// network, ports taken) or `Ready` (which says whether the network is
+/// Public and which one it is).
+pub fn start_lan(lang: Lang, net: PhoneNet, sink: Sink) -> Handle {
     launch(
         Mode::Lan {
             lang,
             pc_name: pc_name(),
+            net,
         },
         sink,
     )
@@ -455,6 +471,29 @@ fn downloads_vale() -> Option<PathBuf> {
     }
 }
 
+/// The Tailscale counterpart of `detect_lan`: the PC's own tailnet address,
+/// found on the server thread. It reads no Network List Manager category (a
+/// tailnet is private by construction, so it is never flagged Public) and
+/// needs no COM.
+pub(crate) fn detect_tailscale(lang: Lang, pc_name: &str) -> Result<(ServerConfig, Ipv4Addr), Refusal> {
+    let ip = net::pick_tailscale(&net::read_adapters()).ok_or(Refusal::NoTailscale)?;
+    let dest_dir = downloads_vale().ok_or(Refusal::Failed)?;
+    Ok((
+        ServerConfig {
+            bind: IpAddr::V4(ip),
+            ports: PORTS,
+            dest_dir,
+            lang,
+            pc_name: pc_name.to_owned(),
+            network_name: "Tailscale".to_owned(),
+            public: false,
+            allow_loopback: false,
+            net: PhoneNet::Tailscale,
+        },
+        ip,
+    ))
+}
+
 /// Finds the local network a session may use: the adapter, its Network List
 /// Manager category (a Public one is allowed, and flagged so the notch can
 /// warn) and the destination folder. Runs on the server thread, with COM
@@ -483,6 +522,7 @@ pub(crate) fn detect_lan(lang: Lang, pc_name: &str) -> Result<(ServerConfig, Ipv
                 network_name: name,
                 public,
                 allow_loopback: false,
+                net: PhoneNet::Wifi,
             },
             ip,
         ))

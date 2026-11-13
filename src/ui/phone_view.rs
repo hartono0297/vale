@@ -3,6 +3,7 @@
 //! `app_phone.rs` builds it from its state every frame; the demo builds it
 //! from made-up data.
 
+use crate::config::PhoneNet;
 use crate::model::PhoneStage;
 use crate::phone::QrMatrix;
 use crate::shelf::ShelfKind;
@@ -11,6 +12,7 @@ use crate::shelf::ShelfKind;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Warn {
     NoLan,
+    NoTailscale,
     PortsBusy,
     Failed,
 }
@@ -32,6 +34,9 @@ pub struct CodeView<'a> {
     /// "Tersambung: Android" once a phone joined (step 2's sub line); empty
     /// before.
     pub joined: &'a str,
+    /// The session listens on the Tailscale address: the network line names
+    /// the tailnet and the hint says the phone needs Tailscale too.
+    pub tailnet: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -78,6 +83,11 @@ pub struct PhoneView<'a> {
     pub stage: PhoneStage,
     pub qr: QrView<'a>,
     pub recv: RecvView<'a>,
+    /// The saved choice of the Wi-Fi | Tailscale switch: its lit segment.
+    pub net: PhoneNet,
+    /// The switch can be used: false while a file is coming in, since a
+    /// restart would cut it.
+    pub switch_live: bool,
 }
 
 impl PhoneView<'_> {
@@ -140,6 +150,7 @@ mod tests {
                 remaining,
                 public: false,
                 joined: "",
+                tailnet: false,
             }),
             recv: RecvView {
                 rows: &[],
@@ -147,6 +158,8 @@ mod tests {
                 files: 0,
                 bytes: 0,
             },
+            net: PhoneNet::Wifi,
+            switch_live: true,
         };
         assert!(!view(Some(5)).code_dead());
         assert!(view(None).code_dead());

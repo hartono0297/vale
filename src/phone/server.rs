@@ -17,10 +17,11 @@ use super::http::{
     self, FileHead, HttpError, Method, Parsed, Request, Response, parse_head, session_cookie,
 };
 use super::names::{clash_name, sanitize};
-use super::net::{self, BoundCheck, is_private};
+use super::net::{self, BoundCheck, peer_allowed};
 use super::session::Tick;
 use super::share::{RangeAns, Route, counts_as_taken};
 use super::{note_page, thumb, ua};
+use crate::config::PhoneNet;
 use super::{EndReason, FailReason, Mode, PhoneEvent, Refusal, Runtime, ServerConfig, Shared};
 
 /// The accept loop's sleep between empty polls.
@@ -50,14 +51,20 @@ pub(super) fn run(shared: &Arc<Shared>, mode: Mode) {
     let (cfg, watch) = match mode {
         #[cfg(any(test, debug_assertions))]
         Mode::Fixed(cfg) => (cfg, None),
-        Mode::Lan { lang, pc_name } => match super::detect_lan(lang, &pc_name) {
-            Ok((cfg, ip)) => (cfg, Some(ip)),
-            Err(refusal) => {
-                shared.emit(PhoneEvent::Refused(refusal));
-                shared.ended.store(true, Ordering::SeqCst);
-                return;
+        Mode::Lan { lang, pc_name, net } => {
+            let found = match net {
+                PhoneNet::Wifi => super::detect_lan(lang, &pc_name),
+                PhoneNet::Tailscale => super::detect_tailscale(lang, &pc_name),
+            };
+            match found {
+                Ok((cfg, ip)) => (cfg, Some(ip)),
+                Err(refusal) => {
+                    shared.emit(PhoneEvent::Refused(refusal));
+                    shared.ended.store(true, Ordering::SeqCst);
+                    return;
+                }
             }
-        },
+        }
     };
     // Back (or a sleep) may have come while the adapters were being read, which
     // can take a while: nothing listens then, so no Firewall prompt either.
@@ -83,6 +90,7 @@ pub(super) fn run(shared: &Arc<Shared>, mode: Mode) {
         network_name: cfg.network_name.clone(),
         public: cfg.public,
         allow_loopback: cfg.allow_loopback,
+        net: cfg.net,
     });
     let Some(rt) = shared.runtime.get() else {
         shared.emit(PhoneEvent::Refused(Refusal::Failed));
@@ -98,6 +106,7 @@ pub(super) fn run(shared: &Arc<Shared>, mode: Mode) {
             qr,
             network_name: rt.network_name.clone(),
             public: rt.public,
+            net: rt.net,
             token_made: s.token_made(),
         })
     });
@@ -221,7 +230,7 @@ impl Drop for Slot {
 /// A new connection: a peer that is not on a local network is dropped before
 /// anything is read, as is one over the connection cap.
 fn accept(shared: &Arc<Shared>, rt: &Runtime, stream: TcpStream, peer: SocketAddr) {
-    if !is_private(peer.ip(), rt.allow_loopback) {
+    if !peer_allowed(peer.ip(), rt.net, rt.allow_loopback) {
         return;
     }
     if shared.conns.fetch_add(1, Ordering::SeqCst) >= MAX_CONNS {
@@ -1172,6 +1181,7 @@ mod tests {
             network_name: "Test net".into(),
             public: false,
             allow_loopback: true,
+            net: crate::config::PhoneNet::Wifi,
         });
         Some((shared, format!("vs={vs}"), now))
     }
@@ -1399,6 +1409,7 @@ mod tests {
             network_name: "Test net".into(),
             public: false,
             allow_loopback: true,
+            net: crate::config::PhoneNet::Wifi,
         };
         super::run(&shared, Mode::Fixed(cfg));
         assert!(shared.runtime.get().is_none(), "a listener was made");
