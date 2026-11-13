@@ -1158,6 +1158,23 @@ keys! {
     GroupCli => "CLI", "CLI";
     GroupCleaner => "Pembersih", "Cleaner";
     GroupLinks => "Tautan", "Links";
+
+    // Settings → Tentang → Pindah ke PC lain: export and import the settings.
+    GroupMoveSettings => "Pindah ke PC lain", "Move to another PC";
+    TransferExport => "Ekspor pengaturan", "Export settings";
+    TransferExportDesc => "Simpan pengaturan umum ke satu file",
+        "Save the general settings to one file";
+    TransferExportButton => "Ekspor…", "Export…";
+    TransferSaved => "Tersimpan", "Saved";
+    TransferExportFailed => "Gagal menyimpan", "Could not save";
+    TransferImport => "Impor pengaturan", "Import settings";
+    TransferImportDesc => "Ganti pengaturan di PC ini dengan isi file",
+        "Replace this PC's settings with a file";
+    TransferImportButton => "Impor…", "Import…";
+    TransferFromVale => "Dari Vale", "From Vale";
+    TransferPendingNote => "Pengaturan umum diganti, lalu Vale mulai ulang.",
+        "The general settings are replaced, then Vale restarts.";
+    TransferConfirm => "Impor & mulai ulang", "Import & restart";
     SurfaceAuto => "Ikuti maskot", "Match mascot";
     SurfaceSea => "Laut", "Sea";
     SurfaceNight => "Malam", "Night";

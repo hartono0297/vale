@@ -202,23 +202,16 @@ pub enum Action {
     RecSources(RecSources),
     RecFolder(Option<std::path::PathBuf>),
     /// "Ekspor": open the save dialog.
-    // The Settings card that posts it comes next.
-    #[allow(dead_code)]
     ConfigExport,
     /// The path the save dialog returned.
     ConfigExportTo(std::path::PathBuf),
     /// "Impor": open the file dialog.
-    // The Settings card that posts it comes next.
-    #[allow(dead_code)]
     ConfigImport,
     /// The file the open dialog returned.
     ConfigImportFrom(std::path::PathBuf),
     /// "Impor sekarang" on a checked file.
-    // The Settings card that posts it comes next.
-    #[allow(dead_code)]
     ConfigImportConfirm,
-    // The Settings card that posts it comes next.
-    #[allow(dead_code)]
+    /// "Batal", or leaving Tentang or closing the window with a file waiting.
     ConfigImportCancel,
     /// The screen recordings' frame rate: 30 or 60.
     VideoFps(u32),
@@ -411,6 +404,30 @@ fn folder_click(prefs: &RecordingPrefs, hit: Hit) -> Option<Vec<After>> {
         Hit::RecFolderChange => Some(vec![After::PickRecFolder]),
         _ => None,
     }
+}
+
+/// What a click on the "Pindah ke PC lain" card does, or `None` for a hit that
+/// is not on the card. The island owns the dialogs and the pending file.
+fn transfer_click(hit: Hit) -> Option<Vec<After>> {
+    let action = match hit {
+        Hit::ConfigExport => Action::ConfigExport,
+        Hit::ConfigImport => Action::ConfigImport,
+        Hit::ConfigImportConfirm => Action::ConfigImportConfirm,
+        Hit::ConfigImportCancel => Action::ConfigImportCancel,
+        _ => return None,
+    };
+    Some(vec![After::Post(action)])
+}
+
+/// The cancel a checked import file needs when the window leaves Tentang
+/// (`to`: the section it goes to) or closes (`to` is `None`).
+fn import_cancel_on_leave(
+    from: Section,
+    to: Option<Section>,
+    view: &TransferView,
+) -> Option<Action> {
+    let leaves = from == Section::About && to != Some(Section::About);
+    (leaves && matches!(view, TransferView::Pending { .. })).then_some(Action::ConfigImportCancel)
 }
 
 /// What a click on the "Rekam layar" card does, or `None` for a hit that is
@@ -1854,6 +1871,7 @@ impl Settings {
             update_auto: m.update_auto,
             update_row: m.update_row.clone(),
             data_dir: &self.data_label,
+            transfer: m.transfer.clone(),
             transcript: m.transcript.clone(),
             transcript_choose: self.transcript_choose,
             transcript_confirm: self.transcript_confirm,
@@ -3050,6 +3068,10 @@ impl Settings {
             },
             Hit::UpdateAuto => post(Action::UpdateAuto(!m.update_auto)),
             Hit::DataFolder => vec![After::OpenDataFolder],
+            Hit::ConfigExport
+            | Hit::ConfigImport
+            | Hit::ConfigImportConfirm
+            | Hit::ConfigImportCancel => transfer_click(hit).unwrap_or_default(),
             Hit::HooksInstall => {
                 let note = match install::install_for_current_exe() {
                     InstallOutcome::Installed => (text(lang, Key::HooksOn).into(), Tone::Good),
@@ -3232,6 +3254,12 @@ impl Settings {
         // form's Nama field: leaving Fitur closes it, as Batal would.
         if self.section == Section::Features {
             self.arrange_edit = None;
+        }
+        // A checked import file does not wait on another section.
+        if let Some(cancel) =
+            import_cancel_on_leave(self.section, Some(section), &self.model.transfer)
+        {
+            post_action(self.owner, cancel);
         }
         // A recording stops, and a refusal's red text goes, with the section.
         self.cancel_recording();
@@ -4565,6 +4593,10 @@ unsafe extern "system" fn wnd_proc(
                 // The recorder's hook never outlives the window; a recording
                 // in progress ends (the island takes its hotkeys back).
                 st.cancel_recording();
+                if let Some(cancel) = import_cancel_on_leave(st.section, None, &st.model.transfer)
+                {
+                    post_action(st.owner, cancel);
+                }
                 st.owner
             }) {
                 post_action(owner, Action::Closed);
@@ -4811,6 +4843,30 @@ pub fn run_demo(args: &[String]) {
         }
     }
 
+    /// `DI_TRANSFER`: the "Pindah ke PC lain" card's state. `exported`,
+    /// `failed`, `refused`, `newer` (a file from a newer Vale), `pending`, or
+    /// `busy` (pending, and the confirm was refused because a recording runs).
+    /// Anything else: idle.
+    fn demo_transfer(kind: &str, lang: Lang) -> TransferView {
+        let pending = |refusal: Option<&str>| TransferView::Pending {
+            app_version: "1.4.0".into(),
+            date: chrono::NaiveDate::from_ymd_opt(2026, 10, 25),
+            refusal: refusal.map(str::to_owned),
+        };
+        let pick = |id: &'static str, en: &'static str| if lang == Lang::En { en } else { id };
+        match kind.trim().to_ascii_lowercase().as_str() {
+            "exported" => TransferView::Exported("vale-settings-2026-11-13.json".into()),
+            "failed" => TransferView::ExportFailed,
+            "refused" => TransferView::Refused(
+                pick("Ini bukan file pengaturan Vale.", "This is not a Vale settings file.").into(),
+            ),
+            "newer" => TransferView::Refused(i18n::settings_file_newer(lang, "9.9.9")),
+            "pending" => pending(None),
+            "busy" => pending(Some(pick("Hentikan rekaman dulu", "Stop the recording first"))),
+            _ => TransferView::Idle,
+        }
+    }
+
     fn apply(m: &mut Model, action: Action) {
         match action {
             Action::NotchMonitor(v) => m.notch_monitor = v,
@@ -4986,13 +5042,13 @@ pub fn run_demo(args: &[String]) {
             // No network and no install in the demo; the row state is set by
             // `DI_UPDATE`.
             Action::CheckUpdates | Action::InstallUpdate => {}
-            // No dialog, no file and no restart in the demo.
-            Action::ConfigExport
-            | Action::ConfigExportTo(_)
-            | Action::ConfigImport
-            | Action::ConfigImportFrom(_)
-            | Action::ConfigImportConfirm
-            | Action::ConfigImportCancel => {}
+            // No dialog, no file and no restart in the demo: the buttons walk
+            // the card through its states.
+            Action::ConfigExport => m.transfer = demo_transfer("exported", m.lang),
+            Action::ConfigImport => m.transfer = demo_transfer("pending", m.lang),
+            Action::ConfigImportConfirm => m.transfer = demo_transfer("busy", m.lang),
+            Action::ConfigImportCancel => m.transfer = TransferView::Idle,
+            Action::ConfigExportTo(_) | Action::ConfigImportFrom(_) => {}
             Action::DndHelp | Action::Closed => {}
         }
         theme::set_current(theme::Theme {
@@ -5109,6 +5165,7 @@ pub fn run_demo(args: &[String]) {
     let transcript = demo_transcript(&env("DI_TRANSCRIPT"), lang);
     let model = Model {
         transcript,
+        transfer: demo_transfer(&env("DI_TRANSFER"), lang),
         font,
         monitors,
         notch_monitor,
@@ -5259,6 +5316,65 @@ mod tests {
         assert_eq!(m.coat(), Coat::Octopus(OctopusColor::Red));
         m.apply(Action::Mascot(Mascot::Falk));
         assert_eq!(m.coat(), Coat::Falk(FalkColor::Grey));
+    }
+
+    #[test]
+    fn the_move_card_clicks_post_the_island_actions() {
+        let post = |a: Action| Some(vec![After::Post(a)]);
+        assert_eq!(transfer_click(Hit::ConfigExport), post(Action::ConfigExport));
+        assert_eq!(transfer_click(Hit::ConfigImport), post(Action::ConfigImport));
+        assert_eq!(
+            transfer_click(Hit::ConfigImportConfirm),
+            post(Action::ConfigImportConfirm)
+        );
+        assert_eq!(
+            transfer_click(Hit::ConfigImportCancel),
+            post(Action::ConfigImportCancel)
+        );
+        assert_eq!(transfer_click(Hit::Repo), None);
+    }
+
+    #[test]
+    fn leaving_tentang_or_closing_cancels_only_a_pending_import() {
+        let pending = |refusal: Option<&str>| TransferView::Pending {
+            app_version: "1.2.3".into(),
+            date: None,
+            refusal: refusal.map(Into::into),
+        };
+        let cancel = Some(Action::ConfigImportCancel);
+        // Leaving Tentang for another section, with a file waiting.
+        assert_eq!(
+            import_cancel_on_leave(Section::About, Some(Section::General), &pending(None)),
+            cancel
+        );
+        // Closing the window, also when the last confirm was refused.
+        assert_eq!(import_cancel_on_leave(Section::About, None, &pending(None)), cancel);
+        assert_eq!(
+            import_cancel_on_leave(Section::About, None, &pending(Some("Hentikan rekaman dulu"))),
+            cancel
+        );
+        // Nothing waits: nothing is posted.
+        for view in [
+            TransferView::Idle,
+            TransferView::Exported("a.json".into()),
+            TransferView::ExportFailed,
+            TransferView::Refused("x".into()),
+        ] {
+            assert_eq!(import_cancel_on_leave(Section::About, None, &view), None);
+            assert_eq!(
+                import_cancel_on_leave(Section::About, Some(Section::General), &view),
+                None
+            );
+        }
+        // Moving between other sections, or "to" the section it is on.
+        assert_eq!(
+            import_cancel_on_leave(Section::General, Some(Section::About), &pending(None)),
+            None
+        );
+        assert_eq!(
+            import_cancel_on_leave(Section::About, Some(Section::About), &pending(None)),
+            None
+        );
     }
 
     #[test]
