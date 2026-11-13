@@ -252,9 +252,8 @@ pub fn read_incoming(bytes: &[u8]) -> Result<Incoming, ImportError> {
     })
 }
 
-/// `{key: value}` read alone as a config, with the key as it came back. A
-/// field with a lenient reader turns a malformed value into its default, so
-/// the value only counts when it comes back as it went in; `None` otherwise.
+/// `{key: value}` read alone as a config, with the key as it came back; `None`
+/// when it is not a config.
 fn read_back(key: &str, value: &Value) -> Option<Value> {
     let mut one = Map::new();
     one.insert(key.into(), value.clone());
@@ -262,58 +261,97 @@ fn read_back(key: &str, value: &Value) -> Option<Value> {
     config_object(&cfg).remove(key)
 }
 
-/// Whether a top-level `value` is a good value for `key`.
-fn reads_alone(key: &str, value: &Value) -> bool {
-    read_back(key, value).as_ref() == Some(value)
+fn node<'a>(v: &'a Value, path: &[String]) -> Option<&'a Value> {
+    path.iter().try_fold(v, |v, k| v.get(k))
 }
 
-/// Whether a split object's `value` is a good value for `parent.sub`.
-fn sub_reads_alone(parent: &str, sub: &str, value: &Value) -> bool {
-    let mut inner = Map::new();
-    inner.insert(sub.into(), value.clone());
-    read_back(parent, &Value::Object(inner)).is_some_and(|back| back.get(sub) == Some(value))
-}
-
-/// Turns imported built-in tiles off from the end of the list until at most
-/// `MAX_SHOWN` are shown, so the target's own tiles stay visible.
-fn trim_shown_tiles(cfg: &mut Config) {
-    let mut shown = cfg.shortcut_tiles.iter().filter(|t| t.on).count();
-    for t in cfg.shortcut_tiles.iter_mut().rev() {
-        if shown <= crate::tiles::MAX_SHOWN {
-            break;
+fn set_node(v: &mut Value, path: &[String], new: Value) {
+    match path.split_first() {
+        None => *v = new,
+        Some((k, rest)) => {
+            if let Some(child) = v.get_mut(k) {
+                set_node(child, rest, new);
+            }
         }
-        if t.on && crate::tiles::shortcut_from_name(&t.tile).is_some() {
-            t.on = false;
-            shown -= 1;
+    }
+}
+
+/// Lays `theirs` over the node of `cur` at `path`, key by key. `cur` is the
+/// working copy of the target's value of the top-level `top`. A key the target
+/// does not have (unknown or newer) is ignored and a key the file lacks keeps
+/// the target's value. A leaf is taken only when the whole top-level value read
+/// back alone still holds it as it went in, so a malformed value (or one a
+/// lenient reader would turn into a default) costs only that leaf.
+fn merge_node(top: &str, cur: &mut Value, path: &mut Vec<String>, theirs: &Value) {
+    let mine_is_object = node(cur, path).is_some_and(Value::is_object);
+    if let (true, Value::Object(theirs)) = (mine_is_object, theirs) {
+        for (k, v) in theirs {
+            if path.is_empty() && split_keys(top).is_some_and(|keys| !keys.contains(&k.as_str())) {
+                continue;
+            }
+            if node(cur, path).and_then(|n| n.get(k)).is_none() {
+                continue;
+            }
+            path.push(k.clone());
+            merge_node(top, cur, path, v);
+            path.pop();
+        }
+        return;
+    }
+    let mut candidate = cur.clone();
+    set_node(&mut candidate, path, theirs.clone());
+    let held = read_back(top, &candidate)
+        .is_some_and(|back| node(&back, path) == Some(theirs));
+    if held {
+        set_node(cur, path, theirs.clone());
+    }
+}
+
+/// Turns imported built-in tiles off from the end until the page shows at most
+/// `MAX_SHOWN`, counted the way `ShortcutTiles::from_saved` keeps them, so the
+/// target's own tiles stay visible.
+fn trim_shown_tiles(cfg: &mut Config) {
+    use crate::tiles::{MAX_SHOWN, ShortcutTiles, Tile, shortcut_from_name};
+    for _ in 0..cfg.shortcut_tiles.len() {
+        let tiles = ShortcutTiles::from_saved(&cfg.shortcut_tiles);
+        if tiles.shown() <= MAX_SHOWN {
+            return;
+        }
+        let last = tiles.entries().iter().rev().find_map(|(t, on)| match t {
+            Tile::Builtin(s) if *on => Some(*s),
+            _ => None,
+        });
+        let Some(last) = last else {
+            return;
+        };
+        if let Some(raw) = cfg
+            .shortcut_tiles
+            .iter_mut()
+            .find(|e| shortcut_from_name(&e.tile) == Some(last))
+        {
+            raw.on = false;
         }
     }
 }
 
 /// `target` with the general settings of `incoming` laid over it. Keys not in
 /// `EXPORTED` are ignored and a key missing from the file keeps the target's
-/// value. A value that does not read back as it was written, alone in a config, is
-/// skipped too, so the target's value stays. `None` when the merged result still does not read.
+/// value. Objects merge key by key, and a value that does not read back as it
+/// was written is skipped, so the target's value stays. `None` when the merged
+/// result still does not read.
 pub fn apply(target: &Config, incoming: &Incoming) -> Option<Config> {
     let mut merged = config_object(target);
     for &key in EXPORTED {
         let Some(from_file) = incoming.settings.get(key) else {
             continue;
         };
-        if let Some(keys) = split_keys(key) {
-            // Only the listed fields of a split object; the target's folders,
-            // devices, window places and saved layouts stay.
-            if let (Some(Value::Object(mine)), Value::Object(theirs)) =
-                (merged.get_mut(key), from_file)
-            {
-                for &sub in keys {
-                    if let Some(v) = theirs.get(sub)
-                        && sub_reads_alone(key, sub, v)
-                    {
-                        mine.insert(sub.into(), v.clone());
-                    }
-                }
+        if key != "shortcut_tiles" {
+            let mut cur = merged.get(key).cloned().unwrap_or(Value::Null);
+            merge_node(key, &mut cur, &mut Vec::new(), from_file);
+            if !cur.is_null() {
+                merged.insert(key.into(), cur);
             }
-        } else if key == "shortcut_tiles" {
+        } else {
             let Some(mine) = merged.get(key).and_then(Value::as_array) else {
                 continue;
             };
@@ -332,12 +370,12 @@ pub fn apply(target: &Config, incoming: &Incoming) -> Option<Config> {
             let mut tiles = builtin_tiles(from_file);
             tiles.extend(own);
             merged.insert(key.into(), Value::Array(tiles));
-        } else if reads_alone(key, from_file) {
-            merged.insert(key.into(), from_file.clone());
         }
     }
     let mut cfg = config::try_parse(&Value::Object(merged).to_string())?;
-    trim_shown_tiles(&mut cfg);
+    if incoming.settings.contains_key("shortcut_tiles") {
+        trim_shown_tiles(&mut cfg);
+    }
     Some(cfg)
 }
 
@@ -377,10 +415,6 @@ pub fn backup_config(config_path: &Path, now: NaiveDateTime) -> io::Result<Optio
     Ok(None)
 }
 
-/// Applies `incoming` on top of what is on disk and saves it. The island
-/// merges its own fields over the file on every save, so the file must already
-/// hold the imported values of the file-owned fields (such as the battery
-/// threshold) before the restart, or the next save would bring the old ones back.
 /// Why an import stopped before it changed anything the island uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImportFailure {
@@ -390,6 +424,10 @@ pub enum ImportFailure {
     Save,
 }
 
+/// Applies `incoming` on top of what is on disk and saves it. The island
+/// merges its own fields over the file on every save, so the file must already
+/// hold the imported values of the file-owned fields (such as the battery
+/// threshold) before the restart, or the next save would bring the old ones back.
 /// On `Err` the caller adopts nothing and restarts nothing.
 pub fn import_and_save(
     config_path: &Path,
@@ -854,6 +892,7 @@ mod tests {
     fn bad_value_keeps_target(bad: Value) {
         let target = private_config();
         let mut settings = obj(bad);
+        let incoming_has_bad_accent = settings.contains_key("accent");
         settings.insert("notch_width".into(), json!(250));
         if !settings.contains_key("accent") {
             settings.insert("accent".into(), json!("Plum"));
@@ -870,6 +909,10 @@ mod tests {
         assert!(applied.onboarding_done);
         assert_eq!(applied.notch_width, 250);
         assert_ne!(applied.notch_width, target.notch_width);
+        if !incoming_has_bad_accent {
+            assert_eq!(applied.accent, config::parse(r#"{"accent":"Plum"}"#).accent);
+            assert_ne!(applied.accent, target.accent);
+        }
     }
 
     #[test]
@@ -928,9 +971,102 @@ mod tests {
             settings: obj(json!({"shortcut_tiles": all_on})),
         };
         let applied = apply(&target, &incoming).unwrap();
-        let shown = applied.shortcut_tiles.iter().filter(|t| t.on).count();
+        let shown = crate::tiles::ShortcutTiles::from_saved(&applied.shortcut_tiles).shown();
         assert!(shown <= crate::tiles::MAX_SHOWN);
         assert!(applied.shortcut_tiles.iter().any(|t| t.tile == "Custom" && t.on));
+    }
+
+    /// (group, a leaf the file changes, its value, a leaf the file lacks, the
+    /// target's value for it): groups that fill in their own defaults.
+    fn group_cases() -> Vec<(&'static str, &'static str, Value, &'static str, Value)> {
+        vec![
+            ("screenshot", "show_secs", json!(12), "auto_copy", json!(false)),
+            ("widgets", "tilt", json!(true), "clip_fill", json!(true)),
+            ("hotkeys", "search", json!("Ctrl+Alt+B"), "captions", json!("Ctrl+Alt+K")),
+            ("notifications", "max_items", json!(20), "persist", json!(false)),
+            ("pomodoro", "focus_min", json!(30), "sessions", json!(3)),
+            ("clipboard", "max_items", json!(20), "persist", json!(false)),
+        ]
+    }
+
+    /// The target has `lacking` off its default; the file's group is the
+    /// default one with `changed` set, `lacking` removed, and `extra` added.
+    fn group_import(
+        group: &str,
+        changed: (&str, Value),
+        lacking: (&str, Value),
+        extra: bool,
+    ) -> (Config, Config) {
+        let defaults = Value::Object(config_object(&Config::default()));
+        let mut target_json = defaults.clone();
+        target_json[group][lacking.0] = lacking.1;
+        let target = config::parse(&target_json.to_string());
+        let mut file_group = defaults[group].clone();
+        file_group[changed.0] = changed.1;
+        file_group.as_object_mut().unwrap().remove(lacking.0);
+        if extra {
+            file_group["future_field"] = json!(1);
+        }
+        let incoming = Incoming {
+            app_version: String::new(),
+            exported: None,
+            settings: obj(json!({ group: file_group })),
+        };
+        let applied = apply(&target, &incoming).expect("applies");
+        (target, applied)
+    }
+
+    #[test]
+    fn a_group_missing_one_field_still_imports_the_rest() {
+        for extra in [false, true] {
+            for (group, changed, value, lacking, mine) in group_cases() {
+                let (target, applied) =
+                    group_import(group, (changed, value.clone()), (lacking, mine.clone()), extra);
+                let got = config_object(&applied);
+                assert_eq!(got[group][changed], value, "{group}.{changed} extra={extra}");
+                assert_eq!(got[group][lacking], mine, "{group}.{lacking} extra={extra}");
+                assert_ne!(applied, target);
+            }
+        }
+    }
+
+    #[test]
+    fn recording_sources_missing_one_field_still_imports() {
+        let target = Config::default();
+        for extra in [false, true] {
+            let mut sources = json!({"system": false});
+            if extra {
+                sources["future_field"] = json!(1);
+            }
+            let incoming = Incoming {
+                app_version: String::new(),
+                exported: None,
+                settings: obj(json!({"recording": {"sources": sources, "future_field": 2}})),
+            };
+            let got = config_object(&apply(&target, &incoming).unwrap());
+            assert_eq!(got["recording"]["sources"], json!({"mic": true, "system": false}));
+        }
+    }
+
+    #[test]
+    fn a_bad_leaf_in_a_group_costs_only_that_leaf() {
+        let (_, applied) = {
+            let defaults = Value::Object(config_object(&Config::default()));
+            let mut file = defaults["pomodoro"].clone();
+            file["focus_min"] = json!("x");
+            file["sessions"] = json!(3);
+            let incoming = Incoming {
+                app_version: String::new(),
+                exported: None,
+                settings: obj(json!({"pomodoro": file})),
+            };
+            (0, apply(&Config::default(), &incoming).unwrap())
+        };
+        assert_eq!(config_object(&applied)["pomodoro"]["sessions"], json!(3));
+        assert_eq!(
+            config_object(&applied)["pomodoro"]["focus_min"],
+            json!(25)
+        );
     }
 
     #[test]
