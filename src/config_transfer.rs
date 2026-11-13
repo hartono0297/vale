@@ -89,6 +89,8 @@ pub const EXPORTED: &[&str] = &[
 ];
 
 /// Top-level keys that never go in the file: private, or fitting one PC only.
+/// Only the classification test reads it.
+#[allow(dead_code)]
 pub const LEFT_OUT: &[&str] = &[
     "google_client_id",
     "google_client_secret",

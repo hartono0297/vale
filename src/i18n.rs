@@ -459,6 +459,11 @@ keys! {
     UpdateButton => "Update", "Update";
     UpdateLater => "Nanti", "Later";
     UpdateDebugOff => "Cek pembaruan mati di build debug", "Update check is off in debug builds";
+    NotValeFile => "Ini bukan file pengaturan Vale.", "This is not a Vale settings file.";
+    StopRecordingFirst => "Hentikan rekaman dulu", "Stop the recording first";
+    SettingsImportedRestart => "Pengaturan diimpor. Mulai ulang Vale supaya semuanya berlaku.",
+        "Settings imported. Restart Vale to apply everything.";
+    ConfigFilterJson => "File JSON (*.json)", "JSON files (*.json)";
     UpdateErrNoNetwork => "tidak ada koneksi", "no connection";
     UpdateErrNotWritable => "folder tidak bisa ditulis", "folder is not writable";
     UpdateErrChecksum => "checksum tidak cocok", "checksum does not match";
@@ -1883,6 +1888,14 @@ pub fn update_failed(lang: Lang, reason: &str) -> String {
     match lang {
         Lang::Id => format!("Update gagal: {reason}"),
         Lang::En => format!("Update failed: {reason}"),
+    }
+}
+
+/// An import refused because the file comes from a newer Vale.
+pub fn settings_file_newer(lang: Lang, version: &str) -> String {
+    match lang {
+        Lang::Id => format!("File ini dari Vale yang lebih baru (versi {version}). Perbarui Vale dulu."),
+        Lang::En => format!("This file comes from a newer Vale ({version}). Update Vale first."),
     }
 }
 

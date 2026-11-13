@@ -201,6 +201,25 @@ pub enum Action {
     /// back to the default).
     RecSources(RecSources),
     RecFolder(Option<std::path::PathBuf>),
+    /// "Ekspor": open the save dialog.
+    // The Settings card that posts it comes next.
+    #[allow(dead_code)]
+    ConfigExport,
+    /// The path the save dialog returned.
+    ConfigExportTo(std::path::PathBuf),
+    /// "Impor": open the file dialog.
+    // The Settings card that posts it comes next.
+    #[allow(dead_code)]
+    ConfigImport,
+    /// The file the open dialog returned.
+    ConfigImportFrom(std::path::PathBuf),
+    /// "Impor sekarang" on a checked file.
+    // The Settings card that posts it comes next.
+    #[allow(dead_code)]
+    ConfigImportConfirm,
+    // The Settings card that posts it comes next.
+    #[allow(dead_code)]
+    ConfigImportCancel,
     /// The screen recordings' frame rate: 30 or 60.
     VideoFps(u32),
     /// The screen recordings' size cap.
@@ -467,6 +486,23 @@ pub unsafe fn take_action(lparam: LPARAM) -> Option<Action> {
     (!ptr.is_null()).then(|| *unsafe { Box::from_raw(ptr) })
 }
 
+/// The export / import card's state.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum TransferView {
+    #[default]
+    Idle,
+    /// The file name written.
+    Exported(String),
+    ExportFailed,
+    /// Why a file was refused, or what stops the import.
+    Refused(String),
+    /// A checked file waits for "Impor sekarang".
+    Pending {
+        app_version: String,
+        date: Option<chrono::NaiveDate>,
+    },
+}
+
 /// What the window shows, as the owner has it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Model {
@@ -544,6 +580,8 @@ pub struct Model {
     /// a check running, an update known, a download).
     pub update_auto: bool,
     pub update_row: UpdateRow,
+    /// Settings card "Ekspor / Impor pengaturan": the island fills it.
+    pub transfer: TransferView,
     /// Fitur -> Transkrip (the island fills what is on disk and running;
     /// `from_config` only the settings).
     pub transcript: TranscriptView,
@@ -631,6 +669,7 @@ impl Model {
             window_place: cfg.settings_window,
             update_auto: cfg.update_check,
             update_row: UpdateRow::Idle,
+            transfer: TransferView::Idle,
             transcript: TranscriptView {
                 prefs: cfg.transcript.clone(),
                 ..TranscriptView::default()
@@ -3629,6 +3668,144 @@ pub fn pick_rec_audio(owner: HWND, start: std::path::PathBuf) {
         });
 }
 
+/// "Ekspor": the save dialog on a short-lived thread (as `pick_rec_folder`),
+/// opening in Documents with `default_name`. The path comes back to `owner`
+/// as `Action::ConfigExportTo`.
+pub fn pick_export_path(owner: HWND, default_name: String) {
+    use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
+    let raw = owner.0 as isize;
+    let _ = std::thread::Builder::new()
+        .name("config-export".into())
+        .spawn(move || {
+            let owner = HWND(raw as *mut c_void);
+            // The dialog wants a single-threaded apartment.
+            if unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_err() {
+                return;
+            }
+            if let Some(path) = save_json_path(owner, &default_name) {
+                post_action(owner, Action::ConfigExportTo(path));
+            }
+            unsafe { CoUninitialize() };
+        });
+}
+
+/// "Impor": the open dialog on a short-lived thread. The file comes back to
+/// `owner` as `Action::ConfigImportFrom`.
+pub fn pick_import_path(owner: HWND) {
+    use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
+    let raw = owner.0 as isize;
+    let _ = std::thread::Builder::new()
+        .name("config-import".into())
+        .spawn(move || {
+            let owner = HWND(raw as *mut c_void);
+            // The dialog wants a single-threaded apartment.
+            if unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_err() {
+                return;
+            }
+            if let Some(path) = open_json_path(owner) {
+                post_action(owner, Action::ConfigImportFrom(path));
+            }
+            unsafe { CoUninitialize() };
+        });
+}
+
+/// The file types of both settings dialogs: JSON first, then everything.
+/// Owns the wide strings the dialog points at, so keep it alive while the
+/// dialog is up.
+struct JsonFilters {
+    json: HSTRING,
+    all: HSTRING,
+}
+
+impl JsonFilters {
+    fn new() -> Self {
+        let lang = crate::i18n::lang();
+        JsonFilters {
+            json: HSTRING::from(text(lang, Key::ConfigFilterJson)),
+            all: HSTRING::from(text(lang, Key::TileFilterAll)),
+        }
+    }
+
+    fn specs(&self) -> [windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC; 2] {
+        use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
+        [
+            COMDLG_FILTERSPEC {
+                pszName: PCWSTR(self.json.as_ptr()),
+                pszSpec: w!("*.json"),
+            },
+            COMDLG_FILTERSPEC {
+                pszName: PCWSTR(self.all.as_ptr()),
+                pszSpec: w!("*.*"),
+            },
+        ]
+    }
+}
+
+/// The file path the owner picks in the save dialog. `None` when it is
+/// cancelled or cannot open.
+fn save_json_path(owner: HWND, default_name: &str) -> Option<std::path::PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
+    use windows::Win32::UI::Shell::{
+        FOLDERID_Documents, FOS_FORCEFILESYSTEM, FOS_OVERWRITEPROMPT, FileSaveDialog,
+        IFileSaveDialog, IShellItem, KF_FLAG_DEFAULT, SHGetKnownFolderItem, SIGDN_FILESYSPATH,
+    };
+    let filters = JsonFilters::new();
+    unsafe {
+        let dialog: IFileSaveDialog =
+            CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        let options = dialog.GetOptions().ok()? | FOS_FORCEFILESYSTEM | FOS_OVERWRITEPROMPT;
+        dialog.SetOptions(options).ok()?;
+        let _ = dialog.SetFileTypes(&filters.specs());
+        let _ = dialog.SetDefaultExtension(w!("json"));
+        let _ = dialog.SetFileName(&HSTRING::from(default_name));
+        // Documents; if that fails Windows opens where it chooses.
+        if let Ok(folder) =
+            SHGetKnownFolderItem::<IShellItem>(&FOLDERID_Documents, KF_FLAG_DEFAULT, None)
+        {
+            let _ = dialog.SetFolder(&folder);
+        }
+        // Cancelled: an error code.
+        dialog.Show(Some(owner)).ok()?;
+        let item = dialog.GetResult().ok()?;
+        let name = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+        let path = std::path::PathBuf::from(std::ffi::OsString::from_wide(name.as_wide()));
+        CoTaskMemFree(Some(name.0 as *const c_void));
+        Some(path)
+    }
+}
+
+/// The settings file the owner picks in the open dialog. `None` when it is
+/// cancelled or cannot open.
+fn open_json_path(owner: HWND) -> Option<std::path::PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
+    use windows::Win32::UI::Shell::{
+        FOLDERID_Documents, FOS_FILEMUSTEXIST, FOS_FORCEFILESYSTEM, FileOpenDialog,
+        IFileOpenDialog, IShellItem, KF_FLAG_DEFAULT, SHGetKnownFolderItem, SIGDN_FILESYSPATH,
+    };
+    let filters = JsonFilters::new();
+    unsafe {
+        let dialog: IFileOpenDialog =
+            CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        let options = dialog.GetOptions().ok()? | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST;
+        dialog.SetOptions(options).ok()?;
+        let _ = dialog.SetFileTypes(&filters.specs());
+        if let Ok(folder) =
+            SHGetKnownFolderItem::<IShellItem>(&FOLDERID_Documents, KF_FLAG_DEFAULT, None)
+        {
+            let _ = dialog.SetFolder(&folder);
+        }
+        // Cancelled: an error code.
+        dialog.Show(Some(owner)).ok()?;
+        let item = dialog.GetResult().ok()?;
+        let name = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+        let path = std::path::PathBuf::from(std::ffi::OsString::from_wide(name.as_wide()));
+        CoTaskMemFree(Some(name.0 as *const c_void));
+        Some(path)
+    }
+}
+
 /// What the "Transkrip file lain…" dialog lists: recordings and videos.
 pub const RECORDING_FILTER: &str = "*.m4a;*.wav;*.mp4";
 
@@ -4807,6 +4984,13 @@ pub fn run_demo(args: &[String]) {
             // No network and no install in the demo; the row state is set by
             // `DI_UPDATE`.
             Action::CheckUpdates | Action::InstallUpdate => {}
+            // No dialog, no file and no restart in the demo.
+            Action::ConfigExport
+            | Action::ConfigExportTo(_)
+            | Action::ConfigImport
+            | Action::ConfigImportFrom(_)
+            | Action::ConfigImportConfirm
+            | Action::ConfigImportCancel => {}
             Action::DndHelp | Action::Closed => {}
         }
         theme::set_current(theme::Theme {

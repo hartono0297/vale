@@ -71,7 +71,7 @@ fn auto_check_due(enabled: bool, last: Option<SystemTime>, now: SystemTime) -> b
         })
 }
 
-fn notice(key: &str, title: String, body: String, kind: NoticeKind) -> Notice {
+pub(super) fn notice(key: &str, title: String, body: String, kind: NoticeKind) -> Notice {
     Notice {
         key: key.into(),
         source: "Vale".into(),

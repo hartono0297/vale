@@ -159,6 +159,10 @@ use dock_page::DockState;
 mod notif_page;
 use notif_page::{NotifSetting, NotifState, TIMER_NOTIF_SAVE};
 
+#[path = "app_transfer.rs"]
+mod transfer_page;
+use transfer_page::Transfer;
+
 #[path = "app_update.rs"]
 mod update_page;
 use update_page::{TIMER_UPDATE, UpdateState};
@@ -703,6 +707,7 @@ pub fn run(media_log_flag: bool, start: Start) {
             greet_ready: false,
             session_locked: false,
             update: UpdateState::default(),
+            transfer: Transfer::default(),
         });
     });
     with_app(|app| {
@@ -1322,6 +1327,8 @@ struct App {
     session_locked: bool,
     /// The self-update: the known release, a check or a download running.
     update: UpdateState,
+    /// "Ekspor / Impor pengaturan": the card's state and the file waiting to be confirmed.
+    transfer: Transfer,
 }
 
 /// The File Explorer reader (`sources::explorer`): at most one read runs.
@@ -6626,6 +6633,7 @@ impl App {
             calendar: self.calendar.status,
             hotkey_failed: self.hotkeys.failed_flags(),
             update_row: self.update.row(),
+            transfer: self.transfer.view.clone(),
             transcript: self.transcript_card_view(),
             monitors: self
                 .displays
@@ -6847,6 +6855,12 @@ impl App {
             SettingsAction::RecSources(v) => self.rec_set_sources(v),
             SettingsAction::RecDevice(source, id) => self.rec_set_device(source, id),
             SettingsAction::RecFolder(dir) => self.rec_set_folder(dir),
+            SettingsAction::ConfigExport => self.config_export(),
+            SettingsAction::ConfigExportTo(path) => self.config_export_to(path),
+            SettingsAction::ConfigImport => self.config_import(),
+            SettingsAction::ConfigImportFrom(path) => self.config_import_from(path),
+            SettingsAction::ConfigImportConfirm => self.config_import_confirm(),
+            SettingsAction::ConfigImportCancel => self.config_import_cancel(),
             SettingsAction::VideoFps(fps) => self.screen_set_fps(fps),
             SettingsAction::VideoQuality(q) => self.screen_set_quality(q),
             SettingsAction::CursorHighlight(on) => {
