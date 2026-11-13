@@ -16,6 +16,7 @@ use crate::i18n::{self, Key, Lang};
 use crate::model::{Event, Notice, NoticeKind};
 use crate::ui::settings_layout::UpdateRow;
 use crate::update::{self, Release, UpdateError, UpdateEvent};
+use crate::whats_new::{self, StartAction};
 
 /// Next free `TIMER_` id of the island (the highest in use was 34).
 pub(super) const TIMER_UPDATE: usize = 35;
@@ -146,19 +147,64 @@ fn updated_notice(lang: Lang, old: &str) -> Notice {
     )
 }
 
+/// "Diperbarui ke X.Y.Z · klik untuk lihat apa yang baru": the updated notice
+/// with a link to the Settings card. `old` is the version it replaced, when
+/// known.
+fn whats_new_notice(lang: Lang, old: Option<&str>) -> Notice {
+    let hint = i18n::text(lang, Key::WhatsNewHint);
+    let body = match old {
+        Some(old) if !old.is_empty() => format!("{old} \u{2192} {} \u{b7} {hint}", update::CURRENT),
+        _ => hint.to_owned(),
+    };
+    notice(
+        "update-info",
+        i18n::update_done(lang, update::CURRENT),
+        body,
+        NoticeKind::WhatsNew,
+    )
+}
+
 impl App {
     /// After the island is up: the timer of the automatic check (release
-    /// builds only), the notice of an update that just restarted Vale, and
-    /// the removal of what the last swap left beside the exe.
+    /// builds only), the notice of an update or version change that just
+    /// restarted Vale (with the link to What's new when there is something to
+    /// show), and the removal of what the last swap left beside the exe.
     pub(super) fn update_start(&mut self, start: &Start) {
+        let lang = self.config.language;
+        // Release builds only; an import restart leaves it for the next start.
+        let action = if cfg!(debug_assertions) || matches!(start, Start::Imported) {
+            StartAction::None
+        } else {
+            let cfg = &self.config;
+            whats_new::start_action(&cfg.whats_new_seen, update::CURRENT, !cfg.onboarding_done)
+        };
+        let seen = std::mem::take(&mut self.config.whats_new_seen);
+        let shows = action == StartAction::Show && !whats_new::since(&seen, update::CURRENT).is_empty();
+        self.config.whats_new_seen = if action == StartAction::None {
+            seen.clone()
+        } else {
+            update::CURRENT.into()
+        };
+        if action != StartAction::None {
+            self.save_config();
+        }
         match start {
             Start::Updated(old) => {
                 eprintln!("vale: updated from {old} to {}", update::CURRENT);
-                self.apply_now(Event::Notice(updated_notice(self.config.language, old)));
+                let notice = if shows {
+                    whats_new_notice(lang, Some(old))
+                } else {
+                    updated_notice(lang, old)
+                };
+                self.apply_now(Event::Notice(notice));
             }
             Start::Imported => {
-                let title = i18n::text(self.config.language, Key::SettingsImported).into();
+                let title = i18n::text(lang, Key::SettingsImported).into();
                 self.apply_now(Event::Notice(info_notice(title, String::new())));
+            }
+            Start::Normal if shows => {
+                let old = (!seen.is_empty()).then_some(seen.as_str());
+                self.apply_now(Event::Notice(whats_new_notice(lang, old)));
             }
             Start::Normal => {}
         }
@@ -335,6 +381,26 @@ mod tests {
     }
 
     const DAY: u64 = 24 * 60 * 60;
+
+    #[test]
+    fn whats_new_notice_with_old_version() {
+        for lang in [Lang::Id, Lang::En] {
+            let n = whats_new_notice(lang, Some("5.3.0"));
+            let hint = i18n::text(lang, Key::WhatsNewHint);
+            assert_eq!(n.title, i18n::update_done(lang, update::CURRENT));
+            assert_eq!(n.body, format!("5.3.0 \u{2192} {} \u{b7} {hint}", update::CURRENT));
+            assert_eq!(n.kind, NoticeKind::WhatsNew);
+        }
+    }
+
+    #[test]
+    fn whats_new_notice_without_old_version_is_just_the_hint() {
+        for lang in [Lang::Id, Lang::En] {
+            let hint = i18n::text(lang, Key::WhatsNewHint);
+            assert_eq!(whats_new_notice(lang, None).body, hint);
+            assert_eq!(whats_new_notice(lang, Some("")).body, hint);
+        }
+    }
 
     #[test]
     fn the_first_tick_checks_and_a_day_must_pass_before_the_next() {
