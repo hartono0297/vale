@@ -125,6 +125,14 @@ named_enum! {
 }
 
 named_enum! {
+    /// How often the mascot plays a short animation on its own. `Sering`
+    /// plays often, `Sesekali` (the default) now and then, `Jarang` rarely,
+    /// `Sapaan` only with the greeting and on the hour (never on the idle
+    /// timer), `Mati` nothing automatic (the menu item still plays one).
+    MascotPlay { Sesekali, Sering, Jarang, Sapaan, Mati }
+}
+
+named_enum! {
     /// The falk's coat.
     FalkColor { Lutino, Grey, WhiteFace }
 }

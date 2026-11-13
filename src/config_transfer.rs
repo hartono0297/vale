@@ -60,6 +60,7 @@ pub const EXPORTED: &[&str] = &[
     "cat_color",
     "falk_color",
     "octopus_color",
+    "mascot_play",
     "cat_accessory",
     "cat_follow_pointer",
     "cat_dance",
