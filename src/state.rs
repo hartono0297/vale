@@ -2194,6 +2194,11 @@ impl IslandState {
                     effects.push(Effect::PhoneNewQr);
                 }
             }
+            Hit::PhoneNet(net) => {
+                if self.phone_shown() == Some(PhoneStage::Qr) {
+                    effects.push(Effect::PhoneNet(net));
+                }
+            }
             Hit::PhoneShowQr => {
                 if self.phone_shown() == Some(PhoneStage::Receiving) {
                     self.phone = Some(PhoneStage::Qr);
@@ -10127,6 +10132,20 @@ mod tests {
         s.apply(Event::PhoneAttention(PhoneStage::Receiving), t0);
         assert!(s.apply(Event::Click(Hit::PhoneShowQr), t0).is_empty());
         assert_eq!(s.phone_stage(), Some(PhoneStage::Qr));
+    }
+
+    #[test]
+    fn the_net_switch_counts_only_at_the_qr_stage() {
+        use crate::config::PhoneNet;
+        let t0 = Instant::now();
+        let mut s = st();
+        let hit = || Event::Click(Hit::PhoneNet(PhoneNet::Tailscale));
+        // No phone stage at all.
+        assert!(s.apply(hit(), t0).is_empty());
+        s.apply(Event::PhoneAttention(PhoneStage::Qr), t0);
+        assert_eq!(s.apply(hit(), t0), vec![Effect::PhoneNet(PhoneNet::Tailscale)]);
+        s.apply(Event::PhoneAttention(PhoneStage::Receiving), t0);
+        assert!(s.apply(hit(), t0).is_empty());
     }
 
     #[test]

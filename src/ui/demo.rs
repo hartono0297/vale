@@ -4968,6 +4968,7 @@ impl DemoPhone {
                 remaining: Some(292),
                 public: true,
                 joined: "",
+                tailnet: false,
             }),
             _ => QrView::Code(CodeView {
                 qr: &self.qr,
@@ -4980,6 +4981,7 @@ impl DemoPhone {
                 } else {
                     ""
                 },
+                tailnet: false,
             }),
         };
         Some(PhoneView {
@@ -4991,6 +4993,8 @@ impl DemoPhone {
                 files: 2,
                 bytes: self.rows[0].size + self.rows[1].size,
             },
+            net: crate::config::PhoneNet::Wifi,
+            switch_live: true,
         })
     }
 }

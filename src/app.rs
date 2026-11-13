@@ -2427,6 +2427,7 @@ impl App {
             Effect::ShelfClear => self.shelf_clear(),
             Effect::PhoneStart => return self.phone_pill(),
             Effect::PhoneNewQr => self.phone_new_qr(),
+            Effect::PhoneNet(n) => self.phone_switch(n),
             Effect::PhoneCancel => self.phone_cancel(),
             Effect::PhoneStop => self.phone_stop(crate::phone::EndReason::Done),
             Effect::PhoneBack => self.phone_back(),
@@ -7187,7 +7188,7 @@ impl App {
                 .waiting_strip()
                 .or_else(|| self.strip_motion.as_ref().and_then(|m| m.leaving.as_ref())),
         };
-        let phone_view = App::phone_view(state, &self.phone, now);
+        let phone_view = App::phone_view(state, &self.phone, self.config.phone_net, now);
         // Anything that moves outside the shape, or the shape itself: the
         // renderer redraws the whole surface (`ui::dirty`).
         let full_redraw = self.anim.running
