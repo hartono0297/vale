@@ -590,10 +590,9 @@ fn manual_ignores_presence_cooldown_and_an_open_panel() {
     assert!(may_start(&env, Moment::Manual, MascotPlay::Mati, Duration::ZERO, Duration::ZERO));
     // The permanent ones still bind, panel_open included: the handler closes
     // the panel first, because the animation's geometry assumes a closed island.
-    for mut bad in [env.clone(), env.clone()] {
-        bad.fullscreen = true;
-        assert!(!may_start(&bad, Moment::Manual, MascotPlay::Mati, Duration::ZERO, Duration::ZERO));
-    }
+    let mut full = env.clone();
+    full.fullscreen = true;
+    assert!(!may_start(&full, Moment::Manual, MascotPlay::Mati, Duration::ZERO, Duration::ZERO));
     let mut panel = env.clone();
     panel.panel_open = true;
     assert!(!may_start(&panel, Moment::Manual, MascotPlay::Mati, Duration::ZERO, Duration::ZERO));
