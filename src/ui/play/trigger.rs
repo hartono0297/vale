@@ -1,0 +1,319 @@
+//! When a story may play and which one.
+
+use std::time::Duration;
+
+use crate::theme::{Mascot, MascotPlay};
+
+/// An automatic story only plays once the owner has been idle this long: any
+/// sooner they are mid-keystroke.
+pub const PRESENCE_MIN: Duration = Duration::from_secs(15);
+/// Past this they have left the desk and nobody would see it.
+pub const PRESENCE_MAX: Duration = Duration::from_secs(300);
+/// How long the island takes to settle back when a story is cut short.
+pub const WIND_DOWN: Duration = Duration::from_millis(200);
+
+/// Why a story is being picked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Moment {
+    Idle,
+    Hour,
+    Greeting,
+    Manual,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Story {
+    PetakUmpet,
+    BantalAngka,
+    PianoEkor,
+    SyalEkor,
+    PenasaranJam,
+    PelukPulau,
+    Bungee,
+    Kelelawar,
+    MalingAngka,
+    TerbangKeliling,
+}
+
+impl Story {
+    pub fn mascot(self) -> Mascot {
+        match self {
+            Self::PetakUmpet | Self::BantalAngka | Self::PianoEkor | Self::SyalEkor => Mascot::Cat,
+            Self::PenasaranJam | Self::PelukPulau | Self::Bungee => Mascot::Octopus,
+            Self::Kelelawar | Self::MalingAngka | Self::TerbangKeliling => Mascot::Falk,
+        }
+    }
+
+    /// The story plays with the clock digits, so it is skipped when the clock
+    /// is off.
+    pub fn needs_clock(self) -> bool {
+        matches!(
+            self,
+            Self::BantalAngka | Self::PianoEkor | Self::PenasaranJam | Self::MalingAngka
+        )
+    }
+
+    pub fn secs(self) -> f32 {
+        match self {
+            Self::PetakUmpet => 7.8,
+            Self::BantalAngka => 8.6,
+            Self::PianoEkor | Self::SyalEkor => 8.4,
+            Self::PenasaranJam => 7.6,
+            Self::PelukPulau => 7.8,
+            Self::Bungee => 7.4,
+            Self::Kelelawar => 7.6,
+            Self::MalingAngka => 7.8,
+            Self::TerbangKeliling => 7.9,
+        }
+    }
+
+    /// The story preferred for a greeting.
+    fn warm(mascot: Mascot) -> Self {
+        match mascot {
+            Mascot::Cat => Self::SyalEkor,
+            Mascot::Octopus => Self::PelukPulau,
+            Mascot::Falk => Self::TerbangKeliling,
+        }
+    }
+}
+
+const ALL: [Story; 10] = [
+    Story::PetakUmpet,
+    Story::BantalAngka,
+    Story::PianoEkor,
+    Story::SyalEkor,
+    Story::PenasaranJam,
+    Story::PelukPulau,
+    Story::Bungee,
+    Story::Kelelawar,
+    Story::MalingAngka,
+    Story::TerbangKeliling,
+];
+
+pub fn presence_ok(since_input: Duration) -> bool {
+    (PRESENCE_MIN..=PRESENCE_MAX).contains(&since_input)
+}
+
+/// The mascot's stories, without the clock ones when the clock is off.
+pub fn pool(mascot: Mascot, clock_on: bool) -> Vec<Story> {
+    ALL.into_iter()
+        .filter(|s| s.mascot() == mascot && (clock_on || !s.needs_clock()))
+        .collect()
+}
+
+/// Never returns `last`. `roll` is a random number from the caller, so the
+/// choice is deterministic in it.
+pub fn pick(
+    mascot: Mascot,
+    clock_on: bool,
+    last: Option<Story>,
+    moment: Moment,
+    roll: u32,
+) -> Story {
+    let fresh: Vec<Story> = pool(mascot, clock_on)
+        .into_iter()
+        .filter(|s| Some(*s) != last)
+        .collect();
+    if moment == Moment::Greeting {
+        let warm = Story::warm(mascot);
+        if fresh.contains(&warm) {
+            return warm;
+        }
+    }
+    if moment == Moment::Hour {
+        let clock: Vec<Story> = fresh.iter().copied().filter(|s| s.needs_clock()).collect();
+        if !clock.is_empty() {
+            return clock[roll as usize % clock.len()];
+        }
+    }
+    fresh[roll as usize % fresh.len()]
+}
+
+/// How long to wait before an idle story, `None` when the preset has no timer.
+pub fn wait_for(preset: MascotPlay, roll: u32) -> Option<Duration> {
+    let (lo, hi) = match preset {
+        MascotPlay::Sering => (8, 15),
+        MascotPlay::Sesekali => (15, 35),
+        MascotPlay::Jarang => (45, 90),
+        MascotPlay::Sapaan | MascotPlay::Mati => return None,
+    };
+    let (lo, hi) = (lo * 60, hi * 60);
+    Some(Duration::from_secs(lo + u64::from(roll) % (hi - lo + 1)))
+}
+
+/// The least time between two automatic stories.
+pub fn cooldown(preset: MascotPlay) -> Duration {
+    let mins = match preset {
+        MascotPlay::Sering => 6,
+        MascotPlay::Sesekali | MascotPlay::Sapaan => 12,
+        MascotPlay::Jarang => 40,
+        MascotPlay::Mati => 0,
+    };
+    Duration::from_secs(mins * 60)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_presence_window_is_fifteen_seconds_to_five_minutes() {
+        assert!(!presence_ok(Duration::from_secs(14)));
+        assert!(presence_ok(Duration::from_secs(15)));
+        assert!(presence_ok(Duration::from_secs(299)));
+        assert!(!presence_ok(Duration::from_secs(301)));
+    }
+
+    #[test]
+    fn every_mascot_keeps_at_least_two_stories_without_the_clock() {
+        for m in [Mascot::Cat, Mascot::Falk, Mascot::Octopus] {
+            assert!(pool(m, true).len() >= 3, "{m:?}");
+            assert!(pool(m, false).len() >= 2, "{m:?} without the clock");
+            assert!(pool(m, false).iter().all(|s| !s.needs_clock()), "{m:?}");
+            assert!(pool(m, true).iter().all(|s| s.mascot() == m), "{m:?}");
+        }
+    }
+
+    #[test]
+    fn the_clock_stories_are_exactly_the_four_with_digits() {
+        let all = [
+            Story::PetakUmpet,
+            Story::BantalAngka,
+            Story::PianoEkor,
+            Story::SyalEkor,
+            Story::PenasaranJam,
+            Story::PelukPulau,
+            Story::Bungee,
+            Story::Kelelawar,
+            Story::MalingAngka,
+            Story::TerbangKeliling,
+        ];
+        let clock: Vec<Story> = all.into_iter().filter(|s| s.needs_clock()).collect();
+        assert_eq!(
+            clock,
+            [
+                Story::BantalAngka,
+                Story::PianoEkor,
+                Story::PenasaranJam,
+                Story::MalingAngka
+            ]
+        );
+    }
+
+    #[test]
+    fn a_pick_never_repeats_the_last_story() {
+        for m in [Mascot::Cat, Mascot::Falk, Mascot::Octopus] {
+            for clock_on in [true, false] {
+                for last in pool(m, clock_on) {
+                    for moment in [Moment::Idle, Moment::Hour, Moment::Greeting, Moment::Manual] {
+                        for roll in 0..50 {
+                            assert_ne!(
+                                pick(m, clock_on, Some(last), moment, roll),
+                                last,
+                                "{m:?} {moment:?} roll={roll}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_pick_reaches_every_other_story_in_the_pool() {
+        for m in [Mascot::Cat, Mascot::Falk, Mascot::Octopus] {
+            let p = pool(m, true);
+            let last = Some(p[0]);
+            let seen: std::collections::HashSet<Story> = (0..50)
+                .map(|r| pick(m, true, last, Moment::Idle, r))
+                .collect();
+            assert_eq!(seen.len(), p.len() - 1, "{m:?}");
+        }
+    }
+
+    #[test]
+    fn the_hour_prefers_a_clock_story_and_the_greeting_a_warm_one() {
+        for roll in 0..20 {
+            assert!(pick(Mascot::Cat, true, None, Moment::Hour, roll).needs_clock());
+            assert_eq!(
+                pick(Mascot::Octopus, true, None, Moment::Greeting, roll),
+                Story::PelukPulau
+            );
+            assert_eq!(
+                pick(Mascot::Cat, true, None, Moment::Greeting, roll),
+                Story::SyalEkor
+            );
+            assert_eq!(
+                pick(Mascot::Falk, false, None, Moment::Greeting, roll),
+                Story::TerbangKeliling
+            );
+        }
+        assert!(
+            !pick(Mascot::Cat, false, None, Moment::Hour, 0).needs_clock(),
+            "no clock, no clock story"
+        );
+    }
+
+    #[test]
+    fn the_hour_still_avoids_a_repeat_when_one_clock_story_is_left() {
+        // The octopus has one clock story: it was just played, so the hour
+        // falls back to the ordinary pick instead of repeating it.
+        let s = pick(
+            Mascot::Octopus,
+            true,
+            Some(Story::PenasaranJam),
+            Moment::Hour,
+            0,
+        );
+        assert_ne!(s, Story::PenasaranJam);
+        assert_eq!(s.mascot(), Mascot::Octopus);
+    }
+
+    #[test]
+    fn the_presets_carry_the_specs_waits_and_cooldowns() {
+        assert_eq!(wait_for(MascotPlay::Mati, 0), None);
+        assert_eq!(wait_for(MascotPlay::Sapaan, 0), None);
+        for (p, lo, hi) in [
+            (MascotPlay::Sering, 8, 15),
+            (MascotPlay::Sesekali, 15, 35),
+            (MascotPlay::Jarang, 45, 90),
+        ] {
+            let waits: Vec<u64> = (0..3000)
+                .map(|r| wait_for(p, r).unwrap().as_secs())
+                .collect();
+            assert!(
+                waits.iter().all(|w| (lo * 60..=hi * 60).contains(w)),
+                "{p:?}"
+            );
+            assert_eq!(
+                *waits.iter().min().unwrap(),
+                lo * 60,
+                "{p:?} reaches the low end"
+            );
+            assert_eq!(
+                *waits.iter().max().unwrap(),
+                hi * 60,
+                "{p:?} reaches the high end"
+            );
+        }
+        for (p, mins) in [
+            (MascotPlay::Sering, 6),
+            (MascotPlay::Sesekali, 12),
+            (MascotPlay::Jarang, 40),
+            (MascotPlay::Sapaan, 12),
+        ] {
+            assert_eq!(cooldown(p), Duration::from_secs(mins * 60), "{p:?}");
+        }
+    }
+
+    #[test]
+    fn the_wind_down_is_two_hundred_milliseconds() {
+        assert_eq!(WIND_DOWN, Duration::from_millis(200));
+    }
+
+    #[test]
+    fn each_story_lasts_as_long_as_the_mockup() {
+        let secs: Vec<f32> = ALL.iter().map(|s| s.secs()).collect();
+        assert_eq!(secs, [7.8, 8.6, 8.4, 8.4, 7.6, 7.8, 7.4, 7.6, 7.8, 7.9]);
+    }
+}
