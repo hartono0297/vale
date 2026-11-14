@@ -1062,7 +1062,7 @@ fn demo_play(which: DemoPlay, style: Style, shape: ShapeRect) -> PlayFrame {
         beat,
         digits,
         mascot: None,
-        props: Vec::new(),
+        parts: Vec::new(),
     }
 }
 

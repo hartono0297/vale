@@ -8,7 +8,9 @@
 
 use std::f32::consts::{PI, TAU};
 
-use super::{Ease, HEAD_PIVOT, MascotShot, Prop, Shot, blinks, bump, kf, lerp, ring, toward_rest};
+use super::{
+    Draw, Ease, HEAD_PIVOT, Layer, MascotShot, Part, Shot, blinks, bump, kf, lerp, ring, toward_rest,
+};
 use crate::config::Style;
 use crate::ui::geometry::{ShapeRect, idle_layout_lead};
 use crate::ui::mascot::CrestPose;
@@ -174,8 +176,11 @@ pub fn shot(style: Style, s: ShapeRect, beat: Beat) -> Shot {
     let beak = beak_at(&head, rest, k);
     let pivot = (rest.0 + head.dx, rest.1 + head.dy);
     if whistle > 0.0 {
-        out.props.push(Prop::Whistle {
-            at: (pivot.0 + 8.0, pivot.1 - 5.0),
+        out.parts.push(Part {
+            layer: Layer::Front,
+            draw: Draw::Whistle {
+                at: (pivot.0 + 8.0, pivot.1 - 5.0),
+            },
             alpha: whistle.min(1.0) * a,
         });
     }
@@ -202,13 +207,17 @@ pub fn shot(style: Style, s: ShapeRect, beat: Beat) -> Shot {
         } else {
             (beak, head.rot_deg + 80.0)
         };
-        // Gone over its last quarter second of falling, well below the island.
+        // Gone over its last quarter second of falling, well below the
+        // island: in front of it, so it falls out under the lip.
         let fade = ((1.0 - drop) / 0.25).clamp(0.0, 1.0);
         if fade > 0.0 {
-            out.props.push(Prop::Digit {
-                index: STOLEN,
-                at,
-                rot_deg: turn,
+            out.parts.push(Part {
+                layer: Layer::Front,
+                draw: Draw::Digit {
+                    index: STOLEN,
+                    at,
+                    rot_deg: turn,
+                },
                 alpha: fade * a,
             });
         }
@@ -252,7 +261,7 @@ mod tests {
     use crate::ui::mascot::{CrestPose, beak_open, crest_pose};
     use crate::ui::play::shape::is_rest;
     use crate::ui::play::state::Beat;
-    use crate::ui::play::stories::Prop;
+    use crate::ui::play::stories::{Draw, Layer, Part};
     use crate::ui::play::testing::shape;
     use crate::ui::play::trigger::Story;
     use crate::ui::render::DigitFx;
@@ -299,7 +308,9 @@ mod tests {
                 while t <= Story::MalingAngka.secs() {
                     let shot = shot(style, s, Beat { spread: 1.0, alpha: 1.0, t });
                     let b = shot.bounds();
-                    assert!(b.x >= 0.0 && b.y >= 0.0 && b.x + b.w <= WINDOW_W && b.y + b.h <= WINDOW_H,
+                    // Above the screen's top edge is hidden by it, as the
+                    // mockup's bezel hides it.
+                    assert!(b.x >= 0.0 && b.x + b.w <= WINDOW_W && b.y + b.h <= WINDOW_H,
                         "{style:?} {w}x{h} t={t}: {b:?}");
                     t += 0.04;
                 }
@@ -339,13 +350,13 @@ mod tests {
         // Bitten: gone from its place, in the beak instead.
         let held = at(4.0);
         assert_eq!(held.digits[4].alpha, 0.0);
-        assert!(held.props.iter().any(|p| matches!(p, Prop::Digit { index: 4, alpha, .. } if *alpha == 1.0)));
+        assert!(held.parts.iter().any(|p| matches!(p, Part { layer: Layer::Front, draw: Draw::Digit { index: 4, .. }, alpha } if *alpha == 1.0)));
         // The clock regrows it with a little overshoot, then it is home.
         assert!(at(4.75).digits[4].scale > 0.3 && at(4.75).digits[4].scale < 1.0);
         assert!(at(5.0).digits[4].scale >= 0.99);
         // The stolen one falls and is gone a second after the drop.
-        let falling = |t: f32| at(t).props.iter().find_map(|p| match p {
-            Prop::Digit { at, .. } => Some(*at),
+        let falling = |t: f32| at(t).parts.iter().find_map(|p| match p.draw {
+            Draw::Digit { at, .. } => Some(at),
             _ => None,
         });
         let (a, b) = (falling(5.2).unwrap(), falling(5.8).unwrap());
@@ -421,13 +432,14 @@ mod tests {
                     let shot = shot(style, s, Beat { spread: 1.0, alpha: a, t });
                     let m = shot.mascot.unwrap();
                     let beak = drawn_beak(s, 1.0, &m);
-                    let digits: Vec<_> = shot.props.iter().filter_map(|p| match *p {
-                        Prop::Digit { index, at, alpha, .. } => Some((index, at, alpha)),
+                    let digits: Vec<_> = shot.parts.iter().filter_map(|p| match p.draw {
+                        Draw::Digit { index, at, .. } => Some((index, at, p.alpha, p.layer)),
                         _ => None,
                     }).collect();
                     assert_eq!(digits.len(), 1, "{case}: one stolen digit");
-                    let (index, at, alpha) = digits[0];
+                    let (index, at, alpha, layer) = digits[0];
                     assert_eq!(index, 4, "{case}");
+                    assert_eq!(layer, Layer::Front, "{case}: it falls out under the island");
                     let drop = (t - 5.05_f32).max(0.0);
                     let want = (beak.0 + 4.0 * drop, beak.1 + 90.0 * drop * drop);
                     assert!((at.0 - want.0).abs() < 1e-3 && (at.1 - want.1).abs() < 1e-3, "{case}: {at:?} is not at the beak {want:?}");
@@ -449,8 +461,8 @@ mod tests {
         for a in [0.5, 1.0] {
             let shot = shot(Style::Pill, s, Beat { spread: 1.0, alpha: a, t: 6.55 });
             let m = shot.mascot.unwrap();
-            let at = shot.props.iter().find_map(|p| match *p {
-                Prop::Whistle { at, .. } => Some(at),
+            let at = shot.parts.iter().find_map(|p| match p.draw {
+                Draw::Whistle { at } if p.layer == Layer::Front => Some(at),
                 _ => None,
             }).unwrap();
             let head = (rest.0 + m.dx, rest.1 + m.dy);
