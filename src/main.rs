@@ -52,6 +52,7 @@ mod search_details;
 mod search_files;
 mod shelf;
 mod shelf_ole;
+mod shelf_thumb;
 mod shortcuts;
 mod shot_edit;
 mod sources;
