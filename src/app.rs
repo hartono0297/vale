@@ -2381,6 +2381,7 @@ impl App {
             clock_on: self.config.idle_clock,
             has_story: has_ready(self.config.mascot, self.config.idle_clock),
             working: self.typing_shape(now),
+            mascot_changed: self.play.as_ref().is_some_and(|a| a.shape.mascot != self.config.mascot),
         }
     }
 
@@ -11716,7 +11717,7 @@ mod tests {
         assert_eq!(TIMER_MASCOT_PLAY, 19);
     }
 
-    /// An `Env` from 16 bits, one per field, in declaration order.
+    /// An `Env` from 17 bits, one per field, in declaration order.
     fn env_from_bits(bits: u32) -> crate::ui::play::gate::Env {
         let b = |i: u32| bits & (1 << i) != 0;
         crate::ui::play::gate::Env {
@@ -11736,6 +11737,7 @@ mod tests {
             clock_on: b(13),
             has_story: b(14),
             working: b(15),
+            mascot_changed: b(16),
         }
     }
 
@@ -11747,7 +11749,7 @@ mod tests {
         let (since_input, since_last) = (Duration::from_secs(60), Duration::from_secs(3600));
         let mut armed = 0u32;
         for preset in [Sesekali, Sering, Jarang, Sapaan, Mati] {
-            for bits in 0..(1u32 << 16) {
+            for bits in 0..(1u32 << 17) {
                 let env = env_from_bits(bits);
                 for playing in [false, true] {
                     // Written out, not read from the gates: the timer's own rule.
@@ -11767,7 +11769,8 @@ mod tests {
                         && !env.asleep
                         && !env.recording
                         && env.has_story
-                        && !env.working;
+                        && !env.working
+                        && !env.mascot_changed;
                     let got = mascot_timer_wanted(&env, preset, playing);
                     assert_eq!(got, expected, "{preset:?} playing={playing} env={env:?}");
                     // It also agrees with the gate the fire re-checks, with the
@@ -11829,6 +11832,7 @@ mod tests {
             ("energy saver", crate::ui::play::gate::Env { energy_saver: true, ..ok_env() }),
             ("windows animations", crate::ui::play::gate::Env { win_anim: false, ..ok_env() }),
             ("motion", crate::ui::play::gate::Env { motion_full: false, ..ok_env() }),
+            ("mascot", crate::ui::play::gate::Env { mascot_changed: true, ..ok_env() }),
         ] {
             let t0 = Instant::now();
             let mut play = Play::start(Story::Kelelawar, t0);

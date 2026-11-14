@@ -30,6 +30,8 @@ pub struct Env {
     /// The idle face is the typing one (a Claude session, a CLI command or
     /// Mole runs) and the island is widened for its laptop.
     pub working: bool,
+    /// The mascot is not the one the running story started with.
+    pub mascot_changed: bool,
 }
 
 /// The gates that bind every play, a `Manual` one included. The typing face
@@ -48,6 +50,7 @@ fn permanent_ok(env: &Env) -> bool {
         && !env.recording
         && env.has_story
         && !env.working
+        && !env.mascot_changed
 }
 
 /// The gates that asking for a play by hand switches on (reaching the island to
@@ -97,9 +100,10 @@ pub fn must_stop(
         || (playing.needs_clock() && !env.clock_on)
 }
 
-/// No point easing home: the motion itself is not wanted.
+/// No point easing home: the motion itself is not wanted, or another mascot
+/// would perform the old one's motion on its way home.
 pub fn instant_stop(env: &Env) -> bool {
-    !env.motion_full || env.energy_saver || !env.win_anim
+    !env.motion_full || env.energy_saver || !env.win_anim || env.mascot_changed
 }
 
 #[cfg(test)]
@@ -122,7 +126,7 @@ mod tests {
         flips!(
             mascot_on, motion_full, energy_saver, win_anim, idle_view, panel_open, menu_open,
             fullscreen, screen_away, shrunk, pointer_near, asleep, recording, clock_on, has_story,
-            working,
+            working, mascot_changed,
         )
         .into_iter()
         .filter(|(name, _)| *name != "clock_on")
@@ -131,7 +135,7 @@ mod tests {
 
     #[test]
     fn the_flips_cover_every_gate_but_the_clock() {
-        assert_eq!(off_by_one_envs().len(), 15);
+        assert_eq!(off_by_one_envs().len(), 16);
     }
 
     #[test]
@@ -307,8 +311,8 @@ mod tests {
     }
 
     #[test]
-    fn only_those_three_stop_instantly() {
-        let instant = ["motion_full", "energy_saver", "win_anim"];
+    fn only_those_four_stop_instantly() {
+        let instant = ["motion_full", "energy_saver", "win_anim", "mascot_changed"];
         for (name, env) in off_by_one_envs() {
             assert_eq!(instant_stop(&env), instant.contains(&name), "{name}");
         }

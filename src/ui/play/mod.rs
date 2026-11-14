@@ -54,6 +54,7 @@ pub(crate) mod testing {
             clock_on: true,
             has_story: true,
             working: false,
+            mascot_changed: false,
         }
     }
 
